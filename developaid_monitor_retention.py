@@ -29,6 +29,9 @@ from typing import Any
 # колонку. Сравнение по «начинается с»: в живом файле у заголовков хвосты
 # («Выплачено ГУ по состточнию на …») и переносы строк.
 COLUMNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    # Заказчик здесь — генподрядчик: реестр ГУ ведёт он, и в нём стоят его
+    # субподрядчики. Это единственное место, где у нас записано, кто чей.
+    ("customer", ("заказчик",)),
     ("counterparty", ("контрагент",)),
     ("contract", ("реквизиты договора", "договор")),
     ("contract_amount", ("стоимость договора",)),
@@ -159,6 +162,7 @@ def read_retention(data: bytes) -> dict[str, Any]:
             # сложенная второй раз, она удваивает объём подряда.
             contract_amount = 0.0
         rows.append({
+            "customer": str(cell("customer") or "").strip(),
             "counterparty": counterparty,
             "contract": str(cell("contract") or "").strip(),
             "contract_amount": contract_amount or 0.0,

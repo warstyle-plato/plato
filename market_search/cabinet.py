@@ -150,7 +150,7 @@ __ERROR__
 
 
 CABINET_PAGE = r"""<!doctype html><meta charset="utf-8">
-<title>Конструктор отчёта о рынке</title>
+<title>Кабинет DevelopAid</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
 :root{--ink:#16202b;--dim:#5b6b7d;--line:#dde5ed;--blue:#1367AE;--rust:#C4581B;--bg:#f4f6f9}
@@ -478,12 +478,24 @@ __DEVELOPAID_CONTOUR_STYLE__
 </style>
 <header>
   <a class="brand" href="/" title="DevelopAid"><img src="/guide/assets/logo.webp" alt="ПЛАТО" height="26"></a>
-  <h1>Конструктор отчёта о рынке</h1>
+  <h1>Кабинет DevelopAid</h1>
   <div class="sub">Внутренний раздел. Числа лицензионные — наружу не публикуются.
     · версия __DEVELOPAID_VERSION__</div>
 </header>
 <main>
 __DEVELOPAID_CONTOUR__
+  <div class="card" id="overview">
+    <div class="blockhead"><h2 style="margin:0" id="overviewTitle">Кабинет</h2>
+      <label class="upload" title="Что в файле нашлось, то и прочитано: выгрузка ЦФ несёт контрактацию, проводки 1С и оба плана, книга финмодели — квартирографию, план продаж и отчёт правлению. Источники ложатся на склад ядра и переживают закрытие вкладки: файлы грузятся по одному и в любом порядке. Форматы .xlsx, .xlsm, .xlsb">Загрузить файл проекта<input type="file" id="cf" accept=".xlsx,.xlsm,.xlsb"></label>
+    </div>
+    <div id="overviewBody" class="muted" style="font-size:13px;margin-top:6px">Смотрю, что уже загружено…</div>
+    <div id="cfstate" class="muted" style="font-size:12.5px;margin-top:6px"></div>
+    <div id="planstate" class="muted" style="font-size:12.5px"></div>
+  </div>
+  <details class="salesreport" id="market"><summary>
+    <b>Отчёт о рынке</b>
+    <span class="muted">соседи, цена метра, темп продаж, класс — собирается по запросу</span>
+  </summary>
   <div class="card" id="form">
     <div class="row">
       <div style="flex:2 1 380px;position:relative">
@@ -522,13 +534,11 @@ __DEVELOPAID_CONTOUR__
     <button class="go alt" id="hint">Ориентир цены</button>
     <button class="go alt" id="pdf" style="display:none">Сохранить PDF</button>
     <button class="go alt" id="reset" style="display:none">Сбросить отчёт</button>
-    <label class="upload" title="Что в файле нашлось, то и прочитано: выгрузка ЦФ несёт контрактацию, проводки 1С и оба плана, книга финмодели — квартирографию, план продаж и отчёт правлению. Источники ложатся на склад ядра и переживают закрытие вкладки: файлы грузятся по одному и в любом порядке. Форматы .xlsx, .xlsm, .xlsb">Загрузить файл проекта<input type="file" id="cf" accept=".xlsx,.xlsm,.xlsb"></label>
-    <span id="cfstate" class="muted"></span>
-    <span id="planstate" class="muted"></span>
     <span id="state" class="muted" style="margin-left:12px"></span>
     <div id="pdfstate" class="err pdffail" style="display:none"></div>
     <div id="hintout"></div>
   </div>
+  </details>
   <div id="sales"></div>
   <div id="out"></div>
 <script>document.body.dataset.version='__DEVELOPAID_VERSION__';</script>
@@ -1828,18 +1838,20 @@ async function loadStoredSales(){
     if(!r.ok) return;
     const d=await r.json();
     if(d&&!d.empty) showSales(d);
-    else $('#cfstate').textContent='Файлы проекта ещё не загружены.';
+    else renderOverview(null);
   }catch(_){ /* кабинет может быть закрыт ключом — это не поломка экрана */ }
 }
 
 function showSales(d){
   salesData=d;
+  renderOverview(d);
   takePlan(d);
   const t=d.total||{};
-  const parts=(d.sources||[]).map(s=>s.name).join(', ');
-  $('#cfstate').textContent=`${d.project||'Проект'}: ${num(t.contracts)} `
-    +`${plural(t.contracts,'договор','договора','договоров')}, `
-    +`${num(t.amount/1e6,1)} млн ₽`+(parts?` · источники: ${parts}`:'');
+  // Числа стоят плитками выше — здесь только чем они прочитаны и на когда:
+  // повторённое число читается как второе, а не как то же самое.
+  $('#cfstate').textContent=(d.sources||[]).length
+    ?'Источники: '+(d.sources||[]).map(s=>`${s.name} — ${String(s.at||'').slice(0,10)}`).join('; ')+'.'
+    :'';
   $('#sales').innerHTML='';
   renderSales(d);
 }
@@ -2373,6 +2385,57 @@ function plural(count, one, few, many){
 
 function outOf(sold, pool){
   return num(sold||0)+(pool?' из '+num(pool):'');
+}
+
+// Сводка кабинета: с чем человек пришёл и что здесь уже есть.
+//
+// Прежде кабинет открывался конструктором отчёта о рынке — то есть одним
+// инструментом из трёх, и выглядело это как «кабинет = рынок» (владелец,
+// 30.08.2026). Теперь сверху состояние: какой проект открыт, какие источники
+// загружены и на какие даты, чем закончились продажи, — а инструменты стоят
+// свёрнутыми и раскрываются по нажатию.
+//
+// Здесь ничего не считается: числа берутся из свода, который посчитал сервер.
+// Второй счёт той же выручки однажды разошёлся бы с первым, и обе строки
+// выглядели бы верными.
+function renderOverview(d){
+ const box=$('#overviewBody'), head=$('#overviewTitle');
+ if(!box)return;
+ if(!d||d.empty){
+  if(head)head.textContent='Кабинет';
+  box.innerHTML='<b>Файлы проекта ещё не загружены.</b> '
+   +'Выгрузка ЦФ несёт контрактацию и проводки, книга финмодели — квартирографию '
+   +'и планы. Пока их нет, свод продаж собирать не из чего, а отчёт о рынке '
+   +'работает и без них.';
+  return;
+ }
+ if(head)head.textContent='Кабинет'+(d.project?' · '+d.project:'');
+ const t=d.total||{}, whole=(d.pool||{}).total||{};
+ const tile=(name,value,sub)=>`<div><div class="muted" style="font-size:12px">${esc(name)}</div>`
+  +`<div style="font-size:18px;font-weight:600">${value}</div>`
+  +(sub?`<div class="muted" style="font-size:11.5px;margin-top:2px">${esc(sub)}</div>`:'')+'</div>';
+ const share=whole.amount_share===null||whole.amount_share===undefined
+  ?'план не прочитан':num(whole.amount_share*100,1)+'% ожидаемой выручки';
+ const day=String((d.sources||[]).map(s=>String(s.at||'').slice(0,10)).filter(Boolean).sort().pop()||'');
+ const notes=(d.missing||[]).length;
+ box.innerHTML='<div class="kv">'
+   +tile('Договоров',num(t.contracts))
+   +tile('Выручка',num(t.amount/1e6,1)+' млн ₽',share)
+   +tile('На эскроу',num(t.escrow/1e6,1)+' млн ₽')
+   +tile('Источников',num((d.sources||[]).length),day?'последний срез '+day:'')
+   +'</div>'
+   +'<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">'
+   +'<button type="button" class="pdfbtn" id="openSales">Открыть отчёт о продажах</button>'
+   +'<button type="button" class="pdfbtn" id="openMarket">Собрать отчёт о рынке</button>'
+   +'</div>'
+   +(notes?`<div class="muted" style="font-size:12px;margin-top:8px">Не прочитано: ${notes} `
+     +`${plural(notes,'источник','источника','источников')} — подробности в отчёте о продажах.</div>`:'');
+ const open=(id,then)=>{const card=document.getElementById(id);if(!card)return;
+  card.open=true;card.scrollIntoView({block:'start'});if(then)then()};
+ const sales=$('#openSales'); if(sales)sales.onclick=()=>open('sales');
+ const market=$('#openMarket'); if(market)market.onclick=()=>open('market',()=>{
+  const field=document.getElementById('q'); if(field)field.focus();
+ });
 }
 
 function renderSales(d){

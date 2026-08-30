@@ -69,7 +69,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.20.60"
+VERSION = "0.20.69"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -1482,6 +1482,30 @@ def _recognize_freeform_tep_text(text: str) -> dict[str, Any]:
         raise ValueError("Не удалось разобрать распознанные показатели") from exc
 
 
+# Зона нормирования соцобеспеченности Москвы. Во второй зоне нормативы выше:
+# ДОО 63 против 44 мест на тысячу, школа 124 против 90. Список районов был
+# литералом внутри разбора свободного ТЭП, и второй путь — пересчёт под
+# фактический ТЭП без выгрузки ГлавАПУ — завёл бы вторую копию: разойдясь,
+# они дали бы на один участок два норматива, и оба выглядели бы верными.
+MOSCOW_ZONE_TWO_DISTRICTS = frozenset({
+    "бекасово", "бирюлёво восточное", "бирюлёво западное", "внуково", "вороново",
+    "восточный", "выхино-жулебино", "западное дегунино", "коммунарка", "косино-ухтомский",
+    "краснопахорский", "крюково", "куркино", "матушкино", "митино", "молжаниновский",
+    "некрасовка", "новокосино", "савелки", "северное бутово", "северный", "силино",
+    "солнцево", "старое крюково", "троицк", "филимонковский", "щербинка", "южное бутово",
+})
+
+
+def district_zone_two(district: Any) -> bool:
+    """Вторая зона нормирования по названию района.
+
+    Район не назван — это первая зона по умолчанию, и вызывающий обязан сказать
+    об этом вслух: неизвестный район и район первой зоны дают разные нормативы,
+    а на экране выглядят одинаково.
+    """
+    return str(district or "").strip().lower().replace("ё", "ё") in MOSCOW_ZONE_TWO_DISTRICTS
+
+
 def build_freeform_tep(text: str, raw_values: dict[str, Any] | None = None) -> dict[str, Any]:
     raw = copy.deepcopy(raw_values) if raw_values is not None else _recognize_freeform_tep_text(text)
 
@@ -1582,13 +1606,7 @@ def build_freeform_tep(text: str, raw_values: dict[str, Any] | None = None) -> d
     district = str(raw.get("district") or "").strip()
     if district:
         provided.append(f"район — {district}")
-    zone_two = district.lower() in {
-        "бекасово", "бирюлёво восточное", "бирюлёво западное", "внуково", "вороново",
-        "восточный", "выхино-жулебино", "западное дегунино", "коммунарка", "косино-ухтомский",
-        "краснопахорский", "крюково", "куркино", "матушкино", "митино", "молжаниновский",
-        "некрасовка", "новокосино", "савелки", "северное бутово", "северный", "силино",
-        "солнцево", "старое крюково", "троицк", "филимонковский", "щербинка", "южное бутово",
-    }
+    zone_two = district_zone_two(district)
     doo_norm = (63 if zone_two else 44) * population / 1000
     school_norm = (124 if zone_two else 90) * population / 1000
     clinic_norm = 19 * population / 1000
@@ -2186,7 +2204,12 @@ def monitor_crew(project: str, date: str = "", session: str = "",
             report = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             report = None
-    return crew.crew_day(rows, by_code, report, day or view.get("cut"))
+    # Кто чей: в реестрах РСС у статьи стоит генподрядчик, а на площадку выходят
+    # его субподрядчики. Связь лежит в реестре гарантийных удержаний — его ведёт
+    # генподрядчик, и в нём его договоры.
+    register = developaid_monitor.latest_retention(project)
+    subs = crew.subcontractors(register if (register or {}).get("rows") else None)
+    return crew.crew_day(rows, by_code, report, day or view.get("cut"), subs)
 
 
 @app.get("/monitor/daily/summary", include_in_schema=False)
@@ -2195,9 +2218,40 @@ def monitor_daily_summary(project: str, upto: str = "",
     """Люди на площадке по дням и последний отчёт словами."""
     _require_web_access(session, key, "Монитор проекта")
     try:
-        return developaid_monitor_daily.daily_summary(project, upto or None)
+        return developaid_monitor_daily.daily_summary(
+            project, upto or None, known=_monitor_known_parties(project))
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+
+
+def _monitor_known_parties(project: str) -> list[str]:
+    """Имена подрядчиков, известные проекту: из реестров РСС и реестра ГУ.
+
+    Нужны разбору ежедневного отчёта: подрядчик, названный в строке работ, но
+    не выводивший людей в этот день, в численности отчёта не значится — и без
+    этого списка его строка достаётся заголовку выше.
+    """
+    import developaid_monitor_crew as crew
+
+    names: list[str] = []
+    rss = developaid_monitor._latest(project, "estimate", ".xlsx", "")
+    if rss is not None:
+        try:
+            for register in (developaid_actuals.read_completed_works(rss),
+                             developaid_actuals.read_payments(rss)):
+                for row in register.get("rows") or []:
+                    name = str(row.get("contractor") or "").strip()
+                    if name and name not in names:
+                        names.append(name)
+        except (KeyError, ValueError):
+            pass
+    register = developaid_monitor.latest_retention(project)
+    for row in ((register or {}).get("rows") or []):
+        for field in ("counterparty", "customer"):
+            name = str(row.get(field) or "").strip()
+            if name and name not in names:
+                names.append(name)
+    return names
 
 
 @app.post("/monitor/work-fact/stage", include_in_schema=False)
@@ -5173,6 +5227,203 @@ def tep_derived(req: TepDerivedRequest) -> dict[str, Any]:
         k1=req.k1, k2=req.k2, zone_two=req.zone_two,
         upks_rub=req.upks_rub, sqm_per_job=req.sqm_per_job,
         parking_norm_regime=req.parking_norm_regime)
+
+
+class TepRescaleRequest(BaseModel):
+    """Пересчёт соцнагрузки пропорцией, когда норматив считать не от чего.
+
+    Места зависят от населения, население — от площади квартир; ставка за место
+    у нас задана экспертно и от метража не зависит. Значит при правке ТЭП
+    соцнагрузка масштабируется, а не считается заново, — и это верно в любом
+    регионе, потому что норматив здесь не применяется вовсе: масштабируется то,
+    что УЖЕ посчитано городом или введено человеком.
+    """
+    apartment_area_before_sqm: float = 0.0
+    apartment_area_after_sqm: float = 0.0
+    nonresidential_before_sqm: float = 0.0
+    nonresidential_after_sqm: float = 0.0
+    kindergarten_places: float = 0.0
+    school_places: float = 0.0
+    clinic_capacity: float = 0.0
+    social_compensation_mln: float = 0.0
+    underground_manual_spaces: float = 0.0
+    basis: str = ""
+
+
+@app.post("/tep/rescale-social")
+def tep_rescale_social(req: TepRescaleRequest) -> dict[str, Any]:
+    """Соцнагрузка и машино-места под новый ТЭП — пропорцией от прежних.
+
+    «Почему нельзя брать пропорцию? Количество мест зависит от количества
+    людей, а количество людей — от количества жилых площадей. Себестоимости
+    места у нас вбиты экспертно» (владелец, 30.08.2026). Верно: норматив линеен
+    по населению, а население линейно по площади квартир, и в Подмосковье это
+    работает так же, как в Москве, — потому что норматив здесь не применяется
+    вовсе.
+
+    Отсюда и граница ответа: пропорция масштабирует то, что УЖЕ стоит в модели.
+    Нечего масштабировать — это отказ, а не ноль: пустая соцнагрузка и
+    соцнагрузка, уменьшенная до нуля, значат разное.
+    """
+    before = max(0.0, float(req.apartment_area_before_sqm or 0.0))
+    after = max(0.0, float(req.apartment_area_after_sqm or 0.0))
+    if before <= 0:
+        raise HTTPException(
+            status_code=422,
+            detail=("Не от чего считать пропорцию: неизвестна площадь квартир, "
+                    "под которую посчитана нынешняя соцнагрузка."))
+    known = [value for value in (req.kindergarten_places, req.school_places,
+                                 req.clinic_capacity, req.social_compensation_mln,
+                                 req.underground_manual_spaces)
+             if float(value or 0.0) > 0]
+    if not known:
+        raise HTTPException(
+            status_code=422,
+            detail=("Масштабировать нечего: соцнагрузка и машино-места в модели "
+                    "не заданы. Пустая нагрузка и уменьшенная до нуля — разное."))
+    factor = after / before
+    # Места целые и всегда вверх: половина места не строится, а норматив
+    # округляется в большую сторону.
+    def places(value: Any) -> int:
+        return int(math.ceil(float(value or 0.0) * factor - 1e-9))
+
+    nonres_before = max(0.0, float(req.nonresidential_before_sqm or 0.0))
+    nonres_after = max(0.0, float(req.nonresidential_after_sqm or 0.0))
+    warnings: list[str] = []
+    if nonres_before > 0 and abs(nonres_after - nonres_before) > 1.0:
+        warnings.append(
+            "Нежилая площадь тоже изменилась, а приобъектные машино-места "
+            "считаются от неё своим коэффициентом района — их пропорция не "
+            "трогает.")
+    return {
+        "factor": round(factor, 6),
+        "places": {
+            "kindergarten": places(req.kindergarten_places),
+            "school": places(req.school_places),
+            "clinic": places(req.clinic_capacity),
+        },
+        # Компенсация — ставка за место × места: ставка задана экспертно и от
+        # метража не зависит, поэтому компенсация идёт тем же коэффициентом.
+        "compensation_mln": round(float(req.social_compensation_mln or 0.0) * factor, 3),
+        "underground_manual_spaces": places(req.underground_manual_spaces),
+        "basis": [
+            f"пропорция по населению: площадь квартир {_telegram_number(before, 0)} → "
+            f"{_telegram_number(after, 0)} м², коэффициент "
+            + f"{factor:.4f}".replace(".", ","),
+            "население — 33 м² квартир на человека, места — линейно от населения",
+            "компенсация — ставка за место задана экспертно и от метража не зависит",
+            ("прежние значения: " + (req.basis or "введены в модель")),
+        ],
+        "warnings": warnings,
+    }
+
+
+class TepBySiteRequest(BaseModel):
+    """Пересчёт под фактический ТЭП, когда выгрузки ГлавАПУ нет.
+
+    Район и признак Москвы приходят из разбора участка (`/cadastral/analyze`) —
+    своего справочника территорий здесь не заводится.
+    """
+    apartment_area_sqm: float = 0.0
+    residential_living_spp_sqm: float = 0.0
+    nonresidential_np_sqm: float = 0.0
+    district: str = ""
+    inside_moscow: bool = True
+    sqm_per_job: float = 36.0
+    parking_norm_regime: str = "2118_2026"
+
+
+@app.post("/tep/derived-by-site")
+def tep_derived_by_site(req: TepBySiteRequest) -> dict[str, Any]:
+    """Что следует из ТЭП, когда исходного расчёта ГлавАПУ нет.
+
+    Правка ТЭП не пересчитывала ничего без выгрузки: «пишется ошибка и
+    упоминание про отсутствие расчёта ГлавАПУ» (владелец, 29.08.2026). При этом
+    расчёт своими формулами был написан и не звался никем.
+
+    Считается то, для чего у нас есть все основания, и НЕ считается то, для чего
+    их нет. Каждый ответ подписан своим основанием, каждый отказ — своей
+    причиной: молча выданный ноль неотличим от посчитанного нуля.
+
+    Чего здесь нет намеренно:
+    * **машино-места** — нужен К2 по району (приложение 3 к 945-ПП, 132 строки).
+      Своего справочника районов не заводим (решение владельца, 24.08.2026):
+      К1 и К2 только СНИЖАЮТ потребность, и единица «пока не знаем» отдала бы
+      максимум, выданный за норматив;
+    * **денежная соцкомпенсация** — нужен УПКС кадастрового квартала. Наш
+      справочник кварталов областной (50:*), по Москве в нём семнадцать строк из
+      тридцати тысяч — то есть его нет;
+    * **плата за ВРИ** — считается своей кнопкой (`/vri/manual`) по базовым
+      стоимостям типов использования.
+    """
+    if not req.inside_moscow:
+        raise HTTPException(
+            status_code=422,
+            detail=("Участок вне Москвы: московские нормативы соцобеспеченности "
+                    "к нему не применяются, а нормативы области у нас не сведены "
+                    "(открытые вопросы G7 и G8 в справочнике РНГП). Считать "
+                    "по московским значило бы выдать чужой норматив за областной."))
+    district = str(req.district or "").strip()
+    zone_two = district_zone_two(district)
+    # Арифметика одна на оба пути: пересчёт по выгрузке и этот зовут одну и ту
+    # же функцию. Второй счёт тех же метров однажды разошёлся бы с первым.
+    got = tep_derived_norms(
+        apartment_area_sqm=req.apartment_area_sqm,
+        residential_living_spp_sqm=req.residential_living_spp_sqm,
+        nonresidential_np_sqm=req.nonresidential_np_sqm,
+        k1=1.0, k2=1.0, zone_two=zone_two, upks_rub=0.0,
+        sqm_per_job=req.sqm_per_job,
+        parking_norm_regime=req.parking_norm_regime)
+    basis = [
+        "население — 33 м² квартир на человека",
+        f"нормативы мест — зона {'2' if zone_two else '1'}"
+        + (f" по району «{district}»" if district else " (район не назван)"),
+        str(got.get("parking_basis") or ""),
+        "гостевые машино-места — десятая часть постоянных",
+        "места приложения труда — нежилая наземная площадь на "
+        f"{_telegram_number(req.sqm_per_job, 0)} м² на место",
+    ]
+    warnings = list(got.get("missing") or [])
+    if not district:
+        warnings.append(
+            "Район участка не определён — нормативы взяты по первой зоне. "
+            "Во второй зоне ДОО 63 и школа 124 места на тысячу вместо 44 и 90.")
+    return {
+        "source": "формулы DevelopAid по нормативам Москвы, без выгрузки ГлавАПУ",
+        "district": district,
+        "zone_two": zone_two,
+        "population": got.get("population"),
+        "apartment_units": got.get("apartment_units"),
+        "places": {
+            "kindergarten": got.get("kindergarten_places"),
+            "school": got.get("school_places"),
+            "clinic": got.get("clinic_capacity"),
+        },
+        # Постоянные и гостевые места коэффициентов района не требуют:
+        # постоянные считаются от площади квартир (п. 1 приложения 5 к 945-ПП),
+        # гостевые — десятая часть постоянных. Приобъектные требуют К1 и К2, и
+        # они — единственное, чего здесь нет.
+        "parking": {
+            "permanent": got.get("parking_permanent"),
+            "guest": got.get("parking_guest"),
+            "underground": int(got.get("parking_permanent") or 0)
+            + int(got.get("parking_guest") or 0),
+        },
+        "jobs": got.get("jobs"),
+        "basis": [line for line in basis if line],
+        "warnings": warnings,
+        "refused": [
+            {"name": "Приобъектные машино-места",
+             "reason": "нужны К1 и К2 по району (приложение 3 к 945-ПП) — своего "
+                       "справочника районов не заводим: коэффициенты только снижают "
+                       "потребность, и единица отдала бы максимум за норматив"},
+            {"name": "Денежная соцкомпенсация",
+             "reason": "нужен УПКС кадастрового квартала: наш справочник кварталов "
+                       "областной, по Москве в нём почти ничего"},
+            {"name": "Плата за смену ВРИ",
+             "reason": "считается своей кнопкой «Плата за ВРИ — свой расчёт»"},
+        ],
+    }
 
 
 @app.post("/land/lookup")
@@ -35459,7 +35710,7 @@ function renderInputs(){
       el.disabled=true;
       el.title='Москва: платежи ежеквартально — установлено нормативно';
      }
-     el.onchange=()=>{inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='social_mode')inputs._social_mode_user_set=true;if(id==='vri_region'){renderInputs();return calculate()}if(['apartment_price_th','commercial_price_th','parking_price_th','main_above_th_per_sqm','main_under_th_per_sqm'].includes(id)){inputs.project_class='custom';syncProjectClassSelector()}if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(TEP_DERIVED_INPUTS.includes(id)){const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
+     el.onchange=()=>{inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='social_mode')inputs._social_mode_user_set=true;if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){renderInputs();return calculate()}if(['apartment_price_th','commercial_price_th','parking_price_th','main_above_th_per_sqm','main_under_th_per_sqm'].includes(id)){inputs.project_class='custom';syncProjectClassSelector()}if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(TEP_DERIVED_INPUTS.includes(id)){const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
      wrap.appendChild(el);grid.appendChild(wrap);
    });det.appendChild(grid);(ownTab?vriBox:box).appendChild(det);
  });
@@ -36290,15 +36541,144 @@ async function recalcMoFromApartments(apartments,area){
  }finally{moAutoBusy=false}
 }
 
+// Пересчёт под фактический ТЭП, когда выгрузки ГлавАПУ нет.
+//
+// Считается то, для чего есть все основания, и НЕ считается то, для чего их
+// нет: каждое число подписано основанием, каждый пропуск — причиной. Считает
+// сервер, экран только показывает и подставляет подтверждённое — арифметики
+// здесь нет ни одной.
+// Соцнагрузка, которую можно пересчитать пропорцией, и метры, под которые она
+// посчитана. Отметка ставится там, где числа появляются: при импорте, после
+// пересчёта и при ручной правке. Без неё пропорцию считать не от чего — а
+// угадывать площадь по числу мест значило бы обратить норматив, которого в
+// Подмосковье нет.
+const SOCIAL_SCALED_KEYS=['kindergarten_places','school_places','clinic_capacity',
+ 'social_compensation_mln','underground_manual_spaces'];
+function stampSocialBasis(source){
+ inputs._social_basis={
+  apartment_area_sqm:Number((tep.apartments&&tep.apartments.saleable)||0),
+  nonresidential_sqm:nonresidentialAboveSqm(),
+  source:String(source||'')};
+}
+function nonresidentialAboveSqm(){
+ return Number((tep.ground_commercial&&tep.ground_commercial.total_area)||0)
+  +Number((tep.offices&&tep.offices.total_area)||0)
+  +Number((tep.standalone_retail&&tep.standalone_retail.total_area)||0);
+}
+
+// Пропорция: места зависят от населения, население — от площади квартир,
+// ставка за место задана экспертно. Норматив здесь не применяется вовсе,
+// поэтому это работает и в Подмосковье, где московских нормативов нет
+// (владелец, 30.08.2026).
+async function rescaleSocialFromTep(options){
+ const silent=!!(options&&options.silent);
+ const note=document.getElementById('tepDerivedNote');
+ const say=(html,ok)=>{if(!note)return;note.style.display='';note.innerHTML=ok?('<span class="import-ok">'+html+'</span>'):html};
+ const basis=inputs._social_basis||null;
+ const after=Number((tep.apartments&&tep.apartments.saleable)||0);
+ if(!basis||!Number(basis.apartment_area_sqm||0)||!after)return false;
+ if(Math.abs(after-Number(basis.apartment_area_sqm||0))<1)return false;
+ let d;
+ try{
+  const r=await fetch('/tep/rescale-social',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({apartment_area_before_sqm:Number(basis.apartment_area_sqm||0),
+    apartment_area_after_sqm:after,
+    nonresidential_before_sqm:Number(basis.nonresidential_sqm||0),
+    nonresidential_after_sqm:nonresidentialAboveSqm(),
+    kindergarten_places:Number(inputs.kindergarten_places||0),
+    school_places:Number(inputs.school_places||0),
+    clinic_capacity:Number(inputs.clinic_capacity||0),
+    social_compensation_mln:Number(inputs.social_compensation_mln||0),
+    underground_manual_spaces:Number(inputs.underground_manual_spaces||0),
+    basis:String(basis.source||'')})});
+  d=await r.json();
+  if(!r.ok)return false;
+ }catch(e){return false}
+ const lines=[
+  'ДОО '+num(inputs.kindergarten_places)+' → '+num(d.places.kindergarten)
+   +' · школа '+num(inputs.school_places)+' → '+num(d.places.school)
+   +' · поликлиника '+num(inputs.clinic_capacity)+' → '+num(d.places.clinic),
+  'Соцкомпенсация, млн ₽: '+num(inputs.social_compensation_mln)+' → '+num(d.compensation_mln),
+  'Машино-места подземные: '+num(inputs.underground_manual_spaces)+' → '+num(d.underground_manual_spaces)];
+ (d.warnings||[]).forEach(w=>lines.push('⚠ '+w));
+ if(!silent&&!confirm('Пересчёт соцнагрузки пропорцией под новый ТЭП:\n\n'
+   +lines.join('\n')+'\n\nПодставить в модель?'))
+  {say(lines.map(escapeHtml).join('<br>'),true);return true}
+ inputs.kindergarten_places=d.places.kindergarten;
+ inputs.school_places=d.places.school;
+ inputs.clinic_capacity=d.places.clinic;
+ if(Number(inputs.social_compensation_mln||0)>0)inputs.social_compensation_mln=d.compensation_mln;
+ if(Number(inputs.underground_manual_spaces||0)>0)inputs.underground_manual_spaces=d.underground_manual_spaces;
+ stampSocialBasis(basis.source||'пропорция');
+ syncTep(false);renderInputs();renderTep();
+ say((silent?'Пересчитано пропорцией: ':'Подставлено: ')+lines.map(escapeHtml).join('<br>')
+   +'<br><b>Чем посчитано:</b> '+(d.basis||[]).map(escapeHtml).join('; ')+'.',true);
+ calculate();
+ return true;
+}
+
+async function recalcFromTepByNorms(options){
+ const silent=!!(options&&options.silent);
+ const note=document.getElementById('tepDerivedNote');
+ const say=(html,ok)=>{if(!note)return;note.style.display='';note.innerHTML=ok?('<span class="import-ok">'+html+'</span>'):html};
+ const territory=((cadastralAnalysis||{}).territory)||{};
+ const apartments=Number((tep.apartments&&tep.apartments.saleable)||0);
+ if(!apartments){
+  if(!silent)say('Пересчитывать не от чего: в ТЭП нет продаваемой площади квартир.',false);
+  return;
+ }
+ const nonres=Number((tep.ground_commercial&&tep.ground_commercial.total_area)||0)
+   +Number((tep.offices&&tep.offices.total_area)||0)
+   +Number((tep.standalone_retail&&tep.standalone_retail.total_area)||0);
+ let d;
+ try{
+  const r=await fetch('/tep/derived-by-site',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({apartment_area_sqm:apartments,
+    residential_living_spp_sqm:Number((tep.apartments&&tep.apartments.gns)||0),
+    nonresidential_np_sqm:nonres,
+    district:String(territory.district||''),
+    inside_moscow:territory.inside_moscow!==false})});
+  d=await r.json();
+  if(!r.ok)throw new Error(d.detail||'Пересчёт не выполнен');
+ }catch(e){say('Пересчёт по нормативам не выполнен: '+escapeHtml(String(e.message||e)),false);return}
+
+ const lines=[
+  'Население: '+num(d.population)+' чел. · квартир '+num(d.apartment_units),
+  'ДОО '+num(d.places.kindergarten)+' · школа '+num(d.places.school)
+   +' · поликлиника '+num(d.places.clinic)+' пос./смену',
+  'Машино-места подземные: '+num(d.parking.underground)
+   +' ('+num(d.parking.permanent)+' постоянных + '+num(d.parking.guest)+' гостевых)',
+  'Места приложения труда: '+num(d.jobs)];
+ (d.refused||[]).forEach(x=>lines.push('Не посчитано — '+x.name+': '+x.reason));
+ (d.warnings||[]).forEach(w=>lines.push('⚠ '+w));
+ if(!silent&&!confirm('Пересчёт по нормативам Москвы (выгрузки ГлавАПУ нет):\n\n'
+   +lines.join('\n')+'\n\nПодставить в модель?'))
+  {say(lines.map(escapeHtml).join('<br>'),true);return}
+ inputs.kindergarten_places=d.places.kindergarten;
+ inputs.school_places=d.places.school;
+ inputs.clinic_capacity=d.places.clinic;
+ inputs.underground_manual_spaces=d.parking.underground;
+ stampSocialBasis('нормативы Москвы');
+ syncTep(false);renderInputs();renderTep();
+ say((silent?'Пересчитано под новый ТЭП: ':'Подставлено: ')+lines.map(escapeHtml).join('<br>')
+   +'<br><b>Чем посчитано:</b> '+(d.basis||[]).map(escapeHtml).join('; ')+'. '
+   +'Это наш расчёт по нормативам, а не расчёт города: город считает штатным '
+   +'калькулятором, и его выгрузка сильнее.',true);
+ calculate();
+}
+
 async function recalcFromTep(options){
  const silent=!!(options&&options.silent);
  const note=document.getElementById('tepDerivedNote');
  const say=(html,ok)=>{if(!note)return;note.style.display='';note.innerHTML=ok?('<span class="import-ok">'+html+'</span>'):html};
  const baseline=((inputs._glavapu_import||{}).normalized)||null;
  if(!baseline||!Number(baseline.change_vri_mln||0)){
-  if(!silent)say('Нет исходного расчёта ГлавАПУ: пересчитывать не от чего. Загрузите участок '
-     +'или выгрузку калькулятора — ставки территории берутся из неё.',false);
-  return;
+  // Без выгрузки ГлавАПУ пересчёт не отказывается целиком. Сначала пропорция:
+  // если соцнагрузка в модели уже есть, места и компенсация масштабируются по
+  // населению — норматив тут не применяется вовсе, и это работает в любом
+  // регионе. Не от чего масштабировать — считаем по нормативам Москвы.
+  if(await rescaleSocialFromTep(options))return;
+  return recalcFromTepByNorms(options);
  }
  const apartments=Number((tep.apartments&&tep.apartments.saleable)||0);
  const livingSpp=Number((tep.apartments&&tep.apartments.gns)||0);
@@ -36357,6 +36737,7 @@ async function recalcFromTep(options){
  // для посетителей встроенной коммерции, под землю их не кладут: с ними гараж
  // выходил больше нормы, и лишние места ехали в себестоимость.
  inputs.underground_manual_spaces=d.parking.permanent+d.parking.guest;
+ stampSocialBasis('выгрузка ГлавАПУ');
  syncTep(false);renderInputs();renderTep();
  lines.push('Машино-места в ТЭП: было '+parkingWas+', стало '
    +Number((tep.underground_parking&&tep.underground_parking.units)||0));

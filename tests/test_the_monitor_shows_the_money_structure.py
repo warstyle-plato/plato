@@ -39,17 +39,15 @@ DASH = (ROOT / "developaid_monitor_dashboard.py").read_text(encoding="utf-8")
 def test_the_structure_names_both_contours_and_both_deficits() -> None:
     body = PAGE[PAGE.index("function fundingStructure("):]
     body = body[: body.index("\n}\n")]
-    for line in ("Лимит РСС", "Остаток лимитов на завершение",
+    for line in ("Общая сметная стоимость глав 2–3", "Остаток лимитов на завершение",
                  "Утверждённый бюджет глав 2–3",
                  "Остаток потребности по утверждённому бюджету",
-                 "Дефицит общий", "Дефицит структурный",
-                 "Потребность в дофинансировании"):
+                 "Надо достроить по утверждённой модели", "Есть: остаток лимитов + резерв",
+                 "row('ДЕФИЦИТ'", "Структурный дефицит внутри лимитов"):
         assert line in body, f"в структуре нет строки «{line}»"
-    # Срок — половина ответа: «нужно 3,6 млрд» и «нужно с марта» — разные новости.
+    # Срок — половина ответа: «нужно 2,2 млрд» и «нужно с марта» — разные новости.
     assert "additional_financing_from" in body
-    # Структурный дефицит объяснён там же, где показан.
-    assert "не покрывается по статьям" in body
-    assert "это потребность, а не деньги" in body
+    assert "Первый месяц нехватки" in body
 
 
 def test_the_need_carries_the_month_it_starts() -> None:
@@ -169,7 +167,7 @@ def test_the_hidden_reserve_reaches_the_screen_and_the_store() -> None:
     assert hasattr(monitor, "store_retention") and hasattr(monitor, "latest_retention")
     assert '"retention": _retention(project, rnv)' in DASH
     body = PAGE[PAGE.index("function fundingStructure("):]
-    assert "скрытый резерв РСС" in body
+    assert "справочно, дефицит они не уменьшают" in body
     assert "Из них после ввода" in body
     assert "в стройке эти деньги не будут потрачены" in body
     # Реестра нет — строки нет вовсе: «не загружали» и «удержаний нет» разное.
@@ -198,6 +196,27 @@ def test_a_stored_register_is_read_back(tmp_path, monkeypatch) -> None:
     assert retention.summary(back, horizon=datetime.date(2027, 12, 31))["left"] == 2.0
 
 
+def test_the_upload_stands_with_the_other_uploads() -> None:
+    """Реестр ГУ — такой же источник проекта, как РСС и продажи.
+
+    Поле уехало в верхнюю панель, к «Проекту» и «Срезу»: вставка искала
+    ближайший `<div class="field">` перед кнопкой продаж, а в блоке загрузок
+    таких нет вовсе — разметка там своя. «Почему загрузку ГУ вынесли за пределы
+    всех загрузок?» (владелец, 30.08.2026) — верный вопрос: источник, стоящий
+    в стороне от источников, читается как отдельная кнопка неизвестно чего.
+    """
+    page = PAGE
+    weekly = page[page.index("<b>Еженедельно</b>"):]
+    weekly = weekly[: weekly.index('<div class="msg"')]
+    assert 'id="retention"' in weekly, "загрузка ГУ стоит не с остальными загрузками"
+    assert 'id="retentionBtn"' in weekly
+    assert "Реестр гарантийных удержаний" in weekly, "и блок называет этот источник"
+    # А в верхней панели её нет: там управление срезом, а не файлы.
+    controls = page[page.index('<div class="controls">'):]
+    controls = controls[: controls.index("</div></div>")]
+    assert "retention" not in controls
+
+
 def test_the_tests_do_not_write_into_the_repository() -> None:
     """Проверка, оставляющая файлы в `data/`, уезжает с ними в коммит.
 
@@ -210,3 +229,71 @@ def test_the_tests_do_not_write_into_the_repository() -> None:
     left = sorted(path.name for path in (ROOT / "data" / "monitor").glob("*"))
     assert "Проверочный" not in left, "проверка снова пишет в рабочие данные"
     assert monitor._SNAPSHOT_DIR.name == "monitor"
+
+
+def test_the_need_comes_from_the_model_and_the_bank_is_the_source() -> None:
+    """«РСС — это то, что даёт банк. Утверждённая модель — сколько надо реально,
+    чтобы построить» (владелец, 30.08.2026).
+
+    Значит потребность берётся из модели, лимиты банка с резервом — источник, а
+    главный дефицит есть разница. Прежде потребностью считалась банковская
+    колонка «Средства на завершение», и дефицит выходил вчетверо меньше
+    настоящего: 0,2 млрд вместо 2,2.
+    """
+    import developaid_monitor_dashboard as dash
+
+    funding = {"known": True, "remaining_need": 1.66e9, "bank_remaining": 1.15e9,
+               "reserve": 306.1e6, "approved_remaining": 3.66e9,
+               "monthly_unfunded": {}, "additional_financing": 0.2e9}
+    said = dash._summary({"dashboard": {}}, funding, {})[0]
+    assert "По утверждённой модели достроить стоит 3,66 млрд ₽" in said
+    assert "По РСС осталось 1,46 млрд ₽" in said
+    assert "оставшийся лимит и есть то, что банк готов дать" in said
+    assert "бюджет всей стройки, а не банковская доля" in said
+    assert "Дефицит 2,20 млрд ₽" in said
+    # Банковский остаток остаётся справочным и назван взглядом банка.
+    assert "его взгляд по РСС, а не потребность стройки" in said
+    # Источник назван своим именем, а не чужим.
+    assert "ДДС" not in said
+
+    # Без модели потребность не выдумывается.
+    blind = dash._summary({"dashboard": {}}, {**funding, "approved_remaining": 0}, {})[0]
+    assert "Утверждённая модель не прочитана" in blind
+
+
+def test_the_screen_puts_the_model_against_the_bank() -> None:
+    """На экране те же роли: модель — потребность, банк — источник, разница —
+    дефицит; банковский остаток стоит справочной строкой."""
+    body = PAGE[PAGE.index("function fundingStructure("):]
+    body = body[: body.index("\n}\n")]
+    assert "Надо достроить по утверждённой модели" in body
+    assert "Есть: остаток лимитов + резерв" in body
+    assert "row('ДЕФИЦИТ'" in body
+    assert "mainGap=modelNeed==null?null:Math.max(0,modelNeed-fuel)" in body
+    assert "Справочно: «Средства на завершение» по РСС" in body
+    assert "взгляд банка на остаток, не потребность стройки" in body
+    # Структурный дефицит остаётся, но он про статьи внутри лимитов.
+    assert "Структурный дефицит внутри лимитов" in body
+    # Без книги модель не выдумывается.
+    assert "сколько реально надо, сказать нечем" in body
+
+
+
+
+def test_the_estimate_column_is_not_called_a_credit_limit() -> None:
+    """Суммы ПФ в РСС нет — она из НКЛ (владелец, 30.08.2026).
+
+    Строка «Лимит РСС» показывала колонку «Общая сметная стоимость»
+    (`_ESTIMATE_COLUMNS["estimate"] = 4`, сумма по главам 2 и 3), то есть
+    сметную стоимость всей стройки под именем кредитной линии. Та же
+    ошибка, что подпись «Даёт банк» под остатком РСС: число посчитано
+    верно и прочитано неверно, потому что названо чужим именем. При этом
+    оставшийся лимит — это ровно то, что банк готов дать, и так и сказано.
+    """
+    body = PAGE[PAGE.index("function fundingStructure("):]
+    body = body[: body.index("\n}\n")]
+    assert "Общая сметная стоимость глав 2–3" in body
+    assert "Лимит РСС" not in body, "сметная стоимость названа кредитным лимитом"
+    assert "колонка РСС, а не лимит кредитной линии" in body
+    assert "суммы ПФ в нём нет, она из НКЛ" in body
+    assert "это и есть то, что банк готов дать" in body

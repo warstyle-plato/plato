@@ -483,6 +483,30 @@ def _retention(project: str, horizon: Any) -> dict[str, Any] | None:
     return got
 
 
+def _unspent(project: str, rss: Path, estimate: dict[str, Any],
+             horizon: Any, waterfall: dict[str, Any]) -> dict[str, Any] | None:
+    """Постатейно: что до ввода израсходовано не будет.
+
+    Реестра ГУ может не быть, реестра договоров в РСС может не быть — свободное
+    от договоров считается и без них, а причина, по которой ГУ не разложены,
+    называется вслух. Пусто здесь бывает только когда нечего показать вовсе.
+    """
+    import developaid_monitor_unspent as unspent_mod
+
+    register = monitor.latest_retention(project)
+    if register and register.get("known") is False:
+        register = None
+    try:
+        contracts = actuals.read_contracts(rss)
+    except Exception:  # noqa: BLE001 — листа договоров в РСС может не быть
+        contracts = None
+    needy = {str(row.get("code") or ""): float(row.get("unfunded_take") or 0.0)
+             for row in (waterfall.get("articles") or [])}
+    got = unspent_mod.unspent(estimate, contracts=contracts, retention=register,
+                              horizon=horizon, needy=needy)
+    return got if (got["articles"] or got["retention"]["reason"]) else None
+
+
 def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, Any]) -> dict[str, Any]:
     baseline = _finance_baseline(project)
     if not baseline.get("known"):
@@ -519,6 +543,11 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
         "source": baseline["source"],
         "bank_limit": current["limit"],
         "paid_actual": paid_actual,
+        # Второй остаток потребности по тем же главам 2–3: утверждённый бюджет
+        # минус оплаченное. С «средствами на завершение» они расходятся, и обе
+        # величины считает сервер — экран их только показывает.
+        "approved": float(baseline.get("approved") or 0.0),
+        "approved_remaining": max(0.0, float(baseline.get("approved") or 0.0) - paid_actual),
         "bank_remaining": waterfall["opening_bank_remaining"],
         "opening_article_deficit": waterfall["opening_article_deficit"],
         "remaining_need": remaining_need,
@@ -534,6 +563,11 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
         "additional_financing": waterfall["additional_financing"],
         "additional_financing_from": waterfall["additional_financing_from"],
         "retention": _retention(project, rnv),
+        # Что не будет выбрано до ввода: свободное от договоров считается точно,
+        # ГУ раскладываются по статьям оценкой. Считает это отдельный модуль,
+        # здесь только вход — лимиты и потребность живут выше и второй раз не
+        # считаются.
+        "unspent": _unspent(project, rss, estimate, rnv, waterfall),
         "forecast_to": monitor._iso(rnv),
         "monthly_need": waterfall["monthly_need"],
         "monthly_reserve_draw": waterfall["monthly_reserve_draw"],
@@ -679,12 +713,32 @@ def _summary(view: dict[str, Any], funding: dict[str, Any],
     bank = float(funding.get("bank_remaining") or 0.0)
     reserve = float(funding.get("reserve") or 0.0)
     fuel = bank + reserve
-    out.append(
-        f"Деньги. До конца стройки по утверждённому ДДС нужно {_fmt_money(need)}. "
-        f"Доступно {_fmt_money(fuel)}: {_fmt_money(bank)} остатков лимитов "
-        f"статей и {_fmt_money(reserve)} резерва 2.8/2.9 — "
-        f"{fuel / need * 100:.0f}% потребности." if need > 0 else
-        f"Деньги. Потребности по утверждённому ДДС не осталось; доступно {_fmt_money(fuel)}.")
+    # РСС — это то, что даёт банк; утверждённая модель — сколько надо реально,
+    # чтобы построить (владелец, 30.08.2026). Значит потребность берётся из
+    # модели, а лимиты банка с резервом — это источник, и главный дефицит есть
+    # разница между ними. Прежде фраза брала потребностью банковскую колонку
+    # «Средства на завершение» — то есть взгляд банка на остаток, — и дефицит
+    # выходил вчетверо меньше настоящего.
+    model_need = float(funding.get("approved_remaining") or 0.0)
+    if model_need > 0:
+        gap = max(0.0, model_need - fuel)
+        money = (
+            f"Деньги. По утверждённой модели достроить стоит "
+            f"{_fmt_money(model_need)} (модель минус оплаченное). По РСС "
+            f"осталось {_fmt_money(fuel)}: {_fmt_money(bank)} лимитов статей и "
+            f"{_fmt_money(reserve)} резерва 2.8/2.9 — оставшийся лимит и есть "
+            f"то, что банк готов дать; сам РСС при этом бюджет всей стройки, а "
+            f"не банковская доля. Дефицит {_fmt_money(gap)}.")
+        if need > 0:
+            money += (f" Справочно: сам банк считает остаток к завершению в "
+                      f"{_fmt_money(need)} — это его взгляд по РСС, а не "
+                      f"потребность стройки.")
+    else:
+        money = (
+            f"Деньги. Утверждённая модель не прочитана — сколько реально надо "
+            f"достроить, сказать нечем. Банк даёт {_fmt_money(fuel)}; его "
+            f"остаток к завершению по РСС — {_fmt_money(need)}.")
+    out.append(money)
 
     start = funding.get("reserve_start")
     exhaustion = funding.get("reserve_exhaustion")
@@ -714,7 +768,7 @@ def _summary(view: dict[str, Any], funding: dict[str, Any],
                 f"{monitor._day(deadline).strftime('%d.%m.%Y')} — дальше стройка "
                 "платит только тем, что осталось, и темп станет падать.")
     else:
-        out.append("Дыры по утверждённому ДДС нет: лимиты статей и резерв "
+        out.append("Дыры по РСС нет: лимиты статей и резерв "
                    "закрывают потребность до конца.")
 
     rows = funding.get("articles") or []

@@ -36,16 +36,53 @@ def name_key(value: Any) -> str:
     return "".join(kept or words)
 
 
-def same_party(left: str, right: str) -> bool:
-    """Одно ли это лицо. Короткие ключи не сравниваются вхождением.
+def _words(value: Any) -> list[str]:
+    """Слова имени без формы собственности."""
+    words = [word.lower().replace("ё", "е") for word in _WORD.findall(str(value or ""))]
+    kept = [word for word in words if word not in _NOISE]
+    return kept or words
 
-    «Нур» внутри «Стройэнергонур» — совпадение по букве, а не по лицу, поэтому
-    вхождение разрешено только с четырёх знаков.
+
+def is_acronym(short: str, words: list[str]) -> bool:
+    """Сокращение ли `short` от `words`: «СПМ» от «СП Менеджмент».
+
+    Сокращение обязано разобраться на приставки ВСЕХ слов по порядку, и каждое
+    слово должно дать хотя бы букву: иначе «СПМ» сойдётся с чем угодно, где
+    есть буква «с». Двух знаков мало — на них совпадают половина подрядчиков.
+    """
+    text = str(short or "")
+    if len(text) < 3 or not words:
+        return False
+
+    def walk(rest: str, index: int) -> bool:
+        if index == len(words):
+            return not rest
+        word = words[index]
+        for take in range(1, min(len(word), len(rest)) + 1):
+            if rest[:take] != word[:take]:
+                break
+            if walk(rest[take:], index + 1):
+                return True
+        return False
+
+    return walk(text, 0)
+
+
+def same_party(left: str, right: str) -> bool:
+    """Одно ли это лицо.
+
+    Три способа, и каждый со своим ограничением. Равенство ключей — всегда.
+    Вхождение — с четырёх знаков: «Нур» внутри «Стройэнергонур» это совпадение
+    по букве, а не по лицу. И сокращение по первым буквам слов: «СПМ» и есть
+    «СП Менеджмент» (владелец, 30.08.2026) — реестр пишет полное имя, отчёт с
+    площадки сокращает.
     """
     first, second = name_key(left), name_key(right)
     if not first or not second:
         return False
     if first == second:
+        return True
+    if is_acronym(first, _words(right)) or is_acronym(second, _words(left)):
         return True
     if min(len(first), len(second)) < 4:
         return False
@@ -68,6 +105,42 @@ def contractors_by_code(*registers: Any) -> dict[str, list[str]]:
                 continue
             found.setdefault(code, {}).setdefault(name_key(name), name)
     return {code: sorted(names.values()) for code, names in found.items()}
+
+
+def _named_in(who: str, line: str) -> bool:
+    """Названо ли лицо в строке работ.
+
+    Слова короче четырёх знаков не ищутся: «СП» найдётся в любой строке, где
+    есть «спуск» или «СПб», и превратит сверку в шум.
+    """
+    key = name_key(who)
+    if len(key) < 4:
+        return False
+    text = "".join(_WORD.findall(str(line or "").lower().replace("ё", "е")))
+    return key in text
+
+
+def subcontractors(register: dict[str, Any] | None) -> dict[str, list[str]]:
+    """Кто чей: генподрядчик → его субподрядчики, из реестра ГУ.
+
+    В реестрах РСС у статьи стоит генподрядчик — с ним договор. На площадку
+    выходят его субподрядчики, и в реестрах РСС их нет вовсе. Пока эта связь не
+    читалась, сверка дня выдавала «никто из плановых не отмечен» и всю бригаду
+    записывала «вне плана» (экран владельца, 30.08.2026: «они точно все вне
+    плана? странно»).
+
+    Связь берётся из реестра гарантийных удержаний: его ведёт генподрядчик, и
+    в нём его договоры со субподрядчиками. Своего справочника договоров не
+    заводим — это то же правило, по которому подрядчик статьи берётся из РСС.
+    """
+    out: dict[str, dict[str, str]] = {}
+    for row in ((register or {}).get("rows") or []):
+        boss = name_key(row.get("customer"))
+        name = str(row.get("counterparty") or "").strip()
+        if not boss or not name:
+            continue
+        out.setdefault(boss, {}).setdefault(name_key(name), name)
+    return {boss: sorted(names.values()) for boss, names in out.items()}
 
 
 def _day(value: Any) -> datetime.date | None:
@@ -101,7 +174,8 @@ def planned(rows: list[dict[str, Any]], by_code: dict[str, list[str]],
 
 
 def crew_day(rows: list[dict[str, Any]], by_code: dict[str, list[str]],
-             report: dict[str, Any] | None, day: Any) -> dict[str, Any]:
+             report: dict[str, Any] | None, day: Any,
+             subs: dict[str, list[str]] | None = None) -> dict[str, Any]:
     """Сопоставление плана и факта одного дня.
 
     Ни одна сторона не выбрасывается молча: подрядчик, которого нет в плане,
@@ -127,19 +201,45 @@ def crew_day(rows: list[dict[str, Any]], by_code: dict[str, list[str]],
             if not any(same_party(name, seen) for seen in expected):
                 expected.append(name)
 
+    crews = subs or {}
+
+    def works_for(who: str, boss: str) -> bool:
+        """Вышедший — субподрядчик планового генподрядчика?"""
+        for key, names in crews.items():
+            if not same_party(boss, key) and key != name_key(boss):
+                continue
+            if any(same_party(who, name) for name in names):
+                return True
+        return False
+
     matched, missing, extra = [], [], []
+    taken: set[str] = set()
     for name in expected:
-        found = next((item for item in actual if same_party(name, item["name"])), None)
-        if found:
-            matched.append({**found, "planned_as": name,
-                            "lines": lines.get(name_key(found["name"]), [])})
-        else:
-            missing.append({"name": name,
-                            "codes": [item["code"] for item in plan
-                                      if any(same_party(name, other)
-                                             for other in item["contractors"])]})
+        own = [item for item in actual if same_party(name, item["name"])]
+        crew = [item for item in actual
+                if item not in own and works_for(item["name"], name)]
+        for item in own + crew:
+            taken.add(name_key(item["name"]))
+            matched.append({**item, "planned_as": name,
+                            "via": "" if item in own else name,
+                            "lines": lines.get(name_key(item["name"]), [])})
+        if not own and not crew:
+            codes = [item["code"] for item in plan
+                     if any(same_party(name, other) for other in item["contractors"])]
+            # Имя может стоять в строках работ, а численности за ним не быть:
+            # «Моэк (теплосети) — монтаж ограждения» в отчёте есть, а сколько
+            # человек — нет. Это «работы отмечены, людей не назвали», а не «не
+            # вышли»; выдать одно за другое значит обвинить подрядчика молча.
+            said = [line for group in lines.values() for line in group
+                    if _named_in(name, line)]
+            if said:
+                matched.append({"name": name, "itr": 0, "workers": 0,
+                                "planned_as": name, "via": "",
+                                "headcount_unknown": True, "lines": said[:4]})
+            else:
+                missing.append({"name": name, "codes": codes})
     for item in actual:
-        if not any(same_party(item["name"], name) for name in expected):
+        if name_key(item["name"]) not in taken:
             extra.append({**item, "lines": lines.get(name_key(item["name"]), [])})
 
     notes: list[str] = []
@@ -154,9 +254,16 @@ def crew_day(rows: list[dict[str, Any]], by_code: dict[str, list[str]],
         notes.append("ежедневного отчёта за этот день нет")
     elif not actual:
         notes.append("в отчёте за этот день нет численности по подрядчикам")
-    if extra and not missing and not matched:
-        notes.append("ни одно имя из отчёта не сошлось с реестрами — "
-                     "проверьте написание подрядчиков")
+    if extra and not matched:
+        notes.append(
+            "ни один вышедший не сошёлся с плановыми. В реестрах РСС у статьи "
+            "стоит генподрядчик, а на площадку выходят его субподрядчики — "
+            "связь «кто чей» берётся из реестра гарантийных удержаний; без него "
+            "или при другом написании имён вся бригада уходит «вне плана»")
+    elif extra and not crews:
+        notes.append(
+            "реестр гарантийных удержаний не загружен — субподрядчиков "
+            "генподрядчика привязать к его статьям нечем")
 
     return {
         "date": when.isoformat() if when else "",
