@@ -29,7 +29,8 @@ from market_search.contracting import _totals  # noqa: E402
 
 
 def page() -> str:
-    return cabinet_page()
+    # Свод продаж живёт своей страницей: на титуле кабинета его нет вовсе.
+    return cabinet_page("sales")
 
 
 def script() -> str:

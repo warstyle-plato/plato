@@ -166,8 +166,8 @@ def test_nothing_to_show_is_said_out_loud() -> None:
 
 def test_the_button_sends_the_same_markup_as_the_pdf() -> None:
     """Две сборки одной колоды разойдутся — значит разметка одна и та же."""
-    body = max(re.findall(r"<script[^>]*>(.*?)</script>", cabinet_page(), re.S), key=len)
-    assert 'id="salesppt"' in cabinet_page()
+    body = max(re.findall(r"<script[^>]*>(.*?)</script>", cabinet_page("sales"), re.S), key=len)
+    assert 'id="salesppt"' in cabinet_page("sales")
     handler = body[body.index("$('#salesppt').onclick="):][:2200]
     assert "salesPrintHtml()" in handler, "презентация собиралась бы из другой разметки"
     assert "'/cabinet/sales.pptx'" in handler
@@ -221,7 +221,7 @@ def test_the_live_screen_markup_parses_into_slides(tmp_path) -> None:
     got["pool"] = contracting.pool_progress(got, [], None, None)
 
     file = tmp_path / "cabinet.html"
-    file.write_text(cabinet_page().replace("__DEVELOPAID_VERSION__", "test"), encoding="utf-8")
+    file.write_text(cabinet_page("sales").replace("__DEVELOPAID_VERSION__", "test"), encoding="utf-8")
     with play.sync_playwright() as pw:
         try:
             browser = browser_launch.launch(pw)

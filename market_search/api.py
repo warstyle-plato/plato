@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -184,9 +185,48 @@ def install(app: FastAPI) -> MarketDiscoveryService:
         # появлялась, и отличить «не сделано» от «показана вчерашняя копия»
         # было нечем — та же беда, из-за которой версия печатается в шапке.
         return HTMLResponse(
-            cabinet_module.cabinet_page(),
+            cabinet_module.cabinet_page("home"),
             headers={"Cache-Control": "no-store, must-revalidate"},
         )
+
+    def _cabinet_view(request: Request, view: str) -> HTMLResponse:
+        """Тот же кабинет, другой его вид. Вход проверяется тем же способом."""
+        problem = cabinet_module.key_problem()
+        if problem:
+            return HTMLResponse(cabinet_module.login_page(problem), status_code=503)
+        if not cabinet_module.cabinet_key():
+            return HTMLResponse(
+                cabinet_module.login_page(
+                    f"Кабинет выключен: не задан {cabinet_module.ENV_NAME}."),
+                status_code=503)
+        if not cabinet_module.authorised(request):
+            return HTMLResponse(cabinet_module.login_page(), status_code=401)
+        return HTMLResponse(cabinet_module.cabinet_page(view),
+                            headers={"Cache-Control": "no-store, must-revalidate"})
+
+    @app.get("/cabinet/sales", response_class=HTMLResponse)
+    async def cabinet_sales_page(request: Request) -> HTMLResponse:
+        """Свод продаж своей страницей."""
+        return _cabinet_view(request, "sales")
+
+    @app.get("/cabinet/market", response_class=HTMLResponse)
+    async def cabinet_market_page(request: Request) -> HTMLResponse:
+        """Конструктор отчёта о рынке своей страницей."""
+        return _cabinet_view(request, "market")
+
+    @app.get("/cabinet/assets/{name}.webp")
+    async def cabinet_face(name: str) -> Any:
+        """Портреты кабинетов. Файла нет — 404, и карточка сама скажет, чего
+        не хватает: пустой круг читается как «так и надо»."""
+        from fastapi.responses import FileResponse
+
+        if not re.fullmatch(r"[a-z0-9-]{1,40}", name):
+            raise HTTPException(status_code=404, detail="нет такого портрета")
+        path = Path(__file__).resolve().parent / "assets" / f"{name}.webp"
+        if not path.exists():
+            raise HTTPException(status_code=404, detail=f"портрет {name} ещё не загружен")
+        return FileResponse(path, media_type="image/webp",
+                            headers={"Cache-Control": "public, max-age=86400"})
 
     @app.post("/cabinet/login")
     async def cabinet_login(request: Request) -> Any:
@@ -618,7 +658,7 @@ def install(app: FastAPI) -> MarketDiscoveryService:
             got.setdefault("read_notes", []).append(line)
         return got
 
-    @app.get("/cabinet/sales")
+    @app.get("/cabinet/sales/summary")
     async def cabinet_sales(request: Request, project: str = "") -> dict[str, Any]:
         """Свод продаж по уже загруженным источникам — без файла."""
         cabinet_module.require_cabinet(request)
