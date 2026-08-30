@@ -295,7 +295,10 @@ def test_the_line_that_kept_the_debt_still_pays_for_it():
     rve = plain["phases"][0]["result"]["dates"]["rve"]
     after = [r for r in source["rows"] if str(r["month"])[:10] > rve]
     assert sum(r["pf_repayment"] for r in after) > 3_000_000_000
-    assert source["ending_pf"] > 4_000_000_000
+    # Порог держит смысл сценария — очередь не гасит долг, — а не конкретное
+    # число: ставка подземки с 30.08.2026 равна 0,8 наземной, и долг тут же
+    # упал с 4 229 до 3 862 млн.
+    assert source["ending_pf"] > 3_000_000_000
 
 
 def test_the_debt_cannot_land_before_the_receiving_line_exists():

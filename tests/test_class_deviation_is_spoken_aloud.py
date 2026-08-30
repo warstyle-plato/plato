@@ -30,10 +30,12 @@ PLATO_TEMPLATE = Path(__file__).resolve().parent.parent / "templates" / "PLATO_t
 V4_TEMPLATE = Path(__file__).resolve().parent.parent / "templates" / "DevelopAid_model_v4.xlsx"
 
 
-BUSINESS_BASE = dict(apartment_price_th=650, commercial_price_th=650,
-                     parking_price_th=5000, preparation_th_per_sqm=2.75,
-                     main_above_th_per_sqm=190, main_under_th_per_sqm=190,
-                     utilities_th_per_sqm=10.25, landscaping_th_per_sqm=15.5)
+# База берётся у самих пресетов, а не переписывается сюда числами: подземная
+# ставка стала 0,8 наземной (решение владельца 27.08.2026), и копия базы в
+# тесте молча разошлась бы с движком — ровно та ошибка, которую этот тест и
+# ловит в книге.
+BUSINESS_BASE = {key: value for key, value
+                 in core.PROJECT_CLASS_PRESETS["business"].items() if key != "label"}
 
 
 def test_deviation_rows_compare_inputs_to_the_class_base():
@@ -171,7 +173,8 @@ def test_pdf_still_builds_with_a_deviated_class():
     inputs = dict(core.DEFAULT_INPUTS)
     inputs.update(project_class="business", apartment_price_th=700,
                   commercial_price_th=650, parking_price_th=5000,
-                  main_above_th_per_sqm=210, main_under_th_per_sqm=190,
+                  main_above_th_per_sqm=210,
+                  main_under_th_per_sqm=BUSINESS_BASE["main_under_th_per_sqm"],
                   purchase_price_mln=700)
     bundle = core._run_authoritative_model(inputs, core.TEP_DEFAULT, [], {})
     data = core._build_developaid_pdf({
