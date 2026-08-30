@@ -342,3 +342,58 @@ def test_a_conclusion_alone_does_not_get_its_own_slide() -> None:
             if shape.has_text_frame]
     assert any("213,6 млн ₽" in text for text in said)
     assert sum("213,6 млн ₽" in text for text in said) == 1, "вывод повторился"
+
+
+def test_the_bars_keep_their_own_scale_next_to_the_price_line() -> None:
+    """«Тут просто линии» (владелец, 30.08.2026) — и столбиков правда не было.
+
+    С двумя шкалами первая обязана остаться видимой. Удалённая — а её удаляло
+    правило «значения на столбиках, ось лишняя» — она уводит столбики на шкалу
+    цены: 35 против 800 000, и от них на слайде не остаётся ничего.
+    """
+    import io
+    import zipfile
+
+    from lxml import etree
+
+    html = ('<section class="salesblock"><h2>Спрос</h2>'
+            '<table><thead><tr><th>Полоса</th><th>Просят</th>'
+            '<th>₽/м² в книге</th></tr></thead><tbody>'
+            '<tr><td>28,3-40</td><td>35</td><td>614 466</td></tr>'
+            '<tr><td>40-55</td><td>41</td><td>644 507</td></tr>'
+            '<tr><td>55-85</td><td>29</td><td>612 170</td></tr>'
+            '<tr><td>85-168</td><td>17</td><td>734 077</td></tr>'
+            '</tbody></table></section>')
+    blob = sales_deck.build(sales_deck.sections(html),
+                            title="Т", subtitle="с", footer="ф")
+    namespace = {"c": "http://schemas.openxmlformats.org/drawingml/2006/chart"}
+    with zipfile.ZipFile(io.BytesIO(blob)) as pack:
+        part = next(name for name in pack.namelist()
+                    if name.startswith("ppt/charts/chart"))
+        area = etree.fromstring(pack.read(part)).find(".//c:plotArea", namespace)
+    axes = {ax.find("c:axPos", namespace).get("val"): ax
+            for ax in area.findall("c:valAx", namespace)}
+    assert set(axes) == {"l", "r"}, "у столбиков и цены должны быть свои шкалы"
+    for side, ax in axes.items():
+        gone = ax.find("c:delete", namespace)
+        assert gone is not None and gone.get("val") == "0", \
+            f"шкала {side} удалена — ряд уедет на чужую"
+
+
+def test_without_a_price_line_the_axis_still_goes_away_when_values_are_on_top() -> None:
+    """Правило «значения на столбиках — ось лишняя краска» остаётся: оно
+    отменяется только второй шкалой."""
+    import io
+
+    from pptx import Presentation
+
+    pages = [{"title": "Продукты", "note": "", "lines": [], "strips": [],
+              "tables": [{"head": ["Продукт", "Договоров"],
+                          "rows": [["Квартира", "56"], ["Паркинг", "14"],
+                                   ["ПСН", "6"]]}]}]
+    deck = Presentation(io.BytesIO(sales_deck.build(
+        pages, title="Т", subtitle="с", footer="ф")))
+    chart = [shape.chart for slide in deck.slides for shape in slide.shapes
+             if getattr(shape, "has_chart", False) and shape.has_chart][0]
+    assert chart.plots[0].has_data_labels
+    assert chart.value_axis.visible is False

@@ -663,6 +663,10 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         # Число на каждом столбике — это хаос, если столбиков много: тогда
         # значения несёт ось. Мало — значения стоят прямо на шапках, и ось со
         # своей сеткой становится лишней краской.
+        # Со второй шкалой первая обязана остаться видимой. Удалённая, она
+        # уводит столбики на шкалу цены — 35 против 800 000, — и на слайде от
+        # них не остаётся ничего: «тут просто линии» (владелец, 30.08.2026).
+        has_line = bool(line)
         labelled = len(data["categories"]) <= 8
         plot.has_data_labels = labelled
         if labelled:
@@ -675,13 +679,13 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
             labels.font.color.rgb = ink
 
         value_axis = chart.value_axis
-        value_axis.has_major_gridlines = not labelled
+        value_axis.has_major_gridlines = not labelled and not has_line
         if value_axis.has_major_gridlines:
             # Имя `line` здесь занято рядом цены — сетка носит своё.
             hairline = value_axis.major_gridlines.format.line
             hairline.color.rgb = RGBColor(0xE3, 0xEB, 0xF2)
             hairline.width = Pt(0.75)
-        value_axis.visible = not labelled
+        value_axis.visible = has_line or not labelled
         value_axis.has_minor_gridlines = False
         value_axis.major_tick_mark = XL_TICK_MARK.NONE
         value_axis.format.line.fill.background()
