@@ -42,7 +42,7 @@ def test_the_structure_names_both_contours_and_both_deficits() -> None:
     for line in ("Лимит РСС", "Остаток лимитов на завершение",
                  "Утверждённый бюджет глав 2–3",
                  "Остаток потребности по утверждённому бюджету",
-                 "Надо по утверждённой модели", "Даёт банк: остаток лимитов + резерв",
+                 "Надо по утверждённой модели", "Остаток по РСС: лимиты статей + резерв",
                  "row('ДЕФИЦИТ'", "Структурный дефицит внутри лимитов"):
         assert line in body, f"в структуре нет строки «{line}»"
     # Срок — половина ответа: «нужно 2,2 млрд» и «нужно с марта» — разные новости.
@@ -247,7 +247,8 @@ def test_the_need_comes_from_the_model_and_the_bank_is_the_source() -> None:
                "monthly_unfunded": {}, "additional_financing": 0.2e9}
     said = dash._summary({"dashboard": {}}, funding, {})[0]
     assert "По утверждённой модели достроить стоит 3,66 млрд ₽" in said
-    assert "Банк даёт 1,46 млрд ₽" in said
+    assert "По РСС осталось 1,46 млрд ₽" in said
+    assert "бюджет всей стройки, а не банковская доля" in said
     assert "Дефицит 2,20 млрд ₽" in said
     # Банковский остаток остаётся справочным и назван взглядом банка.
     assert "его взгляд по РСС, а не потребность стройки" in said
@@ -265,7 +266,7 @@ def test_the_screen_puts_the_model_against_the_bank() -> None:
     body = PAGE[PAGE.index("function fundingStructure("):]
     body = body[: body.index("\n}\n")]
     assert "Надо по утверждённой модели" in body
-    assert "Даёт банк: остаток лимитов + резерв" in body
+    assert "Остаток по РСС: лимиты статей + резерв" in body
     assert "row('ДЕФИЦИТ'" in body
     assert "mainGap=modelNeed==null?null:Math.max(0,modelNeed-fuel)" in body
     assert "Справочно: «Средства на завершение» по РСС" in body
@@ -275,188 +276,4 @@ def test_the_screen_puts_the_model_against_the_bank() -> None:
     # Без книги модель не выдумывается.
     assert "сколько реально надо, сказать нечем" in body
 
-
-def test_the_upload_stands_with_the_other_uploads() -> None:
-    """Реестр ГУ — такой же источник проекта, как РСС и продажи.
-
-    Поле уехало в верхнюю панель, к «Проекту» и «Срезу»: вставка искала
-    ближайший `<div class="field">` перед кнопкой продаж, а в блоке загрузок
-    таких нет вовсе — разметка там своя. «Почему загрузку ГУ вынесли за пределы
-    всех загрузок?» (владелец, 30.08.2026) — верный вопрос: источник, стоящий
-    в стороне от источников, читается как отдельная кнопка неизвестно чего.
-    """
-    page = PAGE
-    weekly = page[page.index("<b>Еженедельно</b>"):]
-    weekly = weekly[: weekly.index('<div class="msg"')]
-    assert 'id="retention"' in weekly, "загрузка ГУ стоит не с остальными загрузками"
-    assert 'id="retentionBtn"' in weekly
-    assert "Реестр гарантийных удержаний" in weekly, "и блок называет этот источник"
-    # А в верхней панели её нет: там управление срезом, а не файлы.
-    controls = page[page.index('<div class="controls">'):]
-    controls = controls[: controls.index("</div></div>")]
-    assert "retention" not in controls
-
-
-def test_the_tests_do_not_write_into_the_repository() -> None:
-    """Проверка, оставляющая файлы в `data/`, уезжает с ними в коммит.
-
-    Так и вышло: снимок реестра ГУ проверочного проекта дважды попал в
-    репозиторий. Каталог снимков читается при импорте, и `DATA_DIR`,
-    выставленный в тесте, до него уже не доходит.
-    """
-    import developaid_monitor as monitor
-
-    left = sorted(path.name for path in (ROOT / "data" / "monitor").glob("*"))
-    assert "Проверочный" not in left, "проверка снова пишет в рабочие данные"
-    assert monitor._SNAPSHOT_DIR.name == "monitor"
-
-
-def test_the_need_comes_from_the_model_and_the_bank_is_the_source() -> None:
-    """«РСС — это то, что даёт банк. Утверждённая модель — сколько надо реально,
-    чтобы построить» (владелец, 30.08.2026).
-
-    Значит потребность берётся из модели, лимиты банка с резервом — источник, а
-    главный дефицит есть разница. Прежде потребностью считалась банковская
-    колонка «Средства на завершение», и дефицит выходил вчетверо меньше
-    настоящего: 0,2 млрд вместо 2,2.
-    """
-    import developaid_monitor_dashboard as dash
-
-    funding = {"known": True, "remaining_need": 1.66e9, "bank_remaining": 1.15e9,
-               "reserve": 306.1e6, "approved_remaining": 3.66e9,
-               "monthly_unfunded": {}, "additional_financing": 0.2e9}
-    said = dash._summary({"dashboard": {}}, funding, {})[0]
-    assert "По утверждённой модели достроить стоит 3,66 млрд ₽" in said
-    assert "Банк даёт 1,46 млрд ₽" in said
-    assert "Дефицит 2,20 млрд ₽" in said
-    # Банковский остаток остаётся справочным и назван взглядом банка.
-    assert "его взгляд по РСС, а не потребность стройки" in said
-    # Источник назван своим именем, а не чужим.
-    assert "ДДС" not in said
-
-    # Без модели потребность не выдумывается.
-    blind = dash._summary({"dashboard": {}}, {**funding, "approved_remaining": 0}, {})[0]
-    assert "Утверждённая модель не прочитана" in blind
-
-
-def test_the_tests_do_not_write_into_the_repository() -> None:
-    """Проверка, оставляющая файлы в `data/`, уезжает с ними в коммит.
-
-    Так и вышло: снимок реестра ГУ проверочного проекта дважды попал в
-    репозиторий. Каталог снимков читается при импорте, и `DATA_DIR`,
-    выставленный в тесте, до него уже не доходит.
-    """
-    import developaid_monitor as monitor
-
-    left = sorted(path.name for path in (ROOT / "data" / "monitor").glob("*"))
-    assert "Проверочный" not in left, "проверка снова пишет в рабочие данные"
-    assert monitor._SNAPSHOT_DIR.name == "monitor"
-
-
-def test_the_need_comes_from_the_model_and_the_bank_is_the_source() -> None:
-    """«РСС — это то, что даёт банк. Утверждённая модель — сколько надо реально,
-    чтобы построить» (владелец, 30.08.2026).
-
-    Значит потребность берётся из модели, лимиты банка с резервом — источник, а
-    главный дефицит есть разница. Прежде потребностью считалась банковская
-    колонка «Средства на завершение», и дефицит выходил вчетверо меньше
-    настоящего: 0,2 млрд вместо 2,2.
-    """
-    import developaid_monitor_dashboard as dash
-
-    funding = {"known": True, "remaining_need": 1.66e9, "bank_remaining": 1.15e9,
-               "reserve": 306.1e6, "approved_remaining": 3.66e9,
-               "monthly_unfunded": {}, "additional_financing": 0.2e9}
-    said = dash._summary({"dashboard": {}}, funding, {})[0]
-    assert "По утверждённой модели достроить стоит 3,66 млрд ₽" in said
-    assert "Банк даёт 1,46 млрд ₽" in said
-    assert "Дефицит 2,20 млрд ₽" in said
-    # Банковский остаток остаётся справочным и назван взглядом банка.
-    assert "его взгляд по РСС, а не потребность стройки" in said
-    # Источник назван своим именем, а не чужим.
-    assert "ДДС" not in said
-
-    # Без модели потребность не выдумывается.
-    blind = dash._summary({"dashboard": {}}, {**funding, "approved_remaining": 0}, {})[0]
-    assert "Утверждённая модель не прочитана" in blind
-
-
-def test_the_screen_puts_the_model_against_the_bank() -> None:
-    """На экране те же роли: модель — потребность, банк — источник, разница —
-    дефицит; банковский остаток стоит справочной строкой."""
-    body = PAGE[PAGE.index("function fundingStructure("):]
-    body = body[: body.index("\n}\n")]
-    assert "Надо по утверждённой модели" in body
-    assert "Даёт банк: остаток лимитов + резерв" in body
-    assert "row('ДЕФИЦИТ'" in body
-    assert "mainGap=modelNeed==null?null:Math.max(0,modelNeed-fuel)" in body
-    assert "Справочно: «Средства на завершение» по РСС" in body
-    assert "взгляд банка на остаток, не потребность стройки" in body
-    # Структурный дефицит остаётся, но он про статьи внутри лимитов.
-    assert "Структурный дефицит внутри лимитов" in body
-    # Без книги модель не выдумывается.
-    assert "сколько реально надо, сказать нечем" in body
-
-
-def test_the_upload_stands_with_the_other_uploads() -> None:
-    """Реестр ГУ — такой же источник проекта, как РСС и продажи.
-
-    Поле уехало в верхнюю панель, к «Проекту» и «Срезу»: вставка искала
-    ближайший `<div class="field">` перед кнопкой продаж, а в блоке загрузок
-    таких нет вовсе — разметка там своя. «Почему загрузку ГУ вынесли за пределы
-    всех загрузок?» (владелец, 30.08.2026) — верный вопрос: источник, стоящий
-    в стороне от источников, читается как отдельная кнопка неизвестно чего.
-    """
-    page = PAGE
-    weekly = page[page.index("<b>Еженедельно</b>"):]
-    weekly = weekly[: weekly.index('<div class="msg"')]
-    assert 'id="retention"' in weekly, "загрузка ГУ стоит не с остальными загрузками"
-    assert 'id="retentionBtn"' in weekly
-    assert "Реестр гарантийных удержаний" in weekly, "и блок называет этот источник"
-    # А в верхней панели её нет: там управление срезом, а не файлы.
-    controls = page[page.index('<div class="controls">'):]
-    controls = controls[: controls.index("</div></div>")]
-    assert "retention" not in controls
-
-
-def test_the_tests_do_not_write_into_the_repository() -> None:
-    """Проверка, оставляющая файлы в `data/`, уезжает с ними в коммит.
-
-    Так и вышло: снимок реестра ГУ проверочного проекта дважды попал в
-    репозиторий. Каталог снимков читается при импорте, и `DATA_DIR`,
-    выставленный в тесте, до него уже не доходит.
-    """
-    import developaid_monitor as monitor
-
-    left = sorted(path.name for path in (ROOT / "data" / "monitor").glob("*"))
-    assert "Проверочный" not in left, "проверка снова пишет в рабочие данные"
-    assert monitor._SNAPSHOT_DIR.name == "monitor"
-
-
-def test_the_need_comes_from_the_model_and_the_bank_is_the_source() -> None:
-    """«РСС — это то, что даёт банк. Утверждённая модель — сколько надо реально,
-    чтобы построить» (владелец, 30.08.2026).
-
-    Значит потребность берётся из модели, лимиты банка с резервом — источник, а
-    главный дефицит есть разница. Прежде потребностью считалась банковская
-    колонка «Средства на завершение», и дефицит выходил вчетверо меньше
-    настоящего: 0,2 млрд вместо 2,2.
-    """
-    import developaid_monitor_dashboard as dash
-
-    funding = {"known": True, "remaining_need": 1.66e9, "bank_remaining": 1.15e9,
-               "reserve": 306.1e6, "approved_remaining": 3.66e9,
-               "monthly_unfunded": {}, "additional_financing": 0.2e9}
-    said = dash._summary({"dashboard": {}}, funding, {})[0]
-    assert "По утверждённой модели достроить стоит 3,66 млрд ₽" in said
-    assert "Банк даёт 1,46 млрд ₽" in said
-    assert "Дефицит 2,20 млрд ₽" in said
-    # Банковский остаток остаётся справочным и назван взглядом банка.
-    assert "его взгляд по РСС, а не потребность стройки" in said
-    # Источник назван своим именем, а не чужим.
-    assert "ДДС" not in said
-
-    # Без модели потребность не выдумывается.
-    blind = dash._summary({"dashboard": {}}, {**funding, "approved_remaining": 0}, {})[0]
-    assert "Утверждённая модель не прочитана" in blind
 

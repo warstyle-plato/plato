@@ -695,10 +695,10 @@ def _summary(view: dict[str, Any], funding: dict[str, Any],
         gap = max(0.0, model_need - fuel)
         money = (
             f"Деньги. По утверждённой модели достроить стоит "
-            f"{_fmt_money(model_need)} (модель минус оплаченное). Банк даёт "
-            f"{_fmt_money(fuel)}: {_fmt_money(bank)} остатков лимитов статей и "
-            f"{_fmt_money(reserve)} резерва 2.8/2.9. Дефицит "
-            f"{_fmt_money(gap)}.")
+            f"{_fmt_money(model_need)} (модель минус оплаченное). По РСС "
+            f"осталось {_fmt_money(fuel)}: {_fmt_money(bank)} лимитов статей и "
+            f"{_fmt_money(reserve)} резерва 2.8/2.9 — это бюджет всей стройки, "
+            f"а не банковская доля. Дефицит {_fmt_money(gap)}.")
         if need > 0:
             money += (f" Справочно: сам банк считает остаток к завершению в "
                       f"{_fmt_money(need)} — это его взгляд по РСС, а не "

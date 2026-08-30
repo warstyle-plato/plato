@@ -134,7 +134,7 @@ function fundingStructure(f,hasBook,approved,paid,remainingBudget){
  const total=Math.max(0,need-fuel);
  const structural=Number(f.additional_financing)||0;
  const from=f.additional_financing_from;
- let html='<div class="fundblock"><div class="muted" style="margin-bottom:6px"><b>РСС банка</b> — лимиты по статьям</div>'
+ let html='<div class="fundblock"><div class="muted" style="margin-bottom:6px"><b>РСС</b> — утверждённый банком бюджет всей стройки, лимиты по статьям</div>'
   +row('Лимит РСС',money2(f.bank_limit))
   +row('Оплачено по реестру',money2(f.paid_actual!=null?f.paid_actual:paid))
   +row('Остаток лимитов на завершение',money2(f.bank_remaining))
@@ -170,8 +170,8 @@ function fundingStructure(f,hasBook,approved,paid,remainingBudget){
   +(modelNeed!=null
     ?row('Надо по утверждённой модели',money2(modelNeed),'сколько реально нужно достроить: утверждённая модель минус оплачено')
     :'<div class="notice">Нет финансовой книги — сколько реально надо, сказать нечем.</div>')
-  +row('Даёт банк: остаток лимитов + резерв',money2(fuel))
-  +(mainGap!=null?row('ДЕФИЦИТ',money2(mainGap),'надо по модели минус то, что даёт банк',mainGap>0?'bad':'good'):'')
+  +row('Остаток по РСС: лимиты статей + резерв',money2(fuel),'РСС — бюджет всей стройки, а не банковская доля; чем платить, видно в источнике платежа')
+  +(mainGap!=null?row('ДЕФИЦИТ',money2(mainGap),'надо по модели минус остаток по РСС',mainGap>0?'bad':'good'):'')
   +row('Структурный дефицит внутри лимитов',money2(structural),'статьи, которым не хватает своего лимита, — чужим свободным он не закрывается',structural>0?'bad':'good')
   +row('Первый месяц нехватки',from?dt(from):'—',structural>0&&!from?'срок не определён':'',structural>0?'bad':'')
   +row('Справочно: «Средства на завершение» по РСС',money2(need),'взгляд банка на остаток, не потребность стройки')
