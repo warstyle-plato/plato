@@ -165,3 +165,76 @@ def test_the_reader_is_told_once_not_on_every_chart() -> None:
     """Сноска под каждым графиком повторялась двадцать раз и стала шумом."""
     source = (ROOT / "market_search" / "sales_deck.py").read_text(encoding="utf-8")
     assert source.count("правятся в PowerPoint") == 1
+
+
+def test_the_price_per_metre_rides_as_a_line_not_its_own_slide() -> None:
+    """«И линия цены метра то должна быть на этих графиках» (владелец,
+    30.08.2026).
+
+    Правило про цену уже записано: «цена — всегда линия на своей шкале, а не
+    вкладка со столбиками». В колоде она уходила своим слайдом со столбиками —
+    то же самое другими словами: смотрят на объём, а цена в это время на
+    соседнем листе. Теперь она идёт линией справа на каждом графике объёма, а
+    своим слайдом остаётся, только если объёма рядом нет вовсе.
+    """
+    table = {"head": ["Месяц", "Лотов", "млн ₽", "₽/м²"],
+             "rows": [["2026-07", "4", "140,8", "712 747"],
+                      ["2026-06", "9", "301,2", "717 000"],
+                      ["2026-05", "9", "288,0", "705 100"]]}
+    drawn = sales_deck.charts(table)
+    assert [item["name"] for item in drawn] == ["Лотов", "млн ₽"], \
+        "цена больше не заводит своего слайда со столбиками"
+    assert all(item["line"]["name"] == "₽/м²" for item in drawn)
+    # Одна цена без объёма — сама себе график: показать её иначе нечем.
+    alone = sales_deck.charts({"head": ["Месяц", "₽/м²"],
+                               "rows": [["2026-07", "712 747"], ["2026-06", "717 000"]]})
+    assert [item["name"] for item in alone] == ["₽/м²"]
+    assert "line" not in alone[0]
+
+
+def test_the_price_line_is_a_real_line_on_its_own_axis() -> None:
+    """Комбинированный график собирается правкой XML, и порядок в нём строгий.
+
+    Все группы графиков обязаны стоять раньше всех осей: линия, приписанная в
+    конец области, встаёт после осей — PowerPoint такой файл не открывает
+    вовсе, а python-pptx, LibreOffice и схема его читают и молчат.
+    """
+    import io
+    import zipfile
+
+    from lxml import etree
+    from pptx import Presentation
+    from pptx.chart.xmlwriter import ChartXmlWriter  # noqa: F401  (проверка окружения)
+
+    html = ('<section class="salesblock"><h2>Динамика</h2>'
+            '<table><thead><tr><th>Месяц</th><th>млн ₽</th><th>₽/м²</th></tr></thead>'
+            '<tbody><tr><td>2026-07</td><td>140,8</td><td>712 747</td></tr>'
+            '<tr><td>2026-06</td><td>301,2</td><td>717 000</td></tr>'
+            '<tr><td>2026-05</td><td>288,0</td><td>705 100</td></tr>'
+            '</tbody></table></section>')
+    blob = sales_deck.build(sales_deck.sections(html),
+                            title="Т", subtitle="с", footer="ф")
+
+    deck = Presentation(io.BytesIO(blob))
+    found = [shape.chart for slide in deck.slides for shape in slide.shapes
+             if shape.has_chart]
+    assert found, "график не нарисовался вовсе"
+    chart = found[0]
+    kinds = [type(plot).__name__ for plot in chart.plots]
+    assert "BarPlot" in kinds and "LinePlot" in kinds, kinds
+    assert chart.has_legend, "два ряда без легенды неразличимы"
+
+    namespace = {"c": "http://schemas.openxmlformats.org/drawingml/2006/chart"}
+    with zipfile.ZipFile(io.BytesIO(blob)) as pack:
+        part = next(name for name in pack.namelist()
+                    if name.startswith("ppt/charts/chart"))
+        area = etree.fromstring(pack.read(part)).find(".//c:plotArea", namespace)
+    order = [etree.QName(child).localname for child in area]
+    groups = [index for index, name in enumerate(order) if name.endswith("Chart")]
+    axes = [index for index, name in enumerate(order) if name.endswith("Ax")]
+    assert max(groups) < min(axes), f"оси встали раньше групп: {order}"
+    # Своя шкала справа, и её деления видны: урезанная шкала обязана назваться.
+    right = [ax for ax in area.findall("c:valAx", namespace)
+             if ax.find("c:axPos", namespace).get("val") == "r"]
+    assert right, "у цены нет своей шкалы справа"
+    assert right[0].find("c:delete", namespace).get("val") == "0"

@@ -246,6 +246,8 @@ def sections(html: str) -> list[dict[str, Any]]:
 
 
 _NUMBER = re.compile(r"^-?\d[\d  ]*(?:[.,]\d+)?$")
+# Заголовок колонки цены метра: кроме «₽/м²» встречается «руб/м²» и «цена, ₽/м²».
+_PRICE = re.compile(r"(₽|руб)\s*/\s*м", re.IGNORECASE)
 
 
 def cell_number(text: str) -> float | None:
@@ -283,14 +285,107 @@ def charts(table: dict[str, Any]) -> list[dict[str, Any]]:
     if len(head) < 2 or len(rows) < 2:
         return []
     categories = [str(row[0]) for row in rows if row]
-    out: list[dict[str, Any]] = []
-    for index in range(1, len(head)):
+
+    def column(index: int) -> list[float] | None:
         values = [cell_number(row[index]) if index < len(row) else None for row in rows]
         if len(values) != len(categories) or any(value is None for value in values):
+            return None
+        return [float(value) for value in values]
+
+    numeric = {index: column(index) for index in range(1, len(head))}
+    numeric = {index: values for index, values in numeric.items() if values}
+    # Цена метра — не такая же мера, как метры и рубли: она про другое и живёт
+    # линией на своей шкале. «Цена — всегда линия на своей шкале, а не вкладка
+    # со столбиками» (владелец, 26.08.2026): на общей шкале с рублями её не
+    # видно, а отдельной вкладкой она исчезает ровно тогда, когда смотрят на
+    # метры. В колоде она уходила своим слайдом со столбиками — то же самое
+    # другими словами. Теперь она идёт линией справа на каждом графике объёма.
+    price = next((index for index in numeric if _PRICE.search(str(head[index]))), None)
+    line = ({"name": str(head[price]), "values": numeric[price]}
+            if price is not None else None)
+    out: list[dict[str, Any]] = []
+    for index, values in numeric.items():
+        # Своим слайдом цена остаётся, только если объёма рядом нет вовсе.
+        if index == price and len(numeric) > 1:
             continue
-        out.append({"name": str(head[index]), "categories": categories,
-                    "values": [float(value) for value in values]})
+        item: dict[str, Any] = {"name": str(head[index]), "categories": categories,
+                                "values": values}
+        if line and index != price:
+            item["line"] = line
+        out.append(item)
     return out
+
+
+_SEC_CAT_AX, _SEC_VAL_AX = 771001, 771002
+
+
+def _price_line(chart: Any, brand: Any) -> None:
+    """Второй ряд — линией на правой шкале, а не вторым частоколом столбиков.
+
+    Комбинированных графиков python-pptx не строит, и это единственное место
+    модуля, где XML правится руками. Иначе пришлось бы либо класть цену
+    столбиками на общую шкалу — а рядом с рублями столбик цены выходит в
+    пиксель, — либо уносить её отдельным слайдом, что и было и что владелец
+    назвал ошибкой: цена сравнивается с ценой ТОГО ЖЕ товара, и смотрят на неё
+    вместе с объёмом.
+
+    Ось цены не от нуля: «урезанная шкала обязана назваться» — она подписана
+    справа своим именем, и её деления видны. Ось объёма при этом остаётся от
+    нуля: у метров и рублей ноль — настоящее начало отсчёта.
+    """
+    from copy import deepcopy
+
+    from lxml import etree
+    from pptx.oxml.ns import qn
+
+    plot_area = chart._chartSpace.find(qn("c:chart")).find(qn("c:plotArea"))
+    bar = plot_area.find(qn("c:barChart"))
+    series = bar.findall(qn("c:ser"))
+    if bar is None or len(series) < 2:
+        raise DeckUnavailable("второй ряд для линии цены не нашёлся")
+    moved = series[-1]
+    bar.remove(moved)
+    # `invertIfNegative` — свойство столбика; в линии его быть не должно.
+    for junk in moved.findall(qn("c:invertIfNegative")):
+        moved.remove(junk)
+
+    def element(tag: str):
+        node = etree.SubElement(plot_area, qn(tag))
+        return node
+
+    # Порядок детей области обязателен: сначала ВСЕ группы графиков, потом
+    # оси. Линия, приписанная в конец, встала бы после осей — PowerPoint такой
+    # файл не открывает вовсе, а всё остальное его читает и молчит.
+    line_chart = etree.Element(qn("c:lineChart"))
+    bar.addnext(line_chart)
+    etree.SubElement(line_chart, qn("c:grouping")).set("val", "standard")
+    etree.SubElement(line_chart, qn("c:varyColors")).set("val", "0")
+    line_chart.append(moved)
+    etree.SubElement(line_chart, qn("c:marker")).set("val", "1")
+    for axis in (_SEC_CAT_AX, _SEC_VAL_AX):
+        etree.SubElement(line_chart, qn("c:axId")).set("val", str(axis))
+    # Толщина и цвет линии: тот же фирменный синий, но темнее столбиков —
+    # два разных ряда одного цвета неразличимы.
+    properties = etree.SubElement(moved, qn("c:spPr"))
+    stroke = etree.SubElement(properties, qn("a:ln"))
+    stroke.set("w", "28575")
+    fill = etree.SubElement(stroke, qn("a:solidFill"))
+    etree.SubElement(fill, qn("a:srgbClr")).set("val", "0E2A43")
+    etree.SubElement(moved, qn("c:smooth")).set("val", "0")
+
+    def axis(tag: str, own: int, cross: int, *, position: str, deleted: str):
+        node = element(tag)
+        etree.SubElement(node, qn("c:axId")).set("val", str(own))
+        scaling = etree.SubElement(node, qn("c:scaling"))
+        etree.SubElement(scaling, qn("c:orientation")).set("val", "minMax")
+        etree.SubElement(node, qn("c:delete")).set("val", deleted)
+        etree.SubElement(node, qn("c:axPos")).set("val", position)
+        etree.SubElement(node, qn("c:crossAx")).set("val", str(cross))
+        return node
+
+    price_axis = axis("c:valAx", _SEC_VAL_AX, _SEC_CAT_AX, position="r", deleted="0")
+    etree.SubElement(price_axis, qn("c:crosses")).set("val", "max")
+    axis("c:catAx", _SEC_CAT_AX, _SEC_VAL_AX, position="b", deleted="1")
 
 
 def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str) -> bytes:
@@ -299,7 +394,8 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         from pptx import Presentation
         from pptx.chart.data import CategoryChartData
         from pptx.dml.color import RGBColor
-        from pptx.enum.chart import XL_CHART_TYPE, XL_LABEL_POSITION, XL_TICK_MARK
+        from pptx.enum.chart import (XL_CHART_TYPE, XL_LABEL_POSITION,
+                                     XL_LEGEND_POSITION, XL_TICK_MARK)
         from pptx.enum.text import PP_ALIGN
         from pptx.util import Inches, Pt
     except ImportError as exc:  # noqa: BLE001
@@ -406,14 +502,21 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         прямо на столбиках, и оставлена волосяной, где их много; легенды нет —
         ряд один, и его называет заголовок слайда.
         """
+        line = data.get("line")
         payload = CategoryChartData()
         payload.categories = data["categories"]
         payload.add_series(data["name"], data["values"])
+        if line:
+            payload.add_series(line["name"], line["values"])
         frame = slide.shapes.add_chart(
             XL_CHART_TYPE.COLUMN_CLUSTERED, Inches(0.6), Inches(top),
             Inches(SLIDE_W_IN - 1.2), Inches(height), payload)
         chart = frame.chart
-        chart.has_legend = False
+        # Рядов два — легенда нужна: без неё столбики и линия неразличимы.
+        chart.has_legend = bool(line)
+        if line:
+            chart.legend.position = XL_LEGEND_POSITION.BOTTOM
+            chart.legend.include_in_layout = False
         chart.font.size = Pt(11)
         chart.font.name = "Calibri"
         chart.font.color.rgb = dim
@@ -450,9 +553,10 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         value_axis = chart.value_axis
         value_axis.has_major_gridlines = not labelled
         if value_axis.has_major_gridlines:
-            line = value_axis.major_gridlines.format.line
-            line.color.rgb = RGBColor(0xE3, 0xEB, 0xF2)
-            line.width = Pt(0.75)
+            # Имя `line` здесь занято рядом цены — сетка носит своё.
+            hairline = value_axis.major_gridlines.format.line
+            hairline.color.rgb = RGBColor(0xE3, 0xEB, 0xF2)
+            hairline.width = Pt(0.75)
         value_axis.visible = not labelled
         value_axis.has_minor_gridlines = False
         value_axis.major_tick_mark = XL_TICK_MARK.NONE
@@ -469,6 +573,8 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         category_axis.format.line.color.rgb = RGBColor(0xDD, 0xE5, 0xED)
         category_axis.tick_labels.font.size = Pt(10)
         category_axis.tick_labels.font.color.rgb = dim
+        if line:
+            _price_line(chart, brand)
 
     # Титул: чей отчёт и на какую дату. Слайд, отделившийся от колоды, обязан
     # сам говорить, чей он, — как лист на бумаге.
