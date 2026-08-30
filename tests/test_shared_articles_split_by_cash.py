@@ -123,5 +123,8 @@ def test_the_unpaid_debt_agrees_too(evaluated):
         inputs=INPUTS, tep={k: dict(v) for k, v in core.TEP_DEFAULT.items()},
         rates=[], phasing=PHASING))
     engine = float(bundle["phases"][0]["result"]["finance"]["ending_pf"]) / 1e6
-    assert engine > 4_000, "предохранитель: очередь обязана не погасить долг"
+    # Порог держит смысл сценария — очередь не гасит долг, — а не конкретное
+    # число: ставка подземки с 30.08.2026 равна 0,8 наземной, и долг тут же
+    # упал с 4 229 до 3 862. Предохранитель на это и сработал.
+    assert engine > 3_000, "предохранитель: очередь обязана не погасить долг"
     assert float(evaluated.cell("CF_1", "B47")) == pytest.approx(engine, rel=0.005)
