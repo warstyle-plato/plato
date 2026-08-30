@@ -98,15 +98,10 @@ def _question(summary: dict, ask: str | None = None) -> str:
     limit_line = PAGE[PAGE.index("const SALES_ASK_LIMIT="):]
     limit_line = limit_line[:limit_line.index(";") + 1]
 
-    # Счёт бюджета живёт отдельным модулем и общий с торгами: свод его зовёт,
-    # значит и здесь он должен быть настоящим, а не пересказанным.
-    from market_search import ask_budget
-
     script = (
         "const num=(v,d=0)=>v===null||v===undefined?'—':"
         "Number(v).toLocaleString('ru-RU',"
         "{minimumFractionDigits:d,maximumFractionDigits:d});\n"
-        + ask_budget.SCRIPT + "\n"
         + limit_line + "\n" + asks + "\n" + digest + "\n"
         + "const salesData=" + json.dumps(summary, ensure_ascii=False) + ";\n"
         + "const ask=" + json.dumps(ask, ensure_ascii=False) + "||SALES_ASKS[0].text;\n"
