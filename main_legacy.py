@@ -69,7 +69,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.20.59"
+VERSION = "0.20.60"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -12810,18 +12810,24 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             for i in comparison)
         if _has_debt or _carry:
             story.append(P("Непогашенный долг и перенос между очередями",h2))
-            debt_rows=[["Очередь","Принято от предыдущей","Непогашено на конец","Передано следующей"]]
+            # Порядок колонок — рассказ: сколько пришло, сколько ушло, что
+            # осталось. «Непогашено» посередине читалось как противоречие
+            # соседней колонке с тем же числом (владелец, 30.08.2026).
+            _carried_any = any(float(i.get("debt_carried_out") or 0) > 500_000
+                               for i in comparison)
+            debt_rows=[["Очередь","Принято от предыдущей","Передано следующей",
+                        "Осталось на очереди" if _carried_any else "Непогашено на конец"]]
             for item in comparison:
                 debt_rows.append([
                     str(item.get("name") or "—"),
                     _pdf_money(item.get("carried_debt_in")),
-                    _pdf_money(item.get("ending_pf")),
                     _pdf_money(item.get("debt_carried_out")),
+                    _pdf_money(item.get("ending_pf")),
                 ])
             debt_rows.append([
                 "Итого","—",
-                _pdf_money(sum(float(i.get("ending_pf") or 0) for i in comparison)),
                 _pdf_money(sum(float(i.get("debt_carried_out") or 0) for i in comparison)),
+                _pdf_money(sum(float(i.get("ending_pf") or 0) for i in comparison)),
             ])
             story.append(table(debt_rows,[30*mm,42*mm,42*mm,42*mm],font_size=7.0))
             if _carry.get("note"):
@@ -14925,6 +14931,10 @@ def _v4_apply_management_profile(xml: str, missing: list[str]) -> str:
 # льготы, а не в свою).
 _V4_CARRY_ACCEPTED_ROW = 64          # ПФ — принятый долг предыдущей очереди
 _V4_CARRY_PASSED_ROW = 65            # ПФ — долг передан следующей очереди
+# Сколько не покрыл раскрытый эскроу. Отдельная строка, а не «переданное»:
+# линия закрывается при нехватке ВСЕГДА, перенесли долг или объявили дефолт.
+# Строка 29 листов CF в шаблоне пуста — ряд встаёт, не сдвигая ссылок.
+_V4_RVE_UNPAID_ROW = 29
 _V4_CARRY_FLAG_CELL = "B92"          # признак на «Вводных»
 _V4_CF_FIRST_COL = 4                 # D
 _V4_CF_LAST_COL = 123                # DS
@@ -14954,11 +14964,11 @@ def _v4_write_carry_flag(xml: str, enabled: bool, missing: list[str]) -> str:
     """Признак переноса долга на «Вводных» — своей строкой, как остальные Да/Нет."""
     row = int(_V4_CARRY_FLAG_CELL[1:])
     body = (
-        f'<x:c r="A{row}" t="str"><x:v>Непогашенный долг очереди переходит в ПФ '
-        f'следующей</x:v></x:c>'
+        f'<x:c r="A{row}" t="str"><x:v>Перенос долга между очередями применён '
+        f'(решает гейт по LLCR)</x:v></x:c>'
         f'<x:c r="B{row}" s="12" t="str"><x:v>{"Да" if enabled else "Нет"}</x:v></x:c>'
         f'<x:c r="C{row}" t="str"><x:v>Да / Нет</x:v></x:c>'
-        f'<x:c r="D{row}" t="str"><x:v>carry_debt_forward</x:v></x:c>')
+        f'<x:c r="D{row}" t="str"><x:v>carry_debt_applied</x:v></x:c>')
     updated, done = _v4_insert_row(xml, row, body, row + 1)
     if not done:
         missing.append(f"признак переноса долга: строка {row} «Вводных» занята")
@@ -15011,7 +15021,12 @@ def _v4_apply_debt_carry(xml: str, phase: int, queues: int, missing: list[str]) 
 
     accepted: dict[str, str] = {}
     passed: dict[str, str] = {}
+    unpaid: dict[str, str] = {}
     for column in columns:
+        # Нехватка в РВЭ: считается всегда, до всякого решения о переносе.
+        unpaid[column] = (
+            f"IF(AND($B$5=1,YEAR({column}$3)=YEAR($B$8),MONTH({column}$3)=MONTH($B$8)),"
+            f"MAX(0,{column}38+{column}45+{column}{_V4_CARRY_ACCEPTED_ROW}-{column}46),0)")
         if phase <= 1:
             accepted[column] = "0"
         else:
@@ -15026,11 +15041,10 @@ def _v4_apply_debt_carry(xml: str, phase: int, queues: int, missing: list[str]) 
             passed[column] = "0"
         else:
             passed[column] = (
-                f"IF(AND({flag},$B$5=1,{next_enabled},"
-                f"YEAR({column}$3)=YEAR($B$8),MONTH({column}$3)=MONTH($B$8)),"
-                f"MAX(0,{column}38+{column}45+{column}{_V4_CARRY_ACCEPTED_ROW}"
-                f"-{column}46),0)")
+                f"IF(AND({flag},{next_enabled}),{column}{_V4_RVE_UNPAID_ROW},0)")
 
+    unpaid_xml = _v4_carry_row_xml(
+        _V4_RVE_UNPAID_ROW, "ПФ — не покрыто раскрытым эскроу", unpaid)
     rows_xml = (_v4_carry_row_xml(_V4_CARRY_ACCEPTED_ROW,
                                   "ПФ — принятый долг предыдущей очереди", accepted)
                 + _v4_carry_row_xml(_V4_CARRY_PASSED_ROW,
@@ -15044,6 +15058,26 @@ def _v4_apply_debt_carry(xml: str, phase: int, queues: int, missing: list[str]) 
         return xml
     at = xml.index(marker)
     xml = xml[:at] + rows_xml + xml[at:]
+    # Строка 29 в шаблоне существует, но пуста: в XML есть сам элемент <x:row>
+    # без ячеек. Заполняем его, а не вставляем второй с тем же номером —
+    # Excel вправе счесть такой лист повреждённым. Непустую строку не трогаем:
+    # значит шаблон изменился, и молча писать поверх нельзя.
+    existing = re.search(
+        r'<x:row r="%d"[^>]*>(.*?)</x:row>' % _V4_RVE_UNPAID_ROW, xml, re.S)
+    if existing:
+        # «Занята» — это есть значение или формула, а не есть ячейки: пустая
+        # строка шаблона состоит из самозакрытых <x:c r="A29" /> со стилями.
+        if "<x:v>" in existing.group(1) or "<x:f>" in existing.group(1):
+            missing.append(f"{sheet}: строка {_V4_RVE_UNPAID_ROW} занята")
+            return xml
+        xml = xml[:existing.start()] + unpaid_xml + xml[existing.end():]
+    else:
+        unpaid_marker = f'<x:row r="{_V4_RVE_UNPAID_ROW + 1}"'
+        if unpaid_marker not in xml:
+            missing.append(f"{sheet}: не найдена строка {_V4_RVE_UNPAID_ROW + 1}")
+            return xml
+        at = xml.index(unpaid_marker)
+        xml = xml[:at] + unpaid_xml + xml[at:]
 
     # Правки формул. Каждая — точной строкой, а не по всему листу: `L38+L45`
     # встречается и там, где принятый долг не при чём.
@@ -15087,10 +15121,26 @@ def _v4_apply_debt_carry(xml: str, phase: int, queues: int, missing: list[str]) 
         # модели переносить нечему — формула остаётся прежней.
         if index == 0:
             continue
+        # Признак «линия уже закрыта» — накопленная нехватка по ПРЕДЫДУЩИЕ
+        # месяцы: итог строки суммирует и этот месяц, а он читает строки 44–46,
+        # и вышла бы круговая ссылка.
+        # Закрывается линия по факту ПЕРЕНОСА (строка 65), а не по факту
+        # нехватки: дефолт модель называет, но на нём не обрывается —
+        # реструктуризацию считаем прежним допущением и говорим о нём вслух.
         seen = f"SUM($D${b}:{columns[index - 1]}{b})"
         edits[44].append((f"<x:f>IF({column}$3&gt;=$B$7,",
                           f"<x:f>IF(AND({column}$3&gt;=$B$7,"
                           f"OR({seen}&lt;=0,{column}$3&lt;=$B$8)),"))
+        # Закрытая линия не собирает: остаточные продажи остаются застройщику.
+        edits[46].append((f"<x:f>MIN({column}38+{column}45+{column}{a},",
+                          f"<x:f>IF(AND({seen}&gt;0,{column}$3&gt;$B$8),0,"
+                          f"MIN({column}38+{column}45+{column}{a},"))
+        edits[46].append((f"IF({column}$3&gt;$B$8,{column}12,0)))</x:f>",
+                          f"IF({column}$3&gt;$B$8,{column}12,0))))</x:f>"))
+        # И не начисляет: проценты по договорной ставке на закрытом НКЛ — та же
+        # фикция, из-за которой остаток «гасился» продажами.
+        edits[42].append((f"IF(AND(({column}38+{column}45+{column}{a})&gt;0,",
+                          f"IF(AND({seen}&lt;=0,({column}38+{column}45+{column}{a})&gt;0,"))
     for row in sorted(edits):
         pattern = re.compile(r'(<x:row r="%d">)(.*?)(</x:row>)' % row, re.S)
         found = pattern.search(xml)
@@ -15389,6 +15439,13 @@ def build_project_workbook(
             # Сколько движок переносит между очередями — контрольное число для
             # своей строки ПРОВЕРОК. Итоги проекта перенос почти не двигает: он
             # меняет, КТО платит, поэтому прежние строки паритета его не ловят.
+            # Применён ли перенос — решает движок гейтом по общему LLCR, и
+            # книга этого LLCR не знает. Полагаясь на одно намерение
+            # пользователя, она перенесла бы долг там, где банк отказал, —
+            # и показала бы очередь рассчитавшейся, пока отчёт зовёт её
+            # дефолтной.
+            finance_hints["carry_applied"] = bool(
+                (_hint_bundle.get("debt_carry") or {}).get("applied"))
             finance_hints["carried_debt_mln"] = sum(
                 float((p_item.get("result") or {}).get("finance", {}).get(
                     "debt_carried_out") or 0.0)
@@ -15460,9 +15517,7 @@ def build_project_workbook(
     # но живёт в phasing, а не во вводных проекта: это условие сделки с банком,
     # а не свойство площадки.
     xml = _v4_write_carry_flag(
-        xml,
-        bool((phasing or {}).get("carry_debt_forward")) and bool((phasing or {}).get("enabled")),
-        missing)
+        xml, bool((finance_hints or {}).get("carry_applied")), missing)
 
     # Ставка, ушедшая от базы класса, помечается рядом со значением: молча
     # книга и отчёт «одного класса» разойдутся, и оба будут выглядеть верно.
@@ -20973,6 +21028,12 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
         # застройщика.
         debt_leaves_at_rve = bool(x.get("_phase_debt_leaves_at_rve"))
         debt_left_at_rve = 0.0
+        # Линия закрыта: после РВЭ, если раскрытого эскроу не хватило. Не
+        # выбирает, не начисляет и не собирает — что бы дальше ни случилось с
+        # долгом, переоформили его или объявили дефолт.
+        line_closed = False
+        rve_unpaid = 0.0
+        defaulted_at: date | None = None
         pf_reservation_fee = (pf_limit or 0.0) * n(x, "reservation_fee_pct") / 100 if pf_limit else 0.0
         transferred_bridge_interest = 0.0
 
@@ -21084,7 +21145,7 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
                 # выбирать по 57 млн в месяц и тут же гасить их продажами, с
                 # процентами по полной базовой ставке: та же фикция закрытой
                 # линии, только мельче.
-                if not (debt_leaves_at_rve and month > rve):
+                if not line_closed:
                     pf_draw += max(project_costs, 0.0)
                 if cap is not None:
                     # Потолок считается от остатка на начало месяца: погашения
@@ -21121,7 +21182,7 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
                     step_months[special_rate] = step_months.get(special_rate, 0) + 1
                 pf_rate = pf_base_rate * (1 - weight) + special_rate * weight
 
-                if pf_balance > 0:
+                if pf_balance > 0 and not line_closed:
                     pf_interest = pf_balance * pf_rate / 12
                     pf_cap = pf_interest_payable * pf_rate / 12
                     pf_interest_payable += pf_interest + pf_cap
@@ -21152,18 +21213,39 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
                 elif month > rve:
                     available_for_repayment = sales
 
-                if available_for_repayment > 0 and pf_balance > 0:
+                if available_for_repayment > 0 and pf_balance > 0 and not line_closed:
                     pf_repayment = min(available_for_repayment, pf_balance)
                     pf_balance -= pf_repayment
                     pf_repayment_total += pf_repayment
 
-                # Раскрытого эскроу не хватило — остаток уходит на линию
-                # следующей очереди этим же месяцем. Дальше он здесь не живёт:
-                # ни процентов, ни погашения остаточными продажами. Деньги от
-                # продаж после РВЭ остаются застройщику (владелец, 29.08.2026).
-                if debt_leaves_at_rve and month == rve and pf_balance > 0:
-                    debt_left_at_rve = pf_balance
-                    pf_balance = 0.0
+                # Момент истины. Раскрытого эскроу не хватило — период
+                # доступности кончился, НКЛ закрывается, и дальше у долга ровно
+                # два исхода: банк переоформляет его на линию следующей очереди
+                # или фиксирует дефолт (владелец, 30.08.2026: «банк не будет
+                # ждать, пока продажи покроют остаток долга»). Третьего —
+                # остаток живёт на закрытой линии и год гасится остаточными
+                # продажами — в жизни не бывает, а модель показывала именно
+                # его. Деньги от продаж после этой даты остаются застройщику.
+                if month == rve and pf_balance > 0:
+                    rve_unpaid = pf_balance
+                    if debt_leaves_at_rve:
+                        # Долг переоформлен: линия этой очереди закрывается —
+                        # не выбирает, не начисляет и не собирает.
+                        line_closed = True
+                        debt_left_at_rve = pf_balance
+                        pf_balance = 0.0
+                    else:
+                        # Дефолт назван, но модель на нём не обрывается
+                        # (владелец, 30.08.2026): «не закрывай, лучше просто
+                        # показывай, что по факту модель — дефолт на такой-то
+                        # очереди и надо будет согласие банка на перенос долга
+                        # на следующую или реструктуризация». Вариантов у банка
+                        # много, и если эскроу не наполнился из-за продаж —
+                        # это форс-мажор, которого в НКЛ и не могло быть.
+                        # Условий реструктуризации мы не знаем, поэтому дальше
+                        # считаем прежним допущением — остаток обслуживается
+                        # продажами следующих периодов, — и называем его вслух.
+                        defaulted_at = month
 
                 # Current Excel pays accumulated interest at RVE and current interest thereafter.
                 if month >= rve and pf_interest_payable > 0:
@@ -21254,6 +21336,11 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
             # остаток без этой величины читается как «рассчиталась сама».
             "debt_left_at_rve": debt_left_at_rve,
             "debt_carried_out": debt_left_at_rve,
+            # Сколько не покрыл раскрытый эскроу и когда линия закрылась.
+            # Дефолт — это дата, а не только сумма на конец горизонта: банк
+            # фиксирует его в раскрытие, а не через год остаточных продаж.
+            "rve_unpaid": rve_unpaid,
+            "default_date": defaulted_at.isoformat() if defaulted_at else None,
             "pf_repayment_total": pf_repayment_total,
             "pf_reservation_fee": pf_reservation_fee,
             "pf_interest": pf_interest_total,
@@ -22216,6 +22303,11 @@ def calculate(req: CalcRequest) -> dict:
                 # выглядит взявшей больше, чем брала.
                 "carried_debt_in": fin.get("carried_debt_in", 0.0),
                 "debt_carried_out": fin.get("debt_carried_out", 0.0),
+                # Сколько не покрыл раскрытый эскроу и когда банк зафиксировал
+                # дефолт. У отчёта свой экземпляр финансирования, и ключ,
+                # добавленный только в `finance`, до поверхностей не доезжает.
+                "rve_unpaid": fin.get("rve_unpaid", 0.0),
+                "default_date": fin.get("default_date"),
                 # Пик тела и пик с капитализированными процентами — разные
                 # показатели: книга ведёт остаток сразу с капитализацией, и
                 # одинаковое слово «пик» читалось как расхождение моделей.
@@ -23549,6 +23641,8 @@ def _consolidate_phase_results(
                 "interest_and_fees": finance["financing_cost"],
                 "ending_pf": finance.get("ending_pf", 0.0),
                 "carried_debt_in": finance.get("carried_debt_in", 0.0),
+                "rve_unpaid": finance.get("rve_unpaid", 0.0),
+                "default_date": finance.get("default_date"),
                 "bridge_peak_capitalized": finance["peak_bridge"]
                 + finance.get("transferred_bridge_interest", 0.0),
                 "peak_total_debt": finance["peak_total_debt"],
@@ -36680,12 +36774,23 @@ function renderPhaseComparison(){
  const anyDebt=k=>c.some(x=>Number(x[k]||0)>0.5e6);
  const debtRows=[];
  if(anyDebt('ending_pf')||anyDebt('debt_carried_out')||anyDebt('carried_debt_in')){
+  // Порядок строк — это и есть рассказ: сколько пришло, сколько ушло, что
+  // осталось. Прежде «непогашенный долг 0» стоял МЕЖДУ «принято 11,73» и
+  // «передано 11,73» и читался как противоречие («как это долга нет, но он
+  // передан?» — владелец, 30.08.2026). Противоречия нет, но и объяснять его
+  // читателю не должно приходиться.
+  //
+  // И название: 11,73 млрд ПФ ведь НЕ погашены — они сменили должника.
+  // «Непогашенный долг на конец очереди» обещало ровно то, что стояло строкой
+  // выше с другим числом. Осталось — значит осталось здесь, после передачи.
   if(anyDebt('carried_debt_in'))
    debtRows.push(['Принято от предыдущей очереди',c.map(x=>money(x.carried_debt_in||0)),'—']);
-  debtRows.push(['Непогашенный долг ПФ на конец очереди',
-                 c.map(x=>money(x.ending_pf||0)),money(cons.finance.ending_pf||0)]);
   if(anyDebt('debt_carried_out'))
    debtRows.push(['Передано следующей очереди',c.map(x=>money(x.debt_carried_out||0)),'—']);
+  debtRows.push([anyDebt('debt_carried_out')
+                 ?'Осталось непогашенным на очереди'
+                 :'Непогашенный долг ПФ на конец очереди',
+                 c.map(x=>money(x.ending_pf||0)),money(cons.finance.ending_pf||0)]);
  }
  const rows=[
   ['Продаваемая площадь',c.map(x=>num(x.saleable_sqm)+' м²'),num(csSale)+' м²'],
@@ -36744,6 +36849,109 @@ function renderPhaseReportControls(){
  const b=[['all','Весь проект'],...phaseBundle.phases.map((p,i)=>[`phase${i+1}`,p.name]),['compare','Сравнение очередей']];
  phaseReportControls.innerHTML=b.map(([k,l])=>`<button class="btn ${reportView===k?'active':''}" onclick="selectReportView('${k}')">${l}</button>`).join('')
 }
+// Предложный падеж сразу, а не выведенный заменой окончаний: «в марте 2031»
+// читается человеком, и склонять его правилом «я→е, а→е» — способ однажды
+// получить «в мае» из «мая» и «в феврале» из чего угодно.
+const RU_MONTHS_IN=['январе','феврале','марте','апреле','мае','июне',
+                    'июле','августе','сентябре','октябре','ноябре','декабре'];
+function ruMonth(iso){
+ const m=/^(\d{4})-(\d{2})/.exec(String(iso||''));
+ if(!m)return '';
+ const index=Number(m[2])-1;
+ return index>=0&&index<12?`${RU_MONTHS_IN[index]} ${m[1]}`:'';
+}
+// Плашка о непогашенном ПФ. Прежде она складывала все очереди в одну кучу —
+// «в даты РВЭ очередей: долг перед раскрытием столько-то» — и из неё нельзя
+// было понять ни какая очередь не рассчиталась, ни куда ушёл её долг. А с
+// включённым переносом фраза «остаток гасится продажами после ввода» стала
+// прямо неверной: остаток уходит на линию следующей очереди, а продажи
+// остаются застройщику. Теперь плашка говорит по очередям и называет, что
+// куда и когда ушло.
+function pfRveWarningHtml(r){
+ const phased=phaseBundle&&phaseBundle.mode==='phased'&&(phaseBundle.comparison||[]).length>1;
+ if(!phased){
+  const f=r.report.financing||{},gap=Number(f.rve_unpaid||f.rve_pf_shortfall||0);
+  if(!(gap>500000))return '';
+  const when=ruMonth(f.default_date);
+  return `<b>Дефолт${when?' в '+when:' в дату раскрытия'}: раскрытого эскроу не `
+   +`хватило на ${money(gap)}.</b> Дальше нужна реструктуризация — её условий `
+   +'модель не знает и считает по допущению, что остаток обслуживается продажами '
+   +'следующих периодов.';
+ }
+ const rows=phaseBundle.comparison||[],phases=phaseBundle.phases||[];
+ const carry=phaseBundle.debt_carry||(phaseBundle.consolidated||{}).debt_carry||null;
+ const at={};((carry&&carry.transfers)||[]).forEach(t=>{at[t.from]=t});
+ const lines=[];let firstDefault=null;
+ rows.forEach((row,i)=>{
+  const fin=(((phases[i]||{}).result||{}).report||{}).financing||{};
+  const gap=Number(fin.rve_unpaid||0)||Number(row.debt_carried_out||0);
+  if(!(gap>500000))return;
+  const name=escapeHtml(String(row.name||('О'+(i+1))));
+  if(Number(row.debt_carried_out||0)>500000){
+   const t=at[i+1]||{},when=ruMonth(t.at);
+   const to=escapeHtml(String((rows[i+1]||{}).name||('О'+(i+2))));
+   lines.push(`<b>${name}</b>: при раскрытии эскроу не погашено <b>${money(gap)}</b> — `
+    +`этот долг принял ПФ <b>${to}</b>${when?' в '+when:''}.`);
+  }else{
+   // Банк не ждёт продаж: в дату раскрытия он либо переоформляет долг, либо
+   // фиксирует дефолт (владелец, 30.08.2026). Прежде здесь стояло «остаток
+   // гасится её собственными продажами после ввода» — состояние, которого в
+   // жизни не бывает.
+   const when=ruMonth(fin.default_date);
+   if(!firstDefault)firstDefault={name:name,when:when,gap:gap};
+   lines.push(`<b>${name}</b>: раскрытого эскроу не хватило на <b>${money(gap)}</b> — `
+    +`по модели это <b>дефолт${when?' в '+when:' в дату раскрытия'}</b>.`);
+  }
+ });
+ if(!lines.length)return '';
+ const ending=Number(((phaseBundle.consolidated||{}).finance||{}).ending_pf||0);
+ if(firstDefault){
+  // План показываем, но называем несостоявшимся (решение владельца,
+  // 30.08.2026): после дефолта банк финансирование не продолжает, и числа
+  // следующих очередей — замысел, а не результат.
+  if(carry&&carry.applied===false&&carry.note)lines.push(escapeHtml(String(carry.note)));
+  else if(!carry)lines.push('Перенос долга на следующую очередь не включён — признак на вкладке «Очерёдность».');
+  // Дату не повторяем: она названа строкой выше, а «после январе 2030» —
+  // родительный падеж там, где список месяцев даёт предложный. Две формы
+  // одного слова ради одной фразы не заводим.
+  // Дефолт называем, но проект не хороним (владелец, 30.08.2026): «не закрывай,
+  // лучше просто показывай, что по факту модель — дефолт на такой-то очереди и
+  // надо будет согласие банка на перенос долга на следующую или
+  // реструктуризация». Вариантов у банка много, чаще всего долг просто
+  // переоформляют на следующую очередь; а если эскроу не наполнился из-за
+  // продаж, это форс-мажор, которого в НКЛ и не могло быть заложено. Условий
+  // реструктуризации модель не знает — считает прежним допущением и говорит
+  // об этом вслух.
+  lines.push('<b>Понадобится согласие банка</b> — на перенос долга на следующую '
+   +'очередь или на реструктуризацию. Дальше модель считает по допущению, что '
+   +'остаток обслуживается продажами следующих периодов; пени и требование она '
+   +'не считает.');
+  lines.push(ending>500000
+   ?`<b>По итогу всех очередей</b> при этом допущении непогашенным остаётся <b>${money(ending)}</b>.`
+   :'<b>По итогу всех очередей</b> при этом допущении долг погашен полностью.');
+ }else{
+  lines.push(ending>500000
+   ?`<b>По итогу всех очередей</b> непогашенным остаётся <b>${money(ending)}</b>.`
+   :'<b>По итогу всех очередей</b> долг погашен полностью.');
+  // «Долг погашен полностью» читается как «всё в порядке», хотя весь план
+  // держится на согласии банка. Вариантов у него больше, чем можно
+  // предусмотреть, и каждый предусмотренный выглядел бы предсказанием
+  // (владелец, 30.08.2026: «банк может переложить долг на следующую очередь,
+  // но сделать кэш-свип на первую. Эти варианты все не предусмотреть. Главное
+  // видимо увидеть, что проблемная очередь есть»). Поэтому называем факт и
+  // границу метода, а решение за банк не выдумываем.
+  lines.push('<b>Но проблемные очереди есть, и план держится на согласии '
+   +'банка.</b> Перенос долга — одно из возможных его решений: вместо него '
+   +'банк может сделать кэш-свип на проблемную очередь, потребовать '
+   +'дополнительное обеспечение или реструктурировать долг. Этих вариантов '
+   +'модель не считает.');
+ }
+ const title=firstDefault
+  ?`Модель даёт дефолт на очереди ${firstDefault.name}.`
+  :'Эскроу не погашает ПФ полностью.';
+ return `<div style="margin-bottom:6px"><b>${title}</b></div>`
+  +lines.map(line=>`<div style="margin-top:4px">${line}</div>`).join('');
+}
 function renderResult(){
  if(!lastResult)return;const r=lastResult,f=r.finance;
  hideCalcLocked();
@@ -36783,16 +36991,11 @@ function renderResult(){
  ];
  reportKpi.innerHTML=reportKpis.map(x=>`<div class="kpi"><span>${x[0]}</span><b>${x[1]}</b></div>`).join('');
 
- const rveFinance=r.report.financing||{},rveGap=Number(rveFinance.rve_pf_shortfall||0),rveDebt=Number(rveFinance.rve_pf_before_repayment||0),rveEscrow=Number(rveFinance.rve_escrow_release||0),rveWarning=document.getElementById('pfRveWarning');
+ const rveWarning=document.getElementById('pfRveWarning');
  if(rveWarning){
-  if(rveGap>500000){
-   const scope=Number(r.summary.phase_count||0)>1?'В даты РВЭ очередей':'В момент РВЭ';
-   rveWarning.style.display='block';
-   const rveRepaid=Number(rveFinance.rve_pf_repayment||0),rveEnding=Number(rveFinance.ending_pf||0);
-   rveWarning.innerHTML=`<b>Эскроу не погашает ПФ полностью.</b> ${scope}: долг перед раскрытием ${money(rveDebt)}, раскрыто эскроу ${money(rveEscrow)}, из них на погашение ПФ ${money(rveRepaid)}, остаток ПФ <b>${money(rveGap)}</b>. Остаток гасится продажами после ввода — они идут без эскроу. ${rveEnding>500000?`На конец горизонта непогашенным остаётся <b>${money(rveEnding)}</b> — модель считает это дефолтом.`:'К концу горизонта долг погашен.'}`;
-  }else{
-   rveWarning.style.display='none';rveWarning.textContent='';
-  }
+  const html=pfRveWarningHtml(r);
+  if(html){rveWarning.style.display='block';rveWarning.innerHTML=html}
+  else{rveWarning.style.display='none';rveWarning.textContent=''}
  }
 
  llcrValue.textContent=mult(r.summary.llcr);
@@ -36951,15 +37154,18 @@ function renderResult(){
   // Плашка выше говорит «остаток гасится последующими продажами», а число,
   // отвечающее «погасился ли», стояло только в PDF и в книге. На экране его
   // не было вовсе, и проверить обещание было нечем (владелец, 25.08.2026).
-  row('Непогашенный долг ПФ на конец проекта'+(Number(r.report.financing.ending_pf||0)>0?' · дефолт':''),
-      money(r.report.financing.ending_pf))+
-  // Переданный и принятый долг стоят рядом с остатком, а не вместо него.
-  // У передавшей очереди остаток ноль — без своей строки обязательство
-  // исчезало бы бесследно, и очередь выглядела бы рассчитавшейся сама.
-  (Number(r.report.financing.debt_carried_out||0)>0.5e6
-   ?row('Долг передан в ПФ следующей очереди',money(r.report.financing.debt_carried_out)):'')+
+  // Порядок: сколько пришло, сколько ушло, что осталось. Остаток последним —
+  // он вывод, а не одно из трёх чисел; стоя первым, он читался как
+  // противоречие строке «передано» с тем же числом.
   (Number(r.report.financing.carried_debt_in||0)>0.5e6
    ?row('в т.ч. принято от предыдущей очереди',money(r.report.financing.carried_debt_in)):'')+
+  (Number(r.report.financing.debt_carried_out||0)>0.5e6
+   ?row('Долг передан в ПФ следующей очереди',money(r.report.financing.debt_carried_out)):'')+
+  row((Number(r.report.financing.debt_carried_out||0)>0.5e6
+       ?'Осталось непогашенным на очереди'
+       :'Непогашенный долг ПФ на конец проекта')
+      +(Number(r.report.financing.ending_pf||0)>0?' · дефолт':''),
+      money(r.report.financing.ending_pf))+
   (r.report.financing.peak_total_debt!=null?row('Максимальный совокупный долг',money(r.report.financing.peak_total_debt)):'')+
   row('Текущая ключевая ставка',pct(r.report.financing.current_key_rate))+
   row('Спред БРИДЖ',pct(r.report.financing.bridge_spread))+
