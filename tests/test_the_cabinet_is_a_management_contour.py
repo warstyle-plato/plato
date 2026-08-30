@@ -152,3 +152,51 @@ def test_the_public_calculator_stays_outside() -> None:
     main = TestClient(main_registry.app).get("/")
     assert main.status_code == 200
     assert "Управленческий контур" not in main.text
+
+
+def test_the_cabinet_opens_with_a_summary_not_with_one_tool() -> None:
+    """«Может, для кабинета нужен какой-то сводный вариант, а не как сейчас,
+    когда маркетинг и отчёт о продажах сразу открывается» (владелец,
+    30.08.2026).
+
+    Кабинет — вход в контур, а открывался он конструктором отчёта о рынке, то
+    есть одним инструментом из четырёх. Теперь сверху состояние, инструменты
+    свёрнуты, и раскрывает их человек.
+    """
+    from market_search.cabinet import CABINET_PAGE, cabinet_page
+
+    page = cabinet_page()
+    assert "<title>Кабинет DevelopAid</title>" in page
+    assert "Конструктор отчёта о рынке" not in page, "старое имя кабинета осталось"
+
+    # Сводка стоит до инструментов.
+    assert page.index('id="overview"') < page.index('id="market"') < page.index('id="sales"')
+    # Оба инструмента — раскрытия, и оба закрыты: `open` в разметке нет.
+    market = CABINET_PAGE[CABINET_PAGE.index('<details class="salesreport" id="market">'):]
+    assert market[: market.index(">")].count("open") == 0
+
+    body = CABINET_PAGE[CABINET_PAGE.index("function renderOverview(d){"):]
+    body = body[: body.index("\nfunction renderSales(")]
+    # Числа сводки — из свода, посчитанного сервером; на экране только формат.
+    for sign in ("d.total", "d.sources", "d.pool"):
+        assert sign in body
+    for sign in ("/1e6*", "Math.round(", "amount/area"):
+        assert sign not in body, f"в сводке появилась арифметика: {sign}"
+    # Пустой склад говорит, чего нет, а не молчит.
+    assert "Файлы проекта ещё не загружены" in body
+    assert "отчёт о рынке" in body and "работает и без них" in body
+    # И кнопки раскрывают то, что назвали.
+    assert "id=\"openSales\"" in body and "id=\"openMarket\"" in body
+
+
+def test_the_project_file_upload_lives_with_the_summary() -> None:
+    """Загрузка источников — про проект, а не про отчёт о рынке: в карточке
+    конструктора она стояла чужой."""
+    from market_search.cabinet import CABINET_PAGE
+
+    overview = CABINET_PAGE[CABINET_PAGE.index('id="overview"'):]
+    overview = overview[: overview.index('<details class="salesreport" id="market">')]
+    assert 'id="cf"' in overview and "Загрузить файл проекта" in overview
+    form = CABINET_PAGE[CABINET_PAGE.index('<div class="card" id="form">'):]
+    form = form[: form.index("</details>")]
+    assert 'id="cf"' not in form

@@ -436,7 +436,9 @@ def test_cabinet_is_closed_by_default_and_opens_only_by_key(tmp_path, monkeypatc
                           follow_redirects=False)
     assert entered.status_code == 303
     assert client.get("/cabinet").status_code == 200
-    assert "Конструктор отчёта" in client.get("/cabinet").text
+    # Кабинет больше не «конструктор отчёта о рынке»: рынок — один инструмент
+    # из четырёх, и открывается страница сводкой, а не им.
+    assert "Кабинет DevelopAid" in client.get("/cabinet").text
 
     # Кириллический ключ заголовком не передаётся — это должно быть сказано,
     # а не проявляться загадочным отказом на одном из двух путей входа.
