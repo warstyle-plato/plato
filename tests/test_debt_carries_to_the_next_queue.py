@@ -290,9 +290,6 @@ def test_the_amount_is_what_the_released_escrow_did_not_cover():
     unpaid = source["rve_unpaid"]
     assert unpaid > 1_000_000_000, (
         "предохранитель: на этих вводных раскрытого эскроу обязано не хватить")
-    # Нехватка в РВЭ и остаток на конец теперь одно и то же: линия закрывается,
-    # и остаточные продажи её больше не гасят (решение владельца, 30.08.2026).
-    assert source["ending_pf"] == pytest.approx(unpaid, rel=1e-6)
     carried = _bundle(700, 12000, carry=True)
     assert carried["debt_carry"]["transfers"][0]["amount"] == pytest.approx(
         unpaid, rel=1e-6)
@@ -318,31 +315,46 @@ def test_after_the_transfer_the_closed_line_neither_lends_nor_collects():
     assert source["ending_pf"] == pytest.approx(0.0)
 
 
-def test_without_the_transfer_the_shortfall_is_a_default_at_the_release():
-    """Без переноса нехватка — дефолт в дату раскрытия, а не долгое погашение.
+def test_without_the_transfer_the_default_is_named_but_the_model_goes_on():
+    """Без переноса дефолт НАЗЫВАЕТСЯ датой и суммой, но модель не обрывается.
 
-    Владелец, 30.08.2026: «если надо погасить в дату РВЭ, банк не будет ждать,
-    пока продажи покроют остаток долга. Он просто дефолт, нет проекта, если не
-    видит возможности перенести на другие очереди из-за ненормативного LLCR».
+    Владелец, 30.08.2026: «не закрывай! лучше просто показывай, что по факту
+    модель — дефолт на такой-то очереди и надо будет согласие банка на перенос
+    долга на следующую или реструктуризация». Вариантов у банка много, чаще
+    всего долг просто переоформляют; а если эскроу не наполнился из-за продаж,
+    это форс-мажор, которого в НКЛ и не могло быть заложено.
 
-    Прежде остаток год гасился остаточными продажами на уже закрытой линии —
-    состояние, которого в жизни не бывает.
+    Условий реструктуризации модель не знает, поэтому считает прежним
+    допущением — остаток обслуживается продажами следующих периодов, — и
+    называет его вслух на экране.
     """
     plain = _bundle(700, 12000, carry=False)
     source = plain["phases"][0]["result"]["finance"]
     rve = plain["phases"][0]["result"]["dates"]["rve"]
+    assert source["default_date"] == rve, "дефолт фиксируется в дату раскрытия"
+    assert source["rve_unpaid"] > 1_000_000_000, (
+        "предохранитель: раскрытого эскроу обязано не хватить")
+    after = [r for r in source["rows"] if str(r["month"])[:10] > rve]
+    assert sum(r["pf_repayment"] for r in after) > 1_000_000_000, (
+        "модель не обрывается на дефолте: остаток гасится продажами следующих "
+        "периодов — допущение о реструктуризации, названное на экране")
+    assert source["ending_pf"] < source["rve_unpaid"], (
+        "остаток на конец меньше нехватки в РВЭ — продажи его обслуживали")
+
+
+def test_the_transferred_debt_does_close_the_line():
+    """А вот переоформленный долг линию закрывает: он ушёл к другому должнику."""
+    carried = _bundle(700, 12000, carry=True)
+    source = carried["phases"][0]["result"]["finance"]
+    rve = carried["phases"][0]["result"]["dates"]["rve"]
     after = [r for r in source["rows"] if str(r["month"])[:10] > rve]
     assert after, "предохранитель: у очереди обязаны быть месяцы после РВЭ"
     assert sum(r["sales"] for r in after) > 1_000_000_000, (
-        "предохранитель: остаточные продажи обязаны быть — иначе проверка "
-        "ниже проходит на пустом месте")
-    assert sum(r["pf_repayment"] for r in after) == pytest.approx(0.0), (
-        "закрытая линия не собирает: продажи после ввода остаются застройщику")
-    assert sum(r.get("pf_interest") or 0.0 for r in after) == pytest.approx(0.0), (
-        "закрытая линия не начисляет: проценты по договорной ставке на закрытом "
-        "НКЛ — та же фикция")
-    assert source["default_date"] == rve, "дефолт фиксируется в дату раскрытия"
-    assert source["ending_pf"] == pytest.approx(source["rve_unpaid"], rel=1e-6)
+        "предохранитель: остаточные продажи обязаны быть")
+    assert sum(r["pf_repayment"] for r in after) == pytest.approx(0.0)
+    assert sum(r["pf_draw"] for r in after) == pytest.approx(0.0)
+    assert sum(r.get("pf_interest") or 0.0 for r in after) == pytest.approx(0.0)
+    assert source["default_date"] is None, "перенос — не дефолт"
 
 
 def test_the_debt_cannot_land_before_the_receiving_line_exists():
