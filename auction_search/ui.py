@@ -96,6 +96,7 @@ __DEVELOPAID_CONTOUR__
   __DEVELOPAID_LEGAL_FOOTER__
 </div>
 <script>
+__DEVELOPAID_ASK_BUDGET__
 const state={lots:[],filtered:[],families:[],openFamilies:new Set(),coverage:[],quality:{},selected:null,ingested:null,krt:[],krtFiltered:[],krtOkrugs:new Set(),krtModels:{},krtReports:{},krtRequirements:{},krtNew:0,krtNewDays:30,krtPolls:0,krtTimer:null,krtRank:{},krtRankProgress:null,krtRankTimer:null};
 const KRT_OKRUGS=['ЦАО','САО','СВАО','ВАО','ЮВАО','ЮАО','ЮЗАО','ЗАО','СЗАО','НАО','ТАО','ЗелАО'];
 const $=id=>document.getElementById(id);
@@ -1038,12 +1039,19 @@ function krtMarketBlocks(d){
 function renderKrtMarketBlocks(report,out){out.insertAdjacentHTML('beforeend',krtMarketBlocks(report))}
 // Что Платон видит: то же, что человек на экране. Числа собираются здесь и
 // подаются готовыми — модель их не считает, она читает посчитанное.
+// Свод отдаёт шапку и разделы, а не одну склеенную строку: бюджет вопроса
+// считается на всё сообщение, и резать его надо по разделам, а не по хвосту.
+// Прежде свод собирался вовсе без бюджета — на семнадцати лотах с длинными
+// названиями и выбранной площадкой с перечнем ЗОУИТ сообщение уходило за
+// четыре тысячи знаков, и человек видел «Вопрос слишком длинный» на вопрос в
+// две строки.
 function askDigest(){
- const lines=[];
+ const head=[], groups=[];
  const krtMode=!$('krtPanel').classList.contains('hidden');
  if(krtMode){
   const list=state.krtFiltered||[];
-  lines.push(`ОТОБРАНО ПЛОЩАДОК КРТ: ${list.length} из ${(state.krt||[]).length} в каталоге.`);
+  head.push(`ОТОБРАНО ПЛОЩАДОК КРТ: ${list.length} из ${(state.krt||[]).length} в каталоге.`);
+  const lines=[];
   list.slice(0,12).forEach(x=>{
    const sc=krtScore(x), rank=state.krtRank[x.slug]||{};
    lines.push(`— ${x.name} (${[x.okrug,x.district].filter(Boolean).join(', ')}): балл ${sc.score}`
@@ -1055,21 +1063,25 @@ function askDigest(){
     +(x.is_new?'; появилась в каталоге недавно':''));
   });
   if(list.length>12)lines.push(`(показаны первые 12 из ${list.length})`);
+  groups.push({name:'список площадок', lines});
   const chosen=state.selectedKrt;
   if(chosen){
-   const sc=krtScore(chosen), model=state.krtModels[chosen.slug];
-   lines.push('', `ВЫБРАНА: ${chosen.name}. Балл ${sc.score} из потенциала ${sc.base}.`);
-   if(sc.cuts.length)lines.push('Снижения: '+sc.cuts.map(c=>`${c.label} −${c.points}%`).join('; ')+'.');
-   if(model?.text)lines.push('Модель: '+model.text);
-   (model?.exclusions||[]).slice(0,6).forEach(x=>lines.push('НЕ УЧТЕНО: '+x));
+   const sc=krtScore(chosen), model=state.krtModels[chosen.slug], pick=[];
+   // Выбранная идёт ПЕРВЫМ разделом: спрашивают обычно о ней, а список — фон.
+   pick.push(`ВЫБРАНА: ${chosen.name}. Балл ${sc.score} из потенциала ${sc.base}.`);
+   if(sc.cuts.length)pick.push('Снижения: '+sc.cuts.map(c=>`${c.label} −${c.points}%`).join('; ')+'.');
+   if(model?.text)pick.push('Модель: '+model.text);
+   (model?.exclusions||[]).slice(0,6).forEach(x=>pick.push('НЕ УЧТЕНО: '+x));
+   groups.unshift({name:'выбранная площадка', lines:pick});
   }
  }else{
   // Платону список идёт в том же виде, в каком он на экране: тридцать
   // одинаковых гаражей одной строкой. Отдай ему все тридцать — и половину
   // вопроса займут повторы, а полезный лот в двенадцать строк не влезет.
   const list=state.filtered||[], fams=state.families||[];
-  lines.push(`ОТОБРАНО ЛОТОВ: ${list.length} из ${(state.lots||[]).length} в выборке`
+  head.push(`ОТОБРАНО ЛОТОВ: ${list.length} из ${(state.lots||[]).length} в выборке`
    +`; строк на экране ${fams.length} — повторы одного извещения схлопнуты в группу.`);
+  const lines=[];
   fams.slice(0,12).forEach(f=>{
    const l=f.lead, sc=f.score;
    lines.push(`— ${l.title||l.address||'лот'} (${kindLabel(l.lot_kind)})`
@@ -1081,15 +1093,17 @@ function askDigest(){
     +(sc.cuts.length?`; снижено за: ${sc.cuts.map(c=>c.label).join(', ')}`:''));
   });
   if(fams.length>12)lines.push(`(показаны первые 12 строк из ${fams.length})`);
+  groups.push({name:'список лотов', lines});
   if(state.selected){
-   const sc=lotScore(state.selected), sr=state.selected.screening||{};
-   lines.push('', `ВЫБРАН: ${state.selected.title||state.selected.address}. Балл ${sc.score} из потенциала ${sc.base}.`);
-   if(sr.why_here)lines.push('Почему в выборке: '+sr.why_here);
-   (sr.concerns||[]).slice(0,6).forEach(x=>lines.push('НАСТОРАЖИВАЕТ: '+x));
-   (sr.verify_before_calculation||[]).slice(0,6).forEach(x=>lines.push('ПРОВЕРИТЬ ДО РАСЧЁТА: '+x));
+   const sc=lotScore(state.selected), sr=state.selected.screening||{}, pick=[];
+   pick.push(`ВЫБРАН: ${state.selected.title||state.selected.address}. Балл ${sc.score} из потенциала ${sc.base}.`);
+   if(sr.why_here)pick.push('Почему в выборке: '+sr.why_here);
+   (sr.concerns||[]).slice(0,6).forEach(x=>pick.push('НАСТОРАЖИВАЕТ: '+x));
+   (sr.verify_before_calculation||[]).slice(0,6).forEach(x=>pick.push('ПРОВЕРИТЬ ДО РАСЧЁТА: '+x));
+   groups.unshift({name:'выбранный лот', lines:pick});
   }
  }
- return lines.join('\n');
+ return {head, groups};
 }
 function renderAskContext(){
  const box=$('askContext');
@@ -1109,9 +1123,16 @@ async function askPlato(){
  const question=(field.value||'').trim();
  if(!question){out.innerHTML='<div class="notice warn">Напишите вопрос.</div>';return}
  button.disabled=true;out.innerHTML='<div class="notice"><span class="spinner"></span>Платон Сергеевич думает…</div>';
- const message='Ниже то, что сейчас открыто в модуле торгов DevelopAid. Числа посчитаны '
+ // Бюджет считается на ВСЁ сообщение: предел сервера минус вступление, минус
+ // сам вопрос, минус запас на склейку. Прежде свод шёл целиком и без счёта, и
+ // отказ приходил на вопрос в две строки.
+ const preamble='Ниже то, что сейчас открыто в модуле торгов DevelopAid. Числа посчитаны '
   +'движком — не пересчитывай их, объясни и ответь по ним. Чего в списке нет, того не '
-  +'выдумывай: скажи, что данных нет.\n\n'+askDigest()+'\n\nВопрос: '+question;
+  +'выдумывай: скажи, что данных нет.';
+ const LIMIT=4000;
+ const {head, groups}=askDigest();
+ const room=LIMIT-preamble.length-question.length-64;
+ const message=preamble+'\n\n'+fitAsk(head, groups, room)+'\n\nВопрос: '+question;
  try{
   let d;
   try{
@@ -1175,8 +1196,11 @@ def auctions_page(core=None) -> str:
     import management_contour
 
     footer = legal_footer_html(core) if core is not None else ""
+    from market_search import ask_budget
+
     return (AUCTIONS_PAGE
             .replace(LEGAL_FOOTER_PLACEHOLDER, footer)
+            .replace(ask_budget.PLACEHOLDER, ask_budget.SCRIPT)
             .replace("__DEVELOPAID_CONTOUR_STYLE__", management_contour.STYLE)
             .replace(management_contour.PLACEHOLDER,
                      management_contour.markup("/auctions")))

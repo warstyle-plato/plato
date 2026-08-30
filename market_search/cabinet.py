@@ -592,6 +592,7 @@ __DEVELOPAID_BNMAP__
   __DEVELOPAID_LEGAL_FOOTER__
 </main>
 <script>
+__DEVELOPAID_ASK_BUDGET__
 const $=s=>document.querySelector(s);
 // Кабинет отдаётся тремя видами, и элемента на этом виде может не быть
 // вовсе. Необработанная ошибка в этом скрипте гасит страницу целиком —
@@ -2896,51 +2897,10 @@ function salesDigest(d, limit){
   const rank=name=>(ORDER.indexOf(name)+1)||99;
   groups.sort((a,b)=>rank(a.name)-rank(b.name));
 
-  // Складываем, пока влезает.
-  const cap=Number(limit)||2800;
-  // Место под строку «не поместилось» держится с самого начала. Приписанная
-  // сверх бюджета, она вылезала за предел и обрезалась первой — то есть
-  // пропадало ровно то предупреждение, ради которого она написана, а свод
-  // выглядел полным.
-  const NOTE_ROOM=200;
-  const kept=[...head], dropped=[];
-  let size=kept.join('\n').length;
-  groups.forEach(g=>{
-    if(!g.lines.length) return;
-    // Раздел входит построчно, а не целиком. Всё-или-ничего давало обрыв:
-    // «каналы» из шести строк не влезали, а стоящая ниже «размерность» из пяти
-    // влезала — и из вопроса выпадали две темы из четырёх, о которых мы же и
-    // спросили. Сколько строк вошло из скольких, стоит в самой строке.
-    const room=cap-NOTE_ROOM-size;
-    const fit=[];
-    let used=0;
-    g.lines.forEach(line=>{
-      if(used+line.length+1<=room){ fit.push(line); used+=line.length+1 }
-    });
-    if(!fit.length){ dropped.push(g.name+' ('+g.lines.length+' строк)'); return }
-    if(fit.length<g.lines.length){
-      const note='(вошло '+fit.length+' строк из '+g.lines.length+')';
-      // Метка ставится, если для неё есть место, и НЕ вместо данных: подмена
-      // последней строки меткой оставляла раздел из одной строки «(вошло 1 из
-      // 8)» — то есть выбрасывала ровно то, ради чего раздел вошёл. Что раздел
-      // урезан, в любом случае сказано общей строкой ниже.
-      if(used+note.length+1<=room){ fit.push(note); used+=note.length+1 }
-      dropped.push(g.name+' — часть');
-    }
-    kept.push(fit.join('\n'));
-    size+=fit.join('\n').length+1;
-  });
-  if(dropped.length){
-    let note='НЕ ПОМЕСТИЛОСЬ В ВОПРОС (не считай это отсутствием данных): '+dropped.join(', ')+'.';
-    if(note.length>NOTE_ROOM-1) note=note.slice(0,NOTE_ROOM-3)+'….';
-    kept.push(note);
-  }
-  // Последний рубеж: даже обязательная шапка теоретически может перерасти
-  // бюджет (длинное имя проекта). Обрезка называет себя — молча укороченный
-  // свод читается как полный.
-  let out=kept.join('\n');
-  if(out.length>cap) out=out.slice(0, Math.max(0, cap-40))+'\n(свод обрезан по длине вопроса)';
-  return out;
+  // Складываем, пока влезает. Счёт объявлен один раз в `ask_budget` и общий
+  // со сводом торгов: две копии бюджета разошлись бы, и одна из поверхностей
+  // однажды снова отвечала бы «вопрос слишком длинный».
+  return fitAsk(head, groups, Number(limit)||2800);
 }
 
 // Сказанное Платоном о продажах. Живёт рядом со сводом: перерисовка карточки
@@ -3761,6 +3721,7 @@ def cabinet_page(view: str = "home") -> str:
     # негде обновлять, а поверхность без входа в контур не найти.
     import management_contour
 
+    from . import ask_budget
     from . import bnmap_ui
 
     if view not in _KEEP:
@@ -3780,6 +3741,7 @@ def cabinet_page(view: str = "home") -> str:
         # Второй источник стоит РЯДОМ с отчётом и подписан тестовым:
         # пока «Пульс» и bnMAP не сверены на живых числах, в сборке
         # отчёта менять нечего (владелец, 30.08.2026).
+        .replace(ask_budget.PLACEHOLDER, ask_budget.SCRIPT)
         .replace(bnmap_ui.PLACEHOLDER, bnmap_ui.markup())
     )
 
