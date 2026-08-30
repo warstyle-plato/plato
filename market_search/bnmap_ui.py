@@ -87,26 +87,33 @@ def markup() -> str:
 </div>
 </details>
 <script>
-(function(){{
-  const $=id=>document.getElementById(id);
-  const go=$('bngo'); if(!go) return;
-  go.addEventListener('click', async function(){{
-    const q=($('bnid').value||'').trim();
-    $('bnstate').textContent='спрашиваю bnMAP…'; $('bnout').innerHTML='';
+// Помощники берутся кабинетные (`on` и `$`), своих здесь нет: скрипт кабинета
+// один на три вида, элемента на виде может не быть, и верхнеуровневый
+// `addEventListener` роняет ВЕСЬ скрипт на остальных страницах — экран
+// становится мёртвым. `on` для того и заведён, а вторая копия защиты однажды
+// разошлась бы с первой.
+//
+// Отложено до `DOMContentLoaded` по простой причине: этот блок стоит в
+// разметке выше основного скрипта кабинета, и в момент разбора `on` ещё не
+// объявлен. Слушатель регистрируется во время разбора, до самого события.
+document.addEventListener('DOMContentLoaded', function(){{
+  on('#bngo', 'click', async function(){{
+    const q=($('#bnid').value||'').trim();
+    $('#bnstate').textContent='спрашиваю bnMAP…'; $('#bnout').innerHTML='';
     try{{
       const r=await fetch('/market/bnmap/report?object_id='+encodeURIComponent(q)
-        +'&base='+encodeURIComponent($('bnbase').value));
+        +'&base='+encodeURIComponent($('#bnbase').value));
       const text=await r.text();
       let data=null;
       try{{ data=JSON.parse(text); }}catch(e){{
         // Ответ разбирают, зная, что он может быть не ответом: шлюз отдаёт свою
         // страницу, и «The string did not match the expected pattern» вместо
         // причины отказа — это поломка разбора, а не сообщение сервиса.
-        $('bnstate').textContent='ответ не разобрался ('+r.status+'): '
+        $('#bnstate').textContent='ответ не разобрался ('+r.status+'): '
           +text.slice(0,120); return;
       }}
-      if(!r.ok){{ $('bnstate').textContent=data.detail||('отказ '+r.status); return; }}
-      $('bnstate').textContent='';
+      if(!r.ok){{ $('#bnstate').textContent=data.detail||('отказ '+r.status); return; }}
+      $('#bnstate').textContent='';
       // Блоки рисует рендерер отчёта — тот же `blockCard`. Пустые ряды для
       // графиков передаются намеренно: истории у этого источника мы не берём,
       // а функция графика на пустом ряду говорит об этом сама.
@@ -118,10 +125,10 @@ def markup() -> str:
         catch(e){{ return '<div class="card"><h2>'+(b.title||'')+'</h2>'
           +'<div class="err">блок не нарисовался: '+e+'</div></div>'; }}
       }}).join('');
-      $('bnout').innerHTML=blocks+'<div class="card">'+(data.html||'')+'</div>';
-    }}catch(e){{ $('bnstate').textContent='не дошло до сервера: '+e; }}
+      $('#bnout').innerHTML=blocks+'<div class="card">'+(data.html||'')+'</div>';
+    }}catch(e){{ $('#bnstate').textContent='не дошло до сервера: '+e; }}
   }});
-}})();
+}});
 </script>
 """
 

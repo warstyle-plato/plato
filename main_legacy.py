@@ -69,7 +69,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.20.61"
+VERSION = "0.20.77"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -1482,6 +1482,30 @@ def _recognize_freeform_tep_text(text: str) -> dict[str, Any]:
         raise ValueError("Не удалось разобрать распознанные показатели") from exc
 
 
+# Зона нормирования соцобеспеченности Москвы. Во второй зоне нормативы выше:
+# ДОО 63 против 44 мест на тысячу, школа 124 против 90. Список районов был
+# литералом внутри разбора свободного ТЭП, и второй путь — пересчёт под
+# фактический ТЭП без выгрузки ГлавАПУ — завёл бы вторую копию: разойдясь,
+# они дали бы на один участок два норматива, и оба выглядели бы верными.
+MOSCOW_ZONE_TWO_DISTRICTS = frozenset({
+    "бекасово", "бирюлёво восточное", "бирюлёво западное", "внуково", "вороново",
+    "восточный", "выхино-жулебино", "западное дегунино", "коммунарка", "косино-ухтомский",
+    "краснопахорский", "крюково", "куркино", "матушкино", "митино", "молжаниновский",
+    "некрасовка", "новокосино", "савелки", "северное бутово", "северный", "силино",
+    "солнцево", "старое крюково", "троицк", "филимонковский", "щербинка", "южное бутово",
+})
+
+
+def district_zone_two(district: Any) -> bool:
+    """Вторая зона нормирования по названию района.
+
+    Район не назван — это первая зона по умолчанию, и вызывающий обязан сказать
+    об этом вслух: неизвестный район и район первой зоны дают разные нормативы,
+    а на экране выглядят одинаково.
+    """
+    return str(district or "").strip().lower().replace("ё", "ё") in MOSCOW_ZONE_TWO_DISTRICTS
+
+
 def build_freeform_tep(text: str, raw_values: dict[str, Any] | None = None) -> dict[str, Any]:
     raw = copy.deepcopy(raw_values) if raw_values is not None else _recognize_freeform_tep_text(text)
 
@@ -1582,13 +1606,7 @@ def build_freeform_tep(text: str, raw_values: dict[str, Any] | None = None) -> d
     district = str(raw.get("district") or "").strip()
     if district:
         provided.append(f"район — {district}")
-    zone_two = district.lower() in {
-        "бекасово", "бирюлёво восточное", "бирюлёво западное", "внуково", "вороново",
-        "восточный", "выхино-жулебино", "западное дегунино", "коммунарка", "косино-ухтомский",
-        "краснопахорский", "крюково", "куркино", "матушкино", "митино", "молжаниновский",
-        "некрасовка", "новокосино", "савелки", "северное бутово", "северный", "силино",
-        "солнцево", "старое крюково", "троицк", "филимонковский", "щербинка", "южное бутово",
-    }
+    zone_two = district_zone_two(district)
     doo_norm = (63 if zone_two else 44) * population / 1000
     school_norm = (124 if zone_two else 90) * population / 1000
     clinic_norm = 19 * population / 1000
@@ -2186,7 +2204,12 @@ def monitor_crew(project: str, date: str = "", session: str = "",
             report = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             report = None
-    return crew.crew_day(rows, by_code, report, day or view.get("cut"))
+    # Кто чей: в реестрах РСС у статьи стоит генподрядчик, а на площадку выходят
+    # его субподрядчики. Связь лежит в реестре гарантийных удержаний — его ведёт
+    # генподрядчик, и в нём его договоры.
+    register = developaid_monitor.latest_retention(project)
+    subs = crew.subcontractors(register if (register or {}).get("rows") else None)
+    return crew.crew_day(rows, by_code, report, day or view.get("cut"), subs)
 
 
 @app.get("/monitor/daily/summary", include_in_schema=False)
@@ -2195,9 +2218,40 @@ def monitor_daily_summary(project: str, upto: str = "",
     """Люди на площадке по дням и последний отчёт словами."""
     _require_web_access(session, key, "Монитор проекта")
     try:
-        return developaid_monitor_daily.daily_summary(project, upto or None)
+        return developaid_monitor_daily.daily_summary(
+            project, upto or None, known=_monitor_known_parties(project))
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+
+
+def _monitor_known_parties(project: str) -> list[str]:
+    """Имена подрядчиков, известные проекту: из реестров РСС и реестра ГУ.
+
+    Нужны разбору ежедневного отчёта: подрядчик, названный в строке работ, но
+    не выводивший людей в этот день, в численности отчёта не значится — и без
+    этого списка его строка достаётся заголовку выше.
+    """
+    import developaid_monitor_crew as crew
+
+    names: list[str] = []
+    rss = developaid_monitor._latest(project, "estimate", ".xlsx", "")
+    if rss is not None:
+        try:
+            for register in (developaid_actuals.read_completed_works(rss),
+                             developaid_actuals.read_payments(rss)):
+                for row in register.get("rows") or []:
+                    name = str(row.get("contractor") or "").strip()
+                    if name and name not in names:
+                        names.append(name)
+        except (KeyError, ValueError):
+            pass
+    register = developaid_monitor.latest_retention(project)
+    for row in ((register or {}).get("rows") or []):
+        for field in ("counterparty", "customer"):
+            name = str(row.get(field) or "").strip()
+            if name and name not in names:
+                names.append(name)
+    return names
 
 
 @app.post("/monitor/work-fact/stage", include_in_schema=False)
@@ -5173,6 +5227,203 @@ def tep_derived(req: TepDerivedRequest) -> dict[str, Any]:
         k1=req.k1, k2=req.k2, zone_two=req.zone_two,
         upks_rub=req.upks_rub, sqm_per_job=req.sqm_per_job,
         parking_norm_regime=req.parking_norm_regime)
+
+
+class TepRescaleRequest(BaseModel):
+    """Пересчёт соцнагрузки пропорцией, когда норматив считать не от чего.
+
+    Места зависят от населения, население — от площади квартир; ставка за место
+    у нас задана экспертно и от метража не зависит. Значит при правке ТЭП
+    соцнагрузка масштабируется, а не считается заново, — и это верно в любом
+    регионе, потому что норматив здесь не применяется вовсе: масштабируется то,
+    что УЖЕ посчитано городом или введено человеком.
+    """
+    apartment_area_before_sqm: float = 0.0
+    apartment_area_after_sqm: float = 0.0
+    nonresidential_before_sqm: float = 0.0
+    nonresidential_after_sqm: float = 0.0
+    kindergarten_places: float = 0.0
+    school_places: float = 0.0
+    clinic_capacity: float = 0.0
+    social_compensation_mln: float = 0.0
+    underground_manual_spaces: float = 0.0
+    basis: str = ""
+
+
+@app.post("/tep/rescale-social")
+def tep_rescale_social(req: TepRescaleRequest) -> dict[str, Any]:
+    """Соцнагрузка и машино-места под новый ТЭП — пропорцией от прежних.
+
+    «Почему нельзя брать пропорцию? Количество мест зависит от количества
+    людей, а количество людей — от количества жилых площадей. Себестоимости
+    места у нас вбиты экспертно» (владелец, 30.08.2026). Верно: норматив линеен
+    по населению, а население линейно по площади квартир, и в Подмосковье это
+    работает так же, как в Москве, — потому что норматив здесь не применяется
+    вовсе.
+
+    Отсюда и граница ответа: пропорция масштабирует то, что УЖЕ стоит в модели.
+    Нечего масштабировать — это отказ, а не ноль: пустая соцнагрузка и
+    соцнагрузка, уменьшенная до нуля, значат разное.
+    """
+    before = max(0.0, float(req.apartment_area_before_sqm or 0.0))
+    after = max(0.0, float(req.apartment_area_after_sqm or 0.0))
+    if before <= 0:
+        raise HTTPException(
+            status_code=422,
+            detail=("Не от чего считать пропорцию: неизвестна площадь квартир, "
+                    "под которую посчитана нынешняя соцнагрузка."))
+    known = [value for value in (req.kindergarten_places, req.school_places,
+                                 req.clinic_capacity, req.social_compensation_mln,
+                                 req.underground_manual_spaces)
+             if float(value or 0.0) > 0]
+    if not known:
+        raise HTTPException(
+            status_code=422,
+            detail=("Масштабировать нечего: соцнагрузка и машино-места в модели "
+                    "не заданы. Пустая нагрузка и уменьшенная до нуля — разное."))
+    factor = after / before
+    # Места целые и всегда вверх: половина места не строится, а норматив
+    # округляется в большую сторону.
+    def places(value: Any) -> int:
+        return int(math.ceil(float(value or 0.0) * factor - 1e-9))
+
+    nonres_before = max(0.0, float(req.nonresidential_before_sqm or 0.0))
+    nonres_after = max(0.0, float(req.nonresidential_after_sqm or 0.0))
+    warnings: list[str] = []
+    if nonres_before > 0 and abs(nonres_after - nonres_before) > 1.0:
+        warnings.append(
+            "Нежилая площадь тоже изменилась, а приобъектные машино-места "
+            "считаются от неё своим коэффициентом района — их пропорция не "
+            "трогает.")
+    return {
+        "factor": round(factor, 6),
+        "places": {
+            "kindergarten": places(req.kindergarten_places),
+            "school": places(req.school_places),
+            "clinic": places(req.clinic_capacity),
+        },
+        # Компенсация — ставка за место × места: ставка задана экспертно и от
+        # метража не зависит, поэтому компенсация идёт тем же коэффициентом.
+        "compensation_mln": round(float(req.social_compensation_mln or 0.0) * factor, 3),
+        "underground_manual_spaces": places(req.underground_manual_spaces),
+        "basis": [
+            f"пропорция по населению: площадь квартир {_telegram_number(before, 0)} → "
+            f"{_telegram_number(after, 0)} м², коэффициент "
+            + f"{factor:.4f}".replace(".", ","),
+            "население — 33 м² квартир на человека, места — линейно от населения",
+            "компенсация — ставка за место задана экспертно и от метража не зависит",
+            ("прежние значения: " + (req.basis or "введены в модель")),
+        ],
+        "warnings": warnings,
+    }
+
+
+class TepBySiteRequest(BaseModel):
+    """Пересчёт под фактический ТЭП, когда выгрузки ГлавАПУ нет.
+
+    Район и признак Москвы приходят из разбора участка (`/cadastral/analyze`) —
+    своего справочника территорий здесь не заводится.
+    """
+    apartment_area_sqm: float = 0.0
+    residential_living_spp_sqm: float = 0.0
+    nonresidential_np_sqm: float = 0.0
+    district: str = ""
+    inside_moscow: bool = True
+    sqm_per_job: float = 36.0
+    parking_norm_regime: str = "2118_2026"
+
+
+@app.post("/tep/derived-by-site")
+def tep_derived_by_site(req: TepBySiteRequest) -> dict[str, Any]:
+    """Что следует из ТЭП, когда исходного расчёта ГлавАПУ нет.
+
+    Правка ТЭП не пересчитывала ничего без выгрузки: «пишется ошибка и
+    упоминание про отсутствие расчёта ГлавАПУ» (владелец, 29.08.2026). При этом
+    расчёт своими формулами был написан и не звался никем.
+
+    Считается то, для чего у нас есть все основания, и НЕ считается то, для чего
+    их нет. Каждый ответ подписан своим основанием, каждый отказ — своей
+    причиной: молча выданный ноль неотличим от посчитанного нуля.
+
+    Чего здесь нет намеренно:
+    * **машино-места** — нужен К2 по району (приложение 3 к 945-ПП, 132 строки).
+      Своего справочника районов не заводим (решение владельца, 24.08.2026):
+      К1 и К2 только СНИЖАЮТ потребность, и единица «пока не знаем» отдала бы
+      максимум, выданный за норматив;
+    * **денежная соцкомпенсация** — нужен УПКС кадастрового квартала. Наш
+      справочник кварталов областной (50:*), по Москве в нём семнадцать строк из
+      тридцати тысяч — то есть его нет;
+    * **плата за ВРИ** — считается своей кнопкой (`/vri/manual`) по базовым
+      стоимостям типов использования.
+    """
+    if not req.inside_moscow:
+        raise HTTPException(
+            status_code=422,
+            detail=("Участок вне Москвы: московские нормативы соцобеспеченности "
+                    "к нему не применяются, а нормативы области у нас не сведены "
+                    "(открытые вопросы G7 и G8 в справочнике РНГП). Считать "
+                    "по московским значило бы выдать чужой норматив за областной."))
+    district = str(req.district or "").strip()
+    zone_two = district_zone_two(district)
+    # Арифметика одна на оба пути: пересчёт по выгрузке и этот зовут одну и ту
+    # же функцию. Второй счёт тех же метров однажды разошёлся бы с первым.
+    got = tep_derived_norms(
+        apartment_area_sqm=req.apartment_area_sqm,
+        residential_living_spp_sqm=req.residential_living_spp_sqm,
+        nonresidential_np_sqm=req.nonresidential_np_sqm,
+        k1=1.0, k2=1.0, zone_two=zone_two, upks_rub=0.0,
+        sqm_per_job=req.sqm_per_job,
+        parking_norm_regime=req.parking_norm_regime)
+    basis = [
+        "население — 33 м² квартир на человека",
+        f"нормативы мест — зона {'2' if zone_two else '1'}"
+        + (f" по району «{district}»" if district else " (район не назван)"),
+        str(got.get("parking_basis") or ""),
+        "гостевые машино-места — десятая часть постоянных",
+        "места приложения труда — нежилая наземная площадь на "
+        f"{_telegram_number(req.sqm_per_job, 0)} м² на место",
+    ]
+    warnings = list(got.get("missing") or [])
+    if not district:
+        warnings.append(
+            "Район участка не определён — нормативы взяты по первой зоне. "
+            "Во второй зоне ДОО 63 и школа 124 места на тысячу вместо 44 и 90.")
+    return {
+        "source": "формулы DevelopAid по нормативам Москвы, без выгрузки ГлавАПУ",
+        "district": district,
+        "zone_two": zone_two,
+        "population": got.get("population"),
+        "apartment_units": got.get("apartment_units"),
+        "places": {
+            "kindergarten": got.get("kindergarten_places"),
+            "school": got.get("school_places"),
+            "clinic": got.get("clinic_capacity"),
+        },
+        # Постоянные и гостевые места коэффициентов района не требуют:
+        # постоянные считаются от площади квартир (п. 1 приложения 5 к 945-ПП),
+        # гостевые — десятая часть постоянных. Приобъектные требуют К1 и К2, и
+        # они — единственное, чего здесь нет.
+        "parking": {
+            "permanent": got.get("parking_permanent"),
+            "guest": got.get("parking_guest"),
+            "underground": int(got.get("parking_permanent") or 0)
+            + int(got.get("parking_guest") or 0),
+        },
+        "jobs": got.get("jobs"),
+        "basis": [line for line in basis if line],
+        "warnings": warnings,
+        "refused": [
+            {"name": "Приобъектные машино-места",
+             "reason": "нужны К1 и К2 по району (приложение 3 к 945-ПП) — своего "
+                       "справочника районов не заводим: коэффициенты только снижают "
+                       "потребность, и единица отдала бы максимум за норматив"},
+            {"name": "Денежная соцкомпенсация",
+             "reason": "нужен УПКС кадастрового квартала: наш справочник кварталов "
+                       "областной, по Москве в нём почти ничего"},
+            {"name": "Плата за смену ВРИ",
+             "reason": "считается своей кнопкой «Плата за ВРИ — свой расчёт»"},
+        ],
+    }
 
 
 @app.post("/land/lookup")
@@ -12018,6 +12269,63 @@ def _purchase_feasibility(
     llcr: Any,
     debt_amount: Any = 0.0,
     ending_debt_mln: Any = 0.0,
+    default_date: Any = None,
+) -> dict[str, str]:
+    """Вердикт по вводным плюс оговорка о дефолте, если он в модели был.
+
+    Дефолт в дату раскрытия эскроу — факт о расчёте, а не ещё одна ветка
+    вердикта: он верен и при низком LLCR, и при высоком, и спорить с ними за
+    очередь ему незачем. Прежде он звучал ровно в одном случае — когда долг
+    оставался непогашенным на КОНЕЦ горизонта. Если остаточные продажи его
+    закрывали, вердикт молчал, и прибыль печаталась голым числом: банк при
+    этом ждал погашения в РВЭ и не получил его (владелец, 30.08.2026:
+    «значит нельзя писать и чистую прибыль»).
+    """
+    verdict = _purchase_feasibility_base(
+        purchase_price_mln, net_profit_mln, llcr, debt_amount, ending_debt_mln)
+    when = str(default_date or "").strip()
+    # У ветки «Дефолтный» оговорка уже своя, и повторять её нечем.
+    if not when or verdict.get("status") in ("default", "not_available"):
+        return verdict
+    verdict = dict(verdict)
+    verdict["conditional"] = True
+    verdict["default_date"] = when
+    verdict["text"] = verdict["text"].rstrip() + (
+        f" В модели есть дефолт: {_month_in_words(when)} раскрытого эскроу не "
+        "хватило на погашение ПФ. Долг закрывается позже, продажами следующих "
+        "периодов, — но только если банк на это согласится: пени и досрочное "
+        "требование модель не считает. Значит показанная чистая прибыль — при "
+        "этом допущении, а не результат.")
+    return verdict
+
+
+def _month_in_words(iso: Any) -> str:
+    """«2030-01-01» → «в январе 2030». Пустое — «в дату раскрытия»."""
+    text = str(iso or "").strip()
+    if len(text) < 7:
+        return "в дату раскрытия эскроу"
+    try:
+        year, month = int(text[:4]), int(text[5:7])
+    except ValueError:
+        return "в дату раскрытия эскроу"
+    if not 1 <= month <= 12:
+        return "в дату раскрытия эскроу"
+    return f"в {_MONTHS_IN[month - 1]} {year}"
+
+
+# Предложный падеж списком, а не заменой окончаний: правило «я→е» однажды
+# даст «в феврале» из чего угодно. Тот же список, той же формы, что на
+# странице (RU_MONTHS_IN) — но объявить его один раз на два языка нечем.
+_MONTHS_IN = ("январе", "феврале", "марте", "апреле", "мае", "июне", "июле",
+              "августе", "сентябре", "октябре", "ноябре", "декабре")
+
+
+def _purchase_feasibility_base(
+    purchase_price_mln: Any,
+    net_profit_mln: Any,
+    llcr: Any,
+    debt_amount: Any = 0.0,
+    ending_debt_mln: Any = 0.0,
 ) -> dict[str, str]:
     """Return a short preliminary purchase-feasibility conclusion.
 
@@ -12637,7 +12945,13 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     # дефолтный, а не прибыльный (решение владельца, 27.08.2026), и строка
     # прибыли обязана говорить это сама, а не полагаться на вывод ниже.
     _carried_out=float(financing.get('debt_carried_out') or 0)
+    # Три разных исхода, и оговорка у каждого своя. Средний прежде молчал:
+    # долг не погашен в РВЭ, но остаточные продажи закрыли его к концу
+    # горизонта — и прибыль печаталась голым числом, хотя держится она на
+    # согласии банка, которого в модели не спрашивали.
     _default_note=(" — бумажная: долг не погашен" if float(financing.get('ending_pf') or 0)>500_000
+                   else " — условная: в модели дефолт, долг закрыт продажами "
+                        "следующих периодов" if str(financing.get('default_date') or '').strip()
                    else " — долг очереди принят следующей" if _carried_out>500_000 else "")
     kpis=[
         *_pdf_entry_cost_rows(result, expense_structure),
@@ -12745,6 +13059,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             float(financing.get("pf_uncovered_peak") or 0),
         ),
         float(financing.get("ending_pf") or 0) / 1_000_000,
+        financing.get("default_date"),
     )
     story.append(KeepTogether([
         P("Оценка целесообразности покупки", h2),
@@ -12810,18 +13125,24 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             for i in comparison)
         if _has_debt or _carry:
             story.append(P("Непогашенный долг и перенос между очередями",h2))
-            debt_rows=[["Очередь","Принято от предыдущей","Непогашено на конец","Передано следующей"]]
+            # Порядок колонок — рассказ: сколько пришло, сколько ушло, что
+            # осталось. «Непогашено» посередине читалось как противоречие
+            # соседней колонке с тем же числом (владелец, 30.08.2026).
+            _carried_any = any(float(i.get("debt_carried_out") or 0) > 500_000
+                               for i in comparison)
+            debt_rows=[["Очередь","Принято от предыдущей","Передано следующей",
+                        "Осталось на очереди" if _carried_any else "Непогашено на конец"]]
             for item in comparison:
                 debt_rows.append([
                     str(item.get("name") or "—"),
                     _pdf_money(item.get("carried_debt_in")),
-                    _pdf_money(item.get("ending_pf")),
                     _pdf_money(item.get("debt_carried_out")),
+                    _pdf_money(item.get("ending_pf")),
                 ])
             debt_rows.append([
                 "Итого","—",
-                _pdf_money(sum(float(i.get("ending_pf") or 0) for i in comparison)),
                 _pdf_money(sum(float(i.get("debt_carried_out") or 0) for i in comparison)),
+                _pdf_money(sum(float(i.get("ending_pf") or 0) for i in comparison)),
             ])
             story.append(table(debt_rows,[30*mm,42*mm,42*mm,42*mm],font_size=7.0))
             if _carry.get("note"):
@@ -14925,6 +15246,10 @@ def _v4_apply_management_profile(xml: str, missing: list[str]) -> str:
 # льготы, а не в свою).
 _V4_CARRY_ACCEPTED_ROW = 64          # ПФ — принятый долг предыдущей очереди
 _V4_CARRY_PASSED_ROW = 65            # ПФ — долг передан следующей очереди
+# Сколько не покрыл раскрытый эскроу. Отдельная строка, а не «переданное»:
+# линия закрывается при нехватке ВСЕГДА, перенесли долг или объявили дефолт.
+# Строка 29 листов CF в шаблоне пуста — ряд встаёт, не сдвигая ссылок.
+_V4_RVE_UNPAID_ROW = 29
 _V4_CARRY_FLAG_CELL = "B92"          # признак на «Вводных»
 _V4_CF_FIRST_COL = 4                 # D
 _V4_CF_LAST_COL = 123                # DS
@@ -14954,11 +15279,11 @@ def _v4_write_carry_flag(xml: str, enabled: bool, missing: list[str]) -> str:
     """Признак переноса долга на «Вводных» — своей строкой, как остальные Да/Нет."""
     row = int(_V4_CARRY_FLAG_CELL[1:])
     body = (
-        f'<x:c r="A{row}" t="str"><x:v>Непогашенный долг очереди переходит в ПФ '
-        f'следующей</x:v></x:c>'
+        f'<x:c r="A{row}" t="str"><x:v>Перенос долга между очередями применён '
+        f'(решает гейт по LLCR)</x:v></x:c>'
         f'<x:c r="B{row}" s="12" t="str"><x:v>{"Да" if enabled else "Нет"}</x:v></x:c>'
         f'<x:c r="C{row}" t="str"><x:v>Да / Нет</x:v></x:c>'
-        f'<x:c r="D{row}" t="str"><x:v>carry_debt_forward</x:v></x:c>')
+        f'<x:c r="D{row}" t="str"><x:v>carry_debt_applied</x:v></x:c>')
     updated, done = _v4_insert_row(xml, row, body, row + 1)
     if not done:
         missing.append(f"признак переноса долга: строка {row} «Вводных» занята")
@@ -15011,7 +15336,12 @@ def _v4_apply_debt_carry(xml: str, phase: int, queues: int, missing: list[str]) 
 
     accepted: dict[str, str] = {}
     passed: dict[str, str] = {}
+    unpaid: dict[str, str] = {}
     for column in columns:
+        # Нехватка в РВЭ: считается всегда, до всякого решения о переносе.
+        unpaid[column] = (
+            f"IF(AND($B$5=1,YEAR({column}$3)=YEAR($B$8),MONTH({column}$3)=MONTH($B$8)),"
+            f"MAX(0,{column}38+{column}45+{column}{_V4_CARRY_ACCEPTED_ROW}-{column}46),0)")
         if phase <= 1:
             accepted[column] = "0"
         else:
@@ -15026,11 +15356,10 @@ def _v4_apply_debt_carry(xml: str, phase: int, queues: int, missing: list[str]) 
             passed[column] = "0"
         else:
             passed[column] = (
-                f"IF(AND({flag},$B$5=1,{next_enabled},"
-                f"YEAR({column}$3)=YEAR($B$8),MONTH({column}$3)=MONTH($B$8)),"
-                f"MAX(0,{column}38+{column}45+{column}{_V4_CARRY_ACCEPTED_ROW}"
-                f"-{column}46),0)")
+                f"IF(AND({flag},{next_enabled}),{column}{_V4_RVE_UNPAID_ROW},0)")
 
+    unpaid_xml = _v4_carry_row_xml(
+        _V4_RVE_UNPAID_ROW, "ПФ — не покрыто раскрытым эскроу", unpaid)
     rows_xml = (_v4_carry_row_xml(_V4_CARRY_ACCEPTED_ROW,
                                   "ПФ — принятый долг предыдущей очереди", accepted)
                 + _v4_carry_row_xml(_V4_CARRY_PASSED_ROW,
@@ -15044,6 +15373,26 @@ def _v4_apply_debt_carry(xml: str, phase: int, queues: int, missing: list[str]) 
         return xml
     at = xml.index(marker)
     xml = xml[:at] + rows_xml + xml[at:]
+    # Строка 29 в шаблоне существует, но пуста: в XML есть сам элемент <x:row>
+    # без ячеек. Заполняем его, а не вставляем второй с тем же номером —
+    # Excel вправе счесть такой лист повреждённым. Непустую строку не трогаем:
+    # значит шаблон изменился, и молча писать поверх нельзя.
+    existing = re.search(
+        r'<x:row r="%d"[^>]*>(.*?)</x:row>' % _V4_RVE_UNPAID_ROW, xml, re.S)
+    if existing:
+        # «Занята» — это есть значение или формула, а не есть ячейки: пустая
+        # строка шаблона состоит из самозакрытых <x:c r="A29" /> со стилями.
+        if "<x:v>" in existing.group(1) or "<x:f>" in existing.group(1):
+            missing.append(f"{sheet}: строка {_V4_RVE_UNPAID_ROW} занята")
+            return xml
+        xml = xml[:existing.start()] + unpaid_xml + xml[existing.end():]
+    else:
+        unpaid_marker = f'<x:row r="{_V4_RVE_UNPAID_ROW + 1}"'
+        if unpaid_marker not in xml:
+            missing.append(f"{sheet}: не найдена строка {_V4_RVE_UNPAID_ROW + 1}")
+            return xml
+        at = xml.index(unpaid_marker)
+        xml = xml[:at] + unpaid_xml + xml[at:]
 
     # Правки формул. Каждая — точной строкой, а не по всему листу: `L38+L45`
     # встречается и там, где принятый долг не при чём.
@@ -15087,10 +15436,26 @@ def _v4_apply_debt_carry(xml: str, phase: int, queues: int, missing: list[str]) 
         # модели переносить нечему — формула остаётся прежней.
         if index == 0:
             continue
+        # Признак «линия уже закрыта» — накопленная нехватка по ПРЕДЫДУЩИЕ
+        # месяцы: итог строки суммирует и этот месяц, а он читает строки 44–46,
+        # и вышла бы круговая ссылка.
+        # Закрывается линия по факту ПЕРЕНОСА (строка 65), а не по факту
+        # нехватки: дефолт модель называет, но на нём не обрывается —
+        # реструктуризацию считаем прежним допущением и говорим о нём вслух.
         seen = f"SUM($D${b}:{columns[index - 1]}{b})"
         edits[44].append((f"<x:f>IF({column}$3&gt;=$B$7,",
                           f"<x:f>IF(AND({column}$3&gt;=$B$7,"
                           f"OR({seen}&lt;=0,{column}$3&lt;=$B$8)),"))
+        # Закрытая линия не собирает: остаточные продажи остаются застройщику.
+        edits[46].append((f"<x:f>MIN({column}38+{column}45+{column}{a},",
+                          f"<x:f>IF(AND({seen}&gt;0,{column}$3&gt;$B$8),0,"
+                          f"MIN({column}38+{column}45+{column}{a},"))
+        edits[46].append((f"IF({column}$3&gt;$B$8,{column}12,0)))</x:f>",
+                          f"IF({column}$3&gt;$B$8,{column}12,0))))</x:f>"))
+        # И не начисляет: проценты по договорной ставке на закрытом НКЛ — та же
+        # фикция, из-за которой остаток «гасился» продажами.
+        edits[42].append((f"IF(AND(({column}38+{column}45+{column}{a})&gt;0,",
+                          f"IF(AND({seen}&lt;=0,({column}38+{column}45+{column}{a})&gt;0,"))
     for row in sorted(edits):
         pattern = re.compile(r'(<x:row r="%d">)(.*?)(</x:row>)' % row, re.S)
         found = pattern.search(xml)
@@ -15109,6 +15474,49 @@ def _v4_apply_debt_carry(xml: str, phase: int, queues: int, missing: list[str]) 
 
 
 _V4_CARRY_PARITY_ROW = 85
+
+
+_V4_REPORT_DEFAULT_ROW = 21          # ОТЧЕТ: строка под «Статусом модели»
+
+
+def _v4_add_report_default_row(xml: str, missing: list[str]) -> str:
+    """Строка ОТЧЁТа: сколько не погашено в РВЭ и не передано дальше.
+
+    Строка 22 у книги уже есть — «Непогашенный долг на конец проекта (дефолт,
+    если > 0)». У неё тот же изъян, который на экране чинился отдельно: она
+    смотрит на КОНЕЦ горизонта. Банк ждёт погашения в дату раскрытия эскроу, и
+    если остаточные продажи закрывают долг годом позже, строка 22 показывает
+    ноль — книга о дефолте молчит (владелец, 30.08.2026: «в экселе мы где-то
+    увидим что проект дефолт»).
+
+    Нехватку в РВЭ книга считает по очередям (строка 29 листов CF), но одной
+    суммой её показывать нельзя: та же величина возникает и при законном
+    переносе долга следующей очереди — банк его принял, дефолта нет. Поэтому
+    из суммы вычитается переданное (строка 65), и остаётся ровно то, что никто
+    не принял.
+
+    Строка 21 в шаблоне пуста в колонках A–C (справа, в F–H, живёт своя
+    панель темпов продаж — её не трогаем). Значит ряд встаёт, не сдвигая ни
+    одной ссылки.
+    """
+    row = _V4_REPORT_DEFAULT_ROW
+    unpaid = "+".join(f"'CF_{phase}'!$B${_V4_RVE_UNPAID_ROW}" for phase in range(1, 5))
+    passed = "+".join(f"'CF_{phase}'!$B${_V4_CARRY_PASSED_ROW}" for phase in range(1, 5))
+    for coord, kwargs in (
+            (f"A{row}", {"text": "Не погашено в дату раскрытия эскроу и не передано "
+                                 "следующей очереди (дефолт по линии, если > 0)"}),
+            (f"B{row}", {"formula": f"MAX(0,({unpaid})-({passed}))"})):
+        # Занятая ячейка значит, что шаблон изменился: писать поверх молча
+        # нельзя — так теряется то, что там стояло.
+        existing = re.search(
+            r'<x:c r="%s"[^>]*?(?:/>|>(.*?)</x:c>)' % re.escape(coord), xml, re.S)
+        if existing and (existing.group(1) or ""):
+            missing.append(f"ОТЧЁТ: ячейка {coord} занята")
+            continue
+        xml, done = _v4_set_cell(xml, coord, **kwargs)
+        if not done:
+            missing.append(f"ОТЧЁТ: ячейка {coord} не найдена")
+    return xml
 
 
 def _v4_add_carry_parity_row(xml: str, target_mln: float, missing: list[str]) -> str:
@@ -15389,6 +15797,13 @@ def build_project_workbook(
             # Сколько движок переносит между очередями — контрольное число для
             # своей строки ПРОВЕРОК. Итоги проекта перенос почти не двигает: он
             # меняет, КТО платит, поэтому прежние строки паритета его не ловят.
+            # Применён ли перенос — решает движок гейтом по общему LLCR, и
+            # книга этого LLCR не знает. Полагаясь на одно намерение
+            # пользователя, она перенесла бы долг там, где банк отказал, —
+            # и показала бы очередь рассчитавшейся, пока отчёт зовёт её
+            # дефолтной.
+            finance_hints["carry_applied"] = bool(
+                (_hint_bundle.get("debt_carry") or {}).get("applied"))
             finance_hints["carried_debt_mln"] = sum(
                 float((p_item.get("result") or {}).get("finance", {}).get(
                     "debt_carried_out") or 0.0)
@@ -15460,9 +15875,7 @@ def build_project_workbook(
     # но живёт в phasing, а не во вводных проекта: это условие сделки с банком,
     # а не свойство площадки.
     xml = _v4_write_carry_flag(
-        xml,
-        bool((phasing or {}).get("carry_debt_forward")) and bool((phasing or {}).get("enabled")),
-        missing)
+        xml, bool((finance_hints or {}).get("carry_applied")), missing)
 
     # Ставка, ушедшая от базы класса, помечается рядом со значением: молча
     # книга и отчёт «одного класса» разойдутся, и оба будут выглядеть верно.
@@ -15706,6 +16119,7 @@ def build_project_workbook(
     report_sheet_path = _v4_sheet_path(source, "ОТЧЕТ")
     tep_sheet_path = _v4_sheet_path(source, "ТЭП")
     report_xml = source.read(report_sheet_path).decode("utf-8")
+    report_xml = _v4_add_report_default_row(report_xml, missing)
     tep_xml = source.read(tep_sheet_path).decode("utf-8")
 
     # Соцстройка — готовыми числами в строку 31 блока каждой очереди CAPEX:
@@ -19059,6 +19473,7 @@ def telegram_result(req: TelegramResultRequest,
             float(summary.get("pf_uncovered_peak_mln") or 0),
         ),
         summary.get("ending_pf_mln"),
+        summary.get("default_date"),
     )
     # Продукт с ГНС и без продаваемой площади делает вердикт бессмысленным:
     # расходы полные, выручки нет, и «нецелесообразна» относится к дырке
@@ -20973,6 +21388,12 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
         # застройщика.
         debt_leaves_at_rve = bool(x.get("_phase_debt_leaves_at_rve"))
         debt_left_at_rve = 0.0
+        # Линия закрыта: после РВЭ, если раскрытого эскроу не хватило. Не
+        # выбирает, не начисляет и не собирает — что бы дальше ни случилось с
+        # долгом, переоформили его или объявили дефолт.
+        line_closed = False
+        rve_unpaid = 0.0
+        defaulted_at: date | None = None
         pf_reservation_fee = (pf_limit or 0.0) * n(x, "reservation_fee_pct") / 100 if pf_limit else 0.0
         transferred_bridge_interest = 0.0
 
@@ -21084,7 +21505,7 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
                 # выбирать по 57 млн в месяц и тут же гасить их продажами, с
                 # процентами по полной базовой ставке: та же фикция закрытой
                 # линии, только мельче.
-                if not (debt_leaves_at_rve and month > rve):
+                if not line_closed:
                     pf_draw += max(project_costs, 0.0)
                 if cap is not None:
                     # Потолок считается от остатка на начало месяца: погашения
@@ -21121,7 +21542,7 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
                     step_months[special_rate] = step_months.get(special_rate, 0) + 1
                 pf_rate = pf_base_rate * (1 - weight) + special_rate * weight
 
-                if pf_balance > 0:
+                if pf_balance > 0 and not line_closed:
                     pf_interest = pf_balance * pf_rate / 12
                     pf_cap = pf_interest_payable * pf_rate / 12
                     pf_interest_payable += pf_interest + pf_cap
@@ -21152,18 +21573,39 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
                 elif month > rve:
                     available_for_repayment = sales
 
-                if available_for_repayment > 0 and pf_balance > 0:
+                if available_for_repayment > 0 and pf_balance > 0 and not line_closed:
                     pf_repayment = min(available_for_repayment, pf_balance)
                     pf_balance -= pf_repayment
                     pf_repayment_total += pf_repayment
 
-                # Раскрытого эскроу не хватило — остаток уходит на линию
-                # следующей очереди этим же месяцем. Дальше он здесь не живёт:
-                # ни процентов, ни погашения остаточными продажами. Деньги от
-                # продаж после РВЭ остаются застройщику (владелец, 29.08.2026).
-                if debt_leaves_at_rve and month == rve and pf_balance > 0:
-                    debt_left_at_rve = pf_balance
-                    pf_balance = 0.0
+                # Момент истины. Раскрытого эскроу не хватило — период
+                # доступности кончился, НКЛ закрывается, и дальше у долга ровно
+                # два исхода: банк переоформляет его на линию следующей очереди
+                # или фиксирует дефолт (владелец, 30.08.2026: «банк не будет
+                # ждать, пока продажи покроют остаток долга»). Третьего —
+                # остаток живёт на закрытой линии и год гасится остаточными
+                # продажами — в жизни не бывает, а модель показывала именно
+                # его. Деньги от продаж после этой даты остаются застройщику.
+                if month == rve and pf_balance > 0:
+                    rve_unpaid = pf_balance
+                    if debt_leaves_at_rve:
+                        # Долг переоформлен: линия этой очереди закрывается —
+                        # не выбирает, не начисляет и не собирает.
+                        line_closed = True
+                        debt_left_at_rve = pf_balance
+                        pf_balance = 0.0
+                    else:
+                        # Дефолт назван, но модель на нём не обрывается
+                        # (владелец, 30.08.2026): «не закрывай, лучше просто
+                        # показывай, что по факту модель — дефолт на такой-то
+                        # очереди и надо будет согласие банка на перенос долга
+                        # на следующую или реструктуризация». Вариантов у банка
+                        # много, и если эскроу не наполнился из-за продаж —
+                        # это форс-мажор, которого в НКЛ и не могло быть.
+                        # Условий реструктуризации мы не знаем, поэтому дальше
+                        # считаем прежним допущением — остаток обслуживается
+                        # продажами следующих периодов, — и называем его вслух.
+                        defaulted_at = month
 
                 # Current Excel pays accumulated interest at RVE and current interest thereafter.
                 if month >= rve and pf_interest_payable > 0:
@@ -21254,6 +21696,11 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
             # остаток без этой величины читается как «рассчиталась сама».
             "debt_left_at_rve": debt_left_at_rve,
             "debt_carried_out": debt_left_at_rve,
+            # Сколько не покрыл раскрытый эскроу и когда линия закрылась.
+            # Дефолт — это дата, а не только сумма на конец горизонта: банк
+            # фиксирует его в раскрытие, а не через год остаточных продаж.
+            "rve_unpaid": rve_unpaid,
+            "default_date": defaulted_at.isoformat() if defaulted_at else None,
             "pf_repayment_total": pf_repayment_total,
             "pf_reservation_fee": pf_reservation_fee,
             "pf_interest": pf_interest_total,
@@ -22216,6 +22663,11 @@ def calculate(req: CalcRequest) -> dict:
                 # выглядит взявшей больше, чем брала.
                 "carried_debt_in": fin.get("carried_debt_in", 0.0),
                 "debt_carried_out": fin.get("debt_carried_out", 0.0),
+                # Сколько не покрыл раскрытый эскроу и когда банк зафиксировал
+                # дефолт. У отчёта свой экземпляр финансирования, и ключ,
+                # добавленный только в `finance`, до поверхностей не доезжает.
+                "rve_unpaid": fin.get("rve_unpaid", 0.0),
+                "default_date": fin.get("default_date"),
                 # Пик тела и пик с капитализированными процентами — разные
                 # показатели: книга ведёт остаток сразу с капитализацией, и
                 # одинаковое слово «пик» читалось как расхождение моделей.
@@ -23038,6 +23490,15 @@ def _aggregate_finance(results: list[dict[str, Any]]) -> dict[str, Any]:
         "rve_escrow_release": sum(f.get("rve_escrow_release", 0.0) for f in fs),
         "rve_pf_shortfall": sum(f.get("rve_pf_shortfall", 0.0) for f in fs),
         "rve_pf_repayment": sum(f.get("rve_pf_repayment", 0.0) for f in fs),
+        # Дефолт хотя бы одной очереди — свойство всего свода: прибыль после
+        # него посчитана на допущении, что банк дал проекту продолжиться.
+        # Без этих двух ключей свод их не знал вовсе, и вердикт с PDF
+        # печатали прибыль голым числом там, где модель ушла в дефолт
+        # (владелец, 30.08.2026: «значит нельзя писать и чистую прибыль»).
+        "rve_unpaid": sum(f.get("rve_unpaid", 0.0) for f in fs),
+        "default_date": min(
+            (str(f.get("default_date")) for f in fs if f.get("default_date")),
+            default=None),
     }
 
 
@@ -23549,6 +24010,8 @@ def _consolidate_phase_results(
                 "interest_and_fees": finance["financing_cost"],
                 "ending_pf": finance.get("ending_pf", 0.0),
                 "carried_debt_in": finance.get("carried_debt_in", 0.0),
+                "rve_unpaid": finance.get("rve_unpaid", 0.0),
+                "default_date": finance.get("default_date"),
                 "bridge_peak_capitalized": finance["peak_bridge"]
                 + finance.get("transferred_bridge_interest", 0.0),
                 "peak_total_debt": finance["peak_total_debt"],
@@ -34607,6 +35070,10 @@ async function sendTelegramResult(){
    pf_uncovered_peak_mln:Number(f.pf_uncovered_peak||0)/1e6,
    rve_pf_shortfall_mln:Number(f.rve_pf_shortfall||0)/1e6,
    ending_pf_mln:Number(f.ending_pf||0)/1e6,
+   // Дефолт в дату раскрытия эскроу карточка бота не знала вовсе, и вердикт
+   // в чате печатал прибыль голым числом там, где остаточные продажи долг
+   // закрыли, а банк своего погашения в РВЭ не получил.
+   default_date:f.default_date||null,
     report_payload:currentPdfReportPayload(cads)
  };
  try{
@@ -35365,7 +35832,7 @@ function renderInputs(){
       el.disabled=true;
       el.title='Москва: платежи ежеквартально — установлено нормативно';
      }
-     el.onchange=()=>{inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='social_mode')inputs._social_mode_user_set=true;if(id==='vri_region'){renderInputs();return calculate()}if(['apartment_price_th','commercial_price_th','parking_price_th','main_above_th_per_sqm','main_under_th_per_sqm'].includes(id)){inputs.project_class='custom';syncProjectClassSelector()}if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(TEP_DERIVED_INPUTS.includes(id)){const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
+     el.onchange=()=>{inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='social_mode')inputs._social_mode_user_set=true;if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){renderInputs();return calculate()}if(['apartment_price_th','commercial_price_th','parking_price_th','main_above_th_per_sqm','main_under_th_per_sqm'].includes(id)){inputs.project_class='custom';syncProjectClassSelector()}if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(TEP_DERIVED_INPUTS.includes(id)){const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
      wrap.appendChild(el);grid.appendChild(wrap);
    });det.appendChild(grid);(ownTab?vriBox:box).appendChild(det);
  });
@@ -36196,15 +36663,144 @@ async function recalcMoFromApartments(apartments,area){
  }finally{moAutoBusy=false}
 }
 
+// Пересчёт под фактический ТЭП, когда выгрузки ГлавАПУ нет.
+//
+// Считается то, для чего есть все основания, и НЕ считается то, для чего их
+// нет: каждое число подписано основанием, каждый пропуск — причиной. Считает
+// сервер, экран только показывает и подставляет подтверждённое — арифметики
+// здесь нет ни одной.
+// Соцнагрузка, которую можно пересчитать пропорцией, и метры, под которые она
+// посчитана. Отметка ставится там, где числа появляются: при импорте, после
+// пересчёта и при ручной правке. Без неё пропорцию считать не от чего — а
+// угадывать площадь по числу мест значило бы обратить норматив, которого в
+// Подмосковье нет.
+const SOCIAL_SCALED_KEYS=['kindergarten_places','school_places','clinic_capacity',
+ 'social_compensation_mln','underground_manual_spaces'];
+function stampSocialBasis(source){
+ inputs._social_basis={
+  apartment_area_sqm:Number((tep.apartments&&tep.apartments.saleable)||0),
+  nonresidential_sqm:nonresidentialAboveSqm(),
+  source:String(source||'')};
+}
+function nonresidentialAboveSqm(){
+ return Number((tep.ground_commercial&&tep.ground_commercial.total_area)||0)
+  +Number((tep.offices&&tep.offices.total_area)||0)
+  +Number((tep.standalone_retail&&tep.standalone_retail.total_area)||0);
+}
+
+// Пропорция: места зависят от населения, население — от площади квартир,
+// ставка за место задана экспертно. Норматив здесь не применяется вовсе,
+// поэтому это работает и в Подмосковье, где московских нормативов нет
+// (владелец, 30.08.2026).
+async function rescaleSocialFromTep(options){
+ const silent=!!(options&&options.silent);
+ const note=document.getElementById('tepDerivedNote');
+ const say=(html,ok)=>{if(!note)return;note.style.display='';note.innerHTML=ok?('<span class="import-ok">'+html+'</span>'):html};
+ const basis=inputs._social_basis||null;
+ const after=Number((tep.apartments&&tep.apartments.saleable)||0);
+ if(!basis||!Number(basis.apartment_area_sqm||0)||!after)return false;
+ if(Math.abs(after-Number(basis.apartment_area_sqm||0))<1)return false;
+ let d;
+ try{
+  const r=await fetch('/tep/rescale-social',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({apartment_area_before_sqm:Number(basis.apartment_area_sqm||0),
+    apartment_area_after_sqm:after,
+    nonresidential_before_sqm:Number(basis.nonresidential_sqm||0),
+    nonresidential_after_sqm:nonresidentialAboveSqm(),
+    kindergarten_places:Number(inputs.kindergarten_places||0),
+    school_places:Number(inputs.school_places||0),
+    clinic_capacity:Number(inputs.clinic_capacity||0),
+    social_compensation_mln:Number(inputs.social_compensation_mln||0),
+    underground_manual_spaces:Number(inputs.underground_manual_spaces||0),
+    basis:String(basis.source||'')})});
+  d=await r.json();
+  if(!r.ok)return false;
+ }catch(e){return false}
+ const lines=[
+  'ДОО '+num(inputs.kindergarten_places)+' → '+num(d.places.kindergarten)
+   +' · школа '+num(inputs.school_places)+' → '+num(d.places.school)
+   +' · поликлиника '+num(inputs.clinic_capacity)+' → '+num(d.places.clinic),
+  'Соцкомпенсация, млн ₽: '+num(inputs.social_compensation_mln)+' → '+num(d.compensation_mln),
+  'Машино-места подземные: '+num(inputs.underground_manual_spaces)+' → '+num(d.underground_manual_spaces)];
+ (d.warnings||[]).forEach(w=>lines.push('⚠ '+w));
+ if(!silent&&!confirm('Пересчёт соцнагрузки пропорцией под новый ТЭП:\n\n'
+   +lines.join('\n')+'\n\nПодставить в модель?'))
+  {say(lines.map(escapeHtml).join('<br>'),true);return true}
+ inputs.kindergarten_places=d.places.kindergarten;
+ inputs.school_places=d.places.school;
+ inputs.clinic_capacity=d.places.clinic;
+ if(Number(inputs.social_compensation_mln||0)>0)inputs.social_compensation_mln=d.compensation_mln;
+ if(Number(inputs.underground_manual_spaces||0)>0)inputs.underground_manual_spaces=d.underground_manual_spaces;
+ stampSocialBasis(basis.source||'пропорция');
+ syncTep(false);renderInputs();renderTep();
+ say((silent?'Пересчитано пропорцией: ':'Подставлено: ')+lines.map(escapeHtml).join('<br>')
+   +'<br><b>Чем посчитано:</b> '+(d.basis||[]).map(escapeHtml).join('; ')+'.',true);
+ calculate();
+ return true;
+}
+
+async function recalcFromTepByNorms(options){
+ const silent=!!(options&&options.silent);
+ const note=document.getElementById('tepDerivedNote');
+ const say=(html,ok)=>{if(!note)return;note.style.display='';note.innerHTML=ok?('<span class="import-ok">'+html+'</span>'):html};
+ const territory=((cadastralAnalysis||{}).territory)||{};
+ const apartments=Number((tep.apartments&&tep.apartments.saleable)||0);
+ if(!apartments){
+  if(!silent)say('Пересчитывать не от чего: в ТЭП нет продаваемой площади квартир.',false);
+  return;
+ }
+ const nonres=Number((tep.ground_commercial&&tep.ground_commercial.total_area)||0)
+   +Number((tep.offices&&tep.offices.total_area)||0)
+   +Number((tep.standalone_retail&&tep.standalone_retail.total_area)||0);
+ let d;
+ try{
+  const r=await fetch('/tep/derived-by-site',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({apartment_area_sqm:apartments,
+    residential_living_spp_sqm:Number((tep.apartments&&tep.apartments.gns)||0),
+    nonresidential_np_sqm:nonres,
+    district:String(territory.district||''),
+    inside_moscow:territory.inside_moscow!==false})});
+  d=await r.json();
+  if(!r.ok)throw new Error(d.detail||'Пересчёт не выполнен');
+ }catch(e){say('Пересчёт по нормативам не выполнен: '+escapeHtml(String(e.message||e)),false);return}
+
+ const lines=[
+  'Население: '+num(d.population)+' чел. · квартир '+num(d.apartment_units),
+  'ДОО '+num(d.places.kindergarten)+' · школа '+num(d.places.school)
+   +' · поликлиника '+num(d.places.clinic)+' пос./смену',
+  'Машино-места подземные: '+num(d.parking.underground)
+   +' ('+num(d.parking.permanent)+' постоянных + '+num(d.parking.guest)+' гостевых)',
+  'Места приложения труда: '+num(d.jobs)];
+ (d.refused||[]).forEach(x=>lines.push('Не посчитано — '+x.name+': '+x.reason));
+ (d.warnings||[]).forEach(w=>lines.push('⚠ '+w));
+ if(!silent&&!confirm('Пересчёт по нормативам Москвы (выгрузки ГлавАПУ нет):\n\n'
+   +lines.join('\n')+'\n\nПодставить в модель?'))
+  {say(lines.map(escapeHtml).join('<br>'),true);return}
+ inputs.kindergarten_places=d.places.kindergarten;
+ inputs.school_places=d.places.school;
+ inputs.clinic_capacity=d.places.clinic;
+ inputs.underground_manual_spaces=d.parking.underground;
+ stampSocialBasis('нормативы Москвы');
+ syncTep(false);renderInputs();renderTep();
+ say((silent?'Пересчитано под новый ТЭП: ':'Подставлено: ')+lines.map(escapeHtml).join('<br>')
+   +'<br><b>Чем посчитано:</b> '+(d.basis||[]).map(escapeHtml).join('; ')+'. '
+   +'Это наш расчёт по нормативам, а не расчёт города: город считает штатным '
+   +'калькулятором, и его выгрузка сильнее.',true);
+ calculate();
+}
+
 async function recalcFromTep(options){
  const silent=!!(options&&options.silent);
  const note=document.getElementById('tepDerivedNote');
  const say=(html,ok)=>{if(!note)return;note.style.display='';note.innerHTML=ok?('<span class="import-ok">'+html+'</span>'):html};
  const baseline=((inputs._glavapu_import||{}).normalized)||null;
  if(!baseline||!Number(baseline.change_vri_mln||0)){
-  if(!silent)say('Нет исходного расчёта ГлавАПУ: пересчитывать не от чего. Загрузите участок '
-     +'или выгрузку калькулятора — ставки территории берутся из неё.',false);
-  return;
+  // Без выгрузки ГлавАПУ пересчёт не отказывается целиком. Сначала пропорция:
+  // если соцнагрузка в модели уже есть, места и компенсация масштабируются по
+  // населению — норматив тут не применяется вовсе, и это работает в любом
+  // регионе. Не от чего масштабировать — считаем по нормативам Москвы.
+  if(await rescaleSocialFromTep(options))return;
+  return recalcFromTepByNorms(options);
  }
  const apartments=Number((tep.apartments&&tep.apartments.saleable)||0);
  const livingSpp=Number((tep.apartments&&tep.apartments.gns)||0);
@@ -36263,6 +36859,7 @@ async function recalcFromTep(options){
  // для посетителей встроенной коммерции, под землю их не кладут: с ними гараж
  // выходил больше нормы, и лишние места ехали в себестоимость.
  inputs.underground_manual_spaces=d.parking.permanent+d.parking.guest;
+ stampSocialBasis('выгрузка ГлавАПУ');
  syncTep(false);renderInputs();renderTep();
  lines.push('Машино-места в ТЭП: было '+parkingWas+', стало '
    +Number((tep.underground_parking&&tep.underground_parking.units)||0));
@@ -36680,12 +37277,23 @@ function renderPhaseComparison(){
  const anyDebt=k=>c.some(x=>Number(x[k]||0)>0.5e6);
  const debtRows=[];
  if(anyDebt('ending_pf')||anyDebt('debt_carried_out')||anyDebt('carried_debt_in')){
+  // Порядок строк — это и есть рассказ: сколько пришло, сколько ушло, что
+  // осталось. Прежде «непогашенный долг 0» стоял МЕЖДУ «принято 11,73» и
+  // «передано 11,73» и читался как противоречие («как это долга нет, но он
+  // передан?» — владелец, 30.08.2026). Противоречия нет, но и объяснять его
+  // читателю не должно приходиться.
+  //
+  // И название: 11,73 млрд ПФ ведь НЕ погашены — они сменили должника.
+  // «Непогашенный долг на конец очереди» обещало ровно то, что стояло строкой
+  // выше с другим числом. Осталось — значит осталось здесь, после передачи.
   if(anyDebt('carried_debt_in'))
    debtRows.push(['Принято от предыдущей очереди',c.map(x=>money(x.carried_debt_in||0)),'—']);
-  debtRows.push(['Непогашенный долг ПФ на конец очереди',
-                 c.map(x=>money(x.ending_pf||0)),money(cons.finance.ending_pf||0)]);
   if(anyDebt('debt_carried_out'))
    debtRows.push(['Передано следующей очереди',c.map(x=>money(x.debt_carried_out||0)),'—']);
+  debtRows.push([anyDebt('debt_carried_out')
+                 ?'Осталось непогашенным на очереди'
+                 :'Непогашенный долг ПФ на конец очереди',
+                 c.map(x=>money(x.ending_pf||0)),money(cons.finance.ending_pf||0)]);
  }
  const rows=[
   ['Продаваемая площадь',c.map(x=>num(x.saleable_sqm)+' м²'),num(csSale)+' м²'],
@@ -36744,6 +37352,150 @@ function renderPhaseReportControls(){
  const b=[['all','Весь проект'],...phaseBundle.phases.map((p,i)=>[`phase${i+1}`,p.name]),['compare','Сравнение очередей']];
  phaseReportControls.innerHTML=b.map(([k,l])=>`<button class="btn ${reportView===k?'active':''}" onclick="selectReportView('${k}')">${l}</button>`).join('')
 }
+// Предложный падеж сразу, а не выведенный заменой окончаний: «в марте 2031»
+// читается человеком, и склонять его правилом «я→е, а→е» — способ однажды
+// получить «в мае» из «мая» и «в феврале» из чего угодно.
+const RU_MONTHS_IN=['январе','феврале','марте','апреле','мае','июне',
+                    'июле','августе','сентябре','октябре','ноябре','декабре'];
+function ruMonth(iso){
+ const m=/^(\d{4})-(\d{2})/.exec(String(iso||''));
+ if(!m)return '';
+ const index=Number(m[2])-1;
+ return index>=0&&index<12?`${RU_MONTHS_IN[index]} ${m[1]}`:'';
+}
+// Плашка о непогашенном ПФ. Прежде она складывала все очереди в одну кучу —
+// «в даты РВЭ очередей: долг перед раскрытием столько-то» — и из неё нельзя
+// было понять ни какая очередь не рассчиталась, ни куда ушёл её долг. А с
+// включённым переносом фраза «остаток гасится продажами после ввода» стала
+// прямо неверной: остаток уходит на линию следующей очереди, а продажи
+// остаются застройщику. Теперь плашка говорит по очередям и называет, что
+// куда и когда ушло.
+// Что случилось с ПФ каждой очереди — один разбор на все поверхности экрана.
+// Плашка о непогашенном долге и оговорка у чистой прибыли отвечают на один и
+// тот же вопрос «был ли дефолт», и две проверки на него однажды разойдутся:
+// обе будут выглядеть верными, а говорить разное про один расчёт.
+function pfQueueOutcomes(){
+ const phased=phaseBundle&&phaseBundle.mode==='phased'&&(phaseBundle.comparison||[]).length>1;
+ if(!phased)return [];
+ const rows=phaseBundle.comparison||[],phases=phaseBundle.phases||[];
+ const carry=phaseBundle.debt_carry||(phaseBundle.consolidated||{}).debt_carry||null;
+ const at={};((carry&&carry.transfers)||[]).forEach(t=>{at[t.from]=t});
+ const out=[];
+ rows.forEach((row,i)=>{
+  const fin=(((phases[i]||{}).result||{}).report||{}).financing||{};
+  const carried=Number(row.debt_carried_out||0);
+  const gap=Number(fin.rve_unpaid||0)||carried;
+  if(!(gap>500000))return;
+  const name=String(row.name||('О'+(i+1)));
+  if(carried>500000){
+   out.push({kind:'carried',name:name,gap:gap,when:ruMonth((at[i+1]||{}).at),
+             to:String((rows[i+1]||{}).name||('О'+(i+2))),index:i});
+  }else{
+   out.push({kind:'default',name:name,gap:gap,when:ruMonth(fin.default_date),
+             index:i,last:i===rows.length-1});
+  }
+ });
+ return out;
+}
+
+// Дефолт в модели — факт о расчёте, и он старше любой плитки: прибыль после
+// него посчитана на допущении, что банк дал проекту продолжиться. Прежде это
+// говорилось только когда долг оставался непогашенным на КОНЕЦ горизонта;
+// если остаточные продажи его закрывали, экран печатал прибыль голым числом
+// (владелец, 30.08.2026: «значит нельзя писать и чистую прибыль»).
+function modelDefaultInfo(r){
+ const phased=phaseBundle&&phaseBundle.mode==='phased'&&(phaseBundle.comparison||[]).length>1;
+ if(phased)return pfQueueOutcomes().find(o=>o.kind==='default')||null;
+ const f=(r&&r.report&&r.report.financing)||{};
+ const gap=Number(f.rve_unpaid||f.rve_pf_shortfall||0);
+ if(!(gap>500000))return null;
+ return {kind:'default',name:'',gap:gap,when:ruMonth(f.default_date),index:0,last:true};
+}
+
+function pfRveWarningHtml(r){
+ const phased=phaseBundle&&phaseBundle.mode==='phased'&&(phaseBundle.comparison||[]).length>1;
+ if(!phased){
+  const f=r.report.financing||{},gap=Number(f.rve_unpaid||f.rve_pf_shortfall||0);
+  if(!(gap>500000))return '';
+  const when=ruMonth(f.default_date);
+  return `<b>Дефолт${when?' в '+when:' в дату раскрытия'}: раскрытого эскроу не `
+   +`хватило на ${money(gap)}.</b> Дальше нужна реструктуризация — её условий `
+   +'модель не знает и считает по допущению, что остаток обслуживается продажами '
+   +'следующих периодов.';
+ }
+ const outcomes=pfQueueOutcomes();
+ const carry=phaseBundle.debt_carry||(phaseBundle.consolidated||{}).debt_carry||null;
+ const lines=outcomes.map(o=>o.kind==='carried'
+  ?`<b>${escapeHtml(o.name)}</b>: при раскрытии эскроу не погашено `
+   +`<b>${money(o.gap)}</b> — этот долг принял ПФ <b>${escapeHtml(o.to)}</b>`
+   +`${o.when?' в '+o.when:''}.`
+  // Банк не ждёт продаж: в дату раскрытия он либо переоформляет долг, либо
+  // фиксирует дефолт (владелец, 30.08.2026). Прежде здесь стояло «остаток
+  // гасится её собственными продажами после ввода» — состояние, которого в
+  // жизни не бывает.
+  :`<b>${escapeHtml(o.name)}</b>: раскрытого эскроу не хватило на `
+   +`<b>${money(o.gap)}</b> — по модели это `
+   +`<b>дефолт${o.when?' в '+o.when:' в дату раскрытия'}</b>.`);
+ const firstDefault=outcomes.find(o=>o.kind==='default')||null;
+ if(!lines.length)return '';
+ const ending=Number(((phaseBundle.consolidated||{}).finance||{}).ending_pf||0);
+ if(firstDefault){
+  // План показываем, но называем несостоявшимся (решение владельца,
+  // 30.08.2026): после дефолта банк финансирование не продолжает, и числа
+  // следующих очередей — замысел, а не результат.
+  if(carry&&carry.applied===false&&carry.note)lines.push(escapeHtml(String(carry.note)));
+  else if(!carry&&!firstDefault.last)lines.push('Перенос долга на следующую очередь не включён — признак на вкладке «Очерёдность».');
+  // Дату не повторяем: она названа строкой выше, а «после январе 2030» —
+  // родительный падеж там, где список месяцев даёт предложный. Две формы
+  // одного слова ради одной фразы не заводим.
+  // Дефолт называем, но проект не хороним (владелец, 30.08.2026): «не закрывай,
+  // лучше просто показывай, что по факту модель — дефолт на такой-то очереди и
+  // надо будет согласие банка на перенос долга на следующую или
+  // реструктуризация». Вариантов у банка много, чаще всего долг просто
+  // переоформляют на следующую очередь; а если эскроу не наполнился из-за
+  // продаж, это форс-мажор, которого в НКЛ и не могло быть заложено. Условий
+  // реструктуризации модель не знает — считает прежним допущением и говорит
+  // об этом вслух.
+  // Последней очереди передавать долг некуда, и предлагать это ей нельзя:
+  // движок такой перенос и не делает («перенос был бы фикцией»), а плашка
+  // звала включить признак, который ничего бы не изменил (владелец,
+  // 30.08.2026: «а ничего что очередей две всего?»).
+  lines.push(firstDefault.last
+   ?`<b>Понадобится согласие банка.</b> Переносить долг некуда — `
+    +`<b>${escapeHtml(firstDefault.name)}</b> последняя очередь, и остаётся только `
+    +'реструктуризация: её условий модель не знает и считает по допущению, что '
+    +'остаток обслуживается продажами следующих периодов; пени и требование она '
+    +'не считает.'
+   :'<b>Понадобится согласие банка</b> — на перенос долга на следующую '
+    +'очередь или на реструктуризацию. Дальше модель считает по допущению, что '
+    +'остаток обслуживается продажами следующих периодов; пени и требование она '
+    +'не считает.');
+  lines.push(ending>500000
+   ?`<b>По итогу всех очередей</b> при этом допущении непогашенным остаётся <b>${money(ending)}</b>.`
+   :'<b>По итогу всех очередей</b> при этом допущении долг погашен полностью.');
+ }else{
+  lines.push(ending>500000
+   ?`<b>По итогу всех очередей</b> непогашенным остаётся <b>${money(ending)}</b>.`
+   :'<b>По итогу всех очередей</b> долг погашен полностью.');
+  // «Долг погашен полностью» читается как «всё в порядке», хотя весь план
+  // держится на согласии банка. Вариантов у него больше, чем можно
+  // предусмотреть, и каждый предусмотренный выглядел бы предсказанием
+  // (владелец, 30.08.2026: «банк может переложить долг на следующую очередь,
+  // но сделать кэш-свип на первую. Эти варианты все не предусмотреть. Главное
+  // видимо увидеть, что проблемная очередь есть»). Поэтому называем факт и
+  // границу метода, а решение за банк не выдумываем.
+  lines.push('<b>Но проблемные очереди есть, и план держится на согласии '
+   +'банка.</b> Перенос долга — одно из возможных его решений: вместо него '
+   +'банк может сделать кэш-свип на проблемную очередь, потребовать '
+   +'дополнительное обеспечение или реструктурировать долг. Этих вариантов '
+   +'модель не считает.');
+ }
+ const title=firstDefault
+  ?`Модель даёт дефолт на очереди ${escapeHtml(firstDefault.name)}.`
+  :'Эскроу не погашает ПФ полностью.';
+ return `<div style="margin-bottom:6px"><b>${title}</b></div>`
+  +lines.map(line=>`<div style="margin-top:4px">${line}</div>`).join('');
+}
 function renderResult(){
  if(!lastResult)return;const r=lastResult,f=r.finance;
  hideCalcLocked();
@@ -36757,6 +37509,21 @@ function renderResult(){
   return found?Number(found.value||0):0;
  };
 
+ // Оговорка у чисел, зависящих от послед-дефолтного потока. Решение о том,
+ // был ли дефолт, — не своё: то же, что у плашки (modelDefaultInfo).
+ const modelDefault=modelDefaultInfo(r);
+ const note=text=>`<i style="display:block;font-weight:400;font-size:11px;opacity:.75">`
+  +`${text}</i>`;
+ // Полная оговорка стоит один раз, у прибыли; маржинальность и NPV — та же
+ // величина в другом виде, и повторять им фразу целиком значит превратить её
+ // в фон, который перестают читать.
+ const conditionalNote=modelDefault
+  ?note(`условная: в модели дефолт`
+   +`${modelDefault.name?' на '+escapeHtml(modelDefault.name):''}`
+   +`${modelDefault.when?' в '+modelDefault.when:''}`)
+  :'';
+ const conditionalShort=modelDefault?note('при том же допущении'):'';
+
  const reportKpis=[
   ['Выручка',money(r.summary.revenue)],
   // Вторая половина уравнения. В PDF ключевая экономика идёт «Выручка →
@@ -36764,9 +37531,13 @@ function renderResult(){
   // появлялась из ниоткуда, сравнить её было не с чем.
   ['Расходы всего',money(r.summary.total_expenses)],
   ['EBITDA',money(r.summary.ebitda)],
-  ['Чистая прибыль',money(r.summary.net_profit)],
-  ['Маржинальность',pct(r.summary.margin)],
-  ['NPV @'+Number(inputs.discount_rate_pct||20).toLocaleString('ru-RU')+'%',money(r.summary.npv)],
+  // Прибыль, маржинальность и NPV после дефолта посчитаны на допущении, что
+  // банк дал проекту продолжиться: это одна и та же величина в трёх видах.
+  // Голое число читается как достигнутое — оговорка стоит у самого числа, а
+  // не только в плашке выше: плашку можно пролистать, плитку нет.
+  ['Чистая прибыль',money(r.summary.net_profit)+conditionalNote],
+  ['Маржинальность',pct(r.summary.margin)+conditionalShort],
+  ['NPV @'+Number(inputs.discount_rate_pct||20).toLocaleString('ru-RU')+'%',money(r.summary.npv)+conditionalShort],
   // Цена входа стояла только в «Параметрах проекта» ниже и в PDF первой
   // строкой ключевой экономики: экран и отчёт расходились по составу, а
   // главное число сделки в шапку не попадало вовсе.
@@ -36783,16 +37554,11 @@ function renderResult(){
  ];
  reportKpi.innerHTML=reportKpis.map(x=>`<div class="kpi"><span>${x[0]}</span><b>${x[1]}</b></div>`).join('');
 
- const rveFinance=r.report.financing||{},rveGap=Number(rveFinance.rve_pf_shortfall||0),rveDebt=Number(rveFinance.rve_pf_before_repayment||0),rveEscrow=Number(rveFinance.rve_escrow_release||0),rveWarning=document.getElementById('pfRveWarning');
+ const rveWarning=document.getElementById('pfRveWarning');
  if(rveWarning){
-  if(rveGap>500000){
-   const scope=Number(r.summary.phase_count||0)>1?'В даты РВЭ очередей':'В момент РВЭ';
-   rveWarning.style.display='block';
-   const rveRepaid=Number(rveFinance.rve_pf_repayment||0),rveEnding=Number(rveFinance.ending_pf||0);
-   rveWarning.innerHTML=`<b>Эскроу не погашает ПФ полностью.</b> ${scope}: долг перед раскрытием ${money(rveDebt)}, раскрыто эскроу ${money(rveEscrow)}, из них на погашение ПФ ${money(rveRepaid)}, остаток ПФ <b>${money(rveGap)}</b>. Остаток гасится продажами после ввода — они идут без эскроу. ${rveEnding>500000?`На конец горизонта непогашенным остаётся <b>${money(rveEnding)}</b> — модель считает это дефолтом.`:'К концу горизонта долг погашен.'}`;
-  }else{
-   rveWarning.style.display='none';rveWarning.textContent='';
-  }
+  const html=pfRveWarningHtml(r);
+  if(html){rveWarning.style.display='block';rveWarning.innerHTML=html}
+  else{rveWarning.style.display='none';rveWarning.textContent=''}
  }
 
  llcrValue.textContent=mult(r.summary.llcr);
@@ -36951,15 +37717,18 @@ function renderResult(){
   // Плашка выше говорит «остаток гасится последующими продажами», а число,
   // отвечающее «погасился ли», стояло только в PDF и в книге. На экране его
   // не было вовсе, и проверить обещание было нечем (владелец, 25.08.2026).
-  row('Непогашенный долг ПФ на конец проекта'+(Number(r.report.financing.ending_pf||0)>0?' · дефолт':''),
-      money(r.report.financing.ending_pf))+
-  // Переданный и принятый долг стоят рядом с остатком, а не вместо него.
-  // У передавшей очереди остаток ноль — без своей строки обязательство
-  // исчезало бы бесследно, и очередь выглядела бы рассчитавшейся сама.
-  (Number(r.report.financing.debt_carried_out||0)>0.5e6
-   ?row('Долг передан в ПФ следующей очереди',money(r.report.financing.debt_carried_out)):'')+
+  // Порядок: сколько пришло, сколько ушло, что осталось. Остаток последним —
+  // он вывод, а не одно из трёх чисел; стоя первым, он читался как
+  // противоречие строке «передано» с тем же числом.
   (Number(r.report.financing.carried_debt_in||0)>0.5e6
    ?row('в т.ч. принято от предыдущей очереди',money(r.report.financing.carried_debt_in)):'')+
+  (Number(r.report.financing.debt_carried_out||0)>0.5e6
+   ?row('Долг передан в ПФ следующей очереди',money(r.report.financing.debt_carried_out)):'')+
+  row((Number(r.report.financing.debt_carried_out||0)>0.5e6
+       ?'Осталось непогашенным на очереди'
+       :'Непогашенный долг ПФ на конец проекта')
+      +(Number(r.report.financing.ending_pf||0)>0?' · дефолт':''),
+      money(r.report.financing.ending_pf))+
   (r.report.financing.peak_total_debt!=null?row('Максимальный совокупный долг',money(r.report.financing.peak_total_debt)):'')+
   row('Текущая ключевая ставка',pct(r.report.financing.current_key_rate))+
   row('Спред БРИДЖ',pct(r.report.financing.bridge_spread))+

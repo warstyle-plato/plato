@@ -51,6 +51,53 @@ def _day(value: Any) -> datetime.date:
     return day
 
 
+# Разделители, которыми в отчёте отбивают имя подрядчика от его работы:
+# «Сталко -сборка лесов», «Бизнес Инжиниринг : устройство плитки»,
+# «Моэк ( теплосети)- монтаж ограждения».
+_INLINE_SPLIT = re.compile(r"\s*[:\-—–]\s*")
+
+
+def _known_party(prefix: str, known: list[str]) -> str:
+    """Имя из списка известных, если приставка строки — оно.
+
+    Сравнение то же, что у сверки дня: ключ без формы собственности, вхождение
+    с четырёх знаков, сокращение по первым буквам слов. Копии правила здесь
+    нет — модуль сверки один на приложение.
+    """
+    import developaid_monitor_crew as crew
+
+    text = str(prefix or "").strip(" \t.,;:-—–")
+    if not text:
+        return ""
+    for name in known:
+        if crew.same_party(text, name):
+            return name
+    return ""
+
+
+def attribute_works(works: list[dict[str, Any]], known: list[str]) -> list[dict[str, Any]]:
+    """Приписать строку работ тому, кто в ней назван.
+
+    Разбор вёл строки за последним заголовком-подрядчиком, а в отчёте имя
+    следующего подрядчика стоит В САМОЙ строке: «Клодо( кладка): Сталко —
+    сборка лесов» на экране читалось как работа Клодо (владелец, 30.08.2026:
+    «что такое Клодо кладка и потом другие подрядчики? бред какой-то»).
+
+    Переприписываем ТОЛЬКО по доказательству: приставка строки должна совпасть
+    с известным именем — из численности того же отчёта, из реестров РСС или из
+    реестра ГУ. Иначе «Бетонирование ПП - 68,5 м3» стало бы подрядчиком
+    «Бетонирование ПП».
+    """
+    out: list[dict[str, Any]] = []
+    for item in works or []:
+        line = str(item.get("line") or "")
+        parts = _INLINE_SPLIT.split(line, maxsplit=1)
+        name = _known_party(parts[0], known) if len(parts) == 2 else ""
+        out.append({**item, "contractor": name or item.get("contractor", ""),
+                    **({"named_inline": True} if name else {})})
+    return out
+
+
 def parse_daily_report(text: str) -> dict[str, Any]:
     contractors: list[dict[str, Any]] = []
     works: list[dict[str, Any]] = []
@@ -108,6 +155,9 @@ def parse_daily_report(text: str) -> dict[str, Any]:
             supplies.append(_LEAD_NUM.sub("", line).strip())
         elif mode == "removal":
             removals.append(_LEAD_NUM.sub("", line).strip())
+    # Имя подрядчика в самой строке сильнее заголовка выше: заголовок ставится
+    # один раз, а имена идут по строкам.
+    works = attribute_works(works, [c["name"] for c in contractors])
     return {
         "contractors": contractors,
         "itr_total": sum(c["itr"] for c in contractors),
@@ -159,7 +209,8 @@ def _load_reports(project: str) -> list[dict[str, Any]]:
     return reports
 
 
-def daily_summary(project: str, upto: Any = None, days: int = 45) -> dict[str, Any]:
+def daily_summary(project: str, upto: Any = None, days: int = 45,
+                  known: list[str] | None = None) -> dict[str, Any]:
     """Ряды для плитки «Люди на площадке» и последний день словами."""
     reports = _load_reports(project)
     if upto:
@@ -190,7 +241,12 @@ def daily_summary(project: str, upto: Any = None, days: int = 45) -> dict[str, A
             "date": latest["date"],
             "contractors": sorted((parsed.get("contractors") or []),
                                   key=lambda c: -(c["itr"] + c["workers"])),
-            "works": parsed.get("works") or [],
+            # Имена из реестров доезжают сюда же: подрядчик, названный в
+            # строке, но не выводивший людей в этот день, в численности
+            # отчёта не значится — а работу его назвать надо.
+            "works": attribute_works(parsed.get("works") or [],
+                                     [c["name"] for c in (parsed.get("contractors") or [])]
+                                     + [str(name) for name in (known or [])]),
             "supplies": parsed.get("supplies") or [],
             "removals": parsed.get("removals") or [],
         },

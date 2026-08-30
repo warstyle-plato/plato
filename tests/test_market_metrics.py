@@ -436,7 +436,9 @@ def test_cabinet_is_closed_by_default_and_opens_only_by_key(tmp_path, monkeypatc
                           follow_redirects=False)
     assert entered.status_code == 303
     assert client.get("/cabinet").status_code == 200
-    assert "Конструктор отчёта" in client.get("/cabinet").text
+    # Кабинет больше не «конструктор отчёта о рынке»: рынок — один инструмент
+    # из четырёх, и открывается страница сводкой, а не им.
+    assert "Кабинет DevelopAid" in client.get("/cabinet").text
 
     # Кириллический ключ заголовком не передаётся — это должно быть сказано,
     # а не проявляться загадочным отказом на одном из двух путей входа.
@@ -587,12 +589,16 @@ def test_every_element_the_script_asks_for_exists_in_the_markup() -> None:
 
     from market_search.cabinet import cabinet_page
 
-    page = cabinet_page()
+    # Кабинет отдаётся тремя видами, и элемент живёт на своём: на титуле нет
+    # ни формы рынка, ни свода продаж. Значит имя обязано найтись ХОТЯ БЫ на
+    # одном виде — имени, которого нет нигде, быть не должно.
+    pages = {view: cabinet_page(view) for view in ("home", "sales", "market")}
+    whole = "".join(pages.values())
     # Объявление ищется по всей странице, а не только в статической разметке:
     # часть узлов скрипт создаёт сам из шаблонов. Проверка ловит другое — имя,
     # которого нет нигде: опечатку и забытую вёрстку.
-    present = set(re.findall(r'id="([a-zA-Z0-9_-]+)"', page))
-    asked = set(re.findall(r"\$\('#([a-zA-Z0-9_-]+)'\)", page))
+    present = set(re.findall(r'id="([a-zA-Z0-9_-]+)"', whole))
+    asked = set(re.findall(r"\$\('#([a-zA-Z0-9_-]+)'\)", whole))
     assert asked, "скрипт не обращается ни к одному элементу — проверка бесполезна"
     assert not (asked - present), f"скрипт зовёт то, чего нет в разметке: {sorted(asked - present)}"
 
@@ -952,7 +958,7 @@ def test_the_report_can_be_dropped_whole() -> None:
     from market_search.cabinet import CABINET_PAGE
 
     assert 'id="reset"' in CABINET_PAGE
-    reset = CABINET_PAGE[CABINET_PAGE.index("$('#reset').addEventListener"):]
+    reset = CABINET_PAGE[CABINET_PAGE.index("on('#reset','click'"):]
     reset = reset[: reset.index("});")]
     for state in ("lastReport=null", "planData=null", "added.clear()",
                   "$('#out').innerHTML=''", "$('#hintout').innerHTML=''",
@@ -2522,7 +2528,7 @@ def test_the_pdf_button_falls_back_to_the_browser_dialog() -> None:
     # Печать объявлена один раз на обе поверхности кабинета — рынок и продажи, —
     # поэтому и проверяется в одном месте: две копии разошлись бы на откате и на
     # тексте отказа. Кнопка отвечает за своё: что печатать и как назвать файл.
-    button = CABINET_PAGE[CABINET_PAGE.index("$('#pdf').addEventListener"):]
+    button = CABINET_PAGE[CABINET_PAGE.index("on('#pdf','click'"):]
     button = button[: button.index("\n});") + 4]
     assert "printPdf({" in button
     # Разметка уходит та же, что на экране: считать заново нечего.
@@ -2925,7 +2931,7 @@ def test_a_failed_print_says_so_and_keeps_saying_it() -> None:
     """
     from market_search.cabinet import CABINET_PAGE, cabinet_page
 
-    button = CABINET_PAGE[CABINET_PAGE.index("$('#pdf').addEventListener"):]
+    button = CABINET_PAGE[CABINET_PAGE.index("on('#pdf','click'"):]
     button = button[: button.index("\n});") + 4]
     assert "state:$('#pdfstate')" in button, "докладывать отказ печати некуда"
 

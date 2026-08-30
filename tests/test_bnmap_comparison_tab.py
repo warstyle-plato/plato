@@ -115,16 +115,29 @@ def test_long_discount_terms_are_cut_by_word() -> None:
     assert not re.search(r"\d…$", short), "число обрезано посередине"
 
 
-def test_the_tab_is_on_the_cabinet_page_and_the_placeholder_is_filled() -> None:
-    page = cabinet.cabinet_page()
-    assert bnmap_ui.PLACEHOLDER not in page
-    assert 'id="bnmap"' in page and "Тестовый отчёт bnMAP" in page
+def test_the_tab_lives_on_the_market_page_and_nowhere_else() -> None:
+    """Кабинет разнесён на три вида, и клон рыночного отчёта живёт на рынке.
+
+    Умолчание `cabinet_page()` — титул, и блока там быть не должно: разметку
+    `_cut` режет кусками, а плейсхолдер вне куска вылез бы на всех трёх
+    страницах, и заметить это было бы негде.
+    """
+    market = cabinet.cabinet_page("market")
+    assert bnmap_ui.PLACEHOLDER not in market
+    assert 'id="bnmap"' in market and "Тестовый отчёт bnMAP" in market
+    for view in ("home", "sales"):
+        page = cabinet.cabinet_page(view)
+        assert 'id="bnmap"' not in page, f"вкладка вылезла на вид «{view}»"
+        assert bnmap_ui.PLACEHOLDER not in page
 
 
 def test_the_blocks_are_drawn_by_the_report_renderer() -> None:
     """Своей вёрстки блоков у вкладки нет: две вёрстки одного отчёта разойдутся."""
     script = re.search(r"<script>(.*?)</script>", bnmap_ui.markup(), re.S).group(1)
     assert "blockCard(" in script, "вкладка рисует блоки сама"
+    # Помощник кабинета, а не свой: верхнеуровневый слушатель на элементе,
+    # которого на этом виде нет, роняет весь скрипт кабинета.
+    assert "on('#bngo'" in script and "const $=" not in script
     body = (ROOT / "market_search" / "bnmap_ui.py").read_text()
     assert "медиана соседей" not in body, "подписи блоков продублированы во вкладке"
 

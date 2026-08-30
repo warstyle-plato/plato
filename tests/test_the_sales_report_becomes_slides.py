@@ -145,15 +145,17 @@ def test_the_slides_carry_real_objects_and_not_a_single_picture() -> None:
             elif shape.has_text_frame:
                 texts.append(shape.text_frame.text)
     assert pictures == 0, "картинка вместо объектов — её нельзя править"
-    assert tables >= 2 and charts >= 2, "график на каждую меру"
+    assert tables >= 1 and charts >= 2, "график на каждую меру"
     assert any("Продажи — Тестовый ЖК" in text for text in texts)
     assert any("Темп последних месяцев" in text for text in texts), "вывод раздела"
 
-    # Числа на слайде — те же, что в разметке экрана.
+    # Числа на слайде — те же, что в разметке экрана. Ключевые лежат плитками
+    # (фигура с текстом), помесячные — ячейками таблицы.
     numbers = [cell.text for slide in deck.slides for shape in slide.shapes
                if getattr(shape, "has_table", False) and shape.has_table
                for row in shape.table.rows for cell in row.cells]
-    assert "120,4" in numbers and "540 000" in numbers and "76" in numbers
+    assert "120,4" in numbers and "540 000" in numbers
+    assert any("76" in text for text in texts), "ключевое число пропало с плитки"
 
 
 def test_nothing_to_show_is_said_out_loud() -> None:
@@ -166,8 +168,8 @@ def test_nothing_to_show_is_said_out_loud() -> None:
 
 def test_the_button_sends_the_same_markup_as_the_pdf() -> None:
     """Две сборки одной колоды разойдутся — значит разметка одна и та же."""
-    body = max(re.findall(r"<script[^>]*>(.*?)</script>", cabinet_page(), re.S), key=len)
-    assert 'id="salesppt"' in cabinet_page()
+    body = max(re.findall(r"<script[^>]*>(.*?)</script>", cabinet_page("sales"), re.S), key=len)
+    assert 'id="salesppt"' in cabinet_page("sales")
     handler = body[body.index("$('#salesppt').onclick="):][:2200]
     assert "salesPrintHtml()" in handler, "презентация собиралась бы из другой разметки"
     assert "'/cabinet/sales.pptx'" in handler
@@ -221,7 +223,7 @@ def test_the_live_screen_markup_parses_into_slides(tmp_path) -> None:
     got["pool"] = contracting.pool_progress(got, [], None, None)
 
     file = tmp_path / "cabinet.html"
-    file.write_text(cabinet_page().replace("__DEVELOPAID_VERSION__", "test"), encoding="utf-8")
+    file.write_text(cabinet_page("sales").replace("__DEVELOPAID_VERSION__", "test"), encoding="utf-8")
     with play.sync_playwright() as pw:
         try:
             browser = browser_launch.launch(pw)
