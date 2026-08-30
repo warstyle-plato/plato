@@ -32,12 +32,17 @@ INSIDE = ("/monitor", "/auctions", "/statistics", "/cabinet")
 
 def test_every_role_the_owner_named_has_its_entrance() -> None:
     roles = {str(role["role"]): role for role in contour.ROLES}
-    assert set(roles) == {"Строителю", "Коммерции", "Инвестициям"}
+    assert set(roles) == {"Строителю", "Коммерции", "Инвестициям", "Аналитике"}
     hrefs = {role: [str(link["href"]) for link in item["links"]]
              for role, item in roles.items()}
     assert "/monitor" in hrefs["Строителю"]
     assert "/cabinet#sales" in hrefs["Коммерции"] and "/cabinet" in hrefs["Коммерции"]
     assert "/auctions" in hrefs["Инвестициям"]
+    # Статистика себестоимости обосновывает наши ставки, а не помогает
+    # продавать: «это аналитический блок, а не маркетинг» (владелец,
+    # 30.08.2026).
+    assert "/statistics" in hrefs["Аналитике"]
+    assert "/statistics" not in hrefs["Коммерции"]
     # У каждой ссылки сказано, что за ней: имя раздела в чужой роли ничего не
     # говорит человеку, который туда не ходит.
     for item in contour.ROLES:

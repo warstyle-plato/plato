@@ -69,7 +69,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.20.57"
+VERSION = "0.20.58"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -5182,6 +5182,95 @@ def tep_derived(req: TepDerivedRequest) -> dict[str, Any]:
         k1=req.k1, k2=req.k2, zone_two=req.zone_two,
         upks_rub=req.upks_rub, sqm_per_job=req.sqm_per_job,
         parking_norm_regime=req.parking_norm_regime)
+
+
+class TepRescaleRequest(BaseModel):
+    """Пересчёт соцнагрузки пропорцией, когда норматив считать не от чего.
+
+    Места зависят от населения, население — от площади квартир; ставка за место
+    у нас задана экспертно и от метража не зависит. Значит при правке ТЭП
+    соцнагрузка масштабируется, а не считается заново, — и это верно в любом
+    регионе, потому что норматив здесь не применяется вовсе: масштабируется то,
+    что УЖЕ посчитано городом или введено человеком.
+    """
+    apartment_area_before_sqm: float = 0.0
+    apartment_area_after_sqm: float = 0.0
+    nonresidential_before_sqm: float = 0.0
+    nonresidential_after_sqm: float = 0.0
+    kindergarten_places: float = 0.0
+    school_places: float = 0.0
+    clinic_capacity: float = 0.0
+    social_compensation_mln: float = 0.0
+    underground_manual_spaces: float = 0.0
+    basis: str = ""
+
+
+@app.post("/tep/rescale-social")
+def tep_rescale_social(req: TepRescaleRequest) -> dict[str, Any]:
+    """Соцнагрузка и машино-места под новый ТЭП — пропорцией от прежних.
+
+    «Почему нельзя брать пропорцию? Количество мест зависит от количества
+    людей, а количество людей — от количества жилых площадей. Себестоимости
+    места у нас вбиты экспертно» (владелец, 30.08.2026). Верно: норматив линеен
+    по населению, а население линейно по площади квартир, и в Подмосковье это
+    работает так же, как в Москве, — потому что норматив здесь не применяется
+    вовсе.
+
+    Отсюда и граница ответа: пропорция масштабирует то, что УЖЕ стоит в модели.
+    Нечего масштабировать — это отказ, а не ноль: пустая соцнагрузка и
+    соцнагрузка, уменьшенная до нуля, значат разное.
+    """
+    before = max(0.0, float(req.apartment_area_before_sqm or 0.0))
+    after = max(0.0, float(req.apartment_area_after_sqm or 0.0))
+    if before <= 0:
+        raise HTTPException(
+            status_code=422,
+            detail=("Не от чего считать пропорцию: неизвестна площадь квартир, "
+                    "под которую посчитана нынешняя соцнагрузка."))
+    known = [value for value in (req.kindergarten_places, req.school_places,
+                                 req.clinic_capacity, req.social_compensation_mln,
+                                 req.underground_manual_spaces)
+             if float(value or 0.0) > 0]
+    if not known:
+        raise HTTPException(
+            status_code=422,
+            detail=("Масштабировать нечего: соцнагрузка и машино-места в модели "
+                    "не заданы. Пустая нагрузка и уменьшенная до нуля — разное."))
+    factor = after / before
+    # Места целые и всегда вверх: половина места не строится, а норматив
+    # округляется в большую сторону.
+    def places(value: Any) -> int:
+        return int(math.ceil(float(value or 0.0) * factor - 1e-9))
+
+    nonres_before = max(0.0, float(req.nonresidential_before_sqm or 0.0))
+    nonres_after = max(0.0, float(req.nonresidential_after_sqm or 0.0))
+    warnings: list[str] = []
+    if nonres_before > 0 and abs(nonres_after - nonres_before) > 1.0:
+        warnings.append(
+            "Нежилая площадь тоже изменилась, а приобъектные машино-места "
+            "считаются от неё своим коэффициентом района — их пропорция не "
+            "трогает.")
+    return {
+        "factor": round(factor, 6),
+        "places": {
+            "kindergarten": places(req.kindergarten_places),
+            "school": places(req.school_places),
+            "clinic": places(req.clinic_capacity),
+        },
+        # Компенсация — ставка за место × места: ставка задана экспертно и от
+        # метража не зависит, поэтому компенсация идёт тем же коэффициентом.
+        "compensation_mln": round(float(req.social_compensation_mln or 0.0) * factor, 3),
+        "underground_manual_spaces": places(req.underground_manual_spaces),
+        "basis": [
+            f"пропорция по населению: площадь квартир {_telegram_number(before, 0)} → "
+            f"{_telegram_number(after, 0)} м², коэффициент "
+            + f"{factor:.4f}".replace(".", ","),
+            "население — 33 м² квартир на человека, места — линейно от населения",
+            "компенсация — ставка за место задана экспертно и от метража не зависит",
+            ("прежние значения: " + (req.basis or "введены в модель")),
+        ],
+        "warnings": warnings,
+    }
 
 
 class TepBySiteRequest(BaseModel):
@@ -34922,7 +35011,7 @@ function renderInputs(){
       el.disabled=true;
       el.title='Москва: платежи ежеквартально — установлено нормативно';
      }
-     el.onchange=()=>{inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='social_mode')inputs._social_mode_user_set=true;if(id==='vri_region'){renderInputs();return calculate()}if(['apartment_price_th','commercial_price_th','parking_price_th','main_above_th_per_sqm','main_under_th_per_sqm'].includes(id)){inputs.project_class='custom';syncProjectClassSelector()}if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(TEP_DERIVED_INPUTS.includes(id)){const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
+     el.onchange=()=>{inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='social_mode')inputs._social_mode_user_set=true;if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){renderInputs();return calculate()}if(['apartment_price_th','commercial_price_th','parking_price_th','main_above_th_per_sqm','main_under_th_per_sqm'].includes(id)){inputs.project_class='custom';syncProjectClassSelector()}if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(TEP_DERIVED_INPUTS.includes(id)){const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
      wrap.appendChild(el);grid.appendChild(wrap);
    });det.appendChild(grid);(ownTab?vriBox:box).appendChild(det);
  });
@@ -35759,6 +35848,76 @@ async function recalcMoFromApartments(apartments,area){
 // нет: каждое число подписано основанием, каждый пропуск — причиной. Считает
 // сервер, экран только показывает и подставляет подтверждённое — арифметики
 // здесь нет ни одной.
+// Соцнагрузка, которую можно пересчитать пропорцией, и метры, под которые она
+// посчитана. Отметка ставится там, где числа появляются: при импорте, после
+// пересчёта и при ручной правке. Без неё пропорцию считать не от чего — а
+// угадывать площадь по числу мест значило бы обратить норматив, которого в
+// Подмосковье нет.
+const SOCIAL_SCALED_KEYS=['kindergarten_places','school_places','clinic_capacity',
+ 'social_compensation_mln','underground_manual_spaces'];
+function stampSocialBasis(source){
+ inputs._social_basis={
+  apartment_area_sqm:Number((tep.apartments&&tep.apartments.saleable)||0),
+  nonresidential_sqm:nonresidentialAboveSqm(),
+  source:String(source||'')};
+}
+function nonresidentialAboveSqm(){
+ return Number((tep.ground_commercial&&tep.ground_commercial.total_area)||0)
+  +Number((tep.offices&&tep.offices.total_area)||0)
+  +Number((tep.standalone_retail&&tep.standalone_retail.total_area)||0);
+}
+
+// Пропорция: места зависят от населения, население — от площади квартир,
+// ставка за место задана экспертно. Норматив здесь не применяется вовсе,
+// поэтому это работает и в Подмосковье, где московских нормативов нет
+// (владелец, 30.08.2026).
+async function rescaleSocialFromTep(options){
+ const silent=!!(options&&options.silent);
+ const note=document.getElementById('tepDerivedNote');
+ const say=(html,ok)=>{if(!note)return;note.style.display='';note.innerHTML=ok?('<span class="import-ok">'+html+'</span>'):html};
+ const basis=inputs._social_basis||null;
+ const after=Number((tep.apartments&&tep.apartments.saleable)||0);
+ if(!basis||!Number(basis.apartment_area_sqm||0)||!after)return false;
+ if(Math.abs(after-Number(basis.apartment_area_sqm||0))<1)return false;
+ let d;
+ try{
+  const r=await fetch('/tep/rescale-social',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({apartment_area_before_sqm:Number(basis.apartment_area_sqm||0),
+    apartment_area_after_sqm:after,
+    nonresidential_before_sqm:Number(basis.nonresidential_sqm||0),
+    nonresidential_after_sqm:nonresidentialAboveSqm(),
+    kindergarten_places:Number(inputs.kindergarten_places||0),
+    school_places:Number(inputs.school_places||0),
+    clinic_capacity:Number(inputs.clinic_capacity||0),
+    social_compensation_mln:Number(inputs.social_compensation_mln||0),
+    underground_manual_spaces:Number(inputs.underground_manual_spaces||0),
+    basis:String(basis.source||'')})});
+  d=await r.json();
+  if(!r.ok)return false;
+ }catch(e){return false}
+ const lines=[
+  'ДОО '+num(inputs.kindergarten_places)+' → '+num(d.places.kindergarten)
+   +' · школа '+num(inputs.school_places)+' → '+num(d.places.school)
+   +' · поликлиника '+num(inputs.clinic_capacity)+' → '+num(d.places.clinic),
+  'Соцкомпенсация, млн ₽: '+num(inputs.social_compensation_mln)+' → '+num(d.compensation_mln),
+  'Машино-места подземные: '+num(inputs.underground_manual_spaces)+' → '+num(d.underground_manual_spaces)];
+ (d.warnings||[]).forEach(w=>lines.push('⚠ '+w));
+ if(!silent&&!confirm('Пересчёт соцнагрузки пропорцией под новый ТЭП:\n\n'
+   +lines.join('\n')+'\n\nПодставить в модель?'))
+  {say(lines.map(escapeHtml).join('<br>'),true);return true}
+ inputs.kindergarten_places=d.places.kindergarten;
+ inputs.school_places=d.places.school;
+ inputs.clinic_capacity=d.places.clinic;
+ if(Number(inputs.social_compensation_mln||0)>0)inputs.social_compensation_mln=d.compensation_mln;
+ if(Number(inputs.underground_manual_spaces||0)>0)inputs.underground_manual_spaces=d.underground_manual_spaces;
+ stampSocialBasis(basis.source||'пропорция');
+ syncTep(false);renderInputs();renderTep();
+ say((silent?'Пересчитано пропорцией: ':'Подставлено: ')+lines.map(escapeHtml).join('<br>')
+   +'<br><b>Чем посчитано:</b> '+(d.basis||[]).map(escapeHtml).join('; ')+'.',true);
+ calculate();
+ return true;
+}
+
 async function recalcFromTepByNorms(options){
  const silent=!!(options&&options.silent);
  const note=document.getElementById('tepDerivedNote');
@@ -35800,6 +35959,7 @@ async function recalcFromTepByNorms(options){
  inputs.school_places=d.places.school;
  inputs.clinic_capacity=d.places.clinic;
  inputs.underground_manual_spaces=d.parking.underground;
+ stampSocialBasis('нормативы Москвы');
  syncTep(false);renderInputs();renderTep();
  say((silent?'Пересчитано под новый ТЭП: ':'Подставлено: ')+lines.map(escapeHtml).join('<br>')
    +'<br><b>Чем посчитано:</b> '+(d.basis||[]).map(escapeHtml).join('; ')+'. '
@@ -35814,10 +35974,11 @@ async function recalcFromTep(options){
  const say=(html,ok)=>{if(!note)return;note.style.display='';note.innerHTML=ok?('<span class="import-ok">'+html+'</span>'):html};
  const baseline=((inputs._glavapu_import||{}).normalized)||null;
  if(!baseline||!Number(baseline.change_vri_mln||0)){
-  // Без выгрузки ГлавАПУ пересчёт не отказывается целиком: население, места и
-  // те машино-места, которым не нужны коэффициенты района, считаются своими
-  // формулами и подписываются своим основанием. Прежде здесь стоял отказ, а
-  // написанный расчёт не звался никем (владелец, 29.08.2026).
+  // Без выгрузки ГлавАПУ пересчёт не отказывается целиком. Сначала пропорция:
+  // если соцнагрузка в модели уже есть, места и компенсация масштабируются по
+  // населению — норматив тут не применяется вовсе, и это работает в любом
+  // регионе. Не от чего масштабировать — считаем по нормативам Москвы.
+  if(await rescaleSocialFromTep(options))return;
   return recalcFromTepByNorms(options);
  }
  const apartments=Number((tep.apartments&&tep.apartments.saleable)||0);
@@ -35877,6 +36038,7 @@ async function recalcFromTep(options){
  // для посетителей встроенной коммерции, под землю их не кладут: с ними гараж
  // выходил больше нормы, и лишние места ехали в себестоимость.
  inputs.underground_manual_spaces=d.parking.permanent+d.parking.guest;
+ stampSocialBasis('выгрузка ГлавАПУ');
  syncTep(false);renderInputs();renderTep();
  lines.push('Машино-места в ТЭП: было '+parkingWas+', стало '
    +Number((tep.underground_parking&&tep.underground_parking.units)||0));

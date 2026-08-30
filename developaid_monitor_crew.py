@@ -36,16 +36,53 @@ def name_key(value: Any) -> str:
     return "".join(kept or words)
 
 
-def same_party(left: str, right: str) -> bool:
-    """Одно ли это лицо. Короткие ключи не сравниваются вхождением.
+def _words(value: Any) -> list[str]:
+    """Слова имени без формы собственности."""
+    words = [word.lower().replace("ё", "е") for word in _WORD.findall(str(value or ""))]
+    kept = [word for word in words if word not in _NOISE]
+    return kept or words
 
-    «Нур» внутри «Стройэнергонур» — совпадение по букве, а не по лицу, поэтому
-    вхождение разрешено только с четырёх знаков.
+
+def is_acronym(short: str, words: list[str]) -> bool:
+    """Сокращение ли `short` от `words`: «СПМ» от «СП Менеджмент».
+
+    Сокращение обязано разобраться на приставки ВСЕХ слов по порядку, и каждое
+    слово должно дать хотя бы букву: иначе «СПМ» сойдётся с чем угодно, где
+    есть буква «с». Двух знаков мало — на них совпадают половина подрядчиков.
+    """
+    text = str(short or "")
+    if len(text) < 3 or not words:
+        return False
+
+    def walk(rest: str, index: int) -> bool:
+        if index == len(words):
+            return not rest
+        word = words[index]
+        for take in range(1, min(len(word), len(rest)) + 1):
+            if rest[:take] != word[:take]:
+                break
+            if walk(rest[take:], index + 1):
+                return True
+        return False
+
+    return walk(text, 0)
+
+
+def same_party(left: str, right: str) -> bool:
+    """Одно ли это лицо.
+
+    Три способа, и каждый со своим ограничением. Равенство ключей — всегда.
+    Вхождение — с четырёх знаков: «Нур» внутри «Стройэнергонур» это совпадение
+    по букве, а не по лицу. И сокращение по первым буквам слов: «СПМ» и есть
+    «СП Менеджмент» (владелец, 30.08.2026) — реестр пишет полное имя, отчёт с
+    площадки сокращает.
     """
     first, second = name_key(left), name_key(right)
     if not first or not second:
         return False
     if first == second:
+        return True
+    if is_acronym(first, _words(right)) or is_acronym(second, _words(left)):
         return True
     if min(len(first), len(second)) < 4:
         return False

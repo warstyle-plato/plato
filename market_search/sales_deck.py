@@ -277,7 +277,8 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         from pptx import Presentation
         from pptx.chart.data import CategoryChartData
         from pptx.dml.color import RGBColor
-        from pptx.enum.chart import XL_CHART_TYPE
+        from pptx.enum.chart import XL_CHART_TYPE, XL_LABEL_POSITION, XL_TICK_MARK
+        from pptx.enum.text import PP_ALIGN
         from pptx.util import Inches, Pt
     except ImportError as exc:  # noqa: BLE001
         raise DeckUnavailable(
@@ -289,8 +290,12 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
     deck.slide_width = Inches(SLIDE_W_IN)
     deck.slide_height = Inches(SLIDE_H_IN)
     blank = deck.slide_layouts[6]
+    # Цвета продукта, а не офисные: тот же синий, что в кабинете и на странице.
+    # Ряд один, поэтому категориальная палитра здесь не нужна — нужен один
+    # фирменный цвет и текстовые токены под подписи.
     ink = RGBColor(0x16, 0x20, 0x2B)
     dim = RGBColor(0x5B, 0x6B, 0x7D)
+    brand = RGBColor(0x13, 0x67, 0xAE)
 
     def textbox(slide, text: str, *, top: float, size: int, colour: RGBColor,
                 bold: bool = False, height: float = 0.6):
@@ -311,6 +316,12 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         return slide
 
     def put_table(slide, table: dict[str, Any], *, top: float, height: float) -> None:
+        """Таблица в оформлении продукта, а не в заводской синей полосатости.
+
+        Заводской стиль PowerPoint красит шапку в сплошную синеву и чередует
+        строки — на слайде с числами это шум, который спорит с числами. Здесь
+        шапка на светлой подложке, строки белые, текст носит текстовые токены.
+        """
         head = table.get("head") or []
         rows = table.get("rows") or []
         columns = max([len(head)] + [len(row) for row in rows]) or 1
@@ -318,31 +329,111 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
                                        Inches(0.6), Inches(top),
                                        Inches(SLIDE_W_IN - 1.2), Inches(height))
         grid = shape.table
+        grid.first_row = bool(head)
+        grid.horz_banding = False
+
+        def dress(cell, text: str, *, header: bool) -> None:
+            cell.text = text
+            cell.fill.solid()
+            cell.fill.fore_color.rgb = RGBColor(0xF4, 0xF7, 0xFA) if header else RGBColor(0xFF, 0xFF, 0xFF)
+            cell.margin_left = Inches(0.06)
+            cell.margin_right = Inches(0.06)
+            paragraph = cell.text_frame.paragraphs[0]
+            # Числу место справа: колонка чисел, прижатая влево, не читается
+            # столбиком. Заголовок стоит там же, где его числа.
+            if cell_number(text) is not None or (header and cell is not grid.cell(0, 0)):
+                paragraph.alignment = PP_ALIGN.RIGHT
+            for run in paragraph.runs or [paragraph.add_run()]:
+                run.font.size = Pt(11)
+                run.font.bold = header
+                run.font.color.rgb = ink if header else RGBColor(0x2A, 0x33, 0x3D)
+
         offset = 0
         if head:
             for index in range(columns):
-                cell = grid.cell(0, index)
-                cell.text = str(head[index]) if index < len(head) else ""
-                cell.text_frame.paragraphs[0].runs[0].font.size = Pt(11)
-                cell.text_frame.paragraphs[0].runs[0].font.bold = True
+                dress(grid.cell(0, index),
+                      str(head[index]) if index < len(head) else "", header=True)
             offset = 1
         for line, row in enumerate(rows):
             for index in range(columns):
-                cell = grid.cell(line + offset, index)
-                cell.text = str(row[index]) if index < len(row) else ""
-                paragraph = cell.text_frame.paragraphs[0]
-                if paragraph.runs:
-                    paragraph.runs[0].font.size = Pt(11)
+                dress(grid.cell(line + offset, index),
+                      str(row[index]) if index < len(row) else "", header=False)
 
     def put_chart(slide, data: dict[str, Any], *, top: float, height: float) -> None:
+        """График, а не заводская заготовка PowerPoint.
+
+        «Убогие графики очень, как для первого класса школы» (владелец,
+        30.08.2026) — и это была правда: столбики во всю ширину слота заводской
+        синевы, сетка по всему полю, ось со значениями и подписи офисным
+        шрифтом. Здесь наведён порядок по правилам оформления данных:
+        столбик тонкий, цвет — наш фирменный, а не офисный; текст носит
+        текстовые токены, а не цвет ряда; сетка убрана там, где значения стоят
+        прямо на столбиках, и оставлена волосяной, где их много; легенды нет —
+        ряд один, и его называет заголовок слайда.
+        """
         payload = CategoryChartData()
         payload.categories = data["categories"]
         payload.add_series(data["name"], data["values"])
         frame = slide.shapes.add_chart(
             XL_CHART_TYPE.COLUMN_CLUSTERED, Inches(0.6), Inches(top),
             Inches(SLIDE_W_IN - 1.2), Inches(height), payload)
-        # Ряд один — легенда из одной строки повторяет заголовок слайда.
-        frame.chart.has_legend = False
+        chart = frame.chart
+        chart.has_legend = False
+        chart.font.size = Pt(11)
+        chart.font.name = "Calibri"
+        chart.font.color.rgb = dim
+
+        plot = chart.plots[0]
+        plot.vary_by_categories = False
+        # Столбик не заполняет слот: воздух между столбиками — часть чтения, а
+        # столбик во всю ширину слота и есть то самое «как для первого класса».
+        # Ширины в формате нет, есть просвет — и он тем больше, чем меньше
+        # категорий: на трёх категориях столбик иначе выходит в две ладони.
+        count = len(data["categories"])
+        plot.gap_width = 400 if count <= 3 else (250 if count <= 8 else
+                                                 (140 if count <= 12 else 60))
+
+        series = plot.series[0]
+        series.format.fill.solid()
+        series.format.fill.fore_color.rgb = brand
+        series.format.line.fill.background()
+
+        # Число на каждом столбике — это хаос, если столбиков много: тогда
+        # значения несёт ось. Мало — значения стоят прямо на шапках, и ось со
+        # своей сеткой становится лишней краской.
+        labelled = len(data["categories"]) <= 8
+        plot.has_data_labels = labelled
+        if labelled:
+            labels = plot.data_labels
+            labels.number_format = "#,##0.#"
+            labels.number_format_is_linked = False
+            labels.position = XL_LABEL_POSITION.OUTSIDE_END
+            labels.font.size = Pt(11)
+            labels.font.bold = True
+            labels.font.color.rgb = ink
+
+        value_axis = chart.value_axis
+        value_axis.has_major_gridlines = not labelled
+        if value_axis.has_major_gridlines:
+            line = value_axis.major_gridlines.format.line
+            line.color.rgb = RGBColor(0xE3, 0xEB, 0xF2)
+            line.width = Pt(0.75)
+        value_axis.visible = not labelled
+        value_axis.has_minor_gridlines = False
+        value_axis.major_tick_mark = XL_TICK_MARK.NONE
+        value_axis.format.line.fill.background()
+        if value_axis.visible:
+            value_axis.tick_labels.number_format = "#,##0"
+            value_axis.tick_labels.number_format_is_linked = False
+            value_axis.tick_labels.font.size = Pt(10)
+            value_axis.tick_labels.font.color.rgb = dim
+
+        category_axis = chart.category_axis
+        category_axis.has_major_gridlines = False
+        category_axis.major_tick_mark = XL_TICK_MARK.NONE
+        category_axis.format.line.color.rgb = RGBColor(0xDD, 0xE5, 0xED)
+        category_axis.tick_labels.font.size = Pt(10)
+        category_axis.tick_labels.font.color.rgb = dim
 
     # Титул: чей отчёт и на какую дату. Слайд, отделившийся от колоды, обязан
     # сам говорить, чей он, — как лист на бумаге.
