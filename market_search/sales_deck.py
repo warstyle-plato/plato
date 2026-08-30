@@ -636,6 +636,9 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
             XL_CHART_TYPE.COLUMN_CLUSTERED, Inches(0.6), Inches(top),
             Inches(SLIDE_W_IN - 1.2), Inches(height), payload)
         chart = frame.chart
+        # Своего заголовка у графика нет: его имя уже стоит заголовком слайда,
+        # а повторённое мелким серым оно читается как чужая подпись.
+        chart.has_title = False
         # Рядов два — легенда нужна: без неё столбики и линия неразличимы.
         chart.has_legend = bool(line)
         if line:
@@ -732,7 +735,11 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         strips = list(page.get("strips") or [])
         tiles = [table for table in tables if table.get("kind") == "tiles"]
         tables = [table for table in tables if table.get("kind") != "tiles"]
-        drawn = charts(tables[0]) if tables else []
+        # Раздел с лентой долей столбиков не получает: лента говорит то же
+        # самое и теми же цветами, что на экране, а три синих столбиковых
+        # слайда подряд — «некрасивые столбики, а не как в отчёте» (владелец,
+        # 30.08.2026). Числа при этом не пропадают: они в таблице раздела.
+        drawn = [] if strips else (charts(tables[0]) if tables else [])
         # Слайд заводится, только если на нём есть что показать. Вывод сам по
         # себе слайдом не является: «этот слайд странный» (владелец,
         # 30.08.2026) — заголовок, одна строка и пять дюймов белого. Такой

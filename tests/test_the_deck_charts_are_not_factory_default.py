@@ -397,3 +397,53 @@ def test_without_a_price_line_the_axis_still_goes_away_when_values_are_on_top() 
              if getattr(shape, "has_chart", False) and shape.has_chart][0]
     assert chart.plots[0].has_data_labels
     assert chart.value_axis.visible is False
+
+
+def test_a_section_with_bands_does_not_also_get_bar_charts() -> None:
+    """«Тут некрасивые столбики, а не как в отчёте» (владелец, 30.08.2026).
+
+    На экране квартирография — три цветные ленты долей. В колоде поверх них
+    рисовались ещё и три синих столбиковых слайда подряд: то же самое, только
+    хуже и без цвета полос. Числа при этом никуда не деваются — они в таблице
+    раздела, которая идёт следом.
+    """
+    import io
+
+    from pptx import Presentation
+
+    html = ('<section class="salesblock"><h2>Квартирография</h2>'
+            '<div class="sumup">Вымывается полоса 28,3-40.</div>'
+            '<div style="margin:10px 0"><div class="muted">Пул проекта</div>'
+            '<div style="display:flex;height:22px">'
+            '<div style="width:23.2%;background:#1367AE" title="28,3-40 — 23,2%"></div>'
+            '<div style="width:76.8%;background:#C4581B" title="40-55 — 76,8%"></div>'
+            '</div></div>'
+            '<table><thead><tr><th>Полоса</th><th>В пуле</th><th>Продано</th>'
+            '</tr></thead><tbody>'
+            '<tr><td>28,3-40</td><td>51</td><td>26</td></tr>'
+            '<tr><td>40-55</td><td>60</td><td>12</td></tr></tbody></table></section>')
+    deck = Presentation(io.BytesIO(sales_deck.build(
+        sales_deck.sections(html), title="Т", subtitle="с", footer="ф")))
+    shapes = [shape for slide in deck.slides for shape in slide.shapes]
+    assert not [s for s in shapes if getattr(s, "has_chart", False) and s.has_chart], \
+        "рядом с лентой снова появились столбики"
+    # Лента на месте, и числа тоже.
+    assert [s for s in shapes if str(s.shape_type or "").startswith("AUTO_SHAPE")]
+    assert [s for s in shapes if getattr(s, "has_table", False) and s.has_table]
+
+
+def test_the_chart_does_not_repeat_the_slide_title() -> None:
+    """Имя меры уже стоит заголовком слайда; повторённое мелким серым над
+    графиком, оно читается как чужая подпись."""
+    import io
+
+    from pptx import Presentation
+
+    pages = [{"title": "Продукты", "note": "", "lines": [], "strips": [],
+              "tables": [{"head": ["Продукт", "Договоров"],
+                          "rows": [["Квартира", "56"], ["Паркинг", "14"]]}]}]
+    deck = Presentation(io.BytesIO(sales_deck.build(
+        pages, title="Т", subtitle="с", footer="ф")))
+    chart = [shape.chart for slide in deck.slides for shape in slide.shapes
+             if getattr(shape, "has_chart", False) and shape.has_chart][0]
+    assert chart.has_title is False
