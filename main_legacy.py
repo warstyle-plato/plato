@@ -69,7 +69,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.20.83"
+VERSION = "0.20.84"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -32815,7 +32815,9 @@ function calculateAndOpen(id){
 
 // Строка состояния поверх страницы: «Считаю…» → «Готов». Без неё непонятно,
 // идёт ли работа, — расчёт занимает секунды, а окно выглядит замершим.
+let telegramProgressTimer=null;
 function telegramProgress(text){
+ if(telegramProgressTimer){clearTimeout(telegramProgressTimer);telegramProgressTimer=null}
  let bar=document.getElementById('telegramProgress');
  if(!text){if(bar)bar.remove();return}
  if(!bar){
@@ -32826,6 +32828,12 @@ function telegramProgress(text){
   document.body.appendChild(bar);
  }
  bar.textContent=text;
+ // Полоса без признака жизни неотличима от зависшей: окно замирало на
+ // «Считаю…» и не говорило ничего (владелец, 31.08.2026). Полминуты — это
+ // уже не «идёт расчёт», и об этом надо сказать.
+ telegramProgressTimer=setTimeout(()=>{
+  if(bar&&bar.isConnected)bar.textContent=text+' Дольше обычного — можно закрыть окно и повторить из чата.';
+ },30000);
 }
 
 async function telegramRecalculateAndFinish(tab){
@@ -39510,7 +39518,25 @@ function setupTelegramEditSubmit(){
  showTelegramResendButton();
 }
 
+// Мини-приложение висело на «Считаю…» после переноса тизера из бота
+// (владелец, 31.08.2026). Полоса ставится перед расчётом и снимается ПОСЛЕ
+// него строкой ниже — а если расчёт бросил, до этой строки не доходит вовсе, и
+// окно замирает навсегда. Обёртка снимает полосу при любом исходе и называет
+// причину: замершее окно не говорит человеку ничего, а ошибка говорит.
 async function initializeTelegramLaunch(){
+ try{
+  return await runTelegramLaunch();
+ }catch(e){
+  telegramProgress('');
+  const status=document.getElementById('glavapuStatus');
+  const why=escapeHtml(String((e&&e.message)||e||'причина не названа'));
+  if(status)status.innerHTML='<span class="import-error">Расчёт из чата не прошёл: '+why+'</span>';
+  const tg=window.Telegram&&window.Telegram.WebApp;
+  if(tg&&tg.MainButton){try{tg.MainButton.enable();tg.MainButton.setText('Обновить расчёт в Telegram')}catch(err){}}
+ }
+}
+
+async function runTelegramLaunch(){
  if(window.Telegram&&window.Telegram.WebApp){
   window.Telegram.WebApp.ready();
   window.Telegram.WebApp.expand();
