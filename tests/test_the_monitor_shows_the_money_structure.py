@@ -250,11 +250,17 @@ def test_the_money_line_names_its_source_and_its_boundary() -> None:
     summary = "\n".join(line for line in summary.splitlines()
                         if not line.lstrip().startswith("#"))
     assert "По РСС на завершение глав 2–3 нужно" in summary
-    assert "вся потребность стройки" in summary, "граница числа названа"
+    # Разницу объясняет не граница глав: обе величины про главы 2–3, и второй
+    # остаток назван прямо в той же фразе.
+    assert "вне глав" not in summary, "оговорка уводила от настоящей причины"
+    assert "По утверждённому бюджету тех же глав остаток другой" in summary
+    assert "решает методика, а не расчёт" in summary
     assert "утверждённому ДДС" not in summary, "источник снова назван чужим именем"
 
     # На экране то же самое: имена контуров и подписи.
     assert "Потребность на завершение по РСС" in PAGE
+    assert "что вне их и вне книги" not in PAGE, "объяснение границей глав вернулось"
+    assert "обе величины про главы 2–3" in PAGE
     assert "kpi('Дефицит · РСС'" in PAGE and "kpi('Резерв · РСС'" in PAGE
     assert "текущий ДДС" not in PAGE
     # Помесячная программа — это программа РСС, а не отдельный ДДС.
@@ -279,7 +285,8 @@ def test_both_remainders_get_their_own_deficit() -> None:
     assert "Потребность по утверждённому бюджету" in body
     assert "budgetGap=budgetNeed==null?null:Math.max(0,budgetNeed-fuel)" in body
     assert "Два остатка потребности в одной книге расходятся" in body
-    assert "Это не дефицит, а разные определения остатка" in body
+    assert "Это не дефицит и не разница глав" in body
+    assert "обе величины про главы 2–3" in body
     # Какой из остатков верен, решает не экран.
     assert "решает методика, а не расчёт" in body
     # Без книги бюджетного контура нет вовсе — и его строк тоже.
