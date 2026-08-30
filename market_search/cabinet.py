@@ -2349,6 +2349,20 @@ function salesPlansBlock(d){
     +'Цена — по квартирам у всех троих: общая цена метра смешала бы паркинг с жильём.'
     +(rows.some(r=>r.pale)?' Бледный столбик — незакрытый квартал: в нём меньше трёх месяцев факта, и рядом с полным плановым он читался бы как провал.':'')
     +'</div>';
+  // Числа этого блока жили только внутри картинки: в PDF их не выделить, а в
+  // презентацию не перенести вовсе — там от раздела оставались одни слова.
+  // У остальных блоков такая раскладка есть, у этого не было.
+  html+='<details style="margin-top:8px"><summary>Кварталы числами</summary>'
+    +salesTable(['Квартал',metric.name+', факт',metric.name+', план ФМ',
+                 metric.name+', план банка','Цена факт, ₽/м²','Цена ФМ, ₽/м²','Цена банка, ₽/м²'],
+      rows.map(r=>[esc(r.label)+(r.pale?' (часть)':''),
+        r.value===null||r.value===undefined?'—':metric.show(r.value),
+        r.fm===null||r.fm===undefined?'—':metric.show(r.fm),
+        r.bank===null||r.bank===undefined?'—':metric.show(r.bank),
+        r.factPrice?num(r.factPrice):'—',
+        r.fmPrice?num(r.fmPrice):'—',
+        r.bankPrice?num(r.bankPrice):'—']))
+    +'</details>';
   return html;
 }
 
