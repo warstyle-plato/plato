@@ -208,3 +208,21 @@ def test_no_method_is_matched_to_our_checklist_before_its_answer_is_seen() -> No
     """
     for row in bnmap.WANTED:
         assert "у bnMAP" not in row, f"строка «{row['вопрос']}» сопоставлена по догадке"
+
+
+def test_bnmap_stands_beside_the_report_and_not_inside_it() -> None:
+    """Действующий отчёт собирает «Пульс», и bnMAP в него не входит.
+
+    Владелец сказал это прямо (30.08.2026): «не сломай текущий рыночный отчет,
+    этот пока тест для сравнения что лучше». Пока два источника не сверены на
+    живых числах, менять в отчёте нечего — а подключить второй источник «на
+    пробу» ровно в тот момент, когда он ещё ничего не отвечает, значит получить
+    отчёт, у которого половина чисел ниоткуда.
+
+    Сторож дешёвый и ловит главное: отчёт не должен знать про bnMAP, пока это
+    решение не принято вслух.
+    """
+    report = (ROOT / "market_search" / "service_v6.py").read_text()
+    assert "bnmap" not in report.lower(), "bnMAP просочился в сборку отчёта"
+    pulse = (ROOT / "market_search" / "pulse.py").read_text()
+    assert "bnmap" not in pulse.lower(), "bnMAP просочился в читателя «Пульса»"
