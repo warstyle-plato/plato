@@ -69,7 +69,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.20.56"
+VERSION = "0.20.57"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -464,7 +464,7 @@ def tep_ratios_changed(raw: Any) -> list[str]:
 VRI_USE_TYPES_PLACEHOLDER = "__DEVELOPAID_VRI_USE_TYPES__"
 
 TEP_DEFAULT = {'apartments': {'label': 'Квартиры', 'gns': 130716.66012842482, 'total_area': 117647.0588235294, 'useful': 80000, 'saleable': 80000, 'transfer': 0, 'units': 1361.815754339119}, 'ground_commercial': {'label': 'Коммерция 1 эт.', 'gns': 9664.049734985854, 'total_area': 8695.652173913044, 'useful': 7826.08695652174, 'saleable': 7826.08695652174, 'transfer': 0, 'units': 0}, 'standalone_retail': {'label': 'Коммерция ОСЗ', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'offices': {'label': 'Офисы', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'above_parking': {'label': 'Наземный паркинг', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'underground_parking': {'label': 'Подземный паркинг', 'gns': 38763, 'total_area': 38763, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 1107.5142857142857}, 'storage': {'label': 'Кладовки', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'kindergarten': {'label': 'ДОУ', 'gns': 0, 'total_area': 3000, 'useful': 0, 'saleable': 0, 'transfer': 3000, 'units': 250}, 'school': {'label': 'СОШ', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'clinic': {'label': 'Поликлиника', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'other_mandatory': {'label': 'Прочие обязательные объекты', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}}
-FIELD_GROUPS = [['Сделка и сроки', [['purchase_price_mln', 'Стоимость покупки / цена входа', 'млн ₽', 'number'], ['land_rights_cost_mln', 'Оформление земельных правоотношений / смена ВРИ', 'млн ₽', 'number'], ['project_start', 'Начало проекта', 'дата', 'date'], ['ird_months', 'Срок ИРД до РнС', 'мес.; минимум 1 — ноль модель не считает', 'number'], ['construction_months', 'Срок строительства', 'мес.', 'number'], ['sales_lag_months', 'Лаг старта продаж после РнС', 'мес.', 'number'], ['bridge_repay_lag_months', 'Лаг погашения БРИДЖ после РнС', 'мес.', 'number'], ['residual_sales_months', 'Остаточные продажи после РВЭ', 'мес.', 'number']]], ['Смена ВРИ и земельные права', [['vri_required', 'Требуется изменение ВРИ', 'Да / Нет', 'checkbox'], ['vri_region', 'Регион', 'регион', 'select', [['msk', 'Москва'], ['mo', 'Московская область']]], ['land_right', 'Право на участок', 'право', 'select', [['ownership', 'Собственность'], ['lease', 'Аренда']]], ['vri_obligation_date_mode', 'Дата обязательства', 'режим', 'select', [['before_rns_1m', 'За месяц до РнС — экспертная оценка'], ['at_rns', 'В дату РнС'], ['before_rns_3m', 'За три месяца до РнС'], ['after_purchase', 'Через N мес. после покупки'], ['manual', 'Задана вручную']]], ['vri_months_after_purchase', 'Месяцев после покупки', 'мес.', 'number'], ['vri_obligation_date', 'Дата возникновения обязательства', 'точная дата по документу; пусто — экспертная оценка', 'date'], ['vri_payment_mode', 'Порядок оплаты', 'режим', 'select', [['lump', 'Единовременно'], ['installment', 'Рассрочка']]], ['vri_installment_years', 'Срок рассрочки', 'лет (Москва: 1, 3, 6)', 'number'], ['vri_periodicity_months', 'Периодичность платежей', 'мес.; в Москве всегда квартал', 'select', [['1', 'Ежемесячно'], ['3', 'Ежеквартально'], ['6', 'Раз в полгода'], ['12', 'Раз в год']]], ['vri_initial_pct', 'Первый взнос по рассрочке', '% от суммы', 'number'], ['vri_schedule_mode', 'График платежей', 'режим', 'select', [['auto', 'Автоматический'], ['manual', 'Ручной']]], ['vri_interest_enabled', 'Проценты на остаток', 'режим', 'select', [['', 'По региону'], ['1', 'Начисляются'], ['0', 'Не начисляются']]], ['vri_interest_spread_pp', 'Спред к ключевой ставке по рассрочке', 'п.п.', 'number'], ['vri_early_repay_after_pf', 'Досрочное погашение остатка после открытия ПФ', 'Да / Нет', 'checkbox'], ['vri_pf_open_date', 'Дата открытия ПФ', 'дата (пусто — РнС)', 'date'], ['vri_in_bank_budget', 'ВРИ включена в банковский бюджет', 'Да / Нет', 'checkbox'], ['vri_financing_mode', 'Источники оплаты', 'режим', 'select', [['auto', 'Как весь проект'], ['shares', 'Заданные доли']]], ['vri_share_bridge_pct', 'Доля БРИДЖ', '%', 'number'], ['vri_share_pf_pct', 'Доля ПФ', '%', 'number'], ['vri_share_equity_pct', 'Доля собственного капитала', '%', 'number'], ['vri_relief_mode', 'Льгота по плате', 'режим', 'select', [['none', 'Нет'], ['percent', 'Доля от суммы'], ['amount', 'Фиксированная сумма']]], ['vri_relief_pct', 'Льгота — доля от суммы', '%', 'number'], ['vri_relief_mln', 'Льгота — сумма', 'млн ₽', 'number'], ['vri_transfer_offset_mln', 'Зачёт переданных муниципалитету площадей', 'млн ₽; по соглашению — уменьшает плату за ВРИ', 'number'], ['vri_security_cost_mln', 'Расходы на обеспечение обязательства', 'млн ₽', 'number']]], ['Продажи', [['apartment_price_th', 'Стартовая цена квартир', 'тыс. ₽/м²', 'number'], ['commercial_price_th', 'Стартовая цена коммерции 1 этажа', 'тыс. ₽/м²', 'number'], ['parking_price_th', 'Цена подземного машино-места', 'тыс. ₽/шт.', 'number'], ['storage_price_th', 'Цена кладовой', 'тыс. ₽/шт.', 'number'], ['share_before_rve_pct', 'Доля продаж до РВЭ', '%', 'number'], ['pace_adjustment_pct', 'Корректировка темпа', '%', 'number'], ['inflation_after_rve_pct', 'Инфляция после РВЭ', '% год', 'number'], ['seasonal_reduction_pct', 'Сезонное снижение темпа', '%', 'number'], ['growth_stage1_pct', 'Рост цены — этап 1', '%', 'number'], ['growth_stage2_pct', 'Рост цены — этап 2', '%', 'number'], ['growth_stage3_pct', 'Рост цены — этап 3', '%', 'number'], ['growth_stage4_pct', 'Рост цены — этап 4', '%', 'number'], ['monthly_growth_pre_pct', 'Ежемесячный рост цены до РВЭ', '%/мес.', 'number'], ['monthly_growth_post_pct', 'Ежемесячный рост цены после РВЭ', '%/мес.', 'number']]], ['Строительство', [['demolition_area_sqm', 'Снос — площадь сносимого', 'м²; по обязательствам КРТ, а не по новой ГНС', 'number'], ['demolition_cost_th_per_sqm', 'Снос — стоимость', 'тыс. ₽/м² сносимого; пусто при непустой площади — статья не посчитана', 'number'], ['resettlement_cost_mln', 'Расселение', 'млн ₽; отдельное обязательство КРТ, не соцнагрузка', 'number'], ['ird_th_per_sqm', 'ИРД и согласования', 'тыс. ₽/м² ГНС', 'number'], ['design_p_th_per_sqm', 'Проектирование стадии П', 'тыс. ₽/м² ГНС', 'number'], ['design_rd_th_per_sqm', 'Проектирование стадии РД', 'тыс. ₽/м² ГНС', 'number'], ['preparation_th_per_sqm', 'Подготовительные работы', 'тыс. ₽/м² ГНС', 'number'], ['main_above_th_per_sqm', 'Основное строительство — наземная часть', 'тыс. ₽/м² наземной части', 'number'], ['main_under_th_per_sqm', 'Основное строительство — подземная часть', 'тыс. ₽/м² подземной части', 'number'], ['utilities_th_per_sqm', 'Наружные инженерные сети', 'тыс. ₽/м² ГНС', 'number'], ['landscaping_th_per_sqm', 'Благоустройство', 'тыс. ₽/м² ГНС', 'number'], ['commissioning_th_per_sqm', 'Сдача и ввод', 'тыс. ₽/м² ГНС', 'number'], ['site_maintenance_th_per_sqm', 'Содержание стройплощадки', 'тыс. ₽/м² ГНС', 'number'], ['gc_fee_pct', 'Вознаграждение генподрядчика', '% СМР', 'number'], ['author_supervision_pct', 'Авторский надзор', '% от П + РД', 'number'], ['project_management_pct', 'Управление проектом — зарплаты и накладные', '% прямых затрат', 'number'], ['technical_supervision_pct', 'Технический заказчик / стройконтроль (технадзор)', '% СМР', 'number'], ['reserve_pct', 'Резерв', '%', 'number']]], ['Коммерческие расходы и налоги', [['marketing_pct', 'Маркетинг', '% выручки', 'number'], ['selling_pct', 'Расходы на продажи', '% выручки', 'number'], ['profit_tax_pct', 'Налог на прибыль', '%', 'number'], ['vat_pct', 'НДС', '%', 'number']]], ['Финансирование', [['pre_pf_own_funds_mln', 'Собственные средства до открытия ПФ', 'млн ₽; тратятся раньше БРИДЖа и процентов не несут', 'number'], ['bridge_spread_pp', 'Спред БРИДЖ', 'п.п.', 'number'], ['bridge_cap_spread_pp', 'Спред капитализации БРИДЖ', 'п.п.', 'number'], ['pf_spread_pp', 'Спред ПФ', 'п.п.', 'number'], ['pf_special_pct', 'Ставка ПФ при покрытии эскроу 1×', '%', 'number'], ['pf_limit_approved_mln', 'Одобренный лимит ПФ', 'млн ₽; 0 — лимит выводится из потребности. Задан — становится потолком, а нехватка показывается отдельно', 'number'], ['pf_special_steps', 'Ступени ставки по покрытию эскроу', 'лестница как в НКЛ: диапазон покрытия — своя ставка; по умолчанию лестница Сбера, впишите свою из договора. Пусто — одна ставка выше', 'pf_steps'], ['limit_fee_pct', 'Плата за лимит', '%', 'number'], ['reservation_fee_pct', 'Плата за резервирование', '%', 'number'], ['discount_rate_pct', 'Ставка дисконтирования', '%', 'number'], ['bridge_interest_mode', 'Проценты БРИДЖ при рефинансировании', 'режим', 'finance_select']]], ['Социальная нагрузка', [['social_mode', 'Форма исполнения', 'режим', 'select'], ['social_comp_date', 'Дата денежной компенсации', 'дата', 'date'], ['social_compensation_mln', 'Социальный платеж / компенсация по ГлавАПУ', 'млн ₽', 'number'], ['kindergarten_places', 'ДОУ — количество мест', 'мест', 'number'], ['kindergarten_cost_mln_per_place', 'ДОУ — себестоимость места', 'млн ₽/место', 'number'], ['kindergarten_start', 'ДОУ — начало строительства', 'дата', 'date'], ['kindergarten_months', 'ДОУ — срок строительства', 'мес.', 'number'], ['school_places', 'СОШ — количество мест', 'мест', 'number'], ['school_cost_mln_per_place', 'СОШ — себестоимость места', 'млн ₽/место', 'number'], ['school_start', 'СОШ — начало строительства', 'дата', 'date'], ['school_months', 'СОШ — срок строительства', 'мес.', 'number'], ['clinic_capacity', 'Поликлиника — мощность', 'пос./смену', 'number'], ['clinic_cost_mln_per_unit', 'Поликлиника — себестоимость мощности', 'млн ₽/(пос./смену)', 'number'], ['clinic_start', 'Поликлиника — начало строительства', 'дата', 'date'], ['clinic_months', 'Поликлиника — срок строительства', 'мес.', 'number'], ['social_dou_gba_sqm', 'ДОУ — общая площадь', 'м²', 'number'], ['social_dou_norm_sqm', 'ДОУ — норматив площади на место', 'м²/место', 'number'], ['social_school_gba_sqm', 'СОШ — общая площадь', 'м²', 'number'], ['social_school_norm_sqm', 'СОШ — норматив площади на место', 'м²/место', 'number'], ['social_clinic_gba_sqm', 'Поликлиника — общая площадь', 'м²', 'number'], ['social_clinic_norm_sqm', 'Поликлиника — норматив площади', 'м²/ед.', 'number']]], ['МФОЦ / офисы', [['offices_enabled', 'Объект включен', 'Да / Нет', 'checkbox'], ['offices_gba_sqm', 'Общая площадь (GBA)', 'м²', 'number'], ['offices_saleable_sqm', 'Продаваемая площадь', 'м²', 'number'], ['offices_start', 'Начало строительства', 'дата', 'date'], ['offices_months', 'Срок строительства', 'мес.', 'number'], ['offices_cost_th_per_sqm', 'Себестоимость строительства', 'тыс. ₽/м² GBA', 'number'], ['offices_sales_start', 'Старт продаж', 'дата', 'date'], ['offices_price_th_per_sqm', 'Стартовая цена', 'тыс. ₽/м²', 'number'], ['offices_share_before_rve_pct', 'Доля продаж до РВЭ', '%', 'number'], ['offices_residual_months', 'Остаточные продажи после РВЭ', 'мес.', 'number'], ['offices_growth_pre_pct', 'Рост цены до РВЭ', '%/мес.', 'number'], ['offices_growth_post_pct', 'Рост цены после РВЭ', '%/мес.', 'number']]], ['ТЦ / коммерция ОСЗ', [['retail_enabled', 'Объект включен', 'Да / Нет', 'checkbox'], ['retail_gba_sqm', 'Общая площадь (GBA)', 'м²', 'number'], ['retail_saleable_sqm', 'Продаваемая площадь', 'м²', 'number'], ['retail_start', 'Начало строительства', 'дата', 'date'], ['retail_months', 'Срок строительства', 'мес.', 'number'], ['retail_cost_th_per_sqm', 'Себестоимость строительства', 'тыс. ₽/м² GBA', 'number'], ['retail_sales_start', 'Старт продаж', 'дата', 'date'], ['retail_price_th_per_sqm', 'Стартовая цена', 'тыс. ₽/м²', 'number'], ['retail_share_before_rve_pct', 'Доля продаж до РВЭ', '%', 'number'], ['retail_residual_months', 'Остаточные продажи после РВЭ', 'мес.', 'number'], ['retail_growth_pre_pct', 'Рост цены до РВЭ', '%/мес.', 'number'], ['retail_growth_post_pct', 'Рост цены после РВЭ', '%/мес.', 'number']]], ['Приобъектная парковка нежилья', [['parking_k1', 'К1 — доступность рельсового каркаса', '0,75 до 1200 м · 0,9 до 2200 м · 1,0 дальше; по пешеходным путям до входа на станцию. 0 — не задан, расчёт откажется', 'number'], ['parking_k2', 'К2 — деловая активность района', 'приложение 3 к 945-ПП, по району Москвы. 0 — не задан', 'number'], ['parking_design_mode', 'Край норматива (Московская область)', 'режим', 'select', [['maximum', 'Верхний — больше мест'], ['minimum', 'Нижний — меньше мест']]], ['ground_commercial_parking_surface', 'Коммерция 1 эт. — места в наземный паркинг', 'Да / Нет; снято — свой подземный', 'checkbox'], ['offices_parking_surface', 'Офисы — места в наземный паркинг', 'Да / Нет; снято — свой подземный', 'checkbox'], ['retail_parking_surface', 'ТЦ / ОСЗ — места в наземный паркинг', 'Да / Нет; снято — свой подземный', 'checkbox']]], ['Подземный паркинг', [['underground_parking_disabled', 'Отказ от подземного паркинга', 'Да / Нет; места переносятся в наземный', 'checkbox'], ['underground_manual_spaces', 'Машино-места — решение проекта', 'шт.; из расчёта ТЭП — меняйте, площадь пересчитается', 'number'], ['underground_manual_gns_sqm', 'Площадь подземной парковки', 'м²; пересчитывается из мест и обратно', 'number'], ['underground_area_per_space_sqm', 'Норматив площади на машино-место', 'м²/место, гросс: рампы, проезды и техпомещения включены', 'number']]], ['Наземный паркинг', [['above_parking_enabled', 'Объект включен', 'Да / Нет', 'checkbox'], ['above_parking_spaces', 'Количество машино-мест', 'шт.', 'number'], ['above_parking_cost_mln_per_space', 'Себестоимость одного места', 'млн ₽/место', 'number'], ['above_parking_start', 'Начало строительства', 'дата', 'date'], ['above_parking_months', 'Срок строительства', 'мес.', 'number'], ['above_parking_sales_start', 'Старт продаж', 'дата', 'date'], ['above_parking_price_mln_per_space', 'Стартовая цена места', 'млн ₽/место', 'number'], ['above_parking_share_before_rve_pct', 'Доля продаж до РВЭ', '%', 'number'], ['above_parking_residual_months', 'Остаточные продажи после РВЭ', 'мес.', 'number'], ['above_parking_growth_pre_pct', 'Рост цены до РВЭ', '%/мес.', 'number'], ['above_parking_growth_post_pct', 'Рост цены после РВЭ', '%/мес.', 'number'], ['above_parking_area_per_space_sqm', 'Площадь на 1 место для ТЭП', 'м²/место', 'number']]]]
+FIELD_GROUPS = [['Сделка и сроки', [['purchase_price_mln', 'Стоимость покупки / цена входа', 'млн ₽', 'number'], ['land_rights_cost_mln', 'Оформление земельных правоотношений / смена ВРИ', 'млн ₽', 'number'], ['project_start', 'Начало проекта', 'дата', 'date'], ['ird_months', 'Срок ИРД до РнС', 'мес.; минимум 1 — ноль модель не считает', 'number'], ['construction_months', 'Срок строительства', 'мес.', 'number'], ['sales_lag_months', 'Лаг старта продаж после РнС', 'мес.', 'number'], ['bridge_repay_lag_months', 'Лаг погашения БРИДЖ после РнС', 'мес.', 'number'], ['residual_sales_months', 'Остаточные продажи после РВЭ', 'мес.', 'number']]], ['Смена ВРИ и земельные права', [['vri_required', 'Требуется изменение ВРИ', 'Да / Нет', 'checkbox'], ['vri_region', 'Регион', 'регион', 'select', [['msk', 'Москва'], ['mo', 'Московская область']]], ['land_right', 'Право на участок', 'право', 'select', [['ownership', 'Собственность'], ['lease', 'Аренда']]], ['vri_obligation_date_mode', 'Дата обязательства', 'режим', 'select', [['before_rns_1m', 'За месяц до РнС — экспертная оценка'], ['at_rns', 'В дату РнС'], ['before_rns_3m', 'За три месяца до РнС'], ['after_purchase', 'Через N мес. после покупки'], ['manual', 'Задана вручную']]], ['vri_months_after_purchase', 'Месяцев после покупки', 'мес.', 'number'], ['vri_obligation_date', 'Дата возникновения обязательства', 'точная дата по документу; пусто — экспертная оценка', 'date'], ['vri_payment_mode', 'Порядок оплаты', 'режим', 'select', [['lump', 'Единовременно'], ['installment', 'Рассрочка']]], ['vri_installment_years', 'Срок рассрочки', 'лет (Москва: 1, 3, 6)', 'number'], ['vri_periodicity_months', 'Периодичность платежей', 'мес.; в Москве всегда квартал', 'select', [['1', 'Ежемесячно'], ['3', 'Ежеквартально'], ['6', 'Раз в полгода'], ['12', 'Раз в год']]], ['vri_initial_pct', 'Первый взнос по рассрочке', '% от суммы', 'number'], ['vri_schedule_mode', 'График платежей', 'режим', 'select', [['auto', 'Автоматический'], ['manual', 'Ручной']]], ['vri_interest_enabled', 'Проценты на остаток', 'режим', 'select', [['', 'По региону'], ['1', 'Начисляются'], ['0', 'Не начисляются']]], ['vri_interest_spread_pp', 'Спред к ключевой ставке по рассрочке', 'п.п.', 'number'], ['vri_early_repay_after_pf', 'Досрочное погашение остатка после открытия ПФ', 'Да / Нет', 'checkbox'], ['vri_pf_open_date', 'Дата открытия ПФ', 'дата (пусто — РнС)', 'date'], ['vri_in_bank_budget', 'ВРИ включена в банковский бюджет', 'Да / Нет', 'checkbox'], ['vri_financing_mode', 'Источники оплаты', 'режим', 'select', [['auto', 'Как весь проект'], ['shares', 'Заданные доли']]], ['vri_share_bridge_pct', 'Доля БРИДЖ', '%', 'number'], ['vri_share_pf_pct', 'Доля ПФ', '%', 'number'], ['vri_share_equity_pct', 'Доля собственного капитала', '%', 'number'], ['vri_relief_mode', 'Льгота по плате', 'режим', 'select', [['none', 'Нет'], ['percent', 'Доля от суммы'], ['amount', 'Фиксированная сумма']]], ['vri_relief_pct', 'Льгота — доля от суммы', '%', 'number'], ['vri_relief_mln', 'Льгота — сумма', 'млн ₽', 'number'], ['vri_transfer_offset_mln', 'Зачёт переданных муниципалитету площадей', 'млн ₽; по соглашению — уменьшает плату за ВРИ', 'number'], ['vri_security_cost_mln', 'Расходы на обеспечение обязательства', 'млн ₽', 'number']]], ['Продажи', [['apartment_price_th', 'Стартовая цена квартир', 'тыс. ₽/м²', 'number'], ['commercial_price_th', 'Стартовая цена коммерции 1 этажа', 'тыс. ₽/м²', 'number'], ['parking_price_th', 'Цена подземного машино-места', 'тыс. ₽/шт.', 'number'], ['storage_price_th', 'Цена кладовой', 'тыс. ₽/шт.', 'number'], ['share_before_rve_pct', 'Доля продаж до РВЭ', '%', 'number'], ['pace_adjustment_pct', 'Корректировка темпа', '%', 'number'], ['inflation_after_rve_pct', 'Инфляция после РВЭ', '% год', 'number'], ['seasonal_reduction_pct', 'Сезонное снижение темпа', '%', 'number'], ['growth_stage1_pct', 'Рост цены — этап 1', '%', 'number'], ['growth_stage2_pct', 'Рост цены — этап 2', '%', 'number'], ['growth_stage3_pct', 'Рост цены — этап 3', '%', 'number'], ['growth_stage4_pct', 'Рост цены — этап 4', '%', 'number'], ['monthly_growth_pre_pct', 'Ежемесячный рост цены до РВЭ', '%/мес.', 'number'], ['monthly_growth_post_pct', 'Ежемесячный рост цены после РВЭ', '%/мес.', 'number']]], ['Строительство', [['demolition_area_sqm', 'Снос — площадь сносимого', 'м²; по обязательствам КРТ, а не по новой ГНС', 'number'], ['demolition_cost_th_per_sqm', 'Снос — стоимость', 'тыс. ₽/м² сносимого; пусто при непустой площади — статья не посчитана', 'number'], ['resettlement_cost_mln', 'Расселение', 'млн ₽; отдельное обязательство КРТ, не соцнагрузка', 'number'], ['ird_th_per_sqm', 'ИРД и согласования', 'тыс. ₽/м² ГНС', 'number'], ['design_p_th_per_sqm', 'Проектирование стадии П', 'тыс. ₽/м² ГНС', 'number'], ['design_rd_th_per_sqm', 'Проектирование стадии РД', 'тыс. ₽/м² ГНС', 'number'], ['preparation_th_per_sqm', 'Подготовительные работы', 'тыс. ₽/м² ГНС', 'number'], ['main_above_th_per_sqm', 'Основное строительство — наземная часть', 'тыс. ₽/м² наземной части', 'number'], ['main_under_th_per_sqm', 'Основное строительство — подземная часть', 'тыс. ₽/м² подземной части', 'number'], ['utilities_th_per_sqm', 'Наружные инженерные сети, в т.ч. плата за техприсоединение', 'тыс. ₽/м² ГНС; ТП зависит от мощности, а не от метров — на длинном проекте проверяйте отдельно', 'number'], ['landscaping_th_per_sqm', 'Благоустройство', 'тыс. ₽/м² ГНС', 'number'], ['commissioning_th_per_sqm', 'Сдача и ввод', 'тыс. ₽/м² ГНС', 'number'], ['site_maintenance_th_per_sqm', 'Содержание стройплощадки', 'тыс. ₽/м² ГНС', 'number'], ['gc_fee_pct', 'Вознаграждение генподрядчика', '% СМР', 'number'], ['author_supervision_pct', 'Авторский надзор', '% от П + РД', 'number'], ['project_management_pct', 'Управление проектом — зарплаты и накладные', '% прямых затрат', 'number'], ['technical_supervision_pct', 'Технический заказчик / стройконтроль (технадзор)', '% СМР', 'number'], ['reserve_pct', 'Резерв', '%', 'number']]], ['Коммерческие расходы и налоги', [['marketing_pct', 'Маркетинг', '% выручки', 'number'], ['selling_pct', 'Расходы на продажи', '% выручки', 'number'], ['profit_tax_pct', 'Налог на прибыль', '%', 'number'], ['vat_pct', 'НДС', '%', 'number']]], ['Финансирование', [['pre_pf_own_funds_mln', 'Собственные средства до открытия ПФ', 'млн ₽; тратятся раньше БРИДЖа и процентов не несут', 'number'], ['bridge_spread_pp', 'Спред БРИДЖ', 'п.п.', 'number'], ['bridge_cap_spread_pp', 'Спред капитализации БРИДЖ', 'п.п.', 'number'], ['pf_spread_pp', 'Спред ПФ', 'п.п.', 'number'], ['pf_special_pct', 'Ставка ПФ при покрытии эскроу 1×', '%', 'number'], ['pf_limit_approved_mln', 'Одобренный лимит ПФ', 'млн ₽; 0 — лимит выводится из потребности. Задан — становится потолком, а нехватка показывается отдельно', 'number'], ['pf_special_steps', 'Ступени ставки по покрытию эскроу', 'лестница как в НКЛ: диапазон покрытия — своя ставка; по умолчанию лестница Сбера, впишите свою из договора. Пусто — одна ставка выше', 'pf_steps'], ['limit_fee_pct', 'Плата за лимит', '%', 'number'], ['reservation_fee_pct', 'Плата за резервирование', '%', 'number'], ['discount_rate_pct', 'Ставка дисконтирования', '%', 'number'], ['bridge_interest_mode', 'Проценты БРИДЖ при рефинансировании', 'режим', 'finance_select']]], ['Социальная нагрузка', [['social_mode', 'Форма исполнения', 'режим', 'select'], ['social_comp_date', 'Дата денежной компенсации', 'дата', 'date'], ['social_compensation_mln', 'Социальный платеж / компенсация по ГлавАПУ', 'млн ₽', 'number'], ['kindergarten_places', 'ДОУ — количество мест', 'мест', 'number'], ['kindergarten_cost_mln_per_place', 'ДОУ — себестоимость места', 'млн ₽/место', 'number'], ['kindergarten_start', 'ДОУ — начало строительства', 'дата', 'date'], ['kindergarten_months', 'ДОУ — срок строительства', 'мес.', 'number'], ['school_places', 'СОШ — количество мест', 'мест', 'number'], ['school_cost_mln_per_place', 'СОШ — себестоимость места', 'млн ₽/место', 'number'], ['school_start', 'СОШ — начало строительства', 'дата', 'date'], ['school_months', 'СОШ — срок строительства', 'мес.', 'number'], ['clinic_capacity', 'Поликлиника — мощность', 'пос./смену', 'number'], ['clinic_cost_mln_per_unit', 'Поликлиника — себестоимость мощности', 'млн ₽/(пос./смену)', 'number'], ['clinic_start', 'Поликлиника — начало строительства', 'дата', 'date'], ['clinic_months', 'Поликлиника — срок строительства', 'мес.', 'number'], ['social_dou_gba_sqm', 'ДОУ — общая площадь', 'м²', 'number'], ['social_dou_norm_sqm', 'ДОУ — норматив площади на место', 'м²/место', 'number'], ['social_school_gba_sqm', 'СОШ — общая площадь', 'м²', 'number'], ['social_school_norm_sqm', 'СОШ — норматив площади на место', 'м²/место', 'number'], ['social_clinic_gba_sqm', 'Поликлиника — общая площадь', 'м²', 'number'], ['social_clinic_norm_sqm', 'Поликлиника — норматив площади', 'м²/ед.', 'number']]], ['МФОЦ / офисы', [['offices_enabled', 'Объект включен', 'Да / Нет', 'checkbox'], ['offices_gba_sqm', 'Общая площадь (GBA)', 'м²', 'number'], ['offices_saleable_sqm', 'Продаваемая площадь', 'м²', 'number'], ['offices_start', 'Начало строительства', 'дата', 'date'], ['offices_months', 'Срок строительства', 'мес.', 'number'], ['offices_cost_th_per_sqm', 'Себестоимость строительства', 'тыс. ₽/м² GBA', 'number'], ['offices_sales_start', 'Старт продаж', 'дата', 'date'], ['offices_price_th_per_sqm', 'Стартовая цена', 'тыс. ₽/м²', 'number'], ['offices_share_before_rve_pct', 'Доля продаж до РВЭ', '%', 'number'], ['offices_residual_months', 'Остаточные продажи после РВЭ', 'мес.', 'number'], ['offices_growth_pre_pct', 'Рост цены до РВЭ', '%/мес.', 'number'], ['offices_growth_post_pct', 'Рост цены после РВЭ', '%/мес.', 'number']]], ['ТЦ / коммерция ОСЗ', [['retail_enabled', 'Объект включен', 'Да / Нет', 'checkbox'], ['retail_gba_sqm', 'Общая площадь (GBA)', 'м²', 'number'], ['retail_saleable_sqm', 'Продаваемая площадь', 'м²', 'number'], ['retail_start', 'Начало строительства', 'дата', 'date'], ['retail_months', 'Срок строительства', 'мес.', 'number'], ['retail_cost_th_per_sqm', 'Себестоимость строительства', 'тыс. ₽/м² GBA', 'number'], ['retail_sales_start', 'Старт продаж', 'дата', 'date'], ['retail_price_th_per_sqm', 'Стартовая цена', 'тыс. ₽/м²', 'number'], ['retail_share_before_rve_pct', 'Доля продаж до РВЭ', '%', 'number'], ['retail_residual_months', 'Остаточные продажи после РВЭ', 'мес.', 'number'], ['retail_growth_pre_pct', 'Рост цены до РВЭ', '%/мес.', 'number'], ['retail_growth_post_pct', 'Рост цены после РВЭ', '%/мес.', 'number']]], ['Приобъектная парковка нежилья', [['parking_k1', 'К1 — доступность рельсового каркаса', '0,75 до 1200 м · 0,9 до 2200 м · 1,0 дальше; по пешеходным путям до входа на станцию. 0 — не задан, расчёт откажется', 'number'], ['parking_k2', 'К2 — деловая активность района', 'приложение 3 к 945-ПП, по району Москвы. 0 — не задан', 'number'], ['parking_design_mode', 'Край норматива (Московская область)', 'режим', 'select', [['maximum', 'Верхний — больше мест'], ['minimum', 'Нижний — меньше мест']]], ['ground_commercial_parking_surface', 'Коммерция 1 эт. — места в наземный паркинг', 'Да / Нет; снято — свой подземный', 'checkbox'], ['offices_parking_surface', 'Офисы — места в наземный паркинг', 'Да / Нет; снято — свой подземный', 'checkbox'], ['retail_parking_surface', 'ТЦ / ОСЗ — места в наземный паркинг', 'Да / Нет; снято — свой подземный', 'checkbox']]], ['Подземный паркинг', [['underground_parking_disabled', 'Отказ от подземного паркинга', 'Да / Нет; места переносятся в наземный', 'checkbox'], ['underground_manual_spaces', 'Машино-места — решение проекта', 'шт.; из расчёта ТЭП — меняйте, площадь пересчитается', 'number'], ['underground_manual_gns_sqm', 'Площадь подземной парковки', 'м²; пересчитывается из мест и обратно', 'number'], ['underground_area_per_space_sqm', 'Норматив площади на машино-место', 'м²/место, гросс: рампы, проезды и техпомещения включены', 'number']]], ['Наземный паркинг', [['above_parking_enabled', 'Объект включен', 'Да / Нет', 'checkbox'], ['above_parking_spaces', 'Количество машино-мест', 'шт.', 'number'], ['above_parking_cost_mln_per_space', 'Себестоимость одного места', 'млн ₽/место', 'number'], ['above_parking_start', 'Начало строительства', 'дата', 'date'], ['above_parking_months', 'Срок строительства', 'мес.', 'number'], ['above_parking_sales_start', 'Старт продаж', 'дата', 'date'], ['above_parking_price_mln_per_space', 'Стартовая цена места', 'млн ₽/место', 'number'], ['above_parking_share_before_rve_pct', 'Доля продаж до РВЭ', '%', 'number'], ['above_parking_residual_months', 'Остаточные продажи после РВЭ', 'мес.', 'number'], ['above_parking_growth_pre_pct', 'Рост цены до РВЭ', '%/мес.', 'number'], ['above_parking_growth_post_pct', 'Рост цены после РВЭ', '%/мес.', 'number'], ['above_parking_area_per_space_sqm', 'Площадь на 1 место для ТЭП', 'м²/место', 'number']]]]
 # Удельные умолчания сверены с банковским бюджетом собственного проекта
 # (Гродненская, 18; ГНС наземной 19 341,14 м², подземная 3 733,2 м², лимит Сбера
 # по главам). Проценты сошлись — генподряд 7%, коммерческие 7% от выручки,
@@ -12627,7 +12627,9 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     # Прибыль при непогашенном долге — бумажная: для инвестора проект
     # дефолтный, а не прибыльный (решение владельца, 27.08.2026), и строка
     # прибыли обязана говорить это сама, а не полагаться на вывод ниже.
-    _default_note=" — бумажная: долг не погашен" if float(financing.get('ending_pf') or 0)>500_000 else ""
+    _carried_out=float(financing.get('debt_carried_out') or 0)
+    _default_note=(" — бумажная: долг не погашен" if float(financing.get('ending_pf') or 0)>500_000
+                   else " — долг очереди принят следующей" if _carried_out>500_000 else "")
     kpis=[
         *_pdf_entry_cost_rows(result, expense_structure),
         ["Выручка",_pdf_money(summary.get('revenue'))],["Расходы всего",_pdf_money(summary.get('total_expenses'))],["EBITDA",_pdf_money(summary.get('ebitda'))],["Чистая прибыль",_pdf_money(summary.get('net_profit'))+_default_note],["Маржинальность",_pdf_pct(summary.get('margin'))],["LLCR",_pdf_num(summary.get('llcr'),2)+"x"],["Расчётный БРИДЖ",_pdf_money(financing.get('calculated_bridge'))],["Фактический пик БРИДЖ",_pdf_money(financing.get('actual_bridge'))],["Пиковая (непокрытая эскроу) задолженность ПФ",_pdf_money(financing.get('pf_uncovered_peak'))],["Проценты и комиссии",_pdf_money(financing.get('interest_and_fees'))],
@@ -12641,6 +12643,8 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
                      _pdf_money(_rve_pf_shortfall)])
     if _ending_pf>500_000:
         kpis.append(["Непогашенный долг ПФ на конец проекта",_pdf_money(_ending_pf)])
+    elif _carried_out>500_000:
+        kpis.append(["Долг передан в ПФ следующей очереди",_pdf_money(_carried_out)])
     story.append(table([["Показатель","Значение"]]+kpis,[112*mm,58*mm]))
     story.append(_PdfSection("vri"))
     # Основание платы за ВРИ — тремя множителями формулы ГлавАПУ. Расхождение
@@ -12784,6 +12788,40 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             _pdf_money(summary.get("net_profit")),_pdf_num(summary.get("llcr"),2)+"x",
         ])
         story.append(table(head,[22*mm,25*mm,29*mm,26*mm,26*mm,27*mm,15*mm],font_size=7.0))
+        # Непогашенный долг очереди и перенос его в следующую. Раздел не
+        # печатался вовсе: очередь, не рассчитавшаяся с банком, выглядела в
+        # отчёте так же, как закрывшая долг, а после переноса у передавшей
+        # стоял ноль — обязательство исчезало бесследно. Строка появляется
+        # вместе с числом: у проекта без непогашенного долга её нет.
+        _carry = result.get("debt_carry") if isinstance(result.get("debt_carry"), dict) else {}
+        _has_debt = any(
+            float(i.get("ending_pf") or 0) > 500_000
+            or float(i.get("debt_carried_out") or 0) > 500_000
+            or float(i.get("carried_debt_in") or 0) > 500_000
+            for i in comparison)
+        if _has_debt or _carry:
+            story.append(P("Непогашенный долг и перенос между очередями",h2))
+            debt_rows=[["Очередь","Принято от предыдущей","Непогашено на конец","Передано следующей"]]
+            for item in comparison:
+                debt_rows.append([
+                    str(item.get("name") or "—"),
+                    _pdf_money(item.get("carried_debt_in")),
+                    _pdf_money(item.get("ending_pf")),
+                    _pdf_money(item.get("debt_carried_out")),
+                ])
+            debt_rows.append([
+                "Итого","—",
+                _pdf_money(sum(float(i.get("ending_pf") or 0) for i in comparison)),
+                _pdf_money(sum(float(i.get("debt_carried_out") or 0) for i in comparison)),
+            ])
+            story.append(table(debt_rows,[30*mm,42*mm,42*mm,42*mm],font_size=7.0))
+            if _carry.get("note"):
+                story.append(P(str(_carry["note"]),small))
+            elif _has_debt:
+                story.append(P(
+                    "Перенос долга между очередями выключен: непогашенный остаток "
+                    "остаётся на очереди, которая его набрала, и означает дефолт по "
+                    "её линии. Итог по проекту при этом складывается из очередей.",small))
         phase_financing = result.get("phase_financing") or {}
         funding_rows = phase_financing.get("rows") or []
         if funding_rows:
@@ -12892,7 +12930,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
 
     story.append(_PdfSection("premises"));story.append(P("Цены и основные предпосылки",h2))
     _class_dev=project_class_deviations(inputs)
-    premise_rows=[["Параметр","Значение"],["Класс проекта",_class_dev["label"]],["Стартовая цена квартир",_pdf_num(inputs.get('apartment_price_th'),0)+" тыс. ₽/м²"],["Стартовая цена коммерции",_pdf_num(inputs.get('commercial_price_th'),0)+" тыс. ₽/м²"],["Цена подземного машино-места",_pdf_num(inputs.get('parking_price_th'),0)+" тыс. ₽/шт."],["СМР наземной части",_pdf_num(inputs.get('main_above_th_per_sqm'),0)+" тыс. ₽/м² наземной части"],["СМР подземной части",_pdf_num(inputs.get('main_under_th_per_sqm'),0)+" тыс. ₽/м² подземной части"],["Наружные инженерные сети",_pdf_num(inputs.get('utilities_th_per_sqm'),1)+" тыс. ₽/м² строит. объёма"],["Доля продаж до РВЭ",_pdf_num(inputs.get('share_before_rve_pct'),1)+"%"],["Налог на прибыль",_pdf_num(inputs.get('profit_tax_pct'),1)+"%"]]
+    premise_rows=[["Параметр","Значение"],["Класс проекта",_class_dev["label"]],["Стартовая цена квартир",_pdf_num(inputs.get('apartment_price_th'),0)+" тыс. ₽/м²"],["Стартовая цена коммерции",_pdf_num(inputs.get('commercial_price_th'),0)+" тыс. ₽/м²"],["Цена подземного машино-места",_pdf_num(inputs.get('parking_price_th'),0)+" тыс. ₽/шт."],["СМР наземной части",_pdf_num(inputs.get('main_above_th_per_sqm'),0)+" тыс. ₽/м² наземной части"],["СМР подземной части",_pdf_num(inputs.get('main_under_th_per_sqm'),0)+" тыс. ₽/м² подземной части"],["Наружные инженерные сети, в т.ч. техприсоединение",_pdf_num(inputs.get('utilities_th_per_sqm'),1)+" тыс. ₽/м² строит. объёма"],["Доля продаж до РВЭ",_pdf_num(inputs.get('share_before_rve_pct'),1)+"%"],["Налог на прибыль",_pdf_num(inputs.get('profit_tax_pct'),1)+"%"]]
     story.append(table(premise_rows,[105*mm,65*mm]))
     if _class_dev["rows"]:
         # Ушёл от базы — скажи об этом: молча два отчёта «одного класса»
@@ -12962,7 +13000,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
               "из ТЭП: изменится нарезка — изменится и темп.", small),
         ]))
     story.append(_PdfSection("financing"));story.append(P("Финансирование и динамика проекта",h2))
-    finance_rows=[["Показатель","Значение"],["Расчётный БРИДЖ",_pdf_money(financing.get('calculated_bridge'))],["Пиковый фактический БРИДЖ (тело долга)",_pdf_money(financing.get('actual_bridge'))],["Собственные средства до ПФ",_pdf_money(financing.get('own_funds'))],["Пик БРИДЖ с капитализацией процентов (справочно)",_pdf_money(financing.get('bridge_peak_capitalized') or financing.get('actual_bridge'))],["Пиковая (непокрытая эскроу) задолженность ПФ",_pdf_money(financing.get('pf_uncovered_peak'))],["Долг ПФ перед раскрытием в РВЭ",_pdf_money(financing.get('rve_pf_before_repayment'))],["Раскрытый эскроу в РВЭ",_pdf_money(financing.get('rve_escrow_release'))],["Остаток ПФ после раскрытия в РВЭ",_pdf_money(financing.get('rve_pf_shortfall'))],["Лимит ПФ",_pdf_money(financing.get('pf_limit'))],["Текущая ключевая ставка",_pdf_pct(financing.get('current_key_rate'))],["Спред БРИДЖ",_pdf_pct(financing.get('bridge_spread'))],["Ставка БРИДЖ на текущей ключевой",_pdf_pct(financing.get('current_bridge_rate'))],["Средняя ключевая за период БРИДЖ",_pdf_pct(financing.get('avg_bridge_key_rate'))],["Средневзвешенная ставка БРИДЖ за период",_pdf_pct(financing.get('avg_bridge_rate'))],["Средняя фактическая ставка ПФ",_pdf_pct(financing.get('avg_pf_effective_rate'))],*_pdf_pf_step_rows(financing),["Проценты и комиссии",_pdf_money(financing.get('interest_and_fees'))],["Непогашенный долг ПФ на конец проекта",_pdf_money(financing.get('ending_pf'))],["LLCR",_pdf_num(summary.get('llcr'),2)+"x"]]
+    finance_rows=[["Показатель","Значение"],["Расчётный БРИДЖ",_pdf_money(financing.get('calculated_bridge'))],["Пиковый фактический БРИДЖ (тело долга)",_pdf_money(financing.get('actual_bridge'))],["Собственные средства до ПФ",_pdf_money(financing.get('own_funds'))],["Пик БРИДЖ с капитализацией процентов (справочно)",_pdf_money(financing.get('bridge_peak_capitalized') or financing.get('actual_bridge'))],["Пиковая (непокрытая эскроу) задолженность ПФ",_pdf_money(financing.get('pf_uncovered_peak'))],["Долг ПФ перед раскрытием в РВЭ",_pdf_money(financing.get('rve_pf_before_repayment'))],["Раскрытый эскроу в РВЭ",_pdf_money(financing.get('rve_escrow_release'))],["Остаток ПФ после раскрытия в РВЭ",_pdf_money(financing.get('rve_pf_shortfall'))],["Лимит ПФ",_pdf_money(financing.get('pf_limit'))],["Текущая ключевая ставка",_pdf_pct(financing.get('current_key_rate'))],["Спред БРИДЖ",_pdf_pct(financing.get('bridge_spread'))],["Ставка БРИДЖ на текущей ключевой",_pdf_pct(financing.get('current_bridge_rate'))],["Средняя ключевая за период БРИДЖ",_pdf_pct(financing.get('avg_bridge_key_rate'))],["Средневзвешенная ставка БРИДЖ за период",_pdf_pct(financing.get('avg_bridge_rate'))],["Средняя фактическая ставка ПФ",_pdf_pct(financing.get('avg_pf_effective_rate'))],*_pdf_pf_step_rows(financing),["Проценты и комиссии",_pdf_money(financing.get('interest_and_fees'))],["Непогашенный долг ПФ на конец проекта",_pdf_money(financing.get('ending_pf'))],*([["Долг передан в ПФ следующей очереди",_pdf_money(financing.get('debt_carried_out'))]] if float(financing.get('debt_carried_out') or 0)>500_000 else []),*([["в т.ч. принято от предыдущей очереди",_pdf_money(financing.get('carried_debt_in'))]] if float(financing.get('carried_debt_in') or 0)>500_000 else []),["LLCR",_pdf_num(summary.get('llcr'),2)+"x"]]
     story.append(table(finance_rows,[112*mm,58*mm],font_size=7.6))
 
     # Restore the bridge-purpose disclosure that exists in the web report.
@@ -14780,6 +14818,225 @@ def _v4_apply_management_profile(xml: str, missing: list[str]) -> str:
     return xml
 
 
+# Перенос непогашенного долга между очередями в книге.
+#
+# Строки 64 и 65 листов CF в шаблоне пусты — значит ряд заводится, не сдвигая
+# ни одной ссылки. Вставлять строку в занятое место нельзя: поедет всё, что
+# на неё ссылается (тем же правилом зачёт переданных метров лёг в ячейку
+# льготы, а не в свою).
+_V4_CARRY_ACCEPTED_ROW = 64          # ПФ — принятый долг предыдущей очереди
+_V4_CARRY_PASSED_ROW = 65            # ПФ — долг передан следующей очереди
+_V4_CARRY_FLAG_CELL = "B92"          # признак на «Вводных»
+_V4_CF_FIRST_COL = 4                 # D
+_V4_CF_LAST_COL = 123                # DS
+_V4_CF_QUEUE_ENABLED_ROW = 88        # 'Вводные'!B88 — очередь 1 включена
+
+
+def _v4_insert_row(xml: str, row: int, body: str, before: int | None) -> tuple[str, bool]:
+    """Вставляет целую строку в пустое место листа.
+
+    Пустая строка в XML не существует вовсе, а `_v4_set_cell` умеет только
+    заменять существующую ячейку. Вставлять в ЗАНЯТОЕ место нельзя — поедут
+    все ссылки; поэтому вызывающий обязан выбрать строку, которой в шаблоне
+    нет, и это проверяется здесь.
+    """
+    if f'<x:row r="{row}"' in xml:
+        return xml, False
+    # Строка последняя на листе — вставлять не перед чем, дописываем в конец
+    # данных. Порядок строк в sheetData обязан расти, поэтому только в конец.
+    marker = f'<x:row r="{before}"' if before else "</x:sheetData>"
+    at = xml.find(marker)
+    if at < 0:
+        return xml, False
+    return xml[:at] + f'<x:row r="{row}">' + body + "</x:row>" + xml[at:], True
+
+
+def _v4_write_carry_flag(xml: str, enabled: bool, missing: list[str]) -> str:
+    """Признак переноса долга на «Вводных» — своей строкой, как остальные Да/Нет."""
+    row = int(_V4_CARRY_FLAG_CELL[1:])
+    body = (
+        f'<x:c r="A{row}" t="str"><x:v>Непогашенный долг очереди переходит в ПФ '
+        f'следующей</x:v></x:c>'
+        f'<x:c r="B{row}" s="12" t="str"><x:v>{"Да" if enabled else "Нет"}</x:v></x:c>'
+        f'<x:c r="C{row}" t="str"><x:v>Да / Нет</x:v></x:c>'
+        f'<x:c r="D{row}" t="str"><x:v>carry_debt_forward</x:v></x:c>')
+    updated, done = _v4_insert_row(xml, row, body, row + 1)
+    if not done:
+        missing.append(f"признак переноса долга: строка {row} «Вводных» занята")
+        return xml
+    return updated
+
+
+def _v4_cf_columns() -> list[str]:
+    from openpyxl.utils import get_column_letter
+    return [get_column_letter(c) for c in range(_V4_CF_FIRST_COL, _V4_CF_LAST_COL + 1)]
+
+
+def _v4_carry_row_xml(row: int, label: str, formulas: dict[str, str]) -> str:
+    """Строка листа CF целиком: подпись, итог, единица и месяцы.
+
+    Стили берутся у строки 47 («ПФ — долг на конец») — той же природы величина,
+    и Excel не должен увидеть чужой формат в середине блока.
+    """
+    cells = [
+        f'<x:c r="A{row}" s="113" t="str"><x:v>{xml_escape(label)}</x:v></x:c>',
+        f'<x:c r="B{row}" s="113" t="n"><x:f>SUM(D{row}:DS{row})</x:f></x:c>',
+        f'<x:c r="C{row}" s="113" t="str"><x:v>млн ₽</x:v></x:c>',
+    ]
+    for column in _v4_cf_columns():
+        cells.append(
+            f'<x:c r="{column}{row}" s="120">'
+            f"<x:f>{xml_escape(formulas[column])}</x:f></x:c>")
+    return f'<x:row r="{row}">' + "".join(cells) + "</x:row>"
+
+
+def _v4_apply_debt_carry(xml: str, phase: int, queues: int, missing: list[str]) -> str:
+    """Учит лист CF очереди принимать долг предыдущей и отдавать свой следующей.
+
+    Методика — движковая (владелец, 27–29.08.2026): долг переезжает в месяц
+    раскрытия эскроу передавшей очереди, в сумме, которой раскрытому эскроу не
+    хватило; лимита он не выбирает, но проценты несёт и разбавляет покрытие;
+    после этого линия передавшей закрыта — ни выборки, ни погашения.
+
+    Формулы шаблона не переписываются вслепую: не опознали — в `missing`, а не
+    молча посчитали по-своему. Признак выключен — ряды дают ноль, и все
+    правленые формулы сходятся к прежним: книга без переноса обязана считать
+    ровно как раньше, иначе паритет поедет на проектах, где его никто не
+    включал.
+    """
+    columns = _v4_cf_columns()
+    sheet = f"CF_{phase}"
+    previous = f"CF_{phase - 1}"
+    flag = f"'Вводные'!${_V4_CARRY_FLAG_CELL[0]}${_V4_CARRY_FLAG_CELL[1:]}=\"Да\""
+    next_enabled = f"'Вводные'!$B${_V4_CF_QUEUE_ENABLED_ROW + phase}=\"Да\""
+
+    accepted: dict[str, str] = {}
+    passed: dict[str, str] = {}
+    for column in columns:
+        if phase <= 1:
+            accepted[column] = "0"
+        else:
+            # Дата приёма — максимум из РВЭ передавшей и РнС этой: раньше
+            # своей линии принять долг в ПФ нельзя, её ещё нет.
+            at = f"MAX('{previous}'!$B$8,$B$7)"
+            accepted[column] = (
+                f"IF(AND($B$5=1,YEAR({column}$3)=YEAR({at}),"
+                f"MONTH({column}$3)=MONTH({at})),'{previous}'!$B${_V4_CARRY_PASSED_ROW},0)")
+        if phase >= queues or phase >= 4:
+            # Последней очереди передавать некому: «перенос» был бы фикцией.
+            passed[column] = "0"
+        else:
+            passed[column] = (
+                f"IF(AND({flag},$B$5=1,{next_enabled},"
+                f"YEAR({column}$3)=YEAR($B$8),MONTH({column}$3)=MONTH($B$8)),"
+                f"MAX(0,{column}38+{column}45+{column}{_V4_CARRY_ACCEPTED_ROW}"
+                f"-{column}46),0)")
+
+    rows_xml = (_v4_carry_row_xml(_V4_CARRY_ACCEPTED_ROW,
+                                  "ПФ — принятый долг предыдущей очереди", accepted)
+                + _v4_carry_row_xml(_V4_CARRY_PASSED_ROW,
+                                    "ПФ — долг передан следующей очереди", passed))
+    marker = '<x:row r="66"'
+    if marker not in xml:
+        missing.append(f"{sheet}: не найдена строка 66 — ряд переноса вставить некуда")
+        return xml
+    if f'<x:row r="{_V4_CARRY_ACCEPTED_ROW}"' in xml:
+        missing.append(f"{sheet}: строка {_V4_CARRY_ACCEPTED_ROW} уже занята")
+        return xml
+    at = xml.index(marker)
+    xml = xml[:at] + rows_xml + xml[at:]
+
+    # Правки формул. Каждая — точной строкой, а не по всему листу: `L38+L45`
+    # встречается и там, где принятый долг не при чём.
+    a = _V4_CARRY_ACCEPTED_ROW
+    b = _V4_CARRY_PASSED_ROW
+    # Правки по строкам, а не по всему листу: `L38+L45` встречается и там, где
+    # принятый долг ни при чём. Сравнения в XML хранятся сущностями (`&gt;`),
+    # и искать надо именно их — иначе формула «не опознана» на ровном месте.
+    edits: dict[int, list[tuple[str, str]]] = {row: [] for row in (40, 42, 43, 45, 46, 47, 61)}
+    for index, column in enumerate(columns):
+        # Долг на конец и его же проверка roll-forward.
+        edits[47].append((f"MAX(0,{column}38+{column}45-{column}46)",
+                          f"MAX(0,{column}38+{column}45+{column}{a}-{column}46-{column}{b})"))
+        edits[61].append((f"{column}47-({column}38+{column}45-{column}46)",
+                          f"{column}47-({column}38+{column}45+{column}{a}-{column}46-{column}{b})"))
+        # Проценты, плата за лимит и покрытие эскроу — принятый долг входит в
+        # базу: он несёт проценты как тело и покрывать его тоже надо.
+        edits[42].append((f"({column}38+{column}45)&gt;0",
+                          f"({column}38+{column}45+{column}{a})&gt;0"))
+        edits[42].append((f"({column}38+{column}45)*{column}41/12",
+                          f"({column}38+{column}45+{column}{a})*{column}41/12"))
+        edits[43].append((f"-({column}38+{column}45))",
+                          f"-({column}38+{column}45+{column}{a}))"))
+        edits[40].append((f"MAX(1,{column}38+{column}45)",
+                          f"MAX(1,{column}38+{column}45+{column}{a})"))
+        edits[46].append((f"MIN({column}38+{column}45,",
+                          f"MIN({column}38+{column}45+{column}{a},"))
+        # Линия закрыта после того, как долг с неё ушёл: выборки больше нет.
+        # Признак «перенос уже случился» — накопленная строка 65 по ПРЕДЫДУЩИЕ
+        # месяцы, а не её итог B65: итог суммирует в том числе этот месяц, а
+        # строка 65 читает строку 45 — вышла бы круговая ссылка, и Excel сказал
+        # бы то же, что сказал вычислитель формул. В месяц РВЭ выборка ещё
+        # идёт: движок в этот месяц выбирает, гасит раскрытым эскроу и только
+        # потом отдаёт остаток. В первом месяце модели переносить нечему —
+        # формула остаётся прежней.
+        if index == 0:
+            continue
+        seen = f"SUM($D${b}:{columns[index - 1]}{b})"
+        edits[45].append((f"<x:f>{column}44</x:f>",
+                          f"<x:f>IF(AND({seen}&gt;0,{column}$3&gt;$B$8),0,{column}44)</x:f>"))
+    for row in sorted(edits):
+        pattern = re.compile(r'(<x:row r="%d">)(.*?)(</x:row>)' % row, re.S)
+        found = pattern.search(xml)
+        if not found:
+            missing.append(f"{sheet}: строка {row} не найдена")
+            return xml
+        body = found.group(2)
+        for old, new in edits[row]:
+            if old not in body:
+                missing.append(f"{sheet}: формула строки {row} не опознана ({old})")
+                return xml
+            body = body.replace(old, new, 1)
+        xml = (xml[:found.start()] + found.group(1) + body + found.group(3)
+               + xml[found.end():])
+    return xml
+
+
+_V4_CARRY_PARITY_ROW = 85
+
+
+def _v4_add_carry_parity_row(xml: str, target_mln: float, missing: list[str]) -> str:
+    """Строка паритета «долг, переданный между очередями» на листе ПРОВЕРКИ.
+
+    Без неё книга могла бы переносить не то и не тогда, а вердикт листа остался
+    бы «ПРОЙДЕНО»: остальные строки паритета смотрят на итоги, а перенос между
+    очередями итоги проекта почти не двигает — он меняет, КТО платит.
+    """
+    row = _V4_CARRY_PARITY_ROW
+    total = "+".join(f"'CF_{phase}'!$B${_V4_CARRY_PASSED_ROW}" for phase in range(1, 5))
+    tolerance = max(1.0, abs(target_mln) * 0.005)
+    body = (
+        f'<x:c r="A{row}" t="inlineStr"><x:is><x:t>Паритет: долг, переданный '
+        f'между очередями, млн</x:t></x:is></x:c>'
+        f'<x:c r="B{row}"><x:f>{total}</x:f></x:c>'
+        f'<x:c r="C{row}"><x:v>{_v4_number(round(target_mln, 4))}</x:v></x:c>'
+        f'<x:c r="D{row}"><x:f>IF(C{row}="","",B{row}-C{row})</x:f></x:c>'
+        f'<x:c r="E{row}"><x:v>{_v4_number(round(tolerance, 4))}</x:v></x:c>'
+        f'<x:c r="F{row}"><x:f>IF(C{row}="","",IF(ABS(D{row})&lt;=E{row},'
+        f'"OK","FAIL"))</x:f></x:c>')
+    updated, done = _v4_insert_row(xml, row, body, None)
+    if not done:
+        missing.append(f"паритет переноса долга: строка {row} ПРОВЕРОК занята")
+        return xml
+    # Вердикт листа считает по диапазону — новая строка обязана в него войти,
+    # иначе она красная, а лист «ПРОЙДЕНО».
+    before = updated
+    updated = updated.replace("COUNTIF(F6:F84,", f"COUNTIF(F6:F{row},")
+    if updated == before:
+        missing.append("паритет переноса долга: вердикт B3 не расширен на новую строку")
+    return updated
+
+
 def _v4_parity_targets(consolidated: dict[str, Any]) -> dict[str, float]:
     """Контрольные числа движка для parity-блока листа ПРОВЕРКИ."""
     summary = consolidated.get("summary") or {}
@@ -14855,6 +15112,35 @@ def _v4_fold_tep_rows(
     return rows[:book - 1] + [merged]
 
 
+def phase_cash_default_weights(count: int) -> dict[str, list[float]]:
+    """Кассовые доли общепроектных статей по умолчанию — один раз на движок и книгу.
+
+    Копия этих умолчаний жила в книге и говорила другое: `_v4_shared_weights`
+    при пустом `shared_cash` валила ВСЕ статьи на первую очередь, а движок
+    раскладывал ИРД, проектирование, подготовку и сети по весам очередей.
+    Страница долю всегда присылает, поэтому в жизни расхождение не всплывало,
+    а через API — на двухочередном проекте это 686 млн ₽ разницы в пике
+    БРИДЖа между отчётом и книгой, оба достоверные на вид. Тот же класс
+    ошибки, что копия `FIELD_GROUPS` на странице: умолчание, объявленное
+    дважды, однажды разойдётся.
+    """
+    count = max(1, int(count))
+    weights = _default_phase_weights(count)
+    first_only = [100.0] + [0.0] * (count - 1)
+    return {
+        "purchase": list(first_only),
+        "land_rights": list(first_only),
+        "ird": list(weights),
+        "design": list(weights),
+        "preparation": list(weights),
+        "utilities": list(weights),
+        "social_compensation": list(first_only),
+        # Свои деньги вкладывают на входе, поэтому по умолчанию они целиком в
+        # первой очереди. Иное распределение задаётся shared_cash.own_funds.
+        "own_funds": list(first_only),
+    }
+
+
 def _v4_shared_weights(
     phasing: dict[str, Any], key: str, count: int, enabled: int | None = None
 ) -> list[float]:
@@ -14866,7 +15152,13 @@ def _v4_shared_weights(
     weights = [float(w or 0) for w in ((phasing.get("shared_cash") or {}).get(key) or [])]
     weights = _v4_fold_tail(weights, enabled or count, count)
     if len(weights) < count or sum(weights[:count]) <= 0:
-        return [1.0 if index == 0 else 0.0 for index in range(count)]
+        # Умолчание берётся у движка, а не пишется здесь второй раз: своя
+        # копия говорила «всё в первую очередь» там, где движок раскладывал
+        # по весам очередей.
+        fallback = phase_cash_default_weights(count).get(key)
+        if not fallback:
+            return [1.0 if index == 0 else 0.0 for index in range(count)]
+        return _v4_normalized(fallback, count)
     return _v4_normalized(weights, count)
 
 
@@ -14988,6 +15280,13 @@ def build_project_workbook(
                     "bridge_peak_by_phase": [float(_hint_fin.get("peak_bridge", 0.0)) / 1e6],
                 }
             finance_hints["parity"] = _v4_parity_targets(_hint_bundle["consolidated"])
+            # Сколько движок переносит между очередями — контрольное число для
+            # своей строки ПРОВЕРОК. Итоги проекта перенос почти не двигает: он
+            # меняет, КТО платит, поэтому прежние строки паритета его не ловят.
+            finance_hints["carried_debt_mln"] = sum(
+                float((p_item.get("result") or {}).get("finance", {}).get(
+                    "debt_carried_out") or 0.0)
+                for p_item in _hint_phases) / 1e6
         except Exception:
             finance_hints = {}
     p = phasing or {}
@@ -15050,6 +15349,14 @@ def build_project_workbook(
 
     for key, coord in _V4_BOOL_CELLS.items():
         put(coord, text="Да" if x.get(key) else "Нет", label=key)
+
+    # Признак переноса долга между очередями. Стоит рядом с остальными Да/Нет,
+    # но живёт в phasing, а не во вводных проекта: это условие сделки с банком,
+    # а не свойство площадки.
+    xml = _v4_write_carry_flag(
+        xml,
+        bool((phasing or {}).get("carry_debt_forward")) and bool((phasing or {}).get("enabled")),
+        missing)
 
     # Ставка, ушедшая от базы класса, помечается рядом со значением: молча
     # книга и отчёт «одного класса» разойдутся, и оба будут выглядеть верно.
@@ -15374,6 +15681,24 @@ def build_project_workbook(
     # Parity-блок ПРОВЕРОК: контрольные числа движка — значениями в C, допуск
     # в E; формулы книги в B посчитает Excel, и вердикт листа скажет FAIL,
     # если поверхности разойдутся. Без движковых чисел строки молчат.
+    # Перенос непогашенного долга между очередями: строки 64 и 65 листов CF.
+    # Признак живёт на «Вводных» и по умолчанию выключен — с выключенным ряды
+    # дают ноль, и все правленые формулы сходятся к прежним.
+    _carry_on = bool(p.get("carry_debt_forward")) and bool(p.get("enabled"))
+    _queue_count = max(1, min(4, int(p.get("phase_count") or 1) if p.get("enabled") else 1))
+    cf_sheet_paths: dict[str, str] = {}
+    cf_sheet_xml: dict[str, str] = {}
+    for _phase in range(1, 5):
+        _name = f"CF_{_phase}"
+        try:
+            _path = _v4_sheet_path(source, _name)
+        except Exception:
+            missing.append(f"{_name}: лист не найден")
+            continue
+        cf_sheet_paths[_name] = _path
+        cf_sheet_xml[_name] = _v4_apply_debt_carry(
+            source.read(_path).decode("utf-8"), _phase, _queue_count, missing)
+
     checks_sheet_path = _v4_sheet_path(source, "ПРОВЕРКИ")
     checks_xml = source.read(checks_sheet_path).decode("utf-8")
     _parity = (finance_hints or {}).get("parity") or {}
@@ -15394,6 +15719,8 @@ def build_project_workbook(
             if not done:
                 missing.append(f"паритет ПРОВЕРКИ: строка {_row}")
                 break
+    checks_xml = _v4_add_carry_parity_row(
+        checks_xml, float((finance_hints or {}).get("carried_debt_mln") or 0.0), missing)
 
     def _put_extra(sheet_xml: str, coord: str, *, number=None, text=None) -> str:
         updated, done = _v4_set_cell(sheet_xml, coord, number=number, text=text)
@@ -15673,6 +16000,10 @@ def build_project_workbook(
                 payload = sources_xml.encode("utf-8")
             elif item.filename == checks_sheet_path:
                 payload = checks_xml.encode("utf-8")
+            elif item.filename in cf_sheet_paths.values():
+                payload = cf_sheet_xml[
+                    next(k for k, v in cf_sheet_paths.items() if v == item.filename)
+                ].encode("utf-8")
             if item.filename.startswith("xl/worksheets/") and item.filename.endswith(".xml"):
                 text = payload.decode("utf-8")
                 text = re.sub(r"(<x:f(?:\s[^>]*)?>[^<]*</x:f>)<x:v>[^<]*</x:v>", r"\1", text)
@@ -20483,6 +20814,29 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
         # CAPEX, который на неё куплен, а перенос не покупает ничего).
         carried_debt_in = 0.0
         carried_debt = max(n(x, "_phase_carried_debt_mln") * 1_000_000, 0.0)
+        # Месяц приёма долга. Владелец (29.08.2026): обязательство переходит
+        # тогда, когда эскроу предыдущей очереди раскрылось и его не хватило,
+        # — то есть в её РВЭ, а не в дату открытия нашей линии. Раньше своего
+        # РнС принять его в ПФ всё равно нельзя: линии ещё нет, поэтому пол —
+        # `permit`. Прежняя версия клала сюда итоговый непогашенный остаток
+        # предыдущей очереди в дату НАШЕГО открытия ПФ: число из будущего в
+        # прошлом, и очередь платила проценты за долг, которого ещё нет.
+        carried_debt_month = permit
+        _carried_at = str(x.get("_phase_carried_debt_month") or "").strip()
+        if _carried_at:
+            try:
+                carried_debt_month = max(permit, d(_carried_at))
+            except Exception:
+                carried_debt_month = permit
+        # Долг уходит из этой очереди в её же РВЭ: период доступности кончился,
+        # эскроу раскрыто, и то, чего не хватило, банк переоформляет на
+        # следующую линию. Без этого признака остаток висел на закрытой линии
+        # до конца горизонта — на контрольном проекте год по полной базовой
+        # ставке 13,5% (покрытие после раскрытия нулевое), 691,3 млн ₽
+        # процентов, — а остаточные продажи уходили в погашение вместо кассы
+        # застройщика.
+        debt_leaves_at_rve = bool(x.get("_phase_debt_leaves_at_rve"))
+        debt_left_at_rve = 0.0
         pf_reservation_fee = (pf_limit or 0.0) * n(x, "reservation_fee_pct") / 100 if pf_limit else 0.0
         transferred_bridge_interest = 0.0
 
@@ -20587,7 +20941,15 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
 
             if month >= permit:
                 # PF finances all project costs; escrow is not available before RVE.
-                pf_draw += max(project_costs, 0.0)
+                # Но после того как долг ушёл с этой линии в РВЭ, линии больше
+                # нет: период доступности кончился, НКЛ закрыт. Выбирать из
+                # него расходы остаточного периода нельзя — они платятся
+                # кассой. Прежде очередь после передачи долга продолжала
+                # выбирать по 57 млн в месяц и тут же гасить их продажами, с
+                # процентами по полной базовой ставке: та же фикция закрытой
+                # линии, только мельче.
+                if not (debt_leaves_at_rve and month > rve):
+                    pf_draw += max(project_costs, 0.0)
                 if cap is not None:
                     # Потолок считается от остатка на начало месяца: погашения
                     # в этом месяце идут ниже по циклу и свободного лимита
@@ -20607,7 +20969,7 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
                 # 27.08.2026) — банк переносит обязательство, а не выдаёт
                 # новые деньги. Но проценты на него идут как на тело ПФ, и
                 # покрытие эскроу он разбавляет: покрывать приходится больше.
-                if month == permit and carried_debt > 0:
+                if month == carried_debt_month and carried_debt > 0:
                     pf_balance += carried_debt
                     carried_debt_in += carried_debt
 
@@ -20658,6 +21020,14 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
                     pf_repayment = min(available_for_repayment, pf_balance)
                     pf_balance -= pf_repayment
                     pf_repayment_total += pf_repayment
+
+                # Раскрытого эскроу не хватило — остаток уходит на линию
+                # следующей очереди этим же месяцем. Дальше он здесь не живёт:
+                # ни процентов, ни погашения остаточными продажами. Деньги от
+                # продаж после РВЭ остаются застройщику (владелец, 29.08.2026).
+                if debt_leaves_at_rve and month == rve and pf_balance > 0:
+                    debt_left_at_rve = pf_balance
+                    pf_balance = 0.0
 
                 # Current Excel pays accumulated interest at RVE and current interest thereafter.
                 if month >= rve and pf_interest_payable > 0:
@@ -20744,6 +21114,10 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
 
             "pf_draw_total": pf_draw_total,
             "carried_debt_in": carried_debt_in,
+            # Сколько ушло отсюда на линию следующей очереди в РВЭ. Обнулённый
+            # остаток без этой величины читается как «рассчиталась сама».
+            "debt_left_at_rve": debt_left_at_rve,
+            "debt_carried_out": debt_left_at_rve,
             "pf_repayment_total": pf_repayment_total,
             "pf_reservation_fee": pf_reservation_fee,
             "pf_interest": pf_interest_total,
@@ -21700,6 +22074,12 @@ def calculate(req: CalcRequest) -> dict:
                 "pf_special_steps": fin.get("pf_special_steps") or [],
                 "interest_and_fees": fin["financing_cost"],
                 "ending_pf": fin.get("ending_pf", 0.0),
+                # Принятый долг предыдущей очереди — не «новые деньги»: лимита
+                # он не выбирает, но проценты несёт и стоит в знаменателе LLCR.
+                # Без своей строки он растворяется в остатке ПФ, и очередь
+                # выглядит взявшей больше, чем брала.
+                "carried_debt_in": fin.get("carried_debt_in", 0.0),
+                "debt_carried_out": fin.get("debt_carried_out", 0.0),
                 # Пик тела и пик с капитализированными процентами — разные
                 # показатели: книга ведёт остаток сразу с капитализацией, и
                 # одинаковое слово «пик» читалось как расхождение моделей.
@@ -23032,6 +23412,7 @@ def _consolidate_phase_results(
                 "pf_special_rate": finance["pf_special_rate"],
                 "interest_and_fees": finance["financing_cost"],
                 "ending_pf": finance.get("ending_pf", 0.0),
+                "carried_debt_in": finance.get("carried_debt_in", 0.0),
                 "bridge_peak_capitalized": finance["peak_bridge"]
                 + finance.get("transferred_bridge_interest", 0.0),
                 "peak_total_debt": finance["peak_total_debt"],
@@ -23205,18 +23586,7 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
 
     shared_cash = phasing.get("shared_cash") or {}
     shared_alloc = phasing.get("shared_allocation") or {}
-    cash_defaults = {
-        "purchase": [100.0] + [0.0]*(count-1),
-        "land_rights": [100.0] + [0.0]*(count-1),
-        "ird": default_weights,
-        "design": default_weights,
-        "preparation": default_weights,
-        "utilities": default_weights,
-        "social_compensation": [100.0] + [0.0]*(count-1),
-        # Свои деньги вкладывают на входе, поэтому по умолчанию они целиком в
-        # первой очереди. Иное распределение задаётся shared_cash.own_funds.
-        "own_funds": [100.0] + [0.0]*(count-1),
-    }
+    cash_defaults = phase_cash_default_weights(count)
     cash_weights = {
         key: _normalized_phase_weights(shared_cash.get(key), count, cash_defaults[key])
         for key in cash_defaults
@@ -23502,6 +23872,14 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
         carried_list = phasing.get("_carried_debt_mln") or []
         if idx < len(carried_list):
             p_inputs["_phase_carried_debt_mln"] = float(carried_list[idx] or 0.0)
+        # Месяц приёма — РВЭ передавшей очереди, а не открытие ПФ этой.
+        carried_at = phasing.get("_carried_debt_month") or []
+        if idx < len(carried_at) and carried_at[idx]:
+            p_inputs["_phase_carried_debt_month"] = str(carried_at[idx])
+        # Признак «долг уходит отсюда в РВЭ»: ставится передавшей очереди.
+        leaves = phasing.get("_debt_leaves_at_rve") or []
+        if idx < len(leaves) and leaves[idx]:
+            p_inputs["_phase_debt_leaves_at_rve"] = True
 
         if financing_strategy == "unified_project_cash" and idx > 0:
             p_inputs["_phase_project_cash_schedule"] = (
@@ -23582,6 +23960,19 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
                 for item in (result.get("report") or {}).get("products") or []},
             "cash_shared_cost":cash_shared,"allocated_shared_cost":allocated_shared,
             "peak_bridge":result["finance"]["peak_bridge"],"peak_pf":result["finance"]["peak_pf"],
+            # Непогашенный долг очереди в таблице сравнения не выводился вовсе:
+            # очередь, не рассчитавшаяся с банком, выглядела в ней так же, как
+            # закрывшая долг, — разница пряталась в отдельной карточке отчёта
+            # одной очереди. Дефолт старше бумажной прибыли, и стоять он обязан
+            # там, где очереди сравнивают.
+            "ending_pf":result["finance"].get("ending_pf", 0.0),
+            # Принято от предыдущей очереди и передано следующей. Первое движок
+            # знает сам, второе дописывает перенос: у передавшей очереди долг
+            # обнуляется, и без этой строки он исчезал бы бесследно — читатель
+            # увидел бы ноль и не понял, платит его теперь кто-то другой или
+            # очередь рассчиталась сама.
+            "carried_debt_in":result["finance"].get("carried_debt_in", 0.0),
+            "debt_carried_out":result["finance"].get("debt_carried_out", 0.0),
             "llcr":result["summary"]["llcr"],"net_profit":result["summary"]["net_profit"],
             # Налог очереди в таблице был не выведен вовсе, хотя в книге он в
             # строке очереди стоит. Свод считает его как один налогоплательщик
@@ -23664,7 +24055,20 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
         return bundle
 
     def unpaid(item: dict[str, Any]) -> float:
-        return float(((item.get("result") or {}).get("finance") or {}).get("ending_pf") or 0.0)
+        """Чего не хватило раскрытого эскроу — вот что переезжает.
+
+        Владелец (29.08.2026): «долг переходит в тот момент, когда средства с
+        эскроу после РВЭ предыдущей очереди раскрылись и их не хватило на
+        погашение. При этом деньги от последующих продаж остаются у
+        застройщика». Прежде бралось `ending_pf` — остаток на КОНЕЦ горизонта,
+        то есть уже после того, как остаточные продажи год гасили долг на
+        закрытой линии. На контрольном проекте это 4 229 млн вместо 7 816.
+        """
+        return float(((item.get("result") or {}).get("finance") or {}).get(
+            "rve_pf_shortfall") or 0.0)
+
+    def rve_month(item: dict[str, Any]) -> str:
+        return str(((item.get("result") or {}).get("dates") or {}).get("rve") or "")
 
     # Переносить нечего, если долг остаётся только у последней очереди: дальше
     # него нет никого, и «перенос» был бы фикцией.
@@ -23676,7 +24080,7 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
     if consolidated_llcr < _PHASE_DEBT_CARRY_MIN_LLCR:
         # Молчать нельзя: без этой строки читатель увидит дефолтную очередь и
         # не поймёт, почему перенос, о котором сказано в методике, не сработал.
-        bundle["debt_carry"] = {
+        refusal = {
             "applied": False,
             "project_llcr": round(consolidated_llcr, 4),
             "min_llcr": _PHASE_DEBT_CARRY_MIN_LLCR,
@@ -23686,9 +24090,14 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
                 "Банк переносит обязательство только если проект в целом его "
                 "обслуживает; иначе перенос лишь отодвигает дефолт."),
         }
+        bundle["debt_carry"] = refusal
+        if isinstance(bundle.get("consolidated"), dict):
+            bundle["consolidated"]["debt_carry"] = copy.deepcopy(refusal)
         return bundle
 
     carried = [0.0] * len(phases)
+    at: list[str] = [""] * len(phases)
+    leaves: list[bool] = [False] * len(phases)
     applied: list[dict[str, Any]] = []
     current = bundle
     for idx in range(len(phases) - 1):
@@ -23696,28 +24105,26 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
         if left <= _PHASE_DEBT_CARRY_MIN_RUB:
             continue
         carried[idx + 1] = carried[idx + 1] + left
+        at[idx + 1] = rve_month((current.get("phases") or [])[idx])
+        leaves[idx] = True
         request = PhasedCalcRequest(
             inputs=copy.deepcopy(req.inputs), tep=copy.deepcopy(req.tep),
             rates=copy.deepcopy(req.rates),
             phasing={**copy.deepcopy(req.phasing or {}),
-                     "_carried_debt_mln": [value / 1_000_000 for value in carried]})
+                     "_carried_debt_mln": [value / 1_000_000 for value in carried],
+                     "_carried_debt_month": list(at),
+                     "_debt_leaves_at_rve": list(leaves)})
         current = _calculate_phased_once(request)
-        # Обязательство сменило должника — у передавшей очереди его больше нет.
-        # Без этого долг стоял бы в обеих: первая осталась бы дефолтной, хотя
-        # платит уже вторая, и свод сложил бы его дважды.
-        source = (current.get("phases") or [])[idx]
-        source_fin = (source.get("result") or {}).get("finance") or {}
-        source_sum = (source.get("result") or {}).get("summary") or {}
-        source_fin["debt_carried_out"] = left
-        source_fin["ending_pf"] = 0.0
-        if "ending_pf" in source_sum:
-            source_sum["ending_pf"] = 0.0
-        if "ending_pf_mln" in source_sum:
-            source_sum["ending_pf_mln"] = 0.0
+        # Дописывать сверху здесь больше нечего: движок сам снимает долг с
+        # передавшей очереди в её РВЭ и сам называет переданную сумму, а все
+        # поверхности читают её у него. Пока это делалось правкой результата,
+        # экземпляров было три — `finance`, строка сравнения и `report.
+        # financing`, — и любой забытый показывал долг там, где его уже нет.
         applied.append({
             "from": idx + 1, "to": idx + 2,
             "amount": round(left, 2),
             "amount_mln": round(left / 1_000_000, 3),
+            "at": at[idx + 1],
         })
 
     if not applied:
@@ -23736,17 +24143,32 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
     summary_block = consolidated.get("summary")
     if isinstance(summary_block, dict) and "ending_pf_mln" in summary_block:
         summary_block["ending_pf_mln"] = ending_total / 1_000_000
-    current["debt_carry"] = {
+    carry_block = {
         "applied": True,
         "project_llcr": round(consolidated_llcr, 4),
         "min_llcr": _PHASE_DEBT_CARRY_MIN_LLCR,
         "transfers": applied,
+        # Дата и сумма в самой фразе: «принят следующей очередью» без месяца
+        # не отличает переезд в раскрытие эскроу от переезда на два года
+        # раньше, а разница между ними — сотни миллионов процентов.
         "note": (
-            "Долг, не погашенный очередью, принят ПФ следующей по генеральному "
-            "соглашению: лимита он не выбирает, но проценты несёт и стоит в "
-            f"знаменателе её LLCR. Общий LLCR проекта {consolidated_llcr:.2f}x — "
-            "перенос допустим."),
+            "Долг, не погашенный раскрытым эскроу, принят ПФ следующей очереди "
+            "по генеральному соглашению: "
+            + "; ".join(
+                f"О{item['from']} → О{item['to']} "
+                f"{item['amount_mln']:,.0f} млн ₽ в {item['at'][:7]}".replace(",", " ")
+                for item in applied)
+            + ". Переезд — в месяц раскрытия эскроу передавшей очереди: её линия "
+              "закрыта, и остаточные продажи остаются застройщику. Лимита долг не "
+              "выбирает, но проценты несёт и стоит в знаменателе LLCR принявшей. "
+            f"Общий LLCR проекта {consolidated_llcr:.2f}x — перенос допустим."),
     }
+    current["debt_carry"] = carry_block
+    # PDF собирается из свода, а не из связки: без этой строки отчёт печатал бы
+    # обнулённый долг первой очереди и повышенный долг второй, ничего не сказав
+    # о переносе, — то самое «снижение без объяснения».
+    if isinstance(current.get("consolidated"), dict):
+        current["consolidated"]["debt_carry"] = copy.deepcopy(carry_block)
     return current
 
 
@@ -30643,6 +31065,10 @@ details.cadastral-box>summary::marker{color:#888}
           <label><input id="phaseFinancingUnified" name="phaseFinancingStrategy" type="radio" value="unified_project_cash" onchange="setPhaseFinancingStrategy(this.value)"> Единый денежный поток проекта</label>
         </div>
         <div class="note">В едином потоке уже полученный свободный cash предыдущих очередей после обслуживания их долга уменьшает затраты следующей очереди до РНС. Эскроу, будущая прибыль, лимиты БРИДЖ/ПФ и банковский долг другой очереди не используются.</div>
+        <div style="display:grid;gap:8px;margin:12px 0 4px">
+          <label><input id="phaseCarryDebt" type="checkbox" onchange="setPhaseCarryDebt(this.checked)"> Непогашенный долг очереди переходит в ПФ следующей</label>
+        </div>
+        <div class="note">Долг принимается в дату открытия ПФ следующей очереди по генеральному соглашению: лимита он не выбирает, но проценты несёт как тело и разбавляет покрытие эскроу, а в знаменателе LLCR принявшей очереди стоит. Перенос допустим только если общий LLCR проекта не ниже 1,00x — иначе банк не спасает проект, а откладывает дефолт, и перенос отказывается с названной причиной. Excel-книга о переносе пока не знает: с включённым признаком её финансирование разойдётся с отчётом.</div>
         <div id="phaseFinancingSummary" class="phase-status" style="margin:10px 0">Выполните расчёт очередей.</div>
         <div class="scroll"><table class="phase-table">
           <thead><tr><th>Очередь</th><th>Затраты до РНС</th><th>Свободный cash проекта</th><th>Собственные средства</th><th>Новый БРИДЖ</th><th>ПФ после РНС</th></tr></thead>
@@ -30908,6 +31334,7 @@ details.cadastral-box>summary::marker{color:#888}
           <tbody id="phaseComparisonBody"></tbody>
         </table></div>
         <div class="note">Аналитическая прибыль после аллокации перераспределяет общепроектные расходы только для сравнения очередей. Сводный CF не меняется.</div>
+        <div id="phaseDebtCarryNote" class="note" style="display:none"></div>
       </div>
       </div>
 
@@ -31454,7 +31881,7 @@ function frontLoadedPreset(count,kind){
 }
 function makeDefaultPhasing(count=1){
  const w=phaseWeightPreset(count);
- return {enabled:false,user_enabled:false,default_version:'0.12.25',phase_count:count,target_size_sqm:70000,phase_gap_months:12,cost_inflation_pct:8,sales_price_inflation_pct:8,financing_strategy:'independent',
+ return {enabled:false,user_enabled:false,default_version:'0.12.25',phase_count:count,target_size_sqm:70000,phase_gap_months:12,cost_inflation_pct:8,sales_price_inflation_pct:8,financing_strategy:'independent',carry_debt_forward:false,
   phases:Array.from({length:count},(_,i)=>({name:`О${i+1}`,start_offset_months:i*12,construction_months:Number(INPUT_DEFAULT.construction_months||24),products:{}})),
   products:{apartments:[...w],ground_commercial:[...w],underground_parking:[...w],storage:[...w]},
   shared_cash:{purchase:frontLoadedPreset(count,'purchase'),land_rights:frontLoadedPreset(count,'land_rights'),ird:frontLoadedPreset(count,'ird'),design:frontLoadedPreset(count,'design'),preparation:frontLoadedPreset(count,'preparation'),utilities:frontLoadedPreset(count,'utilities'),social_compensation:frontLoadedPreset(count,'social_compensation')},
@@ -32030,19 +32457,22 @@ function normalizeSocialObjectDates(){
 function currentPhaseFinancingStrategy(){
  return phasing.financing_strategy||'independent';
 }
+function setPhaseCarryDebt(value){
+ phasing.carry_debt_forward=!!value;renderPhasing();calculate();
+}
 function togglePhasing(v){
  if(v&&Number(phasing.phase_count||1)<=1){
-   const t=phasing.target_size_sqm||70000,g=phasing.phase_gap_months||12,cinf=Number(phasing.cost_inflation_pct??8),pinf=Number(phasing.sales_price_inflation_pct??8),strategy=currentPhaseFinancingStrategy();
+   const t=phasing.target_size_sqm||70000,g=phasing.phase_gap_months||12,cinf=Number(phasing.cost_inflation_pct??8),pinf=Number(phasing.sales_price_inflation_pct??8),strategy=currentPhaseFinancingStrategy(),carry=!!phasing.carry_debt_forward;
    phasing=makeDefaultPhasing(Math.max(2,recommendationCount()));
-   phasing.target_size_sqm=t;phasing.phase_gap_months=g;phasing.cost_inflation_pct=cinf;phasing.sales_price_inflation_pct=pinf;phasing.financing_strategy=strategy;
+   phasing.target_size_sqm=t;phasing.phase_gap_months=g;phasing.cost_inflation_pct=cinf;phasing.sales_price_inflation_pct=pinf;phasing.financing_strategy=strategy;phasing.carry_debt_forward=carry;
  }
  phasing.enabled=!!v;phasing.user_enabled=!!v;
  if(v&&!phasing.social_objects.length&&inputs.social_mode==='Строительство')autoSocialObjects(false);
  normalizeSocialObjectDates();renderInputs();renderPhasing();calculate()
 }
-function setPhaseCount(count){const e=phasing.enabled&&Number(count)>1,t=phasing.target_size_sqm||70000,g=phasing.phase_gap_months||12,cinf=Number(phasing.cost_inflation_pct??8),pinf=Number(phasing.sales_price_inflation_pct??8),strategy=currentPhaseFinancingStrategy();phasing=makeDefaultPhasing(Math.max(1,Math.min(5,count)));phasing.enabled=e;phasing.user_enabled=e;phasing.target_size_sqm=t;phasing.phase_gap_months=g;phasing.cost_inflation_pct=cinf;phasing.sales_price_inflation_pct=pinf;phasing.financing_strategy=strategy;phasing.phases.forEach((p,i)=>p.start_offset_months=i*g);autoSocialObjects(false);normalizeSocialObjectDates();renderInputs();renderPhasing();calculate()}
+function setPhaseCount(count){const e=phasing.enabled&&Number(count)>1,t=phasing.target_size_sqm||70000,g=phasing.phase_gap_months||12,cinf=Number(phasing.cost_inflation_pct??8),pinf=Number(phasing.sales_price_inflation_pct??8),strategy=currentPhaseFinancingStrategy(),carry=!!phasing.carry_debt_forward;phasing=makeDefaultPhasing(Math.max(1,Math.min(5,count)));phasing.enabled=e;phasing.user_enabled=e;phasing.target_size_sqm=t;phasing.phase_gap_months=g;phasing.cost_inflation_pct=cinf;phasing.sales_price_inflation_pct=pinf;phasing.financing_strategy=strategy;phasing.carry_debt_forward=carry;phasing.phases.forEach((p,i)=>p.start_offset_months=i*g);autoSocialObjects(false);normalizeSocialObjectDates();renderInputs();renderPhasing();calculate()}
 function autoPhaseDates(){phasing.phases.forEach((p,i)=>p.start_offset_months=i*Number(phasing.phase_gap_months||12));normalizeSocialObjectDates();renderPhasing();calculate()}
-function autoSuggestPhasing(){const c=recommendationCount(),cinf=Number(phasing.cost_inflation_pct??8),pinf=Number(phasing.sales_price_inflation_pct??8),strategy=currentPhaseFinancingStrategy();phasing=makeDefaultPhasing(c);phasing.enabled=c>1;phasing.user_enabled=c>1;phasing.cost_inflation_pct=cinf;phasing.sales_price_inflation_pct=pinf;phasing.financing_strategy=strategy;phasing.target_size_sqm=Number(document.getElementById('phaseTargetSize')?.value||70000);phasing.phase_gap_months=Number(document.getElementById('phaseGap')?.value||12);phasing.phases.forEach((p,i)=>p.start_offset_months=i*phasing.phase_gap_months);autoSocialObjects(false);renderPhasing();calculate()}
+function autoSuggestPhasing(){const c=recommendationCount(),cinf=Number(phasing.cost_inflation_pct??8),pinf=Number(phasing.sales_price_inflation_pct??8),strategy=currentPhaseFinancingStrategy(),carry=!!phasing.carry_debt_forward;phasing=makeDefaultPhasing(c);phasing.enabled=c>1;phasing.user_enabled=c>1;phasing.cost_inflation_pct=cinf;phasing.sales_price_inflation_pct=pinf;phasing.financing_strategy=strategy;phasing.carry_debt_forward=carry;phasing.target_size_sqm=Number(document.getElementById('phaseTargetSize')?.value||70000);phasing.phase_gap_months=Number(document.getElementById('phaseGap')?.value||12);phasing.phases.forEach((p,i)=>p.start_offset_months=i*phasing.phase_gap_months);autoSocialObjects(false);renderPhasing();calculate()}
 function rebalancePhaseProductShares(values,index,value){
  const count=Math.max(1,Number(phasing.phase_count||values.length||1)),out=Array.from({length:count},(_,j)=>Math.max(0,Number(values[j]||0)));
  const lockedTotal=out.slice(0,index).reduce((s,x)=>s+x,0),available=Math.max(0,100-lockedTotal),rightIndexes=out.map((_,j)=>j).filter(j=>j>index);
@@ -32169,7 +32599,10 @@ function setPhaseFinancingStrategy(value){
 function renderPhaseFinancing(){
  const independent=document.getElementById('phaseFinancingIndependent'),unified=document.getElementById('phaseFinancingUnified'),body=document.getElementById('phaseFinancingBody'),summary=document.getElementById('phaseFinancingSummary');
  const strategy=currentPhaseFinancingStrategy();phasing.financing_strategy=strategy;
- if(independent)independent.checked=strategy==='independent';if(unified)unified.checked=strategy==='unified_project_cash';if(!body||!summary)return;
+ if(independent)independent.checked=strategy==='independent';if(unified)unified.checked=strategy==='unified_project_cash';
+ const carryBox=document.getElementById('phaseCarryDebt');
+ if(carryBox)carryBox.checked=!!phasing.carry_debt_forward;
+ if(!body||!summary)return;
  const funding=phaseBundle&&phaseBundle.mode==='phased'?phaseBundle.phase_financing:null;
  if(!funding||funding.strategy!==strategy){body.innerHTML='';summary.textContent='Пересчитываю финансирование очередей…';return}
  const rows=funding.rows||[],totals=funding.totals||{};
@@ -36104,6 +36537,20 @@ function renderPhaseComparison(){
  };
  const prodRows=[...group(MKD_PRODUCTS,'Итого МКД'),
                  ...group(prodOrder.filter(k=>!MKD_PRODUCTS.includes(k)),'Итого отдельные объекты')];
+ // Непогашенный долг очереди в таблице не стоял вовсе: очередь, не
+ // рассчитавшаяся с банком, выглядела здесь так же, как закрывшая долг. А
+ // после переноса у передавшей очереди ноль — без строки «передано следующей»
+ // обязательство исчезало бы бесследно. Строка заводится вместе с числом.
+ const anyDebt=k=>c.some(x=>Number(x[k]||0)>0.5e6);
+ const debtRows=[];
+ if(anyDebt('ending_pf')||anyDebt('debt_carried_out')||anyDebt('carried_debt_in')){
+  if(anyDebt('carried_debt_in'))
+   debtRows.push(['Принято от предыдущей очереди',c.map(x=>money(x.carried_debt_in||0)),'—']);
+  debtRows.push(['Непогашенный долг ПФ на конец очереди',
+                 c.map(x=>money(x.ending_pf||0)),money(cons.finance.ending_pf||0)]);
+  if(anyDebt('debt_carried_out'))
+   debtRows.push(['Передано следующей очереди',c.map(x=>money(x.debt_carried_out||0)),'—']);
+ }
  const rows=[
   ['Продаваемая площадь',c.map(x=>num(x.saleable_sqm)+' м²'),num(csSale)+' м²'],
   ['Общая площадь — ГНС',c.map(x=>num(x.gns_sqm)+' м²'),num(csGns)+' м²'],
@@ -36124,12 +36571,28 @@ function renderPhaseComparison(){
   ['Собственные средства',c.map(x=>money(x.own_funds)),money(((phaseBundle.phase_financing||{}).totals||{}).own_funds)],
   ['Новый БРИДЖ',c.map(x=>money(x.new_bridge)),money(((phaseBundle.phase_financing||{}).totals||{}).new_bridge)],
   ['Пиковый остаток ПФ',c.map(x=>money(x.peak_pf)),money(cons.finance.peak_pf)],
+  ...debtRows,
   ['LLCR',c.map(x=>mult(x.llcr)),mult(cons.summary.llcr)],
   ['Чистая прибыль — cash',c.map(x=>money(x.net_profit)),money(cons.summary.net_profit)],
   ['Аналитическая прибыль после аллокации',c.map(x=>money(x.allocated_net_profit)),'—'],
   ['Маржинальность',c.map(x=>pct(x.margin)),pct(cons.summary.margin)]
  ];
- phaseComparisonBody.innerHTML=rows.map(r=>`<tr><td>${r[0]}</td>${r[1].map(v=>`<td>${v}</td>`).join('')}<td>${r[2]}</td></tr>`).join('')
+ phaseComparisonBody.innerHTML=rows.map(r=>`<tr><td>${r[0]}</td>${r[1].map(v=>`<td>${v}</td>`).join('')}<td>${r[2]}</td></tr>`).join('');
+ // Причина, по которой долг сменил очередь — или по которой не сменил.
+ // Обнулённый долг первой очереди рядом с выросшим долгом второй без этой
+ // строки читается как ошибка расчёта.
+ const note=document.getElementById('phaseDebtCarryNote');
+ if(note){
+  const carry=phaseBundle.debt_carry||(cons&&cons.debt_carry)||null;
+  if(carry&&carry.note){
+   note.textContent=carry.note;
+   note.className='note '+(carry.applied?'phase-total-ok':'phase-total-bad');
+   note.style.display='block';
+  }else if(debtRows.length){
+   note.textContent='Перенос долга между очередями выключен: непогашенный остаток остаётся на очереди, которая его набрала, и означает дефолт по её линии. Признак — на вкладке «Очерёдность».';
+   note.className='note';note.style.display='block';
+  }else{note.style.display='none'}
+ }
 }
 function selectReportView(view){
  if(!phaseBundle||phaseBundle.mode!=='phased')return;reportView=view;phaseComparisonCard.style.display='none';
@@ -36258,6 +36721,10 @@ function renderResult(){
   row('Поступление ПФ',money(f.pf_draw_total))+
   `<tr><th>Числитель LLCR</th><th>${money(f.llcr_numerator)}</th></tr>`+
   row('Основной долг ПФ',money(f.pf_draw_total))+
+  // Принятый долг предыдущей очереди стоит в знаменателе, но своей строки не
+  // имел: видимые строки не складывались в показанный итог, и покрытие
+  // выглядело заниженным без причины.
+  (Number(f.carried_debt_in||0)>0.5e6?row('Принятый долг предыдущей очереди',money(f.carried_debt_in)):'')+
   row('Проценты и комиссии',money(f.reported_interest_and_fees))+
  row('Корректировка переноса процентов БРИДЖ',`(${money(f.transferred_bridge_interest)})`)+
   `<tr><th>Знаменатель LLCR</th><th>${money(f.llcr_denominator)}</th></tr>`+
@@ -36350,6 +36817,13 @@ function renderResult(){
   // не было вовсе, и проверить обещание было нечем (владелец, 25.08.2026).
   row('Непогашенный долг ПФ на конец проекта'+(Number(r.report.financing.ending_pf||0)>0?' · дефолт':''),
       money(r.report.financing.ending_pf))+
+  // Переданный и принятый долг стоят рядом с остатком, а не вместо него.
+  // У передавшей очереди остаток ноль — без своей строки обязательство
+  // исчезало бы бесследно, и очередь выглядела бы рассчитавшейся сама.
+  (Number(r.report.financing.debt_carried_out||0)>0.5e6
+   ?row('Долг передан в ПФ следующей очереди',money(r.report.financing.debt_carried_out)):'')+
+  (Number(r.report.financing.carried_debt_in||0)>0.5e6
+   ?row('в т.ч. принято от предыдущей очереди',money(r.report.financing.carried_debt_in)):'')+
   (r.report.financing.peak_total_debt!=null?row('Максимальный совокупный долг',money(r.report.financing.peak_total_debt)):'')+
   row('Текущая ключевая ставка',pct(r.report.financing.current_key_rate))+
   row('Спред БРИДЖ',pct(r.report.financing.bridge_spread))+
