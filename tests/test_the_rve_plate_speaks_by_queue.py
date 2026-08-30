@@ -81,6 +81,7 @@ def test_node_renders_the_plate_by_queue():
     script = (
         _preamble()
         + _function("ruMonth") + "\n"
+        + _function("pfQueueOutcomes") + "\n"
         + _function("pfRveWarningHtml") + "\n"
         + """
         phaseBundle = {
@@ -123,6 +124,7 @@ def test_node_renders_the_plate_without_the_transfer():
     script = (
         _preamble()
         + _function("ruMonth") + "\n"
+        + _function("pfQueueOutcomes") + "\n"
         + _function("pfRveWarningHtml") + "\n"
         + """
         phaseBundle = {
@@ -197,6 +199,7 @@ def test_the_last_queue_is_not_offered_a_transfer():
     script = (
         _preamble()
         + _function("ruMonth") + "\n"
+        + _function("pfQueueOutcomes") + "\n"
         + _function("pfRveWarningHtml") + "\n"
         + """
         phaseBundle = {
@@ -238,6 +241,7 @@ def test_the_flag_is_not_suggested_where_it_would_change_nothing():
     script = (
         _preamble()
         + _function("ruMonth") + "\n"
+        + _function("pfQueueOutcomes") + "\n"
         + _function("pfRveWarningHtml") + "\n"
         + """
         phaseBundle = {
@@ -276,6 +280,7 @@ def test_the_middle_queue_still_hears_about_the_transfer():
     script = (
         _preamble()
         + _function("ruMonth") + "\n"
+        + _function("pfQueueOutcomes") + "\n"
         + _function("pfRveWarningHtml") + "\n"
         + """
         phaseBundle = {
