@@ -69,7 +69,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.20.79"
+VERSION = "0.20.80"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -5022,13 +5022,20 @@ def _geocode_nominatim(address: str, limit: int) -> list[dict[str, Any]]:
         if wait > 0:
             time.sleep(min(wait, 1.0))
         _nominatim_last_call = time.time()
-    params = urllib.parse.urlencode({
+    region = _query_region(address)
+    query = {
         "q": address,
         "format": "jsonv2",
         "limit": limit,
         "accept-language": "ru",
         "countrycodes": "ru",
-    })
+        "addressdetails": 1,
+    }
+    if region:
+        # Названный в запросе регион — это условие, а не слово: без него
+        # «Москва Мишина 46» ищется по всей стране.
+        query["state"] = region[0]
+    params = urllib.parse.urlencode(query)
     payload = _land_fetch_json(
         f"{_NOMINATIM_BASE_URL}/search?{params}",
         service="Геокодер OpenStreetMap",
@@ -5038,13 +5045,54 @@ def _geocode_nominatim(address: str, limit: int) -> list[dict[str, Any]]:
         lat, lng = _land_float((item or {}).get("lat")), _land_float((item or {}).get("lon"))
         if lat is None or lng is None:
             continue
+        label = _land_text(item.get("display_name"))
+        if region:
+            # Сам ответ говорит, где он: если регион назван в запросе, а в
+            # ответе его нет, это чужой город с похожей улицей.
+            details = (item or {}).get("address") or {}
+            where = " ".join(str(value).lower() for value in details.values())
+            if region[0] not in where and region[0] not in label.lower():
+                continue
         results.append({
             "lat": lat,
             "lng": lng,
-            "label": _land_text(item.get("display_name")),
+            "label": label,
             "provider": "OpenStreetMap",
         })
     return results
+
+
+# Регион, названный в самом запросе. Города в запросе к геокодеру не было
+# вовсе — стоял только `countrycodes=ru`, — поэтому «Москва Мишина 46» искалось
+# по всей стране: «находил везде, не только в Москве» (владелец, 30.08.2026).
+#
+# Двух регионов достаточно: мы работаем по Москве и области, а у участка регион
+# написан первыми цифрами кадастрового номера, и сверка выходит дармовой.
+# Регион, которого тут нет, ничего не отсекает — лучше не проверять, чем
+# отсеять верное по неполному справочнику.
+_QUERY_REGIONS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
+    ("Москва", ("московская область", "подмосковь", "мо,"), ("50",)),
+    ("Москва", ("москва", "г москва", "г. москва"), ("77",)),
+)
+
+
+def _query_region(address: str) -> tuple[str, tuple[str, ...]] | None:
+    """Какой регион назван в запросе: его имя для геокодера и коды кадастра.
+
+    Область проверяется раньше города: «Московская область» содержит в себе
+    слово «Москва», и порядок наоборот отдал бы области московский код.
+    """
+    text = " " + re.sub(r"\s+", " ", str(address or "")).strip().lower() + " "
+    for _, marks, codes in _QUERY_REGIONS:
+        if any(mark in text for mark in marks):
+            return (marks[0], codes)
+    return None
+
+
+def _same_region(number: str, codes: tuple[str, ...]) -> bool:
+    """Первые цифры кадастрового номера — это регион, и сверка тут дармовая."""
+    head = str(number or "").split(":", 1)[0].strip()
+    return not head or not codes or head in codes
 
 
 _GEOCODERS = (
@@ -5055,8 +5103,17 @@ _GEOCODERS = (
 
 
 def _geocode_address(address: str, limit: int) -> tuple[list[dict[str, Any]], list[str]]:
+    """Точка по адресу и то, чем именно она найдена.
+
+    Спуск по лесенке говорится вслух: провайдер без ключа возвращает пустоту,
+    а не ошибку, поэтому падение на запасной геокодер было неотличимо от
+    плохого адреса. А запасной ищет по всей стране, и «Москва Мишина 46»
+    находилось где угодно.
+    """
     forced = _env_str("LAND_LOOKUP_GEOCODER").lower()
     warnings: list[str] = []
+    silent: list[str] = []
+    named = {"yandex": "Яндекс", "dadata": "DaData", "nominatim": "OpenStreetMap"}
     for name, provider in _GEOCODERS:
         if forced and forced != name:
             continue
@@ -5064,9 +5121,16 @@ def _geocode_address(address: str, limit: int) -> tuple[list[dict[str, Any]], li
             candidates = provider(address, limit)
         except HTTPException as exc:
             warnings.append(str(exc.detail))
+            silent.append(named.get(name, name))
             continue
         if candidates:
+            if silent:
+                warnings.append(
+                    "Адрес разобрал " + named.get(name, name) + ": "
+                    + ", ".join(silent) + " не ответил" + ("и" if len(silent) > 1 else "")
+                    + ". Запасной геокодер ищет грубее.")
             return candidates, warnings
+        silent.append(named.get(name, name))
     return [], warnings
 
 
@@ -5539,6 +5603,9 @@ def land_lookup(req: LandLookupRequest) -> dict[str, Any]:
             if not results:
                 candidates, geocoder_warnings = _geocode_address(query, 3)
                 warnings.extend(geocoder_warnings)
+                named = _query_region(query)
+                region_codes = named[1] if named else ()
+                strangers: list[str] = []
                 # «Адрес не распознан» рядом с двумя десятками найденных по
                 # нему объектов — противоречие: не распознан не адрес, а участок.
                 if not candidates and not neighbours:
@@ -5558,10 +5625,27 @@ def land_lookup(req: LandLookupRequest) -> dict[str, Any]:
                     for item in found:
                         item["matched_address"] = candidate.get("label", "")
                         item["geocoder"] = candidate.get("provider", "")
+                    # Регион участка написан первыми цифрами его номера. Запрос
+                    # назвал регион — значит участок из другого не он, а на
+                    # экране он выглядел бы обычной находкой.
+                    if region_codes:
+                        kept = [item for item in found
+                                if _same_region(item.get("cadastral_number"), region_codes)]
+                        strangers.extend(str(item.get("cadastral_number") or "—")
+                                         for item in found if item not in kept)
+                        found = kept
                     results.extend(found)
                     if len(results) >= limit:
                         break
                 results = results[:limit]
+                if strangers:
+                    # Отсечённое называется: молча выброшенная находка читается
+                    # как её отсутствие.
+                    warnings.append(
+                        "Не показаны участки другого региона: "
+                        + ", ".join(dict.fromkeys(strangers))
+                        + ". В запросе назван "
+                        + (named[0] if named else "регион") + ".")
                 if candidates and not results:
                     warnings.append(
                         "Адрес найден, но участок ЕГРН в этой точке не определён — "
