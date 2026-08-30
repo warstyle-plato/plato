@@ -32,17 +32,26 @@ INSIDE = ("/monitor", "/auctions", "/statistics", "/cabinet")
 
 def test_every_role_the_owner_named_has_its_entrance() -> None:
     roles = {str(role["role"]): role for role in contour.ROLES}
-    assert set(roles) == {"Строителю", "Коммерции", "Инвестициям", "Аналитике"}
+    # Три кабинета: аналитика уехала в инвестиции (владелец, 30.08.2026).
+    assert set(roles) == {"Строителю", "Коммерции", "Инвестициям"}
     hrefs = {role: [str(link["href"]) for link in item["links"]]
              for role, item in roles.items()}
     assert "/monitor" in hrefs["Строителю"]
-    assert "/cabinet#sales" in hrefs["Коммерции"] and "/cabinet" in hrefs["Коммерции"]
+    # Оба отчёта — своими страницами, а не якорем на общую: «они должны быть
+    # ссылками в меню коммерции, и всё» (владелец, 30.08.2026).
+    assert "/cabinet/sales" in hrefs["Коммерции"]
+    assert "/cabinet/market" in hrefs["Коммерции"]
+    assert "#" not in "".join(hrefs["Коммерции"]), "якорь читается как переход, которого нет"
     assert "/auctions" in hrefs["Инвестициям"]
     # Статистика себестоимости обосновывает наши ставки, а не помогает
     # продавать: «это аналитический блок, а не маркетинг» (владелец,
     # 30.08.2026).
-    assert "/statistics" in hrefs["Аналитике"]
+    assert "/statistics" in hrefs["Инвестициям"]
     assert "/statistics" not in hrefs["Коммерции"]
+    # У каждого кабинета своё имя и свой портрет: карточка без имени — это
+    # строка списка, а её и так видно в контуре.
+    for item in contour.ROLES:
+        assert str(item["room"]).strip() and str(item["face"]).strip()
     # У каждой ссылки сказано, что за ней: имя раздела в чужой роли ничего не
     # говорит человеку, который туда не ходит.
     for item in contour.ROLES:
@@ -113,8 +122,15 @@ def test_the_cabinet_is_checked_too_when_its_key_is_set(tmp_path, monkeypatch) -
                 follow_redirects=False)
     page = client.get("/cabinet")
     assert page.status_code == 200
-    assert "Управленческий контур" in page.text
-    assert "__DEVELOPAID_CONTOUR" not in page.text
+    # На титуле оглавление — карточки кабинетов; полоска контура стоит на
+    # страницах разделов, куда эти карточки и ведут.
+    assert 'class="room"' in page.text
+    assert "__DEVELOPAID_" not in page.text, "плейсхолдер не подставился"
+    for view in ("/cabinet/sales", "/cabinet/market"):
+        inner = client.get(view)
+        assert inner.status_code == 200, view
+        assert "Управленческий контур" in inner.text
+        assert "__DEVELOPAID_" not in inner.text
 
 
 def test_the_sales_link_lands_on_the_sales_report() -> None:
@@ -154,39 +170,38 @@ def test_the_public_calculator_stays_outside() -> None:
     assert "Управленческий контур" not in main.text
 
 
-def test_the_cabinet_opens_with_a_summary_not_with_one_tool() -> None:
-    """«Может, для кабинета нужен какой-то сводный вариант, а не как сейчас,
-    когда маркетинг и отчёт о продажах сразу открывается» (владелец,
+def test_the_cabinet_opens_with_the_rooms_and_nothing_else() -> None:
+    """«Зачем тут 76 договоров, если это титульный лист кабинета? И зачем внизу
+    отчёты? Они должны быть ссылками в меню коммерции, и всё» (владелец,
     30.08.2026).
 
-    Кабинет — вход в контур, а открывался он конструктором отчёта о рынке, то
-    есть одним инструментом из четырёх. Теперь сверху состояние, инструменты
-    свёрнуты, и раскрывает их человек.
+    Титул кабинета — это выбор кабинета, а не сводка проекта: числа продаж
+    живут на странице продаж, конструктор рынка — на своей. Раньше на одной
+    странице стояло всё сразу, и у отчёта о рынке не было ссылки вовсе: он
+    ссылался на страницу, где человек уже стоял, и рисовался неактивным.
     """
-    from market_search.cabinet import CABINET_PAGE, cabinet_page
+    from market_search.cabinet import cabinet_page
 
-    page = cabinet_page()
-    assert "<title>Кабинет DevelopAid</title>" in page
-    assert "Конструктор отчёта о рынке" not in page, "старое имя кабинета осталось"
+    home = cabinet_page("home")
+    assert "<title>Кабинет DevelopAid</title>" in home
+    assert home.count('class="room"') == len(contour.ROLES)
+    for role in contour.ROLES:
+        assert str(role["room"]) in home
+    # Ни чисел проекта, ни инструментов: их место на своих страницах.
+    for stranger in ('id="overview"', 'id="form"', 'id="market"', 'id="cf"'):
+        assert stranger not in home, f"на титуле осталось {stranger}"
+    # И полоски контура тут нет: её работу делают карточки, два меню подряд —
+    # это одно и то же дважды.
+    assert 'class="contour"' not in home
 
-    # Сводка стоит до инструментов.
-    assert page.index('id="overview"') < page.index('id="market"') < page.index('id="sales"')
-    # Оба инструмента — раскрытия, и оба закрыты: `open` в разметке нет.
-    market = CABINET_PAGE[CABINET_PAGE.index('<details class="salesreport" id="market">'):]
-    assert market[: market.index(">")].count("open") == 0
+    sales, market = cabinet_page("sales"), cabinet_page("market")
+    assert 'id="overview"' in sales and 'id="cf"' in sales
+    assert 'id="form"' not in sales, "конструктор рынка уехал на свою страницу"
+    assert 'id="form"' in market
+    assert 'id="overview"' not in market
+    # На страницах разделов полоска контура на месте — уйти из раздела нечем.
+    assert 'class="contour"' in sales and 'class="contour"' in market
 
-    body = CABINET_PAGE[CABINET_PAGE.index("function renderOverview(d){"):]
-    body = body[: body.index("\nfunction renderSales(")]
-    # Числа сводки — из свода, посчитанного сервером; на экране только формат.
-    for sign in ("d.total", "d.sources", "d.pool"):
-        assert sign in body
-    for sign in ("/1e6*", "Math.round(", "amount/area"):
-        assert sign not in body, f"в сводке появилась арифметика: {sign}"
-    # Пустой склад говорит, чего нет, а не молчит.
-    assert "Файлы проекта ещё не загружены" in body
-    assert "отчёт о рынке" in body and "работает и без них" in body
-    # И кнопки раскрывают то, что назвали.
-    assert "id=\"openSales\"" in body and "id=\"openMarket\"" in body
 
 
 def test_the_project_file_upload_lives_with_the_summary() -> None:
@@ -200,3 +215,48 @@ def test_the_project_file_upload_lives_with_the_summary() -> None:
     form = CABINET_PAGE[CABINET_PAGE.index('<div class="card" id="form">'):]
     form = form[: form.index("</details>")]
     assert 'id="cf"' not in form
+
+
+def test_each_view_of_the_cabinet_opens_without_a_script_error(tmp_path) -> None:
+    """Скрипт кабинета один на три вида, и элемента на виде может не быть.
+
+    Необработанная ошибка в этом блоке гасит страницу целиком: обработчики не
+    навешиваются ни на что, и человек видит мёртвый экран. Строковые проверки
+    такого не ловят — нужен настоящий браузер. Без Chromium это пропуск, а не
+    зелёный прогон на пустом месте.
+    """
+    import pytest
+
+    play = pytest.importorskip("playwright.sync_api")
+
+    import browser_launch
+
+    from market_search.cabinet import cabinet_page
+
+    broken: dict[str, list[str]] = {}
+    with play.sync_playwright() as pw:
+        try:
+            browser = browser_launch.launch(pw)
+        except Exception as exc:  # noqa: BLE001
+            pytest.skip(f"Chromium недоступен: {exc}")
+        try:
+            for view in ("home", "sales", "market"):
+                file = tmp_path / f"{view}.html"
+                file.write_text(
+                    cabinet_page(view).replace("__DEVELOPAID_VERSION__", "test"),
+                    encoding="utf-8")
+                tab = browser.new_page()
+                errors: list[str] = []
+                tab.on("pageerror", lambda exc: errors.append(str(exc)))
+                tab.route("**/*", lambda route: route.abort()
+                          if route.request.url.startswith("http")
+                          else route.continue_())
+                tab.goto(file.as_uri())
+                # Функции объявляются только если блок доработал до конца.
+                alive = tab.evaluate("() => typeof askPlato === 'function'")
+                if errors or not alive:
+                    broken[view] = errors or ["скрипт не доработал до конца"]
+                tab.close()
+        finally:
+            browser.close()
+    assert not broken, f"вид кабинета упал: {broken}"

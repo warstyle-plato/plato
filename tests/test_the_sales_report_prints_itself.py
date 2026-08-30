@@ -33,7 +33,7 @@ from market_search.cabinet import cabinet_page, cabinet_style  # noqa: E402
 
 
 def page() -> str:
-    return cabinet_page()
+    return cabinet_page("sales")
 
 
 def script() -> str:
@@ -53,7 +53,7 @@ def test_printing_is_declared_once_for_both_surfaces() -> None:
     body = script()
     assert "async function printPdf(" in body
     assert body.count("'/cabinet/report.pdf'") == 1, "вторая копия печати разойдётся с первой"
-    for caller in ("$('#pdf').addEventListener('click'", "$('#salespdf').onclick="):
+    for caller in ("on('#pdf','click'", "$('#salespdf').onclick="):
         start = body.index(caller)
         assert "printPdf({" in body[start:start + 700], f"{caller} печатает сам по себе"
 
@@ -108,7 +108,7 @@ def test_the_printed_markup_is_the_screen_without_its_tools(tmp_path) -> None:
 
     from market_search import report_pdf
 
-    body = cabinet_page().replace("__DEVELOPAID_VERSION__", "test")
+    body = cabinet_page("sales").replace("__DEVELOPAID_VERSION__", "test")
     file = tmp_path / "cabinet.html"
     file.write_text(body, encoding="utf-8")
 

@@ -52,14 +52,16 @@ class _Sections(HTMLParser):
     половины чисел, поэтому пустой разбор объявляется отказом выше.
     """
 
-    _SKIP = {"script", "style", "button", "textarea", "select", "svg"}
+    # `summary` — подпись сворачивалки, а не содержание: на слайде «Помесячно
+    # числами» это осиротевшая фраза, под которой ничего нет.
+    _SKIP = {"script", "style", "button", "textarea", "select", "svg", "summary"}
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.sections: list[dict[str, Any]] = []
-        self.head: dict[str, Any] = {"title": "", "lines": [], "tables": [], "note": ""}
+        self.head: dict[str, Any] = {"title": "", "lines": [], "tables": [], "strips": [], "note": ""}
         self.tail: dict[str, Any] = {"title": "На чём посчитано", "lines": [],
-                                     "tables": [], "note": ""}
+                                     "tables": [], "strips": [], "note": ""}
         self._current = self.head
         self._kv_depth = 0
         self._kv_row: list[str] | None = None
@@ -71,6 +73,14 @@ class _Sections(HTMLParser):
         self._text: list[str] = []
         self._in_head_cell = False
         self._want: str = ""
+        # Подписи легенды и полос лежат соседними `span` без единого пробела
+        # между ними: «факт, млн ₽» и «цена квартир, ₽/м²» на слайде выходили
+        # одним словом. Разделитель ставится ТОЛЬКО между соседями одного
+        # уровня — внутри строки `span` разбивать нечего.
+        self._span_depth = 0
+        self._closed_span_at: int | None = None
+        self._strip: dict[str, Any] | None = None
+        self._strip_depth = 0
 
     # --- служебное -----------------------------------------------------
     def _flush_line(self) -> None:
@@ -108,16 +118,36 @@ class _Sections(HTMLParser):
                 self._flush_line()
             return
         if tag == "div" and "kv" in classes.split():
-            # Плашка ключевых чисел: имя, число и пояснение под ним. Россыпью
-            # текстовых строк они на слайде наезжали друг на друга и читались
-            # как обрывки; таблицей — читаются и правятся.
+            # Плашка ключевых чисел: имя, число и пояснение под ним. На экране
+            # это плитки с крупным числом; таблицей «Показатель / Значение /
+            # Пояснение» они перестают быть плитками и читаются как список.
             self._flush_line()
             self._kv_depth = 1
-            self._table = {"head": ["Показатель", "Значение", "Пояснение"], "rows": []}
+            self._table = {"head": ["Показатель", "Значение", "Пояснение"],
+                           "rows": [], "kind": "tiles"}
+            return
+        style = dict(attrs).get("style") or ""
+        if tag == "div" and "display:flex" in style.replace(" ", "") and "height:" in style:
+            self._flush_line()
+            # Подпись ленты — строка прямо над ней: «Пул проекта · как
+            # построено». Её уже прочитали, поэтому берём последнюю.
+            caption = self._current["lines"].pop() if self._current["lines"] else ""
+            self._strip = {"caption": caption, "parts": []}
+            self._strip_depth = 1
+            return
+        if self._strip is not None:
+            self._strip_depth += 1
+            share = _SHARE.search(style)
+            colour = _COLOUR.search(style)
+            title = dict(attrs).get("title") or ""
+            if share and title:
+                self._strip["parts"].append({
+                    "name": title, "share": float(share.group(1)),
+                    "colour": (colour.group(1) if colour else "1367AE").upper()})
             return
         if tag == "section" and "salesblock" in classes:
             self._flush_line()
-            self._current = {"title": "", "lines": [], "tables": [], "note": ""}
+            self._current = {"title": "", "lines": [], "tables": [], "strips": [], "note": ""}
             self.sections.append(self._current)
             return
         if tag in {"h1", "h2", "h3", "h4"}:
@@ -139,10 +169,26 @@ class _Sections(HTMLParser):
             self._cell = []
             self._in_head_cell = tag == "th"
             return
-        if tag in {"br", "p", "div", "li", "summary"}:
+        if tag == "span":
+            if self._closed_span_at == self._span_depth and self._text:
+                tail = "".join(self._text).rstrip()
+                if tail and not tail.endswith(("·", ",", ";", ":")):
+                    self._text.append(" · ")
+            self._span_depth += 1
+            self._closed_span_at = None
+            return
+        self._closed_span_at = None
+        if tag in {"br", "p", "div", "li"}:
             self._flush_line()
 
     def handle_endtag(self, tag: str) -> None:
+        if self._strip is not None and tag == "div":
+            self._strip_depth -= 1
+            if self._strip_depth == 0:
+                if self._strip["parts"]:
+                    self._current.setdefault("strips", []).append(self._strip)
+                self._strip = None
+            return
         if tag == "svg":
             self._svg_depth = max(0, self._svg_depth - 1)
             return
@@ -191,7 +237,12 @@ class _Sections(HTMLParser):
             self._current = self.tail
             self._want = ""
             return
-        if tag in {"h1", "h2", "h3", "h4", "p", "div", "li", "summary"}:
+        if tag == "span":
+            self._span_depth = max(0, self._span_depth - 1)
+            self._closed_span_at = self._span_depth
+            return
+        self._closed_span_at = None
+        if tag in {"h1", "h2", "h3", "h4", "p", "div", "li"}:
             self._flush_line()
             self._want = ""
 
@@ -217,13 +268,18 @@ def sections(html: str) -> list[dict[str, Any]]:
     # заголовок у него наш, и пустой он выдал бы пустую колоду за собранную.
     tail = [parser.tail] if (parser.tail["lines"] or parser.tail["tables"]) else []
     out = [parser.head] + parser.sections + tail
-    kept = [item for item in out if item["lines"] or item["tables"] or item["note"]]
+    kept = [item for item in out
+            if item["lines"] or item["tables"] or item["strips"] or item["note"]]
     if not kept:
         raise DeckUnavailable("В разметке свода не нашлось ни одного раздела")
     return kept
 
 
+_SHARE = re.compile(r"width:\s*([\d.]+)%")
+_COLOUR = re.compile(r"background:\s*#([0-9a-fA-F]{6})")
 _NUMBER = re.compile(r"^-?\d[\d  ]*(?:[.,]\d+)?$")
+# Заголовок колонки цены метра: кроме «₽/м²» встречается «руб/м²» и «цена, ₽/м²».
+_PRICE = re.compile(r"(₽|руб)\s*/\s*м", re.IGNORECASE)
 
 
 def cell_number(text: str) -> float | None:
@@ -261,14 +317,107 @@ def charts(table: dict[str, Any]) -> list[dict[str, Any]]:
     if len(head) < 2 or len(rows) < 2:
         return []
     categories = [str(row[0]) for row in rows if row]
-    out: list[dict[str, Any]] = []
-    for index in range(1, len(head)):
+
+    def column(index: int) -> list[float] | None:
         values = [cell_number(row[index]) if index < len(row) else None for row in rows]
         if len(values) != len(categories) or any(value is None for value in values):
+            return None
+        return [float(value) for value in values]
+
+    numeric = {index: column(index) for index in range(1, len(head))}
+    numeric = {index: values for index, values in numeric.items() if values}
+    # Цена метра — не такая же мера, как метры и рубли: она про другое и живёт
+    # линией на своей шкале. «Цена — всегда линия на своей шкале, а не вкладка
+    # со столбиками» (владелец, 26.08.2026): на общей шкале с рублями её не
+    # видно, а отдельной вкладкой она исчезает ровно тогда, когда смотрят на
+    # метры. В колоде она уходила своим слайдом со столбиками — то же самое
+    # другими словами. Теперь она идёт линией справа на каждом графике объёма.
+    price = next((index for index in numeric if _PRICE.search(str(head[index]))), None)
+    line = ({"name": str(head[price]), "values": numeric[price]}
+            if price is not None else None)
+    out: list[dict[str, Any]] = []
+    for index, values in numeric.items():
+        # Своим слайдом цена остаётся, только если объёма рядом нет вовсе.
+        if index == price and len(numeric) > 1:
             continue
-        out.append({"name": str(head[index]), "categories": categories,
-                    "values": [float(value) for value in values]})
+        item: dict[str, Any] = {"name": str(head[index]), "categories": categories,
+                                "values": values}
+        if line and index != price:
+            item["line"] = line
+        out.append(item)
     return out
+
+
+_SEC_CAT_AX, _SEC_VAL_AX = 771001, 771002
+
+
+def _price_line(chart: Any, brand: Any) -> None:
+    """Второй ряд — линией на правой шкале, а не вторым частоколом столбиков.
+
+    Комбинированных графиков python-pptx не строит, и это единственное место
+    модуля, где XML правится руками. Иначе пришлось бы либо класть цену
+    столбиками на общую шкалу — а рядом с рублями столбик цены выходит в
+    пиксель, — либо уносить её отдельным слайдом, что и было и что владелец
+    назвал ошибкой: цена сравнивается с ценой ТОГО ЖЕ товара, и смотрят на неё
+    вместе с объёмом.
+
+    Ось цены не от нуля: «урезанная шкала обязана назваться» — она подписана
+    справа своим именем, и её деления видны. Ось объёма при этом остаётся от
+    нуля: у метров и рублей ноль — настоящее начало отсчёта.
+    """
+    from copy import deepcopy
+
+    from lxml import etree
+    from pptx.oxml.ns import qn
+
+    plot_area = chart._chartSpace.find(qn("c:chart")).find(qn("c:plotArea"))
+    bar = plot_area.find(qn("c:barChart"))
+    series = bar.findall(qn("c:ser"))
+    if bar is None or len(series) < 2:
+        raise DeckUnavailable("второй ряд для линии цены не нашёлся")
+    moved = series[-1]
+    bar.remove(moved)
+    # `invertIfNegative` — свойство столбика; в линии его быть не должно.
+    for junk in moved.findall(qn("c:invertIfNegative")):
+        moved.remove(junk)
+
+    def element(tag: str):
+        node = etree.SubElement(plot_area, qn(tag))
+        return node
+
+    # Порядок детей области обязателен: сначала ВСЕ группы графиков, потом
+    # оси. Линия, приписанная в конец, встала бы после осей — PowerPoint такой
+    # файл не открывает вовсе, а всё остальное его читает и молчит.
+    line_chart = etree.Element(qn("c:lineChart"))
+    bar.addnext(line_chart)
+    etree.SubElement(line_chart, qn("c:grouping")).set("val", "standard")
+    etree.SubElement(line_chart, qn("c:varyColors")).set("val", "0")
+    line_chart.append(moved)
+    etree.SubElement(line_chart, qn("c:marker")).set("val", "1")
+    for axis in (_SEC_CAT_AX, _SEC_VAL_AX):
+        etree.SubElement(line_chart, qn("c:axId")).set("val", str(axis))
+    # Толщина и цвет линии: тот же фирменный синий, но темнее столбиков —
+    # два разных ряда одного цвета неразличимы.
+    properties = etree.SubElement(moved, qn("c:spPr"))
+    stroke = etree.SubElement(properties, qn("a:ln"))
+    stroke.set("w", "28575")
+    fill = etree.SubElement(stroke, qn("a:solidFill"))
+    etree.SubElement(fill, qn("a:srgbClr")).set("val", "0E2A43")
+    etree.SubElement(moved, qn("c:smooth")).set("val", "0")
+
+    def axis(tag: str, own: int, cross: int, *, position: str, deleted: str):
+        node = element(tag)
+        etree.SubElement(node, qn("c:axId")).set("val", str(own))
+        scaling = etree.SubElement(node, qn("c:scaling"))
+        etree.SubElement(scaling, qn("c:orientation")).set("val", "minMax")
+        etree.SubElement(node, qn("c:delete")).set("val", deleted)
+        etree.SubElement(node, qn("c:axPos")).set("val", position)
+        etree.SubElement(node, qn("c:crossAx")).set("val", str(cross))
+        return node
+
+    price_axis = axis("c:valAx", _SEC_VAL_AX, _SEC_CAT_AX, position="r", deleted="0")
+    etree.SubElement(price_axis, qn("c:crosses")).set("val", "max")
+    axis("c:catAx", _SEC_CAT_AX, _SEC_VAL_AX, position="b", deleted="1")
 
 
 def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str) -> bytes:
@@ -277,7 +426,9 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         from pptx import Presentation
         from pptx.chart.data import CategoryChartData
         from pptx.dml.color import RGBColor
-        from pptx.enum.chart import XL_CHART_TYPE, XL_LABEL_POSITION, XL_TICK_MARK
+        from pptx.enum.chart import (XL_CHART_TYPE, XL_LABEL_POSITION,
+                                     XL_LEGEND_POSITION, XL_TICK_MARK)
+        from pptx.enum.shapes import MSO_SHAPE
         from pptx.enum.text import PP_ALIGN
         from pptx.util import Inches, Pt
     except ImportError as exc:  # noqa: BLE001
@@ -296,6 +447,8 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
     ink = RGBColor(0x16, 0x20, 0x2B)
     dim = RGBColor(0x5B, 0x6B, 0x7D)
     brand = RGBColor(0x13, 0x67, 0xAE)
+    deep = RGBColor(0x0E, 0x2A, 0x43)
+    paper = RGBColor(0xFF, 0xFF, 0xFF)
 
     def textbox(slide, text: str, *, top: float, size: int, colour: RGBColor,
                 bold: bool = False, height: float = 0.6):
@@ -310,9 +463,20 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         run.font.color.rgb = colour
         return box
 
-    def new_slide(heading: str):
+    def new_slide(heading: str, section: str = ""):
+        """Лист раздела: заголовок и номер. Имя раздела внизу не повторяем —
+        оно уже стоит заголовком, а повтор читается как заводская рамка."""
         slide = deck.slides.add_slide(blank)
-        textbox(slide, heading, top=0.42, size=24, colour=ink, bold=True)
+        textbox(slide, heading, top=0.45, size=26, colour=ink, bold=True, height=0.7)
+        corner = slide.shapes.add_textbox(Inches(SLIDE_W_IN - 1.4),
+                                          Inches(SLIDE_H_IN - 0.55),
+                                          Inches(0.8), Inches(0.35))
+        paragraph = corner.text_frame.paragraphs[0]
+        paragraph.alignment = PP_ALIGN.RIGHT
+        number = paragraph.add_run()
+        number.text = str(len(deck.slides))
+        number.font.size = Pt(10)
+        number.font.color.rgb = dim
         return slide
 
     def put_table(slide, table: dict[str, Any], *, top: float, height: float) -> None:
@@ -332,7 +496,7 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         grid.first_row = bool(head)
         grid.horz_banding = False
 
-        def dress(cell, text: str, *, header: bool) -> None:
+        def dress(cell, text: str, *, header: bool, first: bool = False) -> None:
             cell.text = text
             cell.fill.solid()
             cell.fill.fore_color.rgb = RGBColor(0xF4, 0xF7, 0xFA) if header else RGBColor(0xFF, 0xFF, 0xFF)
@@ -341,7 +505,7 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
             paragraph = cell.text_frame.paragraphs[0]
             # Числу место справа: колонка чисел, прижатая влево, не читается
             # столбиком. Заголовок стоит там же, где его числа.
-            if cell_number(text) is not None or (header and cell is not grid.cell(0, 0)):
+            if cell_number(text) is not None or (header and not first):
                 paragraph.alignment = PP_ALIGN.RIGHT
             for run in paragraph.runs or [paragraph.add_run()]:
                 run.font.size = Pt(11)
@@ -352,12 +516,103 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         if head:
             for index in range(columns):
                 dress(grid.cell(0, index),
-                      str(head[index]) if index < len(head) else "", header=True)
+                      str(head[index]) if index < len(head) else "", header=True,
+                      first=index == 0)
             offset = 1
         for line, row in enumerate(rows):
             for index in range(columns):
                 dress(grid.cell(line + offset, index),
                       str(row[index]) if index < len(row) else "", header=False)
+
+    def put_tiles(slide, table: dict[str, Any], *, top: float) -> float:
+        """Ключевые числа плитками, как на экране: число крупно, имя над ним.
+
+        Таблицей «Показатель / Значение / Пояснение» они перестают быть тем,
+        чем являются: на слайде это первое, на что смотрят, и читаться оно
+        должно с трёх метров, а не разбираться построчно.
+        """
+        rows = [row for row in (table.get("rows") or []) if any(row)]
+        if not rows:
+            return top
+        count = min(len(rows), 4)
+        gap, edge = 0.25, 0.6
+        width = (SLIDE_W_IN - edge * 2 - gap * (count - 1)) / count
+        for index, row in enumerate(rows[:count]):
+            left = edge + index * (width + gap)
+            card = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(left), Inches(top),
+                                          Inches(width), Inches(1.35))
+            card.fill.solid()
+            card.fill.fore_color.rgb = RGBColor(0xF4, 0xF7, 0xFA)
+            card.line.color.rgb = RGBColor(0xDD, 0xE5, 0xED)
+            card.shadow.inherit = False
+            frame = card.text_frame
+            frame.word_wrap = True
+            frame.margin_left = frame.margin_right = Inches(0.16)
+            frame.margin_top = Inches(0.12)
+            for order, (text, size, bold, tone) in enumerate((
+                    (str(row[0] if len(row) > 0 else ""), 11, False, dim),
+                    (str(row[1] if len(row) > 1 else ""), 24, True, ink),
+                    (str(row[2] if len(row) > 2 else ""), 10, False, dim))):
+                if not text:
+                    continue
+                para = frame.paragraphs[0] if order == 0 else frame.add_paragraph()
+                para.alignment = PP_ALIGN.LEFT
+                run = para.add_run()
+                run.text = text
+                run.font.size = Pt(size)
+                run.font.bold = bold
+                run.font.color.rgb = tone
+        return top + 1.6
+
+    def put_strip(slide, strip: dict[str, Any], *, top: float) -> float:
+        """Лента долей — теми же цветами, что на экране, и с подписями.
+
+        На слайде от неё не оставалось ничего: у кусков ленты нет текста, одна
+        ширина и цвет. А это и есть ответ раздела — как устроен пул и как из
+        него покупают.
+        """
+        parts = [item for item in strip.get("parts") or [] if item.get("share")]
+        if not parts:
+            return top
+        caption = str(strip.get("caption") or "")
+        if caption:
+            textbox(slide, caption, top=top, size=12, colour=dim, height=0.3)
+            top += 0.32
+        total = sum(item["share"] for item in parts) or 100.0
+        width = SLIDE_W_IN - 1.2
+        left = 0.6
+        narrow = []
+        for item in parts:
+            span = width * item["share"] / total
+            block = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(left), Inches(top),
+                                           Inches(max(span, 0.02)), Inches(0.46))
+            block.fill.solid()
+            block.fill.fore_color.rgb = RGBColor.from_string(item["colour"])
+            block.line.fill.background()
+            block.shadow.inherit = False
+            name = str(item["name"])
+            if span >= 1.3:
+                # Имя стоит в своём куске: серой строкой под лентой оно с
+                # цветом не связано вовсе, а подсказки по наведению на слайде
+                # не бывает.
+                para = block.text_frame.paragraphs[0]
+                para.alignment = PP_ALIGN.CENTER
+                run = para.add_run()
+                run.text = name
+                run.font.size = Pt(10)
+                run.font.bold = True
+                run.font.color.rgb = paper
+            else:
+                narrow.append(name)
+            left += span
+        top += 0.54
+        if narrow:
+            # Узкому куску имя внутрь не влезает — оно уходит строкой под
+            # ленту, но только оно: остальные уже подписаны.
+            textbox(slide, "Узкие полосы: " + "; ".join(narrow),
+                    top=top, size=10, colour=dim, height=0.3)
+            top += 0.34
+        return top
 
     def put_chart(slide, data: dict[str, Any], *, top: float, height: float) -> None:
         """График, а не заводская заготовка PowerPoint.
@@ -371,14 +626,21 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         прямо на столбиках, и оставлена волосяной, где их много; легенды нет —
         ряд один, и его называет заголовок слайда.
         """
+        line = data.get("line")
         payload = CategoryChartData()
         payload.categories = data["categories"]
         payload.add_series(data["name"], data["values"])
+        if line:
+            payload.add_series(line["name"], line["values"])
         frame = slide.shapes.add_chart(
             XL_CHART_TYPE.COLUMN_CLUSTERED, Inches(0.6), Inches(top),
             Inches(SLIDE_W_IN - 1.2), Inches(height), payload)
         chart = frame.chart
-        chart.has_legend = False
+        # Рядов два — легенда нужна: без неё столбики и линия неразличимы.
+        chart.has_legend = bool(line)
+        if line:
+            chart.legend.position = XL_LEGEND_POSITION.BOTTOM
+            chart.legend.include_in_layout = False
         chart.font.size = Pt(11)
         chart.font.name = "Calibri"
         chart.font.color.rgb = dim
@@ -415,9 +677,10 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         value_axis = chart.value_axis
         value_axis.has_major_gridlines = not labelled
         if value_axis.has_major_gridlines:
-            line = value_axis.major_gridlines.format.line
-            line.color.rgb = RGBColor(0xE3, 0xEB, 0xF2)
-            line.width = Pt(0.75)
+            # Имя `line` здесь занято рядом цены — сетка носит своё.
+            hairline = value_axis.major_gridlines.format.line
+            hairline.color.rgb = RGBColor(0xE3, 0xEB, 0xF2)
+            hairline.width = Pt(0.75)
         value_axis.visible = not labelled
         value_axis.has_minor_gridlines = False
         value_axis.major_tick_mark = XL_TICK_MARK.NONE
@@ -434,46 +697,95 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         category_axis.format.line.color.rgb = RGBColor(0xDD, 0xE5, 0xED)
         category_axis.tick_labels.font.size = Pt(10)
         category_axis.tick_labels.font.color.rgb = dim
+        if line:
+            _price_line(chart, brand)
 
     # Титул: чей отчёт и на какую дату. Слайд, отделившийся от колоды, обязан
     # сам говорить, чей он, — как лист на бумаге.
+    # Титул тёмный: он и лист «На чём посчитано» обрамляют светлую середину.
+    # Так колода читается как документ, а не как двадцать одинаковых листов.
     first = deck.slides.add_slide(blank)
-    textbox(first, title, top=2.6, size=34, colour=ink, bold=True, height=1.0)
-    textbox(first, subtitle, top=3.9, size=16, colour=dim)
-    textbox(first, footer, top=6.6, size=11, colour=dim)
+    first.background.fill.solid()
+    first.background.fill.fore_color.rgb = deep
+    textbox(first, title, top=2.5, size=40, colour=paper, bold=True, height=1.2)
+    textbox(first, subtitle, top=3.9, size=16, colour=RGBColor(0xB6, 0xC8, 0xDA))
+    textbox(first, "Слайды настоящие: таблицы и графики правятся в PowerPoint.",
+            top=4.5, size=13, colour=RGBColor(0x8F, 0xA6, 0xBD))
+    textbox(first, footer, top=6.7, size=11, colour=RGBColor(0x8F, 0xA6, 0xBD))
 
     for page in pages:
-        heading = str(page.get("title") or "Раздел")
+        # У шапки свода своего заголовка нет — она несёт ключевые числа
+        # проекта. «Раздел» над плитками не говорит ничего.
+        heading = str(page.get("title") or title)
         tables = list(page.get("tables") or [])
         note = str(page.get("note") or "").strip()
         lines = [line for line in (page.get("lines") or []) if line][:LINES_PER_SLIDE]
-        drawn = charts(tables[0]) if tables else []
 
-        # Первый слайд раздела — о чём он: заголовок, вывод и подписи, которые
-        # на экране стоят рядом с картинкой (доли полос — это и есть числа
-        # такого раздела).
-        slide = new_slide(heading)
-        top = 1.25
-        if note:
-            textbox(slide, note, top=top, size=14, colour=dim, height=0.8)
-            top += 0.9
-        if lines:
-            for index, line in enumerate(lines):
-                textbox(slide, line, top=top + index * 0.42, size=13, colour=ink)
-        elif not drawn and tables:
-            put_table(slide, tables[0], top=top,
-                      height=min(4.8, 0.34 * (len(tables[0]["rows"]) + 1)))
-            tables = tables[1:]
+        # Первый слайд раздела — о чём он: вывод крупно и подписи, которые на
+        # экране стоят рядом с картинкой (доли полос — это и есть числа такого
+        # раздела). Слайда НЕТ, когда класть на него нечего: «Расторжения» с
+        # одним заголовком и пустым полем — это не раздел, а пустой лист.
+        strips = list(page.get("strips") or [])
+        tiles = [table for table in tables if table.get("kind") == "tiles"]
+        tables = [table for table in tables if table.get("kind") != "tiles"]
+        drawn = charts(tables[0]) if tables else []
+        # Слайд заводится, только если на нём есть что показать. Вывод сам по
+        # себе слайдом не является: «этот слайд странный» (владелец,
+        # 30.08.2026) — заголовок, одна строка и пять дюймов белого. Такой
+        # вывод едет подзаголовком на первый слайд раздела, где есть картинка.
+        rich = bool(lines or tiles or strips or (not drawn and tables))
+        carry = "" if rich else note
+
+        def lead(slide, top: float) -> float:
+            """Вывод раздела над содержимым — один раз на раздел."""
+            nonlocal carry
+            if not carry:
+                return top
+            textbox(slide, carry, top=top, size=14, colour=dim, height=0.55)
+            carry = ""
+            return top + 0.7
+
+        opening = None
+        if rich:
+            opening = new_slide(heading)
+            top = 1.3
+            if note:
+                textbox(opening, note, top=top, size=15, colour=ink, height=0.8)
+                top += 0.95
+            if tiles:
+                top = put_tiles(opening, tiles[0], top=top)
+            for strip in strips:
+                top = put_strip(opening, strip, top=top + 0.1)
+            if lines and not strips:
+                # Больше пяти подписей — в две колонки: столбик в двадцать
+                # строк уезжает за нижний край, а половина листа стоит пустой.
+                columns = 2 if len(lines) > 5 else 1
+                per = -(-len(lines) // columns)
+                width = (SLIDE_W_IN - 1.2) / columns - 0.2
+                for index, line in enumerate(lines):
+                    box = opening.shapes.add_textbox(
+                        Inches(0.6 + (index // per) * (width + 0.2)),
+                        Inches(top + (index % per) * 0.42),
+                        Inches(width), Inches(0.4))
+                    box.text_frame.word_wrap = True
+                    run = box.text_frame.paragraphs[0].add_run()
+                    run.text = line
+                    run.font.size = Pt(14)
+                    run.font.color.rgb = ink
+            elif not drawn and tables and not tiles and not strips:
+                put_table(opening, tables[0], top=top,
+                          height=min(4.8, 0.34 * (len(tables[0]["rows"]) + 1)))
+                tables = tables[1:]
 
         # По слайду на график: каждая мера показана и ни одна не спорит с
         # соседней. Ряд один, поэтому легенда не нужна — мера стоит в
-        # заголовке слайда.
+        # заголовке слайда. Сноски под каждым графиком больше нет: повторённая
+        # двадцать раз, она перестаёт быть пояснением и становится шумом —
+        # сказать это достаточно один раз, на титуле.
         for chart in drawn:
-            part = new_slide(f"{heading} · {chart['name']}")
-            put_chart(part, chart, top=1.25, height=SLIDE_H_IN - 1.95)
-            textbox(part, "График настоящий: данные правятся в PowerPoint,"
-                          " числа — таблицей на следующих слайдах.",
-                    top=SLIDE_H_IN - 0.95, size=11, colour=dim, height=0.4)
+            part = new_slide(f"{heading} · {chart['name']}", heading)
+            top = lead(part, 1.25)
+            put_chart(part, chart, top=top, height=SLIDE_H_IN - top - 0.8)
 
         # Таблицы — целиком и ячейками: их и правят. Длинная продолжается
         # следующим слайдом, а не ужимается до нечитаемого.
@@ -482,11 +794,17 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
             for start in range(0, len(rows), ROWS_PER_SLIDE):
                 chunk = {"head": table.get("head") or [],
                          "rows": rows[start:start + ROWS_PER_SLIDE]}
-                part = new_slide(heading + ("" if start == 0 else " · продолжение"))
-                put_table(part, chunk, top=1.25,
-                          height=min(5.6, 0.34 * (len(chunk["rows"]) + 1)))
-        if note:
-            slide.notes_slide.notes_text_frame.text = note
+                part = new_slide(heading + ("" if start == 0 else " · продолжение"),
+                                 heading)
+                top = lead(part, 1.25)
+                put_table(part, chunk, top=top,
+                          height=min(SLIDE_H_IN - top - 0.8,
+                                     0.34 * (len(chunk["rows"]) + 1)))
+        if carry:
+            # Разделу нечего показать, кроме вывода: тогда он и есть слайд.
+            textbox(new_slide(heading), carry, top=1.4, size=20, colour=ink, height=1.6)
+        if note and opening is not None:
+            opening.notes_slide.notes_text_frame.text = note
 
     buffer = io.BytesIO()
     deck.save(buffer)

@@ -350,6 +350,18 @@ g.bub.on circle{fill-opacity:.75}
    что стоит ниже, побеждает. Пока блок стоял выше, `.printviews{display:none}`
    гасил карты рынка обратно, а `#bubble{display:none}` (id — сильнее) убирал
    и открытую. В PDF не попадала ни одна: разом сработали обе половины. */
+.hello{margin:4px 0 18px}.hello h2{margin:0 0 4px;font-size:26px}
+.rooms{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px;margin-bottom:22px}
+.room{background:#fff;border:1px solid #dde5ed;padding:22px 20px 20px;text-align:center;
+display:flex;flex-direction:column;align-items:center}
+.room img{width:172px;height:172px;border-radius:50%;object-fit:cover;margin-bottom:14px}
+.room .noface{width:172px;height:172px;border-radius:50%;margin-bottom:14px;background:#eef3f8;
+display:flex;align-items:center;justify-content:center;color:#8ba0b5;font-size:12px;padding:0 18px}
+.room b{font-size:17px;color:#16202b}
+.room .what{font-size:13px;color:#5b6b7d;margin:6px 0 14px;min-height:36px}
+.room a{display:block;font-size:14px;color:#1367AE;text-decoration:none;margin-top:6px}
+.room a:hover{text-decoration:underline}
+.room a span{display:block;font-size:11.5px;color:#5b6b7d}
 __DEVELOPAID_CONTOUR_STYLE__
 @media print{
   /* В печать уходит отчёт, а не орудия его сборки: форма, кнопки и поле
@@ -484,6 +496,15 @@ __DEVELOPAID_CONTOUR_STYLE__
 </header>
 <main>
 __DEVELOPAID_CONTOUR__
+<!--HOME-->
+  <div class="hello">
+    <h2>Кабинет DevelopAid</h2>
+    <div class="muted">Выберите, с чем работаете</div>
+  </div>
+  <div class="rooms">__DEVELOPAID_ROOMS__</div>
+<!--/HOME-->
+<!--WORK-->
+<!--SALESHOME-->
   <div class="card" id="overview">
     <div class="blockhead"><h2 style="margin:0" id="overviewTitle">Кабинет</h2>
       <label class="upload" title="Что в файле нашлось, то и прочитано: выгрузка ЦФ несёт контрактацию, проводки 1С и оба плана, книга финмодели — квартирографию, план продаж и отчёт правлению. Источники ложатся на склад ядра и переживают закрытие вкладки: файлы грузятся по одному и в любом порядке. Форматы .xlsx, .xlsm, .xlsb">Загрузить файл проекта<input type="file" id="cf" accept=".xlsx,.xlsm,.xlsb"></label>
@@ -492,6 +513,8 @@ __DEVELOPAID_CONTOUR__
     <div id="cfstate" class="muted" style="font-size:12.5px;margin-top:6px"></div>
     <div id="planstate" class="muted" style="font-size:12.5px"></div>
   </div>
+<!--/SALESHOME-->
+<!--MARKET-->
   <details class="salesreport" id="market"><summary>
     <b>Отчёт о рынке</b>
     <span class="muted">соседи, цена метра, темп продаж, класс — собирается по запросу</span>
@@ -539,8 +562,12 @@ __DEVELOPAID_CONTOUR__
     <div id="hintout"></div>
   </div>
   </details>
-  <div id="sales"></div>
   <div id="out"></div>
+<!--/MARKET-->
+<!--SALES-->
+  <div id="sales"></div>
+<!--/SALES-->
+<!--/WORK-->
 <script>document.body.dataset.version='__DEVELOPAID_VERSION__';</script>
 <div id="tip" role="status"></div>
   <div class="card" id="askcard" style="display:none">
@@ -565,6 +592,11 @@ __DEVELOPAID_CONTOUR__
 </main>
 <script>
 const $=s=>document.querySelector(s);
+// Кабинет отдаётся тремя видами, и элемента на этом виде может не быть
+// вовсе. Необработанная ошибка в этом скрипте гасит страницу целиком —
+// так уже пропадала кнопка личного кабинета, — поэтому обработчик
+// вешается только на то, что есть.
+const on=(sel,evt,fn)=>{const el=$(sel); if(el)el.addEventListener(evt,fn); return el;};
 const num=(v,d=0)=>v===null||v===undefined?'—':Number(v).toLocaleString('ru-RU',{minimumFractionDigits:d,maximumFractionDigits:d});
 const pct=v=>v===null||v===undefined?'—':(v>0?'+':'')+num(v,1)+' %';
 const esc=s=>String(s===null||s===undefined?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -1834,7 +1866,7 @@ async function loadContracting(file){
 // — это «ещё не грузили», а не «продаж нет», и так и написано.
 async function loadStoredSales(){
   try{
-    const r=await fetch('/cabinet/sales');
+    const r=await fetch('/cabinet/sales/summary');
     if(!r.ok) return;
     const d=await r.json();
     if(d&&!d.empty) showSales(d);
@@ -2317,6 +2349,20 @@ function salesPlansBlock(d){
     +'Цена — по квартирам у всех троих: общая цена метра смешала бы паркинг с жильём.'
     +(rows.some(r=>r.pale)?' Бледный столбик — незакрытый квартал: в нём меньше трёх месяцев факта, и рядом с полным плановым он читался бы как провал.':'')
     +'</div>';
+  // Числа этого блока жили только внутри картинки: в PDF их не выделить, а в
+  // презентацию не перенести вовсе — там от раздела оставались одни слова.
+  // У остальных блоков такая раскладка есть, у этого не было.
+  html+='<details style="margin-top:8px"><summary>Кварталы числами</summary>'
+    +salesTable(['Квартал',metric.name+', факт',metric.name+', план ФМ',
+                 metric.name+', план банка','Цена факт, ₽/м²','Цена ФМ, ₽/м²','Цена банка, ₽/м²'],
+      rows.map(r=>[esc(r.label)+(r.pale?' (часть)':''),
+        r.value===null||r.value===undefined?'—':metric.show(r.value),
+        r.fm===null||r.fm===undefined?'—':metric.show(r.fm),
+        r.bank===null||r.bank===undefined?'—':metric.show(r.bank),
+        r.factPrice?num(r.factPrice):'—',
+        r.fmPrice?num(r.fmPrice):'—',
+        r.bankPrice?num(r.bankPrice):'—']))
+    +'</details>';
   return html;
 }
 
@@ -2424,18 +2470,11 @@ function renderOverview(d){
    +tile('На эскроу',num(t.escrow/1e6,1)+' млн ₽')
    +tile('Источников',num((d.sources||[]).length),day?'последний срез '+day:'')
    +'</div>'
-   +'<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">'
-   +'<button type="button" class="pdfbtn" id="openSales">Открыть отчёт о продажах</button>'
-   +'<button type="button" class="pdfbtn" id="openMarket">Собрать отчёт о рынке</button>'
-   +'</div>'
    +(notes?`<div class="muted" style="font-size:12px;margin-top:8px">Не прочитано: ${notes} `
-     +`${plural(notes,'источник','источника','источников')} — подробности в отчёте о продажах.</div>`:'');
- const open=(id,then)=>{const card=document.getElementById(id);if(!card)return;
-  card.open=true;card.scrollIntoView({block:'start'});if(then)then()};
- const sales=$('#openSales'); if(sales)sales.onclick=()=>open('sales');
- const market=$('#openMarket'); if(market)market.onclick=()=>open('market',()=>{
-  const field=document.getElementById('q'); if(field)field.focus();
- });
+     +`${plural(notes,'источник','источника','источников')} — подробности ниже в отчёте.</div>`:'');
+ // Кнопок «открыть отчёт» тут больше нет: отчёты — это страницы, и вход в них
+ // стоит в меню коммерции. Кнопка, раскрывающая блок на той же странице,
+ // читалась как переход, которого не было (владелец, 30.08.2026).
 }
 
 function renderSales(d){
@@ -3444,8 +3483,8 @@ async function printPdf({html, title, footer, file, button, state}){
   }finally{ if(button){button.disabled=false; button.textContent=was} }
 }
 
-$('#go').addEventListener('click',build);
-$('#askbtn').addEventListener('click',askPlato);
+on('#go','click',build);
+on('#askbtn','click',askPlato);
 // PDF — печатью самой страницы. Второй вёрстки не заводим: она разошлась бы с
 // первой, и мы получили бы два достоверных на вид отчёта с разными числами.
 // PDF печатает сервер: номер страницы браузер из CSS ставить не умеет, а
@@ -3453,7 +3492,7 @@ $('#askbtn').addEventListener('click',askPlato);
 // половину нельзя. Уходит та же разметка, что на экране, — считать заново
 // нечего. Не получилось — остаётся диалог печати: отчёт на бумаге важнее
 // номеров на нём.
-$('#pdf').addEventListener('click',()=>{
+on('#pdf','click',()=>{
   const out=$('#out');
   const s=(lastReport||{}).subject||{};
   const name=s.project_name||s.address||s.query||'Отчёт о рынке';
@@ -3469,7 +3508,7 @@ $('#pdf').addEventListener('click',()=>{
 // ПЛАТО, ответ Платона и ориентир. Стереть один экран и оставить остальное —
 // значит собрать следующий отчёт с чужим хвостом: добавленный руками сосед
 // приехал бы в выборку другого объекта и выглядел бы там найденным.
-$('#reset').addEventListener('click',function(){
+on('#reset','click',function(){
   lastReport=null; planData=null; added.clear(); bubbleView='speed'; selectedSubjectQuery=null;
   $('#out').innerHTML=''; $('#hintout').innerHTML='';
   $('#planstate').textContent=''; $('#state').textContent='';
@@ -3478,8 +3517,8 @@ $('#reset').addEventListener('click',function(){
   $('#pdf').style.display='none'; $('#reset').style.display='none';
   $('#q').focus();
 });
-$('#cf').addEventListener('change',e=>{if(e.target.files[0])loadContracting(e.target.files[0])});
-loadStoredSales();
+on('#cf','change',e=>{if(e.target.files[0])loadContracting(e.target.files[0])});
+if($('#sales'))loadStoredSales();
 document.querySelectorAll('.chips button').forEach(b=>b.addEventListener('click',()=>{
   $('#ask').value=b.dataset.q; askPlato();
 }));
@@ -3505,7 +3544,7 @@ function showHint(d,extra){
     +`</div>`;
 }
 
-$('#hint').addEventListener('click',async function(){
+on('#hint','click',async function(){
   const where=$('#q').value.trim();
   if(!where){$('#state').textContent='Укажите объект.';return}
   // Отчёт на экране — ориентир берётся из него: это те самые конкуренты,
@@ -3578,10 +3617,10 @@ document.addEventListener('pointerdown',function(e){
 
 // Тот же довод, что и у списка добавления: палец шлёт `pointerdown`, мышь —
 // тоже, а `mousedown` на тач-экране приходит не всегда.
-sug.addEventListener('pointerdown',e=>{
+if(sug)sug.addEventListener('pointerdown',e=>{
   const row=e.target.closest('div[data-i]'); if(row){e.preventDefault();choose(+row.dataset.i)}
 });
-$('#q').addEventListener('input',()=>{
+on('#q','input',()=>{
   selectedSubjectQuery=null;
   const text=$('#q').value.trim();
   clearTimeout(timer);
@@ -3614,7 +3653,7 @@ $('#q').addEventListener('input',()=>{
     } else { $('#state').textContent=''; }
   },180);
 });
-$('#q').addEventListener('keydown',e=>{
+on('#q','keydown',e=>{
   const open=sug.style.display==='block';
   if(open&&e.key==='ArrowDown'){cur=Math.min(cur+1,items.length-1);paint();e.preventDefault();return}
   if(open&&e.key==='ArrowUp'){cur=Math.max(cur-1,0);paint();e.preventDefault();return}
@@ -3623,9 +3662,9 @@ $('#q').addEventListener('keydown',e=>{
     if(open&&cur>=0){choose(cur)}else{closeSug();build()}
   }
 });
-document.addEventListener('click',e=>{if(!e.target.closest('#sug')&&e.target!==$('#q'))closeSug()});
+if($('#q'))document.addEventListener('click',e=>{if(!e.target.closest('#sug')&&e.target!==$('#q'))closeSug()});
 const incomingKrt=new URLSearchParams(location.search);
-if(incomingKrt.get('krt')){
+if(incomingKrt.get('krt')&&$('#q')){
   selectedSubjectQuery='krt:'+incomingKrt.get('krt');
   $('#q').value=incomingKrt.get('name')||selectedSubjectQuery;
 }
@@ -3676,16 +3715,64 @@ def legal_footer() -> str:
         return ""
 
 
-def cabinet_page() -> str:
+# Три вида одной страницы. Форк был бы второй реализацией кабинета, и копию
+# негде обновлять, поэтому исходник один, а маршрут решает, какой кусок разметки
+# в него попадёт. «Зачем тут 76 договоров, если это титульный лист кабинета? И
+# зачем внизу отчёты — они должны быть ссылками в меню коммерции, и всё»
+# (владелец, 30.08.2026).
+VIEWS = {
+    "home": ("/cabinet", "Кабинет DevelopAid"),
+    "sales": ("/cabinet/sales", "Отчёт о продажах"),
+    "market": ("/cabinet/market", "Отчёт о рынке"),
+}
+_REGIONS = {
+    "HOME": ("<!--HOME-->", "<!--/HOME-->"),
+    "WORK": ("<!--WORK-->", "<!--/WORK-->"),
+    "SALESHOME": ("<!--SALESHOME-->", "<!--/SALESHOME-->"),
+    "MARKET": ("<!--MARKET-->", "<!--/MARKET-->"),
+    "SALES": ("<!--SALES-->", "<!--/SALES-->"),
+}
+_KEEP = {
+    "home": {"HOME"},
+    "sales": {"WORK", "SALESHOME", "SALES"},
+    "market": {"WORK", "MARKET"},
+}
+
+
+def _cut(page: str, keep: set[str]) -> str:
+    """Убрать куски, которых на этом виде нет. Разметку режем целиком —
+    спрятанный стилем блок остаётся в DOM и живёт своей жизнью."""
+    for name, (start, end) in _REGIONS.items():
+        while True:
+            head = page.find(start)
+            if head < 0:
+                break
+            tail = page.find(end, head)
+            if tail < 0:
+                raise RuntimeError(f"в разметке кабинета не закрыт кусок {name}")
+            inner = page[head + len(start):tail]
+            page = page[:head] + (inner if name in keep else "") + page[tail + len(end):]
+    return page
+
+
+def cabinet_page(view: str = "home") -> str:
     # Контур объявлен один раз и подставляется, как подвал и версия: копии
     # негде обновлять, а поверхность без входа в контур не найти.
     import management_contour
 
+    if view not in _KEEP:
+        raise ValueError(f"неизвестный вид кабинета: {view}")
+    here = VIEWS[view][0]
+    # На титуле полоски контура нет: её работу делают карточки, а два меню
+    # подряд — это одно и то же дважды.
+    contour = "" if view == "home" else management_contour.markup(here)
     return (
-        CABINET_PAGE.replace("__SECTIONS__", _sections_markup())
+        _cut(CABINET_PAGE, _KEEP[view])
+        .replace("__SECTIONS__", _sections_markup())
+        .replace("__DEVELOPAID_ROOMS__", management_contour.rooms())
         .replace(VERSION_PLACEHOLDER, app_version())
         .replace("__DEVELOPAID_CONTOUR_STYLE__", management_contour.STYLE)
-        .replace(management_contour.PLACEHOLDER, management_contour.markup("/cabinet"))
+        .replace(management_contour.PLACEHOLDER, contour)
         .replace(LEGAL_FOOTER_PLACEHOLDER, legal_footer())
     )
 
