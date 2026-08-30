@@ -42,7 +42,7 @@ def test_the_structure_names_both_contours_and_both_deficits() -> None:
     for line in ("Общая сметная стоимость глав 2–3", "Остаток лимитов на завершение",
                  "Утверждённый бюджет глав 2–3",
                  "Остаток потребности по утверждённому бюджету",
-                 "Надо по утверждённой модели", "Остаток по РСС: лимиты статей + резерв",
+                 "Надо достроить по утверждённой модели", "Есть: остаток лимитов + резерв",
                  "row('ДЕФИЦИТ'", "Структурный дефицит внутри лимитов"):
         assert line in body, f"в структуре нет строки «{line}»"
     # Срок — половина ответа: «нужно 2,2 млрд» и «нужно с марта» — разные новости.
@@ -167,7 +167,7 @@ def test_the_hidden_reserve_reaches_the_screen_and_the_store() -> None:
     assert hasattr(monitor, "store_retention") and hasattr(monitor, "latest_retention")
     assert '"retention": _retention(project, rnv)' in DASH
     body = PAGE[PAGE.index("function fundingStructure("):]
-    assert "скрытый резерв РСС" in body
+    assert "справочно, дефицит они не уменьшают" in body
     assert "Из них после ввода" in body
     assert "в стройке эти деньги не будут потрачены" in body
     # Реестра нет — строки нет вовсе: «не загружали» и «удержаний нет» разное.
@@ -266,8 +266,8 @@ def test_the_screen_puts_the_model_against_the_bank() -> None:
     дефицит; банковский остаток стоит справочной строкой."""
     body = PAGE[PAGE.index("function fundingStructure("):]
     body = body[: body.index("\n}\n")]
-    assert "Надо по утверждённой модели" in body
-    assert "Остаток по РСС: лимиты статей + резерв" in body
+    assert "Надо достроить по утверждённой модели" in body
+    assert "Есть: остаток лимитов + резерв" in body
     assert "row('ДЕФИЦИТ'" in body
     assert "mainGap=modelNeed==null?null:Math.max(0,modelNeed-fuel)" in body
     assert "Справочно: «Средства на завершение» по РСС" in body

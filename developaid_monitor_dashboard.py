@@ -483,6 +483,30 @@ def _retention(project: str, horizon: Any) -> dict[str, Any] | None:
     return got
 
 
+def _unspent(project: str, rss: Path, estimate: dict[str, Any],
+             horizon: Any, waterfall: dict[str, Any]) -> dict[str, Any] | None:
+    """Постатейно: что до ввода израсходовано не будет.
+
+    Реестра ГУ может не быть, реестра договоров в РСС может не быть — свободное
+    от договоров считается и без них, а причина, по которой ГУ не разложены,
+    называется вслух. Пусто здесь бывает только когда нечего показать вовсе.
+    """
+    import developaid_monitor_unspent as unspent_mod
+
+    register = monitor.latest_retention(project)
+    if register and register.get("known") is False:
+        register = None
+    try:
+        contracts = actuals.read_contracts(rss)
+    except Exception:  # noqa: BLE001 — листа договоров в РСС может не быть
+        contracts = None
+    needy = {str(row.get("code") or ""): float(row.get("unfunded_take") or 0.0)
+             for row in (waterfall.get("articles") or [])}
+    got = unspent_mod.unspent(estimate, contracts=contracts, retention=register,
+                              horizon=horizon, needy=needy)
+    return got if (got["articles"] or got["retention"]["reason"]) else None
+
+
 def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, Any]) -> dict[str, Any]:
     baseline = _finance_baseline(project)
     if not baseline.get("known"):
@@ -539,6 +563,11 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
         "additional_financing": waterfall["additional_financing"],
         "additional_financing_from": waterfall["additional_financing_from"],
         "retention": _retention(project, rnv),
+        # Что не будет выбрано до ввода: свободное от договоров считается точно,
+        # ГУ раскладываются по статьям оценкой. Считает это отдельный модуль,
+        # здесь только вход — лимиты и потребность живут выше и второй раз не
+        # считаются.
+        "unspent": _unspent(project, rss, estimate, rnv, waterfall),
         "forecast_to": monitor._iso(rnv),
         "monthly_need": waterfall["monthly_need"],
         "monthly_reserve_draw": waterfall["monthly_reserve_draw"],
