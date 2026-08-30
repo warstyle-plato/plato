@@ -190,3 +190,57 @@ def test_the_route_passes_the_relation() -> None:
     route = route[: route.index("\n@app.")]
     assert "crew.subcontractors(" in route and "latest_retention(project)" in route
     assert "субподрядчик" in PAGE, "на экране видно, чьей бригадой вышли"
+
+
+def test_the_line_belongs_to_the_party_named_in_it() -> None:
+    """«Что такое Клодо кладка и потом другие подрядчики? Бред какой-то»
+    (владелец, 30.08.2026).
+
+    Разбор вёл строки за последним заголовком-подрядчиком, а в отчёте имя
+    следующего стоит В САМОЙ строке: «Клодо( кладка): Сталко — сборка лесов»
+    читалось как работа Клодо. Так под одним именем оказались работы шести
+    подрядчиков.
+    """
+    import developaid_monitor_daily as daily
+
+    text = "\n".join([
+        "1. НУР ООО Итр- 11 чел. Рабочие - 54 чел.",
+        "2. Клодо ( кладка) Итр 2 чел. рабочих 10",
+        "3. Сталко Итр 2 рабочих 31",
+        "По работам:",
+        "Клодо( кладка):",
+        "Устройство стен из пеноблока",
+        "Корпус 3 - 6,7,8,9",
+        "Сталко -сборка лесов и монтаж люлек на Корпусе 1и2.",
+        "Бетонирование ПП - 68,5 м3 24 эт.(1,2зах)",
+    ])
+    works = {item["line"]: item["contractor"]
+             for item in daily.parse_daily_report(text)["works"]}
+    assert works["Сталко -сборка лесов и монтаж люлек на Корпусе 1и2."] == "Сталко", \
+        "имя в строке сильнее заголовка"
+    assert works["Устройство стен из пеноблока"] == "Клодо( кладка)", \
+        "заголовок работает там, где имени в строке нет"
+    # И приставка без имени подрядчика заголовок не перебивает: иначе
+    # «Бетонирование ПП» стало бы подрядчиком.
+    assert works["Бетонирование ПП - 68,5 м3 24 эт.(1,2зах)"] == "Клодо( кладка)"
+    assert works["Корпус 3 - 6,7,8,9"] == "Клодо( кладка)"
+
+
+def test_a_name_known_only_to_the_registers_still_claims_its_line() -> None:
+    """МОЭК людей в этот день не выводил, поэтому в численности отчёта его нет —
+    а работа его названа, и строка обязана достаться ему."""
+    import developaid_monitor_daily as daily
+
+    works = daily.parse_daily_report(
+        "По работам:\nКлодо( кладка):\nМоэк ( теплосети)- монтаж ограждения")["works"]
+    assert works[0]["contractor"] == "Клодо( кладка)", "своими силами разбор его не знает"
+    fixed = daily.attribute_works(works, ["ПАО МОЭК"])
+    assert fixed[0]["contractor"] == "ПАО МОЭК" and fixed[0]["named_inline"] is True
+
+
+def test_the_summary_route_hands_over_the_known_names() -> None:
+    body = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    assert "known=_monitor_known_parties(project)" in body
+    helper = body[body.index("def _monitor_known_parties("):]
+    helper = helper[: helper.index("\n@app.")]
+    assert "read_completed_works" in helper and "latest_retention" in helper

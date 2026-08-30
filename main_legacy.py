@@ -69,7 +69,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.20.63"
+VERSION = "0.20.64"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -2209,9 +2209,40 @@ def monitor_daily_summary(project: str, upto: str = "",
     """Люди на площадке по дням и последний отчёт словами."""
     _require_web_access(session, key, "Монитор проекта")
     try:
-        return developaid_monitor_daily.daily_summary(project, upto or None)
+        return developaid_monitor_daily.daily_summary(
+            project, upto or None, known=_monitor_known_parties(project))
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+
+
+def _monitor_known_parties(project: str) -> list[str]:
+    """Имена подрядчиков, известные проекту: из реестров РСС и реестра ГУ.
+
+    Нужны разбору ежедневного отчёта: подрядчик, названный в строке работ, но
+    не выводивший людей в этот день, в численности отчёта не значится — и без
+    этого списка его строка достаётся заголовку выше.
+    """
+    import developaid_monitor_crew as crew
+
+    names: list[str] = []
+    rss = developaid_monitor._latest(project, "estimate", ".xlsx", "")
+    if rss is not None:
+        try:
+            for register in (developaid_actuals.read_completed_works(rss),
+                             developaid_actuals.read_payments(rss)):
+                for row in register.get("rows") or []:
+                    name = str(row.get("contractor") or "").strip()
+                    if name and name not in names:
+                        names.append(name)
+        except (KeyError, ValueError):
+            pass
+    register = developaid_monitor.latest_retention(project)
+    for row in ((register or {}).get("rows") or []):
+        for field in ("counterparty", "customer"):
+            name = str(row.get(field) or "").strip()
+            if name and name not in names:
+                names.append(name)
+    return names
 
 
 @app.post("/monitor/work-fact/stage", include_in_schema=False)
