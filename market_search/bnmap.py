@@ -239,6 +239,10 @@ VERIFIED: dict[str, str] = {
     "layers.get": "200, слои: nov-expo «В реализации», nov-off «Закрытые продажи»",
     "reports.getSalesDynamic": "200 при regionAlias и targetDate; топ-20 по сделкам за три месяца",
     "analytics.perspectiveProjects": "200 и ПУСТОЙ список без доступа — не «проектов нет»",
+    "v2.reports.projectsMap": "200, 1869 проектов Москвы и области: objectId, имя, адрес, координаты",
+    "v2.reports.projects": "200 при filters.regionAlias; страницами, у объекта стадия и цены поштучных отчётов",
+    "v2.reports.developers": "200, 718 застройщиков с идентификаторами",
+    "v2.reports.prices": "200, поштучный прайс: паспорт 800 ₽, прайсы 700 ₽, сделки 2400 ₽, данные ЖК 3200 ₽",
     "layers.data": "403 NO_REGION_ACCESS: у аккаунта нет региональной лицензии",
     "analytics.objectMarket": "403: нет инструмента deals",
     "analytics.objectDeals": "403: нет инструмента deals",
@@ -255,6 +259,14 @@ REPORT_METHODS = (
     "analytics.indicators",
     "analytics.reportNearBy",
 )
+
+# Справочник службы отчётов. Он открыт без подписки на платформу и отвечает
+# на то, из-за чего вкладка сперва спрашивала номер руками: адрес объекта
+# превратить в идентификатор bnMAP было нечем, потому что `layers.data` за
+# региональной лицензией. Здесь то же самое и даром — 1869 проектов Москвы и
+# области с координатами, одним запросом.
+DIRECTORY_METHOD = "v2.reports.projectsMap"
+DIRECTORY_TTL_SECONDS = 86_400
 
 SIGNIN_URL = "https://bnmap.pro/api/v1/authentication/signin"
 
@@ -634,6 +646,92 @@ def probe_browser(url: str = ENTRY_PAGE, seconds: float = 60.0,
     return report
 
 
+def directory(data_dir: Any, *, base: str = "msk", refresh: bool = False) -> list[dict[str, Any]]:
+    """Справочник проектов bnMAP: идентификатор, имя, адрес, координаты.
+
+    Кладётся на диск на сутки — воркеров два, а справочник в полторы тысячи
+    строк тянуть на каждое нажатие незачем. Пустой ответ кэшем не становится:
+    записанная пустота потом читается как «в bnMAP таких проектов нет».
+    """
+    from pathlib import Path
+
+    from .http import fresh, load_json, save_json
+
+    path = Path(data_dir) / f"directory-{base}.json"
+    if not refresh and fresh(path, DIRECTORY_TTL_SECONDS):
+        cached = load_json(path)
+        if isinstance(cached, list) and cached:
+            return cached
+    raw = Session(data_dir).call(DIRECTORY_METHOD, {"filters": {"regionAlias": base}})
+    rows = raw if isinstance(raw, list) else (raw or {}).get("objects") or []
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        point = row.get("coordinates") if isinstance(row, dict) else None
+        if not isinstance(point, (list, tuple)) or len(point) != 2:
+            continue
+        try:
+            latitude, longitude = float(point[0]), float(point[1])
+        except (TypeError, ValueError):
+            continue
+        out.append({"object_id": row.get("objectId"), "name": row.get("name"),
+                    "address": row.get("address"),
+                    "latitude": latitude, "longitude": longitude})
+    if out:
+        save_json(path, out)
+    return out
+
+
+def find(data_dir: Any, query: str, *, base: str = "msk") -> dict[str, Any]:
+    """Опознать объект по номеру, координатам или словам названия и адреса.
+
+    Чем опознан — часть ответа: номер, взятый из справочника по слову, и номер,
+    введённый руками, на экране выглядят одинаково, а доверия к ним разное.
+    """
+    text = " ".join(str(query or "").split())
+    if not text:
+        return {"query": text, "how": "", "object_id": None, "candidates": []}
+    if text.isdigit():
+        return {"query": text, "how": "номер введён руками",
+                "object_id": int(text), "candidates": []}
+    known = directory(data_dir, base=base)
+    point = _point(text)
+    if point is not None:
+        near = sorted(
+            ((_distance_km(point[0], point[1], row["latitude"], row["longitude"]), row)
+             for row in known), key=lambda pair: pair[0])[:8]
+        return {"query": text, "how": "ближайший к точке",
+                "object_id": near[0][1]["object_id"] if near else None,
+                "candidates": [{**row, "distance_km": round(km, 3)} for km, row in near]}
+    needle = text.casefold()
+    hits = [row for row in known
+            if needle in str(row.get("name") or "").casefold()
+            or needle in str(row.get("address") or "").casefold()][:8]
+    return {"query": text, "how": "совпадение по названию или адресу",
+            "object_id": hits[0]["object_id"] if hits else None, "candidates": hits}
+
+
+def _point(text: str) -> tuple[float, float] | None:
+    parts = [piece for piece in text.replace(";", ",").split(",") if piece.strip()]
+    if len(parts) != 2:
+        return None
+    try:
+        latitude, longitude = float(parts[0]), float(parts[1])
+    except ValueError:
+        return None
+    return (latitude, longitude) if -90 <= latitude <= 90 and -180 <= longitude <= 180 else None
+
+
+def _distance_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Расстояние по земле. Считаем сами — bnMAP его отдаёт только у соседей."""
+    import math
+
+    radius = 6371.0088
+    rad = math.radians
+    return 2 * radius * math.asin(math.sqrt(
+        math.sin(rad(lat2 - lat1) / 2) ** 2
+        + math.cos(rad(lat1)) * math.cos(rad(lat2)) * math.sin(rad(lon2 - lon1) / 2) ** 2))
+
+
 def comparison_report(data_dir: Any, object_id: Any, *, base: str = "msk",
                       date: str = "") -> dict[str, Any]:
     """Тестовый свод bnMAP по одному объекту — для сравнения с нашим отчётом.
@@ -651,6 +749,9 @@ def comparison_report(data_dir: Any, object_id: Any, *, base: str = "msk",
     """
     session = Session(data_dir)
     asked = date or _today()
+    found = find(data_dir, str(object_id), base=base) if object_id else {}
+    if found.get("object_id"):
+        object_id = found["object_id"]
     tools = session.call("v1.toolAccess.getActiveToolsFull") or {}
     active = [str(row.get("alias")) for row in (tools.get("userToolsFromTariff") or [])
               if isinstance(row, dict) and row.get("alias")]
@@ -668,6 +769,7 @@ def comparison_report(data_dir: Any, object_id: Any, *, base: str = "msk",
         "base": base,
         "asked_date": asked,
         "object_id": object_id or None,
+        "found": found or None,
         "account": {"tools": active, "expires": expires},
         "indicators": indicators,
         "nearby": nearby,

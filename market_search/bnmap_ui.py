@@ -52,13 +52,14 @@ def markup() -> str:
 <div class="card">
   <div class="muted" style="font-size:13px;margin-bottom:10px">
     Числа показаны так, как их отдал bnMAP: здесь ничего не пересчитывается.
-    Объект задаётся его идентификатором — справочник проектов у bnMAP за
-    региональной лицензией, и превратить адрес в номер пока нечем.
-    Номер виден в адресе их кабинета: <code>platform.bnmap.pro/object/details/<b>2600</b></code>.
+    Объект ищется в справочнике службы отчётов bnMAP — 1869 проектов Москвы и
+    области с адресами и координатами; он открыт без подписки на платформу.
+    Можно и номером, если он известен.
   </div>
   <div class="row">
-    <div><label class="f">Идентификатор объекта bnMAP</label>
-      <input type="text" id="bnid" placeholder="1" style="max-width:180px"></div>
+    <div><label class="f">Объект: название, адрес, координаты или номер bnMAP</label>
+      <input type="text" id="bnid" placeholder="Прайм Парк · Викторенко 16 · 55.79, 37.52 · 1"
+             style="max-width:320px"></div>
     <div><label class="f">Регион</label>
       <select id="bnbase"><option value="msk" selected>Москва и область</option></select></div>
   </div>
@@ -110,10 +111,31 @@ def render(report: dict[str, Any]) -> str:
     for line in report.get("errors") or []:
         out.append('<div class="err" style="margin-bottom:8px">' + escape(str(line)) + "</div>")
 
+    out.append(_subject(report.get("found")))
     out.append(_indicators(report.get("indicators")))
     out.append(_peers(report.get("nearby")))
     out.append(_location(report.get("nearby")))
     return "".join(part for part in out if part)
+
+
+def _subject(found: Any) -> str:
+    """Чем опознан объект — часть ответа, а не подробность.
+
+    Номер, найденный по слову в справочнике, и номер, введённый руками, на
+    экране выглядят одинаково, а доверия к ним разное. Кандидаты показываются
+    рядом: совпадение по адресу бывает не одно.
+    """
+    if not isinstance(found, dict) or not found.get("how"):
+        return ""
+    rows = found.get("candidates") or []
+    names = ", ".join(
+        escape(str(row.get("name") or row.get("address") or row.get("object_id")))
+        + (f' ({row["distance_km"]} км)' if row.get("distance_km") is not None else "")
+        for row in rows[:5])
+    return ('<div class="muted" style="font-size:12.5px;margin-bottom:8px">'
+            + "Объект опознан: " + escape(str(found["how"]))
+            + " · номер " + escape(str(found.get("object_id") or "не найден"))
+            + (" · рядом: " + names if names else "") + "</div>")
 
 
 def _indicators(data: Any) -> str:

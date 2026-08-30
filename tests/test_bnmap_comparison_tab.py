@@ -132,3 +132,35 @@ def test_the_report_route_is_registered_and_gated() -> None:
     assert '@app.get("/market/bnmap/report")' in body
     route = body[body.index('@app.get("/market/bnmap/report")'):]
     assert "cabinet_module.require_cabinet(request)" in route[:2000]
+
+
+def test_the_object_is_found_by_words_coordinates_or_number(monkeypatch, tmp_path) -> None:
+    """Адрес превращается в номер справочником службы отчётов — он бесплатный.
+
+    Раньше вкладка спрашивала номер руками: `layers.data` за региональной
+    лицензией, и превратить адрес в идентификатор было нечем. Оказалось —
+    есть чем: `v2.reports.projectsMap` отдаёт 1869 проектов Москвы и области с
+    координатами и подписки на платформу не требует.
+    """
+    known = [
+        {"object_id": 28, "name": "Матч Поинт", "address": "Василисы Кожиной ул., вл. 13",
+         "latitude": 55.736242, "longitude": 37.499905},
+        {"object_id": 1539, "name": "Prime Park / Прайм Парк", "address": "Ленинградский пр-т",
+         "latitude": 55.794, "longitude": 37.52},
+    ]
+    monkeypatch.setattr(bnmap, "directory", lambda *a, **k: known)
+    assert bnmap.find(tmp_path, "1539")["how"] == "номер введён руками"
+    by_name = bnmap.find(tmp_path, "прайм парк")
+    assert by_name["object_id"] == 1539 and "названи" in by_name["how"]
+    by_address = bnmap.find(tmp_path, "Василисы Кожиной")
+    assert by_address["object_id"] == 28
+    by_point = bnmap.find(tmp_path, "55.7362, 37.4999")
+    assert by_point["object_id"] == 28 and by_point["candidates"][0]["distance_km"] < 0.1
+
+
+def test_how_the_object_was_recognised_is_shown() -> None:
+    """Номер по слову и номер руками выглядят одинаково, а доверие разное."""
+    html = bnmap_ui.render({**ANSWER, "found": {
+        "how": "совпадение по названию или адресу", "object_id": 1539,
+        "candidates": [{"name": "Прайм Парк", "object_id": 1539}]}})
+    assert "Объект опознан" in html and "1539" in html
