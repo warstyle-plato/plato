@@ -69,7 +69,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.20.62"
+VERSION = "0.20.63"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -2195,7 +2195,12 @@ def monitor_crew(project: str, date: str = "", session: str = "",
             report = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             report = None
-    return crew.crew_day(rows, by_code, report, day or view.get("cut"))
+    # Кто чей: в реестрах РСС у статьи стоит генподрядчик, а на площадку выходят
+    # его субподрядчики. Связь лежит в реестре гарантийных удержаний — его ведёт
+    # генподрядчик, и в нём его договоры.
+    register = developaid_monitor.latest_retention(project)
+    subs = crew.subcontractors(register if (register or {}).get("rows") else None)
+    return crew.crew_day(rows, by_code, report, day or view.get("cut"), subs)
 
 
 @app.get("/monitor/daily/summary", include_in_schema=False)

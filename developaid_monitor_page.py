@@ -204,7 +204,13 @@ async function showCrew(day){
   const r=await fetch('/monitor/crew?'+q);
   const d=await r.json().catch(()=>({}));
   if(!r.ok) throw new Error(d.detail||('HTTP '+r.status));
-  const list=(items,empty)=>items.length?items.map(x=>`<div>${esc(x.name)}${x.workers!=null?` <span class="muted">· ИТР ${x.itr}, рабочих ${x.workers}</span>`:''}${(x.codes&&x.codes.length)?` <span class="muted">· статьи ${esc(x.codes.join(', '))}</span>`:''}${(x.lines&&x.lines.length)?`<div class="muted" style="font-size:11px;margin-left:10px">${x.lines.map(esc).join('<br>')}</div>`:''}</div>`).join(''):`<div class="muted">${empty}</div>`;
+  const list=(items,empty)=>items.length?items.map(x=>`<div>${esc(x.name)}`
+   +(x.via?` <span class="muted">· субподрядчик ${esc(x.via)}</span>`:'')
+   +(x.headcount_unknown?' <span class="muted">· работы отмечены, численность не указана</span>'
+     :(x.workers!=null?` <span class="muted">· ИТР ${x.itr}, рабочих ${x.workers}</span>`:''))
+   +((x.codes&&x.codes.length)?` <span class="muted">· статьи ${esc(x.codes.join(', '))}</span>`:'')
+   +((x.lines&&x.lines.length)?`<div class="muted" style="font-size:11px;margin-left:10px">${x.lines.map(esc).join('<br>')}</div>`:'')
+   +'</div>').join(''):`<div class="muted">${empty}</div>`;
   box.innerHTML=`<div class="fundblock"><b>Работы дня · ${dt(d.date)}</b>`
    +`<div class="muted" style="font-size:11px;margin:4px 0">По графику идут работы ${d.planned.length} статей; на площадке ${d.people.contractors} подрядчиков, ИТР ${d.people.itr}, рабочих ${d.people.workers}.</div>`
    +`<div class="crew-grid"><div><div class="muted">Вышли по плану</div>${list(d.matched,'никто из плановых подрядчиков не отмечен')}</div>`

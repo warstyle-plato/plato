@@ -120,3 +120,73 @@ def test_the_route_is_registered() -> None:
     import main_legacy
 
     assert "/monitor/crew" in {getattr(route, "path", "") for route in main_legacy.app.routes}
+
+
+SUBS = {crew.name_key("СП Менеджмент ООО"): ["НУР ООО", "СТАЛКО ИПЛ ООО", "КЛОДО ООО"]}
+
+
+def test_the_crew_of_the_planned_contractor_is_not_off_plan() -> None:
+    """«Они точно все вне плана? Странно» (владелец, 30.08.2026).
+
+    Не все. В реестрах РСС у статьи стоит ГЕНПОДРЯДЧИК — с ним договор, — а на
+    площадку выходят его субподрядчики, и в реестрах РСС их нет вовсе. Пока
+    связь «кто чей» не читалась, сверка выдавала «никто из плановых не отмечен»
+    и всю бригаду записывала «вне плана»: девять подрядчиков из девяти.
+
+    Связь берётся из реестра гарантийных удержаний — его ведёт генподрядчик, и
+    в нём его договоры. Своего справочника договоров не заводим.
+    """
+    got = crew.crew_day(
+        [{"code": "2.2.2.1", "name": "Монолит",
+          "plan_start": "2026-08-01", "plan_finish": "2026-12-01"}],
+        crew.contractors_by_code({"rows": [
+            {"estimate_code": "2.2.2.1", "contractor": "ООО СП Менеджмент"}]}),
+        report([{"name": "НУР", "itr": 11, "workers": 54},
+                {"name": "Сталко", "itr": 2, "workers": 31}]),
+        "2026-08-29", SUBS)
+    assert [item["name"] for item in got["matched"]] == ["НУР", "Сталко"]
+    assert all(item["via"] == "ООО СП Менеджмент" for item in got["matched"])
+    assert got["missing"] == [] and got["extra"] == []
+
+
+def test_a_party_named_in_the_works_without_a_headcount_is_not_absent() -> None:
+    """«Моэк (теплосети) — монтаж ограждения» в отчёте есть, а сколько человек —
+    нет. Это «работы отмечены, людей не назвали», а не «не вышли»."""
+    got = crew.crew_day(
+        [{"code": "2.4.3", "name": "Теплосети",
+          "plan_start": "2026-08-01", "plan_finish": "2026-12-01"}],
+        crew.contractors_by_code({"rows": [
+            {"estimate_code": "2.4.3", "contractor": "ПАО МОЭК"}]}),
+        report([{"name": "НУР", "itr": 11, "workers": 54}],
+               [{"contractor": "НУР", "line": "Моэк ( теплосети)- монтаж ограждения"}]),
+        "2026-08-29", SUBS)
+    named = next(item for item in got["matched"] if item["name"] == "ПАО МОЭК")
+    assert named["headcount_unknown"] is True
+    assert named["workers"] == 0 and named["lines"]
+    assert got["missing"] == []
+
+
+def test_a_short_name_is_not_hunted_inside_the_works_text() -> None:
+    """«СП» нашлось бы в любом «спуске» и превратило сверку в шум."""
+    assert crew._named_in("ПАО МОЭК", "Моэк ( теплосети)- монтаж") is True
+    assert crew._named_in("СП", "спуск в подвал") is False
+
+
+def test_nothing_matched_says_why_it_could_not() -> None:
+    got = crew.crew_day(
+        [{"code": "2.2.2.1", "name": "Монолит",
+          "plan_start": "2026-08-01", "plan_finish": "2026-12-01"}],
+        crew.contractors_by_code({"rows": [
+            {"estimate_code": "2.2.2.1", "contractor": "ООО СП Менеджмент"}]}),
+        report([{"name": "НУР", "itr": 11, "workers": 54}]),
+        "2026-08-29", None)
+    assert not got["matched"] and got["extra"]
+    assert any("генподрядчик" in note for note in got["notes"])
+
+
+def test_the_route_passes_the_relation() -> None:
+    body = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    route = body[body.index("def monitor_crew("):]
+    route = route[: route.index("\n@app.")]
+    assert "crew.subcontractors(" in route and "latest_retention(project)" in route
+    assert "субподрядчик" in PAGE, "на экране видно, чьей бригадой вышли"
