@@ -280,6 +280,9 @@ _COLOUR = re.compile(r"background:\s*#([0-9a-fA-F]{6})")
 _NUMBER = re.compile(r"^-?\d[\d  ]*(?:[.,]\d+)?$")
 # Заголовок колонки цены метра: кроме «₽/м²» встречается «руб/м²» и «цена, ₽/м²».
 _PRICE = re.compile(r"(₽|руб)\s*/\s*м", re.IGNORECASE)
+# Денежная колонка: рубли — то, на что смотрят, а штуки и метры при них
+# справочны. «₽/м²» сюда не попадает — её ловит `_PRICE` раньше.
+_MONEY = re.compile(r"(₽|руб|млн|млрд)", re.IGNORECASE)
 
 
 def cell_number(text: str) -> float | None:
@@ -335,17 +338,22 @@ def charts(table: dict[str, Any]) -> list[dict[str, Any]]:
     price = next((index for index in numeric if _PRICE.search(str(head[index]))), None)
     line = ({"name": str(head[price]), "values": numeric[price]}
             if price is not None else None)
-    out: list[dict[str, Any]] = []
-    for index, values in numeric.items():
-        # Своим слайдом цена остаётся, только если объёма рядом нет вовсе.
-        if index == price and len(numeric) > 1:
-            continue
-        item: dict[str, Any] = {"name": str(head[index]), "categories": categories,
-                                "values": values}
-        if line and index != price:
-            item["line"] = line
-        out.append(item)
-    return out
+    # График на раздел — один. Мера на слайд давала три-четыре почти одинаковых
+    # столбиковых листа подряд: «столбики не функциональны и не красивы»
+    # (владелец, 30.08.2026). Остальные меры не пропадают — они в таблице
+    # раздела, которая идёт следом и которую правят.
+    #
+    # Берётся денежная колонка: управленцу нужны рубли, а штуки и метры при них
+    # справочны. Денег нет — первая числовая.
+    order = [index for index in numeric if index != price]
+    if not order:
+        order = list(numeric)
+    money = next((index for index in order if _MONEY.search(str(head[index]))), order[0])
+    item: dict[str, Any] = {"name": str(head[money]), "categories": categories,
+                            "values": numeric[money]}
+    if line and money != price:
+        item["line"] = line
+    return [item]
 
 
 _SEC_CAT_AX, _SEC_VAL_AX = 771001, 771002

@@ -182,8 +182,10 @@ def test_the_price_per_metre_rides_as_a_line_not_its_own_slide() -> None:
                       ["2026-06", "9", "301,2", "717 000"],
                       ["2026-05", "9", "288,0", "705 100"]]}
     drawn = sales_deck.charts(table)
-    assert [item["name"] for item in drawn] == ["Лотов", "млн ₽"], \
-        "цена больше не заводит своего слайда со столбиками"
+    # График на раздел один, и это деньги: «столбики не функциональны и не
+    # красивы» (владелец, 30.08.2026) — три почти одинаковых листа подряд.
+    assert [item["name"] for item in drawn] == ["млн ₽"], \
+        "цена больше не заводит своего слайда, а мера на слайд — своего"
     assert all(item["line"]["name"] == "₽/м²" for item in drawn)
     # Одна цена без объёма — сама себе график: показать её иначе нечем.
     alone = sales_deck.charts({"head": ["Месяц", "₽/м²"],
@@ -447,3 +449,24 @@ def test_the_chart_does_not_repeat_the_slide_title() -> None:
     chart = [shape.chart for slide in deck.slides for shape in slide.shapes
              if getattr(shape, "has_chart", False) and shape.has_chart][0]
     assert chart.has_title is False
+
+
+def test_one_chart_a_section_and_it_is_the_money_one() -> None:
+    """«Столбики не функциональны и не красивы» (владелец, 30.08.2026).
+
+    График на меру давал три-четыре почти одинаковых столбиковых листа
+    подряд: «Договоров», «млн ₽», «На эскроу». Управленцу нужны рубли, а
+    штуки и метры при них справочны — и они не пропадают, они в таблице
+    раздела, которая идёт следом и которую правят.
+    """
+    money = sales_deck.charts({
+        "head": ["Условие", "Договоров", "млн ₽", "На эскроу, млн ₽"],
+        "rows": [["рассрочка", "35", "1 399,4", "573,7"],
+                 ["100% оплата", "25", "447,4", "447,4"]]})
+    assert [item["name"] for item in money] == ["млн ₽"]
+
+    # Денег в таблице нет — берётся первая числовая, и она одна.
+    counted = sales_deck.charts({
+        "head": ["Источник", "Обращений", "Броней"],
+        "rows": [["звонок", "518", "16"], ["агент", "44", "16"]]})
+    assert [item["name"] for item in counted] == ["Обращений"]
