@@ -194,8 +194,17 @@ def test_the_catalogue_is_asked_of_the_source_and_not_copied_into_us() -> None:
     got = bnmap.catalogue()
     assert got["asked"] == bnmap.GATEWAY
     assert got.get("methods") or got.get("reason"), "каталог обязан назвать причину пустоты"
-    body = source()
-    assert "\"analytics.objectMarket\"" not in body, "каталог переписан в модуль копией"
+    # В модуле живут только те методы, чей ответ увиден, — это журнал проверок,
+    # а не копия каталога. Каталог у сервиса на два с половиной сотни имён; как
+    # только в исходнике окажется имя, которого никто не спрашивал, это уже
+    # копия, и она устареет молча.
+    # Имена ищутся по группам самого каталога (`analytics`, `layers`, `v1`…),
+    # иначе в улов попадают домен и имя файла куки.
+    groups = sorted({name.split(".")[0] for name in bnmap.VERIFIED})
+    named = set(re.findall(r'"((?:%s)\.[A-Za-z_.]+)"' % "|".join(groups), source()))
+    unknown = sorted(named - set(bnmap.VERIFIED))
+    assert not unknown, "в модуле имена методов, чей ответ не увиден: " + ", ".join(unknown)
+    assert len(bnmap.VERIFIED) < 40, "журнал проверок разросся до копии каталога"
 
 
 def test_no_method_is_matched_to_our_checklist_before_its_answer_is_seen() -> None:

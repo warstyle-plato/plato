@@ -13,6 +13,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field, model_validator
 
 from . import bnmap
+from . import bnmap_ui
 from . import cabinet as cabinet_module
 from . import sales_store
 from .geocoder import GeocodingError
@@ -335,6 +336,33 @@ def install(app: FastAPI) -> MarketDiscoveryService:
         return await run_in_threadpool(
             bnmap.probe_browser, target, max(5.0, min(float(seconds), 180.0))
         )
+
+    @app.get("/market/bnmap/report")
+    async def market_bnmap_report(
+        request: Request, object_id: str = "", base: str = "msk"
+    ) -> dict[str, Any]:
+        """Тестовый свод bnMAP — вкладка рядом с отчётом, для сравнения.
+
+        Действующий отчёт этого маршрута не касается: он собирает «Пульс», а
+        здесь показано, что на те же вопросы отвечает второй источник. Числа
+        отдаются как пришли — считать их второй раз значит завести две
+        достоверные на вид версии одного рынка.
+
+        Оговорка, которая обязана дойти до человека: аккаунт bnMAP
+        односеансный, и обращение отсюда выбивает того, кто сидит в их
+        кабинете. Поэтому свод собирается по нажатию, а не сам собой.
+        """
+        cabinet_module.require_cabinet(request)
+        if not bnmap.available():
+            raise HTTPException(
+                status_code=503,
+                detail="Источник выключен: не заданы BNMAP_LOGIN и BNMAP_PASSWORD",
+            )
+        report = await run_in_threadpool(
+            bnmap.comparison_report, Path(data_dir) / "bnmap", object_id.strip(),
+            base=(base or "msk").strip(),
+        )
+        return {**report, "html": bnmap_ui.render(report)}
 
     @app.get("/market/address/suggest")
     async def market_address_suggest(request: Request, q: str = "") -> dict[str, Any]:

@@ -219,6 +219,162 @@ CANDIDATES: tuple[tuple[str, str], ...] = (
 ENTRY_PAGE = f"{BASE}/"
 
 
+# Методы, чей ЖИВОЙ ответ увиден. Разбирать разрешено только их, и это
+# проверяется тестом: пока ответа нет, разбор — догадка, а догадка уже
+# приезжала на прод тридцатью гаражами.
+#
+# Рядом с именем — что пришло 30.08.2026 под доступом владельца. Отказ тоже
+# ответ: он называет инструмент, которого у аккаунта нет, и это знание не
+# менее ценное, чем данные.
+VERIFIED: dict[str, str] = {
+    "v1.authentication.signin": "200, «Вы успешно вошли», аккаунт 5788, кука authorization на .bnmap.pro",
+    "v1.authentication.me": "200, account.category, content.$token у вошедшего",
+    "v1.toolAccess.getActiveToolsFull": "200, userToolsFromTariff: irn, service_bi, service_lk до 02.09.2026",
+    "v1.regions.get": "200, 36 регионов; msk — «Московский регион», коды 77 и 50",
+    "v1.regions.getRegionsWithTools": "200, регионы-инструменты: moscow, new_moscow, mo, spb…",
+    "analytics.indicators": "200, срез и предыдущий, зоны M / NewM / MO, цена м², лоты, проекты",
+    "analytics.reportNearBy": "200, radius (id, имя, адрес, координаты, расстояние), nearby (29 полей), location (ряд с 2016)",
+    "analytics.stages": "200, справочник стадий строительства",
+    "analytics.renovation": "200, дома под реновацию с координатами",
+    "layers.get": "200, слои: nov-expo «В реализации», nov-off «Закрытые продажи»",
+    "reports.getSalesDynamic": "200 при regionAlias и targetDate; топ-20 по сделкам за три месяца",
+    "analytics.perspectiveProjects": "200 и ПУСТОЙ список без доступа — не «проектов нет»",
+    "layers.data": "403 NO_REGION_ACCESS: у аккаунта нет региональной лицензии",
+    "analytics.objectMarket": "403: нет инструмента deals",
+    "analytics.objectDeals": "403: нет инструмента deals",
+    "domrf.declarations": "403: нет инструмента domrf",
+    "commercial.get": "403: нет инструмента commercial_objects",
+    "analytics.fullReport": "403: нет инструмента magic",
+}
+
+# Что спрашивает тестовый свод. Только методы, которые ОТВЕТИЛИ ДАННЫМИ:
+# у остальных ответ известен и он отказ, звать их значит показывать человеку
+# пустоту вместо причины.
+REPORT_METHODS = (
+    "v1.toolAccess.getActiveToolsFull",
+    "analytics.indicators",
+    "analytics.reportNearBy",
+)
+
+SIGNIN_URL = "https://bnmap.pro/api/v1/authentication/signin"
+
+
+class Session:
+    """Сеанс bnMAP: кука на диске, молчаливый отказ, причина вслух.
+
+    Устроен как `PulseClient`, и по тем же причинам: воркеров два, память у
+    них раздельная, поэтому кука живёт файлом. Отличие одно и важное —
+    **аккаунт односеансный**. Второй вход отвечает «Вы уже авторизованы на
+    другом компьютере», сброс через тридцать минут после последнего действия,
+    и каждая попытка этот срок отодвигает. Поэтому вход здесь пробуется РОВНО
+    ОДИН РАЗ на вызов: цикл повторов выдавил бы из кабинета живого человека и
+    сам себе закрыл дорогу.
+    """
+
+    def __init__(self, data_dir: Any, *, timeout: float = 60.0):
+        from pathlib import Path
+
+        self.dir = Path(data_dir)
+        self.dir.mkdir(parents=True, exist_ok=True)
+        self.timeout = timeout
+        self.errors: list[str] = []
+        self._jar: Any = None
+        self._opener: Any = None
+
+    def _build(self) -> Any:
+        if self._opener is not None:
+            return self._opener
+        import http.cookiejar
+
+        jar = http.cookiejar.MozillaCookieJar(str(self.dir / "cookies.txt"))
+        try:
+            jar.load(ignore_discard=True, ignore_expires=True)
+        except (OSError, http.cookiejar.LoadError):
+            pass
+        self._jar = jar
+        self._opener = urllib.request.build_opener(
+            urllib.request.HTTPCookieProcessor(jar)
+        )
+        return self._opener
+
+    def _save(self) -> None:
+        try:
+            self._jar.save(ignore_discard=True, ignore_expires=True)
+        except (OSError, AttributeError):
+            pass
+
+    @property
+    def signed_in(self) -> bool:
+        self._build()
+        return any(c.name == "authorization" for c in self._jar or [])
+
+    def sign_in(self) -> bool:
+        """Вход. Возвращает успех, не бросает и не повторяет попытку."""
+        login, password = credentials()
+        if not (login and password):
+            self.errors.append("не заданы BNMAP_LOGIN и BNMAP_PASSWORD")
+            return False
+        status, body = self._raw(SIGNIN_URL, {"email": login, "password": password},
+                                 origin="https://bnmap.pro")
+        if status == 200:
+            return True
+        # Сообщение сервиса доносится как есть: «уже авторизованы на другом
+        # компьютере» — это не поломка и не неверный пароль, а занятый сеанс,
+        # и человеку надо сказать именно это.
+        self.errors.append(f"вход не удался ({status}): {_service_message(body)}")
+        return False
+
+    def _raw(self, url: str, payload: dict[str, Any], *, origin: str) -> tuple[int, Any]:
+        request = urllib.request.Request(
+            url, data=json.dumps(payload).encode("utf-8"), method="POST",
+            # Заголовки ставятся НА ЗАПРОС, а не на опенер. Выставленные на
+            # опенере, они до сервиса не доезжают: он отвечает 422 «поле email
+            # обязательно» при верном теле, и это читается как неверная
+            # сигнатура. Час на это ушёл 30.08.2026.
+            headers={"Content-Type": "application/json", "Accept": "application/json",
+                     "User-Agent": os.getenv("MARKET_HTTP_USER_AGENT", "Mozilla/5.0"),
+                     "Origin": origin, "Referer": origin + "/"})
+        try:
+            with self._build().open(request, timeout=self.timeout) as response:
+                body = response.read().decode("utf-8", "replace")
+                status = int(getattr(response, "status", 0) or 0)
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.read(2000).decode("utf-8", "replace")
+        except (urllib.error.URLError, OSError) as exc:
+            return 0, f"{type(exc).__name__}: {exc}"
+        self._save()
+        try:
+            return status, json.loads(body)
+        except ValueError:
+            return status, body
+
+    def call(self, method: str, payload: dict[str, Any] | None = None) -> Any:
+        """Позвать метод. Незнакомый — отказ на месте, а не запрос наугад."""
+        if method not in VERIFIED:
+            self.errors.append(f"{method}: метод не сверен живым ответом, не зову")
+            return None
+        if not self.signed_in and not self.sign_in():
+            return None
+        status, body = self._raw(f"https://api.bnmap.pro/{method}", payload or {},
+                                 origin="https://platform.bnmap.pro")
+        if status == 401 and self.sign_in():
+            status, body = self._raw(f"https://api.bnmap.pro/{method}", payload or {},
+                                     origin="https://platform.bnmap.pro")
+        if status != 200:
+            self.errors.append(f"{method}: {status} {_service_message(body)}")
+            return None
+        return body.get("content") if isinstance(body, dict) else body
+
+
+def _service_message(body: Any) -> str:
+    """Сообщение сервиса из его же ответа — своих формулировок не выдумываем."""
+    if isinstance(body, dict):
+        error = body.get("error") if isinstance(body.get("error"), dict) else body
+        text = error.get("message") or error.get("type") or ""
+        return " ".join(str(text).split())[:200]
+    return " ".join(str(body).split())[:200]
+
+
 def credentials() -> tuple[str, str]:
     """Доступы из окружения. Их отсутствие — не поломка, а выключенный источник."""
     return os.getenv("BNMAP_LOGIN", ""), os.getenv("BNMAP_PASSWORD", "")
@@ -476,3 +632,55 @@ def probe_browser(url: str = ENTRY_PAGE, seconds: float = 60.0,
     )
     report["wanted"] = list(WANTED)
     return report
+
+
+def comparison_report(data_dir: Any, object_id: Any, *, base: str = "msk",
+                      date: str = "") -> dict[str, Any]:
+    """Тестовый свод bnMAP по одному объекту — для сравнения с нашим отчётом.
+
+    Спрашивает только то, что ответило данными (`REPORT_METHODS`), и первым
+    делом — состав аккаунта. Это не украшение: без региональной лицензии
+    `analytics.perspectiveProjects` отвечает `200` и ПУСТЫМ списком, а не
+    отказом, то есть «не куплено» выглядит как «ничего нет». Читатель обязан
+    различать это сам, иначе покажет пустой рынок как факт — та же ошибка, что
+    пустой ответ НСПД, выданный за отсутствие ограничений.
+
+    Своего счёта здесь нет вовсе: числа bnMAP показываются, как пришли. Второй
+    счёт той же величины однажды разошёлся бы с первым, и обе поверхности
+    выглядели бы верными.
+    """
+    session = Session(data_dir)
+    asked = date or _today()
+    tools = session.call("v1.toolAccess.getActiveToolsFull") or {}
+    active = [str(row.get("alias")) for row in (tools.get("userToolsFromTariff") or [])
+              if isinstance(row, dict) and row.get("alias")]
+    expires = sorted({str(row.get("expiredAt") or "")[:10]
+                      for row in (tools.get("userToolsFromTariff") or [])
+                      if isinstance(row, dict) and row.get("expiredAt")})
+    indicators = session.call("analytics.indicators", {"_base": base, "date": asked})
+    nearby = None
+    if object_id not in (None, "", 0):
+        nearby = session.call("analytics.reportNearBy", {
+            "_base": base, "object_id": object_id, "project": object_id,
+            "date": asked, "extended": True})
+    return {
+        "source": "bnMAP.pro",
+        "base": base,
+        "asked_date": asked,
+        "object_id": object_id or None,
+        "account": {"tools": active, "expires": expires},
+        "indicators": indicators,
+        "nearby": nearby,
+        "errors": session.errors,
+        "methods": list(REPORT_METHODS),
+        "note": (
+            "Тестовый свод: числа bnMAP показаны как пришли, ничего не пересчитано. "
+            "Пустой раздел здесь значит «инструмента у аккаунта нет», а не «на рынке пусто»."
+        ),
+    }
+
+
+def _today() -> str:
+    from datetime import date as _date
+
+    return _date.today().isoformat()

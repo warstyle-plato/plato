@@ -530,6 +530,7 @@ __DEVELOPAID_CONTOUR__
     <div id="hintout"></div>
   </div>
   <div id="sales"></div>
+__DEVELOPAID_BNMAP__
   <div id="out"></div>
 <script>document.body.dataset.version='__DEVELOPAID_VERSION__';</script>
 <div id="tip" role="status"></div>
@@ -3614,6 +3615,8 @@ def legal_footer() -> str:
 
 
 def cabinet_page() -> str:
+    from . import bnmap_ui
+
     # Контур объявлен один раз и подставляется, как подвал и версия: копии
     # негде обновлять, а поверхность без входа в контур не найти.
     import management_contour
@@ -3624,6 +3627,10 @@ def cabinet_page() -> str:
         .replace("__DEVELOPAID_CONTOUR_STYLE__", management_contour.STYLE)
         .replace(management_contour.PLACEHOLDER, management_contour.markup("/cabinet"))
         .replace(LEGAL_FOOTER_PLACEHOLDER, legal_footer())
+        # Второй источник стоит РЯДОМ с отчётом и подписан тестовым:
+        # пока «Пульс» и bnMAP не сверены на живых числах, в сборке
+        # отчёта менять нечего (владелец, 30.08.2026).
+        .replace(bnmap_ui.PLACEHOLDER, bnmap_ui.markup())
     )
 
 
