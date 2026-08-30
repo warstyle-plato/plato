@@ -125,10 +125,11 @@ def test_node_renders_the_plate_without_the_transfer():
             {name: 'О2', debt_carried_out: 0, ending_pf: 0, carried_debt_in: 0},
           ],
           phases: [
-            {result: {report: {financing: {rve_pf_shortfall: 8.93e9}}}},
-            {result: {report: {financing: {rve_pf_shortfall: 0}}}},
+            {result: {report: {financing: {rve_unpaid: 8.93e9,
+                                           default_date: '2030-01-01'}}}},
+            {result: {report: {financing: {rve_unpaid: 0}}}},
           ],
-          consolidated: {finance: {ending_pf: 6.63e9}},
+          consolidated: {finance: {ending_pf: 8.93e9}},
         };
         const html = pfRveWarningHtml({report: {financing: {}}, summary: {}});
         console.log(html.replace(/<[^>]+>/g, ' ').replace(/\\s+/g, ' ').trim());
@@ -137,8 +138,12 @@ def test_node_renders_the_plate_without_the_transfer():
     out = subprocess.run([_node(), "-e", script], capture_output=True, text=True, timeout=30)
     assert out.returncode == 0, out.stderr
     text = out.stdout.strip()
-    assert "гасится её собственными продажами" in text, text
-    assert "модель считает это дефолтом" in text, text
+    # Банк не ждёт продаж: в дату раскрытия он либо переоформляет долг, либо
+    # фиксирует дефолт (владелец, 30.08.2026).
+    assert "гасится её собственными продажами" not in text, text
+    assert "банк фиксирует дефолт в январе 2030" in text, text
+    assert "В такой нарезке проект не финансируется" in text, text
+    assert "план, который не состоится" in text, text
     assert "признак на вкладке «Очерёдность»" in text, text
 
 

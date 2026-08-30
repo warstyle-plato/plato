@@ -287,13 +287,15 @@ def test_the_amount_is_what_the_released_escrow_did_not_cover():
     закрытой линии."""
     plain = _bundle(700, 12000, carry=False)
     source = plain["phases"][0]["result"]["finance"]
-    shortfall = source["rve_pf_shortfall"]
-    assert shortfall > source["ending_pf"] + 1_000_000_000, (
-        "предохранитель: на этих вводных нехватка в РВЭ обязана быть заметно "
-        "больше остатка на конец, иначе тест не различает две методики")
+    unpaid = source["rve_unpaid"]
+    assert unpaid > 1_000_000_000, (
+        "предохранитель: на этих вводных раскрытого эскроу обязано не хватить")
+    # Нехватка в РВЭ и остаток на конец теперь одно и то же: линия закрывается,
+    # и остаточные продажи её больше не гасят (решение владельца, 30.08.2026).
+    assert source["ending_pf"] == pytest.approx(unpaid, rel=1e-6)
     carried = _bundle(700, 12000, carry=True)
     assert carried["debt_carry"]["transfers"][0]["amount"] == pytest.approx(
-        shortfall, rel=1e-6)
+        unpaid, rel=1e-6)
 
 
 def test_after_the_transfer_the_closed_line_neither_lends_nor_collects():
@@ -316,21 +318,31 @@ def test_after_the_transfer_the_closed_line_neither_lends_nor_collects():
     assert source["ending_pf"] == pytest.approx(0.0)
 
 
-def test_the_line_that_kept_the_debt_still_pays_for_it():
-    """Предохранитель обратного знака: без переноса всё остаётся как было.
+def test_without_the_transfer_the_shortfall_is_a_default_at_the_release():
+    """Без переноса нехватка — дефолт в дату раскрытия, а не долгое погашение.
 
-    Правка не имеет права менять поведение выключенного признака — иначе
-    книга, которая о переносе не знает, разойдётся с отчётом на проектах, где
-    перенос никто не включал."""
+    Владелец, 30.08.2026: «если надо погасить в дату РВЭ, банк не будет ждать,
+    пока продажи покроют остаток долга. Он просто дефолт, нет проекта, если не
+    видит возможности перенести на другие очереди из-за ненормативного LLCR».
+
+    Прежде остаток год гасился остаточными продажами на уже закрытой линии —
+    состояние, которого в жизни не бывает.
+    """
     plain = _bundle(700, 12000, carry=False)
     source = plain["phases"][0]["result"]["finance"]
     rve = plain["phases"][0]["result"]["dates"]["rve"]
     after = [r for r in source["rows"] if str(r["month"])[:10] > rve]
-    assert sum(r["pf_repayment"] for r in after) > 3_000_000_000
-    # Порог держит смысл сценария — очередь не гасит долг, — а не конкретное
-    # число: ставка подземки с 30.08.2026 равна 0,8 наземной, и долг тут же
-    # упал с 4 229 до 3 862 млн.
-    assert source["ending_pf"] > 3_000_000_000
+    assert after, "предохранитель: у очереди обязаны быть месяцы после РВЭ"
+    assert sum(r["sales"] for r in after) > 1_000_000_000, (
+        "предохранитель: остаточные продажи обязаны быть — иначе проверка "
+        "ниже проходит на пустом месте")
+    assert sum(r["pf_repayment"] for r in after) == pytest.approx(0.0), (
+        "закрытая линия не собирает: продажи после ввода остаются застройщику")
+    assert sum(r.get("pf_interest") or 0.0 for r in after) == pytest.approx(0.0), (
+        "закрытая линия не начисляет: проценты по договорной ставке на закрытом "
+        "НКЛ — та же фикция")
+    assert source["default_date"] == rve, "дефолт фиксируется в дату раскрытия"
+    assert source["ending_pf"] == pytest.approx(source["rve_unpaid"], rel=1e-6)
 
 
 def test_the_debt_cannot_land_before_the_receiving_line_exists():
