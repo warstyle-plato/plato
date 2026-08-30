@@ -231,3 +231,32 @@ def test_the_tests_do_not_write_into_the_repository() -> None:
     left = sorted(path.name for path in (ROOT / "data" / "monitor").glob("*"))
     assert "Проверочный" not in left, "проверка снова пишет в рабочие данные"
     assert monitor._SNAPSHOT_DIR.name == "monitor"
+
+
+def test_the_money_line_names_its_source_and_its_boundary() -> None:
+    """«Не по ДДС, а по РСС, а так-то мы знаем, что денег нужно на стройку
+    гораздо больше» (владелец, 30.08.2026).
+
+    Обе половины замечания верны. Источник назывался чужим именем: и
+    потребность на завершение, и остатки лимитов, и резерв 2.8/2.9 читаются с
+    листа «Расчет стоимости строительства» — это РСС, а не утверждённый ДДС. А
+    «до конца стройки» звучало как ВСЁ, что стройке нужно, тогда как это
+    инвестиционные расходы глав 2 и 3 и ничего сверх них.
+    """
+    summary = DASH[DASH.index("def _summary("):]
+    summary = summary[: summary.index("\ndef ")]
+    # Комментарии выбрасываем: в них записано, как было и почему поправили, и
+    # запрет на старое имя не должен запрещать помнить о нём.
+    summary = "\n".join(line for line in summary.splitlines()
+                        if not line.lstrip().startswith("#"))
+    assert "По РСС на завершение глав 2–3 нужно" in summary
+    assert "вся потребность стройки" in summary, "граница числа названа"
+    assert "утверждённому ДДС" not in summary, "источник снова назван чужим именем"
+
+    # На экране то же самое: имена контуров и подписи.
+    assert "Потребность на завершение по РСС" in PAGE
+    assert "kpi('Дефицит · РСС'" in PAGE and "kpi('Резерв · РСС'" in PAGE
+    assert "текущий ДДС" not in PAGE
+    # Помесячная программа — это программа РСС, а не отдельный ДДС.
+    assert "помесячной программе РСС" in PAGE
+    assert "утверждённом ДДС" not in PAGE
