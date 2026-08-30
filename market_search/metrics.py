@@ -88,6 +88,26 @@ def _peer_stats(rows: list[dict[str, Any]], key: str) -> dict[str, Any]:
     }
 
 
+def _class_key(row: dict[str, Any]) -> str | None:
+    """Ключ «своего класса»: метка источника, если он различает тоньше нашей лестницы.
+
+    Решение владельца 30.08.2026: «считаем как считает источник». У bnMAP класс
+    дробный — «Бизнес+», «Бизнес», «Бизнес−», — и наша лестница из пяти ступеней
+    сводит их в один «бизнес». Тогда медиана своего класса совпадает с общей, и
+    тонкость источника пропадает МОЛЧА: на Кутузов Сити это разница между
+    504 904 ₽/м² по смешанной выборке и 783 431 у единственного соседа того же
+    класса, что назвал источник.
+
+    Строка, пришедшая с меткой источника (`segment_exact`), группируется по ней.
+    Остальные — по ступени лестницы, как раньше: у «Пульса» дробных меток нет, и
+    его путь этой правкой не двигается.
+    """
+    exact = row.get("segment_exact")
+    if exact:
+        return " ".join(str(exact).split()).casefold()
+    return normalize_segment(row.get("segment"))
+
+
 def _add_same_class(
     block: MetricBlock,
     subject: dict[str, Any],
@@ -104,19 +124,24 @@ def _add_same_class(
     показывает, из чего сложилась общая, вместо того чтобы прятать это в одно
     число.
     """
-    own = normalize_segment(subject.get("segment"))
+    own = _class_key(subject)
     if not own:
         return
-    same = [row for row in peers if normalize_segment(row.get("segment")) == own]
+    same = [row for row in peers if _class_key(row) == own]
     if not same or len(same) == len(peers):
         return
     exact = _peer_stats(same, "price_per_sqm")
     if not exact["count"]:
         return
     block.peers["same_class"] = {**exact, "vs_median_pct": _ratio(price, exact["median"])}
+    label = subject.get("segment_exact") or own
+    # Разделитель тысяч заменяется в САМОМ ЧИСЛЕ, а не во всей строке: прежде
+    # `.replace(",", " ")` стояла на конце f-строки и вместе с разделителем
+    # съедала запятую предложения — «1 из 4  их медиана».
+    median = f"{exact['median']:,.0f}".replace(",", " ")
     block.notes.append(
-        f"В выборку входят соседние классы; только своего класса «{own}» — "
-        f"{exact['count']} из {len(peers)}, их медиана {exact['median']:,.0f} ₽/м²".replace(",", " ")
+        f"В выборку входят соседние классы; только своего класса «{label}» — "
+        f"{exact['count']} из {len(peers)}, их медиана {median} ₽/м²"
     )
 
 

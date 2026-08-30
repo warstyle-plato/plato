@@ -761,6 +761,11 @@ def _metric_row(card: dict[str, Any], name: str, distance: Any, observed: str) -
         # «Бизнес−» к ступени «бизнес», а подпись в таблице должна остаться
         # той, что дал источник, — три ступени там, где у нас одна.
         "segment": card.get("class"),
+        # Метка источника как есть — по ней и группируется «свой класс»:
+        # владелец, 30.08.2026, «считаем как считает источник». Ступень нашей
+        # лестницы остаётся в `segment` для сравнения с городским сводом, у
+        # которого своя шкала.
+        "segment_exact": card.get("class"),
         "price_per_sqm": _float(price.get("metrprice_avg_total")),
         "observed_at": observed,
         "units_per_month": _float(card.get("pace_lots")),

@@ -231,3 +231,34 @@ def test_commercial_and_parking_are_named_as_closed_not_as_absent() -> None:
     assert "машино-места" in gaps and "commercialNumParking" in gaps
     assert "не куплен" in gaps
     assert bnmap.VERIFIED["commercial.get"].startswith("403")
+
+
+def test_the_same_class_is_grouped_by_the_source_label() -> None:
+    """«Считаем как считает источник» — решение владельца 30.08.2026.
+
+    У bnMAP класс дробный: «Бизнес+», «Бизнес», «Бизнес−». Наша лестница из пяти
+    ступеней сводит их в один «бизнес», и тогда медиана своего класса совпадает
+    с общей — тонкость источника пропадает молча. На Кутузов Сити это разница
+    между «дороже соседей на треть» и «дешевле своего класса»: смотря что
+    считать своим классом.
+    """
+    subject = bnmap._metric_row(CARD, "Объект", 0, "2026-08-25")
+    same = bnmap._metric_row({**CARD, "object_id": "7", "class": "Бизнес"},
+                             "Тот же класс", 1.0, "2026-08-25")
+    lower = bnmap._metric_row({**NEIGHBOUR, "class": "Бизнес-"}, "Ступенью ниже", 0.5, "2026-08-25")
+    price = [b for b in metrics.build_blocks(subject, [same, lower]) if b["code"] == "price"][0]
+    assert price["peers"]["same_class"]["count"] == 1, "дробная метка источника схлопнулась"
+    assert price["peers"]["same_class"]["names"] == ["Тот же класс"]
+    assert any("«Бизнес»" in note for note in price["notes"])
+    # Запятая предложения — не разделитель тысяч.
+    assert not any("  " in note for note in price["notes"])
+
+
+def test_the_pulse_path_keeps_the_ladder() -> None:
+    """У «Пульса» дробных меток нет, и его сборка этой правкой не двигается."""
+    subject = {"name": "Свой", "price_per_sqm": 700000, "segment": "Бизнес"}
+    peers = [{"name": "Сосед", "price_per_sqm": 500000, "segment": "бизнес"},
+             {"name": "Премиальный", "price_per_sqm": 900000, "segment": "Премиум"}]
+    price = [b for b in metrics.build_blocks(subject, peers) if b["code"] == "price"][0]
+    assert price["peers"]["same_class"]["count"] == 1
+    assert price["peers"]["same_class"]["names"] == ["Сосед"]
