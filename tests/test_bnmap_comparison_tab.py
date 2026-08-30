@@ -194,3 +194,40 @@ def test_bnmap_stands_beside_the_report_and_not_inside_it() -> None:
     """Действующий отчёт собирает «Пульс», и bnMAP в него не входит."""
     for name in ("service_v6.py", "pulse.py"):
         assert "bnmap" not in (ROOT / "market_search" / name).read_text().lower(), name
+
+
+def test_the_flat_mix_and_deal_prices_are_shown() -> None:
+    """Сделки по объекту закрыты у платформы и открыты у службы отчётов.
+
+    `analytics.objectDeals` отвечает «нет инструмента deals», а
+    `getReportSalesBalancesTypeRooms` и `getReportSalesBalancesPriceInDeals`
+    отдают агрегаты по тем же сделкам бесплатно. Это две разные двери в один
+    дом, и знать про вторую важнее, чем про первую.
+    """
+    data = {
+        **payload(),
+        "rooms_balance": [
+            {"type": "1", "pboCount": 88, "pdoCount": 25, "pboLeft": 63, "pboLeftShare": 72},
+            {"type": "ст", "pboCount": 23, "pdoCount": 14, "pboLeft": 9, "pboLeftShare": 39},
+        ],
+        "deal_prices": {"years": [{"year": 2026, "1": 686087, "2": 734921, "3": 787165}]},
+    }
+    html = bnmap_ui.render(data)
+    assert "Квартирография и вымывание" in html and "63" in html and "72 %" in html
+    # «ст» — это студии, и подпись разворачивается: сырой ключ на экране
+    # читается как чужой код, а не как тип квартиры.
+    assert "Студии" in html and ">ст<" not in html
+    assert "Цена в сделках" in html and "734 921" in html
+
+
+def test_commercial_and_parking_are_named_as_closed_not_as_absent() -> None:
+    """«Источник не знает» и «нам не продали» — разные утверждения.
+
+    В объектной модели bnMAP машино-места, кладовые и нежилое лежат своими
+    полями; закрыт инструмент, а не данные. Сказать «этого нет» значит соврать
+    про источник и закрыть вопрос, который на самом деле про деньги.
+    """
+    gaps = " ".join(bnmap.CLONE_GAPS)
+    assert "машино-места" in gaps and "commercialNumParking" in gaps
+    assert "не куплен" in gaps
+    assert bnmap.VERIFIED["commercial.get"].startswith("403")

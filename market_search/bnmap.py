@@ -246,6 +246,10 @@ VERIFIED: dict[str, str] = {
     "v2.reports.getUniqueTypesOfRooms": "200, типы лотов объекта: ст, 1, 2, 3, 4, 5 — только квартиры",
     "v2.reports.getActualLayerDates": "200, даты свежести по слоям: price, deals, passport, declaration",
     "v1.locator.objectsData": "403: «Локатор» недоступен, а объектная модель у него на 77 полей",
+    "v2.reports.getReportSalesBalancesTypeRooms": "200, по типам квартир: сколько в продаже, продано ДДУ, остаток и его доля",
+    "v2.reports.getReportSalesBalancesPriceInDeals": "200, цена В СДЕЛКАХ по годам и месяцам, в разрезе комнатности",
+    "v2.reports.getReportSalesBalancesCheckmate": "200, шахматка по этажам: лотов, площади, остаток",
+    "v2.reports.project": "200, карточка объекта службы отчётов со свежестью и ценами",
     "layers.data": "403 NO_REGION_ACCESS: у аккаунта нет региональной лицензии",
     "analytics.objectMarket": "403: нет инструмента deals",
     "analytics.objectDeals": "403: нет инструмента deals",
@@ -735,56 +739,6 @@ def _distance_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
         + math.cos(rad(lat1)) * math.cos(rad(lat2)) * math.sin(rad(lon2 - lon1) / 2) ** 2))
 
 
-def comparison_report(data_dir: Any, object_id: Any, *, base: str = "msk",
-                      date: str = "") -> dict[str, Any]:
-    """Тестовый свод bnMAP по одному объекту — для сравнения с нашим отчётом.
-
-    Спрашивает только то, что ответило данными (`REPORT_METHODS`), и первым
-    делом — состав аккаунта. Это не украшение: без региональной лицензии
-    `analytics.perspectiveProjects` отвечает `200` и ПУСТЫМ списком, а не
-    отказом, то есть «не куплено» выглядит как «ничего нет». Читатель обязан
-    различать это сам, иначе покажет пустой рынок как факт — та же ошибка, что
-    пустой ответ НСПД, выданный за отсутствие ограничений.
-
-    Своего счёта здесь нет вовсе: числа bnMAP показываются, как пришли. Второй
-    счёт той же величины однажды разошёлся бы с первым, и обе поверхности
-    выглядели бы верными.
-    """
-    session = Session(data_dir)
-    asked = date or _today()
-    found = find(data_dir, str(object_id), base=base) if object_id else {}
-    if found.get("object_id"):
-        object_id = found["object_id"]
-    tools = session.call("v1.toolAccess.getActiveToolsFull") or {}
-    active = [str(row.get("alias")) for row in (tools.get("userToolsFromTariff") or [])
-              if isinstance(row, dict) and row.get("alias")]
-    expires = sorted({str(row.get("expiredAt") or "")[:10]
-                      for row in (tools.get("userToolsFromTariff") or [])
-                      if isinstance(row, dict) and row.get("expiredAt")})
-    indicators = session.call("analytics.indicators", {"_base": base, "date": asked})
-    nearby = None
-    if object_id not in (None, "", 0):
-        nearby = session.call("analytics.reportNearBy", {
-            "_base": base, "object_id": object_id, "project": object_id,
-            "date": asked, "extended": True})
-    return {
-        "source": "bnMAP.pro",
-        "base": base,
-        "asked_date": asked,
-        "object_id": object_id or None,
-        "found": found or None,
-        "account": {"tools": active, "expires": expires},
-        "indicators": indicators,
-        "nearby": nearby,
-        "errors": session.errors,
-        "methods": list(REPORT_METHODS),
-        "note": (
-            "Тестовый свод: числа bnMAP показаны как пришли, ничего не пересчитано. "
-            "Пустой раздел здесь значит «инструмента у аккаунта нет», а не «на рынке пусто»."
-        ),
-    }
-
-
 def _today() -> str:
     from datetime import date as _date
 
@@ -899,8 +853,15 @@ def clone_report(data_dir: Any, query: str, *, base: str = "msk", date: str = ""
         else:
             peers.append(row)
     tools = session.call("v1.toolAccess.getActiveToolsFull") or {}
+    # Свод по объекту из службы отчётов. Он открыт там, где платформа отвечает
+    # 403: `analytics.objectDeals` требует инструмента deals, а эти два метода
+    # отдают агрегаты по тем же сделкам бесплатно. Спрашиваются только по
+    # объекту оценки: по каждому соседу это ещё два запроса на строку.
+    object_key = {"objectId": str(found["object_id"]), "regionAlias": base}
     return {
         "found": found,
+        "rooms_balance": session.call("v2.reports.getReportSalesBalancesTypeRooms", object_key),
+        "deal_prices": session.call("v2.reports.getReportSalesBalancesPriceInDeals", object_key),
         "indicators": session.call("analytics.indicators", {"_base": base, "date": asked}),
         "subject": subject,
         "peers": peers,

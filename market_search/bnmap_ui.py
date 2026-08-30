@@ -150,6 +150,8 @@ def render(report: dict[str, Any]) -> str:
     out.append(_subject(report.get("found")))
     out.append(_rooms(report.get("peers"), report.get("subject")))
     out.append(_discounts(report.get("peers"), report.get("subject")))
+    out.append(_rooms_balance(report.get("rooms_balance")))
+    out.append(_deal_prices(report.get("deal_prices")))
     out.append(_indicators(report.get("indicators")))
     out.append(_gaps(report))
     return "".join(part for part in out if part)
@@ -187,6 +189,62 @@ def _subject(found: Any) -> str:
             + "Объект опознан: " + escape(str(found["how"]))
             + " · номер " + escape(str(found.get("object_id") or "не найден"))
             + (" · рядом: " + names if names else "") + "</div>")
+
+
+def _rooms_balance(rows: Any) -> str:
+    """Квартирография объекта с остатком — по типам квартир.
+
+    То же, что у нас в своде продаж считается по книге финмодели, но здесь по
+    любому проекту и без файла. Отвечает на вопрос оценки прямо: какая полоса
+    вымылась, а какая стоит.
+    """
+    if not isinstance(rows, list) or not rows:
+        return ""
+    body = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        body.append("<tr><td>" + escape(_room_name(row.get("type"))) + "</td>"
+                    + _num({"val": row.get("pboCount")}) + _num({"val": row.get("pdoCount")})
+                    + _num({"val": row.get("pboLeft")})
+                    + '<td class="num">' + escape(str(row.get("pboLeftShare", "—"))) + " %</td></tr>")
+    if not body:
+        return ""
+    return ('<h3 style="margin-top:16px">Квартирография и вымывание</h3>'
+            '<div class="tablescroll"><table class="peers"><tr><th>Тип</th>'
+            '<th class="num">В продаже</th><th class="num">Продано ДДУ</th>'
+            '<th class="num">Остаток</th><th class="num">Доля остатка</th></tr>'
+            + "".join(body) + "</table></div>")
+
+
+def _deal_prices(data: Any) -> str:
+    """Цена В СДЕЛКАХ по годам — не прайс.
+
+    Прайс это витрина, сделка — факт, и разрыв между ними у нас до сих пор был
+    виден только через скидки со слов застройщика. Разрез по комнатности тот же,
+    что и у прайса, поэтому две таблицы читаются рядом.
+    """
+    years = (data or {}).get("years") if isinstance(data, dict) else None
+    if not isinstance(years, list) or not years:
+        return ""
+    body = []
+    for row in years:
+        if not isinstance(row, dict):
+            continue
+        cells = "".join(_num({"val": row.get(key) or None}) for key, _ in _ROOMS)
+        body.append("<tr><td>" + escape(str(row.get("year", "—"))) + "</td>" + cells + "</tr>")
+    if not body:
+        return ""
+    head = "".join(f'<th class="num">{escape(title)}</th>' for _, title in _ROOMS)
+    return ('<h3 style="margin-top:16px">Цена в сделках по годам, ₽/м²</h3>'
+            '<div class="tablescroll"><table class="peers"><tr><th>Год</th>'
+            + head + "</tr>" + "".join(body) + "</table></div>")
+
+
+def _room_name(value: Any) -> str:
+    """Подпись типа — та, что дал источник; «ст» разворачиваем в «студии»."""
+    text = str(value or "").strip()
+    return "Студии" if text.lower() in ("ст", "st") else (text + "к" if text.isdigit() else text or "—")
 
 
 def _indicators(data: Any) -> str:
