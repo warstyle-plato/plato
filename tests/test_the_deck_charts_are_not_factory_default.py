@@ -110,3 +110,58 @@ def test_numbers_stand_to_the_right() -> None:
     value = grid.cell(1, 1)
     assert value.text_frame.paragraphs[0].alignment == PP_ALIGN.RIGHT
     assert grid.cell(1, 0).text_frame.paragraphs[0].alignment != PP_ALIGN.RIGHT
+
+
+def test_sibling_labels_do_not_glue_into_one_word() -> None:
+    """«факт, млн ₽цена квартир, ₽/м²» — так это выглядело на слайде.
+
+    Подписи легенды и полос лежат соседними `span` без пробела между ними:
+    браузер разводит их отступом, разбор склеивал в одно слово. Разделитель
+    ставится только между соседями одного уровня — `span` внутри строки
+    разбивать нечего.
+    """
+    html = ('<section class="salesblock"><h2>Динамика</h2>'
+            '<div class="muted"><span><span></span>факт, млн ₽</span>'
+            '<span><span></span>цена квартир, ₽/м²</span></div>'
+            '<p>Внутри строки <span class="muted">пояснение</span> не рвётся.</p>'
+            '</section>')
+    lines = sales_deck.sections(html)[0]["lines"]
+    assert "факт, млн ₽ · цена квартир, ₽/м²" in lines
+    assert "Внутри строки пояснение не рвётся." in lines
+
+
+def test_a_fold_label_is_not_content() -> None:
+    """«Помесячно числами» — подпись сворачивалки, и на слайде она сирота."""
+    html = ('<section class="salesblock"><h2>Продукты</h2>'
+            '<details><summary>Продукты числами</summary>'
+            '<table><thead><tr><th>Что</th><th>Сколько</th></tr></thead>'
+            '<tbody><tr><td>Квартира</td><td>56</td></tr>'
+            '<tr><td>Паркинг</td><td>14</td></tr></tbody></table></details></section>')
+    page = sales_deck.sections(html)[0]
+    assert "Продукты числами" not in page["lines"]
+    assert page["tables"], "таблица под сворачивалкой при этом обязана остаться"
+
+
+def test_a_section_without_words_does_not_get_an_empty_slide() -> None:
+    """«Расторжения» шли листом, на котором стоял один заголовок."""
+    from pptx import Presentation
+    import io
+
+    html = ('<section class="salesblock"><h2>Расторжения</h2>'
+            '<table><thead><tr><th>Месяц</th><th>млн ₽</th></tr></thead>'
+            '<tbody><tr><td>2026-05</td><td>12,0</td></tr>'
+            '<tr><td>2026-06</td><td>3,5</td></tr></tbody></table></section>')
+    deck = Presentation(io.BytesIO(sales_deck.build(
+        sales_deck.sections(html), title="Т", subtitle="с", footer="ф")))
+    for slide in deck.slides:
+        filled = [shape for shape in slide.shapes
+                  if shape.has_chart or shape.has_table
+                  or (shape.has_text_frame and shape.text_frame.text.strip())]
+        # Заголовок и номер — не содержание: лист, кроме них, обязан что-то нести.
+        assert len(filled) > 2, "слайд с одним заголовком и номером"
+
+
+def test_the_reader_is_told_once_not_on_every_chart() -> None:
+    """Сноска под каждым графиком повторялась двадцать раз и стала шумом."""
+    source = (ROOT / "market_search" / "sales_deck.py").read_text(encoding="utf-8")
+    assert source.count("правятся в PowerPoint") == 1

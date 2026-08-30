@@ -52,7 +52,9 @@ class _Sections(HTMLParser):
     половины чисел, поэтому пустой разбор объявляется отказом выше.
     """
 
-    _SKIP = {"script", "style", "button", "textarea", "select", "svg"}
+    # `summary` — подпись сворачивалки, а не содержание: на слайде «Помесячно
+    # числами» это осиротевшая фраза, под которой ничего нет.
+    _SKIP = {"script", "style", "button", "textarea", "select", "svg", "summary"}
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -71,6 +73,12 @@ class _Sections(HTMLParser):
         self._text: list[str] = []
         self._in_head_cell = False
         self._want: str = ""
+        # Подписи легенды и полос лежат соседними `span` без единого пробела
+        # между ними: «факт, млн ₽» и «цена квартир, ₽/м²» на слайде выходили
+        # одним словом. Разделитель ставится ТОЛЬКО между соседями одного
+        # уровня — внутри строки `span` разбивать нечего.
+        self._span_depth = 0
+        self._closed_span_at: int | None = None
 
     # --- служебное -----------------------------------------------------
     def _flush_line(self) -> None:
@@ -139,7 +147,16 @@ class _Sections(HTMLParser):
             self._cell = []
             self._in_head_cell = tag == "th"
             return
-        if tag in {"br", "p", "div", "li", "summary"}:
+        if tag == "span":
+            if self._closed_span_at == self._span_depth and self._text:
+                tail = "".join(self._text).rstrip()
+                if tail and not tail.endswith(("·", ",", ";", ":")):
+                    self._text.append(" · ")
+            self._span_depth += 1
+            self._closed_span_at = None
+            return
+        self._closed_span_at = None
+        if tag in {"br", "p", "div", "li"}:
             self._flush_line()
 
     def handle_endtag(self, tag: str) -> None:
@@ -191,7 +208,12 @@ class _Sections(HTMLParser):
             self._current = self.tail
             self._want = ""
             return
-        if tag in {"h1", "h2", "h3", "h4", "p", "div", "li", "summary"}:
+        if tag == "span":
+            self._span_depth = max(0, self._span_depth - 1)
+            self._closed_span_at = self._span_depth
+            return
+        self._closed_span_at = None
+        if tag in {"h1", "h2", "h3", "h4", "p", "div", "li"}:
             self._flush_line()
             self._want = ""
 
@@ -296,6 +318,8 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
     ink = RGBColor(0x16, 0x20, 0x2B)
     dim = RGBColor(0x5B, 0x6B, 0x7D)
     brand = RGBColor(0x13, 0x67, 0xAE)
+    deep = RGBColor(0x0E, 0x2A, 0x43)
+    paper = RGBColor(0xFF, 0xFF, 0xFF)
 
     def textbox(slide, text: str, *, top: float, size: int, colour: RGBColor,
                 bold: bool = False, height: float = 0.6):
@@ -310,9 +334,20 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         run.font.color.rgb = colour
         return box
 
-    def new_slide(heading: str):
+    def new_slide(heading: str, section: str = ""):
+        """Лист раздела: заголовок и номер. Имя раздела внизу не повторяем —
+        оно уже стоит заголовком, а повтор читается как заводская рамка."""
         slide = deck.slides.add_slide(blank)
-        textbox(slide, heading, top=0.42, size=24, colour=ink, bold=True)
+        textbox(slide, heading, top=0.45, size=26, colour=ink, bold=True, height=0.7)
+        corner = slide.shapes.add_textbox(Inches(SLIDE_W_IN - 1.4),
+                                          Inches(SLIDE_H_IN - 0.55),
+                                          Inches(0.8), Inches(0.35))
+        paragraph = corner.text_frame.paragraphs[0]
+        paragraph.alignment = PP_ALIGN.RIGHT
+        number = paragraph.add_run()
+        number.text = str(len(deck.slides))
+        number.font.size = Pt(10)
+        number.font.color.rgb = dim
         return slide
 
     def put_table(slide, table: dict[str, Any], *, top: float, height: float) -> None:
@@ -437,10 +472,16 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
 
     # Титул: чей отчёт и на какую дату. Слайд, отделившийся от колоды, обязан
     # сам говорить, чей он, — как лист на бумаге.
+    # Титул тёмный: он и лист «На чём посчитано» обрамляют светлую середину.
+    # Так колода читается как документ, а не как двадцать одинаковых листов.
     first = deck.slides.add_slide(blank)
-    textbox(first, title, top=2.6, size=34, colour=ink, bold=True, height=1.0)
-    textbox(first, subtitle, top=3.9, size=16, colour=dim)
-    textbox(first, footer, top=6.6, size=11, colour=dim)
+    first.background.fill.solid()
+    first.background.fill.fore_color.rgb = deep
+    textbox(first, title, top=2.5, size=40, colour=paper, bold=True, height=1.2)
+    textbox(first, subtitle, top=3.9, size=16, colour=RGBColor(0xB6, 0xC8, 0xDA))
+    textbox(first, "Слайды настоящие: таблицы и графики правятся в PowerPoint.",
+            top=4.5, size=13, colour=RGBColor(0x8F, 0xA6, 0xBD))
+    textbox(first, footer, top=6.7, size=11, colour=RGBColor(0x8F, 0xA6, 0xBD))
 
     for page in pages:
         heading = str(page.get("title") or "Раздел")
@@ -449,31 +490,50 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         lines = [line for line in (page.get("lines") or []) if line][:LINES_PER_SLIDE]
         drawn = charts(tables[0]) if tables else []
 
-        # Первый слайд раздела — о чём он: заголовок, вывод и подписи, которые
-        # на экране стоят рядом с картинкой (доли полос — это и есть числа
-        # такого раздела).
-        slide = new_slide(heading)
-        top = 1.25
-        if note:
-            textbox(slide, note, top=top, size=14, colour=dim, height=0.8)
-            top += 0.9
-        if lines:
-            for index, line in enumerate(lines):
-                textbox(slide, line, top=top + index * 0.42, size=13, colour=ink)
-        elif not drawn and tables:
-            put_table(slide, tables[0], top=top,
-                      height=min(4.8, 0.34 * (len(tables[0]["rows"]) + 1)))
-            tables = tables[1:]
+        # Первый слайд раздела — о чём он: вывод крупно и подписи, которые на
+        # экране стоят рядом с картинкой (доли полос — это и есть числа такого
+        # раздела). Слайда НЕТ, когда класть на него нечего: «Расторжения» с
+        # одним заголовком и пустым полем — это не раздел, а пустой лист.
+        opening = None
+        if note or lines or (not drawn and tables):
+            opening = new_slide(heading)
+            top = 1.3
+            if note:
+                # Вывод — то, ради чего лист открывают. Один он на листе —
+                # значит и стоит крупно, а не строкой мелким шрифтом.
+                big = 20 if not lines else 15
+                textbox(opening, note, top=top, size=big, colour=ink,
+                        height=1.6 if not lines else 0.9)
+                top += 1.8 if not lines else 1.0
+            if lines:
+                # Больше пяти подписей — в две колонки: столбик в двадцать
+                # строк уезжает за нижний край, а половина листа стоит пустой.
+                columns = 2 if len(lines) > 5 else 1
+                per = -(-len(lines) // columns)
+                width = (SLIDE_W_IN - 1.2) / columns - 0.2
+                for index, line in enumerate(lines):
+                    box = opening.shapes.add_textbox(
+                        Inches(0.6 + (index // per) * (width + 0.2)),
+                        Inches(top + (index % per) * 0.42),
+                        Inches(width), Inches(0.4))
+                    box.text_frame.word_wrap = True
+                    run = box.text_frame.paragraphs[0].add_run()
+                    run.text = line
+                    run.font.size = Pt(14)
+                    run.font.color.rgb = ink
+            elif not drawn and tables:
+                put_table(opening, tables[0], top=top,
+                          height=min(4.8, 0.34 * (len(tables[0]["rows"]) + 1)))
+                tables = tables[1:]
 
         # По слайду на график: каждая мера показана и ни одна не спорит с
         # соседней. Ряд один, поэтому легенда не нужна — мера стоит в
-        # заголовке слайда.
+        # заголовке слайда. Сноски под каждым графиком больше нет: повторённая
+        # двадцать раз, она перестаёт быть пояснением и становится шумом —
+        # сказать это достаточно один раз, на титуле.
         for chart in drawn:
-            part = new_slide(f"{heading} · {chart['name']}")
-            put_chart(part, chart, top=1.25, height=SLIDE_H_IN - 1.95)
-            textbox(part, "График настоящий: данные правятся в PowerPoint,"
-                          " числа — таблицей на следующих слайдах.",
-                    top=SLIDE_H_IN - 0.95, size=11, colour=dim, height=0.4)
+            part = new_slide(f"{heading} · {chart['name']}", heading)
+            put_chart(part, chart, top=1.3, height=SLIDE_H_IN - 2.1)
 
         # Таблицы — целиком и ячейками: их и правят. Длинная продолжается
         # следующим слайдом, а не ужимается до нечитаемого.
@@ -482,11 +542,12 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
             for start in range(0, len(rows), ROWS_PER_SLIDE):
                 chunk = {"head": table.get("head") or [],
                          "rows": rows[start:start + ROWS_PER_SLIDE]}
-                part = new_slide(heading + ("" if start == 0 else " · продолжение"))
-                put_table(part, chunk, top=1.25,
-                          height=min(5.6, 0.34 * (len(chunk["rows"]) + 1)))
-        if note:
-            slide.notes_slide.notes_text_frame.text = note
+                part = new_slide(heading + ("" if start == 0 else " · продолжение"),
+                                 heading)
+                put_table(part, chunk, top=1.3,
+                          height=min(5.4, 0.34 * (len(chunk["rows"]) + 1)))
+        if note and opening is not None:
+            opening.notes_slide.notes_text_frame.text = note
 
     buffer = io.BytesIO()
     deck.save(buffer)
