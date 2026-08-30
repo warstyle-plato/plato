@@ -309,3 +309,36 @@ def test_the_first_header_stands_over_its_own_column() -> None:
     first = grids[0].cell(0, 0).text_frame.paragraphs[0]
     second = grids[0].cell(0, 1).text_frame.paragraphs[0]
     assert first.alignment != second.alignment, "оба заголовка выровнены одинаково"
+
+
+def test_a_conclusion_alone_does_not_get_its_own_slide() -> None:
+    """«Этот слайд странный» (владелец, 30.08.2026): заголовок, одна строка
+    вывода и пять дюймов белого.
+
+    Вывод сам по себе слайдом не является — он едет подзаголовком на первый
+    слайд раздела, где есть картинка. Слайд заводится под содержимое.
+    """
+    import io
+
+    from pptx import Presentation
+
+    html = ('<section class="salesblock"><h2>Динамика</h2>'
+            '<div class="sumup">Последние три месяца — 213,6 млн ₽ в месяц.</div>'
+            '<table><thead><tr><th>Месяц</th><th>млн ₽</th></tr></thead><tbody>'
+            '<tr><td>2026-07</td><td>140,8</td></tr>'
+            '<tr><td>2026-06</td><td>301,2</td></tr>'
+            '<tr><td>2026-05</td><td>288,0</td></tr>'
+            '</tbody></table></section>')
+    deck = Presentation(io.BytesIO(sales_deck.build(
+        sales_deck.sections(html), title="Т", subtitle="с", footer="ф")))
+    slides = list(deck.slides)[1:]  # титул не в счёт
+    for slide in slides:
+        heavy = [shape for shape in slide.shapes
+                 if shape.has_chart or shape.has_table
+                 or str(shape.shape_type or "").startswith("AUTO_SHAPE")]
+        assert heavy, "слайд без единой картинки, таблицы или плитки"
+    # И вывод при этом не пропал: он стоит над первой картинкой.
+    said = [shape.text_frame.text for slide in slides for shape in slide.shapes
+            if shape.has_text_frame]
+    assert any("213,6 млн ₽" in text for text in said)
+    assert sum("213,6 млн ₽" in text for text in said) == 1, "вывод повторился"

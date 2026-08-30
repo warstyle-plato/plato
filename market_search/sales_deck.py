@@ -729,17 +729,29 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         tiles = [table for table in tables if table.get("kind") == "tiles"]
         tables = [table for table in tables if table.get("kind") != "tiles"]
         drawn = charts(tables[0]) if tables else []
+        # Слайд заводится, только если на нём есть что показать. Вывод сам по
+        # себе слайдом не является: «этот слайд странный» (владелец,
+        # 30.08.2026) — заголовок, одна строка и пять дюймов белого. Такой
+        # вывод едет подзаголовком на первый слайд раздела, где есть картинка.
+        rich = bool(lines or tiles or strips or (not drawn and tables))
+        carry = "" if rich else note
+
+        def lead(slide, top: float) -> float:
+            """Вывод раздела над содержимым — один раз на раздел."""
+            nonlocal carry
+            if not carry:
+                return top
+            textbox(slide, carry, top=top, size=14, colour=dim, height=0.55)
+            carry = ""
+            return top + 0.7
+
         opening = None
-        if note or lines or tiles or strips or (not drawn and tables):
+        if rich:
             opening = new_slide(heading)
             top = 1.3
             if note:
-                # Вывод — то, ради чего лист открывают. Один он на листе —
-                # значит и стоит крупно, а не строкой мелким шрифтом.
-                alone = not lines and not tiles and not strips
-                textbox(opening, note, top=top, size=20 if alone else 15,
-                        colour=ink, height=1.6 if alone else 0.8)
-                top += 1.8 if alone else 0.95
+                textbox(opening, note, top=top, size=15, colour=ink, height=0.8)
+                top += 0.95
             if tiles:
                 top = put_tiles(opening, tiles[0], top=top)
             for strip in strips:
@@ -772,7 +784,8 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         # сказать это достаточно один раз, на титуле.
         for chart in drawn:
             part = new_slide(f"{heading} · {chart['name']}", heading)
-            put_chart(part, chart, top=1.3, height=SLIDE_H_IN - 2.1)
+            top = lead(part, 1.25)
+            put_chart(part, chart, top=top, height=SLIDE_H_IN - top - 0.8)
 
         # Таблицы — целиком и ячейками: их и правят. Длинная продолжается
         # следующим слайдом, а не ужимается до нечитаемого.
@@ -783,8 +796,13 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
                          "rows": rows[start:start + ROWS_PER_SLIDE]}
                 part = new_slide(heading + ("" if start == 0 else " · продолжение"),
                                  heading)
-                put_table(part, chunk, top=1.3,
-                          height=min(5.4, 0.34 * (len(chunk["rows"]) + 1)))
+                top = lead(part, 1.25)
+                put_table(part, chunk, top=top,
+                          height=min(SLIDE_H_IN - top - 0.8,
+                                     0.34 * (len(chunk["rows"]) + 1)))
+        if carry:
+            # Разделу нечего показать, кроме вывода: тогда он и есть слайд.
+            textbox(new_slide(heading), carry, top=1.4, size=20, colour=ink, height=1.6)
         if note and opening is not None:
             opening.notes_slide.notes_text_frame.text = note
 
