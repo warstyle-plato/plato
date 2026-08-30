@@ -69,7 +69,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.20.59"
+VERSION = "0.20.60"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -36744,6 +36744,70 @@ function renderPhaseReportControls(){
  const b=[['all','Весь проект'],...phaseBundle.phases.map((p,i)=>[`phase${i+1}`,p.name]),['compare','Сравнение очередей']];
  phaseReportControls.innerHTML=b.map(([k,l])=>`<button class="btn ${reportView===k?'active':''}" onclick="selectReportView('${k}')">${l}</button>`).join('')
 }
+// Предложный падеж сразу, а не выведенный заменой окончаний: «в марте 2031»
+// читается человеком, и склонять его правилом «я→е, а→е» — способ однажды
+// получить «в мае» из «мая» и «в феврале» из чего угодно.
+const RU_MONTHS_IN=['январе','феврале','марте','апреле','мае','июне',
+                    'июле','августе','сентябре','октябре','ноябре','декабре'];
+function ruMonth(iso){
+ const m=/^(\d{4})-(\d{2})/.exec(String(iso||''));
+ if(!m)return '';
+ const index=Number(m[2])-1;
+ return index>=0&&index<12?`${RU_MONTHS_IN[index]} ${m[1]}`:'';
+}
+// Плашка о непогашенном ПФ. Прежде она складывала все очереди в одну кучу —
+// «в даты РВЭ очередей: долг перед раскрытием столько-то» — и из неё нельзя
+// было понять ни какая очередь не рассчиталась, ни куда ушёл её долг. А с
+// включённым переносом фраза «остаток гасится продажами после ввода» стала
+// прямо неверной: остаток уходит на линию следующей очереди, а продажи
+// остаются застройщику. Теперь плашка говорит по очередям и называет, что
+// куда и когда ушло.
+function pfRveWarningHtml(r){
+ const phased=phaseBundle&&phaseBundle.mode==='phased'&&(phaseBundle.comparison||[]).length>1;
+ if(!phased){
+  const f=r.report.financing||{},gap=Number(f.rve_pf_shortfall||0);
+  if(!(gap>500000))return '';
+  const ending=Number(f.ending_pf||0);
+  return `<b>Эскроу не погашает ПФ полностью.</b> При раскрытии эскроу долг составлял `
+   +`${money(Number(f.rve_pf_before_repayment||0))}, раскрыто ${money(Number(f.rve_escrow_release||0))}, `
+   +`не погашено <b>${money(gap)}</b>. Остаток гасится продажами после ввода — они идут без эскроу. `
+   +(ending>500000
+     ?`К концу горизонта непогашенным остаётся <b>${money(ending)}</b> — модель считает это дефолтом.`
+     :'К концу горизонта долг погашен.');
+ }
+ const rows=phaseBundle.comparison||[],phases=phaseBundle.phases||[];
+ const carry=phaseBundle.debt_carry||(phaseBundle.consolidated||{}).debt_carry||null;
+ const at={};((carry&&carry.transfers)||[]).forEach(t=>{at[t.from]=t});
+ const lines=[];
+ rows.forEach((row,i)=>{
+  const fin=((phases[i]||{}).result||{}).report||{};
+  const own=Number((fin.financing||{}).rve_pf_shortfall||0);
+  const passed=Number(row.debt_carried_out||0);
+  const gap=passed>500000?passed:own;
+  if(!(gap>500000))return;
+  const name=escapeHtml(String(row.name||('О'+(i+1))));
+  if(passed>500000){
+   const t=at[i+1]||{},when=ruMonth(t.at);
+   const to=escapeHtml(String((rows[i+1]||{}).name||('О'+(i+2))));
+   lines.push(`<b>${name}</b>: при раскрытии эскроу не погашено <b>${money(gap)}</b> — `
+    +`этот долг принял ПФ <b>${to}</b>${when?' в '+when:''}.`);
+  }else{
+   lines.push(`<b>${name}</b>: при раскрытии эскроу не погашено <b>${money(gap)}</b> — `
+    +'остаток гасится её собственными продажами после ввода, они идут без эскроу.');
+  }
+ });
+ if(!lines.length)return '';
+ const ending=Number(((phaseBundle.consolidated||{}).finance||{}).ending_pf||0);
+ lines.push(ending>500000
+  ?`<b>По итогу всех очередей</b> непогашенным остаётся <b>${money(ending)}</b> — модель считает это дефолтом.`
+  :'<b>По итогу всех очередей</b> долг погашен полностью.');
+ // Отказ переноса называется вслух: иначе читатель видит дефолтную очередь и
+ // не знает, почему методика, о которой сказано рядом, не сработала.
+ if(carry&&carry.applied===false&&carry.note)lines.push(escapeHtml(String(carry.note)));
+ else if(!carry)lines.push('Перенос долга между очередями выключен — признак на вкладке «Очерёдность».');
+ return '<div style="margin-bottom:6px"><b>Эскроу не погашает ПФ полностью.</b></div>'
+  +lines.map(line=>`<div style="margin-top:4px">${line}</div>`).join('');
+}
 function renderResult(){
  if(!lastResult)return;const r=lastResult,f=r.finance;
  hideCalcLocked();
@@ -36783,16 +36847,11 @@ function renderResult(){
  ];
  reportKpi.innerHTML=reportKpis.map(x=>`<div class="kpi"><span>${x[0]}</span><b>${x[1]}</b></div>`).join('');
 
- const rveFinance=r.report.financing||{},rveGap=Number(rveFinance.rve_pf_shortfall||0),rveDebt=Number(rveFinance.rve_pf_before_repayment||0),rveEscrow=Number(rveFinance.rve_escrow_release||0),rveWarning=document.getElementById('pfRveWarning');
+ const rveWarning=document.getElementById('pfRveWarning');
  if(rveWarning){
-  if(rveGap>500000){
-   const scope=Number(r.summary.phase_count||0)>1?'В даты РВЭ очередей':'В момент РВЭ';
-   rveWarning.style.display='block';
-   const rveRepaid=Number(rveFinance.rve_pf_repayment||0),rveEnding=Number(rveFinance.ending_pf||0);
-   rveWarning.innerHTML=`<b>Эскроу не погашает ПФ полностью.</b> ${scope}: долг перед раскрытием ${money(rveDebt)}, раскрыто эскроу ${money(rveEscrow)}, из них на погашение ПФ ${money(rveRepaid)}, остаток ПФ <b>${money(rveGap)}</b>. Остаток гасится продажами после ввода — они идут без эскроу. ${rveEnding>500000?`На конец горизонта непогашенным остаётся <b>${money(rveEnding)}</b> — модель считает это дефолтом.`:'К концу горизонта долг погашен.'}`;
-  }else{
-   rveWarning.style.display='none';rveWarning.textContent='';
-  }
+  const html=pfRveWarningHtml(r);
+  if(html){rveWarning.style.display='block';rveWarning.innerHTML=html}
+  else{rveWarning.style.display='none';rveWarning.textContent=''}
  }
 
  llcrValue.textContent=mult(r.summary.llcr);
