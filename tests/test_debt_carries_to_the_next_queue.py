@@ -178,11 +178,43 @@ def test_the_refusal_also_reaches_the_consolidated_result():
 def test_the_page_shows_the_debt_rows_and_the_reason():
     page = core.PAGE
     for label in ("Непогашенный долг ПФ на конец очереди",
+                  "Осталось непогашенным на очереди",
                   "Передано следующей очереди",
                   "Принято от предыдущей очереди",
                   "Долг передан в ПФ следующей очереди",
                   "phaseDebtCarryNote"):
         assert label in page, label
+
+
+def test_the_remainder_comes_after_what_went_in_and_out():
+    """Порядок строк — это и есть рассказ: пришло, ушло, осталось.
+
+    Прежде «непогашенный долг 0» стоял МЕЖДУ «принято 11,73» и «передано
+    11,73» и читался как противоречие: «как это долга нет, но он передан в
+    другую очередь тут же в другой строке» (владелец, 30.08.2026).
+    Противоречия не было, но объяснять его читателю не должно приходиться.
+    """
+    page = core.PAGE
+    taken = page.index("'Принято от предыдущей очереди'")
+    passed = page.index("'Передано следующей очереди'")
+    left = page.index("'Осталось непогашенным на очереди'")
+    assert taken < passed < left, (
+        "остаток обязан стоять последним: он вывод, а не одно из трёх чисел")
+
+
+def test_the_remainder_is_not_called_unpaid_when_the_debt_moved():
+    """11,73 млрд ПФ не погашены — они сменили должника.
+
+    Название «Непогашенный долг на конец очереди» обещало ровно то, что
+    стояло строкой выше с тем же числом. При переносе строка называется
+    иначе, при его отсутствии — как раньше.
+    """
+    page = core.PAGE
+    marker = "anyDebt('debt_carried_out')\n                 ?'Осталось непогашенным на очереди'"
+    assert marker.replace("\n", "\n") in page or (
+        "?'Осталось непогашенным на очереди'" in page
+        and "'Непогашенный долг ПФ на конец очереди'" in page), (
+        "название строки обязано зависеть от того, был ли перенос")
     # Признак должен быть на экране: без него перенос включить нечем, и весь
     # разбор остаётся недостижимым из интерфейса.
     assert "phaseCarryDebt" in page
@@ -255,13 +287,12 @@ def test_the_amount_is_what_the_released_escrow_did_not_cover():
     закрытой линии."""
     plain = _bundle(700, 12000, carry=False)
     source = plain["phases"][0]["result"]["finance"]
-    shortfall = source["rve_pf_shortfall"]
-    assert shortfall > source["ending_pf"] + 1_000_000_000, (
-        "предохранитель: на этих вводных нехватка в РВЭ обязана быть заметно "
-        "больше остатка на конец, иначе тест не различает две методики")
+    unpaid = source["rve_unpaid"]
+    assert unpaid > 1_000_000_000, (
+        "предохранитель: на этих вводных раскрытого эскроу обязано не хватить")
     carried = _bundle(700, 12000, carry=True)
     assert carried["debt_carry"]["transfers"][0]["amount"] == pytest.approx(
-        shortfall, rel=1e-6)
+        unpaid, rel=1e-6)
 
 
 def test_after_the_transfer_the_closed_line_neither_lends_nor_collects():
@@ -284,21 +315,46 @@ def test_after_the_transfer_the_closed_line_neither_lends_nor_collects():
     assert source["ending_pf"] == pytest.approx(0.0)
 
 
-def test_the_line_that_kept_the_debt_still_pays_for_it():
-    """Предохранитель обратного знака: без переноса всё остаётся как было.
+def test_without_the_transfer_the_default_is_named_but_the_model_goes_on():
+    """Без переноса дефолт НАЗЫВАЕТСЯ датой и суммой, но модель не обрывается.
 
-    Правка не имеет права менять поведение выключенного признака — иначе
-    книга, которая о переносе не знает, разойдётся с отчётом на проектах, где
-    перенос никто не включал."""
+    Владелец, 30.08.2026: «не закрывай! лучше просто показывай, что по факту
+    модель — дефолт на такой-то очереди и надо будет согласие банка на перенос
+    долга на следующую или реструктуризация». Вариантов у банка много, чаще
+    всего долг просто переоформляют; а если эскроу не наполнился из-за продаж,
+    это форс-мажор, которого в НКЛ и не могло быть заложено.
+
+    Условий реструктуризации модель не знает, поэтому считает прежним
+    допущением — остаток обслуживается продажами следующих периодов, — и
+    называет его вслух на экране.
+    """
     plain = _bundle(700, 12000, carry=False)
     source = plain["phases"][0]["result"]["finance"]
     rve = plain["phases"][0]["result"]["dates"]["rve"]
+    assert source["default_date"] == rve, "дефолт фиксируется в дату раскрытия"
+    assert source["rve_unpaid"] > 1_000_000_000, (
+        "предохранитель: раскрытого эскроу обязано не хватить")
     after = [r for r in source["rows"] if str(r["month"])[:10] > rve]
-    assert sum(r["pf_repayment"] for r in after) > 3_000_000_000
-    # Порог держит смысл сценария — очередь не гасит долг, — а не конкретное
-    # число: ставка подземки с 30.08.2026 равна 0,8 наземной, и долг тут же
-    # упал с 4 229 до 3 862 млн.
-    assert source["ending_pf"] > 3_000_000_000
+    assert sum(r["pf_repayment"] for r in after) > 1_000_000_000, (
+        "модель не обрывается на дефолте: остаток гасится продажами следующих "
+        "периодов — допущение о реструктуризации, названное на экране")
+    assert source["ending_pf"] < source["rve_unpaid"], (
+        "остаток на конец меньше нехватки в РВЭ — продажи его обслуживали")
+
+
+def test_the_transferred_debt_does_close_the_line():
+    """А вот переоформленный долг линию закрывает: он ушёл к другому должнику."""
+    carried = _bundle(700, 12000, carry=True)
+    source = carried["phases"][0]["result"]["finance"]
+    rve = carried["phases"][0]["result"]["dates"]["rve"]
+    after = [r for r in source["rows"] if str(r["month"])[:10] > rve]
+    assert after, "предохранитель: у очереди обязаны быть месяцы после РВЭ"
+    assert sum(r["sales"] for r in after) > 1_000_000_000, (
+        "предохранитель: остаточные продажи обязаны быть")
+    assert sum(r["pf_repayment"] for r in after) == pytest.approx(0.0)
+    assert sum(r["pf_draw"] for r in after) == pytest.approx(0.0)
+    assert sum(r.get("pf_interest") or 0.0 for r in after) == pytest.approx(0.0)
+    assert source["default_date"] is None, "перенос — не дефолт"
 
 
 def test_the_debt_cannot_land_before_the_receiving_line_exists():

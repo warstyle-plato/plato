@@ -171,11 +171,41 @@ def test_the_parity_row_watches_the_transfer():
         "новая строка не входит в вердикт листа: она красная, а лист «ПРОЙДЕНО»")
 
 
-def test_the_flag_reaches_the_workbook():
+def test_the_flag_carries_the_engine_decision_not_the_intent():
+    """Признак в книге = «перенос ПРИМЕНЁН», а не «пользователь его включил».
+
+    Гейт по общему LLCR решает движок, и книга этого LLCR не знает. Полагаясь
+    на одно намерение, она перенесла бы долг там, где банк отказал, и показала
+    бы очередь рассчитавшейся, пока отчёт зовёт её дефолтной.
+    """
+    row = int(core._V4_CARRY_FLAG_CELL[1:])
     on = _book(True)["Вводные"]
     off = _book(False)["Вводные"]
-    row = int(core._V4_CARRY_FLAG_CELL[1:])
-    assert on[f"B{row}"].value == "Да"
+    assert on[f"B{row}"].value == "Да", "на этом проекте перенос обязан примениться"
     assert off[f"B{row}"].value == "Нет"
-    assert off[f"D{row}"].value == "carry_debt_forward", (
-        "ключ движка рядом со значением — по нему ячейку находят глазами")
+    assert off[f"D{row}"].value == "carry_debt_applied", (
+        "ключ рядом со значением — по нему ячейку находят глазами")
+
+
+def test_a_refused_transfer_does_not_reach_the_workbook_as_applied():
+    """Гейт отказал — книга обязана НЕ переносить, как и движок."""
+    inputs = {**core.DEFAULT_INPUTS, "purchase_price_mln": 6000,
+              "apartment_price_th": 430, "project_start": "2027-01-01",
+              "ird_months": 12, "construction_months": 24}
+    phasing = {**_phasing(True), "phase_count": 3,
+               "phases": [{"name": f"О{i + 1}", "start_offset_months": 12 * i,
+                           "construction_months": 24} for i in range(3)],
+               "products": {key: [35, 35, 30] for key in
+                            ("apartments", "ground_commercial",
+                             "underground_parking", "storage")}}
+    tep = {key: dict(row) for key, row in core.TEP_DEFAULT.items()}
+    bundle = core.calculate_phased(core.PhasedCalcRequest(
+        inputs=inputs, tep=tep, rates=[], phasing=phasing))
+    assert (bundle.get("debt_carry") or {}).get("applied") is False, (
+        "предохранитель: на этих вводных гейт обязан отказать")
+    content, _, meta = core.build_project_workbook(
+        inputs, tep, [], phasing, project_name="Отказ гейта")
+    assert meta["missing"] == [], meta["missing"]
+    book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
+    row = int(core._V4_CARRY_FLAG_CELL[1:])
+    assert book["Вводные"][f"B{row}"].value == "Нет"
