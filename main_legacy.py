@@ -69,7 +69,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.20.57"
+VERSION = "0.20.58"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -14672,6 +14672,43 @@ def _v4_col_number(letters: str) -> int:
     return number
 
 
+def _v4_set_or_insert_cell(
+    xml: str, coord: str, *, number: Any = None, text: str | None = None
+) -> tuple[str, bool]:
+    """Пишет в ячейку, а если её в XML нет — вставляет на своё место в строке.
+
+    Пустых ячеек в файле не существует, и `_v4_set_cell` умеет только заменять
+    существующую. Новая колонка (кассовые доли общепроектных статей) поэтому
+    молча не записывалась. Порядок колонок внутри строки обязан расти, иначе
+    Excel вправе счесть лист повреждённым.
+    """
+    updated, done = _v4_set_cell(xml, coord, number=number, text=text)
+    if done:
+        return updated, True
+    letters = re.match(r"([A-Z]+)(\d+)", coord)
+    if not letters:
+        return xml, False
+    column, row = letters.group(1), letters.group(2)
+    row_pattern = re.compile(r'(<x:row r="%s"[^>]*>)(.*?)(</x:row>)' % row, re.S)
+    found = row_pattern.search(xml)
+    if not found:
+        return xml, False
+    if text is not None:
+        cell = (f'<x:c r="{coord}" t="inlineStr">'
+                f"<x:is><x:t>{xml_escape(str(text))}</x:t></x:is></x:c>")
+    else:
+        cell = f'<x:c r="{coord}"><x:v>{_v4_number(number)}</x:v></x:c>'
+    body = found.group(2)
+    insert_at = len(body)
+    for existing in re.finditer(r'<x:c r="([A-Z]+)%s"' % row, body):
+        if _v4_col_number(existing.group(1)) > _v4_col_number(column):
+            insert_at = existing.start()
+            break
+    new_body = body[:insert_at] + cell + body[insert_at:]
+    return (xml[:found.start()] + found.group(1) + new_body + found.group(3)
+            + xml[found.end():]), True
+
+
 def _v4_note_cell(xml: str, value_coord: str, text: str) -> tuple[str, bool]:
     """Пишет примечание в колонку E строки ячейки ``value_coord``.
 
@@ -14776,6 +14813,59 @@ _V4_CAPEX_ARTICLE_ROW: dict[str, int] = {
 }
 _V4_CAPEX_BLOCK_STRIDE = 34
 _V4_CAPEX_PHASES = 4
+
+
+# Общепроектные статьи, которые движок раскладывает по очередям КАССОВЫМИ
+# долями, а книга считала от площадей самой очереди. Пока доли близки, разница
+# прячется в допуске; на проекте с длинным ИРД и крупной покупкой это 686 млн ₽
+# пика БРИДЖа при совпадающих выручке и CAPEX. Ключ — как в `shared_cash`
+# движка, строка — в блоке CAPEX первой очереди, колонка — где книга берёт долю.
+_V4_SHARED_CASH_ARTICLES = (
+    ("ird", 16, "AJ"),
+    ("design", 17, "AK"),
+    ("design", 18, "AK"),
+    ("preparation", 20, "AL"),
+    ("utilities", 23, "AM"),
+)
+# Площади очереди в формуле статьи: их место занимает площадь всего проекта,
+# а долю очереди даёт кассовый вес.
+_V4_QUEUE_AREA = "('Вводные'!$I${row}+'Вводные'!$J${row}+'Вводные'!$K${row})"
+_V4_PROJECT_AREA = "SUM('Вводные'!$I$88:$K$91)"
+
+
+def _v4_apply_shared_cash_articles(xml: str, missing: list[str]) -> str:
+    """Приводит ИРД, проектирование, подготовку и наружные сети к кассовым долям.
+
+    Движок берёт эти статьи по проекту целиком и делит их между очередями
+    кассовыми долями (`shared_cash`; умолчание — веса очередей, со страницы
+    приходит front-loaded пресет). Книга считала каждую от площадей своей
+    очереди — то есть по долям ТЭП. Отношение выборок на проверочном проекте
+    вышло 1,571, а это ровно 55/35: кассовая доля против доли ТЭП.
+
+    Формула не переписывается вслепую: не опознали — в `missing`.
+    """
+    for phase in range(_V4_CAPEX_PHASES):
+        base = _V4_CAPEX_BLOCK_STRIDE * phase
+        queue_row = _V4_CF_QUEUE_ENABLED_ROW + phase
+        area = _V4_QUEUE_AREA.format(row=queue_row)
+        for _key, article_row, column in _V4_SHARED_CASH_ARTICLES:
+            row = article_row + base
+            pattern = re.compile(r'(<x:c r="B%d"[^>]*>)(.*?)(</x:c>)' % row, re.S)
+            found = pattern.search(xml)
+            if not found:
+                missing.append(f"CAPEX · кассовая доля: ячейка B{row} не найдена")
+                return xml
+            body = found.group(2)
+            if area not in body:
+                missing.append(
+                    f"CAPEX · кассовая доля: формула B{row} не опознана "
+                    f"(нет площадей очереди {phase + 1})")
+                return xml
+            share = f"'Вводные'!${column}${queue_row}"
+            body = body.replace(area, f"({_V4_PROJECT_AREA}*{share})", 1)
+            xml = (xml[:found.start()] + found.group(1) + body + found.group(3)
+                   + xml[found.end():])
+    return xml
 
 
 def _v4_management_profile_ranges() -> tuple[int, int, list[int]]:
@@ -14953,7 +15043,7 @@ def _v4_apply_debt_carry(xml: str, phase: int, queues: int, missing: list[str]) 
     # Правки по строкам, а не по всему листу: `L38+L45` встречается и там, где
     # принятый долг ни при чём. Сравнения в XML хранятся сущностями (`&gt;`),
     # и искать надо именно их — иначе формула «не опознана» на ровном месте.
-    edits: dict[int, list[tuple[str, str]]] = {row: [] for row in (40, 42, 43, 45, 46, 47, 61)}
+    edits: dict[int, list[tuple[str, str]]] = {row: [] for row in (40, 42, 43, 44, 46, 47, 61)}
     for index, column in enumerate(columns):
         # Долг на конец и его же проверка roll-forward.
         edits[47].append((f"MAX(0,{column}38+{column}45-{column}46)",
@@ -14972,19 +15062,26 @@ def _v4_apply_debt_carry(xml: str, phase: int, queues: int, missing: list[str]) 
                           f"MAX(1,{column}38+{column}45+{column}{a})"))
         edits[46].append((f"MIN({column}38+{column}45,",
                           f"MIN({column}38+{column}45+{column}{a},"))
-        # Линия закрыта после того, как долг с неё ушёл: выборки больше нет.
+        # Линия закрыта после того, как долг с неё ушёл: банковской потребности
+        # больше нет. Гасится она в строке 44, а не в выборке 45: иначе книга
+        # считала бы потребность, которую никто не финансирует, и её же
+        # проверка «потребность профинансирована полностью» краснела бы на
+        # ровном месте — 270 млн ₽ на проверочном проекте. Расход остаточного
+        # периода никуда не девается, он платится кассой.
+        #
         # Признак «перенос уже случился» — накопленная строка 65 по ПРЕДЫДУЩИЕ
         # месяцы, а не её итог B65: итог суммирует в том числе этот месяц, а
-        # строка 65 читает строку 45 — вышла бы круговая ссылка, и Excel сказал
-        # бы то же, что сказал вычислитель формул. В месяц РВЭ выборка ещё
-        # идёт: движок в этот месяц выбирает, гасит раскрытым эскроу и только
-        # потом отдаёт остаток. В первом месяце модели переносить нечему —
-        # формула остаётся прежней.
+        # строка 65 читает строку 45, которая читает 44, — вышла бы круговая
+        # ссылка, и Excel сказал бы то же, что сказал вычислитель формул. В
+        # месяц РВЭ выборка ещё идёт: движок в этот месяц выбирает, гасит
+        # раскрытым эскроу и только потом отдаёт остаток. В первом месяце
+        # модели переносить нечему — формула остаётся прежней.
         if index == 0:
             continue
         seen = f"SUM($D${b}:{columns[index - 1]}{b})"
-        edits[45].append((f"<x:f>{column}44</x:f>",
-                          f"<x:f>IF(AND({seen}&gt;0,{column}$3&gt;$B$8),0,{column}44)</x:f>"))
+        edits[44].append((f"<x:f>IF({column}$3&gt;=$B$7,",
+                          f"<x:f>IF(AND({column}$3&gt;=$B$7,"
+                          f"OR({seen}&lt;=0,{column}$3&lt;=$B$8)),"))
     for row in sorted(edits):
         pattern = re.compile(r'(<x:row r="%d">)(.*?)(</x:row>)' % row, re.S)
         found = pattern.search(xml)
@@ -15609,6 +15706,7 @@ def build_project_workbook(
     capex_sheet_path = _v4_sheet_path(source, "CAPEX")
     capex_xml = source.read(capex_sheet_path).decode("utf-8")
     capex_xml = _v4_apply_management_profile(capex_xml, missing)
+    capex_xml = _v4_apply_shared_cash_articles(capex_xml, missing)
     if social_monthly_by_phase is not None:
         from openpyxl.utils import get_column_letter as _col
         for phase_index in range(4):
@@ -15863,7 +15961,11 @@ def build_project_workbook(
             p, max(1, min(5, enabled_phases)))[0],
         count)
     shared = {key: _v4_shared_weights(p, key, count, enabled_phases)
-              for key in ("purchase", "land_rights", "social_compensation", "own_funds")}
+              for key in ("purchase", "land_rights", "social_compensation", "own_funds",
+                          # ИРД, проектирование, подготовка и наружные сети: движок
+                          # делит их кассовыми долями, книга считала от площадей
+                          # своей очереди. Теперь база у обеих одна.
+                          "ird", "design", "preparation", "utilities")}
     # Индексация очередей — готовыми множителями к сдвигу старта, как в
     # движке: О1 ×1, О2 ×1,08, О3 ×1,166 при 8% в год. Годовая инфляция в
     # AE/AF здесь не пишется: книга ведёт её от даты базы цен до старта
@@ -15903,6 +16005,23 @@ def build_project_workbook(
         # бы всю сумму. Умолчание движка то же, что у покупки, — всё в первой.
         put(f"AI{row}", number=shared["own_funds"][index] if active else 0.0,
             label="доля собственных средств")
+        # Кассовые доли общепроектных статей. Прежде их в книге не было вовсе:
+        # каждая очередь считала ИРД, проектирование, подготовку и сети от
+        # СВОИХ площадей, то есть по долям ТЭП, а движок — по кассе.
+        for _share_key, _share_col, _share_label in (
+                ("ird", "AJ", "Доля ИРД"), ("design", "AK", "Доля проектирования"),
+                ("preparation", "AL", "Доля подготовки"),
+                ("utilities", "AM", "Доля наружных сетей")):
+            xml, _done = _v4_set_or_insert_cell(
+                xml, f"{_share_col}{row}",
+                number=shared[_share_key][index] if active else 0.0)
+            if not _done:
+                missing.append(f"кассовая доля «{_share_key}» очереди {index + 1}")
+            if index == 0:
+                xml, _done = _v4_set_or_insert_cell(
+                    xml, f"{_share_col}87", text=_share_label)
+                if not _done:
+                    missing.append(f"подпись кассовой доли «{_share_key}»")
         put(f"Q{row}", number=shared["land_rights"][index] if active else 0.0, label="доля ВРИ")
         put(f"R{row}", number=(
             (social_cash_by_phase[index] if index < len(social_cash_by_phase) else 0.0)
