@@ -81,6 +81,7 @@ def test_node_renders_the_plate_by_queue():
     script = (
         _preamble()
         + _function("ruMonth") + "\n"
+        + _function("pfQueueOutcomes") + "\n"
         + _function("pfRveWarningHtml") + "\n"
         + """
         phaseBundle = {
@@ -123,6 +124,7 @@ def test_node_renders_the_plate_without_the_transfer():
     script = (
         _preamble()
         + _function("ruMonth") + "\n"
+        + _function("pfQueueOutcomes") + "\n"
         + _function("pfRveWarningHtml") + "\n"
         + """
         phaseBundle = {
@@ -181,3 +183,128 @@ def _preamble() -> str:
     const escapeHtml = s => String(s);
     const money = v => (Number(v) / 1e9).toFixed(2).replace('.', ',') + ' млрд ₽';
     """
+
+
+def test_the_last_queue_is_not_offered_a_transfer():
+    """Последней очереди передавать долг некуда, и звать её к этому нельзя.
+
+    Владелец, 30.08.2026: «а ничего что очередей две всего?» — на экране О1
+    передала долг в О2, О2 ушла в дефолт, и плашка предлагала «согласие банка
+    на перенос долга на следующую очередь». Следующей нет. Движок это знает и
+    такой перенос не делает вовсе («перенос был бы фикцией» — гейт в
+    calculate_phased), а плашка звала к тому, чего движок не сделает.
+    """
+    if not _node():
+        pytest.skip("node недоступен")
+    script = (
+        _preamble()
+        + _function("ruMonth") + "\n"
+        + _function("pfQueueOutcomes") + "\n"
+        + _function("pfRveWarningHtml") + "\n"
+        + """
+        phaseBundle = {
+          mode: 'phased',
+          comparison: [
+            {name: 'О1', debt_carried_out: 13.17e9, ending_pf: 0, carried_debt_in: 0},
+            {name: 'О2', debt_carried_out: 0, ending_pf: 0, carried_debt_in: 13.17e9},
+          ],
+          phases: [
+            {result: {report: {financing: {rve_unpaid: 13.17e9}}}},
+            {result: {report: {financing: {rve_unpaid: 10.81e9,
+                                           default_date: '2031-01-01'}}}},
+          ],
+          consolidated: {finance: {ending_pf: 0}},
+          debt_carry: {applied: true, transfers: [{from: 1, to: 2, at: '2030-01-01'}]},
+        };
+        const html = pfRveWarningHtml({report: {financing: {}}, summary: {}});
+        console.log(html.replace(/<[^>]+>/g, ' ').replace(/\\s+/g, ' ').trim());
+        """
+    )
+    out = subprocess.run([_node(), "-e", script], capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    text = out.stdout.strip()
+    assert "Переносить долг некуда" in text, text
+    assert "О2 последняя очередь" in text, text
+    # Ровно то, чего быть не должно: приглашение к переносу с последней очереди.
+    assert "на перенос долга на следующую очередь" not in text, text
+
+
+def test_the_flag_is_not_suggested_where_it_would_change_nothing():
+    """Признак предлагают там, где он способен помочь, а не всюду.
+
+    Признак выключен, не рассчиталась только последняя очередь — включённый
+    перенос не сделал бы ничего: движок отказывает, когда долг остаётся лишь у
+    последней. Совет «включите признак» в этом случае — ложное обещание.
+    """
+    if not _node():
+        pytest.skip("node недоступен")
+    script = (
+        _preamble()
+        + _function("ruMonth") + "\n"
+        + _function("pfQueueOutcomes") + "\n"
+        + _function("pfRveWarningHtml") + "\n"
+        + """
+        phaseBundle = {
+          mode: 'phased',
+          comparison: [
+            {name: 'О1', debt_carried_out: 0, ending_pf: 0},
+            {name: 'О2', debt_carried_out: 0, ending_pf: 9e9},
+          ],
+          phases: [
+            {result: {report: {financing: {rve_unpaid: 0}}}},
+            {result: {report: {financing: {rve_unpaid: 9e9,
+                                           default_date: '2031-01-01'}}}},
+          ],
+          consolidated: {finance: {ending_pf: 9e9}},
+        };
+        const html = pfRveWarningHtml({report: {financing: {}}, summary: {}});
+        console.log(html.replace(/<[^>]+>/g, ' ').replace(/\\s+/g, ' ').trim());
+        """
+    )
+    out = subprocess.run([_node(), "-e", script], capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    text = out.stdout.strip()
+    assert "признак на вкладке" not in text, text
+    assert "Переносить долг некуда" in text, text
+
+
+def test_the_middle_queue_still_hears_about_the_transfer():
+    """Предохранитель: правка про последнюю не должна убить обычную ветку.
+
+    У очереди, за которой есть следующая, перенос — настоящий выход, и он
+    по-прежнему назван. Без этой проверки правка выше молча отменила бы
+    методику для всех.
+    """
+    if not _node():
+        pytest.skip("node недоступен")
+    script = (
+        _preamble()
+        + _function("ruMonth") + "\n"
+        + _function("pfQueueOutcomes") + "\n"
+        + _function("pfRveWarningHtml") + "\n"
+        + """
+        phaseBundle = {
+          mode: 'phased',
+          comparison: [
+            {name: 'О1', debt_carried_out: 0, ending_pf: 0},
+            {name: 'О2', debt_carried_out: 0, ending_pf: 8e9},
+            {name: 'О3', debt_carried_out: 0, ending_pf: 0},
+          ],
+          phases: [
+            {result: {report: {financing: {rve_unpaid: 0}}}},
+            {result: {report: {financing: {rve_unpaid: 8e9,
+                                           default_date: '2031-01-01'}}}},
+            {result: {report: {financing: {rve_unpaid: 0}}}},
+          ],
+          consolidated: {finance: {ending_pf: 8e9}},
+        };
+        const html = pfRveWarningHtml({report: {financing: {}}, summary: {}});
+        console.log(html.replace(/<[^>]+>/g, ' ').replace(/\\s+/g, ' ').trim());
+        """
+    )
+    out = subprocess.run([_node(), "-e", script], capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    text = out.stdout.strip()
+    assert "на перенос долга на следующую очередь" in text, text
+    assert "Переносить долг некуда" not in text, text
+    assert "признак на вкладке" in text, text

@@ -69,7 +69,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.20.69"
+VERSION = "0.20.72"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -12269,6 +12269,63 @@ def _purchase_feasibility(
     llcr: Any,
     debt_amount: Any = 0.0,
     ending_debt_mln: Any = 0.0,
+    default_date: Any = None,
+) -> dict[str, str]:
+    """Вердикт по вводным плюс оговорка о дефолте, если он в модели был.
+
+    Дефолт в дату раскрытия эскроу — факт о расчёте, а не ещё одна ветка
+    вердикта: он верен и при низком LLCR, и при высоком, и спорить с ними за
+    очередь ему незачем. Прежде он звучал ровно в одном случае — когда долг
+    оставался непогашенным на КОНЕЦ горизонта. Если остаточные продажи его
+    закрывали, вердикт молчал, и прибыль печаталась голым числом: банк при
+    этом ждал погашения в РВЭ и не получил его (владелец, 30.08.2026:
+    «значит нельзя писать и чистую прибыль»).
+    """
+    verdict = _purchase_feasibility_base(
+        purchase_price_mln, net_profit_mln, llcr, debt_amount, ending_debt_mln)
+    when = str(default_date or "").strip()
+    # У ветки «Дефолтный» оговорка уже своя, и повторять её нечем.
+    if not when or verdict.get("status") in ("default", "not_available"):
+        return verdict
+    verdict = dict(verdict)
+    verdict["conditional"] = True
+    verdict["default_date"] = when
+    verdict["text"] = verdict["text"].rstrip() + (
+        f" В модели есть дефолт: {_month_in_words(when)} раскрытого эскроу не "
+        "хватило на погашение ПФ. Долг закрывается позже, продажами следующих "
+        "периодов, — но только если банк на это согласится: пени и досрочное "
+        "требование модель не считает. Значит показанная чистая прибыль — при "
+        "этом допущении, а не результат.")
+    return verdict
+
+
+def _month_in_words(iso: Any) -> str:
+    """«2030-01-01» → «в январе 2030». Пустое — «в дату раскрытия»."""
+    text = str(iso or "").strip()
+    if len(text) < 7:
+        return "в дату раскрытия эскроу"
+    try:
+        year, month = int(text[:4]), int(text[5:7])
+    except ValueError:
+        return "в дату раскрытия эскроу"
+    if not 1 <= month <= 12:
+        return "в дату раскрытия эскроу"
+    return f"в {_MONTHS_IN[month - 1]} {year}"
+
+
+# Предложный падеж списком, а не заменой окончаний: правило «я→е» однажды
+# даст «в феврале» из чего угодно. Тот же список, той же формы, что на
+# странице (RU_MONTHS_IN) — но объявить его один раз на два языка нечем.
+_MONTHS_IN = ("январе", "феврале", "марте", "апреле", "мае", "июне", "июле",
+              "августе", "сентябре", "октябре", "ноябре", "декабре")
+
+
+def _purchase_feasibility_base(
+    purchase_price_mln: Any,
+    net_profit_mln: Any,
+    llcr: Any,
+    debt_amount: Any = 0.0,
+    ending_debt_mln: Any = 0.0,
 ) -> dict[str, str]:
     """Return a short preliminary purchase-feasibility conclusion.
 
@@ -12888,7 +12945,13 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     # дефолтный, а не прибыльный (решение владельца, 27.08.2026), и строка
     # прибыли обязана говорить это сама, а не полагаться на вывод ниже.
     _carried_out=float(financing.get('debt_carried_out') or 0)
+    # Три разных исхода, и оговорка у каждого своя. Средний прежде молчал:
+    # долг не погашен в РВЭ, но остаточные продажи закрыли его к концу
+    # горизонта — и прибыль печаталась голым числом, хотя держится она на
+    # согласии банка, которого в модели не спрашивали.
     _default_note=(" — бумажная: долг не погашен" if float(financing.get('ending_pf') or 0)>500_000
+                   else " — условная: в модели дефолт, долг закрыт продажами "
+                        "следующих периодов" if str(financing.get('default_date') or '').strip()
                    else " — долг очереди принят следующей" if _carried_out>500_000 else "")
     kpis=[
         *_pdf_entry_cost_rows(result, expense_structure),
@@ -12996,6 +13059,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             float(financing.get("pf_uncovered_peak") or 0),
         ),
         float(financing.get("ending_pf") or 0) / 1_000_000,
+        financing.get("default_date"),
     )
     story.append(KeepTogether([
         P("Оценка целесообразности покупки", h2),
@@ -15412,6 +15476,49 @@ def _v4_apply_debt_carry(xml: str, phase: int, queues: int, missing: list[str]) 
 _V4_CARRY_PARITY_ROW = 85
 
 
+_V4_REPORT_DEFAULT_ROW = 21          # ОТЧЕТ: строка под «Статусом модели»
+
+
+def _v4_add_report_default_row(xml: str, missing: list[str]) -> str:
+    """Строка ОТЧЁТа: сколько не погашено в РВЭ и не передано дальше.
+
+    Строка 22 у книги уже есть — «Непогашенный долг на конец проекта (дефолт,
+    если > 0)». У неё тот же изъян, который на экране чинился отдельно: она
+    смотрит на КОНЕЦ горизонта. Банк ждёт погашения в дату раскрытия эскроу, и
+    если остаточные продажи закрывают долг годом позже, строка 22 показывает
+    ноль — книга о дефолте молчит (владелец, 30.08.2026: «в экселе мы где-то
+    увидим что проект дефолт»).
+
+    Нехватку в РВЭ книга считает по очередям (строка 29 листов CF), но одной
+    суммой её показывать нельзя: та же величина возникает и при законном
+    переносе долга следующей очереди — банк его принял, дефолта нет. Поэтому
+    из суммы вычитается переданное (строка 65), и остаётся ровно то, что никто
+    не принял.
+
+    Строка 21 в шаблоне пуста в колонках A–C (справа, в F–H, живёт своя
+    панель темпов продаж — её не трогаем). Значит ряд встаёт, не сдвигая ни
+    одной ссылки.
+    """
+    row = _V4_REPORT_DEFAULT_ROW
+    unpaid = "+".join(f"'CF_{phase}'!$B${_V4_RVE_UNPAID_ROW}" for phase in range(1, 5))
+    passed = "+".join(f"'CF_{phase}'!$B${_V4_CARRY_PASSED_ROW}" for phase in range(1, 5))
+    for coord, kwargs in (
+            (f"A{row}", {"text": "Не погашено в дату раскрытия эскроу и не передано "
+                                 "следующей очереди (дефолт по линии, если > 0)"}),
+            (f"B{row}", {"formula": f"MAX(0,({unpaid})-({passed}))"})):
+        # Занятая ячейка значит, что шаблон изменился: писать поверх молча
+        # нельзя — так теряется то, что там стояло.
+        existing = re.search(
+            r'<x:c r="%s"[^>]*?(?:/>|>(.*?)</x:c>)' % re.escape(coord), xml, re.S)
+        if existing and (existing.group(1) or ""):
+            missing.append(f"ОТЧЁТ: ячейка {coord} занята")
+            continue
+        xml, done = _v4_set_cell(xml, coord, **kwargs)
+        if not done:
+            missing.append(f"ОТЧЁТ: ячейка {coord} не найдена")
+    return xml
+
+
 def _v4_add_carry_parity_row(xml: str, target_mln: float, missing: list[str]) -> str:
     """Строка паритета «долг, переданный между очередями» на листе ПРОВЕРКИ.
 
@@ -16012,6 +16119,7 @@ def build_project_workbook(
     report_sheet_path = _v4_sheet_path(source, "ОТЧЕТ")
     tep_sheet_path = _v4_sheet_path(source, "ТЭП")
     report_xml = source.read(report_sheet_path).decode("utf-8")
+    report_xml = _v4_add_report_default_row(report_xml, missing)
     tep_xml = source.read(tep_sheet_path).decode("utf-8")
 
     # Соцстройка — готовыми числами в строку 31 блока каждой очереди CAPEX:
@@ -19365,6 +19473,7 @@ def telegram_result(req: TelegramResultRequest,
             float(summary.get("pf_uncovered_peak_mln") or 0),
         ),
         summary.get("ending_pf_mln"),
+        summary.get("default_date"),
     )
     # Продукт с ГНС и без продаваемой площади делает вердикт бессмысленным:
     # расходы полные, выручки нет, и «нецелесообразна» относится к дырке
@@ -23381,6 +23490,15 @@ def _aggregate_finance(results: list[dict[str, Any]]) -> dict[str, Any]:
         "rve_escrow_release": sum(f.get("rve_escrow_release", 0.0) for f in fs),
         "rve_pf_shortfall": sum(f.get("rve_pf_shortfall", 0.0) for f in fs),
         "rve_pf_repayment": sum(f.get("rve_pf_repayment", 0.0) for f in fs),
+        # Дефолт хотя бы одной очереди — свойство всего свода: прибыль после
+        # него посчитана на допущении, что банк дал проекту продолжиться.
+        # Без этих двух ключей свод их не знал вовсе, и вердикт с PDF
+        # печатали прибыль голым числом там, где модель ушла в дефолт
+        # (владелец, 30.08.2026: «значит нельзя писать и чистую прибыль»).
+        "rve_unpaid": sum(f.get("rve_unpaid", 0.0) for f in fs),
+        "default_date": min(
+            (str(f.get("default_date")) for f in fs if f.get("default_date")),
+            default=None),
     }
 
 
@@ -34952,6 +35070,10 @@ async function sendTelegramResult(){
    pf_uncovered_peak_mln:Number(f.pf_uncovered_peak||0)/1e6,
    rve_pf_shortfall_mln:Number(f.rve_pf_shortfall||0)/1e6,
    ending_pf_mln:Number(f.ending_pf||0)/1e6,
+   // Дефолт в дату раскрытия эскроу карточка бота не знала вовсе, и вердикт
+   // в чате печатал прибыль голым числом там, где остаточные продажи долг
+   // закрыли, а банк своего погашения в РВЭ не получил.
+   default_date:f.default_date||null,
     report_payload:currentPdfReportPayload(cads)
  };
  try{
@@ -37248,6 +37370,48 @@ function ruMonth(iso){
 // прямо неверной: остаток уходит на линию следующей очереди, а продажи
 // остаются застройщику. Теперь плашка говорит по очередям и называет, что
 // куда и когда ушло.
+// Что случилось с ПФ каждой очереди — один разбор на все поверхности экрана.
+// Плашка о непогашенном долге и оговорка у чистой прибыли отвечают на один и
+// тот же вопрос «был ли дефолт», и две проверки на него однажды разойдутся:
+// обе будут выглядеть верными, а говорить разное про один расчёт.
+function pfQueueOutcomes(){
+ const phased=phaseBundle&&phaseBundle.mode==='phased'&&(phaseBundle.comparison||[]).length>1;
+ if(!phased)return [];
+ const rows=phaseBundle.comparison||[],phases=phaseBundle.phases||[];
+ const carry=phaseBundle.debt_carry||(phaseBundle.consolidated||{}).debt_carry||null;
+ const at={};((carry&&carry.transfers)||[]).forEach(t=>{at[t.from]=t});
+ const out=[];
+ rows.forEach((row,i)=>{
+  const fin=(((phases[i]||{}).result||{}).report||{}).financing||{};
+  const carried=Number(row.debt_carried_out||0);
+  const gap=Number(fin.rve_unpaid||0)||carried;
+  if(!(gap>500000))return;
+  const name=String(row.name||('О'+(i+1)));
+  if(carried>500000){
+   out.push({kind:'carried',name:name,gap:gap,when:ruMonth((at[i+1]||{}).at),
+             to:String((rows[i+1]||{}).name||('О'+(i+2))),index:i});
+  }else{
+   out.push({kind:'default',name:name,gap:gap,when:ruMonth(fin.default_date),
+             index:i,last:i===rows.length-1});
+  }
+ });
+ return out;
+}
+
+// Дефолт в модели — факт о расчёте, и он старше любой плитки: прибыль после
+// него посчитана на допущении, что банк дал проекту продолжиться. Прежде это
+// говорилось только когда долг оставался непогашенным на КОНЕЦ горизонта;
+// если остаточные продажи его закрывали, экран печатал прибыль голым числом
+// (владелец, 30.08.2026: «значит нельзя писать и чистую прибыль»).
+function modelDefaultInfo(r){
+ const phased=phaseBundle&&phaseBundle.mode==='phased'&&(phaseBundle.comparison||[]).length>1;
+ if(phased)return pfQueueOutcomes().find(o=>o.kind==='default')||null;
+ const f=(r&&r.report&&r.report.financing)||{};
+ const gap=Number(f.rve_unpaid||f.rve_pf_shortfall||0);
+ if(!(gap>500000))return null;
+ return {kind:'default',name:'',gap:gap,when:ruMonth(f.default_date),index:0,last:true};
+}
+
 function pfRveWarningHtml(r){
  const phased=phaseBundle&&phaseBundle.mode==='phased'&&(phaseBundle.comparison||[]).length>1;
  if(!phased){
@@ -37259,31 +37423,20 @@ function pfRveWarningHtml(r){
    +'модель не знает и считает по допущению, что остаток обслуживается продажами '
    +'следующих периодов.';
  }
- const rows=phaseBundle.comparison||[],phases=phaseBundle.phases||[];
+ const outcomes=pfQueueOutcomes();
  const carry=phaseBundle.debt_carry||(phaseBundle.consolidated||{}).debt_carry||null;
- const at={};((carry&&carry.transfers)||[]).forEach(t=>{at[t.from]=t});
- const lines=[];let firstDefault=null;
- rows.forEach((row,i)=>{
-  const fin=(((phases[i]||{}).result||{}).report||{}).financing||{};
-  const gap=Number(fin.rve_unpaid||0)||Number(row.debt_carried_out||0);
-  if(!(gap>500000))return;
-  const name=escapeHtml(String(row.name||('О'+(i+1))));
-  if(Number(row.debt_carried_out||0)>500000){
-   const t=at[i+1]||{},when=ruMonth(t.at);
-   const to=escapeHtml(String((rows[i+1]||{}).name||('О'+(i+2))));
-   lines.push(`<b>${name}</b>: при раскрытии эскроу не погашено <b>${money(gap)}</b> — `
-    +`этот долг принял ПФ <b>${to}</b>${when?' в '+when:''}.`);
-  }else{
-   // Банк не ждёт продаж: в дату раскрытия он либо переоформляет долг, либо
-   // фиксирует дефолт (владелец, 30.08.2026). Прежде здесь стояло «остаток
-   // гасится её собственными продажами после ввода» — состояние, которого в
-   // жизни не бывает.
-   const when=ruMonth(fin.default_date);
-   if(!firstDefault)firstDefault={name:name,when:when,gap:gap};
-   lines.push(`<b>${name}</b>: раскрытого эскроу не хватило на <b>${money(gap)}</b> — `
-    +`по модели это <b>дефолт${when?' в '+when:' в дату раскрытия'}</b>.`);
-  }
- });
+ const lines=outcomes.map(o=>o.kind==='carried'
+  ?`<b>${escapeHtml(o.name)}</b>: при раскрытии эскроу не погашено `
+   +`<b>${money(o.gap)}</b> — этот долг принял ПФ <b>${escapeHtml(o.to)}</b>`
+   +`${o.when?' в '+o.when:''}.`
+  // Банк не ждёт продаж: в дату раскрытия он либо переоформляет долг, либо
+  // фиксирует дефолт (владелец, 30.08.2026). Прежде здесь стояло «остаток
+  // гасится её собственными продажами после ввода» — состояние, которого в
+  // жизни не бывает.
+  :`<b>${escapeHtml(o.name)}</b>: раскрытого эскроу не хватило на `
+   +`<b>${money(o.gap)}</b> — по модели это `
+   +`<b>дефолт${o.when?' в '+o.when:' в дату раскрытия'}</b>.`);
+ const firstDefault=outcomes.find(o=>o.kind==='default')||null;
  if(!lines.length)return '';
  const ending=Number(((phaseBundle.consolidated||{}).finance||{}).ending_pf||0);
  if(firstDefault){
@@ -37291,7 +37444,7 @@ function pfRveWarningHtml(r){
   // 30.08.2026): после дефолта банк финансирование не продолжает, и числа
   // следующих очередей — замысел, а не результат.
   if(carry&&carry.applied===false&&carry.note)lines.push(escapeHtml(String(carry.note)));
-  else if(!carry)lines.push('Перенос долга на следующую очередь не включён — признак на вкладке «Очерёдность».');
+  else if(!carry&&!firstDefault.last)lines.push('Перенос долга на следующую очередь не включён — признак на вкладке «Очерёдность».');
   // Дату не повторяем: она названа строкой выше, а «после январе 2030» —
   // родительный падеж там, где список месяцев даёт предложный. Две формы
   // одного слова ради одной фразы не заводим.
@@ -37303,10 +37456,20 @@ function pfRveWarningHtml(r){
   // продаж, это форс-мажор, которого в НКЛ и не могло быть заложено. Условий
   // реструктуризации модель не знает — считает прежним допущением и говорит
   // об этом вслух.
-  lines.push('<b>Понадобится согласие банка</b> — на перенос долга на следующую '
-   +'очередь или на реструктуризацию. Дальше модель считает по допущению, что '
-   +'остаток обслуживается продажами следующих периодов; пени и требование она '
-   +'не считает.');
+  // Последней очереди передавать долг некуда, и предлагать это ей нельзя:
+  // движок такой перенос и не делает («перенос был бы фикцией»), а плашка
+  // звала включить признак, который ничего бы не изменил (владелец,
+  // 30.08.2026: «а ничего что очередей две всего?»).
+  lines.push(firstDefault.last
+   ?`<b>Понадобится согласие банка.</b> Переносить долг некуда — `
+    +`<b>${escapeHtml(firstDefault.name)}</b> последняя очередь, и остаётся только `
+    +'реструктуризация: её условий модель не знает и считает по допущению, что '
+    +'остаток обслуживается продажами следующих периодов; пени и требование она '
+    +'не считает.'
+   :'<b>Понадобится согласие банка</b> — на перенос долга на следующую '
+    +'очередь или на реструктуризацию. Дальше модель считает по допущению, что '
+    +'остаток обслуживается продажами следующих периодов; пени и требование она '
+    +'не считает.');
   lines.push(ending>500000
    ?`<b>По итогу всех очередей</b> при этом допущении непогашенным остаётся <b>${money(ending)}</b>.`
    :'<b>По итогу всех очередей</b> при этом допущении долг погашен полностью.');
@@ -37328,7 +37491,7 @@ function pfRveWarningHtml(r){
    +'модель не считает.');
  }
  const title=firstDefault
-  ?`Модель даёт дефолт на очереди ${firstDefault.name}.`
+  ?`Модель даёт дефолт на очереди ${escapeHtml(firstDefault.name)}.`
   :'Эскроу не погашает ПФ полностью.';
  return `<div style="margin-bottom:6px"><b>${title}</b></div>`
   +lines.map(line=>`<div style="margin-top:4px">${line}</div>`).join('');
@@ -37346,6 +37509,21 @@ function renderResult(){
   return found?Number(found.value||0):0;
  };
 
+ // Оговорка у чисел, зависящих от послед-дефолтного потока. Решение о том,
+ // был ли дефолт, — не своё: то же, что у плашки (modelDefaultInfo).
+ const modelDefault=modelDefaultInfo(r);
+ const note=text=>`<i style="display:block;font-weight:400;font-size:11px;opacity:.75">`
+  +`${text}</i>`;
+ // Полная оговорка стоит один раз, у прибыли; маржинальность и NPV — та же
+ // величина в другом виде, и повторять им фразу целиком значит превратить её
+ // в фон, который перестают читать.
+ const conditionalNote=modelDefault
+  ?note(`условная: в модели дефолт`
+   +`${modelDefault.name?' на '+escapeHtml(modelDefault.name):''}`
+   +`${modelDefault.when?' в '+modelDefault.when:''}`)
+  :'';
+ const conditionalShort=modelDefault?note('при том же допущении'):'';
+
  const reportKpis=[
   ['Выручка',money(r.summary.revenue)],
   // Вторая половина уравнения. В PDF ключевая экономика идёт «Выручка →
@@ -37353,9 +37531,13 @@ function renderResult(){
   // появлялась из ниоткуда, сравнить её было не с чем.
   ['Расходы всего',money(r.summary.total_expenses)],
   ['EBITDA',money(r.summary.ebitda)],
-  ['Чистая прибыль',money(r.summary.net_profit)],
-  ['Маржинальность',pct(r.summary.margin)],
-  ['NPV @'+Number(inputs.discount_rate_pct||20).toLocaleString('ru-RU')+'%',money(r.summary.npv)],
+  // Прибыль, маржинальность и NPV после дефолта посчитаны на допущении, что
+  // банк дал проекту продолжиться: это одна и та же величина в трёх видах.
+  // Голое число читается как достигнутое — оговорка стоит у самого числа, а
+  // не только в плашке выше: плашку можно пролистать, плитку нет.
+  ['Чистая прибыль',money(r.summary.net_profit)+conditionalNote],
+  ['Маржинальность',pct(r.summary.margin)+conditionalShort],
+  ['NPV @'+Number(inputs.discount_rate_pct||20).toLocaleString('ru-RU')+'%',money(r.summary.npv)+conditionalShort],
   // Цена входа стояла только в «Параметрах проекта» ниже и в PDF первой
   // строкой ключевой экономики: экран и отчёт расходились по составу, а
   // главное число сделки в шапку не попадало вовсе.
