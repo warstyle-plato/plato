@@ -12810,18 +12810,24 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             for i in comparison)
         if _has_debt or _carry:
             story.append(P("Непогашенный долг и перенос между очередями",h2))
-            debt_rows=[["Очередь","Принято от предыдущей","Непогашено на конец","Передано следующей"]]
+            # Порядок колонок — рассказ: сколько пришло, сколько ушло, что
+            # осталось. «Непогашено» посередине читалось как противоречие
+            # соседней колонке с тем же числом (владелец, 30.08.2026).
+            _carried_any = any(float(i.get("debt_carried_out") or 0) > 500_000
+                               for i in comparison)
+            debt_rows=[["Очередь","Принято от предыдущей","Передано следующей",
+                        "Осталось на очереди" if _carried_any else "Непогашено на конец"]]
             for item in comparison:
                 debt_rows.append([
                     str(item.get("name") or "—"),
                     _pdf_money(item.get("carried_debt_in")),
-                    _pdf_money(item.get("ending_pf")),
                     _pdf_money(item.get("debt_carried_out")),
+                    _pdf_money(item.get("ending_pf")),
                 ])
             debt_rows.append([
                 "Итого","—",
-                _pdf_money(sum(float(i.get("ending_pf") or 0) for i in comparison)),
                 _pdf_money(sum(float(i.get("debt_carried_out") or 0) for i in comparison)),
+                _pdf_money(sum(float(i.get("ending_pf") or 0) for i in comparison)),
             ])
             story.append(table(debt_rows,[30*mm,42*mm,42*mm,42*mm],font_size=7.0))
             if _carry.get("note"):
@@ -36680,12 +36686,23 @@ function renderPhaseComparison(){
  const anyDebt=k=>c.some(x=>Number(x[k]||0)>0.5e6);
  const debtRows=[];
  if(anyDebt('ending_pf')||anyDebt('debt_carried_out')||anyDebt('carried_debt_in')){
+  // Порядок строк — это и есть рассказ: сколько пришло, сколько ушло, что
+  // осталось. Прежде «непогашенный долг 0» стоял МЕЖДУ «принято 11,73» и
+  // «передано 11,73» и читался как противоречие («как это долга нет, но он
+  // передан?» — владелец, 30.08.2026). Противоречия нет, но и объяснять его
+  // читателю не должно приходиться.
+  //
+  // И название: 11,73 млрд ПФ ведь НЕ погашены — они сменили должника.
+  // «Непогашенный долг на конец очереди» обещало ровно то, что стояло строкой
+  // выше с другим числом. Осталось — значит осталось здесь, после передачи.
   if(anyDebt('carried_debt_in'))
    debtRows.push(['Принято от предыдущей очереди',c.map(x=>money(x.carried_debt_in||0)),'—']);
-  debtRows.push(['Непогашенный долг ПФ на конец очереди',
-                 c.map(x=>money(x.ending_pf||0)),money(cons.finance.ending_pf||0)]);
   if(anyDebt('debt_carried_out'))
    debtRows.push(['Передано следующей очереди',c.map(x=>money(x.debt_carried_out||0)),'—']);
+  debtRows.push([anyDebt('debt_carried_out')
+                 ?'Осталось непогашенным на очереди'
+                 :'Непогашенный долг ПФ на конец очереди',
+                 c.map(x=>money(x.ending_pf||0)),money(cons.finance.ending_pf||0)]);
  }
  const rows=[
   ['Продаваемая площадь',c.map(x=>num(x.saleable_sqm)+' м²'),num(csSale)+' м²'],
@@ -37010,15 +37027,18 @@ function renderResult(){
   // Плашка выше говорит «остаток гасится последующими продажами», а число,
   // отвечающее «погасился ли», стояло только в PDF и в книге. На экране его
   // не было вовсе, и проверить обещание было нечем (владелец, 25.08.2026).
-  row('Непогашенный долг ПФ на конец проекта'+(Number(r.report.financing.ending_pf||0)>0?' · дефолт':''),
-      money(r.report.financing.ending_pf))+
-  // Переданный и принятый долг стоят рядом с остатком, а не вместо него.
-  // У передавшей очереди остаток ноль — без своей строки обязательство
-  // исчезало бы бесследно, и очередь выглядела бы рассчитавшейся сама.
-  (Number(r.report.financing.debt_carried_out||0)>0.5e6
-   ?row('Долг передан в ПФ следующей очереди',money(r.report.financing.debt_carried_out)):'')+
+  // Порядок: сколько пришло, сколько ушло, что осталось. Остаток последним —
+  // он вывод, а не одно из трёх чисел; стоя первым, он читался как
+  // противоречие строке «передано» с тем же числом.
   (Number(r.report.financing.carried_debt_in||0)>0.5e6
    ?row('в т.ч. принято от предыдущей очереди',money(r.report.financing.carried_debt_in)):'')+
+  (Number(r.report.financing.debt_carried_out||0)>0.5e6
+   ?row('Долг передан в ПФ следующей очереди',money(r.report.financing.debt_carried_out)):'')+
+  row((Number(r.report.financing.debt_carried_out||0)>0.5e6
+       ?'Осталось непогашенным на очереди'
+       :'Непогашенный долг ПФ на конец проекта')
+      +(Number(r.report.financing.ending_pf||0)>0?' · дефолт':''),
+      money(r.report.financing.ending_pf))+
   (r.report.financing.peak_total_debt!=null?row('Максимальный совокупный долг',money(r.report.financing.peak_total_debt)):'')+
   row('Текущая ключевая ставка',pct(r.report.financing.current_key_rate))+
   row('Спред БРИДЖ',pct(r.report.financing.bridge_spread))+
