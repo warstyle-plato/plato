@@ -19,6 +19,12 @@
 `403 NO_REGION_ACCESS`), а метода поиска по адресу в каталоге нет вовсе. Пока
 лицензии нет, адрес в идентификатор превратить нечем, и притворяться, что можем,
 хуже, чем спросить номер.
+
+
+Блоки клона рисует `blockCard` кабинета — тот же рендерер, которым показан
+отчёт по «Пульсу». Своей вёрстки для них здесь нет: две вёрстки одного отчёта
+разошлись бы, и обе выглядели бы верными. Здесь остаётся то, для чего блока в
+отчёте не существует.
 """
 
 from __future__ import annotations
@@ -31,16 +37,6 @@ PLACEHOLDER = "__DEVELOPAID_BNMAP__"
 # Колонки карточки соседа. Имена полей — из живого ответа `analytics.reportNearBy`
 # (30.08.2026), а не из головы: у карточки 29 полей, здесь взяты те, что отвечают
 # на те же вопросы, что наш отчёт задаёт «Пульсу».
-_PEER_COLUMNS: tuple[tuple[str, str], ...] = (
-    ("distance", "Дист., км"),
-    ("project", "Проект"),
-    ("class", "Класс"),
-    ("agreement", "Договор"),
-    ("start_sales_date", "Старт продаж"),
-    ("date_state_commission", "Ввод"),
-    ("interior", "Отделка"),
-)
-
 # Оценке нужен не ряд за десять лет, а сегодняшняя цена, скидка с неё и то,
 # как быстро уходит остаток (владелец, 30.08.2026: «история цены мало
 # интересна для оценки»). Поэтому рядом с ценой метра стоят скидка и прогноз
@@ -53,12 +49,14 @@ _PEER_COLUMNS: tuple[tuple[str, str], ...] = (
 # Поле `price_dynamics` из той же карточки НЕ показывается: у соседей оно
 # равно 5, 45, 624 и 298, процентами не читается, и чем является — неизвестно.
 # Число под выдуманной подписью хуже отсутствующего числа.
+# Ключи — те, что остаются после разбора строки: приставку `metrprice_avg_`
+# снимает `_metric_row`, и таблица обязана знать имя ПОСЛЕ разбора, а не до.
 _ROOMS: tuple[tuple[str, str], ...] = (
-    ("metrprice_avg_st", "Студии"),
-    ("metrprice_avg_1", "1к"),
-    ("metrprice_avg_2", "2к"),
-    ("metrprice_avg_3", "3к"),
-    ("metrprice_avg_4", "4к+"),
+    ("st", "Студии"),
+    ("1", "1к"),
+    ("2", "2к"),
+    ("3", "3к"),
+    ("4", "4к+"),
 )
 
 
@@ -93,10 +91,10 @@ def markup() -> str:
   const $=id=>document.getElementById(id);
   const go=$('bngo'); if(!go) return;
   go.addEventListener('click', async function(){{
-    const id=($('bnid').value||'').trim();
+    const q=($('bnid').value||'').trim();
     $('bnstate').textContent='спрашиваю bnMAP…'; $('bnout').innerHTML='';
     try{{
-      const r=await fetch('/market/bnmap/report?object_id='+encodeURIComponent(id)
+      const r=await fetch('/market/bnmap/report?object_id='+encodeURIComponent(q)
         +'&base='+encodeURIComponent($('bnbase').value));
       const text=await r.text();
       let data=null;
@@ -109,7 +107,18 @@ def markup() -> str:
       }}
       if(!r.ok){{ $('bnstate').textContent=data.detail||('отказ '+r.status); return; }}
       $('bnstate').textContent='';
-      $('bnout').innerHTML=data.html||'';
+      // Блоки рисует рендерер отчёта — тот же `blockCard`. Пустые ряды для
+      // графиков передаются намеренно: истории у этого источника мы не берём,
+      // а функция графика на пустом ряду говорит об этом сама.
+      const ctx={{peers:data.peers||[], subjectMetrics:data.subject||{{}},
+        subjectName:(data.subject||{{}}).name||'', subjectSegment:(data.subject||{{}}).segment||'',
+        series:[], sales:[], analysis:null}};
+      const blocks=(data.blocks||[]).map(b=>{{
+        try{{ return blockCard(b,ctx); }}
+        catch(e){{ return '<div class="card"><h2>'+(b.title||'')+'</h2>'
+          +'<div class="err">блок не нарисовался: '+e+'</div></div>'; }}
+      }}).join('');
+      $('bnout').innerHTML=blocks+'<div class="card">'+(data.html||'')+'</div>';
     }}catch(e){{ $('bnstate').textContent='не дошло до сервера: '+e; }}
   }});
 }})();
@@ -118,24 +127,46 @@ def markup() -> str:
 
 
 def render(report: dict[str, Any]) -> str:
-    """Разметка по ответу bnMAP. Ни одного вычисления — только показ."""
+    """То, чего в отчёте нет. Сами блоки рисует рендерер кабинета.
+
+    Клон отчёта показывается ТЕМ ЖЕ `blockCard`, которым показан отчёт по
+    «Пульсу»: иначе сравнение источников превратилось бы в сравнение двух
+    наших вёрсток. Здесь остаётся то, для чего блока в отчёте не существует, —
+    комнатность, скидки, городские зоны, — и оговорки: чего источник не дал и
+    почему блок пуст.
+    """
     out: list[str] = []
     account = report.get("account") or {}
     tools = account.get("tools") or []
-    expires = account.get("expires") or []
     out.append('<div class="muted" style="font-size:12.5px;margin-bottom:10px">'
-               + "Инструменты аккаунта: "
+               + "Инструменты аккаунта bnMAP: "
                + (escape(", ".join(tools)) if tools else "не назвались")
-               + (f" · доступ до {escape(expires[0])}" if expires else "")
-               + " · " + escape(str(report.get("note") or "")) + "</div>")
+               + " · срез " + escape(str(report.get("asked_date") or "—"))
+               + " · числа показаны как пришли, считают их блоки нашего отчёта.</div>")
     for line in report.get("errors") or []:
         out.append('<div class="err" style="margin-bottom:8px">' + escape(str(line)) + "</div>")
-
+    if report.get("reason"):
+        out.append('<div class="err">' + escape(str(report["reason"])) + "</div>")
     out.append(_subject(report.get("found")))
+    out.append(_rooms(report.get("peers"), report.get("subject")))
+    out.append(_discounts(report.get("peers"), report.get("subject")))
     out.append(_indicators(report.get("indicators")))
-    out.append(_peers(report.get("nearby")))
-    out.append(_rooms(report.get("nearby")))
+    out.append(_gaps(report))
     return "".join(part for part in out if part)
+
+
+def _gaps(report: dict[str, Any]) -> str:
+    """Чего источник не дал. Пустой блок без причины читается как «этого нет»."""
+    lines = list(report.get("gaps") or [])
+    missing = report.get("unnamed_peers") or []
+    if missing:
+        lines.append("bnMAP назвал соседей, но карточек по ним не дал: "
+                     + ", ".join(str(name) for name in missing))
+    if not lines:
+        return ""
+    return ('<h3 style="margin-top:16px">Чего bnMAP не дал</h3><ul style="margin:0;'
+            'padding-left:20px;color:#5b6b7d;font-size:13.5px">'
+            + "".join("<li>" + escape(str(line)) + "</li>" for line in lines) + "</ul>")
 
 
 def _subject(found: Any) -> str:
@@ -188,76 +219,50 @@ def _indicators(data: Any) -> str:
             + "<th class=\"num\">Δ</th></tr>" + "".join(rows) + "</table></div>")
 
 
-def _peers(data: Any) -> str:
-    """Соседи так, как их подобрал сам bnMAP: расстояние он считает у себя."""
-    if not isinstance(data, dict):
-        return ""
-    cards = {str(row.get("object_id")): row for row in data.get("nearby") or []
-             if isinstance(row, dict)}
-    rows = []
-    for item in data.get("radius") or []:
-        if not isinstance(item, dict):
-            continue
-        card = cards.get(str(item.get("id"))) or {}
-        price = card.get("metrprice_avg") or {}
-        total = card.get("apart_total") or {}
-        cells = []
-        for key, _ in _PEER_COLUMNS:
-            if key == "distance":
-                value = item.get("distance")
-            elif key == "project":
-                # Имя соседа лежит в строке радиуса под `name`, а в карточке —
-                # под `project`. Ответ несёт оба; берём первое, что есть, иначе
-                # сосед без карточки остаётся строкой из прочерков и читается
-                # как пустая находка, хотя bnMAP его назвал.
-                value = item.get("name") or card.get("project")
-            else:
-                value = card.get(key)
-            cells.append("<td>" + escape(str(value if value not in (None, "") else "—")) + "</td>")
-        cells.append(_num({"val": price.get("metrprice_avg_total")}))
-        cells.append(_num({"val": total.get("expo")}))
-        cells.append(_num({"val": card.get("pace_lots")}))
-        cells.append(_num({"val": card.get("unrealized_count")}))
-        cells.append(_num({"val": card.get("forecast_month")}))
-        cells.append("<td>" + escape(str(card.get("discount") or "—")) + "</td>")
-        rows.append("<tr>" + "".join(cells) + "</tr>")
-    if not rows:
-        return ('<h3>Соседи</h3><div class="muted">bnMAP соседей не вернул — '
-                'либо не задан объект, либо у аккаунта нет инструмента.</div>')
-    head = "".join(f"<th>{escape(title)}</th>" for _, title in _PEER_COLUMNS)
-    return ('<h3 style="margin-top:16px">Соседи по версии bnMAP</h3>'
-            '<div class="tablescroll"><table class="peers"><tr>' + head
-            + '<th class="num">₽/м²</th><th class="num">Экспозиция</th>'
-              '<th class="num">Темп, лотов</th><th class="num">Остаток</th>'
-              '<th class="num">Распродажа, мес</th>'
-              '<th>Скидка</th></tr>'
-            + "".join(rows) + "</table></div>")
-
-
-def _rooms(data: Any) -> str:
-    """Цена метра по комнатности у соседей.
+def _rooms(peers: Any, subject: Any) -> str:
+    """Цена метра по комнатности — блока с таким вопросом в отчёте нет.
 
     Для оценки это работает там, где общая средняя врёт: у соседа с
     однокомнатным ядром и у соседа с крупными лотами один и тот же «средний
-    метр» означает разные товары. Разбивку bnMAP отдаёт готовой, считать
-    нечего.
+    метр» означает разные товары. Разбивку bnMAP отдаёт готовой, считать нечего.
     """
-    if not isinstance(data, dict):
-        return ""
-    rows = []
-    for card in data.get("nearby") or []:
-        if not isinstance(card, dict):
-            continue
-        price = card.get("metrprice_avg") or {}
-        cells = "".join(_num({"val": price.get(key) or None}) for key, _ in _ROOMS)
-        rows.append("<tr><td>" + escape(str(card.get("project") or card.get("object_id")))
-                    + "</td>" + cells + "</tr>")
+    rows = [row for row in ([subject] + list(peers or [])) if isinstance(row, dict) and row.get("rooms")]
     if not rows:
         return ""
+    body = []
+    for row in rows:
+        rooms = row.get("rooms") or {}
+        cells = "".join(_num({"val": rooms.get(key) or None}) for key, _ in _ROOMS)
+        body.append("<tr><td>" + escape(str(row.get("name") or row.get("object_id")))
+                    + (' <span class="self">— объект</span>' if row is rows[0] and row is subject else "")
+                    + "</td>" + cells + "</tr>")
     head = "".join(f'<th class="num">{escape(title)}</th>' for _, title in _ROOMS)
     return ('<h3 style="margin-top:16px">Цена метра по комнатности</h3>'
             '<div class="tablescroll"><table class="peers"><tr><th>Проект</th>'
-            + head + "</tr>" + "".join(rows) + "</table></div>")
+            + head + "</tr>" + "".join(body) + "</table></div>")
+
+
+def _discounts(peers: Any, subject: Any) -> str:
+    """Скидки и условия покупки. Прайс — не цена сделки, и разрыв виден числом."""
+    rows = [row for row in ([subject] + list(peers or []))
+            if isinstance(row, dict) and (row.get("discount") or row.get("discount_terms"))]
+    if not rows:
+        return ""
+    body = []
+    for row in rows:
+        body.append("<tr><td>" + escape(str(row.get("name") or "")) + "</td>"
+                    + _num({"val": row.get("price_per_sqm")})
+                    + "<td>" + escape(str(row.get("discount") or "—")) + "</td>"
+                    + '<td style="white-space:normal;max-width:420px">'
+                    # Условия у застройщиков бывают на полтора экрана: акции,
+                    # партнёрские карты, скидки льготным категориям. В таблицу
+                    # идёт начало, целиком оно живёт в подсказке.
+                    + f'<span title="{escape(str(row.get("discount_terms") or ""))}">'
+                    + escape(_short(row.get("discount_terms"))) + "</span></td></tr>")
+    return ('<h3 style="margin-top:16px">Скидки и условия покупки</h3>'
+            '<div class="tablescroll"><table class="peers"><tr><th>Проект</th>'
+            '<th class="num">Прайс, ₽/м²</th><th>Скидка</th><th>Условия</th></tr>'
+            + "".join(body) + "</table></div>")
 
 
 def _num(value: Any) -> str:
@@ -270,8 +275,10 @@ def _num(value: Any) -> str:
         return '<td class="num">' + escape(str(raw)) + "</td>"
 
 
-def _money(raw: Any) -> str:
-    try:
-        return f"{float(raw):,.0f}".replace(",", " ") + " ₽/м²"
-    except (TypeError, ValueError):
-        return "—"
+def _short(text: Any, limit: int = 150) -> str:
+    """Начало условий. Обрезаем по слову: обрубок посреди числа читается как другое число."""
+    words = " ".join(str(text or "").split())
+    if len(words) <= limit:
+        return words or "—"
+    cut = words[:limit].rsplit(" ", 1)[0]
+    return cut + "…"

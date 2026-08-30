@@ -243,6 +243,9 @@ VERIFIED: dict[str, str] = {
     "v2.reports.projects": "200 при filters.regionAlias; страницами, у объекта стадия и цены поштучных отчётов",
     "v2.reports.developers": "200, 718 застройщиков с идентификаторами",
     "v2.reports.prices": "200, поштучный прайс: паспорт 800 ₽, прайсы 700 ₽, сделки 2400 ₽, данные ЖК 3200 ₽",
+    "v2.reports.getUniqueTypesOfRooms": "200, типы лотов объекта: ст, 1, 2, 3, 4, 5 — только квартиры",
+    "v2.reports.getActualLayerDates": "200, даты свежести по слоям: price, deals, passport, declaration",
+    "v1.locator.objectsData": "403: «Локатор» недоступен, а объектная модель у него на 77 полей",
     "layers.data": "403 NO_REGION_ACCESS: у аккаунта нет региональной лицензии",
     "analytics.objectMarket": "403: нет инструмента deals",
     "analytics.objectDeals": "403: нет инструмента deals",
@@ -786,3 +789,126 @@ def _today() -> str:
     from datetime import date as _date
 
     return _date.today().isoformat()
+
+
+# Строка отчёта в том виде, в каком её ждут блоки `metrics`. Ключи не наши
+# выдумки: это контракт `build_blocks`, которым считается действующий отчёт.
+# Клон обязан считаться ИМ ЖЕ — вторая реализация медианы однажды разойдётся с
+# первой, и обе будут выглядеть верными.
+def _metric_row(card: dict[str, Any], name: str, distance: Any, observed: str) -> dict[str, Any]:
+    price = card.get("metrprice_avg") or {}
+    total = card.get("apart_total") or {}
+    budget = card.get("sum_avg") or {}
+    return {
+        "object_id": card.get("object_id"),
+        "name": name,
+        "distance_km": _float(distance),
+        # Класс отдаётся как есть: `normalize_segment` уже сводит «Бизнес+» и
+        # «Бизнес−» к ступени «бизнес», а подпись в таблице должна остаться
+        # той, что дал источник, — три ступени там, где у нас одна.
+        "segment": card.get("class"),
+        "price_per_sqm": _float(price.get("metrprice_avg_total")),
+        "observed_at": observed,
+        "units_per_month": _float(card.get("pace_lots")),
+        "remaining_units": _float(card.get("unrealized_count")),
+        "lot_count": _float(total.get("expo")),
+        # Средний лот В ПРОЕКТЕ, а не проданный: у bnMAP это площадь
+        # экспозиции. Класть её в «средний проданный» нельзя — блок сравнивает
+        # именно эти две величины между собой.
+        "lot_area_avg": _float(total.get("square_avg")),
+        "rooms": {key.replace("metrprice_avg_", ""): _float(value)
+                  for key, value in price.items() if key != "metrprice_avg_total"},
+        "budget_avg": _float(budget.get("apart_total")),
+        "pace_12m": _float(card.get("pace_lots_pre_12")),
+        "months_by_source": _float(card.get("forecast_month")),
+        "stage": card.get("stage"),
+        "agreement": card.get("agreement"),
+        "commission": card.get("date_state_commission"),
+        "start_sales": card.get("start_sales_date"),
+        "interior": card.get("interior"),
+        "discount": card.get("discount"),
+        "discount_terms": card.get("desc"),
+    }
+
+
+def _float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+# Чего у bnMAP нет из того, что отчёт берёт у «Пульса». Список не украшение:
+# пустой блок без причины читается как «у проекта этого нет», а не «источник
+# такого не отдаёт».
+# Разница важная: «источник этого не знает» и «доступный нам метод этого не
+# отдаёт» — разные утверждения, и второе не даёт права сказать первое.
+# Объектная модель bnMAP («Локатор», 77 полей) несёт и поглощение в метрах по
+# трём окнам, и машиноместа с кладовыми, и коммерцию отдельными строками — но
+# сам «Локатор» отвечает 403, а `reportNearBy` этих полей не содержит.
+CLONE_GAPS = (
+    "поглощение в метрах за месяц — `reportNearBy` его не отдаёт; в объектной "
+    "модели bnMAP оно есть (livingSoldSquare за 3, 6 и 12 месяцев), но «Локатор» закрыт",
+    "средний ПРОДАННЫЙ лот — приходит средняя площадь экспозиции, а это другое",
+    "границы цены метра, минимум и максимум",
+    "объём проекта в лотах — доля экспозиции от объёма не считается",
+    "машино-места, кладовые и коммерция — в модели bnMAP они есть отдельными "
+    "полями (commercialNumParking, commercialNumPantry, commercialNumNonresidential), "
+    "но инструмент commercial_objects у аккаунта не куплен",
+)
+
+
+def clone_report(data_dir: Any, query: str, *, base: str = "msk", date: str = "",
+                 codes: list[str] | None = None) -> dict[str, Any]:
+    """Действующий отчёт, собранный на bnMAP: те же блоки, тот же счёт.
+
+    Блоки считает `metrics.build_blocks` — та самая функция, которой считается
+    отчёт по «Пульсу». Меняется источник строк, а не арифметика: иначе сравнение
+    источников превратилось бы в сравнение двух наших реализаций.
+
+    Городской свод берётся общий, как в отчёте. Это осознанно: если сравнивать
+    bnMAP с одной медианой Москвы, а «Пульс» с другой, разойдутся не источники,
+    а рамки, и понять, кто прав, будет нечем.
+    """
+    from . import metrics
+
+    session = Session(data_dir)
+    asked = date or _today()
+    found = find(data_dir, query, base=base)
+    if not found.get("object_id"):
+        return {"found": found, "reason": f"В справочнике bnMAP нет «{query}»",
+                "blocks": [], "peers": [], "gaps": list(CLONE_GAPS)}
+    answer = session.call("analytics.reportNearBy", {
+        "_base": base, "object_id": found["object_id"], "project": found["object_id"],
+        "date": asked, "extended": True}) or {}
+    cards = {str(row.get("object_id")): row for row in answer.get("nearby") or []
+             if isinstance(row, dict)}
+    subject: dict[str, Any] = {}
+    peers: list[dict[str, Any]] = []
+    unnamed: list[str] = []
+    for item in answer.get("radius") or []:
+        card = cards.get(str(item.get("id")))
+        if not card:
+            # Названный, но не раскрытый сосед — это не отсутствующий сосед.
+            unnamed.append(str(item.get("name") or item.get("id")))
+            continue
+        row = _metric_row(card, str(item.get("name") or card.get("project") or ""),
+                          item.get("distance"), asked)
+        if str(item.get("id")) == str(found["object_id"]):
+            subject = row
+        else:
+            peers.append(row)
+    tools = session.call("v1.toolAccess.getActiveToolsFull") or {}
+    return {
+        "found": found,
+        "indicators": session.call("analytics.indicators", {"_base": base, "date": asked}),
+        "subject": subject,
+        "peers": peers,
+        "blocks": metrics.build_blocks(subject, peers, None, codes) if subject else [],
+        "unnamed_peers": unnamed,
+        "gaps": list(CLONE_GAPS),
+        "account": {"tools": [str(row.get("alias")) for row in
+                              (tools.get("userToolsFromTariff") or []) if isinstance(row, dict)]},
+        "asked_date": asked,
+        "errors": session.errors,
+    }

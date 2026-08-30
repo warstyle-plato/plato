@@ -359,7 +359,7 @@ def install(app: FastAPI) -> MarketDiscoveryService:
                 detail="Источник выключен: не заданы BNMAP_LOGIN и BNMAP_PASSWORD",
             )
         report = await run_in_threadpool(
-            bnmap.comparison_report, Path(data_dir) / "bnmap", object_id.strip(),
+            bnmap.clone_report, Path(data_dir) / "bnmap", object_id.strip(),
             base=(base or "msk").strip(),
         )
         return {**report, "html": bnmap_ui.render(report)}
