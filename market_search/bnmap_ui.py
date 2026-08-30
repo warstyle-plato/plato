@@ -41,6 +41,26 @@ _PEER_COLUMNS: tuple[tuple[str, str], ...] = (
     ("interior", "Отделка"),
 )
 
+# Оценке нужен не ряд за десять лет, а сегодняшняя цена, скидка с неё и то,
+# как быстро уходит остаток (владелец, 30.08.2026: «история цены мало
+# интересна для оценки»). Поэтому рядом с ценой метра стоят скидка и прогноз
+# распродажи, а помесячный ряд bnMAP не показывается вовсе: он приходит в том
+# же ответе и просто не выводится.
+#
+# Прогноз проверен арифметикой: 585 остатка при темпе 14 дают 41 месяц,
+# 907 при 27 — 33, 1623 при 11 — 147. Значит подпись верна.
+#
+# Поле `price_dynamics` из той же карточки НЕ показывается: у соседей оно
+# равно 5, 45, 624 и 298, процентами не читается, и чем является — неизвестно.
+# Число под выдуманной подписью хуже отсутствующего числа.
+_ROOMS: tuple[tuple[str, str], ...] = (
+    ("metrprice_avg_st", "Студии"),
+    ("metrprice_avg_1", "1к"),
+    ("metrprice_avg_2", "2к"),
+    ("metrprice_avg_3", "3к"),
+    ("metrprice_avg_4", "4к+"),
+)
+
 
 def markup() -> str:
     """Свёрнутый блок кабинета. Открывается по нажатию, сам ничего не грузит."""
@@ -114,7 +134,7 @@ def render(report: dict[str, Any]) -> str:
     out.append(_subject(report.get("found")))
     out.append(_indicators(report.get("indicators")))
     out.append(_peers(report.get("nearby")))
-    out.append(_location(report.get("nearby")))
+    out.append(_rooms(report.get("nearby")))
     return "".join(part for part in out if part)
 
 
@@ -198,6 +218,8 @@ def _peers(data: Any) -> str:
         cells.append(_num({"val": total.get("expo")}))
         cells.append(_num({"val": card.get("pace_lots")}))
         cells.append(_num({"val": card.get("unrealized_count")}))
+        cells.append(_num({"val": card.get("forecast_month")}))
+        cells.append("<td>" + escape(str(card.get("discount") or "—")) + "</td>")
         rows.append("<tr>" + "".join(cells) + "</tr>")
     if not rows:
         return ('<h3>Соседи</h3><div class="muted">bnMAP соседей не вернул — '
@@ -206,30 +228,36 @@ def _peers(data: Any) -> str:
     return ('<h3 style="margin-top:16px">Соседи по версии bnMAP</h3>'
             '<div class="tablescroll"><table class="peers"><tr>' + head
             + '<th class="num">₽/м²</th><th class="num">Экспозиция</th>'
-              '<th class="num">Темп, лотов</th><th class="num">Остаток</th></tr>'
+              '<th class="num">Темп, лотов</th><th class="num">Остаток</th>'
+              '<th class="num">Распродажа, мес</th>'
+              '<th>Скидка</th></tr>'
             + "".join(rows) + "</table></div>")
 
 
-def _location(data: Any) -> str:
-    """Ряд цены по локации. Показываются края и длина — весь ряд не таблица."""
-    if not isinstance(data, dict) or not isinstance(data.get("location"), dict):
+def _rooms(data: Any) -> str:
+    """Цена метра по комнатности у соседей.
+
+    Для оценки это работает там, где общая средняя врёт: у соседа с
+    однокомнатным ядром и у соседа с крупными лотами один и тот же «средний
+    метр» означает разные товары. Разбивку bnMAP отдаёт готовой, считать
+    нечего.
+    """
+    if not isinstance(data, dict):
         return ""
-    series = data["location"]
-    months = sorted(series)
-    if not months:
+    rows = []
+    for card in data.get("nearby") or []:
+        if not isinstance(card, dict):
+            continue
+        price = card.get("metrprice_avg") or {}
+        cells = "".join(_num({"val": price.get(key) or None}) for key, _ in _ROOMS)
+        rows.append("<tr><td>" + escape(str(card.get("project") or card.get("object_id")))
+                    + "</td>" + cells + "</tr>")
+    if not rows:
         return ""
-    last = series[months[-1]] or {}
-    near = last.get("location_buildings") or {}
-    return ('<h3 style="margin-top:16px">История цены по локации</h3>'
-            '<div class="muted" style="font-size:12.5px">'
-            + f'{len(months)} месячных точек, с {escape(months[0][:7])} по {escape(months[-1][:7])}. '
-            + "На последней точке: проект "
-            + escape(_money(last.get("current_project_metrprice_avg")))
-            + ", пять ближайших "
-            + escape(_money(last.get("five_projects_metrprice_avg")))
-            + ", локация " + escape(_money(near.get("metrprice_avg")))
-            + " при экспозиции " + escape(str(near.get("expo_num", "—")))
-            + " лотов.</div>")
+    head = "".join(f'<th class="num">{escape(title)}</th>' for _, title in _ROOMS)
+    return ('<h3 style="margin-top:16px">Цена метра по комнатности</h3>'
+            '<div class="tablescroll"><table class="peers"><tr><th>Проект</th>'
+            + head + "</tr>" + "".join(rows) + "</table></div>")
 
 
 def _num(value: Any) -> str:
