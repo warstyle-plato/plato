@@ -26,9 +26,28 @@
   `/map/projects`, `/object/details`, `/indicators/flats` и прочие
   (`analitics_1`). Это маршруты страниц, а не адреса данных.
 
-**Разбора здесь по-прежнему нет** — ни имён полей, ни формы ответа: всё
-перечисленное отдаётся до входа, а данные лежат за ним. Есть проба, которая
-ПОКАЗЫВАЕТ ответ.
+## Контракт API сервис описывает сам
+
+Гадать имена методов не пришлось: клиент платформы на старте делает
+`GET https://api.bnmap.pro/gateway._api_`, и тот отдаёт **каталог всех
+методов** — имя, сигнатуру и типы параметров. Дальше метод зовётся как
+`POST /{имя}` с телом JSON, а ответ приходит в оболочке
+`{content, account, settings}` — той же, что у `/api/v1/authentication/me`.
+30.08.2026 в каталоге 253 метода, и берётся он одним запросом: копии здесь
+нет ровно по той же причине, по которой нет копии `VERSION`, — её негде
+обновлять, а каталог живёт своей жизнью и меняется без нас.
+
+**Разбора здесь по-прежнему нет** — ни одного ответа С ДАННЫМИ никто не видел:
+каталог и оболочка отдаются до входа, а всякий содержательный метод отвечает
+`401 INVALID_TOKEN` (`analytics.stages`, `layers.get`, `analytics.indicators`
+проверены 30.08.2026). Имена методов обещают многое — `layers.data` с рамкой и
+списком полей, `analytics.objectMarket`, `analytics.objectDeals`,
+`analytics.getDealsHistory`, `domrf.declarations`, — но **обещание имени это не
+ответ**: что лежит в `content` каждого из них, покажет только живой вызов с
+токеном. До тех пор сопоставления «метод bnMAP → строка нашего списка» здесь
+нет, и заводить его по смыслу имени нельзя: ровно так писались ГИС Торги.
+
+Есть проба, которая ПОКАЗЫВАЕТ ответ.
 
 Это не осторожность, а вывод из своей же ошибки. С ГИС Торгами разбор был
 написан по догадке и «уверенности модели»: живой ответ опроверг почти каждое
@@ -223,6 +242,18 @@ def _fetch(url: str, context: ssl.SSLContext) -> dict[str, Any]:
                 answer["items"] = len(payload)
                 if payload and isinstance(payload[0], dict):
                     answer["first_item_keys"] = sorted(payload[0])[:30]
+            # Каталог методов — единственное, что здесь разбирается, и разбор
+            # этот не догадка: `content` со списком именованных методов и есть
+            # то, из чего клиент сервиса строит свой API.
+            if isinstance(payload, dict):
+                content = payload.get("content")
+                if isinstance(content, list) and content and all(
+                    isinstance(row, dict) and "name" in row for row in content
+                ):
+                    answer["json_methods"] = [
+                        {"name": row["name"], "signature": row.get("signature")}
+                        for row in content
+                    ]
     return answer
 
 
@@ -249,7 +280,32 @@ def probe(certs_dir: str = "") -> dict[str, Any]:
         "attempts": [
             {"what": title, **_fetch(url, context)} for title, url in CANDIDATES
         ],
+        "catalogue": catalogue(context),
     }
+
+
+GATEWAY = "https://api.bnmap.pro/gateway._api_"
+
+
+def catalogue(context: ssl.SSLContext | None = None) -> dict[str, Any]:
+    """Каталог методов, как его отдаёт сам сервис. Своего списка мы не ведём.
+
+    Клиент платформы строит из этого ответа весь свой API: имя `a.b.c`
+    становится вызовом `$server.a.b.c(payload)`, то есть `POST /a.b.c`.
+    Значит и нам спрашивать нечего — источник описывает себя сам, и список,
+    переписанный в наш код, устарел бы молча.
+
+    Отдаётся без входа, поэтому годится и как проверка живости: пустой каталог
+    при живом хосте — это уже новость, а не «ничего не нашли».
+    """
+    answer = _fetch(GATEWAY, context or trust_context())
+    methods = answer.get("json_methods")
+    if methods is None:
+        return {"asked": GATEWAY, "reason": answer.get("reason") or answer.get("json")
+                or f"ответ не разобрался (код {answer.get('http_status')})",
+                "http_status": answer.get("http_status")}
+    return {"asked": GATEWAY, "http_status": answer.get("http_status"),
+            "methods": len(methods), "names": methods}
 
 
 def _sign_in(page: Any, login: str, password: str) -> dict[str, Any]:

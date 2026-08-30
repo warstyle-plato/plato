@@ -182,3 +182,29 @@ def test_the_login_step_fills_submits_and_leaves_no_login_in_the_answer(
     assert login not in text, "логин доехал до ответа пробы"
     assert password not in text
     assert "Кабинет: [redacted]" in got.get("text_head", "")
+
+
+def test_the_catalogue_is_asked_of_the_source_and_not_copied_into_us() -> None:
+    """Список методов ведёт сервис, а не мы: копию негде обновлять.
+
+    Клиент платформы строит из этого ответа весь свой API — имя `a.b.c`
+    становится `POST /a.b.c`. Переписанный в наш код список устарел бы молча,
+    как устаревали копии `VERSION` и долей ТЭП.
+    """
+    got = bnmap.catalogue()
+    assert got["asked"] == bnmap.GATEWAY
+    assert got.get("methods") or got.get("reason"), "каталог обязан назвать причину пустоты"
+    body = source()
+    assert "\"analytics.objectMarket\"" not in body, "каталог переписан в модуль копией"
+
+
+def test_no_method_is_matched_to_our_checklist_before_its_answer_is_seen() -> None:
+    """Имя метода обещает, но не отвечает.
+
+    `analytics.objectDeals` звучит как сделки объекта, `layers.data` — как
+    справочник проектов. Что лежит в их `content`, не видел никто: содержательные
+    методы отвечают 401 без токена. Сопоставление, написанное по смыслу имени, —
+    это ГИС Торги во второй раз.
+    """
+    for row in bnmap.WANTED:
+        assert "у bnMAP" not in row, f"строка «{row['вопрос']}» сопоставлена по догадке"
