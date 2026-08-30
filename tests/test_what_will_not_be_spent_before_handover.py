@@ -165,3 +165,28 @@ def test_the_table_shows_where_to_ask_and_says_it_is_an_estimate() -> None:
     # Экран не считает: числа приходят готовыми.
     for arithmetic in ("*", "/"):
         assert f"a.limit{arithmetic}" not in body
+
+
+def test_the_battery_measures_against_the_model_not_the_bank_column() -> None:
+    """Картинке верят быстрее, чем строке, — и она обязана мерить то же.
+
+    Заряд считался от `remaining_need`, то есть от банковской колонки
+    «Средства на завершение»: на Кутузов Сити 1,46 из 1,66 — 88% и
+    «хватает до конца» при дефиците 2,2 млрд ₽. Три строки структуры
+    говорили одно, батарея под ними — обратное. «Может, батареи нагляднее
+    как раз?» (владелец, 30.08.2026) — нагляднее, поэтому и врали громче.
+    """
+    # Первое вхождение — ветка «нет книги» выше по функции; батарея живёт во
+    # втором, и искать надо его.
+    block = PAGE[PAGE.index("$('fundingCompare').innerHTML=(needAll==null"):]
+    block = block[: block.index("\n}")]
+    assert "надо по модели" in block
+    assert "remaining_need" not in block, "заряд снова меряет банковской колонкой"
+    # Вторая батарея убрана: она отвечала «сколько бюджета не потрачено», а
+    # рядом с первой читалась как второй ответ на тот же вопрос.
+    assert "Остаток потребности по утверждённому бюджету" not in block
+    # Без книги заряда нет вовсе, а не заряд от чужого числа.
+    assert "сказать нечем" in block
+    setup = PAGE[PAGE.index("const fuel=(Number(f.bank_remaining)"):]
+    setup = setup[: setup.index("\n")]
+    assert "needAll=hasBook?Math.max(0,Number(remainingBudget)||0):null" in setup
