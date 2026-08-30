@@ -238,3 +238,74 @@ def test_the_price_line_is_a_real_line_on_its_own_axis() -> None:
              if ax.find("c:axPos", namespace).get("val") == "r"]
     assert right, "у цены нет своей шкалы справа"
     assert right[0].find("c:delete", namespace).get("val") == "0"
+
+
+def test_the_key_numbers_are_tiles_and_the_bands_are_bands() -> None:
+    """«Ничего общего с отчётом и PDF» (владелец, 30.08.2026).
+
+    Колода собиралась разбором отчёта в «заголовок, строки, таблица», и от
+    экрана не переносилось ничего визуального: плашка ключевых чисел ехала
+    таблицей «Показатель / Значение / Пояснение», а цветная лента долей
+    пропадала целиком — у её кусков нет текста, только ширина и цвет.
+    Теперь плитки — фигуры с крупным числом, лента — фигуры своих цветов.
+    """
+    import io
+
+    from pptx import Presentation
+
+    html = ('<div class="kv">'
+            '<div><div>Договоров</div><div>76</div><div></div></div>'
+            '<div><div>Выручка</div><div>2 345,3 млн ₽</div><div>17,9%</div></div>'
+            '</div>'
+            '<section class="salesblock"><h2>Квартирография</h2>'
+            '<div style="margin:10px 0"><div class="muted">Пул проекта · как построено</div>'
+            '<div style="display:flex;height:22px">'
+            '<div style="width:23.2%;background:#1367AE" title="28,3-40 — 23,2%"></div>'
+            '<div style="width:76.8%;background:#C4581B" title="40-55 — 76,8%"></div>'
+            '</div></div></section>')
+
+    pages = sales_deck.sections(html)
+    bands = [strip for page in pages for strip in page.get("strips") or []]
+    assert bands and len(bands[0]["parts"]) == 2
+    assert bands[0]["caption"] == "Пул проекта · как построено"
+    assert bands[0]["parts"][0]["colour"] == "1367AE"
+
+    deck = Presentation(io.BytesIO(sales_deck.build(
+        pages, title="Продажи — Кутузов Сити", subtitle="срез", footer="DevelopAid")))
+    shapes = [shape for slide in deck.slides for shape in slide.shapes]
+    filled = [shape for shape in shapes
+              if str(shape.shape_type or "").startswith("AUTO_SHAPE")]
+    assert filled, "ни плиток, ни ленты — только текст и таблицы"
+    # Лента несёт цвета экрана, а не офисную палитру.
+    tones = {"%02X%02X%02X" % tuple(shape.fill.fore_color.rgb)
+             for shape in filled if shape.fill.type is not None}
+    assert "1367AE" in tones and "C4581B" in tones
+    # Ключевое число стоит крупно: плитка, на которую смотрят с трёх метров.
+    big = [run.font.size.pt for shape in filled if shape.has_text_frame
+           for para in shape.text_frame.paragraphs for run in para.runs
+           if run.font.size]
+    assert big and max(big) >= 20
+    # И у шапки свода на слайде имя проекта, а не слово «Раздел».
+    texts = [shape.text_frame.text for shape in shapes if shape.has_text_frame]
+    assert not any(text.strip() == "Раздел" for text in texts)
+
+
+def test_the_first_header_stands_over_its_own_column() -> None:
+    """`grid.cell(0,0)` отдаёт новую обёртку на каждый вызов, поэтому сравнение
+    «это ли первая ячейка» было всегда ложным, и «Месяц» уезжал вправо над
+    колонкой дат, прижатых влево."""
+    import io
+
+    from pptx import Presentation
+
+    pages = [{"title": "Динамика", "note": "", "lines": [], "strips": [],
+              "tables": [{"head": ["Месяц", "Лотов"],
+                          "rows": [["2026-07", "4"], ["2026-06", "9"]]}]}]
+    deck = Presentation(io.BytesIO(sales_deck.build(
+        pages, title="Т", subtitle="с", footer="ф")))
+    grids = [shape.table for slide in deck.slides for shape in slide.shapes
+             if getattr(shape, "has_table", False) and shape.has_table]
+    assert grids
+    first = grids[0].cell(0, 0).text_frame.paragraphs[0]
+    second = grids[0].cell(0, 1).text_frame.paragraphs[0]
+    assert first.alignment != second.alignment, "оба заголовка выровнены одинаково"
