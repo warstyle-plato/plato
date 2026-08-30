@@ -106,6 +106,7 @@ const fmtMoney=n=>(n===null||n===undefined||n==='')?'—'
  :Number.isFinite(Number(n))?new Intl.NumberFormat('ru-RU',{maximumFractionDigits:1}).format(Number(n)/1e6)+' млн ₽':'—';
 const fmtArea=n=>n!==null&&n!==undefined&&n!==''&&Number.isFinite(Number(n))?new Intl.NumberFormat('ru-RU',{maximumFractionDigits:0}).format(Number(n))+' м²':'—';
 const fmtMln=n=>n!==null&&n!==undefined&&Number.isFinite(Number(n))?new Intl.NumberFormat('ru-RU',{maximumFractionDigits:1}).format(Number(n))+' млн ₽':'—';
+__DEVELOPAID_PLATO_PACK__
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const kindLabel=k=>({krt:'КРТ',land_sale:'Продажа земли',land_lease:'Аренда земли',property_complex:'ЗИК',unfinished:'Незавершёнка',other:'Другое'})[k]||k||'—';
 function shortDate(v){if(!v)return '—';const d=new Date(v);return Number.isNaN(d.getTime())?String(v).slice(0,16):new Intl.DateTimeFormat('ru-RU',{day:'2-digit',month:'2-digit',year:'2-digit',hour:'2-digit',minute:'2-digit'}).format(d)}
@@ -1039,14 +1040,14 @@ function renderKrtMarketBlocks(report,out){out.insertAdjacentHTML('beforeend',kr
 // Что Платон видит: то же, что человек на экране. Числа собираются здесь и
 // подаются готовыми — модель их не считает, она читает посчитанное.
 function askDigest(){
- const lines=[];
+ const head=[], rows=[], chosenLines=[];
  const krtMode=!$('krtPanel').classList.contains('hidden');
  if(krtMode){
   const list=state.krtFiltered||[];
-  lines.push(`ОТОБРАНО ПЛОЩАДОК КРТ: ${list.length} из ${(state.krt||[]).length} в каталоге.`);
+  head.push(`ОТОБРАНО ПЛОЩАДОК КРТ: ${list.length} из ${(state.krt||[]).length} в каталоге.`);
   list.slice(0,12).forEach(x=>{
    const sc=krtScore(x), rank=state.krtRank[x.slug]||{};
-   lines.push(`— ${x.name} (${[x.okrug,x.district].filter(Boolean).join(', ')}): балл ${sc.score}`
+   rows.push(`— ${x.name} (${[x.okrug,x.district].filter(Boolean).join(', ')}): балл ${sc.score}`
     +` (потенциал по ТЭП ${sc.base}${sc.counted?`, расчёт снял ${sc.cut}%`:`, модель не считалась${sc.reason?': '+sc.reason:''}`})`
     +`; жильё ${fmtArea(x.housing_gfa_sqm)}, всего ${fmtArea(x.total_gfa_sqm)}, ${x.area_ha||'—'} га`
     +(rank.project_llcr_x!=null?`; LLCR ${Number(rank.project_llcr_x).toFixed(2)}x`:'')
@@ -1054,25 +1055,25 @@ function askDigest(){
     +(rank.entry_capacity_rub_per_sqm!=null?`, потолок входа ${rank.entry_capacity_rub_per_sqm} ₽/м² продаваемой`:'')
     +(x.is_new?'; появилась в каталоге недавно':''));
   });
-  if(list.length>12)lines.push(`(показаны первые 12 из ${list.length})`);
+  if(list.length>12)rows.push(`(показаны первые 12 из ${list.length})`);
   const chosen=state.selectedKrt;
   if(chosen){
    const sc=krtScore(chosen), model=state.krtModels[chosen.slug];
-   lines.push('', `ВЫБРАНА: ${chosen.name}. Балл ${sc.score} из потенциала ${sc.base}.`);
-   if(sc.cuts.length)lines.push('Снижения: '+sc.cuts.map(c=>`${c.label} −${c.points}%`).join('; ')+'.');
-   if(model?.text)lines.push('Модель: '+model.text);
-   (model?.exclusions||[]).slice(0,6).forEach(x=>lines.push('НЕ УЧТЕНО: '+x));
+   chosenLines.push(`ВЫБРАНА: ${chosen.name}. Балл ${sc.score} из потенциала ${sc.base}.`);
+   if(sc.cuts.length)chosenLines.push('Снижения: '+sc.cuts.map(c=>`${c.label} −${c.points}%`).join('; ')+'.');
+   if(model?.text)chosenLines.push('Модель: '+model.text);
+   (model?.exclusions||[]).slice(0,6).forEach(x=>chosenLines.push('НЕ УЧТЕНО: '+x));
   }
  }else{
   // Платону список идёт в том же виде, в каком он на экране: тридцать
   // одинаковых гаражей одной строкой. Отдай ему все тридцать — и половину
   // вопроса займут повторы, а полезный лот в двенадцать строк не влезет.
   const list=state.filtered||[], fams=state.families||[];
-  lines.push(`ОТОБРАНО ЛОТОВ: ${list.length} из ${(state.lots||[]).length} в выборке`
+  head.push(`ОТОБРАНО ЛОТОВ: ${list.length} из ${(state.lots||[]).length} в выборке`
    +`; строк на экране ${fams.length} — повторы одного извещения схлопнуты в группу.`);
   fams.slice(0,12).forEach(f=>{
    const l=f.lead, sc=f.score;
-   lines.push(`— ${l.title||l.address||'лот'} (${kindLabel(l.lot_kind)})`
+   rows.push(`— ${l.title||l.address||'лот'} (${kindLabel(l.lot_kind)})`
     +(f.collapsed?`, ГРУППА ПОВТОРОВ: ${f.count} лотов, цена ${lotRange(f.priceMin,f.priceMax,fmtMoney)}, площадь ${lotRange(f.areaMin,f.areaMax,fmtArea)}`:'')
     +`: балл ${sc.score}`
     +` из потенциала ${sc.base}${sc.cut?`, снято ${sc.cut}%`:''}`
@@ -1080,17 +1081,39 @@ function askDigest(){
     +`, заявка до ${shortDate(l.application_deadline)||'—'}, документов ${(l.documents||[]).length}`
     +(sc.cuts.length?`; снижено за: ${sc.cuts.map(c=>c.label).join(', ')}`:''));
   });
-  if(fams.length>12)lines.push(`(показаны первые 12 строк из ${fams.length})`);
+  if(fams.length>12)rows.push(`(показаны первые 12 строк из ${fams.length})`);
   if(state.selected){
    const sc=lotScore(state.selected), sr=state.selected.screening||{};
-   lines.push('', `ВЫБРАН: ${state.selected.title||state.selected.address}. Балл ${sc.score} из потенциала ${sc.base}.`);
-   if(sr.why_here)lines.push('Почему в выборке: '+sr.why_here);
-   (sr.concerns||[]).slice(0,6).forEach(x=>lines.push('НАСТОРАЖИВАЕТ: '+x));
-   (sr.verify_before_calculation||[]).slice(0,6).forEach(x=>lines.push('ПРОВЕРИТЬ ДО РАСЧЁТА: '+x));
+   chosenLines.push(`ВЫБРАН: ${state.selected.title||state.selected.address}. Балл ${sc.score} из потенциала ${sc.base}.`);
+   if(sr.why_here)chosenLines.push('Почему в выборке: '+sr.why_here);
+   (sr.concerns||[]).slice(0,6).forEach(x=>chosenLines.push('НАСТОРАЖИВАЕТ: '+x));
+   (sr.verify_before_calculation||[]).slice(0,6).forEach(x=>chosenLines.push('ПРОВЕРИТЬ ДО РАСЧЁТА: '+x));
   }
  }
- return lines.join('\n');
+ // Выбранное идёт первым: спрашивают обычно про него, а список — то, среди
+ // чего оно выбрано.
+ return {head, groups:[{name:'выбранное', lines:chosenLines}, {name:'список', lines:rows}]};
 }
+
+// Разделы в порядке важности: что не влезло, названо в самом вопросе.
+const ASK_ORDER=['выбранное','список','охват'];
+
+function askMessage(question){
+ const parts=askDigest();
+ const preamble='Ниже то, что сейчас открыто в модуле торгов DevelopAid. Числа посчитаны '
+  +'движком — не пересчитывай их, объясни и ответь по ним. Чего в списке нет, того не '
+  +'выдумывай: скажи, что данных нет.\n\n';
+ const tail='\n\nВопрос: '+question;
+ // Бюджет считается на ВСЁ сообщение: у Платона предел 4000 знаков, и
+ // превышение — отказ «вопрос слишком длинный» ровно там, где данных больше
+ // всего. Списки тут и раньше резались по двенадцать строк, а общего счёта не
+ // было вовсе: один выбранный лот, у которого в названии весь перечень ЗОУИТ,
+ // выносил вопрос за предел.
+ const room=3900-preamble.length-tail.length;
+ return preamble+platoPack(parts.head, parts.groups, {limit: Math.max(400, room),
+   order: ASK_ORDER, lineLimit: 240})+tail;
+}
+
 function renderAskContext(){
  const box=$('askContext');
  if(!box)return;
@@ -1109,9 +1132,7 @@ async function askPlato(){
  const question=(field.value||'').trim();
  if(!question){out.innerHTML='<div class="notice warn">Напишите вопрос.</div>';return}
  button.disabled=true;out.innerHTML='<div class="notice"><span class="spinner"></span>Платон Сергеевич думает…</div>';
- const message='Ниже то, что сейчас открыто в модуле торгов DevelopAid. Числа посчитаны '
-  +'движком — не пересчитывай их, объясни и ответь по ним. Чего в списке нет, того не '
-  +'выдумывай: скажи, что данных нет.\n\n'+askDigest()+'\n\nВопрос: '+question;
+ const message=askMessage(question);
  try{
   let d;
   try{
@@ -1173,9 +1194,11 @@ def auctions_page(core=None) -> str:
     from guide import legal_footer_html
 
     import management_contour
+    import plato_question
 
     footer = legal_footer_html(core) if core is not None else ""
     return (AUCTIONS_PAGE
+            .replace(plato_question.PLACEHOLDER, plato_question.script())
             .replace(LEGAL_FOOTER_PLACEHOLDER, footer)
             .replace("__DEVELOPAID_CONTOUR_STYLE__", management_contour.STYLE)
             .replace(management_contour.PLACEHOLDER,
