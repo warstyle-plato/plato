@@ -134,10 +134,10 @@ function fundingStructure(f,hasBook,approved,paid,remainingBudget){
  const total=Math.max(0,need-fuel);
  const structural=Number(f.additional_financing)||0;
  const from=f.additional_financing_from;
- let html='<div class="fundblock"><div class="muted" style="margin-bottom:6px"><b>РСС</b> — утверждённый банком бюджет всей стройки, лимиты по статьям</div>'
-  +row('Лимит РСС',money2(f.bank_limit))
+ let html='<div class="fundblock"><div class="muted" style="margin-bottom:6px"><b>РСС</b> — утверждённый банком бюджет всей стройки по статьям; суммы ПФ в нём нет, она из НКЛ</div>'
+  +row('Общая сметная стоимость глав 2–3',money2(f.bank_limit),'колонка РСС, а не лимит кредитной линии')
   +row('Оплачено по реестру',money2(f.paid_actual!=null?f.paid_actual:paid))
-  +row('Остаток лимитов на завершение',money2(f.bank_remaining))
+  +row('Остаток лимитов на завершение',money2(f.bank_remaining),'это и есть то, что банк готов дать')
   +row('Резерв 2.8/2.9',money2(f.reserve),f.reserve_exhaustion?`исчерпание ${dt(f.reserve_exhaustion)}`:'')
   +(Number(f.opening_article_deficit)>0?row('Статьи с исчерпанным лимитом на срез',money2(f.opening_article_deficit),'их не закрывает свободный лимит соседней статьи','bad'):'')
   +'</div>';
@@ -170,7 +170,7 @@ function fundingStructure(f,hasBook,approved,paid,remainingBudget){
   +(modelNeed!=null
     ?row('Надо по утверждённой модели',money2(modelNeed),'сколько реально нужно достроить: утверждённая модель минус оплачено')
     :'<div class="notice">Нет финансовой книги — сколько реально надо, сказать нечем.</div>')
-  +row('Остаток по РСС: лимиты статей + резерв',money2(fuel),'РСС — бюджет всей стройки, а не банковская доля; чем платить, видно в источнике платежа')
+  +row('Остаток по РСС: лимиты статей + резерв',money2(fuel),'оставшийся лимит и есть то, что банк готов дать; сам РСС — бюджет всей стройки, а не банковская доля')
   +(mainGap!=null?row('ДЕФИЦИТ',money2(mainGap),'надо по модели минус остаток по РСС',mainGap>0?'bad':'good'):'')
   +row('Структурный дефицит внутри лимитов',money2(structural),'статьи, которым не хватает своего лимита, — чужим свободным он не закрывается',structural>0?'bad':'good')
   +row('Первый месяц нехватки',from?dt(from):'—',structural>0&&!from?'срок не определён':'',structural>0?'bad':'')

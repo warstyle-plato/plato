@@ -39,7 +39,7 @@ DASH = (ROOT / "developaid_monitor_dashboard.py").read_text(encoding="utf-8")
 def test_the_structure_names_both_contours_and_both_deficits() -> None:
     body = PAGE[PAGE.index("function fundingStructure("):]
     body = body[: body.index("\n}\n")]
-    for line in ("Лимит РСС", "Остаток лимитов на завершение",
+    for line in ("Общая сметная стоимость глав 2–3", "Остаток лимитов на завершение",
                  "Утверждённый бюджет глав 2–3",
                  "Остаток потребности по утверждённому бюджету",
                  "Надо по утверждённой модели", "Остаток по РСС: лимиты статей + резерв",
@@ -248,6 +248,7 @@ def test_the_need_comes_from_the_model_and_the_bank_is_the_source() -> None:
     said = dash._summary({"dashboard": {}}, funding, {})[0]
     assert "По утверждённой модели достроить стоит 3,66 млрд ₽" in said
     assert "По РСС осталось 1,46 млрд ₽" in said
+    assert "оставшийся лимит и есть то, что банк готов дать" in said
     assert "бюджет всей стройки, а не банковская доля" in said
     assert "Дефицит 2,20 млрд ₽" in said
     # Банковский остаток остаётся справочным и назван взглядом банка.
@@ -277,3 +278,22 @@ def test_the_screen_puts_the_model_against_the_bank() -> None:
     assert "сколько реально надо, сказать нечем" in body
 
 
+
+
+def test_the_estimate_column_is_not_called_a_credit_limit() -> None:
+    """Суммы ПФ в РСС нет — она из НКЛ (владелец, 30.08.2026).
+
+    Строка «Лимит РСС» показывала колонку «Общая сметная стоимость»
+    (`_ESTIMATE_COLUMNS["estimate"] = 4`, сумма по главам 2 и 3), то есть
+    сметную стоимость всей стройки под именем кредитной линии. Та же
+    ошибка, что подпись «Даёт банк» под остатком РСС: число посчитано
+    верно и прочитано неверно, потому что названо чужим именем. При этом
+    оставшийся лимит — это ровно то, что банк готов дать, и так и сказано.
+    """
+    body = PAGE[PAGE.index("function fundingStructure("):]
+    body = body[: body.index("\n}\n")]
+    assert "Общая сметная стоимость глав 2–3" in body
+    assert "Лимит РСС" not in body, "сметная стоимость названа кредитным лимитом"
+    assert "колонка РСС, а не лимит кредитной линии" in body
+    assert "суммы ПФ в нём нет, она из НКЛ" in body
+    assert "это и есть то, что банк готов дать" in body
