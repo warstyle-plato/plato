@@ -1492,6 +1492,57 @@ function peersCard(peers){
     +`</table></div></div>`;
 }
 
+// Лестница цены метра по формату: линия на проект, категории по оси X.
+// Отвечает на вопрос, которого нет ни у одного помесячного графика: дешевеет
+// ли метр с ростом лота. У рынка дешевеет — покупатель приходит с бюджетом, и
+// за доступность малого лота платят премией к метру; плоская или растущая
+// линия означает, что лестницы нет.
+//
+// Пунктиром — цена В СДЕЛКАХ того же проекта, если она известна: прайс это
+// витрина, и разрыв между линиями и есть скидка, которую дают по формату.
+const ROOM_STEPS=[['st','студии'],['1','1к'],['2','2к'],['3','3к'],['4','4к+']];
+function roomsChart(rows, deals){
+  const lines=(rows||[]).map(r=>({name:r.name, own:!!r.__own,
+      points:ROOM_STEPS.map(([key],i)=>({i, v:(r.rooms||{})[key]||null}))
+        .filter(p=>p.v)}))
+    .filter(l=>l.points.length>1);
+  if(lines.length<2) return '<div class="muted">Цен по комнатности меньше чем у двух проектов — лестницу строить не из чего.</div>';
+  const dealLine=(deals&&Object.keys(deals).length)
+    ? {name:'наши сделки', deals:true,
+       points:ROOM_STEPS.map(([key],i)=>({i, v:deals[key]||null})).filter(p=>p.v)}
+    : null;
+  const all=lines.concat(dealLine&&dealLine.points.length>1?[dealLine]:[]);
+  const vals=all.flatMap(l=>l.points.map(p=>p.v));
+  const lo=Math.min(...vals)*0.95, hi=Math.max(...vals)*1.05;
+  const W=640,H=280,L=64,R=150,T=16,B=34;
+  const x=i=>L+i*(W-L-R)/(ROOM_STEPS.length-1);
+  const y=v=>T+(H-T-B)*(1-(v-lo)/((hi-lo)||1));
+  let svg=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img">`;
+  [0,0.5,1].forEach(f=>{const v=lo+(hi-lo)*f;
+    svg+=`<line x1="${L}" y1="${y(v)}" x2="${W-R}" y2="${y(v)}" stroke="#e6ecf2"/>`
+       +`<text x="${L-6}" y="${y(v)+4}" text-anchor="end" font-size="10" fill="#8798a8">${num(v)}</text>`;});
+  ROOM_STEPS.forEach(([,title],i)=>{
+    svg+=`<text x="${x(i)}" y="${H-12}" text-anchor="middle" font-size="11" fill="#5b6b7d">${esc(title)}</text>`;});
+  const path=l=>l.points.map((p,k)=>`${k?'L':'M'}${x(p.i).toFixed(1)} ${y(p.v).toFixed(1)}`).join(' ');
+  const marks=[];
+  all.forEach((l,idx)=>{
+    const colour=l.own?'#C4581B':(l.deals?'#16202b':PICKED[idx%PICKED.length]);
+    svg+=`<path d="${path(l)}" fill="none" stroke="${colour}"`
+       +` stroke-width="${l.own?2.8:(l.deals?1.8:1.4)}"${l.deals?' stroke-dasharray="5 4"':''}`
+       +` data-tip="${esc(l.name)}"></path>`;
+    l.points.forEach(p=>{ svg+=`<circle cx="${x(p.i).toFixed(1)}" cy="${y(p.v).toFixed(1)}" r="${l.own?3.4:2.2}"`
+       +` fill="${colour}" data-tip="${esc(l.name+': '+num(p.v)+' ₽/м²')}"></circle>`; });
+    const last=l.points[l.points.length-1];
+    marks.push({y:y(last.v), n:l.name, colour, own:l.own});
+  });
+  marks.sort((a,b)=>a.y-b.y);
+  let prev=-99;
+  marks.forEach(m=>{ const yy=Math.max(m.y, prev+13); prev=yy;
+    svg+=`<text x="${W-R+8}" y="${yy+3}" font-size="10.5" fill="${m.colour}"`
+       +`${m.own?' font-weight="600"':''}>${esc(m.n.length>17?m.n.slice(0,16)+'…':m.n)}</text>`;});
+  return '<div class="wrap">'+svg+'</svg></div>';
+}
+
 function blockCard(b,ctx){
   const s=b.subject||{}, p=b.peers||{}, c=b.city||{};
   const cell=(v,l)=>`<div><b>${v}</b><span>${l}</span></div>`;

@@ -683,3 +683,79 @@ def test_the_sample_cannot_be_widened_and_the_module_says_so() -> None:
     assert "объект и пять ближайших" in bnmap.VERIFIED["analytics.reportNearByProjectClass"]
     for name in ("analytics.balloon", "analytics.reportNearByProjectClass"):
         assert name not in bnmap.REPORT_METHODS, f"{name} зовётся, хотя данных не даёт"
+
+
+def test_the_ladder_of_price_by_format_is_drawn_and_the_slope_is_counted() -> None:
+    """Дешевеет ли метр с ростом лота — вопрос, который задать было нечем.
+
+    Владелец, 31.08.2026: «мелкие лоты продаются безумно дёшево за метр, это
+    точно на графике должно быть видно». Цену метра по комнатности «Пульс» не
+    отдаёт вовсе; у bnMAP она есть по каждому проекту выборки, и наклон
+    лестницы считает сервер: у рынка он отрицательный (за доступность малого
+    лота платят премией к метру), плоский или растущий означает, что лестницы
+    нет.
+    """
+    # Живые числа 31.08.2026: у Веера метр падает на четверть, у Кутузов Сити
+    # растёт — линия перевёрнута относительно рынка.
+    assert bnmap._rooms_slope({"metrprice_avg_st": 626191, "metrprice_avg_4": 464107}) == -25.9
+    assert bnmap._rooms_slope({"metrprice_avg_st": 764610, "metrprice_avg_4": 780937}) == 2.1
+    # Студий в проекте нет — базой становится однушка, а не ноль: иначе
+    # лестница объявляется отвесной там, где её просто не с чем сравнить.
+    assert bnmap._rooms_slope({"metrprice_avg_1": 534629, "metrprice_avg_4": 476502}) == -10.9
+    assert bnmap._rooms_slope({"metrprice_avg_st": 0, "metrprice_avg_4": 0}) is None
+    row = bnmap._metric_row(CARD, "Объект", 0, "2026-08-25")
+    assert row["rooms_slope_pct"] is not None
+
+    # Цена сделок по формату — годовым срезом: у формата бывает две сделки в
+    # месяц, и помесячная линия прыгала бы составом проданного.
+    deals = bnmap._deal_rooms({"years": [
+        {"year": 2025, "1": 668598, "2": 667865, "st": 0},
+        {"year": 2026, "1": 686087, "2": 734921, "3": 787165, "st": 0},
+    ]})
+    assert deals == {"1": 686087.0, "2": 734921.0, "3": 787165.0}, deals
+    assert "st" not in deals, "ноль принят за цену"
+
+    page = cabinet.cabinet_page("market")
+    assert page.count("function roomsChart(") == 1
+    script = re.search(r"<script>(.*?)</script>", bnmap_ui.markup(), re.S).group(1)
+    assert "roomsChart(market, data.deal_rooms" in script
+    assert "Лестница цены по формату" in script
+
+
+def test_the_ladder_chart_draws_every_project_and_the_deals_line(tmp_path) -> None:
+    """Проверяем рисунком, а не строкой: линия на проект плюс пунктир сделок."""
+    import json
+
+    page = cabinet.cabinet_page("market")
+    start = page.index("function roomsChart(")
+    depth, index = 0, page.index("{", start)
+    for position in range(index, len(page)):
+        if page[position] == "{":
+            depth += 1
+        elif page[position] == "}":
+            depth -= 1
+            if depth == 0:
+                body = page[start:position + 1]
+                break
+    consts = [line for line in page.splitlines()
+              if line.startswith(("const num=", "const esc=", "const PICKED=", "const ROOM_STEPS="))]
+    rows = [
+        {"name": "Объект", "__own": True,
+         "rooms": {"st": 764610, "1": 758421, "2": 675137, "3": 688265, "4": 780937}},
+        {"name": "Сосед", "rooms": {"st": 626191, "1": 541152, "2": 484851, "4": 464107}},
+    ]
+    deals = {"1": 686087, "2": 734921, "3": 787165}
+    script = ("\n".join(consts) + "\n" + body
+              + f"\nconst out=roomsChart({json.dumps(rows, ensure_ascii=False)},"
+              + f"{json.dumps(deals)});"
+              + "console.log(JSON.stringify({paths:(out.match(/<path/g)||[]).length,"
+              + "dots:(out.match(/<circle/g)||[]).length,deals:out.includes('наши сделки'),"
+              + "own:out.includes('font-weight=\"600\"')}));")
+    path = tmp_path / "ladder.js"
+    path.write_text(script, encoding="utf-8")
+    done = subprocess.run([_node(), str(path)], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    drawn = json.loads(done.stdout)
+    assert drawn["paths"] == 3, "должно быть две линии проектов и пунктир сделок"
+    assert drawn["deals"] and drawn["own"]
+    assert drawn["dots"] >= 12

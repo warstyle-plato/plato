@@ -807,6 +807,11 @@ def _metric_row(card: dict[str, Any], name: str, distance: Any, observed: str,
         "lot_area_avg": _float(total.get("square_avg")),
         "rooms": {key.replace("metrprice_avg_", ""): _float(value)
                   for key, value in price.items() if key != "metrprice_avg_total"},
+        # Наклон лестницы: во сколько метр крупного формата дешевле метра
+        # самого мелкого. У рынка он отрицательный — покупатель приходит с
+        # бюджетом, и за доступность малого лота платят премией к метру.
+        # Ноль и плюс означают, что лестницы нет или она перевёрнута.
+        "rooms_slope_pct": _rooms_slope(price),
         # Бюджет лота: минимум, средняя, максимум. Это РУБЛИ ЗА ЛОТ, а не цена
         # метра — в колонки «мин» и «макс» отчёта они не идут, там ₽/м².
         # Своей строкой они отвечают на вопрос, которого у «Пульса» нет вовсе:
@@ -831,6 +836,23 @@ def _metric_row(card: dict[str, Any], name: str, distance: Any, observed: str,
         "discount": card.get("discount"),
         "discount_terms": card.get("desc"),
     }
+
+
+def _rooms_slope(price: dict[str, Any]) -> float | None:
+    """Наклон цены метра от самого мелкого формата к самому крупному, %.
+
+    База — студии, а если их в проекте нет, однокомнатные: у проекта без студий
+    сравнивать не с чем, и подставить туда ноль значило бы объявить лестницу
+    отвесной. Верх — 4к+, при их отсутствии 3к.
+    """
+    def at(key: str) -> float | None:
+        return _float((price or {}).get(f"metrprice_avg_{key}")) or None
+
+    base = at("st") or at("1")
+    top = at("4") or at("3")
+    if not base or not top:
+        return None
+    return round((top / base - 1) * 100, 1)
 
 
 def _float(value: Any) -> float | None:
@@ -945,6 +967,29 @@ def _deal_series(data: Any) -> list[dict[str, Any]]:
 _ROOMS_IN_DEALS: tuple[tuple[str, str], ...] = (
     ("st", "студии"), ("1", "1к"), ("2", "2к"), ("3", "3к"), ("4", "4к"),
 )
+
+
+def _deal_rooms(data: Any) -> dict[str, float]:
+    """Цена сделок по комнатности за последний известный год.
+
+    Годовой срез, а не помесячный: у формата бывает две-три сделки в месяц, и
+    линия по ним прыгала бы составом проданного, а не ценой. Берётся последний
+    год ряда — тот, с которым сравнивают сегодняшний прайс.
+    """
+    years = (data or {}).get("years") if isinstance(data, dict) else None
+    if not isinstance(years, list) or not years:
+        return {}
+    last = max((row for row in years if isinstance(row, dict)),
+               key=lambda row: _float(row.get("year")) or 0, default=None)
+    if not last:
+        return {}
+    out: dict[str, float] = {}
+    for key, _ in _ROOMS_IN_DEALS:
+        value = _float(last.get(key))
+        # Ноль — «сделок такой комнатности не было», а не цена: точка не ставится.
+        if value:
+            out[key] = value
+    return out
 
 
 def _exposure_series(location: Any) -> list[dict[str, Any]]:
@@ -1095,6 +1140,7 @@ def clone_report(data_dir: Any, query: str, *, base: str = "msk", date: str = ""
         "found": found,
         "rooms_balance": rooms_balance,
         "deal_series": _deal_series(deal_prices),
+        "deal_rooms": _deal_rooms(deal_prices),
         "rooms_bands": _rooms_bands(rooms_balance),
         "deal_prices": deal_prices,
         "indicators": session.call("analytics.indicators", {"_base": base, "date": asked}),
