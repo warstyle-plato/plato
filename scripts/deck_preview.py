@@ -118,12 +118,24 @@ def render(path: str, out_dir: str) -> list[str]:
                 back = colour(slide.background.fill.fore_color)
         except Exception:  # noqa: BLE001
             pass
+        # Картинки рисуются: без них титул выглядит так же, как титул без
+        # эмблемы, и починка не видна.
         parts = [f'<div class="slide" style="width:{width}px;height:{height}px;'
                  f'background:{back}">']
         for shape in slide.shapes:
             left, top = inches(shape.left) * PX, inches(shape.top) * PX
             w, h = inches(shape.width) * PX, inches(shape.height) * PX
             style = f"position:absolute;left:{left:.1f}px;top:{top:.1f}px;width:{w:.1f}px"
+            if shape.__class__.__name__ == "Picture":
+                import base64 as _b64
+                blob = shape.image.blob
+                kind = shape.image.content_type or "image/png"
+                data = _b64.b64encode(blob).decode("ascii")
+                parts.append(
+                    f'<img src="data:{kind};base64,{data}" style="position:absolute;'
+                    f'left:{inches(shape.left) * PX}px;top:{inches(shape.top) * PX}px;'
+                    f'width:{inches(shape.width) * PX}px;height:{inches(shape.height) * PX}px">')
+                continue
             if shape.has_chart:
                 parts.append(f'<div style="{style};height:{h:.1f}px">'
                              + chart_svg(shape.chart, w, h) + "</div>")

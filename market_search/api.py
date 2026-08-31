@@ -573,12 +573,18 @@ def install(app: FastAPI) -> MarketDiscoveryService:
         subtitle = str((payload or {}).get("subtitle") or "").strip()
         footer = str((payload or {}).get("footer") or title).strip()
 
+        # Эмблема берётся тем же крючком, что карта и картинки отчёта: она
+        # лежит в `PAGE`, и копии у неё нет — её негде было бы обновлять.
+        fetch = getattr(service, "local_asset", None)
+        logo = fetch("/guide/assets/logo.webp") if fetch is not None else None
+
         def collect() -> bytes:
             # Разделы берутся из той же разметки, что печатается в PDF: каждое
             # число слайда буквально взято со строки экрана. Собирать колоду
             # «по тем же данным» значило бы завести вторую реализацию отчёта.
             return sales_deck.build(sales_deck.sections(body),
-                                    title=title, subtitle=subtitle, footer=footer)
+                                    title=title, subtitle=subtitle, footer=footer,
+                                    logo=logo)
 
         try:
             raw = await run_in_threadpool(collect)

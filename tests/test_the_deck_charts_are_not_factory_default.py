@@ -874,3 +874,52 @@ def test_the_deck_wears_the_palette_of_the_report() -> None:
     assert "0xF6, 0xF9, 0xFC" in source, "подложка плашки вывода"
     assert "0x33, 0x42, 0x4F" in source, "текст вывода"
     assert "def put_note(" in source, "вывод рисуется плашкой, а не строкой"
+
+
+def test_the_deck_carries_the_emblem_and_does_not_say_the_name_twice() -> None:
+    """Эмблема одна на все поверхности, и она лежит в `PAGE`.
+
+    У колоды её не было вовсе — лист без неё не опознаётся как наш («нет
+    стилистики Плато», владелец, 31.08.2026). Байты идут тем же крючком, что
+    карта и картинки отчёта: копии у эмблемы нет, её негде было бы обновлять.
+
+    Формат при этом переводится, а не глушится. Эмблема у нас в WebP —
+    страницы его берут, PowerPoint нет, и первая версия прятала отказ за
+    `except: pass`: эмблема просто не появлялась, то есть молчаливый пропуск
+    вместо перевода.
+    """
+    import io
+
+    from pptx import Presentation
+
+    page = {"title": "Динамика", "note": "Темп растёт.", "charted": True,
+            "lines": [], "strips": [],
+            "tables": [{"head": ["Месяц", "млн ₽"],
+                        "rows": [["2026-01", "30,5"], ["2026-02", "60,5"]]}]}
+
+    def built(logo):
+        raw = sales_deck.build([dict(page)], title="Продажи", subtitle="срез",
+                               footer="DevelopAid", logo=logo)
+        deck = Presentation(io.BytesIO(raw))
+        first = deck.slides[0]
+        pictures = [s for s in first.shapes if s.__class__.__name__ == "Picture"]
+        texts = [s.text_frame.text.strip() for s in first.shapes
+                 if s.has_text_frame and s.text_frame.text.strip()]
+        return pictures, texts
+
+    import main_registry
+
+    emblem = main_registry._local_asset("/guide/assets/logo.webp")
+    assert emblem, "эмблема не отдаётся крючком — на слайде её взять неоткуда"
+
+    pictures, texts = built(emblem)
+    assert len(pictures) == 1, "эмблемы на титуле нет"
+    # WebP переведён: формат слайда его не знает, и картинка иначе не встала бы.
+    assert pictures[0].image.content_type in ("image/png", "image/jpeg")
+    # Под картинкой со словом ПЛАТО строка «DEVELOPAID» — то же слово дважды.
+    assert "DEVELOPAID" not in texts, texts
+
+    # Эмблемы нет — надзаголовок остаётся: имя отчёта назвать всё равно надо.
+    bare_pictures, bare_texts = built(None)
+    assert bare_pictures == []
+    assert "DEVELOPAID" in bare_texts, bare_texts

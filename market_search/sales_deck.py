@@ -630,7 +630,36 @@ def _combo(chart: Any, *, primary: int, secondary: int) -> None:
     axis("c:catAx", _SEC_CAT_AX, _SEC_VAL_AX, position="b", deleted="1")
 
 
-def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str) -> bytes:
+def _slide_picture(raw: bytes) -> Any:
+    """Картинка в том виде, который понимает формат слайда.
+
+    Эмблема у нас в WebP — страницы его берут, а PowerPoint нет: `add_picture`
+    знает PNG, JPEG и ещё несколько, и на WebP бросает. Первая версия глушила
+    это `except: pass`, и эмблема просто не появлялась — молчаливый пропуск
+    вместо перевода, то есть ровно та ошибка, которую мы ловим везде. Формат
+    переводится; не переводится — эмблемы не будет, но и колода не упадёт из-за
+    одной картинки.
+    """
+    if not raw:
+        return None
+    if raw[:8] == b"\x89PNG\r\n\x1a\n" or raw[:3] == b"\xff\xd8\xff":
+        return io.BytesIO(raw)
+    try:
+        from PIL import Image
+    except ImportError:  # pragma: no cover - в образе PIL есть
+        return None
+    try:
+        with Image.open(io.BytesIO(raw)) as image:
+            out = io.BytesIO()
+            image.convert("RGBA" if "A" in image.getbands() else "RGB").save(out, "PNG")
+    except Exception:  # noqa: BLE001 - битая картинка не должна ронять колоду
+        return None
+    out.seek(0)
+    return out
+
+
+def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str,
+          logo: bytes | None = None) -> bytes:
     """Колода из разобранных разделов. Ни одного числа здесь не считается."""
     try:
         from pptx import Presentation
@@ -1078,7 +1107,25 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
     # подзаголовок. «Максимально похожий на PDF» (владелец, 31.08.2026), а PDF
     # у нас белый — тёмный лист ему противоречил.
     first = deck.slides.add_slide(blank)
-    top = eyebrow_line(first, footer, top=1.35)
+    top = 1.35
+    stamped = False
+    if logo:
+        # Эмблема одна на все поверхности, и она лежит в `PAGE`. Колода брала
+        # её ниоткуда — то есть не брала вовсе, и лист без неё не опознавался
+        # как наш («нет стилистики Плато», владелец, 31.08.2026). Байты идут
+        # тем же крючком, что карта и картинки отчёта: копии у эмблемы нет.
+        picture = _slide_picture(logo)
+        if picture is not None:
+            first.shapes.add_picture(picture, Inches(0.6), Inches(top - 0.62),
+                                     height=Inches(0.34))
+            # Эмблема и надзаголовок несут одно и то же имя: под картинкой со
+            # словом ПЛАТО строка «DEVELOPAID» — то же слово второй раз.
+            # Линейка шапки остаётся: она отбивает заголовок.
+            rule(first, top=top + 0.3, colour=ink)
+            top += 0.42
+            stamped = True
+    if not stamped:
+        top = eyebrow_line(first, footer, top=top)
     textbox(first, title, top=top, size=32, colour=ink, bold=True, height=0.95)
     top += 1.05
     if subtitle:
