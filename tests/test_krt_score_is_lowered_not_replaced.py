@@ -46,7 +46,9 @@ def page_functions() -> str:
     script = auctions_page()
     script = script[script.rindex("<script>") + len("<script>"):script.rindex("</script>")]
     out = []
-    for name in ("krtFit", "krtPenalty", "krtScore", "krtScoreNote"):
+    # `krtIntent` появилась вместе со снижениями за оператора и городские
+    # нужды: балл теперь читает и то, что сказано в источнике о самой площадке.
+    for name in ("krtFit", "krtIntent", "krtPenalty", "krtScore", "krtScoreNote"):
         start = script.index(f"function {name}(")
         depth = 0
         for position in range(script.index("{", start), len(script)):
@@ -64,14 +66,16 @@ def page_functions() -> str:
     return "\n".join(out)
 
 
-def score(model: dict | None, rank: dict | None = None, site: dict | None = None) -> dict:
+def score(model: dict | None, rank: dict | None = None, site: dict | None = None,
+          intent: dict | None = None) -> dict:
     node = shutil.which("node")
     if not node:
         pytest.skip("node недоступен")
     stub = (
-        "const state={krtModels:{},krtRank:{}};\n"
+        "const state={krtModels:{},krtRank:{},krtRequirements:{}};\n"
         f"state.krtModels['site']={json.dumps(model)};\n"
         f"state.krtRank['site']={json.dumps(rank or {})};\n"
+        f"state.krtRequirements['site']={json.dumps(intent and {'intent': intent} or {})};\n"
         "const document={getElementById:()=>({value:'housing_ready'})};\n"
         "const $=()=>({value:'housing_ready'});\n"
         "function fmtArea(v){return String(v)}\n"

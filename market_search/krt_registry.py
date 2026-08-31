@@ -436,7 +436,8 @@ class KrtRegistry:
                         pdf_data = self.fetch(pdf_url)
                         if len(pdf_data) > 35 * 1024 * 1024:
                             raise RuntimeError("PDF проекта решения превышает 35 МБ")
-                        facts = parse_decision_requirements(pdf_text(pdf_data))
+                        facts = parse_decision_requirements(
+                            pdf_text(pdf_data), str(decision.get("title") or ""))
                         decision_meta = {
                             "id": document_id,
                             "title": decision.get("title"),
