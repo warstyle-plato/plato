@@ -164,10 +164,55 @@ def test_a_section_without_words_does_not_get_an_empty_slide() -> None:
         assert len(filled) > 2, "слайд с одним заголовком и номером"
 
 
-def test_the_reader_is_told_once_not_on_every_chart() -> None:
-    """Сноска под каждым графиком повторялась двадцать раз и стала шумом."""
-    source = (ROOT / "market_search" / "sales_deck.py").read_text(encoding="utf-8")
-    assert source.count("правятся в PowerPoint") == 1
+def test_the_deck_adds_no_words_of_its_own() -> None:
+    """«Зачем ты там вставляешь свои комментарии — разве это есть в PDF?»
+    (владелец, 31.08.2026).
+
+    Колода печатает тот же отчёт, что и PDF, и обе поверхности получают одну
+    разметку. Строка, которой в отчёте нет, на слайде читается как часть
+    отчёта — а её там нет. Сначала сноска стояла под каждым графиком, потом
+    переехала на титул одной строкой; и то и другое — наши слова в чужом
+    документе.
+    """
+    import io
+
+    from pptx import Presentation
+
+    html = ('<div class="kv"><div><div>Договоров</div><div>76</div><div></div></div>'
+            '<div><div>Выручка</div><div>2 345,3 млн ₽</div><div></div></div></div>'
+            '<section class="salesblock"><h3>Динамика</h3>'
+            '<div class="sumup">Темп растёт.</div>'
+            '<table><thead><tr><th>Месяц</th><th>млн ₽</th></tr></thead><tbody>'
+            '<tr><td>2026-01</td><td>30,5</td></tr>'
+            '<tr><td>2026-02</td><td>60,5</td></tr></tbody></table></section>')
+    pages = sales_deck.sections(html)
+    deck = Presentation(io.BytesIO(sales_deck.build(
+        pages, title="Продажи — Кутузов Сити",
+        subtitle="Свод продаж DevelopAid · срез 2026-08-27", footer="DevelopAid")))
+
+    # Всё, что стоит на слайдах, обязано быть в разметке отчёта. Исключения —
+    # только служебное: имя отчёта, подзаголовок, колонтитул и номер листа.
+    # Служебное — имя отчёта, его подзаголовок, колонтитул и номер листа.
+    # Всё это слова вызывающего, то есть самого отчёта, а не колоды.
+    allowed = {text.casefold() for text in (
+        "Продажи — Кутузов Сити",
+        "Свод продаж DevelopAid · срез 2026-08-27",
+        "DevelopAid",
+        "DevelopAid · Продажи — Кутузов Сити"
+        " · Свод продаж DevelopAid · срез 2026-08-27",
+        "1", "2",
+    )}
+    source = html.lower()
+    for slide in deck.slides:
+        for shape in slide.shapes:
+            if not shape.has_text_frame:
+                continue
+            for line in shape.text_frame.text.splitlines():
+                text = line.strip()
+                if not text or text.casefold() in allowed:
+                    continue
+                assert text.casefold() in source, (
+                    f"слова, которых нет в отчёте: {text!r}")
 
 
 def test_the_price_per_metre_rides_as_a_line_not_its_own_slide() -> None:

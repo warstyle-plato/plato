@@ -38,9 +38,6 @@ ROWS_PER_SLIDE = 13
 # Текстовых строк раздела на слайде. Раздел, у которого таблицы нет вовсе
 # (полосы долей), живёт своими подписями — они и есть его числа.
 LINES_PER_SLIDE = 10
-# Надзаголовок печатной шапки: у отчёта он один на документ, у колоды — на
-# каждом листе, потому что лист ходит отдельно от колоды.
-DECK_EYEBROW = "Свод продаж DevelopAid"
 # Содержимое начинается под шапкой — надзаголовок, линейка, заголовок.
 CONTENT_TOP = 1.5
 
@@ -595,7 +592,10 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         заголовок, колонтитул. Номер листа живёт в колонтитуле, а не углом:
         на бумаге он стоит там же."""
         slide = deck.slides.add_slide(blank)
-        top = eyebrow_line(slide, section or DECK_EYEBROW, top=0.42)
+        # Надзаголовок несёт слова отчёта, а не наши: имя раздела, а на его
+        # первом листе — подзаголовок самого свода. Придуманная строка на
+        # слайде читается как часть отчёта, которой в отчёте нет.
+        top = eyebrow_line(slide, section or subtitle or footer, top=0.42)
         textbox(slide, heading, top=top, size=26, colour=ink, bold=True, height=0.75)
         footer_line(slide, len(deck.slides))
         return slide
@@ -904,7 +904,7 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
     # подзаголовок. «Максимально похожий на PDF» (владелец, 31.08.2026), а PDF
     # у нас белый — тёмный лист ему противоречил.
     first = deck.slides.add_slide(blank)
-    top = eyebrow_line(first, footer or DECK_EYEBROW, top=1.35)
+    top = eyebrow_line(first, footer, top=1.35)
     textbox(first, title, top=top, size=32, colour=ink, bold=True, height=0.95)
     top += 1.05
     if subtitle:
@@ -921,10 +921,8 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         # Помечаем взятую полку: повторённая через слайд, она читается как
         # вторые числа о том же.
         shelf["used"] = True
-        top = put_shelf(first, shelf, top=top + 0.1)
-    textbox(first,
-            "Слайды настоящие: таблицы, графики и полосы правятся в PowerPoint.",
-            top=top + 0.2, size=11, colour=dim, height=0.4)
+        put_shelf(first, shelf, top=top + 0.1)
+
     # На титуле имя отчёта уже стоит заголовком: повторённое колонтитулом,
     # оно читается как заводская рамка. Номер листа остаётся.
     footer_line(first, 1, name=False)
