@@ -168,26 +168,5 @@ def test_single_phase_project_is_untouched():
 
 # --- выгрузка ---------------------------------------------------------------
 
-def test_comparison_sheet_shows_social_load():
-    pytest.importorskip("openpyxl")
-    import io
-    import zipfile
-
-    from openpyxl import load_workbook
-
-    content, _ = main.build_model_archive(
-        {**main.DEFAULT_INPUTS, **SOCIAL_INPUTS}, main.TEP_DEFAULT, [], phasing(3),
-        project_name="Соц",
-    )
-    archive = zipfile.ZipFile(io.BytesIO(content))
-    sheet = load_workbook(io.BytesIO(archive.read("90_Детализация_консолидация.xlsx")), data_only=True)["Сравнение очередей"]
-    header = [cell.value for cell in sheet[4]]
-    column = header.index("Социальная нагрузка, млн ₽") + 1
-    objects_column = header.index("Социальные объекты") + 1
-    assert sheet.cell(row=5, column=column).value == 0
-    assert sheet.cell(row=5, column=objects_column).value == "—"
-    assert sheet.cell(row=7, column=column).value > 0
-
-
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

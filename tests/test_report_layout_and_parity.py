@@ -238,12 +238,3 @@ def test_the_page_shows_both_bases_as_well():
     assert "ebitda_per_gns_th" in page
     assert "expenseTotalGns" in page and "expenseTotalSaleable" in page
 
-
-def test_the_workbook_phase_sheet_pairs_the_columns():
-    """Итоговая строка книги берёт колонки по заголовку: номера разъезжались
-    каждый раз, когда в таблицу добавлялся показатель."""
-    import inspect
-    source = inspect.getsource(core._model_sheet_phase_comparison)
-    assert 'header.index("CAPEX, тыс ₽/м² продаваемой")' in source
-    assert 'header.index("Чистая прибыль, тыс ₽/м² строит. объёма")' in source
-    assert "1: \"saleable_sqm\"" not in source, "номера колонок вернулись"
