@@ -2077,13 +2077,24 @@ async function loadContracting(file){
 // раз, а не при каждом открытии кабинета (владелец, 26.08.2026). Пустой склад
 // — это «ещё не грузили», а не «продаж нет», и так и написано.
 async function loadStoredSales(){
+  // «Не спросили» и «не загружено» — разные ответы, и молчание выдаёт первое за
+  // второе: страница оставалась со строкой «Смотрю, что уже загружено…»
+  // навсегда, и отличить закрытый ключом кабинет от пустого склада было нечем.
+  const box=$('#overviewBody');
+  const failed=why=>{ if(box)box.innerHTML='<b>Склад не ответил.</b> '+esc(why)
+    +' Это не значит, что источников нет: их не удалось спросить.'; };
   try{
     const r=await fetch('/cabinet/sales/summary');
-    if(!r.ok) return;
+    if(!r.ok){
+      failed(r.status===401||r.status===403
+        ?'Кабинет закрыт ключом — войдите и обновите страницу.'
+        :`Ядро ответило кодом ${r.status}.`);
+      return;
+    }
     const d=await r.json();
     if(d&&!d.empty) showSales(d);
     else renderOverview(null);
-  }catch(_){ /* кабинет может быть закрыт ключом — это не поломка экрана */ }
+  }catch(e){ failed(String(e&&e.message||e)+'.') }
 }
 
 let salesSourcesSeen='';
@@ -2546,8 +2557,14 @@ const PLAN_METRICS=[
   {key:'amount', name:'млн ₽', axis:v=>num(v/1e6),      show:v=>num(v/1e6,1)+' млн ₽'},
   {key:'area',   name:'м²',    axis:v=>num(v),          show:v=>num(v)+' м²'},
 ];
-function salesPlansChart(quarters, metric){
-  const rows=quarters.map(q=>({
+// Строки квартального графика. Объявлены отдельно, потому что их читают двое:
+// сама картинка и таблица под ней. Пока сборка строк жила внутри графика, блок
+// продолжал ссылаться на `rows` из чужой области видимости — и падал
+// `ReferenceError` ровно тогда, когда планы прочитаны, то есть на настоящем
+// проекте. Экран при этом не «ломался наполовину»: `renderSales` обрывался, и
+// от отчёта не оставалось ничего (владелец, 31.08.2026).
+function salesPlansRows(quarters, metric){
+  return quarters.map(q=>({
     label:q.label, short:q.label.replace(' ',''),
     value:q['fact_'+metric.key], pale:q.partial,
     fm:q['fm_'+metric.key], bank:q['bank_'+metric.key],
@@ -2555,6 +2572,10 @@ function salesPlansChart(quarters, metric){
     over:q.partial?'часть':'',
     tip:q.label+': факт '+metric.show(q['fact_'+metric.key])+(q.partial?' (месяцев в квартале — '+q.months+')':''),
   }));
+}
+
+function salesPlansChart(quarters, metric){
+  const rows=salesPlansRows(quarters, metric);
   const lines=[{key:'fm',name:'план ФМ',color:'#C4581B'},
                {key:'bank',name:'план банка',color:'#8E7CC3',dash:true}];
   return barChart(rows,{lines,axis:metric.axis,show:metric.show,factName:'факт',
@@ -2573,6 +2594,7 @@ function salesPlansBlock(d){
   const quarters=(plans.quarters||[]);
   if(quarters.length<2) return '';
   const metric=PLAN_METRICS.find(m=>m.key===plansMetric)||PLAN_METRICS[0];
+  const rows=salesPlansRows(quarters, metric);
   // На бумагу идут обе меры: переключателя в документе нет.
   let html=salesPlansChart(quarters, metric);
   const rest=PLAN_METRICS.filter(m=>m.key!==metric.key);
@@ -2695,22 +2717,15 @@ function renderOverview(d){
   return;
  }
  if(head)head.textContent='Кабинет'+(d.project?' · '+d.project:'');
- const t=d.total||{}, whole=(d.pool||{}).total||{};
- const tile=(name,value,sub)=>`<div><div class="muted" style="font-size:12px">${esc(name)}</div>`
-  +`<div style="font-size:18px;font-weight:600">${value}</div>`
-  +(sub?`<div class="muted" style="font-size:11.5px;margin-top:2px">${esc(sub)}</div>`:'')+'</div>';
- const share=whole.amount_share===null||whole.amount_share===undefined
-  ?'план не прочитан':num(whole.amount_share*100,1)+'% ожидаемой выручки';
- const day=String((d.sources||[]).map(s=>String(s.at||'').slice(0,10)).filter(Boolean).sort().pop()||'');
- const notes=(d.missing||[]).length;
- box.innerHTML='<div class="kv">'
-   +tile('Договоров',num(t.contracts))
-   +tile('Выручка',num(t.amount/1e6,1)+' млн ₽',share)
-   +tile('На эскроу',num(t.escrow/1e6,1)+' млн ₽')
-   +tile('Источников',num((d.sources||[]).length),day?'последний срез '+day:'')
-   +'</div>'
-   +(notes?`<div class="muted" style="font-size:12px;margin-top:8px">Не прочитано: ${notes} `
-     +`${plural(notes,'источник','источника','источников')} — подробности ниже в отчёте.</div>`:'');
+ // Плиток с числами здесь больше нет. Пока отчёт был свёрнут, они были
+ // единственными числами на странице; развёрнутый отчёт несёт те же договоры,
+ // выручку и эскроу строкой ниже — и своей долей от пула проекта, чего у этих
+ // плиток не было. Два одинаковых числа подряд читаются как два разных.
+ const n=(d.sources||[]).length, notes=(d.missing||[]).length;
+ box.innerHTML=`Прочитано ${num(n)} ${plural(n,'источник','источника','источников')}`
+   +' — числа ниже, в отчёте.'
+   +(notes?` Не прочитано: ${notes} `
+     +`${plural(notes,'источник','источника','источников')} — подробности в отчёте.`:'');
  // Кнопок «открыть отчёт» тут больше нет: отчёты — это страницы, и вход в них
  // стоит в меню коммерции. Кнопка, раскрывающая блок на той же странице,
  // читалась как переход, которого не было (владелец, 30.08.2026).
@@ -2720,19 +2735,17 @@ function renderSales(d){
   const t=d.total||{}, box=$('#sales'), pool=d.pool||{}, whole=pool.total||{};
   const byProduct={}; (pool.products||[]).forEach(p=>{byProduct[p.product]=p});
   const share=v=>v===null||v===undefined?'':num(v*100,1)+'%';
-  // Отчёт закрыт при открытии страницы. Кабинет начинается с рынка, а свод
-  // продаж — это отдельная работа на десять экранов: развёрнутый, он занимал
-  // страницу целиком ещё до того, как человек решил на него смотреть
-  // (владелец, 27.08.2026: «чтобы его не было видно сразу приоткрытой
-  // страницы»). Данные при этом посчитаны и лежат готовыми — свёрнут показ, а
-  // не разбор.
-  const t0=d.total||{};
-  let html='<details class="salesreport" id="sales"><summary>'
-    +'<b>Отчёт о продажах ПЛАТО</b>'
-    +'<span class="muted">'+(d.project?esc(d.project)+' · ':'')
-    +num(t0.contracts)+' '+plural(t0.contracts,'договор','договора','договоров')
-    +' · '+num(t0.amount/1e6,1)+' млн ₽</span></summary>'
-    +'<div class="card"><div class="blockhead"><h2 style="margin:0">Продажи проекта'
+  // Отчёт РАЗВЁРНУТ. Свёрнут он был 27.08.2026 по причине, которой больше нет:
+  // тогда свод жил на общей странице кабинета рядом с отчётом о рынке и занимал
+  // её целиком ещё до того, как человек решил на него смотреть. С 30.08.2026
+  // кабинет разнесён на три страницы, и на `/cabinet/sales` этот отчёт —
+  // единственное, зачем сюда приходят: свёрнутый, он превращал страницу в одну
+  // серую строку («а куда вообще отчёт делся о продажах? там нет ничего на
+  // вкладке», владелец, 31.08.2026). Правило то же, по которому со свода сняли
+  // кнопки «открыть отчёт»: складка внутри страницы читается как переход,
+  // которого не было. Свои складки у таблиц внутри разделов остаются — они
+  // прячут числа под уже показанной картинкой, а не отчёт под его именем.
+  let html='<div class="card" id="salesreport"><div class="blockhead"><h2 style="margin:0">Продажи проекта'
     +(d.project?' — '+esc(d.project):'')+'</h2>'
     +'<div class="noprint"><button type="button" class="pdfbtn" id="salespdf">Скачать PDF</button>'
     +' <button type="button" class="pdfbtn" id="salesppt">Презентация</button></div>'
@@ -2860,13 +2873,7 @@ function renderSales(d){
      +`<textarea id="salesq" rows="3" placeholder="Например: чем объяснить разрыв между планом банка и фактом?">${esc(SALES_ASKS[0].text)}</textarea>`
      +'<button class="go" id="salesask">Спросить</button>'
      +'<div id="salesout"></div></div>';
-  box.innerHTML=html+'</div></details>';
-  // Пришли по ссылке контура «Отчёт о продажах» — отчёт открыт. Свёрнутый
-  // отчёт под такой ссылкой читается как переход, который не произошёл.
-  if(location.hash==='#sales'){
-    const card=document.getElementById('sales');
-    if(card){card.open=true; card.scrollIntoView({block:'start'})}
-  }
+  box.innerHTML=html+'</div>';
   $('#salesask').onclick=askPlatoSales;
   // Дата среза — самая свежая из источников: два файла разных дат, поданных
   // как один проект, — худший исход, и в документе это должно быть видно.
