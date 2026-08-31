@@ -47,7 +47,7 @@ __DEVELOPAID_CONTOUR__
              title="Мелкие площадки отсекаются по объёму жилья. Площадка, у которой объём жилья не указан, при непустом пороге прячется — она не «маленькая», она неизвестная, и сколько таких скрыто, написано под таблицей.">
       <select id="krtStage" title="Воронка: mos.ru показывает территорию раньше всех, ГИС Торги — позже всех">
         <option value="">Шаг: любой</option>
-        <option value="decision">Есть решение о КРТ</option>
+        <option value="decision">Есть проект решения о КРТ</option>
         <option value="upcoming">Объявлено о торгах</option>
         <option value="auction">Лот опубликован</option>
         <option value="bidding">Идёт аукцион</option>
@@ -71,7 +71,7 @@ __DEVELOPAID_CONTOUR__
     <div id="krtFilterNote" class="source" style="margin:6px 2px"></div>
     <div id="krtRankStatus" class="notice" style="display:none"></div>
     <div id="krtDecisions" class="notice" style="display:none"></div>
-    <div class="layout"><div class="tablewrap"><table><thead><tr><th data-sort="name">Проект КРТ</th><th data-sort="score">Оценка Платона</th><th data-sort="ceiling" title="Предельная цена входа при LLCR 1,20x: на метр продаваемой площади и всего по проекту">Потолок цены входа</th><th data-sort="llcr" title="LLCR проекта из посчитанной модели. Прочерк — модель не считалась: это «не знаем», а не ноль, и при сортировке такие строки уходят вниз при любом направлении">LLCR</th><th data-sort="margin" title="Маржинальность до неизвестных обязательств">Маржа</th><th data-sort="stage" title="Шаг воронки: решение о КРТ на mos.ru → объявлено о торгах → лот опубликован (ИнвестМосква, ГИС Торги) → идёт аукцион (Росэлторг) → инвестор определён. ГИС Торги — самый поздний источник из всех">Шаг</th><th data-sort="status">Статус</th><th data-sort="decided" title="Дата проекта решения о КРТ на mos.ru. У площадки без карточки это единственная её дата">Решение</th><th data-sort="area">Площадь</th><th data-sort="total">Общий объём</th><th data-sort="housing">Жильё</th><th data-sort="jobs">Рабочие места</th></tr></thead><tbody id="krtRows"></tbody></table><div id="krtEmpty" class="empty">Открываю официальный каталог krt.mos.ru…</div></div><aside class="side" id="krtSide"><div class="empty">Выберите проект КРТ.<br>ТЭП берутся из krt.mos.ru, рынок считает существующий движок DevelopAid.</div></aside></div>
+    <div class="layout"><div class="tablewrap"><table><thead><tr><th data-sort="name">Проект КРТ</th><th data-sort="score">Оценка Платона</th><th data-sort="ceiling" title="Предельная цена входа при LLCR 1,20x: на метр продаваемой площади и всего по проекту">Потолок цены входа</th><th data-sort="llcr" title="LLCR проекта из посчитанной модели. Прочерк — модель не считалась: это «не знаем», а не ноль, и при сортировке такие строки уходят вниз при любом направлении">LLCR</th><th data-sort="margin" title="Маржинальность до неизвестных обязательств">Маржа</th><th data-sort="stage" title="Шаг воронки: проект решения о КРТ на mos.ru (самый ранний сигнал — решения ещё нет) → объявлено о торгах → лот опубликован (ИнвестМосква, ГИС Торги) → идёт аукцион (Росэлторг) → инвестор определён. ГИС Торги — самый поздний источник из всех">Шаг</th><th data-sort="status">Статус</th><th data-sort="decided" title="Дата ПРОЕКТА решения о КРТ на mos.ru: город опубликовал его для сбора мнений правообладателей, решения ещё нет. У площадки без карточки это единственная её дата">Проект решения</th><th data-sort="area">Площадь</th><th data-sort="total">Общий объём</th><th data-sort="housing">Жильё</th><th data-sort="jobs">Рабочие места</th></tr></thead><tbody id="krtRows"></tbody></table><div id="krtEmpty" class="empty">Открываю официальный каталог krt.mos.ru…</div></div><aside class="side" id="krtSide"><div class="empty">Выберите проект КРТ.<br>ТЭП берутся из krt.mos.ru, рынок считает существующий движок DevelopAid.</div></aside></div>
   </div>
   <div class="filters" id="auctionFilters">
     <select id="source"><option value="all">Все официальные источники</option><option value="investmoscow">Торги Москвы → ЭТП</option><option value="lot_online">РАД / Lot-online</option><option value="roseltorg">Росэлторг</option><option value="torgi_gov">ГИС Торги</option><option value="etp_gpb">ЭТП ГПБ</option><option value="etp_rf">ЭТП РФ</option><option value="sberbank_ast">Сбербанк-АСТ</option><option value="nistp">НИС</option></select>
@@ -609,7 +609,7 @@ const KRT_STAGES=[
  {key:'bidding', name:'Идёт аукцион',       tone:'ok'},
  {key:'auction', name:'Лот опубликован',    tone:'ok'},
  {key:'upcoming',name:'Объявлено о торгах', tone:'ok'},
- {key:'decision',name:'Есть решение о КРТ', tone:''},
+ {key:'decision',name:'Проект решения о КРТ', tone:''},
  {key:'unknown', name:'Шаг не определён',   tone:''},
 ];
 function krtStage(x){
@@ -643,7 +643,7 @@ function krtStage(x){
   why.push('в публикации: право выставят на торги');return {key:'upcoming',why};
  }
  if(intent&&intent.decision_read){why.push('прочитан проект решения о КРТ');return {key:'decision',why}}
- if(x.no_card&&x.decided_at){why.push('решение опубликовано '+krtWhen(x.decided_at));return {key:'decision',why}}
+ if(x.no_card&&x.draft_decision_at){why.push('проект решения опубликован '+krtWhen(x.draft_decision_at)+' — решения ещё нет, город собирает мнения правообладателей');return {key:'decision',why}}
  return {key:'unknown',why:['ни решения, ни лота не прочитано — это «не знаем», а не «ничего нет»']};
 }
 function krtStageCell(x){
@@ -773,7 +773,7 @@ function krtValue(x,key){
   // Площадка без карточки живёт своей датой — решением. У неё нет ни ТЭП, ни
   // балла, и по ним она уходит вниз; по дате она сравнима с остальными
   // новинками.
-  case 'decided': return Number(x.decided_at)||null;
+  case 'decided': return Number(x.draft_decision_at)||null;
   // Шаг сортируется по своему порядку, а не по алфавиту: «идёт аукцион» и
   // «есть решение» — не соседи по алфавиту, а соседи по времени.
   case 'stage': {
@@ -925,9 +925,13 @@ function renderKrt(){const a=state.krtFiltered,body=$('krtRows');body.innerHTML=
  // «в каталоге города её ещё нет».
  const lots=(state.krtTenders[x.slug]||[]).length;
  const tender=lots?`<span class="tag ok" title="Найден лот на торгах — площадку выставили">торги${lots>1?' ×'+lots:''}</span>`:'';
- const nocard=x.no_card?'<span class="tag warn" title="Проект решения опубликован'
-  +(x.decided_at?' '+krtWhen(x.decided_at):'')+', карточки в каталоге krt.mos.ru нет — ТЭП взять неоткуда">без карточки</span>':'';
- tr.innerHTML=`<td><div class="lotname">${esc(x.name)}${fresh}${tender}${nocard}</div><div class="source">${esc([x.okrug,x.district].filter(Boolean).join(' · '))}</div></td><td><span class="fit ${sc.tone}" title="${esc(title)}"><span class="light"></span>${sc.score} · ${esc(sc.label)}</span><div class="source">${esc(krtScoreNote(sc))}</div></td><td class="money">${krtRankCell(x.slug)}</td><td class="money">${krtModelCell(x.slug,'llcr')}</td><td class="money">${krtModelCell(x.slug,'margin')}</td><td>${krtStageCell(x)}</td><td>${x.decided_at?esc(krtWhen(x.decided_at)):(x.url&&x.no_card?'—':'<span class="source">—</span>')}</td><td><span class="tag ${x.status==='В реализации'?'warn':'ok'}" title="${esc(x.status==='В реализации'?'Инвестор определён — войти нельзя, площадка справочная':'Войти ещё можно')}">${esc(x.status||'—')}</span></td><td>${x.area_ha?esc(x.area_ha+' га'):'—'}</td><td>${fmtArea(x.total_gfa_sqm)}</td><td>${fmtArea(x.housing_gfa_sqm)}</td><td>${esc(x.jobs??'—')}</td>`;tr.onclick=()=>selectKrt(x);body.appendChild(tr)});renderAskContext()}
+ // Метка называет документ, а не его отсутствие: «без карточки» — это про наш
+ // каталог, а на mos.ru лежит проект решения, и это не решение (владелец,
+ // 31.08.2026). Отсутствие карточки — следствие, и оно в подсказке.
+ const nocard=x.no_card?'<span class="tag warn" title="Проект решения о КРТ опубликован'
+  +(x.draft_decision_at?' '+krtWhen(x.draft_decision_at):'')
+  +'. Решение ещё не принято — город собирает мнения правообладателей. Карточки в каталоге krt.mos.ru нет, ТЭП взять неоткуда">проект решения</span>':'';
+ tr.innerHTML=`<td><div class="lotname">${esc(x.name)}${fresh}${tender}${nocard}</div><div class="source">${esc([x.okrug,x.district].filter(Boolean).join(' · '))}</div></td><td><span class="fit ${sc.tone}" title="${esc(title)}"><span class="light"></span>${sc.score} · ${esc(sc.label)}</span><div class="source">${esc(krtScoreNote(sc))}</div></td><td class="money">${krtRankCell(x.slug)}</td><td class="money">${krtModelCell(x.slug,'llcr')}</td><td class="money">${krtModelCell(x.slug,'margin')}</td><td>${krtStageCell(x)}</td><td>${x.draft_decision_at?esc(krtWhen(x.draft_decision_at)):(x.url&&x.no_card?'—':'<span class="source">—</span>')}</td><td><span class="tag ${x.status==='В реализации'?'warn':'ok'}" title="${esc(x.status==='В реализации'?'Инвестор определён — войти нельзя, площадка справочная':'Войти ещё можно')}">${esc(x.status||'—')}</span></td><td>${x.area_ha?esc(x.area_ha+' га'):'—'}</td><td>${fmtArea(x.total_gfa_sqm)}</td><td>${fmtArea(x.housing_gfa_sqm)}</td><td>${esc(x.jobs??'—')}</td>`;tr.onclick=()=>selectKrt(x);body.appendChild(tr)});renderAskContext()}
 // Балл — потолок цены входа на метр продаваемой (решение владельца,
 // 23.08.2026). На метр, а не в абсолюте: потолок в рублях выгоден крупным
 // площадкам просто по размеру. Пустая ячейка значит «не посчитали», и это не
