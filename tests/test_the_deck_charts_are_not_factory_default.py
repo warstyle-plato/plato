@@ -282,11 +282,17 @@ def test_the_key_numbers_are_tiles_and_the_bands_are_bands() -> None:
     tones = {"%02X%02X%02X" % tuple(shape.fill.fore_color.rgb)
              for shape in filled if shape.fill.type is not None}
     assert "1367AE" in tones and "C4581B" in tones
-    # Ключевое число стоит крупно: плитка, на которую смотрят с трёх метров.
-    big = [run.font.size.pt for shape in filled if shape.has_text_frame
+    # Ключевое число стоит крупно: полка титула, на которую смотрят с трёх
+    # метров. Ищется по ВСЕМ фигурам, а не по одним автофигурам: число полки
+    # лежит своей надписью над подложкой — колонок в подложке пять, и одним
+    # текстовым полем они не набираются. Прежняя поломка («Показатель /
+    # Значение / Пояснение» таблицей) этой проверкой ловится по-прежнему:
+    # у ячеек таблицы своего text_frame среди фигур слайда нет.
+    big = [run.font.size.pt for shape in shapes if shape.has_text_frame
            for para in shape.text_frame.paragraphs for run in para.runs
-           if run.font.size]
-    assert big and max(big) >= 20
+           if run.font.size and run.font.size.pt >= 20 and any(
+               ch.isdigit() for ch in run.text)]
+    assert big, "ключевого числа крупно нет ни на одном слайде"
     # И у шапки свода на слайде имя проекта, а не слово «Раздел».
     texts = [shape.text_frame.text for shape in shapes if shape.has_text_frame]
     assert not any(text.strip() == "Раздел" for text in texts)
@@ -470,3 +476,74 @@ def test_one_chart_a_section_and_it_is_the_money_one() -> None:
         "head": ["Источник", "Обращений", "Броней"],
         "rows": [["звонок", "518", "16"], ["агент", "44", "16"]]})
     assert [item["name"] for item in counted] == ["Обращений"]
+
+
+def test_the_deck_is_laid_out_like_the_printed_report() -> None:
+    """«Мне нужен максимально похожий на PDF вариант в pp» (владелец,
+    31.08.2026).
+
+    PDF свода — это напечатанный экран, и его вёрстка объявлена в `@media
+    print` кабинета: надзаголовок прописными вразрядку под волосяной линейкой,
+    заголовок, полка ключевых чисел на подложке, колонтитул на каждой странице.
+    Колода собиралась своей вёрсткой — тёмный титул, номер листа углом, плитки
+    карточками, — и рядом с отчётом читалась как другой документ.
+
+    Проверяется то, что видно: шапка, полка и колонтитул. Числа при этом
+    по-прежнему берутся с экрана, а не считаются заново.
+    """
+    import io
+
+    from pptx import Presentation
+    from pptx.util import Pt
+
+    html = ('<div class="kv">'
+            '<div><div>Договоров</div><div>76</div><div>с начала продаж</div></div>'
+            '<div><div>Выручка</div><div>2 345,3 млн ₽</div><div>17,9%</div></div>'
+            '</div>'
+            '<section class="salesblock"><h2>Динамика</h2>'
+            '<table><thead><tr><th>Месяц</th><th>млн ₽</th></tr></thead><tbody>'
+            '<tr><td>2026-01</td><td>30,5</td></tr>'
+            '<tr><td>2026-02</td><td>60,5</td></tr></tbody></table></section>')
+
+    pages = sales_deck.sections(html)
+    deck = Presentation(io.BytesIO(sales_deck.build(
+        pages, title="Продажи — Кутузов Сити",
+        subtitle="Свод продаж DevelopAid · срез 2026-08-27", footer="DevelopAid")))
+    slides = list(deck.slides)
+    assert len(slides) >= 2
+
+    def texts(slide) -> list[str]:
+        return [shape.text_frame.text.strip() for shape in slide.shapes
+                if shape.has_text_frame]
+
+    # Колонтитул на каждом листе: лист, отделившийся от колоды, обязан сам
+    # себя нумеровать. Углового номера больше нет — в отчёте он внизу строки.
+    for number, slide in enumerate(slides, 1):
+        assert str(number) in texts(slide), f"на листе {number} нет его номера"
+
+    # Титул несёт полку показателей, и её числа — те же, что на экране.
+    title_slide = slides[0]
+    joined = " ".join(texts(title_slide))
+    assert "2 345,3 млн ₽" in joined and "76" in joined
+    panel = [shape for shape in title_slide.shapes
+             if str(shape.shape_type or "").startswith("AUTO_SHAPE")
+             and shape.width > Pt(400)]
+    assert panel, "полки показателей на титуле нет"
+
+    # Титул себя не повторяет: имя отчёта стоит заголовком, и колонтитулом
+    # оно читалось бы как заводская рамка.
+    assert sum(1 for text in texts(title_slide)
+               if "Кутузов Сити" in text) == 1
+
+    # Полка не повторяется разделом: вторые числа о том же читаются как
+    # расхождение, даже когда числа те же.
+    for slide in slides[1:]:
+        assert "2 345,3 млн ₽" not in " ".join(texts(slide))
+
+    # Надзаголовок раздела — прописными и вразрядку, как в печатной шапке.
+    section = slides[1]
+    spaced = [run for shape in section.shapes if shape.has_text_frame
+              for para in shape.text_frame.paragraphs for run in para.runs
+              if run.font._rPr.get("spc")]
+    assert spaced, "надзаголовок стоит без разрядки — прописные слипаются"
+    assert any(run.text == run.text.upper() and run.text.strip() for run in spaced)

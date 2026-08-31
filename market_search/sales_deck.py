@@ -38,6 +38,11 @@ ROWS_PER_SLIDE = 13
 # Текстовых строк раздела на слайде. Раздел, у которого таблицы нет вовсе
 # (полосы долей), живёт своими подписями — они и есть его числа.
 LINES_PER_SLIDE = 10
+# Надзаголовок печатной шапки: у отчёта он один на документ, у колоды — на
+# каждом листе, потому что лист ходит отдельно от колоды.
+DECK_EYEBROW = "Свод продаж DevelopAid"
+# Содержимое начинается под шапкой — надзаголовок, линейка, заголовок.
+CONTENT_TOP = 1.5
 
 
 class DeckUnavailable(RuntimeError):
@@ -471,20 +476,61 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         run.font.color.rgb = colour
         return box
 
-    def new_slide(heading: str, section: str = ""):
-        """Лист раздела: заголовок и номер. Имя раздела внизу не повторяем —
-        оно уже стоит заголовком, а повтор читается как заводская рамка."""
-        slide = deck.slides.add_slide(blank)
-        textbox(slide, heading, top=0.45, size=26, colour=ink, bold=True, height=0.7)
-        corner = slide.shapes.add_textbox(Inches(SLIDE_W_IN - 1.4),
-                                          Inches(SLIDE_H_IN - 0.55),
-                                          Inches(0.8), Inches(0.35))
-        paragraph = corner.text_frame.paragraphs[0]
+    def spaced(run, hundredths: int) -> None:
+        """Разрядка. python-pptx её не знает — ставим атрибут прямо в разметке:
+        прописные без разрядки в шапке слипаются в одно слово."""
+        run.font._rPr.set("spc", str(hundredths))
+
+    def rule(slide, *, top: float, colour: RGBColor, weight: float = 0.75,
+             left: float = 0.6, width: float | None = None) -> None:
+        """Волосяная линейка. В PDF ими отбиты и шапка, и колонтитул."""
+        line = slide.shapes.add_shape(
+            MSO_SHAPE.RECTANGLE, Inches(left), Inches(top),
+            Inches(width if width is not None else SLIDE_W_IN - left * 2),
+            Pt(weight))
+        line.fill.solid()
+        line.fill.fore_color.rgb = colour
+        line.line.fill.background()
+        line.shadow.inherit = False
+
+    def footer_line(slide, number: int, *, name: bool = True) -> None:
+        """Колонтитул: лист, отделившийся от колоды, обязан сам говорить, чей
+        он и на какую дату. В PDF он повторяется на каждой странице."""
+        rule(slide, top=SLIDE_H_IN - 0.62, colour=RGBColor(0xDD, 0xE5, 0xED))
+        left = slide.shapes.add_textbox(Inches(0.6), Inches(SLIDE_H_IN - 0.55),
+                                        Inches(SLIDE_W_IN - 1.8), Inches(0.35))
+        run = left.text_frame.paragraphs[0].add_run()
+        run.text = " · ".join(part for part in (footer, title, subtitle) if part) \
+            if name else ""
+        run.font.size = Pt(9)
+        run.font.color.rgb = dim
+        right = slide.shapes.add_textbox(Inches(SLIDE_W_IN - 1.4),
+                                         Inches(SLIDE_H_IN - 0.55),
+                                         Inches(0.8), Inches(0.35))
+        paragraph = right.text_frame.paragraphs[0]
         paragraph.alignment = PP_ALIGN.RIGHT
-        number = paragraph.add_run()
-        number.text = str(len(deck.slides))
-        number.font.size = Pt(10)
-        number.font.color.rgb = dim
+        page = paragraph.add_run()
+        page.text = str(number)
+        page.font.size = Pt(9)
+        page.font.color.rgb = dim
+
+    def eyebrow_line(slide, text: str, *, top: float) -> float:
+        """Надзаголовок печатной шапки: прописные вразрядку под волосяной
+        линейкой. В PDF ими открывается документ, и лист колоды открывается
+        так же — иначе слайд и страница выглядят двумя разными отчётами."""
+        box = textbox(slide, text.upper(), top=top, size=10, colour=dim, height=0.28)
+        spaced(box.text_frame.paragraphs[0].runs[0], 85)
+        rule(slide, top=top + 0.3, colour=ink)
+        return top + 0.42
+
+    def new_slide(heading: str, section: str = ""):
+        """Лист раздела в вёрстке печатного отчёта: надзаголовок, линейка,
+        заголовок, колонтитул. Номер листа живёт в колонтитуле, а не углом:
+        на бумаге он стоит там же."""
+        slide = deck.slides.add_slide(blank)
+        top = eyebrow_line(slide, section or DECK_EYEBROW, top=0.42)
+        textbox(slide, heading, top=top, size=26, colour=ink, bold=True, height=0.75)
+        footer_line(slide, len(deck.slides))
         return slide
 
     def put_table(slide, table: dict[str, Any], *, top: float, height: float) -> None:
@@ -572,6 +618,59 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
                 run.font.color.rgb = tone
         return top + 1.6
 
+    def put_shelf(slide, table: dict[str, Any], *, top: float) -> float:
+        """Полка показателей титула — та же, что в шапке печатного отчёта:
+        одна подложка, равные колонки, разделённые волосяными линейками.
+
+        Пять чисел вразброс по белому читаются как обрывки текста, а на своей
+        плашке — как одна панель. Колонки равные и разделены линейками, иначе
+        длинная сноска второго столбца перекашивает весь ряд.
+        """
+        rows = [row for row in (table.get("rows") or []) if any(row)][:5]
+        if not rows:
+            return top
+        left, width, height = 0.6, SLIDE_W_IN - 1.2, 1.25
+        panel = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(left),
+                                       Inches(top), Inches(width), Inches(height))
+        panel.fill.solid()
+        panel.fill.fore_color.rgb = RGBColor(0xF4, 0xF7, 0xFA)
+        panel.line.color.rgb = RGBColor(0xE3, 0xEB, 0xF2)
+        panel.shadow.inherit = False
+        panel.adjustments[0] = 0.04
+        column = width / len(rows)
+        for index, row in enumerate(rows):
+            if index:
+                divider = slide.shapes.add_shape(
+                    MSO_SHAPE.RECTANGLE, Inches(left + index * column),
+                    Inches(top + 0.16), Pt(0.75), Inches(height - 0.32))
+                divider.fill.solid()
+                divider.fill.fore_color.rgb = RGBColor(0xE3, 0xEB, 0xF2)
+                divider.line.fill.background()
+                divider.shadow.inherit = False
+            box = slide.shapes.add_textbox(Inches(left + index * column + 0.14),
+                                           Inches(top + 0.14),
+                                           Inches(column - 0.28), Inches(height - 0.28))
+            frame = box.text_frame
+            frame.word_wrap = True
+            # Порядок печатной плитки: число, под ним имя, под ним сноска.
+            # На экране имя стоит над числом, на бумаге — под: там первым
+            # смотрят на само число.
+            for order, (text, size, bold, tone) in enumerate((
+                    (str(row[1] if len(row) > 1 else ""), 20, True, ink),
+                    (str(row[0] if len(row) > 0 else ""), 11, False, dim),
+                    (str(row[2] if len(row) > 2 else ""), 9, False,
+                     RGBColor(0x7B, 0x8B, 0x9A)))):
+                if not text:
+                    continue
+                para = frame.paragraphs[0] if order == 0 else frame.add_paragraph()
+                para.alignment = PP_ALIGN.LEFT
+                run = para.add_run()
+                run.text = text
+                run.font.size = Pt(size)
+                run.font.bold = bold
+                run.font.color.rgb = tone
+        return top + height + 0.2
+
     def put_strip(slide, strip: dict[str, Any], *, top: float) -> float:
         """Лента долей — теми же цветами, что на экране, и с подписями.
 
@@ -593,7 +692,7 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         for item in parts:
             span = width * item["share"] / total
             block = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(left), Inches(top),
-                                           Inches(max(span, 0.02)), Inches(0.46))
+                                           Inches(max(span, 0.02)), Inches(0.62))
             block.fill.solid()
             block.fill.fore_color.rgb = RGBColor.from_string(item["colour"])
             block.line.fill.background()
@@ -613,7 +712,7 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
             else:
                 narrow.append(name)
             left += span
-        top += 0.54
+        top += 0.70
         if narrow:
             # Узкому куску имя внутрь не влезает — оно уходит строкой под
             # ленту, но только оно: остальные уже подписаны.
@@ -717,16 +816,34 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
 
     # Титул: чей отчёт и на какую дату. Слайд, отделившийся от колоды, обязан
     # сам говорить, чей он, — как лист на бумаге.
-    # Титул тёмный: он и лист «На чём посчитано» обрамляют светлую середину.
-    # Так колода читается как документ, а не как двадцать одинаковых листов.
+    # Титул — печатная шапка отчёта: надзаголовок под линейкой, крупное имя,
+    # подзаголовок. «Максимально похожий на PDF» (владелец, 31.08.2026), а PDF
+    # у нас белый — тёмный лист ему противоречил.
     first = deck.slides.add_slide(blank)
-    first.background.fill.solid()
-    first.background.fill.fore_color.rgb = deep
-    textbox(first, title, top=2.5, size=40, colour=paper, bold=True, height=1.2)
-    textbox(first, subtitle, top=3.9, size=16, colour=RGBColor(0xB6, 0xC8, 0xDA))
-    textbox(first, "Слайды настоящие: таблицы и графики правятся в PowerPoint.",
-            top=4.5, size=13, colour=RGBColor(0x8F, 0xA6, 0xBD))
-    textbox(first, footer, top=6.7, size=11, colour=RGBColor(0x8F, 0xA6, 0xBD))
+    top = eyebrow_line(first, footer or DECK_EYEBROW, top=1.35)
+    textbox(first, title, top=top, size=32, colour=ink, bold=True, height=0.95)
+    top += 1.05
+    if subtitle:
+        # Подзаголовок печатного отчёта: одна строка о том, на чём посчитано.
+        textbox(first, subtitle, top=top, size=14, colour=dim, height=0.4)
+        top += 0.5
+    # Полка показателей стоит ДО первого графика — как в отчёте: главные числа
+    # не вылавливают из картинки. Плитки берутся у того раздела, где они есть,
+    # а не считаются заново: второй счёт той же величины однажды разойдётся.
+    shelf = next((table for page in pages for table in (page.get("tables") or [])
+                  if table.get("kind") == "tiles" and any(
+                      any(row) for row in (table.get("rows") or []))), None)
+    if shelf is not None:
+        # Помечаем взятую полку: повторённая через слайд, она читается как
+        # вторые числа о том же.
+        shelf["used"] = True
+        top = put_shelf(first, shelf, top=top + 0.1)
+    textbox(first,
+            "Слайды настоящие: таблицы, графики и полосы правятся в PowerPoint.",
+            top=top + 0.2, size=11, colour=dim, height=0.4)
+    # На титуле имя отчёта уже стоит заголовком: повторённое колонтитулом,
+    # оно читается как заводская рамка. Номер листа остаётся.
+    footer_line(first, 1, name=False)
 
     for page in pages:
         # У шапки свода своего заголовка нет — она несёт ключевые числа
@@ -741,7 +858,8 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         # раздела). Слайда НЕТ, когда класть на него нечего: «Расторжения» с
         # одним заголовком и пустым полем — это не раздел, а пустой лист.
         strips = list(page.get("strips") or [])
-        tiles = [table for table in tables if table.get("kind") == "tiles"]
+        tiles = [table for table in tables
+                 if table.get("kind") == "tiles" and not table.get("used")]
         tables = [table for table in tables if table.get("kind") != "tiles"]
         # Раздел с лентой долей столбиков не получает: лента говорит то же
         # самое и теми же цветами, что на экране, а три синих столбиковых
@@ -767,7 +885,7 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         opening = None
         if rich:
             opening = new_slide(heading)
-            top = 1.3
+            top = CONTENT_TOP
             if note:
                 textbox(opening, note, top=top, size=15, colour=ink, height=0.8)
                 top += 0.95
@@ -803,7 +921,7 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         # сказать это достаточно один раз, на титуле.
         for chart in drawn:
             part = new_slide(f"{heading} · {chart['name']}", heading)
-            top = lead(part, 1.25)
+            top = lead(part, CONTENT_TOP)
             put_chart(part, chart, top=top, height=SLIDE_H_IN - top - 0.8)
 
         # Таблицы — целиком и ячейками: их и правят. Длинная продолжается
@@ -815,13 +933,14 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
                          "rows": rows[start:start + ROWS_PER_SLIDE]}
                 part = new_slide(heading + ("" if start == 0 else " · продолжение"),
                                  heading)
-                top = lead(part, 1.25)
+                top = lead(part, CONTENT_TOP)
                 put_table(part, chunk, top=top,
                           height=min(SLIDE_H_IN - top - 0.8,
                                      0.34 * (len(chunk["rows"]) + 1)))
         if carry:
             # Разделу нечего показать, кроме вывода: тогда он и есть слайд.
-            textbox(new_slide(heading), carry, top=1.4, size=20, colour=ink, height=1.6)
+            textbox(new_slide(heading), carry, top=CONTENT_TOP, size=20, colour=ink,
+                    height=1.6)
         if note and opening is not None:
             opening.notes_slide.notes_text_frame.text = note
 
