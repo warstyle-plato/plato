@@ -30733,7 +30733,7 @@ details.cadastral-box>summary::marker{color:#888}
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px"><h2 style="margin:0;font-size:17px">Настройки классов</h2><button onclick="closeClassDialog()" style="margin-left:auto;border:1px solid #ddd;background:#fff;border-radius:6px;padding:3px 10px;cursor:pointer">✕</button></div>
     <div id="classDialogBody"></div>
     <div id="classDialogNote" style="font-size:12px;margin-top:10px;color:#444"></div>
-    <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap"><button onclick="applyProjectClassPreset(document.getElementById('projectClassSelect').value);renderClassDialog()" style="border:1px solid #3b6db4;background:#fff;color:#3b6db4;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px">Вернуть ставки базы выбранного класса</button><button onclick="fillClassesFromStats()" title="Подставляет свод модуля «Статистика» во все классы как ваши значения — по каждой статье, где свод есть" style="border:1px solid #3b6db4;background:#fff;color:#3b6db4;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px">Вставить данные из статистики</button></div>
+    <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap"><button onclick="applyProjectClassPreset(document.getElementById('projectClassSelect').value);renderClassDialog()" style="border:1px solid #3b6db4;background:#fff;color:#3b6db4;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px">Вернуть ставки базы выбранного класса</button><button onclick="fillClassesFromStats()" title="Подставляет свод модуля «Статистика» во все классы как ваши значения — по каждой статье, где свод есть" style="border:1px solid #3b6db4;background:#fff;color:#3b6db4;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px">Вставить данные из статистики</button><button id="clearClassOwnButton" onclick="clearClassOverrides()" title="Убирает ВАШИ значения всех классов — таблица возвращается к общим базам DevelopAid" style="border:1px solid #c98a1b;background:#fff;color:#8a5a00;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px">Убрать мои значения</button></div>
     <div id="classSourcesBody" style="margin-top:16px"></div>
   </div>
 </div>
@@ -34239,6 +34239,28 @@ function renderClassStats(){
  if(!CLASS_STATS_BY){box.innerHTML='<div style="font-size:12px;color:#777">Загружаю свод модуля «Статистика»…</div>';return;}
  box.innerHTML='<div style="font-size:12px;color:#555">Строки «свод „Статистики“» — независимый ориентир себестоимости, посчитанный модулем «Статистика» из раскрытий источников рынка и наших данных на ТЭП этого проекта. <b>Данные — Москва и Московская область.</b> Клик по числу подставляет его классу; «Вставить данные из статистики» подставляет весь свод разом; клик по названию статьи раскрывает обоснование — источники с грейдами, диапазон рынка и положение вашего значения в нём. Как это считается — за кнопкой «Как считаются класс и сценарий»; таблица источников — на странице <a href="/statistics" target="_blank" style="color:#3b6db4">«Статистика»</a>.</div>';
 }
+
+// Поставить свои значения во все классы — одна кнопка, а снять их можно было
+// только вручную, ячейка за ячейкой: восемь статей на три класса, до двадцати
+// четырёх штук. Владелец нажал «Вставить данные из статистики», и правка базы
+// класса перестала быть видна вовсе — своё значение сильнее базы и живёт на
+// сервере, поэтому переживает выкатку (30.08.2026: «не сработало твоё 80
+// процентов от наземной»). Кнопка, у которой нет обратной, — ловушка.
+async function clearClassOverrides(){
+ if(!CLASS_OVERRIDES||!Object.keys(CLASS_OVERRIDES).length){
+  CLASS_OVERRIDES_NOTE='Своих значений классов нет — таблица и так на общих базах.';
+  renderClassDialog();return;
+ }
+ CLASS_OVERRIDES={};
+ renderProjectClassPreview();
+ renderClassDialog();
+ // Без входа хранилища нет: правка живёт до перезагрузки, и об этом уже
+ // сказано в примечании под таблицей — второй раз не повторяем.
+ if(!activeSession()&&!projectsAdminKey)return;
+ try{await projectsCall('/classes/overrides/save',{payload:{}});}
+ catch(e){CLASS_OVERRIDES_NOTE='Не сохранилось: '+(e.message||e);renderClassDialog();}
+}
+
 async function fillClassesFromStats(){
  // Кнопка «Вставить данные из статистики»: весь свод разом во все классы —
  // клики по числу остаются для точечной правки (владелец, 27.08.2026).
