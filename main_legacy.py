@@ -13847,7 +13847,8 @@ def _v4_col_number(letters: str) -> int:
 
 
 def _v4_set_or_insert_cell(
-    xml: str, coord: str, *, number: Any = None, text: str | None = None
+    xml: str, coord: str, *, number: Any = None, text: str | None = None,
+    formula: str | None = None,
 ) -> tuple[str, bool]:
     """Пишет в ячейку, а если её в XML нет — вставляет на своё место в строке.
 
@@ -13856,7 +13857,7 @@ def _v4_set_or_insert_cell(
     молча не записывалась. Порядок колонок внутри строки обязан расти, иначе
     Excel вправе счесть лист повреждённым.
     """
-    updated, done = _v4_set_cell(xml, coord, number=number, text=text)
+    updated, done = _v4_set_cell(xml, coord, number=number, text=text, formula=formula)
     if done:
         return updated, True
     letters = re.match(r"([A-Z]+)(\d+)", coord)
@@ -13867,7 +13868,9 @@ def _v4_set_or_insert_cell(
     found = row_pattern.search(xml)
     if not found:
         return xml, False
-    if text is not None:
+    if formula is not None:
+        cell = f'<x:c r="{coord}"><x:f>{xml_escape(formula)}</x:f></x:c>'
+    elif text is not None:
         cell = (f'<x:c r="{coord}" t="inlineStr">'
                 f"<x:is><x:t>{xml_escape(str(text))}</x:t></x:is></x:c>")
     else:
@@ -14317,6 +14320,82 @@ def _v4_apply_debt_carry(xml: str, phase: int, queues: int, missing: list[str]) 
     return xml
 
 
+# Выручка очереди по продуктам на листе КОНСОЛИДАТОР.
+#
+# «Выручка одной строкой не говорит, чем очередь живёт: у одной весь объём в
+# квартирах, у другой треть в офисах и ОСЗ, а маржа и риск у них разные»
+# (владелец, 23.08.2026). На экране разбивка есть, а в книге жила только в
+# выгрузке детализации — и уехала вместе с ней, когда архив очередей сняли.
+# Переносится в живую книгу: колонки Q и дальше свободны во всех строках, ряд
+# встаёт, не сдвигая ни одной ссылки.
+#
+# Числа книга считает сама, своими формулами: площадные продукты — с листа
+# «Продажи» (блок очереди через 23 строки), отдельно стоящие объекты — с листа
+# «ОБЪЕКТЫ», и там же лежит номер очереди, в которой объект финансируется.
+_V4_CONSOLIDATOR_ROWS = (4, 5, 6, 7)      # очереди 1–4
+_V4_CONSOLIDATOR_TOTAL_ROW = 8
+_V4_CONSOLIDATOR_FIRST_COL = 17           # Q — первая свободная
+_V4_SALES_PHASE_STRIDE = 23               # шаг блока очереди на листе «Продажи»
+_V4_SALES_PRODUCT_ROW = {                 # строка выручки в блоке первой очереди
+    "apartments": 16,
+    "ground_commercial": 19,
+    "underground_parking": 22,
+    "storage": 25,
+}
+_V4_OBJECT_PRODUCT_CELLS = {              # (очередь объекта, его выручка)
+    "offices": (8, 24),
+    "standalone_retail": (36, 52),
+    "above_parking": (64, 80),
+}
+
+
+def _v4_revenue_by_product(xml: str, products: list[dict[str, Any]],
+                           missing: list[str]) -> str:
+    """Колонки «Выручка · продукт» по очередям и строка итога.
+
+    Колонка заводится под продукт, у которого выручка есть хоть в одной
+    очереди: семь нулевых колонок — шум, а не полнота (то же правило, что на
+    экране). Продукт, которого книга посчитать не умеет, в `missing`, а не
+    молча пропущен: пустая колонка и отсутствующая выглядят одинаково.
+    """
+    if not products:
+        return xml
+    labels = {str(item.get("key")): str(item.get("label") or item.get("key"))
+              for item in products}
+    column = _V4_CONSOLIDATOR_FIRST_COL
+    for key in labels:
+        letter = get_column_letter(column)
+        if key in _V4_SALES_PRODUCT_ROW:
+            base = _V4_SALES_PRODUCT_ROW[key]
+            per_queue = [f"'Продажи'!$B${base + _V4_SALES_PHASE_STRIDE * index}"
+                         for index in range(len(_V4_CONSOLIDATOR_ROWS))]
+        elif key in _V4_OBJECT_PRODUCT_CELLS:
+            phase_cell, revenue_cell = _V4_OBJECT_PRODUCT_CELLS[key]
+            per_queue = [f"IF('ОБЪЕКТЫ'!$B${phase_cell}={index + 1},"
+                         f"'ОБЪЕКТЫ'!$B${revenue_cell},0)"
+                         for index in range(len(_V4_CONSOLIDATOR_ROWS))]
+        else:
+            missing.append(f"КОНСОЛИДАТОР: книга не умеет считать выручку «{labels[key]}»")
+            continue
+        xml, done = _v4_set_or_insert_cell(
+            xml, f"{letter}3", text=f"Выручка · {labels[key]}, млн ₽")
+        if not done:
+            missing.append(f"КОНСОЛИДАТОР: заголовок {letter}3 не поставлен")
+            continue
+        for row, formula in zip(_V4_CONSOLIDATOR_ROWS, per_queue):
+            xml, done = _v4_set_or_insert_cell(xml, f"{letter}{row}", formula=formula)
+            if not done:
+                missing.append(f"КОНСОЛИДАТОР: ячейка {letter}{row} не поставлена")
+        first, last = _V4_CONSOLIDATOR_ROWS[0], _V4_CONSOLIDATOR_ROWS[-1]
+        xml, done = _v4_set_or_insert_cell(
+            xml, f"{letter}{_V4_CONSOLIDATOR_TOTAL_ROW}",
+            formula=f"SUM({letter}{first}:{letter}{last})")
+        if not done:
+            missing.append(f"КОНСОЛИДАТОР: итог {letter}{_V4_CONSOLIDATOR_TOTAL_ROW}")
+        column += 1
+    return xml
+
+
 _V4_CARRY_PARITY_ROW = 85
 
 
@@ -14596,6 +14675,53 @@ def _v4_step_worksheet_xml(text: str, steps: list[tuple[float, float]],
     return _re.sub(r"<x:f>([^<]*'Вводные'!\$B\$28[^<]*)</x:f>", swap, text), counter
 
 
+def _v4_finance_hints(bundle: dict[str, Any]) -> dict[str, Any]:
+    """Контрольные числа книги из посчитанного движком — одно объявление.
+
+    Сборка жила двумя копиями: своя у выгрузки с сайта, своя у бота. Копия
+    бота отстала — в ней не было ни признака переноса долга, ни его суммы, и
+    на проекте с включённым переносом книга из чата не знала о нём вовсе, а
+    книга с сайта знала. Два достоверных на вид документа на одних вводных.
+    """
+    phases = (bundle.get("phases") or []) if isinstance(bundle, dict) else []
+    if phases:
+        hints: dict[str, Any] = {
+            "pf_limit_by_phase": [
+                float(p["result"]["finance"].get("pf_limit", 0.0)) / 1e6 for p in phases],
+            "bridge_peak_by_phase": [
+                float(p["result"]["finance"].get("peak_bridge", 0.0)) / 1e6 for p in phases],
+        }
+    else:
+        finance = ((bundle or {}).get("consolidated") or {}).get("finance") or {}
+        if not finance:
+            return {}
+        hints = {
+            "pf_limit_by_phase": [float(finance.get("pf_limit", 0.0)) / 1e6],
+            "bridge_peak_by_phase": [float(finance.get("peak_bridge", 0.0)) / 1e6],
+        }
+    hints["parity"] = _v4_parity_targets(bundle.get("consolidated") or {})
+    # Применён ли перенос — решает движок гейтом по общему LLCR, и книга этого
+    # LLCR не знает. Полагаясь на одно намерение пользователя, она перенесла бы
+    # долг там, где банк отказал, и показала бы очередь рассчитавшейся, пока
+    # отчёт зовёт её дефолтной.
+    hints["carry_applied"] = bool((bundle.get("debt_carry") or {}).get("applied"))
+    hints["carried_debt_mln"] = sum(
+        float((item.get("result") or {}).get("finance", {}).get("debt_carried_out") or 0.0)
+        for item in phases) / 1e6
+    # Выручка очереди по продуктам: книга считает её своими формулами, а отсюда
+    # берёт только список продуктов, у которых выручка есть хоть в одной
+    # очереди, и их подписи. Второй счёт той же выручки однажды разошёлся бы с
+    # первым, и обе строки выглядели бы верными.
+    rows = bundle.get("comparison") or []
+    products = ((bundle.get("consolidated") or {}).get("report") or {}).get("products") or []
+    hints["revenue_products"] = [
+        {"key": str(item.get("key")), "label": str(item.get("label") or item.get("key"))}
+        for item in products
+        if any(float((row.get("revenue_by_product") or {}).get(str(item.get("key"))) or 0.0) > 0.0
+               for row in rows)]
+    return hints
+
+
 def build_project_workbook(
     inputs: dict[str, Any],
     tep: dict[str, dict[str, Any]],
@@ -14619,39 +14745,8 @@ def build_project_workbook(
     # движка книга остаётся на собственных формулах долей.
     if finance_hints is None:
         try:
-            _hint_bundle = _run_authoritative_model(
-                inputs or {}, tep or {}, rates or [], phasing or {})
-            _hint_phases = _hint_bundle.get("phases") or []
-            if _hint_phases:
-                finance_hints = {
-                    "pf_limit_by_phase": [
-                        float(p["result"]["finance"].get("pf_limit", 0.0)) / 1e6
-                        for p in _hint_phases],
-                    "bridge_peak_by_phase": [
-                        float(p["result"]["finance"].get("peak_bridge", 0.0)) / 1e6
-                        for p in _hint_phases],
-                }
-            else:
-                _hint_fin = _hint_bundle["consolidated"]["finance"]
-                finance_hints = {
-                    "pf_limit_by_phase": [float(_hint_fin.get("pf_limit", 0.0)) / 1e6],
-                    "bridge_peak_by_phase": [float(_hint_fin.get("peak_bridge", 0.0)) / 1e6],
-                }
-            finance_hints["parity"] = _v4_parity_targets(_hint_bundle["consolidated"])
-            # Сколько движок переносит между очередями — контрольное число для
-            # своей строки ПРОВЕРОК. Итоги проекта перенос почти не двигает: он
-            # меняет, КТО платит, поэтому прежние строки паритета его не ловят.
-            # Применён ли перенос — решает движок гейтом по общему LLCR, и
-            # книга этого LLCR не знает. Полагаясь на одно намерение
-            # пользователя, она перенесла бы долг там, где банк отказал, —
-            # и показала бы очередь рассчитавшейся, пока отчёт зовёт её
-            # дефолтной.
-            finance_hints["carry_applied"] = bool(
-                (_hint_bundle.get("debt_carry") or {}).get("applied"))
-            finance_hints["carried_debt_mln"] = sum(
-                float((p_item.get("result") or {}).get("finance", {}).get(
-                    "debt_carried_out") or 0.0)
-                for p_item in _hint_phases) / 1e6
+            finance_hints = _v4_finance_hints(_run_authoritative_model(
+                inputs or {}, tep or {}, rates or [], phasing or {}))
         except Exception:
             finance_hints = {}
     p = phasing or {}
@@ -15064,6 +15159,13 @@ def build_project_workbook(
         cf_sheet_xml[_name] = _v4_apply_debt_carry(
             source.read(_path).decode("utf-8"), _phase, _queue_count, missing)
 
+    # Выручка очереди по продуктам: на экране разбивка есть, а в книге жила
+    # только в снятой выгрузке детализации.
+    consolidator_sheet_path = _v4_sheet_path(source, "КОНСОЛИДАТОР")
+    consolidator_xml = _v4_revenue_by_product(
+        source.read(consolidator_sheet_path).decode("utf-8"),
+        list((finance_hints or {}).get("revenue_products") or []), missing)
+
     checks_sheet_path = _v4_sheet_path(source, "ПРОВЕРКИ")
     checks_xml = source.read(checks_sheet_path).decode("utf-8")
     _parity = (finance_hints or {}).get("parity") or {}
@@ -15386,6 +15488,8 @@ def build_project_workbook(
                 payload = sources_xml.encode("utf-8")
             elif item.filename == checks_sheet_path:
                 payload = checks_xml.encode("utf-8")
+            elif item.filename == consolidator_sheet_path:
+                payload = consolidator_xml.encode("utf-8")
             elif item.filename in cf_sheet_paths.values():
                 payload = cf_sheet_xml[
                     next(k for k, v in cf_sheet_paths.items() if v == item.filename)
@@ -18267,28 +18371,7 @@ def _telegram_send_attachments(
         # книга тогда собирается без подсказок, но обязана собраться.
         workbook_hints = None
         try:
-            hint_phases = (bundle.get("phases") or []) if isinstance(bundle, dict) else []
-            if hint_phases:
-                workbook_hints = {
-                    "pf_limit_by_phase": [
-                        float(p["result"]["finance"].get("pf_limit", 0.0)) / 1e6
-                        for p in hint_phases],
-                    "bridge_peak_by_phase": [
-                        float(p["result"]["finance"].get("peak_bridge", 0.0)) / 1e6
-                        for p in hint_phases],
-                }
-            else:
-                _fin = ((bundle or {}).get("consolidated") or {}).get("finance") or {}
-                if _fin:
-                    workbook_hints = {
-                        "pf_limit_by_phase": [float(_fin.get("pf_limit", 0.0)) / 1e6],
-                        "bridge_peak_by_phase": [float(_fin.get("peak_bridge", 0.0)) / 1e6],
-                    }
-            if workbook_hints is not None and isinstance(bundle, dict):
-                # Контрольные числа для parity-блока ПРОВЕРОК: движок уже
-                # посчитан — книга получает те же цели, что видел PDF.
-                workbook_hints["parity"] = _v4_parity_targets(
-                    bundle.get("consolidated") or {})
+            workbook_hints = _v4_finance_hints(bundle) or None
         except Exception:
             workbook_hints = None
         model_bytes, model_filename, model_meta = build_project_workbook(
