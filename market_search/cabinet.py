@@ -2422,7 +2422,11 @@ function salesDemandBlock(d){
     return out+'</div></div>';
   };
   let html=strip('Просят', b=>b.asked_share, 'запросы из CRM')
-    +strip('Осталось показывать', b=>b.left_share, 'витрина на сегодня');
+    +strip('Осталось показывать', b=>b.left_share, 'витрина на сегодня')
+    // Третья полоса — деньги: сколько запросов дотягивается до входа в каждую
+    // полосу по цене остатка. Дефицит в витрине и недоступность по бюджету —
+    // разные причины «не покупают», и по двум полосам они неразличимы.
+    +strip('Хватает бюджета', b=>b.budget_reach_share, 'запросы, дотянувшиеся до входа');
   html+='<div class="muted" style="font-size:12px;margin:6px 0 0">';
   bands.forEach((b,i)=>{ html+=`<span style="margin-right:12px;white-space:nowrap">`
     +`<span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${SALES_COLORS[i%SALES_COLORS.length]};margin-right:4px"></span>`
@@ -2432,13 +2436,30 @@ function salesDemandBlock(d){
     html+='<div class="muted" style="font-size:12.5px;margin-top:10px">О чём спрашивают: '
       +want.wants.map(w=>esc(w.want)+' — '+num(w.deals)).join(', ')+'.</div>';
   }
+  // Где кончается медианный бюджет — числом и словами. Считает сервер: на
+  // экране этой арифметике места нет.
+  const cut=want.budget_cut||{};
+  if(cut.reach_sqm){
+    html+=`<div class="say watch" style="margin-top:10px"><b>⚠️ Деньги</b> `
+      +`Медианный бюджет ${num(cut.budget_median/1e6,1)} млн ₽ по цене остатка — это `
+      +`${num(cut.reach_sqm,0)} м². `
+      +((cut.closed_bands||[]).length
+        ? `Ценой закрыты полосы ${esc(cut.closed_bands.join(', '))} м²`
+          +(cut.closed_left_share?` — ${num(cut.closed_left_share*100,0)} % витрины.`:'.')
+        : 'Все полосы витрины в бюджет укладываются.')
+      +`</div>`;
+  }
   html+='<details style="margin-top:8px"><summary>Полосы числами</summary>'
-    +salesTable(['Полоса, м²','Просят','Доля спроса','Осталось','Доля витрины','₽/м² в книге'],
+    +salesTable(['Полоса, м²','Просят','Доля спроса','Осталось','Доля витрины','₽/м² в книге',
+                 'Вход, млн ₽','Хватает бюджета'],
       bands.map(b=>[esc(b.band), num(b.asked),
         b.asked_share===null?'—':num(b.asked_share*100,1)+'%',
         b.left_units===null||b.left_units===undefined?'—':num(b.left_units),
         b.left_share===null||b.left_share===undefined?'—':num(b.left_share*100,1)+'%',
-        b.price_per_sqm?num(b.price_per_sqm):'—']))
+        b.price_per_sqm?num(b.price_per_sqm):'—',
+        b.entry_amount?num(b.entry_amount/1e6,1):'—',
+        b.budget_reach_share===null||b.budget_reach_share===undefined
+          ?'—':num(b.budget_reach_share*100,0)+'%']))
     +'</details>';
   // Оговорки приходят с сервера: они про то, чего в данных нет, и придумывать
   // их на экране значит обещать разбор, которого не было. Первая — на виду:
