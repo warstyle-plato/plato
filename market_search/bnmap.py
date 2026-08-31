@@ -919,6 +919,46 @@ def _exposure_series(location: Any) -> list[dict[str, Any]]:
     return out
 
 
+def _rooms_bands(rows: Any) -> list[dict[str, Any]]:
+    """Квартирография bnMAP в том виде, в каком её рисует свод продаж.
+
+    Полосы там — площади из книги финмодели; здесь их роль играют типы квартир,
+    которыми делит сам источник. Доли считаются здесь, рядом с рядом: на
+    странице им считаться негде — она показывает, а не считает.
+
+    Пул НЕ складывается из проданного и остатка: что именно значит «в продаже»
+    у источника — выставлено сейчас или всего в проекте, — мы живым ответом не
+    проверяли, и сумма двух колонок под именем «пул проекта» была бы нашей
+    догадкой. Поэтому полос две: как покупают и что осталось показывать.
+    """
+    bands: list[dict[str, Any]] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        sold = _float(row.get("pdoCount")) or 0.0
+        left = _float(row.get("pboLeft")) or 0.0
+        if not sold and not left:
+            continue
+        bands.append({"band": _room_title(row.get("type")),
+                      "pool_units": None, "sold_units": sold, "left_units": left,
+                      "pool_share": None, "skew": None})
+    sold_all = sum(band["sold_units"] for band in bands)
+    left_all = sum(band["left_units"] for band in bands)
+    for band in bands:
+        band["sold_share"] = band["sold_units"] / sold_all if sold_all else None
+        band["left_share"] = band["left_units"] / left_all if left_all else None
+    return bands
+
+
+_ROOM_TITLES = {"st": "студии", "0": "студии", "1": "1к", "2": "2к", "3": "3к",
+                "4": "4к", "5": "5к+"}
+
+
+def _room_title(value: Any) -> str:
+    key = str(value or "").strip().lower()
+    return _ROOM_TITLES.get(key, key or "—")
+
+
 def clone_report(data_dir: Any, query: str, *, base: str = "msk", date: str = "",
                  codes: list[str] | None = None, radius_km: float | None = None) -> dict[str, Any]:
     """Действующий отчёт, собранный на bnMAP: те же блоки, тот же счёт.
@@ -1002,9 +1042,11 @@ def clone_report(data_dir: Any, query: str, *, base: str = "msk", date: str = ""
     # отдают агрегаты по тем же сделкам бесплатно. Спрашиваются только по
     # объекту оценки: по каждому соседу это ещё два запроса на строку.
     object_key = {"objectId": str(found["object_id"]), "regionAlias": base}
+    rooms_balance = session.call("v2.reports.getReportSalesBalancesTypeRooms", object_key)
     return {
         "found": found,
-        "rooms_balance": session.call("v2.reports.getReportSalesBalancesTypeRooms", object_key),
+        "rooms_balance": rooms_balance,
+        "rooms_bands": _rooms_bands(rooms_balance),
         "deal_prices": session.call("v2.reports.getReportSalesBalancesPriceInDeals", object_key),
         "indicators": session.call("analytics.indicators", {"_base": base, "date": asked}),
         "subject": subject,
