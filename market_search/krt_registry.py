@@ -213,7 +213,10 @@ class KrtRegistry:
                 seen_urls.add(url)
                 page, url = parse_catalogue(self.fetch(url).decode("utf-8", errors="replace"))
                 if not page:
-                    direct_complete = True
+                    # Неразобранная страница — не конец каталога. Конец
+                    # объявляет сам сайт отсутствием ссылки «показать ещё»;
+                    # пустой разбор посреди обхода значит, что страница не
+                    # прочиталась, и помечать усечённый список полным нельзя.
                     break
                 new_rows = [row for row in page if row.slug not in seen_slugs]
                 rows.extend(new_rows)
@@ -228,16 +231,29 @@ class KrtRegistry:
         # The renderer preserves the official page text and links. Pagination
         # has no reliable final-page marker, so a repeated page is the stop.
         try:
+            previous: list[str] | None = None
             for page_number in range(1, max_pages + 1):
                 suffix = "" if page_number == 1 else f"?PAGEN_1={page_number}"
                 document = self.fetch(JINA_PREFIX + CATALOGUE_URL + suffix).decode(
                     "utf-8", errors="replace"
                 )
                 page = parse_catalogue_markdown(document)
-                new_rows = [row for row in page if row.slug not in seen_slugs]
-                if not page or not new_rows:
-                    persist(complete=bool(rows))
+                slugs = [row.slug for row in page]
+                # Конец — повтор предыдущей страницы, а не «нет новых
+                # площадок». Прямой путь мог оборваться на середине, и тогда
+                # первая же страница запасного состоит из уже прочитанных:
+                # обход останавливался на ней и объявлял усечённый список
+                # полным. Пустая первая страница — отказ рендерера, а не конец.
+                if slugs and previous is not None and slugs == previous:
+                    persist(complete=True)
                     return rows
+                if not page:
+                    if previous is None:
+                        break
+                    persist(complete=True)
+                    return rows
+                previous = slugs
+                new_rows = [row for row in page if row.slug not in seen_slugs]
                 rows.extend(new_rows)
                 seen_slugs.update(row.slug for row in new_rows)
                 persist(complete=False)
