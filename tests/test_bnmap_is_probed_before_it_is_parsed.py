@@ -157,6 +157,21 @@ def test_the_login_step_fills_submits_and_leaves_no_login_in_the_answer(
     источник. Заодно видно главное: логин, который страница напечатала на себе,
     в ответ пробы не попадает.
     """
+    import pytest
+
+    # Без браузера это ПРОПУСК, а не зелёный прогон на пустом месте: на раннере
+    # GitHub Chromium не ставится, и проба честно отвечает «Playwright
+    # недоступен» — тест валился на этом ответе, будто вход не сработал.
+    pytest.importorskip("playwright.sync_api")
+    import browser_launch
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as playwright:
+        try:
+            browser_launch.launch(playwright).close()
+        except Exception as exc:  # noqa: BLE001
+            pytest.skip(f"Chromium недоступен: {exc}")
+
     login, password = "someone@example-tenant.ru", "s3cret-not-real"
     monkeypatch.setenv("BNMAP_LOGIN", login)
     monkeypatch.setenv("BNMAP_PASSWORD", password)
