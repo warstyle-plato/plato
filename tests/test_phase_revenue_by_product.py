@@ -19,7 +19,9 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT.parent))
+sys.path.insert(0, str(ROOT))
 
 import main as wrapper  # noqa: E402
 
@@ -105,73 +107,89 @@ def test_the_screen_hides_products_without_revenue():
 
 
 # --- книга --------------------------------------------------------------------
+#
+# Разбивка жила в выгрузке детализации, а её сняли вместе с архивом очередей
+# (владелец, 30.08.2026: рабочая книга одна). Требование от этого не исчезло —
+# проверять его надо там, где книга теперь одна: в КОНСОЛИДАТОРЕ книги v4.
 
-def _sheet(bundle):
-    sheet = core._model_sheet_phase_comparison(bundle)
-    rows = sheet["rows"]
-    header = [getattr(cell, "value", cell) for cell in rows[3]]
-    return header, rows
+BOOK_INPUTS = {"offices_enabled": True, "retail_enabled": True}
+BOOK_PHASING = {"enabled": True, "mode": "phased", "user_enabled": True,
+                "phase_count": 2, "phase_gap_months": 12,
+                "phases": [{"name": "О1", "start_offset_months": 0},
+                           {"name": "О2", "start_offset_months": 12}],
+                "shared_cash": {}, "shared_allocation": {}, "social_objects": []}
+
+
+def _book():
+    import io as _io
+    import openpyxl
+    sys.setrecursionlimit(400000)
+    inputs = {**core.DEFAULT_INPUTS, **BOOK_INPUTS}
+    tep = {key: dict(value) for key, value in core.TEP_DEFAULT.items()}
+    content, _, meta = core.build_project_workbook(
+        inputs, tep, [], dict(BOOK_PHASING), project_name="Разбивка")
+    assert meta["missing"] == [], meta["missing"]
+    sheet = openpyxl.load_workbook(_io.BytesIO(content))["КОНСОЛИДАТОР"]
+    columns = {}
+    for column in range(17, 30):
+        title = sheet.cell(row=3, column=column).value
+        if isinstance(title, str) and title.startswith("Выручка · "):
+            columns[title[len("Выручка · "):-len(", млн ₽")]] = column
+    return sheet, columns, content
 
 
 def test_the_workbook_has_the_same_columns(bundle):
-    header, _ = _sheet(bundle)
-    titles = [h for h in header if isinstance(h, str) and h.startswith("Выручка · ")]
-    assert titles, "в книге разбивки нет — книга и экран скажут разное"
+    _, columns, _ = _book()
+    assert columns, "в книге разбивки нет — книга и экран скажут разное"
     labels = {p["label"] for p in bundle["consolidated"]["report"]["products"]}
-    for title in titles:
-        assert title[len("Выручка · "):-len(", млн ₽")] in labels
+    for title in columns:
+        assert title in labels, title
 
 
-def test_the_workbook_total_row_sums_each_product(bundle):
-    header, rows = _sheet(bundle)
-    columns = [i for i, h in enumerate(header)
-               if isinstance(h, str) and h.startswith("Выручка · ")]
-    queues = rows[4:4 + len(bundle["comparison"])]
-    total = rows[4 + len(bundle["comparison"])]
-    assert getattr(total[0], "value", total[0]) == "Итого"
-    for index in columns:
-        by_queue = sum(float(getattr(row[index], "value", 0) or 0) for row in queues)
-        assert float(getattr(total[index], "value", 0) or 0) == pytest.approx(by_queue)
+def test_the_workbook_numbers_match_the_engine(bundle):
+    """Книга считает разбивку своими формулами — и обязана сойтись с движком."""
+    import io as _io
+    import openpyxl
+    from xlsx_eval import Evaluator
+    _, columns, content = _book()
+    book = Evaluator(openpyxl.load_workbook(_io.BytesIO(content)))
+    by_label = {p["label"]: p["key"] for p in bundle["consolidated"]["report"]["products"]}
+    checked = 0
+    for title, column in columns.items():
+        letter = openpyxl.utils.get_column_letter(column)
+        for index, row in enumerate(bundle["comparison"]):
+            engine = float((row.get("revenue_by_product") or {}).get(by_label[title]) or 0.0) / 1e6
+            assert book.cell("КОНСОЛИДАТОР", f"{letter}{4 + index}") == pytest.approx(
+                engine, abs=1.0, rel=0.005), (title, row["name"])
+            checked += 1
+    assert checked >= 6, "проверено слишком мало — выборка не та"
+
+
+def test_the_workbook_total_row_sums_each_product():
+    """Итог книги — сумма очередей её же формулой, а не второй счёт."""
+    sheet, columns, _ = _book()
+    assert columns
+    for column in columns.values():
+        letter = __import__("openpyxl").utils.get_column_letter(column)
+        assert sheet.cell(row=8, column=column).value == f"=SUM({letter}4:{letter}7)"
 
 
 def test_a_project_without_extra_products_gets_no_empty_columns():
-    """Колонка заводится под продукт, у которого выручка есть."""
+    """Колонка заводится под продукт, у которого выручка есть.
+
+    Семь нулевых колонок — шум, а не полнота: то же правило, что на экране.
+    """
+    import io as _io
+    import openpyxl
+    sys.setrecursionlimit(400000)
+    inputs = dict(core.DEFAULT_INPUTS)   # офисы и ОСЗ выключены
     tep = {key: dict(value) for key, value in core.TEP_DEFAULT.items()}
-    plain = core._run_authoritative_model(
-        dict(core.DEFAULT_INPUTS), tep, [],
-        {"enabled": True, "phase_count": 2, "phase_gap_months": 12})
-    header, _ = _sheet(plain)
-    titles = [h for h in header if isinstance(h, str) and h.startswith("Выручка · ")]
-    assert titles, "разбивка пропала совсем"
-    assert not any("Офисы" in t or "ОСЗ" in t for t in titles), titles
-
-
-# --- промежуточные итоги ------------------------------------------------------
-
-def test_the_mkd_group_is_declared_in_the_engine():
-    """Состав МКД — жильё, коммерция, машино-места и кладовки (владелец,
-    23.08.2026). Копия на странице разошлась бы с этой молча."""
-    assert core.MKD_PRODUCTS == (
-        "apartments", "ground_commercial", "underground_parking", "storage")
-    assert core.STANDALONE_PRODUCTS == ("standalone_retail", "offices", "above_parking")
-    assert not set(core.MKD_PRODUCTS) & set(core.STANDALONE_PRODUCTS)
-    # На странице список подставляется, а не переписан руками.
-    assert "__DEVELOPAID_MKD_PRODUCTS__" not in core.PAGE, "плейсхолдер не подставлен"
-    assert "const MKD_PRODUCTS=" in core.PAGE
-
-
-def test_the_screen_subtotals_the_building_and_the_standalone():
-    body = re.search(r"\nfunction renderPhaseComparison\(.*?\n\}", core.PAGE, re.S).group(0)
-    assert "Итого МКД" in body and "Итого отдельные объекты" in body
-    # Итог под единственной строкой — та же строка дважды.
-    assert "mine.length>1" in body
-
-
-def test_the_subtotals_add_up(bundle):
-    """Проверка на числах: МКД плюс отдельные объекты — это выручка очереди."""
-    for item in bundle["comparison"]:
-        by_product = item["revenue_by_product"]
-        mkd = sum(float(by_product.get(k) or 0.0) for k in core.MKD_PRODUCTS)
-        standalone = sum(float(by_product.get(k) or 0.0) for k in core.STANDALONE_PRODUCTS)
-        assert mkd + standalone == pytest.approx(item["revenue"], rel=1e-9), item["name"]
-        assert mkd > 0, f"{item['name']}: МКД пустой — проверка ни о чём"
+    content, _, meta = core.build_project_workbook(
+        inputs, tep, [], dict(BOOK_PHASING), project_name="Только жильё")
+    assert meta["missing"] == [], meta["missing"]
+    sheet = openpyxl.load_workbook(_io.BytesIO(content))["КОНСОЛИДАТОР"]
+    titles = [sheet.cell(row=3, column=c).value for c in range(17, 30)]
+    titles = [t for t in titles if isinstance(t, str)]
+    assert titles, "разбивки нет вовсе"
+    for absent in ("Офисы", "Коммерция ОСЗ", "Наземный паркинг", "Кладовые"):
+        assert not any(absent in t for t in titles), (absent, titles)

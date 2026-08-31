@@ -164,34 +164,6 @@ def test_strategy_is_explicit_and_independent_by_default_in_queue_tab():
     assert "будущая прибыль" in page
 
 
-def test_excel_uses_the_same_queue_funding_rows(nagatino):
-    bundle = calculate_nagatino(nagatino, "unified_project_cash", fourth_offset=60)
-    assert bundle["consolidated"]["phase_financing"] == bundle["phase_financing"]
-    sheet = core._model_sheet_phase_comparison(bundle)
-    header = [cell.value for cell in sheet["rows"][3]]
-    for label in (
-        "Затраты до РНС, млн ₽", "Свободный cash проекта, млн ₽",
-        "Собственные средства, млн ₽", "Новый БРИДЖ, млн ₽", "Пик ПФ, млн ₽",
-    ):
-        assert label in header
-    fourth = sheet["rows"][7]
-    by_header = {label: fourth[index].value for index, label in enumerate(header)}
-    funding = bundle["phase_financing"]["rows"][3]
-    assert by_header["Свободный cash проекта, млн ₽"] == pytest.approx(
-        funding["project_cash_used"] / 1_000_000, abs=0.0001)
-    assert by_header["Новый БРИДЖ, млн ₽"] == pytest.approx(
-        funding["new_bridge"] / 1_000_000, abs=0.0001)
-
-
-def test_monthly_excel_exposes_project_cash_and_own_funds(nagatino):
-    bundle = calculate_nagatino(nagatino, "unified_project_cash", fourth_offset=60)
-    phase_four = bundle["phases"][3]["result"]
-    sheet = core._model_sheet_monthly(phase_four)
-    header = [cell.value for cell in sheet["rows"][2]]
-    assert "Свободный cash проекта" in header
-    assert "Собственные средства" in header
-
-
 def test_preset_import_keeps_strategy_and_defaults_to_independent():
     from project_preset import map_phasing
 

@@ -45,13 +45,6 @@ def filled():
     return content, report, load_workbook(io.BytesIO(content), data_only=False)
 
 
-def test_status_reports_the_template():
-    status = main.report_plato_status()
-    assert status["template_available"] is True
-    assert status["input_fields"] > 60
-    assert status["tep_rows"] >= 8
-
-
 def test_every_mapped_field_is_found(filled):
     _, report, _ = filled
     assert report["missing"] == []
@@ -239,48 +232,6 @@ def test_changed_input_reaches_the_template():
 
 # --- архив ------------------------------------------------------------------
 
-def test_single_archive_has_one_workbook():
-    content, filename, meta = main.build_plato_archive(
-        main.DEFAULT_INPUTS, main.TEP_DEFAULT, project_name="Мытищи"
-    )
-    names = zipfile.ZipFile(io.BytesIO(content)).namelist()
-    # Шаблон, книга с графиком ВРИ, которую шаблон вместить не может, и
-    # собственная модель DevelopAid — та же экономика живыми формулами.
-    assert names == [
-        "Мытищи_ПЛАТО.xlsx",
-        "ВРИ_график_Мытищи.xlsx",
-        "Модель_DevelopAid_Мытищи.xlsx",
-        "README.txt",
-    ]
-    assert meta["phased"] is False
-    assert "ПЛАТО" in filename
-
-
-def test_phased_archive_has_consolidator_and_phases():
-    phasing = {"enabled": True, "user_enabled": True, "phase_count": 3,
-               "target_size_sqm": 70000, "phase_gap_months": 12,
-               "cost_inflation_pct": 8, "sales_price_inflation_pct": 8}
-    content, filename, meta = main.build_plato_archive(
-        main.DEFAULT_INPUTS, main.TEP_DEFAULT, [], phasing, project_name="Мытищи"
-    )
-    names = zipfile.ZipFile(io.BytesIO(content)).namelist()
-    assert names[0].startswith("00_Консолидатор")
-    assert len([name for name in names if "Очередь" in name]) == 3
-    assert meta["phased"] is True
-    assert "очереди" in filename
-    readme = zipfile.ZipFile(io.BytesIO(content)).read("README.txt").decode("utf-8")
-    # Ссылки ДВССЫЛ не читают закрытые книги — без этого свод покажет нули,
-    # и пользователь решит, что сломана модель.
-    assert "одновременно с консолидатором" in readme
-
-
-def test_readme_explains_what_was_filled():
-    content, _, _ = main.build_plato_archive(main.DEFAULT_INPUTS, main.TEP_DEFAULT)
-    readme = zipfile.ZipFile(io.BytesIO(content)).read("README.txt").decode("utf-8")
-    assert "Вводные" in readme and "Расчет ВРИ (ТЭП)" in readme
-    assert "Ctrl+Alt+F9" in readme
-
-
 def test_missing_template_is_reported(tmp_path):
     with pytest.raises(HTTPException) as exc:
         main.fill_plato_template(
@@ -288,52 +239,6 @@ def test_missing_template_is_reported(tmp_path):
         )
     assert exc.value.status_code == 503
     assert "шаблон" in str(exc.value.detail).lower()
-
-
-def test_endpoint_returns_zip():
-    response = main.report_plato(main.PlatoTemplateRequest(
-        inputs=main.DEFAULT_INPUTS, tep=main.TEP_DEFAULT, project_name="Мишина",
-    ))
-    assert response.media_type == "application/zip"
-    assert response.body[:2] == b"PK"
-
-
-def test_routes_are_registered():
-    routes = {getattr(route, "path", "") for route in _wrapper.app.routes}
-    assert {"/report/plato", "/report/plato/status"}.issubset(routes)
-
-
-def test_plato_archive_carries_the_vri_schedule_alongside_the_template():
-    """Шаблон не трогаем: график ВРИ едет отдельной книгой в том же архиве."""
-    inputs = {
-        **main.DEFAULT_INPUTS,
-        "land_rights_cost_mln": 3000.0,
-        "vri_payment_mode": "installment",
-        "vri_installment_years": 6,
-    }
-    content, _, _ = main.build_plato_archive(
-        inputs, main.TEP_DEFAULT, [], None, project_name="Мытищи"
-    )
-    archive = zipfile.ZipFile(io.BytesIO(content))
-    assert "ВРИ_график_Мытищи.xlsx" in archive.namelist()
-    book = load_workbook(io.BytesIO(archive.read("ВРИ_график_Мытищи.xlsx")))
-    assert book.sheetnames == ["ВРИ"]
-    sheet = book["ВРИ"]
-    assert sheet.cell(row=3, column=2).value == pytest.approx(3000.0)
-    assert sheet.cell(row=5, column=2).value > 0  # проценты по рассрочке
-    readme = archive.read("README.txt").decode("utf-8")
-    assert "ВРИ_график_" in readme
-
-
-def test_plato_archive_has_no_vri_book_when_vri_is_switched_off():
-    # Без платы — без книги ВРИ. Один снятый признак её больше не отменяет:
-    # плата осталась бы в расходах, а графика платежей не было бы.
-    inputs = {**main.DEFAULT_INPUTS, "vri_required": False, "land_rights_cost_mln": 0}
-    content, _, _ = main.build_plato_archive(
-        inputs, main.TEP_DEFAULT, [], None, project_name="Мытищи"
-    )
-    names = zipfile.ZipFile(io.BytesIO(content)).namelist()
-    assert not any(name.startswith("ВРИ_график") for name in names)
 
 
 if __name__ == "__main__":

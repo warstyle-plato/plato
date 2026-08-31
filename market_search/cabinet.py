@@ -562,6 +562,7 @@ __DEVELOPAID_CONTOUR__
     <div id="hintout"></div>
   </div>
   </details>
+__DEVELOPAID_BNMAP__
   <div id="out"></div>
 <!--/MARKET-->
 <!--SALES-->
@@ -3751,6 +3752,8 @@ def cabinet_page(view: str = "home") -> str:
     import management_contour
     import plato_question
 
+    from . import bnmap_ui
+
     if view not in _KEEP:
         raise ValueError(f"неизвестный вид кабинета: {view}")
     here = VIEWS[view][0]
@@ -3766,6 +3769,10 @@ def cabinet_page(view: str = "home") -> str:
         .replace("__DEVELOPAID_CONTOUR_STYLE__", management_contour.STYLE)
         .replace(management_contour.PLACEHOLDER, contour)
         .replace(LEGAL_FOOTER_PLACEHOLDER, legal_footer())
+        # Второй источник стоит РЯДОМ с отчётом и подписан тестовым:
+        # пока «Пульс» и bnMAP не сверены на живых числах, в сборке
+        # отчёта менять нечего (владелец, 30.08.2026).
+        .replace(bnmap_ui.PLACEHOLDER, bnmap_ui.markup())
     )
 
 
