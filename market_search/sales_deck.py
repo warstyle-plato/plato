@@ -116,10 +116,21 @@ class _Sections(HTMLParser):
             return
         if self._svg_depth:
             return
-        if tag in self._SKIP or "noprint" in classes or "salesnav" in classes:
+        # `printviews` — те же меры, что колода строит сама из таблицы раздела.
+        # Взятые ещё раз, они задвоили бы легенды строками раздела; на бумаге
+        # они нужны, потому что там переключателя нет, а здесь есть лист на
+        # меру.
+        if (tag in self._SKIP or "noprint" in classes or "salesnav" in classes
+                or "printviews" in classes):
             self._skip_depth += 1
             return
         if self._skip_depth:
+            # Вложенное внутри пропускаемого тоже считается: закрытие каждого
+            # `div` глубину уменьшает, и без пары на открытии первый же
+            # вложенный `</div>` снимал пропуск досрочно — хвост блока
+            # доезжал строками раздела. Касается и `noprint`.
+            if tag == "div" or tag in self._SKIP:
+                self._skip_depth += 1
             return
         if self._kv_depth:
             self._kv_depth += 1
