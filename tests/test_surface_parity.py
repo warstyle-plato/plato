@@ -18,14 +18,16 @@ from __future__ import annotations
 import copy
 import io
 import sys
-import zipfile
 from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT.parent))
+sys.path.insert(0, str(ROOT))
 
 import main as wrapper  # noqa: E402
+from xlsx_eval import Evaluator  # noqa: E402
 
 core = wrapper.core
 openpyxl = pytest.importorskip("openpyxl")
@@ -98,25 +100,29 @@ def test_a_missing_value_is_not_reported_as_a_mismatch():
 
 # --- один расчёт на все поверхности -----------------------------------------
 
-def test_the_detail_workbook_matches_the_engine():
-    """Детализация считается из тех же вводных и обязана сойтись."""
+def test_the_workbook_matches_the_engine():
+    """Книга считается из тех же вводных и обязана сойтись.
+
+    Сторож паритета сверял лист из архива очередей — выгрузки, которой не было
+    ни кнопки на сайте, ни отправки ботом. Книгу, которую скачивают на самом
+    деле, он не смотрел: проверка стояла не у той двери. Архив снят
+    (владелец, 30.08.2026), и сверка переехала на книгу v4.
+    """
     inputs, tep = project()
     result = core.calculate(core.CalcRequest(inputs=inputs, tep=tep, rates=[]))
-    data, _ = core.build_model_archive(inputs, tep, [], {}, project_name="Паритет")
-    archive = zipfile.ZipFile(io.BytesIO(data))
-    name = next(n for n in archive.namelist() if n.startswith("90_Детализация"))
-    sheet = openpyxl.load_workbook(io.BytesIO(archive.read(name)), data_only=True)["Сводка"]
-
-    found = {}
-    for row in sheet.iter_rows(values_only=True):
-        for index, cell in enumerate(row):
-            if isinstance(cell, str) and cell.strip() == "LLCR":
-                for value in row[index + 1:]:
-                    if isinstance(value, (int, float)):
-                        found["llcr"] = value
-                        break
-
-    assert found.get("llcr") == pytest.approx(result["summary"]["llcr"], rel=1e-6)
+    content, _, meta = core.build_project_workbook(
+        inputs, tep, [], {}, project_name="Паритет")
+    assert meta["missing"] == [], meta["missing"]
+    # Книга вся из формул, а openpyxl их не считает: сверять надо посчитанное,
+    # иначе проверка выродится в сравнение адресов ячеек.
+    sys.setrecursionlimit(400000)
+    book = Evaluator(openpyxl.load_workbook(io.BytesIO(content)))
+    assert book.cell("ОТЧЕТ", "B19") == pytest.approx(
+        result["summary"]["llcr"], rel=0.005)
+    assert book.cell("ОТЧЕТ", "B5") == pytest.approx(
+        result["summary"]["revenue"] / 1e6, rel=0.005)
+    assert book.cell("ОТЧЕТ", "B12") == pytest.approx(
+        result["summary"]["net_profit"] / 1e6, rel=0.005)
 
 
 def test_the_attachments_use_the_server_calculation(monkeypatch):
@@ -131,7 +137,8 @@ def test_the_attachments_use_the_server_calculation(monkeypatch):
                         lambda payload: seen.setdefault("llcr", payload["result"]["summary"]["llcr"]) and b"")
     monkeypatch.setattr(core, "_telegram_send_document_bytes", lambda *a, **kw: None)
     monkeypatch.setattr(core, "_telegram_send_message", lambda *a, **kw: None)
-    monkeypatch.setattr(core, "build_model_archive", lambda *a, **kw: (b"", "model.zip"))
+    monkeypatch.setattr(core, "build_project_workbook",
+                        lambda *a, **kw: (b"", "model.xlsx", {}))
     monkeypatch.setattr(core, "run_sensitivity", lambda *a, **kw: {})
 
     core._telegram_send_attachments(1, {
@@ -154,7 +161,8 @@ def test_the_discrepancy_reaches_the_chat(monkeypatch):
     monkeypatch.setattr(core, "_telegram_send_document_bytes", lambda *a, **kw: None)
     monkeypatch.setattr(core, "_telegram_send_message",
                         lambda chat_id, text, **kw: messages.append(text))
-    monkeypatch.setattr(core, "build_model_archive", lambda *a, **kw: (b"", "model.zip"))
+    monkeypatch.setattr(core, "build_project_workbook",
+                        lambda *a, **kw: (b"", "model.xlsx", {}))
     monkeypatch.setattr(core, "run_sensitivity", lambda *a, **kw: {})
 
     core._telegram_send_attachments(1, {

@@ -114,6 +114,8 @@ def test_the_whole_archive_survives_a_hole_in_the_list():
                     "construction_months": 24} for i in range(3)],
         "social_objects": [None],
     }
-    data, name = core.build_model_archive(inputs, tep, [], phasing, project_name="Тест")
+    data, name, meta = core.build_project_workbook(
+        inputs, tep, [], phasing, project_name="Тест")
 
-    assert data[:2] == b"PK" and name.endswith(".zip")
+    assert data[:2] == b"PK" and name.endswith(".xlsx")
+    assert meta["missing"] == [], meta["missing"]

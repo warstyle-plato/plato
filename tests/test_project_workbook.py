@@ -548,7 +548,10 @@ def test_the_bot_attachment_is_the_same_workbook():
     import inspect
     source = inspect.getsource(core._telegram_send_attachments)
     assert "build_project_workbook" in source
-    assert "build_model_archive" not in source
+    # Прежняя выгрузка снята целиком (владелец, 30.08.2026): архив очередей с
+    # консолидатором остался от времени, когда очереди были отдельными файлами.
+    assert not hasattr(core, "build_model_archive")
+    assert not hasattr(core, "build_plato_archive")
 
 
 # --- четвёртая очередь как драйвер, а не только листы -----------------------

@@ -46,8 +46,11 @@ def telegram(monkeypatch):
         return b"%PDF-"
 
     monkeypatch.setattr(core, "_build_developaid_pdf", slow_pdf)
-    monkeypatch.setattr(core, "build_model_archive",
-                        lambda *a, **k: (b"PK\x03\x04", "модель.zip"))
+    # Бот собирает книгу v4; заглушка стояла на прежней выгрузке, которую
+    # он не зовёт с тех пор, как архив очередей сняли, — и каждый прогон
+    # честно собирал настоящую книгу.
+    monkeypatch.setattr(core, "build_project_workbook",
+                        lambda *a, **k: (b"PK\x03\x04", "модель.xlsx", {}))
     return events
 
 
@@ -123,7 +126,8 @@ def test_the_bot_report_carries_the_sensitivity_section(monkeypatch):
     bundle = core._run_authoritative_model(inputs, tep, [], {})
     monkeypatch.setattr(core, "_telegram_send_document_bytes", lambda *a, **k: None)
     monkeypatch.setattr(core, "_telegram_send_message", lambda *a, **k: None)
-    monkeypatch.setattr(core, "build_model_archive", lambda *a, **k: (b"PK", "м.zip"))
+    monkeypatch.setattr(core, "build_project_workbook",
+                        lambda *a, **k: (b"PK", "м.xlsx", {}))
     monkeypatch.setattr(core, "_build_developaid_pdf",
                         lambda payload: seen.update(payload) or b"%PDF-")
 
@@ -139,7 +143,8 @@ def test_an_explicit_analysis_is_not_recomputed(monkeypatch):
     seen = {}
     monkeypatch.setattr(core, "_telegram_send_document_bytes", lambda *a, **k: None)
     monkeypatch.setattr(core, "_telegram_send_message", lambda *a, **k: None)
-    monkeypatch.setattr(core, "build_model_archive", lambda *a, **k: (b"PK", "м.zip"))
+    monkeypatch.setattr(core, "build_project_workbook",
+                        lambda *a, **k: (b"PK", "м.xlsx", {}))
     monkeypatch.setattr(core, "_build_developaid_pdf",
                         lambda payload: seen.update(payload) or b"%PDF-")
     monkeypatch.setattr(core, "run_sensitivity",

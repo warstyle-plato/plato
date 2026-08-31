@@ -190,11 +190,17 @@ def test_the_pdf_prints_the_pace_in_units(payload):
 def test_the_workbook_carries_the_same_pace(payload):
     """Книга и отчёт обязаны говорить одно: расхождение поверхностей уже
     стоило разбирательства «какая из двух правда»."""
-    sheet = core._model_sheet_revenue(payload["result"])
-    text = "\n".join(str(getattr(cell, "value", cell))
-                     for row in sheet["rows"] for cell in row)
-    assert "Темп продаж квартир" in text
-    assert "Темп до РВЭ, кв./мес." in text
+    import io as _io
+    import openpyxl
+    inputs = {**core.DEFAULT_INPUTS, **(payload.get("inputs") or {})}
+    tep = payload.get("tep") or core.TEP_DEFAULT
+    content, _, meta = core.build_project_workbook(
+        inputs, tep, [], {}, project_name="Темп")
+    assert meta["missing"] == [], meta["missing"]
+    sheet = openpyxl.load_workbook(_io.BytesIO(content))["ОТЧЕТ"]
+    labels = {sheet.cell(row=row, column=1).value for row in range(55, 75)}
+    assert "Темп продаж до РВЭ — штуки" in labels, labels
+    assert "Темп продаж после РВЭ — штуки" in labels, labels
 
 
 def test_the_page_shows_the_pace_too():
