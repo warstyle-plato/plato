@@ -714,12 +714,12 @@ def test_the_report_opens_with_the_verdict_and_closes_with_the_bottom_line() -> 
     # где ничего не сдвинулось.
     body = CABINET_PAGE[CABINET_PAGE.index("function render(d)"):]
     verdict = body.index("html+=verdictCard(d);")
-    market_map = body.index("<h2>Карта рынка</h2>")
+    market_map = body.index("html+=bubbleCard(market, 'bubble');")
     assert verdict < market_map, "вывод обязан стоять до карты рынка"
     assert body.index("html+=findingsCard(d);") < market_map, "выводы уехали за карту"
 
     # Итоговая карточка приклеивается последней, уже после таблицы соседей.
-    peers_table = body.index("<h2>Соседи в выборке</h2>")
+    peers_table = body.index("html+=peersCard(peers);")
     final = body.index("html+=finalCard(d);")
     assert peers_table < final < body.index("$('#out').innerHTML=html;")
 
@@ -791,7 +791,10 @@ def test_the_bubble_knows_its_name_and_the_print_takes_every_view() -> None:
     # На бумагу уходят все пары осей, а открытая на экране — прячется, иначе
     # она напечаталась бы дважды.
     assert ".printviews{display:block}" in CABINET_PAGE
-    assert 'VIEWS.map(v=>`<h3>${esc(v.name)}</h3>`+bubbleChart(market,v))' in CABINET_PAGE
+    # Карточка пузырьков вынесена в свою функцию: её рисуют две поверхности, и
+    # печать всех пар осей живёт внутри неё, а не во вставке отчёта.
+    assert 'views.map(v=>`<h3>${esc(v.name)}</h3>`+bubbleChart(market,v))' in CABINET_PAGE
+    assert CABINET_PAGE.count("function bubbleCard(") == 1
 
 
 def test_the_search_shows_what_it_is_doing_while_it_waits() -> None:
@@ -1094,7 +1097,7 @@ def test_adding_a_project_sits_with_the_sample_not_in_the_tail() -> None:
 
     body = CABINET_PAGE[CABINET_PAGE.index("function render(d)"):]
     add = body.index('id="addq"')
-    assert add < body.index("<h2>Карта рынка</h2>"), "поле должно стоять до графиков"
+    assert add < body.index("html+=bubbleCard(market, 'bubble');"), "поле должно стоять до графиков"
     # И оно ровно одно: две копии расходятся состоянием.
     assert body.count('id="addq"') == 1
 
@@ -2180,7 +2183,7 @@ def test_the_map_says_out_loud_who_is_missing_from_it() -> None:
     """
     from market_search.cabinet import CABINET_PAGE
 
-    assert "Координат нет у ${noGeo} из ${peers.length} соседей выборки" in CABINET_PAGE
+    assert "Координат нет у ${noGeo} из ${(peers||[]).length} соседей выборки" in CABINET_PAGE
     assert CABINET_PAGE.index("<h2>Где соседи</h2>") < CABINET_PAGE.index("<h2>Карта рынка</h2>")
     # Подложку склеивает движок и отдаёт одной картинкой. Наружу за тайлами
     # браузер не ходит: чужой хост в разметке — это уже второй путь наружу,
@@ -2815,7 +2818,7 @@ def test_the_analysis_reaches_the_page_and_starts_a_new_printed_sheet() -> None:
     assert CABINET_PAGE.count("function essayCard(") == 1
     # Разбор идёт последним разделом, после всех графиков и таблиц.
     body = CABINET_PAGE[CABINET_PAGE.index("function render(d)"):]
-    assert body.index("html+=essayCard(d);") > body.index("<h2>Соседи в выборке</h2>")
+    assert body.index("html+=essayCard(d);") > body.index("html+=peersCard(peers);")
 
 
 def test_findings_and_analysis_travel_all_the_way_to_the_markup(tmp_path) -> None:

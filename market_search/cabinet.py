@@ -984,6 +984,11 @@ const AXES={
   units_per_month:{label:'темп, ДДУ в месяц',digits:1},
   price_per_sqm:{label:'цена, ₽/м²',digits:0},
   sold_lot_avg:{label:'средний проданный лот, м²',digits:1},
+  // Средний лот В ПРОЕКТЕ — другая величина, чем проданный: первая про то, что
+  // построено, вторая про то, что берут. Своё имя у оси обязательно: подмена
+  // одной другой превратила бы сравнение «что уходит против того, что есть» в
+  // сравнение числа с самим собой.
+  lot_area_avg:{label:'средний лот в проекте, м²',digits:1},
   lot_count:{label:'лотов в экспозиции',digits:0},
   remaining_units:{label:'остаток, лотов',digits:0},
   distance_km:{label:'расстояние, км',digits:2},
@@ -994,6 +999,7 @@ const VIEWS=[
   {id:'lot',   name:'Цена и размер лота', x:'sold_lot_avg', y:'price_per_sqm', size:'lot_count'},
   {id:'stock', name:'Темп и остаток',  x:'units_per_month', y:'remaining_units', size:'lot_count'},
   {id:'near',  name:'Цена и удалённость', x:'distance_km', y:'price_per_sqm', size:'lot_count'},
+  {id:'size',  name:'Цена и лот в проекте', x:'lot_area_avg', y:'price_per_sqm', size:'lot_count'},
 ];
 let bubbleView='speed';
 // Чьи кривые показаны поверх полосы. Полоса отвечает на вопрос «где я
@@ -1389,6 +1395,103 @@ function essayCard(d){
     +`</div>`;
 }
 
+// Карта соседей и «Карта рынка» — общие для обеих поверхностей, как вердикт и
+// разбор. Контейнер пузырьков задаётся именем: на одной странице две карточки,
+// и повторённый `id="bubble"` сделал бы вторую невидимой для переключателя.
+function geoCard(market, subject, peers){
+  const geoSvg=mapChart(market, subject);
+  if(!geoSvg) return '';
+  // Сосед без координат в схему не попадает, и молчать об этом нельзя:
+  // отсутствие точки читается как отсутствие соседа.
+  const noGeo=(peers||[]).filter(p=>p.latitude==null||p.longitude==null).length;
+  return `<div class="card"><h2>Где соседи</h2>`+geoSvg
+    +`<div class="muted" style="font-size:12.5px;margin-top:8px">Кольца — расстояние`
+    +` от объекта по прямой, а не по дороге: через реку или пути восемьсот метров`
+    +` бывают тремя километрами. Цвет точки — класс, обводка — отмеченный на графиках.`
+    +` Имя проекта — наведением или касанием; в печать уходят ближайшие шесть`
+    +` и отмеченные.`
+    +(noGeo?` Координат нет у ${noGeo} из ${(peers||[]).length} соседей выборки — на карте`
+      +` их нет, в расчётах они участвуют наравне.`:'')
+    +`</div></div>`;
+}
+
+// Пара осей, у которой ни одной точки нет, рисует пустое поле — а пустое поле
+// читается как «здесь нечего показывать про рынок», хотя на деле источник не
+// знает этой величины. Такие виды не рисуются, и о них сказано словами.
+function bubbleViews(market){
+  const has=key=>(market||[]).some(r=>r[key]!==null&&r[key]!==undefined);
+  return VIEWS.filter(v=>has(v.x)&&has(v.y));
+}
+
+function bubbleCard(market, box){
+  box=box||'bubble';
+  const views=bubbleViews(market);
+  if(!views.length) return '';
+  const missing=VIEWS.filter(v=>views.indexOf(v)<0).map(v=>v.name);
+  const current=views.find(v=>v.id===bubbleView)||views[0];
+  return `<div class="card"><h2>Карта рынка</h2>`
+    +`<div class="chips views" data-box="${box}">`+views.map(v=>`<button type="button" data-view="${v.id}"`
+      +`${v.id===current.id?' class="on"':''}>${esc(v.name)}</button>`).join('')+`</div>`
+    +`<div id="${box}">`+bubbleChart(market, current)+`</div>`
+    +`<div class="printviews">`+views.map(v=>`<h3>${esc(v.name)}</h3>`+bubbleChart(market,v)).join('')+`</div>`
+    +`<div class="muted" style="font-size:12.5px;margin-top:8px">Размер кружка — лотов в экспозиции.`
+    +` Пунктир — медианы по обеим осям. Имя проекта — наведением на кружок;`
+    +` в печать уходят все пары осей.`
+    +(missing.length?` Пар осей «${missing.map(esc).join('», «')}» здесь нет: источник не`
+      +` даёт величины для одной из осей.`:'')
+    +`</div></div>`;
+}
+
+// Переключатель ищет свои кнопки в своей карточке, а не по всей странице:
+// иначе нажатие в одной карточке перерисовывало бы обе.
+function wireBubbles(market, box){
+  box=box||'bubble';
+  const chips=document.querySelector(`.chips.views[data-box="${box}"]`);
+  const field=document.getElementById(box);
+  if(!chips||!field) return;
+  chips.querySelectorAll('button').forEach(btn=>btn.addEventListener('click',()=>{
+    bubbleView=btn.dataset.view;
+    chips.querySelectorAll('button').forEach(b2=>b2.classList.toggle('on',b2===btn));
+    field.innerHTML=bubbleChart(market, VIEWS.find(v=>v.id===bubbleView));
+  }));
+}
+
+// Цены соседей столбиками и таблица выборки — тоже общие: на них смотрят,
+// чтобы проверить вывод глазами, и вторая их вёрстка разошлась бы с первой.
+function pricesCard(peers, own, median){
+  if(!(peers||[]).length) return '';
+  // Столбик рисуется только там, где есть действующая цена. Сколько соседей
+  // выборки в него не попало — сказано тут же: иначе график из семи столбиков
+  // при двадцати строках в таблице читается как потеря.
+  const withPrice=peers.filter(p=>p.price_per_sqm).length;
+  if(!withPrice) return '';
+  return `<div class="card"><h2>Цены соседей сегодня</h2>`
+    +priceChart(peers, own, median)
+    +(withPrice<peers.length?`<div class="muted" style="font-size:12.5px;margin-top:6px">`
+      +`Столбик есть у ${withPrice} из ${peers.length} соседей выборки — у остальных`
+      +` действующего прайса нет, и в цене они не участвуют. В разделах о темпе, лоте`
+      +` и метрах они считаются наравне.</div>`:'')
+    +`</div>`;
+}
+
+function peersCard(peers){
+  if(!(peers||[]).length) return '';
+  return `<div class="card"><h2>Соседи в выборке</h2>
+    <div class="wrap"><table class="peers">
+    <tr><th>Проект</th><th>Застройщик</th><th class="num">км</th><th>Класс</th>
+    <th class="num">₽/м²</th><th class="num">ДДУ/мес</th><th class="num">м²/мес</th><th class="num">Лотов</th><th>Прайс от</th></tr>`
+    +peers.map((p,i)=>`<tr${p.added_by_hand?' class="added byhand"':''}><td class="link" data-peer="${i}">`
+      +`${esc(p.name)}${p.added_by_hand?' <span class="muted">+</span>':''}</td><td class="muted">${esc(p.developer||'—')}</td>
+      <td class="num">${num(p.distance_km,2)}</td><td>${esc(p.segment||'—')}</td>
+      <td class="num">${p.price_per_sqm?num(p.price_per_sqm)
+        :`<span class="muted" title="в расчёт не идёт">${p.price_status==='устарела'
+          ?num(p.stale_price_per_sqm)+' · '+esc(p.stale_observed_at||'')
+          :'цены нет'}</span>`}</td><td class="num">${num(p.units_per_month,1)}</td>
+      <td class="num">${num(p.area_per_month)}</td><td class="num">${num(p.lot_count)}</td>
+      <td class="muted">${esc(p.observed_at||'—')}</td></tr>`).join('')
+    +`</table></div></div>`;
+}
+
 function blockCard(b,ctx){
   const s=b.subject||{}, p=b.peers||{}, c=b.city||{};
   const cell=(v,l)=>`<div><b>${v}</b><span>${l}</span></div>`;
@@ -1578,29 +1681,42 @@ function renderTalk(box, talk, pending){
   box.innerHTML=(pending?`<div class="muted">${esc(pending)}</div>`:'')+rows.join('');
 }
 
-async function askPlato(){
-  const q=$('#ask').value.trim();
-  if(!q){$('#askout').innerHTML='<div class="muted">Напишите вопрос.</div>';return}
-  if(!lastReport){$('#askout').innerHTML='<div class="muted">Сначала соберите отчёт — Платону нужны числа.</div>';return}
-  $('#askbtn').disabled=true;
-  renderTalk($('#askout'), marketTalk, 'Платон Сергеевич думает…');
+// Спрашивают о том отчёте, который перед глазами, поэтому у каждой поверхности
+// свои поле и вывод, — но путь к Платону один: платить за обрыв длинного
+// ответа дважды не надо, и разойтись двум копиям опроса негде.
+//
+// Сводка приходит параметром: у второго источника свой состав чисел и своё имя,
+// и подставить ему сводку «Пульса» значило бы спросить не о том, что показано.
+async function askPlatoIn(ids, report, digest){
+  const field=$(ids.field), out=$(ids.out), btn=$(ids.button), talk=ids.talk;
+  if(!field||!out) return;
+  const q=field.value.trim();
+  if(!q){out.innerHTML='<div class="muted">Напишите вопрос.</div>';return}
+  if(!report){out.innerHTML='<div class="muted">Сначала соберите отчёт — Платону нужны числа.</div>';return}
+  if(btn) btn.disabled=true;
+  renderTalk(out, talk, 'Платон Сергеевич думает…');
   const message='Ниже готовый разбор рынка, посчитанный движком. Числа не пересчитывай — '
-    +'объясни и ответь на вопрос по ним.\n\n'+reportDigest(lastReport)+'\n\nВопрос: '+q;
+    +'объясни и ответь на вопрос по ним.\n\n'+digest(report)+'\n\nВопрос: '+q;
   try{
     const text=await platoAnswer(message,
-      note=>{renderTalk($('#askout'), marketTalk, 'Платон Сергеевич: '+note)},
-      marketTalk.history());
+      note=>{renderTalk(out, talk, 'Платон Сергеевич: '+note)},
+      talk.history());
     // В историю уходит вопрос человека, а не сообщение с разбором: движок
     // обрезает реплику по длине, и разбор вернулся бы обрубком, выглядящим
     // полным. Числа поэтому едут свежими в каждом вопросе.
-    marketTalk.said(q, text);
-    $('#ask').value='';
-    renderTalk($('#askout'), marketTalk, '');
+    talk.said(q, text);
+    field.value='';
+    renderTalk(out, talk, '');
   }catch(e){
-    renderTalk($('#askout'), marketTalk, '');
-    $('#askout').insertAdjacentHTML('afterbegin', `<div class="err">${esc(e.message||e)}</div>`);
+    renderTalk(out, talk, '');
+    out.insertAdjacentHTML('afterbegin', `<div class="err">${esc(e.message||e)}</div>`);
   }
-  finally{$('#askbtn').disabled=false}
+  finally{if(btn) btn.disabled=false}
+}
+
+function askPlato(){
+  return askPlatoIn({field:'#ask', out:'#askout', button:'#askbtn', talk:marketTalk},
+                    lastReport, reportDigest);
 }
 
 
@@ -3355,45 +3471,12 @@ function render(d){
   const market=[{...m, name:s.project_name||'объект', segment:s.segment, __own:true},
     ...peers.map(p=>({...p, __picked:onChart.has(String(p.complex_id))}))];
   // География — до осей: сначала «где это всё стоит», потом «как соотносится».
-  const geoSvg=mapChart(market, s);
-  if(geoSvg){
-    // Сосед без координат в схему не попадает, и молчать об этом нельзя:
-    // отсутствие точки читается как отсутствие соседа. Пустой результат — не
-    // «чисто», и здесь ровно тот же случай.
-    const noGeo=peers.filter(p=>p.latitude==null||p.longitude==null).length;
-    html+=`<div class="card"><h2>Где соседи</h2>`+geoSvg
-      +`<div class="muted" style="font-size:12.5px;margin-top:8px">Кольца — расстояние`
-      +` от объекта по прямой, а не по дороге: через реку или пути восемьсот метров`
-      +` бывают тремя километрами. Цвет точки — класс, обводка — отмеченный на графиках.`
-      +` Имя проекта — наведением или касанием; в печать уходят ближайшие шесть`
-      +` и отмеченные.`
-      +(noGeo?` Координат нет у ${noGeo} из ${peers.length} соседей выборки — на карте`
-        +` их нет, в расчётах они участвуют наравне.`:'')
-      +`</div></div>`;
-  }
-
-  html+=`<div class="card"><h2>Карта рынка</h2>`
-    +`<div class="chips views">`+VIEWS.map(v=>`<button type="button" data-view="${v.id}"`
-      +`${v.id===bubbleView?' class="on"':''}>${esc(v.name)}</button>`).join('')+`</div>`
-    +`<div id="bubble">`+bubbleChart(market, VIEWS.find(v=>v.id===bubbleView))+`</div>`
-    +`<div class="printviews">`+VIEWS.map(v=>`<h3>${esc(v.name)}</h3>`+bubbleChart(market,v)).join('')+`</div>`
-    +`<div class="muted" style="font-size:12.5px;margin-top:8px">Размер кружка — лотов в экспозиции.`
-    +` Пунктир — медианы по обеим осям. Имя проекта — наведением на кружок;`
-    +` в печать уходят все пары осей.</div></div>`;
+  html+=geoCard(market, s, peers);
+  html+=bubbleCard(market, 'bubble');
 
   const priceBlock=(d.blocks||[]).find(b=>b.code==='price');
   if(priceBlock){
-    // Столбик рисуется только там, где есть действующая цена. Сколько
-    // соседей выборки в него не попало — сказано тут же: иначе график из
-    // семи столбиков при двадцати строках в таблице читается как потеря.
-    const withPrice=peers.filter(p=>p.price_per_sqm).length;
-    html+=`<div class="card"><h2>Цены соседей сегодня</h2>`
-      +priceChart(peers,{...m,name:s.project_name||'объект'},(priceBlock.peers||{}).median)
-      +(withPrice<peers.length?`<div class="muted" style="font-size:12.5px;margin-top:6px">`
-        +`Столбик есть у ${withPrice} из ${peers.length} соседей выборки — у остальных`
-        +` действующего прайса нет, и в цене они не участвуют. В разделах о темпе, лоте`
-        +` и метрах они считаются наравне.</div>`:'')
-      +`</div>`;
+    html+=pricesCard(peers,{...m,name:s.project_name||'объект'},(priceBlock.peers||{}).median);
   }
 
   const ctx={
@@ -3419,29 +3502,12 @@ function render(d){
 
   html+=boardCard(planData);
   html+=deepCard(d);
-  html+=`<div class="card"><h2>Соседи в выборке</h2>
-    <div class="wrap"><table class="peers">
-    <tr><th>Проект</th><th>Застройщик</th><th class="num">км</th><th>Класс</th>
-    <th class="num">₽/м²</th><th class="num">ДДУ/мес</th><th class="num">м²/мес</th><th class="num">Лотов</th><th>Прайс от</th></tr>`
-    +peers.map((p,i)=>`<tr${p.added_by_hand?' class="added byhand"':''}><td class="link" data-peer="${i}">`
-      +`${esc(p.name)}${p.added_by_hand?' <span class="muted">+</span>':''}</td><td class="muted">${esc(p.developer||'—')}</td>
-      <td class="num">${num(p.distance_km,2)}</td><td>${esc(p.segment||'—')}</td>
-      <td class="num">${p.price_per_sqm?num(p.price_per_sqm)
-        :`<span class="muted" title="в расчёт не идёт">${p.price_status==='устарела'
-          ?num(p.stale_price_per_sqm)+' · '+esc(p.stale_observed_at||'')
-          :'цены нет'}</span>`}</td><td class="num">${num(p.units_per_month,1)}</td>
-      <td class="num">${num(p.area_per_month)}</td><td class="num">${num(p.lot_count)}</td>
-      <td class="muted">${esc(p.observed_at||'—')}</td></tr>`).join('')
-    +`</table></div></div>`;
+  html+=peersCard(peers);
   // «Разбор» — в конце: те же числа, но связанные между собой.
   html+=essayCard(d);
   html+=finalCard(d);
   $('#out').innerHTML=html;
-  document.querySelectorAll('.views button').forEach(btn=>btn.addEventListener('click',()=>{
-    bubbleView=btn.dataset.view;
-    document.querySelectorAll('.views button').forEach(b2=>b2.classList.toggle('on',b2===btn));
-    $('#bubble').innerHTML=bubbleChart(market, VIEWS.find(v=>v.id===bubbleView));
-  }));
+  wireBubbles(market, 'bubble');
   $('#askcard').style.display='block';
   $('#pdf').style.display='inline-block';
   $('#reset').style.display='inline-block';
