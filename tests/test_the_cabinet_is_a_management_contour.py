@@ -134,11 +134,18 @@ def test_the_cabinet_is_checked_too_when_its_key_is_set(tmp_path, monkeypatch) -
 
 
 def test_the_sales_link_lands_on_the_sales_report() -> None:
-    """Свёрнутый отчёт под ссылкой «Отчёт о продажах» — переход, которого нет."""
+    """Свёрнутый отчёт под ссылкой «Отчёт о продажах» — переход, которого нет.
+
+    Ссылка контура ведёт на `/cabinet/sales`, и отчёт там единственное, зачем
+    приходят. Свёрнутый, он оставлял на странице одну серую строку — «там нет
+    ничего на вкладке» (владелец, 31.08.2026).
+    """
     body = (ROOT / "market_search" / "cabinet.py").read_text(encoding="utf-8")
-    assert 'class="salesreport" id="sales"' in body
-    assert "location.hash==='#sales'" in body
-    assert "card.open=true" in body
+    report = body[body.index("function renderSales(d){"):]
+    report = report[: report.index("\nfunction tile(")]
+    assert '<details class="salesreport" id="sales">' not in report, \
+        "отчёт снова свёрнут — страница показывает одну строку вместо свода"
+    assert '<div class="card" id="salesreport">' in report
 
 
 def test_the_contour_wears_the_house_style() -> None:
