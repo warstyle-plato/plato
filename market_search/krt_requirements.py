@@ -141,6 +141,13 @@ def decision_intent(text: str, title: str = "", card_fields: dict[str, str] | No
     if raw.casefold() not in _EMPTY_FIELD:
         operator_name = raw
     quotes = _quotes(sentences, _OPERATOR_MARKERS)
+    # Реновация — это тоже городские нужды (владелец, 31.08.2026), и КРТ ЖИЛОЙ
+    # застройки — та же история: город расселяет жильцов по своей программе.
+    # Вид КРТ поэтому не просто метка для фильтра, а сам по себе основание —
+    # со своей цитатой, из заголовка решения, а не выданное за фразу документа.
+    needs = _quotes(sentences, _CITY_NEEDS_MARKERS)
+    if kind == "жилой застройки" and kind_quote:
+        needs = list(dict.fromkeys([f"Вид КРТ — жилой застройки: {kind_quote}"] + needs))[:5]
     return {
         "probed": bool(probed and (sentences or title or fields)),
         # Читали ли САМ проект решения. Карточка — тоже документ, но городские
@@ -149,7 +156,7 @@ def decision_intent(text: str, title: str = "", card_fields: dict[str, str] | No
         "decision_read": bool(sentences),
         "kind": kind,
         "kind_quote": kind_quote[:300],
-        "city_needs": _quotes(sentences, _CITY_NEEDS_MARKERS),
+        "city_needs": needs,
         "operator_name": operator_name,
         "operator": quotes,
         # «Занята» — это когда назван тот, кто её берёт. Одного вида КРТ для
