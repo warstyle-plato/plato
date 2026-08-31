@@ -10,6 +10,16 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
+# Наши добавочные корни. Объявлены один раз (`trusted_roots`) и общие с
+# адаптером ГИС Торгов: без них прямое чтение krt.mos.ru падает на проверке
+# сертификата ВСЕГДА, и каталог города целиком приезжает запасным путём — а у
+# того от разметки карточки не остаётся структуры. Проверка при этом остаётся
+# включённой: выключенная молча принимает любой сертификат.
+try:  # модуль рынка поднимается и отдельно от движка
+    from trusted_roots import trust_context as _trust_context
+except ImportError:  # pragma: no cover - вне сборки движка
+    _trust_context = None
+
 
 class RemoteServiceError(RuntimeError):
     pass
@@ -52,11 +62,15 @@ def request_bytes(
     if headers:
         request_headers.update(headers)
 
+    # Контекст собирается на каждый запрос: положенный на машину корень
+    # начинает работать без выкатки — так же, как у адаптера торгов.
+    context = _trust_context() if _trust_context is not None else None
+
     last_error: Exception | None = None
     for attempt in range(retries + 1):
         try:
             req = Request(url, data=data, headers=request_headers, method=method)
-            with urlopen(req, timeout=timeout) as response:
+            with urlopen(req, timeout=timeout, context=context) as response:
                 return response.read()
         except (HTTPError, URLError, TimeoutError, socket.timeout) as exc:
             last_error = exc

@@ -688,11 +688,23 @@ def install(app: FastAPI) -> None:
             for row in projects
         ]
         status = krt_registry.status()
+        # Неразобранная карточка называется вслух. Её значения съезжают на
+        # поле — округом становится статус, статусом хвост адреса, — и такая
+        # строка не проходит ни один флажок округа и пропадает с экрана без
+        # единого слова. Молча выброшенная площадка читается как её
+        # отсутствие, а это самая крупная площадка каталога и есть.
+        unparsed = [row for row in projects if row.get("parse_problem")]
         return {
             "source": CATALOGUE_URL,
             "geometry_status": "not_published_in_catalogue",
             **status,
             "count": len(projects),
+            "unparsed_count": len(unparsed),
+            "unparsed": [
+                {"slug": row.get("slug"), "name": row.get("name"),
+                 "problem": row.get("parse_problem")}
+                for row in unparsed[:20]
+            ],
             "new_count": sum(1 for row in projects if row["is_new"]),
             "new_for_days": NEW_FOR_SECONDS // 86400,
             "projects": projects,

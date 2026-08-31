@@ -149,3 +149,79 @@ def test_the_printed_markup_is_the_screen_without_its_tools(tmp_path) -> None:
     assert raw[:4] == b"%PDF"
     pages = raw.count(b"/Type /Page\n") + raw.count(b"/Type /Page/") + raw.count(b"/Type /Page ")
     assert pages >= sections, f"страниц {pages} при {sections} разделах"
+
+
+def test_the_document_carries_every_measure_the_screen_offers() -> None:
+    """«Значит в PDF тоже все выезжать должны — мы это обсуждали на рыночном
+    отчёте» (владелец, 31.08.2026).
+
+    Переключатель мер — орудие экрана: на бумаге его не переключить, и мера,
+    до которой не дошли, в документе просто отсутствует. То же правило, что у
+    свёрнутой таблицы: раскрыть её читателю нечем. У карты рынка это уже
+    сделано блоком `.printviews`; свод продаж печатал одну выбранную меру из
+    трёх у динамики и одну из двух у планов.
+    """
+    import market_search.cabinet as cabinet
+
+    page = cabinet.cabinet_page("sales")
+    # Меры объявлены переключателем — они же обязаны уехать в печать.
+    assert "const SALES_METRICS=[" in page
+    assert "const PLAN_METRICS=[" in page
+    assert "function salesDynamicsChart(" in page, "меру рисует общий код"
+    assert "function salesPlansChart(" in page
+    for source in ("salesChartBlock", "salesPlansBlock"):
+        body = page[page.index(f"function {source}("):]
+        body = body[:body.index("\n}\n")]
+        assert '"printviews"' in body or "'printviews'" in body, (
+            f"{source}: остальные меры на бумагу не идут")
+        assert "filter(m=>m.key!==metric.key)" in body, (
+            f"{source}: в печать уехала бы и выбранная мера, то есть дважды")
+
+    # Печать этот блок показывает, экран — прячет. Правило уже объявлено, и
+    # второй копии у него быть не должно.
+    assert ".printviews{display:none}" in page
+    assert ".printviews{display:block}" in page
+
+
+def test_the_deck_does_not_take_the_print_only_views_twice() -> None:
+    """Колода строит те же меры сама — из таблицы раздела.
+
+    Взятые ещё раз из печатного блока, они задвоили бы легенды строками
+    раздела. На бумаге блок нужен, потому что там переключателя нет; в колоде
+    лист на меру и так есть.
+    """
+    from market_search import sales_deck
+
+    html = ('<section class="salesblock"><h3>Динамика</h3>'
+            '<svg viewBox="0 0 700 250"></svg>'
+            '<div class="muted"><span>факт, млн ₽</span></div>'
+            '<div class="printviews">'
+            '<div class="wrap"><svg viewBox="0 0 700 250"></svg></div>'
+            '<div class="muted"><span>факт, м²</span></div>'
+            '<div class="wrap"><svg viewBox="0 0 700 250"></svg></div>'
+            '<div class="muted"><span>факт, лоты</span></div></div>'
+            '<table><thead><tr><th>Месяц</th><th>млн ₽</th></tr></thead><tbody>'
+            '<tr><td>2026-01</td><td>30,5</td></tr>'
+            '<tr><td>2026-02</td><td>60,5</td></tr></tbody></table></section>')
+
+    page = sales_deck.sections(html)[-1]
+    assert page["lines"] == ["факт, млн ₽"], page["lines"]
+    assert page["charted"] is True
+    assert len(page["tables"]) == 1
+
+
+def test_a_skipped_block_ends_where_it_ends() -> None:
+    """Вложенный `div` глубину пропуска уменьшал, не увеличив её.
+
+    Первый же внутренний `</div>` снимал пропуск досрочно, и хвост
+    пропускаемого блока доезжал строками раздела. Касалось и `noprint` —
+    кнопок и поля вопроса, которым в документе места нет.
+    """
+    from market_search import sales_deck
+
+    html = ('<section class="salesblock"><h3>Раздел</h3>'
+            '<div class="noprint"><div><button>Спросить</button></div>'
+            '<div>поле вопроса</div></div>'
+            '<div class="muted">видимая строка</div></section>')
+    page = sales_deck.sections(html)[-1]
+    assert page["lines"] == ["видимая строка"], page["lines"]

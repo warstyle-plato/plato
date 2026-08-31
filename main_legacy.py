@@ -70,7 +70,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.20.93"
+VERSION = "0.21.4"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -5016,6 +5016,10 @@ def _dadata_suggest(address: str, limit: int) -> list[dict[str, Any]]:
             "lng": _land_float(data.get("geo_lon")),
             "label": _land_text(suggestion.get("value")),
             "cadastral_number": _land_text(data.get("cadastral_number") or data.get("house_cadnum")),
+            # Регион подсказки DaData объявляет сама — «г Москва», «Московская
+            # обл». Он нужен отсеву наравне с ответом Nominatim: DaData стоит в
+            # лесенке РАНЬШЕ, и проверка только у последней ступени не работает.
+            "region": _land_text(data.get("region_with_type") or data.get("region")),
             "provider": "DaData",
         })
     return results
@@ -5039,19 +5043,20 @@ def _geocode_nominatim(address: str, limit: int) -> list[dict[str, Any]]:
             time.sleep(min(wait, 1.0))
         _nominatim_last_call = time.time()
     region = _query_region(address)
-    query = {
+    # `state` рядом с `q` слать нельзя: структурный запрос Nominatim с
+    # свободным не совмещается, и сервер отвечает 400. Первая версия сужения
+    # добавляла его — и запасной геокодер начал падать ровно на тех запросах,
+    # которые сужение и затевалось ради: где названа Москва или область
+    # (живой ответ портала, 31.08.2026). Регион остаётся условием, но
+    # проверяется по ОТВЕТУ, а не по запросу.
+    params = urllib.parse.urlencode({
         "q": address,
         "format": "jsonv2",
         "limit": limit,
         "accept-language": "ru",
         "countrycodes": "ru",
         "addressdetails": 1,
-    }
-    if region:
-        # Названный в запросе регион — это условие, а не слово: без него
-        # «Москва Мишина 46» ищется по всей стране.
-        query["state"] = region[0]
-    params = urllib.parse.urlencode(query)
+    })
     payload = _land_fetch_json(
         f"{_NOMINATIM_BASE_URL}/search?{params}",
         service="Геокодер OpenStreetMap",
@@ -5062,17 +5067,13 @@ def _geocode_nominatim(address: str, limit: int) -> list[dict[str, Any]]:
         if lat is None or lng is None:
             continue
         label = _land_text(item.get("display_name"))
-        if region:
-            # Сам ответ говорит, где он: если регион назван в запросе, а в
-            # ответе его нет, это чужой город с похожей улицей.
-            details = (item or {}).get("address") or {}
-            where = " ".join(str(value).lower() for value in details.values())
-            if region[0] not in where and region[0] not in label.lower():
-                continue
         results.append({
             "lat": lat,
             "lng": lng,
             "label": label,
+            # По России Nominatim несёт регион полем `state`: «Москва»,
+            # «Московская область», «Тульская область».
+            "region": _land_text(((item or {}).get("address") or {}).get("state")),
             "provider": "OpenStreetMap",
         })
     return results
@@ -5086,23 +5087,45 @@ def _geocode_nominatim(address: str, limit: int) -> list[dict[str, Any]]:
 # написан первыми цифрами кадастрового номера, и сверка выходит дармовой.
 # Регион, которого тут нет, ничего не отсекает — лучше не проверять, чем
 # отсеять верное по неполному справочнику.
-_QUERY_REGIONS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
-    ("Москва", ("московская область", "подмосковь", "мо,"), ("50",)),
-    ("Москва", ("москва", "г москва", "г. москва"), ("77",)),
+# Имя региона — то, как его называет ОТВЕТ геокодера (поле `address.state`),
+# а не то, как его пишут в запросе. Прежде именем становилась первая поисковая
+# метка, и у области выходило «Москва» — строка, которой в ответах нет вовсе.
+# Метки ищутся по границе слова, а не подстрокой: «мо,» с запятой не опознавало
+# «Химки, МО» в конце строки, а «москва» подстрокой ловится внутри «московская».
+_QUERY_REGIONS: tuple[tuple[str, re.Pattern[str], tuple[str, ...]], ...] = (
+    ("Московская область",
+     re.compile(r"московск\w*\s+обл|подмосков\w*|\bмо\b", re.IGNORECASE), ("50",)),
+    ("Москва", re.compile(r"\bмоскв\w*\b", re.IGNORECASE), ("77",)),
 )
 
 
-def _query_region(address: str) -> tuple[str, tuple[str, ...]] | None:
+def _query_region(address: str) -> tuple[str, re.Pattern[str], tuple[str, ...]] | None:
     """Какой регион назван в запросе: его имя для геокодера и коды кадастра.
 
     Область проверяется раньше города: «Московская область» содержит в себе
     слово «Москва», и порядок наоборот отдал бы области московский код.
     """
-    text = " " + re.sub(r"\s+", " ", str(address or "")).strip().lower() + " "
-    for _, marks, codes in _QUERY_REGIONS:
-        if any(mark in text for mark in marks):
-            return (marks[0], codes)
+    text = re.sub(r"\s+", " ", str(address or "")).strip()
+    for name, marks, codes in _QUERY_REGIONS:
+        if marks.search(text):
+            return (name, marks, codes)
     return None
+
+
+def _in_region(candidate: dict[str, Any], marks: re.Pattern[str]) -> bool:
+    """Находка из названного региона — по её собственному признаку.
+
+    Судим тем же выражением, что опознаёт регион в запросе: две проверки на
+    одно правило однажды разошлись бы. Свой регион кандидат объявляет сам
+    (DaData — «г Москва», Nominatim — `address.state`); объявленный и не
+    совпавший отбрасывается. Не объявлен — судим по подписи, и только по
+    границе слова: подстрокой «москва» входит в «московская», и Подмосковье
+    проходило московский отсев целиком.
+    """
+    region = str(candidate.get("region") or "").strip()
+    if region:
+        return bool(marks.search(region))
+    return bool(marks.search(str(candidate.get("label") or "")))
 
 
 def _same_region(number: str, codes: tuple[str, ...]) -> bool:
@@ -5129,6 +5152,7 @@ def _geocode_address(address: str, limit: int) -> tuple[list[dict[str, Any]], li
     forced = _env_str("LAND_LOOKUP_GEOCODER").lower()
     warnings: list[str] = []
     silent: list[str] = []
+    region = _query_region(address)
     named = {"yandex": "Яндекс", "dadata": "DaData", "nominatim": "OpenStreetMap"}
     for name, provider in _GEOCODERS:
         if forced and forced != name:
@@ -5139,6 +5163,19 @@ def _geocode_address(address: str, limit: int) -> tuple[list[dict[str, Any]], li
             warnings.append(str(exc.detail))
             silent.append(named.get(name, name))
             continue
+        if region and candidates:
+            # Названный в запросе регион — условие для ЛЮБОЙ ступени лесенки, а
+            # не только для последней. Проверка стояла внутри Nominatim, а
+            # DaData отвечает раньше него: «находил везде, не только в Москве»
+            # осталось бы верным ровно там, где до Nominatim не доходит.
+            outside = [item for item in candidates if not _in_region(item, region[1])]
+            candidates = [item for item in candidates if item not in outside]
+            if outside and not candidates:
+                warnings.append(
+                    f"{named.get(name, name)} нашёл адрес вне «{region[0]}»: "
+                    + "; ".join(dict.fromkeys(
+                        str(item.get("label") or "—") for item in outside[:3]))
+                    + ". Уточните запрос или введите кадастровый номер.")
         if candidates:
             if silent:
                 warnings.append(
@@ -5620,7 +5657,7 @@ def land_lookup(req: LandLookupRequest) -> dict[str, Any]:
                 candidates, geocoder_warnings = _geocode_address(query, 3)
                 warnings.extend(geocoder_warnings)
                 named = _query_region(query)
-                region_codes = named[1] if named else ()
+                region_codes = named[2] if named else ()
                 strangers: list[str] = []
                 # «Адрес не распознан» рядом с двумя десятками найденных по
                 # нему объектов — противоречие: не распознан не адрес, а участок.
