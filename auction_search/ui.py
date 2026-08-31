@@ -119,7 +119,7 @@ __DEVELOPAID_CONTOUR__
   __DEVELOPAID_LEGAL_FOOTER__
 </div>
 <script>
-const state={lots:[],filtered:[],families:[],openFamilies:new Set(),coverage:[],quality:{},selected:null,ingested:null,krt:[],krtFiltered:[],krtOkrugs:new Set(),krtModels:{},krtReports:{},krtRequirements:{},krtNew:0,krtNewDays:30,krtPolls:0,krtTimer:null,krtRank:{},krtRankProgress:null,krtRankTimer:null,krtPress:{},krtTenders:{},krtOrders:[],krtOrphanLots:[],krtSort:{key:'score',dir:-1},krtHidden:{small:0,unknown:0}};
+const state={lots:[],filtered:[],families:[],openFamilies:new Set(),coverage:[],quality:{},selected:null,ingested:null,krt:[],krtFiltered:[],krtOkrugs:new Set(),krtModels:{},krtReports:{},krtRequirements:{},krtNew:0,krtNewDays:30,krtPolls:0,krtTimer:null,krtRank:{},krtRankProgress:null,krtRankTimer:null,krtPress:{},krtTenderLinks:{},krtTenders:{},krtOrders:[],krtOrphanLots:[],krtSort:{key:'score',dir:-1},krtHidden:{small:0,unknown:0}};
 const KRT_OKRUGS=['ЦАО','САО','СВАО','ВАО','ЮВАО','ЮАО','ЮЗАО','ЗАО','СЗАО','НАО','ТАО','ЗелАО'];
 const $=id=>document.getElementById(id);
 // Ноль и «цены нет» — разные вещи. Number(null) равен нулю, и лот без
@@ -625,6 +625,13 @@ function krtStage(x){
  const open=lots.find(v=>v.deadline);
  if(open){why.push('лот на торгах, заявки до '+open.deadline);return {key:'bidding',why}}
  if(lots.length){why.push('лот на торгах опубликован');return {key:'auction',why}}
+ const mark=state.krtTenderLinks[x.slug];
+ if(mark&&mark.number){
+  // Отметка человека, открывшего распоряжение. Машине привязать нечем: адреса
+  // в распоряжении нет, PDF — скан.
+  why.push('отмечено вручную: распоряжение '+mark.number+(mark.published_at?' от '+krtWhen(mark.published_at):''));
+  return {key:'upcoming',why};
+ }
  if(status.includes('торг')){why.push('статус каталога «'+esc(x.status)+'»');return {key:'upcoming',why}}
  if(press&&(press.operator_pending||[]).length){
   why.push('в публикации: право выставят на торги');return {key:'upcoming',why};
@@ -1176,7 +1183,7 @@ async function loadKrtRequirements(x){
   if(state.selectedKrt&&state.selectedKrt.slug===x.slug)box.innerHTML=renderKrtRequirements(d);
  }catch(e){box.innerHTML=`<div class="notice warn">${esc(e.message||e)}</div>`}
 }
-function selectKrt(x){state.selectedKrt=x;const sc=krtScore(x),fit=sc.fit,cached=state.krtModels[x.slug],planned=String(x.status||'').toLowerCase().includes('планируем');$('krtSide').innerHTML=`<h2>${esc(x.name)}${x.is_new?'<span class="tag new">новое</span>':''}</h2><div class="sub">krt.mos.ru · ${esc([x.okrug,x.district].filter(Boolean).join(' · '))}</div><div class="notice"><div class="fit ${sc.tone}"><span class="light"></span>Оценка Платона: ${sc.score}/100 · ${sc.label}</div><div class="source">Потенциал по официальным ТЭП — ${sc.base}. ${sc.counted?(sc.cut?`Расчёт снял ${sc.cut}%: `+esc(sc.cuts.map(c=>c.label+' −'+c.points+'%').join(', ')):'Расчёт балл не снизил.'):'Модель ещё не считалась — снижать нечем.'}</div></div><div class="kv"><div>Статус</div><div>${esc(x.status||'—')}</div><div>Площадь</div><div>${esc(x.area_ha?x.area_ha+' га':'—')}</div><div>Жильё</div><div>${fmtArea(x.housing_gfa_sqm)}</div><div>Всего построить</div><div>${fmtArea(x.total_gfa_sqm)}</div></div><details class="fold"><summary>Почему такой балл — ${fit.reasons.length+fit.checks.length+sc.cuts.length} пункт(ов)</summary><div class="foldbody"><div class="items">${fit.reasons.map(x=>`<div class="item"><b>Соответствует запросу</b>${esc(x)}</div>`).join('')}${fit.checks.map(x=>`<div class="item"><b>Нужно проверить</b>${esc(x)}</div>`).join('')}${sc.cuts.map(c=>`<div class="item"><b>Балл снижен на ${c.points}%</b>${esc(c.label)}</div>`).join('')}</div></div></details>${krtTenderBlock(x)}${krtIntentBlock(x)}<div id="krtPressBox"></div><details class="fold"><summary>Остальные ТЭП каталога</summary><div class="foldbody"><div class="kv" style="border:0"><div>Нежилое</div><div>${fmtArea(x.nonresidential_gfa_sqm)}</div><div>Общественно-деловое</div><div>${fmtArea(x.business_gfa_sqm)}</div><div>Рабочие места</div><div>${esc(x.jobs??'—')}</div></div><div class="notice warn">Официальный полигон границ пока не получен. Анализ использует геокодированную точку и помечает это приближение.</div></div></details>${krtRatioBlock(x)}<div class="actions"><button class="primary" id="krtHandoff">Передать в DevelopAid</button><button id="krtPlato">Рекомендация Платона</button><button id="krtMarket">Пересчитать сейчас</button><button id="krtShare">Поделиться</button><button id="krtSource">Открыть krt.mos.ru</button><button id="krtPress">Что пишут об этой площадке</button></div><div id="krtShareNote" class="notice" style="display:none"></div>${planned?'<div id="krtRequirementsBox"><div class="notice">Ищу проект решения и читаю требования…</div></div>':''}<div id="krtMapBox"><div class="notice">Строю карту участка…</div></div><div id="krtMarketResult">${cached?renderKrtModel(cached):''}</div>`;$('krtMarket').onclick=()=>loadKrtMarket(x);$('krtSource').onclick=()=>window.open(x.url,'_blank','noopener');$('krtPress').onclick=()=>loadKrtPress(x);const ra=$('krtRatioApply');if(ra)ra.onclick=()=>loadKrtMarket(x);
+function selectKrt(x){state.selectedKrt=x;const sc=krtScore(x),fit=sc.fit,cached=state.krtModels[x.slug],planned=String(x.status||'').toLowerCase().includes('планируем');$('krtSide').innerHTML=`<h2>${esc(x.name)}${x.is_new?'<span class="tag new">новое</span>':''}</h2><div class="sub">krt.mos.ru · ${esc([x.okrug,x.district].filter(Boolean).join(' · '))}</div><div class="notice"><div class="fit ${sc.tone}"><span class="light"></span>Оценка Платона: ${sc.score}/100 · ${sc.label}</div><div class="source">Потенциал по официальным ТЭП — ${sc.base}. ${sc.counted?(sc.cut?`Расчёт снял ${sc.cut}%: `+esc(sc.cuts.map(c=>c.label+' −'+c.points+'%').join(', ')):'Расчёт балл не снизил.'):'Модель ещё не считалась — снижать нечем.'}</div></div><div class="kv"><div>Статус</div><div>${esc(x.status||'—')}</div><div>Площадь</div><div>${esc(x.area_ha?x.area_ha+' га':'—')}</div><div>Жильё</div><div>${fmtArea(x.housing_gfa_sqm)}</div><div>Всего построить</div><div>${fmtArea(x.total_gfa_sqm)}</div></div><details class="fold"><summary>Почему такой балл — ${fit.reasons.length+fit.checks.length+sc.cuts.length} пункт(ов)</summary><div class="foldbody"><div class="items">${fit.reasons.map(x=>`<div class="item"><b>Соответствует запросу</b>${esc(x)}</div>`).join('')}${fit.checks.map(x=>`<div class="item"><b>Нужно проверить</b>${esc(x)}</div>`).join('')}${sc.cuts.map(c=>`<div class="item"><b>Балл снижен на ${c.points}%</b>${esc(c.label)}</div>`).join('')}</div></div></details>${krtOrderBlock(x)}${krtTenderBlock(x)}${krtIntentBlock(x)}<div id="krtPressBox"></div><details class="fold"><summary>Остальные ТЭП каталога</summary><div class="foldbody"><div class="kv" style="border:0"><div>Нежилое</div><div>${fmtArea(x.nonresidential_gfa_sqm)}</div><div>Общественно-деловое</div><div>${fmtArea(x.business_gfa_sqm)}</div><div>Рабочие места</div><div>${esc(x.jobs??'—')}</div></div><div class="notice warn">Официальный полигон границ пока не получен. Анализ использует геокодированную точку и помечает это приближение.</div></div></details>${krtRatioBlock(x)}<div class="actions"><button class="primary" id="krtHandoff">Передать в DevelopAid</button><button id="krtPlato">Рекомендация Платона</button><button id="krtMarket">Пересчитать сейчас</button><button id="krtShare">Поделиться</button><button id="krtSource">Открыть krt.mos.ru</button><button id="krtPress">Что пишут об этой площадке</button></div><div id="krtShareNote" class="notice" style="display:none"></div>${planned?'<div id="krtRequirementsBox"><div class="notice">Ищу проект решения и читаю требования…</div></div>':''}<div id="krtMapBox"><div class="notice">Строю карту участка…</div></div><div id="krtMarketResult">${cached?renderKrtModel(cached):''}</div>`;$('krtMarket').onclick=()=>loadKrtMarket(x);krtOrderBind(x);$('krtSource').onclick=()=>window.open(x.url,'_blank','noopener');$('krtPress').onclick=()=>loadKrtPress(x);const ra=$('krtRatioApply');if(ra)ra.onclick=()=>loadKrtMarket(x);
  $('krtShare').onclick=()=>shareKrt(x);
  $('krtHandoff').onclick=()=>handoffKrt(x);
  $('krtPlato').onclick=()=>askPlatoAboutKrt(x);
@@ -1329,6 +1336,7 @@ async function loadKrtTenders(){
   state.krtTenders=d.by_site||{};
   state.krtOrders=d.orders||[];
   state.krtOrphanLots=d.unmatched||[];
+  try{const l=await askJson('/auctions/krt/tender-links');state.krtTenderLinks=l.links||{}}catch(e){}
   renderKrtTenderNote(d);
   filterKrt();
  }catch(e){ /* торги не спрошены — список площадок от этого не ломается */ }
@@ -1347,6 +1355,56 @@ function renderKrtTenderNote(d){
   +'. '+esc(d.orders_note||'')
   +` Среди собранных лотов про КРТ — ${d.krt_lots||0}; привязано к площадкам ${sites}`
   +(orphans?`, ещё ${orphans} про КРТ, но площадка не опознана`:'')+'.</div>';
+}
+// Распоряжение о торгах на карточке площадки. Ставится РУКАМИ: адреса в
+// распоряжении нет ни в заголовке, ни в карточке документа, а PDF — скан
+// (семь страниц, 199 картинок на первой, текста только регистрационный штамп).
+// Привязка по номеру или по дате объявила бы площадку выставленной на торги
+// без единого основания, поэтому отметку ставит тот, кто документ открыл, и
+// подписана она так же: «отмечено вручную».
+function krtOrderBlock(x){
+ const mark=state.krtTenderLinks[x.slug]||null, orders=state.krtOrders||[];
+ const chosen=mark&&mark.order_id?mark.order_id:'';
+ const options=orders.map(o=>`<option value="${esc(o.id)}"${o.id===chosen?' selected':''}>`
+   +`${esc(o.number||o.id)}${o.published_at?' · '+esc(krtWhen(o.published_at)):''}`
+   +`${o.kind?' · '+esc(o.kind):''}</option>`).join('');
+ const said=mark&&mark.number
+  ? `<div class="item"><b>Объявлены торги</b>Согласно распоряжению ${esc(mark.number)}`
+    +`${mark.published_at?' от '+esc(krtWhen(mark.published_at)):''} `
+    +`${mark.url?`<a href="${esc(mark.url)}" target="_blank" rel="noopener">открыть документ</a>`:''}`
+    +`<div class="source">Отмечено вручную${mark.marked_at?' '+esc(krtWhen(mark.marked_at)):''}: `
+    +'адреса в распоряжении нет, машине привязать нечем.</div></div>'
+  : '<div class="source">Распоряжение по этой площадке не отмечено. '
+    +'Город объявляет торги распоряжениями ДГП, но адреса в них нет — '
+    +'привязать может только тот, кто документ открыл.</div>';
+ if(!orders.length&&!mark)return '';
+ return `<div class="section"><h3>Торги по распоряжению города</h3><div class="items">${said}</div>`
+  +(orders.length?`<div class="row" style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">`
+    +`<select id="krtOrderPick" style="flex:1 1 260px"><option value="">— выбрать распоряжение —</option>${options}</select>`
+    +'<button type="button" id="krtOrderSave">Отметить</button>'
+    +(mark&&mark.number?'<button type="button" id="krtOrderDrop">Снять отметку</button>':'')
+    +'</div>':'')
+  +'</div>';
+}
+function krtOrderBind(x){
+ const save=document.getElementById('krtOrderSave'), drop=document.getElementById('krtOrderDrop');
+ const send=async order=>{
+  try{
+   const res=await fetch('/auctions/krt/'+encodeURIComponent(x.slug)+'/tender-order',
+     {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order})});
+   if(!res.ok){alert('Отметка не сохранена: '+res.status);return}
+   const d=await res.json();
+   if(d.link&&d.link.number)state.krtTenderLinks[x.slug]=d.link; else delete state.krtTenderLinks[x.slug];
+   selectKrt(x); filterKrt();
+  }catch(e){alert(String(e.message||e))}
+ };
+ if(save)save.onclick=()=>{
+  const id=(document.getElementById('krtOrderPick')||{}).value;
+  const order=(state.krtOrders||[]).find(o=>o.id===id);
+  if(!order){alert('Выберите распоряжение');return}
+  send(order);
+ };
+ if(drop)drop.onclick=()=>send(null);
 }
 function krtTenderBlock(x){
  const lots=state.krtTenders[x.slug]||[];

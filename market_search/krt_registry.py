@@ -230,6 +230,7 @@ class KrtRegistry:
         self.decisions_path = Path(data_dir) / "krt" / "decisions.json"
         self.tenders_path = Path(data_dir) / "krt" / "tender_orders.json"
         self.map_path = Path(data_dir) / "krt" / "map_dataset.json"
+        self.tender_links_path = Path(data_dir) / "krt" / "tender_links.json"
         self.fetch = fetch or (lambda url: request_bytes(url, timeout=15, retries=1))
         self.ttl_seconds = 24 * 60 * 60
         self._refreshing = False
@@ -569,6 +570,44 @@ class KrtRegistry:
         }
         save_json(self.map_path, payload)
         return payload
+
+    def tender_link(self, slug: str = "") -> dict[str, Any]:
+        """Привязки «распоряжение — площадка», проставленные человеком.
+
+        Машине привязать нечем: адреса в распоряжении нет ни в заголовке, ни в
+        карточке документа, а PDF — скан (семь страниц, 199 картинок на первой,
+        текста только регистрационный штамп). Разложить 53 распоряжения по
+        площадкам может только тот, кто их открыл, поэтому отметка ставится
+        руками и хранится с датой: это утверждение человека, а не наш вывод, и
+        подписано оно так же.
+        """
+        marks = load_json(self.tender_links_path)
+        marks = marks if isinstance(marks, dict) else {}
+        return marks.get(str(slug)) or {} if slug else marks
+
+    def mark_tender(self, slug: str, order: dict[str, Any], who: str = "") -> dict[str, Any]:
+        """Отметить, что по этой площадке объявлены торги — по такому-то документу."""
+        marks = load_json(self.tender_links_path)
+        marks = marks if isinstance(marks, dict) else {}
+        clean = str(slug or "").strip()
+        if not clean:
+            raise ValueError("площадка не названа")
+        if not order:
+            marks.pop(clean, None)
+            save_json(self.tender_links_path, marks)
+            return {}
+        entry = {
+            "order_id": str(order.get("id") or "").strip(),
+            "number": str(order.get("number") or "").strip(),
+            "url": str(order.get("url") or "").strip(),
+            "published_at": int(order.get("published_at") or 0),
+            "kind": str(order.get("kind") or "").strip(),
+            "marked_at": int(time.time()),
+            "marked_by": str(who or "").strip(),
+        }
+        marks[clean] = entry
+        save_json(self.tender_links_path, marks)
+        return entry
 
     def tender_orders(self, *, refresh: bool = False, max_pages: int = 12) -> dict[str, Any]:
         """Распоряжения ДГП о проведении торгов по КРТ.

@@ -845,6 +845,42 @@ def install(app: FastAPI) -> None:
                      "/auctions/etp/probe/browser?url=…"),
         }
 
+    @app.post("/auctions/krt/{slug}/tender-order")
+    async def auction_krt_mark_tender(slug: str, request: Request) -> dict[str, Any]:
+        """Отметить: по этой площадке объявлены торги — по такому-то распоряжению.
+
+        Машине привязать нечем. Распоряжение ДГП не называет адреса ни в
+        заголовке, ни в карточке документа, а его PDF — скан: семь страниц, 199
+        картинок на первой, текста только регистрационный штамп. Придумать
+        привязку по номеру или по дате значило бы объявить площадку выставленной
+        на торги без единого основания.
+
+        Поэтому отметку ставит человек, открывший распоряжение, а мы храним её
+        как его утверждение — с номером, ссылкой и датой отметки.
+        """
+        setter = getattr(krt_registry, "mark_tender", None)
+        if not callable(setter):
+            raise HTTPException(status_code=503, detail="Отметки недоступны")
+        payload = await request.json()
+        order = (payload or {}).get("order") or {}
+        if order and not str(order.get("url") or "").startswith("https://www.mos.ru/"):
+            raise HTTPException(status_code=422,
+                                detail="Ссылка должна вести на распоряжение mos.ru")
+        try:
+            entry = await run_in_threadpool(
+                lambda: setter(slug, order, str((payload or {}).get("who") or "")))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"slug": slug, "link": entry}
+
+    @app.get("/auctions/krt/tender-links")
+    async def auction_krt_tender_links() -> dict[str, Any]:
+        """Все проставленные вручную привязки распоряжений к площадкам."""
+        reader = getattr(krt_registry, "tender_link", None)
+        if not callable(reader):
+            return {"links": {}}
+        return {"links": await run_in_threadpool(lambda: reader(""))}
+
     @app.get("/auctions/krt/map")
     async def auction_krt_map(refresh: bool = False, step_m: float = Query(default=40.0, ge=1.0, le=200.0)) -> dict[str, Any]:
         """Площадки КРТ с официальными границами — для карты Москвы.

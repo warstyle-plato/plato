@@ -107,3 +107,63 @@ def test_the_order_is_read_but_never_tied_to_a_site() -> None:
     assert "address" not in order, "адреса в распоряжении нет — поля быть не должно"
 
     assert parse_tender_order({"id": "1", "title": "О внесении изменений в постановление"}) is None
+
+
+# --- Отметка о торгах ставится человеком, а не выводится машиной --------------
+#
+# «Пишем в ячейке КРТ, что согласно постановлению такому-то объявлены торги»
+# (владелец, 31.08.2026). Машине привязать нечем: адреса в распоряжении нет ни в
+# заголовке, ни в карточке документа, а PDF — скан (семь страниц, 199 картинок
+# на первой, текста только регистрационный штамп; текстовых полей у записи
+# поиска тоже нет — пустые). Привязка по номеру или по дате объявила бы площадку
+# выставленной на торги без единого основания.
+
+def test_the_mark_is_stored_as_a_human_statement(tmp_path) -> None:
+    from market_search.krt_registry import KrtRegistry
+
+    registry = KrtRegistry(tmp_path, fetch=lambda url: b"{}")
+    assert registry.tender_link("vyatskaya") == {}
+
+    order = {"id": "342473220", "number": "ДГП-Р-28/26",
+             "url": "https://www.mos.ru/dgp/documents/view/342473220/",
+             "published_at": 1778619600, "kind": "нежилой застройки"}
+    saved = registry.mark_tender("vyatskaya", order, who="владелец")
+    assert saved["number"] == "ДГП-Р-28/26"
+    assert saved["marked_at"] > 0, "отметка обязана нести дату — это утверждение человека"
+    assert saved["marked_by"] == "владелец"
+
+    again = KrtRegistry(tmp_path, fetch=lambda url: b"{}")
+    assert again.tender_link("vyatskaya")["number"] == "ДГП-Р-28/26", "отметка не пережила перезапуск"
+    assert again.mark_tender("vyatskaya", {}) == {}
+    assert again.tender_link("vyatskaya") == {}
+
+
+def test_an_empty_slug_is_refused(tmp_path) -> None:
+    from market_search.krt_registry import KrtRegistry
+
+    registry = KrtRegistry(tmp_path, fetch=lambda url: b"{}")
+    try:
+        registry.mark_tender("", {"number": "x"})
+    except ValueError:
+        return
+    raise AssertionError("площадка без имени не должна отмечаться")
+
+
+def test_the_card_says_the_mark_is_by_hand() -> None:
+    from auction_search import ui
+
+    page = ui.AUCTIONS_PAGE
+    body = page[page.index("function krtOrderBlock("):]
+    body = body[:body.index("\nfunction ", 1)]
+    assert "Отмечено вручную" in body
+    assert "адреса в распоряжении нет" in body, "причина ручной отметки названа на экране"
+    assert "Согласно распоряжению" in body, "формулировка владельца"
+
+
+def test_the_route_only_accepts_a_mos_ru_document() -> None:
+    """Ссылка на что угодно превратила бы отметку в свободное поле."""
+    source = (ROOT / "auction_search" / "api.py").read_text(encoding="utf-8")
+    block = source[source.index('"/auctions/krt/{slug}/tender-order"'):]
+    block = block[:block.index('@app.get("/auctions/krt/tender-links")')]
+    assert 'startswith("https://www.mos.ru/")' in block
+    assert "скан" in block, "причина ручной отметки названа и в маршруте"

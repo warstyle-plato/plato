@@ -50,7 +50,7 @@ def _stages_const() -> str:
     return PAGE[start:PAGE.index("];", start) + 2]
 
 
-def stage(site: dict, *, lots=None, press=None, intent=None) -> dict:
+def stage(site: dict, *, lots=None, press=None, intent=None, mark=None) -> dict:
     node = shutil.which("node")
     if not node:
         pytest.skip("node недоступен")
@@ -58,7 +58,8 @@ def stage(site: dict, *, lots=None, press=None, intent=None) -> dict:
     program = (
         f"const state={{krtTenders:{json.dumps({slug: lots or []})},"
         f"krtPress:{json.dumps({slug: press} if press else {})},"
-        f"krtRank:{{}},krtRequirements:{json.dumps({slug: {'intent': intent}} if intent else {})}}};\n"
+        f"krtRank:{{}},krtTenderLinks:{json.dumps(mark or {})},"
+        f"krtRequirements:{json.dumps({slug: {'intent': intent}} if intent else {})}}};\n"
         "const esc=s=>String(s);\n"
         "function krtWhen(t){return t?'дата':''}\n"
         + _stages_const() + "\n" + _function("krtIntent") + "\n" + _function("krtStage") + "\n"
@@ -163,3 +164,11 @@ def test_investmoscow_is_part_of_all_sources() -> None:
     assert "InvestMoscowDiscoveryAdapter()" in block
     assert block.count("InvestMoscowDiscoveryAdapter()") >= 2, \
         "и отдельным выбором, и в наборе «все»"
+
+
+def test_a_hand_made_mark_moves_the_site_to_upcoming() -> None:
+    """Машине привязать распоряжение нечем — отметку ставит человек."""
+    got = stage({"slug": "m", "status": "Планируемый"},
+                mark={"m": {"number": "ДГП-Р-28/26", "published_at": 1778619600}})
+    assert got["key"] == "upcoming"
+    assert "отмечено вручную" in " ".join(got["why"])
