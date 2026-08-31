@@ -747,6 +747,27 @@ def install(app: FastAPI) -> None:
         screening["market_report"] = _market_digest(report)
         return screening
 
+    @app.get("/auctions/krt/decisions")
+    async def auction_krt_decisions(refresh: bool = False) -> dict[str, Any]:
+        """Решения о КРТ, у которых нет карточки в каталоге.
+
+        Каталог krt.mos.ru отвечает на «какие площадки город показывает».
+        Решение публикуется отдельно, и площадка может иметь опубликованное
+        решение, не имея карточки вовсе — до сих пор такие были не видны ни при
+        каком фильтре. Сопоставление строгое: ложная привязка прячет настоящий
+        пробел, поэтому «не сопоставилось» здесь значит «карточки не нашли», а
+        не «новая площадка».
+        """
+        reader = getattr(krt_registry, "decisions", None)
+        if not callable(reader):
+            raise HTTPException(status_code=503, detail="Чтение решений недоступно")
+        try:
+            payload = await run_in_threadpool(lambda: reader(refresh=bool(refresh)))
+        except Exception as exc:  # источник закрыт — это ответ, а не пустой список
+            raise HTTPException(status_code=502,
+                                detail=f"Поиск mos.ru не ответил: {exc}") from exc
+        return payload
+
     @app.get("/auctions/krt/{slug}/requirements")
     async def auction_krt_requirements(slug: str) -> dict[str, Any]:
         """Requirements from the official decision for one planned KRT.

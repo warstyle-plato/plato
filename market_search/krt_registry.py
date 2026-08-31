@@ -37,6 +37,7 @@ CATALOGUE_URL = BASE_URL + "/projects/"
 JINA_PREFIX = "https://r.jina.ai/"
 CACHE_SCHEMA_VERSION = 3
 REQUIREMENTS_CACHE_SCHEMA_VERSION = 2
+DECISIONS_CACHE_SCHEMA_VERSION = 1
 _SPACE = re.compile(r"\s+")
 _NUMBER = re.compile(r"[-+]?\d+(?:[.,]\d+)?")
 
@@ -218,6 +219,10 @@ class KrtRegistry:
     def __init__(self, data_dir: Path, *, fetch: Callable[[str], bytes] | None = None) -> None:
         self.path = Path(data_dir) / "krt" / "catalogue.json"
         self.requirements_dir = Path(data_dir) / "krt" / "requirements"
+        # Решения о КРТ на mos.ru — вход со стороны документа. Каталог отвечает
+        # на «какие площадки город показывает», решения — на «о каких он принял
+        # решение», и это разные множества.
+        self.decisions_path = Path(data_dir) / "krt" / "decisions.json"
         self.fetch = fetch or (lambda url: request_bytes(url, timeout=15, retries=1))
         self.ttl_seconds = 24 * 60 * 60
         self._refreshing = False
@@ -471,6 +476,40 @@ class KrtRegistry:
         })
         save_json(cache_path, result)
         return result
+
+    def decisions(self, *, refresh: bool = False, max_pages: int = 60) -> dict[str, Any]:
+        """Решения о КРТ и разложение их на «карточка есть» и «карточки нет».
+
+        Недособранный список, выданный за полный, читается как «таких решений
+        больше нет», поэтому `complete` едет вместе с числами, а не вместо них.
+        """
+        from . import krt_decisions
+
+        cached = load_json(self.decisions_path)
+        if (not refresh and isinstance(cached, dict)
+                and cached.get("schema_version") == DECISIONS_CACHE_SCHEMA_VERSION
+                and fresh(self.decisions_path, self.ttl_seconds)):
+            return cached
+        found, complete = krt_decisions.collect(self.fetch, max_pages=max_pages)
+        if not found and isinstance(cached, dict) and cached.get("decisions"):
+            # Источник не ответил — прежний ответ честнее пустого списка, и он
+            # назван прежним.
+            stale = dict(cached)
+            stale["stale"] = True
+            return stale
+        split = krt_decisions.match_catalogue(found, self.catalogue())
+        payload = {
+            "schema_version": DECISIONS_CACHE_SCHEMA_VERSION,
+            "retrieved_at": int(time.time()),
+            "complete": complete,
+            "stale": False,
+            "total": split["total"],
+            "matched": len(split["matched"]),
+            "decisions": [one.to_dict() for one in split["unmatched"]],
+            "query": krt_decisions.MOS_KRT_QUERY,
+        }
+        save_json(self.decisions_path, payload)
+        return payload
 
     def status(self) -> dict[str, bool]:
         cached = load_json(self.path)
