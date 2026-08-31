@@ -72,7 +72,7 @@ def score(model: dict | None, rank: dict | None = None, site: dict | None = None
     if not node:
         pytest.skip("node недоступен")
     stub = (
-        "const state={krtModels:{},krtRank:{},krtRequirements:{}};\n"
+        "const state={krtModels:{},krtRank:{},krtRequirements:{},krtPress:{}};\n"
         f"state.krtModels['site']={json.dumps(model)};\n"
         f"state.krtRank['site']={json.dumps(rank or {})};\n"
         f"state.krtRequirements['site']={json.dumps(intent and {'intent': intent} or {})};\n"

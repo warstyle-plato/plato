@@ -700,6 +700,34 @@ def install(app: FastAPI) -> None:
         # единого слова. Молча выброшенная площадка читается как её
         # отсутствие, а это самая крупная площадка каталога и есть.
         unparsed = [row for row in projects if row.get("parse_problem")]
+        # Площадка, у которой решение опубликовано, а карточки в каталоге нет,
+        # стояла отдельным списком под таблицей — то есть в общем ряду её не
+        # было («КРТ без карточки надо включать в общий список, но делать
+        # пометку», владелец, 31.08.2026). Она едет строкой сюда же, с меткой
+        # и датой решения. ТЭП у неё нет вовсе, и придумывать их нельзя: в
+        # колонках стоит прочерк, а не ноль.
+        decision_rows: list[dict[str, Any]] = []
+        reader = getattr(krt_registry, "decisions", None)
+        if callable(reader):
+            try:
+                found = await run_in_threadpool(reader)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("KRT decisions failed")
+                found = {"decisions": [], "error": f"{type(exc).__name__}: {exc}"}
+            for one in (found.get("decisions") or []):
+                decision_rows.append({
+                    "slug": "decision:" + str(one.get("id") or ""),
+                    "name": str(one.get("address") or one.get("title") or ""),
+                    "okrug": one.get("okrug") or "",
+                    "district": "",
+                    "status": "Решение опубликовано",
+                    "url": one.get("url"),
+                    "no_card": True,
+                    "krt_kind": one.get("kind") or "",
+                    "decided_at": one.get("published_at") or 0,
+                    "department": one.get("department") or "",
+                })
+            projects = projects + decision_rows
         return {
             "source": CATALOGUE_URL,
             "geometry_status": "not_published_in_catalogue",
@@ -711,7 +739,8 @@ def install(app: FastAPI) -> None:
                  "problem": row.get("parse_problem")}
                 for row in unparsed[:20]
             ],
-            "new_count": sum(1 for row in projects if row["is_new"]),
+            "no_card_count": len(decision_rows),
+            "new_count": sum(1 for row in projects if row.get("is_new")),
             "new_for_days": NEW_FOR_SECONDS // 86400,
             "projects": projects,
         }
@@ -767,6 +796,48 @@ def install(app: FastAPI) -> None:
             raise HTTPException(status_code=502,
                                 detail=f"Поиск mos.ru не ответил: {exc}") from exc
         return payload
+
+    @app.get("/auctions/krt/{slug}/open-sources")
+    async def auction_krt_open_sources(slug: str) -> dict[str, Any]:
+        """Что об этой площадке сказано в публикациях.
+
+        В самом проекте решения об операторе и городских нуждах не сказано
+        почти ничего — проверено на восьми живых документах (31.08.2026).
+        Живут эти факты в публикациях mos.ru и деловой прессы, откуда их берёт
+        и ручная таблица владельца. Ни один признак не ставится без цитаты и
+        ссылки, а поиск — общий крючок сервиса, своего здесь не заводим.
+        """
+        from market_search import krt_open_sources
+
+        project = next((row for row in krt_registry.catalogue()
+                        if row.get("slug") == slug), None)
+        name = str((project or {}).get("name") or "")
+        if not name:
+            raise HTTPException(status_code=404, detail="Площадка не найдена в каталоге")
+        # Поиск у сервиса уже есть — второй свой не заводим: модуль, идущий
+        # наружу мимо общего пути, однажды пойдёт другим маршрутом и ответит
+        # иначе, чем весь остальной сервис.
+        client = getattr(service, "search", None)
+        finder = getattr(client, "search", None)
+        if not callable(finder) or not getattr(client, "configured", False):
+            return {"available": False,
+                    "reason": "Веб-поиск не настроен — публикации спросить нечем"}
+        asked = krt_open_sources.queries(
+            name, str((project or {}).get("okrug") or ""),
+            str((project or {}).get("district") or ""))
+        docs: list[Any] = []
+        errors: list[str] = []
+        for query in asked:
+            try:
+                docs.extend(await run_in_threadpool(finder, query))
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{type(exc).__name__}: {exc}")
+        if not docs and errors:
+            # Поиск не ответил — это ответ, а не «в источниках ничего нет».
+            return {"available": False, "reason": "; ".join(errors[:2]), "queries": asked}
+        found = krt_open_sources.read_findings(docs, name)
+        found.update({"available": True, "queries": asked, "errors": errors[:2]})
+        return found
 
     @app.get("/auctions/krt/{slug}/requirements")
     async def auction_krt_requirements(slug: str) -> dict[str, Any]:
