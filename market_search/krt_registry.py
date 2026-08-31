@@ -39,6 +39,7 @@ CACHE_SCHEMA_VERSION = 3
 REQUIREMENTS_CACHE_SCHEMA_VERSION = 2
 DECISIONS_CACHE_SCHEMA_VERSION = 2
 TENDERS_CACHE_SCHEMA_VERSION = 1
+MAP_CACHE_SCHEMA_VERSION = 1
 # Поля записи решения — по ним кэш поднимается обратно в объект.
 _DECISION_FIELDS = ("id", "title", "url", "address", "okrug", "kind",
                     "published_at", "department")
@@ -228,6 +229,7 @@ class KrtRegistry:
         # решение», и это разные множества.
         self.decisions_path = Path(data_dir) / "krt" / "decisions.json"
         self.tenders_path = Path(data_dir) / "krt" / "tender_orders.json"
+        self.map_path = Path(data_dir) / "krt" / "map_dataset.json"
         self.fetch = fetch or (lambda url: request_bytes(url, timeout=15, retries=1))
         self.ttl_seconds = 24 * 60 * 60
         self._refreshing = False
@@ -529,6 +531,44 @@ class KrtRegistry:
         out["matched"] = len(split["matched"])
         out["decisions"] = [one.to_dict() for one in split["unmatched"]]
         return out
+
+    def map_dataset(self, *, refresh: bool = False, step_m: float = 40.0) -> dict[str, Any]:
+        """Реестр КРТ картой: 263 площадки с полигонами официальных границ.
+
+        Постраничный список отдаёт 136, наш прежний снимок держал 124 — то есть
+        половина каталога до нас не доезжала. Здесь весь реестр одним файлом, и
+        у каждой записи есть контур: карточка перестаёт говорить «официальный
+        полигон границ пока не получен».
+        """
+        from . import krt_map_data
+
+        cached = load_json(self.map_path)
+        if (not refresh and isinstance(cached, dict)
+                and cached.get("schema_version") == MAP_CACHE_SCHEMA_VERSION
+                and cached.get("step_m") == step_m
+                and fresh(self.map_path, self.ttl_seconds)):
+            return cached
+        try:
+            sites = krt_map_data.read(self.fetch, step_m)
+        except Exception as exc:  # noqa: BLE001
+            if isinstance(cached, dict) and cached.get("sites"):
+                stale = dict(cached)
+                stale["stale"] = True
+                stale["error"] = f"{type(exc).__name__}: {exc}"
+                return stale
+            raise
+        payload = {
+            "schema_version": MAP_CACHE_SCHEMA_VERSION,
+            "retrieved_at": int(time.time()),
+            "source": krt_map_data.DATASET_URL,
+            "step_m": step_m,
+            "stale": False,
+            "count": len(sites),
+            "bbox_merc": krt_map_data.bbox(sites),
+            "sites": sites,
+        }
+        save_json(self.map_path, payload)
+        return payload
 
     def tender_orders(self, *, refresh: bool = False, max_pages: int = 12) -> dict[str, Any]:
         """Распоряжения ДГП о проведении торгов по КРТ.

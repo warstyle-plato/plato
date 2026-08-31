@@ -845,6 +845,25 @@ def install(app: FastAPI) -> None:
                      "/auctions/etp/probe/browser?url=…"),
         }
 
+    @app.get("/auctions/krt/map")
+    async def auction_krt_map(refresh: bool = False, step_m: float = Query(default=40.0, ge=1.0, le=200.0)) -> dict[str, Any]:
+        """Площадки КРТ с официальными границами — для карты Москвы.
+
+        Контуры отдаются в метрах веб-меркатора, в тех же, в которых считает
+        подложка `/land/basemap`: переводить их в браузере значило бы завести
+        вторую проекцию, а перепутанный порядок пары «широта, долгота» молча
+        зеркалит полигон — участок остаётся правдоподобным и встаёт не туда.
+        """
+        reader = getattr(krt_registry, "map_dataset", None)
+        if not callable(reader):
+            raise HTTPException(status_code=503, detail="Реестр карты недоступен")
+        try:
+            return await run_in_threadpool(
+                lambda: reader(refresh=bool(refresh), step_m=float(step_m)))
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=502,
+                                detail=f"Карта КРТ не прочитана: {exc}") from exc
+
     @app.get("/auctions/krt/api-probe")
     async def auction_krt_api_probe(url: str = Query(default="")) -> dict[str, Any]:
         """Что на самом деле отдаёт api.krt.mos.ru. Разбора здесь нет.

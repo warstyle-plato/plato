@@ -65,6 +65,9 @@ __DEVELOPAID_CONTOUR__
       <div class="filter-actions"><button id="krtRefresh" class="primary">Обновить каталог</button><button id="krtRankBtn">Оценить отобранные моделью</button><button id="krtExport">Выгрузить Excel</button></div>
     </div>
     <div class="stats"><div class="stat"><b id="krtCount">—</b><span>проектов</span></div><div class="stat"><b id="krtArea">—</b><span>га территории</span></div><div class="stat"><b id="krtHousing">—</b><span>м² жилья</span></div><div class="stat"><b id="krtGfa">—</b><span>м² всего</span></div></div>
+    <details class="fold" id="krtMapFold"><summary>Карта КРТ Москвы — 263 площадки с официальными границами</summary>
+      <div class="foldbody"><div id="krtMapBody"><div class="notice">Открой, и карта построится.</div></div></div>
+    </details>
     <div id="krtFilterNote" class="source" style="margin:6px 2px"></div>
     <div id="krtRankStatus" class="notice" style="display:none"></div>
     <div id="krtDecisions" class="notice" style="display:none"></div>
@@ -1355,6 +1358,142 @@ function krtTenderBlock(x){
   +'</div><div class="source">Совпадение по улице и владению или по кадастровому номеру. '
   +'Лот, привязанный неверно, объявил бы площадку проданной, поэтому правило строгое.</div></div>';
 }
+// Карта КРТ Москвы. Подложка — та же серверная склейка `/land/basemap`, что у
+// карточки участка: своей проекции модуль не заводит. Контуры приходят уже в
+// метрах меркатора — переводить их в браузере значило бы завести вторую
+// проекцию, а перепутанный порядок пары «широта, долгота» молча зеркалит
+// полигон: он остаётся правдоподобным и встаёт не туда.
+const KRT_MAP={w:1200,h:760,pad:0.02,data:null,busy:false,whole:false};
+function krtMapColour(site,lots){
+ if(lots)return '#C4581B';                                   // есть лот на торгах
+ return String(site.status||'').toLowerCase().includes('реализац')?'#4E9BDE':'#C0392B';
+}
+// Кадр по основной массе площадок. Общая рамка тянется до Зеленограда и Новой
+// Москвы, и город в ней сжимается в пятно: на снимке 263 контура занимали
+// пятую часть поля. Берём пятый и девяносто пятый процентиль центров, а
+// оставшиеся за кадром называем числом — молча обрезанная площадка читается
+// как её отсутствие.
+function krtMapFrame(sites,whole){
+ const xs=sites.map(s=>s.centre_merc&&s.centre_merc[0]).filter(v=>Number.isFinite(v)).sort((a,b)=>a-b);
+ const ys=sites.map(s=>s.centre_merc&&s.centre_merc[1]).filter(v=>Number.isFinite(v)).sort((a,b)=>a-b);
+ if(!xs.length||!ys.length)return null;
+ const at=(arr,q)=>arr[Math.min(arr.length-1,Math.max(0,Math.round((arr.length-1)*q)))];
+ const box=whole?[xs[0],ys[0],xs[xs.length-1],ys[ys.length-1]]
+                :[at(xs,0.05),at(ys,0.05),at(xs,0.95),at(ys,0.95)];
+ const outside=sites.filter(s=>{const c=s.centre_merc;
+   return c&&(c[0]<box[0]||c[0]>box[2]||c[1]<box[1]||c[1]>box[3])}).length;
+ return {box,outside};
+}
+function krtMapPlace(bbox){
+ // Кадр с полями и с поправкой на форму окна: растянутый по одной оси кадр
+ // увёл бы контуры относительно подложки, а выглядело бы это как неточность
+ // источника.
+ const [x0,y0,x1,y1]=bbox, padX=(x1-x0)*KRT_MAP.pad, padY=(y1-y0)*KRT_MAP.pad;
+ let ax=x0-padX, ay=y0-padY, bx=x1+padX, by=y1+padY;
+ const want=KRT_MAP.w/KRT_MAP.h, have=(bx-ax)/(by-ay);
+ if(have>want){const need=(bx-ax)/want-(by-ay);ay-=need/2;by+=need/2}
+ else{const need=(by-ay)*want-(bx-ax);ax-=need/2;bx+=need/2}
+ return {ax,ay,bx,by,
+   px:(x)=>(x-ax)/(bx-ax)*KRT_MAP.w,
+   py:(y)=>(by-y)/(by-ay)*KRT_MAP.h};
+}
+async function loadKrtMap(){
+ const box=document.getElementById('krtMapBody');
+ if(!box||KRT_MAP.busy)return;
+ if(KRT_MAP.data){box.innerHTML=krtMapMarkup(KRT_MAP.data);krtMapBind();return}
+ KRT_MAP.busy=true;
+ box.innerHTML='<div class="notice"><span class="spinner"></span>Читаю реестр КРТ с официальными границами…</div>';
+ try{
+  const d=await askJson('/auctions/krt/map');
+  KRT_MAP.data=d;
+  box.innerHTML=krtMapMarkup(d);
+  krtMapBind();
+ }catch(e){
+  // Источник не ответил — это ответ, а не пустая карта: пустое поле читалось
+  // бы как «площадок нет».
+  box.innerHTML=`<div class="notice warn">Карта не построена: ${esc(String(e.message||e))}. `
+   +'Это не значит, что площадок нет — реестр не прочитан.</div>';
+ }finally{KRT_MAP.busy=false}
+}
+function krtMapMarkup(d){
+ const sites=(d.sites||[]).filter(s=>(s.rings_merc||[]).length);
+ if(!sites.length||!d.bbox_merc)
+  return '<div class="notice warn">В реестре нет ни одного контура — рисовать нечего.</div>';
+ const frame=krtMapFrame(sites,!!KRT_MAP.whole);
+ if(!frame)return '<div class="notice warn">У площадок нет ни одной точки — кадр не построить.</div>';
+ const place=krtMapPlace(frame.box);
+ const src='/land/basemap?'+new URLSearchParams({
+   bbox:[place.ax,place.ay,place.bx,place.by].join(','), width:String(KRT_MAP.w)});
+ const shapes=sites.map((s,i)=>{
+  const lots=(state.krtTenders[s.slug]||[]).length;
+  const colour=krtMapColour(s,lots);
+  const paths=(s.rings_merc||[]).map(ring=>'M'+ring.map(p=>
+    place.px(p[0]).toFixed(1)+' '+place.py(p[1]).toFixed(1)).join('L')+'Z').join(' ');
+  return `<path d="${paths}" fill="${colour}" fill-opacity="0.34" stroke="${colour}"`
+   +` stroke-width="1.1" data-i="${i}" class="krtshape"></path>`;
+ }).join('');
+ const counts={};
+ sites.forEach(s=>{const k=s.status||'—';counts[k]=(counts[k]||0)+1});
+ const legend=Object.entries(counts).map(([name,n])=>
+   `<span style="margin-right:14px;white-space:nowrap"><span style="display:inline-block;width:10px;height:10px;`
+   +`background:${String(name).toLowerCase().includes('реализац')?'#4E9BDE':'#C0392B'};margin-right:5px"></span>`
+   +`${esc(name)} — ${n}</span>`).join('')
+  +'<span style="margin-right:14px;white-space:nowrap"><span style="display:inline-block;width:10px;height:10px;'
+  +'background:#C4581B;margin-right:5px"></span>есть лот на торгах</span>';
+ const scope=`<div class="source" style="margin:6px 0"><button type="button" id="krtMapWhole" class="pdfbtn">`
+   +(KRT_MAP.whole?'Показать город плотно':'Показать всю Москву')+'</button>'
+   +(frame.outside?` <span>За кадром ${frame.outside} площадок(и) — Зеленоград и Новая Москва. `
+     +'Кадр взят по основной массе: в общей рамке город сжимается в пятно.</span>':'')+'</div>';
+ return `${scope}<div class="krtmap" style="position:relative;max-width:100%;overflow:auto">
+   <div style="position:relative;width:${KRT_MAP.w}px;height:${KRT_MAP.h}px">
+     <img src="${src}" alt="" width="${KRT_MAP.w}" height="${KRT_MAP.h}"
+          style="position:absolute;left:0;top:0;width:100%;height:100%;object-fit:cover">
+     <svg viewBox="0 0 ${KRT_MAP.w} ${KRT_MAP.h}" width="${KRT_MAP.w}" height="${KRT_MAP.h}"
+          style="position:absolute;left:0;top:0">${shapes}</svg>
+     <div id="krtMapTip" style="position:absolute;display:none;pointer-events:none;z-index:3;
+          background:#fff;border:1px solid var(--line);padding:8px 10px;font-size:12px;max-width:320px"></div>
+   </div></div>
+  <div class="source" style="margin-top:8px">${legend}</div>
+  <div class="source">Границы — официальные полигоны реестра КРТ (${sites.length} площадок).
+   Подложка — та же карта улиц, что в карточке участка. Наведите на площадку, чтобы увидеть сводку;
+   нажмите, чтобы открыть её карточку.</div>`;
+}
+function krtMapBind(){
+ const body=document.getElementById('krtMapBody');
+ if(!body||!KRT_MAP.data)return;
+ const sites=(KRT_MAP.data.sites||[]).filter(s=>(s.rings_merc||[]).length);
+ const tip=document.getElementById('krtMapTip');
+ const toggle=document.getElementById('krtMapWhole');
+ if(toggle)toggle.onclick=()=>{KRT_MAP.whole=!KRT_MAP.whole;
+   body.innerHTML=krtMapMarkup(KRT_MAP.data);krtMapBind()};
+ body.querySelectorAll('path.krtshape').forEach(node=>{
+  const s=sites[Number(node.dataset.i)];
+  if(!s)return;
+  node.style.cursor='pointer';
+  node.addEventListener('mousemove',ev=>{
+   if(!tip)return;
+   const host=node.closest('div[style*="position:relative"]');
+   const rect=host.getBoundingClientRect();
+   const lots=(state.krtTenders[s.slug]||[]).length;
+   tip.innerHTML=`<b>${esc(s.name)}</b><div class="source">${esc([s.okrug,s.district].filter(Boolean).join(' · '))}</div>`
+    +`<div>${esc(s.status||'—')}${lots?' · есть лот на торгах':''}</div>`
+    +`<div class="source">${s.area_ha?esc(s.area_ha)+' га':'площадь не указана'}`
+    +`${s.total_gfa_sqm?' · '+fmtArea(s.total_gfa_sqm)+' всего':''}`
+    +`${s.housing_gfa_sqm?' · жильё '+fmtArea(s.housing_gfa_sqm):''}</div>`;
+   tip.style.display='block';
+   tip.style.left=Math.min(rect.width-330,Math.max(0,ev.clientX-rect.left+14))+'px';
+   tip.style.top=Math.max(0,ev.clientY-rect.top+14)+'px';
+  });
+  node.addEventListener('mouseleave',()=>{if(tip)tip.style.display='none'});
+  node.addEventListener('click',()=>{
+   // Площадка карты и площадка каталога — одна и та же, и открывается та же
+   // карточка. Каталог её ещё не показывает — честно уводим на портал.
+   const row=state.krt.find(x=>x.slug===s.slug);
+   if(row){switchTab(true);selectKrt(row);row&&document.getElementById('krtSide')?.scrollIntoView({block:'start'})}
+   else window.open(s.url,'_blank','noopener');
+  });
+ });
+}
 function krtIntentBlock(x){
  const it=krtIntent(x);
  if(!it)return '<div class="notice">Проект решения ещё не прочитан — чьё это КРТ и есть ли оператор, сказать нечем.</div>';
@@ -1574,7 +1713,7 @@ $('askBtn').onclick=askPlato;
 $('askCard').querySelectorAll('.chips button').forEach(b=>{
  b.onclick=()=>{$('askText').value=b.dataset.q;askPlato()};
 });
-$('tabAuctions').onclick=()=>switchTab(false);$('tabKrt').onclick=()=>switchTab(true);$('krtRefresh').onclick=loadKrt;$('krtRankBtn').onclick=startKrtRanking;$('krtSearch').oninput=filterKrt;$('krtStatus').onchange=filterKrt;$('krtPurpose').onchange=filterKrt;$('krtNeeds').onchange=filterKrt;$('krtCard').onchange=filterKrt;$('krtTender').onchange=filterKrt;$('krtStage').onchange=filterKrt;$('krtMinHousing').oninput=filterKrt;document.querySelectorAll('#krtRows').forEach(()=>{});document.querySelectorAll('th[data-sort]').forEach(th=>{th.style.cursor='pointer';th.title=(th.title?th.title+'. ':'')+'Нажмите, чтобы отсортировать';th.onclick=()=>krtSortBy(th.dataset.sort)});$('krtProfile').onchange=()=>{filterKrt();if(state.selectedKrt)selectKrt(state.selectedKrt)};
+$('tabAuctions').onclick=()=>switchTab(false);$('tabKrt').onclick=()=>switchTab(true);$('krtRefresh').onclick=loadKrt;$('krtRankBtn').onclick=startKrtRanking;$('krtSearch').oninput=filterKrt;$('krtStatus').onchange=filterKrt;$('krtPurpose').onchange=filterKrt;$('krtNeeds').onchange=filterKrt;$('krtCard').onchange=filterKrt;$('krtTender').onchange=filterKrt;$('krtStage').onchange=filterKrt;document.getElementById('krtMapFold')?.addEventListener('toggle',ev=>{if(ev.target.open)loadKrtMap()});$('krtMinHousing').oninput=filterKrt;document.querySelectorAll('#krtRows').forEach(()=>{});document.querySelectorAll('th[data-sort]').forEach(th=>{th.style.cursor='pointer';th.title=(th.title?th.title+'. ':'')+'Нажмите, чтобы отсортировать';th.onclick=()=>krtSortBy(th.dataset.sort)});$('krtProfile').onchange=()=>{filterKrt();if(state.selectedKrt)selectKrt(state.selectedKrt)};
 $('krtOkrugToggle').onclick=e=>{e.stopPropagation();const menu=$('krtOkrugMenu'),open=menu.classList.contains('hidden');menu.classList.toggle('hidden',!open);$('krtOkrugToggle').setAttribute('aria-expanded',String(open))};$('krtOkrugMenu').onclick=e=>e.stopPropagation();$('krtOkrugClear').onclick=()=>{state.krtOkrugs.clear();$('krtOkrugOptions').querySelectorAll('input').forEach(x=>x.checked=false);updateKrtOkrugLabel();filterKrt()};document.addEventListener('click',closeKrtOkrugs);document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeKrtOkrugs();$('krtOkrugToggle').focus()}});
 loadKrtRanking();
 // Ссылка из «Поделиться» открывает ту же территорию: получатель попадает на
