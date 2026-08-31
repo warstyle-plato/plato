@@ -148,9 +148,18 @@ document.addEventListener('DOMContentLoaded', function(){{
         catch(e){{ return '<div class="card"><h2>'+(b.title||'')+'</h2>'
           +'<div class="err">блок не нарисовался: '+e+'</div></div>'; }}
       }}).join('');
-      $('#bnout').innerHTML=verdictCard(data)+findingsCard(data)+blocks
+      // Карта соседей и «Карта рынка» — те же функции, что в отчёте; контейнер
+      // пузырьков свой, иначе два одинаковых id на одной странице, и
+      // переключатель нашёл бы чужой.
+      const market=[{{...ctx.subjectMetrics, name:ctx.subjectName,
+                     segment:ctx.subjectSegment, __own:true}}].concat(data.peers||[]);
+      $('#bnout').innerHTML=verdictCard(data)+findingsCard(data)
+        +geoCard(market, data.subject||{{}}, data.peers||[])
+        +bubbleCard(market, 'bnbubble')
+        +blocks
         +'<div class="card">'+(data.html||'')+'</div>'
         +essayCard(data)+finalCard(data);
+      wireBubbles(market, 'bnbubble');
     }}catch(e){{ $('#bnstate').textContent='не дошло до сервера: '+e; }}
   }});
 }});

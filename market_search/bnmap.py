@@ -749,14 +749,36 @@ def _today() -> str:
 # выдумки: это контракт `build_blocks`, которым считается действующий отчёт.
 # Клон обязан считаться ИМ ЖЕ — вторая реализация медианы однажды разойдётся с
 # первой, и обе будут выглядеть верными.
-def _metric_row(card: dict[str, Any], name: str, distance: Any, observed: str) -> dict[str, Any]:
+def _coordinates(value: Any) -> tuple[float | None, float | None]:
+    """Координаты соседа. В списке `radius` они приходят строкой «широта, долгота».
+
+    Разбираются здесь, а не на странице: карту рисует общий рендерер, и он ждёт
+    два числа. Непонятная строка даёт пару пустых — точка на карте просто не
+    появится, а сосед останется в расчётах наравне, и об этом сказано под
+    картой.
+    """
+    parts = str(value or "").split(",")
+    if len(parts) != 2:
+        return None, None
+    try:
+        return float(parts[0].strip()), float(parts[1].strip())
+    except (TypeError, ValueError):
+        return None, None
+
+
+def _metric_row(card: dict[str, Any], name: str, distance: Any, observed: str,
+                point: Any = None) -> dict[str, Any]:
     price = card.get("metrprice_avg") or {}
     total = card.get("apart_total") or {}
     budget = card.get("sum_avg") or {}
+    latitude, longitude = _coordinates(
+        point if point is not None else card.get("coordinates"))
     return {
         "object_id": card.get("object_id"),
         "name": name,
         "distance_km": _float(distance),
+        "latitude": latitude,
+        "longitude": longitude,
         # Класс отдаётся как есть: `normalize_segment` уже сводит «Бизнес+» и
         # «Бизнес−» к ступени «бизнес», а подпись в таблице должна остаться
         # той, что дал источник, — три ступени там, где у нас одна.
@@ -916,7 +938,7 @@ def clone_report(data_dir: Any, query: str, *, base: str = "msk", date: str = ""
             unnamed.append(str(item.get("name") or item.get("id")))
             continue
         row = _metric_row(card, str(item.get("name") or card.get("project") or ""),
-                          item.get("distance"), asked)
+                          item.get("distance"), asked, item.get("coordinates"))
         if str(item.get("id")) == str(found["object_id"]):
             subject = row
         else:

@@ -984,6 +984,11 @@ const AXES={
   units_per_month:{label:'темп, ДДУ в месяц',digits:1},
   price_per_sqm:{label:'цена, ₽/м²',digits:0},
   sold_lot_avg:{label:'средний проданный лот, м²',digits:1},
+  // Средний лот В ПРОЕКТЕ — другая величина, чем проданный: первая про то, что
+  // построено, вторая про то, что берут. Своё имя у оси обязательно: подмена
+  // одной другой превратила бы сравнение «что уходит против того, что есть» в
+  // сравнение числа с самим собой.
+  lot_area_avg:{label:'средний лот в проекте, м²',digits:1},
   lot_count:{label:'лотов в экспозиции',digits:0},
   remaining_units:{label:'остаток, лотов',digits:0},
   distance_km:{label:'расстояние, км',digits:2},
@@ -994,6 +999,7 @@ const VIEWS=[
   {id:'lot',   name:'Цена и размер лота', x:'sold_lot_avg', y:'price_per_sqm', size:'lot_count'},
   {id:'stock', name:'Темп и остаток',  x:'units_per_month', y:'remaining_units', size:'lot_count'},
   {id:'near',  name:'Цена и удалённость', x:'distance_km', y:'price_per_sqm', size:'lot_count'},
+  {id:'size',  name:'Цена и лот в проекте', x:'lot_area_avg', y:'price_per_sqm', size:'lot_count'},
 ];
 let bubbleView='speed';
 // Чьи кривые показаны поверх полосы. Полоса отвечает на вопрос «где я
@@ -1387,6 +1393,67 @@ function essayCard(d){
     +essay.map(part=>`<h3>${esc(part.headline)}</h3>`
       +(part.paragraphs||[]).map(text=>`<p>${esc(text)}</p>`).join('')).join('')
     +`</div>`;
+}
+
+// Карта соседей и «Карта рынка» — общие для обеих поверхностей, как вердикт и
+// разбор. Контейнер пузырьков задаётся именем: на одной странице две карточки,
+// и повторённый `id="bubble"` сделал бы вторую невидимой для переключателя.
+function geoCard(market, subject, peers){
+  const geoSvg=mapChart(market, subject);
+  if(!geoSvg) return '';
+  // Сосед без координат в схему не попадает, и молчать об этом нельзя:
+  // отсутствие точки читается как отсутствие соседа.
+  const noGeo=(peers||[]).filter(p=>p.latitude==null||p.longitude==null).length;
+  return `<div class="card"><h2>Где соседи</h2>`+geoSvg
+    +`<div class="muted" style="font-size:12.5px;margin-top:8px">Кольца — расстояние`
+    +` от объекта по прямой, а не по дороге: через реку или пути восемьсот метров`
+    +` бывают тремя километрами. Цвет точки — класс, обводка — отмеченный на графиках.`
+    +` Имя проекта — наведением или касанием; в печать уходят ближайшие шесть`
+    +` и отмеченные.`
+    +(noGeo?` Координат нет у ${noGeo} из ${(peers||[]).length} соседей выборки — на карте`
+      +` их нет, в расчётах они участвуют наравне.`:'')
+    +`</div></div>`;
+}
+
+// Пара осей, у которой ни одной точки нет, рисует пустое поле — а пустое поле
+// читается как «здесь нечего показывать про рынок», хотя на деле источник не
+// знает этой величины. Такие виды не рисуются, и о них сказано словами.
+function bubbleViews(market){
+  const has=key=>(market||[]).some(r=>r[key]!==null&&r[key]!==undefined);
+  return VIEWS.filter(v=>has(v.x)&&has(v.y));
+}
+
+function bubbleCard(market, box){
+  box=box||'bubble';
+  const views=bubbleViews(market);
+  if(!views.length) return '';
+  const missing=VIEWS.filter(v=>views.indexOf(v)<0).map(v=>v.name);
+  const current=views.find(v=>v.id===bubbleView)||views[0];
+  return `<div class="card"><h2>Карта рынка</h2>`
+    +`<div class="chips views" data-box="${box}">`+views.map(v=>`<button type="button" data-view="${v.id}"`
+      +`${v.id===current.id?' class="on"':''}>${esc(v.name)}</button>`).join('')+`</div>`
+    +`<div id="${box}">`+bubbleChart(market, current)+`</div>`
+    +`<div class="printviews">`+views.map(v=>`<h3>${esc(v.name)}</h3>`+bubbleChart(market,v)).join('')+`</div>`
+    +`<div class="muted" style="font-size:12.5px;margin-top:8px">Размер кружка — лотов в экспозиции.`
+    +` Пунктир — медианы по обеим осям. Имя проекта — наведением на кружок;`
+    +` в печать уходят все пары осей.`
+    +(missing.length?` Пар осей «${missing.map(esc).join('», «')}» здесь нет: источник не`
+      +` даёт величины для одной из осей.`:'')
+    +`</div></div>`;
+}
+
+// Переключатель ищет свои кнопки в своей карточке, а не по всей странице:
+// иначе нажатие в одной карточке перерисовывало бы обе.
+function wireBubbles(market, box){
+  box=box||'bubble';
+  const chips=document.querySelector(`.chips.views[data-box="${box}"]`);
+  const field=document.getElementById(box);
+  if(!chips||!field) return;
+  chips.querySelectorAll('button').forEach(btn=>btn.addEventListener('click',()=>{
+    bubbleView=btn.dataset.view;
+    chips.querySelectorAll('button').forEach(b2=>b2.classList.toggle('on',b2===btn));
+    field.innerHTML=bubbleChart(market, VIEWS.find(v=>v.id===bubbleView));
+  }));
 }
 
 function blockCard(b,ctx){
@@ -3336,31 +3403,8 @@ function render(d){
   const market=[{...m, name:s.project_name||'объект', segment:s.segment, __own:true},
     ...peers.map(p=>({...p, __picked:onChart.has(String(p.complex_id))}))];
   // География — до осей: сначала «где это всё стоит», потом «как соотносится».
-  const geoSvg=mapChart(market, s);
-  if(geoSvg){
-    // Сосед без координат в схему не попадает, и молчать об этом нельзя:
-    // отсутствие точки читается как отсутствие соседа. Пустой результат — не
-    // «чисто», и здесь ровно тот же случай.
-    const noGeo=peers.filter(p=>p.latitude==null||p.longitude==null).length;
-    html+=`<div class="card"><h2>Где соседи</h2>`+geoSvg
-      +`<div class="muted" style="font-size:12.5px;margin-top:8px">Кольца — расстояние`
-      +` от объекта по прямой, а не по дороге: через реку или пути восемьсот метров`
-      +` бывают тремя километрами. Цвет точки — класс, обводка — отмеченный на графиках.`
-      +` Имя проекта — наведением или касанием; в печать уходят ближайшие шесть`
-      +` и отмеченные.`
-      +(noGeo?` Координат нет у ${noGeo} из ${peers.length} соседей выборки — на карте`
-        +` их нет, в расчётах они участвуют наравне.`:'')
-      +`</div></div>`;
-  }
-
-  html+=`<div class="card"><h2>Карта рынка</h2>`
-    +`<div class="chips views">`+VIEWS.map(v=>`<button type="button" data-view="${v.id}"`
-      +`${v.id===bubbleView?' class="on"':''}>${esc(v.name)}</button>`).join('')+`</div>`
-    +`<div id="bubble">`+bubbleChart(market, VIEWS.find(v=>v.id===bubbleView))+`</div>`
-    +`<div class="printviews">`+VIEWS.map(v=>`<h3>${esc(v.name)}</h3>`+bubbleChart(market,v)).join('')+`</div>`
-    +`<div class="muted" style="font-size:12.5px;margin-top:8px">Размер кружка — лотов в экспозиции.`
-    +` Пунктир — медианы по обеим осям. Имя проекта — наведением на кружок;`
-    +` в печать уходят все пары осей.</div></div>`;
+  html+=geoCard(market, s, peers);
+  html+=bubbleCard(market, 'bubble');
 
   const priceBlock=(d.blocks||[]).find(b=>b.code==='price');
   if(priceBlock){
@@ -3418,11 +3462,7 @@ function render(d){
   html+=essayCard(d);
   html+=finalCard(d);
   $('#out').innerHTML=html;
-  document.querySelectorAll('.views button').forEach(btn=>btn.addEventListener('click',()=>{
-    bubbleView=btn.dataset.view;
-    document.querySelectorAll('.views button').forEach(b2=>b2.classList.toggle('on',b2===btn));
-    $('#bubble').innerHTML=bubbleChart(market, VIEWS.find(v=>v.id===bubbleView));
-  }));
+  wireBubbles(market, 'bubble');
   $('#askcard').style.display='block';
   $('#pdf').style.display='inline-block';
   $('#reset').style.display='inline-block';

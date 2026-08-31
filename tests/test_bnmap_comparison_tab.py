@@ -414,3 +414,62 @@ def test_a_ready_made_average_is_a_line_and_not_a_quartile_band() -> None:
     assert "пять ближайших" in drawn and "локация" in drawn
     assert "Полосы квартилей здесь нет" in drawn
     assert "<svg" in drawn, "график не нарисовался вовсе"
+
+
+def test_the_neighbours_carry_their_coordinates_to_the_map() -> None:
+    """Координаты у bnMAP есть — строкой, и разобрать их обязан сервер.
+
+    Карту рисует общий рендерер, он ждёт два числа. Строка «55.716254,
+    37.433176» приходит в списке соседей `radius`; неразобранная, она оставила
+    бы карту пустой при полном ответе источника.
+    """
+    row = bnmap._metric_row(CARD, "Объект", 0, "2026-08-25", "55.716254, 37.433176")
+    assert row["latitude"] == 55.716254 and row["longitude"] == 37.433176
+    # Непонятная строка — это «точки нет», а не ноль: нулевые координаты
+    # поставили бы проект в Гвинейский залив, и выглядело бы это как данные.
+    blank = bnmap._metric_row(CARD, "Объект", 0, "2026-08-25", "—")
+    assert blank["latitude"] is None and blank["longitude"] is None
+
+
+def test_the_tab_shows_the_map_and_the_bubbles_by_the_report_renderers() -> None:
+    """Карта соседей и «Карта рынка» — те же функции, что в отчёте."""
+    script = re.search(r"<script>(.*?)</script>", bnmap_ui.markup(), re.S).group(1)
+    for call in ("geoCard(", "bubbleCard(", "wireBubbles("):
+        assert call in script, f"вкладка не зовёт {call}"
+    # Контейнер пузырьков свой: два `id=\"bubble\"` на одной странице сделали бы
+    # вторую карточку невидимой для переключателя.
+    assert "'bnbubble'" in script
+    page = cabinet.cabinet_page("market")
+    for name in ("function geoCard(", "function bubbleCard(", "function wireBubbles("):
+        assert page.count(name) == 1, name
+    assert "html+=geoCard(market, s, peers);" in page
+    assert "html+=bubbleCard(market, 'bubble');" in page
+
+
+def test_a_pair_of_axes_without_data_is_named_and_not_drawn_empty() -> None:
+    """Пустое поле читается как «про рынок сказать нечего».
+
+    У bnMAP нет ни поглощения в метрах, ни среднего ПРОДАННОГО лота — приходит
+    средняя площадь экспозиции, а это другая величина. Две пары осей из шести
+    построить не на чем: они не рисуются пустыми, а называются под графиком.
+    """
+    body = "\n".join(line for line in cabinet.cabinet_page("market").splitlines()
+                     if line.startswith("const num=") or line.startswith("const esc="))
+    script = (body + "\n" + _page_function("bubbleViews") + "\n"
+              + "const VIEWS=[{id:'pace',name:'Цена и темп',x:'units_per_month',y:'price_per_sqm'},"
+              + "{id:'speed',name:'Цена и скорость',x:'area_per_month',y:'price_per_sqm'},"
+              + "{id:'lot',name:'Цена и размер лота',x:'sold_lot_avg',y:'price_per_sqm'}];\n"
+              + "const rows=[{price_per_sqm:700000,units_per_month:3,lot_area_avg:60},"
+              + "{price_per_sqm:500000,units_per_month:13,lot_area_avg:64}];\n"
+              + "console.log(bubbleViews(rows).map(v=>v.id).join(','));\n")
+    path = ROOT / "tests" / "_bnmap_views.js"
+    path.write_text(script, encoding="utf-8")
+    try:
+        done = subprocess.run([_node(), str(path)], capture_output=True, text=True)
+        assert done.returncode == 0, done.stderr
+    finally:
+        path.unlink(missing_ok=True)
+    assert done.stdout.strip() == "pace", done.stdout
+    # И сама ось названа своим именем: лот в проекте — не проданный лот.
+    page = cabinet.cabinet_page("market")
+    assert "средний лот в проекте, м²" in page and "средний проданный лот, м²" in page
