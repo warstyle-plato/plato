@@ -94,7 +94,11 @@ def _number(value: Any) -> float:
 
 # Паспорт площадки приходит из каталога krt.mos.ru и к нашему счёту отношения
 # не имеет: он обновляется даже тогда, когда посчитать не удалось.
-_CATALOGUE_FIELDS = ("name", "okrug", "district", "status", "area_ha", "housing_gfa_sqm")
+_CATALOGUE_FIELDS = ("name", "okrug", "district", "status", "area_ha", "housing_gfa_sqm",
+                     # Застройщик и реновация приходят с карточки каталога и к
+                     # нашему счёту отношения не имеют: обновляются и тогда,
+                     # когда модель посчитать не удалось.
+                     "card_facts")
 
 
 def score_row(project: dict[str, Any], screening: dict[str, Any]) -> dict[str, Any]:
@@ -118,6 +122,9 @@ def score_row(project: dict[str, Any], screening: dict[str, Any]) -> dict[str, A
     if not screening.get("available"):
         row["available"] = False
         row["reason"] = str(screening.get("reason") or "Модель не собрана")
+        # Застройщик с карточки — не результат счёта: он есть и тогда, когда
+        # модель не собралась, и фильтр обязан его видеть.
+        row["card_facts"] = screening.get("card_facts") or {}
         return row
 
     metrics = screening.get("metrics") or {}
@@ -130,6 +137,10 @@ def score_row(project: dict[str, Any], screening: dict[str, Any]) -> dict[str, A
         "available": True,
         "traffic_light": screening.get("traffic_light") or {},
         "requirements": screening.get("requirements") or {},
+        # Карточка каталога называет застройщика и реновацию сама. Пока это
+        # читалось только по нажатию в карточке, фильтр по оператору и
+        # городским нуждам находил их лишь у площадок, открытых руками.
+        "card_facts": screening.get("card_facts") or {},
         "saleable_sqm": round(saleable) if saleable else 0,
         "segment": market.get("recommended_segment"),
         "start_price_rub_sqm": market.get("start_price_rub_sqm"),

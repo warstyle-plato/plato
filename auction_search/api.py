@@ -774,8 +774,17 @@ def install(app: FastAPI) -> None:
                 "available": False,
                 "warning": f"Документы обязательств временно не прочитаны: {type(exc).__name__}",
             }
+        # Карточка каталога — официальный и бесплатный источник застройщика и
+        # реновации. Читается в прогоне, а не по нажатию: иначе фильтр по
+        # оператору и городским нуждам работает только по открытым руками.
+        try:
+            card = krt_registry.card_facts(str(project.get("slug") or ""))
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("KRT card facts failed slug=%s", project.get("slug"))
+            card = {"available": False, "reason": f"{type(exc).__name__}: {exc}"}
         screening = build_krt_model_screening(
             project, report, core, requirements=requirements)
+        screening["card_facts"] = card
         # Маркетинг едет вместе со скринингом и оседает в отчёте площадки.
         # Считать его второй раз при открытии карточки незачем: прогон уже
         # сходил к рынку, к соседям и к движку — минуты чужого ожидания на
@@ -1029,6 +1038,19 @@ def install(app: FastAPI) -> None:
         found = krt_open_sources.read_findings(docs, name)
         found.update({"available": True, "queries": asked, "errors": errors[:2]})
         return found
+
+    @app.get("/auctions/krt/{slug}/card-facts")
+    async def auction_krt_card_facts(slug: str) -> dict[str, Any]:
+        """Застройщик и реновация — со страницы самой площадки.
+
+        Один запрос к krt.mos.ru, без поиска и без его квоты. Прогон читает то
+        же самое и кладёт в строку рейтинга; здесь — для площадки, которую ещё
+        не считали: открыл карточку и видишь, кто застройщик.
+        """
+        reader = getattr(krt_registry, "card_facts", None)
+        if not callable(reader):
+            raise HTTPException(status_code=503, detail="Чтение карточки не подключено")
+        return await run_in_threadpool(reader, slug)
 
     @app.get("/auctions/krt/{slug}/requirements")
     async def auction_krt_requirements(slug: str) -> dict[str, Any]:

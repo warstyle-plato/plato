@@ -37,6 +37,8 @@ CATALOGUE_URL = BASE_URL + "/projects/"
 JINA_PREFIX = "https://r.jina.ai/"
 CACHE_SCHEMA_VERSION = 3
 REQUIREMENTS_CACHE_SCHEMA_VERSION = 2
+# Разбор карточки версионируется отдельно: он меняется чаще требований.
+CARD_FACTS_SCHEMA_VERSION = 1
 DECISIONS_CACHE_SCHEMA_VERSION = 2
 TENDERS_CACHE_SCHEMA_VERSION = 1
 MAP_CACHE_SCHEMA_VERSION = 1
@@ -230,6 +232,9 @@ class KrtRegistry:
         self.decisions_path = Path(data_dir) / "krt" / "decisions.json"
         self.tenders_path = Path(data_dir) / "krt" / "tender_orders.json"
         self.map_path = Path(data_dir) / "krt" / "map_dataset.json"
+        # Разобранная карточка каталога: застройщик и реновация. Лежит рядом с
+        # требованиями и по тому же правилу — хранится разобранное, не страница.
+        self.card_facts_dir = Path(data_dir) / "krt" / "cards"
         self.tender_links_path = Path(data_dir) / "krt" / "tender_links.json"
         self.fetch = fetch or (lambda url: request_bytes(url, timeout=15, retries=1))
         self.ttl_seconds = 24 * 60 * 60
@@ -370,6 +375,40 @@ class KrtRegistry:
                 or not cached.get("complete", True)):
             self.refresh_in_background()
         return [row.to_dict() for row in rows]
+
+    def card_facts(self, slug: str, *, refresh: bool = False) -> dict[str, Any]:
+        """Что говорит сама карточка: застройщик и реновация.
+
+        Официальный источник и бесплатный — ни поиска, ни его квоты. Поэтому он
+        идёт первым, а публикации остаются вторым слоем: у планируемой площадки
+        застройщика ещё нет, и карточка о нём честно молчит.
+
+        Читается для ЛЮБОГО статуса, в отличие от требований: решение читают
+        только у планируемых, а имя застройщика ценно как раз у тех, кто уже в
+        реализации — оно отвечает «войти нельзя и вот кто вошёл».
+        """
+        from . import krt_card_facts
+
+        clean = str(slug or "").strip()
+        if not re.fullmatch(r"[a-zA-Z0-9_-]{2,180}", clean):
+            return {"available": False, "reason": "Неверный идентификатор площадки"}
+        path = self.card_facts_dir / f"{clean}.json"
+        cached = load_json(path)
+        if (not refresh and fresh(path, self.ttl_seconds) and isinstance(cached, dict)
+                and cached.get("schema_version") == CARD_FACTS_SCHEMA_VERSION):
+            return cached
+        url = f"{BASE_URL}/projects/{clean}"
+        try:
+            page = self.fetch(url).decode("utf-8", errors="replace")
+        except Exception as exc:  # noqa: BLE001
+            # Не ответила карточка — это «не спросили», а не «застройщика нет».
+            return {"available": False, "slug": clean, "source_url": url,
+                    "reason": f"{type(exc).__name__}: {exc}"}
+        out = krt_card_facts.parse(page)
+        out.update({"schema_version": CARD_FACTS_SCHEMA_VERSION, "available": True,
+                    "slug": clean, "source_url": url})
+        save_json(path, out)
+        return out
 
     def requirements(self, slug: str, *, refresh: bool = False) -> dict[str, Any] | None:
         """Read one planned KRT card and its official project-decision PDF."""
