@@ -135,3 +135,31 @@ def test_the_probe_shows_the_answer_and_parses_nothing() -> None:
     import re as _re
     flat = _re.sub(r"\s+", " ", source)
     assert "сначала ответ источника" in flat, "правило должно быть названо в самом модуле"
+
+
+def test_the_investmoscow_probe_names_where_the_chain_breaks() -> None:
+    """«Investmoscow у нас нету» (владелец, 31.08.2026).
+
+    Адаптер есть и стоит в наборе «все источники», но лот у него рождается
+    цепочкой: каталог → карточки города → ссылка на официальную ЭТП → лот. Ноль
+    лотов при живом каталоге значит обрыв на одном из шагов, а не отсутствие
+    лотов. Проба называет шаг: сколько байт, похоже ли на оболочку SPA, сколько
+    карточек нашлось.
+    """
+    source = (ROOT / "auction_search" / "api.py").read_text(encoding="utf-8")
+    block = source[source.index('"/auctions/investmoscow/probe"'):]
+    block = block[:block.index('@app.get("/auctions/krt/api-probe")')]
+    for name in ("city_cards", "looks_html", "bytes"):
+        assert name in block, f"проба не показывает {name}"
+    assert "run_in_threadpool" in block, "чтение сети не должно держать цикл событий"
+    assert "InvestMoscowDiscoveryAdapter" in block, "проба обязана идти тем же путём, что адаптер"
+
+
+def test_investmoscow_is_part_of_all_sources() -> None:
+    """Источник, которого нет в наборе «все», не появится никогда."""
+    source = (ROOT / "auction_search" / "api.py").read_text(encoding="utf-8")
+    block = source[source.index("def _discovery_adapters("):]
+    block = block[:block.index("\ndef ", 1)]
+    assert "InvestMoscowDiscoveryAdapter()" in block
+    assert block.count("InvestMoscowDiscoveryAdapter()") >= 2, \
+        "и отдельным выбором, и в наборе «все»"

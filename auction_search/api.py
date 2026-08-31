@@ -797,6 +797,54 @@ def install(app: FastAPI) -> None:
                                 detail=f"Поиск mos.ru не ответил: {exc}") from exc
         return payload
 
+    @app.get("/auctions/investmoscow/probe")
+    async def auction_investmoscow_probe() -> dict[str, Any]:
+        """Почему у нас нет ИнвестМосквы. Проба показывает ответ, а не догадку.
+
+        Адаптер есть и стоит в наборе «все источники», но лот у него рождается
+        длинной цепочкой: каталог → карточки города → ссылка на официальную ЭТП
+        → лот у адаптера ЭТП. Оборвись цепочка на первом шаге — карточек ноль,
+        лотов ноль, и в отчёте источника это видно только числами. Проба
+        называет, где именно рвётся: сколько байт вернул каталог, похоже ли это
+        на оболочку SPA и сколько ссылок на карточки в нём нашлось.
+        """
+        from .adapters.investmoscow import InvestMoscowDiscoveryAdapter as _IM
+
+        def collect() -> list[dict[str, Any]]:
+            adapter = _IM()
+            out: list[dict[str, Any]] = []
+            for url in _IM._search_urls()[:3]:
+                row: dict[str, Any] = {"url": url}
+                try:
+                    html = adapter._read_html(url)
+                except Exception as exc:  # noqa: BLE001
+                    row["error"] = f"{type(exc).__name__}: {exc}"[:300]
+                    out.append(row)
+                    continue
+                row["bytes"] = len(html)
+                low = html[:600].lower()
+                row["looks_html"] = "<html" in low or "<!doctype" in low
+                try:
+                    cards = _IM._city_card_urls(url, html)
+                except Exception as exc:  # noqa: BLE001
+                    row["parse_error"] = f"{type(exc).__name__}: {exc}"[:200]
+                    cards = []
+                row["city_cards"] = len(cards)
+                row["first_cards"] = list(cards)[:3]
+                out.append(row)
+            return out
+
+        answers = await run_in_threadpool(collect)
+        return {
+            "source": "investmoscow",
+            "asked": len(answers),
+            "answers": answers,
+            "note": ("Ноль карточек при живом ответе означает, что каталог отдаёт "
+                     "оболочку, а список приезжает отдельным вызовом — тогда нужен "
+                     "браузер и адрес, по которому страница сама ходит за данными: "
+                     "/auctions/etp/probe/browser?url=…"),
+        }
+
     @app.get("/auctions/krt/api-probe")
     async def auction_krt_api_probe(url: str = Query(default="")) -> dict[str, Any]:
         """Что на самом деле отдаёт api.krt.mos.ru. Разбора здесь нет.
