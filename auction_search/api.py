@@ -797,6 +797,38 @@ def install(app: FastAPI) -> None:
                                 detail=f"Поиск mos.ru не ответил: {exc}") from exc
         return payload
 
+    @app.get("/auctions/krt/api-probe")
+    async def auction_krt_api_probe(url: str = Query(default="")) -> dict[str, Any]:
+        """Что на самом деле отдаёт api.krt.mos.ru. Разбора здесь нет.
+
+        Каталог мы читаем с этого домена — но КАК HTML, парсером разметки и с
+        текстовым фолбэком. Есть ли под ним JSON со статусами, включая
+        «Проекты на торгах», мы не знаем: адреса не спрашивали ни разу.
+        Гадать имена полей мы уже пробовали на ГИС Торгах — приехали гаражи,
+        поэтому здесь только проба, которая ПОКАЗЫВАЕТ ответ.
+        """
+        from . import krt_api_probe
+
+        return await run_in_threadpool(krt_api_probe.probe, url.strip())
+
+    @app.get("/auctions/krt/api-probe/browser")
+    async def auction_krt_api_probe_browser(
+        seconds: float = Query(default=45.0, ge=5.0, le=90.0),
+        url: str = Query(default=""),
+    ) -> dict[str, Any]:
+        """Та же проба настоящим браузером: адреса, по которым ходит сама страница.
+
+        У SPA данные приезжают отдельными вызовами бэкенда, и списка статусов в
+        разметке может не быть вовсе. Секреты проба не печатает — ни заголовков,
+        ни cookies, ни хранилища.
+        """
+        from .adapters.browser_probe import probe_browser
+
+        from . import krt_api_probe
+
+        return await run_in_threadpool(
+            lambda: probe_browser(url.strip() or krt_api_probe.PORTAL_URL, seconds=seconds))
+
     @app.post("/auctions/krt/tenders")
     async def auction_krt_tenders(request: Request) -> dict[str, Any]:
         """Торги по КРТ: распоряжения города и лоты, привязанные к площадкам.
