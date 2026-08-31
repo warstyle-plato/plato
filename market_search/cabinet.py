@@ -1681,29 +1681,42 @@ function renderTalk(box, talk, pending){
   box.innerHTML=(pending?`<div class="muted">${esc(pending)}</div>`:'')+rows.join('');
 }
 
-async function askPlato(){
-  const q=$('#ask').value.trim();
-  if(!q){$('#askout').innerHTML='<div class="muted">Напишите вопрос.</div>';return}
-  if(!lastReport){$('#askout').innerHTML='<div class="muted">Сначала соберите отчёт — Платону нужны числа.</div>';return}
-  $('#askbtn').disabled=true;
-  renderTalk($('#askout'), marketTalk, 'Платон Сергеевич думает…');
+// Спрашивают о том отчёте, который перед глазами, поэтому у каждой поверхности
+// свои поле и вывод, — но путь к Платону один: платить за обрыв длинного
+// ответа дважды не надо, и разойтись двум копиям опроса негде.
+//
+// Сводка приходит параметром: у второго источника свой состав чисел и своё имя,
+// и подставить ему сводку «Пульса» значило бы спросить не о том, что показано.
+async function askPlatoIn(ids, report, digest){
+  const field=$(ids.field), out=$(ids.out), btn=$(ids.button), talk=ids.talk;
+  if(!field||!out) return;
+  const q=field.value.trim();
+  if(!q){out.innerHTML='<div class="muted">Напишите вопрос.</div>';return}
+  if(!report){out.innerHTML='<div class="muted">Сначала соберите отчёт — Платону нужны числа.</div>';return}
+  if(btn) btn.disabled=true;
+  renderTalk(out, talk, 'Платон Сергеевич думает…');
   const message='Ниже готовый разбор рынка, посчитанный движком. Числа не пересчитывай — '
-    +'объясни и ответь на вопрос по ним.\n\n'+reportDigest(lastReport)+'\n\nВопрос: '+q;
+    +'объясни и ответь на вопрос по ним.\n\n'+digest(report)+'\n\nВопрос: '+q;
   try{
     const text=await platoAnswer(message,
-      note=>{renderTalk($('#askout'), marketTalk, 'Платон Сергеевич: '+note)},
-      marketTalk.history());
+      note=>{renderTalk(out, talk, 'Платон Сергеевич: '+note)},
+      talk.history());
     // В историю уходит вопрос человека, а не сообщение с разбором: движок
     // обрезает реплику по длине, и разбор вернулся бы обрубком, выглядящим
     // полным. Числа поэтому едут свежими в каждом вопросе.
-    marketTalk.said(q, text);
-    $('#ask').value='';
-    renderTalk($('#askout'), marketTalk, '');
+    talk.said(q, text);
+    field.value='';
+    renderTalk(out, talk, '');
   }catch(e){
-    renderTalk($('#askout'), marketTalk, '');
-    $('#askout').insertAdjacentHTML('afterbegin', `<div class="err">${esc(e.message||e)}</div>`);
+    renderTalk(out, talk, '');
+    out.insertAdjacentHTML('afterbegin', `<div class="err">${esc(e.message||e)}</div>`);
   }
-  finally{$('#askbtn').disabled=false}
+  finally{if(btn) btn.disabled=false}
+}
+
+function askPlato(){
+  return askPlatoIn({field:'#ask', out:'#askout', button:'#askbtn', talk:marketTalk},
+                    lastReport, reportDigest);
 }
 
 

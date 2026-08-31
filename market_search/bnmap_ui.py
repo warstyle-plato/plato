@@ -97,6 +97,21 @@ def markup() -> str:
   <button class="go alt" id="bngo" style="margin-top:10px">Собрать тестовый свод</button>
   <span id="bnstate" class="muted" style="margin-left:10px"></span>
   <div id="bnout" style="margin-top:12px"></div>
+  <div class="card" id="bnask" style="display:none">
+    <h2>Спросить Платона Сергеевича</h2>
+    <div class="muted" style="font-size:13px;margin-bottom:8px">
+      Он видит числа ЭТОГО свода — второго источника, а не «Пульса». Считает движок,
+      модель не пересчитывает.
+    </div>
+    <div class="chips" id="bnchips">
+      <button type="button" data-q="Что здесь главное и что делать с ценой?">Что делать с ценой?</button>
+      <button type="button" data-q="Чем этот свод отличается от отчёта по «Пульсу» и чему верить?">Чем отличается от «Пульса»?</button>
+      <button type="button" data-q="Кто здесь ближайший конкурент и чем он опасен?">Кто конкурент?</button>
+    </div>
+    <textarea id="bnq" rows="3" placeholder="Например: выборка из пяти соседей — насколько ей можно верить?"></textarea>
+    <button class="go" id="bnaskbtn">Спросить</button>
+    <div id="bnaskout"></div>
+  </div>
 </div>
 </details>
 <script>
@@ -109,7 +124,49 @@ def markup() -> str:
 // Отложено до `DOMContentLoaded` по простой причине: этот блок стоит в
 // разметке выше основного скрипта кабинета, и в момент разбора `on` ещё не
 // объявлен. Слушатель регистрируется во время разбора, до самого события.
+// Свой разговор и свой последний свод: спрашивают о том отчёте, который перед
+// глазами, а на странице их может быть два.
+let bnLast=null;
+// Разговор заводится при первом вопросе, а не при разборе: этот блок стоит в
+// разметке ВЫШЕ основного скрипта кабинета, и `platoThread` в момент разбора
+// ещё не объявлен — вызов на верхнем уровне роняет весь скрипт страницы. Та же
+// причина, по которой слушатели отложены до `DOMContentLoaded`.
+let bnTalk=null;
+const bnThread=()=>bnTalk||(bnTalk=platoThread());
+function bnDigest(d){{
+  const found=d.found||{{}}, sel=d.selection||{{}}, said=(d.analysis||{{}}).overall||{{}};
+  const lines=['Источник: bnMAP.pro (второй источник; действующий отчёт считает «Пульс»).',
+    'Объект: '+((d.subject||{{}}).name||found.query||'—')+'; класс '
+      +((d.subject||{{}}).segment||'—')+'; данные на '+(d.asked_date||'—')+'.',
+    'Выборку назначает сам bnMAP: прислал '+(sel.given||0)+' соседей, в расчёте '
+      +(sel.used||0)+'. Радиуса у метода нет.'];
+  if(said.headline) lines.push('Вывод движка: '+said.headline+'. '+said.text);
+  (d.blocks||[]).forEach(b=>{{
+    const say=((d.analysis||{{}}).blocks||{{}})[b.code];
+    if(say&&say.text) lines.push(b.title+': '+say.text);
+  }});
+  const peers=(d.peers||[]).slice(0,12).map(p=>
+    p.name+' ('+(p.segment||'—')+', '+p.distance_km+' км): '+(p.price_per_sqm||'—')+' ₽/м², '
+    +(p.units_per_month==null?'—':p.units_per_month)+' ДДУ/мес').join('; ');
+  if(peers) lines.push('Соседи: '+peers+'.');
+  // Чего у источника нет — часть вопроса: без этого Платон объяснит пустой
+  // график продаж как провал продаж.
+  if((d.gaps||[]).length) lines.push('Источник НЕ даёт: '+d.gaps.join('; ')+'.');
+  return lines.join('\\n');
+}}
+
 document.addEventListener('DOMContentLoaded', function(){{
+  on('#bnaskbtn','click',function(){{
+    askPlatoIn({{field:'#bnq', out:'#bnaskout', button:'#bnaskbtn', talk:bnThread()}},
+               bnLast, bnDigest);
+  }});
+  on('#bnchips','click',function(e){{
+    const btn=e.target.closest('button[data-q]');
+    if(!btn) return;
+    $('#bnq').value=btn.dataset.q;
+    askPlatoIn({{field:'#bnq', out:'#bnaskout', button:'#bnaskbtn', talk:bnThread()}},
+               bnLast, bnDigest);
+  }});
   on('#bngo', 'click', async function(){{
     const q=($('#bnid').value||'').trim();
     $('#bnstate').textContent='спрашиваю bnMAP…'; $('#bnout').innerHTML='';
@@ -160,10 +217,17 @@ document.addEventListener('DOMContentLoaded', function(){{
         +pricesCard(data.peers||[], {{...ctx.subjectMetrics, name:ctx.subjectName}},
                     (priceBlock.peers||{{}}).median)
         +blocks
+        // «Что стоит премия» считается тем же кодом; на данных bnMAP она
+        // покажет сроки, а денежную часть — нет: остатка В МЕТРАХ источник не
+        // даёт, а перемножить остаток лотов на среднюю площадь экспозиции
+        // значит выдать оценку за данные.
+        +deepCard(data)
         +peersCard(data.peers||[])
         +'<div class="card">'+(data.html||'')+'</div>'
         +essayCard(data)+finalCard(data);
       wireBubbles(market, 'bnbubble');
+      $('#bnask').style.display='block';
+      bnLast=data;
     }}catch(e){{ $('#bnstate').textContent='не дошло до сервера: '+e; }}
   }});
 }});

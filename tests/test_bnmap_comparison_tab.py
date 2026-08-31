@@ -523,3 +523,44 @@ def test_the_tab_shows_what_pulse_has_no_field_for() -> None:
     flats = bnmap_ui._delivery([], bnmap._metric_row(
         {**CARD, "apartments": 0, "dsc_count": 1}, "Объект", 0, "2026-08-25"))
     assert "квартиры" in flats
+
+
+def test_the_tab_asks_platon_about_its_own_numbers() -> None:
+    """У вкладки свой вопрос и своя сводка — но путь к Платону один.
+
+    На странице два свода сразу: отчёт по «Пульсу» и этот. Общее поле вопроса
+    отдало бы Платону числа последнего построенного, а человек спрашивал бы о
+    том, что перед глазами. Поэтому поле своё, а `askPlatoIn` — общая: копия
+    опроса стала бы вторым местом, где чинят обрыв длинного ответа.
+    """
+    markup = bnmap_ui.markup()
+    assert 'id="bnask"' in markup and 'id="bnq"' in markup and 'id="bnaskbtn"' in markup
+    script = re.search(r"<script>(.*?)</script>", markup, re.S).group(1)
+    assert "askPlatoIn(" in script and "platoAnswer(" not in script
+    page = cabinet.cabinet_page("market")
+    assert page.count("async function askPlatoIn(") == 1
+    assert "askPlatoIn({field:'#ask', out:'#askout'" in page
+    # Сводка вкладки называет свой источник и границы выборки: подставить ей
+    # сводку «Пульса» значило бы спросить не о том, что показано.
+    assert "bnMAP.pro (второй источник" in script
+    assert "Радиуса у метода нет" in script
+    assert "Источник НЕ даёт:" in script, "в вопрос не едет список того, чего нет"
+
+
+def test_the_premium_card_is_drawn_by_the_report_too() -> None:
+    """«Что стоит премия» — та же `deepCard`, и на bnMAP она частичная.
+
+    Денежной части у неё здесь не будет: остатка В МЕТРАХ источник не даёт, а
+    перемножить остаток лотов на среднюю площадь экспозиции значит выдать свою
+    оценку за данные. Сроки распродажи считаются и показываются.
+    """
+    from market_search import verdict
+
+    script = re.search(r"<script>(.*?)</script>", bnmap_ui.markup(), re.S).group(1)
+    assert "deepCard(data)" in script
+    row = bnmap._metric_row(CARD, "Объект", 0, "2026-08-25")
+    peer = bnmap._metric_row(NEIGHBOUR, "Сосед", 0.55, "2026-08-25")
+    money = verdict.price_of_premium(row, [peer])
+    assert "months_own_pace" in money and "months_peer_pace" in money
+    assert "premium_on_remainder" not in money, "остаток в метрах взялся из ниоткуда"
+    assert "remaining_area" not in row
