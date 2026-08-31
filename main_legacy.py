@@ -13279,7 +13279,14 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
               "из ТЭП: изменится нарезка — изменится и темп.", small),
         ]))
     story.append(_PdfSection("financing"));story.append(P("Финансирование и динамика проекта",h2))
-    finance_rows=[["Показатель","Значение"],["Расчётный БРИДЖ",_pdf_money(financing.get('calculated_bridge'))],["Пиковый фактический БРИДЖ (тело долга)",_pdf_money(financing.get('actual_bridge'))],["Собственные средства до ПФ",_pdf_money(financing.get('own_funds'))],["Пик БРИДЖ с капитализацией процентов (справочно)",_pdf_money(financing.get('bridge_peak_capitalized') or financing.get('actual_bridge'))],["Пиковая (непокрытая эскроу) задолженность ПФ",_pdf_money(financing.get('pf_uncovered_peak'))],["Долг ПФ перед раскрытием в РВЭ",_pdf_money(financing.get('rve_pf_before_repayment'))],["Раскрытый эскроу в РВЭ",_pdf_money(financing.get('rve_escrow_release'))],["Остаток ПФ после раскрытия в РВЭ",_pdf_money(financing.get('rve_pf_shortfall'))],["Лимит ПФ",_pdf_money(financing.get('pf_limit'))],["Текущая ключевая ставка",_pdf_pct(financing.get('current_key_rate'))],["Спред БРИДЖ",_pdf_pct(financing.get('bridge_spread'))],["Ставка БРИДЖ на текущей ключевой",_pdf_pct(financing.get('current_bridge_rate'))],["Средняя ключевая за период БРИДЖ",_pdf_pct(financing.get('avg_bridge_key_rate'))],["Средневзвешенная ставка БРИДЖ за период",_pdf_pct(financing.get('avg_bridge_rate'))],["Средняя фактическая ставка ПФ",_pdf_pct(financing.get('avg_pf_effective_rate'))],*_pdf_pf_step_rows(financing),["Проценты и комиссии",_pdf_money(financing.get('interest_and_fees'))],["Непогашенный долг ПФ на конец проекта",_pdf_money(financing.get('ending_pf'))],*([["Долг передан в ПФ следующей очереди",_pdf_money(financing.get('debt_carried_out'))]] if float(financing.get('debt_carried_out') or 0)>500_000 else []),*([["в т.ч. принято от предыдущей очереди",_pdf_money(financing.get('carried_debt_in'))]] if float(financing.get('carried_debt_in') or 0)>500_000 else []),["LLCR",_pdf_num(summary.get('llcr'),2)+"x"]]
+    # Раскрытие эскроу — событие очереди, и у каждой оно своё. На
+    # многоочередном проекте подписи «в РВЭ» называли моментом сумму
+    # разнесённых во времени событий (владелец, 31.08.2026). Величины те же,
+    # но названы итогами; по очередям они стоят в разделе «Очереди проекта».
+    _pdf_phased = len(result.get("comparison") or []) > 1
+    def _pdf_rve_label(base: str) -> str:
+        return f"{base} — всего" if _pdf_phased else f"{base} в РВЭ"
+    finance_rows=[["Показатель","Значение"],["Расчётный БРИДЖ",_pdf_money(financing.get('calculated_bridge'))],["Пиковый фактический БРИДЖ (тело долга)",_pdf_money(financing.get('actual_bridge'))],["Собственные средства до ПФ",_pdf_money(financing.get('own_funds'))],["Пик БРИДЖ с капитализацией процентов (справочно)",_pdf_money(financing.get('bridge_peak_capitalized') or financing.get('actual_bridge'))],["Пиковая (непокрытая эскроу) задолженность ПФ",_pdf_money(financing.get('pf_uncovered_peak'))],[_pdf_rve_label("Долг ПФ перед раскрытием"),_pdf_money(financing.get('rve_pf_before_repayment'))],[_pdf_rve_label("Раскрытый эскроу"),_pdf_money(financing.get('rve_escrow_release'))],["Из него на погашение ПФ",_pdf_money(financing.get('rve_pf_repayment'))],[_pdf_rve_label("Не покрыто эскроу при раскрытии"),_pdf_money(financing.get('rve_pf_shortfall'))],[("Лимит ПФ — сумма по очередям" if _pdf_phased else "Лимит ПФ"),_pdf_money(financing.get('pf_limit'))],["Текущая ключевая ставка",_pdf_pct(financing.get('current_key_rate'))],["Спред БРИДЖ",_pdf_pct(financing.get('bridge_spread'))],["Ставка БРИДЖ на текущей ключевой",_pdf_pct(financing.get('current_bridge_rate'))],["Средняя ключевая за период БРИДЖ",_pdf_pct(financing.get('avg_bridge_key_rate'))],["Средневзвешенная ставка БРИДЖ за период",_pdf_pct(financing.get('avg_bridge_rate'))],["Средняя фактическая ставка ПФ",_pdf_pct(financing.get('avg_pf_effective_rate'))],*_pdf_pf_step_rows(financing),["Проценты и комиссии",_pdf_money(financing.get('interest_and_fees'))],["Непогашенный долг ПФ на конец проекта",_pdf_money(financing.get('ending_pf'))],*([["Долг передан в ПФ следующей очереди",_pdf_money(financing.get('debt_carried_out'))]] if float(financing.get('debt_carried_out') or 0)>500_000 else []),*([["в т.ч. принято от предыдущей очереди",_pdf_money(financing.get('carried_debt_in'))]] if (not _pdf_phased and float(financing.get('carried_debt_in') or 0)>500_000) else []),["LLCR",_pdf_num(summary.get('llcr'),2)+"x"]]
     story.append(table(finance_rows,[112*mm,58*mm],font_size=7.6))
 
     # Restore the bridge-purpose disclosure that exists in the web report.
@@ -23501,6 +23508,17 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
                 for item in (result.get("report") or {}).get("products") or []},
             "cash_shared_cost":cash_shared,"allocated_shared_cost":allocated_shared,
             "peak_bridge":result["finance"]["peak_bridge"],"peak_pf":result["finance"]["peak_pf"],
+            # Раскрытие эскроу — событие очереди, а не проекта: у каждой своя
+            # дата РВЭ, свой лимит и свой остаток. В своде эти строки
+            # складывались под именами моментов и читались как одно событие
+            # (владелец, 31.08.2026: «раскрытый эскроу в РВЭ — какое из них?»).
+            # Место им — здесь, рядом с именем очереди.
+            "rve": str((result.get("dates") or {}).get("rve") or ""),
+            "pf_limit": result["finance"].get("pf_limit", 0.0),
+            "rve_pf_before_repayment": result["finance"].get("rve_pf_before_repayment", 0.0),
+            "rve_escrow_release": result["finance"].get("rve_escrow_release", 0.0),
+            "rve_pf_repayment": result["finance"].get("rve_pf_repayment", 0.0),
+            "rve_pf_shortfall": result["finance"].get("rve_pf_shortfall", 0.0),
             # Непогашенный долг очереди в таблице сравнения не выводился вовсе:
             # очередь, не рассчитавшаяся с банком, выглядела в ней так же, как
             # закрывшая долг, — разница пряталась в отдельной карточке отчёта
@@ -36306,6 +36324,19 @@ function renderPhaseComparison(){
   ['Собственные средства',c.map(x=>money(x.own_funds)),money(((phaseBundle.phase_financing||{}).totals||{}).own_funds)],
   ['Новый БРИДЖ',c.map(x=>money(x.new_bridge)),money(((phaseBundle.phase_financing||{}).totals||{}).new_bridge)],
   ['Пиковый остаток ПФ',c.map(x=>money(x.peak_pf)),money(cons.finance.peak_pf)],
+  // Раскрытие эскроу — событие очереди. В своде эти строки складывались под
+  // именами моментов: «Раскрытый эскроу в РВЭ» суммировал раскрытия разных
+  // лет, а «в т.ч. принято от предыдущей очереди» при трёх очередях не
+  // отвечало, от какой (владелец, 31.08.2026). Здесь у каждого числа есть
+  // очередь и дата, а в своде остались только те же величины как итоги.
+  ['Лимит ПФ',c.map(x=>money(x.pf_limit)),money(cons.finance.pf_limit)],
+  ['РВЭ очереди',c.map(x=>x.rve?dateRu(x.rve):'—'),'—'],
+  ['Долг ПФ перед раскрытием',c.map(x=>money(x.rve_pf_before_repayment)),
+   money(cons.finance.rve_pf_before_repayment)],
+  ['Раскрыто эскроу',c.map(x=>money(x.rve_escrow_release)),money(cons.finance.rve_escrow_release)],
+  ['Из него на погашение ПФ',c.map(x=>money(x.rve_pf_repayment)),money(cons.finance.rve_pf_repayment)],
+  ['Не покрыто эскроу при раскрытии',c.map(x=>money(x.rve_pf_shortfall)),
+   money(cons.finance.rve_pf_shortfall)],
   ...debtRows,
   ['LLCR',c.map(x=>mult(x.llcr)),mult(cons.summary.llcr)],
   ['Чистая прибыль — cash',c.map(x=>money(x.net_profit)),money(cons.summary.net_profit)],
@@ -36701,32 +36732,49 @@ function renderResult(){
   row('EBITDA на метр',th(r.summary.ebitda_per_saleable_th)+'/м² прод. · '+th(r.summary.ebitda_per_gns_th)+'/м² ГНС')+
   row('Чистая прибыль на метр',th(r.summary.net_profit_per_saleable_th)+'/м² прод. · '+th(r.summary.net_profit_per_gns_th)+'/м² ГНС');
 
+ // Свод финансирования на многоочередном проекте — это итоги, а не моменты:
+ // подписи «в РВЭ» и «от предыдущей очереди» там называют событием сумму по
+ // очередям. Само деление на очереди берётся оттуда же, откуда его берут все
+ // остальные блоки страницы.
+ const phased=!!(phaseBundle&&phaseBundle.mode==='phased'&&(phaseBundle.comparison||[]).length>1);
  reportFinanceTable.innerHTML=
   row('Расчётный БРИДЖ',money(r.report.financing.calculated_bridge))+
   row('Фактический / пиковый БРИДЖ',money(r.report.financing.actual_bridge))+
   // Не из банка: собственные деньги, заём учредителя, перехваченный чужой долг.
   (Number(r.report.financing.own_funds||0)>0.5?row('Собственные средства до ПФ',money(r.report.financing.own_funds)+' <span style="color:#777;font-weight:400">без процентов</span>'):'')+
-  row('Лимит ПФ',money(r.report.financing.pf_limit))+
+  row(phased?'Лимит ПФ — сумма по очередям':'Лимит ПФ',money(r.report.financing.pf_limit))+
   row('Пиковый ПФ',money(r.report.financing.pf_peak))+
   // Ушла из плиток шапки: для общей оценки проекта величина неочевидная, а
   // здесь, среди лимитов и ставок, читается тем, чем является.
   row('Пиковая (непокрытая эскроу) задолженность ПФ',money(r.report.financing.pf_uncovered_peak))+
-  row('Долг ПФ перед раскрытием в РВЭ',money(r.report.financing.rve_pf_before_repayment))+
-  row('Раскрытый эскроу в РВЭ',money(r.report.financing.rve_escrow_release))+
+  // Раскрытие эскроу — событие очереди, и у каждой оно своё. Подписи «в РВЭ»
+  // на многоочередном проекте называли моментом сумму разнесённых во времени
+  // событий: «раскрытый эскроу в РВЭ — какое из них?» (владелец, 31.08.2026).
+  // Величины те же, но названы итогами, а по очередям они стоят в таблице
+  // сравнения — с датой РВЭ у каждой.
+  row(phased?'Долг ПФ перед раскрытием — всего':'Долг ПФ перед раскрытием в РВЭ',
+      money(r.report.financing.rve_pf_before_repayment))+
+  row(phased?'Раскрыто эскроу за проект':'Раскрытый эскроу в РВЭ',
+      money(r.report.financing.rve_escrow_release))+
   // Раскрытое и погашенное — разные величины: эскроу гасит СВОЙ ПФ, излишек
   // уходит в кассу. Без этой строки три числа рядом не вычитаются.
   row('Из него на погашение ПФ',money(r.report.financing.rve_pf_repayment))+
-  row('Остаток ПФ после раскрытия в РВЭ',money(r.report.financing.rve_pf_shortfall))+
+  row(phased?'Не покрыто эскроу при раскрытии — всего':'Остаток ПФ после раскрытия в РВЭ',
+      money(r.report.financing.rve_pf_shortfall))+
   // Плашка выше говорит «остаток гасится последующими продажами», а число,
   // отвечающее «погасился ли», стояло только в PDF и в книге. На экране его
   // не было вовсе, и проверить обещание было нечем (владелец, 25.08.2026).
   // Порядок: сколько пришло, сколько ушло, что осталось. Остаток последним —
   // он вывод, а не одно из трёх чисел; стоя первым, он читался как
   // противоречие строке «передано» с тем же числом.
-  (Number(r.report.financing.carried_debt_in||0)>0.5e6
-   ?row('в т.ч. принято от предыдущей очереди',money(r.report.financing.carried_debt_in)):'')+
+  // «в т.ч. принято от предыдущей очереди» в своде — сумма приёмов, и при трёх
+  // очередях «предыдущая» не отвечает ни на что. Кто у кого принял и когда —
+  // в таблице сравнения; здесь остаётся итог переоформленного за проект.
   (Number(r.report.financing.debt_carried_out||0)>0.5e6
-   ?row('Долг передан в ПФ следующей очереди',money(r.report.financing.debt_carried_out)):'')+
+   ?row(phased?'Переоформлено между очередями, всего':'Долг передан в ПФ следующей очереди',
+        money(r.report.financing.debt_carried_out)):'')+
+  (!phased&&Number(r.report.financing.carried_debt_in||0)>0.5e6
+   ?row('в т.ч. принято от предыдущей очереди',money(r.report.financing.carried_debt_in)):'')+
   row((Number(r.report.financing.debt_carried_out||0)>0.5e6
        ?'Осталось непогашенным на очереди'
        :'Непогашенный долг ПФ на конец проекта')
