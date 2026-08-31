@@ -548,7 +548,13 @@ def charts(table: dict[str, Any]) -> list[dict[str, Any]]:
                           if measure_of(str(head[index])) == price_unit]
 
     drawn: list[dict[str, Any]] = []
-    for unit, columns in groups:
+    # Мер у раздела бывает три — рубли, метры, лоты, — и лист на каждую давал
+    # три почти одинаковых столбиковых слайда подряд: «пустые два слайда»
+    # (владелец, 31.08.2026). Рисуется ведущая мера (деньги), остальные не
+    # пропадают — они колонками в таблице раздела, которая идёт следом и
+    # которую правят. Названы они в подписи под графиком, чтобы читатель знал,
+    # где смотреть.
+    for unit, columns in groups[:1]:
         if unit == price_unit:
             continue
         lead = columns[0]
@@ -569,6 +575,14 @@ def charts(table: dict[str, Any]) -> list[dict[str, Any]]:
             "second": [{"name": str(head[index]), "values": numeric[index]}
                        for index in second],
             "second_measure": price_unit if second else "",
+            # Меры, оставшиеся в таблице: сказать о них надо, иначе читатель
+            # решит, что их потеряли.
+            # Имя меры — как в отчёте: у группы из одной колонки это её
+            # заголовок. Назвать «шт» там, где написано «Лотов», значит
+            # переписать отчёт.
+            "other_measures": [
+                str(head[pair[1][0]]) if len(pair[1]) == 1 else pair[0]
+                for pair in groups[1:] if pair[0] != price_unit],
         })
     if not drawn and price is not None:
         # Одна цена без объёма — сама себе график: показать её иначе нечем, а
@@ -821,6 +835,17 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         textbox(slide, heading, top=top, size=26, colour=dim, bold=True, height=0.75)
         footer_line(slide, len(deck.slides))
         return slide
+
+    def fitted(rows_count: int, room: float) -> float:
+        """Высота таблицы, растянутой по листу, но не до разреженности.
+
+        Таблица из двух строк ростом в 0,34 дюйма на листе в 7,5 — это шесть
+        дюймов белого, и читается это как «здесь ничего нет» (владелец,
+        31.08.2026). Растянуть её целиком тоже нельзя: строка в два дюйма
+        читается как ошибка вёрстки. Поэтому строка тянется до 0,58.
+        """
+        rows_count = max(int(rows_count), 1)
+        return min(room, max(0.34, min(0.58, room / rows_count)) * rows_count)
 
     def put_table(slide, table: dict[str, Any], *, top: float, height: float) -> None:
         """Таблица в оформлении продукта, а не в заводской синей полосатости.
@@ -1320,6 +1345,10 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
                 # Больше пяти подписей — в две колонки: столбик в двадцать
                 # строк уезжает за нижний край, а половина листа стоит пустой.
                 columns = 2 if len(lines) > 5 else 1
+                if not (tiles or tables or note):
+                    # Подписи — всё содержимое листа: ставим их по центру.
+                    room = SLIDE_H_IN - top - 0.8
+                    top += max(0.0, (room - 0.42 * -(-len(lines) // columns)) / 2)
                 per = -(-len(lines) // columns)
                 width = (SLIDE_W_IN - 1.2) / columns - 0.2
                 for index, line in enumerate(lines):
@@ -1341,10 +1370,16 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
             # «здесь ничего нет». Не поместилась — уезжает своим листом
             # целиком, а не ужимается до нечитаемого.
             if not drawn and tables and not tiles:
-                height = 0.34 * (len(tables[0]["rows"]) + 1)
-                if top + height <= SLIDE_H_IN - 1.5:
-                    put_table(opening, tables[0], top=top + 0.15, height=height)
-                    top += 0.15 + height
+                rows_count = len(tables[0]["rows"]) + 1
+                if top + 0.34 * rows_count <= SLIDE_H_IN - 1.5:
+                    room = SLIDE_H_IN - top - 0.15 - (1.1 if note else 0.8)
+                    height = fitted(rows_count, room)
+                    # Пусто под таблицей — значит она одна на листе: тогда её
+                    # место посередине, а не под самой шапкой.
+                    alone = not (strips or lines or note)
+                    shift = max(0.0, (room - height) / 2) if alone else 0.0
+                    put_table(opening, tables[0], top=top + 0.15 + shift, height=height)
+                    top += 0.15 + shift + height
                     tables = tables[1:]
             # Вывод раздела стоит ПОД его содержимым, как на листе: наверху он
             # читается как подпись к заголовку, а он — ответ раздела.
@@ -1363,15 +1398,35 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
             top = CONTENT_TOP
             # Подписи и вывод — под картинкой и только на первом её слайде:
             # повторённые у каждой меры, они читаются как разные пояснения.
-            below = caption if index == 0 else []
+            below = list(caption if index == 0 else [])
+            others = [name for name in (chart.get("other_measures") or []) if name]
+            if others:
+                # Мера, которой на графике нет, не потеряна — она колонкой в
+                # таблице. Молча это читается как потеря.
+                below.append("Остальные меры — в таблице ниже: " + ", ".join(others) + ".")
             tail = carry if index == 0 else ""
             reserve = 0.42 * len(below) + (0.8 if tail else 0.0)
-            put_chart(part, chart, top=top,
-                      height=max(2.4, SLIDE_H_IN - top - 0.8 - reserve))
-            under = top + max(2.4, SLIDE_H_IN - top - 0.8 - reserve) + 0.1
+            # Таблица раздела встаёт под график на тот же лист, если помещается:
+            # лист с короткой таблицей и шестью дюймами белого — это не
+            # «просторно», а «здесь ничего нет» (владелец, 31.08.2026). Не
+            # поместилась — уезжает своим листом целиком, а не ужимается.
+            joined = None
+            if index == 0 and tables:
+                rows = tables[0].get("rows") or []
+                if len(rows) <= ROWS_PER_SLIDE:
+                    need = 0.34 * (len(rows) + 1)
+                    if SLIDE_H_IN - top - 0.8 - reserve - need - 0.25 >= 2.4:
+                        joined, tables = (tables[0], need), tables[1:]
+            room = SLIDE_H_IN - top - 0.8 - reserve - ((joined[1] + 0.25) if joined else 0.0)
+            height = max(2.4, room)
+            put_chart(part, chart, top=top, height=height)
+            under = top + height + 0.1
             for line in below:
                 textbox(part, line, top=under, size=12, colour=dim, height=0.36)
                 under += 0.4
+            if joined:
+                put_table(part, joined[0], top=under + 0.1, height=joined[1])
+                under += 0.1 + joined[1]
             if tail:
                 put_note(part, tail, top=under, size=13)
                 carry = ""
@@ -1386,9 +1441,15 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
                 part = new_slide(heading + ("" if start == 0 else " · продолжение"),
                                  heading)
                 top = lead(part, CONTENT_TOP)
-                put_table(part, chunk, top=top,
-                          height=min(SLIDE_H_IN - top - 0.8,
-                                     0.34 * (len(chunk["rows"]) + 1)))
+                room = SLIDE_H_IN - top - 0.8
+                # Строка тянется, пока не станет разреженной: таблица из двух
+                # строк ростом в 0,34 дюйма на листе в 7,5 — это шесть дюймов
+                # белого. Растянуть её целиком тоже нельзя: строка в два дюйма
+                # читается как ошибка вёрстки. Поэтому строка до 0,58, а
+                # остаток пустоты делится пополам — лист выглядит собранным.
+                height = fitted(len(chunk["rows"]) + 1, room)
+                put_table(part, chunk, top=top + max(0.0, (room - height) / 2),
+                          height=height)
         if carry:
             # Разделу нечего показать, кроме вывода: тогда он и есть слайд.
             put_note(new_slide(heading), carry, top=CONTENT_TOP, size=18)
