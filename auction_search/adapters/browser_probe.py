@@ -127,7 +127,31 @@ def _network_call(response: Any) -> dict[str, Any] | None:
     return item
 
 
-def probe_browser(url: str, seconds: float = 45.0, save_to: str = "") -> dict[str, Any]:
+def _without_secrets(value: Any, secrets: tuple[str, ...]) -> Any:
+    """Убрать из отчёта присланные значения доступов — целиком и везде.
+
+    Имена секретных ключей проба знает и так, но доступ приходит и туда, где
+    ключ невинен: логин лежит в поле `email`, а сам он — чужая рабочая почта.
+    Диагностический маршрут открыт кабинету, и печатать в нём чужую учётную
+    запись нельзя. Чистится вся ветка ответа, а не тело запроса входа: адрес
+    страницы после входа тоже иногда несёт логин параметром.
+    """
+    marks = tuple(str(item) for item in secrets if item and len(str(item)) >= 3)
+    if not marks:
+        return value
+    if isinstance(value, dict):
+        return {k: _without_secrets(v, marks) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_without_secrets(item, marks) for item in value]
+    if isinstance(value, str):
+        for mark in marks:
+            value = value.replace(mark, "[redacted]")
+        return value
+    return value
+
+
+def probe_browser(url: str, seconds: float = 45.0, save_to: str = "",
+                  after_load: Any = None, secrets: tuple[str, ...] = ()) -> dict[str, Any]:
     """Открыть адрес браузером и показать, за чем страница ходила сама.
 
     Главное в ответе — не текст страницы, а `data_calls`: адреса, по которым
@@ -137,6 +161,16 @@ def probe_browser(url: str, seconds: float = 45.0, save_to: str = "") -> dict[st
     ею же проверяется — как читатели книги и выгрузки CRM писались по файлам
     владельца. Разбор, написанный по описанию страницы, — это разбор по
     догадке, и он уже приезжал на прод тридцатью гаражами.
+
+    `after_load` — шаг на уже открытой странице: у источника по подписке
+    данных без входа не видно вовсе, и проба без входа показала бы пустую
+    витрину как пустой источник. Своей копии пробы ради этого не заводим:
+    вторая разошлась бы с первой на признаках отказа. Что вернул шаг, лежит в
+    отчёте отдельным полем — не сработавший вход, о котором не сказали,
+    неотличим от источника без данных.
+
+    `secrets` — значения, которых в отчёте быть не должно: логин и пароль
+    вычищаются из него целиком, включая адреса и тела запросов.
     """
     try:
         from playwright.sync_api import sync_playwright
@@ -165,6 +199,14 @@ def probe_browser(url: str, seconds: float = 45.0, save_to: str = "") -> dict[st
                 page.set_default_timeout(int(seconds * 1000))
                 page.on("response", remember)
                 page.goto(url, wait_until="networkidle", timeout=int(seconds * 1000))
+                if after_load is not None:
+                    try:
+                        report["after_load"] = after_load(page)
+                    except Exception as exc:  # noqa: BLE001
+                        # Сорвавшийся шаг не отменяет пробу: то, что страница
+                        # успела загрузить до него, всё ещё ответ.
+                        report["after_load"] = {
+                            "reason": f"{type(exc).__name__}: {exc}"}
                 body = page.content()
                 title = page.title()
                 report.update({
@@ -195,7 +237,7 @@ def probe_browser(url: str, seconds: float = 45.0, save_to: str = "") -> dict[st
         report["captcha"] = False
         report["captcha_note"] = ("слово защиты найдено в исходнике, но страница "
                                   "сходила за данными — это не проверка на робота")
-    return report
+    return _without_secrets(report, secrets)
 
 
 def _save_page(path: str, html: str) -> dict[str, Any]:

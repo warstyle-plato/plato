@@ -13,6 +13,8 @@ from fastapi import Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field, model_validator
 
+from . import bnmap
+from . import bnmap_ui
 from . import cabinet as cabinet_module
 from . import sales_store
 from .geocoder import GeocodingError
@@ -331,6 +333,76 @@ def install(app: FastAPI) -> MarketDiscoveryService:
                 detail="Справочник проектов пуст — укажите complex_id вручную",
             )
         return await run_in_threadpool(service.pulse.probe_object_types, complex_id)
+
+    @app.get("/market/bnmap/probe")
+    async def market_bnmap_probe(request: Request) -> dict[str, Any]:
+        """Что отвечает bnMAP — второй источник рынка, ещё не разобранный.
+
+        Доступ прислан владельцем 30.08.2026, отчёт на этом источнике пока не
+        собирается: живого ответа bnMAP не видел никто, а разбор по догадке уже
+        приезжал на прод тридцатью гаражами. Проба ходит с ядра — из песочницы
+        `bnmap.pro` закрыт сетевой политикой (403 на CONNECT) — и показывает
+        ответ как есть. Список `wanted` в ответе называет, что источник обязан
+        уметь, чтобы отчёт на нём стало можно собрать: он собран из того, что
+        отчёт сегодня берёт у «Пульса», а не из воображения.
+        """
+        cabinet_module.require_cabinet(request)
+        return await run_in_threadpool(bnmap.probe)
+
+    @app.get("/market/bnmap/browser")
+    async def market_bnmap_browser(
+        request: Request, url: str = "", seconds: float = 60.0
+    ) -> dict[str, Any]:
+        """За какими адресами страница bnMAP ходит сама, войдя под нашим доступом.
+
+        У SPA числа приезжают не в HTML, а отдельными вызовами бэкенда: без них
+        читатель писать не по чему. Открыть страницу браузером — обычный визит
+        тем же Chromium, которым считается калькулятор ГлавАПУ; капчу проба
+        называет вслух и на этом останавливается.
+
+        Адрес принимается только на самом bnMAP: проба заведена под этот
+        источник, и открывать её браузером что угодно по чужой ссылке — это уже
+        не проба, а прокси.
+        """
+        cabinet_module.require_cabinet(request)
+        target = (url or bnmap.ENTRY_PAGE).strip()
+        if not target.startswith(f"https://{bnmap.HOST}") and not target.startswith(
+            f"https://api.{bnmap.HOST}"
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Проба открывает только {bnmap.HOST}, а не «{target}»",
+            )
+        return await run_in_threadpool(
+            bnmap.probe_browser, target, max(5.0, min(float(seconds), 180.0))
+        )
+
+    @app.get("/market/bnmap/report")
+    async def market_bnmap_report(
+        request: Request, object_id: str = "", base: str = "msk"
+    ) -> dict[str, Any]:
+        """Тестовый свод bnMAP — вкладка рядом с отчётом, для сравнения.
+
+        Действующий отчёт этого маршрута не касается: он собирает «Пульс», а
+        здесь показано, что на те же вопросы отвечает второй источник. Числа
+        отдаются как пришли — считать их второй раз значит завести две
+        достоверные на вид версии одного рынка.
+
+        Оговорка, которая обязана дойти до человека: аккаунт bnMAP
+        односеансный, и обращение отсюда выбивает того, кто сидит в их
+        кабинете. Поэтому свод собирается по нажатию, а не сам собой.
+        """
+        cabinet_module.require_cabinet(request)
+        if not bnmap.available():
+            raise HTTPException(
+                status_code=503,
+                detail="Источник выключен: не заданы BNMAP_LOGIN и BNMAP_PASSWORD",
+            )
+        report = await run_in_threadpool(
+            bnmap.clone_report, Path(data_dir) / "bnmap", object_id.strip(),
+            base=(base or "msk").strip(),
+        )
+        return {**report, "html": bnmap_ui.render(report)}
 
     @app.get("/market/address/suggest")
     async def market_address_suggest(request: Request, q: str = "") -> dict[str, Any]:
