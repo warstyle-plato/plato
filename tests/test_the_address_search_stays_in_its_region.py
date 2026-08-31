@@ -1,91 +1,153 @@
-"""Поиск по адресу не уходит в чужой город, а спуск на запасной геокодер слышен.
+"""Поиск по адресу не уходит из названного региона — и не ломается об это.
 
 «Москва Мишина 46 ничего не находил или находил везде, не только в Москве»
-(владелец, 30.08.2026). В запросе к Nominatim стоял только `countrycodes=ru`:
-города не было вовсе, поэтому улица искалась по всей стране, найденная точка
-шла в НСПД и возвращала чужой участок — на экране обычной находкой.
+(владелец, 30.08.2026, повторно 31.08.2026 — «он так и не работает»).
 
-Рядом второе: провайдер без ключа возвращает пустоту, а не ошибку, и падение
-на запасной геокодер было неотличимо от плохого адреса.
+Первая правка добавила Nominatim параметр `state`. Живой ответ портала
+(31.08.2026): `q` вместе со структурным `state` — это **400 Bad Request**.
+Свободный и структурный запросы у Nominatim не совмещаются, и запасной
+геокодер начал падать ровно на тех запросах, ради которых сужение и делалось:
+на всех, где названа Москва или область. «Находил везде» сменилось на «не
+находил ничего», и это была та же правка.
+
+Отсюда три правила, и каждое проверяется здесь.
+
+- **Регион проверяется по ОТВЕТУ, а не сужается запросом.** Каждый провайдер
+  свой регион объявляет сам: DaData — «г Москва», Nominatim — `address.state`.
+- **Правило одно на всю лесенку.** Отсев стоял внутри Nominatim, а DaData
+  отвечает раньше: до последней ступени дело обычно не доходит вовсе.
+- **Сверять регион подстрокой нельзя:** «москва» входит в «московская», и
+  Подмосковье проходило московский отсев целиком.
 """
+
 from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Any
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-import main_legacy as core  # noqa: E402
+import main_legacy  # noqa: E402
 
 
-def test_the_region_named_in_the_query_is_recognised() -> None:
-    assert core._query_region("Москва Мишина 46")[1] == ("77",)
-    assert core._query_region("г. Москва, Саввинская наб 25")[1] == ("77",)
-    # Область проверяется раньше города: в «Московской области» есть «Москва»,
-    # и обратный порядок отдал бы области московский код.
-    assert core._query_region("Московская область, Химки, Ленина 5")[1] == ("50",)
-    assert core._query_region("Подмосковье, Мытищи")[1] == ("50",)
-    # Не назван — ничего не отсекаем: лучше не проверять, чем отсечь верное.
-    assert core._query_region("Мишина 46") is None
+def _candidate(label: str, region: str) -> dict[str, Any]:
+    return {"lat": 55.0, "lng": 37.0, "label": label, "region": region,
+            "provider": "DaData"}
 
 
-def test_a_parcel_from_another_region_is_not_it() -> None:
-    """Регион участка написан первыми цифрами номера — сверка тут дармовая."""
-    assert core._same_region("77:09:0004014:13", ("77",))
-    assert not core._same_region("76:12:0001:5", ("77",))
-    assert core._same_region("50:21:0120316:1221", ("50",))
-    # Пустой номер и пустой список кодов ничего не отсекают.
-    assert core._same_region("", ("77",))
-    assert core._same_region("76:12:0001:5", ())
+def _ladder(monkeypatch, *providers) -> None:
+    monkeypatch.setattr(main_legacy, "_GEOCODERS",
+                        tuple((f"stub{i}", p) for i, p in enumerate(providers)))
 
 
-def test_the_city_reaches_the_geocoder_and_filters_its_answer(monkeypatch) -> None:
-    """Город из запроса едет условием, а ответ проверяется по себе же."""
-    seen: dict[str, str] = {}
+def test_the_free_form_query_never_carries_a_structured_region(monkeypatch) -> None:
+    """`q` и `state` вместе — 400 от Nominatim, то есть геокодера нет вовсе.
 
-    def fake_fetch(url, **kwargs):
-        seen["url"] = url
-        return [
-            {"lat": "55.79", "lon": "37.57", "display_name": "улица Мишина, Москва",
-             "address": {"state": "Москва", "road": "улица Мишина"}},
-            {"lat": "57.62", "lon": "39.87", "display_name": "улица Мишина, Ярославль",
-             "address": {"state": "Ярославская область", "road": "улица Мишина"}},
-        ]
+    Проверяется собранный адрес запроса: именно он и был поломкой.
+    """
+    asked: list[str] = []
 
-    monkeypatch.setattr(core, "_land_fetch_json", fake_fetch)
-    monkeypatch.setattr(core, "_nominatim_last_call", 0.0, raising=False)
-    got = core._geocode_nominatim("Москва Мишина 46", 5)
-    assert "state=" in seen["url"], "город не доехал до геокодера"
-    assert "addressdetails=1" in seen["url"], "без подробностей ответ не проверить"
-    assert [item["label"] for item in got] == ["улица Мишина, Москва"], \
-        "чужой город остался в выдаче"
+    def fetch(url: str, **kwargs: Any) -> Any:
+        asked.append(url)
+        return []
 
-
-def test_dropping_to_the_spare_geocoder_is_said_out_loud(monkeypatch) -> None:
-    """Провайдер без ключа возвращает пустоту, а не ошибку: молчаливый спуск
-    неотличим от плохого адреса."""
-    monkeypatch.setattr(core, "_env_str", lambda *a, **k: "")
-    monkeypatch.setattr(core, "_GEOCODERS", (
-        ("yandex", lambda address, limit: []),
-        ("dadata", lambda address, limit: []),
-        ("nominatim", lambda address, limit: [{"lat": 55.0, "lng": 37.0,
-                                               "label": "точка",
-                                               "provider": "OpenStreetMap"}]),
-    ))
-    found, warnings = core._geocode_address("Москва Мишина 46", 3)
-    assert found, "точка не нашлась"
-    said = " ".join(warnings)
-    assert "OpenStreetMap" in said and "Яндекс" in said and "DaData" in said
-    assert "грубее" in said, "не сказано, чем этот ответ хуже"
+    monkeypatch.setattr(main_legacy, "_land_fetch_json", fetch)
+    monkeypatch.setattr(main_legacy, "_nominatim_last_call", 0.0)
+    main_legacy._geocode_nominatim("Москва Мишина 46", 3)
+    assert asked, "запрос к геокодеру не собрался"
+    url = asked[0]
+    assert "q=" in url
+    for structured in ("state=", "city=", "street=", "county="):
+        assert structured not in url, (
+            f"структурный параметр {structured} рядом с q — Nominatim ответит 400")
 
 
-def test_nothing_is_said_when_the_first_geocoder_answers(monkeypatch) -> None:
-    """Оговорка про запасной появляется только когда до него дошло."""
-    monkeypatch.setattr(core, "_env_str", lambda *a, **k: "")
-    monkeypatch.setattr(core, "_GEOCODERS", (
-        ("yandex", lambda address, limit: [{"lat": 55.0, "lng": 37.0,
-                                            "label": "точка", "provider": "Яндекс"}]),
-    ))
-    found, warnings = core._geocode_address("Москва Мишина 46", 3)
-    assert found and not warnings
+def test_the_region_is_read_from_the_answer_not_forced_on_the_query(monkeypatch) -> None:
+    """Регион находки объявляет сама находка, и чужая отбрасывается."""
+    def dadata(address: str, limit: int) -> list[dict[str, Any]]:
+        return [_candidate("г Москва, ул Мишина, д 46", "г Москва"),
+                _candidate("г Нижний Новгород, ул Мишина, д 46", "Нижегородская обл")]
+
+    _ladder(monkeypatch, dadata)
+    found, _ = main_legacy._geocode_address("Москва Мишина 46", 3)
+    assert [item["label"] for item in found] == ["г Москва, ул Мишина, д 46"]
+
+
+def test_the_rule_holds_on_the_first_rung_not_only_the_last(monkeypatch) -> None:
+    """DaData отвечает раньше Nominatim — отсев обязан работать и там.
+
+    Проверка жила внутри Nominatim, и до неё в норме не доходило: «находил
+    везде» оставалось верным при исправном DaData.
+    """
+    def dadata(address: str, limit: int) -> list[dict[str, Any]]:
+        return [_candidate("г Тула, ул Мишина", "Тульская обл")]
+
+    reached: list[str] = []
+
+    def nominatim(address: str, limit: int) -> list[dict[str, Any]]:
+        # Чужое у первой ступени — не ответ: спуск к следующей верен, она
+        # может найти нужное. Проверяется не то, что спуска нет, а то, что
+        # чужая находка первой ступени за ответ не выдана.
+        reached.append(address)
+        return []
+
+    _ladder(monkeypatch, dadata, nominatim)
+    found, warnings = main_legacy._geocode_address("Москва Мишина 46", 3)
+    assert found == []
+    assert reached, "лесенка остановилась на чужой находке"
+    assert any("вне «Москва»" in text for text in warnings), warnings
+    # Отсечённое называется: молча выброшенная находка читается как её
+    # отсутствие, и человек не знает, что менять в запросе.
+    assert any("Тула" in text for text in warnings), warnings
+
+
+def test_the_region_moscow_does_not_swallow_the_oblast(monkeypatch) -> None:
+    """«москва» — подстрока «московская», и подстрочный отсев их не различал."""
+    def both(address: str, limit: int) -> list[dict[str, Any]]:
+        return [_candidate("Московская обл, г Химки, ул Ленина, д 1", "Московская обл"),
+                _candidate("г Москва, ул Ленина", "г Москва")]
+
+    _ladder(monkeypatch, both)
+    city, _ = main_legacy._geocode_address("Москва, Ленина 1", 3)
+    assert [item["label"] for item in city] == ["г Москва, ул Ленина"]
+    oblast, _ = main_legacy._geocode_address("МО, Химки, Ленина 1", 3)
+    assert [item["label"] for item in oblast] == [
+        "Московская обл, г Химки, ул Ленина, д 1"]
+
+
+def test_no_region_named_filters_nothing(monkeypatch) -> None:
+    """Регион не назван — сужать не по чему, и выдумывать его нельзя."""
+    def dadata(address: str, limit: int) -> list[dict[str, Any]]:
+        return [_candidate("г Москва, ул Мишина, д 46", "г Москва"),
+                _candidate("г Нижний Новгород, ул Мишина, д 46", "Нижегородская обл")]
+
+    _ladder(monkeypatch, dadata)
+    found, _ = main_legacy._geocode_address("Мишина 46", 3)
+    assert len(found) == 2
+
+
+def test_an_undeclared_region_is_judged_by_the_label() -> None:
+    """Провайдер региона не назвал — судим по подписи, но по границе слова."""
+    marks = main_legacy._query_region("Москва")[1]
+    assert main_legacy._in_region({"label": "46, Мишина улица, Москва, Россия"}, marks)
+    assert not main_legacy._in_region(
+        {"label": "1, Ленина, Химки, Московская область"}, marks)
+
+
+def test_the_region_is_recognised_in_the_wordings_people_type() -> None:
+    """Метка ищется по границе слова: «Химки, МО» опознаётся, Ярославль — нет."""
+    def name(query: str) -> str | None:
+        got = main_legacy._query_region(query)
+        return got[0] if got else None
+
+    assert name("Москва Мишина 46") == "Москва"
+    assert name("г. Москва, ул. Мишина, 46") == "Москва"
+    assert name("Московская область, Красногорск") == "Московская область"
+    assert name("Химки, МО") == "Московская область"
+    assert name("Подмосковье, Одинцово") == "Московская область"
+    # Ни улица, ни чужой город регионом не становятся.
+    assert name("Московский проспект, Ярославль") is None
+    assert name("Санкт-Петербург, Невский 1") is None
+    assert name("Мишина 46") is None
