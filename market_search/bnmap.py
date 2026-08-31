@@ -814,11 +814,75 @@ CLONE_GAPS = (
     "машино-места, кладовые и коммерция — в модели bnMAP они есть отдельными "
     "полями (commercialNumParking, commercialNumPantry, commercialNumNonresidential), "
     "но инструмент commercial_objects у аккаунта не куплен",
+    "помесячные продажи — ДДУ, остаток и метры по месяцам; из-за этого пусты "
+    "графики темпа, остатка и размера лота, а у «Пульса» они есть",
+    "помесячная цена по КАЖДОМУ соседу — приходят две уже посчитанные средние "
+    "(пять ближайших и вся локация), поэтому на графике цены нет ни линий "
+    "соседей, ни полосы квартилей",
+    "выбор радиуса — соседей назначает сам bnMAP (объект и пять ближайших); "
+    "наш выбор удалённости может только отсечь дальних из присланного",
 )
 
 
+# Помесячные ряды из `location` ответа `reportNearBy` (живой ответ 30.08.2026:
+# 18 месяцев, с 2025-03 по 2026-08). Их три, и они разной природы:
+#   current_project_metrprice_avg — цена метра НАШЕГО проекта;
+#   five_projects_metrprice_avg   — средняя пяти ближайших;
+#   location_buildings.metrprice_avg — средняя всей локации.
+# Второй и третий — уже посчитанные источником средние, а не выборка проектов.
+# Поэтому они помечены `aggregate`: полосу квартилей по ним строить нельзя,
+# подпись «верх выборки / низ выборки» на двух средних была бы выдуманной.
+# Помесячной цены по КАЖДОМУ соседу bnMAP в этом ответе не даёт вовсе.
+def _price_series(location: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if not isinstance(location, dict):
+        return [], []
+    own: list[dict[str, Any]] = []
+    five: list[dict[str, Any]] = []
+    around: list[dict[str, Any]] = []
+    for month in sorted(location):
+        point = location.get(month) or {}
+        if not isinstance(point, dict):
+            continue
+        stamp = str(month)[:7]
+        buildings = point.get("location_buildings") or {}
+        for row, value in (
+            (own, point.get("current_project_metrprice_avg")),
+            (five, point.get("five_projects_metrprice_avg")),
+            (around, buildings.get("metrprice_avg") if isinstance(buildings, dict) else None),
+        ):
+            number = _float(value)
+            # Ноль здесь — это «в тот месяц ряда ещё не было», а не цена ноль.
+            if number:
+                row.append({"month": stamp, "value": number})
+    market = []
+    if len(five) > 1:
+        market.append({"name": "пять ближайших, средняя", "aggregate": True, "points": five})
+    if len(around) > 1:
+        market.append({"name": "локация, средняя", "aggregate": True, "points": around})
+    return own, market
+
+
+def _exposure_series(location: Any) -> list[dict[str, Any]]:
+    """Экспозиция локации по месяцам. Остатком проекта она не является.
+
+    Ряд показывается своей строкой и своей подписью: подставить его в график
+    «Остаток по месяцам, лотов» значило бы выдать предложение целого района за
+    остаток одного дома.
+    """
+    if not isinstance(location, dict):
+        return []
+    out: list[dict[str, Any]] = []
+    for month in sorted(location):
+        point = location.get(month) or {}
+        buildings = point.get("location_buildings") if isinstance(point, dict) else None
+        value = _float((buildings or {}).get("expo_num")) if isinstance(buildings, dict) else None
+        if value:
+            out.append({"month": str(month)[:7], "value": value})
+    return out
+
+
 def clone_report(data_dir: Any, query: str, *, base: str = "msk", date: str = "",
-                 codes: list[str] | None = None) -> dict[str, Any]:
+                 codes: list[str] | None = None, radius_km: float | None = None) -> dict[str, Any]:
     """Действующий отчёт, собранный на bnMAP: те же блоки, тот же счёт.
 
     Блоки считает `metrics.build_blocks` — та самая функция, которой считается
@@ -829,7 +893,7 @@ def clone_report(data_dir: Any, query: str, *, base: str = "msk", date: str = ""
     bnMAP с одной медианой Москвы, а «Пульс» с другой, разойдутся не источники,
     а рамки, и понять, кто прав, будет нечем.
     """
-    from . import metrics
+    from . import metrics, narrative, verdict as verdict_module
 
     session = Session(data_dir)
     asked = date or _today()
@@ -857,6 +921,43 @@ def clone_report(data_dir: Any, query: str, *, base: str = "msk", date: str = ""
             subject = row
         else:
             peers.append(row)
+    # Отсечка по удалённости. Расширить выборку нечем: у `analytics.reportNearBy`
+    # параметра радиуса нет вовсе (каталог методов, живой ответ 30.08.2026 —
+    # `_base`, `object_id`, `project`, `date`, `extended`, `ignore_cache`), и
+    # кого считать соседом, решает сам bnMAP. Поэтому ползунок только сужает
+    # присланное, и на экране это сказано словами: выбор, которого у источника
+    # нет, изображать нельзя.
+    peers.sort(key=lambda row: row.get("distance_km")
+               if row.get("distance_km") is not None else 99)
+    given = len(peers)
+    if radius_km:
+        peers = [row for row in peers
+                 if row.get("distance_km") is None or row["distance_km"] <= radius_km]
+
+    price_series, market_series = _price_series(answer.get("location"))
+    exposure = _exposure_series(answer.get("location"))
+    blocks = metrics.build_blocks(subject, peers, None, codes) if subject else []
+    # Выводы считает тот же код, что и в действующем отчёте: `build_notes` даёт
+    # разбор по разделам и общий итог, `findings` — связки между разделами,
+    # `analysis` — эссе. Своей второй трактовки тех же чисел здесь нет; иначе
+    # сравнение источников превратилось бы в сравнение двух наших мнений.
+    notes: dict[str, Any] = {}
+    if blocks:
+        notes = verdict_module.build_notes(blocks, price_series)
+        notes["premium_series"] = verdict_module.premium_series(price_series, peers)
+        notes["price_of_premium"] = verdict_module.price_of_premium(subject, peers)
+        notes["positioning"] = verdict_module.positioning(subject, peers, None)
+        comparison = {"found": given + 1, "comparable": given, "used": len(peers),
+                      "no_price": sum(1 for row in peers if not row.get("price_per_sqm")),
+                      "stale_price": 0}
+        segment = subject.get("segment")
+        notes["findings"] = narrative.findings(
+            subject, peers, comparison, segment=segment,
+            premium=notes.get("premium_series"))
+        notes["analysis"] = narrative.analysis(
+            subject, peers, comparison, segment=segment,
+            premium=notes.get("premium_series"), cost=notes.get("price_of_premium"))
+
     tools = session.call("v1.toolAccess.getActiveToolsFull") or {}
     # Свод по объекту из службы отчётов. Он открыт там, где платформа отвечает
     # 403: `analytics.objectDeals` требует инструмента deals, а эти два метода
@@ -870,7 +971,14 @@ def clone_report(data_dir: Any, query: str, *, base: str = "msk", date: str = ""
         "indicators": session.call("analytics.indicators", {"_base": base, "date": asked}),
         "subject": subject,
         "peers": peers,
-        "blocks": metrics.build_blocks(subject, peers, None, codes) if subject else [],
+        "blocks": blocks,
+        "analysis": notes,
+        "price_series": price_series,
+        "market_series": market_series,
+        "exposure_series": exposure,
+        "selection": {"given": given, "used": len(peers), "radius_km": radius_km,
+                      "farthest_km": max((row["distance_km"] for row in peers
+                                          if row.get("distance_km") is not None), default=None)},
         "unnamed_peers": unnamed,
         "gaps": list(CLONE_GAPS),
         "account": {"tools": [str(row.get("alias")) for row in

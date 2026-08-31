@@ -707,10 +707,16 @@ def test_the_report_opens_with_the_verdict_and_closes_with_the_bottom_line() -> 
     """
     from market_search.cabinet import CABINET_PAGE
 
+    # Порядок на экране задаётся порядком ВЫЗОВОВ, а не тем, где в файле лежит
+    # функция: вердикт, выводы и разбор объявлены наверху, чтобы их могла
+    # позвать и вкладка второго источника. Проверка, цеплявшаяся за место
+    # объявления, после этого выноса сказала бы «вывод уехал вниз» про отчёт,
+    # где ничего не сдвинулось.
     body = CABINET_PAGE[CABINET_PAGE.index("function render(d)"):]
-    verdict = body.index("Куда попадает проект")
+    verdict = body.index("html+=verdictCard(d);")
     market_map = body.index("<h2>Карта рынка</h2>")
     assert verdict < market_map, "вывод обязан стоять до карты рынка"
+    assert body.index("html+=findingsCard(d);") < market_map, "выводы уехали за карту"
 
     # Итоговая карточка приклеивается последней, уже после таблицы соседей.
     peers_table = body.index("<h2>Соседи в выборке</h2>")
@@ -1065,7 +1071,10 @@ def test_the_market_is_a_band_not_fifteen_lines() -> None:
     assert "area('p75','p25')" in trend
     # Медиана рынка — по соседям, без своего проекта: сравнивать себя с
     # медианой, частью которой являешься, нельзя.
-    assert "const peers=rows.filter(s=>!s.own);" in trend
+    # Полоса строится по соседям и только по ним. Готовые средние источника
+    # (`aggregate`) в неё не идут: подпись «верх выборки» назвала бы две
+    # посчитанные им средние разбросом двадцати проектов.
+    assert "const peers=rows.filter(s=>!s.own&&!s.aggregate);" in trend
     assert "peers.map(s=>at(s,m))" in trend
     # Подписей ровно четыре: свой проект и три уровня полосы.
     assert "'верх выборки'" in trend
@@ -1711,8 +1720,10 @@ def test_every_section_has_its_own_chart_and_the_stock_goes_last() -> None:
     assert [code for code, _, _ in SECTIONS] == [
         "price", "pace", "lot_size", "absorption", "stock",
     ]
-    assert "b.code==='lot_size'?lotChart(ctx.sales)" in CABINET_PAGE
-    assert "b.code==='absorption'?salesChart(ctx.sales,'area','м²',0)" in CABINET_PAGE
+    # Причина пустого графика приходит из ctx: у «Пульса» и у второго
+    # источника она разная, и зашитая фраза называла бы одному чужую.
+    assert "b.code==='lot_size'?lotChart(ctx.sales,ctx.salesNote)" in CABINET_PAGE
+    assert "b.code==='absorption'?salesChart(ctx.sales,'area','м²',0,ctx.salesNote)" in CABINET_PAGE
     assert "Средний проданный лот по месяцам, м²" in CABINET_PAGE
     # Средний лот — метры делить на ДДУ, а не отдельное поле источника.
     assert "(p.sold&&p.area&&p.sold>0)?p.area/p.sold:null" in CABINET_PAGE
@@ -2798,8 +2809,13 @@ def test_the_analysis_reaches_the_page_and_starts_a_new_printed_sheet() -> None:
     assert '<div class="card essay"><h2>Разбор</h2>' in CABINET_PAGE
     assert "решение принимает владелец проекта" in CABINET_PAGE
     assert ".essay{break-before:page;page-break-before:always}" in CABINET_PAGE
+    # Разбор рисует одна функция на все поверхности: пока он стоял вставкой
+    # внутри `render`, вкладка второго источника могла показать его только
+    # второй вёрсткой.
+    assert CABINET_PAGE.count("function essayCard(") == 1
     # Разбор идёт последним разделом, после всех графиков и таблиц.
-    assert CABINET_PAGE.index("<h2>Разбор</h2>") > CABINET_PAGE.index("<h2>Соседи в выборке</h2>")
+    body = CABINET_PAGE[CABINET_PAGE.index("function render(d)"):]
+    assert body.index("html+=essayCard(d);") > body.index("<h2>Соседи в выборке</h2>")
 
 
 def test_findings_and_analysis_travel_all_the_way_to_the_markup(tmp_path) -> None:
@@ -2849,18 +2865,28 @@ def test_findings_and_analysis_travel_all_the_way_to_the_markup(tmp_path) -> Non
 
     from market_search.cabinet import CABINET_PAGE
 
-    # Настоящие куски страницы: как она достаёт выводы из ответа и как рисует.
-    start = CABINET_PAGE.index("  const found=(d.analysis||{}).findings||[];")
-    finish = CABINET_PAGE.index("  const market=[", start)
-    picks_findings = CABINET_PAGE[start:finish]
-    start = CABINET_PAGE.index("  const essay=(d.analysis||{}).analysis||[];")
-    finish = CABINET_PAGE.index("  html+=finalCard(d);", start)
-    picks_essay = CABINET_PAGE[start:finish]
+    # Настоящие функции страницы, взятые по своим скобкам. Прежде куски
+    # вырезались от одной соседней строки до другой — и вынос этих же вставок
+    # в функции уронил тест сообщением `substring not found`, ничего не сказав
+    # о том, что сломалось (а не сломалось ничего). Функция — контракт: она
+    # либо есть, либо её нет, и второе настоящая поломка.
+    def picked(name: str) -> str:
+        start = CABINET_PAGE.index(f"function {name}(")
+        depth, index = 0, CABINET_PAGE.index("{", start)
+        for position in range(index, len(CABINET_PAGE)):
+            if CABINET_PAGE[position] == "{":
+                depth += 1
+            elif CABINET_PAGE[position] == "}":
+                depth -= 1
+                if depth == 0:
+                    return CABINET_PAGE[start:position + 1]
+        raise AssertionError(f"функция {name} не закрылась")
 
     driver = (
         "const esc=s=>String(s===null||s===undefined?'':s);\n"
+        + picked("findingsCard") + "\n" + picked("essayCard") + "\n"
         f"const d={json.dumps(report, ensure_ascii=False, default=str)};\n"
-        "let html='';\n" + picks_findings + picks_essay + "\nconsole.log(html);\n"
+        "let html=findingsCard(d)+essayCard(d);\nconsole.log(html);\n"
     )
     path = tmp_path / "surface.js"
     path.write_text(driver, encoding="utf-8")
@@ -3452,3 +3478,49 @@ def test_glavapu_health_answers_for_the_app_not_for_one_worker(tmp_path, monkeyp
     # Диагностика не роняет расчёт: некуда писать — молчим, а не падаем.
     monkeypatch.setenv("DEVELOPAID_DATA_DIR", "/proc/нет-такого/каталога")
     main_legacy._glavapu_health_save()
+
+
+def test_a_project_priced_in_line_but_selling_slowly_is_not_called_in_market() -> None:
+    """Цена в коридоре и втрое медленнее соседей — это не «проект в рынке».
+
+    Ветвление общего вывода спрашивало о темпе только там, где цена вышла из
+    коридора: пара «прайс как у всех, продаж нет» проваливалась в последнюю
+    ветку и печаталась как «темп вровень с соседями» при отставании в восемь
+    раз. Найдено на живых числах Кутузов Сити (разрыв −8,6 %, темп 8,2×), но
+    ошибка общая — тот же вывод стоит и в отчёте по «Пульсу».
+    """
+    from market_search.verdict import overall
+
+    said = overall([], {"price": {"gap_pct": -8.6}, "pace": {"ratio": 8.2},
+                        "stock": {"months_to_sell": 55.0}})
+    assert said["tone"] == "bad"
+    assert "вровень" not in said["text"]
+    assert "8,2" in said["text"]
+    # Соседняя пара не сдвинулась: цена в коридоре и темп вровень — по-прежнему
+    # «в рынке», иначе правка одной ветки поехала бы на всех отчётах.
+    fine = overall([], {"price": {"gap_pct": -3.0}, "pace": {"ratio": 1.1}})
+    assert fine["tone"] == "good" and "в рынке" in fine["headline"]
+
+
+def test_the_shelf_and_those_cheaper_are_counted_in_the_same_row() -> None:
+    """Место в ряду считается внутри того ряда, о котором говорят.
+
+    Дешёвых искали сперва в своём классе, а при неудаче во всей выборке, витрину
+    же считали своим классом. У проекта, где в своём классе дешевле нет никого,
+    а в выборке трое, выходило «в витрине из 2 проектов наш -1-й по цене —
+    дешевле него 3»: отрицательный номер и два несходящихся числа рядом.
+    """
+    from market_search.verdict import positioning
+
+    peers = [
+        {"price_per_sqm": 783431, "segment": "бизнес", "lot_count": 100},
+        {"price_per_sqm": 400000, "segment": "комфорт", "lot_count": 900},
+        {"price_per_sqm": 500000, "segment": "премиум", "lot_count": 500},
+    ]
+    said = positioning({"price_per_sqm": 715927, "segment": "бизнес"}, peers, None)
+    assert "-1" not in said["text"]
+    assert "витрине из 2 проектов наш 2-й по цене — дешевле него 0" in said["text"]
+    # Класса своего в выборке нет вовсе — витриной становится вся выборка, и
+    # дешёвые считаются по ней же.
+    other = positioning({"price_per_sqm": 715927, "segment": "элитный"}, peers, None)
+    assert "витрине из 4 проектов наш 2-й по цене — дешевле него 2" in other["text"]

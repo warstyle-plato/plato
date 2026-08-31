@@ -379,7 +379,7 @@ def install(app: FastAPI) -> MarketDiscoveryService:
 
     @app.get("/market/bnmap/report")
     async def market_bnmap_report(
-        request: Request, object_id: str = "", base: str = "msk"
+        request: Request, object_id: str = "", base: str = "msk", radius_km: float = 0
     ) -> dict[str, Any]:
         """Тестовый свод bnMAP — вкладка рядом с отчётом, для сравнения.
 
@@ -401,6 +401,9 @@ def install(app: FastAPI) -> MarketDiscoveryService:
         report = await run_in_threadpool(
             bnmap.clone_report, Path(data_dir) / "bnmap", object_id.strip(),
             base=(base or "msk").strip(),
+            # Ноль — это «не сужать», а не «радиус ноль»: соседей назначает
+            # bnMAP, и отсечка нужна только тогда, когда её попросили.
+            radius_km=float(radius_km) if radius_km and radius_km > 0 else None,
         )
         return {**report, "html": bnmap_ui.render(report)}
 
