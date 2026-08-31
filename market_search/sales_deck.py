@@ -370,6 +370,27 @@ _NUMERIC_CELL = re.compile(
     re.IGNORECASE)
 
 
+# Число и его подпись раздельно: «900,0 млн ₽» → (900.0, «млн ₽»). Для графика
+# это годится, только если подпись одна и та же во всей колонке — тогда это её
+# единица. Разные подписи в одной колонке значат смесь величин, и такую колонку
+# рисовать нельзя.
+_LABELLED_CELL = re.compile(
+    r"^(?P<number>-?\d[\d  ]*(?:[.,]\d+)?)\s*(?P<unit>[%×xa-zA-Zа-яёА-ЯЁ₽/²  .]{1,12})$")
+
+
+def labelled_number(text: str) -> tuple[float, str] | None:
+    raw = str(text or "").strip().replace("−", "-")
+    found = _LABELLED_CELL.match(raw)
+    if not found:
+        return None
+    try:
+        value = float(found.group("number").replace(" ", "").replace(" ", "").replace(",", "."))
+    except ValueError:
+        return None
+    unit = re.sub(r"\s+", " ", found.group("unit")).strip().casefold()
+    return (value, unit) if unit else None
+
+
 def looks_numeric(text: str) -> bool:
     """Читается ли ячейка числом — для выкладки, а не для графика."""
     raw = str(text or "").strip().replace("−", "-")
@@ -434,6 +455,7 @@ def charts(table: dict[str, Any]) -> list[dict[str, Any]]:
 
     def column(index: int) -> list[float | None] | None:
         values: list[float | None] = []
+        marks: set[str] = set()
         for row in rows:
             raw = str(row[index] if index < len(row) else "").strip()
             if raw in _BLANK_CELL:
@@ -441,7 +463,21 @@ def charts(table: dict[str, Any]) -> list[dict[str, Any]]:
                 continue
             number = cell_number(raw)
             if number is None:
-                return None
+                # Ячейка с ПОДПИСЬЮ — «900,0 млн ₽». `cell_number` не берёт её
+                # намеренно: колонка процентов и колонка рублей дают разные
+                # графики. Но подпись, одинаковая во всей колонке, — это её
+                # единица, а не смесь: у «Факта против планов» рубли стоят в
+                # каждой ячейке, и из-за этого чартились только цены, а сам
+                # факт и оба плана с графика пропадали (снимок владельца,
+                # 31.08.2026). Разные подписи в одной колонке по-прежнему
+                # отказ: складывать проценты с рублями нельзя.
+                labelled = labelled_number(raw)
+                if labelled is None:
+                    return None
+                number, unit = labelled
+                marks.add(unit)
+                if len(marks) > 1:
+                    return None
             values.append(float(number))
         if len(values) != len(categories):
             return None
@@ -449,6 +485,12 @@ def charts(table: dict[str, Any]) -> list[dict[str, Any]]:
 
     numeric = {index: column(index) for index in range(1, len(head))}
     numeric = {index: values for index, values in numeric.items() if values}
+    # Числовых колонок нет вовсе — рисовать нечего. Прежде это падало
+    # `IndexError` на пустом списке, и вместе с ним падала вся сборка колоды:
+    # у раздела «Эскроу против погашения ПФ» таблица «Показатель · Значение ·
+    # Пояснение» числовой не является ни одной колонкой.
+    if not numeric:
+        return []
     # Цена метра — не такая же мера, как метры и рубли: она про другое и живёт
     # линией на своей шкале. «Цена — всегда линия на своей шкале, а не вкладка
     # со столбиками» (владелец, 26.08.2026): на общей шкале с рублями её не
@@ -1077,10 +1119,18 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         # Значения стоят на столбиках, пока их не много. Ряд столбиков один,
         # поэтому считаются его категории — линии подписей не несут.
         labelled = len(data["categories"]) <= 8
+        # Крупным числам дробная часть не нужна вовсе, а её разделитель без
+        # цифр за ним читается как обрыв числа.
+        big = all(abs(value) >= 100 for value in (data.get("values") or [])
+                  if value is not None)
         plot.has_data_labels = labelled
         if labelled:
             labels = plot.data_labels
-            labels.number_format = "#,##0.#"
+            # «#,##0.#» в русской раскладке печатает разделитель дробной части
+            # даже там, где дроби нет: на снимке владельца подписи столбиков
+            # стояли как «576 680,» (31.08.2026). Дробная часть нужна только
+            # мелким числам.
+            labels.number_format = "#,##0" if big else "#,##0.#"
             labels.number_format_is_linked = False
             labels.position = XL_LABEL_POSITION.OUTSIDE_END
             labels.font.size = Pt(11)
