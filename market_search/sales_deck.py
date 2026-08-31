@@ -64,9 +64,11 @@ class _Sections(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.sections: list[dict[str, Any]] = []
-        self.head: dict[str, Any] = {"title": "", "lines": [], "tables": [], "strips": [], "note": ""}
+        self.head: dict[str, Any] = {"title": "", "lines": [], "tables": [], "strips": [],
+                                     "note": "", "charted": False}
         self.tail: dict[str, Any] = {"title": "На чём посчитано", "lines": [],
-                                     "tables": [], "strips": [], "note": ""}
+                                     "tables": [], "strips": [], "note": "",
+                                     "charted": False}
         self._current = self.head
         self._kv_depth = 0
         self._kv_row: list[str] | None = None
@@ -105,7 +107,11 @@ class _Sections(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         classes = dict(attrs).get("class") or ""
         if tag == "svg":
+            # Экран рисует график там, где график отвечает на вопрос раздела,
+            # и таблицу там, где отвечает таблица. Сам рисунок со страницы не
+            # переносится — переносится РЕШЕНИЕ: где на слайде быть графику.
             self._svg_depth += 1
+            self._current["charted"] = True
             return
         if self._svg_depth:
             return
@@ -152,7 +158,8 @@ class _Sections(HTMLParser):
             return
         if tag == "section" and "salesblock" in classes:
             self._flush_line()
-            self._current = {"title": "", "lines": [], "tables": [], "strips": [], "note": ""}
+            self._current = {"title": "", "lines": [], "tables": [], "strips": [],
+                             "note": "", "charted": False}
             self.sections.append(self._current)
             return
         if tag in {"h1", "h2", "h3", "h4"}:
@@ -307,6 +314,37 @@ def cell_number(text: str) -> float | None:
         return None
 
 
+# Число с подписью: «3,1%», «1 628,9 млн ₽», «488 300 ₽/м²». Для ГРАФИКА это
+# не число — колонка процентов и колонка рублей дают разные графики, и
+# `cell_number` их не берёт намеренно. Но для ВЫКЛАДКИ это число: колонка
+# «3,1% / 36,4% / 6,6%», прижатая влево, столбиком не читается, а её заголовок
+# уже стоит справа. Два разных вопроса — две разные проверки.
+_NUMERIC_CELL = re.compile(
+    r"^-?\d[\d  ]*(?:[.,]\d+)?\s*(?:%|×|x|руб|₽|млн|млрд|тыс|м²|шт|дн|ДДУ|₽/м²|[а-яё]{1,4}\s*₽?)?$",
+    re.IGNORECASE)
+
+
+def looks_numeric(text: str) -> bool:
+    """Читается ли ячейка числом — для выкладки, а не для графика."""
+    raw = str(text or "").strip().replace("−", "-")
+    return bool(raw) and bool(_NUMERIC_CELL.match(raw))
+
+
+# Объявленное отсутствие: на экране это прочерк, и он значит «здесь значения
+# нет», а не «здесь ноль».
+_BLANK_CELL = {"", "—", "–", "-", "н/д", "нет"}
+# Мера колонки — то, в чём она измерена. Шапка пишет её либо после запятой
+# («Факт, млн ₽»), либо целиком («млн ₽», «Лотов»).
+_MEASURE_TAIL = re.compile(r",\s*([^,]+)$")
+
+
+def measure_of(head: str) -> str:
+    """В чём измерена колонка. Разные меры на одну ось не кладут."""
+    raw = str(head or "").strip()
+    tail = _MEASURE_TAIL.search(raw)
+    return (tail.group(1) if tail else raw).strip().lower()
+
+
 def charts(table: dict[str, Any]) -> list[dict[str, Any]]:
     """Графики таблицы: по одному на числовую колонку.
 
@@ -317,20 +355,32 @@ def charts(table: dict[str, Any]) -> list[dict[str, Any]]:
     ничего не теряется: каждая мера показана, ни одна не спорит с соседней, а
     лишний слайд в PowerPoint удаляют одним нажатием.
 
-    Колонка берётся, только если КАЖДАЯ её ячейка — число: прочерк посередине
-    нарисовал бы ноль там, где значения нет, а «пропуск — не ноль» мы уже
-    проходили на плане банка.
+    Колонка берётся, только если каждая её ЗАПОЛНЕННАЯ ячейка — число.
+    Прочерк — объявленное отсутствие, и он едет пропуском: столбика в этом
+    месяце просто нет. Нулём его рисовать нельзя («пропуск в ряду — не ноль»),
+    но и выбрасывать всю колонку из-за одного прочерка нельзя тоже — так с
+    графика «факт против планов» пропадал план банка, у которого первый
+    квартал пустой.
     """
     head, rows = table.get("head") or [], table.get("rows") or []
     if len(head) < 2 or len(rows) < 2:
         return []
     categories = [str(row[0]) for row in rows if row]
 
-    def column(index: int) -> list[float] | None:
-        values = [cell_number(row[index]) if index < len(row) else None for row in rows]
-        if len(values) != len(categories) or any(value is None for value in values):
+    def column(index: int) -> list[float | None] | None:
+        values: list[float | None] = []
+        for row in rows:
+            raw = str(row[index] if index < len(row) else "").strip()
+            if raw in _BLANK_CELL:
+                values.append(None)
+                continue
+            number = cell_number(raw)
+            if number is None:
+                return None
+            values.append(float(number))
+        if len(values) != len(categories):
             return None
-        return [float(value) for value in values]
+        return values if sum(1 for value in values if value is not None) >= 2 else None
 
     numeric = {index: column(index) for index in range(1, len(head))}
     numeric = {index: values for index, values in numeric.items() if values}
@@ -354,8 +404,25 @@ def charts(table: dict[str, Any]) -> list[dict[str, Any]]:
     if not order:
         order = list(numeric)
     money = next((index for index in order if _MONEY.search(str(head[index]))), order[0])
-    item: dict[str, Any] = {"name": str(head[money]), "categories": categories,
-                            "values": numeric[money]}
+    # Колонки ОДНОЙ меры идут рядами одного графика, а не разъезжаются по
+    # слайдам и не теряются. Раздел «Факт против планов» показывал один факт:
+    # три колонки в «млн ₽» — факт, план ФМ, план банка, — а на слайд уезжала
+    # первая, и график с именем «против планов» никаких планов не показывал.
+    # Мера берётся из шапки: «Факт, млн ₽» и «План ФМ, млн ₽» — одна ось,
+    # «Лотов», «м²» и «₽/м²» — разные, и класть их вместе нельзя.
+    unit = measure_of(str(head[money]))
+    series = [index for index in order if measure_of(str(head[index])) == unit]
+    item: dict[str, Any] = {
+        "name": str(head[money]), "categories": categories,
+        "values": numeric[money],
+        # Заголовок слайда называет МЕРУ, а не первый ряд: «Факт против планов
+        # · Факт, млн ₽» над графиком, где рядом стоят оба плана, обещает то,
+        # чего на слайде больше, чем сказано. Ряд один — его имя и есть мера.
+        "measure": unit if len(series) > 1 else str(head[money]),
+        # Ряды сверх первого несут своё имя: на графике их различает легенда.
+        "extra": [{"name": str(head[index]), "values": numeric[index]}
+                  for index in series if index != money],
+    }
     if line and money != price:
         item["line"] = line
     return [item]
@@ -550,7 +617,7 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         grid.first_row = bool(head)
         grid.horz_banding = False
 
-        def dress(cell, text: str, *, header: bool, first: bool = False) -> None:
+        def dress(cell, text: str, *, header: bool, first: bool) -> None:
             cell.text = text
             cell.fill.solid()
             cell.fill.fore_color.rgb = RGBColor(0xF4, 0xF7, 0xFA) if header else RGBColor(0xFF, 0xFF, 0xFF)
@@ -559,7 +626,10 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
             paragraph = cell.text_frame.paragraphs[0]
             # Числу место справа: колонка чисел, прижатая влево, не читается
             # столбиком. Заголовок стоит там же, где его числа.
-            if cell_number(text) is not None or (header and not first):
+            # Первая колонка — имена, и вправо она не уходит никогда: «100%»
+            # в ней это условие оплаты, а не число, и прижатое вправо оно
+            # встаёт под колонку договоров.
+            if not first and (looks_numeric(text) or header):
                 paragraph.alignment = PP_ALIGN.RIGHT
             for run in paragraph.runs or [paragraph.add_run()]:
                 run.font.size = Pt(11)
@@ -576,7 +646,8 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         for line, row in enumerate(rows):
             for index in range(columns):
                 dress(grid.cell(line + offset, index),
-                      str(row[index]) if index < len(row) else "", header=False)
+                      str(row[index]) if index < len(row) else "", header=False,
+                      first=index == 0)
 
     def put_tiles(slide, table: dict[str, Any], *, top: float) -> float:
         """Ключевые числа плитками, как на экране: число крупно, имя над ним.
@@ -734,9 +805,12 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         ряд один, и его называет заголовок слайда.
         """
         line = data.get("line")
+        extra = list(data.get("extra") or [])
         payload = CategoryChartData()
         payload.categories = data["categories"]
         payload.add_series(data["name"], data["values"])
+        for other in extra:
+            payload.add_series(other["name"], other["values"])
         if line:
             payload.add_series(line["name"], line["values"])
         frame = slide.shapes.add_chart(
@@ -746,9 +820,10 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         # Своего заголовка у графика нет: его имя уже стоит заголовком слайда,
         # а повторённое мелким серым оно читается как чужая подпись.
         chart.has_title = False
-        # Рядов два — легенда нужна: без неё столбики и линия неразличимы.
-        chart.has_legend = bool(line)
-        if line:
+        # Ряд один — легенды нет, его называет заголовок слайда. Рядов
+        # несколько — без легенды они неразличимы.
+        chart.has_legend = bool(line or extra)
+        if chart.has_legend:
             chart.legend.position = XL_LEGEND_POSITION.BOTTOM
             chart.legend.include_in_layout = False
         chart.font.size = Pt(11)
@@ -765,10 +840,16 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         plot.gap_width = 400 if count <= 3 else (250 if count <= 8 else
                                                  (140 if count <= 12 else 60))
 
-        series = plot.series[0]
-        series.format.fill.solid()
-        series.format.fill.fore_color.rgb = brand
-        series.format.line.fill.background()
+        # Ряды одной меры — оттенками одного цвета, а не радугой: они про одно
+        # и то же, и разный цвет читался бы как разные величины. Факт носит
+        # фирменный, планы — бледнее: смотрят на факт.
+        tones = (brand, RGBColor(0x7F, 0xB2, 0xE5), RGBColor(0xB9, 0xCF, 0xE4),
+                 RGBColor(0xD7, 0xE4, 0xF0))
+        for order in range(1 + len(extra)):
+            bars = plot.series[order]
+            bars.format.fill.solid()
+            bars.format.fill.fore_color.rgb = tones[min(order, len(tones) - 1)]
+            bars.format.line.fill.background()
 
         # Число на каждом столбике — это хаос, если столбиков много: тогда
         # значения несёт ось. Мало — значения стоят прямо на шапках, и ось со
@@ -777,7 +858,10 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         # уводит столбики на шкалу цены — 35 против 800 000, — и на слайде от
         # них не остаётся ничего: «тут просто линии» (владелец, 30.08.2026).
         has_line = bool(line)
-        labelled = len(data["categories"]) <= 8
+        # Значения стоят на столбиках, пока их не много. Считаются ТОЧКИ, а не
+        # категории: три квартала на три ряда — это девять чисел, и на слайде
+        # они наезжают друг на друга ровно так же, как двадцать на одном ряду.
+        labelled = len(data["categories"]) * (1 + len(extra)) <= 8
         plot.has_data_labels = labelled
         if labelled:
             labels = plot.data_labels
@@ -861,11 +945,20 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         tiles = [table for table in tables
                  if table.get("kind") == "tiles" and not table.get("used")]
         tables = [table for table in tables if table.get("kind") != "tiles"]
-        # Раздел с лентой долей столбиков не получает: лента говорит то же
-        # самое и теми же цветами, что на экране, а три синих столбиковых
-        # слайда подряд — «некрасивые столбики, а не как в отчёте» (владелец,
-        # 30.08.2026). Числа при этом не пропадают: они в таблице раздела.
-        drawn = [] if strips else (charts(tables[0]) if tables else [])
+        # График на слайде — только там, где он есть на экране. Прежде колода
+        # заводила столбики под ПЕРВУЮ таблицу каждого раздела, и на своде из
+        # десяти разделов выходило восемь почти одинаковых синих слайдов —
+        # «там была куча столбиков опять» (владелец, 31.08.2026). Расторжения
+        # столбиками не читаются вовсе, у структуры оплаты их три штуки, а
+        # экран в этих разделах и не рисует ничего: он рисует график ровно в
+        # трёх — динамика, факт против планов, эскроу. Это решение уже
+        # принято, и второй раз его принимать нельзя: колода взяла бы на себя
+        # выбор, которого экран ей не поручал.
+        #
+        # Лента долей столбиков не получает по той же причине: она говорит то
+        # же самое и теми же цветами, что на экране. Числа при этом не
+        # пропадают — они в таблице раздела.
+        drawn = charts(tables[0]) if (page.get("charted") and tables and not strips) else []
         # Слайд заводится, только если на нём есть что показать. Вывод сам по
         # себе слайдом не является: «этот слайд странный» (владелец,
         # 30.08.2026) — заголовок, одна строка и пять дюймов белого. Такой
@@ -909,10 +1002,16 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
                     run.text = line
                     run.font.size = Pt(14)
                     run.font.color.rgb = ink
-            elif not drawn and tables and not tiles and not strips:
-                put_table(opening, tables[0], top=top,
-                          height=min(4.8, 0.34 * (len(tables[0]["rows"]) + 1)))
-                tables = tables[1:]
+            # Таблица раздела встаёт на тот же лист, если помещается. На
+            # экране лента и её числа стоят одним блоком, и лист с одной
+            # короткой лентой над пятью дюймами белого — это не «просторно», а
+            # «здесь ничего нет». Не поместилась — уезжает своим листом
+            # целиком, а не ужимается до нечитаемого.
+            if not drawn and tables and not tiles:
+                height = 0.34 * (len(tables[0]["rows"]) + 1)
+                if top + height <= SLIDE_H_IN - 0.9:
+                    put_table(opening, tables[0], top=top + 0.15, height=height)
+                    tables = tables[1:]
 
         # По слайду на график: каждая мера показана и ни одна не спорит с
         # соседней. Ряд один, поэтому легенда не нужна — мера стоит в
@@ -920,7 +1019,8 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         # двадцать раз, она перестаёт быть пояснением и становится шумом —
         # сказать это достаточно один раз, на титуле.
         for chart in drawn:
-            part = new_slide(f"{heading} · {chart['name']}", heading)
+            part = new_slide(
+                f"{heading} · {chart.get('measure') or chart['name']}", heading)
             top = lead(part, CONTENT_TOP)
             put_chart(part, chart, top=top, height=SLIDE_H_IN - top - 0.8)
 
