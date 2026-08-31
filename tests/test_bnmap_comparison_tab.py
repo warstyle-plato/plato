@@ -564,3 +564,122 @@ def test_the_premium_card_is_drawn_by_the_report_too() -> None:
     assert "months_own_pace" in money and "months_peer_pace" in money
     assert "premium_on_remainder" not in money, "остаток в метрах взялся из ниоткуда"
     assert "remaining_area" not in row
+
+
+def test_the_tab_draws_the_map_and_the_neighbours_in_a_real_browser(tmp_path) -> None:
+    """Спор «видно или не видно» решает экран, а не рассуждение о коде.
+
+    Строковые проверки говорят, что `geoCard` зовётся, а вопрос был другой:
+    появляются ли на карте соседи. Здесь страница открывается настоящим
+    браузером, ответ bnMAP подменяется, кнопка нажимается — и в разметке
+    считаются кружки соседей и полосы вымывания. Без Chromium это пропуск, а не
+    зелёный прогон на пустом месте.
+    """
+    import json
+
+    import pytest
+
+    play = pytest.importorskip("playwright.sync_api")
+
+    import browser_launch
+
+    subject = bnmap._metric_row(CARD, "Объект", 0, "2026-08-25", "55.716254, 37.433176")
+    peers = [
+        bnmap._metric_row({**NEIGHBOUR, "object_id": "1"}, "Сосед 1", 0.55, "2026-08-25",
+                          "55.712190, 37.428307"),
+        bnmap._metric_row({**NEIGHBOUR, "object_id": "2"}, "Сосед 2", 0.65, "2026-08-25",
+                          "55.712940, 37.441630"),
+        bnmap._metric_row({**NEIGHBOUR, "object_id": "3"}, "Сосед 3", 0.75, "2026-08-25",
+                          "55.709622, 37.435227"),
+    ]
+    answer = {
+        "found": {"how": "совпадение по названию", "object_id": 2855, "candidates": []},
+        "subject": subject, "peers": peers,
+        "blocks": metrics.build_blocks(subject, peers),
+        "analysis": {}, "price_series": [], "market_series": [], "exposure_series": [],
+        "selection": {"given": 3, "used": 3, "no_price": 0, "farthest_km": 0.75},
+        "rooms_bands": [
+            {"band": "1к", "pool_units": None, "sold_units": 40.0, "left_units": 10.0,
+             "pool_share": None, "sold_share": 0.8, "left_share": 0.2, "skew": None},
+            {"band": "2к", "pool_units": None, "sold_units": 10.0, "left_units": 40.0,
+             "pool_share": None, "sold_share": 0.2, "left_share": 0.8, "skew": None},
+        ],
+        "gaps": [], "unnamed_peers": [], "account": {"tools": []},
+        "asked_date": "2026-08-25", "errors": [], "html": "",
+    }
+
+    page = cabinet.cabinet_page("market").replace("__DEVELOPAID_VERSION__", "test")
+    file = tmp_path / "market.html"
+    file.write_text(page, encoding="utf-8")
+    with play.sync_playwright() as pw:
+        try:
+            browser = browser_launch.launch(pw)
+        except Exception as exc:  # noqa: BLE001
+            pytest.skip(f"Chromium недоступен: {exc}")
+        try:
+            tab = browser.new_page()
+            errors: list[str] = []
+            tab.on("pageerror", lambda exc: errors.append(str(exc)))
+            tab.route("**/*", lambda route: route.abort()
+                      if route.request.url.startswith("http") else route.continue_())
+            tab.goto(file.as_uri())
+            tab.evaluate(
+                "answer => { window.fetch = () => Promise.resolve("
+                "{ok:true, status:200, text:() => Promise.resolve(JSON.stringify(answer))}); }",
+                answer)
+            # Блок свёрнут: человек его раскрывает, и тест делает то же самое.
+            tab.evaluate("() => { document.getElementById('bnmap').open = true; }")
+            tab.click("#bngo")
+            tab.wait_for_selector("#bnout .card", timeout=15000)
+            drawn = tab.inner_html("#bnout")
+            tab.close()
+        finally:
+            browser.close()
+    assert not errors, errors
+    assert "Где соседи" in drawn, "карта соседей не нарисовалась"
+    # Кружок объекта плюс по кружку на соседа — иначе карта пустая, а выглядит
+    # исправной: кольца расстояний рисуются и без единой точки.
+    assert drawn.count("<circle") >= 4, f"на карте нет точек соседей: {drawn.count('<circle')}"
+    for name in ("Сосед 1", "Сосед 2", "Сосед 3"):
+        assert name in drawn, f"{name} не попал на страницу"
+    assert "Вымывание по комнатности" in drawn
+    assert "Карта рынка" in drawn
+
+
+def test_the_price_in_deals_is_a_monthly_series_and_zero_is_not_a_price() -> None:
+    """Цена в сделках по месяцам — то, чего у «Пульса» нет вовсе.
+
+    Живой ответ 31.08.2026: `months` с полями по комнатности и `yearMonth`
+    «07.2025». Ноль в клетке означает «сделок такой комнатности в этом месяце
+    не было»; нарисованный, он рвёт линию до нуля и читается как обвал цены —
+    ровно та же ошибка, что «пропуск в ряду не ноль» в плане банка.
+    """
+    rows = bnmap._deal_series({"months": [
+        {"1": 657839, "2": 0, "yearMonth": "07.2025"},
+        {"1": 574394, "2": 632767, "yearMonth": "08.2025"},
+        {"1": 730096, "2": 691571, "yearMonth": "09.2025"},
+    ]})
+    by_name = {row["name"]: row for row in rows}
+    assert set(by_name) == {"сделки, 1к", "сделки, 2к"}
+    assert [p["month"] for p in by_name["сделки, 1к"]["points"]] == \
+        ["2025-07", "2025-08", "2025-09"]
+    # Июль у двушек выпал целиком, а не встал нулём.
+    assert [p["month"] for p in by_name["сделки, 2к"]["points"]] == ["2025-08", "2025-09"]
+    # Разрезы одного проекта — не выборка соседей: полосы квартилей по ним быть
+    # не должно, иначе проект сравнивается сам с собой.
+    assert all(row["aggregate"] for row in rows)
+    script = re.search(r"<script>(.*?)</script>", bnmap_ui.markup(), re.S).group(1)
+    assert "Цена в сделках по месяцам" in script and "trendChart(data.deal_series)" in script
+
+
+def test_the_sample_cannot_be_widened_and_the_module_says_so() -> None:
+    """Ответ на главный вопрос о выборке: расширить её нечем — это сверено.
+
+    Карточка произвольного объекта закрыта региональной лицензией, а «соседи по
+    классу» отдают ту же пятёрку. Значит выборку по справочнику координат
+    собрать нельзя, и обещать этого нигде не надо.
+    """
+    assert bnmap.VERIFIED["analytics.balloon"].startswith("403")
+    assert "объект и пять ближайших" in bnmap.VERIFIED["analytics.reportNearByProjectClass"]
+    for name in ("analytics.balloon", "analytics.reportNearByProjectClass"):
+        assert name not in bnmap.REPORT_METHODS, f"{name} зовётся, хотя данных не даёт"
