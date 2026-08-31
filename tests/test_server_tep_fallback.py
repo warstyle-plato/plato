@@ -75,10 +75,20 @@ def test_the_page_goes_server_side_in_telegram_and_on_failure():
 
 def _await_drift(timeout: float = 60.0) -> None:
     """Сверка ушла в фон: она стоит целого серверного расчёта, и держать в ней
-    человека, который ждёт свой ТЭП, незачем. Тест дожидается её явно."""
+    человека, который ждёт свой ТЭП, незачем. Тест дожидается её явно.
+
+    Ждать «running стало False» нельзя: поток запускается ПОСЛЕ ответа, и до
+    его старта признак тоже False — «ещё не начиналась» неотличимо от
+    «закончилась». На быстрой машине ожидание успевало проскочить, на раннере
+    сборка из main падала на пустом флаге дрейфа.
+
+    Признак завершения — `checked_at`: его обнуляет `_rearm_drift` перед
+    вызовом, а сама сверка ставит в `finally`, то есть при любом её исходе.
+    """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if not core._GLAVAPU_FORMULA_DRIFT.get("running"):
+        state = core._GLAVAPU_FORMULA_DRIFT
+        if not state.get("running") and float(state.get("checked_at") or 0.0) > 0.0:
             return
         time.sleep(0.05)
     raise AssertionError("фоновая сверка формул не завершилась")
