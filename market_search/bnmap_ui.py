@@ -153,10 +153,14 @@ document.addEventListener('DOMContentLoaded', function(){{
       // переключатель нашёл бы чужой.
       const market=[{{...ctx.subjectMetrics, name:ctx.subjectName,
                      segment:ctx.subjectSegment, __own:true}}].concat(data.peers||[]);
+      const priceBlock=(data.blocks||[]).find(b=>b.code==='price')||{{}};
       $('#bnout').innerHTML=verdictCard(data)+findingsCard(data)
         +geoCard(market, data.subject||{{}}, data.peers||[])
         +bubbleCard(market, 'bnbubble')
+        +pricesCard(data.peers||[], {{...ctx.subjectMetrics, name:ctx.subjectName}},
+                    (priceBlock.peers||{{}}).median)
         +blocks
+        +peersCard(data.peers||[])
         +'<div class="card">'+(data.html||'')+'</div>'
         +essayCard(data)+finalCard(data);
       wireBubbles(market, 'bnbubble');
@@ -200,22 +204,33 @@ def render(report: dict[str, Any]) -> str:
 
 
 def _selection(selection: Any) -> str:
-    """Сколько соседей прислал источник и сколько осталось после отсечки.
+    """Состав выборки плиткой — как в шапке отчёта.
 
     Отсечённый сосед не исчезает молча: выборка из трёх и выборка из шести
     дают разные медианы, и читатель обязан видеть, что часть убрана им самим,
-    а не источником.
+    а не источником. И размер выборки — сам по себе ответ: у «Пульса» в трёх
+    километрах набирается несколько десятков проектов, у bnMAP этот метод
+    отдаёт объект и пять ближайших, и по одной цифре видно, чего стоит
+    сравнение медиан.
     """
     if not isinstance(selection, dict) or not selection.get("given"):
         return ""
-    given, used = selection.get("given"), selection.get("used")
-    line = f"Соседей прислал bnMAP: {given}"
+    tiles = [
+        (selection.get("given"), "прислал bnMAP"),
+        (selection.get("used"), "взято в выборку"),
+        (selection.get("no_price") or None, "цены нет вовсе"),
+        (selection.get("farthest_km"), "км до дальнего"),
+    ]
+    cells = "".join(f"<div><b>{escape(str(value))}</b><span>{escape(label)}</span></div>"
+                    for value, label in tiles if value is not None)
+    note = ("Радиус задаёт сам bnMAP: объект и пять ближайших. "
+            "Ползунок удалённости может только отсечь дальних из присланного.")
     if selection.get("radius_km"):
-        line += (f" · после отсечки «не дальше {selection['radius_km']} км» осталось {used}")
-    if selection.get("farthest_km") is not None:
-        line += f" · дальний из них в {selection['farthest_km']} км"
-    return ('<div class="muted" style="font-size:12.5px;margin-bottom:8px">'
-            + escape(line) + "</div>")
+        note = (f"Отсечка «не дальше {selection['radius_km']} км» применена к тому, "
+                f"что прислал bnMAP. " + note)
+    return ('<div class="kv" style="margin-top:4px">' + cells + "</div>"
+            + '<div class="muted" style="font-size:12.5px;margin:8px 0 4px">'
+            + escape(note) + "</div>")
 
 
 def _gaps(report: dict[str, Any]) -> str:

@@ -167,11 +167,20 @@ def _node() -> str:
 
 
 def test_the_tab_counts_nothing_itself() -> None:
-    """Показ, а не третий счёт: блоки считает отчёт, bnMAP отдаёт числа."""
+    """Показ, а не третий счёт: блоки считает отчёт, bnMAP отдаёт числа.
+
+    Запрещается место, а не слово. Прежде запрет стоял на строке «median», и
+    под него попало чтение уже посчитанной медианы из блока — единственное
+    правильное обращение к ней. Позеленить это можно было бы ровно одним
+    способом: посчитать медиану самим. Поэтому запрещены вычисления —
+    арифметика и вызов, — а чтение готового свойства разрешено прямо здесь.
+    """
     body = (ROOT / "market_search" / "bnmap_ui.py").read_text()
     code = "\n".join(line.split("#")[0] for line in body.splitlines())
-    for sign in (" / ", " * ", "sum(", "median"):
+    for sign in (" / ", " * ", "sum(", "median(", "statistics"):
         assert sign not in code, f"во вкладке считают: {sign}"
+    # Чтение посчитанного сервером — не счёт, и выглядит оно так:
+    assert ".median)" in code, "вкладка перестала брать медиану у блока отчёта"
 
 
 def test_only_methods_with_a_seen_answer_may_be_called() -> None:
@@ -354,7 +363,8 @@ def test_the_distance_filter_only_narrows_and_says_so() -> None:
     assert "расширить выборку нечем" in markup
     assert any("радиус" in line.lower() for line in bnmap.CLONE_GAPS)
     shown = bnmap_ui._selection({"given": 5, "used": 2, "radius_km": 0.5, "farthest_km": 0.44})
-    assert "5" in shown and "осталось 2" in shown
+    assert "прислал bnMAP" in shown and ">5<" in shown and ">2<" in shown
+    assert "не дальше 0.5 км" in shown and "может только отсечь" in shown
 
 
 def _page_function(name: str) -> str:

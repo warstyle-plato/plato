@@ -1456,6 +1456,42 @@ function wireBubbles(market, box){
   }));
 }
 
+// Цены соседей столбиками и таблица выборки — тоже общие: на них смотрят,
+// чтобы проверить вывод глазами, и вторая их вёрстка разошлась бы с первой.
+function pricesCard(peers, own, median){
+  if(!(peers||[]).length) return '';
+  // Столбик рисуется только там, где есть действующая цена. Сколько соседей
+  // выборки в него не попало — сказано тут же: иначе график из семи столбиков
+  // при двадцати строках в таблице читается как потеря.
+  const withPrice=peers.filter(p=>p.price_per_sqm).length;
+  if(!withPrice) return '';
+  return `<div class="card"><h2>Цены соседей сегодня</h2>`
+    +priceChart(peers, own, median)
+    +(withPrice<peers.length?`<div class="muted" style="font-size:12.5px;margin-top:6px">`
+      +`Столбик есть у ${withPrice} из ${peers.length} соседей выборки — у остальных`
+      +` действующего прайса нет, и в цене они не участвуют. В разделах о темпе, лоте`
+      +` и метрах они считаются наравне.</div>`:'')
+    +`</div>`;
+}
+
+function peersCard(peers){
+  if(!(peers||[]).length) return '';
+  return `<div class="card"><h2>Соседи в выборке</h2>
+    <div class="wrap"><table class="peers">
+    <tr><th>Проект</th><th>Застройщик</th><th class="num">км</th><th>Класс</th>
+    <th class="num">₽/м²</th><th class="num">ДДУ/мес</th><th class="num">м²/мес</th><th class="num">Лотов</th><th>Прайс от</th></tr>`
+    +peers.map((p,i)=>`<tr${p.added_by_hand?' class="added byhand"':''}><td class="link" data-peer="${i}">`
+      +`${esc(p.name)}${p.added_by_hand?' <span class="muted">+</span>':''}</td><td class="muted">${esc(p.developer||'—')}</td>
+      <td class="num">${num(p.distance_km,2)}</td><td>${esc(p.segment||'—')}</td>
+      <td class="num">${p.price_per_sqm?num(p.price_per_sqm)
+        :`<span class="muted" title="в расчёт не идёт">${p.price_status==='устарела'
+          ?num(p.stale_price_per_sqm)+' · '+esc(p.stale_observed_at||'')
+          :'цены нет'}</span>`}</td><td class="num">${num(p.units_per_month,1)}</td>
+      <td class="num">${num(p.area_per_month)}</td><td class="num">${num(p.lot_count)}</td>
+      <td class="muted">${esc(p.observed_at||'—')}</td></tr>`).join('')
+    +`</table></div></div>`;
+}
+
 function blockCard(b,ctx){
   const s=b.subject||{}, p=b.peers||{}, c=b.city||{};
   const cell=(v,l)=>`<div><b>${v}</b><span>${l}</span></div>`;
@@ -3408,17 +3444,7 @@ function render(d){
 
   const priceBlock=(d.blocks||[]).find(b=>b.code==='price');
   if(priceBlock){
-    // Столбик рисуется только там, где есть действующая цена. Сколько
-    // соседей выборки в него не попало — сказано тут же: иначе график из
-    // семи столбиков при двадцати строках в таблице читается как потеря.
-    const withPrice=peers.filter(p=>p.price_per_sqm).length;
-    html+=`<div class="card"><h2>Цены соседей сегодня</h2>`
-      +priceChart(peers,{...m,name:s.project_name||'объект'},(priceBlock.peers||{}).median)
-      +(withPrice<peers.length?`<div class="muted" style="font-size:12.5px;margin-top:6px">`
-        +`Столбик есть у ${withPrice} из ${peers.length} соседей выборки — у остальных`
-        +` действующего прайса нет, и в цене они не участвуют. В разделах о темпе, лоте`
-        +` и метрах они считаются наравне.</div>`:'')
-      +`</div>`;
+    html+=pricesCard(peers,{...m,name:s.project_name||'объект'},(priceBlock.peers||{}).median);
   }
 
   const ctx={
@@ -3444,20 +3470,7 @@ function render(d){
 
   html+=boardCard(planData);
   html+=deepCard(d);
-  html+=`<div class="card"><h2>Соседи в выборке</h2>
-    <div class="wrap"><table class="peers">
-    <tr><th>Проект</th><th>Застройщик</th><th class="num">км</th><th>Класс</th>
-    <th class="num">₽/м²</th><th class="num">ДДУ/мес</th><th class="num">м²/мес</th><th class="num">Лотов</th><th>Прайс от</th></tr>`
-    +peers.map((p,i)=>`<tr${p.added_by_hand?' class="added byhand"':''}><td class="link" data-peer="${i}">`
-      +`${esc(p.name)}${p.added_by_hand?' <span class="muted">+</span>':''}</td><td class="muted">${esc(p.developer||'—')}</td>
-      <td class="num">${num(p.distance_km,2)}</td><td>${esc(p.segment||'—')}</td>
-      <td class="num">${p.price_per_sqm?num(p.price_per_sqm)
-        :`<span class="muted" title="в расчёт не идёт">${p.price_status==='устарела'
-          ?num(p.stale_price_per_sqm)+' · '+esc(p.stale_observed_at||'')
-          :'цены нет'}</span>`}</td><td class="num">${num(p.units_per_month,1)}</td>
-      <td class="num">${num(p.area_per_month)}</td><td class="num">${num(p.lot_count)}</td>
-      <td class="muted">${esc(p.observed_at||'—')}</td></tr>`).join('')
-    +`</table></div></div>`;
+  html+=peersCard(peers);
   // «Разбор» — в конце: те же числа, но связанные между собой.
   html+=essayCard(d);
   html+=finalCard(d);

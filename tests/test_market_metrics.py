@@ -719,7 +719,7 @@ def test_the_report_opens_with_the_verdict_and_closes_with_the_bottom_line() -> 
     assert body.index("html+=findingsCard(d);") < market_map, "выводы уехали за карту"
 
     # Итоговая карточка приклеивается последней, уже после таблицы соседей.
-    peers_table = body.index("<h2>Соседи в выборке</h2>")
+    peers_table = body.index("html+=peersCard(peers);")
     final = body.index("html+=finalCard(d);")
     assert peers_table < final < body.index("$('#out').innerHTML=html;")
 
@@ -2818,7 +2818,7 @@ def test_the_analysis_reaches_the_page_and_starts_a_new_printed_sheet() -> None:
     assert CABINET_PAGE.count("function essayCard(") == 1
     # Разбор идёт последним разделом, после всех графиков и таблиц.
     body = CABINET_PAGE[CABINET_PAGE.index("function render(d)"):]
-    assert body.index("html+=essayCard(d);") > body.index("<h2>Соседи в выборке</h2>")
+    assert body.index("html+=essayCard(d);") > body.index("html+=peersCard(peers);")
 
 
 def test_findings_and_analysis_travel_all_the_way_to_the_markup(tmp_path) -> None:

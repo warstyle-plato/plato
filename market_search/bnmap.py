@@ -998,7 +998,10 @@ def clone_report(data_dir: Any, query: str, *, base: str = "msk", date: str = ""
         "price_series": price_series,
         "market_series": market_series,
         "exposure_series": exposure,
+        # Состав выборки считается здесь, рядом с самой выборкой: на странице
+        # ему считаться негде — она показывает, а не считает.
         "selection": {"given": given, "used": len(peers), "radius_km": radius_km,
+                      "no_price": sum(1 for row in peers if not row.get("price_per_sqm")),
                       "farthest_km": max((row["distance_km"] for row in peers
                                           if row.get("distance_km") is not None), default=None)},
         "unnamed_peers": unnamed,
