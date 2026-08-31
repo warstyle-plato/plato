@@ -301,6 +301,23 @@ def overall(blocks: list[dict[str, Any]], notes: dict[str, dict[str, Any]]) -> d
                 "причина в товаре, стадии или локации."
             ),
         }
+    elif slow:
+        # Цена внутри коридора, а темп отстаёт. Эта пара проваливалась в ветку
+        # «проект в рынке» и печаталась как «темп вровень с соседями» при
+        # отставании в восемь раз: ветвление спрашивало о темпе только там,
+        # где цена вышла из коридора. Между тем это самый частый разговор с
+        # девелопером — прайс как у всех, а продаж нет, — и молчание о нём
+        # читается как «всё в порядке».
+        verdict = {
+            "tone": TONE_BAD,
+            "headline": "Цена как у всех, а продаж нет",
+            "text": (
+                f"Отрыв цены {_pct(price_gap)} — внутри обычного разброса, но темп в "
+                f"{_num(ratio, 1)} раза хуже соседей. Причина не в прайсе: при цене "
+                "на уровне класса так отстают из-за продукта, стадии или того, "
+                "как проект показан покупателю."
+            ),
+        }
     else:
         verdict = {
             "tone": TONE_GOOD,
@@ -452,8 +469,14 @@ def positioning(subject: dict[str, Any], peers: list[dict[str, Any]], city) -> d
         return None
     priced = [p for p in peers or [] if p.get("price_per_sqm")]
     same = [p for p in priced if p.get("segment") == label]
-    cheaper = [p for p in same if p["price_per_sqm"] < price] or [p for p in priced if p["price_per_sqm"] < price]
+    # Витрина и те, кто в ней дешевле, — одно и то же множество. Прежде
+    # дешёвых искали сперва среди своего класса, а при неудаче среди всей
+    # выборки, витрину же считали своим классом: у проекта, где в своём
+    # классе дешевле нет никого, а в выборке трое, выходило «в витрине из
+    # 2 проектов наш -1-й по цене — дешевле него 3». Место в ряду считается
+    # внутри того ряда, о котором говорят.
     pool = same or priced
+    cheaper = [p for p in pool if p["price_per_sqm"] < price]
     lots_cheaper = int(sum(p.get("lot_count") or 0 for p in cheaper))
 
     where = shelf(price, city)

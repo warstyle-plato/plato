@@ -3452,3 +3452,49 @@ def test_glavapu_health_answers_for_the_app_not_for_one_worker(tmp_path, monkeyp
     # Диагностика не роняет расчёт: некуда писать — молчим, а не падаем.
     monkeypatch.setenv("DEVELOPAID_DATA_DIR", "/proc/нет-такого/каталога")
     main_legacy._glavapu_health_save()
+
+
+def test_a_project_priced_in_line_but_selling_slowly_is_not_called_in_market() -> None:
+    """Цена в коридоре и втрое медленнее соседей — это не «проект в рынке».
+
+    Ветвление общего вывода спрашивало о темпе только там, где цена вышла из
+    коридора: пара «прайс как у всех, продаж нет» проваливалась в последнюю
+    ветку и печаталась как «темп вровень с соседями» при отставании в восемь
+    раз. Найдено на живых числах Кутузов Сити (разрыв −8,6 %, темп 8,2×), но
+    ошибка общая — тот же вывод стоит и в отчёте по «Пульсу».
+    """
+    from market_search.verdict import overall
+
+    said = overall([], {"price": {"gap_pct": -8.6}, "pace": {"ratio": 8.2},
+                        "stock": {"months_to_sell": 55.0}})
+    assert said["tone"] == "bad"
+    assert "вровень" not in said["text"]
+    assert "8,2" in said["text"]
+    # Соседняя пара не сдвинулась: цена в коридоре и темп вровень — по-прежнему
+    # «в рынке», иначе правка одной ветки поехала бы на всех отчётах.
+    fine = overall([], {"price": {"gap_pct": -3.0}, "pace": {"ratio": 1.1}})
+    assert fine["tone"] == "good" and "в рынке" in fine["headline"]
+
+
+def test_the_shelf_and_those_cheaper_are_counted_in_the_same_row() -> None:
+    """Место в ряду считается внутри того ряда, о котором говорят.
+
+    Дешёвых искали сперва в своём классе, а при неудаче во всей выборке, витрину
+    же считали своим классом. У проекта, где в своём классе дешевле нет никого,
+    а в выборке трое, выходило «в витрине из 2 проектов наш -1-й по цене —
+    дешевле него 3»: отрицательный номер и два несходящихся числа рядом.
+    """
+    from market_search.verdict import positioning
+
+    peers = [
+        {"price_per_sqm": 783431, "segment": "бизнес", "lot_count": 100},
+        {"price_per_sqm": 400000, "segment": "комфорт", "lot_count": 900},
+        {"price_per_sqm": 500000, "segment": "премиум", "lot_count": 500},
+    ]
+    said = positioning({"price_per_sqm": 715927, "segment": "бизнес"}, peers, None)
+    assert "-1" not in said["text"]
+    assert "витрине из 2 проектов наш 2-й по цене — дешевле него 0" in said["text"]
+    # Класса своего в выборке нет вовсе — витриной становится вся выборка, и
+    # дешёвые считаются по ней же.
+    other = positioning({"price_per_sqm": 715927, "segment": "элитный"}, peers, None)
+    assert "витрине из 4 проектов наш 2-й по цене — дешевле него 2" in other["text"]

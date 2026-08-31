@@ -275,3 +275,142 @@ def test_the_pulse_path_keeps_the_ladder() -> None:
     price = [b for b in metrics.build_blocks(subject, peers) if b["code"] == "price"][0]
     assert price["peers"]["same_class"]["count"] == 1
     assert price["peers"]["same_class"]["names"] == ["Сосед"]
+
+
+def test_the_price_history_comes_back_as_three_series() -> None:
+    """История у bnMAP есть, и она не одна: свой ряд и два ряда рынка.
+
+    Владелец, 31.08.2026: «почему никакой истории нет». История была
+    отброшена — «история цены мало интересна для оценки» относилось к
+    помесячному ряду карточки соседа, а не к динамике самого проекта. Ряд
+    `location` живого ответа несёт восемнадцать месяцев: цена проекта, средняя
+    пяти ближайших и средняя всей локации.
+    """
+    location = {
+        "2025-03-01": {"current_project_metrprice_avg": 631549.56,
+                       "five_projects_metrprice_avg": 433558.1,
+                       "location_buildings": {"metrprice_avg": 552630.9, "expo_num": 7693}},
+        "2025-04-01": {"current_project_metrprice_avg": 631793.46,
+                       "five_projects_metrprice_avg": 425359.54,
+                       "location_buildings": {"metrprice_avg": 563015.49, "expo_num": 7606}},
+        # Месяц до выхода проекта в продажу: ноль здесь значит «ряда ещё не
+        # было», а не «цена ноль». Нарисованный, он показал бы обвал цены.
+        "2025-02-01": {"current_project_metrprice_avg": 0,
+                       "five_projects_metrprice_avg": 400000.0,
+                       "location_buildings": {"metrprice_avg": 540000.0, "expo_num": 7000}},
+    }
+    own, market = bnmap._price_series(location)
+    assert [row["month"] for row in own] == ["2025-03", "2025-04"]
+    assert own[0]["value"] == 631549.56
+    assert [row["name"] for row in market] == ["пять ближайших, средняя", "локация, средняя"]
+    assert len(market[0]["points"]) == 3
+    # Две готовые средние — не выборка проектов, и полосу квартилей по ним
+    # строить нельзя: подпись «верх выборки» назвала бы их тем, чем они не
+    # являются.
+    assert all(row["aggregate"] for row in market)
+    assert len(bnmap._exposure_series(location)) == 3
+
+
+def test_the_tab_draws_the_verdict_by_the_report_renderers() -> None:
+    """Выводы рисуются теми же функциями, что и в действующем отчёте."""
+    script = re.search(r"<script>(.*?)</script>", bnmap_ui.markup(), re.S).group(1)
+    for call in ("verdictCard(", "findingsCard(", "essayCard(", "finalCard("):
+        assert call in script, f"вкладка не зовёт {call} — значит рисует вывод сама"
+    page = cabinet.cabinet_page("market")
+    # Те же функции объявлены один раз и зовутся обеими поверхностями: пока
+    # вывод стоял вставкой внутри `showReport`, второй источник мог показать
+    # его только второй вёрсткой.
+    for name in ("function verdictCard(", "function findingsCard(", "function essayCard("):
+        assert page.count(name) == 1, name
+    assert "html+=verdictCard(d);" in page and "html+=essayCard(d);" in page
+
+
+def test_the_empty_sales_chart_names_its_own_reason() -> None:
+    """Причина пустоты приходит снаружи, а не зашита под «Пульс».
+
+    У «Пульса» помесячных продаж нет там, где проекта нет в отчёте по «Москве
+    старой»; у bnMAP их нет вовсе — метод такого ряда не отдаёт. Одна фраза на
+    две разные причины назвала бы второму источнику чужую.
+    """
+    page = cabinet.cabinet_page("market")
+    assert "function salesChart(rows, key, unit, digits, note)" in page
+    assert "salesChart(ctx.sales,'sold','ДДУ',0,ctx.salesNote)" in page
+    script = re.search(r"<script>(.*?)</script>", bnmap_ui.markup(), re.S).group(1)
+    note = re.search(r"salesNote:\s*'((?:[^']|\\')*)'", script)
+    assert note, "вкладка не называет причину пустого графика"
+    assert "Москву старую" not in note.group(1), "второму источнику подставлена чужая причина"
+    assert any("помесячные продажи" in line.lower() for line in bnmap.CLONE_GAPS)
+
+
+def test_the_distance_filter_only_narrows_and_says_so() -> None:
+    """Радиуса у источника нет — значит выбор только отсекает присланное.
+
+    У `analytics.reportNearBy` параметра радиуса в каталоге методов нет вовсе:
+    кого считать соседом, решает bnMAP. Изобразить выбор, которого у источника
+    нет, значит пообещать выборку, которой не будет.
+    """
+    markup = bnmap_ui.markup()
+    assert 'id="bnrad"' in markup and "radius_km=" in markup
+    assert "расширить выборку нечем" in markup
+    assert any("радиус" in line.lower() for line in bnmap.CLONE_GAPS)
+    shown = bnmap_ui._selection({"given": 5, "used": 2, "radius_km": 0.5, "farthest_km": 0.44})
+    assert "5" in shown and "осталось 2" in shown
+
+
+def _page_function(name: str) -> str:
+    """Функция страницы целиком — по скобкам, а не по соседней строке.
+
+    Вырезать «до следующего комментария» уже стоило десяти разом упавших
+    проверок: комментарий переписали, и все они сказали `substring not found`
+    вместо того, что сломалось. Функция — контракт: её граница считается
+    скобками.
+    """
+    page = cabinet.cabinet_page("market")
+    start = page.index(f"function {name}(")
+    depth, index = 0, page.index("{", start)
+    for position in range(index, len(page)):
+        if page[position] == "{":
+            depth += 1
+        elif page[position] == "}":
+            depth -= 1
+            if depth == 0:
+                return page[start:position + 1]
+    raise AssertionError(f"функция {name} не закрылась")
+
+
+def test_a_ready_made_average_is_a_line_and_not_a_quartile_band() -> None:
+    """Готовая средняя источника в полосу квартилей не идёт.
+
+    bnMAP не даёт помесячной цены по каждому соседу — он присылает две уже
+    посчитанные средние: пять ближайших и всю локацию. Пущенные в полосу, они
+    подписались бы «верх выборки» и «низ выборки», то есть были бы названы
+    выборкой соседей, которой не являются. Проверяем не текстом, а прогоном
+    настоящего графика: рисунок должен назвать линии их именами и объяснить,
+    почему полосы нет.
+    """
+    page = cabinet.cabinet_page("market")
+    helpers = "\n".join(line for line in page.splitlines()
+                        if line.startswith("const num=") or line.startswith("const esc="))
+    assert "const num=" in helpers and "const esc=" in helpers, "помощники страницы не нашлись"
+    body = helpers + "\n" + _page_function("trendChart")
+    script = (body + "\nconst PICKED=['#1367AE','#C4581B'];\n"
+              "const out=trendChart([\n"
+              "  {name:'объект',own:true,points:[{month:'2025-03',value:600000},"
+              "{month:'2025-04',value:610000}]},\n"
+              "  {name:'пять ближайших, средняя',aggregate:true,"
+              "points:[{month:'2025-03',value:430000},{month:'2025-04',value:425000}]},\n"
+              "  {name:'локация, средняя',aggregate:true,"
+              "points:[{month:'2025-03',value:550000},{month:'2025-04',value:560000}]}\n"
+              "]);\nconsole.log(out);\n")
+    path = ROOT / "tests" / "_bnmap_trend.js"
+    path.write_text(script, encoding="utf-8")
+    try:
+        done = subprocess.run([_node(), str(path)], capture_output=True, text=True)
+        assert done.returncode == 0, done.stderr
+    finally:
+        path.unlink(missing_ok=True)
+    drawn = done.stdout
+    assert "верх выборки" not in drawn and "низ выборки" not in drawn
+    assert "пять ближайших" in drawn and "локация" in drawn
+    assert "Полосы квартилей здесь нет" in drawn
+    assert "<svg" in drawn, "график не нарисовался вовсе"

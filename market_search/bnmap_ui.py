@@ -80,6 +80,19 @@ def markup() -> str:
              style="max-width:320px"></div>
     <div><label class="f">Регион</label>
       <select id="bnbase"><option value="msk" selected>Москва и область</option></select></div>
+    <div><label class="f">Удалённость соседей</label>
+      <select id="bnrad">
+        <option value="0" selected>как отдал bnMAP</option>
+        <option value="0.5">не дальше 0,5 км</option>
+        <option value="1">не дальше 1 км</option>
+        <option value="1.5">не дальше 1,5 км</option>
+        <option value="3">не дальше 3 км</option>
+      </select></div>
+  </div>
+  <div class="muted" style="font-size:12.5px;margin-top:6px">
+    Радиус у bnMAP не спрашивается: кого считать соседом, решает он сам —
+    объект и пять ближайших. Наш выбор может только отсечь дальних из
+    присланного, расширить выборку нечем.
   </div>
   <button class="go alt" id="bngo" style="margin-top:10px">Собрать тестовый свод</button>
   <span id="bnstate" class="muted" style="margin-left:10px"></span>
@@ -102,7 +115,8 @@ document.addEventListener('DOMContentLoaded', function(){{
     $('#bnstate').textContent='спрашиваю bnMAP…'; $('#bnout').innerHTML='';
     try{{
       const r=await fetch('/market/bnmap/report?object_id='+encodeURIComponent(q)
-        +'&base='+encodeURIComponent($('#bnbase').value));
+        +'&base='+encodeURIComponent($('#bnbase').value)
+        +'&radius_km='+encodeURIComponent($('#bnrad').value));
       const text=await r.text();
       let data=null;
       try{{ data=JSON.parse(text); }}catch(e){{
@@ -114,18 +128,29 @@ document.addEventListener('DOMContentLoaded', function(){{
       }}
       if(!r.ok){{ $('#bnstate').textContent=data.detail||('отказ '+r.status); return; }}
       $('#bnstate').textContent='';
-      // Блоки рисует рендерер отчёта — тот же `blockCard`. Пустые ряды для
-      // графиков передаются намеренно: истории у этого источника мы не берём,
-      // а функция графика на пустом ряду говорит об этом сама.
+      // Всё, что видно, рисуют рендереры отчёта: вердикт, выводы, карточки
+      // разделов, разбор и итог. Своей вёрстки здесь нет — иначе сравнение
+      // источников стало бы сравнением двух наших вёрсток.
+      //
+      // Ряд цены у bnMAP есть, помесячных продаж нет: `series` наполняется,
+      // `sales` остаётся пустым, а причину пустоты несёт `salesNote` — фраза
+      // рендерера про «Москву старую» здесь была бы чужой причиной.
       const ctx={{peers:data.peers||[], subjectMetrics:data.subject||{{}},
         subjectName:(data.subject||{{}}).name||'', subjectSegment:(data.subject||{{}}).segment||'',
-        series:[], sales:[], analysis:null}};
+        analysis:data.analysis||null,
+        series:[{{name:(data.subject||{{}}).name||'объект',own:true,
+                 points:data.price_series||[]}}].concat(data.market_series||[]),
+        sales:[],
+        salesNote:'Помесячных продаж bnMAP по этому методу не отдаёт: есть темп'
+          +' за месяц и за год, но не ряд по месяцам. У «Пульса» этот график есть.'}};
       const blocks=(data.blocks||[]).map(b=>{{
         try{{ return blockCard(b,ctx); }}
         catch(e){{ return '<div class="card"><h2>'+(b.title||'')+'</h2>'
           +'<div class="err">блок не нарисовался: '+e+'</div></div>'; }}
       }}).join('');
-      $('#bnout').innerHTML=blocks+'<div class="card">'+(data.html||'')+'</div>';
+      $('#bnout').innerHTML=verdictCard(data)+findingsCard(data)+blocks
+        +'<div class="card">'+(data.html||'')+'</div>'
+        +essayCard(data)+finalCard(data);
     }}catch(e){{ $('#bnstate').textContent='не дошло до сервера: '+e; }}
   }});
 }});
@@ -155,6 +180,7 @@ def render(report: dict[str, Any]) -> str:
     if report.get("reason"):
         out.append('<div class="err">' + escape(str(report["reason"])) + "</div>")
     out.append(_subject(report.get("found")))
+    out.append(_selection(report.get("selection")))
     out.append(_rooms(report.get("peers"), report.get("subject")))
     out.append(_discounts(report.get("peers"), report.get("subject")))
     out.append(_rooms_balance(report.get("rooms_balance")))
@@ -162,6 +188,25 @@ def render(report: dict[str, Any]) -> str:
     out.append(_indicators(report.get("indicators")))
     out.append(_gaps(report))
     return "".join(part for part in out if part)
+
+
+def _selection(selection: Any) -> str:
+    """Сколько соседей прислал источник и сколько осталось после отсечки.
+
+    Отсечённый сосед не исчезает молча: выборка из трёх и выборка из шести
+    дают разные медианы, и читатель обязан видеть, что часть убрана им самим,
+    а не источником.
+    """
+    if not isinstance(selection, dict) or not selection.get("given"):
+        return ""
+    given, used = selection.get("given"), selection.get("used")
+    line = f"Соседей прислал bnMAP: {given}"
+    if selection.get("radius_km"):
+        line += (f" · после отсечки «не дальше {selection['radius_km']} км» осталось {used}")
+    if selection.get("farthest_km") is not None:
+        line += f" · дальний из них в {selection['farthest_km']} км"
+    return ('<div class="muted" style="font-size:12.5px;margin-bottom:8px">'
+            + escape(line) + "</div>")
 
 
 def _gaps(report: dict[str, Any]) -> str:
