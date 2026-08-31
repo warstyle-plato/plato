@@ -52,10 +52,16 @@ def tables(presentation):
             if getattr(shape, "has_table", False) and shape.has_table]
 
 
-def test_the_bar_wears_the_product_colour_not_the_office_blue() -> None:
+def test_the_bar_wears_the_colour_of_the_report_not_its_own() -> None:
+    """Столбик того же цвета, что на листе, а не «фирменного вообще».
+
+    У колоды была своя палитра — темнее и глуше отчёта, — и рядом с ним она
+    читалась как другой документ («нет стилистики Плато», владелец,
+    31.08.2026). Цвет снят с самого свода, а не подобран.
+    """
     chart = charts(deck(6))[0]
     series = chart.plots[0].series[0]
-    assert str(series.format.fill.fore_color.rgb) == "1367AE", "фирменный синий кабинета"
+    assert str(series.format.fill.fore_color.rgb) == "4E9BDE", "столбик листа"
     # Обводки у столбика нет: рамка вокруг метки — краска, которая не данные.
     assert series.format.line.fill.type is not None
 
@@ -776,3 +782,84 @@ def test_the_slide_repeats_the_composition_of_the_page() -> None:
              for node in area.findall(f"{ns}lineChart")]
     assert sum(1 for axes in lines if axes == own) == 1, lines
     assert sum(1 for axes in lines if axes != own) == 1, lines
+
+
+def test_a_section_of_one_sentence_does_not_get_its_own_slide() -> None:
+    """«Слайды 2-3 пустые вообще — там по одной строчке текста» (владелец,
+    31.08.2026).
+
+    На листе такой раздел занимает три сантиметра в потоке; на слайде — свой
+    заголовок и пять дюймов белого. Такие идут по нескольку на общий лист, в
+    своём порядке и со своими заголовками: пропасть вывод не должен — он и
+    есть ответ раздела.
+    """
+    import io
+
+    from pptx import Presentation
+
+    def block(title: str, body: str = "") -> str:
+        return f'<section class="salesblock"><h3>{title}</h3>{body}</section>'
+
+    html = (block("Эскроу против погашения ПФ",
+                  '<svg viewBox="0 0 700 250"></svg>'
+                  '<div class="sumup">Покрытие 0,95x.</div>')
+            + block("Чего эта воронка не даёт",
+                    '<div class="sumup">Связать обращение с договором нечем.</div>')
+            + block("Расторжения",
+                    '<div class="sumup">Возвращено 21,55 млн ₽.</div>'))
+
+    deck = Presentation(io.BytesIO(sales_deck.build(
+        sales_deck.sections(html), title="Т", subtitle="с", footer="ф")))
+    assert len(deck.slides) == 2, "три фразы заняли три листа"
+    said = " ".join(shape.text_frame.text for slide in deck.slides
+                    for shape in slide.shapes if shape.has_text_frame)
+    # Ни один раздел не пропал: и заголовок, и его вывод на месте.
+    for text in ("Эскроу против погашения ПФ", "Покрытие 0,95x.",
+                 "Чего эта воронка не даёт", "Связать обращение с договором нечем.",
+                 "Расторжения", "Возвращено 21,55 млн ₽."):
+        assert text in said, text
+
+
+def test_the_strip_takes_its_names_from_the_legend_by_colour() -> None:
+    """Ленты каналов подписей не несут — имена стоят в легенде под лентой.
+
+    Кусок брался, только если у него есть и ширина, и `title`; у каналов
+    `title` нет вовсе, лента опознавалась пустой, и раздел уходил на слайд без
+    единой картинки («каналы продаж без визуализации», владелец, 31.08.2026).
+    Имя подбирается по цвету — ровно так же, как это читает человек.
+    """
+    html = ('<section class="salesblock"><h3>Каналы продаж</h3>'
+            '<div style="margin:10px 0 4px">'
+            '<div class="muted" style="font-size:12px">Выручка</div>'
+            '<div style="display:flex;height:22px;margin-top:4px">'
+            '<div style="width:37.30%;background:#5FA98A"></div>'
+            '<div style="width:62.70%;background:#C4581B"></div></div>'
+            '<div class="muted" style="font-size:12px;margin-top:3px">'
+            '<span style="display:inline-block;width:9px;height:9px;'
+            'background:#5FA98A;margin-right:4px"></span>свой отдел 37,3%'
+            '<span style="display:inline-block;width:9px;height:9px;'
+            'background:#C4581B;margin:0 4px 0 14px"></span>брокеры 62,7%'
+            '</div></div></section>')
+
+    page = sales_deck.sections(html)[-1]
+    strips = page.get("strips") or []
+    assert len(strips) == 1, "лента без подписей не опозналась"
+    assert [(part["colour"], part["name"]) for part in strips[0]["parts"]] == [
+        ("5FA98A", "свой отдел 37,3%"), ("C4581B", "брокеры 62,7%")]
+    # Имя уехало в кусок — второй копией строкой раздела оно читалось бы как
+    # подпись к соседнему блоку.
+    assert page["lines"] == [], page["lines"]
+
+
+def test_the_deck_wears_the_palette_of_the_report() -> None:
+    """«Нет стилистики Плато вообще, как в PDF» (владелец, 31.08.2026).
+
+    Токены сняты у самого отчёта, а не подобраны: заголовок раздела там
+    приглушённый, а не чёрный, столбик светлее фирменного синего, а вывод —
+    плашка с полосой, а не серая строка.
+    """
+    source = (ROOT / "market_search" / "sales_deck.py").read_text(encoding="utf-8")
+    assert "0x4E, 0x9B, 0xDE" in source, "столбик листа"
+    assert "0xF6, 0xF9, 0xFC" in source, "подложка плашки вывода"
+    assert "0x33, 0x42, 0x4F" in source, "текст вывода"
+    assert "def put_note(" in source, "вывод рисуется плашкой, а не строкой"

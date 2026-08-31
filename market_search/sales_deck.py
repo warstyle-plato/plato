@@ -85,6 +85,10 @@ class _Sections(HTMLParser):
         self._closed_span_at: int | None = None
         self._strip: dict[str, Any] | None = None
         self._strip_depth = 0
+        # Легенда, стоящая под лентой: цветной квадратик и подпись за ним.
+        # Куски ленты каналов подписи не несут вовсе, и связывает их с именами
+        # только цвет — как и для читателя.
+        self._legend: dict[str, Any] | None = None
 
     # --- служебное -----------------------------------------------------
     def _flush_line(self) -> None:
@@ -142,17 +146,26 @@ class _Sections(HTMLParser):
             caption = self._current["lines"].pop() if self._current["lines"] else ""
             self._strip = {"caption": caption, "parts": []}
             self._strip_depth = 1
+            self._legend = None
             return
         if self._strip is not None:
             self._strip_depth += 1
             share = _SHARE.search(style)
             colour = _COLOUR.search(style)
             title = dict(attrs).get("title") or ""
-            if share and title:
+            # Кусок берётся по ШИРИНЕ, а не по подписи. У лент каналов подписи
+            # нет вовсе: имена стоят в легенде под лентой и связаны с кусками
+            # только цветом — и лента опознавалась пустой, то есть раздел
+            # «Каналы продаж» уходил на слайд без единой картинки. Имя
+            # подбирается из легенды по цвету, ровно так же, как это читает
+            # человек.
+            if share:
                 self._strip["parts"].append({
                     "name": title, "share": float(share.group(1)),
-                    "colour": (colour.group(1) if colour else "1367AE").upper()})
+                    "colour": (colour.group(1) if colour else "4E9BDE").upper()})
             return
+        if tag in {"table", "section", "h1", "h2", "h3", "h4"}:
+            self._legend = None
         if tag == "section" and "salesblock" in classes:
             self._flush_line()
             self._current = {"title": "", "lines": [], "tables": [], "strips": [],
@@ -178,6 +191,11 @@ class _Sections(HTMLParser):
             self._cell = []
             self._in_head_cell = tag == "th"
             return
+        if tag == "span" and self._legend is not None:
+            colour = _COLOUR.search(style)
+            if colour and "width" in style.replace(" ", ""):
+                self._legend["colour"] = colour.group(1).upper()
+                return
         if tag == "span":
             if self._closed_span_at == self._span_depth and self._text:
                 tail = "".join(self._text).rstrip()
@@ -196,6 +214,7 @@ class _Sections(HTMLParser):
             if self._strip_depth == 0:
                 if self._strip["parts"]:
                     self._current.setdefault("strips", []).append(self._strip)
+                    self._legend = {"strip": self._strip, "colour": ""}
                 self._strip = None
             return
         if tag == "svg":
@@ -255,11 +274,27 @@ class _Sections(HTMLParser):
             self._flush_line()
             self._want = ""
 
+    def _take_legend(self, text: str) -> bool:
+        """Подпись легенды — имя куска ленты, а не строка раздела."""
+        if self._legend is None or not self._legend["colour"]:
+            return False
+        colour = self._legend["colour"]
+        self._legend["colour"] = ""
+        named = False
+        for part in self._legend["strip"]["parts"]:
+            if part["colour"] == colour and not part["name"]:
+                part["name"] = text
+                named = True
+        return named
+
     def handle_data(self, data: str) -> None:
         if self._skip_depth or self._svg_depth:
             return
         if self._cell is not None:
             self._cell.append(data)
+            return
+        text = re.sub(r"\s+", " ", data).strip()
+        if text and self._take_legend(text):
             return
         self._text.append(data)
 
@@ -574,10 +609,17 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
     # Цвета продукта, а не офисные: тот же синий, что в кабинете и на странице.
     # Ряд один, поэтому категориальная палитра здесь не нужна — нужен один
     # фирменный цвет и текстовые токены под подписи.
-    ink = RGBColor(0x16, 0x20, 0x2B)
-    dim = RGBColor(0x5B, 0x6B, 0x7D)
-    brand = RGBColor(0x13, 0x67, 0xAE)
-    deep = RGBColor(0x0E, 0x2A, 0x43)
+    # Токены взяты у самого отчёта (`:root` кабинета и его печатные стили), а
+    # не подобраны на глаз: у колоды была своя палитра — темнее и глуше, — и
+    # рядом с листом она читалась как другой документ. Заголовок раздела в
+    # отчёте не чёрный, а приглушённый; столбик светлее фирменного синего.
+    ink = RGBColor(0x16, 0x20, 0x2B)      # --ink
+    dim = RGBColor(0x5B, 0x6B, 0x7D)      # --dim, он же цвет заголовков разделов
+    brand = RGBColor(0x4E, 0x9B, 0xDE)    # столбик графика на листе
+    deep = RGBColor(0x13, 0x67, 0xAE)     # --blue
+    body = RGBColor(0x33, 0x42, 0x4F)     # текст вывода в плашке
+    tile_fill = RGBColor(0xF8, 0xFA, 0xFC)
+    note_fill = RGBColor(0xF6, 0xF9, 0xFC)
     paper = RGBColor(0xFF, 0xFF, 0xFF)
 
     def textbox(slide, text: str, *, top: float, size: int, colour: RGBColor,
@@ -649,7 +691,7 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         # первом листе — подзаголовок самого свода. Придуманная строка на
         # слайде читается как часть отчёта, которой в отчёте нет.
         top = eyebrow_line(slide, section or subtitle or footer, top=0.42)
-        textbox(slide, heading, top=top, size=26, colour=ink, bold=True, height=0.75)
+        textbox(slide, heading, top=top, size=26, colour=dim, bold=True, height=0.75)
         footer_line(slide, len(deck.slides))
         return slide
 
@@ -720,7 +762,7 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
             card = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(left), Inches(top),
                                           Inches(width), Inches(1.35))
             card.fill.solid()
-            card.fill.fore_color.rgb = RGBColor(0xF4, 0xF7, 0xFA)
+            card.fill.fore_color.rgb = tile_fill
             card.line.color.rgb = RGBColor(0xDD, 0xE5, 0xED)
             card.shadow.inherit = False
             frame = card.text_frame
@@ -742,6 +784,40 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
                 run.font.color.rgb = tone
         return top + 1.6
 
+    def put_note(slide, text: str, *, top: float, size: int = 14) -> float:
+        """Вывод раздела — плашка с синей полосой слева, как в отчёте.
+
+        На листе это `.sumup`: светлая подложка, полоса 3px и текст своим
+        цветом. Серой строкой без подложки вывод читается как подпись к
+        соседнему, а он и есть ответ раздела.
+        """
+        if not text:
+            return top
+        lines = 1 + len(text) // 110
+        height = 0.34 + 0.24 * lines
+        plate = slide.shapes.add_shape(
+            MSO_SHAPE.RECTANGLE, Inches(0.6), Inches(top),
+            Inches(SLIDE_W_IN - 1.2), Inches(height))
+        plate.fill.solid()
+        plate.fill.fore_color.rgb = note_fill
+        plate.line.fill.background()
+        plate.shadow.inherit = False
+        bar = slide.shapes.add_shape(
+            MSO_SHAPE.RECTANGLE, Inches(0.6), Inches(top), Pt(3), Inches(height))
+        bar.fill.solid()
+        bar.fill.fore_color.rgb = brand
+        bar.line.fill.background()
+        bar.shadow.inherit = False
+        box = slide.shapes.add_textbox(Inches(0.78), Inches(top + 0.06),
+                                       Inches(SLIDE_W_IN - 1.56), Inches(height - 0.12))
+        frame = box.text_frame
+        frame.word_wrap = True
+        run = frame.paragraphs[0].add_run()
+        run.text = text
+        run.font.size = Pt(size)
+        run.font.color.rgb = body
+        return top + height + 0.18
+
     def put_shelf(slide, table: dict[str, Any], *, top: float) -> float:
         """Полка показателей титула — та же, что в шапке печатного отчёта:
         одна подложка, равные колонки, разделённые волосяными линейками.
@@ -757,7 +833,7 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         panel = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(left),
                                        Inches(top), Inches(width), Inches(height))
         panel.fill.solid()
-        panel.fill.fore_color.rgb = RGBColor(0xF4, 0xF7, 0xFA)
+        panel.fill.fore_color.rgb = tile_fill
         panel.line.color.rgb = RGBColor(0xE3, 0xEB, 0xF2)
         panel.shadow.inherit = False
         panel.adjustments[0] = 0.04
@@ -779,9 +855,11 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
             # Порядок печатной плитки: число, под ним имя, под ним сноска.
             # На экране имя стоит над числом, на бумаге — под: там первым
             # смотрят на само число.
+            # Порядок плитки — как в отчёте: имя, под ним число, под ним
+            # сноска. Число сверху я поставил сам, и это была не та плитка.
             for order, (text, size, bold, tone) in enumerate((
-                    (str(row[1] if len(row) > 1 else ""), 20, True, ink),
                     (str(row[0] if len(row) > 0 else ""), 11, False, dim),
+                    (str(row[1] if len(row) > 1 else ""), 20, True, ink),
                     (str(row[2] if len(row) > 2 else ""), 9, False,
                      RGBColor(0x7B, 0x8B, 0x9A)))):
                 if not text:
@@ -978,6 +1056,31 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
     # оно читается как заводская рамка. Номер листа остаётся.
     footer_line(first, 1, name=False)
 
+    # Раздел, у которого показать нечего, кроме вывода, листом не является:
+    # «слайды 2-3 пустые вообще, там по одной строчке текста» (владелец,
+    # 31.08.2026). На листе такой раздел занимает три сантиметра в потоке, а
+    # на слайде — заголовок и пять дюймов белого. Такие идут по нескольку на
+    # общий лист, в своём порядке и со своими заголовками.
+    THIN_PER_SLIDE = 3
+
+    def thin(page: dict[str, Any]) -> bool:
+        return not (page.get("tables") or page.get("strips") or page.get("lines"))
+
+    pending: list[dict[str, Any]] = []
+
+    def flush_thin() -> None:
+        while pending:
+            batch, pending[:] = pending[:THIN_PER_SLIDE], pending[THIN_PER_SLIDE:]
+            slide = new_slide(str(batch[0].get("title") or title))
+            top = CONTENT_TOP
+            for index, item in enumerate(batch):
+                if index:
+                    textbox(slide, str(item.get("title") or ""), top=top, size=17,
+                            colour=dim, bold=True, height=0.4)
+                    top += 0.5
+                top = put_note(slide, str(item.get("note") or ""), top=top)
+                top += 0.15
+
     for page in pages:
         # У шапки свода своего заголовка нет — она несёт ключевые числа
         # проекта. «Раздел» над плитками не говорит ничего.
@@ -994,6 +1097,12 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         tiles = [table for table in tables
                  if table.get("kind") == "tiles" and not table.get("used")]
         tables = [table for table in tables if table.get("kind") != "tiles"]
+        if not (tables or strips or tiles or lines) and note:
+            # Копим и кладём по нескольку на лист — своего листа такой раздел
+            # не заслуживает, но и пропасть не должен: вывод и есть его ответ.
+            pending.append(page)
+            continue
+        flush_thin()
         # График на слайде — только там, где он есть на экране. Прежде колода
         # заводила столбики под ПЕРВУЮ таблицу каждого раздела, и на своде из
         # десяти разделов выходило восемь почти одинаковых синих слайдов —
@@ -1020,17 +1129,14 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
             nonlocal carry
             if not carry:
                 return top
-            textbox(slide, carry, top=top, size=14, colour=dim, height=0.55)
+            top = put_note(slide, carry, top=top)
             carry = ""
-            return top + 0.7
+            return top
 
         opening = None
         if rich:
             opening = new_slide(heading)
             top = CONTENT_TOP
-            if note:
-                textbox(opening, note, top=top, size=15, colour=ink, height=0.8)
-                top += 0.95
             if tiles:
                 top = put_tiles(opening, tiles[0], top=top)
             for strip in strips:
@@ -1058,9 +1164,15 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
             # целиком, а не ужимается до нечитаемого.
             if not drawn and tables and not tiles:
                 height = 0.34 * (len(tables[0]["rows"]) + 1)
-                if top + height <= SLIDE_H_IN - 0.9:
+                if top + height <= SLIDE_H_IN - 1.5:
                     put_table(opening, tables[0], top=top + 0.15, height=height)
+                    top += 0.15 + height
                     tables = tables[1:]
+            # Вывод раздела стоит ПОД его содержимым, как на листе: наверху он
+            # читается как подпись к заголовку, а он — ответ раздела.
+            if note:
+                put_note(opening, note, top=min(top + 0.2, SLIDE_H_IN - 1.35), size=15)
+                note = ""
 
         # По слайду на график: каждая мера показана и ни одна не спорит с
         # соседней. Ряд один, поэтому легенда не нужна — мера стоит в
@@ -1088,10 +1200,11 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
                                      0.34 * (len(chunk["rows"]) + 1)))
         if carry:
             # Разделу нечего показать, кроме вывода: тогда он и есть слайд.
-            textbox(new_slide(heading), carry, top=CONTENT_TOP, size=20, colour=ink,
-                    height=1.6)
+            put_note(new_slide(heading), carry, top=CONTENT_TOP, size=18)
         if note and opening is not None:
             opening.notes_slide.notes_text_frame.text = note
+
+    flush_thin()
 
     buffer = io.BytesIO()
     deck.save(buffer)
