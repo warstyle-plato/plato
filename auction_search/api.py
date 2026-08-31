@@ -957,7 +957,24 @@ def install(app: FastAPI) -> None:
             except Exception as exc:  # noqa: BLE001
                 logger.exception("KRT tender orders failed")
                 orders = {"orders": [], "error": f"{type(exc).__name__}: {exc}"}
-        return {**matched, "orders": orders.get("orders") or [],
+        # Распоряжение привязывается к площадке САМО: адрес и короткое имя КРТ
+        # достаются распознаванием скана, а совпадение считает то же правило,
+        # что у решений и лотов. Ручная отметка остаётся поправкой на те
+        # распоряжения, где распознать не удалось.
+        from market_search import krt_tender_orders as order_reader
+
+        rows = orders.get("orders") or []
+        order_by_site: dict[str, dict[str, Any]] = {}
+        unbound: list[dict[str, Any]] = []
+        for one in rows:
+            site = await run_in_threadpool(order_reader.match_site, one, sites)
+            if site:
+                order_by_site.setdefault(str(site.get("slug") or ""), one)
+            elif one.get("address") or one.get("krt_name"):
+                unbound.append(one)
+        return {**matched, "orders": rows,
+                "orders_by_site": order_by_site,
+                "orders_unbound": unbound[:40],
                 "orders_note": orders.get("note") or "",
                 "orders_complete": orders.get("complete"),
                 "orders_error": orders.get("error") or ""}

@@ -571,6 +571,36 @@ class KrtRegistry:
         save_json(self.map_path, payload)
         return payload
 
+    def _read_order_details(self, order: dict[str, Any]) -> dict[str, Any]:
+        """Распознать скан одного распоряжения. Отказ называется, а не молчит."""
+        from . import krt_requirements as requirements
+        from . import krt_tender_orders as orders
+
+        blank = {"ocr_done": False, "ocr_notes": []}
+        if not orders.ocr_available():
+            return {**blank, "ocr_notes": ["в образе нет tesseract — скан не распознать"]}
+        try:
+            page = json.loads(self.fetch(
+                requirements.document_detail_url(str(order.get("id") or ""))).decode("utf-8"))
+            files = json.loads(self.fetch(requirements.document_attachments_url(
+                str(order.get("id") or ""), page.get("institution_id"))).decode("utf-8"))
+            pdf_url = requirements.select_pdf_attachment(files)
+            if not pdf_url:
+                return {**blank, "ocr_notes": ["у распоряжения нет PDF"]}
+            text = orders.ocr(self.fetch(pdf_url))
+        except Exception as exc:  # noqa: BLE001
+            return {**blank, "ocr_notes": [f"{type(exc).__name__}: {exc}"[:200]]}
+        parsed = orders.parse_order(text)
+        return {
+            "address": parsed.get("address", ""),
+            "krt_name": parsed.get("krt_name", ""),
+            "start_price_rub": parsed.get("start_price_rub"),
+            "step_rub": parsed.get("step_rub"),
+            "deposit_rub": parsed.get("deposit_rub"),
+            "ocr_notes": parsed.get("notes") or [],
+            "ocr_done": True,
+        }
+
     def tender_link(self, slug: str = "") -> dict[str, Any]:
         """Привязки «распоряжение — площадка», проставленные человеком.
 
@@ -629,6 +659,19 @@ class KrtRegistry:
             stale["stale"] = True
             return stale
         found.sort(key=lambda one: one.get("published_at") or 0, reverse=True)
+        # Адрес площадки лежит в СКАНЕ распоряжения, и другого места у него нет.
+        # Распознаётся один раз и кладётся рядом с записью: без этого привязку
+        # пришлось бы ставить руками, то есть возвращать работу человеку.
+        previous = {str(one.get("id")): one for one in
+                    ((cached or {}).get("orders") or []) if isinstance(one, dict)}
+        for one in found:
+            was = previous.get(str(one.get("id"))) or {}
+            if was.get("ocr_done"):
+                one.update({key: was[key] for key in
+                            ("address", "krt_name", "start_price_rub", "step_rub",
+                             "deposit_rub", "ocr_notes", "ocr_done") if key in was})
+                continue
+            one.update(self._read_order_details(one))
         payload = {
             "schema_version": TENDERS_CACHE_SCHEMA_VERSION,
             "retrieved_at": int(time.time()),

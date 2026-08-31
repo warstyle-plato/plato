@@ -119,7 +119,7 @@ __DEVELOPAID_CONTOUR__
   __DEVELOPAID_LEGAL_FOOTER__
 </div>
 <script>
-const state={lots:[],filtered:[],families:[],openFamilies:new Set(),coverage:[],quality:{},selected:null,ingested:null,krt:[],krtFiltered:[],krtOkrugs:new Set(),krtModels:{},krtReports:{},krtRequirements:{},krtNew:0,krtNewDays:30,krtPolls:0,krtTimer:null,krtRank:{},krtRankProgress:null,krtRankTimer:null,krtPress:{},krtTenderLinks:{},krtTenders:{},krtOrders:[],krtOrphanLots:[],krtSort:{key:'score',dir:-1},krtHidden:{small:0,unknown:0}};
+const state={lots:[],filtered:[],families:[],openFamilies:new Set(),coverage:[],quality:{},selected:null,ingested:null,krt:[],krtFiltered:[],krtOkrugs:new Set(),krtModels:{},krtReports:{},krtRequirements:{},krtNew:0,krtNewDays:30,krtPolls:0,krtTimer:null,krtRank:{},krtRankProgress:null,krtRankTimer:null,krtPress:{},krtTenderLinks:{},krtOrderBySite:{},krtTenders:{},krtOrders:[],krtOrphanLots:[],krtSort:{key:'score',dir:-1},krtHidden:{small:0,unknown:0}};
 const KRT_OKRUGS=['ЦАО','САО','СВАО','ВАО','ЮВАО','ЮАО','ЮЗАО','ЗАО','СЗАО','НАО','ТАО','ЗелАО'];
 const $=id=>document.getElementById(id);
 // Ноль и «цены нет» — разные вещи. Number(null) равен нулю, и лот без
@@ -625,6 +625,12 @@ function krtStage(x){
  const open=lots.find(v=>v.deadline);
  if(open){why.push('лот на торгах, заявки до '+open.deadline);return {key:'bidding',why}}
  if(lots.length){why.push('лот на торгах опубликован');return {key:'auction',why}}
+ const auto=state.krtOrderBySite[x.slug];
+ if(auto&&auto.number){
+  why.push('распоряжение '+auto.number+(auto.published_at?' от '+krtWhen(auto.published_at):'')
+    +' — адрес распознан в самом документе');
+  return {key:'upcoming',why};
+ }
  const mark=state.krtTenderLinks[x.slug];
  if(mark&&mark.number){
   // Отметка человека, открывшего распоряжение. Машине привязать нечем: адреса
@@ -1335,6 +1341,7 @@ async function loadKrtTenders(){
   const d=await res.json();
   state.krtTenders=d.by_site||{};
   state.krtOrders=d.orders||[];
+  state.krtOrderBySite=d.orders_by_site||{};
   state.krtOrphanLots=d.unmatched||[];
   try{const l=await askJson('/auctions/krt/tender-links');state.krtTenderLinks=l.links||{}}catch(e){}
   renderKrtTenderNote(d);
@@ -1368,16 +1375,27 @@ function krtOrderBlock(x){
  const options=orders.map(o=>`<option value="${esc(o.id)}"${o.id===chosen?' selected':''}>`
    +`${esc(o.number||o.id)}${o.published_at?' · '+esc(krtWhen(o.published_at)):''}`
    +`${o.kind?' · '+esc(o.kind):''}</option>`).join('');
- const said=mark&&mark.number
+ const auto=state.krtOrderBySite[x.slug]||null;
+ const money=v=>v?new Intl.NumberFormat('ru-RU').format(v)+' ₽':'';
+ const found=auto?`<div class="item"><b>Объявлены торги</b>Согласно распоряжению ${esc(auto.number||auto.id)}`
+   +`${auto.published_at?' от '+esc(krtWhen(auto.published_at)):''} `
+   +`${auto.url?`<a href="${esc(auto.url)}" target="_blank" rel="noopener">открыть документ</a>`:''}`
+   +`${auto.start_price_rub?`<div>Начальная цена ${esc(money(auto.start_price_rub))}`
+     +`${auto.deposit_rub?' · задаток '+esc(money(auto.deposit_rub)):''}`
+     +`${auto.step_rub?' · шаг '+esc(money(auto.step_rub)):''}</div>`:''}`
+   +`<div class="source">Адрес и суммы распознаны в самом распоряжении: «${esc(String(auto.address||auto.krt_name||'').slice(0,110))}». `
+   +'Цифры подтверждены прописью — не сошлись бы, величина не показывалась бы вовсе.'
+   +`${(auto.ocr_notes||[]).length?' '+esc(auto.ocr_notes.join('; ')):''}</div></div>`:'';
+ const said=found||mark&&mark.number
   ? `<div class="item"><b>Объявлены торги</b>Согласно распоряжению ${esc(mark.number)}`
     +`${mark.published_at?' от '+esc(krtWhen(mark.published_at)):''} `
     +`${mark.url?`<a href="${esc(mark.url)}" target="_blank" rel="noopener">открыть документ</a>`:''}`
     +`<div class="source">Отмечено вручную${mark.marked_at?' '+esc(krtWhen(mark.marked_at)):''}: `
     +'адреса в распоряжении нет, машине привязать нечем.</div></div>'
-  : '<div class="source">Распоряжение по этой площадке не отмечено. '
-    +'Город объявляет торги распоряжениями ДГП, но адреса в них нет — '
-    +'привязать может только тот, кто документ открыл.</div>';
- if(!orders.length&&!mark)return '';
+  : '<div class="source">Распоряжения по этой площадке не нашлось. '
+    +'Распоряжения ДГП читаются распознаванием скана: адрес берётся из самого документа. '
+    +'Если распознать не удалось, привязку можно поставить руками — это поправка, а не основной путь.</div>';
+ if(!orders.length&&!mark&&!auto)return '';
  return `<div class="section"><h3>Торги по распоряжению города</h3><div class="items">${said}</div>`
   +(orders.length?`<div class="row" style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">`
     +`<select id="krtOrderPick" style="flex:1 1 260px"><option value="">— выбрать распоряжение —</option>${options}</select>`
