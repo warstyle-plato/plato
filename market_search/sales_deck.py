@@ -454,6 +454,25 @@ def charts(table: dict[str, Any]) -> list[dict[str, Any]]:
     order = [index for index in numeric if index != price]
     if not order:
         order = list(numeric)
+    # Меры, которые экран предлагает переключателем: у динамики это млн ₽, м²
+    # и лоты, у планов — млн ₽ и м². В документе переключателя нет, и мера, до
+    # которой не переключились, в нём просто отсутствует — то же правило, что у
+    # свёрнутой таблицы: раскрыть её читателю нечем. Поэтому лист на меру.
+    #
+    # Схлопывать их в один график было ошибкой (0.20.83): «куча столбиков»
+    # приходила из разделов, где графика нет на экране вовсе, и это лечится
+    # признаком `charted`, а не потерей мер.
+    groups: list[tuple[str, list[int]]] = []
+    for index in order:
+        unit = measure_of(str(head[index]))
+        found = next((pair for pair in groups if pair[0] == unit), None)
+        if found is None:
+            groups.append((unit, [index]))
+        else:
+            found[1].append(index)
+    # Денежная мера идёт первой: управленцу нужны рубли, а метры и штуки при
+    # них справочны.
+    groups.sort(key=lambda pair: 0 if _MONEY.search(pair[0]) else 1)
     money = next((index for index in order if _MONEY.search(str(head[index]))), order[0])
     # Колонки ОДНОЙ меры идут рядами одного графика, а не разъезжаются по
     # слайдам и не теряются. Раздел «Факт против планов» показывал один факт:
@@ -461,34 +480,49 @@ def charts(table: dict[str, Any]) -> list[dict[str, Any]]:
     # первая, и график с именем «против планов» никаких планов не показывал.
     # Мера берётся из шапки: «Факт, млн ₽» и «План ФМ, млн ₽» — одна ось,
     # «Лотов», «м²» и «₽/м²» — разные, и класть их вместе нельзя.
-    unit = measure_of(str(head[money]))
-    series = [index for index in order if measure_of(str(head[index])) == unit]
+    second_columns: list[int] = []
     # Вторая мера идёт линиями на своей шкале справа — так собран сводный
     # график листа: факт столбиками, планы линиями на шкале рублей, все цены
     # линиями на шкале ₽/м². Второй мерой берётся цена, если она есть: «цена —
     # всегда линия на своей шкале» (владелец, 26.08.2026). Третьей меры на
     # графике не бывает — две шкалы, больше некуда.
-    second_unit = ""
-    if price is not None and measure_of(str(head[price])) != unit:
-        second_unit = measure_of(str(head[price]))
-    second = [index for index in numeric
-              if second_unit and measure_of(str(head[index])) == second_unit]
-    item: dict[str, Any] = {
-        "name": str(head[money]), "categories": categories,
-        "values": numeric[money],
-        # Заголовок слайда называет МЕРУ, а не первый ряд: «Факт против планов
-        # · Факт, млн ₽» над графиком, где рядом стоят оба плана, обещает то,
-        # чего на слайде больше, чем сказано. Ряд один — его имя и есть мера.
-        "measure": unit if len(series) > 1 else str(head[money]),
-        # Ряды сверх первого — линиями на той же шкале: столбики в пять рядов
-        # читаются частоколом, а план рядом с фактом читается линией.
-        "extra": [{"name": str(head[index]), "values": numeric[index]}
-                  for index in series if index != money],
-        "second": [{"name": str(head[index]), "values": numeric[index]}
-                   for index in second],
-        "second_measure": second_unit,
-    }
-    return [item]
+    price_unit = measure_of(str(head[price])) if price is not None else ""
+    if price_unit:
+        second_columns = [index for index in numeric
+                          if measure_of(str(head[index])) == price_unit]
+
+    drawn: list[dict[str, Any]] = []
+    for unit, columns in groups:
+        if unit == price_unit:
+            continue
+        lead = columns[0]
+        second = [index for index in second_columns if index not in columns]
+        drawn.append({
+            "name": str(head[lead]), "categories": categories,
+            "values": numeric[lead],
+            # Заголовок слайда называет МЕРУ, а не первый ряд: «· Факт, млн ₽»
+            # над графиком, где рядом стоят оба плана, обещает меньше, чем на
+            # слайде есть. Ряд один — его имя и есть мера.
+            "measure": unit if len(columns) > 1 else str(head[lead]),
+            # Ряды сверх первого — линиями на той же шкале: столбики в пять
+            # рядов читаются частоколом, а план рядом с фактом — линией.
+            "extra": [{"name": str(head[index]), "values": numeric[index]}
+                      for index in columns[1:]],
+            # Цена метра идёт линией на своей шкале на КАЖДОМ графике объёма:
+            # «цена — всегда линия на своей шкале» (владелец, 26.08.2026).
+            "second": [{"name": str(head[index]), "values": numeric[index]}
+                       for index in second],
+            "second_measure": price_unit if second else "",
+        })
+    if not drawn and price is not None:
+        # Одна цена без объёма — сама себе график: показать её иначе нечем, а
+        # пропустить значило бы потерять единственную меру раздела.
+        drawn.append({
+            "name": str(head[price]), "categories": categories,
+            "values": numeric[price], "measure": str(head[price]),
+            "extra": [], "second": [], "second_measure": "",
+        })
+    return drawn
 
 
 _SEC_CAT_AX, _SEC_VAL_AX = 771001, 771002

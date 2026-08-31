@@ -236,10 +236,11 @@ def test_the_price_per_metre_rides_as_a_line_not_its_own_slide() -> None:
                       ["2026-06", "9", "301,2", "717 000"],
                       ["2026-05", "9", "288,0", "705 100"]]}
     drawn = sales_deck.charts(table)
-    # График на раздел один, и это деньги: «столбики не функциональны и не
-    # красивы» (владелец, 30.08.2026) — три почти одинаковых листа подряд.
-    assert [item["name"] for item in drawn] == ["млн ₽"], \
-        "цена больше не заводит своего слайда, а мера на слайд — своего"
+    # Цена своего листа не заводит: она линией справа на КАЖДОМ графике
+    # объёма. Меры объёма при этом остаются — экран предлагает их
+    # переключателем, а в документе переключателя нет.
+    assert "₽/м²" not in [item["name"] for item in drawn], "цена ушла столбиками"
+    assert [item["name"] for item in drawn] == ["млн ₽", "Лотов"]
     assert all([row["name"] for row in item["second"]] == ["₽/м²"] for item in drawn)
     # Одна цена без объёма — сама себе график: показать её иначе нечем.
     alone = sales_deck.charts({"head": ["Месяц", "₽/м²"],
@@ -515,19 +516,22 @@ def test_the_chart_does_not_repeat_the_slide_title() -> None:
     assert chart.has_title is False
 
 
-def test_one_chart_a_section_and_it_is_the_money_one() -> None:
-    """«Столбики не функциональны и не красивы» (владелец, 30.08.2026).
+def test_the_money_measure_leads_and_one_measure_is_one_chart() -> None:
+    """Деньги первыми, а колонки одной меры делят один график.
 
-    График на меру давал три-четыре почти одинаковых столбиковых листа
-    подряд: «Договоров», «млн ₽», «На эскроу». Управленцу нужны рубли, а
-    штуки и метры при них справочны — и они не пропадают, они в таблице
-    раздела, которая идёт следом и которую правят.
+    Управленцу нужны рубли, штуки и метры при них справочны — поэтому
+    денежная мера идёт первой. Но пропадать они не должны: экран предлагает
+    их переключателем, а в документе переключателя нет.
     """
     money = sales_deck.charts({
         "head": ["Условие", "Договоров", "млн ₽", "На эскроу, млн ₽"],
         "rows": [["рассрочка", "35", "1 399,4", "573,7"],
                  ["100% оплата", "25", "447,4", "447,4"]]})
-    assert [item["name"] for item in money] == ["млн ₽"]
+    # Мера группы из одной колонки — её собственное имя: называть «шт» там,
+    # где в отчёте написано «Договоров», значит переписать отчёт.
+    assert [item["measure"] for item in money] == ["млн ₽", "Договоров"]
+    # Две денежные колонки — один график: «На эскроу» линией рядом с продажами.
+    assert [row["name"] for row in money[0]["extra"]] == ["На эскроу, млн ₽"]
 
     # Денег в таблице нет — берётся первая числовая, и она одна.
     counted = sales_deck.charts({
@@ -647,9 +651,16 @@ def test_the_deck_draws_a_chart_only_where_the_screen_draws_one() -> None:
 
     deck = Presentation(io.BytesIO(sales_deck.build(
         pages, title="Продажи", subtitle="срез", footer="DevelopAid")))
-    drawn = [shape.chart for slide in deck.slides for shape in slide.shapes
-             if getattr(shape, "has_chart", False)]
-    assert len(drawn) == 1, f"столбиков {len(drawn)}, а экран рисует один"
+    # Графики есть только у раздела, где график рисует экран. Мер у него может
+    # быть несколько — их предлагает переключатель, и в документе они обязаны
+    # быть все; а у «Каналов» и «Расторжений» графика нет ни одного.
+    charted = [(slide, shape.chart) for slide in deck.slides for shape in slide.shapes
+               if getattr(shape, "has_chart", False)]
+    assert charted, "раздел с графиком на экране остался без графика"
+    titles = {shape.text_frame.text.split(" · ")[0]
+              for slide, _ in charted for shape in slide.shapes
+              if shape.has_text_frame and shape.text_frame.text.strip()}
+    assert "Каналы продаж" not in titles and "Расторжения" not in titles, titles
     # Числа разделов без графика не пропали — они таблицами.
     tabled = [shape for slide in deck.slides for shape in slide.shapes
               if getattr(shape, "has_table", False)]
