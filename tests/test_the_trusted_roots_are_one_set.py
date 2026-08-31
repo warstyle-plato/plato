@@ -17,6 +17,8 @@ import ssl
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
@@ -76,3 +78,71 @@ def test_an_empty_directory_is_empty_not_an_error(tmp_path) -> None:
     """Корней нет — это норма, а не поломка: их кладёт владелец машины."""
     assert trusted_roots.extra_ca_files(str(tmp_path)) == []
     assert trusted_roots.extra_ca_files(str(tmp_path / "нет-такого")) == []
+
+
+def _openssl(*args: str, cwd: Path) -> None:
+    import subprocess
+
+    subprocess.run(("openssl",) + args, cwd=cwd, check=True, capture_output=True)
+
+
+def _leaf_only_chain(where: Path) -> None:
+    """Корень → промежуточный → лист. Сервер пришлёт ТОЛЬКО лист."""
+    _openssl("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2",
+             "-keyout", "root.key", "-out", "root.pem", "-subj", "/CN=Test Root",
+             cwd=where)
+    _openssl("req", "-newkey", "rsa:2048", "-nodes", "-keyout", "sub.key",
+             "-out", "sub.csr", "-subj", "/CN=Test Sub", cwd=where)
+    (where / "ext.cnf").write_text(
+        "basicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign\n")
+    _openssl("x509", "-req", "-in", "sub.csr", "-CA", "root.pem", "-CAkey", "root.key",
+             "-CAcreateserial", "-days", "2", "-extfile", "ext.cnf", "-out", "sub.pem",
+             cwd=where)
+    _openssl("req", "-newkey", "rsa:2048", "-nodes", "-keyout", "leaf.key",
+             "-out", "leaf.csr", "-subj", "/CN=leaf.example", cwd=where)
+    _openssl("x509", "-req", "-in", "leaf.csr", "-CA", "sub.pem", "-CAkey", "sub.key",
+             "-CAcreateserial", "-days", "2", "-out", "leaf.pem", cwd=where)
+
+
+def test_our_root_completes_a_chain_the_server_did_not_send(tmp_path) -> None:
+    """Сервер прислал один лист — цепочку достраивает наш промежуточный.
+
+    Это и есть прод: `api.krt.mos.ru` присылает ровно один сертификат, издатель
+    GlobalSign, а промежуточный `gsgccr6alphasslca2025.crt` браузер дотягивает
+    по ссылке Authority Information Access — Python этого не делает. Файл лежал
+    на машине с 27.08.2026, и не хватало только кода, который в этот каталог
+    смотрит.
+
+    Проверяется поведением, а не чтением исходника: без нашего каталога тот же
+    лист не проходит.
+    """
+    import shutil
+    import subprocess
+
+    if not shutil.which("openssl"):
+        pytest.skip("openssl в образе нет — проверить цепочку нечем")
+
+    _leaf_only_chain(tmp_path)
+    certs = tmp_path / "certs"
+    certs.mkdir()
+    shutil.copy(tmp_path / "sub.pem", certs / "gsgccr6alphasslca2025.crt")
+
+    def verify(*anchors: Path) -> bool:
+        bundle = tmp_path / "bundle.pem"
+        bundle.write_bytes(b"\n".join(p.read_bytes().rstrip() for p in anchors))
+        done = subprocess.run(
+            ("openssl", "verify", "-CAfile", str(bundle), str(tmp_path / "leaf.pem")),
+            capture_output=True, text=True)
+        return done.returncode == 0
+
+    assert not verify(tmp_path / "root.pem"), (
+        "лист без промежуточного не должен проходить — иначе проверка ничего не значит")
+    assert verify(tmp_path / "root.pem", certs / "gsgccr6alphasslca2025.crt")
+
+    # И наш код кладёт промежуточный именно в хранилище контекста.
+    context = ssl.create_default_context(cafile=str(tmp_path / "root.pem"))
+    accepted, rejected = trusted_roots.load_extra_roots(context, str(certs))
+    assert [Path(p).name for p in accepted] == ["gsgccr6alphasslca2025.crt"]
+    assert rejected == []
+    subjects = {entry["subject"][-1][0][1] for entry in context.get_ca_certs()}
+    assert {"Test Root", "Test Sub"} <= subjects, subjects
