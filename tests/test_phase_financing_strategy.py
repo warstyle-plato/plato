@@ -62,6 +62,12 @@ def test_partial_project_cash_leaves_only_the_remainder_to_new_bridge(nagatino):
     bundle = calculate_nagatino(nagatino, "independent", fourth_offset=60)
     phase = bundle["phases"][3]
     inputs = copy.deepcopy(phase["inputs"])
+    # Расписание кассы теперь двойного назначения: ею и финансируются расходы
+    # до РнС (стратегия «единая касса»), и гасится долг в РВЭ (сметание,
+    # работает при любой стратегии). Поэтому финансирование расходов включается
+    # отдельным признаком — иначе одно решение владельца тянуло бы за собой
+    # второе, о котором он не просил.
+    inputs["_phase_project_cash_funds_costs"] = True
     inputs["_phase_project_cash_schedule"] = {
         phase["result"]["dates"]["project_start"]: 400_000_000.0,
     }
@@ -81,6 +87,12 @@ def test_cash_received_at_rns_is_not_backdated_into_pre_rns_costs(nagatino):
     bundle = calculate_nagatino(nagatino, "independent", fourth_offset=60)
     phase = bundle["phases"][3]
     inputs = copy.deepcopy(phase["inputs"])
+    # Расписание кассы теперь двойного назначения: ею и финансируются расходы
+    # до РнС (стратегия «единая касса»), и гасится долг в РВЭ (сметание,
+    # работает при любой стратегии). Поэтому финансирование расходов включается
+    # отдельным признаком — иначе одно решение владельца тянуло бы за собой
+    # второе, о котором он не просил.
+    inputs["_phase_project_cash_funds_costs"] = True
     inputs["_phase_project_cash_schedule"] = {
         phase["result"]["dates"]["permit"]: 400_000_000.0,
     }
