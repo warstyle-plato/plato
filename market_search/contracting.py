@@ -1255,6 +1255,20 @@ def conclusions(summary: dict[str, Any]) -> dict[str, str]:
             f"{_pct(short['asked_share'])} спроса против {_pct(short['left_share'])} витрины. "
             f"Наоборот — {spare['band']} м²: {_pct(spare['asked_share'])} спроса при "
             f"{_pct(spare['left_share'])} витрины.")
+        # Спрос упирается в деньги, а не в метры: полоса, которой не хватает в
+        # витрине, бывает вдобавок закрыта ценой, и тогда «нечего показать» —
+        # только половина ответа.
+        cut = want.get("budget_cut") or {}
+        if cut.get("reach_sqm"):
+            out["demand"] += (
+                f" По цене остатка медианный бюджет {_mln(cut['budget_median'])} млн ₽ — "
+                f"это {cut['reach_sqm']:.0f} м²: дальше начинается то, что человеку "
+                f"не по деньгам.")
+            if cut.get("closed_bands"):
+                out["demand"] += (
+                    f" Ценой закрыты полосы {', '.join(cut['closed_bands'])} м²"
+                    + (f" — {_pct(cut['closed_left_share'])} витрины."
+                       if cut.get("closed_left_share") else "."))
 
     lead = (summary.get("demand") or {}).get("funnel") or {}
     quality = lead.get("quality") or {}

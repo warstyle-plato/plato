@@ -121,3 +121,60 @@ def test_what_they_ask_about_is_a_word_not_a_guess(text: str, expected: str) -> 
           "wants": [name for name, pattern in demand._WANTS if pattern.search(text)]}],
         [], {})
     assert expected in [w["want"] for w in got["wants"]]
+
+
+def test_the_demand_stops_at_the_budget_not_at_the_metres() -> None:
+    """Полоса, которую просят чаще всех, бывает закрыта ценой — и это причина.
+
+    Владелец, 31.08.2026, о Кутузов Сити: медиана бюджетного запроса 30 млн ₽,
+    а вход в полосу 55–85 м² по цене остатка — 33,7 млн. Спрос отрезан не
+    дефицитом витрины, а деньгами, и по двум полосам «просят / осталось» это
+    неразличимо: обе говорят про метры.
+    """
+    from market_search.demand import demand_summary
+
+    bands = [
+        {"band": "28,3–40", "low": 28.3, "high": 40, "book_price_per_sqm": 614466,
+         "left_share": 0.152, "left_units": 25},
+        {"band": "40–55", "low": 40, "high": 55, "book_price_per_sqm": 644507,
+         "left_share": 0.293, "left_units": 48},
+        {"band": "55–85", "low": 55, "high": 85, "book_price_per_sqm": 612170,
+         "left_share": 0.329, "left_units": 54},
+        {"band": "85–168,6", "low": 85, "high": 168.6, "book_price_per_sqm": 734077,
+         "left_share": 0.226, "left_units": 37},
+    ]
+    deals = [{"area_min": area, "area_max": area, "budget_max": budget}
+             for area, budget in ((40, 30e6), (45, 30e6), (38, 25e6), (60, 45e6), (50, 32e6))]
+    said = demand_summary(deals, bands)
+    rows = {row["band"]: row for row in said["bands"]}
+    # Вход считается по НИЖНЕЙ границе: не дотянулся до самого дешёвого лота
+    # полосы — полоса закрыта целиком.
+    assert round(rows["55–85"]["entry_amount"] / 1e6, 1) == 33.7
+    assert rows["28,3–40"]["budget_reach_share"] == 1.0
+    assert rows["85–168,6"]["budget_reach_share"] == 0.0
+
+    cut = said["budget_cut"]
+    assert round(cut["reach_sqm"]) == 49, "медианный бюджет упирается около 50 м²"
+    assert cut["closed_bands"] == ["55–85", "85–168,6"]
+    assert round(cut["closed_left_share"], 2) == 0.56 or cut["closed_left_share"] > 0.5
+
+    # Полоса без цены — «не знаем», а не «бесплатно»: доля не считается вовсе.
+    blind = demand_summary(deals, [{"band": "нет цены", "low": 30, "high": 50}])
+    assert blind["bands"][0]["budget_reach_share"] is None
+    assert blind["budget_cut"] == {}
+
+
+def test_the_budget_cut_reaches_the_screen_and_the_digest() -> None:
+    """Считает сервер, экран показывает — и оба говорят про деньги."""
+    from market_search import cabinet
+
+    page = cabinet.cabinet_page("sales")
+    start = page.index("function salesDemandBlock(")
+    block = page[start:page.index("\n}", start)]
+    assert "b.budget_reach_share" in block, "третья полоса про деньги не рисуется"
+    assert "want.budget_cut" in block and "Ценой закрыты полосы" in block
+    from pathlib import Path
+
+    body = (Path(__file__).resolve().parent.parent / "market_search"
+            / "contracting.py").read_text()
+    assert "медианный бюджет" in body and "не по деньгам" in body
