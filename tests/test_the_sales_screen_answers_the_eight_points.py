@@ -86,14 +86,38 @@ def test_5_the_mix_is_lots_with_the_pool_and_the_leftover() -> None:
     assert order == sorted(order), "порядок блоков не тот, что просили"
 
 
+def _function(name: str) -> str:
+    """Исходник функции страницы — по её объявлению, а не по соседней строке.
+
+    Кусок резался «от `function salesPlansBlock(` до следующего комментария»,
+    и разделение функции надвое (рисование меры вынесено, чтобы печатные виды
+    звали тот же код) уронило проверку, ничего не сказав про поведение: оба
+    плана как делили один график, так и делят. Функция — контракт, границу
+    считаем скобками.
+    """
+    text = CABINET.read_text()
+    start = text.index(f"function {name}(")
+    depth, index = 0, text.index("{", start)
+    while index < len(text):
+        if text[index] == "{":
+            depth += 1
+        elif text[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:index + 1]
+        index += 1
+    raise AssertionError(f"функция {name} не закрыта")
+
+
 def test_6_both_plans_share_one_chart() -> None:
-    body = _render()
-    start = body.index("function salesPlansBlock(")
-    block = body[start:body.index("\n// ", start + 10)]
-    assert "'план ФМ'" in block and "'план банка'" in block
-    assert block.count("barChart(") == 1, "планов два, а график один"
+    chart = _function("salesPlansChart")
+    assert "'план ФМ'" in chart and "'план банка'" in chart
+    assert chart.count("barChart(") == 1, "планов два, а график один"
     # Цена всех троих — на том же графике линиями, а не отдельной вкладкой.
-    assert "'цена факт'" in block and "'цена ФМ'" in block and "'цена банка'" in block
+    assert "'цена факт'" in chart and "'цена ФМ'" in chart and "'цена банка'" in chart
+
+    block = _function("salesPlansBlock")
+    assert "salesPlansChart(" in block, "блок рисует планы не общим кодом"
     # Сравниваются одинаковые величины: сумма договоров с валовыми продажами
     # банка, а не со строкой «с учётом рассрочки» — та про деньги на эскроу.
     assert "валовые продажи" in block

@@ -140,6 +140,13 @@ def _local_asset(url: str):
             )
         elif parts.path.startswith("/assets/"):
             answer = core.developaid_asset(parts.path.rsplit("/", 1)[-1])
+        elif parts.path == "/guide/assets/logo.webp":
+            # Эмблема лежит в `PAGE` и берётся оттуда же, что и на страницах:
+            # копии у неё нет, потому что её негде обновлять. Крючок тот же —
+            # заводить второй путь к картинкам модулю рынка незачем.
+            import guide
+
+            return guide.brand_logo(core) or None
         else:
             return None
     except Exception:

@@ -2122,19 +2122,30 @@ function barChart(rows, opts){
 // Один график продаж по месяцам с переключателем меры и свёрнутой таблицей:
 // «таблицу динамики убрать или свернуть» и «дублировать таблицы нет смысла,
 // они и так у управленцев есть» (владелец, 26.08.2026).
-function salesChartBlock(d){
-  const metric=SALES_METRICS.find(m=>m.key===salesMetric)||SALES_METRICS[0];
+// Переключатель мер — орудие экрана. В документе его не переключить, и мера,
+// до которой не дошли, там просто отсутствует — то же правило, что у
+// свёрнутой таблицы: раскрыть её читателю нечем. На бумагу поэтому идут ВСЕ
+// меры, как это уже сделано у карты рынка (`.printviews`).
+function salesDynamicsChart(d, metric){
   const rows=(d.dynamics||[]).filter(m=>m.amount>0).map(m=>({
     label:m.month, short:String(m.month).slice(2),
-    value:metric.of(m), over:salesMetric==='amount'?num(m.units):'',
+    value:metric.of(m), over:metric.key==='amount'?num(m.units):'',
     price:m.price_flats,
     tip:m.month+': '+num(m.amount/1e6,1)+' млн ₽, '+num(m.units)+' лот(ов), '+num(m.area)+' м²'
        +(m.price_per_sqm?', '+num(m.price_per_sqm)+' ₽/м²':''),
   }));
-  let html=barChart(rows,{axis:metric.axis,show:metric.show,factName:'факт, '+metric.name,
+  return barChart(rows,{axis:metric.axis,show:metric.show,factName:'факт, '+metric.name,
     rightLines:[{key:'price',name:'цена квартир, ₽/м²',color:'#C4581B'}],
     rightAxis:v=>num(v/1000)+' тыс', rightShow:v=>num(v)+' ₽/м²', rightName:'цена квартир',
-    caption:metric.name+' по месяцам'+(salesMetric==='amount'?'; цифра над столбиком — лотов':'')});
+    caption:metric.name+' по месяцам'+(metric.key==='amount'?'; цифра над столбиком — лотов':'')});
+}
+
+function salesChartBlock(d){
+  const metric=SALES_METRICS.find(m=>m.key===salesMetric)||SALES_METRICS[0];
+  let html=salesDynamicsChart(d, metric);
+  const rest=SALES_METRICS.filter(m=>m.key!==metric.key);
+  if(rest.length) html+='<div class="printviews">'
+    +rest.map(m=>salesDynamicsChart(d, m)).join('')+'</div>';
   html+='<details style="margin-top:8px"><summary>Помесячно числами</summary>';
   html+=salesTable(['Месяц','Лотов','м²','млн ₽','₽/м²'],
     (d.dynamics||[]).slice().reverse().map(m=>[esc(m.month), num(m.units), num(m.area),
@@ -2419,11 +2430,7 @@ const PLAN_METRICS=[
   {key:'amount', name:'млн ₽', axis:v=>num(v/1e6),      show:v=>num(v/1e6,1)+' млн ₽'},
   {key:'area',   name:'м²',    axis:v=>num(v),          show:v=>num(v)+' м²'},
 ];
-function salesPlansBlock(d){
-  const plans=d.plans||{};
-  const quarters=(plans.quarters||[]);
-  if(quarters.length<2) return '';
-  const metric=PLAN_METRICS.find(m=>m.key===plansMetric)||PLAN_METRICS[0];
+function salesPlansChart(quarters, metric){
   const rows=quarters.map(q=>({
     label:q.label, short:q.label.replace(' ',''),
     value:q['fact_'+metric.key], pale:q.partial,
@@ -2434,7 +2441,7 @@ function salesPlansBlock(d){
   }));
   const lines=[{key:'fm',name:'план ФМ',color:'#C4581B'},
                {key:'bank',name:'план банка',color:'#8E7CC3',dash:true}];
-  let html=barChart(rows,{lines,axis:metric.axis,show:metric.show,factName:'факт',
+  return barChart(rows,{lines,axis:metric.axis,show:metric.show,factName:'факт',
     // Цвет линии цены не повторяет цвет столбиков: одинаковый синий читается
     // как «та же величина другой формой», а это другая шкала и другой предмет.
     rightLines:[{key:'factPrice',name:'цена факт',color:'#1B5E77'},
@@ -2443,6 +2450,18 @@ function salesPlansBlock(d){
     rightAxis:v=>num(v/1000)+' тыс', rightShow:v=>num(v)+' ₽/м²',
     rightName:'цена квартир, ₽/м²',
     caption:metric.name+' по кварталам'});
+}
+
+function salesPlansBlock(d){
+  const plans=d.plans||{};
+  const quarters=(plans.quarters||[]);
+  if(quarters.length<2) return '';
+  const metric=PLAN_METRICS.find(m=>m.key===plansMetric)||PLAN_METRICS[0];
+  // На бумагу идут обе меры: переключателя в документе нет.
+  let html=salesPlansChart(quarters, metric);
+  const rest=PLAN_METRICS.filter(m=>m.key!==metric.key);
+  if(rest.length) html+='<div class="printviews">'
+    +rest.map(m=>salesPlansChart(quarters, m)).join('')+'</div>';
   html+='<div class="muted" style="font-size:12.5px;margin-top:6px">'
     +'Кварталы, а не месяцы: план банка квартальный, и раскладывать его по месяцам мы не станем — '
     +'сделать это можно тремя способами, и любой будет нашей выдумкой. '
