@@ -1050,8 +1050,17 @@ function krtRankCell(slug){
 function renderKrtRankStatus(){
  const box=$('krtRankStatus'),p=state.krtRankProgress;
  if(!box)return;
- if(!p||(!p.running&&!p.total&&!p.updated_at)){box.style.display='none';return}
+ if(!p||(!p.running&&!p.running_elsewhere&&!p.total&&!p.updated_at)){box.style.display='none';return}
  box.style.display='';
+ // Прогон ведёт один воркер из двух, и ход виден только ему. Второй молчал бы
+ // — а молчание после нажатой кнопки читается как поломка.
+ if(!p.running&&p.running_elsewhere){
+  const when=p.updated_at?new Date(p.updated_at*1000).toLocaleString('ru-RU'):'';
+  box.className='notice';
+  box.innerHTML='<span class="spinner"></span>Прогон идёт в соседнем процессе — сколько посчитано, отсюда не видно. '
+   +'Строки появляются в таблице по мере счёта'+(when?`, обновлено ${esc(when)}`:'')+'.';
+  return;
+ }
  if(p.running){
   const left=p.current?` · сейчас: ${esc(p.current)}`:'';
   const failed=p.failed?` · не посчитано: ${p.failed}`:'';
@@ -1078,7 +1087,7 @@ async function loadKrtRanking(){
   state.krtRankProgress=d.progress||null;
   renderKrtRankStatus();renderKrt();
   clearTimeout(state.krtRankTimer);
-  if(d.progress&&d.progress.running)state.krtRankTimer=setTimeout(loadKrtRanking,3000);
+  if(d.progress&&(d.progress.running||d.progress.running_elsewhere))state.krtRankTimer=setTimeout(loadKrtRanking,3000);
  }catch(e){const box=$('krtRankStatus');if(box){box.style.display='';box.className='notice warn';box.textContent=String(e.message||e)}}
 }
 async function startKrtRanking(){
@@ -1090,6 +1099,7 @@ async function startKrtRanking(){
   const d=await askJson('/auctions/krt/ranking/refresh',{method:'POST',
    headers:{'Content-Type':'application/json'},body:JSON.stringify({slugs:slugs})}).catch(needLogin);
   state.krtRankProgress=d.progress||null;renderKrtRankStatus();loadKrtRanking();
+  if(!d.started&&d.reason){const box=$('krtRankStatus');box.style.display='';box.className='notice';box.innerHTML='<span class="spinner"></span>'+esc(d.reason)+'.'}
  }catch(e){const box=$('krtRankStatus');box.style.display='';box.className='notice warn';box.textContent=String(e.message||e)}
  finally{b.disabled=false;b.textContent='Оценить все КРТ моделью'}
 }

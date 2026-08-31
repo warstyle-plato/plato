@@ -28,7 +28,9 @@ krt.mos.ru ценового поля нет вовсе (`KrtTerritory` несё�
 
 from __future__ import annotations
 
+import contextlib
 import datetime
+import fcntl
 import json
 import logging
 import os
@@ -74,8 +76,12 @@ SCHEDULE_HOUR = 3
 # перезапуска не ждать неделю до первой проверки.
 HEARTBEAT_SECONDS = 60 * 60
 # Замок протухает: воркер мог умереть посреди прогона, и без срока каталог
-# больше никогда бы не обновился.
-LOCK_TTL_SECONDS = 6 * 60 * 60
+# больше никогда бы не обновился. Полчаса, а не шесть часов, потому что идущий
+# прогон подтверждает себя сам — он трогает замок после каждой площадки. Умер
+# он или считает, видно по этой отметке, а не по сроку, взятому с запасом:
+# перезапуск контейнера посреди прогона иначе запирал бы кнопку на полдня, и
+# отказ «прогон уже идёт» был бы неправдой.
+LOCK_TTL_SECONDS = 30 * 60
 
 
 def _number(value: Any) -> float:
@@ -178,6 +184,29 @@ def keep_computed(
     return kept
 
 
+def merge_row(
+    stored: dict[str, Any] | None, ours: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Из двух записей об одной площадке остаётся более поздний счёт.
+
+    Прогон держит свой снимок каталога в памяти и переписывает файл целиком.
+    Пересчёт одной площадки из карточки идёт мимо этого снимка — и следующая
+    запись прогона стирала его через секунды: человек нажимал «Обновить
+    маркетинг и модель», видел числа, а в таблице оставался прежний балл.
+    То же между воркерами: их два, и файл у них общий.
+
+    Правило «неудача не встаёт на место счёта» здесь не переписывается —
+    записи выстраиваются по времени счёта и отдаются тому же `keep_computed`.
+    """
+    if not stored:
+        return dict(ours or {})
+    if not ours:
+        return dict(stored)
+    if _number(stored.get("computed_at")) <= _number(ours.get("computed_at")):
+        return keep_computed(stored, ours)
+    return keep_computed(ours, stored)
+
+
 class KrtRanking:
     """Фоновый прогон по каталогу с видимым ходом и кэшем на диске."""
 
@@ -267,6 +296,25 @@ class KrtRanking:
                 os.close(handle)
             return True
         return False
+
+    def heartbeat(self) -> None:
+        """Отметить, что прогон жив. Зовётся после каждой посчитанной площадки."""
+        try:
+            self.lock_path.touch()
+        except OSError:
+            pass
+
+    def claimed(self) -> bool:
+        """Занят ли замок прогона — неважно, каким воркером.
+
+        «Идёт прогон» живёт в памяти воркера, а их два: спросить об этом можно
+        только у файла.
+        """
+        try:
+            age = time.time() - self.lock_path.stat().st_mtime
+        except OSError:
+            return False
+        return age <= LOCK_TTL_SECONDS
 
     def release(self) -> None:
         try:
@@ -450,17 +498,17 @@ class KrtRanking:
 
         Пересчёт одной площадки из карточки обязан доехать и до таблицы: иначе
         балл в списке и числа в карточке расходятся, и оба выглядят верными.
-        Прогон по каталогу в это время не идёт — он держит замок.
+        Прогон по каталогу в это время идти может — и шёл: его снимок памяти
+        затирал эту строку следующей же записью.
         """
         slug = str(row.get("slug") or "")
         if not slug:
             return
-        rows = {str(item.get("slug") or ""): item for item in self.rows()}
         # Правило одно на все входы: неудача не встаёт на место счёта. Держать
         # его здесь, а не у зовущего, — чтобы следующий вход не повторил
-        # ошибку молча.
-        rows[slug] = keep_computed(rows.get(slug), row)
-        self._persist(rows)
+        # ошибку молча. Слияние с тем, что уже лежит на диске, делает `_persist`:
+        # прогон в это время может идти в соседнем воркере.
+        self._persist({slug: row})
 
     def progress(self) -> dict[str, Any]:
         with self._lock:
@@ -478,6 +526,10 @@ class KrtRanking:
             cached.get("updated_at")
             and time.time() - float(cached["updated_at"]) > self.ttl_seconds
         )
+        # Ход прогона виден только тому воркеру, который его ведёт. Второй
+        # обязан сказать, что прогон идёт: иначе «ничего не происходит» на
+        # экране означало бы, что кнопка не сработала.
+        state["running_elsewhere"] = bool(not state["running"] and self.claimed())
         return state
 
     # --- счёт -----------------------------------------------------------
@@ -488,10 +540,26 @@ class KrtRanking:
         screen: Callable[[dict[str, Any]], dict[str, Any]],
         *,
         scheduled: bool = False,
+        claimed: bool = False,
     ) -> bool:
-        """Запустить прогон. Повторный вызов на ходу ничего не запускает."""
+        """Запустить прогон. Повторный вызов на ходу ничего не запускает.
+
+        «На ходу» проверяется дважды, и это не перестраховка: первый признак
+        живёт в памяти воркера, а воркеров два. Кнопка, попавшая во второй,
+        поднимала ВТОРОЙ прогон по тому же каталогу — каждый со своим снимком,
+        каждый переписывал файл целиком, и посчитанное одним пропадало под
+        записью другого. Общий признак — тот же файловый замок, которым
+        договаривается еженедельный прогон; `claimed` значит «замок уже мой».
+        """
         with self._lock:
             if self._progress["running"]:
+                return False
+        if not claimed and not self.claim():
+            return False
+        with self._lock:
+            if self._progress["running"]:
+                if not claimed:
+                    self.release()
                 return False
             self._progress = {
                 "running": True, "done": 0, "total": len(projects), "current": "",
@@ -544,6 +612,7 @@ class KrtRanking:
                 with self._lock:
                     self._progress["done"] = index
                 self._persist(rows)
+                self.heartbeat()
         finally:
             self._persist(rows)
             # Замок отпускается ровно здесь: держать его до протухания значило
@@ -555,12 +624,86 @@ class KrtRanking:
                 self._progress["current"] = ""
                 self._progress["finished_at"] = time.time()
 
+    @contextlib.contextmanager
+    def _write_lock(self):
+        """Читают и пишут файл рейтинга под общим замком.
+
+        Файл переписывается целиком, а пишущих трое: прогон, пересчёт из
+        карточки и соседний воркер. Без замка «прочитал — слил — записал» двух
+        процессов теряет одно из слияний: оба прочтут одно и то же, второй
+        запишет поверх, и посчитанное исчезнет, не оставив следа.
+        """
+        path = self.path.parent / (self.path.name + ".write.lock")
+        handle = None
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            handle = path.open("a+")
+            fcntl.flock(handle, fcntl.LOCK_EX)
+        except OSError:
+            if handle is not None:
+                handle.close()
+            handle = None
+        try:
+            yield
+        finally:
+            if handle is not None:
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_UN)
+                finally:
+                    handle.close()
+
+    def _archive_foreign(self, stored: dict[str, Any]) -> None:
+        """Чужая схема не стирается молча: посчитанное уезжает файлом рядом.
+
+        `rows()` такую запись не показывает — поля у неё могли быть другими, —
+        но выбросить её нельзя: это часы счёта. Смена версии схемы иначе
+        обнуляла бы весь рейтинг первой же записью, и на экране это выглядело
+        бы как «модель здесь никогда не считали».
+        """
+        rows = stored.get("rows") if isinstance(stored, dict) else None
+        if not rows:
+            return
+        version = stored.get("schema_version")
+        name = f"{self.path.stem}.v{version}{self.path.suffix}"
+        try:
+            save_json(self.path.parent / name, stored)
+        except OSError:
+            logger.exception("KRT ranking archive failed")
+        else:
+            logger.warning(
+                "KRT ranking: схема %s не наша, %d строк сохранены в %s",
+                version, len(rows), name)
+
+    def _merged_with_stored(
+        self, rows: dict[str, dict[str, Any]]
+    ) -> dict[str, dict[str, Any]]:
+        stored = load_json(self.path) or {}
+        if stored.get("schema_version") != CACHE_SCHEMA_VERSION:
+            self._archive_foreign(stored)
+            return {slug: row for slug, row in rows.items() if slug}
+        merged = {
+            str(item.get("slug") or ""): item
+            for item in (stored.get("rows") or []) if isinstance(item, dict)
+        }
+        merged.pop("", None)
+        for slug, row in rows.items():
+            if slug:
+                merged[slug] = merge_row(merged.get(slug), row)
+        return merged
+
     def _persist(self, rows: dict[str, dict[str, Any]]) -> None:
-        save_json(self.path, {
-            "schema_version": CACHE_SCHEMA_VERSION,
-            "updated_at": int(time.time()),
-            "rows": sorted(rows.values(), key=_rank_key),
-        })
+        """Записать свой взгляд, не потеряв чужого.
+
+        Прежде здесь стоял снимок памяти целиком: всё, что появилось в файле
+        после начала прогона, пропадало при следующей же записи.
+        """
+        with self._write_lock():
+            merged = self._merged_with_stored(rows)
+            save_json(self.path, {
+                "schema_version": CACHE_SCHEMA_VERSION,
+                "updated_at": int(time.time()),
+                "rows": sorted(merged.values(), key=_rank_key),
+            })
 
 
 def _rank_key(row: dict[str, Any]) -> tuple[int, float, str]:

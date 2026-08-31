@@ -571,7 +571,8 @@ def install(app: FastAPI) -> None:
                             projects = krt_registry.projects(refresh=True)
                             rows = [row.to_dict() if hasattr(row, "to_dict") else row
                                     for row in projects]
-                            if rows and not krt_ranking.start(rows, _screen_one, scheduled=True):
+                            if rows and not krt_ranking.start(
+                                    rows, _screen_one, scheduled=True, claimed=True):
                                 krt_ranking.release()
                         except Exception:
                             logger.exception("weekly KRT ranking failed")
@@ -1159,11 +1160,18 @@ def install(app: FastAPI) -> None:
                     detail="Ни одна из выбранных площадок не найдена в каталоге",
                 )
         started = krt_ranking.start(projects, _screen_one)
-        return {
-            "started": started,
-            "reason": "" if started else "Прогон уже идёт",
-            "progress": krt_ranking.progress(),
-        }
+        progress = krt_ranking.progress()
+        if started:
+            reason = ""
+        elif progress.get("running"):
+            reason = "Прогон уже идёт"
+        else:
+            # Воркеров два, и ход прогона виден только тому, кто его ведёт.
+            # «Прогон уже идёт» без этой оговорки читалось бы как поломка:
+            # на экране ничего не движется, а кнопка отказывает.
+            reason = ("Прогон уже идёт в соседнем процессе — строки появляются "
+                      "в таблице по мере счёта")
+        return {"started": started, "reason": reason, "progress": progress}
 
     def _stored_report(slug: str) -> dict[str, Any]:
         stored = krt_ranking.report(slug)
