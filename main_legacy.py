@@ -21537,6 +21537,11 @@ def calculate(req: CalcRequest) -> dict:
                 "pf_uncovered_peak": fin.get("peak_uncovered_pf", 0.0),
                 "rve_pf_before_repayment": fin.get("rve_pf_before_repayment", 0.0),
                 "rve_escrow_release": fin.get("rve_escrow_release", 0.0),
+                # Раскрытое и погашенное — разные величины: эскроу гасит СВОЙ
+                # ПФ, излишек уходит в кассу. Ключ считался, суммировался по
+                # очередям и до экрана не доезжал — строка «Из него на
+                # погашение ПФ» показывала ноль на любом проекте.
+                "rve_pf_repayment": fin.get("rve_pf_repayment", 0.0),
                 "rve_pf_shortfall": fin.get("rve_pf_shortfall", 0.0),
                 "pf_limit": fin["pf_limit"],
                 "avg_bridge_rate": fin["avg_bridge_rate"],
@@ -22908,6 +22913,7 @@ def _consolidate_phase_results(
                 "pf_uncovered_peak": finance["peak_uncovered_pf"],
                 "rve_pf_before_repayment": finance.get("rve_pf_before_repayment", 0.0),
                 "rve_escrow_release": finance.get("rve_escrow_release", 0.0),
+                "rve_pf_repayment": finance.get("rve_pf_repayment", 0.0),
                 "rve_pf_shortfall": finance.get("rve_pf_shortfall", 0.0),
                 "pf_limit": finance["pf_limit"],
                 "avg_bridge_rate": finance["avg_bridge_rate"],
