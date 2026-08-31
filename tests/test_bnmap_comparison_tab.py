@@ -483,3 +483,43 @@ def test_a_pair_of_axes_without_data_is_named_and_not_drawn_empty() -> None:
     # И сама ось названа своим именем: лот в проекте — не проданный лот.
     page = cabinet.cabinet_page("market")
     assert "средний лот в проекте, м²" in page and "средний проданный лот, м²" in page
+
+
+def test_the_budget_of_a_lot_is_not_the_price_of_a_metre() -> None:
+    """`sumRmin`/`sumRmax` — рубли за лот, и в колонки «мин/макс» ₽/м² не идут.
+
+    Соблазн понятен: у отчёта в таблице цены есть пустые колонки «мин» и
+    «макс», а у bnMAP есть два числа с похожими именами. Но это бюджет лота, и
+    подставленный туда он выглядел бы ценой метра в двадцать миллионов —
+    ошибкой, которая не выглядит ошибкой, потому что стоит в своей колонке.
+    """
+    card = {**CARD, "apart_total": {"expo": "57", "square_avg": "60.679",
+                                    "sumRmin": "20363689.00", "sumRavg": "43429137.95",
+                                    "sumRmax": "105136857.00", "metrPriceRAvg": "715927.02"}}
+    row = bnmap._metric_row(card, "Объект", 0, "2026-08-25")
+    assert row["budget_min"] == 20363689.0 and row["budget_max"] == 105136857.0
+    assert "price_per_sqm_min" not in row and "price_per_sqm_max" not in row
+    html = bnmap_ui._budgets([], row)
+    assert "Бюджет лота" in html and "20 363 689" in html
+    assert "не за метр" in html, "таблица не говорит, что это рубли за лот"
+
+
+def test_the_tab_shows_what_pulse_has_no_field_for() -> None:
+    """Апартаменты и сроки ввода — то, чего у «Пульса» нет вовсе.
+
+    Апартаменты стоят в общей медиане наравне с квартирами, хотя это другой
+    правовой статус и другой покупатель; у bnMAP признак есть, и он назван.
+    """
+    row = bnmap._metric_row({**CARD, "apartments": 1, "dsc_count": 3,
+                             "initial_dsc": "2027-09-30",
+                             "before_date_state_commission": 13,
+                             "createTimeMax": "2026-08-22"},
+                            "Объект", 0, "2026-08-25")
+    html = bnmap_ui._delivery([], row)
+    assert "Сроки ввода и статус" in html
+    assert "апартаменты" in html and "2027-09-30" in html and "2026-08-22" in html
+    # Ноль — это «квартиры», а не «неизвестно»: пустое поле и явный ноль
+    # означают разное.
+    flats = bnmap_ui._delivery([], bnmap._metric_row(
+        {**CARD, "apartments": 0, "dsc_count": 1}, "Объект", 0, "2026-08-25"))
+    assert "квартиры" in flats

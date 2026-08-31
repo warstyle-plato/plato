@@ -195,6 +195,8 @@ def render(report: dict[str, Any]) -> str:
     out.append(_subject(report.get("found")))
     out.append(_selection(report.get("selection")))
     out.append(_rooms(report.get("peers"), report.get("subject")))
+    out.append(_budgets(report.get("peers"), report.get("subject")))
+    out.append(_delivery(report.get("peers"), report.get("subject")))
     out.append(_discounts(report.get("peers"), report.get("subject")))
     out.append(_rooms_balance(report.get("rooms_balance")))
     out.append(_deal_prices(report.get("deal_prices")))
@@ -374,6 +376,68 @@ def _rooms(peers: Any, subject: Any) -> str:
     return ('<h3 style="margin-top:16px">Цена метра по комнатности</h3>'
             '<div class="tablescroll"><table class="peers"><tr><th>Проект</th>'
             + head + "</tr>" + "".join(body) + "</table></div>")
+
+
+def _budgets(peers: Any, subject: Any) -> str:
+    """Бюджет лота: минимум, средняя, максимум. У «Пульса» этого нет вовсе.
+
+    Цена метра отвечает на «дорого ли», бюджет — на «с чего начинается вход».
+    Это разные вопросы: у проекта с дорогим метром и мелкой нарезкой чек
+    входа бывает ниже, чем у соседа с дешёвым метром и крупными лотами, и по
+    ₽/м² этого не видно.
+    """
+    rows = [row for row in ([subject] + list(peers or []))
+            if isinstance(row, dict) and row.get("budget_avg")]
+    if not rows:
+        return ""
+    body = []
+    for row in rows:
+        body.append("<tr><td>" + escape(str(row.get("name") or ""))
+                    + (' <span class="self">— объект</span>'
+                       if row is rows[0] and row is subject else "")
+                    + "</td>" + _num({"val": row.get("budget_min")})
+                    + _num({"val": row.get("budget_avg")})
+                    + _num({"val": row.get("budget_max")})
+                    + _num({"val": row.get("lot_area_avg"), "digits": 1}) + "</tr>")
+    return ('<h3 style="margin-top:16px">Бюджет лота</h3>'
+            '<div class="muted" style="font-size:12.5px;margin:4px 0 6px">Рубли за лот, '
+            'а не за метр: в колонки «мин» и «макс» разделов о цене они не идут — там ₽/м².'
+            '</div>'
+            '<div class="tablescroll"><table class="peers"><tr><th>Проект</th>'
+            '<th class="num">Мин, ₽</th><th class="num">Средний, ₽</th>'
+            '<th class="num">Макс, ₽</th><th class="num">Лот в проекте, м²</th></tr>'
+            + "".join(body) + "</table></div>")
+
+
+def _delivery(peers: Any, subject: Any) -> str:
+    """Сроки ввода и статус объекта. Признак апартаментов «Пульс» не отдаёт.
+
+    Апартаменты — не квартиры: другой правовой статус, другой покупатель и
+    другая цена метра, а в общей медиане они стоят наравне с жильём.
+    """
+    rows = [row for row in ([subject] + list(peers or []))
+            if isinstance(row, dict) and (row.get("commission") or row.get("buildings"))]
+    if not rows:
+        return ""
+    body = []
+    for row in rows:
+        apartments = row.get("apartments")
+        mark = "—" if apartments in (None, "") else ("апартаменты" if str(apartments) not in ("0", "False") else "квартиры")
+        body.append("<tr><td>" + escape(str(row.get("name") or ""))
+                    + (' <span class="self">— объект</span>'
+                       if row is rows[0] and row is subject else "")
+                    + "</td><td>" + escape(str(row.get("commission_first") or "—")) + "</td>"
+                    + "<td>" + escape(str(row.get("commission") or "—")) + "</td>"
+                    + _num({"val": row.get("buildings")})
+                    + _num({"val": row.get("commission_soon")})
+                    + "<td>" + escape(mark) + "</td>"
+                    + "<td>" + escape(str(row.get("stage") or "—")) + "</td>"
+                    + "<td>" + escape(str(row.get("updated_at") or "—")) + "</td></tr>")
+    return ('<h3 style="margin-top:16px">Сроки ввода и статус</h3>'
+            '<div class="tablescroll"><table class="peers"><tr><th>Проект</th>'
+            '<th>Первый ввод</th><th>Последний ввод</th><th class="num">Корпусов</th>'
+            '<th class="num">Введут в 12 мес</th><th>Тип</th><th>Стадия</th>'
+            '<th>Данные на</th></tr>' + "".join(body) + "</table></div>")
 
 
 def _discounts(peers: Any, subject: Any) -> str:

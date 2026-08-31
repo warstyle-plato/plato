@@ -799,7 +799,20 @@ def _metric_row(card: dict[str, Any], name: str, distance: Any, observed: str,
         "lot_area_avg": _float(total.get("square_avg")),
         "rooms": {key.replace("metrprice_avg_", ""): _float(value)
                   for key, value in price.items() if key != "metrprice_avg_total"},
+        # Бюджет лота: минимум, средняя, максимум. Это РУБЛИ ЗА ЛОТ, а не цена
+        # метра — в колонки «мин» и «макс» отчёта они не идут, там ₽/м².
+        # Своей строкой они отвечают на вопрос, которого у «Пульса» нет вовсе:
+        # с какого чека начинается вход в проект.
         "budget_avg": _float(budget.get("apart_total")),
+        "budget_min": _float(total.get("sumRmin")),
+        "budget_max": _float(total.get("sumRmax")),
+        # Апартаменты — не квартиры: другой правовой статус, другая цена метра
+        # и другой покупатель. «Пульс» этого признака не отдаёт.
+        "apartments": card.get("apartments"),
+        "buildings": _float(card.get("dsc_count")),
+        "commission_first": card.get("initial_dsc"),
+        "commission_soon": _float(card.get("before_date_state_commission")),
+        "updated_at": card.get("createTimeMax"),
         "pace_12m": _float(card.get("pace_lots_pre_12")),
         "months_by_source": _float(card.get("forecast_month")),
         "stage": card.get("stage"),
