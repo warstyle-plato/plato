@@ -33,6 +33,12 @@ from urllib.parse import urlencode
 from .krt_requirements import MOS_SEARCH_URL, krt_kind
 
 MOS_KRT_QUERY = "проект решения о комплексном развитии территории"
+# Распоряжение, которым город объявляет торги по КРТ. Адреса в нём нет: ни в
+# заголовке, ни в карточке документа, а PDF — скан, из которого извлекается
+# только регистрационный штамп (проверено на живом документе, 31.08.2026).
+# Поэтому такие распоряжения показываются фактом со ссылкой и датой, а к
+# площадке не привязываются — привязка по номеру была бы выдумкой.
+MOS_TENDER_QUERY = "аукцион на право заключения договора о комплексном развитии территории"
 
 _SPACE = re.compile(r"\s+")
 _OKRUG = re.compile(r"\((ЦАО|САО|СВАО|ВАО|ЮВАО|ЮАО|ЮЗАО|ЗАО|СЗАО|ЗелАО|НАО|ТАО|ТиНАО)\)")
@@ -88,9 +94,56 @@ class KrtDecision:
         }
 
 
-def search_url(page: int = 1, per_page: int = 25) -> str:
+def search_url(page: int = 1, per_page: int = 25, query: str = MOS_KRT_QUERY) -> str:
     return MOS_SEARCH_URL + "?" + urlencode(
-        {"q": MOS_KRT_QUERY, "page": max(1, int(page)), "per_page": int(per_page)})
+        {"q": query, "page": max(1, int(page)), "per_page": int(per_page)})
+
+
+_ORDER_NUMBER = re.compile(r"(?iu)№\s*([А-ЯЁA-Z-]*\d+[/-]?\d*)")
+
+
+def parse_tender_order(row: dict[str, Any]) -> dict[str, Any] | None:
+    """Распоряжение о торгах: номер, дата, ссылка. Адреса в нём нет."""
+    title = _clean(row.get("title"))
+    low = title.casefold()
+    if "аукцион" not in low or "комплексн" not in low:
+        return None
+    number = _ORDER_NUMBER.search(title)
+    kind, _ = krt_kind(title)
+    return {
+        "id": str(row.get("id") or "").strip(),
+        "number": number.group(1) if number else "",
+        "title": title,
+        "url": _clean(row.get("url")),
+        "published_at": int(row.get("date") or 0),
+        "kind": kind,
+    }
+
+
+def collect_tender_orders(fetch: Callable[[str], bytes], *, max_pages: int = 12,
+                          per_page: int = 25) -> tuple[list[dict[str, Any]], bool]:
+    """Обойти распоряжения о торгах тем же путём, что и проекты решений."""
+    import json
+
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for page in range(1, max_pages + 1):
+        try:
+            payload = json.loads(
+                fetch(search_url(page, per_page, MOS_TENDER_QUERY)).decode("utf-8"))
+        except Exception:
+            return out, False
+        rows = (payload or {}).get("results") or []
+        fresh = []
+        for row in rows:
+            one = parse_tender_order(row) if isinstance(row, dict) else None
+            if one and one["id"] and one["id"] not in seen:
+                seen.add(one["id"])
+                fresh.append(one)
+        out.extend(fresh)
+        if not fresh:
+            return out, True
+    return out, False
 
 
 def _clean(text: str) -> str:

@@ -38,6 +38,7 @@ JINA_PREFIX = "https://r.jina.ai/"
 CACHE_SCHEMA_VERSION = 3
 REQUIREMENTS_CACHE_SCHEMA_VERSION = 2
 DECISIONS_CACHE_SCHEMA_VERSION = 2
+TENDERS_CACHE_SCHEMA_VERSION = 1
 # Поля записи решения — по ним кэш поднимается обратно в объект.
 _DECISION_FIELDS = ("id", "title", "url", "address", "okrug", "kind",
                     "published_at", "department")
@@ -226,6 +227,7 @@ class KrtRegistry:
         # на «какие площадки город показывает», решения — на «о каких он принял
         # решение», и это разные множества.
         self.decisions_path = Path(data_dir) / "krt" / "decisions.json"
+        self.tenders_path = Path(data_dir) / "krt" / "tender_orders.json"
         self.fetch = fetch or (lambda url: request_bytes(url, timeout=15, retries=1))
         self.ttl_seconds = 24 * 60 * 60
         self._refreshing = False
@@ -527,6 +529,42 @@ class KrtRegistry:
         out["matched"] = len(split["matched"])
         out["decisions"] = [one.to_dict() for one in split["unmatched"]]
         return out
+
+    def tender_orders(self, *, refresh: bool = False, max_pages: int = 12) -> dict[str, Any]:
+        """Распоряжения ДГП о проведении торгов по КРТ.
+
+        Адреса в них нет — ни в заголовке, ни в карточке документа, а PDF скан.
+        Поэтому это факт со ссылкой и датой, а не привязка к площадке.
+        """
+        from . import krt_decisions
+
+        cached = load_json(self.tenders_path)
+        if (not refresh and isinstance(cached, dict)
+                and cached.get("schema_version") == TENDERS_CACHE_SCHEMA_VERSION
+                and fresh(self.tenders_path, self.ttl_seconds)):
+            return cached
+        found, complete = krt_decisions.collect_tender_orders(
+            self.fetch, max_pages=max_pages)
+        if not found and isinstance(cached, dict) and cached.get("orders"):
+            stale = dict(cached)
+            stale["stale"] = True
+            return stale
+        found.sort(key=lambda one: one.get("published_at") or 0, reverse=True)
+        payload = {
+            "schema_version": TENDERS_CACHE_SCHEMA_VERSION,
+            "retrieved_at": int(time.time()),
+            "complete": complete,
+            "stale": False,
+            "orders": found,
+            "query": krt_decisions.MOS_TENDER_QUERY,
+            # Сказать это обязан сам свод: молча непривязанные распоряжения
+            # читаются как «торгов по нашим площадкам нет».
+            "note": ("Адреса в распоряжении нет: ни в заголовке, ни в карточке "
+                     "документа, а PDF — скан. Привязать распоряжение к площадке "
+                     "нечем; лот на площадке ищется отдельно, по торгам."),
+        }
+        save_json(self.tenders_path, payload)
+        return payload
 
     def status(self) -> dict[str, bool]:
         cached = load_json(self.path)

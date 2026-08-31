@@ -797,6 +797,36 @@ def install(app: FastAPI) -> None:
                                 detail=f"Поиск mos.ru не ответил: {exc}") from exc
         return payload
 
+    @app.post("/auctions/krt/tenders")
+    async def auction_krt_tenders(request: Request) -> dict[str, Any]:
+        """Торги по КРТ: распоряжения города и лоты, привязанные к площадкам.
+
+        Лоты приходят те, что уже собраны на экране: второй прогон каталога
+        стоил бы минуту чужого ожидания на готовом ответе. Правило совпадения
+        одно — то же, что у решений: улица держится за своим владением, иначе
+        ложная привязка объявит площадку проданной.
+        """
+        from . import krt_tenders
+
+        payload = await request.json()
+        lots = (payload or {}).get("lots") or []
+        if not isinstance(lots, list) or len(lots) > 5000:
+            raise HTTPException(status_code=422, detail="Список лотов не разобран")
+        sites = await run_in_threadpool(krt_registry.catalogue)
+        matched = await run_in_threadpool(krt_tenders.match, lots, sites)
+        orders: dict[str, Any] = {}
+        reader = getattr(krt_registry, "tender_orders", None)
+        if callable(reader):
+            try:
+                orders = await run_in_threadpool(reader)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("KRT tender orders failed")
+                orders = {"orders": [], "error": f"{type(exc).__name__}: {exc}"}
+        return {**matched, "orders": orders.get("orders") or [],
+                "orders_note": orders.get("note") or "",
+                "orders_complete": orders.get("complete"),
+                "orders_error": orders.get("error") or ""}
+
     @app.get("/auctions/krt/{slug}/open-sources")
     async def auction_krt_open_sources(slug: str) -> dict[str, Any]:
         """Что об этой площадке сказано в публикациях.
