@@ -188,7 +188,11 @@ def test_the_cabinet_opens_with_the_rooms_and_nothing_else() -> None:
     for role in contour.ROLES:
         assert str(role["room"]) in home
     # Ни чисел проекта, ни инструментов: их место на своих страницах.
-    for stranger in ('id="overview"', 'id="form"', 'id="market"', 'id="cf"'):
+    for stranger in ('id="overview"', 'id="form"', 'id="market"', 'id="cf"',
+                     # Клон отчёта на втором источнике живёт на странице рынка;
+                     # на титуле его быть не должно, а плейсхолдер вне кусков
+                     # разметки вылез бы на всех трёх видах незамеченным.
+                     'id="bnmap"'):
         assert stranger not in home, f"на титуле осталось {stranger}"
     # И полоски контура тут нет: её работу делают карточки, два меню подряд —
     # это одно и то же дважды.
