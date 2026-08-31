@@ -1492,6 +1492,57 @@ function peersCard(peers){
     +`</table></div></div>`;
 }
 
+// Лестница цены метра по формату: линия на проект, категории по оси X.
+// Отвечает на вопрос, которого нет ни у одного помесячного графика: дешевеет
+// ли метр с ростом лота. У рынка дешевеет — покупатель приходит с бюджетом, и
+// за доступность малого лота платят премией к метру; плоская или растущая
+// линия означает, что лестницы нет.
+//
+// Пунктиром — цена В СДЕЛКАХ того же проекта, если она известна: прайс это
+// витрина, и разрыв между линиями и есть скидка, которую дают по формату.
+const ROOM_STEPS=[['st','студии'],['1','1к'],['2','2к'],['3','3к'],['4','4к+']];
+function roomsChart(rows, deals){
+  const lines=(rows||[]).map(r=>({name:r.name, own:!!r.__own,
+      points:ROOM_STEPS.map(([key],i)=>({i, v:(r.rooms||{})[key]||null}))
+        .filter(p=>p.v)}))
+    .filter(l=>l.points.length>1);
+  if(lines.length<2) return '<div class="muted">Цен по комнатности меньше чем у двух проектов — лестницу строить не из чего.</div>';
+  const dealLine=(deals&&Object.keys(deals).length)
+    ? {name:'наши сделки', deals:true,
+       points:ROOM_STEPS.map(([key],i)=>({i, v:deals[key]||null})).filter(p=>p.v)}
+    : null;
+  const all=lines.concat(dealLine&&dealLine.points.length>1?[dealLine]:[]);
+  const vals=all.flatMap(l=>l.points.map(p=>p.v));
+  const lo=Math.min(...vals)*0.95, hi=Math.max(...vals)*1.05;
+  const W=640,H=280,L=64,R=150,T=16,B=34;
+  const x=i=>L+i*(W-L-R)/(ROOM_STEPS.length-1);
+  const y=v=>T+(H-T-B)*(1-(v-lo)/((hi-lo)||1));
+  let svg=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img">`;
+  [0,0.5,1].forEach(f=>{const v=lo+(hi-lo)*f;
+    svg+=`<line x1="${L}" y1="${y(v)}" x2="${W-R}" y2="${y(v)}" stroke="#e6ecf2"/>`
+       +`<text x="${L-6}" y="${y(v)+4}" text-anchor="end" font-size="10" fill="#8798a8">${num(v)}</text>`;});
+  ROOM_STEPS.forEach(([,title],i)=>{
+    svg+=`<text x="${x(i)}" y="${H-12}" text-anchor="middle" font-size="11" fill="#5b6b7d">${esc(title)}</text>`;});
+  const path=l=>l.points.map((p,k)=>`${k?'L':'M'}${x(p.i).toFixed(1)} ${y(p.v).toFixed(1)}`).join(' ');
+  const marks=[];
+  all.forEach((l,idx)=>{
+    const colour=l.own?'#C4581B':(l.deals?'#16202b':PICKED[idx%PICKED.length]);
+    svg+=`<path d="${path(l)}" fill="none" stroke="${colour}"`
+       +` stroke-width="${l.own?2.8:(l.deals?1.8:1.4)}"${l.deals?' stroke-dasharray="5 4"':''}`
+       +` data-tip="${esc(l.name)}"></path>`;
+    l.points.forEach(p=>{ svg+=`<circle cx="${x(p.i).toFixed(1)}" cy="${y(p.v).toFixed(1)}" r="${l.own?3.4:2.2}"`
+       +` fill="${colour}" data-tip="${esc(l.name+': '+num(p.v)+' ₽/м²')}"></circle>`; });
+    const last=l.points[l.points.length-1];
+    marks.push({y:y(last.v), n:l.name, colour, own:l.own});
+  });
+  marks.sort((a,b)=>a.y-b.y);
+  let prev=-99;
+  marks.forEach(m=>{ const yy=Math.max(m.y, prev+13); prev=yy;
+    svg+=`<text x="${W-R+8}" y="${yy+3}" font-size="10.5" fill="${m.colour}"`
+       +`${m.own?' font-weight="600"':''}>${esc(m.n.length>17?m.n.slice(0,16)+'…':m.n)}</text>`;});
+  return '<div class="wrap">'+svg+'</svg></div>';
+}
+
 function blockCard(b,ctx){
   const s=b.subject||{}, p=b.peers||{}, c=b.city||{};
   const cell=(v,l)=>`<div><b>${v}</b><span>${l}</span></div>`;
@@ -2422,7 +2473,11 @@ function salesDemandBlock(d){
     return out+'</div></div>';
   };
   let html=strip('Просят', b=>b.asked_share, 'запросы из CRM')
-    +strip('Осталось показывать', b=>b.left_share, 'витрина на сегодня');
+    +strip('Осталось показывать', b=>b.left_share, 'витрина на сегодня')
+    // Третья полоса — деньги: сколько запросов дотягивается до входа в каждую
+    // полосу по цене остатка. Дефицит в витрине и недоступность по бюджету —
+    // разные причины «не покупают», и по двум полосам они неразличимы.
+    +strip('Хватает бюджета', b=>b.budget_reach_share, 'запросы, дотянувшиеся до входа');
   html+='<div class="muted" style="font-size:12px;margin:6px 0 0">';
   bands.forEach((b,i)=>{ html+=`<span style="margin-right:12px;white-space:nowrap">`
     +`<span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${SALES_COLORS[i%SALES_COLORS.length]};margin-right:4px"></span>`
@@ -2432,13 +2487,30 @@ function salesDemandBlock(d){
     html+='<div class="muted" style="font-size:12.5px;margin-top:10px">О чём спрашивают: '
       +want.wants.map(w=>esc(w.want)+' — '+num(w.deals)).join(', ')+'.</div>';
   }
+  // Где кончается медианный бюджет — числом и словами. Считает сервер: на
+  // экране этой арифметике места нет.
+  const cut=want.budget_cut||{};
+  if(cut.reach_sqm){
+    html+=`<div class="say watch" style="margin-top:10px"><b>⚠️ Деньги</b> `
+      +`Медианный бюджет ${num(cut.budget_median/1e6,1)} млн ₽ по цене остатка — это `
+      +`${num(cut.reach_sqm,0)} м². `
+      +((cut.closed_bands||[]).length
+        ? `Ценой закрыты полосы ${esc(cut.closed_bands.join(', '))} м²`
+          +(cut.closed_left_share?` — ${num(cut.closed_left_share*100,0)} % витрины.`:'.')
+        : 'Все полосы витрины в бюджет укладываются.')
+      +`</div>`;
+  }
   html+='<details style="margin-top:8px"><summary>Полосы числами</summary>'
-    +salesTable(['Полоса, м²','Просят','Доля спроса','Осталось','Доля витрины','₽/м² в книге'],
+    +salesTable(['Полоса, м²','Просят','Доля спроса','Осталось','Доля витрины','₽/м² в книге',
+                 'Вход, млн ₽','Хватает бюджета'],
       bands.map(b=>[esc(b.band), num(b.asked),
         b.asked_share===null?'—':num(b.asked_share*100,1)+'%',
         b.left_units===null||b.left_units===undefined?'—':num(b.left_units),
         b.left_share===null||b.left_share===undefined?'—':num(b.left_share*100,1)+'%',
-        b.price_per_sqm?num(b.price_per_sqm):'—']))
+        b.price_per_sqm?num(b.price_per_sqm):'—',
+        b.entry_amount?num(b.entry_amount/1e6,1):'—',
+        b.budget_reach_share===null||b.budget_reach_share===undefined
+          ?'—':num(b.budget_reach_share*100,0)+'%']))
     +'</details>';
   // Оговорки приходят с сервера: они про то, чего в данных нет, и придумывать
   // их на экране значит обещать разбор, которого не было. Первая — на виду:
