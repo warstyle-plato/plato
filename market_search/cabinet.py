@@ -1445,10 +1445,12 @@ let lastReport=null;
 // Один путь к Платону на весь кабинет. Копия этого опроса была бы вторым
 // местом, где чинят обрыв длинного ответа: цепочка ядро → Render → OpenAI
 // одним соединением не держится, и за долгим ответом ходят по номеру запуска.
-async function platoAnswer(message, onStage){
+async function platoAnswer(message, onStage, history){
   const trace='cab'+Math.random().toString(36).slice(2,10);
+  // Разговор, а не один ответ: история несёт реплики, числа едут свежими в
+  // самом вопросе — источник мог смениться между репликами.
   const r=await fetch('/cabinet/ask',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({message})});
+    body:JSON.stringify({message, history: history||[]})});
   // Ответ бывает не JSON — например HTML страницы ошибки. Разбирать его
   // вслепую значит показать «The string did not match the expected pattern»
   // вместо причины.
@@ -1493,18 +1495,44 @@ async function platoAnswer(message, onStage){
   return text;
 }
 
+// Разговор о рынке. Пересборка отчёта его обрывает: Платон помнил бы числа
+// прежнего объекта и уверенно отвечал бы по ним.
+const marketTalk=platoThread();
+
+// Разговор рисуется целиком: без него уточнение «а почему» повисает в воздухе
+// — на экране один ответ, и о чём он, через три реплики уже не сказать.
+function renderTalk(box, talk, pending){
+  const rows=[];
+  for(let i=talk.turns.length-2;i>=0;i-=2){
+    rows.push(`<div class="plato" style="margin-top:10px${i<talk.turns.length-2?';opacity:.75':''}">`
+      +`<div class="muted" style="font-size:12px;margin-bottom:4px">${esc(talk.turns[i].content)}</div>`
+      +esc(talk.turns[i+1].content).replace(/\n/g,'<br>')+'</div>');
+  }
+  box.innerHTML=(pending?`<div class="muted">${esc(pending)}</div>`:'')+rows.join('');
+}
+
 async function askPlato(){
   const q=$('#ask').value.trim();
   if(!q){$('#askout').innerHTML='<div class="muted">Напишите вопрос.</div>';return}
   if(!lastReport){$('#askout').innerHTML='<div class="muted">Сначала соберите отчёт — Платону нужны числа.</div>';return}
-  $('#askbtn').disabled=true; $('#askout').innerHTML='<div class="muted">Платон Сергеевич думает…</div>';
+  $('#askbtn').disabled=true;
+  renderTalk($('#askout'), marketTalk, 'Платон Сергеевич думает…');
   const message='Ниже готовый разбор рынка, посчитанный движком. Числа не пересчитывай — '
     +'объясни и ответь на вопрос по ним.\n\n'+reportDigest(lastReport)+'\n\nВопрос: '+q;
   try{
     const text=await platoAnswer(message,
-      note=>{$('#askout').innerHTML='<div class="muted">Платон Сергеевич: '+esc(note)+'</div>'});
-    $('#askout').innerHTML=`<div class="plato">${esc(text).replace(/\n/g,'<br>')}</div>`;
-  }catch(e){$('#askout').innerHTML=`<div class="err">${esc(e.message||e)}</div>`}
+      note=>{renderTalk($('#askout'), marketTalk, 'Платон Сергеевич: '+note)},
+      marketTalk.history());
+    // В историю уходит вопрос человека, а не сообщение с разбором: движок
+    // обрезает реплику по длине, и разбор вернулся бы обрубком, выглядящим
+    // полным. Числа поэтому едут свежими в каждом вопросе.
+    marketTalk.said(q, text);
+    $('#ask').value='';
+    renderTalk($('#askout'), marketTalk, '');
+  }catch(e){
+    renderTalk($('#askout'), marketTalk, '');
+    $('#askout').insertAdjacentHTML('afterbegin', `<div class="err">${esc(e.message||e)}</div>`);
+  }
   finally{$('#askbtn').disabled=false}
 }
 
@@ -1875,7 +1903,15 @@ async function loadStoredSales(){
   }catch(_){ /* кабинет может быть закрыт ключом — это не поломка экрана */ }
 }
 
+let salesSourcesSeen='';
+
 function showSales(d){
+  // Загрузили новый источник — разговор о прежних числах продолжать нельзя:
+  // Платон помнил бы то, чего в своде уже нет. Сравнивается состав и даты
+  // источников, а не сам факт перерисовки: экран рисуется заново и при
+  // открытии вкладки, а разговор при этом тот же.
+  const seen=(d&&d.sources||[]).map(s=>`${s.name}@${String(s.at||'').slice(0,10)}`).join(';');
+  if(seen!==salesSourcesSeen){ salesTalk.reset(); salesSourcesSeen=seen }
   salesData=d;
   renderOverview(d);
   takePlan(d);
@@ -2901,16 +2937,18 @@ function salesDigest(d, limit){
   return platoPack(head, groups, {limit: limit, order: ORDER});
 }
 
-// Сказанное Платоном о продажах. Живёт рядом со сводом: перерисовка карточки
-// (загрузили второй источник) не должна стирать разговор.
-let salesSaid=[];
+// Разговор Платона о продажах. Живёт рядом со сводом: перерисовка карточки
+// (загрузили второй источник) не должна стирать разговор. И это именно
+// разговор, а не стопка ответов: сказанное уезжает в историю, поэтому
+// уточнение «а почему» Платон понимает.
+const salesTalk=platoThread();
 
 async function askPlatoSales(){
   if(!salesData){$('#salesout').innerHTML='<div class="muted">Сначала загрузите выгрузку ЦФ.</div>';return}
   const ask=($('#salesq').value||'').trim()||SALES_ASKS[0].text;
   const btn=$('#salesask');
   btn.disabled=true;
-  $('#salesout').innerHTML='<div class="muted">Платон Сергеевич читает продажи…</div>';
+  renderTalk($('#salesout'), salesTalk, 'Платон Сергеевич читает продажи…');
   const tail='\n\nВОПРОС: '+ask+'\n\nПиши по-русски, коротко, отдельным абзацем на каждую мысль.';
   const preamble='Ниже свод продаж проекта, посчитанный движком по выгрузке ЦФ. '
     +'Числа НЕ пересчитывай и не выдумывай того, чего в своде нет; чего в своде нет — '
@@ -2920,32 +2958,22 @@ async function askPlatoSales(){
   // бюджет вылезал бы за предел ровно на длинном вопросе.
   const message=preamble+salesDigest(salesData, SALES_ASK_LIMIT-preamble.length-tail.length-20)+tail;
   try{
+    // Ответы копятся, а не затирают друг друга: новый встаёт сверху — на
+    // телефоне дописанный снизу оказывается за краем экрана, и человек
+    // решает, что ничего не произошло. Вопрос стоит над ответом: через три
+    // реплики «он про что это» становится настоящим вопросом.
     const answer=await platoAnswer(message,
-      note=>{$('#salesout').innerHTML='<div class="muted">Платон Сергеевич: '+esc(note)+'</div>'});
-    // Диалог: ответы копятся, а не затирают друг друга — иначе сравнить ответ
-    // на уточнение с исходным нечем. Новый встаёт сверху: на телефоне
-    // дописанный снизу ответ оказывается за краем экрана, и человек решает,
-    // что ничего не произошло. Вопрос стоит над ответом — через три реплики
-    // «он про что это» становится настоящим вопросом.
-    const said=document.createElement('div');
-    said.className='plato';
-    said.style.marginTop='10px';
-    said.innerHTML='<div class="muted" style="font-size:12px;margin-bottom:4px">'+esc(ask)+'</div>'
-      +esc(answer).replace(/\n/g,'<br>');
-    const out=$('#salesout');
-    out.innerHTML='';
-    out.insertBefore(said, out.firstChild);
-    salesSaid.unshift(said.innerHTML);
-    salesSaid.slice(1).forEach(html=>{
-      const older=document.createElement('div');
-      older.className='plato';
-      older.style.marginTop='10px';
-      older.style.opacity='0.75';
-      older.innerHTML=html;
-      out.appendChild(older);
-    });
+      note=>{renderTalk($('#salesout'), salesTalk, 'Платон Сергеевич: '+note)},
+      salesTalk.history());
+    // В историю уходит вопрос человека, а не сообщение со сводом: движок
+    // обрезает реплику по длине, и свод вернулся бы обрубком, выглядящим
+    // полным. Свод поэтому едет свежим в каждом вопросе.
+    salesTalk.said(ask, answer);
+    renderTalk($('#salesout'), salesTalk, '');
   }catch(e){
-    $('#salesout').innerHTML=`<div class="err">${esc(String(e.message||e))}</div>`;
+    renderTalk($('#salesout'), salesTalk, '');
+    $('#salesout').insertAdjacentHTML('afterbegin',
+      `<div class="err">${esc(String(e.message||e))}</div>`);
   }finally{ btn.disabled=false }
 }
 
@@ -3063,7 +3091,9 @@ async function build(){
         city_reference:$('#cityref').checked})});
     const d=await r.json();
     if(!r.ok){$('#out').innerHTML=`<div class="card err">${esc(d.detail||'Не получилось')}</div>`;return}
-    lastReport=d; autoPicked=false; onChart.clear(); render(d);
+    // Новый объект — новый разговор: Платон помнил бы числа прежнего и
+    // уверенно отвечал бы по ним.
+    lastReport=d; autoPicked=false; onChart.clear(); marketTalk.reset(); render(d);
   }catch(e){
     $('#out').innerHTML=`<div class="card err">${esc(e.message||e)}</div>`;
   }finally{clearInterval(timer);$('#go').disabled=false;$('#state').textContent='';}
@@ -3469,6 +3499,7 @@ on('#pdf','click',()=>{
 // приехал бы в выборку другого объекта и выглядел бы там найденным.
 on('#reset','click',function(){
   lastReport=null; planData=null; added.clear(); bubbleView='speed'; selectedSubjectQuery=null;
+  marketTalk.reset();
   $('#out').innerHTML=''; $('#hintout').innerHTML='';
   $('#planstate').textContent=''; $('#state').textContent='';
   $('#ask').value=''; $('#askout').innerHTML='';

@@ -62,6 +62,7 @@ from developaid_monitor_page import MONITOR_PAGE as _MONITOR_PAGE_RAW
 import document_intake
 import management_contour
 import parking_norms
+import plato_question
 import project_preset
 
 # Единственное место, где живёт номер версии. Копий было четырнадцать —
@@ -69,7 +70,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.20.86"
+VERSION = "0.20.87"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -2104,20 +2105,24 @@ class MonitorAskRequest(BaseModel):
     message: str
     session: str = ""
     key: str = ""
+    # Разговор, а не один ответ: реплики, а не числа — числа едут свежими в
+    # самом вопросе, потому что срез мог смениться между репликами.
+    history: list[dict[str, Any]] = []
 
 
 @app.post("/monitor/ask", include_in_schema=False)
 def monitor_ask(req: MonitorAskRequest, request: Request) -> dict[str, Any]:
     """Свободный вопрос Платону из монитора.
 
-    Тот же движковый `plato_answer`, что у кабинета рынка и торгов, — свой
-    маршрут только ради гейта монитора: ключ кабинета у руководителя проекта
-    не спрашивается. Числа экрана приезжают в тексте вопроса готовыми, и в
-    нём прямо стоит «не пересчитывай»; вводные подставляются умолчаниями
-    движка — без них `_run_authoritative_model` падает пятисоткой на пустоте.
+    Тот же движковый Платон, что у кабинета рынка и торгов, — свой маршрут
+    только ради гейта монитора: ключ кабинета у руководителя проекта не
+    спрашивается. Числа экрана приезжают в тексте вопроса готовыми, и в нём
+    прямо стоит «не пересчитывай»; вводные подставляются умолчаниями движка —
+    без них `_run_authoritative_model` падает пятисоткой на пустоте.
     Быстрый ответ приходит этим же запросом, долгий забирается опросом
     `/agent/result/{trace_id}` — цепочка ядро → Render → OpenAI одним
-    соединением не держится.
+    соединением не держится, и держал её тут `plato_answer`, обещавший в этой
+    же строке обратное.
     """
     _require_web_access(req.session, req.key, "Монитор проекта")
     message = str(req.message or "").strip()
@@ -2127,9 +2132,22 @@ def monitor_ask(req: MonitorAskRequest, request: Request) -> dict[str, Any]:
         message=message,
         inputs=dict(DEFAULT_INPUTS),
         tep={key: dict(value) for key, value in TEP_DEFAULT.items()},
+        history=[
+            {"role": str(item.get("role") or ""),
+             "content": str(item.get("content") or "")}
+            for item in (req.history or [])
+            if isinstance(item, dict)
+            and str(item.get("role") or "") in ("user", "assistant")
+            and str(item.get("content") or "").strip()
+        ][-6:],
     )
     try:
-        return plato_answer(payload, request)
+        # Спрашивает браузер, а не бот: соединение держится только до передачи
+        # работы опросу. `plato_answer` ждёт ответ целиком, и на длинном
+        # вопросе окно получало страницу ошибки от nginx вместо ответа —
+        # цепочка ядро → Render → OpenAI одним соединением не держится. Окно
+        # монитора за долгим ответом и так ходит по номеру запуска.
+        return plato_answer_handoff(payload, request)
     except HTTPException:
         raise
     except Exception as exc:
@@ -39654,6 +39672,10 @@ MONITOR_PAGE_HTML = (
     _MONITOR_PAGE_RAW.replace("__VERSION__", VERSION)
     .replace("__DEVELOPAID_CONTOUR_STYLE__", management_contour.STYLE)
     .replace(management_contour.PLACEHOLDER, management_contour.markup("/monitor"))
+    # Разговор с Платоном объявлен один раз (plato_question). Монитор —
+    # четвёртая поверхность, где его спрашивают, и своей памяти у неё быть
+    # не должно: «Платон должен везде уметь вести диалог, а не один ответ».
+    .replace(plato_question.PLACEHOLDER, plato_question.SCRIPT)
 )
 PAGE = PAGE.replace(FIELD_GROUPS_PLACEHOLDER,
                     json.dumps(FIELD_GROUPS, ensure_ascii=False))

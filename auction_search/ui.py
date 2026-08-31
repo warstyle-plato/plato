@@ -1127,19 +1127,37 @@ function renderAskContext(){
   +(chosen?one+(chosen.name||chosen.title||chosen.address):none)
   +'. Числа он не считает — их считает движок, Платон их читает.';
 }
+// Разговор о торгах. Один ответ на вопрос — это справка, а уточнить её было
+// нечем: Платон сказанного не помнил.
+const auctionTalk=platoThread();
+
+function renderAuctionTalk(pending){
+ const out=$('askOut');
+ const rows=[];
+ for(let i=auctionTalk.turns.length-2;i>=0;i-=2){
+  rows.push(`<div class="plato-answer"${i<auctionTalk.turns.length-2?' style="opacity:.75"':''}>`
+   +`<div class="muted" style="font-size:12px;margin-bottom:4px">${esc(auctionTalk.turns[i].content)}</div>`
+   +esc(auctionTalk.turns[i+1].content)+'</div>');
+ }
+ out.innerHTML=(pending||'')+rows.join('');
+}
+
 async function askPlato(){
  const field=$('askText'), out=$('askOut'), button=$('askBtn');
  const question=(field.value||'').trim();
  if(!question){out.innerHTML='<div class="notice warn">Напишите вопрос.</div>';return}
- button.disabled=true;out.innerHTML='<div class="notice"><span class="spinner"></span>Платон Сергеевич думает…</div>';
+ button.disabled=true;
+ renderAuctionTalk('<div class="notice"><span class="spinner"></span>Платон Сергеевич думает…</div>');
  const message=askMessage(question);
  try{
   let d;
   try{
+   // История несёт реплики, а не списки: экран мог смениться между
+   // вопросами, и лоты едут свежими в самом сообщении.
    d=await askJson('/cabinet/ask',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({message})});
+    body:JSON.stringify({message, history: auctionTalk.history()})});
   }catch(e){
-   out.innerHTML=`<div class="notice warn">${esc(e.status===401?NEED_LOGIN:(e.message||e))}</div>`;return;
+   renderAuctionTalk(`<div class="notice warn">${esc(e.status===401?NEED_LOGIN:(e.message||e))}</div>`);return;
   }
   // Быстрый ответ приходит тем же запросом; за долгим ходим по номеру запуска.
   let text=d.reply||d.answer||d.text||'';
@@ -1151,9 +1169,9 @@ async function askPlato(){
    if(pd.status==='error'){text='Ошибка: '+(pd.detail||pd.error||'неизвестно');break}
    text=pd.reply||pd.answer||pd.text||'';
   }
-  out.innerHTML=text?`<div class="plato-answer">${esc(text)}</div>`
-   :`<div class="notice warn">${esc(d.error||'Ответ пустой — Платон ничего не сказал.')}</div>`;
- }catch(e){out.innerHTML=`<div class="notice warn">${esc(e.message||e)}</div>`}
+  if(text){ auctionTalk.said(question, text); field.value=''; renderAuctionTalk('') }
+  else renderAuctionTalk(`<div class="notice warn">${esc(d.error||'Ответ пустой — Платон ничего не сказал.')}</div>`);
+ }catch(e){renderAuctionTalk(`<div class="notice warn">${esc(e.message||e)}</div>`)}
  finally{button.disabled=false}
 }
 $('askBtn').onclick=askPlato;
