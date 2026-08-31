@@ -222,6 +222,16 @@ document.addEventListener('DOMContentLoaded', function(){{
         // даёт, а перемножить остаток лотов на среднюю площадь экспозиции
         // значит выдать оценку за данные.
         +deepCard(data)
+        // Вымывание теми же полосами, что в своде продаж: доли считает
+        // сервер, рисует тот же `salesMixBlock`. Полос две, не три — пул
+        // проекта из ответа не складывается, и подпись «пул» была бы догадкой.
+        +((data.rooms_bands||[]).length
+          ? '<div class="card"><h2>Вымывание по комнатности</h2>'
+            +salesMixBlock({{pool:{{bands:data.rooms_bands}}}})
+            +'<div class="muted" style="font-size:12.5px;margin-top:8px">Полосы —'
+            +' типы квартир, как их делит сам bnMAP. Верхняя: доля типа в проданном'
+            +' по ДДУ, нижняя: доля в остатке. Расхождение и есть вымывание.</div></div>'
+          : '')
         +peersCard(data.peers||[])
         +'<div class="card">'+(data.html||'')+'</div>'
         +essayCard(data)+finalCard(data);
