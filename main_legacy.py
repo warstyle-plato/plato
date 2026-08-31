@@ -70,7 +70,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.21.9"
+VERSION = "0.21.10"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -13188,7 +13188,11 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         story.append(P(
             f"Показатель: {base.get('label') or ''} · база "
             f"{_pdf_num(base.get('value'), digits)} {base.get('unit') or ''} · "
-            f"охват: {base.get('scope_label') or ''} · отклонение "
+            f"охват: {base.get('scope_label') or ''}"
+            + ("" if base.get("project_value") is None else
+               f" (не весь проект: у проекта {_pdf_num(base.get('project_value'), digits)} "
+               f"{base.get('unit') or ''})")
+            + " · отклонение "
             f"{_pdf_num(sensitivity.get('change_pct'), 0)}% и "
             f"{_pdf_num(sensitivity.get('duration_change_months'), 0)} мес. для сроков. "
             "Меняется один параметр за расчёт.", small))
@@ -24198,6 +24202,17 @@ def run_sensitivity(
     items.sort(key=lambda item: item["impact"], reverse=True)
     info = _SENSITIVITY_METRICS[metric]
     verdict = _sensitivity_verdict(metric, base_value, items, change_pct, duration_change_months)
+    # У многоочередного проекта охват по умолчанию — слабейшая очередь, и это
+    # осознанный выбор: банк смотрит на неё. Но на экране рядом стоит LLCR всего
+    # проекта, и два разных числа под одним словом читаются как расхождение
+    # счёта («в целом 1,18, а чувствительность показала 0,9», владелец,
+    # 31.08.2026). Поэтому величина проекта едет вместе с базой — не вместо неё
+    # и не заменяя выбор, а чтобы обе были названы.
+    project_value: float | None = None
+    project_label = ""
+    if scope != "consolidated" and base_bundle.get("mode") == "phased":
+        project_label, project_value, _ = _metric_value(
+            base_bundle, metric, "consolidated", selected_view)
     return {
         "verdict": verdict,
         "base": {
@@ -24209,6 +24224,10 @@ def run_sensitivity(
             "value": round(base_value, 6),
             "scope": scope,
             "scope_label": scope_label,
+            # None — «не считали», а не «столько же»: одноочередной проект сюда
+            # не попадает вовсе, и пустое поле там не должно читаться как ноль.
+            "project_value": None if project_value is None else round(project_value, 6),
+            "project_label": project_label,
         },
         "change_pct": change_pct,
         "duration_change_months": duration_change_months,
@@ -36717,9 +36736,16 @@ function renderReportSensitivity(){
   return;
  }
  const base=sensitivityReport.base;
+ // Охват называется рядом с величиной проекта: торнадо по слабейшей очереди
+ // и LLCR всего проекта — разные числа, и без второй половины первое читается
+ // как «модель посчитала иначе».
+ const scopeLine=escapeHtml(base.scope_label||'')+' · база '
+  +sensFormat(base.value,base.digits)+' '+escapeHtml(base.unit||'')
+  +(base.project_value===null||base.project_value===undefined?''
+    :' · не весь проект: у проекта '+sensFormat(base.project_value,base.digits)+' '
+      +escapeHtml(base.unit||''));
  box.innerHTML='<div class="section-title">Чувствительность · '+escapeHtml(base.label)+'</div>'
-  +'<div style="font-size:12px;color:#777;margin-bottom:10px">'+escapeHtml(base.scope_label||'')+' · база '
-  +sensFormat(base.value,base.digits)+' '+escapeHtml(base.unit||'')+'</div>'
+  +'<div style="font-size:12px;color:#777;margin-bottom:10px">'+scopeLine+'</div>'
   +'<div id="reportTornado"></div>'
   +(sensitivityReport.verdict||[]).map(line=>`<div class="note">${escapeHtml(String(line))}</div>`).join('');
  renderTornado(sensitivityReport,'reportTornado');
