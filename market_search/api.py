@@ -477,8 +477,19 @@ def install(app: FastAPI) -> MarketDiscoveryService:
         message = str((payload or {}).get("message") or "").strip()
         if not message:
             raise HTTPException(status_code=422, detail="Пустой вопрос")
+        # Разговор, а не один ответ: уточнить сказанное можно только тогда,
+        # когда Платон это сказанное помнит. История несёт реплики, а не
+        # числа — числа едут свежими в самом вопросе.
+        history = [
+            {"role": str(item.get("role") or ""),
+             "content": str(item.get("content") or "")}
+            for item in ((payload or {}).get("history") or [])
+            if isinstance(item, dict)
+            and str(item.get("role") or "") in ("user", "assistant")
+            and str(item.get("content") or "").strip()
+        ][-6:]
         try:
-            return ask(message, request)
+            return ask(message, request, history)
         except HTTPException:
             raise
         except Exception as exc:

@@ -264,3 +264,34 @@ def test_each_view_of_the_cabinet_opens_without_a_script_error(tmp_path) -> None
         finally:
             browser.close()
     assert not broken, f"вид кабинета упал: {broken}"
+
+
+def test_each_room_has_its_portrait_and_a_stranger_gets_a_refusal(tmp_path, monkeypatch) -> None:
+    """Портреты кабинетов лежат файлами и отдаются своим маршрутом.
+
+    Карточка без портрета говорит, какого именно не хватает, — пустой круг
+    читался бы как «так и надо». Имя проверяется: маршрут отдаёт файлы из
+    каталога, и путь в нём собирать из чужой строки нельзя.
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from market_search.api import install
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("MARKET_CABINET_KEY", "stand-key-2026")
+    app = FastAPI()
+    install(app)
+    client = TestClient(app)
+    client.post("/cabinet/login", content="key=stand-key-2026",
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                follow_redirects=False)
+
+    for role in contour.ROLES:
+        got = client.get(f"/cabinet/assets/{role['face']}.webp")
+        assert got.status_code == 200, role["face"]
+        assert got.headers["content-type"] == "image/webp"
+        assert len(got.content) > 5000, "портрет подозрительно пуст"
+    # Чужого имени нет, и обход каталога тоже: имя ограничено набором знаков.
+    assert client.get("/cabinet/assets/plato-нет.webp").status_code == 404
+    assert client.get("/cabinet/assets/..%2F..%2Fmain_legacy.webp").status_code == 404

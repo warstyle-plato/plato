@@ -84,9 +84,32 @@ def _fat_summary() -> dict:
     }
 
 
+def _function(name: str) -> str:
+    """Исходник функции страницы — по её объявлению, а не по соседней строке.
+
+    Прежде кусок вырезался «от `function salesDigest(` до комментария
+    „// Сказанное Платоном“». Комментарий — не контракт: его переписали
+    вместе с соседним блоком, и десять проверок разом упали с
+    `ValueError: substring not found`, ни слова не сказав о том, что
+    сломалось на самом деле (ничего). Функция — контракт: она либо есть, либо
+    её нет, и второе — настоящая поломка. Границу считаем скобками.
+    """
+    start = PAGE.index(f"function {name}(")
+    depth, index = 0, PAGE.index("{", start)
+    while index < len(PAGE):
+        if PAGE[index] == "{":
+            depth += 1
+        elif PAGE[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return PAGE[start:index + 1]
+        index += 1
+    raise AssertionError(f"функция {name} на странице не закрыта")
+
+
 def _question(summary: dict, ask: str | None = None) -> str:
     """Собираем вопрос настоящим кодом страницы, а не его пересказом."""
-    digest = PAGE[PAGE.index("function salesDigest("):PAGE.index("// Сказанное Платоном")]
+    digest = _function("salesDigest")
     asks = PAGE[PAGE.index("const SALES_ASKS=["):]
     asks = asks[:asks.index("\n];") + 3]
     body = PAGE[PAGE.index("async function askPlatoSales(){"):]
@@ -98,10 +121,16 @@ def _question(summary: dict, ask: str | None = None) -> str:
     limit_line = PAGE[PAGE.index("const SALES_ASK_LIMIT="):]
     limit_line = limit_line[:limit_line.index(";") + 1]
 
+    # Укладка объявлена один раз (`plato_question`) и подставляется на
+    # страницы плейсхолдером — берём её оттуда, а не выкусываем со страницы
+    # куском по соседству со сводом.
+    import plato_question
+
     script = (
         "const num=(v,d=0)=>v===null||v===undefined?'—':"
         "Number(v).toLocaleString('ru-RU',"
         "{minimumFractionDigits:d,maximumFractionDigits:d});\n"
+        + plato_question.SCRIPT + "\n"
         + limit_line + "\n" + asks + "\n" + digest + "\n"
         + "const salesData=" + json.dumps(summary, ensure_ascii=False) + ";\n"
         + "const ask=" + json.dumps(ask, ensure_ascii=False) + "||SALES_ASKS[0].text;\n"
@@ -134,7 +163,7 @@ def test_the_head_is_only_the_project_and_the_totals():
     """Выводы и «не прочитано» стояли вне бюджета — с них и переполнялось."""
     message = _question(_fat_summary())
     assert message.count("ПРОЕКТ:") == 1
-    body = PAGE[PAGE.index("function salesDigest("):PAGE.index("// Сказанное Платоном")]
+    body = _function("salesDigest")
     head = body[body.index("const head=["):body.index("const add=")]
     assert "ВЫВОД" not in head, "вывод — раздел с бюджетом, а не обязательная шапка"
     assert "НЕ ПРОЧИТАНО" not in head
@@ -207,7 +236,7 @@ def test_the_unread_sources_are_never_the_first_to_go():
 
 def test_the_order_is_declared_not_inherited_from_the_maths():
     """Порядок разделов задаётся при сборке, а не порядком вычислений."""
-    body = PAGE[PAGE.index("function salesDigest("):PAGE.index("// Сказанное Платоном")]
+    body = _function("salesDigest")
     assert "const ORDER=[" in body
     order = body[body.index("const ORDER=["):body.index("groups.sort(")]
     for name in ("выводы", "не прочитано", "оплата", "каналы"):
@@ -237,10 +266,39 @@ def test_the_dialogue_has_preset_questions_and_one_of_them_stands_in_the_field()
 
 
 def test_the_answers_do_not_erase_each_other():
+    """Ответы копятся, новый стоит сверху — и это проверяется отрисовкой.
+
+    Прежде проверялись имена из реализации (`salesSaid`, `insertBefore`).
+    Порядок реплик от них не зависит: стопку ответов заменил разговор, имена
+    сменились, поведение осталось — и проверка упала, ничего про поведение не
+    сказав. Теперь гоняется сама отрисовка: новая реплика обязана стоять выше
+    прежней, потому что на телефоне дописанный снизу ответ оказывается за
+    краем экрана.
+    """
+    import plato_question
+
     body = PAGE[PAGE.index("async function askPlatoSales(){"):]
     body = body[:body.index("\n}\n")]
-    assert "salesSaid" in body, "сказанное копится, а не затирается"
-    assert "insertBefore" in body, "новый ответ встаёт сверху"
+    assert ".said(" in body, "сказанное никуда не записывается"
+    assert "renderTalk(" in body, "разговор не рисуется"
+
+    script = (
+        plato_question.SCRIPT + "\n"
+        + "const esc=s=>String(s);\n"
+        + _function("renderTalk") + "\n"
+        + "const box={innerHTML:''};\n"
+          "const talk=platoThread();\n"
+          "talk.said('первый вопрос','первый ответ');\n"
+          "talk.said('второй вопрос','второй ответ');\n"
+          "renderTalk(box, talk, '');\n"
+          "process.stdout.write(box.innerHTML);\n"
+    )
+    done = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    shown = done.stdout
+    assert "первый ответ" in shown, "прежний ответ затёрт новым"
+    assert shown.index("второй ответ") < shown.index("первый ответ"), (
+        "новый ответ встал под старым — на телефоне его не видно")
 
 
 def test_the_sources_line_carries_no_file_names():

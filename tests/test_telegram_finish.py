@@ -88,6 +88,9 @@ def test_only_one_progress_line_is_ever_created():
         telegramProgress('два');const b=document.getElementById('telegramProgress');
         first.push(a===b, b.textContent);
         console.log(JSON.stringify(first));
+        // Снимаем полосу: у неё сторожевой таймер на полминуты, и с ним node
+        // не завершится, пока тот не сработает.
+        telegramProgress('');
         """
     )
     same, text = run_js(script)

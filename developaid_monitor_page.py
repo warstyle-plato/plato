@@ -79,6 +79,9 @@ __DEVELOPAID_CONTOUR__
 <div class="card hidden detail-float" id="detailCard"><div class="head"><h2 id="detailTitle">Работа</h2><span class="muted">срок · КС · деньги · зависимости</span><button class="detail-close" id="detailClose" title="Закрыть">✕</button></div><div class="body"><div class="detail-grid" id="detailGrid"></div><div id="detailWhy"></div><div id="workFactBox"></div><div id="paymentDetail"></div><div id="financeNotice"></div><div class="links"><div><b>Что влияет на работу</b><div id="pred"></div></div><div><b>На что влияет работа</b><div id="succ"></div></div></div></div></div>
 </div><div class="msg bad" id="viewMsg"></div></div>
 <script>
+__DEVELOPAID_PLATO_PACK__
+</script>
+<script>
 'use strict';
 const $=id=>document.getElementById(id),expanded=new Set();let selected=null,currentView=null,ganttPrimed=false;
 const WEB_SESSION_KEY='developaid_web_session',ADMIN_KEY='plato_projects_key',today=new Date().toISOString().slice(0,10);$('cut').value=today;$('rssDate').value=today;$('baselineDate').value=today;
@@ -296,6 +299,21 @@ $('forecastHeadline').innerHTML=`При сохранении текущего т
 async function runScenario(kind,automatic=false){const wbs=$('scenarioWbs').value.trim(),value=Number($('scenarioValue').value)||0;if(kind!=='current_pace'&&!wbs)return msg('scenarioMsg','Укажите WBS или часть названия работы','bad');if(automatic){$('forecastCard').classList.remove('hidden');$('forecastHeadline').textContent='Платон пересчитывает темп, PM-зависимости и финансирование…'}else msg('scenarioMsg','Платон пересчитывает сеть и будущую потребность…','good');try{const r=await post('/monitor/scenario',{project:$('project').value.trim(),cut:$('cut').value,kind,wbs,days:kind==='delay_wbs'?value:0,acceleration_pct:kind==='accelerate_wbs'?value:20}),s=r.schedule||{},f=r.funding||{},base=f.current_dds||{},sc=f.scenario_dds||{},rd=f.reserve_exhaustion_change_days,fd=f.additional_financing_change;const deltaDays=x=>x==null?'—':`${Number(x)>=0?'+':''}${x} дн`;if(kind==='current_pace')renderForecast(r);if(automatic)return;$('scenarioOutput').className='scenario-result';$('scenarioOutput').innerHTML=`<b>${r.answer||'Сценарий рассчитан'}</b><table class="scenario-table"><thead><tr><th>Показатель</th><th>Текущий утверждённый план</th><th>Сценарий</th><th>Изменение</th></tr></thead><tbody><tr><td>РНВ</td><td>${dt(s.approved_rnv)}</td><td>${dt(s.scenario_rnv)}</td><td class="${Number(s.delay_vs_approved_days)>0?'bad':'good'}">${deltaDays(s.delay_vs_approved_days)}</td></tr><tr><td>Исчерпание резерва</td><td>${dt(base.reserve_exhaustion)}</td><td>${dt(sc.reserve_exhaustion)}</td><td>${deltaDays(rd)}</td></tr><tr><td>Непокрытая потребность</td><td>${money(base.additional_financing)}</td><td>${money(sc.additional_financing)}</td><td class="${Number(fd)>0?'bad':'good'}">${Number(fd)>=0?'+':''}${money(fd)}</td></tr></tbody></table><div class="scenario-note">${f.scope_note||''}</div>`;if(!automatic)msg('scenarioMsg','Сценарий рассчитан. Верхний Cost control остаётся текущим утверждённым планом.','good')}catch(e){if(automatic){renderForecastFallback(e.message)}else msg('scenarioMsg',e.message,'bad')}}
 function renderForecastFallback(reason){const d=(currentView||{}).dashboard||{},s=d.schedule||{},known=!!s.forecast_known;$('forecastCard').classList.remove('hidden');if(known){const slip=Number(s.rnv_delay_days||0);$('forecastHeadline').innerHTML=`По темпу КС прогноз РНВ — <span class="${slip>0?'bad':'good'}">${dt(s.forecast_finish)}${slip?` (${slip>0?'+':''}${slip} дн)`:''}</span>. <span class="muted">${s.forecast_source||'темп актов КС'}.</span>`;$('forecastConfidence').textContent='прогноз по темпу · сценарии требуют PM-выгрузку';$('forecastModel').innerHTML=`<div class="model-warning">Сценарии «что если» считаются по PM-сети: загрузите PM-выгрузку в блоке Benchmark. Причина: ${reason}</div>`}else{$('forecastHeadline').innerHTML='<span class="muted">Прогноз пока не строится: недостаточно факта КС по работам графика.</span>';$('forecastConfidence').textContent='нужен еженедельный РСС';$('forecastModel').innerHTML=`<div class="model-warning">${reason}</div>`}$('forecastMetrics').innerHTML='';$('forecastDrivers').innerHTML=''}document.querySelectorAll('[data-scenario]').forEach(b=>b.onclick=()=>runScenario(b.dataset.scenario));
 function askScenarioQuestion(){const q=$('scenarioQuestion').value.trim();if(!q)return msg('scenarioMsg','Введите вопрос Платону.','bad');if(/текущ[а-яё]*\s+темп|темп[а-яё]*\s+(?:сохран|остан)/i.test(q))return runScenario('current_pace');let m=q.match(/(?:если\s+)?(.+?)\s+(?:задерж[а-яё]*|просроч[а-яё]*|сдвин[а-яё]*)\D{0,20}(\d+)\s*(?:дн|день)/i)||q.match(/(?:задерж[а-яё]*|сдвин[а-яё]*)\s+(.+?)\s+на\s+(\d+)/i);if(m){$('scenarioWbs').value=m[1].replace(/^.*?если\s+/i,'').replace(/^что\s+будет[,]?\s*/i,'').trim();$('scenarioValue').value=m[2];return runScenario('delay_wbs')}m=q.match(/ускор(?:ить|ение)\s+(.+?)(?:\s+на\s+(\d+)\s*%|$)/i);if(m){$('scenarioWbs').value=m[1].replace(/[?.,]+$/,'').trim();$('scenarioValue').value=m[2]||20;return runScenario('accelerate_wbs')}return askMonitorPlato(q)}
+// Разговор монитора. Один ответ на вопрос — это справка; уточнить её было
+// нечем, потому что Платон сказанного не помнил.
+const monitorTalk=platoThread();
+
+function renderMonitorTalk(){
+ const rows=[];
+ for(let i=monitorTalk.turns.length-2;i>=0;i-=2){
+  rows.push('<div style="margin-top:10px'+(i<monitorTalk.turns.length-2?';opacity:.75':'')+'">'
+   +'<div class="muted" style="font-size:12px;margin-bottom:4px">'+esc(monitorTalk.turns[i].content)+'</div>'
+   +'<div style="white-space:pre-wrap;line-height:1.55">'+esc(monitorTalk.turns[i+1].content)+'</div></div>');
+ }
+ $('scenarioOutput').className='scenario-result';
+ $('scenarioOutput').innerHTML=rows.join('');
+}
+
 async function askMonitorPlato(question){
  msg('scenarioMsg','Платон читает числа экрана и думает — до пары минут…','warn');
  const parts=[['Состояние проекта','kpis'],['Резюме Платона','summaryBody'],['Прогноз','forecastHeadline'],['Метрики прогноза','forecastMetrics'],['Драйверы','forecastDrivers'],['Сомнения','doubtsBody']]
@@ -303,7 +321,9 @@ async function askMonitorPlato(question){
   .filter(Boolean).join('\n\n').slice(0,6000);
  const message='Ниже — то, что сейчас открыто в мониторе проекта DevelopAid («'+$('project').value.trim()+'», срез '+$('cut').value+'). Числа посчитаны сервером — не пересчитывай их, объясни и ответь по ним. Чего в данных нет, того не выдумывай — скажи, что данных нет.\n\n'+parts+'\n\nВопрос: '+question;
  try{
-  const d=await post('/monitor/ask',{message});
+  // История несёт реплики, а не экран: числа монитора едут свежими в самом
+  // вопросе — срез между репликами мог смениться.
+  const d=await post('/monitor/ask',{message, history: monitorTalk.history()});
   let text=d.reply||d.answer||d.text||'';
   // Быстрый ответ приходит тем же запросом; за долгим ходим по номеру запуска.
   for(let i=0;!text&&d.trace_id&&i<120;i++){
@@ -315,8 +335,12 @@ async function askMonitorPlato(question){
    text=pd.reply||pd.answer||pd.text||'';
   }
   if(!text){msg('scenarioMsg','Платон не ответил: истекло время ожидания.','bad');return}
-  $('scenarioOutput').className='scenario-result';
-  $('scenarioOutput').innerHTML='<div style="white-space:pre-wrap;line-height:1.55">'+text.replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</div>';
+  // В историю уходит вопрос человека, а не сообщение с экраном: движок
+  // обрезает реплику по длине, и снимок экрана вернулся бы обрубком,
+  // выглядящим полным. Экран поэтому едет свежим в каждом вопросе.
+  monitorTalk.said(question, text);
+  $('scenarioQuestion').value='';
+  renderMonitorTalk();
   msg('scenarioMsg','');
  }catch(e){msg('scenarioMsg',e.message,'bad')}}$('scenarioAsk').onclick=askScenarioQuestion;$('scenarioQuestion').onkeydown=e=>{if(e.key==='Enter')askScenarioQuestion()};
 function collectOriginal(nodes,out=[],ctx={control:'',detail:'',rss:null}){for(const n of nodes||[]){const level=n.level||'';const next={...ctx};if(level==='control')next.control=n.name||'';if(level==='detail')next.detail=n.name||'';if(level==='rss')next.rss=n;if(level==='task')out.push({task:n,control:next.control,detail:next.detail,rss:next.rss});collectOriginal(n.children||[],out,next)}return out}
