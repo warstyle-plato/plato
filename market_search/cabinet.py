@@ -2441,8 +2441,14 @@ const PLAN_METRICS=[
   {key:'amount', name:'млн ₽', axis:v=>num(v/1e6),      show:v=>num(v/1e6,1)+' млн ₽'},
   {key:'area',   name:'м²',    axis:v=>num(v),          show:v=>num(v)+' м²'},
 ];
-function salesPlansChart(quarters, metric){
-  const rows=quarters.map(q=>({
+// Строки квартального графика. Объявлены отдельно, потому что их читают двое:
+// сама картинка и таблица под ней. Пока сборка строк жила внутри графика, блок
+// продолжал ссылаться на `rows` из чужой области видимости — и падал
+// `ReferenceError` ровно тогда, когда планы прочитаны, то есть на настоящем
+// проекте. Экран при этом не «ломался наполовину»: `renderSales` обрывался, и
+// от отчёта не оставалось ничего (владелец, 31.08.2026).
+function salesPlansRows(quarters, metric){
+  return quarters.map(q=>({
     label:q.label, short:q.label.replace(' ',''),
     value:q['fact_'+metric.key], pale:q.partial,
     fm:q['fm_'+metric.key], bank:q['bank_'+metric.key],
@@ -2450,6 +2456,10 @@ function salesPlansChart(quarters, metric){
     over:q.partial?'часть':'',
     tip:q.label+': факт '+metric.show(q['fact_'+metric.key])+(q.partial?' (месяцев в квартале — '+q.months+')':''),
   }));
+}
+
+function salesPlansChart(quarters, metric){
+  const rows=salesPlansRows(quarters, metric);
   const lines=[{key:'fm',name:'план ФМ',color:'#C4581B'},
                {key:'bank',name:'план банка',color:'#8E7CC3',dash:true}];
   return barChart(rows,{lines,axis:metric.axis,show:metric.show,factName:'факт',
@@ -2468,6 +2478,7 @@ function salesPlansBlock(d){
   const quarters=(plans.quarters||[]);
   if(quarters.length<2) return '';
   const metric=PLAN_METRICS.find(m=>m.key===plansMetric)||PLAN_METRICS[0];
+  const rows=salesPlansRows(quarters, metric);
   // На бумагу идут обе меры: переключателя в документе нет.
   let html=salesPlansChart(quarters, metric);
   const rest=PLAN_METRICS.filter(m=>m.key!==metric.key);
