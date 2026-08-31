@@ -654,7 +654,13 @@ function trendChart(series){
   const at=(s,m)=>{const p=s.points.find(p=>p.month===m);return p?p.value:null};
 
   const own=rows.find(s=>s.own)||null;
-  const peers=rows.filter(s=>!s.own);
+  // Ряд, помеченный `aggregate`, — это уже посчитанная источником средняя, а
+  // не проект выборки. В полосу квартилей такие не идут: подписи «верх
+  // выборки» и «низ выборки» над двумя средними назвали бы их тем, чем они не
+  // являются. Рисуются линиями со своим именем. У «Пульса» таких рядов нет,
+  // и его график этой правкой не меняется.
+  const peers=rows.filter(s=>!s.own&&!s.aggregate);
+  const aggregates=rows.filter(s=>!s.own&&s.aggregate);
   // Медиана рынка считается по соседям, без своего проекта. Прежде он входил
   // в неё сам, и цена сравнивалась с медианой, частью которой является.
   const quantile=(sorted,q)=>{
@@ -712,7 +718,7 @@ function trendChart(series){
   // линиями, как раньше: полоса из одного-двух проектов ничего не говорит.
   // Отмеченные галочкой в таблице — поверх полосы, каждый своим цветом.
   // Их не больше горстки: галочек ставят две-три, чтобы сравнить с собой.
-  const picked=peers.filter(s=>s.shown);
+  const picked=peers.filter(s=>s.shown).concat(aggregates);
   picked.forEach((s,i)=>{
     const c=PICKED[i%PICKED.length];
     svg+=`<path d="${path(s)}" fill="none" stroke="${c}" stroke-width="1.8" data-tip="${esc(s.name)}"></path>`;
@@ -776,7 +782,13 @@ function trendChart(series){
     ? `Плотная полоса — половина соседей (от нижнего квартиля до верхнего), бледная — весь разброс`
       +` выборки, пунктир — медиана рынка без вашего проекта. Полоса построена по ${last.n} проектам`
       +` с историей цены. Кривая отдельного соседа — в его карточке: нажмите имя в таблице ниже.`
-    : 'Соседей с историей цены меньше двух — полосу строить не из чего.';
+    : (aggregates.length
+       // Полосы нет не потому, что рынка нет, а потому, что источник прислал
+       // уже посчитанные средние вместо проектов. Молчание об этом читалось бы
+       // как «сравнивать не с чем».
+       ? `Полосы квартилей здесь нет: источник даёт не цену каждого соседа по месяцам, а готовые`
+         +` средние — ${aggregates.map(a=>esc(a.name)).join(' и ')}. Они и нарисованы линиями.`
+       : 'Соседей с историей цены меньше двух — полосу строить не из чего.');
   return '<div class="wrap">'+svg+'</svg></div>'
     +`<div class="muted" style="font-size:12.5px;margin-top:6px">${note}</div>`;
 }
@@ -788,10 +800,14 @@ function trendChart(series){
 // единица — параметрами, потому что вопросов три и все они помесячные:
 // сколько ДДУ, сколько метров и каким лотом. Прежде график был только у
 // первого, а числа для остальных лежали в том же отчёте и не рисовались.
-function salesChart(rows, key, unit, digits){
+function salesChart(rows, key, unit, digits, note){
   key=key||'sold'; unit=unit||'ДДУ'; digits=digits||0;
   const own=rows.find(r=>r.own);
-  if(!own||!own.points.length) return '<div class="muted">Истории продаж по этому проекту в отчёте нет — он покрывает «Москву старую».</div>';
+  // Причина пустоты приходит снаружи: у «Пульса» это «проекта нет в отчёте по
+  // Москве старой», у bnMAP — «помесячных продаж этот метод не отдаёт вовсе».
+  // Зашитая здесь фраза называла бы второму источнику чужую причину.
+  if(!own||!own.points.length) return '<div class="muted">'
+    +esc(note||'Истории продаж по этому проекту в отчёте нет — он покрывает «Москву старую».')+'</div>';
   const months=[...new Set(rows.flatMap(r=>r.points.map(p=>p.month)))].sort();
   const at=(r,m,k)=>{const p=r.points.find(p=>p.month===m);return p?p[k]:null};
   const med=months.map(m=>{
@@ -889,12 +905,12 @@ function salesChart(rows, key, unit, digits){
 // лежали в отчёте с самого начала — просто не запрашивались. Вопрос он
 // закрывает свой: средний лот за всё время говорит о продукте, а по месяцам
 // видно, куда движется спрос — мельчает лот или укрупняется.
-function lotChart(rows){
+function lotChart(rows, note){
   const derive=r=>({...r, points:(r.points||[]).map(p=>({
     month:p.month,
     lot:(p.sold&&p.area&&p.sold>0)?p.area/p.sold:null,
   })).filter(p=>p.lot!==null)});
-  return salesChart(rows.map(derive),'lot','м²',1);
+  return salesChart(rows.map(derive),'lot','м²',1,note);
 }
 
 function remainChart(rows){
@@ -1323,6 +1339,56 @@ function finalCard(d){
     +`</div>`;
 }
 
+// Вердикт, выводы и разбор рисуются одними и теми же тремя функциями на всех
+// поверхностях. Прежде они стояли вставками внутри `showReport`, и вкладка
+// второго источника не могла показать их иначе как второй вёрсткой — а две
+// вёрстки одного вывода расходятся молча, и обе выглядят верными.
+function verdictCard(d){
+  const a=d.analysis||{}, ov=a.overall, pos=a.positioning, site=a.site;
+  if(!ov) return '';
+  // Раскладка по классам печатается рядом с выводом о площадке: «здесь строят
+  // элитный» без линейки вокруг — утверждение без основания на экране.
+  const mix=(site&&site.mix&&site.mix.length>1)?`<h3>Что продаётся вокруг</h3>`
+    +compareTable(site.mix,[
+      {t:'Класс',f:r=>esc(r.segment)+(r.segment===site.segment?' <span class="self">— здешний</span>':'')},
+      {t:'Проектов',num:1,f:r=>num(r.projects)},
+      {t:'из них с ценой',num:1,f:r=>num(r.priced)},
+      {t:'₽/м², медиана',num:1,f:r=>num(r.price_median)},
+      {t:'ДДУ/мес',num:1,f:r=>num(r.units_per_month,1)},
+      {t:'лот, м²',num:1,f:r=>num(r.sold_lot_avg,1)},
+      {t:'лотов в продаже',num:1,f:r=>num(r.exposure)},
+    ]):'';
+  return `<div class="card verdict ${ov.tone}"><h2>${TONE[ov.tone]||''} ${esc(ov.headline)}</h2>`
+    +`<div>${esc(ov.text)}</div>`
+    +(pos?`<div class="pos"><b>Куда попадает проект.</b> ${esc(pos.text)}</div>`:'')
+    +mix+`</div>`;
+}
+
+// «Что из этого следует» — связки между разделами. Читать их после пяти
+// карточек поздно: к тому моменту читатель уже связал числа сам, как получилось.
+function findingsCard(d){
+  const found=(d.analysis||{}).findings||[];
+  if(!found.length) return '';
+  return `<div class="card"><h2>Что из этого следует</h2><div class="findings">`
+    +found.map(f=>`<div class="finding ${esc(f.tone||'flat')}">`
+      +`<b>${esc(f.headline)}</b><p>${esc(f.text)}</p></div>`).join('')
+    +`</div></div>`;
+}
+
+// «Разбор» — те же числа, но связанные между собой. Он читается после графиков
+// и не заменяет их, а объясняет.
+function essayCard(d){
+  const essay=(d.analysis||{}).analysis||[];
+  if(!essay.length) return '';
+  return `<div class="card essay"><h2>Разбор</h2>`
+    +`<p class="lede">Ниже те же цифры, но связанные между собой. Это не рекомендация`
+    +` к действию: решение принимает владелец проекта, а здесь описано, из чего оно`
+    +` складывается.</p>`
+    +essay.map(part=>`<h3>${esc(part.headline)}</h3>`
+      +(part.paragraphs||[]).map(text=>`<p>${esc(text)}</p>`).join('')).join('')
+    +`</div>`;
+}
+
 function blockCard(b,ctx){
   const s=b.subject||{}, p=b.peers||{}, c=b.city||{};
   const cell=(v,l)=>`<div><b>${v}</b><span>${l}</span></div>`;
@@ -1359,9 +1425,9 @@ function blockCard(b,ctx){
   const say=(ctx.analysis&&ctx.analysis.blocks&&ctx.analysis.blocks[b.code])||null;
   const verdict=say&&say.text?`<div class="say ${say.tone}"><b>${TONE[say.tone]||'•'} Разбор</b> ${esc(say.text)}</div>`:'';
   const chart=b.code==='price'?trendChart(ctx.series)
-    :b.code==='pace'?salesChart(ctx.sales,'sold','ДДУ',0)
-    :b.code==='lot_size'?lotChart(ctx.sales)
-    :b.code==='absorption'?salesChart(ctx.sales,'area','м²',0)
+    :b.code==='pace'?salesChart(ctx.sales,'sold','ДДУ',0,ctx.salesNote)
+    :b.code==='lot_size'?lotChart(ctx.sales,ctx.salesNote)
+    :b.code==='absorption'?salesChart(ctx.sales,'area','м²',0,ctx.salesNote)
     :b.code==='stock'?remainChart(ctx.sales):'';
   const chartTitle={price:'Динамика цены, ₽/м²',pace:'Продажи по месяцам, ДДУ',
     lot_size:'Средний проданный лот по месяцам, м²',
@@ -3247,25 +3313,7 @@ function render(d){
   // Вывод — первым, до графиков. Он стоял четвёртой карточкой, под картой
   // рынка и ценами соседей, то есть ниже сгиба: человек открывал отчёт и
   // видел два больших графика вместо ответа на свой вопрос.
-  const ov=(d.analysis||{}).overall, pos=(d.analysis||{}).positioning;
-  const site=(d.analysis||{}).site;
-  // Раскладка по классам печатается рядом с выводом о площадке: «здесь строят
-  // элитный» без линейки вокруг — утверждение без основания на экране.
-  const mix=(site&&site.mix&&site.mix.length>1)?`<h3>Что продаётся вокруг</h3>`
-    +compareTable(site.mix,[
-      {t:'Класс',f:r=>esc(r.segment)+(r.segment===site.segment?' <span class="self">— здешний</span>':'')},
-      {t:'Проектов',num:1,f:r=>num(r.projects)},
-      {t:'из них с ценой',num:1,f:r=>num(r.priced)},
-      {t:'₽/м², медиана',num:1,f:r=>num(r.price_median)},
-      {t:'ДДУ/мес',num:1,f:r=>num(r.units_per_month,1)},
-      {t:'лот, м²',num:1,f:r=>num(r.sold_lot_avg,1)},
-      {t:'лотов в продаже',num:1,f:r=>num(r.exposure)},
-    ]):'';
-  if(ov) html+=`<div class="card verdict ${ov.tone}"><h2>${TONE[ov.tone]||''} ${esc(ov.headline)}</h2>`
-    +`<div>${esc(ov.text)}</div>`
-    +(pos?`<div class="pos"><b>Куда попадает проект.</b> ${esc(pos.text)}</div>`:'')
-    +mix
-    +`</div>`;
+  html+=verdictCard(d);
 
   // У площадки своего проекта нет, и на графиках не остаётся главного героя:
   // полоса рынка есть, а сравнивать её не с чем. Правило «полоса вместо
@@ -3282,14 +3330,8 @@ function render(d){
       .slice(0,5).forEach(p=>onChart.add(String(p.complex_id)));
   }
 
-  // «Что из этого следует» — сразу за вердиктом и до графиков. Выводы связывают
-  // числа разных разделов, и читать их после пяти карточек поздно: к тому
-  // моменту читатель уже связал их сам, как получилось.
-  const found=(d.analysis||{}).findings||[];
-  if(found.length) html+=`<div class="card"><h2>Что из этого следует</h2>`
-    +`<div class="findings">`+found.map(f=>`<div class="finding ${esc(f.tone||'flat')}">`
-      +`<b>${esc(f.headline)}</b><p>${esc(f.text)}</p></div>`).join('')
-    +`</div></div>`;
+  // «Что из этого следует» — сразу за вердиктом и до графиков.
+  html+=findingsCard(d);
 
   const market=[{...m, name:s.project_name||'объект', segment:s.segment, __own:true},
     ...peers.map(p=>({...p, __picked:onChart.has(String(p.complex_id))}))];
@@ -3372,16 +3414,8 @@ function render(d){
       <td class="num">${num(p.area_per_month)}</td><td class="num">${num(p.lot_count)}</td>
       <td class="muted">${esc(p.observed_at||'—')}</td></tr>`).join('')
     +`</table></div></div>`;
-  // «Разбор» — в конце: те же числа, но связанные между собой. Он читается
-  // после того, как человек увидел графики, и не заменяет их, а объясняет.
-  const essay=(d.analysis||{}).analysis||[];
-  if(essay.length) html+=`<div class="card essay"><h2>Разбор</h2>`
-    +`<p class="lede">Ниже те же цифры, но связанные между собой. Это не рекомендация`
-    +` к действию: решение принимает владелец проекта, а здесь описано, из чего оно`
-    +` складывается.</p>`
-    +essay.map(part=>`<h3>${esc(part.headline)}</h3>`
-      +(part.paragraphs||[]).map(text=>`<p>${esc(text)}</p>`).join('')).join('')
-    +`</div>`;
+  // «Разбор» — в конце: те же числа, но связанные между собой.
+  html+=essayCard(d);
   html+=finalCard(d);
   $('#out').innerHTML=html;
   document.querySelectorAll('.views button').forEach(btn=>btn.addEventListener('click',()=>{
