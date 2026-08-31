@@ -246,8 +246,16 @@ VERIFIED: dict[str, str] = {
     "v2.reports.getUniqueTypesOfRooms": "200, типы лотов объекта: ст, 1, 2, 3, 4, 5 — только квартиры",
     "v2.reports.getActualLayerDates": "200, даты свежести по слоям: price, deals, passport, declaration",
     "v1.locator.objectsData": "403: «Локатор» недоступен, а объектная модель у него на 77 полей",
+    # Сверено 31.08.2026, и это ответ на главный вопрос о выборке: расширить её
+    # нечем. Карточка произвольного объекта закрыта региональной лицензией, а
+    # «соседи по классу» отдают ТУ ЖЕ пятёрку, что и `reportNearBy`.
+    "analytics.balloon": "403 NO_REGION_ACCESS: карточки произвольного объекта нет, "
+                         "выборку по справочнику собрать нечем",
+    "analytics.reportNearByProjectClass": "200, но radius тот же: объект и пять ближайших",
     "v2.reports.getReportSalesBalancesTypeRooms": "200, по типам квартир: сколько в продаже, продано ДДУ, остаток и его доля",
-    "v2.reports.getReportSalesBalancesPriceInDeals": "200, цена В СДЕЛКАХ по годам и месяцам, в разрезе комнатности",
+    "v2.reports.getReportSalesBalancesPriceInDeals": "200, цена В СДЕЛКАХ по годам и месяцам, "
+        "в разрезе комнатности; ноль в клетке — сделок такой комнатности в этом месяце не было, "
+        "а не цена ноль (сверено 31.08.2026, ряд с 07.2025)",
     "v2.reports.getReportSalesBalancesCheckmate": "200, шахматка по этажам: лотов, площади, остаток",
     "v2.reports.project": "200, карточка объекта службы отчётов со свежестью и ценами",
     "layers.data": "403 NO_REGION_ACCESS: у аккаунта нет региональной лицензии",
@@ -900,6 +908,45 @@ def _price_series(location: Any) -> tuple[list[dict[str, Any]], list[dict[str, A
     return own, market
 
 
+def _deal_series(data: Any) -> list[dict[str, Any]]:
+    """Цена В СДЕЛКАХ по месяцам, ряд на комнатность. У «Пульса» такого нет.
+
+    Прайс — витрина, сделка — факт, и разрыв между ними виден только так.
+    Живой ответ (31.08.2026) отдаёт `months` с полями «1», «2», «3», «4», «st»
+    и `yearMonth` вида «07.2025».
+
+    Ноль в клетке — «сделок такой комнатности в этом месяце не было», а не цена
+    ноль: нарисованный, он рвёт линию вниз до нуля и читается как обвал цены.
+    Такие месяцы просто выпадают из ряда — пропуск не ноль.
+
+    Ряды помечены `aggregate`: это разрезы ОДНОГО проекта, а не соседи, и
+    полоса квартилей по ним была бы полосой из самого себя.
+    """
+    months = (data or {}).get("months") if isinstance(data, dict) else None
+    if not isinstance(months, list):
+        return []
+    rows: dict[str, list[dict[str, Any]]] = {}
+    for point in months:
+        if not isinstance(point, dict):
+            continue
+        stamp = str(point.get("yearMonth") or "")
+        parts = stamp.split(".")
+        if len(parts) != 2:
+            continue
+        month = f"{parts[1]}-{parts[0]}"
+        for key, title in _ROOMS_IN_DEALS:
+            value = _float(point.get(key))
+            if value:
+                rows.setdefault(title, []).append({"month": month, "value": value})
+    return [{"name": f"сделки, {title}", "aggregate": True, "points": points}
+            for title, points in rows.items() if len(points) > 1]
+
+
+_ROOMS_IN_DEALS: tuple[tuple[str, str], ...] = (
+    ("st", "студии"), ("1", "1к"), ("2", "2к"), ("3", "3к"), ("4", "4к"),
+)
+
+
 def _exposure_series(location: Any) -> list[dict[str, Any]]:
     """Экспозиция локации по месяцам. Остатком проекта она не является.
 
@@ -1043,11 +1090,13 @@ def clone_report(data_dir: Any, query: str, *, base: str = "msk", date: str = ""
     # объекту оценки: по каждому соседу это ещё два запроса на строку.
     object_key = {"objectId": str(found["object_id"]), "regionAlias": base}
     rooms_balance = session.call("v2.reports.getReportSalesBalancesTypeRooms", object_key)
+    deal_prices = session.call("v2.reports.getReportSalesBalancesPriceInDeals", object_key)
     return {
         "found": found,
         "rooms_balance": rooms_balance,
+        "deal_series": _deal_series(deal_prices),
         "rooms_bands": _rooms_bands(rooms_balance),
-        "deal_prices": session.call("v2.reports.getReportSalesBalancesPriceInDeals", object_key),
+        "deal_prices": deal_prices,
         "indicators": session.call("analytics.indicators", {"_base": base, "date": asked}),
         "subject": subject,
         "peers": peers,
