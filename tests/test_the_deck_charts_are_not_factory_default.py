@@ -234,7 +234,7 @@ def test_the_price_per_metre_rides_as_a_line_not_its_own_slide() -> None:
     # красивы» (владелец, 30.08.2026) — три почти одинаковых листа подряд.
     assert [item["name"] for item in drawn] == ["млн ₽"], \
         "цена больше не заводит своего слайда, а мера на слайд — своего"
-    assert all(item["line"]["name"] == "₽/м²" for item in drawn)
+    assert all([row["name"] for row in item["second"]] == ["₽/м²"] for item in drawn)
     # Одна цена без объёма — сама себе график: показать её иначе нечем.
     alone = sales_deck.charts({"head": ["Месяц", "₽/м²"],
                                "rows": [["2026-07", "712 747"], ["2026-06", "717 000"]]})
@@ -679,17 +679,100 @@ def test_columns_of_one_measure_stand_in_one_chart() -> None:
     charts = [shape.chart for slide in deck.slides for shape in slide.shapes
               if getattr(shape, "has_chart", False)]
     assert len(charts) == 1, "меры одной оси разъехались по слайдам"
-    bars = charts[0].plots[0].series
-    assert [series.name for series in bars] == [
-        "Факт, млн ₽", "План ФМ, млн ₽", "План банка, млн ₽"], (
-        "рядом с фактом не встали планы той же меры")
-    # Прочерк — пропуск, а не ноль: столбика в этом квартале просто нет.
-    assert list(bars[2].values)[0] is None
-    # Цена метра — не такая же мера: она линией на своей шкале, а не четвёртым
-    # частоколом столбиков.
-    assert len(charts[0].plots) == 2, "цена ушла столбиками на общую шкалу"
+    # Композиция листа: факт столбиками, планы линиями на шкале рублей, цена
+    # линией на своей шкале справа. Пять столбиков в категории читаются
+    # частоколом, и «факт против плана» в нём не виден.
+    groups = charts[0].plots
+    assert len(groups) == 3, "график собран не так, как на листе"
+    assert [series.name for series in groups[0].series] == ["Факт, млн ₽"]
+    assert [series.name for series in groups[1].series] == [
+        "План ФМ, млн ₽", "План банка, млн ₽"], (
+        "планы той же меры не встали рядом с фактом")
+    assert [series.name for series in groups[2].series] == ["₽/м²"]
+    # Прочерк — пропуск, а не ноль: точки в этом квартале просто нет.
+    assert list(groups[1].series[1].values)[0] is None
     # Заголовок слайда называет меру, а не первый ряд: «· Факт, млн ₽» над
     # графиком с обоими планами обещает меньше, чем на слайде есть.
     titles = [shape.text_frame.text for slide in deck.slides for shape in slide.shapes
               if shape.has_text_frame and "Факт против планов" in shape.text_frame.text]
     assert any(text.strip() == "Факт против планов · млн ₽" for text in titles), titles
+
+
+def test_the_measure_is_read_wherever_the_unit_stands() -> None:
+    """Шапка отчёта ставит единицу впереди: «МЛН ₽, ФАКТ».
+
+    Мера бралась как часть после последней запятой, и на настоящем своде три
+    денежные колонки получали три разные меры — «факт», «план фм», «план
+    банка», — то есть в один график не собирались вовсе. А это и есть тот
+    сводный график листа, ради которого раздел существует (стр. 9 PDF свода,
+    31.08.2026). Единица ищется по своему написанию, а не по месту в шапке.
+    """
+    measure = sales_deck.measure_of
+    assert measure("МЛН ₽, ФАКТ") == measure("Факт, млн ₽") == "млн ₽"
+    assert measure("МЛН ₽, ПЛАН ФМ") == measure("МЛН ₽, ПЛАН БАНКА") == "млн ₽"
+    # Цена метра отличается от денег и от площади — это две оси, между
+    # которыми её и надо различить.
+    assert measure("ЦЕНА ФАКТ, ₽/М²") == measure("₽/м²") == "₽/м²"
+    assert measure("М²") == "м²"
+    assert measure("Лотов") == measure("Договоров") == "шт"
+
+
+def test_the_slide_repeats_the_composition_of_the_page() -> None:
+    """«Графика для планов по метрам и рублям вообще нет, хотя в PDF есть
+    хороший график, где и цены, и метры, и рубли на одном» (владелец,
+    31.08.2026).
+
+    Лист собирает его так: факт столбиками, планы линиями на шкале рублей, все
+    цены линиями на шкале ₽/м². Слайд повторяет лист, а не придумывает свой:
+    прежде он брал ОДНУ денежную колонку и одну ценовую, и раздел «факт против
+    планов» никаких планов не показывал.
+    """
+    import io
+
+    from pptx import Presentation
+
+    html = ('<section class="salesblock"><h3>Факт против планов</h3>'
+            '<svg viewBox="0 0 700 250"></svg>'
+            '<table><thead><tr><th>Квартал</th><th>млн ₽, факт</th>'
+            '<th>млн ₽, план ФМ</th><th>млн ₽, план банка</th>'
+            '<th>цена факт, ₽/м²</th><th>цена ФМ, ₽/м²</th></tr></thead><tbody>'
+            '<tr><td>2025 Q4</td><td>624,0</td><td>624,0</td><td>—</td>'
+            '<td>670281</td><td>640000</td></tr>'
+            '<tr><td>2026 Q1</td><td>554,0</td><td>454,8</td><td>1628,9</td>'
+            '<td>724203</td><td>690000</td></tr>'
+            '<tr><td>2026 Q2</td><td>599,8</td><td>646,0</td><td>358,2</td>'
+            '<td>656733</td><td>705000</td></tr></tbody></table></section>')
+
+    deck = Presentation(io.BytesIO(sales_deck.build(
+        sales_deck.sections(html), title="Т", subtitle="с", footer="ф")))
+    chart = [shape.chart for slide in deck.slides for shape in slide.shapes
+             if getattr(shape, "has_chart", False)][0]
+    groups = chart.plots
+    assert len(groups) == 3
+    assert [s.name for s in groups[0].series] == ["млн ₽, факт"]
+    assert [s.name for s in groups[1].series] == ["млн ₽, план ФМ", "млн ₽, план банка"]
+    assert [s.name for s in groups[2].series] == ["цена факт, ₽/м²", "цена ФМ, ₽/м²"]
+
+    # Порядок детей области обязателен: сначала ВСЕ группы, потом оси. Иначе
+    # PowerPoint не открывает файл вовсе, а всё остальное читает и молчит.
+    import zipfile
+    from lxml import etree
+
+    ns = "{http://schemas.openxmlformats.org/drawingml/2006/chart}"
+    raw = io.BytesIO(sales_deck.build(
+        sales_deck.sections(html), title="Т", subtitle="с", footer="ф"))
+    with zipfile.ZipFile(raw) as pack:
+        part = next(n for n in pack.namelist() if n.startswith("ppt/charts/chart"))
+        area = etree.fromstring(pack.read(part)).find(f"{ns}chart/{ns}plotArea")
+    kids = [etree.QName(node).localname for node in area]
+    charts_at = [i for i, k in enumerate(kids) if k.endswith("Chart")]
+    axes_at = [i for i, k in enumerate(kids) if k.endswith("Ax")]
+    assert max(charts_at) < min(axes_at), kids
+    # Линии планов живут на шкале столбиков, линии цены — на своей.
+    own = [a.get("val") for a in area.find(f"{ns}barChart").findall(f"{ns}axId")]
+    # Порядок групп в разметке значения не имеет — важно, на каких они осях:
+    # одна линия делит шкалу со столбиками, вторая живёт на своей.
+    lines = [[a.get("val") for a in node.findall(f"{ns}axId")]
+             for node in area.findall(f"{ns}lineChart")]
+    assert sum(1 for axes in lines if axes == own) == 1, lines
+    assert sum(1 for axes in lines if axes != own) == 1, lines

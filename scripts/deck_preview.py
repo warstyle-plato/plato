@@ -29,25 +29,41 @@ def colour(fmt) -> str:
 
 
 def chart_svg(chart, width: float, height: float) -> str:
+    """Рисуем ВСЕ группы: столбики, линии своей шкалы и линии второй.
+
+    Пока рисовалась первая группа, сводный график «факт против планов»
+    выглядел одним фактом — и я чинил бы то, что в файле уже верно.
+    """
     plots = list(chart.plots)
     cats = [str(c) for c in plots[0].categories]
-    # Рядов у графика бывает несколько — рисуются ВСЕ. Пока рисовался первый,
-    # «Факт против планов» на картинке выглядел графиком одного факта, и я
-    # чинил бы то, что уже было в файле верным.
-    rows = [(s.name, list(s.values)) for s in plots[0].series]
-    line = list(plots[1].series[0].values) if len(plots) > 1 else None
+    bars = [(s.name, list(s.values)) for s in plots[0].series]
+    own = [a.get("val") for a in plots[0]._element.findall(
+        "{http://schemas.openxmlformats.org/drawingml/2006/chart}axId")]
+    left, right = [], []
+    for plot in plots[1:]:
+        axes = [a.get("val") for a in plot._element.findall(
+            "{http://schemas.openxmlformats.org/drawingml/2006/chart}axId")]
+        rows = [(s.name, list(s.values)) for s in plot.series]
+        (left if axes == own else right).extend(rows)
     tones = ["#1367AE", "#7FB2E5", "#B9CFE4", "#D7E4F0"]
+    left_tones = ["#C4581B", "#7C6BB5", "#8A9BA8"]
+    right_tones = ["#1F5C87", "#D9A441", "#4FA07A", "#9A6BB5"]
     pad = 40
-    w, h = width - pad * 2, height - pad * 2
-    top = max([v for _, values in rows for v in values if v is not None] or [1]) or 1
+    w, h = width - pad * 2, height - pad * 2 - (26 if (left or right) else 0)
+    def span(rows):
+        vals = [v for _, values in rows for v in values if v is not None]
+        return (min(vals), max(vals)) if vals else (0.0, 1.0)
+    top = max([v for _, values in bars + left for v in values if v is not None] or [1]) or 1
+    rlo, rhi = span(right)
+    rlo = rlo * 0.9
     step = w / max(1, len(cats))
-    gap = (plots[0].gap_width or 150) / 100.0
-    slot = step / (1 + gap)
-    bar_w = slot / max(1, len(rows))
+    slot = step / (1 + (plots[0].gap_width or 150) / 100.0)
+    bar_w = slot / max(1, len(bars))
     out = [f'<svg width="{width}" height="{height}">']
+    def x_at(i): return pad + i * step + step / 2
     for i in range(len(cats)):
         base = pad + i * step + (step - slot) / 2
-        for order, (_, values) in enumerate(rows):
+        for order, (_, values) in enumerate(bars):
             value = values[i] if i < len(values) else None
             if value is None:
                 continue
@@ -61,24 +77,32 @@ def chart_svg(chart, width: float, height: float) -> str:
                            f' fill="#16202B">{value:,.0f}</text>'.replace(",", " "))
         out.append(f'<text x="{base + slot / 2:.1f}" y="{pad + h + 16:.1f}" font-size="10"'
                    f' text-anchor="middle" fill="#5B6B7D">{html.escape(cats[i])}</text>')
+    def polyline(rows, palette, lo, hi):
+        for order, (_, values) in enumerate(rows):
+            pts = [f"{x_at(i):.1f},{pad + h - h * 0.88 * ((v - lo) / ((hi - lo) or 1)) - h * 0.06:.1f}"
+                   for i, v in enumerate(values) if v is not None]
+            if len(pts) < 2:
+                continue
+            colour = palette[min(order, len(palette) - 1)]
+            out.append(f'<polyline points="{" ".join(pts)}" fill="none"'
+                       f' stroke="{colour}" stroke-width="2.5"/>')
+            for point in pts:
+                cx, cy = point.split(",")
+                out.append(f'<circle cx="{cx}" cy="{cy}" r="3" fill="{colour}"/>')
+    polyline(left, left_tones, 0.0, top)
+    polyline(right, right_tones, rlo, rhi)
     if chart.has_legend:
         marks = []
-        for order, (name, _) in enumerate(rows):
-            marks.append(f'<rect x="{pad + order * 190}" y="{height - 24}" width="10"'
-                         f' height="10" fill="{tones[min(order, 3)]}"/>'
-                         f'<text x="{pad + order * 190 + 15}" y="{height - 15}"'
-                         f' font-size="10" fill="#5B6B7D">{html.escape(str(name))}</text>')
+        every = bars + [(n, v) for n, v in left] + [(n, v) for n, v in right]
+        palette = tones[:len(bars)] + left_tones[:len(left)] + right_tones[:len(right)]
+        at = pad
+        for order, (name, _) in enumerate(every):
+            marks.append(f'<rect x="{at}" y="{height - 22}" width="10" height="10"'
+                         f' fill="{palette[min(order, len(palette) - 1)]}"/>'
+                         f'<text x="{at + 14}" y="{height - 13}" font-size="10"'
+                         f' fill="#5B6B7D">{html.escape(str(name))}</text>')
+            at += 34 + 6.2 * len(str(name))
         out.extend(marks)
-    if line:
-        lo, hi = min(line), max(line)
-        span = (hi - lo) or 1
-        points = " ".join(
-            f"{pad + i * step + step / 2:.1f},{pad + h - h * 0.75 * (v - lo) / span - h * 0.12:.1f}"
-            for i, v in enumerate(line))
-        out.append(f'<polyline points="{points}" fill="none" stroke="#0E2A43" stroke-width="2.5"/>')
-        for point in points.split():
-            x, y = point.split(",")
-            out.append(f'<circle cx="{x}" cy="{y}" r="3" fill="#0E2A43"/>')
     out.append("</svg>")
     return "".join(out)
 
