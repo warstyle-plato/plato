@@ -62,6 +62,7 @@ from developaid_monitor_page import MONITOR_PAGE as _MONITOR_PAGE_RAW
 import document_intake
 import management_contour
 import parking_norms
+import plato_question
 import project_preset
 
 # Единственное место, где живёт номер версии. Копий было четырнадцать —
@@ -69,7 +70,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.20.75"
+VERSION = "0.20.89"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -2104,20 +2105,24 @@ class MonitorAskRequest(BaseModel):
     message: str
     session: str = ""
     key: str = ""
+    # Разговор, а не один ответ: реплики, а не числа — числа едут свежими в
+    # самом вопросе, потому что срез мог смениться между репликами.
+    history: list[dict[str, Any]] = []
 
 
 @app.post("/monitor/ask", include_in_schema=False)
 def monitor_ask(req: MonitorAskRequest, request: Request) -> dict[str, Any]:
     """Свободный вопрос Платону из монитора.
 
-    Тот же движковый `plato_answer`, что у кабинета рынка и торгов, — свой
-    маршрут только ради гейта монитора: ключ кабинета у руководителя проекта
-    не спрашивается. Числа экрана приезжают в тексте вопроса готовыми, и в
-    нём прямо стоит «не пересчитывай»; вводные подставляются умолчаниями
-    движка — без них `_run_authoritative_model` падает пятисоткой на пустоте.
+    Тот же движковый Платон, что у кабинета рынка и торгов, — свой маршрут
+    только ради гейта монитора: ключ кабинета у руководителя проекта не
+    спрашивается. Числа экрана приезжают в тексте вопроса готовыми, и в нём
+    прямо стоит «не пересчитывай»; вводные подставляются умолчаниями движка —
+    без них `_run_authoritative_model` падает пятисоткой на пустоте.
     Быстрый ответ приходит этим же запросом, долгий забирается опросом
     `/agent/result/{trace_id}` — цепочка ядро → Render → OpenAI одним
-    соединением не держится.
+    соединением не держится, и держал её тут `plato_answer`, обещавший в этой
+    же строке обратное.
     """
     _require_web_access(req.session, req.key, "Монитор проекта")
     message = str(req.message or "").strip()
@@ -2127,9 +2132,22 @@ def monitor_ask(req: MonitorAskRequest, request: Request) -> dict[str, Any]:
         message=message,
         inputs=dict(DEFAULT_INPUTS),
         tep={key: dict(value) for key, value in TEP_DEFAULT.items()},
+        history=[
+            {"role": str(item.get("role") or ""),
+             "content": str(item.get("content") or "")}
+            for item in (req.history or [])
+            if isinstance(item, dict)
+            and str(item.get("role") or "") in ("user", "assistant")
+            and str(item.get("content") or "").strip()
+        ][-6:],
     )
     try:
-        return plato_answer(payload, request)
+        # Спрашивает браузер, а не бот: соединение держится только до передачи
+        # работы опросу. `plato_answer` ждёт ответ целиком, и на длинном
+        # вопросе окно получало страницу ошибки от nginx вместо ответа —
+        # цепочка ядро → Render → OpenAI одним соединением не держится. Окно
+        # монитора за долгим ответом и так ходит по номеру запуска.
+        return plato_answer_handoff(payload, request)
     except HTTPException:
         raise
     except Exception as exc:
@@ -5022,13 +5040,20 @@ def _geocode_nominatim(address: str, limit: int) -> list[dict[str, Any]]:
         if wait > 0:
             time.sleep(min(wait, 1.0))
         _nominatim_last_call = time.time()
-    params = urllib.parse.urlencode({
+    region = _query_region(address)
+    query = {
         "q": address,
         "format": "jsonv2",
         "limit": limit,
         "accept-language": "ru",
         "countrycodes": "ru",
-    })
+        "addressdetails": 1,
+    }
+    if region:
+        # Названный в запросе регион — это условие, а не слово: без него
+        # «Москва Мишина 46» ищется по всей стране.
+        query["state"] = region[0]
+    params = urllib.parse.urlencode(query)
     payload = _land_fetch_json(
         f"{_NOMINATIM_BASE_URL}/search?{params}",
         service="Геокодер OpenStreetMap",
@@ -5038,13 +5063,54 @@ def _geocode_nominatim(address: str, limit: int) -> list[dict[str, Any]]:
         lat, lng = _land_float((item or {}).get("lat")), _land_float((item or {}).get("lon"))
         if lat is None or lng is None:
             continue
+        label = _land_text(item.get("display_name"))
+        if region:
+            # Сам ответ говорит, где он: если регион назван в запросе, а в
+            # ответе его нет, это чужой город с похожей улицей.
+            details = (item or {}).get("address") or {}
+            where = " ".join(str(value).lower() for value in details.values())
+            if region[0] not in where and region[0] not in label.lower():
+                continue
         results.append({
             "lat": lat,
             "lng": lng,
-            "label": _land_text(item.get("display_name")),
+            "label": label,
             "provider": "OpenStreetMap",
         })
     return results
+
+
+# Регион, названный в самом запросе. Города в запросе к геокодеру не было
+# вовсе — стоял только `countrycodes=ru`, — поэтому «Москва Мишина 46» искалось
+# по всей стране: «находил везде, не только в Москве» (владелец, 30.08.2026).
+#
+# Двух регионов достаточно: мы работаем по Москве и области, а у участка регион
+# написан первыми цифрами кадастрового номера, и сверка выходит дармовой.
+# Регион, которого тут нет, ничего не отсекает — лучше не проверять, чем
+# отсеять верное по неполному справочнику.
+_QUERY_REGIONS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
+    ("Москва", ("московская область", "подмосковь", "мо,"), ("50",)),
+    ("Москва", ("москва", "г москва", "г. москва"), ("77",)),
+)
+
+
+def _query_region(address: str) -> tuple[str, tuple[str, ...]] | None:
+    """Какой регион назван в запросе: его имя для геокодера и коды кадастра.
+
+    Область проверяется раньше города: «Московская область» содержит в себе
+    слово «Москва», и порядок наоборот отдал бы области московский код.
+    """
+    text = " " + re.sub(r"\s+", " ", str(address or "")).strip().lower() + " "
+    for _, marks, codes in _QUERY_REGIONS:
+        if any(mark in text for mark in marks):
+            return (marks[0], codes)
+    return None
+
+
+def _same_region(number: str, codes: tuple[str, ...]) -> bool:
+    """Первые цифры кадастрового номера — это регион, и сверка тут дармовая."""
+    head = str(number or "").split(":", 1)[0].strip()
+    return not head or not codes or head in codes
 
 
 _GEOCODERS = (
@@ -5055,8 +5121,17 @@ _GEOCODERS = (
 
 
 def _geocode_address(address: str, limit: int) -> tuple[list[dict[str, Any]], list[str]]:
+    """Точка по адресу и то, чем именно она найдена.
+
+    Спуск по лесенке говорится вслух: провайдер без ключа возвращает пустоту,
+    а не ошибку, поэтому падение на запасной геокодер было неотличимо от
+    плохого адреса. А запасной ищет по всей стране, и «Москва Мишина 46»
+    находилось где угодно.
+    """
     forced = _env_str("LAND_LOOKUP_GEOCODER").lower()
     warnings: list[str] = []
+    silent: list[str] = []
+    named = {"yandex": "Яндекс", "dadata": "DaData", "nominatim": "OpenStreetMap"}
     for name, provider in _GEOCODERS:
         if forced and forced != name:
             continue
@@ -5064,9 +5139,16 @@ def _geocode_address(address: str, limit: int) -> tuple[list[dict[str, Any]], li
             candidates = provider(address, limit)
         except HTTPException as exc:
             warnings.append(str(exc.detail))
+            silent.append(named.get(name, name))
             continue
         if candidates:
+            if silent:
+                warnings.append(
+                    "Адрес разобрал " + named.get(name, name) + ": "
+                    + ", ".join(silent) + " не ответил" + ("и" if len(silent) > 1 else "")
+                    + ". Запасной геокодер ищет грубее.")
             return candidates, warnings
+        silent.append(named.get(name, name))
     return [], warnings
 
 
@@ -5539,6 +5621,9 @@ def land_lookup(req: LandLookupRequest) -> dict[str, Any]:
             if not results:
                 candidates, geocoder_warnings = _geocode_address(query, 3)
                 warnings.extend(geocoder_warnings)
+                named = _query_region(query)
+                region_codes = named[1] if named else ()
+                strangers: list[str] = []
                 # «Адрес не распознан» рядом с двумя десятками найденных по
                 # нему объектов — противоречие: не распознан не адрес, а участок.
                 if not candidates and not neighbours:
@@ -5558,10 +5643,27 @@ def land_lookup(req: LandLookupRequest) -> dict[str, Any]:
                     for item in found:
                         item["matched_address"] = candidate.get("label", "")
                         item["geocoder"] = candidate.get("provider", "")
+                    # Регион участка написан первыми цифрами его номера. Запрос
+                    # назвал регион — значит участок из другого не он, а на
+                    # экране он выглядел бы обычной находкой.
+                    if region_codes:
+                        kept = [item for item in found
+                                if _same_region(item.get("cadastral_number"), region_codes)]
+                        strangers.extend(str(item.get("cadastral_number") or "—")
+                                         for item in found if item not in kept)
+                        found = kept
                     results.extend(found)
                     if len(results) >= limit:
                         break
                 results = results[:limit]
+                if strangers:
+                    # Отсечённое называется: молча выброшенная находка читается
+                    # как её отсутствие.
+                    warnings.append(
+                        "Не показаны участки другого региона: "
+                        + ", ".join(dict.fromkeys(strangers))
+                        + ". В запросе назван "
+                        + (named[0] if named else "регион") + ".")
                 if candidates and not results:
                     warnings.append(
                         "Адрес найден, но участок ЕГРН в этой точке не определён — "
@@ -32732,6 +32834,9 @@ function calculateAndOpen(id){
 // Строка состояния поверх страницы: «Считаю…» → «Готов». Без неё непонятно,
 // идёт ли работа, — расчёт занимает секунды, а окно выглядит замершим.
 function telegramProgress(text){
+ // Таймер живёт на самой функции: вынесенный наружу, он делает её незапускаемой
+ // в отрыве от страницы — а проверка гоняет её именно так.
+ if(telegramProgress.timer){clearTimeout(telegramProgress.timer);telegramProgress.timer=null}
  let bar=document.getElementById('telegramProgress');
  if(!text){if(bar)bar.remove();return}
  if(!bar){
@@ -32742,6 +32847,12 @@ function telegramProgress(text){
   document.body.appendChild(bar);
  }
  bar.textContent=text;
+ // Полоса без признака жизни неотличима от зависшей: окно замирало на
+ // «Считаю…» и не говорило ничего (владелец, 31.08.2026). Полминуты — это
+ // уже не «идёт расчёт», и об этом надо сказать.
+ telegramProgress.timer=setTimeout(()=>{
+  if(bar&&bar.isConnected)bar.textContent=text+' Дольше обычного — можно закрыть окно и повторить из чата.';
+ },30000);
 }
 
 async function telegramRecalculateAndFinish(tab){
@@ -39426,7 +39537,25 @@ function setupTelegramEditSubmit(){
  showTelegramResendButton();
 }
 
+// Мини-приложение висело на «Считаю…» после переноса тизера из бота
+// (владелец, 31.08.2026). Полоса ставится перед расчётом и снимается ПОСЛЕ
+// него строкой ниже — а если расчёт бросил, до этой строки не доходит вовсе, и
+// окно замирает навсегда. Обёртка снимает полосу при любом исходе и называет
+// причину: замершее окно не говорит человеку ничего, а ошибка говорит.
 async function initializeTelegramLaunch(){
+ try{
+  return await runTelegramLaunch();
+ }catch(e){
+  telegramProgress('');
+  const status=document.getElementById('glavapuStatus');
+  const why=escapeHtml(String((e&&e.message)||e||'причина не названа'));
+  if(status)status.innerHTML='<span class="import-error">Расчёт из чата не прошёл: '+why+'</span>';
+  const tg=window.Telegram&&window.Telegram.WebApp;
+  if(tg&&tg.MainButton){try{tg.MainButton.enable();tg.MainButton.setText('Обновить расчёт в Telegram')}catch(err){}}
+ }
+}
+
+async function runTelegramLaunch(){
  if(window.Telegram&&window.Telegram.WebApp){
   window.Telegram.WebApp.ready();
   window.Telegram.WebApp.expand();
@@ -39543,6 +39672,10 @@ MONITOR_PAGE_HTML = (
     _MONITOR_PAGE_RAW.replace("__VERSION__", VERSION)
     .replace("__DEVELOPAID_CONTOUR_STYLE__", management_contour.STYLE)
     .replace(management_contour.PLACEHOLDER, management_contour.markup("/monitor"))
+    # Разговор с Платоном объявлен один раз (plato_question). Монитор —
+    # четвёртая поверхность, где его спрашивают, и своей памяти у неё быть
+    # не должно: «Платон должен везде уметь вести диалог, а не один ответ».
+    .replace(plato_question.PLACEHOLDER, plato_question.SCRIPT)
 )
 PAGE = PAGE.replace(FIELD_GROUPS_PLACEHOLDER,
                     json.dumps(FIELD_GROUPS, ensure_ascii=False))

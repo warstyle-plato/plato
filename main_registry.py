@@ -51,7 +51,7 @@ def _cadastre_from_egrn(number: str):
     return None
 
 
-def _plato_ask(message: str, request):
+def _plato_ask(message: str, request, history=None):
     """Вопрос Платону из кабинета рынка.
 
     Вводные и ТЭП подставляются умолчаниями движка: без них
@@ -63,6 +63,9 @@ def _plato_ask(message: str, request):
         message=message,
         inputs=dict(core.DEFAULT_INPUTS),
         tep={key: dict(value) for key, value in core.TEP_DEFAULT.items()},
+        # Разговор кабинета едет тем же полем, что и разговор главной
+        # страницы: своего механизма памяти у кабинета нет.
+        history=list(history or []),
     )
     # Спрашивает браузер, а не бот: соединение держится только до передачи
     # работы опросу. `plato_answer` ждёт ответ целиком и годится тому, кому

@@ -117,9 +117,10 @@ def test_every_numeric_column_gets_its_own_chart() -> None:
     И колонка с прочерком в графики не идёт вовсе: пропуск — не ноль."""
     table = parsed()[1]["tables"][0]
     drawn = sales_deck.charts(table)
-    assert [item["name"] for item in drawn] == ["Лотов", "млн ₽"], \
-        "колонка «₽/м²» с прочерком должна выпасть, остальные — остаться"
-    assert drawn[0]["values"] == [5.0, 3.0]
+    # Колонка с прочерком не идёт вовсе, а из оставшихся берётся денежная:
+    # график на раздел один.
+    assert [item["name"] for item in drawn] == ["млн ₽"], \
+        "колонка «₽/м²» с прочерком должна выпасть, а на слайд идут деньги"
     assert drawn[0]["categories"] == ["2026-07", "2026-06"]
     # Один ряд на график: рубли и штуки на одной оси дают столбик в пиксель.
     assert all(len(item["values"]) == len(item["categories"]) for item in drawn)
@@ -145,7 +146,7 @@ def test_the_slides_carry_real_objects_and_not_a_single_picture() -> None:
             elif shape.has_text_frame:
                 texts.append(shape.text_frame.text)
     assert pictures == 0, "картинка вместо объектов — её нельзя править"
-    assert tables >= 1 and charts >= 2, "график на каждую меру"
+    assert tables >= 1 and charts >= 1, "раздел с числами остался без графика"
     assert any("Продажи — Тестовый ЖК" in text for text in texts)
     assert any("Темп последних месяцев" in text for text in texts), "вывод раздела"
 

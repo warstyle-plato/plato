@@ -1,22 +1,10 @@
 """Предпросмотр колоды картинками: фигуры по их координатам, графики по данным.
 
-Колоду четыре раза подряд называли убогой, и каждый раз я чинил её вслепую:
-LibreOffice в песочнице pptx не открывает, `pdftoppm` в образе нет — увидеть
-слайд нечем, а «убого или нет» разбором файла не проверяется. Отсюда правило:
-**поверхность, которую не видно, чинится по одному замечанию за раз** — и это
-не работа, а переписка.
-
-Здесь фигуры выкладываются по своим координатам в HTML, графики рисуются по
-своим же данным, а снимок делает Chromium — он в образе есть и запускается за
-полсекунды. Это НЕ рендер PowerPoint: шрифты подставные, графики приблизительны.
-Но пустоту, переполнение, выравнивание и общий вид показывает, а именно они и
-были сломаны.
-
-    python3 scripts/deck_preview.py колода.pptx каталог/
-
-Дальше — снимок каждого слайда любым браузером по `preview.html`.
+LibreOffice в песочнице pptx не открывает, `pdftoppm` нет — увидеть слайд
+иначе нечем, а «убого или нет» разбором файла не проверяется. Это не рендер
+PowerPoint: пустоту, переполнение, выравнивание и общий вид показывает, шрифты
+и графики приблизительны.
 """
-
 from __future__ import annotations
 
 import html
@@ -43,26 +31,44 @@ def colour(fmt) -> str:
 def chart_svg(chart, width: float, height: float) -> str:
     plots = list(chart.plots)
     cats = [str(c) for c in plots[0].categories]
-    bars = list(plots[0].series[0].values)
+    # Рядов у графика бывает несколько — рисуются ВСЕ. Пока рисовался первый,
+    # «Факт против планов» на картинке выглядел графиком одного факта, и я
+    # чинил бы то, что уже было в файле верным.
+    rows = [(s.name, list(s.values)) for s in plots[0].series]
     line = list(plots[1].series[0].values) if len(plots) > 1 else None
+    tones = ["#1367AE", "#7FB2E5", "#B9CFE4", "#D7E4F0"]
     pad = 40
     w, h = width - pad * 2, height - pad * 2
-    top = max(bars) or 1
+    top = max([v for _, values in rows for v in values if v is not None] or [1]) or 1
     step = w / max(1, len(cats))
     gap = (plots[0].gap_width or 150) / 100.0
-    bar_w = step / (1 + gap)
+    slot = step / (1 + gap)
+    bar_w = slot / max(1, len(rows))
     out = [f'<svg width="{width}" height="{height}">']
-    for i, value in enumerate(bars):
-        bh = h * (value / top)
-        x = pad + i * step + (step - bar_w) / 2
-        out.append(f'<rect x="{x:.1f}" y="{pad + h - bh:.1f}" width="{bar_w:.1f}"'
-                   f' height="{bh:.1f}" fill="#1367AE"/>')
-        if plots[0].has_data_labels:
-            out.append(f'<text x="{x + bar_w / 2:.1f}" y="{pad + h - bh - 6:.1f}"'
-                       f' font-size="11" font-weight="700" text-anchor="middle"'
-                       f' fill="#16202B">{value:,.0f}</text>'.replace(",", " "))
-        out.append(f'<text x="{x + bar_w / 2:.1f}" y="{pad + h + 16:.1f}" font-size="10"'
+    for i in range(len(cats)):
+        base = pad + i * step + (step - slot) / 2
+        for order, (_, values) in enumerate(rows):
+            value = values[i] if i < len(values) else None
+            if value is None:
+                continue
+            bh = h * (value / top)
+            x = base + order * bar_w
+            out.append(f'<rect x="{x:.1f}" y="{pad + h - bh:.1f}" width="{bar_w:.1f}"'
+                       f' height="{bh:.1f}" fill="{tones[min(order, 3)]}"/>')
+            if plots[0].has_data_labels:
+                out.append(f'<text x="{x + bar_w / 2:.1f}" y="{pad + h - bh - 6:.1f}"'
+                           f' font-size="11" font-weight="700" text-anchor="middle"'
+                           f' fill="#16202B">{value:,.0f}</text>'.replace(",", " "))
+        out.append(f'<text x="{base + slot / 2:.1f}" y="{pad + h + 16:.1f}" font-size="10"'
                    f' text-anchor="middle" fill="#5B6B7D">{html.escape(cats[i])}</text>')
+    if chart.has_legend:
+        marks = []
+        for order, (name, _) in enumerate(rows):
+            marks.append(f'<rect x="{pad + order * 190}" y="{height - 24}" width="10"'
+                         f' height="10" fill="{tones[min(order, 3)]}"/>'
+                         f'<text x="{pad + order * 190 + 15}" y="{height - 15}"'
+                         f' font-size="10" fill="#5B6B7D">{html.escape(str(name))}</text>')
+        out.extend(marks)
     if line:
         lo, hi = min(line), max(line)
         span = (hi - lo) or 1
