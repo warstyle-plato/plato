@@ -644,3 +644,42 @@ def test_the_tab_draws_the_map_and_the_neighbours_in_a_real_browser(tmp_path) ->
         assert name in drawn, f"{name} не попал на страницу"
     assert "Вымывание по комнатности" in drawn
     assert "Карта рынка" in drawn
+
+
+def test_the_price_in_deals_is_a_monthly_series_and_zero_is_not_a_price() -> None:
+    """Цена в сделках по месяцам — то, чего у «Пульса» нет вовсе.
+
+    Живой ответ 31.08.2026: `months` с полями по комнатности и `yearMonth`
+    «07.2025». Ноль в клетке означает «сделок такой комнатности в этом месяце
+    не было»; нарисованный, он рвёт линию до нуля и читается как обвал цены —
+    ровно та же ошибка, что «пропуск в ряду не ноль» в плане банка.
+    """
+    rows = bnmap._deal_series({"months": [
+        {"1": 657839, "2": 0, "yearMonth": "07.2025"},
+        {"1": 574394, "2": 632767, "yearMonth": "08.2025"},
+        {"1": 730096, "2": 691571, "yearMonth": "09.2025"},
+    ]})
+    by_name = {row["name"]: row for row in rows}
+    assert set(by_name) == {"сделки, 1к", "сделки, 2к"}
+    assert [p["month"] for p in by_name["сделки, 1к"]["points"]] == \
+        ["2025-07", "2025-08", "2025-09"]
+    # Июль у двушек выпал целиком, а не встал нулём.
+    assert [p["month"] for p in by_name["сделки, 2к"]["points"]] == ["2025-08", "2025-09"]
+    # Разрезы одного проекта — не выборка соседей: полосы квартилей по ним быть
+    # не должно, иначе проект сравнивается сам с собой.
+    assert all(row["aggregate"] for row in rows)
+    script = re.search(r"<script>(.*?)</script>", bnmap_ui.markup(), re.S).group(1)
+    assert "Цена в сделках по месяцам" in script and "trendChart(data.deal_series)" in script
+
+
+def test_the_sample_cannot_be_widened_and_the_module_says_so() -> None:
+    """Ответ на главный вопрос о выборке: расширить её нечем — это сверено.
+
+    Карточка произвольного объекта закрыта региональной лицензией, а «соседи по
+    классу» отдают ту же пятёрку. Значит выборку по справочнику координат
+    собрать нельзя, и обещать этого нигде не надо.
+    """
+    assert bnmap.VERIFIED["analytics.balloon"].startswith("403")
+    assert "объект и пять ближайших" in bnmap.VERIFIED["analytics.reportNearByProjectClass"]
+    for name in ("analytics.balloon", "analytics.reportNearByProjectClass"):
+        assert name not in bnmap.REPORT_METHODS, f"{name} зовётся, хотя данных не даёт"
