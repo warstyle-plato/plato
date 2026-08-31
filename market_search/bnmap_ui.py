@@ -97,6 +97,21 @@ def markup() -> str:
   <button class="go alt" id="bngo" style="margin-top:10px">Собрать тестовый свод</button>
   <span id="bnstate" class="muted" style="margin-left:10px"></span>
   <div id="bnout" style="margin-top:12px"></div>
+  <div class="card" id="bnask" style="display:none">
+    <h2>Спросить Платона Сергеевича</h2>
+    <div class="muted" style="font-size:13px;margin-bottom:8px">
+      Он видит числа ЭТОГО свода — второго источника, а не «Пульса». Считает движок,
+      модель не пересчитывает.
+    </div>
+    <div class="chips" id="bnchips">
+      <button type="button" data-q="Что здесь главное и что делать с ценой?">Что делать с ценой?</button>
+      <button type="button" data-q="Чем этот свод отличается от отчёта по «Пульсу» и чему верить?">Чем отличается от «Пульса»?</button>
+      <button type="button" data-q="Кто здесь ближайший конкурент и чем он опасен?">Кто конкурент?</button>
+    </div>
+    <textarea id="bnq" rows="3" placeholder="Например: выборка из пяти соседей — насколько ей можно верить?"></textarea>
+    <button class="go" id="bnaskbtn">Спросить</button>
+    <div id="bnaskout"></div>
+  </div>
 </div>
 </details>
 <script>
@@ -109,7 +124,49 @@ def markup() -> str:
 // Отложено до `DOMContentLoaded` по простой причине: этот блок стоит в
 // разметке выше основного скрипта кабинета, и в момент разбора `on` ещё не
 // объявлен. Слушатель регистрируется во время разбора, до самого события.
+// Свой разговор и свой последний свод: спрашивают о том отчёте, который перед
+// глазами, а на странице их может быть два.
+let bnLast=null;
+// Разговор заводится при первом вопросе, а не при разборе: этот блок стоит в
+// разметке ВЫШЕ основного скрипта кабинета, и `platoThread` в момент разбора
+// ещё не объявлен — вызов на верхнем уровне роняет весь скрипт страницы. Та же
+// причина, по которой слушатели отложены до `DOMContentLoaded`.
+let bnTalk=null;
+const bnThread=()=>bnTalk||(bnTalk=platoThread());
+function bnDigest(d){{
+  const found=d.found||{{}}, sel=d.selection||{{}}, said=(d.analysis||{{}}).overall||{{}};
+  const lines=['Источник: bnMAP.pro (второй источник; действующий отчёт считает «Пульс»).',
+    'Объект: '+((d.subject||{{}}).name||found.query||'—')+'; класс '
+      +((d.subject||{{}}).segment||'—')+'; данные на '+(d.asked_date||'—')+'.',
+    'Выборку назначает сам bnMAP: прислал '+(sel.given||0)+' соседей, в расчёте '
+      +(sel.used||0)+'. Радиуса у метода нет.'];
+  if(said.headline) lines.push('Вывод движка: '+said.headline+'. '+said.text);
+  (d.blocks||[]).forEach(b=>{{
+    const say=((d.analysis||{{}}).blocks||{{}})[b.code];
+    if(say&&say.text) lines.push(b.title+': '+say.text);
+  }});
+  const peers=(d.peers||[]).slice(0,12).map(p=>
+    p.name+' ('+(p.segment||'—')+', '+p.distance_km+' км): '+(p.price_per_sqm||'—')+' ₽/м², '
+    +(p.units_per_month==null?'—':p.units_per_month)+' ДДУ/мес').join('; ');
+  if(peers) lines.push('Соседи: '+peers+'.');
+  // Чего у источника нет — часть вопроса: без этого Платон объяснит пустой
+  // график продаж как провал продаж.
+  if((d.gaps||[]).length) lines.push('Источник НЕ даёт: '+d.gaps.join('; ')+'.');
+  return lines.join('\\n');
+}}
+
 document.addEventListener('DOMContentLoaded', function(){{
+  on('#bnaskbtn','click',function(){{
+    askPlatoIn({{field:'#bnq', out:'#bnaskout', button:'#bnaskbtn', talk:bnThread()}},
+               bnLast, bnDigest);
+  }});
+  on('#bnchips','click',function(e){{
+    const btn=e.target.closest('button[data-q]');
+    if(!btn) return;
+    $('#bnq').value=btn.dataset.q;
+    askPlatoIn({{field:'#bnq', out:'#bnaskout', button:'#bnaskbtn', talk:bnThread()}},
+               bnLast, bnDigest);
+  }});
   on('#bngo', 'click', async function(){{
     const q=($('#bnid').value||'').trim();
     $('#bnstate').textContent='спрашиваю bnMAP…'; $('#bnout').innerHTML='';
@@ -148,9 +205,29 @@ document.addEventListener('DOMContentLoaded', function(){{
         catch(e){{ return '<div class="card"><h2>'+(b.title||'')+'</h2>'
           +'<div class="err">блок не нарисовался: '+e+'</div></div>'; }}
       }}).join('');
-      $('#bnout').innerHTML=verdictCard(data)+findingsCard(data)+blocks
+      // Карта соседей и «Карта рынка» — те же функции, что в отчёте; контейнер
+      // пузырьков свой, иначе два одинаковых id на одной странице, и
+      // переключатель нашёл бы чужой.
+      const market=[{{...ctx.subjectMetrics, name:ctx.subjectName,
+                     segment:ctx.subjectSegment, __own:true}}].concat(data.peers||[]);
+      const priceBlock=(data.blocks||[]).find(b=>b.code==='price')||{{}};
+      $('#bnout').innerHTML=verdictCard(data)+findingsCard(data)
+        +geoCard(market, data.subject||{{}}, data.peers||[])
+        +bubbleCard(market, 'bnbubble')
+        +pricesCard(data.peers||[], {{...ctx.subjectMetrics, name:ctx.subjectName}},
+                    (priceBlock.peers||{{}}).median)
+        +blocks
+        // «Что стоит премия» считается тем же кодом; на данных bnMAP она
+        // покажет сроки, а денежную часть — нет: остатка В МЕТРАХ источник не
+        // даёт, а перемножить остаток лотов на среднюю площадь экспозиции
+        // значит выдать оценку за данные.
+        +deepCard(data)
+        +peersCard(data.peers||[])
         +'<div class="card">'+(data.html||'')+'</div>'
         +essayCard(data)+finalCard(data);
+      wireBubbles(market, 'bnbubble');
+      $('#bnask').style.display='block';
+      bnLast=data;
     }}catch(e){{ $('#bnstate').textContent='не дошло до сервера: '+e; }}
   }});
 }});
@@ -182,6 +259,8 @@ def render(report: dict[str, Any]) -> str:
     out.append(_subject(report.get("found")))
     out.append(_selection(report.get("selection")))
     out.append(_rooms(report.get("peers"), report.get("subject")))
+    out.append(_budgets(report.get("peers"), report.get("subject")))
+    out.append(_delivery(report.get("peers"), report.get("subject")))
     out.append(_discounts(report.get("peers"), report.get("subject")))
     out.append(_rooms_balance(report.get("rooms_balance")))
     out.append(_deal_prices(report.get("deal_prices")))
@@ -191,22 +270,33 @@ def render(report: dict[str, Any]) -> str:
 
 
 def _selection(selection: Any) -> str:
-    """Сколько соседей прислал источник и сколько осталось после отсечки.
+    """Состав выборки плиткой — как в шапке отчёта.
 
     Отсечённый сосед не исчезает молча: выборка из трёх и выборка из шести
     дают разные медианы, и читатель обязан видеть, что часть убрана им самим,
-    а не источником.
+    а не источником. И размер выборки — сам по себе ответ: у «Пульса» в трёх
+    километрах набирается несколько десятков проектов, у bnMAP этот метод
+    отдаёт объект и пять ближайших, и по одной цифре видно, чего стоит
+    сравнение медиан.
     """
     if not isinstance(selection, dict) or not selection.get("given"):
         return ""
-    given, used = selection.get("given"), selection.get("used")
-    line = f"Соседей прислал bnMAP: {given}"
+    tiles = [
+        (selection.get("given"), "прислал bnMAP"),
+        (selection.get("used"), "взято в выборку"),
+        (selection.get("no_price") or None, "цены нет вовсе"),
+        (selection.get("farthest_km"), "км до дальнего"),
+    ]
+    cells = "".join(f"<div><b>{escape(str(value))}</b><span>{escape(label)}</span></div>"
+                    for value, label in tiles if value is not None)
+    note = ("Радиус задаёт сам bnMAP: объект и пять ближайших. "
+            "Ползунок удалённости может только отсечь дальних из присланного.")
     if selection.get("radius_km"):
-        line += (f" · после отсечки «не дальше {selection['radius_km']} км» осталось {used}")
-    if selection.get("farthest_km") is not None:
-        line += f" · дальний из них в {selection['farthest_km']} км"
-    return ('<div class="muted" style="font-size:12.5px;margin-bottom:8px">'
-            + escape(line) + "</div>")
+        note = (f"Отсечка «не дальше {selection['radius_km']} км» применена к тому, "
+                f"что прислал bnMAP. " + note)
+    return ('<div class="kv" style="margin-top:4px">' + cells + "</div>"
+            + '<div class="muted" style="font-size:12.5px;margin:8px 0 4px">'
+            + escape(note) + "</div>")
 
 
 def _gaps(report: dict[str, Any]) -> str:
@@ -350,6 +440,68 @@ def _rooms(peers: Any, subject: Any) -> str:
     return ('<h3 style="margin-top:16px">Цена метра по комнатности</h3>'
             '<div class="tablescroll"><table class="peers"><tr><th>Проект</th>'
             + head + "</tr>" + "".join(body) + "</table></div>")
+
+
+def _budgets(peers: Any, subject: Any) -> str:
+    """Бюджет лота: минимум, средняя, максимум. У «Пульса» этого нет вовсе.
+
+    Цена метра отвечает на «дорого ли», бюджет — на «с чего начинается вход».
+    Это разные вопросы: у проекта с дорогим метром и мелкой нарезкой чек
+    входа бывает ниже, чем у соседа с дешёвым метром и крупными лотами, и по
+    ₽/м² этого не видно.
+    """
+    rows = [row for row in ([subject] + list(peers or []))
+            if isinstance(row, dict) and row.get("budget_avg")]
+    if not rows:
+        return ""
+    body = []
+    for row in rows:
+        body.append("<tr><td>" + escape(str(row.get("name") or ""))
+                    + (' <span class="self">— объект</span>'
+                       if row is rows[0] and row is subject else "")
+                    + "</td>" + _num({"val": row.get("budget_min")})
+                    + _num({"val": row.get("budget_avg")})
+                    + _num({"val": row.get("budget_max")})
+                    + _num({"val": row.get("lot_area_avg"), "digits": 1}) + "</tr>")
+    return ('<h3 style="margin-top:16px">Бюджет лота</h3>'
+            '<div class="muted" style="font-size:12.5px;margin:4px 0 6px">Рубли за лот, '
+            'а не за метр: в колонки «мин» и «макс» разделов о цене они не идут — там ₽/м².'
+            '</div>'
+            '<div class="tablescroll"><table class="peers"><tr><th>Проект</th>'
+            '<th class="num">Мин, ₽</th><th class="num">Средний, ₽</th>'
+            '<th class="num">Макс, ₽</th><th class="num">Лот в проекте, м²</th></tr>'
+            + "".join(body) + "</table></div>")
+
+
+def _delivery(peers: Any, subject: Any) -> str:
+    """Сроки ввода и статус объекта. Признак апартаментов «Пульс» не отдаёт.
+
+    Апартаменты — не квартиры: другой правовой статус, другой покупатель и
+    другая цена метра, а в общей медиане они стоят наравне с жильём.
+    """
+    rows = [row for row in ([subject] + list(peers or []))
+            if isinstance(row, dict) and (row.get("commission") or row.get("buildings"))]
+    if not rows:
+        return ""
+    body = []
+    for row in rows:
+        apartments = row.get("apartments")
+        mark = "—" if apartments in (None, "") else ("апартаменты" if str(apartments) not in ("0", "False") else "квартиры")
+        body.append("<tr><td>" + escape(str(row.get("name") or ""))
+                    + (' <span class="self">— объект</span>'
+                       if row is rows[0] and row is subject else "")
+                    + "</td><td>" + escape(str(row.get("commission_first") or "—")) + "</td>"
+                    + "<td>" + escape(str(row.get("commission") or "—")) + "</td>"
+                    + _num({"val": row.get("buildings")})
+                    + _num({"val": row.get("commission_soon")})
+                    + "<td>" + escape(mark) + "</td>"
+                    + "<td>" + escape(str(row.get("stage") or "—")) + "</td>"
+                    + "<td>" + escape(str(row.get("updated_at") or "—")) + "</td></tr>")
+    return ('<h3 style="margin-top:16px">Сроки ввода и статус</h3>'
+            '<div class="tablescroll"><table class="peers"><tr><th>Проект</th>'
+            '<th>Первый ввод</th><th>Последний ввод</th><th class="num">Корпусов</th>'
+            '<th class="num">Введут в 12 мес</th><th>Тип</th><th>Стадия</th>'
+            '<th>Данные на</th></tr>' + "".join(body) + "</table></div>")
 
 
 def _discounts(peers: Any, subject: Any) -> str:

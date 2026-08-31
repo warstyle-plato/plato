@@ -167,11 +167,20 @@ def _node() -> str:
 
 
 def test_the_tab_counts_nothing_itself() -> None:
-    """Показ, а не третий счёт: блоки считает отчёт, bnMAP отдаёт числа."""
+    """Показ, а не третий счёт: блоки считает отчёт, bnMAP отдаёт числа.
+
+    Запрещается место, а не слово. Прежде запрет стоял на строке «median», и
+    под него попало чтение уже посчитанной медианы из блока — единственное
+    правильное обращение к ней. Позеленить это можно было бы ровно одним
+    способом: посчитать медиану самим. Поэтому запрещены вычисления —
+    арифметика и вызов, — а чтение готового свойства разрешено прямо здесь.
+    """
     body = (ROOT / "market_search" / "bnmap_ui.py").read_text()
     code = "\n".join(line.split("#")[0] for line in body.splitlines())
-    for sign in (" / ", " * ", "sum(", "median"):
+    for sign in (" / ", " * ", "sum(", "median(", "statistics"):
         assert sign not in code, f"во вкладке считают: {sign}"
+    # Чтение посчитанного сервером — не счёт, и выглядит оно так:
+    assert ".median)" in code, "вкладка перестала брать медиану у блока отчёта"
 
 
 def test_only_methods_with_a_seen_answer_may_be_called() -> None:
@@ -354,7 +363,8 @@ def test_the_distance_filter_only_narrows_and_says_so() -> None:
     assert "расширить выборку нечем" in markup
     assert any("радиус" in line.lower() for line in bnmap.CLONE_GAPS)
     shown = bnmap_ui._selection({"given": 5, "used": 2, "radius_km": 0.5, "farthest_km": 0.44})
-    assert "5" in shown and "осталось 2" in shown
+    assert "прислал bnMAP" in shown and ">5<" in shown and ">2<" in shown
+    assert "не дальше 0.5 км" in shown and "может только отсечь" in shown
 
 
 def _page_function(name: str) -> str:
@@ -414,3 +424,143 @@ def test_a_ready_made_average_is_a_line_and_not_a_quartile_band() -> None:
     assert "пять ближайших" in drawn and "локация" in drawn
     assert "Полосы квартилей здесь нет" in drawn
     assert "<svg" in drawn, "график не нарисовался вовсе"
+
+
+def test_the_neighbours_carry_their_coordinates_to_the_map() -> None:
+    """Координаты у bnMAP есть — строкой, и разобрать их обязан сервер.
+
+    Карту рисует общий рендерер, он ждёт два числа. Строка «55.716254,
+    37.433176» приходит в списке соседей `radius`; неразобранная, она оставила
+    бы карту пустой при полном ответе источника.
+    """
+    row = bnmap._metric_row(CARD, "Объект", 0, "2026-08-25", "55.716254, 37.433176")
+    assert row["latitude"] == 55.716254 and row["longitude"] == 37.433176
+    # Непонятная строка — это «точки нет», а не ноль: нулевые координаты
+    # поставили бы проект в Гвинейский залив, и выглядело бы это как данные.
+    blank = bnmap._metric_row(CARD, "Объект", 0, "2026-08-25", "—")
+    assert blank["latitude"] is None and blank["longitude"] is None
+
+
+def test_the_tab_shows_the_map_and_the_bubbles_by_the_report_renderers() -> None:
+    """Карта соседей и «Карта рынка» — те же функции, что в отчёте."""
+    script = re.search(r"<script>(.*?)</script>", bnmap_ui.markup(), re.S).group(1)
+    for call in ("geoCard(", "bubbleCard(", "wireBubbles("):
+        assert call in script, f"вкладка не зовёт {call}"
+    # Контейнер пузырьков свой: два `id=\"bubble\"` на одной странице сделали бы
+    # вторую карточку невидимой для переключателя.
+    assert "'bnbubble'" in script
+    page = cabinet.cabinet_page("market")
+    for name in ("function geoCard(", "function bubbleCard(", "function wireBubbles("):
+        assert page.count(name) == 1, name
+    assert "html+=geoCard(market, s, peers);" in page
+    assert "html+=bubbleCard(market, 'bubble');" in page
+
+
+def test_a_pair_of_axes_without_data_is_named_and_not_drawn_empty() -> None:
+    """Пустое поле читается как «про рынок сказать нечего».
+
+    У bnMAP нет ни поглощения в метрах, ни среднего ПРОДАННОГО лота — приходит
+    средняя площадь экспозиции, а это другая величина. Две пары осей из шести
+    построить не на чем: они не рисуются пустыми, а называются под графиком.
+    """
+    body = "\n".join(line for line in cabinet.cabinet_page("market").splitlines()
+                     if line.startswith("const num=") or line.startswith("const esc="))
+    script = (body + "\n" + _page_function("bubbleViews") + "\n"
+              + "const VIEWS=[{id:'pace',name:'Цена и темп',x:'units_per_month',y:'price_per_sqm'},"
+              + "{id:'speed',name:'Цена и скорость',x:'area_per_month',y:'price_per_sqm'},"
+              + "{id:'lot',name:'Цена и размер лота',x:'sold_lot_avg',y:'price_per_sqm'}];\n"
+              + "const rows=[{price_per_sqm:700000,units_per_month:3,lot_area_avg:60},"
+              + "{price_per_sqm:500000,units_per_month:13,lot_area_avg:64}];\n"
+              + "console.log(bubbleViews(rows).map(v=>v.id).join(','));\n")
+    path = ROOT / "tests" / "_bnmap_views.js"
+    path.write_text(script, encoding="utf-8")
+    try:
+        done = subprocess.run([_node(), str(path)], capture_output=True, text=True)
+        assert done.returncode == 0, done.stderr
+    finally:
+        path.unlink(missing_ok=True)
+    assert done.stdout.strip() == "pace", done.stdout
+    # И сама ось названа своим именем: лот в проекте — не проданный лот.
+    page = cabinet.cabinet_page("market")
+    assert "средний лот в проекте, м²" in page and "средний проданный лот, м²" in page
+
+
+def test_the_budget_of_a_lot_is_not_the_price_of_a_metre() -> None:
+    """`sumRmin`/`sumRmax` — рубли за лот, и в колонки «мин/макс» ₽/м² не идут.
+
+    Соблазн понятен: у отчёта в таблице цены есть пустые колонки «мин» и
+    «макс», а у bnMAP есть два числа с похожими именами. Но это бюджет лота, и
+    подставленный туда он выглядел бы ценой метра в двадцать миллионов —
+    ошибкой, которая не выглядит ошибкой, потому что стоит в своей колонке.
+    """
+    card = {**CARD, "apart_total": {"expo": "57", "square_avg": "60.679",
+                                    "sumRmin": "20363689.00", "sumRavg": "43429137.95",
+                                    "sumRmax": "105136857.00", "metrPriceRAvg": "715927.02"}}
+    row = bnmap._metric_row(card, "Объект", 0, "2026-08-25")
+    assert row["budget_min"] == 20363689.0 and row["budget_max"] == 105136857.0
+    assert "price_per_sqm_min" not in row and "price_per_sqm_max" not in row
+    html = bnmap_ui._budgets([], row)
+    assert "Бюджет лота" in html and "20 363 689" in html
+    assert "не за метр" in html, "таблица не говорит, что это рубли за лот"
+
+
+def test_the_tab_shows_what_pulse_has_no_field_for() -> None:
+    """Апартаменты и сроки ввода — то, чего у «Пульса» нет вовсе.
+
+    Апартаменты стоят в общей медиане наравне с квартирами, хотя это другой
+    правовой статус и другой покупатель; у bnMAP признак есть, и он назван.
+    """
+    row = bnmap._metric_row({**CARD, "apartments": 1, "dsc_count": 3,
+                             "initial_dsc": "2027-09-30",
+                             "before_date_state_commission": 13,
+                             "createTimeMax": "2026-08-22"},
+                            "Объект", 0, "2026-08-25")
+    html = bnmap_ui._delivery([], row)
+    assert "Сроки ввода и статус" in html
+    assert "апартаменты" in html and "2027-09-30" in html and "2026-08-22" in html
+    # Ноль — это «квартиры», а не «неизвестно»: пустое поле и явный ноль
+    # означают разное.
+    flats = bnmap_ui._delivery([], bnmap._metric_row(
+        {**CARD, "apartments": 0, "dsc_count": 1}, "Объект", 0, "2026-08-25"))
+    assert "квартиры" in flats
+
+
+def test_the_tab_asks_platon_about_its_own_numbers() -> None:
+    """У вкладки свой вопрос и своя сводка — но путь к Платону один.
+
+    На странице два свода сразу: отчёт по «Пульсу» и этот. Общее поле вопроса
+    отдало бы Платону числа последнего построенного, а человек спрашивал бы о
+    том, что перед глазами. Поэтому поле своё, а `askPlatoIn` — общая: копия
+    опроса стала бы вторым местом, где чинят обрыв длинного ответа.
+    """
+    markup = bnmap_ui.markup()
+    assert 'id="bnask"' in markup and 'id="bnq"' in markup and 'id="bnaskbtn"' in markup
+    script = re.search(r"<script>(.*?)</script>", markup, re.S).group(1)
+    assert "askPlatoIn(" in script and "platoAnswer(" not in script
+    page = cabinet.cabinet_page("market")
+    assert page.count("async function askPlatoIn(") == 1
+    assert "askPlatoIn({field:'#ask', out:'#askout'" in page
+    # Сводка вкладки называет свой источник и границы выборки: подставить ей
+    # сводку «Пульса» значило бы спросить не о том, что показано.
+    assert "bnMAP.pro (второй источник" in script
+    assert "Радиуса у метода нет" in script
+    assert "Источник НЕ даёт:" in script, "в вопрос не едет список того, чего нет"
+
+
+def test_the_premium_card_is_drawn_by_the_report_too() -> None:
+    """«Что стоит премия» — та же `deepCard`, и на bnMAP она частичная.
+
+    Денежной части у неё здесь не будет: остатка В МЕТРАХ источник не даёт, а
+    перемножить остаток лотов на среднюю площадь экспозиции значит выдать свою
+    оценку за данные. Сроки распродажи считаются и показываются.
+    """
+    from market_search import verdict
+
+    script = re.search(r"<script>(.*?)</script>", bnmap_ui.markup(), re.S).group(1)
+    assert "deepCard(data)" in script
+    row = bnmap._metric_row(CARD, "Объект", 0, "2026-08-25")
+    peer = bnmap._metric_row(NEIGHBOUR, "Сосед", 0.55, "2026-08-25")
+    money = verdict.price_of_premium(row, [peer])
+    assert "months_own_pace" in money and "months_peer_pace" in money
+    assert "premium_on_remainder" not in money, "остаток в метрах взялся из ниоткуда"
+    assert "remaining_area" not in row

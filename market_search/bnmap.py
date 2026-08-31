@@ -749,14 +749,36 @@ def _today() -> str:
 # выдумки: это контракт `build_blocks`, которым считается действующий отчёт.
 # Клон обязан считаться ИМ ЖЕ — вторая реализация медианы однажды разойдётся с
 # первой, и обе будут выглядеть верными.
-def _metric_row(card: dict[str, Any], name: str, distance: Any, observed: str) -> dict[str, Any]:
+def _coordinates(value: Any) -> tuple[float | None, float | None]:
+    """Координаты соседа. В списке `radius` они приходят строкой «широта, долгота».
+
+    Разбираются здесь, а не на странице: карту рисует общий рендерер, и он ждёт
+    два числа. Непонятная строка даёт пару пустых — точка на карте просто не
+    появится, а сосед останется в расчётах наравне, и об этом сказано под
+    картой.
+    """
+    parts = str(value or "").split(",")
+    if len(parts) != 2:
+        return None, None
+    try:
+        return float(parts[0].strip()), float(parts[1].strip())
+    except (TypeError, ValueError):
+        return None, None
+
+
+def _metric_row(card: dict[str, Any], name: str, distance: Any, observed: str,
+                point: Any = None) -> dict[str, Any]:
     price = card.get("metrprice_avg") or {}
     total = card.get("apart_total") or {}
     budget = card.get("sum_avg") or {}
+    latitude, longitude = _coordinates(
+        point if point is not None else card.get("coordinates"))
     return {
         "object_id": card.get("object_id"),
         "name": name,
         "distance_km": _float(distance),
+        "latitude": latitude,
+        "longitude": longitude,
         # Класс отдаётся как есть: `normalize_segment` уже сводит «Бизнес+» и
         # «Бизнес−» к ступени «бизнес», а подпись в таблице должна остаться
         # той, что дал источник, — три ступени там, где у нас одна.
@@ -777,7 +799,20 @@ def _metric_row(card: dict[str, Any], name: str, distance: Any, observed: str) -
         "lot_area_avg": _float(total.get("square_avg")),
         "rooms": {key.replace("metrprice_avg_", ""): _float(value)
                   for key, value in price.items() if key != "metrprice_avg_total"},
+        # Бюджет лота: минимум, средняя, максимум. Это РУБЛИ ЗА ЛОТ, а не цена
+        # метра — в колонки «мин» и «макс» отчёта они не идут, там ₽/м².
+        # Своей строкой они отвечают на вопрос, которого у «Пульса» нет вовсе:
+        # с какого чека начинается вход в проект.
         "budget_avg": _float(budget.get("apart_total")),
+        "budget_min": _float(total.get("sumRmin")),
+        "budget_max": _float(total.get("sumRmax")),
+        # Апартаменты — не квартиры: другой правовой статус, другая цена метра
+        # и другой покупатель. «Пульс» этого признака не отдаёт.
+        "apartments": card.get("apartments"),
+        "buildings": _float(card.get("dsc_count")),
+        "commission_first": card.get("initial_dsc"),
+        "commission_soon": _float(card.get("before_date_state_commission")),
+        "updated_at": card.get("createTimeMax"),
         "pace_12m": _float(card.get("pace_lots_pre_12")),
         "months_by_source": _float(card.get("forecast_month")),
         "stage": card.get("stage"),
@@ -819,6 +854,9 @@ CLONE_GAPS = (
     "помесячная цена по КАЖДОМУ соседу — приходят две уже посчитанные средние "
     "(пять ближайших и вся локация), поэтому на графике цены нет ни линий "
     "соседей, ни полосы квартилей",
+    "остаток в МЕТРАХ — есть остаток в лотах и средняя площадь экспозиции, но "
+    "их произведение было бы нашей оценкой, а не данными; поэтому денежная часть "
+    "раздела «Что стоит премия» пуста, а сроки распродажи считаются",
     "выбор радиуса — соседей назначает сам bnMAP (объект и пять ближайших); "
     "наш выбор удалённости может только отсечь дальних из присланного",
 )
@@ -916,7 +954,7 @@ def clone_report(data_dir: Any, query: str, *, base: str = "msk", date: str = ""
             unnamed.append(str(item.get("name") or item.get("id")))
             continue
         row = _metric_row(card, str(item.get("name") or card.get("project") or ""),
-                          item.get("distance"), asked)
+                          item.get("distance"), asked, item.get("coordinates"))
         if str(item.get("id")) == str(found["object_id"]):
             subject = row
         else:
@@ -976,7 +1014,10 @@ def clone_report(data_dir: Any, query: str, *, base: str = "msk", date: str = ""
         "price_series": price_series,
         "market_series": market_series,
         "exposure_series": exposure,
+        # Состав выборки считается здесь, рядом с самой выборкой: на странице
+        # ему считаться негде — она показывает, а не считает.
         "selection": {"given": given, "used": len(peers), "radius_km": radius_km,
+                      "no_price": sum(1 for row in peers if not row.get("price_per_sqm")),
                       "farthest_km": max((row["distance_km"] for row in peers
                                           if row.get("distance_km") is not None), default=None)},
         "unnamed_peers": unnamed,
