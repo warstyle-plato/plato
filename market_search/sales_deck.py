@@ -39,7 +39,10 @@ ROWS_PER_SLIDE = 13
 # (полосы долей), живёт своими подписями — они и есть его числа.
 LINES_PER_SLIDE = 10
 # Содержимое начинается под шапкой — надзаголовок, линейка, заголовок.
-CONTENT_TOP = 1.5
+# Заголовок листа стоит на 0,84 и занимает 0,75 — содержимое начинается
+# ПОД ним, а не на нём: при 1,5 первая строка текста налезала на заголовок
+# (на графиках и таблицах это было не видно, на «На чём посчитано» видно).
+CONTENT_TOP = 1.66
 
 
 class DeckUnavailable(RuntimeError):
@@ -367,6 +370,27 @@ _NUMERIC_CELL = re.compile(
     re.IGNORECASE)
 
 
+# Число и его подпись раздельно: «900,0 млн ₽» → (900.0, «млн ₽»). Для графика
+# это годится, только если подпись одна и та же во всей колонке — тогда это её
+# единица. Разные подписи в одной колонке значат смесь величин, и такую колонку
+# рисовать нельзя.
+_LABELLED_CELL = re.compile(
+    r"^(?P<number>-?\d[\d  ]*(?:[.,]\d+)?)\s*(?P<unit>[%×xa-zA-Zа-яёА-ЯЁ₽/²  .]{1,12})$")
+
+
+def labelled_number(text: str) -> tuple[float, str] | None:
+    raw = str(text or "").strip().replace("−", "-")
+    found = _LABELLED_CELL.match(raw)
+    if not found:
+        return None
+    try:
+        value = float(found.group("number").replace(" ", "").replace(" ", "").replace(",", "."))
+    except ValueError:
+        return None
+    unit = re.sub(r"\s+", " ", found.group("unit")).strip().casefold()
+    return (value, unit) if unit else None
+
+
 def looks_numeric(text: str) -> bool:
     """Читается ли ячейка числом — для выкладки, а не для графика."""
     raw = str(text or "").strip().replace("−", "-")
@@ -431,6 +455,7 @@ def charts(table: dict[str, Any]) -> list[dict[str, Any]]:
 
     def column(index: int) -> list[float | None] | None:
         values: list[float | None] = []
+        marks: set[str] = set()
         for row in rows:
             raw = str(row[index] if index < len(row) else "").strip()
             if raw in _BLANK_CELL:
@@ -438,7 +463,21 @@ def charts(table: dict[str, Any]) -> list[dict[str, Any]]:
                 continue
             number = cell_number(raw)
             if number is None:
-                return None
+                # Ячейка с ПОДПИСЬЮ — «900,0 млн ₽». `cell_number` не берёт её
+                # намеренно: колонка процентов и колонка рублей дают разные
+                # графики. Но подпись, одинаковая во всей колонке, — это её
+                # единица, а не смесь: у «Факта против планов» рубли стоят в
+                # каждой ячейке, и из-за этого чартились только цены, а сам
+                # факт и оба плана с графика пропадали (снимок владельца,
+                # 31.08.2026). Разные подписи в одной колонке по-прежнему
+                # отказ: складывать проценты с рублями нельзя.
+                labelled = labelled_number(raw)
+                if labelled is None:
+                    return None
+                number, unit = labelled
+                marks.add(unit)
+                if len(marks) > 1:
+                    return None
             values.append(float(number))
         if len(values) != len(categories):
             return None
@@ -446,6 +485,12 @@ def charts(table: dict[str, Any]) -> list[dict[str, Any]]:
 
     numeric = {index: column(index) for index in range(1, len(head))}
     numeric = {index: values for index, values in numeric.items() if values}
+    # Числовых колонок нет вовсе — рисовать нечего. Прежде это падало
+    # `IndexError` на пустом списке, и вместе с ним падала вся сборка колоды:
+    # у раздела «Эскроу против погашения ПФ» таблица «Показатель · Значение ·
+    # Пояснение» числовой не является ни одной колонкой.
+    if not numeric:
+        return []
     # Цена метра — не такая же мера, как метры и рубли: она про другое и живёт
     # линией на своей шкале. «Цена — всегда линия на своей шкале, а не вкладка
     # со столбиками» (владелец, 26.08.2026): на общей шкале с рублями её не
@@ -733,8 +778,16 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         left = slide.shapes.add_textbox(Inches(0.6), Inches(SLIDE_H_IN - 0.55),
                                         Inches(SLIDE_W_IN - 1.8), Inches(0.35))
         run = left.text_frame.paragraphs[0].add_run()
-        run.text = " · ".join(part for part in (footer, title, subtitle) if part) \
-            if name else ""
+        # Каждая часть — один раз. Прежде здесь склеивались footer, title и
+        # subtitle, а вызывающий слал в footer то же имя и ту же дату: строка
+        # выходила вдвое длиннее и повторяла себя.
+        seen: list[str] = []
+        for part in (footer, title, subtitle):
+            for piece in str(part or "").split(" · "):
+                piece = piece.strip()
+                if piece and piece.casefold() not in {x.casefold() for x in seen}:
+                    seen.append(piece)
+        run.text = " · ".join(seen) if name else ""
         run.font.size = Pt(9)
         run.font.color.rgb = dim
         right = slide.shapes.add_textbox(Inches(SLIDE_W_IN - 1.4),
@@ -1066,10 +1119,18 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         # Значения стоят на столбиках, пока их не много. Ряд столбиков один,
         # поэтому считаются его категории — линии подписей не несут.
         labelled = len(data["categories"]) <= 8
+        # Крупным числам дробная часть не нужна вовсе, а её разделитель без
+        # цифр за ним читается как обрыв числа.
+        big = all(abs(value) >= 100 for value in (data.get("values") or [])
+                  if value is not None)
         plot.has_data_labels = labelled
         if labelled:
             labels = plot.data_labels
-            labels.number_format = "#,##0.#"
+            # «#,##0.#» в русской раскладке печатает разделитель дробной части
+            # даже там, где дроби нет: на снимке владельца подписи столбиков
+            # стояли как «576 680,» (31.08.2026). Дробная часть нужна только
+            # мелким числам.
+            labels.number_format = "#,##0" if big else "#,##0.#"
             labels.number_format_is_linked = False
             labels.position = XL_LABEL_POSITION.OUTSIDE_END
             labels.font.size = Pt(11)
@@ -1135,14 +1196,21 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
     # Полка показателей стоит ДО первого графика — как в отчёте: главные числа
     # не вылавливают из картинки. Плитки берутся у того раздела, где они есть,
     # а не считаются заново: второй счёт той же величины однажды разойдётся.
-    shelf = next((table for page in pages for table in (page.get("tables") or [])
-                  if table.get("kind") == "tiles" and any(
-                      any(row) for row in (table.get("rows") or []))), None)
+    shelf, shelf_page = None, None
+    for page in pages:
+        for table in page.get("tables") or []:
+            if table.get("kind") == "tiles" and any(any(row) for row in (table.get("rows") or [])):
+                shelf, shelf_page = table, page
+                break
+        if shelf is not None:
+            break
+    shelf_bottom = top
     if shelf is not None:
         # Помечаем взятую полку: повторённая через слайд, она читается как
         # вторые числа о том же.
         shelf["used"] = True
         put_shelf(first, shelf, top=top + 0.1)
+        shelf_bottom = top + 1.45
 
     # На титуле имя отчёта уже стоит заголовком: повторённое колонтитулом,
     # оно читается как заводская рамка. Номер листа остаётся.
@@ -1190,6 +1258,13 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
                  if table.get("kind") == "tiles" and not table.get("used")]
         tables = [table for table in tables if table.get("kind") != "tiles"]
         if not (tables or strips or tiles or lines) and note:
+            if page is shelf_page:
+                # Числа этого раздела уехали полкой на титул — туда же и его
+                # вывод. Отдельный лист с одной строкой под заголовком — это
+                # не раздел, а пустой лист: «слайд 2 пустой вообще» (владелец,
+                # 31.08.2026).
+                put_note(first, note, top=shelf_bottom, size=14)
+                continue
             # Копим и кладём по нескольку на лист — своего листа такой раздел
             # не заслуживает, но и пропасть не должен: вывод и есть его ответ.
             pending.append(page)
@@ -1213,6 +1288,14 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         # себе слайдом не является: «этот слайд странный» (владелец,
         # 30.08.2026) — заголовок, одна строка и пять дюймов белого. Такой
         # вывод едет подзаголовком на первый слайд раздела, где есть картинка.
+        # Подписи, стоящие на экране РЯДОМ с картинкой, слайдом не являются.
+        # Прежде они делали раздел «богатым», и у «Динамики» выходил лист с
+        # одной строкой «факт, млн ₽ · цена квартир, ₽/м²» и плашкой поверх
+        # неё, а сами графики шли следующими листами — «слайд 3 пустой»
+        # (владелец, 31.08.2026). Есть график — подписи едут на него.
+        caption = lines if drawn else []
+        if drawn:
+            lines = []
         rich = bool(lines or tiles or strips or (not drawn and tables))
         carry = "" if rich else note
 
@@ -1249,6 +1332,9 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
                     run.text = line
                     run.font.size = Pt(14)
                     run.font.color.rgb = ink
+                # Высоту занятого места считаем по самой длинной колонке: без
+                # этого плашка вывода ложилась ПОВЕРХ подписей.
+                top += per * 0.42 + 0.1
             # Таблица раздела встаёт на тот же лист, если помещается. На
             # экране лента и её числа стоят одним блоком, и лист с одной
             # короткой лентой над пятью дюймами белого — это не «просторно», а
@@ -1271,11 +1357,24 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         # заголовке слайда. Сноски под каждым графиком больше нет: повторённая
         # двадцать раз, она перестаёт быть пояснением и становится шумом —
         # сказать это достаточно один раз, на титуле.
-        for chart in drawn:
+        for index, chart in enumerate(drawn):
             part = new_slide(
                 f"{heading} · {chart.get('measure') or chart['name']}", heading)
-            top = lead(part, CONTENT_TOP)
-            put_chart(part, chart, top=top, height=SLIDE_H_IN - top - 0.8)
+            top = CONTENT_TOP
+            # Подписи и вывод — под картинкой и только на первом её слайде:
+            # повторённые у каждой меры, они читаются как разные пояснения.
+            below = caption if index == 0 else []
+            tail = carry if index == 0 else ""
+            reserve = 0.42 * len(below) + (0.8 if tail else 0.0)
+            put_chart(part, chart, top=top,
+                      height=max(2.4, SLIDE_H_IN - top - 0.8 - reserve))
+            under = top + max(2.4, SLIDE_H_IN - top - 0.8 - reserve) + 0.1
+            for line in below:
+                textbox(part, line, top=under, size=12, colour=dim, height=0.36)
+                under += 0.4
+            if tail:
+                put_note(part, tail, top=under, size=13)
+                carry = ""
 
         # Таблицы — целиком и ячейками: их и правят. Длинная продолжается
         # следующим слайдом, а не ужимается до нечитаемого.

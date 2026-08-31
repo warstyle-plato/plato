@@ -496,7 +496,7 @@ def _plato_krt_prompt(stored: dict[str, Any]) -> str:
             f"Безусловный снос: {_plato_number(duties.get('demolition_area_sqm'))} м² "
             f"({duties.get('demolition_objects') or 0} объектов); "
             f"снос/реконструкция: {duties.get('conditional_objects') or 0} объектов.",
-            f"Расселение/изъятие: {'найдено' if duties.get('resettlement') else 'не найдено в опубликованном решении'}; "
+            f"Расселение/изъятие: {'найдено' if duties.get('resettlement') else 'не найдено в опубликованном проекте решения'}; "
             f"дополнительные объекты: {len(duties.get('unmodelled_construction') or [])}.",
         ]
     for item in (screening.get("exclusions") or [])[:6]:
@@ -571,7 +571,8 @@ def install(app: FastAPI) -> None:
                             projects = krt_registry.projects(refresh=True)
                             rows = [row.to_dict() if hasattr(row, "to_dict") else row
                                     for row in projects]
-                            if rows and not krt_ranking.start(rows, _screen_one, scheduled=True):
+                            if rows and not krt_ranking.start(
+                                    rows, _screen_one, scheduled=True, claimed=True):
                                 krt_ranking.release()
                         except Exception:
                             logger.exception("weekly KRT ranking failed")
@@ -700,6 +701,42 @@ def install(app: FastAPI) -> None:
         # единого слова. Молча выброшенная площадка читается как её
         # отсутствие, а это самая крупная площадка каталога и есть.
         unparsed = [row for row in projects if row.get("parse_problem")]
+        # Площадка, у которой опубликован ПРОЕКТ решения, а карточки в
+        # каталоге нет, стояла отдельным списком под таблицей — то есть в общем
+        # ряду её не было («КРТ без карточки надо включать в общий список, но
+        # делать пометку», владелец, 31.08.2026). Она едет строкой сюда же, с
+        # меткой и датой. ТЭП у неё нет вовсе, и придумывать их нельзя: в
+        # колонках стоит прочерк, а не ноль.
+        #
+        # Метка называет ДОКУМЕНТ, а не его отсутствие: «без карточки» — это
+        # про наш каталог, а на mos.ru лежит проект решения о КРТ, и это не
+        # решение (владелец, 31.08.2026: «то, что ты назвал КРТ без карточки,
+        # вообще-то ПРОЕКТ решения»). Разница не в слове: проект решения город
+        # публикует для сбора мнений правообладателей — решения ещё нет, и
+        # назвать его принятым значит показать стадию, которой не наступало.
+        # Зато это самый ранний сигнал из всех: до торгов остаётся время.
+        decision_rows: list[dict[str, Any]] = []
+        reader = getattr(krt_registry, "decisions", None)
+        if callable(reader):
+            try:
+                found = await run_in_threadpool(reader)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("KRT decisions failed")
+                found = {"decisions": [], "error": f"{type(exc).__name__}: {exc}"}
+            for one in (found.get("decisions") or []):
+                decision_rows.append({
+                    "slug": "decision:" + str(one.get("id") or ""),
+                    "name": str(one.get("address") or one.get("title") or ""),
+                    "okrug": one.get("okrug") or "",
+                    "district": "",
+                    "status": "Проект решения",
+                    "url": one.get("url"),
+                    "no_card": True,
+                    "krt_kind": one.get("kind") or "",
+                    "draft_decision_at": one.get("published_at") or 0,
+                    "department": one.get("department") or "",
+                })
+            projects = projects + decision_rows
         return {
             "source": CATALOGUE_URL,
             "geometry_status": "not_published_in_catalogue",
@@ -711,7 +748,8 @@ def install(app: FastAPI) -> None:
                  "problem": row.get("parse_problem")}
                 for row in unparsed[:20]
             ],
-            "new_count": sum(1 for row in projects if row["is_new"]),
+            "no_card_count": len(decision_rows),
+            "new_count": sum(1 for row in projects if row.get("is_new")),
             "new_for_days": NEW_FOR_SECONDS // 86400,
             "projects": projects,
         }
@@ -736,8 +774,17 @@ def install(app: FastAPI) -> None:
                 "available": False,
                 "warning": f"Документы обязательств временно не прочитаны: {type(exc).__name__}",
             }
+        # Карточка каталога — официальный и бесплатный источник застройщика и
+        # реновации. Читается в прогоне, а не по нажатию: иначе фильтр по
+        # оператору и городским нуждам работает только по открытым руками.
+        try:
+            card = krt_registry.card_facts(str(project.get("slug") or ""))
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("KRT card facts failed slug=%s", project.get("slug"))
+            card = {"available": False, "reason": f"{type(exc).__name__}: {exc}"}
         screening = build_krt_model_screening(
             project, report, core, requirements=requirements)
+        screening["card_facts"] = card
         # Маркетинг едет вместе со скринингом и оседает в отчёте площадки.
         # Считать его второй раз при открытии карточки незачем: прогон уже
         # сходил к рынку, к соседям и к движку — минуты чужого ожидания на
@@ -767,6 +814,243 @@ def install(app: FastAPI) -> None:
             raise HTTPException(status_code=502,
                                 detail=f"Поиск mos.ru не ответил: {exc}") from exc
         return payload
+
+    @app.get("/auctions/investmoscow/probe")
+    async def auction_investmoscow_probe() -> dict[str, Any]:
+        """Почему у нас нет ИнвестМосквы. Проба показывает ответ, а не догадку.
+
+        Адаптер есть и стоит в наборе «все источники», но лот у него рождается
+        длинной цепочкой: каталог → карточки города → ссылка на официальную ЭТП
+        → лот у адаптера ЭТП. Оборвись цепочка на первом шаге — карточек ноль,
+        лотов ноль, и в отчёте источника это видно только числами. Проба
+        называет, где именно рвётся: сколько байт вернул каталог, похоже ли это
+        на оболочку SPA и сколько ссылок на карточки в нём нашлось.
+        """
+        from .adapters.investmoscow import InvestMoscowDiscoveryAdapter as _IM
+
+        def collect() -> list[dict[str, Any]]:
+            adapter = _IM()
+            out: list[dict[str, Any]] = []
+            for url in _IM._search_urls()[:3]:
+                row: dict[str, Any] = {"url": url}
+                try:
+                    html = adapter._read_html(url)
+                except Exception as exc:  # noqa: BLE001
+                    row["error"] = f"{type(exc).__name__}: {exc}"[:300]
+                    out.append(row)
+                    continue
+                row["bytes"] = len(html)
+                low = html[:600].lower()
+                row["looks_html"] = "<html" in low or "<!doctype" in low
+                try:
+                    cards = _IM._city_card_urls(url, html)
+                except Exception as exc:  # noqa: BLE001
+                    row["parse_error"] = f"{type(exc).__name__}: {exc}"[:200]
+                    cards = []
+                row["city_cards"] = len(cards)
+                row["first_cards"] = list(cards)[:3]
+                out.append(row)
+            return out
+
+        answers = await run_in_threadpool(collect)
+        return {
+            "source": "investmoscow",
+            "asked": len(answers),
+            "answers": answers,
+            "note": ("Ноль карточек при живом ответе означает, что каталог отдаёт "
+                     "оболочку, а список приезжает отдельным вызовом — тогда нужен "
+                     "браузер и адрес, по которому страница сама ходит за данными: "
+                     "/auctions/etp/probe/browser?url=…"),
+        }
+
+    @app.post("/auctions/krt/{slug}/tender-order")
+    async def auction_krt_mark_tender(slug: str, request: Request) -> dict[str, Any]:
+        """Отметить: по этой площадке объявлены торги — по такому-то распоряжению.
+
+        Машине привязать нечем. Распоряжение ДГП не называет адреса ни в
+        заголовке, ни в карточке документа, а его PDF — скан: семь страниц, 199
+        картинок на первой, текста только регистрационный штамп. Придумать
+        привязку по номеру или по дате значило бы объявить площадку выставленной
+        на торги без единого основания.
+
+        Поэтому отметку ставит человек, открывший распоряжение, а мы храним её
+        как его утверждение — с номером, ссылкой и датой отметки.
+        """
+        setter = getattr(krt_registry, "mark_tender", None)
+        if not callable(setter):
+            raise HTTPException(status_code=503, detail="Отметки недоступны")
+        payload = await request.json()
+        order = (payload or {}).get("order") or {}
+        if order and not str(order.get("url") or "").startswith("https://www.mos.ru/"):
+            raise HTTPException(status_code=422,
+                                detail="Ссылка должна вести на распоряжение mos.ru")
+        try:
+            entry = await run_in_threadpool(
+                lambda: setter(slug, order, str((payload or {}).get("who") or "")))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"slug": slug, "link": entry}
+
+    @app.get("/auctions/krt/tender-links")
+    async def auction_krt_tender_links() -> dict[str, Any]:
+        """Все проставленные вручную привязки распоряжений к площадкам."""
+        reader = getattr(krt_registry, "tender_link", None)
+        if not callable(reader):
+            return {"links": {}}
+        return {"links": await run_in_threadpool(lambda: reader(""))}
+
+    @app.get("/auctions/krt/map")
+    async def auction_krt_map(refresh: bool = False, step_m: float = Query(default=40.0, ge=1.0, le=200.0)) -> dict[str, Any]:
+        """Площадки КРТ с официальными границами — для карты Москвы.
+
+        Контуры отдаются в метрах веб-меркатора, в тех же, в которых считает
+        подложка `/land/basemap`: переводить их в браузере значило бы завести
+        вторую проекцию, а перепутанный порядок пары «широта, долгота» молча
+        зеркалит полигон — участок остаётся правдоподобным и встаёт не туда.
+        """
+        reader = getattr(krt_registry, "map_dataset", None)
+        if not callable(reader):
+            raise HTTPException(status_code=503, detail="Реестр карты недоступен")
+        try:
+            return await run_in_threadpool(
+                lambda: reader(refresh=bool(refresh), step_m=float(step_m)))
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=502,
+                                detail=f"Карта КРТ не прочитана: {exc}") from exc
+
+    @app.get("/auctions/krt/api-probe")
+    async def auction_krt_api_probe(url: str = Query(default="")) -> dict[str, Any]:
+        """Что на самом деле отдаёт api.krt.mos.ru. Разбора здесь нет.
+
+        Каталог мы читаем с этого домена — но КАК HTML, парсером разметки и с
+        текстовым фолбэком. Есть ли под ним JSON со статусами, включая
+        «Проекты на торгах», мы не знаем: адреса не спрашивали ни разу.
+        Гадать имена полей мы уже пробовали на ГИС Торгах — приехали гаражи,
+        поэтому здесь только проба, которая ПОКАЗЫВАЕТ ответ.
+        """
+        from . import krt_api_probe
+
+        return await run_in_threadpool(krt_api_probe.probe, url.strip())
+
+    @app.get("/auctions/krt/api-probe/browser")
+    async def auction_krt_api_probe_browser(
+        seconds: float = Query(default=45.0, ge=5.0, le=90.0),
+        url: str = Query(default=""),
+    ) -> dict[str, Any]:
+        """Та же проба настоящим браузером: адреса, по которым ходит сама страница.
+
+        У SPA данные приезжают отдельными вызовами бэкенда, и списка статусов в
+        разметке может не быть вовсе. Секреты проба не печатает — ни заголовков,
+        ни cookies, ни хранилища.
+        """
+        from .adapters.browser_probe import probe_browser
+
+        from . import krt_api_probe
+
+        return await run_in_threadpool(
+            lambda: probe_browser(url.strip() or krt_api_probe.PORTAL_URL, seconds=seconds))
+
+    @app.post("/auctions/krt/tenders")
+    async def auction_krt_tenders(request: Request) -> dict[str, Any]:
+        """Торги по КРТ: распоряжения города и лоты, привязанные к площадкам.
+
+        Лоты приходят те, что уже собраны на экране: второй прогон каталога
+        стоил бы минуту чужого ожидания на готовом ответе. Правило совпадения
+        одно — то же, что у решений: улица держится за своим владением, иначе
+        ложная привязка объявит площадку проданной.
+        """
+        from . import krt_tenders
+
+        payload = await request.json()
+        lots = (payload or {}).get("lots") or []
+        if not isinstance(lots, list) or len(lots) > 5000:
+            raise HTTPException(status_code=422, detail="Список лотов не разобран")
+        sites = await run_in_threadpool(krt_registry.catalogue)
+        matched = await run_in_threadpool(krt_tenders.match, lots, sites)
+        orders: dict[str, Any] = {}
+        reader = getattr(krt_registry, "tender_orders", None)
+        if callable(reader):
+            try:
+                orders = await run_in_threadpool(reader)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("KRT tender orders failed")
+                orders = {"orders": [], "error": f"{type(exc).__name__}: {exc}"}
+        # Распоряжение привязывается к площадке САМО: адрес и короткое имя КРТ
+        # достаются распознаванием скана, а совпадение считает то же правило,
+        # что у решений и лотов. Ручная отметка остаётся поправкой на те
+        # распоряжения, где распознать не удалось.
+        from market_search import krt_tender_orders as order_reader
+
+        rows = orders.get("orders") or []
+        order_by_site: dict[str, dict[str, Any]] = {}
+        unbound: list[dict[str, Any]] = []
+        for one in rows:
+            site = await run_in_threadpool(order_reader.match_site, one, sites)
+            if site:
+                order_by_site.setdefault(str(site.get("slug") or ""), one)
+            elif one.get("address") or one.get("krt_name"):
+                unbound.append(one)
+        return {**matched, "orders": rows,
+                "orders_by_site": order_by_site,
+                "orders_unbound": unbound[:40],
+                "orders_note": orders.get("note") or "",
+                "orders_complete": orders.get("complete"),
+                "orders_error": orders.get("error") or ""}
+
+    @app.get("/auctions/krt/{slug}/open-sources")
+    async def auction_krt_open_sources(slug: str) -> dict[str, Any]:
+        """Что об этой площадке сказано в публикациях.
+
+        В самом проекте решения об операторе и городских нуждах не сказано
+        почти ничего — проверено на восьми живых документах (31.08.2026).
+        Живут эти факты в публикациях mos.ru и деловой прессы, откуда их берёт
+        и ручная таблица владельца. Ни один признак не ставится без цитаты и
+        ссылки, а поиск — общий крючок сервиса, своего здесь не заводим.
+        """
+        from market_search import krt_open_sources
+
+        project = next((row for row in krt_registry.catalogue()
+                        if row.get("slug") == slug), None)
+        name = str((project or {}).get("name") or "")
+        if not name:
+            raise HTTPException(status_code=404, detail="Площадка не найдена в каталоге")
+        # Поиск у сервиса уже есть — второй свой не заводим: модуль, идущий
+        # наружу мимо общего пути, однажды пойдёт другим маршрутом и ответит
+        # иначе, чем весь остальной сервис.
+        client = getattr(service, "search", None)
+        finder = getattr(client, "search", None)
+        if not callable(finder) or not getattr(client, "configured", False):
+            return {"available": False,
+                    "reason": "Веб-поиск не настроен — публикации спросить нечем"}
+        asked = krt_open_sources.queries(
+            name, str((project or {}).get("okrug") or ""),
+            str((project or {}).get("district") or ""))
+        docs: list[Any] = []
+        errors: list[str] = []
+        for query in asked:
+            try:
+                docs.extend(await run_in_threadpool(finder, query))
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{type(exc).__name__}: {exc}")
+        if not docs and errors:
+            # Поиск не ответил — это ответ, а не «в источниках ничего нет».
+            return {"available": False, "reason": "; ".join(errors[:2]), "queries": asked}
+        found = krt_open_sources.read_findings(docs, name)
+        found.update({"available": True, "queries": asked, "errors": errors[:2]})
+        return found
+
+    @app.get("/auctions/krt/{slug}/card-facts")
+    async def auction_krt_card_facts(slug: str) -> dict[str, Any]:
+        """Застройщик и реновация — со страницы самой площадки.
+
+        Один запрос к krt.mos.ru, без поиска и без его квоты. Прогон читает то
+        же самое и кладёт в строку рейтинга; здесь — для площадки, которую ещё
+        не считали: открыл карточку и видишь, кто застройщик.
+        """
+        reader = getattr(krt_registry, "card_facts", None)
+        if not callable(reader):
+            raise HTTPException(status_code=503, detail="Чтение карточки не подключено")
+        return await run_in_threadpool(reader, slug)
 
     @app.get("/auctions/krt/{slug}/requirements")
     async def auction_krt_requirements(slug: str) -> dict[str, Any]:
@@ -906,11 +1190,18 @@ def install(app: FastAPI) -> None:
                     detail="Ни одна из выбранных площадок не найдена в каталоге",
                 )
         started = krt_ranking.start(projects, _screen_one)
-        return {
-            "started": started,
-            "reason": "" if started else "Прогон уже идёт",
-            "progress": krt_ranking.progress(),
-        }
+        progress = krt_ranking.progress()
+        if started:
+            reason = ""
+        elif progress.get("running"):
+            reason = "Прогон уже идёт"
+        else:
+            # Воркеров два, и ход прогона виден только тому, кто его ведёт.
+            # «Прогон уже идёт» без этой оговорки читалось бы как поломка:
+            # на экране ничего не движется, а кнопка отказывает.
+            reason = ("Прогон уже идёт в соседнем процессе — строки появляются "
+                      "в таблице по мере счёта")
+        return {"started": started, "reason": reason, "progress": progress}
 
     def _stored_report(slug: str) -> dict[str, Any]:
         stored = krt_ranking.report(slug)

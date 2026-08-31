@@ -56,7 +56,7 @@ def _run(program: str) -> dict:
 
 def _needs_harness(intent, mode: str) -> str:
     return (
-        "const state={krtRank:{},krtRequirements:{}};\n"
+        "const state={krtRank:{},krtRequirements:{},krtPress:{}};\n"  # krtPress появился вместе с чтением публикаций
         + f"state.krtRequirements['s']={json.dumps({'intent': intent} if intent else {})};\n"
         + _function("krtIntent") + "\n" + _function("krtNeedsPass") + "\n"
         + f"console.log(JSON.stringify({{pass:krtNeedsPass({{slug:'s'}},{json.dumps(mode)})}}));"

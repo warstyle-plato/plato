@@ -243,7 +243,7 @@ margin-top:12px;white-space:normal}
 /* Баннер — в подвале и во всю ширину: он широкий, ему нужна ширина. Реплика
    в нём нарисована, поэтому текстом её рядом нет: одна и та же фраза дважды
    на экране читается как недосмотр, каковым и была. */
-.brand{display:block;margin-bottom:10px;line-height:0}.brand img{height:26px;width:auto;display:block}.legal-footer{display:flex;gap:18px;flex-wrap:wrap;padding:14px 0 6px;font-size:11px;color:#8b8b8b}.legal-footer a{color:#8b8b8b}.plato-footer{margin:26px 0 8px;line-height:0}
+.brand{display:block;margin-bottom:10px;line-height:0}.brand img{height:26px;width:auto;display:block;mix-blend-mode:multiply}.legal-footer{display:flex;gap:18px;flex-wrap:wrap;padding:14px 0 6px;font-size:11px;color:#8b8b8b}.legal-footer a{color:#8b8b8b}.plato-footer{margin:26px 0 8px;line-height:0}
 .plato-footer img{width:100%;height:auto;border-radius:14px;display:block}
 td.link{color:var(--blue);cursor:pointer;text-decoration:underline dotted}
 .cardwrap{position:fixed;inset:0;background:rgba(20,35,60,.45);display:flex;align-items:flex-start;
@@ -2975,7 +2975,12 @@ function renderSales(d){
         body:JSON.stringify({html,
           title:name,
           subtitle:'Свод продаж DevelopAid'+(day?' · срез '+day:''),
-          footer:'DevelopAid · слайд отвечает разделу отчёта о продажах'})});
+          // Колонтитул отвечает на «чей это лист и на какую дату», а не
+          // объясняет читателю устройство колоды: «зачем ты там вставляешь
+          // свои идиотские комментарии — что включено, на чём построено»
+          // (владелец, 31.08.2026). Имя и срез собирает сам сборщик из
+          // заголовка и подзаголовка, второй раз их слать незачем.
+          footer:''})});
       if(!r.ok){
         // Ответ разбираем, зная, что он может быть не ответом: на отказе шлюза
         // приезжает его HTML-страница, и `r.json()` дал бы поломку разбора
