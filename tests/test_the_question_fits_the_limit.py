@@ -310,19 +310,24 @@ def test_the_sources_line_carries_no_file_names():
     assert "s.at" in line and "s.name" in line
 
 
-def test_the_report_is_folded_under_its_own_name():
-    """Кабинет начинается с рынка, а свод продаж — отдельная работа на десять
-    экранов: развёрнутый, он занимал страницу целиком ещё до того, как человек
-    решил на него смотреть."""
+def test_the_report_is_open_on_its_own_page():
+    """Свод продаж занимает свою страницу целиком, и складки у него нет.
+
+    Свёрнут он был 27.08.2026, когда жил на общей странице кабинета рядом с
+    отчётом о рынке. С 30.08.2026 кабинет разнесён на три страницы, причина
+    исчезла, а складка осталась: на `/cabinet/sales` человек видел плитки и одну
+    серую строку «▸ Отчёт о продажах ПЛАТО» — «там нет ничего на вкладке»
+    (владелец, 31.08.2026). Складки внутри разделов при этом остаются: они
+    прячут числа под уже показанной картинкой, а не отчёт под его именем.
+    """
     body = PAGE[PAGE.index("function renderSales(d){"):]
     body = body[:body.index("\nfunction tile(")]
-    # У отчёта появился якорь: ссылка контура «Отчёт о продажах» ведёт на него
-    # и раскрывает — свёрнутый под такой ссылкой читается как переход, которого
-    # не было. Свёрнутым он при этом остаётся.
-    assert '<details class="salesreport" id="sales">' in body
-    assert "Отчёт о продажах ПЛАТО" in body
-    assert "<details class=\"salesreport\" open" not in body, "вкладка открыта по умолчанию"
-    assert "</details>" in body
+    assert '<details class="salesreport" id="sales">' not in body, \
+        "отчёт снова свёрнут — страница показывает одну строку вместо свода"
+    assert '<div class="card" id="salesreport">' in body
+    assert "Продажи проекта" in body, "у отчёта пропало имя вместе со складкой"
+    # Разделы никуда не делись — свёрнут был показ, а не разбор.
+    assert "salesSection('sb-dyn'" in body and "salesSection('sb-plan'" in body
 
 
 def test_only_one_upload_button_is_left():
