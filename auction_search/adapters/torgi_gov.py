@@ -192,61 +192,15 @@ BUILDING_WORDS = ("здани", "помещен", "комплекс", "неза�
 # Выключенная проверка молча принимает любой сертификат — и тогда «мы читаем
 # ГИС Торги» перестаёт что-либо значить, потому что читать могли и не их.
 # Такого переключателя здесь нет намеренно.
-EXTRA_CA_DIR = os.environ.get("DEVELOPAID_EXTRA_CA_DIR", "certs")
-_CA_SUFFIXES = (".crt", ".cer", ".pem")
-
-
-def extra_ca_files(directory: str = "") -> list[str]:
-    """Корни, которые мы добавляем к системным. Пусто — значит пусто."""
-    root = directory or EXTRA_CA_DIR
-    try:
-        names = sorted(os.listdir(root))
-    except OSError:
-        return []
-    return [os.path.join(root, name) for name in names
-            if name.lower().endswith(_CA_SUFFIXES)]
-
-
-def load_extra_roots(context: ssl.SSLContext, directory: str = "") -> tuple[list[str], list[str]]:
-    """Добавляет наши корни к контексту. Возвращает принятые и отвергнутые.
-
-    Различать «файл лежит» и «корень принят» обязаны мы, а не читатель.
-    24.08.2026 по неверному адресу скачалась HTML-страница портала и легла
-    в каталог с расширением `.cer`: файл на месте, доверия не прибавилось
-    ни на грамм. Отчёт «корень добавлен» на таком файле был бы враньём того
-    же рода, что «критических ограничений не обнаружено» там, где не
-    спрашивали.
-    """
-    accepted: list[str] = []
-    rejected: list[str] = []
-    for path in extra_ca_files(directory):
-        try:
-            raw = pathlib.Path(path).read_bytes()
-        except OSError:
-            rejected.append(path)
-            continue
-        try:
-            # Двоичный или текстовый — решает содержимое, а не расширение.
-            # По ссылкам из самого сертификата (Authority Information Access)
-            # издатель приезжает в DER, а `cafile` понимает только PEM: годный
-            # корень отвергался бы как битый, и причина была бы невнятной.
-            if raw.lstrip().startswith(b"-----BEGIN"):
-                context.load_verify_locations(cadata=raw.decode("ascii", "strict"))
-            else:
-                context.load_verify_locations(cadata=raw)
-        except (OSError, ssl.SSLError, ValueError, UnicodeDecodeError):
-            # Битый файл — не повод доверять всему подряд и не повод молчать.
-            rejected.append(path)
-        else:
-            accepted.append(path)
-    return accepted, rejected
-
-
-def trust_context(directory: str = "") -> ssl.SSLContext:
-    """Системные корни плюс наши. Проверка остаётся включённой всегда."""
-    context = ssl.create_default_context()
-    load_extra_roots(context, directory)
-    return context
+# Поддержка добавочных корней объявлена один раз и общая с модулем рынка:
+# каталог КРТ ходил наружу мимо неё и падал на проверке сертификата всегда.
+# Имена оставлены на месте — их зовут и отсюда, и проверки.
+from trusted_roots import (  # noqa: E402
+    EXTRA_CA_DIR,
+    extra_ca_files,
+    load_extra_roots,
+    trust_context,
+)
 
 
 def trust_report(directory: str = "") -> dict[str, list[str]]:
