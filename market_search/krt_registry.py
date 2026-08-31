@@ -11,7 +11,7 @@ import json
 import re
 import threading
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Callable
@@ -35,7 +35,7 @@ from .krt_requirements import (
 BASE_URL = "https://api.krt.mos.ru"
 CATALOGUE_URL = BASE_URL + "/projects/"
 JINA_PREFIX = "https://r.jina.ai/"
-CACHE_SCHEMA_VERSION = 2
+CACHE_SCHEMA_VERSION = 3
 REQUIREMENTS_CACHE_SCHEMA_VERSION = 2
 _SPACE = re.compile(r"\s+")
 _NUMBER = re.compile(r"[-+]?\d+(?:[.,]\d+)?")
@@ -56,6 +56,8 @@ class KrtTerritory:
     business_gfa_sqm: float | None = None
     jobs: float | None = None
     source: str = "krt.mos.ru"
+    # Чем карточка не разобралась. Пустая строка — разобралась.
+    parse_problem: str = ""
 
     @property
     def query(self) -> str:
@@ -121,6 +123,45 @@ def _number(text: str) -> float | None:
     return float(found.group(0).replace(",", ".")) if found else None
 
 
+# Округа Москвы так, как их пишет сам каталог: ТАО и НАО там раздельно.
+_OKRUGS = frozenset((
+    "ЦАО", "САО", "СВАО", "ВАО", "ЮВАО", "ЮАО", "ЮЗАО", "ЗАО", "СЗАО",
+    "ЗелАО", "ТАО", "НАО", "ТиНАО",
+))
+
+
+def parse_problem(row: KrtTerritory) -> str:
+    """Чем разбор карточки не сошёлся сам с собой.
+
+    Значения карточек иногда съезжают на поле: у «2-й Звенигородской» округом
+    стал «Планируемый», статусом — хвост адреса «влд. 13», а общий объём вышел
+    350 м² при жилье 27 580 (снимок прода, 31.08.2026). Такая строка молча
+    доезжала до каталога, до балла и до экрана — и там пропадала, потому что
+    её «округ» не проходит ни один флажок.
+
+    Разбор проверяется тем, что известно о нём самом: округ из набора, статус
+    из двух, общий объём не меньше жилого. Проверка не чинит съезд — она не
+    даёт выдать неразобранное за разобранное.
+    """
+    problems: list[str] = []
+    okrug = (row.okrug or "").strip()
+    if okrug and okrug not in _OKRUGS:
+        problems.append(f"округ «{okrug}» не из московских")
+    status = (row.status or "").strip().casefold()
+    if status and "планируем" not in status and "реализац" not in status:
+        problems.append(f"статус «{row.status}» не опознан")
+    total, housing = row.total_gfa_sqm, row.housing_gfa_sqm
+    if total is not None and housing is not None and total < housing:
+        problems.append("общий объём меньше жилого")
+    return "; ".join(problems)
+
+
+def _checked(row: KrtTerritory) -> KrtTerritory:
+    """Строка каталога несёт свой диагноз с собой, а не теряет его по дороге."""
+    problem = parse_problem(row)
+    return replace(row, parse_problem=problem) if problem else row
+
+
 def parse_catalogue(html: str) -> tuple[list[KrtTerritory], str | None]:
     parser = _CatalogueParser()
     parser.feed(html)
@@ -128,7 +169,7 @@ def parse_catalogue(html: str) -> tuple[list[KrtTerritory], str | None]:
     rows: list[KrtTerritory] = []
     for slug, name, parts in parser.rows:
         fields = {p.split(":", 1)[0].strip().lower(): p.split(":", 1)[1].strip() for p in parts}
-        rows.append(KrtTerritory(
+        rows.append(_checked(KrtTerritory(
             slug=slug, name=name, url=f"{BASE_URL}/projects/{slug}",
             area_ha=_number(fields.get("площадь", "")),
             okrug=fields.get("округ"), district=fields.get("район"), status=fields.get("статус"),
@@ -137,7 +178,7 @@ def parse_catalogue(html: str) -> tuple[list[KrtTerritory], str | None]:
             nonresidential_gfa_sqm=_number(fields.get("нежилое назначение", "")),
             business_gfa_sqm=_number(fields.get("общественно-деловое назначение", "")),
             jobs=_number(fields.get("прирост рабочих мест", "")),
-        ))
+        )))
     return rows, parser.next_url
 
 
@@ -160,7 +201,7 @@ def parse_catalogue_markdown(markdown: str) -> list[KrtTerritory]:
                 key, value = text.split(":", 1)
                 fields[key.strip().lower()] = value.strip()
         slug, name = match.group(2), match.group(1).strip()
-        rows.append(KrtTerritory(
+        rows.append(_checked(KrtTerritory(
             slug=slug, name=name, url=f"{BASE_URL}/projects/{slug}",
             area_ha=_number(fields.get("площадь", "")),
             okrug=fields.get("округ"), district=fields.get("район"), status=fields.get("статус"),
@@ -169,7 +210,7 @@ def parse_catalogue_markdown(markdown: str) -> list[KrtTerritory]:
             nonresidential_gfa_sqm=_number(fields.get("нежилое назначение", "")),
             business_gfa_sqm=_number(fields.get("общественно-деловое назначение", "")),
             jobs=_number(fields.get("прирост рабочих мест", "")),
-        ))
+        )))
     return rows
 
 
