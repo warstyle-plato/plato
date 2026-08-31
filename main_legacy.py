@@ -70,7 +70,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.20.89"
+VERSION = "0.20.90"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -598,7 +598,6 @@ class TelegramSessionRequest(BaseModel):
     session: str
 
 
-
 _XLSX_MAIN_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 _XLSX_REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 _XLSX_PKG_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
@@ -768,7 +767,6 @@ def _find_named(rows: list[list[Any]], needle: str, value_col: int = 3) -> Any:
         if len(row) > 1 and needle in str(row[1] or "").lower():
             return row[value_col] if len(row) > value_col else None
     return None
-
 
 
 def _find_named_num(
@@ -8153,63 +8151,6 @@ def _xlsx_sheet_name(name: str, used: set[str]) -> str:
     return candidate
 
 
-def _model_sheet_xml(sheet: dict[str, Any]) -> bytes:
-    drawing = '<drawing r:id="rId1"/>' if sheet.get("charts") else ""
-    rows: list[list[_XlsxCell]] = sheet.get("rows") or []
-    widths: list[float] = sheet.get("widths") or []
-    freeze: str = str(sheet.get("freeze") or "")
-    cols = ""
-    if widths:
-        cols = "<cols>" + "".join(
-            f'<col min="{index + 1}" max="{index + 1}" width="{width}" customWidth="1"/>'
-            for index, width in enumerate(widths)
-        ) + "</cols>"
-    views = ""
-    if freeze:
-        split_x = int(sheet.get("split_x", 0) or 0)
-        split_y = int(sheet.get("split_y", 1) or 0)
-        active_pane = "bottomRight" if split_x and split_y else ("topRight" if split_x else "bottomLeft")
-        views = (
-            '<sheetViews><sheetView workbookViewId="0">'
-            f'<pane xSplit="{split_x}" ySplit="{split_y}" '
-            f'topLeftCell="{freeze}" activePane="{active_pane}" state="frozen"/>'
-            f'<selection pane="{active_pane}" activeCell="{freeze}" sqref="{freeze}"/>'
-            "</sheetView></sheetViews>"
-        )
-    xml_rows: list[str] = []
-    for row_index, row in enumerate(rows, 1):
-        cells: list[str] = []
-        for col_index, cell in enumerate(row):
-            if cell is None:
-                continue
-            item = cell if isinstance(cell, _XlsxCell) else _cell_text(cell)
-            if item.value in (None, "") and not item.formula:
-                continue
-            ref = f"{_xlsx_column_name(col_index)}{row_index}"
-            style = f' s="{item.style}"' if item.style else ""
-            if item.formula:
-                cells.append(
-                    f'<c r="{ref}"{style}><f>{_xlsx_xml_text(item.formula)}</f>'
-                    f"<v>{item.value if item.value is not None else 0}</v></c>"
-                )
-            elif isinstance(item.value, (int, float)) and not isinstance(item.value, bool):
-                cells.append(f'<c r="{ref}"{style}><v>{item.value}</v></c>')
-            else:
-                cells.append(
-                    f'<c r="{ref}"{style} t="inlineStr"><is><t xml:space="preserve">'
-                    f"{_xlsx_xml_text(item.value)}</t></is></c>"
-                )
-        xml_rows.append(f'<row r="{row_index}">{"".join(cells)}</row>')
-    max_columns = max((len(row) for row in rows), default=1) or 1
-    dimension = f'<dimension ref="A1:{_xlsx_column_name(max_columns - 1)}{max(len(rows), 1)}"/>'
-    return (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        f'<worksheet xmlns="{_XLSX_MAIN_NS}" xmlns:r="{_XLSX_REL_NS}">{dimension}{views}'
-        f'<sheetFormatPr defaultRowHeight="15"/>{cols}'
-        f'<sheetData>{"".join(xml_rows)}</sheetData>{drawing}</worksheet>'
-    ).encode("utf-8")
-
-
 _XLSX_DRAWING_NS = "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing"
 _XLSX_DRAWINGML_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
 _XLSX_CHART_NS = "http://schemas.openxmlformats.org/drawingml/2006/chart"
@@ -8357,133 +8298,6 @@ def _xlsx_sheet_ref(name: str, column: str, first: int, last: int) -> str:
     """Ссылка на диапазон листа в том виде, в каком её ждёт диаграмма."""
     quoted = name.replace("'", "''")
     return f"'{quoted}'!${column}${first}:${column}${last}"
-
-
-def _build_model_xlsx(sheets: list[dict[str, Any]]) -> bytes:
-    if not sheets:
-        raise ValueError("Нет листов для выгрузки")
-    # Необязательные листы возвращают None, и раньше это выходило наружу как
-    # «'NoneType' object has no attribute 'get'» — сообщение, по которому не
-    # найти ни лист, ни место. Называем виновника сразу.
-    for position, sheet in enumerate(sheets, 1):
-        if not isinstance(sheet, dict):
-            raise ValueError(f"Лист №{position} выгрузки не собран (получено {type(sheet).__name__})")
-    used: set[str] = set()
-    names = [_xlsx_sheet_name(sheet.get("name") or f"Лист {index}", used) for index, sheet in enumerate(sheets, 1)]
-    overrides = "".join(
-        f'<Override PartName="/xl/worksheets/sheet{index}.xml" '
-        'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
-        for index in range(1, len(sheets) + 1)
-    )
-    # Диаграммы: своя часть на лист плюс по части на каждую диаграмму.
-    drawings: list[tuple[int, int, list[int]]] = []   # (лист, рисунок, номера диаграмм)
-    charts: list[dict[str, Any]] = []
-    for index, sheet in enumerate(sheets, 1):
-        sheet_charts = sheet.get("charts") or []
-        if not sheet_charts:
-            continue
-        numbers = list(range(len(charts) + 1, len(charts) + len(sheet_charts) + 1))
-        charts.extend(sheet_charts)
-        drawings.append((index, len(drawings) + 1, numbers))
-    overrides += "".join(
-        f'<Override PartName="/xl/drawings/drawing{number}.xml" '
-        'ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>'
-        for _, number, _ in drawings
-    )
-    overrides += "".join(
-        f'<Override PartName="/xl/charts/chart{number}.xml" '
-        'ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart+xml"/>'
-        for number in range(1, len(charts) + 1)
-    )
-    content_types = (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
-        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
-        '<Default Extension="xml" ContentType="application/xml"/>'
-        '<Override PartName="/xl/workbook.xml" '
-        'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
-        '<Override PartName="/xl/styles.xml" '
-        'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
-        '<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>'
-        '<Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>'
-        f"{overrides}</Types>"
-    ).encode("utf-8")
-    package_rels = (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        f'<Relationships xmlns="{_XLSX_PKG_REL_NS}">'
-        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
-        '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>'
-        '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/>'
-        "</Relationships>"
-    ).encode("utf-8")
-    created = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    core_props = (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        '<cp:coreProperties '
-        'xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" '
-        'xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" '
-        'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">'
-        "<dc:creator>DevelopAid</dc:creator><cp:lastModifiedBy>DevelopAid</cp:lastModifiedBy>"
-        f'<dcterms:created xsi:type="dcterms:W3CDTF">{created}</dcterms:created>'
-        f'<dcterms:modified xsi:type="dcterms:W3CDTF">{created}</dcterms:modified>'
-        "</cp:coreProperties>"
-    ).encode("utf-8")
-    app_props = (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        '<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" '
-        'xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes">'
-        "<Application>DevelopAid</Application></Properties>"
-    ).encode("utf-8")
-    sheet_tags = "".join(
-        f'<sheet name="{_xlsx_xml_text(name)}" sheetId="{index}" r:id="rId{index}"/>'
-        for index, name in enumerate(names, 1)
-    )
-    workbook = (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        f'<workbook xmlns="{_XLSX_MAIN_NS}" xmlns:r="{_XLSX_REL_NS}">'
-        f"<sheets>{sheet_tags}</sheets>"
-        '<calcPr calcId="124519" fullCalcOnLoad="1"/></workbook>'
-    ).encode("utf-8")
-    sheet_rels = "".join(
-        f'<Relationship Id="rId{index}" '
-        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
-        f'Target="worksheets/sheet{index}.xml"/>'
-        for index in range(1, len(sheets) + 1)
-    )
-    workbook_rels = (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        f'<Relationships xmlns="{_XLSX_PKG_REL_NS}">{sheet_rels}'
-        f'<Relationship Id="rId{len(sheets) + 1}" '
-        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
-        "</Relationships>"
-    ).encode("utf-8")
-    out = io.BytesIO()
-    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("[Content_Types].xml", content_types)
-        archive.writestr("_rels/.rels", package_rels)
-        archive.writestr("xl/workbook.xml", workbook)
-        archive.writestr("docProps/core.xml", core_props)
-        archive.writestr("docProps/app.xml", app_props)
-        archive.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
-        archive.writestr("xl/styles.xml", _XLSX_STYLES)
-        for index, sheet in enumerate(sheets, 1):
-            archive.writestr(f"xl/worksheets/sheet{index}.xml", _model_sheet_xml(sheet))
-        for sheet_index, drawing_number, chart_numbers in drawings:
-            archive.writestr(
-                f"xl/worksheets/_rels/sheet{sheet_index}.xml.rels",
-                _sheet_rels_xml(drawing_number),
-            )
-            archive.writestr(
-                f"xl/drawings/drawing{drawing_number}.xml",
-                _drawing_xml([charts[number - 1] for number in chart_numbers]),
-            )
-            archive.writestr(
-                f"xl/drawings/_rels/drawing{drawing_number}.xml.rels",
-                _drawing_rels_xml(chart_numbers),
-            )
-        for number, chart in enumerate(charts, 1):
-            archive.writestr(f"xl/charts/chart{number}.xml", _chart_xml(chart))
-    return out.getvalue()
 
 
 # Дрейф-контроль серверных формул ГлавАПУ. Штатный браузерный калькулятор —
@@ -9664,7 +9478,6 @@ def _glavapu_headless_rows(numbers: list[str], area_ha: float) -> list[dict[str,
         _GLAVAPU_HEADLESS_LOCK.release()
 
 
-
 _GLAVAPU_DRIFT_CHECKS = [
     ("4", "население", 3.0, "abs"),
     ("10", "площадь квартир", 0.01, "rel"),
@@ -10390,7 +10203,6 @@ def _telegram_send_message(
     if reply_markup:
         payload["reply_markup"] = reply_markup
     return _telegram_api("sendMessage", payload)
-
 
 
 def _telegram_send_document_bytes(
@@ -11534,7 +11346,6 @@ def _telegram_send_tep_review(chat_id: int, parsed: dict[str, Any], *, dialog_mo
     _telegram_send_message(chat_id, message_text, reply_markup=button)
 
 
-
 # _DEVELOPAID_MINIMAL_CAD_PRICING_V01216
 
 def _telegram_econ_value_th(text: str) -> float:
@@ -12248,7 +12059,6 @@ def telegram_session_data(req: TelegramSessionRequest) -> dict[str, Any]:
         "manual_tep": session.get("manual_tep"),
         "calc_overrides": session.get("calc_overrides") or {},
     }
-
 
 
 # Встроенные в PDF гарнитуры кириллицы не содержат, поэтому отчёт целиком —
@@ -13719,111 +13529,6 @@ def _model_value_cell(value: Any, kind: str) -> _XlsxCell:
     return _cell_num(value)
 
 
-def _model_sheet_summary(result: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
-    summary = result.get("summary") or {}
-    finance = result.get("finance") or {}
-    dates = result.get("dates") or {}
-    rows: list[list[_XlsxCell]] = [
-        [_cell_text("DevelopAid · инвестиционная модель проекта", _XLSX_STYLE_TITLE)],
-        [_cell_text(str(meta.get("title") or "Расчёт"), _XLSX_STYLE_BOLD)],
-        [_cell_text("Выгружено"), _cell_text(date.today().isoformat())],
-        [_cell_text("Сценарий"), _cell_text(str(meta.get("scenario") or "base"))],
-        [_cell_text("Все денежные показатели — млн ₽, если не указано иное")],
-        [],
-        [_cell_text("Ключевые даты", _XLSX_STYLE_BOLD)],
-        *[
-            [_cell_text(label), _cell_text(dates.get(key) or "—")]
-            for key, label in (
-                ("project_start", "Начало проекта"),
-                ("permit", "РнС"),
-                ("sales_start", "Старт продаж"),
-                ("rve", "РВЭ"),
-            )
-        ],
-        [],
-        [_cell_text("Экономика проекта", _XLSX_STYLE_BOLD)],
-        _header_row(["Показатель", "Значение"]),
-    ]
-    for key, label, kind in _MODEL_SUMMARY_ROWS:
-        source = summary if key in summary else finance
-        rows.append([_cell_text(label), _model_value_cell(source.get(key), kind)])
-    rows.extend([
-        [],
-        [_cell_text("Финансирование", _XLSX_STYLE_BOLD)],
-        _header_row(["Показатель", "Значение"]),
-    ])
-    for key, label, kind in _MODEL_FINANCE_SUMMARY_ROWS:
-        rows.append([_cell_text(label), _model_value_cell(finance.get(key), kind)])
-    return {"name": "Сводка", "rows": rows, "widths": [52, 20], "freeze": ""}
-
-
-def _model_sheet_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
-    rows: list[list[_XlsxCell]] = [
-        [_cell_text("Вводные модели", _XLSX_STYLE_TITLE)],
-        [_cell_text("Значения соответствуют вкладке «Вводные». Ключ нужен для переноса обратно в модель.")],
-        [],
-        _header_row(["Раздел", "Показатель", "Значение", "Ед. изм.", "Ключ"]),
-    ]
-    for group_name, fields in FIELD_GROUPS:
-        for field in fields:
-            key, label, unit, kind = field[0], field[1], field[2], field[3]
-            options = dict(field[4]) if len(field) > 4 else {}
-            value = inputs.get(key)
-            if kind == "number":
-                value_cell = _cell_num(value)
-            elif kind == "checkbox":
-                value_cell = _cell_text("Да" if value else "Нет")
-            elif options:
-                value_cell = _cell_text(options.get(str(value or ""), value))
-            else:
-                value_cell = _cell_text(value)
-            rows.append([
-                _cell_text(group_name), _cell_text(label), value_cell,
-                _cell_text(unit), _cell_text(key),
-            ])
-    extra = [key for key in sorted(inputs) if key.startswith("_")]
-    if extra:
-        rows.extend([[], [_cell_text("Служебные поля проекта", _XLSX_STYLE_BOLD)]])
-        for key in extra:
-            rows.append([_cell_text(""), _cell_text(key), _cell_text(json.dumps(
-                inputs.get(key), ensure_ascii=False, default=str)[:400])])
-    return {"name": "Вводные", "rows": rows, "widths": [26, 46, 16, 16, 28], "freeze": "A5", "split_y": 4}
-
-
-def _model_sheet_tep(result: dict[str, Any]) -> dict[str, Any]:
-    tep = result.get("tep") or {}
-    header = ["Продукт", "ГНС, м²", "Общая площадь, м²", "Полезная, м²", "Продаваемая, м²", "Передаётся, м²", "Единицы"]
-    rows: list[list[_XlsxCell]] = [
-        [_cell_text("ТЭП проекта", _XLSX_STYLE_TITLE)],
-        [],
-        _header_row(header),
-    ]
-    first_data_row = len(rows) + 1
-    for item in tep.get("rows") or []:
-        rows.append([
-            _cell_text(item.get("label")),
-            _cell_num(item.get("gns"), _XLSX_STYLE_INT),
-            _cell_num(item.get("total_area"), _XLSX_STYLE_INT),
-            _cell_num(item.get("useful"), _XLSX_STYLE_INT),
-            _cell_num(item.get("saleable"), _XLSX_STYLE_INT),
-            _cell_num(item.get("transfer"), _XLSX_STYLE_INT),
-            _cell_num(item.get("units"), _XLSX_STYLE_INT),
-        ])
-    last_data_row = len(rows)
-    total = tep.get("total") or {}
-    total_row: list[_XlsxCell] = [_cell_text("Итого", _XLSX_STYLE_BOLD)]
-    for offset, key in enumerate(("gns", "total_area", "useful", "saleable", "transfer", "units"), start=1):
-        column = _xlsx_column_name(offset)
-        total_row.append(_cell_formula(
-            _sum_formula(column, first_data_row, last_data_row),
-            total.get(key),
-            _XLSX_STYLE_TOTAL_INT,
-        ))
-    rows.append(total_row)
-    rows.extend(_model_parking_norm_rows(result))
-    return {"name": "ТЭП", "rows": rows, "widths": [30] + [18] * 6, "freeze": "A4", "split_y": 3}
-
-
 def _parking_num_text(value: Any) -> str:
     """Число норматива строкой: 63.0 -> «63», 0.75 -> «0,75»."""
     try:
@@ -13894,250 +13599,6 @@ def _model_parking_norm_rows(result: dict[str, Any]) -> list[list[_XlsxCell]]:
     for line in parking.get("missing") or []:
         rows.append([_cell_text("Не посчитано — " + line)])
     return rows
-
-
-def _model_sheet_revenue(result: dict[str, Any]) -> dict[str, Any]:
-    report = result.get("report") or {}
-    rows: list[list[_XlsxCell]] = [
-        [_cell_text("Выручка по продуктам", _XLSX_STYLE_TITLE)],
-        [],
-        _header_row([
-            "Продукт", "Ед. изм.", "Количество", "Стартовая цена, тыс. ₽",
-            "Средняя цена, тыс. ₽", "Выручка, млн ₽",
-        ]),
-    ]
-    first_data_row = len(rows) + 1
-    for item in report.get("products") or []:
-        rows.append([
-            _cell_text(item.get("label")),
-            _cell_text(item.get("unit")),
-            _cell_num(item.get("quantity"), _XLSX_STYLE_INT),
-            _cell_num(item.get("start_price_th")),
-            _cell_num(item.get("avg_price_th")),
-            _cell_mln(item.get("revenue")),
-        ])
-    last_data_row = len(rows)
-    revenue_total = (result.get("revenue") or {}).get("total")
-    rows.append([
-        _cell_text("Итого", _XLSX_STYLE_BOLD), _cell_text(""), _cell_text(""), _cell_text(""), _cell_text(""),
-        _cell_formula(
-            _sum_formula("F", first_data_row, last_data_row),
-            (_land_float(revenue_total) or 0.0) / 1_000_000.0,
-        ),
-    ])
-    unit_economics = report.get("unit_economics") or []
-    if unit_economics:
-        rows.extend([
-            [], [_cell_text("Юнит-экономика", _XLSX_STYLE_BOLD)],
-            _header_row(["Показатель", "Всего, млн ₽", "На м² ГНС, тыс. ₽", "На м² продаж, тыс. ₽"]),
-        ])
-        for item in unit_economics:
-            rows.append([
-                _cell_text(item.get("label")),
-                _cell_mln(item.get("total")),
-                _cell_num(item.get("per_gns_th")),
-                _cell_num(item.get("per_saleable_th")),
-            ])
-    # Темп в штуках — та же цифра, что в отчёте: квартиры продаются штуками,
-    # и отдел продаж считает планы в них, а не в метрах.
-    apartment_sales = report.get("apartment_sales") or {}
-    if float(apartment_sales.get("units_total") or 0) > 0:
-        rows.extend([
-            [], [_cell_text("Темп продаж квартир", _XLSX_STYLE_BOLD)],
-            _header_row(["Показатель", "Значение"]),
-            [_cell_text("Квартир в проекте, шт."), _cell_num(apartment_sales.get("units_total"), _XLSX_STYLE_INT)],
-            [_cell_text("Средняя площадь квартиры, м²"), _cell_num(apartment_sales.get("avg_unit_sqm"))],
-            [_cell_text("Средняя цена квартиры, млн ₽"), _cell_num(apartment_sales.get("avg_unit_price_mln"))],
-            [_cell_text("Темп до РВЭ, кв./мес."), _cell_num(apartment_sales.get("pace_pre_rve_units"))],
-            [_cell_text("Средний темп за период продаж, кв./мес."), _cell_num(apartment_sales.get("pace_units"))],
-            [_cell_text("Пиковый месяц, кв."), _cell_num(apartment_sales.get("peak_units"))],
-        ])
-    return {"name": "Выручка", "rows": rows, "widths": [34, 14, 16, 20, 20, 18], "freeze": "A4", "split_y": 3}
-
-
-def _model_sheet_costs(result: dict[str, Any]) -> dict[str, Any]:
-    capex = result.get("capex") or {}
-    rows: list[list[_XlsxCell]] = [
-        [_cell_text("Расходы проекта", _XLSX_STYLE_TITLE)],
-        [],
-        _header_row(["Статья", "Сумма, млн ₽", "Доля в CAPEX"]),
-    ]
-    first_data_row = len(rows) + 1
-    capex_total = _land_float(capex.get("total")) or 0.0
-    for key, label in _MODEL_CAPEX_LABELS:
-        value = _land_float(capex.get(key)) or 0.0
-        share_row = len(rows) + 1
-        rows.append([
-            _cell_text(label),
-            _cell_mln(value),
-            _cell_formula(
-                f"IF($B${first_data_row + len(_MODEL_CAPEX_LABELS)}=0,0,B{share_row}/$B${first_data_row + len(_MODEL_CAPEX_LABELS)})",
-                (value / capex_total) if capex_total else 0.0,
-                _XLSX_STYLE_PCT,
-            ),
-        ])
-    last_data_row = len(rows)
-    rows.append([
-        _cell_text("CAPEX всего", _XLSX_STYLE_BOLD),
-        _cell_formula(_sum_formula("B", first_data_row, last_data_row), capex_total / 1_000_000.0),
-        _cell_text(""),
-    ])
-    rows.extend([
-        [],
-        [_cell_text("Коммерческие расходы"), _cell_mln(result.get("commercial_costs"))],
-        [_cell_text("Стоимость финансирования"), _cell_mln((result.get("summary") or {}).get("financing_cost"))],
-        [_cell_text("Налог на прибыль"), _cell_mln((result.get("summary") or {}).get("profit_tax"))],
-        [_cell_text("НДС"), _cell_mln((result.get("summary") or {}).get("vat"))],
-    ])
-    structure = (result.get("report") or {}).get("expense_structure") or []
-    charts: list[dict[str, Any]] = []
-    if structure:
-        rows.extend([
-            [], [_cell_text("Структура расходов проекта", _XLSX_STYLE_BOLD)],
-            _header_row(["Статья", "Сумма, млн ₽", "Доля"]),
-        ])
-        structure_first = len(rows) + 1
-        for item in structure:
-            rows.append([
-                _cell_text(item.get("label")),
-                _cell_mln(item.get("value")),
-                _XlsxCell(_land_float(item.get("share")), _XLSX_STYLE_PCT),
-            ])
-        charts.append({
-            "kind": "bar",
-            "title": "Структура полных расходов",
-            "y_title": "млн ₽",
-            "categories": _xlsx_sheet_ref("Расходы", "A", structure_first, len(rows)),
-            "series": [{
-                "name": "Расходы, млн ₽",
-                "values": _xlsx_sheet_ref("Расходы", "B", structure_first, len(rows)),
-            }],
-            "anchor": (4, 2),
-            "span": (9, 22),
-        })
-    return {
-        "name": "Расходы", "rows": rows, "widths": [46, 18, 14],
-        "freeze": "A4", "split_y": 3, "charts": charts,
-    }
-
-
-def _model_sheet_monthly(result: dict[str, Any], name: str = "Помесячно") -> dict[str, Any]:
-    finance = result.get("finance") or {}
-    finance_rows = finance.get("rows") or []
-    header = ["Месяц"] + [label for _, label, _ in _MODEL_FINANCE_COLUMNS]
-    rows: list[list[_XlsxCell]] = [
-        [_cell_text("Помесячная модель · млн ₽, ставки — % годовых", _XLSX_STYLE_TITLE)],
-        [],
-        _header_row(header),
-    ]
-    first_data_row = len(rows) + 1
-    for item in finance_rows:
-        row: list[_XlsxCell] = [_cell_text(item.get("month"))]
-        for key, _, kind in _MODEL_FINANCE_COLUMNS:
-            row.append(_model_value_cell(item.get(key), kind))
-        rows.append(row)
-    last_data_row = len(rows)
-    if finance_rows:
-        total_row: list[_XlsxCell] = [_cell_text("Итого", _XLSX_STYLE_BOLD)]
-        for index, (key, _, kind) in enumerate(_MODEL_FINANCE_COLUMNS, start=1):
-            if key not in _MODEL_FINANCE_SUMMABLE:
-                total_row.append(_cell_text(""))
-                continue
-            column = _xlsx_column_name(index)
-            total = sum(_land_float(item.get(key)) or 0.0 for item in finance_rows)
-            total_row.append(_cell_formula(
-                _sum_formula(column, first_data_row, last_data_row),
-                total / 1_000_000.0 if kind == "mln" else total,
-            ))
-        rows.append(total_row)
-    charts: list[dict[str, Any]] = []
-    if finance_rows:
-        keys = [key for key, _, _ in _MODEL_FINANCE_COLUMNS]
-        months = _xlsx_sheet_ref(name, "A", first_data_row, last_data_row)
-        series = []
-        for key, label, color in (
-            ("pf_balance", "Остаток ПФ", "19324A"),
-            ("escrow", "Эскроу", "6B8E23"),
-            ("bridge_balance", "Остаток БРИДЖ", "B4762A"),
-        ):
-            if key not in keys:
-                continue
-            column = _xlsx_column_name(keys.index(key) + 1)
-            series.append({
-                "name": label, "color": color,
-                "values": _xlsx_sheet_ref(name, column, first_data_row, last_data_row),
-            })
-        if series:
-            charts.append({
-                "kind": "line",
-                "title": "Динамика долга и эскроу",
-                "y_title": "млн ₽",
-                "categories": months,
-                "series": series,
-                "anchor": (1, len(rows) + 2),
-                "span": (12, 22),
-            })
-    return {
-        "name": name,
-        "rows": rows,
-        "widths": [12] + [17] * len(_MODEL_FINANCE_COLUMNS),
-        "freeze": "B4",
-        "split_x": 1,
-        "split_y": 3,
-        "charts": charts,
-    }
-
-
-def _model_sheet_cashflow(result: dict[str, Any]) -> dict[str, Any]:
-    cashflow = result.get("cashflow") or {}
-    months = cashflow.get("months") or []
-    rows: list[list[_XlsxCell]] = [
-        [_cell_text("Денежный поток · млн ₽", _XLSX_STYLE_TITLE)],
-        [],
-        _header_row([
-            "Месяц", "Проектный поток", "Собственный капитал", "Налог на прибыль",
-            "Проектный поток нарастающим итогом",
-        ]),
-    ]
-    first_data_row = len(rows) + 1
-    project = cashflow.get("project") or []
-    equity = cashflow.get("equity") or []
-    tax = cashflow.get("profit_tax") or []
-    running = 0.0
-    for index, month in enumerate(months):
-        value = _land_float(project[index] if index < len(project) else 0) or 0.0
-        running += value
-        current_row = first_data_row + index
-        rows.append([
-            _cell_text(month),
-            _cell_mln(value),
-            _cell_mln(equity[index] if index < len(equity) else 0),
-            _cell_mln(tax[index] if index < len(tax) else 0),
-            _cell_formula(
-                f"SUM($B${first_data_row}:B{current_row})",
-                running / 1_000_000.0,
-                _XLSX_STYLE_NUM,
-            ),
-        ])
-    return {"name": "Денежный поток", "rows": rows, "widths": [12, 20, 22, 20, 34], "freeze": "A4", "split_y": 3}
-
-
-def _model_sheet_calendar(result: dict[str, Any]) -> dict[str, Any]:
-    calendar_data = (result.get("report") or {}).get("calendar") or {}
-    rows: list[list[_XlsxCell]] = [
-        [_cell_text("Календарный план", _XLSX_STYLE_TITLE)],
-        [_cell_text("Горизонт"), _cell_text(calendar_data.get("start") or "—"), _cell_text(calendar_data.get("end") or "—")],
-        [],
-        _header_row(["Событие", "Начало", "Окончание", "Группа"]),
-    ]
-    for event in calendar_data.get("events") or []:
-        rows.append([
-            _cell_text(event.get("label")),
-            _cell_text(event.get("start")),
-            _cell_text(event.get("end")),
-            _cell_text(event.get("group")),
-        ])
-    return {"name": "Календарь", "rows": rows, "widths": [46, 16, 16, 20], "freeze": "A5", "split_y": 4}
 
 
 def _model_matrix_sheet(
@@ -14236,138 +13697,6 @@ def _quarterly_items(items: list[dict[str, Any]], groups: list[tuple[str, list[i
     return result
 
 
-def _model_sheet_quarterly_costs(result: dict[str, Any]) -> dict[str, Any] | None:
-    monthly = result.get("monthly") or {}
-    months = monthly.get("months") or []
-    if not months:
-        return None
-    groups = _quarter_groups(months)
-    extra = [
-        {"label": "Коммерческие расходы", "total": sum(monthly.get("commercial_costs") or []),
-         "values": monthly.get("commercial_costs") or []},
-        {"label": "Налог на прибыль", "total": sum(monthly.get("profit_tax") or []),
-         "values": monthly.get("profit_tax") or []},
-    ]
-    return _model_matrix_sheet(
-        "Расходы поквартально",
-        "Расходы проекта по статьям и кварталам · млн ₽",
-        [label for label, _ in groups],
-        [
-            ("Инвестиционные расходы (CAPEX)", _quarterly_items(monthly.get("costs") or [], groups), "млн ₽"),
-            ("Прочие расходы", _quarterly_items([item for item in extra if abs(item["total"]) > 1e-9], groups), "млн ₽"),
-        ],
-    )
-
-
-def _model_sheet_quarterly_sales(result: dict[str, Any]) -> dict[str, Any] | None:
-    monthly = result.get("monthly") or {}
-    months = monthly.get("months") or []
-    if not months:
-        return None
-    groups = _quarter_groups(months)
-    return _model_matrix_sheet(
-        "Продажи поквартально",
-        "Продажи по продуктам и кварталам",
-        [label for label, _ in groups],
-        [
-            ("Выручка", _quarterly_items(monthly.get("revenue") or [], groups), "млн ₽"),
-            ("Реализованные объёмы", _quarterly_items(monthly.get("quantity") or [], groups), "м² и шт."),
-        ],
-    )
-
-
-def _model_sheet_quarterly_finance(result: dict[str, Any]) -> dict[str, Any] | None:
-    """Финансирование по кварталам: потоки суммируются, остатки на конец, ставки средние."""
-    finance_rows = (result.get("finance") or {}).get("rows") or []
-    if not finance_rows:
-        return None
-    groups = _quarter_groups([str(row.get("month") or "") for row in finance_rows])
-    header = ["Квартал"] + [label for _, label, _ in _MODEL_FINANCE_COLUMNS]
-    rows: list[list[_XlsxCell]] = [
-        [_cell_text("Финансирование по кварталам · млн ₽, ставки — % годовых", _XLSX_STYLE_TITLE)],
-        [_cell_text("Потоки суммируются за квартал, остатки долга и эскроу — на конец квартала, "
-                    "ставки и покрытие — среднее за квартал.")],
-        [],
-        _header_row(header),
-    ]
-    first_data_row = len(rows) + 1
-    aggregated: list[dict[str, float]] = []
-    for label, indexes in groups:
-        row: list[_XlsxCell] = [_cell_text(label)]
-        values: dict[str, float] = {}
-        for key, _, kind in _MODEL_FINANCE_COLUMNS:
-            numbers = [_land_float(finance_rows[index].get(key)) or 0.0 for index in indexes]
-            if key in _MODEL_FINANCE_BALANCES:
-                value = numbers[-1] if numbers else 0.0
-            elif key in _MODEL_FINANCE_AVERAGES:
-                value = sum(numbers) / len(numbers) if numbers else 0.0
-            else:
-                value = sum(numbers)
-            values[key] = value
-            row.append(_model_value_cell(value, kind))
-        aggregated.append(values)
-        rows.append(row)
-    last_data_row = len(rows)
-    total_row: list[_XlsxCell] = [_cell_text("Итого", _XLSX_STYLE_BOLD)]
-    for index, (key, _, kind) in enumerate(_MODEL_FINANCE_COLUMNS, start=1):
-        if key not in _MODEL_FINANCE_SUMMABLE:
-            total_row.append(_cell_text(""))
-            continue
-        column = _xlsx_column_name(index)
-        total = sum(item[key] for item in aggregated)
-        total_row.append(_cell_formula(
-            _sum_formula(column, first_data_row, last_data_row),
-            total / 1_000_000.0 if kind == "mln" else total,
-        ))
-    rows.append(total_row)
-    return {
-        "name": "Финансирование поквартально",
-        "rows": rows,
-        "widths": [12] + [17] * len(_MODEL_FINANCE_COLUMNS),
-        "freeze": "B5",
-        "split_x": 1,
-        "split_y": 4,
-    }
-
-
-def _model_sheet_monthly_costs(result: dict[str, Any]) -> dict[str, Any] | None:
-    monthly = result.get("monthly") or {}
-    months = monthly.get("months") or []
-    if not months:
-        return None
-    extra = [
-        {"label": "Коммерческие расходы", "total": sum(monthly.get("commercial_costs") or []),
-         "values": monthly.get("commercial_costs") or []},
-        {"label": "Налог на прибыль", "total": sum(monthly.get("profit_tax") or []),
-         "values": monthly.get("profit_tax") or []},
-    ]
-    return _model_matrix_sheet(
-        "Расходы помесячно",
-        "Расходы проекта по статьям и месяцам · млн ₽",
-        months,
-        [
-            ("Инвестиционные расходы (CAPEX)", monthly.get("costs") or [], "млн ₽"),
-            ("Прочие расходы", [item for item in extra if abs(item["total"]) > 1e-9], "млн ₽"),
-        ],
-    )
-
-
-def _model_sheet_monthly_sales(result: dict[str, Any]) -> dict[str, Any] | None:
-    monthly = result.get("monthly") or {}
-    months = monthly.get("months") or []
-    if not months:
-        return None
-    return _model_matrix_sheet(
-        "Продажи помесячно",
-        "Продажи по продуктам и месяцам",
-        months,
-        [
-            ("Выручка", monthly.get("revenue") or [], "млн ₽"),
-            ("Реализованные объёмы", monthly.get("quantity") or [], "м² и шт."),
-        ],
-    )
-
-
 _MODEL_VRI_SETTING_ROWS: list[tuple[str, str]] = [
     ("region", "Регион"),
     ("land_right", "Право на участок"),
@@ -14392,596 +13721,9 @@ _MODEL_VRI_LABELS: dict[str, str] = {
 }
 
 
-def _model_sheet_vri(result: dict[str, Any]) -> dict[str, Any] | None:
-    """Отдельный лист по плате за смену ВРИ: график, проценты и источники оплаты."""
-    vri = result.get("vri") or {}
-    if not vri.get("enabled"):
-        return None
-    totals = vri.get("totals") or {}
-    settings = vri.get("settings") or {}
-    rows: list[list[_XlsxCell]] = [
-        [_cell_text("Плата за изменение ВРИ · млн ₽", _XLSX_STYLE_TITLE)],
-        [],
-    ]
-    if _land_float(totals.get("relief")):
-        rows.extend([
-            [_cell_text("Обязательство до льготы"), _cell_mln(totals.get("gross"))],
-            [_cell_text("Льгота"), _cell_mln(totals.get("relief"))],
-        ])
-    rows.extend([
-        [_cell_text("Сумма обязательства"), _cell_mln(totals.get("amount"))],
-        [_cell_text("Основной долг"), _cell_mln(totals.get("principal"))],
-        [_cell_text("Проценты по рассрочке"), _cell_mln(totals.get("interest"))],
-        [_cell_text("Расходы на обеспечение"), _cell_mln(totals.get("security_cost"))],
-        [_cell_text("Выплаты до открытия ПФ"), _cell_mln(totals.get("before_pf"))],
-        [_cell_text("Выплаты после открытия ПФ"), _cell_mln(totals.get("after_pf"))],
-        [_cell_text("Профинансировано БРИДЖем"), _cell_mln(totals.get("bridge"))],
-        [_cell_text("Профинансировано ПФ"), _cell_mln(totals.get("pf"))],
-        [_cell_text("Профинансировано капиталом"), _cell_mln(totals.get("equity"))],
-        [_cell_text("Денежный поток по ВРИ, всего", _XLSX_STYLE_BOLD), _cell_mln(totals.get("cash"))],
-    ])
-    if settings:
-        rows.extend([[], [_cell_text("Условия", _XLSX_STYLE_BOLD)]])
-        for key, label in _MODEL_VRI_SETTING_ROWS:
-            if key not in settings:
-                continue
-            value = settings.get(key)
-            rows.append([
-                _cell_text(label),
-                _cell_text(_MODEL_VRI_LABELS.get(str(value), value)),
-            ])
-    schedule = vri.get("rows") or []
-    if schedule:
-        header = ["Дата", "Период", "Основной долг", "Проценты", "Платёж",
-                  "Остаток после платежа", "До ПФ", "БРИДЖ", "ПФ", "Капитал"]
-        rows.extend([[], [_cell_text("График платежей по обязательству", _XLSX_STYLE_BOLD)], _header_row(header)])
-        first_data_row = len(rows) + 1
-        for item in schedule:
-            rows.append([
-                _cell_text(item.get("date")),
-                _XlsxCell(float(item.get("period") or 0)),
-                _cell_mln(item.get("principal")),
-                _cell_mln(item.get("interest")),
-                _cell_mln(item.get("total")),
-                _cell_mln(item.get("balance_after")),
-                _cell_text("Да" if item.get("before_pf") else "Нет"),
-                _cell_mln(item.get("bridge")),
-                _cell_mln(item.get("pf")),
-                _cell_mln(item.get("equity")),
-            ])
-        last_data_row = len(rows)
-        total_row: list[_XlsxCell] = [_cell_text("Итого", _XLSX_STYLE_BOLD), _cell_text("")]
-        for column, key in (("C", "principal"), ("D", "interest"), ("E", "total")):
-            total_row.append(_cell_formula(
-                _sum_formula(column, first_data_row, last_data_row),
-                sum(_land_float(item.get(key)) or 0.0 for item in schedule) / 1_000_000.0,
-            ))
-        total_row.extend([_cell_text(""), _cell_text("")])
-        for column, key in (("H", "bridge"), ("I", "pf"), ("J", "equity")):
-            total_row.append(_cell_formula(
-                _sum_formula(column, first_data_row, last_data_row),
-                sum(_land_float(item.get(key)) or 0.0 for item in schedule) / 1_000_000.0,
-            ))
-        rows.append(total_row)
-    for warning in vri.get("warnings") or []:
-        rows.append([_cell_text(warning)])
-    return {
-        "name": "ВРИ",
-        "rows": rows,
-        "widths": [34, 12, 16, 14, 14, 22, 10, 14, 14, 14],
-        "freeze": "A4", "split_y": 3,
-    }
-
-
-def _model_sheets_for_result(
-    result: dict[str, Any], inputs: dict[str, Any], meta: dict[str, Any]
-) -> list[dict[str, Any]]:
-    sheets = [
-        _model_sheet_summary(result, meta),
-        _model_sheet_inputs(inputs),
-        _model_sheet_tep(result),
-        _model_sheet_revenue(result),
-        _model_sheet_costs(result),
-        _model_sheet_vri(result),
-        _model_sheet_monthly(result),
-        _model_sheet_monthly_costs(result),
-        _model_sheet_monthly_sales(result),
-        _model_sheet_quarterly_finance(result),
-        _model_sheet_quarterly_costs(result),
-        _model_sheet_quarterly_sales(result),
-        _model_sheet_cashflow(result),
-        _model_sheet_calendar(result),
-    ]
-    return [sheet for sheet in sheets if sheet]
-
-
-def _model_phase_sheet_name(index: int, name: str) -> str:
-    clean = re.sub(r"[\[\]:*?/\\']", " ", str(name or f"О{index}")).strip() or f"О{index}"
-    return f"{index}. {clean}"[:31]
-
-
-def _model_sheet_phase_comparison(bundle: dict[str, Any]) -> dict[str, Any]:
-    comparison = bundle.get("comparison") or []
-    phasing = bundle.get("phasing") or {}
-    # Выручка по продуктам — теми же колонками, что и на экране. Одной строкой
-    # она не отвечает, чем очередь живёт: у одной весь объём в квартирах, у
-    # другой треть в паркинге и ОСЗ, а маржа и риск у них разные. Колонки
-    # заводятся только под продукты, у которых выручка есть хоть в одной
-    # очереди: семь пустых столбцов — это шум, а не полнота.
-    products = (bundle.get("consolidated") or {}).get("report", {}).get("products") or []
-    product_labels = {str(p.get("key")): str(p.get("label") or p.get("key"))
-                      for p in products}
-    product_keys = [key for key in product_labels
-                    if any(float((item.get("revenue_by_product") or {}).get(key) or 0.0) > 0
-                           for item in comparison)]
-    product_headers = [f"Выручка · {product_labels[key]}, млн ₽" for key in product_keys]
-    header = [
-        "Очередь", "Продаваемая площадь, м²", "Общая площадь ГНС, м²",
-        "Выручка, млн ₽", *product_headers,
-        "Цена реализации, тыс ₽/м² продаваемой", "Цена реализации, тыс ₽/м² строит. объёма",
-        "CAPEX, млн ₽",
-        "CAPEX, тыс ₽/м² продаваемой", "CAPEX, тыс ₽/м² строит. объёма",
-        "Полные расходы, млн ₽",
-        "Полные расходы, тыс ₽/м² продаваемой", "Полные расходы, тыс ₽/м² строит. объёма",
-        "Чистая прибыль, тыс ₽/м² продаваемой", "Чистая прибыль, тыс ₽/м² строит. объёма",
-        "Общие расходы (касса), млн ₽", "Общие расходы (аллокация), млн ₽",
-        "Пик БРИДЖ, млн ₽", "Затраты до РНС, млн ₽",
-        "Свободный cash проекта, млн ₽", "Собственные средства, млн ₽",
-        "Новый БРИДЖ, млн ₽", "Пик ПФ, млн ₽", "LLCR",
-        "Чистая прибыль, млн ₽", "Прибыль с аллокацией, млн ₽", "Маржинальность",
-        "Социальная нагрузка, млн ₽", "Социальные объекты",
-        "Индексация себестоимости", "Индексация цен",
-    ]
-    rows: list[list[_XlsxCell]] = [
-        [_cell_text("Сравнение очередей", _XLSX_STYLE_TITLE)],
-        [
-            _cell_text("Очередей"), _cell_num(len(comparison), _XLSX_STYLE_INT),
-            _cell_text("Разрыв между очередями, мес."), _cell_num(phasing.get("phase_gap_months"), _XLSX_STYLE_INT),
-        ],
-        [],
-        _header_row(header),
-    ]
-    first_data_row = len(rows) + 1
-    for item in comparison:
-        rows.append([
-            _cell_text(item.get("name")),
-            _cell_num(item.get("saleable_sqm"), _XLSX_STYLE_INT),
-            _cell_num(item.get("gns_sqm"), _XLSX_STYLE_INT),
-            _cell_mln(item.get("revenue")),
-            *[_cell_mln((item.get("revenue_by_product") or {}).get(key) or 0.0)
-              for key in product_keys],
-            _cell_num(item.get("revenue_per_saleable_th")),
-            _cell_num(item.get("revenue_per_gns_th")),
-            _cell_mln(item.get("capex")),
-            _cell_num(item.get("capex_per_saleable_th")),
-            _cell_num(item.get("capex_per_gns_th")),
-            _cell_mln(item.get("total_expenses")),
-            _cell_num(item.get("expenses_per_saleable_th")),
-            _cell_num(item.get("expenses_per_gns_th")),
-            _cell_num(item.get("net_profit_per_saleable_th")),
-            _cell_num(item.get("net_profit_per_gns_th")),
-            _cell_mln(item.get("cash_shared_cost")),
-            _cell_mln(item.get("allocated_shared_cost")),
-            _cell_mln(item.get("peak_bridge")),
-            _cell_mln(item.get("pre_rns_costs")),
-            _cell_mln(item.get("project_cash_used")),
-            _cell_mln(item.get("own_funds")),
-            _cell_mln(item.get("new_bridge")),
-            _cell_mln(item.get("peak_pf")),
-            _cell_num(item.get("llcr")),
-            _cell_mln(item.get("net_profit")),
-            _cell_mln(item.get("allocated_net_profit")),
-            _XlsxCell(_land_float(item.get("margin")), _XLSX_STYLE_PCT),
-            _cell_mln(item.get("social_cost")),
-            _cell_text(", ".join(item.get("social_objects") or []) or "—"),
-            _cell_num(item.get("cost_inflation_factor")),
-            _cell_num(item.get("sales_price_inflation_factor")),
-        ])
-    last_data_row = len(rows)
-    if comparison:
-        total_row: list[_XlsxCell] = [_cell_text("Итого", _XLSX_STYLE_BOLD)]
-        # Колонки — по заголовку, а не по номеру: номера разъезжаются каждый
-        # раз, когда в таблицу добавляется показатель, и итоговая строка молча
-        # начинает суммировать чужой столбец. Графики этот урок уже усвоили.
-        area_columns = {
-            header.index("Продаваемая площадь, м²"): "saleable_sqm",
-            header.index("Общая площадь ГНС, м²"): "gns_sqm",
-        }
-        money_columns = {
-            header.index("Выручка, млн ₽"): "revenue",
-            header.index("CAPEX, млн ₽"): "capex",
-            # Столбцы продуктов складываются так же, как остальные деньги:
-            # итоговая строка обязана сойтись с выручкой свода по каждому.
-            **{header.index(title): ("revenue_by_product", key)
-               for title, key in zip(product_headers, product_keys)},
-            header.index("Полные расходы, млн ₽"): "total_expenses",
-            header.index("Общие расходы (касса), млн ₽"): "cash_shared_cost",
-            header.index("Общие расходы (аллокация), млн ₽"): "allocated_shared_cost",
-            header.index("Затраты до РНС, млн ₽"): "pre_rns_costs",
-            header.index("Свободный cash проекта, млн ₽"): "project_cash_used",
-            header.index("Собственные средства, млн ₽"): "own_funds",
-            header.index("Новый БРИДЖ, млн ₽"): "new_bridge",
-            header.index("Чистая прибыль, млн ₽"): "net_profit",
-            header.index("Прибыль с аллокацией, млн ₽"): "allocated_net_profit",
-            header.index("Социальная нагрузка, млн ₽"): "social_cost",
-        }
-        # Удельные показатели складывать нельзя: сумма рублей на метр по очередям
-        # ничего не значит. В итоге считаем отношение сводных величин — это и есть
-        # показатель по проекту целиком.
-        ratio_columns = {
-            header.index("Цена реализации, тыс ₽/м² продаваемой"): ("revenue", "saleable_sqm"),
-            header.index("Цена реализации, тыс ₽/м² строит. объёма"): ("revenue", "gns_sqm"),
-            header.index("CAPEX, тыс ₽/м² продаваемой"): ("capex", "saleable_sqm"),
-            header.index("CAPEX, тыс ₽/м² строит. объёма"): ("capex", "gns_sqm"),
-            header.index("Полные расходы, тыс ₽/м² продаваемой"): ("total_expenses", "saleable_sqm"),
-            header.index("Полные расходы, тыс ₽/м² строит. объёма"): ("total_expenses", "gns_sqm"),
-            header.index("Чистая прибыль, тыс ₽/м² продаваемой"): ("net_profit", "saleable_sqm"),
-            header.index("Чистая прибыль, тыс ₽/м² строит. объёма"): ("net_profit", "gns_sqm"),
-        }
-
-        def column_total(key: Any) -> float:
-            # Ключ бывает вложенным: выручка продукта лежит в словаре
-            # `revenue_by_product`, а не отдельным полем очереди.
-            if isinstance(key, tuple):
-                outer, inner = key
-                return sum(_land_float((item.get(outer) or {}).get(inner)) or 0.0
-                           for item in comparison)
-            return sum(_land_float(item.get(key)) or 0.0 for item in comparison)
-
-        for index in range(1, len(header)):
-            column = _xlsx_column_name(index)
-            if index in area_columns:
-                total_row.append(_cell_formula(
-                    _sum_formula(column, first_data_row, last_data_row),
-                    column_total(area_columns[index]),
-                    _XLSX_STYLE_TOTAL_INT,
-                ))
-            elif index in money_columns:
-                total_row.append(_cell_formula(
-                    _sum_formula(column, first_data_row, last_data_row),
-                    column_total(money_columns[index]) / 1_000_000.0,
-                    _XLSX_STYLE_TOTAL,
-                ))
-            elif index in ratio_columns:
-                value_key, area_key = ratio_columns[index]
-                value_col = _xlsx_column_name(next(i for i, k in money_columns.items() if k == value_key))
-                area_col = _xlsx_column_name(next(i for i, k in area_columns.items() if k == area_key))
-                total_row_number = last_data_row + 1
-                area_total = column_total(area_key)
-                total_row.append(_cell_formula(
-                    f"IF({area_col}{total_row_number}=0,0,{value_col}{total_row_number}*1000/{area_col}{total_row_number})",
-                    column_total(value_key) / area_total / 1000.0 if area_total else 0.0,
-                    _XLSX_STYLE_TOTAL,
-                ))
-            else:
-                total_row.append(_cell_text(""))
-        rows.append(total_row)
-    charts: list[dict[str, Any]] = []
-    if comparison:
-        # Колонки берём по заголовку: буквы разъезжаются каждый раз, когда в
-        # таблицу добавляется показатель, и графики начинают рисовать чужой ряд.
-        def series_ref(label: str) -> str:
-            return _xlsx_sheet_ref(
-                "Сравнение очередей", _xlsx_column_name(header.index(label)),
-                first_data_row, last_data_row,
-            )
-
-        names = _xlsx_sheet_ref("Сравнение очередей", "A", first_data_row, last_data_row)
-        charts.append({
-            "kind": "bar", "title": "LLCR по очередям", "y_title": "×",
-            "categories": names,
-            "series": [{"name": "LLCR", "values": series_ref("LLCR")}],
-            "anchor": (1, len(rows) + 2), "span": (7, 18),
-        })
-        charts.append({
-            "kind": "bar", "title": "Выручка и CAPEX по очередям", "y_title": "млн ₽",
-            "categories": names,
-            "series": [
-                {"name": "Выручка", "values": series_ref("Выручка, млн ₽")},
-                {"name": "CAPEX", "values": series_ref("CAPEX, млн ₽"), "color": "B4762A"},
-            ],
-            "anchor": (9, len(rows) + 2), "span": (8, 18),
-        })
-        charts.append({
-            "kind": "bar", "title": "Удельные показатели, тыс ₽/м² продаваемой", "y_title": "тыс ₽/м²",
-            "categories": names,
-            "series": [
-                {"name": "Цена реализации", "values": series_ref("Цена реализации, тыс ₽/м² продаваемой")},
-                {"name": "Полные расходы", "values": series_ref("Полные расходы, тыс ₽/м² продаваемой"), "color": "B4762A"},
-            ],
-            "anchor": (17, len(rows) + 2), "span": (8, 18),
-        })
-    return {"name": "Сравнение очередей", "rows": rows, "widths": [14] + [20] * (len(header) - 1),
-            "freeze": "A5", "split_y": 4, "charts": charts}
-
-
-def _model_sheet_consolidation(bundle: dict[str, Any], phase_sheet_names: list[str]) -> dict[str, Any]:
-    """Живая консолидация: суммы по месяцам собираются формулами с листов очередей."""
-    phases = bundle.get("phases") or []
-    months: list[str] = []
-    seen: set[str] = set()
-    for phase in phases:
-        for row in ((phase.get("result") or {}).get("finance") or {}).get("rows") or []:
-            month = str(row.get("month") or "")
-            if month and month not in seen:
-                seen.add(month)
-                months.append(month)
-    months.sort()
-    summable = [(key, label, kind) for key, label, kind in _MODEL_FINANCE_COLUMNS if key in _MODEL_FINANCE_SUMMABLE]
-    header = ["Месяц"] + [label for _, label, _ in summable]
-    rows: list[list[_XlsxCell]] = [
-        [_cell_text("Консолидация очередей · млн ₽", _XLSX_STYLE_TITLE)],
-        [_cell_text("Значения собираются формулами SUMIF с листов очередей этой же книги — "
-                    "правка любой очереди сразу меняет свод.")],
-        [],
-        _header_row(header),
-    ]
-    first_data_row = len(rows) + 1
-    # Колонки на листах очередей совпадают с _MODEL_FINANCE_COLUMNS.
-    source_column = {key: _xlsx_column_name(index) for index, (key, _, _) in enumerate(_MODEL_FINANCE_COLUMNS, start=1)}
-    phase_rows_by_month: list[dict[str, dict[str, Any]]] = []
-    for phase in phases:
-        by_month: dict[str, dict[str, Any]] = {}
-        for row in ((phase.get("result") or {}).get("finance") or {}).get("rows") or []:
-            by_month[str(row.get("month") or "")] = row
-        phase_rows_by_month.append(by_month)
-    for month_index, month in enumerate(months):
-        row_number = first_data_row + month_index
-        row: list[_XlsxCell] = [_cell_text(month)]
-        for key, _, kind in summable:
-            column = source_column[key]
-            parts = [
-                f"SUMIF('{sheet}'!$A:$A,$A{row_number},'{sheet}'!{column}:{column})"
-                for sheet in phase_sheet_names
-            ]
-            total = sum(
-                _land_float((by_month.get(month) or {}).get(key)) or 0.0
-                for by_month in phase_rows_by_month
-            )
-            row.append(_cell_formula(
-                "+".join(parts) if parts else "0",
-                total / 1_000_000.0 if kind == "mln" else total,
-                _XLSX_STYLE_NUM,
-            ))
-        rows.append(row)
-    last_data_row = len(rows)
-    if months:
-        total_row: list[_XlsxCell] = [_cell_text("Итого", _XLSX_STYLE_BOLD)]
-        for index, (key, _, kind) in enumerate(summable, start=1):
-            column = _xlsx_column_name(index)
-            total = sum(
-                _land_float(row.get(key)) or 0.0
-                for by_month in phase_rows_by_month
-                for row in by_month.values()
-            )
-            total_row.append(_cell_formula(
-                _sum_formula(column, first_data_row, last_data_row),
-                total / 1_000_000.0 if kind == "mln" else total,
-            ))
-        rows.append(total_row)
-    return {
-        "name": "Консолидация помесячно",
-        "rows": rows,
-        "widths": [12] + [19] * len(summable),
-        "freeze": "B5",
-        "split_x": 1,
-        "split_y": 4,
-    }
-
-
-def _model_readme(
-    bundle: dict[str, Any],
-    meta: dict[str, Any],
-    files: list[str],
-    template_notes: list[str] | None = None,
-) -> bytes:
-    phased = str(bundle.get("mode") or "single") == "phased"
-    lines = [
-        "DevelopAid · выгрузка инвестиционной модели",
-        f"Проект: {meta.get('title') or 'Расчёт'}",
-        f"Дата выгрузки: {date.today().isoformat()}",
-        f"Сценарий: {meta.get('scenario') or 'base'}",
-        f"Режим: {'по очередям' if phased else 'единый расчёт'}",
-        "",
-        "Состав архива:",
-        *[f"  - {name}" for name in files],
-        "",
-        "Файлы 00…09 — живая модель на шаблоне ПЛАТО.",
-        "  Заполнены только листы-вводные: «Вводные» и «Расчет ВРИ (ТЭП)».",
-        "  Все остальные листы — Дашборд, ОТЧЕТ, ТЭП, СРОКИ, CF, cf_0…cf_2, КРЕДИТЫ,",
-        "  ЗУ, LLCR — пересчитываются формулами самого шаблона при открытии.",
-        "  Правка любой вводной пересчитывает книгу целиком: это модель, а не отчёт.",
-        "",
-        "Файлы 90…99 — детализация расчёта DevelopAid.",
-        "  Это НЕ модель: числа посчитаны движком и записаны значениями, формулами",
-        "  собраны только итоги строк и консолидация очередей. Правка вводной здесь",
-        "  ничего не пересчитывает — для этого есть файлы 00…09.",
-        "  Нужны ради того, чего в шаблоне нет: помесячная и поквартальная разбивка",
-        "  по статьям и продуктам, график платежей ВРИ, диаграммы.",
-        "",
-        "Как читать детализацию:",
-        "  Сводка — ключевые показатели и финансирование расчёта.",
-        "  Вводные — все параметры модели с ключами для переноса обратно.",
-        "  ТЭП — состав площадей и единиц по продуктам.",
-        "  Выручка / Расходы — продуктовая выручка, статьи CAPEX и структура затрат.",
-        "  Помесячно — сердце модели: продажи, расходы, БРИДЖ, ПФ, эскроу, ставки, налог по месяцам.",
-        "  Денежный поток — проектный и собственный поток, накопленный итог формулой.",
-        "  Календарь — сроки этапов проекта.",
-        "",
-        "Единицы: денежные показатели — млн ₽, площади — м², ставки и доли — проценты.",
-    ]
-    for note in template_notes or []:
-        lines.extend(["", note])
-    if phased:
-        lines.extend([
-            "",
-            "Консолидатор:",
-            "  Файл 90_Детализация_консолидация.xlsx содержит очереди отдельными листами и лист",
-            "  «Консолидация помесячно», где суммы собираются формулами SUMIF с этих листов.",
-            "  Правка месяца в очереди сразу меняет свод. Отдельные файлы очередей —",
-            "  та же модель по одной очереди на случай, если нужен изолированный расчёт.",
-            "  Складывать по месяцам можно только потоки; остатки долга, ставки и покрытие",
-            "  эскроу в консолидации не суммируются — они смотрятся по каждой очереди.",
-        ])
-    lines.extend([
-        "",
-        "Выгрузка отражает расчёт веб-модели DevelopAid на дату формирования.",
-        "Это предварительная инвестиционная модель, а не отчёт оценщика и не решение банка.",
-    ])
-    return ("\n".join(lines) + "\n").encode("utf-8")
-
-
 def _safe_file_stem(value: str, fallback: str = "DevelopAid") -> str:
     stem = re.sub(r"[^0-9A-Za-zА-Яа-яЁё _-]+", "_", str(value or "")).strip(" _")
     return (stem[:60] or fallback)
-
-
-def build_model_archive(
-    inputs: dict[str, Any],
-    tep: dict[str, dict[str, Any]],
-    rates: list[dict[str, Any]] | None = None,
-    phasing: dict[str, Any] | None = None,
-    *,
-    project_name: str = "",
-    scenario: str = "base",
-) -> tuple[bytes, str]:
-    """Полная модель в ZIP: единый расчёт или очереди с книгой-консолидатором."""
-    # Частичная выгрузка (например, из Telegram) дополняется базовыми значениями
-    # ровно так же, как это делает мини-приложение при загрузке проекта.
-    inputs = {**copy.deepcopy(DEFAULT_INPUTS), **(inputs or {})}
-    merged_tep = copy.deepcopy(TEP_DEFAULT)
-    for key, values in (tep or {}).items():
-        if isinstance(values, dict) and key in merged_tep:
-            merged_tep[key].update(values)
-        else:
-            merged_tep[key] = values
-    tep = merged_tep
-    bundle = _run_authoritative_model(inputs, tep, rates or [], phasing or {})
-    consolidated = bundle.get("consolidated") or {}
-    phases = bundle.get("phases") or []
-    phased = str(bundle.get("mode") or "single") == "phased" and len(phases) > 1
-    title = str(project_name or "").strip() or "Проект DevelopAid"
-    meta = {"title": title, "scenario": scenario}
-    stem = _safe_file_stem(title)
-
-    # Живая модель — это шаблон ПЛАТО: в нём 113 708 формул, и правка вводной
-    # пересчитывает всю книгу. Наши листы — детализация расчёта рядом с ним:
-    # помесячная и поквартальная разбивка, график ВРИ, диаграммы. Считать их
-    # моделью нельзя: там формулами собраны только итоги.
-    archive_files: list[tuple[str, bytes]] = []
-    template_notes: list[str] = []
-    try:
-        if not phased:
-            content, _ = fill_plato_template(inputs, tep, scenario=scenario, project_name=title)
-            archive_files.append((f"00_Модель_{stem}.xlsx", content))
-        else:
-            phase_files: list[tuple[str, str]] = []
-            for index, phase in enumerate(phases, start=1):
-                phase_inputs = {**inputs, **(phase.get("inputs") or {})}
-                phase_tep = phase.get("tep") or tep
-                label = str(phase.get("name") or f"О{index}")
-                phase_name = _safe_file_stem(label, f"О{index}")
-                content, _ = fill_plato_template(
-                    phase_inputs, phase_tep, scenario=scenario,
-                    project_name=f"{title} · {label}" if title else label,
-                )
-                file_name = f"{index:02d}_Модель_{phase_name}.xlsx"
-                archive_files.append((file_name, content))
-                phase_files.append((label, file_name))
-            # Свод очередей — отдельная книга со ссылками на файлы очередей, а не
-            # ещё одна модель всего проекта: та считала бы проект без разрывов
-            # между очередями и без индексации, то есть другой проект.
-            content, consolidator_report = fill_plato_consolidator(bundle, phase_files)
-            archive_files.insert(0, (f"00_Консолидатор_{stem}.xlsx", content))
-            template_notes.extend(consolidator_report.get("notes") or [])
-    except HTTPException as exc:
-        template_notes.append(
-            f"Живая модель на шаблоне ПЛАТО не собрана: {exc.detail} "
-            "В архиве осталась только детализация расчёта."
-        )
-
-    if not phased:
-        sheets = _model_sheets_for_result(consolidated, inputs, meta)
-        archive_files.append((f"90_Детализация_{stem}.xlsx", _build_model_xlsx(sheets)))
-    else:
-        phase_sheet_names: list[str] = []
-        phase_monthly_sheets: list[dict[str, Any]] = []
-        for index, phase in enumerate(phases, start=1):
-            sheet_name = _model_phase_sheet_name(index, phase.get("name"))
-            phase_sheet_names.append(sheet_name)
-            monthly = _model_sheet_monthly(phase.get("result") or {}, name=sheet_name)
-            phase_monthly_sheets.append(monthly)
-        consolidator_sheets = [
-            _model_sheet_summary(consolidated, {**meta, "title": f"{title} · все очереди"}),
-            _model_sheet_phase_comparison(bundle),
-            _model_sheet_consolidation(bundle, phase_sheet_names),
-            *phase_monthly_sheets,
-            _model_sheet_inputs(inputs),
-            _model_sheet_tep(consolidated),
-            _model_sheet_revenue(consolidated),
-            _model_sheet_costs(consolidated),
-            _model_sheet_vri(consolidated),
-            _model_sheet_cashflow(consolidated),
-            _model_sheet_calendar(consolidated),
-        ]
-        # Лист ВРИ необязателен: без платы за смену ВРИ его нет. Одноочередная
-        # ветка это учитывала, а здесь None уезжал прямо в сборку книги —
-        # и весь архив многоочередного проекта не собирался.
-        archive_files.append(("90_Детализация_консолидация.xlsx",
-                              _build_model_xlsx([s for s in consolidator_sheets if s])))
-        for index, phase in enumerate(phases, start=1):
-            phase_title = f"{title} · очередь {phase.get('name') or index}"
-            phase_sheets = _model_sheets_for_result(
-                phase.get("result") or {}, inputs, {**meta, "title": phase_title}
-            )
-            phase_name = _safe_file_stem(str(phase.get("name") or f"О{index}"), f"О{index}")
-            archive_files.append((f"9{index}_Детализация_{phase_name}.xlsx", _build_model_xlsx(phase_sheets)))
-
-    readme = _model_readme(
-        bundle, meta, [name for name, _ in archive_files] + ["README.txt"], template_notes
-    )
-    out = io.BytesIO()
-    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
-        for name, payload in archive_files:
-            archive.writestr(name, payload)
-        archive.writestr("README.txt", readme)
-    suffix = "очереди" if phased else "модель"
-    return out.getvalue(), f"DevelopAid_{stem}_{suffix}_{date.today().isoformat()}.zip"
-
-
-class ModelExportRequest(BaseModel):
-    inputs: dict[str, Any]
-    tep: dict[str, dict[str, Any]]
-    rates: list[dict[str, Any]] = []
-    phasing: dict[str, Any] = {}
-    project_name: str = ""
-    scenario: str = "base"
-
-
-@app.post("/report/model")
-def report_model(req: ModelExportRequest) -> Response:
-    try:
-        content, filename = build_model_archive(
-            req.inputs,
-            req.tep,
-            req.rates,
-            req.phasing,
-            project_name=req.project_name,
-            scenario=req.scenario,
-        )
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Не удалось собрать модель: {exc}") from exc
-    encoded_name = urllib.parse.quote(filename)
-    return Response(
-        content=content,
-        media_type="application/zip",
-        headers={
-            "Content-Disposition":
-                f"attachment; filename=DevelopAid_model.zip; filename*=UTF-8''{encoded_name}",
-        },
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -15683,7 +14425,7 @@ def _calculation_fingerprint(
     Считается по ЭФФЕКТИВНЫМ вводным — тем, на которых движок и посчитал:
     умолчания подмешаны, ТЭП слит построчно. Прежде каждая поверхность
     считала отпечаток по тому, что было у неё под рукой: книга — по слитым
-    (`build_model_archive` подмешивает `DEFAULT_INPUTS` первой строкой), PDF —
+    (выгрузка подмешивает `DEFAULT_INPUTS` первой строкой), PDF —
     по сырым, как их прислала страница. Один и тот же расчёт получал два
     разных номера ВСЕГДА, и инструмент, заведённый доказывать тождество,
     доказывал обратное — на нём владельцу уже был дан неверный ответ
@@ -17717,123 +16459,6 @@ _PLATO_CONSOLIDATOR_PATH = Path(__file__).resolve().parent / "templates" / "PLAT
 _PLATO_CONSOLIDATOR_SLOTS = 4
 
 
-def fill_plato_consolidator(
-    bundle: dict[str, Any],
-    phase_files: list[tuple[str, str]],
-    *,
-    template_path: Path | None = None,
-) -> tuple[bytes, dict[str, Any]]:
-    """Заполняет НАСТРОЙКИ консолидатора именами выгруженных файлов очередей.
-
-    Консолидатор — отдельная книга: она не пересчитывает проект, а собирает
-    показатели с листов «ОТЧЕТ», «CF» и «КРЕДИТЫ» файлов очередей через
-    ДВССЫЛ / INDIRECT. Поэтому от нас нужны ровно имена файлов, признак
-    активности очереди и общепроектные суммы; всё остальное — формулы шаблона.
-    """
-    from openpyxl import load_workbook
-
-    path = template_path or _PLATO_CONSOLIDATOR_PATH
-    if not path.is_file():
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "Шаблон консолидатора не найден на сервере: положите файл в "
-                "templates/PLATO_consolidator.xlsx и передеплойте сервис."
-            ),
-        )
-
-    workbook = load_workbook(path)
-    sheet = workbook["НАСТРОЙКИ"]
-    consolidated = bundle.get("consolidated") or {}
-    phases = bundle.get("phases") or []
-    finance = consolidated.get("finance") or {}
-    rows = finance.get("rows") or []
-    notes: list[str] = []
-
-    # Доли БРИДЖ между очередями берём по их собственным пикам: это и есть та
-    # пропорция, в которой очереди пользуются общим бриджем.
-    peaks = [float((p.get("result") or {}).get("finance", {}).get("peak_bridge") or 0.0) for p in phases]
-    total_peak = sum(peaks)
-
-    used = min(len(phase_files), _PLATO_CONSOLIDATOR_SLOTS)
-    if len(phase_files) > _PLATO_CONSOLIDATOR_SLOTS:
-        notes.append(
-            f"Консолидатор рассчитан на {_PLATO_CONSOLIDATOR_SLOTS} очереди, "
-            f"в проекте их {len(phase_files)}: в свод попали первые "
-            f"{_PLATO_CONSOLIDATOR_SLOTS}, остальные надо добавлять вручную."
-        )
-
-    assigned = 0.0
-    for slot in range(_PLATO_CONSOLIDATOR_SLOTS):
-        row = 5 + slot
-        if slot < used:
-            name, file_name = phase_files[slot]
-            sheet.cell(row=row, column=2).value = "Да"
-            sheet.cell(row=row, column=3).value = name
-            sheet.cell(row=row, column=4).value = file_name
-            if slot == used - 1:
-                # Остаток округления кладём на последнюю очередь: шаблон
-                # проверяет сумму долей и ругается на расхождение.
-                share = round(1.0 - assigned, 6)
-            else:
-                share = round(peaks[slot] / total_peak if total_peak else 1.0 / used, 6)
-                assigned += share
-            sheet.cell(row=row, column=5).value = share
-        else:
-            sheet.cell(row=row, column=2).value = "Нет"
-            sheet.cell(row=row, column=4).value = None
-            sheet.cell(row=row, column=5).value = 0
-
-    def put(reference: str, value: Any) -> None:
-        sheet[reference] = value
-
-    # Режим «Весь БРИДЖ в О1» обнулил бы доли остальных очередей, а у нас бридж
-    # считается по каждой очереди отдельно — оставляем ручные доли.
-    put("B14", "По ручным долям")
-    put("B15", "Да")
-    put("B16", round(float(finance.get("peak_bridge") or 0.0) / 1e6, 3))
-    put("B17", round(float(finance.get("bridge_interest") or 0.0) / 1e6, 3))
-    put("B18", round(float(((consolidated.get("vri") or {}).get("totals") or {}).get("cash") or 0.0) / 1e6, 3))
-
-    start = str((consolidated.get("dates") or {}).get("project_start") or "")
-    if start:
-        put("B19", datetime.strptime(start[:10], "%Y-%m-%d"))
-        put("B25", datetime.strptime(start[:10], "%Y-%m-%d"))
-    put("B20", (_land_float((consolidated.get("inputs") or {}).get("discount_rate_pct")) or 20.0) / 100.0)
-    if rows:
-        put("B26", len(rows))
-
-    # Пока внешние книги не открыты, ДВССЫЛ возвращает ноль, и консолидатор
-    # показывает пустой свод. Лист КЭШ_СВОД — его запасной источник: кладём
-    # туда наши цифры, чтобы файл был осмысленным сразу после выгрузки.
-    summary = consolidated.get("summary") or {}
-    cache = workbook["КЭШ_СВОД"]
-    cache["B2"] = round(float(summary.get("revenue") or 0.0) / 1e6, 3)
-    cache["B3"] = round(float(summary.get("total_expenses") or 0.0) / 1e6, 3)
-    cache["B4"] = round(
-        (float(summary.get("revenue") or 0.0) - float(summary.get("total_expenses") or 0.0)) / 1e6, 3)
-    cache["B5"] = round(float(finance.get("bridge_draw_total") or 0.0) / 1e6, 3)
-    cache["B6"] = round(float(finance.get("pf_draw_total") or 0.0) / 1e6, 3)
-
-    workbook.calculation.fullCalcOnLoad = True
-    buffer = io.BytesIO()
-    workbook.save(buffer)
-    return _plato_drop_external_links(buffer.getvalue()), {
-        "template": path.name,
-        "phases": [file_name for _, file_name in phase_files[:used]],
-        "notes": notes,
-    }
-
-
-class PlatoTemplateRequest(BaseModel):
-    inputs: dict[str, Any]
-    tep: dict[str, dict[str, Any]]
-    rates: list[dict[str, Any]] = []
-    phasing: dict[str, Any] = {}
-    project_name: str = ""
-    scenario: str = "base"
-
-
 # --- Новая книга: вводные, помесячный расчёт, отчёт ------------------------
 #
 # Шаблон ПЛАТО — учётная модель действующего проекта: погашение и выборка там
@@ -19208,150 +17833,6 @@ def build_plato_model_v2(
     }
 
 
-def build_plato_archive(
-    inputs: dict[str, Any],
-    tep: dict[str, dict[str, Any]],
-    rates: list[dict[str, Any]] | None = None,
-    phasing: dict[str, Any] | None = None,
-    *,
-    project_name: str = "",
-    scenario: str = "base",
-) -> tuple[bytes, str, dict[str, Any]]:
-    """ZIP: шаблон ПЛАТО на весь проект и по одному файлу на очередь."""
-    bundle = _run_authoritative_model(inputs, tep, rates or [], phasing or {})
-    phases = bundle.get("phases") or []
-    phased = str(bundle.get("mode") or "single") == "phased" and len(phases) > 1
-    title = str(project_name or "").strip() or "Проект DevelopAid"
-    stem = _safe_file_stem(title)
-
-    files: list[tuple[str, bytes]] = []
-    reports: list[dict[str, Any]] = []
-    consolidator_note: list[str] = []
-
-    if phased:
-        # Сначала очереди: консолидатору нужны их имена файлов, чтобы прописать
-        # внешние ссылки.
-        phase_files: list[tuple[str, str]] = []
-        for index, phase in enumerate(phases, start=1):
-            phase_inputs = {**inputs, **(phase.get("inputs") or {})}
-            phase_tep = phase.get("tep") or tep
-            phase_name = str(phase.get("name") or f"О{index}")
-            content, phase_report = fill_plato_template(
-                phase_inputs, phase_tep, scenario=scenario,
-                project_name=f"{title} · {phase_name}",
-            )
-            name = f"{index:02d}_Очередь_{_safe_file_stem(phase_name, f'О{index}')}.xlsx"
-            files.append((name, content))
-            reports.append({"file": name, **phase_report})
-            phase_files.append((phase_name, name))
-
-        consolidator, consolidator_report = fill_plato_consolidator(bundle, phase_files)
-        files.insert(0, (f"00_Консолидатор_{stem}.xlsx", consolidator))
-        reports.insert(0, {"file": files[0][0], **consolidator_report})
-        consolidator_note = list(consolidator_report.get("notes") or [])
-    else:
-        content, report = fill_plato_template(inputs, tep, scenario=scenario, project_name=title)
-        files.append((f"{stem}_ПЛАТО.xlsx", content))
-        reports.append({"file": files[-1][0], **report})
-
-    # Шаблон ПЛАТО принимает плату за ВРИ одной суммой и не умеет рассрочку,
-    # поэтому график платежей едет рядом отдельной книгой, а сам шаблон не
-    # трогается.
-    vri_sheet = _model_sheet_vri(bundle.get("consolidated") or {})
-    if vri_sheet:
-        files.append((f"ВРИ_график_{stem}.xlsx", _build_model_xlsx([vri_sheet])))
-
-    # Собственная книга DevelopAid: те же вводные, но расчёт живыми формулами
-    # по методике движка. Шаблон ПЛАТО — учётная модель действующего проекта,
-    # и часть его листов приходит с «факта»; эта считает проект целиком.
-    try:
-        model_v2, _ = build_plato_model_v2(inputs, tep, rates or [], project_name=title)
-    except Exception as exc:  # книга не должна ронять выгрузку шаблона
-        reports.append({"file": "Модель_DevelopAid", "missing": [f"не собрана: {exc}"]})
-    else:
-        files.append((f"Модель_DevelopAid_{stem}.xlsx", model_v2))
-
-    readme = [
-        "DevelopAid · выгрузка в шаблон ПЛАТО",
-        f"Проект: {title}",
-        f"Дата выгрузки: {date.today().isoformat()}",
-        f"Режим: {'по очередям' if phased else 'единый расчёт'}",
-        "",
-        "Заполнены только листы-вводные: «Вводные» и «Расчет ВРИ (ТЭП)».",
-        "Плата за смену ВРИ в шаблоне — одна сумма без графика, поэтому",
-        "рассрочка, проценты на остаток и источники оплаты вынесены в отдельную",
-        "книгу «ВРИ_график_…»; сам шаблон при этом не меняется.",
-        "Все остальные листы шаблона — Дашборд, ОТЧЕТ, ТЭП, СРОКИ, CF, cf_0…cf_2,",
-        "КРЕДИТЫ, ЗУ, LLCR — считаются формулами самого шаблона при открытии.",
-        "",
-        "Значения модели записаны во все три сценария шаблона (консервативный,",
-        "базовый, оптимистичный), поэтому переключатель сценария не меняет цифры",
-        "расчёта DevelopAid.",
-        "",
-        "Excel пересчитывает книгу при открытии. Если значения выглядят старыми,",
-        "нажмите Ctrl+Alt+F9.",
-        "",
-        "МОДЕЛЬ DEVELOPAID",
-        "Файл «Модель_DevelopAid_…» — отдельная книга на три листа: «Вводные»,",
-        "«Расчёт» и «ОТЧЁТ». Помесячные драйверы (продажи, затраты, ключевая",
-        "ставка, налоговая маржа) записаны значениями — это сценарий. Весь",
-        "финансовый контур — эскроу, БРИДЖ, ПФ, покрытие, ставки, проценты,",
-        "налог и LLCR — живые формулы: меняете спред или ставку на «Вводных»",
-        "и видите пересчёт. На листе «ОТЧЁТ» колонка B считается книгой,",
-        "колонка C — тот же показатель из расчёта DevelopAid, колонка D — разница.",
-        *([
-            "",
-            "КОНСОЛИДАТОР",
-            "Файл 00_Консолидатор_… — отдельная книга: она не считает проект заново,",
-            "а собирает показатели с листов «ОТЧЕТ», «CF» и «КРЕДИТЫ» файлов очередей",
-            "через ДВССЫЛ / INDIRECT. Имена файлов уже прописаны на листе «НАСТРОЙКИ».",
-            "",
-            "Чтобы свод посчитался:",
-            "  1. распакуйте все файлы архива в одну папку;",
-            "  2. откройте файлы очередей одновременно с консолидатором —",
-            "     ДВССЫЛ не читает закрытые внешние книги, при закрытых источниках",
-            "     свод покажет нули;",
-            "  3. если файлы переименуете, поправьте имена в НАСТРОЙКИ!D5:D8.",
-            "",
-            "Пока источники закрыты, консолидатор показывает цифры с листа «КЭШ_СВОД» —",
-            "это снимок расчёта DevelopAid на момент выгрузки, а не живой свод.",
-        ] if phased else []),
-        *([""] + consolidator_note if consolidator_note else []),
-        "",
-        "Состав архива:",
-        *[f"  - {name}" for name, _ in files],
-    ]
-    out = io.BytesIO()
-    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
-        for name, payload in files:
-            archive.writestr(name, payload)
-        archive.writestr("README.txt", ("\n".join(readme) + "\n").encode("utf-8"))
-    suffix = "очереди" if phased else "модель"
-    return out.getvalue(), f"DevelopAid_ПЛАТО_{stem}_{suffix}_{date.today().isoformat()}.zip", {
-        "phased": phased,
-        "files": reports,
-    }
-
-
-@app.post("/report/plato")
-def report_plato(req: PlatoTemplateRequest) -> Response:
-    try:
-        content, filename, _ = build_plato_archive(
-            req.inputs, req.tep, req.rates, req.phasing,
-            project_name=req.project_name, scenario=req.scenario,
-        )
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Не удалось заполнить шаблон ПЛАТО: {exc}") from exc
-    encoded = urllib.parse.quote(filename)
-    return Response(
-        content=content,
-        media_type="application/zip",
-        headers={"Content-Disposition": f"attachment; filename=DevelopAid_PLATO.zip; filename*=UTF-8''{encoded}"},
-    )
-
-
 # Что с чем сверяется на листе «ОТЧЕТ» шаблона. Слева подпись в колонке B,
 # справа — как та же величина зовётся в результате движка. Знак не важен:
 # шаблон пишет расходы отрицательными, движок — положительными.
@@ -19472,17 +17953,6 @@ def audit_plato_workbook(
         "mismatched": mismatched,
         "missing": missing,
         "verdict": verdict,
-    }
-
-
-@app.get("/report/plato/status")
-def report_plato_status() -> dict[str, Any]:
-    """Есть ли шаблон на сервере и сколько полей карта умеет заполнять."""
-    return {
-        "template_available": _PLATO_TEMPLATE_PATH.is_file(),
-        "template_path": str(_PLATO_TEMPLATE_PATH),
-        "input_fields": len(_PLATO_INPUT_MAP) + len(_PLATO_BLOCK_MAP),
-        "tep_rows": len(_PLATO_TEP_ROWS),
     }
 
 
@@ -19861,7 +18331,6 @@ def _telegram_send_attachments(
             pass
 
 
-
 def _server_preset_meta(preset_id: str) -> dict[str, Any]:
     meta = SERVER_TEP_PRESETS.get(preset_id)
     if not meta:
@@ -19983,7 +18452,6 @@ def month_range(start: date, end: date) -> list[date]:
         out.append(cur)
         cur = add_months(cur, 1)
     return out
-
 
 
 def social_cash_payment_date(x: dict[str, Any], permit: date) -> date:
@@ -20264,7 +18732,6 @@ def spread_evenly(target: dict[date, float], amount: float, start: date, months:
         target[add_months(start, i)] += each
 
 
-
 def _monthly_npv(cashflows: list[float], annual_rate: float) -> float:
     if not cashflows:
         return 0.0
@@ -20313,7 +18780,6 @@ def _monthly_irr(cashflows: list[float]) -> float | None:
 
 def _iso(value: date) -> str:
     return value.isoformat()
-
 
 
 def effective_social_program(x: dict) -> dict[str, float]:
@@ -23013,7 +21479,6 @@ def defaults() -> dict:
     }
 
 
-
 def _normalized_phase_weights(values: Any, count: int, fallback: list[float] | None = None) -> list[float]:
     vals: list[float] = []
     if isinstance(values, list):
@@ -24912,7 +23377,6 @@ def sensitivity_options() -> dict[str, Any]:
     }
 
 
-
 # ---------------------------------------------------------------------------
 # DevelopAid SERGEEVICH FEDOSKIN — tool-using read-only investment analyst
 # The LLM chooses tools; all financial arithmetic and parameter search are executed
@@ -26754,8 +25218,6 @@ def _tool_get_user_guide(section: str) -> dict[str, Any]:
         "class_presets": PROJECT_CLASS_PRESETS,
         "note": "Отсылая пользователя к руководству, давай ссылку вида /guide#раздел.",
     }
-
-
 
 
 def _clone_agent_req_with_inputs(req: AgentChatRequest, inputs: dict[str, Any]) -> Any:
@@ -29274,7 +27736,6 @@ def users_registry_summary(days: int = 30) -> dict[str, Any]:
         } for item in people[:15]],
         "dir": str(_users_dir()),
     }
-
 
 
 def usage_admin_ids() -> set[int]:
@@ -33132,7 +31593,6 @@ async function awaitAgentResult(traceId,thinking,accepted){
 }
 
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&document.getElementById('aiDrawer')?.classList.contains('open'))toggleAgent(false);if((e.ctrlKey||e.metaKey)&&e.key==='Enter'&&document.getElementById('aiDrawer')?.classList.contains('open'))sendAgentMessage()});
-
 
 
 function currentMonetizableSaleable(){
@@ -38472,9 +36932,10 @@ function downloadBlobResponse(blob,disposition,fallback){
 
 async function exportModelArchive(){
  // Одна модель на выгрузку: книга DevelopAid v4, считающая проект формулами
- // из текущих вводных. Архив детализации и шаблон ПЛАТО остались как API
- // (/report/model, /report/plato), но с сайта их кнопки убраны — две
- // выгрузки рядом читались как разные модели одного проекта.
+ // из текущих вводных. Прежние выгрузки — архив очередей с консолидатором и
+ // заполненный шаблон ПЛАТО — сняты вместе с маршрутами: они остались от
+ // времени, когда очереди собирались отдельными файлами, и две выгрузки
+ // рядом читались как разные модели одного проекта.
  const button=document.getElementById('exportModelButton');
  const label=button?button.textContent:'';
  if(button){button.disabled=true;button.textContent='Собираю модель…'}

@@ -310,11 +310,12 @@ def test_tep_and_inputs_feed_the_model():
 
 def test_model_export_works_on_mo_project():
     result = main.mo_calculate(main.MoCalculateRequest(site_area_ha=15, density_sqm_per_ha=9000, district="Мытищи"))
-    content, filename = main.build_model_archive(
+    content, filename, meta = main.build_project_workbook(
         {**main.DEFAULT_INPUTS, **result["inputs"]}, result["tep"], [], {}, project_name="Подмосковье",
     )
     assert content[:2] == b"PK"
     assert "Подмосковье" in filename
+    assert meta["missing"] == [], meta["missing"]
 
 
 # --- эндпоинты и бот --------------------------------------------------------
