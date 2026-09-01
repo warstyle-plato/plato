@@ -70,7 +70,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.21.45"
+VERSION = "0.21.46"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -9380,11 +9380,27 @@ def _glavapu_name_key(value: Any) -> str:
     return " ".join(str(value or "").lower().replace("ё", "е").split())
 
 
+def _glavapu_stems(value: str) -> list[str]:
+    """Основы слов: шесть букв хватает, чтобы пережить падеж и не поймать чужое."""
+    return [word[:6] for word in _glavapu_name_key(value).split() if len(word) > 2]
+
+
 def _glavapu_missing_controls(rows: list[dict[str, Any]]) -> list[str]:
-    """Каких контрольных строк в таблице нет. Пусто — значит все на месте."""
+    """Каких контрольных строк в таблице нет. Пусто — значит все на месте.
+
+    Ищется не начало строки и не строка целиком, а ОСНОВЫ её слов в любом
+    месте имени. Начало — та же ловушка, что и номер строки, только мягче:
+    «Численность населения» не начинается с «население». Целое слово — ловушка
+    третья: «населения» это не «население», русский падеж рассыпает совпадение
+    ровно так же, как он рассыпал якорь площадки в модуле публикаций.
+
+    Ложное совпадение здесь дёшево — это признак готовности, а не величина;
+    пропущенное останавливает расчёт у всех сразу.
+    """
     have = [_glavapu_name_key(row.get("name")) for row in rows]
     return [need for need in _GLAVAPU_CONTROL_NAMES
-            if not any(name.startswith(need) for name in have)]
+            if not any(all(stem in name for stem in _glavapu_stems(need))
+                       for name in have)]
 
 
 def _glavapu_table_shot(rows: list[dict[str, Any]]) -> str:
@@ -9671,10 +9687,27 @@ def _glavapu_drive_page(page: Any, numbers: list[str], area_ha: float,
         # когда захочет; ждём того, что от нумерации не зависит: строки, которые
         # мы читаем ПО ИМЕНАМ, на месте, и таблица перестала меняться.
         shot = _glavapu_table_shot(rows)
-        if (len(rows) >= 60 and not _glavapu_missing_controls(rows)
-                and shot and shot == last_shot):
-            mark("table")
-            return rows
+        # Готовность — свойство самой таблицы, а не наших ожиданий от неё:
+        # она пришла, она не пуста и перестала меняться. Ни номера строки, ни
+        # её количества здесь больше нет. Число строк было последним таким
+        # ожиданием («не меньше шестидесяти»), и оно того же рода, что код 60:
+        # источник вправе поменять его молча, а стоит это полутора минутами
+        # ожидания на каждом участке у всех сразу.
+        if rows and shot and shot == last_shot:
+            missing = _glavapu_missing_controls(rows)
+            if not missing:
+                mark("table")
+                return rows
+            # Таблица устоялась, а строк, которые мы читаем, в ней нет. Ждать
+            # больше нечего: она уже не изменится. Отказ сейчас и по имени
+            # лучше полутора минут молчания и «истекло время».
+            try:
+                snapshot = page.evaluate(_GLAVAPU_SNAPSHOT_JS) or {}
+            except Exception:  # страница ушла — снимка не будет, но отказ будет
+                snapshot = {}
+            raise GlavapuTableNotReady(
+                _glavapu_not_ready_message(rows, _glavapu_with_network(snapshot)),
+                snapshot)
         last_shot = shot
         if time.monotonic() > deadline:
             try:

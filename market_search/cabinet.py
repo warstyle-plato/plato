@@ -2954,7 +2954,15 @@ function renderSales(d){
     +tile('Выручка', num(t.amount/1e6,1)+' млн ₽',
           whole.amount_share!==null&&whole.amount_share!==undefined
             ?share(whole.amount_share)+' из ожидаемых '+num(whole.pool_amount/1e6,1)+' млн ₽':'план не прочитан')
-    +tile('На эскроу', num(t.escrow/1e6,1)+' млн ₽', num(t.escrow_share*100,1)+'% от продаж')
+    // Остаток на счетах, а не всё поступившее: при расторжении деньги уходят
+    // обратно покупателю (владелец, 01.09.2026: «я имел в виду текущий остаток
+    // для отчёта»). Обе половины названы рядом — «остаток» без второго числа
+    // читается как «столько и пришло». Возврат считает сервер, здесь только
+    // вычитание двух его же величин.
+    +tile('Остаток на эскроу', num((t.escrow-(d.escrow_returned||0))/1e6,1)+' млн ₽',
+          d.escrow_returned
+            ?'поступило '+num(t.escrow/1e6,1)+', возвращено '+num(d.escrow_returned/1e6,1)+' млн ₽'
+            :num(t.escrow_share*100,1)+'% от продаж, возвратов не было')
     +'</div>'+salesNote(d,'pool');
 
   html+=salesSection('sb-dyn','Динамика',

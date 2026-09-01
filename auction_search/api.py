@@ -1342,6 +1342,78 @@ def install(app: FastAPI) -> None:
                       "в таблице по мере счёта")
         return {"started": started, "reason": reason, "progress": progress}
 
+    def _press_only(project: dict[str, Any]) -> dict[str, Any]:
+        """Прогон одних публикаций: без рынка и без модели.
+
+        Ответ на «кто здесь собрался строить» у планируемой площадки бывает
+        только один — публикации и каналы: карточка города до торгов
+        застройщика не называет (0 из 30 измеренных). А поиск был заперт внутри
+        полного прогона, который на каждой площадке ещё строит рыночный отчёт и
+        гоняет движок — минуты на площадку, поэтому он и ходит раз в неделю.
+        Дешёвый проход отвечает на один вопрос и стоит своих пяти запросов.
+
+        Модель здесь не считается, и это сказано вслух: «не посчитали» — тоже
+        ответ, а балл в строке остаётся прежним, потому что неудавшийся
+        пересчёт не затирает удавшийся.
+        """
+        return {
+            "available": False,
+            "reason": "Прогон публикаций: модель и рынок в нём не считаются",
+            "press_facts": _open_sources_for_run(project),
+        }
+
+    @app.post("/auctions/krt/press/run")
+    async def auction_krt_press_run(request: Request) -> dict[str, Any]:
+        """Прочитать публикации по всем планируемым площадкам разом.
+
+        По планируемым — потому что вопрос «кто собрался строить» есть только у
+        них: у площадки в реализации застройщика называет сама карточка города,
+        бесплатно и без поиска.
+
+        Уже спрошенные пропускаются: занятая площадка свободной не станет, и
+        платить за неё второй раз незачем (владелец, 01.09.2026). Замок общий с
+        прогоном модели — двум проходам по одному каталогу расходиться негде.
+        """
+        market_cabinet.require_cabinet(request)
+        if market is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Поиск по публикациям требует маркетингового движка",
+            )
+        projects = await run_in_threadpool(krt_registry.catalogue)
+        if not projects:
+            raise HTTPException(
+                status_code=503,
+                detail="Каталог КРТ ещё не получен — обновите каталог и повторите",
+            )
+        planned = []
+        for row in projects:
+            if "реализац" in str(row.get("status") or "").lower():
+                continue
+            stored = {}
+            try:
+                stored = (krt_ranking.stored_row(str(row.get("slug") or "")) or {}).get(
+                    "press_facts") or {}
+            except Exception:  # noqa: BLE001
+                logger.exception("stored press facts failed slug=%s", row.get("slug"))
+            if stored.get("available") and stored.get("taken"):
+                continue
+            planned.append(row)
+        if not planned:
+            return {"started": False, "reason": "Спрашивать нечего: планируемых площадок нет",
+                    "planned": 0, "progress": krt_ranking.progress()}
+        started = krt_ranking.start(planned, _press_only)
+        progress = krt_ranking.progress()
+        if started:
+            reason = ""
+        elif progress.get("running"):
+            reason = "Прогон уже идёт"
+        else:
+            reason = ("Прогон уже идёт в соседнем процессе — находки появляются "
+                      "в таблице по мере чтения")
+        return {"started": started, "reason": reason,
+                "planned": len(planned), "progress": progress}
+
     def _stored_report(slug: str) -> dict[str, Any]:
         stored = krt_ranking.report(slug)
         if not stored:
