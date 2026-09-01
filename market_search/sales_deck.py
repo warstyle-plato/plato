@@ -974,11 +974,17 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         """Полка показателей титула — та же, что в шапке печатного отчёта:
         одна подложка, равные колонки, разделённые волосяными линейками.
 
-        Пять чисел вразброс по белому читаются как обрывки текста, а на своей
+        Числа вразброс по белому читаются как обрывки текста, а на своей
         плашке — как одна панель. Колонки равные и разделены линейками, иначе
         длинная сноска второго столбца перекашивает весь ряд.
+
+        Полка держит до шести плиток. Было пять, и шестая — «На эскроу» —
+        молча срезалась: в отчёте она есть, а на титуле её не было
+        (владелец, 01.09.2026: «надо куда-то на 1 слайд остаток на эскроу»).
+        Отрезанная плитка неотличима от непосчитанной. Число при шести
+        колонках чуть мельче: иначе «2 400,9 млн ₽» переносится по слогам.
         """
-        rows = [row for row in (table.get("rows") or []) if any(row)][:5]
+        rows = [row for row in (table.get("rows") or []) if any(row)][:6]
         if not rows:
             return top
         left, width, height = 0.6, SLIDE_W_IN - 1.2, 1.25
@@ -1009,9 +1015,10 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
             # смотрят на само число.
             # Порядок плитки — как в отчёте: имя, под ним число, под ним
             # сноска. Число сверху я поставил сам, и это была не та плитка.
+            number_size = 20 if len(rows) <= 5 else 17
             for order, (text, size, bold, tone) in enumerate((
                     (str(row[0] if len(row) > 0 else ""), 11, False, dim),
-                    (str(row[1] if len(row) > 1 else ""), 20, True, ink),
+                    (str(row[1] if len(row) > 1 else ""), number_size, True, ink),
                     (str(row[2] if len(row) > 2 else ""), 9, False,
                      RGBColor(0x7B, 0x8B, 0x9A)))):
                 if not text:
