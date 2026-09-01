@@ -161,11 +161,20 @@ def test_a_silent_search_is_not_an_empty_answer() -> None:
     assert "не спрошены" in body and "не значит, что о площадке не пишут" in body
 
 
-def test_the_route_uses_the_service_search_and_not_its_own() -> None:
-    """Модуль, идущий наружу мимо общего пути, однажды ответит иначе, чем сервис."""
+def test_the_route_uses_the_engine_search_and_not_its_own() -> None:
+    """Модуль, идущий наружу мимо общего пути, однажды ответит иначе, чем сервис.
+
+    Здесь стояло `getattr(service, "search", None)` — и проверка искала в
+    исходнике ровно ту строку, которая ломала маршрут: имя `service` живёт
+    локально внутри маршрута выдачи лотов, снаружи его нет, и кнопка отвечала
+    пятисоткой всегда (экран владельца, 01.09.2026). Совпадение текста ничего
+    не говорит о том, разрешается ли имя, — поэтому рядом стоит проверка,
+    которая маршрут ЗОВЁТ (`test_the_press_button_answers.py`).
+    """
     source = (ROOT / "auction_search" / "api.py").read_text(encoding="utf-8")
     block = source[source.index('"/auctions/krt/{slug}/open-sources"'):]
-    block = block[:block.index('@app.get("/auctions/krt/{slug}/requirements")')]
-    assert 'getattr(service, "search", None)' in block
+    block = block[:block.index('@app.get("/auctions/krt/{slug}/card-facts")')]
+    assert 'getattr(market, "search", None)' in block
+    assert 'getattr(service, "search", None)' not in block
     assert "YandexSearchClient" not in block, "своего клиента поиска здесь быть не должно"
     assert "not configured" in block or "configured" in block
