@@ -109,9 +109,17 @@ def test_the_automation_repeats_the_page_steps():
     """Серверные шаги — те же, что у скрытого iframe: другая последовательность
     молча дала бы другой расчёт."""
     import inspect
-    source = inspect.getsource(core._glavapu_drive_page)
+    # Шаг перехода к расчётам живёт своей функцией с 01.09.2026: голый click()
+    # девяносто секунд стучался в disabled-кнопку и отдавал стек Playwright
+    # вместо ответа калькулятора. Проверка смотрит на автоматизацию целиком —
+    # привязанная к телу одной функции, она падает при любом выносе кода и
+    # молчит о том, что сломалось на самом деле.
+    source = (inspect.getsource(core._glavapu_drive_page)
+              + inspect.getsource(core._glavapu_proceed))
     for step in ("Участок", "fill_numbers", "Отправить", "Перейти к расчётам"):
         assert step in source, step
+    assert "_glavapu_proceed(" in inspect.getsource(core._glavapu_drive_page), \
+        "шаг перехода к расчётам выпал из последовательности"
     # Поле кадастровых номеров ищется по нескольким признакам: один жёсткий
     # селектор — это обещание, что вёрстка genplan.tech не изменится, а она
     # изменилась, и расчёт девяносто секунд ждал элемент, которого нет.
