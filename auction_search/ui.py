@@ -768,7 +768,11 @@ function krtIntent(x){
  // Публикации отвечают на те же два вопроса и отвечают чаще, чем документ.
  // Прочитанные, они входят в признак наравне с решением — иначе находка
  // видна на карточке и не влияет ни на фильтр, ни на балл.
- const press=state.krtPress[x.slug];
+ // Занятость приезжает прогоном в строке рейтинга и оседает там: платится она
+ // один раз на площадку (владелец, 01.09.2026: «может, один раз провести
+ // прогон как с моделью, а потом только по требованию?»). Нажатая кнопка
+ // отвечает свежее и потому сильнее — но своего второго ответа не заводит.
+ const press=state.krtPress[x.slug]||rank.press_facts;
  if(!press||!press.available)return intent;
  const merged=Object.assign({probed:true,decision_read:false,kind:'',city_needs:[],
    operator:[],operator_name:'',agreement:[],taken:false}, intent||{});

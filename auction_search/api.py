@@ -768,6 +768,98 @@ def install(app: FastAPI) -> None:
             "projects": projects,
         }
 
+    def _read_open_sources(project: dict[str, Any]) -> dict[str, Any]:
+        """Что об этой площадке сказано в публикациях и каналах. Один разбор.
+
+        Зовётся и кнопкой на карточке, и еженедельным прогоном: второй такой
+        разбор однажды ответил бы про одну площадку иначе, чем первый, и оба
+        ответа выглядели бы верными.
+        """
+        from market_search import krt_open_sources
+
+        name = str((project or {}).get("name") or "")
+        if not name:
+            return {"available": False, "reason": "У площадки нет имени — искать нечего"}
+        # Поиск берётся у маркетингового движка — того самого, которым считаются
+        # соседи по рынку. Своего второго не заводим: модуль, идущий наружу мимо
+        # общего пути, однажды ответит иначе, чем весь остальной сервис.
+        client = getattr(market, "search", None)
+        finder = getattr(client, "search", None)
+        if not callable(finder) or not getattr(client, "configured", False):
+            return {"available": False,
+                    "reason": "Веб-поиск не настроен — публикации спросить нечем"}
+        asked = krt_open_sources.queries(
+            name, str((project or {}).get("okrug") or ""),
+            str((project or {}).get("district") or ""))
+        docs: list[Any] = []
+        errors: list[str] = []
+        for query in asked:
+            try:
+                docs.extend(finder(query))
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{type(exc).__name__}: {exc}")
+        if not docs and errors:
+            # Поиск не ответил — это ответ, а не «в источниках ничего нет».
+            return {"available": False, "reason": "; ".join(errors[:2]), "queries": asked}
+        found = krt_open_sources.read_findings(docs, name)
+        # Рынок знает площадку по имени проекта, а не по адресу: «Строгино 360»
+        # знают все, «Маршала Прошлякова ул., вл. 9» — никто. Имя берётся из
+        # публикации, где оно стоит рядом с адресом, и вторым кругом ищется уже
+        # оно. Круг ровно один: поиск платный, а бренд у площадки один.
+        for brand in (found.get("brands") or [])[:1]:
+            query = f'"{brand}" застройщик КРТ Москва'
+            asked = asked + [query]
+            try:
+                docs.extend(finder(query))
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{type(exc).__name__}: {exc}")
+            else:
+                found = krt_open_sources.read_findings(docs, name)
+        # Телеграм-каналы говорят о площадке раньше прессы (владелец,
+        # 01.09.2026: «а поиск информации можно через телеграм-каналы ещё
+        # вести?»). Спрашиваются тем же платным индексом с ограничением по
+        # домену — своего пути наружу не заводим. Круг один: у поиска цена.
+        tg_asked = krt_open_sources.telegram_queries(name, found.get("brands") or [])
+        tg_ok = False
+        for query in tg_asked:
+            asked = asked + [query]
+            try:
+                docs.extend(finder(query))
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{type(exc).__name__}: {exc}")
+            else:
+                tg_ok = True
+                found = krt_open_sources.read_findings(docs, name)
+        found.update({"available": True, "queries": asked, "errors": errors[:2],
+                      "checked_at": int(time.time()),
+                      # Спросили каналы и там пусто — не то же, что не спросили.
+                      "telegram_asked": tg_ok})
+        return found
+
+    # Занятость — ответ ОДНОСТОРОННИЙ: отданная площадка свободной не
+    # становится (владелец, 01.09.2026: «может, один раз провести прогон как с
+    # моделью, а потом только по требованию?»). Значит спрашивать её повторно
+    # незачем: прогон платит за площадку один раз, дальше платит только тот,
+    # кто нажал «Пересчитать сейчас». Неотвеченная и свободная спрашиваются
+    # снова — там ответ ещё может измениться.
+    def _open_sources_for_run(project: dict[str, Any]) -> dict[str, Any]:
+        slug = str((project or {}).get("slug") or "")
+        stored = {}
+        try:
+            stored = (krt_ranking.stored_row(slug) or {}).get("press_facts") or {}
+        except Exception:  # noqa: BLE001
+            logger.exception("stored press facts failed slug=%s", slug)
+        if stored.get("available") and stored.get("taken"):
+            return stored
+        try:
+            return _read_open_sources(project)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("KRT open sources failed slug=%s", slug)
+            fresh = {"available": False, "reason": f"{type(exc).__name__}: {exc}"}
+            # Неудача не затирает прежний ответ — правило «посчитанное не
+            # выбрасывают» здесь то же самое.
+            return stored or fresh
+
     def _screen_one(project: dict[str, Any]) -> dict[str, Any]:
         """Один прогон для рейтинга — тем же путём, что и открытая карточка.
 
@@ -799,6 +891,11 @@ def install(app: FastAPI) -> None:
         screening = build_krt_model_screening(
             project, report, core, requirements=requirements)
         screening["card_facts"] = card
+        # Занятость площадки — в прогон, а не по нажатию: пока она приходила
+        # только кнопкой, каталог показывал «Планируемая» там, где договор
+        # давно подписан. Платится один раз на площадку: занятая больше не
+        # спрашивается никогда.
+        screening["press_facts"] = _open_sources_for_run(project)
         # Маркетинг едет вместе со скринингом и оседает в отчёте площадки.
         # Считать его второй раз при открытии карточки незачем: прогон уже
         # сходил к рынку, к соседям и к движку — минуты чужого ожидания на
@@ -1021,74 +1118,15 @@ def install(app: FastAPI) -> None:
         и ручная таблица владельца. Ни один признак не ставится без цитаты и
         ссылки, а поиск — общий крючок сервиса, своего здесь не заводим.
         """
-        from market_search import krt_open_sources
-
         project = next((row for row in krt_registry.catalogue()
                         if row.get("slug") == slug), None)
-        name = str((project or {}).get("name") or "")
-        if not name:
+        if not str((project or {}).get("name") or ""):
             raise HTTPException(status_code=404, detail="Площадка не найдена в каталоге")
-        # Поиск у сервиса уже есть — второй свой не заводим: модуль, идущий
-        # наружу мимо общего пути, однажды пойдёт другим маршрутом и ответит
-        # иначе, чем весь остальной сервис.
-        # Поиск берётся у маркетингового движка — того самого, которым
-        # считаются соседи по рынку. Здесь стояло имя `service`, а оно живёт
-        # локально внутри маршрута выдачи лотов: снаружи его не существует, и
-        # кнопка «Что пишут об этой площадке» отвечала пятисоткой ВСЕГДА
-        # (экран владельца, 01.09.2026). Своего второго поиска не заводим —
-        # модуль, идущий наружу мимо общего пути, однажды ответит иначе, чем
-        # весь остальной сервис.
-        client = getattr(market, "search", None)
-        finder = getattr(client, "search", None)
-        if not callable(finder) or not getattr(client, "configured", False):
-            return {"available": False,
-                    "reason": "Веб-поиск не настроен — публикации спросить нечем"}
-        asked = krt_open_sources.queries(
-            name, str((project or {}).get("okrug") or ""),
-            str((project or {}).get("district") or ""))
-        docs: list[Any] = []
-        errors: list[str] = []
-        for query in asked:
-            try:
-                docs.extend(await run_in_threadpool(finder, query))
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f"{type(exc).__name__}: {exc}")
-        if not docs and errors:
-            # Поиск не ответил — это ответ, а не «в источниках ничего нет».
-            return {"available": False, "reason": "; ".join(errors[:2]), "queries": asked}
-        found = krt_open_sources.read_findings(docs, name)
-        # Рынок знает площадку по имени проекта, а не по адресу: «Строгино 360»
-        # знают все, «Маршала Прошлякова ул., вл. 9» — никто. Имя берётся из
-        # публикации, где оно стоит рядом с адресом, и вторым кругом ищется уже
-        # оно. Круг ровно один: поиск платный, а бренд у площадки один.
-        for brand in (found.get("brands") or [])[:1]:
-            query = f'"{brand}" застройщик КРТ Москва'
-            asked = asked + [query]
-            try:
-                docs.extend(await run_in_threadpool(finder, query))
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f"{type(exc).__name__}: {exc}")
-            else:
-                found = krt_open_sources.read_findings(docs, name)
-        # Телеграм-каналы говорят о площадке раньше прессы (владелец,
-        # 01.09.2026: «а поиск информации можно через телеграм-каналы ещё
-        # вести?»). Спрашиваются тем же платным индексом с ограничением по
-        # домену — своего пути наружу не заводим. Круг один: у поиска цена.
-        tg_asked = krt_open_sources.telegram_queries(name, found.get("brands") or [])
-        tg_ok = False
-        for query in tg_asked:
-            asked = asked + [query]
-            try:
-                docs.extend(await run_in_threadpool(finder, query))
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f"{type(exc).__name__}: {exc}")
-            else:
-                tg_ok = True
-                found = krt_open_sources.read_findings(docs, name)
-        found.update({"available": True, "queries": asked, "errors": errors[:2],
-                      # Спросили каналы и там пусто — не то же, что не спросили.
-                      "telegram_asked": tg_ok})
-        return found
+        # Разбор один на кнопку и на прогон (`_read_open_sources`). Здесь
+        # стояло имя `service`, а оно живёт локально внутри маршрута выдачи
+        # лотов: снаружи его не существует, и кнопка «Что пишут об этой
+        # площадке» отвечала пятисоткой ВСЕГДА (экран владельца, 01.09.2026).
+        return await run_in_threadpool(_read_open_sources, project or {})
 
     @app.get("/auctions/krt/{slug}/card-facts")
     async def auction_krt_card_facts(slug: str) -> dict[str, Any]:
