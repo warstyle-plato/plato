@@ -70,7 +70,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.21.39"
+VERSION = "0.21.40"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -9102,7 +9102,23 @@ _GLAVAPU_HEADLESS_QUEUE_SECONDS = max(5.0, _env_float("GLAVAPU_HEADLESS_QUEUE_SE
 # минуты за ответ, который был известен заранее. После сбоя браузер не трогаем
 # несколько минут: формулы отвечают сразу, а причина видна в /status.
 _GLAVAPU_HEADLESS_COOLDOWN_SECONDS = max(0.0, _env_float("GLAVAPU_HEADLESS_COOLDOWN_SECONDS", 300.0))
-_GLAVAPU_HEADLESS_BLOCKED_UNTIL = {"at": 0.0}
+_GLAVAPU_HEADLESS_BLOCKED_UNTIL = {"at": 0.0, "row": 0}
+
+# Предохранитель растёт, пока отказы идут подряд, и не дольше получаса.
+# 01.09.2026 калькулятор ГлавАПУ лежал у самого города — проверено вручную в
+# браузере, — и каждый человек платил за это ожиданием: пять минут паузы, потом
+# снова полторы минуты в недоступную кнопку, и так весь день. Пауза в пять
+# минут написана под СРЫВ БРАУЗЕРА, который проходит сам; лежащий чужой сервис
+# сам не проходит, и стучаться к нему с прежней частотой — это платить временем
+# людей за уже известный ответ.
+#
+# Обратная сторона названа тем же правилом, по которому пауза вообще короткая:
+# запасной ответ не должен пережить штатный. Поэтому лестница сбрасывается
+# первым же удавшимся расчётом, а расти начинает только со второго отказа —
+# одиночный срыв браузера остаётся пятиминутным, как и был.
+_GLAVAPU_HEADLESS_COOLDOWN_MAX_SECONDS = max(
+    _GLAVAPU_HEADLESS_COOLDOWN_SECONDS,
+    _env_float("GLAVAPU_HEADLESS_COOLDOWN_MAX_SECONDS", 1800.0))
 
 
 def _glavapu_headless_available() -> bool:
@@ -9112,10 +9128,20 @@ def _glavapu_headless_available() -> bool:
     return time.monotonic() >= _GLAVAPU_HEADLESS_BLOCKED_UNTIL["at"]
 
 
+def _glavapu_cooldown_seconds(row: int) -> float:
+    """Пауза после `row`-го отказа подряд: 5, 10, 20, 30 минут и дальше 30."""
+    if _GLAVAPU_HEADLESS_COOLDOWN_SECONDS <= 0:
+        return 0.0
+    grown = _GLAVAPU_HEADLESS_COOLDOWN_SECONDS * (2 ** max(0, int(row) - 1))
+    return min(grown, _GLAVAPU_HEADLESS_COOLDOWN_MAX_SECONDS)
+
+
 def _glavapu_headless_failed() -> None:
-    if _GLAVAPU_HEADLESS_COOLDOWN_SECONDS > 0:
-        _GLAVAPU_HEADLESS_BLOCKED_UNTIL["at"] = (
-            time.monotonic() + _GLAVAPU_HEADLESS_COOLDOWN_SECONDS)
+    _GLAVAPU_HEADLESS_BLOCKED_UNTIL["row"] = int(
+        _GLAVAPU_HEADLESS_BLOCKED_UNTIL.get("row") or 0) + 1
+    pause = _glavapu_cooldown_seconds(_GLAVAPU_HEADLESS_BLOCKED_UNTIL["row"])
+    if pause > 0:
+        _GLAVAPU_HEADLESS_BLOCKED_UNTIL["at"] = time.monotonic() + pause
 
 # Браузер живёт между расчётами. Холодный запуск Chromium и первая загрузка
 # страницы калькулятора со всеми её ассетами стоили большую часть минуты, и
@@ -9256,8 +9282,22 @@ _GLAVAPU_SNAPSHOT_JS = """() => {
   const rows = table ? Array.from(table.querySelectorAll('tbody tr')).map(row =>
     Array.from(row.children).map(c => String(c.textContent || '').replace(/\s+/g, ' ').trim())
   ) : [];
+  const proceed = document.querySelector('[data-r="map-proceed-button"]')
+    || Array.from(document.querySelectorAll('button')).find(b =>
+         /перейти к расч/i.test(b.getAttribute('aria-label') || b.textContent || ''));
+  const dialog = document.querySelector('[role="dialog"]');
   return {
     url: location.href,
+    proceed: proceed ? {
+      disabled: !!proceed.disabled,
+      label: String(proceed.getAttribute('aria-label') || proceed.textContent || '')
+        .replace(/\s+/g, ' ').trim().slice(0, 80),
+    } : null,
+    dialog: dialog ? String(dialog.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 600) : '',
+    errors: Array.from(document.querySelectorAll(
+      '.Mui-error, .MuiFormHelperText-root, [role="alert"]'))
+      .map(n => String(n.textContent || '').replace(/\s+/g, ' ').trim())
+      .filter(Boolean).slice(0, 8),
     tables: tables.slice(0, 12),
     calc_table: !!table,
     row_count: rows.length,
@@ -9269,6 +9309,21 @@ _GLAVAPU_SNAPSHOT_JS = """() => {
       .filter(Boolean).slice(0, 12),
   };
 }"""
+
+
+class GlavapuParcelNotAccepted(TimeoutError):
+    """Калькулятор не принял участок: кнопка перехода к расчётам не ожила.
+
+    Живой ответ ядра (01.09.2026): кнопка `map-proceed-button` есть, но стоит
+    `disabled` с подписью «…», и Playwright девяносто секунд стучится в неё,
+    после чего отдаёт свой стек. Читать в нём нечего: это не поломка клика, а
+    ответ калькулятора — он не собрал территорию по этим номерам. Ждать в таком
+    состоянии бессмысленно: кнопка не оживёт, пока участок не опознан.
+    """
+
+    def __init__(self, message: str, snapshot: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.snapshot = snapshot or {}
 
 
 class GlavapuTableNotReady(TimeoutError):
@@ -9317,6 +9372,66 @@ def _glavapu_not_ready_message(rows: list[dict[str, Any]], seen: list[str],
     return (f"таблица есть ({len(rows)} строк), кодов {len(seen)}, "
             f"нет кодов {', '.join(missing)}; прочитаны: {', '.join(seen[:14])}"
             f"{'…' if len(seen) > 14 else ''}")
+
+
+# Сколько ждём, пока калькулятор примет участок. Меньше общего срока
+# намеренно: пока кнопка перехода стоит `disabled`, таблицы не будет вовсе, и
+# доедать оставшееся время нечем — а отказ нужен человеку сейчас, а не через
+# полторы минуты.
+_GLAVAPU_PARCEL_WAIT_MS = 45_000
+
+
+def _glavapu_proceed(page: Any, numbers: list[str]) -> None:
+    """Нажать «Перейти к расчётам», дождавшись, что кнопка ожила.
+
+    Прежде здесь стоял голый `click()`, и Playwright девяносто секунд стучался
+    в `disabled`-кнопку, после чего отдавал свой стек: «Timeout 90000ms
+    exceeded … element is not enabled». В стеке не было главного — что
+    калькулятор ПРОСТО НЕ ОПОЗНАЛ участок, и кнопка не оживёт никогда.
+
+    Кнопка ищется по нескольким признакам: `data-r` устойчивее подписи, а
+    подпись у неё в этом состоянии вообще «…». Правило то же, что и с полем
+    номеров: селектор на чужой странице живёт парой с диагностикой.
+    """
+    button = page.locator('[data-r="map-proceed-button"]').first
+    try:
+        button.wait_for(state="attached", timeout=5000)
+    except Exception:
+        button = page.get_by_role("button", name="Перейти к расчётам").first
+    deadline = time.monotonic() + _GLAVAPU_PARCEL_WAIT_MS / 1000.0
+    while True:
+        try:
+            if button.is_enabled(timeout=1000):
+                button.click(timeout=10_000)
+                return
+        except Exception:
+            pass
+        if time.monotonic() > deadline:
+            break
+        page.wait_for_timeout(_GLAVAPU_HEADLESS_POLL_MS)
+    try:
+        snapshot = page.evaluate(_GLAVAPU_SNAPSHOT_JS) or {}
+    except Exception:
+        snapshot = {}
+    raise GlavapuParcelNotAccepted(
+        _glavapu_parcel_message(numbers, snapshot), snapshot)
+
+
+def _glavapu_parcel_message(numbers: list[str], snapshot: dict[str, Any]) -> str:
+    """Отказ шага участка — словами, а не стеком Playwright."""
+    limit = _GLAVAPU_PARCEL_WAIT_MS // 1000
+    listed = ", ".join(numbers[:3]) + ("…" if len(numbers) > 3 else "")
+    proceed = snapshot.get("proceed")
+    if proceed is None:
+        return (f"кнопки «Перейти к расчётам» на странице нет за {limit} с; "
+                f"участки: {listed}")
+    said = "; ".join(str(x) for x in (snapshot.get("errors") or []))[:200]
+    dialog = str(snapshot.get("dialog") or "")[:240]
+    return (f"калькулятор не принял участок за {limit} с: кнопка «Перейти к расчётам» "
+            f"осталась недоступной (подпись «{proceed.get('label') or '—'}»). "
+            f"Участки: {listed}. "
+            + (f"Страница говорит: {said}. " if said else "")
+            + (f"Диалог: {dialog}" if dialog else "Диалог участка ничего не сообщил"))
 
 
 def _glavapu_drive_page(page: Any, numbers: list[str], area_ha: float,
@@ -9429,7 +9544,7 @@ def _glavapu_drive_page(page: Any, numbers: list[str], area_ha: float,
     fill_numbers(", ".join(numbers))
     page.get_by_role("button", name="Отправить").click()
     dismiss_tour()
-    page.get_by_role("button", name="Перейти к расчётам").click()
+    _glavapu_proceed(page, numbers)
     mark("parcel")
     deadline = time.monotonic() + _GLAVAPU_HEADLESS_TIMEOUT_MS / 1000.0
     while True:
@@ -9494,6 +9609,15 @@ def _glavapu_browser_worker() -> None:
                         page.route("**/*", _glavapu_block_junk)
                     holder["rows"] = _glavapu_drive_page(page, numbers, area_ha, timings)
                 except Exception as exc:
+                    # Снимок страницы прикладывается к ЛЮБОМУ отказу, а не
+                    # только к тем, что мы предвидели: `snapshot: {}` у пробы
+                    # означает «смотреть не на что», и именно так выглядел
+                    # стек Playwright на недоступной кнопке.
+                    if getattr(exc, "snapshot", None) is None and page is not None:
+                        try:
+                            exc.snapshot = page.evaluate(_GLAVAPU_SNAPSHOT_JS) or {}
+                        except Exception:
+                            pass
                     holder["error"] = exc
                     # Упавший прогон мог оставить страницу в неизвестном
                     # состоянии, а тихо считать на ней дальше — это чужой ТЭП
@@ -9758,10 +9882,13 @@ def _glavapu_headless_state() -> dict[str, Any]:
                  "Браузер живёт только на ядре.")}
     blocked = max(0, int(_GLAVAPU_HEADLESS_BLOCKED_UNTIL["at"] - time.monotonic()))
     if blocked:
+        row = int(_GLAVAPU_HEADLESS_BLOCKED_UNTIL.get("row") or 0)
         return {"state": "предохранитель", "where": where, "blocked_for": blocked,
+                "failures_in_row": row,
                 "last_error": str(_GLAVAPU_HEADLESS.get("last_error") or ""),
-                "hint": "Браузер сорвался; следующая попытка через "
-                        f"{blocked} с. Причина — в last_error."}
+                "hint": (f"Отказов подряд: {row}; следующая попытка через {blocked} с. "
+                         "Пауза растёт, пока отказы идут подряд, и сбрасывается первым "
+                         "удавшимся расчётом. Причина — в last_error.")}
     # «Готов» — это про браузер, а не про расчёт. На живом ответе ядра
     # (01.09.2026) стояло «готов» при `last_ok: ""` и четырёх откатах на
     # формулы: браузер поднимался исправно, а расчёт не удавался НИ РАЗУ, и
@@ -9848,12 +9975,14 @@ def glavapu_probe(cad: str = "", area: float = 1.0) -> dict[str, Any]:
     started = time.monotonic()
     try:
         rows = _glavapu_headless_rows(numbers, float(area or 1.0))
-    except GlavapuTableNotReady as exc:
+    except (GlavapuTableNotReady, GlavapuParcelNotAccepted) as exc:
         return {"ok": False, "seconds": round(time.monotonic() - started, 1),
                 "error": str(exc), "snapshot": exc.snapshot}
     except Exception as exc:  # noqa: BLE001
+        # Снимок берётся и у чужого отказа: его прикладывает поток браузера.
         return {"ok": False, "seconds": round(time.monotonic() - started, 1),
-                "error": f"{type(exc).__name__}: {exc}", "snapshot": {}}
+                "error": f"{type(exc).__name__}: {exc}",
+                "snapshot": getattr(exc, "snapshot", None) or {}}
     codes = sorted({str(r.get("code") or "") for r in rows} - {""})
     return {"ok": True, "seconds": round(time.monotonic() - started, 1),
             "row_count": len(rows), "codes": codes[:40], "sample": rows[:6]}
@@ -9972,6 +10101,9 @@ def cadastral_tep_server(req: CadastralAnalysisRequest) -> dict[str, Any]:
             _GLAVAPU_HEADLESS["last_ok"] = datetime.now().isoformat(timespec="seconds")
             _GLAVAPU_HEADLESS["last_error"] = ""
             _GLAVAPU_HEADLESS_BLOCKED_UNTIL["at"] = 0.0
+            # Удавшийся расчёт сбрасывает и лестницу: связка ожила, и следующий
+            # одиночный срыв снова стоит пять минут, а не полчаса.
+            _GLAVAPU_HEADLESS_BLOCKED_UNTIL["row"] = 0
             _glavapu_health_save()
             imported.setdefault("source", {}).update({
                 "format": "Штатный калькулятор ГлавАПУ — серверный запуск",
