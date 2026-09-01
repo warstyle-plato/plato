@@ -9363,40 +9363,6 @@ _GLAVAPU_SNAPSHOT_JS = """() => {
 }"""
 
 
-class GlavapuParcelNotAccepted(TimeoutError):
-    """Калькулятор не принял участок: кнопка перехода к расчётам не ожила.
-
-    Живой ответ ядра (01.09.2026): кнопка `map-proceed-button` есть, но стоит
-    `disabled` с подписью «…», и Playwright девяносто секунд стучится в неё,
-    после чего отдаёт свой стек. Читать в нём нечего: это не поломка клика, а
-    ответ калькулятора — он не собрал территорию по этим номерам. Ждать в таком
-    состоянии бессмысленно: кнопка не оживёт, пока участок не опознан.
-    """
-
-    def __init__(self, message: str, snapshot: dict[str, Any] | None = None) -> None:
-        super().__init__(message)
-        self.snapshot = snapshot or {}
-
-
-class GlavapuTableNotReady(TimeoutError):
-    """Таблица не признана готовой. Снимок страницы приложен к отказу."""
-
-    def __init__(self, message: str, snapshot: dict[str, Any] | None = None) -> None:
-        super().__init__(message)
-        self.snapshot = snapshot or {}
-
-
-def _glavapu_block_junk(route: Any) -> None:
-    """Отсекает то, что к расчёту отношения не имеет."""
-    request = route.request
-    junk = (request.resource_type in _GLAVAPU_BLOCKED_TYPES
-            or any(host in request.url for host in _GLAVAPU_BLOCKED_HOSTS))
-    try:
-        route.abort() if junk else route.continue_()
-    except Exception:  # страница уже ушла — нечего продолжать
-        pass
-
-
 # Строки, без которых таблица бесполезна. Проверяются по ИМЕНИ, а не по номеру:
 # разбор и так читает таблицу по именам, а номера чужой таблицы источник
 # перенумеровал молча — кода 60 у ГлавАПУ больше нет, таблица кончается на 58
