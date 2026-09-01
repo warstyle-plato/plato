@@ -70,7 +70,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.21.43"
+VERSION = "0.21.45"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -12820,6 +12820,41 @@ def _pdf_pf_step_rows(financing: dict[str, Any]) -> list[list[str]]:
     return rows
 
 
+# Легенда графика покрытия эскроу объявлена один раз. Её читают страница и PDF,
+# и разошедшиеся подписи одних и тех же линий — это две версии правды об одном
+# графике: копии уже разошлись, одна называла накопленное накопленным, вторая
+# нет. Стиль здесь назван, а не нарисован: у страницы это CSS, у PDF — штрих.
+_ESCROW_CHART_LEGEND: tuple[tuple[str, str, str], ...] = (
+    ("Эскроу накоплено", "#2D6A4F", "area"),
+    ("Обязательство: тело + начисленные проценты и комиссии", "#A35D00", "line"),
+    ("Тело ПФ", "#A35D00", "dash4"),
+    ("Чем эскроу не перекрыт", "#A35D00", "band"),
+    ("Раскрыто с эскроу, накопленно", "#1B5E77", "dash6"),
+    ("Продано после ввода, накопленно", "#1B5E77", "thin"),
+)
+ESCROW_CHART_LEGEND_PLACEHOLDER = "__DEVELOPAID_ESCROW_LEGEND__"
+
+
+def _escrow_chart_legend_html() -> str:
+    """Та же легенда разметкой страницы."""
+    spans = []
+    for text, colour, style in _ESCROW_CHART_LEGEND:
+        if style == "dash4":
+            fill = f"repeating-linear-gradient(90deg,{colour} 0 4px,transparent 4px 7px)"
+        elif style == "dash6":
+            fill = f"repeating-linear-gradient(90deg,{colour} 0 6px,transparent 6px 10px)"
+        elif style == "area":
+            fill = f"{colour};opacity:.45;height:9px"
+        elif style == "band":
+            fill = f"{colour};opacity:.25;height:9px"
+        elif style == "thin":
+            fill = f"{colour};opacity:.55;height:2px"
+        else:
+            fill = colour
+        spans.append(f'<span><i style="background:{fill}"></i>{html.escape(text)}</span>')
+    return '<div class="legend">' + "".join(spans) + "</div>"
+
+
 def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
@@ -13792,15 +13827,40 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         data = [row for row in rows if duty(row) > 0 or escrow_of(row) > 0]
         if len(data) < 2:
             return None
+        def cum_of(row: dict[str, Any], key: str) -> float:
+            return float(row.get(key, 0.0) or 0.0)
+
         width = 500
-        left, right, bottom, top_pad = 42, 8, 22, 20
+        from reportlab.pdfbase.pdfmetrics import stringWidth
+        # Легенда шире одной строки: подписей шесть, а ширина листа не растёт.
+        # Раскладка считается до геометрии — иначе верхнее поле не знает,
+        # сколько строк над ним.
+        legend_rows, line_x = 1, 0.0
+        for text, _colour, _style in _ESCROW_CHART_LEGEND:
+            step = 22 + stringWidth(text, regular, 6.4)
+            if line_x and line_x + step > width - 42:
+                legend_rows += 1
+                line_x = 0.0
+            line_x += step
+        left, right, bottom = 42, 30, 22
+        # Легенда переносом не отнимает у графика поле, а поднимает крышу:
+        # подписей стало шесть, и съеденная ими треть высоты — это сплющенный
+        # долг, ровно то, от чего уходили. Подписи осей идут под легендой:
+        # на одной строке с ней они наезжали друг на друга.
+        height = height + 10 * (legend_rows - 1)
+        top_pad = 12 + 10 * legend_rows
         plot_w, plot_h = width - left - right, height - bottom - top_pad
-        peak = max(max(duty(row), escrow_of(row),
-                       float(row.get("escrow_and_sales_cumulative", 0.0) or 0.0))
-                   for row in data) * 1.08 or 1.0
+        peak = max(max(duty(row), escrow_of(row)) for row in data) * 1.08 or 1.0
+        # Долг — «сколько должны сейчас», накопленное — «сколько пришло с
+        # начала»: на одной шкале второе перерастает первое и сплющивает его
+        # в нижнюю треть. У накопленного своя ось справа.
+        cum_peak = max(max(cum_of(row, "escrow_released_cumulative"),
+                           cum_of(row, "sales_after_rve_cumulative"))
+                       for row in data) * 1.08 or 1.0
         drawing = Drawing(width, height)
         x_at = lambda i: left + plot_w * i / (len(data) - 1)
         y_at = lambda v: bottom + plot_h * max(0.0, v) / peak
+        y_cum = lambda v: bottom + plot_h * max(0.0, v) / cum_peak
 
         for tick in range(5):
             value = peak * tick / 4
@@ -13849,9 +13909,31 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         polyline(duty, "#A35D00", 1.8)
         polyline(lambda row: float(row.get("pf_balance", 0.0) or 0.0), "#A35D00", 0.8, [2, 2])
         polyline(escrow_of, "#2D6A4F", 1.4)
-        if any(float(row.get("escrow_and_sales_cumulative", 0.0) or 0.0) > 0 for row in data):
-            polyline(lambda row: float(row.get("escrow_and_sales_cumulative", 0.0) or 0.0),
-                     "#1B5E77", 1.1, [3, 2])
+        # Раскрытие эскроу и продажи после ввода — разные события, и одной
+        # линией они врут: ступенька читалась как «после ввода продали на
+        # столько», хотя продаж в этот месяц нет — это деньги предыдущих лет,
+        # снятые со счетов разом.
+        def cum_polyline(key: str, w: float, dash=None, opacity: float = 1.0) -> None:
+            if not any(cum_of(row, key) > 0 for row in data):
+                return
+            points = [(x_at(i), y_cum(cum_of(row, key))) for i, row in enumerate(data)]
+            line = PolyLine([c for point in points for c in point],
+                            strokeColor=colors.HexColor("#1B5E77"), strokeWidth=w,
+                            fillColor=None)
+            if dash:
+                line.strokeDashArray = dash
+            if opacity < 1.0:
+                line.strokeOpacity = opacity
+            drawing.add(line)
+
+        cum_polyline("escrow_released_cumulative", 1.4, [4, 3])
+        cum_polyline("sales_after_rve_cumulative", 1.0, None, 0.55)
+        for tick in range(5):
+            value = cum_peak * tick / 4
+            drawing.add(String(width - right + 4, y_cum(value) - 2,
+                               _pdf_num(value / 1_000_000_000, 1), fontName=regular,
+                               fontSize=6.5, textAnchor="start",
+                               fillColor=colors.HexColor("#1B5E77")))
 
         rve = str(cover.get("rve") or "")[:7]
         for index, row in enumerate(data):
@@ -13876,20 +13958,39 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
                                fontSize=6.4, textAnchor="end",
                                fillColor=colors.HexColor("#A35D00")))
 
-        legend = [("Эскроу накоплено", "#2D6A4F"),
-                  ("Обязательство: тело + начисленное", "#A35D00"),
-                  ("Раскрытый эскроу и продажи после него", "#1B5E77")]
-        from reportlab.pdfbase.pdfmetrics import stringWidth
-        x = left
-        for text, colour in legend:
-            drawing.add(Line(x, height - 7, x + 12, height - 7,
-                             strokeColor=colors.HexColor(colour), strokeWidth=2.0))
-            drawing.add(String(x + 16, height - 10, text, fontName=regular, fontSize=6.4,
+        x, y_legend = left, height - 7
+        for text, colour, style in _ESCROW_CHART_LEGEND:
+            step = 22 + stringWidth(text, regular, 6.4)
+            if x > left and x + step > width - 42:
+                x, y_legend = left, y_legend - 10
+            if style in ("area", "band"):
+                mark = Rect(x, y_legend - 3, 12, 6,
+                            fillColor=colors.HexColor(colour),
+                            fillOpacity=0.45 if style == "area" else 0.25,
+                            strokeColor=None)
+            else:
+                mark = Line(x, y_legend, x + 12, y_legend,
+                            strokeColor=colors.HexColor(colour),
+                            strokeWidth=1.0 if style == "thin" else 2.0)
+                if style == "dash4":
+                    mark.strokeDashArray = [3, 2]
+                elif style == "dash6":
+                    mark.strokeDashArray = [4, 3]
+                if style == "thin":
+                    mark.strokeOpacity = 0.55
+            drawing.add(mark)
+            drawing.add(String(x + 16, y_legend - 3, text, fontName=regular, fontSize=6.4,
                                fillColor=colors.HexColor("#444444")))
-            x += 22 + stringWidth(text, regular, 6.4)
-        drawing.add(String(width - right, height - 10, "млрд ₽", fontName=regular,
-                           fontSize=6.4, textAnchor="end",
+            x += step
+        # Две оси — две подписи: без них правая колонка чисел читается как
+        # продолжение левой.
+        axis_y = bottom + plot_h + 3
+        drawing.add(String(left, axis_y, "долг и эскроу, млрд ₽", fontName=regular,
+                           fontSize=6.4, textAnchor="start",
                            fillColor=colors.HexColor("#777777")))
+        drawing.add(String(width - 2, axis_y, "накопленно", fontName=regular,
+                           fontSize=6.4, textAnchor="end",
+                           fillColor=colors.HexColor("#1B5E77")))
         for index in sorted(set([0, len(data) // 2, len(data) - 1])):
             drawing.add(String(x_at(index), 5, chart_month(data[index].get("month")),
                                fontName=regular, fontSize=6.4, textAnchor="middle",
@@ -20740,6 +20841,12 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
         bridge_balance = 0.0
         sales_after_rve = 0.0
         escrow_and_sales = 0.0
+        # Раскрытие эскроу и продажи после ввода — РАЗНЫЕ события, и складывать
+        # их в один накопленный ряд значит показать разблокировку заработанного
+        # как выручку месяца. Ступенька в 70 млрд читалась как «после ввода
+        # продали на 70» (владелец, 01.09.2026), хотя продаж в этот месяц ноль:
+        # это деньги предыдущих двух лет, снятые с эскроу-счетов разом.
+        escrow_released_cum = 0.0
         bridge_interest_payable = 0.0
         pf_balance = 0.0
         pf_interest_payable = 0.0
@@ -21057,6 +21164,7 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
             # (владелец, 01.09.2026). Так она и продолжает кривую счёта: там,
             # где эскроу кончился, начинается она.
             escrow_and_sales += escrow_release + sales_after_rve_month
+            escrow_released_cum += escrow_release
             rows.append({
                 "month": month.isoformat(),
                 "sales": sales,
@@ -21065,6 +21173,7 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
                 # как обрыв расчёта, а не как непогашенный долг.
                 "sales_after_rve": sales_after_rve_month,
                 "sales_after_rve_cumulative": sales_after_rve,
+                "escrow_released_cumulative": escrow_released_cum,
                 "escrow_and_sales_cumulative": escrow_and_sales,
                 "project_costs": project_costs,
                 "key_rate": key_rate,
@@ -22944,7 +23053,8 @@ def _aggregate_finance(results: list[dict[str, Any]]) -> dict[str, Any]:
     # два накопленных итога нельзя: горизонты очередей разной длины, и в
     # месяце, где строки одной кончились, сумма падает — линия «погашено
     # банку» уезжала с 41,8 до 19,7 млрд на ровном месте.
-    running = {"escrow_and_sales_cumulative": 0.0, "sales_after_rve_cumulative": 0.0}
+    running = {"escrow_and_sales_cumulative": 0.0, "sales_after_rve_cumulative": 0.0,
+               "escrow_released_cumulative": 0.0}
     rows: list[dict[str, Any]] = []
     for month in sorted(month_map):
         agg = month_map[month]
@@ -22970,6 +23080,7 @@ def _aggregate_finance(results: list[dict[str, Any]]) -> dict[str, Any]:
         out["pf_obligation"] = out["pf_balance"] + out["pf_payable"]
         running["escrow_and_sales_cumulative"] += out["escrow_release"] + out["sales_after_rve"]
         running["sales_after_rve_cumulative"] += out["sales_after_rve"]
+        running["escrow_released_cumulative"] += out["escrow_release"]
         out.update(running)
         rows.append(out)
 
@@ -31471,7 +31582,7 @@ details.cadastral-box>summary::marker{color:#888}
       <div class="card">
         <div class="section-title">Эскроу против обязательств по ПФ</div>
         <div id="financeChart" class="chart"></div>
-        <div class="legend"><span><i style="background:#2D6A4F;opacity:.45;height:9px"></i>Эскроу накоплено</span><span><i style="background:#A35D00"></i>Обязательство: тело + начисленные проценты и комиссии</span><span><i style="background:repeating-linear-gradient(90deg,#A35D00 0 4px,transparent 4px 7px)"></i>Тело ПФ</span><span><i style="background:repeating-linear-gradient(90deg,#1B5E77 0 6px,transparent 6px 10px)"></i>Раскрытый эскроу и продажи после него, накопленным итогом</span><span><i style="background:#A35D00;opacity:.25;height:9px"></i>Чем эскроу не перекрыт</span></div>
+        __DEVELOPAID_ESCROW_LEGEND__
         <div id="escrowCoverNote" class="note"></div>
       </div>
 
@@ -31694,7 +31805,7 @@ details.cadastral-box>summary::marker{color:#888}
       <div class="card">
         <div class="section-title">Эскроу против обязательств по ПФ</div>
         <div id="reportEscrowChart" class="chart"></div>
-        <div class="legend"><span><i style="background:#2D6A4F;opacity:.45;height:9px"></i>Эскроу накоплено</span><span><i style="background:#A35D00"></i>Обязательство: тело + начисленные</span><span><i style="background:repeating-linear-gradient(90deg,#A35D00 0 4px,transparent 4px 7px)"></i>Тело ПФ</span><span><i style="background:repeating-linear-gradient(90deg,#1B5E77 0 6px,transparent 6px 10px)"></i>Раскрытый эскроу и продажи после него</span></div>
+        __DEVELOPAID_ESCROW_LEGEND__
         <div id="reportEscrowNote" class="note"></div>
       </div>
 
@@ -37996,10 +38107,17 @@ function escrowCoverSvg(rows,cover){
  const duty=x=>Number(x.pf_obligation!==undefined?x.pf_obligation:(Number(x.pf_balance||0)+Number(x.pf_payable||0)));
  const data=(rows||[]).filter(x=>duty(x)>0||Number(x.escrow||0)>0);
  if(data.length<2)return '';
- const W=900,H=250,pL=58,pR=14,pT=18,pB=26,plotW=W-pL-pR,plotH=H-pT-pB;
- const top=Math.max(...data.map(x=>Math.max(duty(x),Number(x.escrow||0),Number(x.escrow_and_sales_cumulative||0))),1)*1.08;
+ const W=900,H=250,pL=58,pR=58,pT=18,pB=26,plotW=W-pL-pR,plotH=H-pT-pB;
+ // Долг — это «сколько должны сейчас», накопленное — «сколько пришло с
+ // начала». Разные величины, и на одной шкале накопленное всегда перерастает
+ // долг: к концу оно равно почти всей выручке, а долг нулю. Долг сплющивался
+ // в нижнюю треть графика. Поэтому у накопленного своя ось справа.
+ const top=Math.max(...data.map(x=>Math.max(duty(x),Number(x.escrow||0))),1)*1.08;
+ const cumTop=Math.max(...data.map(x=>Math.max(Number(x.escrow_released_cumulative||0),
+  Number(x.sales_after_rve_cumulative||0))),1)*1.08;
  const X=i=>pL+plotW*i/(data.length-1);
  const Y=v=>pT+plotH-plotH*Math.max(0,v)/top;
+ const Yc=v=>pT+plotH-plotH*Math.max(0,v)/cumTop;
  const pt=(i,v)=>`${X(i).toFixed(1)},${Y(v).toFixed(1)}`;
  const path=f=>data.map((x,i)=>pt(i,f(x))).join(' ');
  // Заливка, а не линия: вопрос у графика один — перекрывает эскроу
@@ -38035,8 +38153,20 @@ function escrowCoverSvg(rows,cover){
  // чем гасят дальше. Прежде здесь шли «продажи после раскрытия» от нуля —
  // рядом с эскроу в десятки миллиардов такая линия не значила ничего
  // (владелец, 01.09.2026). Вопрос у графика один: чем и когда закрыт долг.
- const repaid=data.some(x=>Number(x.escrow_and_sales_cumulative||0)>0)
-  ?`<polyline points="${path(x=>Number(x.escrow_and_sales_cumulative||0))}" fill="none" stroke="#1B5E77" stroke-width="1.8" stroke-dasharray="6 4"/>`:'';
+ // Раскрытие эскроу и продажи после ввода — разные события, и одной линией
+ // они врут. Ступенька в 70 млрд читалась как «после ввода продали на 70»
+ // (владелец, 01.09.2026), хотя продаж в этот месяц ноль: это деньги
+ // предыдущих двух лет, снятые с эскроу разом. Теперь их две.
+ const cumPath=f=>data.map((x,i)=>`${X(i).toFixed(1)},${Yc(f(x)).toFixed(1)}`).join(' ');
+ const released=data.some(x=>Number(x.escrow_released_cumulative||0)>0)
+  ?`<polyline points="${cumPath(x=>Number(x.escrow_released_cumulative||0))}" fill="none" stroke="#1B5E77" stroke-width="1.8" stroke-dasharray="6 4"/>`:'';
+ const afterSales=data.some(x=>Number(x.sales_after_rve_cumulative||0)>0)
+  ?`<polyline points="${cumPath(x=>Number(x.sales_after_rve_cumulative||0))}" fill="none" stroke="#1B5E77" stroke-width="1.4" opacity="0.55"/>`:'';
+ const repaid=released+afterSales;
+ // Правая ось — подписи накопленного, чтобы шкалы не путались.
+ let cumGrid='';
+ for(let t=0;t<=4;t++){const v=cumTop*t/4,y=Yc(v);
+  cumGrid+=`<text x="${W-pR+6}" y="${(y+4).toFixed(1)}" font-size="11" fill="#1B5E77" text-anchor="start">${(v/1e9).toLocaleString('ru-RU',{maximumFractionDigits:1})}</text>`}
  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">${grid}
   <polygon points="${area(x=>Number(x.escrow||0))}" fill="#2D6A4F" fill-opacity="0.30"/>
   ${gaps}
@@ -38044,7 +38174,9 @@ function escrowCoverSvg(rows,cover){
   <polyline points="${path(x=>Number(x.pf_balance||0))}" fill="none" stroke="#A35D00" stroke-width="1" stroke-dasharray="4 3" opacity="0.85"/>
   <polyline points="${path(x=>Number(x.escrow||0))}" fill="none" stroke="#2D6A4F" stroke-width="2"/>
   ${repaid}${rveMark}${endMark}
-  <text x="${W-pR}" y="${pT-4}" font-size="11" fill="#777" text-anchor="end">млрд ₽</text>
+  ${cumGrid}
+  <text x="${pL}" y="${pT-4}" font-size="11" fill="#777" text-anchor="start">долг и эскроу, млрд ₽</text>
+  <text x="${W-2}" y="${pT-4}" font-size="11" fill="#1B5E77" text-anchor="end">накопленно</text>
   ${marks}</svg>`;
 }
 function escrowCoverLines(cover){
@@ -39494,6 +39626,8 @@ PAGE = PAGE.replace(VRI_USE_TYPES_PLACEHOLDER, json.dumps(VRI_USE_TYPES, ensure_
 PAGE = PAGE.replace(FEEDBACK_FORM_PLACEHOLDER, json.dumps(
     {"groups": FEEDBACK_GROUPS, "roles": FEEDBACK_ROLES, "regions": FEEDBACK_REGIONS},
     ensure_ascii=False))
+# Легенда графика эскроу — из движка: PDF рисует те же линии теми же словами.
+PAGE = PAGE.replace(ESCROW_CHART_LEGEND_PLACEHOLDER, _escrow_chart_legend_html())
 PAGE = PAGE.replace(SOCIAL_MODES_PLACEHOLDER,
                     json.dumps([item[0] for item in _M2_EXTRA_OPTIONS["social_mode"]],
                                ensure_ascii=False))

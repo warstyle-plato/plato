@@ -52,7 +52,7 @@ h1{margin:0;font-size:24px}h2{margin:0;font-size:14px}.muted{color:var(--muted)}
 @media(max-width:1200px){.kpis{grid-template-columns:repeat(4,1fr)}.setup,.finance-grid,.forecast-grid{grid-template-columns:1fr}.g-axis,.g-row{grid-template-columns:250px 1fr 170px}.detail-grid{grid-template-columns:repeat(3,1fr)}}
 .crew-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-top:6px;font-size:12px}
 .fundblock{border-top:1px solid var(--line);padding-top:8px;margin-top:8px}
-.fundmore{margin-top:10px}.fundmore>summary{cursor:pointer;font-size:10px;color:var(--muted);padding:6px 0;list-style:none}.fundmore>summary::-webkit-details-marker{display:none}.fundmore>summary:before{content:"▸ ";}.fundmore[open]>summary:before{content:"▾ ";}
+.fundmore{margin-top:10px}.fundmore>summary{cursor:pointer;font-size:12px;font-weight:600;color:var(--text);padding:6px 0;list-style:none}.fundhead{font-size:12px;font-weight:600;margin-top:8px}.fundmore>summary::-webkit-details-marker{display:none}.fundmore>summary:before{content:"▸ ";}.fundmore[open]>summary:before{content:"▾ ";}
 table.unspent td{padding:7px 8px;border:1px solid var(--line);text-align:right}table.unspent td:first-child,table.unspent td:nth-child(2){text-align:left}table.unspent tfoot td{font-weight:700;background:#f7f9fb}
 .fundblock:first-child{border-top:0;margin-top:0}
 __DEVELOPAID_CONTOUR_STYLE__
@@ -140,26 +140,45 @@ function mln(v){const n=Number(v)||0;return Math.abs(n)>=1e9?(n/1e9).toLocaleStr
 // Здесь ничего не считается: сервер присылает готовое, экран показывает.
 // Второй счёт тех же величин однажды разошёлся бы с первым, и обе таблицы
 // выглядели бы верными.
-function unspentTable(u){
+function unspentTable(u,structural){
  if(!u) return '';
- const arts=u.articles||[],gu=u.retention||{};
- if(!arts.length&&!Number(gu.unmatched_total)&&!Number(gu.undated)&&!gu.reason) return '';
+ const src=u.sources||[],skip=u.excluded||[],needy=u.needy||[],gu=u.retention||{};
+ if(!src.length&&!skip.length&&!needy.length&&!gu.reason) return '';
  const num=v=>`<td style="text-align:right">${money(v)}</td>`;
- const body=arts.slice(0,25).map(a=>`<tr><td>${esc(a.code)}</td><td>${esc(a.name)}</td>`
-  +num(a.limit)+num(a.contracted)+num(a.free)+num(a.retention_deferred)
-  +`<td style="text-align:right"><b>${money(a.unspent)}</b></td></tr>`).join('');
- let html=`<details class="fundmore"><summary>Что не будет выбрано до ввода — ${money(u.total)}</summary>`;
- html+='<div class="muted" style="margin:6px 0">Свободное от договоров — точно: лимит минус заключено. Гарантийные удержания разложены по статьям через лицо подрядчика, и это <b>оценка</b>: ГУ, удержанные с генподрядчика, примерно равны сумме ГУ по его договорам с субподрядчиками. Дефицит эти деньги не уменьшают — банк не факт что даст их использовать.</div>';
- if(arts.length) html+='<div style="overflow-x:auto"><table class="unspent"><thead><tr><th>Код</th><th>Статья</th><th>Лимит</th><th>Заключено</th><th>Свободно</th><th>ГУ после ввода</th><th>Не будет выбрано</th></tr></thead><tbody>'
-  +body+`</tbody><tfoot><tr><td colspan="4">Итого</td><td style="text-align:right">${money(u.free_total)}</td><td style="text-align:right">${money(u.retention_deferred_total)}</td><td style="text-align:right"><b>${money(u.total)}</b></td></tr></tfoot></table></div>`;
+ // Раскрыто по умолчанию: «два важных раздела мелким шрифтом свёрнуты»
+ // (владелец, 01.09.2026). Свернуть можно, но начинается блок открытым.
+ let html=`<details class="fundmore" open><summary>Перераспределение лимитов внутри РСС — кому не хватает ${money(u.shortage_total)}, откуда просить ${money(u.total)}</summary>`;
+ // Две половины одного ответа рядом: нехватка по статьям — это тот же
+ // структурный дефицит, что назван выше, строка в строку; источники — статьи,
+ // где новых трат не будет.
+ if(needy.length){
+  html+='<div class="fundhead">Кому не хватает своего лимита</div>'
+   +'<div class="muted" style="margin:2px 0 6px">Потребность — по программе РСС после среза; нехватку сначала гасит резерв 2.8/2.9, что осталось — не покрыто. Итог колонки «Не покрыто» и есть структурный дефицит.</div>'
+   +'<div style="overflow-x:auto"><table class="unspent"><thead><tr><th>Код</th><th>Статья</th><th>Потребность</th><th>Свой остаток лимита</th><th>Из резерва</th><th>Не покрыто</th><th>С какого месяца</th></tr></thead><tbody>'
+   +needy.map(n=>`<tr><td>${esc(n.code)}</td><td>${esc(n.name)}</td>`+num(n.need)+num(n.own_limit)+num(n.from_reserve)
+     +`<td style="text-align:right"><b>${money(n.shortage)}</b></td><td>${n.from?dt(n.from):'—'}</td></tr>`).join('')
+   +`</tbody><tfoot><tr><td colspan="5">Итого не покрыто</td><td style="text-align:right"><b>${money(u.shortage_total)}</b></td><td></td></tr></tfoot></table></div>`;
+  if(structural!=null&&Math.abs(Number(structural)-Number(u.shortage_total||0))>1e6)
+   html+=`<div class="notice warn">Сумма по статьям ${money(u.shortage_total)} не сходится со структурным дефицитом ${money(structural)} — это ошибка счёта, а не особенность данных.</div>`;
+ }
+ html+='<div class="fundhead" style="margin-top:12px">Откуда просить: статьи, где новых трат не будет</div>'
+  +`<div class="muted" style="margin:2px 0 6px">Признак: ${esc(u.criterion||'')}. Свободное — точно: лимит минус заключено. Гарантийные удержания разложены по статьям главы 2 через лицо подрядчика, и это <b>оценка</b>: ГУ, удержанные с генподрядчика, примерно равны сумме ГУ по его договорам с субподрядчиками. Резерв 2.8/2.9 источником не считается — он не статья, он гасит нехватку других.</div>`;
+ if(src.length) html+='<div style="overflow-x:auto"><table class="unspent"><thead><tr><th>Код</th><th>Статья</th><th>Лимит</th><th>Заключено</th><th>Акты</th><th>Свободно</th><th>ГУ после ввода</th><th>Можно просить</th><th>Основание</th></tr></thead><tbody>'
+  +src.slice(0,25).map(a=>`<tr><td>${esc(a.code)}</td><td>${esc(a.name)}</td>`+num(a.limit)+num(a.contracted)
+    +`<td style="text-align:right">${a.acts_share==null?'—':pct(a.acts_share)}</td>`+num(a.free)+num(a.retention_deferred)
+    +`<td style="text-align:right"><b>${money(a.unspent)}</b></td><td class="muted">${esc(a.basis||'')}</td></tr>`).join('')
+  +`</tbody><tfoot><tr><td colspan="5">Итого</td><td style="text-align:right">${money(u.free_total)}</td><td style="text-align:right">${money(u.retention_deferred_total)}</td><td style="text-align:right"><b>${money(u.total)}</b></td><td></td></tr></tfoot></table></div>`;
+ else html+='<div class="notice">Статей, где новых трат уже не будет, нет: везде либо договор не заключён, либо работы ещё идут.</div>';
+ if(u.covers===true) html+=`<div class="notice" style="background:#eef7ee;color:#1f5a2b">Источников ${money(u.total)} хватает, чтобы закрыть нехватку ${money(u.shortage_total)} перераспределением — без нового финансирования.</div>`;
+ else if(u.covers===false) html+=`<div class="notice">Источников ${money(u.total)} на нехватку ${money(u.shortage_total)} не хватает: перераспределение закрывает часть, остальное — дофинансирование или увеличение лимитов.</div>`;
+ // Не попавшее в источники названо поимённо с причиной: молча снятая статья
+ // читается как её отсутствие, а свободный лимит у неё есть.
+ if(skip.length) html+=`<div class="muted" style="margin-top:8px">Свободный лимит есть, но источником не считаем (${money(u.excluded_free_total)}): `
+  +skip.slice(0,12).map(a=>`${esc(a.code)} ${money(a.free)} — ${esc(a.reason||'')}`).join('; ')+(skip.length>12?` … и ещё ${skip.length-12}`:'')+'.</div>';
  if(gu.reason) html+=`<div class="notice">Гарантийные удержания по статьям не разложены: ${esc(gu.reason)}.</div>`;
- // Не сшитое и неразделённое показывается поимённо: молча потерянная строка
- // читается как её отсутствие.
  (gu.unsplit||[]).forEach(item=>{html+=`<div class="notice">${esc(item.name)}: ${money(item.left)} — в РСС он стоит на нескольких статьях (${(item.codes||[]).map(esc).join(', ')}), долями не делим.</div>`});
  if(Number(gu.unmatched_total)>0) html+=`<div class="notice">Не нашлись среди подрядчиков РСС: ${money(gu.unmatched_total)} — ${(gu.unmatched||[]).map(i=>esc(i.name)).join(', ')}.</div>`;
  if(Number(gu.undated)>0) html+=`<div class="notice">Без даты выплаты: ${money(gu.undated)} — срок не назван, в перераспределение не идёт.</div>`;
- const needy=u.needy||[];
- if(needy.length) html+=`<div class="notice">Куда просить: своего лимита не хватает статьям ${needy.map(n=>`${esc(n.code)} (${money(n.shortage)})`).join(', ')}.</div>`;
  html+='</details>';
  return html;
 }
@@ -183,9 +202,7 @@ function fundingStructure(f,hasBook,approved,paid,remainingBudget){
  // «Повторно и суматошно слишком много индикаторов» (владелец, 30.08.2026).
  const modelNeed=hasBook?Number(remainingBudget)||0:null;
  const mainGap=modelNeed==null?null:Math.max(0,modelNeed-fuel);
- // Разница остатков дефицитом НЕ является: их два, и который потребность —
- // вопрос методики, а не расчёта. Названа отдельной строкой под раскрытием.
- const contourGap=modelNeed==null?null:modelNeed-need;
+ const check=f.bank_need_check||null;
  let html='<div class="fundblock">'
   +(modelNeed!=null
     ?row('Надо достроить по утверждённой модели',money2(modelNeed),'утверждённая модель минус оплачено')
@@ -194,11 +211,13 @@ function fundingStructure(f,hasBook,approved,paid,remainingBudget){
   +(mainGap!=null?row('ДЕФИЦИТ',money2(mainGap),
      structural>0&&from?`первый месяц нехватки — ${dt(from)}`:'',mainGap>0?'bad':'good'):'')
   +'</div>';
- html+='<details class="fundmore"><summary>Откуда эти числа</summary>';
+ // Раскрыто по умолчанию: свёрнутое мелким шрифтом читалось как неважное
+ // (владелец, 01.09.2026).
+ html+='<details class="fundmore" open><summary>Откуда эти числа</summary>';
  html+='<div class="fundblock"><div class="muted" style="margin-bottom:6px"><b>РСС</b> — утверждённый банком бюджет всей стройки по статьям; суммы ПФ в нём нет, она из НКЛ</div>'
   +row('Общая сметная стоимость глав 2–3',money2(f.bank_limit),'колонка РСС, а не лимит кредитной линии')
   +row('Оплачено по реестру',money2(f.paid_actual!=null?f.paid_actual:paid))
-  +row('Остаток лимитов на завершение',money2(f.bank_remaining),'это и есть то, что банк готов дать')
+  +row('Остаток лимитов на завершение',money2(f.bank_remaining),'по статьям глав 2–3: лимит минус оплачено; это и есть то, что банк готов дать')
   +row('Резерв 2.8/2.9',money2(f.reserve),f.reserve_exhaustion?`исчерпание ${dt(f.reserve_exhaustion)}`:'')
   +(Number(f.opening_article_deficit)>0?row('Статьи с исчерпанным лимитом на срез',money2(f.opening_article_deficit),'их не закрывает свободный лимит соседней статьи','bad'):'')
   +'</div>';
@@ -208,12 +227,29 @@ function fundingStructure(f,hasBook,approved,paid,remainingBudget){
      +row('Остаток потребности по утверждённому бюджету',money2(remainingBudget),'это потребность, а не деньги')
    :'<div class="notice">Нет финансовой книги — утверждённый бюджет сравнивать не с чем.</div>')
   +'</div>';
- html+='<div class="fundblock"><div class="muted" style="margin:10px 0 6px"><b>Дефицит по статьям и взгляд банка</b></div>'
+ // Структурный дефицит — счёт внутри РСС: и потребность (программа), и
+ // лимиты — его. Модель здесь не участвует, и это сказано словами: «от РСС
+ // или от утверждённой модели?» — законный вопрос, если не сказано.
+ html+='<div class="fundblock"><div class="muted" style="margin:10px 0 6px"><b>Структурный дефицит</b> — как посчитан</div>'
+  +'<div class="muted" style="margin-bottom:6px">Помесячно по программе РСС: потребность каждой статьи против остатка её же лимита. Нехватку гасит резерв 2.8/2.9, пока он есть; что осталось непокрытым — структурный дефицит. Считается целиком внутри РСС — и потребность, и лимиты из него; утверждённая модель здесь не участвует. Постатейно — в таблице ниже.</div>'
   +row('Структурный дефицит внутри лимитов',money2(structural),'статьи, которым не хватает своего лимита, — чужим свободным он не закрывается',structural>0?'bad':'good')
   +row('Первый месяц нехватки',from?dt(from):'—',structural>0&&!from?'срок не определён':'',structural>0?'bad':'')
-  +row('Справочно: «Средства на завершение» по РСС',money2(need),'взгляд банка на остаток, не потребность стройки')
-  +(contourGap!=null?row('Разница двух остатков потребности',money2(contourGap),'это не дефицит: какой из остатков считать потребностью, решает методика'):'')
   +'</div>';
+ // Колонка банка против нашего остатка — разница разложена, а не названа
+ // «не дефицитом» и оставлена читателю (владелец, 01.09.2026: «Почему там
+ // 1,66, если остаток лимитов и резервов 1,46??? Откуда ещё 200 млн?»).
+ if(check){
+  const ch=check.by_chapter||{};
+  html+='<div class="fundblock"><div class="muted" style="margin:10px 0 6px"><b>Сверка с колонкой банка</b> «Средства на завершение»</div>'
+   +row('«Средства на завершение» по РСС',money2(check.bank_column),'взгляд банка на остаток, не потребность стройки')
+   +row('Наш остаток лимитов + резерв',money2(check.ours),Object.keys(ch).map(k=>`глава ${esc(k)} ${money(ch[k])}`).concat([`резерв ${money(check.reserve)}`]).join(' · '))
+   +(Number(check.no_programme)>0?row('в т.ч. статьи без производственной программы',money2(check.no_programme),'потребности у них нет, лимит есть'):'')
+   +(Number(check.overpaid_clipped)>0?row('Статьи, где оплачено больше лимита',money2(check.overpaid_clipped),'у нас взяты нулём; банк, складывая со знаком, вычитает','bad'):'')
+   +(Math.abs(Number(check.residual))>1e6
+     ?row('Не сошлось с колонкой банка',money2(check.residual),'колонка банка считает иначе: оплаты у неё с листа РСС на дату книги, у нас — из реестра платежей на срез','bad')
+     :row('С колонкой банка сходится','✓','разница меньше миллиона','good'))
+   +'</div>';
+ }
  // Гарантийные удержания: в РСС они стоят полной стоимостью договора, а
  // платятся после погашения ПФ. Дефицит они не уменьшают — банк не факт что
  // даст их использовать (владелец, 30.08.2026), поэтому строка справочная.
@@ -236,7 +272,7 @@ function fundingStructure(f,hasBook,approved,paid,remainingBudget){
  }
  if(total<structural) html+='<div class="notice">Структурный дефицит больше общего: денег по сумме хватает, но лежат они на статьях, куда потребность не относится. Это и есть повод к перераспределению, а не к новому финансированию.</div>';
  html+='</details>';
- html+=unspentTable(f.unspent);
+ html+=unspentTable(f.unspent,structural);
  return html;
 }
 
@@ -283,7 +319,7 @@ function renderMoneyChart(f){const box=$('moneyChart');if(!box)return;const need
  let mark='';if(f.reserve_exhaustion){const em=String(f.reserve_exhaustion).slice(0,7);const i=months.findIndex(m=>m.slice(0,7)===em);if(i>=0){const x=padL+i*(bw+2)+bw/2;mark=`<line x1="${x}" y1="${padT}" x2="${x}" y2="${padT+plotH}" stroke="#a02418" stroke-dasharray="4 3" stroke-width="1.5"/><text x="${x+4}" y="${padT+10}" font-size="9" fill="#a02418">исчерпание ${dt(f.reserve_exhaustion)}</text>`}}
  const totC=months.reduce((s,m)=>s+Math.max(0,(Number(need[m])||0)-(Number(draw[m])||0)-(Number(un[m])||0)),0),totR=months.reduce((s,m)=>s+(Number(draw[m])||0),0),totU=months.reduce((s,m)=>s+(Number(un[m])||0),0);
  box.innerHTML=`<div class="mc-head"><span class="mc-title" data-hint="Каждый столбик — месяц будущей потребности по помесячной программе РСС. Синее закрывают остатки лимитов своих статей, янтарное — резерв 2.8/2.9, красное — деньги, которых нет. Пунктир — день исчерпания резерва." tabindex="0">Потребность по месяцам и чем она покрыта</span><span class="mc-legend"><span><i class="mc-sw" style="background:${C.cov}"></i>лимиты статей · ${mln(totC)}</span><span><i class="mc-sw" style="background:${C.res}"></i>резерв 2.8/2.9 · ${mln(totR)}</span><span><i class="mc-sw" style="background:${C.gap}"></i>непокрыто · ${mln(totU)}</span></span></div><svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block">${grid}${bars}${xl}${mark}</svg><div class="mc-note">Каждый столбик — месяц будущей потребности по помесячной программе РСС. Синее закрывают остатки лимитов своих статей, янтарное — резерв, красное — деньги, которых нет. Пунктир — день, когда резерв кончается. Наведите на столбик — числа месяца.</div>`}
-function renderArticleBatts(f){const box=$('articleBatts');if(!box)return;const rows=(f.articles||[]).filter(a=>Number(a.limit)>0||Number(a.need_total)>0);if(!rows.length||!f.known){box.innerHTML='';return}
+function renderArticleBatts(f){const box=$('articleBatts');if(!box)return;const rows=(f.articles||[]).filter(a=>Number(a.need_total)>0);if(!rows.length||!f.known){box.innerHTML='';return}
  const monthName=m=>{if(!m)return '';const d=new Date(m);return d.toLocaleDateString('ru-RU',{month:'short',year:'2-digit'})};
  rows.sort((a,b)=>{const am=a.first_reserve_month||'9999',bm=b.first_reserve_month||'9999';if(am!==bm)return am<bm?-1:1;return (a.opening_limit/Math.max(1,a.limit))-(b.opening_limit/Math.max(1,b.limit))});
  const html=rows.map(a=>{const limit=Math.max(0,Number(a.limit)||0),left=Math.max(0,Number(a.opening_limit)||0);const charge=limit>0?Math.max(0,Math.min(1,left/limit)):0;const dead=!!a.first_reserve_month;const col=dead?'#a02418':charge<0.35?'#bf8f00':'#2f66b3';const take=Math.max(0,Number(a.reserve_take)||0),gap=Math.max(0,Number(a.unfunded_take)||0),after=a.reserve_left_after_first;
