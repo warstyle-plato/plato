@@ -70,7 +70,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.21.38"
+VERSION = "0.21.39"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -9241,6 +9241,44 @@ _GLAVAPU_READ_ROWS_JS = """() => {
 }"""
 
 
+# Что на странице лежит на самом деле. Спрашивается ровно тогда, когда таблица
+# не признана готовой: «калькулятор не отдал таблицу (строк 79)» — сообщение,
+# которое ничего не объясняет, потому что таблица-то как раз пришла, и в ней
+# семьдесят девять строк. Не сошлись КОДЫ, а какие пришли — знала только чужая
+# страница. Правило прежнее: селектор на чужой странице живёт парой с
+# диагностикой, и в ошибку кладётся сама страница, а не её отсутствие.
+_GLAVAPU_SNAPSHOT_JS = """() => {
+  const tables = Array.from(document.querySelectorAll('table')).map(t => ({
+    label: t.getAttribute('aria-label') || '',
+    rows: t.querySelectorAll('tbody tr').length,
+  }));
+  const table = document.querySelector('table[aria-label="calc table"]');
+  const rows = table ? Array.from(table.querySelectorAll('tbody tr')).map(row =>
+    Array.from(row.children).map(c => String(c.textContent || '').replace(/\s+/g, ' ').trim())
+  ) : [];
+  return {
+    url: location.href,
+    tables: tables.slice(0, 12),
+    calc_table: !!table,
+    row_count: rows.length,
+    widths: Array.from(new Set(rows.map(r => r.length))).slice(0, 6),
+    sample: rows.slice(0, 6),
+    tail: rows.slice(-3),
+    buttons: Array.from(document.querySelectorAll('button'))
+      .map(b => String(b.textContent || '').replace(/\s+/g, ' ').trim())
+      .filter(Boolean).slice(0, 12),
+  };
+}"""
+
+
+class GlavapuTableNotReady(TimeoutError):
+    """Таблица не признана готовой. Снимок страницы приложен к отказу."""
+
+    def __init__(self, message: str, snapshot: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.snapshot = snapshot or {}
+
+
 def _glavapu_block_junk(route: Any) -> None:
     """Отсекает то, что к расчёту отношения не имеет."""
     request = route.request
@@ -9250,6 +9288,35 @@ def _glavapu_block_junk(route: Any) -> None:
         route.abort() if junk else route.continue_()
     except Exception:  # страница уже ушла — нечего продолжать
         pass
+
+
+def _glavapu_not_ready_message(rows: list[dict[str, Any]], seen: list[str],
+                               snapshot: dict[str, Any]) -> str:
+    """Отказ называет то, что увидел, а не то, чего не дождался.
+
+    Три состояния читаются одинаково и означают разное: таблицы нет вовсе;
+    таблица есть и пуста; таблица есть, полна, но столбец с кодом сменился —
+    тогда `code` пуст у всех строк, и готовность не наступит НИКОГДА, сколько
+    ни ждать. Последнее и выглядело как «калькулятор не отдал таблицу».
+    """
+    limit = _GLAVAPU_HEADLESS_TIMEOUT_MS // 1000
+    if not snapshot.get("calc_table", True):
+        labels = ", ".join(f"{t.get('label') or '—'}:{t.get('rows')}"
+                           for t in (snapshot.get("tables") or [])[:6])
+        return (f"таблицы calc table на странице нет за {limit} с; "
+                f"таблицы на странице: {labels or 'ни одной'}")
+    if not rows:
+        return f"таблица calc table пуста за {limit} с"
+    if not seen:
+        widths = ",".join(str(w) for w in (snapshot.get("widths") or []))
+        first = " | ".join((snapshot.get("sample") or [[]])[0][:4])
+        return (f"таблица есть ({len(rows)} строк), но НИ У ОДНОЙ строки нет кода "
+                f"в первой ячейке — столбец сменился. Ширины строк: {widths or '—'}. "
+                f"Первая строка: {first[:180]}")
+    missing = [code for code in ("60", "54") if code not in seen]
+    return (f"таблица есть ({len(rows)} строк), кодов {len(seen)}, "
+            f"нет кодов {', '.join(missing)}; прочитаны: {', '.join(seen[:14])}"
+            f"{'…' if len(seen) > 14 else ''}")
 
 
 def _glavapu_drive_page(page: Any, numbers: list[str], area_ha: float,
@@ -9372,9 +9439,13 @@ def _glavapu_drive_page(page: Any, numbers: list[str], area_ha: float,
             mark("table")
             return rows
         if time.monotonic() > deadline:
-            raise TimeoutError(
-                f"калькулятор не отдал таблицу за {_GLAVAPU_HEADLESS_TIMEOUT_MS // 1000} с "
-                f"(строк {len(rows)})")
+            try:
+                snapshot = page.evaluate(_GLAVAPU_SNAPSHOT_JS) or {}
+            except Exception:  # страница ушла — снимка не будет, но отказ будет
+                snapshot = {}
+            seen = sorted(code for code in codes if code)
+            raise GlavapuTableNotReady(
+                _glavapu_not_ready_message(rows, seen, snapshot), snapshot)
         page.wait_for_timeout(_GLAVAPU_HEADLESS_POLL_MS)
 
 
@@ -9691,7 +9762,31 @@ def _glavapu_headless_state() -> dict[str, Any]:
                 "last_error": str(_GLAVAPU_HEADLESS.get("last_error") or ""),
                 "hint": "Браузер сорвался; следующая попытка через "
                         f"{blocked} с. Причина — в last_error."}
+    # «Готов» — это про браузер, а не про расчёт. На живом ответе ядра
+    # (01.09.2026) стояло «готов» при `last_ok: ""` и четырёх откатах на
+    # формулы: браузер поднимался исправно, а расчёт не удавался НИ РАЗУ, и
+    # состояние это скрывало. Ответ на вопрос «работает ли связка» даёт
+    # удавшийся расчёт, а не готовность запустить Chromium.
     return {"state": "готов", "where": where}
+
+
+def _glavapu_state_with_history(state: dict[str, Any]) -> dict[str, Any]:
+    """Готовность браузера и удача расчёта — разные ответы, и путать их нельзя."""
+    if state.get("state") != "готов":
+        return state
+    runs = int(state.get("runs") or 0)
+    fallbacks = int(state.get("fallbacks") or 0)
+    if state.get("last_ok"):
+        return state
+    if runs or fallbacks:
+        state["state"] = "браузер готов, расчёт не удавался"
+        state["hint"] = (
+            "Chromium поднимается, но ни один расчёт не дошёл до таблицы "
+            f"(попыток {runs}, откатов на формулы {fallbacks}). Причина — в last_error; "
+            "снимок страницы покажет /glavapu/probe?cad=<кадастровый номер>.")
+    else:
+        state["state"] = "браузер готов, расчётов ещё не было"
+    return state
 
 
 def _glavapu_health_file() -> Path:
@@ -9733,6 +9828,37 @@ def _glavapu_health_load() -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
+@app.get("/glavapu/probe")
+def glavapu_probe(cad: str = "", area: float = 1.0) -> dict[str, Any]:
+    """Что калькулятор ГлавАПУ отдаёт прямо сейчас — снимком, а не догадкой.
+
+    Живой ответ с ядра: `state` бывает «готов», а `last_error` при этом говорит
+    «не отдал таблицу (строк 79)» — то есть таблица пришла, и в ней семьдесят
+    девять строк, а признана неготовой она по кодам. Какие коды пришли, знала
+    только чужая страница; из песочницы genplan.tech не спросить.
+
+    Проба гоняет ТОТ ЖЕ путь, что и расчёт, — второго пути наружу не заводим, —
+    и на отказе отдаёт приложенный к нему снимок: адрес, таблицы страницы, их
+    подписи и размеры, первые и последние строки, видимые кнопки.
+    """
+    numbers = [part.strip() for part in str(cad or "").split(",") if part.strip()]
+    if not numbers:
+        raise HTTPException(status_code=400,
+                            detail="Нужен кадастровый номер: /glavapu/probe?cad=77:01:0004023:1000")
+    started = time.monotonic()
+    try:
+        rows = _glavapu_headless_rows(numbers, float(area or 1.0))
+    except GlavapuTableNotReady as exc:
+        return {"ok": False, "seconds": round(time.monotonic() - started, 1),
+                "error": str(exc), "snapshot": exc.snapshot}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "seconds": round(time.monotonic() - started, 1),
+                "error": f"{type(exc).__name__}: {exc}", "snapshot": {}}
+    codes = sorted({str(r.get("code") or "") for r in rows} - {""})
+    return {"ok": True, "seconds": round(time.monotonic() - started, 1),
+            "row_count": len(rows), "codes": codes[:40], "sample": rows[:6]}
+
+
 @app.get("/glavapu/health")
 def glavapu_health() -> dict[str, Any]:
     """Состояние штатного калькулятора ГлавАПУ — для /status бота.
@@ -9765,7 +9891,7 @@ def glavapu_health() -> dict[str, Any]:
         if not state.get(key) and shared.get(key):
             state[key] = shared[key]
     state["worker"] = os.getpid()
-    return state
+    return _glavapu_state_with_history(state)
 
 
 def _cadastral_analysis_for(numbers: list[str],
