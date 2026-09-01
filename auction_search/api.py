@@ -723,6 +723,20 @@ def install(app: FastAPI) -> None:
             except Exception as exc:  # noqa: BLE001
                 logger.exception("KRT decisions failed")
                 found = {"decisions": [], "error": f"{type(exc).__name__}: {exc}"}
+            # Дата проекта решения у площадки, которая в каталоге ЕСТЬ: колонка
+            # стояла пустой, будто документа не существует, а он найден и
+            # сопоставлен. «С карточкой и без — это по сути решение принято или
+            # это ещё проект» (владелец, 01.09.2026): ответить на это можно
+            # только датой документа, а не наличием карточки.
+            by_slug = {str(one.get("slug") or ""): one
+                       for one in (found.get("matched_rows") or [])}
+            if by_slug:
+                projects = [
+                    {**row,
+                     "draft_decision_at": (by_slug.get(str(row.get("slug") or "")) or {}).get("published_at") or 0,
+                     "draft_decision_url": (by_slug.get(str(row.get("slug") or "")) or {}).get("url") or ""}
+                    for row in projects
+                ]
             for one in (found.get("decisions") or []):
                 decision_rows.append({
                     "slug": "decision:" + str(one.get("id") or ""),

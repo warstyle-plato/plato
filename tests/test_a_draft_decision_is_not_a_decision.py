@@ -34,8 +34,8 @@ def test_the_row_says_draft_and_not_decision():
 
 def test_the_page_names_the_document_not_its_absence():
     page = ui.auctions_page(None)
-    assert ">проект решения</span>" in page, \
-        "метка называет отсутствие карточки, а не сам документ"
+    assert ">только проект решения</span>" in page, \
+        "метка называет отсутствие карточки, а не стадию"
     assert "Проект решения о КРТ" in page
     assert "решения ещё нет" in page, \
         "стадия не оговорена: «есть решение» и «есть его проект» — разные ответы"
@@ -47,3 +47,32 @@ def test_the_platon_prompt_does_not_promise_a_decision():
     source = Path(auction_api.__file__).read_text(encoding="utf-8")
     assert "не найдено в опубликованном проекте решения" in source
     assert "не найдено в опубликованном решении" not in source
+
+
+def test_the_source_filter_speaks_stages_not_our_jargon():
+    """«Карточка» — наше слово, читателю оно ничего не говорит.
+
+    «Так с карточкой и без — это по сути решение принято или это ещё проект.
+    А так не ясно, что за карточка» (владелец, 01.09.2026). Отбор называет
+    источник, а подсказка говорит, чего из него НЕ следует: что решение не
+    принято, город нигде не публикует.
+    """
+    page = ui.auctions_page(None)
+    assert "Источник: любой" in page and "В каталоге города" in page
+    assert "Только проект решения" in page
+    assert "Карточка: любая" not in page, "жаргон остался в отборе"
+    assert "решение НЕ принято, отсюда не следует" in page, \
+        "отсутствие карточки читается как «решения нет» — так и будет прочитано"
+
+
+def test_a_catalogue_site_also_shows_its_draft_decision():
+    """Дата документа стояла только у площадок без карточки.
+
+    Сопоставленные решения давали лишь счёт, и у площадки каталога колонка
+    была пустой, будто документа не существует.
+    """
+    source = Path(auction_api.__file__).read_text(encoding="utf-8")
+    assert "matched_rows" in source, "сопоставленные решения до строк не доезжают"
+    assert "draft_decision_url" in source
+    page = ui.auctions_page(None)
+    assert "draft_decision_url" in page, "ссылка на документ на экран не выводится"

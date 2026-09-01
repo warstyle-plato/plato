@@ -570,6 +570,14 @@ class KrtRegistry:
         out["total"] = split["total"]
         out["matched"] = len(split["matched"])
         out["decisions"] = [one.to_dict() for one in split["unmatched"]]
+        # Сопоставленные — не только счёт: у площадки каталога появляется дата
+        # её проекта решения и ссылка на документ. Прежде дата была только у
+        # тех, у кого карточки нет, и колонка «Проект решения» у остальных
+        # стояла пустой, будто документа не существует.
+        out["matched_rows"] = [
+            {"slug": one.matched_slug, "published_at": one.published_at,
+             "url": one.url, "title": one.title}
+            for one in split["matched"] if one.matched_slug]
         return out
 
     def map_dataset(self, *, refresh: bool = False, step_m: float = 40.0) -> dict[str, Any]:
