@@ -15,6 +15,7 @@ from auction_search.adapters.roseltorg_public import RoseltorgAdapter
 from auction_search.adapters.sberbank_ast import SberbankASTAdapter
 from auction_search.adapters.nistp import NistpAdapter
 from auction_search.models import AuctionLot
+from auction_search.parsing import mentions_moscow
 
 
 _MOSCOW = ZoneInfo("Europe/Moscow")
@@ -171,8 +172,7 @@ class InvestMoscowDiscoveryAdapter(AuctionPlatformAdapter):
 
     @staticmethod
     def _confirmed_moscow(lot: AuctionLot) -> bool:
-        text = " ".join((lot.address or "", lot.title or "", str(lot.raw.get("region") or ""))).lower()
-        return "москва" in text or "г. москва" in text
+        return mentions_moscow(lot.address, lot.title, lot.raw.get("region"))
 
     @staticmethod
     def _has_current_deadline(deadline: str | None) -> bool:
