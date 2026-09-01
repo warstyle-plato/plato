@@ -2459,6 +2459,97 @@ function salesFunnelBlock(d){
 // осталось показывать. Прямого «почему не купил» в CRM нет: поля стадии и
 // причины в выгрузке не существует, а слово «отказ» в комментарии почти всегда
 // означает отказ дать контакты. Разрыв честнее заявленной причины.
+// Чат отдела продаж: воронка от встреч и о чём говорят покупатели. Свод
+// начинался с подписанного договора и дотягивался вверх до обращения CRM;
+// выше обращения не было ничего, а там слышно, чего человек хотел.
+//
+// Числа считает сервер (`salesroom.summarise`) — здесь только показ. Брони и
+// сделки на регистрации приходят СОСТОЯНИЕМ дня, поэтому в месяце стоит
+// среднее одновременно висящих, а не сумма: сумма означала бы «сколько раз
+// бронь упомянута в ежедневных отчётах».
+// Один рисовальщик на оба ряда чата: воронку и темы. Две копии линейного
+// графика разошлись бы на первой же правке, и разошлись бы молча.
+function roomTrend(labels, series, digits, suffix){
+  const W=640,H=230,L=48,R=126,T=14,B=32;
+  const vals=series.flatMap(s=>s.points.map(p=>p.v)).filter(v=>v!==null&&v!==undefined);
+  if(!vals.length) return '';
+  const hi=Math.max(...vals,0)*1.15||1;
+  const x=i=>L+i*(W-L-R)/Math.max(labels.length-1,1);
+  const y=v=>T+(H-T-B)*(1-v/hi);
+  let svg=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img">`;
+  [0,hi/2,hi].forEach(v=>{
+    svg+=`<line x1="${L}" y1="${y(v)}" x2="${W-R}" y2="${y(v)}" stroke="#eef2f6"/>`
+       +`<text x="${L-6}" y="${y(v)+4}" text-anchor="end" font-size="10" fill="#8798a8">${num(v,digits)}${suffix}</text>`;});
+  labels.forEach((label,i)=>{
+    svg+=`<text x="${x(i)}" y="${H-10}" text-anchor="middle" font-size="10" fill="#8798a8">${esc(label.slice(2))}</text>`;});
+  series.forEach(s=>{
+    const pts=s.points.filter(p=>p.v!==null&&p.v!==undefined);
+    if(pts.length<2) return;
+    svg+=`<path d="${pts.map((p,k)=>`${k?'L':'M'}${x(p.i).toFixed(1)} ${y(p.v).toFixed(1)}`).join(' ')}"`
+       +` fill="none" stroke="${s.colour}" stroke-width="2"/>`;
+    pts.forEach(p=>{svg+=`<circle cx="${x(p.i).toFixed(1)}" cy="${y(p.v).toFixed(1)}" r="2.6" fill="${s.colour}"`
+       +` data-tip="${esc(s.name+': '+num(p.v,digits)+suffix+' — '+labels[p.i])}"></circle>`;});
+    const last=pts[pts.length-1];
+    svg+=`<text x="${W-R+8}" y="${y(last.v)+4}" font-size="10.5" fill="${s.colour}">${esc(s.name)}</text>`;
+  });
+  return '<div class="wrap">'+svg+'</svg></div>';
+}
+
+const ROOM_COLOURS=['#1367AE','#2E7D5B','#C4581B','#6C4AB6','#8798a8'];
+
+function salesRoomBlock(d){
+  const room=d.salesroom||{};
+  const months=(room.months||[]).filter(m=>m.meetings_per_day!==null&&m.meetings_per_day!==undefined);
+  if(!months.length) return '';
+  const labels=months.map(m=>m.month);
+  let html=roomTrend(labels, [['meetings_per_day','встречи в день'],
+                              ['calls_per_day','целевые звонки'],
+                              ['bookings_at_once','броней разом']]
+    .map(([key,name],k)=>({name, colour:ROOM_COLOURS[k],
+      points:months.map((m,i)=>({i, v:m[key]}))})), 1, '');
+  // О чём говорят — долей сообщений месяца, а не абсолютным счётом: в месяцах
+  // разное число отчётов, и голая частота сравнивала бы длину переписки.
+  const topics=room.topics||[];
+  if(topics.length){
+    const drawn=topics.slice(0,4).filter(t=>(t.months||[]).length>1);
+    if(drawn.length){
+      html+='<h3 style="margin-top:14px">О чём говорят — по месяцам</h3>'
+        +roomTrend((drawn[0].months||[]).map(m=>m.month),
+          drawn.map((t,k)=>({name:t.topic, colour:ROOM_COLOURS[k],
+            points:(t.months||[]).map((m,i)=>({i, v:m.share*100}))})), 0, ' %');
+    }
+    html+='<div class="wrap"><table class="peers">'
+      +'<tr><th>Тема</th><th class="num">Сообщений</th><th class="num">Доля</th>'
+      +'<th class="num">Первые 3 мес.</th><th class="num">Последние 3 мес.</th>'
+      +'<th>Впервые</th><th>Последний раз</th></tr>'
+      +topics.map(t=>`<tr><td>${esc(t.topic)}</td><td class="num">${num(t.messages)}</td>`
+        +`<td class="num">${num(t.share*100,1)} %</td>`
+        +`<td class="num">${t.share_early===null||t.share_early===undefined?'—':num(t.share_early*100,1)+' %'}</td>`
+        +`<td class="num">${t.share_recent===null||t.share_recent===undefined?'—':num(t.share_recent*100,1)+' %'}</td>`
+        +`<td class="muted">${esc(t.first)}</td>`
+        +`<td class="muted">${esc(t.last)}</td></tr>`).join('')
+      +'</table></div>';
+  }
+  const rivals=room.rivals||[];
+  if(rivals.length){
+    html+='<div class="muted" style="font-size:12.5px;margin-top:8px">Сравнивают с: '
+      +rivals.map(r=>esc(r.rival)+' — '+num(r.messages)).join(', ')+'.</div>';
+  }
+  // Цена метра в бронях — против прайса и против книги. Каждый лот считается
+  // один раз: ежедневный отчёт повторяет бронь, пока она держится.
+  const bands=(room.bands||[]).filter(b=>b.price_per_sqm);
+  if(bands.length){
+    html+='<h3 style="margin-top:14px">Цена метра в бронях</h3><div class="wrap"><table class="peers">'
+      +'<tr><th>Полоса, м²</th><th class="num">Лотов</th><th class="num">₽/м², медиана</th></tr>'
+      +bands.map(b=>`<tr><td>${esc(b.band)}</td><td class="num">${num(b.lots)}</td>`
+        +`<td class="num">${num(b.price_per_sqm)}</td></tr>`).join('')
+      +'</table></div>';
+  }
+  (room.notes||[]).forEach(note=>{
+    html+=`<div class="muted" style="font-size:12.5px;margin-top:8px">${esc(note)}</div>`;});
+  return html;
+}
+
 function salesDemandBlock(d){
   const want=d.demand||{}, bands=(want.bands||[]).filter(b=>b.asked_share!==null&&b.asked_share!==undefined);
   if(!bands.length) return '';
@@ -2595,7 +2686,16 @@ function salesOwnVsBrokers(d){
 // есть вопрос (владелец, 26.08.2026).
 function salesChannelsBlock(d){
   if(!(d.by_channel||[]).length) return '';
+  // Не прочитанная колонка брокера и продажи без брокеров дают одну картинку —
+  // единственный канал «напрямую». Разница называется, а не додумывается.
+  const blindChannels = d.broker_column === false
+    ? `<div class="err" style="margin-bottom:10px">Канал продаж не прочитан:`
+      +` колонка с наименованием брокера в листе «Контрактация» не нашлась.`
+      +` Всё показано как «напрямую» потому, что читать брокеров было негде,`
+      +` а не потому, что их нет.</div>`
+    : '';
   let html=salesOwnVsBrokers(d);
+  html=blindChannels+html;
   html+='<details style="margin-top:8px"><summary>Список каналов числами</summary>'
     +salesTable(['Канал','Договоров','млн ₽','Комиссия, млн ₽','Премия ОП, млн ₽','Всего, % от продаж','Комиссия, % от наполнения'],
       d.by_channel.map(x=>[
@@ -2706,6 +2806,7 @@ const SALES_BLOCKS=[
   {id:'sb-mix',  name:'Квартирография'},
   {id:'sb-want', name:'Спрос'},
   {id:'sb-lead', name:'Обращения'},
+  {id:'sb-room', name:'Отдел продаж'},
   {id:'sb-prod', name:'Продукты'},
   {id:'sb-pay',  name:'Оплата'},
   {id:'sb-plan', name:'Планы'},
@@ -2733,6 +2834,7 @@ const NOTE_NEEDS={
   products:'договоров хотя бы по одному продукту',
   payment:'условий оплаты в карточках CRM',
   channels:'канала продаж в договорах',
+  salesroom:'чата отдела продаж — воронки от встреч и того, о чём говорят',
   fm:'плана нашей финмодели',
   bank:'плана банка',
   escrow:'листа «КРЕДИТЫ» книги финмодели',
@@ -2834,6 +2936,7 @@ function renderSales(d){
   if(((d.plans||{}).quarters||[]).length>1) have.push('sb-plan');
   if(((d.escrow||{}).queues||[]).length) have.push('sb-esc');
   if((d.by_channel||[]).length) have.push('sb-ch');
+  if(((d.salesroom||{}).months||[]).length) have.push('sb-room');
   if((d.terminated||[]).length) have.push('sb-term');
   html+=salesNav(have);
 
@@ -2903,6 +3006,11 @@ function renderSales(d){
     salesEscrowBlock(d), salesNote(d,'escrow'));
 
   html+=salesSection('sb-ch','Каналы продаж', salesChannelsBlock(d), salesNote(d,'channels'));
+
+  // Отдел продаж — после каналов и до расторжений: сначала чем и как продавали,
+  // потом что говорили в переговорной, потом что сорвалось.
+  html+=salesSection('sb-room','Отдел продаж: встречи и разговоры',
+    salesRoomBlock(d), salesNote(d,'salesroom'));
 
   if((d.terminated||[]).length){
     html+=salesSection('sb-term','Расторжения',
@@ -3069,6 +3177,11 @@ const SALES_ASKS=[
      +'рыночное ли оно и что значит разрыв между «% от продаж» и «% от наполнения»; '
      +'3) эффективность собственного отдела продаж против брокерского канала; '
      +'4) структура продаж — есть ли сдвиг в сторону мелких лотов и что это значит для выручки.'},
+  {chip:'Что говорят покупатели',
+   text:'По чату отдела продаж: о чём покупатели говорят чаще всего и как это менялось '
+     +'от месяца к месяцу; с кем нас сравнивают; и как воронка от встречи доходит до '
+     +'брони — где она проседает. Это отчёты менеджеров, а не слова покупателя: '
+     +'отсутствие темы в записи значит «не записали», а не «не спрашивали».'},
   {chip:'Почему не покупают?',
    text:'Что в этих числах говорит о том, почему люди не покупают: чего просят и чего '
      +'нет в витрине? Отвечай только по своду, недостающее назови недостающим.'},
@@ -3195,6 +3308,41 @@ function salesDigest(d, limit){
     term.push(`РАСТОРЖЕНИЙ: ${d.terminated.length}, возвращено с эскроу ${num(back/1e6,1)} млн ₽`);
   }
   add('расторжения', term);
+  // Чат отдела продаж отвечает на то, чего в CRM нет: что человек говорил на
+  // встрече и до чего дошёл разговор. Числа считает сервер, здесь только строки.
+  //
+  // Разделов ДВА, и это не косметика: обрезка режет раздел по хвосту, а хвост
+  // у смешанного раздела — брони и соседи, то есть помесячная воронка,
+  // единственная «динамика», о которой и спрашивают, выпадала целиком и молча.
+  const room=d.salesroom||{};
+  const roomLines=[], saidLines=[];
+  if((room.months||[]).length){
+    roomLines.push(`ЧАТ ОТДЕЛА ПРОДАЖ${room.chat?' («'+room.chat+'»)':''}: `
+      +`${room.from}—${room.to}, ${num(room.messages)} сообщений. Это отчёты менеджеров, `
+      +`а не слова покупателя; бронь показана средним числом одновременно висящих.`);
+    room.months.forEach(m=>{
+      const bits=[];
+      if(m.meetings_per_day!==undefined) bits.push(`встреч в день ${num(m.meetings_per_day,1)}`);
+      if(m.calls_per_day!==undefined) bits.push(`целевых звонков в день ${num(m.calls_per_day,1)}`);
+      if(m.bookings_at_once!==undefined) bits.push(`броней разом ${num(m.bookings_at_once,1)}`);
+      if(m.registering_at_once!==undefined) bits.push(`на регистрации разом ${num(m.registering_at_once,1)}`);
+      if(bits.length) roomLines.push(`— ${m.month}: ${bits.join(', ')}`);
+    });
+  }
+  add('чат: воронка от встреч', roomLines, 4);
+  (room.topics||[]).slice(0,5).forEach(t=>{
+    // Доля последних трёх месяцев против первых трёх — это и есть «в
+    // динамике»: без неё Платон видит итог за год и не видит перемены.
+    const moved=(t.share_recent===null||t.share_recent===undefined
+      ||t.share_early===null||t.share_early===undefined)?''
+      :`; последние 3 мес. ${num(t.share_recent*100,1)}% против ${num(t.share_early*100,1)}% в первых трёх`;
+    saidLines.push(`ГОВОРЯТ ПРО ${t.topic}: ${num(t.messages)} сообщений `
+      +`(${num(t.share*100,1)}% чата)${moved}`);
+  });
+  if((room.rivals||[]).length)
+    saidLines.push('СРАВНИВАЮТ С: '+room.rivals.slice(0,5)
+      .map(r=>`${r.rival} (${num(r.messages)})`).join(', '));
+  add('чат: о чём говорят', saidLines);
   // Непрочитанное — предупреждение, а не данные: Платон не должен читать
   // отсутствие источника как ноль. Строки бывают длинными (в них имя файла),
   // поэтому раздел стоит в общей очереди, а не поверх бюджета.
@@ -3212,9 +3360,13 @@ function salesDigest(d, limit){
   // «Не прочитано» стоит вторым намеренно: это предупреждение против чтения
   // отсутствия как нуля, и выброшенное молча оно вредит сильнее любой
   // пропущенной таблицы.
-  const ORDER=['выводы','не прочитано','оплата','каналы','пул и вымывание',
-    'размерность','продукты','воронка обращений','план ФМ','план банка',
-    'расторжения','динамика'];
+  // Воронка от встреч идёт третьей: она короткая и отвечает на прямо заданный
+  // вопрос. «О чём говорят» стоит ниже пула и вымывания — они отвечают на то
+  // же «почему не покупают», только числами витрины, и вытеснять их новой
+  // темой значит менять один ответ на другой, а не добавлять.
+  const ORDER=['выводы','не прочитано','чат: воронка от встреч','оплата','каналы',
+    'пул и вымывание','чат: о чём говорят','размерность','продукты',
+    'воронка обращений','план ФМ','план банка','расторжения','динамика'];
   const rank=name=>(ORDER.indexOf(name)+1)||99;
   groups.sort((a,b)=>rank(a.name)-rank(b.name));
 

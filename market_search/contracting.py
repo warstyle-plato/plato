@@ -198,13 +198,27 @@ def read_contracts(data: bytes) -> dict[str, Any]:
     header = [str(x).strip() if x is not None else "" for x in rows[_HEADER_ROW - 1]]
     index = {}
     missing = []
+    # Имя колонки сверяется через `_text`, а не через `strip`: подписи этих
+    # листов приезжают и с переносом ВНУТРИ ячейки, и с двойным пробелом, и с
+    # неразрывным — про это сказано прямо у `_text`, а здесь не применялось.
+    # Цена промаха не «колонки нет», а хуже: `cell` отдаёт None, брокер у всех
+    # строк становится пустым, и весь объём уходит в канал «напрямую» — на
+    # экране это читается как «брокеров нет вовсе».
     for key, title in _COLUMNS.items():
-        wanted = title.strip()
-        found = next((i for i, name in enumerate(header) if name.strip() == wanted), None)
+        wanted = _text(title)
+        found = next((i for i, name in enumerate(header) if _text(name) == wanted), None)
         if found is None:
             missing.append(title)
         else:
             index[key] = found
+    # Чего мы не нашли — половина ответа; вторая половина, как колонка названа
+    # на самом деле. Без неё «не прочитано — Наименование брокера» отправляет
+    # человека открывать книгу и сверять подписи глазами, а список подписей
+    # лист отдаёт сам.
+    if missing:
+        present = [_text(name) for name in header if _text(name)]
+        missing.append("в шапке листа нашлись: " + ("; ".join(present) if present
+                                                    else "ни одной подписи"))
 
     project = ""
     for row in rows[:_HEADER_ROW]:
@@ -759,6 +773,10 @@ def summarise(contracts: dict[str, Any], ledger: dict[str, Any] | None = None) -
         block["fee_unknown"] = bool(name) and block["broker_fee"] == 0
         by_channel.append(block)
     by_channel.sort(key=lambda item: -item["amount"])
+    # Не прочитанная колонка брокера и продажи без брокеров дают на экране одну
+    # картинку: единственный канал «напрямую». Утверждения при этом разные, и
+    # молчаливое первое читается как второе.
+    broker_column = _COLUMNS["broker_name"] not in (contracts.get("missing") or [])
 
     flats = [r for r in rows if r["product"] == "Квартира"]
     bands: dict[str, list] = {}
@@ -780,6 +798,7 @@ def summarise(contracts: dict[str, Any], ledger: dict[str, Any] | None = None) -
         "by_product": by_product,
         "by_payment": by_payment,
         "by_channel": by_channel,
+        "broker_column": broker_column,
         "by_size": by_size,
         "brokers": _totals(broker_rows),
         "own_sales": _totals(own_rows),
@@ -1193,13 +1212,70 @@ def conclusions(summary: dict[str, Any]) -> dict[str, str]:
 
     brokers = summary.get("brokers") or {}
     own = summary.get("own_sales") or {}
-    if brokers.get("amount") or own.get("amount"):
+    if summary.get("broker_column") is False:
+        # Единственный канал «напрямую» бывает и правдой, и непрочитанной
+        # колонкой. Пока мы не знаем, какой это случай, называть первый нельзя.
+        out["channels"] = (
+            f"Колонка «{_COLUMNS['broker_name']}» в листе «{SHEET_CONTRACTS}» не "
+            "нашлась, поэтому канал продаж не прочитан ни у одного договора. "
+            "Весь объём показан как «напрямую» не потому, что брокеров нет, а "
+            "потому, что читать их было негде.")
+    elif brokers.get("amount") or own.get("amount"):
         out["channels"] = (
             f"Чужие каналы принесли {_pct(brokers.get('amount', 0) / total['amount'] if total.get('amount') else None)} "
             f"выручки и стоили {_pct(brokers.get('cost_of_sales'), 2)} от своих продаж; свой отдел — "
             f"{_pct(own.get('amount', 0) / total['amount'] if total.get('amount') else None)} выручки при "
             f"{_pct(own.get('cost_of_sales'), 2)}. Вознаграждения всего — "
             f"{_mln((brokers.get('cost') or 0) + (own.get('cost') or 0))} млн ₽.")
+
+    room = summary.get("salesroom") or {}
+    months = [m for m in (room.get("months") or []) if m.get("meetings_per_day") is not None]
+    if months:
+        # Месяц словами — теми же списками, что в рыночном отчёте: третий
+        # список названий расходится с двумя первыми на первой же правке. После
+        # «в» нужен предложный падеж («в августе»), и он там уже объявлен —
+        # `MONTHS`; родительный (`GENITIVE`) дал бы «в августа».
+        from .narrative import _month_form, MONTHS
+
+        def _month_from(month: str) -> str:
+            return _month_form(month, MONTHS)
+
+        last = months[-1]
+        line = (f"Чат отдела продаж, {room.get('from')} — {room.get('to')}: в "
+                f"{_month_from(last['month'])} {_dec(last['meetings_per_day'], 1)} встречи в день")
+        if last.get("calls_per_day") is not None:
+            line += f" и {_dec(last['calls_per_day'], 1)} целевых звонка"
+        if last.get("bookings_at_once") is not None:
+            line += f", одновременно висящих броней {_dec(last['bookings_at_once'], 1)}"
+        # Встречи есть, а броней нет — это срыв на разговоре, а не нехватка
+        # трафика; обратное — наоборот. Одно число без другого читается неверно.
+        busy = [m for m in months if m.get("meetings_per_day")]
+        best = max(busy, key=lambda m: m.get("bookings_at_once") or 0.0, default=None)
+        if best is not None and best is not last and \
+                (best.get("bookings_at_once") or 0.0) > (last.get("bookings_at_once") or 0.0):
+            line += (f". В {_month_from(best['month'])} при {_dec(best['meetings_per_day'], 1)} "
+                     f"встречи в день броней держалось {_dec(best['bookings_at_once'], 1)} — "
+                     "трафик тот же, а до брони доходит меньше")
+        topics = room.get("topics") or []
+        if topics:
+            line += (". Чаще всего в разговорах: "
+                     + ", ".join(f"{t['topic']} ({int(t['messages'])})" for t in topics[:3]))
+            # Что СТАЛИ спрашивать чаще — это и есть «в динамике». Доля месяца,
+            # а не счёт: месяцы разной длины и разной разговорчивости, и голая
+            # частота сравнивала бы длину переписки, а не спрос.
+            moved = [t for t in topics
+                     if t.get("share_recent") is not None and t.get("share_early") is not None
+                     and t["share_recent"] >= t["share_early"] * 1.5
+                     and t["share_recent"] - t["share_early"] >= 0.05]
+            if moved:
+                grew = max(moved, key=lambda t: t["share_recent"] - t["share_early"])
+                line += (f". Спрашивать про «{grew['topic']}» стали заметно чаще: "
+                         f"{_pct(grew['share_recent'])} сообщений последних трёх месяцев "
+                         f"против {_pct(grew['share_early'])} в первых трёх")
+        rivals = room.get("rivals") or []
+        if rivals:
+            line += "; сравнивают с " + ", ".join(r["rival"] for r in rivals[:3])
+        out["salesroom"] = line + "."
 
     fm = summary.get("fm_plan") or {}
     plan = (fm.get("plan") or {}).get("Итого") or (fm.get("plan") or {}).get("Квартира") or {}

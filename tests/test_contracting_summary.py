@@ -347,3 +347,76 @@ def test_the_chart_does_not_shadow_the_market_one() -> None:
     assert page.count("function planChart(") == 1
     assert page.count("function barChart(") == 1
     assert page.count("function salesPlansBlock(") == 1
+
+
+def _book_with_header(title: str, replaced: str) -> bytes:
+    """Та же книга, но одна подпись шапки написана иначе."""
+    book = openpyxl.Workbook()
+    sheet = book.active
+    sheet.title = contracting.SHEET_CONTRACTS
+    sheet["A2"] = "Контрактация"
+    sheet["A3"] = "Название проекта:"
+    sheet["E3"] = "Тестовый ЖК"
+    for column, name in enumerate(HEAD, start=1):
+        sheet.cell(row=6, column=column, value=replaced if name == title else name)
+    for index, deal in enumerate(DEALS):
+        for column, value in enumerate(deal, start=1):
+            sheet.cell(row=7 + index, column=column, value=value)
+    buffer = io.BytesIO()
+    book.save(buffer)
+    return buffer.getvalue()
+
+
+@pytest.mark.parametrize("written", [
+    "Наименование\nброкера",     # перенос внутри ячейки
+    "Наименование  брокера",     # двойной пробел
+    "Наименование брокера",  # неразрывный пробел
+    " Наименование брокера ",    # пробелы по краям
+])
+def test_the_broker_column_survives_a_reworded_header(written: str) -> None:
+    """Подпись шапки поехала — брокеры не должны исчезать.
+
+    Владелец, 01.09.2026: «почему в отчёте по продажам полностью пропали
+    продажи через брокеров, их как будто нет вовсе». Колонки листа искались
+    точным равенством после `strip`, а подписи этих листов приезжают и с
+    переносом ВНУТРИ ячейки, и с двойным пробелом — про это сказано прямо у
+    `_text`, но при поиске он не применялся. Промах не давал ошибки: `cell`
+    отдавала None, брокер у всех строк становился пустым, и весь объём уходил
+    в канал «напрямую».
+    """
+    read = contracting.read_contracts(_book_with_header("Наименование брокера", written))
+    assert "Наименование брокера" not in (read["missing"] or []), written
+    assert any(row["broker"] for row in read["rows"]), "брокеры потерялись на подписи шапки"
+
+
+def test_a_missing_broker_column_is_named_and_not_shown_as_direct_sales() -> None:
+    """Колонки нет — так и сказано; «всё напрямую» без оговорки читается как факт.
+
+    Даже с починенным сопоставлением шапка однажды поедет так, что колонка не
+    найдётся. Тогда единственный канал «напрямую» — это не вывод о продажах, а
+    отсутствие данных, и разница обязана быть на экране.
+    """
+    read = contracting.read_contracts(
+        _book_with_header("Наименование брокера", "Кто привёл клиента"))
+    assert "Наименование брокера" in read["missing"]
+    # Рядом с «не нашли» стоит «а что в шапке есть»: иначе человек идёт
+    # сверять подписи в книге глазами, хотя лист их только что отдал.
+    found_line = next(x for x in read["missing"] if x.startswith("в шапке листа нашлись"))
+    assert "Кто привёл клиента" in found_line
+    summary = contracting.summarise(read)
+    assert summary["broker_column"] is False
+    assert [row["channel"] for row in summary["by_channel"]] == ["напрямую"]
+
+    said = contracting.conclusions(summary)
+    assert "не нашлась" in said["channels"] and "не потому, что брокеров нет" in said["channels"]
+
+    from market_search import cabinet
+
+    page = cabinet.cabinet_page("sales")
+    assert "d.broker_column === false" in page
+    assert "читать брокеров было негде" in page
+
+    # На книге с целой шапкой признак не взводится и оговорки нет.
+    whole = contracting.summarise(contracting.read_contracts(_book()))
+    assert whole["broker_column"] is True
+    assert "не нашлась" not in (contracting.conclusions(whole).get("channels") or "")
