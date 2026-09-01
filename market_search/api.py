@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from . import bnmap
 from . import bnmap_ui
+from . import salesroom
 from . import cabinet as cabinet_module
 from . import sales_store
 from .geocoder import GeocodingError
@@ -670,6 +671,15 @@ def install(app: FastAPI) -> MarketDiscoveryService:
         if crm:
             got["demand"] = demand_module.demand_summary(
                 crm.get("deals") or [], (got.get("pool") or {}).get("bands") or [], crm)
+        # Чат отдела продаж: воронка от встреч и то, о чём говорят покупатели.
+        # Свод продаж начинался с подписанного договора и дотягивался вверх до
+        # обращения CRM; выше обращения не было ничего, а там слышно, чего
+        # человек хотел. Полосы площади берутся ТЕ ЖЕ, что у квартирографии:
+        # свои завели бы второе деление одной величины.
+        room = part("salesroom")
+        if room:
+            got["salesroom"] = salesroom.summarise(
+                room, (got.get("pool") or {}).get("bands") or [])
         got["conclusions"] = contracting.conclusions(got)
         # План продаж и отчёт правлению едут отсюда же: у них была своя кнопка
         # загрузки, то есть свой файл и своя дата рядом с общим складом.
@@ -695,7 +705,11 @@ def install(app: FastAPI) -> MarketDiscoveryService:
                              ("bank_plan", contracting.read_bank_plan),
                              ("pool", contracting.read_pool),
                              ("credit", contracting.read_credit_plan),
-                             ("demand", demand_module.read_demand)):
+                             ("demand", demand_module.read_demand),
+                             # Экспорт чата отдела продаж принимается той же
+                             # кнопкой: две загрузки на один проект однажды
+                             # приносят файлы разных дат под одним именем.
+                             ("salesroom", salesroom.read_salesroom)):
             try:
                 parts[kind] = reader(data)
             except Exception as exc:  # noqa: BLE001

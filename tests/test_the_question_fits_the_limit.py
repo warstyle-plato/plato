@@ -76,6 +76,22 @@ def _fat_summary() -> dict:
         "by_product": [{"product": p, "contracts": 20, "amount": 500_000_000}
                        for p in ("Квартира", "Машиноместо", "Кладовая", "ПСН")],
         "terminated": [{"escrow_returned": 5_000_000}, {"escrow_returned": 3_000_000}],
+        "salesroom": {
+            "chat": "Кутузов Сити. Отчёты. Продажи",
+            "from": "2025-12-07", "to": "2026-08-31", "messages": 742,
+            "months": [{"month": m, "days": 30, "meetings_per_day": 1.13,
+                        "calls_per_day": 1.12, "bookings_at_once": 0.93,
+                        "registering_at_once": 0.1} for m in months],
+            "topics": [{"topic": t, "messages": 161, "share": 0.217,
+                        "first": "2025-12-29", "last": "2026-08-31"}
+                       for t in ("площадь и планировка", "рассрочка", "ипотека",
+                                 "студии и однушки", "паркинг и кладовые",
+                                 "отделка", "срок ввода", "скидка и торг")],
+            "rivals": [{"rival": r, "messages": 12, "last": "2026-08-31"}
+                       for r in ("Родина Парк", "Веер", "Сет", "Level", "Индиво")],
+            "bands": [{"band": b, "lots": 6, "price_per_sqm": 920_000}
+                      for b in ("28,3–40", "40–55", "55–85", "85–120", "120–168,6")],
+        },
         "missing": [
             "источник «сделки CRM» не загружен",
             "пул «Машиноместо»: план финмодели 75 лотов, книга 73 — доли посчитаны по плану",
