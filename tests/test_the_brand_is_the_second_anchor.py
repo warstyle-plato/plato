@@ -85,9 +85,16 @@ def test_a_stranger_brand_does_not_bring_its_operator():
         "чужой проект приписал нашей площадке своего оператора"
 
 
-def test_the_route_asks_the_brand_in_a_second_round():
+def test_the_reader_asks_the_brand_in_a_second_round():
+    """Круг по имени проекта — в разборе, а не в теле маршрута.
+
+    Разбор объявлен один раз (`_read_open_sources`) и зовётся и кнопкой, и
+    еженедельным прогоном; проверка смотрит на него, а не на строки внутри
+    маршрута, — иначе она падает при любом выносе кода и молчит о том, что
+    сломалось на самом деле.
+    """
     source = (ROOT / "auction_search" / "api.py").read_text(encoding="utf-8")
-    block = source[source.index('"/auctions/krt/{slug}/open-sources"'):]
-    block = block[:block.index('@app.get("/auctions/krt/{slug}/card-facts")')]
+    block = source[source.index("def _read_open_sources("):]
+    block = block[:block.index("\n    def _open_sources_for_run(")]
     assert 'found.get("brands")' in block, "второй круг по имени проекта не идёт"
     assert "[:1]" in block, "поиск платный — кругов должно быть не больше одного"
