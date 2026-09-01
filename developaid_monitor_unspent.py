@@ -29,6 +29,14 @@
 конкретную главу. Удержание без даты выплаты — «срок не назван», а не «после
 ввода»: своя сумма, в перераспределение не идёт.
 
+Источником статья считается не по одному свободному лимиту. «Перераспределение
+лимитов внутри банковской РСС можно рассматривать только там, где работы
+завершены или завершатся судя по актированию, договор заключён и очевидно
+нового скорее всего не будет» (владелец, 01.09.2026). Первая версия называла
+«не будет выбрано» всё свободное подряд — и первыми в списке стояли резервы
+2.8/2.9, у которых договоров нет по построению («Резервы разве не будут
+выбраны???»), а за ними статьи, по которым договор ещё не заключён вовсе.
+
 Ничего сверх этого здесь не считается: лимиты, потребность, структурный
 дефицит и сроки считает дашборд, и второго счёта тех же величин тут нет.
 """
@@ -168,61 +176,135 @@ def _retention_by_code(retention: dict[str, Any] | None,
     }
 
 
+# Договор считается закрытым актами, когда принято не меньше этой доли его
+# суммы. Порог назван на экране: число без порога читается как измеренное.
+CLOSED_BY_ACTS_SHARE = 0.9
+
+
 def unspent(estimate: dict[str, Any], *,
             contracts: dict[str, Any] | None = None,
             retention: dict[str, Any] | None = None,
             horizon: Any = None,
-            needy: dict[str, float] | None = None,
-            roots: tuple[str, ...] = ("2", "3")) -> dict[str, Any]:
-    """Постатейно: лимит, заключено, свободное и отложенное в ГУ.
+            needy: list[dict[str, Any]] | None = None,
+            programme_left: dict[str, float] | None = None,
+            roots: tuple[str, ...] = ("2", "3"),
+            retention_roots: tuple[str, ...] = ("2",),
+            not_articles: frozenset[str] | set[str] = frozenset({"2.8", "2.9"})) -> dict[str, Any]:
+    """Постатейно: откуда лимит можно просить и кому его не хватает.
+
+    Источником перераспределения статья считается только там, где «работы
+    завершены или завершатся судя по актированию, договор заключён и очевидно
+    нового скорее всего не будет» (владелец, 01.09.2026). То есть:
+    договор есть, акты закрыли не меньше `CLOSED_BY_ACTS_SHARE` его суммы —
+    или по программе РСС после среза статья не тратит ничего. Статья без
+    договора источником не считается: свободный лимит у неё есть, но новые
+    договоры по ней ещё придут. Резерв 2.8/2.9 — не статья вовсе: у него нет
+    договоров по построению, и «не будет выбран» о нём неверно — он гасит
+    нехватку других. Гарантийные удержания относятся только к главе 2: в
+    главе 3 подрядных договоров с удержанием нет.
 
     `needy` — статьи, которым своего лимита не хватает; их считает водопад
-    дашборда, здесь они только называются рядом: перераспределять есть куда, и
-    это вторая половина ответа.
+    дашборда, здесь они только названы рядом с источниками: перераспределять
+    есть куда, и это вторая половина ответа.
     """
     rows = (estimate or {}).get("rows") or []
-    leaves = _leaves(rows)
-    gu = _retention_by_code(retention, contracts, horizon, roots)
+    leaves = {str(row.get("code") or "") for row in rows if row.get("is_leaf")} or _leaves(rows)
+    gu = _retention_by_code(retention, contracts, horizon, retention_roots)
+    programme_left = programme_left or {}
 
-    items: list[dict[str, Any]] = []
-    free_total = 0.0
+    sources: list[dict[str, Any]] = []
+    excluded: list[dict[str, Any]] = []
     for row in rows:
         code = str(row.get("code") or "")
-        if not code or _root(code) not in roots:
+        if not code or _root(code) not in roots or code not in leaves:
+            continue
+        if code in not_articles:
             continue
         limit = float(row.get("estimate") or 0.0)
         contracted = float(row.get("contracted") or 0.0)
+        completed = float(row.get("completed") or 0.0)
         deferred = float(gu["by_code"].get(code) or 0.0)
-        free = max(0.0, limit - contracted) if code in leaves else 0.0
+        free = max(0.0, limit - contracted)
         if free <= 0 and deferred <= 0:
             continue
-        free_total += free
-        items.append({
+        acts_share = (completed / contracted) if contracted > 0 else None
+        left = programme_left.get(code)
+        item = {
             "code": code,
             "name": str(row.get("article") or ""),
             "limit": limit,
             "contracted": contracted,
+            "completed": completed,
+            "acts_share": acts_share,
             "paid": float(row.get("paid") or 0.0),
             "free": free,
             "retention_deferred": deferred,
-            "unspent": free + deferred,
-            "leaf": code in leaves,
+            "programme_left": left,
+        }
+        if contracted <= 0:
+            reason = "договора нет — новые договоры по статье ещё придут"
+            item["reason"] = reason
+            # ГУ без договора в РСС не бывает; свободный лимит — не источник.
+            excluded.append(item)
+            continue
+        closed = acts_share is not None and acts_share >= CLOSED_BY_ACTS_SHARE
+        quiet = left is not None and left <= 0
+        if closed:
+            item["basis"] = f"акты закрыли {acts_share * 100:.0f}% договора"
+        elif quiet:
+            item["basis"] = "по программе РСС после среза статья не тратит"
+        if closed or quiet:
+            item["unspent"] = free + deferred
+            sources.append(item)
+        elif deferred > 0:
+            # Договор ещё в работе, но удержанное по актам до ввода не
+            # выплатится в любом случае — источником идёт только оно.
+            item["basis"] = "только ГУ: договор в работе, удержанное до ввода не выплатится"
+            item["free_in_work"] = free
+            item["free"] = 0.0
+            item["unspent"] = deferred
+            sources.append(item)
+        else:
+            item["reason"] = (f"в работе: акты закрыли {acts_share * 100:.0f}% договора"
+                              + (f", по программе ещё {left:,.0f} ₽".replace(",", " ")
+                                 if left else ""))
+            excluded.append(item)
+    sources.sort(key=lambda item: -item["unspent"])
+    excluded.sort(key=lambda item: -(item["free"] + item["retention_deferred"]))
+    free_total = sum(item["free"] for item in sources)
+    deferred_total = sum(item["retention_deferred"] for item in sources)
+
+    need_rows = []
+    for row in (needy or []):
+        need_rows.append({
+            "code": str(row.get("code") or ""),
+            "name": str(row.get("name") or ""),
+            "need": float(row.get("need_total") or 0.0),
+            "own_limit": float(row.get("opening_limit") or 0.0),
+            "from_reserve": float(row.get("reserve_take") or 0.0),
+            "shortage": float(row.get("unfunded_take") or 0.0),
+            "from": row.get("first_reserve_month"),
         })
-    items.sort(key=lambda item: -item["unspent"])
-    deferred_total = sum(float(value) for value in gu["by_code"].values())
+    need_rows.sort(key=lambda item: -item["shortage"])
+    shortage_total = sum(item["shortage"] for item in need_rows)
+    total = free_total + deferred_total
     return {
-        "articles": items,
+        "sources": sources,
+        "excluded": excluded,
         "free_total": free_total,
         "retention_deferred_total": deferred_total,
-        "total": free_total + deferred_total,
+        "total": total,
+        "excluded_free_total": sum(item["free"] for item in excluded),
+        "criterion": (f"договор заключён и акты закрыли не меньше "
+                      f"{CLOSED_BY_ACTS_SHARE * 100:.0f}% его суммы — или по программе "
+                      "РСС после среза статья больше не тратит"),
         # ГУ генподрядчика в его статью кладётся оценкой, и это сказано вслух.
         "retention_is_estimate": bool(gu["by_code"]),
         "retention": {key: gu[key] for key in
                       ("known", "reason", "matched", "unsplit", "unsplit_total",
                        "unmatched", "unmatched_total", "undated",
                        "paid_before_horizon")},
-        "needy": [{"code": code, "shortage": float(value)}
-                  for code, value in sorted((needy or {}).items(),
-                                            key=lambda pair: -float(pair[1]))
-                  if float(value) > 0][:20],
+        "needy": need_rows[:20],
+        "shortage_total": shortage_total,
+        "covers": total >= shortage_total if shortage_total > 0 else None,
     }
