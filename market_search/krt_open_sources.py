@@ -85,6 +85,24 @@ def queries(name: str, okrug: str = "", district: str = "") -> list[str]:
     return out[:3]
 
 
+# Телеграм-каналы застройщиков и городские каналы говорят о площадке раньше
+# деловой прессы и почти всегда именем проекта, а не адресом. Спрашиваются они
+# тем же платным индексом, ограниченным доменом: своего пути наружу модуль не
+# заводит — правило то же, по которому поиск взят у движка рынка.
+#
+# Круг ровно один и по одному якорю: у поиска цена за запрос, а канал без
+# якоря в том же предложении дал бы то же, что сниппет, повторяющий запрос.
+def telegram_queries(name: str, brands: Iterable[str] = ()) -> list[str]:
+    """Запрос к каналам: по имени проекта, если оно доказано, иначе по адресу."""
+    brand = next((str(b).strip() for b in (brands or []) if str(b).strip()), "")
+    base = _SPACE.sub(" ", str(name or "")).strip()
+    if brand:
+        return [f'site:t.me "{brand}" КРТ застройщик']
+    if not base:
+        return []
+    return [f'site:t.me "{base}" КРТ']
+
+
 def _anchor_words(name: str) -> set[str]:
     """Основы слов площадки: «Молдавская» и «на Молдавской улице» — одно место.
 
@@ -189,12 +207,23 @@ def _operator_name(sentence: str) -> str:
     return _SPACE.sub(" ", found.group("name")).strip(" «»")
 
 
+def _is_telegram(domain: str) -> bool:
+    host = str(domain or "").lower().strip().strip(".")
+    return host == "t.me" or host.endswith(".t.me") or host == "telegram.me"
+
+
 def _found(sentence: str, doc: Any) -> dict[str, Any]:
+    domain = getattr(doc, "domain", "") or ""
     return {
         "quote": sentence[:400],
         "url": getattr(doc, "url", "") or "",
-        "domain": getattr(doc, "domain", "") or "",
-        "official": any(host in (getattr(doc, "domain", "") or "") for host in _TRUSTED),
+        "domain": domain,
+        "official": any(host in domain for host in _TRUSTED),
+        # Канал — не издание: пост пишет кто угодно, опровергать его никто не
+        # обязан. Признак ставится тот же и по тому же правилу (цитата, ссылка,
+        # якорь в том же предложении), но происхождение названо вслух — иначе
+        # слух встанет на экране рядом с mos.ru и будет выглядеть так же.
+        "telegram": _is_telegram(domain),
     }
 
 
@@ -255,6 +284,11 @@ def read_findings(docs: Iterable[Any], name: str) -> dict[str, Any]:
         # адресом. По нему идёт второй круг поиска — статья про бренд адреса
         # чаще всего не называет.
         "brands": brands,
+        # Сколько находок пришло из каналов: пустая строка «спросили каналы, и
+        # там пусто» и не спрошенные вовсе каналы выглядят на экране одинаково.
+        "telegram_found": sum(
+            1 for item in operator_named + operator_appointed + operator_pending
+            + city_needs + stage if item.get("telegram")),
         "taken": bool(operator_named or operator_appointed),
         "free": bool(operator_pending) and not (operator_named or operator_appointed),
     }

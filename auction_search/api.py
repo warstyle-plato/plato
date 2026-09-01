@@ -1070,7 +1070,24 @@ def install(app: FastAPI) -> None:
                 errors.append(f"{type(exc).__name__}: {exc}")
             else:
                 found = krt_open_sources.read_findings(docs, name)
-        found.update({"available": True, "queries": asked, "errors": errors[:2]})
+        # Телеграм-каналы говорят о площадке раньше прессы (владелец,
+        # 01.09.2026: «а поиск информации можно через телеграм-каналы ещё
+        # вести?»). Спрашиваются тем же платным индексом с ограничением по
+        # домену — своего пути наружу не заводим. Круг один: у поиска цена.
+        tg_asked = krt_open_sources.telegram_queries(name, found.get("brands") or [])
+        tg_ok = False
+        for query in tg_asked:
+            asked = asked + [query]
+            try:
+                docs.extend(await run_in_threadpool(finder, query))
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{type(exc).__name__}: {exc}")
+            else:
+                tg_ok = True
+                found = krt_open_sources.read_findings(docs, name)
+        found.update({"available": True, "queries": asked, "errors": errors[:2],
+                      # Спросили каналы и там пусто — не то же, что не спросили.
+                      "telegram_asked": tg_ok})
         return found
 
     @app.get("/auctions/krt/{slug}/card-facts")
