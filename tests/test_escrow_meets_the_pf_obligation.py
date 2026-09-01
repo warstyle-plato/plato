@@ -100,8 +100,8 @@ def test_the_page_draws_the_obligation_and_not_only_the_body():
     # Линия «сколько банк получил всего»: раскрытый эскроу и то, чем гасят
     # дальше. Продажи после раскрытия рисовались от нуля и рядом с эскроу в
     # десятки миллиардов не значили ничего (владелец, 01.09.2026).
-    assert "repaid_cumulative" in page, "погашенное банку не нарисовано"
-    assert "Погашено банку" in page, "линия не названа"
+    assert "escrow_and_sales_cumulative" in page, "погашенное банку не нарисовано"
+    assert "Раскрытый эскроу и продажи после него" in page, "линия не названа"
     assert "не погашено" in page, "последняя точка не названа — читается как обрыв"
 
 
@@ -150,7 +150,7 @@ def test_the_pdf_prints_the_escrow_cover():
         assert cover["label"] in flat, "очередь не названа в отчёте"
 
 
-def test_the_repaid_line_never_goes_backwards():
+def test_the_dashed_line_starts_where_escrow_ends_and_never_goes_back():
     """Накопленное на своде считается по потоку, а не складыванием итогов.
 
     Сложить два накопленных ряда нельзя: горизонты очередей разной длины, и в
@@ -162,15 +162,15 @@ def test_the_repaid_line_never_goes_backwards():
     bundle = core._run_authoritative_model(
         inputs, tep, [], {"enabled": True, "phase_count": 2, "phase_gap_months": 12})
     rows = bundle["consolidated"]["finance"]["rows"]
-    assert any(row["repaid_cumulative"] > 0 for row in rows), \
-        "банку ничего не погашено — проверка ничего не значит"
+    assert any(row["escrow_and_sales_cumulative"] > 0 for row in rows), \
+        "линия пуста — проверка ничего не значит"
     for before, after in zip(rows, rows[1:]):
-        assert after["repaid_cumulative"] >= before["repaid_cumulative"] - 1.0, (
+        assert after["escrow_and_sales_cumulative"] >= before["escrow_and_sales_cumulative"] - 1.0, (
             f"накопленное упало в {after['month']}: "
-            f"{before['repaid_cumulative']:.0f} → {after['repaid_cumulative']:.0f}")
+            f"{before['escrow_and_sales_cumulative']:.0f} → {after['escrow_and_sales_cumulative']:.0f}")
     # И линия начинается там, где раскрылся эскроу, а не с нуля после него.
     release = max(row["escrow_release"] for row in rows)
-    jump = max(after["repaid_cumulative"] - before["repaid_cumulative"]
+    jump = max(after["escrow_and_sales_cumulative"] - before["escrow_and_sales_cumulative"]
                for before, after in zip(rows, rows[1:]))
-    assert jump >= release * 0.5, \
-        "погашенное не подхватывает раскрытый эскроу — линия снова идёт от нуля"
+    assert jump >= release * 0.9, \
+        "линия не подхватывает раскрытый эскроу — она снова идёт от нуля"

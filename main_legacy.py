@@ -13395,7 +13395,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         left, right, bottom, top_pad = 42, 8, 22, 20
         plot_w, plot_h = width - left - right, height - bottom - top_pad
         peak = max(max(duty(row), escrow_of(row),
-                       float(row.get("repaid_cumulative", 0.0) or 0.0))
+                       float(row.get("escrow_and_sales_cumulative", 0.0) or 0.0))
                    for row in data) * 1.08 or 1.0
         drawing = Drawing(width, height)
         x_at = lambda i: left + plot_w * i / (len(data) - 1)
@@ -13448,8 +13448,8 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         polyline(duty, "#A35D00", 1.8)
         polyline(lambda row: float(row.get("pf_balance", 0.0) or 0.0), "#A35D00", 0.8, [2, 2])
         polyline(escrow_of, "#2D6A4F", 1.4)
-        if any(float(row.get("repaid_cumulative", 0.0) or 0.0) > 0 for row in data):
-            polyline(lambda row: float(row.get("repaid_cumulative", 0.0) or 0.0),
+        if any(float(row.get("escrow_and_sales_cumulative", 0.0) or 0.0) > 0 for row in data):
+            polyline(lambda row: float(row.get("escrow_and_sales_cumulative", 0.0) or 0.0),
                      "#1B5E77", 1.1, [3, 2])
 
         rve = str(cover.get("rve") or "")[:7]
@@ -13477,7 +13477,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
 
         legend = [("Эскроу накоплено", "#2D6A4F"),
                   ("Обязательство: тело + начисленное", "#A35D00"),
-                  ("Погашено банку, накопленным итогом", "#1B5E77")]
+                  ("Раскрытый эскроу и продажи после него", "#1B5E77")]
         from reportlab.pdfbase.pdfmetrics import stringWidth
         x = left
         for text, colour in legend:
@@ -20189,7 +20189,7 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
         pf_shortfall_month: date | None = None
         bridge_balance = 0.0
         sales_after_rve = 0.0
-        repaid_cumulative = 0.0
+        escrow_and_sales = 0.0
         bridge_interest_payable = 0.0
         pf_balance = 0.0
         pf_interest_payable = 0.0
@@ -20461,14 +20461,13 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
 
             sales_after_rve_month = sales if month > rve else 0.0
             sales_after_rve += sales_after_rve_month
-            # Сколько банк получил всего: раскрытый эскроу гасит тело в дату
-            # раскрытия, дальше гасят остаточные продажи, а проценты платятся
-            # кассой. Линия «продажи после раскрытия» считалась от нуля и
-            # рядом с эскроу выглядела ничем: «почему пунктир от нуля, а не
-            # накопленным итогом с эскроу» (владелец, 01.09.2026). Он прав —
-            # вопрос у графика один: чем и когда закрыт долг, а отвечает на
-            # него именно эта сумма.
-            repaid_cumulative += pf_repayment + interest_payment
+            # Деньги, пришедшие на долг, накопленным итогом: раскрытый эскроу
+            # и то, что продалось после него. Линия «продажи после раскрытия»
+            # считалась от нуля и рядом с эскроу в десятки миллиардов не
+            # значила ничего — «пунктир не от нуля, а от окончания эскроу»
+            # (владелец, 01.09.2026). Так она и продолжает кривую счёта: там,
+            # где эскроу кончился, начинается она.
+            escrow_and_sales += escrow_release + sales_after_rve_month
             rows.append({
                 "month": month.isoformat(),
                 "sales": sales,
@@ -20477,7 +20476,7 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
                 # как обрыв расчёта, а не как непогашенный долг.
                 "sales_after_rve": sales_after_rve_month,
                 "sales_after_rve_cumulative": sales_after_rve,
-                "repaid_cumulative": repaid_cumulative,
+                "escrow_and_sales_cumulative": escrow_and_sales,
                 "project_costs": project_costs,
                 "key_rate": key_rate,
                 "bridge_rate": bridge_rate,
@@ -22312,7 +22311,7 @@ def _aggregate_finance(results: list[dict[str, Any]]) -> dict[str, Any]:
     # два накопленных итога нельзя: горизонты очередей разной длины, и в
     # месяце, где строки одной кончились, сумма падает — линия «погашено
     # банку» уезжала с 41,8 до 19,7 млрд на ровном месте.
-    running = {"repaid_cumulative": 0.0, "sales_after_rve_cumulative": 0.0}
+    running = {"escrow_and_sales_cumulative": 0.0, "sales_after_rve_cumulative": 0.0}
     rows: list[dict[str, Any]] = []
     for month in sorted(month_map):
         agg = month_map[month]
@@ -22336,7 +22335,7 @@ def _aggregate_finance(results: list[dict[str, Any]]) -> dict[str, Any]:
         out["pf_rate"] = pf_num / pf_den if pf_den else 0.0
         out["coverage"] = out["escrow"] / out["pf_balance"] if out["pf_balance"] else 0.0
         out["pf_obligation"] = out["pf_balance"] + out["pf_payable"]
-        running["repaid_cumulative"] += out["pf_repayment"] + out["interest_payment"]
+        running["escrow_and_sales_cumulative"] += out["escrow_release"] + out["sales_after_rve"]
         running["sales_after_rve_cumulative"] += out["sales_after_rve"]
         out.update(running)
         rows.append(out)
@@ -30803,7 +30802,7 @@ details.cadastral-box>summary::marker{color:#888}
       <div class="card">
         <div class="section-title">Эскроу против обязательств по ПФ</div>
         <div id="financeChart" class="chart"></div>
-        <div class="legend"><span><i style="background:#2D6A4F;opacity:.45;height:9px"></i>Эскроу накоплено</span><span><i style="background:#A35D00"></i>Обязательство: тело + начисленные проценты и комиссии</span><span><i style="background:repeating-linear-gradient(90deg,#A35D00 0 4px,transparent 4px 7px)"></i>Тело ПФ</span><span><i style="background:repeating-linear-gradient(90deg,#1B5E77 0 6px,transparent 6px 10px)"></i>Погашено банку, накопленным итогом</span><span><i style="background:#A35D00;opacity:.25;height:9px"></i>Чем эскроу не перекрыт</span></div>
+        <div class="legend"><span><i style="background:#2D6A4F;opacity:.45;height:9px"></i>Эскроу накоплено</span><span><i style="background:#A35D00"></i>Обязательство: тело + начисленные проценты и комиссии</span><span><i style="background:repeating-linear-gradient(90deg,#A35D00 0 4px,transparent 4px 7px)"></i>Тело ПФ</span><span><i style="background:repeating-linear-gradient(90deg,#1B5E77 0 6px,transparent 6px 10px)"></i>Раскрытый эскроу и продажи после него, накопленным итогом</span><span><i style="background:#A35D00;opacity:.25;height:9px"></i>Чем эскроу не перекрыт</span></div>
         <div id="escrowCoverNote" class="note"></div>
       </div>
 
@@ -31026,7 +31025,7 @@ details.cadastral-box>summary::marker{color:#888}
       <div class="card">
         <div class="section-title">Эскроу против обязательств по ПФ</div>
         <div id="reportEscrowChart" class="chart"></div>
-        <div class="legend"><span><i style="background:#2D6A4F;opacity:.45;height:9px"></i>Эскроу накоплено</span><span><i style="background:#A35D00"></i>Обязательство: тело + начисленные</span><span><i style="background:repeating-linear-gradient(90deg,#A35D00 0 4px,transparent 4px 7px)"></i>Тело ПФ</span><span><i style="background:repeating-linear-gradient(90deg,#1B5E77 0 6px,transparent 6px 10px)"></i>Погашено банку</span></div>
+        <div class="legend"><span><i style="background:#2D6A4F;opacity:.45;height:9px"></i>Эскроу накоплено</span><span><i style="background:#A35D00"></i>Обязательство: тело + начисленные</span><span><i style="background:repeating-linear-gradient(90deg,#A35D00 0 4px,transparent 4px 7px)"></i>Тело ПФ</span><span><i style="background:repeating-linear-gradient(90deg,#1B5E77 0 6px,transparent 6px 10px)"></i>Раскрытый эскроу и продажи после него</span></div>
         <div id="reportEscrowNote" class="note"></div>
       </div>
 
@@ -37241,7 +37240,7 @@ function escrowCoverSvg(rows,cover){
  const data=(rows||[]).filter(x=>duty(x)>0||Number(x.escrow||0)>0);
  if(data.length<2)return '';
  const W=900,H=250,pL=58,pR=14,pT=18,pB=26,plotW=W-pL-pR,plotH=H-pT-pB;
- const top=Math.max(...data.map(x=>Math.max(duty(x),Number(x.escrow||0),Number(x.repaid_cumulative||0))),1)*1.08;
+ const top=Math.max(...data.map(x=>Math.max(duty(x),Number(x.escrow||0),Number(x.escrow_and_sales_cumulative||0))),1)*1.08;
  const X=i=>pL+plotW*i/(data.length-1);
  const Y=v=>pT+plotH-plotH*Math.max(0,v)/top;
  const pt=(i,v)=>`${X(i).toFixed(1)},${Y(v).toFixed(1)}`;
@@ -37279,8 +37278,8 @@ function escrowCoverSvg(rows,cover){
  // чем гасят дальше. Прежде здесь шли «продажи после раскрытия» от нуля —
  // рядом с эскроу в десятки миллиардов такая линия не значила ничего
  // (владелец, 01.09.2026). Вопрос у графика один: чем и когда закрыт долг.
- const repaid=data.some(x=>Number(x.repaid_cumulative||0)>0)
-  ?`<polyline points="${path(x=>Number(x.repaid_cumulative||0))}" fill="none" stroke="#1B5E77" stroke-width="1.8" stroke-dasharray="6 4"/>`:'';
+ const repaid=data.some(x=>Number(x.escrow_and_sales_cumulative||0)>0)
+  ?`<polyline points="${path(x=>Number(x.escrow_and_sales_cumulative||0))}" fill="none" stroke="#1B5E77" stroke-width="1.8" stroke-dasharray="6 4"/>`:'';
  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">${grid}
   <polygon points="${area(x=>Number(x.escrow||0))}" fill="#2D6A4F" fill-opacity="0.30"/>
   ${gaps}
