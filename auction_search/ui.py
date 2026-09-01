@@ -62,10 +62,9 @@ __DEVELOPAID_CONTOUR__
         <option value="yes">В каталоге города</option>
         <option value="no">Только проект решения</option></select>
       <select id="krtNeeds" title="Городские нужды и оператор читаются из проекта решения и карточки krt.mos.ru — только вместе с цитатой. Площадка, у которой документ ещё не прочитан, остаётся в списке при любом выборе: «не найдено» — это не «нет»."><option value="">Чьё угодно</option><option value="free">Без городских нужд и без оператора</option><option value="city">Только городские нужды</option><option value="taken">Только с названным оператором</option></select>
-      <select id="krtProfile" title="Под какую задачу считать балл: балл собирается арифметикой по каталожным ТЭП krt.mos.ru, без модели и без экономики. Платон появляется отдельной кнопкой в карточке."><option value="housing_ready">Ищем: жильё, готовое к старту</option><option value="housing_pipeline">Ищем: жилищный потенциал</option><option value="business">Ищем: деловую застройку</option></select>
       <div class="filter-actions"><button id="krtRefresh" class="primary">Обновить каталог</button><button id="krtRankBtn">Оценить отобранные моделью</button><button id="krtPressBtn" title="Читает публикации по отобранным площадкам: три поисковых запроса на площадку, не больше 25 за раз. Официальная карточка каталога читается прогоном и поиска не требует.">Прочитать публикации по отобранным</button><button id="krtExport">Выгрузить Excel</button></div>
     </div>
-    <div class="stats"><div class="stat"><b id="krtCount">—</b><span>проектов</span></div><div class="stat"><b id="krtArea">—</b><span>га территории</span></div><div class="stat"><b id="krtHousing">—</b><span>м² жилья</span></div><div class="stat"><b id="krtGfa">—</b><span>м² всего</span></div></div>
+    <div class="stats"><div class="stat"><b id="krtCount">—</b><span id="krtCountNote">проектов</span></div><div class="stat"><b id="krtArea">—</b><span>га территории</span></div><div class="stat"><b id="krtHousing">—</b><span>м² жилья</span></div><div class="stat"><b id="krtGfa">—</b><span>м² всего</span></div></div>
     <details class="fold" id="krtMapFold"><summary>Карта КРТ Москвы — 263 площадки с официальными границами</summary>
       <div class="foldbody"><div id="krtMapBody"><div class="notice">Открой, и карта построится.</div></div></div>
     </details>
@@ -632,8 +631,16 @@ function krtVolumeShare(value,[low,high]){
  if(v<=low)return 0;
  return Math.max(0,Math.min(1,Math.log(v/low)/Math.log(high/low)));
 }
+// Под какую задачу считать балл, говорит общий фильтр «Назначение»: отдельный
+// список «Ищем: …» дублировал его и «Статус» (владелец, 01.09.2026: «убери
+// этот фильтр, он дублирует другие — про статус и про назначение»). Два
+// органа управления на один вопрос однажды разойдутся, и оба будут выглядеть
+// верными. Ничего не выбрано — меряем жильём: это и был прежний смысл.
+function krtTaskProfile(){
+ return $('krtPurpose').value === 'business_gfa_sqm' ? 'business' : 'housing';
+}
 function krtFit(x){
- const profile=$('krtProfile').value;
+ const profile=krtTaskProfile();
  const total=Number(x.total_gfa_sqm)||0, housing=Number(x.housing_gfa_sqm)||0;
  const business=Number(x.business_gfa_sqm)||0, area=Number(x.area_ha)||0, jobs=Number(x.jobs)||0;
  const reasons=[], checks=[];
@@ -799,9 +806,13 @@ function krtIntent(x){
  // Первым — официальный источник: карточка каталога называет застройщика и
  // реновацию сама, бесплатно и без поиска. В решении их нет (измерено на
  // восьми документах), и вывод «источники молчат» был про решение, а не про
- // карточку. Читается она в прогоне, поэтому признак есть у всего списка, а
- // не только у площадок, открытых руками.
- const card=(state.krtCards||{})[x.slug]||rank.card_facts||null;
+ // карточку.
+ //
+ // Строка каталога несёт её сама (`x.card_facts`): прежде карточка читалась
+ // ТОЛЬКО в платном прогоне, и до прогона у площадки с явным оператором в
+ // колонке не стояло ничего — «мы не спрашивали» читалось как «оператора нет»
+ // (владелец, 01.09.2026). Бесплатный источник не зависит от платного.
+ const card=(state.krtCards||{})[x.slug]||x.card_facts||rank.card_facts||null;
  if(card&&card.available&&((card.developers||[]).length||card.renovation)){
   intent=Object.assign({probed:true,decision_read:false,kind:'',city_needs:[],
     operator:[],operator_name:'',taken:false}, intent||{});
@@ -977,8 +988,7 @@ function filterKrt(){
  const q=$('krtSearch').value.trim().toLowerCase(),status=$('krtStatus').value,
        purpose=$('krtPurpose').value,needs=$('krtNeeds').value,card=$('krtCard').value,tender=$('krtTender').value,stage=$('krtStage').value,
        minHousing=Number($('krtMinHousing').value)||0;
- const profile=$('krtProfile').value;
- let small=0, unknown=0, offtask=0, taken=0;
+ let small=0, unknown=0;
  state.krtFiltered=state.krt.filter(x=>{
   if(q&&![x.name,x.district,x.okrug].join(' ').toLowerCase().includes(q))return false;
   // Задача — это ОТБОР, а не оттенок балла. Два жилищных профиля считали
@@ -988,11 +998,6 @@ function filterKrt(){
   // жильё каталога вместе с занятым, «деловая» — площадки с нежилым объёмом.
   // Скрытое считается и называется под таблицей: молча выброшенная площадка
   // читается как её отсутствие.
-  const wanted=profile==='business'?Number(x.business_gfa_sqm):Number(x.housing_gfa_sqm);
-  if(!(wanted>0)){offtask++;return false}
-  if(profile==='housing_ready'&&String(x.status||'').toLowerCase().includes('реализац')){
-   taken++;return false;
-  }
   if(state.krtOkrugs.size&&!state.krtOkrugs.has(x.okrug))return false;
   if(status&&x.status!==status)return false;
   if(purpose&&!(Number(x[purpose])>0))return false;
@@ -1013,7 +1018,7 @@ function filterKrt(){
   }
   return true;
  }).sort(krtCompare);
- state.krtHidden={small,unknown,offtask,taken,profile};
+ state.krtHidden={small,unknown};
  renderKrt();
 }
 function sumKrt(rows,key,d){const n=rows.reduce((s,x)=>s+(Number(x[key])||0),0);return new Intl.NumberFormat('ru-RU',{maximumFractionDigits:d}).format(n)}
@@ -1083,13 +1088,11 @@ function renderKrtNewNote(){
 function renderKrtFilterNote(){
  const box=$('krtFilterNote');
  if(!box)return;
- const {small,unknown,offtask,taken,profile}=state.krtHidden||{};
+ const {small,unknown}=state.krtHidden||{};
  const bits=[];
- // Отбор по задаче виден числом: сколько площадок он снял и почему. Иначе
- // переключатель выглядит бездействующим ровно там, где он сработал сильнее
- // всего.
- if(offtask)bits.push(`${offtask} без объёма под задачу (${profile==='business'?'нежилого':'жилого'})`);
- if(taken)bits.push(`${taken} уже в реализации — войти нельзя`);
+ // Скрытое считается и называется: молча выброшенная площадка читается как её
+ // отсутствие. Отбора по задаче здесь больше нет — его делают «Статус» и
+ // «Назначение», и обе причины видны в самих списках.
  if(small)bits.push(`${small} ниже порога по объёму жилья`);
  if(unknown)bits.push(`${unknown} без указанного объёма жилья — это «не знаем», а не «мало»`);
  const sorted=state.krtSort.key!=='score'||state.krtSort.dir!==-1
@@ -1101,7 +1104,14 @@ function renderKrtFilterNote(){
 const KRT_SORT_NAMES={stage:'по шагу воронки',name:'по названию',score:'по баллу',ceiling:'по потолку входа',
  llcr:'по LLCR',margin:'по марже',status:'по статусу',area:'по площади',
  total:'по общему объёму',housing:'по объёму жилья',jobs:'по рабочим местам'};
-function renderKrt(){const a=state.krtFiltered,body=$('krtRows');body.innerHTML='';renderKrtFilterNote();$('krtEmpty').style.display=a.length?'none':'grid';$('krtCount').textContent=a.length;$('krtArea').textContent=sumKrt(a,'area_ha',1);$('krtHousing').textContent=sumKrt(a,'housing_gfa_sqm',0);$('krtGfa').textContent=sumKrt(a,'total_gfa_sqm',0);a.forEach(x=>{const sc=krtScore(x),model=state.krtModels[x.slug],light=model?.traffic_light,tr=document.createElement('tr');
+function renderKrt(){const a=state.krtFiltered,body=$('krtRows');body.innerHTML='';renderKrtFilterNote();$('krtEmpty').style.display=a.length?'none':'grid';$('krtCount').textContent=a.length;
+ // Плитка показывает ОТОБРАННОЕ, а подписана была просто «проектов»: на экране
+ // 58 при 577 в каталоге, и это читается как пропавший каталог (владелец,
+ // 01.09.2026: «в КРТ осталось 58 объектов, как так»). Число, названное не тем
+ // именем, выглядит посчитанным — и проверить его нечем.
+ const whole=(state.krt||[]).length;
+ $('krtCountNote').textContent=whole&&whole!==a.length
+   ? 'проектов в отборе · всего в каталоге '+whole : 'проектов';$('krtArea').textContent=sumKrt(a,'area_ha',1);$('krtHousing').textContent=sumKrt(a,'housing_gfa_sqm',0);$('krtGfa').textContent=sumKrt(a,'total_gfa_sqm',0);a.forEach(x=>{const sc=krtScore(x),model=state.krtModels[x.slug],light=model?.traffic_light,tr=document.createElement('tr');
  const title=sc.counted?`Потенциал по ТЭП ${sc.base}; расчёт снял ${sc.cut}%. ${light?.label||''}`:('Балл по ТЭП; модель ещё не считалась'+(sc.reason?'. '+sc.reason:''));
  const fresh=x.is_new?'<span class="tag new" title="Появилась в каталоге недавно">новое</span>':'';
  // Строка без карточки честно говорит, чего у неё нет: ТЭП, балла и модели.
@@ -1115,7 +1125,7 @@ function renderKrt(){const a=state.krtFiltered,body=$('krtRows');body.innerHTML=
  // Реновация и застройщик — с официальной карточки, прочитанной прогоном.
  // Видеть их можно было только внутри открытой площадки: «а где поиск
  // публичной информации и реновация в таблице?» (владелец, 01.09.2026).
- const card=(state.krtCards||{})[x.slug]||(state.krtRank[x.slug]||{}).card_facts||{};
+ const card=(state.krtCards||{})[x.slug]||x.card_facts||(state.krtRank[x.slug]||{}).card_facts||{};
  const press=(state.krtPress||{})[x.slug]||null;
  const renov=card.renovation||((press&&press.city_needs||[]).length>0);
  const builder=(card.developers||[])[0]
@@ -1806,7 +1816,7 @@ function krtMapMarkup(d){
  // линейка. Печатную картинку она не подменяет (её видно сразу и она уезжает в
  // отчёт), а отвечает на другой вопрос — «что вокруг».
  const live=typeof openLandMap==='function'
-  ? `<button type="button" id="krtMapLive" class="pdfbtn">Развернуть живую карту</button> `
+  ? `<button type="button" id="krtMapLive" class="pdfbtn">Открыть живую карту — двигать и приближать</button> `
   : '<span>Живая карта не подключена: страница поднята без движка.</span> ';
  const scope=`<div class="source" style="margin:6px 0">${live}<button type="button" id="krtMapWhole" class="pdfbtn">`
    +(KRT_MAP.whole?'Показать город плотно':'Показать всю Москву')+'</button>'
@@ -1814,8 +1824,9 @@ function krtMapMarkup(d){
      +'Кадр взят по основной массе: в общей рамке город сжимается в пятно.</span>':'')+'</div>';
  return `${scope}<div class="krtmap" style="position:relative;max-width:100%;overflow:auto">
    <div style="position:relative;width:${KRT_MAP.w}px;height:${KRT_MAP.h}px">
-     <img src="${src}" alt="" width="${KRT_MAP.w}" height="${KRT_MAP.h}"
-          style="position:absolute;left:0;top:0;width:100%;height:100%;object-fit:cover">
+     <img src="${src}" alt="" width="${KRT_MAP.w}" height="${KRT_MAP.h}" id="krtMapShot"
+          title="Нажмите, чтобы открыть живую карту"
+          style="position:absolute;left:0;top:0;width:100%;height:100%;object-fit:cover;cursor:zoom-in">
      <svg viewBox="0 0 ${KRT_MAP.w} ${KRT_MAP.h}" width="${KRT_MAP.w}" height="${KRT_MAP.h}"
           style="position:absolute;left:0;top:0">${shapes}</svg>
      <div id="krtMapTip" style="position:absolute;display:none;pointer-events:none;z-index:3;
@@ -1824,8 +1835,8 @@ function krtMapMarkup(d){
   <div class="source" style="margin-top:8px">${legend}</div>
   <div class="source">Границы — официальные полигоны реестра КРТ (${sites.length} площадок).
    Подложка — та же карта улиц, что в карточке участка. Наведите на площадку, чтобы увидеть сводку;
-   нажмите, чтобы открыть её карточку. Этот кадр неподвижен намеренно — он же уходит в отчёт;
-   чтобы приблизить и подвинуть, разверните живую карту.</div>`;
+   нажмите на неё, чтобы открыть карточку, а на свободное место — чтобы открыть живую карту.
+   Этот кадр неподвижен намеренно: он же уходит в отчёт, и подвижную картинку туда не вставить.</div>`;
 }
 // Живая карта площадок. Своей проекции и своих тайлов здесь нет — всё берётся
 // у движка (`openLandMap`), потому что разошедшиеся проекции кладут контур
@@ -1863,6 +1874,13 @@ function krtMapBind(){
    body.innerHTML=krtMapMarkup(KRT_MAP.data);krtMapBind()};
  const liveBtn=document.getElementById('krtMapLive');
  if(liveBtn)liveBtn.onclick=()=>openKrtLiveMap(sites);
+ // Живая карта была только за кнопкой, и первым человек видел неподвижный
+ // кадр — «карта крт статичная и неудобная» (владелец, 01.09.2026). Теперь её
+ // открывает сам кадр. Контуры при этом по-прежнему ведут в карточку: они
+ // лежат в SVG поверх картинки, и клик по контуру до картинки не доходит, а
+ // по пустому месту SVG не ловится вовсе — там нет ни одной фигуры.
+ const shot=document.getElementById('krtMapShot');
+ if(shot)shot.onclick=()=>openKrtLiveMap(sites);
  body.querySelectorAll('path.krtshape').forEach(node=>{
   const s=sites[Number(node.dataset.i)];
   if(!s)return;
@@ -2110,7 +2128,7 @@ $('askBtn').onclick=askPlato;
 $('askCard').querySelectorAll('.chips button').forEach(b=>{
  b.onclick=()=>{$('askText').value=b.dataset.q;askPlato()};
 });
-$('tabAuctions').onclick=()=>switchTab(false);$('tabKrt').onclick=()=>switchTab(true);$('krtRefresh').onclick=loadKrt;$('krtRankBtn').onclick=startKrtRanking;$('krtPressBtn').onclick=readKrtPressForFiltered;$('krtSearch').oninput=filterKrt;$('krtStatus').onchange=filterKrt;$('krtPurpose').onchange=filterKrt;$('krtNeeds').onchange=filterKrt;$('krtCard').onchange=filterKrt;$('krtTender').onchange=filterKrt;$('krtStage').onchange=filterKrt;document.getElementById('krtMapFold')?.addEventListener('toggle',ev=>{if(ev.target.open)loadKrtMap()});$('krtMinHousing').oninput=filterKrt;document.querySelectorAll('#krtRows').forEach(()=>{});document.querySelectorAll('th[data-sort]').forEach(th=>{th.style.cursor='pointer';th.title=(th.title?th.title+'. ':'')+'Нажмите, чтобы отсортировать';th.onclick=()=>krtSortBy(th.dataset.sort)});$('krtProfile').onchange=()=>{filterKrt();if(state.selectedKrt)selectKrt(state.selectedKrt)};
+$('tabAuctions').onclick=()=>switchTab(false);$('tabKrt').onclick=()=>switchTab(true);$('krtRefresh').onclick=loadKrt;$('krtRankBtn').onclick=startKrtRanking;$('krtPressBtn').onclick=readKrtPressForFiltered;$('krtSearch').oninput=filterKrt;$('krtStatus').onchange=filterKrt;$('krtNeeds').onchange=filterKrt;$('krtCard').onchange=filterKrt;$('krtTender').onchange=filterKrt;$('krtStage').onchange=filterKrt;document.getElementById('krtMapFold')?.addEventListener('toggle',ev=>{if(ev.target.open)loadKrtMap()});$('krtMinHousing').oninput=filterKrt;document.querySelectorAll('#krtRows').forEach(()=>{});document.querySelectorAll('th[data-sort]').forEach(th=>{th.style.cursor='pointer';th.title=(th.title?th.title+'. ':'')+'Нажмите, чтобы отсортировать';th.onclick=()=>krtSortBy(th.dataset.sort)});$('krtPurpose').onchange=()=>{filterKrt();if(state.selectedKrt)selectKrt(state.selectedKrt)};
 $('krtOkrugToggle').onclick=e=>{e.stopPropagation();const menu=$('krtOkrugMenu'),open=menu.classList.contains('hidden');menu.classList.toggle('hidden',!open);$('krtOkrugToggle').setAttribute('aria-expanded',String(open))};$('krtOkrugMenu').onclick=e=>e.stopPropagation();$('krtOkrugClear').onclick=()=>{state.krtOkrugs.clear();$('krtOkrugOptions').querySelectorAll('input').forEach(x=>x.checked=false);updateKrtOkrugLabel();filterKrt()};document.addEventListener('click',closeKrtOkrugs);document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeKrtOkrugs();$('krtOkrugToggle').focus()}});
 loadKrtRanking();
 // Ссылка из «Поделиться» открывает ту же территорию: получатель попадает на

@@ -70,7 +70,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.21.41"
+VERSION = "0.21.43"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -9363,6 +9363,66 @@ _GLAVAPU_SNAPSHOT_JS = """() => {
 }"""
 
 
+# Строки, без которых таблица бесполезна. Проверяются по ИМЕНИ, а не по номеру:
+# разбор и так читает таблицу по именам, а номера чужой таблицы источник
+# перенумеровал молча — кода 60 у ГлавАПУ больше нет, таблица кончается на 58
+# (живой снимок ядра, 01.09.2026). Имя строки означает величину, номер — только
+# её место, и держаться надо за первое.
+_GLAVAPU_CONTROL_NAMES = (
+    "площадь территории проектирования",
+    "население",
+    "количество квартир",
+    "площадь квартир",
+)
+
+
+def _glavapu_name_key(value: Any) -> str:
+    return " ".join(str(value or "").lower().replace("ё", "е").split())
+
+
+def _glavapu_missing_controls(rows: list[dict[str, Any]]) -> list[str]:
+    """Каких контрольных строк в таблице нет. Пусто — значит все на месте."""
+    have = [_glavapu_name_key(row.get("name")) for row in rows]
+    return [need for need in _GLAVAPU_CONTROL_NAMES
+            if not any(name.startswith(need) for name in have)]
+
+
+def _glavapu_table_shot(rows: list[dict[str, Any]]) -> str:
+    """Отпечаток таблицы: по нему видно, что она перестала меняться.
+
+    Ждать «появился код 60» нельзя — номер чужой строки меняет источник. Ждать
+    «таблица перестала меняться» можно всегда: это свойство самой таблицы, а не
+    её нумерации.
+    """
+    return "|".join(
+        f"{row.get('code') or ''}={row.get('value') or ''}" for row in rows)
+
+
+def _glavapu_not_ready_message(rows: list[dict[str, Any]],
+                               snapshot: dict[str, Any]) -> str:
+    """Отказ называет то, что увидел, а не то, чего не дождался.
+
+    Состояния читаются одинаково и означают разное: таблицы нет вовсе; таблица
+    есть и пуста; таблица полна, но в ней нет строк, которые мы читаем; таблица
+    полна и всё ещё считается.
+    """
+    limit = _GLAVAPU_HEADLESS_TIMEOUT_MS // 1000
+    if not snapshot.get("calc_table", True):
+        labels = ", ".join(f"{t.get('label') or '—'}:{t.get('rows')}"
+                           for t in (snapshot.get("tables") or [])[:6])
+        return (f"таблицы calc table на странице нет за {limit} с; "
+                f"таблицы на странице: {labels or 'ни одной'}")
+    if not rows:
+        return f"таблица calc table пуста за {limit} с"
+    missing = _glavapu_missing_controls(rows)
+    if missing:
+        first = " | ".join((snapshot.get("sample") or [[]])[0][:4])
+        return (f"таблица есть ({len(rows)} строк), но в ней нет строк, которые мы "
+                f"читаем: {', '.join(missing)}. Первая строка: {first[:180]}")
+    return (f"таблица есть ({len(rows)} строк), все контрольные строки на месте, но за "
+            f"{limit} с она так и не перестала меняться — калькулятор всё ещё считает")
+
+
 class GlavapuParcelNotAccepted(TimeoutError):
     """Калькулятор не принял участок: кнопка перехода к расчётам не ожила.
 
@@ -9395,35 +9455,6 @@ def _glavapu_block_junk(route: Any) -> None:
         route.abort() if junk else route.continue_()
     except Exception:  # страница уже ушла — нечего продолжать
         pass
-
-
-def _glavapu_not_ready_message(rows: list[dict[str, Any]], seen: list[str],
-                               snapshot: dict[str, Any]) -> str:
-    """Отказ называет то, что увидел, а не то, чего не дождался.
-
-    Три состояния читаются одинаково и означают разное: таблицы нет вовсе;
-    таблица есть и пуста; таблица есть, полна, но столбец с кодом сменился —
-    тогда `code` пуст у всех строк, и готовность не наступит НИКОГДА, сколько
-    ни ждать. Последнее и выглядело как «калькулятор не отдал таблицу».
-    """
-    limit = _GLAVAPU_HEADLESS_TIMEOUT_MS // 1000
-    if not snapshot.get("calc_table", True):
-        labels = ", ".join(f"{t.get('label') or '—'}:{t.get('rows')}"
-                           for t in (snapshot.get("tables") or [])[:6])
-        return (f"таблицы calc table на странице нет за {limit} с; "
-                f"таблицы на странице: {labels or 'ни одной'}")
-    if not rows:
-        return f"таблица calc table пуста за {limit} с"
-    if not seen:
-        widths = ",".join(str(w) for w in (snapshot.get("widths") or []))
-        first = " | ".join((snapshot.get("sample") or [[]])[0][:4])
-        return (f"таблица есть ({len(rows)} строк), но НИ У ОДНОЙ строки нет кода "
-                f"в первой ячейке — столбец сменился. Ширины строк: {widths or '—'}. "
-                f"Первая строка: {first[:180]}")
-    missing = [code for code in ("60", "54") if code not in seen]
-    return (f"таблица есть ({len(rows)} строк), кодов {len(seen)}, "
-            f"нет кодов {', '.join(missing)}; прочитаны: {', '.join(seen[:14])}"
-            f"{'…' if len(seen) > 14 else ''}")
 
 
 # Сколько ждём, пока калькулятор примет участок. Меньше общего срока
@@ -9630,21 +9661,29 @@ def _glavapu_drive_page(page: Any, numbers: list[str], area_ha: float,
     _glavapu_proceed(page, numbers)
     mark("parcel")
     deadline = time.monotonic() + _GLAVAPU_HEADLESS_TIMEOUT_MS / 1000.0
+    last_shot = ""
     while True:
         rows = page.evaluate(_GLAVAPU_READ_ROWS_JS) or []
-        codes = {str(r.get("code") or "") for r in rows}
-        if "60" in codes and "54" in codes and len(rows) >= 60:
+        # Готовность больше не держится на номере чужой строки. Кода 60 у
+        # ГлавАПУ не стало — таблица перенумерована и кончается на 58 (живой
+        # снимок ядра, 01.09.2026), — и мы ждали несуществующую строку девяносто
+        # секунд, на каждом участке и у всех сразу. Номер строки источник меняет
+        # когда захочет; ждём того, что от нумерации не зависит: строки, которые
+        # мы читаем ПО ИМЕНАМ, на месте, и таблица перестала меняться.
+        shot = _glavapu_table_shot(rows)
+        if (len(rows) >= 60 and not _glavapu_missing_controls(rows)
+                and shot and shot == last_shot):
             mark("table")
             return rows
+        last_shot = shot
         if time.monotonic() > deadline:
             try:
                 snapshot = page.evaluate(_GLAVAPU_SNAPSHOT_JS) or {}
             except Exception:  # страница ушла — снимка не будет, но отказ будет
                 snapshot = {}
             snapshot = _glavapu_with_network(snapshot)
-            seen = sorted(code for code in codes if code)
             raise GlavapuTableNotReady(
-                _glavapu_not_ready_message(rows, seen, snapshot), snapshot)
+                _glavapu_not_ready_message(rows, snapshot), snapshot)
         page.wait_for_timeout(_GLAVAPU_HEADLESS_POLL_MS)
 
 
@@ -10278,9 +10317,18 @@ def import_cadastral_tep(req: CadastralTepRequest) -> dict[str, Any]:
         value = str(item.get("value") or "").strip()[:120]
         if name and value:
             table_rows.append([code or None, name, unit, value])
-    codes = {str(row[0]) for row in table_rows if row[0]}
-    if not {"1", "10", "42", "54", "60"}.issubset(codes):
-        raise HTTPException(status_code=400, detail="Не все контрольные строки ТЭП получены из калькулятора")
+    # Контроль полноты — по ИМЕНАМ строк, а не по их номерам. Кода 60 у ГлавАПУ
+    # больше нет (живой снимок ядра, 01.09.2026): таблица перенумерована и
+    # кончается на 58, а разбор и так читает её по именам. Номер чужой строки
+    # означает только её место, и держаться за него — значит ломаться при
+    # каждой перенумерации, молча и у всех сразу.
+    missing = _glavapu_missing_controls(
+        [{"name": row[1]} for row in table_rows])
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail="Не все контрольные строки ТЭП получены из калькулятора: "
+                   + ", ".join(missing))
 
     analysis = req.cadastral_analysis or {}
     territory = analysis.get("territory") or {}

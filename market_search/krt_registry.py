@@ -240,6 +240,8 @@ class KrtRegistry:
         self.ttl_seconds = 24 * 60 * 60
         self._refreshing = False
         self._refresh_lock = threading.Lock()
+        self._cards_filling = False
+        self._cards_lock = threading.Lock()
 
     def projects(self, *, refresh: bool = False, max_pages: int = 100) -> list[KrtTerritory]:
         cached = load_json(self.path)
@@ -409,6 +411,69 @@ class KrtRegistry:
                     "slug": clean, "source_url": url})
         save_json(path, out)
         return out
+
+    def card_facts_known(self, slugs: list[str] | tuple[str, ...]) -> dict[str, dict[str, Any]]:
+        """Что о карточках УЖЕ прочитано — с диска, без единого запроса.
+
+        Карточка называет застройщика бесплатно, а читалась она только в
+        платном прогоне каталога: пока прогона не было, колонка занятости
+        пустовала у всех подряд, и «мы не спрашивали» читалось как «оператора
+        нет» (владелец, 01.09.2026: «где очевидно что КРТ уже с оператором —
+        ничего не стоит»). Бесплатный официальный источник не должен зависеть
+        от платного.
+
+        Здесь именно ЗНАЕМ, а не спрашиваем: маршрут каталога не имеет права
+        ходить в сеть 263 раза, пока человек ждёт ответа.
+        """
+        out: dict[str, dict[str, Any]] = {}
+        for slug in slugs:
+            clean = str(slug or "").strip()
+            if not re.fullmatch(r"[a-zA-Z0-9_-]{2,180}", clean):
+                continue
+            cached = load_json(self.card_facts_dir / f"{clean}.json")
+            if (isinstance(cached, dict)
+                    and cached.get("schema_version") == CARD_FACTS_SCHEMA_VERSION):
+                out[clean] = cached
+        return out
+
+    def fill_card_facts_in_background(self, slugs: list[str] | tuple[str, ...],
+                                      *, limit: int = 40) -> bool:
+        """Дочитать карточки, которых ещё нет, — фоном и порциями.
+
+        Порция намеренно ограничена: каталог из 263 площадок за один заход —
+        это 263 запроса подряд к сайту города, и он вправе счесть это налётом.
+        Следующее чтение каталога дочитает следующую порцию; через несколько
+        открытий колонка заполнена целиком.
+
+        Работу берёт один: воркеров два, память у них раздельная, и без замка
+        оба пошли бы читать одно и то же.
+        """
+        clean = [str(slug or "").strip() for slug in slugs]
+        missing = [slug for slug in clean
+                   if re.fullmatch(r"[a-zA-Z0-9_-]{2,180}", slug or "")
+                   and not fresh(self.card_facts_dir / f"{slug}.json", self.ttl_seconds)]
+        if not missing:
+            return False
+        with self._cards_lock:
+            if self._cards_filling:
+                return False
+            self._cards_filling = True
+
+        def run() -> None:
+            try:
+                for slug in missing[:max(1, int(limit))]:
+                    try:
+                        self.card_facts(slug)
+                    except Exception:  # noqa: BLE001
+                        # Не ответила одна карточка — остальные читаем дальше:
+                        # один отказ не должен оставлять колонку пустой у всех.
+                        continue
+            finally:
+                with self._cards_lock:
+                    self._cards_filling = False
+
+        threading.Thread(target=run, name="krt-card-facts", daemon=True).start()
+        return True
 
     def requirements(self, slug: str, *, refresh: bool = False) -> dict[str, Any] | None:
         """Read one planned KRT card and its official project-decision PDF."""

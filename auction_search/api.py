@@ -36,6 +36,11 @@ from auction_search.adapters.etp_probe import (
 from auction_search.adapters.fedresurs import (
     SEARCH_PAGE as FEDRESURS_SEARCH_PAGE,
     probe as fedresurs_probe, probe_browser as fedresurs_browser)
+from auction_search.adapters.roseltorg_probe import (
+    CATALOGUE_URL as ROSELTORG_SECTION_URL,
+    probe as roseltorg_probe,
+    probe_section_browser as roseltorg_section_browser,
+)
 from auction_search.bridge import auction_page_with_handoff, install_page_bridge
 from auction_search.catalogue_quality import catalogue_quality
 from auction_search import equity_stake
@@ -641,7 +646,17 @@ def install(app: FastAPI) -> None:
                     "name": "Росэлторг",
                     "direct_lot_ingest": True,
                     "moscow_discovery": True,
-                    "discovery_access": "public_tags_search",
+                    "discovery_access": "public_tags_search_and_property_section",
+                    # Что источник СОДЕРЖИТ — часть ответа. Раздел имущества
+                    # «Развитие территории» — адрес, с которого город публикует
+                    # аукционы КРТ; со страницы берутся только ссылки на
+                    # карточки процедур, а читает их тот же разбор, что и
+                    # раньше. Чем отвечает сам раздел, показывает
+                    # `/auctions/roseltorg/probe` — с ядра: из песочницы
+                    # roseltorg.ru закрыт.
+                    "note": ("Поиск процедур по тегам плюс раздел имущества "
+                             "«Развитие территории» по Москве (ОКАТО 45000000000). "
+                             "Проба раздела — /auctions/roseltorg/probe."),
                 },
                 {
                     "id": "etp_gpb",
@@ -702,6 +717,33 @@ def install(app: FastAPI) -> None:
              "is_new": krt_ranking.is_new(seen.get(str(row.get("slug") or "")))}
             for row in projects
         ]
+        # Что карточка города говорит о застройщике и реновации — бесплатный
+        # официальный источник, и он больше не ждёт платного прогона: строка
+        # каталога несёт то, что уже прочитано, а недостающее дочитывается
+        # фоном порциями. Пока это лежало только в прогоне, у площадки с явным
+        # оператором в колонке не стояло ничего, и «не спрашивали» читалось как
+        # «оператора нет» (владелец, 01.09.2026).
+        known = getattr(krt_registry, "card_facts_known", None)
+        if callable(known):
+            slugs = [str(row.get("slug") or "") for row in projects]
+            try:
+                facts = await run_in_threadpool(known, slugs)
+            except Exception:  # noqa: BLE001
+                logger.exception("KRT card facts cache failed")
+                facts = {}
+            if facts:
+                projects = [
+                    {**row, "card_facts": facts.get(str(row.get("slug") or ""))}
+                    if facts.get(str(row.get("slug") or "")) else row
+                    for row in projects
+                ]
+            filler = getattr(krt_registry, "fill_card_facts_in_background", None)
+            if callable(filler):
+                try:
+                    filler(slugs)
+                except Exception:  # noqa: BLE001
+                    logger.exception("KRT card facts fill failed")
+
         status = krt_registry.status()
         # Неразобранная карточка называется вслух. Её значения съезжают на
         # поле — округом становится статус, статусом хвост адреса, — и такая
@@ -1524,6 +1566,52 @@ def install(app: FastAPI) -> None:
         # параметр оставляет страницу поиска торгов, как было.
         return await run_in_threadpool(
             lambda: fedresurs_browser(url=url.strip() or FEDRESURS_SEARCH_PAGE, seconds=seconds))
+
+    @app.get("/auctions/roseltorg/probe")
+    async def auction_roseltorg_probe(
+        seconds: float = Query(default=45.0, ge=5.0, le=90.0),
+    ) -> dict[str, Any]:
+        """Чем отвечает раздел «Развитие территории» Росэлторга. Разбора нет.
+
+        Владелец прислал адрес каталога и живой лот на экране: аукцион на
+        право заключения договора о КРТ нежилой застройки Москвы, 14,62 га,
+        2,4 млрд ₽. Наша разведка Росэлторга этот раздел не спрашивает вовсе —
+        она ходит только в поиск процедур по тегам. Это утверждение о нашем
+        коде, и его видно в нём; чем отвечает сам раздел, скажет проба.
+
+        Рядом спрашивается НЫНЕШНИЙ путь разведки: «раздел отвечает» и «раздел
+        отвечает лучше нынешнего» — разные утверждения, и второе без
+        контрольного запроса не проверяется.
+
+        Ответ из двух половин и обе нужны: простой запрос показывает, что
+        приходит в HTML, живой браузер — за чем страница ходит сама и что в
+        итоге оказалось в DOM. Пустой список запросов при видимых карточках
+        значит «всё пришло первым ответом», а не «карточек нет».
+
+        Произвольного адреса здесь нет намеренно: спрашивается ровно тот
+        раздел, который открывает владелец.
+
+        Из песочницы roseltorg.ru закрыт, поэтому проба ходит только с ядра.
+        """
+        return await run_in_threadpool(lambda: roseltorg_probe(seconds=float(seconds)))
+
+    @app.get("/auctions/roseltorg/browser")
+    async def auction_roseltorg_browser(
+        seconds: float = Query(default=45.0, ge=5.0, le=90.0),
+        url: str = Query(default=""),
+        save: bool = Query(default=False),
+    ) -> dict[str, Any]:
+        """Тот же раздел живым браузером — и адреса, за которыми он ходит.
+
+        Если каталог рисует приложение, в простом ответе будет оболочка, а
+        числа приедут отдельными вызовами. Их адреса и нужны, чтобы написать
+        читателя — не угаданные, а увиденные. `save=1` кладёт страницу файлом:
+        читатель пишется по настоящей странице и ею же проверяется.
+        """
+        target = url.strip() or ROSELTORG_SECTION_URL
+        save_to = "/tmp/roseltorg-section.html" if save else ""
+        return await run_in_threadpool(
+            lambda: roseltorg_section_browser(target, seconds=seconds, save_to=save_to))
 
     @app.get("/auctions/etp/probe")
     async def auction_etp_probe() -> dict[str, Any]:
