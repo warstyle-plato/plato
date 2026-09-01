@@ -1057,6 +1057,19 @@ def install(app: FastAPI) -> None:
             # Поиск не ответил — это ответ, а не «в источниках ничего нет».
             return {"available": False, "reason": "; ".join(errors[:2]), "queries": asked}
         found = krt_open_sources.read_findings(docs, name)
+        # Рынок знает площадку по имени проекта, а не по адресу: «Строгино 360»
+        # знают все, «Маршала Прошлякова ул., вл. 9» — никто. Имя берётся из
+        # публикации, где оно стоит рядом с адресом, и вторым кругом ищется уже
+        # оно. Круг ровно один: поиск платный, а бренд у площадки один.
+        for brand in (found.get("brands") or [])[:1]:
+            query = f'"{brand}" застройщик КРТ Москва'
+            asked = asked + [query]
+            try:
+                docs.extend(await run_in_threadpool(finder, query))
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{type(exc).__name__}: {exc}")
+            else:
+                found = krt_open_sources.read_findings(docs, name)
         found.update({"available": True, "queries": asked, "errors": errors[:2]})
         return found
 

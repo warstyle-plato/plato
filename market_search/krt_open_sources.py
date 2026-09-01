@@ -105,9 +105,76 @@ def _mentions(sentence: str, anchors: set[str]) -> bool:
     return any(word.startswith(stem) for word in words for stem in anchors)
 
 
+# Имя проекта рынком известно раньше адреса: «Строгино 360» знают все, а
+# «Маршала Воробьева ул., вл. 12» — никто. Статья про бренд к площадке не
+# привязывалась вовсе: якорем служит адрес, и это дыра, а не осторожность
+# (владелец, 01.09.2026: «по улице Маршала Воробьева 12 не показывает, что оно
+# обещано кому-то, а там же Строгино 360 и это ПИК»).
+#
+# Бренд берётся только доказанный: он обязан стоять в ОДНОМ предложении с
+# адресом площадки. Иначе повторится ошибка модуля рынка, где сниппет,
+# повторяющий запрос, отдавал каждому кандидату адрес объекта оценки.
+_BRAND = re.compile(
+    r"(?:ЖК|жилой комплекс|жилого комплекса|проект|проекта|квартал)\s+"
+    r"[«\"]([^«»\"]{3,40})[»\"]"
+    r"|[«\"]([А-ЯЁA-Z][^«»\"]{2,39})[»\"]")
+# Слова, которые в кавычках стоят, но именем проекта не являются.
+_NOT_BRAND = {"крт", "комплексное развитие территории", "реновация", "москва",
+              "планируемый", "в реализации", "проект решения"}
+
+
+def brand_names(docs: Iterable[Any], name: str) -> list[str]:
+    """Как площадка называется на рынке — по соседству с её адресом.
+
+    Пусто — значит пусто: имя, взятое из предложения без адреса, привязало бы
+    к площадке чужой проект.
+    """
+    anchors = _anchor_words(name)
+    found: list[str] = []
+    for doc in docs or []:
+        text = f"{getattr(doc, 'title', '')}. {getattr(doc, 'snippet', '')}"
+        for sentence in _sentences(text):
+            if not _mentions(sentence, anchors):
+                continue
+            for match in _BRAND.finditer(sentence):
+                brand = (match.group(1) or match.group(2) or "").strip()
+                low = brand.lower().replace("ё", "е")
+                if not brand or low in _NOT_BRAND:
+                    continue
+                # Имя, состоящее из слов самого адреса, вторым якорем не
+                # является: оно ничего не добавляет.
+                if _mentions(brand, anchors):
+                    continue
+                if brand not in found:
+                    found.append(brand)
+    return found[:3]
+
+
+# Сокращения, после которых точка — не конец фразы. Адрес площадки сам состоит
+# из них: «Маршала Воробьева ул., вл. 12» разваливалось пополам, адрес уезжал в
+# одно предложение, признак — в другое, и правило «в одном предложении» молча
+# теряло настоящую находку на КАЖДОМ адресе с «вл.» (владелец, 01.09.2026).
+_ABBR = {"вл", "влд", "д", "дом", "стр", "корп", "к", "тер", "кв", "ул", "просп",
+         "пр", "пер", "наб", "ш", "г", "гг", "руб", "тыс", "млн", "млрд", "им",
+         "обл", "мкр", "п", "с", "им", "т", "ок", "прим", "рис", "см"}
+_TAIL_WORD = re.compile(r"([А-Яа-яЁёA-Za-z]+)\.$")
+
+
 def _sentences(text: str) -> list[str]:
     flat = _SPACE.sub(" ", str(text or "")).strip()
-    return [part.strip() for part in _SENTENCE.split(flat) if part.strip()]
+    parts = [part.strip() for part in _SENTENCE.split(flat) if part.strip()]
+    out: list[str] = []
+    for part in parts:
+        if out:
+            tail = _TAIL_WORD.search(out[-1])
+            short = tail and tail.group(1).lower().replace("ё", "е") in _ABBR
+            # Точка после сокращения или перед числом фразу не кончает:
+            # «вл. 12», «д. 5 стр. 2», «тыс. кв. м».
+            if short or part[:1].isdigit():
+                out[-1] = out[-1] + " " + part
+                continue
+        out.append(part)
+    return out
 
 
 def _operator_name(sentence: str) -> str:
@@ -133,7 +200,14 @@ def _found(sentence: str, doc: Any) -> dict[str, Any]:
 
 def read_findings(docs: Iterable[Any], name: str) -> dict[str, Any]:
     """Разобрать выдачу по одной площадке. Без цитаты признак не ставится."""
-    anchors = _anchor_words(name)
+    anchors = set(_anchor_words(name))
+    # Бренд площадки, если он доказан соседством с адресом, работает якорем
+    # наравне с адресом: статья, где сказано только «Строгино 360», иначе
+    # проходит мимо.
+    docs = list(docs or [])
+    brands = brand_names(docs, name)
+    for brand in brands:
+        anchors |= _anchor_words(brand)
     operator_named: list[dict[str, Any]] = []
     operator_appointed: list[dict[str, Any]] = []
     operator_pending: list[dict[str, Any]] = []
@@ -177,6 +251,10 @@ def read_findings(docs: Iterable[Any], name: str) -> dict[str, Any]:
         "operator_pending": operator_pending[:3],
         "city_needs": city_needs[:3],
         "stage": stage[:4],
+        # Как площадка известна рынку: имя проекта, доказанное соседством с
+        # адресом. По нему идёт второй круг поиска — статья про бренд адреса
+        # чаще всего не называет.
+        "brands": brands,
         "taken": bool(operator_named or operator_appointed),
         "free": bool(operator_pending) and not (operator_named or operator_appointed),
     }
