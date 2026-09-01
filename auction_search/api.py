@@ -38,6 +38,7 @@ from auction_search.adapters.fedresurs import (
     probe as fedresurs_probe, probe_browser as fedresurs_browser)
 from auction_search.bridge import auction_page_with_handoff, install_page_bridge
 from auction_search.catalogue_quality import catalogue_quality
+from auction_search import equity_stake
 from auction_search.developaid_mapper import build_developaid_seed
 from auction_search.documents import DocumentExtractionError
 from auction_search.export_areas import export_areas
@@ -283,13 +284,20 @@ def _handoff_land_cadastres(preset: dict[str, Any], context: dict[str, Any]) -> 
 _LOTONLINE_PROJECT_SHARES_FLAG = "AUCTION_LOTONLINE_PROJECT_SHARES_DISCOVERY"
 
 
-def _feature_enabled(name: str) -> bool:
-    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+def _feature_enabled(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
 
 
 def _lot_online_discovery_adapter() -> LotOnlineAdapter:
+    # Доли в юрлицах спрашиваются по умолчанию (владелец, 01.09.2026: «надо
+    # посмотреть ещё лоты по продаже долей в юр лицах»). Категория 85 РАД —
+    # «Акции и доли предприятий»; выключатель остаётся на случай, когда цена
+    # обхода каталога важнее полноты.
     return LotOnlineAdapter(
-        include_project_shares=_feature_enabled(_LOTONLINE_PROJECT_SHARES_FLAG),
+        include_project_shares=_feature_enabled(_LOTONLINE_PROJECT_SHARES_FLAG, True),
     )
 
 
@@ -607,8 +615,8 @@ def install(app: FastAPI) -> None:
                     "moscow_discovery": True,
                     "discovery_access": "public_catalogue",
                     "project_company_shares_discovery": {
-                        "enabled": _feature_enabled(_LOTONLINE_PROJECT_SHARES_FLAG),
-                        "rollout": "explicit_runtime_flag",
+                        "enabled": _feature_enabled(_LOTONLINE_PROJECT_SHARES_FLAG, True),
+                        "rollout": "on_by_default_switchable",
                     },
                 },
                 {
@@ -1609,6 +1617,10 @@ def install(app: FastAPI) -> None:
                     # вторым счётом той же величины.
                     "fit": profile_fit(_public_lot_dict(lot)),
                     "quality": catalogue_quality(lot),
+                    # Доля в юрлице разбирается сервером: пороги владельца и
+                    # разбор активов, объявленные один раз. Собранные на
+                    # странице, они были бы вторым ответом на тот же вопрос.
+                    "equity": equity_stake.screen(lot),
                     "screening": {
                         **AuctionSearchService.screen_lot(lot),
                         "documents_count": len(lot.documents),

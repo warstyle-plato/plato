@@ -77,7 +77,7 @@ __DEVELOPAID_CONTOUR__
   <div class="filters" id="auctionFilters">
     <select id="source"><option value="all">Все официальные источники</option><option value="investmoscow">Торги Москвы → ЭТП</option><option value="lot_online">РАД / Lot-online</option><option value="roseltorg">Росэлторг</option><option value="torgi_gov">ГИС Торги</option><option value="etp_gpb">ЭТП ГПБ</option><option value="etp_rf">ЭТП РФ</option><option value="sberbank_ast">Сбербанк-АСТ</option><option value="nistp">НИС</option></select>
     <select id="origin" title="Городские торги и банкротные — разные рынки: у города цена не снижается, у банкротного лота она ползёт от начальной к минимальной по графику"><option value="all">Все торги</option><option value="city">Городские</option><option value="bankruptcy">Банкротные</option><option value="seized">Арест и ИП</option><option value="other">Прочие</option></select>
-    <select id="kind"><option value="all">Все типы</option><option value="land">— Земля</option><option value="building">— Объекты</option><option value="krt">КРТ</option><option value="land_sale">Продажа земли</option><option value="land_lease">Аренда земли</option><option value="property_complex">ЗИК</option><option value="unfinished">Незавершёнка</option></select>
+    <select id="kind"><option value="all">Все типы</option><option value="land">— Земля</option><option value="building">— Объекты</option><option value="krt">КРТ</option><option value="land_sale">Продажа земли</option><option value="land_lease">Аренда земли</option><option value="property_complex">ЗИК</option><option value="equity_stake">Доля в юрлице</option><option value="unfinished">Незавершёнка</option></select>
     <select id="noise"><option value="0">Интересные · данные заполнены</option><option value="1">Показать неполные и шум</option></select>
     <input id="search" placeholder="Адрес / кадастр / лот">
     <button id="refresh" class="primary">Обновить</button><button id="auctionExport">Выгрузить Excel</button>
@@ -132,7 +132,7 @@ const fmtArea=n=>n!==null&&n!==undefined&&n!==''&&Number.isFinite(Number(n))?new
 const fmtMln=n=>n!==null&&n!==undefined&&Number.isFinite(Number(n))?new Intl.NumberFormat('ru-RU',{maximumFractionDigits:1}).format(Number(n))+' млн ₽':'—';
 __DEVELOPAID_PLATO_PACK__
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const kindLabel=k=>({krt:'КРТ',land_sale:'Продажа земли',land_lease:'Аренда земли',property_complex:'ЗИК',unfinished:'Незавершёнка',other:'Другое'})[k]||k||'—';
+const kindLabel=k=>({krt:'КРТ',land_sale:'Продажа земли',land_lease:'Аренда земли',property_complex:'ЗИК',equity_stake:'Доля в юрлице',unfinished:'Незавершёнка',other:'Другое'})[k]||k||'—';
 function shortDate(v){if(!v)return '—';const d=new Date(v);return Number.isNaN(d.getTime())?String(v).slice(0,16):new Intl.DateTimeFormat('ru-RU',{day:'2-digit',month:'2-digit',year:'2-digit',hour:'2-digit',minute:'2-digit'}).format(d)}
 // Предмет лота — «земля или уже построенное» — считает сервер полем subject.
 // Своей копии правила на странице нет: разойдись они, один и тот же лот попадал
@@ -174,7 +174,23 @@ function priceBattery(lot){
 // Балл лота — тем же правилом, что у КРТ: база от того, что лот собой
 // представляет, и названные снижения за то, чего у него нет. Поднимать балл
 // нечем: у лота нет своей экономики, пока его не разобрали в модель.
-const LOT_BASE_BY_KIND={krt:45,land_sale:40,land_lease:30,property_complex:25};
+// Доля в юрлице — потенциал средний: за ней бывает та же площадка, но
+// покупается общество с его историей, и проверка тут длиннее.
+const LOT_BASE_BY_KIND={krt:45,land_sale:40,land_lease:30,property_complex:25,equity_stake:30};
+// Что стоит за долей — одной строкой под видом лота. Размер доли и активы:
+// «доля не названа» и «активы не описаны» говорятся вслух, потому что молчание
+// источника читается как его отрицательный ответ.
+function equityNote(l){
+ const eq=l.equity||{};
+ if(!eq.is_equity)return '';
+ const bits=[eq.share_label||''];
+ if(eq.assets&&(eq.assets.real_estate||eq.assets.land))
+  bits.push('активы: '+[eq.assets.real_estate?'недвижимость':'',eq.assets.land?'земля':'']
+    .filter(Boolean).join(' и '));
+ else if(eq.assets&&eq.assets.mentioned)bits.push('активы без недвижимости и земли');
+ else bits.push('активы не описаны');
+ return `<div class="source" title="${esc((eq.why||[]).join('. '))}">${esc(bits.filter(Boolean).join(' · '))}</div>`;
+}
 function lotDeadlineDays(l){
  const raw=l.application_deadline;
  if(!raw)return null;
@@ -226,6 +242,19 @@ function lotScore(l){
  if(fit.fit!==null&&fit.fit!==undefined&&fit.fit<1){
    const why=(fit.misses||[]).join('; ')||'лот мельче профиля сделок';
    cuts.push({label:'не дотягивает до профиля сделок: '+why, points:Math.round((1-fit.fit)*60)});
+ }
+ // Доля в юрлице: пороги владельца и доп. критерий активов. Считает их
+ // сервер (`equity`), экран только показывает — второй счёт того же однажды
+ // разошёлся бы с первым, и обе строки выглядели бы верными.
+ const eq=l.equity||{};
+ if(eq.is_equity){
+  if(eq.price_ok===false)
+   cuts.push({label:'стартовая цена ниже порога: '+(eq.why||[])[0],points:60});
+  if(eq.asset_match===false&&eq.assets&&eq.assets.mentioned)
+   cuts.push({label:'активы общества названы, но недвижимости и земли среди них нет',points:40});
+  // Не описаны — это «не знаем», а не «их нет»: снижение маленькое и названное.
+  if(eq.assets&&!eq.assets.mentioned)
+   cuts.push({label:'активы общества в лоте не описаны — проверить по выписке',points:15});
  }
  const concerns=(s.concerns||[]).length;
  if(concerns)cuts.push({label:`замечаний скрининга: ${concerns}`,points:Math.min(15,concerns*5)});
@@ -319,7 +348,7 @@ function lotRowHtml(l){
  const quality=l.quality||{}, qualityNote=(quality.reasons||[]).join(' · ');
  return `<td><div class="lotname">${esc(l.title||l.address||'Лот')}</div><div class="source">Почему здесь: ${esc(l.screening?.why_here||l.selection_reasons?.slice(0,4).join(' · ')||'требуется проверка')}</div>${quality.accepted===false?`<div class="source warn">${esc(quality.label||'Не входит в основную подборку')}: ${esc(qualityNote)}</div>`:''}${parse.available?'':`<div class="source warn">Разбор недоступен: ${esc(parse.reason)}</div>`}<div class="cad">${esc((l.cadastral_numbers||[]).join(', ')||l.source?.external_lot_id||'')}</div></td>`
   +`<td><span class="fit ${sc.tone}" title="${esc('Потенциал лота '+sc.base+'; снято '+sc.cut+'%')}"><span class="light"></span>${sc.score} · ${esc(sc.label)}</span><div class="source">${esc(lotScoreNote(sc))}</div></td>`
-  +`<td><span class="tag ${l.lot_kind==='krt'?'ok':''}">${esc(kindLabel(l.lot_kind))}</span>${(l.origin&&l.origin!=='city')?`<div class="source">${esc(ORIGIN_LABEL[l.origin]||l.origin)}</div>`:''}</td>`
+  +`<td><span class="tag ${l.lot_kind==='krt'?'ok':''}">${esc(kindLabel(l.lot_kind))}</span>${equityNote(l)}${(l.origin&&l.origin!=='city')?`<div class="source">${esc(ORIGIN_LABEL[l.origin]||l.origin)}</div>`:''}</td>`
   +`<td>${areaLine(l)}</td>`
   +`<td class="money">${fmtMoney(l.current_price_rub??l.start_price_rub)}${priceBattery(l)}</td>`
   +`<td>${esc(shortDate(l.application_deadline))}</td><td>${l.documents?.length||0}</td>`;
@@ -331,7 +360,7 @@ function familyRowHtml(f){
   +`<div class="source">${open?'Нажмите, чтобы свернуть':'Нажмите, чтобы раскрыть все '+f.count}</div>`
   +`<div class="cad">${esc((l.cadastral_numbers||[]).join(', ')||l.source?.external_lot_id||'')}${f.count>1?' и ещё '+(f.count-1):''}</div></td>`
   +`<td><span class="fit ${sc.tone}" title="${esc('Балл лучшего лота группы; остальные не выше')}"><span class="light"></span>${sc.score} · ${esc(sc.label)}</span><div class="source">${esc('Лучший из '+f.count+'. '+lotScoreNote(sc))}</div></td>`
-  +`<td><span class="tag ${l.lot_kind==='krt'?'ok':''}">${esc(kindLabel(l.lot_kind))}</span>${(l.origin&&l.origin!=='city')?`<div class="source">${esc(ORIGIN_LABEL[l.origin]||l.origin)}</div>`:''}</td>`
+  +`<td><span class="tag ${l.lot_kind==='krt'?'ok':''}">${esc(kindLabel(l.lot_kind))}</span>${equityNote(l)}${(l.origin&&l.origin!=='city')?`<div class="source">${esc(ORIGIN_LABEL[l.origin]||l.origin)}</div>`:''}</td>`
   +`<td>${esc(lotRange(f.areaMin,f.areaMax,fmtArea))}</td>`
   +`<td class="money">${esc(lotRange(f.priceMin,f.priceMax,fmtMoney))}</td>`
   +`<td>${esc(shortDate(l.application_deadline))}</td><td>${f.docs}</td>`;
