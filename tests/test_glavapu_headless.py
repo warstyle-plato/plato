@@ -153,11 +153,19 @@ def test_the_container_flags_are_set_for_a_small_machine():
 class _FakePage:
     def __init__(self, counter):
         self.counter, self.url, self._closed = counter, "", False
+        self.listeners = []
 
     def set_default_timeout(self, ms): pass
 
     def route(self, pattern, handler):
         self.counter["routed"] += 1
+
+    # Заглушка обязана уметь то же, что настоящая страница. Слушатели сети
+    # (`requestfailed`, `response`) появились 01.09.2026, и без этого метода
+    # поток браузера падал, а следом сыпались соседние наборы: глобальное
+    # состояние оставалось от мёртвого потока.
+    def on(self, event, handler):
+        self.listeners.append(event)
 
     def is_closed(self): return self._closed
 

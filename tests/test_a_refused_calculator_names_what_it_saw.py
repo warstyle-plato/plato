@@ -161,10 +161,32 @@ def test_a_missing_proceed_button_is_another_answer():
     assert "кнопки" in message and "нет" in message
 
 
-def test_a_silent_dialog_is_named_silent():
+def test_a_silent_page_is_named_silent():
     message = core._glavapu_parcel_message(
         ["77:01:0004023:1000"], {"proceed": {"disabled": True, "label": "…"}})
-    assert "ничего не сообщил" in message, "молчание диалога подано как его отсутствие"
+    assert "ничего не сообщила" in message, "молчание страницы подано как её отсутствие"
+
+
+def test_the_panel_is_read_when_there_is_no_dialog():
+    """Ввод участка у ГлавАПУ — левая панель, а не диалог.
+
+    `[role="dialog"]` её не находит, и отказ говорил «диалог ничего не
+    сообщил» там, где на странице написано «Район: Савёловский» и площадь
+    участка (экран владельца, 01.09.2026): калькулятор участок ПРИНЯЛ. В ошибку
+    кладётся сама страница, а не её отсутствие.
+    """
+    message = core._glavapu_parcel_message(
+        ["77:09:0004014:13"],
+        {"proceed": {"disabled": True, "label": "…"},
+         "page_text": "Определение территории Точка Участок Территория "
+                      "Район: Савёловский Площадь территории рассмотрения, га 0.6509"})
+    assert "Савёловский" in message, "текст страницы до человека не доехал"
+    assert "0.6509" in message, "площадь, которую страница уже посчитала, потеряна"
+
+
+def test_the_snapshot_reads_the_page_itself():
+    assert "innerText" in core._GLAVAPU_SNAPSHOT_JS, \
+        "снимок не берёт текст страницы — панель без role=dialog останется невидимой"
 
 
 def test_the_parcel_wait_is_shorter_than_the_whole_budget():

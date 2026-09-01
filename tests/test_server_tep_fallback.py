@@ -135,6 +135,11 @@ def test_a_matching_calculator_clears_the_drift_flag(monkeypatch):
     again = core.import_cadastral_tep(core.CadastralTepRequest(
         rows=rows, cadastral_analysis={"recognized": ["77:09:0004014:13"]}))
     assert not any("разошлись" in w for w in again["warnings"])
+    # Второй импорт тоже поднял фоновую сверку. Не дождаться её — значит
+    # оставить чужой поток соседнему тесту: он добежит уже во время его работы
+    # и СБРОСИТ флаг дрейфа, который тот только что взвёл. Так и выходило одно
+    # падение из восьми, и каждый раз в другом месте.
+    _await_drift()
 
 
 def test_a_changed_methodology_screams_everywhere(monkeypatch):
@@ -158,6 +163,8 @@ def test_a_changed_methodology_screams_everywhere(monkeypatch):
         rows=rows, cadastral_analysis={"recognized": ["77:09:0004014:13"]}))
     assert any("разошлись" in w for w in result["warnings"]), \
         "расхождение обязано попасть в предупреждения импорта"
+    # Тот же долг: не оставлять фоновую сверку следующему тесту.
+    _await_drift()
     assert "Дрейф формул ГлавАПУ" in core._TELEGRAM_RUNTIME.get("last_error", "")
 
     # Серверный путь и карточка бота предупреждают, пока дрейф не снят.

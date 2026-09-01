@@ -41,12 +41,15 @@ class Doc:
 
 def test_the_channel_round_is_asked_by_the_project_name_when_it_is_proven():
     asked = krt_open_sources.telegram_queries(NAME, ["Строгино 360"])
-    assert asked == ['site:t.me "Строгино 360" КРТ застройщик'], asked
+    assert asked == ['site:t.me "Строгино 360" КРТ застройщик оператор'], asked
 
 
 def test_without_a_proven_name_the_channel_round_falls_back_to_the_address():
+    """Адрес — в человеческом виде: «вл.» пишет каталог, а не канал."""
     asked = krt_open_sources.telegram_queries(NAME, [])
-    assert len(asked) == 1 and "site:t.me" in asked[0] and NAME in asked[0]
+    assert len(asked) == 1 and "site:t.me" in asked[0]
+    assert "Маршала Воробьева" in asked[0]
+    assert "вл." not in asked[0], "канцелярское сокращение уехало в запрос к каналам"
     assert krt_open_sources.telegram_queries("", []) == []
 
 
