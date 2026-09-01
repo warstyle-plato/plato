@@ -806,9 +806,13 @@ function krtIntent(x){
  // Первым — официальный источник: карточка каталога называет застройщика и
  // реновацию сама, бесплатно и без поиска. В решении их нет (измерено на
  // восьми документах), и вывод «источники молчат» был про решение, а не про
- // карточку. Читается она в прогоне, поэтому признак есть у всего списка, а
- // не только у площадок, открытых руками.
- const card=(state.krtCards||{})[x.slug]||rank.card_facts||null;
+ // карточку.
+ //
+ // Строка каталога несёт её сама (`x.card_facts`): прежде карточка читалась
+ // ТОЛЬКО в платном прогоне, и до прогона у площадки с явным оператором в
+ // колонке не стояло ничего — «мы не спрашивали» читалось как «оператора нет»
+ // (владелец, 01.09.2026). Бесплатный источник не зависит от платного.
+ const card=(state.krtCards||{})[x.slug]||x.card_facts||rank.card_facts||null;
  if(card&&card.available&&((card.developers||[]).length||card.renovation)){
   intent=Object.assign({probed:true,decision_read:false,kind:'',city_needs:[],
     operator:[],operator_name:'',taken:false}, intent||{});
@@ -1121,7 +1125,7 @@ function renderKrt(){const a=state.krtFiltered,body=$('krtRows');body.innerHTML=
  // Реновация и застройщик — с официальной карточки, прочитанной прогоном.
  // Видеть их можно было только внутри открытой площадки: «а где поиск
  // публичной информации и реновация в таблице?» (владелец, 01.09.2026).
- const card=(state.krtCards||{})[x.slug]||(state.krtRank[x.slug]||{}).card_facts||{};
+ const card=(state.krtCards||{})[x.slug]||x.card_facts||(state.krtRank[x.slug]||{}).card_facts||{};
  const press=(state.krtPress||{})[x.slug]||null;
  const renov=card.renovation||((press&&press.city_needs||[]).length>0);
  const builder=(card.developers||[])[0]
@@ -1812,7 +1816,7 @@ function krtMapMarkup(d){
  // линейка. Печатную картинку она не подменяет (её видно сразу и она уезжает в
  // отчёт), а отвечает на другой вопрос — «что вокруг».
  const live=typeof openLandMap==='function'
-  ? `<button type="button" id="krtMapLive" class="pdfbtn">Развернуть живую карту</button> `
+  ? `<button type="button" id="krtMapLive" class="pdfbtn">Открыть живую карту — двигать и приближать</button> `
   : '<span>Живая карта не подключена: страница поднята без движка.</span> ';
  const scope=`<div class="source" style="margin:6px 0">${live}<button type="button" id="krtMapWhole" class="pdfbtn">`
    +(KRT_MAP.whole?'Показать город плотно':'Показать всю Москву')+'</button>'
@@ -1820,8 +1824,9 @@ function krtMapMarkup(d){
      +'Кадр взят по основной массе: в общей рамке город сжимается в пятно.</span>':'')+'</div>';
  return `${scope}<div class="krtmap" style="position:relative;max-width:100%;overflow:auto">
    <div style="position:relative;width:${KRT_MAP.w}px;height:${KRT_MAP.h}px">
-     <img src="${src}" alt="" width="${KRT_MAP.w}" height="${KRT_MAP.h}"
-          style="position:absolute;left:0;top:0;width:100%;height:100%;object-fit:cover">
+     <img src="${src}" alt="" width="${KRT_MAP.w}" height="${KRT_MAP.h}" id="krtMapShot"
+          title="Нажмите, чтобы открыть живую карту"
+          style="position:absolute;left:0;top:0;width:100%;height:100%;object-fit:cover;cursor:zoom-in">
      <svg viewBox="0 0 ${KRT_MAP.w} ${KRT_MAP.h}" width="${KRT_MAP.w}" height="${KRT_MAP.h}"
           style="position:absolute;left:0;top:0">${shapes}</svg>
      <div id="krtMapTip" style="position:absolute;display:none;pointer-events:none;z-index:3;
@@ -1830,8 +1835,8 @@ function krtMapMarkup(d){
   <div class="source" style="margin-top:8px">${legend}</div>
   <div class="source">Границы — официальные полигоны реестра КРТ (${sites.length} площадок).
    Подложка — та же карта улиц, что в карточке участка. Наведите на площадку, чтобы увидеть сводку;
-   нажмите, чтобы открыть её карточку. Этот кадр неподвижен намеренно — он же уходит в отчёт;
-   чтобы приблизить и подвинуть, разверните живую карту.</div>`;
+   нажмите на неё, чтобы открыть карточку, а на свободное место — чтобы открыть живую карту.
+   Этот кадр неподвижен намеренно: он же уходит в отчёт, и подвижную картинку туда не вставить.</div>`;
 }
 // Живая карта площадок. Своей проекции и своих тайлов здесь нет — всё берётся
 // у движка (`openLandMap`), потому что разошедшиеся проекции кладут контур
@@ -1869,6 +1874,13 @@ function krtMapBind(){
    body.innerHTML=krtMapMarkup(KRT_MAP.data);krtMapBind()};
  const liveBtn=document.getElementById('krtMapLive');
  if(liveBtn)liveBtn.onclick=()=>openKrtLiveMap(sites);
+ // Живая карта была только за кнопкой, и первым человек видел неподвижный
+ // кадр — «карта крт статичная и неудобная» (владелец, 01.09.2026). Теперь её
+ // открывает сам кадр. Контуры при этом по-прежнему ведут в карточку: они
+ // лежат в SVG поверх картинки, и клик по контуру до картинки не доходит, а
+ // по пустому месту SVG не ловится вовсе — там нет ни одной фигуры.
+ const shot=document.getElementById('krtMapShot');
+ if(shot)shot.onclick=()=>openKrtLiveMap(sites);
  body.querySelectorAll('path.krtshape').forEach(node=>{
   const s=sites[Number(node.dataset.i)];
   if(!s)return;

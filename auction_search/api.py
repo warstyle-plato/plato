@@ -717,6 +717,33 @@ def install(app: FastAPI) -> None:
              "is_new": krt_ranking.is_new(seen.get(str(row.get("slug") or "")))}
             for row in projects
         ]
+        # Что карточка города говорит о застройщике и реновации — бесплатный
+        # официальный источник, и он больше не ждёт платного прогона: строка
+        # каталога несёт то, что уже прочитано, а недостающее дочитывается
+        # фоном порциями. Пока это лежало только в прогоне, у площадки с явным
+        # оператором в колонке не стояло ничего, и «не спрашивали» читалось как
+        # «оператора нет» (владелец, 01.09.2026).
+        known = getattr(krt_registry, "card_facts_known", None)
+        if callable(known):
+            slugs = [str(row.get("slug") or "") for row in projects]
+            try:
+                facts = await run_in_threadpool(known, slugs)
+            except Exception:  # noqa: BLE001
+                logger.exception("KRT card facts cache failed")
+                facts = {}
+            if facts:
+                projects = [
+                    {**row, "card_facts": facts.get(str(row.get("slug") or ""))}
+                    if facts.get(str(row.get("slug") or "")) else row
+                    for row in projects
+                ]
+            filler = getattr(krt_registry, "fill_card_facts_in_background", None)
+            if callable(filler):
+                try:
+                    filler(slugs)
+                except Exception:  # noqa: BLE001
+                    logger.exception("KRT card facts fill failed")
+
         status = krt_registry.status()
         # Неразобранная карточка называется вслух. Её значения съезжают на
         # поле — округом становится статус, статусом хвост адреса, — и такая
