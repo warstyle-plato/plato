@@ -805,6 +805,12 @@ def summarise(contracts: dict[str, Any], ledger: dict[str, Any] | None = None) -
         "sales_bonus_paid": sum(r["sales_bonus_paid"] for r in rows),
         "company_buyers": sum(1 for r in rows if r["company_buyer"]),
         "terminated": ledger.get("terminated") or [],
+        # Остаток на эскроу — не то же, что пришло на эскроу: при расторжении
+        # деньги уходят обратно покупателю. Считается здесь, рядом с остальными
+        # итогами: посчитанный на экране, он был бы вторым счётом той же
+        # величины, а таких расхождений у нас уже было довольно.
+        "escrow_returned": sum(float(one.get("escrow_returned") or 0.0)
+                               for one in (ledger.get("terminated") or [])),
     }
 
 
