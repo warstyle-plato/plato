@@ -174,12 +174,12 @@ def telegram_queries(name: str, brands: Iterable[str] = ()) -> list[str]:
     brand = next((str(b).strip() for b in (brands or []) if str(b).strip()), "")
     base = search_address(name)
     if brand:
-        return [f'site:t.me "{brand}" КРТ застройщик']
+        return [f'site:t.me "{brand}" КРТ застройщик оператор']
     if not base:
         return []
     # Адрес — без канцелярских сокращений и без кавычек: в канале пишут живым
     # языком, и точная фраза каталога там не встречается.
-    return [f"site:t.me {base} КРТ застройщик"]
+    return [f"site:t.me кто оператор КРТ {base} застройщик"]
 
 
 def _anchor_words(name: str) -> set[str]:
@@ -192,7 +192,11 @@ def _anchor_words(name: str) -> set[str]:
     stop = {"улица", "улице", "улиц", "проезд", "проезде", "переулок", "владение",
             "москва", "территория", "территории", "проект", "участок", "участка",
             "город", "тер", "влд"}
-    return {word[:6] for word in _WORD.findall(flat) if word not in stop}
+    # Пять букв, а не шесть. «Светлый» даёт основу «светлы», а публикация пишет
+    # «на Светлом проезде» — «светлом» с неё не начинается, и якорь не
+    # срабатывал ровно на той площадке, из-за которой всё и затевалось
+    # (владелец, 01.09.2026). Шестая буква у прилагательного — уже окончание.
+    return {word[:5] for word in _WORD.findall(flat) if word not in stop}
 
 
 def _mentions(sentence: str, anchors: set[str]) -> bool:

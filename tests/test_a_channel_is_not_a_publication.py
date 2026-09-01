@@ -41,7 +41,7 @@ class Doc:
 
 def test_the_channel_round_is_asked_by_the_project_name_when_it_is_proven():
     asked = krt_open_sources.telegram_queries(NAME, ["Строгино 360"])
-    assert asked == ['site:t.me "Строгино 360" КРТ застройщик'], asked
+    assert asked == ['site:t.me "Строгино 360" КРТ застройщик оператор'], asked
 
 
 def test_without_a_proven_name_the_channel_round_falls_back_to_the_address():

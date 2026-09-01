@@ -181,8 +181,34 @@ def test_the_query_names_the_other_words_for_the_same_person():
 
 def test_the_channel_query_uses_the_human_address_too():
     asked = krt_open_sources.telegram_queries("Светлый проезд, вл. 4", [])
-    assert asked == ["site:t.me Светлый проезд 4 КРТ застройщик"], asked
+    assert asked == ["site:t.me кто оператор КРТ Светлый проезд 4 застройщик"], asked
     # Имя проекта — наоборот, точной фразой: «Строгино 360» без кавычек
     # рассыпается на «Строгино» и число.
     assert krt_open_sources.telegram_queries("Светлый проезд, вл. 4", ["Строгино 360"]) == [
-        'site:t.me "Строгино 360" КРТ застройщик']
+        'site:t.me "Строгино 360" КРТ застройщик оператор']
+
+
+def test_the_anchor_survives_the_russian_case():
+    """«Светлый» → «на Светлом проезде»: шестая буква у прилагательного — окончание.
+
+    Основа в шесть букв давала «светлы», а публикация пишет «светлом» — якорь
+    не срабатывал ровно на той площадке, из-за которой всё и затевалось
+    (владелец, 01.09.2026). Это же правило держит «Молдавская» → «Молдавской».
+    """
+    for sentence, site in (
+            ("Застройщиком проекта на Светлом проезде выступает ПАО «ПИК».",
+             "Светлый проезд, вл. 4"),
+            ("Оператором КРТ на Молдавской улице выступает ООО «Ромашка».",
+             "Молдавская ул., вл. 3-5")):
+        got = krt_open_sources.read_findings(
+            [Doc(title="", snippet=sentence, domain="mos.ru")], site)
+        assert got["operator_named"], f"якорь не сработал: {site}"
+        assert got["taken"] is True
+
+
+def test_a_short_stem_does_not_borrow_a_stranger():
+    """Пять букв — всё ещё улица, а не любое слово."""
+    got = krt_open_sources.read_findings(
+        [Doc(title="", snippet="Оператором КРТ на Бутовской улице выступает ООО «Чужой».",
+             domain="mos.ru")], "Светлый проезд, вл. 4")
+    assert not got["operator_named"] and got["taken"] is False

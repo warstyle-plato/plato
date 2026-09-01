@@ -9169,6 +9169,52 @@ _GLAVAPU_HEADLESS_ARGS = [
 ]
 # Картинки, шрифты и счётчики к таблице ТЭП отношения не имеют, а тянутся
 # дольше самого расчёта. Всё, что участвует в счёте, — запросы к API ГлавАПУ.
+# Что случилось с запросами САМОЙ страницы. Территория у ГлавАПУ формируется не
+# в браузере: страница спрашивает свой бэкенд, и пока ответа нет, кнопка
+# «Перейти к расчётам» стоит недоступной — ровно то, что мы видели. Канал до их
+# API с ядра никто не проверял (владелец, 01.09.2026: «ты вообще проверить
+# канал до ГлавАПУ то не хочешь?»), а по нашей диагностике это было неотличимо
+# от «участок не опознан».
+#
+# Список ограничен и очищается перед каждым расчётом: это диагностика, а не
+# журнал.
+_GLAVAPU_NET: dict[str, list[dict[str, str]]] = {"failed": [], "bad": []}
+_GLAVAPU_NET_LIMIT = 12
+
+
+def _glavapu_net_reset() -> None:
+    _GLAVAPU_NET["failed"] = []
+    _GLAVAPU_NET["bad"] = []
+
+
+def _glavapu_net_watch(page: Any) -> None:
+    """Записывает сорванные запросы и ответы с ошибкой. Один раз на страницу."""
+    def failed(request: Any) -> None:
+        if len(_GLAVAPU_NET["failed"]) >= _GLAVAPU_NET_LIMIT:
+            return
+        try:
+            failure = str(getattr(request, "failure", "") or "")
+            # Мы сами гасим аналитику и картинки — это не сорванный канал.
+            if "aborted" in failure.lower() or "ERR_ABORTED" in failure:
+                return
+            _GLAVAPU_NET["failed"].append(
+                {"url": str(request.url)[:200], "why": failure[:120]})
+        except Exception:
+            pass
+
+    def answered(response: Any) -> None:
+        try:
+            if int(response.status) < 400 or len(_GLAVAPU_NET["bad"]) >= _GLAVAPU_NET_LIMIT:
+                return
+            _GLAVAPU_NET["bad"].append(
+                {"url": str(response.url)[:200], "why": f"HTTP {response.status}"})
+        except Exception:
+            pass
+
+    page.on("requestfailed", failed)
+    page.on("response", answered)
+
+
 _GLAVAPU_BLOCKED_TYPES = {"image", "font", "media"}
 _GLAVAPU_BLOCKED_HOSTS = ("mc.yandex.", "metrika", "google-analytics.com",
                           "googletagmanager.com", "top-fwz1.mail.ru",
@@ -9419,8 +9465,35 @@ def _glavapu_proceed(page: Any, numbers: list[str]) -> None:
         snapshot = page.evaluate(_GLAVAPU_SNAPSHOT_JS) or {}
     except Exception:
         snapshot = {}
+    snapshot = _glavapu_with_network(snapshot)
     raise GlavapuParcelNotAccepted(
         _glavapu_parcel_message(numbers, snapshot), snapshot)
+
+
+def _glavapu_with_network(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """К снимку — что случилось с запросами страницы к её же бэкенду."""
+    out = dict(snapshot or {})
+    out["network_failed"] = list(_GLAVAPU_NET["failed"])
+    out["network_bad"] = list(_GLAVAPU_NET["bad"])
+    return out
+
+
+def _glavapu_network_note(snapshot: dict[str, Any]) -> str:
+    """Одной фразой: дошли ли запросы страницы до её бэкенда."""
+    failed = snapshot.get("network_failed") or []
+    bad = snapshot.get("network_bad") or []
+    if not failed and not bad:
+        return ""
+    parts = []
+    if failed:
+        first = failed[0]
+        parts.append(f"не дошли {len(failed)} запросов страницы, первый — "
+                     f"{first.get('url', '')} ({first.get('why', '')})")
+    if bad:
+        first = bad[0]
+        parts.append(f"ответили ошибкой {len(bad)}, первый — "
+                     f"{first.get('url', '')} ({first.get('why', '')})")
+    return "Канал страницы: " + "; ".join(parts) + ". "
 
 
 def _glavapu_parcel_message(numbers: list[str], snapshot: dict[str, Any]) -> str:
@@ -9439,6 +9512,7 @@ def _glavapu_parcel_message(numbers: list[str], snapshot: dict[str, Any]) -> str
     return (f"калькулятор не принял участок за {limit} с: кнопка «Перейти к расчётам» "
             f"осталась недоступной (подпись «{proceed.get('label') or '—'}»). "
             f"Участки: {listed}. "
+            + _glavapu_network_note(snapshot)
             + (f"Страница говорит: {said}. " if said else "")
             + (f"На странице: {told[:400]}" if told else "Страница ничего не сообщила"))
 
@@ -9567,6 +9641,7 @@ def _glavapu_drive_page(page: Any, numbers: list[str], area_ha: float,
                 snapshot = page.evaluate(_GLAVAPU_SNAPSHOT_JS) or {}
             except Exception:  # страница ушла — снимка не будет, но отказ будет
                 snapshot = {}
+            snapshot = _glavapu_with_network(snapshot)
             seen = sorted(code for code in codes if code)
             raise GlavapuTableNotReady(
                 _glavapu_not_ready_message(rows, seen, snapshot), snapshot)
@@ -9616,6 +9691,10 @@ def _glavapu_browser_worker() -> None:
                         page = browser.new_page()
                         page.set_default_timeout(_GLAVAPU_HEADLESS_TIMEOUT_MS)
                         page.route("**/*", _glavapu_block_junk)
+                        # Слушатели вешаются один раз на страницу, а список
+                        # чистится перед каждым расчётом: диагностика, а не журнал.
+                        _glavapu_net_watch(page)
+                    _glavapu_net_reset()
                     holder["rows"] = _glavapu_drive_page(page, numbers, area_ha, timings)
                 except Exception as exc:
                     # Снимок страницы прикладывается к ЛЮБОМУ отказу, а не
