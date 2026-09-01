@@ -142,6 +142,47 @@ def search_address(name: str) -> str:
     return _SPACE.sub(" ", flat).strip(" -–—.")
 
 
+# Тип улицы: по нему видно, где кончился один адрес и начался другой. Стоит он
+# и перед именем («ул. Удальцова»), и после него («Молдавская ул.»), поэтому
+# ищется как слово, а не как приставка.
+_STREET_TYPE = re.compile(
+    r"(?iu)(?<!\w)(?:ул|улица|пр-т|просп|проспект|проезд|пер|переулок|наб|"
+    r"набережная|б-р|бульвар|ш|шоссе|пл|площадь|туп|тупик|аллея|линия)\.?(?!\w)")
+
+
+def search_addresses(name: str) -> list[str]:
+    """Адреса площадки по отдельности: их бывает несколько.
+
+    У площадки КРТ в каталоге города имя — это перечисление адресов:
+    «ул. Удальцова, влд. 75А, ул. Веерная, влд. 1». Склеенные в один запрос,
+    они дают строку, которой нет ни в одной публикации, — поиск отвечает про
+    что угодно. Спрашивать надо по каждому адресу и складывать находки.
+
+    Новый адрес начинается там, где снова назван тип улицы, а у предыдущего
+    уже есть номер: «Молдавская ул., вл. 3-5» — это ОДИН адрес, и разрывать
+    его по запятой нельзя.
+    """
+    parts = [part.strip() for part in str(name or "").split(",")]
+    chunks: list[list[str]] = []
+    for part in parts:
+        if not part:
+            continue
+        started = bool(chunks)
+        has_number = started and any(ch.isdigit() for ch in " ".join(chunks[-1]))
+        if started and has_number and _STREET_TYPE.search(part):
+            chunks.append([part])
+        elif started:
+            chunks[-1].append(part)
+        else:
+            chunks.append([part])
+    out: list[str] = []
+    for chunk in chunks:
+        clean = search_address(", ".join(chunk))
+        if clean and clean not in out:
+            out.append(clean)
+    return out
+
+
 def queries(name: str, okrug: str = "", district: str = "") -> list[str]:
     """Запросы к поиску. Имя площадки — это её адрес, и он же якорь находки.
 
@@ -156,22 +197,27 @@ def queries(name: str, okrug: str = "", district: str = "") -> list[str]:
     признак ставится только в предложении с адресом площадки, а что прочитано и
     что отброшено, теперь видно в карточке.
     """
-    base = search_address(name)
-    if not base:
+    addresses = search_addresses(name)
+    if not addresses:
         return []
     where = " ".join(part for part in (district, okrug) if part)
-    out = [
-        f"кто оператор и застройщик КРТ по адресу {base} Москва",
+    out: list[str] = []
+    # Адресов у площадки бывает несколько, и спрашиваем по каждому: склеенные в
+    # одну строку, они дают запрос, которого нет ни в одной публикации.
+    # Спрашиваем ВОПРОСОМ, а не набором слов.
+    for base in addresses[:2]:
+        out.append(f"кто оператор и застройщик КРТ по адресу {base} Москва")
         # Второй путь к тому же ответу, и часто он короче: справочники и
         # объявления отвечают на «что здесь строится» именем ЖК, а от имени до
         # компании один шаг — им же идёт наш круг по бренду (владелец,
         # 01.09.2026: «там указано, что по этому адресу строится конкретный ЖК
         # Строгино 360»).
-        f"какой ЖК строится по адресу {base} Москва девелопер",
-    ]
+        out.append(f"какой ЖК строится по адресу {base} Москва девелопер")
     if where:
-        out.append(f"{base} {where} комплексное развитие территории договор заключён")
-    return out[:3]
+        out.append(f"{addresses[0]} {where} комплексное развитие территории договор заключён")
+    # Потолок — поиск платный, и площадка с пятью адресами не имеет права
+    # стоить впятеро дороже соседней.
+    return out[:5]
 
 
 # Телеграм-каналы застройщиков и городские каналы говорят о площадке раньше
@@ -184,14 +230,15 @@ def queries(name: str, okrug: str = "", district: str = "") -> list[str]:
 def telegram_queries(name: str, brands: Iterable[str] = ()) -> list[str]:
     """Запрос к каналам: по имени проекта, если оно доказано, иначе по адресу."""
     brand = next((str(b).strip() for b in (brands or []) if str(b).strip()), "")
-    base = search_address(name)
     if brand:
         return [f'site:t.me "{brand}" КРТ застройщик оператор']
-    if not base:
+    addresses = search_addresses(name)
+    if not addresses:
         return []
     # Адрес — без канцелярских сокращений и без кавычек: в канале пишут живым
-    # языком, и точная фраза каталога там не встречается.
-    return [f"site:t.me кто оператор КРТ {base} застройщик"]
+    # языком, и точная фраза каталога там не встречается. Адресов бывает
+    # несколько, и склеенные в один запрос они не совпадают ни с чем.
+    return [f"site:t.me кто оператор КРТ {base} застройщик" for base in addresses[:2]]
 
 
 def _anchor_words(name: str) -> set[str]:

@@ -62,7 +62,7 @@ __DEVELOPAID_CONTOUR__
         <option value="yes">В каталоге города</option>
         <option value="no">Только проект решения</option></select>
       <select id="krtNeeds" title="Городские нужды и оператор читаются из проекта решения и карточки krt.mos.ru — только вместе с цитатой. Площадка, у которой документ ещё не прочитан, остаётся в списке при любом выборе: «не найдено» — это не «нет»."><option value="">Чьё угодно</option><option value="free">Без городских нужд и без оператора</option><option value="city">Только городские нужды</option><option value="taken">Только с названным оператором</option></select>
-      <div class="filter-actions"><button id="krtRefresh" class="primary">Обновить каталог</button><button id="krtRankBtn">Оценить отобранные моделью</button><button id="krtPressBtn" title="Читает публикации по отобранным площадкам: три поисковых запроса на площадку, не больше 25 за раз. Официальная карточка каталога читается прогоном и поиска не требует.">Прочитать публикации по отобранным</button><button id="krtExport">Выгрузить Excel</button></div>
+      <div class="filter-actions"><button id="krtRefresh" class="primary">Обновить каталог</button><button id="krtRankBtn">Оценить отобранные моделью</button><button id="krtPressBtn" title="Читает публикации и каналы по ВСЕМ планируемым площадкам: до пяти поисковых запросов на площадку, по каждому её адресу. Уже спрошенные пропускаются — занятая площадка свободной не станет. У площадок в реализации застройщика называет сама карточка города, поиска они не требуют.">Прочитать публикации по планируемым</button><button id="krtExport">Выгрузить Excel</button></div>
     </div>
     <div class="stats"><div class="stat"><b id="krtCount">—</b><span id="krtCountNote">проектов</span></div><div class="stat"><b id="krtArea">—</b><span>га территории</span></div><div class="stat"><b id="krtHousing">—</b><span>м² жилья</span></div><div class="stat"><b id="krtGfa">—</b><span>м² всего</span></div></div>
     <details class="fold" id="krtMapFold"><summary>Карта КРТ Москвы — 263 площадки с официальными границами</summary>
@@ -1550,30 +1550,24 @@ function krtPressLines(list,label){
 // Публикации по отобранным. Поиск платный, поэтому берётся ровно то, что
 // осталось после фильтра, и не больше двадцати пяти за раз — цена названа в
 // подсказке кнопки, а не спрятана.
-const KRT_PRESS_BATCH=25;
-async function readKrtPressForFiltered(){
+// Публикации по всем планируемым площадкам разом — серверным проходом, а не
+// порциями из браузера. Прежде кнопка читала по 25 штук и просила нажать ещё
+// раз: на каталоге из 263 площадок это одиннадцать нажатий и одиннадцать
+// ожиданий подряд. Ход виден там же, где ход прогона модели: замок у них общий,
+// и двум проходам по одному каталогу расходиться негде.
+async function readKrtPress(){
  const b=$('krtPressBtn'), box=$('krtRankStatus');
- const rows=(state.krtFiltered||[]).filter(v=>v.slug&&!state.krtPress[v.slug]).slice(0,KRT_PRESS_BATCH);
- if(!rows.length){box.style.display='';box.className='notice';
-  box.textContent='Публикации по отобранным уже прочитаны — или отбирать нечего.';return}
- b.disabled=true;
- let done=0, failed=0;
- for(const row of rows){
-  b.innerHTML=`<span class="spinner"></span>Читаю ${done+1} из ${rows.length}`;
-  try{
-   const d=await askJson('/auctions/krt/'+encodeURIComponent(row.slug)+'/open-sources',{cache:'no-store'});
-   state.krtPress[row.slug]=d;
-   if(!d.available)failed++;
-  }catch(e){failed++}
-  done++;
-  renderKrt();
- }
- b.disabled=false;b.textContent='Прочитать публикации по отобранным';
- box.style.display='';box.className=failed?'notice warn':'notice';
- // Не ответивший поиск — это «не спросили», а не «в источниках ничего нет».
- box.textContent=`Публикации прочитаны по ${done} площадк${done===1?'е':'ам'}`
-  +(failed?`; у ${failed} источник не ответил — это «не спросили», а не «ничего не нашли».`:'.')
-  +(state.krtFiltered.length>rows.length?` В отборе ещё ${state.krtFiltered.length-rows.length} — нажмите ещё раз.`:'');
+ b.disabled=true;b.innerHTML='<span class="spinner"></span>Запускаю';
+ try{
+  const d=await askJson('/auctions/krt/press/run',{method:'POST'}).catch(needLogin);
+  state.krtRankProgress=d.progress||null;renderKrtRankStatus();loadKrtRanking();
+  if(!d.started&&d.reason){box.style.display='';box.className='notice';
+   box.innerHTML='<span class="spinner"></span>'+esc(d.reason)+'.'}
+  else if(d.started){box.style.display='';box.className='notice';
+   box.innerHTML='<span class="spinner"></span>Читаю публикации по '+d.planned
+    +' планируемым площадкам. Уже спрошенные пропускаются: занятая площадка свободной не станет.'}
+ }catch(e){box.style.display='';box.className='notice warn';box.textContent=String(e.message||e)}
+ finally{b.disabled=false;b.textContent='Прочитать публикации по планируемым'}
 }
 async function loadKrtCardFacts(x){
  if(state.krtCards[x.slug])return;
@@ -2128,7 +2122,7 @@ $('askBtn').onclick=askPlato;
 $('askCard').querySelectorAll('.chips button').forEach(b=>{
  b.onclick=()=>{$('askText').value=b.dataset.q;askPlato()};
 });
-$('tabAuctions').onclick=()=>switchTab(false);$('tabKrt').onclick=()=>switchTab(true);$('krtRefresh').onclick=loadKrt;$('krtRankBtn').onclick=startKrtRanking;$('krtPressBtn').onclick=readKrtPressForFiltered;$('krtSearch').oninput=filterKrt;$('krtStatus').onchange=filterKrt;$('krtNeeds').onchange=filterKrt;$('krtCard').onchange=filterKrt;$('krtTender').onchange=filterKrt;$('krtStage').onchange=filterKrt;document.getElementById('krtMapFold')?.addEventListener('toggle',ev=>{if(ev.target.open)loadKrtMap()});$('krtMinHousing').oninput=filterKrt;document.querySelectorAll('#krtRows').forEach(()=>{});document.querySelectorAll('th[data-sort]').forEach(th=>{th.style.cursor='pointer';th.title=(th.title?th.title+'. ':'')+'Нажмите, чтобы отсортировать';th.onclick=()=>krtSortBy(th.dataset.sort)});$('krtPurpose').onchange=()=>{filterKrt();if(state.selectedKrt)selectKrt(state.selectedKrt)};
+$('tabAuctions').onclick=()=>switchTab(false);$('tabKrt').onclick=()=>switchTab(true);$('krtRefresh').onclick=loadKrt;$('krtRankBtn').onclick=startKrtRanking;$('krtPressBtn').onclick=readKrtPress;$('krtSearch').oninput=filterKrt;$('krtStatus').onchange=filterKrt;$('krtNeeds').onchange=filterKrt;$('krtCard').onchange=filterKrt;$('krtTender').onchange=filterKrt;$('krtStage').onchange=filterKrt;document.getElementById('krtMapFold')?.addEventListener('toggle',ev=>{if(ev.target.open)loadKrtMap()});$('krtMinHousing').oninput=filterKrt;document.querySelectorAll('#krtRows').forEach(()=>{});document.querySelectorAll('th[data-sort]').forEach(th=>{th.style.cursor='pointer';th.title=(th.title?th.title+'. ':'')+'Нажмите, чтобы отсортировать';th.onclick=()=>krtSortBy(th.dataset.sort)});$('krtPurpose').onchange=()=>{filterKrt();if(state.selectedKrt)selectKrt(state.selectedKrt)};
 $('krtOkrugToggle').onclick=e=>{e.stopPropagation();const menu=$('krtOkrugMenu'),open=menu.classList.contains('hidden');menu.classList.toggle('hidden',!open);$('krtOkrugToggle').setAttribute('aria-expanded',String(open))};$('krtOkrugMenu').onclick=e=>e.stopPropagation();$('krtOkrugClear').onclick=()=>{state.krtOkrugs.clear();$('krtOkrugOptions').querySelectorAll('input').forEach(x=>x.checked=false);updateKrtOkrugLabel();filterKrt()};document.addEventListener('click',closeKrtOkrugs);document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeKrtOkrugs();$('krtOkrugToggle').focus()}});
 loadKrtRanking();
 // Ссылка из «Поделиться» открывает ту же территорию: получатель попадает на
