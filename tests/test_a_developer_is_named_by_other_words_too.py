@@ -163,8 +163,12 @@ def test_the_dot_of_the_shorthand_goes_with_it():
 def test_the_query_is_a_question():
     asked = krt_open_sources.queries("Светлый проезд, вл. 4", okrug="САО", district="Сокол")
     assert asked, "запросов не осталось"
-    assert any(q.startswith("кто строит") for q in asked), "вопроса «кто строит» нет"
-    assert any("кто оператор" in q for q in asked)
+    assert any("кто оператор и застройщик" in q for q in asked), \
+        "вопроса про оператора и застройщика нет"
+    # Второй путь к тому же ответу: справочники отвечают именем ЖК, а от имени
+    # до компании один шаг — его делает круг по бренду.
+    assert any("какой ЖК строится" in q for q in asked), \
+        "имя ЖК по адресу не спрашивается вовсе"
     assert all('"' not in q for q in asked), \
         "адрес снова в жёстких кавычках — точной фразы каталога в публикациях нет"
     assert all("вл." not in q for q in asked), "канцелярское сокращение уехало в запрос"
