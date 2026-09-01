@@ -64,7 +64,7 @@ def test_a_closed_contract_with_free_limit_is_a_source() -> None:
     got = unspent_mod.unspent(ESTIMATE, horizon="2027-06-30")
     src = _codes(got["sources"])
     assert src["2.1"]["free"] == 10.0
-    assert "акты закрыли 96%" in src["2.1"]["basis"]
+    assert "принято по актам 96%" in src["2.1"]["basis"]
     assert "2.2" not in src, "статья выбрана договорами целиком — показывать нечего"
 
 
@@ -88,20 +88,31 @@ def test_an_article_without_a_contract_is_named_but_not_a_source() -> None:
 def test_a_contract_in_progress_is_not_a_source_until_the_acts_close_it() -> None:
     got = unspent_mod.unspent(ESTIMATE, horizon="2027-06-30")
     assert "2.4" not in _codes(got["sources"])
-    assert "в работе: акты закрыли 30%" in _codes(got["excluded"])["2.4"]["reason"]
+    assert "в работе: принято по актам 30%" in _codes(got["excluded"])["2.4"]["reason"]
 
 
-def test_a_quiet_programme_makes_a_source_even_without_closed_acts() -> None:
-    """Вторая половина признака: по программе РСС после среза статья не тратит."""
-    got = unspent_mod.unspent(ESTIMATE, horizon="2027-06-30",
-                              programme_left={"2.4": 0.0})
-    src = _codes(got["sources"])
-    assert "2.4" in src and "программе" in src["2.4"]["basis"]
-    # А с живой программой — по-прежнему в работе, и остаток программы назван.
-    again = unspent_mod.unspent(ESTIMATE, horizon="2027-06-30",
-                                programme_left={"2.4": 7.0})
-    assert "2.4" not in _codes(again["sources"])
-    assert "по программе ещё" in _codes(again["excluded"])["2.4"]["reason"]
+def test_a_programme_that_plans_more_than_the_contracts_leave_means_new_spending() -> None:
+    """Третья часть признака — «нового не будет» — проверяется программой РСС.
+
+    Реклама с договорами, принятыми на 91%, по актам выглядит закрытой, а
+    тратится до конца продаж: программа после среза планирует больше, чем
+    осталось выплатить по договорам, — значит новые договоры придут.
+    """
+    # 2.1: заключено 50, оплачено 0 → остаток по договорам 50; программа 80 > 50.
+    got = unspent_mod.unspent(ESTIMATE, horizon="2027-06-30", programme_left={"2.1": 80.0})
+    assert "2.1" not in _codes(got["sources"])
+    reason = _codes(got["excluded"])["2.1"]["reason"]
+    assert "новые траты ожидаются" in reason and "больше остатка по договорам" in reason
+    # Программа в пределах остатка договоров — источник, и это сказано в основании.
+    again = unspent_mod.unspent(ESTIMATE, horizon="2027-06-30", programme_left={"2.1": 40.0})
+    assert "новых трат нет" in _codes(again["sources"])["2.1"]["basis"]
+    # Программа не прочитана — судим по актам, и это тоже сказано.
+    blind = unspent_mod.unspent(ESTIMATE, horizon="2027-06-30")
+    assert "не прочитана" in _codes(blind["sources"])["2.1"]["basis"]
+    # Тихая программа при незакрытом договоре источником не делает: договор
+    # ещё в работе, и свободный лимит его ждёт.
+    quiet = unspent_mod.unspent(ESTIMATE, horizon="2027-06-30", programme_left={"2.4": 0.0})
+    assert "2.4" not in _codes(quiet["sources"])
 
 
 def test_chapter_three_is_a_source_like_chapter_two() -> None:
@@ -216,7 +227,7 @@ def test_the_shortage_side_repeats_the_waterfall_and_sums_to_the_structural_defi
     assert got["shortage_total"] == 40.0
     # Источников 15 на нехватку 40 — не хватает, и это сказано, а не выведено.
     assert got["covers"] is False
-    assert got["criterion"].startswith("договор заключён")
+    assert got["criterion"].startswith("договор заключён, по актам принято")
 
 
 def test_the_module_does_not_recount_limits_or_deficit() -> None:

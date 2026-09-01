@@ -242,18 +242,23 @@ def unspent(estimate: dict[str, Any], *,
             "programme_left": left,
         }
         if contracted <= 0:
-            reason = "договора нет — новые договоры по статье ещё придут"
-            item["reason"] = reason
+            item["reason"] = "договора нет — новые договоры по статье ещё придут"
             # ГУ без договора в РСС не бывает; свободный лимит — не источник.
             excluded.append(item)
             continue
         closed = acts_share is not None and acts_share >= CLOSED_BY_ACTS_SHARE
-        quiet = left is not None and left <= 0
-        if closed:
-            item["basis"] = f"акты закрыли {acts_share * 100:.0f}% договора"
-        elif quiet:
-            item["basis"] = "по программе РСС после среза статья не тратит"
-        if closed or quiet:
+        # «Нового не будет» проверяется программой РСС: если после среза она
+        # планирует по статье больше, чем осталось выплатить по заключённым
+        # договорам, — новые договоры ожидаются, и свободный лимит уйдёт на них.
+        # Реклама с договорами, принятыми на 91%, по актам выглядит закрытой, а
+        # тратится до конца продаж — программа это и показывает.
+        remainder = max(0.0, contracted - float(row.get("paid") or 0.0))
+        new_expected = left is not None and left > remainder + 0.01 * max(limit, 1.0)
+        if closed and not new_expected:
+            item["basis"] = (f"принято по актам {acts_share * 100:.0f}% договора"
+                             + (", по программе РСС после среза новых трат нет"
+                                if left is not None
+                                else "; программа РСС по статье не прочитана — судим по актам"))
             item["unspent"] = free + deferred
             sources.append(item)
         elif deferred > 0:
@@ -265,9 +270,13 @@ def unspent(estimate: dict[str, Any], *,
             item["unspent"] = deferred
             sources.append(item)
         else:
-            item["reason"] = (f"в работе: акты закрыли {acts_share * 100:.0f}% договора"
-                              + (f", по программе ещё {left:,.0f} ₽".replace(",", " ")
-                                 if left else ""))
+            if not closed:
+                item["reason"] = f"в работе: принято по актам {acts_share * 100:.0f}% договора"
+            else:
+                item["reason"] = ("по программе РСС после среза ещё "
+                                  f"{left / 1e6:,.1f} млн — больше остатка по договорам "
+                                  f"({remainder / 1e6:,.1f} млн): новые траты ожидаются"
+                                  ).replace(",", " ")
             excluded.append(item)
     sources.sort(key=lambda item: -item["unspent"])
     excluded.sort(key=lambda item: -(item["free"] + item["retention_deferred"]))
@@ -295,9 +304,10 @@ def unspent(estimate: dict[str, Any], *,
         "retention_deferred_total": deferred_total,
         "total": total,
         "excluded_free_total": sum(item["free"] for item in excluded),
-        "criterion": (f"договор заключён и акты закрыли не меньше "
-                      f"{CLOSED_BY_ACTS_SHARE * 100:.0f}% его суммы — или по программе "
-                      "РСС после среза статья больше не тратит"),
+        "criterion": (f"договор заключён, по актам принято не меньше "
+                      f"{CLOSED_BY_ACTS_SHARE * 100:.0f}% его суммы, и программа РСС "
+                      "после среза не планирует по статье больше, чем осталось "
+                      "выплатить по договорам"),
         # ГУ генподрядчика в его статью кладётся оценкой, и это сказано вслух.
         "retention_is_estimate": bool(gu["by_code"]),
         "retention": {key: gu[key] for key in
