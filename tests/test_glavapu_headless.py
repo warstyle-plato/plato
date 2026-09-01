@@ -125,9 +125,14 @@ def test_the_automation_repeats_the_page_steps():
     # изменилась, и расчёт девяносто секунд ждал элемент, которого нет.
     assert "#id-cad-numbers-text-field" in core._GLAVAPU_NUMBER_FIELD_SELECTORS
     assert len(core._GLAVAPU_NUMBER_FIELD_SELECTORS) >= 4
-    # Готовность таблицы определяется как на странице: коды 60 и 54, ≥60 строк.
-    assert '"60" in codes' in source and '"54" in codes' in source
+    # Готовность больше НЕ держится на номере чужой строки: кода 60 у ГлавАПУ
+    # не стало, таблица перенумерована и кончается на 58 (живой снимок ядра,
+    # 01.09.2026), и мы ждали несуществующую строку девяносто секунд. Ждём
+    # того, что от нумерации не зависит: строки, которые читаем по именам, на
+    # месте, и таблица перестала меняться.
+    assert '"60" in codes' not in source and '"54" in codes' not in source
     assert "len(rows) >= 60" in source
+    assert "_glavapu_missing_controls(" in source and "_glavapu_table_shot(" in source
 
 
 def test_only_one_browser_runs_at_a_time():
