@@ -70,7 +70,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.21.29"
+VERSION = "0.21.37"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -33178,11 +33178,16 @@ function landMapGround(mercatorMetres,y){return mercatorMetres*Math.cos(landMapL
 function landMapMetres(pixels,zoom,y){return landMapGround(pixels*landMapScale(zoom),y)}
 
 function openLandMap(payload){
- // payload: {rings, zones, title, note}
+ // payload: {rings, zones, title, note, shapes, onPick}
+ // `shapes` — чужие контуры со своим цветом и подписью: ими карту КРТ рисует
+ // страница торгов. Второй живой карты не заводим: тайлы, проекция, линейка и
+ // масштаб объявлены здесь один раз, и копию было бы негде обновлять.
  const box=document.getElementById('landMapDialog');
  if(!box)return;
  const rings=(payload&&payload.rings)||[];
- const points=rings.flat().filter(p=>Array.isArray(p)&&p.length>=2);
+ const shapes=(payload&&payload.shapes)||[];
+ const points=rings.flat().concat(shapes.flatMap(s=>(s&&s.rings||[]).flat()))
+   .filter(p=>Array.isArray(p)&&p.length>=2);
  if(!points.length)return;
  const minX=Math.min(...points.map(p=>p[0])),maxX=Math.max(...points.map(p=>p[0]));
  const minY=Math.min(...points.map(p=>p[1])),maxY=Math.max(...points.map(p=>p[1]));
@@ -33197,6 +33202,7 @@ function openLandMap(payload){
  const zoom=Math.log2(LAND_MAP_WORLD/256/(span/width));
  LAND_MAP={
   rings:rings,zones:(payload&&payload.zones)||[],
+  shapes:shapes,onPick:(payload&&payload.onPick)||null,
   title:(payload&&payload.title)||'Участок и окружение',
   note:(payload&&payload.note)||'',
   cx:(minX+maxX)/2,cy:(minY+maxY)/2,
@@ -33229,7 +33235,15 @@ function landMapPoint(event){
  return landMapUnproject(event.clientX-view.left,event.clientY-view.top,view);
 }
 function landMapClick(event){
- if(!LAND_MAP||!LAND_MAP.measuring)return;
+ if(!LAND_MAP)return;
+ // Щелчок по чужой фигуре — выбор площадки, а не точка линейки.
+ const pick=event.target&&event.target.getAttribute&&event.target.getAttribute('data-pick');
+ if(pick!==null&&pick!==undefined&&!LAND_MAP.measuring&&typeof LAND_MAP.onPick==='function'){
+  if((LAND_MAP.moved||0)>4)return;
+  LAND_MAP.onPick(pick);
+  return;
+ }
+ if(!LAND_MAP.measuring)return;
  // Линейка нужна не «вообще»: К1 приобъектной парковки задаётся расстоянием
  // до входа на станцию (0,75 до 1200 м · 0,9 до 2200 м), и до сих пор его
  // мерили где-то на стороне и вписывали числом.
@@ -33305,6 +33319,17 @@ function renderLandMap(){
    const colour=paint[zone.flag_class]||'#777';
    return `<path d="${toPath(zone.outline_merc)}" fill="${colour}" fill-opacity="0.22" stroke="${colour}" stroke-width="1.5"/>`;
   }).join('');
+ // Чужие фигуры лежат ПОД контуром и ловят указатель: перетаскивание при этом
+ // не ломается — событие всплывает к сцене, а щелчок после перетаскивания
+ // отсекается тем же счётчиком, что и у линейки.
+ const shapeLayers=(LAND_MAP.shapes||[]).filter(s=>Array.isArray(s.rings)&&s.rings.length)
+  .map((shape,i)=>{
+   const colour=shape.colour||'#777';
+   return `<path d="${toPath(shape.rings)}" fill="${colour}" fill-opacity="0.34" stroke="${colour}"`
+    +` stroke-width="1.2" data-pick="${escapeHtml(String(shape.key||i))}"`
+    +` style="pointer-events:auto;cursor:pointer">`
+    +`<title>${escapeHtml(String(shape.title||''))}</title></path>`;
+  }).join('');
  const contour=`<path d="${toPath(LAND_MAP.rings)}" fill="rgba(245,245,243,.18)" stroke="#111" stroke-width="2.5" fill-rule="evenodd"/>`;
  let ruler='',rulerNote='';
  if(LAND_MAP.measure.length){
@@ -33323,7 +33348,7 @@ function renderLandMap(){
  const barM=nice.filter(v=>v/perPx<=W*0.35).pop()||nice[0];
  const barPx=Math.round(barM/perPx);
  stage.innerHTML=`<div style="position:absolute;inset:0;overflow:hidden">${tiles}</div>`+
-  `<svg width="${W}" height="${H}" style="position:absolute;inset:0;pointer-events:none">${zoneLayers}${contour}${ruler}</svg>`+
+  `<svg width="${W}" height="${H}" style="position:absolute;inset:0;pointer-events:none">${shapeLayers}${zoneLayers}${contour}${ruler}</svg>`+
   `<div style="position:absolute;left:12px;bottom:12px;background:rgba(255,255,255,.88);padding:4px 8px;border-radius:4px;font-size:11px;color:#333">`+
   `<div style="border:2px solid #333;border-top:0;height:5px;width:${barPx}px;margin-bottom:2px"></div>${landNum(barM,0)} м · © OpenStreetMap</div>`+
   (rulerNote?`<div style="position:absolute;right:12px;bottom:12px;background:#3b6db4;color:#fff;padding:4px 10px;border-radius:4px;font-size:12px">${escapeHtml(rulerNote)}</div>`:'');

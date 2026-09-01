@@ -216,7 +216,7 @@ class AuctionSearchService:
         location = " ".join((lot.address or "", str(lot.raw.get("region") or ""), lot.title or "")).lower()
         if "москва" in location:
             selected.append("Москва")
-        kind_labels = {LotKind.KRT: "КРТ", LotKind.PROPERTY_COMPLEX: "имущественный комплекс", LotKind.UNFINISHED: "незавершённый объект", LotKind.LAND_SALE: "продажа земли", LotKind.LAND_LEASE: "аренда земли"}
+        kind_labels = {LotKind.KRT: "КРТ", LotKind.PROPERTY_COMPLEX: "имущественный комплекс", LotKind.UNFINISHED: "незавершённый объект", LotKind.LAND_SALE: "продажа земли", LotKind.LAND_LEASE: "аренда земли", LotKind.EQUITY_STAKE: "доля в юрлице"}
         if lot.lot_kind in kind_labels:
             selected.append(kind_labels[lot.lot_kind])
         if lot.land_area_sqm is not None:
@@ -268,6 +268,12 @@ class AuctionSearchService:
             relevant = True
         elif lot.lot_kind in {LotKind.PROPERTY_COMPLEX, LotKind.UNFINISHED}:
             relevant = not (residential_house and small) and not residential_unit
+        elif lot.lot_kind == LotKind.EQUITY_STAKE:
+            # Доля в юрлице — предмет девелоперского интереса сама по себе:
+            # владелец попросил их смотреть (01.09.2026). Подходит ли она по
+            # цене и стоит ли за ней недвижимость, отвечает `equity_stake` —
+            # здесь решается только «это вообще наш рынок».
+            relevant = not residential_unit
         else:
             relevant = lot.lot_kind in {LotKind.LAND_SALE, LotKind.LAND_LEASE} and not excluded
         lot.selection_reasons = selected

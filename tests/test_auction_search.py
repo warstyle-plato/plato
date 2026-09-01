@@ -41,16 +41,25 @@ def test_generic_right_to_lease_is_not_krt():
     assert classify_lot("Право на заключение договора аренды земельного участка") == LotKind.LAND_LEASE
 
 
-def test_development_project_company_share_is_property_complex():
-    title = "Продажа 100% доли юрлица — собственника проекта комплекса жилой застройки"
-    assert classify_lot(title) == LotKind.PROPERTY_COMPLEX
-    verbose_title = "Продажа доли в размере 100 (сто) % уставного капитала компании, владеющей зданием"
-    assert classify_lot(verbose_title) == LotKind.PROPERTY_COMPLEX
+def test_a_share_in_a_company_is_its_own_kind():
+    """Доля в обществе — не имущественный комплекс и не «прочее».
 
-
-def test_non_development_company_share_is_not_promoted_to_property_complex():
-    title = "Продажа доли в размере 100% уставного капитала ООО ПРАЧЕЧНАЯ"
-    assert classify_lot(title) == LotKind.OTHER
+    Покупают ОБЩЕСТВО с его обязательствами и историей, а не объект: сроки,
+    риск и проверка у такой сделки другие. До 01.09.2026 доля со словом
+    «здание» рядом опознавалась имущественным комплексом, а без него уходила в
+    «прочее» — то есть отсутствие описания активов читалось как их отсутствие,
+    и лот пропадал из выдачи молча. Что стоит за долей, отвечает отдельный
+    разбор, и «активы не описаны» там значит «не знаем».
+    """
+    assert classify_lot(
+        "Продажа 100% доли юрлица — собственника проекта комплекса жилой застройки"
+    ) == LotKind.EQUITY_STAKE
+    assert classify_lot(
+        "Продажа доли в размере 100 (сто) % уставного капитала компании, владеющей зданием"
+    ) == LotKind.EQUITY_STAKE
+    assert classify_lot(
+        "Продажа доли в размере 100% уставного капитала ООО ПРАЧЕЧНАЯ"
+    ) == LotKind.EQUITY_STAKE
 
 
 def test_small_ijs_is_filtered_out():
@@ -208,9 +217,16 @@ def test_a_non_residential_building_is_not_mistaken_for_a_flat():
 
 
 def test_api_runtime_flag_controls_project_share_discovery(monkeypatch):
+    """Доли спрашиваются по умолчанию, выключатель остаётся.
+
+    Категория 85 РАД — «Акции и доли предприятий», и до 01.09.2026 она была
+    выключена: лоты о продаже долей в юрлицах в выдачу не приезжали вовсе.
+    Владелец попросил их смотреть, значит умолчание — «спрашиваем»; выключатель
+    нужен на случай, когда цена обхода каталога важнее полноты.
+    """
     monkeypatch.delenv("AUCTION_LOTONLINE_PROJECT_SHARES_DISCOVERY", raising=False)
     default_adapter = _discovery_adapters("lot_online")[0]
-    assert default_adapter.include_project_shares is False
+    assert default_adapter.include_project_shares is True
 
     monkeypatch.setenv("AUCTION_LOTONLINE_PROJECT_SHARES_DISCOVERY", "true")
     enabled_adapter = _discovery_adapters("lot_online")[0]

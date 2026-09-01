@@ -63,11 +63,25 @@ _CITY_NEEDS = ("реноваци", "фонд реновации", "для нуж
                "муниципальных нужд", "переселени", "расселение жител",
                "жилой застройки")
 
+# Договор о КРТ уже заключён — площадка отдана, и статус каталога об этом
+# молчит. Строкой стадии это быть не может: стадия отвечает на «как далеко
+# зашло», а здесь ответ на другой вопрос — «можно ли ещё войти» (владелец,
+# 01.09.2026: «первичный парсинг источников нужен, чтобы избегать таких
+# классификаций как планируемая, когда она давно уже отдана другим»).
+#
+# «По инициативе правообладателей» стоит здесь же и не случайно: это КРТ, где
+# землю развивает её собственник, и торгов по такой площадке не будет вовсе.
+_AGREEMENT = ("заключен договор о комплексном", "заключён договор о комплексном",
+              "заключили договор о комплексном", "заключен договор о кртк",
+              "подписан договор о комплексном", "подписали договор о комплексном",
+              "договор о комплексном развитии территории заключен",
+              "договор о комплексном развитии территории заключён",
+              "по инициативе правообладател", "по инициативе собственник")
+
 # Стадия проекта: не признак, а факт с датой — им объясняется, почему площадка
 # ещё «Планируемая», а работа по ней уже идёт.
 _STAGE = ("представлена концепция", "утвержден проект планировки",
-          "утверждён проект планировки", "заключен договор о комплексном",
-          "заключён договор о комплексном", "объявлены торги",
+          "утверждён проект планировки", "объявлены торги",
           "получено разрешение на строительство", "начались работы")
 
 _TRUSTED = ("mos.ru", "stroi.mos.ru", "krt.mos.ru", "investmoscow.ru", "torgi.gov.ru")
@@ -83,6 +97,24 @@ def queries(name: str, okrug: str = "", district: str = "") -> list[str]:
     if where:
         out.append(f'"{base}" {where} КРТ застройщик')
     return out[:3]
+
+
+# Телеграм-каналы застройщиков и городские каналы говорят о площадке раньше
+# деловой прессы и почти всегда именем проекта, а не адресом. Спрашиваются они
+# тем же платным индексом, ограниченным доменом: своего пути наружу модуль не
+# заводит — правило то же, по которому поиск взят у движка рынка.
+#
+# Круг ровно один и по одному якорю: у поиска цена за запрос, а канал без
+# якоря в том же предложении дал бы то же, что сниппет, повторяющий запрос.
+def telegram_queries(name: str, brands: Iterable[str] = ()) -> list[str]:
+    """Запрос к каналам: по имени проекта, если оно доказано, иначе по адресу."""
+    brand = next((str(b).strip() for b in (brands or []) if str(b).strip()), "")
+    base = _SPACE.sub(" ", str(name or "")).strip()
+    if brand:
+        return [f'site:t.me "{brand}" КРТ застройщик']
+    if not base:
+        return []
+    return [f'site:t.me "{base}" КРТ']
 
 
 def _anchor_words(name: str) -> set[str]:
@@ -105,9 +137,76 @@ def _mentions(sentence: str, anchors: set[str]) -> bool:
     return any(word.startswith(stem) for word in words for stem in anchors)
 
 
+# Имя проекта рынком известно раньше адреса: «Строгино 360» знают все, а
+# «Маршала Воробьева ул., вл. 12» — никто. Статья про бренд к площадке не
+# привязывалась вовсе: якорем служит адрес, и это дыра, а не осторожность
+# (владелец, 01.09.2026: «по улице Маршала Воробьева 12 не показывает, что оно
+# обещано кому-то, а там же Строгино 360 и это ПИК»).
+#
+# Бренд берётся только доказанный: он обязан стоять в ОДНОМ предложении с
+# адресом площадки. Иначе повторится ошибка модуля рынка, где сниппет,
+# повторяющий запрос, отдавал каждому кандидату адрес объекта оценки.
+_BRAND = re.compile(
+    r"(?:ЖК|жилой комплекс|жилого комплекса|проект|проекта|квартал)\s+"
+    r"[«\"]([^«»\"]{3,40})[»\"]"
+    r"|[«\"]([А-ЯЁA-Z][^«»\"]{2,39})[»\"]")
+# Слова, которые в кавычках стоят, но именем проекта не являются.
+_NOT_BRAND = {"крт", "комплексное развитие территории", "реновация", "москва",
+              "планируемый", "в реализации", "проект решения"}
+
+
+def brand_names(docs: Iterable[Any], name: str) -> list[str]:
+    """Как площадка называется на рынке — по соседству с её адресом.
+
+    Пусто — значит пусто: имя, взятое из предложения без адреса, привязало бы
+    к площадке чужой проект.
+    """
+    anchors = _anchor_words(name)
+    found: list[str] = []
+    for doc in docs or []:
+        text = f"{getattr(doc, 'title', '')}. {getattr(doc, 'snippet', '')}"
+        for sentence in _sentences(text):
+            if not _mentions(sentence, anchors):
+                continue
+            for match in _BRAND.finditer(sentence):
+                brand = (match.group(1) or match.group(2) or "").strip()
+                low = brand.lower().replace("ё", "е")
+                if not brand or low in _NOT_BRAND:
+                    continue
+                # Имя, состоящее из слов самого адреса, вторым якорем не
+                # является: оно ничего не добавляет.
+                if _mentions(brand, anchors):
+                    continue
+                if brand not in found:
+                    found.append(brand)
+    return found[:3]
+
+
+# Сокращения, после которых точка — не конец фразы. Адрес площадки сам состоит
+# из них: «Маршала Воробьева ул., вл. 12» разваливалось пополам, адрес уезжал в
+# одно предложение, признак — в другое, и правило «в одном предложении» молча
+# теряло настоящую находку на КАЖДОМ адресе с «вл.» (владелец, 01.09.2026).
+_ABBR = {"вл", "влд", "д", "дом", "стр", "корп", "к", "тер", "кв", "ул", "просп",
+         "пр", "пер", "наб", "ш", "г", "гг", "руб", "тыс", "млн", "млрд", "им",
+         "обл", "мкр", "п", "с", "им", "т", "ок", "прим", "рис", "см"}
+_TAIL_WORD = re.compile(r"([А-Яа-яЁёA-Za-z]+)\.$")
+
+
 def _sentences(text: str) -> list[str]:
     flat = _SPACE.sub(" ", str(text or "")).strip()
-    return [part.strip() for part in _SENTENCE.split(flat) if part.strip()]
+    parts = [part.strip() for part in _SENTENCE.split(flat) if part.strip()]
+    out: list[str] = []
+    for part in parts:
+        if out:
+            tail = _TAIL_WORD.search(out[-1])
+            short = tail and tail.group(1).lower().replace("ё", "е") in _ABBR
+            # Точка после сокращения или перед числом фразу не кончает:
+            # «вл. 12», «д. 5 стр. 2», «тыс. кв. м».
+            if short or part[:1].isdigit():
+                out[-1] = out[-1] + " " + part
+                continue
+        out.append(part)
+    return out
 
 
 def _operator_name(sentence: str) -> str:
@@ -122,22 +221,41 @@ def _operator_name(sentence: str) -> str:
     return _SPACE.sub(" ", found.group("name")).strip(" «»")
 
 
+def _is_telegram(domain: str) -> bool:
+    host = str(domain or "").lower().strip().strip(".")
+    return host == "t.me" or host.endswith(".t.me") or host == "telegram.me"
+
+
 def _found(sentence: str, doc: Any) -> dict[str, Any]:
+    domain = getattr(doc, "domain", "") or ""
     return {
         "quote": sentence[:400],
         "url": getattr(doc, "url", "") or "",
-        "domain": getattr(doc, "domain", "") or "",
-        "official": any(host in (getattr(doc, "domain", "") or "") for host in _TRUSTED),
+        "domain": domain,
+        "official": any(host in domain for host in _TRUSTED),
+        # Канал — не издание: пост пишет кто угодно, опровергать его никто не
+        # обязан. Признак ставится тот же и по тому же правилу (цитата, ссылка,
+        # якорь в том же предложении), но происхождение названо вслух — иначе
+        # слух встанет на экране рядом с mos.ru и будет выглядеть так же.
+        "telegram": _is_telegram(domain),
     }
 
 
 def read_findings(docs: Iterable[Any], name: str) -> dict[str, Any]:
     """Разобрать выдачу по одной площадке. Без цитаты признак не ставится."""
-    anchors = _anchor_words(name)
+    anchors = set(_anchor_words(name))
+    # Бренд площадки, если он доказан соседством с адресом, работает якорем
+    # наравне с адресом: статья, где сказано только «Строгино 360», иначе
+    # проходит мимо.
+    docs = list(docs or [])
+    brands = brand_names(docs, name)
+    for brand in brands:
+        anchors |= _anchor_words(brand)
     operator_named: list[dict[str, Any]] = []
     operator_appointed: list[dict[str, Any]] = []
     operator_pending: list[dict[str, Any]] = []
     city_needs: list[dict[str, Any]] = []
+    agreement: list[dict[str, Any]] = []
     stage: list[dict[str, Any]] = []
     seen: set[str] = set()
     checked = 0
@@ -165,6 +283,8 @@ def read_findings(docs: Iterable[Any], name: str) -> dict[str, Any]:
                 operator_pending.append(_found(sentence, doc))
             if any(mark in low for mark in _CITY_NEEDS):
                 city_needs.append(_found(sentence, doc))
+            if any(mark in low for mark in _AGREEMENT):
+                agreement.append(_found(sentence, doc))
             if any(mark in low for mark in _STAGE):
                 stage.append(_found(sentence, doc))
     # «Оператор назван» и «оператор назначен» — разные ответы, и второй не
@@ -176,7 +296,21 @@ def read_findings(docs: Iterable[Any], name: str) -> dict[str, Any]:
         "operator_appointed": operator_appointed[:3],
         "operator_pending": operator_pending[:3],
         "city_needs": city_needs[:3],
+        # Договор заключён — отдельный ответ, а не разновидность стадии.
+        "agreement": agreement[:3],
         "stage": stage[:4],
-        "taken": bool(operator_named or operator_appointed),
-        "free": bool(operator_pending) and not (operator_named or operator_appointed),
+        # Как площадка известна рынку: имя проекта, доказанное соседством с
+        # адресом. По нему идёт второй круг поиска — статья про бренд адреса
+        # чаще всего не называет.
+        "brands": brands,
+        # Сколько находок пришло из каналов: пустая строка «спросили каналы, и
+        # там пусто» и не спрошенные вовсе каналы выглядят на экране одинаково.
+        "telegram_found": sum(
+            1 for item in operator_named + operator_appointed + operator_pending
+            + city_needs + agreement + stage if item.get("telegram")),
+        # Заключённый договор занимает площадку так же, как названный оператор:
+        # «Планируемая» в каталоге значит «стройка не начата», а не «свободна».
+        "taken": bool(operator_named or operator_appointed or agreement),
+        "free": bool(operator_pending)
+        and not (operator_named or operator_appointed or agreement),
     }
