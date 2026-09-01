@@ -9294,6 +9294,12 @@ _GLAVAPU_SNAPSHOT_JS = """() => {
         .replace(/\s+/g, ' ').trim().slice(0, 80),
     } : null,
     dialog: dialog ? String(dialog.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 600) : '',
+    // Ввод участка у ГлавАПУ — не диалог, а левая ПАНЕЛЬ (экран владельца,
+    // 01.09.2026), и `[role="dialog"]` её не находит: отказ говорил «диалог
+    // ничего не сообщил» там, где на странице написано «Район: Савёловский» и
+    // площадь участка. В ошибку кладётся сама страница, а не её отсутствие.
+    page_text: String(document.body ? document.body.innerText || '' : '')
+      .replace(/\s+/g, ' ').trim().slice(0, 1500),
     errors: Array.from(document.querySelectorAll(
       '.Mui-error, .MuiFormHelperText-root, [role="alert"]'))
       .map(n => String(n.textContent || '').replace(/\s+/g, ' ').trim())
@@ -9426,12 +9432,15 @@ def _glavapu_parcel_message(numbers: list[str], snapshot: dict[str, Any]) -> str
         return (f"кнопки «Перейти к расчётам» на странице нет за {limit} с; "
                 f"участки: {listed}")
     said = "; ".join(str(x) for x in (snapshot.get("errors") or []))[:200]
-    dialog = str(snapshot.get("dialog") or "")[:240]
+    # Панель ввода участка — не диалог, поэтому текст берётся со страницы
+    # целиком: по нему видно, сформировалась территория (есть район и площадь)
+    # или ввод не дошёл вовсе.
+    told = str(snapshot.get("dialog") or "") or str(snapshot.get("page_text") or "")
     return (f"калькулятор не принял участок за {limit} с: кнопка «Перейти к расчётам» "
             f"осталась недоступной (подпись «{proceed.get('label') or '—'}»). "
             f"Участки: {listed}. "
             + (f"Страница говорит: {said}. " if said else "")
-            + (f"Диалог: {dialog}" if dialog else "Диалог участка ничего не сообщил"))
+            + (f"На странице: {told[:400]}" if told else "Страница ничего не сообщила"))
 
 
 def _glavapu_drive_page(page: Any, numbers: list[str], area_ha: float,
