@@ -187,8 +187,9 @@ function equityNote(l){
  if(eq.assets&&(eq.assets.real_estate||eq.assets.land))
   bits.push('активы: '+[eq.assets.real_estate?'недвижимость':'',eq.assets.land?'земля':'']
     .filter(Boolean).join(' и '));
+ else if(eq.assets&&!eq.assets.probed)bits.push('карточка лота не прочитана');
  else if(eq.assets&&eq.assets.mentioned)bits.push('активы без недвижимости и земли');
- else bits.push('активы не описаны');
+ else bits.push('активы в карточке не описаны');
  return `<div class="source" title="${esc((eq.why||[]).join('. '))}">${esc(bits.filter(Boolean).join(' · '))}</div>`;
 }
 function lotDeadlineDays(l){
@@ -253,8 +254,10 @@ function lotScore(l){
   if(eq.asset_match===false&&eq.assets&&eq.assets.mentioned)
    cuts.push({label:'активы общества названы, но недвижимости и земли среди них нет',points:40});
   // Не описаны — это «не знаем», а не «их нет»: снижение маленькое и названное.
-  if(eq.assets&&!eq.assets.mentioned)
-   cuts.push({label:'активы общества в лоте не описаны — проверить по выписке',points:15});
+  // А непрочитанная карточка — вообще не про лот, это наш пробел: за него балл
+  // лота не снижаем, снижение за неполученные документы уже стоит выше.
+  if(eq.assets&&eq.assets.probed&&!eq.assets.mentioned)
+   cuts.push({label:'в карточке лота активы общества не описаны — проверить по выписке',points:15});
  }
  const concerns=(s.concerns||[]).length;
  if(concerns)cuts.push({label:`замечаний скрининга: ${concerns}`,points:Math.min(15,concerns*5)});

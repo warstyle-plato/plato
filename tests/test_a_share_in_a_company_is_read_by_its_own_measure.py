@@ -38,19 +38,26 @@ from auction_search.models import (  # noqa: E402
     AuctionLot, AuctionSource, LotKind, SourceKind,
 )
 
-FULL = ("Продажа доли в размере 100 (сто) % уставного капитала ООО «РИВЬЕРА ПАРК». "
-        "Активы общества: земельный участок 77:01:0004023:15 и здание площадью 4 200 кв.м.")
-PART = ("Продажа доли в размере 51 % уставного капитала ООО «Ромашка». "
-        "Активы общества: нежилое здание в Москве.")
-BARE = "Продажа доли в размере 25 % уставного капитала ООО «Ромашка»."
+FULL = "Продажа доли в размере 100 (сто) % уставного капитала ООО «РИВЬЕРА ПАРК»"
+PART = "Продажа доли в размере 51 % уставного капитала ООО «Ромашка»"
+BARE = "Продажа доли в размере 25 % уставного капитала ООО «Ромашка»"
+
+# Карточка лота, а не строка каталога: активы общества пишутся здесь.
+CARD = ("Код лота 1234. Вид процедуры: аукцион. "
+        "Активы общества: земельный участок площадью 1,2 га с кадастровым номером "
+        "77:01:0004023:15 и нежилое здание площадью 4 200 кв.м. "
+        "Порядок ознакомления с документацией размещён на сайте организатора.")
+# Та же карточка, но слово «здание» в ней служебное.
+NOISE_CARD = "Осмотр проводится в здании организатора торгов. Код лота 1234."
 
 
-def _lot(title: str, price: float | None) -> AuctionLot:
+def _lot(title: str, price: float | None, card: str = CARD) -> AuctionLot:
     return AuctionLot(
         source=AuctionSource(platform=SourceKind.LOT_ONLINE, lot_url="https://lot-online.ru/1",
                              external_lot_id="1", fetched_at="2026-09-01T00:00:00"),
         lot_kind=classify_lot(title), title=title,
         start_price_rub=price, status="Приём заявок",
+        raw={"page_text": card} if card else {},
     )
 
 
@@ -78,7 +85,7 @@ def test_a_partial_stake_uses_the_lower_floor():
 
 
 def test_an_unnamed_share_is_not_read_as_a_hundred_percent():
-    text = "Продажа доли в уставном капитале ООО «Ромашка». Активы общества: здание."
+    text = "Продажа доли в уставном капитале ООО «Ромашка»"
     screened = equity_stake.screen(_lot(text, 150_000_000))
     assert screened["share_pct"] is None and screened["share_named"] is False
     assert screened["price_ok"] is True, "неназванная доля получила верхний порог"
@@ -92,20 +99,43 @@ def test_an_unpublished_price_is_a_third_answer():
     assert catalogue_quality(_lot(FULL, None))["state"] == "incomplete"
 
 
-def test_assets_are_read_with_a_quote():
+def test_assets_are_read_in_the_card_not_in_the_catalogue_line():
+    """Активы пишутся в карточке, и искать их в заголовке — не искать вовсе."""
     found = equity_stake.screen(_lot(FULL, 750_000_000))["assets"]
-    assert found["real_estate"] and found["land"] and found["mentioned"]
+    assert found["probed"] and found["real_estate"] and found["land"]
     assert found["quotes"] and all(q["quote"] for q in found["quotes"]), \
         "признак активов поставлен без цитаты"
 
 
+def test_an_unread_card_is_not_an_empty_one():
+    """Строка каталога — не ответ об активах: карточку ещё не открывали."""
+    screened = equity_stake.screen(_lot(FULL, 750_000_000, card=""))
+    assert screened["assets"]["probed"] is False
+    assert screened["asset_match"] is False
+    assert any("не прочитана" in line for line in screened["why"]), screened["why"]
+
+
+def test_a_service_word_in_the_card_is_not_an_asset():
+    """«В здании организатора торгов» — не недвижимость общества."""
+    found = equity_stake.screen(_lot(FULL, 750_000_000, card=NOISE_CARD))["assets"]
+    assert found["probed"] is True
+    assert found["real_estate"] is False and found["land"] is False
+
+
 def test_undescribed_assets_are_not_absent_assets():
-    screened = equity_stake.screen(_lot(BARE, 150_000_000))
+    screened = equity_stake.screen(_lot(BARE, 150_000_000, card=NOISE_CARD))
     assert screened["asset_match"] is False
     assert any("не знаем" in line for line in screened["why"]), \
         "«активы не описаны» подано как «активов нет»"
     # Доп. критерий не ворота: лот остаётся в основной подборке.
-    assert catalogue_quality(_lot(BARE, 150_000_000))["accepted"] is True
+    assert catalogue_quality(_lot(BARE, 150_000_000, card=NOISE_CARD))["accepted"] is True
+
+
+def test_the_address_of_the_company_is_not_an_asset():
+    """В графе «Адрес» у доли стоит адрес ОБЩЕСТВА, а не его недвижимости."""
+    lot = _lot(FULL, 750_000_000, card="Код лота 1234.")
+    lot.address = "Москва, ул. Примерная, д. 1, здание 2"
+    assert equity_stake.screen(lot)["assets"]["real_estate"] is False
 
 
 def test_the_missing_area_does_not_throw_the_whole_kind_away():
@@ -128,6 +158,8 @@ def test_the_page_shows_the_kind_and_counts_it_once():
     assert "equity_stake:'Доля в юрлице'" in page, "вид лота на экране не назван"
     assert '<option value="equity_stake">' in page, "по виду нельзя отобрать"
     assert "function equityNote(" in page, "что стоит за долей, на экране не сказано"
+    assert "карточка лота не прочитана" in page, \
+        "непрочитанная карточка на экране неотличима от пустой"
     body = page[page.index("function equityNote("):]
     body = body[:body.index("\nfunction ")]
     for forbidden in ("100000000", "500000000", "1e8", "5e8"):

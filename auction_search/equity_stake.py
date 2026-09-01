@@ -72,19 +72,60 @@ _CADASTRAL_RE = re.compile(r"\b\d{2}:\d{2}:\d{6,7}:\d+\b")
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?;])\s+")
 
 
-def _text(lot: Any) -> str:
-    """Всё, что о лоте написано словами. Документы — тоже слова о лоте."""
+_CARD_TEXT_KEYS = ("page_text", "description", "lot_description", "text", "card_text")
+
+
+def _get(lot: Any, name: str, default: Any = None) -> Any:
     if isinstance(lot, dict):
-        parts = [lot.get("title") or "", lot.get("procedure_type") or "",
-                 lot.get("permitted_use") or "", lot.get("address") or ""]
-        parts += [str(d.get("title") or "") for d in (lot.get("documents") or [])
-                  if isinstance(d, dict)]
-        parts += [str(v) for v in (lot.get("cadastral_numbers") or [])]
-        return " ".join(p for p in parts if p)
-    parts = [getattr(lot, "title", "") or "", getattr(lot, "procedure_type", "") or "",
-             getattr(lot, "permitted_use", "") or "", getattr(lot, "address", "") or ""]
-    parts += [getattr(d, "title", "") or "" for d in (getattr(lot, "documents", None) or [])]
-    parts += [str(v) for v in (getattr(lot, "cadastral_numbers", None) or [])]
+        return lot.get(name, default)
+    return getattr(lot, name, default)
+
+
+def _text(lot: Any) -> str:
+    """Чем лот назван: заголовок и вид процедуры.
+
+    Адрес сюда не входит намеренно: у лота о доле в графе «Адрес» стоит адрес
+    ОБЩЕСТВА, а не его актива, и принимать его за недвижимость нельзя.
+    """
+    parts = [_get(lot, "title", "") or "", _get(lot, "procedure_type", "") or ""]
+    docs = _get(lot, "documents", None) or []
+    for doc in docs:
+        parts.append((doc.get("title") if isinstance(doc, dict) else getattr(doc, "title", "")) or "")
+    return " ".join(p for p in parts if p)
+
+
+def card_text(lot: Any) -> str:
+    """Текст САМОЙ карточки лота, а не строки каталога.
+
+    Активы общества пишутся в карточке, и искать их в заголовке — значит не
+    искать вовсе (владелец, 01.09.2026: «я имею в виду уже в карточке по
+    продаже доли искать здание или ЗУ, а не до этого»). Заголовок каталога
+    называет предмет сделки — долю, — а что за ней стоит, сказано ниже, в
+    описании лота.
+    """
+    raw = _get(lot, "raw", None) or {}
+    if not isinstance(raw, dict):
+        return ""
+    for key in _CARD_TEXT_KEYS:
+        value = raw.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    # У ЭТП ГПБ карточка приезжает не текстом, а набором атрибутов — это тот же
+    # текст карточки, просто разложенный по полям.
+    attributes = raw.get("api_attributes")
+    if isinstance(attributes, dict):
+        joined = ". ".join(str(v) for v in attributes.values() if isinstance(v, str) and v.strip())
+        if joined.strip():
+            return joined
+    return ""
+
+
+def _asset_text(lot: Any) -> str:
+    """Где искать активы: карточка плюс названия документов лота."""
+    parts = [card_text(lot)]
+    docs = _get(lot, "documents", None) or []
+    for doc in docs:
+        parts.append((doc.get("title") if isinstance(doc, dict) else getattr(doc, "title", "")) or "")
     return " ".join(p for p in parts if p)
 
 
@@ -127,30 +168,30 @@ def share_percent(text: str) -> float | None:
     return None
 
 
-def _quote(flat: str, pattern: re.Pattern[str]) -> str:
-    """Предложение, в котором признак и нашёлся. Без цитаты признака нет."""
-    for sentence in _SENTENCE_SPLIT.split(flat):
-        if pattern.search(sentence):
-            return sentence.strip()[:300]
-    found = pattern.search(flat)
-    return flat[max(0, found.start() - 60):found.end() + 60].strip()[:300] if found else ""
-
-
 def assets(lot: Any) -> dict[str, Any]:
-    """Что сказано об активах общества.
+    """Что сказано об активах общества — в карточке лота, а не в заголовке.
 
     Доп. критерий владельца: интересна доля, за которой стоит недвижимость или
-    земля. Пустое описание — «активы не описаны», а не «активов нет».
+    земля. Три разных ответа, и путать их нельзя: карточка не прочитана;
+    прочитана и активы не описаны; описаны, но недвижимости среди них нет.
+    Первое — наш пробел, второе — молчание продавца, и ни то ни другое не
+    «активов нет».
+
+    Слово «здание» в карточке само по себе признаком не считается: карточка
+    полна служебного текста, и признак ставится только в предложении, где рядом
+    сказано об активах, имуществе или балансе общества. Иначе повторится ошибка
+    модуля рынка, где сниппет отдавал кандидату чужой адрес. Кадастровый номер
+    — улика сам по себе: он называет конкретный объект.
     """
-    flat = re.sub(r"\s+", " ", _text(lot))
-    cadastral = bool(_CADASTRAL_RE.search(flat)) or bool(
-        (lot.get("cadastral_numbers") if isinstance(lot, dict)
-         else getattr(lot, "cadastral_numbers", None)) or [])
-    realty = bool(_REALTY_RE.search(flat))
-    land = bool(_LAND_RE.search(flat)) or cadastral
-    mentioned = bool(_ASSETS_RE.search(flat)) or realty or land
+    text = _asset_text(lot)
+    probed = bool(text.strip())
+    flat = re.sub(r"\s+", " ", text)
+    cadastral = bool(_CADASTRAL_RE.search(flat)) or bool(_get(lot, "cadastral_numbers", None) or [])
+    realty = _anchored(flat, _REALTY_RE) or cadastral
+    land = _anchored(flat, _LAND_RE) or cadastral
     out: dict[str, Any] = {
-        "mentioned": mentioned,
+        "probed": probed,
+        "mentioned": bool(_ASSETS_RE.search(flat)) or realty or land,
         "real_estate": realty,
         "land": land,
         "cadastral": cadastral,
@@ -158,9 +199,28 @@ def assets(lot: Any) -> dict[str, Any]:
     }
     for label, pattern in (("недвижимость", _REALTY_RE), ("земельный участок", _LAND_RE),
                            ("активы общества", _ASSETS_RE)):
-        if pattern.search(flat):
-            out["quotes"].append({"label": label, "quote": _quote(flat, pattern)})
+        quote = _anchored_quote(flat, pattern)
+        if quote:
+            out["quotes"].append({"label": label, "quote": quote})
     return out
+
+
+def _sentences(flat: str) -> list[str]:
+    return [part.strip() for part in _SENTENCE_SPLIT.split(flat) if part.strip()]
+
+
+def _anchored(flat: str, pattern: re.Pattern[str]) -> bool:
+    """Признак — только рядом с речью об активах общества, в одном предложении."""
+    return bool(_anchored_quote(flat, pattern))
+
+
+def _anchored_quote(flat: str, pattern: re.Pattern[str]) -> str:
+    for sentence in _sentences(flat):
+        if pattern.search(sentence) and (_ASSETS_RE.search(sentence)
+                                         or _CADASTRAL_RE.search(sentence)
+                                         or pattern is _ASSETS_RE):
+            return sentence[:300]
+    return ""
 
 
 def price_gate(price_rub: float | None, share_pct: float | None) -> dict[str, Any]:
@@ -199,23 +259,25 @@ def screen(lot: Any) -> dict[str, Any]:
     text = _text(lot)
     if not is_equity_lot(text):
         return {"is_equity": False}
-    price = lot.get("start_price_rub") if isinstance(lot, dict) else getattr(
-        lot, "start_price_rub", None)
+    price = _get(lot, "start_price_rub")
     if price is None:
-        price = (lot.get("current_price_rub") if isinstance(lot, dict)
-                 else getattr(lot, "current_price_rub", None))
+        price = _get(lot, "current_price_rub")
     share = share_percent(text)
     gate = price_gate(float(price) if price is not None else None, share)
     found = assets(lot)
     why: list[str] = [gate["why"]]
     if found["real_estate"] or found["land"]:
-        why.append("в лоте названы активы общества: "
+        why.append("в карточке лота названы активы общества: "
                    + ", ".join(part for part, on in (("недвижимость", found["real_estate"]),
                                                      ("земельный участок", found["land"])) if on))
+    elif not found["probed"]:
+        why.append("карточка лота ещё не прочитана — активы смотреть негде")
     elif found["mentioned"]:
-        why.append("активы общества упомянуты, но недвижимости и земли среди них не названо")
+        why.append("активы общества в карточке упомянуты, "
+                   "но недвижимости и земли среди них не названо")
     else:
-        why.append("активы общества в лоте не описаны — это «не знаем», а не «их нет»")
+        why.append("в карточке лота активы общества не описаны — "
+                   "это «не знаем», а не «их нет»")
     return {
         "is_equity": True,
         "share_pct": share,
