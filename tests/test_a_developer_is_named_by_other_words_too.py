@@ -133,3 +133,52 @@ def test_the_screen_shows_what_was_read():
         "отброшенный документ неотличим от непрочитанного"
     assert "Поиск не вернул ни одного документа" in page, \
         "пустая выдача подана как отсутствие фактов о площадке"
+
+
+# --- Спрашиваем вопросом, а не набором слов ----------------------------------
+#
+# Владелец (01.09.2026): «даже тупая Алиса от Яндекса находит легко, когда
+# задаёшь вопрос, кто оператор или кто строит КРТ по такому адресу».
+#
+# Прежние запросы были неудачны дважды. Адрес брался в ЖЁСТКИЕ КАВЫЧКИ — точной
+# фразой «Светлый проезд, вл. 4», которой в публикациях нет: dzen пишет
+# «Светлый проезд, 4». И рядом стояло одно слово «оператор», хотя пишут
+# «застройщик», «девелопер», «построит».
+
+
+def test_the_office_shorthand_is_dropped_from_the_query():
+    """«вл.» пишет каталог, а не люди."""
+    assert krt_open_sources.search_address("Светлый проезд, вл. 4") == "Светлый проезд 4"
+    assert krt_open_sources.search_address("проспект Мира, вл. 82-92") == "проспект Мира 82-92"
+    assert krt_open_sources.search_address("") == ""
+
+
+def test_the_dot_of_the_shorthand_goes_with_it():
+    """Между «.» и пробелом границы слова нет: «вл.» оставляло «.» в адресе."""
+    for name in ("Светлый проезд, вл. 4", "Магистральные улицы тер. 4, 5, 6"):
+        assert " . " not in krt_open_sources.search_address(name)
+        assert not krt_open_sources.search_address(name).endswith(".")
+
+
+def test_the_query_is_a_question():
+    asked = krt_open_sources.queries("Светлый проезд, вл. 4", okrug="САО", district="Сокол")
+    assert asked, "запросов не осталось"
+    assert any(q.startswith("кто строит") for q in asked), "вопроса «кто строит» нет"
+    assert any("кто оператор" in q for q in asked)
+    assert all('"' not in q for q in asked), \
+        "адрес снова в жёстких кавычках — точной фразы каталога в публикациях нет"
+    assert all("вл." not in q for q in asked), "канцелярское сокращение уехало в запрос"
+
+
+def test_the_query_names_the_other_words_for_the_same_person():
+    asked = " ".join(krt_open_sources.queries("Светлый проезд, вл. 4"))
+    assert "застройщик" in asked and "девелопер" in asked
+
+
+def test_the_channel_query_uses_the_human_address_too():
+    asked = krt_open_sources.telegram_queries("Светлый проезд, вл. 4", [])
+    assert asked == ["site:t.me Светлый проезд 4 КРТ застройщик"], asked
+    # Имя проекта — наоборот, точной фразой: «Строгино 360» без кавычек
+    # рассыпается на «Строгино» и число.
+    assert krt_open_sources.telegram_queries("Светлый проезд, вл. 4", ["Строгино 360"]) == [
+        'site:t.me "Строгино 360" КРТ застройщик']
