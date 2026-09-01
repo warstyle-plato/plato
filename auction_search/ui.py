@@ -15,7 +15,8 @@ AUCTIONS_PAGE = r'''<!doctype html>
    кнопка, системный шрифт (замечание владельца, 23.08.2026). */
 :root{--bg:#f2f2ef;--panel:#fff;--text:#171717;--muted:#6b6b6b;--line:#dedede;--soft:#f7f7f5;--accent:#111;--ok:#1f6b3b;--warn:#8a5a00;--bad:#a33}
 
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}.shell{max-width:1540px;margin:0 auto;background:var(--panel);min-height:100vh}.brandbar{padding:22px 34px 0;background:var(--panel)}.brandbar img{display:block;width:min(360px,58vw);height:auto;mix-blend-mode:multiply}.brandline{height:8px;background:#050505;margin-top:12px}.head{display:flex;justify-content:space-between;gap:18px;align-items:flex-end;flex-wrap:wrap;padding:18px 34px 12px;border-bottom:1px solid var(--line)}.head h1{font-size:22px;font-weight:620;letter-spacing:.01em;line-height:1.1;margin:0}.head p{margin:5px 0 0;color:var(--muted);font-size:13px}.content{padding:24px 34px 40px}.badge{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:0;padding:6px 10px;font-size:12px;background:var(--panel)}.filters{display:grid;grid-template-columns:1fr 1fr 1fr minmax(220px,1.5fr) auto;gap:9px;margin-bottom:14px}select,input,button{min-height:42px;border:1px solid var(--line);border-radius:0;background:var(--panel);color:var(--text);padding:0 11px;font:inherit}button{cursor:pointer;font-weight:700;border-color:#111}button.primary{background:var(--accent);color:#fff}button:disabled{opacity:.45;cursor:not-allowed}.filter-actions{grid-column:1/-1;display:flex;gap:9px;justify-content:flex-end;flex-wrap:wrap}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin-bottom:14px}.stat{border:1px solid var(--line);border-radius:0;background:var(--panel);padding:12px}.stat b{font-size:22px;display:block}.stat span{font-size:12px;color:var(--muted)}.coverage{display:none}.layout{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(360px,.8fr);gap:12px}.tablewrap,.side{border:1px solid var(--line);background:var(--panel);border-radius:0;overflow:hidden}.tablewrap{overflow:auto;min-height:420px}table{border-collapse:collapse;width:100%;min-width:900px}th{position:sticky;top:0;background:var(--panel);z-index:1;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.045em;text-align:left;padding:11px 12px;border-bottom:1px solid var(--line)}td{padding:13px 12px;border-bottom:1px solid var(--line);vertical-align:top}tbody tr{cursor:pointer}tbody tr:hover{background:var(--soft)}.lotname{font-weight:700;margin-bottom:4px;max-width:360px}.cad{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted)}.tag{display:inline-flex;padding:4px 7px;border-radius:0;background:var(--soft);font-size:11px;font-weight:700}.tag.ok{color:var(--ok)}.tag.warn{color:var(--warn)}.tag.new{background:var(--accent);color:#fff;margin-left:7px;vertical-align:2px}.askcard{border:1px solid var(--line);background:var(--panel);padding:16px;margin-top:12px}.askcard h2{font-size:16px;margin:0 0 6px}.askhint{color:var(--muted);font-size:12px;margin-bottom:10px}.chips{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:10px}.chips button{min-height:34px;font-weight:500;font-size:12px;padding:0 10px;border-color:var(--line)}#askText{width:100%;min-height:74px;padding:9px 11px;resize:vertical;font:inherit}#askOut{margin-top:10px}.plato-answer{border-left:3px solid var(--accent);background:var(--soft);padding:11px 13px;font-size:13px;line-height:1.55;white-space:pre-wrap}details.fold{border:1px solid var(--line);margin-top:10px}details.fold>summary{cursor:pointer;padding:9px 11px;font-size:12px;font-weight:750;color:var(--muted);list-style:none;display:flex;justify-content:space-between;gap:10px}details.fold>summary::-webkit-details-marker{display:none}details.fold>summary:after{content:'развернуть';font-weight:500}details.fold[open]>summary:after{content:'свернуть'}details.fold>summary:hover{background:var(--soft)}.foldbody{padding:0 11px 11px}.ratio-row{display:grid;grid-template-columns:1fr auto;gap:7px;margin-bottom:7px}.brand{display:block;line-height:0}.legal-footer{display:flex;gap:18px;flex-wrap:wrap;margin:0 34px;padding:14px 0 22px;font-size:11px;color:var(--muted);border-top:1px solid var(--line)}.legal-footer a{color:var(--muted)}.plato-footer{margin:0;padding:0 34px;line-height:0}.plato-footer img{width:100%;height:auto;display:block}tr.family>td:first-child{border-left:3px solid var(--accent)}tr.family>td{background:var(--panel)}tr.sub>td:first-child{padding-left:30px}tr.sub>td{background:var(--soft)}.famcount{display:inline-flex;padding:3px 6px;margin-left:7px;background:var(--accent);color:#fff;font-size:11px;font-weight:700;vertical-align:2px}.money{font-weight:750;white-space:nowrap}.pbatt{position:relative;display:block;height:14px;margin-top:4px;border:1px solid var(--line);border-radius:0;background:var(--soft);overflow:hidden}.pbatt-fill{position:absolute;left:0;top:0;height:100%}.pbatt-pct{position:absolute;left:5px;top:0;font-size:10px;font-weight:750;color:#18202a;text-shadow:0 0 3px #fff,0 0 3px #fff}.side{padding:16px;min-height:420px}.side h2{font-size:18px;margin:0 0 4px}.side .sub{color:var(--muted);font-size:12px;margin-bottom:14px}.empty{display:grid;place-items:center;color:var(--muted);min-height:360px;text-align:center;padding:25px}.kv{display:grid;grid-template-columns:145px 1fr;gap:7px 10px;padding:10px 0;border-bottom:1px solid var(--line)}.kv div:nth-child(odd){color:var(--muted)}.actions{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0}.notice{border-radius:0;padding:10px 11px;background:var(--soft);font-size:12px;margin:10px 0}.notice.warn{color:var(--warn)}.section{margin-top:16px}.section h3{font-size:13px;margin:0 0 7px}.items{display:grid;gap:6px}.item{border:1px solid var(--line);border-radius:0;padding:8px 9px;font-size:12px}.item b{display:block;margin-bottom:2px}.source{font-size:11px;color:var(--muted);margin-top:4px}.source.warn{color:var(--warn)}.status{font-size:12px;color:var(--muted);margin-left:auto}.spinner{display:inline-block;width:13px;height:13px;border:2px solid var(--line);border-top-color:var(--text);border-radius:50%;animation:spin .7s linear infinite;vertical-align:-2px;margin-right:5px}@keyframes spin{to{transform:rotate(360deg)}}@media(max-width:950px){.filters{grid-template-columns:1fr 1fr}.stats{grid-template-columns:1fr 1fr}.layout{grid-template-columns:1fr}.side{min-height:0}.brandbar{padding:14px 16px 0}.head{padding:14px 16px 10px}.tabs{padding:0 16px;gap:18px}.content{padding:16px 16px 28px}.plato-footer{padding:0 16px}.legal-footer{margin:0 16px}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}.shell{max-width:1540px;margin:0 auto;background:var(--panel);min-height:100vh}.brandbar{padding:22px 34px 0;background:var(--panel)}.brandbar img{display:block;width:min(360px,58vw);height:auto;mix-blend-mode:multiply}.brandline{height:8px;background:#050505;margin-top:12px}.head{display:flex;justify-content:space-between;gap:18px;align-items:flex-end;flex-wrap:wrap;padding:18px 34px 12px;border-bottom:1px solid var(--line)}.head h1{font-size:22px;font-weight:620;letter-spacing:.01em;line-height:1.1;margin:0}.head p{margin:5px 0 0;color:var(--muted);font-size:13px}.content{padding:24px 34px 40px}.badge{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:0;padding:6px 10px;font-size:12px;background:var(--panel)}.filters{display:grid;grid-template-columns:repeat(3,minmax(0,1fr)) minmax(0,1.5fr) auto;gap:9px;margin-bottom:14px}.filters.wide{grid-template-columns:minmax(0,2fr) repeat(4,minmax(0,1fr))}select,input,button{min-width:0;max-width:100%;text-overflow:ellipsis;min-height:42px;border:1px solid var(--line);border-radius:0;background:var(--panel);color:var(--text);padding:0 11px;font:inherit}button{cursor:pointer;font-weight:700;border-color:#111}button.primary{background:var(--accent);color:#fff}button:disabled{opacity:.45;cursor:not-allowed}.filter-actions{grid-column:1/-1;display:flex;gap:9px;justify-content:flex-end;flex-wrap:wrap}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin-bottom:14px}.stat{border:1px solid var(--line);border-radius:0;background:var(--panel);padding:12px}.stat b{font-size:22px;display:block}.stat span{font-size:12px;color:var(--muted)}.coverage{display:none}.layout{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(360px,.8fr);gap:12px}.tablewrap,.side{border:1px solid var(--line);background:var(--panel);border-radius:0;overflow:hidden}.tablewrap{overflow:auto;min-height:420px}table{border-collapse:collapse;width:100%;min-width:900px}th{position:sticky;top:0;background:var(--panel);z-index:1;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.045em;text-align:left;padding:11px 12px;border-bottom:1px solid var(--line)}td{padding:13px 12px;border-bottom:1px solid var(--line);vertical-align:top}tbody tr{cursor:pointer}tbody tr:hover{background:var(--soft)}.lotname{font-weight:700;margin-bottom:4px;max-width:360px}.cad{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted)}.tag{display:inline-flex;padding:4px 7px;border-radius:0;background:var(--soft);font-size:11px;font-weight:700}.tag.ok{color:var(--ok)}.tag.warn{color:var(--warn)}.tag.new{background:var(--accent);color:#fff;margin-left:7px;vertical-align:2px}.askcard{border:1px solid var(--line);background:var(--panel);padding:16px;margin-top:12px}.askcard h2{font-size:16px;margin:0 0 6px}.askhint{color:var(--muted);font-size:12px;margin-bottom:10px}.chips{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:10px}.chips button{min-height:34px;font-weight:500;font-size:12px;padding:0 10px;border-color:var(--line)}#askText{width:100%;min-height:74px;padding:9px 11px;resize:vertical;font:inherit}#askOut{margin-top:10px}.plato-answer{border-left:3px solid var(--accent);background:var(--soft);padding:11px 13px;font-size:13px;line-height:1.55;white-space:pre-wrap}details.fold{border:1px solid var(--line);margin-top:10px}details.fold>summary{cursor:pointer;padding:9px 11px;font-size:12px;font-weight:750;color:var(--muted);list-style:none;display:flex;justify-content:space-between;gap:10px}details.fold>summary::-webkit-details-marker{display:none}details.fold>summary:after{content:'развернуть';font-weight:500}details.fold[open]>summary:after{content:'свернуть'}details.fold>summary:hover{background:var(--soft)}.foldbody{padding:0 11px 11px}.ratio-row{display:grid;grid-template-columns:1fr auto;gap:7px;margin-bottom:7px}.brand{display:block;line-height:0}.legal-footer{display:flex;gap:18px;flex-wrap:wrap;margin:0 34px;padding:14px 0 22px;font-size:11px;color:var(--muted);border-top:1px solid var(--line)}.legal-footer a{color:var(--muted)}.plato-footer{margin:0;padding:0 34px;line-height:0}.plato-footer img{width:100%;height:auto;display:block}tr.family>td:first-child{border-left:3px solid var(--accent)}tr.family>td{background:var(--panel)}tr.sub>td:first-child{padding-left:30px}tr.sub>td{background:var(--soft)}.famcount{display:inline-flex;padding:3px 6px;margin-left:7px;background:var(--accent);color:#fff;font-size:11px;font-weight:700;vertical-align:2px}.money{font-weight:750;white-space:nowrap}.pbatt{position:relative;display:block;height:14px;margin-top:4px;border:1px solid var(--line);border-radius:0;background:var(--soft);overflow:hidden}.pbatt-fill{position:absolute;left:0;top:0;height:100%}.pbatt-pct{position:absolute;left:5px;top:0;font-size:10px;font-weight:750;color:#18202a;text-shadow:0 0 3px #fff,0 0 3px #fff}.side{padding:16px;min-height:420px}.side h2{font-size:18px;margin:0 0 4px}.side .sub{color:var(--muted);font-size:12px;margin-bottom:14px}.empty{display:grid;place-items:center;color:var(--muted);min-height:360px;text-align:center;padding:25px}.kv{display:grid;grid-template-columns:145px 1fr;gap:7px 10px;padding:10px 0;border-bottom:1px solid var(--line)}.kv div:nth-child(odd){color:var(--muted)}.actions{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0}.notice{border-radius:0;padding:10px 11px;background:var(--soft);font-size:12px;margin:10px 0}.notice.warn{color:var(--warn)}.section{margin-top:16px}.section h3{font-size:13px;margin:0 0 7px}.items{display:grid;gap:6px}.item{border:1px solid var(--line);border-radius:0;padding:8px 9px;font-size:12px}.item b{display:block;margin-bottom:2px}.source{font-size:11px;color:var(--muted);margin-top:4px}.source.warn{color:var(--warn)}.status{font-size:12px;color:var(--muted);margin-left:auto}.spinner{display:inline-block;width:13px;height:13px;border:2px solid var(--line);border-top-color:var(--text);border-radius:50%;animation:spin .7s linear infinite;vertical-align:-2px;margin-right:5px}@keyframes spin{to{transform:rotate(360deg)}}@media(max-width:950px){.filters,.filters.wide{grid-template-columns:repeat(2,minmax(0,1fr))}.stats{grid-template-columns:1fr 1fr}.layout{grid-template-columns:1fr}.side{min-height:0}.brandbar{padding:14px 16px 0}.head{padding:14px 16px 10px}.tabs{padding:0 16px;gap:18px}.content{padding:16px 16px 28px}.plato-footer{padding:0 16px}.legal-footer{margin:0 16px}}
+@media(max-width:640px){.filters,.filters.wide{grid-template-columns:minmax(0,1fr)}.stats{grid-template-columns:minmax(0,1fr)}.filter-actions{justify-content:stretch}.filter-actions button{flex:1 1 100%}.kv{grid-template-columns:minmax(0,1fr)}.kv div:nth-child(odd){padding-top:4px}}
 .tabs{display:flex;gap:28px;padding:0 34px;border-bottom:1px solid var(--line);overflow:auto;background:var(--panel)}.tabs .tab{border:0;background:none;min-height:0;padding:15px 0 12px;font-size:14px;font-weight:620;color:#777;white-space:nowrap;border-bottom:3px solid transparent}.tabs .tab.active{color:#000;border-color:#000}.hidden{display:none!important}.fit{display:inline-flex;align-items:center;gap:6px;font-weight:750;white-space:nowrap}.fit .light{width:10px;height:10px;border-radius:50%;background:var(--muted);}.fit.ok{color:var(--ok)}.fit.ok .light{background:var(--ok)}.fit.warn{color:var(--warn)}.fit.warn .light{background:var(--warn)}.fit.bad{color:var(--bad)}.fit.bad .light{background:var(--bad)}
 .multi{position:relative;min-width:0}.multi-toggle{width:100%;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-right:30px;position:relative}.multi-toggle:after{content:'⌄';position:absolute;right:11px;font-size:16px;line-height:1}.multi-toggle[aria-expanded="true"]:after{content:'⌃'}.multi-menu{position:absolute;z-index:20;top:calc(100% + 6px);left:0;width:max-content;min-width:100%;max-width:min(320px,80vw);padding:8px;border:1px solid var(--line);border-radius:0;background:var(--panel);}.multi-head{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:2px 4px 7px;font-size:12px;font-weight:750;color:var(--muted)}.multi-clear{min-height:28px;padding:0 7px;border:0;background:transparent;color:var(--muted);font-size:12px}.multi-options{display:grid;gap:2px;max-height:310px;overflow:auto}.multi-option{display:flex;align-items:center;gap:9px;min-height:36px;padding:5px 7px;border-radius:0;cursor:pointer}.multi-option:hover{background:var(--soft)}.multi-option input{flex:0 0 auto;width:17px;height:17px;min-height:0;margin:0;padding:0;accent-color:var(--accent)}
 __DEVELOPAID_CONTOUR_STYLE__
@@ -32,7 +33,7 @@ __DEVELOPAID_CONTOUR_STYLE__
   <div class="content">
 __DEVELOPAID_CONTOUR__
   <div id="krtPanel" class="hidden">
-    <div class="filters" style="grid-template-columns:2fr repeat(4,1fr)">
+    <div class="filters wide">
       <input id="krtSearch" placeholder="Название КРТ или район">
       <div class="multi" id="krtOkrug">
         <button type="button" class="multi-toggle" id="krtOkrugToggle" aria-haspopup="true" aria-expanded="false" aria-controls="krtOkrugMenu">Все округа</button>
@@ -56,13 +57,13 @@ __DEVELOPAID_CONTOUR__
         <option value="">Торги: любые</option>
         <option value="yes">Есть лот на торгах</option>
         <option value="no">Лота не найдено</option></select>
-      <select id="krtCard" title="Площадка без карточки — та, у которой проект решения опубликован, а карточки в каталоге krt.mos.ru нет. Чаще всего это значит «решение свежее, каталог ещё не показывает»; ТЭП у такой площадки нет вовсе, и в колонках стоит прочерк, а не ноль.">
-        <option value="">Карточка: любая</option>
-        <option value="yes">Только с карточкой</option>
-        <option value="no">Только без карточки</option></select>
+      <select id="krtCard" title="Откуда мы знаем о площадке. «В каталоге города» — она опубликована на krt.mos.ru со своими ТЭП. «Только проект решения» — документ на mos.ru есть, а карточки в каталоге нет: чаще всего решение свежее и каталог его ещё не показывает, но встречаются и старые площадки — построенные или переименованные. Что решение НЕ принято, отсюда не следует: город этого нигде не публикует. ТЭП у такой площадки нет вовсе, и в колонках стоит прочерк, а не ноль.">
+        <option value="">Источник: любой</option>
+        <option value="yes">В каталоге города</option>
+        <option value="no">Только проект решения</option></select>
       <select id="krtNeeds" title="Городские нужды и оператор читаются из проекта решения и карточки krt.mos.ru — только вместе с цитатой. Площадка, у которой документ ещё не прочитан, остаётся в списке при любом выборе: «не найдено» — это не «нет»."><option value="">Чьё угодно</option><option value="free">Без городских нужд и без оператора</option><option value="city">Только городские нужды</option><option value="taken">Только с названным оператором</option></select>
       <select id="krtProfile" title="Под какую задачу считать балл: балл собирается арифметикой по каталожным ТЭП krt.mos.ru, без модели и без экономики. Платон появляется отдельной кнопкой в карточке."><option value="housing_ready">Ищем: жильё, готовое к старту</option><option value="housing_pipeline">Ищем: жилищный потенциал</option><option value="business">Ищем: деловую застройку</option></select>
-      <div class="filter-actions"><button id="krtRefresh" class="primary">Обновить каталог</button><button id="krtRankBtn">Оценить отобранные моделью</button><button id="krtExport">Выгрузить Excel</button></div>
+      <div class="filter-actions"><button id="krtRefresh" class="primary">Обновить каталог</button><button id="krtRankBtn">Оценить отобранные моделью</button><button id="krtPressBtn" title="Читает публикации по отобранным площадкам: три поисковых запроса на площадку, не больше 25 за раз. Официальная карточка каталога читается прогоном и поиска не требует.">Прочитать публикации по отобранным</button><button id="krtExport">Выгрузить Excel</button></div>
     </div>
     <div class="stats"><div class="stat"><b id="krtCount">—</b><span>проектов</span></div><div class="stat"><b id="krtArea">—</b><span>га территории</span></div><div class="stat"><b id="krtHousing">—</b><span>м² жилья</span></div><div class="stat"><b id="krtGfa">—</b><span>м² всего</span></div></div>
     <details class="fold" id="krtMapFold"><summary>Карта КРТ Москвы — 263 площадки с официальными границами</summary>
@@ -552,7 +553,9 @@ async function askJson(url, init){
    :r.status===502?'сервер не ответил шлюзу'
    :r.status>=500?'сервер ответил ошибкой'
    :'ответ не разобран';
-  const err=new Error(`Каталог не получен: ${why} (код ${r.status}).`+(head?' '+head:''));
+  // Раньше здесь стояло «Каталог не получен» — сообщение, написанное для
+  // каталога и показанное всем: на кнопке публикаций оно называло чужую беду.
+  const err=new Error(`Ответ не разобран: ${why} (код ${r.status}).`+(head?' '+head:''));
   err.status=r.status; err.notJson=true; throw err;
  }
  if(!r.ok){
@@ -579,7 +582,63 @@ async function loadKrt(){const b=$('krtRefresh');b.disabled=true;b.innerHTML='<s
 function updateKrtOkrugLabel(){const values=KRT_OKRUGS.filter(x=>state.krtOkrugs.has(x)),button=$('krtOkrugToggle');button.textContent=!values.length?'Все округа':values.length<=3?values.join(', '):`${values.slice(0,2).join(', ')} +${values.length-2}`;button.title=values.length?values.join(', '):'Все округа';$('krtOkrugClear').disabled=!values.length}
 function populateKrtOkrugs(){const values=KRT_OKRUGS,options=$('krtOkrugOptions');options.innerHTML='';values.forEach(value=>{const label=document.createElement('label'),input=document.createElement('input'),text=document.createElement('span');label.className='multi-option';input.type='checkbox';input.value=value;input.checked=state.krtOkrugs.has(value);text.textContent=value;input.onchange=()=>{input.checked?state.krtOkrugs.add(value):state.krtOkrugs.delete(value);updateKrtOkrugLabel();filterKrt()};label.append(input,text);options.appendChild(label)});updateKrtOkrugLabel()}
 function closeKrtOkrugs(){const menu=$('krtOkrugMenu'),button=$('krtOkrugToggle');menu.classList.add('hidden');button.setAttribute('aria-expanded','false')}
-function krtFit(x){const profile=$('krtProfile').value,total=Number(x.total_gfa_sqm)||0,housing=Number(x.housing_gfa_sqm)||0,business=Number(x.business_gfa_sqm)||0,area=Number(x.area_ha)||0,jobs=Number(x.jobs)||0,entered=x.status==='В реализации';let score=0,reasons=[],checks=[];const complete=[x.okrug,x.district,x.status,total,area].filter(Boolean).length;score+=complete*3;if(complete>=4)reasons.push('основные ТЭП заполнены');else checks.push('неполные исходные ТЭП');if(profile==='housing_ready'){score+=30;reasons.push(entered?'проект уже в реализации — войти нельзя':'проект пока планируемый');const share=total?housing/total:0;score+=Math.min(35,share*45);if(housing>0)reasons.push(`жильё ${Math.round(share*100)}% общего объёма`);else checks.push('жилой объём не указан');score+=housing>=200000?20:housing>=50000?14:housing>0?7:0}else if(profile==='housing_pipeline'){score+=20;const share=total?housing/total:0;score+=Math.min(42,share*52);if(housing>0)reasons.push(`жилищный потенциал ${fmtArea(housing)}`);else checks.push('жилой объём не указан');score+=housing>=300000?22:housing>=100000?16:housing>0?8:0}else{score+=22;const share=total?business/total:0;score+=Math.min(42,share*52);if(business>0)reasons.push(`деловой объём ${fmtArea(business)}`);else checks.push('деловой объём не указан');score+=jobs>=3000?21:jobs>=500?14:jobs>0?7:0}if(area>0&&area<=40){score+=5;reasons.push('управляемый масштаб территории')}else if(area>40)checks.push('крупная территория требует поэтапной проверки');score=Math.max(0,Math.min(100,Math.round(score)));const tone=score>=75?'ok':score>=50?'warn':'bad',label=score>=75?'Высокое':score>=50?'Среднее':'Низкое';return{score,tone,label,reasons:reasons.slice(0,4),checks:checks.slice(0,3)}}
+// Якоря шкалы сняты с самого каталога (263 площадки, 01.09.2026): жильё
+// 20 600 / 95 550 / 399 180 м² — десятый процентиль, медиана, девяностый;
+// деловое 4 944 / 45 225 / 187 340. Прежняя шкала была сложена из постоянных
+// прибавок — «профиль +30», «полнота ТЭП ×3», «масштаб +5», — и на живом
+// каталоге давала 62% «Высокого» при медиане 92 и двадцати площадках ровно по
+// сто: «этот фильтр туфта, они ничего не дают» (владелец, 01.09.2026). Балл,
+// который не различает, — не балл.
+const KRT_SCALE={housing:[20600,399180],business:[4944,187340]};
+// Логарифм, а не доля от максимума: двухмиллионный проект иначе забирает всю
+// шкалу, и весь остальной каталог жмётся к нулю.
+function krtVolumeShare(value,[low,high]){
+ const v=Number(value)||0;
+ if(v<=0)return null;
+ if(v<=low)return 0;
+ return Math.max(0,Math.min(1,Math.log(v/low)/Math.log(high/low)));
+}
+function krtFit(x){
+ const profile=$('krtProfile').value;
+ const total=Number(x.total_gfa_sqm)||0, housing=Number(x.housing_gfa_sqm)||0;
+ const business=Number(x.business_gfa_sqm)||0, area=Number(x.area_ha)||0, jobs=Number(x.jobs)||0;
+ const reasons=[], checks=[];
+ const wanted=profile==='business'?business:housing;
+ const scale=profile==='business'?KRT_SCALE.business:KRT_SCALE.housing;
+ const what=profile==='business'?'деловой объём':'жильё';
+ // Объём под задачу — шестьдесят баллов, доля под задачу — сорок. Больше в
+ // ТЭП каталога ничего и нет: округ, статус и площадь про потенциал не
+ // говорят, а статус к тому же уже стоит отдельным снижением.
+ const volume=krtVolumeShare(wanted,scale);
+ const share=total>0&&wanted>0?wanted/total:null;
+ let score=0;
+ if(volume===null){
+  // Неизвестный объём — это «не знаем», а не ноль: такая площадка не может
+  // быть «Высокой», и причина названа.
+  checks.push(what+' в каталоге не указан — потенциал считать не из чего');
+ }else{
+  score+=60*volume;
+  reasons.push(what+' '+fmtArea(wanted));
+ }
+ if(share===null){
+  if(!total)checks.push('общий объём застройки не указан');
+ }else{
+  score+=40*share;
+  reasons.push(what+' — '+Math.round(share*100)+'% общего объёма');
+ }
+ // Профиль «готовое к старту» смотрит на то же жильё, но у планируемой
+ // площадки оно ещё продаётся, а у той, что в реализации, инвестор уже есть.
+ // Это не прибавка, а отсечка: снижение за «войти нельзя» стоит отдельно.
+ if(profile==='housing_ready'&&String(x.status||'').toLowerCase().includes('реализац'))
+  checks.push('инвестор определён — войти нельзя');
+ if(profile==='business'&&jobs>0)reasons.push('рабочих мест '+jobs);
+ if(area>40)checks.push('крупная территория требует поэтапной проверки');
+ if(volume===null)score=Math.min(score,45);
+ score=Math.max(0,Math.min(100,Math.round(score)));
+ const tone=score>=75?'ok':score>=50?'warn':'bad';
+ const label=score>=75?'Высокое':score>=50?'Среднее':'Низкое';
+ return{score,tone,label,reasons:reasons.slice(0,4),checks:checks.slice(0,3)};
+}
 // Балл площадки: потенциал по ТЭП, из которого маркетинг и движок ВЫЧИТАЮТ.
 // Прежде посчитанная модель балл не уточняла, а заменяла собой: в колонке
 // вместо «87 · Высокое» появлялось «Модель · Не проходит», и сравнить две
@@ -643,7 +702,11 @@ function krtStage(x){
   why.push('в публикации: право выставят на торги');return {key:'upcoming',why};
  }
  if(intent&&intent.decision_read){why.push('прочитан проект решения о КРТ');return {key:'decision',why}}
- if(x.no_card&&x.draft_decision_at){why.push('проект решения опубликован '+krtWhen(x.draft_decision_at)+' — решения ещё нет, город собирает мнения правообладателей');return {key:'decision',why}}
+ if(x.draft_decision_at){
+  why.push('проект решения опубликован '+krtWhen(x.draft_decision_at)
+   +(x.no_card?' — карточки в каталоге города пока нет':' — площадка есть и в каталоге города'));
+  return {key:'decision',why};
+ }
  return {key:'unknown',why:['ни решения, ни лота не прочитано — это «не знаем», а не «ничего нет»']};
 }
 function krtStageCell(x){
@@ -824,9 +887,22 @@ function filterKrt(){
  const q=$('krtSearch').value.trim().toLowerCase(),status=$('krtStatus').value,
        purpose=$('krtPurpose').value,needs=$('krtNeeds').value,card=$('krtCard').value,tender=$('krtTender').value,stage=$('krtStage').value,
        minHousing=Number($('krtMinHousing').value)||0;
- let small=0, unknown=0;
+ const profile=$('krtProfile').value;
+ let small=0, unknown=0, offtask=0, taken=0;
  state.krtFiltered=state.krt.filter(x=>{
   if(q&&![x.name,x.district,x.okrug].join(' ').toLowerCase().includes(q))return false;
+  // Задача — это ОТБОР, а не оттенок балла. Два жилищных профиля считали
+  // ровно один и тот же балл и различались одной строкой в подсказке: «этот
+  // фильтр туфта, они ничего не дают» (владелец, 01.09.2026). Теперь
+  // «готовое к старту» — это те, куда ещё можно войти, «потенциал» — всё
+  // жильё каталога вместе с занятым, «деловая» — площадки с нежилым объёмом.
+  // Скрытое считается и называется под таблицей: молча выброшенная площадка
+  // читается как её отсутствие.
+  const wanted=profile==='business'?Number(x.business_gfa_sqm):Number(x.housing_gfa_sqm);
+  if(!(wanted>0)){offtask++;return false}
+  if(profile==='housing_ready'&&String(x.status||'').toLowerCase().includes('реализац')){
+   taken++;return false;
+  }
   if(state.krtOkrugs.size&&!state.krtOkrugs.has(x.okrug))return false;
   if(status&&x.status!==status)return false;
   if(purpose&&!(Number(x[purpose])>0))return false;
@@ -847,7 +923,7 @@ function filterKrt(){
   }
   return true;
  }).sort(krtCompare);
- state.krtHidden={small,unknown};
+ state.krtHidden={small,unknown,offtask,taken,profile};
  renderKrt();
 }
 function sumKrt(rows,key,d){const n=rows.reduce((s,x)=>s+(Number(x[key])||0),0);return new Intl.NumberFormat('ru-RU',{maximumFractionDigits:d}).format(n)}
@@ -885,25 +961,19 @@ async function loadKrtDecisions(){
   const rows=d.decisions||[];
   if(!rows.length&&!d.total)return;
   box.style.display='';
-  const day=t=>{if(!Number(t))return '—';try{return new Date(Number(t)*1000)
-    .toLocaleDateString('ru-RU',{day:'numeric',month:'long',year:'numeric'})}catch(e){return '—'}};
-  box.innerHTML=`<div class="source"><b>Решений о КРТ на mos.ru: ${d.total||0}</b>`
-   +`, из них с карточкой в каталоге ${d.matched||0}, без карточки ${rows.length}.`
+  // Прежде здесь лежала вторая таблица тех же строк: площадки без карточки
+  // едут в общий список с меткой «проект решения», и повторённые сворачивалкой
+  // они читаются как другое множество — «какого хера карточки с проектами
+  // решений остались отдельным свёрнутым списком» (владелец, 01.09.2026).
+  // Остаётся счёт: сколько документов прочитано и сколько из них без карточки.
+  box.innerHTML=`<div class="source"><b>Проектов решений о КРТ на mos.ru: ${d.total||0}</b>`
+   +`, из них с карточкой в каталоге ${d.matched||0}, без карточки ${rows.length}`
+   +(rows.length?' — они в таблице выше, с меткой «проект решения».':'.')
    +(d.complete===false?' Выдача дочитана не до конца — список неполон.':'')
    +(d.stale?' Поиск не ответил, показан прежний ответ.':'')
-   +'</div>'
-   +`<details class="fold"><summary>Решения без карточки в каталоге — ${rows.length}</summary>`
-   +'<div class="foldbody"><div class="source">Сопоставление строгое: улица и владение должны '
-   +'совпасть. Ложная привязка спрятала бы настоящий пробел, поэтому «карточки не нашли» здесь '
-   +'не значит «новая площадка» — часть решений старые, площадка могла быть построена или '
-   +'переименована.</div><table><thead><tr><th>Дата</th><th>Округ</th><th>Адрес по решению</th>'
-   +'<th>Вид КРТ</th></tr></thead><tbody>'
-   +rows.slice(0,300).map(r=>`<tr><td>${esc(day(r.published_at))}</td><td>${esc(r.okrug||'—')}</td>`
-     +`<td><a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.address||r.title)}</a></td>`
-     +`<td>${esc(r.kind||'—')}</td></tr>`).join('')
-   +'</tbody></table>'
-   +(rows.length>300?'<div class="source">Показаны первые 300 — список отсортирован от свежих.</div>':'')
-   +'</div></details>';
+   +' Сопоставление строгое: улица и владение должны совпасть, поэтому «карточки'
+   +' не нашли» не значит «новая площадка» — часть решений старые.'
+   +'</div>';
  }catch(e){
   // Отказ источника — это ответ, а не пустой список: молчание читалось бы как
   // «решений без карточки нет».
@@ -923,8 +993,13 @@ function renderKrtNewNote(){
 function renderKrtFilterNote(){
  const box=$('krtFilterNote');
  if(!box)return;
- const {small,unknown}=state.krtHidden||{};
+ const {small,unknown,offtask,taken,profile}=state.krtHidden||{};
  const bits=[];
+ // Отбор по задаче виден числом: сколько площадок он снял и почему. Иначе
+ // переключатель выглядит бездействующим ровно там, где он сработал сильнее
+ // всего.
+ if(offtask)bits.push(`${offtask} без объёма под задачу (${profile==='business'?'нежилого':'жилого'})`);
+ if(taken)bits.push(`${taken} уже в реализации — войти нельзя`);
  if(small)bits.push(`${small} ниже порога по объёму жилья`);
  if(unknown)bits.push(`${unknown} без указанного объёма жилья — это «не знаем», а не «мало»`);
  const sorted=state.krtSort.key!=='score'||state.krtSort.dir!==-1
@@ -947,10 +1022,23 @@ function renderKrt(){const a=state.krtFiltered,body=$('krtRows');body.innerHTML=
  // Метка называет документ, а не его отсутствие: «без карточки» — это про наш
  // каталог, а на mos.ru лежит проект решения, и это не решение (владелец,
  // 31.08.2026). Отсутствие карточки — следствие, и оно в подсказке.
+ // Реновация и застройщик — с официальной карточки, прочитанной прогоном.
+ // Видеть их можно было только внутри открытой площадки: «а где поиск
+ // публичной информации и реновация в таблице?» (владелец, 01.09.2026).
+ const card=(state.krtCards||{})[x.slug]||(state.krtRank[x.slug]||{}).card_facts||{};
+ const press=(state.krtPress||{})[x.slug]||null;
+ const renov=card.renovation||((press&&press.city_needs||[]).length>0);
+ const builder=(card.developers||[])[0]
+   ||((press&&press.operator_named||[])[0]||{}).name||'';
+ const marks=(renov?'<span class="tag warn" title="'
+    +esc(card.renovation_quote||'В публикации сказано о городских нуждах')
+    +'">реновация</span>':'')
+  +(builder?'<span class="tag" title="Застройщик назван официальной карточкой krt.mos.ru или публикацией">'
+    +esc(builder.length>26?builder.slice(0,24)+'…':builder)+'</span>':'');
  const nocard=x.no_card?'<span class="tag warn" title="Проект решения о КРТ опубликован'
   +(x.draft_decision_at?' '+krtWhen(x.draft_decision_at):'')
-  +'. Решение ещё не принято — город собирает мнения правообладателей. Карточки в каталоге krt.mos.ru нет, ТЭП взять неоткуда">проект решения</span>':'';
- tr.innerHTML=`<td><div class="lotname">${esc(x.name)}${fresh}${tender}${nocard}</div><div class="source">${esc([x.okrug,x.district].filter(Boolean).join(' · '))}</div></td><td><span class="fit ${sc.tone}" title="${esc(title)}"><span class="light"></span>${sc.score} · ${esc(sc.label)}</span><div class="source">${esc(krtScoreNote(sc))}</div></td><td class="money">${krtRankCell(x.slug)}</td><td class="money">${krtModelCell(x.slug,'llcr')}</td><td class="money">${krtModelCell(x.slug,'margin')}</td><td>${krtStageCell(x)}</td><td>${x.draft_decision_at?esc(krtWhen(x.draft_decision_at)):(x.url&&x.no_card?'—':'<span class="source">—</span>')}</td><td><span class="tag ${x.status==='В реализации'?'warn':'ok'}" title="${esc(x.status==='В реализации'?'Инвестор определён — войти нельзя, площадка справочная':'Войти ещё можно')}">${esc(x.status||'—')}</span></td><td>${x.area_ha?esc(x.area_ha+' га'):'—'}</td><td>${fmtArea(x.total_gfa_sqm)}</td><td>${fmtArea(x.housing_gfa_sqm)}</td><td>${esc(x.jobs??'—')}</td>`;tr.onclick=()=>selectKrt(x);body.appendChild(tr)});renderAskContext()}
+  +'. Решение ещё не принято — город собирает мнения правообладателей. Карточки в каталоге krt.mos.ru нет, ТЭП взять неоткуда">только проект решения</span>':'';
+ tr.innerHTML=`<td><div class="lotname">${esc(x.name)}${fresh}${tender}${nocard}${marks}</div><div class="source">${esc([x.okrug,x.district].filter(Boolean).join(' · '))}</div></td><td><span class="fit ${sc.tone}" title="${esc(title)}"><span class="light"></span>${sc.score} · ${esc(sc.label)}</span><div class="source">${esc(krtScoreNote(sc))}</div></td><td class="money">${krtRankCell(x.slug)}</td><td class="money">${krtModelCell(x.slug,'llcr')}</td><td class="money">${krtModelCell(x.slug,'margin')}</td><td>${krtStageCell(x)}</td><td>${x.draft_decision_at?(x.draft_decision_url?`<a href="${esc(x.draft_decision_url)}" target="_blank" rel="noopener" title="Проект решения о КРТ на mos.ru">${esc(krtWhen(x.draft_decision_at))}</a>`:esc(krtWhen(x.draft_decision_at))):'<span class="source">—</span>'}</td><td><span class="tag ${x.status==='В реализации'?'warn':'ok'}" title="${esc(x.status==='В реализации'?'Инвестор определён — войти нельзя, площадка справочная':'Войти ещё можно')}">${esc(x.status||'—')}</span></td><td>${x.area_ha?esc(x.area_ha+' га'):'—'}</td><td>${fmtArea(x.total_gfa_sqm)}</td><td>${fmtArea(x.housing_gfa_sqm)}</td><td>${esc(x.jobs??'—')}</td>`;tr.onclick=()=>selectKrt(x);body.appendChild(tr)});renderAskContext()}
 // Балл — потолок цены входа на метр продаваемой (решение владельца,
 // 23.08.2026). На метр, а не в абсолюте: потолок в рублях выгоден крупным
 // площадкам просто по размеру. Пустая ячейка значит «не посчитали», и это не
@@ -1335,6 +1423,34 @@ function krtPressLines(list,label){
 // Карточка каталога называет застройщика и реновацию сама — один запрос без
 // поиска. Прогон читает то же и кладёт в строку рейтинга; здесь для площадки,
 // которую ещё не считали.
+// Публикации по отобранным. Поиск платный, поэтому берётся ровно то, что
+// осталось после фильтра, и не больше двадцати пяти за раз — цена названа в
+// подсказке кнопки, а не спрятана.
+const KRT_PRESS_BATCH=25;
+async function readKrtPressForFiltered(){
+ const b=$('krtPressBtn'), box=$('krtRankStatus');
+ const rows=(state.krtFiltered||[]).filter(v=>v.slug&&!state.krtPress[v.slug]).slice(0,KRT_PRESS_BATCH);
+ if(!rows.length){box.style.display='';box.className='notice';
+  box.textContent='Публикации по отобранным уже прочитаны — или отбирать нечего.';return}
+ b.disabled=true;
+ let done=0, failed=0;
+ for(const row of rows){
+  b.innerHTML=`<span class="spinner"></span>Читаю ${done+1} из ${rows.length}`;
+  try{
+   const d=await askJson('/auctions/krt/'+encodeURIComponent(row.slug)+'/open-sources',{cache:'no-store'});
+   state.krtPress[row.slug]=d;
+   if(!d.available)failed++;
+  }catch(e){failed++}
+  done++;
+  renderKrt();
+ }
+ b.disabled=false;b.textContent='Прочитать публикации по отобранным';
+ box.style.display='';box.className=failed?'notice warn':'notice';
+ // Не ответивший поиск — это «не спросили», а не «в источниках ничего нет».
+ box.textContent=`Публикации прочитаны по ${done} площадк${done===1?'е':'ам'}`
+  +(failed?`; у ${failed} источник не ответил — это «не спросили», а не «ничего не нашли».`:'.')
+  +(state.krtFiltered.length>rows.length?` В отборе ещё ${state.krtFiltered.length-rows.length} — нажмите ещё раз.`:'');
+}
 async function loadKrtCardFacts(x){
  if(state.krtCards[x.slug])return;
  try{
@@ -1836,7 +1952,7 @@ $('askBtn').onclick=askPlato;
 $('askCard').querySelectorAll('.chips button').forEach(b=>{
  b.onclick=()=>{$('askText').value=b.dataset.q;askPlato()};
 });
-$('tabAuctions').onclick=()=>switchTab(false);$('tabKrt').onclick=()=>switchTab(true);$('krtRefresh').onclick=loadKrt;$('krtRankBtn').onclick=startKrtRanking;$('krtSearch').oninput=filterKrt;$('krtStatus').onchange=filterKrt;$('krtPurpose').onchange=filterKrt;$('krtNeeds').onchange=filterKrt;$('krtCard').onchange=filterKrt;$('krtTender').onchange=filterKrt;$('krtStage').onchange=filterKrt;document.getElementById('krtMapFold')?.addEventListener('toggle',ev=>{if(ev.target.open)loadKrtMap()});$('krtMinHousing').oninput=filterKrt;document.querySelectorAll('#krtRows').forEach(()=>{});document.querySelectorAll('th[data-sort]').forEach(th=>{th.style.cursor='pointer';th.title=(th.title?th.title+'. ':'')+'Нажмите, чтобы отсортировать';th.onclick=()=>krtSortBy(th.dataset.sort)});$('krtProfile').onchange=()=>{filterKrt();if(state.selectedKrt)selectKrt(state.selectedKrt)};
+$('tabAuctions').onclick=()=>switchTab(false);$('tabKrt').onclick=()=>switchTab(true);$('krtRefresh').onclick=loadKrt;$('krtRankBtn').onclick=startKrtRanking;$('krtPressBtn').onclick=readKrtPressForFiltered;$('krtSearch').oninput=filterKrt;$('krtStatus').onchange=filterKrt;$('krtPurpose').onchange=filterKrt;$('krtNeeds').onchange=filterKrt;$('krtCard').onchange=filterKrt;$('krtTender').onchange=filterKrt;$('krtStage').onchange=filterKrt;document.getElementById('krtMapFold')?.addEventListener('toggle',ev=>{if(ev.target.open)loadKrtMap()});$('krtMinHousing').oninput=filterKrt;document.querySelectorAll('#krtRows').forEach(()=>{});document.querySelectorAll('th[data-sort]').forEach(th=>{th.style.cursor='pointer';th.title=(th.title?th.title+'. ':'')+'Нажмите, чтобы отсортировать';th.onclick=()=>krtSortBy(th.dataset.sort)});$('krtProfile').onchange=()=>{filterKrt();if(state.selectedKrt)selectKrt(state.selectedKrt)};
 $('krtOkrugToggle').onclick=e=>{e.stopPropagation();const menu=$('krtOkrugMenu'),open=menu.classList.contains('hidden');menu.classList.toggle('hidden',!open);$('krtOkrugToggle').setAttribute('aria-expanded',String(open))};$('krtOkrugMenu').onclick=e=>e.stopPropagation();$('krtOkrugClear').onclick=()=>{state.krtOkrugs.clear();$('krtOkrugOptions').querySelectorAll('input').forEach(x=>x.checked=false);updateKrtOkrugLabel();filterKrt()};document.addEventListener('click',closeKrtOkrugs);document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeKrtOkrugs();$('krtOkrugToggle').focus()}});
 loadKrtRanking();
 // Ссылка из «Поделиться» открывает ту же территорию: получатель попадает на

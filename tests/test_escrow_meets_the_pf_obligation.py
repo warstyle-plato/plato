@@ -97,7 +97,11 @@ def test_the_page_draws_the_obligation_and_not_only_the_body():
     assert page.count("function escrowCoverSvg(") == 1
     # Заливка, а не линии: ответ на «перекрывает или нет» — это площадь.
     assert "<polygon" in page.split("function escrowCoverSvg(")[1][:4000]
-    assert "sales_after_rve_cumulative" in page, "продажи после раскрытия не нарисованы"
+    # Линия «сколько банк получил всего»: раскрытый эскроу и то, чем гасят
+    # дальше. Продажи после раскрытия рисовались от нуля и рядом с эскроу в
+    # десятки миллиардов не значили ничего (владелец, 01.09.2026).
+    assert "escrow_and_sales_cumulative" in page, "погашенное банку не нарисовано"
+    assert "Раскрытый эскроу и продажи после него" in page, "линия не названа"
     assert "не погашено" in page, "последняя точка не названа — читается как обрыв"
 
 
@@ -144,3 +148,29 @@ def test_the_pdf_prints_the_escrow_cover():
     assert "Обязательство: тело + начисленное" in flat
     for cover in bundle["consolidated"]["report"]["financing"]["escrow_cover_phases"]:
         assert cover["label"] in flat, "очередь не названа в отчёте"
+
+
+def test_the_dashed_line_starts_where_escrow_ends_and_never_goes_back():
+    """Накопленное на своде считается по потоку, а не складыванием итогов.
+
+    Сложить два накопленных ряда нельзя: горизонты очередей разной длины, и в
+    месяце, где строки одной кончились, сумма падает — «погашено банку»
+    уезжало с 41,8 до 19,7 млрд ₽ на ровном месте.
+    """
+    inputs = dict(core.DEFAULT_INPUTS)
+    tep = {key: dict(value) for key, value in core.TEP_DEFAULT.items()}
+    bundle = core._run_authoritative_model(
+        inputs, tep, [], {"enabled": True, "phase_count": 2, "phase_gap_months": 12})
+    rows = bundle["consolidated"]["finance"]["rows"]
+    assert any(row["escrow_and_sales_cumulative"] > 0 for row in rows), \
+        "линия пуста — проверка ничего не значит"
+    for before, after in zip(rows, rows[1:]):
+        assert after["escrow_and_sales_cumulative"] >= before["escrow_and_sales_cumulative"] - 1.0, (
+            f"накопленное упало в {after['month']}: "
+            f"{before['escrow_and_sales_cumulative']:.0f} → {after['escrow_and_sales_cumulative']:.0f}")
+    # И линия начинается там, где раскрылся эскроу, а не с нуля после него.
+    release = max(row["escrow_release"] for row in rows)
+    jump = max(after["escrow_and_sales_cumulative"] - before["escrow_and_sales_cumulative"]
+               for before, after in zip(rows, rows[1:]))
+    assert jump >= release * 0.9, \
+        "линия не подхватывает раскрытый эскроу — она снова идёт от нуля"

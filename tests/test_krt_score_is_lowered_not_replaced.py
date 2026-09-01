@@ -48,7 +48,10 @@ def page_functions() -> str:
     out = []
     # `krtIntent` появилась вместе со снижениями за оператора и городские
     # нужды: балл теперь читает и то, что сказано в источнике о самой площадке.
-    for name in ("krtFit", "krtIntent", "krtPenalty", "krtScore", "krtScoreNote"):
+    # `krtVolumeShare` — шкала объёма: балл больше не складывается из
+    # постоянных прибавок, и без неё `krtFit` не считается вовсе.
+    for name in ("krtVolumeShare", "krtFit", "krtIntent", "krtPenalty",
+                 "krtScore", "krtScoreNote"):
         start = script.index(f"function {name}(")
         depth = 0
         for position in range(script.index("{", start), len(script)):
@@ -63,6 +66,9 @@ def page_functions() -> str:
             raise AssertionError(f"не найдена функция {name}")
     rules = script[script.index("const KRT_PENALTIES="):]
     out.insert(0, rules[:rules.index("];") + 2])
+    # Якоря шкалы сняты с самого каталога и объявлены рядом с функцией.
+    scale = script[script.index("const KRT_SCALE="):]
+    out.insert(0, scale[:scale.index("};") + 2])
     return "\n".join(out)
 
 
