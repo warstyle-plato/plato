@@ -198,3 +198,51 @@ def test_every_refusal_carries_a_snapshot():
     probe = source[source.index("def glavapu_probe("):]
     probe = probe[:probe.index("\n@app.get(\"/glavapu/health\")")]
     assert 'getattr(exc, "snapshot", None)' in probe, "проба снимок чужого отказа не отдаёт"
+
+
+# --- Предохранитель: лежащий чужой сервис сам не проходит ---------------------
+#
+# 01.09.2026 калькулятор ГлавАПУ лежал у самого города — проверено вручную в
+# браузере, у нескольких человек на разных участках. Пауза в пять минут написана
+# под срыв БРАУЗЕРА, который проходит сам; чужой лежащий сервис не проходит, и
+# каждый человек платил ожиданием заново за уже известный ответ.
+
+
+def test_the_first_failure_still_costs_five_minutes():
+    """Одиночный срыв браузера остаётся тем, чем был."""
+    assert core._glavapu_cooldown_seconds(1) == core._GLAVAPU_HEADLESS_COOLDOWN_SECONDS
+
+
+def test_the_pause_grows_while_failures_keep_coming():
+    steps = [core._glavapu_cooldown_seconds(i) for i in range(1, 6)]
+    assert steps == sorted(steps), "пауза не растёт"
+    assert steps[1] > steps[0], "второй отказ подряд стоит столько же, сколько первый"
+    assert max(steps) <= core._GLAVAPU_HEADLESS_COOLDOWN_MAX_SECONDS
+
+
+def test_the_pause_has_a_ceiling():
+    """Запасной ответ не должен пережить штатный: связку пробуем и дальше."""
+    assert core._glavapu_cooldown_seconds(50) == core._GLAVAPU_HEADLESS_COOLDOWN_MAX_SECONDS
+    assert core._GLAVAPU_HEADLESS_COOLDOWN_MAX_SECONDS <= 3600
+
+
+def test_a_success_resets_the_ladder():
+    source = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    assert '_GLAVAPU_HEADLESS_BLOCKED_UNTIL["row"] = 0' in source, \
+        "лестница не сбрасывается удавшимся расчётом — связка ожила, а мы её держим"
+
+
+def test_the_state_names_how_many_failures_in_a_row():
+    core._GLAVAPU_HEADLESS_BLOCKED_UNTIL["row"] = 0
+    core._GLAVAPU_HEADLESS_BLOCKED_UNTIL["at"] = 0.0
+    try:
+        core._glavapu_headless_failed()
+        core._glavapu_headless_failed()
+        assert core._GLAVAPU_HEADLESS_BLOCKED_UNTIL["row"] == 2
+        state = core._glavapu_headless_state()
+        if state.get("state") == "предохранитель":
+            assert state["failures_in_row"] == 2
+            assert "Отказов подряд" in state["hint"]
+    finally:
+        core._GLAVAPU_HEADLESS_BLOCKED_UNTIL["row"] = 0
+        core._GLAVAPU_HEADLESS_BLOCKED_UNTIL["at"] = 0.0

@@ -9102,7 +9102,23 @@ _GLAVAPU_HEADLESS_QUEUE_SECONDS = max(5.0, _env_float("GLAVAPU_HEADLESS_QUEUE_SE
 # минуты за ответ, который был известен заранее. После сбоя браузер не трогаем
 # несколько минут: формулы отвечают сразу, а причина видна в /status.
 _GLAVAPU_HEADLESS_COOLDOWN_SECONDS = max(0.0, _env_float("GLAVAPU_HEADLESS_COOLDOWN_SECONDS", 300.0))
-_GLAVAPU_HEADLESS_BLOCKED_UNTIL = {"at": 0.0}
+_GLAVAPU_HEADLESS_BLOCKED_UNTIL = {"at": 0.0, "row": 0}
+
+# Предохранитель растёт, пока отказы идут подряд, и не дольше получаса.
+# 01.09.2026 калькулятор ГлавАПУ лежал у самого города — проверено вручную в
+# браузере, — и каждый человек платил за это ожиданием: пять минут паузы, потом
+# снова полторы минуты в недоступную кнопку, и так весь день. Пауза в пять
+# минут написана под СРЫВ БРАУЗЕРА, который проходит сам; лежащий чужой сервис
+# сам не проходит, и стучаться к нему с прежней частотой — это платить временем
+# людей за уже известный ответ.
+#
+# Обратная сторона названа тем же правилом, по которому пауза вообще короткая:
+# запасной ответ не должен пережить штатный. Поэтому лестница сбрасывается
+# первым же удавшимся расчётом, а расти начинает только со второго отказа —
+# одиночный срыв браузера остаётся пятиминутным, как и был.
+_GLAVAPU_HEADLESS_COOLDOWN_MAX_SECONDS = max(
+    _GLAVAPU_HEADLESS_COOLDOWN_SECONDS,
+    _env_float("GLAVAPU_HEADLESS_COOLDOWN_MAX_SECONDS", 1800.0))
 
 
 def _glavapu_headless_available() -> bool:
@@ -9112,10 +9128,20 @@ def _glavapu_headless_available() -> bool:
     return time.monotonic() >= _GLAVAPU_HEADLESS_BLOCKED_UNTIL["at"]
 
 
+def _glavapu_cooldown_seconds(row: int) -> float:
+    """Пауза после `row`-го отказа подряд: 5, 10, 20, 30 минут и дальше 30."""
+    if _GLAVAPU_HEADLESS_COOLDOWN_SECONDS <= 0:
+        return 0.0
+    grown = _GLAVAPU_HEADLESS_COOLDOWN_SECONDS * (2 ** max(0, int(row) - 1))
+    return min(grown, _GLAVAPU_HEADLESS_COOLDOWN_MAX_SECONDS)
+
+
 def _glavapu_headless_failed() -> None:
-    if _GLAVAPU_HEADLESS_COOLDOWN_SECONDS > 0:
-        _GLAVAPU_HEADLESS_BLOCKED_UNTIL["at"] = (
-            time.monotonic() + _GLAVAPU_HEADLESS_COOLDOWN_SECONDS)
+    _GLAVAPU_HEADLESS_BLOCKED_UNTIL["row"] = int(
+        _GLAVAPU_HEADLESS_BLOCKED_UNTIL.get("row") or 0) + 1
+    pause = _glavapu_cooldown_seconds(_GLAVAPU_HEADLESS_BLOCKED_UNTIL["row"])
+    if pause > 0:
+        _GLAVAPU_HEADLESS_BLOCKED_UNTIL["at"] = time.monotonic() + pause
 
 # Браузер живёт между расчётами. Холодный запуск Chromium и первая загрузка
 # страницы калькулятора со всеми её ассетами стоили большую часть минуты, и
@@ -9856,10 +9882,13 @@ def _glavapu_headless_state() -> dict[str, Any]:
                  "Браузер живёт только на ядре.")}
     blocked = max(0, int(_GLAVAPU_HEADLESS_BLOCKED_UNTIL["at"] - time.monotonic()))
     if blocked:
+        row = int(_GLAVAPU_HEADLESS_BLOCKED_UNTIL.get("row") or 0)
         return {"state": "предохранитель", "where": where, "blocked_for": blocked,
+                "failures_in_row": row,
                 "last_error": str(_GLAVAPU_HEADLESS.get("last_error") or ""),
-                "hint": "Браузер сорвался; следующая попытка через "
-                        f"{blocked} с. Причина — в last_error."}
+                "hint": (f"Отказов подряд: {row}; следующая попытка через {blocked} с. "
+                         "Пауза растёт, пока отказы идут подряд, и сбрасывается первым "
+                         "удавшимся расчётом. Причина — в last_error.")}
     # «Готов» — это про браузер, а не про расчёт. На живом ответе ядра
     # (01.09.2026) стояло «готов» при `last_ok: ""` и четырёх откатах на
     # формулы: браузер поднимался исправно, а расчёт не удавался НИ РАЗУ, и
@@ -10072,6 +10101,9 @@ def cadastral_tep_server(req: CadastralAnalysisRequest) -> dict[str, Any]:
             _GLAVAPU_HEADLESS["last_ok"] = datetime.now().isoformat(timespec="seconds")
             _GLAVAPU_HEADLESS["last_error"] = ""
             _GLAVAPU_HEADLESS_BLOCKED_UNTIL["at"] = 0.0
+            # Удавшийся расчёт сбрасывает и лестницу: связка ожила, и следующий
+            # одиночный срыв снова стоит пять минут, а не полчаса.
+            _GLAVAPU_HEADLESS_BLOCKED_UNTIL["row"] = 0
             _glavapu_health_save()
             imported.setdefault("source", {}).update({
                 "format": "Штатный калькулятор ГлавАПУ — серверный запуск",
