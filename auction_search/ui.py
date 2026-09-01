@@ -119,7 +119,9 @@ __DEVELOPAID_CONTOUR__
   </footer>
   __DEVELOPAID_LEGAL_FOOTER__
 </div>
+__DEVELOPAID_LAND_MAP_DIALOG__
 <script>
+__DEVELOPAID_LAND_MAP_KIT__
 const state={lots:[],filtered:[],families:[],openFamilies:new Set(),coverage:[],quality:{},selected:null,ingested:null,krt:[],krtFiltered:[],krtOkrugs:new Set(),krtModels:{},krtReports:{},krtRequirements:{},krtNew:0,krtNewDays:30,krtPolls:0,krtTimer:null,krtRank:{},krtRankProgress:null,krtRankTimer:null,krtPress:{},krtCards:{},krtTenderLinks:{},krtOrderBySite:{},krtTenders:{},krtOrders:[],krtOrphanLots:[],krtSort:{key:'score',dir:-1},krtHidden:{small:0,unknown:0}};
 const KRT_OKRUGS=['ЦАО','САО','СВАО','ВАО','ЮВАО','ЮАО','ЮЗАО','ЗАО','СЗАО','НАО','ТАО','ЗелАО'];
 const $=id=>document.getElementById(id);
@@ -1745,7 +1747,13 @@ function krtMapMarkup(d){
    +`${esc(name)} — ${n}</span>`).join('')
   +'<span style="margin-right:14px;white-space:nowrap"><span style="display:inline-block;width:10px;height:10px;'
   +'background:#C4581B;margin-right:5px"></span>есть лот на торгах</span>';
- const scope=`<div class="source" style="margin:6px 0"><button type="button" id="krtMapWhole" class="pdfbtn">`
+ // Живая карта — та же, что у карточки участка: тайлы, перетаскивание, колесо,
+ // линейка. Печатную картинку она не подменяет (её видно сразу и она уезжает в
+ // отчёт), а отвечает на другой вопрос — «что вокруг».
+ const live=typeof openLandMap==='function'
+  ? `<button type="button" id="krtMapLive" class="pdfbtn">Развернуть живую карту</button> `
+  : '<span>Живая карта не подключена: страница поднята без движка.</span> ';
+ const scope=`<div class="source" style="margin:6px 0">${live}<button type="button" id="krtMapWhole" class="pdfbtn">`
    +(KRT_MAP.whole?'Показать город плотно':'Показать всю Москву')+'</button>'
    +(frame.outside?` <span>За кадром ${frame.outside} площадок(и) — Зеленоград и Новая Москва. `
      +'Кадр взят по основной массе: в общей рамке город сжимается в пятно.</span>':'')+'</div>';
@@ -1761,7 +1769,34 @@ function krtMapMarkup(d){
   <div class="source" style="margin-top:8px">${legend}</div>
   <div class="source">Границы — официальные полигоны реестра КРТ (${sites.length} площадок).
    Подложка — та же карта улиц, что в карточке участка. Наведите на площадку, чтобы увидеть сводку;
-   нажмите, чтобы открыть её карточку.</div>`;
+   нажмите, чтобы открыть её карточку. Этот кадр неподвижен намеренно — он же уходит в отчёт;
+   чтобы приблизить и подвинуть, разверните живую карту.</div>`;
+}
+// Живая карта площадок. Своей проекции и своих тайлов здесь нет — всё берётся
+// у движка (`openLandMap`), потому что разошедшиеся проекции кладут контур
+// рядом с подложкой, а выглядит это как неточность источника.
+function openKrtLiveMap(sites){
+ if(typeof openLandMap!=='function')return;
+ const shapes=(sites||[]).filter(s=>(s.rings_merc||[]).length).map(s=>({
+  rings:s.rings_merc,
+  colour:krtMapColour(s,(state.krtTenders[s.slug]||[]).length),
+  key:s.slug||'',
+  title:[s.name,[s.okrug,s.district].filter(Boolean).join(' · '),s.status,
+         s.area_ha?s.area_ha+' га':''].filter(Boolean).join(' — '),
+ }));
+ if(!shapes.length)return;
+ openLandMap({
+  shapes:shapes,
+  title:'Площадки КРТ Москвы — '+shapes.length+' контуров',
+  note:'Тяните карту мышью или пальцем, колесо — увеличение. Нажмите на площадку, '
+   +'чтобы открыть её карточку. Границы — официальный реестр КРТ, подложка — OpenStreetMap.',
+  onPick:slug=>{
+   const row=state.krt.find(x=>x.slug===slug);
+   if(!row){const s=(sites||[]).find(v=>v.slug===slug);if(s&&s.url)window.open(s.url,'_blank','noopener');return}
+   closeLandMap(); switchTab(true); selectKrt(row);
+   document.getElementById('krtSide')?.scrollIntoView({block:'start'});
+  },
+ });
 }
 function krtMapBind(){
  const body=document.getElementById('krtMapBody');
@@ -1771,6 +1806,8 @@ function krtMapBind(){
  const toggle=document.getElementById('krtMapWhole');
  if(toggle)toggle.onclick=()=>{KRT_MAP.whole=!KRT_MAP.whole;
    body.innerHTML=krtMapMarkup(KRT_MAP.data);krtMapBind()};
+ const liveBtn=document.getElementById('krtMapLive');
+ if(liveBtn)liveBtn.onclick=()=>openKrtLiveMap(sites);
  body.querySelectorAll('path.krtshape').forEach(node=>{
   const s=sites[Number(node.dataset.i)];
   if(!s)return;
@@ -2054,10 +2091,17 @@ def auctions_page(core=None) -> str:
     import management_contour
     import plato_question
 
+    from auction_search import land_map
+
     footer = legal_footer_html(core) if core is not None else ""
     return (AUCTIONS_PAGE
             .replace(plato_question.PLACEHOLDER, plato_question.script())
             .replace(LEGAL_FOOTER_PLACEHOLDER, footer)
+            # Живая карта — движковая, объявленная один раз в `PAGE`. Без движка
+            # плейсхолдеры убираются, а кнопка на странице говорит об этом
+            # вслух: молча отсутствующая кнопка неотличима от сломанной.
+            .replace(land_map.PLACEHOLDER, land_map.script(core))
+            .replace(land_map.MARKUP_PLACEHOLDER, land_map.markup(core))
             .replace("__DEVELOPAID_CONTOUR_STYLE__", management_contour.STYLE)
             .replace(management_contour.PLACEHOLDER,
                      management_contour.markup("/auctions")))
