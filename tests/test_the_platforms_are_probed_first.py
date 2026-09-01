@@ -65,3 +65,29 @@ def test_the_certificate_check_is_not_disabled() -> None:
 def test_the_endpoint_is_wired() -> None:
     api = (ROOT / "auction_search" / "api.py").read_text()
     assert "/auctions/etp/probe" in api and "etp_probe" in api
+
+
+def test_the_roseltorg_section_is_probed_with_a_control_request() -> None:
+    """Раздел Росэлторга спрашивается рядом с нынешним путём разведки.
+
+    «Раздел отвечает» и «раздел отвечает лучше нынешнего» — разные
+    утверждения, и второе без контрольного запроса не проверяется: у ГИС
+    Торгов параметр региона не фильтровал, а выдачу менял, и понять это можно
+    было только сравнением.
+    """
+    from auction_search.adapters import roseltorg_probe
+
+    labels = [label for label, _url in roseltorg_probe.SECTIONS]
+    urls = [url for _label, url in roseltorg_probe.SECTIONS]
+    assert any("razvitie-territorii" in url for url in urls)
+    assert any(label.startswith("КОНТРОЛЬ") for label in labels)
+    assert any("procedures/search" in url for url in urls), (
+        "контрольный запрос — это нынешняя разведка по тегам")
+
+    body = (ROOT / "auction_search" / "adapters" / "roseltorg_probe.py").read_text()
+    assert "def discover_moscow" not in body and "def fetch_lot" not in body
+    assert "разбора нет" in roseltorg_probe.probe.__doc__ + body
+    for forbidden in ("CERT_NONE", "check_hostname = False", "_create_unverified"):
+        assert forbidden not in body
+    api = (ROOT / "auction_search" / "api.py").read_text()
+    assert "/auctions/roseltorg/probe" in api and "/auctions/roseltorg/browser" in api

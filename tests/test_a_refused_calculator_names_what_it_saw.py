@@ -27,39 +27,41 @@ sys.path.insert(0, str(ROOT))
 import main_legacy as core  # noqa: E402
 
 
-def _rows(count: int, coded: bool) -> list[dict[str, str]]:
-    return [{"code": str(60 + i) if coded else "", "name": f"строка {i}",
-             "unit": "м²", "value": "1"} for i in range(count)]
+def _rows(count: int, named: bool = True) -> list[dict[str, str]]:
+    """Строки таблицы. Контрольные — по ИМЕНАМ: номера источник перенумеровал."""
+    control = ["Площадь территории проектирования", "Население",
+               "Количество квартир", "Площадь квартир"]
+    rows = [{"code": str(i), "name": control[i] if named and i < len(control)
+             else f"строка {i}", "unit": "м²", "value": "1"} for i in range(count)]
+    return rows
 
 
 def test_a_missing_table_says_which_tables_are_there():
     message = core._glavapu_not_ready_message(
-        [], [], {"calc_table": False,
-                 "tables": [{"label": "", "rows": 3}, {"label": "other", "rows": 9}]})
+        [], {"calc_table": False,
+             "tables": [{"label": "", "rows": 3}, {"label": "other", "rows": 9}]})
     assert "calc table" in message and "нет" in message
     assert "other:9" in message, "не сказано, какие таблицы на странице есть"
 
 
 def test_an_empty_table_is_not_a_missing_one():
-    message = core._glavapu_not_ready_message([], [], {"calc_table": True})
+    message = core._glavapu_not_ready_message([], {"calc_table": True})
     assert "пуста" in message
 
 
-def test_a_full_table_without_codes_names_the_changed_column():
-    """Самый частый случай — и раньше он выглядел как «таблицы нет»."""
-    snapshot = {"calc_table": True, "widths": [5],
-                "sample": [["Население", "чел.", "1 200", "—", ""]]}
-    message = core._glavapu_not_ready_message(_rows(79, coded=False), [], snapshot)
+def test_a_table_without_the_rows_we_read_names_them():
+    """Полная на вид таблица без наших строк — не «ещё считается»."""
+    snapshot = {"calc_table": True, "sample": [["Население", "чел.", "1 200"]]}
+    message = core._glavapu_not_ready_message(_rows(79, named=False), snapshot)
     assert "79 строк" in message
-    assert "столбец сменился" in message, "не названа причина, по которой ждать бесполезно"
-    assert "Население" in message, "первой строки в отказе нет — смотреть нечего"
+    assert "нет строк, которые мы читаем" in message
+    assert "население" in message, "не сказано, какой именно строки не хватает"
 
 
-def test_a_table_with_other_codes_lists_them():
-    seen = ["1", "2", "3", "61", "62"]
-    message = core._glavapu_not_ready_message(_rows(79, coded=True), seen, {"calc_table": True})
-    assert "нет кодов 60, 54" in message, "не сказано, каких кодов не хватило"
-    assert "61" in message and "прочитаны" in message, "прочитанные коды не названы"
+def test_a_complete_but_moving_table_is_named_so():
+    message = core._glavapu_not_ready_message(_rows(79), {"calc_table": True})
+    assert "не перестала меняться" in message, \
+        "полная таблица подана как неполная"
 
 
 def test_the_refusal_carries_the_snapshot():
