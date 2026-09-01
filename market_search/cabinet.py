@@ -2595,7 +2595,16 @@ function salesOwnVsBrokers(d){
 // есть вопрос (владелец, 26.08.2026).
 function salesChannelsBlock(d){
   if(!(d.by_channel||[]).length) return '';
+  // Не прочитанная колонка брокера и продажи без брокеров дают одну картинку —
+  // единственный канал «напрямую». Разница называется, а не додумывается.
+  const blindChannels = d.broker_column === false
+    ? `<div class="err" style="margin-bottom:10px">Канал продаж не прочитан:`
+      +` колонка с наименованием брокера в листе «Контрактация» не нашлась.`
+      +` Всё показано как «напрямую» потому, что читать брокеров было негде,`
+      +` а не потому, что их нет.</div>`
+    : '';
   let html=salesOwnVsBrokers(d);
+  html=blindChannels+html;
   html+='<details style="margin-top:8px"><summary>Список каналов числами</summary>'
     +salesTable(['Канал','Договоров','млн ₽','Комиссия, млн ₽','Премия ОП, млн ₽','Всего, % от продаж','Комиссия, % от наполнения'],
       d.by_channel.map(x=>[

@@ -198,9 +198,15 @@ def read_contracts(data: bytes) -> dict[str, Any]:
     header = [str(x).strip() if x is not None else "" for x in rows[_HEADER_ROW - 1]]
     index = {}
     missing = []
+    # Имя колонки сверяется через `_text`, а не через `strip`: подписи этих
+    # листов приезжают и с переносом ВНУТРИ ячейки, и с двойным пробелом, и с
+    # неразрывным — про это сказано прямо у `_text`, а здесь не применялось.
+    # Цена промаха не «колонки нет», а хуже: `cell` отдаёт None, брокер у всех
+    # строк становится пустым, и весь объём уходит в канал «напрямую» — на
+    # экране это читается как «брокеров нет вовсе».
     for key, title in _COLUMNS.items():
-        wanted = title.strip()
-        found = next((i for i, name in enumerate(header) if name.strip() == wanted), None)
+        wanted = _text(title)
+        found = next((i for i, name in enumerate(header) if _text(name) == wanted), None)
         if found is None:
             missing.append(title)
         else:
@@ -759,6 +765,10 @@ def summarise(contracts: dict[str, Any], ledger: dict[str, Any] | None = None) -
         block["fee_unknown"] = bool(name) and block["broker_fee"] == 0
         by_channel.append(block)
     by_channel.sort(key=lambda item: -item["amount"])
+    # Не прочитанная колонка брокера и продажи без брокеров дают на экране одну
+    # картинку: единственный канал «напрямую». Утверждения при этом разные, и
+    # молчаливое первое читается как второе.
+    broker_column = _COLUMNS["broker_name"] not in (contracts.get("missing") or [])
 
     flats = [r for r in rows if r["product"] == "Квартира"]
     bands: dict[str, list] = {}
@@ -780,6 +790,7 @@ def summarise(contracts: dict[str, Any], ledger: dict[str, Any] | None = None) -
         "by_product": by_product,
         "by_payment": by_payment,
         "by_channel": by_channel,
+        "broker_column": broker_column,
         "by_size": by_size,
         "brokers": _totals(broker_rows),
         "own_sales": _totals(own_rows),
@@ -1193,7 +1204,15 @@ def conclusions(summary: dict[str, Any]) -> dict[str, str]:
 
     brokers = summary.get("brokers") or {}
     own = summary.get("own_sales") or {}
-    if brokers.get("amount") or own.get("amount"):
+    if summary.get("broker_column") is False:
+        # Единственный канал «напрямую» бывает и правдой, и непрочитанной
+        # колонкой. Пока мы не знаем, какой это случай, называть первый нельзя.
+        out["channels"] = (
+            f"Колонка «{_COLUMNS['broker_name']}» в листе «{SHEET_CONTRACTS}» не "
+            "нашлась, поэтому канал продаж не прочитан ни у одного договора. "
+            "Весь объём показан как «напрямую» не потому, что брокеров нет, а "
+            "потому, что читать их было негде.")
+    elif brokers.get("amount") or own.get("amount"):
         out["channels"] = (
             f"Чужие каналы принесли {_pct(brokers.get('amount', 0) / total['amount'] if total.get('amount') else None)} "
             f"выручки и стоили {_pct(brokers.get('cost_of_sales'), 2)} от своих продаж; свой отдел — "
