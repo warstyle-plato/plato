@@ -114,7 +114,10 @@ def test_node_renders_the_plate_by_queue():
     # каждый предусмотренный выглядел бы предсказанием (владелец, 30.08.2026).
     assert "проблемные очереди есть" in text, text
     assert "держится на согласии банка" in text, text
-    assert "кэш-свип" in text, text
+    # Кэш-свип модель теперь считает, и называть его неучтённым нельзя — но и
+    # выдавать согласованным тоже: о нём с банком договариваются.
+    assert "Перенос долга и кэш-свип — то, о чём с ним договариваются" in text, text
+    assert "дополнительное обеспечение" in text, text
     assert "Этих вариантов модель не считает" in text, text
 
 
@@ -308,3 +311,78 @@ def test_the_middle_queue_still_hears_about_the_transfer():
     assert "на перенос долга на следующую очередь" in text, text
     assert "Переносить долг некуда" not in text, text
     assert "признак на вкладке" in text, text
+
+
+def test_node_says_what_closed_the_gap_when_escrow_was_short():
+    """Накопленные продажи прошлых очередей закрыли долг — это надо назвать.
+
+    Иначе нехватка была, дефолта нет, и чем закрыли — непонятно: долг
+    исчезает без объяснения, а это читается как ошибка расчёта.
+    """
+    if not _node():
+        pytest.skip("node недоступен")
+    script = (
+        _preamble()
+        + _function("ruMonth") + "\n"
+        + _function("pfQueueOutcomes") + "\n"
+        + _function("pfRveWarningHtml") + "\n"
+        + """
+        phaseBundle = {
+          mode: 'phased',
+          comparison: [{name: 'О1', debt_carried_out: 14.09e9},
+                       {name: 'О2', debt_carried_out: 0}],
+          phases: [
+            {result: {report: {financing: {rve_unpaid: 14.09e9}}}},
+            {result: {report: {financing: {rve_unpaid: 0, project_cash_sweep: 9.59e9,
+                                           project_cash_sweep_month: '2031-01-01'}}}},
+          ],
+          consolidated: {finance: {ending_pf: 0}},
+          debt_carry: {applied: true, transfers: [{from: 1, to: 2, at: '2030-01-01'}]},
+        };
+        const html = pfRveWarningHtml({report: {financing: {}}, summary: {}});
+        console.log(html.replace(/<[^>]+>/g, ' ').replace(/\\s+/g, ' ').trim());
+        """
+    )
+    out = subprocess.run([_node(), "-e", script], capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    text = out.stdout.strip()
+    assert "банк забирал долю поступлений прошлых очередей" in text, text
+    assert "за период это 9,59 млрд ₽" in text, text
+    assert "долг закрыт" in text, text
+    # Дефолта не было — и слова о нём тоже.
+    assert "дефолт" not in text.lower(), text
+
+
+def test_node_names_the_swept_amount_inside_the_default():
+    """Сметённого не хватило — оба числа стоят рядом, иначе дефолт необъясним."""
+    if not _node():
+        pytest.skip("node недоступен")
+    script = (
+        _preamble()
+        + _function("ruMonth") + "\n"
+        + _function("pfQueueOutcomes") + "\n"
+        + _function("pfRveWarningHtml") + "\n"
+        + """
+        phaseBundle = {
+          mode: 'phased',
+          comparison: [{name: 'О1', debt_carried_out: 14.09e9},
+                       {name: 'О2', debt_carried_out: 0}],
+          phases: [
+            {result: {report: {financing: {rve_unpaid: 14.09e9}}}},
+            {result: {report: {financing: {rve_unpaid: 2.94e9, default_date: '2031-01-01',
+                                           project_cash_sweep: 15.66e9,
+                                           project_cash_sweep_month: '2031-01-01'}}}},
+          ],
+          consolidated: {finance: {ending_pf: 2.94e9}},
+          debt_carry: {applied: true, transfers: [{from: 1, to: 2, at: '2030-01-01'}]},
+        };
+        const html = pfRveWarningHtml({report: {financing: {}}, summary: {}});
+        console.log(html.replace(/<[^>]+>/g, ' ').replace(/\\s+/g, ' ').trim());
+        """
+    )
+    out = subprocess.run([_node(), "-e", script], capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    text = out.stdout.strip()
+    assert "забранных банком поступлений прошлых очередей (15,66 млрд ₽)" in text, text
+    assert "не хватило на 2,94 млрд ₽" in text, text
+    assert "дефолт в январе 2031" in text, text
