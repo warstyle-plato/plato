@@ -98,7 +98,11 @@ _CATALOGUE_FIELDS = ("name", "okrug", "district", "status", "area_ha", "housing_
                      # Застройщик и реновация приходят с карточки каталога и к
                      # нашему счёту отношения не имеют: обновляются и тогда,
                      # когда модель посчитать не удалось.
-                     "card_facts")
+                     "card_facts",
+                     # Занятость площадки: кто её взял и по какой улике. Ответ
+                     # односторонний — отданная свободной не становится, —
+                     # поэтому он тоже переживает неудачу счёта.
+                     "press_facts")
 
 
 def score_row(project: dict[str, Any], screening: dict[str, Any]) -> dict[str, Any]:
@@ -125,6 +129,7 @@ def score_row(project: dict[str, Any], screening: dict[str, Any]) -> dict[str, A
         # Застройщик с карточки — не результат счёта: он есть и тогда, когда
         # модель не собралась, и фильтр обязан его видеть.
         row["card_facts"] = screening.get("card_facts") or {}
+        row["press_facts"] = screening.get("press_facts") or {}
         return row
 
     metrics = screening.get("metrics") or {}
@@ -141,6 +146,7 @@ def score_row(project: dict[str, Any], screening: dict[str, Any]) -> dict[str, A
         # читалось только по нажатию в карточке, фильтр по оператору и
         # городским нуждам находил их лишь у площадок, открытых руками.
         "card_facts": screening.get("card_facts") or {},
+        "press_facts": screening.get("press_facts") or {},
         "saleable_sqm": round(saleable) if saleable else 0,
         "segment": market.get("recommended_segment"),
         "start_price_rub_sqm": market.get("start_price_rub_sqm"),
@@ -334,6 +340,16 @@ class KrtRanking:
             pass
 
     # --- чтение ---------------------------------------------------------
+
+    def stored_row(self, slug: str) -> dict[str, Any]:
+        """Что уже записано об этой площадке. Пусто — значит не спрашивали."""
+        clean = str(slug or "").strip()
+        if not clean:
+            return {}
+        for row in self.rows():
+            if str(row.get("slug") or "") == clean:
+                return dict(row)
+        return {}
 
     def rows(self) -> list[dict[str, Any]]:
         cached = load_json(self.path) or {}

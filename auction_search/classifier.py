@@ -11,10 +11,14 @@ from auction_search.models import LotKind, LotOrigin
 _KRT_RE = re.compile(r"(?:\bкрт\b|комплексн\w*\s+развити\w*\s+территор\w*)", re.I)
 _LEASE_RE = re.compile(r"аренд\w*", re.I)
 _PROPERTY_RE = re.compile(r"(?:имущественн\w*\s+комплекс\w*|\bзик\b|здани\w*\s+и\s+земельн\w*\s+участ\w*)", re.I)
+# Доля в обществе. Правило одно на модуль — им же пользуется `equity_stake`,
+# иначе один и тот же лот у списка и у разбора окажется разного вида.
 _EQUITY_RE = re.compile(
     r"(?:100\s*(?:\([^)]*\)\s*)?%\s*(?:дол\w*|уставн\w*\s+капитал\w*)|"
-    r"дол\w*\s+(?:в\s+размере\s+)?100\s*(?:\([^)]*\)\s*)?%|"
-    r"дол\w*\s+(?:в\s+)?уставн\w*\s+капитал\w*)",
+    r"дол\w*\s+(?:в\s+размере\s+)?\d{1,3}(?:[.,]\d+)?\s*(?:\([^)]*\)\s*)?%|"
+    r"дол\w*\s+(?:в\s+)?уставн\w*\s+капитал\w*|"
+    r"дол\w*\s+юрлиц\w*|дол\w*\s+юридическ\w*\s+лиц\w*|"
+    r"пакет\w*\s+акци\w*)",
     re.I,
 )
 _DEVELOPMENT_ASSET_RE = re.compile(
@@ -39,7 +43,14 @@ def classify_lot(title: str, procedure_text: str = "", document_titles: list[str
         return LotKind.KRT
     if _UNFINISHED_RE.search(compact):
         return LotKind.UNFINISHED
-    if _PROPERTY_RE.search(compact) or (_EQUITY_RE.search(compact) and _DEVELOPMENT_ASSET_RE.search(compact)):
+    # Доля в обществе — свой вид, и признак развития для неё не условие.
+    # Прежде «доля + слово про стройку» становилась имущественным комплексом, а
+    # доля без таких слов уходила в «прочее»: отсутствие описания активов
+    # читалось как их отсутствие. Что стоит за долей, отвечает `equity_stake`,
+    # и «активы не описаны» там значит «не знаем» (владелец, 01.09.2026).
+    if _EQUITY_RE.search(compact):
+        return LotKind.EQUITY_STAKE
+    if _PROPERTY_RE.search(compact):
         return LotKind.PROPERTY_COMPLEX
     if _LEASE_RE.search(compact):
         return LotKind.LAND_LEASE
