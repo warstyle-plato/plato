@@ -64,18 +64,28 @@ TIMEOUT_SECONDS = 25
 _TEXT_SHOWN = 900
 _LINKS_SHOWN = 12
 
-# Адрес владельца целиком, вместе с его фильтрами. Разбирать их со слов мы не
-# будем: что значит `sale=5` и что значат статусы, скажет сравнение выдач, а
-# не наша догадка о смысле чужого параметра.
-OWNER_URL = (
+# Адрес владельца целиком, вместе с его фильтрами и ровно в том виде, в каком
+# он его открывает. Разбирать их со слов мы не будем: что значит `sale=5` и
+# что значат статусы, скажет сравнение выдач, а не наша догадка о смысле
+# чужого параметра.
+#
+# Скобки оставлены как есть намеренно: это тот самый адрес, а не похожий на
+# него. Для `urllib` они кодируются при запросе — браузер делает это сам.
+CATALOGUE_URL = (
     "https://www.roseltorg.ru/imuschestvo/prochee/razvitie-territorii"
-    "?sale=5&okato%5B%5D=45000000000&status%5B%5D=5&status%5B%5D=0&status%5B%5D=1&page=1"
+    "?sale=5&okato[]=45000000000&status[]=5&status[]=0&status[]=1&page=1"
 )
+
+
+def _for_urllib(url: str) -> str:
+    """Тот же адрес, пригодный для `urllib`: скобки в запросе — процентами."""
+    head, _, query = url.partition("?")
+    return head + ("?" + query.replace("[", "%5B").replace("]", "%5D") if query else "")
 
 # Что спрашиваем и зачем. Подпись — часть ответа: без неё в отчёте окажутся
 # шесть адресов, и чем они отличаются, придётся вспоминать.
 SECTIONS: tuple[tuple[str, str], ...] = (
-    ("Адрес владельца целиком", OWNER_URL),
+    ("Адрес владельца целиком", CATALOGUE_URL),
     ("Тот же раздел без фильтров — сколько там всего",
      "https://www.roseltorg.ru/imuschestvo/prochee/razvitie-territorii"),
     ("Раздел без фильтра Москвы — влияет ли okato вообще",
@@ -230,14 +240,60 @@ def _fetch(url: str, context: ssl.SSLContext) -> dict[str, Any]:
     return report
 
 
-def probe(directory: str = "") -> dict[str, Any]:
-    """Чем отвечает раздел имущества и чем — нынешняя разведка. Разбора нет."""
+# Что спросить у самой страницы, когда она уже открыта. Ответ на «карточки в
+# HTML или их рисует скрипт» даёт не наличие скриптов, а наличие карточек в
+# DOM: страница может нарисовать их так, что ни одного отдельного запроса за
+# данными не будет (всё пришло первым ответом), — и тогда пустой `data_calls`
+# означает «читать нечего», а не «источник молчит».
+#
+# Имён классов здесь нет намеренно: карточка опознаётся по тому, ЧЕМ она
+# является, — ближайшим предком ссылки на `/procedure/`. Придуманное имя
+# класса — это тот же разбор по догадке, только раньше.
+_DOM_FACTS_JS = """() => {
+  const links = Array.from(document.querySelectorAll('a[href*="/procedure/"]'));
+  const first = links[0];
+  let card = null;
+  if (first) {
+    card = first;
+    for (let i = 0; i < 6 && card.parentElement; i++) {
+      card = card.parentElement;
+      if (card.querySelectorAll('a[href*="/procedure/"]').length > 1) {
+        card = card.querySelector('a[href*="/procedure/"]').parentElement;
+        break;
+      }
+    }
+  }
+  return {
+    procedure_links_in_dom: links.length,
+    first_procedure_links: links.slice(0, 3).map(a => a.href),
+    first_card_outer_html: card ? String(card.outerHTML).slice(0, 4000) : "",
+    body_text_chars: (document.body ? document.body.innerText : "").length,
+  };
+}"""
+
+
+def _dom_facts(page: Any) -> dict[str, Any]:
+    """Что видно в открытой странице: ссылки на процедуры и разметка карточки."""
+    return page.evaluate(_DOM_FACTS_JS)
+
+
+def probe(seconds: float = 45.0, directory: str = "") -> dict[str, Any]:
+    """Чем отвечает раздел имущества — простым запросом и живым браузером.
+
+    Разбора нет: сначала ответ источника, потом код. Обе половины нужны и
+    отвечают на разное. Простой запрос показывает, что приходит в HTML, и
+    сравнивает раздел с нынешним путём разведки. Браузер показывает, за чем
+    страница ходит сама, и что в итоге оказалось в DOM: пустой список запросов
+    при видимых карточках означает «всё пришло первым ответом», а не «карточек
+    нет».
+    """
     context = trust_context(directory)
     attempts = []
     for label, url in SECTIONS:
-        attempts.append({"asked": label, "url": url, **_fetch(url, context)})
+        attempts.append({"asked": label, "url": url,
+                         **_fetch(_for_urllib(url), context)})
     return {
-        "source": "Росэлторг",
+        "source": "Росэлторг · развитие территорий · Москва",
         "parsing": ("разбора нет: сначала ответ источника, потом код. "
                     "Раздел «Развитие территории» наш читатель сегодня не "
                     "спрашивает вовсе — разведка ходит только в поиск по тегам."),
@@ -247,14 +303,19 @@ def probe(directory: str = "") -> dict[str, Any]:
             "max_pages": RoseltorgAdapter.DISCOVERY_MAX_PAGES,
         },
         "attempts": attempts,
+        "browser": probe_browser(CATALOGUE_URL, seconds=float(seconds),
+                                 after_load=_dom_facts),
     }
 
 
 def probe_section_browser(url: str = "", seconds: float = 45.0,
                           save_to: str = "") -> dict[str, Any]:
-    """Тот же раздел живым браузером — и адреса, по которым он берёт данные.
+    """Тот же раздел живым браузером и с сохранением страницы файлом.
 
     Своей пробы здесь не заводим: она объявлена один раз в `browser_probe`, и
-    вторая копия разошлась бы с первой на признаках отказа.
+    вторая копия разошлась бы с первой на признаках отказа. Отдельным
+    маршрутом эта половина оставлена ради `save_to` и произвольного адреса:
+    читатель пишется по НАСТОЯЩЕЙ странице и ею же проверяется.
     """
-    return probe_browser(url.strip() or OWNER_URL, seconds=seconds, save_to=save_to)
+    return probe_browser(url.strip() or CATALOGUE_URL, seconds=seconds,
+                         save_to=save_to, after_load=_dom_facts)

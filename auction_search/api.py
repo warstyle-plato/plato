@@ -37,7 +37,7 @@ from auction_search.adapters.fedresurs import (
     SEARCH_PAGE as FEDRESURS_SEARCH_PAGE,
     probe as fedresurs_probe, probe_browser as fedresurs_browser)
 from auction_search.adapters.roseltorg_probe import (
-    OWNER_URL as ROSELTORG_SECTION_URL,
+    CATALOGUE_URL as ROSELTORG_SECTION_URL,
     probe as roseltorg_probe,
     probe_section_browser as roseltorg_section_browser,
 )
@@ -1568,7 +1568,9 @@ def install(app: FastAPI) -> None:
             lambda: fedresurs_browser(url=url.strip() or FEDRESURS_SEARCH_PAGE, seconds=seconds))
 
     @app.get("/auctions/roseltorg/probe")
-    async def auction_roseltorg_probe() -> dict[str, Any]:
+    async def auction_roseltorg_probe(
+        seconds: float = Query(default=45.0, ge=5.0, le=90.0),
+    ) -> dict[str, Any]:
         """Чем отвечает раздел «Развитие территории» Росэлторга. Разбора нет.
 
         Владелец прислал адрес каталога и живой лот на экране: аукцион на
@@ -1581,9 +1583,17 @@ def install(app: FastAPI) -> None:
         отвечает лучше нынешнего» — разные утверждения, и второе без
         контрольного запроса не проверяется.
 
+        Ответ из двух половин и обе нужны: простой запрос показывает, что
+        приходит в HTML, живой браузер — за чем страница ходит сама и что в
+        итоге оказалось в DOM. Пустой список запросов при видимых карточках
+        значит «всё пришло первым ответом», а не «карточек нет».
+
+        Произвольного адреса здесь нет намеренно: спрашивается ровно тот
+        раздел, который открывает владелец.
+
         Из песочницы roseltorg.ru закрыт, поэтому проба ходит только с ядра.
         """
-        return await run_in_threadpool(roseltorg_probe)
+        return await run_in_threadpool(lambda: roseltorg_probe(seconds=float(seconds)))
 
     @app.get("/auctions/roseltorg/browser")
     async def auction_roseltorg_browser(
