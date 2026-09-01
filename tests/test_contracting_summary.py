@@ -399,6 +399,10 @@ def test_a_missing_broker_column_is_named_and_not_shown_as_direct_sales() -> Non
     read = contracting.read_contracts(
         _book_with_header("Наименование брокера", "Кто привёл клиента"))
     assert "Наименование брокера" in read["missing"]
+    # Рядом с «не нашли» стоит «а что в шапке есть»: иначе человек идёт
+    # сверять подписи в книге глазами, хотя лист их только что отдал.
+    found_line = next(x for x in read["missing"] if x.startswith("в шапке листа нашлись"))
+    assert "Кто привёл клиента" in found_line
     summary = contracting.summarise(read)
     assert summary["broker_column"] is False
     assert [row["channel"] for row in summary["by_channel"]] == ["напрямую"]

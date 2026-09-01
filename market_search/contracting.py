@@ -211,6 +211,14 @@ def read_contracts(data: bytes) -> dict[str, Any]:
             missing.append(title)
         else:
             index[key] = found
+    # Чего мы не нашли — половина ответа; вторая половина, как колонка названа
+    # на самом деле. Без неё «не прочитано — Наименование брокера» отправляет
+    # человека открывать книгу и сверять подписи глазами, а список подписей
+    # лист отдаёт сам.
+    if missing:
+        present = [_text(name) for name in header if _text(name)]
+        missing.append("в шапке листа нашлись: " + ("; ".join(present) if present
+                                                    else "ни одной подписи"))
 
     project = ""
     for row in rows[:_HEADER_ROW]:
