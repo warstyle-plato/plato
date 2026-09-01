@@ -63,11 +63,25 @@ _CITY_NEEDS = ("реноваци", "фонд реновации", "для нуж
                "муниципальных нужд", "переселени", "расселение жител",
                "жилой застройки")
 
+# Договор о КРТ уже заключён — площадка отдана, и статус каталога об этом
+# молчит. Строкой стадии это быть не может: стадия отвечает на «как далеко
+# зашло», а здесь ответ на другой вопрос — «можно ли ещё войти» (владелец,
+# 01.09.2026: «первичный парсинг источников нужен, чтобы избегать таких
+# классификаций как планируемая, когда она давно уже отдана другим»).
+#
+# «По инициативе правообладателей» стоит здесь же и не случайно: это КРТ, где
+# землю развивает её собственник, и торгов по такой площадке не будет вовсе.
+_AGREEMENT = ("заключен договор о комплексном", "заключён договор о комплексном",
+              "заключили договор о комплексном", "заключен договор о кртк",
+              "подписан договор о комплексном", "подписали договор о комплексном",
+              "договор о комплексном развитии территории заключен",
+              "договор о комплексном развитии территории заключён",
+              "по инициативе правообладател", "по инициативе собственник")
+
 # Стадия проекта: не признак, а факт с датой — им объясняется, почему площадка
 # ещё «Планируемая», а работа по ней уже идёт.
 _STAGE = ("представлена концепция", "утвержден проект планировки",
-          "утверждён проект планировки", "заключен договор о комплексном",
-          "заключён договор о комплексном", "объявлены торги",
+          "утверждён проект планировки", "объявлены торги",
           "получено разрешение на строительство", "начались работы")
 
 _TRUSTED = ("mos.ru", "stroi.mos.ru", "krt.mos.ru", "investmoscow.ru", "torgi.gov.ru")
@@ -241,6 +255,7 @@ def read_findings(docs: Iterable[Any], name: str) -> dict[str, Any]:
     operator_appointed: list[dict[str, Any]] = []
     operator_pending: list[dict[str, Any]] = []
     city_needs: list[dict[str, Any]] = []
+    agreement: list[dict[str, Any]] = []
     stage: list[dict[str, Any]] = []
     seen: set[str] = set()
     checked = 0
@@ -268,6 +283,8 @@ def read_findings(docs: Iterable[Any], name: str) -> dict[str, Any]:
                 operator_pending.append(_found(sentence, doc))
             if any(mark in low for mark in _CITY_NEEDS):
                 city_needs.append(_found(sentence, doc))
+            if any(mark in low for mark in _AGREEMENT):
+                agreement.append(_found(sentence, doc))
             if any(mark in low for mark in _STAGE):
                 stage.append(_found(sentence, doc))
     # «Оператор назван» и «оператор назначен» — разные ответы, и второй не
@@ -279,6 +296,8 @@ def read_findings(docs: Iterable[Any], name: str) -> dict[str, Any]:
         "operator_appointed": operator_appointed[:3],
         "operator_pending": operator_pending[:3],
         "city_needs": city_needs[:3],
+        # Договор заключён — отдельный ответ, а не разновидность стадии.
+        "agreement": agreement[:3],
         "stage": stage[:4],
         # Как площадка известна рынку: имя проекта, доказанное соседством с
         # адресом. По нему идёт второй круг поиска — статья про бренд адреса
@@ -288,7 +307,10 @@ def read_findings(docs: Iterable[Any], name: str) -> dict[str, Any]:
         # там пусто» и не спрошенные вовсе каналы выглядят на экране одинаково.
         "telegram_found": sum(
             1 for item in operator_named + operator_appointed + operator_pending
-            + city_needs + stage if item.get("telegram")),
-        "taken": bool(operator_named or operator_appointed),
-        "free": bool(operator_pending) and not (operator_named or operator_appointed),
+            + city_needs + agreement + stage if item.get("telegram")),
+        # Заключённый договор занимает площадку так же, как названный оператор:
+        # «Планируемая» в каталоге значит «стройка не начата», а не «свободна».
+        "taken": bool(operator_named or operator_appointed or agreement),
+        "free": bool(operator_pending)
+        and not (operator_named or operator_appointed or agreement),
     }

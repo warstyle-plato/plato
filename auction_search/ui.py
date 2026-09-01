@@ -676,7 +676,9 @@ function krtStage(x){
  const intent=krtIntent(x), status=String(x.status||'').toLowerCase();
  const why=[];
  if(status.includes('реализац')||(intent&&intent.taken)){
-  why.push(status.includes('реализац')?'статус каталога «В реализации»':'оператор назван в источнике');
+  why.push(status.includes('реализац')?'статус каталога «В реализации»'
+   :((intent.operator_name||(intent.operator||[]).length)?'оператор назван в источнике'
+     :'в источнике: договор о КРТ уже заключён'));
   return {key:'taken',why};
  }
  // Заявочная кампания видна сроком подачи: лот с открытым приёмом — это уже
@@ -708,6 +710,33 @@ function krtStage(x){
   return {key:'decision',why};
  }
  return {key:'unknown',why:['ни решения, ни лота не прочитано — это «не знаем», а не «ничего нет»']};
+}
+// Статус каталога отвечает на «начата ли стройка», а не на «свободна ли
+// площадка»: у КРТ по инициативе правообладателей договор подписан, а статус
+// так и стоит «Планируемый». Зелёная метка с подсказкой «войти ещё можно» была
+// поэтому утверждением, которого каталог не подтверждает, — на Маршала
+// Воробьева, вл. 12 она стояла при заключённом договоре (владелец,
+// 01.09.2026). Занятость решается уликами, а неизвестная занятость называется
+// неизвестной: молчание источника не «свободно», как пустой ответ НСПД не
+// «чисто».
+function krtStatusCell(x){
+ const label=esc(x.status||'—');
+ if(x.status==='В реализации')
+  return `<span class="tag warn" title="Инвестор определён — войти нельзя, площадка справочная">${label}</span>`
+   +'<div class="source">инвестор определён</div>';
+ const it=krtIntent(x);
+ if(it&&it.taken){
+  const why=it.operator_name?'застройщик назван: '+it.operator_name
+   :((it.agreement||[]).length?'договор о КРТ уже заключён'
+     :'в источниках назван тот, кто площадку берёт');
+  return `<span class="tag warn" title="${esc(why+'. Статус каталога говорит только о том, что стройка не начата')}">${label}</span>`
+   +`<div class="source">${esc(why)}</div>`;
+ }
+ if(it&&it.probed&&it.free)
+  return `<span class="tag ok" title="По прочитанным источникам право ещё выставят на торги">${label}</span>`
+   +'<div class="source">право ещё выставят на торги</div>';
+ return `<span class="tag" title="${esc('Статус каталога отвечает на «начата ли стройка», а не на «свободна ли площадка». Занятость по источникам не проверена — нажмите «Что пишут об этой площадке»')}">${label}</span>`
+  +'<div class="source">занятость не проверена</div>';
 }
 function krtStageCell(x){
  const stage=krtStage(x), meta=KRT_STAGES.find(s=>s.key===stage.key)||KRT_STAGES[5];
@@ -742,13 +771,18 @@ function krtIntent(x){
  const press=state.krtPress[x.slug];
  if(!press||!press.available)return intent;
  const merged=Object.assign({probed:true,decision_read:false,kind:'',city_needs:[],
-   operator:[],operator_name:'',taken:false}, intent||{});
+   operator:[],operator_name:'',agreement:[],taken:false}, intent||{});
  merged.city_needs=(merged.city_needs||[]).concat((press.city_needs||[]).map(v=>v.quote));
  merged.operator=(merged.operator||[]).concat(
    (press.operator_named||[]).concat(press.operator_appointed||[]).map(v=>v.quote));
  if(!merged.operator_name&&(press.operator_named||[]).length)
   merged.operator_name=press.operator_named[0].name||'';
- merged.taken=!!(merged.operator_name||merged.operator.length);
+ // Заключённый договор о КРТ занимает площадку так же, как названный оператор,
+ // и статус каталога об этом молчит: «Планируемая» там значит «стройка не
+ // начата». Так Маршала Воробьева, вл. 12 стояла зелёной «войти ещё можно»
+ // при подписанном договоре с правообладателями (владелец, 01.09.2026).
+ merged.agreement=(merged.agreement||[]).concat((press.agreement||[]).map(v=>v.quote));
+ merged.taken=!!(merged.operator_name||merged.operator.length||merged.agreement.length);
  merged.probed=true;
  return merged;
 }
@@ -780,7 +814,9 @@ function krtScore(x){
  // Ставится только при названном имени или цитате: догадка сюда не идёт.
  const intent=krtIntent(x);
  if(intent&&intent.taken&&x.status!=='В реализации')
-  cuts.push({label:'оператор уже назван'+(intent.operator_name?': '+intent.operator_name:' в проекте решения')
+  cuts.push({label:(intent.operator_name||(intent.operator||[]).length
+    ?'оператор уже назван'+(intent.operator_name?': '+intent.operator_name:' в проекте решения')
+    :'договор о КРТ уже заключён — площадка развивается правообладателями')
    +' — войти нельзя',points:60});
  // Городские нужды снижают, но не закрывают: КРТ для нужд города выигрывает и
  // частный застройщик, поэтому это не запрет, а названная сложность.
@@ -1038,7 +1074,7 @@ function renderKrt(){const a=state.krtFiltered,body=$('krtRows');body.innerHTML=
  const nocard=x.no_card?'<span class="tag warn" title="Проект решения о КРТ опубликован'
   +(x.draft_decision_at?' '+krtWhen(x.draft_decision_at):'')
   +'. Решение ещё не принято — город собирает мнения правообладателей. Карточки в каталоге krt.mos.ru нет, ТЭП взять неоткуда">только проект решения</span>':'';
- tr.innerHTML=`<td><div class="lotname">${esc(x.name)}${fresh}${tender}${nocard}${marks}</div><div class="source">${esc([x.okrug,x.district].filter(Boolean).join(' · '))}</div></td><td><span class="fit ${sc.tone}" title="${esc(title)}"><span class="light"></span>${sc.score} · ${esc(sc.label)}</span><div class="source">${esc(krtScoreNote(sc))}</div></td><td class="money">${krtRankCell(x.slug)}</td><td class="money">${krtModelCell(x.slug,'llcr')}</td><td class="money">${krtModelCell(x.slug,'margin')}</td><td>${krtStageCell(x)}</td><td>${x.draft_decision_at?(x.draft_decision_url?`<a href="${esc(x.draft_decision_url)}" target="_blank" rel="noopener" title="Проект решения о КРТ на mos.ru">${esc(krtWhen(x.draft_decision_at))}</a>`:esc(krtWhen(x.draft_decision_at))):'<span class="source">—</span>'}</td><td><span class="tag ${x.status==='В реализации'?'warn':'ok'}" title="${esc(x.status==='В реализации'?'Инвестор определён — войти нельзя, площадка справочная':'Войти ещё можно')}">${esc(x.status||'—')}</span></td><td>${x.area_ha?esc(x.area_ha+' га'):'—'}</td><td>${fmtArea(x.total_gfa_sqm)}</td><td>${fmtArea(x.housing_gfa_sqm)}</td><td>${esc(x.jobs??'—')}</td>`;tr.onclick=()=>selectKrt(x);body.appendChild(tr)});renderAskContext()}
+ tr.innerHTML=`<td><div class="lotname">${esc(x.name)}${fresh}${tender}${nocard}${marks}</div><div class="source">${esc([x.okrug,x.district].filter(Boolean).join(' · '))}</div></td><td><span class="fit ${sc.tone}" title="${esc(title)}"><span class="light"></span>${sc.score} · ${esc(sc.label)}</span><div class="source">${esc(krtScoreNote(sc))}</div></td><td class="money">${krtRankCell(x.slug)}</td><td class="money">${krtModelCell(x.slug,'llcr')}</td><td class="money">${krtModelCell(x.slug,'margin')}</td><td>${krtStageCell(x)}</td><td>${x.draft_decision_at?(x.draft_decision_url?`<a href="${esc(x.draft_decision_url)}" target="_blank" rel="noopener" title="Проект решения о КРТ на mos.ru">${esc(krtWhen(x.draft_decision_at))}</a>`:esc(krtWhen(x.draft_decision_at))):'<span class="source">—</span>'}</td><td>${krtStatusCell(x)}</td><td>${x.area_ha?esc(x.area_ha+' га'):'—'}</td><td>${fmtArea(x.total_gfa_sqm)}</td><td>${fmtArea(x.housing_gfa_sqm)}</td><td>${esc(x.jobs??'—')}</td>`;tr.onclick=()=>selectKrt(x);body.appendChild(tr)});renderAskContext()}
 // Балл — потолок цены входа на метр продаваемой (решение владельца,
 // 23.08.2026). На метр, а не в абсолюте: потолок в рублях выгоден крупным
 // площадкам просто по размеру. Пустая ячейка значит «не посчитали», и это не
@@ -1476,6 +1512,7 @@ async function loadKrtPress(x){
   state.krtPress[x.slug]=d;
   const items=krtPressLines(d.operator_named,'Оператор назван')
    +krtPressLines(d.operator_appointed,'Оператор назначен, имя не названо')
+   +krtPressLines(d.agreement,'Договор о КРТ уже заключён — войти нельзя')
    +krtPressLines(d.operator_pending,'Право ещё выставят на торги')
    +krtPressLines(d.city_needs,'Городские нужды')
    +krtPressLines(d.stage,'Стадия');
