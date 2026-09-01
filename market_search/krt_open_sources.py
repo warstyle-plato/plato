@@ -328,6 +328,19 @@ def read_findings(docs: Iterable[Any], name: str) -> dict[str, Any]:
     # другой. Пустой список значит «не нашли», а не «нет».
     return {
         "checked": checked,
+        # Что поиск ВООБЩЕ принёс. Без этого «не нашли» и «нечего было
+        # находить» на экране неразличимы: читатель видит пустой блок и не
+        # может сказать, промолчал источник или промолчали мы. Владелец трижды
+        # подряд присылал публикацию, которую видно глазами, — и каждый раз
+        # разговор начинался с догадок вместо выдачи (01.09.2026).
+        "documents": [
+            {"title": str(getattr(doc, "title", "") or "")[:200],
+             "url": str(getattr(doc, "url", "") or ""),
+             "domain": str(getattr(doc, "domain", "") or ""),
+             "anchored": any(_mentions(one, anchors) for one in _sentences(
+                 f"{getattr(doc, 'title', '')}. {getattr(doc, 'snippet', '')}"))}
+            for doc in docs[:20]
+        ],
         "operator_named": operator_named[:3],
         "operator_appointed": operator_appointed[:3],
         "operator_pending": operator_pending[:3],

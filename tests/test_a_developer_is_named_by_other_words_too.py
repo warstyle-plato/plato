@@ -97,3 +97,39 @@ def test_a_stranger_site_still_does_not_borrow_the_name():
     got = krt_open_sources.read_findings(
         [Doc(title="ЖК от STONE на Бутовской улице", snippet="")], SITE)
     assert not got["operator_named"] and got["taken"] is False
+
+
+# --- Что поиск принёс, видно на экране ---------------------------------------
+#
+# Владелец трижды подряд присылал публикацию, которую видно глазами, и каждый
+# раз разговор начинался с догадок: карточка показывала только НАХОДКИ, а по
+# пустому блоку нельзя сказать, промолчал источник или промолчали мы.
+
+
+def test_the_findings_carry_what_was_read():
+    got = krt_open_sources.read_findings(
+        [Doc(title=DZEN, snippet="", url="https://dzen.ru/a/x", domain="dzen.ru"),
+         Doc(title="Новости района Сокол", snippet="Про совсем другое место")], SITE)
+    docs = got["documents"]
+    assert len(docs) == 2, "прочитанные документы до карточки не доезжают"
+    assert docs[0]["domain"] == "dzen.ru" and docs[0]["url"]
+    assert docs[0]["anchored"] is True, "документ с адресом площадки помечен как чужой"
+    assert docs[1]["anchored"] is False, "документ без якоря выдан за подходящий"
+
+
+def test_an_empty_search_is_not_an_empty_site():
+    got = krt_open_sources.read_findings([], SITE)
+    assert got["documents"] == []
+    assert got["checked"] == 0
+
+
+def test_the_screen_shows_what_was_read():
+    from auction_search import ui
+
+    page = ui.auctions_page(None)
+    assert "function krtPressDocs(" in page, "прочитанное на экране не показывается"
+    assert "Что прочитано" in page
+    assert "без якоря площадки" in page, \
+        "отброшенный документ неотличим от непрочитанного"
+    assert "Поиск не вернул ни одного документа" in page, \
+        "пустая выдача подана как отсутствие фактов о площадке"
