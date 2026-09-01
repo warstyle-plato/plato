@@ -23,6 +23,12 @@ _ORIGINAL_STORE_SALES_FILE = None
 _ORIGINAL_STORE_PROPOSAL = None
 
 
+# Резерв 2.8/2.9 — не статья: у него нет ни договоров, ни программы, он гасит
+# нехватку других статей. В список статей он не попадает ни как потребность,
+# ни как источник перераспределения.
+_RESERVE_CODES = frozenset({"2.8", "2.9"})
+
+
 def _norm(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "").strip().lower().replace("ё", "е"))
 
@@ -164,7 +170,7 @@ def _read_finance_baseline(path: Path) -> dict[str, Any]:
             article = _norm(values[1] if len(values) > 1 else None)
             if total_row is None and "всего инвестиционные расходы глава 2, 3" in article:
                 total_row = r
-            if code in {"2.8", "2.9"}:
+            if code in _RESERVE_CODES:
                 reserve_rows.append(r)
             if not code:
                 continue
@@ -232,27 +238,43 @@ def _read_finance_baseline(path: Path) -> dict[str, Any]:
 
         # Only terminal rows are financing buckets. Parent rows (2.2, 2.2.2,
         # 2.3...) repeat the same programme and would double-count need.
+        #
+        # Статьи берутся по ОБЕИМ главам итоговой строки и независимо от того,
+        # стоит ли у статьи производственная программа. Прежде сюда попадала
+        # только глава 2 и только статьи с программой — а «Средства на
+        # завершение», утверждённая модель и оплаченное считались по главам
+        # 2–3. «Есть: остаток лимитов + резерв» выходило 1,46 млрд ₽ против
+        # 1,66 у колонки банка, и 200 млн разницы были главой 3 и статьями без
+        # программы, а не чьим-то счётом (владелец, 01.09.2026: «Это точно 2
+        # глава? Или в разделе РСС 2, а в дефиците 2 и 3?»). У статьи без
+        # программы потребность нулевая, а лимит — настоящий: это источник.
         articles: dict[str, dict[str, Any]] = {}
         for meta in source_rows:
             code = meta["code"]
-            if meta["has_children"] or not code.startswith("2") or code in {"2.8", "2.9"}:
+            chapter = code.split(".")[0]
+            if meta["has_children"] or chapter not in {"2", "3"} or code in _RESERVE_CODES:
                 continue
             r = meta["row"]
             month_need = {
                 month.isoformat(): max(0.0, actuals._money(ws.cell(r, c).value))
                 for c, month in month_columns
             }
-            if not any(month_need.values()):
+            limit = actuals._money(ws.cell(r, rss_limit_col).value)
+            paid_here = actuals._money(ws.cell(r, paid_col).value)
+            if not any(month_need.values()) and limit <= 0 and paid_here <= 0:
                 continue
             item = articles.setdefault(code, {
                 "code": code,
+                "chapter": chapter,
                 "name": str(ws.cell(r, 2).value or "").strip(),
                 "rss_limit": 0.0,
                 "paid_at_baseline": 0.0,
+                "has_programme": False,
                 "monthly_need": {month.isoformat(): 0.0 for _, month in month_columns},
             })
-            item["rss_limit"] += actuals._money(ws.cell(r, rss_limit_col).value)
-            item["paid_at_baseline"] += actuals._money(ws.cell(r, paid_col).value)
+            item["rss_limit"] += limit
+            item["paid_at_baseline"] += paid_here
+            item["has_programme"] = item["has_programme"] or any(month_need.values())
             for month, amount in month_need.items():
                 item["monthly_need"][month] = item["monthly_need"].get(month, 0.0) + amount
 
@@ -424,6 +446,8 @@ def _article_waterfall(
             reserve_left_after_first = monthly_reserve_balance.get(first_month.isoformat())
         article_rows.append({
             "code": code,
+            "chapter": str(item.get("chapter") or code.split(".")[0]),
+            "has_programme": bool(item.get("has_programme", need_total > 0)),
             "name": item.get("name", ""),
             "limit": limit,
             "need_total": need_total,
@@ -483,13 +507,30 @@ def _retention(project: str, horizon: Any) -> dict[str, Any] | None:
     return got
 
 
+def _programme_left(articles: dict[str, dict[str, Any]], cut: datetime.date) -> dict[str, float]:
+    """Сколько статья ещё тратит по программе РСС начиная с месяца среза."""
+    cut_month = cut.replace(day=1)
+    left: dict[str, float] = {}
+    for code, item in articles.items():
+        total = 0.0
+        for month, amount in (item.get("monthly_need") or {}).items():
+            day = monitor._day(month)
+            if day is not None and day >= cut_month:
+                total += max(0.0, float(amount or 0.0))
+        left[code] = total
+    return left
+
+
 def _unspent(project: str, rss: Path, estimate: dict[str, Any],
-             horizon: Any, waterfall: dict[str, Any]) -> dict[str, Any] | None:
-    """Постатейно: что до ввода израсходовано не будет.
+             horizon: Any, waterfall: dict[str, Any],
+             baseline_articles: dict[str, dict[str, Any]] | None = None,
+             cut: datetime.date | None = None) -> dict[str, Any] | None:
+    """Постатейно: откуда лимит можно просить и кому его не хватает.
 
     Реестра ГУ может не быть, реестра договоров в РСС может не быть — свободное
     от договоров считается и без них, а причина, по которой ГУ не разложены,
     называется вслух. Пусто здесь бывает только когда нечего показать вовсе.
+    Потребность и нехватку считает водопад выше — сюда они приходят готовыми.
     """
     import developaid_monitor_unspent as unspent_mod
 
@@ -500,11 +541,52 @@ def _unspent(project: str, rss: Path, estimate: dict[str, Any],
         contracts = actuals.read_contracts(rss)
     except Exception:  # noqa: BLE001 — листа договоров в РСС может не быть
         contracts = None
-    needy = {str(row.get("code") or ""): float(row.get("unfunded_take") or 0.0)
-             for row in (waterfall.get("articles") or [])}
+    needy = [row for row in (waterfall.get("articles") or [])
+             if float(row.get("unfunded_take") or 0.0) > 0]
+    programme_left = (_programme_left(baseline_articles, cut)
+                      if baseline_articles is not None and cut is not None else None)
     got = unspent_mod.unspent(estimate, contracts=contracts, retention=register,
-                              horizon=horizon, needy=needy)
-    return got if (got["articles"] or got["retention"]["reason"]) else None
+                              horizon=horizon, needy=needy,
+                              programme_left=programme_left,
+                              not_articles=_RESERVE_CODES)
+    return got if (got["sources"] or got["excluded"] or got["needy"]
+                   or got["retention"]["reason"]) else None
+
+
+def _bank_need_check(remaining_need: float, reserve: float,
+                     waterfall: dict[str, Any]) -> dict[str, Any]:
+    """Сверка «Средств на завершение» банка с нашим остатком лимитов.
+
+    Две суммы об одном остатке стояли рядом и расходились на 200 млн ₽, и
+    откуда разница — было не видно (владелец, 01.09.2026: «Откуда ещё 200 млн
+    взялось?»). Здесь она раскладывается: по главам, по резерву, по статьям с
+    перерасходом (их отрицательный остаток мы берём нулём), и то, что не
+    объяснилось, названо остатком, а не спрятано в округление.
+    """
+    rows = waterfall.get("articles") or []
+    by_chapter: dict[str, float] = {}
+    no_programme = 0.0
+    raw_total = 0.0
+    for row in rows:
+        raw = float(row.get("opening_limit_raw") or 0.0)
+        raw_total += raw
+        chapter = str(row.get("chapter") or str(row.get("code") or "").split(".")[0])
+        by_chapter[chapter] = by_chapter.get(chapter, 0.0) + max(0.0, raw)
+        if not row.get("has_programme"):
+            no_programme += max(0.0, raw)
+    clipped = float(waterfall.get("opening_article_deficit") or 0.0)
+    ours = float(waterfall.get("opening_bank_remaining") or 0.0) + float(reserve or 0.0)
+    # Наш остаток без клипа: то, что банк увидел бы, складывая статьи со знаком.
+    ours_raw = raw_total + float(reserve or 0.0)
+    return {
+        "bank_column": float(remaining_need or 0.0),
+        "ours": ours,
+        "by_chapter": dict(sorted(by_chapter.items())),
+        "reserve": float(reserve or 0.0),
+        "no_programme": no_programme,
+        "overpaid_clipped": clipped,
+        "residual": float(remaining_need or 0.0) - ours_raw,
+    }
 
 
 def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, Any]) -> dict[str, Any]:
@@ -567,7 +649,11 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
         # ГУ раскладываются по статьям оценкой. Считает это отдельный модуль,
         # здесь только вход — лимиты и потребность живут выше и второй раз не
         # считаются.
-        "unspent": _unspent(project, rss, estimate, rnv, waterfall),
+        "unspent": _unspent(project, rss, estimate, rnv, waterfall, articles, cut),
+        # Колонка банка против нашего остатка — разложенная разница, а не две
+        # цифры рядом.
+        "bank_need_check": _bank_need_check(
+            remaining_need, float(baseline.get("reserve") or 0.0), waterfall),
         "forecast_to": monitor._iso(rnv),
         "monthly_need": waterfall["monthly_need"],
         "monthly_reserve_draw": waterfall["monthly_reserve_draw"],

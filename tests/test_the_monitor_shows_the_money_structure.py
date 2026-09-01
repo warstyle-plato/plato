@@ -270,12 +270,124 @@ def test_the_screen_puts_the_model_against_the_bank() -> None:
     assert "Есть: остаток лимитов + резерв" in body
     assert "row('ДЕФИЦИТ'" in body
     assert "mainGap=modelNeed==null?null:Math.max(0,modelNeed-fuel)" in body
-    assert "Справочно: «Средства на завершение» по РСС" in body
+    assert "«Средства на завершение» по РСС" in body
     assert "взгляд банка на остаток, не потребность стройки" in body
     # Структурный дефицит остаётся, но он про статьи внутри лимитов.
     assert "Структурный дефицит внутри лимитов" in body
     # Без книги модель не выдумывается.
     assert "сколько реально надо, сказать нечем" in body
+
+
+def test_the_structural_deficit_says_how_it_is_counted_and_from_what() -> None:
+    """«Структурный дефицит — непонятно откуда 1,44, как это посчитано? И он
+    считается от РСС или утверждённой модели?» (владелец, 01.09.2026)."""
+    body = PAGE[PAGE.index("function fundingStructure("):]
+    body = body[: body.index("\n}\n")]
+    assert "Помесячно по программе РСС" in body
+    assert "утверждённая модель здесь не участвует" in body
+    assert "Нехватку гасит резерв 2.8/2.9" in body
+    # Строка «разница двух остатков» снята: два почти одинаковых числа под
+    # разными именами читались как бред, а не как оговорка.
+    assert "Разница двух остатков потребности" not in body
+
+
+def test_the_bank_column_is_reconciled_not_just_shown() -> None:
+    """«Почему там 1,66, если остаток лимитов и резервов 1,46??? Откуда ещё 200
+    млн взялось?» — разница раскладывается по главам, резерву и статьям с
+    перерасходом, а несведённое названо остатком."""
+    import developaid_monitor_dashboard as dash
+
+    waterfall = {
+        "opening_bank_remaining": 1.40e9, "opening_article_deficit": 0.05e9,
+        "articles": [
+            {"code": "2.1", "chapter": "2", "has_programme": True, "opening_limit_raw": 0.9e9},
+            {"code": "2.2", "chapter": "2", "has_programme": False, "opening_limit_raw": 0.2e9},
+            {"code": "2.3", "chapter": "2", "has_programme": True, "opening_limit_raw": -0.05e9},
+            {"code": "3.1", "chapter": "3", "has_programme": False, "opening_limit_raw": 0.3e9},
+        ],
+    }
+    check = dash._bank_need_check(1.66e9, 0.06e9, waterfall)
+    assert check["bank_column"] == pytest.approx(1.66e9)
+    assert check["ours"] == pytest.approx(1.46e9)
+    assert check["by_chapter"] == {"2": pytest.approx(1.1e9), "3": pytest.approx(0.3e9)}
+    assert check["no_programme"] == pytest.approx(0.5e9)
+    assert check["overpaid_clipped"] == pytest.approx(0.05e9)
+    # 1,66 − (1,40 − 0,05 + 0,06): то, чего мы объяснить не можем, названо.
+    assert check["residual"] == pytest.approx(0.25e9)
+
+    body = PAGE[PAGE.index("function fundingStructure("):]
+    body = body[: body.index("\n}\n")]
+    assert "Сверка с колонкой банка" in body
+    for key in ("check.bank_column", "check.ours", "check.by_chapter",
+                "check.no_programme", "check.overpaid_clipped", "check.residual"):
+        assert key in body, f"экран не показывает {key}"
+    assert "Не сошлось с колонкой банка" in body
+    assert "С колонкой банка сходится" in body
+
+
+def test_the_limits_cover_both_chapters_like_the_bank_column(tmp_path) -> None:
+    """«Это точно 2 глава? Или в разделе РСС 2, а в дефиците 2 и 3?»
+
+    Было именно так: статьи водопада брались только из главы 2 и только с
+    программой, а «Средства на завершение», модель и оплаченное — по итоговой
+    строке глав 2–3. «Есть: остаток лимитов + резерв» выходило на 200 млн ₽
+    меньше колонки банка, и разница была главой 3 и статьями без программы.
+    """
+    from openpyxl import Workbook
+
+    import developaid_monitor_dashboard as dash
+
+    book = Workbook()
+    ws = book.active
+    ws.title = "Расчет стоимости строительства"
+    for c, v in {1: "Код", 4: "Общая сметная стоимость", 7: "Утвержденная фин.модель проекта"}.items():
+        ws.cell(row=9, column=c, value=v)
+    for c, v in {9: "Оплачено по состояни. На 17.07.2026",
+                 11: "Средства на завершение согласно бюджету",
+                 13: "производстввенная программа"}.items():
+        ws.cell(row=8, column=c, value=v)
+    ws.cell(row=9, column=13, value="Август")
+    ws.cell(row=9, column=14, value="Сентябрь")
+    rows = [
+        ("2", "Глава 2", 700.0, 100.0, None, None),
+        ("2.1", "С программой", 300.0, 50.0, 40.0, 60.0),
+        ("2.2", "Без программы", 300.0, 50.0, None, None),
+        ("2.8", "Резерв", 100.0, 0.0, None, None),
+        ("3", "Глава 3", 200.0, 20.0, None, None),
+        ("3.1", "Прочие затраты", 200.0, 20.0, None, None),
+    ]
+    for offset, (code, name, limit, paid, aug, sep) in enumerate(rows, start=10):
+        ws.cell(row=offset, column=1, value=code)
+        ws.cell(row=offset, column=2, value=name)
+        ws.cell(row=offset, column=4, value=limit)
+        ws.cell(row=offset, column=9, value=paid)
+        ws.cell(row=offset, column=11, value=limit - paid)
+        if aug is not None:
+            ws.cell(row=offset, column=13, value=aug)
+            ws.cell(row=offset, column=14, value=sep)
+    total = 10 + len(rows)
+    ws.cell(row=total, column=2, value="Всего инвестиционные расходы глава 2, 3")
+    ws.cell(row=total, column=7, value=1200.0)
+    ws.cell(row=total, column=9, value=120.0)
+    ws.cell(row=total, column=11, value=780.0)
+    path = tmp_path / "finance.xlsx"
+    book.save(path)
+
+    baseline = dash._read_finance_baseline(path)
+    assert baseline["known"], baseline
+    articles = baseline["articles"]
+    assert set(articles) == {"2.1", "2.2", "3.1"}, "статьи не по главам 2–3"
+    assert articles["2.2"]["has_programme"] is False
+    assert articles["3.1"]["chapter"] == "3"
+    assert articles["2.1"]["has_programme"] is True
+    # Резерв — не статья, а главы не считаются вместе со своими статьями.
+    assert baseline["reserve"] == pytest.approx(100.0)
+    waterfall = dash._article_waterfall(articles, baseline["reserve"], datetime.date(2026, 8, 20))
+    # Остаток лимитов теперь тот же контур, что колонка банка: 250 + 250 + 180.
+    assert waterfall["opening_bank_remaining"] == pytest.approx(680.0)
+    check = dash._bank_need_check(baseline["completion_need_at_baseline"], baseline["reserve"], waterfall)
+    assert check["ours"] == pytest.approx(780.0)
+    assert check["residual"] == pytest.approx(0.0, abs=1e-6)
 
 
 

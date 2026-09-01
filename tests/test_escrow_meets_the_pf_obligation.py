@@ -97,12 +97,62 @@ def test_the_page_draws_the_obligation_and_not_only_the_body():
     assert page.count("function escrowCoverSvg(") == 1
     # Заливка, а не линии: ответ на «перекрывает или нет» — это площадь.
     assert "<polygon" in page.split("function escrowCoverSvg(")[1][:4000]
-    # Линия «сколько банк получил всего»: раскрытый эскроу и то, чем гасят
-    # дальше. Продажи после раскрытия рисовались от нуля и рядом с эскроу в
-    # десятки миллиардов не значили ничего (владелец, 01.09.2026).
-    assert "escrow_and_sales_cumulative" in page, "погашенное банку не нарисовано"
-    assert "Раскрытый эскроу и продажи после него" in page, "линия не названа"
+    # Раскрытие эскроу и продажи после ввода — разные события, и одной линией
+    # они врут: ступень в 70 млрд читалась как «после ввода продали на 70»
+    # (владелец, 01.09.2026), хотя продаж в тот месяц нет.
+    assert "escrow_released_cumulative" in page, "раскрытый эскроу не нарисован"
+    assert "sales_after_rve_cumulative" in page, "продажи после ввода не нарисованы"
     assert "не погашено" in page, "последняя точка не названа — читается как обрыв"
+    # Накопленное — своей осью: на общей шкале оно перерастает долг и сплющивает
+    # его в нижнюю треть.
+    drawer = page.split("function escrowCoverSvg(")[1][:6000]
+    assert "cumTop" in drawer and "накопленно" in drawer, \
+        "у накопленного нет своей шкалы"
+
+
+def test_the_chart_legend_is_declared_once():
+    """Две копии легенды назвали одну линию по-разному.
+
+    Одна говорила «накопленным итогом», вторая молчала об этом — два ответа
+    на «что это за линия» об одном графике.
+    """
+    assert core.PAGE.count(core.ESCROW_CHART_LEGEND_PLACEHOLDER) == 0, \
+        "подстановка легенды не сработала — на странице остался плейсхолдер"
+    names = [text for text, _colour, _style in core._ESCROW_CHART_LEGEND]
+    assert "Раскрыто с эскроу, накопленно" in names
+    assert "Продано после ввода, накопленно" in names
+    for text in names:
+        assert core.PAGE.count(">" + text + "<") == 2, \
+            f"подпись «{text}» на странице не из общего объявления"
+
+
+def test_the_two_lines_are_two_events():
+    """Ступень — это снятое с эскроу, а не продажи месяца.
+
+    Проверяется по самим рядам: накопленное раскрытие растёт ровно на
+    раскрытие месяца, накопленные продажи после ввода — ровно на продажи.
+    """
+    inputs = dict(core.DEFAULT_INPUTS)
+    tep = {key: dict(value) for key, value in core.TEP_DEFAULT.items()}
+    bundle = core._run_authoritative_model(
+        inputs, tep, [], {"enabled": True, "phase_count": 2, "phase_gap_months": 12})
+    rows = bundle["consolidated"]["finance"]["rows"]
+    assert any(row["escrow_released_cumulative"] > 0 for row in rows), \
+        "эскроу нигде не раскрылся — проверка ничего не значит"
+    assert any(row["sales_after_rve_cumulative"] > 0 for row in rows), \
+        "после ввода не продано ничего — проверка ничего не значит"
+    released = sales = 0.0
+    for row in rows:
+        released += row["escrow_release"]
+        sales += row["sales_after_rve"]
+        assert row["escrow_released_cumulative"] == pytest.approx(released, abs=1.0)
+        assert row["sales_after_rve_cumulative"] == pytest.approx(sales, abs=1.0)
+        assert row["escrow_and_sales_cumulative"] == pytest.approx(
+            released + sales, abs=1.0), "сумма двух линий разошлась с их итогом"
+    # Ради чего всё: в месяц самой высокой ступени продаж почти нет.
+    step, at = max((row["escrow_release"], index) for index, row in enumerate(rows))
+    assert rows[at]["sales_after_rve"] < step * 0.05, \
+        "ступень и продажи одного месяца сравнимы — разделять было нечего"
 
 
 def test_the_report_shows_the_chart_the_pdf_prints():
@@ -145,7 +195,8 @@ def test_the_pdf_prints_the_escrow_cover():
         io.BytesIO(core._build_developaid_pdf(payload))).pages)
     flat = " ".join(text.split())
     assert "Эскроу против обязательств по ПФ" in flat
-    assert "Обязательство: тело + начисленное" in flat
+    for text, _colour, _style in core._ESCROW_CHART_LEGEND:
+        assert " ".join(text.split()) in flat, f"в отчёте нет подписи «{text}»"
     for cover in bundle["consolidated"]["report"]["financing"]["escrow_cover_phases"]:
         assert cover["label"] in flat, "очередь не названа в отчёте"
 
