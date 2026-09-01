@@ -127,3 +127,122 @@ def test_a_tripped_breaker_keeps_its_own_state():
     tripped = core._glavapu_state_with_history(
         {"state": "предохранитель", "blocked_for": 200, "last_ok": "", "runs": 0})
     assert tripped["state"] == "предохранитель"
+
+
+# --- Шаг участка: калькулятор не принял номера ------------------------------
+#
+# Живой ответ ядра (01.09.2026) на 77:09:0004014:1013:
+#
+#   TimeoutError: Locator.click: Timeout 90000ms exceeded … locator resolved to
+#   <button disabled tabindex="-1" data-r="map-proceed-button" …>…</button>
+#   element is not enabled — retrying click action
+#
+# Поломка не в чтении таблицы и не в клике: кнопка перехода стоит `disabled` с
+# подписью «…», потому что калькулятор не собрал территорию по этим номерам. В
+# стеке Playwright этого не сказано, а ждать девяносто секунд бессмысленно —
+# кнопка не оживёт, пока участок не опознан.
+
+
+def test_the_parcel_step_refuses_in_words_not_in_a_stack():
+    snapshot = {"proceed": {"disabled": True, "label": "…"},
+                "dialog": "Участок не найден в реестре",
+                "errors": ["Ни один номер не распознан"]}
+    message = core._glavapu_parcel_message(["77:09:0004014:1013"], snapshot)
+    assert "не принял участок" in message
+    assert "77:09:0004014:1013" in message, "не сказано, о каком участке речь"
+    assert "Ни один номер не распознан" in message, "сказанное страницей потеряно"
+    assert "Участок не найден" in message, "текст диалога до человека не доехал"
+    assert "Timeout" not in message and "Locator" not in message
+
+
+def test_a_missing_proceed_button_is_another_answer():
+    """Кнопки нет вовсе — это смена вёрстки, а не отказ калькулятора."""
+    message = core._glavapu_parcel_message(["77:09:0004014:1013"], {"proceed": None})
+    assert "кнопки" in message and "нет" in message
+
+
+def test_a_silent_dialog_is_named_silent():
+    message = core._glavapu_parcel_message(
+        ["77:01:0004023:1000"], {"proceed": {"disabled": True, "label": "…"}})
+    assert "ничего не сообщил" in message, "молчание диалога подано как его отсутствие"
+
+
+def test_the_parcel_wait_is_shorter_than_the_whole_budget():
+    """Пока кнопка недоступна, таблицы не будет — доедать срок нечем."""
+    assert core._GLAVAPU_PARCEL_WAIT_MS < core._GLAVAPU_HEADLESS_TIMEOUT_MS
+
+
+def test_the_button_is_found_by_more_than_its_label():
+    """Подпись у кнопки в этом состоянии — «…», по ней её не найти."""
+    source = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    body = source[source.index("def _glavapu_proceed("):]
+    body = body[:body.index("\ndef _glavapu_parcel_message(")]
+    assert 'data-r="map-proceed-button"' in body, "кнопка ищется только по подписи"
+    assert "Перейти к расчётам" in body, "запасного признака нет"
+    assert "is_enabled" in body, "клик снова идёт вслепую в недоступную кнопку"
+
+
+def test_the_snapshot_looks_at_the_parcel_dialog():
+    js = core._GLAVAPU_SNAPSHOT_JS
+    for field in ("map-proceed-button", "role=\"dialog\"", "Mui-error", "disabled"):
+        assert field in js, f"снимок не показывает {field}"
+
+
+def test_every_refusal_carries_a_snapshot():
+    """`snapshot: {}` значит «смотреть не на что» — так выглядел стек Playwright."""
+    source = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    worker = source[source.index("def _glavapu_browser_worker("):]
+    worker = worker[:worker.index("\ndef _glavapu_warm_up(")]
+    assert 'getattr(exc, "snapshot", None) is None' in worker, \
+        "чужой отказ уходит без снимка страницы"
+    probe = source[source.index("def glavapu_probe("):]
+    probe = probe[:probe.index("\n@app.get(\"/glavapu/health\")")]
+    assert 'getattr(exc, "snapshot", None)' in probe, "проба снимок чужого отказа не отдаёт"
+
+
+# --- Предохранитель: лежащий чужой сервис сам не проходит ---------------------
+#
+# 01.09.2026 калькулятор ГлавАПУ лежал у самого города — проверено вручную в
+# браузере, у нескольких человек на разных участках. Пауза в пять минут написана
+# под срыв БРАУЗЕРА, который проходит сам; чужой лежащий сервис не проходит, и
+# каждый человек платил ожиданием заново за уже известный ответ.
+
+
+def test_the_first_failure_still_costs_five_minutes():
+    """Одиночный срыв браузера остаётся тем, чем был."""
+    assert core._glavapu_cooldown_seconds(1) == core._GLAVAPU_HEADLESS_COOLDOWN_SECONDS
+
+
+def test_the_pause_grows_while_failures_keep_coming():
+    steps = [core._glavapu_cooldown_seconds(i) for i in range(1, 6)]
+    assert steps == sorted(steps), "пауза не растёт"
+    assert steps[1] > steps[0], "второй отказ подряд стоит столько же, сколько первый"
+    assert max(steps) <= core._GLAVAPU_HEADLESS_COOLDOWN_MAX_SECONDS
+
+
+def test_the_pause_has_a_ceiling():
+    """Запасной ответ не должен пережить штатный: связку пробуем и дальше."""
+    assert core._glavapu_cooldown_seconds(50) == core._GLAVAPU_HEADLESS_COOLDOWN_MAX_SECONDS
+    assert core._GLAVAPU_HEADLESS_COOLDOWN_MAX_SECONDS <= 3600
+
+
+def test_a_success_resets_the_ladder():
+    source = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    assert '_GLAVAPU_HEADLESS_BLOCKED_UNTIL["row"] = 0' in source, \
+        "лестница не сбрасывается удавшимся расчётом — связка ожила, а мы её держим"
+
+
+def test_the_state_names_how_many_failures_in_a_row():
+    core._GLAVAPU_HEADLESS_BLOCKED_UNTIL["row"] = 0
+    core._GLAVAPU_HEADLESS_BLOCKED_UNTIL["at"] = 0.0
+    try:
+        core._glavapu_headless_failed()
+        core._glavapu_headless_failed()
+        assert core._GLAVAPU_HEADLESS_BLOCKED_UNTIL["row"] == 2
+        state = core._glavapu_headless_state()
+        if state.get("state") == "предохранитель":
+            assert state["failures_in_row"] == 2
+            assert "Отказов подряд" in state["hint"]
+    finally:
+        core._GLAVAPU_HEADLESS_BLOCKED_UNTIL["row"] = 0
+        core._GLAVAPU_HEADLESS_BLOCKED_UNTIL["at"] = 0.0
