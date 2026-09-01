@@ -83,14 +83,29 @@ def test_a_site_nobody_wrote_about_stays_free():
     assert found["stage"], "стадия перестала читаться вовсе"
 
 
-def test_the_status_cell_no_longer_promises_that_the_site_is_free():
+def test_the_status_column_stays_the_city_word_and_nothing_more():
+    """Де-юре статус города — не наш ответ, и красить его нашим нельзя.
+
+    Первая правка смешала оба в одной клетке: печатала слово города, а красила
+    его нашим суждением, — и на экране выходил третий ответ, которого нет ни у
+    кого. Слово города остаётся нейтральным; занятость живёт в колонке «Шаг».
+    """
     page = ui.auctions_page(None)
     assert "function krtStatusCell(" in page, \
-        "ответ о занятости снова считается прямо в разметке строки"
+        "ответ о статусе снова считается прямо в разметке строки"
     assert "Войти ещё можно" not in page, \
         "статус каталога опять обещает то, чего каталог не говорит"
-    assert "занятость не проверена" in page, \
-        "непроверенная занятость выдаётся за свободную площадку"
+    cell = page[page.index("function krtStatusCell("):]
+    cell = cell[:cell.index("\nfunction ")]
+    for tone in ("tag ok", "tag warn"):
+        assert tone not in cell, f"статус города покрашен нашим суждением ({tone})"
+    assert "де-юре" in cell, "не сказано, что это слово города, а не наш ответ"
+
+
+def test_the_funnel_step_is_where_occupancy_lives():
+    page = ui.auctions_page(None)
+    assert "{key:'taken'" in page and "name:'Занята'" in page, \
+        "шаг воронки не называет занятую площадку занятой"
 
 
 def test_the_taken_site_is_cut_by_a_named_reason():

@@ -52,7 +52,7 @@ __DEVELOPAID_CONTOUR__
         <option value="upcoming">Объявлено о торгах</option>
         <option value="auction">Лот опубликован</option>
         <option value="bidding">Идёт аукцион</option>
-        <option value="taken">Инвестор определён</option></select>
+        <option value="taken">Занята</option></select>
       <select id="krtTender" title="Лот на торгах, привязанный к этой площадке. Ищется по лотам, уже собранным на вкладке «Торги»: правило совпадения то же, что у решений — улица держится за своим владением.">
         <option value="">Торги: любые</option>
         <option value="yes">Есть лот на торгах</option>
@@ -72,7 +72,7 @@ __DEVELOPAID_CONTOUR__
     <div id="krtFilterNote" class="source" style="margin:6px 2px"></div>
     <div id="krtRankStatus" class="notice" style="display:none"></div>
     <div id="krtDecisions" class="notice" style="display:none"></div>
-    <div class="layout"><div class="tablewrap"><table class="wide"><thead><tr><th data-sort="name">Проект КРТ</th><th data-sort="score">Оценка Платона</th><th data-sort="ceiling" title="Предельная цена входа при LLCR 1,20x: на метр продаваемой площади и всего по проекту">Потолок цены входа</th><th data-sort="llcr" title="LLCR проекта из посчитанной модели. Прочерк — модель не считалась: это «не знаем», а не ноль, и при сортировке такие строки уходят вниз при любом направлении">LLCR</th><th data-sort="margin" title="Маржинальность до неизвестных обязательств">Маржа</th><th data-sort="stage" title="Шаг воронки: проект решения о КРТ на mos.ru (самый ранний сигнал — решения ещё нет) → объявлено о торгах → лот опубликован (ИнвестМосква, ГИС Торги) → идёт аукцион (Росэлторг) → инвестор определён. ГИС Торги — самый поздний источник из всех">Шаг</th><th data-sort="status">Статус</th><th data-sort="decided" title="Дата ПРОЕКТА решения о КРТ на mos.ru: город опубликовал его для сбора мнений правообладателей, решения ещё нет. У площадки без карточки это единственная её дата">Проект решения</th><th data-sort="area">Площадь</th><th data-sort="total">Общий объём</th><th data-sort="housing">Жильё</th><th data-sort="jobs">Рабочие места</th></tr></thead><tbody id="krtRows"></tbody></table><div id="krtEmpty" class="empty">Открываю официальный каталог krt.mos.ru…</div></div><aside class="side" id="krtSide"><div class="empty">Выберите проект КРТ.<br>ТЭП берутся из krt.mos.ru, рынок считает существующий движок DevelopAid.</div></aside></div>
+    <div class="layout"><div class="tablewrap"><table class="wide"><thead><tr><th data-sort="name">Проект КРТ</th><th data-sort="score">Оценка Платона</th><th data-sort="ceiling" title="Предельная цена входа при LLCR 1,20x: на метр продаваемой площади и всего по проекту">Потолок цены входа</th><th data-sort="llcr" title="LLCR проекта из посчитанной модели. Прочерк — модель не считалась: это «не знаем», а не ноль, и при сортировке такие строки уходят вниз при любом направлении">LLCR</th><th data-sort="margin" title="Маржинальность до неизвестных обязательств">Маржа</th><th data-sort="stage" title="Шаг воронки: проект решения о КРТ на mos.ru (самый ранний сигнал — решения ещё нет) → объявлено о торгах → лот опубликован (ИнвестМосква, ГИС Торги) → идёт аукцион (Росэлторг) → инвестор определён. ГИС Торги — самый поздний источник из всех. «Занята» — площадку уже кто-то взял: назван застройщик, назван оператор или заключён договор о КРТ; де-юре статус города при этом может оставаться «Планируемым»">Шаг</th><th data-sort="status" title="Статус krt.mos.ru, де-юре: отвечает на «начата ли стройка», а не на «свободна ли площадка». Занятость — в колонке «Шаг»">Статус</th><th data-sort="decided" title="Дата ПРОЕКТА решения о КРТ на mos.ru: город опубликовал его для сбора мнений правообладателей, решения ещё нет. У площадки без карточки это единственная её дата">Проект решения</th><th data-sort="area">Площадь</th><th data-sort="total">Общий объём</th><th data-sort="housing">Жильё</th><th data-sort="jobs">Рабочие места</th></tr></thead><tbody id="krtRows"></tbody></table><div id="krtEmpty" class="empty">Открываю официальный каталог krt.mos.ru…</div></div><aside class="side" id="krtSide"><div class="empty">Выберите проект КРТ.<br>ТЭП берутся из krt.mos.ru, рынок считает существующий движок DevelopAid.</div></aside></div>
   </div>
   <div class="filters" id="auctionFilters">
     <select id="source"><option value="all">Все официальные источники</option><option value="investmoscow">Торги Москвы → ЭТП</option><option value="lot_online">РАД / Lot-online</option><option value="roseltorg">Росэлторг</option><option value="torgi_gov">ГИС Торги</option><option value="etp_gpb">ЭТП ГПБ</option><option value="etp_rf">ЭТП РФ</option><option value="sberbank_ast">Сбербанк-АСТ</option><option value="nistp">НИС</option></select>
@@ -664,7 +664,7 @@ const KRT_PENALTIES=[
 // основание: «не знаем» — такой же ответ, как остальные, и выглядит он иначе,
 // чем «шага не было».
 const KRT_STAGES=[
- {key:'taken',   name:'Инвестор определён', tone:'warn'},
+ {key:'taken',   name:'Занята',             tone:'warn'},
  {key:'bidding', name:'Идёт аукцион',       tone:'ok'},
  {key:'auction', name:'Лот опубликован',    tone:'ok'},
  {key:'upcoming',name:'Объявлено о торгах', tone:'ok'},
@@ -711,32 +711,18 @@ function krtStage(x){
  }
  return {key:'unknown',why:['ни решения, ни лота не прочитано — это «не знаем», а не «ничего нет»']};
 }
-// Статус каталога отвечает на «начата ли стройка», а не на «свободна ли
-// площадка»: у КРТ по инициативе правообладателей договор подписан, а статус
-// так и стоит «Планируемый». Зелёная метка с подсказкой «войти ещё можно» была
-// поэтому утверждением, которого каталог не подтверждает, — на Маршала
-// Воробьева, вл. 12 она стояла при заключённом договоре (владелец,
-// 01.09.2026). Занятость решается уликами, а неизвестная занятость называется
-// неизвестной: молчание источника не «свободно», как пустой ответ НСПД не
-// «чисто».
+// Де-юре площадка остаётся «Планируемой» — это слово города, и трогать его
+// нельзя (владелец, 01.09.2026: «планируемой площадка де-юре остаётся, но по
+// шагу это уже занятый объект»). Статус отвечает на «начата ли стройка»;
+// свободна ли она — вопрос наш, и ответ на него живёт в колонке «Шаг».
+//
+// Первая правка смешала оба в одной клетке: печатала слово города, а красила
+// его нашим суждением. Так на экране выходит третий ответ, которого нет ни у
+// кого. Колонка статуса поэтому нейтральна всегда — ни зелёного обещания
+// «войти можно», ни нашего оранжевого.
 function krtStatusCell(x){
  const label=esc(x.status||'—');
- if(x.status==='В реализации')
-  return `<span class="tag warn" title="Инвестор определён — войти нельзя, площадка справочная">${label}</span>`
-   +'<div class="source">инвестор определён</div>';
- const it=krtIntent(x);
- if(it&&it.taken){
-  const why=it.operator_name?'застройщик назван: '+it.operator_name
-   :((it.agreement||[]).length?'договор о КРТ уже заключён'
-     :'в источниках назван тот, кто площадку берёт');
-  return `<span class="tag warn" title="${esc(why+'. Статус каталога говорит только о том, что стройка не начата')}">${label}</span>`
-   +`<div class="source">${esc(why)}</div>`;
- }
- if(it&&it.probed&&it.free)
-  return `<span class="tag ok" title="По прочитанным источникам право ещё выставят на торги">${label}</span>`
-   +'<div class="source">право ещё выставят на торги</div>';
- return `<span class="tag" title="${esc('Статус каталога отвечает на «начата ли стройка», а не на «свободна ли площадка». Занятость по источникам не проверена — нажмите «Что пишут об этой площадке»')}">${label}</span>`
-  +'<div class="source">занятость не проверена</div>';
+ return `<span class="tag" title="${esc('Статус krt.mos.ru, де-юре: отвечает на «начата ли стройка», а не на «свободна ли площадка». Занятость — в колонке «Шаг»')}">${label}</span>`;
 }
 function krtStageCell(x){
  const stage=krtStage(x), meta=KRT_STAGES.find(s=>s.key===stage.key)||KRT_STAGES[5];
