@@ -36,6 +36,7 @@ from auction_search.adapters.etp_probe import (
 from auction_search.adapters.fedresurs import (
     SEARCH_PAGE as FEDRESURS_SEARCH_PAGE,
     probe as fedresurs_probe, probe_browser as fedresurs_browser)
+from auction_search.adapters.roseltorg_probe import probe as roseltorg_probe
 from auction_search.bridge import auction_page_with_handoff, install_page_bridge
 from auction_search.catalogue_quality import catalogue_quality
 from auction_search import equity_stake
@@ -1524,6 +1525,21 @@ def install(app: FastAPI) -> None:
         # параметр оставляет страницу поиска торгов, как было.
         return await run_in_threadpool(
             lambda: fedresurs_browser(url=url.strip() or FEDRESURS_SEARCH_PAGE, seconds=seconds))
+
+    @app.get("/auctions/roseltorg/probe")
+    async def auction_roseltorg_probe(
+        seconds: float = Query(default=45.0, ge=5.0, le=90.0),
+    ) -> dict[str, Any]:
+        """Московский раздел развития территорий — живой ответ с ядра.
+
+        Адрес жёстко задан тем, который открывает владелец: категория развития
+        территорий, Москва, три выбранных статуса, первая страница. Здесь нет
+        параметра ``url`` и нет разбора по догадке. Проба показывает, пришли ли
+        карточки готовым HTML или отдельными XHR/fetch, вместе с методом,
+        адресом, телом запроса и началом ответа.
+        """
+        return await run_in_threadpool(
+            lambda: roseltorg_probe(seconds=float(seconds)))
 
     @app.get("/auctions/etp/probe")
     async def auction_etp_probe() -> dict[str, Any]:
