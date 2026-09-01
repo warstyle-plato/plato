@@ -31,7 +31,7 @@ from __future__ import annotations
 import html
 import re
 import statistics
-from collections import Counter, defaultdict
+from collections import Counter
 from typing import Any
 
 # Экспорт Telegram: сообщение — блок `message default`, внутри имя, дата и текст.
