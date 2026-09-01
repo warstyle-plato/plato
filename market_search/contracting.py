@@ -1255,6 +1255,20 @@ def conclusions(summary: dict[str, Any]) -> dict[str, str]:
             f"{_pct(short['asked_share'])} спроса против {_pct(short['left_share'])} витрины. "
             f"Наоборот — {spare['band']} м²: {_pct(spare['asked_share'])} спроса при "
             f"{_pct(spare['left_share'])} витрины.")
+        # Спрос упирается в деньги, а не в метры: полоса, которой не хватает в
+        # витрине, бывает вдобавок закрыта ценой, и тогда «нечего показать» —
+        # только половина ответа.
+        cut = want.get("budget_cut") or {}
+        if cut.get("reach_sqm"):
+            out["demand"] += (
+                f" По цене остатка медианный бюджет {_mln(cut['budget_median'])} млн ₽ — "
+                f"это {cut['reach_sqm']:.0f} м²: дальше начинается то, что человеку "
+                f"не по деньгам.")
+            if cut.get("closed_bands"):
+                out["demand"] += (
+                    f" Ценой закрыты полосы {', '.join(cut['closed_bands'])} м²"
+                    + (f" — {_pct(cut['closed_left_share'])} витрины."
+                       if cut.get("closed_left_share") else "."))
 
     lead = (summary.get("demand") or {}).get("funnel") or {}
     quality = lead.get("quality") or {}
@@ -1309,75 +1323,6 @@ def conclusions(summary: dict[str, Any]) -> dict[str, str]:
 def plan_comparison(summary: dict[str, Any]) -> dict[str, Any]:
     """Ряд кварталов: факт, план финмодели, план банка — в ₽, м² и ₽/м²."""
     fm = summary.get("fm_plan") or {}
-    money = (summary.get("escrow") or {}).get("queues") or []
-    for queue in money[:1]:
-        if queue.get("plan_coverage_at") is None:
-            continue
-        line = (
-            f"К раскрытию эскроу ({queue['disclosure']}) план накапливает "
-            f"{_mln(queue['plan_escrow_at'])} млн ₽ против остатка ПФ "
-            f"{_mln(queue['plan_pf_at'])} млн — покрытие "
-            f"{_dec(queue['plan_coverage_at'])}×. "
-            f"На {queue['measured_at']} факт {_mln(queue['actual'])} млн против плановых "
-            f"{_mln(queue['plan'])} млн")
-        if queue.get("gap_share") is not None:
-            line += f" — на {_pct(abs(queue['gap_share']))} {'ниже' if queue['gap_share'] < 0 else 'выше'}"
-        if queue.get("pace_ratio"):
-            line += (f". План требует {_mln(queue['plan_pace'])} млн ₽ в месяц — это в "
-                     f"{_dec(queue['pace_ratio'], 1)} раза быстрее нынешних "
-                     f"{_mln(queue['pace'])} млн")
-        if queue.get("keeping_pace_coverage"):
-            line += (f"; при нынешнем темпе к раскрытию накопится "
-                     f"{_mln(queue['keeping_pace_escrow'])} млн, покрытие "
-                     f"{_dec(queue['keeping_pace_coverage'])}×")
-        out["escrow"] = line + "."
-
-    want = summary.get("demand") or {}
-    rows = [b for b in (want.get("bands") or [])
-            if b.get("asked_share") is not None and b.get("left_share") is not None]
-    if rows:
-        # Разрыв, а не заявленная причина: где спроса больше, чем витрины, там
-        # людям нечего показать, и это ответ на «почему не покупают».
-        short = max(rows, key=lambda b: b["asked_share"] - b["left_share"])
-        spare = min(rows, key=lambda b: b["asked_share"] - b["left_share"])
-        out["demand"] = (
-            f"Разобрано {int(want.get('with_area') or 0)} "
-            f"{_plural(want.get('with_area') or 0, 'запрос', 'запроса', 'запросов')} по площади и "
-            f"{int(want.get('with_budget') or 0)} по бюджету из "
-            # «из N сделок» — родительный падеж при любом N, помощник здесь не нужен.
-            f"{int(want.get('deals') or 0)} сделок CRM; медиана запроса — "
-            f"{(want.get('area_median') or 0):.0f} м² и "
-            f"{_mln(want.get('budget_median'))} млн ₽. "
-            f"Больше всего не хватает полосы {short['band']} м²: "
-            f"{_pct(short['asked_share'])} спроса против {_pct(short['left_share'])} витрины. "
-            f"Наоборот — {spare['band']} м²: {_pct(spare['asked_share'])} спроса при "
-            f"{_pct(spare['left_share'])} витрины.")
-
-    lead = (summary.get("demand") or {}).get("funnel") or {}
-    quality = lead.get("quality") or {}
-    sources = [row for row in (lead.get("by_source") or []) if row.get("deals", 0) >= 10]
-    if quality.get("target") and sources:
-        main = sources[0]
-        best = max(sources, key=lambda row: row.get("share") or 0)
-        line = (
-            f"Звонков {int(quality['calls'])}, из них целевых "
-            f"{int(quality['target'])}; до брони доходит "
-            f"{_pct(quality.get('booked_target'))}. ")
-        if best is not main and best.get("share"):
-            line += (f"У «{main['name']}» это {_pct(main.get('share'))} при "
-                     f"{int(main['deals'])} обращениях, у «{best['name']}» — "
-                     f"{_pct(best.get('share'))} при {int(best['deals'])}. ")
-        if quality.get("blank") and quality.get("booked_when_blank") is not None:
-            line += (
-                f"В {int(quality['blank'])} звонках из "
-                f"{int(quality['target'])} целевых в карточке не осталось ни потребности, "
-                f"ни следующего шага; там бронь случается "
-                f"{_pct(quality['booked_when_blank'])} против "
-                f"{_pct(quality.get('booked_when_need_asked'))} там, где потребность "
-                f"выяснена. Это соседство, а не доказанная причина: менеджер мог "
-                f"расспрашивать тех, кто и так был готов.")
-        out["funnel"] = line.strip()
-
     bank = summary.get("bank_plan") or {}
     plan = (fm.get("plan") or {}).get("Итого") or {}
     # У «Итого» финмодели нет метров: строка «м2» есть у продуктов. Метры плана

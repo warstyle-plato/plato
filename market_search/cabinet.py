@@ -243,7 +243,7 @@ margin-top:12px;white-space:normal}
 /* Баннер — в подвале и во всю ширину: он широкий, ему нужна ширина. Реплика
    в нём нарисована, поэтому текстом её рядом нет: одна и та же фраза дважды
    на экране читается как недосмотр, каковым и была. */
-.brand{display:block;margin-bottom:10px;line-height:0}.brand img{height:26px;width:auto;display:block}.legal-footer{display:flex;gap:18px;flex-wrap:wrap;padding:14px 0 6px;font-size:11px;color:#8b8b8b}.legal-footer a{color:#8b8b8b}.plato-footer{margin:26px 0 8px;line-height:0}
+.brand{display:block;margin-bottom:10px;line-height:0}.brand img{height:26px;width:auto;display:block;mix-blend-mode:multiply}.legal-footer{display:flex;gap:18px;flex-wrap:wrap;padding:14px 0 6px;font-size:11px;color:#8b8b8b}.legal-footer a{color:#8b8b8b}.plato-footer{margin:26px 0 8px;line-height:0}
 .plato-footer img{width:100%;height:auto;border-radius:14px;display:block}
 td.link{color:var(--blue);cursor:pointer;text-decoration:underline dotted}
 .cardwrap{position:fixed;inset:0;background:rgba(20,35,60,.45);display:flex;align-items:flex-start;
@@ -1492,6 +1492,57 @@ function peersCard(peers){
     +`</table></div></div>`;
 }
 
+// Лестница цены метра по формату: линия на проект, категории по оси X.
+// Отвечает на вопрос, которого нет ни у одного помесячного графика: дешевеет
+// ли метр с ростом лота. У рынка дешевеет — покупатель приходит с бюджетом, и
+// за доступность малого лота платят премией к метру; плоская или растущая
+// линия означает, что лестницы нет.
+//
+// Пунктиром — цена В СДЕЛКАХ того же проекта, если она известна: прайс это
+// витрина, и разрыв между линиями и есть скидка, которую дают по формату.
+const ROOM_STEPS=[['st','студии'],['1','1к'],['2','2к'],['3','3к'],['4','4к+']];
+function roomsChart(rows, deals){
+  const lines=(rows||[]).map(r=>({name:r.name, own:!!r.__own,
+      points:ROOM_STEPS.map(([key],i)=>({i, v:(r.rooms||{})[key]||null}))
+        .filter(p=>p.v)}))
+    .filter(l=>l.points.length>1);
+  if(lines.length<2) return '<div class="muted">Цен по комнатности меньше чем у двух проектов — лестницу строить не из чего.</div>';
+  const dealLine=(deals&&Object.keys(deals).length)
+    ? {name:'наши сделки', deals:true,
+       points:ROOM_STEPS.map(([key],i)=>({i, v:deals[key]||null})).filter(p=>p.v)}
+    : null;
+  const all=lines.concat(dealLine&&dealLine.points.length>1?[dealLine]:[]);
+  const vals=all.flatMap(l=>l.points.map(p=>p.v));
+  const lo=Math.min(...vals)*0.95, hi=Math.max(...vals)*1.05;
+  const W=640,H=280,L=64,R=150,T=16,B=34;
+  const x=i=>L+i*(W-L-R)/(ROOM_STEPS.length-1);
+  const y=v=>T+(H-T-B)*(1-(v-lo)/((hi-lo)||1));
+  let svg=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img">`;
+  [0,0.5,1].forEach(f=>{const v=lo+(hi-lo)*f;
+    svg+=`<line x1="${L}" y1="${y(v)}" x2="${W-R}" y2="${y(v)}" stroke="#e6ecf2"/>`
+       +`<text x="${L-6}" y="${y(v)+4}" text-anchor="end" font-size="10" fill="#8798a8">${num(v)}</text>`;});
+  ROOM_STEPS.forEach(([,title],i)=>{
+    svg+=`<text x="${x(i)}" y="${H-12}" text-anchor="middle" font-size="11" fill="#5b6b7d">${esc(title)}</text>`;});
+  const path=l=>l.points.map((p,k)=>`${k?'L':'M'}${x(p.i).toFixed(1)} ${y(p.v).toFixed(1)}`).join(' ');
+  const marks=[];
+  all.forEach((l,idx)=>{
+    const colour=l.own?'#C4581B':(l.deals?'#16202b':PICKED[idx%PICKED.length]);
+    svg+=`<path d="${path(l)}" fill="none" stroke="${colour}"`
+       +` stroke-width="${l.own?2.8:(l.deals?1.8:1.4)}"${l.deals?' stroke-dasharray="5 4"':''}`
+       +` data-tip="${esc(l.name)}"></path>`;
+    l.points.forEach(p=>{ svg+=`<circle cx="${x(p.i).toFixed(1)}" cy="${y(p.v).toFixed(1)}" r="${l.own?3.4:2.2}"`
+       +` fill="${colour}" data-tip="${esc(l.name+': '+num(p.v)+' ₽/м²')}"></circle>`; });
+    const last=l.points[l.points.length-1];
+    marks.push({y:y(last.v), n:l.name, colour, own:l.own});
+  });
+  marks.sort((a,b)=>a.y-b.y);
+  let prev=-99;
+  marks.forEach(m=>{ const yy=Math.max(m.y, prev+13); prev=yy;
+    svg+=`<text x="${W-R+8}" y="${yy+3}" font-size="10.5" fill="${m.colour}"`
+       +`${m.own?' font-weight="600"':''}>${esc(m.n.length>17?m.n.slice(0,16)+'…':m.n)}</text>`;});
+  return '<div class="wrap">'+svg+'</svg></div>';
+}
+
 function blockCard(b,ctx){
   const s=b.subject||{}, p=b.peers||{}, c=b.city||{};
   const cell=(v,l)=>`<div><b>${v}</b><span>${l}</span></div>`;
@@ -2077,13 +2128,24 @@ async function loadContracting(file){
 // раз, а не при каждом открытии кабинета (владелец, 26.08.2026). Пустой склад
 // — это «ещё не грузили», а не «продаж нет», и так и написано.
 async function loadStoredSales(){
+  // «Не спросили» и «не загружено» — разные ответы, и молчание выдаёт первое за
+  // второе: страница оставалась со строкой «Смотрю, что уже загружено…»
+  // навсегда, и отличить закрытый ключом кабинет от пустого склада было нечем.
+  const box=$('#overviewBody');
+  const failed=why=>{ if(box)box.innerHTML='<b>Склад не ответил.</b> '+esc(why)
+    +' Это не значит, что источников нет: их не удалось спросить.'; };
   try{
     const r=await fetch('/cabinet/sales/summary');
-    if(!r.ok) return;
+    if(!r.ok){
+      failed(r.status===401||r.status===403
+        ?'Кабинет закрыт ключом — войдите и обновите страницу.'
+        :`Ядро ответило кодом ${r.status}.`);
+      return;
+    }
     const d=await r.json();
     if(d&&!d.empty) showSales(d);
     else renderOverview(null);
-  }catch(_){ /* кабинет может быть закрыт ключом — это не поломка экрана */ }
+  }catch(e){ failed(String(e&&e.message||e)+'.') }
 }
 
 let salesSourcesSeen='';
@@ -2411,7 +2473,11 @@ function salesDemandBlock(d){
     return out+'</div></div>';
   };
   let html=strip('Просят', b=>b.asked_share, 'запросы из CRM')
-    +strip('Осталось показывать', b=>b.left_share, 'витрина на сегодня');
+    +strip('Осталось показывать', b=>b.left_share, 'витрина на сегодня')
+    // Третья полоса — деньги: сколько запросов дотягивается до входа в каждую
+    // полосу по цене остатка. Дефицит в витрине и недоступность по бюджету —
+    // разные причины «не покупают», и по двум полосам они неразличимы.
+    +strip('Хватает бюджета', b=>b.budget_reach_share, 'запросы, дотянувшиеся до входа');
   html+='<div class="muted" style="font-size:12px;margin:6px 0 0">';
   bands.forEach((b,i)=>{ html+=`<span style="margin-right:12px;white-space:nowrap">`
     +`<span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${SALES_COLORS[i%SALES_COLORS.length]};margin-right:4px"></span>`
@@ -2421,13 +2487,30 @@ function salesDemandBlock(d){
     html+='<div class="muted" style="font-size:12.5px;margin-top:10px">О чём спрашивают: '
       +want.wants.map(w=>esc(w.want)+' — '+num(w.deals)).join(', ')+'.</div>';
   }
+  // Где кончается медианный бюджет — числом и словами. Считает сервер: на
+  // экране этой арифметике места нет.
+  const cut=want.budget_cut||{};
+  if(cut.reach_sqm){
+    html+=`<div class="say watch" style="margin-top:10px"><b>⚠️ Деньги</b> `
+      +`Медианный бюджет ${num(cut.budget_median/1e6,1)} млн ₽ по цене остатка — это `
+      +`${num(cut.reach_sqm,0)} м². `
+      +((cut.closed_bands||[]).length
+        ? `Ценой закрыты полосы ${esc(cut.closed_bands.join(', '))} м²`
+          +(cut.closed_left_share?` — ${num(cut.closed_left_share*100,0)} % витрины.`:'.')
+        : 'Все полосы витрины в бюджет укладываются.')
+      +`</div>`;
+  }
   html+='<details style="margin-top:8px"><summary>Полосы числами</summary>'
-    +salesTable(['Полоса, м²','Просят','Доля спроса','Осталось','Доля витрины','₽/м² в книге'],
+    +salesTable(['Полоса, м²','Просят','Доля спроса','Осталось','Доля витрины','₽/м² в книге',
+                 'Вход, млн ₽','Хватает бюджета'],
       bands.map(b=>[esc(b.band), num(b.asked),
         b.asked_share===null?'—':num(b.asked_share*100,1)+'%',
         b.left_units===null||b.left_units===undefined?'—':num(b.left_units),
         b.left_share===null||b.left_share===undefined?'—':num(b.left_share*100,1)+'%',
-        b.price_per_sqm?num(b.price_per_sqm):'—']))
+        b.price_per_sqm?num(b.price_per_sqm):'—',
+        b.entry_amount?num(b.entry_amount/1e6,1):'—',
+        b.budget_reach_share===null||b.budget_reach_share===undefined
+          ?'—':num(b.budget_reach_share*100,0)+'%']))
     +'</details>';
   // Оговорки приходят с сервера: они про то, чего в данных нет, и придумывать
   // их на экране значит обещать разбор, которого не было. Первая — на виду:
@@ -2546,8 +2629,14 @@ const PLAN_METRICS=[
   {key:'amount', name:'млн ₽', axis:v=>num(v/1e6),      show:v=>num(v/1e6,1)+' млн ₽'},
   {key:'area',   name:'м²',    axis:v=>num(v),          show:v=>num(v)+' м²'},
 ];
-function salesPlansChart(quarters, metric){
-  const rows=quarters.map(q=>({
+// Строки квартального графика. Объявлены отдельно, потому что их читают двое:
+// сама картинка и таблица под ней. Пока сборка строк жила внутри графика, блок
+// продолжал ссылаться на `rows` из чужой области видимости — и падал
+// `ReferenceError` ровно тогда, когда планы прочитаны, то есть на настоящем
+// проекте. Экран при этом не «ломался наполовину»: `renderSales` обрывался, и
+// от отчёта не оставалось ничего (владелец, 31.08.2026).
+function salesPlansRows(quarters, metric){
+  return quarters.map(q=>({
     label:q.label, short:q.label.replace(' ',''),
     value:q['fact_'+metric.key], pale:q.partial,
     fm:q['fm_'+metric.key], bank:q['bank_'+metric.key],
@@ -2555,6 +2644,10 @@ function salesPlansChart(quarters, metric){
     over:q.partial?'часть':'',
     tip:q.label+': факт '+metric.show(q['fact_'+metric.key])+(q.partial?' (месяцев в квартале — '+q.months+')':''),
   }));
+}
+
+function salesPlansChart(quarters, metric){
+  const rows=salesPlansRows(quarters, metric);
   const lines=[{key:'fm',name:'план ФМ',color:'#C4581B'},
                {key:'bank',name:'план банка',color:'#8E7CC3',dash:true}];
   return barChart(rows,{lines,axis:metric.axis,show:metric.show,factName:'факт',
@@ -2573,6 +2666,7 @@ function salesPlansBlock(d){
   const quarters=(plans.quarters||[]);
   if(quarters.length<2) return '';
   const metric=PLAN_METRICS.find(m=>m.key===plansMetric)||PLAN_METRICS[0];
+  const rows=salesPlansRows(quarters, metric);
   // На бумагу идут обе меры: переключателя в документе нет.
   let html=salesPlansChart(quarters, metric);
   const rest=PLAN_METRICS.filter(m=>m.key!==metric.key);
@@ -2695,22 +2789,15 @@ function renderOverview(d){
   return;
  }
  if(head)head.textContent='Кабинет'+(d.project?' · '+d.project:'');
- const t=d.total||{}, whole=(d.pool||{}).total||{};
- const tile=(name,value,sub)=>`<div><div class="muted" style="font-size:12px">${esc(name)}</div>`
-  +`<div style="font-size:18px;font-weight:600">${value}</div>`
-  +(sub?`<div class="muted" style="font-size:11.5px;margin-top:2px">${esc(sub)}</div>`:'')+'</div>';
- const share=whole.amount_share===null||whole.amount_share===undefined
-  ?'план не прочитан':num(whole.amount_share*100,1)+'% ожидаемой выручки';
- const day=String((d.sources||[]).map(s=>String(s.at||'').slice(0,10)).filter(Boolean).sort().pop()||'');
- const notes=(d.missing||[]).length;
- box.innerHTML='<div class="kv">'
-   +tile('Договоров',num(t.contracts))
-   +tile('Выручка',num(t.amount/1e6,1)+' млн ₽',share)
-   +tile('На эскроу',num(t.escrow/1e6,1)+' млн ₽')
-   +tile('Источников',num((d.sources||[]).length),day?'последний срез '+day:'')
-   +'</div>'
-   +(notes?`<div class="muted" style="font-size:12px;margin-top:8px">Не прочитано: ${notes} `
-     +`${plural(notes,'источник','источника','источников')} — подробности ниже в отчёте.</div>`:'');
+ // Плиток с числами здесь больше нет. Пока отчёт был свёрнут, они были
+ // единственными числами на странице; развёрнутый отчёт несёт те же договоры,
+ // выручку и эскроу строкой ниже — и своей долей от пула проекта, чего у этих
+ // плиток не было. Два одинаковых числа подряд читаются как два разных.
+ const n=(d.sources||[]).length, notes=(d.missing||[]).length;
+ box.innerHTML=`Прочитано ${num(n)} ${plural(n,'источник','источника','источников')}`
+   +' — числа ниже, в отчёте.'
+   +(notes?` Не прочитано: ${notes} `
+     +`${plural(notes,'источник','источника','источников')} — подробности в отчёте.`:'');
  // Кнопок «открыть отчёт» тут больше нет: отчёты — это страницы, и вход в них
  // стоит в меню коммерции. Кнопка, раскрывающая блок на той же странице,
  // читалась как переход, которого не было (владелец, 30.08.2026).
@@ -2720,19 +2807,17 @@ function renderSales(d){
   const t=d.total||{}, box=$('#sales'), pool=d.pool||{}, whole=pool.total||{};
   const byProduct={}; (pool.products||[]).forEach(p=>{byProduct[p.product]=p});
   const share=v=>v===null||v===undefined?'':num(v*100,1)+'%';
-  // Отчёт закрыт при открытии страницы. Кабинет начинается с рынка, а свод
-  // продаж — это отдельная работа на десять экранов: развёрнутый, он занимал
-  // страницу целиком ещё до того, как человек решил на него смотреть
-  // (владелец, 27.08.2026: «чтобы его не было видно сразу приоткрытой
-  // страницы»). Данные при этом посчитаны и лежат готовыми — свёрнут показ, а
-  // не разбор.
-  const t0=d.total||{};
-  let html='<details class="salesreport" id="sales"><summary>'
-    +'<b>Отчёт о продажах ПЛАТО</b>'
-    +'<span class="muted">'+(d.project?esc(d.project)+' · ':'')
-    +num(t0.contracts)+' '+plural(t0.contracts,'договор','договора','договоров')
-    +' · '+num(t0.amount/1e6,1)+' млн ₽</span></summary>'
-    +'<div class="card"><div class="blockhead"><h2 style="margin:0">Продажи проекта'
+  // Отчёт РАЗВЁРНУТ. Свёрнут он был 27.08.2026 по причине, которой больше нет:
+  // тогда свод жил на общей странице кабинета рядом с отчётом о рынке и занимал
+  // её целиком ещё до того, как человек решил на него смотреть. С 30.08.2026
+  // кабинет разнесён на три страницы, и на `/cabinet/sales` этот отчёт —
+  // единственное, зачем сюда приходят: свёрнутый, он превращал страницу в одну
+  // серую строку («а куда вообще отчёт делся о продажах? там нет ничего на
+  // вкладке», владелец, 31.08.2026). Правило то же, по которому со свода сняли
+  // кнопки «открыть отчёт»: складка внутри страницы читается как переход,
+  // которого не было. Свои складки у таблиц внутри разделов остаются — они
+  // прячут числа под уже показанной картинкой, а не отчёт под его именем.
+  let html='<div class="card" id="salesreport"><div class="blockhead"><h2 style="margin:0">Продажи проекта'
     +(d.project?' — '+esc(d.project):'')+'</h2>'
     +'<div class="noprint"><button type="button" class="pdfbtn" id="salespdf">Скачать PDF</button>'
     +' <button type="button" class="pdfbtn" id="salesppt">Презентация</button></div>'
@@ -2860,13 +2945,7 @@ function renderSales(d){
      +`<textarea id="salesq" rows="3" placeholder="Например: чем объяснить разрыв между планом банка и фактом?">${esc(SALES_ASKS[0].text)}</textarea>`
      +'<button class="go" id="salesask">Спросить</button>'
      +'<div id="salesout"></div></div>';
-  box.innerHTML=html+'</div></details>';
-  // Пришли по ссылке контура «Отчёт о продажах» — отчёт открыт. Свёрнутый
-  // отчёт под такой ссылкой читается как переход, который не произошёл.
-  if(location.hash==='#sales'){
-    const card=document.getElementById('sales');
-    if(card){card.open=true; card.scrollIntoView({block:'start'})}
-  }
+  box.innerHTML=html+'</div>';
   $('#salesask').onclick=askPlatoSales;
   // Дата среза — самая свежая из источников: два файла разных дат, поданных
   // как один проект, — худший исход, и в документе это должно быть видно.
@@ -2896,7 +2975,12 @@ function renderSales(d){
         body:JSON.stringify({html,
           title:name,
           subtitle:'Свод продаж DevelopAid'+(day?' · срез '+day:''),
-          footer:'DevelopAid · слайд отвечает разделу отчёта о продажах'})});
+          // Колонтитул отвечает на «чей это лист и на какую дату», а не
+          // объясняет читателю устройство колоды: «зачем ты там вставляешь
+          // свои идиотские комментарии — что включено, на чём построено»
+          // (владелец, 31.08.2026). Имя и срез собирает сам сборщик из
+          // заголовка и подзаголовка, второй раз их слать незачем.
+          footer:''})});
       if(!r.ok){
         // Ответ разбираем, зная, что он может быть не ответом: на отказе шлюза
         // приезжает его HTML-страница, и `r.json()` дал бы поломку разбора

@@ -109,27 +109,28 @@ def test_a_cell_is_a_number_whole_or_not_at_all() -> None:
         assert sales_deck.cell_number(text) is None, text
 
 
-def test_every_measure_gets_its_own_chart() -> None:
-    """«Не проще для каждого графика свой слайд сделать?» — проще (владелец,
-    29.08.2026): каждая мера показана, ни одна не спорит с соседней на общей
-    оси, а лишний слайд в PowerPoint удаляют одним нажатием.
+def test_the_leading_measure_is_charted_and_the_rest_are_named() -> None:
+    """График на раздел один, а прочие меры названы и живут в таблице.
 
-    Экран предлагает меры переключателем; в документе переключателя нет, и
-    мера, до которой не переключились, в нём просто отсутствует — то же
-    правило, что у свёрнутой таблицы. Схлопывать их в один график было
-    ошибкой: «куча столбиков» приходила из разделов, где графика нет вовсе.
+    Здесь стояло обратное — лист на каждую меру («не проще для каждого графика
+    свой слайд сделать?», владелец, 29.08.2026). На настоящем своде это дало
+    три почти одинаковых столбиковых листа подряд, и на двух из них не было
+    ничего, кроме картинки: «пустые два слайда» (владелец, 31.08.2026).
+    Решение 30.08 — «график на раздел один, деньги ведущие» — стояло в
+    комментарии и не было доведено до кода.
 
-    А колонка, в которой осталось меньше двух чисел, графиком не становится:
-    по одной точке линии нет, и прочерк рядом — пропуск, а не ноль.
+    Мера при этом не пропадает: она колонкой в таблице раздела, которая идёт
+    следом и которую правят, и названа подписью под графиком.
     """
     table = parsed()[1]["tables"][0]
     drawn = sales_deck.charts(table)
     # Деньги первыми: управленцу нужны рубли, штуки при них справочны.
-    assert [item["name"] for item in drawn] == ["млн ₽", "Лотов"]
+    assert [item["name"] for item in drawn] == ["млн ₽"]
+    assert "Лотов" in " ".join(drawn[0]["other_measures"]), \
+        "мера, ушедшая в таблицу, на слайде не названа — читается как потеря"
     # «₽/м²» здесь одна цифра и прочерк — линии из этого не выйдет.
     assert all(not item["second"] for item in drawn)
     assert drawn[0]["categories"] == ["2026-07", "2026-06"]
-    # Один ряд на график: рубли и штуки на одной оси дают столбик в пиксель.
     assert all(len(item["values"]) == len(item["categories"]) for item in drawn)
 
 
@@ -254,3 +255,79 @@ def test_the_live_screen_markup_parses_into_slides(tmp_path) -> None:
     assert blocks[0]["tables"], "ключевые числа не доехали таблицей"
     raw = sales_deck.build(blocks, title="Продажи", subtitle="срез", footer="DevelopAid")
     assert raw[:2] == b"PK", "это не .pptx"
+
+
+# --- Лист без содержимого листом не является ---------------------------------
+#
+# Снимок колоды с телефона (владелец, 31.08.2026): слайд 2 — заголовок и одна
+# строка вывода, слайд 3 — заголовок, подпись графика и плашка ПОВЕРХ неё, а
+# сами графики следом отдельными листами. На экране эти подписи стоят рядом с
+# картинкой, и отрывать их от неё незачем.
+
+def _deck_slides(html: str):
+    from pptx import Presentation
+
+    from market_search import sales_deck
+
+    raw = sales_deck.build(sales_deck.sections(html), title="Продажи — Проект",
+                           subtitle="Свод продаж DevelopAid · срез 2026-08-31",
+                           footer="")
+    return Presentation(io.BytesIO(raw))
+
+
+def _text_boxes(slide):
+    from pptx.util import Emu
+
+    out = []
+    for shape in slide.shapes:
+        text = shape.text_frame.text.strip() if shape.has_text_frame else ""
+        if text:
+            out.append((Emu(shape.left).inches, Emu(shape.top).inches,
+                        Emu(shape.width).inches, Emu(shape.height).inches, text))
+    return out
+
+
+def test_a_chart_section_opens_with_its_chart() -> None:
+    """Подпись графика — не слайд: она едет на слайд с графиком."""
+    deck = _deck_slides(MARKUP)
+    for index, slide in enumerate(deck.slides):
+        if index == 0:
+            continue
+        heading = next((s.text_frame.text for s in slide.shapes
+                        if s.has_text_frame and s.text_frame.text), "")
+        if "Динамика" in heading:
+            assert any(s.has_chart for s in slide.shapes), \
+                "первый слайд «Динамики» обязан нести картинку, а не одну подпись"
+            break
+    else:
+        pytest.skip("в этом своде нет раздела с графиком")
+
+
+def test_no_text_sits_on_top_of_other_text() -> None:
+    """Плашка вывода ложилась поверх подписи: `top` не двигался после подписей."""
+    deck = _deck_slides(MARKUP)
+    clashes = []
+    for number, slide in enumerate(deck.slides, 1):
+        boxes = _text_boxes(slide)
+        for left in range(len(boxes)):
+            for right in range(left + 1, len(boxes)):
+                x1, y1, w1, h1, t1 = boxes[left]
+                x2, y2, w2, h2, t2 = boxes[right]
+                # Колонтитул и номер листа делят одну строку намеренно: левый
+                # прижат влево, правый вправо.
+                if abs(y1 - y2) < 0.01 and (t1.isdigit() or t2.isdigit()):
+                    continue
+                if (min(x1 + w1, x2 + w2) - max(x1, x2) > 0.05
+                        and min(y1 + h1, y2 + h2) - max(y1, y2) > 0.05):
+                    clashes.append((number, t1[:40], t2[:40]))
+    assert not clashes, f"текст поверх текста: {clashes[:3]}"
+
+
+def test_the_footer_says_each_thing_once() -> None:
+    """Вызывающий слал имя и дату, сборщик добавлял их же — строка повторяла себя."""
+    deck = _deck_slides(MARKUP)
+    line = next(s.text_frame.text for s in list(deck.slides)[1].shapes
+                if s.has_text_frame and "срез" in s.text_frame.text)
+    parts = [p.strip() for p in line.split(" · ") if p.strip()]
+    assert len(parts) == len(set(p.casefold() for p in parts)), f"повтор в колонтитуле: {line}"
+    assert "слайд отвечает" not in line, "колонтитул объясняет устройство колоды"

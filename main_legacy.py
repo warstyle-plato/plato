@@ -70,7 +70,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.21.7"
+VERSION = "0.21.37"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -13188,7 +13188,11 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         story.append(P(
             f"Показатель: {base.get('label') or ''} · база "
             f"{_pdf_num(base.get('value'), digits)} {base.get('unit') or ''} · "
-            f"охват: {base.get('scope_label') or ''} · отклонение "
+            f"охват: {base.get('scope_label') or ''}"
+            + ("" if base.get("project_value") is None else
+               f" (не весь проект: у проекта {_pdf_num(base.get('project_value'), digits)} "
+               f"{base.get('unit') or ''})")
+            + " · отклонение "
             f"{_pdf_num(sensitivity.get('change_pct'), 0)}% и "
             f"{_pdf_num(sensitivity.get('duration_change_months'), 0)} мес. для сроков. "
             "Меняется один параметр за расчёт.", small))
@@ -13373,6 +13377,154 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     )
     if debt_chart:
         story.append(KeepTogether([P("Долг и наполнение эскроу",h2),debt_chart]))
+
+    # Тот же вопрос, но полной мерой: банку в раскрытие причитается тело И
+    # начисленное. График выше сравнивает счёт с телом и на этот вопрос не
+    # отвечает — «эскроу выше долга» читалось бы как «рассчитались».
+    def escrow_cover_chart(rows: list[dict[str, Any]], cover: dict[str, Any],
+                           height: float = 132) -> Drawing | None:
+        """Заливка, а не линии: ответ на «перекрывает или нет» — это площадь.
+
+        Линии отвечали хуже: две кривые рядом видно, а разрыв между ними —
+        нет. Заливкой видно и его, и то, что после раскрытия остаток гасят
+        продажи, а не эскроу.
+        """
+        def duty(row: dict[str, Any]) -> float:
+            return float(row.get("pf_obligation", 0.0) or 0.0)
+
+        def escrow_of(row: dict[str, Any]) -> float:
+            return float(row.get("escrow", 0.0) or 0.0)
+
+        data = [row for row in rows if duty(row) > 0 or escrow_of(row) > 0]
+        if len(data) < 2:
+            return None
+        width = 500
+        left, right, bottom, top_pad = 42, 8, 22, 20
+        plot_w, plot_h = width - left - right, height - bottom - top_pad
+        peak = max(max(duty(row), escrow_of(row),
+                       float(row.get("escrow_and_sales_cumulative", 0.0) or 0.0))
+                   for row in data) * 1.08 or 1.0
+        drawing = Drawing(width, height)
+        x_at = lambda i: left + plot_w * i / (len(data) - 1)
+        y_at = lambda v: bottom + plot_h * max(0.0, v) / peak
+
+        for tick in range(5):
+            value = peak * tick / 4
+            y = y_at(value)
+            drawing.add(Line(left, y, width - right, y,
+                             strokeColor=colors.HexColor("#E2E2E2"), strokeWidth=0.5))
+            drawing.add(String(left - 5, y - 2, _pdf_num(value / 1_000_000_000, 1),
+                               fontName=regular, fontSize=6.5, textAnchor="end",
+                               fillColor=colors.HexColor("#777777")))
+
+        escrow_area = [(x_at(0), y_at(0))]
+        for index, row in enumerate(data):
+            escrow_area.append((x_at(index), y_at(escrow_of(row))))
+        escrow_area.append((x_at(len(data) - 1), y_at(0)))
+        drawing.add(Polygon([c for point in escrow_area for c in point],
+                            fillColor=colors.HexColor("#2D6A4F"), fillOpacity=0.30,
+                            strokeColor=None))
+
+        run: list[int] = []
+
+        def flush() -> None:
+            if len(run) > 1:
+                points = [(x_at(i), y_at(duty(data[i]))) for i in run]
+                points += [(x_at(i), y_at(escrow_of(data[i]))) for i in reversed(run)]
+                drawing.add(Polygon([c for point in points for c in point],
+                                    fillColor=colors.HexColor("#A35D00"),
+                                    fillOpacity=0.18, strokeColor=None))
+            run.clear()
+
+        for index, row in enumerate(data):
+            if duty(row) - escrow_of(row) > 0:
+                run.append(index)
+            else:
+                flush()
+        flush()
+
+        def polyline(value, colour: str, w: float, dash=None) -> None:
+            points = [(x_at(i), y_at(value(row))) for i, row in enumerate(data)]
+            line = PolyLine([c for point in points for c in point],
+                            strokeColor=colors.HexColor(colour), strokeWidth=w,
+                            fillColor=None)
+            if dash:
+                line.strokeDashArray = dash
+            drawing.add(line)
+
+        polyline(duty, "#A35D00", 1.8)
+        polyline(lambda row: float(row.get("pf_balance", 0.0) or 0.0), "#A35D00", 0.8, [2, 2])
+        polyline(escrow_of, "#2D6A4F", 1.4)
+        if any(float(row.get("escrow_and_sales_cumulative", 0.0) or 0.0) > 0 for row in data):
+            polyline(lambda row: float(row.get("escrow_and_sales_cumulative", 0.0) or 0.0),
+                     "#1B5E77", 1.1, [3, 2])
+
+        rve = str(cover.get("rve") or "")[:7]
+        for index, row in enumerate(data):
+            if str(row.get("month") or "")[:7] == rve:
+                drawing.add(Line(x_at(index), bottom, x_at(index), bottom + plot_h,
+                                 strokeColor=colors.HexColor("#666666"), strokeWidth=0.6,
+                                 strokeDashArray=[2, 2]))
+                drawing.add(String(x_at(index) - 4, bottom + plot_h - 8, "раскрытие эскроу",
+                                   fontName=regular, fontSize=6.2, textAnchor="end",
+                                   fillColor=colors.HexColor("#555555")))
+                break
+
+        # Остаток — из свода движка, а не из последней нарисованной точки:
+        # рисуются только месяцы с долгом или счётом, и у погасившейся очереди
+        # последняя из них лежит до погашения.
+        ending = float(cover.get("ending_unpaid", 0.0) or 0.0)
+        if ending > 1_000_000:
+            drawing.add(Circle(x_at(len(data) - 1), y_at(ending), 1.8,
+                               fillColor=colors.HexColor("#A35D00"), strokeColor=None))
+            drawing.add(String(x_at(len(data) - 1) - 4, y_at(ending) + 17,
+                               "не погашено " + _pdf_money(ending), fontName=regular,
+                               fontSize=6.4, textAnchor="end",
+                               fillColor=colors.HexColor("#A35D00")))
+
+        legend = [("Эскроу накоплено", "#2D6A4F"),
+                  ("Обязательство: тело + начисленное", "#A35D00"),
+                  ("Раскрытый эскроу и продажи после него", "#1B5E77")]
+        from reportlab.pdfbase.pdfmetrics import stringWidth
+        x = left
+        for text, colour in legend:
+            drawing.add(Line(x, height - 7, x + 12, height - 7,
+                             strokeColor=colors.HexColor(colour), strokeWidth=2.0))
+            drawing.add(String(x + 16, height - 10, text, fontName=regular, fontSize=6.4,
+                               fillColor=colors.HexColor("#444444")))
+            x += 22 + stringWidth(text, regular, 6.4)
+        drawing.add(String(width - right, height - 10, "млрд ₽", fontName=regular,
+                           fontSize=6.4, textAnchor="end",
+                           fillColor=colors.HexColor("#777777")))
+        for index in sorted(set([0, len(data) // 2, len(data) - 1])):
+            drawing.add(String(x_at(index), 5, chart_month(data[index].get("month")),
+                               fontName=regular, fontSize=6.4, textAnchor="middle",
+                               fillColor=colors.HexColor("#777777")))
+        return drawing
+
+    def escrow_cover_block(rows: list[dict[str, Any]], cover: dict[str, Any],
+                           title: str, heading=None) -> list[Any]:
+        chart = escrow_cover_chart(rows, cover)
+        lines = [P(line, small) for line in (cover.get("lines") or [])]
+        if not chart and not lines:
+            return []
+        return [P(title, heading or h2)] + ([chart] if chart else []) + lines
+
+    escrow_cover = financing.get("escrow_cover") or {}
+    block = escrow_cover_block(timeline_rows, escrow_cover,
+                               "Эскроу против обязательств по ПФ")
+    if block:
+        story.append(KeepTogether(block))
+
+    # По очередям — своим блоком: дата раскрытия у каждой своя, и свод на
+    # вопрос «какой очереди не хватило» не отвечает.
+    phase_rows = {str(item.get("name") or ""): (((item.get("result") or {}).get("finance") or {}).get("rows") or [])
+                  for item in (payload.get("phases") or [])}
+    for cover in (financing.get("escrow_cover_phases") or []):
+        name = str(cover.get("label") or "Очередь")
+        block = escrow_cover_block(phase_rows.get(name) or [], cover, name, h2)
+        if block:
+            story.append(KeepTogether(block))
 
     rate_chart=line_chart(
         timeline_rows,
@@ -18249,7 +18401,8 @@ async def report_pdf(request: Request) -> Response:
                 {**server_result, "inputs": payload.get("inputs") or {}},
                 {**(payload.get("result") or {}), "inputs": payload.get("inputs") or {}},
             )
-            payload = {**payload, "result": server_result}
+            payload = {**payload, "result": server_result,
+                       "phases": bundle.get("phases") or []}
             if problems:
                 # В чат тут писать некому — расхождение печатается в самом
                 # отчёте: молча подменить числа нельзя, человек увидит в PDF
@@ -18493,7 +18646,8 @@ def _telegram_send_attachments(
             {**server_result, "inputs": report_payload.get("inputs") or {}},
             {**(report_payload.get("result") or {}), "inputs": report_payload.get("inputs") or {}},
         )
-        report_payload = {**report_payload, "result": server_result}
+        report_payload = {**report_payload, "result": server_result,
+                          "phases": bundle.get("phases") or []}
         if problems:
             # Хостинг закрыт, и молча подменить числа нельзя: человек увидит
             # в PDF не то, что было на экране, и не поймёт почему.
@@ -20190,6 +20344,8 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
         pf_shortfall_total = 0.0
         pf_shortfall_month: date | None = None
         bridge_balance = 0.0
+        sales_after_rve = 0.0
+        escrow_and_sales = 0.0
         bridge_interest_payable = 0.0
         pf_balance = 0.0
         pf_interest_payable = 0.0
@@ -20498,9 +20654,24 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
                 coverage = 0.0
                 pf_rate = 0.0
 
+            sales_after_rve_month = sales if month > rve else 0.0
+            sales_after_rve += sales_after_rve_month
+            # Деньги, пришедшие на долг, накопленным итогом: раскрытый эскроу
+            # и то, что продалось после него. Линия «продажи после раскрытия»
+            # считалась от нуля и рядом с эскроу в десятки миллиардов не
+            # значила ничего — «пунктир не от нуля, а от окончания эскроу»
+            # (владелец, 01.09.2026). Так она и продолжает кривую счёта: там,
+            # где эскроу кончился, начинается она.
+            escrow_and_sales += escrow_release + sales_after_rve_month
             rows.append({
                 "month": month.isoformat(),
                 "sales": sales,
+                # Чем гасится остаток после раскрытия: накопленные продажи
+                # следующих месяцев. Без них последняя точка графика читается
+                # как обрыв расчёта, а не как непогашенный долг.
+                "sales_after_rve": sales_after_rve_month,
+                "sales_after_rve_cumulative": sales_after_rve,
+                "escrow_and_sales_cumulative": escrow_and_sales,
                 "project_costs": project_costs,
                 "key_rate": key_rate,
                 "bridge_rate": bridge_rate,
@@ -20526,6 +20697,15 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
                 "pf_draw": pf_draw,
                 "pf_repayment": pf_repayment,
                 "pf_balance": pf_balance,
+                # Начисленное к уплате — вне лимита и вне тела: проценты и
+                # комиссии копятся на своём счёте и платятся кассой. Без этой
+                # строки график сравнивал эскроу с телом, то есть отвечал не на
+                # тот вопрос: банку в раскрытие причитается тело И начисленное.
+                "pf_payable": pf_interest_payable,
+                # Обязательство перед банком — готовым числом, а не суммой на
+                # каждой поверхности: страница, PDF и книга иначе сложили бы
+                # его каждая по-своему.
+                "pf_obligation": pf_balance + pf_interest_payable,
                 "escrow": escrow,
                 "escrow_release": escrow_release,
                 "coverage": coverage,
@@ -20557,6 +20737,7 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
 
         return {
             "rows": rows,
+            "escrow_cover": _escrow_cover(rows, rve),
             "calculated_bridge_limit": calculated_bridge_limit,
             "bridge_fee": bridge_fee,
             "bridge_draw_total": bridge_draw_total,
@@ -21550,6 +21731,10 @@ def calculate(req: CalcRequest) -> dict:
                 # погашение ПФ» показывала ноль на любом проекте.
                 "rve_pf_repayment": fin.get("rve_pf_repayment", 0.0),
                 "rve_pf_shortfall": fin.get("rve_pf_shortfall", 0.0),
+                # Чем эскроу перекрывает обязательство — считается один раз в
+                # движке. Ключ, добавленный только в `finance`, до поверхностей
+                # не доезжает: у отчёта свой экземпляр.
+                "escrow_cover": fin.get("escrow_cover") or {},
                 "pf_limit": fin["pf_limit"],
                 "avg_bridge_rate": fin["avg_bridge_rate"],
                 "avg_bridge_key_rate": fin.get("avg_bridge_key_rate", 0.0),
@@ -22235,13 +22420,120 @@ def _phase_tax_rate(results: list[dict[str, Any]]) -> float:
     return rates.pop() if len(rates) == 1 else 0.0
 
 
+def _pf_obligation(row: dict[str, Any]) -> float:
+    """Обязательство перед банком в этом месяце: тело плюс начисленное.
+
+    Складывать их можно ровно здесь. С ЛИМИТОМ это число не сравнивают —
+    капитализированные проценты лимит не выбирают (решение владельца,
+    04.08.2026), и внешние сверки, прибавляющие payable к телу, находят
+    «превышение», которого нет. С ЭСКРОУ сравнивают: эскроу и есть то, чем
+    долг закрывают, и вопрос «сходятся они или нет» — про полное
+    обязательство, а не про его тело.
+    """
+    if row.get("pf_obligation") is not None:
+        return float(row.get("pf_obligation") or 0.0)
+    return (float(row.get("pf_balance", 0.0) or 0.0)
+            + float(row.get("pf_payable", 0.0) or 0.0))
+
+
+def _mln_ru(value: float) -> str:
+    return f"{value / 1e6:,.0f}".replace(",", " ") + " млн ₽"
+
+
+def _month_ru(value: Any) -> str:
+    parts = str(value or "")[:7].split("-")
+    return f"{parts[1]}.{parts[0]}" if len(parts) == 2 else str(value or "")[:7]
+
+
+def _escrow_cover(rows: list[dict[str, Any]], rve: Any = None) -> dict[str, Any]:
+    """Чем эскроу перекрывает обязательство по ПФ — и где не перекрывает.
+
+    График «Долг и эскроу» сравнивал счёт с ТЕЛОМ долга. Банку в дату
+    раскрытия причитается и начисленное: проценты и комиссии копятся вне
+    лимита и платятся кассой проекта. Пока их не видно, «эскроу выше долга»
+    читается как «рассчитались» — хотя сверх эскроу проект платит деньгами, и
+    в дефолтном случае разрыв ещё и больше показанного.
+
+    Числа считаются здесь один раз: вкладка, PDF и очереди берут готовые.
+    """
+    gaps = [(_pf_obligation(row) - float(row.get("escrow", 0.0) or 0.0),
+             str(row.get("month") or "")) for row in rows]
+    peak_gap, peak_month = max(gaps, default=(0.0, ""))
+    out: dict[str, Any] = {
+        "peak_gap": max(peak_gap, 0.0),
+        "peak_gap_month": peak_month if peak_gap > 0 else "",
+        "peak_obligation": max((_pf_obligation(row) for row in rows), default=0.0),
+        "peak_escrow": max((float(row.get("escrow", 0.0) or 0.0) for row in rows), default=0.0),
+        "lines": [],
+    }
+    row = {}
+    if rve is not None:
+        row = next((item for item in rows
+                    if str(item.get("month") or "") == rve.isoformat()), {})
+    if row:
+        repaid = float(row.get("pf_repayment", 0.0) or 0.0)
+        unpaid = float(row.get("pf_balance", 0.0) or 0.0)
+        released = float(row.get("escrow_release", 0.0) or 0.0)
+        interest = float(row.get("interest_payment", 0.0) or 0.0)
+        out.update({
+            "rve": rve.isoformat(),
+            "escrow_released": released,
+            "pf_body": repaid + unpaid,
+            "pf_body_repaid": repaid,
+            "pf_body_unpaid": unpaid,
+            "interest_due": interest,
+            "obligation": repaid + unpaid + interest,
+            "covered": unpaid <= 0,
+        })
+        if unpaid > 0:
+            out["lines"].append(
+                f"На раскрытии эскроу {_month_ru(out['rve'])} счёт даёт "
+                f"{_mln_ru(released)} против тела ПФ {_mln_ru(out['pf_body'])} — "
+                f"не хватает {_mln_ru(unpaid)}. Это дефолт по линии очереди, пока "
+                f"банк не переоформит долг или не реструктурирует его.")
+        else:
+            out["lines"].append(
+                f"На раскрытии эскроу {_month_ru(out['rve'])} счёт даёт "
+                f"{_mln_ru(released)} и закрывает тело ПФ {_mln_ru(out['pf_body'])} "
+                f"целиком.")
+        if interest > 0:
+            out["lines"].append(
+                "Начисленные проценты и комиссии "
+                f"{_mln_ru(interest)} эскроу не покрывает: они копятся вне лимита "
+                "и платятся кассой проекта в ту же дату.")
+    if rows:
+        last = rows[-1]
+        ending = float(last.get("pf_balance", 0.0) or 0.0)
+        out["ending_month"] = str(last.get("month") or "")
+        out["ending_unpaid"] = ending
+        out["residual_sales"] = float(last.get("sales_after_rve_cumulative", 0.0) or 0.0)
+        if ending > 1_000_000:
+            out["lines"].append(
+                f"На конец горизонта {_month_ru(out['ending_month'])} не погашено "
+                f"{_mln_ru(ending)}: остаточных продаж после раскрытия хватило на "
+                f"{_mln_ru(out['residual_sales'])}, и это всё, что модель считает "
+                "источником — условий реструктуризации она не знает.")
+        elif out.get("pf_body_unpaid", 0.0) > 0:
+            out["lines"].append(
+                f"Остаток закрыт продажами после раскрытия — {_mln_ru(out['residual_sales'])} "
+                f"к {_month_ru(out['ending_month'])}. Банк ждал их в дату раскрытия, "
+                "а не через месяцы: допущение модели, а не согласие банка.")
+    if out["peak_gap"] > 0 and out["peak_gap_month"]:
+        out["lines"].append(
+            f"Наибольший разрыв между обязательством и эскроу — "
+            f"{_mln_ru(out['peak_gap'])} в {_month_ru(out['peak_gap_month'])}: до "
+            "раскрытия счёт только копится, а долг растёт вместе с процентами.")
+    return out
+
+
 def _aggregate_finance(results: list[dict[str, Any]]) -> dict[str, Any]:
     month_map: dict[str, dict[str, float]] = {}
     additive = (
         "bridge_draw", "bridge_repayment", "bridge_interest", "bridge_capitalization",
         "bridge_balance", "project_cash_draw", "own_funds_draw",
         "pf_draw", "pf_repayment", "pf_interest",
-        "pf_interest_capitalization", "pf_balance", "escrow", "limit_fee",
+        "pf_interest_capitalization", "pf_balance", "pf_payable", "pf_obligation",
+        "sales_after_rve", "escrow", "escrow_release", "limit_fee",
         "interest_payment", "profit_tax", "taxable_margin",
         "financing_tax_deduction", "taxable_profit_cumulative",
         "revenue", "capex", "operating",
@@ -22254,6 +22546,11 @@ def _aggregate_finance(results: list[dict[str, Any]]) -> dict[str, Any]:
             for key in additive:
                 agg[key] += float(row.get(key, 0.0) or 0.0)
 
+    # Накопленные ряды свода считаются заново по сложенному потоку. Сложить
+    # два накопленных итога нельзя: горизонты очередей разной длины, и в
+    # месяце, где строки одной кончились, сумма падает — линия «погашено
+    # банку» уезжала с 41,8 до 19,7 млрд на ровном месте.
+    running = {"escrow_and_sales_cumulative": 0.0, "sales_after_rve_cumulative": 0.0}
     rows: list[dict[str, Any]] = []
     for month in sorted(month_map):
         agg = month_map[month]
@@ -22276,6 +22573,10 @@ def _aggregate_finance(results: list[dict[str, Any]]) -> dict[str, Any]:
         out["bridge_rate"] = bridge_num / bridge_den if bridge_den else 0.0
         out["pf_rate"] = pf_num / pf_den if pf_den else 0.0
         out["coverage"] = out["escrow"] / out["pf_balance"] if out["pf_balance"] else 0.0
+        out["pf_obligation"] = out["pf_balance"] + out["pf_payable"]
+        running["escrow_and_sales_cumulative"] += out["escrow_release"] + out["sales_after_rve"]
+        running["sales_after_rve_cumulative"] += out["sales_after_rve"]
+        out.update(running)
         rows.append(out)
 
     # Налог очередей считается ЗАНОВО и на своде, а не складывается из
@@ -22327,6 +22628,7 @@ def _aggregate_finance(results: list[dict[str, Any]]) -> dict[str, Any]:
     financing_cost = sum(f["financing_cost"] for f in fs)
     return {
         "rows": rows,
+        "escrow_cover": _escrow_cover(rows),
         "calculated_bridge_limit": sum(f["calculated_bridge_limit"] for f in fs),
         "bridge_draw_total": sum(f["bridge_draw_total"] for f in fs),
         "project_cash_used": sum(f.get("project_cash_used", 0.0) for f in fs),
@@ -22922,6 +23224,16 @@ def _consolidate_phase_results(
                 "rve_escrow_release": finance.get("rve_escrow_release", 0.0),
                 "rve_pf_repayment": finance.get("rve_pf_repayment", 0.0),
                 "rve_pf_shortfall": finance.get("rve_pf_shortfall", 0.0),
+                # На своде дата раскрытия у каждой очереди своя, поэтому здесь
+                # свод разрыва по месяцам, а поимённые ответы — рядом списком.
+                # Одна сумма на весь проект не отвечает, какой очереди не
+                # хватило: то же правило, что у непогашенного долга.
+                "escrow_cover": finance.get("escrow_cover") or {},
+                "escrow_cover_phases": [
+                    dict(item["result"]["finance"].get("escrow_cover") or {},
+                         label=str(item.get("name") or f"Очередь {index + 1}"))
+                    for index, item in enumerate(phase_items)
+                ],
                 "pf_limit": finance["pf_limit"],
                 "avg_bridge_rate": finance["avg_bridge_rate"],
                 "avg_bridge_key_rate": finance.get("avg_bridge_key_rate", 0.0),
@@ -24471,6 +24783,17 @@ def run_sensitivity(
     items.sort(key=lambda item: item["impact"], reverse=True)
     info = _SENSITIVITY_METRICS[metric]
     verdict = _sensitivity_verdict(metric, base_value, items, change_pct, duration_change_months)
+    # У многоочередного проекта охват по умолчанию — слабейшая очередь, и это
+    # осознанный выбор: банк смотрит на неё. Но на экране рядом стоит LLCR всего
+    # проекта, и два разных числа под одним словом читаются как расхождение
+    # счёта («в целом 1,18, а чувствительность показала 0,9», владелец,
+    # 31.08.2026). Поэтому величина проекта едет вместе с базой — не вместо неё
+    # и не заменяя выбор, а чтобы обе были названы.
+    project_value: float | None = None
+    project_label = ""
+    if scope != "consolidated" and base_bundle.get("mode") == "phased":
+        project_label, project_value, _ = _metric_value(
+            base_bundle, metric, "consolidated", selected_view)
     return {
         "verdict": verdict,
         "base": {
@@ -24482,6 +24805,10 @@ def run_sensitivity(
             "value": round(base_value, 6),
             "scope": scope,
             "scope_label": scope_label,
+            # None — «не считали», а не «столько же»: одноочередной проект сюда
+            # не попадает вовсе, и пустое поле там не должно читаться как ноль.
+            "project_value": None if project_value is None else round(project_value, 6),
+            "project_label": project_label,
         },
         "change_pct": change_pct,
         "duration_change_months": duration_change_months,
@@ -30748,9 +31075,10 @@ details.cadastral-box>summary::marker{color:#888}
       </div>
 
       <div class="card">
-        <div class="section-title">Долг и эскроу</div>
+        <div class="section-title">Эскроу против обязательств по ПФ</div>
         <div id="financeChart" class="chart"></div>
-        <div class="legend"><span><i></i>ПФ, остаток</span><span><i class="gray"></i>Эскроу</span></div>
+        <div class="legend"><span><i style="background:#2D6A4F;opacity:.45;height:9px"></i>Эскроу накоплено</span><span><i style="background:#A35D00"></i>Обязательство: тело + начисленные проценты и комиссии</span><span><i style="background:repeating-linear-gradient(90deg,#A35D00 0 4px,transparent 4px 7px)"></i>Тело ПФ</span><span><i style="background:repeating-linear-gradient(90deg,#1B5E77 0 6px,transparent 6px 10px)"></i>Раскрытый эскроу и продажи после него, накопленным итогом</span><span><i style="background:#A35D00;opacity:.25;height:9px"></i>Чем эскроу не перекрыт</span></div>
+        <div id="escrowCoverNote" class="note"></div>
       </div>
 
       <div class="card">
@@ -30766,7 +31094,7 @@ details.cadastral-box>summary::marker{color:#888}
 
       <div class="card">
         <div class="section-title">Помесячное финансирование</div>
-        <div class="scroll"><table class="monthly"><thead><tr><th>Месяц</th><th>Ключевая</th><th>БРИДЖ</th><th>Ставка БРИДЖ</th><th>% БРИДЖ</th><th>ПФ</th><th>Эскроу</th><th>Покрытие</th><th>Ставка ПФ</th><th>% ПФ</th><th>Комиссия лимита</th><th>Погашение ПФ</th><th>Налог на прибыль</th></tr></thead><tbody id="monthlyFinance"></tbody></table></div>
+        <div class="scroll"><table class="monthly"><thead><tr><th>Месяц</th><th>Ключевая</th><th>БРИДЖ</th><th>Ставка БРИДЖ</th><th>% БРИДЖ</th><th>ПФ</th><th>Начислено к уплате</th><th>Эскроу</th><th>Покрытие</th><th>Ставка ПФ</th><th>% ПФ</th><th>Комиссия лимита</th><th>Погашение ПФ</th><th>Налог на прибыль</th></tr></thead><tbody id="monthlyFinance"></tbody></table></div>
       </div>
       <div class="note warning">LLCR остаётся расчётным показателем веб-движка до завершения помесячной сверки кредитного CF с актуальной Excel-моделью.</div>
     </div>
@@ -30893,6 +31221,11 @@ details.cadastral-box>summary::marker{color:#888}
         <div class="note">Аналитическая прибыль после аллокации перераспределяет общепроектные расходы только для сравнения очередей. Сводный CF не меняется.</div>
         <div id="phaseDebtCarryNote" class="note" style="display:none"></div>
       </div>
+      <div class="card" id="phaseEscrowCard" style="display:none">
+        <div class="section-title">Эскроу против обязательств по ПФ — по очередям</div>
+        <div class="note">У каждой очереди своя дата раскрытия и своя линия. Свод по проекту на вопрос «какой очереди не хватило» не отвечает.</div>
+        <div id="phaseEscrowCharts"></div>
+      </div>
       </div>
 
       <div class="report-section" id="rsExpenses">
@@ -30964,6 +31297,13 @@ details.cadastral-box>summary::marker{color:#888}
           <table class="metric-table metric-compact" id="ratesDebtTable"></table>
         </div>
       </div>
+      <div class="card">
+        <div class="section-title">Эскроу против обязательств по ПФ</div>
+        <div id="reportEscrowChart" class="chart"></div>
+        <div class="legend"><span><i style="background:#2D6A4F;opacity:.45;height:9px"></i>Эскроу накоплено</span><span><i style="background:#A35D00"></i>Обязательство: тело + начисленные</span><span><i style="background:repeating-linear-gradient(90deg,#A35D00 0 4px,transparent 4px 7px)"></i>Тело ПФ</span><span><i style="background:repeating-linear-gradient(90deg,#1B5E77 0 6px,transparent 6px 10px)"></i>Раскрытый эскроу и продажи после него</span></div>
+        <div id="reportEscrowNote" class="note"></div>
+      </div>
+
       <div class="card">
         <div class="section-title">Структура расчётного БРИДЖа</div>
         <table class="metric-table metric-compact bridge-purpose-table" id="bridgePurposeTable"></table>
@@ -33134,11 +33474,16 @@ function landMapGround(mercatorMetres,y){return mercatorMetres*Math.cos(landMapL
 function landMapMetres(pixels,zoom,y){return landMapGround(pixels*landMapScale(zoom),y)}
 
 function openLandMap(payload){
- // payload: {rings, zones, title, note}
+ // payload: {rings, zones, title, note, shapes, onPick}
+ // `shapes` — чужие контуры со своим цветом и подписью: ими карту КРТ рисует
+ // страница торгов. Второй живой карты не заводим: тайлы, проекция, линейка и
+ // масштаб объявлены здесь один раз, и копию было бы негде обновлять.
  const box=document.getElementById('landMapDialog');
  if(!box)return;
  const rings=(payload&&payload.rings)||[];
- const points=rings.flat().filter(p=>Array.isArray(p)&&p.length>=2);
+ const shapes=(payload&&payload.shapes)||[];
+ const points=rings.flat().concat(shapes.flatMap(s=>(s&&s.rings||[]).flat()))
+   .filter(p=>Array.isArray(p)&&p.length>=2);
  if(!points.length)return;
  const minX=Math.min(...points.map(p=>p[0])),maxX=Math.max(...points.map(p=>p[0]));
  const minY=Math.min(...points.map(p=>p[1])),maxY=Math.max(...points.map(p=>p[1]));
@@ -33153,6 +33498,7 @@ function openLandMap(payload){
  const zoom=Math.log2(LAND_MAP_WORLD/256/(span/width));
  LAND_MAP={
   rings:rings,zones:(payload&&payload.zones)||[],
+  shapes:shapes,onPick:(payload&&payload.onPick)||null,
   title:(payload&&payload.title)||'Участок и окружение',
   note:(payload&&payload.note)||'',
   cx:(minX+maxX)/2,cy:(minY+maxY)/2,
@@ -33185,7 +33531,15 @@ function landMapPoint(event){
  return landMapUnproject(event.clientX-view.left,event.clientY-view.top,view);
 }
 function landMapClick(event){
- if(!LAND_MAP||!LAND_MAP.measuring)return;
+ if(!LAND_MAP)return;
+ // Щелчок по чужой фигуре — выбор площадки, а не точка линейки.
+ const pick=event.target&&event.target.getAttribute&&event.target.getAttribute('data-pick');
+ if(pick!==null&&pick!==undefined&&!LAND_MAP.measuring&&typeof LAND_MAP.onPick==='function'){
+  if((LAND_MAP.moved||0)>4)return;
+  LAND_MAP.onPick(pick);
+  return;
+ }
+ if(!LAND_MAP.measuring)return;
  // Линейка нужна не «вообще»: К1 приобъектной парковки задаётся расстоянием
  // до входа на станцию (0,75 до 1200 м · 0,9 до 2200 м), и до сих пор его
  // мерили где-то на стороне и вписывали числом.
@@ -33261,6 +33615,17 @@ function renderLandMap(){
    const colour=paint[zone.flag_class]||'#777';
    return `<path d="${toPath(zone.outline_merc)}" fill="${colour}" fill-opacity="0.22" stroke="${colour}" stroke-width="1.5"/>`;
   }).join('');
+ // Чужие фигуры лежат ПОД контуром и ловят указатель: перетаскивание при этом
+ // не ломается — событие всплывает к сцене, а щелчок после перетаскивания
+ // отсекается тем же счётчиком, что и у линейки.
+ const shapeLayers=(LAND_MAP.shapes||[]).filter(s=>Array.isArray(s.rings)&&s.rings.length)
+  .map((shape,i)=>{
+   const colour=shape.colour||'#777';
+   return `<path d="${toPath(shape.rings)}" fill="${colour}" fill-opacity="0.34" stroke="${colour}"`
+    +` stroke-width="1.2" data-pick="${escapeHtml(String(shape.key||i))}"`
+    +` style="pointer-events:auto;cursor:pointer">`
+    +`<title>${escapeHtml(String(shape.title||''))}</title></path>`;
+  }).join('');
  const contour=`<path d="${toPath(LAND_MAP.rings)}" fill="rgba(245,245,243,.18)" stroke="#111" stroke-width="2.5" fill-rule="evenodd"/>`;
  let ruler='',rulerNote='';
  if(LAND_MAP.measure.length){
@@ -33279,7 +33644,7 @@ function renderLandMap(){
  const barM=nice.filter(v=>v/perPx<=W*0.35).pop()||nice[0];
  const barPx=Math.round(barM/perPx);
  stage.innerHTML=`<div style="position:absolute;inset:0;overflow:hidden">${tiles}</div>`+
-  `<svg width="${W}" height="${H}" style="position:absolute;inset:0;pointer-events:none">${zoneLayers}${contour}${ruler}</svg>`+
+  `<svg width="${W}" height="${H}" style="position:absolute;inset:0;pointer-events:none">${shapeLayers}${zoneLayers}${contour}${ruler}</svg>`+
   `<div style="position:absolute;left:12px;bottom:12px;background:rgba(255,255,255,.88);padding:4px 8px;border-radius:4px;font-size:11px;color:#333">`+
   `<div style="border:2px solid #333;border-top:0;height:5px;width:${barPx}px;margin-bottom:2px"></div>${landNum(barM,0)} м · © OpenStreetMap</div>`+
   (rulerNote?`<div style="position:absolute;right:12px;bottom:12px;background:#3b6db4;color:#fff;padding:4px 10px;border-radius:4px;font-size:12px">${escapeHtml(rulerNote)}</div>`:'');
@@ -36344,6 +36709,7 @@ function renderPhaseComparison(){
   ['Маржинальность',c.map(x=>pct(x.margin)),pct(cons.summary.margin)]
  ];
  phaseComparisonBody.innerHTML=rows.map(r=>`<tr><td>${r[0]}</td>${r[1].map(v=>`<td>${v}</td>`).join('')}<td>${r[2]}</td></tr>`).join('');
+ renderPhaseEscrowCharts();
  // Причина, по которой долг сменил очередь — или по которой не сменил.
  // Обнулённый долг первой очереди рядом с выросшим долгом второй без этой
  // строки читается как ошибка расчёта.
@@ -36359,6 +36725,24 @@ function renderPhaseComparison(){
    note.className='note';note.style.display='block';
   }else{note.style.display='none'}
  }
+}
+// Свод складывает эскроу и долг всех очередей, и по нему не видно, какая
+// очередь не рассчиталась: у каждой своя дата раскрытия. Поэтому график по
+// очередям отдельный — тем же рисовальщиком и на тех же числах сервера.
+function renderPhaseEscrowCharts(){
+ const card=document.getElementById('phaseEscrowCard'),box=document.getElementById('phaseEscrowCharts');
+ if(!card||!box)return;
+ const items=((phaseBundle&&phaseBundle.phases)||[]).map((p,i)=>{
+  const rows=((p.result||{}).finance||{}).rows||[];
+  const cover=(((p.result||{}).report||{}).financing||{}).escrow_cover||{};
+  const svg=escrowCoverSvg(rows,cover);
+  if(!svg)return '';
+  const lines=escrowCoverLines(cover);
+  return `<div class="phase-escrow" style="margin-bottom:20px"><div class="section-title">${escapeHtml(p.name||('Очередь '+(i+1)))}</div>${svg}`
+   +(lines?`<div class="note">${lines}</div>`:'')+'</div>';
+ }).filter(Boolean);
+ box.innerHTML=items.join('');
+ card.style.display=items.length?'':'none';
 }
 function selectReportView(view){
  if(!phaseBundle||phaseBundle.mode!=='phased')return;reportView=view;phaseComparisonCard.style.display='none';
@@ -36684,10 +37068,10 @@ function renderResult(){
  taxTable.innerHTML=taxMarkup;
  reportTaxTable.innerHTML=taxMarkup;
 
- renderFinanceChart(f.rows);
+ renderFinanceChart(f.rows,((r.report||{}).financing||{}).escrow_cover||{});
  monthlyFinance.innerHTML=f.rows.filter((_,i)=>i%1===0).map(x=>`<tr>
   <td>${x.month.slice(0,7)}</td><td>${pct(x.key_rate)}</td><td class="money">${mln(x.bridge_balance)}</td><td>${pct(x.bridge_rate)}</td><td>${mln(x.bridge_interest+x.bridge_capitalization)}</td>
-  <td class="money">${mln(x.pf_balance)}</td><td class="money">${mln(x.escrow)}</td><td>${mult(x.coverage)}</td><td>${pct(x.pf_rate)}</td><td>${mln(x.pf_interest+x.pf_interest_capitalization)}</td><td>${mln(x.limit_fee)}</td><td>${mln(x.pf_repayment)}</td><td>${mln(x.profit_tax||0)}</td>
+  <td class="money">${mln(x.pf_balance)}</td><td class="money">${mln(x.pf_payable||0)}</td><td class="money">${mln(x.escrow)}</td><td>${mult(x.coverage)}</td><td>${pct(x.pf_rate)}</td><td>${mln(x.pf_interest+x.pf_interest_capitalization)}</td><td>${mln(x.limit_fee)}</td><td>${mln(x.pf_repayment)}</td><td>${mln(x.profit_tax||0)}</td>
  </tr>`).join('');
 
  economicsTable.innerHTML=
@@ -37055,9 +37439,16 @@ function renderReportSensitivity(){
   return;
  }
  const base=sensitivityReport.base;
+ // Охват называется рядом с величиной проекта: торнадо по слабейшей очереди
+ // и LLCR всего проекта — разные числа, и без второй половины первое читается
+ // как «модель посчитала иначе».
+ const scopeLine=escapeHtml(base.scope_label||'')+' · база '
+  +sensFormat(base.value,base.digits)+' '+escapeHtml(base.unit||'')
+  +(base.project_value===null||base.project_value===undefined?''
+    :' · не весь проект: у проекта '+sensFormat(base.project_value,base.digits)+' '
+      +escapeHtml(base.unit||''));
  box.innerHTML='<div class="section-title">Чувствительность · '+escapeHtml(base.label)+'</div>'
-  +'<div style="font-size:12px;color:#777;margin-bottom:10px">'+escapeHtml(base.scope_label||'')+' · база '
-  +sensFormat(base.value,base.digits)+' '+escapeHtml(base.unit||'')+'</div>'
+  +'<div style="font-size:12px;color:#777;margin-bottom:10px">'+scopeLine+'</div>'
   +'<div id="reportTornado"></div>'
   +(sensitivityReport.verdict||[]).map(line=>`<div class="note">${escapeHtml(String(line))}</div>`).join('');
  renderTornado(sensitivityReport,'reportTornado');
@@ -37201,16 +37592,81 @@ function renderApartmentPaceChart(sales){
  </svg>`;
 }
 
-function renderFinanceChart(rows){
- const data=rows.filter(x=>x.pf_balance>0||x.escrow>0);
- if(!data.length){financeChart.innerHTML='';return}
- const W=900,H=220,pad=18,max=Math.max(...data.flatMap(x=>[x.pf_balance,x.escrow]),1);
- const pts=(key)=>data.map((x,i)=>`${pad+i*(W-2*pad)/Math.max(data.length-1,1)},${H-pad-(x[key]/max)*(H-2*pad)}`).join(' ');
- financeChart.innerHTML=`<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
- <line x1="${pad}" y1="${H-pad}" x2="${W-pad}" y2="${H-pad}" stroke="#ddd"/>
- <polyline points="${pts('pf_balance')}" fill="none" stroke="#050505" stroke-width="3" vector-effect="non-scaling-stroke"/>
- <polyline points="${pts('escrow')}" fill="none" stroke="#999" stroke-width="2" vector-effect="non-scaling-stroke"/>
- </svg>`;
+// Эскроу против обязательства по ПФ. Прежде здесь сравнивалось тело долга со
+// счётом — то есть ответ на другой вопрос: банку в раскрытие причитается и
+// начисленное, оно копится вне лимита и платится кассой. Один рисовальщик на
+// проект и на очереди: два разошлись бы, и оба выглядели бы верными. Числа
+// приходят готовыми с сервера, здесь только геометрия.
+function escrowCoverSvg(rows,cover){
+ cover=cover||{};
+ const duty=x=>Number(x.pf_obligation!==undefined?x.pf_obligation:(Number(x.pf_balance||0)+Number(x.pf_payable||0)));
+ const data=(rows||[]).filter(x=>duty(x)>0||Number(x.escrow||0)>0);
+ if(data.length<2)return '';
+ const W=900,H=250,pL=58,pR=14,pT=18,pB=26,plotW=W-pL-pR,plotH=H-pT-pB;
+ const top=Math.max(...data.map(x=>Math.max(duty(x),Number(x.escrow||0),Number(x.escrow_and_sales_cumulative||0))),1)*1.08;
+ const X=i=>pL+plotW*i/(data.length-1);
+ const Y=v=>pT+plotH-plotH*Math.max(0,v)/top;
+ const pt=(i,v)=>`${X(i).toFixed(1)},${Y(v).toFixed(1)}`;
+ const path=f=>data.map((x,i)=>pt(i,f(x))).join(' ');
+ // Заливка, а не линия: вопрос у графика один — перекрывает эскроу
+ // обязательство или нет, — и ответ на него это площадь между кривыми.
+ const area=f=>`${pt(0,0)} ${path(f)} ${pt(data.length-1,0)}`;
+ // Непокрытая часть — своей заливкой, куском за куском: обязательство вперёд,
+ // эскроу обратно. Один сплошной полигон склеил бы разрывы и закрасил месяцы,
+ // где всё покрыто.
+ let gaps='',run=[];
+ const flush=()=>{if(run.length>1){
+   const up=run.map(i=>pt(i,duty(data[i]))).join(' ');
+   const back=run.slice().reverse().map(i=>pt(i,Number(data[i].escrow||0))).join(' ');
+   gaps+=`<polygon points="${up} ${back}" fill="#A35D00" fill-opacity="0.16"/>`}
+  run=[]};
+ data.forEach((x,i)=>{if(duty(x)-Number(x.escrow||0)>0)run.push(i);else flush()});flush();
+ let grid='';
+ for(let t=0;t<=4;t++){const v=top*t/4,y=Y(v);
+  grid+=`<line x1="${pL}" y1="${y.toFixed(1)}" x2="${W-pR}" y2="${y.toFixed(1)}" stroke="#e8e8e8"/>`
+   +`<text x="${pL-6}" y="${(y+4).toFixed(1)}" font-size="11" fill="#777" text-anchor="end">${(v/1e9).toLocaleString('ru-RU',{maximumFractionDigits:1})}</text>`}
+ const monthRu=iso=>{const parts=String(iso||'').slice(0,7).split('-');return parts.length===2?parts[1]+'.'+parts[0]:''};
+ const marks=[...new Set([0,Math.floor(data.length/2),data.length-1])].map(i=>
+  `<text x="${X(i).toFixed(1)}" y="${H-7}" font-size="11" fill="#777" text-anchor="${i===0?'start':(i===data.length-1?'end':'middle')}">${monthRu(data[i].month)}</text>`).join('');
+ const at=data.findIndex(x=>String(x.month||'').slice(0,7)===String(cover.rve||'').slice(0,7));
+ const late=at>data.length*0.7;
+ const rveMark=at<0?'':`<line x1="${X(at).toFixed(1)}" y1="${pT}" x2="${X(at).toFixed(1)}" y2="${(pT+plotH).toFixed(1)}" stroke="#666" stroke-dasharray="3 3"/>`
+  +`<text x="${X(at).toFixed(1)}" y="${pT+11}" dx="${late?-5:5}" font-size="11" fill="#555" text-anchor="${late?'end':'start'}">раскрытие эскроу</text>`;
+ // Последняя точка — событие, а не обрыв линии: непогашенный остаток надо
+ // назвать, иначе график читается как «расчёт кончился».
+ const endLeft=Number(cover.ending_unpaid||0);
+ const endMark=endLeft<=1e6?'':`<circle cx="${X(data.length-1).toFixed(1)}" cy="${Y(endLeft).toFixed(1)}" r="3.5" fill="#A35D00"/>`
+  +`<text x="${(X(data.length-1)-6).toFixed(1)}" y="${(Y(endLeft)-8).toFixed(1)}" font-size="11" fill="#A35D00" text-anchor="end">не погашено ${mln(endLeft)}</text>`;
+ // Сколько банк получил всего, накопленным итогом: раскрытый эскроу и то,
+ // чем гасят дальше. Прежде здесь шли «продажи после раскрытия» от нуля —
+ // рядом с эскроу в десятки миллиардов такая линия не значила ничего
+ // (владелец, 01.09.2026). Вопрос у графика один: чем и когда закрыт долг.
+ const repaid=data.some(x=>Number(x.escrow_and_sales_cumulative||0)>0)
+  ?`<polyline points="${path(x=>Number(x.escrow_and_sales_cumulative||0))}" fill="none" stroke="#1B5E77" stroke-width="1.8" stroke-dasharray="6 4"/>`:'';
+ return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">${grid}
+  <polygon points="${area(x=>Number(x.escrow||0))}" fill="#2D6A4F" fill-opacity="0.30"/>
+  ${gaps}
+  <polyline points="${path(duty)}" fill="none" stroke="#A35D00" stroke-width="2.6"/>
+  <polyline points="${path(x=>Number(x.pf_balance||0))}" fill="none" stroke="#A35D00" stroke-width="1" stroke-dasharray="4 3" opacity="0.85"/>
+  <polyline points="${path(x=>Number(x.escrow||0))}" fill="none" stroke="#2D6A4F" stroke-width="2"/>
+  ${repaid}${rveMark}${endMark}
+  <text x="${W-pR}" y="${pT-4}" font-size="11" fill="#777" text-anchor="end">млрд ₽</text>
+  ${marks}</svg>`;
+}
+function escrowCoverLines(cover){
+ return ((cover&&cover.lines)||[]).map(escapeHtml).join('<br>');
+}
+function renderFinanceChart(rows,cover){
+ const svg=escrowCoverSvg(rows,cover||{});
+ financeChart.innerHTML=svg;
+ const report=document.getElementById('reportEscrowChart');
+ if(report)report.innerHTML=svg;
+ const note=document.getElementById('escrowCoverNote');
+ if(!note)return;
+ const text=escrowCoverLines(cover);
+ note.innerHTML=text;note.style.display=text?'':'none';
+ const reportNote=document.getElementById('reportEscrowNote');
+ if(reportNote){reportNote.innerHTML=text;reportNote.style.display=text?'':'none'}
 }
 
 // --- Анализ чувствительности (Tornado) ---------------------------------------

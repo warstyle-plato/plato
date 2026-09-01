@@ -246,8 +246,16 @@ VERIFIED: dict[str, str] = {
     "v2.reports.getUniqueTypesOfRooms": "200, типы лотов объекта: ст, 1, 2, 3, 4, 5 — только квартиры",
     "v2.reports.getActualLayerDates": "200, даты свежести по слоям: price, deals, passport, declaration",
     "v1.locator.objectsData": "403: «Локатор» недоступен, а объектная модель у него на 77 полей",
+    # Сверено 31.08.2026, и это ответ на главный вопрос о выборке: расширить её
+    # нечем. Карточка произвольного объекта закрыта региональной лицензией, а
+    # «соседи по классу» отдают ТУ ЖЕ пятёрку, что и `reportNearBy`.
+    "analytics.balloon": "403 NO_REGION_ACCESS: карточки произвольного объекта нет, "
+                         "выборку по справочнику собрать нечем",
+    "analytics.reportNearByProjectClass": "200, но radius тот же: объект и пять ближайших",
     "v2.reports.getReportSalesBalancesTypeRooms": "200, по типам квартир: сколько в продаже, продано ДДУ, остаток и его доля",
-    "v2.reports.getReportSalesBalancesPriceInDeals": "200, цена В СДЕЛКАХ по годам и месяцам, в разрезе комнатности",
+    "v2.reports.getReportSalesBalancesPriceInDeals": "200, цена В СДЕЛКАХ по годам и месяцам, "
+        "в разрезе комнатности; ноль в клетке — сделок такой комнатности в этом месяце не было, "
+        "а не цена ноль (сверено 31.08.2026, ряд с 07.2025)",
     "v2.reports.getReportSalesBalancesCheckmate": "200, шахматка по этажам: лотов, площади, остаток",
     "v2.reports.project": "200, карточка объекта службы отчётов со свежестью и ценами",
     "layers.data": "403 NO_REGION_ACCESS: у аккаунта нет региональной лицензии",
@@ -799,6 +807,11 @@ def _metric_row(card: dict[str, Any], name: str, distance: Any, observed: str,
         "lot_area_avg": _float(total.get("square_avg")),
         "rooms": {key.replace("metrprice_avg_", ""): _float(value)
                   for key, value in price.items() if key != "metrprice_avg_total"},
+        # Наклон лестницы: во сколько метр крупного формата дешевле метра
+        # самого мелкого. У рынка он отрицательный — покупатель приходит с
+        # бюджетом, и за доступность малого лота платят премией к метру.
+        # Ноль и плюс означают, что лестницы нет или она перевёрнута.
+        "rooms_slope_pct": _rooms_slope(price),
         # Бюджет лота: минимум, средняя, максимум. Это РУБЛИ ЗА ЛОТ, а не цена
         # метра — в колонки «мин» и «макс» отчёта они не идут, там ₽/м².
         # Своей строкой они отвечают на вопрос, которого у «Пульса» нет вовсе:
@@ -823,6 +836,23 @@ def _metric_row(card: dict[str, Any], name: str, distance: Any, observed: str,
         "discount": card.get("discount"),
         "discount_terms": card.get("desc"),
     }
+
+
+def _rooms_slope(price: dict[str, Any]) -> float | None:
+    """Наклон цены метра от самого мелкого формата к самому крупному, %.
+
+    База — студии, а если их в проекте нет, однокомнатные: у проекта без студий
+    сравнивать не с чем, и подставить туда ноль значило бы объявить лестницу
+    отвесной. Верх — 4к+, при их отсутствии 3к.
+    """
+    def at(key: str) -> float | None:
+        return _float((price or {}).get(f"metrprice_avg_{key}")) or None
+
+    base = at("st") or at("1")
+    top = at("4") or at("3")
+    if not base or not top:
+        return None
+    return round((top / base - 1) * 100, 1)
 
 
 def _float(value: Any) -> float | None:
@@ -900,6 +930,68 @@ def _price_series(location: Any) -> tuple[list[dict[str, Any]], list[dict[str, A
     return own, market
 
 
+def _deal_series(data: Any) -> list[dict[str, Any]]:
+    """Цена В СДЕЛКАХ по месяцам, ряд на комнатность. У «Пульса» такого нет.
+
+    Прайс — витрина, сделка — факт, и разрыв между ними виден только так.
+    Живой ответ (31.08.2026) отдаёт `months` с полями «1», «2», «3», «4», «st»
+    и `yearMonth` вида «07.2025».
+
+    Ноль в клетке — «сделок такой комнатности в этом месяце не было», а не цена
+    ноль: нарисованный, он рвёт линию вниз до нуля и читается как обвал цены.
+    Такие месяцы просто выпадают из ряда — пропуск не ноль.
+
+    Ряды помечены `aggregate`: это разрезы ОДНОГО проекта, а не соседи, и
+    полоса квартилей по ним была бы полосой из самого себя.
+    """
+    months = (data or {}).get("months") if isinstance(data, dict) else None
+    if not isinstance(months, list):
+        return []
+    rows: dict[str, list[dict[str, Any]]] = {}
+    for point in months:
+        if not isinstance(point, dict):
+            continue
+        stamp = str(point.get("yearMonth") or "")
+        parts = stamp.split(".")
+        if len(parts) != 2:
+            continue
+        month = f"{parts[1]}-{parts[0]}"
+        for key, title in _ROOMS_IN_DEALS:
+            value = _float(point.get(key))
+            if value:
+                rows.setdefault(title, []).append({"month": month, "value": value})
+    return [{"name": f"сделки, {title}", "aggregate": True, "points": points}
+            for title, points in rows.items() if len(points) > 1]
+
+
+_ROOMS_IN_DEALS: tuple[tuple[str, str], ...] = (
+    ("st", "студии"), ("1", "1к"), ("2", "2к"), ("3", "3к"), ("4", "4к"),
+)
+
+
+def _deal_rooms(data: Any) -> dict[str, float]:
+    """Цена сделок по комнатности за последний известный год.
+
+    Годовой срез, а не помесячный: у формата бывает две-три сделки в месяц, и
+    линия по ним прыгала бы составом проданного, а не ценой. Берётся последний
+    год ряда — тот, с которым сравнивают сегодняшний прайс.
+    """
+    years = (data or {}).get("years") if isinstance(data, dict) else None
+    if not isinstance(years, list) or not years:
+        return {}
+    last = max((row for row in years if isinstance(row, dict)),
+               key=lambda row: _float(row.get("year")) or 0, default=None)
+    if not last:
+        return {}
+    out: dict[str, float] = {}
+    for key, _ in _ROOMS_IN_DEALS:
+        value = _float(last.get(key))
+        # Ноль — «сделок такой комнатности не было», а не цена: точка не ставится.
+        if value:
+            out[key] = value
+    return out
+
+
 def _exposure_series(location: Any) -> list[dict[str, Any]]:
     """Экспозиция локации по месяцам. Остатком проекта она не является.
 
@@ -917,6 +1009,46 @@ def _exposure_series(location: Any) -> list[dict[str, Any]]:
         if value:
             out.append({"month": str(month)[:7], "value": value})
     return out
+
+
+def _rooms_bands(rows: Any) -> list[dict[str, Any]]:
+    """Квартирография bnMAP в том виде, в каком её рисует свод продаж.
+
+    Полосы там — площади из книги финмодели; здесь их роль играют типы квартир,
+    которыми делит сам источник. Доли считаются здесь, рядом с рядом: на
+    странице им считаться негде — она показывает, а не считает.
+
+    Пул НЕ складывается из проданного и остатка: что именно значит «в продаже»
+    у источника — выставлено сейчас или всего в проекте, — мы живым ответом не
+    проверяли, и сумма двух колонок под именем «пул проекта» была бы нашей
+    догадкой. Поэтому полос две: как покупают и что осталось показывать.
+    """
+    bands: list[dict[str, Any]] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        sold = _float(row.get("pdoCount")) or 0.0
+        left = _float(row.get("pboLeft")) or 0.0
+        if not sold and not left:
+            continue
+        bands.append({"band": _room_title(row.get("type")),
+                      "pool_units": None, "sold_units": sold, "left_units": left,
+                      "pool_share": None, "skew": None})
+    sold_all = sum(band["sold_units"] for band in bands)
+    left_all = sum(band["left_units"] for band in bands)
+    for band in bands:
+        band["sold_share"] = band["sold_units"] / sold_all if sold_all else None
+        band["left_share"] = band["left_units"] / left_all if left_all else None
+    return bands
+
+
+_ROOM_TITLES = {"st": "студии", "0": "студии", "1": "1к", "2": "2к", "3": "3к",
+                "4": "4к", "5": "5к+"}
+
+
+def _room_title(value: Any) -> str:
+    key = str(value or "").strip().lower()
+    return _ROOM_TITLES.get(key, key or "—")
 
 
 def clone_report(data_dir: Any, query: str, *, base: str = "msk", date: str = "",
@@ -1002,10 +1134,15 @@ def clone_report(data_dir: Any, query: str, *, base: str = "msk", date: str = ""
     # отдают агрегаты по тем же сделкам бесплатно. Спрашиваются только по
     # объекту оценки: по каждому соседу это ещё два запроса на строку.
     object_key = {"objectId": str(found["object_id"]), "regionAlias": base}
+    rooms_balance = session.call("v2.reports.getReportSalesBalancesTypeRooms", object_key)
+    deal_prices = session.call("v2.reports.getReportSalesBalancesPriceInDeals", object_key)
     return {
         "found": found,
-        "rooms_balance": session.call("v2.reports.getReportSalesBalancesTypeRooms", object_key),
-        "deal_prices": session.call("v2.reports.getReportSalesBalancesPriceInDeals", object_key),
+        "rooms_balance": rooms_balance,
+        "deal_series": _deal_series(deal_prices),
+        "deal_rooms": _deal_rooms(deal_prices),
+        "rooms_bands": _rooms_bands(rooms_balance),
+        "deal_prices": deal_prices,
         "indicators": session.call("analytics.indicators", {"_base": base, "date": asked}),
         "subject": subject,
         "peers": peers,

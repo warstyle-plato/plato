@@ -277,6 +277,19 @@ def demand_summary(deals: list[dict[str, Any]], bands: list[dict[str, Any]] | No
             over += 1
     for band in bands:
         want = [d for d in asked if _overlaps(d["area_min"], d["area_max"], band)]
+        # Спрос упирается не в метры, а в деньги: покупатель приходит с
+        # бюджетом. Полоса, которую просят чаще всех, может быть недостижима по
+        # цене, и тогда «спроса больше, чем витрины» — не вся правда.
+        #
+        # Вход в полосу считается по её НИЖНЕЙ границе: это самый дешёвый лот
+        # полосы, и если бюджет не дотягивается даже до него, полоса закрыта
+        # целиком. Цена берётся из книги; полоса без цены даёт `None`, а не
+        # ноль — «не знаем», а не «бесплатно».
+        price = band.get("book_price_per_sqm") or None
+        entry = price * band["low"] if price and band.get("low") else None
+        reach = None
+        if entry and budgets:
+            reach = sum(1 for value in budgets if value >= entry) / len(budgets)
         rows.append({
             "band": band["band"],
             "low": band["low"], "high": band["high"],
@@ -285,7 +298,9 @@ def demand_summary(deals: list[dict[str, Any]], bands: list[dict[str, Any]] | No
             "left_units": band.get("left_units"),
             "left_share": band.get("left_share"),
             "sold_share": band.get("sold_share"),
-            "price_per_sqm": band.get("book_price_per_sqm") or None,
+            "price_per_sqm": price,
+            "entry_amount": entry,
+            "budget_reach_share": reach,
         })
     wants: dict[str, int] = {}
     for deal in deals:
@@ -321,6 +336,7 @@ def demand_summary(deals: list[dict[str, Any]], bands: list[dict[str, Any]] | No
         "budget_median": middle(budgets),
         "budget_low": budgets[0] if budgets else None,
         "budget_high": budgets[-1] if budgets else None,
+        "budget_cut": _budget_cut(rows, middle(budgets)),
         "bands": rows,
         "wants": [{"want": name, "deals": float(count)}
                   for name, count in sorted(wants.items(), key=lambda x: -x[1])],
@@ -355,6 +371,41 @@ NOT_A_LEAD = re.compile(
     r"реклам|предлага(ет|л) (услуги|разместить)|яндекс еда|сотруднич|поставщик|"
     r"вакансн|резюме|подключени[ею] к", re.I)
 CALL_SOURCE = "Звонок"
+
+
+def _budget_cut(rows: list[dict[str, Any]], budget_median: float | None) -> dict[str, Any]:
+    """Где медианный бюджет упирается в цену: до какой площади он дотягивается.
+
+    Отвечает на «почему не покупают» деньгами, а не метрами: полоса, которую
+    просят чаще всех, бывает недостижима по цене, и тогда её дефицит в витрине
+    — не главная причина.
+
+    Считается по цене метра остатка из книги: сколько метров этой полосы можно
+    купить на медианный бюджет. Первая полоса, чей вход дороже медианы, и есть
+    граница спроса.
+    """
+    if not budget_median:
+        return {}
+    priced = [row for row in rows if row.get("entry_amount")]
+    if not priced:
+        return {}
+    reachable = [row for row in priced if row["entry_amount"] <= budget_median]
+    closed = [row for row in priced if row["entry_amount"] > budget_median]
+    # Сколько метров даёт медианный бюджет в самой дешёвой доступной полосе:
+    # это и есть потолок площади для среднего покупателя.
+    cheapest = min(priced, key=lambda row: row["price_per_sqm"])
+    return {
+        "budget_median": budget_median,
+        "reach_sqm": budget_median / cheapest["price_per_sqm"],
+        "cheapest_band": cheapest["band"],
+        "reachable_bands": [row["band"] for row in reachable],
+        "closed_bands": [row["band"] for row in closed],
+        # Доля витрины, закрытой ценой для медианного бюджета. Считается по
+        # остатку в лотах: витрина — это то, что человеку могут показать.
+        "closed_left_share": (
+            sum(row.get("left_share") or 0 for row in closed) or None),
+        "priced_bands": len(priced), "bands": len(rows),
+    }
 
 
 def funnel(deals: list[dict[str, Any]], read: dict[str, Any] | None = None) -> dict[str, Any]:

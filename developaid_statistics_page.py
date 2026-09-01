@@ -477,7 +477,8 @@ def _render_matrix(payload: dict[str, Any]) -> str:
 
 _CSS = """
 *{box-sizing:border-box}body{margin:0;background:#f4f5f7;color:#202833;font:14px -apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif}
-.wrap{max-width:1600px;margin:auto;padding:0 22px 40px}.brandbar{padding:22px 0 0}.brandbar img{display:block;width:min(360px,58vw);height:auto}.brandline{height:8px;background:#050505;margin-top:12px}
+.wrap{max-width:1600px;margin:auto;padding:0 22px 40px}/* Эмблема — чёрное на белом, без прозрачности: она одна на все поверхности и лежит в `PAGE`, а копии с альфой негде обновлять. На светлой странице белый прямоугольник вокруг букв виден цветом (владелец, 31.08.2026), поэтому фон снимается наложением: multiply оставляет буквы и растворяет белое в любой светлой подложке. */
+.brandbar{padding:22px 0 0}.brandbar img{display:block;width:min(360px,58vw);height:auto;mix-blend-mode:multiply}.brandline{height:8px;background:#050505;margin-top:12px}
 h1{font-size:34px;margin:26px 0 8px}h2{font-size:20px;margin:0 0 7px}.sub,.note,.small{color:#737d8d}.note{line-height:1.5;margin-bottom:12px}
 .filters{display:grid;grid-template-columns:1.1fr .9fr repeat(4,1fr) auto;gap:8px;background:#fff;border:1px solid #dfe4ea;border-radius:14px;padding:14px;margin:16px 0 18px}
 .field label{display:block;font-size:10px;color:#788291;margin-bottom:5px}.field .hint{font-size:9px;color:#98a0ab;margin-top:3px}

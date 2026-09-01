@@ -66,6 +66,106 @@ _META_PREFIXES = (
 )
 
 
+# --- Чьё это КРТ и не занято ли оно ------------------------------------------
+#
+# Два вопроса решают, можно ли в площадку войти вообще: для чего город её затеял
+# и не назван ли уже тот, кто её берёт. «Надо добавлять то, что видно по
+# открытым источникам, фильтр по нуждам города и возможно уже назначение
+# оператора» (владелец, 31.08.2026).
+#
+# Признак ставится ТОЛЬКО вместе с цитатой из документа. Список слов — это
+# поиск, а не утверждение: не нашлось — «не найдено», и это не то же самое, что
+# «нет». Пустой результат проверки не значит «чисто» — то же правило, по
+# которому молчащий НСПД не выдаётся за отсутствие ограничений.
+
+# Вид КРТ по ст. 65 ГрК. Заголовок проекта решения называет его прямо: «о
+# комплексном развитии территории нежилой застройки». Вид сам по себе не
+# закрывает вход и балла не снижает — он отвечает на «чья это история» и
+# годится фильтром.
+# «Жилой застройки» лежит внутри «нежилой застройки» целиком, и поиск подстрокой
+# читает вторую как первую — то же, что уже ловилось у нас в терминаторах
+# заголовка. Поэтому образец, а не подстрока: у жилого вида стоит запрет на «не»
+# перед ним.
+_KRT_KINDS = (
+    (re.compile(r"(?iu)не\s*жилой\s+застройки"), "нежилой застройки"),
+    (re.compile(r"(?iu)незастроенной\s+территории"), "незастроенной территории"),
+    (re.compile(r"(?iu)инициативе\s+правообладателей"), "по инициативе правообладателей"),
+    (re.compile(r"(?iu)(?<!не)(?<!не\s)жилой\s+застройки"), "жилой застройки"),
+)
+
+# Городские нужды. Слова узкие намеренно: «расселение» и «аварийное» сюда не
+# входят — обязательство расселить мы считаем отдельно, и оно есть у половины
+# площадок. Признак, который срабатывает почти всегда, ничего не отделяет.
+_CITY_NEEDS_MARKERS = (
+    "реновац", "государственных нужд", "муниципальных нужд", "нужд города",
+)
+
+# Оператор. На карточке krt.mos.ru это строка «Застройщик» — она у нас была и
+# отбрасывалась как служебная. В решении он появляется отдельными оборотами.
+_OPERATOR_MARKERS = (
+    "оператор комплексного развития", "лицо, заключившее договор",
+    "определен победитель", "определён победитель",
+    "заключен договор о комплексном развитии", "заключён договор о комплексном развитии",
+)
+_OPERATOR_FIELD = "застройщик"
+_EMPTY_FIELD = {"", "—", "–", "-", "не определен", "не определён", "нет", "н/д"}
+
+
+def _quotes(sentences: list[str], markers: tuple[str, ...]) -> list[str]:
+    found = [line for line in sentences
+             if any(marker in line.casefold() for marker in markers)]
+    return list(dict.fromkeys(found))[:5]
+
+
+def krt_kind(text: str) -> tuple[str, str]:
+    """Вид КРТ и та строка, из которой он взят. Не опознан — две пустые."""
+    flat = _SPACE.sub(" ", text or "")
+    for pattern, name in _KRT_KINDS:
+        found = pattern.search(flat)
+        if found:
+            start = max(0, found.start() - 120)
+            return name, flat[start:found.end() + 40].strip()
+    return "", ""
+
+
+def decision_intent(text: str, title: str = "", card_fields: dict[str, str] | None = None,
+                    probed: bool = True) -> dict[str, Any]:
+    """Вид КРТ, городские нужды и оператор — словами источника, а не оценкой."""
+    sentences = _decision_sentences(text) if text else []
+    kind, kind_quote = krt_kind(title or "")
+    if not kind:
+        kind, kind_quote = krt_kind(text or "")
+    fields = card_fields or {}
+    operator_name = ""
+    raw = _SPACE.sub(" ", str(fields.get(_OPERATOR_FIELD) or "")).strip()
+    if raw.casefold() not in _EMPTY_FIELD:
+        operator_name = raw
+    quotes = _quotes(sentences, _OPERATOR_MARKERS)
+    # Реновация — это тоже городские нужды (владелец, 31.08.2026), и КРТ ЖИЛОЙ
+    # застройки — та же история: город расселяет жильцов по своей программе.
+    # Вид КРТ поэтому не просто метка для фильтра, а сам по себе основание —
+    # со своей цитатой, из заголовка решения, а не выданное за фразу документа.
+    needs = _quotes(sentences, _CITY_NEEDS_MARKERS)
+    if kind == "жилой застройки" and kind_quote:
+        needs = list(dict.fromkeys([f"Вид КРТ — жилой застройки: {kind_quote}"] + needs))[:5]
+    return {
+        "probed": bool(probed and (sentences or title or fields)),
+        # Читали ли САМ проект решения. Карточка — тоже документ, но городские
+        # нужды в ней не пишут, и «не найдено в прочитанном документе» без этой
+        # оговорки читалось бы как ответ решения, которого мы не открывали.
+        "decision_read": bool(sentences),
+        "kind": kind,
+        "kind_quote": kind_quote[:300],
+        "city_needs": needs,
+        "operator_name": operator_name,
+        "operator": quotes,
+        # «Занята» — это когда назван тот, кто её берёт. Одного вида КРТ для
+        # такого вывода мало, и цитаты без имени тоже: обе половины признака
+        # видны читателю отдельно.
+        "taken": bool(operator_name or quotes),
+    }
+
+
 def is_planned_project(project: dict[str, Any]) -> bool:
     return "планируем" in str(project.get("status") or "").casefold()
 
@@ -235,6 +335,29 @@ def _sections(document: str) -> dict[str, list[str]]:
     return out
 
 
+def _meta_fields(document: str) -> dict[str, str]:
+    """Служебные строки карточки — как пары «ключ: значение».
+
+    Прежде они только отбрасывались: список `_META_PREFIXES` нужен был, чтобы
+    ТЭП не попадали в перечень обязательств. Вместе с ними выбрасывался и
+    «Застройщик» — то самое имя, по которому видно, что площадка уже занята.
+    Строка при этом может стоять и до первого заголовка, поэтому идём по всему
+    документу, а не по разделам.
+    """
+    out: dict[str, str] = {}
+    for raw in _as_lines(document):
+        text = _plain_line(re.sub(r"^#{1,4}\s+", "", raw.strip()))
+        if ":" not in text:
+            continue
+        key, value = text.split(":", 1)
+        key = key.strip().casefold()
+        if not key or key in out:
+            continue
+        if any(key.startswith(prefix.rstrip(":").strip()) for prefix in _META_PREFIXES):
+            out[key] = value.strip()
+    return out
+
+
 def _facts(lines: list[str]) -> list[str]:
     """Readable, deduplicated statements, including icon-style ``2 / школа`` pairs."""
     paired: list[str] = []
@@ -385,7 +508,7 @@ def _construction_parameters(text: str) -> list[str]:
     return list(dict.fromkeys(result))[:20]
 
 
-def parse_decision_requirements(text: str) -> dict[str, Any]:
+def parse_decision_requirements(text: str, title: str = "") -> dict[str, Any]:
     """Extract duties explicitly present in a project-decision PDF."""
     sentences = _decision_sentences(text)
     permitted_uses = []
@@ -417,6 +540,7 @@ def parse_decision_requirements(text: str) -> dict[str, Any]:
         )
     }
     return {
+        "intent": decision_intent(text, title=title),
         "permitted_uses": list(dict.fromkeys(permitted_uses))[:30],
         "construction": list(dict.fromkeys(construction))[:20],
         "deadlines": list(dict.fromkeys(deadlines))[:5],
@@ -449,6 +573,18 @@ def merge_decision_requirements(
             "preservation", "resettlement",
         )
     }
+    # Вид КРТ и городские нужды берутся из решения — оно и есть документ, где
+    # это сказано. Имя застройщика с карточки при этом не теряется: в решении
+    # его может не быть вовсе.
+    intent = dict(facts.get("intent") or {})
+    from_card = dict(card.get("intent") or {})
+    if not intent.get("operator_name") and from_card.get("operator_name"):
+        intent["operator_name"] = from_card["operator_name"]
+    if not intent.get("kind") and from_card.get("kind"):
+        intent["kind"], intent["kind_quote"] = from_card["kind"], from_card.get("kind_quote", "")
+    intent["taken"] = bool(intent.get("operator_name") or intent.get("operator"))
+    intent["decision_read"] = True
+    result["intent"] = intent
     result["warning"] = (
         "Прочитан опубликованный проект решения. Это проект, а не заключённый договор: "
         "до утверждения требования могут измениться. Отсутствие записи о расселении или "
@@ -493,6 +629,12 @@ def parse_project_requirements(document: str, project: dict[str, Any]) -> dict[s
         key: "published" if result[key] else "not_published_on_project_page"
         for key in ("demolition", "reconstruction", "preservation", "resettlement")
     }
+    # Кто берёт площадку и для чего — из той же карточки, вместе с цитатой.
+    # Проекта решения здесь ещё нет, поэтому городские нужды остаются пустыми:
+    # это «не искали в документе», а не «не нашли».
+    result["intent"] = decision_intent(
+        "", title=str(project.get("name") or ""),
+        card_fields=_meta_fields(document), probed=bool(document.strip()))
     result["warning"] = (
         "Карточка krt.mos.ru — краткая официальная справка. Отсутствие записи о сносе "
         "или расселении не означает, что их нет: точный перечень содержится в проекте "
