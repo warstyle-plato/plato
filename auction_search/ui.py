@@ -65,7 +65,7 @@ __DEVELOPAID_CONTOUR__
       <select id="krtProfile" title="Под какую задачу считать балл: балл собирается арифметикой по каталожным ТЭП krt.mos.ru, без модели и без экономики. Платон появляется отдельной кнопкой в карточке."><option value="housing_ready">Ищем: жильё, готовое к старту</option><option value="housing_pipeline">Ищем: жилищный потенциал</option><option value="business">Ищем: деловую застройку</option></select>
       <div class="filter-actions"><button id="krtRefresh" class="primary">Обновить каталог</button><button id="krtRankBtn">Оценить отобранные моделью</button><button id="krtPressBtn" title="Читает публикации по отобранным площадкам: три поисковых запроса на площадку, не больше 25 за раз. Официальная карточка каталога читается прогоном и поиска не требует.">Прочитать публикации по отобранным</button><button id="krtExport">Выгрузить Excel</button></div>
     </div>
-    <div class="stats"><div class="stat"><b id="krtCount">—</b><span>проектов</span></div><div class="stat"><b id="krtArea">—</b><span>га территории</span></div><div class="stat"><b id="krtHousing">—</b><span>м² жилья</span></div><div class="stat"><b id="krtGfa">—</b><span>м² всего</span></div></div>
+    <div class="stats"><div class="stat"><b id="krtCount">—</b><span id="krtCountNote">проектов</span></div><div class="stat"><b id="krtArea">—</b><span>га территории</span></div><div class="stat"><b id="krtHousing">—</b><span>м² жилья</span></div><div class="stat"><b id="krtGfa">—</b><span>м² всего</span></div></div>
     <details class="fold" id="krtMapFold"><summary>Карта КРТ Москвы — 263 площадки с официальными границами</summary>
       <div class="foldbody"><div id="krtMapBody"><div class="notice">Открой, и карта построится.</div></div></div>
     </details>
@@ -1101,7 +1101,14 @@ function renderKrtFilterNote(){
 const KRT_SORT_NAMES={stage:'по шагу воронки',name:'по названию',score:'по баллу',ceiling:'по потолку входа',
  llcr:'по LLCR',margin:'по марже',status:'по статусу',area:'по площади',
  total:'по общему объёму',housing:'по объёму жилья',jobs:'по рабочим местам'};
-function renderKrt(){const a=state.krtFiltered,body=$('krtRows');body.innerHTML='';renderKrtFilterNote();$('krtEmpty').style.display=a.length?'none':'grid';$('krtCount').textContent=a.length;$('krtArea').textContent=sumKrt(a,'area_ha',1);$('krtHousing').textContent=sumKrt(a,'housing_gfa_sqm',0);$('krtGfa').textContent=sumKrt(a,'total_gfa_sqm',0);a.forEach(x=>{const sc=krtScore(x),model=state.krtModels[x.slug],light=model?.traffic_light,tr=document.createElement('tr');
+function renderKrt(){const a=state.krtFiltered,body=$('krtRows');body.innerHTML='';renderKrtFilterNote();$('krtEmpty').style.display=a.length?'none':'grid';$('krtCount').textContent=a.length;
+ // Плитка показывает ОТОБРАННОЕ, а подписана была просто «проектов»: на экране
+ // 58 при 577 в каталоге, и это читается как пропавший каталог (владелец,
+ // 01.09.2026: «в КРТ осталось 58 объектов, как так»). Число, названное не тем
+ // именем, выглядит посчитанным — и проверить его нечем.
+ const whole=(state.krt||[]).length;
+ $('krtCountNote').textContent=whole&&whole!==a.length
+   ? 'проектов в отборе · всего в каталоге '+whole : 'проектов';$('krtArea').textContent=sumKrt(a,'area_ha',1);$('krtHousing').textContent=sumKrt(a,'housing_gfa_sqm',0);$('krtGfa').textContent=sumKrt(a,'total_gfa_sqm',0);a.forEach(x=>{const sc=krtScore(x),model=state.krtModels[x.slug],light=model?.traffic_light,tr=document.createElement('tr');
  const title=sc.counted?`Потенциал по ТЭП ${sc.base}; расчёт снял ${sc.cut}%. ${light?.label||''}`:('Балл по ТЭП; модель ещё не считалась'+(sc.reason?'. '+sc.reason:''));
  const fresh=x.is_new?'<span class="tag new" title="Появилась в каталоге недавно">новое</span>':'';
  // Строка без карточки честно говорит, чего у неё нет: ТЭП, балла и модели.
