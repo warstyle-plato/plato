@@ -552,7 +552,9 @@ async function askJson(url, init){
    :r.status===502?'сервер не ответил шлюзу'
    :r.status>=500?'сервер ответил ошибкой'
    :'ответ не разобран';
-  const err=new Error(`Каталог не получен: ${why} (код ${r.status}).`+(head?' '+head:''));
+  // Раньше здесь стояло «Каталог не получен» — сообщение, написанное для
+  // каталога и показанное всем: на кнопке публикаций оно называло чужую беду.
+  const err=new Error(`Ответ не разобран: ${why} (код ${r.status}).`+(head?' '+head:''));
   err.status=r.status; err.notJson=true; throw err;
  }
  if(!r.ok){
