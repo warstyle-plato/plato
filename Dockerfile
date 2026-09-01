@@ -7,9 +7,13 @@ FROM python:3.11-slim
 # fontconfig и DejaVu — для PDF: в python:3.11-slim нет ни одного шрифта, а
 # встроенная в PDF гарнитура Helvetica не содержит кириллицы, поэтому отчёт
 # либо не собирается вовсе, либо выходит с пустыми прямоугольниками вместо букв.
+# tesseract с русским нужен распоряжениям о торгах по КРТ: их PDF — сканы, и
+# адрес площадки лежит только в изображении страницы. Без распознавания
+# привязку распоряжения к площадке пришлось бы ставить руками.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       ca-certificates tzdata curl fontconfig fonts-dejavu-core \
+      tesseract-ocr tesseract-ocr-rus \
  && rm -rf /var/lib/apt/lists/*
 
 ENV TZ=Europe/Moscow \

@@ -37,7 +37,14 @@ CATALOGUE_URL = BASE_URL + "/projects/"
 JINA_PREFIX = "https://r.jina.ai/"
 CACHE_SCHEMA_VERSION = 3
 REQUIREMENTS_CACHE_SCHEMA_VERSION = 2
-DECISIONS_CACHE_SCHEMA_VERSION = 1
+# Разбор карточки версионируется отдельно: он меняется чаще требований.
+CARD_FACTS_SCHEMA_VERSION = 1
+DECISIONS_CACHE_SCHEMA_VERSION = 2
+TENDERS_CACHE_SCHEMA_VERSION = 1
+MAP_CACHE_SCHEMA_VERSION = 1
+# Поля записи решения — по ним кэш поднимается обратно в объект.
+_DECISION_FIELDS = ("id", "title", "url", "address", "okrug", "kind",
+                    "published_at", "department")
 _SPACE = re.compile(r"\s+")
 _NUMBER = re.compile(r"[-+]?\d+(?:[.,]\d+)?")
 
@@ -223,6 +230,12 @@ class KrtRegistry:
         # на «какие площадки город показывает», решения — на «о каких он принял
         # решение», и это разные множества.
         self.decisions_path = Path(data_dir) / "krt" / "decisions.json"
+        self.tenders_path = Path(data_dir) / "krt" / "tender_orders.json"
+        self.map_path = Path(data_dir) / "krt" / "map_dataset.json"
+        # Разобранная карточка каталога: застройщик и реновация. Лежит рядом с
+        # требованиями и по тому же правилу — хранится разобранное, не страница.
+        self.card_facts_dir = Path(data_dir) / "krt" / "cards"
+        self.tender_links_path = Path(data_dir) / "krt" / "tender_links.json"
         self.fetch = fetch or (lambda url: request_bytes(url, timeout=15, retries=1))
         self.ttl_seconds = 24 * 60 * 60
         self._refreshing = False
@@ -363,6 +376,40 @@ class KrtRegistry:
             self.refresh_in_background()
         return [row.to_dict() for row in rows]
 
+    def card_facts(self, slug: str, *, refresh: bool = False) -> dict[str, Any]:
+        """Что говорит сама карточка: застройщик и реновация.
+
+        Официальный источник и бесплатный — ни поиска, ни его квоты. Поэтому он
+        идёт первым, а публикации остаются вторым слоем: у планируемой площадки
+        застройщика ещё нет, и карточка о нём честно молчит.
+
+        Читается для ЛЮБОГО статуса, в отличие от требований: решение читают
+        только у планируемых, а имя застройщика ценно как раз у тех, кто уже в
+        реализации — оно отвечает «войти нельзя и вот кто вошёл».
+        """
+        from . import krt_card_facts
+
+        clean = str(slug or "").strip()
+        if not re.fullmatch(r"[a-zA-Z0-9_-]{2,180}", clean):
+            return {"available": False, "reason": "Неверный идентификатор площадки"}
+        path = self.card_facts_dir / f"{clean}.json"
+        cached = load_json(path)
+        if (not refresh and fresh(path, self.ttl_seconds) and isinstance(cached, dict)
+                and cached.get("schema_version") == CARD_FACTS_SCHEMA_VERSION):
+            return cached
+        url = f"{BASE_URL}/projects/{clean}"
+        try:
+            page = self.fetch(url).decode("utf-8", errors="replace")
+        except Exception as exc:  # noqa: BLE001
+            # Не ответила карточка — это «не спросили», а не «застройщика нет».
+            return {"available": False, "slug": clean, "source_url": url,
+                    "reason": f"{type(exc).__name__}: {exc}"}
+        out = krt_card_facts.parse(page)
+        out.update({"schema_version": CARD_FACTS_SCHEMA_VERSION, "available": True,
+                    "slug": clean, "source_url": url})
+        save_json(path, out)
+        return out
+
     def requirements(self, slug: str, *, refresh: bool = False) -> dict[str, Any] | None:
         """Read one planned KRT card and its official project-decision PDF."""
         clean_slug = str(slug or "").strip()
@@ -480,35 +527,212 @@ class KrtRegistry:
     def decisions(self, *, refresh: bool = False, max_pages: int = 60) -> dict[str, Any]:
         """Решения о КРТ и разложение их на «карточка есть» и «карточки нет».
 
+        Кэш держит САМИ решения, а разложение считается на каждом чтении. Иначе
+        площадка, у которой карточка появилась час назад, до суток стоит в
+        списке дважды: строкой каталога и строкой «без карточки» из вчерашнего
+        разложения («когда карточка появится, она обновится в списке?» —
+        владелец, 31.08.2026). Кэшировать надо ответ источника, а не соединение
+        двух списков: второй меняется чаще первого.
+
         Недособранный список, выданный за полный, читается как «таких решений
         больше нет», поэтому `complete` едет вместе с числами, а не вместо них.
         """
         from . import krt_decisions
 
         cached = load_json(self.decisions_path)
+        payload: dict[str, Any] | None = None
         if (not refresh and isinstance(cached, dict)
                 and cached.get("schema_version") == DECISIONS_CACHE_SCHEMA_VERSION
                 and fresh(self.decisions_path, self.ttl_seconds)):
+            payload = dict(cached)
+        if payload is None:
+            found, complete = krt_decisions.collect(self.fetch, max_pages=max_pages)
+            if not found and isinstance(cached, dict) and cached.get("all"):
+                # Источник не ответил — прежний ответ честнее пустого списка, и
+                # он назван прежним.
+                payload = dict(cached)
+                payload["stale"] = True
+            else:
+                payload = {
+                    "schema_version": DECISIONS_CACHE_SCHEMA_VERSION,
+                    "retrieved_at": int(time.time()),
+                    "complete": complete,
+                    "stale": False,
+                    "all": [one.to_dict() for one in found],
+                    "query": krt_decisions.MOS_KRT_QUERY,
+                }
+                save_json(self.decisions_path, payload)
+        rows = [krt_decisions.KrtDecision(**{key: value for key, value in one.items()
+                                             if key in _DECISION_FIELDS})
+                for one in (payload.get("all") or [])]
+        split = krt_decisions.match_catalogue(rows, self.catalogue())
+        out = dict(payload)
+        out["total"] = split["total"]
+        out["matched"] = len(split["matched"])
+        out["decisions"] = [one.to_dict() for one in split["unmatched"]]
+        # Сопоставленные — не только счёт: у площадки каталога появляется дата
+        # её проекта решения и ссылка на документ. Прежде дата была только у
+        # тех, у кого карточки нет, и колонка «Проект решения» у остальных
+        # стояла пустой, будто документа не существует.
+        out["matched_rows"] = [
+            {"slug": one.matched_slug, "published_at": one.published_at,
+             "url": one.url, "title": one.title}
+            for one in split["matched"] if one.matched_slug]
+        return out
+
+    def map_dataset(self, *, refresh: bool = False, step_m: float = 40.0) -> dict[str, Any]:
+        """Реестр КРТ картой: 263 площадки с полигонами официальных границ.
+
+        Постраничный список отдаёт 136, наш прежний снимок держал 124 — то есть
+        половина каталога до нас не доезжала. Здесь весь реестр одним файлом, и
+        у каждой записи есть контур: карточка перестаёт говорить «официальный
+        полигон границ пока не получен».
+        """
+        from . import krt_map_data
+
+        cached = load_json(self.map_path)
+        if (not refresh and isinstance(cached, dict)
+                and cached.get("schema_version") == MAP_CACHE_SCHEMA_VERSION
+                and cached.get("step_m") == step_m
+                and fresh(self.map_path, self.ttl_seconds)):
             return cached
-        found, complete = krt_decisions.collect(self.fetch, max_pages=max_pages)
-        if not found and isinstance(cached, dict) and cached.get("decisions"):
-            # Источник не ответил — прежний ответ честнее пустого списка, и он
-            # назван прежним.
+        try:
+            sites = krt_map_data.read(self.fetch, step_m)
+        except Exception as exc:  # noqa: BLE001
+            if isinstance(cached, dict) and cached.get("sites"):
+                stale = dict(cached)
+                stale["stale"] = True
+                stale["error"] = f"{type(exc).__name__}: {exc}"
+                return stale
+            raise
+        payload = {
+            "schema_version": MAP_CACHE_SCHEMA_VERSION,
+            "retrieved_at": int(time.time()),
+            "source": krt_map_data.DATASET_URL,
+            "step_m": step_m,
+            "stale": False,
+            "count": len(sites),
+            "bbox_merc": krt_map_data.bbox(sites),
+            "sites": sites,
+        }
+        save_json(self.map_path, payload)
+        return payload
+
+    def _read_order_details(self, order: dict[str, Any]) -> dict[str, Any]:
+        """Распознать скан одного распоряжения. Отказ называется, а не молчит."""
+        from . import krt_requirements as requirements
+        from . import krt_tender_orders as orders
+
+        blank = {"ocr_done": False, "ocr_notes": []}
+        if not orders.ocr_available():
+            return {**blank, "ocr_notes": ["в образе нет tesseract — скан не распознать"]}
+        try:
+            page = json.loads(self.fetch(
+                requirements.document_detail_url(str(order.get("id") or ""))).decode("utf-8"))
+            files = json.loads(self.fetch(requirements.document_attachments_url(
+                str(order.get("id") or ""), page.get("institution_id"))).decode("utf-8"))
+            pdf_url = requirements.select_pdf_attachment(files)
+            if not pdf_url:
+                return {**blank, "ocr_notes": ["у распоряжения нет PDF"]}
+            text = orders.ocr(self.fetch(pdf_url))
+        except Exception as exc:  # noqa: BLE001
+            return {**blank, "ocr_notes": [f"{type(exc).__name__}: {exc}"[:200]]}
+        parsed = orders.parse_order(text)
+        return {
+            "address": parsed.get("address", ""),
+            "krt_name": parsed.get("krt_name", ""),
+            "start_price_rub": parsed.get("start_price_rub"),
+            "step_rub": parsed.get("step_rub"),
+            "deposit_rub": parsed.get("deposit_rub"),
+            "ocr_notes": parsed.get("notes") or [],
+            "ocr_done": True,
+        }
+
+    def tender_link(self, slug: str = "") -> dict[str, Any]:
+        """Привязки «распоряжение — площадка», проставленные человеком.
+
+        Машине привязать нечем: адреса в распоряжении нет ни в заголовке, ни в
+        карточке документа, а PDF — скан (семь страниц, 199 картинок на первой,
+        текста только регистрационный штамп). Разложить 53 распоряжения по
+        площадкам может только тот, кто их открыл, поэтому отметка ставится
+        руками и хранится с датой: это утверждение человека, а не наш вывод, и
+        подписано оно так же.
+        """
+        marks = load_json(self.tender_links_path)
+        marks = marks if isinstance(marks, dict) else {}
+        return marks.get(str(slug)) or {} if slug else marks
+
+    def mark_tender(self, slug: str, order: dict[str, Any], who: str = "") -> dict[str, Any]:
+        """Отметить, что по этой площадке объявлены торги — по такому-то документу."""
+        marks = load_json(self.tender_links_path)
+        marks = marks if isinstance(marks, dict) else {}
+        clean = str(slug or "").strip()
+        if not clean:
+            raise ValueError("площадка не названа")
+        if not order:
+            marks.pop(clean, None)
+            save_json(self.tender_links_path, marks)
+            return {}
+        entry = {
+            "order_id": str(order.get("id") or "").strip(),
+            "number": str(order.get("number") or "").strip(),
+            "url": str(order.get("url") or "").strip(),
+            "published_at": int(order.get("published_at") or 0),
+            "kind": str(order.get("kind") or "").strip(),
+            "marked_at": int(time.time()),
+            "marked_by": str(who or "").strip(),
+        }
+        marks[clean] = entry
+        save_json(self.tender_links_path, marks)
+        return entry
+
+    def tender_orders(self, *, refresh: bool = False, max_pages: int = 12) -> dict[str, Any]:
+        """Распоряжения ДГП о проведении торгов по КРТ.
+
+        Адреса в них нет — ни в заголовке, ни в карточке документа, а PDF скан.
+        Поэтому это факт со ссылкой и датой, а не привязка к площадке.
+        """
+        from . import krt_decisions
+
+        cached = load_json(self.tenders_path)
+        if (not refresh and isinstance(cached, dict)
+                and cached.get("schema_version") == TENDERS_CACHE_SCHEMA_VERSION
+                and fresh(self.tenders_path, self.ttl_seconds)):
+            return cached
+        found, complete = krt_decisions.collect_tender_orders(
+            self.fetch, max_pages=max_pages)
+        if not found and isinstance(cached, dict) and cached.get("orders"):
             stale = dict(cached)
             stale["stale"] = True
             return stale
-        split = krt_decisions.match_catalogue(found, self.catalogue())
+        found.sort(key=lambda one: one.get("published_at") or 0, reverse=True)
+        # Адрес площадки лежит в СКАНЕ распоряжения, и другого места у него нет.
+        # Распознаётся один раз и кладётся рядом с записью: без этого привязку
+        # пришлось бы ставить руками, то есть возвращать работу человеку.
+        previous = {str(one.get("id")): one for one in
+                    ((cached or {}).get("orders") or []) if isinstance(one, dict)}
+        for one in found:
+            was = previous.get(str(one.get("id"))) or {}
+            if was.get("ocr_done"):
+                one.update({key: was[key] for key in
+                            ("address", "krt_name", "start_price_rub", "step_rub",
+                             "deposit_rub", "ocr_notes", "ocr_done") if key in was})
+                continue
+            one.update(self._read_order_details(one))
         payload = {
-            "schema_version": DECISIONS_CACHE_SCHEMA_VERSION,
+            "schema_version": TENDERS_CACHE_SCHEMA_VERSION,
             "retrieved_at": int(time.time()),
             "complete": complete,
             "stale": False,
-            "total": split["total"],
-            "matched": len(split["matched"]),
-            "decisions": [one.to_dict() for one in split["unmatched"]],
-            "query": krt_decisions.MOS_KRT_QUERY,
+            "orders": found,
+            "query": krt_decisions.MOS_TENDER_QUERY,
+            # Сказать это обязан сам свод: молча непривязанные распоряжения
+            # читаются как «торгов по нашим площадкам нет».
+            "note": ("Адреса в распоряжении нет: ни в заголовке, ни в карточке "
+                     "документа, а PDF — скан. Привязать распоряжение к площадке "
+                     "нечем; лот на площадке ищется отдельно, по торгам."),
         }
-        save_json(self.decisions_path, payload)
+        save_json(self.tenders_path, payload)
         return payload
 
     def status(self) -> dict[str, bool]:

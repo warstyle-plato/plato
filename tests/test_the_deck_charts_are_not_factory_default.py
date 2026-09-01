@@ -101,7 +101,12 @@ def test_the_text_does_not_wear_the_data_colour() -> None:
     assert str(chart.font.color.rgb) == "5B6B7D"
     labels = chart.plots[0].data_labels
     assert str(labels.font.color.rgb) == "16202B"
-    assert labels.number_format == "#,##0.#" and labels.number_format_is_linked is False
+    # Формат зависит от величины: «#,##0.#» в русской раскладке печатает
+    # разделитель дробной части и там, где дроби нет, — подписи столбиков
+    # стояли как «576 680,» (снимок владельца, 31.08.2026). Крупным числам
+    # дробная часть не нужна вовсе.
+    assert labels.number_format in {"#,##0.#", "#,##0"}
+    assert labels.number_format_is_linked is False
 
 
 def test_the_table_is_not_blue_striped() -> None:
@@ -240,7 +245,10 @@ def test_the_price_per_metre_rides_as_a_line_not_its_own_slide() -> None:
     # объёма. Меры объёма при этом остаются — экран предлагает их
     # переключателем, а в документе переключателя нет.
     assert "₽/м²" not in [item["name"] for item in drawn], "цена ушла столбиками"
-    assert [item["name"] for item in drawn] == ["млн ₽", "Лотов"]
+    # График на раздел один: «Лотов» осталась колонкой таблицы и названа под
+    # графиком — лист на каждую меру давал пустые слайды (владелец, 31.08.2026).
+    assert [item["name"] for item in drawn] == ["млн ₽"]
+    assert drawn[0]["other_measures"] == ["Лотов"]
     assert all([row["name"] for row in item["second"]] == ["₽/м²"] for item in drawn)
     # Одна цена без объёма — сама себе график: показать её иначе нечем.
     alone = sales_deck.charts({"head": ["Месяц", "₽/м²"],
@@ -516,20 +524,25 @@ def test_the_chart_does_not_repeat_the_slide_title() -> None:
     assert chart.has_title is False
 
 
-def test_the_money_measure_leads_and_one_measure_is_one_chart() -> None:
-    """Деньги первыми, а колонки одной меры делят один график.
+def test_the_money_measure_leads_and_the_rest_stay_in_the_table() -> None:
+    """Деньги первыми, а прочие меры — колонками таблицы, не листами.
 
-    Управленцу нужны рубли, штуки и метры при них справочны — поэтому
-    денежная мера идёт первой. Но пропадать они не должны: экран предлагает
-    их переключателем, а в документе переключателя нет.
+    Прежде здесь стояло обратное: лист на каждую меру (владелец, 29.08.2026,
+    «не проще для каждого графика свой слайд сделать?»). На настоящем своде это
+    дало три почти одинаковых столбиковых листа подряд, и на двух из них не
+    было ничего, кроме картинки — «пустые два слайда» (владелец, 31.08.2026).
+    Решение 30.08 — «график на раздел один» — было записано в комментарии, но
+    не доведено до кода; здесь оно и доводится.
+
+    Пропасть меры при этом не должны: они колонками в таблице раздела, которая
+    идёт следом, и названы подписью под графиком (`other_measures`).
     """
     money = sales_deck.charts({
         "head": ["Условие", "Договоров", "млн ₽", "На эскроу, млн ₽"],
         "rows": [["рассрочка", "35", "1 399,4", "573,7"],
                  ["100% оплата", "25", "447,4", "447,4"]]})
-    # Мера группы из одной колонки — её собственное имя: называть «шт» там,
-    # где в отчёте написано «Договоров», значит переписать отчёт.
-    assert [item["measure"] for item in money] == ["млн ₽", "Договоров"]
+    assert [item["measure"] for item in money] == ["млн ₽"]
+    assert money[0]["other_measures"], "мера, ушедшая в таблицу, не названа"
     # Две денежные колонки — один график: «На эскроу» линией рядом с продажами.
     assert [row["name"] for row in money[0]["extra"]] == ["На эскроу, млн ₽"]
 
@@ -923,3 +936,56 @@ def test_the_deck_carries_the_emblem_and_does_not_say_the_name_twice() -> None:
     bare_pictures, bare_texts = built(None)
     assert bare_pictures == []
     assert "DEVELOPAID" in bare_texts, bare_texts
+
+
+def test_a_big_number_gets_no_dangling_separator() -> None:
+    """«576 680,» — это оборванное число, а не подпись."""
+    from pptx.util import Emu  # noqa: F401  (импорт держит зависимость явной)
+
+    from market_search import sales_deck
+
+    table = {"head": ["Квартал", "Цена, ₽/м²"],
+             "rows": [["2026 Q1", "576 680"], ["2026 Q2", "670 281"],
+                      ["2026 Q3", "724 203"]]}
+    drawn = sales_deck.charts(table)
+    assert drawn, "колонка цен читается числом"
+    built = sales_deck.build(
+        [{"title": "Цены", "charted": True, "tables": [table], "lines": [], "strips": [],
+          "note": ""}],
+        title="Проверка", subtitle="", footer="")
+    from pptx import Presentation
+    import io as _io
+    deck = Presentation(_io.BytesIO(built))
+    labels = [shape.chart.plots[0].data_labels for slide in deck.slides
+              for shape in slide.shapes if shape.has_chart]
+    assert labels, "график не построился"
+    assert labels[0].number_format == "#,##0", "у сотен тысяч дробной части нет"
+
+
+def test_a_column_with_the_same_label_in_every_cell_is_still_numeric() -> None:
+    """«900,0 млн ₽» — это число с единицей, а не текст.
+
+    Из-за отказа читать такую ячейку у «Факта против планов» с графика
+    пропадали и факт, и оба плана: числом оставались только цены, у которых
+    подписи в ячейках нет (снимок владельца, 31.08.2026).
+    """
+    from market_search import sales_deck
+
+    table = {"head": ["Квартал", "млн ₽, факт", "млн ₽, план ФМ", "Цена факт, ₽/м²"],
+             "rows": [["2026 Q1", "900,0 млн ₽", "1 100,0 млн ₽", "219 000"],
+                      ["2026 Q2", "990,0 млн ₽", "1 210,0 млн ₽", "219 000"],
+                      ["2026 Q3", "540,0 млн ₽", "660,0 млн ₽", "219 000"]]}
+    drawn = sales_deck.charts(table)
+    assert len(drawn) == 1, "рубли — одна мера, один график"
+    assert drawn[0]["measure"] == "млн ₽"
+    assert [row["name"] for row in drawn[0]["extra"]] == ["млн ₽, план ФМ"]
+    assert [row["name"] for row in drawn[0]["second"]] == ["Цена факт, ₽/м²"]
+
+
+def test_a_column_of_mixed_labels_is_not_a_column() -> None:
+    """Разные подписи в одной колонке — смесь величин, и рисовать её нельзя."""
+    from market_search import sales_deck
+
+    table = {"head": ["Строка", "Значение"],
+             "rows": [["A", "900,0 млн ₽"], ["B", "3,1%"], ["C", "12 шт"]]}
+    assert sales_deck.charts(table) == []

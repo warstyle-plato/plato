@@ -169,3 +169,46 @@ def test_the_same_page_twice_is_the_end_not_a_loop() -> None:
 def test_the_query_is_the_one_that_answered() -> None:
     assert "page=1" in search_url(1) and "per_page=25" in search_url(1, 25)
     assert "aisearch" in search_url(1)
+
+
+# --- Карточка появилась — строка «без карточки» уходит в тот же миг ----------
+#
+# «Когда карточка появится, она обновится в списке?» (владелец, 31.08.2026).
+# Кэш держит сами решения, а разложение считается на каждом чтении: иначе
+# площадка, у которой карточка появилась час назад, до суток стоит в списке
+# дважды — строкой каталога и строкой «без карточки» из вчерашнего разложения.
+
+def test_the_row_disappears_the_moment_the_card_appears(tmp_path) -> None:
+    import json as _json
+
+    from market_search.krt_registry import KrtRegistry
+
+    catalogue: list[dict] = []
+
+    def fetch(url: str) -> bytes:
+        page = int(urlparse(url).query.split("page=")[1].split("&")[0])
+        return _json.dumps({"results": LIVE if page == 1 else []}).encode("utf-8")
+
+    registry = KrtRegistry(tmp_path, fetch=fetch)
+    registry.catalogue = lambda: list(catalogue)  # type: ignore[assignment]
+
+    first = registry.decisions()
+    gaps = [one["address"] for one in first["decisions"]]
+    assert any("Малая Филевская" in line for line in gaps)
+    assert first["matched"] == 0
+
+    # Город завёл карточку — источник при этом не спрашивается заново.
+    catalogue.append({"slug": "malaya-filevskaya", "okrug": "ЗАО",
+                      "name": "ул. Малая Филевская, влд. 9, 11"})
+    calls: list[str] = []
+
+    def refuse(url: str) -> bytes:
+        calls.append(url)
+        raise OSError("источник спрашивать не надо — ответ уже в кэше")
+
+    registry.fetch = refuse  # type: ignore[assignment]
+    second = registry.decisions()
+    assert not calls, "разложение считается на месте, без нового похода в источник"
+    assert second["matched"] == 1
+    assert all("Малая Филевская" not in one["address"] for one in second["decisions"]), \
+        "строка «без карточки» осталась рядом с появившейся карточкой"

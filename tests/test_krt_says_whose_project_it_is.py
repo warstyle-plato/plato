@@ -110,3 +110,32 @@ def test_the_decision_does_not_lose_the_name_from_the_card() -> None:
     assert merged["intent"]["operator_name"] == "АО «Мосинжпроект»"
     assert merged["intent"]["kind"] == "нежилой застройки"
     assert merged["intent"]["city_needs"]
+
+
+def test_renovation_is_a_city_need_and_so_is_krt_of_housing() -> None:
+    """«Реновация — это тоже городские нужды» (владелец, 31.08.2026).
+
+    Двух ответов на один вопрос быть не должно: КРТ жилой застройки — та же
+    история, город расселяет жильцов по своей программе. Вид КРТ поэтому сам по
+    себе основание — со своей цитатой из заголовка, а не выданный за фразу
+    документа.
+    """
+    housing_title = ("Проект решения о комплексном развитии территории жилой застройки "
+                     "города Москвы, расположенной по адресу: г. Москва, ул. Тестовая, вл. 1")
+    intent = decision_intent("Территория развивается поэтапно.", title=housing_title)
+    assert intent["kind"] == "жилой застройки"
+    assert intent["city_needs"], "жилая застройка — городская история, и это должно быть видно"
+    assert "жилой застройки" in intent["city_needs"][0]
+
+    # А нежилая сама по себе городских нужд не означает.
+    other = decision_intent("Территория развивается поэтапно.",
+                            title="… территории нежилой застройки …")
+    assert other["kind"] == "нежилой застройки"
+    assert other["city_needs"] == []
+
+
+def test_the_renovation_word_alone_is_enough() -> None:
+    text = ("Площадка включена в программу реновации жилищного фонда города Москвы. "
+            "Строительство ведётся поэтапно.")
+    got = decision_intent(text, title="… территории нежилой застройки …")
+    assert got["city_needs"] and "реновац" in got["city_needs"][0].lower()
