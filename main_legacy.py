@@ -13283,7 +13283,14 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
               "из ТЭП: изменится нарезка — изменится и темп.", small),
         ]))
     story.append(_PdfSection("financing"));story.append(P("Финансирование и динамика проекта",h2))
-    finance_rows=[["Показатель","Значение"],["Расчётный БРИДЖ",_pdf_money(financing.get('calculated_bridge'))],["Пиковый фактический БРИДЖ (тело долга)",_pdf_money(financing.get('actual_bridge'))],["Собственные средства до ПФ",_pdf_money(financing.get('own_funds'))],["Пик БРИДЖ с капитализацией процентов (справочно)",_pdf_money(financing.get('bridge_peak_capitalized') or financing.get('actual_bridge'))],["Пиковая (непокрытая эскроу) задолженность ПФ",_pdf_money(financing.get('pf_uncovered_peak'))],["Долг ПФ перед раскрытием в РВЭ",_pdf_money(financing.get('rve_pf_before_repayment'))],["Раскрытый эскроу в РВЭ",_pdf_money(financing.get('rve_escrow_release'))],["Остаток ПФ после раскрытия в РВЭ",_pdf_money(financing.get('rve_pf_shortfall'))],["Лимит ПФ",_pdf_money(financing.get('pf_limit'))],["Текущая ключевая ставка",_pdf_pct(financing.get('current_key_rate'))],["Спред БРИДЖ",_pdf_pct(financing.get('bridge_spread'))],["Ставка БРИДЖ на текущей ключевой",_pdf_pct(financing.get('current_bridge_rate'))],["Средняя ключевая за период БРИДЖ",_pdf_pct(financing.get('avg_bridge_key_rate'))],["Средневзвешенная ставка БРИДЖ за период",_pdf_pct(financing.get('avg_bridge_rate'))],["Средняя фактическая ставка ПФ",_pdf_pct(financing.get('avg_pf_effective_rate'))],*_pdf_pf_step_rows(financing),["Проценты и комиссии",_pdf_money(financing.get('interest_and_fees'))],["Непогашенный долг ПФ на конец проекта",_pdf_money(financing.get('ending_pf'))],*([["Долг передан в ПФ следующей очереди",_pdf_money(financing.get('debt_carried_out'))]] if float(financing.get('debt_carried_out') or 0)>500_000 else []),*([["в т.ч. принято от предыдущей очереди",_pdf_money(financing.get('carried_debt_in'))]] if float(financing.get('carried_debt_in') or 0)>500_000 else []),["LLCR",_pdf_num(summary.get('llcr'),2)+"x"]]
+    # Раскрытие эскроу — событие очереди, и у каждой оно своё. На
+    # многоочередном проекте подписи «в РВЭ» называли моментом сумму
+    # разнесённых во времени событий (владелец, 31.08.2026). Величины те же,
+    # но названы итогами; по очередям они стоят в разделе «Очереди проекта».
+    _pdf_phased = len(result.get("comparison") or []) > 1
+    def _pdf_rve_label(base: str) -> str:
+        return f"{base} — всего" if _pdf_phased else f"{base} в РВЭ"
+    finance_rows=[["Показатель","Значение"],["Расчётный БРИДЖ",_pdf_money(financing.get('calculated_bridge'))],["Пиковый фактический БРИДЖ (тело долга)",_pdf_money(financing.get('actual_bridge'))],["Собственные средства до ПФ",_pdf_money(financing.get('own_funds'))],["Пик БРИДЖ с капитализацией процентов (справочно)",_pdf_money(financing.get('bridge_peak_capitalized') or financing.get('actual_bridge'))],["Пиковая (непокрытая эскроу) задолженность ПФ",_pdf_money(financing.get('pf_uncovered_peak'))],[_pdf_rve_label("Долг ПФ перед раскрытием"),_pdf_money(financing.get('rve_pf_before_repayment'))],[_pdf_rve_label("Раскрытый эскроу"),_pdf_money(financing.get('rve_escrow_release'))],["Из него на погашение ПФ",_pdf_money(financing.get('rve_pf_repayment'))],[_pdf_rve_label("Не покрыто эскроу при раскрытии"),_pdf_money(financing.get('rve_pf_shortfall'))],[("Лимит ПФ — сумма по очередям" if _pdf_phased else "Лимит ПФ"),_pdf_money(financing.get('pf_limit'))],["Текущая ключевая ставка",_pdf_pct(financing.get('current_key_rate'))],["Спред БРИДЖ",_pdf_pct(financing.get('bridge_spread'))],["Ставка БРИДЖ на текущей ключевой",_pdf_pct(financing.get('current_bridge_rate'))],["Средняя ключевая за период БРИДЖ",_pdf_pct(financing.get('avg_bridge_key_rate'))],["Средневзвешенная ставка БРИДЖ за период",_pdf_pct(financing.get('avg_bridge_rate'))],["Средняя фактическая ставка ПФ",_pdf_pct(financing.get('avg_pf_effective_rate'))],*_pdf_pf_step_rows(financing),["Проценты и комиссии",_pdf_money(financing.get('interest_and_fees'))],["Непогашенный долг ПФ на конец проекта",_pdf_money(financing.get('ending_pf'))],*([["Долг передан в ПФ следующей очереди",_pdf_money(financing.get('debt_carried_out'))]] if float(financing.get('debt_carried_out') or 0)>500_000 else []),*([["в т.ч. принято от предыдущей очереди",_pdf_money(financing.get('carried_debt_in'))]] if (not _pdf_phased and float(financing.get('carried_debt_in') or 0)>500_000) else []),["LLCR",_pdf_num(summary.get('llcr'),2)+"x"]]
     story.append(table(finance_rows,[112*mm,58*mm],font_size=7.6))
 
     # Restore the bridge-purpose disclosure that exists in the web report.
@@ -14311,15 +14318,24 @@ def _v4_insert_row(xml: str, row: int, body: str, before: int | None) -> tuple[s
     return xml[:at] + f'<x:row r="{row}">' + body + "</x:row>" + xml[at:], True
 
 
-def _v4_write_carry_flag(xml: str, enabled: bool, missing: list[str]) -> str:
-    """Признак переноса долга на «Вводных» — своей строкой, как остальные Да/Нет."""
+def _v4_write_carry_flag(xml: str, enabled: bool, missing: list[str],
+                         sweep_share: float = 0.0) -> str:
+    """Признак переноса долга на «Вводных» — своей строкой, как остальные Да/Нет.
+
+    Доля кэш-свипа стоит в той же строке: это одно и то же событие — очередь
+    отдала долг и с её поступлений банк забирает долю. Отдельной строки для
+    неё в шаблоне нет, а вставлять вторую значило бы двигать заголовок блока
+    ставок.
+    """
     row = int(_V4_CARRY_FLAG_CELL[1:])
     body = (
         f'<x:c r="A{row}" t="str"><x:v>Перенос долга между очередями применён '
         f'(решает гейт по LLCR)</x:v></x:c>'
         f'<x:c r="B{row}" s="12" t="str"><x:v>{"Да" if enabled else "Нет"}</x:v></x:c>'
         f'<x:c r="C{row}" t="str"><x:v>Да / Нет</x:v></x:c>'
-        f'<x:c r="D{row}" t="str"><x:v>carry_debt_applied</x:v></x:c>')
+        f'<x:c r="D{row}" t="str"><x:v>carry_debt_applied</x:v></x:c>'
+        f'<x:c r="E{row}" t="str"><x:v>Кэш-свип: доля поступлений банку</x:v></x:c>'
+        f'<x:c r="F{row}"><x:v>{_v4_number(round(sweep_share, 6))}</x:v></x:c>')
     updated, done = _v4_insert_row(xml, row, body, row + 1)
     if not done:
         missing.append(f"признак переноса долга: строка {row} «Вводных» занята")
@@ -14585,6 +14601,77 @@ def _v4_revenue_by_product(xml: str, products: list[dict[str, Any]],
     return xml
 
 
+# Кэш-свип в книге.
+#
+# Очередь передала долг, но продавать не перестала: строка 12 её листа —
+# «Прямые поступления после РВЭ», и долю от них банк забирает в погашение
+# долга, который теперь несёт следующая. Строка 26 листов CF в шаблоне пуста —
+# ряд встаёт, не сдвигая ссылок; доля лежит на «Вводных» рядом с признаком
+# переноса.
+_V4_SWEEP_ROW = 26
+_V4_SWEEP_SHARE_CELL = "F92"
+
+
+def _v4_apply_cash_sweep(xml: str, phase: int, missing: list[str]) -> str:
+    """Строка 26: сколько принято кэш-свипом с продаж предыдущей очереди.
+
+    Формула — та же, что у движка: доля от прямых поступлений предыдущей
+    очереди, но не больше её долга на этот месяц. Больше, чем должны, банк не
+    берёт; излишек остаётся проекту, и в книге он просто не списывается.
+    """
+    columns = _v4_cf_columns()
+    sheet = f"CF_{phase}"
+    if phase <= 1:
+        formulas = {column: "0" for column in columns}
+    else:
+        previous = f"CF_{phase - 1}"
+        share = f"'Вводные'!${_V4_SWEEP_SHARE_CELL[0]}${_V4_SWEEP_SHARE_CELL[1:]}"
+        flag = f"'Вводные'!${_V4_CARRY_FLAG_CELL[0]}${_V4_CARRY_FLAG_CELL[1:]}=\"Да\""
+        formulas = {}
+        for index, column in enumerate(columns):
+            if index == 0:
+                # В первом месяце передавать ещё нечего.
+                formulas[column] = "0"
+                continue
+            # Свип идёт, только когда предыдущая очередь уже передала долг:
+            # до этого её поступления гасят её собственную линию.
+            handed = f"SUM('{previous}'!$D$65:'{previous}'!${columns[index - 1]}$65)>0"
+            owed = f"MAX(0,{column}38+{column}45+{column}{_V4_CARRY_ACCEPTED_ROW}-{column}46)"
+            formulas[column] = (
+                f"IF(AND({flag},$B$5=1,{handed}),"
+                f"MIN({owed},{share}*'{previous}'!{column}12),0)")
+    body = _v4_carry_row_xml(_V4_SWEEP_ROW, "ПФ — погашение кэш-свипом предыдущей очереди",
+                             formulas)
+    existing = re.search(r'<x:row r="%d"[^>]*>(.*?)</x:row>' % _V4_SWEEP_ROW, xml, re.S)
+    if not existing:
+        missing.append(f"{sheet}: строка {_V4_SWEEP_ROW} не найдена")
+        return xml
+    if "<x:v>" in existing.group(1) or "<x:f>" in existing.group(1):
+        missing.append(f"{sheet}: строка {_V4_SWEEP_ROW} занята")
+        return xml
+    xml = xml[:existing.start()] + body + xml[existing.end():]
+    # Долг на конец и его самопроверка обязаны увидеть свип, иначе книга
+    # покажет погашение и тот же долг.
+    for row, pattern, replacement in (
+            (47, "{c}38+{c}45+{c}64-{c}46-{c}65", "{c}38+{c}45+{c}64-{c}46-{c}65-{c}26"),
+            (61, "{c}38+{c}45+{c}64-{c}46-{c}65", "{c}38+{c}45+{c}64-{c}46-{c}65-{c}26")):
+        for column in columns:
+            old = pattern.format(c=column)
+            new = replacement.format(c=column)
+            marker = f'<x:c r="{column}{row}"'
+            at = xml.find(marker)
+            if at < 0:
+                missing.append(f"{sheet}: ячейка {column}{row} не найдена")
+                break
+            end = xml.find("</x:c>", at)
+            cell = xml[at:end]
+            if old not in cell:
+                missing.append(f"{sheet}: формула {column}{row} не опознана")
+                break
+            xml = xml[:at] + cell.replace(old, new, 1) + xml[end:]
+    return xml
+
+
 _V4_CARRY_PARITY_ROW = 85
 
 
@@ -14629,6 +14716,32 @@ def _v4_add_report_default_row(xml: str, missing: list[str]) -> str:
         if not done:
             missing.append(f"ОТЧЁТ: ячейка {coord} не найдена")
     return xml
+
+
+def _v4_relax_limit_check_for_carried_debt(xml: str, missing: list[str]) -> str:
+    """Проверка 72 книги не знает, что принятый долг лимита не выбирает.
+
+    Лимит покрывает только тело, выбранное этой очередью; долг, переоформленный
+    с предыдущей, приходит на линию, не выбирая лимита (решение владельца,
+    27.08.2026). Проверка сравнивала пик ПФ с лимитом как есть и на любом
+    проекте с переносом кричала «превышение», которого по методике нет.
+    Кричащая зря проверка хуже отсутствующей: её перестают читать.
+    """
+    row = 72
+    found = re.search(r'<x:c r="B%d"[^>]*>(.*?)</x:c>' % row, xml, re.S)
+    if not found:
+        missing.append(f"ПРОВЕРКИ: ячейка B{row} не найдена")
+        return xml
+    body = found.group(1)
+    changed = body
+    for phase in range(1, 5):
+        old = f"'CF_{phase}'!B83-"
+        new = f"'CF_{phase}'!B83-'CF_{phase}'!$B${_V4_CARRY_ACCEPTED_ROW}-"
+        if old not in changed:
+            missing.append(f"ПРОВЕРКИ: формула B{row} не опознана (очередь {phase})")
+            return xml
+        changed = changed.replace(old, new, 1)
+    return xml[:found.start(1)] + changed + xml[found.end(1):]
 
 
 def _v4_add_carry_parity_row(xml: str, target_mln: float, missing: list[str]) -> str:
@@ -14894,6 +15007,14 @@ def _v4_finance_hints(bundle: dict[str, Any]) -> dict[str, Any]:
     # долг там, где банк отказал, и показала бы очередь рассчитавшейся, пока
     # отчёт зовёт её дефолтной.
     hints["carry_applied"] = bool((bundle.get("debt_carry") or {}).get("applied"))
+    # Доля кэш-свипа: книга берёт её оттуда же, откуда признак переноса.
+    # Свип без переноса не бывает — долг остаётся на своей очереди.
+    hints["cash_sweep_share"] = (
+        max((float((item.get("result") or {}).get("finance", {}).get("cash_sweep_pct") or 0.0)
+             for item in phases), default=0.0) / 100.0
+        if hints["carry_applied"] and any(
+            float((item.get("result") or {}).get("finance", {}).get("bank_sweep_out") or 0.0) > 0
+            for item in phases) else 0.0)
     hints["carried_debt_mln"] = sum(
         float((item.get("result") or {}).get("finance", {}).get("debt_carried_out") or 0.0)
         for item in phases) / 1e6
@@ -15003,7 +15124,8 @@ def build_project_workbook(
     # но живёт в phasing, а не во вводных проекта: это условие сделки с банком,
     # а не свойство площадки.
     xml = _v4_write_carry_flag(
-        xml, bool((finance_hints or {}).get("carry_applied")), missing)
+        xml, bool((finance_hints or {}).get("carry_applied")), missing,
+        sweep_share=float((finance_hints or {}).get("cash_sweep_share") or 0.0))
 
     # Ставка, ушедшая от базы класса, помечается рядом со значением: молча
     # книга и отчёт «одного класса» разойдутся, и оба будут выглядеть верно.
@@ -15345,8 +15467,10 @@ def build_project_workbook(
             missing.append(f"{_name}: лист не найден")
             continue
         cf_sheet_paths[_name] = _path
-        cf_sheet_xml[_name] = _v4_apply_debt_carry(
-            source.read(_path).decode("utf-8"), _phase, _queue_count, missing)
+        cf_sheet_xml[_name] = _v4_apply_cash_sweep(
+            _v4_apply_debt_carry(
+                source.read(_path).decode("utf-8"), _phase, _queue_count, missing),
+            _phase, missing)
 
     # Выручка очереди по продуктам: на экране разбивка есть, а в книге жила
     # только в снятой выгрузке детализации.
@@ -15356,7 +15480,8 @@ def build_project_workbook(
         list((finance_hints or {}).get("revenue_products") or []), missing)
 
     checks_sheet_path = _v4_sheet_path(source, "ПРОВЕРКИ")
-    checks_xml = source.read(checks_sheet_path).decode("utf-8")
+    checks_xml = _v4_relax_limit_check_for_carried_debt(
+        source.read(checks_sheet_path).decode("utf-8"), missing)
     _parity = (finance_hints or {}).get("parity") or {}
     if _parity:
         _parity_rows = (
@@ -20140,6 +20265,27 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     # The schedule is dated: a receipt in July cannot fund another queue in
     # June.  This is deliberately an internal input of the atomic engine; a
     # standalone project never invents project cash for itself.
+    # Накопленная касса проекта доезжает до очереди всегда: банк заберёт её в
+    # РВЭ, если раскрытого эскроу не хватило (владелец, 31.08.2026). А вот
+    # финансировать ею расходы до РнС — отдельное решение, это стратегия
+    # «единая касса проекта». Пул один, поэтому дважды одни деньги не потратить.
+    project_cash_funds_costs = bool(x.get("_phase_project_cash_funds_costs"))
+    # Признак, а не умолчание: книга сметания пока не знает, и включённое по
+    # умолчанию оно развело бы движок с выгрузкой молча — на проверочном
+    # проекте это 246 млн ₽ стоимости финансирования и 185 млн чистой прибыли.
+    # Тем же порядком заводили перенос долга между очередями.
+    sweep_project_cash = bool(x.get("_phase_sweep_project_cash"))
+    # Доля поступлений, которую банк забирает напрямую в погашение у очереди,
+    # передавшей свой долг дальше. Остальное остаётся проекту резервом:
+    # застройщику из этих денег платить содержание, налоги и комиссии
+    # (владелец, 31.08.2026).
+    cash_sweep_share = min(max(n(x, "_phase_cash_sweep_pct", 80.0) / 100.0, 0.0), 1.0)
+    bank_sweep_schedule: dict[date, float] = {}
+    for raw_month, raw_value in (x.get("_phase_bank_sweep_schedule") or {}).items():
+        try:
+            bank_sweep_schedule[d(raw_month)] = max(0.0, float(raw_value or 0.0))
+        except Exception:
+            continue
     project_cash_schedule: dict[date, float] = defaultdict(float)
     for raw_month, raw_value in (x.get("_phase_project_cash_schedule") or {}).items():
         try:
@@ -20185,6 +20331,16 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
             value for month, value in project_cash_schedule.items()
             if month < project_start)
         project_cash_used = 0.0
+        # Сколько накопленной кассы проекта ушло банку в РВЭ и в каком месяце.
+        project_cash_sweep = 0.0
+        sweep_month: date | None = None
+        # Сколько эта очередь отдала банку по кэш-свипу после передачи долга.
+        bank_sweep_out_total = 0.0
+        bank_sweep_out_by_month: dict[date, float] = {}
+        bank_sweep_out = 0.0
+        # Возврат проекту: свип пришёл, а гасить уже нечего.
+        bank_sweep_returned = 0.0
+        sweep_returned = 0.0
         pf_shortfall_total = 0.0
         pf_shortfall_month: date | None = None
         bridge_balance = 0.0
@@ -20264,7 +20420,8 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
             special_rate = base_special_rate
 
             bridge_draw = bridge_repayment = bridge_interest = bridge_cap = 0.0
-            own_draw = project_cash_draw = 0.0
+            own_draw = project_cash_draw = sweep_draw = bank_sweep_out = 0.0
+            sweep_returned = 0.0
             pf_draw = pf_repayment = pf_interest = pf_cap = limit_fee = 0.0
             interest_payment = 0.0
             escrow_release = 0.0
@@ -20306,7 +20463,8 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
                 # В едином потоке уже заработанный cash проекта идёт первым:
                 # он уменьшает новую внешнюю потребность. Затем используются
                 # заявленные собственные средства, остаток выбирается БРИДЖем.
-                project_cash_draw = min(project_cash_available, need)
+                project_cash_draw = (min(project_cash_available, need)
+                                     if project_cash_funds_costs else 0.0)
                 project_cash_available -= project_cash_draw
                 project_cash_used += project_cash_draw
                 need -= project_cash_draw
@@ -20417,10 +20575,47 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
                 elif month > rve:
                     available_for_repayment = sales
 
+                # Линия закрыта — свой долг гасить нечем, но продажи идут, и по
+                # кэш-свипу доля поступлений уходит банку в погашение долга,
+                # который теперь несёт следующая очередь. Расписание собирает
+                # обёртка: своего баланса чужой очереди этот расчёт не знает.
+                if line_closed and month > rve and sweep_project_cash and sales > 0:
+                    bank_sweep_out = sales * cash_sweep_share
+                    bank_sweep_out_total += bank_sweep_out
+                    bank_sweep_out_by_month[month] = bank_sweep_out
+
                 if available_for_repayment > 0 and pf_balance > 0 and not line_closed:
                     pf_repayment = min(available_for_repayment, pf_balance)
                     pf_balance -= pf_repayment
                     pf_repayment_total += pf_repayment
+
+                # Кэш-свип: очередь передала долг, но продавать не перестала,
+                # и банк забирает долю её поступлений напрямую в погашение —
+                # обычно 80%, остальное остаётся проекту резервом (владелец,
+                # 31.08.2026). Деньги приходят помесячно, а не одним куском в
+                # РВЭ: долг гасится раньше, и процентов меньше. Доля берётся от
+                # ВЫРУЧКИ, а не от свободной кассы: банк смотрит на поступления
+                # на счёт, а не на то, что у застройщика осталось после трат.
+                incoming = bank_sweep_schedule.get(month, 0.0)
+                if incoming > 0:
+                    swept = (min(incoming, pf_balance)
+                             if pf_balance > 0 and not line_closed else 0.0)
+                    if swept > 0:
+                        project_cash_sweep += swept
+                        sweep_draw = swept
+                        pf_balance -= swept
+                        pf_repayment_total += swept
+                        pf_repayment += swept
+                        sweep_month = month
+                    # Банк забирает не больше, чем ему должны. Долг закрыт —
+                    # свип прекращается, и то, что передавшая очередь уже
+                    # отдала сверх нужного, возвращается проекту. Без этого
+                    # деньги растворялись бы: из её кассы вычтены, а долг ими
+                    # не гасится.
+                    returned = incoming - swept
+                    if returned > 0:
+                        bank_sweep_returned += returned
+                        sweep_returned = returned
 
                 # Момент истины. Раскрытого эскроу не хватило — период
                 # доступности кончился, НКЛ закрывается, и дальше у долга ровно
@@ -20482,6 +20677,14 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
                 "bridge_rate": bridge_rate,
                 "bridge_draw": bridge_draw,
                 "project_cash_draw": project_cash_draw,
+                # Касса проекта, ушедшая банку в РВЭ. Отдельно от draw: то
+                # финансирует расходы до РнС, это гасит долг — разные события,
+                # и складывать их в одну строку значит потерять оба.
+                "project_cash_sweep": sweep_draw,
+                # Ушло банку по кэш-свипу с продаж этой очереди после передачи
+                # долга: её касса это теряет, а долг следующей уменьшает.
+                "bank_sweep_out": bank_sweep_out,
+                "bank_sweep_returned": sweep_returned,
                 "own_funds_draw": own_draw,
                 # Погашение тела БРИДЖа рефинансированием строка не отдавала, а
                 # поток на собственный капитал его спрашивал: получал ноль и
@@ -20544,6 +20747,14 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
             "transferred_bridge_interest": transferred_bridge_interest,
             "peak_bridge": max((r["bridge_balance"] for r in rows), default=0.0),
             "project_cash_used": project_cash_used,
+            # Накопленная касса проекта, ушедшая банку в РВЭ этой очереди.
+            "project_cash_sweep": project_cash_sweep,
+            "project_cash_sweep_month": sweep_month.isoformat() if sweep_month else None,
+            "bank_sweep_out": bank_sweep_out_total,
+            "bank_sweep_returned": bank_sweep_returned,
+            "bank_sweep_out_schedule": {
+                month.isoformat(): value for month, value in bank_sweep_out_by_month.items()},
+            "cash_sweep_pct": cash_sweep_share * 100.0,
             "project_cash_available_unused": project_cash_available,
             "own_funds_used": own_funds_used,
             "own_funds_available": own_funds_total,
@@ -21192,9 +21403,15 @@ def calculate(req: CalcRequest) -> dict:
         project_cf.append(revenue_m - capex_m - opex_m - int_pay - fees - tax)
         escrow_release = float(fr.get("escrow_release", 0.0) or 0.0)
         cash_revenue_to_equity = 0.0 if month < op["rve"] else revenue_m + escrow_release
+        # Кэш-свип уходит банку с поступлений этой очереди: её долг он не
+        # гасит (линия закрыта), поэтому в pf_repay его нет, а из кассы он
+        # выбывает. Без этого вычета деньги посчитались бы дважды — здесь как
+        # оставшиеся застройщику, и у следующей очереди как погашение.
         equity_cf.append(
             cash_revenue_to_equity - capex_m - opex_m - int_pay - fees - tax
             + bridge_draw + pf_draw - bridge_repay - pf_repay
+            - float(fr.get("bank_sweep_out", 0.0) or 0.0)
+            + float(fr.get("bank_sweep_returned", 0.0) or 0.0)
         )
 
     if project_cf:
@@ -21508,6 +21725,11 @@ def calculate(req: CalcRequest) -> dict:
                 "pf_uncovered_peak": fin.get("peak_uncovered_pf", 0.0),
                 "rve_pf_before_repayment": fin.get("rve_pf_before_repayment", 0.0),
                 "rve_escrow_release": fin.get("rve_escrow_release", 0.0),
+                # Раскрытое и погашенное — разные величины: эскроу гасит СВОЙ
+                # ПФ, излишек уходит в кассу. Ключ считался, суммировался по
+                # очередям и до экрана не доезжал — строка «Из него на
+                # погашение ПФ» показывала ноль на любом проекте.
+                "rve_pf_repayment": fin.get("rve_pf_repayment", 0.0),
                 "rve_pf_shortfall": fin.get("rve_pf_shortfall", 0.0),
                 # Чем эскроу перекрывает обязательство — считается один раз в
                 # движке. Ключ, добавленный только в `finance`, до поверхностей
@@ -22048,6 +22270,19 @@ def _combine_cashflows(results: list[dict[str, Any]], master_start: date) -> tup
     )
 
 
+def _sweep_project_cash_enabled(phasing: dict[str, Any]) -> bool:
+    """Кэш-свип включён, если его явно не выключили.
+
+    Правило то же, что у платы за ВРИ: отсутствующий ключ — «не задано», а не
+    «снято». Проект, сохранённый до появления признака, приедет без него, и
+    прочитать это как выключенный значит молча посчитать его по прежней
+    методике — той, где деньги от продаж передавшей очереди лежат у
+    застройщика, пока банку не заплачено.
+    """
+    value = (phasing or {}).get("sweep_project_cash")
+    return True if value is None else bool(value)
+
+
 def _phase_financing_strategy(phasing: dict[str, Any]) -> str:
     """Normalize the public strategy; independent financing is the default."""
     raw = str(phasing.get("financing_strategy") or "").strip().lower()
@@ -22093,6 +22328,10 @@ def _consume_project_cash_sources(
     transfers: list[dict[str, Any]] = []
     ordered = sorted(sources, key=lambda item: (str(item["month"]), int(item["phase"])))
     for row in (result.get("finance") or {}).get("rows") or []:
+        # Только финансирование расходов: кэш-свип берётся не из общего пула
+        # свободной кассы, а прямо с поступлений передавшей очереди, и из её
+        # потока на капитал уже вычтен. Списать его отсюда значит вычесть одни
+        # деньги дважды — пул опустеет там, где он полон.
         remaining_draw = float(row.get("project_cash_draw", 0.0) or 0.0)
         if remaining_draw <= 1e-6:
             continue
@@ -22983,6 +23222,7 @@ def _consolidate_phase_results(
                 "pf_uncovered_peak": finance["peak_uncovered_pf"],
                 "rve_pf_before_repayment": finance.get("rve_pf_before_repayment", 0.0),
                 "rve_escrow_release": finance.get("rve_escrow_release", 0.0),
+                "rve_pf_repayment": finance.get("rve_pf_repayment", 0.0),
                 "rve_pf_shortfall": finance.get("rve_pf_shortfall", 0.0),
                 # На своде дата раскрытия у каждой очереди своя, поэтому здесь
                 # свод разрыва по месяцам, а поимённые ответы — рядом списком.
@@ -23479,22 +23719,44 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
         if idx < len(leaves) and leaves[idx]:
             p_inputs["_phase_debt_leaves_at_rve"] = True
 
-        if financing_strategy == "unified_project_cash" and idx > 0:
+        if idx > 0:
             p_inputs["_phase_project_cash_schedule"] = (
                 _available_project_cash_schedule(project_cash_sources))
+        if financing_strategy == "unified_project_cash":
+            p_inputs["_phase_project_cash_funds_costs"] = True
+        # Умолчание — включено (владелец, 31.08.2026: «в реальности иначе быть
+        # не может»). Отсутствующий ключ — это «не задано», а не «снято»:
+        # старые сохранённые проекты приезжают без него, и читать его как
+        # выключенный значило бы молча считать их по прежней методике.
+        # Снятая галочка приходит явным false — вот она и выключает.
+        if _sweep_project_cash_enabled(phasing):
+            p_inputs["_phase_sweep_project_cash"] = True
+            p_inputs["_phase_cash_sweep_pct"] = float(
+                phasing.get("cash_sweep_pct") or 80.0)
+            # Что предыдущая очередь отдаёт банку помесячно — приходит сюда в
+            # погашение принятого долга. Расписание собирается из уже
+            # посчитанной очереди: своего баланса она не знает, а эта не знает
+            # её продаж.
+            if idx > 0 and phase_items:
+                previous = (phase_items[-1].get("result") or {}).get("finance") or {}
+                schedule = previous.get("bank_sweep_out_schedule") or {}
+                if schedule:
+                    p_inputs["_phase_bank_sweep_schedule"] = dict(schedule)
 
         result = calculate(CalcRequest(inputs=p_inputs, tep=p_tep, rates=rates))
 
-        if financing_strategy == "unified_project_cash":
-            project_cash_transfers.extend(_consume_project_cash_sources(
-                project_cash_sources, result, idx + 1))
-            for cash_month, amount in _phase_free_cash_schedule(result):
-                project_cash_sources.append({
-                    "phase": idx + 1,
-                    "month": cash_month.isoformat(),
-                    "amount": amount,
-                    "remaining": amount,
-                })
+        project_cash_transfers.extend(_consume_project_cash_sources(
+            project_cash_sources, result, idx + 1))
+        # Свободная касса очереди копится всегда: при единой стратегии ею
+        # финансируются расходы следующей, при любой — банк заберёт её в РВЭ,
+        # если эскроу не хватило.
+        for cash_month, amount in _phase_free_cash_schedule(result):
+            project_cash_sources.append({
+                "phase": idx + 1,
+                "month": cash_month.isoformat(),
+                "amount": amount,
+                "remaining": amount,
+            })
 
         cash_shared = sum(shared_base_mln[k]*cash_weights[k][idx]/100*scenario_cost for k in shared_base_mln)*1_000_000
         allocated_shared = sum(shared_base_mln[k]*allocation_weights[k][idx]/100*scenario_cost for k in shared_base_mln)*1_000_000
@@ -23558,6 +23820,17 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
                 for item in (result.get("report") or {}).get("products") or []},
             "cash_shared_cost":cash_shared,"allocated_shared_cost":allocated_shared,
             "peak_bridge":result["finance"]["peak_bridge"],"peak_pf":result["finance"]["peak_pf"],
+            # Раскрытие эскроу — событие очереди, а не проекта: у каждой своя
+            # дата РВЭ, свой лимит и свой остаток. В своде эти строки
+            # складывались под именами моментов и читались как одно событие
+            # (владелец, 31.08.2026: «раскрытый эскроу в РВЭ — какое из них?»).
+            # Место им — здесь, рядом с именем очереди.
+            "rve": str((result.get("dates") or {}).get("rve") or ""),
+            "pf_limit": result["finance"].get("pf_limit", 0.0),
+            "rve_pf_before_repayment": result["finance"].get("rve_pf_before_repayment", 0.0),
+            "rve_escrow_release": result["finance"].get("rve_escrow_release", 0.0),
+            "rve_pf_repayment": result["finance"].get("rve_pf_repayment", 0.0),
+            "rve_pf_shortfall": result["finance"].get("rve_pf_shortfall", 0.0),
             # Непогашенный долг очереди в таблице сравнения не выводился вовсе:
             # очередь, не рассчитавшаяся с банком, выглядела в ней так же, как
             # закрывшая долг, — разница пряталась в отдельной карточке отчёта
@@ -30676,6 +30949,8 @@ details.cadastral-box>summary::marker{color:#888}
         <div class="note">В едином потоке уже полученный свободный cash предыдущих очередей после обслуживания их долга уменьшает затраты следующей очереди до РНС. Эскроу, будущая прибыль, лимиты БРИДЖ/ПФ и банковский долг другой очереди не используются.</div>
         <div style="display:grid;gap:8px;margin:12px 0 4px">
           <label><input id="phaseCarryDebt" type="checkbox" onchange="setPhaseCarryDebt(this.checked)"> Непогашенный долг очереди переходит в ПФ следующей</label>
+          <label title="Очередь передала долг, но продавать не перестала. Банк забирает долю её поступлений напрямую в погашение; остальное остаётся резервом проекта."><input id="phaseSweepCash" type="checkbox" onchange="setPhaseSweepCash(this.checked)"> Кэш-свип: банк забирает долю поступлений очереди, передавшей долг</label>
+          <label style="margin-left:18px">доля банку, %: <input id="phaseSweepPct" type="number" min="0" max="100" step="5" style="width:64px" onchange="setPhaseSweepPct(this.value)"></label>
         </div>
         <div class="note">Долг принимается в дату открытия ПФ следующей очереди по генеральному соглашению: лимита он не выбирает, но проценты несёт как тело и разбавляет покрытие эскроу, а в знаменателе LLCR принявшей очереди стоит. Перенос допустим только если общий LLCR проекта не ниже 1,00x — иначе банк не спасает проект, а откладывает дефолт, и перенос отказывается с названной причиной. Excel-книга о переносе пока не знает: с включённым признаком её финансирование разойдётся с отчётом.</div>
         <div id="phaseFinancingSummary" class="phase-status" style="margin:10px 0">Выполните расчёт очередей.</div>
@@ -31503,7 +31778,7 @@ function frontLoadedPreset(count,kind){
 }
 function makeDefaultPhasing(count=1){
  const w=phaseWeightPreset(count);
- return {enabled:false,user_enabled:false,default_version:'0.12.25',phase_count:count,target_size_sqm:70000,phase_gap_months:12,cost_inflation_pct:8,sales_price_inflation_pct:8,financing_strategy:'independent',carry_debt_forward:false,
+ return {enabled:false,user_enabled:false,default_version:'0.12.25',phase_count:count,target_size_sqm:70000,phase_gap_months:12,cost_inflation_pct:8,sales_price_inflation_pct:8,financing_strategy:'independent',carry_debt_forward:false,sweep_project_cash:true,cash_sweep_pct:80,
   phases:Array.from({length:count},(_,i)=>({name:`О${i+1}`,start_offset_months:i*12,construction_months:Number(INPUT_DEFAULT.construction_months||24),products:{}})),
   products:{apartments:[...w],ground_commercial:[...w],underground_parking:[...w],storage:[...w]},
   shared_cash:{purchase:frontLoadedPreset(count,'purchase'),land_rights:frontLoadedPreset(count,'land_rights'),ird:frontLoadedPreset(count,'ird'),design:frontLoadedPreset(count,'design'),preparation:frontLoadedPreset(count,'preparation'),utilities:frontLoadedPreset(count,'utilities'),social_compensation:frontLoadedPreset(count,'social_compensation')},
@@ -32090,19 +32365,32 @@ function currentPhaseFinancingStrategy(){
 function setPhaseCarryDebt(value){
  phasing.carry_debt_forward=!!value;renderPhasing();calculate();
 }
+// Деньги от продаж прошлых очередей копятся у застройщика, пока строится
+// следующая. Банк в дату раскрытия заберёт их раньше, чем станет
+// переоформлять долг: они уже на счету, а перенос — его одолжение
+// (владелец, 31.08.2026). Признак, а не умолчание: книга сметания пока не
+// знает, и молча они разойдутся.
+function setPhaseSweepCash(value){
+ phasing.sweep_project_cash=!!value;renderPhasing();calculate();
+}
+function setPhaseSweepPct(value){
+ const v=Number(String(value).replace(',','.'));
+ phasing.cash_sweep_pct=isFinite(v)?Math.min(100,Math.max(0,v)):80;
+ renderPhasing();calculate();
+}
 function togglePhasing(v){
  if(v&&Number(phasing.phase_count||1)<=1){
-   const t=phasing.target_size_sqm||70000,g=phasing.phase_gap_months||12,cinf=Number(phasing.cost_inflation_pct??8),pinf=Number(phasing.sales_price_inflation_pct??8),strategy=currentPhaseFinancingStrategy(),carry=!!phasing.carry_debt_forward;
+   const t=phasing.target_size_sqm||70000,g=phasing.phase_gap_months||12,cinf=Number(phasing.cost_inflation_pct??8),pinf=Number(phasing.sales_price_inflation_pct??8),strategy=currentPhaseFinancingStrategy(),carry=!!phasing.carry_debt_forward,sweep=phasing.sweep_project_cash!==false,sweepPct=Number(phasing.cash_sweep_pct??80);
    phasing=makeDefaultPhasing(Math.max(2,recommendationCount()));
-   phasing.target_size_sqm=t;phasing.phase_gap_months=g;phasing.cost_inflation_pct=cinf;phasing.sales_price_inflation_pct=pinf;phasing.financing_strategy=strategy;phasing.carry_debt_forward=carry;
+   phasing.target_size_sqm=t;phasing.phase_gap_months=g;phasing.cost_inflation_pct=cinf;phasing.sales_price_inflation_pct=pinf;phasing.financing_strategy=strategy;phasing.carry_debt_forward=carry;phasing.sweep_project_cash=sweep;phasing.cash_sweep_pct=sweepPct;
  }
  phasing.enabled=!!v;phasing.user_enabled=!!v;
  if(v&&!phasing.social_objects.length&&inputs.social_mode==='Строительство')autoSocialObjects(false);
  normalizeSocialObjectDates();renderInputs();renderPhasing();calculate()
 }
-function setPhaseCount(count){const e=phasing.enabled&&Number(count)>1,t=phasing.target_size_sqm||70000,g=phasing.phase_gap_months||12,cinf=Number(phasing.cost_inflation_pct??8),pinf=Number(phasing.sales_price_inflation_pct??8),strategy=currentPhaseFinancingStrategy(),carry=!!phasing.carry_debt_forward;phasing=makeDefaultPhasing(Math.max(1,Math.min(5,count)));phasing.enabled=e;phasing.user_enabled=e;phasing.target_size_sqm=t;phasing.phase_gap_months=g;phasing.cost_inflation_pct=cinf;phasing.sales_price_inflation_pct=pinf;phasing.financing_strategy=strategy;phasing.carry_debt_forward=carry;phasing.phases.forEach((p,i)=>p.start_offset_months=i*g);autoSocialObjects(false);normalizeSocialObjectDates();renderInputs();renderPhasing();calculate()}
+function setPhaseCount(count){const e=phasing.enabled&&Number(count)>1,t=phasing.target_size_sqm||70000,g=phasing.phase_gap_months||12,cinf=Number(phasing.cost_inflation_pct??8),pinf=Number(phasing.sales_price_inflation_pct??8),strategy=currentPhaseFinancingStrategy(),carry=!!phasing.carry_debt_forward,sweep=phasing.sweep_project_cash!==false,sweepPct=Number(phasing.cash_sweep_pct??80);phasing=makeDefaultPhasing(Math.max(1,Math.min(5,count)));phasing.enabled=e;phasing.user_enabled=e;phasing.target_size_sqm=t;phasing.phase_gap_months=g;phasing.cost_inflation_pct=cinf;phasing.sales_price_inflation_pct=pinf;phasing.financing_strategy=strategy;phasing.carry_debt_forward=carry;phasing.sweep_project_cash=sweep;phasing.cash_sweep_pct=sweepPct;phasing.phases.forEach((p,i)=>p.start_offset_months=i*g);autoSocialObjects(false);normalizeSocialObjectDates();renderInputs();renderPhasing();calculate()}
 function autoPhaseDates(){phasing.phases.forEach((p,i)=>p.start_offset_months=i*Number(phasing.phase_gap_months||12));normalizeSocialObjectDates();renderPhasing();calculate()}
-function autoSuggestPhasing(){const c=recommendationCount(),cinf=Number(phasing.cost_inflation_pct??8),pinf=Number(phasing.sales_price_inflation_pct??8),strategy=currentPhaseFinancingStrategy(),carry=!!phasing.carry_debt_forward;phasing=makeDefaultPhasing(c);phasing.enabled=c>1;phasing.user_enabled=c>1;phasing.cost_inflation_pct=cinf;phasing.sales_price_inflation_pct=pinf;phasing.financing_strategy=strategy;phasing.carry_debt_forward=carry;phasing.target_size_sqm=Number(document.getElementById('phaseTargetSize')?.value||70000);phasing.phase_gap_months=Number(document.getElementById('phaseGap')?.value||12);phasing.phases.forEach((p,i)=>p.start_offset_months=i*phasing.phase_gap_months);autoSocialObjects(false);renderPhasing();calculate()}
+function autoSuggestPhasing(){const c=recommendationCount(),cinf=Number(phasing.cost_inflation_pct??8),pinf=Number(phasing.sales_price_inflation_pct??8),strategy=currentPhaseFinancingStrategy(),carry=!!phasing.carry_debt_forward,sweep=phasing.sweep_project_cash!==false,sweepPct=Number(phasing.cash_sweep_pct??80);phasing=makeDefaultPhasing(c);phasing.enabled=c>1;phasing.user_enabled=c>1;phasing.cost_inflation_pct=cinf;phasing.sales_price_inflation_pct=pinf;phasing.financing_strategy=strategy;phasing.carry_debt_forward=carry;phasing.sweep_project_cash=sweep;phasing.cash_sweep_pct=sweepPct;phasing.target_size_sqm=Number(document.getElementById('phaseTargetSize')?.value||70000);phasing.phase_gap_months=Number(document.getElementById('phaseGap')?.value||12);phasing.phases.forEach((p,i)=>p.start_offset_months=i*phasing.phase_gap_months);autoSocialObjects(false);renderPhasing();calculate()}
 function rebalancePhaseProductShares(values,index,value){
  const count=Math.max(1,Number(phasing.phase_count||values.length||1)),out=Array.from({length:count},(_,j)=>Math.max(0,Number(values[j]||0)));
  const lockedTotal=out.slice(0,index).reduce((s,x)=>s+x,0),available=Math.max(0,100-lockedTotal),rightIndexes=out.map((_,j)=>j).filter(j=>j>index);
@@ -32232,6 +32520,14 @@ function renderPhaseFinancing(){
  if(independent)independent.checked=strategy==='independent';if(unified)unified.checked=strategy==='unified_project_cash';
  const carryBox=document.getElementById('phaseCarryDebt');
  if(carryBox)carryBox.checked=!!phasing.carry_debt_forward;
+ const sweepBox=document.getElementById('phaseSweepCash');
+ // Отсутствующий ключ — «не задано», а не «снято»: у проекта, сохранённого
+ // до появления признака, его нет, и `!!` показал бы галочку снятой при
+ // включённом расчёте — экран разошёлся бы с сервером.
+ if(sweepBox)sweepBox.checked=phasing.sweep_project_cash!==false;
+ const sweepPct=document.getElementById('phaseSweepPct');
+ if(sweepPct){sweepPct.value=Number(phasing.cash_sweep_pct??80);
+  sweepPct.disabled=phasing.sweep_project_cash===false;}
  if(!body||!summary)return;
  const funding=phaseBundle&&phaseBundle.mode==='phased'?phaseBundle.phase_financing:null;
  if(!funding||funding.strategy!==strategy){body.innerHTML='';summary.textContent='Пересчитываю финансирование очередей…';return}
@@ -36393,6 +36689,19 @@ function renderPhaseComparison(){
   ['Собственные средства',c.map(x=>money(x.own_funds)),money(((phaseBundle.phase_financing||{}).totals||{}).own_funds)],
   ['Новый БРИДЖ',c.map(x=>money(x.new_bridge)),money(((phaseBundle.phase_financing||{}).totals||{}).new_bridge)],
   ['Пиковый остаток ПФ',c.map(x=>money(x.peak_pf)),money(cons.finance.peak_pf)],
+  // Раскрытие эскроу — событие очереди. В своде эти строки складывались под
+  // именами моментов: «Раскрытый эскроу в РВЭ» суммировал раскрытия разных
+  // лет, а «в т.ч. принято от предыдущей очереди» при трёх очередях не
+  // отвечало, от какой (владелец, 31.08.2026). Здесь у каждого числа есть
+  // очередь и дата, а в своде остались только те же величины как итоги.
+  ['Лимит ПФ',c.map(x=>money(x.pf_limit)),money(cons.finance.pf_limit)],
+  ['РВЭ очереди',c.map(x=>x.rve?dateRu(x.rve):'—'),'—'],
+  ['Долг ПФ перед раскрытием',c.map(x=>money(x.rve_pf_before_repayment)),
+   money(cons.finance.rve_pf_before_repayment)],
+  ['Раскрыто эскроу',c.map(x=>money(x.rve_escrow_release)),money(cons.finance.rve_escrow_release)],
+  ['Из него на погашение ПФ',c.map(x=>money(x.rve_pf_repayment)),money(cons.finance.rve_pf_repayment)],
+  ['Не покрыто эскроу при раскрытии',c.map(x=>money(x.rve_pf_shortfall)),
+   money(cons.finance.rve_pf_shortfall)],
   ...debtRows,
   ['LLCR',c.map(x=>mult(x.llcr)),mult(cons.summary.llcr)],
   ['Чистая прибыль — cash',c.map(x=>money(x.net_profit)),money(cons.summary.net_profit)],
@@ -36482,14 +36791,21 @@ function pfQueueOutcomes(){
   const fin=(((phases[i]||{}).result||{}).report||{}).financing||{};
   const carried=Number(row.debt_carried_out||0);
   const gap=Number(fin.rve_unpaid||0)||carried;
-  if(!(gap>500000))return;
+  const swept=Number(fin.project_cash_sweep||0);
+  if(!(gap>500000)&&!(swept>500000))return;
   const name=String(row.name||('О'+(i+1)));
-  if(carried>500000){
+  if(swept>500000&&!(gap>500000)){
+   // Долг закрыт не эскроу, а накопленными продажами прошлых очередей.
+   // Без этой строки он исчезает без объяснения: нехватка была, а дефолта
+   // нет — и непонятно, чем закрыли.
+   out.push({kind:'swept',name:name,gap:swept,when:ruMonth(fin.project_cash_sweep_month),
+             index:i,last:i===rows.length-1});
+  }else if(carried>500000){
    out.push({kind:'carried',name:name,gap:gap,when:ruMonth((at[i+1]||{}).at),
              to:String((rows[i+1]||{}).name||('О'+(i+2))),index:i});
   }else{
    out.push({kind:'default',name:name,gap:gap,when:ruMonth(fin.default_date),
-             index:i,last:i===rows.length-1});
+             swept:swept,index:i,last:i===rows.length-1});
   }
  });
  return out;
@@ -36522,7 +36838,11 @@ function pfRveWarningHtml(r){
  }
  const outcomes=pfQueueOutcomes();
  const carry=phaseBundle.debt_carry||(phaseBundle.consolidated||{}).debt_carry||null;
- const lines=outcomes.map(o=>o.kind==='carried'
+ const lines=outcomes.map(o=>o.kind==='swept'
+  ?`<b>${escapeHtml(o.name)}</b>: раскрытого эскроу не хватило, но банк забирал `
+   +`долю поступлений прошлых очередей — за период это <b>${money(o.gap)}</b>, `
+   +`и долг закрыт.`
+  :o.kind==='carried'
   ?`<b>${escapeHtml(o.name)}</b>: при раскрытии эскроу не погашено `
    +`<b>${money(o.gap)}</b> — этот долг принял ПФ <b>${escapeHtml(o.to)}</b>`
    +`${o.when?' в '+o.when:''}.`
@@ -36530,8 +36850,9 @@ function pfRveWarningHtml(r){
   // фиксирует дефолт (владелец, 30.08.2026). Прежде здесь стояло «остаток
   // гасится её собственными продажами после ввода» — состояние, которого в
   // жизни не бывает.
-  :`<b>${escapeHtml(o.name)}</b>: раскрытого эскроу не хватило на `
-   +`<b>${money(o.gap)}</b> — по модели это `
+  :`<b>${escapeHtml(o.name)}</b>: раскрытого эскроу`
+   +`${o.swept>500000?' и забранных банком поступлений прошлых очередей ('+money(o.swept)+')':''}`
+   +` не хватило на <b>${money(o.gap)}</b> — по модели это `
    +`<b>дефолт${o.when?' в '+o.when:' в дату раскрытия'}</b>.`);
  const firstDefault=outcomes.find(o=>o.kind==='default')||null;
  if(!lines.length)return '';
@@ -36582,10 +36903,10 @@ function pfRveWarningHtml(r){
   // видимо увидеть, что проблемная очередь есть»). Поэтому называем факт и
   // границу метода, а решение за банк не выдумываем.
   lines.push('<b>Но проблемные очереди есть, и план держится на согласии '
-   +'банка.</b> Перенос долга — одно из возможных его решений: вместо него '
-   +'банк может сделать кэш-свип на проблемную очередь, потребовать '
-   +'дополнительное обеспечение или реструктурировать долг. Этих вариантов '
-   +'модель не считает.');
+   +'банка.</b> Перенос долга и кэш-свип — то, о чём с ним договариваются; '
+   +'вместо них он может потребовать дополнительное обеспечение, поручительство '
+   +'или реструктурировать долг на своих условиях. Этих вариантов модель не '
+   +'считает.');
  }
  const title=firstDefault
   ?`Модель даёт дефолт на очереди ${escapeHtml(firstDefault.name)}.`
@@ -36795,32 +37116,49 @@ function renderResult(){
   row('EBITDA на метр',th(r.summary.ebitda_per_saleable_th)+'/м² прод. · '+th(r.summary.ebitda_per_gns_th)+'/м² ГНС')+
   row('Чистая прибыль на метр',th(r.summary.net_profit_per_saleable_th)+'/м² прод. · '+th(r.summary.net_profit_per_gns_th)+'/м² ГНС');
 
+ // Свод финансирования на многоочередном проекте — это итоги, а не моменты:
+ // подписи «в РВЭ» и «от предыдущей очереди» там называют событием сумму по
+ // очередям. Само деление на очереди берётся оттуда же, откуда его берут все
+ // остальные блоки страницы.
+ const phased=!!(phaseBundle&&phaseBundle.mode==='phased'&&(phaseBundle.comparison||[]).length>1);
  reportFinanceTable.innerHTML=
   row('Расчётный БРИДЖ',money(r.report.financing.calculated_bridge))+
   row('Фактический / пиковый БРИДЖ',money(r.report.financing.actual_bridge))+
   // Не из банка: собственные деньги, заём учредителя, перехваченный чужой долг.
   (Number(r.report.financing.own_funds||0)>0.5?row('Собственные средства до ПФ',money(r.report.financing.own_funds)+' <span style="color:#777;font-weight:400">без процентов</span>'):'')+
-  row('Лимит ПФ',money(r.report.financing.pf_limit))+
+  row(phased?'Лимит ПФ — сумма по очередям':'Лимит ПФ',money(r.report.financing.pf_limit))+
   row('Пиковый ПФ',money(r.report.financing.pf_peak))+
   // Ушла из плиток шапки: для общей оценки проекта величина неочевидная, а
   // здесь, среди лимитов и ставок, читается тем, чем является.
   row('Пиковая (непокрытая эскроу) задолженность ПФ',money(r.report.financing.pf_uncovered_peak))+
-  row('Долг ПФ перед раскрытием в РВЭ',money(r.report.financing.rve_pf_before_repayment))+
-  row('Раскрытый эскроу в РВЭ',money(r.report.financing.rve_escrow_release))+
+  // Раскрытие эскроу — событие очереди, и у каждой оно своё. Подписи «в РВЭ»
+  // на многоочередном проекте называли моментом сумму разнесённых во времени
+  // событий: «раскрытый эскроу в РВЭ — какое из них?» (владелец, 31.08.2026).
+  // Величины те же, но названы итогами, а по очередям они стоят в таблице
+  // сравнения — с датой РВЭ у каждой.
+  row(phased?'Долг ПФ перед раскрытием — всего':'Долг ПФ перед раскрытием в РВЭ',
+      money(r.report.financing.rve_pf_before_repayment))+
+  row(phased?'Раскрыто эскроу за проект':'Раскрытый эскроу в РВЭ',
+      money(r.report.financing.rve_escrow_release))+
   // Раскрытое и погашенное — разные величины: эскроу гасит СВОЙ ПФ, излишек
   // уходит в кассу. Без этой строки три числа рядом не вычитаются.
   row('Из него на погашение ПФ',money(r.report.financing.rve_pf_repayment))+
-  row('Остаток ПФ после раскрытия в РВЭ',money(r.report.financing.rve_pf_shortfall))+
+  row(phased?'Не покрыто эскроу при раскрытии — всего':'Остаток ПФ после раскрытия в РВЭ',
+      money(r.report.financing.rve_pf_shortfall))+
   // Плашка выше говорит «остаток гасится последующими продажами», а число,
   // отвечающее «погасился ли», стояло только в PDF и в книге. На экране его
   // не было вовсе, и проверить обещание было нечем (владелец, 25.08.2026).
   // Порядок: сколько пришло, сколько ушло, что осталось. Остаток последним —
   // он вывод, а не одно из трёх чисел; стоя первым, он читался как
   // противоречие строке «передано» с тем же числом.
-  (Number(r.report.financing.carried_debt_in||0)>0.5e6
-   ?row('в т.ч. принято от предыдущей очереди',money(r.report.financing.carried_debt_in)):'')+
+  // «в т.ч. принято от предыдущей очереди» в своде — сумма приёмов, и при трёх
+  // очередях «предыдущая» не отвечает ни на что. Кто у кого принял и когда —
+  // в таблице сравнения; здесь остаётся итог переоформленного за проект.
   (Number(r.report.financing.debt_carried_out||0)>0.5e6
-   ?row('Долг передан в ПФ следующей очереди',money(r.report.financing.debt_carried_out)):'')+
+   ?row(phased?'Переоформлено между очередями, всего':'Долг передан в ПФ следующей очереди',
+        money(r.report.financing.debt_carried_out)):'')+
+  (!phased&&Number(r.report.financing.carried_debt_in||0)>0.5e6
+   ?row('в т.ч. принято от предыдущей очереди',money(r.report.financing.carried_debt_in)):'')+
   row((Number(r.report.financing.debt_carried_out||0)>0.5e6
        ?'Осталось непогашенным на очереди'
        :'Непогашенный долг ПФ на конец проекта')
