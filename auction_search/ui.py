@@ -579,7 +579,63 @@ async function loadKrt(){const b=$('krtRefresh');b.disabled=true;b.innerHTML='<s
 function updateKrtOkrugLabel(){const values=KRT_OKRUGS.filter(x=>state.krtOkrugs.has(x)),button=$('krtOkrugToggle');button.textContent=!values.length?'Все округа':values.length<=3?values.join(', '):`${values.slice(0,2).join(', ')} +${values.length-2}`;button.title=values.length?values.join(', '):'Все округа';$('krtOkrugClear').disabled=!values.length}
 function populateKrtOkrugs(){const values=KRT_OKRUGS,options=$('krtOkrugOptions');options.innerHTML='';values.forEach(value=>{const label=document.createElement('label'),input=document.createElement('input'),text=document.createElement('span');label.className='multi-option';input.type='checkbox';input.value=value;input.checked=state.krtOkrugs.has(value);text.textContent=value;input.onchange=()=>{input.checked?state.krtOkrugs.add(value):state.krtOkrugs.delete(value);updateKrtOkrugLabel();filterKrt()};label.append(input,text);options.appendChild(label)});updateKrtOkrugLabel()}
 function closeKrtOkrugs(){const menu=$('krtOkrugMenu'),button=$('krtOkrugToggle');menu.classList.add('hidden');button.setAttribute('aria-expanded','false')}
-function krtFit(x){const profile=$('krtProfile').value,total=Number(x.total_gfa_sqm)||0,housing=Number(x.housing_gfa_sqm)||0,business=Number(x.business_gfa_sqm)||0,area=Number(x.area_ha)||0,jobs=Number(x.jobs)||0,entered=x.status==='В реализации';let score=0,reasons=[],checks=[];const complete=[x.okrug,x.district,x.status,total,area].filter(Boolean).length;score+=complete*3;if(complete>=4)reasons.push('основные ТЭП заполнены');else checks.push('неполные исходные ТЭП');if(profile==='housing_ready'){score+=30;reasons.push(entered?'проект уже в реализации — войти нельзя':'проект пока планируемый');const share=total?housing/total:0;score+=Math.min(35,share*45);if(housing>0)reasons.push(`жильё ${Math.round(share*100)}% общего объёма`);else checks.push('жилой объём не указан');score+=housing>=200000?20:housing>=50000?14:housing>0?7:0}else if(profile==='housing_pipeline'){score+=20;const share=total?housing/total:0;score+=Math.min(42,share*52);if(housing>0)reasons.push(`жилищный потенциал ${fmtArea(housing)}`);else checks.push('жилой объём не указан');score+=housing>=300000?22:housing>=100000?16:housing>0?8:0}else{score+=22;const share=total?business/total:0;score+=Math.min(42,share*52);if(business>0)reasons.push(`деловой объём ${fmtArea(business)}`);else checks.push('деловой объём не указан');score+=jobs>=3000?21:jobs>=500?14:jobs>0?7:0}if(area>0&&area<=40){score+=5;reasons.push('управляемый масштаб территории')}else if(area>40)checks.push('крупная территория требует поэтапной проверки');score=Math.max(0,Math.min(100,Math.round(score)));const tone=score>=75?'ok':score>=50?'warn':'bad',label=score>=75?'Высокое':score>=50?'Среднее':'Низкое';return{score,tone,label,reasons:reasons.slice(0,4),checks:checks.slice(0,3)}}
+// Якоря шкалы сняты с самого каталога (263 площадки, 01.09.2026): жильё
+// 20 600 / 95 550 / 399 180 м² — десятый процентиль, медиана, девяностый;
+// деловое 4 944 / 45 225 / 187 340. Прежняя шкала была сложена из постоянных
+// прибавок — «профиль +30», «полнота ТЭП ×3», «масштаб +5», — и на живом
+// каталоге давала 62% «Высокого» при медиане 92 и двадцати площадках ровно по
+// сто: «этот фильтр туфта, они ничего не дают» (владелец, 01.09.2026). Балл,
+// который не различает, — не балл.
+const KRT_SCALE={housing:[20600,399180],business:[4944,187340]};
+// Логарифм, а не доля от максимума: двухмиллионный проект иначе забирает всю
+// шкалу, и весь остальной каталог жмётся к нулю.
+function krtVolumeShare(value,[low,high]){
+ const v=Number(value)||0;
+ if(v<=0)return null;
+ if(v<=low)return 0;
+ return Math.max(0,Math.min(1,Math.log(v/low)/Math.log(high/low)));
+}
+function krtFit(x){
+ const profile=$('krtProfile').value;
+ const total=Number(x.total_gfa_sqm)||0, housing=Number(x.housing_gfa_sqm)||0;
+ const business=Number(x.business_gfa_sqm)||0, area=Number(x.area_ha)||0, jobs=Number(x.jobs)||0;
+ const reasons=[], checks=[];
+ const wanted=profile==='business'?business:housing;
+ const scale=profile==='business'?KRT_SCALE.business:KRT_SCALE.housing;
+ const what=profile==='business'?'деловой объём':'жильё';
+ // Объём под задачу — шестьдесят баллов, доля под задачу — сорок. Больше в
+ // ТЭП каталога ничего и нет: округ, статус и площадь про потенциал не
+ // говорят, а статус к тому же уже стоит отдельным снижением.
+ const volume=krtVolumeShare(wanted,scale);
+ const share=total>0&&wanted>0?wanted/total:null;
+ let score=0;
+ if(volume===null){
+  // Неизвестный объём — это «не знаем», а не ноль: такая площадка не может
+  // быть «Высокой», и причина названа.
+  checks.push(what+' в каталоге не указан — потенциал считать не из чего');
+ }else{
+  score+=60*volume;
+  reasons.push(what+' '+fmtArea(wanted));
+ }
+ if(share===null){
+  if(!total)checks.push('общий объём застройки не указан');
+ }else{
+  score+=40*share;
+  reasons.push(what+' — '+Math.round(share*100)+'% общего объёма');
+ }
+ // Профиль «готовое к старту» смотрит на то же жильё, но у планируемой
+ // площадки оно ещё продаётся, а у той, что в реализации, инвестор уже есть.
+ // Это не прибавка, а отсечка: снижение за «войти нельзя» стоит отдельно.
+ if(profile==='housing_ready'&&String(x.status||'').toLowerCase().includes('реализац'))
+  checks.push('инвестор определён — войти нельзя');
+ if(profile==='business'&&jobs>0)reasons.push('рабочих мест '+jobs);
+ if(area>40)checks.push('крупная территория требует поэтапной проверки');
+ if(volume===null)score=Math.min(score,45);
+ score=Math.max(0,Math.min(100,Math.round(score)));
+ const tone=score>=75?'ok':score>=50?'warn':'bad';
+ const label=score>=75?'Высокое':score>=50?'Среднее':'Низкое';
+ return{score,tone,label,reasons:reasons.slice(0,4),checks:checks.slice(0,3)};
+}
 // Балл площадки: потенциал по ТЭП, из которого маркетинг и движок ВЫЧИТАЮТ.
 // Прежде посчитанная модель балл не уточняла, а заменяла собой: в колонке
 // вместо «87 · Высокое» появлялось «Модель · Не проходит», и сравнить две
@@ -824,9 +880,22 @@ function filterKrt(){
  const q=$('krtSearch').value.trim().toLowerCase(),status=$('krtStatus').value,
        purpose=$('krtPurpose').value,needs=$('krtNeeds').value,card=$('krtCard').value,tender=$('krtTender').value,stage=$('krtStage').value,
        minHousing=Number($('krtMinHousing').value)||0;
- let small=0, unknown=0;
+ const profile=$('krtProfile').value;
+ let small=0, unknown=0, offtask=0, taken=0;
  state.krtFiltered=state.krt.filter(x=>{
   if(q&&![x.name,x.district,x.okrug].join(' ').toLowerCase().includes(q))return false;
+  // Задача — это ОТБОР, а не оттенок балла. Два жилищных профиля считали
+  // ровно один и тот же балл и различались одной строкой в подсказке: «этот
+  // фильтр туфта, они ничего не дают» (владелец, 01.09.2026). Теперь
+  // «готовое к старту» — это те, куда ещё можно войти, «потенциал» — всё
+  // жильё каталога вместе с занятым, «деловая» — площадки с нежилым объёмом.
+  // Скрытое считается и называется под таблицей: молча выброшенная площадка
+  // читается как её отсутствие.
+  const wanted=profile==='business'?Number(x.business_gfa_sqm):Number(x.housing_gfa_sqm);
+  if(!(wanted>0)){offtask++;return false}
+  if(profile==='housing_ready'&&String(x.status||'').toLowerCase().includes('реализац')){
+   taken++;return false;
+  }
   if(state.krtOkrugs.size&&!state.krtOkrugs.has(x.okrug))return false;
   if(status&&x.status!==status)return false;
   if(purpose&&!(Number(x[purpose])>0))return false;
@@ -847,7 +916,7 @@ function filterKrt(){
   }
   return true;
  }).sort(krtCompare);
- state.krtHidden={small,unknown};
+ state.krtHidden={small,unknown,offtask,taken,profile};
  renderKrt();
 }
 function sumKrt(rows,key,d){const n=rows.reduce((s,x)=>s+(Number(x[key])||0),0);return new Intl.NumberFormat('ru-RU',{maximumFractionDigits:d}).format(n)}
@@ -917,8 +986,13 @@ function renderKrtNewNote(){
 function renderKrtFilterNote(){
  const box=$('krtFilterNote');
  if(!box)return;
- const {small,unknown}=state.krtHidden||{};
+ const {small,unknown,offtask,taken,profile}=state.krtHidden||{};
  const bits=[];
+ // Отбор по задаче виден числом: сколько площадок он снял и почему. Иначе
+ // переключатель выглядит бездействующим ровно там, где он сработал сильнее
+ // всего.
+ if(offtask)bits.push(`${offtask} без объёма под задачу (${profile==='business'?'нежилого':'жилого'})`);
+ if(taken)bits.push(`${taken} уже в реализации — войти нельзя`);
  if(small)bits.push(`${small} ниже порога по объёму жилья`);
  if(unknown)bits.push(`${unknown} без указанного объёма жилья — это «не знаем», а не «мало»`);
  const sorted=state.krtSort.key!=='score'||state.krtSort.dir!==-1
