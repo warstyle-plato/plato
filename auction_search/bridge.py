@@ -34,6 +34,12 @@ BRIDGE_SCRIPT = r'''
      +'Текущий расчёт на экране будет заменён.'))return;
    applyProjectSnapshot(model);
    if(typeof inputs!=='undefined')inputs._manual_tep_import={project_name:String(pending.krt_name||'')};
+   // Кадастр и контур прошлого участка остаются в поле и в предпросмотре — и
+   // читаются как участок площадки КРТ («передаёт какой-то другой участок»,
+   // владелец, 02.09.2026). У площадки КРТ своих кадастровых номеров в
+   // каталоге нет, поэтому поле пустое, а не чужое.
+   ['cadastralNumbers','landQuery','moQuery'].forEach(id=>{const f=document.getElementById(id);if(f)f.value=''});
+   const preview=document.getElementById('landPreview');if(preview)preview.style.display='none';
    if(typeof calculateAndOpen==='function')calculateAndOpen('report');
    return;
   }

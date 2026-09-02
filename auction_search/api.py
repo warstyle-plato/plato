@@ -1228,22 +1228,40 @@ def install(app: FastAPI) -> None:
                 (item for item in krt_registry.catalogue() if item.get("slug") == slug), None)
         if not project:
             raise HTTPException(status_code=404, detail="Территория КРТ не найдена")
-        # Точка берётся тем же путём, что и точка отчёта, — `resolve_subject`.
-        # Свой вызов геокодера здесь был четвёртым случаем одной ошибки: модуль
-        # завёл свой путь туда, где у сервиса уже есть общий. Цена была не в
-        # красоте. Во-первых, он звал `market.geocoder` напрямую, мимо крючка
-        # `geocode_address`, — то есть на ядре один Nominatim вместо движковой
-        # цепочки (Яндекс, DaData, Nominatim), и карта отвечала «место не
-        # найдено» на территорию, которую отчёт находил. Во-вторых, он слал
-        # один запрос вместо лестницы `_krt_geocode_candidates` (отдельный
-        # адрес → запрос каталога → район). И в-третьих — главное: точка карты
-        # и точка, на которой посчитан отчёт, могли оказаться разными. Карта —
-        # то, на что смотрят; расходиться ей с расчётом нельзя.
-        try:
-            subject = await run_in_threadpool(market.resolve_subject, f"krt:{slug}")
-        except (GeocodingError, RemoteServiceError, RuntimeError) as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        data = subject.to_dict() if hasattr(subject, "to_dict") else {}
+        # Сначала официальный файл карты: у каждой площадки реестра там контур
+        # и центр. Геокодер — только когда площадки в файле нет: он ставит
+        # точку по адресу, а карточка писала «полигон не публикуется» и
+        # показывала чужой квартал (владелец, 02.09.2026: «и карта»).
+        site_reader = getattr(krt_registry, "map_site", None)
+        site = (await run_in_threadpool(site_reader, slug)) if callable(site_reader) else None
+        rings = list((site or {}).get("rings_merc") or [])
+        centre = (site or {}).get("centre_merc")
+        if site and core is not None and (rings or centre):
+            if not centre:
+                points = [point for ring in rings for point in ring]
+                centre = [sum(p[0] for p in points) / len(points),
+                          sum(p[1] for p in points) / len(points)]
+            lat, lng = core._mercator_to_wgs84(float(centre[0]), float(centre[1]))
+            data = {
+                "query": f"krt:{slug}", "latitude": lat, "longitude": lng,
+                "precision": "official_centre", "address": project.get("name"),
+                "notes": ["Точка и контур — официальный файл карты реестра КРТ "
+                          "(krt.mos.ru): центр территории и полигон её границ."],
+            }
+            geometry_status = "official_polygon" if rings else "official_centre_only"
+        else:
+            # Точка берётся тем же путём, что и точка отчёта, — `resolve_subject`:
+            # свой геокодер здесь был четвёртым случаем одной ошибки (см. правило
+            # в CLAUDE.md о точке карты и точке отчёта).
+            try:
+                subject = await run_in_threadpool(market.resolve_subject, f"krt:{slug}")
+            except (GeocodingError, RemoteServiceError, RuntimeError) as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            data = subject.to_dict() if hasattr(subject, "to_dict") else {}
+            data["notes"] = list(data.get("notes") or []) + [
+                "Площадки нет в файле карты реестра — точка поставлена геокодером по адресу, "
+                "контур не показан."]
+            geometry_status = "geocoded_point"
         # Ссылка на публичную карту НСПД строится движком (`_nspd_map_url`) —
         # координаты там в веб-меркаторе, и второй сборщик этого адреса в
         # браузере разошёлся бы с первым молча. Ссылка нужна не как украшение:
@@ -1272,6 +1290,10 @@ def install(app: FastAPI) -> None:
             "notes": data.get("notes") or [],
             "area_ha": project.get("area_ha"),
             "nspd_url": nspd_url,
+            # Контур в метрах меркатора — тех же, что у подложки `/land/basemap`.
+            "geometry_status": geometry_status,
+            "rings_merc": rings,
+            "centre_merc": centre,
         }
 
     @app.get("/auctions/krt/ranking")

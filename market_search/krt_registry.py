@@ -683,6 +683,26 @@ class KrtRegistry:
         save_json(self.map_path, payload)
         return payload
 
+    def map_site(self, slug: str) -> dict[str, Any] | None:
+        """Площадка из файла карты: официальный контур и центр, по слагу.
+
+        Карточка ставила метку по геокодированному адресу и писала «официальный
+        полигон границ каталогом не публикуется» — при том что файл карты несёт
+        полигон каждой из 263 площадок. Здесь он и берётся; нет площадки в файле
+        — `None`, и карточка честно откатывается на геокодер.
+        """
+        clean = str(slug or "").strip()
+        if not clean:
+            return None
+        try:
+            payload = self.map_dataset()
+        except Exception:  # noqa: BLE001 — файл карты не прочитан: это не «нет контура»
+            return None
+        for site in (payload or {}).get("sites") or []:
+            if str(site.get("slug") or "") == clean:
+                return dict(site)
+        return None
+
     def _read_order_details(self, order: dict[str, Any]) -> dict[str, Any]:
         """Распознать скан одного распоряжения. Отказ называется, а не молчит."""
         from . import krt_requirements as requirements

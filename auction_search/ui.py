@@ -1225,17 +1225,53 @@ function krtSiteMap(subject,areaHa){
    +'<div class="notice warn">Точка участка не определена — карта не построена. '
    +'Геокодер не нашёл адрес территории.</div>'
    +krtNspdLink(subject&&subject.nspd_url)+'</div>';
- // Кадр по площади: сторона квадрата такой же площади, с запасом в 2,5 раза,
- // чтобы было видно окружение. Меньше 600 м не берём — на 300 м улиц не видно.
- const side=Math.max(600, Math.sqrt(Math.max(1,Number(areaHa)||1)*10000)*2.5);
- const half=side/2, cx=mercX(lon), cy=mercY(lat);
+ // Официальный контур из файла карты реестра — рисуется поверх подложки в тех
+ // же метрах меркатора, в которых она склеена: совмещать нечего. Прежде здесь
+ // стояла одна метка по геокодированному адресу с оговоркой «полигон не
+ // публикуется» — а файл карты несёт полигон каждой площадки (владелец,
+ // 02.09.2026).
+ const rings=(subject&&Array.isArray(subject.rings_merc)?subject.rings_merc:[]).filter(r=>Array.isArray(r)&&r.length>=3);
  // Меркатор растягивает метры к северу — поправка по широте, иначе кадр
- // окажется у́же заявленного и масштабная линейка соврёт.
- const k=1/Math.cos(lat*Math.PI/180), hx=half*k, hy=half*k;
- const bbox=[cx-hx,cy-hy,cx+hx,cy+hy].join(',');
+ // окажется уже заявленного и масштабная линейка соврёт.
+ const k=1/Math.cos(lat*Math.PI/180);
+ let side, cx, cy;
+ if(rings.length){
+  const pts=rings.flat();
+  const xs=pts.map(p=>p[0]), ys=pts.map(p=>p[1]);
+  const w=Math.max(...xs)-Math.min(...xs), h=Math.max(...ys)-Math.min(...ys);
+  cx=(Math.max(...xs)+Math.min(...xs))/2; cy=(Math.max(...ys)+Math.min(...ys))/2;
+  // Кадр — контур с запасом в 1,6 раза по большей стороне, не меньше 600 м.
+  side=Math.max(600*k, Math.max(w,h)*1.6)/k;
+ }else{
+  // Кадр по площади: сторона квадрата такой же площади, с запасом в 2,5 раза,
+  // чтобы было видно окружение. Меньше 600 м не берём — на 300 м улиц не видно.
+  side=Math.max(600, Math.sqrt(Math.max(1,Number(areaHa)||1)*10000)*2.5);
+  cx=mercX(lon); cy=mercY(lat);
+ }
+ const half=side/2, hx=half*k, hy=half*k;
+ const ax=cx-hx, ay=cy-hy, bx=cx+hx, by=cy+hy;
+ const bbox=[ax,ay,bx,by].join(',');
  const src='/land/basemap?'+new URLSearchParams({bbox:bbox,width:'900'});
  const scale=Math.round(side/4/50)*50||100;
  const scalePct=(scale/side*100).toFixed(1);
+ // Контур в долях кадра: SVG растягивается вместе с картинкой.
+ const W=1000, H=1000;
+ const px=x=>(x-ax)/(bx-ax)*W, py=y=>(by-y)/(by-ay)*H;
+ const outline=rings.length
+  ?`<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none">`
+    +`<path d="${rings.map(ring=>'M'+ring.map(p=>px(p[0]).toFixed(1)+' '+py(p[1]).toFixed(1)).join('L')+'Z').join(' ')}" fill="#C0392B" fill-opacity="0.22" stroke="#C0392B" stroke-width="3" vector-effect="non-scaling-stroke"/></svg>`
+  :'';
+ const marker=rings.length?'':`<span style="position:absolute;left:50%;top:50%;width:14px;height:14px;margin:-7px 0 0 -7px;
+                border:3px solid #b3261e;border-radius:50%;background:rgba(255,255,255,.65)"></span>`;
+ // Живая карта — та же, что у карточки участка (`openLandMap` движка), с этим
+ // контуром. Без движка остаётся кадр OpenStreetMap с меткой.
+ const liveId='krtSiteLive'+Math.random().toString(36).slice(2,8);
+ if(rings.length&&typeof openLandMap==='function'){
+  setTimeout(()=>{const b=document.getElementById(liveId);if(!b)return;b.onclick=()=>openLandMap({
+   shapes:[{rings:rings,colour:'#C0392B',key:String(subject.slug||''),title:String(subject.address||'')+(areaHa?' — '+areaHa+' га':'')}],
+   title:String(subject.address||'Территория КРТ'),
+   note:'Границы — официальный реестр КРТ (файл карты krt.mos.ru), подложка — OpenStreetMap. Тяните карту, колесо — увеличение.'})},0);
+ }
  // Чем опознана точка, говорит сам разбор: «по отдельному адресу», «по
  // району», «по запросу каталога». Прежде здесь стояла своя оценка точности
  // геокодера — а точка теперь берётся тем же путём, что и точка отчёта, и
@@ -1243,24 +1279,26 @@ function krtSiteMap(subject,areaHa){
  const notes=Array.isArray(subject&&subject.notes)?subject.notes:[];
  const delta=Math.max(0.003,side/111000), bboxGeo=[lon-delta,lat-delta,lon+delta,lat+delta].join(',');
  const interactive='https://www.openstreetmap.org/export/embed.html?'+new URLSearchParams({bbox:bboxGeo,layer:'mapnik',marker:lat+','+lon});
- return `<div class="section"><h3>Участок на карте</h3>
-  <details open><summary style="cursor:pointer;font-weight:700;padding:8px 0">Раскрыть интерактивную карту</summary>
+ const liveBlock=(rings.length&&typeof openLandMap==='function')
+  ?`<div class="source" style="margin:6px 0"><button type="button" id="${liveId}" class="pdfbtn">Открыть живую карту — двигать и приближать</button></div>`
+  :`<details open><summary style="cursor:pointer;font-weight:700;padding:8px 0">Раскрыть интерактивную карту</summary>
    <iframe src="${interactive}" title="Интерактивная карта территории КРТ" style="width:100%;height:330px;border:1px solid #e3e3e0" loading="lazy"></iframe>
-  </details>
+  </details>`;
+ return `<div class="section"><h3>Участок на карте</h3>
+  ${liveBlock}
   <div style="position:relative;border:1px solid #e3e3e0;overflow:hidden">
    <img src="${src}" alt="Карта окрестностей участка" style="display:block;width:100%"
         onerror="this.parentNode.innerHTML='<div class=\'empty\' style=\'padding:26px\'>Подложка карты не ответила. Участок виден на НСПД — ссылка ниже.</div>'">
-   <span style="position:absolute;left:50%;top:50%;width:14px;height:14px;margin:-7px 0 0 -7px;
-                border:3px solid #b3261e;border-radius:50%;background:rgba(255,255,255,.65)"></span>
+   ${outline}${marker}
    <div style="position:absolute;left:12px;bottom:12px;background:rgba(255,255,255,.9);
                padding:4px 8px;font-size:11px;display:flex;align-items:center;gap:7px">
     <span style="display:block;height:3px;background:#222;width:${scalePct}%;min-width:34px"></span>
     <span>${scale} м</span>
    </div>
   </div>
-  <div class="source" style="margin-top:7px">Метка — геокодированный центр территории, кадр ${Math.round(side)} м.
-   Официальный полигон границ КРТ каталогом не публикуется, поэтому контур не показан:
-   по нему стали бы мерить пятно застройки.</div>
+  <div class="source" style="margin-top:7px">${rings.length
+   ?`Контур — официальные границы территории из файла карты реестра КРТ (krt.mos.ru)${areaHa?', по каталогу '+areaHa+' га':''}; кадр ${Math.round(side)} м.`
+   :`Метка — геокодированный центр территории, кадр ${Math.round(side)} м. Этой площадки в файле карты реестра нет, поэтому контур не показан: по метке пятно застройки не мерить.`}</div>
   ${notes.length?`<div class="source" style="margin-top:5px">${notes.map(esc).join('<br>')}</div>`:''}
   ${krtNspdLink(subject&&subject.nspd_url)}
  </div>`;
