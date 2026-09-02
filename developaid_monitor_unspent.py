@@ -205,7 +205,8 @@ def unspent(estimate: dict[str, Any], *,
 
     `needy` — статьи, которым своего лимита не хватает; их считает водопад
     дашборда, здесь они только названы рядом с источниками: перераспределять
-    есть куда, и это вторая половина ответа.
+    есть куда, и это вторая половина ответа. Сходятся половины ПО ГЛАВАМ:
+    лимит главы 3 для главы 2 недоступен (владелец, 02.09.2026).
     """
     rows = (estimate or {}).get("rows") or []
     leaves = {str(row.get("code") or "") for row in rows if row.get("is_leaf")} or _leaves(rows)
@@ -231,6 +232,7 @@ def unspent(estimate: dict[str, Any], *,
         left = programme_left.get(code)
         item = {
             "code": code,
+            "chapter": _root(code),
             "name": str(row.get("article") or ""),
             "limit": limit,
             "contracted": contracted,
@@ -289,7 +291,9 @@ def unspent(estimate: dict[str, Any], *,
             "code": str(row.get("code") or ""),
             "name": str(row.get("name") or ""),
             "need": float(row.get("need_total") or 0.0),
-            "own_limit": float(row.get("opening_limit") or 0.0),
+            # Из своего лимита взято ровно столько, сколько его было или
+            # сколько понадобилось: колонка складывается с соседними.
+            "own_limit": float(row.get("own_take", row.get("opening_limit")) or 0.0),
             "from_reserve": float(row.get("reserve_take") or 0.0),
             "shortage": float(row.get("unfunded_take") or 0.0),
             "from": row.get("first_reserve_month"),
@@ -297,6 +301,22 @@ def unspent(estimate: dict[str, Any], *,
     need_rows.sort(key=lambda item: -item["shortage"])
     shortage_total = sum(item["shortage"] for item in need_rows)
     total = free_total + deferred_total
+    # Лимит главы 3 для главы 2 недоступен (владелец, 02.09.2026): банк
+    # перераспределяет внутри главы, и сумма источников по всем главам рядом с
+    # нехваткой главы 2 обещала бы то, чего банк не даст. Ответ — по главам.
+    by_chapter: dict[str, dict[str, Any]] = {}
+    for item in sources:
+        bucket = by_chapter.setdefault(_root(item["code"]), {"sources": 0.0, "shortage": 0.0})
+        bucket["sources"] += item["unspent"]
+    for item in need_rows:
+        bucket = by_chapter.setdefault(_root(item["code"]), {"sources": 0.0, "shortage": 0.0})
+        bucket["shortage"] += item["shortage"]
+    for chapter, bucket in by_chapter.items():
+        bucket["chapter"] = chapter
+        bucket["covers"] = (bucket["sources"] >= bucket["shortage"]
+                            if bucket["shortage"] > 0 else None)
+    chapters = [by_chapter[key] for key in sorted(by_chapter)]
+    verdicts = [b["covers"] for b in chapters if b["covers"] is not None]
     return {
         "sources": sources,
         "excluded": excluded,
@@ -316,5 +336,7 @@ def unspent(estimate: dict[str, Any], *,
                        "paid_before_horizon")},
         "needy": need_rows[:20],
         "shortage_total": shortage_total,
-        "covers": total >= shortage_total if shortage_total > 0 else None,
+        "by_chapter": chapters,
+        # Хватает — только если хватает в КАЖДОЙ главе с нехваткой.
+        "covers": all(verdicts) if verdicts else None,
     }

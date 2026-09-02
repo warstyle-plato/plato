@@ -153,8 +153,8 @@ function unspentTable(u,structural){
  // где новых трат не будет.
  if(needy.length){
   html+='<div class="fundhead">Кому не хватает своего лимита</div>'
-   +'<div class="muted" style="margin:2px 0 6px">Потребность — по программе РСС после среза; нехватку сначала гасит резерв 2.8/2.9, что осталось — не покрыто. Итог колонки «Не покрыто» и есть структурный дефицит.</div>'
-   +'<div style="overflow-x:auto"><table class="unspent"><thead><tr><th>Код</th><th>Статья</th><th>Потребность</th><th>Свой остаток лимита</th><th>Из резерва</th><th>Не покрыто</th><th>С какого месяца</th></tr></thead><tbody>'
+   +'<div class="muted" style="margin:2px 0 6px">Потребность — по программе РСС с месяца среза, прошедшие месяцы не входят; каждая строка складывается: своё + резерв + не покрыто = потребность. Нехватку сначала гасит резерв 2.8/2.9, что осталось — не покрыто. Итог колонки «Не покрыто» и есть структурный дефицит.</div>'
+   +'<div style="overflow-x:auto"><table class="unspent"><thead><tr><th>Код</th><th>Статья</th><th>Потребность после среза</th><th>Из своего лимита</th><th>Из резерва</th><th>Не покрыто</th><th>С какого месяца</th></tr></thead><tbody>'
    +needy.map(n=>`<tr><td>${esc(n.code)}</td><td>${esc(n.name)}</td>`+num(n.need)+num(n.own_limit)+num(n.from_reserve)
      +`<td style="text-align:right"><b>${money(n.shortage)}</b></td><td>${n.from?dt(n.from):'—'}</td></tr>`).join('')
    +`</tbody><tfoot><tr><td colspan="5">Итого не покрыто</td><td style="text-align:right"><b>${money(u.shortage_total)}</b></td><td></td></tr></tfoot></table></div>`;
@@ -162,15 +162,22 @@ function unspentTable(u,structural){
    html+=`<div class="notice warn">Сумма по статьям ${money(u.shortage_total)} не сходится со структурным дефицитом ${money(structural)} — это ошибка счёта, а не особенность данных.</div>`;
  }
  html+='<div class="fundhead" style="margin-top:12px">Откуда просить: статьи, где новых трат не будет</div>'
-  +`<div class="muted" style="margin:2px 0 6px">Признак: ${esc(u.criterion||'')}. Свободное — точно: лимит минус заключено. Гарантийные удержания разложены по статьям главы 2 через лицо подрядчика, и это <b>оценка</b>: ГУ, удержанные с генподрядчика, примерно равны сумме ГУ по его договорам с субподрядчиками. Резерв 2.8/2.9 источником не считается — он не статья, он гасит нехватку других.</div>`;
+  +`<div class="muted" style="margin:2px 0 6px">Признак: ${esc(u.criterion||'')}. Свободное — точно: лимит минус заключено. Гарантийные удержания разложены по статьям главы 2 через лицо подрядчика, и это <b>оценка</b>: ГУ, удержанные с генподрядчика, примерно равны сумме ГУ по его договорам с субподрядчиками. Резерв 2.8/2.9 источником не считается — он не статья, он гасит нехватку других. Перераспределение — только внутри главы: лимит главы 3 для главы 2 недоступен.</div>`;
+ // Лимит главы 3 для главы 2 недоступен (владелец, 02.09.2026): источники
+ // сгруппированы по главам, и итог у каждой главы свой — общая сумма рядом с
+ // нехваткой главы 2 обещала бы то, чего банк не даст.
+ const chapters=u.by_chapter||[];
  if(src.length) html+='<div style="overflow-x:auto"><table class="unspent"><thead><tr><th>Код</th><th>Статья</th><th>Лимит</th><th>Заключено</th><th>Акты</th><th>Свободно</th><th>ГУ после ввода</th><th>Можно просить</th><th>Основание</th></tr></thead><tbody>'
-  +src.slice(0,25).map(a=>`<tr><td>${esc(a.code)}</td><td>${esc(a.name)}</td>`+num(a.limit)+num(a.contracted)
-    +`<td style="text-align:right">${a.acts_share==null?'—':pct(a.acts_share)}</td>`+num(a.free)+num(a.retention_deferred)
-    +`<td style="text-align:right"><b>${money(a.unspent)}</b></td><td class="muted">${esc(a.basis||'')}</td></tr>`).join('')
-  +`</tbody><tfoot><tr><td colspan="5">Итого</td><td style="text-align:right">${money(u.free_total)}</td><td style="text-align:right">${money(u.retention_deferred_total)}</td><td style="text-align:right"><b>${money(u.total)}</b></td><td></td></tr></tfoot></table></div>`;
+  +chapters.map(ch=>{const rows=src.filter(a=>String(a.chapter||String(a.code).split('.')[0])===String(ch.chapter));if(!rows.length)return `<tr><td colspan="9" class="muted">Глава ${esc(ch.chapter)} — источников внутри главы нет</td></tr>`;
+    return `<tr><td colspan="9" style="font-weight:600;background:#f7f9fb">Глава ${esc(ch.chapter)} — можно просить ${money(ch.sources)}${ch.shortage>0?`, не хватает ${money(ch.shortage)}`:''}</td></tr>`
+     +rows.slice(0,25).map(a=>`<tr><td>${esc(a.code)}</td><td>${esc(a.name)}</td>`+num(a.limit)+num(a.contracted)
+      +`<td style="text-align:right">${a.acts_share==null?'—':pct(a.acts_share)}</td>`+num(a.free)+num(a.retention_deferred)
+      +`<td style="text-align:right"><b>${money(a.unspent)}</b></td><td class="muted">${esc(a.basis||'')}</td></tr>`).join('')}).join('')
+  +`</tbody><tfoot><tr><td colspan="5">Итого по всем главам — справочно, между главами лимит не переносится</td><td style="text-align:right">${money(u.free_total)}</td><td style="text-align:right">${money(u.retention_deferred_total)}</td><td style="text-align:right"><b>${money(u.total)}</b></td><td></td></tr></tfoot></table></div>`;
  else html+='<div class="notice">Статей, где новых трат уже не будет, нет: везде либо договор не заключён, либо работы ещё идут.</div>';
- if(u.covers===true) html+=`<div class="notice" style="background:#eef7ee;color:#1f5a2b">Источников ${money(u.total)} хватает, чтобы закрыть нехватку ${money(u.shortage_total)} перераспределением — без нового финансирования.</div>`;
- else if(u.covers===false) html+=`<div class="notice">Источников ${money(u.total)} на нехватку ${money(u.shortage_total)} не хватает: перераспределение закрывает часть, остальное — дофинансирование или увеличение лимитов.</div>`;
+ chapters.filter(ch=>ch.shortage>0).forEach(ch=>{
+  if(ch.covers) html+=`<div class="notice" style="background:#eef7ee;color:#1f5a2b">Глава ${esc(ch.chapter)}: источников внутри главы ${money(ch.sources)} хватает на нехватку ${money(ch.shortage)} — перераспределением, без нового финансирования.</div>`;
+  else html+=`<div class="notice">Глава ${esc(ch.chapter)}: внутри главы источников ${money(ch.sources)} на нехватку ${money(ch.shortage)} — перераспределение закрывает ${ch.sources>0?'часть':'ничего'}, остальное — дофинансирование или увеличение лимитов. Лимит других глав сюда не переносится.</div>`});
  // Не попавшее в источники названо поимённо с причиной: молча снятая статья
  // читается как её отсутствие, а свободный лимит у неё есть.
  if(skip.length) html+=`<div class="muted" style="margin-top:8px">Свободный лимит есть, но источником не считаем (${money(u.excluded_free_total)}): `

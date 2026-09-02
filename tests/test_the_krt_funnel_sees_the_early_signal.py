@@ -182,3 +182,24 @@ def test_the_order_binds_itself_when_the_scan_is_read() -> None:
                              "address": "Куркинское ш., вл. 27-39"}})
     assert got["key"] == "upcoming"
     assert "распознан" in " ".join(got["why"]), "основание названо"
+
+
+def test_a_live_lot_beats_an_operator_from_the_press() -> None:
+    """«Почему занята? Там торги идут, ты сам нашёл их» (владелец, 02.09.2026).
+
+    Право на договор о КРТ на торгах — значит оператора у площадки нет: город
+    торгует тем, чего никому не отдал. Публикация с именем проигрывает лоту,
+    а противоречие названо в основании шага.
+    """
+    got = stage({"slug": "g", "status": "Планируемый"},
+                lots=[{"title": "лот", "deadline": "2026-09-21"}],
+                intent={"decision_read": True, "taken": True,
+                        "operator": ["публикация: оператор Х"], "operator_name": "Х",
+                        "city_needs": []})
+    assert got["key"] == "bidding"
+    assert any("торги сильнее" in line for line in got["why"])
+    # Слово города «В реализации» лот не отменяет: противоречие названо.
+    still = stage({"slug": "h", "status": "В реализации"},
+                  lots=[{"title": "лот", "deadline": "2026-09-21"}])
+    assert still["key"] == "taken"
+    assert any("противоречат" in line for line in still["why"])

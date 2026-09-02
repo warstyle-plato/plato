@@ -215,9 +215,11 @@ def test_the_shortage_side_repeats_the_waterfall_and_sums_to_the_structural_defi
     (владелец, 01.09.2026) — это те же строки водопада, и итог тот же."""
     needy = [
         {"code": "2.4", "name": "Отделка", "need_total": 90.0, "opening_limit": 38.0,
-         "reserve_take": 20.0, "unfunded_take": 32.0, "first_reserve_month": "2026-10-01"},
+         "own_take": 38.0, "reserve_take": 20.0, "unfunded_take": 32.0,
+         "first_reserve_month": "2026-10-01"},
         {"code": "2.5", "name": "Фасады", "need_total": 30.0, "opening_limit": 10.0,
-         "reserve_take": 12.0, "unfunded_take": 8.0, "first_reserve_month": "2026-11-01"},
+         "own_take": 10.0, "reserve_take": 12.0, "unfunded_take": 8.0,
+         "first_reserve_month": "2026-11-01"},
     ]
     got = unspent_mod.unspent(ESTIMATE, horizon="2027-06-30", needy=needy)
     assert [row["code"] for row in got["needy"]] == ["2.4", "2.5"]
@@ -227,6 +229,32 @@ def test_the_shortage_side_repeats_the_waterfall_and_sums_to_the_structural_defi
     assert got["shortage_total"] == 40.0
     # Источников 15 на нехватку 40 — не хватает, и это сказано, а не выведено.
     assert got["covers"] is False
+
+
+def test_chapter_three_limit_is_not_a_source_for_chapter_two() -> None:
+    """«3 глава не доступна для 2 главы увы» (владелец, 02.09.2026).
+
+    Источники главы 3 (3.2 — 5) рядом с нехваткой главы 2 обещали бы
+    перераспределение, которого банк не даст: ответ считается по главам.
+    """
+    needy = [{"code": "2.4", "name": "Отделка", "need_total": 90.0, "opening_limit": 38.0,
+              "own_take": 38.0, "reserve_take": 20.0, "unfunded_take": 4.0,
+              "first_reserve_month": "2026-10-01"}]
+    got = unspent_mod.unspent(ESTIMATE, horizon="2027-06-30", needy=needy)
+    by = {b["chapter"]: b for b in got["by_chapter"]}
+    # Глава 2: нехватка 4, источник 2.1 → 10 — хватает внутри главы.
+    assert by["2"]["shortage"] == 4.0 and by["2"]["sources"] == 10.0 and by["2"]["covers"] is True
+    # Глава 3: источники есть, нехватки нет — вердикта нет, а не «хватает».
+    assert by["3"]["sources"] == 5.0 and by["3"]["covers"] is None
+    # Нехватка главы 2 больше её источников — главой 3 не закрывается, хотя
+    # общая сумма источников (15) больше нехватки (12).
+    needy[0]["unfunded_take"] = 12.0
+    again = unspent_mod.unspent(ESTIMATE, horizon="2027-06-30", needy=needy)
+    assert again["total"] == 15.0 and again["shortage_total"] == 12.0
+    assert again["covers"] is False
+    assert {b["chapter"]: b["covers"] for b in again["by_chapter"]}["2"] is False
+    for item in again["sources"]:
+        assert item["chapter"] == item["code"].split(".")[0]
     assert got["criterion"].startswith("договор заключён, по актам принято")
 
 
@@ -286,6 +314,11 @@ def test_the_table_shows_both_halves_and_says_what_is_an_estimate() -> None:
     assert "оценка" in body, "разложенные по статьям ГУ выданы за измеренные"
     assert "долями не делим" in body
     assert "Резерв 2.8/2.9 источником не считается" in body
+    # Перераспределение — внутри главы: источники сгруппированы по главам, и
+    # вердикт у каждой главы свой.
+    assert "u.by_chapter" in body and "лимит главы 3 для главы 2 недоступен" in body
+    assert "между главами лимит не переносится" in body
+    assert "Лимит других глав сюда не переносится" in body
     # Снятые статьи названы с причиной, а не выброшены.
     assert "a.reason" in body and "источником не считаем" in body
     # Расхождение с дефицитом выше — ошибка счёта, и так и сказано.
