@@ -2513,13 +2513,13 @@ function salesRoomBlock(d){
   if(topics.length){
     const drawn=topics.slice(0,4).filter(t=>(t.months||[]).length>1);
     if(drawn.length){
-      html+='<h3 style="margin-top:14px">О чём говорят — по месяцам</h3>'
+      html+='<h3 style="margin-top:14px">О чём говорят на встречах — по месяцам</h3>'
         +roomTrend((drawn[0].months||[]).map(m=>m.month),
           drawn.map((t,k)=>({name:t.topic, colour:ROOM_COLOURS[k],
             points:(t.months||[]).map((m,i)=>({i, v:m.share*100}))})), 0, ' %');
     }
     html+='<div class="wrap"><table class="peers">'
-      +'<tr><th>Тема</th><th class="num">Сообщений</th><th class="num">Доля</th>'
+      +'<tr><th>Тема</th><th class="num">Визитов</th><th class="num">Доля визитов</th>'
       +'<th class="num">Первые 3 мес.</th><th class="num">Последние 3 мес.</th>'
       +'<th>Впервые</th><th>Последний раз</th></tr>'
       +topics.map(t=>`<tr><td>${esc(t.topic)}</td><td class="num">${num(t.messages)}</td>`
@@ -2529,6 +2529,28 @@ function salesRoomBlock(d){
         +`<td class="muted">${esc(t.first)}</td>`
         +`<td class="muted">${esc(t.last)}</td></tr>`).join('')
       +'</table></div>';
+  }
+  // Что мешало — словами самих записей. Это НЕ «почему не купили»: назвавший
+  // цену высокой назавтра берёт бронь. Поэтому строка называется «что мешало»,
+  // и рядом стоит, из скольких описанных встреч.
+  const stop=room.objections||[];
+  if(stop.length){
+    html+='<h3 style="margin-top:14px">Что мешало на встрече</h3><div class="wrap"><table class="peers">'
+      +'<tr><th>Причина</th><th class="num">Встреч</th><th class="num">Доля визитов</th><th>Последний раз</th></tr>'
+      +stop.map(o=>`<tr><td>${esc(o.objection)}</td><td class="num">${num(o.visits)}</td>`
+        +`<td class="num">${o.share===null||o.share===undefined?'—':num(o.share*100,1)+' %'}</td>`
+        +`<td class="muted">${esc(o.last)}</td></tr>`).join('')
+      +'</table></div>';
+  }
+  // Разрыв между тем, с чем приходят, и тем, что просят. Обе величины названы
+  // покупателем на встрече; считает их сервер.
+  const asked=room.asked||{};
+  if(asked.budget_median_mln||asked.area_median){
+    html+='<div class="muted" style="font-size:12.5px;margin-top:8px">Называют на встрече: '
+      +(asked.budget_median_mln?`бюджет ${num(asked.budget_median_mln,1)} млн ₽ (медиана ${num(asked.budget_said)} названных)`:'')
+      +(asked.budget_median_mln&&asked.area_median?', ':'')
+      +(asked.area_median?`площадь ${num(asked.area_median,1)} м² (медиана ${num(asked.area_said)} названных)`:'')
+      +'.</div>';
   }
   const rivals=room.rivals||[];
   if(rivals.length){
@@ -2954,15 +2976,7 @@ function renderSales(d){
     +tile('Выручка', num(t.amount/1e6,1)+' млн ₽',
           whole.amount_share!==null&&whole.amount_share!==undefined
             ?share(whole.amount_share)+' из ожидаемых '+num(whole.pool_amount/1e6,1)+' млн ₽':'план не прочитан')
-    // Остаток на счетах, а не всё поступившее: при расторжении деньги уходят
-    // обратно покупателю (владелец, 01.09.2026: «я имел в виду текущий остаток
-    // для отчёта»). Обе половины названы рядом — «остаток» без второго числа
-    // читается как «столько и пришло». Возврат считает сервер, здесь только
-    // вычитание двух его же величин.
-    +tile('Остаток на эскроу', num((t.escrow-(d.escrow_returned||0))/1e6,1)+' млн ₽',
-          d.escrow_returned
-            ?'поступило '+num(t.escrow/1e6,1)+', возвращено '+num(d.escrow_returned/1e6,1)+' млн ₽'
-            :num(t.escrow_share*100,1)+'% от продаж, возвратов не было')
+    +tile('На эскроу', num(t.escrow/1e6,1)+' млн ₽', num(t.escrow_share*100,1)+'% от продаж')
     +'</div>'+salesNote(d,'pool');
 
   html+=salesSection('sb-dyn','Динамика',
@@ -3325,9 +3339,9 @@ function salesDigest(d, limit){
   const room=d.salesroom||{};
   const roomLines=[], saidLines=[];
   if((room.months||[]).length){
-    roomLines.push(`ЧАТ ОТДЕЛА ПРОДАЖ${room.chat?' («'+room.chat+'»)':''}: `
-      +`${room.from}—${room.to}, ${num(room.messages)} сообщений. Это отчёты менеджеров, `
-      +`а не слова покупателя; бронь показана средним числом одновременно висящих.`);
+    roomLines.push(`ЧАТ ОТДЕЛА ПРОДАЖ: ${room.from}—${room.to}, `
+      +`${num(room.visits)} описанных встреч из ${num(room.messages)} сообщений — темы по ним. `
+      +`Это отчёты менеджеров; бронь — среднее одновременно висящих.`);
     room.months.forEach(m=>{
       const bits=[];
       if(m.meetings_per_day!==undefined) bits.push(`встреч в день ${num(m.meetings_per_day,1)}`);
@@ -3344,12 +3358,20 @@ function salesDigest(d, limit){
     const moved=(t.share_recent===null||t.share_recent===undefined
       ||t.share_early===null||t.share_early===undefined)?''
       :`; последние 3 мес. ${num(t.share_recent*100,1)}% против ${num(t.share_early*100,1)}% в первых трёх`;
-    saidLines.push(`ГОВОРЯТ ПРО ${t.topic}: ${num(t.messages)} сообщений `
-      +`(${num(t.share*100,1)}% чата)${moved}`);
+    saidLines.push(`ГОВОРЯТ ПРО ${t.topic}: ${num(t.messages)} визитов `
+      +`(${num(t.share*100,1)}% описанных встреч)${moved}`);
   });
   if((room.rivals||[]).length)
     saidLines.push('СРАВНИВАЮТ С: '+room.rivals.slice(0,5)
       .map(r=>`${r.rival} (${num(r.messages)})`).join(', '));
+  (room.objections||[]).slice(0,4).forEach(o=>{
+    saidLines.push(`МЕШАЛО ${o.objection}: ${num(o.visits)} встреч`
+      +`${o.share===null||o.share===undefined?'':' ('+num(o.share*100,1)+'% описанных)'}`);
+  });
+  const asked=room.asked||{};
+  if(asked.budget_median_mln&&asked.area_median)
+    saidLines.push(`ПРОСЯТ НА ВСТРЕЧЕ: бюджет ${num(asked.budget_median_mln,1)} млн ₽ `
+      +`и ${num(asked.area_median,0)} м² (медианы того, что называют вслух)`);
   add('чат: о чём говорят', saidLines);
   // Непрочитанное — предупреждение, а не данные: Платон не должен читать
   // отсутствие источника как ноль. Строки бывают длинными (в них имя файла),

@@ -70,6 +70,28 @@ TOPICS: tuple[tuple[str, str], ...] = (
     ("сравнение с соседями", r"сравнива|конкурент|у соседей"),
 )
 
+# Что не подошло. Слова взяты из самих записей — каждая строка стоит в живом
+# экспорте 01.09.2026, а не придумана по списку типовых возражений. Правило то
+# же, что у причин отказа в CRM: считаем то, что рядом с однозначной уликой, а
+# не слово «отказ» в пересказе.
+#
+# Возражение — это НЕ «не купил»: человек, назвавший цену высокой, назавтра
+# берёт бронь. Строка отвечает на «что мешало», а не на «почему не продали».
+OBJECTIONS: tuple[tuple[str, str], ...] = (
+    ("бюджет и цена",
+     r"не проход\w*\s*по\s*бюджет|по\s*бюджет\w*\s*не\s*под|ограничен\w*\s*в\s*бюджет"
+     r"|слишком дорог|\bдорого\b|не по бюджет|по цене не проход|цены.{0,30}негатив"
+     r"|локация не соответствует цене|не хватает бюджет"),
+    ("соседний дом рядом",
+     r"(?:инград|кутузов\s*град)(?=[^.!?]{0,80}(?:не нрав|смуща|давит|близко|слишком))"
+     r"|(?:не нрав|смуща|давит)[^.!?]{0,80}(?:инград|кутузов\s*град)"),
+    ("много стройки вокруг", r"много\s*стро|стройк\w*\s*рядом"),
+    ("этаж и виды", r"смуща\w*\s*этаж|видов\w*\s*характеристик|виды\s*из\s*окон"),
+    ("планировка и комнаты",
+     r"маленьким\w*\s*комнат|комнаты\s*от\s*\d+|планировк\w*\s*котор\w*\s*нрав"),
+    ("район как статус", r"понижени\w*\s*уровн|район.{0,30}не подход"),
+)
+
 # Соседние проекты, с которыми сравнивают. Список короткий и явный: ловить
 # имена «по заглавной букве» значило бы записать в конкуренты Ипотеку и Москву.
 RIVALS: tuple[tuple[str, str], ...] = (
@@ -81,6 +103,37 @@ RIVALS: tuple[tuple[str, str], ...] = (
     ("Level", r"\blevel\b|левел"),
     ("Индиво", r"индиво"),
 )
+
+
+# Описание визита внутри дневного отчёта: кусок после счёта встреч и до счёта
+# звонков. Владелец, 01.09.2026: «анализировать надо только отчёты о встречах,
+# простую болтовню не надо».
+#
+# Мерить темы по ВСЕМУ сообщению нельзя, и по всему чату тем более. В отчёте
+# рядом стоит список действующих броней, и он повторяется каждый день, пока
+# бронь держится: «квартира №20, башня Гармония, 90,2 кВ.м» приносила тему
+# «площадь» тридцать раз подряд — та же ошибка, от которой брони считаются по
+# одному разу. А в чате помимо отчётов живёт рабочая переписка: план эскроу,
+# ссылки на дом.рф, «где новые фото». Её 69% за всё время и 91% в декабре, и со
+# временем её стало меньше — доля темы от всего чата росла бы сама собой.
+_VISIT = re.compile(
+    r"(?:встреч\w*\s*в\s*офисе|в\s*офисе)[\s:\-–—]*(\d+)\s*(?:шт\.?|встреч\w*)?[\s\.\)\-–—:]*(.*?)"
+    r"(?=целев\w*\s*звонк|на\s+завтра|$)", re.I | re.S)
+
+# Короче этого — не описание разговора, а «Встреч в офисе - 0» с хвостом.
+_VISIT_MIN = 40
+
+# Меньше этого числа визитов на куске — сравнивать не с чем.
+_SLICE_MIN = 10
+
+
+def visit_of(text: str) -> str:
+    """Что записано про сам визит. Пусто — в этот день визит не описывали."""
+    found = _VISIT.search(text)
+    if not found:
+        return ""
+    said = found.group(2).strip()
+    return said if len(said) >= _VISIT_MIN else ""
 
 
 def _plain(fragment: str) -> str:
@@ -118,6 +171,51 @@ def read_salesroom(data: bytes) -> dict[str, Any]:
             "missing": []}
 
 
+# Бюджет и площадь, названные на встрече. «бюджет 35 млн», «до 40 млн»,
+# «рассматривает 100 метров». Разрыв между тем и другим — это и есть ответ на
+# «почему не покупают», причём словами покупателя, а не нашей догадкой.
+_BUDGET = re.compile(r"бюджет\w*\s*(?:до\s*|около\s*|порядка\s*|в\s*)?(\d{1,3})\s*млн", re.I)
+_WANT_AREA = re.compile(r"(?:рассматрива\w*|смотр\w*|ище\w*|нужн\w*|хоч\w*|интересу\w*)"
+                        r"[^.!?]{0,40}?(\d{2,3})\s*(?:\+\s*)?(?:кв\.?\s?м|м2|м²|метр)", re.I)
+
+
+def _asked(visits: list[dict[str, Any]]) -> dict[str, Any]:
+    """Что просят: бюджет и метры, названные на встречах.
+
+    Считается по описаниям визитов, поэтому одна встреча даёт одну пару, а не
+    столько, сколько раз в отчёте повторилась действующая бронь.
+    """
+    budgets, areas = [], []
+    for visit in visits:
+        found = [int(x) for x in _BUDGET.findall(visit["text"])]
+        budgets += [x for x in found if 5 <= x <= 300]
+        found = [int(x) for x in _WANT_AREA.findall(visit["text"])]
+        areas += [x for x in found if 20 <= x <= 250]
+    return {
+        "budget_median_mln": (round(statistics.median(budgets), 1) if budgets else None),
+        "budget_said": float(len(budgets)),
+        "area_median": (round(statistics.median(areas), 1) if areas else None),
+        "area_said": float(len(areas)),
+    }
+
+
+def _objections(visits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Что мешало — по словам самих записей.
+
+    Возражение это не отказ: назвавший цену высокой назавтра берёт бронь.
+    Строка отвечает на «что мешало», и так она и подписана.
+    """
+    out = []
+    for name, pattern in OBJECTIONS:
+        hits = [v for v in visits if re.search(pattern, v["text"], re.I)]
+        if hits:
+            out.append({"objection": name, "visits": float(len(hits)),
+                        "share": len(hits) / len(visits) if visits else None,
+                        "last": hits[-1]["day"]})
+    out.sort(key=lambda row: -row["visits"])
+    return out
+
+
 def _lots(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Лоты из броней: площадь и цена метра, каждый лот один раз.
 
@@ -143,13 +241,19 @@ def _lots(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 
-def _slice_share(_rows: list[dict[str, Any]], seen: Counter,
-                 said: Counter, months: list[str]) -> float | None:
-    """Доля темы в куске месяцев. Меньше трёх месяцев — не тренд, а один месяц."""
+def _slice_share(seen: Counter, said: Counter, months: list[str]) -> float | None:
+    """Доля темы в куске месяцев. Мало визитов — ответа нет, а не ноль.
+
+    Описывать разговор в отчёте начали не сразу: в феврале 2026 таких записей
+    нет вовсе, в марте шесть. Доля, посчитанная на четырёх визитах, читается на
+    экране ровно так же, как посчитанная на пятидесяти, — и «стали спрашивать
+    чаще» выходило бы из того, что стали ПИСАТЬ подробнее.
+    """
     if len(months) < 3:
         return None
     total = sum(said[month] for month in months)
-    return (sum(seen.get(month, 0) for month in months) / total) if total else None
+    return (sum(seen.get(month, 0) for month in months) / total) if total >= _SLICE_MIN else None
+
 
 
 def summarise(read: dict[str, Any], bands: list[dict[str, Any]] | None = None) -> dict[str, Any]:
@@ -202,26 +306,28 @@ def summarise(read: dict[str, Any], bands: list[dict[str, Any]] | None = None) -
             row["calls_per_day"] = round(month["calls"] / month["calls_days"], 2)
         rows.append(row)
 
-    # Тема считается долей месяца, а не числом: сообщений в месяце то тридцать,
-    # то девяносто, и «стали чаще спрашивать про рассрочку» по голому счёту
-    # означало бы «менеджеры стали писать длиннее».
-    said_in_month: Counter = Counter(m["day"][:7] for m in messages)
+    # Темы меряются ТОЛЬКО по описаниям визитов — по тому, что менеджер
+    # записал про разговор. Всё остальное в чате про покупателя не говорит, а
+    # повторяющийся блок броней говорит про него тридцать раз подряд.
+    visits = [{"day": m["day"], "text": visit_of(m["text"])} for m in messages]
+    visits = [v for v in visits if v["text"]]
+    said_in_month: Counter = Counter(v["day"][:7] for v in visits)
     order = sorted(said_in_month)
     topics: list[dict[str, Any]] = []
     for name, pattern in TOPICS:
-        hits = [m for m in messages if re.search(pattern, m["text"], re.I)]
+        hits = [v for v in visits if re.search(pattern, v["text"], re.I)]
         if not hits:
             continue
-        seen: Counter = Counter(m["day"][:7] for m in hits)
+        seen: Counter = Counter(v["day"][:7] for v in hits)
         by_month = [{"month": month, "messages": float(seen.get(month, 0)),
                      "share": seen.get(month, 0) / said_in_month[month]}
                     for month in order]
         topics.append({"topic": name, "messages": float(len(hits)),
-                       "share": len(hits) / len(messages),
+                       "share": len(hits) / len(visits) if visits else None,
                        "first": hits[0]["day"], "last": hits[-1]["day"],
                        "months": by_month,
-                       "share_early": _slice_share(by_month, seen, said_in_month, order[:3]),
-                       "share_recent": _slice_share(by_month, seen, said_in_month, order[-3:])})
+                       "share_early": _slice_share(seen, said_in_month, order[:3]),
+                       "share_recent": _slice_share(seen, said_in_month, order[-3:])})
     topics.sort(key=lambda row: -row["messages"])
 
     rivals = []
@@ -247,11 +353,17 @@ def summarise(read: dict[str, Any], bands: list[dict[str, Any]] | None = None) -
         "Рост доли темы значит, что о ней стали ЗАПИСЫВАТЬ чаще. Это может быть "
         "и переменой спроса, и переменой в том, как подробно ведут отчёт; "
         "различить одно от другого по чату нечем.",
+        f"Темы считаются по описаниям визитов ({len(visits)} из {len(messages)} "
+        "сообщений), а не по всему чату: в отчёте рядом лежит список действующих "
+        "броней, и он повторяется каждый день, пока бронь держится.",
     ]
     return {
         "chat": read.get("chat") or "",
         "from": messages[0]["day"], "to": messages[-1]["day"],
         "messages": float(len(messages)),
+        # База названа числом: «47% разговоров» и «47% чата» — разные
+        # утверждения, а на экране они выглядят одинаково.
+        "visits": float(len(visits)),
         "months": rows,
         "topics": topics,
         "rivals": rivals,
@@ -259,6 +371,8 @@ def summarise(read: dict[str, Any], bands: list[dict[str, Any]] | None = None) -
         "asked_area_median": (round(statistics.median(asked), 1) if asked else None),
         "asked_mentions": float(len(asked)),
         "bands": _lots_by_band(lots, bands),
+        "objections": _objections(visits),
+        "asked": _asked(visits),
         "notes": notes,
     }
 
