@@ -13,12 +13,22 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+# Недельный прогон каталога КРТ стартует нитью при установке модуля торгов и
+# считает ВЕСЬ каталог, когда наступает его календарная точка. В тестах этой
+# нити быть не должно: 02.09.2026 она проснулась внутри прогона на GitHub с
+# рынком-заглушкой из соседнего теста, сходила в сеть за 263 площадками и
+# залила хвост лога 134 трассировками «'object' has no attribute
+# 'build_report'» — строку «N passed» под ними пришлось искать скриптом.
+# Выключатель у нити есть; здесь он взводится до импорта приложения.
+os.environ.setdefault("AUCTION_KRT_WEEKLY", "0")
 
 import main as _wrapper  # noqa: E402
 import main_legacy as _engine  # noqa: E402
