@@ -171,41 +171,57 @@ def test_the_funnel_dynamics_reach_the_question_month_by_month() -> None:
         assert sign not in room, f"в вопросе считают: {sign}"
 
 
-def test_a_topic_is_measured_by_its_share_of_the_month() -> None:
-    """«Возможно в динамике» — значит долей месяца, а не числом сообщений.
+def test_a_topic_is_measured_by_the_visit_and_not_by_the_whole_report() -> None:
+    """Темы считаются по описанию визита, а не по всему сообщению.
 
-    В декабре двадцать отчётов, в августе девяносто: голая частота сравнивала
-    бы длину переписки, а не спрос. И перемена называется только тогда, когда
-    месяцев на кусок хватает — два месяца это не тренд, а один месяц.
+    Владелец, 01.09.2026: «анализировать надо только отчёты о встречах, простую
+    болтовню не надо». В дневном отчёте рядом с визитом лежит список
+    действующих броней, и он повторяется каждый день, пока бронь держится:
+    «квартира №20, башня Гармония, 90,2 кВ.м» приносила бы тему «площадь»
+    тридцать раз подряд. Та же ошибка, от которой брони считаются по одному
+    разу, только в другом месте.
+    """
+    booking = ("Текущих броней: 1 шт. - квартира №20, башня Гармония, 5 этаж, "
+               "90,2 кВ.м. Цена лота 64 913 192 р. Длительная бронь.")
+    days = [(f"{day:02d}.08.2026",
+             f"Отчёт за {day:02d}.08.2026 г. Эскроу - 1 325 млн. {booking} "
+             "Встреч в офисе - 1 шт. Пришёл сам, интересовался ипотекой, "
+             "ушёл считать. Целевых звонков - 2 шт.")
+            for day in range(1, 21)]
+    said = salesroom.summarise(salesroom.read_salesroom(_export(days)))
+
+    assert said["visits"] == 20, "визиты не найдены в отчётах"
+    topics = {t["topic"]: t for t in said["topics"]}
+    assert "ипотека" in topics, "тема визита потеряна"
+    assert "площадь и планировка" not in topics, \
+        "метры из повторяющейся брони засчитаны как разговор про площадь"
+
+
+def test_a_thin_slice_gives_no_trend_at_all() -> None:
+    """Описывать визиты начали не сразу — на четырёх записях доли нет.
+
+    В феврале 2026 описаний визита в отчётах нет вовсе, в марте шесть. Доля,
+    посчитанная на такой горстке, выглядит на экране ровно так же, как
+    посчитанная на пятидесяти, и «стали спрашивать чаще» выходило бы из того,
+    что стали ПОДРОБНЕЕ ПИСАТЬ.
     """
     days = []
-    # Декабрь: десять отчётов, про рассрочку в одном.
-    for day in range(1, 11):
-        text = "Отчёт. Встреч в офисе - 1 шт." + (" Спрашивали про рассрочку." if day == 1 else "")
-        days.append((f"{day:02d}.12.2025", text))
-    # Январь и февраль — столько же и так же, чтобы «первые три» были ровными.
-    for month in ("01.2026", "02.2026"):
-        for day in range(1, 11):
-            days.append((f"{day:02d}.{month}", "Отчёт. Встреч в офисе - 1 шт."))
-    # Июнь–август: рассрочка в каждом втором отчёте.
+    # Первые три месяца: по одному описанному визиту в месяц — мерить нечем.
+    for month in ("12.2025", "01.2026", "02.2026"):
+        days.append((f"05.{month}", f"Отчёт за 05.{month} Встреч в офисе - 1 шт. "
+                                    "Пришла пара, спрашивали про рассрочку и первоначальный взнос, ушли считать. Целевых звонков - 1 шт."))
+    # Последние три — по двадцать.
     for month in ("06.2026", "07.2026", "08.2026"):
-        for day in range(1, 11):
-            text = "Отчёт. Встреч в офисе - 1 шт." + (" Просят рассрочку." if day % 2 else "")
-            days.append((f"{day:02d}.{month}", text))
-
+        for day in range(1, 21):
+            days.append((f"{day:02d}.{month}", f"Отчёт за {day:02d}.{month} Встреч в офисе - 1 шт. "
+                                               "Пришла пара, спрашивали про рассрочку и первоначальный взнос, ушли считать. Целевых звонков - 1 шт."))
     said = salesroom.summarise(salesroom.read_salesroom(_export(days)))
-    rassrochka = next(t for t in said["topics"] if t["topic"] == "рассрочка")
-    assert len(rassrochka["months"]) == 6, "ряд по месяцам не собран"
-    assert abs(rassrochka["share_early"] - 1 / 30) < 1e-9, "первые три месяца посчитаны не долей"
-    assert abs(rassrochka["share_recent"] - 15 / 30) < 1e-9, "последние три месяца посчитаны не долей"
+    topic = next(t for t in said["topics"] if t["topic"] == "рассрочка")
+    assert topic["share_early"] is None, "доля посчитана на трёх визитах"
+    assert topic["share_recent"] is not None
 
     line = contracting.conclusions({"salesroom": said, "total": {}})["salesroom"]
-    assert "рассрочка" in line and "последних трёх месяцев" in line, line
-
-    # Меньше трёх месяцев — не тренд: перемены не называется, а не выдумывается.
-    short = salesroom.summarise(salesroom.read_salesroom(_export(days[:20])))
-    topic = next(t for t in short["topics"] if t["topic"] == "рассрочка")
-    assert topic["share_recent"] is None and topic["share_early"] is None
+    assert "стали заметно чаще" not in line, "рост выдуман на пустой базе: " + line
 
 
 def test_the_growth_of_a_topic_is_not_called_a_change_of_demand() -> None:
@@ -224,3 +240,70 @@ def test_both_chat_charts_are_drawn_by_one_renderer() -> None:
     body = page[start:page.index("\n}", start)]
     assert body.count("roomTrend(") == 2, "воронка и темы рисуются разным кодом"
     assert "<svg" not in body, "график собирается в блоке, а не рисовальщиком"
+
+
+def test_what_got_in_the_way_is_read_from_the_words_of_the_visit() -> None:
+    """«Что мешало» берётся из записи встречи, а не из списка типовых причин.
+
+    Владелец, 01.09.2026: «а есть выводы там, что людям не подходило?». В
+    записях это есть дословно — «не проходят по бюджету по тем планировкам,
+    которые нравятся», «не нравится близость к Инграду», «смущает этаж». Ни
+    одной такой строки не выводилось: они лежали в тексте.
+    """
+    days = [
+        ("05.08.2026", "Отчёт за 05.08.2026 Встреч в офисе - 1 шт. Пара смотрела 70 метров, "
+                       "проект понравился, но не проходят по бюджету по тем планировкам, "
+                       "которые нравятся. Бюджет 35 млн. Целевых звонков - 1 шт."),
+        ("06.08.2026", "Отчёт за 06.08.2026 Встреч в офисе - 1 шт. Ольга рассматривает 100 метров, "
+                       "бюджет 50 млн, по бюджету проходит только в 3 корпус, но не нравится "
+                       "близость к Инграду. Целевых звонков - 0 шт."),
+        ("07.08.2026", "Отчёт за 07.08.2026 Встреч в офисе - 1 шт. Подошёл один вариант на 2 этаже "
+                       "38,2 кв.м., но смущает этаж, ушла думать и обещала перезвонить. "
+                       "Целевых звонков - 2 шт."),
+    ]
+    said = salesroom.summarise(salesroom.read_salesroom(_export(days)))
+    named = {o["objection"]: o for o in said["objections"]}
+    assert "бюджет и цена" in named, named
+    assert "соседний дом рядом" in named, named
+    assert "этаж и виды" in named, named
+
+    # Названный бюджет и запрошенные метры — то, что человек сказал вслух.
+    assert said["asked"]["budget_median_mln"] == 42.5, said["asked"]
+    assert said["asked"]["area_median"] == 85.0, said["asked"]
+
+    line = contracting.conclusions({"salesroom": said, "total": {}})["salesroom"]
+    assert "Мешало чаще прочего" in line and "бюджет и цена" in line, line
+
+
+def test_a_neighbour_mentioned_without_a_complaint_is_not_an_objection() -> None:
+    """Соседний дом и приводит людей, и мешает — это разные записи.
+
+    Из четырнадцати упоминаний Инграда и Кутузов Града возражение только в
+    шести; в остальных это источник покупателей — «живёт в Кутузов Град, гулял
+    с сыном, зашёл». Считать все четырнадцать возражением значит записать своих
+    же лидов в недовольные.
+    """
+    days = [
+        ("10.08.2026", "Отчёт за 10.08.2026 Встреч в офисе - 1 шт. Михаил живёт в Кутузов Град, "
+                       "гулял с сыном, решил зайти, рассматривает расширение площади. "
+                       "Целевых звонков - 0 шт."),
+        ("11.08.2026", "Отчёт за 11.08.2026 Встреч в офисе - 1 шт. Клиентке всё нравится, "
+                       "не нравится Кутузов Град, слишком близко расположен к проекту. "
+                       "Целевых звонков - 0 шт."),
+    ]
+    said = salesroom.summarise(salesroom.read_salesroom(_export(days)))
+    named = {o["objection"]: o for o in said["objections"]}
+    assert named["соседний дом рядом"]["visits"] == 1, \
+        "сосед, упомянутый без жалобы, посчитан возражением"
+
+
+def test_what_got_in_the_way_reaches_the_screen_and_the_question() -> None:
+    """Посчитанное за маршрутом — не показанное: это правило уже стоило свода продаж."""
+    page = cabinet.cabinet_page("sales")
+    start = page.index("function salesRoomBlock(")
+    body = page[start:page.index("\n}", start)]
+    assert "room.objections" in body and "Что мешало на встрече" in body
+    assert "room.asked" in body, "разрыв бюджета не показан"
+
+    digest = page[page.index("function salesDigest("):page.index("\nfunction ", page.index("function salesDigest(") + 10)]
+    assert "МЕШАЛО" in digest and "ПРОСЯТ НА ВСТРЕЧЕ" in digest, "Платон об этом не узнает"

@@ -54,6 +54,11 @@ from typing import Any, Iterable
 
 SHEET_CONTRACTS = "Контрактация"
 SHEET_LEDGER = "1С_Факт"
+# Проводки 1С целиком. Комиссия брокерам приходит СЮДА, а колонками
+# «Контрактации» она бывает, а бывает и нет: 01.09.2026 автор выгрузки
+# пересобрал лист и шесть колонок из него убрал — брокеры пропали с
+# экрана целиком, при 23,07 млн ₽ комиссий в том же файле листом левее.
+SHEET_POSTINGS = "Раб.файл"
 
 # Счета 1С: заключение договора и поступление на эскроу — разные факты.
 ACCOUNT_CONTRACT = "76.06"
@@ -279,6 +284,84 @@ def read_contracts(data: bytes) -> dict[str, Any]:
         })
     return {"rows": out, "project": project, "missing": missing}
 
+
+
+# Подпись субконто, под которой комиссия брокерам лежит в проводках. Сверено с
+# живым файлом 01.09.2026: пятнадцать строк, пять брокеров, 23,07 млн ₽.
+_BROKER_SUBCONTO = "комиссия брокерам"
+
+
+def read_broker_postings(data: bytes) -> dict[str, Any]:
+    """Комиссия брокерам из проводок «Раб.файл».
+
+    Второй источник на ту же величину заводится не от хорошей жизни: колонки
+    брокера в «Контрактации» то есть, то нет — она сводная таблица, её
+    пересобирают руками. Проводки — первичка бухгалтерии, и они не пропадают.
+
+    Что этот источник НЕ покрывает, сказано вслух рядом с числами: комиссия
+    попадает в 1С по подписанному акту, поэтому свежий договор, приведённый
+    брокером, здесь ещё не виден; премии своего отдела в этих строках нет
+    вовсе — это другая статья.
+    """
+    rows = _rows(data, SHEET_POSTINGS)
+    if not rows:
+        return {"rows": [], "missing": [f"лист «{SHEET_POSTINGS}» не найден"]}
+    # Шапка у листа не в первой строке: сверху сводка. Ищем строку, где стоят
+    # сразу «Сумма» и «Содержание», — по подписям, а не по номеру: номер
+    # съедет от одной вставленной строки, и лист прочитается пустым.
+    head = None
+    for i, row in enumerate(rows[:40]):
+        names = {_text(x) for x in row}
+        if {"Сумма", "Содержание"} <= names:
+            head = i
+            break
+    if head is None:
+        return {"rows": [], "missing": [
+            f"в листе «{SHEET_POSTINGS}» не нашлась шапка проводок "
+            "(строка с «Сумма» и «Содержание»)"]}
+    header = [_text(x) for x in rows[head]]
+
+    def column(title: str) -> int | None:
+        return next((i for i, name in enumerate(header) if name == title), None)
+
+    at = {key: column(title) for key, title in (
+        ("date", "Дата"), ("article", "Субконто1 Дт"), ("party", "Субконто1 Кт"),
+        ("amount", "Сумма"), ("content", "Содержание"))}
+    missing = [title for key, title in (
+        ("article", "Субконто1 Дт"), ("party", "Субконто1 Кт"),
+        ("amount", "Сумма"), ("content", "Содержание")) if at[key] is None]
+    if missing:
+        return {"rows": [], "missing": [
+            f"в листе «{SHEET_POSTINGS}» не нашлись колонки: " + ", ".join(missing)]}
+
+    out = []
+    for row in rows[head + 1:]:
+        def cell(key: str) -> Any:
+            position = at.get(key)
+            return row[position] if position is not None and position < len(row) else None
+
+        if _text(cell("article")).lower() != _BROKER_SUBCONTO:
+            continue
+        amount = _number(cell("amount"))
+        if not amount:
+            continue
+        signed = _excel_date(cell("date"))
+        out.append({
+            "date": signed.isoformat() if signed else "",
+            "broker": _text(cell("party")),
+            "amount": amount,
+            "content": _text(cell("content")),
+            # Ставка написана в назначении платежа — «(5%)». Написана не всегда,
+            # и её отсутствие это «не указана», а не ноль.
+            "rate": _posting_rate(_text(cell("content"))),
+        })
+    return {"rows": out, "missing": []}
+
+
+def _posting_rate(content: str) -> float | None:
+    """Ставка из назначения платежа: «Комиссия брокерам (2,477%) ДДУ …»."""
+    found = re.search(r"\(\s*([\d]+(?:[.,]\d+)?)\s*%\s*\)", content)
+    return float(found.group(1).replace(",", ".")) / 100 if found else None
 
 def read_ledger(data: bytes) -> dict[str, Any]:
     """Проводки листа «1С_Факт»: контрактация и эскроу порознь.
@@ -1258,7 +1341,8 @@ def conclusions(summary: dict[str, Any]) -> dict[str, str]:
                      "трафик тот же, а до брони доходит меньше")
         topics = room.get("topics") or []
         if topics:
-            line += (". Чаще всего в разговорах: "
+            visits = int(room.get("visits") or 0)
+            line += (f". Чаще всего на встречах (из {visits} описанных): "
                      + ", ".join(f"{t['topic']} ({int(t['messages'])})" for t in topics[:3]))
             # Что СТАЛИ спрашивать чаще — это и есть «в динамике». Доля месяца,
             # а не счёт: месяцы разной длины и разной разговорчивости, и голая
@@ -1270,8 +1354,16 @@ def conclusions(summary: dict[str, Any]) -> dict[str, str]:
             if moved:
                 grew = max(moved, key=lambda t: t["share_recent"] - t["share_early"])
                 line += (f". Спрашивать про «{grew['topic']}» стали заметно чаще: "
-                         f"{_pct(grew['share_recent'])} сообщений последних трёх месяцев "
+                         f"{_pct(grew['share_recent'])} встреч последних трёх месяцев "
                          f"против {_pct(grew['share_early'])} в первых трёх")
+        stop = room.get("objections") or []
+        if stop:
+            line += (". Мешало чаще прочего: "
+                     + ", ".join(f"{o['objection']} ({int(o['visits'])})" for o in stop[:3]))
+        asked = room.get("asked") or {}
+        if asked.get("budget_median_mln") and asked.get("area_median"):
+            line += (f". Приходят с бюджетом {_dec(asked['budget_median_mln'], 1)} млн ₽ "
+                     f"на {_dec(asked['area_median'], 0)} м² — это то, что называют вслух")
         rivals = room.get("rivals") or []
         if rivals:
             line += "; сравнивают с " + ", ".join(r["rival"] for r in rivals[:3])

@@ -78,7 +78,7 @@ def _fat_summary() -> dict:
         "terminated": [{"escrow_returned": 5_000_000}, {"escrow_returned": 3_000_000}],
         "salesroom": {
             "chat": "Кутузов Сити. Отчёты. Продажи",
-            "from": "2025-12-07", "to": "2026-08-31", "messages": 742,
+            "from": "2025-12-07", "to": "2026-08-31", "messages": 742, "visits": 105,
             "months": [{"month": m, "days": 30, "meetings_per_day": 1.13,
                         "calls_per_day": 1.12, "bookings_at_once": 0.93,
                         "registering_at_once": 0.1} for m in months],
