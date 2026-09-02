@@ -141,3 +141,17 @@ def test_the_script_of_the_page_parses(tmp_path) -> None:
         done = subprocess.run([node, "--check", str(file)],
                               capture_output=True, text=True, timeout=60)
         assert done.returncode == 0, done.stderr[:600]
+
+
+def test_a_live_lot_lifts_the_operator_cut_and_the_renovation_tag_carries_its_quote() -> None:
+    """Живой лот сильнее публикации — снижения за «оператор назван» при нём нет;
+    а метка «реновация» показывает свою цитату, не общий ответ."""
+    page = (ROOT / "auction_search" / "ui.py").read_text(encoding="utf-8")
+    body = page[page.index("function krtScore("):]
+    body = body[: body.index("\n}\n")]
+    assert "!krtLiveLot(x)" in body, "снижение за оператора ставится и при живом лоте"
+    assert "function krtLiveLot(" in page
+    tag = page[page.index("const renovQuote="):]
+    tag = tag[: tag.index("реновация</span>")]
+    assert "press&&press.city_needs||[])[0]||{}).quote" in tag
+    assert "публикация: " in tag and "карточка krt.mos.ru: " in tag

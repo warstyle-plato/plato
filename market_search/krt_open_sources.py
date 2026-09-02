@@ -442,13 +442,33 @@ def _is_not_an_operator(name: str) -> bool:
     return any(mark in low for mark in _NOT_AN_OPERATOR)
 
 
+# Кавычки — не признак компании: в них же стоят станции метро и улицы.
+# «Оператор КРТ у метро «Коломенская»» давало оператора «Коломенская»
+# (экран владельца, 02.09.2026). Место узнаётся по слову перед кавычками и по
+# форме имени: одно слово-прилагательное — топоним, а не юрлицо.
+_PLACE_BEFORE = re.compile(
+    r"(?iu)(?:метро|станци\w*|ст\.\s*м\.|м\.|улиц\w*|ул\.|район\w*|платформ\w*|"
+    r"площад\w*|шоссе|проспект\w*|пр-т|набережн\w*|бульвар\w*|деревн\w*|посёлк\w*|"
+    r"поселк\w*|город\w*|округ\w*)\s*$")
+_TOPONYM_WORD = re.compile(r"(?u)^«?[А-ЯЁ][а-яё-]+(?:ская|ский|ское|ские|ская|цкая|цкий|ное|ный|ная)»?$")
+
+
+def _looks_like_a_place(tail: str, found: "re.Match[str]") -> bool:
+    """Имя в кавычках — место, а не компания."""
+    before = tail[:found.start()]
+    if _PLACE_BEFORE.search(before):
+        return True
+    raw = found.group("name").strip()
+    return bool(_TOPONYM_WORD.match(raw))
+
+
 def _operator_name(sentence: str) -> str:
     """Имя оператора. Нет имени — пустая строка, а не догадка."""
     word = _OPERATOR_WORD.search(sentence)
     if word:
         tail = sentence[word.end():word.end() + 140]
         found = _NAME.search(tail)
-        if found:
+        if found and not _looks_like_a_place(tail, found):
             name = _clean_name(found.group("name"))
             if name and not _is_not_an_operator(name):
                 return name

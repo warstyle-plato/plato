@@ -725,20 +725,35 @@ const KRT_STAGES=[
  {key:'decision',name:'Проект решения о КРТ', tone:''},
  {key:'unknown', name:'Шаг не определён',   tone:''},
 ];
+// Живой лот на площадку: город выставил право на договор о КРТ, приём заявок
+// открыт. Это официальный акт, и он сильнее публикации: пока право на торгах,
+// оператора у площадки нет — иначе торговать было бы нечем.
+function krtLiveLot(x){
+ return ((state.krtTenders||{})[x.slug]||[]).find(v=>v.deadline)||null;
+}
 function krtStage(x){
  const lots=state.krtTenders[x.slug]||[], press=state.krtPress[x.slug]||null;
  const intent=krtIntent(x), status=String(x.status||'').toLowerCase();
  const why=[];
+ // Заявочная кампания видна сроком подачи: лот с открытым приёмом — это уже
+ // не «опубликован», а «идёт». И он сильнее «занятости» из публикаций:
+ // Варшавское ш., вл. 37 стояло «Занята» с оператором из статьи при живом
+ // лоте на torgi.gov.ru с приёмом заявок до 21.09 (владелец, 02.09.2026:
+ // «Там торги идут, ты сам нашёл их»). Статус каталога «В реализации» —
+ // слово города, его лот не отменяет: противоречие называется, а не решается.
+ const open=lots.find(v=>v.deadline);
+ if(open&&!status.includes('реализац')){
+  why.push('лот на торгах, заявки до '+open.deadline);
+  if(intent&&intent.taken)why.push('публикация называет оператора, но право на договор ещё на торгах — торги сильнее');
+  return {key:'bidding',why};
+ }
  if(status.includes('реализац')||(intent&&intent.taken)){
   why.push(status.includes('реализац')?'статус каталога «В реализации»'
    :((intent.operator_name||(intent.operator||[]).length)?'оператор назван в источнике'
      :'в источнике: договор о КРТ уже заключён'));
+  if(open)why.push('при этом лот на торгах, заявки до '+open.deadline+' — источники противоречат друг другу');
   return {key:'taken',why};
  }
- // Заявочная кампания видна сроком подачи: лот с открытым приёмом — это уже
- // не «опубликован», а «идёт».
- const open=lots.find(v=>v.deadline);
- if(open){why.push('лот на торгах, заявки до '+open.deadline);return {key:'bidding',why}}
  if(lots.length){why.push('лот на торгах опубликован');return {key:'auction',why}}
  const auto=state.krtOrderBySite[x.slug];
  if(auto&&auto.number){
@@ -891,7 +906,10 @@ function krtScore(x){
  // «в реализации», только увиденное раньше. Снижение поэтому такое же.
  // Ставится только при названном имени или цитате: догадка сюда не идёт.
  const intent=krtIntent(x);
- if(intent&&intent.taken&&x.status!=='В реализации')
+ // Живой лот сильнее публикации: право на договор ещё на торгах — значит
+ // площадка не занята, и снижения за «оператор назван» нет (владелец,
+ // 02.09.2026). Противоречие остаётся видимым в основании шага.
+ if(intent&&intent.taken&&x.status!=='В реализации'&&!krtLiveLot(x))
   cuts.push({label:(intent.operator_name||(intent.operator||[]).length
     ?'оператор уже назван'+(intent.operator_name?': '+intent.operator_name:' в проекте решения')
     :'договор о КРТ уже заключён — площадка развивается правообладателями')
@@ -1143,8 +1161,13 @@ function renderKrt(){const a=state.krtFiltered,body=$('krtRows');body.innerHTML=
  const renov=card.renovation||((press&&press.city_needs||[]).length>0);
  const builder=(card.developers||[])[0]
    ||((press&&press.operator_named||[])[0]||{}).name||'';
+ // Метка несёт свою цитату: «почему реновация?» (владелец, 02.09.2026) — на
+ // общий ответ «в публикации сказано» ответить нечем, на цитату — есть чем.
+ const renovQuote=card.renovation_quote
+   ||(((press&&press.city_needs||[])[0]||{}).quote)
+   ||'В публикации сказано о городских нуждах';
  const marks=(renov?'<span class="tag warn" title="'
-    +esc(card.renovation_quote||'В публикации сказано о городских нуждах')
+    +esc(String(card.renovation?'карточка krt.mos.ru: ':'публикация: ')+renovQuote)
     +'">реновация</span>':'')
   +(builder?'<span class="tag" title="Застройщик назван официальной карточкой krt.mos.ru или публикацией">'
     +esc(builder.length>26?builder.slice(0,24)+'…':builder)+'</span>':'');
