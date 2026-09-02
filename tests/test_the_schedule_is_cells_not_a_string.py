@@ -26,11 +26,14 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+# Лестница цены сюда не входит: у неё именованные поля этапов по строительной
+# готовности — «как в квартирах блок Этап и процент» (владелец, 02.09.2026).
+# График — это то, у чего срок задаётся самим человеком, а не готовностью.
 SCHEDULES = (
-    "purchase_schedule", "price_steps",
-    "offices_sales_profile", "offices_price_steps",
-    "retail_sales_profile", "retail_price_steps",
-    "above_parking_sales_profile", "above_parking_price_steps",
+    "purchase_schedule",
+    "offices_sales_profile",
+    "retail_sales_profile",
+    "above_parking_sales_profile",
 )
 
 
@@ -106,14 +109,19 @@ def test_the_editor_adds_and_removes_rows(core, tmp_path):
               const html = box.innerHTML;
               const two = inputs.purchase_schedule;
               scheduleRemove('purchase_schedule', 1);
-              inputs.price_steps = '10%@6; 15%@12';
+              // Второй график — профиль продаж объекта: срок у него месяцем от
+              // старта продаж, а не датой, и рисоваться он обязан тем же
+              // редактором. Один проверенный график ничего не говорит об остальных.
+              inputs.offices_enabled = true;
+              inputs.offices_sales_profile = '60%@0; 40%@12';
               renderInputs();
-              const ladder = document.getElementById('sched_price_steps');
+              const profile = document.getElementById('sched_offices_sales_profile');
               return {two, one: inputs.purchase_schedule,
                       cells: box.querySelectorAll('input').length,
                       has_date: html.includes('type="date"'),
                       says_sum: html.includes('Сумма долей'),
-                      ladder_cells: ladder ? ladder.querySelectorAll('input').length : -1};
+                      profile_cells: profile ? profile.querySelectorAll('input').length : -1,
+                      profile_has_date: profile ? profile.innerHTML.includes('type="date"') : true};
             }""")
             tab.close()
         finally:
@@ -126,4 +134,5 @@ def test_the_editor_adds_and_removes_rows(core, tmp_path):
     assert got["cells"] == 4, f"две строки — четыре ячейки, а вышло {got['cells']}"
     assert got["has_date"] is True, "у платежа за покупку нет даты"
     assert got["says_sum"] is True, "сумма долей не показана — график на 90% пройдёт молча"
-    assert got["ladder_cells"] == 4, "лестница цены рисуется не ячейками"
+    assert got["profile_cells"] == 4, "профиль продаж объекта рисуется не ячейками"
+    assert got["profile_has_date"] is False, "у профиля продаж срок датой, а он от старта продаж"
