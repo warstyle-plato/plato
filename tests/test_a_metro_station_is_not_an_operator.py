@@ -34,6 +34,9 @@ def test_a_lone_adjective_in_quotes_is_a_place_even_without_the_word() -> None:
 def test_a_real_company_still_reads() -> None:
     assert "Бореалис" in sources._operator_name(
         "Оператором КРТ стало ООО «СЗ „Бореалис Девелопмент“».")
-    assert sources._operator_name("Застройщик — ГК «Самолет».") != ""
+    # «Застройщик» — не оператор: имя читается, но своей ролью.
+    assert sources._operator_name("Застройщик — ГК «Самолет».") == ""
+    name, role = sources._named_role("Застройщик — ГК «Самолет».")
+    assert "Самолет" in name and role == "developer"
     # Компания, названная прилагательным в составе полного имени, не топоним.
     assert sources._operator_name("Оператор — АО «Московская инжиниринговая компания».") != ""

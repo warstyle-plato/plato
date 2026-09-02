@@ -118,6 +118,12 @@ def render(inputs: dict, tail: str = "console.log(JSON.stringify(groups()));") -
         page_function("pfStepRemove"),
         page_function("pfStepAdd"),
         page_function("renderPfStepsEditor"),
+        # График вводится ячейками, и `renderInputs` рисует его своим
+        # редактором: без него форма не строится вовсе. Берётся блок целиком —
+        # перечисление функций поимённо ломается от каждой новой, и ломается
+        # молча: стенд падает на неопределённом имени, а выглядит это как
+        # ошибка правки страницы.
+        PAGE[PAGE.index("const SCHEDULE_FIELDS={"):PAGE.index("function renderPfStepsEditor(")],
         page_function("renderInputs"),
         DOM,
         f"const inputs=Object.assign(structuredClone(INPUT_DEFAULT),{json.dumps(inputs)});",

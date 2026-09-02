@@ -665,8 +665,14 @@ def test_every_choice_on_the_page_is_a_choice_in_the_workbook(book):
             # списка, а данные, которых мы не знаем заранее (лестница ставок
             # переписывается из конкретного НКЛ). Сторожим здесь именно поля
             # выбора: у них список известен, и книга обязана его повторить.
-            if kind in ("number", "date", "text", "pf_steps"):
+            if kind in ("number", "date", "text", "pf_steps", "schedule"):
                 continue
+            # Неизвестный тип поля не молчит: он либо выбор, либо свободный ввод,
+            # и решать это должен тот, кто его завёл. Прежде такое поле молча
+            # считалось выбором, и проверка падала с диагнозом «остался свободным
+            # вводом» — то есть не о том.
+            assert kind in ("select", "checkbox", "finance_select"), (
+                f"«{key}»: тип поля «{kind}» не назван ни выбором, ни свободным вводом")
             address = f"B{meta['layout']['inputs'][key]}"
             assert address in validated, f"«{key}» ({kind}) остался свободным вводом"
 

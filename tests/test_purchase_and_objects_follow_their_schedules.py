@@ -195,7 +195,9 @@ def test_the_page_has_the_fields_and_prints_the_schedules() -> None:
     for key in ("purchase_schedule", "offices_sales_profile", "offices_price_steps",
                 "retail_sales_profile", "retail_price_steps",
                 "above_parking_sales_profile", "above_parking_price_steps"):
-        assert key in fields and fields[key][3] == "text", key
+        # Тип поля — «schedule»: график вводится ячейками, а хранится той же
+        # строкой, которую читают и движок, и книга.
+        assert key in fields and fields[key][3] == "schedule", key
         assert core.DEFAULT_INPUTS[key] == ""
     page = core.PAGE
     assert "График платежей за покупку" in page
@@ -253,7 +255,7 @@ def test_the_book_prices_apartments_by_the_same_ladder() -> None:
 
 def test_the_four_mute_stage_fields_gave_way_to_the_ladder() -> None:
     fields = {f[0]: f for _group, items in core.FIELD_GROUPS for f in items}
-    assert fields["price_steps"][3] == "text"
+    assert fields["price_steps"][3] == "schedule"
     for key in ("growth_stage1_pct", "growth_stage2_pct", "growth_stage3_pct", "growth_stage4_pct"):
         assert key not in fields, f"{key} остаётся на странице, а движок его не читает"
         # И из умолчаний тоже: форма 2.0 требует поле на каждую вводную, а

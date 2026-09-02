@@ -794,6 +794,14 @@ def read_findings(
     # «Оператор назван» и «оператор назначен» — разные ответы, и второй не
     # отменяется первым: имя может быть в одной публикации, а факт назначения в
     # другой. Пустой список значит «не нашли», а не «нет».
+    # Все находки одним списком: счётчики и надёжность считаются по нему, а
+    # не перечислением корзин. Перечисление уже подвело — заведённые в 0.21.59
+    # застройщик, торги на договор и роль Фонда в счётчик каналов не попали, и
+    # находка из канала показывалась как «каналы спрошены, там пусто».
+    every_finding = (operator_named + developer_named + operator_appointed
+                     + operator_pending + city_needs + agreement + stage
+                     + contract_tender + fund_role)
+
     return {
         "checked": checked,
         "rules_version": ANCHOR_RULES_VERSION,
@@ -848,9 +856,7 @@ def read_findings(
         "brands": brands,
         # Сколько находок пришло из каналов: пустая строка «спросили каналы, и
         # там пусто» и не спрошенные вовсе каналы выглядят на экране одинаково.
-        "telegram_found": sum(
-            1 for item in operator_named + operator_appointed + operator_pending
-            + city_needs + agreement + stage if item.get("telegram")),
+        "telegram_found": sum(1 for item in every_finding if item.get("telegram")),
         # Заключённый договор занимает площадку так же, как названный оператор:
         # «Планируемая» в каталоге значит «стройка не начата», а не «свободна».
         # Надёжность идёт от ИСТОЧНИКА, а не от нашей уверенности: адресный
