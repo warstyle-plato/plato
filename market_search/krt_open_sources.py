@@ -198,9 +198,29 @@ def queries(name: str, okrug: str = "", district: str = "") -> list[str]:
     что отброшено, теперь видно в карточке.
     """
     addresses = search_addresses(name)
+    where = " ".join(part for part in (district, okrug) if part)
+    # Имя площадки бывает не адресом, а перечнем общих слов: «Магистральные
+    # улицы тер. 4, 5, 6». По нему поиск отвечает про городские магистрали
+    # вообще, а пишут о такой площадке по району и по соседству — «промзона
+    # рядом с Москва-Сити» (владелец, 02.09.2026). Тогда спрашиваем районом:
+    # это единственное, чем она названа однозначно.
+    words, phrase = _site_anchor(name)
+    if not words:
+        if not where:
+            return []
+        # Имя всё же спрашиваем, если из него вышла фраза: по ней площадку
+        # называют в публикациях. Район идёт рядом, а не вместо — о такой
+        # площадке пишут и «промзона рядом с Москва-Сити».
+        # Спрашиваем словами имени, а не их основами: «Магис Улицы» — не то, что
+        # написано в публикациях, а поиск ищет по написанному.
+        said = " ".join(_phrase_words(name))
+        asked = [f"кто застройщик КРТ {where} район Москва",
+                 f"комплексное развитие территории {where} Москва оператор проекта"]
+        if said:
+            asked.insert(0, f"кто оператор и застройщик КРТ {said} {where} Москва")
+        return asked[:3]
     if not addresses:
         return []
-    where = " ".join(part for part in (district, okrug) if part)
     out: list[str] = []
     # Адресов у площадки бывает несколько, и спрашиваем по каждому: склеенные в
     # одну строку, они дают запрос, которого нет ни в одной публикации.
@@ -248,9 +268,21 @@ def _anchor_words(name: str) -> set[str]:
     якорь не срабатывает ровно там, где публикация написана живым языком.
     """
     flat = str(name or "").lower().replace("ё", "е")
-    stop = {"улица", "улице", "улиц", "проезд", "проезде", "переулок", "владение",
-            "москва", "территория", "территории", "проект", "участок", "участка",
-            "город", "тер", "влд"}
+    # Слова, которыми площадку не опознать: они стоят в каждой второй статье о
+    # городе. «Магистральные улицы тер. 4, 5, 6» — настоящее имя площадки в
+    # каталоге, и якорем из него выходило «магис» + «улицы»: под такой якорь
+    # подходит любая проза про московские магистрали, и в карточку приезжала
+    # статья про Москва-Сити и «реновацию локации в 3 тыс. га» (экран
+    # владельца, 02.09.2026). Признак, который срабатывает на чужом тексте, —
+    # не признак.
+    stop = {"улица", "улице", "улиц", "улицы", "улицам", "магистральные",
+            "магистральная", "магистральных", "магистраль", "проезд", "проезде",
+            "проезды", "переулок", "владение", "москва", "московский",
+            "территория", "территории", "территорий", "проект", "участок",
+            "участка", "город", "тер", "влд", "квартал", "квартала",
+            "кварталы", "промзона", "промзоны", "район", "района", "округ",
+            "зона", "зоны", "шоссе", "набережная", "бульвар", "площадь",
+            "линия", "аллея", "тупик", "корпус", "строение", "дом"}
     # Пять букв, а не шесть. «Светлый» даёт основу «светлы», а публикация пишет
     # «на Светлом проезде» — «светлом» с неё не начинается, и якорь не
     # срабатывал ровно на той площадке, из-за которой всё и затевалось
@@ -258,9 +290,63 @@ def _anchor_words(name: str) -> set[str]:
     return {word[:5] for word in _WORD.findall(flat) if word not in stop}
 
 
+_PHRASE_SKIP = {"тер", "территория", "территории", "влд", "вл", "д", "дом",
+                "стр", "корп", "участок", "москва", "город"}
+
+
+def _phrase_words(name: str) -> list[str]:
+    """Значимые слова имени как есть — ими и спрашивают поиск."""
+    return [word for word in _WORD.findall(str(name or ""))
+            if word.lower().replace("ё", "е") not in _PHRASE_SKIP
+            and not word.isdigit() and len(word) > 2][:4]
+
+
+def _phrase_anchor(name: str) -> list[str]:
+    """Основы слов имени ПО ПОРЯДКУ — якорь для имени из общих слов.
+
+    «Магистральные улицы тер. 4, 5, 6»: по отдельности «магис» и «улицы»
+    ловят любую прозу о городе, а подряд — только тот текст, где площадка
+    названа своим именем. Настоящая публикация о ней так и пишет: «Оператором
+    выступает компания „КРТ «Магистральные улицы»“». Отбрасывать её вместе с
+    чужой значило бы лечить ложную находку потерей настоящей.
+    """
+    return [word.lower().replace("ё", "е")[:5] for word in _phrase_words(name)]
+
+
+def _mentions_phrase(sentence: str, stems: list[str]) -> bool:
+    """Стоят ли основы имени в этом предложении подряд, в том же порядке."""
+    if len(stems) < 2:
+        return False
+    words = _WORD.findall(sentence.lower().replace("ё", "е"))
+    for start in range(len(words) - len(stems) + 1):
+        if all(words[start + shift].startswith(stem)
+               for shift, stem in enumerate(stems)):
+            return True
+    return False
+
+
+def _site_anchor(name: str) -> tuple[set[str], list[str]]:
+    """Чем опознавать площадку: основы слов или, если они общие, — фраза.
+
+    Возвращает пару «слова, фраза». Слова сильнее: они переживают падеж и
+    перестановку. Фраза — запасной якорь для имени вроде «Магистральные улицы
+    тер. 4, 5, 6», у которого своих слов нет вовсе.
+    """
+    words = _anchor_words(name)
+    return (words, [] if words else _phrase_anchor(name))
+
+
 def _mentions(sentence: str, anchors: set[str]) -> bool:
+    """Сказано ли в этом предложении о НАШЕЙ площадке.
+
+    Пустой набор якорей значит «опознать площадку нечем», а не «подходит
+    любой текст». Прежде было наоборот, и у площадки с общим именем — вроде
+    «Магистральные улицы тер. 4, 5, 6» — в признаки шло всё подряд: якорей не
+    оставалось после чистки, и проверка пропускала каждое предложение.
+    Отсутствие якоря — причина ничего не утверждать, а не разрешение.
+    """
     if not anchors:
-        return True
+        return False
     words = _WORD.findall(sentence.lower().replace("ё", "е"))
     return any(word.startswith(stem) for word in words for stem in anchors)
 
@@ -289,12 +375,13 @@ def brand_names(docs: Iterable[Any], name: str) -> list[str]:
     Пусто — значит пусто: имя, взятое из предложения без адреса, привязало бы
     к площадке чужой проект.
     """
-    anchors = _anchor_words(name)
+    anchors, phrase = _site_anchor(name)
     found: list[str] = []
     for doc in docs or []:
         text = f"{getattr(doc, 'title', '')}. {getattr(doc, 'snippet', '')}"
         for sentence in _sentences(text):
-            if not _mentions(sentence, anchors):
+            if not (_mentions(sentence, anchors)
+                    or _mentions_phrase(sentence, phrase)):
                 continue
             for match in _BRAND.finditer(sentence):
                 brand = (match.group(1) or match.group(2) or "").strip()
@@ -399,7 +486,8 @@ def _found(sentence: str, doc: Any) -> dict[str, Any]:
 
 def read_findings(docs: Iterable[Any], name: str) -> dict[str, Any]:
     """Разобрать выдачу по одной площадке. Без цитаты признак не ставится."""
-    anchors = set(_anchor_words(name))
+    anchors, phrase = _site_anchor(name)
+    anchors = set(anchors)
     # Бренд площадки, если он доказан соседством с адресом, работает якорем
     # наравне с адресом: статья, где сказано только «Строгино 360», иначе
     # проходит мимо.
@@ -422,7 +510,8 @@ def read_findings(docs: Iterable[Any], name: str) -> dict[str, Any]:
             low = sentence.lower().replace("ё", "е")
             # Якорь площадки в ТОМ ЖЕ предложении: сниппет повторяет запрос, и
             # без якоря сюда попадает любой соседний проект.
-            if not _mentions(sentence, anchors):
+            if not (_mentions(sentence, anchors)
+                    or _mentions_phrase(sentence, phrase)):
                 continue
             key = low[:120]
             if key in seen:
@@ -457,10 +546,17 @@ def read_findings(docs: Iterable[Any], name: str) -> dict[str, Any]:
             {"title": str(getattr(doc, "title", "") or "")[:200],
              "url": str(getattr(doc, "url", "") or ""),
              "domain": str(getattr(doc, "domain", "") or ""),
-             "anchored": any(_mentions(one, anchors) for one in _sentences(
+             "anchored": any(_mentions(one, anchors) or _mentions_phrase(one, phrase)
+                             for one in _sentences(
                  f"{getattr(doc, 'title', '')}. {getattr(doc, 'snippet', '')}"))}
             for doc in docs[:20]
         ],
+        # Чем опознавалась площадка. Пусто — значит имя каталога состоит из
+        # общих слов («Магистральные улицы тер. 4, 5, 6»), и привязать к ней
+        # находку нечем: прочитанное показываем, но признаков не ставим.
+        # Молча пустой блок читался бы как «в источниках ничего нет».
+        "anchors": sorted(anchors) or [" ".join(phrase)] if (anchors or phrase) else [],
+        "anchorless": not anchors and not phrase,
         "operator_named": operator_named[:3],
         "operator_appointed": operator_appointed[:3],
         "operator_pending": operator_pending[:3],
