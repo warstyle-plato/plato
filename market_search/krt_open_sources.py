@@ -325,6 +325,39 @@ def _mentions_phrase(sentence: str, stems: list[str]) -> bool:
     return False
 
 
+# Номер владения: «Фестивальная ул., вл. 53А» и «Фестивальная ул., вл. 6, 6а,
+# 6б, 4а» — РАЗНЫЕ площадки на одной улице, и обе в каталоге. Якорь держал
+# только улицу, поэтому оператор одной приезжал в карточку другой: «Бореалис —
+# это про 6а, 6б, а не про 53А» (владелец, 02.09.2026). Улица одна и та же —
+# отличает их номер.
+_HOUSE = re.compile(
+    r"(?iu)(?:вл|влд|владение|дом|д)\.?\s*№?\s*(\d+[а-яa-z]?(?:\s*[/,-]\s*\d+[а-яa-z]?)*)")
+_HOUSE_ITEM = re.compile(r"(?iu)\d+[а-яa-z]?")
+
+
+def _house_numbers(text: str) -> set[str]:
+    """Номера владений, названные в тексте. Пусто — номер не назван вовсе."""
+    out: set[str] = set()
+    for found in _HOUSE.finditer(str(text or "")):
+        for item in _HOUSE_ITEM.findall(found.group(1)):
+            out.add(item.lower().replace("ё", "е"))
+    return out
+
+
+def _house_conflict(sentence: str, ours: set[str]) -> bool:
+    """Названы ли в предложении ДРУГИЕ номера владений и только они.
+
+    Номер, названный в тексте и не совпавший с нашим, — это соседняя площадка.
+    Текст без номеров вовсе конфликтом не считается: об одной территории часто
+    пишут просто «на Фестивальной», и требовать номер значило бы выбрасывать
+    настоящие находки.
+    """
+    if not ours:
+        return False
+    theirs = _house_numbers(sentence)
+    return bool(theirs) and not (theirs & ours)
+
+
 def _site_anchor(name: str) -> tuple[set[str], list[str]]:
     """Чем опознавать площадку: основы слов или, если они общие, — фраза.
 
@@ -376,12 +409,16 @@ def brand_names(docs: Iterable[Any], name: str) -> list[str]:
     к площадке чужой проект.
     """
     anchors, phrase = _site_anchor(name)
+    houses = _house_numbers(name)
     found: list[str] = []
     for doc in docs or []:
         text = f"{getattr(doc, 'title', '')}. {getattr(doc, 'snippet', '')}"
         for sentence in _sentences(text):
             if not (_mentions(sentence, anchors)
                     or _mentions_phrase(sentence, phrase)):
+                continue
+            # Улица совпала, а номер владения — чужой: это соседняя площадка.
+            if _house_conflict(sentence, houses):
                 continue
             for match in _BRAND.finditer(sentence):
                 brand = (match.group(1) or match.group(2) or "").strip()
@@ -488,6 +525,7 @@ def read_findings(docs: Iterable[Any], name: str) -> dict[str, Any]:
     """Разобрать выдачу по одной площадке. Без цитаты признак не ставится."""
     anchors, phrase = _site_anchor(name)
     anchors = set(anchors)
+    houses = _house_numbers(name)
     # Бренд площадки, если он доказан соседством с адресом, работает якорем
     # наравне с адресом: статья, где сказано только «Строгино 360», иначе
     # проходит мимо.
@@ -512,6 +550,9 @@ def read_findings(docs: Iterable[Any], name: str) -> dict[str, Any]:
             # без якоря сюда попадает любой соседний проект.
             if not (_mentions(sentence, anchors)
                     or _mentions_phrase(sentence, phrase)):
+                continue
+            # Улица совпала, а номер владения — чужой: это соседняя площадка.
+            if _house_conflict(sentence, houses):
                 continue
             key = low[:120]
             if key in seen:
@@ -546,9 +587,11 @@ def read_findings(docs: Iterable[Any], name: str) -> dict[str, Any]:
             {"title": str(getattr(doc, "title", "") or "")[:200],
              "url": str(getattr(doc, "url", "") or ""),
              "domain": str(getattr(doc, "domain", "") or ""),
-             "anchored": any(_mentions(one, anchors) or _mentions_phrase(one, phrase)
+             "anchored": (not _house_conflict(
+                 f"{getattr(doc, 'title', '')}. {getattr(doc, 'snippet', '')}", houses)
+                 and any((_mentions(one, anchors) or _mentions_phrase(one, phrase))
                              for one in _sentences(
-                 f"{getattr(doc, 'title', '')}. {getattr(doc, 'snippet', '')}"))}
+                 f"{getattr(doc, 'title', '')}. {getattr(doc, 'snippet', '')}")))}
             for doc in docs[:20]
         ],
         # Чем опознавалась площадка. Пусто — значит имя каталога состоит из
