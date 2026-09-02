@@ -423,7 +423,17 @@ function coverageLine(r){
   if(unsupported) bits.push('нужны адаптеры: '+unsupported);
  }else{
   if(r.kept!==undefined) bits.push(`лотов ${r.kept||0}`);
+  // Сколько из них КРТ — иначе «лотов 9» не отвечает на вопрос «а где КРТ»:
+  // который источник принёс единственную площадку, по строке охвата не видно
+  // вовсе (владелец, 02.09.2026).
+  if(r.kept_krt!==undefined&&r.kept) bits.push(`из них КРТ ${r.kept_krt}`);
   if(r.cards) bits.push(`из ${r.cards} карточек`);
+  // Раздел имущества «Развитие территории» — отдельный вход, и молчит он
+  // по-своему: пустой раздел и неотвеченный выглядят одинаково, пока не
+  // сказано, сколько ссылок он дал.
+  (r.sections||[]).forEach(s=>bits.push(
+    s.reason?`раздел «${s.name}» не ответил: ${s.reason}`
+            :`раздел «${s.name}» — ссылок ${s.procedure_links||0}`));
   if(r.pages) bits.push(`страниц ${r.pages}`);
   if(r.total_elements) bits.push(`всего в выдаче ${r.total_elements}`);
   if(r.outside_region) bits.push(`вне Москвы ${r.outside_region}`);
