@@ -537,6 +537,32 @@ class KrtRanking:
         # прогон в это время может идти в соседнем воркере.
         self._persist({slug: row})
 
+    def remember(self, slug: str, facts: dict[str, Any]) -> None:
+        """Дописать прочитанное в строку площадки, не трогая остальное.
+
+        Прочитанное по кнопке жило в памяти вкладки и пропадало при
+        перезагрузке — у всех и каждый раз («сейчас всё слетает», владелец,
+        02.09.2026). Хуже: поиск по публикациям платный, и потерянная находка
+        значит второй счёт за тот же ответ.
+
+        Кладём туда же, куда кладёт прогон, — в строку рейтинга: она общая, на
+        диске, и переживает и перезагрузку, и выкатку. Балл при этом не
+        трогается: находка дописывается полем, а не встаёт на место счёта.
+        """
+        clean = str(slug or "").strip()
+        if not clean or not facts:
+            return
+        with self._write_lock():
+            stored = {str(row.get("slug") or ""): row for row in self.rows()}
+            row = dict(stored.get(clean) or {"slug": clean})
+            row.update(facts)
+            stored[clean] = row
+            save_json(self.path, {
+                "schema_version": CACHE_SCHEMA_VERSION,
+                "updated_at": int(time.time()),
+                "rows": sorted(stored.values(), key=_rank_key),
+            })
+
     def progress(self) -> dict[str, Any]:
         with self._lock:
             state = dict(self._progress)

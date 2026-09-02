@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime
 from html.parser import HTMLParser
 from urllib.parse import urlencode, urljoin, urlparse
@@ -19,7 +20,14 @@ from auction_search.models import (
     SourceKind,
     utc_now_iso,
 )
-from auction_search.parsing import cadastral_numbers, normalize_space, parse_decimal, parse_money
+from auction_search.parsing import (
+    cadastral_numbers,
+    mentions_moscow,
+    normalize_space,
+    parse_decimal,
+    parse_hectares_sqm,
+    parse_money,
+)
 
 
 _MOSCOW = ZoneInfo("Europe/Moscow")
@@ -69,6 +77,22 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
     SEARCH_URL = "https://www.roseltorg.ru/procedures/search"
     DISCOVERY_TAGS = ("земельный участок", "комплексное развитие")
     DISCOVERY_MAX_PAGES = 3
+    # Раздел имущества площадки: там город публикует аукционы КРТ. Адрес
+    # прислан владельцем (01.09.2026) вместе с живым лотом на экране —
+    # аукцион на право заключения договора о КРТ нежилой застройки Москвы,
+    # 14,62 га, 2,4 млрд ₽. Разведка спрашивала только поиск по тегам, то есть
+    # этот раздел не спрашивала вовсе.
+    #
+    # Своего разбора карточек раздела здесь НЕТ и не будет, пока не увидим
+    # ответ: со страницы берутся только ссылки на `/procedure/`, а каждая
+    # такая карточка читается тем же `fetch_lot`, что и раньше. Ссылок нет —
+    # раздел не добавит ни одного лота и скажет это строкой охвата; выдуманный
+    # разбор чужой разметки однажды уже приехал на прод гаражами.
+    SECTION_URLS = (
+        ("Развитие территории (имущество, Москва)",
+         "https://www.roseltorg.ru/imuschestvo/prochee/razvitie-territorii"
+         "?sale=5&okato%5B%5D=45000000000&status%5B%5D=5&status%5B%5D=0&status%5B%5D=1"),
+    )
     RELEVANT_KINDS = {
         LotKind.LAND_SALE,
         LotKind.LAND_LEASE,
@@ -113,11 +137,10 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
         # platform's own Moscow office address in the footer.
         if str(lot.raw.get("lot_region_code") or "") == "77":
             return True
-        text = " ".join([lot.address or "", lot.title or ""]).lower()
-        if re.search(r"\b(?:г\.?|город)\s*москва\b", text):
-            return True
-        without_oblast = re.sub(r"московск\w*\s+област\w*", "", text)
-        return bool(re.search(r"\bмосква\b", without_oblast))
+        # Падежи читает общий разбор: своя проверка требовала именительного, и
+        # «...застройки города Москвы» — заголовок живого аукциона КРТ —
+        # выбрасывалось как немосковское.
+        return mentions_moscow(lot.address, lot.title)
 
     @staticmethod
     def _is_actionable_status(status: str | None) -> bool:
@@ -155,6 +178,17 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
                 return datetime.strptime(raw, fmt).replace(tzinfo=_MOSCOW) >= datetime.now(_MOSCOW)
             except ValueError:
                 continue
+        # Срок без часа — это «до конца того дня», а не «в полночь того дня».
+        # Извещения города так и пишут: «заявки до 21.09.26». Прежде такой срок
+        # не читался вовсе, и лот выбрасывался как просроченный — то есть
+        # «часа не назвали» превращалось в «время вышло».
+        for fmt in ("%d.%m.%Y", "%d.%m.%y"):
+            try:
+                day = datetime.strptime(raw, fmt)
+            except ValueError:
+                continue
+            end_of_day = day.replace(hour=23, minute=59, second=59, tzinfo=_MOSCOW)
+            return end_of_day >= datetime.now(_MOSCOW)
         return False
 
     def discover_moscow(self, *, deadline: float | None = None) -> list[AuctionLot]:
@@ -162,9 +196,44 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
         # каждым идёт свой запрос по двадцать пять секунд. Потолок в страницах
         # ограничивает объём, но не время; срок ограничивает время.
         self.last_report = {"source": self.platform_name, "pages": 0,
-                            "cards": 0, "kept": 0, "reason": ""}
+                            "cards": 0, "kept": 0, "reason": "",
+                            # Что источник СОДЕРЖИТ — часть ответа. Молчание о
+                            # том, чего мы не спрашиваем, читается как
+                            # отсутствие таких лотов на рынке.
+                            "market": ("процедуры площадки по тегам «земельный участок» и "
+                                       "«комплексное развитие» плюс раздел имущества "
+                                       "«Развитие территории» по Москве")}
         candidate_urls: list[str] = []
         seen_urls: set[str] = set()
+        # Раздел имущества спрашивается ПЕРВЫМ: это адрес, с которого город
+        # публикует КРТ, и уступать его тегам, когда срок кончится на середине,
+        # было бы решением наоборот.
+        section_found = 0
+        for label, section_url in self.SECTION_URLS:
+            if clock.expired(deadline):
+                self.last_report["reason"] = f"остановлено по времени до раздела «{label}»"
+                break
+            try:
+                req = Request(section_url, headers={"User-Agent": self.USER_AGENT})
+                with urlopen(req, timeout=clock.timeout(deadline, 25)) as response:
+                    html = response.read().decode(
+                        response.headers.get_content_charset() or "utf-8", errors="replace")
+            except Exception as exc:  # noqa: BLE001
+                # Неответ раздела — строка охвата, а не отказ всей разведке:
+                # молчание источника нельзя показывать как отсутствие лотов.
+                self.last_report.setdefault("sections", []).append(
+                    {"name": label, "reason": f"{type(exc).__name__}: {exc}"})
+                continue
+            parser = _RoseltorgHTML()
+            parser.feed(html)
+            found = [url for url in self._procedure_urls(section_url, parser.links)
+                     if url not in seen_urls]
+            candidate_urls.extend(found)
+            seen_urls.update(found)
+            section_found += len(found)
+            self.last_report.setdefault("sections", []).append(
+                {"name": label, "procedure_links": len(found)})
+
         for tag in self.DISCOVERY_TAGS:
             for page in range(1, self.DISCOVERY_MAX_PAGES + 1):
                 if clock.expired(deadline):
@@ -187,16 +256,29 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
         lots: list[AuctionLot] = []
         seen_lots: set[str] = set()
         self.last_report["cards"] = len(candidate_urls)
+        # Карточки читаются пачкой, а не по одной. За каждой идёт свой запрос;
+        # по очереди сорок две карточки не умещаются в общий срок каталога
+        # (сорок секунд на ВСЕ источники), и сбор обрывался на первых. Владелец
+        # видел это как «фильтр нашёл один КРТ, хотя их там чуть ли не десять»
+        # (02.09.2026) — и был прав: остальные просто не успели прочитаться.
+        #
+        # Шесть потоков — не «побыстрее», а ровно столько, чтобы уложиться:
+        # больше значит стучаться в чужую площадку без нужды.
+        read: dict[str, AuctionLot] = {}
+        unread = 0
+        if candidate_urls and not clock.expired(deadline):
+            with ThreadPoolExecutor(max_workers=6) as pool:
+                jobs = {pool.submit(self.fetch_lot, url, deadline=deadline): url
+                        for url in candidate_urls}
+                for job in as_completed(jobs):
+                    try:
+                        read[jobs[job]] = job.result()
+                    except Exception:
+                        # Одна битая или недоступная процедура не роняет выдачу.
+                        unread += 1
         for lot_url in candidate_urls:
-            if clock.expired(deadline):
-                self.last_report["reason"] = (
-                    f"остановлено по времени: разобрано лотов {len(lots)} "
-                    f"из {len(candidate_urls)} найденных")
-                break
-            try:
-                lot = self.fetch_lot(lot_url, deadline=deadline)
-            except Exception:
-                # One malformed/temporarily unavailable procedure must not drop the feed.
+            lot = read.get(lot_url)
+            if lot is None:
                 continue
             if lot.lot_kind not in self.RELEVANT_KINDS:
                 continue
@@ -214,6 +296,14 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
             lot.raw["discovered_via"] = "Roseltorg public tags[] search"
             lots.append(lot)
         self.last_report["kept"] = len(lots)
+        self.last_report["from_section"] = section_found
+        if unread:
+            # Непрочитанная карточка — «не знаем», а не «лота нет».
+            self.last_report["unread_cards"] = unread
+            self.last_report["reason"] = (
+                self.last_report.get("reason")
+                or f"не прочитано карточек {unread} из {len(candidate_urls)}: "
+                   "источник не ответил или кончился срок сбора")
         return lots
 
     def discover_moscow_history(
@@ -449,6 +539,13 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
             r"Дата и время окончания при[её]ма заявок\s*(?:\||до)?\s*(\d{2}\.\d{2}\.\d{2,4}\s+\d{2}:\d{2}(?::\d{2})?)",
             r"Окончание при[её]ма заявок\s*(\d{2}\.\d{2}\.\d{4})\s*(?:в|\s)\s*(\d{2}:\d{2}(?::\d{2})?)",
             r"При[её]м заявок\s*до\s*(\d{2}\.\d{2}\.\d{2,4}\s+\d{2}:\d{2}(?::\d{2})?)",
+            # Час называют не всегда: «заявки до 21.09.26» — обычная строка
+            # извещения города. Эти образцы стоят ПОСЛЕ образцов с часом,
+            # чтобы час, если он есть, не потерялся.
+            r"Дата и время окончания при[её]ма заявок\s*(?:\||до)?\s*(\d{2}\.\d{2}\.\d{2,4})\b",
+            r"При[её]м заявок\s*до\s*(\d{2}\.\d{2}\.\d{2,4})\b",
+            r"Окончание при[её]ма заявок\s*(\d{2}\.\d{2}\.\d{2,4})\b",
+            r"[Зз]аявк\w*\s+до\s*(\d{2}\.\d{2}\.\d{2,4})\b",
         )
         for pattern in patterns:
             match = re.search(pattern, text, re.I)
@@ -480,7 +577,12 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
     @staticmethod
     def _area_from_text(text: str):
         match = re.search(r"(?:площад(?:ь|ью)\s*)?(\d[\d\s\u00a0]*(?:[.,]\d+)?)\s*(?:кв\.?\s*м|м2|м²)", text, re.I)
-        return parse_decimal(match.group(1)) if match else None
+        if match:
+            return parse_decimal(match.group(1))
+        # Город меряет площадки гектарами: «...города Москвы, площадью 14,62 га».
+        # Метров при этом нет вовсе, а допуск подборки требует площадь — лот
+        # уходил в неполные, не будучи неполным.
+        return parse_hectares_sqm(text)
 
     @staticmethod
     def _documents(base_url: str, links: list[tuple[str, str]], fetched_at: str) -> list[AuctionDocument]:

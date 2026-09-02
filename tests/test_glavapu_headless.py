@@ -109,17 +109,36 @@ def test_the_automation_repeats_the_page_steps():
     """Серверные шаги — те же, что у скрытого iframe: другая последовательность
     молча дала бы другой расчёт."""
     import inspect
-    source = inspect.getsource(core._glavapu_drive_page)
+    # Шаг перехода к расчётам живёт своей функцией с 01.09.2026: голый click()
+    # девяносто секунд стучался в disabled-кнопку и отдавал стек Playwright
+    # вместо ответа калькулятора. Проверка смотрит на автоматизацию целиком —
+    # привязанная к телу одной функции, она падает при любом выносе кода и
+    # молчит о том, что сломалось на самом деле.
+    source = (inspect.getsource(core._glavapu_drive_page)
+              + inspect.getsource(core._glavapu_proceed))
     for step in ("Участок", "fill_numbers", "Отправить", "Перейти к расчётам"):
         assert step in source, step
+    assert "_glavapu_proceed(" in inspect.getsource(core._glavapu_drive_page), \
+        "шаг перехода к расчётам выпал из последовательности"
     # Поле кадастровых номеров ищется по нескольким признакам: один жёсткий
     # селектор — это обещание, что вёрстка genplan.tech не изменится, а она
     # изменилась, и расчёт девяносто секунд ждал элемент, которого нет.
     assert "#id-cad-numbers-text-field" in core._GLAVAPU_NUMBER_FIELD_SELECTORS
     assert len(core._GLAVAPU_NUMBER_FIELD_SELECTORS) >= 4
-    # Готовность таблицы определяется как на странице: коды 60 и 54, ≥60 строк.
-    assert '"60" in codes' in source and '"54" in codes' in source
-    assert "len(rows) >= 60" in source
+    # Готовность больше НЕ держится ни на номере чужой строки, ни на их
+    # количестве. Кода 60 у ГлавАПУ не стало, таблица перенумерована и
+    # кончается на 58 (живой снимок ядра, 01.09.2026), и мы ждали
+    # несуществующую строку девяносто секунд. Порог «строк не меньше
+    # шестидесяти» — то же ожидание другой формы: источник вправе поменять и
+    # его, а стоит это полутора минутами на каждом участке у всех сразу.
+    #
+    # Ждём того, что от источника не зависит: таблица пришла, не пуста и
+    # перестала меняться; строки, которые читаем, ищутся по ИМЕНАМ.
+    assert '"60" in codes' not in source and '"54" in codes' not in source
+    assert "len(rows) >= 60" not in source, (
+        "число строк чужой таблицы — такое же наше ожидание, как её нумерация")
+    assert "shot == last_shot" in source, "готовность — устоявшаяся таблица"
+    assert "_glavapu_missing_controls(" in source and "_glavapu_table_shot(" in source
 
 
 def test_only_one_browser_runs_at_a_time():
@@ -145,11 +164,19 @@ def test_the_container_flags_are_set_for_a_small_machine():
 class _FakePage:
     def __init__(self, counter):
         self.counter, self.url, self._closed = counter, "", False
+        self.listeners = []
 
     def set_default_timeout(self, ms): pass
 
     def route(self, pattern, handler):
         self.counter["routed"] += 1
+
+    # Заглушка обязана уметь то же, что настоящая страница. Слушатели сети
+    # (`requestfailed`, `response`) появились 01.09.2026, и без этого метода
+    # поток браузера падал, а следом сыпались соседние наборы: глобальное
+    # состояние оставалось от мёртвого потока.
+    def on(self, event, handler):
+        self.listeners.append(event)
 
     def is_closed(self): return self._closed
 

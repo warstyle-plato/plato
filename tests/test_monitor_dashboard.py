@@ -320,3 +320,34 @@ def test_the_summary_speaks_the_deficit_and_its_date(monkeypatch):
 def test_the_summary_is_honest_without_a_finance_book():
     text = " ".join(dashboard._summary({}, {"known": False}, {"known": False}))
     assert "не загружена" in text
+
+
+def test_the_need_of_an_article_is_counted_from_the_cut_and_adds_up():
+    """Строка таблицы обязана складываться: своё + резерв + не покрыто = потребность.
+
+    Не складывалась — 805,4 против 286,8 + 114,1 + 257,6 (владелец, 02.09.2026):
+    в потребность входила вся программа, включая прошедшие месяцы, а три
+    соседних колонки считались только с месяца среза.
+    """
+    articles = {
+        "2.2.2.6": {
+            "rss_limit": 30.0, "paid_at_baseline": 0.0,
+            # Июль — до среза: в потребность после среза не входит.
+            "monthly_need": {"2026-07-01": 100.0, "2026-08-01": 50.0, "2026-09-01": 40.0},
+        },
+    }
+    result = dashboard._article_waterfall(
+        articles, reserve=20.0, cut=datetime.date(2026, 8, 21)
+    )
+    row = result["articles"][0]
+    assert row["need_total"] == pytest.approx(90.0)
+    assert row["need_before_cut"] == pytest.approx(100.0)
+    assert row["own_take"] == pytest.approx(30.0)
+    assert row["reserve_take"] == pytest.approx(20.0)
+    assert row["unfunded_take"] == pytest.approx(40.0)
+    assert row["need_total"] == pytest.approx(
+        row["own_take"] + row["reserve_take"] + row["unfunded_take"])
+    # И на экране колонка названа тем, что в ней лежит.
+    from developaid_monitor_page import MONITOR_PAGE
+    assert "<th>Потребность после среза</th><th>Из своего лимита</th>" in MONITOR_PAGE
+    assert "каждая строка складывается" in MONITOR_PAGE

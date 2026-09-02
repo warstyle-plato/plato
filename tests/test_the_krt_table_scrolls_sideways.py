@@ -131,3 +131,100 @@ def test_the_wide_table_does_not_push_the_phone_sideways(tmp_path, width):
     got = _measure(tmp_path, width)
     assert got["doc"] <= got["win"] + 1, (
         f"на {width} px страница шириной {got['doc']} — запас таблицы распёр её вбок")
+
+
+# --- Полоса прокрутки сверху -------------------------------------------------
+#
+# Владелец (01.09.2026): «скролл в КРТ можно сверху сделать? листать 57 лотов
+# вниз тяжело». Нижняя полоса лежит под всеми строками: чтобы подвинуть таблицу
+# вбок, надо пролистать её вниз, подвинуть и вернуться наверх.
+#
+# Полоса сверху — зеркало настоящей, а не вторая прокрутка: ширину она берёт у
+# самой таблицы, положение синхронизируется в обе стороны. Прокручивать нечего
+# — полосы нет вовсе: пустая полоска над таблицей читается как поломка вёрстки.
+
+
+def _mirror(tmp_path, width: int, rows) -> dict:
+    pw = pytest.importorskip("playwright.sync_api")
+    import browser_launch
+
+    file = tmp_path / "auctions.html"
+    file.write_text(ui.auctions_page(None), encoding="utf-8")
+    with pw.sync_playwright() as play:
+        try:
+            browser = browser_launch.launch(play)
+        except Exception as exc:  # образ без Chromium — не поломка страницы
+            pytest.skip(f"Chromium недоступен: {exc}")
+        try:
+            tab = browser.new_page(viewport={"width": width, "height": 900})
+            tab.goto(file.as_uri())
+            tab.wait_for_timeout(300)
+            tab.evaluate("()=>document.getElementById('tabKrt')?.click()")
+            tab.evaluate("r=>{state.krt=r;state.krtFiltered=r;renderKrt()}", rows)
+            tab.wait_for_timeout(200)
+            got = tab.evaluate(
+                """()=>{
+                  const bar=document.getElementById('krtScrollTop');
+                  const wrap=document.getElementById('krtTableWrap');
+                  const before=bar.getBoundingClientRect().top<wrap.getBoundingClientRect().top;
+                  bar.scrollLeft=200; bar.dispatchEvent(new Event('scroll'));
+                  const pushed=wrap.scrollLeft;
+                  wrap.scrollLeft=40; wrap.dispatchEvent(new Event('scroll'));
+                  return {hidden:bar.hidden, above:before, pushed:pushed,
+                          pulled:bar.scrollLeft,
+                          inner:bar.firstElementChild.getBoundingClientRect().width,
+                          content:wrap.scrollWidth,
+                          doc:document.documentElement.scrollWidth, win:innerWidth};
+                }""")
+            tab.close()
+        finally:
+            browser.close()
+    return got
+
+
+def test_the_top_bar_mirrors_the_table(tmp_path):
+    got = _mirror(tmp_path, 1440, ROWS)
+    assert got["hidden"] is False, "полосы сверху нет там, где таблица не помещается"
+    assert got["above"] is True, "полоса оказалась не над таблицей"
+    assert abs(got["inner"] - got["content"]) <= 2, \
+        "ширина полосы не совпала с шириной таблицы — прокрутка врёт про размер"
+    assert got["pushed"] == 200, "таблица не поехала за верхней полосой"
+    assert got["pulled"] == 40, "верхняя полоса не поехала за таблицей"
+    assert got["doc"] <= got["win"] + 1, "страница уехала вбок вслед за полосой"
+
+
+def test_nothing_to_scroll_means_no_bar(tmp_path):
+    """Пустая полоска над таблицей читается как поломка вёрстки.
+
+    Таблица КРТ шире отведённого места при любом окне — запас в 1360 px стоит
+    ради самих колонок, — поэтому случай «прокручивать нечего» достигается
+    здесь снятием этого запаса, а не подбором ширины экрана.
+    """
+    pw = pytest.importorskip("playwright.sync_api")
+    import browser_launch
+
+    file = tmp_path / "auctions.html"
+    file.write_text(ui.auctions_page(None), encoding="utf-8")
+    with pw.sync_playwright() as play:
+        try:
+            browser = browser_launch.launch(play)
+        except Exception as exc:
+            pytest.skip(f"Chromium недоступен: {exc}")
+        try:
+            tab = browser.new_page(viewport={"width": 1440, "height": 900})
+            tab.goto(file.as_uri())
+            tab.wait_for_timeout(300)
+            tab.evaluate("()=>document.getElementById('tabKrt')?.click()")
+            tab.evaluate("r=>{state.krt=r;state.krtFiltered=r;renderKrt()}", ROWS)
+            hidden = tab.evaluate(
+                """()=>{
+                  const table=document.querySelector('#krtTableWrap table');
+                  table.style.tableLayout='fixed';
+                  table.style.minWidth='0'; table.style.width='200px';
+                  syncTopScroll();
+                  return document.getElementById('krtScrollTop').hidden;
+                }""")
+            tab.close()
+        finally:
+            browser.close()
+    assert hidden is True

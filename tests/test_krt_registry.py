@@ -277,9 +277,12 @@ def test_krt_multiple_holdings_are_geocoded_as_separate_addresses() -> None:
 
     def geocode(query: str):
         calls.append(query)
-        if query == "Москва, ул. Сеславинская, вл. 6А":
+        # Владение геокодеру не понятно, дом — понятен: с 02.09.2026 лестница
+        # спрашивает «6А», а не «вл. 6А» (см. test_the_krt_point_is_a_house…).
+        if query == "Москва, ул. Сеславинская, 6А":
             return SimpleNamespace(
-                latitude=55.744, longitude=37.499, display_name=query
+                latitude=55.744, longitude=37.499, display_name=query,
+                precision="building",
             )
         raise GeocodingError(f"Адрес «{query}» не найден")
 
@@ -287,8 +290,8 @@ def test_krt_multiple_holdings_are_geocoded_as_separate_addresses() -> None:
         "krt:two-holdings", geocode=geocode, find_krt=lambda query: territory
     )
 
-    assert calls == ["Москва, ул. Сеславинская, вл. 6А"]
-    assert subject.address == "Москва, ул. Сеславинская, вл. 6А"
+    assert calls == ["Москва, ул. Сеславинская, 6А"]
+    assert subject.address == "Москва, ул. Сеславинская, 6А"
     assert "отдельному адресу" in subject.notes[1]
 
 
@@ -315,8 +318,8 @@ def test_krt_falls_back_to_district_when_each_address_is_not_found() -> None:
     )
 
     assert calls == [
-        "Москва, ул. Первая, вл. 1",
-        "Москва, Вторая ул., вл. 2",
+        "Москва, ул. Первая, 1",
+        "Москва, Вторая ул., 2",
         "Москва, район Перово",
     ]
     assert subject.address == "Москва, район Перово"
@@ -369,11 +372,15 @@ def test_auctions_exposes_krt_as_a_separate_tab_and_endpoint(monkeypatch) -> Non
     assert "const KRT_OKRUGS=['ЦАО','САО'" in page.text
     assert "'НАО','ТАО','ЗелАО'" in page.text
     assert "Оценка Платона" in page.text
-    # Подпись фильтра каталога: «Платон:» из неё убрана намеренно — балл здесь
-    # арифметический, по каталожным ТЭП, и Платон в нём не участвует. Он
-    # появляется отдельной кнопкой, и обещать его выбором в списке нельзя.
-    assert "Ищем: жильё, готовое к старту" in page.text
+    # Отдельного списка задач в каталоге больше нет: он дублировал «Статус» и
+    # «Назначение» (владелец, 01.09.2026: «убери этот фильтр, он дублирует
+    # другие»). Мера балла следует выбранному назначению — это проверяет
+    # tests/test_the_score_measure_follows_the_purpose.py. Подпись «Платон:»
+    # с фильтра снята ещё раньше: балл здесь арифметический, по каталожным
+    # ТЭП, и Платон в нём не участвует.
+    assert "Ищем: жильё, готовое к старту" not in page.text
     assert "Платон: жильё" not in page.text
+    assert 'id="krtPurpose"' in page.text
     assert "Короткий вывод Платона" in page.text
     assert "analysis.site||analysis.overall" in page.text
     # Карточка открывает посчитанное, а не запускает счёт заново: кнопка

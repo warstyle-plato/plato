@@ -50,8 +50,11 @@ def page_functions() -> str:
     # нужды: балл теперь читает и то, что сказано в источнике о самой площадке.
     # `krtVolumeShare` — шкала объёма: балл больше не складывается из
     # постоянных прибавок, и без неё `krtFit` не считается вовсе.
-    for name in ("krtVolumeShare", "krtFit", "krtIntent", "krtPenalty",
-                 "krtScore", "krtScoreNote"):
+    # `krtTaskProfile` читает выбранное назначение: отдельного списка задач
+    # больше нет, он дублировал «Статус» и «Назначение», и мера балла следует
+    # тому же полю, что и отбор.
+    for name in ("krtVolumeShare", "krtTaskProfile", "krtFit", "krtIntent",
+                 "krtPenalty", "krtScore", "krtScoreNote"):
         start = script.index(f"function {name}(")
         depth = 0
         for position in range(script.index("{", start), len(script)):

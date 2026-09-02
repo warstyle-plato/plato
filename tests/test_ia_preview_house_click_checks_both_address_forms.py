@@ -130,7 +130,11 @@ def test_the_layer_wires_the_decision_in():
     assert "resolveHouse(item.label" in source
     assert source.count("lastTypedQuery = ") >= 2, "набранный текст нигде не запоминается"
     assert "fetch('/land/lookup'" in source
-    assert "houseQueryDecision(label, typed, probes[0], probes[1])" in source
+    # Подсказка спрашивается в той форме, которой ищет НСПД: каноническое
+    # «д 18» он не находит, и запасной путь по сырому тексту срабатывал там,
+    # где расхождения нет вовсе.
+    assert "houseQueryDecision(asked, typed, probes[0], probes[1])" in source
+    assert "nspdAddress(label)" in source
     assert "Promise.all([" in source, "формы проверяются по очереди — плата в цепочку геокодера"
     # Проверка возвращает состав участков, а не «нашлось»: сравнивать больше нечем.
     assert "x.kind === 'land'" in source
@@ -172,3 +176,39 @@ def test_the_click_puts_the_chosen_address_into_the_field():
     assert body.index("suggestField.value") < body.index("resolveHouse("), (
         "адрес подставляется до запуска поиска")
 
+
+
+def test_the_suggestion_is_asked_in_the_form_nspd_searches() -> None:
+    """«д 18» НСПД не находит, «18» находит — спрашиваем второй формой.
+
+    Плашка «подсказку поиск НСПД не распознал» вылезала почти на каждом адресе
+    с домом (экран владельца, 01.09.2026), и причина была не в НСПД и не в
+    подсказке: мы спрашивали неподходящей формой, а потом честно сообщали, что
+    сработал запасной путь.
+    """
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        import pytest as _pytest
+        _pytest.skip("node недоступен")
+    source = _OVERLAY.read_text(encoding="utf-8")
+    start = source.index("function nspdAddress(")
+    body = source[start:source.index("\n  }", start) + 4]
+    script = body + """
+const cases = [
+  ['г Москва, ул Гродненская, д 18', 'г Москва, ул Гродненская, 18'],
+  ['г Москва, ул Веерная, влд. 1', 'г Москва, ул Веерная, 1'],
+  ['г Москва, ул Гродненская, 18', 'г Москва, ул Гродненская, 18'],
+  // «Стр» и «корп» остаются: это часть адреса, а не форма записи номера дома.
+  ['ул Мишина, д 46, стр 2', 'ул Мишина, 46, стр 2'],
+];
+for (const [given, want] of cases) {
+  const got = nspdAddress(given);
+  if (got !== want) { console.log('FAIL ' + given + ' -> ' + got); process.exit(1); }
+}
+console.log('OK');
+"""
+    done = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0, done.stdout + done.stderr

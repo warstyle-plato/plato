@@ -19,7 +19,14 @@ from auction_search.models import (
     SourceKind,
     utc_now_iso,
 )
-from auction_search.parsing import cadastral_numbers, normalize_space, parse_area_sqm, parse_decimal, parse_money
+from auction_search.parsing import (
+    cadastral_numbers,
+    mentions_moscow,
+    normalize_space,
+    parse_area_sqm,
+    parse_decimal,
+    parse_money,
+)
 
 
 _MOSCOW = ZoneInfo("Europe/Moscow")
@@ -178,13 +185,9 @@ class LotOnlineAdapter(AuctionPlatformAdapter):
 
     @staticmethod
     def _confirmed_moscow(lot: AuctionLot) -> bool:
-        values = [
-            lot.address or "",
-            str(lot.raw.get("region") or ""),
-            lot.title or "",
-        ]
-        haystack = " ".join(values).lower()
-        return "москва" in haystack or "г. москва" in haystack
+        # Правило одно на все площадки: подстрока «москва» не узнавала ни
+        # «Москвы», ни «Москве», а «Московская область» проходила бы за город.
+        return mentions_moscow(lot.address, lot.raw.get("region"), lot.title)
 
     @staticmethod
     def _is_test_lot(lot: AuctionLot) -> bool:

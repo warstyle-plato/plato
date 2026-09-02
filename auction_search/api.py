@@ -36,6 +36,11 @@ from auction_search.adapters.etp_probe import (
 from auction_search.adapters.fedresurs import (
     SEARCH_PAGE as FEDRESURS_SEARCH_PAGE,
     probe as fedresurs_probe, probe_browser as fedresurs_browser)
+from auction_search.adapters.roseltorg_probe import (
+    CATALOGUE_URL as ROSELTORG_SECTION_URL,
+    probe as roseltorg_probe,
+    probe_section_browser as roseltorg_section_browser,
+)
 from auction_search.bridge import auction_page_with_handoff, install_page_bridge
 from auction_search.catalogue_quality import catalogue_quality
 from auction_search import equity_stake
@@ -641,7 +646,17 @@ def install(app: FastAPI) -> None:
                     "name": "Росэлторг",
                     "direct_lot_ingest": True,
                     "moscow_discovery": True,
-                    "discovery_access": "public_tags_search",
+                    "discovery_access": "public_tags_search_and_property_section",
+                    # Что источник СОДЕРЖИТ — часть ответа. Раздел имущества
+                    # «Развитие территории» — адрес, с которого город публикует
+                    # аукционы КРТ; со страницы берутся только ссылки на
+                    # карточки процедур, а читает их тот же разбор, что и
+                    # раньше. Чем отвечает сам раздел, показывает
+                    # `/auctions/roseltorg/probe` — с ядра: из песочницы
+                    # roseltorg.ru закрыт.
+                    "note": ("Поиск процедур по тегам плюс раздел имущества "
+                             "«Развитие территории» по Москве (ОКАТО 45000000000). "
+                             "Проба раздела — /auctions/roseltorg/probe."),
                 },
                 {
                     "id": "etp_gpb",
@@ -702,6 +717,33 @@ def install(app: FastAPI) -> None:
              "is_new": krt_ranking.is_new(seen.get(str(row.get("slug") or "")))}
             for row in projects
         ]
+        # Что карточка города говорит о застройщике и реновации — бесплатный
+        # официальный источник, и он больше не ждёт платного прогона: строка
+        # каталога несёт то, что уже прочитано, а недостающее дочитывается
+        # фоном порциями. Пока это лежало только в прогоне, у площадки с явным
+        # оператором в колонке не стояло ничего, и «не спрашивали» читалось как
+        # «оператора нет» (владелец, 01.09.2026).
+        known = getattr(krt_registry, "card_facts_known", None)
+        if callable(known):
+            slugs = [str(row.get("slug") or "") for row in projects]
+            try:
+                facts = await run_in_threadpool(known, slugs)
+            except Exception:  # noqa: BLE001
+                logger.exception("KRT card facts cache failed")
+                facts = {}
+            if facts:
+                projects = [
+                    {**row, "card_facts": facts.get(str(row.get("slug") or ""))}
+                    if facts.get(str(row.get("slug") or "")) else row
+                    for row in projects
+                ]
+            filler = getattr(krt_registry, "fill_card_facts_in_background", None)
+            if callable(filler):
+                try:
+                    filler(slugs)
+                except Exception:  # noqa: BLE001
+                    logger.exception("KRT card facts fill failed")
+
         status = krt_registry.status()
         # Неразобранная карточка называется вслух. Её значения съезжают на
         # поле — округом становится статус, статусом хвост адреса, — и такая
@@ -1134,7 +1176,13 @@ def install(app: FastAPI) -> None:
         # стояло имя `service`, а оно живёт локально внутри маршрута выдачи
         # лотов: снаружи его не существует, и кнопка «Что пишут об этой
         # площадке» отвечала пятисоткой ВСЕГДА (экран владельца, 01.09.2026).
-        return await run_in_threadpool(_read_open_sources, project or {})
+        found = await run_in_threadpool(_read_open_sources, project or {})
+        # Прочитанное остаётся на сервере, а не в памяти вкладки: поиск
+        # платный, и потерянная находка — это второй счёт за тот же ответ.
+        # Кладётся туда же, куда кладёт прогон, и общее для всех.
+        if found.get("available") is not False:
+            await run_in_threadpool(krt_ranking.remember, slug, {"press_facts": found})
+        return found
 
     @app.get("/auctions/krt/{slug}/card-facts")
     async def auction_krt_card_facts(slug: str) -> dict[str, Any]:
@@ -1186,22 +1234,50 @@ def install(app: FastAPI) -> None:
                 (item for item in krt_registry.catalogue() if item.get("slug") == slug), None)
         if not project:
             raise HTTPException(status_code=404, detail="Территория КРТ не найдена")
-        # Точка берётся тем же путём, что и точка отчёта, — `resolve_subject`.
-        # Свой вызов геокодера здесь был четвёртым случаем одной ошибки: модуль
-        # завёл свой путь туда, где у сервиса уже есть общий. Цена была не в
-        # красоте. Во-первых, он звал `market.geocoder` напрямую, мимо крючка
-        # `geocode_address`, — то есть на ядре один Nominatim вместо движковой
-        # цепочки (Яндекс, DaData, Nominatim), и карта отвечала «место не
-        # найдено» на территорию, которую отчёт находил. Во-вторых, он слал
-        # один запрос вместо лестницы `_krt_geocode_candidates` (отдельный
-        # адрес → запрос каталога → район). И в-третьих — главное: точка карты
-        # и точка, на которой посчитан отчёт, могли оказаться разными. Карта —
-        # то, на что смотрят; расходиться ей с расчётом нельзя.
-        try:
-            subject = await run_in_threadpool(market.resolve_subject, f"krt:{slug}")
-        except (GeocodingError, RemoteServiceError, RuntimeError) as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        data = subject.to_dict() if hasattr(subject, "to_dict") else {}
+        # Сначала официальный файл карты: у каждой площадки реестра там контур
+        # и центр. Геокодер — только когда площадки в файле нет: он ставит
+        # точку по адресу, а карточка писала «полигон не публикуется» и
+        # показывала чужой квартал (владелец, 02.09.2026: «и карта»).
+        site_reader = getattr(krt_registry, "map_lookup", None)
+        lookup = ((await run_in_threadpool(site_reader, slug, str(project.get("name") or "")))
+                  if callable(site_reader) else {})
+        site = (lookup or {}).get("site")
+        map_problem = str((lookup or {}).get("problem") or "")
+        rings = list((site or {}).get("rings_merc") or [])
+        centre = (site or {}).get("centre_merc")
+        if site and core is not None and (rings or centre):
+            if not centre:
+                points = [point for ring in rings for point in ring]
+                centre = [sum(p[0] for p in points) / len(points),
+                          sum(p[1] for p in points) / len(points)]
+            lat, lng = core._mercator_to_wgs84(float(centre[0]), float(centre[1]))
+            data = {
+                "query": f"krt:{slug}", "latitude": lat, "longitude": lng,
+                "precision": "official_centre", "address": project.get("name"),
+                "notes": ["Точка и контур — официальный файл карты реестра КРТ "
+                          "(krt.mos.ru): центр территории и полигон её границ."],
+            }
+            geometry_status = "official_polygon" if rings else "official_centre_only"
+        else:
+            # Точка берётся тем же путём, что и точка отчёта, — `resolve_subject`:
+            # свой геокодер здесь был четвёртым случаем одной ошибки (см. правило
+            # в CLAUDE.md о точке карты и точке отчёта).
+            try:
+                subject = await run_in_threadpool(market.resolve_subject, f"krt:{slug}")
+            except (GeocodingError, RemoteServiceError, RuntimeError) as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            data = subject.to_dict() if hasattr(subject, "to_dict") else {}
+            # Причина называется та, что случилась: «файл не прочитан» и «в файле
+            # нет такой площадки» — разные ответы, и первый ничего не говорит о
+            # площадке. Точка при этом всё равно геокодерная, и это сказано.
+            data["notes"] = list(data.get("notes") or []) + [
+                (map_problem or "площадки нет в файле карты реестра").capitalize()
+                + " — точка поставлена геокодером по адресу, контур не показан."]
+            if len(str(project.get("name") or "").split(",")) > 2:
+                data["notes"].append(
+                    "В названии площадки несколько адресов: геокодер ставит точку по одному "
+                    "из них, и центр территории может оказаться в стороне.")
+            geometry_status = "geocoded_point"
         # Ссылка на публичную карту НСПД строится движком (`_nspd_map_url`) —
         # координаты там в веб-меркаторе, и второй сборщик этого адреса в
         # браузере разошёлся бы с первым молча. Ссылка нужна не как украшение:
@@ -1230,6 +1306,10 @@ def install(app: FastAPI) -> None:
             "notes": data.get("notes") or [],
             "area_ha": project.get("area_ha"),
             "nspd_url": nspd_url,
+            # Контур в метрах меркатора — тех же, что у подложки `/land/basemap`.
+            "geometry_status": geometry_status,
+            "rings_merc": rings,
+            "centre_merc": centre,
         }
 
     @app.get("/auctions/krt/ranking")
@@ -1299,6 +1379,78 @@ def install(app: FastAPI) -> None:
             reason = ("Прогон уже идёт в соседнем процессе — строки появляются "
                       "в таблице по мере счёта")
         return {"started": started, "reason": reason, "progress": progress}
+
+    def _press_only(project: dict[str, Any]) -> dict[str, Any]:
+        """Прогон одних публикаций: без рынка и без модели.
+
+        Ответ на «кто здесь собрался строить» у планируемой площадки бывает
+        только один — публикации и каналы: карточка города до торгов
+        застройщика не называет (0 из 30 измеренных). А поиск был заперт внутри
+        полного прогона, который на каждой площадке ещё строит рыночный отчёт и
+        гоняет движок — минуты на площадку, поэтому он и ходит раз в неделю.
+        Дешёвый проход отвечает на один вопрос и стоит своих пяти запросов.
+
+        Модель здесь не считается, и это сказано вслух: «не посчитали» — тоже
+        ответ, а балл в строке остаётся прежним, потому что неудавшийся
+        пересчёт не затирает удавшийся.
+        """
+        return {
+            "available": False,
+            "reason": "Прогон публикаций: модель и рынок в нём не считаются",
+            "press_facts": _open_sources_for_run(project),
+        }
+
+    @app.post("/auctions/krt/press/run")
+    async def auction_krt_press_run(request: Request) -> dict[str, Any]:
+        """Прочитать публикации по всем планируемым площадкам разом.
+
+        По планируемым — потому что вопрос «кто собрался строить» есть только у
+        них: у площадки в реализации застройщика называет сама карточка города,
+        бесплатно и без поиска.
+
+        Уже спрошенные пропускаются: занятая площадка свободной не станет, и
+        платить за неё второй раз незачем (владелец, 01.09.2026). Замок общий с
+        прогоном модели — двум проходам по одному каталогу расходиться негде.
+        """
+        market_cabinet.require_cabinet(request)
+        if market is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Поиск по публикациям требует маркетингового движка",
+            )
+        projects = await run_in_threadpool(krt_registry.catalogue)
+        if not projects:
+            raise HTTPException(
+                status_code=503,
+                detail="Каталог КРТ ещё не получен — обновите каталог и повторите",
+            )
+        planned = []
+        for row in projects:
+            if "реализац" in str(row.get("status") or "").lower():
+                continue
+            stored = {}
+            try:
+                stored = (krt_ranking.stored_row(str(row.get("slug") or "")) or {}).get(
+                    "press_facts") or {}
+            except Exception:  # noqa: BLE001
+                logger.exception("stored press facts failed slug=%s", row.get("slug"))
+            if stored.get("available") and stored.get("taken"):
+                continue
+            planned.append(row)
+        if not planned:
+            return {"started": False, "reason": "Спрашивать нечего: планируемых площадок нет",
+                    "planned": 0, "progress": krt_ranking.progress()}
+        started = krt_ranking.start(planned, _press_only)
+        progress = krt_ranking.progress()
+        if started:
+            reason = ""
+        elif progress.get("running"):
+            reason = "Прогон уже идёт"
+        else:
+            reason = ("Прогон уже идёт в соседнем процессе — находки появляются "
+                      "в таблице по мере чтения")
+        return {"started": started, "reason": reason,
+                "planned": len(planned), "progress": progress}
 
     def _stored_report(slug: str) -> dict[str, Any]:
         stored = krt_ranking.report(slug)
@@ -1525,6 +1677,52 @@ def install(app: FastAPI) -> None:
         return await run_in_threadpool(
             lambda: fedresurs_browser(url=url.strip() or FEDRESURS_SEARCH_PAGE, seconds=seconds))
 
+    @app.get("/auctions/roseltorg/probe")
+    async def auction_roseltorg_probe(
+        seconds: float = Query(default=45.0, ge=5.0, le=90.0),
+    ) -> dict[str, Any]:
+        """Чем отвечает раздел «Развитие территории» Росэлторга. Разбора нет.
+
+        Владелец прислал адрес каталога и живой лот на экране: аукцион на
+        право заключения договора о КРТ нежилой застройки Москвы, 14,62 га,
+        2,4 млрд ₽. Наша разведка Росэлторга этот раздел не спрашивает вовсе —
+        она ходит только в поиск процедур по тегам. Это утверждение о нашем
+        коде, и его видно в нём; чем отвечает сам раздел, скажет проба.
+
+        Рядом спрашивается НЫНЕШНИЙ путь разведки: «раздел отвечает» и «раздел
+        отвечает лучше нынешнего» — разные утверждения, и второе без
+        контрольного запроса не проверяется.
+
+        Ответ из двух половин и обе нужны: простой запрос показывает, что
+        приходит в HTML, живой браузер — за чем страница ходит сама и что в
+        итоге оказалось в DOM. Пустой список запросов при видимых карточках
+        значит «всё пришло первым ответом», а не «карточек нет».
+
+        Произвольного адреса здесь нет намеренно: спрашивается ровно тот
+        раздел, который открывает владелец.
+
+        Из песочницы roseltorg.ru закрыт, поэтому проба ходит только с ядра.
+        """
+        return await run_in_threadpool(lambda: roseltorg_probe(seconds=float(seconds)))
+
+    @app.get("/auctions/roseltorg/browser")
+    async def auction_roseltorg_browser(
+        seconds: float = Query(default=45.0, ge=5.0, le=90.0),
+        url: str = Query(default=""),
+        save: bool = Query(default=False),
+    ) -> dict[str, Any]:
+        """Тот же раздел живым браузером — и адреса, за которыми он ходит.
+
+        Если каталог рисует приложение, в простом ответе будет оболочка, а
+        числа приедут отдельными вызовами. Их адреса и нужны, чтобы написать
+        читателя — не угаданные, а увиденные. `save=1` кладёт страницу файлом:
+        читатель пишется по настоящей странице и ею же проверяется.
+        """
+        target = url.strip() or ROSELTORG_SECTION_URL
+        save_to = "/tmp/roseltorg-section.html" if save else ""
+        return await run_in_threadpool(
+            lambda: roseltorg_section_browser(target, seconds=seconds, save_to=save_to))
+
     @app.get("/auctions/etp/probe")
     async def auction_etp_probe() -> dict[str, Any]:
         """Что отвечают площадки банкротства. Разбора нет — сначала ответ.
@@ -1673,10 +1871,14 @@ def install(app: FastAPI) -> None:
         project_preset = build_project_preset(lot)
         # ОКС и участок — разные объекты ЕГРН. В карточках торгов часто
         # публикуют оба КН; передача обоих в ГлавАПУ заставляет калькулятор
-        # принять площадь здания за площадь территории и сложить их. Для
-        # имущественного комплекса/незавершёнки оставляем в handoff только
-        # земельные КН, подтверждённые НСПД.
-        if lot.lot_kind != LotKind.KRT and lot.cadastral_numbers and core is not None:
+        # принять площадь здания за площадь территории и сложить их. Поэтому в
+        # handoff оставляем только земельные КН, подтверждённые НСПД.
+        #
+        # КРТ здесь стоял исключением, и зря: в его извещении КН зданий больше
+        # всего — их сносят, и они перечислены поимённо. «Из карточки КРТ в
+        # DevelopAid неверно передаёт КН участков» (владелец, 02.09.2026) — это
+        # оно: участками уезжали заодно и снесённые дома.
+        if lot.cadastral_numbers and core is not None:
             try:
                 context = await run_in_threadpool(core._land_lot_context, lot.cadastral_numbers)
                 _handoff_land_cadastres(project_preset, context)

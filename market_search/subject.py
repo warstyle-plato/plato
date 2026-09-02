@@ -49,6 +49,52 @@ _NEXT_ADDRESS = re.compile(
 _HAS_STREET = re.compile(rf"\b{_STREET_MARKER}(?=\s|,|;|$)", re.IGNORECASE)
 
 
+# Владение геокодеру не понятно, а улица — понятна, и это хуже пустого ответа.
+# Живая проба (02.09.2026): «Москва, Варшавское шоссе, вл. 37» Nominatim
+# отвечает типом `road` и точкой в Южном Бутове — в четырнадцати километрах от
+# самой площадки; «Москва, Варшавское шоссе, 37» отвечает точкой в
+# Нагатино-Садовниках, то есть верной. Совпала УЛИЦА, а не адрес, и на карте
+# это выглядело как уверенно поставленная метка (владелец, 02.09.2026: «там не
+# то на карте место указано»).
+_HOUSE_PREFIX = re.compile(r"(?iu)\b(?:влд|вл|дом|д|уч)\.?\s*(?=\d)")
+_HOUSE_NUMBER = re.compile(r"(?iu)(\d+[а-я]?)")
+# Тип ответа — часть ответа. У Nominatim это `addresstype`, у Яндекса —
+# `precision`; названия разные, смысл один: дом, точка или улица.
+_HOUSE_KINDS = {"building", "house", "house_number", "residential", "exact", "number"}
+_STREET_KINDS = {"road", "highway", "street", "footway", "path"}
+_AREA_KINDS = {"suburb", "city_district", "district", "quarter", "neighbourhood",
+               "city", "town", "administrative", "other", "locality"}
+
+
+def _house_variants(part: str) -> list[str]:
+    """Адрес в формах, которые геокодер понимает: «вл. 3А/6» → «3А» и «3А/6»."""
+    plain = _HOUSE_PREFIX.sub("", str(part or "")).strip(" ,;")
+    variants = [plain]
+    if "/" in plain:
+        variants.append(plain.split("/")[0].strip())
+    return [item for index, item in enumerate(variants) if item and item not in variants[:index]]
+
+
+def geocode_rank(point: Any, query: str) -> int:
+    """Насколько точен ответ: 3 — дом, 2 — точка, 1 — улица, 0 — район.
+
+    Провайдер называет тип по-своему и иногда молчит. Тогда спрашиваем сам
+    ответ: есть в нём номер дома из запроса — это дом, нет — доверять нечему.
+    """
+    kind = str(getattr(point, "precision", "") or "").casefold()
+    if kind in _HOUSE_KINDS:
+        return 3
+    if kind in _STREET_KINDS:
+        return 1
+    if kind in _AREA_KINDS:
+        return 0
+    shown = str(getattr(point, "display_name", "") or "").casefold()
+    number = _HOUSE_NUMBER.search(str(query or ""))
+    if number and number.group(1).casefold() in shown:
+        return 3
+    return 2
+
+
 def _krt_geocode_candidates(
     territory: dict[str, Any], fallback: str
 ) -> list[tuple[str, str]]:
@@ -59,7 +105,9 @@ def _krt_geocode_candidates(
     multiple_addresses = len(address_parts) > 1
 
     candidates: list[tuple[str, str]] = []
-    candidates.extend((f"Москва, {part}", "address_fragment") for part in address_parts)
+    for part in address_parts:
+        candidates.extend((f"Москва, {variant}", "address_fragment")
+                          for variant in _house_variants(part))
 
     combined = " ".join(
         str(territory.get("geocode_query") or name or fallback).split()
@@ -174,17 +222,26 @@ def resolve_subject(
         if territory:
             if not geocode:
                 raise SubjectNotFound("КРТ найдена, но геокодер не подключён")
+            # Берётся лучший ответ, а не первый: улица длиной в пятнадцать
+            # километров отвечает на запрос дома охотно, и первый ответ бывает
+            # хуже второго. Дом нашёлся — дальше не спрашиваем.
             point = None
             used_query = ""
             used_precision = ""
+            used_rank = -1
             last_error: RuntimeError | None = None
             for candidate, precision in _krt_geocode_candidates(territory, text):
                 try:
-                    point = geocode(candidate)
-                    used_query, used_precision = candidate, precision
-                    break
+                    answer = geocode(candidate)
                 except RuntimeError as exc:
                     last_error = exc
+                    continue
+                rank = geocode_rank(answer, candidate)
+                if rank > used_rank:
+                    point, used_query, used_precision, used_rank = (
+                        answer, candidate, precision, rank)
+                if used_rank >= 3:
+                    break
             if point is None:
                 if last_error:
                     raise last_error
@@ -193,7 +250,14 @@ def resolve_subject(
             notes = [
                 "КРТ взята из krt.mos.ru; официальная геометрия границ не получена."
             ]
-            if used_precision == "address_fragment":
+            if used_rank <= 1 and used_precision != "district":
+                # Совпала улица, а не адрес: на карте такая метка выглядит
+                # уверенно и стоит где угодно вдоль неё.
+                notes.append(
+                    f"Геокодер нашёл по запросу «{used_query}» только улицу, а не дом: "
+                    "точка стоит где-то вдоль неё и площадку не показывает."
+                )
+            elif used_precision == "address_fragment":
                 notes.append(
                     f"Точка поставлена по отдельному адресу «{used_query}»; "
                     "остальные владения проекта не объединялись в один поисковый запрос."

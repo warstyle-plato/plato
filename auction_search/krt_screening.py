@@ -14,6 +14,7 @@ import copy
 import math
 from typing import Any
 
+from market_search.krt_requirements import social_objects_from_decision
 from market_search.segments import BUSINESS, COMFORT, ECONOMY, ELITE, PREMIUM, normalize_segment
 
 
@@ -58,6 +59,18 @@ def _queue_word(count: int) -> str:
 def _verdict(report: dict[str, Any]) -> dict[str, Any]:
     analysis = report.get("analysis") or {}
     return analysis.get("site") or analysis.get("overall") or {}
+
+
+def _territory_keys(core: Any) -> list[str]:
+    """Поля участка — со страницы движка, копии здесь нет."""
+    try:
+        from developaid_v2_form import territory_input_keys
+        return list(territory_input_keys(core))
+    except Exception:  # noqa: BLE001 — страница без списка: обнуляем то, что знаем
+        return ["purchase_price_mln", "site_area_ha", "site_density_sqm_per_ha",
+                "land_rights_cost_mln", "social_compensation_mln", "offices_gba_sqm",
+                "offices_saleable_sqm", "retail_gba_sqm", "retail_saleable_sqm",
+                "above_parking_spaces"]
 
 
 def _empty_tep(core: Any) -> dict[str, dict[str, Any]]:
@@ -224,6 +237,12 @@ def _requirements_for_model(requirements: dict[str, Any] | None) -> dict[str, An
     return {
         "available": bool(source.get("available")),
         "decision_available": bool(source.get("decision_available")),
+        # Что город назвал сам: конкретные ДОО и СОШ иногда стоят прямо в
+        # решении, и тогда норматив не спрашивают — документ сильнее.
+        "social_objects": social_objects_from_decision(
+            list(source.get("construction") or [])
+            + list((source.get("decision") or {}).get("construction") or [])
+        ),
         "source_level": source.get("source_level"),
         "decision": copy.deepcopy(source.get("decision")),
         "demolition_area_sqm": demolition_area,
@@ -249,6 +268,171 @@ def _requirements_for_model(requirements: dict[str, Any] | None) -> dict[str, An
         "permitted_uses": list(source.get("permitted_uses") or [])[:20],
         "deadlines": list(source.get("deadlines") or [])[:5],
         "warning": source.get("warning"),
+    }
+
+
+# Соцобъект живёт в трёх местах разом: строкой ТЭП, местами во вводных и
+# площадью во вводных. Список объявлен один раз — разойдясь, эти три места
+# показали бы про один садик разное, и все три выглядели бы верными.
+_SOCIAL_ROWS: dict[str, tuple[str, str, str, str, str]] = {
+    "kindergarten": ("kindergarten", "kindergarten_places", "social_dou_gba_sqm",
+                     "social_dou_norm_sqm", "ДОО"),
+    "school": ("school", "school_places", "social_school_gba_sqm",
+               "social_school_norm_sqm", "СОШ"),
+    "clinic": ("clinic", "clinic_capacity", "social_clinic_gba_sqm",
+               "social_clinic_norm_sqm", "Поликлиника"),
+}
+POPULATION_SQM_PER_PERSON = 33.0
+
+
+def _programme(
+    core: Any,
+    project: dict[str, Any],
+    duties: dict[str, Any],
+    inputs: dict[str, Any],
+    tep: dict[str, dict[str, Any]],
+    applied_ratios: dict[str, Any],
+    apartments_saleable_sqm: float,
+) -> dict[str, Any]:
+    """Разложить объёмы города по продуктам модели.
+
+    Город даёт три слагаемых: жилое, нежилое и общественно-деловое (сумма их
+    равна общему объёму — проверено на карточках Кунцева и Магистральных улиц).
+    Жильё мы считаем сами; соцобъекты город либо назвал в решении, либо их
+    считает норматив; **остаток нежилого за вычетом соцобъектов** — это ОСЗ и
+    ТЦ, а общественно-деловое — офисы (решение владельца, 02.09.2026).
+
+    Отрицательный остаток — находка, а не ноль: он значит, что соцобъекты по
+    нормативу не помещаются в нежилой объём города, и молча обнулить его
+    значит спрятать противоречие между двумя источниками.
+    """
+    housing = _number(project.get("housing_gfa_sqm"))
+    nonresidential = _number(project.get("nonresidential_gfa_sqm"))
+    business = _number(project.get("business_gfa_sqm"))
+    total = _number(project.get("total_gfa_sqm"))
+    district = str(project.get("district") or "").strip()
+    zone_two = core.district_zone_two(district)
+    population = apartments_saleable_sqm / POPULATION_SQM_PER_PERSON
+
+    named: dict[str, dict[str, Any]] = {}
+    for item in duties.get("social_objects") or []:
+        kind = str(item.get("kind") or "")
+        if kind not in _SOCIAL_ROWS:
+            continue
+        slot = named.setdefault(
+            kind, {"places": 0.0, "area_sqm": 0.0, "quotes": [], "numbered": False})
+        places = _number(item.get("places"))
+        area = _number(item.get("area_sqm"))
+        if places > 0 or area > 0:
+            slot["numbered"] = True
+        slot["places"] += places
+        slot["area_sqm"] += area
+        if item.get("quote"):
+            slot["quotes"].append(str(item["quote"]))
+
+    social_rows: list[dict[str, Any]] = []
+    social_area = 0.0
+    for kind, (tep_key, places_key, area_key, norm_key, label) in _SOCIAL_ROWS.items():
+        norm_sqm = _number(inputs.get(norm_key))
+        demanded = named.get(kind)
+        by_norm = math.ceil(core.moscow_social_places(kind, population, zone_two=zone_two))
+        if demanded and demanded["numbered"]:
+            places = demanded["places"]
+            area = demanded["area_sqm"]
+            if places <= 0 and area > 0 and norm_sqm > 0:
+                places = area / norm_sqm
+            source = "decision"
+        else:
+            places = float(by_norm)
+            area = 0.0
+            # Объект город назвал, а мощность его — нет. Отказаться считать
+            # значит потерять обязательство целиком; поэтому считаем нормативом
+            # и говорим, что число наше, а не города.
+            source = "norm_after_named" if demanded else "norm"
+        # Площадь на место — ступень по ёмкости здания (РНГП, редакция
+        # 2579-ПП): маленький садик стоит 27 м² на место, крупный 16. Поле
+        # вводных несёт одно число на любую ёмкость, поэтому норматив города
+        # сильнее — и записывается в то же поле, чтобы страница показывала
+        # именно то, чем посчитано.
+        city_norm = core.moscow_social_area_per_place(kind, places)
+        if city_norm:
+            norm_sqm = city_norm
+            inputs[norm_key] = city_norm
+        if area <= 0:
+            area = places * norm_sqm
+        inputs[places_key] = places
+        inputs[area_key] = area
+        tep[tep_key].update({"total_area": area, "transfer": area, "units": places})
+        social_area += area
+        social_rows.append({
+            "kind": kind,
+            "label": label,
+            "places": round(places, 1),
+            "gba_sqm": round(area, 1),
+            "norm_sqm_per_place": norm_sqm,
+            "norm_is_the_citys": bool(city_norm),
+            "by_norm_places": by_norm,
+            "source": source,
+            "quotes": (demanded or {}).get("quotes", [])[:3],
+        })
+    # Соцобъекты строятся, а не откупаются: решение города называет объекты, и
+    # денежная компенсация вместо них — другое обязательство, а не то же самое.
+    inputs["social_mode"] = "Строительство"
+
+    commercial = nonresidential - social_area
+    retail_ratios = applied_ratios.get("standalone_retail") or {}
+    office_ratios = applied_ratios.get("offices") or {}
+    if commercial > 0:
+        saleable = commercial * _number(retail_ratios.get("saleable_of_gns"))
+        inputs["retail_enabled"] = True
+        inputs["retail_gba_sqm"] = commercial
+        inputs["retail_saleable_sqm"] = saleable
+        tep["standalone_retail"].update({
+            "gns": commercial,
+            "total_area": commercial * _number(retail_ratios.get("total_of_gns")),
+            "useful": saleable,
+            "saleable": saleable,
+        })
+    if business > 0:
+        saleable = business * _number(office_ratios.get("saleable_of_gns"))
+        inputs["offices_enabled"] = True
+        inputs["offices_gba_sqm"] = business
+        inputs["offices_saleable_sqm"] = saleable
+        tep["offices"].update({
+            "gns": business,
+            "total_area": business * _number(office_ratios.get("total_of_gns")),
+            "useful": saleable,
+            "saleable": saleable,
+        })
+
+    # Сходимость объявленного городом. Расхождение называется, а не
+    # выравнивается: три числа карточки — его данные, и подгонять их под сумму
+    # значит выдать нашу правку за его объём.
+    declared_sum = housing + nonresidential + business
+    difference = total - declared_sum if total > 0 else 0.0
+    return {
+        "city": {
+            "total_gfa_sqm": total,
+            "housing_gfa_sqm": housing,
+            "nonresidential_gfa_sqm": nonresidential,
+            "business_gfa_sqm": business,
+            "district": district,
+            "zone_two": zone_two,
+            "area_ha": _number(project.get("area_ha")),
+        },
+        "population": int(math.ceil(population)),
+        "social": social_rows,
+        "social_gba_sqm": round(social_area, 1),
+        "social_from_decision": any(row["source"] == "decision" for row in social_rows),
+        "commercial_gba_sqm": round(commercial, 1),
+        "commercial_negative": commercial < 0,
+        "offices_gba_sqm": round(business, 1),
+        "balance": {
+            "declared_sum_sqm": round(declared_sum, 1),
+            "difference_sqm": round(difference, 1),
+            "matches": total <= 0 or abs(difference) <= max(1.0, total * 0.001),
+            "total_published": total > 0,
+        },
     }
 
 
@@ -295,7 +479,10 @@ def build_krt_model_screening(
         "land_rights_cost_mln": 0.0,
         "vri_required": False,
         "vri_security_cost_mln": 0.0,
-        "social_mode": "Денежная компенсация",
+        # Всё, что относится к площадке, обнуляется здесь и заполняется ниже
+        # из объёмов города: оставленное умолчание пресета — это чужие метры,
+        # выданные за посчитанные.
+        "social_mode": "Строительство",
         "social_compensation_mln": 0.0,
         "kindergarten_places": 0.0,
         "school_places": 0.0,
@@ -304,9 +491,29 @@ def build_krt_model_screening(
         "social_school_gba_sqm": 0.0,
         "social_clinic_gba_sqm": 0.0,
         "offices_enabled": False,
+        "offices_gba_sqm": 0.0,
+        "offices_saleable_sqm": 0.0,
         "retail_enabled": False,
+        "retail_gba_sqm": 0.0,
+        "retail_saleable_sqm": 0.0,
         "above_parking_enabled": False,
     })
+    # Площадка КРТ — другой участок, и всё, что относится к участку, обязано
+    # обнулиться: список этих полей один, его держит страница
+    # (`TERRITORY_INPUT_KEYS`), и читается он оттуда же, откуда его читает
+    # перенос ГлавАПУ. Прежде модель собиралась от умолчаний целиком, и в
+    # DevelopAid приезжал чужой участок — с офисами 10 000 м² и площадью
+    # прошлого проекта («в девелоп он передаёт какой-то другой участок и явно
+    # не 14 га», владелец, 02.09.2026). Площадь территории — из каталога.
+    for key in _territory_keys(core):
+        if key in inputs:
+            inputs[key] = 0.0 if not isinstance(inputs[key], bool) else False
+    area_ha = _number(project.get("area_ha"))
+    if area_ha > 0:
+        inputs["site_area_ha"] = area_ha
+        total_gfa = _number(project.get("total_gfa_sqm"))
+        if total_gfa > 0:
+            inputs["site_density_sqm_per_ha"] = round(total_gfa / area_ha, 1)
     duties = _requirements_for_model(requirements)
     duties["nonhousing_gfa_sqm"] = (
         _number(project.get("nonresidential_gfa_sqm"))
@@ -339,6 +546,10 @@ def build_krt_model_screening(
         "saleable": saleable,
         "units": saleable / lot_area,
     })
+
+    # Нежилой объём города и соцобъекты — до паркинга: места считаются от жилья,
+    # но продукты очереди и ТЭП должны быть собраны целиком до прогона модели.
+    programme = _programme(core, project, duties, inputs, tep, applied_ratios, saleable)
 
     parking_spaces = math.ceil(housing_gfa / PARKING_GNS_PER_SPACE)
     parking_spaces += math.ceil(parking_spaces * PARKING_GUEST_SHARE)
@@ -433,6 +644,35 @@ def build_krt_model_screening(
         "Рост цены принят по базовым вводным модели: 1,5% в месяц до РВЭ и 0,25% после РВЭ; "
         "для очередей дополнительно применены 8% в год к затратам и их стартовой цене.",
     ]
+    social_text = "; ".join(
+        f"{row['label']} — {_ru_number(row['places'])} "
+        + ("пос./смену" if row["kind"] == "clinic" else "мест")
+        + f", {_ru_number(row['gba_sqm'])} м² по "
+        + (f"{_ru_number(row['norm_sqm_per_place'], 0)} м²/место"
+           + (" норматива города для этой ёмкости" if row["norm_is_the_citys"] else " вводных модели")
+           + ", ")
+        + {
+            "decision": "мощность по решению города",
+            "norm_after_named": "мощность по нормативу: объект в решении назван, число мест нет",
+            "norm": "мощность по нормативу",
+        }[row["source"]]
+        for row in programme["social"] if row["places"] > 0
+    )
+    assumptions.append(
+        f"Население {_ru_number(programme['population'])} чел. по 33 м² квартир; норматив "
+        + ("второй" if programme["city"]["zone_two"] else "первой")
+        + " зоны Москвы"
+        + (f" по району «{programme['city']['district']}»"
+           if programme["city"]["district"] else " — район в карточке не назван, принята первая зона")
+        + ". " + (social_text + "." if social_text else "Соцобъекты по нормативу не потребовались.")
+    )
+    assumptions.append(
+        f"Нежилой объём города {_ru_number(programme['city']['nonresidential_gfa_sqm'])} м² "
+        f"за вычетом соцобъектов {_ru_number(programme['social_gba_sqm'])} м² дал "
+        f"{_ru_number(programme['commercial_gba_sqm'])} м² ГНС на ОСЗ и ТЦ; "
+        f"общественно-деловое назначение {_ru_number(programme['offices_gba_sqm'])} м² "
+        "принято офисами. Размещение объектов по очередям — умолчание модели."
+    )
     if absorption["available"]:
         assumptions.append(
             f"Темп рынка {_ru_number(absorption['market_units_per_month'], 1)} ДДУ/мес. принят на одну очередь: "
@@ -452,10 +692,39 @@ def build_krt_model_screening(
         "Цена приобретения / входа принята равной нулю.",
         "Плата за ВРИ и оформление земельных правоотношений не включены.",
     ]
-    if duties["nonhousing_gfa_sqm"] > 0:
+    if programme["commercial_gba_sqm"] > 0 or programme["offices_gba_sqm"] > 0:
+        objects = " и ".join(filter(None, (
+            "ОСЗ" if programme["commercial_gba_sqm"] > 0 else "",
+            "офисов" if programme["offices_gba_sqm"] > 0 else "",
+        )))
         exclusions.append(
-            f"Нежилой и общественно-деловой объём {_ru_number(duties['nonhousing_gfa_sqm'])} м² "
-            "не включён в жилую модель: нужно подтвердить продукт и отдельные цены/затраты."
+            f"Цена и себестоимость {objects} взяты базовыми вводными модели "
+            f"({_ru_number(inputs.get('retail_price_th_per_sqm'))} тыс. ₽/м² продажи и "
+            f"{_ru_number(inputs.get('retail_cost_th_per_sqm'))} тыс. ₽/м² ГНС): "
+            "маркетинг нежилого не считался, класс продукта не подтверждён."
+        )
+    if programme["commercial_negative"]:
+        exclusions.append(
+            f"Соцобъекты {_ru_number(programme['social_gba_sqm'])} м² "
+            + ("(по решению города и нормативу) " if programme["social_from_decision"]
+               else "(по нормативу) ")
+            + "больше всего нежилого объёма города "
+            f"{_ru_number(programme['city']['nonresidential_gfa_sqm'])} м² на "
+            f"{_ru_number(abs(programme['commercial_gba_sqm']))} м²: остатка на ОСЗ и ТЦ нет, "
+            "и обнулять его молча нельзя — либо соцобъекты у города учтены вне нежилого "
+            "назначения, либо норматив к этой площадке не применяется целиком."
+        )
+    if not programme["balance"]["total_published"]:
+        exclusions.append(
+            "Общий объём застройки в карточке города не опубликован: сходимость "
+            "«жилое + нежилое + деловое = всего» проверить не на чем."
+        )
+    elif not programme["balance"]["matches"]:
+        exclusions.append(
+            "Слагаемые карточки города не сходятся с её же общим объёмом: "
+            f"{_ru_number(programme['balance']['declared_sum_sqm'])} м² против "
+            f"{_ru_number(programme['city']['total_gfa_sqm'])} м², разница "
+            f"{_ru_number(programme['balance']['difference_sqm'])} м². В модель взяты слагаемые."
         )
     if duties["demolition_area_sqm"] > 0:
         exclusions.append(
@@ -513,6 +782,7 @@ def build_krt_model_screening(
             "phasing": copy.deepcopy(phasing),
         },
         "requirements": duties,
+        "programme": programme,
         "headline": traffic["label"],
         "text": text,
         "market": {

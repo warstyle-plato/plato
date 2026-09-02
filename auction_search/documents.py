@@ -6,7 +6,7 @@ import re
 import zipfile
 from html.parser import HTMLParser
 from urllib.error import HTTPError
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse, urlunparse
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree as ET
 
@@ -78,6 +78,27 @@ def _looks_like_login_page(final_url: str, content_type: str, data: bytes) -> bo
     )
 
 
+def safe_url(url: str) -> str:
+    """Тот же адрес, пригодный для запроса: пробелы и кириллица — процентами.
+
+    Площадка кладёт в ссылку имя файла как есть: «/file/get/…/name/Территория,
+    Лотовая документация.1700483.pdf» — с пробелом и кириллицей. `urllib` на
+    таком адресе не делает запроса вовсе, а отвечает «URL can't contain control
+    characters», и разбор лота падает целиком (экран владельца, 02.09.2026).
+    Читатель при этом ни при чём: адрес честный, просто незакодированный.
+
+    Уже закодированное не кодируется второй раз (`safe` держит проценты), иначе
+    «%20» превратилось бы в «%2520» и площадка отдала бы 404.
+    """
+    parsed = urlparse(str(url or "").strip())
+    if not parsed.scheme:
+        return str(url or "").strip()
+    return urlunparse(parsed._replace(
+        path=quote(parsed.path, safe="/%:@!$&'()*+,;=~-._"),
+        query=quote(parsed.query, safe="/%:@!$&'()*+,;=~-._?"),
+    ))
+
+
 def download_document(url: str, *, timeout: int = 25) -> tuple[bytes, str, bool]:
     """Download an official ETP attachment, public-first.
 
@@ -86,7 +107,7 @@ def download_document(url: str, *, timeout: int = 25) -> tuple[bytes, str, bool]
     DocumentAuthorizationRequired rather than treating the document as missing.
     """
     headers, authenticated = _request_headers(url)
-    req = Request(url, headers=headers)
+    req = Request(safe_url(url), headers=headers)
     try:
         with urlopen(req, timeout=timeout) as response:
             content_type = (response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
