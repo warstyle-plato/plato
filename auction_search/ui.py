@@ -616,7 +616,10 @@ async function ingest(){const l=state.selected;if(!l)return;const b=$('ingestBtn
  // отдельный объект ЕГРН, его площадь никогда не является площадью участка.
  // Проверяем связь через тот же НСПД-контур, который уже показан в карточке.
  const cads=(d.lot&&d.lot.cadastral_numbers)||l.cadastral_numbers||[];
- if(cads.length&&l.lot_kind!=='krt'){try{const ctx=await askJson('/land/lot-context',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cadastral_numbers:cads})});const land=(ctx.land_parcels||[]).map(x=>x.cadastral_number).filter(Boolean);if(land.length){d.project_preset.project.cadastral_numbers=land;d.project_preset.project.cadastral_numbers_input=land.join(', ');d.project_preset.land.cadastral_numbers=land;d.project_preset.land.cadastral_numbers_csv=land.join(', ');d.project_preset.project.cadastral_import.mode=land.length>1?'bulk':'single';d.project_preset.project.cadastral_import.note+=' В КН для расчёта включены только земельные участки; здания/ОКС исключены.';d.developaid_seed.site.cadastral_numbers=land;l._landCadastralNumbers=land}}catch(_){/* карточка остаётся доступной; ручная проверка НСПД не блокирует разбор */}}
+ // КРТ здесь был исключением, и зря: в его извещении КН зданий больше всего —
+ // их сносят, и они перечислены поимённо. Передача их «участками» заставляет
+ // калькулятор принять площадь дома за площадь территории.
+ if(cads.length){try{const ctx=await askJson('/land/lot-context',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cadastral_numbers:cads})});const land=(ctx.land_parcels||[]).map(x=>x.cadastral_number).filter(Boolean);if(land.length){d.project_preset.project.cadastral_numbers=land;d.project_preset.project.cadastral_numbers_input=land.join(', ');d.project_preset.land.cadastral_numbers=land;d.project_preset.land.cadastral_numbers_csv=land.join(', ');d.project_preset.project.cadastral_import.mode=land.length>1?'bulk':'single';d.project_preset.project.cadastral_import.note+=' В КН для расчёта включены только земельные участки; здания/ОКС исключены.';d.developaid_seed.site.cadastral_numbers=land;l._landCadastralNumbers=land}}catch(_){/* карточка остаётся доступной; ручная проверка НСПД не блокирует разбор */}}
  state.ingested=d;renderAnalysis(d)}catch(e){status.className='notice warn';status.textContent=String(e.message||e)}finally{b.disabled=false;b.textContent='Разобрать заново'}}
 function renderAnalysis(d){const s=d.screening||{},l=d.lot||{},a=$('analysis'),status=$('detailStatus');if(s.krt_auth_required){status.className='notice warn';status.textContent='Часть документации требует входа на ЭТП. Лот сохранён, но DevelopAid не считает закрытые документы отсутствующими.'}else if(s.krt_documents_complete===true){status.className='notice';status.textContent='Официальные документы КРТ разобраны без пропусков, обнаруженных загрузчиком.'}else{status.className='notice';status.textContent='Карточка ЭТП сверена. Для обычной земли следующий слой — кадастр/градпроверка DevelopAid.'}
  const program=l.krt_program||[],obs=l.obligations||[],docs=l.documents||[],px=s.platon_explanation||{};
@@ -1654,9 +1657,15 @@ async function loadKrtCardFacts(x){
   }
  }catch(e){/* не ответила карточка — это «не спросили», а не «застройщика нет» */}
 }
-async function loadKrtPress(x){
+async function loadKrtPress(x, force){
  const box=document.getElementById('krtPressBox');
  if(!box)return;
+ // Прочитанное лежит на сервере, в строке рейтинга: показываем его сразу и
+ // второй раз за тот же ответ не платим. Поиск платный, а раньше находка жила
+ // в памяти вкладки и пропадала при перезагрузке — «сейчас всё слетает»
+ // (владелец, 02.09.2026). Перечитать можно по требованию, кнопкой.
+ const kept=state.krtPress[x.slug]||(state.krtRank[x.slug]||{}).press_facts||null;
+ if(kept&&!force){state.krtPress[x.slug]=kept;showKrtPress(x,kept,true);return}
  box.innerHTML='<div class="notice"><span class="spinner"></span>Читаю публикации об этой площадке…</div>';
  try{
   const d=await askJson('/auctions/krt/'+encodeURIComponent(x.slug)+'/open-sources');
@@ -1666,40 +1675,50 @@ async function loadKrtPress(x){
    return;
   }
   state.krtPress[x.slug]=d;
-  const items=krtPressLines(d.operator_named,'Оператор назван')
-   +krtPressLines(d.operator_appointed,'Оператор назначен, имя не названо')
-   +krtPressLines(d.agreement,'Договор о КРТ уже заключён — войти нельзя')
-   +krtPressLines(d.operator_pending,'Право ещё выставят на торги')
-   +krtPressLines(d.city_needs,'Городские нужды')
-   +krtPressLines(d.stage,'Стадия');
-  // Имя площадки бывает не адресом, а перечнем общих слов — «Магистральные
-  // улицы тер. 4, 5, 6». Привязать к ней находку нечем: под такой якорь
-  // подходит любая проза о московских магистралях, и в карточку приезжала
-  // статья про Москва-Сити (экран владельца, 02.09.2026). Прочитанное
-  // показываем, признаков не ставим — и говорим, почему.
-  const anchorless=d.anchorless?'<div class="notice warn">Имя площадки в каталоге состоит '
-    +'из общих слов, и привязать к ней находку по нему нельзя: под такой якорь подходит '
-    +'любая статья о городе. Спрашивали по району; прочитанное ниже, но признаков по нему '
-    +'не ставим — иначе чужой текст стал бы фактом об этой площадке.</div>':'';
-  box.innerHTML='<div class="section"><h3>Что пишут об этой площадке</h3>'+anchorless
-   +(items||(d.anchorless?'':'<div class="notice">В прочитанных публикациях об операторе и городских нуждах '
-     +'не сказано. Это «не нашли», а не «нет»: искали по '+(d.checked||0)+' документам.</div>'))
-   +krtPressDocs(d)
-   +`<div class="source">Запросы: ${esc((d.queries||[]).join(' · '))}. `
-   +'Признак ставится только вместе с цитатой: сниппет поиска повторяет слова запроса, '
-   +'и без привязки к самой площадке сюда попал бы любой соседний проект. '
-   +(d.telegram_asked
-     ? (d.telegram_found
-        ? 'Каналы спрошены, из них '+d.telegram_found+' находок — они помечены отдельно: '
-          +'канал не издание, опровергать пост никто не обязан.'
-        : 'Каналы спрошены — в них об этой площадке ничего не нашлось. Это «не нашли», а не «нет».')
-     : 'Каналы не спрошены.')
-   +'</div></div>';
+  showKrtPress(x,d,false);
   // Найденное входит в фильтр: иначе оно есть на карточке и не влияет ни на что.
   filterKrt();
  }catch(e){
   box.innerHTML=`<div class="notice warn">${esc(String(e.message||e))}</div>`;
  }
+}
+function showKrtPress(x,d,stored){
+ const box=document.getElementById('krtPressBox');
+ if(!box)return;
+ const items=krtPressLines(d.operator_named,'Оператор назван')
+  +krtPressLines(d.operator_appointed,'Оператор назначен, имя не названо')
+  +krtPressLines(d.agreement,'Договор о КРТ уже заключён — войти нельзя')
+  +krtPressLines(d.operator_pending,'Право ещё выставят на торги')
+  +krtPressLines(d.city_needs,'Городские нужды')
+  +krtPressLines(d.stage,'Стадия');
+ // Имя площадки бывает не адресом, а перечнем общих слов — «Магистральные
+ // улицы тер. 4, 5, 6». Привязать к ней находку нечем: под такой якорь
+ // подходит любая проза о московских магистралях, и в карточку приезжала
+ // статья про Москва-Сити (экран владельца, 02.09.2026). Прочитанное
+ // показываем, признаков не ставим — и говорим, почему.
+ const anchorless=d.anchorless?'<div class="notice warn">Имя площадки в каталоге состоит '
+   +'из общих слов, и привязать к ней находку по нему нельзя: под такой якорь подходит '
+   +'любая статья о городе. Спрашивали по району; прочитанное ниже, но признаков по нему '
+   +'не ставим — иначе чужой текст стал бы фактом об этой площадке.</div>':'';
+ box.innerHTML='<div class="section"><h3>Что пишут об этой площадке</h3>'+anchorless
+  +(items||(d.anchorless?'':'<div class="notice">В прочитанных публикациях об операторе и городских нуждах '
+    +'не сказано. Это «не нашли», а не «нет»: искали по '+(d.checked||0)+' документам.</div>'))
+  +krtPressDocs(d)
+  +`<div class="source">Запросы: ${esc((d.queries||[]).join(' · '))}. `
+  +'Признак ставится только вместе с цитатой: сниппет поиска повторяет слова запроса, '
+  +'и без привязки к самой площадке сюда попал бы любой соседний проект. '
+  +(d.telegram_asked
+    ? (d.telegram_found
+       ? 'Каналы спрошены, из них '+d.telegram_found+' находок — они помечены отдельно: '
+         +'канал не издание, опровергать пост никто не обязан.'
+       : 'Каналы спрошены — в них об этой площадке ничего не нашлось. Это «не нашли», а не «нет».')
+    : 'Каналы не спрошены.')
+  +(stored?' Показано прочитанное раньше — оно лежит на сервере и общее для всех.':'')
+  +'</div>'
+  +'<button type="button" class="pdfbtn" id="krtPressAgain">'
+  +(stored?'Перечитать публикации':'Прочитать заново')+'</button></div>';
+ const again=document.getElementById('krtPressAgain');
+ if(again)again.onclick=()=>loadKrtPress(x,true);
 }
 // Торги по КРТ. Лоты берутся те, что уже собраны на вкладке «Торги», а
 // совпадение считает сервер: правило одно на весь модуль, и вторая его
@@ -1990,7 +2009,15 @@ function krtIntentBlock(x){
  const it=krtIntent(x);
  if(!it)return '<div class="notice">Проект решения ещё не прочитан — чьё это КРТ и есть ли оператор, сказать нечем.</div>';
  const rows=[];
- rows.push(['Вид КРТ', it.kind?esc(it.kind):'<span class="muted">в заголовке решения не назван</span>']);
+ // Вид КРТ — термин ГОРОДА и про то, что на территории СЕЙЧАС, а не про то,
+ // что построят: КРТ нежилой застройки сплошь и рядом строит жильё по
+ // программе реновации («почему нежилой застройки в виде КРТ это жилое»,
+ // владелец 02.09.2026). Чьё это слово и о чём оно — часть самого слова.
+ rows.push(['Вид КРТ по решению города', it.kind
+   ?esc(it.kind)+'<div class="source">Слово города: вид КРТ определяется тем, что на '
+     +'территории сейчас, а не тем, что на ней построят. В КРТ нежилой застройки жильё '
+     +'строят обычно — что именно, сказано строкой ниже и в самом решении.</div>'
+   :'<span class="muted">в заголовке решения не назван</span>']);
  rows.push(['Городские нужды', (it.city_needs||[]).length
    ?esc(it.city_needs[0])
    :(it.decision_read?'<span class="muted">в проекте решения не найдено — это не «нет»</span>'
@@ -2041,11 +2068,39 @@ async function shareKrt(x){
  }
 }
 async function loadKrtMarket(x){const b=$('krtMarket'),out=$('krtMarketResult');b.disabled=true;b.innerHTML='<span class="spinner"></span>Рынок → модель';out.innerHTML='<div class="notice">Определяю продукт и цену, затем запускаю финансовый движок и автоматические очереди…</div>';try{const q=new URLSearchParams();const rr=krtRatios();if(rr)q.set('tep_ratios',rr);const d=await askJson('/auctions/krt/'+encodeURIComponent(x.slug)+'/market'+(q.toString()?'?'+q:''),{cache:'no-store'}).catch(needLogin);if(d.model_screening?.available){state.krtModels[x.slug]=d.model_screening;renderKrt()}renderKrtRatios(x);delete state.krtReports[x.slug];loadKrtRanking();renderKrtMarket(d,out)}catch(e){out.innerHTML=`<div class="notice warn">${esc(e.message||e)}</div>`}finally{b.disabled=false;b.textContent='Обновить маркетинг и модель'}}
+// Что дал город и во что это разложено. Три слагаемых карточки — жилое,
+// нежилое и общественно-деловое — это его данные; наше здесь только правило
+// раскладки, и оно названо у каждой строки. Своей арифметики блок не ведёт:
+// числа посчитаны сервером, второй счёт разошёлся бы с первым молча.
+function renderKrtProgramme(p){
+ if(!p)return '';
+ const c=p.city||{},bal=p.balance||{};
+ const why={decision:'по решению города',norm:'по нормативу',norm_after_named:'по нормативу — объект в решении назван, мощность нет'};
+ const social=(p.social||[]).filter(r=>Number(r.places)>0).map(r=>
+  `<div class="item"><b>${esc(r.label)} · ${fmtArea(r.gba_sqm)}</b>${new Intl.NumberFormat('ru-RU').format(Math.round(r.places))} ${r.kind==='clinic'?'пос./смену':'мест'} · ${esc(why[r.source]||r.source)}${(r.quotes||[]).length?`<div class="source">${esc(r.quotes[0])}</div>`:''}</div>`).join('');
+ const balance=!bal.total_published
+  ? '<div class="notice warn">Общий объём застройки город не опубликовал — сходимость слагаемых проверить не на чем.</div>'
+  : (bal.matches
+     ? `<div class="source">Слагаемые карточки сходятся с её общим объёмом ${fmtArea(c.total_gfa_sqm)}.</div>`
+     : `<div class="notice warn">Слагаемые дают ${fmtArea(bal.declared_sum_sqm)} при общем объёме ${fmtArea(c.total_gfa_sqm)} — разница ${fmtArea(bal.difference_sqm)}. В модель взяты слагаемые.</div>`);
+ return `<div class="section"><h3>Что дал город и во что это разложено</h3><div class="kv">`
+  +`<div>Территория</div><div>${c.area_ha?new Intl.NumberFormat('ru-RU',{maximumFractionDigits:2}).format(c.area_ha)+' га':'не опубликована'}</div>`
+  +`<div>Жилое назначение</div><div>${fmtArea(c.housing_gfa_sqm)}</div>`
+  +`<div>Нежилое назначение</div><div>${fmtArea(c.nonresidential_gfa_sqm)}</div>`
+  +`<div>Общественно-деловое</div><div>${fmtArea(c.business_gfa_sqm)}</div>`
+  +`<div>Население по 33 м² квартир</div><div>${new Intl.NumberFormat('ru-RU').format(p.population||0)} чел.${c.zone_two?' · вторая зона нормирования':''}</div>`
+  +`</div>${balance}`
+  +(social?`<div class="items">${social}</div>`:'<div class="source">Соцобъекты по нормативу не потребовались.</div>')
+  +(p.commercial_negative
+    ? `<div class="notice warn">Соцобъекты ${fmtArea(p.social_gba_sqm)} больше всего нежилого объёма города — остатка на ОСЗ и ТЦ нет. Обнулять его молча нельзя: либо город учёл соцобъекты вне нежилого назначения, либо норматив к площадке применяется не целиком.</div>`
+    : `<div class="source">Остаток нежилого за вычетом соцобъектов — ${fmtArea(p.commercial_gba_sqm)} ГНС на ОСЗ и ТЦ; общественно-деловое ${fmtArea(p.offices_gba_sqm)} принято офисами.</div>`)
+  +`</div>`;
+}
 function renderKrtModel(m){
  if(!m?.available)return `<div class="section"><h3>Предварительный прогон модели</h3><div class="notice warn">${esc(m?.reason||'Модель не рассчитана')}</div></div>`;
  const t=m.traffic_light||{},market=m.market||{},ph=m.phasing||{},abs=m.absorption||{},k=m.metrics||{},cap=m.entry_capacity,phases=ph.phases||[];
  const pace=abs.available?`${new Intl.NumberFormat('ru-RU',{maximumFractionDigits:1}).format(abs.market_units_per_month)} ДДУ/мес. · ${esc(abs.sellout_months_per_phase)} мес. на очередь`:'не определён';
- return `<div class="section"><h3>Предварительный прогон модели</h3><div class="notice"><div class="fit ${esc(t.tone||'warn')}"><span class="light"></span>${esc(m.headline||t.label||'Рассчитано')}</div><div style="margin-top:6px">${esc(m.text||'')}</div><div class="source" style="margin-top:7px">${esc(m.criterion||'')}</div></div><div class="kv"><div>Класс из маркетинга</div><div>${esc(market.recommended_segment||'—')}</div><div>Стартовая цена</div><div class="money">${market.start_price_rub_sqm?new Intl.NumberFormat('ru-RU').format(market.start_price_rub_sqm)+' ₽/м²':'—'}</div><div>Темп / реализация</div><div>${pace}</div><div>Очереди</div><div>${esc(ph.count||1)} · автоматически, цель ${fmtArea(ph.target_saleable_sqm)}</div><div>Продаваемая площадь</div><div>${fmtArea(ph.saleable_sqm)}</div><div>LLCR проекта</div><div>${Number.isFinite(Number(k.project_llcr_x))?Number(k.project_llcr_x).toFixed(2)+'x':'—'}</div><div>LLCR слабейшей очереди</div><div>${Number.isFinite(Number(k.weakest_phase_llcr_x))?Number(k.weakest_phase_llcr_x).toFixed(2)+'x':'—'}</div><div>Маржа до неизвестных обязательств</div><div>${Number.isFinite(Number(k.margin_pct))?Number(k.margin_pct).toFixed(1)+'%':'—'}</div><div>Чистая прибыль до цены входа</div><div>${fmtMln(k.net_profit_mln)}</div><div>Резерв при LLCR 1,20x</div><div>${cap?.available?fmtMln(cap.amount_mln):'—'}</div></div>${cap?.available?`<div class="notice warn">${esc(cap.meaning)}</div>`:''}${phases.length>1?`<div class="items">${phases.map(p=>`<div class="item"><b>${esc(p.name)} · LLCR ${Number(p.llcr_x||0).toFixed(2)}x</b>${fmtArea(p.saleable_sqm)} продаваемых · маржа ${Number(p.margin_pct||0).toFixed(1)}%</div>`).join('')}</div>`:''}<details class="fold"><summary>Что поставлено в модель — ${(m.assumptions||[]).length} допущени(й)</summary><div class="foldbody"><div class="items">${(m.assumptions||[]).map(x=>`<div class="item">${esc(x)}</div>`).join('')}</div></div></details><details class="fold"><summary>Что пока не учтено — ${(m.exclusions||[]).length} пункт(ов)</summary><div class="foldbody"><div class="items">${(m.exclusions||[]).map(x=>`<div class="item"><b>Нужно добавить</b>${esc(x)}</div>`).join('')}</div></div></details></div>`
+ return `<div class="section"><h3>Предварительный прогон модели</h3><div class="notice"><div class="fit ${esc(t.tone||'warn')}"><span class="light"></span>${esc(m.headline||t.label||'Рассчитано')}</div><div style="margin-top:6px">${esc(m.text||'')}</div><div class="source" style="margin-top:7px">${esc(m.criterion||'')}</div></div><div class="kv"><div>Класс из маркетинга</div><div>${esc(market.recommended_segment||'—')}</div><div>Стартовая цена</div><div class="money">${market.start_price_rub_sqm?new Intl.NumberFormat('ru-RU').format(market.start_price_rub_sqm)+' ₽/м²':'—'}</div><div>Темп / реализация</div><div>${pace}</div><div>Очереди</div><div>${esc(ph.count||1)} · автоматически, цель ${fmtArea(ph.target_saleable_sqm)}</div><div>Продаваемая площадь</div><div>${fmtArea(ph.saleable_sqm)}</div><div>LLCR проекта</div><div>${Number.isFinite(Number(k.project_llcr_x))?Number(k.project_llcr_x).toFixed(2)+'x':'—'}</div><div>LLCR слабейшей очереди</div><div>${Number.isFinite(Number(k.weakest_phase_llcr_x))?Number(k.weakest_phase_llcr_x).toFixed(2)+'x':'—'}</div><div>Маржа до неизвестных обязательств</div><div>${Number.isFinite(Number(k.margin_pct))?Number(k.margin_pct).toFixed(1)+'%':'—'}</div><div>Чистая прибыль до цены входа</div><div>${fmtMln(k.net_profit_mln)}</div><div>Резерв при LLCR 1,20x</div><div>${cap?.available?fmtMln(cap.amount_mln):'—'}</div></div>${renderKrtProgramme(m.programme)}${cap?.available?`<div class="notice warn">${esc(cap.meaning)}</div>`:''}${phases.length>1?`<div class="items">${phases.map(p=>`<div class="item"><b>${esc(p.name)} · LLCR ${Number(p.llcr_x||0).toFixed(2)}x</b>${fmtArea(p.saleable_sqm)} продаваемых · маржа ${Number(p.margin_pct||0).toFixed(1)}%</div>`).join('')}</div>`:''}<details class="fold"><summary>Что поставлено в модель — ${(m.assumptions||[]).length} допущени(й)</summary><div class="foldbody"><div class="items">${(m.assumptions||[]).map(x=>`<div class="item">${esc(x)}</div>`).join('')}</div></div></details><details class="fold"><summary>Что пока не учтено — ${(m.exclusions||[]).length} пункт(ов)</summary><div class="foldbody"><div class="items">${(m.exclusions||[]).map(x=>`<div class="item"><b>Нужно добавить</b>${esc(x)}</div>`).join('')}</div></div></details></div>`
 }
 function renderKrtMarket(d,out){
  const peers=d.peers||[],hint=d.price_hint||{},c=d.comparison||{},analysis=d.analysis||{},verdict=analysis.site||analysis.overall||{};
