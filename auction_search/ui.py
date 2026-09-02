@@ -707,10 +707,42 @@ function krtFit(x){
 // балл за хорошую модель нельзя: она посчитана на предпосылках, а не на сметах,
 // и «прибавка за уверенность» была бы прибавкой за нашу же догадку.
 const KRT_PENALTIES=[
- {key:'llcr', max:35, from:1.20, to:0.90, label:'LLCR проекта'},
- {key:'margin', max:25, from:15, to:0, label:'маржинальность'},
- {key:'weakest', max:10, from:1.00, to:0.80, label:'слабейшая очередь'},
+ {key:'llcr', field:'project_llcr_x', max:35, from:1.20, to:0.90, label:'LLCR проекта'},
+ {key:'margin', field:'margin_pct', max:25, from:15, to:0, label:'маржинальность'},
+ {key:'weakest', field:'weakest_phase_llcr_x', max:10, from:1.00, to:0.80,
+  label:'слабейшая очередь'},
 ];
+// Снижение за экономику меряется по САМОМУ каталогу, а не по абсолютным
+// порогам. Скрининг считает при нулевой цене входа и на общих предпосылках, и
+// на них почти у каждой площадки LLCR ниже 1,20x, а маржа ниже 15%: это
+// свойство наших предпосылок, а не признак площадки. Пока порог абсолютный,
+// весь список читается «Низкое», и сравнивать нечем (владелец, 02.09.2026:
+// «фильтры ни к черту»). Правило то же, что уже применено к шкале объёма:
+// якоря — десятый и девяностый процентили посчитанных строк.
+const KRT_SCALE_MIN_ROWS=8;
+function krtCountedValues(field){
+ const out=[];
+ Object.keys(state.krtRank||{}).forEach(slug=>{
+  const rank=state.krtRank[slug]||{}, model=(state.krtModels||{})[slug]||{};
+  const v=(model.metrics||{})[field]??rank[field];
+  if(v!==null&&v!==undefined&&Number.isFinite(Number(v)))out.push(Number(v));
+ });
+ return out.sort((a,b)=>a-b);
+}
+function krtQuantile(sorted,q){
+ if(!sorted.length)return null;
+ const at=(sorted.length-1)*q, low=Math.floor(at), high=Math.ceil(at);
+ return low===high?sorted[low]:sorted[low]+(sorted[high]-sorted[low])*(at-low);
+}
+// Меньше восьми посчитанных строк — распределения нет, и процентиль по трём
+// числам был бы выдумкой: остаются абсолютные пороги, и это сказано в подписи.
+function krtModelScale(rule){
+ const values=krtCountedValues(rule.field);
+ if(values.length<KRT_SCALE_MIN_ROWS)return null;
+ const to=krtQuantile(values,0.10), from=krtQuantile(values,0.90);
+ if(to===null||from===null||!(from>to))return null;
+ return {from:from,to:to};
+}
 // Чьё это КРТ и не занято ли оно. Читается из проекта решения и карточки —
 // разбор на сервере, здесь только показ. Признак приходит вместе с цитатой:
 // список слов это поиск, а не утверждение, и «не найдено» это не «нет».
@@ -882,12 +914,12 @@ function krtIntent(x){
  merged.probed=true;
  return merged;
 }
-function krtPenalty(value,rule){
+function krtPenalty(value,rule,scale){
  if(value===null||value===undefined||!Number.isFinite(Number(value)))return 0;
- const v=Number(value);
- if(v>=rule.from)return 0;
- if(v<=rule.to)return rule.max;
- return Math.round(rule.max*(rule.from-v)/(rule.from-rule.to));
+ const v=Number(value), from=scale?scale.from:rule.from, to=scale?scale.to:rule.to;
+ if(v>=from)return 0;
+ if(v<=to)return rule.max;
+ return Math.round(rule.max*(from-v)/(from-to));
 }
 function krtScore(x){
  const fit=krtFit(x), model=state.krtModels[x.slug], rank=state.krtRank[x.slug]||{};
@@ -923,8 +955,19 @@ function krtScore(x){
   cuts.push({label:'в документе сказано о городских нуждах',points:25});
  if(counted){
   [[llcr,KRT_PENALTIES[0]],[margin,KRT_PENALTIES[1]],[weakest,KRT_PENALTIES[2]]].forEach(([v,rule])=>{
-   const p=krtPenalty(v,rule);
-   if(p>0)cuts.push({label:rule.label,points:p});
+   const scale=krtModelScale(rule);
+   let points=krtPenalty(v,rule,scale);
+   let label=rule.label+(scale?' — ниже каталога':'');
+   // Пол остаётся абсолютным и назван своим именем: относительная шкала
+   // сравнивает площадки между собой и молчит о том, что плохи все разом.
+   // Пол абсолютный и называется ВСЕГДА, а не только когда он выше
+   // относительного: относительная шкала сравнивает площадки между собой и о
+   // том, что плохи все разом, молчит.
+   if(rule.key==='llcr'&&Number.isFinite(Number(v))&&Number(v)<1){
+    points=Math.max(points,20);
+    label='LLCR ниже 1,00x — долг не обслуживается даже при нулевой цене входа';
+   }
+   if(points>0)cuts.push({label:label,points:points});
   });
   const ceilingKnown=rank.entry_capacity_rub_per_sqm!==null&&rank.entry_capacity_rub_per_sqm!==undefined;
   if(!ceilingKnown)cuts.push({label:'потолок входа не подобран',points:10});
@@ -1700,7 +1743,16 @@ function showKrtPress(x,d,stored){
    +'из общих слов, и привязать к ней находку по нему нельзя: под такой якорь подходит '
    +'любая статья о городе. Спрашивали по району; прочитанное ниже, но признаков по нему '
    +'не ставим — иначе чужой текст стал бы фактом об этой площадке.</div>':'';
- box.innerHTML='<div class="section"><h3>Что пишут об этой площадке</h3>'+anchorless
+ // Улица общая с соседней площадкой каталога: под её якорь подходит проза о
+ // соседях, и с неё в карточку приезжали чужие реновация и застройщик
+ // (владелец, 02.09.2026). Тогда засчитывается только упоминание с нашим
+ // номером владения или именем проекта — и это сказано, иначе пустой блок
+ // читается как «в источниках ничего нет».
+ const strict=d.strict_house?'<div class="notice">На этой улице стоит ещё одна площадка '
+   +'каталога, поэтому одного названия улицы мало: засчитаны только упоминания '
+   +'с номером владения ('+esc((d.house_numbers||[]).join(', '))+') или с именем проекта. '
+   +'Прочитанное ниже — целиком.</div>':'';
+ box.innerHTML='<div class="section"><h3>Что пишут об этой площадке</h3>'+anchorless+strict
   +(items||(d.anchorless?'':'<div class="notice">В прочитанных публикациях об операторе и городских нуждах '
     +'не сказано. Это «не нашли», а не «нет»: искали по '+(d.checked||0)+' документам.</div>'))
   +krtPressDocs(d)

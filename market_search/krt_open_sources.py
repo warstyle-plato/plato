@@ -541,18 +541,49 @@ def _found(sentence: str, doc: Any) -> dict[str, Any]:
     }
 
 
-def read_findings(docs: Iterable[Any], name: str) -> dict[str, Any]:
-    """Разобрать выдачу по одной площадке. Без цитаты признак не ставится."""
+def read_findings(
+    docs: Iterable[Any], name: str, siblings: Iterable[str] = ()
+) -> dict[str, Any]:
+    """Разобрать выдачу по одной площадке. Без цитаты признак не ставится.
+
+    `siblings` — имена остальных площадок каталога. По ним видно, опознаёт ли
+    улица площадку вообще. «Варшавское шоссе, вл. 37, Нагатинская ул., влд.
+    3А/6» давало якоря «варша» и «нагат»: под них подходит любая статья про
+    Нагатино и про пятнадцать километров Варшавки, и в карточку приехали чужая
+    реновация и чужой застройщик (владелец, 02.09.2026: «мы анализировали
+    Нагатинскую, там нет ни реновации, ни ФСК»).
+
+    Правило то же, что у геокодера: якорь обязан быть не менее точным, чем то,
+    что он опознаёт. Улица, на которой стоит ещё одна площадка каталога,
+    площадку не опознаёт — засчитывается только упоминание с НАШИМ номером
+    владения либо с доказанным именем проекта. Улица, где площадка одна,
+    работает как прежде: требовать номер там значило бы терять настоящие
+    находки — «на Фестивальной» пишут и без номера.
+    """
     anchors, phrase = _site_anchor(name)
     anchors = set(anchors)
     houses = _house_numbers(name)
+    neighbours: set[str] = set()
+    for other in siblings or ():
+        if str(other or "").strip() and str(other) != str(name):
+            neighbours |= _anchor_words(other)
+    shared = anchors & neighbours
+    strict = bool(houses) and bool(shared)
     # Бренд площадки, если он доказан соседством с адресом, работает якорем
     # наравне с адресом: статья, где сказано только «Строгино 360», иначе
     # проходит мимо.
     docs = list(docs or [])
     brands = brand_names(docs, name)
+    brand_anchors: set[str] = set()
     for brand in brands:
-        anchors |= _anchor_words(brand)
+        brand_anchors |= _anchor_words(brand)
+    anchors |= brand_anchors
+
+    def named_ours(sentence: str) -> bool:
+        """Назван ли в предложении наш номер владения либо имя проекта."""
+        if _house_numbers(sentence) & houses:
+            return True
+        return bool(brand_anchors) and _mentions(sentence, brand_anchors)
     operator_named: list[dict[str, Any]] = []
     operator_appointed: list[dict[str, Any]] = []
     operator_pending: list[dict[str, Any]] = []
@@ -573,6 +604,10 @@ def read_findings(docs: Iterable[Any], name: str) -> dict[str, Any]:
                 continue
             # Улица совпала, а номер владения — чужой: это соседняя площадка.
             if _house_conflict(sentence, houses):
+                continue
+            # Улица общая с соседней площадкой каталога: без нашего номера или
+            # имени проекта предложение — о соседях, а не о нас.
+            if strict and not named_ours(sentence):
                 continue
             key = low[:120]
             if key in seen:
@@ -607,11 +642,15 @@ def read_findings(docs: Iterable[Any], name: str) -> dict[str, Any]:
             {"title": str(getattr(doc, "title", "") or "")[:200],
              "url": str(getattr(doc, "url", "") or ""),
              "domain": str(getattr(doc, "domain", "") or ""),
+             # Конфликт номеров считается по документу целиком: заголовок
+             # «КРТ на Фестивальной» номера не называет, а сниппет называет
+             # чужой — это статья о соседе, и привязанной она быть не может.
              "anchored": (not _house_conflict(
                  f"{getattr(doc, 'title', '')}. {getattr(doc, 'snippet', '')}", houses)
                  and any((_mentions(one, anchors) or _mentions_phrase(one, phrase))
-                             for one in _sentences(
-                 f"{getattr(doc, 'title', '')}. {getattr(doc, 'snippet', '')}")))}
+                         and (not strict or named_ours(one))
+                         for one in _sentences(
+                             f"{getattr(doc, 'title', '')}. {getattr(doc, 'snippet', '')}")))}
             for doc in docs[:20]
         ],
         # Чем опознавалась площадка. Пусто — значит имя каталога состоит из
@@ -620,6 +659,12 @@ def read_findings(docs: Iterable[Any], name: str) -> dict[str, Any]:
         # Молча пустой блок читался бы как «в источниках ничего нет».
         "anchors": sorted(anchors) or [" ".join(phrase)] if (anchors or phrase) else [],
         "anchorless": not anchors and not phrase,
+        # Улица общая с соседней площадкой каталога — засчитываем только
+        # упоминания с номером владения или именем проекта. Молчание такого
+        # разбора иначе читалось бы как «в источниках ничего нет».
+        "strict_house": strict,
+        "shared_anchors": sorted(shared),
+        "house_numbers": sorted(houses),
         "operator_named": operator_named[:3],
         "operator_appointed": operator_appointed[:3],
         "operator_pending": operator_pending[:3],

@@ -851,7 +851,13 @@ def install(app: FastAPI) -> None:
         if not docs and errors:
             # Поиск не ответил — это ответ, а не «в источниках ничего нет».
             return {"available": False, "reason": "; ".join(errors[:2]), "queries": asked}
-        found = krt_open_sources.read_findings(docs, name)
+        # Соседи по каталогу решают, опознаёт ли улица площадку вообще: там,
+        # где на той же улице стоит ещё одна площадка, засчитываются только
+        # упоминания с номером владения или именем проекта.
+        mine = str((project or {}).get("slug") or "")
+        siblings = [str(item.get("name") or "") for item in krt_registry.catalogue()
+                    if str(item.get("slug") or "") != mine]
+        found = krt_open_sources.read_findings(docs, name, siblings)
         # Рынок знает площадку по имени проекта, а не по адресу: «Строгино 360»
         # знают все, «Маршала Прошлякова ул., вл. 9» — никто. Имя берётся из
         # публикации, где оно стоит рядом с адресом, и вторым кругом ищется уже
@@ -864,7 +870,7 @@ def install(app: FastAPI) -> None:
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"{type(exc).__name__}: {exc}")
             else:
-                found = krt_open_sources.read_findings(docs, name)
+                found = krt_open_sources.read_findings(docs, name, siblings)
         # Телеграм-каналы говорят о площадке раньше прессы (владелец,
         # 01.09.2026: «а поиск информации можно через телеграм-каналы ещё
         # вести?»). Спрашиваются тем же платным индексом с ограничением по
@@ -879,7 +885,7 @@ def install(app: FastAPI) -> None:
                 errors.append(f"{type(exc).__name__}: {exc}")
             else:
                 tg_ok = True
-                found = krt_open_sources.read_findings(docs, name)
+                found = krt_open_sources.read_findings(docs, name, siblings)
         found.update({"available": True, "queries": asked, "errors": errors[:2],
                       "checked_at": int(time.time()),
                       # Спросили каналы и там пусто — не то же, что не спросили.
