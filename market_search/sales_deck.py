@@ -601,8 +601,11 @@ _SEC_CAT_AX, _SEC_VAL_AX = 771001, 771002
 # Цвета рядов. Столбики — фирменный синий; линии первой шкалы и линии второй
 # берут свои ряды из палитры листа: два ряда одного цвета неразличимы, а
 # радуга читается как разные величины. Порядок повторяет порядок листа.
-_PRIMARY_LINES = ("C4581B", "7C6BB5", "8A9BA8")
-_SECOND_LINES = ("1F5C87", "D9A441", "4FA07A", "9A6BB5")
+# Линии планов на слайде «факт против планов»: красная и серая — как их
+# поставила надстройка в присланном файле. Столбик факта носит фирменный синий,
+# и смотрят на него; планы рядом не должны спорить с ним за внимание.
+_PRIMARY_LINES = ("B3261E", "6B7280", "A9631A")
+_SECOND_LINES = ("15803D", "A9631A", "6B7280", "B3261E")
 
 
 def _combo(chart: Any, *, primary: int, secondary: int) -> None:
@@ -739,6 +742,11 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
     deck.slide_width = Inches(SLIDE_W_IN)
     deck.slide_height = Inches(SLIDE_H_IN)
     blank = deck.slide_layouts[6]
+    # Палитра колоды своя — чёрно-серая с зелёным акцентом (решение владельца,
+    # 01.09.2026). Экран кабинета и PDF остаются синими: колоду носят на
+    # встречу отдельным файлом, и там она живёт сама по себе, а лист отчёта
+    # читают рядом с экраном. Смысл цвета при этом один и тот же: чёрный —
+    # заголовок, серый — подпись, зелёный — вывод, синий — столбик факта.
     # Цвета продукта, а не офисные: тот же синий, что в кабинете и на странице.
     # Ряд один, поэтому категориальная палитра здесь не нужна — нужен один
     # фирменный цвет и текстовые токены под подписи.
@@ -746,13 +754,14 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
     # не подобраны на глаз: у колоды была своя палитра — темнее и глуше, — и
     # рядом с листом она читалась как другой документ. Заголовок раздела в
     # отчёте не чёрный, а приглушённый; столбик светлее фирменного синего.
-    ink = RGBColor(0x16, 0x20, 0x2B)      # --ink
-    dim = RGBColor(0x5B, 0x6B, 0x7D)      # --dim, он же цвет заголовков разделов
-    brand = RGBColor(0x4E, 0x9B, 0xDE)    # столбик графика на листе
-    deep = RGBColor(0x13, 0x67, 0xAE)     # --blue
-    body = RGBColor(0x33, 0x42, 0x4F)     # текст вывода в плашке
-    tile_fill = RGBColor(0xF8, 0xFA, 0xFC)
-    note_fill = RGBColor(0xF6, 0xF9, 0xFC)
+    ink = RGBColor(0x00, 0x00, 0x00)      # заголовки — чистый чёрный
+    dim = RGBColor(0x6B, 0x72, 0x80)      # глазок раздела, подвал, подписи
+    brand = RGBColor(0x1F, 0x6F, 0xB2)    # столбик графика
+    deep = RGBColor(0x15, 0x80, 0x3D)     # акцентная полоса у вывода
+    body = RGBColor(0x1A, 0x1A, 0x1A)     # текст вывода в плашке
+    tile_fill = RGBColor(0xF5, 0xF5, 0xF5)
+    note_fill = RGBColor(0xF5, 0xF5, 0xF5)
+    hair = RGBColor(0xE5, 0xE5, 0xE5)     # линейки и разделители плиток
     paper = RGBColor(0xFF, 0xFF, 0xFF)
 
     def textbox(slide, text: str, *, top: float, size: int, colour: RGBColor,
@@ -788,7 +797,7 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
     def footer_line(slide, number: int, *, name: bool = True) -> None:
         """Колонтитул: лист, отделившийся от колоды, обязан сам говорить, чей
         он и на какую дату. В PDF он повторяется на каждой странице."""
-        rule(slide, top=SLIDE_H_IN - 0.62, colour=RGBColor(0xDD, 0xE5, 0xED))
+        rule(slide, top=SLIDE_H_IN - 0.62, colour=hair)
         left = slide.shapes.add_textbox(Inches(0.6), Inches(SLIDE_H_IN - 0.55),
                                         Inches(SLIDE_W_IN - 1.8), Inches(0.35))
         run = left.text_frame.paragraphs[0].add_run()
@@ -832,7 +841,10 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         # первом листе — подзаголовок самого свода. Придуманная строка на
         # слайде читается как часть отчёта, которой в отчёте нет.
         top = eyebrow_line(slide, section or subtitle or footer, top=0.42)
-        textbox(slide, heading, top=top, size=26, colour=dim, bold=True, height=0.75)
+        # Заголовок слайда чёрный, а приглушённый — только глазок раздела над
+        # ним. Серый заголовок рядом с серым глазком читался одной строкой в
+        # два этажа, и слайд оставался без явной шапки.
+        textbox(slide, heading, top=top, size=26, colour=ink, bold=True, height=0.75)
         footer_line(slide, len(deck.slides))
         return slide
 
@@ -881,7 +893,7 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
             for run in paragraph.runs or [paragraph.add_run()]:
                 run.font.size = Pt(11)
                 run.font.bold = header
-                run.font.color.rgb = ink if header else RGBColor(0x2A, 0x33, 0x3D)
+                run.font.color.rgb = ink if header else body
 
         offset = 0
         if head:
@@ -915,7 +927,7 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
                                           Inches(width), Inches(1.35))
             card.fill.solid()
             card.fill.fore_color.rgb = tile_fill
-            card.line.color.rgb = RGBColor(0xDD, 0xE5, 0xED)
+            card.line.color.rgb = hair
             card.shadow.inherit = False
             frame = card.text_frame
             frame.word_wrap = True
@@ -957,7 +969,7 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         bar = slide.shapes.add_shape(
             MSO_SHAPE.RECTANGLE, Inches(0.6), Inches(top), Pt(3), Inches(height))
         bar.fill.solid()
-        bar.fill.fore_color.rgb = brand
+        bar.fill.fore_color.rgb = deep
         bar.line.fill.background()
         bar.shadow.inherit = False
         box = slide.shapes.add_textbox(Inches(0.78), Inches(top + 0.06),
@@ -986,7 +998,7 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
                                        Inches(top), Inches(width), Inches(height))
         panel.fill.solid()
         panel.fill.fore_color.rgb = tile_fill
-        panel.line.color.rgb = RGBColor(0xE3, 0xEB, 0xF2)
+        panel.line.color.rgb = hair
         panel.shadow.inherit = False
         panel.adjustments[0] = 0.04
         column = width / len(rows)
@@ -1124,8 +1136,8 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         # Ряды одной меры — оттенками одного цвета, а не радугой: они про одно
         # и то же, и разный цвет читался бы как разные величины. Факт носит
         # фирменный, планы — бледнее: смотрят на факт.
-        tones = (brand, RGBColor(0x7F, 0xB2, 0xE5), RGBColor(0xB9, 0xCF, 0xE4),
-                 RGBColor(0xD7, 0xE4, 0xF0))
+        tones = (brand, RGBColor(0xA9, 0x63, 0x1A), RGBColor(0xB3, 0x26, 0x1E),
+                 RGBColor(0x15, 0x80, 0x3D))
         # Столбики только у первого ряда: остальные уедут линиями. Пять
         # столбиков в категории читаются частоколом, и «факт против плана» в
         # нём не виден — на листе планы идут линиями, и слайд повторяет лист.
@@ -1167,7 +1179,7 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         if value_axis.has_major_gridlines:
             # Имя `line` здесь занято рядом цены — сетка носит своё.
             hairline = value_axis.major_gridlines.format.line
-            hairline.color.rgb = RGBColor(0xE3, 0xEB, 0xF2)
+            hairline.color.rgb = hair
             hairline.width = Pt(0.75)
         value_axis.visible = has_line or not labelled
         value_axis.has_minor_gridlines = False
@@ -1428,7 +1440,7 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
                 put_table(part, joined[0], top=under + 0.1, height=joined[1])
                 under += 0.1 + joined[1]
             if tail:
-                put_note(part, tail, top=under, size=13)
+                put_note(part, tail, top=under, size=15)
                 carry = ""
 
         # Таблицы — целиком и ячейками: их и правят. Длинная продолжается
