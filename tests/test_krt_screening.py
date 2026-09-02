@@ -113,6 +113,11 @@ def test_published_krt_duties_reach_developaid_without_an_invented_cost() -> Non
     assert any("расселение/изъятие" in item for item in result["exclusions"])
 
 
+def _social(programme: dict, kind: str, field: str) -> float:
+    row = next(r for r in programme["social"] if r["kind"] == kind)
+    return float(row[field])
+
+
 def test_the_handoff_carries_this_site_and_not_the_default_one() -> None:
     """«В девелоп он передаёт какой-то другой участок и явно не 14 га»
     (владелец, 02.09.2026): модель собиралась от умолчаний целиком — с офисами
@@ -125,8 +130,34 @@ def test_the_handoff_carries_this_site_and_not_the_default_one() -> None:
     inputs = result["model_inputs"]["inputs"]
     assert inputs["site_area_ha"] == 14.62
     assert inputs["site_density_sqm_per_ha"] == round(443_700 / 14.62, 1)
+    # Поле участка либо обнулено, либо посчитано ПО ЭТОЙ площадке: соцобъекты и
+    # нежилые продукты собираются из объёмов города, и требовать от них нуля
+    # значило бы требовать, чтобы город ничего не дал. Проверяется поэтому не
+    # ноль, а происхождение — число обязано совпасть с разложенной программой.
+    programme = result["programme"]
+    applied, _ = core.tep_ratios_applied("")
+    ratios = {
+        "offices": float(applied["offices"]["saleable_of_gns"]),
+        "retail": float(applied["standalone_retail"]["saleable_of_gns"]),
+    }
+    computed = {
+        "kindergarten_places": _social(programme, "kindergarten", "places"),
+        "school_places": _social(programme, "school", "places"),
+        "clinic_capacity": _social(programme, "clinic", "places"),
+        "social_dou_gba_sqm": _social(programme, "kindergarten", "gba_sqm"),
+        "social_school_gba_sqm": _social(programme, "school", "gba_sqm"),
+        "social_clinic_gba_sqm": _social(programme, "clinic", "gba_sqm"),
+        "offices_gba_sqm": programme["offices_gba_sqm"],
+        "offices_saleable_sqm": programme["offices_gba_sqm"] * ratios["offices"],
+        "retail_gba_sqm": max(0.0, programme["commercial_gba_sqm"]),
+        "retail_saleable_sqm": max(0.0, programme["commercial_gba_sqm"]) * ratios["retail"],
+    }
     for key in territory_input_keys(core):
         if key in ("site_area_ha", "site_density_sqm_per_ha"):
+            continue
+        if key in computed:
+            assert round(float(inputs.get(key) or 0.0), 1) == round(computed[key], 1), (
+                f"поле участка {key} не совпало с разложенной программой города")
             continue
         assert not inputs.get(key), f"поле участка {key} приехало от умолчаний: {inputs.get(key)!r}"
     # Умолчания движка при этом несут чужой участок — иначе проверять было бы нечего.
