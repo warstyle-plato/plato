@@ -289,7 +289,9 @@ def unspent(estimate: dict[str, Any], *,
             "code": str(row.get("code") or ""),
             "name": str(row.get("name") or ""),
             "need": float(row.get("need_total") or 0.0),
-            "own_limit": float(row.get("opening_limit") or 0.0),
+            # Из своего лимита взято ровно столько, сколько его было или
+            # сколько понадобилось: колонка складывается с соседними.
+            "own_limit": float(row.get("own_take", row.get("opening_limit")) or 0.0),
             "from_reserve": float(row.get("reserve_take") or 0.0),
             "shortage": float(row.get("unfunded_take") or 0.0),
             "from": row.get("first_reserve_month"),

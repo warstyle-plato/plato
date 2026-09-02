@@ -215,9 +215,11 @@ def test_the_shortage_side_repeats_the_waterfall_and_sums_to_the_structural_defi
     (владелец, 01.09.2026) — это те же строки водопада, и итог тот же."""
     needy = [
         {"code": "2.4", "name": "Отделка", "need_total": 90.0, "opening_limit": 38.0,
-         "reserve_take": 20.0, "unfunded_take": 32.0, "first_reserve_month": "2026-10-01"},
+         "own_take": 38.0, "reserve_take": 20.0, "unfunded_take": 32.0,
+         "first_reserve_month": "2026-10-01"},
         {"code": "2.5", "name": "Фасады", "need_total": 30.0, "opening_limit": 10.0,
-         "reserve_take": 12.0, "unfunded_take": 8.0, "first_reserve_month": "2026-11-01"},
+         "own_take": 10.0, "reserve_take": 12.0, "unfunded_take": 8.0,
+         "first_reserve_month": "2026-11-01"},
     ]
     got = unspent_mod.unspent(ESTIMATE, horizon="2027-06-30", needy=needy)
     assert [row["code"] for row in got["needy"]] == ["2.4", "2.5"]

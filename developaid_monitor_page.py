@@ -153,8 +153,8 @@ function unspentTable(u,structural){
  // где новых трат не будет.
  if(needy.length){
   html+='<div class="fundhead">Кому не хватает своего лимита</div>'
-   +'<div class="muted" style="margin:2px 0 6px">Потребность — по программе РСС после среза; нехватку сначала гасит резерв 2.8/2.9, что осталось — не покрыто. Итог колонки «Не покрыто» и есть структурный дефицит.</div>'
-   +'<div style="overflow-x:auto"><table class="unspent"><thead><tr><th>Код</th><th>Статья</th><th>Потребность</th><th>Свой остаток лимита</th><th>Из резерва</th><th>Не покрыто</th><th>С какого месяца</th></tr></thead><tbody>'
+   +'<div class="muted" style="margin:2px 0 6px">Потребность — по программе РСС с месяца среза, прошедшие месяцы не входят; каждая строка складывается: своё + резерв + не покрыто = потребность. Нехватку сначала гасит резерв 2.8/2.9, что осталось — не покрыто. Итог колонки «Не покрыто» и есть структурный дефицит.</div>'
+   +'<div style="overflow-x:auto"><table class="unspent"><thead><tr><th>Код</th><th>Статья</th><th>Потребность после среза</th><th>Из своего лимита</th><th>Из резерва</th><th>Не покрыто</th><th>С какого месяца</th></tr></thead><tbody>'
    +needy.map(n=>`<tr><td>${esc(n.code)}</td><td>${esc(n.name)}</td>`+num(n.need)+num(n.own_limit)+num(n.from_reserve)
      +`<td style="text-align:right"><b>${money(n.shortage)}</b></td><td>${n.from?dt(n.from):'—'}</td></tr>`).join('')
    +`</tbody><tfoot><tr><td colspan="5">Итого не покрыто</td><td style="text-align:right"><b>${money(u.shortage_total)}</b></td><td></td></tr></tfoot></table></div>`;
