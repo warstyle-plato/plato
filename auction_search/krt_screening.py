@@ -341,16 +341,25 @@ def _programme(
             area = demanded["area_sqm"]
             if places <= 0 and area > 0 and norm_sqm > 0:
                 places = area / norm_sqm
-            if area <= 0:
-                area = places * norm_sqm
             source = "decision"
         else:
             places = float(by_norm)
-            area = places * norm_sqm
+            area = 0.0
             # Объект город назвал, а мощность его — нет. Отказаться считать
             # значит потерять обязательство целиком; поэтому считаем нормативом
             # и говорим, что число наше, а не города.
             source = "norm_after_named" if demanded else "norm"
+        # Площадь на место — ступень по ёмкости здания (РНГП, редакция
+        # 2579-ПП): маленький садик стоит 27 м² на место, крупный 16. Поле
+        # вводных несёт одно число на любую ёмкость, поэтому норматив города
+        # сильнее — и записывается в то же поле, чтобы страница показывала
+        # именно то, чем посчитано.
+        city_norm = core.moscow_social_area_per_place(kind, places)
+        if city_norm:
+            norm_sqm = city_norm
+            inputs[norm_key] = city_norm
+        if area <= 0:
+            area = places * norm_sqm
         inputs[places_key] = places
         inputs[area_key] = area
         tep[tep_key].update({"total_area": area, "transfer": area, "units": places})
@@ -361,6 +370,7 @@ def _programme(
             "places": round(places, 1),
             "gba_sqm": round(area, 1),
             "norm_sqm_per_place": norm_sqm,
+            "norm_is_the_citys": bool(city_norm),
             "by_norm_places": by_norm,
             "source": source,
             "quotes": (demanded or {}).get("quotes", [])[:3],
@@ -637,11 +647,14 @@ def build_krt_model_screening(
     social_text = "; ".join(
         f"{row['label']} — {_ru_number(row['places'])} "
         + ("пос./смену" if row["kind"] == "clinic" else "мест")
-        + f", {_ru_number(row['gba_sqm'])} м² "
+        + f", {_ru_number(row['gba_sqm'])} м² по "
+        + (f"{_ru_number(row['norm_sqm_per_place'], 0)} м²/место"
+           + (" норматива города для этой ёмкости" if row["norm_is_the_citys"] else " вводных модели")
+           + ", ")
         + {
-            "decision": "по решению города",
-            "norm_after_named": "по нормативу: объект в решении назван, мощность — нет",
-            "norm": "по нормативу",
+            "decision": "мощность по решению города",
+            "norm_after_named": "мощность по нормативу: объект в решении назван, число мест нет",
+            "norm": "мощность по нормативу",
         }[row["source"]]
         for row in programme["social"] if row["places"] > 0
     )
