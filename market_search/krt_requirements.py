@@ -473,6 +473,84 @@ def _object_label(item: dict[str, Any]) -> str:
     return f"КН {item['cadastral_number']}{area_text} · {item['action']}"
 
 
+# --- Что город назвал объектом сам -------------------------------------------
+#
+# Иногда решение о КРТ прямо требует конкретные ДОО и СОШ: «дошкольная
+# образовательная организация на 250 мест» (владелец, 02.09.2026). Норматив
+# тогда не спрашивают — требование документа сильнее нашей формулы, и подменять
+# его расчётом значит показать своё число под именем города.
+#
+# Число берётся только из ТОГО ЖЕ предложения, где назван объект: «на 250 мест»
+# строкой ниже — это машино-места, и приписанные садику они завысили бы его
+# впятеро. Машино-места поэтому вырезаются до поиска, а не отсеиваются после.
+_SOCIAL_KINDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    # Порядок значим: «дошкольн» содержит «школ» подстрокой — ровно тот случай,
+    # что уже ловился у «нежилой застройки» внутри «жилой застройки». Садик
+    # обязан проверяться первым, иначе каждый садик станет школой.
+    # Аббревиатуры проверяются словом целиком: «доо» подстрокой найдётся внутри
+    # соседнего слова и заведёт садик там, где его не называли.
+    ("kindergarten", (r"дошкольн", r"детск\w*\s+сад", r"\bдо[оу]\b")),
+    ("school", (r"общеобразоват", r"школ")),
+    ("clinic", (r"поликлиник",)),
+)
+_SOCIAL_LABELS = {"kindergarten": "ДОО", "school": "СОШ", "clinic": "поликлиника"}
+_MACHINE_PLACES = re.compile(r"(?iu)машино-?\s*мест\w*")
+_PLACES_RE = re.compile(r"(?iu)(?<![\d.,])(\d[\d  ]*)\s*(?:мест|учащ|воспитанник)")
+_VISITS_RE = re.compile(r"(?iu)(?<![\d.,])(\d[\d  ]*)\s*посещени")
+_SOCIAL_AREA_RE = re.compile(
+    r"(?iu)(?<![\d.,])(\d[\d  ]*(?:[.,]\d+)?)\s*(?:кв\.?\s*м|м2|м²)")
+
+
+def _social_number(raw: str | None) -> float | None:
+    if not raw:
+        return None
+    cleaned = raw.replace(" ", "").replace(" ", "").replace(",", ".")
+    try:
+        value = float(cleaned)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def social_objects_from_decision(sentences: Any) -> list[dict[str, Any]]:
+    """Соцобъекты, названные самим решением, с цитатой при каждом.
+
+    Пустой список — это «в прочитанном требования нет», а не «город его не
+    предъявил»: решение могло не читаться вовсе. Отличать одно от другого
+    обязан вызывающий, у него для этого есть `decision_available`.
+    """
+    found: list[dict[str, Any]] = []
+    for raw in list(sentences or [])[:60]:
+        sentence = _SPACE.sub(" ", str(raw or "")).strip()
+        if len(sentence) < 12:
+            continue
+        low = sentence.casefold()
+        kind = next(
+            (name for name, markers in _SOCIAL_KINDS
+             if any(re.search(marker, low) for marker in markers)),
+            None,
+        )
+        if kind is None:
+            continue
+        countable = _MACHINE_PLACES.sub(" ", sentence)
+        places = None
+        if kind == "clinic":
+            visits = _VISITS_RE.search(countable)
+            places = _social_number(visits.group(1)) if visits else None
+        if places is None:
+            match = _PLACES_RE.search(countable)
+            places = _social_number(match.group(1)) if match else None
+        area = _SOCIAL_AREA_RE.search(countable)
+        found.append({
+            "kind": kind,
+            "label": _SOCIAL_LABELS[kind],
+            "places": places,
+            "area_sqm": _social_number(area.group(1)) if area else None,
+            "quote": sentence[:400],
+        })
+    return found
+
+
 def _construction_parameters(text: str) -> list[str]:
     low = text.casefold()
     marker = low.find("предельные параметры разрешенного строительства")

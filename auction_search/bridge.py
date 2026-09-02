@@ -43,7 +43,10 @@ BRIDGE_SCRIPT = r'''
     field.value='';
     if(typeof renderSitePanel==='function')renderSitePanel();
    }
-   if(typeof inputs!=='undefined')inputs._manual_tep_import={project_name:String(pending.krt_name||'')};
+   if(typeof inputs!=='undefined')inputs._manual_tep_import={
+    project_name:String(pending.krt_name||''),
+    site_area_ha:Number((model.inputs||{}).site_area_ha||0)
+   };
    if(typeof calculateAndOpen==='function')calculateAndOpen('report');
    return;
   }

@@ -1505,6 +1505,24 @@ def district_zone_two(district: Any) -> bool:
     return str(district or "").strip().lower().replace("ё", "ё") in MOSCOW_ZONE_TWO_DISTRICTS
 
 
+# Нормативы мест на тысячу жителей по зонам нормирования. Литералами они стояли
+# внутри разбора свободного ТЭП; скрининг площадки КРТ считает то же самое, и
+# вторая копия дала бы на один участок два норматива, оба на вид верных.
+MOSCOW_SOCIAL_PLACES_PER_1000: dict[str, tuple[float, float]] = {
+    "kindergarten": (44.0, 63.0),
+    "school": (90.0, 124.0),
+    # Смешанная поликлиника считается своим нормативом, а не суммой взрослой и
+    # детской: на населении 970 город даёт 19 на тысячу при частях 13 и 7.
+    "clinic": (19.0, 19.0),
+}
+
+
+def moscow_social_places(kind: str, population: float, *, zone_two: bool) -> float:
+    """Потребность в местах по зоне нормирования. Без округления — округляет вызывающий."""
+    first, second = MOSCOW_SOCIAL_PLACES_PER_1000[kind]
+    return (second if zone_two else first) * float(population or 0.0) / 1000.0
+
+
 def build_freeform_tep(text: str, raw_values: dict[str, Any] | None = None) -> dict[str, Any]:
     raw = copy.deepcopy(raw_values) if raw_values is not None else _recognize_freeform_tep_text(text)
 
@@ -1606,9 +1624,9 @@ def build_freeform_tep(text: str, raw_values: dict[str, Any] | None = None) -> d
     if district:
         provided.append(f"район — {district}")
     zone_two = district_zone_two(district)
-    doo_norm = (63 if zone_two else 44) * population / 1000
-    school_norm = (124 if zone_two else 90) * population / 1000
-    clinic_norm = 19 * population / 1000
+    doo_norm = moscow_social_places("kindergarten", population, zone_two=zone_two)
+    school_norm = moscow_social_places("school", population, zone_two=zone_two)
+    clinic_norm = moscow_social_places("clinic", population, zone_two=zone_two)
     calc_doo = int(math.ceil(doo_norm))
     calc_school = int(math.ceil(school_norm))
     calc_clinic = int(math.ceil(clinic_norm))
@@ -19670,13 +19688,30 @@ def _monthly_irr(cashflows: list[float]) -> float | None:
     if not cashflows or not any(v < 0 for v in cashflows) or not any(v > 0 for v in cashflows):
         return None
 
+    # Знак NPV на ставке, уходящей к −100%, задаёт последний ненулевой поток:
+    # его знаменатель меньше всех остальных, и он перевешивает весь ряд.
+    tail_sign = next((1.0 if cf > 0 else -1.0 for cf in reversed(cashflows) if cf), 0.0)
+
     def npv(rate: float) -> float:
         if rate <= -0.999999:
-            return float("inf")
-        try:
-            return sum(cf / pow(1.0 + rate, i) for i, cf in enumerate(cashflows))
-        except OverflowError:
-            return 0.0
+            return math.inf * tail_sign if tail_sign else 0.0
+        total = 0.0
+        factor = 1.0
+        base = 1.0 + rate
+        for cf in cashflows:
+            # На длинном горизонте знаменатель проваливается в ноль раньше, чем
+            # ряд кончается: 0,05 в 240-й степени — это уже машинный ноль, и
+            # деление на него роняло весь расчёт очередей (площадка КРТ
+            # «Магистральные улицы», 02.09.2026). Ноль в знаменателе — не ошибка
+            # данных, а предел арифметики: дальше ряд считает знак хвоста.
+            if factor == 0.0:
+                return math.inf * tail_sign if tail_sign else total
+            total += cf / factor
+            try:
+                factor *= base
+            except OverflowError:
+                factor = math.inf
+        return total
 
     lo, hi = -0.95, 1.0
     f_lo, f_hi = npv(lo), npv(hi)
