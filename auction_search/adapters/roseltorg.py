@@ -4,7 +4,9 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime
 from html.parser import HTMLParser
-from urllib.parse import urlencode, urljoin, urlparse
+from urllib.parse import (
+    parse_qsl, urlencode, urljoin, urlparse, urlsplit, urlunsplit,
+)
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
@@ -77,6 +79,10 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
     SEARCH_URL = "https://www.roseltorg.ru/procedures/search"
     DISCOVERY_TAGS = ("земельный участок", "комплексное развитие")
     DISCOVERY_MAX_PAGES = 3
+    # У раздела свой обход: на экране владельца в нём 44 процедуры, а страница
+    # отдаёт заметно меньше. Пять страниц с запасом; кончились новые ссылки —
+    # обход прекращается сам, не тратя срок.
+    SECTION_MAX_PAGES = 5
     # Раздел имущества площадки: там город публикует аукционы КРТ. Адрес
     # прислан владельцем (01.09.2026) вместе с живым лотом на экране —
     # аукцион на право заключения договора о КРТ нежилой застройки Москвы,
@@ -111,6 +117,21 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
         if page > 1:
             params.append(("page", str(page)))
         return cls.SEARCH_URL + "?" + urlencode(params)
+
+    @staticmethod
+    def _paged(url: str, page: int) -> str:
+        """Тот же адрес со страницей. Первая — как есть, чужие параметры целы.
+
+        Раздел приходит с фильтрами владельца в строке запроса; собирать адрес
+        заново значило бы потерять их, а вместе с ними и сам раздел.
+        """
+        if page <= 1:
+            return url
+        parts = urlsplit(url)
+        query = [(key, value) for key, value in parse_qsl(parts.query, keep_blank_values=True)
+                 if key != "page"]
+        query.append(("page", str(page)))
+        return urlunsplit(parts._replace(query=urlencode(query)))
 
     @staticmethod
     def _procedure_urls(base_url: str, links: list[tuple[str, str]]) -> list[str]:
@@ -248,32 +269,50 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
         # было бы решением наоборот.
         section_found = 0
         for label, section_url in self.SECTION_URLS:
-            if clock.expired(deadline):
-                self.last_report["reason"] = f"остановлено по времени до раздела «{label}»"
-                break
-            try:
-                req = Request(section_url, headers={"User-Agent": self.USER_AGENT})
-                with urlopen(req, timeout=clock.timeout(deadline, 25)) as response:
-                    html = response.read().decode(
-                        response.headers.get_content_charset() or "utf-8", errors="replace")
-            except Exception as exc:  # noqa: BLE001
-                # Неответ раздела — строка охвата, а не отказ всей разведке:
-                # молчание источника нельзя показывать как отсутствие лотов.
-                self.last_report.setdefault("sections", []).append(
-                    {"name": label, "reason": f"{type(exc).__name__}: {exc}"})
-                continue
-            parser = _RoseltorgHTML()
-            parser.feed(html)
-            found = [url for url in self._procedure_urls(section_url, parser.links)
-                     if url not in seen_urls]
-            self._remember_titles(section_url, parser.links, titles)
-            candidate_urls.extend(found)
-            seen_urls.update(found)
-            section_found += len(found)
-            self.last_report.setdefault("sections", []).append(
-                {"name": label, "procedure_links": len(found),
-                 "krt_titles": sum(1 for url in found
-                                   if self._looks_like_krt(titles.get(url, "")))})
+            # Раздел читается ПОСТРАНИЧНО. Прежде он спрашивался ровно одной
+            # страницей — у тегов обход был, у раздела нет, — и всё, что не
+            # уместилось на первой, до нас не доезжало вовсе. На экране
+            # владельца в этом разделе 44 процедуры (02.09.2026), а мы видели
+            # первую страницу и объясняли недостачу порядком чтения.
+            page_found = 0
+            failed = ""
+            for page in range(1, self.SECTION_MAX_PAGES + 1):
+                if clock.expired(deadline):
+                    self.last_report["reason"] = (
+                        f"остановлено по времени на странице {page} раздела «{label}»")
+                    break
+                page_url = self._paged(section_url, page)
+                try:
+                    req = Request(page_url, headers={"User-Agent": self.USER_AGENT})
+                    with urlopen(req, timeout=clock.timeout(deadline, 25)) as response:
+                        html = response.read().decode(
+                            response.headers.get_content_charset() or "utf-8",
+                            errors="replace")
+                except Exception as exc:  # noqa: BLE001
+                    # Неответ раздела — строка охвата, а не отказ всей разведке:
+                    # молчание источника нельзя показывать как отсутствие лотов.
+                    failed = f"{type(exc).__name__}: {exc}"
+                    break
+                parser = _RoseltorgHTML()
+                parser.feed(html)
+                found = [url for url in self._procedure_urls(page_url, parser.links)
+                         if url not in seen_urls]
+                self._remember_titles(page_url, parser.links, titles)
+                if not found:
+                    # Страница без единой НОВОЙ ссылки — это конец списка либо
+                    # тот же список второй раз: дальше идти незачем.
+                    break
+                candidate_urls.extend(found)
+                seen_urls.update(found)
+                page_found += len(found)
+            section_found += page_found
+            row = {"name": label, "procedure_links": page_found,
+                   "krt_titles": sum(
+                       1 for url in candidate_urls
+                       if self._looks_like_krt(titles.get(url, "")))}
+            if failed:
+                row["reason"] = failed
+            self.last_report.setdefault("sections", []).append(row)
 
         for tag in self.DISCOVERY_TAGS:
             for page in range(1, self.DISCOVERY_MAX_PAGES + 1):
