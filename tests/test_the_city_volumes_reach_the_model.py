@@ -162,3 +162,47 @@ def test_the_norm_is_declared_once(core):
     source = (ROOT / "auction_search" / "krt_screening.py").read_text(encoding="utf-8")
     for number in ("44", "63", "90", "124"):
         assert f"{number} *" not in source
+
+
+def test_the_area_per_place_is_a_step_not_a_number(core):
+    """РНГП: площадь на место — ступень по ёмкости здания (редакция 2579-ПП)."""
+    assert core.moscow_social_area_per_place("kindergarten", 100) == 27.0
+    assert core.moscow_social_area_per_place("kindergarten", 200) == 18.0
+    assert core.moscow_social_area_per_place("kindergarten", 400) == 16.0
+    assert core.moscow_social_area_per_place("school", 300) == 18.0
+    assert core.moscow_social_area_per_place("school", 900) == 15.0
+    assert core.moscow_social_area_per_place("school", 1200) == 13.0
+    # Поликлиники в документе нет: «не знаем» и «нормы не существует» — разные
+    # ответы, и выдавать одно за другое нельзя.
+    assert core.moscow_social_area_per_place("clinic", 300) is None
+
+
+def test_the_city_norm_beats_the_flat_input(core):
+    """Поле вводных несёт одно число на любую ёмкость — норматив города сильнее."""
+    result = build_krt_model_screening(site(), market(), core, requirements={"available": True})
+    rows = {row["kind"]: row for row in result["programme"]["social"]}
+    inputs = result["model_inputs"]["inputs"]
+    school = rows["school"]
+    assert school["norm_is_the_citys"] is True
+    assert school["norm_sqm_per_place"] == core.moscow_social_area_per_place(
+        "school", school["places"])
+    # Норматив записан в то же поле: страница обязана показывать, чем посчитано.
+    assert inputs["social_school_norm_sqm"] == school["norm_sqm_per_place"]
+    assert school["gba_sqm"] == pytest.approx(school["places"] * school["norm_sqm_per_place"], abs=1)
+    # У поликлиники норматива города нет — остаётся вводное поле, и это сказано.
+    assert rows["clinic"]["norm_is_the_citys"] is False
+
+
+def test_a_district_written_without_yo_is_still_zone_two(core):
+    """Город пишет «Бирюлево», список хранился с «ё» — район терял свою зону."""
+    assert core.district_zone_two("Бирюлево Восточное") is True
+    assert core.district_zone_two("Бирюлёво Восточное") is True
+    assert core.district_zone_two("Кунцево") is False
+    dense = build_krt_model_screening(
+        site(district="Бирюлево Восточное"), market(), core, requirements={"available": True})
+    plain = build_krt_model_screening(
+        site(district="Кунцево"), market(), core, requirements={"available": True})
+    assert dense["programme"]["city"]["zone_two"] is True
+    school_two = next(r for r in dense["programme"]["social"] if r["kind"] == "school")
+    school_one = next(r for r in plain["programme"]["social"] if r["kind"] == "school")
+    assert school_two["places"] > school_one["places"]
