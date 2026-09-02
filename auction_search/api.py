@@ -1839,10 +1839,14 @@ def install(app: FastAPI) -> None:
         project_preset = build_project_preset(lot)
         # ОКС и участок — разные объекты ЕГРН. В карточках торгов часто
         # публикуют оба КН; передача обоих в ГлавАПУ заставляет калькулятор
-        # принять площадь здания за площадь территории и сложить их. Для
-        # имущественного комплекса/незавершёнки оставляем в handoff только
-        # земельные КН, подтверждённые НСПД.
-        if lot.lot_kind != LotKind.KRT and lot.cadastral_numbers and core is not None:
+        # принять площадь здания за площадь территории и сложить их. Поэтому в
+        # handoff оставляем только земельные КН, подтверждённые НСПД.
+        #
+        # КРТ здесь стоял исключением, и зря: в его извещении КН зданий больше
+        # всего — их сносят, и они перечислены поимённо. «Из карточки КРТ в
+        # DevelopAid неверно передаёт КН участков» (владелец, 02.09.2026) — это
+        # оно: участками уезжали заодно и снесённые дома.
+        if lot.cadastral_numbers and core is not None:
             try:
                 context = await run_in_threadpool(core._land_lot_context, lot.cadastral_numbers)
                 _handoff_land_cadastres(project_preset, context)

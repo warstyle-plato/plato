@@ -30,9 +30,19 @@ BRIDGE_SCRIPT = r'''
    const model=pending.krt_model;
    if(!confirm('Открыть площадку КРТ «'+String(pending.krt_name||'без названия')+'» в модели?\n\n'
      +'Вводные посчитаны предварительным прогоном: цена входа принята нулём, '
-     +'обязательства КРТ сверх опубликованных не учтены.\n\n'
+     +'обязательства КРТ сверх опубликованных не учтены. Кадастровых номеров у '
+     +'площадки в каталоге города нет — поле участка очистится, впишите номера сами.\n\n'
      +'Текущий расчёт на экране будет заменён.'))return;
    applyProjectSnapshot(model);
+   // Кадастровых номеров у площадки КРТ нет: город публикует адрес и границы,
+   // а перечня участков — нет. Поле при этом оставалось от ПРОШЛОГО проекта, и
+   // на экране это выглядело как «передал не те КН» (владелец, 02.09.2026).
+   // Чужой номер хуже пустого поля: он выглядит посчитанным.
+   const field=document.getElementById('cadastralNumbers');
+   if(field&&field.value.trim()){
+    field.value='';
+    if(typeof renderSitePanel==='function')renderSitePanel();
+   }
    if(typeof inputs!=='undefined')inputs._manual_tep_import={project_name:String(pending.krt_name||'')};
    if(typeof calculateAndOpen==='function')calculateAndOpen('report');
    return;
