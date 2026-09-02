@@ -184,3 +184,59 @@ def test_social_metres_do_not_reach_the_per_metre_articles(core):
     source = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
     line = re.search(r"core_above_gns = .+", source).group(0)
     assert "kindergarten" not in line and "school" not in line and "clinic" not in line
+
+
+def test_the_area_follows_the_places_by_the_city_step(core, tmp_path):
+    """Норматив площади считается от количества мест — решение владельца.
+
+    «Значит алгоритм мест в СОШ и ДОО должен быть записан правилом и считать от
+    кол-ва мест» (02.09.2026). Прежде поле норматива было одним числом на любую
+    ёмкость (ДОО 12 — ниже городского минимума 16), и площадь считалась им же.
+    """
+    playwright = pytest.importorskip("playwright.sync_api")
+    import browser_launch
+
+    html = core.PAGE.replace("__DEVELOPAID_VERSION__", "test")
+    file = tmp_path / "page.html"
+    file.write_text(html, encoding="utf-8")
+    with playwright.sync_playwright() as pw:
+        try:
+            browser = browser_launch.launch(pw)
+        except Exception as exc:  # noqa: BLE001
+            pytest.skip(f"Chromium недоступен: {exc}")
+        try:
+            tab = browser.new_page()
+            errors: list[str] = []
+            tab.on("pageerror", lambda exc: errors.append(str(exc)))
+            tab.route("**/*", lambda route: route.abort()
+                      if route.request.url.startswith("http") else route.continue_())
+            tab.goto(file.as_uri())
+            tab.wait_for_function("() => typeof syncTep === 'function'", timeout=15000)
+            got = tab.evaluate("""() => {
+              const read = (places) => {
+                inputs.social_mode = 'Строительство';
+                inputs.kindergarten_places = places;
+                inputs.social_dou_gba_sqm = 0;
+                syncTep(false);
+                return {norm: Number(inputs.social_dou_norm_sqm||0),
+                        area: Number(inputs.social_dou_gba_sqm||0),
+                        tep: tep.kindergarten.total_area};
+              };
+              const small = read(100), medium = read(200), large = read(400);
+              // Школа своей лестницей, поликлиника — своим полем.
+              inputs.school_places = 900; inputs.social_school_gba_sqm = 0; syncTep(false);
+              const school = Number(inputs.social_school_norm_sqm||0);
+              inputs.clinic_capacity = 120; inputs.social_clinic_gba_sqm = 0; syncTep(false);
+              const clinic = Number(inputs.social_clinic_norm_sqm||0);
+              return {small, medium, large, school, clinic};
+            }""")
+            tab.close()
+        finally:
+            browser.close()
+    assert [item for item in errors if "Failed to fetch" not in item] == [], errors
+    assert (got["small"]["norm"], got["medium"]["norm"], got["large"]["norm"]) == (27, 18, 16)
+    assert got["large"]["area"] == pytest.approx(400 * 16)
+    assert got["large"]["tep"] == pytest.approx(400 * 16), "ТЭП не следует за нормативом"
+    assert got["school"] == 15, "школа на 900 мест — 15 м²/место"
+    # У поликлиники норматива города нет: поле остаётся вводным.
+    assert got["clinic"] == 15

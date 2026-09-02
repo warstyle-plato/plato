@@ -1,4 +1,11 @@
-"""Ту же компанию называют другими словами — и все они значат одно.
+"""Ту же компанию называют другими словами — и все они значат одно ЛИЦО.
+
+С 02.09.2026 у этого лица есть роль. Методика владельца (проверка 55 площадок):
+«застройщик здания, правообладатель земли и оператор КРТ могут быть разными
+лицами», «бренд ЖК сам по себе оператором не считается». Поэтому девелопер
+читается по-прежнему, но попадает в свой ответ — `developer_named`, — и вход на
+площадку не закрывает: закрывает его только названный ОПЕРАТОР или заключённый
+договор.
 
 Владелец прислал две публикации о КРТ на Светлом проезде, вл. 4 (01.09.2026),
 и фильтр не считал площадку занятой ни по одной из них. Причина не в якоре и не
@@ -49,18 +56,20 @@ class Doc:
     rank: int = 1
 
 
-def test_a_developer_counts_as_an_operator():
+def test_a_developer_is_read_but_as_a_developer():
     got = krt_open_sources.read_findings(
         [Doc(title="Стройка на Светлом проезде", snippet=LIVESOKOL)], SITE)
-    assert got["operator_named"], "«девелопер» не опознан как тот, кто площадку берёт"
-    name = got["operator_named"][0]["name"]
+    assert got["developer_named"], "«девелопер» не опознан вовсе"
+    name = got["developer_named"][0]["name"]
     assert "Стоунхедж" in name or "STONE" in name, f"имя разобрано как «{name}»"
-    assert got["taken"] is True
+    assert got["operator_named"] == [], "девелопер записан оператором КРТ"
+    assert got["taken"] is False, "застройщик здания вход на площадку не закрывает"
 
 
 def test_the_name_keeps_its_closing_quote():
     """«АО «Стоунхедж» с непарной кавычкой дальше не совпадёт ни с чем."""
-    name = krt_open_sources._operator_name(LIVESOKOL)
+    name, role = krt_open_sources._named_role(LIVESOKOL)
+    assert role == "developer", role
     assert name.count("«") == name.count("»"), f"непарная кавычка в «{name}»"
 
 
@@ -68,9 +77,10 @@ def test_a_brand_before_the_address_is_read_too():
     """«ЖК от STONE» — имя стоит перед адресом, хвостовой разбор его не видит."""
     got = krt_open_sources.read_findings(
         [Doc(title=DZEN, snippet="", url="https://dzen.ru/a/x", domain="dzen.ru")], SITE)
-    assert got["operator_named"], "имя из заголовка не прочитано"
-    assert got["operator_named"][0]["name"] == "STONE"
-    assert got["taken"] is True
+    assert got["developer_named"], "имя из заголовка не прочитано"
+    assert got["developer_named"][0]["name"] == "STONE"
+    # Бренд ЖК оператором не считается — методика владельца, 02.09.2026.
+    assert got["operator_named"] == [] and got["taken"] is False
 
 
 def test_a_role_after_ot_is_not_a_name():
@@ -81,8 +91,8 @@ def test_a_role_after_ot_is_not_a_name():
 
 
 def test_a_quoted_brand_is_read():
-    assert krt_open_sources._operator_name(
-        "ЖК от «Донстрой» на Светлый проезд") == "Донстрой"
+    assert krt_open_sources._named_role(
+        "ЖК от «Донстрой» на Светлый проезд") == ("Донстрой", "developer")
 
 
 def test_the_old_wording_still_works():
@@ -195,15 +205,29 @@ def test_the_anchor_survives_the_russian_case():
     не срабатывал ровно на той площадке, из-за которой всё и затевалось
     (владелец, 01.09.2026). Это же правило держит «Молдавская» → «Молдавской».
     """
-    for sentence, site in (
-            ("Застройщиком проекта на Светлом проезде выступает ПАО «ПИК».",
-             "Светлый проезд, вл. 4"),
-            ("Оператором КРТ на Молдавской улице выступает ООО «Ромашка».",
-             "Молдавская ул., вл. 3-5")):
+    # Номер владения в предложении стоит с 02.09.2026 обязательным для тяжёлых
+    # признаков: улица опознаёт квартал, а не площадку, и оператор соседа
+    # приезжал в чужую карточку. Здесь проверяется именно склонение — что
+    # «Светлом» и «Молдавской» вообще узнаются, — поэтому номер в тексте есть.
+    for sentence, site, key in (
+            ("Застройщиком проекта на Светлом проезде, вл. 4 выступает ПАО «ПИК».",
+             "Светлый проезд, вл. 4", "developer_named"),
+            ("Оператором КРТ на Молдавской улице, вл. 3 выступает ООО «Ромашка».",
+             "Молдавская ул., вл. 3-5", "operator_named")):
         got = krt_open_sources.read_findings(
             [Doc(title="", snippet=sentence, domain="mos.ru")], site)
-        assert got["operator_named"], f"якорь не сработал: {site}"
-        assert got["taken"] is True
+        assert got[key], f"якорь не сработал: {site}"
+    # Оператор закрывает вход, застройщик — нет: это разные лица.
+    assert got["taken"] is True
+
+
+def test_the_case_anchor_works_even_when_the_claim_is_not_proved():
+    """Склонение узнаётся и без номера — просто признак по такому тексту не ставим."""
+    got = krt_open_sources.read_findings(
+        [Doc(title="", snippet="Застройщиком проекта на Светлом проезде выступает ПАО «ПИК».",
+             url="https://mos.ru/a", domain="mos.ru")], "Светлый проезд, вл. 4")
+    assert got["documents"][0]["anchored"] is True, "склонение перестало узнаваться"
+    assert got["operator_named"] == [], "оператор приписан по одной улице"
 
 
 def test_a_short_stem_does_not_borrow_a_stranger():

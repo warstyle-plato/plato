@@ -65,7 +65,10 @@ def test_a_finding_from_a_channel_says_so():
             snippet="Территория по адресу Маршала Воробьева, вл. 12 включена в программу реновации."),
     ]
     found = krt_open_sources.read_findings(docs, NAME)
-    items = (found["operator_named"] + found["operator_appointed"]
+    # Застройщик — своя роль, а не оператор: у «ПИК» из канала находка живёт
+    # в `developer_named`, и метка канала обязана доехать и туда.
+    items = (found["operator_named"] + found["developer_named"]
+             + found["operator_appointed"]
              + found["operator_pending"] + found["city_needs"] + found["stage"])
     assert items, "находок нет вовсе — проверять нечего"
     from_channel = [i for i in items if i["domain"] == "t.me"]

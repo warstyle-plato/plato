@@ -54,6 +54,7 @@ def page_functions() -> str:
     # больше нет, он дублировал «Статус» и «Назначение», и мера балла следует
     # тому же полю, что и отбор.
     for name in ("krtVolumeShare", "krtTaskProfile", "krtFit", "krtIntent",
+                 "krtCountedValues", "krtQuantile", "krtModelScale",
                  "krtPenalty", "krtScore", "krtScoreNote"):
         start = script.index(f"function {name}(")
         depth = 0
@@ -72,6 +73,9 @@ def page_functions() -> str:
     # Якоря шкалы сняты с самого каталога и объявлены рядом с функцией.
     scale = script[script.index("const KRT_SCALE="):]
     out.insert(0, scale[:scale.index("};") + 2])
+    # Порог, ниже которого распределения нет и шкала остаётся абсолютной.
+    rows = script[script.index("const KRT_SCALE_MIN_ROWS="):]
+    out.insert(0, rows[:rows.index(";") + 1])
     return "\n".join(out)
 
 
