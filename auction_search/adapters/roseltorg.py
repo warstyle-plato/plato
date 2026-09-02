@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime
 from html.parser import HTMLParser
 from urllib.parse import urlencode, urljoin, urlparse
@@ -255,16 +256,29 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
         lots: list[AuctionLot] = []
         seen_lots: set[str] = set()
         self.last_report["cards"] = len(candidate_urls)
+        # Карточки читаются пачкой, а не по одной. За каждой идёт свой запрос;
+        # по очереди сорок две карточки не умещаются в общий срок каталога
+        # (сорок секунд на ВСЕ источники), и сбор обрывался на первых. Владелец
+        # видел это как «фильтр нашёл один КРТ, хотя их там чуть ли не десять»
+        # (02.09.2026) — и был прав: остальные просто не успели прочитаться.
+        #
+        # Шесть потоков — не «побыстрее», а ровно столько, чтобы уложиться:
+        # больше значит стучаться в чужую площадку без нужды.
+        read: dict[str, AuctionLot] = {}
+        unread = 0
+        if candidate_urls and not clock.expired(deadline):
+            with ThreadPoolExecutor(max_workers=6) as pool:
+                jobs = {pool.submit(self.fetch_lot, url, deadline=deadline): url
+                        for url in candidate_urls}
+                for job in as_completed(jobs):
+                    try:
+                        read[jobs[job]] = job.result()
+                    except Exception:
+                        # Одна битая или недоступная процедура не роняет выдачу.
+                        unread += 1
         for lot_url in candidate_urls:
-            if clock.expired(deadline):
-                self.last_report["reason"] = (
-                    f"остановлено по времени: разобрано лотов {len(lots)} "
-                    f"из {len(candidate_urls)} найденных")
-                break
-            try:
-                lot = self.fetch_lot(lot_url, deadline=deadline)
-            except Exception:
-                # One malformed/temporarily unavailable procedure must not drop the feed.
+            lot = read.get(lot_url)
+            if lot is None:
                 continue
             if lot.lot_kind not in self.RELEVANT_KINDS:
                 continue
@@ -283,6 +297,13 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
             lots.append(lot)
         self.last_report["kept"] = len(lots)
         self.last_report["from_section"] = section_found
+        if unread:
+            # Непрочитанная карточка — «не знаем», а не «лота нет».
+            self.last_report["unread_cards"] = unread
+            self.last_report["reason"] = (
+                self.last_report.get("reason")
+                or f"не прочитано карточек {unread} из {len(candidate_urls)}: "
+                   "источник не ответил или кончился срок сбора")
         return lots
 
     def discover_moscow_history(

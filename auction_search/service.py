@@ -64,6 +64,7 @@ class AuctionSearchService:
                     index, adapter = pending[future]
                     try:
                         batches[index] = list(future.result())
+                        self._count_kinds(adapter, batches[index])
                     except Exception as exc:  # noqa: BLE001
                         self._failed(adapter, exc)
                         batches[index] = []
@@ -75,7 +76,9 @@ class AuctionSearchService:
                     self._not_asked(adapter, budget_seconds)
                     continue
                 try:
-                    lots.extend(self._ask(adapter, until))
+                    found = list(self._ask(adapter, until))
+                    self._count_kinds(adapter, found)
+                    lots.extend(found)
                 except Exception as exc:  # noqa: BLE001
                     # Один недоступный источник не отменяет остальные. Прежде
                     # любое его исключение доходило до маршрута, тот отвечал
@@ -123,6 +126,23 @@ class AuctionSearchService:
         if takes_deadline:
             return discover(deadline=until)
         return discover()
+
+    @staticmethod
+    def _count_kinds(adapter: AuctionPlatformAdapter, lots: list[AuctionLot]) -> None:
+        """Сколько КРТ дал источник — в его же строке охвата.
+
+        «Как так вышло, что фильтр только один КРТ и нашёл, хотя их там чуть ли
+        не десять» (владелец, 02.09.2026). По строке охвата ответить было
+        нечем: она говорит «лотов 9», а какие это лоты — нет, и который из
+        источников принёс единственный КРТ, на экране не видно вовсе.
+
+        Считается здесь, в одном месте на все источники: у каждого читателя
+        свой такой счёт однажды разошёлся бы с общим списком.
+        """
+        report = getattr(adapter, "last_report", None)
+        if not isinstance(report, dict):
+            return
+        report["kept_krt"] = sum(1 for lot in lots if lot.lot_kind is LotKind.KRT)
 
     @staticmethod
     def _failed(adapter: AuctionPlatformAdapter, exc: Exception) -> None:
