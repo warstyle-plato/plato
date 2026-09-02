@@ -898,6 +898,34 @@ def install(app: FastAPI) -> None:
     # незачем: прогон платит за площадку один раз, дальше платит только тот,
     # кто нажал «Пересчитать сейчас». Неотвеченная и свободная спрашиваются
     # снова — там ответ ещё может измениться.
+    def _row_without_stale_facts(row: dict[str, Any]) -> dict[str, Any]:
+        """Строка рейтинга без признаков, посчитанных прежним правилом."""
+        facts = (row or {}).get("press_facts") or {}
+        if not facts or _facts_by_current_rules(facts):
+            return row
+        kept = dict(row)
+        kept["press_facts"] = {
+            "available": False,
+            "stale_rules": True,
+            "checked_at": facts.get("checked_at"),
+            "reason": ("прочитано прежним правилом привязки — до перечитывания "
+                       "признаки по нему не ставим"),
+        }
+        return kept
+
+    def _facts_by_current_rules(stored: dict[str, Any]) -> bool:
+        """Посчитан ли хранимый ответ нынешним правилом привязки.
+
+        Занятость спрашивается один раз — «отданная площадка свободной не
+        становится», — и неверная находка поэтому живёт вечно: «Бореалис» стоял
+        у Фестивальной, 53А, хотя строит он 6, 6а, 6б (владелец, 02.09.2026).
+        Правило привязки версионируется, и ответ прежней версии — не ответ.
+        """
+        from market_search import krt_open_sources
+
+        return int((stored or {}).get("rules_version") or 0) >= \
+            krt_open_sources.ANCHOR_RULES_VERSION
+
     def _open_sources_for_run(project: dict[str, Any]) -> dict[str, Any]:
         slug = str((project or {}).get("slug") or "")
         stored = {}
@@ -905,7 +933,7 @@ def install(app: FastAPI) -> None:
             stored = (krt_ranking.stored_row(slug) or {}).get("press_facts") or {}
         except Exception:  # noqa: BLE001
             logger.exception("stored press facts failed slug=%s", slug)
-        if stored.get("available") and stored.get("taken"):
+        if stored.get("available") and stored.get("taken") and _facts_by_current_rules(stored):
             return stored
         try:
             return _read_open_sources(project)
@@ -1335,7 +1363,11 @@ def install(app: FastAPI) -> None:
                 "за вход», а не «проходит ли она по объявленной цене»."
             ),
             "progress": krt_ranking.progress(),
-            "rows": krt_ranking.rows(),
+            # Находка, посчитанная прежним правилом привязки, признаком не
+            # считается: она сделана из того же текста, но по другому правилу,
+            # и до перечитывания это «не знаем», а не «занята» (владелец,
+            # 02.09.2026: «Бореалис 53А не строит»).
+            "rows": [_row_without_stale_facts(row) for row in krt_ranking.rows()],
         }
 
     @app.post("/auctions/krt/ranking/refresh")
@@ -1440,7 +1472,8 @@ def install(app: FastAPI) -> None:
                     "press_facts") or {}
             except Exception:  # noqa: BLE001
                 logger.exception("stored press facts failed slug=%s", row.get("slug"))
-            if stored.get("available") and stored.get("taken"):
+            if (stored.get("available") and stored.get("taken")
+                    and _facts_by_current_rules(stored)):
                 continue
             planned.append(row)
         if not planned:
