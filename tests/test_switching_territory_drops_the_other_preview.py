@@ -99,6 +99,10 @@ def test_each_territory_path_drops_the_other_card():
 
 
 def test_reset_drops_both_cards_with_their_data():
+    # Сброс забывает территорию тем же вызовом, что подмена проекта
+    # (`forgetTerritoryState`), а тот снимает обе карточки вместе с данными.
     reset = page_function("resetAll")
-    assert "dropGlavapuPreview();" in reset
-    assert "dropMoPreview();" in reset
+    assert "forgetTerritoryState();" in reset
+    forget = page_function("forgetTerritoryState")
+    assert "dropGlavapuPreview();" in forget
+    assert "dropMoPreview();" in forget
