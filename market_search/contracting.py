@@ -276,15 +276,124 @@ def read_contracts(data: bytes) -> dict[str, Any]:
             "escrow_paid": _number(cell("escrow_total")),
             # Имя покупателя наружу не идёт: остаётся только признак.
             "company_buyer": bool(_COMPANY.search(buyer)),
+            # Фамилия — ключ сведения с проводками комиссий, и живёт она ровно
+            # до конца этого читателя: `_attach_brokers` её снимает. В своде,
+            # на экране и в вопросе Платону имени покупателя нет.
+            "_surname": buyer.split()[0] if buyer.split() else "",
             "escrow_schedule": [
                 {"month": when.strftime("%Y-%m"), "amount": _number(row[i])}
                 for i, when in escrow_columns
                 if i < len(row) and _number(row[i])
             ],
         })
+    # Канал продаж из проводок — когда колонки брокера в шапке не нашлось.
+    # Колонок этих в выгрузке то есть, то нет: 01.09.2026 автор пересобрал лист
+    # и убрал шесть, и весь объём стал «свой отдел 100%» при 23,07 млн ₽
+    # комиссий в том же файле листом левее.
+    # «Колонка есть» и «канал прочитан» — разные вещи: колонка бывает на месте
+    # и пустой во всех строках, а на экране это та же картинка «свой отдел
+    # 100%». Прочитанным канал считается, когда брокер назван хоть у одного
+    # договора.
+    missing += _attach_brokers(
+        out, data,
+        known=(_COLUMNS["broker_name"] not in missing
+               and any(row["broker"] for row in out)))
+    for row in out:
+        row.pop("_surname", None)
     return {"rows": out, "project": project, "missing": missing}
 
 
+
+
+def _attach_brokers(rows: list[dict[str, Any]], data: bytes, *, known: bool) -> list[str]:
+    """Проставить канал продаж по проводкам комиссий. Вернуть, что не свелось.
+
+    Колонка брокера в «Контрактации» есть не всегда — лист сводный, его
+    пересобирают руками. Проводки первичны и не пропадают, поэтому канал берётся
+    из них, когда колонки нет. Когда колонка ЕСТЬ, проводки её не переписывают:
+    два источника на одну величину, и молча выбрать из них один нельзя.
+
+    Ключ сведения — фамилия покупателя в назначении платежа: «Комиссия брокерам
+    (5%) ДДУ Тагиров по вх.д. от 12.09.2025». Совпадение проверяется по целому
+    слову: «Бертяев» лежит внутри «Бертяевой», и подстрокой это два разных
+    договора под одним брокером. Не свелось — говорится вслух: молча
+    выброшенная комиссия читается как её отсутствие.
+    """
+    try:
+        postings = read_broker_postings(data)
+    except Exception as exc:  # noqa: BLE001
+        postings = {"rows": [], "missing": [f"проводки комиссий брокерам: {exc}"]}
+    lines = postings.get("rows") or []
+    if not lines:
+        # Листа проводок в книге может не быть вовсе, и пока канал прочитан из
+        # колонки, это ничего не значит: говорить о нём тогда — шум, в котором
+        # теряются настоящие пробелы. Молчание кончается там, где колонки тоже
+        # нет: вот тогда канала не прочитано ниоткуда, и это надо сказать.
+        return [] if known else list(postings.get("missing") or [])
+    if known:
+        # Колонка на месте — канал уже прочитан из неё. Проводки тогда не
+        # источник, а вторая мера той же величины, и сверять её должен человек.
+        paid = sum(line["amount"] for line in lines)
+        told = sum(row.get("broker_fee") or 0.0 for row in rows)
+        if paid and abs(paid - told) / max(paid, told, 1.0) > 0.05:
+            return [f"комиссия брокерам в колонке {told / 1e6:.1f} млн ₽, "
+                    f"а в проводках {paid / 1e6:.1f} млн ₽ — расхождение не сведено"]
+        return []
+
+    left: list[str] = []
+    for line in lines:
+        text = line["content"]
+        # Кандидаты по убыванию жёсткости якоря: номер договора однозначен,
+        # фамилия целым словом почти однозначна, фамилия с падежным хвостом —
+        # только когда подходит ровно одна строка («Бертяев» лежит внутри
+        # «Бертяевой», и это два разных договора).
+        candidates: list[dict[str, Any]] = []
+        number = re.search(r"№\s*([\dА-Яа-яA-Za-z\-/]+)", text)
+        if number:
+            want = number.group(1).rstrip("/").lower()
+            candidates += [row for row in rows
+                           if re.search(rf"(?<![\w-]){re.escape(want)}(?![\w-])",
+                                        (row.get("contract") or "").lower())]
+        candidates += [row for row in rows
+                       if len(row.get("_surname") or "") >= 4
+                       and re.search(rf"\b{re.escape(row['_surname'])}\b", text, re.I)]
+        loose = [row for row in rows
+                 if len(row.get("_surname") or "") >= 4
+                 and re.search(rf"\b{re.escape(row['_surname'])}[а-яё]{{1,2}}\b", text, re.I)]
+        if len(loose) == 1:
+            candidates += loose
+
+        # Ставка в назначении платежа — проверка самой привязки, а не украшение.
+        # «(5%)» на договоре в 4,0 млн ₽ при комиссии 3,10 млн даёт 77%: это не
+        # тот договор. Своей ставки у проводки нет — тогда проверять нечем, и
+        # первый кандидат принимается как есть.
+        def fits(row: dict[str, Any]) -> bool:
+            if not line["rate"] or not row.get("amount"):
+                return True
+            implied = line["amount"] / row["amount"]
+            return line["rate"] / 3 <= implied <= line["rate"] * 3
+
+        hit = next((row for row in candidates if fits(row)), None)
+        if hit is None:
+            why = (" — ни один кандидат не сошёлся со ставкой "
+                   f"{line['rate'] * 100:.2f}%" if candidates and line["rate"] else "")
+            left.append(f"комиссия {line['amount'] / 1e6:.2f} млн ₽ "
+                        f"({line['broker']}) не свелась с договором{why}: «{text[:60]}»")
+            continue
+        hit["broker"] = line["broker"]
+        hit["broker_fee"] = (hit.get("broker_fee") or 0.0) + line["amount"]
+        if hit.get("broker_rate") is None:
+            hit["broker_rate"] = line["rate"]
+        # Чем прочитан канал — часть ответа: колонка и проводка отвечают на
+        # разные вопросы. Проводка появляется по подписанному акту, поэтому
+        # свежий договор, приведённый брокером, здесь ещё не виден.
+        hit["broker_source"] = "проводки 1С"
+    left.append(
+        f"канал продаж прочитан из проводок «{SHEET_POSTINGS}», а не из колонки "
+        f"«{_COLUMNS['broker_name']}»: комиссия попадает в 1С по подписанному "
+        "акту, поэтому недавний договор брокера здесь ещё не виден, а премии "
+        "своего отдела в этих строках нет вовсе")
+    return left
 
 # Подпись субконто, под которой комиссия брокерам лежит в проводках. Сверено с
 # живым файлом 01.09.2026: пятнадцать строк, пять брокеров, 23,07 млн ₽.
@@ -859,7 +968,16 @@ def summarise(contracts: dict[str, Any], ledger: dict[str, Any] | None = None) -
     # Не прочитанная колонка брокера и продажи без брокеров дают на экране одну
     # картинку: единственный канал «напрямую». Утверждения при этом разные, и
     # молчаливое первое читается как второе.
-    broker_column = _COLUMNS["broker_name"] not in (contracts.get("missing") or [])
+    # «Колонки нет» и «канал не прочитан» — разные утверждения, и с 02.09.2026
+    # они разошлись: колонки может не быть, а канал всё равно прочитан — из
+    # проводок комиссий. Плашка отвечает на второе, поэтому смотрит на то, есть
+    # ли у кого-то брокер, а не на то, нашлась ли подпись в шапке.
+    broker_column = (_COLUMNS["broker_name"] not in (contracts.get("missing") or [])
+                     or any(row.get("broker") for row in rows))
+    # Чем прочитан канал — часть ответа: проводка появляется по подписанному
+    # акту, и недавний договор брокера в ней ещё не виден.
+    broker_source = next((row["broker_source"] for row in rows
+                          if row.get("broker_source")), "")
 
     flats = [r for r in rows if r["product"] == "Квартира"]
     bands: dict[str, list] = {}
@@ -882,6 +1000,7 @@ def summarise(contracts: dict[str, Any], ledger: dict[str, Any] | None = None) -
         "by_payment": by_payment,
         "by_channel": by_channel,
         "broker_column": broker_column,
+        "broker_source": broker_source,
         "by_size": by_size,
         "brokers": _totals(broker_rows),
         "own_sales": _totals(own_rows),
