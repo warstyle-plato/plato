@@ -109,6 +109,30 @@ _AGREEMENT = ("заключен договор о комплексном", "за
 
 # Стадия проекта: не признак, а факт с датой — им объясняется, почему площадка
 # ещё «Планируемая», а работа по ней уже идёт.
+# Торги на право заключения договора КРТ — это вход на площадку. Закупка
+# подрядчика действующим оператором входом не является и площадку доступной не
+# делает (методика владельца, 02.09.2026). Прежде любое слово «торги» шло в
+# один признак, и поиск генподрядчика читался как открытый аукцион.
+_CONTRACT_TENDER = ("на право заключения договора о комплексном",
+                    "на право заключения договора крт",
+                    "торги на право реализации проекта крт",
+                    "аукцион на право заключения договора о комплексном")
+_CONTRACTOR_TENDER = ("генерального подрядчика", "генподряд", "подрядчика",
+                      "закупк", "поставщик", "проектировщика", "изыскан")
+
+# Роль Фонда реновации записывается БУКВАЛЬНО: упоминание Фонда не означает,
+# что он оператор КРТ. У владельца на 55 площадках Фонд оператором назван
+# один раз, а соглашение с ним предусмотрено у многих.
+_FUND = ("фонд реновации", "фонда реновации", "фондом реновации")
+_FUND_ROLES = (("оператор", "оператор"), ("застройщик", "застройщик"),
+               ("соглашени", "сторона соглашения"), ("договор", "сторона договора"))
+
+# Надёжность источника — часть ответа, а не наша уверенность. Три уровня по
+# методике владельца: адресный официальный источник, отраслевой или
+# реестровый, и «только карточка».
+_TRADE_SOURCES = ("erzrf.ru", "rbc.ru", "vedomosti.ru", "kommersant.ru", "interfax.ru",
+                  "realty.rbc.ru", "cian.ru", "dp.ru", "forbes.ru", "stroygaz.ru")
+
 _STAGE = ("представлена концепция", "утвержден проект планировки",
           "утверждён проект планировки", "объявлены торги",
           "получено разрешение на строительство", "начались работы")
@@ -542,26 +566,58 @@ def _looks_like_a_place(tail: str, found: "re.Match[str]") -> bool:
     return bool(_TOPONYM_WORD.match(raw))
 
 
-def _operator_name(sentence: str) -> str:
-    """Имя оператора. Нет имени — пустая строка, а не догадка."""
-    word = _OPERATOR_WORD.search(sentence)
-    if word:
-        tail = sentence[word.end():word.end() + 140]
-        found = _NAME.search(tail)
-        if found and not _looks_like_a_place(tail, found):
+# Оператор КРТ, застройщик и правообладатель — ТРИ РАЗНЫХ ЛИЦА, и методика
+# владельца (проверка 55 площадок, 02.09.2026) держит их тремя колонками:
+# «застройщик здания, правообладатель земли и оператор КРТ могут быть разными
+# лицами», а «бренд ЖК сам по себе оператором не считается». У нас всё сливалось
+# в один признак: «застройщиком выступает ПАО „ПИК“» закрывало вход на площадку
+# наравне с названным оператором. На его проверке оператор установлен у ТРЁХ
+# площадок из 55 — у нас их было кратно больше, и это разница между
+# «проверено» и «показалось».
+_ROLE_WORDS = (
+    ("operator", re.compile(r"(?iu)\bоператор\w*")),
+    ("developer", re.compile(r"(?iu)\b(?:застройщик\w*|девелопер\w*|инвестор\w*|"
+                             r"правообладател\w*|собственник\w*)")),
+)
+
+
+def _named_role(sentence: str) -> tuple[str, str]:
+    """Имя и РОЛЬ: оператор или застройщик. Нет имени — пустая пара.
+
+    Роль берётся у того слова, после которого стоит имя: «оператором выступает
+    X» и «застройщиком выступает X» — разные утверждения о разных лицах.
+    """
+    best: tuple[int, str, str] = (10 ** 6, "", "")
+    for role, word in _ROLE_WORDS:
+        for found_word in word.finditer(sentence):
+            tail = sentence[found_word.end():found_word.end() + 140]
+            found = _NAME.search(tail)
+            if not found or _looks_like_a_place(tail, found):
+                continue
             name = _clean_name(found.group("name"))
-            if name and not _is_not_an_operator(name):
-                return name
-    # «ЖК от STONE» — то же утверждение другой формой: имя стоит перед адресом,
-    # и хвостовой разбор его не достаёт.
+            if not name or _is_not_an_operator(name):
+                continue
+            if found_word.start() < best[0]:
+                best = (found_word.start(), name, role)
+    if best[1]:
+        return best[1], best[2]
+    # «ЖК от STONE» — имя стоит перед адресом, и хвостовой разбор его не
+    # достаёт. Это ЗАСТРОЙЩИК бренда, а не оператор КРТ: бренд оператором не
+    # считается (методика владельца).
     branded = _BRAND_OF.search(sentence)
     if branded:
         name = _clean_name(branded.group("name"))
         low = name.lower().rstrip("аеиоуыюя")
         if (name and not any(low.startswith(stem[:6]) for stem in _NOT_A_BRAND)
                 and not _is_not_an_operator(name)):
-            return name
-    return ""
+            return name, "developer"
+    return "", ""
+
+
+def _operator_name(sentence: str) -> str:
+    """Имя оператора КРТ. Застройщик сюда не идёт — он отвечает на другой вопрос."""
+    name, role = _named_role(sentence)
+    return name if role == "operator" else ""
 
 
 def _is_telegram(domain: str) -> bool:
@@ -593,8 +649,20 @@ def _found(sentence: str, doc: Any) -> dict[str, Any]:
 #   1 — якорем служила улица;
 #   2 — на улице с несколькими площадками каталога нужен номер владения;
 #   3 — тяжёлые признаки (оператор, договор, городские нужды) требуют номер
-#       владения или имя проекта всегда, даже когда соседа в каталоге нет.
-ANCHOR_RULES_VERSION = 3
+#       владения или имя проекта всегда, даже когда соседа в каталоге нет;
+#   4 — оператор, застройщик и Фонд разведены по методике владельца, торги
+#       считаются только на право договора КРТ, у находки есть надёжность.
+ANCHOR_RULES_VERSION = 4
+
+
+def _confidence(items: Iterable[dict[str, Any]]) -> str:
+    """Надёжность находки по классу источника, а не по нашей уверенности."""
+    domains = [str(item.get("domain") or "").lower() for item in items]
+    if any(any(host in domain for host in _TRUSTED) for domain in domains):
+        return "высокая"
+    if domains:
+        return "средняя" if any(domain for domain in domains) else "ограниченная"
+    return "ограниченная"
 
 
 def read_findings(
@@ -641,6 +709,9 @@ def read_findings(
             return True
         return bool(brand_anchors) and _mentions(sentence, brand_anchors)
     operator_named: list[dict[str, Any]] = []
+    developer_named: list[dict[str, Any]] = []
+    contract_tender: list[dict[str, Any]] = []
+    fund_role: list[dict[str, Any]] = []
     operator_appointed: list[dict[str, Any]] = []
     operator_pending: list[dict[str, Any]] = []
     city_needs: list[dict[str, Any]] = []
@@ -687,7 +758,14 @@ def read_findings(
             # Она остаётся в прочитанном и видна — но приписать по ней
             # застройщика значит однажды приписать чужого.
             heavy_ok = (proved or named_ours(sentence)) if houses else True
-            named = _operator_name(sentence)
+            named, role = _named_role(sentence)
+            if named and role == "developer" and heavy_ok:
+                # Застройщик здания и правообладатель земли — не оператор КРТ:
+                # вход они не закрывают, но знать их надо.
+                item = _found(sentence, doc)
+                item["name"] = named
+                developer_named.append(item)
+                named = ""
             if named and heavy_ok:
                 item = _found(sentence, doc)
                 item["name"] = named
@@ -702,6 +780,15 @@ def read_findings(
                 city_needs.append(_found(sentence, doc))
             if any(mark in low for mark in _AGREEMENT) and heavy_ok:
                 agreement.append(_found(sentence, doc))
+            # Торги на право договора КРТ — вход; закупка подрядчика — нет.
+            if (any(mark in low for mark in _CONTRACT_TENDER)
+                    and not any(mark in low for mark in _CONTRACTOR_TENDER)):
+                contract_tender.append(_found(sentence, doc))
+            if any(mark in low for mark in _FUND) and heavy_ok:
+                said = next((title for mark, title in _FUND_ROLES if mark in low), "упомянут")
+                item = _found(sentence, doc)
+                item["role"] = said
+                fund_role.append(item)
             if any(mark in low for mark in _STAGE):
                 stage.append(_found(sentence, doc))
     # «Оператор назван» и «оператор назначен» — разные ответы, и второй не
@@ -743,6 +830,12 @@ def read_findings(
         "shared_anchors": sorted(shared),
         "house_numbers": sorted(houses),
         "operator_named": operator_named[:3],
+        # Застройщик и правообладатель — отдельным ответом: они не оператор.
+        "developer_named": developer_named[:3],
+        # Торги именно на право заключения договора КРТ.
+        "contract_tender": contract_tender[:3],
+        # Роль Фонда реновации — буквально та, что названа.
+        "fund_role": fund_role[:3],
         "operator_appointed": operator_appointed[:3],
         "operator_pending": operator_pending[:3],
         "city_needs": city_needs[:3],
@@ -760,6 +853,19 @@ def read_findings(
             + city_needs + agreement + stage if item.get("telegram")),
         # Заключённый договор занимает площадку так же, как названный оператор:
         # «Планируемая» в каталоге значит «стройка не начата», а не «свободна».
+        # Надёжность идёт от ИСТОЧНИКА, а не от нашей уверенности: адресный
+        # официальный — высокая, отраслевой или реестровый — средняя, ничего
+        # кроме карточки — ограниченная.
+        "confidence": _confidence(
+            operator_named + developer_named + operator_appointed + agreement
+            + city_needs + contract_tender + fund_role),
+        # «Не найдено» — отсутствие подтверждения в доступной выдаче на дату, а
+        # не доказательство отсутствия факта. Молча пустой ответ читается как
+        # второе (методика владельца, 02.09.2026).
+        "not_found_note": (
+            "" if (operator_named or developer_named or agreement or contract_tender)
+            else "не найдено опубликованного подтверждения в доступной выдаче на дату "
+                 "проверки — это не доказательство отсутствия факта"),
         "taken": bool(operator_named or operator_appointed or agreement),
         "free": bool(operator_pending)
         and not (operator_named or operator_appointed or agreement),

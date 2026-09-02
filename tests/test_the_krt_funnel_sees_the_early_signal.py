@@ -203,3 +203,20 @@ def test_a_live_lot_beats_an_operator_from_the_press() -> None:
                   lots=[{"title": "лот", "deadline": "2026-09-21"}])
     assert still["key"] == "taken"
     assert any("противоречат" in line for line in still["why"])
+
+
+def test_a_draft_decision_can_be_chosen_by_status() -> None:
+    """«В фильтре КРТ реализуемые и планируемые, а проекты» (владелец, 02.09.2026).
+
+    У проекта решения статуса каталога нет вовсе — карточки ещё не существует.
+    Пока выбор в списке был из двух городских слов, такие площадки выпадали из
+    любого отбора по статусу молча: `x.status !== status` истинно для пустого
+    статуса при любом выборе.
+    """
+    page = (Path(__file__).resolve().parent.parent / "auction_search" / "ui.py").read_text("utf-8")
+    assert '<option value="draft">Проект решения</option>' in page, \
+        "проект решения нельзя выбрать в списке статусов"
+    assert "if(status==='draft'){ if(x.status)return false; }" in page, \
+        "выбор «проект решения» не отбирает площадки без статуса каталога"
+    # Прочерк на месте статуса читался как пробел в данных, а это ответ.
+    assert "x.draft_decision_at?'Проект решения':'—'" in page

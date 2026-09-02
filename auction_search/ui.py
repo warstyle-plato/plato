@@ -42,7 +42,7 @@ __DEVELOPAID_CONTOUR__
           <div class="multi-options" id="krtOkrugOptions"></div>
         </div>
       </div>
-      <select id="krtStatus"><option value="">Все статусы</option><option>Планируемый</option><option>В реализации</option></select>
+      <select id="krtStatus" title="Статус krt.mos.ru: «Планируемый» и «В реализации» — слова города о стройке. Проект решения статуса каталога не имеет вовсе: карточки у него ещё нет, и по статусу он раньше молча выпадал из выдачи."><option value="">Все статусы</option><option>Планируемый</option><option>В реализации</option><option value="draft">Проект решения</option></select>
       <select id="krtPurpose"><option value="">Любое назначение</option><option value="housing_gfa_sqm">Жильё</option><option value="business_gfa_sqm">Общественно-деловое</option><option value="nonresidential_gfa_sqm">Нежилое</option></select>
       <input id="krtMinHousing" type="number" min="0" step="10000" placeholder="Жильё от, м²"
              title="Мелкие площадки отсекаются по объёму жилья. Площадка, у которой объём жилья не указан, при непустом пороге прячется — она не «маленькая», она неизвестная, и сколько таких скрыто, написано под таблицей.">
@@ -860,7 +860,9 @@ function syncTopScroll(){
  window.addEventListener('resize',syncTopScroll);
 }
 function krtStatusCell(x){
- const label=esc(x.status||'—');
+ // Пустой статус — не «неизвестно»: у проекта решения карточки ещё нет, и
+ // прочерк на его месте читался как пробел в данных.
+ const label=esc(x.status||(x.draft_decision_at?'Проект решения':'—'));
  return `<span class="tag" title="${esc('Статус krt.mos.ru, де-юре: отвечает на «начата ли стройка», а не на «свободна ли площадка». Занятость — в колонке «Шаг»')}">${label}</span>`;
 }
 function krtStageCell(x){
@@ -1081,7 +1083,12 @@ function filterKrt(){
   // Скрытое считается и называется под таблицей: молча выброшенная площадка
   // читается как её отсутствие.
   if(state.krtOkrugs.size&&!state.krtOkrugs.has(x.okrug))return false;
-  if(status&&x.status!==status)return false;
+  // Проект решения статуса каталога не имеет: он ещё не карточка. Пока выбор
+  // был из двух городских слов, такие площадки выпадали из ЛЮБОГО отбора по
+  // статусу молча — «в фильтре КРТ реализуемые и планируемые, а проекты»
+  // (владелец, 02.09.2026).
+  if(status==='draft'){ if(x.status)return false; }
+  else if(status&&x.status!==status)return false;
   if(purpose&&!(Number(x[purpose])>0))return false;
   if(!krtNeedsPass(x,needs))return false;
   const lots=(state.krtTenders[x.slug]||[]).length;
