@@ -42,8 +42,15 @@ def test_the_narrowing_still_says_what_it_did() -> None:
 
 
 def test_the_site_handoff_clears_the_field_and_says_so() -> None:
-    assert "field.value=''" in BRIDGE, "поле участка остаётся от прошлого проекта"
-    assert "Кадастровых номеров у" in BRIDGE, "очистка поля не объяснена"
-    # Чистится только на пути площадки КРТ: у лота номера как раз передаются.
+    """Поле участка чистит подмена проекта (`forgetTerritoryState`), а мост
+    объясняет пустое поле в вопросе: у площадки КРТ кадастровых номеров нет."""
+    assert "Кадастровых номеров у" in BRIDGE, "пустое поле не объяснено"
     krt = BRIDGE[BRIDGE.index("if(pending.krt_model){"):BRIDGE.index("const preset=pending.project_preset")]
-    assert "field.value=''" in krt
+    assert "applyProjectSnapshot(model)" in krt
+    # Своего списка полей у моста нет: у лота номера как раз передаются, а
+    # территорию площадки забывает та же функция, что грузит любой проект.
+    assert "field.value=''" not in krt
+    page = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    forget = page[page.index("function forgetTerritoryState("):]
+    forget = forget[: forget.index("\n}\n")]
+    assert "'cadastralNumbers'" in forget and "field.value=''" in forget
