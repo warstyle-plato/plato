@@ -723,6 +723,7 @@ def install(app: FastAPI) -> None:
         # фоном порциями. Пока это лежало только в прогоне, у площадки с явным
         # оператором в колонке не стояло ничего, и «не спрашивали» читалось как
         # «оператора нет» (владелец, 01.09.2026).
+        cards_state: dict[str, Any] | None = None
         known = getattr(krt_registry, "card_facts_known", None)
         if callable(known):
             slugs = [str(row.get("slug") or "") for row in projects]
@@ -737,6 +738,18 @@ def install(app: FastAPI) -> None:
                     if facts.get(str(row.get("slug") or "")) else row
                     for row in projects
                 ]
+            # Сколько карточек прочитано и на чём споткнулись остальные. Без
+            # этого «реновации нет» и «карточку не спросили» выглядят на экране
+            # одинаково, а общий отказ источника не виден вовсе.
+            coverage = getattr(krt_registry, "card_facts_coverage", None)
+            if callable(coverage):
+                try:
+                    cards_state = await run_in_threadpool(coverage, slugs)
+                except Exception:  # noqa: BLE001
+                    logger.exception("KRT card facts coverage failed")
+                    cards_state = None
+            else:
+                cards_state = None
             filler = getattr(krt_registry, "fill_card_facts_in_background", None)
             if callable(filler):
                 try:
@@ -815,6 +828,8 @@ def install(app: FastAPI) -> None:
             "no_card_count": len(decision_rows),
             "new_count": sum(1 for row in projects if row.get("is_new")),
             "new_for_days": NEW_FOR_SECONDS // 86400,
+            # Охват карточек города: прочитано, не ответило и по какой причине.
+            "cards_state": cards_state,
             "projects": projects,
         }
 
@@ -1353,6 +1368,7 @@ def install(app: FastAPI) -> None:
         Отдаёт посчитанное сразу — даже на ходу прогона: половина рейтинга с
         честным ходом полезнее пустого экрана, который ничего не объясняет.
         """
+        rows = [_row_without_stale_facts(row) for row in krt_ranking.rows()]
         return {
             "measure": "entry_capacity_rub_per_sqm",
             "measure_label": "Потолок цены входа, ₽/м² продаваемой",
@@ -1367,7 +1383,15 @@ def install(app: FastAPI) -> None:
             # считается: она сделана из того же текста, но по другому правилу,
             # и до перечитывания это «не знаем», а не «занята» (владелец,
             # 02.09.2026: «Бореалис 53А не строит»).
-            "rows": [_row_without_stale_facts(row) for row in krt_ranking.rows()],
+            "rows": rows,
+            # Сколько находок ждут перечитывания по новому правилу привязки.
+            # Смена версии правила снимает признаки СРАЗУ У ВСЕХ, и без этого
+            # числа пустая колонка читается как «заново атрибутировать каждый
+            # раз» (владелец, 02.09.2026), хотя перечитать надо один раз —
+            # кнопкой «Прочитать публикации по планируемым».
+            "stale_rules_count": sum(
+                1 for row in rows
+                if ((row.get("press_facts") or {}).get("stale_rules"))),
         }
 
     @app.post("/auctions/krt/ranking/refresh")

@@ -638,7 +638,7 @@ function renderAnalysis(d){const s=d.screening||{},l=d.lot||{},a=$('analysis'),s
  $('copySeed').onclick=async()=>{await navigator.clipboard.writeText(JSON.stringify(d.developaid_seed,null,2));$('copySeed').textContent='Скопировано'};$('modelBtn').onclick=()=>{const note=$('modelNote');note.textContent='Project-preset handoff подключается следующим слоем: цена лота → цена входа, КРТ-ТЭП → planning, обязательства → отдельные cost/constraint lines.'}
 }
 function switchTab(showKrt){['auctionFilters','auctionStats','auctionLayout','coverage'].forEach(id=>$(id).classList.toggle('hidden',showKrt));$('krtPanel').classList.toggle('hidden',!showKrt);$('tabAuctions').classList.toggle('active',!showKrt);$('tabKrt').classList.toggle('active',showKrt);renderAskContext();if(showKrt&&!state.krt.length)loadKrt()}
-async function loadKrt(){const b=$('krtRefresh');b.disabled=true;b.innerHTML='<span class="spinner"></span>Читаю krt.mos.ru';try{const d=await askJson('/auctions/krt',{cache:'no-store'});state.krt=d.projects||[];state.krtNew=Number(d.new_count||0);state.krtNewDays=Number(d.new_for_days||30);state.krtUnparsed=d.unparsed||[];populateKrtOkrugs();$('krtEmpty').textContent=state.krt.length?'':'Официальный каталог обновляется в фоне. Первые проекты появятся автоматически.';filterKrt();renderKrtNewNote();renderKrtUnparsedNote();loadKrtDecisions();loadKrtTenders();if(!d.complete&&state.krtPolls<18){state.krtPolls++;clearTimeout(state.krtTimer);state.krtTimer=setTimeout(loadKrt,10000)}else state.krtPolls=0}catch(e){$('krtEmpty').style.display='grid';$('krtEmpty').textContent=String(e.message||e)}finally{b.disabled=false;b.textContent='Обновить каталог'}}
+async function loadKrt(){const b=$('krtRefresh');b.disabled=true;b.innerHTML='<span class="spinner"></span>Читаю krt.mos.ru';try{const d=await askJson('/auctions/krt',{cache:'no-store'});state.krt=d.projects||[];state.krtNew=Number(d.new_count||0);state.krtNewDays=Number(d.new_for_days||30);state.krtUnparsed=d.unparsed||[];state.krtCardsState=d.cards_state||null;populateKrtOkrugs();$('krtEmpty').textContent=state.krt.length?'':'Официальный каталог обновляется в фоне. Первые проекты появятся автоматически.';filterKrt();renderKrtNewNote();renderKrtUnparsedNote();renderKrtCardsNote();loadKrtDecisions();loadKrtTenders();if(!d.complete&&state.krtPolls<18){state.krtPolls++;clearTimeout(state.krtTimer);state.krtTimer=setTimeout(loadKrt,10000)}else state.krtPolls=0}catch(e){$('krtEmpty').style.display='grid';$('krtEmpty').textContent=String(e.message||e)}finally{b.disabled=false;b.textContent='Обновить каталог'}}
 function updateKrtOkrugLabel(){const values=KRT_OKRUGS.filter(x=>state.krtOkrugs.has(x)),button=$('krtOkrugToggle');button.textContent=!values.length?'Все округа':values.length<=3?values.join(', '):`${values.slice(0,2).join(', ')} +${values.length-2}`;button.title=values.length?values.join(', '):'Все округа';$('krtOkrugClear').disabled=!values.length}
 function populateKrtOkrugs(){const values=KRT_OKRUGS,options=$('krtOkrugOptions');options.innerHTML='';values.forEach(value=>{const label=document.createElement('label'),input=document.createElement('input'),text=document.createElement('span');label.className='multi-option';input.type='checkbox';input.value=value;input.checked=state.krtOkrugs.has(value);text.textContent=value;input.onchange=()=>{input.checked?state.krtOkrugs.add(value):state.krtOkrugs.delete(value);updateKrtOkrugLabel();filterKrt()};label.append(input,text);options.appendChild(label)});updateKrtOkrugLabel()}
 function closeKrtOkrugs(){const menu=$('krtOkrugMenu'),button=$('krtOkrugToggle');menu.classList.add('hidden');button.setAttribute('aria-expanded','false')}
@@ -1136,6 +1136,45 @@ function renderKrtUnparsedNote(){
    +`${bad.length>3?' и другие':''}.</div>`;
 }
 
+// Сколько карточек города прочитано и на чём споткнулись остальные.
+// Застройщик и реновация приходят с карточки krt.mos.ru — бесплатно, без
+// поиска, — и когда не отвечает НИ ОДНА, на экране это выглядит как «признаков
+// реновации нет» (владелец, 02.09.2026: «нет никаких признаков реновации и
+// тп»). Отказ каждой карточки ловился по отдельности и молча, поэтому общая
+// причина — просроченный корень сертификата, смена адреса — не была видна
+// нигде. Молчащая проверка неотличима от отсутствующей.
+// Сколько находок ждут перечитывания по новому правилу привязки. Смена версии
+// правила снимает признаки СРАЗУ У ВСЕХ — иначе неверная привязка жила бы
+// вечно, — и пустая колонка без этой строки читается как «заново
+// атрибутировать все каждый раз» (владелец, 02.09.2026). Перечитать надо один
+// раз, и кнопка для этого уже есть.
+function renderKrtStaleNote(){
+ const box=$('krtRankStatus'), n=state.krtStaleRules||0;
+ if(!box||!n)return;
+ box.style.display='';
+ if(!box.innerHTML.includes('прежним правилом'))
+  box.innerHTML+=`<div class="source">Находок, прочитанных прежним правилом`
+   +` привязки: ${n}. Правило сменилось, и по нему признаки не ставятся —`
+   +` это «не знаем», а не «свободна». Перечитать разом — кнопкой «Прочитать`
+   +` публикации по планируемым»; повторять при каждом открытии не нужно.</div>`;
+}
+
+function renderKrtCardsNote(){
+ const box=$('krtRankStatus'), st=state.krtCardsState;
+ if(!box||!st)return;
+ if(!st.failed&&!st.unknown)return;
+ const bits=[`Карточки города: прочитано ${st.read||0}`];
+ if(st.failed)bits.push(`не ответили ${st.failed}`);
+ if(st.unknown)bits.push(`ещё не спрошены ${st.unknown}`);
+ const why=Object.entries(st.reasons||{}).map(([r,n])=>`${r} — ${n}`).join('; ');
+ box.style.display='';
+ if(!box.innerHTML.includes('Карточки города:'))
+  box.innerHTML+=`<div class="source">${esc(bits.join(', '))}.`
+   +(why?` Причина: ${esc(why)}.`:'')
+   +` Пока карточка не прочитана, застройщик и реновация у неё не «отсутствуют»,`
+   +` а неизвестны.</div>`;
+}
+
 // Решения о КРТ, у которых нет карточки в каталоге. Каталог отвечает на «какие
 // площадки город показывает», решения — на «о каких он принял решение», и это
 // разные множества: у ручной таблицы владельца шесть площадок с решениями
@@ -1434,7 +1473,8 @@ async function loadKrtRanking(){
   state.krtRank={};(d.rows||[]).forEach(row=>{state.krtRank[row.slug]=row;
    if(row.available&&row.traffic_light)state.krtModels[row.slug]={traffic_light:row.traffic_light}});
   state.krtRankProgress=d.progress||null;
-  renderKrtRankStatus();renderKrt();
+  state.krtStaleRules=Number(d.stale_rules_count||0);
+  renderKrtRankStatus();renderKrt();renderKrtStaleNote();
   clearTimeout(state.krtRankTimer);
   if(d.progress&&(d.progress.running||d.progress.running_elsewhere))state.krtRankTimer=setTimeout(loadKrtRanking,3000);
  }catch(e){const box=$('krtRankStatus');if(box){box.style.display='';box.className='notice warn';box.textContent=String(e.message||e)}}
