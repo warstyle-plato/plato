@@ -4,7 +4,9 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime
 from html.parser import HTMLParser
-from urllib.parse import urlencode, urljoin, urlparse
+from urllib.parse import (
+    parse_qsl, urlencode, urljoin, urlparse, urlsplit, urlunsplit,
+)
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
@@ -77,6 +79,10 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
     SEARCH_URL = "https://www.roseltorg.ru/procedures/search"
     DISCOVERY_TAGS = ("земельный участок", "комплексное развитие")
     DISCOVERY_MAX_PAGES = 3
+    # У раздела свой обход: на экране владельца в нём 44 процедуры, а страница
+    # отдаёт заметно меньше. Пять страниц с запасом; кончились новые ссылки —
+    # обход прекращается сам, не тратя срок.
+    SECTION_MAX_PAGES = 5
     # Раздел имущества площадки: там город публикует аукционы КРТ. Адрес
     # прислан владельцем (01.09.2026) вместе с живым лотом на экране —
     # аукцион на право заключения договора о КРТ нежилой застройки Москвы,
@@ -113,6 +119,21 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
         return cls.SEARCH_URL + "?" + urlencode(params)
 
     @staticmethod
+    def _paged(url: str, page: int) -> str:
+        """Тот же адрес со страницей. Первая — как есть, чужие параметры целы.
+
+        Раздел приходит с фильтрами владельца в строке запроса; собирать адрес
+        заново значило бы потерять их, а вместе с ними и сам раздел.
+        """
+        if page <= 1:
+            return url
+        parts = urlsplit(url)
+        query = [(key, value) for key, value in parse_qsl(parts.query, keep_blank_values=True)
+                 if key != "page"]
+        query.append(("page", str(page)))
+        return urlunsplit(parts._replace(query=urlencode(query)))
+
+    @staticmethod
     def _procedure_urls(base_url: str, links: list[tuple[str, str]]) -> list[str]:
         out: list[str] = []
         seen: set[str] = set()
@@ -142,6 +163,17 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
     @classmethod
     def _looks_like_krt(cls, title: str) -> bool:
         return bool(cls._KRT_TITLE.search(str(title or "")))
+
+    @classmethod
+    def _remember_titles(cls, base_url: str, links: list[tuple[str, str]],
+                         titles: dict[str, str]) -> None:
+        """Подпись ссылки к её карточке. Первая непустая выигрывает."""
+        for href, text in links:
+            if not text:
+                continue
+            for url in cls._procedure_urls(base_url, [(href, text)]):
+                if not titles.get(url):
+                    titles[url] = text
 
     @classmethod
     def _ordered_candidates(
@@ -237,35 +269,50 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
         # было бы решением наоборот.
         section_found = 0
         for label, section_url in self.SECTION_URLS:
-            if clock.expired(deadline):
-                self.last_report["reason"] = f"остановлено по времени до раздела «{label}»"
-                break
-            try:
-                req = Request(section_url, headers={"User-Agent": self.USER_AGENT})
-                with urlopen(req, timeout=clock.timeout(deadline, 25)) as response:
-                    html = response.read().decode(
-                        response.headers.get_content_charset() or "utf-8", errors="replace")
-            except Exception as exc:  # noqa: BLE001
-                # Неответ раздела — строка охвата, а не отказ всей разведке:
-                # молчание источника нельзя показывать как отсутствие лотов.
-                self.last_report.setdefault("sections", []).append(
-                    {"name": label, "reason": f"{type(exc).__name__}: {exc}"})
-                continue
-            parser = _RoseltorgHTML()
-            parser.feed(html)
-            found = [url for url in self._procedure_urls(section_url, parser.links)
-                     if url not in seen_urls]
-            for href, text in parser.links:
-                url = self._procedure_urls(section_url, [(href, text)])
-                if url and text and not titles.get(url[0]):
-                    titles[url[0]] = text
-            candidate_urls.extend(found)
-            seen_urls.update(found)
-            section_found += len(found)
-            self.last_report.setdefault("sections", []).append(
-                {"name": label, "procedure_links": len(found),
-                 "krt_titles": sum(1 for url in found
-                                   if self._looks_like_krt(titles.get(url, "")))})
+            # Раздел читается ПОСТРАНИЧНО. Прежде он спрашивался ровно одной
+            # страницей — у тегов обход был, у раздела нет, — и всё, что не
+            # уместилось на первой, до нас не доезжало вовсе. На экране
+            # владельца в этом разделе 44 процедуры (02.09.2026), а мы видели
+            # первую страницу и объясняли недостачу порядком чтения.
+            page_found = 0
+            failed = ""
+            for page in range(1, self.SECTION_MAX_PAGES + 1):
+                if clock.expired(deadline):
+                    self.last_report["reason"] = (
+                        f"остановлено по времени на странице {page} раздела «{label}»")
+                    break
+                page_url = self._paged(section_url, page)
+                try:
+                    req = Request(page_url, headers={"User-Agent": self.USER_AGENT})
+                    with urlopen(req, timeout=clock.timeout(deadline, 25)) as response:
+                        html = response.read().decode(
+                            response.headers.get_content_charset() or "utf-8",
+                            errors="replace")
+                except Exception as exc:  # noqa: BLE001
+                    # Неответ раздела — строка охвата, а не отказ всей разведке:
+                    # молчание источника нельзя показывать как отсутствие лотов.
+                    failed = f"{type(exc).__name__}: {exc}"
+                    break
+                parser = _RoseltorgHTML()
+                parser.feed(html)
+                found = [url for url in self._procedure_urls(page_url, parser.links)
+                         if url not in seen_urls]
+                self._remember_titles(page_url, parser.links, titles)
+                if not found:
+                    # Страница без единой НОВОЙ ссылки — это конец списка либо
+                    # тот же список второй раз: дальше идти незачем.
+                    break
+                candidate_urls.extend(found)
+                seen_urls.update(found)
+                page_found += len(found)
+            section_found += page_found
+            row = {"name": label, "procedure_links": page_found,
+                   "krt_titles": sum(
+                       1 for url in candidate_urls
+                       if self._looks_like_krt(titles.get(url, "")))}
+            if failed:
+                row["reason"] = failed
+            self.last_report.setdefault("sections", []).append(row)
 
         for tag in self.DISCOVERY_TAGS:
             for page in range(1, self.DISCOVERY_MAX_PAGES + 1):
@@ -280,6 +327,12 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
                 parser = _RoseltorgHTML()
                 parser.feed(html)
                 page_urls = self._procedure_urls(search_url, parser.links)
+                # Подписи собираются и здесь: прежде они брались только из
+                # раздела, и у карточек с теговых страниц заголовка не было
+                # вовсе — порядок чтения их не поднимал, а счётчик «КРТ по
+                # заголовкам» их не видел. Правка порядка при этом выглядела
+                # применённой.
+                self._remember_titles(search_url, parser.links, titles)
                 new_urls = [url for url in page_urls if url not in seen_urls]
                 if not new_urls:
                     break
@@ -314,25 +367,59 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
                     except Exception:
                         # Одна битая или недоступная процедура не роняет выдачу.
                         unread += 1
+        # Отсев называет причину. «Одна карточка КРТ» неотличима от «остальные
+        # закрыты», пока не сказано, на каком именно шаге они ушли: владелец
+        # видел единицу и после правки порядка чтения (02.09.2026), и ответить
+        # «почему» было нечем — счётчики говорили только «карточек N, лотов M».
+        dropped: dict[str, int] = {}
+        krt_dropped: dict[str, int] = {}
+
+        def drop(reason: str, is_krt: bool) -> None:
+            dropped[reason] = dropped.get(reason, 0) + 1
+            if is_krt:
+                krt_dropped[reason] = krt_dropped.get(reason, 0) + 1
+
         for lot_url in candidate_urls:
             lot = read.get(lot_url)
             if lot is None:
                 continue
+            # КРТ по заголовку раздела ИЛИ по разбору карточки: подпись бывает
+            # обрезана, а вид лота — прочитан.
+            is_krt = (lot.lot_kind == LotKind.KRT
+                      or self._looks_like_krt(titles.get(lot_url, ""))
+                      or self._looks_like_krt(lot.title or ""))
             if lot.lot_kind not in self.RELEVANT_KINDS:
+                drop("вид лота не девелоперский", is_krt)
                 continue
             if not self._is_asset_disposal(lot):
+                drop("не распоряжение имуществом", is_krt)
                 continue
             if not self._confirmed_moscow(lot):
+                drop("Москва не подтверждена", is_krt)
                 continue
             if not self._is_actionable_status(lot.status):
+                drop(f"статус «{lot.status or 'не назван'}»", is_krt)
                 continue
             if not self._has_current_deadline(lot.application_deadline):
+                drop("срок подачи прошёл или не назван", is_krt)
                 continue
             if lot.canonical_key in seen_lots:
+                drop("дубль", is_krt)
                 continue
             seen_lots.add(lot.canonical_key)
             lot.raw["discovered_via"] = "Roseltorg public tags[] search"
             lots.append(lot)
+        if dropped:
+            self.last_report["dropped"] = dict(
+                sorted(dropped.items(), key=lambda pair: -pair[1]))
+        if krt_dropped:
+            self.last_report["krt_dropped"] = dict(
+                sorted(krt_dropped.items(), key=lambda pair: -pair[1]))
+        self.last_report["krt_read"] = sum(
+            1 for url, lot in read.items()
+            if self._looks_like_krt(titles.get(url, ""))
+            or lot.lot_kind == LotKind.KRT
+            or self._looks_like_krt(lot.title or ""))
         self.last_report["kept"] = len(lots)
         self.last_report["from_section"] = section_found
         if unread:

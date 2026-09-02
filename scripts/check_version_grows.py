@@ -51,6 +51,39 @@ def _show(ref: str) -> str:
     return data.decode("utf-8", errors="replace")
 
 
+def _remote_versions() -> tuple[dict[str, tuple[int, ...]], list[str]]:
+    """Версия у каждой ветки origin и список тех, кого прочитать не вышло.
+
+    Номер сверяют СО ВСЕМИ ветками, а не только с базой: пока ветка живёт,
+    соседняя сессия успевает выпустить пять номеров, и в main их не видно,
+    пока она не слита. Правило было записано 31.08.2026 и держалось на памяти
+    — 02.09.2026 соседняя ветка стояла на 0.21.55 при main 0.21.62 и моей
+    0.21.65, и `--next` напечатал бы ей занятый номер.
+
+    Непрочитанная ветка НАЗЫВАЕТСЯ: в чистой сборке CI ссылок соседей нет
+    вовсе, и молча посчитать по одной базе значило бы вернуть ту же ошибку с
+    уверенным видом.
+    """
+    try:
+        listed = subprocess.run(
+            ["git", "ls-remote", "--heads", "origin"],
+            capture_output=True, check=True, text=True).stdout
+    except (subprocess.CalledProcessError, OSError) as exc:
+        return {}, [f"git ls-remote не ответил ({exc}) — ветки не сверены"]
+    seen: dict[str, tuple[int, ...]] = {}
+    unread: list[str] = []
+    for line in listed.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 2 or not parts[1].startswith("refs/heads/"):
+            continue
+        branch = parts[1][len("refs/heads/"):]
+        try:
+            seen[branch] = _version(_show(f"origin/{branch}"))
+        except (subprocess.CalledProcessError, SystemExit):
+            unread.append(branch)
+    return seen, unread
+
+
 def _next_version(base: tuple[int, ...]) -> str:
     """Первый свободный номер над базой.
 
@@ -81,9 +114,28 @@ def main() -> int:
     if show_next:
         reference = base_ref or "origin/main"
         try:
-            print(_next_version(_version(_show(reference))))
+            highest = _version(_show(reference))
         except subprocess.CalledProcessError:
             raise SystemExit(f"Не удалось прочитать {ENGINE} в {reference}.")
+        taken, unread = _remote_versions()
+        holder = reference
+        for branch, version in taken.items():
+            if version > highest:
+                highest, holder = version, branch
+        print(_next_version(highest))
+        # Чем посчитано — часть ответа: «свободный номер» без списка веток
+        # неотличим от номера, посчитанного по одной базе.
+        print(f"Взято выше {'.'.join(map(str, highest))} — максимума по "
+              f"{len(taken) or 1} веткам (держит {holder}).", file=sys.stderr)
+        if unread:
+            # Одной строкой: в репозитории живут десятки давно брошенных
+            # веток, и строка на каждую утопила бы саму находку — список всех
+            # непрочитанных это шум, в котором теряется ответ.
+            shown = ", ".join(sorted(unread)[:3])
+            print(f"Не прочитано веток: {len(unread)} — ссылок нет локально "
+                  f"({shown}{' и другие' if len(unread) > 3 else ''}). "
+                  "В сверку они не вошли; `git fetch origin --prune` их "
+                  "подтянет.", file=sys.stderr)
         return 0
     previous_ref = base_ref or (argv[0] if argv else "HEAD~1")
     try:
@@ -110,9 +162,14 @@ def main() -> int:
           f"стало {'.'.join(map(str, after))}.", file=sys.stderr)
     print("Движок изменился, значит выпуск другой. Поднимите VERSION в "
           f"{ENGINE} — она объявляется там один раз.", file=sys.stderr)
-    print(f"Свободный номер над этой базой: {_next_version(before)}. "
-          "Его же печатает `python3 scripts/check_version_grows.py --next "
-          "--base origin/main`.", file=sys.stderr)
+    taken, _unread = _remote_versions()
+    highest = before
+    for version in taken.values():
+        highest = max(highest, version)
+    print(f"Свободный номер выше максимума по всем веткам: "
+          f"{_next_version(highest)}. Его же печатает "
+          "`python3 scripts/check_version_grows.py --next --base origin/main` "
+          "— он сверяет ветки, а не только базу.", file=sys.stderr)
     return 1
 
 
