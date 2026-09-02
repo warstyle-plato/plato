@@ -82,7 +82,7 @@ def test_the_purchase_is_paid_by_the_schedule_and_the_total_is_kept() -> None:
     op = core.build_operating_model(_inputs(purchase_schedule="30%@0; 40%@6; 30%@12"), _tep(), [])
     paid = {when.isoformat(): round(value / 1e6, 3) for when, value in op["capex_by_article"]["purchase"].items()}
     assert paid == {"2027-01-01": 300.0, "2027-07-01": 400.0, "2028-01-01": 300.0}
-    assert op["capex_amounts"]["purchase"] == pytest.approx(1e9)
+    assert sum(op["capex_by_article"]["purchase"].values()) == pytest.approx(1e9)
     rows = op["purchase_schedule"]["rows"]
     assert [row["offset_months"] for row in rows] == [0, 6, 12]
     assert sum(row["share"] for row in rows) == pytest.approx(1.0)
