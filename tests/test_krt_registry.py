@@ -277,9 +277,12 @@ def test_krt_multiple_holdings_are_geocoded_as_separate_addresses() -> None:
 
     def geocode(query: str):
         calls.append(query)
-        if query == "Москва, ул. Сеславинская, вл. 6А":
+        # Владение геокодеру не понятно, дом — понятен: с 02.09.2026 лестница
+        # спрашивает «6А», а не «вл. 6А» (см. test_the_krt_point_is_a_house…).
+        if query == "Москва, ул. Сеславинская, 6А":
             return SimpleNamespace(
-                latitude=55.744, longitude=37.499, display_name=query
+                latitude=55.744, longitude=37.499, display_name=query,
+                precision="building",
             )
         raise GeocodingError(f"Адрес «{query}» не найден")
 
@@ -287,8 +290,8 @@ def test_krt_multiple_holdings_are_geocoded_as_separate_addresses() -> None:
         "krt:two-holdings", geocode=geocode, find_krt=lambda query: territory
     )
 
-    assert calls == ["Москва, ул. Сеславинская, вл. 6А"]
-    assert subject.address == "Москва, ул. Сеславинская, вл. 6А"
+    assert calls == ["Москва, ул. Сеславинская, 6А"]
+    assert subject.address == "Москва, ул. Сеславинская, 6А"
     assert "отдельному адресу" in subject.notes[1]
 
 
@@ -315,8 +318,8 @@ def test_krt_falls_back_to_district_when_each_address_is_not_found() -> None:
     )
 
     assert calls == [
-        "Москва, ул. Первая, вл. 1",
-        "Москва, Вторая ул., вл. 2",
+        "Москва, ул. Первая, 1",
+        "Москва, Вторая ул., 2",
         "Москва, район Перово",
     ]
     assert subject.address == "Москва, район Перово"

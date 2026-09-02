@@ -49,6 +49,12 @@ _SPACE = re.compile(r"\s+")
 _NUMBER = re.compile(r"[-+]?\d+(?:[.,]\d+)?")
 
 
+def _map_name_key(value: Any) -> str:
+    """Имя площадки как ключ: регистр, «ё» и знаки препинания не различают."""
+    text = str(value or "").casefold().replace("ё", "е")
+    return _SPACE.sub(" ", re.sub(r"[^0-9a-zа-я]+", " ", text)).strip()
+
+
 @dataclass(frozen=True)
 class KrtTerritory:
     slug: str
@@ -683,25 +689,45 @@ class KrtRegistry:
         save_json(self.map_path, payload)
         return payload
 
-    def map_site(self, slug: str) -> dict[str, Any] | None:
-        """Площадка из файла карты: официальный контур и центр, по слагу.
+    def map_lookup(self, slug: str, name: str = "") -> dict[str, Any]:
+        """Площадка из файла карты и ПРИЧИНА, если её там не нашлось.
 
-        Карточка ставила метку по геокодированному адресу и писала «официальный
-        полигон границ каталогом не публикуется» — при том что файл карты несёт
-        полигон каждой из 263 площадок. Здесь он и берётся; нет площадки в файле
-        — `None`, и карточка честно откатывается на геокодер.
+        Прежде отказ был один на два разных случая: файл карты не прочитан
+        (сеть, сертификат) и площадки в файле нет. Оба возвращали `None`, и
+        карточка писала одно и то же — «площадки нет в файле карты», — а на
+        экране это выглядело как чужая точка без объяснения (владелец,
+        02.09.2026: «там не то на карте место указано»). Молчание источника
+        нельзя показывать как его отрицательный ответ.
+
+        Слаг сверяется первым: он приходит из ссылки портала и в обоих
+        источниках один. Не совпал — пробуем имя: у списка и у карты оно
+        одинаковой строкой, а слаг портал пишет по-разному
+        («varshavskoe-shosse-…» против «varshavskoe-sh-…»), и одна такая
+        разница молча уводила карточку на геокодер.
         """
         clean = str(slug or "").strip()
         if not clean:
-            return None
+            return {"site": None, "problem": "слаг площадки не задан"}
         try:
             payload = self.map_dataset()
-        except Exception:  # noqa: BLE001 — файл карты не прочитан: это не «нет контура»
-            return None
-        for site in (payload or {}).get("sites") or []:
+        except Exception as exc:  # noqa: BLE001 — это не «нет контура», а «нет ответа»
+            return {"site": None,
+                    "problem": f"файл карты реестра не прочитан: {type(exc).__name__}"}
+        sites = (payload or {}).get("sites") or []
+        for site in sites:
             if str(site.get("slug") or "") == clean:
-                return dict(site)
-        return None
+                return {"site": dict(site), "problem": "", "matched": "slug"}
+        wanted = _map_name_key(name)
+        if wanted:
+            for site in sites:
+                if _map_name_key(site.get("name")) == wanted:
+                    return {"site": dict(site), "problem": "", "matched": "name"}
+        return {"site": None,
+                "problem": f"площадки нет в файле карты реестра ({len(sites)} площадок)"}
+
+    def map_site(self, slug: str, name: str = "") -> dict[str, Any] | None:
+        """Площадка из файла карты: официальный контур и центр."""
+        return self.map_lookup(slug, name).get("site")
 
     def _read_order_details(self, order: dict[str, Any]) -> dict[str, Any]:
         """Распознать скан одного распоряжения. Отказ называется, а не молчит."""

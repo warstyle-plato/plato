@@ -52,7 +52,7 @@ def test_the_point_route_asks_the_map_file_before_the_geocoder() -> None:
     source = (ROOT / "auction_search" / "api.py").read_text(encoding="utf-8")
     body = source[source.index("async def auction_krt_point"):]
     body = body[: body.index("async def auction_krt_ranking(")]
-    assert body.index("map_site") < body.index("market.resolve_subject"), \
+    assert body.index("map_lookup") < body.index("market.resolve_subject"), \
         "геокодер спрашивается раньше файла карты"
     assert '"rings_merc": rings' in body and '"geometry_status": geometry_status' in body
     assert "official_polygon" in body and "geocoded_point" in body
