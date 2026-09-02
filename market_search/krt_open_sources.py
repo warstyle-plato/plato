@@ -344,6 +344,30 @@ def _house_numbers(text: str) -> set[str]:
     return out
 
 
+# Публикация пишет адрес по-человечески: «ЖК от STONE на Светлый проезд, 4»,
+# без «вл.». Требовать сокращение значило бы не увидеть номер там, где он
+# написан прямо. Единица измерения рядом снимает совпадение: «55 тыс. м²» —
+# это площадь, а не владение.
+_UNIT_AFTER = re.compile(
+    r"(?iu)^\s*(?:тыс|млн|млрд|га|кв|м2|м²|%|проц|лет|год|мест|машино|руб|₽|"
+    r"этаж|секц|корп|дом(?:ов)?|квартир|человек|жител)")
+
+
+def _says_our_number(sentence: str, ours: set[str]) -> bool:
+    """Назван ли в предложении НАШ номер владения — хоть с «вл.», хоть без."""
+    if not ours:
+        return False
+    if _house_numbers(sentence) & ours:
+        return True
+    flat = str(sentence or "").lower().replace("ё", "е")
+    for number in ours:
+        for found in re.finditer(
+                rf"(?<![\w./,-]){re.escape(number)}(?![\w./-])", flat):
+            if not _UNIT_AFTER.match(flat[found.end():]):
+                return True
+    return False
+
+
 def _house_conflict(sentence: str, ours: set[str]) -> bool:
     """Названы ли в предложении ДРУГИЕ номера владений и только они.
 
@@ -402,6 +426,21 @@ _NOT_BRAND = {"крт", "комплексное развитие террито�
               "планируемый", "в реализации", "проект решения"}
 
 
+# Имя компании в кавычках — не имя проекта. «Оператором стала ГК „Орехово“»:
+# отсюда бралось «Орехово» как бренд площадки, бренд становился вторым якорем,
+# и якорь подтверждал ту самую находку, из которой он же и вышел. Кольцо —
+# оператор доказывал сам себя, и «ГК Орехово» приезжала на Шипиловский, 55 из
+# статьи про Шипиловский, 39 (владелец, 02.09.2026).
+_COMPANY_BEFORE = re.compile(
+    r"(?iu)(?:гк|ооо|оао|зао|пао|ао|нао|ук|сз|тк|гбу|гку|кп|фонд|группа(?:\s+компаний)?|"
+    r"компания|компании|девелопер|застройщик|холдинг|концерн|корпорация)\s*$")
+
+
+def _named_by_a_company(sentence: str, found: "re.Match[str]") -> bool:
+    """Стоит ли перед кавычками форма юрлица — тогда это компания, не проект."""
+    return bool(_COMPANY_BEFORE.search(sentence[:found.start()].rstrip()))
+
+
 def brand_names(docs: Iterable[Any], name: str) -> list[str]:
     """Как площадка называется на рынке — по соседству с её адресом.
 
@@ -428,6 +467,10 @@ def brand_names(docs: Iterable[Any], name: str) -> list[str]:
                 # Имя, состоящее из слов самого адреса, вторым якорем не
                 # является: оно ничего не добавляет.
                 if _mentions(brand, anchors):
+                    continue
+                # Компания, а не проект: иначе оператор становится якорем
+                # площадки и подтверждает сам себя.
+                if _named_by_a_company(sentence, match):
                     continue
                 if brand not in found:
                     found.append(brand)
@@ -548,8 +591,10 @@ def _found(sentence: str, doc: Any) -> dict[str, Any]:
 # Фестивальной, 53А, хотя строит он 6, 6а, 6б (владелец, 02.09.2026), и
 # перечитывать её было незачем — она же «занята».
 #   1 — якорем служила улица;
-#   2 — на улице с несколькими площадками каталога нужен номер владения.
-ANCHOR_RULES_VERSION = 2
+#   2 — на улице с несколькими площадками каталога нужен номер владения;
+#   3 — тяжёлые признаки (оператор, договор, городские нужды) требуют номер
+#       владения или имя проекта всегда, даже когда соседа в каталоге нет.
+ANCHOR_RULES_VERSION = 3
 
 
 def read_findings(
@@ -592,7 +637,7 @@ def read_findings(
 
     def named_ours(sentence: str) -> bool:
         """Назван ли в предложении наш номер владения либо имя проекта."""
-        if _house_numbers(sentence) & houses:
+        if _says_our_number(sentence, houses):
             return True
         return bool(brand_anchors) and _mentions(sentence, brand_anchors)
     operator_named: list[dict[str, Any]] = []
@@ -606,6 +651,11 @@ def read_findings(
     for doc in docs or []:
         checked += 1
         text = f"{getattr(doc, 'title', '')}. {getattr(doc, 'snippet', '')}"
+        # Номер владения доказывается ДОКУМЕНТОМ, а не предложением: настоящая
+        # публикация называет адрес в заголовке, а оператора в тексте, и
+        # требовать номер в той же фразе значило бы терять почти все находки.
+        # Чужой номер при этом отсекается конфликтом ниже — так же, как раньше.
+        proved = named_ours(text)
         for sentence in _sentences(text):
             low = sentence.lower().replace("ё", "е")
             # Якорь площадки в ТОМ ЖЕ предложении: сниппет повторяет запрос, и
@@ -624,18 +674,33 @@ def read_findings(
             if key in seen:
                 continue
             seen.add(key)
+            # Чем тяжелее утверждение, тем строже доказательство. «Оператор
+            # назван», «договор заключён» и «городские нужды» закрывают вход на
+            # площадку — их ставим ТОЛЬКО при названном номере владения или
+            # имени проекта, даже если соседа по улице в каталоге нет вовсе.
+            # «Ты на Шипиловском 55 пишешь, что там ГК Орехово, а это
+            # Шипиловский 39» (владелец, 02.09.2026), и тридцать девятого в
+            # реестре нет: улица нашлась, номер никто не спрашивал.
+            #
+            # Цена названа: на улице, где площадка одна, статья без номера
+            # («оператором на Никулинской стало…») в признак больше не идёт.
+            # Она остаётся в прочитанном и видна — но приписать по ней
+            # застройщика значит однажды приписать чужого.
+            heavy_ok = (proved or named_ours(sentence)) if houses else True
             named = _operator_name(sentence)
-            if named:
+            if named and heavy_ok:
                 item = _found(sentence, doc)
                 item["name"] = named
                 operator_named.append(item)
-            elif any(mark in low for mark in _APPOINTED):
+            elif not named and any(mark in low for mark in _APPOINTED) and heavy_ok:
                 operator_appointed.append(_found(sentence, doc))
-            elif any(mark in low for mark in _TO_BE_CHOSEN):
+            elif not named and any(mark in low for mark in _TO_BE_CHOSEN):
+                # «Право ещё выставят на торги» говорит, что площадка СВОБОДНА:
+                # вход оно не закрывает, и строгость тут была бы потерей.
                 operator_pending.append(_found(sentence, doc))
-            if any(mark in low for mark in _CITY_NEEDS):
+            if any(mark in low for mark in _CITY_NEEDS) and heavy_ok:
                 city_needs.append(_found(sentence, doc))
-            if any(mark in low for mark in _AGREEMENT):
+            if any(mark in low for mark in _AGREEMENT) and heavy_ok:
                 agreement.append(_found(sentence, doc))
             if any(mark in low for mark in _STAGE):
                 stage.append(_found(sentence, doc))

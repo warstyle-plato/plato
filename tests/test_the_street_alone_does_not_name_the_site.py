@@ -66,15 +66,28 @@ def test_our_own_article_still_counts():
     assert [item["name"] for item in found["operator_named"]] == ["Пример"]
 
 
-def test_a_single_site_street_still_works_without_a_number():
-    """Там, где площадка на улице одна, номер не требуется."""
+def test_a_single_site_street_is_not_strict_but_a_heavy_claim_still_needs_proof():
+    """Улица одиночная — строгого режима нет; тяжёлый признак всё равно по номеру.
+
+    Строгость по соседям и строгость по тяжести признака — разные правила.
+    Первое отвечает «опознаёт ли улица площадку», второе — «чем доказано, что
+    вход закрыт». «Шипиловского 39 в реестре нет вовсе» (владелец, 02.09.2026),
+    и первое правило его бы не поймало.
+    """
     siblings = [name for name in catalogue() if name != SOLO]
-    found = read_findings(
+    without = read_findings(
         [doc("Реновация на Никулинской",
              "На Никулинской улице квартал застраивается по программе реновации.")],
         SOLO, siblings)
-    assert found["strict_house"] is False
-    assert found["city_needs"], "на одиночной улице находка потеряна"
+    assert without["strict_house"] is False
+    assert without["city_needs"] == [], "тяжёлый признак поставлен по одной улице"
+    assert without["documents"][0]["anchored"] is True, "документ потерян вместе с признаком"
+    # Тот же текст с нашим номером — находка на месте.
+    with_number = read_findings(
+        [doc("Реновация на Никулинской, вл. 2",
+             "На Никулинской улице, вл. 2 квартал застраивается по программе реновации.")],
+        SOLO, siblings)
+    assert with_number["city_needs"], "находка с номером потеряна"
 
 
 def test_without_siblings_nothing_changes():
