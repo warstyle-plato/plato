@@ -256,5 +256,8 @@ def test_the_four_mute_stage_fields_gave_way_to_the_ladder() -> None:
     assert fields["price_steps"][3] == "text"
     for key in ("growth_stage1_pct", "growth_stage2_pct", "growth_stage3_pct", "growth_stage4_pct"):
         assert key not in fields, f"{key} остаётся на странице, а движок его не читает"
-        assert key in core.DEFAULT_INPUTS, "сохранённые проекты несут ключ — умолчание остаётся"
+        # И из умолчаний тоже: форма 2.0 требует поле на каждую вводную, а
+        # сохранённый проект с лишним ключом страница переживает — он просто
+        # лежит рядом и никуда не едет.
+        assert key not in core.DEFAULT_INPUTS
 
