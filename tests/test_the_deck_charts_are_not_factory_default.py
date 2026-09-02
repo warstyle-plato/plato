@@ -52,16 +52,18 @@ def tables(presentation):
             if getattr(shape, "has_table", False) and shape.has_table]
 
 
-def test_the_bar_wears_the_colour_of_the_report_not_its_own() -> None:
-    """Столбик того же цвета, что на листе, а не «фирменного вообще».
+def test_the_bar_wears_the_declared_palette_of_the_deck() -> None:
+    """Столбик носит объявленный цвет колоды, а не офисный по умолчанию.
 
-    У колоды была своя палитра — темнее и глуше отчёта, — и рядом с ним она
-    читалась как другой документ («нет стилистики Плато», владелец,
-    31.08.2026). Цвет снят с самого свода, а не подобран.
+    Палитра у колоды с 01.09.2026 своя — чёрно-серая с зелёным акцентом
+    (решение владельца): её носят на встречу отдельным файлом. Экран кабинета
+    и PDF при этом остаются синими. Проверяется не «какой синий», а что цвет
+    ОБЪЯВЛЕН нами: офисная палитра PowerPoint даёт свой 4472C4, и по нему
+    сразу видно, что ряд не покрашен вовсе.
     """
     chart = charts(deck(6))[0]
     series = chart.plots[0].series[0]
-    assert str(series.format.fill.fore_color.rgb) == "4E9BDE", "столбик листа"
+    assert str(series.format.fill.fore_color.rgb) == "1F6FB2", "столбик колоды"
     # Обводки у столбика нет: рамка вокруг метки — краска, которая не данные.
     assert series.format.line.fill.type is not None
 
@@ -86,7 +88,7 @@ def test_many_columns_drop_the_labels_and_keep_a_hairline_grid() -> None:
     assert chart.value_axis.has_major_gridlines is True
     assert chart.value_axis.visible is True
     line = chart.value_axis.major_gridlines.format.line
-    assert str(line.color.rgb) == "E3EBF2", "сетка волосяная и отступает на второй план"
+    assert str(line.color.rgb) == "E5E5E5", "сетка волосяная и отступает на второй план"
 
 
 def test_the_column_does_not_fill_its_slot() -> None:
@@ -98,9 +100,9 @@ def test_the_column_does_not_fill_its_slot() -> None:
 
 def test_the_text_does_not_wear_the_data_colour() -> None:
     chart = charts(deck(5))[0]
-    assert str(chart.font.color.rgb) == "5B6B7D"
+    assert str(chart.font.color.rgb) == "6B7280"
     labels = chart.plots[0].data_labels
-    assert str(labels.font.color.rgb) == "16202B"
+    assert str(labels.font.color.rgb) == "000000"
     # Формат зависит от величины: «#,##0.#» в русской раскладке печатает
     # разделитель дробной части и там, где дроби нет, — подписи столбиков
     # стояли как «576 680,» (снимок владельца, 31.08.2026). Крупным числам
@@ -875,17 +877,25 @@ def test_the_strip_takes_its_names_from_the_legend_by_colour() -> None:
     assert page["lines"] == [], page["lines"]
 
 
-def test_the_deck_wears_the_palette_of_the_report() -> None:
-    """«Нет стилистики Плато вообще, как в PDF» (владелец, 31.08.2026).
+def test_the_deck_wears_its_own_declared_palette() -> None:
+    """У колоды палитра своя, и она объявлена в одном месте.
 
-    Токены сняты у самого отчёта, а не подобраны: заголовок раздела там
-    приглушённый, а не чёрный, столбик светлее фирменного синего, а вывод —
-    плашка с полосой, а не серая строка.
+    До 01.09.2026 колода носила токены отчёта — синие, как экран кабинета.
+    Владелец прислал колоду, перекрашенную надстройкой в чёрно-серую с зелёным
+    акцентом, и выбрал её ДЛЯ КОЛОДЫ: её носят на встречу отдельным файлом.
+    Экран и PDF остаются синими — перекрашивать их он не просил, а два
+    несогласованных решения об одном цвете хуже одного явного.
+
+    Проверяется не красота, а что цвета объявлены здесь и не расползлись
+    литералами по функциям: разъехавшись, они дадут слайды разного вида в
+    одной колоде, и заметить это можно будет только глазами.
     """
     source = (ROOT / "market_search" / "sales_deck.py").read_text(encoding="utf-8")
-    assert "0x4E, 0x9B, 0xDE" in source, "столбик листа"
-    assert "0xF6, 0xF9, 0xFC" in source, "подложка плашки вывода"
-    assert "0x33, 0x42, 0x4F" in source, "текст вывода"
+    assert "0x1F, 0x6F, 0xB2" in source, "столбик факта"
+    assert "0x15, 0x80, 0x3D" in source, "зелёная полоса вывода"
+    assert "0xF5, 0xF5, 0xF5" in source, "подложка плашки вывода"
+    assert "0x1A, 0x1A, 0x1A" in source, "текст вывода"
+    assert "0xE5, 0xE5, 0xE5" in source, "волосяная линейка"
     assert "def put_note(" in source, "вывод рисуется плашкой, а не строкой"
 
 
