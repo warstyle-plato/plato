@@ -1176,7 +1176,13 @@ def install(app: FastAPI) -> None:
         # стояло имя `service`, а оно живёт локально внутри маршрута выдачи
         # лотов: снаружи его не существует, и кнопка «Что пишут об этой
         # площадке» отвечала пятисоткой ВСЕГДА (экран владельца, 01.09.2026).
-        return await run_in_threadpool(_read_open_sources, project or {})
+        found = await run_in_threadpool(_read_open_sources, project or {})
+        # Прочитанное остаётся на сервере, а не в памяти вкладки: поиск
+        # платный, и потерянная находка — это второй счёт за тот же ответ.
+        # Кладётся туда же, куда кладёт прогон, и общее для всех.
+        if found.get("available") is not False:
+            await run_in_threadpool(krt_ranking.remember, slug, {"press_facts": found})
+        return found
 
     @app.get("/auctions/krt/{slug}/card-facts")
     async def auction_krt_card_facts(slug: str) -> dict[str, Any]:

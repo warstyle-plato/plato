@@ -1593,9 +1593,15 @@ async function loadKrtCardFacts(x){
   }
  }catch(e){/* не ответила карточка — это «не спросили», а не «застройщика нет» */}
 }
-async function loadKrtPress(x){
+async function loadKrtPress(x, force){
  const box=document.getElementById('krtPressBox');
  if(!box)return;
+ // Прочитанное лежит на сервере, в строке рейтинга: показываем его сразу и
+ // второй раз за тот же ответ не платим. Поиск платный, а раньше находка жила
+ // в памяти вкладки и пропадала при перезагрузке — «сейчас всё слетает»
+ // (владелец, 02.09.2026). Перечитать можно по требованию, кнопкой.
+ const kept=state.krtPress[x.slug]||(state.krtRank[x.slug]||{}).press_facts||null;
+ if(kept&&!force){state.krtPress[x.slug]=kept;showKrtPress(x,kept,true);return}
  box.innerHTML='<div class="notice"><span class="spinner"></span>Читаю публикации об этой площадке…</div>';
  try{
   const d=await askJson('/auctions/krt/'+encodeURIComponent(x.slug)+'/open-sources');
@@ -1605,40 +1611,50 @@ async function loadKrtPress(x){
    return;
   }
   state.krtPress[x.slug]=d;
-  const items=krtPressLines(d.operator_named,'Оператор назван')
-   +krtPressLines(d.operator_appointed,'Оператор назначен, имя не названо')
-   +krtPressLines(d.agreement,'Договор о КРТ уже заключён — войти нельзя')
-   +krtPressLines(d.operator_pending,'Право ещё выставят на торги')
-   +krtPressLines(d.city_needs,'Городские нужды')
-   +krtPressLines(d.stage,'Стадия');
-  // Имя площадки бывает не адресом, а перечнем общих слов — «Магистральные
-  // улицы тер. 4, 5, 6». Привязать к ней находку нечем: под такой якорь
-  // подходит любая проза о московских магистралях, и в карточку приезжала
-  // статья про Москва-Сити (экран владельца, 02.09.2026). Прочитанное
-  // показываем, признаков не ставим — и говорим, почему.
-  const anchorless=d.anchorless?'<div class="notice warn">Имя площадки в каталоге состоит '
-    +'из общих слов, и привязать к ней находку по нему нельзя: под такой якорь подходит '
-    +'любая статья о городе. Спрашивали по району; прочитанное ниже, но признаков по нему '
-    +'не ставим — иначе чужой текст стал бы фактом об этой площадке.</div>':'';
-  box.innerHTML='<div class="section"><h3>Что пишут об этой площадке</h3>'+anchorless
-   +(items||(d.anchorless?'':'<div class="notice">В прочитанных публикациях об операторе и городских нуждах '
-     +'не сказано. Это «не нашли», а не «нет»: искали по '+(d.checked||0)+' документам.</div>'))
-   +krtPressDocs(d)
-   +`<div class="source">Запросы: ${esc((d.queries||[]).join(' · '))}. `
-   +'Признак ставится только вместе с цитатой: сниппет поиска повторяет слова запроса, '
-   +'и без привязки к самой площадке сюда попал бы любой соседний проект. '
-   +(d.telegram_asked
-     ? (d.telegram_found
-        ? 'Каналы спрошены, из них '+d.telegram_found+' находок — они помечены отдельно: '
-          +'канал не издание, опровергать пост никто не обязан.'
-        : 'Каналы спрошены — в них об этой площадке ничего не нашлось. Это «не нашли», а не «нет».')
-     : 'Каналы не спрошены.')
-   +'</div></div>';
+  showKrtPress(x,d,false);
   // Найденное входит в фильтр: иначе оно есть на карточке и не влияет ни на что.
   filterKrt();
  }catch(e){
   box.innerHTML=`<div class="notice warn">${esc(String(e.message||e))}</div>`;
  }
+}
+function showKrtPress(x,d,stored){
+ const box=document.getElementById('krtPressBox');
+ if(!box)return;
+ const items=krtPressLines(d.operator_named,'Оператор назван')
+  +krtPressLines(d.operator_appointed,'Оператор назначен, имя не названо')
+  +krtPressLines(d.agreement,'Договор о КРТ уже заключён — войти нельзя')
+  +krtPressLines(d.operator_pending,'Право ещё выставят на торги')
+  +krtPressLines(d.city_needs,'Городские нужды')
+  +krtPressLines(d.stage,'Стадия');
+ // Имя площадки бывает не адресом, а перечнем общих слов — «Магистральные
+ // улицы тер. 4, 5, 6». Привязать к ней находку нечем: под такой якорь
+ // подходит любая проза о московских магистралях, и в карточку приезжала
+ // статья про Москва-Сити (экран владельца, 02.09.2026). Прочитанное
+ // показываем, признаков не ставим — и говорим, почему.
+ const anchorless=d.anchorless?'<div class="notice warn">Имя площадки в каталоге состоит '
+   +'из общих слов, и привязать к ней находку по нему нельзя: под такой якорь подходит '
+   +'любая статья о городе. Спрашивали по району; прочитанное ниже, но признаков по нему '
+   +'не ставим — иначе чужой текст стал бы фактом об этой площадке.</div>':'';
+ box.innerHTML='<div class="section"><h3>Что пишут об этой площадке</h3>'+anchorless
+  +(items||(d.anchorless?'':'<div class="notice">В прочитанных публикациях об операторе и городских нуждах '
+    +'не сказано. Это «не нашли», а не «нет»: искали по '+(d.checked||0)+' документам.</div>'))
+  +krtPressDocs(d)
+  +`<div class="source">Запросы: ${esc((d.queries||[]).join(' · '))}. `
+  +'Признак ставится только вместе с цитатой: сниппет поиска повторяет слова запроса, '
+  +'и без привязки к самой площадке сюда попал бы любой соседний проект. '
+  +(d.telegram_asked
+    ? (d.telegram_found
+       ? 'Каналы спрошены, из них '+d.telegram_found+' находок — они помечены отдельно: '
+         +'канал не издание, опровергать пост никто не обязан.'
+       : 'Каналы спрошены — в них об этой площадке ничего не нашлось. Это «не нашли», а не «нет».')
+    : 'Каналы не спрошены.')
+  +(stored?' Показано прочитанное раньше — оно лежит на сервере и общее для всех.':'')
+  +'</div>'
+  +'<button type="button" class="pdfbtn" id="krtPressAgain">'
+  +(stored?'Перечитать публикации':'Прочитать заново')+'</button></div>';
+ const again=document.getElementById('krtPressAgain');
+ if(again)again.onclick=()=>loadKrtPress(x,true);
 }
 // Торги по КРТ. Лоты берутся те, что уже собраны на вкладке «Торги», а
 // совпадение считает сервер: правило одно на весь модуль, и вторая его
