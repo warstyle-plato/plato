@@ -28,8 +28,17 @@ SOLO = "Никулинская ул., вл. 2"
 
 
 def catalogue() -> list[str]:
-    data = json.loads((ROOT / "data" / "market" / "krt" / "catalogue.json").read_text("utf-8"))
-    return [str(row.get("name") or "") for row in data["projects"]]
+    """Имена площадок — фикстурой, а не рабочим каталогом.
+
+    Рабочий `data/market/krt/catalogue.json` лежит в .gitignore: на машине он
+    есть, на CI контейнер чистый — и тест, читающий его, падал ровно там, где
+    его никто не смотрит, а локально был зелёным. Фикстура несёт срез улиц, по
+    которым идёт правило общего якоря, и дату снимка.
+    """
+    data = json.loads(
+        (ROOT / "tests" / "fixtures" / "krt_catalogue_streets_20260902.json")
+        .read_text("utf-8"))
+    return [str(name) for name in data["names"]]
 
 
 def doc(title: str, snippet: str) -> SimpleNamespace:
