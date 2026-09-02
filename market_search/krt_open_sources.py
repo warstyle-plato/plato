@@ -109,6 +109,30 @@ _AGREEMENT = ("заключен договор о комплексном", "за
 
 # Стадия проекта: не признак, а факт с датой — им объясняется, почему площадка
 # ещё «Планируемая», а работа по ней уже идёт.
+# Торги на право заключения договора КРТ — это вход на площадку. Закупка
+# подрядчика действующим оператором входом не является и площадку доступной не
+# делает (методика владельца, 02.09.2026). Прежде любое слово «торги» шло в
+# один признак, и поиск генподрядчика читался как открытый аукцион.
+_CONTRACT_TENDER = ("на право заключения договора о комплексном",
+                    "на право заключения договора крт",
+                    "торги на право реализации проекта крт",
+                    "аукцион на право заключения договора о комплексном")
+_CONTRACTOR_TENDER = ("генерального подрядчика", "генподряд", "подрядчика",
+                      "закупк", "поставщик", "проектировщика", "изыскан")
+
+# Роль Фонда реновации записывается БУКВАЛЬНО: упоминание Фонда не означает,
+# что он оператор КРТ. У владельца на 55 площадках Фонд оператором назван
+# один раз, а соглашение с ним предусмотрено у многих.
+_FUND = ("фонд реновации", "фонда реновации", "фондом реновации")
+_FUND_ROLES = (("оператор", "оператор"), ("застройщик", "застройщик"),
+               ("соглашени", "сторона соглашения"), ("договор", "сторона договора"))
+
+# Надёжность источника — часть ответа, а не наша уверенность. Три уровня по
+# методике владельца: адресный официальный источник, отраслевой или
+# реестровый, и «только карточка».
+_TRADE_SOURCES = ("erzrf.ru", "rbc.ru", "vedomosti.ru", "kommersant.ru", "interfax.ru",
+                  "realty.rbc.ru", "cian.ru", "dp.ru", "forbes.ru", "stroygaz.ru")
+
 _STAGE = ("представлена концепция", "утвержден проект планировки",
           "утверждён проект планировки", "объявлены торги",
           "получено разрешение на строительство", "начались работы")
@@ -344,6 +368,30 @@ def _house_numbers(text: str) -> set[str]:
     return out
 
 
+# Публикация пишет адрес по-человечески: «ЖК от STONE на Светлый проезд, 4»,
+# без «вл.». Требовать сокращение значило бы не увидеть номер там, где он
+# написан прямо. Единица измерения рядом снимает совпадение: «55 тыс. м²» —
+# это площадь, а не владение.
+_UNIT_AFTER = re.compile(
+    r"(?iu)^\s*(?:тыс|млн|млрд|га|кв|м2|м²|%|проц|лет|год|мест|машино|руб|₽|"
+    r"этаж|секц|корп|дом(?:ов)?|квартир|человек|жител)")
+
+
+def _says_our_number(sentence: str, ours: set[str]) -> bool:
+    """Назван ли в предложении НАШ номер владения — хоть с «вл.», хоть без."""
+    if not ours:
+        return False
+    if _house_numbers(sentence) & ours:
+        return True
+    flat = str(sentence or "").lower().replace("ё", "е")
+    for number in ours:
+        for found in re.finditer(
+                rf"(?<![\w./,-]){re.escape(number)}(?![\w./-])", flat):
+            if not _UNIT_AFTER.match(flat[found.end():]):
+                return True
+    return False
+
+
 def _house_conflict(sentence: str, ours: set[str]) -> bool:
     """Названы ли в предложении ДРУГИЕ номера владений и только они.
 
@@ -402,6 +450,21 @@ _NOT_BRAND = {"крт", "комплексное развитие террито�
               "планируемый", "в реализации", "проект решения"}
 
 
+# Имя компании в кавычках — не имя проекта. «Оператором стала ГК „Орехово“»:
+# отсюда бралось «Орехово» как бренд площадки, бренд становился вторым якорем,
+# и якорь подтверждал ту самую находку, из которой он же и вышел. Кольцо —
+# оператор доказывал сам себя, и «ГК Орехово» приезжала на Шипиловский, 55 из
+# статьи про Шипиловский, 39 (владелец, 02.09.2026).
+_COMPANY_BEFORE = re.compile(
+    r"(?iu)(?:гк|ооо|оао|зао|пао|ао|нао|ук|сз|тк|гбу|гку|кп|фонд|группа(?:\s+компаний)?|"
+    r"компания|компании|девелопер|застройщик|холдинг|концерн|корпорация)\s*$")
+
+
+def _named_by_a_company(sentence: str, found: "re.Match[str]") -> bool:
+    """Стоит ли перед кавычками форма юрлица — тогда это компания, не проект."""
+    return bool(_COMPANY_BEFORE.search(sentence[:found.start()].rstrip()))
+
+
 def brand_names(docs: Iterable[Any], name: str) -> list[str]:
     """Как площадка называется на рынке — по соседству с её адресом.
 
@@ -428,6 +491,10 @@ def brand_names(docs: Iterable[Any], name: str) -> list[str]:
                 # Имя, состоящее из слов самого адреса, вторым якорем не
                 # является: оно ничего не добавляет.
                 if _mentions(brand, anchors):
+                    continue
+                # Компания, а не проект: иначе оператор становится якорем
+                # площадки и подтверждает сам себя.
+                if _named_by_a_company(sentence, match):
                     continue
                 if brand not in found:
                     found.append(brand)
@@ -499,26 +566,58 @@ def _looks_like_a_place(tail: str, found: "re.Match[str]") -> bool:
     return bool(_TOPONYM_WORD.match(raw))
 
 
-def _operator_name(sentence: str) -> str:
-    """Имя оператора. Нет имени — пустая строка, а не догадка."""
-    word = _OPERATOR_WORD.search(sentence)
-    if word:
-        tail = sentence[word.end():word.end() + 140]
-        found = _NAME.search(tail)
-        if found and not _looks_like_a_place(tail, found):
+# Оператор КРТ, застройщик и правообладатель — ТРИ РАЗНЫХ ЛИЦА, и методика
+# владельца (проверка 55 площадок, 02.09.2026) держит их тремя колонками:
+# «застройщик здания, правообладатель земли и оператор КРТ могут быть разными
+# лицами», а «бренд ЖК сам по себе оператором не считается». У нас всё сливалось
+# в один признак: «застройщиком выступает ПАО „ПИК“» закрывало вход на площадку
+# наравне с названным оператором. На его проверке оператор установлен у ТРЁХ
+# площадок из 55 — у нас их было кратно больше, и это разница между
+# «проверено» и «показалось».
+_ROLE_WORDS = (
+    ("operator", re.compile(r"(?iu)\bоператор\w*")),
+    ("developer", re.compile(r"(?iu)\b(?:застройщик\w*|девелопер\w*|инвестор\w*|"
+                             r"правообладател\w*|собственник\w*)")),
+)
+
+
+def _named_role(sentence: str) -> tuple[str, str]:
+    """Имя и РОЛЬ: оператор или застройщик. Нет имени — пустая пара.
+
+    Роль берётся у того слова, после которого стоит имя: «оператором выступает
+    X» и «застройщиком выступает X» — разные утверждения о разных лицах.
+    """
+    best: tuple[int, str, str] = (10 ** 6, "", "")
+    for role, word in _ROLE_WORDS:
+        for found_word in word.finditer(sentence):
+            tail = sentence[found_word.end():found_word.end() + 140]
+            found = _NAME.search(tail)
+            if not found or _looks_like_a_place(tail, found):
+                continue
             name = _clean_name(found.group("name"))
-            if name and not _is_not_an_operator(name):
-                return name
-    # «ЖК от STONE» — то же утверждение другой формой: имя стоит перед адресом,
-    # и хвостовой разбор его не достаёт.
+            if not name or _is_not_an_operator(name):
+                continue
+            if found_word.start() < best[0]:
+                best = (found_word.start(), name, role)
+    if best[1]:
+        return best[1], best[2]
+    # «ЖК от STONE» — имя стоит перед адресом, и хвостовой разбор его не
+    # достаёт. Это ЗАСТРОЙЩИК бренда, а не оператор КРТ: бренд оператором не
+    # считается (методика владельца).
     branded = _BRAND_OF.search(sentence)
     if branded:
         name = _clean_name(branded.group("name"))
         low = name.lower().rstrip("аеиоуыюя")
         if (name and not any(low.startswith(stem[:6]) for stem in _NOT_A_BRAND)
                 and not _is_not_an_operator(name)):
-            return name
-    return ""
+            return name, "developer"
+    return "", ""
+
+
+def _operator_name(sentence: str) -> str:
+    """Имя оператора КРТ. Застройщик сюда не идёт — он отвечает на другой вопрос."""
+    name, role = _named_role(sentence)
+    return name if role == "operator" else ""
 
 
 def _is_telegram(domain: str) -> bool:
@@ -541,19 +640,78 @@ def _found(sentence: str, doc: Any) -> dict[str, Any]:
     }
 
 
-def read_findings(docs: Iterable[Any], name: str) -> dict[str, Any]:
-    """Разобрать выдачу по одной площадке. Без цитаты признак не ставится."""
+# Версия правила привязки находки к площадке. Хранимый ответ — не вечный: он
+# посчитан ПРАВИЛОМ, и когда правило меняется, прежний ответ перестаёт быть
+# ответом. Занятость спрашивается один раз («отданная площадка свободной не
+# становится»), поэтому неверная находка иначе живёт вечно: «Бореалис» стоял у
+# Фестивальной, 53А, хотя строит он 6, 6а, 6б (владелец, 02.09.2026), и
+# перечитывать её было незачем — она же «занята».
+#   1 — якорем служила улица;
+#   2 — на улице с несколькими площадками каталога нужен номер владения;
+#   3 — тяжёлые признаки (оператор, договор, городские нужды) требуют номер
+#       владения или имя проекта всегда, даже когда соседа в каталоге нет;
+#   4 — оператор, застройщик и Фонд разведены по методике владельца, торги
+#       считаются только на право договора КРТ, у находки есть надёжность.
+ANCHOR_RULES_VERSION = 4
+
+
+def _confidence(items: Iterable[dict[str, Any]]) -> str:
+    """Надёжность находки по классу источника, а не по нашей уверенности."""
+    domains = [str(item.get("domain") or "").lower() for item in items]
+    if any(any(host in domain for host in _TRUSTED) for domain in domains):
+        return "высокая"
+    if domains:
+        return "средняя" if any(domain for domain in domains) else "ограниченная"
+    return "ограниченная"
+
+
+def read_findings(
+    docs: Iterable[Any], name: str, siblings: Iterable[str] = ()
+) -> dict[str, Any]:
+    """Разобрать выдачу по одной площадке. Без цитаты признак не ставится.
+
+    `siblings` — имена остальных площадок каталога. По ним видно, опознаёт ли
+    улица площадку вообще. «Варшавское шоссе, вл. 37, Нагатинская ул., влд.
+    3А/6» давало якоря «варша» и «нагат»: под них подходит любая статья про
+    Нагатино и про пятнадцать километров Варшавки, и в карточку приехали чужая
+    реновация и чужой застройщик (владелец, 02.09.2026: «мы анализировали
+    Нагатинскую, там нет ни реновации, ни ФСК»).
+
+    Правило то же, что у геокодера: якорь обязан быть не менее точным, чем то,
+    что он опознаёт. Улица, на которой стоит ещё одна площадка каталога,
+    площадку не опознаёт — засчитывается только упоминание с НАШИМ номером
+    владения либо с доказанным именем проекта. Улица, где площадка одна,
+    работает как прежде: требовать номер там значило бы терять настоящие
+    находки — «на Фестивальной» пишут и без номера.
+    """
     anchors, phrase = _site_anchor(name)
     anchors = set(anchors)
     houses = _house_numbers(name)
+    neighbours: set[str] = set()
+    for other in siblings or ():
+        if str(other or "").strip() and str(other) != str(name):
+            neighbours |= _anchor_words(other)
+    shared = anchors & neighbours
+    strict = bool(houses) and bool(shared)
     # Бренд площадки, если он доказан соседством с адресом, работает якорем
     # наравне с адресом: статья, где сказано только «Строгино 360», иначе
     # проходит мимо.
     docs = list(docs or [])
     brands = brand_names(docs, name)
+    brand_anchors: set[str] = set()
     for brand in brands:
-        anchors |= _anchor_words(brand)
+        brand_anchors |= _anchor_words(brand)
+    anchors |= brand_anchors
+
+    def named_ours(sentence: str) -> bool:
+        """Назван ли в предложении наш номер владения либо имя проекта."""
+        if _says_our_number(sentence, houses):
+            return True
+        return bool(brand_anchors) and _mentions(sentence, brand_anchors)
     operator_named: list[dict[str, Any]] = []
+    developer_named: list[dict[str, Any]] = []
+    contract_tender: list[dict[str, Any]] = []
+    fund_role: list[dict[str, Any]] = []
     operator_appointed: list[dict[str, Any]] = []
     operator_pending: list[dict[str, Any]] = []
     city_needs: list[dict[str, Any]] = []
@@ -564,6 +722,11 @@ def read_findings(docs: Iterable[Any], name: str) -> dict[str, Any]:
     for doc in docs or []:
         checked += 1
         text = f"{getattr(doc, 'title', '')}. {getattr(doc, 'snippet', '')}"
+        # Номер владения доказывается ДОКУМЕНТОМ, а не предложением: настоящая
+        # публикация называет адрес в заголовке, а оператора в тексте, и
+        # требовать номер в той же фразе значило бы терять почти все находки.
+        # Чужой номер при этом отсекается конфликтом ниже — так же, как раньше.
+        proved = named_ours(text)
         for sentence in _sentences(text):
             low = sentence.lower().replace("ё", "е")
             # Якорь площадки в ТОМ ЖЕ предложении: сниппет повторяет запрос, и
@@ -574,30 +737,74 @@ def read_findings(docs: Iterable[Any], name: str) -> dict[str, Any]:
             # Улица совпала, а номер владения — чужой: это соседняя площадка.
             if _house_conflict(sentence, houses):
                 continue
+            # Улица общая с соседней площадкой каталога: без нашего номера или
+            # имени проекта предложение — о соседях, а не о нас.
+            if strict and not named_ours(sentence):
+                continue
             key = low[:120]
             if key in seen:
                 continue
             seen.add(key)
-            named = _operator_name(sentence)
-            if named:
+            # Чем тяжелее утверждение, тем строже доказательство. «Оператор
+            # назван», «договор заключён» и «городские нужды» закрывают вход на
+            # площадку — их ставим ТОЛЬКО при названном номере владения или
+            # имени проекта, даже если соседа по улице в каталоге нет вовсе.
+            # «Ты на Шипиловском 55 пишешь, что там ГК Орехово, а это
+            # Шипиловский 39» (владелец, 02.09.2026), и тридцать девятого в
+            # реестре нет: улица нашлась, номер никто не спрашивал.
+            #
+            # Цена названа: на улице, где площадка одна, статья без номера
+            # («оператором на Никулинской стало…») в признак больше не идёт.
+            # Она остаётся в прочитанном и видна — но приписать по ней
+            # застройщика значит однажды приписать чужого.
+            heavy_ok = (proved or named_ours(sentence)) if houses else True
+            named, role = _named_role(sentence)
+            if named and role == "developer" and heavy_ok:
+                # Застройщик здания и правообладатель земли — не оператор КРТ:
+                # вход они не закрывают, но знать их надо.
+                item = _found(sentence, doc)
+                item["name"] = named
+                developer_named.append(item)
+                named = ""
+            if named and heavy_ok:
                 item = _found(sentence, doc)
                 item["name"] = named
                 operator_named.append(item)
-            elif any(mark in low for mark in _APPOINTED):
+            elif not named and any(mark in low for mark in _APPOINTED) and heavy_ok:
                 operator_appointed.append(_found(sentence, doc))
-            elif any(mark in low for mark in _TO_BE_CHOSEN):
+            elif not named and any(mark in low for mark in _TO_BE_CHOSEN):
+                # «Право ещё выставят на торги» говорит, что площадка СВОБОДНА:
+                # вход оно не закрывает, и строгость тут была бы потерей.
                 operator_pending.append(_found(sentence, doc))
-            if any(mark in low for mark in _CITY_NEEDS):
+            if any(mark in low for mark in _CITY_NEEDS) and heavy_ok:
                 city_needs.append(_found(sentence, doc))
-            if any(mark in low for mark in _AGREEMENT):
+            if any(mark in low for mark in _AGREEMENT) and heavy_ok:
                 agreement.append(_found(sentence, doc))
+            # Торги на право договора КРТ — вход; закупка подрядчика — нет.
+            if (any(mark in low for mark in _CONTRACT_TENDER)
+                    and not any(mark in low for mark in _CONTRACTOR_TENDER)):
+                contract_tender.append(_found(sentence, doc))
+            if any(mark in low for mark in _FUND) and heavy_ok:
+                said = next((title for mark, title in _FUND_ROLES if mark in low), "упомянут")
+                item = _found(sentence, doc)
+                item["role"] = said
+                fund_role.append(item)
             if any(mark in low for mark in _STAGE):
                 stage.append(_found(sentence, doc))
     # «Оператор назван» и «оператор назначен» — разные ответы, и второй не
     # отменяется первым: имя может быть в одной публикации, а факт назначения в
     # другой. Пустой список значит «не нашли», а не «нет».
+    # Все находки одним списком: счётчики и надёжность считаются по нему, а
+    # не перечислением корзин. Перечисление уже подвело — заведённые в 0.21.59
+    # застройщик, торги на договор и роль Фонда в счётчик каналов не попали, и
+    # находка из канала показывалась как «каналы спрошены, там пусто».
+    every_finding = (operator_named + developer_named + operator_appointed
+                     + operator_pending + city_needs + agreement + stage
+                     + contract_tender + fund_role)
+
     return {
         "checked": checked,
+        "rules_version": ANCHOR_RULES_VERSION,
         # Что поиск ВООБЩЕ принёс. Без этого «не нашли» и «нечего было
         # находить» на экране неразличимы: читатель видит пустой блок и не
         # может сказать, промолчал источник или промолчали мы. Владелец трижды
@@ -607,11 +814,15 @@ def read_findings(docs: Iterable[Any], name: str) -> dict[str, Any]:
             {"title": str(getattr(doc, "title", "") or "")[:200],
              "url": str(getattr(doc, "url", "") or ""),
              "domain": str(getattr(doc, "domain", "") or ""),
+             # Конфликт номеров считается по документу целиком: заголовок
+             # «КРТ на Фестивальной» номера не называет, а сниппет называет
+             # чужой — это статья о соседе, и привязанной она быть не может.
              "anchored": (not _house_conflict(
                  f"{getattr(doc, 'title', '')}. {getattr(doc, 'snippet', '')}", houses)
                  and any((_mentions(one, anchors) or _mentions_phrase(one, phrase))
-                             for one in _sentences(
-                 f"{getattr(doc, 'title', '')}. {getattr(doc, 'snippet', '')}")))}
+                         and (not strict or named_ours(one))
+                         for one in _sentences(
+                             f"{getattr(doc, 'title', '')}. {getattr(doc, 'snippet', '')}")))}
             for doc in docs[:20]
         ],
         # Чем опознавалась площадка. Пусто — значит имя каталога состоит из
@@ -620,7 +831,19 @@ def read_findings(docs: Iterable[Any], name: str) -> dict[str, Any]:
         # Молча пустой блок читался бы как «в источниках ничего нет».
         "anchors": sorted(anchors) or [" ".join(phrase)] if (anchors or phrase) else [],
         "anchorless": not anchors and not phrase,
+        # Улица общая с соседней площадкой каталога — засчитываем только
+        # упоминания с номером владения или именем проекта. Молчание такого
+        # разбора иначе читалось бы как «в источниках ничего нет».
+        "strict_house": strict,
+        "shared_anchors": sorted(shared),
+        "house_numbers": sorted(houses),
         "operator_named": operator_named[:3],
+        # Застройщик и правообладатель — отдельным ответом: они не оператор.
+        "developer_named": developer_named[:3],
+        # Торги именно на право заключения договора КРТ.
+        "contract_tender": contract_tender[:3],
+        # Роль Фонда реновации — буквально та, что названа.
+        "fund_role": fund_role[:3],
         "operator_appointed": operator_appointed[:3],
         "operator_pending": operator_pending[:3],
         "city_needs": city_needs[:3],
@@ -633,11 +856,22 @@ def read_findings(docs: Iterable[Any], name: str) -> dict[str, Any]:
         "brands": brands,
         # Сколько находок пришло из каналов: пустая строка «спросили каналы, и
         # там пусто» и не спрошенные вовсе каналы выглядят на экране одинаково.
-        "telegram_found": sum(
-            1 for item in operator_named + operator_appointed + operator_pending
-            + city_needs + agreement + stage if item.get("telegram")),
+        "telegram_found": sum(1 for item in every_finding if item.get("telegram")),
         # Заключённый договор занимает площадку так же, как названный оператор:
         # «Планируемая» в каталоге значит «стройка не начата», а не «свободна».
+        # Надёжность идёт от ИСТОЧНИКА, а не от нашей уверенности: адресный
+        # официальный — высокая, отраслевой или реестровый — средняя, ничего
+        # кроме карточки — ограниченная.
+        "confidence": _confidence(
+            operator_named + developer_named + operator_appointed + agreement
+            + city_needs + contract_tender + fund_role),
+        # «Не найдено» — отсутствие подтверждения в доступной выдаче на дату, а
+        # не доказательство отсутствия факта. Молча пустой ответ читается как
+        # второе (методика владельца, 02.09.2026).
+        "not_found_note": (
+            "" if (operator_named or developer_named or agreement or contract_tender)
+            else "не найдено опубликованного подтверждения в доступной выдаче на дату "
+                 "проверки — это не доказательство отсутствия факта"),
         "taken": bool(operator_named or operator_appointed or agreement),
         "free": bool(operator_pending)
         and not (operator_named or operator_appointed or agreement),

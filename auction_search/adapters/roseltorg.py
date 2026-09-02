@@ -131,6 +131,31 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
             out.append(canonical)
         return out
 
+    # Заголовок лота стоит прямо в разделе, и по нему видно КРТ, не открывая
+    # карточку. Раздел отдаёт 79 ссылок (живая проба владельца, 02.09.2026), а
+    # за каждой идёт свой запрос: в общий срок каталога помещается десяток.
+    # Пока порядок был случайным, КРТ читались вперемешку с гаражами и
+    # автостоянками, и до них очередь не доходила — на экране это выглядело как
+    # «фильтр нашёл один КРТ, хотя их там вагон».
+    _KRT_TITLE = re.compile(r"(?iu)комплексн\w*\s+развити\w*\s+территор")
+
+    @classmethod
+    def _looks_like_krt(cls, title: str) -> bool:
+        return bool(cls._KRT_TITLE.search(str(title or "")))
+
+    @classmethod
+    def _ordered_candidates(
+        cls, urls: list[str], titles: dict[str, str]
+    ) -> list[str]:
+        """КРТ вперёд: срок кончается раньше, чем список.
+
+        Порядок внутри групп сохраняется — раздел города спрашивается первым, и
+        менять это местами нельзя.
+        """
+        krt = [url for url in urls if cls._looks_like_krt(titles.get(url, ""))]
+        rest = [url for url in urls if url not in set(krt)]
+        return krt + rest
+
     @staticmethod
     def _confirmed_moscow(lot: AuctionLot) -> bool:
         # Never inspect the whole page here: every Roseltorg page contains the
@@ -205,6 +230,8 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
                                        "«Развитие территории» по Москве")}
         candidate_urls: list[str] = []
         seen_urls: set[str] = set()
+        # Подпись ссылки из раздела: по ней КРТ видно до открытия карточки.
+        titles: dict[str, str] = {}
         # Раздел имущества спрашивается ПЕРВЫМ: это адрес, с которого город
         # публикует КРТ, и уступать его тегам, когда срок кончится на середине,
         # было бы решением наоборот.
@@ -228,11 +255,17 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
             parser.feed(html)
             found = [url for url in self._procedure_urls(section_url, parser.links)
                      if url not in seen_urls]
+            for href, text in parser.links:
+                url = self._procedure_urls(section_url, [(href, text)])
+                if url and text and not titles.get(url[0]):
+                    titles[url[0]] = text
             candidate_urls.extend(found)
             seen_urls.update(found)
             section_found += len(found)
             self.last_report.setdefault("sections", []).append(
-                {"name": label, "procedure_links": len(found)})
+                {"name": label, "procedure_links": len(found),
+                 "krt_titles": sum(1 for url in found
+                                   if self._looks_like_krt(titles.get(url, "")))})
 
         for tag in self.DISCOVERY_TAGS:
             for page in range(1, self.DISCOVERY_MAX_PAGES + 1):
@@ -253,9 +286,14 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
                 candidate_urls.extend(new_urls)
                 seen_urls.update(new_urls)
 
+        # Читаем в порядке «сначала то, за чем пришли»: срок кончается раньше,
+        # чем список карточек.
+        candidate_urls = self._ordered_candidates(candidate_urls, titles)
         lots: list[AuctionLot] = []
         seen_lots: set[str] = set()
         self.last_report["cards"] = len(candidate_urls)
+        self.last_report["krt_titles"] = sum(
+            1 for url in candidate_urls if self._looks_like_krt(titles.get(url, "")))
         # Карточки читаются пачкой, а не по одной. За каждой идёт свой запрос;
         # по очереди сорок две карточки не умещаются в общий срок каталога
         # (сорок секунд на ВСЕ источники), и сбор обрывался на первых. Владелец

@@ -42,7 +42,7 @@ __DEVELOPAID_CONTOUR__
           <div class="multi-options" id="krtOkrugOptions"></div>
         </div>
       </div>
-      <select id="krtStatus"><option value="">Все статусы</option><option>Планируемый</option><option>В реализации</option></select>
+      <select id="krtStatus" title="Статус krt.mos.ru: «Планируемый» и «В реализации» — слова города о стройке. Проект решения статуса каталога не имеет вовсе: карточки у него ещё нет, и по статусу он раньше молча выпадал из выдачи."><option value="">Все статусы</option><option>Планируемый</option><option>В реализации</option><option value="draft">Проект решения</option></select>
       <select id="krtPurpose"><option value="">Любое назначение</option><option value="housing_gfa_sqm">Жильё</option><option value="business_gfa_sqm">Общественно-деловое</option><option value="nonresidential_gfa_sqm">Нежилое</option></select>
       <input id="krtMinHousing" type="number" min="0" step="10000" placeholder="Жильё от, м²"
              title="Мелкие площадки отсекаются по объёму жилья. Площадка, у которой объём жилья не указан, при непустом пороге прячется — она не «маленькая», она неизвестная, и сколько таких скрыто, написано под таблицей.">
@@ -428,6 +428,11 @@ function coverageLine(r){
   // вовсе (владелец, 02.09.2026).
   if(r.kept_krt!==undefined&&r.kept) bits.push(`из них КРТ ${r.kept_krt}`);
   if(r.cards) bits.push(`из ${r.cards} карточек`);
+  // Сколько КРТ обещал сам раздел заголовками — иначе «из них КРТ 1» не
+  // отличить от «КРТ там один»: карточки читаются в срок каталога, и до
+  // непрочитанных очередь не доходит (владелец, 02.09.2026: «в торгах так и
+  // остался один КРТ, хотя их там вагон»).
+  if(r.krt_titles) bits.push(`КРТ по заголовкам раздела ${r.krt_titles}`);
   // Непрочитанная карточка — «не знаем», а не «лота нет»: сбор ограничен общим
   // сроком, и на этом молча терялись лоты (владелец, 02.09.2026).
   if(r.unread_cards) bits.push(`не прочитано ${r.unread_cards}`);
@@ -707,10 +712,42 @@ function krtFit(x){
 // балл за хорошую модель нельзя: она посчитана на предпосылках, а не на сметах,
 // и «прибавка за уверенность» была бы прибавкой за нашу же догадку.
 const KRT_PENALTIES=[
- {key:'llcr', max:35, from:1.20, to:0.90, label:'LLCR проекта'},
- {key:'margin', max:25, from:15, to:0, label:'маржинальность'},
- {key:'weakest', max:10, from:1.00, to:0.80, label:'слабейшая очередь'},
+ {key:'llcr', field:'project_llcr_x', max:35, from:1.20, to:0.90, label:'LLCR проекта'},
+ {key:'margin', field:'margin_pct', max:25, from:15, to:0, label:'маржинальность'},
+ {key:'weakest', field:'weakest_phase_llcr_x', max:10, from:1.00, to:0.80,
+  label:'слабейшая очередь'},
 ];
+// Снижение за экономику меряется по САМОМУ каталогу, а не по абсолютным
+// порогам. Скрининг считает при нулевой цене входа и на общих предпосылках, и
+// на них почти у каждой площадки LLCR ниже 1,20x, а маржа ниже 15%: это
+// свойство наших предпосылок, а не признак площадки. Пока порог абсолютный,
+// весь список читается «Низкое», и сравнивать нечем (владелец, 02.09.2026:
+// «фильтры ни к черту»). Правило то же, что уже применено к шкале объёма:
+// якоря — десятый и девяностый процентили посчитанных строк.
+const KRT_SCALE_MIN_ROWS=8;
+function krtCountedValues(field){
+ const out=[];
+ Object.keys(state.krtRank||{}).forEach(slug=>{
+  const rank=state.krtRank[slug]||{}, model=(state.krtModels||{})[slug]||{};
+  const v=(model.metrics||{})[field]??rank[field];
+  if(v!==null&&v!==undefined&&Number.isFinite(Number(v)))out.push(Number(v));
+ });
+ return out.sort((a,b)=>a-b);
+}
+function krtQuantile(sorted,q){
+ if(!sorted.length)return null;
+ const at=(sorted.length-1)*q, low=Math.floor(at), high=Math.ceil(at);
+ return low===high?sorted[low]:sorted[low]+(sorted[high]-sorted[low])*(at-low);
+}
+// Меньше восьми посчитанных строк — распределения нет, и процентиль по трём
+// числам был бы выдумкой: остаются абсолютные пороги, и это сказано в подписи.
+function krtModelScale(rule){
+ const values=krtCountedValues(rule.field);
+ if(values.length<KRT_SCALE_MIN_ROWS)return null;
+ const to=krtQuantile(values,0.10), from=krtQuantile(values,0.90);
+ if(to===null||from===null||!(from>to))return null;
+ return {from:from,to:to};
+}
 // Чьё это КРТ и не занято ли оно. Читается из проекта решения и карточки —
 // разбор на сервере, здесь только показ. Признак приходит вместе с цитатой:
 // список слов это поиск, а не утверждение, и «не найдено» это не «нет».
@@ -823,7 +860,9 @@ function syncTopScroll(){
  window.addEventListener('resize',syncTopScroll);
 }
 function krtStatusCell(x){
- const label=esc(x.status||'—');
+ // Пустой статус — не «неизвестно»: у проекта решения карточки ещё нет, и
+ // прочерк на его месте читался как пробел в данных.
+ const label=esc(x.status||(x.draft_decision_at?'Проект решения':'—'));
  return `<span class="tag" title="${esc('Статус krt.mos.ru, де-юре: отвечает на «начата ли стройка», а не на «свободна ли площадка». Занятость — в колонке «Шаг»')}">${label}</span>`;
 }
 function krtStageCell(x){
@@ -882,12 +921,12 @@ function krtIntent(x){
  merged.probed=true;
  return merged;
 }
-function krtPenalty(value,rule){
+function krtPenalty(value,rule,scale){
  if(value===null||value===undefined||!Number.isFinite(Number(value)))return 0;
- const v=Number(value);
- if(v>=rule.from)return 0;
- if(v<=rule.to)return rule.max;
- return Math.round(rule.max*(rule.from-v)/(rule.from-rule.to));
+ const v=Number(value), from=scale?scale.from:rule.from, to=scale?scale.to:rule.to;
+ if(v>=from)return 0;
+ if(v<=to)return rule.max;
+ return Math.round(rule.max*(from-v)/(from-to));
 }
 function krtScore(x){
  const fit=krtFit(x), model=state.krtModels[x.slug], rank=state.krtRank[x.slug]||{};
@@ -923,8 +962,19 @@ function krtScore(x){
   cuts.push({label:'в документе сказано о городских нуждах',points:25});
  if(counted){
   [[llcr,KRT_PENALTIES[0]],[margin,KRT_PENALTIES[1]],[weakest,KRT_PENALTIES[2]]].forEach(([v,rule])=>{
-   const p=krtPenalty(v,rule);
-   if(p>0)cuts.push({label:rule.label,points:p});
+   const scale=krtModelScale(rule);
+   let points=krtPenalty(v,rule,scale);
+   let label=rule.label+(scale?' — ниже каталога':'');
+   // Пол остаётся абсолютным и назван своим именем: относительная шкала
+   // сравнивает площадки между собой и молчит о том, что плохи все разом.
+   // Пол абсолютный и называется ВСЕГДА, а не только когда он выше
+   // относительного: относительная шкала сравнивает площадки между собой и о
+   // том, что плохи все разом, молчит.
+   if(rule.key==='llcr'&&Number.isFinite(Number(v))&&Number(v)<1){
+    points=Math.max(points,20);
+    label='LLCR ниже 1,00x — долг не обслуживается даже при нулевой цене входа';
+   }
+   if(points>0)cuts.push({label:label,points:points});
   });
   const ceilingKnown=rank.entry_capacity_rub_per_sqm!==null&&rank.entry_capacity_rub_per_sqm!==undefined;
   if(!ceilingKnown)cuts.push({label:'потолок входа не подобран',points:10});
@@ -1033,7 +1083,12 @@ function filterKrt(){
   // Скрытое считается и называется под таблицей: молча выброшенная площадка
   // читается как её отсутствие.
   if(state.krtOkrugs.size&&!state.krtOkrugs.has(x.okrug))return false;
-  if(status&&x.status!==status)return false;
+  // Проект решения статуса каталога не имеет: он ещё не карточка. Пока выбор
+  // был из двух городских слов, такие площадки выпадали из ЛЮБОГО отбора по
+  // статусу молча — «в фильтре КРТ реализуемые и планируемые, а проекты»
+  // (владелец, 02.09.2026).
+  if(status==='draft'){ if(x.status)return false; }
+  else if(status&&x.status!==status)return false;
   if(purpose&&!(Number(x[purpose])>0))return false;
   if(!krtNeedsPass(x,needs))return false;
   const lots=(state.krtTenders[x.slug]||[]).length;
@@ -1700,7 +1755,16 @@ function showKrtPress(x,d,stored){
    +'из общих слов, и привязать к ней находку по нему нельзя: под такой якорь подходит '
    +'любая статья о городе. Спрашивали по району; прочитанное ниже, но признаков по нему '
    +'не ставим — иначе чужой текст стал бы фактом об этой площадке.</div>':'';
- box.innerHTML='<div class="section"><h3>Что пишут об этой площадке</h3>'+anchorless
+ // Улица общая с соседней площадкой каталога: под её якорь подходит проза о
+ // соседях, и с неё в карточку приезжали чужие реновация и застройщик
+ // (владелец, 02.09.2026). Тогда засчитывается только упоминание с нашим
+ // номером владения или именем проекта — и это сказано, иначе пустой блок
+ // читается как «в источниках ничего нет».
+ const strict=d.strict_house?'<div class="notice">На этой улице стоит ещё одна площадка '
+   +'каталога, поэтому одного названия улицы мало: засчитаны только упоминания '
+   +'с номером владения ('+esc((d.house_numbers||[]).join(', '))+') или с именем проекта. '
+   +'Прочитанное ниже — целиком.</div>':'';
+ box.innerHTML='<div class="section"><h3>Что пишут об этой площадке</h3>'+anchorless+strict
   +(items||(d.anchorless?'':'<div class="notice">В прочитанных публикациях об операторе и городских нуждах '
     +'не сказано. Это «не нашли», а не «нет»: искали по '+(d.checked||0)+' документам.</div>'))
   +krtPressDocs(d)

@@ -200,7 +200,11 @@ def test_the_page_has_the_fields_and_prints_the_schedules() -> None:
     fields = {f[0]: f for _group, items in core.FIELD_GROUPS for f in items}
     for key in ("purchase_schedule", "offices_sales_profile",
                 "retail_sales_profile", "above_parking_sales_profile"):
-        assert key in fields and fields[key][3] == "text", key
+        # Тип поля — «schedule»: график вводится ячейками, а хранится той же
+        # строкой, которую читают и движок, и книга. Лестница цены сюда не
+        # входит: у неё именованные поля этапов по строительной готовности —
+        # «как в квартирах блок Этап и процент» (владелец, 02.09.2026).
+        assert key in fields and fields[key][3] == "schedule", key
         assert core.DEFAULT_INPUTS[key] == ""
     for prefix in ("", "offices_", "retail_", "above_parking_"):
         for stage in (1, 2, 3, 4):
