@@ -34,15 +34,17 @@ BRIDGE_SCRIPT = r'''
      +'площадки в каталоге города нет — поле участка очистится, впишите номера сами.\n\n'
      +'Текущий расчёт на экране будет заменён.'))return;
    applyProjectSnapshot(model);
-   // Кадастровых номеров у площадки КРТ нет: город публикует адрес и границы,
-   // а перечня участков — нет. Поле при этом оставалось от ПРОШЛОГО проекта, и
-   // на экране это выглядело как «передал не те КН» (владелец, 02.09.2026).
-   // Чужой номер хуже пустого поля: он выглядит посчитанным.
-   const field=document.getElementById('cadastralNumbers');
-   if(field&&field.value.trim()){
-    field.value='';
-    if(typeof renderSitePanel==='function')renderSitePanel();
-   }
+   // Кадастр и контур прошлого участка остаются в поле и в предпросмотре — и
+   // читаются как участок площадки КРТ («передаёт какой-то другой участок»,
+   // владелец, 02.09.2026). Кадастровых номеров у площадки КРТ нет: город
+   // публикует адрес и границы, перечня участков — нет. Чужой номер хуже
+   // пустого поля: он выглядит посчитанным.
+   ['cadastralNumbers','landQuery','moQuery'].forEach(id=>{
+    const field=document.getElementById(id);
+    if(field)field.value='';
+   });
+   const preview=document.getElementById('landPreview');if(preview)preview.style.display='none';
+   if(typeof renderSitePanel==='function')renderSitePanel();
    if(typeof inputs!=='undefined')inputs._manual_tep_import={
     project_name:String(pending.krt_name||''),
     site_area_ha:Number((model.inputs||{}).site_area_ha||0)

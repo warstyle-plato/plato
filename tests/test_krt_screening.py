@@ -111,3 +111,23 @@ def test_published_krt_duties_reach_developaid_without_an_invented_cost() -> Non
     assert any("стоимость сноса" in item for item in result["exclusions"])
     assert any("снос/реконструкция" in item for item in result["exclusions"])
     assert any("расселение/изъятие" in item for item in result["exclusions"])
+
+
+def test_the_handoff_carries_this_site_and_not_the_default_one() -> None:
+    """«В девелоп он передаёт какой-то другой участок и явно не 14 га»
+    (владелец, 02.09.2026): модель собиралась от умолчаний целиком — с офисами
+    10 000 м² и участком прошлого проекта. Поля участка обнуляются списком
+    страницы, площадь территории — из каталога."""
+    from developaid_v2_form import territory_input_keys
+
+    project = dict(PROJECT, area_ha=14.62, total_gfa_sqm=443_700)
+    result = build_krt_model_screening(project, _market(680_000), core)
+    inputs = result["model_inputs"]["inputs"]
+    assert inputs["site_area_ha"] == 14.62
+    assert inputs["site_density_sqm_per_ha"] == round(443_700 / 14.62, 1)
+    for key in territory_input_keys(core):
+        if key in ("site_area_ha", "site_density_sqm_per_ha"):
+            continue
+        assert not inputs.get(key), f"поле участка {key} приехало от умолчаний: {inputs.get(key)!r}"
+    # Умолчания движка при этом несут чужой участок — иначе проверять было бы нечего.
+    assert core.DEFAULT_INPUTS.get("land_rights_cost_mln") or core.DEFAULT_INPUTS.get("offices_gba_sqm")

@@ -61,6 +61,18 @@ def _verdict(report: dict[str, Any]) -> dict[str, Any]:
     return analysis.get("site") or analysis.get("overall") or {}
 
 
+def _territory_keys(core: Any) -> list[str]:
+    """Поля участка — со страницы движка, копии здесь нет."""
+    try:
+        from developaid_v2_form import territory_input_keys
+        return list(territory_input_keys(core))
+    except Exception:  # noqa: BLE001 — страница без списка: обнуляем то, что знаем
+        return ["purchase_price_mln", "site_area_ha", "site_density_sqm_per_ha",
+                "land_rights_cost_mln", "social_compensation_mln", "offices_gba_sqm",
+                "offices_saleable_sqm", "retail_gba_sqm", "retail_saleable_sqm",
+                "above_parking_spaces"]
+
+
 def _empty_tep(core: Any) -> dict[str, dict[str, Any]]:
     tep = copy.deepcopy(core.TEP_DEFAULT)
     for row in tep.values():
@@ -353,12 +365,6 @@ def _programme(
             "source": source,
             "quotes": (demanded or {}).get("quotes", [])[:3],
         })
-    # Площадь территории едет во вводные: без неё на странице не проверить
-    # плотность, а это первый вопрос к чужому ТЭП.
-    area_ha = _number(project.get("area_ha"))
-    if area_ha > 0:
-        inputs["site_area_ha"] = area_ha
-
     # Соцобъекты строятся, а не откупаются: решение города называет объекты, и
     # денежная компенсация вместо них — другое обязательство, а не то же самое.
     inputs["social_mode"] = "Строительство"
@@ -482,6 +488,22 @@ def build_krt_model_screening(
         "retail_saleable_sqm": 0.0,
         "above_parking_enabled": False,
     })
+    # Площадка КРТ — другой участок, и всё, что относится к участку, обязано
+    # обнулиться: список этих полей один, его держит страница
+    # (`TERRITORY_INPUT_KEYS`), и читается он оттуда же, откуда его читает
+    # перенос ГлавАПУ. Прежде модель собиралась от умолчаний целиком, и в
+    # DevelopAid приезжал чужой участок — с офисами 10 000 м² и площадью
+    # прошлого проекта («в девелоп он передаёт какой-то другой участок и явно
+    # не 14 га», владелец, 02.09.2026). Площадь территории — из каталога.
+    for key in _territory_keys(core):
+        if key in inputs:
+            inputs[key] = 0.0 if not isinstance(inputs[key], bool) else False
+    area_ha = _number(project.get("area_ha"))
+    if area_ha > 0:
+        inputs["site_area_ha"] = area_ha
+        total_gfa = _number(project.get("total_gfa_sqm"))
+        if total_gfa > 0:
+            inputs["site_density_sqm_per_ha"] = round(total_gfa / area_ha, 1)
     duties = _requirements_for_model(requirements)
     duties["nonhousing_gfa_sqm"] = (
         _number(project.get("nonresidential_gfa_sqm"))

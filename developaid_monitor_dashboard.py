@@ -390,6 +390,8 @@ def _article_waterfall(
     first_shortfall: dict[str, datetime.date] = {}
     article_reserve_take: dict[str, float] = {}
     article_unfunded: dict[str, float] = {}
+    article_own_take: dict[str, float] = {}
+    article_need: dict[str, float] = {}
     for month in months:
         month_key = month.isoformat()
         month_need_total = 0.0
@@ -401,6 +403,8 @@ def _article_waterfall(
             available = state.get(code, 0.0)
             own_funding = min(available, need)
             shortage = max(0.0, need - own_funding)
+            article_own_take[code] = article_own_take.get(code, 0.0) + own_funding
+            article_need[code] = article_need.get(code, 0.0) + need
             state[code] = max(0.0, available - need)
             month_shortfall += shortage
             if shortage > 0:
@@ -438,8 +442,18 @@ def _article_waterfall(
 
     for code, item in sorted(articles.items()):
         limit = float(item.get("rss_limit") or 0.0)
-        need_total = sum(max(0.0, float(v or 0.0))
-                         for v in (item.get("monthly_need") or {}).values())
+        # Потребность — те же месяцы, что и водопад: с месяца среза. Прежде
+        # сюда входила вся программа, включая прошедшие месяцы, а свой лимит,
+        # резерв и непокрытое считались только вперёд — и строка таблицы не
+        # складывалась: 805,4 против 286,8 + 114,1 + 257,6 (владелец,
+        # 02.09.2026: «Почему сумма потребности не равна сумме соседних
+        # столбцов???»). Теперь по построению need_total = own_take +
+        # reserve_take + unfunded_take, а прошедшее названо отдельно.
+        need_total = article_need.get(code, 0.0)
+        need_before_cut = sum(
+            max(0.0, float(amount or 0.0))
+            for month, amount in (item.get("monthly_need") or {}).items()
+            if (monitor._day(month) or cut_month) < cut_month)
         first_month = first_shortfall.get(code)
         reserve_left_after_first = None
         if first_month is not None:
@@ -451,6 +465,8 @@ def _article_waterfall(
             "name": item.get("name", ""),
             "limit": limit,
             "need_total": need_total,
+            "need_before_cut": need_before_cut,
+            "own_take": article_own_take.get(code, 0.0),
             "opening_limit_raw": opening_raw.get(code, 0.0),
             "opening_limit": max(0.0, opening_raw.get(code, 0.0)),
             "remaining_limit": state.get(code, 0.0),
