@@ -33,21 +33,20 @@ BRIDGE_SCRIPT = r'''
      +'обязательства КРТ сверх опубликованных не учтены. Кадастровых номеров у '
      +'площадки в каталоге города нет — поле участка очистится, впишите номера сами.\n\n'
      +'Текущий расчёт на экране будет заменён.'))return;
+   // Кадастр, контур ЕГРН и скрининг прошлого участка забывает сама подмена
+   // проекта (`applyProjectSnapshot` → `forgetTerritoryState`): чистить их
+   // здесь по списку значило бы завести второй список того, что относится к
+   // территории, — и площадка КРТ на 15 га приезжала бы «с парой кадастров на
+   // 5 га» из PDF и подписи площади (владелец, 02.09.2026). Кадастровых
+   // номеров у площадки КРТ нет: город публикует адрес и границы, перечня
+   // участков — нет; поле остаётся пустым, и это сказано в вопросе выше.
    applyProjectSnapshot(model);
-   // Кадастр и контур прошлого участка остаются в поле и в предпросмотре — и
-   // читаются как участок площадки КРТ («передаёт какой-то другой участок»,
-   // владелец, 02.09.2026). Кадастровых номеров у площадки КРТ нет: город
-   // публикует адрес и границы, перечня участков — нет. Чужой номер хуже
-   // пустого поля: он выглядит посчитанным.
-   ['cadastralNumbers','landQuery','moQuery'].forEach(id=>{
-    const field=document.getElementById(id);
-    if(field)field.value='';
-   });
-   const preview=document.getElementById('landPreview');if(preview)preview.style.display='none';
-   if(typeof renderSitePanel==='function')renderSitePanel();
    if(typeof inputs!=='undefined')inputs._manual_tep_import={
     project_name:String(pending.krt_name||''),
-    site_area_ha:Number((model.inputs||{}).site_area_ha||0)
+    site_area_ha:Number((model.inputs||{}).site_area_ha||0),
+    // Источник назван: подпись площади и шапка PDF читают его отсюда, а не
+    // пишут «ручной шаблон» про каталог города.
+    source:{kind:'krt',label:'Каталог КРТ krt.mos.ru · предварительный прогон',slug:String(pending.krt_slug||'')}
    };
    if(typeof calculateAndOpen==='function')calculateAndOpen('report');
    return;

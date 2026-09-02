@@ -70,7 +70,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.21.66"
+VERSION = "0.21.68"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -34017,7 +34017,10 @@ function tepSourceLabel(manual){
  // Штатный калькулятор и серверные формулы помечались одинаково — «ГлавАПУ»,
  // и два отчёта с разными числами выглядели одинаково достоверно. Различие
  // видно только по имени файла выгрузки, чего человек знать не обязан.
- if(manual)return 'Ручной шаблон DevelopAid';
+ // Площадка КРТ приходит с карточки торгов тем же маркером, что ручной
+ // шаблон, но источник у неё свой и назван: «Ручной шаблон» в шапке PDF
+ // выдавал бы каталог города за то, что человек вписал сам.
+ if(manual){const src=((inputs._manual_tep_import||{}).source||{});return String(src.label||'Ручной шаблон DevelopAid')}
  const fmt=String(((glavapuImport||{}).source||{}).format||'');
  return /серверн/i.test(fmt)?'ГлавАПУ · серверный расчёт DevelopAid'
                             :'ГлавАПУ · штатный калькулятор';
@@ -36953,6 +36956,7 @@ function effectiveSiteDensity(){
 }
 function siteAreaSourceLabel(){
  if(inputs._site_area_user_set)return 'введена вручную';
+ if((((inputs._manual_tep_import||{}).source||{}).kind)==='krt')return 'из каталога КРТ (krt.mos.ru)';
  if(inputs._glavapu_import)return 'из калькулятора ГлавАПУ';
  if(inputs._mo_calc)return 'из калькулятора Подмосковья';
  if(inputs._cadastral_analysis||cadastralAnalysis)return 'из кадастра (ЕГРН)';
@@ -39918,8 +39922,31 @@ function changeProjectsKey(){
 // Копий было три (кабинет, файл настроек, полученная ссылка), и площадка КРТ
 // стала бы четвёртой: поле, добавленное позже, чинится в одной из них и
 // остаётся сломанным в остальных — ровно так уже терялась периодичность ВРИ.
+// Территория живёт не только во вводных: разбор кадастра, контуры ЕГРН,
+// скрининг НСПД, расчёт Подмосковья и карточка ГлавАПУ лежат в переменных
+// страницы и в её разметке. Присланный проект подменял вводные, а всё это
+// оставалось от прошлого участка — и уезжало в PDF, в подпись площади и в
+// имя проекта: площадка КРТ на 15 га приходила «с парой кадастров на 5 га»
+// (владелец, 02.09.2026). Забывается разом и в одном месте; то, что несёт сам
+// снимок, поднимается заново из его вводных.
+function forgetTerritoryState(){
+ cadastralAnalysis=null;landLookup=null;landScreeningLast=null;LAND_MAP=null;
+ glavapuImport=null;moResult=null;
+ // Опрос НСПД по прошлому участку может ещё идти: номер прогона отсекает его
+ // ответ, иначе он дорисует чужие зоны поверх нового проекта.
+ ++landScreeningRun;
+ ['cadastralNumbers','landQuery','moQuery'].forEach(id=>{const field=document.getElementById(id);if(field)field.value=''});
+ ['landPreview','cadastralPreview','landScreening'].forEach(id=>{const el=document.getElementById(id);if(el)el.style.display='none'});
+ const screening=document.getElementById('landScreening');
+ if(screening){screening.innerHTML='';screening.className='land-screening'}
+ const cadStatus=document.getElementById('cadastralStatus');if(cadStatus)cadStatus.textContent='На внешний сервер передаются только кадастровые номера; финансовая модель не передаётся.';
+ const landStatus=document.getElementById('landStatus');if(landStatus)landStatus.textContent='На внешний сервис передаётся только строка поиска; финансовая модель не передаётся.';
+ dropGlavapuPreview();dropMoPreview();
+}
+
 function applyProjectSnapshot(data){
  data=data||{};
+ forgetTerritoryState();
  inputs=Object.assign(cloneValue(INPUT_DEFAULT),data.inputs||{});
  tep=cloneValue(TEP_DEFAULT);
  Object.entries(data.tep||{}).forEach(([key,values])=>{
@@ -39927,7 +39954,11 @@ function applyProjectSnapshot(data){
  });
  phasing=data.phasing||makeDefaultPhasing(1);
  if(typeof scenarioSelect!=='undefined'&&scenarioSelect)scenarioSelect.value=data.scenario||'base';
- renderInputs();renderTep();renderPhasing();persistLocalSilently();
+ renderInputs();renderTep();renderPhasing();
+ // Территория снимка — из его же вводных, тем же путём, что при загрузке страницы.
+ renderStoredGlavapu();renderStoredCadastral();renderStoredLand();renderStoredMo();
+ if(typeof renderSitePanel==='function')renderSitePanel();
+ persistLocalSilently();
 }
 
 async function loadProject(id){
@@ -40245,23 +40276,17 @@ function resetAll(){
  localStorage.removeItem('plato_v04');
  inputs=resetInputsWanted();
  tep=resetTepWanted();
- phasing=makeDefaultPhasing(1);phaseBundle=null;reportView='all';cadastralAnalysis=null;landLookup=null;moResult=null;
+ phasing=makeDefaultPhasing(1);phaseBundle=null;reportView='all';
+ // Территория забывается тем же способом, что при подмене проекта: прежде
+ // glavapuImport переживал сброс, и «чистый» проект применял ТЭП удалённого
+ // участка.
+ forgetTerritoryState();
  rates=[];
  scenarioSelect.value='base';
  renderInputs();renderTep();renderStoredGlavapu();renderScenarioNote();syncProjectClassSelector();
- const cadField=document.getElementById('cadastralNumbers');if(cadField)cadField.value='';
- const cadStatus=document.getElementById('cadastralStatus');if(cadStatus)cadStatus.textContent='На внешний сервер передаются только кадастровые номера; финансовая модель не передаётся.';
- const landField=document.getElementById('landQuery');if(landField)landField.value='';
- const landPreview=document.getElementById('landPreview');if(landPreview)landPreview.style.display='none';
- const moQuery=document.getElementById('moQuery');if(moQuery)moQuery.value='';
  resetTepControls();
  resetProjectState();
  blankResultSurfaces();
- // Сброс снимает и карточки импорта с их данными: прежде glavapuImport
- // переживал сброс, и «чистый» проект применял ТЭП удалённого участка.
- dropGlavapuPreview();
- dropMoPreview();
- const landStatus=document.getElementById('landStatus');if(landStatus)landStatus.textContent='На внешний сервис передаётся только строка поиска; финансовая модель не передаётся.';
  syncRateControlsFromInputs();generateRateCurve();renderRates();
  refreshCurrentKeyRate(true);
  // Перерисовка полей выше поднимает onchange, а он зовёт calculate(). Расчёт
