@@ -144,6 +144,17 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
         return bool(cls._KRT_TITLE.search(str(title or "")))
 
     @classmethod
+    def _remember_titles(cls, base_url: str, links: list[tuple[str, str]],
+                         titles: dict[str, str]) -> None:
+        """Подпись ссылки к её карточке. Первая непустая выигрывает."""
+        for href, text in links:
+            if not text:
+                continue
+            for url in cls._procedure_urls(base_url, [(href, text)]):
+                if not titles.get(url):
+                    titles[url] = text
+
+    @classmethod
     def _ordered_candidates(
         cls, urls: list[str], titles: dict[str, str]
     ) -> list[str]:
@@ -255,10 +266,7 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
             parser.feed(html)
             found = [url for url in self._procedure_urls(section_url, parser.links)
                      if url not in seen_urls]
-            for href, text in parser.links:
-                url = self._procedure_urls(section_url, [(href, text)])
-                if url and text and not titles.get(url[0]):
-                    titles[url[0]] = text
+            self._remember_titles(section_url, parser.links, titles)
             candidate_urls.extend(found)
             seen_urls.update(found)
             section_found += len(found)
@@ -280,6 +288,12 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
                 parser = _RoseltorgHTML()
                 parser.feed(html)
                 page_urls = self._procedure_urls(search_url, parser.links)
+                # Подписи собираются и здесь: прежде они брались только из
+                # раздела, и у карточек с теговых страниц заголовка не было
+                # вовсе — порядок чтения их не поднимал, а счётчик «КРТ по
+                # заголовкам» их не видел. Правка порядка при этом выглядела
+                # применённой.
+                self._remember_titles(search_url, parser.links, titles)
                 new_urls = [url for url in page_urls if url not in seen_urls]
                 if not new_urls:
                     break
@@ -314,25 +328,59 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
                     except Exception:
                         # Одна битая или недоступная процедура не роняет выдачу.
                         unread += 1
+        # Отсев называет причину. «Одна карточка КРТ» неотличима от «остальные
+        # закрыты», пока не сказано, на каком именно шаге они ушли: владелец
+        # видел единицу и после правки порядка чтения (02.09.2026), и ответить
+        # «почему» было нечем — счётчики говорили только «карточек N, лотов M».
+        dropped: dict[str, int] = {}
+        krt_dropped: dict[str, int] = {}
+
+        def drop(reason: str, is_krt: bool) -> None:
+            dropped[reason] = dropped.get(reason, 0) + 1
+            if is_krt:
+                krt_dropped[reason] = krt_dropped.get(reason, 0) + 1
+
         for lot_url in candidate_urls:
             lot = read.get(lot_url)
             if lot is None:
                 continue
+            # КРТ по заголовку раздела ИЛИ по разбору карточки: подпись бывает
+            # обрезана, а вид лота — прочитан.
+            is_krt = (lot.lot_kind == LotKind.KRT
+                      or self._looks_like_krt(titles.get(lot_url, ""))
+                      or self._looks_like_krt(lot.title or ""))
             if lot.lot_kind not in self.RELEVANT_KINDS:
+                drop("вид лота не девелоперский", is_krt)
                 continue
             if not self._is_asset_disposal(lot):
+                drop("не распоряжение имуществом", is_krt)
                 continue
             if not self._confirmed_moscow(lot):
+                drop("Москва не подтверждена", is_krt)
                 continue
             if not self._is_actionable_status(lot.status):
+                drop(f"статус «{lot.status or 'не назван'}»", is_krt)
                 continue
             if not self._has_current_deadline(lot.application_deadline):
+                drop("срок подачи прошёл или не назван", is_krt)
                 continue
             if lot.canonical_key in seen_lots:
+                drop("дубль", is_krt)
                 continue
             seen_lots.add(lot.canonical_key)
             lot.raw["discovered_via"] = "Roseltorg public tags[] search"
             lots.append(lot)
+        if dropped:
+            self.last_report["dropped"] = dict(
+                sorted(dropped.items(), key=lambda pair: -pair[1]))
+        if krt_dropped:
+            self.last_report["krt_dropped"] = dict(
+                sorted(krt_dropped.items(), key=lambda pair: -pair[1]))
+        self.last_report["krt_read"] = sum(
+            1 for url, lot in read.items()
+            if self._looks_like_krt(titles.get(url, ""))
+            or lot.lot_kind == LotKind.KRT
+            or self._looks_like_krt(lot.title or ""))
         self.last_report["kept"] = len(lots)
         self.last_report["from_section"] = section_found
         if unread:
