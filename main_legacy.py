@@ -70,7 +70,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.21.52"
+VERSION = "0.21.54"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -19778,6 +19778,111 @@ def _iso(value: date) -> str:
     return value.isoformat()
 
 
+# Мощности соцобъектов зовутся одинаково во вводных, в потребности и в ТЭП —
+# три имени объявлены один раз, иначе разница «требуется минус построено»
+# считалась бы по разным ключам в разных местах.
+_SOCIAL_UNITS = ("kindergarten_places", "school_places", "clinic_capacity")
+
+
+def social_required_program(
+    x: dict, t: dict | None = None, built: dict[str, float] | None = None
+) -> dict[str, Any]:
+    """Расчётная потребность города — база платежа, а не обязательство строить.
+
+    В Москве социалка исполняется деньгами, и компенсация посчитана ОТ
+    потребности: строки 30–32 выгрузки ГлавАПУ. В проект доезжали только
+    «фактические» места (строки 18/22/26) — то, что застройщик строит сам, а у
+    компенсационного проекта это нули, — и `syncTep` доглушал строки ДОО, СОШ и
+    поликлиники при режиме «Денежная компенсация». Выходило, что платим за 250
+    мест, а числа 250 в проекте нет нигде: ни во вводных, ни в ТЭП, ни в отчёте
+    («в Москве всё падает в компенсацию, но места никуда справочно не
+    заносятся», владелец, 02.09.2026).
+
+    Метры при этом строить нельзя: объект возводит город, и попади его площадь
+    в ТЭП, она вошла бы в ГНС проекта — в знаменатель всех удельных
+    показателей. Поэтому здесь только мощности и только справочно.
+
+    Источник называется вслух: расчёт города сильнее нашего норматива, а
+    «не от чего считать» — не то же самое, что «потребности нет».
+
+    При режиме «Строительство и компенсация» тем же числом отвечается вопрос,
+    на который ответить было нечем: что именно закрывает денежная часть.
+    Показывается РАЗНИЦА между требованием и построенным — но не утверждается,
+    что компенсация посчитана городом именно от неё: сумма приходит из
+    выгрузки, и чем она набрана, документ не раскрывает.
+    """
+    def with_gap(answer: dict[str, Any]) -> dict[str, Any]:
+        if not answer.get("available") or built is None:
+            return answer
+        answer["built"] = {key: round(float(built.get(key) or 0.0), 1) for key in _SOCIAL_UNITS}
+        answer["gap"] = {
+            key: round(max(0.0, float(answer.get(key) or 0.0) - float(built.get(key) or 0.0)), 1)
+            for key in _SOCIAL_UNITS
+        }
+        answer["fully_built"] = not any(answer["gap"].values())
+        return answer
+
+    imported = (x.get("_glavapu_import") or {}).get("normalized", {}) or {}
+    from_city = {
+        "kindergarten_places": n(imported, "required_kindergarten_places"),
+        "school_places": n(imported, "required_school_places"),
+        "clinic_capacity": n(imported, "required_clinic_capacity"),
+    }
+    district = str(imported.get("district") or "").strip()
+    if any(value > 0 for value in from_city.values()):
+        return with_gap({
+            "available": True,
+            "source": "glavapu",
+            "basis": "расчёт ГлавАПУ по выгрузке — по этим мощностям посчитана компенсация",
+            "district": district,
+            **{key: round(value, 1) for key, value in from_city.items()},
+        })
+
+    apartments = n((t or {}).get("apartments") or {}, "saleable")
+    if apartments <= 0:
+        return {
+            "available": False,
+            "source": "unknown",
+            "basis": "площадь квартир в ТЭП не задана — считать потребность не от чего",
+        }
+    if str(x.get("vri_region") or "msk") == "mo":
+        # В области норматив свой, и он у движка уже есть. Вторая формула здесь
+        # дала бы на один проект два норматива, оба на вид верных.
+        program = mo_social_program(apartments)
+        return with_gap({
+            "available": True,
+            "source": "mo_norm",
+            "basis": "норматив РНГП Московской области по площади квартир",
+            "district": district,
+            "population": program["population"],
+            "kindergarten_places": program["kindergarten"]["places"],
+            "school_places": program["school"]["places"],
+            "clinic_capacity": program["clinic"]["capacity"],
+        })
+    zone_two = district_zone_two(district)
+    population = apartments / 33.0
+    return with_gap({
+        "available": True,
+        "source": "norm",
+        "basis": (
+            "норматив Москвы, "
+            + ("вторая" if zone_two else "первая")
+            + " зона нормирования"
+            + (f", район «{district}»" if district
+               else "; район не назван — принята первая зона")
+        ),
+        "district": district,
+        "zone_two": zone_two,
+        "population": int(math.ceil(population)),
+        "kindergarten_places": math.ceil(
+            moscow_social_places("kindergarten", population, zone_two=zone_two)),
+        "school_places": math.ceil(
+            moscow_social_places("school", population, zone_two=zone_two)),
+        "clinic_capacity": math.ceil(
+            moscow_social_places("clinic", population, zone_two=zone_two)),
+    })
+
+
 def effective_social_program(x: dict) -> dict[str, float]:
     imported = (x.get("_glavapu_import") or {}).get("normalized", {})
 
@@ -22291,6 +22396,11 @@ def calculate(req: CalcRequest) -> dict:
                 )
             ) < 1.0,
             "social_program": op.get("social_program", {}),
+            # Что строит проект — выше; здесь то, за что он платит. При
+            # денежной компенсации первое пустое, и без второго в отчёте не
+            # остаётся ни одного числа о социалке, кроме суммы.
+            "social_required": social_required_program(
+                x, t, built=op.get("social_program") or {}),
             "social_payment_breakdown": {
                 "construction": {
                     "kindergarten_mln": op.get("social_construction_breakdown", {}).get("kindergarten", 0.0) / 1_000_000,
@@ -36478,8 +36588,19 @@ function renderSitePanel(){
      :' Проверьте плотность или состав ТЭП.');
  }else warn.style.display='none';
 }
+function glavapuSocialSpp(row){
+ const normalized=inputs._glavapu_import&&inputs._glavapu_import.normalized;
+ if(!normalized)return 0;
+ const key={kindergarten:'actual_kindergarten_spp_sqm',school:'actual_school_spp_sqm',
+            clinic:'actual_clinic_spp_sqm'}[row];
+ return key?Number(normalized[key]||0):0;
+}
 function applyRequiredSocialProgramFromGlavapu(){
- if(inputs.social_mode!=='Строительство')return false;
+ // Режимов, при которых объект строится, два: «Строительство» и «Строительство
+ // и компенсация». Второй сюда не попадал вовсе, и потребность города в него
+ // не подставлялась — при том что ТЭП он заполняет наравне с первым.
+ if(inputs.social_mode!=='Строительство'
+    &&inputs.social_mode!=='Строительство и компенсация')return false;
  const normalized=inputs._glavapu_import&&inputs._glavapu_import.normalized;
  if(!normalized)return false;
  let changed=false;
@@ -36873,9 +36994,36 @@ function syncTep(rerender=true){
   if(!Number(inputs[saleId]||0)&&filled.saleable>0){inputs[saleId]=filled.saleable;inputsFilled=true}
  });
  tep.above_parking.units=inputs.above_parking_enabled?Number(inputs.above_parking_spaces||0):0;tep.above_parking.gns=tep.above_parking.units*Number(inputs.above_parking_area_per_space_sqm||25);tep.above_parking.total_area=tep.above_parking.gns;
- tep.kindergarten.total_area=socialBuild?Number(inputs.social_dou_gba_sqm||0):0;tep.kindergarten.transfer=tep.kindergarten.total_area;tep.kindergarten.units=socialBuild?Number(inputs.kindergarten_places||0):0;
- tep.school.total_area=socialBuild?Number(inputs.social_school_gba_sqm||0):0;tep.school.transfer=tep.school.total_area;tep.school.units=socialBuild?Number(inputs.school_places||0):0;
- tep.clinic.total_area=socialBuild?Number(inputs.social_clinic_gba_sqm||0):0;tep.clinic.transfer=tep.clinic.total_area;tep.clinic.units=socialBuild?Number(inputs.clinic_capacity||0):0;
+ // Соцобъект: места, площадь и ГНС. Прежде строка получала только общую
+ // площадь и места, а `gns` не трогалась вовсе — поля «ГНС ДОУ» во вводных нет.
+ // Импорт ГлавАПУ при этом писал в неё СПП из выгрузки, и один и тот же садик
+ // давал разный ГНС проекта в зависимости от того, как он в проект попал
+ // (владелец, 02.09.2026). ГНС считается, а статьи «на м² ГНС» её не берут:
+ // их база — ядро МКД (`core_total_gns` в движке), и соцобъект туда не входит.
+ [['kindergarten','social_dou_gba_sqm','social_dou_norm_sqm','kindergarten_places'],
+  ['school','social_school_gba_sqm','social_school_norm_sqm','school_places'],
+  ['clinic','social_clinic_gba_sqm','social_clinic_norm_sqm','clinic_capacity']]
+ .forEach(([row,areaId,normId,unitsId])=>{
+  const units=socialBuild?Number(inputs[unitsId]||0):0;
+  let area=socialBuild?Number(inputs[areaId]||0):0;
+  // Места ввели руками, площадь — нет: считаем её нормативом на место. Прежде
+  // это делал только импорт ГлавАПУ и только в режиме «Строительство», а при
+  // ручном вводе метры объекта не появлялись нигде.
+  if(socialBuild&&area<=0&&units>0&&Number(inputs[normId]||0)>0){
+   area=units*Number(inputs[normId]||0);
+   inputs[areaId]=area;inputsFilled=true;
+  }
+  tep[row].total_area=area;
+  tep[row].transfer=area;
+  tep[row].units=units;
+  // Выгрузка приносит настоящую СПП объекта — её не трогаем. Своей нет:
+  // считаем по той же пропорции НП/СПП, что и остальной ТЭП.
+  const imported=glavapuSocialSpp(row);
+  // Пропорция общей к ГНС уже объявлена в движке и подставлена на страницу —
+  // второй копии числа здесь нет.
+  const share=Number((TEP_RATIOS.apartments||{}).total_of_gns||0)||0.9;
+  tep[row].gns=area>0?(imported>0?imported:area/share):0;
+ });
  // ГлавАПУ has priority over any old/stale underground-parking TEP values.
  if(repairParkingFromGlavapu())storageInsideParking=underlayStorageInParking();
  // Без перерисовки обновлялась только строка итогов, а ячейки продуктов
@@ -37787,6 +37935,22 @@ function renderResult(){
 
  const sb=r.summary.social_payment_breakdown||{};
  const socialMode=r.summary.social_payment_mode||'—';
+ // Расчётная потребность города: за неё платят, её же строят. При компенсации
+ // в проекте не оставалось ни одного числа о социалке, кроме суммы, — платим
+ // за 250 мест, а числа 250 нет нигде (владелец, 02.09.2026). Считает движок,
+ // здесь только показ: второй счёт разошёлся бы с первым молча.
+ const socialNeedRow=(()=>{
+  const need=r.summary.social_required||{};
+  if(!need.available)return `<tr><td colspan="2" style="color:#777;font-size:11px">Расчётная потребность города не определена: ${escapeHtml(need.basis||'источника нет')}.</td></tr>`;
+  const gap=need.gap||{};
+  const parts=[['ДОО','kindergarten_places','мест'],['СОШ','school_places','мест'],
+               ['Поликлиника','clinic_capacity','пос./смену']]
+   .filter(([,key])=>Number(need[key]||0)>0)
+   .map(([label,key,unit])=>`${label} ${num(need[key]||0)} ${unit}`
+     +(Number(gap[key]||0)>0?` (из них не строим ${num(gap[key])})`:''));
+  if(!parts.length)return '';
+  return `<tr><td colspan="2" style="color:#777;font-size:11px">Расчётная потребность города — ${parts.join(', ')}. Основание: ${escapeHtml(need.basis||'')}. Метры соцобъектов, которые строит город, в ГНС проекта не входят.</td></tr>`;
+ })();
  const construction=sb.construction||{};
  const compensation=sb.compensation||{};
  const program=r.summary.social_program||{};
@@ -37808,7 +37972,7 @@ function renderResult(){
     row('Стоимость строительства',money(socialBuilt*1e6))+
     row('Денежная компенсация',money(socialCash))+
     `<tr><th>Социальная нагрузка / всего</th><th>${socialMoney(r.summary.social_payment)}</th></tr>`+
-    socialPerMetre(r)+
+    socialPerMetre(r)+socialNeedRow+
     ((Number(compensation.kindergarten_mln||0)+Number(compensation.school_mln||0)
       +Number(compensation.clinic_mln||0))>0
       ? `<tr><td colspan="2" style="color:#777;font-size:11px">Справочно, разбивка компенсации по ГлавАПУ: `
@@ -37823,7 +37987,7 @@ function renderResult(){
     row(`СОШ — ${num(program.school_places||0)} мест`,money(Number(construction.school_mln||0)*1e6))+
     row(`Поликлиника — ${num(program.clinic_capacity||0)} пос./смену`,money(Number(construction.clinic_mln||0)*1e6))+
     `<tr><th>Стоимость строительства / всего</th><th>${socialMoney(r.summary.social_payment)}</th></tr>`+
-    socialPerMetre(r)+
+    socialPerMetre(r)+socialNeedRow+
     `<tr><td colspan="2" style="color:#777;font-size:11px">Справочно: компенсация по ГлавАПУ — ${money((Number(compensation.kindergarten_mln||0)+Number(compensation.school_mln||0)+Number(compensation.clinic_mln||0))*1e6)}</td></tr>`;
  }else{
    socialTable.innerHTML=
@@ -37832,7 +37996,7 @@ function renderResult(){
     row('СОШ — компенсация',money(Number(compensation.school_mln||0)*1e6))+
     row('Поликлиника — компенсация',money(Number(compensation.clinic_mln||0)*1e6))+
     `<tr><th>Компенсация / всего</th><th>${socialMoney(r.summary.social_payment)}</th></tr>`+
-    socialPerMetre(r);
+    socialPerMetre(r)+socialNeedRow;
  }
 
  const bridgeTotal=Number(r.report.financing.calculated_bridge||0);

@@ -1238,8 +1238,11 @@ def install(app: FastAPI) -> None:
         # и центр. Геокодер — только когда площадки в файле нет: он ставит
         # точку по адресу, а карточка писала «полигон не публикуется» и
         # показывала чужой квартал (владелец, 02.09.2026: «и карта»).
-        site_reader = getattr(krt_registry, "map_site", None)
-        site = (await run_in_threadpool(site_reader, slug)) if callable(site_reader) else None
+        site_reader = getattr(krt_registry, "map_lookup", None)
+        lookup = ((await run_in_threadpool(site_reader, slug, str(project.get("name") or "")))
+                  if callable(site_reader) else {})
+        site = (lookup or {}).get("site")
+        map_problem = str((lookup or {}).get("problem") or "")
         rings = list((site or {}).get("rings_merc") or [])
         centre = (site or {}).get("centre_merc")
         if site and core is not None and (rings or centre):
@@ -1264,9 +1267,16 @@ def install(app: FastAPI) -> None:
             except (GeocodingError, RemoteServiceError, RuntimeError) as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
             data = subject.to_dict() if hasattr(subject, "to_dict") else {}
+            # Причина называется та, что случилась: «файл не прочитан» и «в файле
+            # нет такой площадки» — разные ответы, и первый ничего не говорит о
+            # площадке. Точка при этом всё равно геокодерная, и это сказано.
             data["notes"] = list(data.get("notes") or []) + [
-                "Площадки нет в файле карты реестра — точка поставлена геокодером по адресу, "
-                "контур не показан."]
+                (map_problem or "площадки нет в файле карты реестра").capitalize()
+                + " — точка поставлена геокодером по адресу, контур не показан."]
+            if len(str(project.get("name") or "").split(",")) > 2:
+                data["notes"].append(
+                    "В названии площадки несколько адресов: геокодер ставит точку по одному "
+                    "из них, и центр территории может оказаться в стороне.")
             geometry_status = "geocoded_point"
         # Ссылка на публичную карту НСПД строится движком (`_nspd_map_url`) —
         # координаты там в веб-меркаторе, и второй сборщик этого адреса в
