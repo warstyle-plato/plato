@@ -213,3 +213,48 @@ def test_the_pdf_prints_the_schedule_and_the_object_notes() -> None:
                     for page in pypdf.PdfReader(io.BytesIO(pdf)).pages)
     assert "График платежей за покупку" in text and "01.07.2027" in text
     assert "профиль продаж 60%@0; 40%@12" in text and "лестница цены 10%@6; 20%@12" in text
+
+
+# --- квартиры ----------------------------------------------------------------
+
+def test_the_apartment_ladder_prices_all_core_products() -> None:
+    """«Делать и квартирам — на них и строилась эта идея» (владелец, 02.09.2026).
+    Одна лестница на четыре основных продукта, как и ежемесячный рост."""
+    op = core.build_operating_model(_inputs(price_steps="10%@6; 20%@12"), _tep(), [])
+    for key in ("apartments", "ground_commercial", "underground_parking", "storage"):
+        rev, qty = op["revenue_product_schedules"][key], op["quantity_product_schedules"][key]
+        months = sorted(rev)
+        if not months:
+            continue
+        start_price = rev[months[0]] / qty[months[0]]
+        assert rev[months[6]] / qty[months[6]] == pytest.approx(start_price * 1.10)
+        assert rev[months[12]] / qty[months[12]] == pytest.approx(start_price * 1.20)
+        assert rev[months[3]] / qty[months[3]] == pytest.approx(start_price)
+    assert op["object_schedule_notes"]["core"]["steps_applied"] is True
+    product = [p for p in core._run_authoritative_model(
+        _inputs(price_steps="10%@6; 20%@12"), _tep(), [], {})["consolidated"]["report"]["products"]
+        if p["key"] == "apartments"][0]
+    assert product["price_steps"] == "10%@6; 20%@12" and product["schedule_applied"]
+
+
+def test_the_book_prices_apartments_by_the_same_ladder() -> None:
+    x = _inputs(price_steps="10%@6; 20%@12")
+    op = core.build_operating_model(x, _tep(), [])
+    rev, qty = op["revenue_product_schedules"]["apartments"], op["quantity_product_schedules"]["apartments"]
+    engine = {when.isoformat(): round(rev[when] / qty[when] / 1000, 3) for when in rev}
+    ev = _book(x)
+    book = {}
+    for column in range(4, 64):
+        letter = get_column_letter(column)
+        if float(ev.cell("Продажи", f"{letter}14") or 0) > 1e-6:
+            book[str(ev.cell("Ставки", f"{letter}3"))[:10]] = round(float(ev.cell("Продажи", f"{letter}15")), 3)
+    assert book == engine
+
+
+def test_the_four_mute_stage_fields_gave_way_to_the_ladder() -> None:
+    fields = {f[0]: f for _group, items in core.FIELD_GROUPS for f in items}
+    assert fields["price_steps"][3] == "text"
+    for key in ("growth_stage1_pct", "growth_stage2_pct", "growth_stage3_pct", "growth_stage4_pct"):
+        assert key not in fields, f"{key} остаётся на странице, а движок его не читает"
+        assert key in core.DEFAULT_INPUTS, "сохранённые проекты несут ключ — умолчание остаётся"
+
