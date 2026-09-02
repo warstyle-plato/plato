@@ -241,6 +241,8 @@ class KrtRegistry:
         # Разобранная карточка каталога: застройщик и реновация. Лежит рядом с
         # требованиями и по тому же правилу — хранится разобранное, не страница.
         self.card_facts_dir = Path(data_dir) / "krt" / "cards"
+        # Отказ помнится полчаса: см. `card_facts`.
+        self.card_facts_failure_ttl_seconds = 30 * 60
         self.tender_links_path = Path(data_dir) / "krt" / "tender_links.json"
         self.fetch = fetch or (lambda url: request_bytes(url, timeout=15, retries=1))
         self.ttl_seconds = 24 * 60 * 60
@@ -402,16 +404,33 @@ class KrtRegistry:
             return {"available": False, "reason": "Неверный идентификатор площадки"}
         path = self.card_facts_dir / f"{clean}.json"
         cached = load_json(path)
-        if (not refresh and fresh(path, self.ttl_seconds) and isinstance(cached, dict)
+        if (not refresh and isinstance(cached, dict)
                 and cached.get("schema_version") == CARD_FACTS_SCHEMA_VERSION):
-            return cached
+            # У отказа свой, короткий срок: он про минуту, когда источник не
+            # ответил, а не про сутки. Держать его сутками значило бы выдать
+            # разовый сбой за свойство площадки; не держать вовсе — стучаться
+            # в город при каждом открытии каталога.
+            ttl = (self.ttl_seconds if cached.get("available")
+                   else self.card_facts_failure_ttl_seconds)
+            if fresh(path, ttl):
+                return cached
         url = f"{BASE_URL}/projects/{clean}"
         try:
             page = self.fetch(url).decode("utf-8", errors="replace")
         except Exception as exc:  # noqa: BLE001
             # Не ответила карточка — это «не спросили», а не «застройщика нет».
-            return {"available": False, "slug": clean, "source_url": url,
-                    "reason": f"{type(exc).__name__}: {exc}"}
+            # Отказ ЗАПИСЫВАЕТСЯ, и это важнее, чем кажется: прежде он не
+            # сохранялся вовсе, поэтому неотвечающая карточка не становилась
+            # «известной» никогда — фоновой добор перечитывал её при каждом
+            # открытии каталога, а посчитать, что не отвечает НИ ОДНА, было
+            # нечем. Общая причина (просроченный корень, смена адреса) выглядела
+            # на экране ровно как «реновации тут нет».
+            failure = {"available": False, "slug": clean, "source_url": url,
+                       "schema_version": CARD_FACTS_SCHEMA_VERSION,
+                       "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                       "reason": f"{type(exc).__name__}: {exc}"}
+            save_json(path, failure)
+            return failure
         out = krt_card_facts.parse(page)
         out.update({"schema_version": CARD_FACTS_SCHEMA_VERSION, "available": True,
                     "slug": clean, "source_url": url})
@@ -441,6 +460,40 @@ class KrtRegistry:
                     and cached.get("schema_version") == CARD_FACTS_SCHEMA_VERSION):
                 out[clean] = cached
         return out
+
+    def card_facts_coverage(self, slugs: list[str] | tuple[str, ...]) -> dict[str, Any]:
+        """Сколько карточек города прочитано, сколько не ответило и почему.
+
+        Молчащая проверка неотличима от отсутствующей: фоновой добор ловит
+        отказ каждой карточки по отдельности и читает дальше — «не ответила
+        одна, остальные читаем», — и когда не отвечает НИ ОДНА, на экране это
+        выглядит как «реновации и застройщика тут нет». Общая причина (корень
+        сертификата, смена адреса) обязана быть названа один раз и вслух.
+        """
+        read = failed = unknown = 0
+        reasons: dict[str, int] = {}
+        for slug in slugs:
+            clean = str(slug or "").strip()
+            if not re.fullmatch(r"[a-zA-Z0-9_-]{2,180}", clean):
+                continue
+            cached = load_json(self.card_facts_dir / f"{clean}.json")
+            if not (isinstance(cached, dict)
+                    and cached.get("schema_version") == CARD_FACTS_SCHEMA_VERSION):
+                unknown += 1
+                continue
+            if cached.get("available"):
+                read += 1
+                continue
+            failed += 1
+            # Причина сворачивается до вида ошибки: двести строк с разными
+            # адресами внутри — это одна причина, а не двести.
+            reason = str(cached.get("reason") or "источник не ответил")
+            short = reason.split(":")[0].strip() or reason
+            reasons[short] = reasons.get(short, 0) + 1
+        return {
+            "read": read, "failed": failed, "unknown": unknown,
+            "reasons": dict(sorted(reasons.items(), key=lambda pair: -pair[1])),
+        }
 
     def fill_card_facts_in_background(self, slugs: list[str] | tuple[str, ...],
                                       *, limit: int = 40) -> bool:
