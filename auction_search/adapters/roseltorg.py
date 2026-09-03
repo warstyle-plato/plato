@@ -160,6 +160,41 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
     # «фильтр нашёл один КРТ, хотя их там вагон».
     _KRT_TITLE = re.compile(r"(?iu)комплексн\w*\s+развити\w*\s+территор")
 
+    # Место аукциона КРТ город называет в САМОМ имени процедуры, отдельного
+    # поля адреса у карточки нет: «…площадью 2,90 га, расположенных по
+    # адресам: г. Москва, Куркинское ш., вл. 27-39…». Мы его не читали — и
+    # допуск основной подборки честно убирал лот с причиной «нет адреса или
+    # кадастрового номера». На проде 03.09.2026 так уходили четыре КРТ из
+    # шести: 2,9 га за 110,8 млн, 14,5 га за 87,4 млн, 11,7 га за 3 825,5 млн
+    # и 6,6 га за 4,1 млн — при заполненных площади, цене и сроке подачи.
+    # Владелец видел это как «как был 1 крт так и остался», и починка сбора
+    # (постраничный обход) до экрана не доходила: терялось ниже по цепочке.
+    #
+    # Форм у города две, и обе — его собственные слова, а не наша догадка:
+    # адрес после «по адресу/адресам» и место после «расположенн… в/на».
+    # Ни той ни другой нет — адреса нет, и лот остаётся неполным: выдумывать
+    # местоположение нельзя, на нём стоит сопоставление с эталоном сделок.
+    _ADDRESS_MARKERS = (
+        re.compile(r"(?iu)по\s+адрес(?:у|ам)\s*:?\s*"),
+        re.compile(r"(?iu)располож\w*\s+(?:в|на)\s+"),
+    )
+
+    @classmethod
+    def _address_from_title(cls, title: str) -> str:
+        """Местоположение из имени процедуры — или пусто, если не названо."""
+        text = (title or "").strip()
+        if not text:
+            return ""
+        for marker in cls._ADDRESS_MARKERS:
+            found = marker.search(text)
+            if not found:
+                continue
+            tail = text[found.end():].strip(" ,;:")
+            if len(tail) < 6:
+                continue
+            return tail[:400].strip()
+        return ""
+
     @classmethod
     def _looks_like_krt(cls, title: str) -> bool:
         return bool(cls._KRT_TITLE.search(str(title or "")))
@@ -523,6 +558,9 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
             lot_kind=lot_kind,
             title=title,
             cadastral_numbers=cad,
+            # Адрес из имени процедуры ставится, только когда своего
+            # нет: прочитанный со страницы сильнее выведенного.
+            address=self._address_from_title(title) or None,
             land_area_sqm=area,
             seller=seller,
             organizer=organizer,
