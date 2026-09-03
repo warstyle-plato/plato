@@ -15970,6 +15970,19 @@ _V4_PF_LIMIT_FORMULA = "+".join(_V4_PF_LIMIT_PHASE.format(n=n) for n in range(1,
 # РнС линия БРИДЖа рефинансирована в ПФ, и платить компенсацию нечем.
 _V4_SOCIAL_DEADLINE = "EDATE('CF_1'!$B$7,-1)"
 
+# Вводные движка за каждой колонкой блока: мест, цена места, начало, срок.
+_V4_SOCIAL_KEYS: dict[str, tuple[str, str, str, str]] = {
+    "kindergarten": ("kindergarten_places", "kindergarten_cost_mln_per_place",
+                     "kindergarten_start", "kindergarten_months"),
+    "school": ("school_places", "school_cost_mln_per_place",
+               "school_start", "school_months"),
+    "clinic": ("clinic_capacity", "clinic_cost_mln_per_unit",
+               "clinic_start", "clinic_months"),
+}
+# Подписи колонок очередей — как в шаблоне, чтобы ключ дописывался к ним, а не
+# заменял их: копия подписи разошлась бы с книгой молча.
+_v4_QUEUE_HEADERS: dict[str, str] = {
+    "D": "Старт", "E": "ИРД, мес.", "F": "Стройка, мес.", "G": "Лаг продаж"}
 _V4_SOCIAL_TYPES: tuple[tuple[str, str], ...] = (
     ("kindergarten", "ДОО"), ("school", "СОШ"), ("clinic", "Поликлиника"))
 
@@ -16018,12 +16031,27 @@ def _v4_social_rows_xml(xml: str, rows: dict[tuple[int, str], dict[str, Any]],
         + text_cell(f"E{header}", "Срок, мес.")
         + text_cell(f"F{header}", "Стоимость, млн ₽")
         + text_cell(f"G{header}", "Множитель инфляции очереди")
+        + text_cell(f"H{header}", "Ключ API: мест")
+        + text_cell(f"I{header}", "Ключ API: цена места")
+        + text_cell(f"J{header}", "Ключ API: начало")
+        + text_cell(f"K{header}", "Ключ API: срок")
         + "</x:row>")
     for type_index, (typ, label) in enumerate(_V4_SOCIAL_TYPES):
+        # Ключ движка ставится только там, где строка несёт ВСЮ вводную: тип
+        # стоит в одной очереди. Раскиданный по очередям объект — это доли
+        # одной вводной, и подписать ими проектный ключ значило бы назвать
+        # часть целым (по этой же причине свод не подписывают именем момента).
+        carriers = [phase for phase in range(4)
+                    if float((rows.get((phase, typ)) or {}).get("capacity") or 0.0) > 0]
+        # Объекта нет вовсе — ключ идёт первой очереди: ноль это тоже вся
+        # вводная, и включают объект именно там, а строка без ключа выглядит
+        # как «этого поля в книге нет».
+        sole = carriers[0] if len(carriers) == 1 else (0 if not carriers else None)
         for phase_index in range(4):
             row = _v4_social_row(base_row, type_index, phase_index)
             slot = rows.get((phase_index, typ)) or {}
             serial = _v4_excel_serial(str(slot.get("start") or "")[:10]) if slot else None
+            keys = _V4_SOCIAL_KEYS[typ] if phase_index == sole else ("", "", "", "")
             parts.append(
                 f'<x:row r="{row}">'
                 + text_cell(f"A{row}", f"{label} — очередь {phase_index + 1}")
@@ -16034,6 +16062,8 @@ def _v4_social_rows_xml(xml: str, rows: dict[tuple[int, str], dict[str, Any]],
                                                or months_by_type.get(typ, 24)))
                 + f'<x:c r="F{row}"><x:f>$B{row}*$C{row}*$G{row}</x:f></x:c>'
                 + number_cell(f"G{row}", float(slot.get("factor") or 1.0))
+                + ("".join(text_cell(f"{letter}{row}", key)
+                           for letter, key in zip("HIJK", keys) if key))
                 + "</x:row>")
     cash_row = _v4_social_cash_row(base_row)
     # Дата платежа — методикой движка: min(заданная B18, РнС − 1 мес.).
@@ -16142,6 +16172,17 @@ def build_project_workbook(
             return float((row or {}).get(field) or 0)
         except Exception:
             return 0.0
+
+    # Подпись ключа берётся из самой карты, а не из шаблона: у B69 в шаблоне
+    # стояло «sales_term_default_months», а движок пишет туда
+    # residual_sales_months — одно число под двумя именами, и сверить книгу с
+    # движком по ключу было нельзя. Ключ живёт там же, где решается, куда
+    # писать значение, — второго списка «какой ключ в какой ячейке» не бывает.
+    for key, coord in _V4_INPUT_CELLS.items():
+        if coord.startswith("B"):
+            put("D" + coord[1:], text=key, label=f"ключ {key}")
+        elif coord.startswith("K"):
+            put("M" + coord[1:], text=key, label=f"ключ {key}")
 
     # --- скалярные вводные по карте ключей -------------------------------
     for key, coord in _V4_INPUT_CELLS.items():
@@ -16738,6 +16779,17 @@ def build_project_workbook(
     # на дефолтных вводных, которых нет в расчёте.
     price_inflation = float(p.get("sales_price_inflation_pct", 8.0) or 0) / 100.0 if count > 1 else 0.0
     cost_inflation = float(p.get("cost_inflation_pct", 8.0) or 0) / 100.0 if count > 1 else 0.0
+
+    # Колонки очередей — это вводные движка, и книга их называет: «Старт» без
+    # ключа читается как оформление, а по ключу видно, что правишь именно
+    # project_start. Ключ ставится в шапке, потому что колонка одна на все
+    # очереди, а значение у каждой своё.
+    for _queue_column, _queue_key in (
+            ("D", "project_start"), ("E", "ird_months"),
+            ("F", "construction_months"), ("G", "sales_lag_months")):
+        _header = str(_v4_QUEUE_HEADERS[_queue_column])
+        put(f"{_queue_column}87", text=f"{_header} · {_queue_key}",
+            label=f"подпись колонки {_queue_column}87")
 
     for index in range(4):
         row = 88 + index
