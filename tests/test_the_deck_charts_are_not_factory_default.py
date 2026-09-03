@@ -344,10 +344,16 @@ def test_the_key_numbers_are_tiles_and_the_bands_are_bands() -> None:
     filled = [shape for shape in shapes
               if str(shape.shape_type or "").startswith("AUTO_SHAPE")]
     assert filled, "ни плиток, ни ленты — только текст и таблицы"
-    # Лента несёт цвета экрана, а не офисную палитру.
+    # Лента несёт ПЕРЕВЕДЁННЫЙ цвет экрана, а не офисную палитру и не токен
+    # страницы: у колоды палитра своя (решение владельца, 01.09.2026), и синий
+    # экрана становится синим колоды, а не остаётся собой. Смешать их в одном
+    # документе — значит поставить лиловый и песочный рядом с зелёной полосой
+    # вывода, и лист перестаёт читаться как один.
     tones = {"%02X%02X%02X" % tuple(shape.fill.fore_color.rgb)
              for shape in filled if shape.fill.type is not None}
-    assert "1367AE" in tones and "C4581B" in tones
+    assert sales_deck.deck_colour("1367AE") in tones, tones
+    assert sales_deck.deck_colour("C4581B") in tones, tones
+    assert "1367AE" not in tones and "C4581B" not in tones, "цвет экрана уехал на слайд"
     # Ключевое число стоит крупно: полка титула, на которую смотрят с трёх
     # метров. Ищется по ВСЕМ фигурам, а не по одним автофигурам: число полки
     # лежит своей надписью над подложкой — колонок в подложке пять, и одним

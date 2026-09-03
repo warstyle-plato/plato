@@ -79,9 +79,19 @@ def test_the_card_draws_the_outline_and_names_its_source() -> None:
 
 def test_the_bridge_clears_the_previous_cadastre() -> None:
     """Кадастр и контур прошлого участка оставались в поле — и читались как
-    участок площадки КРТ."""
+    участок площадки КРТ. Забывает их сама подмена проекта: у моста своего
+    списка полей территории нет (второй список отстал бы от первого — так
+    старые кадастры и уезжали в PDF при чистом поле)."""
     bridge = (ROOT / "auction_search" / "bridge.py").read_text(encoding="utf-8")
     krt = bridge[bridge.index("if(pending.krt_model){"):]
     krt = krt[: krt.index("return;\n  }")]
-    assert "'cadastralNumbers'" in krt and "'landQuery'" in krt
-    assert "landPreview" in krt
+    assert "applyProjectSnapshot(model)" in krt
+    assert "'cadastralNumbers'" not in krt and "landPreview" not in krt
+    page = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    snapshot = page[page.index("function applyProjectSnapshot("):]
+    snapshot = snapshot[: snapshot.index("\n}\n")]
+    assert "forgetTerritoryState()" in snapshot
+    forget = page[page.index("function forgetTerritoryState("):]
+    forget = forget[: forget.index("\n}\n")]
+    assert "'cadastralNumbers'" in forget and "'landQuery'" in forget
+    assert "landPreview" in forget
