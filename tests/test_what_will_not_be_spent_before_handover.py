@@ -308,7 +308,7 @@ def test_the_table_shows_both_halves_and_says_what_is_an_estimate() -> None:
     body = body[: body.index("\n return html;\n}")]
     assert "Кому не хватает своего лимита" in body
     assert "Откуда просить" in body
-    assert "Не покрыто" in body and "структурный дефицит" in body
+    assert "Не покрыто" in body and "нехватка по статьям РСС" in body
     assert "u.shortage_total" in body and "u.criterion" in body
     assert "a.basis" in body, "основание источника не показано"
     assert "оценка" in body, "разложенные по статьям ГУ выданы за измеренные"
@@ -322,7 +322,7 @@ def test_the_table_shows_both_halves_and_says_what_is_an_estimate() -> None:
     # Снятые статьи названы с причиной, а не выброшены.
     assert "a.reason" in body and "источником не считаем" in body
     # Расхождение с дефицитом выше — ошибка счёта, и так и сказано.
-    assert "не сходится со структурным дефицитом" in body
+    assert "не сходится с нехваткой по статьям" in body
     # Экран не считает: числа приходят готовыми.
     for arithmetic in ("*", "/"):
         assert f"a.limit{arithmetic}" not in body
