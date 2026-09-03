@@ -243,6 +243,12 @@ def _requirements_for_model(requirements: dict[str, Any] | None) -> dict[str, An
             + list((source.get("decision") or {}).get("construction") or [])
         ),
         "source_level": source.get("source_level"),
+        # Городские нужды — не «да/нет», а объём: доля меряется, а не
+        # оценивается на глаз. Читается из решения; ноль записей — это «в
+        # прочитанном не сказано», и вызывающий обязан отличать это от «нет».
+        "renovation": (source.get("renovation")
+                       or (source.get("decision") or {}).get("renovation")
+                       or {"mentioned": False, "area_sqm": None, "quote": ""}),
         "decision": copy.deepcopy(source.get("decision")),
         "demolition_area_sqm": demolition_area,
         "demolition_objects": len(definite_demolition),

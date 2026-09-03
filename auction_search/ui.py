@@ -942,6 +942,29 @@ function krtIntent(x){
  merged.probed=true;
  return merged;
 }
+// Число правила в его же единицах: LLCR в иксах, маржа в процентах. Подпись
+// без единицы читается как другое число — то же правило, что у удельных.
+// Объём городских нужд и его доля в жилье площадки. Считает не экран — доля
+// это деление двух прочитанных чисел, и оба названы рядом с ней. Цена, по
+// которой Фонд выкупает эти метры, нам неизвестна, поэтому в деньгах эффект не
+// считается вовсе: посчитанный по выдуманной ставке, он выглядел бы измеренным.
+function krtInt(v){return new Intl.NumberFormat('ru-RU').format(Math.round(Number(v)||0))}
+function krtPct(v){return (Math.round(Number(v)*1000)/10).toString().replace('.',',')+'%'}
+function krtRenovation(x,rank){
+ const req=(state.krtRequirements||{})[x.slug]||(rank||{}).requirements||{};
+ const said=req.renovation||{};
+ const area=Number(said.area_sqm||0);
+ const housing=Number(x.housing_gfa_sqm||(rank||{}).housing_gfa_sqm||0);
+ const share=(area>0&&housing>0)?Math.min(1,area/housing):null;
+ return {area:area,housing:housing,share:share,quote:said.quote||''};
+}
+function krtRuleValue(rule,value){
+ const v=Number(value);
+ if(!Number.isFinite(v))return '—';
+ return rule.key==='margin'
+  ? (Math.round(v*10)/10).toString().replace('.',',')+'%'
+  : (Math.round(v*100)/100).toString().replace('.',',')+'x';
+}
 function krtPenalty(value,rule,scale){
  if(value===null||value===undefined||!Number.isFinite(Number(value)))return 0;
  const v=Number(value), from=scale?scale.from:rule.from, to=scale?scale.to:rule.to;
@@ -984,26 +1007,54 @@ function krtScore(x){
    +' — войти нельзя',points:60});
  // Городские нужды снижают, но не закрывают: КРТ для нужд города выигрывает и
  // частный застройщик, поэтому это не запрет, а названная сложность.
- if(intent&&(intent.city_needs||[]).length)
-  cuts.push({label:'в документе сказано о городских нуждах',points:25});
+ // Величина снижения — ИЗМЕРЕННАЯ доля, а не плоская четверть: на Задонском
+ // проезде Фонд забирает 15 100 м² из 150 940 предельной жилой СПП, то есть
+ // десятую часть, а балл падал на 25% (владелец, 03.09.2026: «не смущает, что
+ // фонд реновации забирает 15 тысяч из 150 000? значит остальное рыночный
+ // объём»). Объём не назван — снижение меньше и подписано незнанием: «доля
+ // неизвестна» это не «забирают всё».
+ const reno=krtRenovation(x,rank);
+ if(intent&&(intent.city_needs||[]).length){
+  if(reno.share!==null)
+   cuts.push({label:'городские нужды: '+krtInt(reno.area)+' м² из '+krtInt(reno.housing)
+    +' м² жилья ('+krtPct(reno.share)+') уходят Программе реновации',
+    points:Math.min(25,Math.max(1,Math.round(reno.share*100)))});
+  else
+   cuts.push({label:'в документе сказано о городских нуждах, объём не назван',points:10});
+ }
  if(counted){
   [[llcr,KRT_PENALTIES[0]],[margin,KRT_PENALTIES[1]],[weakest,KRT_PENALTIES[2]]].forEach(([v,rule])=>{
    const scale=krtModelScale(rule);
    let points=krtPenalty(v,rule,scale);
-   let label=rule.label+(scale?' — ниже каталога':'');
-   // Пол остаётся абсолютным и назван своим именем: относительная шкала
-   // сравнивает площадки между собой и молчит о том, что плохи все разом.
-   // Пол абсолютный и называется ВСЕГДА, а не только когда он выше
-   // относительного: относительная шкала сравнивает площадки между собой и о
-   // том, что плохи все разом, молчит.
-   if(rule.key==='llcr'&&Number.isFinite(Number(v))&&Number(v)<1){
-    points=Math.max(points,20);
-    label='LLCR ниже 1,00x — долг не обслуживается даже при нулевой цене входа';
-   }
+   // «Ниже каталога» стояло у 137 площадок из 153 — потому что нулевая точка
+   // шкалы это ДЕВЯНОСТЫЙ процентиль, а не середина. Читалось это как «хуже
+   // каталога», то есть как приговор большинству; на деле сказано «не в
+   // верхней десятой части». Подпись называет и порог, и своё число: два
+   // числа рядом сравнимы, слово «ниже» само по себе — нет.
+   let label=rule.label+(scale
+    ?' '+krtRuleValue(rule,v)+' — ниже верхней десятой части каталога ('
+      +krtRuleValue(rule,scale.from)+')'
+    :'');
    if(points>0)cuts.push({label:label,points:points});
   });
-  const ceilingKnown=rank.entry_capacity_rub_per_sqm!==null&&rank.entry_capacity_rub_per_sqm!==undefined;
-  if(!ceilingKnown)cuts.push({label:'потолок входа не подобран',points:10});
+  // Пол абсолютный и стоит ОТДЕЛЬНОЙ строкой, а не поднимает относительную.
+  // Написанный как `Math.max(points,20)`, он не срабатывал ни разу там, где
+  // нужен: у самой плохой площадки относительная шкала уже даёт максимум
+  // правила, и пол в него проваливался молча. На проверочном каталоге проект
+  // с LLCR 0,72x и убытком получал ровно тот же балл, что худшая площадка
+  // каталога с 1,00x и плюсовой маржой, — то есть относительная шкала прятала
+  // абсолютно плохое, ради чего пол и писался.
+  if(Number.isFinite(Number(llcr))&&Number(llcr)<1)
+   cuts.push({label:'LLCR '+krtRuleValue(KRT_PENALTIES[0],llcr)
+    +' ниже 1,00x — долг не обслуживается даже при нулевой цене входа',points:15});
+  if(Number.isFinite(Number(margin))&&Number(margin)<=0)
+   cuts.push({label:'маржинальность '+krtRuleValue(KRT_PENALTIES[1],margin)
+    +' — проект в убытке при нулевой цене входа',points:10});
+  // Неподобранный потолок входа снижал балл у 147 площадок из 153 — то есть
+  // почти у всех, а значит не различал ничего. И главное: это НАШ пробел, а не
+  // свойство площадки, а правило уже записано — непосчитанное не снижает
+  // ничего, это «не знаем», а не «плохо». Пробел остаётся названным, но в
+  // подписи, а не в балле.
  }
  // Штраф — доля, а не вычитание очков. При вычитании площадка со слабым ТЭП
  // и слабой экономикой падала в ноль (78 − 80), и все плохие становились
@@ -1013,7 +1064,18 @@ function krtScore(x){
  const score=Math.max(0,Math.min(100,Math.round(fit.score*(1-cut/100))));
  const tone=score>=75?'ok':score>=50?'warn':'bad';
  const label=score>=75?'Высокое':score>=50?'Среднее':'Низкое';
- return {score,base:fit.score,cut,cuts,tone,label,counted,fit,
+ // Пробел, который не снижает балл, обязан быть виден: молча снятое снижение
+ // читается как «всё в порядке», а это «мы не знаем».
+ const gaps=[];
+ if(reno.share!==null)
+  gaps.push('в деньгах реновация не посчитана: ставка выкупа Фондом (УУПСС) нам неизвестна');
+ if(counted&&(rank.entry_capacity_rub_per_sqm===null
+   ||rank.entry_capacity_rub_per_sqm===undefined))
+  gaps.push('потолок входа не подобран'
+   +(rank.entry_capacity_reason&&rank.entry_capacity_reason!=='Потолок цены входа не подобран'
+     ?': '+rank.entry_capacity_reason:'')
+   +' — это наш пробел, балл он не снижает');
+ return {score,base:fit.score,cut,cuts,gaps,tone,label,counted,fit,
          reason:rank.reason||'',staleReason:rank.recompute_reason||'',
          staleAt:rank.recompute_failed_at||0,countedAt:rank.computed_at||0};
 }
@@ -1027,7 +1089,8 @@ function krtWhen(stamp){
 }
 function krtScoreNote(sc){
  if(!sc.counted)return 'ТЭП '+sc.base+' · модель не считалась'+(sc.reason?': '+sc.reason:'');
- const head='ТЭП '+sc.base+(sc.cut?' · расчёт снял '+sc.cut+'%: '+sc.cuts.map(c=>c.label).join(', '):' · расчёт не снизил');
+ const head='ТЭП '+sc.base+(sc.cut?' · расчёт снял '+sc.cut+'%: '+sc.cuts.map(c=>c.label).join(', '):' · расчёт не снизил')
+  +((sc.gaps||[]).length?' · '+sc.gaps.join('; '):'');
  if(!sc.staleReason)return head;
  // Числа остались от удавшегося счёта — значит, надо сказать, от какого.
  const when=krtWhen(sc.countedAt);
