@@ -951,9 +951,13 @@ function krtIntent(x){
 function krtInt(v){return new Intl.NumberFormat('ru-RU').format(Math.round(Number(v)||0))}
 function krtPct(v){return (Math.round(Number(v)*1000)/10).toString().replace('.',',')+'%'}
 function krtRenovation(x,rank){
+ // Запасной путь обязателен: скрининг кладёт долю в строку рейтинга, и без
+ // него признак виден только тому, кто нажал кнопку в этой вкладке —
+ // посчитанное на сервере становится неотличимо от непосчитанного.
  const req=(state.krtRequirements||{})[x.slug]||(rank||{}).requirements||{};
+ const row=(rank||{}).renovation||{};
  const said=req.renovation||{};
- const area=Number(said.area_sqm||0);
+ const area=Number(said.area_sqm||row.spp_sqm||0);
  const housing=Number(x.housing_gfa_sqm||(rank||{}).housing_gfa_sqm||0);
  const share=(area>0&&housing>0)?Math.min(1,area/housing):null;
  return {area:area,housing:housing,share:share,quote:said.quote||''};
@@ -1024,22 +1028,20 @@ function krtScore(x){
       // приписанный факт.
       :'на площадке уже продаётся ЖК'))
    +' — войти нельзя',points:60});
- // Городские нужды снижают, но не закрывают: КРТ для нужд города выигрывает и
- // частный застройщик, поэтому это не запрет, а названная сложность.
- // Величина снижения — ИЗМЕРЕННАЯ доля, а не плоская четверть: на Задонском
- // проезде Фонд забирает 15 100 м² из 150 940 предельной жилой СПП, то есть
- // десятую часть, а балл падал на 25% (владелец, 03.09.2026: «не смущает, что
- // фонд реновации забирает 15 тысяч из 150 000? значит остальное рыночный
- // объём»). Объём не назван — снижение меньше и подписано незнанием: «доля
- // неизвестна» это не «забирают всё».
+ // Метры Программы реновации — часть ЦЕНЫ ВХОДА, уплаченная метрами (владелец,
+ // 03.09.2026), и с 0.21.77 их знает сама модель: они строятся, но не
+ // продаются. Значит снижать за них балл ОТДЕЛЬНО больше нельзя — экономика
+ // уже посчитана без этой выручки, и второе снижение было бы тем же убытком,
+ // посчитанным дважды. Снижение остаётся ровно там, где модель не считалась
+ // (тогда вычесть выручку было негде) и где объём не назван (вычитать нечего).
  const reno=krtRenovation(x,rank);
  if(intent&&(intent.city_needs||[]).length){
-  if(reno.share!==null)
-   cuts.push({label:'городские нужды: '+krtInt(reno.area)+' м² из '+krtInt(reno.housing)
-    +' м² жилья ('+krtPct(reno.share)+') уходят Программе реновации',
-    points:Math.min(25,Math.max(1,Math.round(reno.share*100)))});
-  else
+  if(reno.share===null)
    cuts.push({label:'в документе сказано о городских нуждах, объём не назван',points:10});
+  else if(!counted)
+   cuts.push({label:'городские нужды: '+krtInt(reno.area)+' м² из '+krtInt(reno.housing)
+    +' м² жилья ('+krtPct(reno.share)+') — Программа реновации, модель не считалась',
+    points:Math.min(25,Math.max(1,Math.round(reno.share*100)))});
  }
  if(counted){
   [[llcr,KRT_PENALTIES[0]],[margin,KRT_PENALTIES[1]],[weakest,KRT_PENALTIES[2]]].forEach(([v,rule])=>{
@@ -1086,8 +1088,10 @@ function krtScore(x){
  // Пробел, который не снижает балл, обязан быть виден: молча снятое снижение
  // читается как «всё в порядке», а это «мы не знаем».
  const gaps=[];
- if(reno.share!==null)
-  gaps.push('в деньгах реновация не посчитана: ставка выкупа Фондом (УУПСС) нам неизвестна');
+ if(reno.share!==null&&counted)
+  gaps.push('метры реновации ('+krtInt(reno.area)+' м², '+krtPct(reno.share)
+   +' жилья) строятся, но не продаются — это часть цены входа, уплаченная метрами;'
+   +' в выручке модели их нет');
  if(counted&&(rank.entry_capacity_rub_per_sqm===null
    ||rank.entry_capacity_rub_per_sqm===undefined))
   gaps.push('потолок входа не подобран'
@@ -1374,9 +1378,21 @@ function krtMarks(x){
  const renovQuote=card.renovation_quote
    ||(((press&&press.city_needs||[])[0]||{}).quote)
    ||'В публикации сказано о городских нуждах';
- const marks=(renov?'<span class="tag warn" title="'
-    +esc(String(card.renovation?'карточка krt.mos.ru: ':'публикация: ')+renovQuote)
-    +'">реновация</span>':'')
+ // Доля из решения сильнее упоминания: «реновация» и «реновация — всё жильё»
+ // это разные площадки. Сто процентов значит, что девелоперского продукта
+ // здесь нет вовсе: Фонд реновации КРТ не торгует, он оператор КРТ и заказывает
+ // подрядные работы (владелец, 03.09.2026), — войти можно подрядчиком.
+ const share=krtRenovation(x,state.krtRank[x.slug]||{});
+ const whole=share.share!==null&&share.share>=0.99;
+ const renovLabel=whole?'реновация — всё жильё'
+  :(share.share!==null?'реновация '+krtPct(share.share):'реновация');
+ const renovTitle=share.share!==null
+  ? krtInt(share.area)+' м² СПП из '+krtInt(share.housing)+' м² жилья по решению о КРТ. '
+    +'Эти метры строятся, но не продаются: часть цены входа, уплаченная метрами.'
+    +(whole?' Девелоперского продукта здесь нет — войти можно подрядчиком.':'')
+  : String(card.renovation?'карточка krt.mos.ru: ':'публикация: ')+renovQuote;
+ const marks=((renov||share.share!==null)?'<span class="tag warn" title="'
+    +esc(renovTitle)+'">'+esc(renovLabel)+'</span>':'')
   +(selling?'<span class="tag warn" title="'+esc('публикация: '+(selling.quote||''))
     +'">уже продаётся ЖК</span>':'')
   +(builder?'<span class="tag" title="Застройщик назван официальной карточкой krt.mos.ru или публикацией">'

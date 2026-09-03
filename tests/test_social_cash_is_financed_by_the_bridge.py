@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import io
 import sys
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -110,8 +110,42 @@ def test_the_workbook_gets_the_same_date():
 
 
 def test_the_workbook_moves_a_late_date_the_same_way():
-    cell = workbook(social_comp_date="2028-12-01")["Вводные"]["B18"]
-    assert getattr(cell.value, "date", lambda: cell.value)() == date(2028, 6, 1)
+    """Заданная дата за бридж-периодом платится в крайний месяц — как в движке.
+
+    С 0.21.79 в B18 стоит ЗАДАННАЯ дата, а правило min(заданная, РнС − 1 мес.)
+    живёт в формуле читателя: обрезанное число не двигалось от правки РнС прямо
+    в книге, а из результата не было видно, что за ним стоит правило. Поэтому
+    проверяется не содержимое ячейки, а то, КОГДА книга платит."""
+    from xlsx_eval import Evaluator
+
+    sys.setrecursionlimit(400000)
+    book = workbook(social_comp_date="2028-12-01")
+    assert getattr(book["Вводные"]["B18"].value, "date",
+                   lambda: book["Вводные"]["B18"].value)() == date(2028, 12, 1)
+
+    evaluator = Evaluator(book)
+    sheet = book["Вводные"]
+    cash = next(number for number in range(1, sheet.max_row + 1)
+                if str(sheet[f"A{number}"].value or "").startswith("Денежная компенсация"))
+    paid = evaluator.cell("Вводные", f"D{cash}")
+    paid = paid if hasattr(paid, "isoformat") else (
+        date(1899, 12, 30) + timedelta(days=int(paid)))
+    assert str(paid)[:10] == "2028-06-01", paid
+
+
+def test_the_workbook_pays_an_early_date_when_it_was_asked_to():
+    """Обрезка — потолок, а не подмена: дата внутри бридж-периода не двигается."""
+    from xlsx_eval import Evaluator
+
+    sys.setrecursionlimit(400000)
+    book = workbook(social_comp_date="2027-06-01")
+    sheet = book["Вводные"]
+    cash = next(number for number in range(1, sheet.max_row + 1)
+                if str(sheet[f"A{number}"].value or "").startswith("Денежная компенсация"))
+    paid = Evaluator(book).cell("Вводные", f"D{cash}")
+    paid = paid if hasattr(paid, "isoformat") else (
+        date(1899, 12, 30) + timedelta(days=int(paid)))
+    assert str(paid)[:10] == "2027-06-01", paid
 
 
 def test_the_workbook_peak_agrees_with_the_engine():

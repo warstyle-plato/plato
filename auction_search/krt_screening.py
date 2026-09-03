@@ -571,16 +571,38 @@ def build_krt_model_screening(
     # чужой продукт, а не наш.
     lot_area, lot_basis = core.average_flat_sqm("manual")
     neighbour_lot = _number(verdict.get("sold_lot_avg"))
+    # Метры Программы реновации СТРОЯТСЯ, но не продаются: это часть цены входа,
+    # уплаченная метрами (владелец, 03.09.2026: «это по сути часть стоимости
+    # входа в проект метрами»). Фонд реновации КРТ не торгует — он оператор КРТ
+    # и проводит конкурсы на подрядные работы, а не выкупает у инвестора метры:
+    # «Донские улицы», 136 910 м² каталога, ушли подрядчику за 14 млрд ₽, то
+    # есть по 102 тыс ₽/м² — это цена СТРОЙКИ, а не цена метра. Значит выручки
+    # за эти метры нет ни по рынку, ни по выкупу.
+    #
+    # ГНС и общая остаются полными — метры строят, и CAPEX за них платят; из
+    # продаваемой они вычитаются. То же правило, что у переданных
+    # муниципалитету метров: строятся, но не продаются.
+    renovation = duties.get("renovation") or {}
+    renovation_spp = min(_number(renovation.get("area_sqm")), housing_gfa)
+    renovation_share = renovation_spp / housing_gfa if housing_gfa > 0 else 0.0
+    saleable_market = saleable * (1 - renovation_share)
     tep["apartments"].update({
         "gns": housing_gfa,
         "total_area": total_area,
         "useful": saleable,
-        "saleable": saleable,
-        "units": saleable / lot_area,
+        "saleable": saleable_market,
+        # Переданное городу едет тем же полем, каким уже едут метры
+        # муниципалитету: второй механизм на одно явление однажды разошёлся бы
+        # с первым, и обе строки выглядели бы верными.
+        "transfer": saleable - saleable_market,
+        "units": saleable_market / lot_area,
     })
 
     # Нежилой объём города и соцобъекты — до паркинга: места считаются от жилья,
     # но продукты очереди и ТЭП должны быть собраны целиком до прогона модели.
+    # Население и нормативы считаются от ВСЕХ квартир, включая реновационные:
+    # в них живут люди, и места в саду, школе и паркинге им положены так же.
+    # Не продаётся — не значит не заселяется.
     programme = _programme(core, project, duties, inputs, tep, applied_ratios, saleable)
 
     # Места считает постановление, а не своя строка модуля (решение владельца,
@@ -603,7 +625,7 @@ def build_krt_model_screening(
     inputs["underground_parking_disabled"] = False
 
     phasing = _phase_configuration(saleable, int(_number(inputs.get("construction_months")) or 24))
-    units_total = saleable / lot_area
+    units_total = saleable_market / lot_area
     observed_pace = _number(verdict.get("units_per_month"))
     absorption: dict[str, Any] = {"available": False}
     if observed_pace > 0:
@@ -716,8 +738,27 @@ def build_krt_model_screening(
         "соцобъекты — не позже первой (ДОО) и второй (школа, поликлиника) очереди: "
         "срок ввода по условиям КРТ не раскрыт, это допущение DevelopAid."
     )
+    if renovation_spp > 0:
+        assumptions.append(
+            f"Программа реновации — {_ru_number(renovation_spp)} м² СПП "
+            f"({renovation_share * 100:.1f}% жилья площадки): метры строятся и передаются "
+            f"городу, выручки не несут. Это часть ЦЕНЫ ВХОДА, уплаченная метрами, "
+            f"а не убыток: Фонд реновации КРТ не торгует — он оператор КРТ и проводит "
+            f"конкурсы на подрядные работы, а не выкупает у инвестора метры. "
+            f"Продаваемая по рынку — {_ru_number(saleable_market)} м² из "
+            f"{_ru_number(saleable)} м² построенных."
+            + (" Всё жильё площадки — Программа реновации: девелоперского продукта "
+               "здесь нет вовсе, войти можно подрядчиком."
+               if renovation_share >= 0.99 else "")
+        )
+    elif (renovation or {}).get("mentioned"):
+        assumptions.append(
+            "Программа реновации в решении названа, но объём не указан: метры "
+            "продаются по рынку целиком, потому что вычесть нечего. «Доля "
+            "неизвестна» — это не «доли нет»."
+        )
     assumptions.append(
-        f"Число квартир — {_ru_number(saleable / lot_area)} лотов по средней квартире "
+        f"Число квартир — {_ru_number(saleable_market / lot_area)} лотов по средней квартире "
         f"{lot_area:g} м²: {lot_basis}."
         + (f" У соседей средний проданный лот {_ru_number(neighbour_lot, 1)} м² — "
            "это наблюдение рынка, а не мера нашей нарезки."
@@ -832,6 +873,17 @@ def build_krt_model_screening(
             "phasing": copy.deepcopy(phasing),
         },
         "requirements": duties,
+        # Признак реновации едет ЧИСЛОМ, а не пересказом: метка на строке и
+        # предпосылка в отчёте обязаны считаться одним и тем же, иначе они
+        # однажды скажут про одну площадку разное.
+        "renovation": {
+            "spp_sqm": round(renovation_spp),
+            "share": round(renovation_share, 4),
+            "saleable_lost_sqm": round(saleable - saleable_market),
+            "whole_site": renovation_share >= 0.99,
+            "mentioned": bool((renovation or {}).get("mentioned")),
+            "quote": str((renovation or {}).get("quote") or ""),
+        },
         "programme": programme,
         "headline": traffic["label"],
         "text": text,
@@ -849,8 +901,8 @@ def build_krt_model_screening(
             "count": phasing["phase_count"],
             "target_saleable_sqm": TARGET_PHASE_SALEABLE_SQM,
             "gap_months": PHASE_GAP_MONTHS,
-            "saleable_sqm": round(saleable),
-            "average_saleable_sqm": round(saleable / phasing["phase_count"]),
+            "saleable_sqm": round(saleable_market),
+            "average_saleable_sqm": round(saleable_market / phasing["phase_count"]),
             "capped_at_five": capped_at_five,
             "phases": phases,
         },

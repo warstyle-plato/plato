@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -50,6 +51,29 @@ def _function(name: str) -> str:
     raise AssertionError(f"не нашёл конец функции {name}")
 
 
+def _function_with_helpers(name: str) -> str:
+    """Функция вместе с теми, кого она зовёт: стенд не перечисляет их руками.
+
+    `krtMarks` обзавелась соседями (`krtRenovation`, `krtInt`, `krtPct`), и
+    шесть проверок упали с `ReferenceError` — на верном поведении, просто
+    вырезали одну функцию из четырёх. Перечислять зависимости списком значит
+    повторить это при следующем соседе; они находятся разбором вызовов.
+    """
+    taken, order, queue = set(), [], [name]
+    while queue:
+        current = queue.pop(0)
+        if current in taken:
+            continue
+        if f"function {current}(" not in PAGE:
+            continue
+        taken.add(current)
+        body = _function(current)
+        order.append(body)
+        queue.extend(sorted(set(re.findall(r"\b(krt[A-Za-z]+)\s*\(", body))))
+    assert order, f"не нашёл функцию {name}"
+    return "\n".join(reversed(order))
+
+
 def _marks(*, rank_row: dict, pressed: dict | None = None,
            row: dict | None = None) -> str:
     node = shutil.which("node")
@@ -60,7 +84,7 @@ def _marks(*, rank_row: dict, pressed: dict | None = None,
         "({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c]));\n"
         f"const state={{krtCards:{{}},krtRank:{{s:{json.dumps(rank_row)}}},"
         f"krtPress:{json.dumps(pressed or {})}}};\n"
-        + _function("krtMarks") + "\n"
+        + _function_with_helpers("krtMarks") + "\n"
         f"process.stdout.write(krtMarks({json.dumps(row or {'slug': 's'})}));"
     )
     done = subprocess.run([node, "-e", program], capture_output=True,

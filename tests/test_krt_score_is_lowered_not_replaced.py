@@ -178,18 +178,36 @@ def test_an_unpriced_ceiling_is_our_gap_and_costs_nothing() -> None:
     assert with_ceiling["gaps"] == [], with_ceiling
 
 
-def test_the_city_share_is_measured_not_assumed() -> None:
-    """15 100 м² из 150 940 — это десятая часть, а балл снимал четверть."""
+def test_a_counted_model_does_not_pay_for_renovation_twice() -> None:
+    """Метры реновации уже не в выручке модели — снижать за них ещё и балл нельзя.
+
+    С 0.21.77 скрининг знает, что они строятся, но не продаются: это часть цены
+    входа, уплаченная метрами. Экономика посчитана без этой выручки, и второе
+    снижение было бы тем же убытком, посчитанным дважды.
+    """
     site = {**SITE, "housing_gfa_sqm": 150940}
     got = score(model_with(1.30, 20.0, 1.20), {"entry_capacity_rub_per_sqm": 30000},
                 site=site, requirements={
                     "intent": {"probed": True, "city_needs": ["Программа реновации"]},
                     "renovation": {"mentioned": True, "area_sqm": 15100,
                                    "quote": "передать 15 100 кв. м в Программу реновации"}})
-    cut = next(c for c in got["cuts"] if "городские нужды" in c["label"])
+    assert not [c for c in got["cuts"] if "реновац" in c["label"].lower()], got["cuts"]
+    # Молча снятое снижение читается как «всё в порядке» — оно названо в пробелах.
+    gap = next(g for g in got["gaps"] if "реновац" in g.lower())
+    assert "15 100" in gap.replace("\u00a0", " "), gap
+    assert "не продаются" in gap and "цены входа" in gap, gap
+
+
+def test_an_uncounted_model_still_pays_for_the_city_share() -> None:
+    """Модель не считалась — вычесть выручку было негде, и снижение остаётся."""
+    site = {**SITE, "housing_gfa_sqm": 150940}
+    got = score(None, site=site, requirements={
+        "intent": {"probed": True, "city_needs": ["Программа реновации"]},
+        "renovation": {"mentioned": True, "area_sqm": 15100}})
+    cut = next(c for c in got["cuts"] if "реновац" in c["label"].lower())
     assert cut["points"] == 10, got["cuts"]
-    assert "15 100" in cut["label"].replace("\u00a0", " "), cut["label"]
     assert "10%" in cut["label"], cut["label"]
+    assert "модель не считалась" in cut["label"], cut["label"]
 
 
 def test_an_unnamed_city_share_is_not_the_whole_site() -> None:
@@ -203,14 +221,17 @@ def test_an_unnamed_city_share_is_not_the_whole_site() -> None:
     assert "объём не назван" in cut["label"], cut["label"]
 
 
-def test_the_money_effect_is_not_invented() -> None:
-    """Ставку выкупа Фондом мы не знаем — и говорим это, а не считаем по догадке."""
+def test_the_share_is_read_from_the_row_too() -> None:
+    """Скрининг кладёт долю в строку рейтинга — без запасного пути её видит
+    только тот, кто нажал кнопку в этой вкладке."""
     site = {**SITE, "housing_gfa_sqm": 150940}
-    got = score(model_with(1.30, 20.0, 1.20), {"entry_capacity_rub_per_sqm": 30000},
-                site=site, requirements={
-                    "intent": {"probed": True, "city_needs": ["Программа реновации"]},
-                    "renovation": {"mentioned": True, "area_sqm": 15100}})
-    assert any("УУПСС" in gap for gap in got["gaps"]), got["gaps"]
+    got = score(model_with(1.30, 20.0, 1.20), {
+        "entry_capacity_rub_per_sqm": 30000,
+        "renovation": {"spp_sqm": 15100, "share": 0.1},
+        "requirements": {"intent": {"probed": True,
+                                    "city_needs": ["Программа реновации"]}}},
+        site=site)
+    assert any("реновац" in g.lower() for g in got["gaps"]), got["gaps"]
 
 
 def test_the_scale_label_names_the_threshold_it_compares_with() -> None:
