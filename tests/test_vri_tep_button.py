@@ -223,7 +223,14 @@ def test_both_branches_attach_the_filled_developaid_template(monkeypatch):
     assert parsed["inputs"]["land_rights_cost_mln"] == pytest.approx(4643.921, rel=0.001)
     assert parsed["tep"]["apartments"]["saleable"] == pytest.approx(195080.1, rel=0.001)
     assert parsed["tep"]["kindergarten"]["units"] == pytest.approx(453)
-    assert parsed["tep"]["apartments"]["units"] == pytest.approx(3321)
+    # Квартиры Подмосковья меряет РНГП области, а не число без источника: было
+    # 3 321 по литералу 58,75 (он не брался ниоткуда), стало 3 318 по 28 м² на
+    # человека при размере домовладения 2,1. Утверждение — про ДЕЛИТЕЛЬ, а не
+    # про запомненное число: литерал разошёлся бы с движком молча.
+    flat, basis = core.average_flat_sqm("mo")
+    assert "РНГП Московской области" in basis, basis
+    assert parsed["tep"]["apartments"]["units"] == pytest.approx(
+        parsed["tep"]["apartments"]["saleable"] / flat, rel=0.001)
 
 
 def test_the_msk_branch_finds_the_parcel_by_address(monkeypatch):
