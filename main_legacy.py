@@ -70,7 +70,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.21.79"
+VERSION = "0.21.81"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -13906,7 +13906,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     _pdf_phased = len(result.get("comparison") or []) > 1
     def _pdf_rve_label(base: str) -> str:
         return f"{base} — всего" if _pdf_phased else f"{base} в РВЭ"
-    finance_rows=[["Показатель","Значение"],["Расчётный БРИДЖ",_pdf_money(financing.get('calculated_bridge'))],["Пиковый фактический БРИДЖ (тело долга)",_pdf_money(financing.get('actual_bridge'))],["Собственные средства до ПФ",_pdf_money(financing.get('own_funds'))],["Пик БРИДЖ с капитализацией процентов (справочно)",_pdf_money(financing.get('bridge_peak_capitalized') or financing.get('actual_bridge'))],["Пиковая (непокрытая эскроу) задолженность ПФ",_pdf_money(financing.get('pf_uncovered_peak'))],[_pdf_rve_label("Долг ПФ перед раскрытием"),_pdf_money(financing.get('rve_pf_before_repayment'))],[_pdf_rve_label("Раскрытый эскроу"),_pdf_money(financing.get('rve_escrow_release'))],["Из него на погашение ПФ",_pdf_money(financing.get('rve_pf_repayment'))],[_pdf_rve_label("Не покрыто эскроу при раскрытии"),_pdf_money(financing.get('rve_pf_shortfall'))],[("Лимит ПФ — сумма по очередям" if _pdf_phased else "Лимит ПФ"),_pdf_money(financing.get('pf_limit'))],["Текущая ключевая ставка",_pdf_pct(financing.get('current_key_rate'))],["Спред БРИДЖ",_pdf_pct(financing.get('bridge_spread'))],["Ставка БРИДЖ на текущей ключевой",_pdf_pct(financing.get('current_bridge_rate'))],["Средняя ключевая за период БРИДЖ",_pdf_pct(financing.get('avg_bridge_key_rate'))],["Средневзвешенная ставка БРИДЖ за период",_pdf_pct(financing.get('avg_bridge_rate'))],["Средняя фактическая ставка ПФ",_pdf_pct(financing.get('avg_pf_effective_rate'))],*_pdf_pf_step_rows(financing),["Проценты и комиссии",_pdf_money(financing.get('interest_and_fees'))],["Непогашенный долг ПФ на конец проекта",_pdf_money(financing.get('ending_pf'))],*([["Долг передан в ПФ следующей очереди",_pdf_money(financing.get('debt_carried_out'))]] if float(financing.get('debt_carried_out') or 0)>500_000 else []),*([["в т.ч. принято от предыдущей очереди",_pdf_money(financing.get('carried_debt_in'))]] if (not _pdf_phased and float(financing.get('carried_debt_in') or 0)>500_000) else []),["LLCR",_pdf_num(summary.get('llcr'),2)+"x"]]
+    finance_rows=[["Показатель","Значение"],[("Расчётный БРИДЖ — сумма лимитов очередей" if _pdf_phased else "Расчётный БРИДЖ"),_pdf_money(financing.get('calculated_bridge'))],[("Пик одновременно открытых линий БРИДЖа очередей (тело долга)" if _pdf_phased else "Пиковый фактический БРИДЖ (тело долга)"),_pdf_money(financing.get('actual_bridge'))],["Собственные средства до ПФ",_pdf_money(financing.get('own_funds'))],["Пик БРИДЖ с капитализацией процентов (справочно)",_pdf_money(financing.get('bridge_peak_capitalized') or financing.get('actual_bridge'))],["Пиковая (непокрытая эскроу) задолженность ПФ",_pdf_money(financing.get('pf_uncovered_peak'))],[_pdf_rve_label("Долг ПФ перед раскрытием"),_pdf_money(financing.get('rve_pf_before_repayment'))],[_pdf_rve_label("Раскрытый эскроу"),_pdf_money(financing.get('rve_escrow_release'))],["Из него на погашение ПФ",_pdf_money(financing.get('rve_pf_repayment'))],[_pdf_rve_label("Не покрыто эскроу при раскрытии"),_pdf_money(financing.get('rve_pf_shortfall'))],[("Лимит ПФ — сумма по очередям" if _pdf_phased else "Лимит ПФ"),_pdf_money(financing.get('pf_limit'))],["Текущая ключевая ставка",_pdf_pct(financing.get('current_key_rate'))],["Спред БРИДЖ",_pdf_pct(financing.get('bridge_spread'))],["Ставка БРИДЖ на текущей ключевой",_pdf_pct(financing.get('current_bridge_rate'))],["Средняя ключевая за период БРИДЖ",_pdf_pct(financing.get('avg_bridge_key_rate'))],["Средневзвешенная ставка БРИДЖ за период",_pdf_pct(financing.get('avg_bridge_rate'))],["Средняя фактическая ставка ПФ",_pdf_pct(financing.get('avg_pf_effective_rate'))],*_pdf_pf_step_rows(financing),["Проценты и комиссии",_pdf_money(financing.get('interest_and_fees'))],["Непогашенный долг ПФ на конец проекта",_pdf_money(financing.get('ending_pf'))],*([["Долг передан в ПФ следующей очереди",_pdf_money(financing.get('debt_carried_out'))]] if float(financing.get('debt_carried_out') or 0)>500_000 else []),*([["в т.ч. принято от предыдущей очереди",_pdf_money(financing.get('carried_debt_in'))]] if (not _pdf_phased and float(financing.get('carried_debt_in') or 0)>500_000) else []),["LLCR",_pdf_num(summary.get('llcr'),2)+"x"]]
     story.append(table(finance_rows,[112*mm,58*mm],font_size=7.6))
 
     # Restore the bridge-purpose disclosure that exists in the web report.
@@ -13978,6 +13978,32 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     # разница между лимитом методики и реальной потребностью («остальное
     # вашими») читалась только глазами по структуре расходов.
     actual_structure = list(financing.get("actual_bridge_structure") or [])
+    # По очередям — у каждой свой БРИДЖ и свой месяц пика; свод — подписью.
+    pdf_phase_items = [item for item in (payload.get("phases") or []) if isinstance(item, dict)]
+    if len(pdf_phase_items) > 1:
+        for item in pdf_phase_items:
+            pf_fin = ((item.get("result") or {}).get("report") or {}).get("financing") or {}
+            rows_q = list(pf_fin.get("actual_bridge_structure") or [])
+            name_q = str(item.get("name") or "Очередь")
+            if not rows_q:
+                continue
+            peak_q = float(pf_fin.get("actual_bridge") or 0)
+            month_q = str(pf_fin.get("actual_bridge_month") or "")
+            table_q = [["Статья", "Оплачено к пику очереди", "Доля"]]
+            for row_q in rows_q:
+                table_q.append([str(row_q.get("label") or "—"), _pdf_money(float(row_q.get("value") or 0)),
+                                _pdf_num(float(row_q.get("share") or 0) * 100, 1) + "%"])
+            table_q.append([f"ПИК БРИДЖА {name_q}", _pdf_money(peak_q), "100,0%" if peak_q else "—"])
+            story.append(KeepTogether([
+                P(f"Структура фактического БРИДЖА · {name_q}"
+                  + (f" · {'.'.join(reversed(month_q.split('-')))}" if month_q else ""), h2),
+                table(table_q, [98*mm, 45*mm, 27*mm], font_size=8.0),
+            ]))
+        story.append(P("У каждой очереди свой БРИДЖ до открытия её ПФ; оплачено к месяцу пика этой очереди. "
+                       + (f"Свод: наибольшая сумма одновременно открытых линий — "
+                          f"{_pdf_money(float(financing.get('actual_bridge') or 0))}."
+                          if financing.get("actual_bridge") else ""), small))
+        actual_structure = []
     if actual_structure:
         actual_peak = float(financing.get("actual_bridge") or 0)
         actual_rows = [["Статья", "Оплачено к пику", "Доля"]]
@@ -13990,12 +14016,26 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         actual_rows.append(["ПИК БРИДЖА", _pdf_money(actual_peak),
                             "100,0%" if actual_peak else "—"])
         month = str(financing.get("actual_bridge_month") or "")
+        queues = financing.get("actual_bridge_queues") or {}
+        on_bridge = [str(name) for name in (queues.get("on_bridge") or [])]
+        queue_note = ""
+        if on_bridge:
+            tails = []
+            if queues.get("refinanced"):
+                tails.append(", ".join(map(str, queues["refinanced"]))
+                             + " к этому месяцу уже на ПФ — их расходы сюда не входят")
+            if queues.get("not_started"):
+                tails.append(", ".join(map(str, queues["not_started"])) + " ещё не начаты")
+            queue_note = ("Пик свода — месяц, когда на БРИДЖе " + ", ".join(on_bridge)
+                          + ("; " + "; ".join(tails) if tails else "") + ". ")
         story.append(KeepTogether([
             P("Структура фактического БРИДЖА"
-              + (f" · {'.'.join(reversed(month.split('-')))}" if month else ""), h2),
+              + (f" · {'.'.join(reversed(month.split('-')))}" if month else "")
+              + (f" · на БРИДЖе: {', '.join(on_bridge)}" if on_bridge else ""), h2),
             table(actual_rows, [98*mm, 45*mm, 27*mm], font_size=8.0),
-            P("Оплачено к месяцу пика. До открытия ПФ у проекта нет ни выручки, ни ПФ, "
-              "поэтому остаток БРИДЖа равен оплаченному; разница с расчётным лимитом — "
+            P(queue_note
+              + "Оплачено к месяцу пика. До открытия ПФ у очереди нет ни выручки, ни ПФ, "
+              "поэтому остаток её БРИДЖа равен оплаченному; разница с расчётным лимитом — "
               "расходы, под которые лимит не даётся.", small),
         ]))
 
@@ -15200,9 +15240,17 @@ def _v4_apply_debt_carry(xml: str, phase: int, queues: int, missing: list[str]) 
         # нехватки: дефолт модель называет, но на нём не обрывается —
         # реструктуризацию считаем прежним допущением и говорим о нём вслух.
         seen = f"SUM($D${b}:{columns[index - 1]}{b})"
+        # Вторая закрытая линия — рассчитавшаяся: раскрытый эскроу погасил
+        # долг целиком (строка 29 по предыдущие месяцы — ноль), и после РВЭ
+        # выбирать больше нечего, расход платит касса. Иначе поздний платёж
+        # рассрочки за покупку выбирался с закрытой линии и оставался
+        # «непогашенным долгом» проекта с LLCR 1,23x (04.09.2026). Остался
+        # долг в РВЭ и не передан — прежнее допущение: линия обслуживается
+        # продажами дальше, и книга считает так же, как движок.
+        unpaid_seen = f"SUM($D${_V4_RVE_UNPAID_ROW}:{columns[index - 1]}{_V4_RVE_UNPAID_ROW})"
         edits[44].append((f"<x:f>IF({column}$3&gt;=$B$7,",
                           f"<x:f>IF(AND({column}$3&gt;=$B$7,"
-                          f"OR({seen}&lt;=0,{column}$3&lt;=$B$8)),"))
+                          f"OR({column}$3&lt;=$B$8,AND({seen}&lt;=0,{unpaid_seen}&gt;0))),"))
         # Закрытая линия не собирает: остаточные продажи остаются застройщику.
         edits[46].append((f"<x:f>MIN({column}38+{column}45+{column}{a},",
                           f"<x:f>IF(AND({seen}&gt;0,{column}$3&gt;$B$8),0,"
@@ -16466,8 +16514,12 @@ def build_project_workbook(
                                  else typed_starts.get(typ) or phase_start)
                     obj_start = max(own_start, project_start_iso)
                 else:
+                    # Не раньше РнС очереди — как в движке: стройка до РнС
+                    # ложилась бы на БРИДЖ.
+                    phase_permit = add_months(
+                        phase_start, int(max(float(IRD_MONTHS_MIN), n(x, "ird_months", 18.0)))).isoformat()
                     obj_start = max(min(slot["dates"]) if slot["dates"] else phase_start,
-                                    phase_start)
+                                    phase_start, phase_permit)
                 span_months = months_by_type.get(typ, 24)
                 first_col = months_between(
                     date.fromisoformat(project_start_iso), date.fromisoformat(obj_start))
@@ -16790,13 +16842,25 @@ def build_project_workbook(
         # CAPEX падал в БРИДЖ до РнС, и пик завышался почти вдвое.
         offset = (phase_offsets[queue - 1]
                   if (phasing or {}).get("enabled") and queue - 1 < len(phase_offsets) else 0.0)
-        if offset:
+        if (phasing or {}).get("enabled"):
+            # Не раньше РнС своей очереди и продажи не раньше стройки — как в
+            # движке: стройка до РнС ложилась бы на БРИДЖ.
+            queue_permit = add_months(
+                add_months(str(x.get("project_start"))[:10], int(offset)),
+                int(max(float(IRD_MONTHS_MIN), n(x, "ird_months", 18.0))))
+            build_date = None
             for cell, key in zip(date_cells, date_keys):
                 base = x.get(key)
-                if base:
-                    shifted = _v4_excel_serial(add_months(str(base)[:10], int(offset)))
-                    if shifted is not None:
-                        put(cell, number=shifted, label=f"{key} (сдвиг очереди)")
+                if not base:
+                    continue
+                shifted_date = max(add_months(str(base)[:10], int(offset)), queue_permit)
+                if build_date is None:
+                    build_date = shifted_date
+                else:
+                    shifted_date = max(shifted_date, build_date)
+                shifted = _v4_excel_serial(shifted_date.isoformat())
+                if shifted is not None:
+                    put(cell, number=shifted, label=f"{key} (сдвиг очереди, не раньше РнС)")
 
     # --- очереди: базовый ТЭП в W..AC, доли и сроки -------------------------
     enabled_phases = int(p.get("phase_count") or 1) if p.get("enabled") else 1
@@ -19163,7 +19227,7 @@ def build_plato_model_v2(
         "bridge_refinance", "bridge_balance", "bridge_interest", "bridge_cap",
         "bridge_transfer", "bridge_payable",
         ("section", "Проектное финансирование"), "pf_draw", "pf_gross", "pf_repayment",
-        "pf_balance", "coverage", "pf_base_rate", "pf_special_rate", "pf_rate",
+        "pf_balance", "rve_unpaid", "coverage", "pf_base_rate", "pf_special_rate", "pf_rate",
         "pf_interest", "pf_cap", "limit_fee", "interest_payment", "pf_payable",
         ("section", "Итого стоимость долга"), "fees", "cost")
     credit.formula("bridge_rate", "Ставка", lambda i: f"={rate_grid.outside('bridge', i)}", percent)
@@ -19201,8 +19265,19 @@ def build_plato_model_v2(
     credit.formula("bridge_payable", "Начисленные проценты, остаток",
                    lambda i: f"={bridge_accrued(i)}-{credit.at('bridge_transfer', i)}", money)
 
+    # Линия, рассчитавшаяся в РВЭ, после него не кредитует: долг погашен
+    # раскрытием целиком — расходы остаточного периода платит касса, а не
+    # закрытый НКЛ. Остался долг в РВЭ — прежнее допущение, линия обслуживается
+    # продажами дальше. Признак — нехватка в РВЭ по ПРЕДЫДУЩИЕ месяцы, а не
+    # итог строки: итог включал бы этот месяц и дал круг (как в v4).
+    def unpaid_seen(index: int) -> str:
+        if index == 0:
+            return "0"
+        return f"SUM({credit.letter(0)}{credit.rows['rve_unpaid']}:{credit.letter(index - 1)}{credit.rows['rve_unpaid']})"
+
     credit.formula("pf_draw", "Выборка",
-                   lambda i: (f"=IF({credit.month(i)}>={ref('permit')},"
+                   lambda i: (f"=IF(AND({credit.month(i)}>={ref('permit')},"
+                              f"OR({credit.month(i)}<={ref('rve')},{unpaid_seen(i)}>0)),"
                               f"MAX({costs.outside('debt', i)},0),0)"
                               f"+{credit.at('bridge_refinance', i)}"
                               f"+IF({capitalized},0,{credit.at('bridge_transfer', i)})"), money)
@@ -19214,6 +19289,8 @@ def build_plato_model_v2(
     credit.formula("pf_balance", "Остаток ПФ",
                    lambda i: f"={credit.at('pf_gross', i)}-{credit.at('pf_repayment', i)}",
                    money, bold=True)
+    credit.formula("rve_unpaid", "ПФ — не покрыто раскрытым эскроу (в РВЭ)",
+                   lambda i: f"=IF({credit.month(i)}={ref('rve')},{credit.at('pf_balance', i)},0)", money)
     # Покрытие — эскроу до раскрытия к долгу ПФ после выборки, но до погашения.
     # Взять эскроу после раскрытия — на РВЭ покрытие обнулится, ставка прыгнет к
     # базовой и проценты уедут вверх на весь остаток проекта.
@@ -22025,6 +22102,10 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
         # выбирает, не начисляет и не собирает — что бы дальше ни случилось с
         # долгом, переоформили его или объявили дефолт.
         line_closed = False
+        # Линия, рассчитавшаяся в РВЭ: раскрытый эскроу закрыл долг целиком,
+        # период доступности кончился, и выбирать из неё больше нечего —
+        # расходы после РВЭ платит касса, а не закрытый НКЛ.
+        line_settled = False
         rve_unpaid = 0.0
         defaulted_at: date | None = None
         pf_reservation_fee = (pf_limit or 0.0) * n(x, "reservation_fee_pct") / 100 if pf_limit else 0.0
@@ -22140,7 +22221,12 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
                 # выбирать по 57 млн в месяц и тут же гасить их продажами, с
                 # процентами по полной базовой ставке: та же фикция закрытой
                 # линии, только мельче.
-                if not line_closed:
+                # То же и у линии, которая в РВЭ рассчиталась полностью:
+                # поздний платёж рассрочки за покупку (625 млн в июле 2031 на
+                # «Нагатино») выбирался с закрытой линии, гасить его было уже
+                # нечем — продажи кончились, — и проект с LLCR 1,23x и 35 млрд
+                # прибыли назывался дефолтным на 625 млн.
+                if not line_closed and not line_settled:
                     pf_draw += max(project_costs, 0.0)
                 if cap is not None:
                     # Потолок считается от остатка на начало месяца: погашения
@@ -22278,6 +22364,10 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
                         # считаем прежним допущением — остаток обслуживается
                         # продажами следующих периодов, — и называем его вслух.
                         defaulted_at = month
+                elif month == rve and not line_closed:
+                    # Долга в РВЭ не осталось — НКЛ закрыт: дальше расходы
+                    # очереди идут из её кассы, выборок и процентов нет.
+                    line_settled = True
 
                 # Current Excel pays accumulated interest at RVE and current interest thereafter.
                 if month >= rve and pf_interest_payable > 0:
@@ -23555,6 +23645,44 @@ def _bridge_peak_month(rows: list[dict[str, Any]]) -> str:
     return month.isoformat() if hasattr(month, "isoformat") else str(month)
 
 
+def _bridge_balance_at(rows: list[dict[str, Any]], month: str) -> float:
+    """Остаток БРИДЖа этой линии в названный месяц; нет строки — линии нет."""
+    for row in rows:
+        row_month = row.get("month")
+        row_month = row_month.isoformat() if hasattr(row_month, "isoformat") else str(row_month)
+        if row_month == month:
+            return float(row.get("bridge_balance") or 0.0)
+    return 0.0
+
+
+def _queues_on_bridge(phase_items: list[dict[str, Any]], month: str) -> dict[str, list[str]]:
+    """Чей БРИДЖ открыт в месяц пика свода — и чей уже закрыт или ещё не начат.
+
+    У каждой очереди своя линия до открытия её ПФ. Пик свода приходится на
+    месяц, когда открыты линии не всех очередей: расшифровка, сложившая
+    оплаченное ВСЕМИ очередями, показывала 148% по одной статье и 2,5 млрд ₽
+    проектирования трёх очередей, из которых на БРИДЖе стояла одна.
+    """
+    on_bridge: list[str] = []
+    refinanced: list[str] = []
+    not_started: list[str] = []
+    for item in phase_items:
+        name = str(item.get("name") or "")
+        rows = ((item.get("result") or {}).get("finance") or {}).get("rows") or []
+        if _bridge_balance_at(rows, month) > 0:
+            on_bridge.append(name)
+            continue
+        opened = [
+            (r.get("month").isoformat() if hasattr(r.get("month"), "isoformat") else str(r.get("month")))
+            for r in rows if float(r.get("bridge_balance") or 0.0) > 0
+        ]
+        if opened and max(opened) < month:
+            refinanced.append(name)
+        else:
+            not_started.append(name)
+    return {"on_bridge": on_bridge, "refinanced": refinanced, "not_started": not_started}
+
+
 def _own_funds_by(rows: list[dict[str, Any]], month: str) -> float:
     """Сколько собственных средств вложено к этому месяцу включительно."""
     if not month:
@@ -24573,6 +24701,17 @@ def _consolidate_phase_results(
     results = [item["result"] for item in phase_items]
     finance = _aggregate_finance(results)
     consolidated_bridge_month = _bridge_peak_month(finance["rows"])
+    # Расшифровка пика свода — только по очередям, чья линия в этот месяц
+    # открыта: закрытая линия ничего не должна, а её расходы уже на ПФ.
+    bridge_queues = _queues_on_bridge(phase_items, consolidated_bridge_month)
+    bridge_items = [item for item in phase_items
+                    if str(item.get("name") or "") in bridge_queues["on_bridge"]]
+    bridge_own_funds = sum(
+        _own_funds_by((item["result"].get("finance") or {}).get("rows") or [], consolidated_bridge_month)
+        for item in bridge_items)
+    bridge_project_cash = sum(
+        _project_cash_by((item["result"].get("finance") or {}).get("rows") or [], consolidated_bridge_month)
+        for item in bridge_items)
 
     tep_map: dict[str, dict[str, Any]] = {}
     for result in results:
@@ -24881,10 +25020,10 @@ def _consolidate_phase_results(
                 "own_funds_available": finance.get("own_funds_available", 0.0),
                 "project_cash": finance.get("project_cash_used", 0.0),
                 "actual_bridge_structure": _bridge_actual_structure(
-                    [result.get("monthly") or {} for result in results],
+                    [item["result"].get("monthly") or {} for item in bridge_items],
                     consolidated_bridge_month, finance["peak_bridge"],
-                    _own_funds_by(finance["rows"], consolidated_bridge_month),
-                    _project_cash_by(finance["rows"], consolidated_bridge_month)),
+                    bridge_own_funds, bridge_project_cash),
+                "actual_bridge_queues": bridge_queues,
                 "pf_peak": finance["peak_pf"],
                 "pf_uncovered_peak": finance["peak_uncovered_pf"],
                 "rve_pf_before_repayment": finance.get("rve_pf_before_repayment", 0.0),
@@ -25302,10 +25441,16 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
             p_inputs["school_places"] = sums["school"]
             p_inputs["clinic_capacity"] = sums["clinic"]
             phase_start_date = d(p_inputs["project_start"])
+            # Стройка не начинается раньше РнС своей очереди: до РнС у очереди
+            # нет ни разрешения, ни ПФ, и садик, стартовавший в день старта
+            # очереди, целиком ложился на БРИДЖ (1,89 млрд ₽ у О2 «Нагатино»)
+            # — «БРИДЖ не может финансировать стройку» (владелец, 04.09.2026).
+            phase_permit_date = add_months(
+                phase_start_date, int(max(float(IRD_MONTHS_MIN), n(p_inputs, "ird_months", 18.0))))
             def phase_social_start(values: list[str]) -> str:
                 candidate = d(min(values)) if values else phase_start_date
                 # A social object assigned to a queue cannot start before that queue itself.
-                return max(candidate, phase_start_date).isoformat()
+                return max(candidate, phase_start_date, phase_permit_date).isoformat()
             p_inputs["kindergarten_start"] = phase_social_start(starts["kindergarten"])
             p_inputs["school_start"] = phase_social_start(starts["school"])
             p_inputs["clinic_start"] = phase_social_start(starts["clinic"])
@@ -25373,6 +25518,18 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
                     dk=f"{prefix}_{suffix}"
                     if dk in p_inputs:
                         p_inputs[dk]=_shift_iso(x_master.get(dk),offset)
+                # Объект строится в своей очереди — и не раньше её РнС: офисы
+                # третьей очереди стартовали за полгода до её РнС, и 7,3 млрд ₽
+                # их стройки лежали на БРИДЖе. Продажи — не раньше стройки.
+                build_key, sales_key = f"{prefix}_start", f"{prefix}_sales_start"
+                permit_date = add_months(
+                    d(p_inputs["project_start"]),
+                    int(max(float(IRD_MONTHS_MIN), n(p_inputs, "ird_months", 18.0))))
+                if p_inputs.get(build_key):
+                    build_date = max(d(p_inputs[build_key]), permit_date)
+                    p_inputs[build_key] = build_date.isoformat()
+                    if p_inputs.get(sales_key):
+                        p_inputs[sales_key] = max(d(p_inputs[sales_key]), build_date).isoformat()
                 if prefix=="offices":
                     p_inputs["offices_cost_th_per_sqm"]=n(x_master,"offices_cost_th_per_sqm")*cost_inflation_factor
                     p_inputs["offices_price_th_per_sqm"]=n(x_master,"offices_price_th_per_sqm")*sales_price_inflation_factor
@@ -25954,7 +26111,7 @@ _AGENT_INSTRUCTIONS = """
 
 Особые правила:
 1. LLCR 1,20x — целевой ориентир пользователя для DevelopAid, не называй его универсальным нормативом всех банков.
-2. Для многоочередного проекта при банковской рекомендации предпочитай scope=weakest_phase, если пользователь явно не просит только сводный проект.
+2. Охват по умолчанию — consolidated и для многоочередного проекта: банк смотрит лимит в целом, ради этого есть перенос долга между очередями. Слабейшую очередь называй рядом (phase_llcr_at_solution, weakest_phase); scope=weakest_phase — только если пользователь прямо просит судить по очереди.
 2a. Если хотя бы одна очередь ниже 1,20x, не ограничивайся констатацией. Сначала вызови diagnose_project_logic, затем phase_recovery_options. Построй причинный вывод: хватает ли слабой очереди ТЭП/выручки относительно CAPEX, ранних общепроектных затрат, Bridge и социалки; затем ранжируй реальные варианты оздоровления.
 2b. Различай реальное улучшение проекта и косметическую перекладку. Покупку/ВРИ нельзя просто перенести в другую очередь ради красивого LLCR. Социалку и сети можно предлагать переносить только как сценарий при фактической реализуемости по графику/обязательствам.
 2f. Социальная нагрузка и плата за смену ВРИ — обязательства, а не параметры оптимизации. В Москве обнулить социалку нельзя: строить не дадут. Не подавай «социалка = 0» или «плата за ВРИ = 0» как способ оздоровления, даже если инструмент такой сценарий посчитал; если считаешь для оценки чувствительности, называй это пределом, а не решением, и повторяй оговорку инструмента.
@@ -25964,7 +26121,7 @@ _AGENT_INSTRUCTIONS = """
 2e. Управление проектом 5% и технический заказчик/стройконтроль 5% — разные статьи с разным экономическим смыслом.
 3. На вопрос о максимальной цене покупки при LLCR 1,20 вызывай goal_seek:
    variable=purchase_price_mln, target_metric=llcr, target_value=1.20,
-   constraint=at_least, objective=maximum_variable, scope=weakest_phase для многоочередного проекта
+   constraint=at_least, objective=maximum_variable, scope=consolidated (и для многоочередного проекта)
    либо consolidated для одноочередного.
 4. На вопрос о максимальной строительной себестоимости вызывай goal_seek:
    variable=main_construction_cost_th_per_sqm с теми же правилами LLCR.
@@ -27021,6 +27178,55 @@ def _constraint_ok(value: float | None, target: float, constraint: str) -> bool:
     return abs(value - target) <= max(abs(target) * 1e-4, 1e-5)
 
 
+def _goal_scope_label(scope: str, label: str) -> str:
+    """«О1» само по себе не говорит, почему смотрят на неё, — «слабейшая очередь О1» говорит."""
+    if scope == "weakest_phase" and label and label != "Весь проект":
+        return f"слабейшая очередь {label}"
+    return label or "Весь проект"
+
+
+def _goal_refusal_reason(
+    scope_label: str,
+    variable: str,
+    target_metric: str,
+    target_value: float,
+    constraint: str,
+    lo: float,
+    hi: float,
+    closest_variable: float,
+    closest_metric: float | None,
+    closest_label: str,
+) -> str:
+    """Причина отказа подбора: чьё число, какой порог, до чего дотянули и где."""
+    metric_meta = _SENSITIVITY_METRICS.get(target_metric) or {}
+    metric_label = str(metric_meta.get("label") or target_metric)
+    unit = str(metric_meta.get("unit") or "")
+    # Кратность банка читают с двумя знаками: «1,20x», а не «1,200x».
+    digits = 2 if unit == "x" else int(metric_meta.get("digits") or 2)
+
+    def fmt_metric(value: float | None) -> str:
+        if value is None or not math.isfinite(float(value)):
+            return "не посчитан"
+        text = f"{float(value):,.{digits}f}".replace(",", " ").replace(".", ",")
+        return f"{text}{unit}" if unit == "x" else (f"{text} {unit}".strip())
+
+    def fmt_variable(value: float) -> str:
+        return f"{float(value):,.0f}".replace(",", " ")
+
+    words = {"at_least": "не ниже", "at_most": "не выше"}.get(constraint, "ровно")
+    variable_label = _GOAL_VARIABLES.get(variable, variable)
+    where = (
+        "даже при нулевом значении" if abs(closest_variable - 0.0) < 1e-9
+        else f"ближе всего при {fmt_variable(closest_variable)}"
+    )
+    who = "" if closest_label == scope_label else f" ({closest_label})"
+    return (
+        f"{scope_label[:1].upper()}{scope_label[1:]}: {metric_label} {words} {fmt_metric(target_value)} "
+        f"не достигается ни при одном значении «{variable_label}» в диапазоне "
+        f"{fmt_variable(lo)}–{fmt_variable(hi)} — {where} выходит {fmt_metric(closest_metric)}{who}."
+    )
+
+
 def _tool_goal_seek(
     req: AgentChatRequest,
     bundle: dict[str, Any],
@@ -27069,8 +27275,10 @@ def _tool_goal_seek(
     # Coarse scan first: robust against imperfect monotonicity.
     points = [lo + (hi - lo) * i / 16 for i in range(17)]
     sampled = []
+    labels: dict[float, str] = {}
     for p in points:
         mv, b, lbl = evaluate(p)
+        labels[p] = lbl
         sampled.append((p, mv, _constraint_ok(mv, target_value, constraint)))
 
     feasible = [item for item in sampled if item[2]]
@@ -27079,21 +27287,32 @@ def _tool_goal_seek(
             sampled,
             key=lambda item: abs((item[1] if item[1] is not None else float("inf")) - target_value),
         )
+        # Отказ называет, ЧЬЁ число не дотянуло и до чего дотянуло. Общее
+        # «в заданном диапазоне не найдено» рядом со сводным LLCR 1,23x
+        # читалось как противоречие: порог не проходила слабейшая очередь
+        # (0,95x), а карточка показывала свод — и не говорила, о ком речь.
+        scope_label = _goal_scope_label(resolved_scope, current_label)
+        closest_label = _goal_scope_label(resolved_scope, labels.get(closest[0], current_label))
         return {
             "available": False,
-            "reason": "В заданном диапазоне не найдено значение переменной, удовлетворяющее целевому условию.",
+            "reason": _goal_refusal_reason(
+                scope_label, variable, target_metric, target_value, constraint,
+                lo, hi, closest[0], closest[1], closest_label,
+            ),
             "variable": variable,
             "variable_label": _GOAL_VARIABLES[variable],
             "target_metric": target_metric,
             "target_value": target_value,
             "constraint": constraint,
             "scope": resolved_scope,
+            "scope_label": scope_label,
             "current_variable": round(current_var, 4),
             "current_metric": round(float(current_metric), 6),
             "search_bounds": [round(lo, 4), round(hi, 4)],
             "closest_tested": {
                 "variable": round(closest[0], 4),
                 "metric": round(float(closest[1]), 6) if closest[1] is not None else None,
+                "scope_label": closest_label,
             },
         }
 
@@ -27687,7 +27906,7 @@ def _tool_evaluate_purchase_offer(
       construction-cost threshold under the offered purchase price.
     """
     offer = max(0.0, float(offer_price_mln))
-    scope = "weakest_phase" if bundle.get("mode") == "phased" else "consolidated"
+    scope = _agent_scope_of(bundle)
 
     # 1) Full model at offered purchase price.
     x_offer = copy.deepcopy(req.inputs)
@@ -28077,11 +28296,11 @@ def _tool_phase_recovery_options(
     if not any(c["achieves_target"] for c in candidates):
         fallback["max_purchase_price"] = _tool_goal_seek(
             req, bundle, "purchase_price_mln", "llcr", target_llcr,
-            "at_least", "maximum_variable", "weakest_phase", None, None,
+            "at_least", "maximum_variable", _agent_scope_of(bundle), None, None,
         )
         fallback["max_construction_cost"] = _tool_goal_seek(
             req, bundle, "main_construction_cost_th_per_sqm", "llcr", target_llcr,
-            "at_least", "maximum_variable", "weakest_phase", None, None,
+            "at_least", "maximum_variable", _agent_scope_of(bundle), None, None,
         )
 
     return {
@@ -31417,7 +31636,16 @@ def _agent_x(value: Any) -> str:
 
 
 def _agent_scope_of(bundle: dict[str, Any]) -> str:
-    return "weakest_phase" if bundle.get("mode") == "phased" else "consolidated"
+    """Охват суждения по умолчанию — весь проект.
+
+    Банк смотрит лимит в целом, и ради этого заведены режимы переноса долга
+    между очередями (владелец, 04.09.2026: «банк смотрит лимит в целом, для
+    этого мы и вводили режимы перевода долга между очередями»). Подбор по
+    слабейшей очереди отказывал «ни при какой цене» проекту с LLCR 1,23x.
+    Слабейшая очередь называется рядом, а не судит; по ней считают только
+    по явной просьбе (`scope=weakest_phase`).
+    """
+    return "consolidated"
 
 
 def _local_expense_structure(req: AgentChatRequest, bundle: dict[str, Any]) -> str:
@@ -33483,11 +33711,15 @@ function phaseWeightPreset(count){
  return cloneValue(p[count]||Array(count).fill(100/count));
 }
 function frontLoadedPreset(count,kind){
+ // ИРД (ГПЗУ, ППТ, согласования) идёт вперёд — это документы всей территории.
+ // Проектирование, подготовка и сети — по размеру очереди: каждая проектирует
+ // и готовит свои корпуса. Прежний пресет клал 42% проектирования проекта на
+ // первую очередь — «ПИР на 1,5 ярда на очередь из 50 тысяч метров»
+ // (владелец, 04.09.2026).
+ if(['design','preparation','utilities'].includes(kind))return [...phaseWeightPreset(count)];
  if(count===3){
   if(['purchase','land_rights','social_compensation'].includes(kind))return [100,0,0];
-  if(['ird','preparation'].includes(kind))return [60,25,15];
-  if(kind==='design')return [50,30,20];
-  if(kind==='utilities')return [55,27,18];
+  if(kind==='ird')return [60,25,15];
  }
  if(['purchase','land_rights','social_compensation'].includes(kind))return [100,...Array(count-1).fill(0)];
  const a=phaseWeightPreset(count);if(count>1){a[0]+=10;for(let i=1;i<count;i++)a[i]-=10/(count-1)}
@@ -39339,8 +39571,8 @@ function renderResult(){
   :'';
  reportFinanceTable.innerHTML=
   purchaseLine+
-  row('Расчётный БРИДЖ',money(r.report.financing.calculated_bridge))+
-  row('Фактический / пиковый БРИДЖ',money(r.report.financing.actual_bridge))+
+  row(r.summary.phase_count>1?'Расчётный БРИДЖ — сумма лимитов очередей':'Расчётный БРИДЖ',money(r.report.financing.calculated_bridge))+
+  row(r.summary.phase_count>1?'Пик одновременно открытых линий БРИДЖа очередей':'Фактический / пиковый БРИДЖ',money(r.report.financing.actual_bridge))+
   // Не из банка: собственные деньги, заём учредителя, перехваченный чужой долг.
   (Number(r.report.financing.own_funds||0)>0.5?row('Собственные средства до ПФ',money(r.report.financing.own_funds)+' <span style="color:#777;font-weight:400">без процентов</span>'):'')+
   row(phased?'Лимит ПФ — сумма по очередям':'Лимит ПФ',money(r.report.financing.pf_limit))+
@@ -39474,6 +39706,14 @@ function renderResult(){
    ['Проектирование — стадия РД',bridgeDesignRd]
  ].filter(x=>x[1]>0.5);
  const bridgeShare=value=>bridgeTotal>0?(value/bridgeTotal*100).toLocaleString('ru-RU',{minimumFractionDigits:1,maximumFractionDigits:1})+'%':'—';
+ function bridgeActualNoteText(queues){
+  const base='Оплачено к месяцу пика. До открытия ПФ у очереди нет ни выручки, ни ПФ, поэтому остаток её БРИДЖа равен оплаченному. Разница с расчётным лимитом — расходы, под которые лимит не даётся.';
+  if(!queues||!queues.on_bridge||!queues.on_bridge.length)return base;
+  const parts=[];
+  if(queues.refinanced&&queues.refinanced.length)parts.push(queues.refinanced.join(', ')+' к этому месяцу уже на ПФ — их расходы сюда не входят');
+  if(queues.not_started&&queues.not_started.length)parts.push(queues.not_started.join(', ')+' ещё не начаты');
+  return 'Пик свода — месяц, когда на БРИДЖе '+queues.on_bridge.join(', ')+(parts.length?'; '+parts.join('; '):'')+'. '+base;
+ }
  const bridgePurposeEl=document.getElementById('bridgePurposeTable');
  bridgePurposeEl.innerHTML=
    `<thead><tr><th>Цель</th><th>Сумма</th><th>Доля</th></tr></thead>`+
@@ -39483,21 +39723,46 @@ function renderResult(){
  // Фактический пик — по статьям, оплаченным к месяцу пика. Лимит методики и
  // реальная потребность расходятся всегда, и разница — это то, что банк
  // называет «остальное вашими»; до сих пор её приходилось считать глазами.
+ // На своде очередей у каждой своя линия: пик свода приходится на месяц, когда
+ // открыты не все, и подпись называет, чья линия в него вошла, а чья уже на ПФ.
+ // У очередей БРИДЖ — свой у каждой, до открытия её ПФ; «пик свода» —
+ // это одновременно открытые линии, и структура по нему отвечает не на тот
+ // вопрос («что за пиковый бридж в проектах с очередностью», владелец,
+ // 04.09.2026). На своде блок рисуется по очередям: у каждой свой месяц пика,
+ // свой пик и свои статьи; свод стоит подписью, а не таблицей.
  const bridgeActual=(r.report.financing.actual_bridge_structure||[]);
  const bridgeActualTotal=Number(r.report.financing.actual_bridge||0);
  const bridgeActualEl=document.getElementById('bridgeActualTable');
- if(bridgeActualEl){
+ const bridgeShareCell=x=>`<td>${(Number(x.share||0)*100).toLocaleString('ru-RU',{minimumFractionDigits:1,maximumFractionDigits:1})}%</td>`;
+ const bridgeRowsHtml=rows=>rows.map(x=>`<tr><td>${escapeHtml(x.label)}</td><td>${money(x.value)}</td>${bridgeShareCell(x)}</tr>`).join('');
+ const bridgePhases=(phaseBundle&&phaseBundle.phases&&phaseBundle.phases.length>1&&r===phaseBundle.consolidated)?phaseBundle.phases:null;
+ if(bridgeActualEl&&bridgePhases){
+  const blocks=bridgePhases.map(p=>{
+   const pf=((p.result||{}).report||{}).financing||{};
+   const rows=pf.actual_bridge_structure||[], peak=Number(pf.actual_bridge||0), when=String(pf.actual_bridge_month||'');
+   if(!rows.length)return `<tbody><tr><th colspan="3">${escapeHtml(p.name||'Очередь')} · БРИДЖ не привлекался</th></tr></tbody>`;
+   return `<tbody><tr><th colspan="3">${escapeHtml(p.name||'Очередь')} · пик ${money(peak)}${when?' · '+dateRu(when):''}</th></tr>${bridgeRowsHtml(rows)}<tr><th>Пик БРИДЖа ${escapeHtml(p.name||'')}</th><th>${money(peak)}</th><th>100,0%</th></tr></tbody>`;
+  }).join('');
+  bridgeActualEl.innerHTML=`<thead><tr><th>Статья</th><th>Оплачено к пику очереди</th><th>Доля</th></tr></thead>`+blocks;
+  const monthEl=document.getElementById('bridgeActualMonth');
+  if(monthEl)monthEl.textContent=' · по очередям';
+  const noteEl=document.getElementById('bridgeActualNote');
+  const queues=r.report.financing.actual_bridge_queues||null;
+  if(noteEl)noteEl.textContent='У каждой очереди свой БРИДЖ до открытия её ПФ; оплачено к месяцу пика этой очереди. '
+   +(bridgeActualTotal>0?`Свод: наибольшая сумма одновременно открытых линий — ${money(bridgeActualTotal)}${r.report.financing.actual_bridge_month?' в '+dateRu(String(r.report.financing.actual_bridge_month)):''}${queues&&queues.on_bridge&&queues.on_bridge.length?' ('+queues.on_bridge.join(', ')+')':''}.`:'');
+ }else if(bridgeActualEl){
   bridgeActualEl.innerHTML=bridgeActual.length?
    (`<thead><tr><th>Статья</th><th>Оплачено к пику</th><th>Доля</th></tr></thead>`
-    +`<tbody>${bridgeActual.map(x=>`<tr><td>${escapeHtml(x.label)}</td><td>${money(x.value)}</td><td>${(Number(x.share||0)*100).toLocaleString('ru-RU',{minimumFractionDigits:1,maximumFractionDigits:1})}%</td></tr>`).join('')}</tbody>`
+    +`<tbody>${bridgeRowsHtml(bridgeActual)}</tbody>`
     +`<tfoot><tr><th>Пик БРИДЖа</th><th>${money(bridgeActualTotal)}</th><th>${bridgeActualTotal>0?'100,0%':'—'}</th></tr></tfoot>`)
    :'';
   const monthEl=document.getElementById('bridgeActualMonth');
   const when=String(r.report.financing.actual_bridge_month||'');
-  if(monthEl)monthEl.textContent=when?' · '+dateRu(when):'';
+  const queues=r.report.financing.actual_bridge_queues||null;
+  if(monthEl)monthEl.textContent=(when?' · '+dateRu(when):'')+(queues&&queues.on_bridge&&queues.on_bridge.length?' · на БРИДЖе: '+queues.on_bridge.join(', '):'');
   const noteEl=document.getElementById('bridgeActualNote');
   if(noteEl)noteEl.textContent=bridgeActual.length
-   ?'Оплачено к месяцу пика. До открытия ПФ у проекта нет ни выручки, ни ПФ, поэтому остаток БРИДЖа равен оплаченному. Разница с расчётным лимитом — расходы, под которые лимит не даётся.'
+   ?bridgeActualNoteText(queues)
    :'БРИДЖ не привлекался.';
  }
 

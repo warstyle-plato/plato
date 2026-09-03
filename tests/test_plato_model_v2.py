@@ -30,6 +30,12 @@ sys.path.insert(0, str(ROOT.parent))
 sys.path.insert(0, str(ROOT))
 
 import main as wrapper  # noqa: E402
+
+# Вычислитель формул идёт по ссылкам рекурсией: линия ПФ, закрытая после
+# РВЭ, читает нехватку по предыдущим месяцам, и цепочка стала длиннее предела
+# по умолчанию. Книге это не мешает — Excel считает итеративно; предел
+# поднимается так же, как в проверках книги v4.
+sys.setrecursionlimit(400000)
 from xlsx_eval import Evaluator, FormulaError  # noqa: E402
 
 core = wrapper.core

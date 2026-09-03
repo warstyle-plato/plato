@@ -55,6 +55,69 @@ def _map_name_key(value: Any) -> str:
     return _SPACE.sub(" ", re.sub(r"[^0-9a-zа-я]+", " ", text)).strip()
 
 
+# Сокращения адреса: список и карта портала пишут одно владение по-разному
+# («Варшавское шоссе, вл. 37» и «Варшавское ш., влд. 37»), и точный ключ не
+# совпадал — площадка уходила на геокодер, а на карте стояла чужая точка.
+_ADDRESS_ABBREVIATIONS = (
+    (r"\bшоссе\b", "ш"), (r"\bулица\b", "ул"), (r"\bпроспект\b", "пр"),
+    (r"\bпр\s*кт\b", "пр"), (r"\bпереулок\b", "пер"), (r"\bнабережная\b", "наб"),
+    (r"\bпроезд\b", "пр д"), (r"\bбульвар\b", "б р"), (r"\bплощадь\b", "пл"),
+    (r"\bвладение\b", "вл"), (r"\bвлд\b", "вл"), (r"\bдом\b", "д"),
+    (r"\bкорпус\b", "к"), (r"\bкорп\b", "к"), (r"\bстроение\b", "стр"),
+)
+
+
+def _address_key(value: Any) -> str:
+    """Ключ адреса без разницы в сокращениях."""
+    key = _map_name_key(value)
+    for pattern, short in _ADDRESS_ABBREVIATIONS:
+        key = re.sub(pattern, short, key)
+    return _SPACE.sub(" ", key).strip()
+
+
+def _address_parts(value: Any) -> list[str]:
+    """Составное имя «адрес, вл. N, адрес, вл. M» — по одному адресу.
+
+    Портал склеивает несколько владений в одно имя площадки; часть разделяет
+    запятой, а внутри одного адреса запятая стоит перед номером владения.
+    Поэтому режем по запятым и склеиваем «улица + номер» обратно.
+    """
+    pieces = [piece.strip() for piece in str(value or "").split(",") if piece.strip()]
+    parts: list[str] = []
+    for piece in pieces:
+        if parts and re.match(r"^(вл\.?|влд\.?|владение|д\.?|дом|стр\.?|к\.?|корп\.?)\s*\S", piece, re.I):
+            parts[-1] = parts[-1] + ", " + piece
+        else:
+            parts.append(piece)
+    return [_address_key(part) for part in parts if _address_key(part)]
+
+
+def _same_territory(site: dict[str, Any], project: dict[str, Any]) -> bool:
+    """Одна площадка по паспорту: район, площадь и жилой объём совпали.
+
+    Имя у списка и у карты может расходиться, а ТЭП в обоих источниках один и
+    тот же реестр: совпадение трёх паспортных чисел — не совпадение по
+    случайности.
+    """
+    def num(item: dict[str, Any], key: str) -> float | None:
+        try:
+            value = float(item.get(key) or 0.0)
+        except (TypeError, ValueError):
+            return None
+        return value if value > 0 else None
+
+    district = _map_name_key(site.get("district"))
+    if district and _map_name_key(project.get("district")) and \
+            district != _map_name_key(project.get("district")):
+        return False
+    area, area_p = num(site, "area_ha"), num(project, "area_ha")
+    housing, housing_p = num(site, "housing_gfa_sqm"), num(project, "housing_gfa_sqm")
+    if not (area and area_p and housing and housing_p):
+        return False
+    return abs(area - area_p) <= 0.02 * max(area, area_p) and \
+        abs(housing - housing_p) <= 0.01 * max(housing, housing_p)
+
+
 @dataclass(frozen=True)
 class KrtTerritory:
     slug: str
@@ -742,7 +805,8 @@ class KrtRegistry:
         save_json(self.map_path, payload)
         return payload
 
-    def map_lookup(self, slug: str, name: str = "") -> dict[str, Any]:
+    def map_lookup(self, slug: str, name: str = "",
+                   project: dict[str, Any] | None = None) -> dict[str, Any]:
         """Площадка из файла карты и ПРИЧИНА, если её там не нашлось.
 
         Прежде отказ был один на два разных случая: файл карты не прочитан
@@ -775,12 +839,31 @@ class KrtRegistry:
             for site in sites:
                 if _map_name_key(site.get("name")) == wanted:
                     return {"site": dict(site), "problem": "", "matched": "name"}
+        # Имя одно, записано по-разному: сокращения адреса и составные имена
+        # из нескольких владений. У Варшавского ш., вл. 37 имя списка — два
+        # адреса через запятую, и точный ключ не совпадал ни с чем (владелец,
+        # 03.09.2026: «почему у него единственного нет верного контура»).
+        wanted_key = _address_key(name)
+        wanted_parts = set(_address_parts(name))
+        if wanted_key:
+            for site in sites:
+                site_key = _address_key(site.get("name"))
+                site_parts = set(_address_parts(site.get("name")))
+                if site_key == wanted_key or (wanted_parts and site_parts & wanted_parts):
+                    return {"site": dict(site), "problem": "", "matched": "address"}
+        # Последний ключ — паспорт: район, площадь и жилой объём в обоих
+        # источниках из одного реестра.
+        if project:
+            twins = [site for site in sites if _same_territory(site, project)]
+            if len(twins) == 1:
+                return {"site": dict(twins[0]), "problem": "", "matched": "passport"}
         return {"site": None,
                 "problem": f"площадки нет в файле карты реестра ({len(sites)} площадок)"}
 
-    def map_site(self, slug: str, name: str = "") -> dict[str, Any] | None:
+    def map_site(self, slug: str, name: str = "",
+                 project: dict[str, Any] | None = None) -> dict[str, Any] | None:
         """Площадка из файла карты: официальный контур и центр."""
-        return self.map_lookup(slug, name).get("site")
+        return self.map_lookup(slug, name, project).get("site")
 
     def _read_order_details(self, order: dict[str, Any]) -> dict[str, Any]:
         """Распознать скан одного распоряжения. Отказ называется, а не молчит."""

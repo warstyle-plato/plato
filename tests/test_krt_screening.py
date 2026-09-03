@@ -12,17 +12,18 @@ PROJECT = {
 }
 
 
-def _market(price: int) -> dict:
+def _market(price: int, market: int = 708_000) -> dict:
+    """`price` — цена входа соседей (справка), `market` — рекомендация отчёта (в модель)."""
     return {
         "analysis": {
             "site": {
                 "segment": "бизнес",
-                "price_per_sqm": 708_000,
+                "price_per_sqm": market,
                 "sold_lot_avg": 50.0,
                 "units_per_month": 21.5,
             }
         },
-        "price_hint": {"entry_per_sqm": price, "price_per_sqm": 708_000},
+        "price_hint": {"entry_per_sqm": price, "price_per_sqm": market},
     }
 
 
@@ -37,7 +38,10 @@ def test_krt_screening_uses_market_class_and_authoritative_phasing() -> None:
     assert result["available"] is True
     assert result["market"]["recommended_segment"] == "бизнес"
     assert result["market"]["model_class"] == "business"
-    assert result["market"]["start_price_rub_sqm"] == 680_000
+    # Стартовая цена — рекомендация отчёта (708), а не цена входа соседей (680):
+    # два ответа одного модуля на один вопрос — второй ответ.
+    assert result["market"]["start_price_rub_sqm"] == 708_000
+    assert result["market"]["entry_price_rub_sqm"] == 680_000
     assert result["phasing"]["count"] == 2
     assert result["phasing"]["saleable_sqm"] == round(161_680 * 0.65)
     assert len(result["phasing"]["phases"]) == 2
@@ -58,7 +62,7 @@ def test_krt_screening_uses_market_class_and_authoritative_phasing() -> None:
 
 
 def test_krt_screening_can_reject_operating_case_before_land_price() -> None:
-    result = build_krt_model_screening(PROJECT, _market(455_000), core)
+    result = build_krt_model_screening(PROJECT, _market(455_000, market=455_000), core)
 
     assert result["available"] is True
     assert result["traffic_light"]["tone"] == "bad"
