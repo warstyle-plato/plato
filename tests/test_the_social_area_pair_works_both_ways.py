@@ -85,6 +85,10 @@ def got(core, tmp_path_factory):
               tepCellChanged('school', 'total_area', '18000');
               const back = {gns: tep.school.gns, total: tep.school.total_area,
                             field: inputs.social_school_gba_sqm};
+              // Требование КРТ задаёт площадь — значит поле «норматив» обязано
+              // показывать ФАКТИЧЕСКИЙ показатель, а не то, что стояло там до
+              // вписанного требования (владелец: «показывать фактически»).
+              const fact = inputs.social_school_norm_sqm;
               const cells = tr => Array.from(tr.querySelectorAll('input'))
                 .slice(0, 2).map(el => el.readOnly);
               const school = () => Array.from(document.querySelectorAll('#tepBody tr'))
@@ -96,7 +100,7 @@ def got(core, tmp_path_factory):
               syncTep(true);
               const shut = cells(school());
               const shutNote = school().firstChild.textContent;
-              return {before, after, survived, back, note, open, shut, shutNote};
+              return {before, after, survived, back, note, open, shut, shutNote, fact};
             }""")
             tab.close()
         finally:
@@ -142,3 +146,18 @@ def test_the_total_still_leads_too(got):
 def test_the_row_says_which_number_is_which(got):
     """«В габаритах наружных стен» — это ГНС, и на экране это сказано."""
     assert "габаритах наружных стен" in got["note"], got["note"]
+
+
+def test_the_norm_field_shows_the_fact_in_the_manual_mode(got, core):
+    """19 998 общей на 1 000 мест — это 20,0 м²/место, а не норматив РНГП 15."""
+    # К моменту снимка в строке стоит пережившая пересчёт правка ГНС: 22 220 в
+    # габаритах наружных стен, то есть 19 998 общей.
+    assert got["fact"] == pytest.approx(19998 / 1000, abs=0.01), got["fact"]
+    # Требование договора и норматив города — разные числа, и подмены нет.
+    assert core.moscow_social_area_per_place("school", 1000) == 15.0
+
+
+def test_the_row_names_the_fact_next_to_the_city_norm(got):
+    """Одно число без второго читается как норматив — а это разные ответы."""
+    assert "Фактически" in got["note"], got["note"]
+    assert "норматив РНГП" in got["note"], got["note"]

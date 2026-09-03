@@ -531,13 +531,15 @@ def build_krt_model_screening(
     saleable = housing_gfa * _number(apartment_ratios.get("saleable_of_gns"))
     total_area = housing_gfa * _number(apartment_ratios.get("total_of_gns"))
     verdict = _verdict(market_report)
-    lot_area = _number(verdict.get("sold_lot_avg"))
-    if lot_area <= 0:
-        default_apartments = core.TEP_DEFAULT.get("apartments") or {}
-        lot_area = (
-            _number(default_apartments.get("saleable")) / _number(default_apartments.get("units"))
-            if _number(default_apartments.get("units")) > 0 else 58.7
-        )
+    # Средняя квартира объявлена в движке с ОСНОВАНИЕМ: площадку КРТ мы
+    # собираем сами, значит делитель ручной сборки — 60 м² (решение владельца,
+    # 03.09.2026). Прежде здесь стоял средний ПРОДАННЫЙ лот соседей — на живом
+    # примере 36 м², и на 136 818 м² квартир это давало 3 800 лотов против
+    # 2 280. Средний лот соседей остаётся наблюдением рынка и печатается
+    # предпосылкой, но мерой нашего проекта не становится: чужая нарезка — это
+    # чужой продукт, а не наш.
+    lot_area, lot_basis = core.average_flat_sqm("manual")
+    neighbour_lot = _number(verdict.get("sold_lot_avg"))
     tep["apartments"].update({
         "gns": housing_gfa,
         "total_area": total_area,
@@ -678,6 +680,13 @@ def build_krt_model_screening(
         f"{_ru_number(programme['commercial_gba_sqm'])} м² ГНС на ОСЗ и ТЦ; "
         f"общественно-деловое назначение {_ru_number(programme['offices_gba_sqm'])} м² "
         "принято офисами. Размещение объектов по очередям — умолчание модели."
+    )
+    assumptions.append(
+        f"Число квартир — {_ru_number(saleable / lot_area)} лотов по средней квартире "
+        f"{lot_area:g} м²: {lot_basis}."
+        + (f" У соседей средний проданный лот {_ru_number(neighbour_lot, 1)} м² — "
+           "это наблюдение рынка, а не мера нашей нарезки."
+           if neighbour_lot > 0 else "")
     )
     if absorption["available"]:
         assumptions.append(
