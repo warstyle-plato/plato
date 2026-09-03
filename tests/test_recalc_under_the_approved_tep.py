@@ -592,7 +592,13 @@ def test_a_switched_off_row_cannot_be_edited_into_losing_its_metres():
     page = core.PAGE
     body = page[page.index("function renderTep("):page.index("// Правка ячейки ТЭП")]
     assert "const rowOff=rowSwitch&&!inputs[rowSwitch[0]]" in body
-    assert "const locked=rowOff||" in body, "ячейки выключенной строки заперты"
+    # Проверяется утверждение, а не соседняя строка: `rowOff` обязан входить в
+    # признак запертой ячейки. Прежняя проверка держала литерал
+    # «const locked=rowOff||» и упала, когда рядом появилось второе слагаемое
+    # (соцстроки, 03.09.2026), — при верном поведении.
+    locked = body[body.index("const locked="):]
+    locked = locked[:locked.index(";")]
+    assert "rowOff" in locked, f"ячейки выключенной строки заперты: {locked}"
     assert "Сохранено:" in body, "сохранённые метры названы, а не спрятаны за нулями"
     assert 'onclick="enableTepRow(' in body, (
         "включить объект можно отсюда: решение за человеком, но не поход на другую вкладку")

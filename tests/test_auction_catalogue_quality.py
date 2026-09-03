@@ -52,7 +52,12 @@ def test_an_unmeasured_card_is_not_presented_as_an_interesting_lot() -> None:
 
     service = AuctionSearchService([_One()])
     assert service.discover_moscow() == []
-    assert service.last_quality_report == {
+    # Сверяются счётчики воронки, а не то, что словарь закрыт: у него с
+    # 03.09.2026 есть своя строка про КРТ, и равенство целиком упало бы при
+    # верном поведении — проверка держала бы состав, а не утверждение.
+    report = service.last_quality_report
+    assert {key: report[key] for key in
+            ("seen", "accepted", "incomplete", "outside_profile", "noise")} == {
         "seen": 1,
         "accepted": 0,
         "incomplete": 1,
