@@ -15210,9 +15210,17 @@ def _v4_apply_debt_carry(xml: str, phase: int, queues: int, missing: list[str]) 
         # нехватки: дефолт модель называет, но на нём не обрывается —
         # реструктуризацию считаем прежним допущением и говорим о нём вслух.
         seen = f"SUM($D${b}:{columns[index - 1]}{b})"
+        # Вторая закрытая линия — рассчитавшаяся: раскрытый эскроу погасил
+        # долг целиком (строка 29 по предыдущие месяцы — ноль), и после РВЭ
+        # выбирать больше нечего, расход платит касса. Иначе поздний платёж
+        # рассрочки за покупку выбирался с закрытой линии и оставался
+        # «непогашенным долгом» проекта с LLCR 1,23x (04.09.2026). Остался
+        # долг в РВЭ и не передан — прежнее допущение: линия обслуживается
+        # продажами дальше, и книга считает так же, как движок.
+        unpaid_seen = f"SUM($D${_V4_RVE_UNPAID_ROW}:{columns[index - 1]}{_V4_RVE_UNPAID_ROW})"
         edits[44].append((f"<x:f>IF({column}$3&gt;=$B$7,",
                           f"<x:f>IF(AND({column}$3&gt;=$B$7,"
-                          f"OR({seen}&lt;=0,{column}$3&lt;=$B$8)),"))
+                          f"OR({column}$3&lt;=$B$8,AND({seen}&lt;=0,{unpaid_seen}&gt;0))),"))
         # Закрытая линия не собирает: остаточные продажи остаются застройщику.
         edits[46].append((f"<x:f>MIN({column}38+{column}45+{column}{a},",
                           f"<x:f>IF(AND({seen}&gt;0,{column}$3&gt;$B$8),0,"
@@ -21756,6 +21764,10 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
         # выбирает, не начисляет и не собирает — что бы дальше ни случилось с
         # долгом, переоформили его или объявили дефолт.
         line_closed = False
+        # Линия, рассчитавшаяся в РВЭ: раскрытый эскроу закрыл долг целиком,
+        # период доступности кончился, и выбирать из неё больше нечего —
+        # расходы после РВЭ платит касса, а не закрытый НКЛ.
+        line_settled = False
         rve_unpaid = 0.0
         defaulted_at: date | None = None
         pf_reservation_fee = (pf_limit or 0.0) * n(x, "reservation_fee_pct") / 100 if pf_limit else 0.0
@@ -21871,7 +21883,12 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
                 # выбирать по 57 млн в месяц и тут же гасить их продажами, с
                 # процентами по полной базовой ставке: та же фикция закрытой
                 # линии, только мельче.
-                if not line_closed:
+                # То же и у линии, которая в РВЭ рассчиталась полностью:
+                # поздний платёж рассрочки за покупку (625 млн в июле 2031 на
+                # «Нагатино») выбирался с закрытой линии, гасить его было уже
+                # нечем — продажи кончились, — и проект с LLCR 1,23x и 35 млрд
+                # прибыли назывался дефолтным на 625 млн.
+                if not line_closed and not line_settled:
                     pf_draw += max(project_costs, 0.0)
                 if cap is not None:
                     # Потолок считается от остатка на начало месяца: погашения
@@ -22009,6 +22026,10 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
                         # считаем прежним допущением — остаток обслуживается
                         # продажами следующих периодов, — и называем его вслух.
                         defaulted_at = month
+                elif month == rve and not line_closed:
+                    # Долга в РВЭ не осталось — НКЛ закрыт: дальше расходы
+                    # очереди идут из её кассы, выборок и процентов нет.
+                    line_settled = True
 
                 # Current Excel pays accumulated interest at RVE and current interest thereafter.
                 if month >= rve and pf_interest_payable > 0:

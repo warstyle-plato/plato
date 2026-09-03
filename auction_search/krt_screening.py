@@ -81,14 +81,26 @@ def _empty_tep(core: Any) -> dict[str, dict[str, Any]]:
 
 
 def _market_inputs(report: dict[str, Any]) -> tuple[str | None, float, float, str]:
+    """Стартовая цена скрининга — та же, что рекомендует отчёт о рынке.
+
+    Прежде бралась медиана цен входа соседей (их самые дешёвые лоты): на
+    Варшавском ш., вл. 37 это 350 тыс. против 670 у рекомендации того же
+    отчёта, и каталог называл площадку «Низкой» там, где расчёт владельца по
+    рекомендации давал 1,21x (владелец, 04.09.2026: «почему у каталога 350,
+    если само обращение к Пульсу даёт рекомендацию 670 нашим же механизмом»).
+    Два ответа одного модуля на один вопрос — это второй ответ; цена входа
+    остаётся справкой рядом, а не ценой модели.
+    """
     verdict = _verdict(report)
     hint = report.get("price_hint") or {}
     segment = normalize_segment(verdict.get("segment"))
     market_price = _number(verdict.get("price_per_sqm") or hint.get("price_per_sqm"))
     entry_price = _number(hint.get("entry_per_sqm"))
+    if market_price > 0:
+        return segment, market_price, market_price, "рекомендация отчёта о рынке — уровень цен сопоставимых проектов"
     if entry_price > 0:
-        return segment, entry_price, market_price, "медиана входных цен соседних проектов"
-    return segment, market_price, market_price, "медиана действующих прайсов рекомендованного класса"
+        return segment, entry_price, entry_price, "медиана входных цен соседних проектов (уровень рынка отчёт не определил)"
+    return segment, 0.0, 0.0, "цена не определена"
 
 
 def _phase_configuration(saleable_sqm: float, construction_months: int) -> dict[str, Any]:
@@ -478,6 +490,7 @@ def build_krt_model_screening(
         }
 
     segment, start_price, market_price, price_basis = _market_inputs(market_report)
+    entry_price = _number(((market_report or {}).get("price_hint") or {}).get("entry_per_sqm"))
     if not segment or segment not in _CLASS_MAP:
         return {"available": False, "reason": "Маркетинг пока не определил класс продукта"}
     if start_price <= 0:
@@ -658,7 +671,9 @@ def build_krt_model_screening(
         f"({_number(apartment_ratios.get('saleable_of_gns')) * 100:.1f}% ГНС). "
         + ("Доли — умолчание DevelopAid; правятся в карточке."
            if own_ratios else "Доли заданы вручную, а не нашей методикой."),
-        f"Стартовая цена {_ru_number(start_price)} ₽/м² взята из маркетинга: {price_basis}.",
+        f"Стартовая цена {_ru_number(start_price)} ₽/м² взята из маркетинга: {price_basis}."
+        + (f" Медиана цен входа соседей — {_ru_number(entry_price)} ₽/м² — справочно, в модель не идёт."
+           if entry_price > 0 and round(entry_price) != round(start_price) else ""),
         f"Себестоимость основного строительства взята из пресета «{class_label}»: "
         f"{_ru_number(preset.get('main_above_th_per_sqm'))} тыс. ₽/м² наземной и "
         f"{_ru_number(preset.get('main_under_th_per_sqm'))} тыс. ₽/м² подземной части.",
@@ -824,6 +839,7 @@ def build_krt_model_screening(
             "model_class_label": class_label,
             "start_price_rub_sqm": round(start_price),
             "market_price_rub_sqm": round(market_price) if market_price > 0 else None,
+            "entry_price_rub_sqm": round(entry_price) if entry_price > 0 else None,
             "price_basis": price_basis,
         },
         "phasing": {
