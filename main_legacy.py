@@ -13990,12 +13990,26 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         actual_rows.append(["ПИК БРИДЖА", _pdf_money(actual_peak),
                             "100,0%" if actual_peak else "—"])
         month = str(financing.get("actual_bridge_month") or "")
+        queues = financing.get("actual_bridge_queues") or {}
+        on_bridge = [str(name) for name in (queues.get("on_bridge") or [])]
+        queue_note = ""
+        if on_bridge:
+            tails = []
+            if queues.get("refinanced"):
+                tails.append(", ".join(map(str, queues["refinanced"]))
+                             + " к этому месяцу уже на ПФ — их расходы сюда не входят")
+            if queues.get("not_started"):
+                tails.append(", ".join(map(str, queues["not_started"])) + " ещё не начаты")
+            queue_note = ("Пик свода — месяц, когда на БРИДЖе " + ", ".join(on_bridge)
+                          + ("; " + "; ".join(tails) if tails else "") + ". ")
         story.append(KeepTogether([
             P("Структура фактического БРИДЖА"
-              + (f" · {'.'.join(reversed(month.split('-')))}" if month else ""), h2),
+              + (f" · {'.'.join(reversed(month.split('-')))}" if month else "")
+              + (f" · на БРИДЖе: {', '.join(on_bridge)}" if on_bridge else ""), h2),
             table(actual_rows, [98*mm, 45*mm, 27*mm], font_size=8.0),
-            P("Оплачено к месяцу пика. До открытия ПФ у проекта нет ни выручки, ни ПФ, "
-              "поэтому остаток БРИДЖа равен оплаченному; разница с расчётным лимитом — "
+            P(queue_note
+              + "Оплачено к месяцу пика. До открытия ПФ у очереди нет ни выручки, ни ПФ, "
+              "поэтому остаток её БРИДЖа равен оплаченному; разница с расчётным лимитом — "
               "расходы, под которые лимит не даётся.", small),
         ]))
 
@@ -23272,6 +23286,44 @@ def _bridge_peak_month(rows: list[dict[str, Any]]) -> str:
     return month.isoformat() if hasattr(month, "isoformat") else str(month)
 
 
+def _bridge_balance_at(rows: list[dict[str, Any]], month: str) -> float:
+    """Остаток БРИДЖа этой линии в названный месяц; нет строки — линии нет."""
+    for row in rows:
+        row_month = row.get("month")
+        row_month = row_month.isoformat() if hasattr(row_month, "isoformat") else str(row_month)
+        if row_month == month:
+            return float(row.get("bridge_balance") or 0.0)
+    return 0.0
+
+
+def _queues_on_bridge(phase_items: list[dict[str, Any]], month: str) -> dict[str, list[str]]:
+    """Чей БРИДЖ открыт в месяц пика свода — и чей уже закрыт или ещё не начат.
+
+    У каждой очереди своя линия до открытия её ПФ. Пик свода приходится на
+    месяц, когда открыты линии не всех очередей: расшифровка, сложившая
+    оплаченное ВСЕМИ очередями, показывала 148% по одной статье и 2,5 млрд ₽
+    проектирования трёх очередей, из которых на БРИДЖе стояла одна.
+    """
+    on_bridge: list[str] = []
+    refinanced: list[str] = []
+    not_started: list[str] = []
+    for item in phase_items:
+        name = str(item.get("name") or "")
+        rows = ((item.get("result") or {}).get("finance") or {}).get("rows") or []
+        if _bridge_balance_at(rows, month) > 0:
+            on_bridge.append(name)
+            continue
+        opened = [
+            (r.get("month").isoformat() if hasattr(r.get("month"), "isoformat") else str(r.get("month")))
+            for r in rows if float(r.get("bridge_balance") or 0.0) > 0
+        ]
+        if opened and max(opened) < month:
+            refinanced.append(name)
+        else:
+            not_started.append(name)
+    return {"on_bridge": on_bridge, "refinanced": refinanced, "not_started": not_started}
+
+
 def _own_funds_by(rows: list[dict[str, Any]], month: str) -> float:
     """Сколько собственных средств вложено к этому месяцу включительно."""
     if not month:
@@ -24290,6 +24342,17 @@ def _consolidate_phase_results(
     results = [item["result"] for item in phase_items]
     finance = _aggregate_finance(results)
     consolidated_bridge_month = _bridge_peak_month(finance["rows"])
+    # Расшифровка пика свода — только по очередям, чья линия в этот месяц
+    # открыта: закрытая линия ничего не должна, а её расходы уже на ПФ.
+    bridge_queues = _queues_on_bridge(phase_items, consolidated_bridge_month)
+    bridge_items = [item for item in phase_items
+                    if str(item.get("name") or "") in bridge_queues["on_bridge"]]
+    bridge_own_funds = sum(
+        _own_funds_by((item["result"].get("finance") or {}).get("rows") or [], consolidated_bridge_month)
+        for item in bridge_items)
+    bridge_project_cash = sum(
+        _project_cash_by((item["result"].get("finance") or {}).get("rows") or [], consolidated_bridge_month)
+        for item in bridge_items)
 
     tep_map: dict[str, dict[str, Any]] = {}
     for result in results:
@@ -24598,10 +24661,10 @@ def _consolidate_phase_results(
                 "own_funds_available": finance.get("own_funds_available", 0.0),
                 "project_cash": finance.get("project_cash_used", 0.0),
                 "actual_bridge_structure": _bridge_actual_structure(
-                    [result.get("monthly") or {} for result in results],
+                    [item["result"].get("monthly") or {} for item in bridge_items],
                     consolidated_bridge_month, finance["peak_bridge"],
-                    _own_funds_by(finance["rows"], consolidated_bridge_month),
-                    _project_cash_by(finance["rows"], consolidated_bridge_month)),
+                    bridge_own_funds, bridge_project_cash),
+                "actual_bridge_queues": bridge_queues,
                 "pf_peak": finance["peak_pf"],
                 "pf_uncovered_peak": finance["peak_uncovered_pf"],
                 "rve_pf_before_repayment": finance.get("rve_pf_before_repayment", 0.0),
@@ -39253,6 +39316,14 @@ function renderResult(){
    ['Проектирование — стадия РД',bridgeDesignRd]
  ].filter(x=>x[1]>0.5);
  const bridgeShare=value=>bridgeTotal>0?(value/bridgeTotal*100).toLocaleString('ru-RU',{minimumFractionDigits:1,maximumFractionDigits:1})+'%':'—';
+ function bridgeActualNoteText(queues){
+  const base='Оплачено к месяцу пика. До открытия ПФ у очереди нет ни выручки, ни ПФ, поэтому остаток её БРИДЖа равен оплаченному. Разница с расчётным лимитом — расходы, под которые лимит не даётся.';
+  if(!queues||!queues.on_bridge||!queues.on_bridge.length)return base;
+  const parts=[];
+  if(queues.refinanced&&queues.refinanced.length)parts.push(queues.refinanced.join(', ')+' к этому месяцу уже на ПФ — их расходы сюда не входят');
+  if(queues.not_started&&queues.not_started.length)parts.push(queues.not_started.join(', ')+' ещё не начаты');
+  return 'Пик свода — месяц, когда на БРИДЖе '+queues.on_bridge.join(', ')+(parts.length?'; '+parts.join('; '):'')+'. '+base;
+ }
  const bridgePurposeEl=document.getElementById('bridgePurposeTable');
  bridgePurposeEl.innerHTML=
    `<thead><tr><th>Цель</th><th>Сумма</th><th>Доля</th></tr></thead>`+
@@ -39262,6 +39333,8 @@ function renderResult(){
  // Фактический пик — по статьям, оплаченным к месяцу пика. Лимит методики и
  // реальная потребность расходятся всегда, и разница — это то, что банк
  // называет «остальное вашими»; до сих пор её приходилось считать глазами.
+ // На своде очередей у каждой своя линия: пик свода приходится на месяц, когда
+ // открыты не все, и подпись называет, чья линия в него вошла, а чья уже на ПФ.
  const bridgeActual=(r.report.financing.actual_bridge_structure||[]);
  const bridgeActualTotal=Number(r.report.financing.actual_bridge||0);
  const bridgeActualEl=document.getElementById('bridgeActualTable');
@@ -39273,10 +39346,11 @@ function renderResult(){
    :'';
   const monthEl=document.getElementById('bridgeActualMonth');
   const when=String(r.report.financing.actual_bridge_month||'');
-  if(monthEl)monthEl.textContent=when?' · '+dateRu(when):'';
+  const queues=r.report.financing.actual_bridge_queues||null;
+  if(monthEl)monthEl.textContent=(when?' · '+dateRu(when):'')+(queues&&queues.on_bridge&&queues.on_bridge.length?' · на БРИДЖе: '+queues.on_bridge.join(', '):'');
   const noteEl=document.getElementById('bridgeActualNote');
   if(noteEl)noteEl.textContent=bridgeActual.length
-   ?'Оплачено к месяцу пика. До открытия ПФ у проекта нет ни выручки, ни ПФ, поэтому остаток БРИДЖа равен оплаченному. Разница с расчётным лимитом — расходы, под которые лимит не даётся.'
+   ?bridgeActualNoteText(queues)
    :'БРИДЖ не привлекался.';
  }
 
