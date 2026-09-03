@@ -76,9 +76,18 @@ def test_the_weak_and_the_strong_stop_looking_alike():
 
 
 def test_the_reason_says_the_scale_is_the_catalogues():
+    """Подпись называет порог и своё число: слово «ниже» само по себе не сравнимо.
+
+    Прежде стояло «ниже каталога» — и стояло у 137 площадок из 153, потому что
+    нулевая точка шкалы это ДЕВЯНОСТЫЙ процентиль, а не середина. Читалось это
+    как приговор большинству, а сказано было «не в верхней десятой части».
+    """
     got = scores(catalogue())
     labels = " ".join(item["label"] for item in got["s0"]["cuts"])
-    assert "ниже каталога" in labels, labels
+    assert "ниже верхней десятой части каталога" in labels, labels
+    assert "ниже каталога" not in labels, labels
+    # Своё число и порог стоят рядом — иначе сравнивать не с чем.
+    assert "1,16x" in labels and "1x" in labels, labels
 
 
 def test_a_project_that_cannot_service_debt_is_still_cut():
@@ -89,7 +98,12 @@ def test_a_project_that_cannot_service_debt_is_still_cut():
     got = scores(rows)
     labels = " ".join(item["label"] for item in got["dead"]["cuts"])
     assert "долг не обслуживается" in labels, labels
-    assert got["dead"]["score"] < got["s0"]["score"]
+    assert "в убытке" in labels, labels
+    # Пол — ОТДЕЛЬНАЯ строка, а не поднятие относительной: написанный как
+    # `Math.max(points, 20)`, он проваливался в максимум правила и не
+    # срабатывал ровно там, где нужен, — у самой плохой площадки.
+    assert got["dead"]["score"] < got["s0"]["score"], (
+        "относительная шкала снова прячет абсолютно плохое")
 
 
 def test_a_short_catalogue_keeps_the_absolute_scale():

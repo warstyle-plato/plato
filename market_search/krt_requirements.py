@@ -551,6 +551,43 @@ def social_objects_from_decision(sentences: Any) -> list[dict[str, Any]]:
     return found
 
 
+# Метры, уходящие городу по Программе реновации. Признак «в документе сказано о
+# городских нуждах» отвечал только «да», а решение обычно называет и объём:
+# на Задонском проезде это 15 100 м² из 150 940 предельной жилой СПП — десятая
+# часть, а балл снижался на четверть (владелец, 03.09.2026: «не смущает, что
+# фонд реновации забирает 15 тысяч из 150 000? значит остальное рыночный
+# объём»). Доля меряется, а не оценивается на глаз.
+_RENOVATION_MARKERS = ("программ", "реновац")
+_RENOVATION_AREA = re.compile(
+    r"(?iu)(?<![\d.,])(\d[\d  ]*(?:[.,]\d+)?)\s*(?:кв\.?\s*м|м2|м²)")
+
+
+def renovation_volume(sentences: Any) -> dict[str, Any]:
+    """Сколько метров решение отдаёт Программе реновации — и чем это сказано.
+
+    Ответов три, и они разные: назван объём, сказано о реновации без объёма,
+    не сказано ничего. Второй нельзя показывать ни первым, ни третьим: «доля
+    неизвестна» — это не «доли нет» и не «забирают всё».
+    """
+    mentioned = False
+    quote = ""
+    area: float | None = None
+    for raw in list(sentences or [])[:200]:
+        sentence = _SPACE.sub(" ", str(raw or "")).strip()
+        low = sentence.casefold()
+        if not all(mark in low for mark in _RENOVATION_MARKERS):
+            continue
+        mentioned = True
+        if not quote:
+            quote = sentence[:400]
+        match = _RENOVATION_AREA.search(sentence)
+        value = _social_number(match.group(1)) if match else None
+        if value is not None and (area is None or value > area):
+            area = value
+            quote = sentence[:400]
+    return {"mentioned": mentioned, "area_sqm": area, "quote": quote}
+
+
 def _construction_parameters(text: str) -> list[str]:
     low = text.casefold()
     marker = low.find("предельные параметры разрешенного строительства")
@@ -619,6 +656,9 @@ def parse_decision_requirements(text: str, title: str = "") -> dict[str, Any]:
     }
     return {
         "intent": decision_intent(text, title=title),
+        # Объём городских нужд измеряется, а не подразумевается: признак без
+        # доли снижал балл на четверть при десятой части жилья.
+        "renovation": renovation_volume(sentences),
         "permitted_uses": list(dict.fromkeys(permitted_uses))[:30],
         "construction": list(dict.fromkeys(construction))[:20],
         "deadlines": list(dict.fromkeys(deadlines))[:5],
@@ -643,6 +683,8 @@ def merge_decision_requirements(
         "preservation", "resettlement", "object_actions", "deadlines", "permitted_uses",
     ):
         result[key] = list(facts.get(key) or [])
+    if facts.get("renovation"):
+        result["renovation"] = facts["renovation"]
     result["disclosure"] = {
         key: "published_in_project_decision" if result.get(key)
         else "not_published_in_project_decision"
