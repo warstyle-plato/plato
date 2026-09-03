@@ -604,6 +604,25 @@ _SEC_CAT_AX, _SEC_VAL_AX = 771001, 771002
 # Линии планов на слайде «факт против планов»: красная и серая — как их
 # поставила надстройка в присланном файле. Столбик факта носит фирменный синий,
 # и смотрят на него; планы рядом не должны спорить с ним за внимание.
+# Цвет полосы приезжает из разметки отчёта — экран красит её своими токенами,
+# а у колоды палитра своя (решение владельца, 01.09.2026). Ставить цвет экрана
+# на слайд значит смешать две палитры в одном документе: рядом с зелёной
+# полосой вывода и синим столбиком факта встают лиловый и песочный, и лист
+# перестаёт читаться как один. Перевод — таблицей, а не подбором на глаз:
+# неизвестный цвет уходит в серый, а не остаётся собой.
+_SCREEN_TO_DECK = {
+    "1367AE": "1F6FB2", "4E9BDE": "1F6FB2", "2E7D5B": "15803D", "5FA98A": "15803D",
+    "C4581B": "A9631A", "D0A24C": "A9631A", "B3261E": "B3261E", "8E7CC3": "6B7280",
+    "7C6BB5": "6B7280", "8A9BA8": "6B7280", "9A6BB5": "6B7280", "1F5C87": "1F6FB2",
+    "D9A441": "A9631A", "4FA07A": "15803D", "0F766E": "0F766E",
+}
+
+
+def deck_colour(screen: str) -> str:
+    """Цвет экрана в палитре колоды. Незнакомый — серый, а не он сам."""
+    return _SCREEN_TO_DECK.get((screen or "").upper(), "6B7280")
+
+
 _PRIMARY_LINES = ("B3261E", "6B7280", "A9631A")
 _SECOND_LINES = ("15803D", "A9631A", "6B7280", "B3261E")
 
@@ -1014,7 +1033,7 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
                     MSO_SHAPE.RECTANGLE, Inches(left + index * column),
                     Inches(top + 0.16), Pt(0.75), Inches(height - 0.32))
                 divider.fill.solid()
-                divider.fill.fore_color.rgb = RGBColor(0xE3, 0xEB, 0xF2)
+                divider.fill.fore_color.rgb = hair
                 divider.line.fill.background()
                 divider.shadow.inherit = False
             box = slide.shapes.add_textbox(Inches(left + index * column + 0.14),
@@ -1032,7 +1051,7 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
                     (str(row[0] if len(row) > 0 else ""), 11, False, dim),
                     (str(row[1] if len(row) > 1 else ""), number_size, True, ink),
                     (str(row[2] if len(row) > 2 else ""), 9, False,
-                     RGBColor(0x7B, 0x8B, 0x9A)))):
+                     dim))):
                 if not text:
                     continue
                 para = frame.paragraphs[0] if order == 0 else frame.add_paragraph()
@@ -1067,7 +1086,7 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
             block = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(left), Inches(top),
                                            Inches(max(span, 0.02)), Inches(0.62))
             block.fill.solid()
-            block.fill.fore_color.rgb = RGBColor.from_string(item["colour"])
+            block.fill.fore_color.rgb = RGBColor.from_string(deck_colour(item["colour"]))
             block.line.fill.background()
             block.shadow.inherit = False
             name = str(item["name"])
