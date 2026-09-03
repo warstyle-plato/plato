@@ -191,14 +191,32 @@ def keep_computed(
     приходят от krt.mos.ru и к счёту отношения не имеют.
     """
     if fresh.get("available") or not (previous or {}).get("available"):
-        return fresh
+        return _with_remembered_facts(previous, dict(fresh))
     kept = dict(previous or {})
     for field in _CATALOGUE_FIELDS:
         if field in fresh:
             kept[field] = fresh[field]
     kept["recompute_failed_at"] = int(time.time())
     kept["recompute_reason"] = str(fresh.get("reason") or "Пересчёт не удался")
-    return kept
+    return _with_remembered_facts(previous, kept)
+
+
+# Прочитанное о площадке — застройщик и реновация с карточки города, занятость
+# и оператор из публикаций — живёт в строке рейтинга рядом с баллом. Строка при
+# пересчёте собирается заново (`score_row`), и скрининг из карточки этих фактов
+# не несёт: пустое поле вставало на место прочитанного, и после каждого
+# «Пересчитать сейчас» площадку приходилось читать заново — «так и не хранятся
+# данные о уже просчитанных проектах, что реновация, что занято» (владелец,
+# 03.09.2026). Пустота не затирает прочитанное; новые непустые факты — да.
+_REMEMBERED_FACTS = ("card_facts", "press_facts")
+
+
+def _with_remembered_facts(previous: dict[str, Any] | None,
+                           row: dict[str, Any]) -> dict[str, Any]:
+    for field in _REMEMBERED_FACTS:
+        if not row.get(field) and (previous or {}).get(field):
+            row[field] = previous[field]
+    return row
 
 
 def merge_row(
