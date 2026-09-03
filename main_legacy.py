@@ -36749,6 +36749,23 @@ function renderTep(){
      const note=apartmentUnitsNote();
      if(note)label+=` <span style="display:block;font-size:10px;color:#777;margin-top:3px">${escapeHtml(note)}</span>`;
    }
+   // Какое из двух чисел чьё — иначе вписанное «по решению КРТ» молча
+   // становится не тем: решение задаёт площадь В ГАБАРИТАХ НАРУЖНЫХ СТЕН, то
+   // есть наземную, а поле во вводных называется общей.
+   if(TEP_SOCIAL_INPUTS[key]){
+     const share=Math.round(socialTotalShare()*1000)/10;
+     label+=String(inputs.social_area_source||'norm')==='manual'
+       ? ` <span style="display:block;font-size:10px;color:#777;margin-top:3px">`
+         +`Площадь в решении о КРТ дана в габаритах наружных стен — это ГНС. `
+         +`Правится любое из двух: общая = ГНС × ${landNum(share,1)}%. `
+         +`Места — в разделе «Социальная нагрузка».</span>`
+       // Запертая ячейка честнее редактируемой: в нормативном режиме площадь
+       // считается от мест, и вписанное вернулось бы к прежнему на первом же
+       // пересчёте — молча, то есть неотличимо от «не сработало».
+       : ` <span style="display:block;font-size:10px;color:#777;margin-top:3px">`
+         +`Площадь считается от мест по нормативу РНГП. Чтобы вписать свою — `
+         +`«Социальная нагрузка → Площадь и норматив соцобъектов → Требование КРТ».</span>`;
+   }
    if(TEP_RATIOS[key]){
      const bad=tepRefillNote[key]||tepRowComplaint(key,row);
      if(bad)label+=` <span style="display:block;font-size:10px;color:#a33;margin-top:2px">${escapeHtml(bad)}</span>`;
@@ -36796,7 +36813,13 @@ function renderTep(){
      +'</div>';
    };
    ['gns','total_area','useful','saleable','transfer','units'].forEach(col=>{
-     const locked=rowOff||(key==='underground_parking'&&(importedParking||inputs.underground_parking_disabled||Number(inputs.underground_manual_spaces||0)>0||Number(inputs.underground_manual_gns_sqm||0)>0)&&['gns','total_area','useful','saleable','transfer','units'].includes(col));
+     // Соцстрока: правится только пара «ГНС — общая» и только в ручном режиме.
+     // Места и передаваемая приходят из вводных на каждом пересчёте, поэтому
+     // редактируемая ячейка там обещала бы то, чего не будет.
+     const socialLocked=!!TEP_SOCIAL_INPUTS[key]
+       &&(String(inputs.social_area_source||'norm')!=='manual'
+          ||!['gns','total_area'].includes(col));
+     const locked=socialLocked||rowOff||(key==='underground_parking'&&(importedParking||inputs.underground_parking_disabled||Number(inputs.underground_manual_spaces||0)>0||Number(inputs.underground_manual_gns_sqm||0)>0)&&['gns','total_area','useful','saleable','transfer','units'].includes(col));
      // Два атрибута style на одном input браузер не складывает — берёт первый,
      // и запертая ячейка теряла бы серый фон. Стиль собирается один.
      html+=`<td style="vertical-align:top"><input type="number" step="0.1" value="${inputDisplay(row[col])}" style="margin:0${locked?';background:#f3f3f1;color:#555':''}" ${locked?'readonly':''} onchange="tepCellChanged('${key}','${col}',this.value)">${locked?'':ratioField(col)}</td>`;
@@ -36979,6 +37002,19 @@ const tepRefillNote={};
 // защищать от пересчёта, а вернуть туда, откуда пересчёт его берёт.
 const TEP_ROW_INPUTS={offices:{gns:'offices_gba_sqm',saleable:'offices_saleable_sqm'},
  standalone_retail:{gns:'retail_gba_sqm',saleable:'retail_saleable_sqm'}};
+// Соцобъект во вводных живёт ОДНИМ числом — общей площадью, а ГНС из неё
+// выводится. Пока обратного пути не было, правка ГНС в таблице не доезжала
+// никуда: ячейка выглядела редактируемой, а на следующем пересчёте ГНС
+// возвращалась к «общая ÷ доля» (владелец, 03.09.2026: «если тут меняю ГНС,
+// то общая не меняется»). Ведущим может быть любое из двух — как у трёх
+// площадей продукта.
+const TEP_SOCIAL_INPUTS={kindergarten:'social_dou_gba_sqm',
+ school:'social_school_gba_sqm',clinic:'social_clinic_gba_sqm'};
+// Доля объявлена в движке и подставлена на страницу; второй копии числа здесь
+// нет — она бы разошлась с той, по которой считает `syncTep`.
+function socialTotalShare(){
+ return Number((TEP_RATIOS.apartments||{}).total_of_gns||0)||0.9;
+}
 
 function tepRowToInputs(key){
  const map=TEP_ROW_INPUTS[key];
@@ -37018,6 +37054,26 @@ function tepCellChanged(key,col,value){
   tepRowToInputs(key);
   renderInputs();
   renderTep();
+  calculate();
+  return;
+ }
+ // Соцобъект: пара «ГНС — общая» пересчитывается в обе стороны, а во вводные
+ // уходит общая — то единственное число, которое там есть. Решение о КРТ
+ // задаёт площадь «в габаритах наружных стен», то есть НАЗЕМНУЮ: вписывать её
+ // надо в ГНС, и тогда общая считается сама.
+ if(TEP_SOCIAL_INPUTS[key]&&['gns','total_area'].includes(col)){
+  const share=socialTotalShare();
+  const entered=Number(value||0);
+  const total=col==='gns'?entered*share:entered;
+  tep[key].total_area=Math.round(total*10)/10;
+  tep[key].gns=total>0?Math.round(total/share*10)/10:0;
+  // Передаваемая у соцобъекта — вся площадь объекта: правило продуктов сюда
+  // не идёт, но и отставать от общей она не должна.
+  tep[key].transfer=tep[key].total_area;
+  inputs[TEP_SOCIAL_INPUTS[key]]=tep[key].total_area;
+  renderInputs();
+  renderTep();
+  scheduleTepAutoRecalc();
   calculate();
   return;
  }
@@ -37759,7 +37815,7 @@ function syncTep(rerender=true){
   // считаем по той же пропорции НП/СПП, что и остальной ТЭП.
   // Пропорция общей к ГНС уже объявлена в движке и подставлена на страницу —
   // второй копии числа здесь нет.
-  const share=Number((TEP_RATIOS.apartments||{}).total_of_gns||0)||0.9;
+  const share=socialTotalShare();
   tep[row].gns=area>0?(imported>0?imported:area/share):0;
  });
  // ГлавАПУ has priority over any old/stale underground-parking TEP values.
