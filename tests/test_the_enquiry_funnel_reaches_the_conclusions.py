@@ -83,3 +83,82 @@ def test_a_block_without_a_conclusion_says_what_is_missing() -> None:
     assert "Вывод не сложился" in body
     for key in ("pool", "bands", "demand", "funnel", "escrow", "fm", "bank"):
         assert f"{key}:" in page[page.index("const NOTE_NEEDS="):page.index("function salesNote(")], key
+
+
+def test_the_funnel_is_drawn_and_the_picture_reaches_the_deck(tmp_path) -> None:
+    """«У тебя таблица воронки обращений идёт!!!» (владелец, 03.09.2026).
+
+    Таблица шла, картинки не было: раздел рисовался одними строками, и в
+    презентации от воронки оставались колонки — разрыв между звонками и
+    агентами приходилось искать глазами. Колода рисует ровно там, где рисует
+    экран, поэтому чинится это на экране, а на слайд приходит само.
+
+    Проверяется на живой странице, а не поиском строки: график собирает общий
+    `barChart`, и обещание «здесь картинка» стоит ровно столько, сколько
+    стоит его вызов на настоящих числах.
+    """
+    import importlib
+    import sys
+
+    import pytest
+
+    play = pytest.importorskip("playwright.sync_api")
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import browser_launch
+
+    from market_search import cabinet, sales_deck
+
+    got = importlib.import_module(
+        "test_the_sales_report_survives_a_full_project").full_summary()
+    lead = got.setdefault("demand", {}).setdefault("funnel", {})
+    lead["by_source"] = [{"name": "Звонок", "deals": 518, "booked": 16, "share": 0.031},
+                         {"name": "Агент", "deals": 44, "booked": 16, "share": 0.364},
+                         {"name": "Сайт", "deals": 11, "booked": 1, "share": 0.091}]
+    lead["by_manager"] = [{"name": "Иванова", "deals": 200, "booked": 25, "share": 0.125},
+                          {"name": "Петров", "deals": 160, "booked": 2, "share": 0.012}]
+    lead.setdefault("quality", {"calls": 573, "target": 449,
+                                "booked_target": 0.031, "blank": 231})
+
+    file = tmp_path / "cabinet.html"
+    file.write_text(cabinet.cabinet_page("sales").replace("__DEVELOPAID_VERSION__", "t"),
+                    encoding="utf-8")
+    with play.sync_playwright() as pw:
+        try:
+            browser = browser_launch.launch(pw)
+        except Exception as exc:  # noqa: BLE001
+            pytest.skip(f"Chromium недоступен: {exc}")
+        try:
+            tab = browser.new_page()
+            tab.route("**/*", lambda route: route.abort()
+                      if route.request.url.startswith("http") else route.continue_())
+            tab.goto(file.as_uri())
+            markup = tab.evaluate("(d)=>{renderSales(d); return salesPrintHtml()}", got)
+        finally:
+            browser.close()
+
+    block = next(page for page in sales_deck.sections(markup)
+                 if str(page.get("title") or "").startswith("Воронка"))
+    drawn = [table for table in (block.get("tables") or []) if table.get("charted")]
+    assert [table["head"][0] for table in drawn] == ["Источник", "Менеджер"], \
+        "картинки нет ни у источников, ни у менеджеров"
+    for table in drawn:
+        charts = sales_deck.charts(table)
+        assert len(charts) == 1, "воронка — одна картинка, а не лист на колонку"
+        rows = [charts[0]["name"], *[extra["name"] for extra in charts[0]["extra"]]]
+        assert rows == ["Обращений", "Броней"], rows
+        # Доля — линия справа на своей шкале, как на экране: своим листом со
+        # столбиками она читалась бы как ещё один объём.
+        assert [line["name"] for line in charts[0]["second"]] == ["Доля"]
+
+    import io
+
+    from pptx import Presentation
+
+    deck = Presentation(io.BytesIO(sales_deck.build(
+        sales_deck.sections(markup), title="Т", subtitle="с", footer="ф")))
+    headings = [shape.text_frame.text for slide in deck.slides for shape in slide.shapes
+                if shape.has_text_frame and 700000 < shape.top < 1_150_000]
+    funnel = [line for line in headings if line.startswith("Воронка обращений ·")
+              and "продолжение" not in line]
+    assert len(funnel) == 2 and len(set(funnel)) == 2, \
+        f"два листа воронки нечем различить: {funnel}"

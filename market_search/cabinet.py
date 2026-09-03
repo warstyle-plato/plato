@@ -2439,8 +2439,31 @@ function salesFunnelBlock(d){
     +tile('Без следа в карточке', num(q.blank||0),
           'ни потребности, ни следующего шага')
     +'</div>';
-  html+='<h4 style="margin:14px 0 2px;font-size:13px">Источники</h4>'+table(lead.by_source,'Источник');
-  html+='<h4 style="margin:14px 0 2px;font-size:13px">Ответственные</h4>'+table(lead.by_manager,'Менеджер');
+  // Воронку рисуют, а не только перечисляют: столбик — обращения, линия рядом —
+  // сколько из них дошло до брони, и доля справа на своей шкале. Пока раздел
+  // был одними таблицами, в презентации от него оставались строки, и разрыв
+  // между звонками и агентами приходилось искать глазами по колонке
+  // («у тебя таблица воронки обращений идёт!!!», владелец, 03.09.2026).
+  // Числа считает сервер; здесь только показ, проценты — оформление доли.
+  const funnelChart=(rows,caption)=>{
+    const kept=(rows||[]).filter(r=>r.deals>=3);
+    if(kept.length<2) return '';
+    return barChart(kept.map(r=>({
+      label:r.name, short:r.name, value:r.deals, booked:r.booked,
+      share:r.share===null||r.share===undefined?null:r.share*100,
+      tip:r.name+': '+num(r.deals)+' обращений, '+num(r.booked)+' броней'})),
+      {lines:[{key:'booked',name:'броней',color:'#2E7D5B'}],
+       axis:v=>num(v), show:v=>num(v)+' обращений', factName:'обращений',
+       rightLines:[{key:'share',name:'доходит до брони',color:'#C4581B'}],
+       rightAxis:v=>num(v,1)+' %', rightShow:v=>num(v,1)+' %',
+       rightName:'доходит до брони', caption:caption});
+  };
+  html+='<h4 style="margin:14px 0 2px;font-size:13px">Источники</h4>'
+    +funnelChart(lead.by_source,'обращения и брони по источникам; линия справа — доля в бронь')
+    +table(lead.by_source,'Источник');
+  html+='<h4 style="margin:14px 0 2px;font-size:13px">Ответственные</h4>'
+    +funnelChart(lead.by_manager,'обращения и брони по менеджерам; линия справа — доля в бронь')
+    +table(lead.by_manager,'Менеджер');
   // Оговорки приходят с сервера: они про то, чего в данных нет.
   const notes=lead.notes||[];
   if(notes.length){

@@ -529,14 +529,10 @@ def charts(table: dict[str, Any]) -> list[dict[str, Any]]:
     # видно, а отдельной вкладкой она исчезает ровно тогда, когда смотрят на
     # метры. В колоде она уходила своим слайдом со столбиками — то же самое
     # другими словами. Теперь она идёт линией справа на каждом графике объёма.
-    price = next((index for index in numeric if _PRICE.search(str(head[index]))), None)
     # Меры, которые экран предлагает переключателем: у динамики это млн ₽, м²
     # и лоты, у планов — млн ₽ и м². В документе переключателя нет, и мера, до
     # которой не переключились, в нём просто отсутствует — то же правило, что у
     # свёрнутой таблицы: раскрыть её читателю нечем.
-    order = [index for index in numeric if index != price]
-    if not order:
-        order = list(numeric)
     named = {name for name, _ in _MEASURES}
 
     def unit_of(index: int) -> str:
@@ -553,6 +549,10 @@ def charts(table: dict[str, Any]) -> list[dict[str, Any]]:
         by_cell = measure_of(cell_marks.get(index, ""))
         return by_cell if by_cell in named else by_head
 
+    rates = [index for index in numeric
+             if measure_of(str(head[index])) in {"₽/м²", "%"}
+             or measure_of(cell_marks.get(index, "")) in {"₽/м²", "%"}]
+    order = [index for index in numeric if index not in rates] or list(numeric)
     groups: list[tuple[str, list[int]]] = []
     for index in order:
         unit = unit_of(index)
@@ -570,12 +570,20 @@ def charts(table: dict[str, Any]) -> list[dict[str, Any]]:
     # график с именем «против планов» никаких планов не показывал. Мера
     # берётся из шапки: «Факт, млн ₽» и «План ФМ, млн ₽» — одна ось, «Лотов»,
     # «м²» и «₽/м²» — разные, и класть их вместе нельзя.
-    price_unit = unit_of(price) if price is not None else ""
-    price_columns = ([index for index in numeric if unit_of(index) == price_unit]
-                     if price_unit else [])
+    # Справа на своей шкале живёт не только цена: доля — такая же удельная
+    # величина, и экран ведёт её линией на том же графике («доходит до брони»
+    # у воронки обращений). Своим листом со столбиками она читалась бы как
+    # ещё один объём. Цена вперёд доли: «цена — всегда линия на своей шкале»
+    # (владелец, 26.08.2026), а осей всего две.
+    rate_unit, rate_columns = "", []
+    for candidate in ("₽/м²", "%"):
+        columns = [index for index in numeric if unit_of(index) == candidate]
+        if columns:
+            rate_unit, rate_columns = candidate, columns
+            break
+    price_unit, price_columns = rate_unit, rate_columns
     volume = [pair for pair in groups if pair[0] != price_unit]
-    # Цена метра идёт линией на своей шкале справа от объёма — пока она ОДНА.
-    # «Цена — всегда линия на своей шкале» (владелец, 26.08.2026). Цен
+    # Удельная величина идёт линией справа от объёма — пока она ОДНА. Цен
     # несколько (факт и два плана) — второй шкале их не унести: в шаблоне
     # владельца они стоят своим графиком из трёх линий рядом с деньгами
     # (слайд 11), и это верно — три чужие линии спорят с тем графиком, на
@@ -1508,6 +1516,16 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         # столбиковых слайда подряд — так что верны обе жалобы, и лечится это
         # шириной, а не выбором меры.
         spilled: list[str] = []
+
+        def measures_line(pair: tuple[dict[str, Any], list[dict[str, Any]]]) -> str:
+            said = [str(chart.get("measure") or chart["name"]) for chart in pair[1]]
+            short = [name.split(",")[0].strip() or name for name in said]
+            return f"{heading} · " + (", ".join(short) if len(said) > 1 else said[0])
+
+        # Одинаковый заголовок у двух листов — это два листа, которые нечем
+        # различить: подлежащее приписывается ОБОИМ, а не второму из них.
+        seen_lines = [measures_line(pair) for pair in plotted]
+        twice = {name for name in seen_lines if seen_lines.count(name) > 1}
         for order, (source, drawn) in enumerate(plotted):
             caption = caption if order == 0 else []
             names = [str(chart.get("measure") or chart["name"]) for chart in drawn]
@@ -1516,8 +1534,16 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
             # те же слова тремя строками ниже. Заголовок перечисляет меры до
             # запятой, как в шаблоне.
             titles = [name.split(",")[0].strip() or name for name in names]
-            part = new_slide(f"{heading} · " + (", ".join(titles) if len(drawn) > 1
-                                                else names[0]), heading)
+            line = f"{heading} · " + (", ".join(titles) if len(drawn) > 1 else names[0])
+            # Два графика раздела с одинаковыми мерами дают два одинаковых
+            # заголовка: у воронки обращений это «по источникам» и «по
+            # менеджерам», и различить листы нечем. Тогда лист называет своё
+            # подлежащее — первую колонку таблицы, из которой посчитан.
+            if line in twice:
+                subject = str((source.get("head") or [""])[0]).strip()
+                if subject:
+                    line = f"{heading} · {subject} · " + ", ".join(titles)
+            part = new_slide(line, heading)
             top = CONTENT_TOP
             below = list(caption)
             tail = carry
