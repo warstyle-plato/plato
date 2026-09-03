@@ -145,6 +145,20 @@ function unspentTable(u,structural){
  const src=u.sources||[],skip=u.excluded||[],needy=u.needy||[],gu=u.retention||{};
  if(!src.length&&!skip.length&&!needy.length&&!gu.reason) return '';
  const num=v=>`<td style="text-align:right">${money(v)}</td>`;
+ // Строка сходится и после округления. Сервер держит равенство по построению
+ // (своё + резерв + не покрыто = потребность), но каждая ячейка округлялась до
+ // десятых отдельно, и хвосты расходились: 286,8 + 111,8 + 260,0 = 658,6 при
+ // потребности 658,5 («сумма трёх крайних столбцов не равна первому»,
+ // владелец, 03.09.2026). Слагаемые округляются, а разница округления
+ // ложится в остаток — «не покрыто» и есть «потребность минус своё минус
+ // резерв»; если остаток от этого ушёл бы в минус, разница уходит в самое
+ // крупное слагаемое. Ноль остаётся нулём, а не «−0,1».
+ const rowParts=(total,parts)=>{const r1=v=>Math.round(Number(v||0)/1e5)/10;
+  const t=r1(total),ps=parts.map(r1);const sum=ps.reduce((a,b)=>a+b,0);
+  const drift=Math.round((t-sum)*10)/10;
+  if(drift){let at=ps.length-1;if(ps[at]+drift<0){at=0;ps.forEach((v,i)=>{if(v>ps[at])at=i})}
+   ps[at]=Math.round((ps[at]+drift)*10)/10}
+  return {total:t*1e6,parts:ps.map(v=>v*1e6)}};
  // Раскрыто по умолчанию: «два важных раздела мелким шрифтом свёрнуты»
  // (владелец, 01.09.2026). Свернуть можно, но начинается блок открытым.
  let html=`<details class="fundmore" open><summary>Перераспределение лимитов внутри РСС — кому не хватает ${money(u.shortage_total)}, откуда просить ${money(u.total)}</summary>`;
@@ -155,8 +169,9 @@ function unspentTable(u,structural){
   html+='<div class="fundhead">Кому не хватает своего лимита</div>'
    +'<div class="muted" style="margin:2px 0 6px">Потребность — по программе РСС с месяца среза, прошедшие месяцы не входят; каждая строка складывается: своё + резерв + не покрыто = потребность. Нехватку сначала гасит резерв 2.8/2.9, что осталось — не покрыто. Итог колонки «Не покрыто» и есть структурный дефицит.</div>'
    +'<div style="overflow-x:auto"><table class="unspent"><thead><tr><th>Код</th><th>Статья</th><th>Потребность после среза</th><th>Из своего лимита</th><th>Из резерва</th><th>Не покрыто</th><th>С какого месяца</th></tr></thead><tbody>'
-   +needy.map(n=>`<tr><td>${esc(n.code)}</td><td>${esc(n.name)}</td>`+num(n.need)+num(n.own_limit)+num(n.from_reserve)
-     +`<td style="text-align:right"><b>${money(n.shortage)}</b></td><td>${n.from?dt(n.from):'—'}</td></tr>`).join('')
+   +needy.map(n=>{const r=rowParts(n.need,[n.own_limit,n.from_reserve,n.shortage]);
+     return `<tr><td>${esc(n.code)}</td><td>${esc(n.name)}</td>`+num(r.total)+num(r.parts[0])+num(r.parts[1])
+     +`<td style="text-align:right"><b>${money(r.parts[2])}</b></td><td>${n.from?dt(n.from):'—'}</td></tr>`}).join('')
    +`</tbody><tfoot><tr><td colspan="5">Итого не покрыто</td><td style="text-align:right"><b>${money(u.shortage_total)}</b></td><td></td></tr></tfoot></table></div>`;
   if(structural!=null&&Math.abs(Number(structural)-Number(u.shortage_total||0))>1e6)
    html+=`<div class="notice warn">Сумма по статьям ${money(u.shortage_total)} не сходится со структурным дефицитом ${money(structural)} — это ошибка счёта, а не особенность данных.</div>`;
