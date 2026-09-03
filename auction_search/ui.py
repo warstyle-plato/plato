@@ -1238,6 +1238,34 @@ function renderKrtFilterNote(){
 const KRT_SORT_NAMES={stage:'по шагу воронки',name:'по названию',score:'по баллу',ceiling:'по потолку входа',
  llcr:'по LLCR',margin:'по марже',status:'по статусу',area:'по площади',
  total:'по общему объёму',housing:'по объёму жилья',jobs:'по рабочим местам'};
+function krtMarks(x){
+ const card=(state.krtCards||{})[x.slug]||x.card_facts||(state.krtRank[x.slug]||{}).card_facts||{};
+ // Прогон кладёт находки публикаций в строку рейтинга и платится за них
+ // ОДИН раз на площадку. Таблица читала их только из нажатой в этой
+ // вкладке кнопки — то есть посчитанное на сервере на экран не попадало
+ // вовсе: у планируемых площадок это 30 находок «городские нужды» и
+ // пять «занята», лежащих в рейтинге (измерено на проде 03.09.2026).
+ // Карточка города рядом запасной путь имела, публикации — нет: правка
+ // была применена наполовину, и выглядела применённой. Тот же порядок,
+ // что у `krtIntent`: нажатая кнопка свежее и потому сильнее, но своего
+ // второго ответа не заводит.
+ const press=(state.krtPress||{})[x.slug]||(state.krtRank[x.slug]||{}).press_facts||null;
+ const renov=card.renovation||((press&&press.city_needs||[]).length>0);
+ const builder=(card.developers||[])[0]
+   ||((press&&press.operator_named||[])[0]||{}).name||'';
+ // Метка несёт свою цитату: «почему реновация?» (владелец, 02.09.2026) — на
+ // общий ответ «в публикации сказано» ответить нечем, на цитату — есть чем.
+ const renovQuote=card.renovation_quote
+   ||(((press&&press.city_needs||[])[0]||{}).quote)
+   ||'В публикации сказано о городских нуждах';
+ const marks=(renov?'<span class="tag warn" title="'
+    +esc(String(card.renovation?'карточка krt.mos.ru: ':'публикация: ')+renovQuote)
+    +'">реновация</span>':'')
+  +(builder?'<span class="tag" title="Застройщик назван официальной карточкой krt.mos.ru или публикацией">'
+    +esc(builder.length>26?builder.slice(0,24)+'…':builder)+'</span>':'');
+ return marks;
+}
+
 function renderKrt(){const a=state.krtFiltered,body=$('krtRows');body.innerHTML='';renderKrtFilterNote();$('krtEmpty').style.display=a.length?'none':'grid';$('krtCount').textContent=a.length;
  // Плитка показывает ОТОБРАННОЕ, а подписана была просто «проектов»: на экране
  // 58 при 577 в каталоге, и это читается как пропавший каталог (владелец,
@@ -1259,21 +1287,7 @@ function renderKrt(){const a=state.krtFiltered,body=$('krtRows');body.innerHTML=
  // Реновация и застройщик — с официальной карточки, прочитанной прогоном.
  // Видеть их можно было только внутри открытой площадки: «а где поиск
  // публичной информации и реновация в таблице?» (владелец, 01.09.2026).
- const card=(state.krtCards||{})[x.slug]||x.card_facts||(state.krtRank[x.slug]||{}).card_facts||{};
- const press=(state.krtPress||{})[x.slug]||null;
- const renov=card.renovation||((press&&press.city_needs||[]).length>0);
- const builder=(card.developers||[])[0]
-   ||((press&&press.operator_named||[])[0]||{}).name||'';
- // Метка несёт свою цитату: «почему реновация?» (владелец, 02.09.2026) — на
- // общий ответ «в публикации сказано» ответить нечем, на цитату — есть чем.
- const renovQuote=card.renovation_quote
-   ||(((press&&press.city_needs||[])[0]||{}).quote)
-   ||'В публикации сказано о городских нуждах';
- const marks=(renov?'<span class="tag warn" title="'
-    +esc(String(card.renovation?'карточка krt.mos.ru: ':'публикация: ')+renovQuote)
-    +'">реновация</span>':'')
-  +(builder?'<span class="tag" title="Застройщик назван официальной карточкой krt.mos.ru или публикацией">'
-    +esc(builder.length>26?builder.slice(0,24)+'…':builder)+'</span>':'');
+ const marks=krtMarks(x);
  const nocard=x.no_card?'<span class="tag warn" title="Проект решения о КРТ опубликован'
   +(x.draft_decision_at?' '+krtWhen(x.draft_decision_at):'')
   +'. Решение ещё не принято — город собирает мнения правообладателей. Карточки в каталоге krt.mos.ru нет, ТЭП взять неоткуда">только проект решения</span>':'';
@@ -1474,7 +1488,11 @@ async function loadKrtRanking(){
    if(row.available&&row.traffic_light)state.krtModels[row.slug]={traffic_light:row.traffic_light}});
   state.krtRankProgress=d.progress||null;
   state.krtStaleRules=Number(d.stale_rules_count||0);
-  renderKrtRankStatus();renderKrt();renderKrtStaleNote();
+  // Порядок важен: `renderKrtRankStatus` пишет в узел целиком, то есть
+  // сносит всё, что дописали до него. Строка о карточках города
+  // добавляется в загрузке каталога — она приходит РАНЬШЕ рейтинга и
+  // молча пропадала. Обе приписки идут после того, кто узел переписал.
+  renderKrtRankStatus();renderKrt();renderKrtStaleNote();renderKrtCardsNote();
   clearTimeout(state.krtRankTimer);
   if(d.progress&&(d.progress.running||d.progress.running_elsewhere))state.krtRankTimer=setTimeout(loadKrtRanking,3000);
  }catch(e){const box=$('krtRankStatus');if(box){box.style.display='';box.className='notice warn';box.textContent=String(e.message||e)}}
