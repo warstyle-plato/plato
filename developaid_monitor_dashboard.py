@@ -569,6 +569,52 @@ def _unspent(project: str, rss: Path, estimate: dict[str, Any],
                    or got["retention"]["reason"]) else None
 
 
+def _deficit_ladder(waterfall: dict[str, Any], reserve: float,
+                    approved_remaining: float | None,
+                    unspent: dict[str, Any] | None) -> dict[str, Any]:
+    """Лестница от структурного дефицита к «не хватает на достройку».
+
+    Структурный дефицит и «ДЕФИЦИТ» в шапке отвечают на разные вопросы, и
+    складывать их нельзя — потребность модели уже включает программу РСС
+    (владелец, 03.09.2026: «к нему же ещё надо добавлять дефицит с учётом
+    потребности бюджета реального на достройку»). Связь такая: структурный
+    (постатейно, без перебросок) → минус то, что закрывается
+    перераспределением внутри глав по признаку «Откуда просить» → минус
+    свободный лимит, который просить нельзя (у статьи ещё работы; шапка
+    считает, что банк его отдаст) → дефицит по РСС при полном
+    перераспределении → плюс превышение утверждённой модели над программой
+    РСС → итого, и это то же число, что «ДЕФИЦИТ» в шапке.
+    """
+    rows = waterfall.get("articles") or []
+    rss_need = sum(max(0.0, float(row.get("need_total") or 0.0)) for row in rows)
+    fuel = float(waterfall.get("opening_bank_remaining") or 0.0) + float(reserve or 0.0)
+    structural = float(waterfall.get("additional_financing") or 0.0)
+    redistributable = 0.0
+    for bucket in ((unspent or {}).get("by_chapter") or []):
+        redistributable += min(float(bucket.get("shortage") or 0.0),
+                               float(bucket.get("sources") or 0.0))
+    redistributable = min(redistributable, structural)
+    after_redistribution = structural - redistributable
+    pooled_gap = max(0.0, rss_need - fuel)
+    locked = max(0.0, after_redistribution - pooled_gap)
+    rss_gap = after_redistribution - locked
+    out: dict[str, Any] = {
+        "rss_need_after_cut": rss_need,
+        "fuel": fuel,
+        "structural": structural,
+        "redistributable": redistributable,
+        "locked_limits": locked,
+        "rss_gap": rss_gap,
+        "model_excess": None,
+        "total": None,
+    }
+    if approved_remaining is not None:
+        model_excess = float(approved_remaining) - rss_need
+        out["model_excess"] = model_excess
+        out["total"] = max(0.0, rss_gap + model_excess)
+    return out
+
+
 def _bank_need_check(remaining_need: float, reserve: float,
                      waterfall: dict[str, Any]) -> dict[str, Any]:
     """Сверка «Средств на завершение» банка с нашим остатком лимитов.
@@ -636,6 +682,7 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
 
     reserve_start = waterfall["reserve_start"]
     reserve_exhaustion = waterfall["reserve_exhaustion"]
+    unspent_view = _unspent(project, rss, estimate, rnv, waterfall, articles, cut)
     return {
         "known": True,
         "source": baseline["source"],
@@ -665,11 +712,18 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
         # ГУ раскладываются по статьям оценкой. Считает это отдельный модуль,
         # здесь только вход — лимиты и потребность живут выше и второй раз не
         # считаются.
-        "unspent": _unspent(project, rss, estimate, rnv, waterfall, articles, cut),
+        "unspent": unspent_view,
         # Колонка банка против нашего остатка — разложенная разница, а не две
         # цифры рядом.
         "bank_need_check": _bank_need_check(
             remaining_need, float(baseline.get("reserve") or 0.0), waterfall),
+        # Лестница от структурного дефицита к «не хватает на достройку»:
+        # считается здесь, экран только показывает.
+        "deficit_ladder": _deficit_ladder(
+            waterfall, float(baseline.get("reserve") or 0.0),
+            (max(0.0, float(baseline.get("approved") or 0.0) - paid_actual)
+             if float(baseline.get("approved") or 0.0) > 0 else None),
+            unspent_view),
         "forecast_to": monitor._iso(rnv),
         "monthly_need": waterfall["monthly_need"],
         "monthly_reserve_draw": waterfall["monthly_reserve_draw"],
