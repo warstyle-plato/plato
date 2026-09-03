@@ -139,6 +139,23 @@ _STAGE = ("представлена концепция", "утвержден п�
 
 _TRUSTED = ("mos.ru", "stroi.mos.ru", "krt.mos.ru", "investmoscow.ru", "torgi.gov.ru")
 
+# На площадке уже продаётся ЖК. Это самый громкий ответ на «можно ли войти», и
+# он лежал прямо в выдаче: у Озёрной, вл. 42-46 восемь страниц продаж
+# «Страны.Озерной» и офис продаж по адресу «Озёрная ул., 42» — а карточка не
+# ставила ничего («почему тут нет даже намёка на то, что это Страна Девелопмент
+# и там по адресу 42 уже ЖК строится», владелец, 03.09.2026).
+#
+# Источники говорят языком продаж, а корзины были написаны языком канцелярии:
+# «оператор», «договор заключён», «городские нужды». Ни одно из этих слов на
+# странице агрегатора не стоит, и молчание читалось как «о площадке не пишут».
+_SELLING = ("купить квартиру", "купить квартиры", "цены и планировки",
+            "старт продаж", "офис продаж", "ход строительства",
+            "от официального застройщика", "продажа квартир", "квартиры от",
+            "апартаменты от", "выбрать квартиру", "квартиры в ипотеку")
+# Продают именно жильё: «офис продаж» бывает и у склада.
+_HOUSING = ("жк ", "жк.", "жилой комплекс", "жилого комплекса", "жилом комплексе",
+            "квартир", "апартамент")
+
 
 # Сокращения адреса, которых в публикациях не бывает. Каталог пишет «Светлый
 # проезд, вл. 4», dzen — «Светлый проезд, 4», канал — «Светлый проезд, вл. 4»:
@@ -377,6 +394,13 @@ _UNIT_AFTER = re.compile(
     r"этаж|секц|корп|дом(?:ов)?|квартир|человек|жител)")
 
 
+# Диапазон номеров, написанный без «вл.»: «на Озерной улице, 42-46». Дефис
+# стоит в отсечках выше по обе стороны числа, поэтому ни «42», ни «46» из такой
+# записи не опознавались — а это ровно тот адрес, которым страница продаж
+# называет площадку.
+_HOUSE_RANGE = re.compile(r"(?<![\w./])(\d{1,3})\s*[-–—]\s*(\d{1,3})(?![\w./])")
+
+
 def _says_our_number(sentence: str, ours: set[str]) -> bool:
     """Назван ли в предложении НАШ номер владения — хоть с «вл.», хоть без."""
     if not ours:
@@ -388,6 +412,18 @@ def _says_our_number(sentence: str, ours: set[str]) -> bool:
         for found in re.finditer(
                 rf"(?<![\w./,-]){re.escape(number)}(?![\w./-])", flat):
             if not _UNIT_AFTER.match(flat[found.end():]):
+                return True
+    # Диапазон покрывает свои концы: «42-46» — это и 42, и 46. Считаем только
+    # числами: у «53а» концов диапазона не бывает.
+    digits = {number for number in ours if number.isdigit()}
+    if digits:
+        for found in _HOUSE_RANGE.finditer(flat):
+            if _UNIT_AFTER.match(flat[found.end():]):
+                continue
+            low, high = int(found.group(1)), int(found.group(2))
+            if low > high:
+                continue
+            if any(low <= int(number) <= high for number in digits):
                 return True
     return False
 
@@ -528,8 +564,19 @@ def _sentences(text: str) -> list[str]:
     return out
 
 
+# Хвост заголовка страницы — не часть имени компании. Сниппет агрегатора
+# заканчивается рекламой («Застройщик ГК Страна Девелопмент в Москве и МО -
+# квартиры»), а образец имени идёт до точки или запятой — и забирал всё.
+# Терминаторы те же, что у имени проекта, ASCII-дефис в их числе: на нём мы уже
+# спотыкались, «ЖК Cult (Культ) - купить квартиру» доезжало до запятой целиком.
+_NAME_TAIL = re.compile(r"(?u)\s+(?:[—–|]|-\s)")
+# Приставка места и рекламный хвост: «в Москве и МО», «— информация».
+_NAME_PLACE_TAIL = re.compile(
+    r"(?iu)\s+в\s+(?:москв\w*|мо|московской\s+области|подмосковье)\b.*$")
+
+
 def _clean_name(raw: str) -> str:
-    """Имя без внешних кавычек. Внутренние остаются: «АО «Стоунхедж»» — одно имя.
+    """Имя без внешних кавычек и без хвоста заголовка.
 
     Голый `strip(" «»")` срезал закрывающую кавычку и оставлял «АО «Стоунхедж» —
     имя с непарной кавычкой, которое дальше ни с чем не совпадёт.
@@ -537,7 +584,14 @@ def _clean_name(raw: str) -> str:
     name = _SPACE.sub(" ", str(raw or "")).strip()
     while name.startswith("«") and name.endswith("»"):
         name = name[1:-1].strip()
-    return name
+    # Хвост режется только у имени БЕЗ кавычек: внутри кавычек всё принадлежит
+    # имени — «КРТ «Магистральные улицы» — группа ЕСН» одно лицо, а не два.
+    if "«" not in name:
+        cut = _NAME_TAIL.search(name)
+        if cut:
+            name = name[:cut.start()].strip()
+        name = _NAME_PLACE_TAIL.sub("", name).strip()
+    return name.strip(" .,;:-—–")
 
 
 def _is_not_an_operator(name: str) -> bool:
@@ -652,7 +706,36 @@ def _found(sentence: str, doc: Any) -> dict[str, Any]:
 #       владения или имя проекта всегда, даже когда соседа в каталоге нет;
 #   4 — оператор, застройщик и Фонд разведены по методике владельца, торги
 #       считаются только на право договора КРТ, у находки есть надёжность.
-ANCHOR_RULES_VERSION = 4
+#   5 — заведена корзина «здесь уже продаётся ЖК» (доказательство — наш номер
+#       владения в документе), а имя компании больше не тащит хвост заголовка.
+ANCHOR_RULES_VERSION = 5
+
+
+# Корзины находок объявлены ОДИН раз: по этому списку идут и счётчики, и
+# надёжность, и то, что рисует карточка. Перечисление подводило уже дважды —
+# в 0.21.59 застройщик, торги и роль Фонда не попали в счётчик каналов, а на
+# экране их не рисовали вовсе: данные приезжали и молчали (владелец,
+# 03.09.2026). `cap` — сколько цитат показываем; `heavy` — закрывает ли находка
+# вход на площадку.
+FINDING_BUCKETS: tuple[dict[str, Any], ...] = (
+    {"key": "operator_named", "title": "Оператор назван", "cap": 3, "heavy": True},
+    {"key": "operator_appointed", "title": "Оператор назначен, имя не названо",
+     "cap": 3, "heavy": True},
+    {"key": "agreement", "title": "Договор о КРТ уже заключён — войти нельзя",
+     "cap": 3, "heavy": True},
+    {"key": "selling_now", "title": "На площадке уже продаётся ЖК — войти нельзя",
+     "cap": 3, "heavy": True},
+    {"key": "developer_named", "title": "Застройщик назван — но это не оператор КРТ",
+     "cap": 3, "heavy": False},
+    {"key": "contract_tender", "title": "Торги на право заключения договора о КРТ",
+     "cap": 3, "heavy": False},
+    {"key": "fund_role", "title": "Фонд реновации — названная роль",
+     "cap": 3, "heavy": False},
+    {"key": "operator_pending", "title": "Право ещё выставят на торги",
+     "cap": 3, "heavy": False},
+    {"key": "city_needs", "title": "Городские нужды", "cap": 3, "heavy": False},
+    {"key": "stage", "title": "Стадия", "cap": 4, "heavy": False},
+)
 
 
 def _confidence(items: Iterable[dict[str, Any]]) -> str:
@@ -708,15 +791,20 @@ def read_findings(
         if _says_our_number(sentence, houses):
             return True
         return bool(brand_anchors) and _mentions(sentence, brand_anchors)
-    operator_named: list[dict[str, Any]] = []
-    developer_named: list[dict[str, Any]] = []
-    contract_tender: list[dict[str, Any]] = []
-    fund_role: list[dict[str, Any]] = []
-    operator_appointed: list[dict[str, Any]] = []
-    operator_pending: list[dict[str, Any]] = []
-    city_needs: list[dict[str, Any]] = []
-    agreement: list[dict[str, Any]] = []
-    stage: list[dict[str, Any]] = []
+    # Корзины заводятся по объявленному списку, а не перечислением здесь:
+    # заведённая позже иначе выпадает из счётчиков и с экрана.
+    found_by: dict[str, list[dict[str, Any]]] = {
+        bucket["key"]: [] for bucket in FINDING_BUCKETS}
+    operator_named = found_by["operator_named"]
+    developer_named = found_by["developer_named"]
+    contract_tender = found_by["contract_tender"]
+    fund_role = found_by["fund_role"]
+    operator_appointed = found_by["operator_appointed"]
+    operator_pending = found_by["operator_pending"]
+    city_needs = found_by["city_needs"]
+    agreement = found_by["agreement"]
+    selling_now = found_by["selling_now"]
+    stage = found_by["stage"]
     seen: set[str] = set()
     checked = 0
     for doc in docs or []:
@@ -727,6 +815,40 @@ def read_findings(
         # требовать номер в той же фразе значило бы терять почти все находки.
         # Чужой номер при этом отсекается конфликтом ниже — так же, как раньше.
         proved = named_ours(text)
+        # «Здесь уже продаётся ЖК» — самый громкий ответ на «можно ли войти», и
+        # доказательство ему нужно самое строгое: НАШ номер владения в
+        # документе и ни одного чужого. Брендом его доказать нельзя —
+        # «Страна.Заречная» и «Страна.Озерная» строит один застройщик, и по
+        # имени бренда сестринский проект доказывал бы продажи на нашей
+        # площадке. Номера у площадки нет вовсе — остаётся имя проекта; нет и
+        # его — находки не будет, и это честнее приписанной.
+        #
+        # Считается по ДОКУМЕНТУ, а не по предложению: страница агрегатора
+        # называет адрес в заголовке, а продаёт в тексте — «ЖК Страна.Озерная —
+        # купить квартиру» и «Озёрная ул., вл. 42-46» стоят порознь. Правило
+        # «в одном предложении» теряло здесь каждую находку.
+        sells_proved = ((_says_our_number(text, houses)
+                         and not _house_conflict(text, houses))
+                        if houses else proved)
+        whole = text.lower().replace("ё", "е")
+        if (sells_proved and any(mark in whole for mark in _SELLING)
+                and any(mark in whole for mark in _HOUSING)):
+            # Что продаётся жильё и что его продают — сказано в документе, а не
+            # обязательно в одной фразе: «ЖК Страна. Озерная» и «акция от
+            # официального застройщика» стоят порознь, и разбор на предложения
+            # рвёт их ещё и по точке в самом имени.
+            #
+            # Цитатой берётся фраза со словами продажи, а из таких — та, где
+            # рядом названо жильё: цитата отвечает на «почему так решили».
+            said = [one for one in _sentences(text)
+                    if any(mark in one.lower().replace("ё", "е") for mark in _SELLING)]
+            best = next((one for one in said
+                         if any(mark in one.lower().replace("ё", "е")
+                                for mark in _HOUSING)), None)
+            # Один документ — одна находка: восемь страниц продаж одного ЖК
+            # доказывают ровно то же, что первая.
+            quote = best or (said[0] if said else text)
+            selling_now.append(_found(quote, doc))
         for sentence in _sentences(text):
             low = sentence.lower().replace("ё", "е")
             # Якорь площадки в ТОМ ЖЕ предложении: сниппет повторяет запрос, и
@@ -798,9 +920,13 @@ def read_findings(
     # не перечислением корзин. Перечисление уже подвело — заведённые в 0.21.59
     # застройщик, торги на договор и роль Фонда в счётчик каналов не попали, и
     # находка из канала показывалась как «каналы спрошены, там пусто».
-    every_finding = (operator_named + developer_named + operator_appointed
-                     + operator_pending + city_needs + agreement + stage
-                     + contract_tender + fund_role)
+    every_finding = [item for bucket in FINDING_BUCKETS
+                     for item in found_by[bucket["key"]]]
+    # Занимают площадку только тяжёлые корзины, и какие они — сказано в самом
+    # списке: «застройщик назван» вход не закрывает (методика владельца), а
+    # «здесь уже продаётся ЖК» закрывает.
+    heavy = [item for bucket in FINDING_BUCKETS if bucket["heavy"]
+             for item in found_by[bucket["key"]]]
 
     return {
         "checked": checked,
@@ -837,19 +963,18 @@ def read_findings(
         "strict_house": strict,
         "shared_anchors": sorted(shared),
         "house_numbers": sorted(houses),
-        "operator_named": operator_named[:3],
-        # Застройщик и правообладатель — отдельным ответом: они не оператор.
-        "developer_named": developer_named[:3],
-        # Торги именно на право заключения договора КРТ.
-        "contract_tender": contract_tender[:3],
-        # Роль Фонда реновации — буквально та, что названа.
-        "fund_role": fund_role[:3],
-        "operator_appointed": operator_appointed[:3],
-        "operator_pending": operator_pending[:3],
-        "city_needs": city_needs[:3],
-        # Договор заключён — отдельный ответ, а не разновидность стадии.
-        "agreement": agreement[:3],
-        "stage": stage[:4],
+        # Корзины кладутся по объявленному списку, а не перечислением: так
+        # заведённая позже приезжает на экран тем, что она заведена. Застройщик
+        # отвечает не на вопрос оператора, договор — не разновидность стадии,
+        # а «здесь уже продаётся ЖК» — самый громкий ответ на «можно ли войти».
+        **{bucket["key"]: found_by[bucket["key"]][:bucket["cap"]]
+           for bucket in FINDING_BUCKETS},
+        # Список корзин отдаётся вместе с находками: карточка рисует по нему, и
+        # новая корзина попадает на экран без второй правки. Прежде имена были
+        # переписаны в странице, и застройщик, торги и Фонд не рисовались вовсе
+        # — данные приезжали и молчали (владелец, 03.09.2026).
+        "buckets": [{"key": bucket["key"], "title": bucket["title"],
+                     "heavy": bucket["heavy"]} for bucket in FINDING_BUCKETS],
         # Как площадка известна рынку: имя проекта, доказанное соседством с
         # адресом. По нему идёт второй круг поиска — статья про бренд адреса
         # чаще всего не называет.
@@ -863,16 +988,17 @@ def read_findings(
         # официальный — высокая, отраслевой или реестровый — средняя, ничего
         # кроме карточки — ограниченная.
         "confidence": _confidence(
-            operator_named + developer_named + operator_appointed + agreement
-            + city_needs + contract_tender + fund_role),
+            [item for bucket in FINDING_BUCKETS
+             if bucket["key"] not in ("operator_pending", "stage")
+             for item in found_by[bucket["key"]]]),
         # «Не найдено» — отсутствие подтверждения в доступной выдаче на дату, а
         # не доказательство отсутствия факта. Молча пустой ответ читается как
         # второе (методика владельца, 02.09.2026).
         "not_found_note": (
-            "" if (operator_named or developer_named or agreement or contract_tender)
+            "" if (operator_named or developer_named or agreement or contract_tender
+                   or selling_now)
             else "не найдено опубликованного подтверждения в доступной выдаче на дату "
                  "проверки — это не доказательство отсутствия факта"),
-        "taken": bool(operator_named or operator_appointed or agreement),
-        "free": bool(operator_pending)
-        and not (operator_named or operator_appointed or agreement),
+        "taken": bool(heavy),
+        "free": bool(operator_pending) and not heavy,
     }

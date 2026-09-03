@@ -117,6 +117,22 @@ def test_the_taken_site_is_cut_by_a_named_reason():
 
 
 def test_the_screen_shows_the_agreement_it_found():
+    """Найденный договор виден на карточке.
+
+    Прежде проверялся вызов `krtPressLines(d.agreement, …)` — то есть ИМЯ
+    корзины, вписанное в страницу руками. Ровно это перечисление и подвело:
+    карточка называла шесть корзин из девяти, и застройщик с торгами на право
+    договора приезжали с сервера, не рисуясь вовсе (03.09.2026). Теперь список
+    корзин объявлен один раз в разборе и едет вместе с находками, а карточка
+    рисует по нему. Проверяем контракт, а не строку: корзина объявлена сервером
+    и попадает на экран тем, что она объявлена.
+    """
+    from market_search.krt_open_sources import FINDING_BUCKETS
+
+    keys = [bucket["key"] for bucket in FINDING_BUCKETS]
+    assert "agreement" in keys, "договор о КРТ перестал быть корзиной находок"
     page = ui.auctions_page(None)
-    assert re.search(r"krtPressLines\(d\.agreement,", page), \
-        "найденный договор нигде не показывается — находка есть и не видна"
+    assert re.search(r"buckets\.map\(", page), \
+        "карточка перестала рисовать по списку корзин сервера"
+    assert re.search(r"krtPressLines\(d\[b\.key\]", page), \
+        "находки корзины на экран не выводятся"

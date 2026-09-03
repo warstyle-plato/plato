@@ -80,7 +80,27 @@ def test_a_brand_before_the_address_is_read_too():
     assert got["developer_named"], "имя из заголовка не прочитано"
     assert got["developer_named"][0]["name"] == "STONE"
     # Бренд ЖК оператором не считается — методика владельца, 02.09.2026.
-    assert got["operator_named"] == [] and got["taken"] is False
+    assert got["operator_named"] == []
+    # А вот вход эта публикация закрывает, и не застройщиком: в заголовке стоит
+    # «старт продаж ЖК» по НАШЕМУ адресу — то есть здесь уже продаётся ЖК
+    # (03.09.2026). Прежде строка проверяла `taken is False` и была верна, пока
+    # такой корзины не существовало вовсе; теперь она проверяла бы, что мы этого
+    # не замечаем. Закрывает вход именно продажа, а не имя застройщика.
+    assert got["selling_now"], "старт продаж по нашему адресу не прочитан"
+    assert got["taken"] is True
+
+
+def test_a_developer_alone_does_not_close_the_entry():
+    """Застройщик здания — не оператор КРТ, и вход он не закрывает.
+
+    Проверяется на публикации БЕЗ слов продажи: иначе вход закрывает она, и
+    утверждение о застройщике оказалось бы непроверенным.
+    """
+    got = krt_open_sources.read_findings(
+        [Doc(title="Стройка на Светлом проезде", snippet=LIVESOKOL)], SITE)
+    assert got["developer_named"], "«девелопер» не опознан вовсе"
+    assert got["selling_now"] == [], "публикация без слов продажи попала в продажи"
+    assert got["taken"] is False
 
 
 def test_a_role_after_ot_is_not_a_name():
