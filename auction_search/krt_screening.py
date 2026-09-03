@@ -22,7 +22,6 @@ TARGET_PHASE_SALEABLE_SQM = 70_000.0
 MAX_PHASES = 5
 PHASE_GAP_MONTHS = 12
 TARGET_LLCR = 1.20
-PARKING_GNS_PER_SPACE = 100.0
 PARKING_GUEST_SHARE = 0.10
 UNDERGROUND_AREA_PER_SPACE = 35.0
 
@@ -551,8 +550,15 @@ def build_krt_model_screening(
     # но продукты очереди и ТЭП должны быть собраны целиком до прогона модели.
     programme = _programme(core, project, duties, inputs, tep, applied_ratios, saleable)
 
-    parking_spaces = math.ceil(housing_gfa / PARKING_GNS_PER_SPACE)
-    parking_spaces += math.ceil(parking_spaces * PARKING_GUEST_SHARE)
+    # Места считает постановление, а не своя строка модуля (решение владельца,
+    # 03.09.2026: «машиноместа конечно он должен считать по постановлениям»).
+    # Здесь жила третья копия формулы — `ГНС жилья / 100`, то есть прежний
+    # порядок 945-ПП и чужая база: 2118-ПП считает от ПЛОЩАДИ КВАРТИР, а не от
+    # наземной площади зданий, и К1 в постоянных местах больше нет. На 136 818 м²
+    # квартир разница — 1 580 мест по норме против 2 100 по старой строке.
+    # Формула объявлена в движке один раз; копий у неё быть не должно.
+    permanent = core.moscow_permanent_parking_2118(saleable)
+    parking_spaces = permanent + math.ceil(permanent * PARKING_GUEST_SHARE)
     parking_gns = parking_spaces * UNDERGROUND_AREA_PER_SPACE
     tep["underground_parking"].update({
         "gns": parking_gns,

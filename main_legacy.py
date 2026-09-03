@@ -70,7 +70,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.21.69"
+VERSION = "0.21.70"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -35966,6 +35966,36 @@ function getGlavapuUnderground(){
  return {permanent,guest,mfc,spaces,basis,gns:(permanent+guest)*per+mfcArea};
 }
 
+// Постановление считает места всегда, а не только когда есть выгрузка
+// ГлавАПУ (решение владельца, 03.09.2026: «машиноместа конечно он должен
+// считать по постановлениям»). Прежде пересчёт начинался с проверки импорта и
+// без него не делал НИЧЕГО: проект, набранный руками, оставался с тем числом
+// мест, которое когда-то попало в строку, и правка метров его не двигала.
+// Норма та же, что в движке, числа подставлены плейсхолдером — копии нет.
+//
+// Приобъектные места нежилья сюда не входят намеренно: их формуле нужны К1 и
+// К2 квартала, которых без выгрузки у нас нет, а единица «пока не знаем»
+// отдала бы максимум, выданный за норматив. Поэтому здесь только жильё, и
+// основание это называет.
+function normativeUnderground(){
+ const apartments=Number((tep.apartments&&tep.apartments.saleable)||0);
+ if(apartments<=0)return null;
+ const permanent=Math.ceil(apartments/(PARKING_2118.sqm_per_person*PARKING_2118.household)
+                           *PARKING_2118.per_flat);
+ const guest=Math.ceil(permanent*PARKING_2118.guest_share);
+ const spaces=permanent+guest;
+ if(spaces<=0)return null;
+ return {permanent,guest,mfc:0,spaces,
+         basis:'2118-ПП от '+num(Math.round(apartments))+' м² квартир, приобъектные нежилья не учтены',
+         gns:spaces*undergroundAreaPerSpace()};
+}
+
+// Потребность в местах — один ответ на весь экран. Выгрузка города знает
+// приобъектные места нежилья и потому идёт первой; её нет — считает норма.
+function parkingRequirement(){
+ return getGlavapuUnderground()||normativeUnderground();
+}
+
 function undergroundAreaPerSpace(){
  return Number(inputs.underground_area_per_space_sqm||0)||35;
 }
@@ -35995,7 +36025,7 @@ function repairParkingFromGlavapu(){
   tep.underground_parking.transfer=0;
   return true;
  }
- const p=getGlavapuUnderground();
+ const p=parkingRequirement();
  if(!p)return false;
  tep.underground_parking.units=p.spaces;
  tep.underground_parking.gns=p.gns;
@@ -36050,7 +36080,7 @@ function fillUndergroundFromTep(){
  // читался как «паркинга нет». Новый импорт ГлавАПУ перезаписывает пару.
  if(inputs.underground_parking_disabled)return false;
  if(Number(inputs.underground_manual_spaces||0)>0||Number(inputs.underground_manual_gns_sqm||0)>0)return false;
- const p=getGlavapuUnderground();
+ const p=parkingRequirement();
  if(!p||!(p.spaces>0))return false;
  const per=undergroundAreaPerSpace();
  inputs.underground_manual_spaces=Math.round(p.spaces);
@@ -36066,7 +36096,7 @@ function undergroundShortfallNote(){
  const manualArea=Number(inputs.underground_manual_gns_sqm||0);
  const off=!!inputs.underground_parking_disabled;
  if(!off&&manualSpaces<=0&&manualArea<=0)return '';
- const required=getGlavapuUnderground();
+ const required=parkingRequirement();
  if(!required)return '';
  // При отказе норматив закрывает наземный паркинг — его места идут в зачёт.
  const above=inputs.above_parking_enabled?Number(inputs.above_parking_spaces||0):0;
@@ -36617,7 +36647,7 @@ function renderScenarioNote(){
 function renderTep(){
  repairParkingFromGlavapu();
  const body=tepBody;body.innerHTML='';
- const importedParking=getGlavapuUnderground();
+ const importedParking=parkingRequirement();
  Object.entries(tep).forEach(([key,row])=>{
    const tr=document.createElement('tr');
    let label=row.label;

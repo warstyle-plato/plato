@@ -87,8 +87,15 @@ def live_import(preset_name: str) -> dict:
         "function num(v){return Number(v||0).toLocaleString('ru-RU')}\n"
         "function scheduleTepAutoRecalc(){}\n")
     # Живые — не заглушённые: именно они заполняют пару полей паркинга.
+    # Перечисление имён здесь — известная слабость стенда: добавили рядом
+    # `normativeUnderground` и `parkingRequirement` (норма считается и без
+    # выгрузки), и прогон упал на «parkingRequirement is not defined» —
+    # то есть на правке страницы, а не на импорте. Список поэтому идёт
+    # от той функции, которую стенд действительно зовёт, вниз по её
+    # соседям: пропущенное имя видно сразу, а не через чужое падение.
     real = "\n".join(page_function(name) for name in (
         "getGlavapuUnderground", "undergroundAreaPerSpace",
+        "normativeUnderground", "parkingRequirement",
         "repairParkingFromGlavapu", "fillUndergroundFromTep"))
 
     script = (f"const payload={json.dumps(parsed, ensure_ascii=False, default=str)};\n"
