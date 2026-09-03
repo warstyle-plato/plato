@@ -2381,7 +2381,7 @@ function renderKrtMarket(d,out){
  const price=verdict.price_per_sqm||hint.price_per_sqm;
  const headline=verdict.headline||(price?'Рыночный ориентир найден':'Вывод по продукту пока не сложился');
  const summary=verdict.text||(peers.length?'Платон нашёл соседние проекты, но данных об их классе недостаточно для уверенного ответа, что именно здесь строить.':'В выбранном радиусе недостаточно сопоставимых проектов для вывода о продукте и цене.');
- const entry=hint.entry_per_sqm?`Для старта продаж ориентир входной цены — ${new Intl.NumberFormat('ru-RU').format(hint.entry_per_sqm)} ₽/м²; средняя цена проекта формируется позднее по очередям и квартирографии.`:'';
+ const entry=hint.entry_per_sqm?`Справочно: медиана цен входа соседей (их самые дешёвые лоты) — ${new Intl.NumberFormat('ru-RU').format(hint.entry_per_sqm)} ₽/м². В модель идёт ориентир цены выше, тот же, что рекомендует отчёт о рынке.`:'';
  out.innerHTML=`<div class="section"><h3>Короткий вывод Платона</h3><div class="notice"><b>${esc(headline)}</b><div style="margin-top:5px">${esc(summary)}</div>${entry?`<div class="source" style="margin-top:7px">${esc(entry)}</div>`:''}</div></div>${renderKrtModel(d.model_screening)}${krtMarketBlocks(d)}`
 }
 // Рынок рядом и список соседей рисуются одним куском и для свежего запроса, и
