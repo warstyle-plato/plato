@@ -95,3 +95,89 @@ def test_a_social_object_split_across_queues_carries_no_project_key():
         row = next(number for number in range(1, sheet.max_row + 1)
                    if str(sheet[f"A{number}"].value or "") == f"ДОО — очередь {phase}")
         assert sheet[f"H{row}"].value in (None, ""), (phase, sheet[f"H{row}"].value)
+
+
+# --- блоки внизу листа ------------------------------------------------------
+
+BLOCK_INPUTS = {**core.DEFAULT_INPUTS, "purchase_price_mln": 1000,
+                "purchase_schedule": "30%@0; 40%@6; 30%@12",
+                "offices_enabled": True, "retail_enabled": True,
+                "above_parking_enabled": True,
+                "offices_sales_profile": "60%@0; 40%@12",
+                "retail_sales_profile": "70%@0; 30%@6",
+                "above_parking_sales_profile": "80%@0; 20%@6",
+                "growth_stage1_pct": 10, "offices_growth_stage1_pct": 8,
+                "retail_growth_stage1_pct": 5, "above_parking_growth_stage1_pct": 4}
+
+
+@pytest.fixture(scope="module")
+def blocks():
+    content, _, _ = core.build_project_workbook(
+        BLOCK_INPUTS, core.TEP_DEFAULT, [], {}, project_name="Блоки")
+    return openpyxl.load_workbook(io.BytesIO(content), data_only=False)["Вводные"]
+
+
+def labels(sheet, column: str) -> set[str]:
+    return {str(sheet[f"{column}{row}"].value or "")
+            for row in range(1, sheet.max_row + 1)}
+
+
+def test_the_schedule_blocks_say_which_input_they_are(blocks):
+    """График, профиль и лестница лежали блоками без единого ключа: ячейки есть,
+    а какая это вводная — не сказано (нашёл соседний писатель, 03.09.2026)."""
+    named = labels(blocks, "D")
+    for key in ("purchase_schedule", "offices_sales_profile",
+                "retail_sales_profile", "above_parking_sales_profile"):
+        assert key in named, key
+    for prefix in ("", "offices_", "retail_", "above_parking_"):
+        for stage in (1, 2, 3, 4):
+            assert f"{prefix}growth_stage{stage}_pct" in named, (prefix, stage)
+
+
+def test_a_schedule_carries_one_key_for_the_whole_block(blocks):
+    """Вводная здесь ОДНА («30%@0; 40%@6»), а строк у неё столько, сколько
+    шагов: ключ на каждой строке назвал бы шаг целой вводной."""
+    row = next(number for number in range(1, blocks.max_row + 1)
+               if str(blocks[f"A{number}"].value or "") == "ГРАФИК ПЛАТЕЖЕЙ ЗА ПОКУПКУ")
+    assert blocks[f"D{row}"].value == "purchase_schedule"
+    steps = [number for number in range(row, row + 8)
+             if str(blocks[f"A{number}"].value or "").startswith("Шаг ")]
+    assert len(steps) == 3, steps
+    for step in steps:
+        assert blocks[f"D{step}"].value == "доля", "шаг подписан ключом целой вводной"
+
+
+def test_a_ladder_carries_a_key_on_every_stage(blocks):
+    """У лестницы наоборот: каждый этап — своя вводная движка."""
+    row = next(number for number in range(1, blocks.max_row + 1)
+               if str(blocks[f"A{number}"].value or "").startswith("ЛЕСТНИЦА ЦЕНЫ · КВАРТИРЫ"))
+    for index, stage in enumerate(range(row + 2, row + 6), 1):
+        assert blocks[f"D{stage}"].value == f"growth_stage{index}_pct", stage
+
+
+def test_an_empty_payment_date_stays_empty(blocks):
+    """Жёлтая ячейка с формулой — ложное приглашение: впишешь число, как цвет и
+    зовёт, и затрёшь формулу. Пустая дата остаётся пустой, а запасной путь
+    живёт у читателя вместе с самой обрезкой по РнС."""
+    content, _, _ = core.build_project_workbook(
+        {**core.DEFAULT_INPUTS, "social_comp_date": ""},
+        core.TEP_DEFAULT, [], {}, project_name="Пустая дата")
+    sheet = openpyxl.load_workbook(io.BytesIO(content), data_only=False)["Вводные"]
+    assert sheet["B18"].value in (None, ""), sheet["B18"].value
+
+    cash = next(number for number in range(1, sheet.max_row + 1)
+                if str(sheet[f"A{number}"].value or "").startswith("Денежная компенсация"))
+    formula = str(sheet[f"D{cash}"].value or "")
+    assert formula.startswith("=IF($B$18=") and "MIN($B$18" in formula, formula
+
+
+def test_a_failed_engine_is_named_not_swallowed(monkeypatch):
+    """Без контрольных чисел лист ПРОВЕРОК выглядит просто пустым, и «паритет не
+    считался» неотличимо от «паритет сошёлся»."""
+    def boom(*args, **kwargs):
+        raise RuntimeError("движок упал")
+
+    monkeypatch.setattr(core, "_run_authoritative_model", boom)
+    _, _, meta = core.build_project_workbook(
+        {**core.DEFAULT_INPUTS}, core.TEP_DEFAULT, [], {}, project_name="Без движка")
+    assert any("контрольные числа движка" in item for item in meta["missing"]), meta["missing"]

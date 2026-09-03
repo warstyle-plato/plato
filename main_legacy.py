@@ -15736,8 +15736,8 @@ def _v4_finance_hints(bundle: dict[str, Any]) -> dict[str, Any]:
                for row in rows)]
     return hints
 def _v4_schedule_rows_xml(xml: str, title: str, hint: str,
-                          rows: list[tuple[int, float]], unit: str
-                          ) -> tuple[str, list[tuple[str, str]]]:
+                          rows: list[tuple[int, float]], unit: str,
+                          key: str = "") -> tuple[str, list[tuple[str, str]]]:
     """Блок «месяц → величина» внизу «Вводных» книги v4; возвращает ссылки.
 
     Тот же приём, что у ступеней ставки: книга собирается прямо в XML, низ
@@ -15753,7 +15753,12 @@ def _v4_schedule_rows_xml(xml: str, title: str, hint: str,
     def text_cell(coord: str, value: str) -> str:
         return f'<x:c r="{coord}" t="inlineStr"><x:is><x:t>{html.escape(value, quote=False)}</x:t></x:is></x:c>'
 
-    parts.append(f'<x:row r="{row_at}">' + text_cell(f"A{row_at}", title) + "</x:row>")
+    # Ключ движка — в шапке блока: вводная здесь ОДНА («30%@0; 40%@6»), а строк
+    # у неё столько, сколько шагов. Подписать ключом каждую строку значило бы
+    # назвать шаг целой вводной — то же правило, по которому раскиданный по
+    # очередям соцобъект ключа не получает.
+    parts.append(f'<x:row r="{row_at}">' + text_cell(f"A{row_at}", title)
+                 + (text_cell(f"D{row_at}", key) if key else "") + "</x:row>")
     row_at += 1
     parts.append(f'<x:row r="{row_at}">' + text_cell(f"A{row_at}", hint) + "</x:row>")
     row_at += 1
@@ -15803,8 +15808,8 @@ def _v4_share_by_month(offset: str, refs: list[tuple[str, str]]) -> str:
                           for month_ref, value_ref in refs) + ")"
 
 
-def _v4_stage_rows_xml(xml: str, title: str, hint: str, growth: list[float]
-                       ) -> tuple[str, list[str]]:
+def _v4_stage_rows_xml(xml: str, title: str, hint: str, growth: list[float],
+                       keys: tuple[str, ...] = ()) -> tuple[str, list[str]]:
     """Блок «этап → рост цены» внизу «Вводных» книги v4; возвращает ссылки на
     ячейки роста. Месяц этапа в блоке не хранится — его считает формула из срока
     строительства книги (четверти срока), иначе правка срока в книге оставила
@@ -15823,11 +15828,15 @@ def _v4_stage_rows_xml(xml: str, title: str, hint: str, growth: list[float]
     parts.append(f'<x:row r="{row_at}">' + text_cell(f"A{row_at}", hint) + "</x:row>")
     row_at += 1
     for index, value in enumerate(growth):
+        # У лестницы каждый этап — своя вводная движка, поэтому ключ у каждой
+        # строки свой. В отличие от графика, где вводная одна на весь блок.
         parts.append(
             f'<x:row r="{row_at}">'
             + text_cell(f"A{row_at}", f"Этап {index + 1} · готовность {STAGE_READINESS_PCT[index]}%")
             + f'<x:c r="B{row_at}"><x:v>{round(float(value), 8):g}</x:v></x:c>'
-            + text_cell(f"C{row_at}", "доля роста") + "</x:row>")
+            + text_cell(f"C{row_at}", "доля роста")
+            + (text_cell(f"D{row_at}", keys[index]) if index < len(keys) else "")
+            + "</x:row>")
         refs.append(f"'Вводные'!$B${row_at}")
         row_at += 1
     tail = "</x:sheetData>"
@@ -16077,7 +16086,8 @@ def _v4_social_rows_xml(xml: str, rows: dict[tuple[int, str], dict[str, Any]],
         f'<x:row r="{cash_row}">'
         + text_cell(f"A{cash_row}", "Денежная компенсация (совмещённый режим)")
         + f'<x:c r="D{cash_row}"><x:f>'
-        + xml_escape(f"MIN($B$18,{_V4_SOCIAL_DEADLINE})") + "</x:f></x:c>"
+        + xml_escape(f'IF($B$18="",{_V4_SOCIAL_DEADLINE},'
+                     f"MIN($B$18,{_V4_SOCIAL_DEADLINE}))") + "</x:f></x:c>"
         + number_cell(f"E{cash_row}", 1.0)
         + number_cell(f"F{cash_row}", float(cash_mln))
         + "</x:row>")
@@ -16151,14 +16161,18 @@ def build_project_workbook(
     # выходила вдвое меньше движковой. Поверхности считают один раз: бот
     # передаёт готовый результат, остальные пути считают здесь; при падении
     # движка книга остаётся на собственных формулах долей.
+    p = phasing or {}
+    missing: list[str] = []
     if finance_hints is None:
         try:
             finance_hints = _v4_finance_hints(_run_authoritative_model(
                 inputs or {}, tep or {}, rates or [], phasing or {}))
-        except Exception:
+        except Exception as exc:
+            # Молчать здесь нельзя: без контрольных чисел лист ПРОВЕРОК выглядит
+            # просто пустым, и «паритет не считался» неотличимо от «паритет
+            # сошёлся». Причина уходит туда же, куда неопознанная формула.
             finance_hints = {}
-    p = phasing or {}
-    missing: list[str] = []
+            missing.append("контрольные числа движка: " + _error_location(exc))
 
     template = _V4_TEMPLATE_PATH.read_bytes()
     source = zipfile.ZipFile(io.BytesIO(template))
@@ -16279,9 +16293,13 @@ def build_project_workbook(
     # уже не видна — человек правил бы результат правила, не зная об этом.
     _book_permit = add_months(str(x.get("project_start") or "2027-01-01")[:10],
                               int(max(float(IRD_MONTHS_MIN), n(x, "ird_months", 18.0))))
+    # Пустая дата остаётся ПУСТОЙ, а не подменяется формулой крайнего срока:
+    # ячейка жёлтая, то есть по конвенции «вписано руками», и формула в ней —
+    # ложное приглашение (впишешь число, как цвет и зовёт, — затрёшь её).
+    # Запасной путь живёт у читателя вместе с самой обрезкой: там он и нужен.
     _wanted_social_date = _v4_excel_serial(str(x.get("social_comp_date") or "")[:10])
     if _wanted_social_date is None:
-        put("B18", formula=_V4_SOCIAL_DEADLINE, label="social_comp_date")
+        put("B18", text="", label="social_comp_date")
     else:
         put("B18", number=_wanted_social_date, label="social_comp_date")
     # Конец горизонта движка: он не выводится из РВЭ, а тянется за последним
@@ -16979,7 +16997,7 @@ def build_project_workbook(
                 xml, _purchase_refs = _v4_schedule_rows_xml(
                     xml, "ГРАФИК ПЛАТЕЖЕЙ ЗА ПОКУПКУ",
                     "Месяц от старта очереди → доля цены. Строки покупки CAPEX читают отсюда.",
-                    sorted(_merged.items()), "доля")
+                    sorted(_merged.items()), "доля", key="purchase_schedule")
                 capex_xml = _v4_apply_purchase_schedule(capex_xml, _purchase_refs, missing)
             except Exception as exc:
                 missing.append("Вводные · график платежей за покупку: " + _error_location(exc))
@@ -16989,7 +17007,8 @@ def build_project_workbook(
             xml, _core_refs = _v4_stage_rows_xml(
                 xml, "ЛЕСТНИЦА ЦЕНЫ · КВАРТИРЫ И ОСНОВНЫЕ ПРОДУКТЫ",
                 "Рост цены при строительной готовности 25/50/75/100% (четверти срока строительства очереди). Строки цен листа «Продажи» читают отсюда.",
-                _core_growth)
+                _core_growth,
+                keys=tuple(f"growth_stage{k}_pct" for k in (1, 2, 3, 4)))
             sales_xml = _v4_apply_core_ladder(sales_xml, _core_refs, missing)
         except Exception as exc:
             missing.append("Вводные · лестница цены квартир: " + _error_location(exc))
@@ -17003,12 +17022,14 @@ def build_project_workbook(
                 xml, _profile_refs = _v4_schedule_rows_xml(
                     xml, f"ПРОФИЛЬ ПРОДАЖ · {_label.upper()}",
                     "Месяц от старта продаж → доля объёма. Строка «Реализованный объём» листа ОБЪЕКТЫ читает отсюда.",
-                    [(month, amount / _total) for amount, month in _profile_items], "доля")
+                    [(month, amount / _total) for amount, month in _profile_items], "доля",
+                    key=f"{_prefix}_sales_profile")
             if any(_growth):
                 xml, _stage_refs = _v4_stage_rows_xml(
                     xml, f"ЛЕСТНИЦА ЦЕНЫ · {_label.upper()}",
                     "Рост цены при строительной готовности 25/50/75/100% объекта. Строка «Цена реализации» листа ОБЪЕКТЫ читает отсюда.",
-                    _growth)
+                    _growth,
+                    keys=tuple(f"{_prefix}_growth_stage{k}_pct" for k in (1, 2, 3, 4)))
             if _profile_refs or _stage_refs:
                 objects_xml = _v4_apply_object_schedule(
                     objects_xml, _prefix, _profile_refs, _stage_refs, missing)
