@@ -150,7 +150,13 @@ def test_the_office_block_carries_dates_and_terms():
                             "offices_months": 24, "offices_residual_months": 6})
     assert sheet["K20"].value == "Да"
     assert sheet["K23"].value == pytest.approx(21700)
-    assert sheet["K33"].value == pytest.approx(30)
+    # Срок продаж объекта — стройка ПЛЮС хвост после ввода, и с 0.21.80 он
+    # формула: числом он не двигался ни от правки срока стройки, ни от правки
+    # хвоста, а само слагаемое «остаточные продажи» в книге было не видно.
+    assert sheet["K33"].value == "=$K$28+$K$36"
+    assert sheet["K28"].value == pytest.approx(24), "срок стройки офисов"
+    assert sheet["K36"].value == pytest.approx(6), "остаточные продажи офисов"
+    assert sheet["M36"].value == "offices_residual_months"
     assert sheet["K27"].value == datetime(2028, 7, 1)
 
 
