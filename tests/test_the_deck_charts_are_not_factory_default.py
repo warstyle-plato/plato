@@ -244,19 +244,19 @@ def test_the_price_per_metre_rides_as_a_line_not_its_own_slide() -> None:
                       ["2026-05", "9", "288,0", "705 100"]]}
     drawn = sales_deck.charts(table)
     # Цена своего листа не заводит: она линией справа на КАЖДОМ графике
-    # объёма. Меры объёма при этом остаются — экран предлагает их
-    # переключателем, а в документе переключателя нет.
+    # объёма. Меры объёма при этом рисуются ВСЕ и встают рядом на одном
+    # слайде — «в презентации шаблона есть 3 графика на слайде 2. У тебя 1»
+    # (владелец, 03.09.2026). Мера, названная словом вместо графика, в
+    # документе отсутствует.
     assert "₽/м²" not in [item["name"] for item in drawn], "цена ушла столбиками"
-    # График на раздел один: «Лотов» осталась колонкой таблицы и названа под
-    # графиком — лист на каждую меру давал пустые слайды (владелец, 31.08.2026).
-    assert [item["name"] for item in drawn] == ["млн ₽"]
-    assert drawn[0]["other_measures"] == ["Лотов"]
+    assert [item["name"] for item in drawn] == ["млн ₽", "Лотов"]
     assert all([row["name"] for row in item["second"]] == ["₽/м²"] for item in drawn)
-    # Одна цена без объёма — сама себе график: показать её иначе нечем.
+    # Одна цена без объёма — сама себе график, и он линия: столбиками цена не
+    # рисуется ни при каких обстоятельствах.
     alone = sales_deck.charts({"head": ["Месяц", "₽/м²"],
                                "rows": [["2026-07", "712 747"], ["2026-06", "717 000"]]})
     assert [item["name"] for item in alone] == ["₽/м²"]
-    assert "line" not in alone[0]
+    assert alone[0]["kind"] == "line"
 
 
 def test_the_price_line_is_a_real_line_on_its_own_axis() -> None:
@@ -532,33 +532,32 @@ def test_the_chart_does_not_repeat_the_slide_title() -> None:
     assert chart.has_title is False
 
 
-def test_the_money_measure_leads_and_the_rest_stay_in_the_table() -> None:
-    """Деньги первыми, а прочие меры — колонками таблицы, не листами.
+def test_the_money_measure_leads_and_every_measure_is_drawn() -> None:
+    """Деньги первыми, а рисуются ВСЕ меры — рядом на одном слайде.
 
-    Прежде здесь стояло обратное: лист на каждую меру (владелец, 29.08.2026,
-    «не проще для каждого графика свой слайд сделать?»). На настоящем своде это
-    дало три почти одинаковых столбиковых листа подряд, и на двух из них не
-    было ничего, кроме картинки — «пустые два слайда» (владелец, 31.08.2026).
-    Решение 30.08 — «график на раздел один» — было записано в комментарии, но
-    не доведено до кода; здесь оно и доводится.
-
-    Пропасть меры при этом не должны: они колонками в таблице раздела, которая
-    идёт следом, и названы подписью под графиком (`other_measures`).
+    Здесь дважды стояло обратное, и оба раза по делу. Лист на каждую меру
+    («не проще для каждого графика свой слайд сделать?», владелец, 29.08.2026)
+    дал три почти одинаковых столбиковых листа подряд — «пустые два слайда»
+    (31.08.2026). Ответом было «график на раздел один, остальные меры названы
+    подписью», и он оказался хуже болезни: мера, названная словом вместо
+    графика, в документе отсутствует — то же правило, что у свёрнутой таблицы.
+    «В презентации шаблона есть 3 графика на слайде 2. У тебя 1» (владелец,
+    03.09.2026). Лечится это шириной: графики встают в ряд на одном слайде.
     """
     money = sales_deck.charts({
         "head": ["Условие", "Договоров", "млн ₽", "На эскроу, млн ₽"],
         "rows": [["рассрочка", "35", "1 399,4", "573,7"],
                  ["100% оплата", "25", "447,4", "447,4"]]})
-    assert [item["measure"] for item in money] == ["млн ₽"]
-    assert money[0]["other_measures"], "мера, ушедшая в таблицу, не названа"
+    assert [item["measure"] for item in money] == ["млн ₽", "Договоров"]
     # Две денежные колонки — один график: «На эскроу» линией рядом с продажами.
     assert [row["name"] for row in money[0]["extra"]] == ["На эскроу, млн ₽"]
 
-    # Денег в таблице нет — берётся первая числовая, и она одна.
+    # Разные меры счёта — разные графики, а не один частокол.
     counted = sales_deck.charts({
         "head": ["Источник", "Обращений", "Броней"],
         "rows": [["звонок", "518", "16"], ["агент", "44", "16"]]})
     assert [item["name"] for item in counted] == ["Обращений"]
+    assert [row["name"] for row in counted[0]["extra"]] == ["Броней"]
 
 
 def test_the_deck_is_laid_out_like_the_printed_report() -> None:
@@ -761,9 +760,16 @@ def test_the_slide_repeats_the_composition_of_the_page() -> None:
     31.08.2026).
 
     Лист собирает его так: факт столбиками, планы линиями на шкале рублей, все
-    цены линиями на шкале ₽/м². Слайд повторяет лист, а не придумывает свой:
-    прежде он брал ОДНУ денежную колонку и одну ценовую, и раздел «факт против
-    планов» никаких планов не показывал.
+    цены линиями. Слайд повторяет лист, а не придумывает свой: прежде он брал
+    ОДНУ денежную колонку и одну ценовую, и раздел «факт против планов»
+    никаких планов не показывал.
+
+    Цены при этом уходят СВОИМ графиком рядом, а не на вторую шкалу денежного:
+    так собран присланный шаблон (слайд 11 — столбики факта с двумя линиями
+    планов и отдельный график из трёх линий цены, 01.09.2026), и это верно —
+    три чужие линии спорят с тем графиком, на котором стоят. Одна цена
+    по-прежнему едет линией справа: там спорить не с чем, и так собран слайд
+    «Динамики» того же шаблона.
     """
     import io
 
@@ -783,13 +789,17 @@ def test_the_slide_repeats_the_composition_of_the_page() -> None:
 
     deck = Presentation(io.BytesIO(sales_deck.build(
         sales_deck.sections(html), title="Т", subtitle="с", footer="ф")))
-    chart = [shape.chart for slide in deck.slides for shape in slide.shapes
-             if getattr(shape, "has_chart", False)][0]
-    groups = chart.plots
-    assert len(groups) == 3
+    drawn = [(slide, shape.chart) for slide in deck.slides for shape in slide.shapes
+             if getattr(shape, "has_chart", False)]
+    assert len({id(slide) for slide, _ in drawn}) == 1, \
+        "меры раздела разъехались по листам — их место рядом"
+    money, price = drawn[0][1], drawn[1][1]
+    groups = money.plots
+    assert len(groups) == 2
     assert [s.name for s in groups[0].series] == ["млн ₽, факт"]
     assert [s.name for s in groups[1].series] == ["млн ₽, план ФМ", "млн ₽, план банка"]
-    assert [s.name for s in groups[2].series] == ["цена факт, ₽/м²", "цена ФМ, ₽/м²"]
+    assert [s.name for plot in price.plots for s in plot.series] == \
+        ["цена факт, ₽/м²", "цена ФМ, ₽/м²"]
 
     # Порядок детей области обязателен: сначала ВСЕ группы, потом оси. Иначе
     # PowerPoint не открывает файл вовсе, а всё остальное читает и молчит.
@@ -800,20 +810,66 @@ def test_the_slide_repeats_the_composition_of_the_page() -> None:
     raw = io.BytesIO(sales_deck.build(
         sales_deck.sections(html), title="Т", subtitle="с", footer="ф"))
     with zipfile.ZipFile(raw) as pack:
-        part = next(n for n in pack.namelist() if n.startswith("ppt/charts/chart"))
-        area = etree.fromstring(pack.read(part)).find(f"{ns}chart/{ns}plotArea")
-    kids = [etree.QName(node).localname for node in area]
+        parts = sorted(n for n in pack.namelist() if n.startswith("ppt/charts/chart"))
+        areas = [etree.fromstring(pack.read(name)).find(f"{ns}chart/{ns}plotArea")
+                 for name in parts]
+    bars = next(area for area in areas if area.find(f"{ns}barChart") is not None)
+    kids = [etree.QName(node).localname for node in bars]
     charts_at = [i for i, k in enumerate(kids) if k.endswith("Chart")]
     axes_at = [i for i, k in enumerate(kids) if k.endswith("Ax")]
     assert max(charts_at) < min(axes_at), kids
-    # Линии планов живут на шкале столбиков, линии цены — на своей.
-    own = [a.get("val") for a in area.find(f"{ns}barChart").findall(f"{ns}axId")]
-    # Порядок групп в разметке значения не имеет — важно, на каких они осях:
-    # одна линия делит шкалу со столбиками, вторая живёт на своей.
+    # Линии планов живут на шкале столбиков: это одни и те же рубли.
+    own = [a.get("val") for a in bars.find(f"{ns}barChart").findall(f"{ns}axId")]
     lines = [[a.get("val") for a in node.findall(f"{ns}axId")]
-             for node in area.findall(f"{ns}lineChart")]
-    assert sum(1 for axes in lines if axes == own) == 1, lines
-    assert sum(1 for axes in lines if axes != own) == 1, lines
+             for node in bars.findall(f"{ns}lineChart")]
+    assert lines == [own], lines
+    # Цена — свой график, и в нём столбиков нет вовсе.
+    prices = next(area for area in areas if area.find(f"{ns}barChart") is None)
+    assert prices.find(f"{ns}lineChart") is not None
+
+
+def test_the_measures_of_a_section_stand_side_by_side_on_one_slide() -> None:
+    """«В презентации шаблона есть 3 графика на слайде 2. У тебя 1» (владелец,
+    03.09.2026).
+
+    Так собран его шаблон: слайд «Динамики» несёт объём, выручку и лоты рядом,
+    каждый со своим именем над картинкой. Мера, у которой графика нет, в
+    документе отсутствует — переключателя, которым её достают на экране,
+    в презентации не существует.
+    """
+    import io
+
+    from pptx import Presentation
+    from pptx.util import Inches
+
+    html = ('<section class="salesblock"><h3>Динамика</h3>'
+            '<svg viewBox="0 0 700 250"></svg>'
+            '<table><thead><tr><th>Месяц</th><th>Лотов</th><th>м²</th>'
+            '<th>млн ₽</th><th>₽/м²</th></tr></thead><tbody>'
+            '<tr><td>2026-06</td><td>9</td><td>420</td><td>301,2</td><td>717000</td></tr>'
+            '<tr><td>2026-07</td><td>4</td><td>198</td><td>140,8</td><td>712747</td></tr>'
+            '<tr><td>2026-08</td><td>1</td><td>70</td><td>55,6</td><td>800000</td></tr>'
+            '</tbody></table></section>')
+    deck = Presentation(io.BytesIO(sales_deck.build(
+        sales_deck.sections(html), title="Т", subtitle="с", footer="ф")))
+    placed = [(slide, shape) for slide in deck.slides for shape in slide.shapes
+              if getattr(shape, "has_chart", False)]
+    assert len(placed) == 3, "три меры объёма — три графика"
+    assert len({id(slide) for slide, _ in placed}) == 1, \
+        "меры разъехались по листам — их место рядом на одном"
+    boxes = sorted((shape.left, shape.width) for _, shape in placed)
+    for (left, width), (next_left, _) in zip(boxes, boxes[1:]):
+        assert left + width <= next_left, "графики налезают друг на друга"
+    assert boxes[0][0] >= Inches(0.5), "график вылез за левое поле листа"
+    assert boxes[-1][0] + boxes[-1][1] <= Inches(12.9), "график вылез за правое поле"
+    # Имя графика обязательно: заголовок слайда называет раздел, и какая мера
+    # на каком графике, сказать больше некому.
+    titles = [shape.chart.chart_title.text_frame.text for _, shape in placed]
+    assert sorted(titles) == sorted(["млн ₽", "м²", "Лотов"]), titles
+    # Цена по-прежнему линией справа на каждом: одна цена ни с чем не спорит.
+    for _, shape in placed:
+        assert any(series.name == "₽/м²" for plot in shape.chart.plots
+                   for series in plot.series), "цена не доехала линией"
 
 
 def test_a_section_of_one_sentence_does_not_get_its_own_slide() -> None:

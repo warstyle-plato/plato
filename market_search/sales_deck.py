@@ -432,14 +432,14 @@ def measure_of(head: str) -> str:
 
 
 def charts(table: dict[str, Any]) -> list[dict[str, Any]]:
-    """Графики таблицы: по одному на числовую колонку.
+    """Графики таблицы: по одному на МЕРУ, все на один слайд.
 
     Класть рубли, метры и цену метра на одну ось нельзя — столбик в пиксель
-    рядом со столбиком во весь слайд читается как «этого нет». Первая версия
-    решала это выбором одной колонки и подписью, какая нарисована; владелец
-    (29.08.2026): «не проще для каждого графика свой слайд сделать?» — проще, и
-    ничего не теряется: каждая мера показана, ни одна не спорит с соседней, а
-    лишний слайд в PowerPoint удаляют одним нажатием.
+    рядом со столбиком во весь слайд читается как «этого нет». Разъезжаться
+    по слайдам им тоже нельзя: три почти одинаковых столбиковых листа подряд —
+    это «пустые два слайда» (владелец, 31.08.2026). Ответ — рядом на одном
+    слайде, как в присланном шаблоне: узкий график читается, а лист говорит о
+    разделе всё сразу.
 
     Колонка берётся, только если каждая её ЗАПОЛНЕННАЯ ячейка — число.
     Прочерк — объявленное отсутствие, и он едет пропуском: столбика в этом
@@ -452,6 +452,12 @@ def charts(table: dict[str, Any]) -> list[dict[str, Any]]:
     if len(head) < 2 or len(rows) < 2:
         return []
     categories = [str(row[0]) for row in rows if row]
+
+    # Единица, найденная в САМИХ ячейках колонки: у таблицы тем шапка молчит
+    # («Первые 3 мес.»), а проценты стоят в каждой строке. Без этого три
+    # колонки одной меры расходились по трём графикам — то же самое, что
+    # потерять их, только шумно.
+    cell_marks: dict[int, str] = {}
 
     def column(index: int) -> list[float | None] | None:
         values: list[float | None] = []
@@ -479,6 +485,8 @@ def charts(table: dict[str, Any]) -> list[dict[str, Any]]:
                 if len(marks) > 1:
                     return None
             values.append(float(number))
+        if len(marks) == 1:
+            cell_marks[index] = next(iter(marks))
         if len(values) != len(categories):
             return None
         return values if sum(1 for value in values if value is not None) >= 2 else None
@@ -498,29 +506,32 @@ def charts(table: dict[str, Any]) -> list[dict[str, Any]]:
     # метры. В колоде она уходила своим слайдом со столбиками — то же самое
     # другими словами. Теперь она идёт линией справа на каждом графике объёма.
     price = next((index for index in numeric if _PRICE.search(str(head[index]))), None)
-    line = ({"name": str(head[price]), "values": numeric[price]}
-            if price is not None else None)
-    # График на раздел — один. Мера на слайд давала три-четыре почти одинаковых
-    # столбиковых листа подряд: «столбики не функциональны и не красивы»
-    # (владелец, 30.08.2026). Остальные меры не пропадают — они в таблице
-    # раздела, которая идёт следом и которую правят.
-    #
-    # Берётся денежная колонка: управленцу нужны рубли, а штуки и метры при них
-    # справочны. Денег нет — первая числовая.
-    order = [index for index in numeric if index != price]
-    if not order:
-        order = list(numeric)
     # Меры, которые экран предлагает переключателем: у динамики это млн ₽, м²
     # и лоты, у планов — млн ₽ и м². В документе переключателя нет, и мера, до
     # которой не переключились, в нём просто отсутствует — то же правило, что у
-    # свёрнутой таблицы: раскрыть её читателю нечем. Поэтому лист на меру.
-    #
-    # Схлопывать их в один график было ошибкой (0.20.83): «куча столбиков»
-    # приходила из разделов, где графика нет на экране вовсе, и это лечится
-    # признаком `charted`, а не потерей мер.
+    # свёрнутой таблицы: раскрыть её читателю нечем.
+    order = [index for index in numeric if index != price]
+    if not order:
+        order = list(numeric)
+    named = {name for name, _ in _MEASURES}
+
+    def unit_of(index: int) -> str:
+        """Мера колонки: сперва шапка, потом единица из ячеек.
+
+        Шапка сильнее: «Факт, млн ₽» и «План ФМ, млн ₽» — одна ось, а
+        «Лотов», «м²» и «₽/м²» — разные, и класть их вместе нельзя. Шапка
+        меры не назвала — её называют ячейки; не назвали и они — колонка
+        сама себе мера.
+        """
+        by_head = measure_of(str(head[index]))
+        if by_head in named:
+            return by_head
+        by_cell = measure_of(cell_marks.get(index, ""))
+        return by_cell if by_cell in named else by_head
+
     groups: list[tuple[str, list[int]]] = []
     for index in order:
-        unit = measure_of(str(head[index]))
+        unit = unit_of(index)
         found = next((pair for pair in groups if pair[0] == unit), None)
         if found is None:
             groups.append((unit, [index]))
@@ -529,68 +540,64 @@ def charts(table: dict[str, Any]) -> list[dict[str, Any]]:
     # Денежная мера идёт первой: управленцу нужны рубли, а метры и штуки при
     # них справочны.
     groups.sort(key=lambda pair: 0 if _MONEY.search(pair[0]) else 1)
-    money = next((index for index in order if _MONEY.search(str(head[index]))), order[0])
-    # Колонки ОДНОЙ меры идут рядами одного графика, а не разъезжаются по
-    # слайдам и не теряются. Раздел «Факт против планов» показывал один факт:
-    # три колонки в «млн ₽» — факт, план ФМ, план банка, — а на слайд уезжала
-    # первая, и график с именем «против планов» никаких планов не показывал.
-    # Мера берётся из шапки: «Факт, млн ₽» и «План ФМ, млн ₽» — одна ось,
-    # «Лотов», «м²» и «₽/м²» — разные, и класть их вместе нельзя.
-    second_columns: list[int] = []
-    # Вторая мера идёт линиями на своей шкале справа — так собран сводный
-    # график листа: факт столбиками, планы линиями на шкале рублей, все цены
-    # линиями на шкале ₽/м². Второй мерой берётся цена, если она есть: «цена —
-    # всегда линия на своей шкале» (владелец, 26.08.2026). Третьей меры на
-    # графике не бывает — две шкалы, больше некуда.
-    price_unit = measure_of(str(head[price])) if price is not None else ""
-    if price_unit:
-        second_columns = [index for index in numeric
-                          if measure_of(str(head[index])) == price_unit]
+    # Колонки ОДНОЙ меры идут рядами одного графика, а не разъезжаются и не
+    # теряются. Раздел «Факт против планов» показывал один факт: три колонки в
+    # «млн ₽» — факт, план ФМ, план банка, — а на слайд уезжала первая, и
+    # график с именем «против планов» никаких планов не показывал. Мера
+    # берётся из шапки: «Факт, млн ₽» и «План ФМ, млн ₽» — одна ось, «Лотов»,
+    # «м²» и «₽/м²» — разные, и класть их вместе нельзя.
+    price_unit = unit_of(price) if price is not None else ""
+    price_columns = ([index for index in numeric if unit_of(index) == price_unit]
+                     if price_unit else [])
+    volume = [pair for pair in groups if pair[0] != price_unit]
+    # Цена метра идёт линией на своей шкале справа от объёма — пока она ОДНА.
+    # «Цена — всегда линия на своей шкале» (владелец, 26.08.2026). Цен
+    # несколько (факт и два плана) — второй шкале их не унести: в шаблоне
+    # владельца они стоят своим графиком из трёх линий рядом с деньгами
+    # (слайд 11), и это верно — три чужие линии спорят с тем графиком, на
+    # котором стоят.
+    riding = price_columns if (len(price_columns) == 1 and volume) else []
 
     drawn: list[dict[str, Any]] = []
-    # Мер у раздела бывает три — рубли, метры, лоты, — и лист на каждую давал
-    # три почти одинаковых столбиковых слайда подряд: «пустые два слайда»
-    # (владелец, 31.08.2026). Рисуется ведущая мера (деньги), остальные не
-    # пропадают — они колонками в таблице раздела, которая идёт следом и
-    # которую правят. Названы они в подписи под графиком, чтобы читатель знал,
-    # где смотреть.
-    for unit, columns in groups[:1]:
-        if unit == price_unit:
-            continue
+    # Все меры раздела рисуются. Прежде рисовалась ведущая (деньги), а
+    # остальные назывались подписью «остальные меры — в таблице ниже»: это был
+    # ответ на «пустые два слайда» (владелец, 31.08.2026) — три почти
+    # одинаковых столбиковых ЛИСТА подряд. Ответ был неверный: лечится это
+    # не потерей мер, а тем, что они встают РЯДОМ на одном слайде, как в
+    # присланном шаблоне («в презентации шаблона есть 3 графика на слайде 2, у
+    # тебя 1», владелец, 03.09.2026). Мера, названная словом вместо графика,
+    # в документе отсутствует — то же правило, что у свёрнутой таблицы.
+    for unit, columns in volume:
         lead = columns[0]
-        second = [index for index in second_columns if index not in columns]
+        second = [index for index in riding if index not in columns]
         drawn.append({
             "name": str(head[lead]), "categories": categories,
             "values": numeric[lead],
-            # Заголовок слайда называет МЕРУ, а не первый ряд: «· Факт, млн ₽»
-            # над графиком, где рядом стоят оба плана, обещает меньше, чем на
-            # слайде есть. Ряд один — его имя и есть мера.
+            # Имя графика называет МЕРУ, а не первый ряд: «· Факт, млн ₽» над
+            # графиком, где рядом стоят оба плана, обещает меньше, чем на нём
+            # есть. Ряд один — его имя и есть мера.
             "measure": unit if len(columns) > 1 else str(head[lead]),
             # Ряды сверх первого — линиями на той же шкале: столбики в пять
             # рядов читаются частоколом, а план рядом с фактом — линией.
             "extra": [{"name": str(head[index]), "values": numeric[index]}
                       for index in columns[1:]],
-            # Цена метра идёт линией на своей шкале на КАЖДОМ графике объёма:
-            # «цена — всегда линия на своей шкале» (владелец, 26.08.2026).
             "second": [{"name": str(head[index]), "values": numeric[index]}
                        for index in second],
             "second_measure": price_unit if second else "",
-            # Меры, оставшиеся в таблице: сказать о них надо, иначе читатель
-            # решит, что их потеряли.
-            # Имя меры — как в отчёте: у группы из одной колонки это её
-            # заголовок. Назвать «шт» там, где написано «Лотов», значит
-            # переписать отчёт.
-            "other_measures": [
-                str(head[pair[1][0]]) if len(pair[1]) == 1 else pair[0]
-                for pair in groups[1:] if pair[0] != price_unit],
         })
-    if not drawn and price is not None:
-        # Одна цена без объёма — сама себе график: показать её иначе нечем, а
-        # пропустить значило бы потерять единственную меру раздела.
+    if price_columns and not riding:
+        first = price_columns[0]
         drawn.append({
-            "name": str(head[price]), "categories": categories,
-            "values": numeric[price], "measure": str(head[price]),
-            "extra": [], "second": [], "second_measure": "",
+            "name": str(head[first]), "categories": categories,
+            "values": numeric[first],
+            "measure": (price_unit if len(price_columns) > 1
+                        else str(head[first])),
+            # Цена столбиками не рисуется ни при каких обстоятельствах: она
+            # линия на своей шкале, и своим графиком — тоже линия.
+            "kind": "line",
+            "extra": [{"name": str(head[index]), "values": numeric[index]}
+                      for index in price_columns[1:]],
+            "second": [], "second_measure": "",
         })
     return drawn
 
@@ -1113,7 +1120,9 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
             top += 0.34
         return top
 
-    def put_chart(slide, data: dict[str, Any], *, top: float, height: float) -> None:
+    def put_chart(slide, data: dict[str, Any], *, top: float, height: float,
+                  left: float = 0.6, width: float = SLIDE_W_IN - 1.2,
+                  titled: bool = False) -> None:
         """График, а не заводская заготовка PowerPoint.
 
         «Убогие графики очень, как для первого класса школы» (владелец,
@@ -1127,18 +1136,30 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         """
         extra = list(data.get("extra") or [])
         second = list(data.get("second") or [])
+        # Цена метра столбиками не рисуется: она линия на своей шкале, и своим
+        # графиком — тоже линия.
+        lines_only = data.get("kind") == "line"
         payload = CategoryChartData()
         payload.categories = data["categories"]
         payload.add_series(data["name"], data["values"])
         for other in extra + second:
             payload.add_series(other["name"], other["values"])
         frame = slide.shapes.add_chart(
-            XL_CHART_TYPE.COLUMN_CLUSTERED, Inches(0.6), Inches(top),
-            Inches(SLIDE_W_IN - 1.2), Inches(height), payload)
+            XL_CHART_TYPE.LINE_MARKERS if lines_only else XL_CHART_TYPE.COLUMN_CLUSTERED,
+            Inches(left), Inches(top), Inches(width), Inches(height), payload)
         chart = frame.chart
-        # Своего заголовка у графика нет: его имя уже стоит заголовком слайда,
-        # а повторённое мелким серым оно читается как чужая подпись.
-        chart.has_title = False
+        # Имя графика: пока график на слайде один, его называет заголовок
+        # слайда, и повторённое мелким серым оно читается как чужая подпись.
+        # Графиков несколько — заголовок слайда называет раздел, и какая мера
+        # на каком графике, сказать больше некому.
+        chart.has_title = titled
+        if titled:
+            chart.chart_title.text_frame.text = str(
+                data.get("measure") or data["name"])
+            headline = chart.chart_title.text_frame.paragraphs[0].runs[0].font
+            headline.size = Pt(12)
+            headline.bold = True
+            headline.color.rgb = ink
         # Ряд один — легенды нет, его называет заголовок слайда. Рядов
         # несколько — без легенды они неразличимы.
         chart.has_legend = bool(extra or second)
@@ -1156,8 +1177,9 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         # Ширины в формате нет, есть просвет — и он тем больше, чем меньше
         # категорий: на трёх категориях столбик иначе выходит в две ладони.
         count = len(data["categories"])
-        plot.gap_width = 400 if count <= 3 else (250 if count <= 8 else
-                                                 (140 if count <= 12 else 60))
+        if not lines_only:
+            plot.gap_width = 400 if count <= 3 else (250 if count <= 8 else
+                                                     (140 if count <= 12 else 60))
 
         # Ряды одной меры — оттенками одного цвета, а не радугой: они про одно
         # и то же, и разный цвет читался бы как разные величины. Факт носит
@@ -1167,10 +1189,19 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         # Столбики только у первого ряда: остальные уедут линиями. Пять
         # столбиков в категории читаются частоколом, и «факт против плана» в
         # нём не виден — на листе планы идут линиями, и слайд повторяет лист.
-        bars = plot.series[0]
-        bars.format.fill.solid()
-        bars.format.fill.fore_color.rgb = tones[0]
-        bars.format.line.fill.background()
+        if lines_only:
+            # Ряды линиями красятся сами: `_combo` сюда не идёт — править XML
+            # незачем, столбиков на этом графике нет вовсе.
+            for order, series in enumerate(plot.series):
+                stroke = series.format.line
+                stroke.color.rgb = RGBColor.from_string(
+                    _PRIMARY_LINES[min(order, len(_PRIMARY_LINES) - 1)])
+                stroke.width = Pt(2.25)
+        else:
+            bars = plot.series[0]
+            bars.format.fill.solid()
+            bars.format.fill.fore_color.rgb = tones[0]
+            bars.format.line.fill.background()
 
         # Число на каждом столбике — это хаос, если столбиков много: тогда
         # значения несёт ось. Мало — значения стоят прямо на шапках, и ось со
@@ -1181,7 +1212,13 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         has_line = bool(second)
         # Значения стоят на столбиках, пока их не много. Ряд столбиков один,
         # поэтому считаются его категории — линии подписей не несут.
-        labelled = len(data["categories"]) <= 8
+        # Узкий график чисел на столбиках не несёт: три графика в ряд дают
+        # 3,9 дюйма на каждый, и подписи там налезают друг на друга. Тогда
+        # значения несёт ось — как в присланном шаблоне.
+        # Линия с несколькими рядами подписей не несёт: три ряда подписей на
+        # одном поле читаются как одно облако чисел.
+        labelled = (len(data["categories"]) <= (8 if width >= 5.5 else 4)
+                    and not (lines_only and extra))
         # Крупным числам дробная часть не нужна вовсе, а её разделитель без
         # цифр за ним читается как обрыв числа.
         big = all(abs(value) >= 100 for value in (data.get("values") or [])
@@ -1195,7 +1232,8 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
             # мелким числам.
             labels.number_format = "#,##0" if big else "#,##0.#"
             labels.number_format_is_linked = False
-            labels.position = XL_LABEL_POSITION.OUTSIDE_END
+            labels.position = (XL_LABEL_POSITION.ABOVE if lines_only
+                               else XL_LABEL_POSITION.OUTSIDE_END)
             labels.font.size = Pt(11)
             labels.font.bold = True
             labels.font.color.rgb = ink
@@ -1223,7 +1261,8 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         category_axis.format.line.color.rgb = RGBColor(0xDD, 0xE5, 0xED)
         category_axis.tick_labels.font.size = Pt(10)
         category_axis.tick_labels.font.color.rgb = dim
-        _combo(chart, primary=len(extra), secondary=len(second))
+        if not lines_only:
+            _combo(chart, primary=len(extra), secondary=len(second))
 
     # Титул: чей отчёт и на какую дату. Слайд, отделившийся от колоды, обязан
     # сам говорить, чей он, — как лист на бумаге.
@@ -1425,31 +1464,32 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
                 put_note(opening, note, top=min(top + 0.2, SLIDE_H_IN - 1.35), size=15)
                 note = ""
 
-        # По слайду на график: каждая мера показана и ни одна не спорит с
-        # соседней. Ряд один, поэтому легенда не нужна — мера стоит в
-        # заголовке слайда. Сноски под каждым графиком больше нет: повторённая
-        # двадцать раз, она перестаёт быть пояснением и становится шумом —
-        # сказать это достаточно один раз, на титуле.
-        for index, chart in enumerate(drawn):
-            part = new_slide(
-                f"{heading} · {chart.get('measure') or chart['name']}", heading)
+        # Все графики раздела — на ОДНОМ слайде, рядом. Так собран присланный
+        # шаблон: слайд «Динамика» несёт объём, выручку и лоты, слайд «Факт
+        # против планов» — деньги и цену («в презентации шаблона есть 3
+        # графика на слайде 2. У тебя 1», владелец, 03.09.2026). Прежде
+        # рисовалась одна мера, а лист на каждую давал три почти одинаковых
+        # столбиковых слайда подряд — так что верны обе жалобы, и лечится это
+        # шириной, а не выбором меры.
+        if drawn:
+            names = [str(chart.get("measure") or chart["name"]) for chart in drawn]
+            # Единицы стоят именами самих графиков — в заголовке слайда они
+            # были бы вторым разом: «Динамика · Выручка, млн ₽ · Объём, м²» и
+            # те же слова тремя строками ниже. Заголовок перечисляет меры до
+            # запятой, как в шаблоне.
+            titles = [name.split(",")[0].strip() or name for name in names]
+            part = new_slide(f"{heading} · " + (", ".join(titles) if len(drawn) > 1
+                                                else names[0]), heading)
             top = CONTENT_TOP
-            # Подписи и вывод — под картинкой и только на первом её слайде:
-            # повторённые у каждой меры, они читаются как разные пояснения.
-            below = list(caption if index == 0 else [])
-            others = [name for name in (chart.get("other_measures") or []) if name]
-            if others:
-                # Мера, которой на графике нет, не потеряна — она колонкой в
-                # таблице. Молча это читается как потеря.
-                below.append("Остальные меры — в таблице ниже: " + ", ".join(others) + ".")
-            tail = carry if index == 0 else ""
+            below = list(caption)
+            tail = carry
             reserve = 0.42 * len(below) + (0.8 if tail else 0.0)
-            # Таблица раздела встаёт под график на тот же лист, если помещается:
-            # лист с короткой таблицей и шестью дюймами белого — это не
-            # «просторно», а «здесь ничего нет» (владелец, 31.08.2026). Не
-            # поместилась — уезжает своим листом целиком, а не ужимается.
+            # Таблица раздела встаёт под графики на тот же лист, если
+            # помещается: лист с короткой таблицей и шестью дюймами белого —
+            # это не «просторно», а «здесь ничего нет» (владелец, 31.08.2026).
+            # Не поместилась — уезжает своим листом целиком, а не ужимается.
             joined = None
-            if index == 0 and tables:
+            if tables:
                 rows = tables[0].get("rows") or []
                 if len(rows) <= ROWS_PER_SLIDE:
                     need = 0.34 * (len(rows) + 1)
@@ -1457,17 +1497,45 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
                         joined, tables = (tables[0], need), tables[1:]
             room = SLIDE_H_IN - top - 0.8 - reserve - ((joined[1] + 0.25) if joined else 0.0)
             height = max(2.4, room)
-            put_chart(part, chart, top=top, height=height)
+            # Ширина делится на все графики: график во всю ширину, повторённый
+            # трижды, — это три слайда, а не один. Просвет между ними — как в
+            # шаблоне.
+            gap = 0.19
+            width = (SLIDE_W_IN - 1.2 - gap * (len(drawn) - 1)) / len(drawn)
+            for index, chart in enumerate(drawn):
+                put_chart(part, chart, top=top, height=height,
+                          left=0.6 + index * (width + gap), width=width,
+                          titled=len(drawn) > 1)
             under = top + height + 0.1
-            for line in below:
+            # Подпись, не поместившаяся на лист, не наезжает на колонтитул и не
+            # пропадает: она уезжает следующим листом раздела. Восемь оговорок
+            # под графиком «Отдела продаж» уводили низ листа на 9,1 дюйма при
+            # высоте 7,5 — то есть за край.
+            spill: list[str] = []
+            for index, line in enumerate(below):
+                if under + 0.4 > SLIDE_H_IN - 0.9:
+                    spill = below[index:]
+                    break
                 textbox(part, line, top=under, size=12, colour=dim, height=0.36)
                 under += 0.4
-            if joined:
+            if joined and not spill:
                 put_table(part, joined[0], top=under + 0.1, height=joined[1])
                 under += 0.1 + joined[1]
-            if tail:
+            elif joined:
+                tables = [joined[0], *tables]
+            if tail and not spill and under + 0.8 <= SLIDE_H_IN - 0.8:
                 put_note(part, tail, top=under, size=15)
                 carry = ""
+            if spill:
+                extra_slide = new_slide(heading + " · продолжение", heading)
+                place = CONTENT_TOP
+                for line in spill:
+                    textbox(extra_slide, line, top=place, size=12, colour=dim,
+                            height=0.36)
+                    place += 0.4
+                if carry:
+                    put_note(extra_slide, carry, top=place + 0.15, size=15)
+                    carry = ""
 
         # Таблицы — целиком и ячейками: их и правят. Длинная продолжается
         # следующим слайдом, а не ужимается до нечитаемого.
