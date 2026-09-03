@@ -43,7 +43,7 @@ def test_the_structure_names_both_contours_and_both_deficits() -> None:
                  "Утверждённый бюджет глав 2–3",
                  "Остаток потребности по утверждённому бюджету",
                  "Надо достроить по утверждённой модели", "Есть: остаток лимитов + резерв",
-                 "row('ДЕФИЦИТ'", "Структурный дефицит внутри лимитов"):
+                 "row('ДЕФИЦИТ'", "Нехватка по статьям РСС"):
         assert line in body, f"в структуре нет строки «{line}»"
     # Срок — половина ответа: «нужно 2,2 млрд» и «нужно с марта» — разные новости.
     assert "additional_financing_from" in body
@@ -58,7 +58,7 @@ def test_the_need_carries_the_month_it_starts() -> None:
 def test_a_bigger_structural_deficit_is_explained_not_just_shown() -> None:
     """Денег хватает, а лежат не там — это повод к перераспределению."""
     body = PAGE[PAGE.index("function fundingStructure("):]
-    assert "Структурный дефицит больше общего" in body
+    assert "Нехватка по статьям больше нехватки в РСС в целом" in body
 
 
 def _register(rows: list[dict]) -> bytes:
@@ -273,7 +273,7 @@ def test_the_screen_puts_the_model_against_the_bank() -> None:
     assert "«Средства на завершение» по РСС" in body
     assert "взгляд банка на остаток, не потребность стройки" in body
     # Структурный дефицит остаётся, но он про статьи внутри лимитов.
-    assert "Структурный дефицит внутри лимитов" in body
+    assert "Нехватка по статьям РСС" in body
     # Без книги модель не выдумывается.
     assert "сколько реально надо, сказать нечем" in body
 
