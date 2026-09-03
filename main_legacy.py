@@ -18902,7 +18902,7 @@ def build_plato_model_v2(
         "bridge_refinance", "bridge_balance", "bridge_interest", "bridge_cap",
         "bridge_transfer", "bridge_payable",
         ("section", "Проектное финансирование"), "pf_draw", "pf_gross", "pf_repayment",
-        "pf_balance", "coverage", "pf_base_rate", "pf_special_rate", "pf_rate",
+        "pf_balance", "rve_unpaid", "coverage", "pf_base_rate", "pf_special_rate", "pf_rate",
         "pf_interest", "pf_cap", "limit_fee", "interest_payment", "pf_payable",
         ("section", "Итого стоимость долга"), "fees", "cost")
     credit.formula("bridge_rate", "Ставка", lambda i: f"={rate_grid.outside('bridge', i)}", percent)
@@ -18940,8 +18940,19 @@ def build_plato_model_v2(
     credit.formula("bridge_payable", "Начисленные проценты, остаток",
                    lambda i: f"={bridge_accrued(i)}-{credit.at('bridge_transfer', i)}", money)
 
+    # Линия, рассчитавшаяся в РВЭ, после него не кредитует: долг погашен
+    # раскрытием целиком — расходы остаточного периода платит касса, а не
+    # закрытый НКЛ. Остался долг в РВЭ — прежнее допущение, линия обслуживается
+    # продажами дальше. Признак — нехватка в РВЭ по ПРЕДЫДУЩИЕ месяцы, а не
+    # итог строки: итог включал бы этот месяц и дал круг (как в v4).
+    def unpaid_seen(index: int) -> str:
+        if index == 0:
+            return "0"
+        return f"SUM({credit.letter(0)}{credit.rows['rve_unpaid']}:{credit.letter(index - 1)}{credit.rows['rve_unpaid']})"
+
     credit.formula("pf_draw", "Выборка",
-                   lambda i: (f"=IF({credit.month(i)}>={ref('permit')},"
+                   lambda i: (f"=IF(AND({credit.month(i)}>={ref('permit')},"
+                              f"OR({credit.month(i)}<={ref('rve')},{unpaid_seen(i)}>0)),"
                               f"MAX({costs.outside('debt', i)},0),0)"
                               f"+{credit.at('bridge_refinance', i)}"
                               f"+IF({capitalized},0,{credit.at('bridge_transfer', i)})"), money)
@@ -18953,6 +18964,8 @@ def build_plato_model_v2(
     credit.formula("pf_balance", "Остаток ПФ",
                    lambda i: f"={credit.at('pf_gross', i)}-{credit.at('pf_repayment', i)}",
                    money, bold=True)
+    credit.formula("rve_unpaid", "ПФ — не покрыто раскрытым эскроу (в РВЭ)",
+                   lambda i: f"=IF({credit.month(i)}={ref('rve')},{credit.at('pf_balance', i)},0)", money)
     # Покрытие — эскроу до раскрытия к долгу ПФ после выборки, но до погашения.
     # Взять эскроу после раскрытия — на РВЭ покрытие обнулится, ставка прыгнет к
     # базовой и проценты уедут вверх на весь остаток проекта.
@@ -25755,7 +25768,7 @@ _AGENT_INSTRUCTIONS = """
 
 Особые правила:
 1. LLCR 1,20x — целевой ориентир пользователя для DevelopAid, не называй его универсальным нормативом всех банков.
-2. Для многоочередного проекта при банковской рекомендации предпочитай scope=weakest_phase, если пользователь явно не просит только сводный проект.
+2. Охват по умолчанию — consolidated и для многоочередного проекта: банк смотрит лимит в целом, ради этого есть перенос долга между очередями. Слабейшую очередь называй рядом (phase_llcr_at_solution, weakest_phase); scope=weakest_phase — только если пользователь прямо просит судить по очереди.
 2a. Если хотя бы одна очередь ниже 1,20x, не ограничивайся констатацией. Сначала вызови diagnose_project_logic, затем phase_recovery_options. Построй причинный вывод: хватает ли слабой очереди ТЭП/выручки относительно CAPEX, ранних общепроектных затрат, Bridge и социалки; затем ранжируй реальные варианты оздоровления.
 2b. Различай реальное улучшение проекта и косметическую перекладку. Покупку/ВРИ нельзя просто перенести в другую очередь ради красивого LLCR. Социалку и сети можно предлагать переносить только как сценарий при фактической реализуемости по графику/обязательствам.
 2f. Социальная нагрузка и плата за смену ВРИ — обязательства, а не параметры оптимизации. В Москве обнулить социалку нельзя: строить не дадут. Не подавай «социалка = 0» или «плата за ВРИ = 0» как способ оздоровления, даже если инструмент такой сценарий посчитал; если считаешь для оценки чувствительности, называй это пределом, а не решением, и повторяй оговорку инструмента.
@@ -25765,7 +25778,7 @@ _AGENT_INSTRUCTIONS = """
 2e. Управление проектом 5% и технический заказчик/стройконтроль 5% — разные статьи с разным экономическим смыслом.
 3. На вопрос о максимальной цене покупки при LLCR 1,20 вызывай goal_seek:
    variable=purchase_price_mln, target_metric=llcr, target_value=1.20,
-   constraint=at_least, objective=maximum_variable, scope=weakest_phase для многоочередного проекта
+   constraint=at_least, objective=maximum_variable, scope=consolidated (и для многоочередного проекта)
    либо consolidated для одноочередного.
 4. На вопрос о максимальной строительной себестоимости вызывай goal_seek:
    variable=main_construction_cost_th_per_sqm с теми же правилами LLCR.
@@ -27550,7 +27563,7 @@ def _tool_evaluate_purchase_offer(
       construction-cost threshold under the offered purchase price.
     """
     offer = max(0.0, float(offer_price_mln))
-    scope = "weakest_phase" if bundle.get("mode") == "phased" else "consolidated"
+    scope = _agent_scope_of(bundle)
 
     # 1) Full model at offered purchase price.
     x_offer = copy.deepcopy(req.inputs)
@@ -27940,11 +27953,11 @@ def _tool_phase_recovery_options(
     if not any(c["achieves_target"] for c in candidates):
         fallback["max_purchase_price"] = _tool_goal_seek(
             req, bundle, "purchase_price_mln", "llcr", target_llcr,
-            "at_least", "maximum_variable", "weakest_phase", None, None,
+            "at_least", "maximum_variable", _agent_scope_of(bundle), None, None,
         )
         fallback["max_construction_cost"] = _tool_goal_seek(
             req, bundle, "main_construction_cost_th_per_sqm", "llcr", target_llcr,
-            "at_least", "maximum_variable", "weakest_phase", None, None,
+            "at_least", "maximum_variable", _agent_scope_of(bundle), None, None,
         )
 
     return {
@@ -31280,7 +31293,16 @@ def _agent_x(value: Any) -> str:
 
 
 def _agent_scope_of(bundle: dict[str, Any]) -> str:
-    return "weakest_phase" if bundle.get("mode") == "phased" else "consolidated"
+    """Охват суждения по умолчанию — весь проект.
+
+    Банк смотрит лимит в целом, и ради этого заведены режимы переноса долга
+    между очередями (владелец, 04.09.2026: «банк смотрит лимит в целом, для
+    этого мы и вводили режимы перевода долга между очередями»). Подбор по
+    слабейшей очереди отказывал «ни при какой цене» проекту с LLCR 1,23x.
+    Слабейшая очередь называется рядом, а не судит; по ней считают только
+    по явной просьбе (`scope=weakest_phase`).
+    """
+    return "consolidated"
 
 
 def _local_expense_structure(req: AgentChatRequest, bundle: dict[str, Any]) -> str:

@@ -1131,24 +1131,25 @@
     var weakest = phases ? weakestPhase(phases) : null;
     var llcr = phases && phases.consolidated && phases.consolidated.summary
       ? phases.consolidated.summary.llcr : result.summary.llcr;
-    var judged = weakest ? weakest.llcr : llcr;
+    /* Судит свод: банк смотрит лимит в целом, ради этого и есть перенос долга
+       между очередями (владелец, 04.09.2026). Слабейшая очередь называется
+       рядом — она говорит, где понадобится согласие банка, а не проходит ли
+       проект. */
     var title = document.getElementById('iaVerdictTitle');
     card.classList.remove('pass', 'edge', 'fail');
-    if (judged == null) {
+    if (llcr == null) {
       title.textContent = 'LLCR не рассчитан';
-    } else if (judged >= TARGET_LLCR) {
+    } else if (llcr >= TARGET_LLCR) {
       card.classList.add('pass'); title.textContent = 'Экономика проходит';
-    } else if (weakest) {
-      card.classList.add(judged >= 1.05 ? 'edge' : 'fail');
-      title.textContent = 'Очередь ' + weakest.name + ' порог банка не проходит';
-    } else if (judged >= 1.05) {
+    } else if (llcr >= 1.05) {
       card.classList.add('edge'); title.textContent = 'Экономика на границе';
     } else {
       card.classList.add('fail'); title.textContent = 'Экономика не проходит';
     }
 
     document.getElementById('iaVerdictLead').textContent =
-      (weakest ? 'Свод LLCR ' + fmtMult(llcr) + ', слабейшая очередь ' + weakest.name + ' — ' + fmtMult(weakest.llcr) + '. ' : '')
+      (weakest ? 'Свод LLCR ' + fmtMult(llcr) + ', слабейшая очередь ' + weakest.name + ' — ' + fmtMult(weakest.llcr)
+        + (weakest.llcr < TARGET_LLCR ? ' (ниже порога: по ней понадобится перенос долга или согласие банка)' : '') + '. ' : '')
       + 'Чистая прибыль ' + fmtMoney(result.summary.net_profit)
       + ' · маржинальность ' + fmtPct(result.summary.margin)
       + ' · IRR ' + (result.summary.irr_equity == null ? 'N/A' : fmtPct(result.summary.irr_equity))
@@ -1160,7 +1161,7 @@
     var cells = [
       weakest
         ? { label: 'LLCR (свод / слабейшая очередь)', value: fmtMult(llcr) + ' / ' + fmtMult(weakest.llcr),
-            note: 'Ориентир банка — 1,20x по каждой очереди; слабейшая — ' + weakest.name + '.' }
+            note: 'Ориентир банка — 1,20x; судит свод, слабейшая — ' + weakest.name + '.' }
         : { label: 'LLCR (расчётный)', value: fmtMult(llcr), note: 'Ориентир банка — 1,20x.' },
       price > 0
         ? { label: 'Цена входа', value: mlnLabel(price), note: 'Текущая цена приобретения.' }

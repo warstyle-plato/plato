@@ -88,14 +88,38 @@ def test_the_refusal_says_whose_number_and_how_far(whole_project: dict) -> None:
     assert whole_project["scope_label"] == "Весь проект"
 
 
-def test_a_phased_refusal_is_signed_by_the_weakest_queue(two_queues: dict) -> None:
+def test_a_phased_project_is_judged_as_a_whole(two_queues: dict) -> None:
+    """Банк смотрит лимит в целом (владелец, 04.09.2026): охват по умолчанию —
+    весь проект и у очередей; слабейшая очередь называется рядом, а не судит."""
     assert two_queues["available"] is False
-    assert two_queues["scope"] == "weakest_phase"
-    assert two_queues["scope_label"].startswith("слабейшая очередь О"), two_queues["scope_label"]
-    assert two_queues["reason"].startswith("Слабейшая очередь О"), two_queues["reason"]
+    assert two_queues["scope"] == "consolidated"
+    assert two_queues["scope_label"] == "Весь проект"
+    assert two_queues["reason"].startswith("Весь проект: LLCR не ниже 1,20x"), two_queues["reason"]
+
+
+def test_the_weakest_queue_is_named_when_asked_for(two_queues: dict) -> None:
+    """Суждение по очереди — по явной просьбе, и тогда отказ подписан ею."""
+    phasing = {
+        "enabled": True, "phase_count": 2, "phase_gap_months": 12,
+        "phases": [
+            {"name": "О1", "start_offset_months": 0, "construction_months": 24},
+            {"name": "О2", "start_offset_months": 12, "construction_months": 24},
+        ],
+        "social_objects": [],
+        "discrete": {"offices": 2, "standalone_retail": 2, "above_parking": 2},
+    }
+    req = _request(phasing)
+    bundle = core._run_authoritative_model(req.inputs, req.tep, req.rates, req.phasing)
+    data = core._tool_goal_seek(
+        req, bundle, "purchase_price_mln", "llcr", TARGET,
+        "at_least", "maximum_variable", "weakest_phase", None, None,
+    )
+    assert data["available"] is False
+    assert data["scope_label"].startswith("слабейшая очередь О"), data["scope_label"]
+    assert data["reason"].startswith("Слабейшая очередь О"), data["reason"]
     # Ближайшая точка подписана своим охватом: при другой цене слабейшей
     # может быть другая очередь, и подпись обязана это пережить.
-    assert two_queues["closest_tested"]["scope_label"].startswith("слабейшая очередь О")
+    assert data["closest_tested"]["scope_label"].startswith("слабейшая очередь О")
 
 
 def test_the_layer_shows_the_weakest_queue_beside_the_consolidated_llcr() -> None:

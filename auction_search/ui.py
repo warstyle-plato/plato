@@ -982,8 +982,14 @@ function krtScoreSource(x){
  const model=state.krtModels[x.slug]||null, rank=state.krtRank[x.slug]||{};
  const metrics=model&&model.metrics?model.metrics:null;
  if(!metrics)return {metrics:{},rank:rank,from:'rank'};
+ // Строка без чисел модели спорить с отчётом не может: отчёт без даты
+ // проигрывал ПУСТОЙ строке, и площадка с посчитанной моделью стояла «не
+ // посчитанной». Спор по дате — только когда числа есть у обоих; при равных
+ // датах побеждает отчёт: его человек и открыл.
+ const rankHasModel=rank.project_llcr_x!==null&&rank.project_llcr_x!==undefined;
+ if(!rankHasModel)return {metrics:metrics,rank:rank,from:'report'};
  const modelAt=Number(model.computed_at||0), rankAt=Number(rank.computed_at||0);
- return modelAt>rankAt?{metrics:metrics,rank:rank,from:'report'}:{metrics:{},rank:rank,from:'rank'};
+ return modelAt>=rankAt?{metrics:metrics,rank:rank,from:'report'}:{metrics:{},rank:rank,from:'rank'};
 }
 function krtScore(x){
  const fit=krtFit(x), rank=state.krtRank[x.slug]||{};

@@ -75,6 +75,20 @@ def test_an_older_or_undated_report_does_not_override_the_row() -> None:
     assert _run(RANK, None)["from"] == "rank"
 
 
+def test_an_empty_row_never_beats_a_report() -> None:
+    """Строка без чисел модели спорить с отчётом не может.
+
+    Отчёт без даты проигрывал ПУСТОЙ строке рейтинга, и площадка с посчитанной
+    моделью стояла в списке «не посчитанной» — балл терял снижения и
+    объяснения. Спор по дате — только когда числа есть у обоих.
+    """
+    undated = dict(REPORT)
+    del undated["computed_at"]
+    assert _run({}, undated)["from"] == "report"
+    assert _run({"computed_at": 500}, undated)["from"] == "report"
+    assert _run({}, REPORT)["metrics"]["project_llcr_x"] == 1.23
+
+
 def test_the_card_header_is_refreshed_after_the_report_loads() -> None:
     page = auctions_page()
     body = _function("\n".join(re.findall(r"<script[^>]*>(.*?)</script>", page, re.S)), "loadKrtReport")

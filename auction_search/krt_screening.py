@@ -172,7 +172,9 @@ def _goal_seek_entry_capacity(
         phasing=phasing,
         selected_view="all",
     )
-    scope = "weakest_phase" if bundle.get("mode") == "phased" else "consolidated"
+    # Охват — тот же, что у подбора везде: весь проект. Банк смотрит лимит в
+    # целом, ради этого и перенос долга между очередями (владелец, 04.09.2026).
+    scope = core._agent_scope_of(bundle)
     result = core._tool_goal_seek(
         request,
         bundle,
