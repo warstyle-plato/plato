@@ -67,8 +67,19 @@ function makeEl(tag){
   set textContent(v){this._text=String(v)},
   get textContent(){return this._text||''},
   querySelector(sel){return find(this,sel)},
+  // Перерисовка снимает раскрытые группы прямо с узла — подделка обязана
+  // уметь то же, иначе она проверяет не тот код, что живёт на странице.
+  querySelectorAll(sel){return findAll(this,sel)},
   remove(){}};
  created.push(node);return node;
+}
+function findAll(root,sel){
+ const out=[];
+ for(const child of root.children){
+  if(sel==='details[data-group]'&&child.tagName==='details'&&child.dataset.group)out.push(child);
+  out.push(...findAll(child,sel));
+ }
+ return out;
 }
 function find(root,sel){
  for(const child of root.children){
