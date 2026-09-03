@@ -33777,6 +33777,25 @@ function setPhaseProductTep(index,key,field,value){
  phaseTepEditWarning=requested!==null&&bounded<requested-1e-6?`Значение ограничено до ${num(bounded)}: доступный остаток исходного ТЭП — ${num(limit)}.`:'';
  if(bounded===null)delete phase.products[key][field];else phase.products[key][field]=bounded;
  if(Object.keys(phase.products[key]).every(k=>k==='assumption_source'))delete phase.products[key];
+ // Три числа продукта связаны теми же пропорциями, что и в таблице ТЭП: там
+ // любое из них ведущее, а два других достраиваются. Здесь связи не было
+ // вовсе — правишь ГНС очереди, продаваемая остаётся прежней, и строка
+ // перестаёт сходиться сама с собой (владелец, 03.09.2026: «тут тоже ячейки
+ // не зависят друг от друга»). Штука — счётчик, пропорцией не считается.
+ if(bounded!==null&&['gns','saleable'].includes(field)&&TEP_RATIOS[key]){
+  const base={gns:0,total_area:0,saleable:0,useful:0};
+  base[field]=bounded;
+  const filled=tepFillByRatios(key,base);
+  const paired=field==='gns'?'saleable':'gns';
+  const want=Number(filled[paired]||0);
+  if(want>0){
+   const pairLimit=phaseProductTepLimit(key,paired,index);
+   const value=pairLimit===null?want:Math.min(pairLimit,want);
+   phase.products[key][paired]=value;
+   syncPhaseProductSharesFromTep(key,paired,index);
+   if(!phasing.products[key])clampPhaseProductTepRight(key,paired,index);
+  }
+ }
  syncPhaseProductSharesFromTep(key,field,index);if(!phasing.products[key])clampPhaseProductTepRight(key,field,index);renderPhasing();calculate();
 }
 function setSharedShare(bucket,k,i,v){phasing[bucket][k][i]=Number(v||0)}
