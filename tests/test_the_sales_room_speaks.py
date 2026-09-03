@@ -121,6 +121,62 @@ def test_the_block_is_drawn_and_counts_nothing_itself() -> None:
     assert "salesNote(d,'salesroom')" in page, "вывод сервера не показан"
 
 
+def test_the_funnel_carries_its_numbers_under_the_chart(tmp_path) -> None:
+    """График без своих чисел до документа не доезжает.
+
+    Колода строит графики из ТАБЛИЦ раздела: под воронкой таблицы не было
+    вовсе, и на слайдах её не оказалось — «а воронку почему не нарисовал?»
+    (владелец, 03.09.2026). Проверяется на живой странице: числа считает
+    сервер, экран их только показывает, и разметка обязана нести их таблицей
+    прямо под графиком — тогда та же таблица становится графиком слайда.
+    """
+    import importlib
+
+    import pytest
+
+    play = pytest.importorskip("playwright.sync_api")
+    import browser_launch
+
+    from market_search import sales_deck
+
+    got = importlib.import_module("test_contracting_summary")._summary()
+    got["salesroom"] = {
+        "months": [{"month": "2026-06", "meetings_per_day": 1.4,
+                    "calls_per_day": 1.1, "bookings_at_once": 6.0},
+                   {"month": "2026-07", "meetings_per_day": 1.1,
+                    "calls_per_day": 0.9, "bookings_at_once": 5.2}],
+        "topics": [], "objections": [], "asked": {}, "rivals": [],
+        "bands": [], "notes": [],
+    }
+    file = tmp_path / "cabinet.html"
+    file.write_text(cabinet.cabinet_page("sales").replace("__DEVELOPAID_VERSION__", "test"),
+                    encoding="utf-8")
+    with play.sync_playwright() as pw:
+        try:
+            browser = browser_launch.launch(pw)
+        except Exception as exc:  # noqa: BLE001
+            pytest.skip(f"Chromium недоступен: {exc}")
+        try:
+            tab = browser.new_page()
+            tab.route("**/*", lambda route: route.abort()
+                      if route.request.url.startswith("http") else route.continue_())
+            tab.goto(file.as_uri())
+            markup = tab.evaluate("(d)=>{renderSales(d); return salesPrintHtml()}", got)
+        finally:
+            browser.close()
+
+    room = next(page for page in sales_deck.sections(markup)
+                if "Отдел продаж" in str(page.get("title") or ""))
+    funnel = (room.get("tables") or [None])[0]
+    assert funnel, "числа воронки не доехали таблицей — рисовать слайду нечего"
+    assert funnel["head"][0] == "Месяц" and len(funnel["rows"]) == 2, funnel["head"]
+    assert funnel.get("charted"), "таблица стоит не под своим графиком"
+    drawn = sales_deck.charts(funnel)
+    assert len(drawn) == 1, "воронка — одна картинка, а не лист на ряд"
+    rows = [drawn[0]["name"], *[extra["name"] for extra in drawn[0]["extra"]]]
+    assert len(rows) == 3, rows
+
+
 def test_the_export_is_taken_by_the_same_upload_as_the_project_file() -> None:
     """Вторая кнопка загрузки означала бы два файла разных дат под одним проектом."""
     body = (ROOT / "market_search" / "api.py").read_text()

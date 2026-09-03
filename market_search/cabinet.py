@@ -2507,6 +2507,21 @@ function salesRoomBlock(d){
                               ['bookings_at_once','броней разом']]
     .map(([key,name],k)=>({name, colour:ROOM_COLOURS[k],
       points:months.map((m,i)=>({i, v:m[key]}))})), 1, '');
+  // Числа воронки — таблицей под её графиком. График на экране без таблицы под
+  // ним в документ не попадает вовсе: колода строит графики из таблиц раздела,
+  // и воронка пропадала молча («а воронку почему не нарисовал?», владелец,
+  // 03.09.2026). Считает их сервер — здесь только показ; пропуск печатается
+  // прочерком, а не нулём.
+  const cell=v=>v===null||v===undefined?'—':num(v,1);
+  html+='<details style="margin-top:8px"><summary>Воронка числами</summary>'
+    +'<div class="wrap"><table class="peers">'
+    +'<tr><th>Месяц</th><th class="num">Встреч в день</th>'
+    +'<th class="num">Звонков в день</th><th class="num">Броней разом</th></tr>'
+    +months.map(m=>`<tr><td>${esc(m.month)}</td>`
+      +`<td class="num">${cell(m.meetings_per_day)}</td>`
+      +`<td class="num">${cell(m.calls_per_day)}</td>`
+      +`<td class="num">${cell(m.bookings_at_once)}</td></tr>`).join('')
+    +'</table></div></details>';
   // О чём говорят — долей сообщений месяца, а не абсолютным счётом: в месяцах
   // разное число отчётов, и голая частота сравнивала бы длину переписки.
   const topics=room.topics||[];

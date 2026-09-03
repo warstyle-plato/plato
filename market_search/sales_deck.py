@@ -77,6 +77,7 @@ class _Sections(HTMLParser):
         self._cell: list[str] | None = None
         self._row: list[str] | None = None
         self._table: dict[str, Any] | None = None
+        self._chart_pending = False
         self._text: list[str] = []
         self._in_head_cell = False
         self._want: str = ""
@@ -116,6 +117,12 @@ class _Sections(HTMLParser):
             # переносится — переносится РЕШЕНИЕ: где на слайде быть графику.
             self._svg_depth += 1
             self._current["charted"] = True
+            # График стоит НАД своими числами, и таблица под ним — это они.
+            # Раздел «Отдел продаж» рисует два графика: воронку и темы, — а
+            # признак был один на весь раздел, и колода чертила только первую
+            # таблицу. Воронка пропадала молча («а воронку почему не
+            # нарисовал?», владелец, 03.09.2026).
+            self._chart_pending = True
             return
         if self._svg_depth:
             return
@@ -256,6 +263,8 @@ class _Sections(HTMLParser):
             return
         if tag == "table" and self._table is not None:
             if self._table["rows"]:
+                self._table["charted"] = self._chart_pending
+                self._chart_pending = False
                 self._current["tables"].append(self._table)
             self._table = None
             return
@@ -271,11 +280,14 @@ class _Sections(HTMLParser):
             self._kv_depth -= 1
             if self._kv_depth == 0 and self._table is not None:
                 if self._table["rows"]:
+                    self._table["charted"] = self._chart_pending
+                    self._chart_pending = False
                     self._current["tables"].append(self._table)
                 self._table = None
             return
         if tag == "section":
             self._flush_line()
+            self._chart_pending = False
             self._current = self.tail
             self._want = ""
             return
@@ -417,8 +429,11 @@ _MEASURES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("₽", re.compile(r"₽|руб", re.IGNORECASE)),
     ("м²", re.compile(r"\bм2\b|м²|метр", re.IGNORECASE)),
     ("%", re.compile(r"%|дол[яию]|конверс", re.IGNORECASE)),
-    ("шт", re.compile(r"\b(?:лотов|лоты|штук|шт|договоров|мест|обращений|броней)\b",
-                      re.IGNORECASE)),
+    # Воронка отдела продаж — одна картинка из трёх рядов и на экране: встречи,
+    # звонки и брони стоят на одной шкале, и разводить их по трём графикам
+    # значит разобрать воронку на части.
+    ("шт", re.compile(r"\b(?:лотов|лоты|штук|шт|договоров|мест|обращений"
+                      r"|броней|встреч|звонков)\b", re.IGNORECASE)),
 )
 
 
@@ -429,6 +444,15 @@ def measure_of(head: str) -> str:
         if marks.search(raw):
             return name
     return raw.casefold()
+
+
+def _group_name(head: list[Any], columns: list[int], unit: str) -> str:
+    """Как назвать график из нескольких колонок одной меры."""
+    if len(columns) == 1:
+        return str(head[columns[0]])
+    if all(unit.casefold() in str(head[index]).casefold() for index in columns):
+        return unit
+    return " · ".join(str(head[index]) for index in columns)
 
 
 def charts(table: dict[str, Any]) -> list[dict[str, Any]]:
@@ -576,7 +600,11 @@ def charts(table: dict[str, Any]) -> list[dict[str, Any]]:
             # Имя графика называет МЕРУ, а не первый ряд: «· Факт, млн ₽» над
             # графиком, где рядом стоят оба плана, обещает меньше, чем на нём
             # есть. Ряд один — его имя и есть мера.
-            "measure": unit if len(columns) > 1 else str(head[lead]),
+            # Имя группы — её единица, но только если единица в шапках и стоит:
+            # у воронки колонки зовутся «Встреч в день» и «Броней разом», а
+            # мера у них общая — «шт», и лист выходил подписан одним этим
+            # словом. Единицы в шапках нет — имя собирается из самих колонок.
+            "measure": _group_name(head, columns, unit),
             # Ряды сверх первого — линиями на той же шкале: столбики в пять
             # рядов читаются частоколом, а план рядом с фактом — линией.
             "extra": [{"name": str(head[index]), "values": numeric[index]}
@@ -1385,7 +1413,15 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         # Лента долей столбиков не получает по той же причине: она говорит то
         # же самое и теми же цветами, что на экране. Числа при этом не
         # пропадают — они в таблице раздела.
-        drawn = charts(tables[0]) if (page.get("charted") and tables and not strips) else []
+        # Чертится КАЖДАЯ таблица, над которой на экране стоит график, а не
+        # первая из них: у «Отдела продаж» графика два — воронка и темы, — и
+        # вторая таблица оставалась без своего листа.
+        plotted: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
+        if page.get("charted") and tables and not strips:
+            own = [table for table in tables if table.get("charted")] or [tables[0]]
+            plotted = [(table, charts(table)) for table in own]
+            plotted = [pair for pair in plotted if pair[1]]
+        drawn = plotted[0][1] if plotted else []
         # Слайд заводится, только если на нём есть что показать. Вывод сам по
         # себе слайдом не является: «этот слайд странный» (владелец,
         # 30.08.2026) — заголовок, одна строка и пять дюймов белого. Такой
@@ -1471,7 +1507,9 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         # рисовалась одна мера, а лист на каждую давал три почти одинаковых
         # столбиковых слайда подряд — так что верны обе жалобы, и лечится это
         # шириной, а не выбором меры.
-        if drawn:
+        spilled: list[str] = []
+        for order, (source, drawn) in enumerate(plotted):
+            caption = caption if order == 0 else []
             names = [str(chart.get("measure") or chart["name"]) for chart in drawn]
             # Единицы стоят именами самих графиков — в заголовке слайда они
             # были бы вторым разом: «Динамика · Выручка, млн ₽ · Объём, м²» и
@@ -1489,12 +1527,13 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
             # это не «просторно», а «здесь ничего нет» (владелец, 31.08.2026).
             # Не поместилась — уезжает своим листом целиком, а не ужимается.
             joined = None
-            if tables:
-                rows = tables[0].get("rows") or []
+            if source in tables:
+                rows = source.get("rows") or []
                 if len(rows) <= ROWS_PER_SLIDE:
                     need = 0.34 * (len(rows) + 1)
                     if SLIDE_H_IN - top - 0.8 - reserve - need - 0.25 >= 2.4:
-                        joined, tables = (tables[0], need), tables[1:]
+                        joined = (source, need)
+                        tables = [table for table in tables if table is not source]
             room = SLIDE_H_IN - top - 0.8 - reserve - ((joined[1] + 0.25) if joined else 0.0)
             height = max(2.4, room)
             # Ширина делится на все графики: график во всю ширину, повторённый
@@ -1523,19 +1562,23 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
                 under += 0.1 + joined[1]
             elif joined:
                 tables = [joined[0], *tables]
+                joined = None
             if tail and not spill and under + 0.8 <= SLIDE_H_IN - 0.8:
                 put_note(part, tail, top=under, size=15)
                 carry = ""
-            if spill:
-                extra_slide = new_slide(heading + " · продолжение", heading)
-                place = CONTENT_TOP
-                for line in spill:
-                    textbox(extra_slide, line, top=place, size=12, colour=dim,
-                            height=0.36)
-                    place += 0.4
-                if carry:
-                    put_note(extra_slide, carry, top=place + 0.15, size=15)
-                    carry = ""
+            spilled.extend(spill)
+
+        if spilled:
+            # Оговорки, не поместившиеся под графиком, идут ПОСЛЕ всех его
+            # листов: втиснутые между воронкой и темами, они разрывают раздел.
+            extra_slide = new_slide(heading + " · продолжение", heading)
+            place = CONTENT_TOP
+            for line in spilled:
+                textbox(extra_slide, line, top=place, size=12, colour=dim, height=0.36)
+                place += 0.4
+            if carry:
+                put_note(extra_slide, carry, top=place + 0.15, size=15)
+                carry = ""
 
         # Таблицы — целиком и ячейками: их и правят. Длинная продолжается
         # следующим слайдом, а не ужимается до нечитаемого.
