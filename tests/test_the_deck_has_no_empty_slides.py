@@ -97,7 +97,45 @@ def test_the_plan_chart_carries_both_plans():
         "на слайде «Факт против планов» нет плана ФМ"
     assert any("план банка" in name for name in plans), \
         "на слайде «Факт против планов» нет плана банка"
-    assert any("Цена" in name for name in plans), "цена не доехала на вторую шкалу"
+    # Цены — свой график рядом, как в присланном шаблоне: три чужие линии
+    # спорят с тем графиком, на котором стоят.
+    assert any(names for names in charted
+               if names is not plans and any("Цена" in name for name in names)), \
+        "цена не доехала своим графиком"
+
+
+def test_nothing_runs_off_the_bottom_of_the_sheet():
+    """Подпись, не поместившаяся под графиком, уезжает листом, а не за край.
+
+    У раздела «Отдел продаж» под графиками стоят восемь оговорок: на настоящем
+    своде низ листа уходил на 9,1 дюйма при высоте 7,5 — то есть под
+    колонтитул и за край. Выбросить их нельзя: оговорка — это про границы
+    того, что показано.
+    """
+    from pptx import Presentation
+    from pptx.util import Emu
+
+    lines = "".join(
+        f'<div class="muted">Оговорка номер {n}: это отчёты менеджеров, а не '
+        f'слова покупателя, и отсутствие площади значит «не записали».</div>'
+        for n in range(1, 9))
+    html = ('<section class="salesblock"><div class="blockhead"><h3>Отдел продаж</h3></div>'
+            '<svg viewBox="0 0 900 300"><rect width="10" height="10"/></svg>'
+            '<table><tbody><tr><th>Тема</th><th>Визитов</th><th>Доля визитов</th></tr>'
+            '<tr><td>площадь</td><td>43</td><td>41,0 %</td></tr>'
+            '<tr><td>бюджет</td><td>21</td><td>20,0 %</td></tr></tbody></table>'
+            + lines +
+            '<div class="sumup">Вывод раздела одной строкой.</div></section>')
+    raw = sales_deck.build(sales_deck.sections(html), title="Т", subtitle="с", footer="ф")
+    deck = Presentation(io.BytesIO(raw))
+    said = 0
+    for slide in deck.slides:
+        for shape in slide.shapes:
+            assert Emu(shape.top + shape.height).inches <= 7.5 + 0.01, \
+                "объект уехал за нижний край листа"
+            if shape.has_text_frame and "Оговорка номер" in shape.text_frame.text:
+                said += 1
+    assert said == 8, f"оговорки потерялись: доехало {said} из 8"
 
 
 def test_one_section_does_not_become_three_alike_slides():
