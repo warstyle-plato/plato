@@ -40095,6 +40095,9 @@ function changeProjectsKey(){
 function forgetTerritoryState(){
  cadastralAnalysis=null;landLookup=null;landScreeningLast=null;LAND_MAP=null;
  glavapuImport=null;moResult=null;
+ // Отложенный пересчёт ТЭП — тоже про участок: доживи он до нового проекта, и
+ // ТЭП пересчитается по выгрузке удалённого. Снимается вместе с остальным.
+ clearTimeout(tepAutoTimer);tepAutoTimer=null;moAutoApartments=null;moAutoBusy=false;
  // Опрос НСПД по прошлому участку может ещё идти: номер прогона отсекает его
  // ответ, иначе он дорисует чужие зоны поверх нового проекта.
  ++landScreeningRun;
