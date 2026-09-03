@@ -16314,6 +16314,10 @@ def build_project_workbook(
     social_cash_by_phase: list[float] | None = None
     social_monthly_by_phase: list[list[float]] | None = None
     social_base_row: int | None = None
+    social_rows: dict[tuple[int, str], dict[str, Any]] = {}
+    social_cash_mln = 0.0
+    cost_per: dict[str, float] = {}
+    months_by_type: dict[str, int] = {}
     social_breakdown = {typ: {"places": 0.0, "cost": 0.0, "phases": set()}
                         for typ in ("kindergarten", "school", "clinic")}
     social_is_construction = str(x.get("social_mode") or "") in ("Строительство", SOCIAL_MODE_BOTH)
@@ -16467,11 +16471,32 @@ def build_project_workbook(
                     if 0 <= column < 120:
                         social_monthly_by_phase[0][column] += cash_mln
 
-            # --- блок соцобъектов на «Вводных» -----------------------------
-            # Дописывается строками в свободный низ листа, как лестница ставок:
-            # вставить строку в занятое место нельзя — поедут все ссылки.
-            xml, social_base_row = _v4_social_rows_xml(
-                xml, social_rows, cost_per, months_by_type, social_cash_mln)
+
+    # --- блок соцобъектов на «Вводных» -------------------------------------
+    # Пишется при ЛЮБОЙ форме соцнагрузки, а не только при стройке. Пока
+    # чисто денежный режим шёл мимо блока, строка CAPEX оставалась на формуле
+    # шаблона, а та читает B18 без обрезки по РнС — и заданная дата за
+    # бридж-периодом платилась в свой месяц вместо крайнего: пик БРИДЖа падал
+    # ровно на сумму компенсации (4132,8 вместо 4713,5 млн). Две дороги к
+    # одному платежу однажды разойдутся; дорога одна.
+    if social_monthly_by_phase is None:
+        social_monthly_by_phase = [[0.0] * 120 for _ in range(4)]
+        social_rows = {}
+        cost_per = {}
+        months_by_type = {}
+        _cash_start = str(x.get("project_start") or "2027-01-01")[:10]
+        social_cash_mln = n(x, "social_compensation_mln")
+        if social_cash_mln > 0:
+            _cash_when = social_cash_payment_date(
+                x, add_months(_cash_start,
+                              int(max(float(IRD_MONTHS_MIN), n(x, "ird_months", 18.0)))))
+            _cash_column = months_between(date.fromisoformat(_cash_start), _cash_when)
+            if 0 <= _cash_column < 120:
+                social_monthly_by_phase[0][_cash_column] += social_cash_mln
+    # Дописывается строками в свободный низ листа, как лестница ставок:
+    # вставить строку в занятое место нельзя — поедут все ссылки.
+    xml, social_base_row = _v4_social_rows_xml(
+        xml, social_rows, cost_per, months_by_type, social_cash_mln)
 
     # --- расшифровка соцнагрузки: ОТЧЕТ (E31:H37) и ТЭП (38–44) -----------
     # «Где в Excel расходы на садик и школы?» — раньше нигде: B17 приезжал
