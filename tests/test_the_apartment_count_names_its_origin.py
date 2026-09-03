@@ -16,6 +16,12 @@
 устареет молча при первой же правке; частное «продаваемая ÷ квартиры» не
 устаревает никогда, поэтому подпись считается от того, что в строке сейчас.
 
+С 03.09.2026 у делителя есть ОТВЕТ, а не только список: собираем сами — 60 м²
+(рынок, решение владельца), Подмосковье — РНГП области (58,8), выгрузка
+ГлавАПУ — число города, и наш делитель к ней не применяется вовсе. Норматив
+Москвы 69,3 м² остаётся мерой НАСЕЛЕНИЯ: подпись называет его только там, где
+число квартир к нему близко и его можно принять за меру квартиры.
+
 Запуск: python3 -m pytest tests/test_the_apartment_count_names_its_origin.py -q
 """
 
@@ -52,7 +58,7 @@ def _function(name: str) -> str:
 
 
 def _note(saleable: float, units: float, *, glavapu: bool = False,
-          krt: bool = False) -> str:
+          krt: bool = False, region: str = "msk") -> str:
     node = shutil.which("node")
     if not node:
         pytest.skip("node недоступен")
@@ -60,8 +66,12 @@ def _note(saleable: float, units: float, *, glavapu: bool = False,
         "const num=v=>String(Math.round(Number(v)*10)/10).replace('.',',');\n"
         "const escapeHtml=s=>String(s);\n"
         f"const PARKING_2118={json.dumps(core.PARKING_2118_PARAMS)};\n"
+        # Средняя квартира с основанием приходит на страницу из движка — тем же
+        # плейсхолдером, что версия. Стенд подставляет её оттуда же, а не своей
+        # копией: копия разошлась бы с ответом, который проверяем.
+        + f"const AVERAGE_FLAT={json.dumps({key: {'sqm': value, 'basis': basis} for key, (value, basis) in core.AVERAGE_FLAT_SOURCES.items()}, ensure_ascii=False)};\n"
         f"const tep={{apartments:{{saleable:{saleable},units:{units}}}}};\n"
-        f"const inputs={{{'_glavapu_import:{normalized:{}},' if glavapu else ''}}};\n"
+        + f"const inputs={{{'_glavapu_import:{normalized:{}},' if glavapu else ''}vri_region:'{region}'}};\n"
         + ("const _manual_tep_import={source:{kind:'krt'}};\n" if krt
            else "const _manual_tep_import=null;\n")
         + _function("apartmentUnitsNote") + "\n"
@@ -73,29 +83,42 @@ def _note(saleable: float, units: float, *, glavapu: bool = False,
 
 
 def test_the_market_divisor_is_visible_and_flagged() -> None:
-    """36 м² на квартиру видно сразу, и рядом стоит норматив города."""
+    """36 м² на квартиру видно сразу, и рядом стоит НАША мера, а не норматив населения."""
     note = _note(136818, 3800, krt=True)
     assert "36" in note, note
     assert "из передачи площадки КРТ" in note
-    # 1 975, а не 1 974: движок округляет вверх ДВАЖДЫ — сначала население
-    # (136 818 / 33 = 4 146), потом квартиры (4 146 / 2,1 = 1 974,3 → 1 975).
-    # Одно деление на 69,3 даёт 1 974,29 и то же 1 975, но совпадают они не
-    # всегда, поэтому подпись повторяет порядок движка.
-    assert "1975" in note.replace(" ", "").replace("\u00a0", ""), (
-        "норматив Москвы рядом не назван: сравнить не с чем")
+    flat, basis = core.average_flat_sqm("manual")
+    assert basis in note, note
+    # 136 818 ÷ 60 = 2 280,3 → 2 281. Сравнивать 3 800 с нормативом населения
+    # Москвы нельзя: он отвечает на «сколько людей поместится», а не на
+    # «на сколько лотов режут метры».
+    plain = note.replace(" ", "").replace("\u00a0", "")
+    assert "2281" in plain, note
+    assert f"{flat:g}" in note, note
 
 
-def test_the_city_export_is_named_as_the_city() -> None:
-    """Число города подписано городом, а не «нашим»."""
+def test_the_city_export_is_not_divided_by_our_yardstick() -> None:
+    """Город назвал число квартир — свой делитель к нему не применяется вовсе."""
     note = _note(136818, 3800, glavapu=True)
     assert "из выгрузки ГлавАПУ" in note
+    assert "Делитель к нему не применяется" in note, note
+    assert "вышло бы" not in note, "второй ответ на вопрос, на который город уже ответил"
 
 
-def test_the_norm_itself_raises_no_alarm() -> None:
-    """Посчитанное нормативом расхождением не объявляется."""
+def test_the_region_changes_the_yardstick() -> None:
+    """Подмосковье меряет РНГП области, а не рынком Москвы: 58,8, а не 60."""
+    mo_flat, mo_basis = core.average_flat_sqm("mo")
+    assert mo_flat != core.average_flat_sqm("manual")[0]
+    note = _note(136818, 3800, region="mo")
+    assert mo_basis in note, note
+
+
+def test_the_population_norm_is_named_as_a_population_norm() -> None:
+    """69,3 м² — мера жителей, и подпись говорит это прямо, а не молчит."""
     note = _note(136818, 1974)
-    assert "69,3" in note or "69" in note
-    assert "вышло бы" not in note, "оговорка стоит там, где расхождения нет"
+    assert "69,3" in note, note
+    assert "норматив населения" in note, note
+    assert "не мера квартиры" in note, note
 
 
 def test_an_empty_row_says_nothing() -> None:

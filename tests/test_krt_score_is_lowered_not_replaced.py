@@ -53,8 +53,13 @@ def page_functions() -> str:
     # `krtTaskProfile` читает выбранное назначение: отдельного списка задач
     # больше нет, он дублировал «Статус» и «Назначение», и мера балла следует
     # тому же полю, что и отбор.
+    # `krtRenovation` — измеренная доля городских нужд: снижение за них больше
+    # не плоская четверть, и без неё балл не считается вовсе. `krtRuleValue`
+    # называет число правила в его единицах, `krtInt`/`krtPct` — оформление
+    # подписи, а не арифметика балла.
     for name in ("krtVolumeShare", "krtTaskProfile", "krtFit", "krtIntent",
                  "krtCountedValues", "krtQuantile", "krtModelScale",
+                 "krtInt", "krtPct", "krtRenovation", "krtRuleValue",
                  "krtPenalty", "krtScore", "krtScoreNote"):
         start = script.index(f"function {name}(")
         depth = 0
@@ -80,7 +85,8 @@ def page_functions() -> str:
 
 
 def score(model: dict | None, rank: dict | None = None, site: dict | None = None,
-          intent: dict | None = None) -> dict:
+          intent: dict | None = None, catalogue: dict | None = None,
+          requirements: dict | None = None) -> dict:
     node = shutil.which("node")
     if not node:
         pytest.skip("node недоступен")
@@ -88,8 +94,13 @@ def score(model: dict | None, rank: dict | None = None, site: dict | None = None
         "const state={krtModels:{},krtRank:{},krtRequirements:{},krtPress:{}};\n"
         f"state.krtModels['site']={json.dumps(model)};\n"
         f"state.krtRank['site']={json.dumps(rank or {})};\n"
-        f"state.krtRequirements['site']={json.dumps(intent and {'intent': intent} or {})};\n"
-        "const document={getElementById:()=>({value:'housing_ready'})};\n"
+        # Шкала считается по САМОМУ каталогу: меньше восьми посчитанных строк —
+        # распределения нет, и пороги остаются абсолютными. Соседи нужны только
+        # тем проверкам, где мерится относительная шкала.
+        + "".join(f"state.krtRank[{json.dumps(slug)}]={json.dumps(row)};\n"
+                  for slug, row in (catalogue or {}).items())
+        + f"state.krtRequirements['site']={json.dumps(requirements or (intent and {'intent': intent}) or {})};\n"
+        + "const document={getElementById:()=>({value:'housing_ready'})};\n"
         "const $=()=>({value:'housing_ready'});\n"
         "function fmtArea(v){return String(v)}\n"
     )
@@ -151,10 +162,71 @@ def test_a_bad_project_still_keeps_a_distinguishable_number() -> None:
     assert got["score"] < got["base"] * 0.3
 
 
-def test_an_unpriced_ceiling_costs_points() -> None:
+def test_an_unpriced_ceiling_is_our_gap_and_costs_nothing() -> None:
+    """Наш пробел баллом не наказывают — но и не прячут.
+
+    Снижение за неподобранный потолок стояло у 147 площадок из 153: величина,
+    общая почти всем, не различает ничего, а называла она НАШУ неудачу, а не
+    свойство площадки. Правило уже записано: непосчитанное не снижает ничего —
+    это «не знаем», а не «плохо». Пробел остаётся видимым в подписи.
+    """
     with_ceiling = score(model_with(1.30, 20.0, 1.20), {"entry_capacity_rub_per_sqm": 30000})
     without = score(model_with(1.30, 20.0, 1.20), {})
-    assert without["cut"] - with_ceiling["cut"] == 10
+    assert without["cut"] == with_ceiling["cut"]
+    assert without["score"] == with_ceiling["score"]
+    assert any("потолок входа не подобран" in gap for gap in without["gaps"]), without
+    assert with_ceiling["gaps"] == [], with_ceiling
+
+
+def test_the_city_share_is_measured_not_assumed() -> None:
+    """15 100 м² из 150 940 — это десятая часть, а балл снимал четверть."""
+    site = {**SITE, "housing_gfa_sqm": 150940}
+    got = score(model_with(1.30, 20.0, 1.20), {"entry_capacity_rub_per_sqm": 30000},
+                site=site, requirements={
+                    "intent": {"probed": True, "city_needs": ["Программа реновации"]},
+                    "renovation": {"mentioned": True, "area_sqm": 15100,
+                                   "quote": "передать 15 100 кв. м в Программу реновации"}})
+    cut = next(c for c in got["cuts"] if "городские нужды" in c["label"])
+    assert cut["points"] == 10, got["cuts"]
+    assert "15 100" in cut["label"].replace("\u00a0", " "), cut["label"]
+    assert "10%" in cut["label"], cut["label"]
+
+
+def test_an_unnamed_city_share_is_not_the_whole_site() -> None:
+    """«Доля неизвестна» — это не «забирают всё» и не «не забирают ничего»."""
+    got = score(model_with(1.30, 20.0, 1.20), {"entry_capacity_rub_per_sqm": 30000},
+                requirements={
+                    "intent": {"probed": True, "city_needs": ["Программа реновации"]},
+                    "renovation": {"mentioned": True, "area_sqm": None}})
+    cut = next(c for c in got["cuts"] if "городски" in c["label"])
+    assert cut["points"] == 10
+    assert "объём не назван" in cut["label"], cut["label"]
+
+
+def test_the_money_effect_is_not_invented() -> None:
+    """Ставку выкупа Фондом мы не знаем — и говорим это, а не считаем по догадке."""
+    site = {**SITE, "housing_gfa_sqm": 150940}
+    got = score(model_with(1.30, 20.0, 1.20), {"entry_capacity_rub_per_sqm": 30000},
+                site=site, requirements={
+                    "intent": {"probed": True, "city_needs": ["Программа реновации"]},
+                    "renovation": {"mentioned": True, "area_sqm": 15100}})
+    assert any("УУПСС" in gap for gap in got["gaps"]), got["gaps"]
+
+
+def test_the_scale_label_names_the_threshold_it_compares_with() -> None:
+    """«Ниже каталога» стояло у 137 из 153 — потому что нулевая точка это 90-й процентиль."""
+    catalogue = {f"s{index}": {"project_llcr_x": 1.00 + index * 0.05,
+                               "margin_pct": 5.0 + index,
+                               "weakest_phase_llcr_x": 0.80 + index * 0.03,
+                               "entry_capacity_rub_per_sqm": 1000}
+                 for index in range(10)}
+    got = score(model_with(1.02, 6.0, 0.82),
+                {"entry_capacity_rub_per_sqm": 1000}, catalogue=catalogue)
+    scaled = [c["label"] for c in got["cuts"] if "верхней десятой части" in c["label"]]
+    assert scaled, got["cuts"]
+    assert all("ниже каталога" not in label for label in got["cuts"]), got["cuts"]
+    # Два числа рядом сравнимы, слово «ниже» само по себе — нет.
+    assert any("x" in label and "(" in label for label in scaled), scaled
 
 
 def test_every_deduction_says_what_it_is() -> None:
