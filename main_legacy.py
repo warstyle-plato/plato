@@ -13906,7 +13906,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     _pdf_phased = len(result.get("comparison") or []) > 1
     def _pdf_rve_label(base: str) -> str:
         return f"{base} — всего" if _pdf_phased else f"{base} в РВЭ"
-    finance_rows=[["Показатель","Значение"],["Расчётный БРИДЖ",_pdf_money(financing.get('calculated_bridge'))],["Пиковый фактический БРИДЖ (тело долга)",_pdf_money(financing.get('actual_bridge'))],["Собственные средства до ПФ",_pdf_money(financing.get('own_funds'))],["Пик БРИДЖ с капитализацией процентов (справочно)",_pdf_money(financing.get('bridge_peak_capitalized') or financing.get('actual_bridge'))],["Пиковая (непокрытая эскроу) задолженность ПФ",_pdf_money(financing.get('pf_uncovered_peak'))],[_pdf_rve_label("Долг ПФ перед раскрытием"),_pdf_money(financing.get('rve_pf_before_repayment'))],[_pdf_rve_label("Раскрытый эскроу"),_pdf_money(financing.get('rve_escrow_release'))],["Из него на погашение ПФ",_pdf_money(financing.get('rve_pf_repayment'))],[_pdf_rve_label("Не покрыто эскроу при раскрытии"),_pdf_money(financing.get('rve_pf_shortfall'))],[("Лимит ПФ — сумма по очередям" if _pdf_phased else "Лимит ПФ"),_pdf_money(financing.get('pf_limit'))],["Текущая ключевая ставка",_pdf_pct(financing.get('current_key_rate'))],["Спред БРИДЖ",_pdf_pct(financing.get('bridge_spread'))],["Ставка БРИДЖ на текущей ключевой",_pdf_pct(financing.get('current_bridge_rate'))],["Средняя ключевая за период БРИДЖ",_pdf_pct(financing.get('avg_bridge_key_rate'))],["Средневзвешенная ставка БРИДЖ за период",_pdf_pct(financing.get('avg_bridge_rate'))],["Средняя фактическая ставка ПФ",_pdf_pct(financing.get('avg_pf_effective_rate'))],*_pdf_pf_step_rows(financing),["Проценты и комиссии",_pdf_money(financing.get('interest_and_fees'))],["Непогашенный долг ПФ на конец проекта",_pdf_money(financing.get('ending_pf'))],*([["Долг передан в ПФ следующей очереди",_pdf_money(financing.get('debt_carried_out'))]] if float(financing.get('debt_carried_out') or 0)>500_000 else []),*([["в т.ч. принято от предыдущей очереди",_pdf_money(financing.get('carried_debt_in'))]] if (not _pdf_phased and float(financing.get('carried_debt_in') or 0)>500_000) else []),["LLCR",_pdf_num(summary.get('llcr'),2)+"x"]]
+    finance_rows=[["Показатель","Значение"],[("Расчётный БРИДЖ — сумма лимитов очередей" if _pdf_phased else "Расчётный БРИДЖ"),_pdf_money(financing.get('calculated_bridge'))],[("Пик одновременно открытых линий БРИДЖа очередей (тело долга)" if _pdf_phased else "Пиковый фактический БРИДЖ (тело долга)"),_pdf_money(financing.get('actual_bridge'))],["Собственные средства до ПФ",_pdf_money(financing.get('own_funds'))],["Пик БРИДЖ с капитализацией процентов (справочно)",_pdf_money(financing.get('bridge_peak_capitalized') or financing.get('actual_bridge'))],["Пиковая (непокрытая эскроу) задолженность ПФ",_pdf_money(financing.get('pf_uncovered_peak'))],[_pdf_rve_label("Долг ПФ перед раскрытием"),_pdf_money(financing.get('rve_pf_before_repayment'))],[_pdf_rve_label("Раскрытый эскроу"),_pdf_money(financing.get('rve_escrow_release'))],["Из него на погашение ПФ",_pdf_money(financing.get('rve_pf_repayment'))],[_pdf_rve_label("Не покрыто эскроу при раскрытии"),_pdf_money(financing.get('rve_pf_shortfall'))],[("Лимит ПФ — сумма по очередям" if _pdf_phased else "Лимит ПФ"),_pdf_money(financing.get('pf_limit'))],["Текущая ключевая ставка",_pdf_pct(financing.get('current_key_rate'))],["Спред БРИДЖ",_pdf_pct(financing.get('bridge_spread'))],["Ставка БРИДЖ на текущей ключевой",_pdf_pct(financing.get('current_bridge_rate'))],["Средняя ключевая за период БРИДЖ",_pdf_pct(financing.get('avg_bridge_key_rate'))],["Средневзвешенная ставка БРИДЖ за период",_pdf_pct(financing.get('avg_bridge_rate'))],["Средняя фактическая ставка ПФ",_pdf_pct(financing.get('avg_pf_effective_rate'))],*_pdf_pf_step_rows(financing),["Проценты и комиссии",_pdf_money(financing.get('interest_and_fees'))],["Непогашенный долг ПФ на конец проекта",_pdf_money(financing.get('ending_pf'))],*([["Долг передан в ПФ следующей очереди",_pdf_money(financing.get('debt_carried_out'))]] if float(financing.get('debt_carried_out') or 0)>500_000 else []),*([["в т.ч. принято от предыдущей очереди",_pdf_money(financing.get('carried_debt_in'))]] if (not _pdf_phased and float(financing.get('carried_debt_in') or 0)>500_000) else []),["LLCR",_pdf_num(summary.get('llcr'),2)+"x"]]
     story.append(table(finance_rows,[112*mm,58*mm],font_size=7.6))
 
     # Restore the bridge-purpose disclosure that exists in the web report.
@@ -13978,6 +13978,32 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     # разница между лимитом методики и реальной потребностью («остальное
     # вашими») читалась только глазами по структуре расходов.
     actual_structure = list(financing.get("actual_bridge_structure") or [])
+    # По очередям — у каждой свой БРИДЖ и свой месяц пика; свод — подписью.
+    pdf_phase_items = [item for item in (payload.get("phases") or []) if isinstance(item, dict)]
+    if len(pdf_phase_items) > 1:
+        for item in pdf_phase_items:
+            pf_fin = ((item.get("result") or {}).get("report") or {}).get("financing") or {}
+            rows_q = list(pf_fin.get("actual_bridge_structure") or [])
+            name_q = str(item.get("name") or "Очередь")
+            if not rows_q:
+                continue
+            peak_q = float(pf_fin.get("actual_bridge") or 0)
+            month_q = str(pf_fin.get("actual_bridge_month") or "")
+            table_q = [["Статья", "Оплачено к пику очереди", "Доля"]]
+            for row_q in rows_q:
+                table_q.append([str(row_q.get("label") or "—"), _pdf_money(float(row_q.get("value") or 0)),
+                                _pdf_num(float(row_q.get("share") or 0) * 100, 1) + "%"])
+            table_q.append([f"ПИК БРИДЖА {name_q}", _pdf_money(peak_q), "100,0%" if peak_q else "—"])
+            story.append(KeepTogether([
+                P(f"Структура фактического БРИДЖА · {name_q}"
+                  + (f" · {'.'.join(reversed(month_q.split('-')))}" if month_q else ""), h2),
+                table(table_q, [98*mm, 45*mm, 27*mm], font_size=8.0),
+            ]))
+        story.append(P("У каждой очереди свой БРИДЖ до открытия её ПФ; оплачено к месяцу пика этой очереди. "
+                       + (f"Свод: наибольшая сумма одновременно открытых линий — "
+                          f"{_pdf_money(float(financing.get('actual_bridge') or 0))}."
+                          if financing.get("actual_bridge") else ""), small))
+        actual_structure = []
     if actual_structure:
         actual_peak = float(financing.get("actual_bridge") or 0)
         actual_rows = [["Статья", "Оплачено к пику", "Доля"]]
@@ -16271,8 +16297,12 @@ def build_project_workbook(
                                  else typed_starts.get(typ) or phase_start)
                     obj_start = max(own_start, project_start_iso)
                 else:
+                    # Не раньше РнС очереди — как в движке: стройка до РнС
+                    # ложилась бы на БРИДЖ.
+                    phase_permit = add_months(
+                        phase_start, int(max(float(IRD_MONTHS_MIN), n(x, "ird_months", 18.0)))).isoformat()
                     obj_start = max(min(slot["dates"]) if slot["dates"] else phase_start,
-                                    phase_start)
+                                    phase_start, phase_permit)
                 span_months = months_by_type.get(typ, 24)
                 first_col = months_between(
                     date.fromisoformat(project_start_iso), date.fromisoformat(obj_start))
@@ -16547,13 +16577,25 @@ def build_project_workbook(
         # CAPEX падал в БРИДЖ до РнС, и пик завышался почти вдвое.
         offset = (phase_offsets[queue - 1]
                   if (phasing or {}).get("enabled") and queue - 1 < len(phase_offsets) else 0.0)
-        if offset:
+        if (phasing or {}).get("enabled"):
+            # Не раньше РнС своей очереди и продажи не раньше стройки — как в
+            # движке: стройка до РнС ложилась бы на БРИДЖ.
+            queue_permit = add_months(
+                add_months(str(x.get("project_start"))[:10], int(offset)),
+                int(max(float(IRD_MONTHS_MIN), n(x, "ird_months", 18.0))))
+            build_date = None
             for cell, key in zip(date_cells, date_keys):
                 base = x.get(key)
-                if base:
-                    shifted = _v4_excel_serial(add_months(str(base)[:10], int(offset)))
-                    if shifted is not None:
-                        put(cell, number=shifted, label=f"{key} (сдвиг очереди)")
+                if not base:
+                    continue
+                shifted_date = max(add_months(str(base)[:10], int(offset)), queue_permit)
+                if build_date is None:
+                    build_date = shifted_date
+                else:
+                    shifted_date = max(shifted_date, build_date)
+                shifted = _v4_excel_serial(shifted_date.isoformat())
+                if shifted is not None:
+                    put(cell, number=shifted, label=f"{key} (сдвиг очереди, не раньше РнС)")
 
     # --- очереди: базовый ТЭП в W..AC, доли и сроки -------------------------
     enabled_phases = int(p.get("phase_count") or 1) if p.get("enabled") else 1
@@ -25116,10 +25158,16 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
             p_inputs["school_places"] = sums["school"]
             p_inputs["clinic_capacity"] = sums["clinic"]
             phase_start_date = d(p_inputs["project_start"])
+            # Стройка не начинается раньше РнС своей очереди: до РнС у очереди
+            # нет ни разрешения, ни ПФ, и садик, стартовавший в день старта
+            # очереди, целиком ложился на БРИДЖ (1,89 млрд ₽ у О2 «Нагатино»)
+            # — «БРИДЖ не может финансировать стройку» (владелец, 04.09.2026).
+            phase_permit_date = add_months(
+                phase_start_date, int(max(float(IRD_MONTHS_MIN), n(p_inputs, "ird_months", 18.0))))
             def phase_social_start(values: list[str]) -> str:
                 candidate = d(min(values)) if values else phase_start_date
                 # A social object assigned to a queue cannot start before that queue itself.
-                return max(candidate, phase_start_date).isoformat()
+                return max(candidate, phase_start_date, phase_permit_date).isoformat()
             p_inputs["kindergarten_start"] = phase_social_start(starts["kindergarten"])
             p_inputs["school_start"] = phase_social_start(starts["school"])
             p_inputs["clinic_start"] = phase_social_start(starts["clinic"])
@@ -25187,6 +25235,18 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
                     dk=f"{prefix}_{suffix}"
                     if dk in p_inputs:
                         p_inputs[dk]=_shift_iso(x_master.get(dk),offset)
+                # Объект строится в своей очереди — и не раньше её РнС: офисы
+                # третьей очереди стартовали за полгода до её РнС, и 7,3 млрд ₽
+                # их стройки лежали на БРИДЖе. Продажи — не раньше стройки.
+                build_key, sales_key = f"{prefix}_start", f"{prefix}_sales_start"
+                permit_date = add_months(
+                    d(p_inputs["project_start"]),
+                    int(max(float(IRD_MONTHS_MIN), n(p_inputs, "ird_months", 18.0))))
+                if p_inputs.get(build_key):
+                    build_date = max(d(p_inputs[build_key]), permit_date)
+                    p_inputs[build_key] = build_date.isoformat()
+                    if p_inputs.get(sales_key):
+                        p_inputs[sales_key] = max(d(p_inputs[sales_key]), build_date).isoformat()
                 if prefix=="offices":
                     p_inputs["offices_cost_th_per_sqm"]=n(x_master,"offices_cost_th_per_sqm")*cost_inflation_factor
                     p_inputs["offices_price_th_per_sqm"]=n(x_master,"offices_price_th_per_sqm")*sales_price_inflation_factor
@@ -33368,11 +33428,15 @@ function phaseWeightPreset(count){
  return cloneValue(p[count]||Array(count).fill(100/count));
 }
 function frontLoadedPreset(count,kind){
+ // ИРД (ГПЗУ, ППТ, согласования) идёт вперёд — это документы всей территории.
+ // Проектирование, подготовка и сети — по размеру очереди: каждая проектирует
+ // и готовит свои корпуса. Прежний пресет клал 42% проектирования проекта на
+ // первую очередь — «ПИР на 1,5 ярда на очередь из 50 тысяч метров»
+ // (владелец, 04.09.2026).
+ if(['design','preparation','utilities'].includes(kind))return [...phaseWeightPreset(count)];
  if(count===3){
   if(['purchase','land_rights','social_compensation'].includes(kind))return [100,0,0];
-  if(['ird','preparation'].includes(kind))return [60,25,15];
-  if(kind==='design')return [50,30,20];
-  if(kind==='utilities')return [55,27,18];
+  if(kind==='ird')return [60,25,15];
  }
  if(['purchase','land_rights','social_compensation'].includes(kind))return [100,...Array(count-1).fill(0)];
  const a=phaseWeightPreset(count);if(count>1){a[0]+=10;for(let i=1;i<count;i++)a[i]-=10/(count-1)}
@@ -39224,8 +39288,8 @@ function renderResult(){
   :'';
  reportFinanceTable.innerHTML=
   purchaseLine+
-  row('Расчётный БРИДЖ',money(r.report.financing.calculated_bridge))+
-  row('Фактический / пиковый БРИДЖ',money(r.report.financing.actual_bridge))+
+  row(r.summary.phase_count>1?'Расчётный БРИДЖ — сумма лимитов очередей':'Расчётный БРИДЖ',money(r.report.financing.calculated_bridge))+
+  row(r.summary.phase_count>1?'Пик одновременно открытых линий БРИДЖа очередей':'Фактический / пиковый БРИДЖ',money(r.report.financing.actual_bridge))+
   // Не из банка: собственные деньги, заём учредителя, перехваченный чужой долг.
   (Number(r.report.financing.own_funds||0)>0.5?row('Собственные средства до ПФ',money(r.report.financing.own_funds)+' <span style="color:#777;font-weight:400">без процентов</span>'):'')+
   row(phased?'Лимит ПФ — сумма по очередям':'Лимит ПФ',money(r.report.financing.pf_limit))+
@@ -39378,13 +39442,35 @@ function renderResult(){
  // называет «остальное вашими»; до сих пор её приходилось считать глазами.
  // На своде очередей у каждой своя линия: пик свода приходится на месяц, когда
  // открыты не все, и подпись называет, чья линия в него вошла, а чья уже на ПФ.
+ // У очередей БРИДЖ — свой у каждой, до открытия её ПФ; «пик свода» —
+ // это одновременно открытые линии, и структура по нему отвечает не на тот
+ // вопрос («что за пиковый бридж в проектах с очередностью», владелец,
+ // 04.09.2026). На своде блок рисуется по очередям: у каждой свой месяц пика,
+ // свой пик и свои статьи; свод стоит подписью, а не таблицей.
  const bridgeActual=(r.report.financing.actual_bridge_structure||[]);
  const bridgeActualTotal=Number(r.report.financing.actual_bridge||0);
  const bridgeActualEl=document.getElementById('bridgeActualTable');
- if(bridgeActualEl){
+ const bridgeShareCell=x=>`<td>${(Number(x.share||0)*100).toLocaleString('ru-RU',{minimumFractionDigits:1,maximumFractionDigits:1})}%</td>`;
+ const bridgeRowsHtml=rows=>rows.map(x=>`<tr><td>${escapeHtml(x.label)}</td><td>${money(x.value)}</td>${bridgeShareCell(x)}</tr>`).join('');
+ const bridgePhases=(phaseBundle&&phaseBundle.phases&&phaseBundle.phases.length>1&&r===phaseBundle.consolidated)?phaseBundle.phases:null;
+ if(bridgeActualEl&&bridgePhases){
+  const blocks=bridgePhases.map(p=>{
+   const pf=((p.result||{}).report||{}).financing||{};
+   const rows=pf.actual_bridge_structure||[], peak=Number(pf.actual_bridge||0), when=String(pf.actual_bridge_month||'');
+   if(!rows.length)return `<tbody><tr><th colspan="3">${escapeHtml(p.name||'Очередь')} · БРИДЖ не привлекался</th></tr></tbody>`;
+   return `<tbody><tr><th colspan="3">${escapeHtml(p.name||'Очередь')} · пик ${money(peak)}${when?' · '+dateRu(when):''}</th></tr>${bridgeRowsHtml(rows)}<tr><th>Пик БРИДЖа ${escapeHtml(p.name||'')}</th><th>${money(peak)}</th><th>100,0%</th></tr></tbody>`;
+  }).join('');
+  bridgeActualEl.innerHTML=`<thead><tr><th>Статья</th><th>Оплачено к пику очереди</th><th>Доля</th></tr></thead>`+blocks;
+  const monthEl=document.getElementById('bridgeActualMonth');
+  if(monthEl)monthEl.textContent=' · по очередям';
+  const noteEl=document.getElementById('bridgeActualNote');
+  const queues=r.report.financing.actual_bridge_queues||null;
+  if(noteEl)noteEl.textContent='У каждой очереди свой БРИДЖ до открытия её ПФ; оплачено к месяцу пика этой очереди. '
+   +(bridgeActualTotal>0?`Свод: наибольшая сумма одновременно открытых линий — ${money(bridgeActualTotal)}${r.report.financing.actual_bridge_month?' в '+dateRu(String(r.report.financing.actual_bridge_month)):''}${queues&&queues.on_bridge&&queues.on_bridge.length?' ('+queues.on_bridge.join(', ')+')':''}.`:'');
+ }else if(bridgeActualEl){
   bridgeActualEl.innerHTML=bridgeActual.length?
    (`<thead><tr><th>Статья</th><th>Оплачено к пику</th><th>Доля</th></tr></thead>`
-    +`<tbody>${bridgeActual.map(x=>`<tr><td>${escapeHtml(x.label)}</td><td>${money(x.value)}</td><td>${(Number(x.share||0)*100).toLocaleString('ru-RU',{minimumFractionDigits:1,maximumFractionDigits:1})}%</td></tr>`).join('')}</tbody>`
+    +`<tbody>${bridgeRowsHtml(bridgeActual)}</tbody>`
     +`<tfoot><tr><th>Пик БРИДЖа</th><th>${money(bridgeActualTotal)}</th><th>${bridgeActualTotal>0?'100,0%':'—'}</th></tr></tfoot>`)
    :'';
   const monthEl=document.getElementById('bridgeActualMonth');
