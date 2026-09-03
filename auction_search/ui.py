@@ -912,7 +912,7 @@ function krtIntent(x){
  const press=state.krtPress[x.slug]||rank.press_facts;
  if(!press||!press.available)return intent;
  const merged=Object.assign({probed:true,decision_read:false,kind:'',city_needs:[],
-   operator:[],operator_name:'',agreement:[],taken:false}, intent||{});
+   operator:[],operator_name:'',agreement:[],selling:[],taken:false}, intent||{});
  merged.city_needs=(merged.city_needs||[]).concat((press.city_needs||[]).map(v=>v.quote));
  merged.operator=(merged.operator||[]).concat(
    (press.operator_named||[]).concat(press.operator_appointed||[]).map(v=>v.quote));
@@ -923,7 +923,12 @@ function krtIntent(x){
  // начата». Так Маршала Воробьева, вл. 12 стояла зелёной «войти ещё можно»
  // при подписанном договоре с правообладателями (владелец, 01.09.2026).
  merged.agreement=(merged.agreement||[]).concat((press.agreement||[]).map(v=>v.quote));
- merged.taken=!!(merged.operator_name||merged.operator.length||merged.agreement.length);
+ // На площадке уже продаётся ЖК — вход закрыт так же, как заключённым
+ // договором, и это самый частый случай: канцелярских слов страница продаж не
+ // знает, а «купить квартиру от застройщика» по нашему адресу знает.
+ merged.selling=(merged.selling||[]).concat((press.selling_now||[]).map(v=>v.quote));
+ merged.taken=!!(merged.operator_name||merged.operator.length
+   ||merged.agreement.length||merged.selling.length);
  merged.probed=true;
  return merged;
 }
@@ -960,7 +965,12 @@ function krtScore(x){
  if(intent&&intent.taken&&x.status!=='В реализации'&&!krtLiveLot(x))
   cuts.push({label:(intent.operator_name||(intent.operator||[]).length
     ?'оператор уже назван'+(intent.operator_name?': '+intent.operator_name:' в проекте решения')
-    :'договор о КРТ уже заключён — площадка развивается правообладателями')
+    :((intent.agreement||[]).length
+      ?'договор о КРТ уже заключён — площадка развивается правообладателями'
+      // Причина названа своя: снижение без верного основания читается как
+      // ошибка счёта, а «договор заключён» там, где его никто не видел, — это
+      // приписанный факт.
+      :'на площадке уже продаётся ЖК'))
    +' — войти нельзя',points:60});
  // Городские нужды снижают, но не закрывают: КРТ для нужд города выигрывает и
  // частный застройщик, поэтому это не запрет, а названная сложность.
@@ -1252,7 +1262,11 @@ function krtMarks(x){
  const press=(state.krtPress||{})[x.slug]||(state.krtRank[x.slug]||{}).press_facts||null;
  const renov=card.renovation||((press&&press.city_needs||[]).length>0);
  const builder=(card.developers||[])[0]
-   ||((press&&press.operator_named||[])[0]||{}).name||'';
+   ||((press&&press.operator_named||[])[0]||{}).name
+   ||((press&&press.developer_named||[])[0]||{}).name||'';
+ // На площадке уже продаётся ЖК — вход закрыт, и говорит об этом не канцелярия,
+ // а страница продаж. Метка несёт свою цитату по тому же правилу, что реновация.
+ const selling=((press&&press.selling_now)||[])[0]||null;
  // Метка несёт свою цитату: «почему реновация?» (владелец, 02.09.2026) — на
  // общий ответ «в публикации сказано» ответить нечем, на цитату — есть чем.
  const renovQuote=card.renovation_quote
@@ -1261,6 +1275,8 @@ function krtMarks(x){
  const marks=(renov?'<span class="tag warn" title="'
     +esc(String(card.renovation?'карточка krt.mos.ru: ':'публикация: ')+renovQuote)
     +'">реновация</span>':'')
+  +(selling?'<span class="tag warn" title="'+esc('публикация: '+(selling.quote||''))
+    +'">уже продаётся ЖК</span>':'')
   +(builder?'<span class="tag" title="Застройщик назван официальной карточкой krt.mos.ru или публикацией">'
     +esc(builder.length>26?builder.slice(0,24)+'…':builder)+'</span>':'');
  return marks;
@@ -1296,12 +1312,14 @@ function renderKrt(){const a=state.krtFiltered,body=$('krtRows');body.innerHTML=
 // 23.08.2026). На метр, а не в абсолюте: потолок в рублях выгоден крупным
 // площадкам просто по размеру. Пустая ячейка значит «не посчитали», и это не
 // то же самое, что «не выдерживает», — поэтому у неё своя подпись.
-// Картинка участка. Границ КРТ каталог krt.mos.ru не публикует и сам это
-// объявляет (`geometry_status: not_published_in_catalogue`) — есть только
-// геокодированная точка и площадь в гектарах. Поэтому рисуем карту улиц вокруг
-// точки с меткой и масштабной линейкой, и НЕ рисуем фигуру «примерной
-// площади»: квадрат или круг на карте читается как контур, и по нему начнут
-// мерить пятно застройки. Подложку отдаёт движковый `/land/basemap` тем же
+// Картинка участка. Границы У БОЛЬШИНСТВА площадок ЕСТЬ: файл карты реестра
+// (`map2025.json`) несёт полигон каждой — их рисуем настоящим контуром. Прежняя
+// оговорка «каталог границ не публикует» была верна, пока каталог читался
+// разметкой, и осталась на экране после смены источника: карточка объявляла
+// приближением ровно то, что приехало официальным полигоном. Чего в файле нет
+// (35 площадок из 282 на 03.09.2026), то остаётся геокодированной точкой — и
+// тогда мы НЕ рисуем фигуру «примерной площади»: квадрат или круг на карте
+// читается как контур, и по нему начнут мерить пятно застройки. Подложку отдаёт движковый `/land/basemap` тем же
 // меркаторным bbox, в котором мы ставим метку, — совмещать в браузере нечего.
 // Кадастровый слой `/land/map-image` для этого масштаба не годится: он верен
 // на двухстах метрах карточки участка, а на километре даёт клубок границ ЕГРН
@@ -1318,13 +1336,37 @@ async function loadKrtPoint(x){
  try{
   const d=await askJson('/auctions/krt/'+encodeURIComponent(x.slug)+'/point',{cache:'no-store'});
   box.innerHTML=krtSiteMap(d,d.area_ha!=null?d.area_ha:x.area_ha);
+  krtOutlineNote(d.geometry_status);
  }catch(e){
   // Не построилась — значит надо сказать, что именно не сработало, и оставить
   // первоисточник. Пустое место читается как «карты тут не бывает».
   box.innerHTML='<div class="section"><h3>Участок на карте</h3>'
    +'<div class="notice warn">Карта не построена: '+esc(e.message||e)
    +'</div>'+krtNspdLink('')+'</div>';
+  krtOutlineNote('');
  }
+}
+// Чем очерчена площадка — ответ маршрута, а не постоянная строка. Оговорка
+// «официальный полигон пока не получен» стояла у ВСЕХ площадок и после того,
+// как файл карты реестра принёс контуры: она объявляла приближением ровно то,
+// что приехало официальным полигоном (правило «оговорка про источник обязана
+// пережить смену источника»). Не спросили — так и сказано: «не знаем» и
+// «границ нет» на экране не одно и то же.
+function krtOutlineNote(status){
+ const box=document.getElementById('krtOutlineNote');
+ if(!box)return;
+ const said={
+  official_polygon:['notice','Границы — официальный полигон файла карты реестра КРТ '
+   +'(krt.mos.ru). Контур нарисован по нему, приближения здесь нет.'],
+  official_centre_only:['notice warn','В файле карты реестра у площадки есть центр, но нет '
+   +'полигона границ. Анализ идёт от точки — контура нет.'],
+  geocoded_point:['notice warn','Площадки нет в файле карты реестра: точка поставлена '
+   +'геокодером по адресу, официального контура нет. Анализ помечает это приближение.'],
+  not_published_in_catalogue:['notice warn','Каталог по этой площадке границ не отдал — '
+   +'анализ идёт от точки.']
+ }[String(status||'')]||['notice','Границы не спрошены: карта не строилась.'];
+ box.className=said[0];
+ box.textContent=said[1];
 }
 // Ссылка на публичную карту НСПД. Адрес собирает движок и присылает готовым —
 // координаты там в веб-меркаторе, и второй пересчёт здесь разошёлся бы с первым
@@ -1606,7 +1648,7 @@ async function loadKrtRequirements(x){
   if(state.selectedKrt&&state.selectedKrt.slug===x.slug)box.innerHTML=renderKrtRequirements(d);
  }catch(e){box.innerHTML=`<div class="notice warn">${esc(e.message||e)}</div>`}
 }
-function selectKrt(x){state.selectedKrt=x;const sc=krtScore(x),fit=sc.fit,cached=state.krtModels[x.slug],planned=String(x.status||'').toLowerCase().includes('планируем');$('krtSide').innerHTML=`<h2>${esc(x.name)}${x.is_new?'<span class="tag new">новое</span>':''}</h2><div class="sub">krt.mos.ru · ${esc([x.okrug,x.district].filter(Boolean).join(' · '))}</div><div class="notice"><div class="fit ${sc.tone}"><span class="light"></span>Оценка Платона: ${sc.score}/100 · ${sc.label}</div><div class="source">Потенциал по официальным ТЭП — ${sc.base}. ${sc.counted?(sc.cut?`Расчёт снял ${sc.cut}%: `+esc(sc.cuts.map(c=>c.label+' −'+c.points+'%').join(', ')):'Расчёт балл не снизил.'):'Модель ещё не считалась — снижать нечем.'}</div></div><div class="kv"><div>Статус</div><div>${esc(x.status||'—')}</div><div>Площадь</div><div>${esc(x.area_ha?x.area_ha+' га':'—')}</div><div>Жильё</div><div>${fmtArea(x.housing_gfa_sqm)}</div><div>Всего построить</div><div>${fmtArea(x.total_gfa_sqm)}</div></div><details class="fold"><summary>Почему такой балл — ${fit.reasons.length+fit.checks.length+sc.cuts.length} пункт(ов)</summary><div class="foldbody"><div class="items">${fit.reasons.map(x=>`<div class="item"><b>Соответствует запросу</b>${esc(x)}</div>`).join('')}${fit.checks.map(x=>`<div class="item"><b>Нужно проверить</b>${esc(x)}</div>`).join('')}${sc.cuts.map(c=>`<div class="item"><b>Балл снижен на ${c.points}%</b>${esc(c.label)}</div>`).join('')}</div></div></details>${krtOrderBlock(x)}${krtTenderBlock(x)}${krtIntentBlock(x)}<div id="krtPressBox"></div><details class="fold"><summary>Остальные ТЭП каталога</summary><div class="foldbody"><div class="kv" style="border:0"><div>Нежилое</div><div>${fmtArea(x.nonresidential_gfa_sqm)}</div><div>Общественно-деловое</div><div>${fmtArea(x.business_gfa_sqm)}</div><div>Рабочие места</div><div>${esc(x.jobs??'—')}</div></div><div class="notice warn">Официальный полигон границ пока не получен. Анализ использует геокодированную точку и помечает это приближение.</div></div></details>${krtRatioBlock(x)}<div class="actions"><button class="primary" id="krtHandoff">Передать в DevelopAid</button><button id="krtPlato">Рекомендация Платона</button><button id="krtMarket">Пересчитать сейчас</button><button id="krtShare">Поделиться</button><button id="krtSource">Открыть krt.mos.ru</button><button id="krtPress">Что пишут об этой площадке</button></div><div id="krtShareNote" class="notice" style="display:none"></div>${planned?'<div id="krtRequirementsBox"><div class="notice">Ищу проект решения и читаю требования…</div></div>':''}<div id="krtMapBox"><div class="notice">Строю карту участка…</div></div><div id="krtMarketResult">${cached?renderKrtModel(cached):''}</div>`;$('krtMarket').onclick=()=>loadKrtMarket(x);krtOrderBind(x);$('krtSource').onclick=()=>window.open(x.url,'_blank','noopener');loadKrtCardFacts(x);$('krtPress').onclick=()=>loadKrtPress(x);const ra=$('krtRatioApply');if(ra)ra.onclick=()=>loadKrtMarket(x);
+function selectKrt(x){state.selectedKrt=x;const sc=krtScore(x),fit=sc.fit,cached=state.krtModels[x.slug],planned=String(x.status||'').toLowerCase().includes('планируем');$('krtSide').innerHTML=`<h2>${esc(x.name)}${x.is_new?'<span class="tag new">новое</span>':''}</h2><div class="sub">krt.mos.ru · ${esc([x.okrug,x.district].filter(Boolean).join(' · '))}</div><div class="notice"><div class="fit ${sc.tone}"><span class="light"></span>Оценка Платона: ${sc.score}/100 · ${sc.label}</div><div class="source">Потенциал по официальным ТЭП — ${sc.base}. ${sc.counted?(sc.cut?`Расчёт снял ${sc.cut}%: `+esc(sc.cuts.map(c=>c.label+' −'+c.points+'%').join(', ')):'Расчёт балл не снизил.'):'Модель ещё не считалась — снижать нечем.'}</div></div><div class="kv"><div>Статус</div><div>${esc(x.status||'—')}</div><div>Площадь</div><div>${esc(x.area_ha?x.area_ha+' га':'—')}</div><div>Жильё</div><div>${fmtArea(x.housing_gfa_sqm)}</div><div>Всего построить</div><div>${fmtArea(x.total_gfa_sqm)}</div></div><details class="fold"><summary>Почему такой балл — ${fit.reasons.length+fit.checks.length+sc.cuts.length} пункт(ов)</summary><div class="foldbody"><div class="items">${fit.reasons.map(x=>`<div class="item"><b>Соответствует запросу</b>${esc(x)}</div>`).join('')}${fit.checks.map(x=>`<div class="item"><b>Нужно проверить</b>${esc(x)}</div>`).join('')}${sc.cuts.map(c=>`<div class="item"><b>Балл снижен на ${c.points}%</b>${esc(c.label)}</div>`).join('')}</div></div></details>${krtOrderBlock(x)}${krtTenderBlock(x)}${krtIntentBlock(x)}<div id="krtPressBox"></div><details class="fold"><summary>Остальные ТЭП каталога</summary><div class="foldbody"><div class="kv" style="border:0"><div>Нежилое</div><div>${fmtArea(x.nonresidential_gfa_sqm)}</div><div>Общественно-деловое</div><div>${fmtArea(x.business_gfa_sqm)}</div><div>Рабочие места</div><div>${esc(x.jobs??'—')}</div></div><div class="notice" id="krtOutlineNote">Границы: читаю файл карты реестра…</div></div></details>${krtRatioBlock(x)}<div class="actions"><button class="primary" id="krtHandoff">Передать в DevelopAid</button><button id="krtPlato">Рекомендация Платона</button><button id="krtMarket">Пересчитать сейчас</button><button id="krtShare">Поделиться</button><button id="krtSource">Открыть krt.mos.ru</button><button id="krtPress">Что пишут об этой площадке</button></div><div id="krtShareNote" class="notice" style="display:none"></div>${planned?'<div id="krtRequirementsBox"><div class="notice">Ищу проект решения и читаю требования…</div></div>':''}<div id="krtMapBox"><div class="notice">Строю карту участка…</div></div><div id="krtMarketResult">${cached?renderKrtModel(cached):''}</div>`;$('krtMarket').onclick=()=>loadKrtMarket(x);krtOrderBind(x);$('krtSource').onclick=()=>window.open(x.url,'_blank','noopener');loadKrtCardFacts(x);$('krtPress').onclick=()=>loadKrtPress(x);const ra=$('krtRatioApply');if(ra)ra.onclick=()=>loadKrtMarket(x);
  $('krtShare').onclick=()=>shareKrt(x);
  $('krtHandoff').onclick=()=>handoffKrt(x);
  $('krtPlato').onclick=()=>askPlatoAboutKrt(x);
@@ -1804,12 +1846,13 @@ async function loadKrtPress(x, force){
 function showKrtPress(x,d,stored){
  const box=document.getElementById('krtPressBox');
  if(!box)return;
- const items=krtPressLines(d.operator_named,'Оператор назван')
-  +krtPressLines(d.operator_appointed,'Оператор назначен, имя не названо')
-  +krtPressLines(d.agreement,'Договор о КРТ уже заключён — войти нельзя')
-  +krtPressLines(d.operator_pending,'Право ещё выставят на торги')
-  +krtPressLines(d.city_needs,'Городские нужды')
-  +krtPressLines(d.stage,'Стадия');
+ // Корзины перечисляет СЕРВЕР — тот же список, по которому он их и наполняет.
+ // Здесь стояли шесть имён из девяти: застройщик, торги на право договора и
+ // роль Фонда приезжали и не рисовались вовсе, и «Страна Девелопмент» на
+ // Озёрной, 42-46 была посчитана, но на экране её не было (владелец,
+ // 03.09.2026). Перечисление в двух местах расходится молча.
+ const buckets=(d.buckets&&d.buckets.length)?d.buckets:[];
+ const items=buckets.map(b=>krtPressLines(d[b.key],b.title)).join('');
  // Имя площадки бывает не адресом, а перечнем общих слов — «Магистральные
  // улицы тер. 4, 5, 6». Привязать к ней находку нечем: под такой якорь
  // подходит любая проза о московских магистралях, и в карточку приезжала
@@ -1829,8 +1872,11 @@ function showKrtPress(x,d,stored){
    +'с номером владения ('+esc((d.house_numbers||[]).join(', '))+') или с именем проекта. '
    +'Прочитанное ниже — целиком.</div>':'';
  box.innerHTML='<div class="section"><h3>Что пишут об этой площадке</h3>'+anchorless+strict
-  +(items||(d.anchorless?'':'<div class="notice">В прочитанных публикациях об операторе и городских нуждах '
-    +'не сказано. Это «не нашли», а не «нет»: искали по '+(d.checked||0)+' документам.</div>'))
+  +(items||(!buckets.length
+    ? '<div class="notice warn">Ответ пришёл без списка корзин — показывать нечем, '
+      +'и «ничего не нашли» здесь было бы неправдой. Нажмите «Прочитать публикации».</div>'
+    :(d.anchorless?'':'<div class="notice">В прочитанных публикациях об операторе, застройщике '
+    +'и продажах не сказано. Это «не нашли», а не «нет»: искали по '+(d.checked||0)+' документам.</div>')))
   +krtPressDocs(d)
   +`<div class="source">Запросы: ${esc((d.queries||[]).join(' · '))}. `
   +'Признак ставится только вместе с цитатой: сниппет поиска повторяет слова запроса, '

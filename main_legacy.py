@@ -70,7 +70,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.21.71"
+VERSION = "0.21.73"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -36674,6 +36674,46 @@ function renderScenarioNote(){
  }
 }
 
+// Средняя квартира — то, чем строка квартир себя выдаёт. Число квартир
+// приходит из четырёх мест и площадью не пересчитывается нигде: выгрузка
+// ГлавАПУ (строка 5), передача площадки КРТ (средний ПРОДАННЫЙ лот у соседей —
+// на живом примере 36 м²), расчёт Подмосковья (поле «средняя квартира», 58,75)
+// и норматив Москвы (33 м² на жителя × 2,1 — те же числа, что в паркинге).
+// На 136 818 м² это 3 800 квартир против 1 974, и на экране они выглядели
+// одинаково достоверно (владелец, 03.09.2026: «должно же быть 1974»).
+// Считается от того, что в строке СЕЙЧАС: отметка о происхождении устарела бы
+// молча, а частное от деления — нет.
+function apartmentUnitsNote(){
+ const row=tep.apartments||{};
+ const saleable=Number(row.saleable||0), units=Number(row.units||0);
+ if(saleable<=0||units<=0)return '';
+ const per=saleable/units;
+ // Норматив считается ТЕМ ЖЕ порядком, что в движке: сначала население по
+ // 33 м², потом квартиры по 2,1 человека — с округлением вверх на каждом шаге.
+ // Одним делением на 69,3 выходит то же самое не всегда: два округления вверх
+ // и одно — разные действия, и подпись, разошедшаяся с расчётом на единицу,
+ // читалась бы как ошибка расчёта.
+ const perPerson=Number(PARKING_2118.sqm_per_person||33);
+ const household=Number(PARKING_2118.household||2.1);
+ const norm=perPerson*household;
+ const byNorm=Math.ceil(Math.ceil(saleable/perPerson)/household);
+ // `_manual_tep_import` объявлен ниже по файлу: до его объявления обращение
+ // по имени падает (temporal dead zone), а `renderTep` зовётся раньше — из
+ // `syncTep` при загрузке. Спрашиваем через `typeof`: функция, читающая то,
+ // чего может ещё не быть, обязана это проверять.
+ const handover=(typeof _manual_tep_import!=='undefined')?_manual_tep_import:null;
+ const source=inputs._glavapu_import?'из выгрузки ГлавАПУ'
+   :((handover&&handover.source&&handover.source.kind==='krt')
+     ?'из передачи площадки КРТ':'наше');
+ // Оговорка ставится не по вкусу, а по расхождению с нормативом города:
+ // «странно» без числа рядом — это не проверка.
+ const off=Math.abs(units-byNorm)/byNorm>=0.15
+  ? ` По нормативу Москвы (${num(Math.round(norm*10)/10)} м² на квартиру) вышло бы ${num(byNorm)}.`
+  : '';
+ return `Средняя квартира ${num(Math.round(per*10)/10)} м² — число квартир ${escapeHtml(source)}`
+   + ` и от площади не пересчитывается.${off}`;
+}
+
 function renderTep(){
  repairParkingFromGlavapu();
  const body=tepBody;body.innerHTML='';
@@ -36704,6 +36744,10 @@ function renderTep(){
    // ГНС нашими долями. Доли теперь правятся под таблицей и пересчитывают строку
    // сами, как только их поменяли (просьба владельца, 20.08.2026), — кнопка,
    // делающая то же самое чужими числами, стала лишней дверью в ту же комнату.
+   if(key==='apartments'){
+     const note=apartmentUnitsNote();
+     if(note)label+=` <span style="display:block;font-size:10px;color:#777;margin-top:3px">${escapeHtml(note)}</span>`;
+   }
    if(TEP_RATIOS[key]){
      const bad=tepRefillNote[key]||tepRowComplaint(key,row);
      if(bad)label+=` <span style="display:block;font-size:10px;color:#a33;margin-top:2px">${escapeHtml(bad)}</span>`;
