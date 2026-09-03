@@ -912,7 +912,7 @@ function krtIntent(x){
  const press=state.krtPress[x.slug]||rank.press_facts;
  if(!press||!press.available)return intent;
  const merged=Object.assign({probed:true,decision_read:false,kind:'',city_needs:[],
-   operator:[],operator_name:'',agreement:[],taken:false}, intent||{});
+   operator:[],operator_name:'',agreement:[],selling:[],taken:false}, intent||{});
  merged.city_needs=(merged.city_needs||[]).concat((press.city_needs||[]).map(v=>v.quote));
  merged.operator=(merged.operator||[]).concat(
    (press.operator_named||[]).concat(press.operator_appointed||[]).map(v=>v.quote));
@@ -923,7 +923,12 @@ function krtIntent(x){
  // начата». Так Маршала Воробьева, вл. 12 стояла зелёной «войти ещё можно»
  // при подписанном договоре с правообладателями (владелец, 01.09.2026).
  merged.agreement=(merged.agreement||[]).concat((press.agreement||[]).map(v=>v.quote));
- merged.taken=!!(merged.operator_name||merged.operator.length||merged.agreement.length);
+ // На площадке уже продаётся ЖК — вход закрыт так же, как заключённым
+ // договором, и это самый частый случай: канцелярских слов страница продаж не
+ // знает, а «купить квартиру от застройщика» по нашему адресу знает.
+ merged.selling=(merged.selling||[]).concat((press.selling_now||[]).map(v=>v.quote));
+ merged.taken=!!(merged.operator_name||merged.operator.length
+   ||merged.agreement.length||merged.selling.length);
  merged.probed=true;
  return merged;
 }
@@ -960,7 +965,12 @@ function krtScore(x){
  if(intent&&intent.taken&&x.status!=='В реализации'&&!krtLiveLot(x))
   cuts.push({label:(intent.operator_name||(intent.operator||[]).length
     ?'оператор уже назван'+(intent.operator_name?': '+intent.operator_name:' в проекте решения')
-    :'договор о КРТ уже заключён — площадка развивается правообладателями')
+    :((intent.agreement||[]).length
+      ?'договор о КРТ уже заключён — площадка развивается правообладателями'
+      // Причина названа своя: снижение без верного основания читается как
+      // ошибка счёта, а «договор заключён» там, где его никто не видел, — это
+      // приписанный факт.
+      :'на площадке уже продаётся ЖК'))
    +' — войти нельзя',points:60});
  // Городские нужды снижают, но не закрывают: КРТ для нужд города выигрывает и
  // частный застройщик, поэтому это не запрет, а названная сложность.
@@ -1252,7 +1262,11 @@ function krtMarks(x){
  const press=(state.krtPress||{})[x.slug]||(state.krtRank[x.slug]||{}).press_facts||null;
  const renov=card.renovation||((press&&press.city_needs||[]).length>0);
  const builder=(card.developers||[])[0]
-   ||((press&&press.operator_named||[])[0]||{}).name||'';
+   ||((press&&press.operator_named||[])[0]||{}).name
+   ||((press&&press.developer_named||[])[0]||{}).name||'';
+ // На площадке уже продаётся ЖК — вход закрыт, и говорит об этом не канцелярия,
+ // а страница продаж. Метка несёт свою цитату по тому же правилу, что реновация.
+ const selling=((press&&press.selling_now)||[])[0]||null;
  // Метка несёт свою цитату: «почему реновация?» (владелец, 02.09.2026) — на
  // общий ответ «в публикации сказано» ответить нечем, на цитату — есть чем.
  const renovQuote=card.renovation_quote
@@ -1261,6 +1275,8 @@ function krtMarks(x){
  const marks=(renov?'<span class="tag warn" title="'
     +esc(String(card.renovation?'карточка krt.mos.ru: ':'публикация: ')+renovQuote)
     +'">реновация</span>':'')
+  +(selling?'<span class="tag warn" title="'+esc('публикация: '+(selling.quote||''))
+    +'">уже продаётся ЖК</span>':'')
   +(builder?'<span class="tag" title="Застройщик назван официальной карточкой krt.mos.ru или публикацией">'
     +esc(builder.length>26?builder.slice(0,24)+'…':builder)+'</span>':'');
  return marks;
@@ -1804,12 +1820,13 @@ async function loadKrtPress(x, force){
 function showKrtPress(x,d,stored){
  const box=document.getElementById('krtPressBox');
  if(!box)return;
- const items=krtPressLines(d.operator_named,'Оператор назван')
-  +krtPressLines(d.operator_appointed,'Оператор назначен, имя не названо')
-  +krtPressLines(d.agreement,'Договор о КРТ уже заключён — войти нельзя')
-  +krtPressLines(d.operator_pending,'Право ещё выставят на торги')
-  +krtPressLines(d.city_needs,'Городские нужды')
-  +krtPressLines(d.stage,'Стадия');
+ // Корзины перечисляет СЕРВЕР — тот же список, по которому он их и наполняет.
+ // Здесь стояли шесть имён из девяти: застройщик, торги на право договора и
+ // роль Фонда приезжали и не рисовались вовсе, и «Страна Девелопмент» на
+ // Озёрной, 42-46 была посчитана, но на экране её не было (владелец,
+ // 03.09.2026). Перечисление в двух местах расходится молча.
+ const buckets=(d.buckets&&d.buckets.length)?d.buckets:[];
+ const items=buckets.map(b=>krtPressLines(d[b.key],b.title)).join('');
  // Имя площадки бывает не адресом, а перечнем общих слов — «Магистральные
  // улицы тер. 4, 5, 6». Привязать к ней находку нечем: под такой якорь
  // подходит любая проза о московских магистралях, и в карточку приезжала
@@ -1829,8 +1846,11 @@ function showKrtPress(x,d,stored){
    +'с номером владения ('+esc((d.house_numbers||[]).join(', '))+') или с именем проекта. '
    +'Прочитанное ниже — целиком.</div>':'';
  box.innerHTML='<div class="section"><h3>Что пишут об этой площадке</h3>'+anchorless+strict
-  +(items||(d.anchorless?'':'<div class="notice">В прочитанных публикациях об операторе и городских нуждах '
-    +'не сказано. Это «не нашли», а не «нет»: искали по '+(d.checked||0)+' документам.</div>'))
+  +(items||(!buckets.length
+    ? '<div class="notice warn">Ответ пришёл без списка корзин — показывать нечем, '
+      +'и «ничего не нашли» здесь было бы неправдой. Нажмите «Прочитать публикации».</div>'
+    :(d.anchorless?'':'<div class="notice">В прочитанных публикациях об операторе, застройщике '
+    +'и продажах не сказано. Это «не нашли», а не «нет»: искали по '+(d.checked||0)+' документам.</div>')))
   +krtPressDocs(d)
   +`<div class="source">Запросы: ${esc((d.queries||[]).join(' · '))}. `
   +'Признак ставится только вместе с цитатой: сниппет поиска повторяет слова запроса, '
