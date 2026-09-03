@@ -1312,12 +1312,14 @@ function renderKrt(){const a=state.krtFiltered,body=$('krtRows');body.innerHTML=
 // 23.08.2026). На метр, а не в абсолюте: потолок в рублях выгоден крупным
 // площадкам просто по размеру. Пустая ячейка значит «не посчитали», и это не
 // то же самое, что «не выдерживает», — поэтому у неё своя подпись.
-// Картинка участка. Границ КРТ каталог krt.mos.ru не публикует и сам это
-// объявляет (`geometry_status: not_published_in_catalogue`) — есть только
-// геокодированная точка и площадь в гектарах. Поэтому рисуем карту улиц вокруг
-// точки с меткой и масштабной линейкой, и НЕ рисуем фигуру «примерной
-// площади»: квадрат или круг на карте читается как контур, и по нему начнут
-// мерить пятно застройки. Подложку отдаёт движковый `/land/basemap` тем же
+// Картинка участка. Границы У БОЛЬШИНСТВА площадок ЕСТЬ: файл карты реестра
+// (`map2025.json`) несёт полигон каждой — их рисуем настоящим контуром. Прежняя
+// оговорка «каталог границ не публикует» была верна, пока каталог читался
+// разметкой, и осталась на экране после смены источника: карточка объявляла
+// приближением ровно то, что приехало официальным полигоном. Чего в файле нет
+// (35 площадок из 282 на 03.09.2026), то остаётся геокодированной точкой — и
+// тогда мы НЕ рисуем фигуру «примерной площади»: квадрат или круг на карте
+// читается как контур, и по нему начнут мерить пятно застройки. Подложку отдаёт движковый `/land/basemap` тем же
 // меркаторным bbox, в котором мы ставим метку, — совмещать в браузере нечего.
 // Кадастровый слой `/land/map-image` для этого масштаба не годится: он верен
 // на двухстах метрах карточки участка, а на километре даёт клубок границ ЕГРН
@@ -1334,13 +1336,37 @@ async function loadKrtPoint(x){
  try{
   const d=await askJson('/auctions/krt/'+encodeURIComponent(x.slug)+'/point',{cache:'no-store'});
   box.innerHTML=krtSiteMap(d,d.area_ha!=null?d.area_ha:x.area_ha);
+  krtOutlineNote(d.geometry_status);
  }catch(e){
   // Не построилась — значит надо сказать, что именно не сработало, и оставить
   // первоисточник. Пустое место читается как «карты тут не бывает».
   box.innerHTML='<div class="section"><h3>Участок на карте</h3>'
    +'<div class="notice warn">Карта не построена: '+esc(e.message||e)
    +'</div>'+krtNspdLink('')+'</div>';
+  krtOutlineNote('');
  }
+}
+// Чем очерчена площадка — ответ маршрута, а не постоянная строка. Оговорка
+// «официальный полигон пока не получен» стояла у ВСЕХ площадок и после того,
+// как файл карты реестра принёс контуры: она объявляла приближением ровно то,
+// что приехало официальным полигоном (правило «оговорка про источник обязана
+// пережить смену источника»). Не спросили — так и сказано: «не знаем» и
+// «границ нет» на экране не одно и то же.
+function krtOutlineNote(status){
+ const box=document.getElementById('krtOutlineNote');
+ if(!box)return;
+ const said={
+  official_polygon:['notice','Границы — официальный полигон файла карты реестра КРТ '
+   +'(krt.mos.ru). Контур нарисован по нему, приближения здесь нет.'],
+  official_centre_only:['notice warn','В файле карты реестра у площадки есть центр, но нет '
+   +'полигона границ. Анализ идёт от точки — контура нет.'],
+  geocoded_point:['notice warn','Площадки нет в файле карты реестра: точка поставлена '
+   +'геокодером по адресу, официального контура нет. Анализ помечает это приближение.'],
+  not_published_in_catalogue:['notice warn','Каталог по этой площадке границ не отдал — '
+   +'анализ идёт от точки.']
+ }[String(status||'')]||['notice','Границы не спрошены: карта не строилась.'];
+ box.className=said[0];
+ box.textContent=said[1];
 }
 // Ссылка на публичную карту НСПД. Адрес собирает движок и присылает готовым —
 // координаты там в веб-меркаторе, и второй пересчёт здесь разошёлся бы с первым
@@ -1622,7 +1648,7 @@ async function loadKrtRequirements(x){
   if(state.selectedKrt&&state.selectedKrt.slug===x.slug)box.innerHTML=renderKrtRequirements(d);
  }catch(e){box.innerHTML=`<div class="notice warn">${esc(e.message||e)}</div>`}
 }
-function selectKrt(x){state.selectedKrt=x;const sc=krtScore(x),fit=sc.fit,cached=state.krtModels[x.slug],planned=String(x.status||'').toLowerCase().includes('планируем');$('krtSide').innerHTML=`<h2>${esc(x.name)}${x.is_new?'<span class="tag new">новое</span>':''}</h2><div class="sub">krt.mos.ru · ${esc([x.okrug,x.district].filter(Boolean).join(' · '))}</div><div class="notice"><div class="fit ${sc.tone}"><span class="light"></span>Оценка Платона: ${sc.score}/100 · ${sc.label}</div><div class="source">Потенциал по официальным ТЭП — ${sc.base}. ${sc.counted?(sc.cut?`Расчёт снял ${sc.cut}%: `+esc(sc.cuts.map(c=>c.label+' −'+c.points+'%').join(', ')):'Расчёт балл не снизил.'):'Модель ещё не считалась — снижать нечем.'}</div></div><div class="kv"><div>Статус</div><div>${esc(x.status||'—')}</div><div>Площадь</div><div>${esc(x.area_ha?x.area_ha+' га':'—')}</div><div>Жильё</div><div>${fmtArea(x.housing_gfa_sqm)}</div><div>Всего построить</div><div>${fmtArea(x.total_gfa_sqm)}</div></div><details class="fold"><summary>Почему такой балл — ${fit.reasons.length+fit.checks.length+sc.cuts.length} пункт(ов)</summary><div class="foldbody"><div class="items">${fit.reasons.map(x=>`<div class="item"><b>Соответствует запросу</b>${esc(x)}</div>`).join('')}${fit.checks.map(x=>`<div class="item"><b>Нужно проверить</b>${esc(x)}</div>`).join('')}${sc.cuts.map(c=>`<div class="item"><b>Балл снижен на ${c.points}%</b>${esc(c.label)}</div>`).join('')}</div></div></details>${krtOrderBlock(x)}${krtTenderBlock(x)}${krtIntentBlock(x)}<div id="krtPressBox"></div><details class="fold"><summary>Остальные ТЭП каталога</summary><div class="foldbody"><div class="kv" style="border:0"><div>Нежилое</div><div>${fmtArea(x.nonresidential_gfa_sqm)}</div><div>Общественно-деловое</div><div>${fmtArea(x.business_gfa_sqm)}</div><div>Рабочие места</div><div>${esc(x.jobs??'—')}</div></div><div class="notice warn">Официальный полигон границ пока не получен. Анализ использует геокодированную точку и помечает это приближение.</div></div></details>${krtRatioBlock(x)}<div class="actions"><button class="primary" id="krtHandoff">Передать в DevelopAid</button><button id="krtPlato">Рекомендация Платона</button><button id="krtMarket">Пересчитать сейчас</button><button id="krtShare">Поделиться</button><button id="krtSource">Открыть krt.mos.ru</button><button id="krtPress">Что пишут об этой площадке</button></div><div id="krtShareNote" class="notice" style="display:none"></div>${planned?'<div id="krtRequirementsBox"><div class="notice">Ищу проект решения и читаю требования…</div></div>':''}<div id="krtMapBox"><div class="notice">Строю карту участка…</div></div><div id="krtMarketResult">${cached?renderKrtModel(cached):''}</div>`;$('krtMarket').onclick=()=>loadKrtMarket(x);krtOrderBind(x);$('krtSource').onclick=()=>window.open(x.url,'_blank','noopener');loadKrtCardFacts(x);$('krtPress').onclick=()=>loadKrtPress(x);const ra=$('krtRatioApply');if(ra)ra.onclick=()=>loadKrtMarket(x);
+function selectKrt(x){state.selectedKrt=x;const sc=krtScore(x),fit=sc.fit,cached=state.krtModels[x.slug],planned=String(x.status||'').toLowerCase().includes('планируем');$('krtSide').innerHTML=`<h2>${esc(x.name)}${x.is_new?'<span class="tag new">новое</span>':''}</h2><div class="sub">krt.mos.ru · ${esc([x.okrug,x.district].filter(Boolean).join(' · '))}</div><div class="notice"><div class="fit ${sc.tone}"><span class="light"></span>Оценка Платона: ${sc.score}/100 · ${sc.label}</div><div class="source">Потенциал по официальным ТЭП — ${sc.base}. ${sc.counted?(sc.cut?`Расчёт снял ${sc.cut}%: `+esc(sc.cuts.map(c=>c.label+' −'+c.points+'%').join(', ')):'Расчёт балл не снизил.'):'Модель ещё не считалась — снижать нечем.'}</div></div><div class="kv"><div>Статус</div><div>${esc(x.status||'—')}</div><div>Площадь</div><div>${esc(x.area_ha?x.area_ha+' га':'—')}</div><div>Жильё</div><div>${fmtArea(x.housing_gfa_sqm)}</div><div>Всего построить</div><div>${fmtArea(x.total_gfa_sqm)}</div></div><details class="fold"><summary>Почему такой балл — ${fit.reasons.length+fit.checks.length+sc.cuts.length} пункт(ов)</summary><div class="foldbody"><div class="items">${fit.reasons.map(x=>`<div class="item"><b>Соответствует запросу</b>${esc(x)}</div>`).join('')}${fit.checks.map(x=>`<div class="item"><b>Нужно проверить</b>${esc(x)}</div>`).join('')}${sc.cuts.map(c=>`<div class="item"><b>Балл снижен на ${c.points}%</b>${esc(c.label)}</div>`).join('')}</div></div></details>${krtOrderBlock(x)}${krtTenderBlock(x)}${krtIntentBlock(x)}<div id="krtPressBox"></div><details class="fold"><summary>Остальные ТЭП каталога</summary><div class="foldbody"><div class="kv" style="border:0"><div>Нежилое</div><div>${fmtArea(x.nonresidential_gfa_sqm)}</div><div>Общественно-деловое</div><div>${fmtArea(x.business_gfa_sqm)}</div><div>Рабочие места</div><div>${esc(x.jobs??'—')}</div></div><div class="notice" id="krtOutlineNote">Границы: читаю файл карты реестра…</div></div></details>${krtRatioBlock(x)}<div class="actions"><button class="primary" id="krtHandoff">Передать в DevelopAid</button><button id="krtPlato">Рекомендация Платона</button><button id="krtMarket">Пересчитать сейчас</button><button id="krtShare">Поделиться</button><button id="krtSource">Открыть krt.mos.ru</button><button id="krtPress">Что пишут об этой площадке</button></div><div id="krtShareNote" class="notice" style="display:none"></div>${planned?'<div id="krtRequirementsBox"><div class="notice">Ищу проект решения и читаю требования…</div></div>':''}<div id="krtMapBox"><div class="notice">Строю карту участка…</div></div><div id="krtMarketResult">${cached?renderKrtModel(cached):''}</div>`;$('krtMarket').onclick=()=>loadKrtMarket(x);krtOrderBind(x);$('krtSource').onclick=()=>window.open(x.url,'_blank','noopener');loadKrtCardFacts(x);$('krtPress').onclick=()=>loadKrtPress(x);const ra=$('krtRatioApply');if(ra)ra.onclick=()=>loadKrtMarket(x);
  $('krtShare').onclick=()=>shareKrt(x);
  $('krtHandoff').onclick=()=>handoffKrt(x);
  $('krtPlato').onclick=()=>askPlatoAboutKrt(x);
