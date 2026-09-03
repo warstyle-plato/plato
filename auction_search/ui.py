@@ -478,6 +478,16 @@ function renderCoverage(){
   line.textContent=`Допуск качества — в основной подборке ${q.accepted||0} из ${q.seen||0}; неполных ${q.incomplete||0}; ниже профиля сделок ${q.outside_profile||0}; шум ${q.noise||0}`;
   box.appendChild(line);
  }
+ // Про КРТ спрашивают отдельно, и в общей воронке площадка неотличима от
+ // гаража. Отсев без числа на каждом шаге чинится наугад — в тот шаг, который
+ // на виду; поэтому здесь и сколько дошло, и чем отсеяно остальное.
+ if(q.krt_seen!==undefined&&q.krt_seen>0){
+  const line=document.createElement('div');
+  const dropped=(q.krt_dropped||[]).map(x=>`${x.reason} — ${x.count}`).join('; ');
+  line.textContent=`Из них площадок КРТ — ${q.krt_seen}, в основную подборку ${q.krt_accepted||0}`
+   +(dropped?`; отсеяно: ${dropped}`:'');
+  box.appendChild(line);
+ }
  lines.forEach(x=>{
   const line=document.createElement('div');
   line.textContent=x.name+(x.said?' — '+x.said:'')+(x.why?' · '+x.why:'');

@@ -91,7 +91,24 @@ class AuctionSearchService:
             screening = self.screen_lot(lot)
             quality = catalogue_quality(lot)
             assessed.append((lot, screening, quality))
+        # КРТ считается отдельной строкой: в общей воронке площадка КРТ
+        # неотличима от гаража, а спрашивают именно про неё («в торгах по КРТ
+        # на самом деле активных 12, а не 6», владелец, 03.09.2026). Отсев без
+        # числа на каждом шаге чинится наугад — в тот шаг, который на виду.
+        krt = [(lot, screen, quality) for lot, screen, quality in assessed
+               if getattr(lot.lot_kind, "value", "") == "krt"]
+        krt_dropped: dict[str, int] = {}
+        for _lot, _screen, quality in krt:
+            if quality.get("accepted"):
+                continue
+            for reason in (quality.get("reasons") or ["причина не названа"]):
+                krt_dropped[reason] = krt_dropped.get(reason, 0) + 1
         self.last_quality_report = {
+            "krt_seen": len(krt),
+            "krt_accepted": sum(1 for _l, _s, quality in krt if quality.get("accepted")),
+            "krt_dropped": [{"reason": reason, "count": count}
+                            for reason, count in sorted(krt_dropped.items(),
+                                                        key=lambda pair: -pair[1])],
             "seen": len(assessed),
             "accepted": sum(1 for _, screen, quality in assessed
                             if screen["development_relevant"] and quality["accepted"]),

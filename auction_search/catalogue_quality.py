@@ -54,6 +54,18 @@ def catalogue_quality(lot: AuctionLot) -> dict[str, Any]:
     if lot.lot_kind is LotKind.EQUITY_STAKE:
         return _equity_quality(lot)
 
+    # У лота КРТ продаётся ПРАВО на заключение договора, а не сам актив, и
+    # стартовая цена этого права ничего не говорит о масштабе площадки: на
+    # живой выдаче 03.09.2026 Шипиловский пр-д, влд. 55 (6,61 га) стоил
+    # 4,1 млн ₽, а Нижние Поля (8,97 га) — 9,3 млн, и оба выпадали из
+    # подборки «ниже профиля сделок». Эталон снят со 121 сделки ПОКУПКИ
+    # недвижимости (48…931 млн ₽) — мерить им цену права значит сравнивать
+    # разные величины, ровно как «продукты» отчёта с построенными местами.
+    # Масштаб у КРТ меряется гектарами и объёмом строительства, и он у этих
+    # лотов известен.
+    if lot.lot_kind is LotKind.KRT:
+        return _krt_quality(lot)
+
     missing: list[str] = []
     if not ((lot.address or "").strip() or lot.cadastral_numbers):
         missing.append("нет адреса или кадастрового номера")
@@ -128,4 +140,36 @@ def _equity_quality(lot: AuctionLot) -> dict[str, Any]:
         # Мера у этого вида своя, и она названа: не метры, а цена и активы.
         "measured_by": "цена доли и активы общества",
         "equity": screened,
+    }
+
+
+def _krt_quality(lot: AuctionLot) -> dict[str, Any]:
+    """Допуск площадки КРТ: местоположение, масштаб и актуальность процедуры.
+
+    Цена в воротах не участвует — она про право, а не про актив. Порогом её
+    отсекать нельзя, но и молчать о ней незачем: неопубликованная цена
+    называется отдельной причиной и остаётся видимой в карточке.
+    """
+    missing: list[str] = []
+    if not ((lot.address or "").strip() or lot.cadastral_numbers):
+        missing.append("нет адреса или кадастрового номера")
+    area = _positive(lot.land_area_sqm, lot.building_area_sqm)
+    if area is None:
+        missing.append("не опубликована площадь территории")
+    if not ((lot.application_deadline or "").strip() or (lot.status or "").strip()):
+        missing.append("нет срока подачи заявки или статуса торгов")
+    reasons = list(missing)
+    accepted = not missing
+    state = "ready" if accepted else "incomplete"
+    return {
+        "accepted": accepted,
+        "state": state,
+        "label": {"ready": "Основная подборка",
+                  "incomplete": "Не хватает данных"}[state],
+        "reasons": reasons,
+        "required": ["местоположение", "площадь территории", "актуальность"],
+        "minimum_profile_fit": None,
+        "fit": profile_fit(lot.to_dict()),
+        # Мера названа своя: цена права порогом сделок не меряется.
+        "measured_by": "площадь территории и объём строительства",
     }
