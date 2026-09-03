@@ -26738,6 +26738,55 @@ def _constraint_ok(value: float | None, target: float, constraint: str) -> bool:
     return abs(value - target) <= max(abs(target) * 1e-4, 1e-5)
 
 
+def _goal_scope_label(scope: str, label: str) -> str:
+    """«О1» само по себе не говорит, почему смотрят на неё, — «слабейшая очередь О1» говорит."""
+    if scope == "weakest_phase" and label and label != "Весь проект":
+        return f"слабейшая очередь {label}"
+    return label or "Весь проект"
+
+
+def _goal_refusal_reason(
+    scope_label: str,
+    variable: str,
+    target_metric: str,
+    target_value: float,
+    constraint: str,
+    lo: float,
+    hi: float,
+    closest_variable: float,
+    closest_metric: float | None,
+    closest_label: str,
+) -> str:
+    """Причина отказа подбора: чьё число, какой порог, до чего дотянули и где."""
+    metric_meta = _SENSITIVITY_METRICS.get(target_metric) or {}
+    metric_label = str(metric_meta.get("label") or target_metric)
+    unit = str(metric_meta.get("unit") or "")
+    # Кратность банка читают с двумя знаками: «1,20x», а не «1,200x».
+    digits = 2 if unit == "x" else int(metric_meta.get("digits") or 2)
+
+    def fmt_metric(value: float | None) -> str:
+        if value is None or not math.isfinite(float(value)):
+            return "не посчитан"
+        text = f"{float(value):,.{digits}f}".replace(",", " ").replace(".", ",")
+        return f"{text}{unit}" if unit == "x" else (f"{text} {unit}".strip())
+
+    def fmt_variable(value: float) -> str:
+        return f"{float(value):,.0f}".replace(",", " ")
+
+    words = {"at_least": "не ниже", "at_most": "не выше"}.get(constraint, "ровно")
+    variable_label = _GOAL_VARIABLES.get(variable, variable)
+    where = (
+        "даже при нулевом значении" if abs(closest_variable - 0.0) < 1e-9
+        else f"ближе всего при {fmt_variable(closest_variable)}"
+    )
+    who = "" if closest_label == scope_label else f" ({closest_label})"
+    return (
+        f"{scope_label[:1].upper()}{scope_label[1:]}: {metric_label} {words} {fmt_metric(target_value)} "
+        f"не достигается ни при одном значении «{variable_label}» в диапазоне "
+        f"{fmt_variable(lo)}–{fmt_variable(hi)} — {where} выходит {fmt_metric(closest_metric)}{who}."
+    )
+
+
 def _tool_goal_seek(
     req: AgentChatRequest,
     bundle: dict[str, Any],
@@ -26786,8 +26835,10 @@ def _tool_goal_seek(
     # Coarse scan first: robust against imperfect monotonicity.
     points = [lo + (hi - lo) * i / 16 for i in range(17)]
     sampled = []
+    labels: dict[float, str] = {}
     for p in points:
         mv, b, lbl = evaluate(p)
+        labels[p] = lbl
         sampled.append((p, mv, _constraint_ok(mv, target_value, constraint)))
 
     feasible = [item for item in sampled if item[2]]
@@ -26796,21 +26847,32 @@ def _tool_goal_seek(
             sampled,
             key=lambda item: abs((item[1] if item[1] is not None else float("inf")) - target_value),
         )
+        # Отказ называет, ЧЬЁ число не дотянуло и до чего дотянуло. Общее
+        # «в заданном диапазоне не найдено» рядом со сводным LLCR 1,23x
+        # читалось как противоречие: порог не проходила слабейшая очередь
+        # (0,95x), а карточка показывала свод — и не говорила, о ком речь.
+        scope_label = _goal_scope_label(resolved_scope, current_label)
+        closest_label = _goal_scope_label(resolved_scope, labels.get(closest[0], current_label))
         return {
             "available": False,
-            "reason": "В заданном диапазоне не найдено значение переменной, удовлетворяющее целевому условию.",
+            "reason": _goal_refusal_reason(
+                scope_label, variable, target_metric, target_value, constraint,
+                lo, hi, closest[0], closest[1], closest_label,
+            ),
             "variable": variable,
             "variable_label": _GOAL_VARIABLES[variable],
             "target_metric": target_metric,
             "target_value": target_value,
             "constraint": constraint,
             "scope": resolved_scope,
+            "scope_label": scope_label,
             "current_variable": round(current_var, 4),
             "current_metric": round(float(current_metric), 6),
             "search_bounds": [round(lo, 4), round(hi, 4)],
             "closest_tested": {
                 "variable": round(closest[0], 4),
                 "metric": round(float(closest[1]), 6) if closest[1] is not None else None,
+                "scope_label": closest_label,
             },
         }
 

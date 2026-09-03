@@ -98,6 +98,21 @@
      undefined — и карточка решения вечно показывала бы «расчёт не выполнен».
      Форматтеры money/mult/pct — тоже const, поэтому берутся так же. */
   function pageResult() { return typeof lastResult === 'undefined' ? null : lastResult; }
+  /* Очереди — свой объект страницы: lastResult держит свод или одну очередь,
+     смотря какой вид открыт, а порог банка смотрит на каждую очередь. */
+  function pagePhases() {
+    if (typeof phaseBundle === 'undefined' || !phaseBundle || !phaseBundle.phases || !phaseBundle.phases.length) return null;
+    return phaseBundle;
+  }
+  function weakestPhase(bundle) {
+    var weakest = null;
+    bundle.phases.forEach(function (item) {
+      var value = item && item.result && item.result.summary ? item.result.summary.llcr : null;
+      if (value == null) return;
+      if (!weakest || value < weakest.llcr) weakest = { name: item.name || 'очередь', llcr: value };
+    });
+    return weakest;
+  }
   function pageGlavapu() { return typeof glavapuImport === 'undefined' ? null : glavapuImport; }
   function pageMoResult() { return typeof moResult === 'undefined' ? null : moResult; }
   /* Карточка с кнопкой «Применить» на экране — ещё не решение: применение
@@ -1108,21 +1123,33 @@
     var result = pageResult();
     if (!card || !result || !result.summary) return;
 
-    var llcr = result.summary.llcr;
+    /* Свод и слабейшая очередь — два разных числа, и банк смотрит на второе:
+       у каждой очереди своя кредитная линия. Сводный LLCR 1,23x рядом с
+       «максимум не достигается» читался как противоречие, пока карточка не
+       говорила, что максимум подбирался для очереди с 0,95x. */
+    var phases = pagePhases();
+    var weakest = phases ? weakestPhase(phases) : null;
+    var llcr = phases && phases.consolidated && phases.consolidated.summary
+      ? phases.consolidated.summary.llcr : result.summary.llcr;
+    var judged = weakest ? weakest.llcr : llcr;
     var title = document.getElementById('iaVerdictTitle');
     card.classList.remove('pass', 'edge', 'fail');
-    if (llcr == null) {
+    if (judged == null) {
       title.textContent = 'LLCR не рассчитан';
-    } else if (llcr >= TARGET_LLCR) {
+    } else if (judged >= TARGET_LLCR) {
       card.classList.add('pass'); title.textContent = 'Экономика проходит';
-    } else if (llcr >= 1.05) {
+    } else if (weakest) {
+      card.classList.add(judged >= 1.05 ? 'edge' : 'fail');
+      title.textContent = 'Очередь ' + weakest.name + ' порог банка не проходит';
+    } else if (judged >= 1.05) {
       card.classList.add('edge'); title.textContent = 'Экономика на границе';
     } else {
       card.classList.add('fail'); title.textContent = 'Экономика не проходит';
     }
 
     document.getElementById('iaVerdictLead').textContent =
-      'Чистая прибыль ' + fmtMoney(result.summary.net_profit)
+      (weakest ? 'Свод LLCR ' + fmtMult(llcr) + ', слабейшая очередь ' + weakest.name + ' — ' + fmtMult(weakest.llcr) + '. ' : '')
+      + 'Чистая прибыль ' + fmtMoney(result.summary.net_profit)
       + ' · маржинальность ' + fmtPct(result.summary.margin)
       + ' · IRR ' + (result.summary.irr_equity == null ? 'N/A' : fmtPct(result.summary.irr_equity))
       + ' · порог банка LLCR ' + TARGET_LLCR.toFixed(2).replace('.', ',') + 'x.';
@@ -1131,7 +1158,10 @@
     var price = found ? goalSeek.current.variable : Number(pageInputs().purchase_price_mln || 0);
     var solution = found ? found.variable : null;
     var cells = [
-      { label: 'LLCR (расчётный)', value: fmtMult(llcr), note: 'Ориентир банка — 1,20x.' },
+      weakest
+        ? { label: 'LLCR (свод / слабейшая очередь)', value: fmtMult(llcr) + ' / ' + fmtMult(weakest.llcr),
+            note: 'Ориентир банка — 1,20x по каждой очереди; слабейшая — ' + weakest.name + '.' }
+        : { label: 'LLCR (расчётный)', value: fmtMult(llcr), note: 'Ориентир банка — 1,20x.' },
       price > 0
         ? { label: 'Цена входа', value: mlnLabel(price), note: 'Текущая цена приобретения.' }
         : { label: 'Цена входа', value: 'не задана', note: 'Заполните «Стоимость покупки» в Экономике — сейчас всё посчитано как для бесплатного участка.', wait: true },
@@ -1140,7 +1170,7 @@
         : { label: 'Максимум цены входа', value: ceilingText(), note: ceilingNote(), wait: true },
       found
         ? { label: 'Запас к цене', value: mlnLabel(found.change_abs), note: found.change_abs >= 0 ? 'Цена ниже потолка.' : 'Цена выше потолка — покупка не проходит по LLCR.' }
-        : { label: 'Запас к цене', value: '—', note: refused() ? 'Порог не достигается ни при какой цене — дело не в цене входа.' : 'Считается после подбора максимума.', wait: true }
+        : { label: 'Запас к цене', value: '—', note: refused() ? 'Порог не достигается ни при какой цене входа' + (goalSeek.scope_label ? ' у ' + scopeGenitive(goalSeek.scope_label) : '') + ' — дело не в цене.' : 'Считается после подбора максимума.', wait: true }
     ];
 
     document.getElementById('iaVerdictGrid').innerHTML = cells.map(function (cell) {
@@ -1170,9 +1200,26 @@
     if (refused()) return 'не достигается';
     return 'откройте раздел';
   }
+  /* Отказ подписывается тем, чьё число не дотянуло: подбор для очередей идёт
+     по слабейшей, и «не достигается» рядом со сводным 1,23x без этого
+     читается как ошибка счёта. */
   function ceilingNote() {
-    if (refused()) return 'LLCR 1,20x не достигается даже при нулевой цене входа.';
+    if (refused()) {
+      var closest = goalSeek.closest_tested || {};
+      var who = goalSeek.scope_label ? scopeGenitive(goalSeek.scope_label) : 'проекта';
+      var at = Number(closest.variable || 0) === 0
+        ? 'даже при нулевой цене входа'
+        : 'ближе всего при ' + mlnLabel(Number(closest.variable));
+      var got = closest.metric == null ? '' : ' — там выходит ' + fmtMult(closest.metric)
+        + (closest.scope_label && closest.scope_label !== goalSeek.scope_label ? ' (' + closest.scope_label + ')' : '');
+      return 'LLCR 1,20x у ' + who + ' не достигается ' + at + got + '.';
+    }
     return 'Подбор параметра движком при LLCR 1,20x.';
+  }
+  function scopeGenitive(label) {
+    if (label.indexOf('слабейшая очередь') === 0) return 'слабейшей очереди' + label.slice('слабейшая очередь'.length);
+    if (label === 'Весь проект') return 'всего проекта';
+    return label;
   }
 
   /* Подбор — это многократный полный пересчёт модели, поэтому он не идёт
