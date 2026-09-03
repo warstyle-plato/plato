@@ -82,7 +82,13 @@ def test_a_catalogue_with_a_lot_answers_two_hundred(client, monkeypatch):
     assert got.status_code == 200, got.text
     body = got.json()
     assert body["count"] == 1
-    assert body["quality"] == {
+    # Сверяются счётчики воронки, а не состав словаря: у отчёта с 03.09.2026
+    # своя строка про КРТ, и равенство целиком упало бы при верном поведении.
+    # Это уже второй экземпляр той же хрупкой проверки — утверждение здесь про
+    # числа, а не про то, что к отчёту нельзя ничего добавить.
+    quality = body["quality"]
+    assert {key: quality[key] for key in
+            ("seen", "accepted", "incomplete", "outside_profile", "noise")} == {
         "seen": 1,
         "accepted": 1,
         "incomplete": 0,
