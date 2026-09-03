@@ -36697,8 +36697,13 @@ function apartmentUnitsNote(){
  const household=Number(PARKING_2118.household||2.1);
  const norm=perPerson*household;
  const byNorm=Math.ceil(Math.ceil(saleable/perPerson)/household);
+ // `_manual_tep_import` объявлен ниже по файлу: до его объявления обращение
+ // по имени падает (temporal dead zone), а `renderTep` зовётся раньше — из
+ // `syncTep` при загрузке. Спрашиваем через `typeof`: функция, читающая то,
+ // чего может ещё не быть, обязана это проверять.
+ const handover=(typeof _manual_tep_import!=='undefined')?_manual_tep_import:null;
  const source=inputs._glavapu_import?'из выгрузки ГлавАПУ'
-   :((_manual_tep_import&&_manual_tep_import.source&&_manual_tep_import.source.kind==='krt')
+   :((handover&&handover.source&&handover.source.kind==='krt')
      ?'из передачи площадки КРТ':'наше');
  // Оговорка ставится не по вкусу, а по расхождению с нормативом города:
  // «странно» без числа рядом — это не проверка.
