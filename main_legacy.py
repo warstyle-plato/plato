@@ -70,7 +70,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.21.78"
+VERSION = "0.21.79"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -14652,7 +14652,11 @@ _V4_INPUT_CELLS: dict[str, str] = {
     "apartment_price_th": "B59", "commercial_price_th": "B60",
     "parking_price_th": "B61", "storage_price_th": "B62",
     "share_before_rve_pct": "B63", "monthly_growth_pre_pct": "B64",
-    "monthly_growth_post_pct": "B65", "sales_lag_months": "B68",
+    "monthly_growth_post_pct": "B65",
+    # sales_lag_months здесь НЕ стоит: ячейку B68 не читает ни одна формула,
+    # лаг живёт колонкой G блока очередей — у каждой очереди свой. Один ключ
+    # на двух ячейках означал бы, что правка живой и правка мёртвой выглядят
+    # одинаково.
     "residual_sales_months": "B69",
     "vri_periodicity_months": "B78", "vri_interest_spread_pp": "B81",
     "vri_relief_mln": "B82", "vri_security_cost_mln": "B83",
@@ -15732,8 +15736,8 @@ def _v4_finance_hints(bundle: dict[str, Any]) -> dict[str, Any]:
                for row in rows)]
     return hints
 def _v4_schedule_rows_xml(xml: str, title: str, hint: str,
-                          rows: list[tuple[int, float]], unit: str
-                          ) -> tuple[str, list[tuple[str, str]]]:
+                          rows: list[tuple[int, float]], unit: str,
+                          key: str = "") -> tuple[str, list[tuple[str, str]]]:
     """Блок «месяц → величина» внизу «Вводных» книги v4; возвращает ссылки.
 
     Тот же приём, что у ступеней ставки: книга собирается прямо в XML, низ
@@ -15749,7 +15753,12 @@ def _v4_schedule_rows_xml(xml: str, title: str, hint: str,
     def text_cell(coord: str, value: str) -> str:
         return f'<x:c r="{coord}" t="inlineStr"><x:is><x:t>{html.escape(value, quote=False)}</x:t></x:is></x:c>'
 
-    parts.append(f'<x:row r="{row_at}">' + text_cell(f"A{row_at}", title) + "</x:row>")
+    # Ключ движка — в шапке блока: вводная здесь ОДНА («30%@0; 40%@6»), а строк
+    # у неё столько, сколько шагов. Подписать ключом каждую строку значило бы
+    # назвать шаг целой вводной — то же правило, по которому раскиданный по
+    # очередям соцобъект ключа не получает.
+    parts.append(f'<x:row r="{row_at}">' + text_cell(f"A{row_at}", title)
+                 + (text_cell(f"D{row_at}", key) if key else "") + "</x:row>")
     row_at += 1
     parts.append(f'<x:row r="{row_at}">' + text_cell(f"A{row_at}", hint) + "</x:row>")
     row_at += 1
@@ -15799,8 +15808,8 @@ def _v4_share_by_month(offset: str, refs: list[tuple[str, str]]) -> str:
                           for month_ref, value_ref in refs) + ")"
 
 
-def _v4_stage_rows_xml(xml: str, title: str, hint: str, growth: list[float]
-                       ) -> tuple[str, list[str]]:
+def _v4_stage_rows_xml(xml: str, title: str, hint: str, growth: list[float],
+                       keys: tuple[str, ...] = ()) -> tuple[str, list[str]]:
     """Блок «этап → рост цены» внизу «Вводных» книги v4; возвращает ссылки на
     ячейки роста. Месяц этапа в блоке не хранится — его считает формула из срока
     строительства книги (четверти срока), иначе правка срока в книге оставила
@@ -15819,11 +15828,15 @@ def _v4_stage_rows_xml(xml: str, title: str, hint: str, growth: list[float]
     parts.append(f'<x:row r="{row_at}">' + text_cell(f"A{row_at}", hint) + "</x:row>")
     row_at += 1
     for index, value in enumerate(growth):
+        # У лестницы каждый этап — своя вводная движка, поэтому ключ у каждой
+        # строки свой. В отличие от графика, где вводная одна на весь блок.
         parts.append(
             f'<x:row r="{row_at}">'
             + text_cell(f"A{row_at}", f"Этап {index + 1} · готовность {STAGE_READINESS_PCT[index]}%")
             + f'<x:c r="B{row_at}"><x:v>{round(float(value), 8):g}</x:v></x:c>'
-            + text_cell(f"C{row_at}", "доля роста") + "</x:row>")
+            + text_cell(f"C{row_at}", "доля роста")
+            + (text_cell(f"D{row_at}", keys[index]) if index < len(keys) else "")
+            + "</x:row>")
         refs.append(f"'Вводные'!$B${row_at}")
         row_at += 1
     tail = "</x:sheetData>"
@@ -15942,6 +15955,191 @@ def _v4_apply_core_ladder(sales_xml: str, stage_refs: list[str],
     return sales_xml
 
 
+# Клетки, где книга получает ЧИСЛО вместо своей формулы. Список закрытый и с
+# причиной у каждой строки: книга должна работать почти как движок — «если
+# что-то меняешь где-то, всё должно меняться так же» (решение владельца,
+# 03.09.2026), — и всякий хард эту связь рвёт. Не «устаревшее число»: соседние
+# статьи поедут за новым календарём, а записанная числом останется в прежних
+# колонках, то есть перестанет принадлежать своей очереди.
+#
+# Сторож `test_the_workbook_has_no_unnamed_hard_values` сверяет собранную книгу
+# с шаблоном и валится на КАЖДОЙ замене «формула → число», которой здесь нет.
+# Пустой список — цель, а не украшение: пока строка тут стоит, книга в этом
+# месте самостоятельным продуктом не является.
+# Лимит ПФ очереди — её выборка, округлённая вверх до 10 млн (методика движка,
+# `pf_limit = ceil(pf_draw_total / 10 млн) × 10 млн`). Округляется КАЖДАЯ очередь,
+# а не сумма: округление суммы даёт другое число на любом проекте с очередями.
+_V4_PF_LIMIT_PHASE = "ROUNDUP('CF_{n}'!$B$45/10,0)*10"
+_V4_PF_LIMIT_FORMULA = "+".join(_V4_PF_LIMIT_PHASE.format(n=n) for n in range(1, 5))
+
+
+# --- блок соцобъектов на «Вводных» ---------------------------------------------
+# Календарь соцстройки был 480 числами в четырёх строках CAPEX: правка сроков
+# очереди прямо в книге его не двигала, а движок строит каждый объект в СВОЕЙ
+# очереди её календарём. Выразить это формулой было нечем — ячеек объектов на
+# «Вводных» не существовало вовсе, только общая строка A17 «Социальный платёж».
+# Теперь они есть: по строке на пару «тип × очередь», и строка CAPEX читает их.
+# Крайний срок денежной компенсации — за месяц до РнС первой очереди: после
+# РнС линия БРИДЖа рефинансирована в ПФ, и платить компенсацию нечем.
+_V4_SOCIAL_DEADLINE = "EDATE('CF_1'!$B$7,-1)"
+
+# Вводные движка за каждой колонкой блока: мест, цена места, начало, срок.
+_V4_SOCIAL_KEYS: dict[str, tuple[str, str, str, str]] = {
+    "kindergarten": ("kindergarten_places", "kindergarten_cost_mln_per_place",
+                     "kindergarten_start", "kindergarten_months"),
+    "school": ("school_places", "school_cost_mln_per_place",
+               "school_start", "school_months"),
+    "clinic": ("clinic_capacity", "clinic_cost_mln_per_unit",
+               "clinic_start", "clinic_months"),
+}
+# Подписи колонок очередей — как в шаблоне, чтобы ключ дописывался к ним, а не
+# заменял их: копия подписи разошлась бы с книгой молча.
+_v4_QUEUE_HEADERS: dict[str, str] = {
+    "D": "Старт", "E": "ИРД, мес.", "F": "Стройка, мес.", "G": "Лаг продаж"}
+_V4_SOCIAL_TYPES: tuple[tuple[str, str], ...] = (
+    ("kindergarten", "ДОО"), ("school", "СОШ"), ("clinic", "Поликлиника"))
+
+
+def _v4_social_row(base_row: int, type_index: int, phase_index: int) -> int:
+    """Строка пары «тип объекта × очередь» в блоке соцобъектов «Вводных»."""
+    return base_row + 2 + type_index * 4 + phase_index
+
+
+def _v4_social_cash_row(base_row: int) -> int:
+    """Строка денежной компенсации совмещённого режима."""
+    return base_row + 2 + len(_V4_SOCIAL_TYPES) * 4
+
+
+def _v4_social_rows_xml(xml: str, rows: dict[tuple[int, str], dict[str, Any]],
+                        cost_per: dict[str, float], months_by_type: dict[str, int],
+                        cash_mln: float) -> tuple[str, int]:
+    """Дописывает блок соцобъектов в конец листа «Вводные»; возвращает базу строк.
+
+    Как и лестница ставок, блок пишется строками XML в свободный низ листа:
+    вставлять строку в занятое место нельзя — поедут все ссылки. Строка есть у
+    каждой пары «тип × очередь», даже пустой: формула CAPEX ссылается на них
+    всегда, а включить объект прямо в книге иначе было бы негде.
+    """
+    import re as _re
+    numbers = [int(number) for number in _re.findall(r'<x:row r="(\d+)"', xml)]
+    base_row = (max(numbers) if numbers else 0) + 2
+    parts: list[str] = []
+
+    def text_cell(coord: str, value: str) -> str:
+        return f'<x:c r="{coord}" t="inlineStr"><x:is><x:t>{xml_escape(value)}</x:t></x:is></x:c>'
+
+    def number_cell(coord: str, value: float) -> str:
+        return f'<x:c r="{coord}"><x:v>{_v4_number(round(value, 6))}</x:v></x:c>'
+
+    parts.append(f'<x:row r="{base_row}">'
+                 + text_cell(f"A{base_row}", "СОЦИАЛЬНЫЕ ОБЪЕКТЫ — КАЛЕНДАРЬ СТРОЙКИ")
+                 + "</x:row>")
+    header = base_row + 1
+    parts.append(
+        f'<x:row r="{header}">'
+        + text_cell(f"A{header}", "Объект и очередь")
+        + text_cell(f"B{header}", "Мест / мощность")
+        + text_cell(f"C{header}", "Стоимость места, млн ₽")
+        + text_cell(f"D{header}", "Начало")
+        + text_cell(f"E{header}", "Срок, мес.")
+        + text_cell(f"F{header}", "Стоимость, млн ₽")
+        + text_cell(f"G{header}", "Множитель инфляции очереди")
+        + text_cell(f"H{header}", "Ключ API: мест")
+        + text_cell(f"I{header}", "Ключ API: цена места")
+        + text_cell(f"J{header}", "Ключ API: начало")
+        + text_cell(f"K{header}", "Ключ API: срок")
+        + "</x:row>")
+    for type_index, (typ, label) in enumerate(_V4_SOCIAL_TYPES):
+        # Ключ движка ставится только там, где строка несёт ВСЮ вводную: тип
+        # стоит в одной очереди. Раскиданный по очередям объект — это доли
+        # одной вводной, и подписать ими проектный ключ значило бы назвать
+        # часть целым (по этой же причине свод не подписывают именем момента).
+        carriers = [phase for phase in range(4)
+                    if float((rows.get((phase, typ)) or {}).get("capacity") or 0.0) > 0]
+        # Объекта нет вовсе — ключ идёт первой очереди: ноль это тоже вся
+        # вводная, и включают объект именно там, а строка без ключа выглядит
+        # как «этого поля в книге нет».
+        sole = carriers[0] if len(carriers) == 1 else (0 if not carriers else None)
+        for phase_index in range(4):
+            row = _v4_social_row(base_row, type_index, phase_index)
+            slot = rows.get((phase_index, typ)) or {}
+            serial = _v4_excel_serial(str(slot.get("start") or "")[:10]) if slot else None
+            keys = _V4_SOCIAL_KEYS[typ] if phase_index == sole else ("", "", "", "")
+            parts.append(
+                f'<x:row r="{row}">'
+                + text_cell(f"A{row}", f"{label} — очередь {phase_index + 1}")
+                + number_cell(f"B{row}", float(slot.get("capacity") or 0.0))
+                + number_cell(f"C{row}", float(cost_per.get(typ, 0.0)))
+                + number_cell(f"D{row}", float(serial) if serial is not None else 0.0)
+                + number_cell(f"E{row}", float(slot.get("months")
+                                               or months_by_type.get(typ, 24)))
+                + f'<x:c r="F{row}"><x:f>$B{row}*$C{row}*$G{row}</x:f></x:c>'
+                + number_cell(f"G{row}", float(slot.get("factor") or 1.0))
+                + ("".join(text_cell(f"{letter}{row}", key)
+                           for letter, key in zip("HIJK", keys) if key))
+                + "</x:row>")
+    cash_row = _v4_social_cash_row(base_row)
+    # Дата платежа — методикой движка: min(заданная B18, РнС − 1 мес.).
+    # Число здесь не двигалось бы от правки РнС прямо в книге, а из обрезанного
+    # числа не видно, что за ним стоит правило.
+    parts.append(
+        f'<x:row r="{cash_row}">'
+        + text_cell(f"A{cash_row}", "Денежная компенсация (совмещённый режим)")
+        + f'<x:c r="D{cash_row}"><x:f>'
+        + xml_escape(f'IF($B$18="",{_V4_SOCIAL_DEADLINE},'
+                     f"MIN($B$18,{_V4_SOCIAL_DEADLINE}))") + "</x:f></x:c>"
+        + number_cell(f"E{cash_row}", 1.0)
+        + number_cell(f"F{cash_row}", float(cash_mln))
+        + "</x:row>")
+    tail = "</x:sheetData>"
+    assert tail in xml
+    return xml.replace(tail, "".join(parts) + tail, 1), base_row
+
+
+def _v4_social_capex_formula(base_row: int, phase_index: int, column: str) -> str:
+    """Расход очереди за месяц: каждый объект — ровной долей своего окна.
+
+    Ровно то, что считает движок (`cost / span_months` по месяцам от старта
+    объекта), но выраженное ячейками: сдвинули начало или срок — поехал график.
+    """
+    parts = []
+    for type_index in range(len(_V4_SOCIAL_TYPES)):
+        row = _v4_social_row(base_row, type_index, phase_index)
+        parts.append(
+            f"IF(AND('Вводные'!$F${row}>0,{column}$3>='Вводные'!$D${row},"
+            f"{column}$3<EDATE('Вводные'!$D${row},'Вводные'!$E${row})),"
+            f"'Вводные'!$F${row}/'Вводные'!$E${row},0)")
+    if phase_index == 0:
+        # Денежная часть совмещённого режима — одним платежом в свою дату:
+        # это другое обязательство с другим сроком, и движок платит его порознь.
+        cash_row = _v4_social_cash_row(base_row)
+        parts.append(
+            f"IF(AND('Вводные'!$F${cash_row}>0,"
+            f"YEAR({column}$3)=YEAR('Вводные'!$D${cash_row}),"
+            f"MONTH({column}$3)=MONTH('Вводные'!$D${cash_row})),"
+            f"'Вводные'!$F${cash_row},0)")
+    return "+".join(parts)
+
+
+V4_ENGINE_WRITTEN_CELLS: dict[tuple[str, str], str] = {
+    ("Вводные", "B18"): (
+        "Заданная дата денежной компенсации — это ВВОДНАЯ (ключ social_comp_date), "
+        "а не результат: формула шаблона стояла здесь потому, что места под "
+        "введённую дату в книге не было вовсе. Правило движка "
+        "min(заданная, РнС − 1 мес.) переехало к читателю — в строку денежной "
+        "компенсации блока соцобъектов. Дата не задана — здесь снова формула"),
+}
+
+
+def v4_hard_value_reason(sheet: str, coord: str) -> str | None:
+    """Причина, по которой в клетке стоит число, а не формула. Нет — значит хард."""
+    direct = V4_ENGINE_WRITTEN_CELLS.get((sheet, coord))
+    if direct:
+        return direct
+    row = "".join(ch for ch in coord if ch.isdigit())
+    return V4_ENGINE_WRITTEN_CELLS.get((sheet, f"строка {row}"))
+
+
 def build_project_workbook(
     inputs: dict[str, Any],
     tep: dict[str, dict[str, Any]],
@@ -15963,14 +16161,18 @@ def build_project_workbook(
     # выходила вдвое меньше движковой. Поверхности считают один раз: бот
     # передаёт готовый результат, остальные пути считают здесь; при падении
     # движка книга остаётся на собственных формулах долей.
+    p = phasing or {}
+    missing: list[str] = []
     if finance_hints is None:
         try:
             finance_hints = _v4_finance_hints(_run_authoritative_model(
                 inputs or {}, tep or {}, rates or [], phasing or {}))
-        except Exception:
+        except Exception as exc:
+            # Молчать здесь нельзя: без контрольных чисел лист ПРОВЕРОК выглядит
+            # просто пустым, и «паритет не считался» неотличимо от «паритет
+            # сошёлся». Причина уходит туда же, куда неопознанная формула.
             finance_hints = {}
-    p = phasing or {}
-    missing: list[str] = []
+            missing.append("контрольные числа движка: " + _error_location(exc))
 
     template = _V4_TEMPLATE_PATH.read_bytes()
     source = zipfile.ZipFile(io.BytesIO(template))
@@ -15988,6 +16190,29 @@ def build_project_workbook(
             return float((row or {}).get(field) or 0)
         except Exception:
             return 0.0
+
+    # Вводная, которую никто не читает, — не вводная, а обещание. «Лаг старта
+    # продаж» (B68) и «Тренд темпа продаж» (B66) не читает НИ ОДНА формула
+    # книги: соседи по блоку читаются сотнями и тысячами ссылок, а эти две —
+    # нулём. Работу делают колонки очередей G и AD, где у лага и тренда своё
+    # значение на очередь. Жёлтая клетка правится, и не меняется ничего.
+    # Поэтому здесь читалка, а не вводная: голубым, ссылкой на первую очередь,
+    # и ключ уезжает к той ячейке, которая работает.
+    put("B66", formula="AD88", label="тренд темпа продаж — читалка очереди 1")
+    put("D66", text="правится в блоке очередей, колонка AD")
+    put("B68", formula="G88", label="лаг продаж — читалка очереди 1")
+    put("D68", text="правится в блоке очередей, колонка G")
+
+    # Подпись ключа берётся из самой карты, а не из шаблона: у B69 в шаблоне
+    # стояло «sales_term_default_months», а движок пишет туда
+    # residual_sales_months — одно число под двумя именами, и сверить книгу с
+    # движком по ключу было нельзя. Ключ живёт там же, где решается, куда
+    # писать значение, — второго списка «какой ключ в какой ячейке» не бывает.
+    for key, coord in _V4_INPUT_CELLS.items():
+        if coord.startswith("B"):
+            put("D" + coord[1:], text=key, label=f"ключ {key}")
+        elif coord.startswith("K"):
+            put("M" + coord[1:], text=key, label=f"ключ {key}")
 
     # --- скалярные вводные по карте ключей -------------------------------
     for key, coord in _V4_INPUT_CELLS.items():
@@ -16060,15 +16285,23 @@ def build_project_workbook(
     start_serial = _v4_excel_serial(x.get("project_start")) or _v4_excel_serial("2027-01-01")
     put("B8", number=start_serial, label="project_start")
     put("B36", number=start_serial, label="price_cost_base_date")
-    # Дата платежа денежной компенсации. Ячейка подписана ключом движка, но в
-    # карту записи не входила — и книга жила на формуле шаблона «за месяц до
-    # РнС», а введённую дату не видела вовсе. Пока умолчание совпадало с этим
-    # месяцем, стороны сходились случайно. Методика теперь одна на обе
-    # (social_cash_payment_date), поэтому дата приходит числом.
+    # Дата платежа денежной компенсации — ЗАДАННАЯ, а не уже обрезанная.
+    # Методика движка (social_cash_payment_date) — min(заданная, РнС − 1 мес.):
+    # компенсация платится в бридж-период, после РнС линия рефинансирована.
+    # Обрезка живёт в формуле читателя, а не в записанном числе: обрезанное
+    # число не двигалось от правки РнС прямо в книге, а введённая дата в нём
+    # уже не видна — человек правил бы результат правила, не зная об этом.
     _book_permit = add_months(str(x.get("project_start") or "2027-01-01")[:10],
                               int(max(float(IRD_MONTHS_MIN), n(x, "ird_months", 18.0))))
-    put("B18", number=_v4_excel_serial(social_cash_payment_date(x, _book_permit)),
-        label="social_comp_date")
+    # Пустая дата остаётся ПУСТОЙ, а не подменяется формулой крайнего срока:
+    # ячейка жёлтая, то есть по конвенции «вписано руками», и формула в ней —
+    # ложное приглашение (впишешь число, как цвет и зовёт, — затрёшь её).
+    # Запасной путь живёт у читателя вместе с самой обрезкой: там он и нужен.
+    _wanted_social_date = _v4_excel_serial(str(x.get("social_comp_date") or "")[:10])
+    if _wanted_social_date is None:
+        put("B18", text="", label="social_comp_date")
+    else:
+        put("B18", number=_wanted_social_date, label="social_comp_date")
     # Конец горизонта движка: он не выводится из РВЭ, а тянется за последним
     # денежным потоком — стройка садика заканчивается позже РВЭ + 12 месяцев и
     # растягивает расчёт. Книга знала только календарную часть правила и
@@ -16114,6 +16347,11 @@ def build_project_workbook(
     # до РнС (дата B18 — формула книги): приближение, но расход не теряется.
     social_cash_by_phase: list[float] | None = None
     social_monthly_by_phase: list[list[float]] | None = None
+    social_base_row: int | None = None
+    social_rows: dict[tuple[int, str], dict[str, Any]] = {}
+    social_cash_mln = 0.0
+    cost_per: dict[str, float] = {}
+    months_by_type: dict[str, int] = {}
     social_breakdown = {typ: {"places": 0.0, "cost": 0.0, "phases": set()}
                         for typ in ("kindergarten", "school", "clinic")}
     social_is_construction = str(x.get("social_mode") or "") in ("Строительство", SOCIAL_MODE_BOTH)
@@ -16177,32 +16415,6 @@ def build_project_workbook(
             # уводила первую очередь в дефолт при гасящем долг движке.
             social_cash_by_phase = [share / social_build
                                     for share in social_build_by_phase]
-            # Разовый платёж завышал пик БРИДЖа на сотни миллионов: движок
-            # строит соцобъекты месяцами, книга платила всё за месяц до РнС.
-            # Теперь книга размазывает сумму равномерно: B18 — старт первого
-            # объекта, E18 — окно до конца последнего (компенсация: E18=1).
-            spans = []
-            for typ, start_key, months_key, months_default in (
-                ("kindergarten", "kindergarten_start", "kindergarten_months", 24),
-                ("school", "school_start", "school_months", 30),
-                ("clinic", "clinic_start", "clinic_months", 24),
-            ):
-                if not any(str(obj.get("type")) == typ for obj in objects):
-                    continue
-                start = str(x.get(start_key) or "")[:10]
-                if not start:
-                    continue
-                months = max(1, int(float(x.get(months_key) or months_default)))
-                spans.append((start, add_months(start, months)))
-            if spans:
-                social_start = min(span[0] for span in spans)
-                social_end = max(span[1] for span in spans)
-                window = max(1, months_between(
-                    date.fromisoformat(social_start), social_end))
-                serial = _v4_excel_serial(social_start)
-                if serial is not None:
-                    put("B18", number=serial, label="старт соцстроительства")
-                    put("E18", number=float(window), label="окно соцстроительства")
             # Помесячный график соцстройки — готовыми числами по очередям:
             # единое окно B18/E18 платило социалку всех очередей одним куском,
             # а движок строит каждый объект в своей очереди — объект без
@@ -16236,6 +16448,11 @@ def build_project_workbook(
                 if obj.get("start_date"):
                     slot["dates"].append(str(obj["start_date"])[:10])
             social_monthly_by_phase = [[0.0] * 120 for _ in range(4)]
+            # Каждая пара «тип × очередь» получает свою строку на «Вводных»:
+            # мест, стоимость места, начало, срок и стоимость формулой. Пустая
+            # пара пишется нулями — строка есть всегда, иначе формула CAPEX
+            # ссылалась бы в пустоту, а включить объект в книге было бы негде.
+            social_rows: dict[tuple[int, str], dict[str, Any]] = {}
             for (phase_index, typ), slot in grouped.items():
                 offset_months = (float(social_phases[phase_index].get("start_offset_months") or 0)
                                  if phase_index < len(social_phases) else 0.0)
@@ -16258,19 +16475,62 @@ def build_project_workbook(
                     column = first_col + month_index
                     if 0 <= column < 120:
                         social_monthly_by_phase[min(phase_index, 3)][column] += cost / span_months
+                slot_key = (min(phase_index, 3), typ)
+                previous = social_rows.get(slot_key)
+                if previous is None:
+                    social_rows[slot_key] = {
+                        "capacity": slot["capacity"], "start": obj_start,
+                        "months": span_months, "factor": (1.0 + social_inflation)
+                        ** (offset_months / 12.0)}
+                else:
+                    # Движок агрегирует объекты типа внутри очереди — сюда
+                    # приходит один раз на пару, но пусть сложение не потеряется.
+                    previous["capacity"] += slot["capacity"]
+                    previous["start"] = min(previous["start"], obj_start)
             # Денежная часть совмещённого режима — одним платежом в свою дату,
             # а не размазанная по графику стройки: это разные обязательства с
             # разными сроками, и движок платит их порознь.
+            social_cash_mln = 0.0
+            social_cash_date = None
             if str(x.get("social_mode")) == SOCIAL_MODE_BOTH:
                 cash_mln = n(x, "social_compensation_mln")
                 # Дата — движковой методикой: платёж не выходит за бридж-период.
                 comp_date = social_cash_payment_date(
                     x, add_months(project_start_iso,
                                   int(max(float(IRD_MONTHS_MIN), n(x, "ird_months", 18.0)))))
+                social_cash_date = comp_date
                 if cash_mln > 0:
+                    social_cash_mln = cash_mln
                     column = months_between(date.fromisoformat(project_start_iso), comp_date)
                     if 0 <= column < 120:
                         social_monthly_by_phase[0][column] += cash_mln
+
+
+    # --- блок соцобъектов на «Вводных» -------------------------------------
+    # Пишется при ЛЮБОЙ форме соцнагрузки, а не только при стройке. Пока
+    # чисто денежный режим шёл мимо блока, строка CAPEX оставалась на формуле
+    # шаблона, а та читает B18 без обрезки по РнС — и заданная дата за
+    # бридж-периодом платилась в свой месяц вместо крайнего: пик БРИДЖа падал
+    # ровно на сумму компенсации (4132,8 вместо 4713,5 млн). Две дороги к
+    # одному платежу однажды разойдутся; дорога одна.
+    if social_monthly_by_phase is None:
+        social_monthly_by_phase = [[0.0] * 120 for _ in range(4)]
+        social_rows = {}
+        cost_per = {}
+        months_by_type = {}
+        _cash_start = str(x.get("project_start") or "2027-01-01")[:10]
+        social_cash_mln = n(x, "social_compensation_mln")
+        if social_cash_mln > 0:
+            _cash_when = social_cash_payment_date(
+                x, add_months(_cash_start,
+                              int(max(float(IRD_MONTHS_MIN), n(x, "ird_months", 18.0)))))
+            _cash_column = months_between(date.fromisoformat(_cash_start), _cash_when)
+            if 0 <= _cash_column < 120:
+                social_monthly_by_phase[0][_cash_column] += social_cash_mln
+    # Дописывается строками в свободный низ листа, как лестница ставок:
+    # вставить строку в занятое место нельзя — поедут все ссылки.
+    xml, social_base_row = _v4_social_rows_xml(
+        xml, social_rows, cost_per, months_by_type, social_cash_mln)
 
     # --- расшифровка соцнагрузки: ОТЧЕТ (E31:H37) и ТЭП (38–44) -----------
     # «Где в Excel расходы на садик и школы?» — раньше нигде: B17 приезжал
@@ -16294,13 +16554,19 @@ def build_project_workbook(
     objects_xml = source.read(objects_sheet_path).decode("utf-8")
     sales_sheet_path = _v4_sheet_path(source, "Продажи")
     sales_xml = source.read(sales_sheet_path).decode("utf-8")
-    if social_monthly_by_phase is not None:
+    if social_monthly_by_phase is not None and social_base_row is not None:
+        # Строка соцстройки — формулой по блоку «Вводных», а не 120 числами на
+        # очередь: сдвинули начало объекта или срок стройки прямо в книге —
+        # поехал график, как в движке. Прежде правка календаря не двигала
+        # ничего, и книга была придатком веб-сервиса, где считает движок.
         from openpyxl.utils import get_column_letter as _col
         for phase_index in range(4):
             row = 31 + 34 * phase_index
-            for column_index, value in enumerate(social_monthly_by_phase[phase_index]):
+            for column_index in range(120):
+                column = _col(4 + column_index)
                 capex_xml, done = _v4_set_cell(
-                    capex_xml, f"{_col(4 + column_index)}{row}", number=round(value, 6))
+                    capex_xml, f"{column}{row}",
+                    formula=_v4_social_capex_formula(social_base_row, phase_index, column))
                 if not done:
                     missing.append(f"соцграфик CAPEX: колонка {column_index} очереди {phase_index + 1}")
                     break
@@ -16454,13 +16720,12 @@ def build_project_workbook(
         "+SUM('CAPEX'!$B$35,'CAPEX'!$B$69,'CAPEX'!$B$103,'CAPEX'!$B$137))/10,0)*10"
     ), label="bridge_limit_mln")
 
-    # Лимит ПФ — движковый: у движка лимит равен потребности фазы, и книжный
-    # ROUNDUP от CAPEX занижал его на проценты вместе с платой за невыбранный
-    # лимит. Без движка остаётся шаблонная формула от CAPEX-блоков.
-    hint_limits = list((finance_hints or {}).get("pf_limit_by_phase") or [])
-    if hint_limits:
-        pf_limit_total = math.ceil(sum(hint_limits) / 10.0) * 10.0
-        put("B26", number=pf_limit_total, label="pf_limit_mln (движок)")
+    # Лимит ПФ — по методике движка: лимит очереди есть её выборка, округлённая
+    # вверх до 10 млн (`pf_limit = ceil(pf_draw_total / 10 млн) × 10 млн`).
+    # Шаблон считал от «РАСХОДЫ ПРОЕКТА ВСЕГО» — другой величины — и занижал
+    # лимит вместе с платой за невыбранный. Число сюда писать нельзя: правка
+    # календаря очереди двигает выборку, а лимит остался бы прежним.
+    put("B26", formula=_V4_PF_LIMIT_FORMULA, label="pf_limit_mln (методика движка)")
 
     # --- ВРИ ---------------------------------------------------------------
     land_cost = float(x.get("land_rights_cost_mln") or 0)
@@ -16574,6 +16839,17 @@ def build_project_workbook(
     price_inflation = float(p.get("sales_price_inflation_pct", 8.0) or 0) / 100.0 if count > 1 else 0.0
     cost_inflation = float(p.get("cost_inflation_pct", 8.0) or 0) / 100.0 if count > 1 else 0.0
 
+    # Колонки очередей — это вводные движка, и книга их называет: «Старт» без
+    # ключа читается как оформление, а по ключу видно, что правишь именно
+    # project_start. Ключ ставится в шапке, потому что колонка одна на все
+    # очереди, а значение у каждой своё.
+    for _queue_column, _queue_key in (
+            ("D", "project_start"), ("E", "ird_months"),
+            ("F", "construction_months"), ("G", "sales_lag_months")):
+        _header = str(_v4_QUEUE_HEADERS[_queue_column])
+        put(f"{_queue_column}87", text=f"{_header} · {_queue_key}",
+            label=f"подпись колонки {_queue_column}87")
+
     for index in range(4):
         row = 88 + index
         active = index < count
@@ -16639,8 +16915,14 @@ def build_project_workbook(
         bridge_hint = _v4_fold_tail(bridge_hint, len(bridge_hint), count) if bridge_hint else []
         pf_total = sum(pf_hint)
         bridge_total = sum(bridge_hint)
+        # Доля очереди в лимите ПФ считается тем же, чем считается сам лимит
+        # (B26): доля от числа при живом лимите разошлась бы с ним на первой же
+        # правке календаря — сумма долей перестала бы быть единицей. Формула
+        # стоит и у выключенной очереди: включат её прямо в книге — доля пойдёт
+        # за выборкой, а ноль остался бы нулём.
+        phase_limit = _V4_PF_LIMIT_PHASE.format(n=index + 1)
+        put(f"V{row}", formula=f"IFERROR({phase_limit}/$B$26,0)", label="доля лимита ПФ")
         if active and pf_total > 0 and index < len(pf_hint):
-            put(f"V{row}", number=pf_hint[index] / pf_total, label="доля лимита ПФ")
             put(f"U{row}", number=(bridge_hint[index] / bridge_total
                                    if bridge_total > 0 and index < len(bridge_hint)
                                    else pf_hint[index] / pf_total),
@@ -16651,10 +16933,8 @@ def build_project_workbook(
             need_total = "SUM('CAPEX'!$B$35,'CAPEX'!$B$69,'CAPEX'!$B$103,'CAPEX'!$B$137)"
             share_formula = f"IFERROR({need_cell}/{need_total},{1.0 if index == 0 else 0.0})"
             put(f"U{row}", formula=share_formula, label="доля лимита БРИДЖ")
-            put(f"V{row}", formula=share_formula, label="доля лимита ПФ")
         else:
             put(f"U{row}", number=0.0, label="доля лимита БРИДЖ")
-            put(f"V{row}", number=0.0, label="доля лимита ПФ")
         put(f"W{row}", number=num_row(crow.get("apartments"), "gns"), label="ГНС квартир")
         put(f"X{row}", number=num_row(crow.get("ground_commercial"), "gns"),
             label="ГНС коммерции")
@@ -16717,7 +16997,7 @@ def build_project_workbook(
                 xml, _purchase_refs = _v4_schedule_rows_xml(
                     xml, "ГРАФИК ПЛАТЕЖЕЙ ЗА ПОКУПКУ",
                     "Месяц от старта очереди → доля цены. Строки покупки CAPEX читают отсюда.",
-                    sorted(_merged.items()), "доля")
+                    sorted(_merged.items()), "доля", key="purchase_schedule")
                 capex_xml = _v4_apply_purchase_schedule(capex_xml, _purchase_refs, missing)
             except Exception as exc:
                 missing.append("Вводные · график платежей за покупку: " + _error_location(exc))
@@ -16727,7 +17007,8 @@ def build_project_workbook(
             xml, _core_refs = _v4_stage_rows_xml(
                 xml, "ЛЕСТНИЦА ЦЕНЫ · КВАРТИРЫ И ОСНОВНЫЕ ПРОДУКТЫ",
                 "Рост цены при строительной готовности 25/50/75/100% (четверти срока строительства очереди). Строки цен листа «Продажи» читают отсюда.",
-                _core_growth)
+                _core_growth,
+                keys=tuple(f"growth_stage{k}_pct" for k in (1, 2, 3, 4)))
             sales_xml = _v4_apply_core_ladder(sales_xml, _core_refs, missing)
         except Exception as exc:
             missing.append("Вводные · лестница цены квартир: " + _error_location(exc))
@@ -16741,12 +17022,14 @@ def build_project_workbook(
                 xml, _profile_refs = _v4_schedule_rows_xml(
                     xml, f"ПРОФИЛЬ ПРОДАЖ · {_label.upper()}",
                     "Месяц от старта продаж → доля объёма. Строка «Реализованный объём» листа ОБЪЕКТЫ читает отсюда.",
-                    [(month, amount / _total) for amount, month in _profile_items], "доля")
+                    [(month, amount / _total) for amount, month in _profile_items], "доля",
+                    key=f"{_prefix}_sales_profile")
             if any(_growth):
                 xml, _stage_refs = _v4_stage_rows_xml(
                     xml, f"ЛЕСТНИЦА ЦЕНЫ · {_label.upper()}",
                     "Рост цены при строительной готовности 25/50/75/100% объекта. Строка «Цена реализации» листа ОБЪЕКТЫ читает отсюда.",
-                    _growth)
+                    _growth,
+                    keys=tuple(f"{_prefix}_growth_stage{k}_pct" for k in (1, 2, 3, 4)))
             if _profile_refs or _stage_refs:
                 objects_xml = _v4_apply_object_schedule(
                     objects_xml, _prefix, _profile_refs, _stage_refs, missing)

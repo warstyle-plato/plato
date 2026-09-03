@@ -151,7 +151,21 @@ def test_a_live_lot_lifts_the_operator_cut_and_the_renovation_tag_carries_its_qu
     body = body[: body.index("\n}\n")]
     assert "!krtLiveLot(x)" in body, "снижение за оператора ставится и при живом лоте"
     assert "function krtLiveLot(" in page
-    tag = page[page.index("const renovQuote="):]
-    tag = tag[: tag.index("реновация</span>")]
+    # Границей куска служит сама функция, а не соседняя строка: подпись метки
+    # стала считаться из доли («реновация 10,0%», «реновация — всё жильё»), и
+    # прежний литерал «реновация</span>» исчез при верном поведении.
+    start = page.index("function krtMarks(")
+    depth, index, seen = 0, page.index("{", start), False
+    while index < len(page):
+        if page[index] == "{":
+            depth, seen = depth + 1, True
+        elif page[index] == "}":
+            depth -= 1
+            if seen and depth == 0:
+                break
+        index += 1
+    tag = page[start:index + 1]
     assert "press&&press.city_needs||[])[0]||{}).quote" in tag
     assert "публикация: " in tag and "карточка krt.mos.ru: " in tag
+    # Доля из решения сильнее упоминания: сто процентов — это другая площадка.
+    assert "всё жильё" in tag, "метка не отличает часть жилья от всего"

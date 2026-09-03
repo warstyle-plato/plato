@@ -707,8 +707,12 @@ def test_the_builder_bridge_limit_sees_the_fourth_queue_capex(default_book):
 def test_the_social_construction_is_spread_like_the_engine():
     """Социалка строительством платилась в книге одним куском за месяц до РнС,
     и пик БРИДЖа выходил на 17% выше движкового: движок строит соцобъекты
-    месяцами. Теперь билдер пишет старт и окно (B18/E18), книга размазывает
-    сумму равномерно, и пики сходятся."""
+    месяцами. Книга размазывает сумму по месяцам стройки, и пики сходятся.
+
+    Общее окно B18/E18 снято в 0.21.77: оно платило социалку всех очередей
+    одним куском от одной даты, а движок строит каждый объект в своей очереди
+    её календарём. Срок теперь стоит у самого объекта в блоке соцобъектов, и
+    проверяется он тем, что видно, — сколько месяцев книга платит."""
     import sys
     sys.setrecursionlimit(400000)
     from xlsx_eval import Evaluator
@@ -721,7 +725,10 @@ def test_the_social_construction_is_spread_like_the_engine():
     book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
     evaluator = Evaluator(book)
 
-    assert book["Вводные"]["E18"].value == pytest.approx(24)
+    sheet = book["Вводные"]
+    row = next(number for number in range(1, sheet.max_row + 1)
+               if str(sheet[f"A{number}"].value or "") == "ДОО — очередь 1")
+    assert sheet[f"E{row}"].value == pytest.approx(24), "срок стройки садика"
     social = [evaluator.cell("CAPEX", f"{col}31") or 0 for col in
               (openpyxl.utils.get_column_letter(i) for i in range(4, 130))]
     active = [v for v in social if float(v or 0) > 0]
