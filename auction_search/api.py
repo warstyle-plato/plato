@@ -1142,11 +1142,38 @@ def install(app: FastAPI) -> None:
         if not callable(reader):
             raise HTTPException(status_code=503, detail="Реестр карты недоступен")
         try:
-            return await run_in_threadpool(
-                lambda: reader(refresh=bool(refresh), step_m=float(step_m)))
+            payload = dict(await run_in_threadpool(
+                lambda: reader(refresh=bool(refresh), step_m=float(step_m))))
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=502,
                                 detail=f"Карта КРТ не прочитана: {exc}") from exc
+        # Файл карты города — не весь реестр: часть строк каталога в нём не
+        # находится ничем, и на карте их не было вовсе (владелец, 04.09.2026:
+        # «На карте крт Нагатино так и нет. Хотя контур в карточке верный»).
+        # Тем, кого нет, контур собирает тот же путь, что уже у карточки —
+        # участки ЕГРН по перечню проекта решения, — и рисуется он иначе:
+        # это состав территории по документу, а не официальный полигон.
+        supplement = getattr(krt_registry, "map_supplement", None)
+        if callable(supplement):
+            try:
+                extra = dict(await run_in_threadpool(lambda: supplement(payload)))
+            except Exception as exc:  # noqa: BLE001 — свод карты не роняем добавкой
+                logger.exception("КРТ: добавка контуров по решениям не собралась")
+                extra = {"sites": [], "gaps": [],
+                         "counts": {}, "problem": f"{type(exc).__name__}: {exc}"[:160]}
+            payload["sites"] = list(payload.get("sites") or []) + list(extra.get("sites") or [])
+            payload["supplement"] = extra
+            payload["count"] = len(payload["sites"])
+            filler = getattr(krt_registry, "fill_outlines_in_background", None)
+            lookup = getattr(core, "_land_lookup_by_numbers", None) if core is not None else None
+            if callable(filler) and callable(lookup):
+                # Непрочитанные перечни дочитывает фон порциями: обход ЕГРН по
+                # десяткам площадок в срок ответа не укладывается, а держать
+                # соединение вместо этого мы уже пробовали.
+                await run_in_threadpool(lambda: filler(
+                    [gap.get("slug") for gap in (extra.get("gaps") or [])
+                     if gap.get("kind") == "unread"], lookup=lookup))
+        return payload
 
     @app.get("/auctions/krt/api-probe")
     async def auction_krt_api_probe(url: str = Query(default="")) -> dict[str, Any]:
