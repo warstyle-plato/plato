@@ -17650,7 +17650,10 @@ def build_project_workbook(
         # AB кормит «Продажи», поэтому здесь стоит проданное, а не построенное.
         put(f"AB{row}", number=underground_saleable_spaces(crow.get("underground_parking") or {}),
             label="паркинг к продаже, шт.")
-        put(f"AC{row}", number=num_row(crow.get("storage"), "units"), label="кладовые, шт.")
+        # Кладовые — то же правило, что у паркинга: строится всё, продаётся
+        # непереданное. AC кормит «Продажи».
+        put(f"AC{row}", number=storage_saleable_spaces(crow.get("storage") or {}),
+            label="кладовые к продаже, шт.")
         put(f"AE{row}", number=0.0, label="инфляция цены")
         put(f"AF{row}", number=0.0, label="инфляция затрат")
         # Тренд темпа продаж — движковый pace (25% по умолчанию): вес месяца
@@ -22015,7 +22018,7 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     # правило было записано давно, а движок его не исполнял.
     core_product("underground_parking", underground_saleable_spaces(underground),
                  n(x, "parking_price_th"))
-    core_product("storage", n(storage, "units"), n(x, "storage_price_th"))
+    core_product("storage", storage_saleable_spaces(storage), n(x, "storage_price_th"))
 
     standalone_capex = {}
     object_schedule_notes: dict[str, dict[str, Any]] = {"core": core_schedule_note}
@@ -22565,13 +22568,40 @@ def underground_guest_spaces(row: dict[str, Any]) -> int:
     return max(0, int(round(total / 11.0))) if total > 0 else 0
 
 
+def transferred_units(row: dict[str, Any]) -> float:
+    """Переданные единицы продукта: построены, но не продаются.
+
+    У продуктов, которые продаются метрами, переданное живёт в колонке
+    «передаваемая» и вычитается из продаваемой площади. У паркинга и кладовых
+    продаётся ШТУКА, и метры про них ничего не говорят: гараж, отданный
+    городу, уменьшил бы площадь, а места продолжили бы продаваться все.
+    Поэтому у штучных продуктов переданное — своё число, в штуках
+    (владелец, 04.09.2026: «если хочу так же коммерцию отдать или
+    машиноместа?»). Механизм «строим, но не продаём» у паркинга уже есть —
+    гостевые места, — и переданные идут той же дорогой.
+    """
+    try:
+        return max(0.0, float(row.get("transfer_units") or 0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def underground_saleable_spaces(row: dict[str, Any]) -> float:
-    """Продаваемые машино-места: всё, кроме гостевых."""
+    """Продаваемые машино-места: всё, кроме гостевых и переданных."""
     try:
         total = float(row.get("units") or 0)
     except (TypeError, ValueError):
         return 0.0
-    return max(0.0, total - underground_guest_spaces(row))
+    return max(0.0, total - underground_guest_spaces(row) - transferred_units(row))
+
+
+def storage_saleable_spaces(row: dict[str, Any]) -> float:
+    """Продаваемые кладовые: построенные минус переданные."""
+    try:
+        total = float(row.get("units") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, total - transferred_units(row))
 
 
 def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) -> dict:
@@ -23514,6 +23544,7 @@ def calculate(req: CalcRequest) -> dict:
         # считала объём продаж от всех мест и продавала гостевые вместе с
         # остальными — выручка расходилась с движком на их стоимость.
         guest = float(underground_guest_spaces(row)) if key == "underground_parking" else 0.0
+        given = transferred_units(row)
         units = n(row, "units")
         tep_rows.append({
             "key": key,
@@ -23525,13 +23556,17 @@ def calculate(req: CalcRequest) -> dict:
             "transfer": n(row, "transfer"),
             "units": units,
             "guest_units": guest,
-            "saleable_units": max(0.0, units - guest),
+            # Переданные штуки строятся и стоят денег, но не продаются — как
+            # гостевые места. Число едет строкой ТЭП, а не выводится каждой
+            # поверхностью заново.
+            "transfer_units": given,
+            "saleable_units": max(0.0, units - guest - given),
         })
 
     tep_total = {
         key: sum(row[key] for row in tep_rows)
         for key in ("gns", "total_area", "useful", "saleable", "transfer", "units",
-                    "guest_units", "saleable_units")
+                    "guest_units", "transfer_units", "saleable_units")
     }
 
     total_revenue = fin["total_revenue"]
@@ -24473,7 +24508,14 @@ def _default_phase_weights(count: int) -> list[float]:
 def _scale_tep_row(row: dict[str, Any], share_pct: float) -> dict[str, Any]:
     result = copy.deepcopy(row)
     factor = share_pct / 100.0
-    for key in ("gns", "total_area", "useful", "saleable", "transfer", "units"):
+    # Гостевые и переданные места делятся вместе со своими: поле, которого нет
+    # в этом списке, молча остаётся числом ПРОЕКТА в каждой очереди — у
+    # выгрузки ГлавАПУ это девяносто гостевых мест, вычтенных из каждой
+    # четверти паркинга вместо своей доли.
+    for key in ("gns", "total_area", "useful", "saleable", "transfer", "units",
+                "guest_units", "transfer_units"):
+        if key in ("guest_units", "transfer_units") and key not in row:
+            continue
         result[key] = n(result, key) * factor
     return result
 
@@ -24505,6 +24547,12 @@ def _scale_tep_row_by_units(
     for key in ("gns", "total_area", "useful", "saleable", "transfer"):
         result[key] = n(result, key) * factor
     result["units"] = float(allocated)
+    # Место неделимо и в гостевых, и в переданных: доля очереди округляется,
+    # но не может превысить её же мест — иначе очередь «продаёт» меньше нуля.
+    for key in ("guest_units", "transfer_units"):
+        if key not in row:
+            continue
+        result[key] = float(min(allocated, int(round(n(row, key) * factor))))
     return result
 
 
@@ -24542,7 +24590,10 @@ def _apply_explicit_phase_products(
 ) -> dict[str, dict[str, Any]]:
     """Overlay manually edited queue TEP and synchronize atomic input aliases."""
     explicit = _explicit_phase_products(cfg)
-    numeric_fields = ("gns", "total_area", "useful", "saleable", "transfer", "units")
+    # Переданные штуки правятся в очереди наравне с остальными полями:
+    # приоритет у очереди, проектная строка — их сумма (владелец, 04.09.2026).
+    numeric_fields = ("gns", "total_area", "useful", "saleable", "transfer", "units",
+                      "transfer_units")
     for key, override in explicit.items():
         row = copy.deepcopy(p_tep.get(key) or TEP_DEFAULT[key])
         for field in numeric_fields:
@@ -24647,7 +24698,10 @@ def _phase_sales_price_inflation_factor(phasing: dict[str, Any], offset_months: 
 
 def _zero_tep_row(row: dict[str, Any]) -> dict[str, Any]:
     result = copy.deepcopy(row)
-    for key in ("gns", "total_area", "useful", "saleable", "transfer", "units"):
+    for key in ("gns", "total_area", "useful", "saleable", "transfer", "units",
+                "guest_units", "transfer_units"):
+        if key in ("guest_units", "transfer_units") and key not in row:
+            continue
         result[key] = 0.0
     return result
 
@@ -25362,13 +25416,16 @@ def _consolidate_phase_results(
                 "key": row["key"], "label": row["label"],
                 "gns": 0.0, "total_area": 0.0, "useful": 0.0,
                 "saleable": 0.0, "transfer": 0.0, "units": 0.0,
+                "guest_units": 0.0, "transfer_units": 0.0, "saleable_units": 0.0,
             })
-            for field in ("gns", "total_area", "useful", "saleable", "transfer", "units"):
+            for field in ("gns", "total_area", "useful", "saleable", "transfer", "units",
+                          "guest_units", "transfer_units", "saleable_units"):
                 target[field] += float(row.get(field, 0.0) or 0.0)
     tep_rows = list(tep_map.values())
     tep_total = {
         field: sum(row[field] for row in tep_rows)
-        for field in ("gns", "total_area", "useful", "saleable", "transfer", "units")
+        for field in ("gns", "total_area", "useful", "saleable", "transfer", "units",
+                      "guest_units", "transfer_units", "saleable_units")
     }
 
     revenue = _sum_dicts([r["revenue"] for r in results])
