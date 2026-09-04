@@ -465,6 +465,34 @@ def _object_actions(text: str) -> list[dict[str, Any]]:
     return result
 
 
+_APPENDIX_MARKER = "перечень земельных участков и объектов капитального строительства"
+
+
+def appendix_cadastral_numbers(text: str) -> dict[str, Any]:
+    """Кадастровые номера из перечня участков и ОКС проекта решения.
+
+    Перечень — единственное место, где документ называет СОСТАВ территории:
+    участки и здания с номерами. Файл карты реестра несёт полигон не у каждой
+    площадки (у Варшавского ш., вл. 37 его нет — 35 строк каталога из 268 в
+    файле отсутствуют), и тогда контур собирается из участков ЕГРН по этим
+    номерам. Участок от здания по номеру не отличить — это скажет ЕГРН, здесь
+    номера отдаются как есть, в порядке документа, без повторов. Перечня нет —
+    берутся номера всего текста, и источник назван: «в тексте», а не «в
+    перечне», это разная уверенность.
+    """
+    low = text.casefold()
+    starts = [match.start() for match in re.finditer(_APPENDIX_MARKER, low)]
+    scope = text[starts[-1]:] if starts else text
+    numbers = list(dict.fromkeys(_CADASTRAL.findall(scope)))
+    if starts:
+        source = "appendix"
+    elif numbers:
+        source = "text"
+    else:
+        source = "none"
+    return {"numbers": numbers[:200], "source": source}
+
+
 def _object_label(item: dict[str, Any]) -> str:
     area = item.get("area_sqm")
     area_text = ""
@@ -648,6 +676,7 @@ def parse_decision_requirements(text: str, title: str = "") -> dict[str, Any]:
             construction.append(sentence[:900])
 
     actions = _object_actions(text)
+    parcels = appendix_cadastral_numbers(text)
     grouped = {
         category: [_object_label(item) for item in actions if item["category"] == category]
         for category in (
@@ -664,6 +693,10 @@ def parse_decision_requirements(text: str, title: str = "") -> dict[str, Any]:
         "deadlines": list(dict.fromkeys(deadlines))[:5],
         "resettlement": list(dict.fromkeys(resettlement))[:20],
         "object_actions": actions[:100],
+        # Состав территории по документу — для контура из ЕГРН, когда файла
+        # карты у площадки нет. Чем найдены номера — часть ответа.
+        "cadastral_numbers": parcels["numbers"],
+        "cadastral_numbers_source": parcels["source"],
         **grouped,
     }
 
@@ -685,6 +718,8 @@ def merge_decision_requirements(
         result[key] = list(facts.get(key) or [])
     if facts.get("renovation"):
         result["renovation"] = facts["renovation"]
+    result["cadastral_numbers"] = list(facts.get("cadastral_numbers") or [])
+    result["cadastral_numbers_source"] = str(facts.get("cadastral_numbers_source") or "none")
     result["disclosure"] = {
         key: "published_in_project_decision" if result.get(key)
         else "not_published_in_project_decision"

@@ -106,6 +106,9 @@ def _market_inputs(report: dict[str, Any]) -> tuple[str | None, float, float, st
 def _phase_configuration(saleable_sqm: float, construction_months: int) -> dict[str, Any]:
     count = max(1, min(MAX_PHASES, math.ceil(saleable_sqm / TARGET_PHASE_SALEABLE_SQM)))
     return {
+        # Проектирование, подготовка и сети — по объёму очереди, как на
+        # странице: цена метра у каждой очереди равна вводной.
+        "shared_cash": {"design": "volume", "preparation": "volume", "utilities": "volume"},
         "enabled": count > 1,
         "user_enabled": False,
         "automatic": True,
