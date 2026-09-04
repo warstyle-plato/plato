@@ -90,8 +90,12 @@ def test_the_volume_share_follows_the_mkd_base_not_the_offices(by_volume: dict) 
     assert sum(applied) == pytest.approx(100.0, abs=1e-6)
     bases = [row["shared_rate_base_sqm"] for row in by_volume["comparison"]]
     assert applied[0] == pytest.approx(bases[0] / sum(bases) * 100, rel=1e-6)
-    gns_total = [row["gns_sqm"] for row in by_volume["comparison"]]
-    assert gns_total[1] > bases[1], "у второй очереди офисы сверх базы МКД — иначе проверка пустая"
+    # Предохранитель: у второй очереди действительно есть метры сверх базы МКД,
+    # иначе проверка пустая. Сравнивается строительный объём, а не ГНС: с
+    # 04.09.2026 ГНС — наземная площадь, и подземный паркинг, входящий в базу
+    # МКД, из неё вычтен — «наземная против базы МКД» сравнивало бы разное.
+    volume = [row["construction_volume_sqm"] for row in by_volume["comparison"]]
+    assert volume[1] > bases[1], "у второй очереди офисы сверх базы МКД — иначе проверка пустая"
 
 
 def test_a_hand_set_share_shows_its_real_rate(by_hand: dict) -> None:

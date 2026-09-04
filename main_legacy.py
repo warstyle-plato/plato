@@ -27236,7 +27236,11 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
             # квартиры на м² продаваемой — общий знаменатель отчёта и книги.
             "apartment_price_th":result["summary"].get("average_apartment_price_th", 0.0),
             "apartment_saleable_sqm":result["summary"].get("apartment_saleable_sqm", 0.0),
+            # ГНС очереди — наземная; подземная и объём стоят рядом своими
+            # полями: удельный показатель без второй базы читается как другой.
             "gns_sqm":p_gns,"total_expenses":p_expenses,
+            "underground_gns_sqm":float(result["summary"].get("underground_gns_sqm") or 0.0),
+            "construction_volume_sqm":float(result["summary"].get("construction_volume_sqm") or 0.0),
             "revenue_per_saleable_th":per_th(result["summary"]["revenue"], p_saleable),
             "revenue_per_gns_th":per_th(result["summary"]["revenue"], p_gns),
             "capex_per_gns_th":per_th(result["summary"]["capex"], p_gns),
