@@ -1883,7 +1883,12 @@ async function handoffKrt(x){
   sessionStorage.setItem('developaid.auction.pending.v1',JSON.stringify({
    krt_model:{inputs:d.inputs,tep:d.tep,phasing:d.phasing},
    krt_name:d.name||x.name||'',
-   krt_slug:x.slug
+   krt_slug:x.slug,
+   // Участок едет вместе с моделью: только земельные КН, здания ЕГРН уже
+   // отделил в контуре. Счёт прочитанного — рядом, иначе пустое поле
+   // читается как «участков в документе нет».
+   krt_cadastres:d.cadastral_numbers||[],
+   krt_cadastre_note:d.cadastral||null
   }));
   location.href='/?krt_import=1';
  }catch(e){say(String(e.message||e))}

@@ -28,10 +28,23 @@ BRIDGE_SCRIPT = r'''
   if(pending.krt_model){
    if(typeof applyProjectSnapshot!=='function')return;
    const model=pending.krt_model;
+   // Перечень участков называет проект решения, а какие из номеров земля —
+   // ответил ЕГРН, когда карточка собирала контур. Прежняя фраза «кадастровых
+   // номеров у площадки в каталоге города нет» была верна до того, как контур
+   // стал собираться по этому перечню, и осталась стоять: на Варшавском ш.,
+   // вл. 37 решение называет 60 номеров, из них 20 участков.
+   const cads=(pending.krt_cadastres||[]).filter(Boolean);
+   const cadNote=pending.krt_cadastre_note||{};
+   const cadLine=cads.length
+    ?('Участок: '+cads.length+' кадастровых номеров из перечня проекта решения'
+      +(cadNote.buildings?' ('+cadNote.buildings+' номеров перечня — здания, они не в счёт площади)':'')
+      +' — поле участка заполнится ими.')
+    :('Кадастровых номеров у площадки не прочитано'
+      +(cadNote.problem?': '+String(cadNote.problem):'')
+      +' — поле участка очистится, впишите номера сами.');
    if(!confirm('Открыть площадку КРТ «'+String(pending.krt_name||'без названия')+'» в модели?\n\n'
      +'Вводные посчитаны предварительным прогоном: цена входа принята нулём, '
-     +'обязательства КРТ сверх опубликованных не учтены. Кадастровых номеров у '
-     +'площадки в каталоге города нет — поле участка очистится, впишите номера сами.\n\n'
+     +'обязательства КРТ сверх опубликованных не учтены. '+cadLine+'\n\n'
      +'Текущий расчёт на экране будет заменён.'))return;
    // Кадастр, контур ЕГРН и скрининг прошлого участка забывает сама подмена
    // проекта (`applyProjectSnapshot` → `forgetTerritoryState`): чистить их
@@ -41,6 +54,15 @@ BRIDGE_SCRIPT = r'''
    // номеров у площадки КРТ нет: город публикует адрес и границы, перечня
    // участков — нет; поле остаётся пустым, и это сказано в вопросе выше.
    applyProjectSnapshot(model);
+   // Строго ПОСЛЕ подмены проекта: она забывает территорию прошлого участка
+   // целиком (`forgetTerritoryState`), и заполненное до неё исчезло бы.
+   if(cads.length){
+    const field=document.getElementById('cadastralNumbers');
+    if(field){
+     field.value=cads.join(', ');
+     if(typeof drawLandPreviewQuiet==='function')drawLandPreviewQuiet(field.value);
+    }
+   }
    if(typeof inputs!=='undefined')inputs._manual_tep_import={
     project_name:String(pending.krt_name||''),
     site_area_ha:Number((model.inputs||{}).site_area_ha||0),

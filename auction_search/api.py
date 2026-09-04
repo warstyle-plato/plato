@@ -1663,6 +1663,17 @@ def install(app: FastAPI) -> None:
                           or "Модель по этой площадке не собрана — передавать нечего"),
             )
         project = stored.get("project") or {}
+        # Участок едет вместе с моделью. Номера называет проект решения, а
+        # какие из них ЗЕМЛЯ — уже ответил ЕГРН, когда карточка собирала
+        # контур: на Варшавском ш., вл. 37 из 60 номеров 20 участков и 39
+        # зданий. Отдать все — это ровно та ошибка, что ловилась на лотах:
+        # ГлавАПУ примет площадь здания за площадь территории и сложит их.
+        # Второго опроса ЕГРН здесь нет — берётся тот же `decision_outline`.
+        outline = await _decision_outline(slug)
+        counts = dict(outline.get("counts") or {})
+        parcels = [str(item.get("cadastral_number") or "")
+                   for item in (outline.get("parcels") or [])
+                   if item.get("cadastral_number")]
         return {
             "slug": slug,
             "name": project.get("name") or slug,
@@ -1673,6 +1684,18 @@ def install(app: FastAPI) -> None:
             "requirements": screening.get("requirements") or {},
             "assumptions": screening.get("assumptions") or [],
             "exclusions": screening.get("exclusions") or [],
+            "cadastral_numbers": parcels,
+            # Чем прочитан перечень и что из него выброшено — часть ответа:
+            # пустое поле участка и «участков в документе нет» на экране
+            # выглядят одинаково.
+            "cadastral": {
+                "land": len(parcels),
+                "listed": int(counts.get("numbers") or 0),
+                "buildings": int(counts.get("buildings") or 0),
+                "missing": int(counts.get("missing") or 0),
+                "source": str(outline.get("numbers_source") or "none"),
+                "problem": str(outline.get("problem") or ""),
+            },
         }
 
     @app.post("/auctions/krt/{slug}/plato")
