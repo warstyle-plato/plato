@@ -656,7 +656,10 @@ def build_krt_model_screening(
     # наземной площади зданий, и К1 в постоянных местах больше нет. На 136 818 м²
     # квартир разница — 1 580 мест по норме против 2 100 по старой строке.
     # Формула объявлена в движке один раз; копий у неё быть не должно.
-    permanent = core.moscow_permanent_parking_2118(saleable)
+    # Число квартир здесь известно — по средней квартире, — поэтому места
+    # считаются пунктом 2 по её полосе: правка числа квартир двигает места.
+    permanent, parking_basis = core.moscow_permanent_parking_by_average(
+        saleable, saleable / lot_area if lot_area else 0.0)
     parking_spaces = permanent + math.ceil(permanent * PARKING_GUEST_SHARE)
     parking_gns = parking_spaces * UNDERGROUND_AREA_PER_SPACE
     tep["underground_parking"].update({
@@ -813,6 +816,10 @@ def build_krt_model_screening(
         + (f" У соседей средний проданный лот {_ru_number(neighbour_lot, 1)} м² — "
            "это наблюдение рынка, а не мера нашей нарезки."
            if neighbour_lot > 0 else "")
+    )
+    assumptions.append(
+        f"Машино-места: {_ru_number(parking_spaces)} ({_ru_number(permanent)} постоянных "
+        f"и гостевые десятой частью) — {parking_basis}."
     )
     if absorption["available"]:
         assumptions.append(
