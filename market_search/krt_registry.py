@@ -47,7 +47,10 @@ DECISION_TEP_SCHEMA_VERSION = 1
 # в памяти вкладки — и правило «живой лот сильнее публикации» работало
 # ровно до перезагрузки.
 TENDER_LOTS_SCHEMA_VERSION = 1
-DECISIONS_CACHE_SCHEMA_VERSION = 2
+# 3 — разбор адреса перестал требовать двоеточия и слова «по»: снимок
+# держит УЖЕ РАЗОБРАННЫЙ адрес, и без смены версии пять площадок ждали
+# бы суток, чтобы их стало можно спросить.
+DECISIONS_CACHE_SCHEMA_VERSION = 3
 TENDERS_CACHE_SCHEMA_VERSION = 1
 MAP_CACHE_SCHEMA_VERSION = 1
 # Поля записи решения — по ним кэш поднимается обратно в объект.

@@ -72,7 +72,7 @@ __DEVELOPAID_CONTOUR__
       </div>
       <input id="krtMinHousing" type="number" min="0" step="10000" placeholder="Жильё от, м²"
              title="Мелкие площадки отсекаются по объёму жилья. Площадка, у которой объём жилья не указан, при непустом пороге прячется — она не «маленькая», она неизвестная, и сколько таких скрыто, написано под таблицей.">
-      <div class="filter-actions"><button id="krtRefresh" class="primary">Обновить каталог</button><button id="krtRankBtn">Оценить отобранные моделью</button><button id="krtPressBtn" title="Читает публикации и каналы по ВСЕМ планируемым площадкам: до пяти поисковых запросов на площадку, по каждому её адресу. Уже спрошенные пропускаются — занятая площадка свободной не станет. У площадок в реализации застройщика называет сама карточка города, поиска они не требуют.">Прочитать публикации по планируемым</button><button id="krtExport">Выгрузить Excel</button></div>
+      <div class="filter-actions"><button id="krtRefresh" class="primary">Обновить каталог</button><button id="krtRankBtn">Оценить отобранные моделью</button><button id="krtPressBtn" title="Читает публикации и каналы по ВСЕМ планируемым площадкам и по площадкам с проектом решения: до пяти поисковых запросов на площадку, по каждому её адресу. Уже спрошенные пропускаются — занятая площадка свободной не станет. У площадок в реализации застройщика называет сама карточка города, поиска они не требуют. У проекта решения без адреса в заголовке спрашивать нечего: такие названы числом, а не пропущены молча.">Прочитать публикации по планируемым</button><button id="krtExport">Выгрузить Excel</button></div>
     </div>
     <div class="stats"><div class="stat"><b id="krtCount">—</b><span id="krtCountNote">проектов</span></div><div class="stat"><b id="krtArea">—</b><span>га территории</span></div><div class="stat"><b id="krtHousing">—</b><span>м² жилья</span></div><div class="stat"><b id="krtGfa">—</b><span>м² всего</span></div></div>
     <details class="fold" id="krtMapFold"><summary>Карта КРТ Москвы — 263 площадки с официальными границами</summary>
@@ -2329,7 +2329,10 @@ async function readKrtPress(){
    box.innerHTML='<span class="spinner"></span>'+esc(d.reason)+'.'}
   else if(d.started){box.style.display='';box.className='notice';
    box.innerHTML='<span class="spinner"></span>Читаю публикации по '+d.planned
-    +' планируемым площадкам. Уже спрошенные пропускаются: занятая площадка свободной не станет.'}
+    +' площадкам — планируемым и с проектом решения. Уже спрошенные пропускаются:'
+    +' занятая площадка свободной не станет.'
+    +(d.no_address?' Не спрошено '+d.no_address+': в заголовке проекта решения нет адреса —'
+      +' искать не по чему, и это не «в источниках пусто».':'')}
  }catch(e){box.style.display='';box.className='notice warn';box.textContent=String(e.message||e)}
  finally{b.disabled=false;b.textContent='Прочитать публикации по планируемым'}
 }
@@ -2352,6 +2355,14 @@ async function loadKrtPress(x, force){
  // в памяти вкладки и пропадала при перезагрузке — «сейчас всё слетает»
  // (владелец, 02.09.2026). Перечитать можно по требованию, кнопкой.
  const kept=state.krtPress[x.slug]||(state.krtRank[x.slug]||{}).press_facts||null;
+ // Записанный отказ — это ответ, и он показывается своей причиной. Прежде он
+ // уезжал в общий вид «показывать нечем, нажмите „Прочитать публикации“»: у
+ // площадки-решения без адреса нажатие ничего бы не изменило, а причина у
+ // отказа есть и она названа.
+ if(kept&&kept.available===false&&!force){
+  box.innerHTML='<div class="notice">Публикации не спрошены: '
+   +esc(kept.reason||'причина не названа')+'. Это не значит, что о площадке не пишут.</div>';
+  return}
  if(kept&&!force){state.krtPress[x.slug]=kept;showKrtPress(x,kept,true);return}
  box.innerHTML='<div class="notice"><span class="spinner"></span>Читаю публикации об этой площадке…</div>';
  try{
