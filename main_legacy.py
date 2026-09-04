@@ -70,7 +70,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.21.87"
+VERSION = "0.21.88"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -14126,13 +14126,39 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
                                fontName=regular, fontSize=6.5, textAnchor="end",
                                fillColor=colors.HexColor("#777777")))
 
-        escrow_area = [(x_at(0), y_at(0))]
-        for index, row in enumerate(data):
-            escrow_area.append((x_at(index), y_at(escrow_of(row))))
-        escrow_area.append((x_at(len(data) - 1), y_at(0)))
-        drawing.add(Polygon([c for point in escrow_area for c in point],
-                            fillColor=colors.HexColor("#2D6A4F"), fillOpacity=0.30,
-                            strokeColor=None))
+        # Свод складывает счета очередей, а даты раскрытия у них разные: в
+        # месяц первой выборки ПФ второй очереди на линии стоит почти только
+        # эскроу ПЕРВОЙ, и одной площадью это читается как «выборка сразу
+        # покрыта» (владелец, 04.09.2026). Отчёт носят в банк, и расходиться
+        # с экраном ему нельзя — здесь те же слои.
+        parts = list((data[0] or {}).get("escrow_by_phase") or [])
+        if len(parts) > 1:
+            for layer in range(len(parts)):
+                def _below(row: dict[str, Any], k: int = layer) -> float:
+                    return sum(float(v or 0.0)
+                               for v in (row.get("escrow_by_phase") or [])[:k])
+
+                def _upto(row: dict[str, Any], k: int = layer) -> float:
+                    values = row.get("escrow_by_phase") or []
+                    return _below(row, k) + float((values[k] if k < len(values) else 0.0) or 0.0)
+
+                band = [(x_at(i), y_at(_upto(row))) for i, row in enumerate(data)]
+                band += [(x_at(i), y_at(_below(data[i]))) for i in reversed(range(len(data)))]
+                drawing.add(Polygon([c for point in band for c in point],
+                                    fillColor=colors.HexColor("#2D6A4F"),
+                                    fillOpacity=0.16 + 0.16 * (layer % 3),
+                                    strokeColor=colors.HexColor("#2D6A4F"), strokeWidth=0.4))
+            drawing.add(String(left + 4, bottom + plot_h - 8, "эскроу — слоями по очередям, снизу вверх",
+                               fontName=regular, fontSize=6.4,
+                               fillColor=colors.HexColor("#2D6A4F")))
+        else:
+            escrow_area = [(x_at(0), y_at(0))]
+            for index, row in enumerate(data):
+                escrow_area.append((x_at(index), y_at(escrow_of(row))))
+            escrow_area.append((x_at(len(data) - 1), y_at(0)))
+            drawing.add(Polygon([c for point in escrow_area for c in point],
+                                fillColor=colors.HexColor("#2D6A4F"), fillOpacity=0.30,
+                                strokeColor=None))
 
         run: list[int] = []
 
@@ -24747,7 +24773,54 @@ def _escrow_cover(rows: list[dict[str, Any]], rve: Any = None) -> dict[str, Any]
     return out
 
 
-def _aggregate_finance(results: list[dict[str, Any]]) -> dict[str, Any]:
+def _escrow_phase_lines(results: list[dict[str, Any]], names: list[str],
+                        rows: list[dict[str, Any]]) -> list[str]:
+    """Чьё эскроу стоит на сводной линии, когда очередь начинает выбирать ПФ.
+
+    Свод складывает счета очередей, и это верная сумма. Но даты раскрытия у
+    них разные, и в месяц первой выборки ПФ второй очереди на линии стоит
+    почти только эскроу ПЕРВОЙ: покрытие свода 0,58 против 0,22 у самой
+    очереди. Читается это как «выборка второй очереди сразу покрыта»
+    (владелец, 04.09.2026: «Это деньги первой очереди или что?»).
+
+    Считается здесь один раз: экран рисует и печатает готовое.
+    """
+    by_month = {str(row.get("month") or ""): row for row in rows}
+    lines: list[str] = []
+    for index, result in enumerate(results):
+        own = (result.get("finance") or {}).get("rows") or []
+        start = next((str(row.get("month") or "") for row in own
+                      if float(row.get("pf_draw", 0.0) or 0.0) > 0), "")
+        if not start:
+            continue
+        total = by_month.get(start) or {}
+        mine = next((row for row in own if str(row.get("month") or "") == start), {})
+        escrow_all = float(total.get("escrow", 0.0) or 0.0)
+        escrow_mine = float(mine.get("escrow", 0.0) or 0.0)
+        others = escrow_all - escrow_mine
+        if others <= 1e6:
+            continue
+        name = names[index] if index < len(names) else f"Очередь {index + 1}"
+        lines.append(
+            f"{name} открывает ПФ в {_month_ru(start)}: на сводной линии эскроу "
+            f"{_mln_ru(escrow_all)}, из них своих {_mln_ru(escrow_mine)}, "
+            f"остальное — счета других очередей. Их деньги её выборку не "
+            f"покрывают: у каждой очереди свой счёт и своя дата раскрытия.")
+    return lines
+
+
+def _escrow_cover_with_phases(rows: list[dict[str, Any]], results: list[dict[str, Any]],
+                              names: list[str]) -> dict[str, Any]:
+    """Свод эскроу плюс оговорка о том, чьи это деньги."""
+    out = _escrow_cover(rows)
+    if len(results) > 1:
+        out["phase_lines"] = _escrow_phase_lines(results, names, rows)
+        out["lines"] = list(out.get("lines") or []) + out["phase_lines"]
+    return out
+
+
+def _aggregate_finance(results: list[dict[str, Any]],
+                      names: list[str] | None = None) -> dict[str, Any]:
     month_map: dict[str, dict[str, float]] = {}
     additive = (
         "bridge_draw", "bridge_repayment", "bridge_interest", "bridge_capitalization",
@@ -24799,6 +24872,16 @@ def _aggregate_finance(results: list[dict[str, Any]]) -> dict[str, Any]:
         running["escrow_and_sales_cumulative"] += out["escrow_release"] + out["sales_after_rve"]
         running["sales_after_rve_cumulative"] += out["sales_after_rve"]
         running["escrow_released_cumulative"] += out["escrow_release"]
+        # Чьё это эскроу. Свод складывает счета очередей, а даты раскрытия у
+        # них разные: в месяц первой выборки ПФ второй очереди на сводной
+        # линии стоит 8,88 млрд, из которых 8,43 — деньги ПЕРВОЙ, и покрытие
+        # свода 0,58 против 0,22 у самой очереди. Читается это как «выборка
+        # второй очереди сразу покрыта» (владелец, 04.09.2026: «Это деньги
+        # первой очереди или что?»). Сумма верна, неверно, что она отвечает
+        # на вопрос про очередь, — поэтому доли едут вместе с ней.
+        out["escrow_by_phase"] = [
+            float((source_rows.get((ri, month)) or {}).get("escrow", 0.0) or 0.0)
+            for ri in range(len(results))]
         out.update(running)
         rows.append(out)
 
@@ -24851,7 +24934,12 @@ def _aggregate_finance(results: list[dict[str, Any]]) -> dict[str, Any]:
     financing_cost = sum(f["financing_cost"] for f in fs)
     return {
         "rows": rows,
-        "escrow_cover": _escrow_cover(rows),
+        # Имена очередей в том же порядке, в каком в строке лежат доли эскроу:
+        # без имён доля — безымянное число, а второй список порядка разошёлся
+        # бы с первым молча.
+        "phase_names": [str(name or f"Очередь {i + 1}")
+                        for i, name in enumerate(names or [""] * len(results))],
+        "escrow_cover": _escrow_cover_with_phases(rows, results, names or []),
         "calculated_bridge_limit": sum(f["calculated_bridge_limit"] for f in fs),
         # Состав лимита складывается по целям, а не пересобирается вычитанием.
         "calculated_bridge_parts": {
@@ -25132,7 +25220,8 @@ def _consolidate_phase_results(
     phase_financing: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     results = [item["result"] for item in phase_items]
-    finance = _aggregate_finance(results)
+    finance = _aggregate_finance(
+        results, [str(item.get("name") or "") for item in phase_items])
     consolidated_bridge_month = _bridge_peak_month(finance["rows"])
     # Расшифровка пика свода — только по очередям, чья линия в этот месяц
     # открыта: закрытая линия ничего не должна, а её расходы уже на ПФ.
@@ -40766,8 +40855,29 @@ function escrowCoverSvg(rows,cover){
  let cumGrid='';
  for(let t=0;t<=4;t++){const v=cumTop*t/4,y=Yc(v);
   cumGrid+=`<text x="${W-pR+6}" y="${(y+4).toFixed(1)}" font-size="11" fill="#1B5E77" text-anchor="start">${(v/1e9).toLocaleString('ru-RU',{maximumFractionDigits:1})}</text>`}
+ // Чьё это эскроу. Свод складывает счета очередей, а даты раскрытия у них
+ // разные: в месяц первой выборки ПФ второй очереди на сводной линии стояло
+ // 8,88 млрд, из которых 8,43 — деньги ПЕРВОЙ, и покрытие свода 0,58 против
+ // 0,22 у самой очереди. Читалось это как «выборка второй очереди сразу
+ // покрыта» (владелец, 04.09.2026: «Это деньги первой очереди или что?»).
+ // Сумма верна — неверно, что она отвечает на вопрос про очередь, поэтому
+ // площадь эскроу на своде разложена по очередям слоями снизу вверх.
+ // Считать здесь нечего: доли приходят готовыми, экран их только рисует.
+ const parts=(data[0]&&data[0].escrow_by_phase)||[];
+ const layers=parts.length>1?parts.map((_,k)=>{
+   const below=x=>(x.escrow_by_phase||[]).slice(0,k).reduce((a,b)=>a+Number(b||0),0);
+   const upto=x=>below(x)+Number((x.escrow_by_phase||[])[k]||0);
+   const top=data.map((x,i)=>pt(i,upto(x))).join(' ');
+   const back=data.slice().reverse().map((x,i)=>pt(data.length-1-i,below(x))).join(' ');
+   return `<polygon points="${top} ${back}" fill="#2D6A4F" fill-opacity="${(0.16+0.16*(k%3)).toFixed(2)}"`
+    +` stroke="#2D6A4F" stroke-opacity="0.35" stroke-width="0.8"></polygon>`;
+ }).join(''):`<polygon points="${area(x=>Number(x.escrow||0))}" fill="#2D6A4F" fill-opacity="0.30"/>`;
+ // Слои названы прямо на рисунке: без подписи разделённая площадь читается
+ // как одна, и общая легенда («Эскроу накоплено») отвечала бы про сумму.
+ const layerNote=parts.length>1
+  ? `<text x="${pL+4}" y="${pT+11}" font-size="11" fill="#2D6A4F">эскроу — слоями по очередям, снизу вверх</text>` : '';
  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">${grid}
-  <polygon points="${area(x=>Number(x.escrow||0))}" fill="#2D6A4F" fill-opacity="0.30"/>
+  ${layers}${layerNote}
   ${gaps}
   <polyline points="${path(duty)}" fill="none" stroke="#A35D00" stroke-width="2.6"/>
   <polyline points="${path(x=>Number(x.pf_balance||0))}" fill="none" stroke="#A35D00" stroke-width="1" stroke-dasharray="4 3" opacity="0.85"/>
