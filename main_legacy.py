@@ -70,7 +70,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.21.88"
+VERSION = "0.21.89"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -14716,6 +14716,10 @@ _V4_INPUT_CELLS: dict[str, str] = {
     "profit_tax_pct": "B21", "vat_pct": "B22", "discount_rate_pct": "B23",
     "bridge_spread_pp": "B25", "pf_spread_pp": "B27", "pf_special_pct": "B28",
     "limit_fee_pct": "B29", "reservation_fee_pct": "B30",
+    # Ставка на старте и срок нормализации писались рукописным put, и подпись
+    # оставалась шаблонная — `key_rate_start_pct`, `key_rate_decline_months`.
+    # Одно число под двумя именами: сверить книгу с движком по ключу нельзя.
+    "rate_start_pct": "B33", "rate_normalization_months": "B35",
     "ird_th_per_sqm": "B40", "design_p_th_per_sqm": "B41",
     "design_rd_th_per_sqm": "B42", "preparation_th_per_sqm": "B43",
     "main_above_th_per_sqm": "B44", "main_under_th_per_sqm": "B45",
@@ -15761,6 +15765,149 @@ def _v4_ladder_rows_xml(xml: str, steps: list[tuple[float, float]]
     return xml.replace(tail, "".join(parts) + tail, 1), refs
 
 
+# Книга v4 читает сценарий ставки по своему имени столбца: E4/F4/G4 несут
+# «Base»/«Upside»/«Downside», а движок — «base»/«high»/«low». Выше ставки
+# у консервативного сценария, поэтому high идёт в Downside, а low в Upside:
+# у книги имя про исход проекта, у движка — про уровень ставки.
+_V4_RATE_SCENARIO_NAMES = {"base": "Base", "high": "Downside", "low": "Upside"}
+
+
+def _v4_rate_curve_rows_xml(xml: str, scenario: str, start_date: Any,
+                            curve_shape: float, offset_months: int,
+                            targets: dict[str, float],
+                            selectors: dict[str, str]
+                            ) -> tuple[str, dict[str, str]]:
+    """Блок кривой ключевой ставки внизу «Вводных»; возвращает ссылки на ячейки.
+
+    Три вводные жили в книге числами ВНУТРИ формулы листа «Ставки»
+    (`EXP(-2*…)` и смещение `+5`) либо не жили вовсе. Числа движок подставлял
+    верные, но править их в книге было негде: «если величина в книге не
+    выражается формулой, значит не хватает не формулы, а вводной».
+
+    Хуже была третья: сценарий ставки книга не знала совсем — ячейка `B6`
+    закреплена словом «Base», и целевая ставка бралась базовой при любом
+    `rate_scenario`. На умолчаниях с консервативным сценарием это 4 516 млн ₽
+    стоимости финансирования у движка против 4 165 у книги. `B6` при этом
+    трогать нельзя: он ведёт множители цены и затрат (движок пишет
+    ПРИМЕНЁННЫЕ в колонку Base) и задержку старта. Поэтому у ставки свой
+    селектор, а не общий.
+
+    Блок дописывается строками XML в свободный низ листа, как лестница
+    ступеней: вставить строку в занятое место нельзя — поедут все ссылки.
+    """
+    import re as _re
+    rows = [int(number) for number in _re.findall(r'<x:row r="(\d+)"', xml)]
+    row_at = (max(rows) if rows else 0) + 2
+    parts: list[str] = []
+
+    def text_cell(coord: str, value: str) -> str:
+        return f'<x:c r="{coord}" t="inlineStr"><x:is><x:t>{value}</x:t></x:is></x:c>'
+
+    def number_cell(coord: str, value: float) -> str:
+        return f'<x:c r="{coord}"><x:v>{value:g}</x:v></x:c>'
+
+    parts.append(f'<x:row r="{row_at}">'
+                 + text_cell(f"A{row_at}", "КРИВАЯ КЛЮЧЕВОЙ СТАВКИ")
+                 + text_cell(f"D{row_at}", "Ключ API") + "</x:row>")
+    row_at += 1
+    parts.append(f'<x:row r="{row_at}">'
+                 + text_cell(f"A{row_at}",
+                             "Правьте значения — лист «Ставки» и ячейка B34 читают их отсюда. "
+                             "Сценарий пишется именем колонки: Base / Upside / Downside.")
+                 + "</x:row>")
+    row_at += 1
+
+    refs: dict[str, str] = {}
+    scenario_row = row_at
+    parts.append(f'<x:row r="{row_at}">'
+                 + text_cell(f"A{row_at}", "Сценарий ключевой ставки")
+                 + text_cell(f"B{row_at}", scenario)
+                 + text_cell(f"C{row_at}", "сценарий")
+                 + text_cell(f"D{row_at}", "rate_scenario") + "</x:row>")
+    refs["rate_scenario"] = f"$B${scenario_row}"
+    row_at += 1
+
+    serial = _v4_excel_serial(start_date)
+    date_row = row_at
+    parts.append(f'<x:row r="{row_at}">'
+                 + text_cell(f"A{row_at}", "Дата стартовой ставки")
+                 + (number_cell(f"B{row_at}", serial) if serial is not None
+                    else text_cell(f"B{row_at}", ""))
+                 + text_cell(f"C{row_at}", "дата")
+                 + text_cell(f"D{row_at}", "rate_start_date") + "</x:row>")
+    refs["rate_start_date"] = f"$B${date_row}"
+    row_at += 1
+
+    shape_row = row_at
+    parts.append(f'<x:row r="{row_at}">'
+                 + text_cell(f"A{row_at}", "Форма кривой снижения")
+                 + number_cell(f"B{row_at}", round(float(curve_shape), 6))
+                 + text_cell(f"C{row_at}", "коэффициент")
+                 + text_cell(f"D{row_at}", "rate_curve_shape") + "</x:row>")
+    refs["rate_curve_shape"] = f"$B${shape_row}"
+    row_at += 1
+
+    # Три целевые ставки стояли в сценарных колонках E8/F8/G8, где свободной
+    # соседней ячейки под ключ нет вовсе: строка 8 занята подписью, значением
+    # и активным сценарием. Значит правят их здесь, а строка 8 читает —
+    # тот же приём, что у лага продаж и тренда темпа (B66/B68).
+    for key, label in (("rate_target_base_pct", "Целевая ставка — базовый (Base)"),
+                       ("rate_target_low_pct", "Целевая ставка — оптимистичный (Upside)"),
+                       ("rate_target_high_pct", "Целевая ставка — консервативный (Downside)")):
+        parts.append(f'<x:row r="{row_at}">'
+                     + text_cell(f"A{row_at}", label)
+                     + number_cell(f"B{row_at}", round(float(targets.get(key, 0.0)), 8))
+                     + text_cell(f"C{row_at}", "% годовых")
+                     + text_cell(f"D{row_at}", key) + "</x:row>")
+        refs[key] = f"$B${row_at}"
+        row_at += 1
+
+    # Смещение считает сама книга — тем же выражением, что и движок. Записать
+    # его числом значило бы заморозить: правка даты стартовой ставки не
+    # двигала бы кривую, а выглядело бы это как рабочая вводная.
+    offset_row = row_at
+    if serial is not None:
+        offset_formula = (f"(YEAR($B$8)-YEAR($B${date_row}))*12"
+                          f"+MONTH($B$8)-MONTH($B${date_row})"
+                          f"-IF(DAY($B${date_row})&gt;1,1,0)")
+        offset_cell = (f'<x:c r="B{offset_row}"><x:f>{offset_formula}</x:f>'
+                       f"<x:v>{int(offset_months)}</x:v></x:c>")
+    else:
+        offset_cell = number_cell(f"B{offset_row}", int(offset_months))
+    parts.append(f'<x:row r="{row_at}">'
+                 + text_cell(f"A{row_at}", "Месяцев от даты ставки до старта проекта")
+                 + offset_cell
+                 + text_cell(f"C{row_at}", "мес.")
+                 + text_cell(f"D{row_at}", "считается из даты выше") + "</x:row>")
+    refs["offset"] = f"$B${offset_row}"
+    row_at += 1
+
+    # Два селектора страницы, которых книга не считает вовсе, — и об этом
+    # сказано прямо. Их следствие в книге уже стоит: ставки себестоимости
+    # посчитаны по классу, ТЭП — по пропорциям. Не назвать их значит выдать
+    # пустое место за «таких вводных нет»; назвать ключом — пообещать, что
+    # правка здесь что-то изменит.
+    row_at += 1
+    parts.append(f'<x:row r="{row_at}">'
+                 + text_cell(f"A{row_at}", "ПРЕДПОСЫЛКИ РАСЧЁТА — книга их не считает")
+                 + "</x:row>")
+    row_at += 1
+    for label, value, note in (
+            ("Класс проекта", selectors.get("project_class", ""),
+             "ставки себестоимости выше уже посчитаны по нему · project_class"),
+            ("Пропорции ТЭП", selectors.get("tep_ratios_custom", "") or "по умолчанию",
+             "ТЭП листа «ТЭП» уже посчитан по ним · tep_ratios_custom")):
+        parts.append(f'<x:row r="{row_at}">'
+                     + text_cell(f"A{row_at}", label)
+                     + text_cell(f"B{row_at}", str(value))
+                     + text_cell(f"D{row_at}", note) + "</x:row>")
+        row_at += 1
+
+    tail = "</x:sheetData>"
+    assert tail in xml
+    return xml.replace(tail, "".join(parts) + tail, 1), refs
+
+
 def _v4_step_worksheet_xml(text: str, steps: list[tuple[float, float]],
                            refs: list[tuple[str, str]]) -> tuple[str, int]:
     """Строка 41 CF-листа: одна ставка B28 становится лестницей по ссылкам.
@@ -16574,11 +16721,6 @@ def build_project_workbook(
             label="engine_horizon_end")
     except Exception:
         put("B71", number=0.0, label="engine_horizon_end")
-    put("B33", number=n(x, "rate_start_pct", 14.0) / 100.0, label="rate_start_pct")
-    put("B35", number=n(x, "rate_normalization_months", 24.0), label="rate_normalization_months")
-    put("E8", number=n(x, "rate_target_base_pct", 9.0) / 100.0, label="rate_target_base_pct")
-    put("F8", number=n(x, "rate_target_low_pct", 7.0) / 100.0, label="rate_target_low_pct")
-    put("G8", number=n(x, "rate_target_high_pct", 11.0) / 100.0, label="rate_target_high_pct")
     # Сезонность: в движке одно значение на январь и май–август.
     seasonal = float(x.get("seasonal_reduction_pct") or 0) / 100.0
     # Сезонность у движка ОДНА вводная на оба окна, а шаблон подписал их своими
@@ -16854,30 +16996,12 @@ def build_project_workbook(
     # при ставке с июля 2026 книга держала ключ 14% там, где у движка уже 12%,
     # и БРИДЖ с ПФ дорожали на десятки миллионов из ниоткуда. Сценарный
     # переключатель сохранён: целевая ставка остаётся ячейкой B34 (= H8).
+    # Сама кривая пишется ниже, когда известны ячейки блока: форма и смещение
+    # стояли здесь числами внутри формулы, и правка их в книге ничего не
+    # меняла — «если величина в книге не выражается формулой, значит не
+    # хватает не формулы, а вводной».
     rates_sheet_path = _v4_sheet_path(source, "Ставки")
     rates_xml = source.read(rates_sheet_path).decode("utf-8")
-    try:
-        _rs_raw = str(x.get("rate_start_date") or "")[:10]
-        _ps_date = date.fromisoformat(str(x.get("project_start") or "2027-01-01")[:10])
-        _rs_date = date.fromisoformat(_rs_raw) if _rs_raw else _ps_date
-        _curve_offset = ((_ps_date.year - _rs_date.year) * 12
-                         + (_ps_date.month - _rs_date.month)
-                         - (1 if _rs_date.day > 1 else 0))
-        _curve_shape = max(0.05, float(x.get("rate_curve_shape") or 2.0))
-    except Exception:
-        _curve_offset, _curve_shape = 0, 2.0
-    from openpyxl.utils import get_column_letter as _rate_col
-    for _rate_index in range(120):
-        _X = _rate_col(4 + _rate_index)
-        _progress = (f"(1-EXP(-{_curve_shape:g}*MIN(MAX(0,{_X}$4-1+{_curve_offset}),"
-                     f"'Вводные'!$B$35)/'Вводные'!$B$35))/(1-EXP(-{_curve_shape:g}))")
-        rates_xml, done = _v4_set_cell(
-            rates_xml, f"{_X}5",
-            formula=(f"MAX(0,'Вводные'!$B$34,'Вводные'!$B$33"
-                     f"+('Вводные'!$B$34-'Вводные'!$B$33)*{_progress})"))
-        if not done:
-            missing.append(f"кривая ключевой ставки: колонка {_rate_index}")
-            break
 
     # Лист «Источники» — данными этого проекта, а не шаблонного: там жил
     # кадастр 77:09 и московское 593-ПП даже у областных проектов, и сверка
@@ -17386,6 +17510,67 @@ def build_project_workbook(
     # Лестница — вводная и здесь: блок ячеек внизу «Вводных», формулы строки 41
     # CF-листов ссылаются на него (владелец, 20.08.2026: «сейчас-то надбавка —
     # это вводная»). Пустое поле оставляет одну ставку B28, как было.
+    # --- кривая ключевой ставки -------------------------------------------
+    # Форма кривой и смещение от даты стартовой ставки стояли ЧИСЛАМИ внутри
+    # формулы листа «Ставки», а сценарий книга не знала вовсе. Теперь это три
+    # вводные ячейки, и формулы читают их.
+    try:
+        _rc_raw = str(x.get("rate_start_date") or "")[:10]
+        _rc_start = date.fromisoformat(str(x.get("project_start") or "2027-01-01")[:10])
+        _rc_date = date.fromisoformat(_rc_raw) if _rc_raw else _rc_start
+        _rc_offset = ((_rc_start.year - _rc_date.year) * 12
+                      + (_rc_start.month - _rc_date.month)
+                      - (1 if _rc_date.day > 1 else 0))
+        _rc_shape = max(0.05, float(x.get("rate_curve_shape") or 2.0))
+    except Exception:
+        _rc_date, _rc_offset, _rc_shape = None, 0, 2.0
+    _rc_scenario = _V4_RATE_SCENARIO_NAMES.get(
+        str(x.get("rate_scenario") or "base").strip().lower(), "Base")
+    _rc_refs: dict[str, str] = {}
+    try:
+        xml, _rc_refs = _v4_rate_curve_rows_xml(
+            xml, _rc_scenario, _rc_date, _rc_shape, _rc_offset,
+            {"rate_target_base_pct": n(x, "rate_target_base_pct", 9.0) / 100.0,
+             "rate_target_low_pct": n(x, "rate_target_low_pct", 7.0) / 100.0,
+             "rate_target_high_pct": n(x, "rate_target_high_pct", 11.0) / 100.0},
+            {"project_class": str(x.get("project_class") or ""),
+             "tep_ratios_custom": str(x.get("tep_ratios_custom") or "")})
+    except Exception as exc:
+        missing.append("Вводные · кривая ключевой ставки: " + _error_location(exc))
+    if _rc_refs:
+        # Целевая ставка активного сценария выбиралась по B6 — общему драйверу
+        # сценария, который движок закрепляет словом «Base» (в колонку Base он
+        # пишет ПРИМЕНЁННЫЕ множители цены и затрат). Поэтому у ставки свой
+        # селектор: иначе проект на консервативном сценарии книга считала по
+        # базовой целевой — 4 516 млн ₽ у движка против 4 165 у книги.
+        for _coord, _key in (("E8", "rate_target_base_pct"),
+                             ("F8", "rate_target_low_pct"),
+                             ("G8", "rate_target_high_pct")):
+            put(_coord, formula=_rc_refs[_key], label=f"читалка {_key}")
+        # Целевая ставка выбиралась по B6 — общему драйверу сценария, который
+        # движок закрепляет словом «Base» (в колонку Base он пишет ПРИМЕНЁННЫЕ
+        # множители цены и затрат, и это верно). У ставки сценарий свой: иначе
+        # проект на консервативном шёл по базовой целевой — 12,82→11,00% у
+        # движка против 12,03→9,00% у книги.
+        put("H8", formula=f"INDEX($E$8:$G$8,1,MATCH({_rc_refs['rate_scenario']},$E$4:$G$4,0))",
+            label="целевая ставка по rate_scenario")
+    _rc_shape_ref = (f"'Вводные'!{_rc_refs['rate_curve_shape']}" if _rc_refs
+                     else f"{_rc_shape:g}")
+    _rc_offset_ref = (f"'Вводные'!{_rc_refs['offset']}" if _rc_refs
+                      else f"{_rc_offset:d}")
+    from openpyxl.utils import get_column_letter as _rate_col
+    for _rate_index in range(120):
+        _X = _rate_col(4 + _rate_index)
+        _progress = (f"(1-EXP(-{_rc_shape_ref}*MIN(MAX(0,{_X}$4-1+{_rc_offset_ref}),"
+                     f"'Вводные'!$B$35)/'Вводные'!$B$35))/(1-EXP(-{_rc_shape_ref}))")
+        rates_xml, done = _v4_set_cell(
+            rates_xml, f"{_X}5",
+            formula=(f"MAX(0,'Вводные'!$B$34,'Вводные'!$B$33"
+                     f"+('Вводные'!$B$34-'Вводные'!$B$33)*{_progress})"))
+        if not done:
+            missing.append(f"кривая ключевой ставки: колонка {_rate_index}")
+            break
+
     _ladder_steps = pf_special_steps(x.get("pf_special_steps"))
     _ladder_refs: list[tuple[str, str]] = []
     _ladder_swapped = 0
