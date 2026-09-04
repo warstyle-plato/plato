@@ -16015,6 +16015,14 @@ _V4_SOCIAL_KEYS: dict[str, tuple[str, str, str, str]] = {
     "clinic": ("clinic_capacity", "clinic_cost_mln_per_unit",
                "clinic_start", "clinic_months"),
 }
+# Площадь объекта и норматив на место — вторая пара колонок того же блока.
+# Бюджет считается от МЕСТ, а площадь нужна для контроля общего объёма
+# (решение владельца, 03.09.2026), и это два разных числа у одной строки.
+_V4_SOCIAL_AREA_KEYS: dict[str, tuple[str, str]] = {
+    "kindergarten": ("social_dou_gba_sqm", "social_dou_norm_sqm"),
+    "school": ("social_school_gba_sqm", "social_school_norm_sqm"),
+    "clinic": ("social_clinic_gba_sqm", "social_clinic_norm_sqm"),
+}
 # Подписи колонок очередей — как в шаблоне, чтобы ключ дописывался к ним, а не
 # заменял их: копия подписи разошлась бы с книгой молча.
 _v4_QUEUE_HEADERS: dict[str, str] = {
@@ -16050,7 +16058,8 @@ V4_INPUTS_NOT_IN_BOOK: dict[str, str] = {
         "то же для офисов: признак делит нормативную потребность между наземным "
         "и подземным паркингом до того, как ТЭП попадает в книгу"),
     "retail_parking_surface": (
-        "то же для ТЦ и ОСЗ"),
+        "то же для ТЦ и ОСЗ: признак делит нормативную потребность между "
+        "наземным и подземным паркингом до того, как ТЭП попадает в книгу"),
 }
 _V4_ENGINE_ONLY_ROWS: tuple[tuple[str, str, str], ...] = (
     ("vri_region", "Регион расчёта платы за ВРИ", "Плата приходит в B16"),
@@ -16127,7 +16136,8 @@ def _v4_social_cash_row(base_row: int) -> int:
 
 def _v4_social_rows_xml(xml: str, rows: dict[tuple[int, str], dict[str, Any]],
                         cost_per: dict[str, float], months_by_type: dict[str, int],
-                        cash_mln: float) -> tuple[str, int]:
+                        cash_mln: float, areas: dict[str, tuple[float, float]] | None = None
+                        ) -> tuple[str, int]:
     """Дописывает блок соцобъектов в конец листа «Вводные»; возвращает базу строк.
 
     Как и лестница ставок, блок пишется строками XML в свободный низ листа:
@@ -16163,6 +16173,10 @@ def _v4_social_rows_xml(xml: str, rows: dict[tuple[int, str], dict[str, Any]],
         + text_cell(f"I{header}", "Ключ API: цена места")
         + text_cell(f"J{header}", "Ключ API: начало")
         + text_cell(f"K{header}", "Ключ API: срок")
+        + text_cell(f"L{header}", "Площадь объекта, м²")
+        + text_cell(f"M{header}", "Норматив, м²/место")
+        + text_cell(f"N{header}", "Ключ API: площадь")
+        + text_cell(f"O{header}", "Ключ API: норматив")
         + "</x:row>")
     for type_index, (typ, label) in enumerate(_V4_SOCIAL_TYPES):
         # Ключ движка ставится только там, где строка несёт ВСЮ вводную: тип
@@ -16192,6 +16206,15 @@ def _v4_social_rows_xml(xml: str, rows: dict[tuple[int, str], dict[str, Any]],
                 + number_cell(f"G{row}", float(slot.get("factor") or 1.0))
                 + ("".join(text_cell(f"{letter}{row}", key)
                            for letter, key in zip("HIJK", keys) if key))
+                # Площадь и норматив — свойство ТИПА, а не очереди: их место
+                # у той же строки, что несёт ключи, иначе одна вводная стояла
+                # бы четырьмя копиями с разными значениями.
+                + ("".join((
+                    number_cell(f"L{row}", float((areas or {}).get(typ, (0.0, 0.0))[0])),
+                    number_cell(f"M{row}", float((areas or {}).get(typ, (0.0, 0.0))[1]),),
+                    text_cell(f"N{row}", _V4_SOCIAL_AREA_KEYS[typ][0]),
+                    text_cell(f"O{row}", _V4_SOCIAL_AREA_KEYS[typ][1]),
+                )) if phase_index == sole else "")
                 + "</x:row>")
     cash_row = _v4_social_cash_row(base_row)
     # Дата платежа — методикой движка: min(заданная B18, РнС − 1 мес.).
@@ -16664,7 +16687,10 @@ def build_project_workbook(
     # Дописывается строками в свободный низ листа, как лестница ставок:
     # вставить строку в занятое место нельзя — поедут все ссылки.
     xml, social_base_row = _v4_social_rows_xml(
-        xml, social_rows, cost_per, months_by_type, social_cash_mln)
+        xml, social_rows, cost_per, months_by_type, social_cash_mln,
+        areas={typ: (n(x, _V4_SOCIAL_AREA_KEYS[typ][0], 0.0),
+                     social_area_per_place(x, typ))
+               for typ in _V4_SOCIAL_AREA_KEYS})
 
     # Вводные, которых книге не сосчитать, показываются основанием: число без
     # основания и основание без числа одинаково бесполезны. Плата за ВРИ стоит
@@ -16865,6 +16891,96 @@ def build_project_workbook(
     # лимит вместе с платой за невыбранный. Число сюда писать нельзя: правка
     # календаря очереди двигает выборку, а лимит остался бы прежним.
     put("B26", formula=_V4_PF_LIMIT_FORMULA, label="pf_limit_mln (методика движка)")
+
+    # --- добавка вводных в СВОИ блоки --------------------------------------
+    # Свободных строк у групп левой колонки почти нет, а вставлять строку в
+    # занятое место нельзя — поедут все ссылки. Поэтому добавка встаёт ПРАВЕЕ,
+    # в те же строки своей группы: править объект, листая от одной его половины
+    # к другой, нельзя (решение владельца, 03.09.2026). Колонки E–H у блоков
+    # сделки, стоимости стройки, продаж и ВРИ свободны — измерено по шаблону.
+    for _extra_row, _extra_label, _extra_key, _extra_unit, _extra_kind in (
+            # Сделка и сроки (13–37)
+            (15, "Лаг погашения БРИДЖ после РнС", "bridge_repay_lag_months", "мес.", "number"),
+            # Стоимость строительства (38–54)
+            (39, "Снос — площадь сносимого", "demolition_area_sqm", "м²", "number"),
+            (40, "Снос — стоимость", "demolition_cost_th_per_sqm", "тыс. ₽/м²", "number"),
+            (41, "Расселение", "resettlement_cost_mln", "млн ₽", "number"),
+            # Продажи (57–71)
+            (59, "Инфляция цены после РВЭ", "inflation_after_rve_pct", "% год", "pct"),
+            # Финансирование — в блоке сделки, там же, где спреды
+            (25, "Спред капитализации БРИДЖ", "bridge_cap_spread_pp", "п.п.", "pct"),
+            (26, "Одобренный лимит ПФ", "pf_limit_approved_mln",
+             "млн ₽; 0 — лимит из потребности", "number"),
+            # Соцнагрузка — форма площади объекта
+            (43, "Площадь соцобъекта", "social_area_source",
+             "норматив / вписана руками", "text"),
+    ):
+        _extra_value = x.get(_extra_key)
+        put_new(f"E{_extra_row}", text=_extra_label)
+        if _extra_kind == "pct":
+            put_new(f"F{_extra_row}", number=n(x, _extra_key, 0.0) / 100.0,
+                    label=_extra_key)
+        elif _extra_kind == "text":
+            put_new(f"F{_extra_row}",
+                    text="вписана руками" if str(_extra_value or "norm") == "manual"
+                    else "норматив", label=_extra_key)
+        else:
+            put_new(f"F{_extra_row}", number=n(x, _extra_key, 0.0), label=_extra_key)
+        put_new(f"G{_extra_row}", text=_extra_unit)
+        put_new(f"H{_extra_row}", text=_extra_key)
+
+    # --- ВРИ: остальные вводные в свой блок --------------------------------
+    # Лист «ВРИ» — живой график на 1932 формулы, он уже читает периодичность,
+    # срок рассрочки, проценты и обеспечение. Недостающие четырнадцать ложатся
+    # туда же, в строки СВОЕГО блока (73–85), двумя парами колонок: E/F и G/H.
+    # Часть из них книга пока не считает, и это сказано единицей измерения —
+    # ложное поле хуже отсутствующего, а молча пропущенное читается как «такой
+    # вводной нет».
+    _vri_mode_words = {
+        "before_rns_1m": "За месяц до РнС", "at_rns": "В дату РнС",
+        "before_rns_3m": "За три месяца до РнС",
+        "after_purchase": "Через N мес. после покупки", "manual": "Задана вручную"}
+    _vri_extra = (
+        ("Дата обязательства — режим", "vri_obligation_date_mode", "режим",
+         _vri_mode_words.get(str(x.get("vri_obligation_date_mode") or "before_rns_1m"),
+                             "За месяц до РнС")),
+        ("Месяцев после покупки", "vri_months_after_purchase", "мес.",
+         n(x, "vri_months_after_purchase", 12.0)),
+        ("Дата обязательства по документу", "vri_obligation_date", "дата; пусто — оценка",
+         str(x.get("vri_obligation_date") or "")[:10] or "не задана"),
+        ("Первый взнос", "vri_initial_pct", "% платы", n(x, "vri_initial_pct", 0.0) / 100.0),
+        ("Порядок графика", "vri_schedule_mode", "режим",
+         "Задан вручную" if str(x.get("vri_schedule_mode") or "auto") == "manual" else "Автоматический"),
+        ("Дата открытия ПФ для ВРИ", "vri_pf_open_date", "дата; пусто — РнС",
+         str(x.get("vri_pf_open_date") or "")[:10] or "не задана"),
+        ("ВРИ в банковском бюджете", "vri_in_bank_budget", "Да / Нет",
+         "Нет" if x.get("vri_in_bank_budget") is False else "Да"),
+        ("Источник оплаты ВРИ", "vri_financing_mode", "режим",
+         "Заданы доли" if str(x.get("vri_financing_mode") or "auto") == "shares" else "Автоматически"),
+        ("Доля БРИДЖа в плате", "vri_share_bridge_pct", "%",
+         n(x, "vri_share_bridge_pct", 0.0) / 100.0),
+        ("Доля ПФ в плате", "vri_share_pf_pct", "%", n(x, "vri_share_pf_pct", 0.0) / 100.0),
+        ("Доля своих средств в плате", "vri_share_equity_pct", "%",
+         n(x, "vri_share_equity_pct", 0.0) / 100.0),
+        ("Льгота — форма", "vri_relief_mode", "режим",
+         {"share": "Долей", "amount": "Суммой"}.get(
+             str(x.get("vri_relief_mode") or "none"), "Нет льготы")),
+        ("Льгота — доля", "vri_relief_pct", "% платы", n(x, "vri_relief_pct", 0.0) / 100.0),
+        ("Зачёт переданных метров", "vri_transfer_offset_mln", "млн ₽",
+         n(x, "vri_transfer_offset_mln", 0.0)),
+    )
+    # Колонка одна — E–H: I–L в этих строках заняты блоком паркинга и кладовых,
+    # и вторая пара затёрла бы его подписи. Полей четырнадцать, строк блока
+    # ровно столько же вместе со строкой заголовка (72–85).
+    for _index, (_label, _key, _unit, _value) in enumerate(_vri_extra):
+        _row = 72 + _index
+        put_new(f"E{_row}", text=_label)
+        if isinstance(_value, str):
+            put_new(f"F{_row}", text=_value, label=_key)
+        else:
+            put_new(f"F{_row}", number=round(float(_value), 6), label=_key)
+        put_new(f"G{_row}", text=_unit)
+        put_new(f"H{_row}", text=_key)
 
     # --- остаточные продажи объектов ---------------------------------------
     # «Общий срок продаж» объекта (K33/K53/K73) — это срок стройки ПЛЮС хвост
