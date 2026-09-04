@@ -15660,7 +15660,8 @@ def _v4_shared_weights(
     # (shared_allocation): с аллокацией книга платила ВРИ тремя кусками перед
     # РнС каждой очереди, а движок — целиком перед первым РнС. Дефолт движка
     # тот же: покупка, ВРИ и соцкомпенсация кассово в первой очереди.
-    weights = [float(w or 0) for w in ((phasing.get("shared_cash") or {}).get(key) or [])]
+    raw = (phasing.get("shared_cash") or {}).get(key)
+    weights = [float(w or 0) for w in raw] if isinstance(raw, list) else []
     weights = _v4_fold_tail(weights, enabled or count, count)
     if len(weights) < count or sum(weights[:count]) <= 0:
         # Умолчание берётся у движка, а не пишется здесь второй раз: своя
@@ -15794,6 +15795,9 @@ def _v4_finance_hints(bundle: dict[str, Any]) -> dict[str, Any]:
     hints["carried_debt_mln"] = sum(
         float((item.get("result") or {}).get("finance", {}).get("debt_carried_out") or 0.0)
         for item in phases) / 1e6
+    # Кассовые доли, которые движок применил: статья «по объёму» в phasing
+    # стоит словом, а книге нужны числа — те же, что у движка.
+    hints["shared_cash_applied"] = dict(bundle.get("shared_cash_applied") or {})
     # Выручка очереди по продуктам: книга считает её своими формулами, а отсюда
     # берёт только список продуктов, у которых выручка есть хоть в одной
     # очереди, и их подписи. Второй счёт той же выручки однажды разошёлся бы с
@@ -16359,6 +16363,23 @@ def build_project_workbook(
             # сошёлся». Причина уходит туда же, куда неопознанная формула.
             finance_hints = {}
             missing.append("контрольные числа движка: " + _error_location(exc))
+
+    # Статья «по объёму» стоит в phasing словом; числа посчитал движок и
+    # отдал в подсказках. Книга берёт их оттуда — второго счёта долей нет.
+    if any(isinstance(v, str) for v in (p.get("shared_cash") or {}).values()):
+        applied_shares = (finance_hints or {}).get("shared_cash_applied") or {}
+        p = dict(p)
+        shares = dict(p.get("shared_cash") or {})
+        for key, value in list(shares.items()):
+            if not isinstance(value, str):
+                continue
+            if applied_shares.get(key):
+                shares[key] = [float(w) for w in applied_shares[key]]
+            else:
+                shares.pop(key)
+                missing.append(f"кассовая доля «{key}» по объёму: движок не отдал применённые доли, книга берёт умолчание")
+        p["shared_cash"] = shares
+        phasing = p
 
     template = _V4_TEMPLATE_PATH.read_bytes()
     source = zipfile.ZipFile(io.BytesIO(template))
@@ -25539,6 +25560,36 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
         key: _normalized_phase_weights(shared_cash.get(key), count, cash_defaults[key])
         for key in cash_defaults
     }
+    # Статья «по объёму» (`shared_cash[key] == "volume"`): очередь платит
+    # проектирование, подготовку и сети по своему строительному объёму, и цена
+    # метра у каждой равна вводной. Общая сумма, делённая долями, не
+    # привязанными к объёму, давала первой очереди 25,9 тыс ₽/м² при вводной
+    # 14,5, а офисной третьей — 6,3 (владелец, 04.09.2026: «а если ставить
+    # 42, то и удельные вводные меняться должны»). Доля считается по ТЭП
+    # очереди, когда он собран, — перед запуском её расчёта.
+    volume_articles = {
+        key for key in ("ird", "design", "preparation", "utilities")
+        if isinstance(shared_cash.get(key), str) and shared_cash.get(key).strip().lower() == "volume"
+    }
+    # База этих статей в движке — ГНС МКД (квартиры, коммерция 1 этажа,
+    # подземный паркинг, кладовые): у офисов, ТЦ и наземного паркинга своя
+    # цена «всё включено». Доля «по объёму» берётся от той же базы — иначе
+    # очередь с офисами платила бы за проектирование объекта, которое уже
+    # сидит в его цене, а цена метра расходилась бы с вводной.
+    _SHARED_BASE_KEYS = ("apartments", "ground_commercial", "underground_parking", "storage")
+    def _shared_base_gns(rows: dict[str, Any]) -> float:
+        return sum(float(((rows or {}).get(key) or {}).get("gns") or 0.0) for key in _SHARED_BASE_KEYS)
+    # База очереди известна до расчёта — это её строки продуктов; доли
+    # нормируются к сумме баз очередей, чтобы сходиться в 100% по построению.
+    queue_base_gns = [
+        sum(float(((phase_product_rows[i].get(key) if key in phase_product_rows[i] else (t_master.get(key) or {})) or {}).get("gns") or 0.0)
+            for key in _SHARED_BASE_KEYS)
+        for i in range(count)
+    ]
+    queue_base_total = sum(queue_base_gns)
+    if volume_articles and queue_base_total > 0:
+        for key in volume_articles:
+            cash_weights[key] = [g / queue_base_total * 100.0 for g in queue_base_gns]
     allocation_weights = {
         key: _normalized_phase_weights(shared_alloc.get(key), count, default_weights)
         for key in (*cash_defaults.keys(), "social_construction")
@@ -25674,17 +25725,6 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
         # Льгота уже срезана в базовом расчёте, из которого взята доля очереди:
         # применять её повторно к доле нельзя.
         p_inputs["vri_relief_mode"] = "none"
-
-        design_total = shared_base_mln["design"]
-        design_p_total = base_amounts.get("design_p",0.0)/1_000_000
-        p_ratio = design_p_total/design_total if design_total else .5
-        p_inputs["_cost_override_mln"] = {
-            "ird": shared_base_mln["ird"]*cash_weights["ird"][idx]/100*cost_inflation_factor,
-            "design_p": design_total*p_ratio*cash_weights["design"][idx]/100*cost_inflation_factor,
-            "design_rd": design_total*(1-p_ratio)*cash_weights["design"][idx]/100*cost_inflation_factor,
-            "preparation": shared_base_mln["preparation"]*cash_weights["preparation"][idx]/100*cost_inflation_factor,
-            "utilities": shared_base_mln["utilities"]*cash_weights["utilities"][idx]/100*cost_inflation_factor,
-        }
 
         if str(x_master.get("social_mode")) == "Денежная компенсация":
             p_inputs["social_mode"] = "Денежная компенсация"
@@ -25887,6 +25927,19 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
                 if schedule:
                     p_inputs["_phase_bank_sweep_schedule"] = dict(schedule)
 
+        # Общепроектные статьи — после того как ТЭП очереди собран целиком
+        # (продукты, объекты, соцобъекты): доля «по объёму» считается от него.
+        design_total = shared_base_mln["design"]
+        design_p_total = base_amounts.get("design_p",0.0)/1_000_000
+        p_ratio = design_p_total/design_total if design_total else .5
+        p_inputs["_cost_override_mln"] = {
+            "ird": shared_base_mln["ird"]*cash_weights["ird"][idx]/100*cost_inflation_factor,
+            "design_p": design_total*p_ratio*cash_weights["design"][idx]/100*cost_inflation_factor,
+            "design_rd": design_total*(1-p_ratio)*cash_weights["design"][idx]/100*cost_inflation_factor,
+            "preparation": shared_base_mln["preparation"]*cash_weights["preparation"][idx]/100*cost_inflation_factor,
+            "utilities": shared_base_mln["utilities"]*cash_weights["utilities"][idx]/100*cost_inflation_factor,
+        }
+
         result = calculate(CalcRequest(inputs=p_inputs, tep=p_tep, rates=rates))
 
         project_cash_transfers.extend(_consume_project_cash_sources(
@@ -25935,8 +25988,31 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
         def per_th(value: float, area: float) -> float:
             return value / area / 1000.0 if area else 0.0
 
+        # Цена метра очереди по общепроектным статьям — то, что она платит на
+        # свой строительный объём; рядом вводная проекта. При долях «по
+        # объёму» они равны (с поправкой на инфляцию очереди), при заданных
+        # руками — расходятся, и это видно числом, а не угадывается.
+        override = p_inputs.get("_cost_override_mln") or {}
+        p_core_gns = queue_base_gns[idx] if idx < len(queue_base_gns) else _shared_base_gns(p_tep)
+        shared_rates_th = {
+            "ird": per_th(float(override.get("ird") or 0.0) * 1_000_000, p_core_gns),
+            "design": per_th((float(override.get("design_p") or 0.0) + float(override.get("design_rd") or 0.0)) * 1_000_000, p_core_gns),
+            "preparation": per_th(float(override.get("preparation") or 0.0) * 1_000_000, p_core_gns),
+            "utilities": per_th(float(override.get("utilities") or 0.0) * 1_000_000, p_core_gns),
+        }
+        shared_rate_inputs_th = {
+            "ird": n(x_master, "ird_th_per_sqm"),
+            "design": n(x_master, "design_p_th_per_sqm") + n(x_master, "design_rd_th_per_sqm"),
+            "preparation": n(x_master, "preparation_th_per_sqm"),
+            "utilities": n(x_master, "utilities_th_per_sqm"),
+        }
+
         comparison.append({
             "name":name,"saleable_sqm":result["summary"]["monetizable_saleable_sqm"],
+            "shared_rates_th":shared_rates_th,
+            "shared_rate_inputs_th":shared_rate_inputs_th,
+            "shared_rate_base_sqm":p_core_gns,
+            "shared_cash_applied":{k:round(float(cash_weights[k][idx]),4) for k in cash_weights},
             # Чисто квартирная удельная цена: смешанные периметры («вся выручка
             # на м²» против «площадные продукты») не сверить глазами, а
             # квартиры на м² продаваемой — общий знаменатель отчёта и книги.
@@ -26027,7 +26103,12 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
     consolidated["vri"] = vri_summary
     for item, row in zip(phase_items, comparison):
         row["vri_cash"] = item["result"].get("vri", {}).get("totals", {}).get("cash", 0.0)
+    # Применённые кассовые доли — один ответ на движок и книгу: статья «по
+    # объёму» в `shared_cash` стоит словом, а числа знает только этот расчёт.
+    shared_cash_applied = {key: [round(float(w), 4) for w in ws] for key, ws in cash_weights.items()}
+    phasing["shared_cash_applied"] = shared_cash_applied
     return {"mode":"phased","consolidated":consolidated,"phases":phase_items,"comparison":comparison,
+            "shared_cash_applied":shared_cash_applied,
             "phasing":phasing,"social_allocation":social_allocation,"vri":vri_summary,
             "phase_financing":phase_financing}
 
@@ -33211,7 +33292,7 @@ details.cadastral-box>summary::marker{color:#888}
 
       <div class="card phase-config-only">
         <div class="section-title">Общепроектные расходы — фактический Cash Flow</div>
-        <div style="font-size:11px;color:#777;margin-bottom:10px">О1 по умолчанию несёт покупку/ВРИ и повышенную долю ИРД, подготовки и наружных сетей.</div>
+        <div style="font-size:11px;color:#777;margin-bottom:10px">О1 по умолчанию несёт покупку, ВРИ и повышенную долю ИРД. Проектирование, подготовка и наружные сети идут по объёму очереди — цена метра у каждой равна вводной; заданная руками доля показывает рядом фактическую цену метра.</div>
         <div class="scroll"><table class="phase-table"><thead id="phaseCashHead"></thead><tbody id="phaseCashBody"></tbody></table></div>
       </div>
 
@@ -34020,7 +34101,7 @@ function frontLoadedPreset(count,kind){
  // и готовит свои корпуса. Прежний пресет клал 42% проектирования проекта на
  // первую очередь — «ПИР на 1,5 ярда на очередь из 50 тысяч метров»
  // (владелец, 04.09.2026).
- if(['design','preparation','utilities'].includes(kind))return [...phaseWeightPreset(count)];
+ if(['design','preparation','utilities'].includes(kind))return 'volume';
  if(count===3){
   if(['purchase','land_rights','social_compensation'].includes(kind))return [100,0,0];
   if(kind==='ird')return [60,25,15];
@@ -34809,10 +34890,30 @@ function renderPhaseFinancing(){
   ?`Единый поток включён: cash проекта профинансировал <b>${money(totals.project_cash_used)}</b> затрат следующих очередей до РНС. Новый БРИДЖ — ${money(totals.new_bridge)}.`
   :`Независимый режим: каждая очередь закрывает затраты до РНС своим капиталом и БРИДЖем. Общая фактическая выборка БРИДЖ — <b>${money(totals.new_bridge)}</b>.`;
 }
+const VOLUME_SHARE_ARTICLES=['ird','design','preparation','utilities'];
+// Статья «по объёму»: доли считает движок по строительному объёму очереди,
+// и цена метра у каждой очереди равна вводной. Заданная руками доля остаётся
+// возможной — и тогда рядом стоит фактическая цена метра этой очереди из
+// последнего расчёта: 42% читаются как «25,9 тыс ₽/м² при вводной 14,5».
+function sharedRateNote(k,i){
+ const c=(phaseBundle&&phaseBundle.comparison)||[],row=c[i]||{},r=row.shared_rates_th||{},inp=row.shared_rate_inputs_th||{};
+ if(r[k]==null)return '';
+ return `<div style="font-size:10px;color:#777;margin-top:2px">${num2(r[k])} тыс ₽/м² МКД${inp[k]!=null?' · вводная '+num2(inp[k]):''}</div>`;
+}
+function setSharedVolume(bucket,k){phasing[bucket][k]='volume';renderPhasing();calculate()}
+function setSharedManual(bucket,k){const applied=(phaseBundle&&phaseBundle.shared_cash_applied&&phaseBundle.shared_cash_applied[k])||phaseWeightPreset(phasing.phases.length);phasing[bucket][k]=Array.from({length:phasing.phases.length},(_,i)=>Number(applied[i]||0));renderPhasing()}
 function renderShareTable(h,b,data,labels,bucket){
  const head=document.getElementById(h),body=document.getElementById(b);if(!head||!body)return;
  head.innerHTML=`<tr><th>Статья</th>${phasing.phases.map(p=>`<th>${p.name}</th>`).join('')}<th>Итого</th></tr>`;
- body.innerHTML=Object.entries(data).map(([k,a])=>{const s=a.reduce((x,y)=>x+Number(y||0),0);return `<tr><td>${labels[k]||k}</td>${a.map((v,i)=>`<td><input type="number" step="1" value="${Number(v).toFixed(1)}" onchange="setSharedShare('${bucket}','${k}',${i},this.value)"></td>`).join('')}<td class="${Math.abs(s-100)<.1?'phase-total-ok':'phase-total-bad'}">${s.toFixed(1)}%</td></tr>`}).join('')
+ body.innerHTML=Object.entries(data).map(([k,a])=>{
+  if(!Array.isArray(a)){
+   const applied=(phaseBundle&&phaseBundle.shared_cash_applied&&phaseBundle.shared_cash_applied[k])||null;
+   const shares=applied?applied.map((v,i)=>`${(phasing.phases[i]||{}).name||('О'+(i+1))} ${Number(v).toFixed(1)}%`).join(' · '):'доли посчитает движок по объёму каждой очереди';
+   return `<tr><td>${labels[k]||k}</td><td colspan="${phasing.phases.length}" style="color:#555">по объёму очереди — цена метра равна вводной${applied?': '+shares:'. '+shares} <button type="button" class="btn-small" onclick="setSharedManual('${bucket}','${k}')">задать руками</button></td><td class="phase-total-ok">100,0%</td></tr>`;
+  }
+  const s=a.reduce((x,y)=>x+Number(y||0),0);
+  const back=(bucket==='shared_cash'&&VOLUME_SHARE_ARTICLES.includes(k))?` <a href="#" style="font-size:11px" onclick="setSharedVolume('${bucket}','${k}');return false">по объёму</a>`:'';
+  return `<tr><td>${labels[k]||k}${back}</td>${a.map((v,i)=>`<td><input type="number" step="1" value="${Number(v).toFixed(1)}" onchange="setSharedShare('${bucket}','${k}',${i},this.value)">${bucket==='shared_cash'?sharedRateNote(k,i):''}</td>`).join('')}<td class="${Math.abs(s-100)<.1?'phase-total-ok':'phase-total-bad'}">${s.toFixed(1)}%</td></tr>`}).join('')
 }
 function renderPhasing(){
  if(!document.getElementById('phasingEnabled'))return;
@@ -39426,6 +39527,12 @@ function renderPhaseComparison(){
   ['Полные расходы на м² ГНС',c.map(x=>num2(x.expenses_per_gns_th)+' тыс ₽/м²'),perTh(cs.total_expenses,csGns)],
   ['Чистая прибыль на м² продаваемой',c.map(x=>num2(x.net_profit_per_saleable_th)+' тыс ₽/м²'),perTh(cs.net_profit,csSale)],
   ['Общепроектная нагрузка — cash',c.map(x=>money(x.cash_shared_cost)),'—'],
+  // Цена метра очереди по общепроектным статьям — из движка: заданная руками
+  // доля видна здесь числом, а не только процентом в редакторе.
+  ...[['ird','ИРД и согласования'],['design','Проектирование П+РД'],['preparation','Подготовительные работы'],['utilities','Наружные сети']].map(([k,l])=>{
+   const inp=((c[0]||{}).shared_rate_inputs_th||{})[k];
+   return [`${l} — цена м² МКД очереди${inp!=null?` (вводная ${num2(inp)} тыс ₽/м²)`:''}`,c.map(x=>((x.shared_rates_th||{})[k]!=null)?num2(x.shared_rates_th[k])+' тыс ₽/м²':'—'),'—'];
+  }),
   ['Аллоцированные общие расходы',c.map(x=>money(x.allocated_shared_cost)),'—'],
   ['Пиковый БРИДЖ',c.map(x=>money(x.peak_bridge)),money(cons.finance.peak_bridge)],
   ['Затраты до РНС',c.map(x=>money(x.pre_rns_costs)),money(((phaseBundle.phase_financing||{}).totals||{}).pre_rns_costs)],

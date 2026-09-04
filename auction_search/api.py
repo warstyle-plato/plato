@@ -1284,6 +1284,23 @@ def install(app: FastAPI) -> None:
             raise HTTPException(status_code=404, detail="Территория КРТ не найдена")
         return result
 
+    async def _decision_outline(slug: str) -> dict[str, Any]:
+        """Контур из участков проекта решения — или причина, почему его нет.
+
+        ЕГРН спрашивает путь движка (`_land_lookup_by_numbers`): второго
+        клиента НСПД в модуле торгов нет. Без движка — «не спрашивали».
+        """
+        reader = getattr(krt_registry, "decision_outline", None)
+        lookup = getattr(core, "_land_lookup_by_numbers", None) if core is not None else None
+        if not callable(reader) or not callable(lookup):
+            return {"rings_merc": [], "problem": "контур по перечню решения не спрашивался — "
+                                                 "нет движка ЕГРН"}
+        try:
+            return dict(await run_in_threadpool(lambda: reader(slug, lookup=lookup)) or {})
+        except Exception as exc:  # noqa: BLE001 — причина едет в подпись, а не в лог
+            logger.exception("КРТ: контур по перечню решения не собрался slug=%s", slug)
+            return {"rings_merc": [], "problem": f"{type(exc).__name__}: {exc}"[:160]}
+
     @app.get("/auctions/krt/{slug}/point")
     async def auction_krt_point(slug: str) -> dict[str, Any]:
         """Геокодированная точка территории — чтобы показать её на карте.
@@ -1333,6 +1350,41 @@ def install(app: FastAPI) -> None:
                              }.get(str((lookup or {}).get("matched") or ""), "")],
             }
             geometry_status = "official_polygon" if rings else "official_centre_only"
+        elif (outline := await _decision_outline(slug)).get("rings_merc") and core is not None:
+            # Файл карты — не весь реестр: у 35 площадок каталога из 268 записи
+            # в нём нет, и у Варшавского ш., вл. 37 контур не приезжал никаким
+            # сопоставлением имён (владелец, 04.09.2026: «и что с контуром КРТ
+            # Нагатино?»). Проект решения перечисляет состав территории —
+            # участки с кадастровыми номерами, — и контур собирается из ЕГРН по
+            # ним. Это состав по документу, а не официальный полигон, и подпись
+            # это говорит.
+            rings = list(outline["rings_merc"])
+            centre = outline.get("centre_merc")
+            lat, lng = core._mercator_to_wgs84(float(centre[0]), float(centre[1]))
+            counts = dict(outline.get("counts") or {})
+            title = str((outline.get("decision") or {}).get("title") or "проект решения о КРТ")
+            extras = []
+            if counts.get("buildings"):
+                extras.append(f"{counts['buildings']} номеров перечня — здания, контур они не задают")
+            if counts.get("missing"):
+                extras.append(f"{counts['missing']} в ЕГРН не найдены")
+            if outline.get("problem"):
+                extras.append(str(outline["problem"]))
+            area_text = (f", вместе {outline['area_ha']} га при {project.get('area_ha')} га по каталогу"
+                         if outline.get("area_ha") and project.get("area_ha") else "")
+            data = {
+                "query": f"krt:{slug}", "latitude": lat, "longitude": lng,
+                "precision": "decision_parcels", "address": project.get("name"),
+                "notes": [
+                    f"Контур — участки ЕГРН из перечня документа «{title[:160]}» (mos.ru): "
+                    f"{counts.get('land', 0)} участков{area_text}."
+                    + (" " + "; ".join(extras) + "." if extras else ""),
+                    (map_problem or "площадки нет в файле карты реестра").capitalize()
+                    + ", поэтому это состав территории по документу, а не официальный "
+                      "полигон её границ.",
+                ],
+            }
+            geometry_status = "decision_parcels"
         else:
             # Точка берётся тем же путём, что и точка отчёта, — `resolve_subject`:
             # свой геокодер здесь был четвёртым случаем одной ошибки (см. правило
@@ -1348,6 +1400,10 @@ def install(app: FastAPI) -> None:
             data["notes"] = list(data.get("notes") or []) + [
                 (map_problem or "площадки нет в файле карты реестра").capitalize()
                 + " — точка поставлена геокодером по адресу, контур не показан."]
+            if outline.get("problem"):
+                data["notes"].append(
+                    "Контур из участков проекта решения не собрался: "
+                    + str(outline["problem"]) + ".")
             if len(str(project.get("name") or "").split(",")) > 2:
                 data["notes"].append(
                     "В названии площадки несколько адресов: геокодер ставит точку по одному "
