@@ -73,16 +73,24 @@ def test_the_field_says_the_minimum():
     assert "ird_months" not in result["notes"]
 
 
-@pytest.mark.parametrize("key,cell,divisor", [
-    ("rate_start_pct", "B33", 100.0),
-    ("rate_normalization_months", "B35", 1.0),
-    ("rate_target_base_pct", "E8", 100.0),
-    ("rate_target_low_pct", "F8", 100.0),
-    ("rate_target_high_pct", "G8", 100.0),
+@pytest.mark.parametrize("key", [
+    "rate_start_pct", "rate_normalization_months",
+    "rate_target_base_pct", "rate_target_low_pct", "rate_target_high_pct",
 ])
-def test_a_zero_rate_setting_is_not_replaced_by_a_default(key, cell, divisor):
-    """Нулевая цель по ставке — заданный сценарий, а не пропуск."""
-    assert workbook(**{key: 0})["Вводные"][cell].value == 0
+def test_a_zero_rate_setting_is_not_replaced_by_a_default(key):
+    """Нулевая цель по ставке — заданный сценарий, а не пропуск.
+
+    Ячейка ищется по ключу, а не по координате: три целевые ставки переехали
+    из сценарных колонок `E8/F8/G8` в блок кривой (в строке 8 свободной ячейки
+    под ключ нет вовсе, и строка 8 теперь их читает). Утверждение от переезда
+    не изменилось — изменился адрес, и проверка обязана держаться за контракт
+    «ключ стоит рядом со значением», а не за координату.
+    """
+    sheet = workbook(**{key: 0})["Вводные"]
+    row = next((cell.row for line in sheet.iter_rows() for cell in line
+                if isinstance(cell.value, str) and cell.value.strip() == key), None)
+    assert row, f"{key}: ключа нет на листе «Вводные»"
+    assert sheet[f"B{row}"].value == 0
 
 
 def test_a_zero_construction_term_is_not_replaced():
