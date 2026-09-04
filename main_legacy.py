@@ -23416,37 +23416,24 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
         for month, value in schedule.items():
             tax_margin_by_month[month] += value
 
-    # Проценты уменьшают базу В МЕСЯЦЕ НАЧИСЛЕНИЯ, а не в месяце уплаты.
-    # Пункт 8 статьи 272 НК: по договорам, срок действия которых приходится
-    # более чем на один отчётный период, расход признаётся на конец КАЖДОГО
-    # МЕСЯЦА независимо от даты выплат по договору (цитата и реквизиты — в
-    # tax_reference). Капитализация момент не двигает: в налоговом учёте её
-    # нет вовсе, проценты остаются внереализационным расходом текущего периода.
+    # Financing deductions are recognized when paid. The bridge and PF setup
+    # fees are dated separately because they are not included in monthly rows.
     #
-    # Прежде вычет строился по `interest_payment`, а весь остаток досыпался в
-    # последний месяц горизонта. Сумма при этом сходилась, расходился МОМЕНТ:
-    # у проекта с эскроу проценты платятся разом в раскрытие, и весь вычет
-    # падал в один месяц. База считается по годам с переносом убытка, поэтому
-    # вычет, попавший в год, которому нечего им закрыть, частично пропадал —
-    # а в последнем году пропадал целиком: переносить его уже некуда.
+    # По п. 8 ст. 272 НК проценты признаются на конец КАЖДОГО МЕСЯЦА
+    # независимо от даты выплат, и здесь это пока не так. Переход на
+    # начисление написан и снят с этой ветки: он меняет налог там, где есть
+    # убыточная очередь (на проверочном проекте 890,9 → 922,3 млн ₽), а книга
+    # признаёт проценты строкой 53 листов CF, то есть по уплате. Методику
+    # меняют в двух местах, движок и книгу, одной правкой — иначе отчёт и
+    # книга скажут про один проект разное, и оба будут выглядеть верными.
     financing_deductions: dict[date, float] = defaultdict(float)
     for row in result["rows"]:
-        financing_deductions[d(row["month"])] += (
-            float(row.get("bridge_interest", 0.0) or 0.0)
-            + float(row.get("bridge_capitalization", 0.0) or 0.0)
-            + float(row.get("pf_interest", 0.0) or 0.0)
-            + float(row.get("pf_interest_capitalization", 0.0) or 0.0)
-            + float(row.get("limit_fee", 0.0) or 0.0)
-        )
-    # Комиссии за выдачу и резервирование в помесячные строки не входят: они
-    # начисляются один раз, в свою дату.
+        financing_deductions[d(row["month"])] += float(row.get("interest_payment", 0.0) or 0.0)
     financing_deductions[project_start] += result["bridge_fee"]
     financing_deductions[permit] += result["pf_reservation_fee"]
 
-    # Сверка осталась, но она больше не механизм признания, а сторож: график
-    # начисления обязан сходиться с отчётной стоимостью финансирования. Копейки
-    # округления досыпаются в последний месяц, а всё, что больше, — расхождение
-    # двух своих же чисел, и о нём надо знать, а не прятать его в налог.
+    # Reconcile rounding and any residual accrued amount to the final period so
+    # the schedule equals the project's reported interest and fee total exactly.
     financing_reconciliation = financing_cost - sum(financing_deductions.values())
     if abs(financing_reconciliation) > 0.01:
         financing_deductions[end] += financing_reconciliation
