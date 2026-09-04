@@ -36,7 +36,7 @@ BASE_URL = "https://api.krt.mos.ru"
 CATALOGUE_URL = BASE_URL + "/projects/"
 JINA_PREFIX = "https://r.jina.ai/"
 CACHE_SCHEMA_VERSION = 3
-REQUIREMENTS_CACHE_SCHEMA_VERSION = 2
+REQUIREMENTS_CACHE_SCHEMA_VERSION = 3
 # Разбор карточки версионируется отдельно: он меняется чаще требований.
 CARD_FACTS_SCHEMA_VERSION = 1
 DECISIONS_CACHE_SCHEMA_VERSION = 2
@@ -304,6 +304,11 @@ class KrtRegistry:
         # Разобранная карточка каталога: застройщик и реновация. Лежит рядом с
         # требованиями и по тому же правилу — хранится разобранное, не страница.
         self.card_facts_dir = Path(data_dir) / "krt" / "cards"
+        # Контур площадки, собранный из участков ЕГРН по перечню проекта
+        # решения, — для тех, кого нет в файле карты реестра. Участки ЕГРН не
+        # двигаются, поэтому срок неделя; неответ ЕГРН помнится полчаса.
+        self.outline_dir = Path(data_dir) / "krt" / "outlines"
+        self.outline_ttl_seconds = 7 * 24 * 60 * 60
         # Отказ помнится полчаса: см. `card_facts`.
         self.card_facts_failure_ttl_seconds = 30 * 60
         self.tender_links_path = Path(data_dir) / "krt" / "tender_links.json"
@@ -864,6 +869,109 @@ class KrtRegistry:
                  project: dict[str, Any] | None = None) -> dict[str, Any] | None:
         """Площадка из файла карты: официальный контур и центр."""
         return self.map_lookup(slug, name, project).get("site")
+
+    def decision_outline(self, slug: str, *, lookup: Callable[[list[str]], list[dict[str, Any]]],
+                         refresh: bool = False, max_numbers: int = 60) -> dict[str, Any]:
+        """Контур площадки из участков ЕГРН по перечню проекта решения.
+
+        Файл карты реестра — не весь реестр: у 35 строк каталога из 268 в нём
+        нет записи, и у Варшавского ш., вл. 37 контур не приезжал никаким
+        сопоставлением имён (владелец, 04.09.2026: «и что с контуром КРТ
+        Нагатино? почему его до сих пор нет»). Проект решения о КРТ при этом
+        перечисляет состав территории — участки и здания с кадастровыми
+        номерами, — а ЕГРН отдаёт контур каждого участка (`lookup` — путь
+        движка `_land_lookup_by_numbers`, второго клиента НСПД здесь нет).
+
+        Ответ подписан своим именем: это состав территории ПО ДОКУМЕНТУ, а не
+        официальный полигон границ. Здания контур не задают (их пятна лежат
+        внутри участков), ненайденные номера названы числом: молча выброшенный
+        участок читается как «его нет в территории».
+        """
+        clean = str(slug or "").strip()
+        if not re.fullmatch(r"[a-zA-Z0-9_-]{2,180}", clean):
+            return {"rings_merc": [], "centre_merc": None, "problem": "слаг площадки не задан"}
+        cache_path = self.outline_dir / f"{clean}.json"
+        cached = load_json(cache_path)
+        if not refresh and isinstance(cached, dict) and cached.get("schema_version") == 1:
+            ttl = (self.outline_ttl_seconds if cached.get("rings_merc")
+                   else self.card_facts_failure_ttl_seconds)
+            if fresh(cache_path, ttl):
+                return dict(cached)
+        requirements = self.requirements(clean)
+        numbers = list((requirements or {}).get("cadastral_numbers") or [])
+        decision = dict((requirements or {}).get("decision") or {})
+        if requirements and requirements.get("skipped"):
+            problem = "перечень участков читается из проекта решения, а он есть только у планируемых площадок"
+        elif not requirements or not requirements.get("available"):
+            problem = "требования по площадке не читаются"
+        elif not decision:
+            problem = "проект решения о КРТ на mos.ru не найден — перечня участков нет"
+        elif not numbers:
+            problem = "в проекте решения нет кадастровых номеров участков"
+        else:
+            problem = ""
+        result: dict[str, Any] = {
+            "schema_version": 1,
+            "slug": clean,
+            "decision": {key: decision.get(key) for key in ("title", "page_url", "pdf_url")},
+            "numbers_source": str((requirements or {}).get("cadastral_numbers_source") or "none"),
+            "counts": {"numbers": len(numbers), "asked": 0, "land": 0, "buildings": 0,
+                       "missing": 0},
+            "parcels": [],
+            "rings_merc": [],
+            "centre_merc": None,
+            "area_ha": None,
+            "problem": problem,
+            "retrieved_at": int(time.time()),
+        }
+        if problem:
+            save_json(cache_path, result)
+            return result
+        asked = numbers[:max_numbers]
+        result["counts"]["asked"] = len(asked)
+        if len(numbers) > max_numbers:
+            result["problem"] = (f"в перечне {len(numbers)} номеров, опрошены первые "
+                                 f"{max_numbers}: контур неполный")
+        try:
+            found = list(lookup(asked) or [])
+        except Exception as exc:  # noqa: BLE001 — неответ ЕГРН называется, а не молчит
+            result["problem"] = f"ЕГРН не ответил: {type(exc).__name__}"
+            save_json(cache_path, result)
+            return result
+        rings: list[list[list[float]]] = []
+        area_sqm = 0.0
+        for item in found:
+            if not isinstance(item, dict) or not item.get("found"):
+                result["counts"]["missing"] += 1
+                continue
+            if str(item.get("kind") or "") != "land":
+                result["counts"]["buildings"] += 1
+                continue
+            contour = [ring for ring in (item.get("contour_merc") or [])
+                       if isinstance(ring, list) and len(ring) >= 3]
+            if not contour:
+                result["counts"]["missing"] += 1
+                continue
+            result["counts"]["land"] += 1
+            rings.extend(contour)
+            area = item.get("area_sqm")
+            if isinstance(area, (int, float)):
+                area_sqm += float(area)
+            result["parcels"].append({
+                "cadastral_number": str(item.get("cadastral_number") or ""),
+                "area_sqm": area if isinstance(area, (int, float)) else None,
+            })
+        result["rings_merc"] = rings
+        if rings:
+            points = [point for ring in rings for point in ring]
+            xs = [float(p[0]) for p in points]
+            ys = [float(p[1]) for p in points]
+            result["centre_merc"] = [(min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0]
+            result["area_ha"] = round(area_sqm / 10000.0, 2) if area_sqm else None
+        elif not result["problem"]:
+            result["problem"] = "ни один номер перечня не найден в ЕГРН как участок с контуром"
+        save_json(cache_path, result)
+        return result
 
     def _read_order_details(self, order: dict[str, Any]) -> dict[str, Any]:
         """Распознать скан одного распоряжения. Отказ называется, а не молчит."""
