@@ -189,3 +189,20 @@ def test_a_live_lot_lifts_the_operator_cut_and_the_renovation_tag_carries_its_qu
     assert "публикация: " in tag and "карточка krt.mos.ru: " in tag
     # Доля из решения сильнее упоминания: сто процентов — это другая площадка.
     assert "всё жильё" in tag, "метка не отличает часть жилья от всего"
+
+
+def test_a_read_decision_alone_does_not_make_a_site_free() -> None:
+    """Проект решения оператора не называет — и молчать о нём ему положено.
+
+    Город публикует ПРОЕКТ решения до того, как что-либо решено. Пока
+    прочитанное решение шло в зачёт «мы спросили», одинаковые по сути площадки
+    получали разный ответ в зависимости от того, дошёл ли до них фоновый
+    читатель PDF: 23 «свободных» из 298 при том, что спрашивали их об одном и
+    том же и не спросили никого (измерено на снимке прода, 04.09.2026).
+    """
+    read_decision = {"probed": True, "decision_read": True, "kind": "нежилой застройки",
+                     "city_needs": [], "operator": [], "operator_name": "", "taken": False}
+    assert _run(_axis_harness(read_decision, "krtEntryKind"))["kind"] == "unknown"
+    # А карточка города и публикации — источники, которые хозяина назвать могли.
+    card = {"available": True, "developers": [], "renovation": False}
+    assert _run(_axis_harness(read_decision, "krtEntryKind", card=card))["kind"] == "free"
