@@ -70,7 +70,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.21.85"
+VERSION = "0.21.89"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -5432,6 +5432,8 @@ class TepDerivedRequest(BaseModel):
     upks_rub: float = 0.0
     sqm_per_job: float = 36.0
     parking_norm_regime: str = "2118_2026"
+    # Число квартир: задано — постоянные места пунктом 2 по средней квартире.
+    apartment_count: float = 0.0
 
 
 @app.post("/tep/derived")
@@ -5444,7 +5446,8 @@ def tep_derived(req: TepDerivedRequest) -> dict[str, Any]:
         nonresidential_np_sqm=req.nonresidential_np_sqm,
         k1=req.k1, k2=req.k2, zone_two=req.zone_two,
         upks_rub=req.upks_rub, sqm_per_job=req.sqm_per_job,
-        parking_norm_regime=req.parking_norm_regime)
+        parking_norm_regime=req.parking_norm_regime,
+        apartment_count=req.apartment_count)
 
 
 class TepRescaleRequest(BaseModel):
@@ -5549,6 +5552,7 @@ class TepBySiteRequest(BaseModel):
     inside_moscow: bool = True
     sqm_per_job: float = 36.0
     parking_norm_regime: str = "2118_2026"
+    apartment_count: float = 0.0
 
 
 @app.post("/tep/derived-by-site")
@@ -5591,7 +5595,8 @@ def tep_derived_by_site(req: TepBySiteRequest) -> dict[str, Any]:
         nonresidential_np_sqm=req.nonresidential_np_sqm,
         k1=1.0, k2=1.0, zone_two=zone_two, upks_rub=0.0,
         sqm_per_job=req.sqm_per_job,
-        parking_norm_regime=req.parking_norm_regime)
+        parking_norm_regime=req.parking_norm_regime,
+        apartment_count=req.apartment_count)
     basis = [
         "население — 33 м² квартир на человека",
         f"нормативы мест — зона {'2' if zone_two else '1'}"
@@ -8642,14 +8647,21 @@ _PARKING_2118_HOUSEHOLD = 2.1     # средний размер домовлад
 _PARKING_2118_PER_FLAT = 0.8      # D — мест на одну квартиру
 _PARKING_2118_SQM_PER_PERSON = 33.0   # S₁ — площадь квартир на жителя
 _PARKING_GUEST_SHARE = 0.1        # гостевые — десятая часть постоянных
+# Пункт 2: коэффициенты по полосам площади квартиры и границы полос —
+# до 70 м², от 70 до 100, свыше 100.
+_PARKING_2118_MIX = {"small": 0.8, "medium": 1.2, "large": 1.6}
+_PARKING_2118_BANDS = {"small_max": 70.0, "medium_max": 100.0}
 # Те же числа нужны странице: она показывает потребность в местах рядом с ТЭП и
 # обязана считать её той же нормой. Копии на странице нет — как у `TEP_RATIOS`
 # и `VERSION`, значения подставляются плейсхолдером.
-PARKING_2118_PARAMS: dict[str, float] = {
+PARKING_2118_PARAMS: dict[str, Any] = {
     "sqm_per_person": _PARKING_2118_SQM_PER_PERSON,
     "household": _PARKING_2118_HOUSEHOLD,
     "per_flat": _PARKING_2118_PER_FLAT,
     "guest_share": _PARKING_GUEST_SHARE,
+    # Пункт 2 по средней квартире — те же полосы и коэффициенты, что у движка.
+    "mix": dict(_PARKING_2118_MIX),
+    "bands": dict(_PARKING_2118_BANDS),
 }
 PARKING_2118_PLACEHOLDER = "__DEVELOPAID_PARKING_2118__"
 
@@ -8692,8 +8704,47 @@ def average_flat_sqm(source: str) -> tuple[float, str]:
     return value, basis
 
 
-_PARKING_2118_MIX = {"small": 0.8, "medium": 1.2, "large": 1.6}
 _PARKING_REGIMES = ("2118_2026", "legacy_945")
+
+
+def moscow_parking_band(average_flat_sqm: float) -> str:
+    """Полоса пункта 2 по площади квартиры: до 70 — малая, до 100 — средняя."""
+    avg = float(average_flat_sqm or 0.0)
+    if avg < _PARKING_2118_BANDS["small_max"]:
+        return "small"
+    if avg <= _PARKING_2118_BANDS["medium_max"]:
+        return "medium"
+    return "large"
+
+
+def moscow_permanent_parking_by_average(apartment_area_sqm: float,
+                                        apartment_count: float) -> tuple[int, str]:
+    """Пункт 2 по средней квартире — когда известно число квартир, а состава нет.
+
+    Состав квартир по размерам есть только со стадии АГР; на стадии оценки его
+    нет, но средняя квартира меняется вместе с числом квартир, и от неё можно
+    плясать (владелец, 04.09.2026). Все квартиры относятся к полосе средней: на
+    28 966 м² при 750 квартирах (38,6 м²) это 600 мест, при 419 (69,1 м²) — 336;
+    пункт 1 от площади дал бы 335 в обоих случаях, потому что число квартир в
+    него не входит. Это оценка, и основание говорит это словами. Без числа
+    квартир — пункт 1.
+    """
+    area = max(0.0, float(apartment_area_sqm or 0.0))
+    count = max(0.0, float(apartment_count or 0.0))
+    if area <= 0:
+        return 0, "площади квартир нет — мест не посчитать"
+    if count <= 0:
+        return (moscow_permanent_parking_2118(area),
+                "приложение 5 к 945-ПП в редакции 2118-ПП, пункт 1: S / (33 × 2,1) × 0,8 "
+                "(число квартир не задано)")
+    avg = area / count
+    band = moscow_parking_band(avg)
+    label = {"small": "до 70 м²", "medium": "от 70 до 100 м²", "large": "свыше 100 м²"}[band]
+    places = math.ceil(count * _PARKING_2118_MIX[band])
+    basis = (f"приложение 5 к 945-ПП в редакции 2118-ПП, пункт 2 по средней квартире "
+             f"{avg:.1f} м²: все {int(count)} квартир отнесены к полосе {label} "
+             f"× {_PARKING_2118_MIX[band]:g} — оценка, состава квартир до АГР нет")
+    return places, basis
 
 
 def moscow_permanent_parking_2118(apartment_area_sqm: float,
@@ -8832,9 +8883,12 @@ def recalculate_from_glavapu_baseline(baseline: dict[str, Any],
         parking_basis = ("приложение 5 к 945-ПП в редакции 2118-ПП, пункт 2: "
                          "F₁×0,8 + F₂×1,2 + F₃×1,6 по составу квартир")
     else:
-        permanent = moscow_permanent_parking_2118(apartments)
-        parking_basis = ("приложение 5 к 945-ПП в редакции 2118-ПП, пункт 1: "
-                         "S / (33 × 2,1) × 0,8")
+        # Число квартир известно — пункт 2 по средней квартире; нет — пункт 1.
+        # На числе квартир самой выгрузки (население / 2,1) средняя равна
+        # 69,3 м² — та же полоса и тот же 0,8, что в пункте 1; расходятся они
+        # только на округление числа квартир вверх (898 против 897 на базе).
+        permanent, parking_basis = moscow_permanent_parking_by_average(
+            apartments, float(areas.get("apartment_count") or 0.0))
     guest = math.ceil(permanent / 10.0) if permanent else 0
     # Приобъектные места — по ставке базы от ВСТРОЕННЫХ помещений: ставка снята
     # с их НП (12 мест на 6 867 м²), и растягивать её на отдельно стоящее
@@ -9021,9 +9075,13 @@ def tep_derived_norms(*, apartment_area_sqm: float, residential_living_spp_sqm: 
                       zone_two: bool = False,
                       upks_rub: float = 0.0,
                       sqm_per_job: float = 36.0,
-                      parking_norm_regime: str = "2118_2026") -> dict[str, Any]:
+                      parking_norm_regime: str = "2118_2026",
+                      apartment_count: float = 0.0) -> dict[str, Any]:
     """Что следует из введённого руками ТЭП: население, соцпотребность,
     компенсация, машино-места, места приложения труда.
+
+    `apartment_count` — число квартир, если оно известно: тогда постоянные
+    места считаются пунктом 2 по средней квартире, иначе пунктом 1 от площади.
 
     Формулы городские и сверены на выгрузке штатного калькулятора
     (77:01:0004023, 20.08.2026): постоянные места 897, гостевые 90,
@@ -9058,9 +9116,9 @@ def tep_derived_norms(*, apartment_area_sqm: float, residential_living_spp_sqm: 
     if regime not in _PARKING_REGIMES:
         regime = "2118_2026"
     if regime == "2118_2026":
-        permanent = moscow_permanent_parking_2118(apartments)
-        parking_basis = ("постоянные места — п. 1 приложения 5 к 945-ПП в редакции "
-                         "2118-ПП: площадь квартир / (33 × 2,1) × 0,8")
+        permanent, parking_basis = moscow_permanent_parking_by_average(
+            apartments, apartment_count)
+        parking_basis = "постоянные места — " + parking_basis
     else:
         # Прежняя строка города: от НАЗЕМНОЙ ЖИЛОЙ площади (90% жилой СПП), а не
         # от всей СПП жилых зданий — на выгрузке первое даёт 897 мест, второе 954.
@@ -37168,13 +37226,26 @@ function getGlavapuUnderground(){
 function normativeUnderground(){
  const apartments=Number((tep.apartments&&tep.apartments.saleable)||0);
  if(apartments<=0)return null;
- const permanent=Math.ceil(apartments/(PARKING_2118.sqm_per_person*PARKING_2118.household)
-                           *PARKING_2118.per_flat);
+ const count=Number((tep.apartments&&tep.apartments.units)||0);
+ let permanent,basis;
+ if(count>0){
+  // Пункт 2 по средней квартире: состава квартир до АГР нет, но средняя
+  // меняется вместе с их числом — все квартиры относятся к её полосе.
+  const avg=apartments/count;
+  const band=avg<PARKING_2118.bands.small_max?'small':(avg<=PARKING_2118.bands.medium_max?'medium':'large');
+  permanent=Math.ceil(count*PARKING_2118.mix[band]);
+  basis='2118-ПП, п. 2 по средней квартире '+avg.toFixed(1).replace('.',',')+' м² ('
+        +num(Math.round(count))+' квартир × '+String(PARKING_2118.mix[band]).replace('.',',')
+        +'), приобъектные нежилья не учтены';
+ }else{
+  permanent=Math.ceil(apartments/(PARKING_2118.sqm_per_person*PARKING_2118.household)
+                      *PARKING_2118.per_flat);
+  basis='2118-ПП, п. 1 от '+num(Math.round(apartments))+' м² квартир (число квартир не задано), приобъектные нежилья не учтены';
+ }
  const guest=Math.ceil(permanent*PARKING_2118.guest_share);
  const spaces=permanent+guest;
  if(spaces<=0)return null;
- return {permanent,guest,mfc:0,spaces,
-         basis:'2118-ПП от '+num(Math.round(apartments))+' м² квартир, приобъектные нежилья не учтены',
+ return {permanent,guest,mfc:0,spaces,basis,
          gns:spaces*undergroundAreaPerSpace()};
 }
 
@@ -38855,6 +38926,7 @@ async function recalcFromTepByNorms(options){
    body:JSON.stringify({apartment_area_sqm:apartments,
     residential_living_spp_sqm:Number((tep.apartments&&tep.apartments.gns)||0),
     nonresidential_np_sqm:nonres,
+    apartment_count:Number((tep.apartments&&tep.apartments.units)||0),
     district:String(territory.district||''),
     inside_moscow:territory.inside_moscow!==false})});
   d=await r.json();
@@ -38913,6 +38985,7 @@ async function recalcFromTep(options){
   const r=await fetch('/tep/recalc-from-baseline',{method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify({baseline:baseline,areas:{
     apartment_area_sqm:apartments,residential_living_spp_sqm:livingSpp,
+    apartment_count:Number((tep.apartments&&tep.apartments.units)||0),
     ground_commercial_spp_sqm:builtIn,nonresidential_np_sqm:nonres,
     land_right:String(inputs.land_right||'ownership'),
     nonres_spp_by_use:{
