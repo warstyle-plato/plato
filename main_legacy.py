@@ -70,7 +70,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.21.85"
+VERSION = "0.21.86"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -11652,6 +11652,7 @@ def _telegram_handle_intake_document(chat_id: int, data: bytes, filename: str) -
     _telegram_send_message(
         chat_id, f"<b>Читаю «{html.escape(filename)}»…</b>\n"
                  f"Страниц: {document.get('pages')}. Выпишу, что нашлось, и спрошу об остальном.")
+    portion = document_intake.intake_text(document)
     payload = AgentChatRequest(
         message=document_intake.intake_prompt(document),
         inputs=dict(DEFAULT_INPUTS),
@@ -13934,23 +13935,14 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     # в ноль и молча уезжала в «приобретение проекта», а сайт в той же строке
     # показывал её отдельно. Два достоверных на вид отчёта с разными числами —
     # ровно то, что правило «поверхности считают одинаково» запрещает.
-    social_mode_now = str(summary.get("social_payment_mode") or "")
-    social_construction = sum(
-        float(value or 0.0) * 1_000_000
-        for value in ((summary.get("social_payment_breakdown") or {}).get("construction") or {}).values()
-    )
-    if social_mode_now == "Денежная компенсация":
-        bridge_social = float(capex_data.get("social") or 0.0)
-    elif social_mode_now == SOCIAL_MODE_BOTH:
-        bridge_social = max(0.0, float(summary.get("social_payment") or 0.0) - social_construction)
-    else:
-        bridge_social = 0.0
-    bridge_design_p = float(capex_data.get("design_p") or 0.0)
-    bridge_design_rd = float(capex_data.get("design_rd") or 0.0)
-    bridge_purchase = max(
-        0.0,
-        bridge_total - bridge_social - bridge_design_p - bridge_design_rd,
-    )
+    # Состав лимита приходит из расчёта — печать его не пересобирает: в БРИДЖ
+    # входит только то, что платится ДО РнС, и вычитание «итог минус…» при
+    # рассрочке покупки дало бы второе, расходящееся число.
+    bridge_parts = dict((financing.get("calculated_bridge_parts") or {}))
+    bridge_social = float(bridge_parts.get("social") or 0.0)
+    bridge_design_p = float(bridge_parts.get("design_p") or 0.0)
+    bridge_design_rd = float(bridge_parts.get("design_rd") or 0.0)
+    bridge_purchase = float(bridge_parts.get("purchase") or 0.0)
     bridge_uses = [
         ("Приобретение проекта", bridge_purchase),
         ("Социальная компенсация", bridge_social),
@@ -19475,10 +19467,27 @@ def build_plato_model_v2(
     def cost_amount(key: str) -> str:
         return f"{_M2_SHEETS['costs']}!{amount(key)}"
 
-    bridge_parts = "+".join(cost_amount(key) for key in ("purchase", "design_p", "design_rd")
-                            if key in calc_row) or "0"
-    social_part = (f'+IF({ref("social_mode")}="Денежная компенсация",{cost_amount("social")},0)'
-                   if "social" in calc_row else "")
+    # БРИДЖем банк считает то, что существует ДО РнС (владелец, 04.09.2026):
+    # при рассрочке покупки часть платежей приходится на период после РнС, и
+    # её финансирует уже ПФ. Книга поэтому суммирует не итог статьи, а её
+    # помесячные ячейки до месяца РнС — той же методикой, что движок.
+    _permit_ref = f"EDATE({ref('project_start')},{ref('ird_months')})"
+    _last_month = costs.letter(len(months) - 1)
+
+    def before_permit(key: str) -> str:
+        # Диапазоны обязаны нести имя листа: формула живёт на «Вводных», а
+        # строки статей — на листе себестоимости. Без префикса SUMIF считал бы
+        # соседние ячейки своего листа и падал на подписи «млн ₽».
+        line = costs.rows[f"cost_{key}"]
+        sheet = _M2_SHEETS["costs"]
+        head = f"{sheet}!$B${costs.MONTH_ROW}:${_last_month}${costs.MONTH_ROW}"
+        body = f"{sheet}!$B${line}:${_last_month}${line}"
+        return f'SUMIF({head},"<"&{_permit_ref},{body})'
+
+    bridge_parts = "+".join(before_permit(key) for key in ("purchase", "design_p", "design_rd")
+                            if f"cost_{key}" in costs.rows) or "0"
+    social_part = (f'+IF({ref("social_mode")}="Денежная компенсация",{before_permit("social")},0)'
+                   if "cost_social" in costs.rows else "")
     ws_in.cell(row=key_row["bridge_limit"], column=2, value=f"={bridge_parts}{social_part}")
 
     line = max(costs._next, calc_line + len(articles) + 1) + 2
@@ -22285,19 +22294,34 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     scenario = str(x.get("rate_scenario", "low"))
     interest_mode = str(x.get("bridge_interest_mode", "Капитализация в ПФ"))
 
-    # Excel input logic: purchase + social compensation + P/RD design.
-    calculated_bridge_limit = (
-        n(x, "purchase_price_mln") * 1_000_000
-        + op["capex_amounts"]["design_p"]
-        + op["capex_amounts"]["design_rd"]
-    )
+    # БРИДЖем банк считает то, что существует ДО РнС (решение владельца,
+    # 04.09.2026: «банк конечно считаем бриджем то что существует до рнс»).
+    # Прежде лимит брал ВСЮ цену покупки, не глядя на график платежей: при
+    # рассрочке «40% в сделку, 60% через 30 мес.» при РнС на 18-м месяце в
+    # лимит уезжали все 7,5 млрд, хотя 4,5 из них платит уже ПФ — лимит
+    # завышался ровно на эту часть («почему мы все 7.5 включаем в расчётный
+    # бридж если по графику ясно, что часть будет уже в ПФ?»).
+    def _before_permit(article: str) -> float:
+        schedule = (op.get("capex_by_article") or {}).get(article) or {}
+        return sum(value for month, value in schedule.items() if month < permit)
+
+    bridge_limit_parts = {
+        "purchase": _before_permit("purchase"),
+        "design_p": _before_permit("design_p"),
+        "design_rd": _before_permit("design_rd"),
+        "social": 0.0,
+    }
     if str(x.get("social_mode")) == "Денежная компенсация":
-        calculated_bridge_limit += op["capex_amounts"]["social"]
+        bridge_limit_parts["social"] = _before_permit("social")
     elif str(x.get("social_mode")) == SOCIAL_MODE_BOTH:
         # В лимит БРИДЖа входит только денежная часть: стройку соцобъектов
         # банк финансирует проектным финансированием после РнС, и включать её
-        # в БРИДЖ значило бы просить лимит дважды.
-        calculated_bridge_limit += n(x, "social_compensation_mln") * 1_000_000
+        # в БРИДЖ значило бы просить лимит дважды. Дата платежа обрезана
+        # методикой до «РнС − 1 мес.», но проверяется она здесь, а не
+        # подразумевается: правило живёт у читателя.
+        if social_cash_payment_date(x, permit) < permit:
+            bridge_limit_parts["social"] = n(x, "social_compensation_mln") * 1_000_000
+    calculated_bridge_limit = sum(bridge_limit_parts.values())
 
     # Часть первоначального финансирования может идти не из банка: собственные
     # деньги, заём учредителя, перехваченный чужой долг. Эти средства тратятся
@@ -22806,6 +22830,12 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
             "rows": rows,
             "escrow_cover": _escrow_cover(rows, rve),
             "calculated_bridge_limit": calculated_bridge_limit,
+            # Из чего сложился лимит — считает движок, а не вычитают экран и
+            # печать. Прежде обе поверхности выводили «Приобретение проекта»
+            # как «итог минус социалка минус П минус РД»: два вычитания на
+            # одну величину однажды разошлись бы, и обе строки выглядели бы
+            # верными.
+            "calculated_bridge_parts": dict(bridge_limit_parts),
             "bridge_fee": bridge_fee,
             "bridge_draw_total": bridge_draw_total,
             "bridge_repayment_total": bridge_repayment_total,
@@ -23845,6 +23875,7 @@ def calculate(req: CalcRequest) -> dict:
             },
             "financing": {
                 "calculated_bridge": fin["calculated_bridge_limit"],
+                "calculated_bridge_parts": fin.get("calculated_bridge_parts") or {},
                 "actual_bridge": fin["peak_bridge"],
                 "actual_bridge_month": bridge_peak_month,
                 "own_funds": fin.get("own_funds_used", 0.0),
@@ -24822,6 +24853,11 @@ def _aggregate_finance(results: list[dict[str, Any]]) -> dict[str, Any]:
         "rows": rows,
         "escrow_cover": _escrow_cover(rows),
         "calculated_bridge_limit": sum(f["calculated_bridge_limit"] for f in fs),
+        # Состав лимита складывается по целям, а не пересобирается вычитанием.
+        "calculated_bridge_parts": {
+            key: sum(float((f.get("calculated_bridge_parts") or {}).get(key, 0.0)) for f in fs)
+            for key in ("purchase", "social", "design_p", "design_rd")
+        },
         "bridge_draw_total": sum(f["bridge_draw_total"] for f in fs),
         "project_cash_used": sum(f.get("project_cash_used", 0.0) for f in fs),
         "own_funds_used": sum(f.get("own_funds_used", 0.0) for f in fs),
@@ -25445,6 +25481,7 @@ def _consolidate_phase_results(
             "calendar": {"start": cal_start.isoformat(), "end": cal_end.isoformat(), "events": events},
             "financing": {
                 "calculated_bridge": finance["calculated_bridge_limit"],
+                "calculated_bridge_parts": finance.get("calculated_bridge_parts") or {},
                 "actual_bridge": finance["peak_bridge"],
                 # Пик свода — общий месяц, а не сумма пиков очередей, поэтому и
                 # расшифровка собирается на этот общий месяц по всем очередям.
@@ -32381,6 +32418,15 @@ def agent_status() -> dict[str, Any]:
     }
 
 
+# Предел свободного вопроса человека и предел машинного задания — разные
+# величины, и объявлены они рядом, чтобы второй не считался копией первого.
+_PLATO_QUESTION_LIMIT = 4000
+_PLATO_MESSAGE_LIMITS = {
+    # Разбор присланного документа: шапка задания плюс сам документ.
+    "document_intake": document_intake.DOCUMENT_TEXT_BUDGET + 8000,
+}
+
+
 def _plato_chat_launch(
     req: AgentChatRequest, request: Request,
 ) -> tuple[str, threading.Event, dict[str, Any]]:
@@ -32394,8 +32440,18 @@ def _plato_chat_launch(
     message = str(req.message or "").strip()
     if not message:
         raise HTTPException(status_code=400, detail="Введите вопрос.")
-    if len(message) > 4000:
-        raise HTTPException(status_code=400, detail="Вопрос слишком длинный.")
+    # Предел — у ЧЕЛОВЕЧЕСКОГО вопроса; машинное задание с документом им мерить
+    # нельзя. Одна шапка задания разбора занимает 2 516 знаков, и на документ
+    # от четырёх тысяч оставалось 1 484 — меньше страницы делового PDF: тизер
+    # отклонялся всегда, а человек читал «Вопрос слишком длинный», то есть
+    # претензию к себе (владелец, 04.09.2026). Бюджет считают на всё сообщение,
+    # и у сообщения, собранного нами, он свой.
+    limit = _PLATO_MESSAGE_LIMITS.get(
+        str(req.scenario or "").strip(), _PLATO_QUESTION_LIMIT)
+    if len(message) > limit:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Вопрос слишком длинный: {len(message)} знаков при пределе {limit}.")
 
     started = time.monotonic()
     trace_id = str(req.trace_id or "").strip().lower()
@@ -32697,7 +32753,12 @@ def agent_document(req: AgentDocumentRequest, request: Request) -> dict[str, Any
     )
     answer = plato_answer(payload, request)
     got = document_intake.parse_intake(str(answer.get("answer") or ""))
-    return {"document": {key: value for key, value in document.items() if key != "text"},
+    # Сколько документа прочитано — часть ответа: непрочитанный хвост, о
+    # котором не сказано, читается как «в документе этого нет».
+    return {"document": {**{key: value for key, value in document.items() if key != "text"},
+                         "read_chars": portion["read_chars"],
+                         "total_chars": portion["total_chars"],
+                         "trimmed": portion["trimmed"]},
             **got}
 
 
@@ -33745,7 +33806,7 @@ details.cadastral-box>summary::marker{color:#888}
       <div class="card">
         <div class="section-title">Структура расчётного БРИДЖа</div>
         <table class="metric-table metric-compact bridge-purpose-table" id="bridgePurposeTable"></table>
-        <div class="bridge-purpose-note">Смена ВРИ / земельные права, проценты и комиссии в расчётный лимит БРИДЖа не входят.</div>
+        <div class="bridge-purpose-note">В лимит входит только то, что платится ДО РнС: при рассрочке покупки часть, приходящаяся на период после РнС, финансируется уже ПФ. Смена ВРИ / земельные права, проценты и комиссии в расчётный лимит БРИДЖа не входят.</div>
         <!-- Расчётный лимит расшифрован по целям методики, а фактический пик не
              был расшифрован ничем — и разница между ними, то самое «остальное
              вашими», разбиралась перепиской. -->
@@ -40213,11 +40274,15 @@ function renderResult(){
  }
 
  const bridgeTotal=Number(r.report.financing.calculated_bridge||0);
- const bridgeSocial=socialMode==='Денежная компенсация'?Number(r.capex.social||0)
-   :(socialMode==='Строительство и компенсация'?socialCash:0);
- const bridgeDesignP=Number(r.capex.design_p||0);
- const bridgeDesignRd=Number(r.capex.design_rd||0);
- const bridgePurchase=Math.max(0,bridgeTotal-bridgeSocial-bridgeDesignP-bridgeDesignRd);
+ // Состав лимита считает движок: он же решает, что попадает в БРИДЖ — только
+ // то, что платится ДО РнС. Вычитать «итог минус социалка минус П минус РД»
+ // на экране значило бы завести второй ответ на тот же вопрос, и при рассрочке
+ // покупки он разошёлся бы с первым.
+ const bridgeParts=r.report.financing.calculated_bridge_parts||{};
+ const bridgeSocial=Number(bridgeParts.social||0);
+ const bridgeDesignP=Number(bridgeParts.design_p||0);
+ const bridgeDesignRd=Number(bridgeParts.design_rd||0);
+ const bridgePurchase=Number(bridgeParts.purchase||0);
  const bridgeUses=[
    ['Приобретение проекта',bridgePurchase],
    ['Социальная компенсация',bridgeSocial],

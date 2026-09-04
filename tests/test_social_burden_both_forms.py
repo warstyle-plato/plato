@@ -256,7 +256,23 @@ def test_the_self_check_knows_all_three_modes():
 
 
 def test_the_pdf_splits_the_bridge_like_the_site():
-    """PDF не знал третьего режима: денежная часть уезжала в «приобретение»."""
-    source = __import__("inspect").getsource(core._build_developaid_pdf)
-    assert "SOCIAL_MODE_BOTH" in source, "PDF не разбирает совмещённый режим"
-    assert "social_payment_breakdown" in source
+    """Денежная часть стоит своей целью, а не уезжает в «приобретение».
+
+    Прежде проверка искала в исходнике печати строки `SOCIAL_MODE_BOTH` и
+    `social_payment_breakdown` — то есть закрепляла РЕАЛИЗАЦИЮ, а не
+    утверждение: обе поверхности выводили состав лимита вычитанием «итог минус
+    социалка минус П минус РД», и правило «поверхности считают одинаково»
+    держалось на том, что вычитаний два и они совпадают. Теперь состав лимита
+    считает движок один раз, и проверять надо его: печать и экран читают одно
+    поле, а денежная часть в нём названа своей целью.
+    """
+    parts = result(core.SOCIAL_MODE_BOTH)["report"]["financing"]["calculated_bridge_parts"]
+    assert parts["social"] == pytest.approx(1149.23 * 1_000_000, rel=1e-6), (
+        "денежная часть соцнагрузки не выделена в составе лимита")
+    assert parts["purchase"] + parts["social"] + parts["design_p"] + parts["design_rd"] \
+        == pytest.approx(
+            result(core.SOCIAL_MODE_BOTH)["report"]["financing"]["calculated_bridge"],
+            rel=1e-9), "состав лимита не складывается в сам лимит"
+    # Стройка соцобъектов в лимит не входит: её финансирует ПФ после РнС.
+    build_parts = result("Строительство")["report"]["financing"]["calculated_bridge_parts"]
+    assert build_parts["social"] == 0.0
