@@ -1588,6 +1588,25 @@ function renderKrtStaleNote(){
    +` публикации по планируемым»; повторять при каждом открытии не нужно.</div>`;
 }
 
+// Сколько строк посчитаны ПРЕЖНЕЙ методикой. Правка цены, очередей или
+// соцобъектов меняет числа сразу у всех, а строка выглядит свежей: `computed_at`
+// отвечает «когда», а не «чем», и прогон публикаций обновляет его, не тронув
+// модель. Так на Нагатине осталась стартовая цена 477 тыс от 03.09 при правке,
+// уехавшей на прод 04.09 (владелец: «почему в Нагатино до сих пор цена для
+// расчёта 477»). Число называется вслух, и рядом стоит кнопка, которая
+// пересчитывает ровно их — не весь каталог: поход к рынку платный.
+function renderKrtStaleModelNote(){
+ const box=$('krtRankStatus'), n=state.krtStaleModel||0;
+ if(!box||!n)return;
+ box.style.display='';
+ if(box.innerHTML.includes('прежней методикой'))return;
+ box.innerHTML+=`<div class="source">Посчитано прежней методикой: ${n} площадок`
+  +` — у них цена, очереди и балл остались от прошлого правила счёта.`
+  +` <button type="button" id="krtStaleRun" class="linkish">Пересчитать только их</button></div>`;
+ const run=$('krtStaleRun');
+ if(run)run.onclick=()=>startKrtRanking(true);
+}
+
 function renderKrtCardsNote(){
  const box=$('krtRankStatus'), st=state.krtCardsState;
  if(!box||!st)return;
@@ -2031,28 +2050,29 @@ async function loadKrtRanking(){
   state.krtRank={};(d.rows||[]).forEach(row=>{state.krtRank[row.slug]=row;
    if(row.available&&row.traffic_light)state.krtModels[row.slug]={traffic_light:row.traffic_light}});
   state.krtRankProgress=d.progress||null;
-  state.krtStaleRules=Number(d.stale_rules_count||0);
+  state.krtStaleRules=Number(d.stale_rules_count||0);state.krtStaleModel=Number(d.stale_model_count||0);
   // Порядок важен: `renderKrtRankStatus` пишет в узел целиком, то есть
   // сносит всё, что дописали до него. Строка о карточках города
   // добавляется в загрузке каталога — она приходит РАНЬШЕ рейтинга и
   // молча пропадала. Обе приписки идут после того, кто узел переписал.
-  renderKrtRankStatus();renderKrt();renderKrtStaleNote();renderKrtCardsNote();
+  renderKrtRankStatus();renderKrt();renderKrtStaleNote();renderKrtStaleModelNote();renderKrtCardsNote();
   clearTimeout(state.krtRankTimer);
   if(d.progress&&(d.progress.running||d.progress.running_elsewhere))state.krtRankTimer=setTimeout(loadKrtRanking,3000);
  }catch(e){const box=$('krtRankStatus');if(box){box.style.display='';box.className='notice warn';box.textContent=String(e.message||e)}}
 }
-async function startKrtRanking(){
+async function startKrtRanking(onlyStale){
  const b=$('krtRankBtn');b.disabled=true;b.innerHTML='<span class="spinner"></span>Запускаю';
  try{
   // Считаем то, что осталось после фильтра: смотрят перспективные округа и
   // нужный статус, а прогон по всему каталогу — это минуты чужой работы.
   const slugs=(state.krtFiltered||[]).map(v=>v.slug).filter(Boolean);
   const d=await askJson('/auctions/krt/ranking/refresh',{method:'POST',
-   headers:{'Content-Type':'application/json'},body:JSON.stringify({slugs:slugs})}).catch(needLogin);
+   headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({slugs:slugs,only_stale:!!onlyStale})}).catch(needLogin);
   state.krtRankProgress=d.progress||null;renderKrtRankStatus();loadKrtRanking();
   if(!d.started&&d.reason){const box=$('krtRankStatus');box.style.display='';box.className='notice';box.innerHTML='<span class="spinner"></span>'+esc(d.reason)+'.'}
  }catch(e){const box=$('krtRankStatus');box.style.display='';box.className='notice warn';box.textContent=String(e.message||e)}
- finally{b.disabled=false;b.textContent='Оценить все КРТ моделью'}
+ finally{b.disabled=false;b.textContent='Оценить отобранные моделью'}
 }
 // Пропорции ТЭП. На обычной странице их правят полем во вводных — у человека
 // на руках бывает ГПЗУ или АГР со своими долями. До площадки КРТ эта правка не

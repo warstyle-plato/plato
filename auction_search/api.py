@@ -50,6 +50,10 @@ from auction_search.export_areas import export_areas
 from auction_search.krt_pipeline import enrich_krt_from_official_documents
 from auction_search.krt_ranking import (
     HEARTBEAT_SECONDS, NEW_FOR_SECONDS, KrtRanking, score_row)
+# Имя `krt_ranking` внутри маршрутов занято ЭКЗЕМПЛЯРОМ хранилища, а версия
+# методики — функция модуля: `krt_ranking.model_is_current` там разрешилось бы
+# на экземпляре и упало бы при первом же чтении рейтинга.
+from auction_search import krt_ranking as krt_ranking_rules
 from auction_search.krt_screening import build_krt_model_screening
 from auction_search.models import LotKind
 from auction_search.preset_mapper import build_project_preset
@@ -68,9 +72,17 @@ logger = logging.getLogger(__name__)
 
 
 class KrtRankingRequest(BaseModel):
-    """Что считать: слаги отобранных площадок. Пусто — весь каталог."""
+    """Что считать: слаги отобранных площадок. Пусто — весь каталог.
+
+    `only_stale` оставляет из выбранного то, что посчитано ПРЕЖНЕЙ методикой
+    или не считалось вовсе. Умолчание — `False`: прогон по кнопке обязан
+    пересчитывать и свежие строки, потому что рынок движется и цена стареет
+    сама по себе, без всяких наших правок. «Устарело по методике» и «устарело
+    по времени» — разные вопросы, и отвечать на них одним ключом нельзя.
+    """
 
     slugs: list[str] = Field(default_factory=list, max_length=400)
+    only_stale: bool = False
 
 
 class AuctionIngestRequest(BaseModel):
@@ -1585,6 +1597,17 @@ def install(app: FastAPI) -> None:
             "stale_rules_count": sum(
                 1 for row in rows
                 if ((row.get("press_facts") or {}).get("stale_rules"))),
+            # Сколько строк судят по ПРЕЖНЕЙ методике счёта. Правка цены,
+            # очередей или соцобъектов меняет числа сразу у всех, а строка
+            # выглядит свежей: `computed_at` отвечает «когда», а не «чем», и
+            # прогон публикаций обновляет его, не тронув модель. Так на
+            # Нагатине осталась стартовая цена 477 тыс от 03.09, при том что
+            # правка «цена — рекомендация отчёта» уехала на прод 04.09
+            # (владелец: «почему в Нагатино до сих пор цена для расчёта 477»).
+            "stale_model_count": sum(
+                1 for row in rows
+                if row.get("available") and not krt_ranking_rules.model_is_current(row)),
+            "rules_version": krt_ranking_rules._screening_rules_version(),
         }
 
     @app.post("/auctions/krt/ranking/refresh")
@@ -1621,6 +1644,27 @@ def install(app: FastAPI) -> None:
                     status_code=422,
                     detail="Ни одна из выбранных площадок не найдена в каталоге",
                 )
+        skipped = 0
+        if body is not None and body.only_stale:
+            fresh_rows = {}
+            try:
+                fresh_rows = {str(row.get("slug") or ""): row
+                              for row in (krt_ranking.rows() or [])}
+            except Exception:  # noqa: BLE001
+                logger.exception("KRT ranking rows failed")
+            keep = []
+            for row in projects:
+                stored = fresh_rows.get(str(row.get("slug") or "")) or {}
+                if stored.get("available") and krt_ranking_rules.model_is_current(stored):
+                    skipped += 1
+                    continue
+                keep.append(row)
+            projects = keep
+            if not projects:
+                return {"started": False,
+                        "reason": ("Пересчитывать нечего: все выбранные площадки "
+                                   "посчитаны нынешней методикой"),
+                        "skipped": skipped, "progress": krt_ranking.progress()}
         started = krt_ranking.start(projects, _screen_one)
         progress = krt_ranking.progress()
         if started:
@@ -1633,7 +1677,10 @@ def install(app: FastAPI) -> None:
             # на экране ничего не движется, а кнопка отказывает.
             reason = ("Прогон уже идёт в соседнем процессе — строки появляются "
                       "в таблице по мере счёта")
-        return {"started": started, "reason": reason, "progress": progress}
+        # Сколько пропущено как посчитанное нынешней методикой — молча
+        # пропущенное читается как несостоявшийся прогон.
+        return {"started": started, "reason": reason, "progress": progress,
+                "planned": len(projects), "skipped": skipped}
 
     def _press_only(project: dict[str, Any]) -> dict[str, Any]:
         """Прогон одних публикаций: без рынка и без модели.
