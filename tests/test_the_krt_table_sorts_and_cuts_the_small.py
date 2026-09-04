@@ -76,7 +76,8 @@ def _sorted_by(key: str, direction: int) -> list[str]:
         # Известна ли величина строки — один ответ на всю страницу: у карточки
         # со съехавшим разбором её значений нет и в сортировке тоже.
         + _function("krtBroken") + "\n" + _function("krtNumber") + "\n"
-        + _function("krtValue") + "\n" + _function("krtCompare") + "\n"
+        + _function("krtValue") + "\n" + _function("krtTieBreak") + "\n"
+        + _function("krtCompare") + "\n"
         + f"const rows={json.dumps(SITES)}.slice().sort(krtCompare);\n"
         "console.log(JSON.stringify({names:rows.map(r=>r.slug)}));"
     )

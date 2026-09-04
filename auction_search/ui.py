@@ -1281,16 +1281,29 @@ function krtValue(x,key){
  }
  return null;
 }
+// Порядок внутри равных значений. У грубых колонок («Шаг» — три значения на
+// 580 строк, «Статус» — четыре) равных большинство, и порядок по алфавиту
+// внутри них читается как «сортировка ничего не сделала»: на экране просто
+// список по имени (владелец, 04.09.2026: «шаги тоже не сортируют ничего»).
+// Внутри равных остаётся порядок списка по умолчанию — по баллу, — и имя
+// только последним, чтобы порядок был устойчив.
+function krtTieBreak(a,b){
+ const sa=krtValue(a,'score'), sb=krtValue(b,'score');
+ const na=sa===null||sa===undefined, nb=sb===null||sb===undefined;
+ if(!na&&!nb&&sa!==sb)return sb-sa;
+ if(na!==nb)return na?1:-1;
+ return String(a.name||'').localeCompare(String(b.name||''),'ru');
+}
 function krtCompare(a,b){
  const {key,dir}=state.krtSort, va=krtValue(a,key), vb=krtValue(b,key);
  const na=va===null||va===undefined||va==='', nb=vb===null||vb===undefined||vb==='';
  // Неизвестное — вниз при любом направлении.
- if(na&&nb)return String(a.name||'').localeCompare(String(b.name||''),'ru');
+ if(na&&nb)return krtTieBreak(a,b);
  if(na)return 1;
  if(nb)return -1;
  if(typeof va==='string'||typeof vb==='string')
-  return dir*String(va).localeCompare(String(vb),'ru');
- return dir*(va-vb)||String(a.name||'').localeCompare(String(b.name||''),'ru');
+  return dir*String(va).localeCompare(String(vb),'ru')||krtTieBreak(a,b);
+ return dir*(va-vb)||krtTieBreak(a,b);
 }
 function krtSortBy(key){
  // Второе нажатие переворачивает. У имени и статуса по умолчанию по возрастанию,
