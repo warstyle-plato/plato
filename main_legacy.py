@@ -13086,6 +13086,25 @@ _ESCROW_CHART_LEGEND: tuple[tuple[str, str, str], ...] = (
 )
 ESCROW_CHART_LEGEND_PLACEHOLDER = "__DEVELOPAID_ESCROW_LEGEND__"
 
+# Оттенки эскроу по очередям на СВОДНОМ графике. Свод складывает счета разных
+# договоров, и после раскрытия первой очереди площадь не падает в ноль —
+# остаётся эскроу тех, кто ещё не раскрылся (шаг очередей 12 месяцев, а цикл
+# каждой около трёх лет, поэтому одновременно живут две-три). Одним цветом это
+# читается как «очередь стартует с десяти миллиардов»; оттенками видно, чьи
+# это деньги. Порядок от тёмного к светлому — по номеру очереди.
+_ESCROW_STACK_SHADES: tuple[str, ...] = ("#1B4332", "#2D6A4F", "#52B788", "#95D5B4")
+ESCROW_STACK_SHADES_PLACEHOLDER = "__DEVELOPAID_ESCROW_SHADES__"
+
+
+def escrow_stack_legend(names: list[str]) -> list[tuple[str, str, str]]:
+    """Подписи оттенков очередей — один список на страницу и на PDF.
+
+    Заменяют строку «Эскроу накоплено»: на своде эта площадь не одна, а
+    сложена из счетов очередей, и назвать её одним словом значит соврать.
+    """
+    return [(f"Эскроу {name}", _ESCROW_STACK_SHADES[index % len(_ESCROW_STACK_SHADES)], "area")
+            for index, name in enumerate(names)]
+
 
 def _escrow_chart_legend_html() -> str:
     """Та же легенда разметкой страницы."""
@@ -41341,8 +41360,10 @@ function renderApartmentPaceChart(sales){
 // начисленное, оно копится вне лимита и платится кассой. Один рисовальщик на
 // проект и на очереди: два разошлись бы, и оба выглядели бы верными. Числа
 // приходят готовыми с сервера, здесь только геометрия.
-function escrowCoverSvg(rows,cover){
+const ESCROW_STACK_SHADES=__DEVELOPAID_ESCROW_SHADES__;
+function escrowCoverSvg(rows,cover,stack){
  cover=cover||{};
+ stack=(stack||[]).filter(s=>s&&s.byMonth);
  const duty=x=>Number(x.pf_obligation!==undefined?x.pf_obligation:(Number(x.pf_balance||0)+Number(x.pf_payable||0)));
  // Месяцы без долга и без счёта не рисуются — иначе ось растянута на годы
  // пустоты. Но обрезать их ВСЕ нельзя: первой точкой становится месяц с уже
@@ -41382,6 +41403,35 @@ function escrowCoverSvg(rows,cover){
    gaps+=`<polygon points="${up} ${back}" fill="#A35D00" fill-opacity="0.16"/>`}
   run=[]};
  data.forEach((x,i)=>{if(duty(x)-Number(x.escrow||0)>0)run.push(i);else flush()});flush();
+ // Свод складывает счета РАЗНЫХ договоров, и после раскрытия первой очереди
+ // площадь не падает в ноль: остаётся эскроу тех, кто ещё не раскрылся. Шаг
+ // очередей 12 месяцев, цикл каждой около трёх лет — одновременно живут две-три
+ // (владелец, 04.09.2026: «так как у нас наложение 12 месяцев»). Одним цветом
+ // это читается как «очередь стартует с десяти миллиардов»; оттенками видно,
+ // чьи это деньги, а прозрачной полосой — где линии пересекаются.
+ let stackAreas='',overlap='';
+ if(stack.length>1){
+  const at=(s,x)=>Number(s.byMonth[String(x.month||'').slice(0,10)]||0);
+  let below=data.map(()=>0);
+  stackAreas=stack.map((s,k)=>{
+   const above=data.map((x,i)=>below[i]+at(s,x));
+   const up=above.map((v,i)=>pt(i,v)).join(' ');
+   const back=below.slice().reverse().map((v,i)=>pt(below.length-1-i,v)).join(' ');
+   below=above;
+   return `<polygon points="${up} ${back}" fill="${ESCROW_STACK_SHADES[k%ESCROW_STACK_SHADES.length]}" fill-opacity="0.5"/>`;
+  }).join('');
+  // Полоса пересечения — по месяцам, где счёт открыт больше чем у одной
+  // очереди. Прозрачная и под линиями: это подсказка о времени, а не величина.
+  let run=[];
+  const flushOverlap=()=>{if(run.length){
+    const x1=X(run[0])-plotW/(data.length-1)/2, x2=X(run[run.length-1])+plotW/(data.length-1)/2;
+    overlap+=`<rect x="${Math.max(pL,x1).toFixed(1)}" y="${pT}" width="${Math.max(0,Math.min(W-pR,x2)-Math.max(pL,x1)).toFixed(1)}" height="${plotH.toFixed(1)}" fill="#1B4332" fill-opacity="0.06"/>`}
+   run=[]};
+  data.forEach((x,i)=>{
+   const live=stack.filter(s=>at(s,x)>0).length;
+   if(live>1)run.push(i);else flushOverlap()});
+  flushOverlap();
+ }
  let grid='';
  for(let t=0;t<=4;t++){const v=top*t/4,y=Y(v);
   grid+=`<line x1="${pL}" y1="${y.toFixed(1)}" x2="${W-pR}" y2="${y.toFixed(1)}" stroke="#e8e8e8"/>`
@@ -41416,8 +41466,8 @@ function escrowCoverSvg(rows,cover){
  let cumGrid='';
  for(let t=0;t<=4;t++){const v=cumTop*t/4,y=Yc(v);
   cumGrid+=`<text x="${W-pR+6}" y="${(y+4).toFixed(1)}" font-size="11" fill="#1B5E77" text-anchor="start">${(v/1e9).toLocaleString('ru-RU',{maximumFractionDigits:1})}</text>`}
- return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">${grid}
-  <polygon points="${area(x=>Number(x.escrow||0))}" fill="#2D6A4F" fill-opacity="0.30"/>
+ return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">${grid}${overlap}
+  ${stackAreas||`<polygon points="${area(x=>Number(x.escrow||0))}" fill="#2D6A4F" fill-opacity="0.30"/>`}
   ${gaps}
   <polyline points="${path(duty)}" fill="none" stroke="#A35D00" stroke-width="2.6"/>
   <polyline points="${path(x=>Number(x.pf_balance||0))}" fill="none" stroke="#A35D00" stroke-width="1" stroke-dasharray="4 3" opacity="0.85"/>
@@ -41431,8 +41481,32 @@ function escrowCoverSvg(rows,cover){
 function escrowCoverLines(cover){
  return ((cover&&cover.lines)||[]).map(escapeHtml).join('<br>');
 }
+function escrowStackOfQueues(){
+ // Стопка эскроу по очередям: числа берутся из отчёта каждой очереди, здесь
+ // только раскладка по месяцам. Второй счёт той же величины разошёлся бы с
+ // первым, и обе площади выглядели бы верными.
+ if(!(phaseBundle&&phaseBundle.mode==='phased'))return [];
+ const phases=phaseBundle.phases||[];
+ if(phases.length<2)return [];
+ return phases.map((p,i)=>{
+  const byMonth={};
+  (((p.result||{}).finance||{}).rows||[]).forEach(r=>{
+   byMonth[String(r.month||'').slice(0,10)]=Number(r.escrow||0)});
+  return {name:p.name||('Очередь '+(i+1)),byMonth:byMonth};
+ });
+}
+function escrowStackLegendHtml(stack){
+ if(!stack.length)return '';
+ return '<div class="legend">'+stack.map((s,k)=>
+  `<span><i style="background:${ESCROW_STACK_SHADES[k%ESCROW_STACK_SHADES.length]};opacity:.5;height:9px"></i>Эскроу ${escapeHtml(s.name)}</span>`
+ ).join('')+'<span><i style="background:#1B4332;opacity:.12;height:9px"></i>Месяцы, когда открыты линии двух и более очередей</span></div>';
+}
 function renderFinanceChart(rows,cover){
- const svg=escrowCoverSvg(rows,cover||{});
+ // Легенда оттенков — рядом с графиком, а не внутри него: у карточки .chart
+ // жёсткая высота, и вложенная подпись вылезла бы за рамку.
+ const stack=escrowStackOfQueues();
+ const svg=escrowCoverSvg(rows,cover||{},stack);
+ const stackLegend=escrowStackLegendHtml(stack);
  financeChart.innerHTML=svg;
  const report=document.getElementById('reportEscrowChart');
  if(report)report.innerHTML=svg;
@@ -41448,9 +41522,10 @@ function renderFinanceChart(rows,cover){
     +'Линии очередей — ниже.'
   : '';
  const text=[escrowCoverLines(cover),caveat].filter(Boolean).join('<br>');
- note.innerHTML=text;note.style.display=text?'':'none';
+ const full=stackLegend+text;
+ note.innerHTML=full;note.style.display=full?'':'none';
  const reportNote=document.getElementById('reportEscrowNote');
- if(reportNote){reportNote.innerHTML=text;reportNote.style.display=text?'':'none'}
+ if(reportNote){reportNote.innerHTML=full;reportNote.style.display=full?'':'none'}
  renderPhaseEscrowCharts();
 }
 
@@ -42923,6 +42998,8 @@ PAGE = PAGE.replace(FEEDBACK_FORM_PLACEHOLDER, json.dumps(
     ensure_ascii=False))
 # Легенда графика эскроу — из движка: PDF рисует те же линии теми же словами.
 PAGE = PAGE.replace(ESCROW_CHART_LEGEND_PLACEHOLDER, _escrow_chart_legend_html())
+PAGE = PAGE.replace(ESCROW_STACK_SHADES_PLACEHOLDER,
+                    json.dumps(list(_ESCROW_STACK_SHADES), ensure_ascii=False))
 PAGE = PAGE.replace(SOCIAL_MODES_PLACEHOLDER,
                     json.dumps([item[0] for item in _M2_EXTRA_OPTIONS["social_mode"]],
                                ensure_ascii=False))
