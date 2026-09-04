@@ -704,8 +704,28 @@ def install(app: FastAPI) -> None:
         }
 
     @app.get("/auctions/krt")
-    async def auction_krt_catalogue() -> dict[str, Any]:
-        projects = await run_in_threadpool(krt_registry.catalogue)
+    async def auction_krt_catalogue(refresh: bool = False) -> dict[str, Any]:
+        """Каталог площадок КРТ. `refresh` — нажатая человеком кнопка.
+
+        Снимок живёт сутки, и до 04.09.2026 «Обновить каталог» на свежем
+        снимке не читал источник вовсе: страница перерисовывала тот же файл, а
+        опубликованный вчера проект решения ждал ночного обхода. Обновление
+        касается обеих половин экрана — и каталога, и решений mos.ru: они
+        приходят из разных источников, а человек нажимает одну кнопку.
+        """
+        projects = await run_in_threadpool(
+            lambda: krt_registry.catalogue(refresh=bool(refresh)))
+        if refresh:
+            # Решения mos.ru — второй источник этого же экрана, и человек
+            # нажимает одну кнопку. Обход идёт фоном: шестьдесят страниц поиска
+            # в срок ответа не укладываются, а работу принимают, а не держат
+            # соединением.
+            asked = getattr(krt_registry, "refresh_decisions_in_background", None)
+            if callable(asked):
+                try:
+                    asked()
+                except Exception:  # noqa: BLE001
+                    logger.exception("KRT decisions refresh failed to start")
         # Каталог отмечается на каждом чтении: «новое» — это разница с прошлым
         # составом, и считать её должен тот, кто состав видит, а не человек
         # глазами по списку из ста двадцати строк.

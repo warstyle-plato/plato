@@ -190,7 +190,7 @@ def test_the_row_disappears_the_moment_the_card_appears(tmp_path) -> None:
         return _json.dumps({"results": LIVE if page == 1 else []}).encode("utf-8")
 
     registry = KrtRegistry(tmp_path, fetch=fetch)
-    registry.catalogue = lambda: list(catalogue)  # type: ignore[assignment]
+    registry.catalogue = lambda **_: list(catalogue)  # type: ignore[assignment]
 
     first = registry.decisions()
     gaps = [one["address"] for one in first["decisions"]]
