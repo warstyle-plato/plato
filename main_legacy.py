@@ -34016,6 +34016,7 @@ details.cadastral-box>summary::marker{color:#888}
         <div id="financeChart" class="chart"></div>
         __DEVELOPAID_ESCROW_LEGEND__
         <div id="escrowCoverNote" class="note"></div>
+        <div id="financeEscrowPhases"></div>
       </div>
 
       <div class="card">
@@ -34239,6 +34240,7 @@ details.cadastral-box>summary::marker{color:#888}
         <div id="reportEscrowChart" class="chart"></div>
         __DEVELOPAID_ESCROW_LEGEND__
         <div id="reportEscrowNote" class="note"></div>
+        <div id="reportEscrowPhases"></div>
       </div>
 
       <div class="card">
@@ -40347,8 +40349,10 @@ function renderPhaseComparison(){
 // один, — движком; здесь она просто доезжает до собранной разметки.
 const ESCROW_LEGEND_HTML=`__DEVELOPAID_ESCROW_LEGEND__`;
 function renderPhaseEscrowCharts(){
- const card=document.getElementById('phaseEscrowCard'),box=document.getElementById('phaseEscrowCharts');
- if(!card||!box)return;
+ const card=document.getElementById('phaseEscrowCard');
+ const boxes=['phaseEscrowCharts','financeEscrowPhases','reportEscrowPhases']
+   .map(id=>document.getElementById(id)).filter(Boolean);
+ if(!boxes.length)return;
  const items=((phaseBundle&&phaseBundle.phases)||[]).map((p,i)=>{
   const rows=((p.result||{}).finance||{}).rows||[];
   const cover=(((p.result||{}).report||{}).financing||{}).escrow_cover||{};
@@ -40358,8 +40362,15 @@ function renderPhaseEscrowCharts(){
   return `<div class="phase-escrow" style="margin-bottom:20px"><div class="section-title">${escapeHtml(p.name||('Очередь '+(i+1)))}</div>${svg}${ESCROW_LEGEND_HTML}`
    +(lines?`<div class="note">${lines}</div>`:'')+'</div>';
  }).filter(Boolean);
- box.innerHTML=items.join('');
- card.style.display=items.length?'':'none';
+ // Свод складывает эскроу и долг РАЗНЫХ договоров: на четырёх очередях он
+ // даёт покрытие 0,58×, когда у первой 0,68×, а у третьей ноль. График
+ // читается так, будто очередь стартует с эскроу в десять миллиардов
+ // (владелец, 04.09.2026: «2 очередь стартует сразу с выборки и эскроу не с
+ // 0 а с 10 млрд, а 3 с 30»). Числа верны, неверно место: линии очередей
+ // теперь стоят прямо под сводным графиком, а не на соседней вкладке.
+ const head=items.length?'<div class="section-title" style="margin-top:18px">По очередям — у каждой свой договор</div>':'';
+ boxes.forEach(box=>{box.innerHTML=(box.id==='phaseEscrowCharts'?'':head)+items.join('')});
+ if(card)card.style.display=items.length?'':'none';
 }
 function selectReportView(view){
  if(!phaseBundle||phaseBundle.mode!=='phased')return;reportView=view;phaseComparisonCard.style.display='none';
@@ -41417,10 +41428,20 @@ function renderFinanceChart(rows,cover){
  if(report)report.innerHTML=svg;
  const note=document.getElementById('escrowCoverNote');
  if(!note)return;
- const text=escrowCoverLines(cover);
+ // Покрытие свода не принадлежит ни одному договору: у каждой очереди свой
+ // счёт эскроу и своя дата раскрытия, а ступень ставки ПФ банк считает по
+ // очереди. Без этой строки сводная кривая читается как покрытие проекта.
+ const phased=!!(phaseBundle&&phaseBundle.mode==='phased'&&(phaseBundle.phases||[]).length>1);
+ const caveat=phased
+  ? 'Это СУММА очередей: у каждой свой счёт эскроу, свой долг и своя дата раскрытия. '
+    +'Покрытие этой кривой не совпадает ни с одним договором — ставку ПФ банк считает по очереди. '
+    +'Линии очередей — ниже.'
+  : '';
+ const text=[escrowCoverLines(cover),caveat].filter(Boolean).join('<br>');
  note.innerHTML=text;note.style.display=text?'':'none';
  const reportNote=document.getElementById('reportEscrowNote');
  if(reportNote){reportNote.innerHTML=text;reportNote.style.display=text?'':'none'}
+ renderPhaseEscrowCharts();
 }
 
 // --- Анализ чувствительности (Tornado) ---------------------------------------

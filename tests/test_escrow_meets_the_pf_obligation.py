@@ -171,7 +171,20 @@ def test_the_report_shows_the_chart_the_pdf_prints():
     page = core.PAGE
     assert 'id="reportEscrowChart"' in page
     assert 'id="reportEscrowNote"' in page
-    body = page.split("function renderFinanceChart(")[1][:900]
+    # Границей служат скобки функции, а не окно в 900 знаков: комментарий
+    # рядом однажды выталкивает искомое за него, и проверка падает на верной
+    # правке. Функция — контракт, и мерить надо её.
+    start = page.index("function renderFinanceChart(")
+    depth, index, seen = 0, page.index("{", start), False
+    while index < len(page):
+        if page[index] == "{":
+            depth, seen = depth + 1, True
+        elif page[index] == "}":
+            depth -= 1
+            if seen and depth == 0:
+                break
+        index += 1
+    body = page[start:index + 1]
     assert "reportEscrowChart" in body, "отчёт не получает тот же график"
     assert "reportEscrowNote" in body
 
