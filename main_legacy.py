@@ -41353,13 +41353,13 @@ const ESCROW_QUEUE_SHADES=__DEVELOPAID_ESCROW_QUEUE_SHADES__;
 // долг, тело ПФ и полоса непокрытого относятся к сумме, и наложенные на них
 // поля очередей дают месиво — так уже вышло, и это было снято.
 function escrowQueuesSvg(phases){
- const live=(phases||[]).filter(p=>p&&p.rows&&p.rows.length);
+ const live=(phases||[]).filter(p=>p&&p.byMonth&&Object.keys(p.byMonth).length);
  if(live.length<2)return '';
- const months=[...new Set([].concat(...live.map(p=>p.rows.map(r=>String(r.month||'').slice(0,10)))))].sort();
+ const months=[...new Set([].concat(...live.map(p=>Object.keys(p.byMonth))))].sort();
  if(months.length<2)return '';
- const value=(p,m)=>Number((p.byMonth||{})[m]||0);
- const top=Math.max(...months.map(m=>Math.max(...live.map(p=>value(p,m)))),1)*1.08;
- const W=900,H=200,pL=58,pR=20,pT=16,pB=26,plotW=W-pL-pR,plotH=H-pT-pB;
+ const esc=(p,m)=>Number((p.byMonth[m]||{}).escrow||0);
+ const top=Math.max(...months.map(m=>Math.max(...live.map(p=>esc(p,m)))),1)*1.08;
+ const W=900,H=220,pL=58,pR=20,pT=18,pB=26,plotW=W-pL-pR,plotH=H-pT-pB;
  const X=i=>pL+plotW*i/(months.length-1);
  const Y=v=>pT+plotH-plotH*Math.max(0,v)/top;
  const pt=(i,v)=>`${X(i).toFixed(1)},${Y(v).toFixed(1)}`;
@@ -41367,22 +41367,29 @@ function escrowQueuesSvg(phases){
  for(let t=0;t<=3;t++){const v=top*t/3,y=Y(v);
   grid+=`<line x1="${pL}" y1="${y.toFixed(1)}" x2="${W-pR}" y2="${y.toFixed(1)}" stroke="#ececec"/>`
    +`<text x="${pL-6}" y="${(y+4).toFixed(1)}" font-size="11" fill="#777" text-anchor="end">${(v/1e9).toLocaleString('ru-RU',{maximumFractionDigits:1})}</text>`}
- const areas=live.map((p,k)=>{
+ // У каждой очереди своя площадь от нуля. Наложение — умножением цветов
+ // (mix-blend-mode: multiply): при обычной прозрачности верхний слой
+ // ВЫБЕЛИВАЕТ нижний, и пересечение выходит бледнее обеих очередей — то есть
+ // ровно наоборот. С умножением общий месяц темнее любого одиночного, и
+ // граница пересечения читается сама. Край каждой площади обведён своим
+ // цветом: без линии смежные тона сливаются.
+ const body=live.map((p,k)=>{
   const colour=ESCROW_QUEUE_SHADES[k%ESCROW_QUEUE_SHADES.length];
-  const line=months.map((m,i)=>pt(i,value(p,m))).join(' ');
-  return `<polygon points="${pt(0,0)} ${line} ${pt(months.length-1,0)}" fill="${colour}" fill-opacity="0.32"/>`
+  const line=months.map((m,i)=>pt(i,esc(p,m))).join(' ');
+  return `<polygon points="${pt(0,0)} ${line} ${pt(months.length-1,0)}" fill="${colour}"`
+   +` fill-opacity="0.45" style="mix-blend-mode:multiply"/>`
    +`<polyline points="${line}" fill="none" stroke="${colour}" stroke-width="1.6"/>`;
  }).join('');
  const monthRu=iso=>{const parts=String(iso||'').slice(0,7).split('-');return parts.length===2?parts[1]+'.'+parts[0]:''};
  const marks=[...new Set([0,Math.floor(months.length/2),months.length-1])].map(i=>
   `<text x="${X(i).toFixed(1)}" y="${H-7}" font-size="11" fill="#777" text-anchor="${i===0?'start':(i===months.length-1?'end':'middle')}">${monthRu(months[i])}</text>`).join('');
- return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">${grid}${areas}
+ return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">${grid}${body}
   <text x="${pL}" y="${pT-4}" font-size="11" fill="#777" text-anchor="start">эскроу очереди, млрд ₽</text>
   ${marks}</svg>`;
 }
 function escrowQueuesLegend(phases){
  return '<div class="legend">'+(phases||[]).map((p,k)=>
-  `<span><i style="background:${ESCROW_QUEUE_SHADES[k%ESCROW_QUEUE_SHADES.length]};opacity:.32;height:9px"></i>${escapeHtml(p.name||'')}</span>`
+  `<span><i style="background:${ESCROW_QUEUE_SHADES[k%ESCROW_QUEUE_SHADES.length]};opacity:.45;height:9px"></i>${escapeHtml(p.name||'')}</span>`
  ).join('')+'<span style="color:#777">Где тон темнее — там очереди идут вместе</span></div>';
 }
 function escrowQueuesData(){
@@ -41390,7 +41397,7 @@ function escrowQueuesData(){
  return (phaseBundle.phases||[]).map((p,i)=>{
   const rows=((p.result||{}).finance||{}).rows||[];
   const byMonth={};
-  rows.forEach(r=>{byMonth[String(r.month||'').slice(0,10)]=Number(r.escrow||0)});
+  rows.forEach(r=>{byMonth[String(r.month||'').slice(0,10)]={escrow:Number(r.escrow||0)}});
   return {name:p.name||('Очередь '+(i+1)),rows:rows,byMonth:byMonth};
  });
 }
