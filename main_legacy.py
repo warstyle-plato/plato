@@ -6288,6 +6288,13 @@ MO_NORMS_DEFAULT: dict[str, float] = {
     "clinic_gba_sqm_per_visit": 15.0,
     "parking_permanent_per_1000": 356.0,
     "parking_permanent_share": 0.9,
+    # Доля 0,18 от уровня автомобилизации даёт 64 места на тысячу и
+    # воспроизводит ППТ заказчика (7 143 жителя → 458 мест). Справочник РНГП
+    # при этом цитирует п. 5.12 иначе: «не менее 30 автомобилей на 1000
+    # человек». Противоречия тут нет — «не менее» это пол, а ППТ вправе дать
+    # больше, — но два числа об одном нормативе живут у нас порознь и не
+    # сверены. Какое из них считать нормативной потребностью, решает владелец;
+    # до его слова остаётся то, что воспроизводит документ.
     "parking_temporary_share": 0.18,
     "parking_underground_sqm_per_space": 35.0,
     "parking_surface_sqm_per_space": 22.5,
@@ -6503,7 +6510,13 @@ def mo_social_program(apartments_sqm: float, norms: dict[str, float] | None = No
         },
         "parking": {
             "permanent_spaces": parking_permanent,
+            # Временные места в проекте не строятся (решение владельца,
+            # 04.09.2026): норматив прямо разрешает размещать их в границах
+            # ЖИЛОГО РАЙОНА, а не квартала, и закрывает их район. Число
+            # остаётся нормативной потребностью и названо ею на экране —
+            # посчитанное и не показанное читается как забытое.
             "temporary_spaces": parking_temporary,
+            "temporary_built": False,
             "underground_sqm": round(underground_sqm, 2),
             "surface_temporary_ha": round(parking_temporary * n["parking_surface_sqm_per_space"] / 10000.0, 4),
         },
@@ -6980,6 +6993,11 @@ def _mo_tep_and_inputs(
         "saleable": 0,
         "transfer": 0,
         "units": parking["permanent_spaces"],
+        # Гостевых мест в области у нас нет: строятся только места ПОСТОЯННОГО
+        # хранения, а временные закрывает жилой район. Ноль пишется явно —
+        # без него движок вычел бы московскую одиннадцатую часть и объявил бы
+        # девять процентов построенных мест непродаваемыми по чужой норме.
+        "guest_units": 0,
     })
     for key, block, places_key in (
         ("kindergarten", kindergarten, "places"),
@@ -36951,7 +36969,9 @@ function renderMo(data){
   ['СОШ',landNum(s.school.places,0)+' мест · участок '+landNum(s.school.site_ha,4)+' га · '+landNum(s.school.gba_sqm,0)+' м²'],
   ['Поликлиника',landNum(s.clinic.capacity,0)+' пос./смену · '+landNum(s.clinic.gba_sqm,0)+' м²'],
   ['Паркинг постоянного хранения',landNum(s.parking.permanent_spaces,0)+' м/м · подземный '+landNum(s.parking.underground_sqm,0)+' м²'],
-  ['Паркинг временного хранения',landNum(s.parking.temporary_spaces,0)+' м/м'],
+  ['Паркинг временного хранения',landNum(s.parking.temporary_spaces,0)+' м/м'
+    +' <span style="color:#777">— в проекте не строим: норматив разрешает разместить их'
+    +' в границах жилого района</span>'],
   ['Озеленение',landNum(s.green.quarter_sqm,0)+' м² · общего пользования '+landNum(s.green.public_sqm,0)+' м²'],
   ['Нежилые помещения общественные',landNum(s.public_premises_sqm,0)+' м²'],
   ['Рабочие места',landNum(s.jobs.required,0)+' требуется · '+landNum(s.jobs.from_objects,0)+
