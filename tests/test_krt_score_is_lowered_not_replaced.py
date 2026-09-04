@@ -58,7 +58,6 @@ def page_functions() -> str:
     # называет число правила в его единицах, `krtInt`/`krtPct` — оформление
     # подписи, а не арифметика балла.
     for name in ("krtVolumeShare", "krtTaskProfile", "krtFit", "krtIntent",
-                 "krtCountedValues", "krtQuantile", "krtModelScale",
                  "krtInt", "krtPct", "krtRenovation", "krtRuleValue",
                  "krtPenalty", "krtScoreSource", "krtScore", "krtScoreNote"):
         start = script.index(f"function {name}(")
@@ -78,9 +77,6 @@ def page_functions() -> str:
     # Якоря шкалы сняты с самого каталога и объявлены рядом с функцией.
     scale = script[script.index("const KRT_SCALE="):]
     out.insert(0, scale[:scale.index("};") + 2])
-    # Порог, ниже которого распределения нет и шкала остаётся абсолютной.
-    rows = script[script.index("const KRT_SCALE_MIN_ROWS="):]
-    out.insert(0, rows[:rows.index(";") + 1])
     return "\n".join(out)
 
 
@@ -159,7 +155,9 @@ def test_a_bad_project_still_keeps_a_distinguishable_number() -> None:
     got = score(model_with(0.60, -20.0, 0.40), {})
     assert got["cut"] <= 95
     assert got["score"] > 0, got
-    assert got["score"] < got["base"] * 0.3
+    # Одно снижение за экономику (не три сложенных) плюс два названных пола:
+    # мёртвый проект теряет больше половины потенциала, но остаётся числом.
+    assert got["score"] < got["base"] * 0.45
 
 
 def test_an_unpriced_ceiling_is_our_gap_and_costs_nothing() -> None:
@@ -234,8 +232,13 @@ def test_the_share_is_read_from_the_row_too() -> None:
     assert any("реновац" in g.lower() for g in got["gaps"]), got["gaps"]
 
 
-def test_the_scale_label_names_the_threshold_it_compares_with() -> None:
-    """«Ниже каталога» стояло у 137 из 153 — потому что нулевая точка это 90-й процентиль."""
+def test_the_economics_cut_is_one_and_names_the_banks_target() -> None:
+    """LLCR, маржа и слабейшая очередь — одно явление, и снижение за них одно.
+
+    Сложенные, три снижения снимали 60–95% у площадки, которая на каждом из
+    трёх лишь чуть ниже цели; порог — цель банка, а не процентиль каталога,
+    и он назван в подписи рядом со своим числом.
+    """
     catalogue = {f"s{index}": {"project_llcr_x": 1.00 + index * 0.05,
                                "margin_pct": 5.0 + index,
                                "weakest_phase_llcr_x": 0.80 + index * 0.03,
@@ -243,11 +246,16 @@ def test_the_scale_label_names_the_threshold_it_compares_with() -> None:
                  for index in range(10)}
     got = score(model_with(1.02, 6.0, 0.82),
                 {"entry_capacity_rub_per_sqm": 1000}, catalogue=catalogue)
-    scaled = [c["label"] for c in got["cuts"] if "верхней десятой части" in c["label"]]
-    assert scaled, got["cuts"]
-    assert all("ниже каталога" not in label for label in got["cuts"]), got["cuts"]
-    # Два числа рядом сравнимы, слово «ниже» само по себе — нет.
-    assert any("x" in label and "(" in label for label in scaled), scaled
+    economics = [c for c in got["cuts"] if "ниже цели банка" in c["label"]]
+    assert len(economics) == 1, got["cuts"]
+    label = economics[0]["label"]
+    assert "1,2x" in label and "1,02x" in label, label
+    # Два остальных показателя названы в той же подписи, а не сняты второй раз.
+    assert "маржинальность 6%" in label and "слабейшая очередь 0,82x" in label, label
+    assert all("каталога" not in c["label"] for c in got["cuts"]), got["cuts"]
+    # Балл площадки не зависит от того, кого пересчитали рядом.
+    alone = score(model_with(1.02, 6.0, 0.82), {"entry_capacity_rub_per_sqm": 1000})
+    assert alone["cut"] == got["cut"] and alone["score"] == got["score"]
 
 
 def test_every_deduction_says_what_it_is() -> None:

@@ -740,9 +740,13 @@ function krtFit(x){
  if(area>40)checks.push('крупная территория требует поэтапной проверки');
  if(volume===null)score=Math.min(score,45);
  score=Math.max(0,Math.min(100,Math.round(score)));
- const tone=score>=75?'ok':score>=50?'warn':'bad';
- const label=score>=75?'Высокое':score>=50?'Среднее':'Низкое';
- return{score,tone,label,reasons:reasons.slice(0,4),checks:checks.slice(0,3)};
+ // Ни объёма под задачу, ни общего объёма — потенциал не «низкий», а
+ // непосчитанный: ноль в колонке читается как «не оценивали», и подпись
+ // обязана сказать это словами, а не красить строку в «Низкое».
+ const known=volume!==null||share!==null;
+ const tone=!known?'':score>=75?'ok':score>=50?'warn':'bad';
+ const label=!known?'ТЭП не указан':score>=75?'Высокое':score>=50?'Среднее':'Низкое';
+ return{score,tone,label,known,reasons:reasons.slice(0,4),checks:checks.slice(0,3)};
 }
 // Балл площадки: потенциал по ТЭП, из которого маркетинг и движок ВЫЧИТАЮТ.
 // Прежде посчитанная модель балл не уточняла, а заменяла собой: в колонке
@@ -760,37 +764,21 @@ const KRT_PENALTIES=[
  {key:'weakest', field:'weakest_phase_llcr_x', max:10, from:1.00, to:0.80,
   label:'слабейшая очередь'},
 ];
-// Снижение за экономику меряется по САМОМУ каталогу, а не по абсолютным
-// порогам. Скрининг считает при нулевой цене входа и на общих предпосылках, и
-// на них почти у каждой площадки LLCR ниже 1,20x, а маржа ниже 15%: это
-// свойство наших предпосылок, а не признак площадки. Пока порог абсолютный,
-// весь список читается «Низкое», и сравнивать нечем (владелец, 02.09.2026:
-// «фильтры ни к черту»). Правило то же, что уже применено к шкале объёма:
-// якоря — десятый и девяностый процентили посчитанных строк.
-const KRT_SCALE_MIN_ROWS=8;
-function krtCountedValues(field){
- const out=[];
- Object.keys(state.krtRank||{}).forEach(slug=>{
-  const rank=state.krtRank[slug]||{}, model=(state.krtModels||{})[slug]||{};
-  const v=(model.metrics||{})[field]??rank[field];
-  if(v!==null&&v!==undefined&&Number.isFinite(Number(v)))out.push(Number(v));
- });
- return out.sort((a,b)=>a-b);
-}
-function krtQuantile(sorted,q){
- if(!sorted.length)return null;
- const at=(sorted.length-1)*q, low=Math.floor(at), high=Math.ceil(at);
- return low===high?sorted[low]:sorted[low]+(sorted[high]-sorted[low])*(at-low);
-}
-// Меньше восьми посчитанных строк — распределения нет, и процентиль по трём
-// числам был бы выдумкой: остаются абсолютные пороги, и это сказано в подписи.
-function krtModelScale(rule){
- const values=krtCountedValues(rule.field);
- if(values.length<KRT_SCALE_MIN_ROWS)return null;
- const to=krtQuantile(values,0.10), from=krtQuantile(values,0.90);
- if(to===null||from===null||!(from>to))return null;
- return {from:from,to:to};
-}
+// Снижение за экономику меряется порогами БАНКА, а не процентилями каталога.
+// Относительная шкала (десятый и девяностый процентили посчитанных строк,
+// 02.09.2026) красила список в «Низкое» по построению: нулевая точка —
+// девяностый процентиль, значит девять площадок из десяти снижены всегда,
+// какой бы ни была их экономика; на проде 04.09.2026 «Низкое» стояло у 151
+// посчитанной площадки из 155. И балл площадки менялся от того, что
+// пересчитали соседей. Вопрос владельца — «хороший ли это КРТ», а не «в
+// верхней ли он десятой части»: на него отвечают пороги банка — LLCR 1,20x
+// и маржа 15% как цель, 0,90x и ноль как дно. Полимерная ул. с 1,29x и 21%
+// не снижается вовсе; Варшавское ш., вл. 37 с 1,01x и 1% теряет четверть.
+//
+// И снижение одно, а не три: LLCR, маржа и слабейшая очередь — одно явление
+// (экономика площадки на общих предпосылках), и сложенные они снимали 60–95%
+// у площадки, которая на каждом из трёх лишь чуть ниже цели. Берётся самое
+// большое из трёх, остальные два названы в его подписи.
 // Чьё это КРТ и не занято ли оно. Читается из проекта решения и карточки —
 // разбор на сервере, здесь только показ. Признак приходит вместе с цитатой:
 // список слов это поиск, а не утверждение, и «не найдено» это не «нет».
@@ -1085,20 +1073,20 @@ function krtScore(x){
     points:Math.min(25,Math.max(1,Math.round(reno.share*100)))});
  }
  if(counted){
-  [[llcr,KRT_PENALTIES[0]],[margin,KRT_PENALTIES[1]],[weakest,KRT_PENALTIES[2]]].forEach(([v,rule])=>{
-   const scale=krtModelScale(rule);
-   let points=krtPenalty(v,rule,scale);
-   // «Ниже каталога» стояло у 137 площадок из 153 — потому что нулевая точка
-   // шкалы это ДЕВЯНОСТЫЙ процентиль, а не середина. Читалось это как «хуже
-   // каталога», то есть как приговор большинству; на деле сказано «не в
-   // верхней десятой части». Подпись называет и порог, и своё число: два
-   // числа рядом сравнимы, слово «ниже» само по себе — нет.
-   let label=rule.label+(scale
-    ?' '+krtRuleValue(rule,v)+' — ниже верхней десятой части каталога ('
-      +krtRuleValue(rule,scale.from)+')'
-    :'');
-   if(points>0)cuts.push({label:label,points:points});
-  });
+  // Одно снижение за экономику — самое большое из трёх; подпись называет
+  // порог и своё число (два числа рядом сравнимы, слово «ниже» само по себе —
+  // нет), а два остальных показателя стоят в ней же.
+  const economics=[[llcr,KRT_PENALTIES[0]],[margin,KRT_PENALTIES[1]],[weakest,KRT_PENALTIES[2]]]
+   .map(([v,rule])=>({rule:rule,value:v,points:krtPenalty(v,rule,null)}))
+   .sort((a,b)=>b.points-a.points);
+  const lead=economics[0];
+  if(lead&&lead.points>0){
+   const rest=economics.slice(1).filter(e=>e.value!==null&&e.value!==undefined&&Number.isFinite(Number(e.value)))
+    .map(e=>e.rule.label+' '+krtRuleValue(e.rule,e.value)).join(', ');
+   cuts.push({label:lead.rule.label+' '+krtRuleValue(lead.rule,lead.value)
+    +' — ниже цели банка '+krtRuleValue(lead.rule,lead.rule.from)
+    +(rest?' (учтено одним снижением: '+rest+')':''),points:lead.points});
+  }
   // Пол абсолютный и стоит ОТДЕЛЬНОЙ строкой, а не поднимает относительную.
   // Написанный как `Math.max(points,20)`, он не срабатывал ни разу там, где
   // нужен: у самой плохой площадки относительная шкала уже даёт максимум
@@ -1124,8 +1112,8 @@ function krtScore(x){
  // Доля сохраняет порядок: 80% снятого от 78 — это 16, а от 100 — 20.
  const cut=Math.min(95,cuts.reduce((sum,c)=>sum+c.points,0));
  const score=Math.max(0,Math.min(100,Math.round(fit.score*(1-cut/100))));
- const tone=score>=75?'ok':score>=50?'warn':'bad';
- const label=score>=75?'Высокое':score>=50?'Среднее':'Низкое';
+ const tone=fit.known===false?'':score>=75?'ok':score>=50?'warn':'bad';
+ const label=fit.known===false?'ТЭП не указан':score>=75?'Высокое':score>=50?'Среднее':'Низкое';
  // Пробел, который не снижает балл, обязан быть виден: молча снятое снижение
  // читается как «всё в порядке», а это «мы не знаем».
  const gaps=[];
