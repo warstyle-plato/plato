@@ -6,11 +6,17 @@
 вовсе. Число в их строке — площадь подземного этажа, то есть другая величина
 под тем же именем, а «Итого» складывало обе.
 
-Деньги при этом не двигаются: CAPEX считается на своих базах (`core_above_gns`
-и `core_under_gns`), `project_gns_sqm` не читает ни одна статья — ни в движке,
-ни в книге, где `ТЭП!C36` читает единственная ячейка `ОТЧЕТ!G6`, и её саму не
-читает никто. Поэтому правка — подпись, а не методика: звёздочка на подземных
-строках, разложенный итог и сноска.
+«Вообще по-хорошему убрать, у неё своя экономика подземелья» (там же). Убрано
+по существу: `project_gns_sqm` — наземная площадь, подземная стоит рядом своим
+числом, строительный объём — их сумма, и он назван там, где считается: общие
+статьи (ИРД, проектирование, подготовка, сети, благоустройство, сдача,
+содержание) идут от него, и подписи их ставок это говорят.
+
+Деньги при этом не двигаются: CAPEX считается на своих базах (`core_above_gns`,
+`core_under_gns`, их сумма), `project_gns_sqm` не читает ни одна статья — ни в
+движке, ни в книге, где `ТЭП!C36` читает единственная ячейка `ОТЧЕТ!G6`, и её
+саму не читает никто. Двигаются удельные: полная себестоимость на метр 307,2
+вместо 240,7 на умолчаниях — это и есть смысл правки.
 
 Разложение берётся у движка (`core_under_gns`): второй счёт той же величины на
 экране однажды разошёлся бы с первым, и обе строки выглядели бы верными.
@@ -78,7 +84,7 @@ def test_the_screen_does_not_add_up_the_underground_itself() -> None:
     piece = _renderer()
     assert "r.tep.core_under_gns" in piece
     assert not re.search(r"UNDERGROUND_PRODUCTS\.includes\([^)]*\)\s*\?\s*sum", piece)
-    head = piece[:piece.index("const underMark")]
+    head = piece[:piece.index("const isUnder")]
     assert "reduce" not in head and "forEach" not in head, (
         "подземная часть суммируется на экране — это второй счёт той же величины")
 
@@ -182,16 +188,50 @@ def test_in_a_real_browser_the_table_names_both_bases() -> None:
         return float(text.replace("\xa0", "").replace("&nbsp;", "")
                      .replace(" ", "").replace(",", "."))
 
-    split = re.search(r"наземная ([\d\s&nbsp;\xa0,\.]+?) · подземная ([\d\s&nbsp;\xa0,\.]+?)</span>", table)
-    assert split, "итог не называет наземную и подземную части"
-    above, under = number(split.group(1)), number(split.group(2))
-    total = re.search(r"Итого — строительный объём</th><th>([\d\s&nbsp;\xa0,\.]+?)<", table)
-    assert total, "итог не подписан строительным объёмом"
-    assert above + under == pytest.approx(number(total.group(1)), rel=1e-6), (
-        above, under, total.group(1))
+    assert "ГНС наземная, м²" in table and "Подземная, м²" in table, (
+        "колонка не разделена — две величины под одним именем")
+    foot = table[table.index("<tfoot>"):]
+    totals = re.findall(r"<th>([\d\s&nbsp;\xa0,\.]+?)</th>", foot)
+    assert len(totals) >= 2, foot
+    above, under = number(totals[0]), number(totals[1])
     assert under > 0, "проверять нечего: на умолчаниях подземной части нет"
 
-    marked = re.findall(r"<tr><td>([^<]+)</td><td>([\d\s&nbsp;\xa0,\.]+?)\*</td>", table)
-    assert marked, "подземная строка не помечена звёздочкой"
-    assert sum(number(value) for _, value in marked) == pytest.approx(under, rel=1e-6), marked
-    assert "наземная площадь" in note and "суммарной поэтажной" in note, note
+    volume = re.search(r"Строительный объём — ([\d\s&nbsp;\xa0,\.]+?) м²", note)
+    assert volume, note
+    assert above + under == pytest.approx(number(volume.group(1)), rel=1e-6), (
+        above, under, volume.group(1))
+    assert "наземной ГНС" in note and "суммарной поэтажной" in note, note
+
+
+def test_the_base_of_the_unit_figures_is_the_above_ground_area() -> None:
+    """`project_gns_sqm` — наземная; обе половины стоят рядом с ней."""
+    summary = _report()["summary"]
+    above = float(summary["project_gns_sqm"])
+    under = float(summary["underground_gns_sqm"])
+    volume = float(summary["construction_volume_sqm"])
+    assert under > 0, "проверять нечего: на умолчаниях подземной части нет"
+    assert above + under == pytest.approx(volume)
+    assert above == pytest.approx(volume - under)
+    # Удельные считаются на наземной, а не на объёме: иначе правка не сделана.
+    expenses = float(summary["total_expenses"])
+    assert summary["full_cost_per_gns_th"] != pytest.approx(expenses / volume / 1000, rel=1e-9)
+
+
+def test_the_shared_rates_say_they_are_on_the_construction_volume() -> None:
+    """Ставки общих статей умножаются на объём — подпись обязана это сказать.
+
+    Ловушка ровно здесь: статья считается от `core_total_gns` (наземная плюс
+    подземная), а подсказка звала базу «ГНС». После того как ГНС стала
+    наземной, человек вписал бы ставку на наземный метр, а движок применил бы
+    её к объёму, который на пятую часть больше.
+    """
+    hints = {name: hint for _group, fields in core.FIELD_GROUPS
+             for name, _title, hint, *_rest in fields}
+    for key in ("ird_th_per_sqm", "design_p_th_per_sqm", "design_rd_th_per_sqm",
+                "preparation_th_per_sqm", "utilities_th_per_sqm",
+                "landscaping_th_per_sqm", "commissioning_th_per_sqm",
+                "site_maintenance_th_per_sqm"):
+        assert "строительного объёма" in hints[key], (key, hints[key])
+    # У СМР базы свои, и они названы своими именами.
+    assert "наземной части" in hints["main_above_th_per_sqm"]
+    assert "подземной части" in hints["main_under_th_per_sqm"]
