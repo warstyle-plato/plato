@@ -135,6 +135,129 @@ def rename_sheet_refs(xml: str, old: str = ENTRY_SHEET, new: str = PARAMS_SHEET)
     return xml
 
 
+
+GUIDE_SHEET = "ИНСТРУКЦИЯ"
+
+
+def guide(entry: str, params: str, styles: str, report: dict[str, Any],
+          missing: list[str] | None = None) -> str:
+    """Лист «как заполнять» — собранный из самой книги, а не написанный рядом.
+
+    «Объясни инструкцией, что где вводить, а Эксель можно и где» (владелец,
+    04.09.2026). Написать это текстом значило бы завести вторую правду о
+    книге: разделы переименуют, ячейка переедет, а инструкция останется
+    прежней и будет читаться как верная — ровно то, чем оказалась оговорка
+    «кадастровых номеров у площадки нет».
+
+    Поэтому здесь нет ни одного числа и ни одного названия раздела, взятого
+    из головы: разделы читаются с листа ввода, цвета — из стилей шаблона,
+    счёт переехавшего — из отчёта о переносе, а «чего не хватает» — из того
+    же `missing`, который книга и так показывает.
+    """
+    smap = style_map(styles)
+    entry_rows = scan(entry)
+    header_ids = _header_styles(styles)
+    # Заголовков у раздела два и они соседние: имя раздела и шапка колонок
+    # («Показатель | Значение | Ед. изм.»). Разделом считается первый —
+    # шапка колонок в оглавлении читалась бы как ещё пять разделов с одним и
+    # тем же именем.
+    marked: list[tuple[int, str]] = []
+    for number in sorted(entry_rows):
+        if number <= 3:  # первые строки листа ввода — его собственная шапка
+            continue
+        cell = entry_rows[number].get("A")
+        if not cell:
+            continue
+        title = cell_text(cell["attrs"], cell["body"], [])
+        if not title:
+            continue
+        if cell["style"] in header_ids or (title == title.upper() and len(title) > 6):
+            marked.append((number, title))
+    sections: list[tuple[int, str]] = []
+    for index, (number, title) in enumerate(marked):
+        if index and number == marked[index - 1][0] + 1:
+            continue  # шапка колонок своего раздела
+        sections.append((number, title))
+
+    lines: list[tuple[str, str]] = [
+        ("Куда печатать", f"Только на лист «{ENTRY_SHEET}». Это единственное место "
+                          "ввода в книге."),
+        ("Где считается", f"Лист «{PARAMS_SHEET}» и все листы за ним. Там стоят "
+                          "формулы шаблона; вписанное туда число стирает формулу, "
+                          "и книга дальше считает по нему."),
+        ("Как отличить", "Цвет — утверждение о ячейке, а не украшение. "
+                         "Синий шрифт на жёлтой заливке — печатают руками. "
+                         "Зелёный на голубой — считается формулой. "
+                         "Белый жирный на тёмно-синем — заголовок."),
+        ("Что стоит на прежних местах",
+         f"На «{PARAMS_SHEET}» вместо каждой вводной осталась ссылка на лист "
+         f"«{ENTRY_SHEET}»: адреса не двигались, и ни одна формула книги не "
+         "сломалась. Править ссылку незачем — правьте то, на что она смотрит."),
+        ("Когда пересчитывается",
+         "Excel считает книгу при открытии, дальше — сразу после правки. "
+         "F9 пересчитывает вручную."),
+        ("Куда смотреть после",
+         "«ОТЧЕТ» — итог, «Дашборд» — картинки, «ПРОВЕРКИ» — сходимость. "
+         "MODEL STATUS в B3 «ПРОВЕРОК» — общий вердикт, «Статус» построчно: "
+         "FAIL значит, что книга сама с собой не согласна, и число из «ОТЧЕТ» "
+         "брать нельзя, пока он не пройден."),
+    ]
+
+    out: list[str] = []
+    at = 1
+    head = smap.get("entry_default")
+
+    def row(cells: str) -> None:
+        nonlocal at
+        out.append(f'<x:row r="{at}">' + cells + "</x:row>")
+        at += 1
+
+    row(_text_cell(f"A{at}", "DEVELOPAID · КАК ЗАПОЛНЯТЬ КНИГУ", None))
+    row(_text_cell(f"A{at}", "Собрано из самой книги: разделы прочитаны с листа "
+                             "ввода, цвета — из стилей шаблона. Второй правды о "
+                             "книге здесь нет.", None))
+    at += 1
+
+    row(_text_cell(f"A{at}", "ПРАВИЛА", None))
+    for name, text in lines:
+        row(_text_cell(f"A{at}", name, None) + _text_cell(f"B{at}", text, None))
+    at += 1
+
+    row(_text_cell(f"A{at}", "РАЗДЕЛЫ ЛИСТА ВВОДА", None))
+    row(_text_cell(f"A{at}", "Раздел", None) + _text_cell(f"B{at}", "Строки", None))
+    for index, (number, title) in enumerate(sections):
+        end = (sections[index + 1][0] - 1) if index + 1 < len(sections) else max(entry_rows)
+        row(_text_cell(f"A{at}", title, None)
+            + _text_cell(f"B{at}", f"{number}–{end}", None))
+    at += 1
+
+    row(_text_cell(f"A{at}", "СКОЛЬКО ЯЧЕЕК", None))
+    row(_text_cell(f"A{at}", "Переехало на лист ввода", None)
+        + _text_cell(f"B{at}", str(report.get("moved", 0)), None))
+    row(_text_cell(f"A{at}", "Перекрашено (была жёлтой, стала формулой)", None)
+        + _text_cell(f"B{at}", str(report.get("restyled", 0)), None))
+    at += 1
+
+    row(_text_cell(f"A{at}", "ЧЕГО КНИГА НЕ СЧИТАЕТ", None))
+    left = list(missing or [])
+    if left:
+        row(_text_cell(f"A{at}", "Движок сообщил при сборке:", None))
+        for item in left[:40]:
+            row(_text_cell(f"A{at}", str(item)[:300], None))
+    else:
+        row(_text_cell(f"A{at}", "Всё, что движок умеет писать в книгу, в неё "
+                                 "попало: список несобранного пуст.", None))
+    row(_text_cell(f"A{at}", "Отдельно: нормативов города, справочника районов и "
+                             "расчёта ГлавАПУ в книге нет — их считает сервис, а "
+                             "в книгу приезжает результат.", None))
+
+    return ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<x:worksheet xmlns:x="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+            '<x:cols><x:col min="1" max="1" width="46" customWidth="1"/>'
+            '<x:col min="2" max="2" width="96" customWidth="1"/></x:cols>'
+            "<x:sheetData>" + "".join(out) + "</x:sheetData></x:worksheet>")
+
+
 def _header_styles(styles: str) -> set[int]:
     """Заголовок раздела: белый жирный на тёмно-синем."""
     fills = _fill_ids(styles, "1F4E78") | _fill_ids(styles, "17365D")
@@ -218,17 +341,34 @@ def plan(sheet: str, styles: str) -> dict[str, Any]:
 
     # Заголовок раздела едет вместе со своими строками: без него список
     # вводных читается как одна простыня.
+    #
+    # Заголовков у раздела ДВА и они соседние — имя («СДЕЛКА, НАЛОГИ И
+    # ФИНАНСИРОВАНИЕ») и шапка колонок («Показатель | Значение | Ед. изм.»).
+    # Пока каждый решал за себя, шапка становилась границей для имени над ней:
+    # первая вводная лежит ПОСЛЕ шапки, значит «до следующего заголовка» у
+    # имени вводных не было, и на лист ввода уезжала только шапка. Выходило
+    # сто строк подписей и пять «Показатель» без единого названия раздела —
+    # ровно то, из-за чего «хер поймёшь, куда вбивать». Подряд идущие
+    # заголовки — один заголовок, и решают они вместе.
+    # Шапка горизонтальной таблицы очередей сюда не идёт: сама таблица
+    # переворачивается и уезжает своим блоком ниже, а её «ID | Вкл. |
+    # Наименование» без неё — заголовок без таблицы.
     header_rows = [number for number in sorted(rows)
-                   if number not in TITLE_ROWS
+                   if number not in TITLE_ROWS and number != QUEUE_HEADER_ROW
                    and (rows[number].get("A") or rows[number].get("J"))
                    and (rows[number].get("A") or rows[number].get("J"))["style"] in headers]
+    groups: list[list[int]] = []
+    for number in header_rows:
+        if groups and number == groups[-1][-1] + 1:
+            groups[-1].append(number)
+        else:
+            groups.append([number])
     wanted = set(keep)
-    for header in header_rows:
-        following = [number for number in keep if number > header]
-        nearer = [other for other in header_rows if other > header]
-        limit = min(nearer) if nearer else 10 ** 9
+    for index, group in enumerate(groups):
+        following = [number for number in keep if number > group[-1]]
+        limit = groups[index + 1][0] if index + 1 < len(groups) else 10 ** 9
         if following and min(following) < limit:
-            wanted.add(header)
+            wanted.update(group)
 
     queue_header = rows.get(QUEUE_HEADER_ROW, {})
     queue_columns: list[str] = []

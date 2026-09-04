@@ -71,7 +71,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.21.91"
+VERSION = "0.21.92"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -14920,6 +14920,8 @@ def _v4_note_cell(xml: str, value_coord: str, text: str) -> tuple[str, bool]:
 # нельзя — шаблон нумерует листы своими sheetN.xml.
 _V4_ENTRY_SHEET_PATH = "xl/worksheets/sheetEntry.xml"
 _V4_ENTRY_REL_ID = "RidEntryInputs0001"
+_V4_GUIDE_SHEET_PATH = "xl/worksheets/sheetGuide.xml"
+_V4_GUIDE_REL_ID = "RidEntryGuide0001"
 
 
 def _v4_workbook_with_entry(workbook: str, add: bool) -> str:
@@ -14937,10 +14939,15 @@ def _v4_workbook_with_entry(workbook: str, add: bool) -> str:
     if not add:
         return workbook
     workbook = _v4_sheet_moved_behind(workbook, v4_entry_sheet.PARAMS_SHEET, "Дашборд")
+    namespace = 'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"'
+    # Инструкция стоит второй — сразу за листом, о котором она. Первой её
+    # ставить нельзя: книгу открывают, чтобы печатать, а не читать инструкцию,
+    # и первый лист — тот, с которого начинают работу.
+    guide = (f'<x:sheet name="{v4_entry_sheet.GUIDE_SHEET}" sheetId="901" '
+             f'r:id="{_V4_GUIDE_REL_ID}" {namespace} />')
     entry = (f'<x:sheet name="{v4_entry_sheet.ENTRY_SHEET}" sheetId="900" '
-             f'r:id="{_V4_ENTRY_REL_ID}" '
-             'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" />')
-    return workbook.replace("<x:sheets>", "<x:sheets>" + entry, 1)
+             f'r:id="{_V4_ENTRY_REL_ID}" {namespace} />')
+    return workbook.replace("<x:sheets>", "<x:sheets>" + entry + guide, 1)
 
 
 def _v4_sheet_moved_behind(workbook: str, name: str, after: str) -> str:
@@ -14961,16 +14968,20 @@ def _v4_sheet_moved_behind(workbook: str, name: str, after: str) -> str:
 
 
 def _v4_rels_with_entry(rels: str) -> str:
-    link = ('<Relationship Type="http://schemas.openxmlformats.org/officeDocument/2006/'
-            'relationships/worksheet" Target="/' + _V4_ENTRY_SHEET_PATH + '" '
-            f'Id="{_V4_ENTRY_REL_ID}" />')
-    return rels.replace("</Relationships>", link + "</Relationships>", 1)
+    links = "".join(
+        '<Relationship Type="http://schemas.openxmlformats.org/officeDocument/2006/'
+        'relationships/worksheet" Target="/' + path + '" ' + f'Id="{rel}" />'
+        for path, rel in ((_V4_ENTRY_SHEET_PATH, _V4_ENTRY_REL_ID),
+                          (_V4_GUIDE_SHEET_PATH, _V4_GUIDE_REL_ID)))
+    return rels.replace("</Relationships>", links + "</Relationships>", 1)
 
 
 def _v4_types_with_entry(types: str) -> str:
-    override = ('<Override PartName="/' + _V4_ENTRY_SHEET_PATH + '" ContentType='
-                '"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml" />')
-    return types.replace("</Types>", override + "</Types>", 1)
+    overrides = "".join(
+        '<Override PartName="/' + path + '" ContentType='
+        '"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml" />'
+        for path in (_V4_ENTRY_SHEET_PATH, _V4_GUIDE_SHEET_PATH))
+    return types.replace("</Types>", overrides + "</Types>", 1)
 
 
 def _v4_sheet_path(archive: zipfile.ZipFile, name: str) -> str:
@@ -17728,6 +17739,16 @@ def build_project_workbook(
         missing.append("Вводные · лист ввода не собран: " + _error_location(exc))
     if entry_xml and not entry_report.get("moved"):
         missing.append("Вводные · на лист ввода не переехало ни одной ячейки")
+    # Инструкция собирается ПОСЛЕ всего: она читает готовый лист ввода и
+    # `missing` целиком. Написанная раньше, она обещала бы книгу, которой ещё
+    # нет, — и разошлась бы с ней ровно тем, что добавили следом.
+    guide_xml = ""
+    if entry_xml:
+        try:
+            guide_xml = v4_entry_sheet.guide(entry_xml, xml, styles_xml,
+                                             entry_report, missing)
+        except Exception as exc:  # noqa: BLE001 — молчащая инструкция хуже отсутствующей
+            missing.append("Вводные · лист инструкции не собран: " + _error_location(exc))
 
     out = io.BytesIO()
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
@@ -17779,6 +17800,7 @@ def build_project_workbook(
             archive.writestr(item, payload)
         if entry_xml:
             archive.writestr(_V4_ENTRY_SHEET_PATH, entry_xml.encode("utf-8"))
+            archive.writestr(_V4_GUIDE_SHEET_PATH, guide_xml.encode("utf-8"))
     source.close()
     if _ladder_steps and not _ladder_swapped:
         # Ступени заданы, а формулы не тронуты — книга посчитает по одной
