@@ -24,7 +24,10 @@ from auction_search import api as auction_api  # noqa: E402
 
 def test_the_row_says_draft_and_not_decision():
     source = Path(auction_api.__file__).read_text(encoding="utf-8")
-    assert '"status": "Проект решения",' in source
+    # Слова каталога у такой строки нет вовсе — карточки ещё не существует, —
+    # а вид её объявлен на сервере один раз. Пока вид выводил экран, отбор по
+    # статусу перестал её находить (см. test_the_krt_filters_actually_filter).
+    assert '"status_kind": "draft",' in source
     assert '"draft_decision_at"' in source
     assert '"status": "Решение опубликовано"' not in source, \
         "проект решения назван принятым решением"

@@ -72,7 +72,10 @@ def _sorted_by(key: str, direction: int) -> list[str]:
     program = (
         f"const state={{krtRank:{json.dumps(RANK)},krtRequirements:{{}},krtModels:{{}},"
         f"krtSort:{{key:{json.dumps(key)},dir:{direction}}}}};\n"
-        "function krtScore(x){return {score:Number(x.housing_gfa_sqm)||0}}\n"
+        "function krtScore(x){return {score:Number(x.housing_gfa_sqm)||0,known:true}}\n"
+        # Известна ли величина строки — один ответ на всю страницу: у карточки
+        # со съехавшим разбором её значений нет и в сортировке тоже.
+        + _function("krtBroken") + "\n" + _function("krtNumber") + "\n"
         + _function("krtValue") + "\n" + _function("krtCompare") + "\n"
         + f"const rows={json.dumps(SITES)}.slice().sort(krtCompare);\n"
         "console.log(JSON.stringify({names:rows.map(r=>r.slug)}));"

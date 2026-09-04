@@ -57,6 +57,7 @@ from auction_search.profile_fit import profile_fit
 from auction_search.service import AuctionSearchService
 from auction_search.ui import auctions_page
 from market_search.krt_registry import CATALOGUE_URL, KrtRegistry
+from market_search import krt_decision_tep
 from market_search import cabinet as market_cabinet
 from market_search.geocoder import GeocodingError
 from market_search.http import RemoteServiceError
@@ -703,6 +704,23 @@ def install(app: FastAPI) -> None:
             "document_access": "public_first_optional_service_account_session",
         }
 
+    # Виды статуса каталога. Город пишет два слова о стройке — «Планируемый» и
+    # «В реализации», — а третий вид у нас свой: у площадки, известной только
+    # проектом решения, карточки нет и статуса каталога не существует вовсе.
+    # Слово источника при этом остаётся словом источника: вид считается ОТ него,
+    # а не подменяет его на экране.
+    def _krt_status_kind(status: Any) -> str:
+        word = str(status or "").strip().casefold()
+        if not word:
+            return "draft"
+        if "планируем" in word:
+            return "planned"
+        if "реализац" in word:
+            return "running"
+        # Разбор карточки съехал на поле: статусом стал хвост адреса. Такой
+        # строке вид не присваивается — «не разобрано» не третий статус.
+        return "unparsed"
+
     @app.get("/auctions/krt")
     async def auction_krt_catalogue(refresh: bool = False) -> dict[str, Any]:
         """Каталог площадок КРТ. `refresh` — нажатая человеком кнопка.
@@ -734,7 +752,14 @@ def install(app: FastAPI) -> None:
         projects = [
             {**row,
              "first_seen_at": seen.get(str(row.get("slug") or "")) or 0,
-             "is_new": krt_ranking.is_new(seen.get(str(row.get("slug") or "")))}
+             "is_new": krt_ranking.is_new(seen.get(str(row.get("slug") or ""))),
+             # Вид статуса объявляется ЗДЕСЬ и один раз. Экран прежде выводил
+             # его сам из слова города, и когда сюда добавилась строка «Проект
+             # решения», выбор «Статус: проект решения» перестал давать хоть
+             # что-нибудь: фильтр искал пустое слово, а в строке стояло слово
+             # (владелец, 04.09.2026: «Статус проект решения вообще не даёт
+             # ничего»). Перечисление в двух местах расходится молча.
+             "status_kind": _krt_status_kind(row.get("status"))}
             for row in projects
         ]
         # Что карточка города говорит о застройщике и реновации — бесплатный
@@ -799,6 +824,7 @@ def install(app: FastAPI) -> None:
         # назвать его принятым значит показать стадию, которой не наступало.
         # Зато это самый ранний сигнал из всех: до торгов остаётся время.
         decision_rows: list[dict[str, Any]] = []
+        tep_state: dict[str, Any] | None = None
         reader = getattr(krt_registry, "decisions", None)
         if callable(reader):
             try:
@@ -813,26 +839,67 @@ def install(app: FastAPI) -> None:
             # только датой документа, а не наличием карточки.
             by_slug = {str(one.get("slug") or ""): one
                        for one in (found.get("matched_rows") or [])}
+            # ТЭП, вынутый из самих PDF. У площадки без карточки это её
+            # единственные цифры; у площадки с карточкой — самопроверка пары
+            # «решение ↔ карточка», и расхождение называется, а не заменяет
+            # собой каталог.
+            tep_by_document = found.get("tep") or {}
+            tep_state = found.get("tep_coverage")
+            # Недостающие решения дочитываются фоном и порциями — как карточки
+            # города: три сотни PDF подряд это налёт на mos.ru, а не чтение.
+            tep_filler = getattr(krt_registry, "fill_decision_tep_in_background", None)
+            if callable(tep_filler) and found.get("tep_pending"):
+                try:
+                    tep_filler(found.get("tep_pending") or [])
+                except Exception:  # noqa: BLE001
+                    logger.exception("KRT decision TEP fill failed")
             if by_slug:
                 projects = [
                     {**row,
                      "draft_decision_at": (by_slug.get(str(row.get("slug") or "")) or {}).get("published_at") or 0,
-                     "draft_decision_url": (by_slug.get(str(row.get("slug") or "")) or {}).get("url") or ""}
+                     "draft_decision_url": (by_slug.get(str(row.get("slug") or "")) or {}).get("url") or "",
+                     "decision_tep_check": krt_decision_tep.catalogue_mismatch(
+                         tep_by_document.get(str((by_slug.get(str(row.get("slug") or "")) or {}).get("id") or "")) or {},
+                         row)}
                     for row in projects
                 ]
             for one in (found.get("decisions") or []):
-                decision_rows.append({
-                    "slug": "decision:" + str(one.get("id") or ""),
+                document_id = str(one.get("id") or "")
+                # Цифры площадки без карточки берутся из её решения: прежде их
+                # не было вовсе, и карточка писала «Оценка Платона: 0/100 · ТЭП
+                # не указан» при опубликованном на mos.ru PDF с площадью,
+                # предельной СПП и площадью квартир (владелец, 04.09.2026).
+                # Ноль в решении — ответ города («строить нельзя»), поэтому
+                # берётся `is not None`, а не истинность значения.
+                tep = tep_by_document.get(document_id) or {}
+                row = {
+                    "slug": "decision:" + document_id,
                     "name": str(one.get("address") or one.get("title") or ""),
                     "okrug": one.get("okrug") or "",
                     "district": "",
-                    "status": "Проект решения",
+                    "status": "",
+                    "status_kind": "draft",
                     "url": one.get("url"),
                     "no_card": True,
                     "krt_kind": one.get("kind") or "",
                     "draft_decision_at": one.get("published_at") or 0,
+                    "draft_decision_url": one.get("url") or "",
                     "department": one.get("department") or "",
-                })
+                    # Чем прочитано — часть ответа: «решение не прочитано» и
+                    # «в решении величина не названа» — разные ответы, и ни
+                    # один из них не «ноль».
+                    "tep_source": ("decision" if tep.get("read") else
+                                   "decision_silent" if tep.get("available") else ""),
+                    "tep_document_url": tep.get("pdf_url") or "",
+                }
+                for key in ("area_ha", "total_gfa_sqm", "housing_gfa_sqm",
+                            "nonresidential_gfa_sqm"):
+                    if tep.get(key) is not None:
+                        row[key] = tep[key]
+                for key in ("flats_sqm", "nonresidential_ground_sqm"):
+                    if tep.get(key) is not None:
+                        row[key] = tep[key]
+                decision_rows.append(row)
             projects = projects + decision_rows
         return {
             "source": CATALOGUE_URL,
@@ -850,6 +917,10 @@ def install(app: FastAPI) -> None:
             "new_for_days": NEW_FOR_SECONDS // 86400,
             # Охват карточек города: прочитано, не ответило и по какой причине.
             "cards_state": cards_state,
+            # Сколько решений mos.ru прочитано ради их ТЭП: пустая колонка без
+            # этого числа читается как «в решении цифр нет», а это чаще наш
+            # пробел чтения.
+            "decision_tep_state": tep_state,
             "projects": projects,
         }
 

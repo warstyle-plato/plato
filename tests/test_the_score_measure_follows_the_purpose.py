@@ -78,6 +78,9 @@ def _scores(purpose: str) -> dict:
         block("const KRT_SCALE=", "};"),
         func("krtVolumeShare"),
         func("krtTaskProfile"),
+        # Величина строки известна или нет — один ответ на всю страницу.
+        func("krtBroken"),
+        func("krtNumber"),
         func("krtFit"),
         "console.log(JSON.stringify(Object.fromEntries("
         "SITES.map(x=>[x.slug,krtFit(x).score]))));",

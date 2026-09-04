@@ -216,7 +216,12 @@ def test_a_draft_decision_can_be_chosen_by_status() -> None:
     page = (Path(__file__).resolve().parent.parent / "auction_search" / "ui.py").read_text("utf-8")
     assert '<option value="draft">Проект решения</option>' in page, \
         "проект решения нельзя выбрать в списке статусов"
-    assert "if(status==='draft'){ if(x.status)return false; }" in page, \
+    assert "if(status&&krtStatusKind(x)!==status)return false;" in page, \
         "выбор «проект решения» не отбирает площадки без статуса каталога"
+    # Вид статуса — один ответ, приходящий с сервера. Пока его выводил экран,
+    # а сервер писал в строку слово, выбор давал ноль строк из 298 (владелец,
+    # 04.09.2026). Отбор нажатием проверяет test_the_krt_filters_actually_filter.
+    assert "function krtStatusKind(x){" in page
+    assert "if(x.status_kind)return x.status_kind;" in page
     # Прочерк на месте статуса читался как пробел в данных, а это ответ.
-    assert "x.draft_decision_at?'Проект решения':'—'" in page
+    assert "kind==='draft'?'Проект решения'" in page

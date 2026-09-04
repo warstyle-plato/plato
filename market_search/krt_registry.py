@@ -14,7 +14,7 @@ import time
 from dataclasses import asdict, dataclass, replace
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 from urllib.parse import urljoin
 
 from .http import RemoteServiceError, fresh, load_json, request_bytes, save_json
@@ -39,6 +39,9 @@ CACHE_SCHEMA_VERSION = 3
 REQUIREMENTS_CACHE_SCHEMA_VERSION = 3
 # Разбор карточки версионируется отдельно: он меняется чаще требований.
 CARD_FACTS_SCHEMA_VERSION = 1
+# ТЭП, вынутый из PDF проекта решения. Своя версия: разбор правится
+# отдельно от разбора карточки, и общая версия обесценивала бы чужое.
+DECISION_TEP_SCHEMA_VERSION = 1
 DECISIONS_CACHE_SCHEMA_VERSION = 2
 TENDERS_CACHE_SCHEMA_VERSION = 1
 MAP_CACHE_SCHEMA_VERSION = 1
@@ -304,6 +307,11 @@ class KrtRegistry:
         # Разобранная карточка каталога: застройщик и реновация. Лежит рядом с
         # требованиями и по тому же правилу — хранится разобранное, не страница.
         self.card_facts_dir = Path(data_dir) / "krt" / "cards"
+        # ТЭП из PDF проекта решения — единственные цифры площадки, у которой
+        # карточки в каталоге ещё нет. Хранится разобранное, а не документ: 298
+        # решений × полтора мегабайта PDF — это диск, который у нас уже
+        # кончался молча.
+        self.decision_tep_dir = Path(data_dir) / "krt" / "decision_tep"
         # Контур площадки, собранный из участков ЕГРН по перечню проекта
         # решения, — для тех, кого нет в файле карты реестра. Участки ЕГРН не
         # двигаются, поэтому срок неделя; неответ ЕГРН помнится полчаса.
@@ -320,6 +328,8 @@ class KrtRegistry:
         self._decisions_lock = threading.Lock()
         self._cards_filling = False
         self._cards_lock = threading.Lock()
+        self._tep_filling = False
+        self._tep_lock = threading.Lock()
 
     def projects(self, *, refresh: bool = False, max_pages: int = 100) -> list[KrtTerritory]:
         cached = load_json(self.path)
@@ -614,6 +624,164 @@ class KrtRegistry:
         threading.Thread(target=run, name="krt-card-facts", daemon=True).start()
         return True
 
+    def decision_tep(self, document_id: str, *, refresh: bool = False) -> dict[str, Any]:
+        """ТЭП площадки из PDF проекта решения. У неё других цифр нет вовсе.
+
+        Площадка без карточки приезжает к нам одним заголовком решения, и на
+        экране это было «Оценка Платона: 0/100 · ТЭП не указан» — при том что
+        в самом решении на mos.ru стоят и площадь территории, и предельная СПП,
+        и площадь квартир («на самом mos.ru уже появилось pdf решения, а мы его
+        не видим и пишем в блоке КРТ что 0», владелец 04.09.2026).
+
+        Отказ записывается со своим коротким сроком — тем же правилом, что у
+        карточки города: неотвеченный документ иначе не становится «известным»
+        никогда, и посчитать, что не отвечает НИ ОДИН, нечем.
+        """
+        from . import krt_decision_tep
+
+        clean = str(document_id or "").strip()
+        if not re.fullmatch(r"\d{4,20}", clean):
+            return {"available": False, "reason": "Неверный номер документа"}
+        path = self.decision_tep_dir / f"{clean}.json"
+        cached = load_json(path)
+        if (not refresh and isinstance(cached, dict)
+                and cached.get("schema_version") == DECISION_TEP_SCHEMA_VERSION):
+            ttl = (self.ttl_seconds * 30 if cached.get("available")
+                   else self.card_facts_failure_ttl_seconds)
+            # Решение — документ опубликованный и неизменяемый: перечитывать
+            # его сутками незачем, поэтому у удачного чтения срок месяц.
+            if fresh(path, ttl):
+                return cached
+
+        def fail(reason: str) -> dict[str, Any]:
+            out = {"available": False, "document_id": clean, "reason": reason,
+                   "schema_version": DECISION_TEP_SCHEMA_VERSION,
+                   "checked_at": int(time.time())}
+            save_json(path, out)
+            return out
+
+        def remote_json(url: str) -> Any | None:
+            try:
+                return json.loads(self.fetch(url).decode("utf-8"))
+            except Exception:  # noqa: BLE001
+                return None
+
+        detail = remote_json(document_detail_url(clean))
+        institution_id = (detail or {}).get("institution_id")
+        if institution_id is None:
+            return fail("mos_document_detail: не указан орган публикации")
+        attachments = remote_json(document_attachments_url(clean, institution_id))
+        pdf_url = select_pdf_attachment(attachments)
+        if not pdf_url:
+            return fail("mos_document_attachments: PDF не опубликован")
+        try:
+            data = self.fetch(pdf_url)
+            if len(data) > 35 * 1024 * 1024:
+                raise RuntimeError("PDF проекта решения превышает 35 МБ")
+            text = pdf_text(data)
+        except Exception as exc:  # noqa: BLE001
+            return fail(f"mos_decision_pdf: {type(exc).__name__}: {exc}")
+        parsed = krt_decision_tep.parse(text)
+        out = {
+            "schema_version": DECISION_TEP_SCHEMA_VERSION,
+            "document_id": clean,
+            # Прочитали, но величин не нашлось, — это ответ документа, а не наш
+            # отказ, и путать их нельзя: скан без текста и решение под дорогу с
+            # нулевой СПП выглядели бы одинаково.
+            "available": True,
+            "pdf_url": pdf_url,
+            "text_length": len(text or ""),
+            "checked_at": int(time.time()),
+            **parsed,
+        }
+        save_json(path, out)
+        return out
+
+    def decision_tep_known(self, ids: Iterable[str]) -> dict[str, dict[str, Any]]:
+        """Что о решениях УЖЕ прочитано — с диска, без единого запроса.
+
+        Маршрут каталога не имеет права ходить в сеть три сотни раз, пока
+        человек ждёт ответа: он показывает прочитанное, а недостающее
+        дочитывается фоном.
+        """
+        out: dict[str, dict[str, Any]] = {}
+        for one in ids:
+            clean = str(one or "").strip()
+            if not re.fullmatch(r"\d{4,20}", clean):
+                continue
+            cached = load_json(self.decision_tep_dir / f"{clean}.json")
+            if (isinstance(cached, dict)
+                    and cached.get("schema_version") == DECISION_TEP_SCHEMA_VERSION):
+                out[clean] = cached
+        return out
+
+    def decision_tep_coverage(self, ids: Iterable[str]) -> dict[str, Any]:
+        """Сколько решений прочитано, сколько не ответило и сколько не спрошено.
+
+        Молчащий цикл обязан иметь счётчик молчания: пустая колонка ТЭП без
+        него читается как «в решении цифр нет», а это чаще наш пробел.
+        """
+        read = failed = unknown = empty = 0
+        reasons: dict[str, int] = {}
+        for one in ids:
+            clean = str(one or "").strip()
+            if not re.fullmatch(r"\d{4,20}", clean):
+                continue
+            cached = load_json(self.decision_tep_dir / f"{clean}.json")
+            if not (isinstance(cached, dict)
+                    and cached.get("schema_version") == DECISION_TEP_SCHEMA_VERSION):
+                unknown += 1
+                continue
+            if not cached.get("available"):
+                failed += 1
+                reason = str(cached.get("reason") or "источник не ответил")
+                short = reason.split(":")[0].strip() or reason
+                reasons[short] = reasons.get(short, 0) + 1
+                continue
+            if cached.get("read"):
+                read += 1
+            else:
+                # Документ прочитан, а величин в нём не названо: ответ
+                # документа, и он не «не спрашивали».
+                empty += 1
+        return {"read": read, "failed": failed, "unknown": unknown,
+                "silent": empty,
+                "reasons": dict(sorted(reasons.items(), key=lambda pair: -pair[1]))}
+
+    def fill_decision_tep_in_background(self, ids: Iterable[str], *,
+                                        limit: int = 25) -> bool:
+        """Дочитать решения, которых ещё нет, — фоном и порциями.
+
+        Порция ограничена по той же причине, что у карточек города: три сотни
+        PDF подряд — это налёт на mos.ru, а не чтение. Следующее открытие
+        каталога дочитает следующую порцию.
+        """
+        missing = [str(one or "").strip() for one in ids]
+        missing = [one for one in missing
+                   if re.fullmatch(r"\d{4,20}", one or "")
+                   and not fresh(self.decision_tep_dir / f"{one}.json",
+                                 self.card_facts_failure_ttl_seconds)]
+        if not missing:
+            return False
+        with self._tep_lock:
+            if self._tep_filling:
+                return False
+            self._tep_filling = True
+
+        def run() -> None:
+            try:
+                for one in missing[:max(1, int(limit))]:
+                    try:
+                        self.decision_tep(one)
+                    except Exception:  # noqa: BLE001
+                        continue
+            finally:
+                with self._tep_lock:
+                    self._tep_filling = False
+
+        threading.Thread(target=run, name="krt-decision-tep", daemon=True).start()
+        return True
+
     def requirements(self, slug: str, *, refresh: bool = False) -> dict[str, Any] | None:
         """Read one planned KRT card and its official project-decision PDF."""
         clean_slug = str(slug or "").strip()
@@ -783,8 +951,21 @@ class KrtRegistry:
         # стояла пустой, будто документа не существует.
         out["matched_rows"] = [
             {"slug": one.matched_slug, "published_at": one.published_at,
-             "url": one.url, "title": one.title}
+             "url": one.url, "title": one.title, "id": one.id}
             for one in split["matched"] if one.matched_slug]
+        # ТЭП из самих документов: у площадки без карточки это её единственные
+        # цифры, у площадки с карточкой — самопроверка сопоставления. Читается
+        # то, что уже на диске; недостающее дочитывается фоном порциями.
+        ids = [one.id for one in rows if one.id]
+        out["tep"] = {key: value for key, value in self.decision_tep_known(ids).items()
+                      if value.get("available")}
+        out["tep_coverage"] = self.decision_tep_coverage(ids)
+        # Дочитывание живёт у маршрута, а не здесь: разложение решений на «с
+        # карточкой» и «без» считается при каждом чтении, и поход в сеть из
+        # него превратил бы дешёвую операцию в дорогую (тест держит это прямо:
+        # «разложение считается на месте, без нового похода в источник»).
+        out["tep_pending"] = [one for one in ids
+                              if one not in out["tep"]]
         return out
 
     def map_dataset(self, *, refresh: bool = False, step_m: float = 40.0) -> dict[str, Any]:

@@ -400,8 +400,14 @@ def test_auctions_exposes_krt_as_a_separate_tab_and_endpoint(monkeypatch) -> Non
     # разница с прошлым составом, и считать её должен сервер, а не человек
     # глазами по списку.
     returned = answer.json()["projects"]
-    assert [{key: value for key, value in row.items()
-             if key not in {"first_seen_at", "is_new"}} for row in returned] == [project]
+    # Сверяются названные величины, а не словарь целиком: равенство целиком
+    # запрещает ДОБАВЛЯТЬ, а утверждение здесь другое — площадка каталога
+    # доезжает до маршрута как есть, ничего по дороге не потеряв.
+    assert len(returned) == 1
+    assert {key: returned[0].get(key) for key in project} == project
+    # Вид статуса приходит с сервера и объявлен там один раз: экран, выводивший
+    # его сам, перестал отбирать проекты решений по статусу.
+    assert returned[0]["status_kind"] == "planned"
     assert returned[0]["is_new"] is False, "первый снимок новым никого не делает"
     assert "new_count" in answer.json()
     assert answer.json()["complete"] is True
