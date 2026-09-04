@@ -60,7 +60,7 @@ def page_functions() -> str:
     for name in ("krtVolumeShare", "krtTaskProfile", "krtFit", "krtIntent",
                  "krtCountedValues", "krtQuantile", "krtModelScale",
                  "krtInt", "krtPct", "krtRenovation", "krtRuleValue",
-                 "krtPenalty", "krtScore", "krtScoreNote"):
+                 "krtPenalty", "krtScoreSource", "krtScore", "krtScoreNote"):
         start = script.index(f"function {name}(")
         depth = 0
         for position in range(script.index("{", start), len(script)):

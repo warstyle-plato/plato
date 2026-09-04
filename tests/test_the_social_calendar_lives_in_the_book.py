@@ -101,16 +101,20 @@ def test_the_block_has_a_row_for_every_pair(phased):
 
 def test_the_book_builds_each_object_in_its_own_queue(phased):
     """Ровно то, что делает движок: садик в первой, школа во второй, поликлиника
-    в третьей — каждый своим календарём, а не общей долей от одной даты."""
+    в третьей — каждый своим календарём, а не общей долей от одной даты.
+
+    Стройка объекта начинается не раньше РнС своей очереди — БРИДЖ стройку не
+    финансирует (владелец, 04.09.2026); здесь ИРД 12 месяцев, шаг очередей 12.
+    """
     evaluator = evaluated(phased)
     windows = {}
     for index, row in enumerate(CAPEX_SOCIAL_ROWS):
         months = [month for month, value in enumerate(monthly(evaluator, row))
                   if abs(value) > 1e-9]
         windows[index] = (months[0], months[-1], len(months)) if months else None
-    assert windows[0] == (0, 23, 24), windows[0]      # ДОО, 24 месяца с начала
-    assert windows[1] == (12, 41, 30), windows[1]     # СОШ, 30 месяцев со второй
-    assert windows[2] == (24, 47, 24), windows[2]     # поликлиника, с третьей
+    assert windows[0] == (12, 35, 24), windows[0]     # ДОО, 24 месяца с РнС первой
+    assert windows[1] == (24, 53, 30), windows[1]     # СОШ, 30 месяцев с РнС второй
+    assert windows[2] == (36, 59, 24), windows[2]     # поликлиника, с РнС третьей
     assert windows[3] is None
 
 

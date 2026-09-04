@@ -1288,7 +1288,8 @@ def install(app: FastAPI) -> None:
         # точку по адресу, а карточка писала «полигон не публикуется» и
         # показывала чужой квартал (владелец, 02.09.2026: «и карта»).
         site_reader = getattr(krt_registry, "map_lookup", None)
-        lookup = ((await run_in_threadpool(site_reader, slug, str(project.get("name") or "")))
+        lookup = ((await run_in_threadpool(site_reader, slug, str(project.get("name") or ""),
+                                           dict(project)))
                   if callable(site_reader) else {})
         site = (lookup or {}).get("site")
         map_problem = str((lookup or {}).get("problem") or "")
@@ -1304,7 +1305,12 @@ def install(app: FastAPI) -> None:
                 "query": f"krt:{slug}", "latitude": lat, "longitude": lng,
                 "precision": "official_centre", "address": project.get("name"),
                 "notes": ["Точка и контур — официальный файл карты реестра КРТ "
-                          "(krt.mos.ru): центр территории и полигон её границ."],
+                          "(krt.mos.ru): центр территории и полигон её границ."
+                          + {"address": " Площадка найдена в файле по адресу — имя там "
+                                        "записано иначе, чем в списке.",
+                             "passport": " Площадка найдена в файле по паспорту — району, "
+                                         "площади и жилому объёму: имя там другое."
+                             }.get(str((lookup or {}).get("matched") or ""), "")],
             }
             geometry_status = "official_polygon" if rings else "official_centre_only"
         else:

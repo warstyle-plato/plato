@@ -129,7 +129,12 @@ def test_the_verdict_stays_open():
     start = page.index("function selectKrt")
     card = page[start:page.index("\nfunction ", start + 10)]
     head = card[:card.index("details class=\"fold\"")]
-    assert "Оценка Платона" in head, "балл уехал под кат"
+    # Балл рисует krtScoreBoxHtml (один источник чисел для списка и карточки);
+    # шапка карточки обязана его звать, а он — называть оценку.
+    assert "krtScoreBoxHtml(" in head, "балл уехал под кат"
+    box_start = page.index("function krtScoreBoxHtml")
+    box = page[box_start:page.index("\nfunction ", box_start + 10)]
+    assert "Оценка Платона" in box
     assert "Жильё" in head and "Всего построить" in head
 
 
