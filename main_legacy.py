@@ -34257,24 +34257,57 @@ details.cadastral-box>summary::marker{color:#888}
      блока и молчала ровно в том случае, ради которого писалась (телефон
      владельца, 23.08.2026: страница мертва, причины нет). -->
 <script>
+function pageFailureBox(){
+ var box=document.getElementById('pageFailure');
+ if(!box){
+  box=document.createElement('div');
+  box.id='pageFailure';
+  box.style.cssText='margin:12px;padding:12px 14px;border:1px solid #a33;'
+   +'background:#fdeeee;color:#7a1f1f;font-size:13px;line-height:1.5;'
+   +'white-space:pre-wrap;word-break:break-word';
+  var host=document.body||document.documentElement;
+  host.insertBefore(box, host.firstChild);
+ }
+ return box;
+}
 window.addEventListener('error', function(event){
  try{
-  var box=document.getElementById('pageFailure');
-  if(!box){
-   box=document.createElement('div');
-   box.id='pageFailure';
-   box.style.cssText='margin:12px;padding:12px 14px;border:1px solid #a33;'
-    +'background:#fdeeee;color:#7a1f1f;font-size:13px;line-height:1.5;'
-    +'white-space:pre-wrap;word-break:break-word';
-   var host=document.body||document.documentElement;
-   host.insertBefore(box, host.firstChild);
+  // Отказ РЕСУРСА — не смерть страницы. У такого события нет ни сообщения, ни
+  // строки, и прежняя ловушка печатала «ошибка без описания · страница:0:0»:
+  // не загрузилась картинка карты — а на экране стояло «страница не
+  // доработала до конца» (владелец, 04.09.2026). Ложная тревога такого рода
+  // хуже молчания: человек ищет поломку там, где всё работает.
+  var target=event.target;
+  var tag=(target&&target!==window&&target.tagName)?String(target.tagName).toLowerCase():'';
+  if(tag){
+   // У картинки карты и у тайлов есть свой onerror: страница о них позаботилась
+   // и показывает это сама. Кричим только о тех, о ком не позаботился никто.
+   if(typeof target.onerror==='function')return;
+   var src=target.currentSrc||target.src||target.href||'';
+   pageFailureBox().textContent='Не загрузился ресурс страницы: '+tag
+    +(src?'\n'+src:'')+'\nСама страница работает — сломано только это.\n'
+    +'Пришлите этот текст.';
+   return;
   }
+  var message=event.message||(event.error&&event.error.message)||'ошибка без описания';
   var where=(event.filename||'страница')+':'+(event.lineno||0)+':'+(event.colno||0);
-  box.textContent='Страница не доработала до конца.\n'
-   +(event.message||'ошибка без описания')+'\n'+where+'\n'
+  pageFailureBox().textContent='Страница не доработала до конца.\n'
+   +message+'\n'+where+'\n'
    +'Пришлите этот текст — по нему видно точное место.';
  }catch(e){}
 }, true);
+// Оборванная асинхронная работа не поднимала ловушку вовсе: у промиса нет
+// события error, и отказ, который никто не поймал, оставался тишиной на
+// экране — «страница просто стоит». Теперь он называет себя.
+window.addEventListener('unhandledrejection', function(event){
+ try{
+  var reason=event&&event.reason;
+  var message=(reason&&(reason.message||reason.detail))||String(reason||'').trim()
+   ||'отказ без описания';
+  pageFailureBox().textContent='Незавершённая работа страницы.\n'+message+'\n'
+   +'Пришлите этот текст — по нему видно точное место.';
+ }catch(e){}
+});
 </script>
 
 <script>
