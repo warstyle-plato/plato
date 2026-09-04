@@ -854,15 +854,23 @@ def install(app: FastAPI) -> None:
                 except Exception:  # noqa: BLE001
                     logger.exception("KRT decision TEP fill failed")
             if by_slug:
-                projects = [
-                    {**row,
-                     "draft_decision_at": (by_slug.get(str(row.get("slug") or "")) or {}).get("published_at") or 0,
-                     "draft_decision_url": (by_slug.get(str(row.get("slug") or "")) or {}).get("url") or "",
-                     "decision_tep_check": krt_decision_tep.catalogue_mismatch(
-                         tep_by_document.get(str((by_slug.get(str(row.get("slug") or "")) or {}).get("id") or "")) or {},
-                         row)}
-                    for row in projects
-                ]
+                def _with_decision(row: dict[str, Any]) -> dict[str, Any]:
+                    one = by_slug.get(str(row.get("slug") or "")) or {}
+                    tep = tep_by_document.get(str(one.get("id") or "")) or {}
+                    return {
+                        **row,
+                        "draft_decision_at": one.get("published_at") or 0,
+                        "draft_decision_url": one.get("url") or "",
+                        # Чем ТЭП решения не сошёлся с карточкой. Гектары здесь
+                        # улика: расходится площадь территории — значит пара
+                        # собрана неверно, и метрам такой пары верить нельзя.
+                        # Расхождение НАЗЫВАЕТСЯ и каталог не подменяет: два
+                        # достоверных на вид ТЭП одной площадки — ровно та
+                        # беда, которую мы ловим в отчёте и книге.
+                        "decision_tep_check": krt_decision_tep.catalogue_mismatch(tep, row),
+                    }
+
+                projects = [_with_decision(row) for row in projects]
             for one in (found.get("decisions") or []):
                 document_id = str(one.get("id") or "")
                 # Цифры площадки без карточки берутся из её решения: прежде их
@@ -891,6 +899,10 @@ def install(app: FastAPI) -> None:
                     "tep_source": ("decision" if tep.get("read") else
                                    "decision_silent" if tep.get("available") else ""),
                     "tep_document_url": tep.get("pdf_url") or "",
+                    # Чьё это КРТ — из того же прочитанного документа. Без
+                    # этого карточка площадки писала «проект решения ещё не
+                    # прочитан» при уже прочитанном решении.
+                    "decision_intent": tep.get("intent") or None,
                 }
                 for key in ("area_ha", "total_gfa_sqm", "housing_gfa_sqm",
                             "nonresidential_gfa_sqm"):

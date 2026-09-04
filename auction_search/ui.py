@@ -957,7 +957,9 @@ function krtStageCell(x){
 function krtIntent(x){
  const rank=state.krtRank[x.slug]||{};
  const req=state.krtRequirements[x.slug]||rank.requirements||{};
- let intent=req.intent||null;
+ // У площадки без карточки требований нет вовсе — у неё есть только само
+ // решение, и оно прочитано вместе с ТЭП тем же документом.
+ let intent=req.intent||x.decision_intent||null;
  // Первым — официальный источник: карточка каталога называет застройщика и
  // реновацию сама, бесплатно и без поиска. В решении их нет (измерено на
  // восьми документах), и вывод «источники молчат» был про решение, а не про
@@ -1213,7 +1215,7 @@ function krtWhen(stamp){
 // и «оценки нет» — разные ответы, и первый читается как приговор площадке.
 function krtScoreNumber(sc){return sc.known?sc.score:'—'}
 function krtScoreBoxHtml(sc){
- return `<div class="fit ${sc.tone}"><span class="light"></span>Оценка Платона: ${krtScoreNumber(sc)}${sc.known?'/100':''} · ${sc.label}</div><div class="source">Потенциал по официальным ТЭП — ${sc.base}. ${sc.counted?(sc.cut?`Расчёт снял ${sc.cut}%: `+esc(sc.cuts.map(c=>c.label+' −'+c.points+'%').join(', ')):'Расчёт балл не снизил.'):'Модель ещё не считалась — снижать нечем.'}</div>`;
+ return `<div class="fit ${sc.tone}"><span class="light"></span>Оценка Платона: ${krtScoreNumber(sc)}${sc.known?'/100':''} · ${sc.label}</div><div class="source">${sc.known?`Потенциал по официальным ТЭП — ${sc.base}.`:'Потенциал считать не из чего: объём под выбранное назначение в источнике не указан. Это «не знаем», а не ноль.'} ${sc.counted?(sc.cut?`Расчёт снял ${sc.cut}%: `+esc(sc.cuts.map(c=>c.label+' −'+c.points+'%').join(', ')):'Расчёт балл не снизил.'):'Модель ещё не считалась — снижать нечем.'}</div>`;
 }
 // Шапка карточки пересчитывается вместе со списком: иначе список уже с
 // новыми числами, а карточка — с теми, что были в момент открытия.

@@ -19,6 +19,7 @@ from urllib.parse import urljoin
 
 from .http import RemoteServiceError, fresh, load_json, request_bytes, save_json
 from .krt_requirements import (
+    decision_intent,
     decision_search_urls,
     document_attachments_url,
     document_detail_url,
@@ -667,6 +668,7 @@ class KrtRegistry:
                 return None
 
         detail = remote_json(document_detail_url(clean))
+        title = str((detail or {}).get("title") or "")
         institution_id = (detail or {}).get("institution_id")
         if institution_id is None:
             return fail("mos_document_detail: не указан орган публикации")
@@ -682,6 +684,14 @@ class KrtRegistry:
         except Exception as exc:  # noqa: BLE001
             return fail(f"mos_decision_pdf: {type(exc).__name__}: {exc}")
         parsed = krt_decision_tep.parse(text)
+        # Тот же текст отвечает и на «чьё это КРТ»: вид, городские нужды,
+        # оператор. Скачивать документ второй раз ради этого незачем, а без
+        # него у площадки без карточки карточка писала «проект решения ещё не
+        # прочитан» при уже прочитанном решении.
+        try:
+            intent = decision_intent(text, title=title)
+        except Exception:  # noqa: BLE001 — разбор намерения не роняет ТЭП
+            intent = None
         out = {
             "schema_version": DECISION_TEP_SCHEMA_VERSION,
             "document_id": clean,
@@ -692,6 +702,7 @@ class KrtRegistry:
             "pdf_url": pdf_url,
             "text_length": len(text or ""),
             "checked_at": int(time.time()),
+            "intent": intent,
             **parsed,
         }
         save_json(path, out)

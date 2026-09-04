@@ -169,3 +169,107 @@ def test_a_refusal_is_remembered_and_named(tmp_path):
     coverage = registry.decision_tep_coverage(["347614220"])
     assert coverage["failed"] == 1 and coverage["unknown"] == 0
     assert coverage["reasons"], "отказ посчитан, но не назван"
+
+
+def test_the_route_puts_the_decision_numbers_into_the_row():
+    """Прочитанное решение доезжает до строки каталога, а не остаётся на диске.
+
+    «Посчитанное на сервере, но прочитанное только из свежего нажатия,
+    неотличимо от непосчитанного» — правило уже стоило нам пустой колонки
+    занятости. Здесь оно проверяется на маршруте: строка без карточки несёт
+    цифры своего решения, строка с карточкой — названное расхождение с ним.
+    """
+    from types import SimpleNamespace
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from auction_search.api import install
+
+    catalogue = [{"slug": "site", "name": "Площадка", "status": "Планируемый",
+                  "okrug": "ЦАО", "area_ha": 0.93, "total_gfa_sqm": 51_040}]
+    decisions = {
+        "total": 2, "matched": 1, "complete": True,
+        "decisions": [{"id": "347614220", "title": "Проект решения",
+                       "url": "https://www.mos.ru/dgp/documents/view/347614220/",
+                       "address": "Большой Тишинский пер., влд. 8", "okrug": "ЦАО",
+                       "kind": "нежилой застройки", "published_at": 1_787_605_200}],
+        "matched_rows": [{"slug": "site", "id": "339017220", "published_at": 1,
+                          "url": "https://www.mos.ru/dgp/documents/view/339017220/"}],
+        "tep": {
+            "347614220": {"available": True, "read": True, "area_ha": 0.28,
+                          "total_gfa_sqm": 9_800.0, "housing_gfa_sqm": 9_800.0,
+                          "flats_sqm": 5_954.0, "pdf_url": "https://www.mos.ru/x.pdf"},
+            "339017220": {"available": True, "read": True, "area_ha": 1.35,
+                          "total_gfa_sqm": 90_280.0},
+        },
+        "tep_coverage": {"read": 2, "failed": 0, "unknown": 3, "silent": 0, "reasons": {}},
+        "tep_pending": ["111", "222", "333"],
+    }
+    filled: list[list[str]] = []
+    app = FastAPI()
+    app.state.market_discovery_service = SimpleNamespace(
+        krt=SimpleNamespace(
+            catalogue=lambda **_: list(catalogue),
+            status=lambda: {"complete": True, "refreshing": False},
+            decisions=lambda **_: dict(decisions),
+            fill_decision_tep_in_background=lambda ids, **_: filled.append(list(ids)),
+        ),
+    )
+    install(app)
+    answer = TestClient(app).get("/auctions/krt")
+    assert answer.status_code == 200
+    rows = {row["slug"]: row for row in answer.json()["projects"]}
+
+    draft = rows["decision:347614220"]
+    assert draft["total_gfa_sqm"] == 9_800 and draft["housing_gfa_sqm"] == 9_800
+    assert draft["area_ha"] == 0.28 and draft["flats_sqm"] == 5_954
+    assert draft["tep_source"] == "decision", "источник цифр не назван"
+    assert draft["status_kind"] == "draft" and not draft["status"]
+
+    # Карточка сильнее: её числа остаются, а расхождение с решением названо.
+    card = rows["site"]
+    assert card["total_gfa_sqm"] == 51_040, "решение подменило собой каталог"
+    assert any("площадь территории" in one for one in card["decision_tep_check"]), card
+    assert card["draft_decision_at"] == 1
+
+    assert answer.json()["decision_tep_state"]["unknown"] == 3
+    assert filled == [["111", "222", "333"]], "недостающие решения не дочитываются"
+
+
+def test_the_same_document_answers_whose_krt_it_is(tmp_path):
+    """Скачали PDF ради ТЭП — «чьё это КРТ» берётся оттуда же, а не вторым разом.
+
+    У площадки без карточки требований не существует, и блок «Чьё это КРТ»
+    писал «проект решения ещё не прочитан» при уже прочитанном решении.
+    """
+    import json
+
+    import market_search.krt_registry as module
+    from market_search.krt_registry import KrtRegistry
+
+    text = _decision("337332220")
+    title = ("Проект решения о комплексном развитии территории нежилой застройки "
+             "города Москвы, расположенной по адресу: г. Москва, Ул. Стромынка (ВАО)")
+
+    def fetch(url: str) -> bytes:
+        if "attachments" in url or "institution" in url:
+            return json.dumps({"items": [{"attachments": [
+                {"url": "/upload/x.pdf", "name": "решение"}]}]}).encode()
+        if "/documents/337332220" in url:
+            return json.dumps({"id": 337332220, "institution_id": 19180090,
+                               "title": title}).encode()
+        return b"%PDF fake"
+
+    original = module.pdf_text
+    module.pdf_text = lambda data: text
+    try:
+        out = KrtRegistry(tmp_path, fetch=fetch).decision_tep("337332220")
+    finally:
+        module.pdf_text = original
+
+    assert out["intent"]["decision_read"] is True
+    assert out["intent"]["kind"] == "нежилой застройки"
+    assert out["intent"]["city_needs"], "Программа реновации в решении названа и потеряна"
+    # ТЭП при этом на месте: намерение читается тем же текстом, а не вместо него.
+    assert out["housing_gfa_sqm"] == 179_150
