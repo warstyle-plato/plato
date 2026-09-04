@@ -696,7 +696,11 @@ function populateKrtOkrugs(){const values=KRT_OKRUGS,options=$('krtOkrugOptions'
 // каталоге давала 62% «Высокого» при медиане 92 и двадцати площадках ровно по
 // сто: «этот фильтр туфта, они ничего не дают» (владелец, 01.09.2026). Балл,
 // который не различает, — не балл.
-const KRT_SCALE={housing:[20600,399180],business:[4944,187340]};
+// Третья шкала — на весь объём застройки: у площадки, где город не разложил
+// СПП по назначениям, известен только он. Якоря сняты с самого каталога
+// тем же способом, что и остальные: десятый и девяностый процентили по
+// 263 строкам с названным объёмом (04.09.2026).
+const KRT_SCALE={housing:[20600,399180],business:[4944,187340],total:[18826,437392]};
 // Логарифм, а не доля от максимума: двухмиллионный проект иначе забирает всю
 // шкалу, и весь остальной каталог жмётся к нулю.
 function krtVolumeShare(value,[low,high]){
@@ -723,14 +727,36 @@ function krtFit(x){
  const business=krtNumber(x,'business_gfa_sqm')||0, area=krtNumber(x,'area_ha')||0;
  const jobs=krtNumber(x,'jobs')||0;
  const reasons=[], checks=[];
- const wanted=profile==='business'?business:housing;
- const scale=profile==='business'?KRT_SCALE.business:KRT_SCALE.housing;
- const what=profile==='business'?'деловой объём':'жильё';
+ // Балл меряется тем объёмом, который у площадки ЕСТЬ. Прежде мерой всегда
+ // было жильё (или деловое, если так выбрана задача), и площадка без жилья
+ // получала «ТЭП не указан» — при названном в источнике объёме: на проде это
+ // 406 строк из 580, то есть каталог встречал человека прочерками (владелец,
+ // 04.09.2026: «мне надо чтобы каталог для тех кто зашел впервые уже был готов
+ // и с баллами»). Порядок: жильё → деловое → весь объём застройки. Чем
+ // измерено — часть ответа, поэтому мера называется в подписи и в карточке:
+ // балл по жилью и балл по общему объёму — разные утверждения.
+ let wanted=profile==='business'?business:housing;
+ let scale=profile==='business'?KRT_SCALE.business:KRT_SCALE.housing;
+ let what=profile==='business'?'деловой объём':'жильё';
+ // Доля под задачу считается только там, где город разложил СПП по
+ // назначениям. Мерить долю общего объёма в общем объёме бессмысленно — она
+ // единица у всех, и сорок баллов достались бы каждому даром.
+ let shareable=true;
+ if(!(wanted>0)){
+  const other=profile==='business'?housing:business;
+  if(other>0){
+   wanted=other;
+   scale=profile==='business'?KRT_SCALE.housing:KRT_SCALE.business;
+   what=profile==='business'?'жильё':'деловой объём';
+  }else if(total>0){
+   wanted=total; scale=KRT_SCALE.total; what='объём застройки'; shareable=false;
+  }
+ }
  // Объём под задачу — шестьдесят баллов, доля под задачу — сорок. Больше в
  // ТЭП каталога ничего и нет: округ, статус и площадь про потенциал не
  // говорят, а статус к тому же уже стоит отдельным снижением.
  const volume=krtVolumeShare(wanted,scale);
- const share=total>0&&wanted>0?wanted/total:null;
+ const share=(shareable&&total>0&&wanted>0)?wanted/total:null;
  let score=0;
  if(volume===null){
   // Неизвестный объём — это «не знаем», а не ноль: такая площадка не может
@@ -742,6 +768,8 @@ function krtFit(x){
  }
  if(share===null){
   if(!total)checks.push('общий объём застройки не указан');
+  else if(!shareable)checks.push('город не разложил объём по назначениям — '
+   +'балл посчитан по всей застройке, доля под задачу в него не вошла');
  }else{
   score+=40*share;
   reasons.push(what+' — '+Math.round(share*100)+'% общего объёма');
@@ -761,7 +789,10 @@ function krtFit(x){
  const known=volume!==null||share!==null;
  const tone=!known?'':score>=75?'ok':score>=50?'warn':'bad';
  const label=!known?'ТЭП не указан':score>=75?'Высокое':score>=50?'Среднее':'Низкое';
- return{score,tone,label,known,reasons:reasons.slice(0,4),checks:checks.slice(0,3)};
+ // Чем измерено — часть ответа: «65 по жилью» и «65 по всей застройке» —
+ // разные утверждения об одной площадке.
+ return{score,tone,label,known,measure:what,
+        reasons:reasons.slice(0,4),checks:checks.slice(0,3)};
 }
 // Балл площадки: потенциал по ТЭП, из которого маркетинг и движок ВЫЧИТАЮТ.
 // Прежде посчитанная модель балл не уточняла, а заменяла собой: в колонке
@@ -1248,7 +1279,7 @@ function krtWhen(stamp){
 // и «оценки нет» — разные ответы, и первый читается как приговор площадке.
 function krtScoreNumber(sc){return sc.known?sc.score:'—'}
 function krtScoreBoxHtml(sc){
- return `<div class="fit ${sc.tone}"><span class="light"></span>Оценка Платона: ${krtScoreNumber(sc)}${sc.known?'/100':''} · ${sc.label}</div><div class="source">${sc.known?`Потенциал по официальным ТЭП — ${sc.base}.`:'Потенциал считать не из чего: объём под выбранное назначение в источнике не указан. Это «не знаем», а не ноль.'} ${sc.counted?(sc.cut?`Расчёт снял ${sc.cut}%: `+esc(sc.cuts.map(c=>c.label+' −'+c.points+'%').join(', ')):'Расчёт балл не снизил.'):'Модель ещё не считалась — снижать нечем.'}</div>`;
+ return `<div class="fit ${sc.tone}"><span class="light"></span>Оценка Платона: ${krtScoreNumber(sc)}${sc.known?'/100':''} · ${sc.label}</div><div class="source">${sc.known?`Потенциал по официальным ТЭП — ${sc.base}, измерен по: ${esc(sc.fit.measure||'—')}.`:'Потенциал считать не из чего: ни жилья, ни делового объёма, ни общей застройки в источнике не названо. Это «не знаем», а не ноль.'} ${sc.counted?(sc.cut?`Расчёт снял ${sc.cut}%: `+esc(sc.cuts.map(c=>c.label+' −'+c.points+'%').join(', ')):'Расчёт балл не снизил.'):'Модель ещё не считалась — снижать нечем.'}</div>`;
 }
 // Шапка карточки пересчитывается вместе со списком: иначе список уже с
 // новыми числами, а карточка — с теми, что были в момент открытия.
@@ -1259,8 +1290,9 @@ function refreshKrtScoreBox(x){
 }
 function krtScoreNote(sc){
  if(!sc.known)return 'ТЭП площадки неизвестен — считать потенциал не из чего';
- if(!sc.counted)return 'ТЭП '+sc.base+' · модель не считалась'+(sc.reason?': '+sc.reason:'');
- const head='ТЭП '+sc.base+(sc.cut?' · расчёт снял '+sc.cut+'%: '+sc.cuts.map(c=>c.label).join(', '):' · расчёт не снизил')
+ const measured=' (по: '+(sc.fit&&sc.fit.measure||'—')+')';
+ if(!sc.counted)return 'ТЭП '+sc.base+measured+' · модель не считалась'+(sc.reason?': '+sc.reason:'');
+ const head='ТЭП '+sc.base+measured+(sc.cut?' · расчёт снял '+sc.cut+'%: '+sc.cuts.map(c=>c.label).join(', '):' · расчёт не снизил')
   +((sc.gaps||[]).length?' · '+sc.gaps.join('; '):'');
  if(!sc.staleReason)return head;
  // Числа остались от удавшегося счёта — значит, надо сказать, от какого.
