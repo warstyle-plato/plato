@@ -41344,7 +41344,17 @@ function renderApartmentPaceChart(sales){
 function escrowCoverSvg(rows,cover){
  cover=cover||{};
  const duty=x=>Number(x.pf_obligation!==undefined?x.pf_obligation:(Number(x.pf_balance||0)+Number(x.pf_payable||0)));
- const data=(rows||[]).filter(x=>duty(x)>0||Number(x.escrow||0)>0);
+ // Месяцы без долга и без счёта не рисуются — иначе ось растянута на годы
+ // пустоты. Но обрезать их ВСЕ нельзя: первой точкой становится месяц с уже
+ // сделанной выборкой, и кривая начинается с полки в миллиард — «зелёное и
+ // жёлтое поле второй очереди не с 0 идут» (владелец, 04.09.2026). Соседний
+ // месяц с каждой стороны остаётся: он настоящий и он нулевой, и на нём
+ // видно, что очередь начинает с нуля.
+ const all=(rows||[]);
+ const alive=all.map(x=>duty(x)>0||Number(x.escrow||0)>0);
+ const first=alive.indexOf(true), last=alive.lastIndexOf(true);
+ if(first<0)return '';
+ const data=all.slice(Math.max(0,first-1),Math.min(all.length,last+2));
  if(data.length<2)return '';
  const W=900,H=250,pL=58,pR=58,pT=18,pB=26,plotW=W-pL-pR,plotH=H-pT-pB;
  // Долг — это «сколько должны сейчас», накопленное — «сколько пришло с
