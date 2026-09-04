@@ -21,6 +21,9 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import v4_entry_sheet  # noqa: E402
 
 import main_legacy as core  # noqa: E402
 from test_book_interest_horizon_follows_the_engine import BASE, tep_of_a_real_project  # noqa: E402
@@ -49,8 +52,13 @@ def test_the_rows_are_written_and_read() -> None:
     assert not [m for m in missing if "снос" in m.lower() or "CAPEX" in m], missing
     ws = wb["CAPEX"]
     assert ws["A36"].value == "Снос и демонтаж" and ws["A37"].value == "Расселение"
-    assert "'Вводные'!$F$39" in ws["B36"].value and "'Вводные'!$F$40" in ws["B36"].value
-    assert "'Вводные'!$F$41" in ws["B37"].value
+    # Ввод разведён на два листа: движок пишет формулу под прежним именем, а
+    # переименование идёт по книге разом. Сверять надо тем же преобразованием,
+    # а не вторым списком имён.
+    sheet = v4_entry_sheet.rename_in_formula
+    assert sheet("'Вводные'!$F$39") in ws["B36"].value \
+        and sheet("'Вводные'!$F$40") in ws["B36"].value
+    assert sheet("'Вводные'!$F$41") in ws["B37"].value
     # Итог блока и база резерва видят новые строки — в каждом из четырёх блоков.
     for base in (0, 34, 68, 102):
         assert f"+D{36 + base}+D{37 + base}" in ws.cell(32 + base, 4).value
