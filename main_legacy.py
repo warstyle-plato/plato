@@ -70,7 +70,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.21.84"
+VERSION = "0.21.85"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -15005,6 +15005,90 @@ def _v4_apply_shared_cash_articles(xml: str, missing: list[str]) -> str:
     return xml
 
 
+# Снос и расселение в блоке CAPEX. У шаблона для них нет строки: движок тратил
+# 270,9 млн ₽ на снос, книга — ничего, и ровно на эту сумму расходились пик
+# БРИДЖа, а следом CAPEX, проценты, налог и LLCR (владелец, 04.09.2026:
+# «расхождения опять»). Вводные для них с 0.21.84 стоят в F39–F41 «Вводных»,
+# но их не читала ни одна формула. Строки 36–37 каждого блока в шаблоне пусты —
+# ряд заводится туда, не сдвигая ни одной ссылки; итог блока (строка 32) и
+# база резерва (строка 30) переписываются, чтобы видеть новые строки.
+_V4_CAPEX_EXTRA_ROWS = (
+    (36, "Снос и демонтаж",
+     "('Вводные'!$F$39*'Вводные'!$F$40/1000)"),
+    (37, "Расселение", "'Вводные'!$F$41"),
+)
+_V4_CAPEX_TOTAL_ROW = 32
+_V4_CAPEX_RESERVE_ROW = 30
+_V4_CAPEX_MONTH_COLUMNS = 120  # D..DS, как у шаблона
+
+
+def _v4_apply_demolition_rows(xml: str, missing: list[str]) -> str:
+    """Строки сноса и расселения в каждом блоке CAPEX по образцу подготовки.
+
+    Сумма — как у строки 20: вводная × сценарий × множитель затрат очереди ×
+    признак очереди × коэффициент затрат к старту × кассовая доля (та же
+    колонка AL, что у подготовки: движок делит снос её долей). Помесячно —
+    окно перед РнС, как у подготовки. Формула не опознана — `missing`.
+    """
+    from openpyxl.utils import get_column_letter as _col
+
+    def styled(cell_xml: str, coord: str, style: str | None) -> str:
+        return cell_xml.replace(f'<x:c r="{coord}"', f'<x:c r="{coord}" s="{style}"', 1) if style else cell_xml
+
+    def style_of(coord: str) -> str | None:
+        found = re.search(r'<x:c r="%s"[^>]*?\ss="(\d+)"' % coord, xml)
+        return found.group(1) if found else None
+
+    label_style, amount_style, month_style = style_of("A20"), style_of("B20"), style_of("D20")
+    for phase in range(_V4_CAPEX_PHASES):
+        base = _V4_CAPEX_BLOCK_STRIDE * phase
+        queue_row = _V4_CF_QUEUE_ENABLED_ROW + phase
+        permit = f"$B${7 + base}"
+        for row_at, label, amount in _V4_CAPEX_EXTRA_ROWS:
+            row = row_at + base
+            xml = _v4_ensure_row(xml, row)
+            formula = (f"{amount}*'Вводные'!$H$6*'Вводные'!$T${queue_row}"
+                       f"*--('Вводные'!$B${queue_row}=\"Да\")*'Вводные'!$AH${queue_row}"
+                       f"*'Вводные'!$AL${queue_row}")
+            cells = [(f"A{row}", dict(text=label), label_style),
+                     (f"B{row}", dict(formula=formula), amount_style),
+                     (f"C{row}", dict(text="млн ₽"), None)]
+            for index in range(_V4_CAPEX_MONTH_COLUMNS):
+                column = _col(4 + index)
+                window = f"MIN(6,'Вводные'!$E${queue_row})"
+                cells.append((f"{column}{row}", dict(formula=(
+                    f"IF(AND({column}$3>=EDATE({permit},-{window}),{column}$3<{permit}),"
+                    f"$B${row}/MAX(1,{window}),0)")), month_style))
+            for coord, payload, style in cells:
+                xml, done = _v4_set_or_insert_cell(xml, coord, **payload)
+                if not done:
+                    missing.append(f"CAPEX · снос и расселение: ячейка {coord} не записана")
+                    return xml
+                if style:
+                    xml = styled(xml, coord, style)
+        # Итог блока видит новые строки: SUM(X14:X31)+ОБЪЕКТЫ → +X36+X37.
+        total_row = _V4_CAPEX_TOTAL_ROW + base
+        extra = [row_at + base for row_at, _label, _amount in _V4_CAPEX_EXTRA_ROWS]
+        pattern = re.compile(
+            r'(<x:c r="(?P<col>[A-Z]{1,3})%d"[^>]*><x:f>)SUM\((?P=col)%d:(?P=col)%d\)\+'
+            % (total_row, 14 + base, 31 + base))
+        xml, count = pattern.subn(
+            lambda m: m.group(1) + "SUM(%s%d:%s%d)+%s+" % (
+                m.group("col"), 14 + base, m.group("col"), 31 + base,
+                "+".join(f"{m.group('col')}{r}" for r in extra)), xml)
+        if count < _V4_CAPEX_MONTH_COLUMNS:
+            missing.append(f"CAPEX · итог очереди {phase + 1}: формула строки {total_row} не опознана "
+                           f"({count} колонок из {_V4_CAPEX_MONTH_COLUMNS})")
+        # База резерва — все статьи блока: (SUM(B15:B29)+B31+…) → +B36+B37.
+        reserve_row = _V4_CAPEX_RESERVE_ROW + base
+        pattern = re.compile(r'(<x:c r="B%d"[^>]*><x:f>\(SUM\(B%d:B%d\)\+B%d)' % (
+            reserve_row, 15 + base, 29 + base, 31 + base))
+        xml, count = pattern.subn(lambda m: m.group(1) + "".join(f"+B{r}" for r in extra), xml)
+        if count != 1:
+            missing.append(f"CAPEX · резерв очереди {phase + 1}: формула B{reserve_row} не опознана")
+    return xml
+
+
 def _v4_management_profile_ranges() -> tuple[int, int, list[int]]:
     """Первая и последняя строка профиля и строки, которые в него не входят."""
     rows = sorted(_V4_CAPEX_ARTICLE_ROW[key] for key in MANAGEMENT_PROFILE_ARTICLES)
@@ -15645,6 +15729,12 @@ def phase_cash_default_weights(count: int) -> dict[str, list[float]]:
         "design": list(weights),
         "preparation": list(weights),
         "utilities": list(weights),
+        # Снос и расселение идут до РнС вместе с подготовкой и делятся между
+        # очередями так же: прежде каждая очередь платила их ЦЕЛИКОМ — вводная
+        # копировалась в каждую без деления, и четыре очереди сносили одно и
+        # то же четыре раза.
+        "demolition": list(weights),
+        "resettlement": list(weights),
         "social_compensation": list(first_only),
         # Свои деньги вкладывают на входе, поэтому по умолчанию они целиком в
         # первой очереди. Иное распределение задаётся shared_cash.own_funds.
@@ -16788,6 +16878,7 @@ def build_project_workbook(
     capex_xml = source.read(capex_sheet_path).decode("utf-8")
     capex_xml = _v4_apply_management_profile(capex_xml, missing)
     capex_xml = _v4_apply_shared_cash_articles(capex_xml, missing)
+    capex_xml = _v4_apply_demolition_rows(capex_xml, missing)
     objects_sheet_path = _v4_sheet_path(source, "ОБЪЕКТЫ")
     objects_xml = source.read(objects_sheet_path).decode("utf-8")
     sales_sheet_path = _v4_sheet_path(source, "Продажи")
@@ -23879,6 +23970,8 @@ _MONTHLY_CAPEX_LABELS: dict[str, str] = {
     "ird": "ИРД и согласования",
     "design_p": "Проектирование, стадия П",
     "design_rd": "Проектирование, стадия РД",
+    "demolition": "Снос и демонтаж",
+    "resettlement": "Расселение",
     "preparation": "Подготовительные работы",
     "main_above": "Основное строительство, наземная часть",
     "main_under": "Основное строительство, подземная часть",
@@ -25590,6 +25683,12 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
     if volume_articles and queue_base_total > 0:
         for key in volume_articles:
             cash_weights[key] = [g / queue_base_total * 100.0 for g in queue_base_gns]
+    # Снос и расселение — те же деньги до РнС, что и подготовка площадки, и
+    # без своей доли они идут её долей (в том числе «по объёму»): в книге у них
+    # та же колонка доли, второго ответа на «кто платит» быть не должно.
+    for key in ("demolition", "resettlement"):
+        if not shared_cash.get(key):
+            cash_weights[key] = list(cash_weights["preparation"])
     allocation_weights = {
         key: _normalized_phase_weights(shared_alloc.get(key), count, default_weights)
         for key in (*cash_defaults.keys(), "social_construction")
@@ -25608,6 +25707,8 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
         "design": (base_amounts.get("design_p", 0.0)+base_amounts.get("design_rd", 0.0))/1_000_000,
         "preparation": base_amounts.get("preparation", 0.0) / 1_000_000,
         "utilities": base_amounts.get("utilities", 0.0) / 1_000_000,
+        "demolition": base_amounts.get("demolition", 0.0) / 1_000_000,
+        "resettlement": base_amounts.get("resettlement", 0.0) / 1_000_000,
         "social_compensation": n(x_master, "social_compensation_mln") if str(x_master.get("social_mode"))=="Денежная компенсация" else 0.0,
     }
 
@@ -25938,6 +26039,8 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
             "design_rd": design_total*(1-p_ratio)*cash_weights["design"][idx]/100*cost_inflation_factor,
             "preparation": shared_base_mln["preparation"]*cash_weights["preparation"][idx]/100*cost_inflation_factor,
             "utilities": shared_base_mln["utilities"]*cash_weights["utilities"][idx]/100*cost_inflation_factor,
+            "demolition": shared_base_mln["demolition"]*cash_weights["demolition"][idx]/100*cost_inflation_factor,
+            "resettlement": shared_base_mln["resettlement"]*cash_weights["resettlement"][idx]/100*cost_inflation_factor,
         }
 
         result = calculate(CalcRequest(inputs=p_inputs, tep=p_tep, rates=rates))
