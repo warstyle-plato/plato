@@ -6288,14 +6288,16 @@ MO_NORMS_DEFAULT: dict[str, float] = {
     "clinic_gba_sqm_per_visit": 15.0,
     "parking_permanent_per_1000": 356.0,
     "parking_permanent_share": 0.9,
-    # Доля 0,18 от уровня автомобилизации даёт 64 места на тысячу и
-    # воспроизводит ППТ заказчика (7 143 жителя → 458 мест). Справочник РНГП
-    # при этом цитирует п. 5.12 иначе: «не менее 30 автомобилей на 1000
-    # человек». Противоречия тут нет — «не менее» это пол, а ППТ вправе дать
-    # больше, — но два числа об одном нормативе живут у нас порознь и не
-    # сверены. Какое из них считать нормативной потребностью, решает владелец;
-    # до его слова остаётся то, что воспроизводит документ.
-    "parking_temporary_share": 0.18,
+    # Временное хранение область задаёт ЧИСЛОМ на тысячу жителей, а не долей от
+    # уровня автомобилизации, как считает московская методика: «не менее 30
+    # автомобилей на 1000 человек расчётного населения» (п. 5.12 РНГП в
+    # редакции 774-ПП, цитата — в mo_rngp_reference). Здесь стояла доля 0,18 от
+    # 356 — 64 места на тысячу: столько дал ППТ заказчика, и модель
+    # воспроизводила ЕГО проект. Решение владельца (04.09.2026): «ППТ может
+    # быть у всех разное, а норматив один» — модель показывает норматив, а
+    # конкретное требование вписывают, когда оно известно. Норма — это ПОЛ:
+    # проект вправе дать больше, и число правится как любой другой норматив.
+    "parking_temporary_per_1000": 30.0,
     "parking_underground_sqm_per_space": 35.0,
     "parking_surface_sqm_per_space": 22.5,
     "jobs_share_of_population": 0.5,
@@ -6431,9 +6433,7 @@ def mo_social_program(apartments_sqm: float, norms: dict[str, float] | None = No
     parking_permanent = _mo_ceil(
         population * n["parking_permanent_per_1000"] / 1000.0 * n["parking_permanent_share"]
     )
-    parking_temporary = _mo_ceil(
-        population * n["parking_permanent_per_1000"] / 1000.0 * n["parking_temporary_share"]
-    )
+    parking_temporary = _mo_ceil(population * n["parking_temporary_per_1000"] / 1000.0)
     underground_sqm = parking_permanent * n["parking_underground_sqm_per_space"]
 
     retail_trade_sqm = per_1000 * n["retail_sqm_per_1000"]
@@ -36970,8 +36970,8 @@ function renderMo(data){
   ['Поликлиника',landNum(s.clinic.capacity,0)+' пос./смену · '+landNum(s.clinic.gba_sqm,0)+' м²'],
   ['Паркинг постоянного хранения',landNum(s.parking.permanent_spaces,0)+' м/м · подземный '+landNum(s.parking.underground_sqm,0)+' м²'],
   ['Паркинг временного хранения',landNum(s.parking.temporary_spaces,0)+' м/м'
-    +' <span style="color:#777">— в проекте не строим: норматив разрешает разместить их'
-    +' в границах жилого района</span>'],
+    +' <span style="color:#777">— не менее 30 м/м на 1000 жителей; в проекте не строим:'
+    +' норматив разрешает разместить их в границах жилого района</span>'],
   ['Озеленение',landNum(s.green.quarter_sqm,0)+' м² · общего пользования '+landNum(s.green.public_sqm,0)+' м²'],
   ['Нежилые помещения общественные',landNum(s.public_premises_sqm,0)+' м²'],
   ['Рабочие места',landNum(s.jobs.required,0)+' требуется · '+landNum(s.jobs.from_objects,0)+
