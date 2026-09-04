@@ -70,7 +70,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.21.96"
+VERSION = "0.21.97"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -15454,6 +15454,7 @@ _V4_CARRY_FLAG_CELL = "B92"          # признак на «Вводных»
 _V4_CF_FIRST_COL = 4                 # D
 _V4_CF_LAST_COL = 123                # DS
 _V4_CF_QUEUE_ENABLED_ROW = 88        # 'Вводные'!B88 — очередь 1 включена
+_V4_BRIDGE_FEE_ROW = 57              # база комиссии выдачи = лимит БРИДЖа
 
 
 def _v4_insert_row(xml: str, row: int, body: str, before: int | None) -> tuple[str, bool]:
@@ -15775,6 +15776,87 @@ def _v4_revenue_by_product(xml: str, products: list[dict[str, Any]],
 # переноса.
 _V4_SWEEP_ROW = 26
 _V4_SWEEP_SHARE_CELL = "F92"
+
+
+# Служебная строка блока CAPEX: база лимита БРИДЖа — те же статьи, но только
+# в месяцах ДО РнС. 36 и 37 заняты сносом и расселением, 38 — процентами ВРИ,
+# 39 в шаблоне пуста. В итог блока и в базу резерва она не входит по
+# построению: обе формулы читают диапазон 14:31 и перечисленные строки.
+_V4_CAPEX_BRIDGE_BASE_ROW = 39
+
+
+def _v4_apply_bridge_limit_before_permit(xml: str, missing: list[str]) -> str:
+    """Лимит БРИДЖа в книге — по платежам ДО РнС, как у движка.
+
+    «Бридж по определению это только то, что ДО РнС» (владелец, 04.09.2026).
+    База комиссии выдачи (строка 57 листов CF) брала итоги статей целиком —
+    покупку, П, РД и денежную соцкомпенсацию, — и рассрочка входила в неё вся,
+    включая платежи после открытия ПФ. С РнС эти платежи финансирует ПФ, и
+    лимит под них — просьба о деньгах дважды.
+
+    Считается по помесячным строкам самих статей, а не по их итогам: у покупки
+    график задаётся вводной, у соцкомпенсации своя дата, а РД у длинного
+    проекта переваливает за РнС. При совмещённом режиме соцнагрузки денежная
+    часть идёт профилем строки 31 в той доле, в какой она денежная, — сумма за
+    месяцы до РнС выходит той же, что у движка.
+    """
+    from openpyxl.utils import get_column_letter as _col
+
+    def style_of(coord: str) -> str | None:
+        found = re.search(r'<x:c r="%s"[^>]*?\ss="(\d+)"' % coord, xml)
+        return found.group(1) if found else None
+
+    label_style, amount_style, month_style = style_of("A20"), style_of("B20"), style_of("D20")
+    for phase in range(_V4_CAPEX_PHASES):
+        base = _V4_CAPEX_BLOCK_STRIDE * phase
+        row = _V4_CAPEX_BRIDGE_BASE_ROW + base
+        permit = f"$B${7 + base}"
+        social_total = f"$B${31 + base}"
+        queue_row = _V4_CF_QUEUE_ENABLED_ROW + phase
+        cash = f"'Вводные'!$B$56*'Вводные'!$R${queue_row}*'Вводные'!$H$6"
+        xml = _v4_ensure_row(xml, row)
+        cells = {f"A{row}": dict(text="Справочно: база лимита БРИДЖа (платежи до РнС)"),
+                 f"B{row}": dict(formula=f"SUM(D{row}:DS{row})"),
+                 f"C{row}": dict(text="млн ₽")}
+        styles = {f"A{row}": label_style, f"B{row}": amount_style, f"C{row}": None}
+        for index in range(_V4_CAPEX_MONTH_COLUMNS):
+            column = _col(4 + index)
+            social = (
+                f"IF('Вводные'!$B$37=\"Денежная компенсация\",{column}{31 + base},"
+                f"IF('Вводные'!$B$37=\"{SOCIAL_MODE_BOTH}\","
+                f"{column}{31 + base}*IFERROR(({cash})/{social_total},0),0))")
+            cells[f"{column}{row}"] = dict(formula=(
+                f"IF({column}$3<{permit},"
+                f"{column}{14 + base}+{column}{17 + base}+{column}{18 + base}+{social},0)"))
+            styles[f"{column}{row}"] = month_style
+        xml, done = _v4_set_cells(xml, row, cells, styles)
+        if not done:
+            missing.append(f"CAPEX · база лимита БРИДЖа: строка {row} не записана")
+    return xml
+
+
+def _v4_use_bridge_base_row(xml: str, phase: int, missing: list[str]) -> str:
+    """Строка 57 листа CF берёт базу лимита из служебной строки CAPEX."""
+    base = _V4_CAPEX_BLOCK_STRIDE * (phase - 1)
+    row = _V4_CAPEX_BRIDGE_BASE_ROW + base
+    purchase, design_p, design_rd = 14 + base, 17 + base, 18 + base
+    social = 31 + base
+    queue_row = _V4_CF_QUEUE_ENABLED_ROW + (phase - 1)
+    cash = f"'Вводные'!$B$56*'Вводные'!$R${queue_row}*'Вводные'!$H$6"
+    old = (f"('CAPEX'!$B${purchase}+'CAPEX'!$B${design_p}+'CAPEX'!$B${design_rd}"
+           f"+IF('Вводные'!$B$37=\"Денежная компенсация\",'CAPEX'!$B${social},"
+           f"IF('Вводные'!$B$37=\"{SOCIAL_MODE_BOTH}\",{cash},0)))")
+    new = f"SUM('CAPEX'!$D${row}:$DS${row})"
+
+    def build(_column: str, body: str) -> str:
+        return body.replace(old, new)
+
+    xml, count = _v4_rewrite_row_formulas(xml, _V4_BRIDGE_FEE_ROW, old, build)
+    if not count:
+        missing.append(
+            f"CF_{phase}: строка {_V4_BRIDGE_FEE_ROW} не опознана — лимит БРИДЖа "
+            "остался от полной цены, а не от платежей до РнС")
+    return xml
 
 
 def _v4_apply_cash_sweep(xml: str, phase: int, missing: list[str]) -> str:
@@ -17188,6 +17270,7 @@ def build_project_workbook(
     capex_xml = _v4_apply_management_profile(capex_xml, missing)
     capex_xml = _v4_apply_shared_cash_articles(capex_xml, missing)
     capex_xml = _v4_apply_demolition_rows(capex_xml, missing)
+    capex_xml = _v4_apply_bridge_limit_before_permit(capex_xml, missing)
     capex_xml = _v4_apply_vri_interest_row(capex_xml, missing)
     vri_sheet_path = _v4_sheet_path(source, "ВРИ")
     vri_xml = _v4_apply_vri_installment_start(
@@ -17290,9 +17373,11 @@ def build_project_workbook(
             missing.append(f"{_name}: лист не найден")
             continue
         cf_sheet_paths[_name] = _path
-        cf_sheet_xml[_name] = _v4_apply_cash_sweep(
-            _v4_apply_debt_carry(
-                source.read(_path).decode("utf-8"), _phase, _queue_count, missing),
+        cf_sheet_xml[_name] = _v4_use_bridge_base_row(
+            _v4_apply_cash_sweep(
+                _v4_apply_debt_carry(
+                    source.read(_path).decode("utf-8"), _phase, _queue_count, missing),
+                _phase, missing),
             _phase, missing)
 
     # Выручка очереди по продуктам: на экране разбивка есть, а в книге жила
@@ -22724,19 +22809,37 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     scenario = str(x.get("rate_scenario", "low"))
     interest_mode = str(x.get("bridge_interest_mode", "Капитализация в ПФ"))
 
-    # Excel input logic: purchase + social compensation + P/RD design.
+    # Лимит БРИДЖа — покупка, денежная соцкомпенсация и проектирование, но
+    # ТОЛЬКО ТО, ЧТО ПЛАТИТСЯ ДО РнС: «бридж по определению это только то, что
+    # ДО РнС» (владелец, 04.09.2026). С РнС открывается ПФ, и всё, что платится
+    # с этого месяца, финансирует он — просить под это лимит БРИДЖа значит
+    # просить дважды. Прежде лимит брался от полной цены покупки, и рассрочка
+    # уезжала в него целиком: на площадке с покупкой 7,5 млрд ₽ и платежами
+    # через год после сделки лимит просил деньги, которых банк по этой линии
+    # не даёт.
+    #
+    # Считается по помесячному графику самой статьи, а не по её итогу: график
+    # платежей за покупку задаётся вводной, у соцкомпенсации своя дата, а РД
+    # у длинного проекта переваливает за РнС.
+    def _bridge_share(article: str) -> float:
+        schedule = (op.get("capex_by_article") or {}).get(article) or {}
+        return sum(value for month, value in schedule.items() if month < permit)
+
     calculated_bridge_limit = (
-        n(x, "purchase_price_mln") * 1_000_000
-        + op["capex_amounts"]["design_p"]
-        + op["capex_amounts"]["design_rd"]
+        _bridge_share("purchase")
+        + _bridge_share("design_p")
+        + _bridge_share("design_rd")
     )
     if str(x.get("social_mode")) == "Денежная компенсация":
-        calculated_bridge_limit += op["capex_amounts"]["social"]
+        calculated_bridge_limit += _bridge_share("social")
     elif str(x.get("social_mode")) == SOCIAL_MODE_BOTH:
         # В лимит БРИДЖа входит только денежная часть: стройку соцобъектов
         # банк финансирует проектным финансированием после РнС, и включать её
         # в БРИДЖ значило бы просить лимит дважды.
-        calculated_bridge_limit += n(x, "social_compensation_mln") * 1_000_000
+        cash_total = n(x, "social_compensation_mln") * 1_000_000
+        built = op["capex_amounts"].get("social", 0.0)
+        share = (_bridge_share("social") / built) if built else 0.0
+        calculated_bridge_limit += cash_total * min(1.0, share)
 
     # Часть первоначального финансирования может идти не из банка: собственные
     # деньги, заём учредителя, перехваченный чужой долг. Эти средства тратятся
@@ -33192,6 +33295,7 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
 .compare{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:15px}.compare div{padding:12px;background:#f7f7f5}
 .compare small{color:#777;display:block}.compare b{display:block;margin-top:5px}
 .rate-good{color:var(--positive)}.rate-warn{color:var(--warn)}.negative{color:var(--negative)}
+.phase-given-none{display:flex;align-items:center;justify-content:center;color:#aaa;font-size:12px}
 .chart{height:230px;border:1px solid var(--line);margin-top:14px;position:relative;background:linear-gradient(to bottom,#fff,#fafafa)}
 .chart svg{width:100%;height:100%}.legend{display:flex;gap:18px;font-size:11px;color:#666;margin-top:8px}.legend i{display:inline-block;width:18px;height:3px;background:#111;vertical-align:middle;margin-right:5px}.legend i.gray{background:#999}
 .monthly th{position:sticky;top:0;z-index:2}.monthly td{white-space:nowrap}.monthly .money{font-variant-numeric:tabular-nums}
@@ -35364,10 +35468,14 @@ function syncPhaseProductSharesFromTep(key,field,index){
 // продаётся ШТУКА, и метры про них ничего не говорят — гараж, отданный городу,
 // уменьшил бы площадь, а места продолжили бы продаваться все.
 const PHASE_GIVEN_IN_UNITS=['underground_parking','storage','above_parking'];
+// Соцобъекты передаются городу целиком, и продаваемой площади у них нет:
+// правило «переданное уходит из продаваемой» к ним не идёт.
+const SOCIAL_TEP_PRODUCTS=['kindergarten','school','clinic'];
 function phaseGivenField(key){
  return PHASE_GIVEN_IN_UNITS.includes(key)?'transfer_units':'transfer';
 }
 function setPhaseProductGiven(index,key,value){
+ if(SOCIAL_TEP_PRODUCTS.includes(key))return;
  const phase=phasing.phases[index];if(!phase)return;if(!phase.products)phase.products={};
  if(!phase.products[key])phase.products[key]={assumption_source:'Введено пользователем'};
  const field=phaseGivenField(key);
@@ -35547,9 +35655,15 @@ function renderPhasing(){
    const givenField=phaseGivenField(k);
    const given=Number(own[givenField]||0);
    totals.given+=given;
-   const givenInput=`<input type="number" min="0" step="any" value="${given.toFixed(givenField==='transfer'?1:0)}"`
-    +` title="передаётся ${givenField==='transfer'?'м² — уходит из продаваемой этой очереди':'шт. — строятся, но не продаются'}"`
-    +` onchange="setPhaseProductGiven(${i},'${k}',this.value)">`;
+   // У соцобъекта передаётся ВЕСЬ объект — садик не отдают наполовину, и
+   // продаваемой площади у него нет вовсе. Поле, которое нечем заполнить,
+   // на экране читается как забытое («зачем эта ячейка у соцобъектов?»,
+   // владелец, 04.09.2026), поэтому его там нет.
+   const givenInput=SOCIAL_TEP_PRODUCTS.includes(k)
+    ? `<div class="phase-given-none" title="Соцобъект передаётся городу целиком: своей продаваемой площади у него нет">—</div>`
+    : `<input type="number" min="0" step="${givenField==='transfer'?'any':'1'}" value="${given.toFixed(givenField==='transfer'?1:0)}"`
+      +` title="передаётся ${givenField==='transfer'?'м² — вычитается из продаваемой площади этой очереди':'шт. — вычитается из продаваемых мест этой очереди'}"`
+      +` onchange="setPhaseProductGiven(${i},'${k}',this.value)">`;
    return `<td><div style="display:grid;grid-template-columns:repeat(4,minmax(72px,1fr));gap:5px">${inputsHtml}${givenInput}</div></td>`;
   }).join('');
   // Сумма очередей сравнивается с проектом, а не показывается сама по себе.
@@ -35579,8 +35693,16 @@ function renderPhasing(){
   // машино-места и кладовые — штуками. В шапке это не сказать: она одна на
   // все продукты, и «передаётся» без единицы читается как вопрос («что
   // передаётся? штуки или метры?», владелец, 04.09.2026).
-  const givenUnit=phaseGivenField(k)==='transfer'?'м²':'шт.';
-  return `<tr><td><b>${tepLabels[k]}</b><div style="font-size:11px;color:#777">передаётся в ${givenUnit}</div></td>${cells}<td>${totalCell}${givenCell}</td></tr>`;
+  // «Передаётся в м²» рядом со строкой, где стоят и метры, и штуки, не
+  // отвечает на вопрос: из какого из трёх чисел это вычитается («если в
+  // квартирах и штуки и метры указаны», владелец, 04.09.2026). Подпись
+  // называет базу, а не единицу.
+  const givenHint=SOCIAL_TEP_PRODUCTS.includes(k)
+   ? 'передаётся городу целиком'
+   : (phaseGivenField(k)==='transfer'
+      ? 'передаётся, м² — из продаваемой площади'
+      : 'передаётся, шт. — из продаваемых мест');
+  return `<tr><td><b>${tepLabels[k]}</b><div style="font-size:11px;color:#777">${givenHint}</div></td>${cells}<td>${totalCell}${givenCell}</td></tr>`;
  }).join('');
  if(document.getElementById('phaseTepWarning'))phaseTepWarning.textContent=phaseTepEditWarning;
  const sl={purchase:'Покупка / вход',land_rights:'Земельные права / ВРИ',ird:'ИРД',design:'П + РД',preparation:'Подготовительные',utilities:'Наружные сети',social_compensation:'Соцкомпенсация',social_construction:'Соцобъекты — аналитическая аллокация'};
