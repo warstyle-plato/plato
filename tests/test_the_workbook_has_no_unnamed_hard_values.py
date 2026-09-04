@@ -34,6 +34,7 @@ import main_legacy as core  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import v4_entry_sheet as ves  # noqa: E402
 import v4_inputs  # noqa: E402
 
 openpyxl = pytest.importorskip("openpyxl")
@@ -55,7 +56,10 @@ def read(source) -> dict[str, dict[str, tuple[str, str]]]:
     book = openpyxl.load_workbook(source, data_only=False)
     out: dict[str, dict[str, tuple[str, str]]] = {}
     for sheet in book.worksheets:
-        if sheet.title == v4_inputs.ENTRY and v4_inputs.PARAMS in book.sheetnames:
+        # Лист ввода и лист инструкции — не копии шаблонных: первый его
+        # продолжение, второй собран из самой книги. Сравнивать их с шаблоном
+        # не с чем, а их отсутствие там читалось бы как пропажа листа.
+        if sheet.title in (v4_inputs.ENTRY, ves.GUIDE_SHEET) and v4_inputs.PARAMS in book.sheetnames:
             continue
         cells: dict[str, tuple[str, str]] = {}
         view = (v4_inputs.inputs(book)

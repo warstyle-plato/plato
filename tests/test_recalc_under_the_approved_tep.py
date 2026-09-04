@@ -513,7 +513,11 @@ def test_the_page_substitutes_the_lease_payment_too():
     body = body[:body.index("\n}\n")]
     assert "land_right:String(inputs.land_right" in body
     assert "делитель 1,001" in body, "право видно в строке «было → стало»"
-    assert "if(d.vri_total_mln>0)inputs.land_rights_cost_mln" in body
+    # Прежде это была одна строка присваивания. Теперь пересчёт пишет вводные
+    # общим правилом — оно же не трогает то, что вписано требованием КРТ, — но
+    # утверждение прежнее: посчитанная плата обязана доехать до поля.
+    assert "derived.land_rights_cost_mln=d.vri_total_mln" in body
+    assert "applyDerivedInputs(derived)" in body
 
 
 def test_editing_the_tep_recalculates_by_itself():
