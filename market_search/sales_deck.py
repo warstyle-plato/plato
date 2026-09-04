@@ -446,6 +446,31 @@ def measure_of(head: str) -> str:
     return raw.casefold()
 
 
+_TIME_LABEL = re.compile(r"^\s*(\d{4})[-\s]*(?:(\d{2})|[QКк]\s*(\d))")
+
+
+def _time_key(label: str) -> tuple[int, int] | None:
+    """Год и период подписи оси, если это вообще время."""
+    found = _TIME_LABEL.match(str(label or ""))
+    if not found:
+        return None
+    year = int(found.group(1))
+    period = found.group(2) or found.group(3)
+    return (year, int(period)) if period else (year, 0)
+
+
+def _descending_time(labels: list[str]) -> bool:
+    """Подписи — время, и оно идёт от нового к старому.
+
+    Строго убывающий ряд: одинаковые соседи или единственная подпись — это не
+    порядок, а совпадение, и переворачивать по ним нечего.
+    """
+    keys = [_time_key(label) for label in labels]
+    if len(keys) < 2 or any(key is None for key in keys):
+        return False
+    return all(keys[index] > keys[index + 1] for index in range(len(keys) - 1))
+
+
 def _group_name(head: list[Any], columns: list[int], unit: str) -> str:
     """Как назвать график из нескольких колонок одной меры."""
     if len(columns) == 1:
@@ -476,6 +501,15 @@ def charts(table: dict[str, Any]) -> list[dict[str, Any]]:
     if len(head) < 2 or len(rows) < 2:
         return []
     categories = [str(row[0]) for row in rows if row]
+    # Время на графике идёт вперёд, а таблица читается свежим вверх — и это
+    # разные порядки, а не один. Колода берёт строки в том порядке, в каком
+    # они на экране, и «Динамика» выходила справа налево: 2026-08 слева,
+    # 2026-01 справа («шкала времени в презентации инвертирована», владелец,
+    # 04.09.2026). Переворачивается только доказанный убывающий РЯД ВРЕМЕНИ —
+    # у тем и каналов свой порядок, и его трогать нельзя.
+    if _descending_time(categories):
+        rows = list(reversed(rows))
+        categories = list(reversed(categories))
 
     # Единица, найденная в САМИХ ячейках колонки: у таблицы тем шапка молчит
     # («Первые 3 мес.»), а проценты стоят в каждой строке. Без этого три
