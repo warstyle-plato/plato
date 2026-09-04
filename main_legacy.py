@@ -41409,28 +41409,21 @@ function escrowCoverSvg(rows,cover,stack){
  // (владелец, 04.09.2026: «так как у нас наложение 12 месяцев»). Одним цветом
  // это читается как «очередь стартует с десяти миллиардов»; оттенками видно,
  // чьи это деньги, а прозрачной полосой — где линии пересекаются.
- let stackAreas='',overlap='';
+ // Каждая очередь — СВОЯ площадь от нуля, полупрозрачная, а не слой поверх
+ // предыдущей (владелец, 04.09.2026: «чтобы поля пересечения очередей были
+ // полупрозрачными и было бы видно, что вторая стартовала с нуля, на фоне
+ // первой, когда первая закончилась, она пошла дальше»). Стопка отвечала на
+ // другой вопрос — «сколько всего», — а вопрос здесь про жизнь каждой линии.
+ // Месяцы, где очереди идут вместе, видны сами: два прозрачных поля дают
+ // более тёмный тон, и отдельная полоса для этого не нужна.
+ let stackAreas='';
  if(stack.length>1){
   const at=(s,x)=>Number(s.byMonth[String(x.month||'').slice(0,10)]||0);
-  let below=data.map(()=>0);
   stackAreas=stack.map((s,k)=>{
-   const above=data.map((x,i)=>below[i]+at(s,x));
-   const up=above.map((v,i)=>pt(i,v)).join(' ');
-   const back=below.slice().reverse().map((v,i)=>pt(below.length-1-i,v)).join(' ');
-   below=above;
-   return `<polygon points="${up} ${back}" fill="${ESCROW_STACK_SHADES[k%ESCROW_STACK_SHADES.length]}" fill-opacity="0.5"/>`;
+   const points=data.map((x,i)=>pt(i,at(s,x))).join(' ');
+   return `<polygon points="${pt(0,0)} ${points} ${pt(data.length-1,0)}" `
+    +`fill="${ESCROW_STACK_SHADES[k%ESCROW_STACK_SHADES.length]}" fill-opacity="0.35"/>`;
   }).join('');
-  // Полоса пересечения — по месяцам, где счёт открыт больше чем у одной
-  // очереди. Прозрачная и под линиями: это подсказка о времени, а не величина.
-  let run=[];
-  const flushOverlap=()=>{if(run.length){
-    const x1=X(run[0])-plotW/(data.length-1)/2, x2=X(run[run.length-1])+plotW/(data.length-1)/2;
-    overlap+=`<rect x="${Math.max(pL,x1).toFixed(1)}" y="${pT}" width="${Math.max(0,Math.min(W-pR,x2)-Math.max(pL,x1)).toFixed(1)}" height="${plotH.toFixed(1)}" fill="#1B4332" fill-opacity="0.06"/>`}
-   run=[]};
-  data.forEach((x,i)=>{
-   const live=stack.filter(s=>at(s,x)>0).length;
-   if(live>1)run.push(i);else flushOverlap()});
-  flushOverlap();
  }
  let grid='';
  for(let t=0;t<=4;t++){const v=top*t/4,y=Y(v);
@@ -41466,7 +41459,7 @@ function escrowCoverSvg(rows,cover,stack){
  let cumGrid='';
  for(let t=0;t<=4;t++){const v=cumTop*t/4,y=Yc(v);
   cumGrid+=`<text x="${W-pR+6}" y="${(y+4).toFixed(1)}" font-size="11" fill="#1B5E77" text-anchor="start">${(v/1e9).toLocaleString('ru-RU',{maximumFractionDigits:1})}</text>`}
- return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">${grid}${overlap}
+ return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">${grid}
   ${stackAreas||`<polygon points="${area(x=>Number(x.escrow||0))}" fill="#2D6A4F" fill-opacity="0.30"/>`}
   ${gaps}
   <polyline points="${path(duty)}" fill="none" stroke="#A35D00" stroke-width="2.6"/>
@@ -41498,8 +41491,8 @@ function escrowStackOfQueues(){
 function escrowStackLegendHtml(stack){
  if(!stack.length)return '';
  return '<div class="legend">'+stack.map((s,k)=>
-  `<span><i style="background:${ESCROW_STACK_SHADES[k%ESCROW_STACK_SHADES.length]};opacity:.5;height:9px"></i>Эскроу ${escapeHtml(s.name)}</span>`
- ).join('')+'<span><i style="background:#1B4332;opacity:.12;height:9px"></i>Месяцы, когда открыты линии двух и более очередей</span></div>';
+  `<span><i style="background:${ESCROW_STACK_SHADES[k%ESCROW_STACK_SHADES.length]};opacity:.35;height:9px"></i>Эскроу ${escapeHtml(s.name)}</span>`
+ ).join('')+'<span style="color:#777">Поля полупрозрачные: где тон темнее — там очереди идут вместе</span></div>';
 }
 function renderFinanceChart(rows,cover){
  // Легенда оттенков — рядом с графиком, а не внутри него: у карточки .chart
