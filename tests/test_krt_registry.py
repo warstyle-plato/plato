@@ -381,7 +381,7 @@ def test_auctions_exposes_krt_as_a_separate_tab_and_endpoint(monkeypatch) -> Non
     # ТЭП, и Платон в нём не участвует.
     assert "Ищем: жильё, готовое к старту" not in page.text
     assert "Платон: жильё" not in page.text
-    assert 'id="krtPurpose"' in page.text
+    assert 'id="krtPurposeOptions"' in page.text
     assert "Короткий вывод Платона" in page.text
     assert "analysis.site||analysis.overall" in page.text
     # Карточка открывает посчитанное, а не запускает счёт заново: кнопка

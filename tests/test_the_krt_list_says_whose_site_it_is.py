@@ -54,12 +54,19 @@ def _run(program: str) -> dict:
     return json.loads(done.stdout)
 
 
-def _needs_harness(intent, mode: str) -> str:
+def _axis_harness(intent, axis: str, *, card=None, press=None) -> str:
+    """Ответ оси на одной площадке: занятость и реновация считаются по-своему."""
     return (
-        "const state={krtRank:{},krtRequirements:{},krtPress:{}};\n"  # krtPress появился вместе с чтением публикаций
+        "const state={krtRank:{},krtRequirements:{},krtPress:{},krtCards:{}};\n"
         + f"state.krtRequirements['s']={json.dumps({'intent': intent} if intent else {})};\n"
-        + _function("krtIntent") + "\n" + _function("krtNeedsPass") + "\n"
-        + f"console.log(JSON.stringify({{pass:krtNeedsPass({{slug:'s'}},{json.dumps(mode)})}}));"
+        + (f"state.krtCards['s']={json.dumps(card)};\n" if card else "")
+        + (f"state.krtPress['s']={json.dumps(press)};\n" if press else "")
+        + _function("krtIntent") + "\n"
+        + _function("krtStatusKind") + "\n"
+        + _function("krtRenovation") + "\n"
+        + _function("krtEntryKind") + "\n"
+        + _function("krtRenovationKind") + "\n"
+        + f"console.log(JSON.stringify({{kind:{axis}({{slug:'s'}})}}));"
     )
 
 
@@ -75,20 +82,30 @@ CARD_ONLY = {"probed": True, "decision_read": False, "kind": "", "city_needs": [
              "operator": [], "operator_name": "", "taken": False}
 
 
-def test_the_filter_sorts_the_read_ones() -> None:
-    assert _run(_needs_harness(CITY, "city"))["pass"] is True
-    assert _run(_needs_harness(CLEAN, "city"))["pass"] is False
-    assert _run(_needs_harness(TAKEN, "taken"))["pass"] is True
-    assert _run(_needs_harness(CLEAN, "free"))["pass"] is True
-    assert _run(_needs_harness(CITY, "free"))["pass"] is False
-    assert _run(_needs_harness(TAKEN, "free"))["pass"] is False
+def test_the_axis_answers_with_three_answers_not_two() -> None:
+    """Занято / свободно / не знаем — три разных ответа (владелец, 04.09.2026).
+
+    Прежде оси было две — «оператор назван» и «городских нужд нет», — и
+    непрочитанная площадка проходила ЛЮБОЙ выбор: сказать о ней было нечего, и
+    прятать её было нельзя. С появлением своего варианта «Не знаем» прятать её
+    больше не нужно: она называется и считается отдельно, а «свободна» перестаёт
+    собирать в себя наш пробел чтения.
+    """
+    read = {"available": True, "developers": [], "renovation": False}
+    assert _run(_axis_harness(TAKEN, "krtEntryKind"))["kind"] == "taken"
+    assert _run(_axis_harness(CLEAN, "krtEntryKind", card=read))["kind"] == "free"
+    # Ничего не прочитано — «не знаем», а не «свободна». Это половина каталога:
+    # у площадки без карточки города карточки не существует вовсе.
+    assert _run(_axis_harness(None, "krtEntryKind"))["kind"] == "unknown"
+    assert _run(_axis_harness({"probed": False}, "krtEntryKind"))["kind"] == "unknown"
 
 
-def test_an_unread_site_is_never_hidden() -> None:
-    """«Не найдено» — не «нет», и «не читали» — тем более."""
-    for mode in ("city", "taken", "free"):
-        assert _run(_needs_harness(None, mode))["pass"] is True, mode
-        assert _run(_needs_harness({"probed": False}, mode))["pass"] is True, mode
+def test_the_renovation_axis_keeps_its_own_unknown() -> None:
+    read = {"available": True, "developers": [], "renovation": False}
+    assert _run(_axis_harness(CITY, "krtRenovationKind"))["kind"] == "yes"
+    assert _run(_axis_harness(CLEAN, "krtRenovationKind", card=read))["kind"] == "no"
+    assert _run(_axis_harness(None, "krtRenovationKind"))["kind"] == "unknown", \
+        "непрочитанное сложено с «реновации не найдено»"
 
 
 def test_the_export_cell_says_what_is_missing() -> None:
@@ -116,8 +133,11 @@ def test_a_named_operator_lowers_the_score_like_a_taken_site() -> None:
 
 
 def test_the_filter_and_the_columns_are_on_the_page() -> None:
-    assert 'id="krtNeeds"' in PAGE
-    assert "$('krtNeeds').onchange=filterKrt" in PAGE
+    # Ось «Чьё угодно» разошлась на две — «Вход» и «Реновация»: один выбор
+    # отвечал на два вопроса разом и потому не отвечал ни на один.
+    assert 'id="krtEntryOptions"' in PAGE and 'id="krtRenoOptions"' in PAGE
+    assert 'id="krtNeeds"' not in PAGE, "прежняя ось вернулась"
+    assert "bindKrtFilters()" in PAGE, "флажки ни к чему не привязаны"
     for key in ("krt_kind", "krt_city_needs", "krt_operator"):
         assert key in PAGE, f"колонка {key} до выгрузки не доезжает"
     from auction_search import api

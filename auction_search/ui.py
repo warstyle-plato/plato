@@ -42,27 +42,36 @@ __DEVELOPAID_CONTOUR__
           <div class="multi-options" id="krtOkrugOptions"></div>
         </div>
       </div>
-      <select id="krtStatus" title="Статус krt.mos.ru: «Планируемый» и «В реализации» — слова города о стройке. У проекта решения статуса каталога нет вовсе: карточки у него ещё нет. Число рядом — сколько площадок сейчас в этом состоянии. «Карточка не разобрана» — те строки каталога, у которых значения съехали на поле: их значения не показываются, чтобы не выдать съехавшее за прочитанное."><option value="">Все статусы</option><option value="planned">Планируемый</option><option value="running">В реализации</option><option value="draft">Проект решения</option><option value="unparsed">Карточка не разобрана</option></select>
-      <select id="krtPurpose"><option value="">Любое назначение</option><option value="housing_gfa_sqm">Жильё</option><option value="business_gfa_sqm">Общественно-деловое</option><option value="nonresidential_gfa_sqm">Нежилое</option></select>
+      <div class="multi" id="krtStageBox" title="Одна ось вместо трёх. «Статус», «Шаг» и «Торги» спорили между собой: площадка бывает «Планируемой» по слову города и «Занятой» по публикации разом, и выбор одного прятал её из другого. Здесь стадия отвечает на одно — где площадка в воронке города. Занятость и реновация стоят своими осями: они про другое.">
+        <button type="button" class="multi-toggle" id="krtStageToggle" aria-haspopup="true" aria-expanded="false" aria-controls="krtStageMenu">Любая стадия</button>
+        <div class="multi-menu hidden" id="krtStageMenu">
+          <div class="multi-head"><span>Стадия по городу</span><button type="button" class="multi-clear" id="krtStageClear">Сбросить</button></div>
+          <div class="multi-options" id="krtStageOptions"></div>
+        </div>
+      </div>
+      <div class="multi" id="krtEntryBox" title="Можно ли ещё войти. «Занята» — площадка в реализации, назван застройщик или оператор, заключён договор о КРТ либо уже продаётся ЖК. «Не знаем» — источники о ней молчат или не спрошены вовсе: у площадки без карточки каталога карточки города не существует. Молчание источника — не «свободна».">
+        <button type="button" class="multi-toggle" id="krtEntryToggle" aria-haspopup="true" aria-expanded="false" aria-controls="krtEntryMenu">Вход: любой</button>
+        <div class="multi-menu hidden" id="krtEntryMenu">
+          <div class="multi-head"><span>Можно ли войти</span><button type="button" class="multi-clear" id="krtEntryClear">Сбросить</button></div>
+          <div class="multi-options" id="krtEntryOptions"></div>
+        </div>
+      </div>
+      <div class="multi" id="krtRenoBox" title="Метры Программы реновации — часть цены входа, уплаченная метрами: они строятся, но не продаются. Признак ставится только вместе с цитатой источника, а «не знаем» — отдельный ответ и в «не найдена» не складывается.">
+        <button type="button" class="multi-toggle" id="krtRenoToggle" aria-haspopup="true" aria-expanded="false" aria-controls="krtRenoMenu">Реновация: любая</button>
+        <div class="multi-menu hidden" id="krtRenoMenu">
+          <div class="multi-head"><span>Городские нужды</span><button type="button" class="multi-clear" id="krtRenoClear">Сбросить</button></div>
+          <div class="multi-options" id="krtRenoOptions"></div>
+        </div>
+      </div>
+      <div class="multi" id="krtPurposeBox" title="Назначение по ТЭП источника: у площадки без карточки они из её проекта решения, у остальных из каталога. Выбрать можно несколько — площадка со смешанным объёмом попадёт в каждое. Выбранное ОДНО «Общественно-деловое» задаёт и меру балла.">
+        <button type="button" class="multi-toggle" id="krtPurposeToggle" aria-haspopup="true" aria-expanded="false" aria-controls="krtPurposeMenu">Любое назначение</button>
+        <div class="multi-menu hidden" id="krtPurposeMenu">
+          <div class="multi-head"><span>Назначение</span><button type="button" class="multi-clear" id="krtPurposeClear">Сбросить</button></div>
+          <div class="multi-options" id="krtPurposeOptions"></div>
+        </div>
+      </div>
       <input id="krtMinHousing" type="number" min="0" step="10000" placeholder="Жильё от, м²"
              title="Мелкие площадки отсекаются по объёму жилья. Площадка, у которой объём жилья не указан, при непустом пороге прячется — она не «маленькая», она неизвестная, и сколько таких скрыто, написано под таблицей.">
-      <select id="krtStage" title="Воронка: mos.ru показывает территорию раньше всех, ГИС Торги — позже всех. Число рядом с шагом — сколько площадок на нём сейчас. «Лот опубликован», «Идёт аукцион» и «Объявлено о торгах» считаются по лотам, а лоты собирает вкладка «Торги»: пока она не открыта, у этих трёх шагов честный ноль, а не пустой фильтр.">
-        <option value="">Шаг: любой</option>
-        <option value="decision">Есть проект решения о КРТ</option>
-        <option value="upcoming">Объявлено о торгах</option>
-        <option value="auction">Лот опубликован</option>
-        <option value="bidding">Идёт аукцион</option>
-        <option value="taken">Занята</option>
-        <option value="unknown">Шаг не определён</option></select>
-      <select id="krtTender" title="Лот на торгах, привязанный к этой площадке. Ищется по лотам, уже собранным на вкладке «Торги»: правило совпадения то же, что у решений — улица держится за своим владением.">
-        <option value="">Торги: любые</option>
-        <option value="yes">Есть лот на торгах</option>
-        <option value="no">Лота не найдено</option></select>
-      <select id="krtCard" title="Откуда мы знаем о площадке. «В каталоге города» — она опубликована на krt.mos.ru со своими ТЭП. «Только проект решения» — документ на mos.ru есть, а карточки в каталоге нет: чаще всего решение свежее и каталог его ещё не показывает, но встречаются и старые площадки — построенные или переименованные. Что решение НЕ принято, отсюда не следует: город этого нигде не публикует. ТЭП у такой площадки нет вовсе, и в колонках стоит прочерк, а не ноль.">
-        <option value="">Источник: любой</option>
-        <option value="yes">В каталоге города</option>
-        <option value="no">Только проект решения</option></select>
-      <select id="krtNeeds" title="Городские нужды и оператор читаются из проекта решения и карточки krt.mos.ru — только вместе с цитатой. Площадка, у которой документ ещё не прочитан, остаётся в списке при любом выборе: «не найдено» — это не «нет»."><option value="">Чьё угодно</option><option value="free">Без городских нужд и без оператора</option><option value="city">Только городские нужды</option><option value="taken">Только с названным оператором</option></select>
       <div class="filter-actions"><button id="krtRefresh" class="primary">Обновить каталог</button><button id="krtRankBtn">Оценить отобранные моделью</button><button id="krtPressBtn" title="Читает публикации и каналы по ВСЕМ планируемым площадкам: до пяти поисковых запросов на площадку, по каждому её адресу. Уже спрошенные пропускаются — занятая площадка свободной не станет. У площадок в реализации застройщика называет сама карточка города, поиска они не требуют.">Прочитать публикации по планируемым</button><button id="krtExport">Выгрузить Excel</button></div>
     </div>
     <div class="stats"><div class="stat"><b id="krtCount">—</b><span id="krtCountNote">проектов</span></div><div class="stat"><b id="krtArea">—</b><span>га территории</span></div><div class="stat"><b id="krtHousing">—</b><span>м² жилья</span></div><div class="stat"><b id="krtGfa">—</b><span>м² всего</span></div></div>
@@ -123,7 +132,7 @@ __DEVELOPAID_CONTOUR__
 __DEVELOPAID_LAND_MAP_DIALOG__
 <script>
 __DEVELOPAID_LAND_MAP_KIT__
-const state={lots:[],filtered:[],families:[],openFamilies:new Set(),coverage:[],quality:{},selected:null,ingested:null,krt:[],krtFiltered:[],krtOkrugs:new Set(),krtModels:{},krtReports:{},krtRequirements:{},krtNew:0,krtNewDays:30,krtPolls:0,krtTimer:null,krtRank:{},krtRankProgress:null,krtRankTimer:null,krtPress:{},krtCards:{},krtTenderLinks:{},krtOrderBySite:{},krtTenders:{},krtOrders:[],krtOrphanLots:[],krtSort:{key:'score',dir:-1},krtHidden:{small:0,unknown:0}};
+const state={lots:[],filtered:[],families:[],openFamilies:new Set(),coverage:[],quality:{},selected:null,ingested:null,krt:[],krtFiltered:[],krtOkrugs:new Set(),krtModels:{},krtReports:{},krtRequirements:{},krtNew:0,krtNewDays:30,krtPolls:0,krtTimer:null,krtRank:{},krtRankProgress:null,krtRankTimer:null,krtPress:{},krtCards:{},krtTenderLinks:{},krtOrderBySite:{},krtTenders:{},krtOrders:[],krtOrphanLots:[],krtSort:{key:'score',dir:-1},krtHidden:{small:0,unknown:0},krtPick:{stage:new Set(),entry:new Set(),renovation:new Set(),purpose:new Set()}};
 const KRT_OKRUGS=['ЦАО','САО','СВАО','ВАО','ЮВАО','ЮАО','ЮЗАО','ЗАО','СЗАО','НАО','ТАО','ЗелАО'];
 const $=id=>document.getElementById(id);
 // Ноль и «цены нет» — разные вещи. Number(null) равен нулю, и лот без
@@ -679,7 +688,7 @@ function renderKrtSnapshotNote(){
 }
 function updateKrtOkrugLabel(){const values=KRT_OKRUGS.filter(x=>state.krtOkrugs.has(x)),button=$('krtOkrugToggle');button.textContent=!values.length?'Все округа':values.length<=3?values.join(', '):`${values.slice(0,2).join(', ')} +${values.length-2}`;button.title=values.length?values.join(', '):'Все округа';$('krtOkrugClear').disabled=!values.length}
 function populateKrtOkrugs(){const values=KRT_OKRUGS,options=$('krtOkrugOptions');options.innerHTML='';values.forEach(value=>{const label=document.createElement('label'),input=document.createElement('input'),text=document.createElement('span');label.className='multi-option';input.type='checkbox';input.value=value;input.checked=state.krtOkrugs.has(value);text.textContent=value;input.onchange=()=>{input.checked?state.krtOkrugs.add(value):state.krtOkrugs.delete(value);updateKrtOkrugLabel();filterKrt()};label.append(input,text);options.appendChild(label)});updateKrtOkrugLabel()}
-function closeKrtOkrugs(){const menu=$('krtOkrugMenu'),button=$('krtOkrugToggle');menu.classList.add('hidden');button.setAttribute('aria-expanded','false')}
+
 // Якоря шкалы сняты с самого каталога (263 площадки, 01.09.2026): жильё
 // 20 600 / 95 550 / 399 180 м² — десятый процентиль, медиана, девяностый;
 // деловое 4 944 / 45 225 / 187 340. Прежняя шкала была сложена из постоянных
@@ -702,7 +711,11 @@ function krtVolumeShare(value,[low,high]){
 // органа управления на один вопрос однажды разойдутся, и оба будут выглядеть
 // верными. Ничего не выбрано — меряем жильём: это и был прежний смысл.
 function krtTaskProfile(){
- return $('krtPurpose').value === 'business_gfa_sqm' ? 'business' : 'housing';
+ // Ось стала флажковой: «деловым» балл меряется, когда выбрано ТОЛЬКО деловое
+ // назначение. Выбрано вместе с жильём — меряем жильём: смешать две меры в
+ // одном балле значит завести третью, не сравнимую ни с чем.
+ const chosen=state.krtPick&&state.krtPick.purpose;
+ return chosen&&chosen.size===1&&chosen.has('business')?'business':'housing';
 }
 function krtFit(x){
  const profile=krtTaskProfile();
@@ -1237,14 +1250,92 @@ function krtScoreNote(sc){
 // Площадка, у которой проект решения ещё не прочитан, остаётся в списке при
 // любом выборе: «не найдено» — это не «нет», и спрятать непрочитанное как
 // заведомо чужое значит выдать молчание источника за его ответ.
-function krtNeedsPass(x,mode){
- if(!mode)return true;
+// Оси фильтра объявлены ОДНИМ списком: имя оси, подпись и правило каждого
+// варианта. Пять отдельных полей — «Статус», «Шаг», «Торги», «Источник» и
+// «Чьё угодно» — отвечали на пересекающиеся вопросы и спорили между собой:
+// площадка бывает «Планируемой» по слову города и «Занятой» по публикации
+// разом, и выбор одного прятал её из другого («фильтры статус шаг и торги
+// просто конфликтуют, а источник туфта какая-то и он не нужен», владелец,
+// 04.09.2026).
+//
+// Осей теперь три по смыслу вопроса: ГДЕ площадка в воронке города, МОЖНО ли
+// в неё войти и ЗАБИРАЕТ ли город метры; четвёртая — назначение. Внутри оси
+// варианты складываются, между осями пересекаются. Варианты не обязаны
+// исключать друг друга: площадка «В реализации» с живым лотом попадёт в оба, и
+// спор «что сильнее» здесь не нужен вовсе — он и был источником конфликта.
+//
+// «Не знаем» — свой вариант в каждой оси, а не молчаливая часть «свободна». У
+// 298 площадок каталога карточки города нет по построению, и сложить их с
+// проверенно свободными значило бы выдать наш пробел за ответ источника.
+const KRT_FILTERS=[
+ {key:'stage', box:'krtStage', empty:'Любая стадия', options:[
+  {value:'draft',    name:'Проект решения',       test:x=>!!x.no_card},
+  {value:'planned',  name:'Планируемая',          test:x=>krtStatusKind(x)==='planned'},
+  {value:'tender',   name:'Торги',                test:x=>krtOnTender(x)},
+  {value:'running',  name:'В реализации',         test:x=>krtStatusKind(x)==='running'},
+  {value:'unparsed', name:'Карточка не разобрана',test:x=>krtBroken(x)},
+ ]},
+ {key:'entry', box:'krtEntry', empty:'Вход: любой', options:[
+  {value:'free',    name:'Свободна', test:x=>krtEntryKind(x)==='free'},
+  {value:'taken',   name:'Занята',   test:x=>krtEntryKind(x)==='taken'},
+  {value:'unknown', name:'Не знаем', test:x=>krtEntryKind(x)==='unknown'},
+ ]},
+ {key:'renovation', box:'krtReno', empty:'Реновация: любая', options:[
+  {value:'yes',     name:'Есть реновация', test:x=>krtRenovationKind(x)==='yes'},
+  {value:'no',      name:'Не найдена',     test:x=>krtRenovationKind(x)==='no'},
+  {value:'unknown', name:'Не знаем',       test:x=>krtRenovationKind(x)==='unknown'},
+ ]},
+ {key:'purpose', box:'krtPurpose', empty:'Любое назначение', options:[
+  {value:'housing',  name:'Жильё',               test:x=>krtNumber(x,'housing_gfa_sqm')>0},
+  {value:'business', name:'Общественно-деловое', test:x=>krtNumber(x,'business_gfa_sqm')>0},
+  {value:'nonres',   name:'Нежилое',             test:x=>krtNumber(x,'nonresidential_gfa_sqm')>0},
+ ]},
+];
+// Торги — это лот на площадке или объявленное распоряжением намерение. Прежде
+// это были три отдельных шага воронки, и на вкладке КРТ все три давали ноль:
+// лоты собирает соседняя вкладка. Шаг остался КОЛОНКОЙ — он объясняет, почему
+// площадка там, где она есть, — но осью отбора быть перестал.
+function krtOnTender(x){
+ const lots=(state.krtTenders||{})[x.slug]||[];
+ const order=(state.krtOrderBySite||{})[x.slug];
+ return lots.length>0||!!(order&&order.number);
+}
+// Можно ли войти. Три ответа, и третий наш: «не знаем» со «свободна» не
+// складывается (владелец, 04.09.2026: «Занято, реновация, свободный участок»).
+function krtEntryKind(x){
+ // Слово города сильнее прочего: «В реализации» значит, что инвестор нашёлся.
+ if(krtStatusKind(x)==='running')return 'taken';
  const it=krtIntent(x);
- if(!it||!it.probed)return true;
- const city=(it.city_needs||[]).length>0, taken=!!it.taken;
- if(mode==='city')return city;
- if(mode==='taken')return taken;
- return !city&&!taken;
+ if(it&&it.taken)return 'taken';
+ // Свободной площадку делает ПРОЧИТАННЫЙ источник, промолчавший о хозяине, а
+ // не отсутствие находки: у площадки без карточки каталога карточки города не
+ // существует вовсе, и спрашивать было нечего.
+ const rank=(state.krtRank||{})[x.slug]||{};
+ const card=(state.krtCards||{})[x.slug]||x.card_facts||rank.card_facts||null;
+ const press=(state.krtPress||{})[x.slug]||rank.press_facts||null;
+ const read=!!(card&&card.available)||!!(press&&press.available)||!!(it&&it.probed);
+ return read?'free':'unknown';
+}
+// Забирает ли город метры. Тот же счёт, что у балла (`krtRenovation`), плюс
+// признак из карточки и публикаций: второго ответа на этот вопрос не заводим.
+function krtRenovationKind(x){
+ const rank=(state.krtRank||{})[x.slug]||{};
+ const it=krtIntent(x);
+ const reno=krtRenovation(x,rank);
+ if((it&&(it.city_needs||[]).length)||reno.area>0)return 'yes';
+ const card=(state.krtCards||{})[x.slug]||x.card_facts||rank.card_facts||null;
+ const press=(state.krtPress||{})[x.slug]||rank.press_facts||null;
+ const read=reno.read||!!(card&&card.available)||!!(press&&press.available);
+ return read?'no':'unknown';
+}
+// Внутри оси — «или», между осями — «и». Одно правило на весь отбор: пока
+// условий было пять, каждое проверялось своей строкой, и спорить им было где.
+function krtFilterPass(x){
+ return KRT_FILTERS.every(axis=>{
+  const chosen=state.krtPick[axis.key];
+  if(!chosen||!chosen.size)return true;
+  return axis.options.some(option=>chosen.has(option.value)&&option.test(x));
+ });
 }
 // Значение строки по колонке. Числа модели лежат в рейтинге, а не в каталоге:
 // на экране их не было вовсе, хотя в браузер они приезжают — «в Excel уже есть
@@ -1313,38 +1404,13 @@ function krtSortBy(key){
  filterKrt();
 }
 function filterKrt(){
- const q=$('krtSearch').value.trim().toLowerCase(),status=$('krtStatus').value,
-       purpose=$('krtPurpose').value,needs=$('krtNeeds').value,card=$('krtCard').value,tender=$('krtTender').value,stage=$('krtStage').value,
+ const q=$('krtSearch').value.trim().toLowerCase(),
        minHousing=Number($('krtMinHousing').value)||0;
  let small=0, unknown=0;
  state.krtFiltered=state.krt.filter(x=>{
   if(q&&![x.name,x.district,x.okrug].join(' ').toLowerCase().includes(q))return false;
-  // Задача — это ОТБОР, а не оттенок балла. Два жилищных профиля считали
-  // ровно один и тот же балл и различались одной строкой в подсказке: «этот
-  // фильтр туфта, они ничего не дают» (владелец, 01.09.2026). Теперь
-  // «готовое к старту» — это те, куда ещё можно войти, «потенциал» — всё
-  // жильё каталога вместе с занятым, «деловая» — площадки с нежилым объёмом.
-  // Скрытое считается и называется под таблицей: молча выброшенная площадка
-  // читается как её отсутствие.
   if(state.krtOkrugs.size&&!state.krtOkrugs.has(x.okrug))return false;
-  // Проект решения статуса каталога не имеет: он ещё не карточка. Пока выбор
-  // был из двух городских слов, такие площадки выпадали из ЛЮБОГО отбора по
-  // статусу молча — «в фильтре КРТ реализуемые и планируемые, а проекты»
-  // (владелец, 02.09.2026).
-  // Вид статуса приходит с сервера (`status_kind`) и объявлен там один раз.
-  // Пока экран выводил его сам из слова города, выбор «Проект решения» не
-  // давал НИ ОДНОЙ строки: сервер стал писать в такую строку слово «Проект
-  // решения», а отбор искал пустое слово (владелец, 04.09.2026). Два ответа на
-  // один вопрос расходятся молча.
-  if(status&&krtStatusKind(x)!==status)return false;
-  if(purpose&&!(krtNumber(x,purpose)>0))return false;
-  if(!krtNeedsPass(x,needs))return false;
-  const lots=(state.krtTenders[x.slug]||[]).length;
-  if(stage&&krtStage(x).key!==stage)return false;
-  if(tender==='yes'&&!lots)return false;
-  if(tender==='no'&&lots)return false;
-  if(card==='yes'&&x.no_card)return false;
-  if(card==='no'&&!x.no_card)return false;
+  if(!krtFilterPass(x))return false;
   if(minHousing>0){
    // Объём жилья не указан — это «не знаем», а не «мало». Такую площадку порог
    // прячет, но она считается отдельно и названа под таблицей: молча
@@ -1379,28 +1445,81 @@ function markKrtSort(){
 // а лоты грузит соседняя вкладка: пустой выбор выглядел как поломка фильтра
 // («фильтры наверху не корректируют вообще», владелец, 04.09.2026). Число
 // рядом с именем отвечает на это до нажатия, а не после.
-function krtFilterCount(test){
- let n=0; (state.krt||[]).forEach(x=>{ if(test(x))n++ }); return n;
+// Сколько строк даст выбор — прямо в самом выборе. Пустой выбор без числа
+// неотличим от сломанного фильтра: три шага воронки из пяти давали ноль
+// всегда, потому что считаются по лотам соседней вкладки, и это читалось как
+// «фильтры наверху не корректируют вообще» (владелец, 04.09.2026).
+//
+// Число считается с учётом ОСТАЛЬНЫХ осей: «Занята (96)» рядом с выдачей из
+// трёх строк обещает не то.
+function krtFilterCount(axis,option){
+ let n=0;
+ (state.krt||[]).forEach(x=>{
+  if(!option.test(x))return;
+  const pass=KRT_FILTERS.every(other=>{
+   if(other.key===axis.key)return true;
+   const chosen=state.krtPick[other.key];
+   if(!chosen||!chosen.size)return true;
+   return other.options.some(one=>chosen.has(one.value)&&one.test(x));
+  });
+  if(pass)n++;
+ });
+ return n;
 }
 function renderKrtFilterCounts(){
- const put=(id,tests)=>{
-  const box=$(id); if(!box)return;
-  [...box.options].forEach(option=>{
-   if(!option.dataset.label)option.dataset.label=option.textContent;
-   const test=tests[option.value];
-   option.textContent=option.dataset.label+(test?` (${krtFilterCount(test)})`:'');
+ KRT_FILTERS.forEach(axis=>{
+  const box=$(axis.box+'Options');
+  if(!box)return;
+  const chosen=state.krtPick[axis.key];
+  box.innerHTML='';
+  axis.options.forEach(option=>{
+   const label=document.createElement('label'),input=document.createElement('input'),
+         text=document.createElement('span');
+   label.className='multi-option';
+   input.type='checkbox';input.value=option.value;input.checked=chosen.has(option.value);
+   text.textContent=option.name+' ('+krtFilterCount(axis,option)+')';
+   input.onchange=()=>{
+    input.checked?chosen.add(option.value):chosen.delete(option.value);
+    filterKrt();
+    // Назначение задаёт МЕРУ балла, а не только отбор: открытая карточка
+    // пересчитывается вместе со списком, иначе список уже с новой мерой, а
+    // карточка с прежней.
+    if(axis.key==='purpose'&&state.selectedKrt)selectKrt(state.selectedKrt);
+   };
+   label.append(input,text);
+   box.appendChild(label);
   });
- };
- put('krtStatus',{planned:x=>krtStatusKind(x)==='planned',running:x=>krtStatusKind(x)==='running',
-  draft:x=>krtStatusKind(x)==='draft',unparsed:x=>krtStatusKind(x)==='unparsed'});
- put('krtStage',Object.fromEntries(KRT_STAGES.map(s=>[s.key,x=>krtStage(x).key===s.key])));
- put('krtCard',{yes:x=>!x.no_card,no:x=>!!x.no_card});
- put('krtTender',{yes:x=>(state.krtTenders[x.slug]||[]).length>0,
-  no:x=>!(state.krtTenders[x.slug]||[]).length});
- put('krtPurpose',Object.fromEntries(['housing_gfa_sqm','business_gfa_sqm','nonresidential_gfa_sqm']
-  .map(key=>[key,x=>Number(x[key])>0])));
- put('krtNeeds',{free:x=>krtNeedsPass(x,'free'),city:x=>krtNeedsPass(x,'city'),
-  taken:x=>krtNeedsPass(x,'taken')});
+  const button=$(axis.box+'Toggle'), clear=$(axis.box+'Clear');
+  const picked=axis.options.filter(one=>chosen.has(one.value)).map(one=>one.name);
+  if(button){
+   button.textContent=!picked.length?axis.empty
+    :picked.length<=2?picked.join(', '):picked[0]+' +'+(picked.length-1);
+   button.title=picked.length?picked.join(', '):axis.empty;
+  }
+  if(clear)clear.disabled=!picked.length;
+ });
+}
+// Виджет один на все оси: пять копий окружного разошлись бы молча — то же
+// правило, по которому у нас нет копии `VERSION`.
+function bindKrtFilters(){
+ KRT_FILTERS.forEach(axis=>{
+  const button=$(axis.box+'Toggle'), menu=$(axis.box+'Menu'), clear=$(axis.box+'Clear');
+  if(!button||!menu)return;
+  button.onclick=event=>{
+   event.stopPropagation();
+   const open=menu.classList.contains('hidden');
+   closeKrtMenus();
+   menu.classList.toggle('hidden',!open);
+   button.setAttribute('aria-expanded',String(open));
+  };
+  menu.onclick=event=>event.stopPropagation();
+  if(clear)clear.onclick=()=>{state.krtPick[axis.key].clear();filterKrt()};
+ });
+}
+function closeKrtMenus(){
+ document.querySelectorAll('#krtPanel .multi-menu').forEach(menu=>menu.classList.add('hidden'));
+ document.querySelectorAll('#krtPanel .multi-toggle').forEach(button=>
+  button.setAttribute('aria-expanded','false'));
 }
 function sumKrt(rows,key,d){const n=rows.reduce((s,x)=>s+(Number(x[key])||0),0);return new Intl.NumberFormat('ru-RU',{maximumFractionDigits:d}).format(n)}
 // Новое в каталоге называется вслух: список на сто двадцать строк
@@ -2760,8 +2879,8 @@ $('askBtn').onclick=askPlato;
 $('askCard').querySelectorAll('.chips button').forEach(b=>{
  b.onclick=()=>{$('askText').value=b.dataset.q;askPlato()};
 });
-$('tabAuctions').onclick=()=>switchTab(false);$('tabKrt').onclick=()=>switchTab(true);$('krtRefresh').onclick=()=>loadKrt(true);$('krtRankBtn').onclick=startKrtRanking;$('krtPressBtn').onclick=readKrtPress;$('krtSearch').oninput=filterKrt;$('krtStatus').onchange=filterKrt;$('krtNeeds').onchange=filterKrt;$('krtCard').onchange=filterKrt;$('krtTender').onchange=filterKrt;$('krtStage').onchange=filterKrt;document.getElementById('krtMapFold')?.addEventListener('toggle',ev=>{if(ev.target.open)loadKrtMap()});$('krtMinHousing').oninput=filterKrt;document.querySelectorAll('#krtRows').forEach(()=>{});document.querySelectorAll('th[data-sort]').forEach(th=>{th.style.cursor='pointer';th.title=(th.title?th.title+'. ':'')+'Нажмите, чтобы отсортировать';th.onclick=()=>krtSortBy(th.dataset.sort)});$('krtPurpose').onchange=()=>{filterKrt();if(state.selectedKrt)selectKrt(state.selectedKrt)};
-$('krtOkrugToggle').onclick=e=>{e.stopPropagation();const menu=$('krtOkrugMenu'),open=menu.classList.contains('hidden');menu.classList.toggle('hidden',!open);$('krtOkrugToggle').setAttribute('aria-expanded',String(open))};$('krtOkrugMenu').onclick=e=>e.stopPropagation();$('krtOkrugClear').onclick=()=>{state.krtOkrugs.clear();$('krtOkrugOptions').querySelectorAll('input').forEach(x=>x.checked=false);updateKrtOkrugLabel();filterKrt()};document.addEventListener('click',closeKrtOkrugs);document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeKrtOkrugs();$('krtOkrugToggle').focus()}});
+$('tabAuctions').onclick=()=>switchTab(false);$('tabKrt').onclick=()=>switchTab(true);$('krtRefresh').onclick=()=>loadKrt(true);$('krtRankBtn').onclick=startKrtRanking;$('krtPressBtn').onclick=readKrtPress;$('krtSearch').oninput=filterKrt;bindKrtFilters();document.getElementById('krtMapFold')?.addEventListener('toggle',ev=>{if(ev.target.open)loadKrtMap()});$('krtMinHousing').oninput=filterKrt;document.querySelectorAll('th[data-sort]').forEach(th=>{th.style.cursor='pointer';th.title=(th.title?th.title+'. ':'')+'Нажмите, чтобы отсортировать';th.onclick=()=>krtSortBy(th.dataset.sort)});
+$('krtOkrugToggle').onclick=e=>{e.stopPropagation();const menu=$('krtOkrugMenu'),open=menu.classList.contains('hidden');closeKrtMenus();menu.classList.toggle('hidden',!open);$('krtOkrugToggle').setAttribute('aria-expanded',String(open))};$('krtOkrugMenu').onclick=e=>e.stopPropagation();$('krtOkrugClear').onclick=()=>{state.krtOkrugs.clear();$('krtOkrugOptions').querySelectorAll('input').forEach(x=>x.checked=false);updateKrtOkrugLabel();filterKrt()};document.addEventListener('click',closeKrtMenus);document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeKrtMenus();$('krtOkrugToggle').focus()}});
 loadKrtRanking();
 // Ссылка из «Поделиться» открывает ту же территорию: получатель попадает на
 // разбор, а не на общий список, где ещё надо искать.

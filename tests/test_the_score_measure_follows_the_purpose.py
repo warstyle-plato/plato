@@ -71,9 +71,9 @@ def _scores(purpose: str) -> dict:
         raise AssertionError(name)
 
     program = "\n".join([
-        f"const PURPOSE={json.dumps(purpose)};",
+        # Ось назначения стала флажковой: мера балла читает выбранный набор.
+        f"const state={{krtPick:{{purpose:new Set({json.dumps([purpose] if purpose else [])})}}}};",
         f"const SITES={json.dumps(SITES, ensure_ascii=False)};",
-        "const $=()=>({value:PURPOSE});",
         "const fmtArea=v=>String(v);",
         block("const KRT_SCALE=", "};"),
         func("krtVolumeShare"),
@@ -93,13 +93,14 @@ def _scores(purpose: str) -> dict:
 def test_the_task_selector_is_gone():
     page = auctions_page()
     assert "krtProfile" not in page, "список задач вернулся и снова дублирует соседей"
-    assert 'id="krtPurpose"' in page and 'id="krtStatus"' in page, \
+    assert 'id="krtPurposeOptions"' in page and 'id="krtStageOptions"' in page, \
         "отбирать теперь нечем"
 
 
 def test_the_purpose_sets_the_measure():
     housing = _scores("")
-    business = _scores("business_gfa_sqm")
+    # Значение оси теперь её ключ, а не имя поля ТЭП.
+    business = _scores("business")
     assert business["office"] > business["mid"], \
         "деловое назначение не поднимает деловую площадку"
     assert housing["mid"] > housing["office"], \

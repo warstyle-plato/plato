@@ -124,17 +124,32 @@ def test_every_status_choice_gives_its_rows_and_none_vanish() -> None:
                     break
             everything = page.evaluate("state.krt.length")
 
-            def rows_for(value: str) -> int:
+            def rows_for(*values: str) -> int:
                 page.evaluate(
-                    "(v)=>{document.getElementById('krtStatus').value=v;filterKrt()}", value)
+                    "(vs)=>{state.krtPick.stage=new Set(vs);filterKrt()}", list(values))
                 page.wait_for_timeout(120)
                 return page.evaluate("document.querySelectorAll('#krtRows tr').length")
 
             counts = {value: rows_for(value)
-                      for value in ("", "planned", "running", "draft", "unparsed")}
+                      for value in ("planned", "running", "draft", "unparsed")}
+            counts[""] = rows_for()
+            # Флажки складываются внутри оси: выбрал два — видишь оба.
+            counts["planned+draft"] = rows_for("planned", "draft")
             options = page.evaluate(
-                "[...document.getElementById('krtStatus').options].map(o=>o.textContent)")
-            page.evaluate("document.getElementById('krtStatus').value='';filterKrt()")
+                "[...document.querySelectorAll('#krtStageOptions label')].map(l=>l.innerText)")
+            entry = page.evaluate(
+                "[...document.querySelectorAll('#krtEntryOptions label')].map(l=>l.innerText)")
+            reno = page.evaluate(
+                "[...document.querySelectorAll('#krtRenoOptions label')].map(l=>l.innerText)")
+            # Между осями — пересечение, а не спор: прежде «Статус» и «Шаг»
+            # отвечали на один вопрос разными словами и прятали строку друг у
+            # друга.
+            page.evaluate("state.krtPick.stage=new Set(['planned']);"
+                          "state.krtPick.entry=new Set(['taken']);filterKrt()")
+            page.wait_for_timeout(120)
+            crossed = page.evaluate("document.querySelectorAll('#krtRows tr').length")
+            page.evaluate("state.krtPick.stage=new Set();state.krtPick.entry=new Set();"
+                          "filterKrt()")
 
             # Сортировка: нажимаем сам заголовок, как человек.
             page.click("#krtTableWrap th[data-sort='area']")
@@ -164,6 +179,13 @@ def test_every_status_choice_gives_its_rows_and_none_vanish() -> None:
     assert counts["unparsed"] == 1, counts
     assert counts["planned"] + counts["running"] + counts["draft"] + counts["unparsed"] \
         == counts[""], counts
+    assert counts["planned+draft"] == counts["planned"] + counts["draft"], \
+        "флажки внутри оси не складываются"
+    # Пересечение осей: занятая планируемая — подмножество планируемых.
+    assert crossed <= counts["planned"], crossed
+    # «Не знаем» — свой вариант в каждой оси, а не молчаливая часть «свободна».
+    assert any(one.startswith("Не знаем") for one in entry), entry
+    assert any(one.startswith("Не знаем") for one in reno), reno
     # Число рядом с выбором отвечает на «сколько это даст» до нажатия: пустой
     # выбор иначе неотличим от сломанного фильтра.
     assert any("(2)" in one for one in options), options
