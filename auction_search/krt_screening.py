@@ -265,7 +265,8 @@ def _requirements_for_model(requirements: dict[str, Any] | None) -> dict[str, An
         # прочитанном не сказано», и вызывающий обязан отличать это от «нет».
         "renovation": (source.get("renovation")
                        or (source.get("decision") or {}).get("renovation")
-                       or {"mentioned": False, "area_sqm": None, "quote": ""}),
+                       or {"mentioned": False, "area_sqm": None, "housing_sqm": None,
+                           "zones": 0, "basis": "not_read", "quote": ""}),
         "decision": copy.deepcopy(source.get("decision")),
         "demolition_area_sqm": demolition_area,
         "demolition_objects": len(definite_demolition),
@@ -585,8 +586,32 @@ def build_krt_model_screening(
     # ГНС и общая остаются полными — метры строят, и CAPEX за них платят; из
     # продаваемой они вычитаются. То же правило, что у переданных
     # муниципалитету метров: строятся, но не продаются.
+    #
+    # Объём вычитается только тогда, когда он ПРОЧИТАН и сошёлся. Прежде здесь
+    # стояло `min(объём, жильё)`, и обрезка молча превращала непонятое число в
+    # уверенные 100%: на Задонском проезде разбор брал 173 200 м² предельной
+    # СПП вместо 15 100 м² реновации, обрезка давала 150 940 — всё жильё, — и
+    # площадка выходила без рыночного продукта вовсе. Обрезка, прячущая
+    # противоречие, — не проверка, а её отсутствие.
     renovation = duties.get("renovation") or {}
-    renovation_spp = min(_number(renovation.get("area_sqm")), housing_gfa)
+    renovation_area = _number(renovation.get("area_sqm"))
+    renovation_note = ""
+    if renovation_area > 0 and housing_gfa > 0:
+        # Самопроверка полноты: решение перечисляет зоны, и сумма парных
+        # площадей жилья обязана сойтись с жильём площадки. Не сошлась —
+        # перечень прочитан не весь, и сумме объёмов доверять нельзя.
+        checked = _number(renovation.get("housing_sqm"))
+        if renovation_area > housing_gfa * 1.001:
+            renovation_note = (
+                f"объём реновации по решению ({_ru_number(renovation_area)} м²) больше "
+                f"всего жилья площадки ({_ru_number(housing_gfa)} м²) — прочитано не то "
+                "число, и вычитать по нему нельзя")
+        elif checked > 0 and abs(checked - housing_gfa) > housing_gfa * 0.01:
+            renovation_note = (
+                f"перечень зон решения сошёлся на {_ru_number(checked)} м² жилья против "
+                f"{_ru_number(housing_gfa)} м² каталога — прочитан не весь, и сумма "
+                "объёмов реновации неполна")
+    renovation_spp = renovation_area if not renovation_note else 0.0
     renovation_share = renovation_spp / housing_gfa if housing_gfa > 0 else 0.0
     saleable_market = saleable * (1 - renovation_share)
     tep["apartments"].update({
@@ -754,6 +779,12 @@ def build_krt_model_screening(
                "здесь нет вовсе, войти можно подрядчиком."
                if renovation_share >= 0.99 else "")
         )
+    elif renovation_note:
+        assumptions.append(
+            f"Программа реновации в решении названа, но {renovation_note}: метры "
+            "продаются по рынку целиком. Это НАШ пробел чтения, а не решение "
+            "города, и выручка здесь заведомо завышена."
+        )
     elif (renovation or {}).get("mentioned"):
         assumptions.append(
             "Программа реновации в решении названа, но объём не указан: метры "
@@ -885,6 +916,11 @@ def build_krt_model_screening(
             "saleable_lost_sqm": round(saleable - saleable_market),
             "whole_site": renovation_share >= 0.99,
             "mentioned": bool((renovation or {}).get("mentioned")),
+            # Чем прочитан объём и сошёлся ли он — часть ответа: «объём не
+            # назван» и «мы его не поняли» на экране выглядят одинаково.
+            "basis": str((renovation or {}).get("basis") or "mentioned_without_volume"),
+            "zones": int((renovation or {}).get("zones") or 0),
+            "not_counted_reason": renovation_note,
             "quote": str((renovation or {}).get("quote") or ""),
         },
         "programme": programme,

@@ -147,6 +147,12 @@ def score_row(project: dict[str, Any], screening: dict[str, Any]) -> dict[str, A
         # городским нуждам находил их лишь у площадок, открытых руками.
         "card_facts": screening.get("card_facts") or {},
         "press_facts": screening.get("press_facts") or {},
+        # Объём городских нужд считает скрининг, а строка его не несла вовсе:
+        # на 268 площадках прода поле пустое у ВСЕХ, и экран падал в запасной
+        # путь «объём не назван» — то есть в утверждение о документе, сделанное
+        # из нашего пробела. Посчитанное на сервере, но не доехавшее до строки,
+        # неотличимо от непосчитанного.
+        "renovation": screening.get("renovation") or {},
         "saleable_sqm": round(saleable) if saleable else 0,
         "segment": market.get("recommended_segment"),
         "start_price_rub_sqm": market.get("start_price_rub_sqm"),

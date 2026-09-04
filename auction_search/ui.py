@@ -987,7 +987,17 @@ function krtRenovation(x,rank){
  const area=Number(said.area_sqm||row.spp_sqm||0);
  const housing=Number(x.housing_gfa_sqm||(rank||{}).housing_gfa_sqm||0);
  const share=(area>0&&housing>0)?Math.min(1,area/housing):null;
- return {area:area,housing:housing,share:share,quote:said.quote||''};
+ // Решение прочитано — это отдельный вопрос от «объём назван». Пока их не
+ // различали, строка рейтинга, посчитанная до появления разбора объёма, давала
+ // «в документе сказано о городских нуждах, объём не назван» на решении, где
+ // он назван прямо: 15 100 м² из 150 940 на Задонском проезде. Наш пробел
+ // чтения, выданный за молчание документа, — то же самое, что пустой ответ
+ // НСПД, показанный как отсутствие ограничений.
+ const read=(said.basis&&said.basis!=='not_read')||Number(row.spp_sqm||0)>0
+  ||said.mentioned===true||row.mentioned===true;
+ return {area:area,housing:housing,share:share,read:!!read,
+  reason:String(said.not_counted_reason||row.not_counted_reason||''),
+  quote:said.quote||''};
 }
 function krtRuleValue(rule,value){
  const v=Number(value);
@@ -1062,7 +1072,11 @@ function krtScore(x){
  // посчитанным дважды. Снижение остаётся ровно там, где модель не считалась
  // (тогда вычесть выручку было негде) и где объём не назван (вычитать нечего).
  const reno=krtRenovation(x,rank);
- if(intent&&(intent.city_needs||[]).length){
+ // Прочитали и не поняли, или ещё не читали, — это НАШ пробел, и балл он не
+ // снижает: то же правило, что у неподобранного потолка входа. Место такого
+ // пробела в `gaps`, а не в снижениях: «балл снижен на 0%» — не фраза.
+ const renoJudged=reno.read&&!reno.reason;
+ if(intent&&(intent.city_needs||[]).length&&renoJudged){
   if(reno.share===null)
    cuts.push({label:'в документе сказано о городских нуждах, объём не назван',points:10});
   else if(!counted)
@@ -1115,6 +1129,12 @@ function krtScore(x){
  // Пробел, который не снижает балл, обязан быть виден: молча снятое снижение
  // читается как «всё в порядке», а это «мы не знаем».
  const gaps=[];
+ if(intent&&(intent.city_needs||[]).length&&reno.reason)
+  gaps.push('объём городских нужд прочитан ненадёжно ('+reno.reason
+   +') — это наш пробел, балл он не снижает, но выручка площадки завышена');
+ else if(intent&&(intent.city_needs||[]).length&&!reno.read)
+  gaps.push('решение о городских нуждах ещё не прочитано — это наш пробел,'
+   +' балл он не снижает; объём реновации из выручки не вычтен');
  if(reno.share!==null&&counted)
   gaps.push('метры реновации ('+krtInt(reno.area)+' м², '+krtPct(reno.share)
    +' жилья) строятся, но не продаются — это часть цены входа, уплаченная метрами;'

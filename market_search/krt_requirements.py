@@ -586,8 +586,48 @@ def social_objects_from_decision(sentences: Any) -> list[dict[str, Any]]:
 # фонд реновации забирает 15 тысяч из 150 000? значит остальное рыночный
 # объём»). Доля меряется, а не оценивается на глаз.
 _RENOVATION_MARKERS = ("программ", "реновац")
+# Оборот, в котором стоит объём: «…для реализации Программы реновации … – 15 100
+# кв.м» либо «площадью не менее 15 100 кв.м в целях реализации Программы
+# реновации». Само слово ищется без пробельных артефактов PDF: в живом решении
+# по 5-му Верхнему Михайловскому стоит «объекты жило го назначения» и «объектов
+# кап итального строительства» — совпадение по целым словам там не сработало бы.
+_RENOVATION_CLAUSE = re.compile(r"(?iu)программ\w*\s+реновац\w*")
 _RENOVATION_AREA = re.compile(
     r"(?iu)(?<![\d.,])(\d[\d  ]*(?:[.,]\d+)?)\s*(?:кв\.?\s*м|м2|м²)")
+# Оборот кончается точкой с запятой списка или концом предложения: перечень
+# зоны идёт «- объекты жилого назначения – H кв.м, в том числе для реализации
+# Программы реновации – R кв.м; - объекты общественно-делового назначения – …».
+_CLAUSE_SPLIT = re.compile(r"[;\n]")
+
+
+def _renovation_clause(clause: str) -> dict[str, Any] | None:
+    """Объём реновации и парная ему площадь жилья в ОДНОМ обороте.
+
+    Возвращает `None`, если оборот не про реновацию или числа в нём нет.
+    """
+    mark = _RENOVATION_CLAUSE.search(clause)
+    if not mark:
+        return None
+    after = _RENOVATION_AREA.search(clause, mark.end())
+    if after:
+        # Форма ТЭП: «жилого назначения – H кв.м, в том числе для реализации
+        # Программы реновации – R кв.м». H — последняя площадь ДО оборота, и
+        # она нужна не для расчёта, а для самопроверки: сумма H по зонам
+        # обязана сойтись с жильём площадки, иначе перечень зон прочитан не
+        # весь и сумме R доверять нельзя.
+        before = list(_RENOVATION_AREA.finditer(clause[:mark.start()]))
+        return {
+            "kind": "tep",
+            "area_sqm": _social_number(after.group(1)),
+            "housing_sqm": _social_number(before[-1].group(1)) if before else None,
+        }
+    before = list(_RENOVATION_AREA.finditer(clause[:mark.start()]))
+    if before:
+        # Форма обязательства: «площадью не менее R кв.м в целях реализации
+        # Программы реновации». Здесь число ДО оборота — это сам объём.
+        return {"kind": "duty", "area_sqm": _social_number(before[-1].group(1)),
+                "housing_sqm": None}
+    return None
 
 
 def renovation_volume(sentences: Any) -> dict[str, Any]:
@@ -596,10 +636,25 @@ def renovation_volume(sentences: Any) -> dict[str, Any]:
     Ответов три, и они разные: назван объём, сказано о реновации без объёма,
     не сказано ничего. Второй нельзя показывать ни первым, ни третьим: «доля
     неизвестна» — это не «доли нет» и не «забирают всё».
+
+    Число берётся из ОБОРОТА, который называет программу, а не наибольшее в
+    предложении. Прежняя версия брала максимум, и на Задонском проезде это
+    давало 173 200 м² — предельную СПП всей площадки — вместо 15 100 м²
+    реновации: доля выходила 100% вместо 10%, и модель отменяла ВСЮ выручку
+    жилья. Соседнее решение (5-й Верхний Михайловский) ловилось тем же
+    способом: 87 690 м² итога зоны вместо 85 580 м² её реновации.
+
+    Зоны — части, и они складываются: у 5-го Верхнего Михайловского зона 1
+    отдаёт 9 600 м², зона 2 — 85 580, вместе ровно 95 180 м² жилья каталога.
+    Обязательственные обороты повторяют те же числа другими словами, поэтому в
+    сумму идут только обороты ТЭП; форма обязательства работает, лишь когда
+    оборотов ТЭП не нашлось вовсе, и тогда объём берётся один — сложить
+    повторы и части, не различая их, значит удвоить объём.
     """
     mentioned = False
     quote = ""
-    area: float | None = None
+    tep: list[dict[str, Any]] = []
+    duty: list[dict[str, Any]] = []
     for raw in list(sentences or [])[:200]:
         sentence = _SPACE.sub(" ", str(raw or "")).strip()
         low = sentence.casefold()
@@ -608,12 +663,28 @@ def renovation_volume(sentences: Any) -> dict[str, Any]:
         mentioned = True
         if not quote:
             quote = sentence[:400]
-        match = _RENOVATION_AREA.search(sentence)
-        value = _social_number(match.group(1)) if match else None
-        if value is not None and (area is None or value > area):
-            area = value
-            quote = sentence[:400]
-    return {"mentioned": mentioned, "area_sqm": area, "quote": quote}
+        for clause in _CLAUSE_SPLIT.split(sentence):
+            found = _renovation_clause(clause)
+            if not found or found["area_sqm"] is None:
+                continue
+            (tep if found["kind"] == "tep" else duty).append(found)
+            if found["kind"] == "tep":
+                quote = sentence[:400]
+    parts = tep or duty[:1]
+    area = sum(one["area_sqm"] for one in parts) if parts else None
+    housing = [one["housing_sqm"] for one in parts if one["housing_sqm"] is not None]
+    return {
+        "mentioned": mentioned,
+        "area_sqm": area,
+        # Сумма парных площадей жилья: самопроверка полноты перечня зон.
+        # Её отсутствие — не ошибка, а «сверить нечем», и вызывающий обязан
+        # отличать одно от другого.
+        "housing_sqm": sum(housing) if housing else None,
+        "zones": len(parts),
+        "basis": ("zone_programme_clause" if tep
+                  else ("duty_clause" if duty else "mentioned_without_volume")),
+        "quote": quote,
+    }
 
 
 def _construction_parameters(text: str) -> list[str]:
