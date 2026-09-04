@@ -37,6 +37,8 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 import main_legacy as core  # noqa: E402
 
+import v4_inputs  # noqa: E402
+
 openpyxl = pytest.importorskip("openpyxl")
 
 BASE = {**core.DEFAULT_INPUTS, "apartment_price_th": 650,
@@ -52,7 +54,7 @@ def workbook(**overrides):
 @pytest.mark.parametrize("months", [1, 6, 18, 24])
 def test_the_permit_period_reaches_the_workbook(months):
     """Ровно то число, что задал человек."""
-    assert workbook(ird_months=months)["Вводные"]["E88"].value == months
+    assert v4_inputs.inputs(workbook(ird_months=months))["E88"].value == months
 
 
 def test_the_permit_period_has_a_floor_of_one_month():
@@ -60,7 +62,7 @@ def test_the_permit_period_has_a_floor_of_one_month():
     сами базы для накладных и налога — до 3,0 млрд ₽ по CAPEX. Минимум в один
     месяц — решение владельца (13.08.2026)."""
     assert core.IRD_MONTHS_MIN == 1
-    assert workbook(ird_months=0)["Вводные"]["E88"].value == 1
+    assert v4_inputs.inputs(workbook(ird_months=0))["E88"].value == 1
 
 
 def test_the_field_says_the_minimum():
@@ -86,7 +88,7 @@ def test_a_zero_rate_setting_is_not_replaced_by_a_default(key):
     не изменилось — изменился адрес, и проверка обязана держаться за контракт
     «ключ стоит рядом со значением», а не за координату.
     """
-    sheet = workbook(**{key: 0})["Вводные"]
+    sheet = v4_inputs.inputs(workbook(**{key: 0}))
     row = next((cell.row for line in sheet.iter_rows() for cell in line
                 if isinstance(cell.value, str) and cell.value.strip() == key), None)
     assert row, f"{key}: ключа нет на листе «Вводные»"
@@ -94,14 +96,14 @@ def test_a_zero_rate_setting_is_not_replaced_by_a_default(key):
 
 
 def test_a_zero_construction_term_is_not_replaced():
-    assert workbook(construction_months=0)["Вводные"]["F88"].value == 0
+    assert v4_inputs.inputs(workbook(construction_months=0))["F88"].value == 0
 
 
 def test_a_missing_value_still_falls_back():
     """Подмена умолчанием остаётся там, где значения действительно нет."""
     x = {**BASE}
     x.pop("ird_months")
-    assert workbook(**{"ird_months": None})["Вводные"]["E88"].value == 18
+    assert v4_inputs.inputs(workbook(**{"ird_months": None}))["E88"].value == 18
 
 
 def test_the_parity_holds_on_a_non_default_permit_period():

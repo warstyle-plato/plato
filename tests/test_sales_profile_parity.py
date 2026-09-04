@@ -24,6 +24,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import v4_inputs  # noqa: E402
 
 import main as wrapper  # noqa: E402
 from xlsx_eval import Evaluator  # noqa: E402
@@ -50,7 +53,7 @@ def test_the_builder_writes_the_engine_pace():
     content, _, _ = core.build_project_workbook(
         inputs, {key: dict(value) for key, value in core.TEP_DEFAULT.items()},
         [], {}, finance_hints={})
-    sheet = openpyxl.load_workbook(io.BytesIO(content), data_only=False)["Вводные"]
+    sheet = v4_inputs.inputs(openpyxl.load_workbook(io.BytesIO(content), data_only=False))
     for row in (88, 89, 90, 91):
         assert sheet[f"AD{row}"].value == pytest.approx(0.25)
 

@@ -71,7 +71,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.21.89"
+VERSION = "0.21.90"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -14926,16 +14926,38 @@ def _v4_workbook_with_entry(workbook: str, add: bool) -> str:
     """Переименовать расчётный лист и поставить лист ввода первым.
 
     Первым — потому что с него начинают: книга открывается там, где печатают.
+    А расчётный лист уходит за отчёт: печатать в нём больше нечего, и вторым
+    он занимал бы место того, ради чего книгу открывают («книгу открывают ради
+    отчёта, а он лежал пятнадцатым листом»). Порядок листов ничего не ломает:
+    формулы ссылаются по именам, а не по позиции.
     """
     workbook = re.sub(r'(<x:sheet name=")%s(")' % re.escape(v4_entry_sheet.ENTRY_SHEET),
                       lambda m: m.group(1) + v4_entry_sheet.PARAMS_SHEET + m.group(2),
                       workbook, count=1)
     if not add:
         return workbook
+    workbook = _v4_sheet_moved_behind(workbook, v4_entry_sheet.PARAMS_SHEET, "Дашборд")
     entry = (f'<x:sheet name="{v4_entry_sheet.ENTRY_SHEET}" sheetId="900" '
              f'r:id="{_V4_ENTRY_REL_ID}" '
              'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" />')
     return workbook.replace("<x:sheets>", "<x:sheets>" + entry, 1)
+
+
+def _v4_sheet_moved_behind(workbook: str, name: str, after: str) -> str:
+    """Переставить лист за другой. Не нашли — оставить как есть.
+
+    Молча переставить не тот лист хуже, чем не переставить: порядок читают
+    глазами, и проверка на него стоит отдельно.
+    """
+    moved = re.search(r'<x:sheet name="%s"[^>]*/>' % re.escape(name), workbook)
+    anchor = re.search(r'<x:sheet name="%s"[^>]*/>' % re.escape(after), workbook)
+    if not moved or not anchor or moved.start() > anchor.start():
+        return workbook
+    without = workbook[:moved.start()] + workbook[moved.end():]
+    anchor = re.search(r'<x:sheet name="%s"[^>]*/>' % re.escape(after), without)
+    if not anchor:
+        return workbook
+    return without[:anchor.end()] + moved.group(0) + without[anchor.end():]
 
 
 def _v4_rels_with_entry(rels: str) -> str:

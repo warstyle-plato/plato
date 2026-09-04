@@ -36,6 +36,8 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 import main_legacy as core  # noqa: E402
 
+import v4_inputs  # noqa: E402
+
 openpyxl = pytest.importorskip("openpyxl")
 
 BASE = {**core.DEFAULT_INPUTS, "apartment_price_th": 650, "commercial_price_th": 650,
@@ -128,7 +130,7 @@ def test_the_workbook_agrees_with_the_engine(mode):
 
 
 def test_the_workbook_carries_both_parts():
-    book = workbook(core.SOCIAL_MODE_BOTH)["Вводные"]
+    book = v4_inputs.inputs(workbook(core.SOCIAL_MODE_BOTH))
     assert book["B17"].value == pytest.approx(
         result(core.SOCIAL_MODE_BOTH)["summary"]["social_payment"] / 1_000_000, rel=1e-6)
     assert book["B56"].value == pytest.approx(1149.23)
@@ -139,7 +141,7 @@ def test_the_other_modes_leave_the_cash_cell_empty():
     """Ячейка живёт только совмещённым режимом: в остальных её содержимое
     исказило бы базу комиссии."""
     for mode in ("Строительство", "Денежная компенсация"):
-        assert workbook(mode)["Вводные"]["B56"].value == 0
+        assert v4_inputs.inputs(workbook(mode))["B56"].value == 0
 
 
 def test_the_book_formula_knows_the_third_mode():
@@ -153,14 +155,19 @@ def test_the_book_formula_knows_the_third_mode():
 def test_the_book_opens_on_the_result():
     """Книгу открывают ради отчёта, а он лежал пятнадцатым листом — после
     четырёх CF, КРЕДИТОВ и КОНСОЛИДАТОРА. Порядок листов ничего не ломает:
-    формулы ссылаются по именам, а не по позиции."""
+    формулы ссылаются по именам, а не по позиции.
+
+    Разделение ввода едва не отобрало у отчёта его место: «Параметры модели»
+    встали вторым листом просто потому, что там раньше стояли «Вводные».
+    Печатать в них больше нечего, и стоять перед отчётом им незачем.
+    """
     names = workbook("Строительство").sheetnames
-    assert names[:3] == ["Вводные", "ОТЧЕТ", "Дашборд"]
+    assert names[:4] == ["Вводные", "ОТЧЕТ", "Дашборд", "Параметры модели"]
 
 
 def test_no_sheet_was_lost_in_the_reorder():
     names = workbook("Строительство").sheetnames
-    assert len(names) == len(set(names)) == 19
+    assert len(names) == len(set(names)) == 20
     for required in ("ПРОВЕРКИ", "CF_1", "CF_4", "КРЕДИТЫ", "ОБЪЕКТЫ"):
         assert required in names
 

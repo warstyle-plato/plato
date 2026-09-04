@@ -35,6 +35,8 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 import main_legacy as core  # noqa: E402
 
+import v4_inputs  # noqa: E402
+
 openpyxl = pytest.importorskip("openpyxl")
 from openpyxl.utils import get_column_letter  # noqa: E402
 
@@ -53,7 +55,7 @@ def book(scenario: str, **over):
 
 def cells(content) -> dict[str, tuple[str, object]]:
     """Ключ движка → (координата, значение). Ключ живёт рядом со значением."""
-    sheet = openpyxl.load_workbook(io.BytesIO(content), data_only=False)["Вводные"]
+    sheet = v4_inputs.inputs(openpyxl.load_workbook(io.BytesIO(content), data_only=False))
     out: dict[str, tuple[str, object]] = {}
     for row in sheet.iter_rows():
         for cell in row:
@@ -107,7 +109,7 @@ def test_b6_still_carries_the_applied_multipliers() -> None:
     бы чужие множители и чужую задержку старта."""
     for scenario in SCENARIOS:
         content, _ = book(scenario)
-        sheet = openpyxl.load_workbook(io.BytesIO(content), data_only=False)["Вводные"]
+        sheet = v4_inputs.inputs(openpyxl.load_workbook(io.BytesIO(content), data_only=False))
         assert sheet["B6"].value == "Base", scenario
 
 
@@ -128,13 +130,13 @@ def test_the_shape_and_the_start_date_are_cells_not_numbers_in_a_formula() -> No
         if not (name.endswith(".xml") and "sheet" in name):
             continue
         text = archive.read(name).decode("utf-8", "replace")
-        found = re.search(r"<x:f>(MAX\(0,'Вводные'!\$B\$34[^<]*)</x:f>", text)
+        found = re.search(r"<x:f>(MAX\(0,'Параметры модели'!\$B\$34[^<]*)</x:f>", text)
         if found:
             formula = found.group(1)
             break
     assert formula, "кривая ключевой ставки не найдена"
     # Форма и смещение — ссылки на «Вводные», а не литералы.
-    assert formula.count("'Вводные'!$B$") >= 5, formula
+    assert formula.count("'Параметры модели'!$B$") >= 5, formula
     assert "EXP(-2*" not in formula and "EXP(-2)" not in formula, formula
 
 

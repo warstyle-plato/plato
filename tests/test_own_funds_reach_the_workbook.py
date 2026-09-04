@@ -31,6 +31,8 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 import main_legacy as core  # noqa: E402
 
+import v4_inputs  # noqa: E402
+
 openpyxl = pytest.importorskip("openpyxl")
 
 BASE = {**core.DEFAULT_INPUTS, "apartment_price_th": 700, "commercial_price_th": 700,
@@ -55,19 +57,19 @@ def evaluated(**overrides):
 
 @pytest.mark.parametrize("amount", [0, 1000, 3200])
 def test_the_amount_reaches_the_workbook(amount):
-    assert workbook(pre_pf_own_funds_mln=amount)["Вводные"]["B85"].value == amount
+    assert v4_inputs.inputs(workbook(pre_pf_own_funds_mln=amount))["B85"].value == amount
 
 
 def test_the_cell_carries_its_key():
     """По ключу в колонке D книгу читают глазами и сверяют с движком."""
-    assert workbook()["Вводные"]["D85"].value == "pre_pf_own_funds_mln"
+    assert v4_inputs.inputs(workbook())["D85"].value == "pre_pf_own_funds_mln"
 
 
 def test_the_share_defaults_to_the_first_phase():
     """Свои деньги вкладывают на входе — умолчание движка то же, что у покупки.
     Без деления каждая очередь взяла бы всю сумму."""
     book = workbook(pre_pf_own_funds_mln=3200)
-    assert [book["Вводные"][f"AI{row}"].value for row in range(88, 92)] == [1.0, 0.0, 0.0, 0.0]
+    assert [v4_inputs.inputs(book)[f"AI{row}"].value for row in range(88, 92)] == [1.0, 0.0, 0.0, 0.0]
 
 
 # --- методика книги совпадает с движком ----------------------------------------

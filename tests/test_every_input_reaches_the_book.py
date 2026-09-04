@@ -29,6 +29,8 @@ sys.path.insert(0, str(ROOT))
 
 import main_legacy as core  # noqa: E402
 
+import v4_inputs  # noqa: E402
+
 openpyxl = pytest.importorskip("openpyxl")
 
 WORD = re.compile(r"\b[a-z][a-z0-9_]{3,}\b")
@@ -89,7 +91,7 @@ def test_every_engine_input_is_named_or_declared_absent(book):
 def test_the_declared_absentees_are_really_absent_by_design(book):
     """Список «книге не сосчитать» не свалка: у каждой причина, и каждая
     показана основанием — значение видно, править нечем."""
-    sheet = book["Вводные"]
+    sheet = v4_inputs.inputs(book)
     shown = {str(sheet[f"D{row}"].value or "") for row in range(1, sheet.max_row + 1)}
     for key, reason in core.V4_INPUTS_NOT_IN_BOOK.items():
         assert len(reason) > 30, f"{key}: причина не названа"

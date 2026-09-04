@@ -26,6 +26,9 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import v4_inputs  # noqa: E402
 
 import main as wrapper  # noqa: E402
 
@@ -101,7 +104,7 @@ def test_the_workbook_gets_the_offset_too():
         inputs, copy.deepcopy(core.TEP_DEFAULT), [], {}, project_name="Проверка")
     assert not [item for item in missing if "vri" in item], missing
     book = openpyxl.load_workbook(io.BytesIO(content))
-    assert book["Вводные"]["B82"].value == pytest.approx(500.0)
+    assert v4_inputs.inputs(book)["B82"].value == pytest.approx(500.0)
 
     # Столько же остаётся к оплате в движке: 1 000 − 200 льготы − 300 зачёта.
     _, net = core.vri_relief(inputs, 1000e6)
@@ -122,7 +125,7 @@ def test_the_workbook_builds_on_the_reduced_saleable_area():
     def cells(tep):
         content, _, _ = core.build_project_workbook(
             {**BASE}, tep, [], {}, project_name="Проверка")
-        sheet = openpyxl.load_workbook(io.BytesIO(content))["Вводные"]
+        sheet = v4_inputs.inputs(openpyxl.load_workbook(io.BytesIO(content)))
         return sheet["W88"].value, sheet["Z88"].value
 
     plain = copy.deepcopy(core.TEP_DEFAULT)

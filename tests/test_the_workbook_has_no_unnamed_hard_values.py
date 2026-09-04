@@ -32,27 +32,45 @@ sys.path.insert(0, str(ROOT))
 
 import main_legacy as core  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import v4_inputs  # noqa: E402
+
 openpyxl = pytest.importorskip("openpyxl")
 
 TEMPLATE = ROOT / "templates" / "DevelopAid_model_v4.xlsx"
 
 
 def read(source) -> dict[str, dict[str, tuple[str, str]]]:
-    """{лист: {клетка: ('f'|'v', содержимое)}} — формула или значение."""
+    """{лист: {клетка: ('f'|'v', содержимое)}} — формула или значение.
+
+    Ввод переехал на свой лист, и на прежней координате стоит ссылка на него.
+    Ссылка — тоже формула, поэтому «число на месте формулы шаблона» на листе
+    вводных стало бы невидимым: сравнение показывало бы формулу против
+    формулы. Ровно на этом листе харды и вероятнее всего — движок пишет туда
+    все вводные. Поэтому ссылка раскрывается, лист сравнивается под прежним
+    именем, а сам лист ввода отдельной записью не идёт: он не копия
+    шаблонного, а его продолжение.
+    """
     book = openpyxl.load_workbook(source, data_only=False)
     out: dict[str, dict[str, tuple[str, str]]] = {}
     for sheet in book.worksheets:
+        if sheet.title == v4_inputs.ENTRY and v4_inputs.PARAMS in book.sheetnames:
+            continue
         cells: dict[str, tuple[str, str]] = {}
+        view = (v4_inputs.inputs(book)
+                if sheet.title == v4_inputs.PARAMS and v4_inputs.ENTRY in book.sheetnames
+                else None)
         for row in sheet.iter_rows():
             for cell in row:
-                value = cell.value
+                value = view[cell.coordinate].value if view is not None else cell.value
                 if value is None:
                     continue
                 if isinstance(value, str) and value.startswith("="):
                     cells[cell.coordinate] = ("f", value[:90])
                 else:
                     cells[cell.coordinate] = ("v", str(value)[:40])
-        out[sheet.title] = cells
+        out["Вводные" if view is not None else sheet.title] = cells
     book.close()
     return out
 

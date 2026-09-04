@@ -106,6 +106,18 @@ def row_of(coord: str) -> int:
     return int(re.search(r"\d+", coord).group(0))
 
 
+def rename_in_formula(text: str, old: str = ENTRY_SHEET, new: str = PARAMS_SHEET) -> str:
+    """Имя листа в ОДНОЙ формуле. Правило одно на всю книгу и на проверки.
+
+    Движок собирает формулы под прежним именем, а переименование идёт по
+    книге разом. Проверке, которая сверяет собранную формулу с той, что писал
+    движок, нужно то же преобразование — второе разошлось бы с первым молча.
+    """
+    quoted = f"'{old}'!"
+    plain = re.compile(r"(?<![A-Za-zА-Яа-я0-9_'])%s!" % re.escape(old))
+    return plain.sub(f"'{new}'!", text.replace(quoted, f"'{new}'!"))
+
+
 def rename_sheet_refs(xml: str, old: str = ENTRY_SHEET, new: str = PARAMS_SHEET) -> str:
     """Имя листа перед `!` — и только оно.
 
@@ -113,11 +125,8 @@ def rename_sheet_refs(xml: str, old: str = ENTRY_SHEET, new: str = PARAMS_SHEET)
     Правится и текст: подпись «Вводные / очереди» на листе ПРОВЕРКИ называет
     лист, и после переименования она указывала бы на несуществующий.
     """
-    quoted = f"'{old}'!"
-    plain_ref = re.compile(r"(?<![A-Za-zА-Яа-я0-9_'])%s!" % re.escape(old))
     def swap(text: str) -> str:
-        text = text.replace(quoted, f"'{new}'!")
-        return plain_ref.sub(f"'{new}'!", text)
+        return rename_in_formula(text, old, new)
     xml = re.sub(r"<x:f>([^<]*)</x:f>", lambda m: "<x:f>" + swap(m.group(1)) + "</x:f>", xml)
     xml = re.sub(r"<x:t([^>]*)>([^<]*)</x:t>",
                  lambda m: f"<x:t{m.group(1)}>" + m.group(2).replace(old, new) + "</x:t>", xml)
