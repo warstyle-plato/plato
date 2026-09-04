@@ -110,7 +110,9 @@ def test_phase_share_editor_rebalances_all_queues_and_recalculates_real_tep():
     assert "syncPhaseProductSharesFromTep(key,field,index)" in page
     assert "phase.products[key][field]=x" in page
     assert "x/total*100" in page
-    assert 'value="${Number(value.toFixed(2))}"' in page
+    # Значение поля печатается округлённым: метры до сотых, штуки целыми —
+    # 412,94 квартиры не бывает.
+    assert 'value="${isCount?value:Number(value.toFixed(2))}"' in page
     assert 'readonly title="Автоматический остаток до 100%"' in page
     assert "<small>остаток</small>" in page
     assert "renderPhasing();calculate()" in page
@@ -121,7 +123,9 @@ def test_real_tep_editor_caps_values_at_the_remaining_project_total():
     page = core.PAGE
     assert "function phaseProductTepLimit(key,field,index)" in page
     assert "phaseProductTepValues(key,field).slice(0,index)" in page
-    assert "Math.min(limit,requested)" in page
+    # Остаток режет запрошенное; у штук он ещё и целый — дробный остаток
+    # вернул бы дробную квартиру ровно там, где её обрезают.
+    assert "Math.min(count?Math.floor(limit+1e-6):limit,requested)" in page
     assert "function clampPhaseProductTepRight(key,field,index)" in page
     assert "rightTotal<=remaining+1e-6" in page
     assert 'max="${Number(limit.toFixed(6))}"' in page

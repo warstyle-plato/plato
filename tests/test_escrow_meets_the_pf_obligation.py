@@ -121,9 +121,16 @@ def test_the_chart_legend_is_declared_once():
     names = [text for text, _colour, _style in core._ESCROW_CHART_LEGEND]
     assert "Раскрыто с эскроу, накопленно" in names
     assert "Продано после ввода, накопленно" in names
-    for text in names:
-        assert core.PAGE.count(">" + text + "<") == 2, \
-            f"подпись «{text}» на странице не из общего объявления"
+    # Легенда стоит у каждого графика — у сводного, у отчётного и у карточек
+    # очередей, — но подставлена везде одна и та же. Значит проверяется не
+    # число вхождений (графиком больше — и проверка упала бы на верной
+    # правке), а то, что все подписи встречаются ОДИНАКОВО часто: своя,
+    # написанная руками копия сбила бы счёт хотя бы одной из них.
+    counts = {text: core.PAGE.count(">" + text + "<") for text in names}
+    assert len(set(counts.values())) == 1, \
+        f"подписи разошлись по числу вхождений: {counts}"
+    assert next(iter(counts.values())) >= 3, \
+        "легенда доехала не до всех графиков — их на странице три"
 
 
 def test_the_two_lines_are_two_events():

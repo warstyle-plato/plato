@@ -46,7 +46,8 @@ def _run(project_saleable: float, typed: float | None) -> str:
     if not node:
         pytest.skip("node недоступен")
     helpers = []
-    for name in ("phaseProductDerived", "phaseProductTepValues", "phaseProductTepLimit"):
+    for name in ("phaseIntegerSplit", "phaseProductDerived",
+                 "phaseProductTepValues", "phaseProductTepLimit"):
         found = re.search(r"\nfunction " + name + r"\(.*?\n\}", core.PAGE, re.S)
         assert found, name
         helpers.append(found.group(0))
@@ -118,4 +119,5 @@ def test_the_limit_still_guards_the_input():
     """Ограничение при вводе никуда не делось: больше проекта не вписать."""
     assert "function phaseProductTepLimit(" in core.PAGE
     setter = re.search(r"\nfunction setPhaseProductTep\(.*?\n\}", core.PAGE, re.S).group(0)
-    assert "Math.min(limit,requested)" in setter
+    # Остаток проекта режет запрошенное; у штук остаток ещё и целый.
+    assert "Math.min(count?Math.floor(limit+1e-6):limit,requested)" in setter
