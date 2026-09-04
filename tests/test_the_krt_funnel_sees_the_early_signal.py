@@ -63,7 +63,11 @@ def stage(site: dict, *, lots=None, press=None, intent=None, mark=None, order=No
         f"krtRequirements:{json.dumps({slug: {'intent': intent}} if intent else {})}}};\n"
         "const esc=s=>String(s);\n"
         "function krtWhen(t){return t?'дата':''}\n"
-        + _stages_const() + "\n" + _function("krtIntent") + "\n" + _function("krtStage") + "\n"
+        # Лоты площадки — один ответ на всю страницу (`krtLots`): связку
+        # считает сервер и он же её помнит, а не память вкладки.
+        + _stages_const() + "\n" + _function("krtIntent") + "\n"
+        + _function("krtLots") + "\n" + _function("krtLiveLot") + "\n"
+        + _function("krtStage") + "\n"
         + f"console.log(JSON.stringify(krtStage({json.dumps(site)})));"
     )
     done = subprocess.run([node, "-e", program], capture_output=True, text=True, timeout=60)

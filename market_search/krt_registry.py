@@ -43,6 +43,10 @@ CARD_FACTS_SCHEMA_VERSION = 1
 # ТЭП, вынутый из PDF проекта решения. Своя версия: разбор правится
 # отдельно от разбора карточки, и общая версия обесценивала бы чужое.
 DECISION_TEP_SCHEMA_VERSION = 1
+# Лоты, привязанные к площадке. Считает их сервер, а хранились они только
+# в памяти вкладки — и правило «живой лот сильнее публикации» работало
+# ровно до перезагрузки.
+TENDER_LOTS_SCHEMA_VERSION = 1
 DECISIONS_CACHE_SCHEMA_VERSION = 2
 TENDERS_CACHE_SCHEMA_VERSION = 1
 MAP_CACHE_SCHEMA_VERSION = 1
@@ -321,6 +325,8 @@ class KrtRegistry:
         # Отказ помнится полчаса: см. `card_facts`.
         self.card_facts_failure_ttl_seconds = 30 * 60
         self.tender_links_path = Path(data_dir) / "krt" / "tender_links.json"
+        # Лоты по площадкам: то, что посчитал маршрут, переживает вкладку.
+        self.tender_lots_path = Path(data_dir) / "krt" / "tender_lots.json"
         self.fetch = fetch or (lambda url: request_bytes(url, timeout=15, retries=1))
         self.ttl_seconds = 24 * 60 * 60
         self._refreshing = False
@@ -1247,6 +1253,46 @@ class KrtRegistry:
         marks[clean] = entry
         save_json(self.tender_links_path, marks)
         return entry
+
+    def remember_tender_lots(self, by_site: dict[str, Any] | None) -> int:
+        """Запомнить, какие лоты привязались к площадкам.
+
+        Соответствие считает сервер по лотам, собранным вкладкой «Торги», а
+        жило оно ТОЛЬКО в памяти браузера: открыл каталог без соседней вкладки
+        — плашки «торги» нет, и правило «живой лот сильнее публикации» не
+        срабатывает вовсе. Находка публикации при этом лежит на диске и
+        переживает всё: на Варшавском ш., вл. 37 при идущем аукционе оставался
+        застройщик из объявления о продаже соседнего дома (владелец,
+        04.09.2026). Асимметрия хранения и есть ошибка.
+
+        Площадка, которой в этом заходе не нашлось, СВОЁ не теряет: обход
+        каталога ограничен сроком и бывает неполным, а «не собрали» — не
+        «лота нет». Устаревание решает срок подачи заявок, он лежит в самой
+        записи.
+        """
+        rows = by_site if isinstance(by_site, dict) else {}
+        stored = load_json(self.tender_lots_path)
+        stored = stored if isinstance(stored, dict) else {}
+        sites = stored.get("sites") if isinstance(stored.get("sites"), dict) else {}
+        now = int(time.time())
+        for slug, lots in rows.items():
+            clean = str(slug or "").strip()
+            if not re.fullmatch(r"[a-zA-Z0-9_-]{2,180}", clean) or not lots:
+                continue
+            sites[clean] = {"lots": list(lots)[:20], "seen_at": now}
+        payload = {"schema_version": TENDER_LOTS_SCHEMA_VERSION,
+                   "updated_at": now, "sites": sites}
+        save_json(self.tender_lots_path, payload)
+        return len(rows)
+
+    def tender_lots_known(self) -> dict[str, Any]:
+        """Что о лотах уже известно — с диска, без единого запроса."""
+        stored = load_json(self.tender_lots_path)
+        if not (isinstance(stored, dict)
+                and stored.get("schema_version") == TENDER_LOTS_SCHEMA_VERSION):
+            return {}
+        sites = stored.get("sites")
+        return sites if isinstance(sites, dict) else {}
 
     def tender_orders(self, *, refresh: bool = False, max_pages: int = 12) -> dict[str, Any]:
         """Распоряжения ДГП о проведении торгов по КРТ.

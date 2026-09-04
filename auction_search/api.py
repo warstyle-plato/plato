@@ -802,6 +802,25 @@ def install(app: FastAPI) -> None:
                 except Exception:  # noqa: BLE001
                     logger.exception("KRT card facts fill failed")
 
+        # Лоты, привязанные к площадкам, — запасной путь к тому, что уже
+        # посчитано: без него «идут торги» видно только тому, кто в этой же
+        # вкладке успел открыть соседнюю.
+        lots_known = getattr(krt_registry, "tender_lots_known", None)
+        if callable(lots_known):
+            try:
+                remembered = await run_in_threadpool(lots_known)
+            except Exception:  # noqa: BLE001
+                logger.exception("KRT tender lots cache failed")
+                remembered = {}
+            if remembered:
+                projects = [
+                    {**row,
+                     "tender_lots": (remembered.get(str(row.get("slug") or "")) or {}).get("lots") or [],
+                     "tender_lots_seen_at": (remembered.get(str(row.get("slug") or "")) or {}).get("seen_at") or 0}
+                    if remembered.get(str(row.get("slug") or "")) else row
+                    for row in projects
+                ]
+
         status = krt_registry.status()
         # Неразобранная карточка называется вслух. Её значения съезжают на
         # поле — округом становится статус, статусом хвост адреса, — и такая
@@ -1280,6 +1299,15 @@ def install(app: FastAPI) -> None:
             raise HTTPException(status_code=422, detail="Список лотов не разобран")
         sites = await run_in_threadpool(krt_registry.catalogue)
         matched = await run_in_threadpool(krt_tenders.match, lots, sites)
+        # Посчитанное сервером сервер и хранит: связка жила в памяти вкладки,
+        # и без соседней вкладки «Торги» её не существовало вовсе — плашки
+        # нет, а правило «живой лот сильнее публикации» не срабатывает.
+        keeper = getattr(krt_registry, "remember_tender_lots", None)
+        if callable(keeper):
+            try:
+                await run_in_threadpool(keeper, matched.get("by_site"))
+            except Exception:  # noqa: BLE001
+                logger.exception("KRT tender lots remember failed")
         orders: dict[str, Any] = {}
         reader = getattr(krt_registry, "tender_orders", None)
         if callable(reader):
