@@ -4,6 +4,7 @@ from __future__ import annotations
 import calendar
 import base64
 import concurrent.futures
+import functools
 import csv
 import gzip
 import copy
@@ -71,7 +72,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.21.92"
+VERSION = "0.21.93"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -15783,6 +15784,60 @@ def _v4_shared_weights(
     return _v4_normalized(weights, count)
 
 
+@functools.lru_cache(maxsize=1)
+def _v4_entry_style_id() -> "int | None":
+    """Стиль «здесь печатают» — взятый у самого шаблона, а не своим числом.
+
+    Дописанные блоки — лестница ставок, графики платежей и продаж, лестницы
+    цены, календарь соцстройки, кривая ключевой ставки — писались БЕЗ стиля
+    вовсе. Пока ввод был один лист, это была придирка к виду. После
+    разделения это стало разрывом: перенос решает по цвету, что считается
+    вводом, — и шестьдесят вводных из ста семидесяти четырёх остались на
+    расчётном листе, где инструкция говорит «печатать нечего». Два ввода,
+    ровно то, чего быть не должно.
+    """
+    with zipfile.ZipFile(_V4_TEMPLATE_PATH) as source:
+        styles = source.read("xl/styles.xml").decode("utf-8")
+    return v4_entry_sheet.style_map(styles)["entry_default"]
+
+
+def _v4_entry_attr() -> str:
+    """Атрибут стиля для ячейки, в которую печатают. Нет стиля — нет атрибута."""
+    style = _v4_entry_style_id()
+    return f' s="{style}"' if style is not None else ""
+
+
+@functools.lru_cache(maxsize=1)
+def _v4_header_style_id() -> "int | None":
+    """Стиль заголовка раздела — тоже у шаблона.
+
+    Заголовок дописанного блока — такой же заголовок раздела, как «ПРОДАЖИ»
+    или «СТОИМОСТЬ СТРОИТЕЛЬСТВА»: строка без значения, называющая, что
+    ниже. Пока он шёл без стиля, перенос вёз на лист ввода шаги графика, а
+    его имя оставлял на расчётном — блок разрывался надвое, и обе половины
+    выглядели целыми.
+    """
+    with zipfile.ZipFile(_V4_TEMPLATE_PATH) as source:
+        styles = source.read("xl/styles.xml").decode("utf-8")
+    found = sorted(v4_entry_sheet._header_styles(styles))
+    return found[0] if found else None
+
+
+def _v4_header_attr() -> str:
+    style = _v4_header_style_id()
+    return f' s="{style}"' if style is not None else ""
+
+
+def _v4_head_cell(coord: str, value: str) -> str:
+    """Ячейка строки-заголовка дописанного блока.
+
+    Тем же стилем, что заголовки разделов шаблона: перенос ввода узнаёт
+    заголовок по цвету и везёт его вместе со своими строками.
+    """
+    return (f'<x:c r="{coord}"{_v4_header_attr()} t="inlineStr">'
+            f"<x:is><x:t>{html.escape(str(value), quote=False)}</x:t></x:is></x:c>")
+
+
 def _v4_ladder_rows_xml(xml: str, steps: list[tuple[float, float]]
                         ) -> tuple[str, list[tuple[str, str]]]:
     """Блок ступеней в XML листа «Вводные» книги v4; возвращает ссылки.
@@ -15802,31 +15857,31 @@ def _v4_ladder_rows_xml(xml: str, steps: list[tuple[float, float]]
         return (f'<x:c r="{coord}" t="inlineStr"><x:is><x:t>{value}</x:t></x:is></x:c>')
 
     parts.append(f'<x:row r="{row_at}">'
-                 + text_cell(f"A{row_at}", "СТУПЕНИ СТАВКИ ПФ ПО ПОКРЫТИЮ ЭСКРОУ")
+                 + _v4_head_cell(f"A{row_at}", "СТУПЕНИ СТАВКИ ПФ ПО ПОКРЫТИЮ ЭСКРОУ")
                  # Ключ один на весь блок: вводная — строка договора целиком
                  # («3,47%@100; 1,75%@110»), а строк у неё столько, сколько
                  # ступеней. То же правило, что у графика платежей.
-                 + text_cell(f"D{row_at}", "pf_special_steps")
+                 + _v4_head_cell(f"D{row_at}", "pf_special_steps")
                  + "</x:row>")
     row_at += 1
     parts.append(f'<x:row r="{row_at}">'
-                 + text_cell(f"A{row_at}",
-                             "Правьте значения — строка 41 листов CF читает их "
-                             "отсюда. Пустой порог выключает ступень.")
+                 + _v4_head_cell(f"A{row_at}",
+                                 "Правьте значения — строка 41 листов CF читает их "
+                                 "отсюда. Пустой порог выключает ступень.")
                  + "</x:row>")
     row_at += 1
     for index, (edge, rate) in enumerate(steps):
         parts.append(
             f'<x:row r="{row_at}">'
             + text_cell(f"A{row_at}", f"Ступень {index + 1} — покрытие от")
-            + f'<x:c r="B{row_at}"><x:v>{round(edge, 6):g}</x:v></x:c>'
+            + f'<x:c r="B{row_at}"{_v4_entry_attr()}><x:v>{round(edge, 6):g}</x:v></x:c>'
             + text_cell(f"C{row_at}", "×") + "</x:row>")
         edge_ref = f"'Вводные'!$B${row_at}"
         row_at += 1
         parts.append(
             f'<x:row r="{row_at}">'
             + text_cell(f"A{row_at}", f"Ступень {index + 1} — ставка")
-            + f'<x:c r="B{row_at}"><x:v>{round(rate, 8):g}</x:v></x:c>'
+            + f'<x:c r="B{row_at}"{_v4_entry_attr()}><x:v>{round(rate, 8):g}</x:v></x:c>'
             + text_cell(f"C{row_at}", "% годовых") + "</x:row>")
         refs.append((edge_ref, f"'Вводные'!$B${row_at}"))
         row_at += 1
@@ -15873,17 +15928,18 @@ def _v4_rate_curve_rows_xml(xml: str, scenario: str, start_date: Any,
     def text_cell(coord: str, value: str) -> str:
         return f'<x:c r="{coord}" t="inlineStr"><x:is><x:t>{value}</x:t></x:is></x:c>'
 
-    def number_cell(coord: str, value: float) -> str:
-        return f'<x:c r="{coord}"><x:v>{value:g}</x:v></x:c>'
+    def number_cell(coord: str, value: float, entry: bool = True) -> str:
+        """Число блока. `entry=False` — там, где правит не человек, а формула."""
+        return f'<x:c r="{coord}"{_v4_entry_attr() if entry else ""}><x:v>{value:g}</x:v></x:c>'
 
     parts.append(f'<x:row r="{row_at}">'
-                 + text_cell(f"A{row_at}", "КРИВАЯ КЛЮЧЕВОЙ СТАВКИ")
-                 + text_cell(f"D{row_at}", "Ключ API") + "</x:row>")
+                 + _v4_head_cell(f"A{row_at}", "КРИВАЯ КЛЮЧЕВОЙ СТАВКИ")
+                 + _v4_head_cell(f"D{row_at}", "Ключ API") + "</x:row>")
     row_at += 1
     parts.append(f'<x:row r="{row_at}">'
-                 + text_cell(f"A{row_at}",
-                             "Правьте значения — лист «Ставки» и ячейка B34 читают их отсюда. "
-                             "Сценарий пишется именем колонки: Base / Upside / Downside.")
+                 + _v4_head_cell(f"A{row_at}",
+                                 "Правьте значения — лист «Ставки» и ячейка B34 читают их отсюда. "
+                                 "Сценарий пишется именем колонки: Base / Upside / Downside.")
                  + "</x:row>")
     row_at += 1
 
@@ -15891,7 +15947,8 @@ def _v4_rate_curve_rows_xml(xml: str, scenario: str, start_date: Any,
     scenario_row = row_at
     parts.append(f'<x:row r="{row_at}">'
                  + text_cell(f"A{row_at}", "Сценарий ключевой ставки")
-                 + text_cell(f"B{row_at}", scenario)
+                 + f'<x:c r="B{row_at}"{_v4_entry_attr()} t="inlineStr">'
+                   f"<x:is><x:t>{scenario}</x:t></x:is></x:c>"
                  + text_cell(f"C{row_at}", "сценарий")
                  + text_cell(f"D{row_at}", "rate_scenario") + "</x:row>")
     refs["rate_scenario"] = f"$B${scenario_row}"
@@ -15943,7 +16000,7 @@ def _v4_rate_curve_rows_xml(xml: str, scenario: str, start_date: Any,
         offset_cell = (f'<x:c r="B{offset_row}"><x:f>{offset_formula}</x:f>'
                        f"<x:v>{int(offset_months)}</x:v></x:c>")
     else:
-        offset_cell = number_cell(f"B{offset_row}", int(offset_months))
+        offset_cell = number_cell(f"B{offset_row}", int(offset_months), entry=False)
     parts.append(f'<x:row r="{row_at}">'
                  + text_cell(f"A{row_at}", "Месяцев от даты ставки до старта проекта")
                  + offset_cell
@@ -16084,17 +16141,17 @@ def _v4_schedule_rows_xml(xml: str, title: str, hint: str,
     # у неё столько, сколько шагов. Подписать ключом каждую строку значило бы
     # назвать шаг целой вводной — то же правило, по которому раскиданный по
     # очередям соцобъект ключа не получает.
-    parts.append(f'<x:row r="{row_at}">' + text_cell(f"A{row_at}", title)
-                 + (text_cell(f"D{row_at}", key) if key else "") + "</x:row>")
+    parts.append(f'<x:row r="{row_at}">' + _v4_head_cell(f"A{row_at}", title)
+                 + (_v4_head_cell(f"D{row_at}", key) if key else "") + "</x:row>")
     row_at += 1
-    parts.append(f'<x:row r="{row_at}">' + text_cell(f"A{row_at}", hint) + "</x:row>")
+    parts.append(f'<x:row r="{row_at}">' + _v4_head_cell(f"A{row_at}", hint) + "</x:row>")
     row_at += 1
     for index, (month, value) in enumerate(rows):
         parts.append(
             f'<x:row r="{row_at}">'
             + text_cell(f"A{row_at}", f"Шаг {index + 1}")
-            + f'<x:c r="B{row_at}"><x:v>{int(month)}</x:v></x:c>'
-            + f'<x:c r="C{row_at}"><x:v>{round(float(value), 8):g}</x:v></x:c>'
+            + f'<x:c r="B{row_at}"{_v4_entry_attr()}><x:v>{int(month)}</x:v></x:c>'
+            + f'<x:c r="C{row_at}"{_v4_entry_attr()}><x:v>{round(float(value), 8):g}</x:v></x:c>'
             + text_cell(f"D{row_at}", unit) + "</x:row>")
         refs.append((f"'Вводные'!$B${row_at}", f"'Вводные'!$C${row_at}"))
         row_at += 1
@@ -16160,7 +16217,7 @@ def _v4_stage_rows_xml(xml: str, title: str, hint: str, growth: list[float],
         parts.append(
             f'<x:row r="{row_at}">'
             + text_cell(f"A{row_at}", f"Этап {index + 1} · готовность {STAGE_READINESS_PCT[index]}%")
-            + f'<x:c r="B{row_at}"><x:v>{round(float(value), 8):g}</x:v></x:c>'
+            + f'<x:c r="B{row_at}"{_v4_entry_attr()}><x:v>{round(float(value), 8):g}</x:v></x:c>'
             + text_cell(f"C{row_at}", "доля роста")
             + (text_cell(f"D{row_at}", keys[index]) if index < len(keys) else "")
             + "</x:row>")
@@ -16365,6 +16422,44 @@ V4_INPUTS_NOT_IN_BOOK: dict[str, str] = {
         "то же для ТЦ и ОСЗ: признак делит нормативную потребность между "
         "наземным и подземным паркингом до того, как ТЭП попадает в книгу"),
 }
+# Ячейки, в которых значение ПОКАЗАНО, но книгой не читается ни одной
+# формулой. Это не ввод: правка здесь не изменит ничего, а выглядит рабочей —
+# «вводная, которую никто не читает, — не вводная, а обещание». Нашлись они
+# счётом читателей: у цены квартир их 484, у этих ноль. На лист ввода они не
+# едут намеренно: там печатают, а печатать здесь нечего.
+# Ячейки, в которые движок пишет ПОСЧИТАННОЕ, а не поле вводных. Это не ошибка
+# и не мусор шаблона: у книги одна ячейка на величину, у которой у движка два
+# слагаемых. Но и сверять её с полем нельзя — она про другое, и молчаливое
+# совпадение имени читалось бы как совпадение величины.
+V4_INPUTS_COMPUTED_IN_THE_CELL: dict[str, str] = {
+    "social_compensation_mln": (
+        "в B17 идёт вся соцнагрузка — и денежная компенсация, и стоимость "
+        "стройки садов, школ и поликлиник: у книги ключ соцнагрузки один, а "
+        "движок берёт в расчётный лимит БРИДЖа только денежную часть"),
+}
+V4_INPUTS_SHOWN_ONLY: dict[str, dict[str, str]] = {
+    "pf_limit_approved_mln": {
+        "cell": "F26",
+        "reason": ("одобренный лимит — потолок банка; книга считает лимит сама "
+                   "(B26 = округление выборки вверх до 10 млн) и потолком его не "
+                   "ограничивает — потребность и одобренное расходятся в отчёте"),
+    },
+    "vri_pf_open_date": {
+        "cell": "F77",
+        "reason": ("дата открытия ПФ для досрочного погашения остатка ВРИ; график "
+                   "платежей приходит в книгу уже посчитанным блоком ВРИ"),
+    },
+    "vri_in_bank_budget": {
+        "cell": "F78",
+        "reason": ("признак «плата за ВРИ в банковском бюджете» делит её между "
+                   "источниками до книги: в неё приходят уже доли лимита"),
+    },
+    "vri_financing_mode": {
+        "cell": "F79",
+        "reason": ("режим источников оплаты ВРИ — тот же выбор до расчёта долей; "
+                   "книга получает доли, а не режим"),
+    },
+}
 _V4_ENGINE_ONLY_ROWS: tuple[tuple[str, str, str], ...] = (
     ("vri_region", "Регион расчёта платы за ВРИ", "Плата приходит в B16"),
     ("land_right", "Право на участок", "Плата приходит в B16"),
@@ -16458,29 +16553,32 @@ def _v4_social_rows_xml(xml: str, rows: dict[tuple[int, str], dict[str, Any]],
         return f'<x:c r="{coord}" t="inlineStr"><x:is><x:t>{xml_escape(value)}</x:t></x:is></x:c>'
 
     def number_cell(coord: str, value: float) -> str:
-        return f'<x:c r="{coord}"><x:v>{_v4_number(round(value, 6))}</x:v></x:c>'
+        # Всё, что здесь число, человек и правит: мест, цена места, начало,
+        # срок, множитель, площадь и норматив. Стоимость объекта (F) — формула,
+        # и она пишется отдельно.
+        return f'<x:c r="{coord}"{_v4_entry_attr()}><x:v>{_v4_number(round(value, 6))}</x:v></x:c>'
 
     parts.append(f'<x:row r="{base_row}">'
-                 + text_cell(f"A{base_row}", "СОЦИАЛЬНЫЕ ОБЪЕКТЫ — КАЛЕНДАРЬ СТРОЙКИ")
+                 + _v4_head_cell(f"A{base_row}", "СОЦИАЛЬНЫЕ ОБЪЕКТЫ — КАЛЕНДАРЬ СТРОЙКИ")
                  + "</x:row>")
     header = base_row + 1
     parts.append(
         f'<x:row r="{header}">'
-        + text_cell(f"A{header}", "Объект и очередь")
-        + text_cell(f"B{header}", "Мест / мощность")
-        + text_cell(f"C{header}", "Стоимость места, млн ₽")
-        + text_cell(f"D{header}", "Начало")
-        + text_cell(f"E{header}", "Срок, мес.")
-        + text_cell(f"F{header}", "Стоимость, млн ₽")
-        + text_cell(f"G{header}", "Множитель инфляции очереди")
-        + text_cell(f"H{header}", "Ключ API: мест")
-        + text_cell(f"I{header}", "Ключ API: цена места")
-        + text_cell(f"J{header}", "Ключ API: начало")
-        + text_cell(f"K{header}", "Ключ API: срок")
-        + text_cell(f"L{header}", "Площадь объекта, м²")
-        + text_cell(f"M{header}", "Норматив, м²/место")
-        + text_cell(f"N{header}", "Ключ API: площадь")
-        + text_cell(f"O{header}", "Ключ API: норматив")
+        + _v4_head_cell(f"A{header}", "Объект и очередь")
+        + _v4_head_cell(f"B{header}", "Мест / мощность")
+        + _v4_head_cell(f"C{header}", "Стоимость места, млн ₽")
+        + _v4_head_cell(f"D{header}", "Начало")
+        + _v4_head_cell(f"E{header}", "Срок, мес.")
+        + _v4_head_cell(f"F{header}", "Стоимость, млн ₽")
+        + _v4_head_cell(f"G{header}", "Множитель инфляции очереди")
+        + _v4_head_cell(f"H{header}", "Ключ API: мест")
+        + _v4_head_cell(f"I{header}", "Ключ API: цена места")
+        + _v4_head_cell(f"J{header}", "Ключ API: начало")
+        + _v4_head_cell(f"K{header}", "Ключ API: срок")
+        + _v4_head_cell(f"L{header}", "Площадь объекта, м²")
+        + _v4_head_cell(f"M{header}", "Норматив, м²/место")
+        + _v4_head_cell(f"N{header}", "Ключ API: площадь")
+        + _v4_head_cell(f"O{header}", "Ключ API: норматив")
         + "</x:row>")
     for type_index, (typ, label) in enumerate(_V4_SOCIAL_TYPES):
         # Ключ движка ставится только там, где строка несёт ВСЮ вводную: тип
@@ -17344,6 +17442,13 @@ def build_project_workbook(
         put("B75", text=f"{years} {word}", label="vri_payment_mode")
     else:
         put("B75", text="Единовременно", label="vri_payment_mode")
+    # Ячейка одна, а вводных в ней две: «3 года» несёт и порядок оплаты, и срок
+    # рассрочки. Ключ срока стоял в шаблоне на строке 77, где его РАЗБИРАЕТ
+    # формула, — то же самое, что было с лагом продаж и трендом темпа: правка
+    # живой ячейки и правка мёртвой выглядели одинаково. Обе вводные названы
+    # там, где их печатают, а строка 77 говорит, откуда берёт своё число.
+    put_new("D75", text="vri_payment_mode · vri_installment_years")
+    put_new("C77", text="лет — из строки 75")
     lead = {"before_rns_1m": 1, "before_rns_3m": 3, "at_rns": 0}.get(
         str(x.get("vri_obligation_date_mode") or "before_rns_1m"), 1)
     put("B76", number=float(lead), label="vri_obligation_lead_months")
