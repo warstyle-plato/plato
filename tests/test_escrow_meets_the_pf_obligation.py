@@ -96,7 +96,22 @@ def test_the_page_draws_the_obligation_and_not_only_the_body():
     # Рисовальщик один на проект и на очереди: два разошлись бы молча.
     assert page.count("function escrowCoverSvg(") == 1
     # Заливка, а не линии: ответ на «перекрывает или нет» — это площадь.
-    assert "<polygon" in page.split("function escrowCoverSvg(")[1][:4000]
+    # Заливка живёт в слое: рисовальщик разложен на слои, чтобы наложение
+    # очередей рисовалось тем же кодом. Границей служит сама функция, а не
+    # окно в 4000 знаков — оно ловило соседний код и падало на верной правке.
+    start = page.index("function escrowLayer(")
+    depth, index, seen = 0, page.index("{", start), False
+    while index < len(page):
+        if page[index] == "{":
+            depth, seen = depth + 1, True
+        elif page[index] == "}":
+            depth -= 1
+            if seen and depth == 0:
+                break
+        index += 1
+    layer = page[start:index + 1]
+    assert "<polygon" in layer, "площадь эскроу перестала быть заливкой"
+    assert page.count("function escrowLayer(") == 1, "два слоя разошлись бы молча"
     # Раскрытие эскроу и продажи после ввода — разные события, и одной линией
     # они врут: ступень в 70 млрд читалась как «после ввода продали на 70»
     # (владелец, 01.09.2026), хотя продаж в тот месяц нет.

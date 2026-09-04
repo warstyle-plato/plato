@@ -41347,146 +41347,151 @@ function renderApartmentPaceChart(sales){
 // проект и на очереди: два разошлись бы, и оба выглядели бы верными. Числа
 // приходят готовыми с сервера, здесь только геометрия.
 const ESCROW_QUEUE_SHADES=__DEVELOPAID_ESCROW_QUEUE_SHADES__;
-// Наложение очередей: у каждой СВОЯ площадь эскроу от нуля, полупрозрачная.
-// Видно, как вторая стартует с нуля на фоне первой и идёт дальше, когда та
-// раскрылась (владелец, 04.09.2026). Своей картинкой, а не поверх свода:
-// долг, тело ПФ и полоса непокрытого относятся к сумме, и наложенные на них
-// поля очередей дают месиво — так уже вышло, и это было снято.
-function escrowQueuesSvg(phases){
- const live=(phases||[]).filter(p=>p&&p.byMonth&&Object.keys(p.byMonth).length);
- if(live.length<2)return '';
- const months=[...new Set([].concat(...live.map(p=>Object.keys(p.byMonth))))].sort();
- if(months.length<2)return '';
- const esc=(p,m)=>Number((p.byMonth[m]||{}).escrow||0);
- const top=Math.max(...months.map(m=>Math.max(...live.map(p=>esc(p,m)))),1)*1.08;
- const W=900,H=220,pL=58,pR=20,pT=18,pB=26,plotW=W-pL-pR,plotH=H-pT-pB;
- const X=i=>pL+plotW*i/(months.length-1);
- const Y=v=>pT+plotH-plotH*Math.max(0,v)/top;
- const pt=(i,v)=>`${X(i).toFixed(1)},${Y(v).toFixed(1)}`;
- let grid='';
- for(let t=0;t<=3;t++){const v=top*t/3,y=Y(v);
-  grid+=`<line x1="${pL}" y1="${y.toFixed(1)}" x2="${W-pR}" y2="${y.toFixed(1)}" stroke="#ececec"/>`
-   +`<text x="${pL-6}" y="${(y+4).toFixed(1)}" font-size="11" fill="#777" text-anchor="end">${(v/1e9).toLocaleString('ru-RU',{maximumFractionDigits:1})}</text>`}
- // У каждой очереди своя площадь от нуля. Наложение — умножением цветов
- // (mix-blend-mode: multiply): при обычной прозрачности верхний слой
- // ВЫБЕЛИВАЕТ нижний, и пересечение выходит бледнее обеих очередей — то есть
- // ровно наоборот. С умножением общий месяц темнее любого одиночного, и
- // граница пересечения читается сама. Край каждой площади обведён своим
- // цветом: без линии смежные тона сливаются.
- const body=live.map((p,k)=>{
-  const colour=ESCROW_QUEUE_SHADES[k%ESCROW_QUEUE_SHADES.length];
-  const line=months.map((m,i)=>pt(i,esc(p,m))).join(' ');
-  return `<polygon points="${pt(0,0)} ${line} ${pt(months.length-1,0)}" fill="${colour}"`
-   +` fill-opacity="0.45" style="mix-blend-mode:multiply"/>`
-   +`<polyline points="${line}" fill="none" stroke="${colour}" stroke-width="1.6"/>`;
- }).join('');
- const monthRu=iso=>{const parts=String(iso||'').slice(0,7).split('-');return parts.length===2?parts[1]+'.'+parts[0]:''};
- const marks=[...new Set([0,Math.floor(months.length/2),months.length-1])].map(i=>
-  `<text x="${X(i).toFixed(1)}" y="${H-7}" font-size="11" fill="#777" text-anchor="${i===0?'start':(i===months.length-1?'end':'middle')}">${monthRu(months[i])}</text>`).join('');
- return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">${grid}${body}
-  <text x="${pL}" y="${pT-4}" font-size="11" fill="#777" text-anchor="start">эскроу очереди, млрд ₽</text>
-  ${marks}</svg>`;
-}
-function escrowQueuesLegend(phases){
- return '<div class="legend">'+(phases||[]).map((p,k)=>
-  `<span><i style="background:${ESCROW_QUEUE_SHADES[k%ESCROW_QUEUE_SHADES.length]};opacity:.45;height:9px"></i>${escapeHtml(p.name||'')}</span>`
- ).join('')+'<span style="color:#777">Где тон темнее — там очереди идут вместе</span></div>';
-}
-function escrowQueuesData(){
- if(!(phaseBundle&&phaseBundle.mode==='phased'))return [];
- return (phaseBundle.phases||[]).map((p,i)=>{
-  const rows=((p.result||{}).finance||{}).rows||[];
-  const byMonth={};
-  rows.forEach(r=>{byMonth[String(r.month||'').slice(0,10)]={escrow:Number(r.escrow||0)}});
-  return {name:p.name||('Очередь '+(i+1)),rows:rows,byMonth:byMonth};
- });
-}
-function escrowCoverSvg(rows,cover){
- cover=cover||{};
- const duty=x=>Number(x.pf_obligation!==undefined?x.pf_obligation:(Number(x.pf_balance||0)+Number(x.pf_payable||0)));
- // Месяцы без долга и без счёта не рисуются — иначе ось растянута на годы
- // пустоты. Но обрезать их ВСЕ нельзя: первой точкой становится месяц с уже
- // сделанной выборкой, и кривая начинается с полки в миллиард — «зелёное и
- // жёлтое поле второй очереди не с 0 идут» (владелец, 04.09.2026). Соседний
- // месяц с каждой стороны остаётся: он настоящий и он нулевой, и на нём
- // видно, что очередь начинает с нуля.
- const all=(rows||[]);
- const alive=all.map(x=>duty(x)>0||Number(x.escrow||0)>0);
- const first=alive.indexOf(true), last=alive.lastIndexOf(true);
- if(first<0)return '';
- const data=all.slice(Math.max(0,first-1),Math.min(all.length,last+2));
- if(data.length<2)return '';
- const W=900,H=250,pL=58,pR=58,pT=18,pB=26,plotW=W-pL-pR,plotH=H-pT-pB;
- // Долг — это «сколько должны сейчас», накопленное — «сколько пришло с
- // начала». Разные величины, и на одной шкале накопленное всегда перерастает
- // долг: к концу оно равно почти всей выручке, а долг нулю. Долг сплющивался
- // в нижнюю треть графика. Поэтому у накопленного своя ось справа.
- const top=Math.max(...data.map(x=>Math.max(duty(x),Number(x.escrow||0))),1)*1.08;
- const cumTop=Math.max(...data.map(x=>Math.max(Number(x.escrow_released_cumulative||0),
-  Number(x.sales_after_rve_cumulative||0))),1)*1.08;
- const X=i=>pL+plotW*i/(data.length-1);
- const Y=v=>pT+plotH-plotH*Math.max(0,v)/top;
- const Yc=v=>pT+plotH-plotH*Math.max(0,v)/cumTop;
- const pt=(i,v)=>`${X(i).toFixed(1)},${Y(v).toFixed(1)}`;
- const path=f=>data.map((x,i)=>pt(i,f(x))).join(' ');
- // Заливка, а не линия: вопрос у графика один — перекрывает эскроу
- // обязательство или нет, — и ответ на него это площадь между кривыми.
- const area=f=>`${pt(0,0)} ${path(f)} ${pt(data.length-1,0)}`;
- // Непокрытая часть — своей заливкой, куском за куском: обязательство вперёд,
- // эскроу обратно. Один сплошной полигон склеил бы разрывы и закрасил месяцы,
- // где всё покрыто.
+
+// Один слой графика: заливка эскроу, полоса непокрытого, обязательство, тело
+// ПФ, линия эскроу, метка раскрытия и непогашенный остаток. Вынесен из
+// escrowCoverSvg затем, чтобы наложение очередей рисовалось ТЕМ ЖЕ кодом:
+// свой рисовальщик для наложения был бы второй реализацией графика, и он уже
+// вышел огрызком — без долга, тела ПФ и непокрытого («ты же весь функционал
+// графика убил», владелец, 04.09.2026).
+function escrowLayer(series,cover,geo,colours){
+ const {X,Y,Yc,pt,n,pL,pR,pT,plotH,W}=geo;
+ const value=(i,key)=>Number((series[i]||{})[key]||0);
+ const has=key=>series.some((_,i)=>value(i,key)>0);
+ const path=key=>series.map((_,i)=>pt(i,value(i,key))).join(' ');
+ const area=key=>`${pt(0,0)} ${path(key)} ${pt(n-1,0)}`;
+ // Непокрытая часть — куском за куском: обязательство вперёд, эскроу обратно.
+ // Один сплошной полигон склеил бы разрывы и закрасил месяцы, где всё покрыто.
  let gaps='',run=[];
  const flush=()=>{if(run.length>1){
-   const up=run.map(i=>pt(i,duty(data[i]))).join(' ');
-   const back=run.slice().reverse().map(i=>pt(i,Number(data[i].escrow||0))).join(' ');
-   gaps+=`<polygon points="${up} ${back}" fill="#A35D00" fill-opacity="0.16"/>`}
+   const up=run.map(i=>pt(i,value(i,'duty'))).join(' ');
+   const back=run.slice().reverse().map(i=>pt(i,value(i,'escrow'))).join(' ');
+   gaps+=`<polygon points="${up} ${back}" fill="${colours.debt}" fill-opacity="${colours.gapOpacity}"/>`}
   run=[]};
- data.forEach((x,i)=>{if(duty(x)-Number(x.escrow||0)>0)run.push(i);else flush()});flush();
+ series.forEach((_,i)=>{if(value(i,'duty')-value(i,'escrow')>0)run.push(i);else flush()});flush();
+ const at=series.findIndex(x=>String((x||{}).month||'').slice(0,7)===String((cover||{}).rve||'').slice(0,7));
+ const late=at>n*0.7;
+ const rveMark=at<0?'':`<line x1="${X(at).toFixed(1)}" y1="${pT}" x2="${X(at).toFixed(1)}" y2="${(pT+plotH).toFixed(1)}" stroke="${colours.mark}" stroke-dasharray="3 3"/>`
+  +(colours.quiet?'':`<text x="${X(at).toFixed(1)}" y="${pT+11}" dx="${late?-5:5}" font-size="11" fill="#555" text-anchor="${late?'end':'start'}">раскрытие эскроу</text>`);
+ // Последняя точка — событие, а не обрыв линии: непогашенный остаток надо
+ // назвать, иначе график читается как «расчёт кончился».
+ const endLeft=Number((cover||{}).ending_unpaid||0);
+ const endMark=endLeft<=1e6?'':`<circle cx="${X(n-1).toFixed(1)}" cy="${Y(endLeft).toFixed(1)}" r="3.5" fill="${colours.debt}"/>`
+  +(colours.quiet?'':`<text x="${(X(n-1)-6).toFixed(1)}" y="${(Y(endLeft)-8).toFixed(1)}" font-size="11" fill="${colours.debt}" text-anchor="end">не погашено ${mln(endLeft)}</text>`);
+ // Накопленное — своей осью справа: раскрытый эскроу и то, чем гасят дальше.
+ const cumPath=key=>series.map((_,i)=>`${X(i).toFixed(1)},${Yc(value(i,key)).toFixed(1)}`).join(' ');
+ const released=has('releasedCum')
+  ?`<polyline points="${cumPath('releasedCum')}" fill="none" stroke="${colours.cum}" stroke-width="1.8" stroke-dasharray="6 4"/>`:'';
+ const afterSales=has('salesCum')
+  ?`<polyline points="${cumPath('salesCum')}" fill="none" stroke="${colours.cum}" stroke-width="1.4" opacity="0.55"/>`:'';
+ const blend=colours.blend?' style="mix-blend-mode:multiply"':'';
+ return `<polygon points="${area('escrow')}" fill="${colours.escrow}" fill-opacity="${colours.areaOpacity}"${blend}/>`
+  +gaps
+  +`<polyline points="${path('duty')}" fill="none" stroke="${colours.debt}" stroke-width="${colours.debtWidth}"/>`
+  +`<polyline points="${path('body')}" fill="none" stroke="${colours.debt}" stroke-width="1" stroke-dasharray="4 3" opacity="0.85"/>`
+  +`<polyline points="${path('escrow')}" fill="none" stroke="${colours.escrow}" stroke-width="${colours.escrowWidth}"/>`
+  +released+afterSales+rveMark+endMark;
+}
+
+// Геометрия и сетка — общие для одиночного графика и для наложения: две
+// системы координат разъехались бы, и слои встали бы не на свои места.
+function escrowGeometry(months,top,cumTop,H){
+ const W=900,pL=58,pR=58,pT=18,pB=26,plotW=W-pL-pR,plotH=H-pT-pB;
+ const n=months.length;
+ const X=i=>pL+plotW*i/Math.max(1,n-1);
+ const Y=v=>pT+plotH-plotH*Math.max(0,v)/top;
+ const Yc=v=>pT+plotH-plotH*Math.max(0,v)/cumTop;
+ return {W,H,pL,pR,pT,pB,plotW,plotH,n,X,Y,Yc,months,
+  pt:(i,v)=>`${X(i).toFixed(1)},${Y(v).toFixed(1)}`};
+}
+function escrowChrome(geo,top,cumTop){
+ const {W,H,pL,pR,pT,plotH,X,Y,Yc,months,n}=geo;
  let grid='';
  for(let t=0;t<=4;t++){const v=top*t/4,y=Y(v);
   grid+=`<line x1="${pL}" y1="${y.toFixed(1)}" x2="${W-pR}" y2="${y.toFixed(1)}" stroke="#e8e8e8"/>`
    +`<text x="${pL-6}" y="${(y+4).toFixed(1)}" font-size="11" fill="#777" text-anchor="end">${(v/1e9).toLocaleString('ru-RU',{maximumFractionDigits:1})}</text>`}
- const monthRu=iso=>{const parts=String(iso||'').slice(0,7).split('-');return parts.length===2?parts[1]+'.'+parts[0]:''};
- const marks=[...new Set([0,Math.floor(data.length/2),data.length-1])].map(i=>
-  `<text x="${X(i).toFixed(1)}" y="${H-7}" font-size="11" fill="#777" text-anchor="${i===0?'start':(i===data.length-1?'end':'middle')}">${monthRu(data[i].month)}</text>`).join('');
- const at=data.findIndex(x=>String(x.month||'').slice(0,7)===String(cover.rve||'').slice(0,7));
- const late=at>data.length*0.7;
- const rveMark=at<0?'':`<line x1="${X(at).toFixed(1)}" y1="${pT}" x2="${X(at).toFixed(1)}" y2="${(pT+plotH).toFixed(1)}" stroke="#666" stroke-dasharray="3 3"/>`
-  +`<text x="${X(at).toFixed(1)}" y="${pT+11}" dx="${late?-5:5}" font-size="11" fill="#555" text-anchor="${late?'end':'start'}">раскрытие эскроу</text>`;
- // Последняя точка — событие, а не обрыв линии: непогашенный остаток надо
- // назвать, иначе график читается как «расчёт кончился».
- const endLeft=Number(cover.ending_unpaid||0);
- const endMark=endLeft<=1e6?'':`<circle cx="${X(data.length-1).toFixed(1)}" cy="${Y(endLeft).toFixed(1)}" r="3.5" fill="#A35D00"/>`
-  +`<text x="${(X(data.length-1)-6).toFixed(1)}" y="${(Y(endLeft)-8).toFixed(1)}" font-size="11" fill="#A35D00" text-anchor="end">не погашено ${mln(endLeft)}</text>`;
- // Сколько банк получил всего, накопленным итогом: раскрытый эскроу и то,
- // чем гасят дальше. Прежде здесь шли «продажи после раскрытия» от нуля —
- // рядом с эскроу в десятки миллиардов такая линия не значила ничего
- // (владелец, 01.09.2026). Вопрос у графика один: чем и когда закрыт долг.
- // Раскрытие эскроу и продажи после ввода — разные события, и одной линией
- // они врут. Ступенька в 70 млрд читалась как «после ввода продали на 70»
- // (владелец, 01.09.2026), хотя продаж в этот месяц ноль: это деньги
- // предыдущих двух лет, снятые с эскроу разом. Теперь их две.
- const cumPath=f=>data.map((x,i)=>`${X(i).toFixed(1)},${Yc(f(x)).toFixed(1)}`).join(' ');
- const released=data.some(x=>Number(x.escrow_released_cumulative||0)>0)
-  ?`<polyline points="${cumPath(x=>Number(x.escrow_released_cumulative||0))}" fill="none" stroke="#1B5E77" stroke-width="1.8" stroke-dasharray="6 4"/>`:'';
- const afterSales=data.some(x=>Number(x.sales_after_rve_cumulative||0)>0)
-  ?`<polyline points="${cumPath(x=>Number(x.sales_after_rve_cumulative||0))}" fill="none" stroke="#1B5E77" stroke-width="1.4" opacity="0.55"/>`:'';
- const repaid=released+afterSales;
- // Правая ось — подписи накопленного, чтобы шкалы не путались.
  let cumGrid='';
  for(let t=0;t<=4;t++){const v=cumTop*t/4,y=Yc(v);
   cumGrid+=`<text x="${W-pR+6}" y="${(y+4).toFixed(1)}" font-size="11" fill="#1B5E77" text-anchor="start">${(v/1e9).toLocaleString('ru-RU',{maximumFractionDigits:1})}</text>`}
- return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">${grid}
-  <polygon points="${area(x=>Number(x.escrow||0))}" fill="#2D6A4F" fill-opacity="0.30"/>
-  ${gaps}
-  <polyline points="${path(duty)}" fill="none" stroke="#A35D00" stroke-width="2.6"/>
-  <polyline points="${path(x=>Number(x.pf_balance||0))}" fill="none" stroke="#A35D00" stroke-width="1" stroke-dasharray="4 3" opacity="0.85"/>
-  <polyline points="${path(x=>Number(x.escrow||0))}" fill="none" stroke="#2D6A4F" stroke-width="2"/>
-  ${repaid}${rveMark}${endMark}
-  ${cumGrid}
-  <text x="${pL}" y="${pT-4}" font-size="11" fill="#777" text-anchor="start">долг и эскроу, млрд ₽</text>
-  <text x="${W-2}" y="${pT-4}" font-size="11" fill="#1B5E77" text-anchor="end">накопленно</text>
-  ${marks}</svg>`;
+ const monthRu=iso=>{const parts=String(iso||'').slice(0,7).split('-');return parts.length===2?parts[1]+'.'+parts[0]:''};
+ const marks=[...new Set([0,Math.floor(n/2),n-1])].map(i=>
+  `<text x="${X(i).toFixed(1)}" y="${H-7}" font-size="11" fill="#777" text-anchor="${i===0?'start':(i===n-1?'end':'middle')}">${monthRu(months[i])}</text>`).join('');
+ return {grid,cumGrid,axis:
+  `<text x="${pL}" y="${pT-4}" font-size="11" fill="#777" text-anchor="start">долг и эскроу, млрд ₽</text>`
+  +`<text x="${W-2}" y="${pT-4}" font-size="11" fill="#1B5E77" text-anchor="end">накопленно</text>`+marks};
+}
+function escrowSeriesOf(rows){
+ const duty=x=>Number(x.pf_obligation!==undefined?x.pf_obligation:(Number(x.pf_balance||0)+Number(x.pf_payable||0)));
+ return (rows||[]).map(x=>({month:String(x.month||'').slice(0,10),
+  escrow:Number(x.escrow||0),duty:duty(x),body:Number(x.pf_balance||0),
+  releasedCum:Number(x.escrow_released_cumulative||0),
+  salesCum:Number(x.sales_after_rve_cumulative||0)}));
+}
+const ESCROW_MAIN_COLOURS={escrow:"#2D6A4F",debt:"#A35D00",cum:"#1B5E77",mark:"#666",
+ areaOpacity:0.30,gapOpacity:0.16,debtWidth:2.6,escrowWidth:2,blend:false,quiet:false};
+
+// Наложение очередей: тот же слой, столько раз, сколько очередей, на общих
+// осях. Пересечение считается умножением цветов: при обычной прозрачности
+// верхний слой ВЫБЕЛИВАЕТ нижний, и общий месяц выходит бледнее каждой из
+// очередей — ровно наоборот тому, что должен показывать.
+function escrowQueuesSvg(queues){
+ const live=(queues||[]).filter(q=>q&&q.series&&q.series.length);
+ if(live.length<2)return '';
+ const months=[...new Set([].concat(...live.map(q=>q.series.map(r=>r.month))))].sort();
+ if(months.length<2)return '';
+ const aligned=live.map(q=>{
+  const byMonth={};q.series.forEach(r=>{byMonth[r.month]=r});
+  return {...q,rows:months.map(m=>byMonth[m]||{month:m,escrow:0,duty:0,body:0,releasedCum:0,salesCum:0})};
+ });
+ const pick=(key)=>Math.max(...aligned.map(q=>Math.max(...q.rows.map(r=>Number(r[key]||0)))),1);
+ const top=Math.max(pick('escrow'),pick('duty'))*1.08;
+ const cumTop=Math.max(pick('releasedCum'),pick('salesCum'))*1.08;
+ const geo=escrowGeometry(months,top,cumTop,250);
+ const chrome=escrowChrome(geo,top,cumTop);
+ const layers=aligned.map((q,k)=>{
+  const shade=ESCROW_QUEUE_SHADES[k%ESCROW_QUEUE_SHADES.length];
+  return escrowLayer(q.rows,q.cover,geo,{escrow:shade,debt:shade,cum:shade,mark:shade,
+   areaOpacity:0.45,gapOpacity:0.14,debtWidth:1.8,escrowWidth:1.4,blend:true,quiet:true});
+ }).join('');
+ return `<svg viewBox="0 0 ${geo.W} ${geo.H}" preserveAspectRatio="xMidYMid meet">`
+  +chrome.grid+layers+chrome.cumGrid+chrome.axis+'</svg>';
+}
+function escrowQueuesLegend(queues){
+ return '<div class="legend">'+(queues||[]).map((q,k)=>
+  `<span><i style="background:${ESCROW_QUEUE_SHADES[k%ESCROW_QUEUE_SHADES.length]};opacity:.45;height:9px"></i>${escapeHtml(q.name||'')}</span>`
+ ).join('')+'<span style="color:#777">У каждой очереди свои заливка эскроу, линия обязательства, '
+  +'пунктир тела ПФ и метка раскрытия. Где тон темнее — очереди идут вместе</span></div>';
+}
+function escrowQueuesData(){
+ if(!(phaseBundle&&phaseBundle.mode==='phased'))return [];
+ return (phaseBundle.phases||[]).map((p,i)=>({
+  name:p.name||('Очередь '+(i+1)),
+  series:escrowSeriesOf(((p.result||{}).finance||{}).rows||[]),
+  cover:(((p.result||{}).report||{}).financing||{}).escrow_cover||{}}));
+}
+
+function escrowCoverSvg(rows,cover){
+ cover=cover||{};
+ const series=escrowSeriesOf(rows);
+ // Месяцы без долга и без счёта не рисуются — иначе ось растянута на годы
+ // пустоты. Но обрезать их ВСЕ нельзя: первой точкой становится месяц с уже
+ // сделанной выборкой, и кривая начинается с полки в миллиард. Соседний месяц
+ // с каждой стороны остаётся: он настоящий и он нулевой.
+ const alive=series.map(x=>x.duty>0||x.escrow>0);
+ const first=alive.indexOf(true), last=alive.lastIndexOf(true);
+ if(first<0)return '';
+ const data=series.slice(Math.max(0,first-1),Math.min(series.length,last+2));
+ if(data.length<2)return '';
+ // Долг — «сколько должны сейчас», накопленное — «сколько пришло с начала».
+ // На одной шкале накопленное всегда перерастает долг, и долг сплющивается в
+ // нижнюю треть. Поэтому у накопленного своя ось справа.
+ const top=Math.max(...data.map(x=>Math.max(x.duty,x.escrow)),1)*1.08;
+ const cumTop=Math.max(...data.map(x=>Math.max(x.releasedCum,x.salesCum)),1)*1.08;
+ const geo=escrowGeometry(data.map(x=>x.month),top,cumTop,250);
+ const chrome=escrowChrome(geo,top,cumTop);
+ return `<svg viewBox="0 0 ${geo.W} ${geo.H}" preserveAspectRatio="xMidYMid meet">`
+  +chrome.grid+escrowLayer(data,cover,geo,ESCROW_MAIN_COLOURS)
+  +chrome.cumGrid+chrome.axis+'</svg>';
 }
 function escrowCoverLines(cover){
  return ((cover&&cover.lines)||[]).map(escapeHtml).join('<br>');
