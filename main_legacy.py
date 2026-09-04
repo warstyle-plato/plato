@@ -17455,7 +17455,8 @@ def build_project_workbook(
     # разошлась бы с первой, и обе выглядели бы верными; поэтому здесь сказано,
     # где их править, а ключ стоит на работающей ячейке.
     put_new("J84", text="Машино-места — решение проекта")
-    put_new("K84", text="правятся в блоке очередей: «База паркинга» и «База гостевых мест»")
+    put_new("K84", text="правятся в блоке очередей, колонка «База паркинга»; "
+                        "рядом справочно «из них гостевых» и «из них передано»")
     put_new("M84", text="underground_manual_spaces")
     put_new("J85", text="Площадь подземной парковки")
     put_new("K85", text="считается: (места + гостевые) × норматив выше")
@@ -17696,6 +17697,24 @@ def build_project_workbook(
         # непереданное. AC кормит «Продажи».
         put(f"AC{row}", number=storage_saleable_spaces(crow.get("storage") or {}),
             label="кладовые к продаже, шт.")
+        # Построенных мест и проданных — разные числа, и книга показывала только
+        # проданные: почему их меньше, узнать было негде. Гостевые и переданные
+        # в натуре стоят рядом справочными колонками (в продажи не идут).
+        _parking_row = crow.get("underground_parking") or {}
+        # Колонок AN–AP в шаблоне нет: пишем со вставкой, как кассовые доли.
+        for _col, _value in (("AN", float(underground_guest_spaces(_parking_row))),
+                             ("AO", transferred_units(_parking_row)),
+                             ("AP", transferred_units(crow.get("storage") or {}))):
+            xml, _done = _v4_set_or_insert_cell(xml, f"{_col}{row}", number=_value)
+            if not _done:
+                missing.append(f"гостевые и переданные места очереди {index + 1}")
+        if index == 0:
+            for _col, _title in (("AN", "Из них гостевых, шт."),
+                                 ("AO", "Из них передано, шт."),
+                                 ("AP", "Кладовых передано, шт.")):
+                xml, _done = _v4_set_or_insert_cell(xml, f"{_col}87", text=_title)
+                if not _done:
+                    missing.append(f"подпись колонки {_col} блока очередей")
         put(f"AE{row}", number=0.0, label="инфляция цены")
         put(f"AF{row}", number=0.0, label="инфляция затрат")
         # Тренд темпа продаж — движковый pace (25% по умолчанию): вес месяца
@@ -40851,11 +40870,26 @@ function renderResult(){
    .map(([key,v])=>`<tr><td>${capNames[key]||key}</td><td>${money(v)}</td><td>${perTh(v,cGns)}</td><td>${perTh(v,cSaleable)}</td></tr>`).join('')
    +`<tr><th>Итого</th><th>${money(r.capex.total)}</th><th>${perTh(r.capex.total,cGns)}</th><th>${perTh(r.capex.total,cSaleable)}</th></tr>`;
  }
+ // Построенных штук и проданных — разные числа, и до сих пор на экране стояло
+ // только первое. Разниц теперь две: гостевые места (строятся, но общие) и
+ // переданные в натуре (строятся, но отданы). Обе считает движок и обе везёт
+ // строкой ТЭП — экран их только показывает, своей арифметики здесь нет.
+ const soldUnits=x=>Number(x.saleable_units!==undefined?x.saleable_units:x.units||0);
+ const unitNote=x=>{
+  const parts=[];
+  if(Number(x.guest_units||0)>0)parts.push('гостевых '+num(x.guest_units));
+  if(Number(x.transfer_units||0)>0)parts.push('передано '+num(x.transfer_units));
+  return parts.length
+   ? `<span style="display:block;font-size:10px;color:#777">из них ${parts.join(' · ')}</span>`
+   : '';
+ };
+ const soldTotal=r.tep.rows.reduce((sum,x)=>sum+soldUnits(x),0);
  reportTep.innerHTML=
-  `<thead><tr><th>Продукт</th><th>ГНС, м²</th><th>Продаваемая площадь, м²</th><th>Количество, шт.</th></tr></thead>`+
+  `<thead><tr><th>Продукт</th><th>ГНС, м²</th><th>Продаваемая площадь, м²</th><th>Построено, шт.</th><th>Продаётся, шт.</th></tr></thead>`+
   `<tbody>`+
-  r.tep.rows.map(x=>`<tr><td>${x.label}</td><td>${num(x.gns)}</td><td>${num(x.saleable)}</td><td>${num(x.units)}</td></tr>`).join('')+
-  `</tbody><tfoot><tr><th>Итого</th><th>${num(r.tep.total.gns)}</th><th>${num(r.tep.total.saleable)}</th><th>${num(r.tep.total.units)}</th></tr></tfoot>`;
+  r.tep.rows.map(x=>`<tr><td>${x.label}</td><td>${num(x.gns)}</td><td>${num(x.saleable)}</td>`
+   +`<td>${num(x.units)}${unitNote(x)}</td><td>${num(soldUnits(x))}</td></tr>`).join('')+
+  `</tbody><tfoot><tr><th>Итого</th><th>${num(r.tep.total.gns)}</th><th>${num(r.tep.total.saleable)}</th><th>${num(r.tep.total.units)}</th><th>${num(soldTotal)}</th></tr></tfoot>`;
 }
 
 
