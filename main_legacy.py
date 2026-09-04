@@ -70,7 +70,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.21.84"
+VERSION = "0.21.85"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -13853,10 +13853,27 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
                              (_pdf_num(value/total_expense*100,1)+'%') if total_expense else '—',
                              _pdf_num(item.get('per_gns_th') or 0,1),
                              _pdf_num(item.get('per_saleable_th') or 0,1)])
+        # Отдельно стоящий объект меряется своей площадью, наземный паркинг —
+        # своими местами. Числа считает движок; отчёт носят в банк, и
+        # расходиться с экраном ему нельзя — подстроки те же.
+        for part in item.get('items') or []:
+            if part.get('basis')=='units':
+                expense_rows.append(["   в т.ч. "+str(part.get('label') or '—')+" · "+str(part.get('basis_label') or ''),
+                                     _pdf_money(part.get('value') or 0),"—","—",
+                                     _pdf_num(part.get('per_unit_mln') or 0,2)+" млн ₽/место"])
+            else:
+                expense_rows.append(["   в т.ч. "+str(part.get('label') or '—')+" · "+str(part.get('basis_label') or ''),
+                                     _pdf_money(part.get('value') or 0),"—",
+                                     _pdf_num(part.get('per_own_gns_th') or 0,1),
+                                     _pdf_num(part.get('per_own_saleable_th') or 0,1)])
     expense_rows.append(["Итого расходы",_pdf_money(total_expense),"100,0%" if total_expense else "—",
                          _pdf_num(total_expense/_exp_gns/1000 if _exp_gns else 0,1),
                          _pdf_num(total_expense/_exp_saleable/1000 if _exp_saleable else 0,1)])
     story.append(table(expense_rows,[62*mm,32*mm,20*mm,28*mm,28*mm],font_size=7.4))
+    _exp_note=next((str(i.get('items_note') or '') for i in expense_structure
+                    if i.get('items') and i.get('items_note')),'')
+    if _exp_note:
+        story.append(P(_exp_note,small))
     story.append(_PdfSection("income"));story.append(P("Продажи и продукты",h2))
     product_rows=[["Продукт","Объём","Темп до РВЭ","Стартовая цена","Средняя цена","Выручка"]]
     for item in products:
@@ -23415,12 +23432,58 @@ def calculate(req: CalcRequest) -> dict:
         # человека статью, которая растёт вместе с долей нежилого.
         ("НДС", fin.get("vat", 0.0)),
     ]
+    # Отдельно стоящий объект меряется СВОЕЙ площадью, а наземный паркинг —
+    # своими местами (владелец, 04.09.2026: «по сути это разные объекты и
+    # должны на свои площади равняться»; «в случае с парковыми на ед м-м»).
+    # Колонки строки остаются проектными — они складываются в итог таблицы, —
+    # а под ней стоят подстроки «в т.ч.» со своей базой у каждого объекта.
+    # Прежде этого не было вовсе: расходы объектов делились на метры ВСЕГО
+    # проекта, и при вводной себестоимости 200 тыс ₽/м² GBA в таблице стояло
+    # 20,1 — в десять раз ниже, и сравнить это ни со сметой, ни со своей же
+    # вводной было нельзя. Рядом жила вторая беда: в числителе строки стоит и
+    # наземный паркинг, у которого метров в знаменателе нет вовсе — он
+    # продаётся местами.
+    def _amount_label(value: float) -> str:
+        return f"{value:,.0f}".replace(",", "\u00a0")
+
+    standalone_items = []
+    for key, label in (("offices", "Офисы / МФОЦ"),
+                       ("standalone_retail", "ТЦ / коммерция ОСЗ"),
+                       ("above_parking", "Наземный паркинг")):
+        amount = op["capex_amounts"].get(key, 0.0)
+        if amount <= 0:
+            continue
+        row = t.get(key) or {}
+        own_gns = n(row, "gns")
+        own_saleable = n(row, "saleable")
+        # Делитель берётся оттуда же, откуда взялся числитель: CAPEX наземного
+        # паркинга считается как `above_parking_spaces × себестоимость места`,
+        # и строка ТЭП тут вторым источником быть не может — при вызове мимо
+        # страницы она приходит нулём, и «за место» вышло бы делением на ноль.
+        own_units = n(x, "above_parking_spaces") if key == "above_parking" else n(row, "units")
+        item = {"key": key, "label": label, "value": amount,
+                "gns_sqm": own_gns, "saleable_sqm": own_saleable,
+                "units": own_units}
+        if key == "above_parking":
+            # Мера продукта — место, и делить его деньги на метры значит
+            # отвечать не на тот вопрос.
+            item["basis"] = "units"
+            item["basis_label"] = f"{_amount_label(own_units)} мест" if own_units else "мест не задано"
+            item["per_unit_mln"] = amount / own_units / 1_000_000 if own_units else 0.0
+        else:
+            item["basis"] = "area"
+            item["basis_label"] = (f"{_amount_label(own_gns)} м² ГНС объекта"
+                                   if own_gns else "площадь объекта не задана")
+            item["per_own_gns_th"] = per_sqm_th(amount, own_gns)
+            item["per_own_saleable_th"] = per_sqm_th(amount, own_saleable)
+        standalone_items.append(item)
+
     expense_structure = []
     expense_base = sum(value for _, value in expense_groups)
     for label, value in expense_groups:
         if value <= 0:
             continue
-        expense_structure.append({
+        entry = {
             "label": label,
             "value": value,
             "share": value / expense_base if expense_base else 0.0,
@@ -23428,7 +23491,16 @@ def calculate(req: CalcRequest) -> dict:
             # спорят с подрядчиком и с банком, а в рублях на метр их не было.
             "per_gns_th": per_sqm_th(value, project_gns_sqm),
             "per_saleable_th": per_sqm_th(value, monetizable_saleable_sqm),
-        })
+        }
+        if label == "Отдельные объекты" and standalone_items:
+            entry["items"] = standalone_items
+            entry["items_note"] = (
+                "Удельные по каждому объекту — на ЕГО площадь, у наземного "
+                "паркинга — на машино-место. Колонки самой строки, как и у "
+                "остальных статей, считаны на весь проект: они складываются "
+                "в итог таблицы, а числа объектов — нет."
+            )
+        expense_structure.append(entry)
     expense_structure.sort(key=lambda item: item["value"], reverse=True)
 
     # Project/equity cash flow proxy for NPV / IRR.
@@ -25163,9 +25235,23 @@ def _consolidate_phase_results(
         }
 
     expense_map: dict[str, float] = defaultdict(float)
+    # Подстроки объектов складываются по объекту, а не по проекту: у каждой
+    # очереди свои офисы и свой паркинг, и на своде их надо сложить с их же
+    # площадями — иначе «на свою ГНС» перестало бы быть своим.
+    item_map: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
+    item_note: dict[str, str] = {}
     for result in results:
         for item in result["report"]["expense_structure"]:
             expense_map[item["label"]] += float(item["value"] or 0.0)
+            for part in item.get("items") or []:
+                kept = item_map[item["label"]].setdefault(
+                    part["key"], {"key": part["key"], "label": part["label"],
+                                  "basis": part["basis"], "value": 0.0,
+                                  "gns_sqm": 0.0, "saleable_sqm": 0.0, "units": 0.0})
+                for field in ("value", "gns_sqm", "saleable_sqm", "units"):
+                    kept[field] += float(part.get(field) or 0.0)
+            if item.get("items_note"):
+                item_note[item["label"]] = item["items_note"]
     expense_base = sum(expense_map.values())
     expense_structure = [
         {
@@ -25181,6 +25267,28 @@ def _consolidate_phase_results(
         }
         for label, value in expense_map.items() if value > 0
     ]
+    for entry in expense_structure:
+        parts = list((item_map.get(entry["label"]) or {}).values())
+        if not parts:
+            continue
+        for part in parts:
+            if part["basis"] == "units":
+                part["basis_label"] = (
+                    f"{part['units']:,.0f}".replace(",", "\u00a0") + " мест"
+                    if part["units"] else "мест не задано")
+                part["per_unit_mln"] = (part["value"] / part["units"] / 1_000_000
+                                        if part["units"] else 0.0)
+            else:
+                part["basis_label"] = (
+                    f"{part['gns_sqm']:,.0f}".replace(",", "\u00a0") + " м² ГНС объекта"
+                    if part["gns_sqm"] else "площадь объекта не задана")
+                part["per_own_gns_th"] = (part["value"] / part["gns_sqm"] / 1000
+                                          if part["gns_sqm"] else 0.0)
+                part["per_own_saleable_th"] = (part["value"] / part["saleable_sqm"] / 1000
+                                               if part["saleable_sqm"] else 0.0)
+        entry["items"] = sorted(parts, key=lambda one: one["value"], reverse=True)
+        if item_note.get(entry["label"]):
+            entry["items_note"] = item_note[entry["label"]]
     expense_structure.sort(key=lambda x: x["value"], reverse=True)
 
     product_map: dict[str, dict[str, Any]] = {}
@@ -40193,13 +40301,29 @@ function renderResult(){
    <div class="expense-pct">${(Number(x.share||0)*100).toLocaleString('ru-RU',{minimumFractionDigits:1,maximumFractionDigits:1})}%</div>
    <div class="expense-value">${money(x.value)}</div>
  </div>`).join('');
- expenseStructureTable.innerHTML=expenseRows.map(x=>`<tr>
+ // Отдельно стоящий объект меряется СВОЕЙ площадью, а наземный паркинг —
+ // своими местами: подстроки «в т.ч.» стоят под своей статьёй и несут числа,
+ // посчитанные движком на их базы. Колонки самой статьи остаются проектными —
+ // они складываются в итог таблицы, — и об этом сказано подписью под ней.
+ expenseStructureTable.innerHTML=expenseRows.map(x=>{
+   const head=`<tr>
    <td>${x.label}</td>
    <td>${money(x.value)}</td>
    <td>${(Number(x.share||0)*100).toLocaleString('ru-RU',{minimumFractionDigits:1,maximumFractionDigits:1})}%</td>
    <td>${num2(x.per_gns_th)}</td>
    <td>${num2(x.per_saleable_th)}</td>
+ </tr>`;
+   const parts=(x.items||[]).map(o=>`<tr class="sub">
+   <td style="padding-left:18px">в т.ч. ${o.label} · ${o.basis_label||''}</td>
+   <td>${money(o.value)}</td>
+   <td>—</td>
+   <td>${o.basis==='units'?'—':num2(o.per_own_gns_th)}</td>
+   <td>${o.basis==='units'?num2(o.per_unit_mln)+' млн ₽/место':num2(o.per_own_saleable_th)}</td>
  </tr>`).join('');
+   const note=(x.items&&x.items.length&&x.items_note)
+     ?`<tr class="sub"><td colspan="5" class="muted" style="padding-left:18px">${x.items_note}</td></tr>`:'';
+   return head+parts+note;
+ }).join('');
  {
   const expenseSum=Number(r.summary.total_expenses||0)||expenseRows.reduce((s,x)=>s+Number(x.value||0),0);
   const eGns=Number(r.summary.project_gns_sqm||0),eSaleable=Number(r.summary.monetizable_saleable_sqm||0);
