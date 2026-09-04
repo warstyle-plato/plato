@@ -70,7 +70,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.21.89"
+VERSION = "0.21.90"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -15147,6 +15147,165 @@ def _v4_apply_demolition_rows(xml: str, missing: list[str]) -> str:
     return xml
 
 
+# Лист «ВРИ»: четыре блока по 13 строк, первый начинается на строке 6.
+_V4_VRI_BLOCK_STRIDE = 13
+_V4_VRI_PRINCIPAL_ROW = 12     # погашение основного долга
+_V4_VRI_INTEREST_ROW = 13      # проценты по рассрочке
+_V4_VRI_SECURITY_ROW = 14      # расходы на обеспечение
+# Строка CAPEX, куда уходят проценты и обеспечение: 36 и 37 заняты сносом и
+# расселением, 38 в шаблоне пуста.
+_V4_CAPEX_VRI_EXTRA_ROW = 38
+_V4_CAPEX_VRI_ROW = 15
+
+
+def _v4_apply_vri_installment_start(xml: str, missing: list[str]) -> str:
+    """Первый платёж рассрочки ВРИ — в дату обязательства, а не периодом позже.
+
+    Правило движка с 08.2026: рассрочка начинается в дату обязательства.
+    Шаблон остался на прежней методике — условие платежа требовало, чтобы от
+    даты обязательства прошло БОЛЬШЕ нуля месяцев, и первый взнос уезжал на
+    период вперёд. Число платежей при этом сохранялось, поэтому расходилось не
+    тело, а проценты: на трёхлетней квартальной рассрочке книга начисляла их
+    двенадцать раз вместо одиннадцати и на полную сумму — 317,9 млн ₽ против
+    269,1 у движка при одинаковой плате.
+
+    Замена точечная: «прошло > 0 месяцев» → «прошло >= 0», а верхняя граница
+    становится строгой, иначе платежей стало бы тринадцать. Формула шаблона не
+    опознана — `missing`, а не молча посчитанный по-своему график.
+    """
+    expected = _V4_CAPEX_MONTH_COLUMNS * 2 * _V4_CAPEX_PHASES
+    start_from, start_count = ")&gt;0,MOD(", xml.count(")&gt;0,MOD(")
+    upper_from, upper_count = "&lt;=&#39;Вводные&#39;!$B$77*12", 0
+    # Апостроф в XML может быть и целым, и мнемоникой — считаем оба написания.
+    for candidate in ("&lt;='Вводные'!$B$77*12", "&lt;=&#39;Вводные&#39;!$B$77*12"):
+        if xml.count(candidate):
+            upper_from, upper_count = candidate, xml.count(candidate)
+            break
+    if start_count != expected or upper_count != expected:
+        missing.append(
+            f"ВРИ · начало рассрочки: условие графика не опознано "
+            f"({start_count} и {upper_count} вместо {expected})")
+        return xml
+    xml = xml.replace(start_from, ")&gt;=0,MOD(")
+    xml = xml.replace(upper_from, upper_from.replace("&lt;=", "&lt;", 1))
+    return xml
+
+
+_V4_VRI_BALANCE_END_ROW = 16   # остаток на конец месяца
+_V4_VRI_RATE_ROW = 17          # ставка по рассрочке
+_V4_VRI_ACCRUAL_ROW = 18       # накопленные проценты — служебная строка блока
+
+
+def _v4_apply_vri_monthly_accrual(xml: str, missing: list[str]) -> str:
+    """Проценты по рассрочке ВРИ копятся помесячно, как в движке.
+
+    Шаблон начислял их в месяц платежа: остаток × ставка ЭТОГО месяца ×
+    периодичность / 12. Движок идёт по месяцам между платежами и берёт ставку
+    каждого месяца (`build_vri_schedule`), а ключевая ставка у нас снижается —
+    на трёхлетней рассрочке книга недосчитывала около двух процентов.
+
+    Свободная строка блока (18, 31, 44, 57 — в шаблоне пусты) копит начисление
+    на остаток КОНЦА месяца: в месяц платежа это остаток после погашения, то
+    есть ровно та база, на которой считает движок. Платёж забирает накопленное
+    за прошлые месяцы, поэтому на первом взносе процентов нет.
+    """
+    from openpyxl.utils import get_column_letter as _col
+
+    def style_of(coord: str) -> str | None:
+        found = re.search(r'<x:c r="%s"[^>]*?\ss="(\d+)"' % coord, xml)
+        return found.group(1) if found else None
+
+    label_style, month_style = style_of("A13"), style_of("D13")
+    for phase in range(_V4_CAPEX_PHASES):
+        base = _V4_VRI_BLOCK_STRIDE * phase
+        principal = _V4_VRI_PRINCIPAL_ROW + base
+        interest = _V4_VRI_INTEREST_ROW + base
+        balance_end = _V4_VRI_BALANCE_END_ROW + base
+        rate = _V4_VRI_RATE_ROW + base
+        accrual = _V4_VRI_ACCRUAL_ROW + base
+        xml = _v4_ensure_row(xml, accrual)
+        cells = [(f"A{accrual}", dict(text="Накопленные проценты (служебная строка)"), label_style),
+                 (f"B{accrual}", dict(formula=f"DS{accrual}"), None)]
+        for index in range(_V4_CAPEX_MONTH_COLUMNS):
+            column = _col(4 + index)
+            previous = _col(3 + index)
+            carried = "0" if index == 0 else f"{previous}{accrual}"
+            month = (f"IF(AND('Вводные'!$B$75<>\"Единовременно\",'Вводные'!$B$80=\"Да\","
+                     f"{column}{balance_end}>0),{column}{balance_end}*{column}{rate}/12,0)")
+            cells.append((f"{column}{accrual}",
+                          dict(formula=f"{carried}+{month}-{column}{interest}"), month_style))
+            cells.append((f"{column}{interest}", dict(formula=(
+                "0" if index == 0 else
+                f"IF({column}{principal}>0,{previous}{accrual},0)")), None))
+        for coord, payload, style in cells:
+            xml, done = _v4_set_or_insert_cell(xml, coord, **payload)
+            if not done:
+                missing.append(f"ВРИ · накопление процентов: ячейка {coord} не записана")
+                return xml
+            if style:
+                xml = xml.replace(f'<x:c r="{coord}"', f'<x:c r="{coord}" s="{style}"', 1)
+    return xml
+
+
+def _v4_apply_vri_interest_row(xml: str, missing: list[str]) -> str:
+    """Проценты и обеспечение по рассрочке ВРИ — своей строкой, вне базы резерва.
+
+    Строка 15 CAPEX брала ВЕСЬ денежный платёж по ВРИ (тело, проценты и
+    обеспечение), а база резерва — это `SUM(B15:B29)`: книга начисляла резерв и
+    на проценты. Движок берёт резерв до того, как проценты и обеспечение
+    становятся статьями (они прибавляются после `base_for_overheads`), и на
+    317,9 млн ₽ процентов это давало лишние 15,9 млн ₽ резерва.
+
+    Поэтому строка 15 несёт только тело, а проценты с обеспечением встают
+    строкой 38 своего блока: она входит в итог блока и не входит в базу резерва.
+    """
+    from openpyxl.utils import get_column_letter as _col
+
+    def style_of(coord: str) -> str | None:
+        found = re.search(r'<x:c r="%s"[^>]*?\ss="(\d+)"' % coord, xml)
+        return found.group(1) if found else None
+
+    label_style, amount_style, month_style = style_of("A15"), style_of("B15"), style_of("D15")
+    for phase in range(_V4_CAPEX_PHASES):
+        base = _V4_CAPEX_BLOCK_STRIDE * phase
+        vri_base = _V4_VRI_BLOCK_STRIDE * phase
+        principal = _V4_VRI_PRINCIPAL_ROW + vri_base
+        interest = _V4_VRI_INTEREST_ROW + vri_base
+        security = _V4_VRI_SECURITY_ROW + vri_base
+        row = _V4_CAPEX_VRI_EXTRA_ROW + base
+        vri_row = _V4_CAPEX_VRI_ROW + base
+        xml = _v4_ensure_row(xml, row)
+        cells = [(f"A{row}", dict(text="Проценты и обеспечение по рассрочке ВРИ"), label_style),
+                 (f"B{row}", dict(formula=(f"SUM('ВРИ'!D{interest}:DS{interest})"
+                                           f"+SUM('ВРИ'!D{security}:DS{security})")), amount_style),
+                 (f"C{row}", dict(text="млн ₽"), None),
+                 (f"B{vri_row}", dict(formula=f"SUM('ВРИ'!D{principal}:DS{principal})"), None)]
+        for index in range(_V4_CAPEX_MONTH_COLUMNS):
+            column = _col(4 + index)
+            cells.append((f"{column}{row}", dict(
+                formula=f"'ВРИ'!{column}{interest}+'ВРИ'!{column}{security}"), month_style))
+            cells.append((f"{column}{vri_row}", dict(
+                formula=f"'ВРИ'!{column}{principal}"), None))
+        for coord, payload, style in cells:
+            xml, done = _v4_set_or_insert_cell(xml, coord, **payload)
+            if not done:
+                missing.append(f"CAPEX · проценты ВРИ: ячейка {coord} не записана")
+                return xml
+            if style:
+                xml = xml.replace(f'<x:c r="{coord}"', f'<x:c r="{coord}" s="{style}"', 1)
+        # Итог блока видит новую строку; база резерва (B30) её не видит намеренно.
+        total_row = _V4_CAPEX_TOTAL_ROW + base
+        pattern = re.compile(
+            r'(<x:c r="(?P<col>[A-Z]{1,3})%d"[^>]*><x:f>SUM\((?P=col)%d:(?P=col)%d\)'
+            r'(?:\+(?P=col)\d+)*)' % (total_row, 14 + base, 31 + base))
+        xml, count = pattern.subn(
+            lambda m: m.group(1) + f"+{m.group('col')}{row}", xml)
+        if count < _V4_CAPEX_MONTH_COLUMNS:
+            missing.append(f"CAPEX · итог очереди {phase + 1}: строка процентов ВРИ не добавлена "
+                           f"({count} колонок из {_V4_CAPEX_MONTH_COLUMNS})")
+    return xml
+
+
 def _v4_management_profile_ranges() -> tuple[int, int, list[int]]:
     """Первая и последняя строка профиля и строки, которые в него не входят."""
     rows = sorted(_V4_CAPEX_ARTICLE_ROW[key] for key in MANAGEMENT_PROFILE_ARTICLES)
@@ -16937,6 +17096,11 @@ def build_project_workbook(
     capex_xml = _v4_apply_management_profile(capex_xml, missing)
     capex_xml = _v4_apply_shared_cash_articles(capex_xml, missing)
     capex_xml = _v4_apply_demolition_rows(capex_xml, missing)
+    capex_xml = _v4_apply_vri_interest_row(capex_xml, missing)
+    vri_sheet_path = _v4_sheet_path(source, "ВРИ")
+    vri_xml = _v4_apply_vri_installment_start(
+        source.read(vri_sheet_path).decode("utf-8"), missing)
+    vri_xml = _v4_apply_vri_monthly_accrual(vri_xml, missing)
     objects_sheet_path = _v4_sheet_path(source, "ОБЪЕКТЫ")
     objects_xml = source.read(objects_sheet_path).decode("utf-8")
     sales_sheet_path = _v4_sheet_path(source, "Продажи")
@@ -17592,6 +17756,8 @@ def build_project_workbook(
                 payload = tep_xml.encode("utf-8")
             elif item.filename == capex_sheet_path:
                 payload = capex_xml.encode("utf-8")
+            elif item.filename == vri_sheet_path:
+                payload = vri_xml.encode("utf-8")
             elif item.filename == objects_sheet_path:
                 payload = objects_xml.encode("utf-8")
             elif item.filename == sales_sheet_path:
