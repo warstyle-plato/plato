@@ -35225,6 +35225,43 @@ function syncPhaseProductSharesFromTep(key,field,index){
  let allocated=0;
  phasing.products[key]=values.map((x,i)=>{const share=i===values.length-1?100-allocated:Number((x/total*100).toFixed(6));allocated+=share;return Math.max(0,share)});
 }
+// Какой мерой отдают этот продукт: метрами или штуками. У паркинга и кладовых
+// продаётся ШТУКА, и метры про них ничего не говорят — гараж, отданный городу,
+// уменьшил бы площадь, а места продолжили бы продаваться все.
+const PHASE_GIVEN_IN_UNITS=['underground_parking','storage','above_parking'];
+function phaseGivenField(key){
+ return PHASE_GIVEN_IN_UNITS.includes(key)?'transfer_units':'transfer';
+}
+function setPhaseProductGiven(index,key,value){
+ const phase=phasing.phases[index];if(!phase)return;if(!phase.products)phase.products={};
+ if(!phase.products[key])phase.products[key]={assumption_source:'Введено пользователем'};
+ const field=phaseGivenField(key);
+ const own=phase.products[key];
+ const was=Number(own[field]||0);
+ const now=Math.max(0,Number(value||0));
+ own[field]=now;
+ if(field==='transfer'){
+  // Переданные метры строятся, но не продаются: продаваемая ЭТОЙ очереди
+  // падает ровно на них, и очередь становится заданной — доля проекта её
+  // больше не двигает, иначе отданное вернулось бы при первом пересчёте.
+  const current=own.saleable!==undefined?Number(own.saleable):phaseProductDerived(key,'saleable',index);
+  own.saleable=Math.max(0,Number((current-(now-was)).toFixed(2)));
+  syncPhaseProductSharesFromTep(key,'saleable',index);
+ }
+ // Проектная строка — сумма очередей: приоритет у очередности.
+ const sum=phasing.phases.reduce((total,p)=>total+Number(((p.products||{})[key]||{})[field]||0),0);
+ if(!tep[key])tep[key]={};
+ tep[key][field]=Number(sum.toFixed(field==='transfer'?2:0));
+ if(field==='transfer'){
+  tep[key].saleable=phasing.phases.reduce((total,p,i)=>{
+   const row=(p.products||{})[key]||{};
+   return total+(row.saleable!==undefined?Number(row.saleable):phaseProductDerived(key,'saleable',i));
+  },0);
+  tep[key].useful=tep[key].saleable;
+  tepRowToInputs(key);
+ }
+ renderPhasing();renderTep();renderInputs();calculate();
+}
 function setPhaseProductTep(index,key,field,value){
  const phase=phasing.phases[index];if(!phase)return;if(!phase.products)phase.products={};
  if(!phase.products[key])phase.products[key]={assumption_source:'Введено пользователем'};
@@ -35355,13 +35392,25 @@ function renderPhasing(){
  // The queue is a set of actual project products.  Empty defaults such as
  // storage, above-ground parking and clinic must not look like KRT objects.
  const tepKeys=Object.keys(tepLabels).filter(k=>tep[k]&&activePhaseProduct(k));
- phaseTepHead.innerHTML=`<tr><th>Продукт</th>${phasing.phases.map(p=>`<th>${p.name}<br><small>ГНС · продаваемая · шт.</small></th>`).join('')}<th>Итого по очередям</th></tr>`;
+ phaseTepHead.innerHTML=`<tr><th>Продукт</th>${phasing.phases.map(p=>`<th>${p.name}<br><small>ГНС · продаваемая · шт. · передаётся</small></th>`).join('')}<th>Итого по очередям</th></tr>`;
  phaseTepBody.innerHTML=tepKeys.map(k=>{
-  const totals={gns:0,saleable:0,units:0};
+  const totals={gns:0,saleable:0,units:0,given:0};
   const cells=phasing.phases.map((p,i)=>{
    const own=(p.products||{})[k]||{};
    const inputsHtml=['gns','saleable','units'].map(field=>{const derived=phaseProductDerived(k,field,i),has=own[field]!==undefined,value=has?Number(own[field]):derived,isRemainder=!!phasing.products[k]&&i===phasing.phases.length-1,limit=phaseProductTepLimit(k,field,i),maxAttr=limit===null?'':`max="${Number(limit.toFixed(6))}"`;totals[field]+=value;return `<input type="number" min="0" ${maxAttr} step="any" value="${Number(value.toFixed(2))}" title="${isRemainder?'Автоматический остаток':field+(has?' — введено вручную':' — рассчитано по доле')+(limit===null?'':` · максимум ${num(limit)}`)}" ${isRemainder?'readonly':`onchange="setPhaseProductTep(${i},'${k}','${field}',this.value)"`}>`}).join('');
-   return `<td><div style="display:grid;grid-template-columns:repeat(3,minmax(80px,1fr));gap:5px">${inputsHtml}</div></td>`;
+   // Передаваемое правится в ОЧЕРЕДИ, а проектная строка становится их суммой
+   // (владелец, 04.09.2026: «приоритет в очередности»). Долями оно не делится:
+   // отдают конкретные метры конкретной очереди и конкретные машино-места, а
+   // не долю проекта. Поэтому поле идёт мимо машинерии долей и не режется
+   // остатком проектного ТЭП — иначе при нулевой проектной передаче в очередь
+   // нельзя было бы вписать ничего.
+   const givenField=phaseGivenField(k);
+   const given=Number(own[givenField]||0);
+   totals.given+=given;
+   const givenInput=`<input type="number" min="0" step="any" value="${given.toFixed(givenField==='transfer'?1:0)}"`
+    +` title="передаётся ${givenField==='transfer'?'м² — уходит из продаваемой этой очереди':'шт. — строятся, но не продаются'}"`
+    +` onchange="setPhaseProductGiven(${i},'${k}',this.value)">`;
+   return `<td><div style="display:grid;grid-template-columns:repeat(4,minmax(72px,1fr));gap:5px">${inputsHtml}${givenInput}</div></td>`;
   }).join('');
   // Сумма очередей сравнивается с проектом, а не показывается сама по себе.
   // Ячейка, вписанная руками, за правкой пропорций не идёт — и это правильно,
@@ -35372,12 +35421,21 @@ function renderPhasing(){
   const master={gns:Number((tep[k]||{}).gns||0),saleable:Number((tep[k]||{}).saleable||0),units:Number((tep[k]||{}).units||0)};
   const off=['gns','saleable','units'].filter(f=>Math.abs(totals[f]-master[f])>Math.max(1,master[f]*0.001));
   const names={gns:'ГНС',saleable:'продаваемая',units:'шт.'};
+  // Переданное в итоге строки — сумма очередей: проектная строка ей и равна,
+  // поэтому расхождением здесь быть нечему, а число видеть надо.
+  const givenTotal=totals.given;
   const totalCell=off.length
    ? `<span class="phase-total-bad">${num(totals.gns)} · ${num(totals.saleable)} · ${num(totals.units)}</span>`
      +`<div class="phase-total-bad" style="font-size:11px;font-weight:500;margin-top:3px">не сходится с проектом: `
      +off.map(f=>`${names[f]} ${num(totals[f])} против ${num(master[f])} (${totals[f]>master[f]?'+':''}${num(totals[f]-master[f])})`).join('; ')+`</div>`
    : `<span class="phase-total-ok">${num(totals.gns)} · ${num(totals.saleable)} · ${num(totals.units)} ✓</span>`;
-  return `<tr><td><b>${tepLabels[k]}</b></td>${cells}<td>${totalCell}</td></tr>`;
+  // Переданное показывается всегда, когда оно есть: ноль в строке — это «не
+  // передаём», а молчание читалось бы как «такого поля нет».
+  const givenCell=givenTotal>0
+   ? `<div style="font-size:11px;color:#7a1f1f;margin-top:3px">передаётся ${num(givenTotal)} `
+     +`${phaseGivenField(k)==='transfer'?'м² — не продаются':'шт. — не продаются'}</div>`
+   : '';
+  return `<tr><td><b>${tepLabels[k]}</b></td>${cells}<td>${totalCell}${givenCell}</td></tr>`;
  }).join('');
  if(document.getElementById('phaseTepWarning'))phaseTepWarning.textContent=phaseTepEditWarning;
  const sl={purchase:'Покупка / вход',land_rights:'Земельные права / ВРИ',ird:'ИРД',design:'П + РД',preparation:'Подготовительные',utilities:'Наружные сети',social_compensation:'Соцкомпенсация',social_construction:'Соцобъекты — аналитическая аллокация'};
