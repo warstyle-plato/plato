@@ -12799,10 +12799,19 @@ def _above_ground_sqm(tep_report: dict[str, Any]) -> float:
 
 
 def _underground_sqm(tep_report: dict[str, Any]) -> float:
-    for row in (tep_report.get("rows") or []):
-        if str(row.get("key")) == "underground_parking":
-            return _number_or_zero(row.get("gns"))
-    return 0.0
+    """Подземная часть — та, что движок и так считает своей базой.
+
+    Читается `core_under_gns`, а не строка гаража: кладовые лежат на том же
+    подземном этаже и в наземную площадь не входят, а перебор строк их терял —
+    подпись отчёта относила их к наземной части. Перебор остаётся запасным
+    путём для отчётов, собранных до появления базы.
+    """
+    base = tep_report.get("core_under_gns")
+    if base is not None:
+        return _number_or_zero(base)
+    return sum(_number_or_zero(row.get("gns"))
+               for row in (tep_report.get("rows") or [])
+               if str(row.get("key")) in _UNDERGROUND_TEP_KEYS)
 
 
 def _number_or_zero(value: Any) -> float:
@@ -15162,6 +15171,14 @@ MKD_PRODUCTS: tuple[str, ...] = (
 STANDALONE_PRODUCTS: tuple[str, ...] = (
     "standalone_retail", "offices", "above_parking",
 )
+
+# Строки ТЭП, у которых наземной площади нет вовсе: гараж и кладовые лежат под
+# землёй, и их метры в ГНС — наземную площадь здания — не входят. Число в
+# колонке ГНС у них своё, и без этого списка таблица складывает две разные
+# величины под одним именем. Список объявлен здесь и подставляется на страницу
+# плейсхолдером — копию негде обновлять, потому что копии нет.
+UNDERGROUND_PRODUCTS: tuple[str, ...] = ("underground_parking", "storage")
+_UNDERGROUND_TEP_KEYS = frozenset(UNDERGROUND_PRODUCTS)
 
 
 MANAGEMENT_PROFILE_ARTICLES: tuple[str, ...] = (
