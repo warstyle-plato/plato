@@ -14885,6 +14885,49 @@ def _v4_set_or_insert_cell(
             + xml[found.end():]), True
 
 
+_V4_ROW_CELL_RE = re.compile(r'<x:c r="([A-Z]{1,3})(\d+)"[^>]*?(?:/>|>.*?</x:c>)', re.S)
+
+
+def _v4_set_cells(xml: str, row: int, cells: dict[str, dict[str, Any]],
+                  styles: dict[str, str | None] | None = None) -> tuple[str, bool]:
+    """Пишет пачку ячеек ОДНОЙ строки за один проход по листу.
+
+    Каждая ячейка искалась регуляркой по всему XML листа. У строки сноса и
+    строки процентов ВРИ таких ячеек 120 на блок, блоков четыре, строк четыре —
+    и сборка книги подорожала с 6,3 до 11,2 секунды, а вместе с ней весь набор
+    тестов: он перестал укладываться в сорок пять минут CI. Лист теперь
+    трогается один раз на строку, а не один раз на ячейку.
+    """
+    found = re.search(
+        r'<x:row r="%d"(?P<attrs>[^>]*?)(?:/>|>(?P<body>.*?)</x:row>)' % row, xml, re.S)
+    if not found:
+        return xml, False
+    body = found.group("body") or ""
+    kept: dict[str, str] = {}
+    for cell in _V4_ROW_CELL_RE.finditer(body):
+        kept[cell.group(1) + cell.group(2)] = cell.group(0)
+    styles = styles or {}
+    for coord, payload in cells.items():
+        style = styles.get(coord)
+        if style is None:
+            previous = kept.get(coord)
+            got = re.search(r'\ss="(\d+)"', previous) if previous else None
+            style = got.group(1) if got else None
+        attr = f' s="{style}"' if style else ""
+        if payload.get("formula") is not None:
+            rendered = f'<x:c r="{coord}"{attr}><x:f>{xml_escape(payload["formula"])}</x:f></x:c>'
+        elif payload.get("text") is not None:
+            rendered = (f'<x:c r="{coord}"{attr} t="inlineStr">'
+                        f'<x:is><x:t>{xml_escape(str(payload["text"]))}</x:t></x:is></x:c>')
+        else:
+            rendered = f'<x:c r="{coord}"{attr}><x:v>{_v4_number(payload.get("number"))}</x:v></x:c>'
+        kept[coord] = rendered
+    order = sorted(kept, key=lambda c: _v4_col_number(re.match(r"[A-Z]+", c).group(0)))
+    rebuilt = f'<x:row r="{row}"{found.group("attrs") or ""}>' + "".join(
+        kept[coord] for coord in order) + "</x:row>"
+    return xml[:found.start()] + rebuilt + xml[found.end():], True
+
+
 def _v4_ensure_row(xml: str, row: int) -> str:
     """Создаёт пустую строку листа, если её в XML нет вовсе.
 
@@ -15108,22 +15151,21 @@ def _v4_apply_demolition_rows(xml: str, missing: list[str]) -> str:
             formula = (f"{amount}*'Вводные'!$H$6*'Вводные'!$T${queue_row}"
                        f"*--('Вводные'!$B${queue_row}=\"Да\")*'Вводные'!$AH${queue_row}"
                        f"*'Вводные'!$AL${queue_row}")
-            cells = [(f"A{row}", dict(text=label), label_style),
-                     (f"B{row}", dict(formula=formula), amount_style),
-                     (f"C{row}", dict(text="млн ₽"), None)]
+            cells = {f"A{row}": dict(text=label),
+                     f"B{row}": dict(formula=formula),
+                     f"C{row}": dict(text="млн ₽")}
+            styles = {f"A{row}": label_style, f"B{row}": amount_style, f"C{row}": None}
             for index in range(_V4_CAPEX_MONTH_COLUMNS):
                 column = _col(4 + index)
                 window = f"MIN(6,'Вводные'!$E${queue_row})"
-                cells.append((f"{column}{row}", dict(formula=(
+                cells[f"{column}{row}"] = dict(formula=(
                     f"IF(AND({column}$3>=EDATE({permit},-{window}),{column}$3<{permit}),"
-                    f"$B${row}/MAX(1,{window}),0)")), month_style))
-            for coord, payload, style in cells:
-                xml, done = _v4_set_or_insert_cell(xml, coord, **payload)
-                if not done:
-                    missing.append(f"CAPEX · снос и расселение: ячейка {coord} не записана")
-                    return xml
-                if style:
-                    xml = styled(xml, coord, style)
+                    f"$B${row}/MAX(1,{window}),0)"))
+                styles[f"{column}{row}"] = month_style
+            xml, done = _v4_set_cells(xml, row, cells, styles)
+            if not done:
+                missing.append(f"CAPEX · снос и расселение: строка {row} не записана")
+                return xml
         # Итог блока видит новые строки: SUM(X14:X31)+ОБЪЕКТЫ → +X36+X37.
         total_row = _V4_CAPEX_TOTAL_ROW + base
         extra = [row_at + base for row_at, _label, _amount in _V4_CAPEX_EXTRA_ROWS]
@@ -15224,26 +15266,27 @@ def _v4_apply_vri_monthly_accrual(xml: str, missing: list[str]) -> str:
         rate = _V4_VRI_RATE_ROW + base
         accrual = _V4_VRI_ACCRUAL_ROW + base
         xml = _v4_ensure_row(xml, accrual)
-        cells = [(f"A{accrual}", dict(text="Накопленные проценты (служебная строка)"), label_style),
-                 (f"B{accrual}", dict(formula=f"DS{accrual}"), None)]
+        carried_cells = {f"A{accrual}": dict(text="Накопленные проценты (служебная строка)"),
+                         f"B{accrual}": dict(formula=f"DS{accrual}")}
+        styles = {f"A{accrual}": label_style, f"B{accrual}": None}
+        paid_cells: dict[str, dict[str, Any]] = {}
         for index in range(_V4_CAPEX_MONTH_COLUMNS):
             column = _col(4 + index)
             previous = _col(3 + index)
             carried = "0" if index == 0 else f"{previous}{accrual}"
             month = (f"IF(AND('Вводные'!$B$75<>\"Единовременно\",'Вводные'!$B$80=\"Да\","
                      f"{column}{balance_end}>0),{column}{balance_end}*{column}{rate}/12,0)")
-            cells.append((f"{column}{accrual}",
-                          dict(formula=f"{carried}+{month}-{column}{interest}"), month_style))
-            cells.append((f"{column}{interest}", dict(formula=(
-                "0" if index == 0 else
-                f"IF({column}{principal}>0,{previous}{accrual},0)")), None))
-        for coord, payload, style in cells:
-            xml, done = _v4_set_or_insert_cell(xml, coord, **payload)
+            carried_cells[f"{column}{accrual}"] = dict(
+                formula=f"{carried}+{month}-{column}{interest}")
+            styles[f"{column}{accrual}"] = month_style
+            paid_cells[f"{column}{interest}"] = dict(formula=(
+                "0" if index == 0 else f"IF({column}{principal}>0,{previous}{accrual},0)"))
+        for target, payload, style_map in ((accrual, carried_cells, styles),
+                                           (interest, paid_cells, None)):
+            xml, done = _v4_set_cells(xml, target, payload, style_map)
             if not done:
-                missing.append(f"ВРИ · накопление процентов: ячейка {coord} не записана")
+                missing.append(f"ВРИ · накопление процентов: строка {target} не записана")
                 return xml
-            if style:
-                xml = xml.replace(f'<x:c r="{coord}"', f'<x:c r="{coord}" s="{style}"', 1)
     return xml
 
 
@@ -15275,24 +15318,23 @@ def _v4_apply_vri_interest_row(xml: str, missing: list[str]) -> str:
         row = _V4_CAPEX_VRI_EXTRA_ROW + base
         vri_row = _V4_CAPEX_VRI_ROW + base
         xml = _v4_ensure_row(xml, row)
-        cells = [(f"A{row}", dict(text="Проценты и обеспечение по рассрочке ВРИ"), label_style),
-                 (f"B{row}", dict(formula=(f"SUM('ВРИ'!D{interest}:DS{interest})"
-                                           f"+SUM('ВРИ'!D{security}:DS{security})")), amount_style),
-                 (f"C{row}", dict(text="млн ₽"), None),
-                 (f"B{vri_row}", dict(formula=f"SUM('ВРИ'!D{principal}:DS{principal})"), None)]
+        extra = {f"A{row}": dict(text="Проценты и обеспечение по рассрочке ВРИ"),
+                 f"B{row}": dict(formula=(f"SUM('ВРИ'!D{interest}:DS{interest})"
+                                          f"+SUM('ВРИ'!D{security}:DS{security})")),
+                 f"C{row}": dict(text="млн ₽")}
+        styles = {f"A{row}": label_style, f"B{row}": amount_style, f"C{row}": None}
+        body = {f"B{vri_row}": dict(formula=f"SUM('ВРИ'!D{principal}:DS{principal})")}
         for index in range(_V4_CAPEX_MONTH_COLUMNS):
             column = _col(4 + index)
-            cells.append((f"{column}{row}", dict(
-                formula=f"'ВРИ'!{column}{interest}+'ВРИ'!{column}{security}"), month_style))
-            cells.append((f"{column}{vri_row}", dict(
-                formula=f"'ВРИ'!{column}{principal}"), None))
-        for coord, payload, style in cells:
-            xml, done = _v4_set_or_insert_cell(xml, coord, **payload)
+            extra[f"{column}{row}"] = dict(
+                formula=f"'ВРИ'!{column}{interest}+'ВРИ'!{column}{security}")
+            styles[f"{column}{row}"] = month_style
+            body[f"{column}{vri_row}"] = dict(formula=f"'ВРИ'!{column}{principal}")
+        for target, payload, style_map in ((row, extra, styles), (vri_row, body, None)):
+            xml, done = _v4_set_cells(xml, target, payload, style_map)
             if not done:
-                missing.append(f"CAPEX · проценты ВРИ: ячейка {coord} не записана")
+                missing.append(f"CAPEX · проценты ВРИ: строка {target} не записана")
                 return xml
-            if style:
-                xml = xml.replace(f'<x:c r="{coord}"', f'<x:c r="{coord}" s="{style}"', 1)
         # Итог блока видит новую строку; база резерва (B30) её не видит намеренно.
         total_row = _V4_CAPEX_TOTAL_ROW + base
         pattern = re.compile(
