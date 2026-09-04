@@ -153,8 +153,13 @@ def install(app: FastAPI) -> MarketDiscoveryService:
     app.state.market_discovery_service = service
 
     @app.post("/market/price-hint")
-    async def market_price_hint(req: PriceHintRequest) -> dict[str, Any]:
-        """Одно число для поля модели. Список проектов сюда не отдаётся."""
+    def market_price_hint(req: PriceHintRequest) -> dict[str, Any]:
+        """Одно число для поля модели. Список проектов сюда не отдаётся.
+
+        Обработчик синхронный намеренно: внутри поход к геокодеру и к «Пульсу»
+        по каждому соседу, и на событийном цикле он держал бы весь воркер —
+        одно нажатие кнопки останавливало половину сайта.
+        """
         try:
             return service.price_hint(
                 address=req.address,
@@ -163,10 +168,25 @@ def install(app: FastAPI) -> MarketDiscoveryService:
                 segment=req.segment,
                 radius_km=req.radius_km,
             )
+        except SubjectNotFound as exc:
+            # Неопознанный ввод — это ОТВЕТ, а не поломка: кадастровый номер, у
+            # которого ЕГРН не дал границ, приходит с поля «Участок» и раньше
+            # ронял маршрут в 500 с текстом «Internal Server Error». Браузер
+            # разбирал его как JSON и показывал «Unexpected token» — поломку
+            # разбора вместо причины (владелец, 04.09.2026).
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         except GeocodingError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except RemoteServiceError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except HTTPException:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            # Любая другая ошибка тоже уходит JSON'ом и с именем: молчаливая
+            # пятисотка на этом маршруте неотличима от сломанной страницы.
+            raise HTTPException(
+                status_code=502,
+                detail=f"Ориентир не посчитан: {type(exc).__name__}: {exc}") from exc
 
     @app.get("/cabinet", response_class=HTMLResponse)
     async def cabinet_home(request: Request) -> HTMLResponse:

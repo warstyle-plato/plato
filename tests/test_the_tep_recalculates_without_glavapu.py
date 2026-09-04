@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import math
 import sys
 from pathlib import Path
 
@@ -169,6 +170,7 @@ def test_the_page_really_fills_the_fields(tmp_path) -> None:
             got = tab.evaluate("""async ()=>{
               cadastralAnalysis={territory:{district:'Некрасовка', inside_moscow:true}};
               tep.apartments.saleable=80000; tep.apartments.gns=130716;
+              tep.apartments.units=1361;
               tep.ground_commercial.total_area=8695;
               inputs.kindergarten_places=0; inputs.school_places=0;
               inputs.clinic_capacity=0; inputs.underground_manual_spaces=0;
@@ -188,5 +190,9 @@ def test_the_page_really_fills_the_fields(tmp_path) -> None:
     assert not other, f"страница упала: {other[:2]}"
     assert (got["dou"], got["school"], got["clinic"]) == (153, 301, 47), \
         "нормативы второй зоны не доехали до вводных"
-    assert got["parking"] == 1017
+    # Постоянные места — пунктом 2 по средней квартире (80 000 / 1 361 = 58,8 м²,
+    # полоса до 70 × 0,8), гостевые десятой частью: то же, что считает движок.
+    permanent, _ = core.moscow_permanent_parking_by_average(80000, 1361)
+    assert permanent == 1089
+    assert got["parking"] == permanent + math.ceil(permanent / 10.0) == 1198
     assert "Не посчитано" in got["note"] and "Чем посчитано" in got["note"]
