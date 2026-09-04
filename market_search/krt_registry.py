@@ -311,6 +311,8 @@ class KrtRegistry:
         self.ttl_seconds = 24 * 60 * 60
         self._refreshing = False
         self._refresh_lock = threading.Lock()
+        self._decisions_refreshing = False
+        self._decisions_lock = threading.Lock()
         self._cards_filling = False
         self._cards_lock = threading.Lock()
 
@@ -440,11 +442,21 @@ class KrtRegistry:
         ranked.sort(key=lambda row: (not row.name.casefold().startswith(needle), row.name))
         return [row.to_dict() for row in ranked[:limit]]
 
-    def catalogue(self) -> list[dict[str, Any]]:
-        """Return the snapshot immediately; all network work stays off-thread."""
+    def catalogue(self, *, refresh: bool = False) -> list[dict[str, Any]]:
+        """Return the snapshot immediately; all network work stays off-thread.
+
+        `refresh` — это нажатая человеком кнопка, и она обязана значить обход
+        источника. Прежде обход начинался только у ПРОСРОЧЕННОГО снимка, и
+        «Обновить каталог» на суточном сроке не читал ничего: страница
+        перерисовывала тот же файл, а новая площадка ждала своего часа
+        («Так я жал обновить, значит вручную не обновляется каталог?» —
+        владелец, 04.09.2026). Кнопка, которая ничего не делает, хуже
+        отсутствующей: по ней судят, что источник пуст.
+        """
         cached = load_json(self.path)
         rows = self._decode(cached) if cached else []
-        if (not self._cache_current(cached) or not fresh(self.path, self.ttl_seconds)
+        if (refresh or not self._cache_current(cached)
+                or not fresh(self.path, self.ttl_seconds)
                 or not cached.get("complete", True)):
             self.refresh_in_background()
         return [row.to_dict() for row in rows]
@@ -754,6 +766,9 @@ class KrtRegistry:
                 for one in (payload.get("all") or [])]
         split = krt_decisions.match_catalogue(rows, self.catalogue())
         out = dict(payload)
+        # Когда снят снимок решений — часть ответа: без даты «577 решений»
+        # читается как ответ источника сию секунду.
+        out["ttl_seconds"] = int(self.ttl_seconds)
         out["total"] = split["total"]
         out["matched"] = len(split["matched"])
         out["decisions"] = [one.to_dict() for one in split["unmatched"]]
@@ -982,13 +997,29 @@ class KrtRegistry:
         save_json(self.tenders_path, payload)
         return payload
 
-    def status(self) -> dict[str, bool]:
+    def status(self) -> dict[str, Any]:
+        """Полнота снимка, ход обхода и КОГДА снимок снят.
+
+        Даты не было, и на экране «577 решений» выглядело как ответ источника
+        сию секунду, хотя снимок мог быть суточной давности: новую площадку
+        города не видно, а понять это можно только измерением со стороны
+        (владелец, 04.09.2026). Возраст снимка — часть ответа, как метод опроса
+        у НСПД.
+        """
         cached = load_json(self.path)
+        stamp = 0
+        try:
+            stamp = int(self.path.stat().st_mtime)
+        except OSError:
+            stamp = 0
         return {
             "complete": bool(
                 self._cache_current(cached) and cached.get("complete", True)
             ),
             "refreshing": self._refreshing,
+            "decisions_refreshing": self._decisions_refreshing,
+            "retrieved_at": stamp,
+            "ttl_seconds": int(self.ttl_seconds),
         }
 
     def refresh_in_background(self) -> bool:
@@ -1005,4 +1036,29 @@ class KrtRegistry:
                     self._refreshing = False
 
         threading.Thread(target=run, name="krt-catalogue-refresh", daemon=True).start()
+        return True
+
+    def refresh_decisions_in_background(self) -> bool:
+        """Перечитать решения mos.ru, не держа соединение с человеком.
+
+        Обход шестидесяти страниц поиска в срок ответа не укладывается, а
+        кнопка обязана ответить сразу: работу принимают, а не держат
+        соединением. Ход виден полем `decisions_refreshing` — страница
+        доспрашивает, пока обход идёт.
+        """
+        with self._decisions_lock:
+            if self._decisions_refreshing:
+                return False
+            self._decisions_refreshing = True
+
+        def run() -> None:
+            try:
+                self.decisions(refresh=True)
+            except Exception:  # noqa: BLE001 — отказ источника не роняет процесс
+                pass
+            finally:
+                with self._decisions_lock:
+                    self._decisions_refreshing = False
+
+        threading.Thread(target=run, name="krt-decisions-refresh", daemon=True).start()
         return True

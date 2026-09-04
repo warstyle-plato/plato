@@ -69,6 +69,7 @@ __DEVELOPAID_CONTOUR__
       <div class="foldbody"><div id="krtMapBody"><div class="notice">Открой, и карта построится.</div></div></div>
     </details>
     <div id="krtFilterNote" class="source" style="margin:6px 2px"></div>
+    <div id="krtSnapshot" class="source" style="margin:6px 2px"></div>
     <div id="krtRankStatus" class="notice" style="display:none"></div>
     <div id="krtDecisions" class="notice" style="display:none"></div>
     <div class="layout"><div class="tablecol"><div class="scrolltop" id="krtScrollTop"><div></div></div><div class="tablewrap" id="krtTableWrap"><table class="wide"><thead><tr><th data-sort="name">Проект КРТ</th><th data-sort="score">Оценка Платона</th><th data-sort="ceiling" title="Предельная цена входа при LLCR 1,20x: на метр продаваемой площади и всего по проекту">Потолок цены входа</th><th data-sort="llcr" title="LLCR проекта из посчитанной модели. Прочерк — модель не считалась: это «не знаем», а не ноль, и при сортировке такие строки уходят вниз при любом направлении">LLCR</th><th data-sort="margin" title="Маржинальность до неизвестных обязательств">Маржа</th><th data-sort="stage" title="Шаг воронки: проект решения о КРТ на mos.ru (самый ранний сигнал — решения ещё нет) → объявлено о торгах → лот опубликован (ИнвестМосква, ГИС Торги) → идёт аукцион (Росэлторг) → инвестор определён. ГИС Торги — самый поздний источник из всех. «Занята» — площадку уже кто-то взял: назван застройщик, назван оператор или заключён договор о КРТ; де-юре статус города при этом может оставаться «Планируемым»">Шаг</th><th data-sort="status" title="Статус krt.mos.ru, де-юре: отвечает на «начата ли стройка», а не на «свободна ли площадка». Занятость — в колонке «Шаг»">Статус</th><th data-sort="decided" title="Дата ПРОЕКТА решения о КРТ на mos.ru: город опубликовал его для сбора мнений правообладателей, решения ещё нет. У площадки без карточки это единственная её дата">Проект решения</th><th data-sort="area">Площадь</th><th data-sort="total">Общий объём</th><th data-sort="housing">Жильё</th><th data-sort="jobs">Рабочие места</th></tr></thead><tbody id="krtRows"></tbody></table><div id="krtEmpty" class="empty">Открываю официальный каталог krt.mos.ru…</div></div></div><aside class="side" id="krtSide"><div class="empty">Выберите проект КРТ.<br>ТЭП берутся из krt.mos.ru, рынок считает существующий движок DevelopAid.</div></aside></div>
@@ -648,7 +649,33 @@ function renderAnalysis(d){const s=d.screening||{},l=d.lot||{},a=$('analysis'),s
  $('copySeed').onclick=async()=>{await navigator.clipboard.writeText(JSON.stringify(d.developaid_seed,null,2));$('copySeed').textContent='Скопировано'};$('modelBtn').onclick=()=>{const note=$('modelNote');note.textContent='Project-preset handoff подключается следующим слоем: цена лота → цена входа, КРТ-ТЭП → planning, обязательства → отдельные cost/constraint lines.'}
 }
 function switchTab(showKrt){['auctionFilters','auctionStats','auctionLayout','coverage'].forEach(id=>$(id).classList.toggle('hidden',showKrt));$('krtPanel').classList.toggle('hidden',!showKrt);$('tabAuctions').classList.toggle('active',!showKrt);$('tabKrt').classList.toggle('active',showKrt);renderAskContext();if(showKrt&&!state.krt.length)loadKrt()}
-async function loadKrt(){const b=$('krtRefresh');b.disabled=true;b.innerHTML='<span class="spinner"></span>Читаю krt.mos.ru';try{const d=await askJson('/auctions/krt',{cache:'no-store'});state.krt=d.projects||[];state.krtNew=Number(d.new_count||0);state.krtNewDays=Number(d.new_for_days||30);state.krtUnparsed=d.unparsed||[];state.krtCardsState=d.cards_state||null;populateKrtOkrugs();$('krtEmpty').textContent=state.krt.length?'':'Официальный каталог обновляется в фоне. Первые проекты появятся автоматически.';filterKrt();renderKrtNewNote();renderKrtUnparsedNote();renderKrtCardsNote();loadKrtDecisions();loadKrtTenders();if(!d.complete&&state.krtPolls<18){state.krtPolls++;clearTimeout(state.krtTimer);state.krtTimer=setTimeout(loadKrt,10000)}else state.krtPolls=0}catch(e){$('krtEmpty').style.display='grid';$('krtEmpty').textContent=String(e.message||e)}finally{b.disabled=false;b.textContent='Обновить каталог'}}
+// Кнопка «Обновить каталог» до 04.09.2026 не читала источник вовсе: снимок
+// живёт сутки, и обход начинался только у ПРОСРОЧЕННОГО — страница
+// перерисовывала тот же файл. Опубликованный вчера проект решения ждал ночного
+// обхода, а на экране это выглядело как «в источнике его нет» («Так я жал
+// обновить, значит вручную не обновляется каталог?» — владелец, 04.09.2026).
+// Нажатая рука значит обход обеих половин экрана: каталога и решений mos.ru.
+async function loadKrt(force){const b=$('krtRefresh');b.disabled=true;b.innerHTML='<span class="spinner"></span>Читаю krt.mos.ru';try{if(force)state.krtDecisionsLoaded=false;const d=await askJson('/auctions/krt'+(force?'?refresh=true':''),{cache:'no-store'});state.krt=d.projects||[];state.krtNew=Number(d.new_count||0);state.krtNewDays=Number(d.new_for_days||30);state.krtUnparsed=d.unparsed||[];state.krtCardsState=d.cards_state||null;state.krtSnapshot={at:Number(d.retrieved_at||0),ttl:Number(d.ttl_seconds||0),refreshing:!!d.refreshing,decisionsRefreshing:!!d.decisions_refreshing,complete:d.complete!==false};populateKrtOkrugs();$('krtEmpty').textContent=state.krt.length?'':'Официальный каталог обновляется в фоне. Первые проекты появятся автоматически.';filterKrt();renderKrtSnapshotNote();renderKrtNewNote();renderKrtUnparsedNote();renderKrtCardsNote();loadKrtDecisions();loadKrtTenders();
+// Обход идёт фоном, и его конец виден только доспросом: без этого нажавший
+// кнопку человек видит прежний список и решает, что обновление не работает.
+const busy=(!d.complete)||d.refreshing||d.decisions_refreshing;if(busy&&state.krtPolls<18){state.krtPolls++;clearTimeout(state.krtTimer);state.krtTimer=setTimeout(()=>loadKrt(false),10000)}else state.krtPolls=0}catch(e){$('krtEmpty').style.display='grid';$('krtEmpty').textContent=String(e.message||e)}finally{b.disabled=false;b.textContent='Обновить каталог'}}
+// Когда снят снимок — часть ответа. Без даты «263 площадки» читается как
+// ответ города сию секунду, хотя снимку могут быть сутки, и новой площадки в
+// нём нет по построению.
+function renderKrtSnapshotNote(){
+ const box=$('krtSnapshot'), st=state.krtSnapshot;
+ if(!box)return;
+ if(!st){box.textContent='';return}
+ const bits=[];
+ bits.push(st.at?`Снимок каталога: ${krtWhenExact(st.at)}`:'Снимок каталога ещё не снят');
+ if(st.at&&st.ttl)bits.push(`обход раз в ${Math.round(st.ttl/3600)} ч`);
+ if(!st.complete)bits.push('выдача дочитана не до конца');
+ if(st.refreshing)bits.push('идёт обход каталога');
+ if(st.decisionsRefreshing)bits.push('идут решения mos.ru');
+ const d=state.krtDecisionsAt||0;
+ if(d)bits.push(`снимок решений: ${krtWhenExact(d)}`);
+ box.textContent=bits.join(' · ')+'. Кнопка «Обновить каталог» читает оба источника заново.';
+}
 function updateKrtOkrugLabel(){const values=KRT_OKRUGS.filter(x=>state.krtOkrugs.has(x)),button=$('krtOkrugToggle');button.textContent=!values.length?'Все округа':values.length<=3?values.join(', '):`${values.slice(0,2).join(', ')} +${values.length-2}`;button.title=values.length?values.join(', '):'Все округа';$('krtOkrugClear').disabled=!values.length}
 function populateKrtOkrugs(){const values=KRT_OKRUGS,options=$('krtOkrugOptions');options.innerHTML='';values.forEach(value=>{const label=document.createElement('label'),input=document.createElement('input'),text=document.createElement('span');label.className='multi-option';input.type='checkbox';input.value=value;input.checked=state.krtOkrugs.has(value);text.textContent=value;input.onchange=()=>{input.checked?state.krtOkrugs.add(value):state.krtOkrugs.delete(value);updateKrtOkrugLabel();filterKrt()};label.append(input,text);options.appendChild(label)});updateKrtOkrugLabel()}
 function closeKrtOkrugs(){const menu=$('krtOkrugMenu'),button=$('krtOkrugToggle');menu.classList.add('hidden');button.setAttribute('aria-expanded','false')}
@@ -1106,6 +1133,12 @@ function krtScore(x){
 // двадцати площадок разом (23.08.2026), а почему — знал только журнал на
 // машине, куда с экрана не заглянешь. Причина приходит в строке рейтинга
 // (`reason`) и просто не выводилась.
+// У снимка важен не день, а час: «снимок от 3 сентября» при суточном сроке не
+// отвечает, час ему или двадцать три.
+function krtWhenExact(stamp){
+ if(!Number(stamp))return '';
+ try{return new Date(Number(stamp)*1000).toLocaleString('ru-RU',{day:'numeric',month:'long',hour:'2-digit',minute:'2-digit'})}catch(e){return ''}
+}
 function krtWhen(stamp){
  if(!Number(stamp))return '';
  try{return new Date(Number(stamp)*1000).toLocaleDateString('ru-RU',{day:'numeric',month:'long',year:'numeric'})}catch(e){return ''}
@@ -1304,6 +1337,10 @@ async function loadKrtDecisions(){
  try{
   const d=await askJson('/auctions/krt/decisions');
   const rows=d.decisions||[];
+  // Дата снимка решений едет в общую строку снимка: два источника одного
+  // экрана, и у каждого свой возраст.
+  state.krtDecisionsAt=Number(d.retrieved_at||0);
+  renderKrtSnapshotNote();
   if(!rows.length&&!d.total)return;
   box.style.display='';
   // Прежде здесь лежала вторая таблица тех же строк: площадки без карточки
@@ -2556,7 +2593,7 @@ $('askBtn').onclick=askPlato;
 $('askCard').querySelectorAll('.chips button').forEach(b=>{
  b.onclick=()=>{$('askText').value=b.dataset.q;askPlato()};
 });
-$('tabAuctions').onclick=()=>switchTab(false);$('tabKrt').onclick=()=>switchTab(true);$('krtRefresh').onclick=loadKrt;$('krtRankBtn').onclick=startKrtRanking;$('krtPressBtn').onclick=readKrtPress;$('krtSearch').oninput=filterKrt;$('krtStatus').onchange=filterKrt;$('krtNeeds').onchange=filterKrt;$('krtCard').onchange=filterKrt;$('krtTender').onchange=filterKrt;$('krtStage').onchange=filterKrt;document.getElementById('krtMapFold')?.addEventListener('toggle',ev=>{if(ev.target.open)loadKrtMap()});$('krtMinHousing').oninput=filterKrt;document.querySelectorAll('#krtRows').forEach(()=>{});document.querySelectorAll('th[data-sort]').forEach(th=>{th.style.cursor='pointer';th.title=(th.title?th.title+'. ':'')+'Нажмите, чтобы отсортировать';th.onclick=()=>krtSortBy(th.dataset.sort)});$('krtPurpose').onchange=()=>{filterKrt();if(state.selectedKrt)selectKrt(state.selectedKrt)};
+$('tabAuctions').onclick=()=>switchTab(false);$('tabKrt').onclick=()=>switchTab(true);$('krtRefresh').onclick=()=>loadKrt(true);$('krtRankBtn').onclick=startKrtRanking;$('krtPressBtn').onclick=readKrtPress;$('krtSearch').oninput=filterKrt;$('krtStatus').onchange=filterKrt;$('krtNeeds').onchange=filterKrt;$('krtCard').onchange=filterKrt;$('krtTender').onchange=filterKrt;$('krtStage').onchange=filterKrt;document.getElementById('krtMapFold')?.addEventListener('toggle',ev=>{if(ev.target.open)loadKrtMap()});$('krtMinHousing').oninput=filterKrt;document.querySelectorAll('#krtRows').forEach(()=>{});document.querySelectorAll('th[data-sort]').forEach(th=>{th.style.cursor='pointer';th.title=(th.title?th.title+'. ':'')+'Нажмите, чтобы отсортировать';th.onclick=()=>krtSortBy(th.dataset.sort)});$('krtPurpose').onchange=()=>{filterKrt();if(state.selectedKrt)selectKrt(state.selectedKrt)};
 $('krtOkrugToggle').onclick=e=>{e.stopPropagation();const menu=$('krtOkrugMenu'),open=menu.classList.contains('hidden');menu.classList.toggle('hidden',!open);$('krtOkrugToggle').setAttribute('aria-expanded',String(open))};$('krtOkrugMenu').onclick=e=>e.stopPropagation();$('krtOkrugClear').onclick=()=>{state.krtOkrugs.clear();$('krtOkrugOptions').querySelectorAll('input').forEach(x=>x.checked=false);updateKrtOkrugLabel();filterKrt()};document.addEventListener('click',closeKrtOkrugs);document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeKrtOkrugs();$('krtOkrugToggle').focus()}});
 loadKrtRanking();
 // Ссылка из «Поделиться» открывает ту же территорию: получатель попадает на

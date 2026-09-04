@@ -342,7 +342,8 @@ def test_auctions_exposes_krt_as_a_separate_tab_and_endpoint(monkeypatch) -> Non
     app = FastAPI()
     app.state.market_discovery_service = SimpleNamespace(
         krt=SimpleNamespace(
-            catalogue=lambda: [project], status=lambda: {"complete": True, "refreshing": False},
+            catalogue=lambda **_: [project],
+            status=lambda: {"complete": True, "refreshing": False},
             requirements=lambda slug: {
                 "slug": slug, "available": True, "decision_available": True,
                 "preservation": ["КН 77:02:0023012:1031 · Сохранение"],
