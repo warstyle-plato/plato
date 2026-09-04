@@ -63,6 +63,8 @@ def _axis_harness(intent, axis: str, *, card=None, press=None) -> str:
         + (f"state.krtPress['s']={json.dumps(press)};\n" if press else "")
         + _function("krtIntent") + "\n"
         + _function("krtStatusKind") + "\n"
+        + _function("krtLots") + "\n" + _function("krtLiveLot") + "\n"
+        + _function("krtAskingPrice") + "\n" + _function("krtPriceVerdict") + "\n"
         + _function("krtRenovation") + "\n"
         + _function("krtEntryKind") + "\n"
         + _function("krtRenovationKind") + "\n"

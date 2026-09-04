@@ -1333,11 +1333,60 @@ def install(app: FastAPI) -> None:
         if not callable(reader):
             raise HTTPException(status_code=503, detail="Реестр карты недоступен")
         try:
-            return await run_in_threadpool(
-                lambda: reader(refresh=bool(refresh), step_m=float(step_m)))
+            payload = dict(await run_in_threadpool(
+                lambda: reader(refresh=bool(refresh), step_m=float(step_m))) or {})
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=502,
                                 detail=f"Карта КРТ не прочитана: {exc}") from exc
+        # Файл карты — не весь реестр: у 35 площадок каталога записи в нём нет
+        # вовсе, и на карте Москвы их не было ни под каким увеличением
+        # («на карте Москвы этот крт так и не появился», владелец, 04.09.2026 —
+        # про Варшавское ш., вл. 37). Контур у них собирается из перечня
+        # участков проекта решения; здесь берётся уже прочитанное, а
+        # недостающее дочитывается фоном: спрашивать ЕГРН по тридцати пяти
+        # площадкам в момент отрисовки карты — это минуты ожидания.
+        #
+        # Такой контур подписан своим именем: это состав территории ПО
+        # ДОКУМЕНТУ, а не официальный полигон границ.
+        try:
+            projects = await run_in_threadpool(krt_registry.catalogue)
+            missing = await run_in_threadpool(krt_registry.map_missing, list(projects))
+            known = await run_in_threadpool(
+                krt_registry.decision_outlines_known, [row.get("slug") for row in missing])
+        except Exception:  # noqa: BLE001
+            logger.exception("КРТ: контуры по документу для карты не собрались")
+            missing, known = [], {}
+        drawn = 0
+        for row in missing:
+            outline = known.get(str(row.get("slug") or ""))
+            if not outline or not outline.get("rings_merc"):
+                continue
+            drawn += 1
+            payload.setdefault("sites", []).append({
+                "slug": row.get("slug"),
+                "name": row.get("name"),
+                "okrug": row.get("okrug"),
+                "status": row.get("status"),
+                "rings_merc": outline.get("rings_merc"),
+                "centre_merc": outline.get("centre_merc"),
+                "area_ha": outline.get("area_ha"),
+                # Чем нарисовано — часть ответа: официальный полигон и наш
+                # свод по перечню документа не одно и то же.
+                "source": "decision",
+            })
+        payload["by_document"] = drawn
+        payload["by_document_pending"] = max(0, len(missing) - drawn)
+        payload["count"] = len(payload.get("sites") or [])
+        filler = getattr(krt_registry, "fill_decision_outlines_in_background", None)
+        if callable(filler) and payload["by_document_pending"]:
+            lookup = getattr(core, "_land_lookup_by_numbers", None) if core is not None else None
+            if callable(lookup):
+                try:
+                    filler([row.get("slug") for row in missing
+                            if str(row.get("slug") or "") not in known], lookup=lookup)
+                except Exception:  # noqa: BLE001
+                    logger.exception("КРТ: фоновое чтение контуров не запустилось")
+        return payload
 
     @app.get("/auctions/krt/api-probe")
     async def auction_krt_api_probe(url: str = Query(default="")) -> dict[str, Any]:

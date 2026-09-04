@@ -62,7 +62,7 @@ def page_functions() -> str:
     # ни в сортировке, ни в балле.
     for name in ("krtVolumeShare", "krtTaskProfile", "krtBroken", "krtNumber",
                  "krtFit", "krtIntent",
-                 "krtInt", "krtPct", "krtRenovation", "krtRuleValue",
+                 "krtInt", "krtPct", "krtRenovation", "krtLots", "krtLiveLot", "krtAskingPrice", "krtPriceVerdict", "krtRuleValue",
                  "krtPenalty", "krtScoreSource", "krtScore", "krtScoreNote"):
         start = script.index(f"function {name}(")
         depth = 0

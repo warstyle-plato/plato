@@ -1247,6 +1247,13 @@ function krtScore(x){
   gaps.push('метры реновации ('+krtInt(reno.area)+' м², '+krtPct(reno.share)
    +' жилья) строятся, но не продаются — это часть цены входа, уплаченная метрами;'
    +' в выручке модели их нет');
+ // Город назвал цену, и она выше того, что проект способен заплатить: по этой
+ // цене он не проходит. Прежде обе величины стояли рядом молча, и строка
+ // читалась как «проходит» — LLCR 1,21x при потолке 994 млн и заявках на
+ // 2 404 млн (владелец, 04.09.2026).
+ const asked=krtPriceVerdict(x);
+ if(asked&&asked.over)
+  cuts.push({label:'цена торгов выше потолка входа: '+asked.text,points:45});
  if(counted&&(rank.entry_capacity_rub_per_sqm===null
    ||rank.entry_capacity_rub_per_sqm===undefined))
   gaps.push('потолок входа не подобран'
@@ -2020,6 +2027,39 @@ function krtSiteMap(subject,areaHa){
 }
 // Число посчитанной модели в таблице. Прочерк — «модель не считалась», и это
 // не ноль: строку с прочерком нельзя ставить рядом с настоящим нулём.
+// Цена, которую город УЖЕ назвал: начальная цена аукциона из живого лота или
+// из распознанного распоряжения. Пока её не было на экране рядом с потолком,
+// строка Варшавского ш., вл. 37 читалась как «проходит»: LLCR 1,21x и потолок
+// 994 млн — при том что заявки идут на 2 404 млн (владелец, 04.09.2026: «по
+// цене чушь полная, при торгах с 2,4 лимит стоит 1»). Числа верны оба, неверно
+// было молчание между ними.
+function krtAskingPrice(x){
+ const live=krtLiveLot(x)||((krtLots(x)||[])[0]||null);
+ if(live&&Number(live.price_rub)>0)
+  return {mln:Number(live.price_rub)/1e6, from:'лот на торгах'+(live.source?' · '+live.source:'')};
+ const order=(state.krtOrderBySite||{})[x.slug];
+ if(order&&Number(order.start_price_rub)>0)
+  return {mln:Number(order.start_price_rub)/1e6, from:'распоряжение города '+(order.number||'')};
+ return null;
+}
+// Потолок посчитан при НУЛЕВОЙ цене входа: модель скрининга ставит
+// `purchase_price_mln = 0` и ищет, сколько проект способен заплатить при LLCR
+// 1,20x. Значит LLCR и маржа в строке — «при бесплатном участке», и рядом с
+// объявленной ценой это надо говорить вслух, а не подразумевать.
+function krtPriceVerdict(x){
+ const rank=state.krtRank[x.slug]||{};
+ const asking=krtAskingPrice(x);
+ const ceiling=rank.entry_capacity_mln;
+ if(!asking)return null;
+ if(ceiling===null||ceiling===undefined)
+  return {asking:asking, ceiling:null, over:false,
+          text:'цена торгов '+fmtMln(asking.mln)+' · потолок входа не подобран'};
+ const over=asking.mln>Number(ceiling);
+ return {asking:asking, ceiling:Number(ceiling), over:over,
+         text:'цена торгов '+fmtMln(asking.mln)+' против потолка '+fmtMln(Number(ceiling))
+              +(over?' — по этой цене проект не проходит':' — умещается в потолок')};
+}
+
 function krtModelCell(slug,key){
  const row=state.krtRank[slug];
  if(!row||!row.available)return '<span class="source">—</span>';
@@ -2030,7 +2070,8 @@ function krtModelCell(slug,key){
   const tone=Number(value)>=1.2?'ok':(Number(value)>=1.0?'warn':'bad');
   const tail=(weakest!==null&&weakest!==undefined&&Number(weakest)<Number(value))
    ? `<div class="source">слабейшая очередь ${Number(weakest).toFixed(2)}x</div>` : '';
-  return `<b class="fit ${tone}" style="padding:0">${Number(value).toFixed(2)}x</b>${tail}`;
+  return `<b class="fit ${tone}" style="padding:0">${Number(value).toFixed(2)}x</b>${tail}`
+   +'<div class="source">при цене входа 0</div>';
  }
  return `<b>${Number(value).toFixed(1)}%</b>`;
 }
@@ -2042,7 +2083,11 @@ function krtRankCell(slug){
  if(per===null||per===undefined)
   return `<span class="source" title="${esc(row.entry_capacity_reason||'')}">потолок не подобран</span>`;
  const total=row.entry_capacity_mln!=null?`<span class="source">всего ${esc(fmtMln(row.entry_capacity_mln))}</span>`:'';
- return `<b>${new Intl.NumberFormat('ru-RU').format(per)} ₽/м²</b>${total}`;
+ const site=(state.krt||[]).find(one=>one.slug===slug);
+ const verdict=site?krtPriceVerdict(site):null;
+ const said=verdict&&verdict.asking
+  ? `<div class="source${verdict.over?' warn':''}">${esc(verdict.text)}</div>` : '';
+ return `<b>${new Intl.NumberFormat('ru-RU').format(per)} ₽/м²</b>${total}${said}`;
 }
 // Ход показывается тем, что есть: сколько посчитано из скольких, что считается
 // сейчас, сколько секунд идёт. Ожидание без признака работы читается как
@@ -2611,7 +2656,13 @@ function krtEntryHead(x){
  if(live&&live.source)facts.push(esc(live.source));
  if(!live&&lots.length)facts.push('лот был, срок подачи прошёл');
  const why=(stage.why||[]).slice(0,2).map(esc).join('; ');
- return `<div class="notice ${tone}"><b>${esc(title)}</b>`
+ // Объявленная цена против потолка входа — первый вопрос инвестора после
+ // «можно ли войти»: цена, по которой не проходит, закрывает разговор.
+ const verdict=krtPriceVerdict(x);
+ const priced=verdict?`<div class="source${verdict.over?' warn':''}">${esc(verdict.text)}`
+   +(verdict.ceiling!==null?'. Потолок посчитан при нулевой цене входа: столько проект '
+     +'способен заплатить при LLCR 1,20x':'')+`</div>`:'';
+ return `<div class="notice ${tone}"><b>${esc(title)}</b>`+priced
   +(facts.length?'<div>'+facts.join(' · ')+'</div>':'')
   +(why?`<div class="source">${why}</div>`:'')
   +'</div>';
@@ -2729,8 +2780,13 @@ function krtMapMarkup(d){
   const colour=krtMapColour(s,lots);
   const paths=(s.rings_merc||[]).map(ring=>'M'+ring.map(p=>
     place.px(p[0]).toFixed(1)+' '+place.py(p[1]).toFixed(1)).join('L')+'Z').join(' ');
-  return `<path d="${paths}" fill="${colour}" fill-opacity="0.34" stroke="${colour}"`
-   +` stroke-width="1.1" data-i="${i}" class="krtshape"></path>`;
+  // Чем нарисовано — часть ответа: официальный полигон реестра идёт сплошной
+  // линией, а состав территории по перечню участков решения — пунктиром.
+  // Одинаково они читались бы как один источник, а это разные утверждения.
+  const byDoc=String(s.source||'')==='decision';
+  return `<path d="${paths}" fill="${colour}" fill-opacity="${byDoc?'0.22':'0.34'}" stroke="${colour}"`
+   +` stroke-width="${byDoc?'1.6':'1.1'}"${byDoc?' stroke-dasharray="7 5"':''}`
+   +` data-i="${i}" class="krtshape"></path>`;
  }).join('');
  const counts={};
  sites.forEach(s=>{const k=s.status||'—';counts[k]=(counts[k]||0)+1});
@@ -2774,16 +2830,25 @@ function openKrtLiveMap(sites){
  const shapes=(sites||[]).filter(s=>(s.rings_merc||[]).length).map(s=>({
   rings:s.rings_merc,
   colour:krtMapColour(s,(state.krtTenders[s.slug]||[]).length),
+  dashed:String(s.source||'')==='decision',
   key:s.slug||'',
   title:[s.name,[s.okrug,s.district].filter(Boolean).join(' · '),s.status,
          s.area_ha?s.area_ha+' га':''].filter(Boolean).join(' — '),
  }));
  if(!shapes.length)return;
+ // Сколько контуров пришло из перечня решения, а не из файла карты: подпись
+ // обязана назвать источник, иначе пунктир читается как та же официальная
+ // граница, только тоньше.
+ const byDoc=(sites||[]).filter(s=>String(s.source||'')==='decision'
+   &&(s.rings_merc||[]).length).length;
  openLandMap({
   shapes:shapes,
   title:'Площадки КРТ Москвы — '+shapes.length+' контуров',
   note:'Тяните карту мышью или пальцем, колесо — увеличение. Нажмите на площадку, '
-   +'чтобы открыть её карточку. Границы — официальный реестр КРТ, подложка — OpenStreetMap.',
+   +'чтобы открыть её карточку. Границы — официальный реестр КРТ, подложка — OpenStreetMap.'
+   +(byDoc?' Пунктиром — '+byDoc+' площадок, которых в файле карты нет вовсе: '
+     +'их контур собран из перечня участков проекта решения о КРТ, это состав территории '
+     +'по документу, а не официальный полигон.':''),
   onPick:slug=>{
    const row=state.krt.find(x=>x.slug===slug);
    if(!row){const s=(sites||[]).find(v=>v.slug===slug);if(s&&s.url)window.open(s.url,'_blank','noopener');return}

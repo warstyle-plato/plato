@@ -337,6 +337,8 @@ class KrtRegistry:
         self._decisions_refreshing = False
         self._decisions_lock = threading.Lock()
         self._cards_filling = False
+        self._outline_fill_lock = threading.Lock()
+        self._outline_filling = False
         self._cards_lock = threading.Lock()
         self._tep_filling = False
         self._tep_lock = threading.Lock()
@@ -1052,6 +1054,16 @@ class KrtRegistry:
             return {"site": None,
                     "problem": f"файл карты реестра не прочитан: {type(exc).__name__}"}
         sites = (payload or {}).get("sites") or []
+        return self._map_match(sites, clean, name, project)
+
+    def _map_match(self, sites: list[dict[str, Any]], clean: str, name: str = "",
+                   project: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Сопоставление площадки с записью файла карты. Один разбор на всех.
+
+        Читает готовый список, а не файл: у карты Москвы это 282 сравнения на
+        один запрос, и чтение файла на каждое было бы чтением одного и того же
+        по три сотни раз.
+        """
         for site in sites:
             if str(site.get("slug") or "") == clean:
                 return {"site": dict(site), "problem": "", "matched": "slug"}
@@ -1085,6 +1097,74 @@ class KrtRegistry:
                  project: dict[str, Any] | None = None) -> dict[str, Any] | None:
         """Площадка из файла карты: официальный контур и центр."""
         return self.map_lookup(slug, name, project).get("site")
+
+    def fill_decision_outlines_in_background(self, slugs, *, lookup, limit: int = 6) -> bool:
+        """Дочитать контуры по перечню решения — фоном и малыми порциями.
+
+        Порция маленькая намеренно: у одной площадки в перечне бывает шесть
+        десятков кадастровых номеров, и каждый — свой запрос в ЕГРН. Карта
+        показывает прочитанное и говорит, сколько ещё не прочитано; следующее
+        открытие дочитает следующую порцию.
+        """
+        clean = [str(slug or "").strip() for slug in slugs or []]
+        wanted = [slug for slug in clean
+                  if re.fullmatch(r"[a-zA-Z0-9_-]{2,180}", slug or "")
+                  and not fresh(self.outline_dir / f"{slug}.json", self.outline_ttl_seconds)]
+        if not wanted or not callable(lookup):
+            return False
+        with self._outline_fill_lock:
+            if self._outline_filling:
+                return False
+            self._outline_filling = True
+
+        def run() -> None:
+            try:
+                for slug in wanted[:max(1, int(limit))]:
+                    try:
+                        self.decision_outline(slug, lookup=lookup)
+                    except Exception:  # noqa: BLE001
+                        continue
+            finally:
+                with self._outline_fill_lock:
+                    self._outline_filling = False
+
+        threading.Thread(target=run, name="krt-outlines", daemon=True).start()
+        return True
+
+    def decision_outlines_known(self, slugs: list[str]) -> dict[str, dict[str, Any]]:
+        """Уже прочитанные контуры по документу. Наружу не ходит.
+
+        Нужна карте Москвы: файл реестра — не весь реестр, и у 35 площадок
+        каталога записи в нём нет вовсе. Спрашивать ЕГРН по всем ним в момент
+        отрисовки карты нельзя — это минуты; поэтому карта берёт прочитанное, а
+        недостающее дочитывается фоном, как карточки города.
+        """
+        out: dict[str, dict[str, Any]] = {}
+        for slug in slugs or []:
+            clean = str(slug or "").strip()
+            if not re.fullmatch(r"[a-zA-Z0-9_-]{2,180}", clean):
+                continue
+            cached = load_json(self.outline_dir / f"{clean}.json")
+            if (isinstance(cached, dict) and cached.get("schema_version") == 1
+                    and cached.get("rings_merc")):
+                out[clean] = dict(cached)
+        return out
+
+    def map_missing(self, projects: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Площадки каталога, которых нет в файле карты реестра."""
+        try:
+            payload = self.map_dataset()
+        except Exception:  # noqa: BLE001
+            return []
+        sites = (payload or {}).get("sites") or []
+        missing = []
+        for row in projects or []:
+            slug = str((row or {}).get("slug") or "").strip()
+            if not slug:
+                continue
+            if not self._map_match(sites, slug, str(row.get("name") or ""), row).get("site"):
+                missing.append(row)
+        return missing
 
     def decision_outline(self, slug: str, *, lookup: Callable[[list[str]], list[dict[str, Any]]],
                          refresh: bool = False, max_numbers: int = 60) -> dict[str, Any]:
