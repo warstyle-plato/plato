@@ -15532,6 +15532,40 @@ def _v4_management_profile_ranges() -> tuple[int, int, list[int]]:
     return first, last, excluded
 
 
+# Подписи, называющие подземную площадь наземной. ГНС — наземная площадь
+# здания (внутренний термин DevelopAid), и у гаража с кладовыми её нет вовсе:
+# в их строке стоит площадь подземного этажа. Итог складывает обе величины и
+# потому зовётся строительным объёмом — на нём считаются общие статьи и все
+# удельные «на метр». Формулы это не двигает: `ТЭП!C36` читает единственная
+# ячейка `ОТЧЕТ!G6`, и её саму не читает никто.
+_V4_GNS_LABELS: tuple[tuple[str, str, str, str], ...] = (
+    ("ТЭП", "C3", "ГНС, м²", "ГНС / подземная площадь, м²"),
+    ("ТЭП", "A36", "ИТОГО ПРОЕКТ", "ИТОГО ПРОЕКТ — строительный объём"),
+    ("ОТЧЕТ", "F6", "ГНС", "Строительный объём"),
+)
+
+
+def _v4_rename_labels(xml: str, sheet: str, missing: list[str]) -> str:
+    """Переименовать подписи листа — по опознанному тексту, а не вслепую.
+
+    Не нашли прежнюю подпись — это `missing`, а не молчание: подпись, которую
+    не удалось заменить, продолжает называть подземную площадь наземной, и
+    снаружи это неотличимо от переименованной.
+    """
+    for name, coord, was, becomes in _V4_GNS_LABELS:
+        if name != sheet:
+            continue
+        pattern = re.compile(
+            r'(<(?:x:)?c r="%s"[^>]*>\s*<(?:x:)?v>)%s(</(?:x:)?v>)' % (coord, re.escape(was))
+        )
+        xml, count = pattern.subn(lambda m: m.group(1) + becomes + m.group(2), xml, count=1)
+        if not count:
+            missing.append(
+                f"{sheet}!{coord}: подпись «{was}» не опознана — "
+                f"переименование в «{becomes}» не применено")
+    return xml
+
+
 def _v4_apply_management_profile(xml: str, missing: list[str]) -> str:
     """Приводит формулу «Управление проектом» книги v4 к списку движка.
 
@@ -17538,7 +17572,9 @@ def build_project_workbook(
     tep_sheet_path = _v4_sheet_path(source, "ТЭП")
     report_xml = source.read(report_sheet_path).decode("utf-8")
     report_xml = _v4_add_report_default_row(report_xml, missing)
+    report_xml = _v4_rename_labels(report_xml, "ОТЧЕТ", missing)
     tep_xml = source.read(tep_sheet_path).decode("utf-8")
+    tep_xml = _v4_rename_labels(tep_xml, "ТЭП", missing)
 
     # Соцстройка — готовыми числами в строку 31 блока каждой очереди CAPEX:
     # объект платится в своей очереди её календарём, как в движке. Итог
@@ -18083,8 +18119,10 @@ def build_project_workbook(
         put(f"W{row}", number=num_row(crow.get("apartments"), "gns"), label="ГНС квартир")
         put(f"X{row}", number=num_row(crow.get("ground_commercial"), "gns"),
             label="ГНС коммерции")
+        # Не «ГНС подземная»: ГНС — наземная площадь здания, а под землёй
+        # наружных стен не бывает. Здесь площадь подземного этажа.
         put(f"Y{row}", number=num_row(crow.get("underground_parking"), "gns"),
-            label="ГНС подземная")
+            label="Подземная площадь")
         put(f"Z{row}", number=num_row(crow.get("apartments"), "saleable"),
             label="прод. квартир")
         put(f"AA{row}", number=num_row(crow.get("ground_commercial"), "saleable"),
@@ -19952,16 +19990,20 @@ def build_plato_model_v2(
 
     # Базы для удельных ставок: наземная и подземная ГНС основных продуктов.
     # Отдельные объекты КРТ считаются по своим ставкам и в базу не входят.
-    core_above_keys = ("apartments", "ground_commercial", "storage")
+    # Кладовые лежат на подземном этаже гаража — в наземную площадь они не
+    # входят. Книга считала их наземными, движок подземными: одна методика в
+    # двух местах, и расходились они молча, пока площадь кладовых была нулём.
+    core_above_keys = ("apartments", "ground_commercial")
+    core_under_keys = ("underground_parking", "storage")
     base_line = total_line + 2
     ws_tep.cell(row=base_line, column=1, value="БАЗЫ ДЛЯ УДЕЛЬНЫХ СТАВОК").font = styles["section"]
     tep_base: dict[str, int] = {}
     above = "+".join(f"B{tep_row_of[key]}" for key in core_above_keys if key in tep_row_of) or "0"
-    under = f"B{tep_row_of['underground_parking']}" if "underground_parking" in tep_row_of else "0"
+    under = "+".join(f"B{tep_row_of[key]}" for key in core_under_keys if key in tep_row_of) or "0"
     for offset, (key, label, formula) in enumerate((
-        ("core_above_gns", "ГНС наземная, м²", f"={above}"),
-        ("core_under_gns", "ГНС подземная, м²", f"={under}"),
-        ("core_total_gns", "ГНС всего, м²", f"=B{base_line + 1}+B{base_line + 2}"),
+        ("core_above_gns", "Наземная площадь (ГНС), м²", f"={above}"),
+        ("core_under_gns", "Подземная площадь, м²", f"={under}"),
+        ("core_total_gns", "Строительный объём, м²", f"=B{base_line + 1}+B{base_line + 2}"),
     )):
         line = base_line + 1 + offset
         ws_tep.cell(row=line, column=1, value=label).font = styles["bold"]
@@ -34667,6 +34709,7 @@ details.cadastral-box>summary::marker{color:#888}
       <div class="card">
         <div class="section-title">ТЭП</div>
         <div class="scroll" style="max-height:none"><table id="reportTep"></table></div>
+        <div id="reportTepNote" style="font-size:11px;color:#777;margin-top:6px"></div>
       </div>
       <div class="card" id="vriCard" style="display:none">
         <div class="report-title">
@@ -39821,6 +39864,8 @@ function socialAreaPerPlace(kind,places){
  return steps[steps.length-1][1];
 }
 const MKD_PRODUCTS=__DEVELOPAID_MKD_PRODUCTS__;
+// Строки ТЭП без наземной площади: гараж и кладовые лежат под землёй.
+const UNDERGROUND_PRODUCTS=__DEVELOPAID_UNDERGROUND_PRODUCTS__;
 const PARKING_2118=__DEVELOPAID_PARKING_2118__;
 const AVERAGE_FLAT=__DEVELOPAID_AVERAGE_FLAT__;
 const VRI_USE_TYPES=__DEVELOPAID_VRI_USE_TYPES__;
@@ -41736,12 +41781,29 @@ function renderResult(){
    : '';
  };
  const soldTotal=r.tep.rows.reduce((sum,x)=>sum+soldUnits(x),0);
+ // ГНС — наземная площадь здания, и у гаража с кладовыми её нет: под землёй
+ // наружных стен не бывает. Число в их строке — площадь подземного этажа, то
+ // есть другая величина под тем же именем, а итог складывает обе. Пока это не
+ // сказано, удельный показатель «на метр ГНС» на пятую часть ниже того же
+ // показателя по наземной площади, и сравнить его с чужой сметой нельзя.
+ // Подземную базу считает движок (core_under_gns) — экран её не собирает:
+ // второй счёт той же величины однажды разошёлся бы с первым.
+ const underGns=Number(r.tep.core_under_gns||0);
+ const aboveGns=Math.max(0,Number(r.tep.total.gns||0)-underGns);
+ const underMark=x=>UNDERGROUND_PRODUCTS.includes(x.key)&&Number(x.gns||0)>0?'*':'';
  reportTep.innerHTML=
   `<thead><tr><th>Продукт</th><th>ГНС, м²</th><th>Продаваемая площадь, м²</th><th>Построено, шт.</th><th>Продаётся, шт.</th></tr></thead>`+
   `<tbody>`+
-  r.tep.rows.map(x=>`<tr><td>${x.label}</td><td>${num(x.gns)}</td><td>${num(x.saleable)}</td>`
+  r.tep.rows.map(x=>`<tr><td>${x.label}</td><td>${num(x.gns)}${underMark(x)}</td><td>${num(x.saleable)}</td>`
    +`<td>${num(x.units)}${unitNote(x)}</td><td>${num(soldUnits(x))}</td></tr>`).join('')+
-  `</tbody><tfoot><tr><th>Итого</th><th>${num(r.tep.total.gns)}</th><th>${num(r.tep.total.saleable)}</th><th>${num(r.tep.total.units)}</th><th>${num(soldTotal)}</th></tr></tfoot>`;
+  `</tbody><tfoot><tr><th>Итого — строительный объём</th>`
+  +`<th>${num(r.tep.total.gns)}`
+  +(underGns>0?`<span style="display:block;font-weight:400;font-size:10px;color:#777">наземная ${num(aboveGns)} · подземная ${num(underGns)}</span>`:'')
+  +`</th><th>${num(r.tep.total.saleable)}</th><th>${num(r.tep.total.units)}</th><th>${num(soldTotal)}</th></tr></tfoot>`;
+ const tepNote=document.getElementById('reportTepNote');
+ if(tepNote)tepNote.innerHTML=underGns>0
+  ? '* ГНС — наземная площадь здания, внутренний термин DevelopAid. У подземного паркинга и кладовых наземной площади нет: в этой колонке у них площадь подземного этажа. Итог — строительный объём, наземная плюс подземная: на нём считаются ИРД, проектирование, подготовка, сети, благоустройство, сдача и содержание, и на нём же — все удельные «на метр». Город нагрузки считает не от него, а от суммарной поэтажной площади.'
+  : 'ГНС — наземная площадь здания, внутренний термин DevelopAid. Город нагрузки считает от суммарной поэтажной площади.';
 }
 
 
@@ -43499,6 +43561,8 @@ PAGE = PAGE.replace(CAPEX_NAMES_PLACEHOLDER, json.dumps(
 # Состав МКД — из движка, копии на странице нет.
 PAGE = PAGE.replace("__DEVELOPAID_MKD_PRODUCTS__",
                     json.dumps(list(MKD_PRODUCTS), ensure_ascii=False))
+PAGE = PAGE.replace("__DEVELOPAID_UNDERGROUND_PRODUCTS__",
+                    json.dumps(list(UNDERGROUND_PRODUCTS), ensure_ascii=False))
 PAGE = PAGE.replace(PARKING_2118_PLACEHOLDER,
                     json.dumps(PARKING_2118_PARAMS, ensure_ascii=False))
 # Средняя квартира с основанием — из движка: копию негде обновлять, потому что
