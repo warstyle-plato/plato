@@ -60,6 +60,7 @@ from developaid_monitor_page import MONITOR_PAGE as _MONITOR_PAGE_RAW
 # техприсоединению) в продукты и деньги модели живёт отдельным модулем: он о
 # документах, движок — об экономике, и смешивать их незачем.
 import document_intake
+import v4_entry_sheet
 import management_contour
 import parking_norms
 import plato_question
@@ -14914,6 +14915,42 @@ def _v4_note_cell(xml: str, value_coord: str, text: str) -> tuple[str, bool]:
             + xml[found.end():]), True
 
 
+# Лист ввода дописывается в книгу как новый файл: имя занято своим,
+# отношение и тип содержимого объявляются рядом. Переиспользовать чужой номер
+# нельзя — шаблон нумерует листы своими sheetN.xml.
+_V4_ENTRY_SHEET_PATH = "xl/worksheets/sheetEntry.xml"
+_V4_ENTRY_REL_ID = "RidEntryInputs0001"
+
+
+def _v4_workbook_with_entry(workbook: str, add: bool) -> str:
+    """Переименовать расчётный лист и поставить лист ввода первым.
+
+    Первым — потому что с него начинают: книга открывается там, где печатают.
+    """
+    workbook = re.sub(r'(<x:sheet name=")%s(")' % re.escape(v4_entry_sheet.ENTRY_SHEET),
+                      lambda m: m.group(1) + v4_entry_sheet.PARAMS_SHEET + m.group(2),
+                      workbook, count=1)
+    if not add:
+        return workbook
+    entry = (f'<x:sheet name="{v4_entry_sheet.ENTRY_SHEET}" sheetId="900" '
+             f'r:id="{_V4_ENTRY_REL_ID}" '
+             'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" />')
+    return workbook.replace("<x:sheets>", "<x:sheets>" + entry, 1)
+
+
+def _v4_rels_with_entry(rels: str) -> str:
+    link = ('<Relationship Type="http://schemas.openxmlformats.org/officeDocument/2006/'
+            'relationships/worksheet" Target="/' + _V4_ENTRY_SHEET_PATH + '" '
+            f'Id="{_V4_ENTRY_REL_ID}" />')
+    return rels.replace("</Relationships>", link + "</Relationships>", 1)
+
+
+def _v4_types_with_entry(types: str) -> str:
+    override = ('<Override PartName="/' + _V4_ENTRY_SHEET_PATH + '" ContentType='
+                '"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml" />')
+    return types.replace("</Types>", override + "</Types>", 1)
+
+
 def _v4_sheet_path(archive: zipfile.ZipFile, name: str) -> str:
     workbook = archive.read("xl/workbook.xml").decode("utf-8")
     sheet = re.search(r'<x:sheet name="%s"[^>]*r:id="([^"]+)"' % re.escape(name), workbook)
@@ -17651,6 +17688,25 @@ def build_project_workbook(
     # проекта, под который книга собиралась в прошлый раз, — «модель не
     # подтянула вводные». Excel пересчитает всё при открытии
     # (fullCalcOnLoad уже стоит в книге).
+    # --- один ввод: «Вводные» для рук, «Параметры модели» для формул --------
+    # Двух вводов быть не должно (владелец, 04.09.2026): два места ввода — это
+    # два достоверных на вид ответа про одно число. Лист шаблона со всеми
+    # своими 85 665 ссылками остаётся на месте и только переименовывается —
+    # адреса не двигаются, — а каждая ячейка, в которую печатали, уезжает на
+    # новый лист, оставляя по себе читалку. Что считается вводом, решает цвет
+    # самого шаблона, а не наш список: забытая в списке ячейка осталась бы
+    # жёлтой на расчётном листе, то есть приглашала бы печатать там, где
+    # печатать больше нельзя.
+    styles_xml = source.read("xl/styles.xml").decode("utf-8")
+    xml = v4_entry_sheet.rename_sheet_refs(xml)
+    try:
+        xml, entry_xml, entry_report = v4_entry_sheet.build(xml, styles_xml)
+    except Exception as exc:  # noqa: BLE001 — книга без листа ввода не выпускается молча
+        entry_xml, entry_report = "", {}
+        missing.append("Вводные · лист ввода не собран: " + _error_location(exc))
+    if entry_xml and not entry_report.get("moved"):
+        missing.append("Вводные · на лист ввода не переехало ни одной ячейки")
+
     out = io.BytesIO()
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
         for item in source.infolist():
@@ -17686,8 +17742,21 @@ def build_project_workbook(
                 if _ladder_steps and "'Вводные'!$B$28" in text:
                     text, swapped = _v4_step_worksheet_xml(text, _ladder_steps, _ladder_refs)
                     _ladder_swapped += swapped
+                # Лист вводных уже переименован до сборки — у него читалки на
+                # новый лист, и второй проход увёл бы их обратно.
+                if item.filename != sheet_path:
+                    text = v4_entry_sheet.rename_sheet_refs(text)
                 payload = text.encode("utf-8")
+            elif item.filename == "xl/workbook.xml":
+                payload = _v4_workbook_with_entry(
+                    payload.decode("utf-8"), bool(entry_xml)).encode("utf-8")
+            elif item.filename == "xl/_rels/workbook.xml.rels" and entry_xml:
+                payload = _v4_rels_with_entry(payload.decode("utf-8")).encode("utf-8")
+            elif item.filename == "[Content_Types].xml" and entry_xml:
+                payload = _v4_types_with_entry(payload.decode("utf-8")).encode("utf-8")
             archive.writestr(item, payload)
+        if entry_xml:
+            archive.writestr(_V4_ENTRY_SHEET_PATH, entry_xml.encode("utf-8"))
     source.close()
     if _ladder_steps and not _ladder_swapped:
         # Ступени заданы, а формулы не тронуты — книга посчитает по одной
