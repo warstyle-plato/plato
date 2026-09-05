@@ -95,6 +95,10 @@ def _number(value: Any) -> float:
 # Паспорт площадки приходит из каталога krt.mos.ru и к нашему счёту отношения
 # не имеет: он обновляется даже тогда, когда посчитать не удалось.
 _CATALOGUE_FIELDS = ("name", "okrug", "district", "status", "area_ha", "housing_gfa_sqm",
+                     # Съезд разбора — свойство карточки, а не счёта: карточка
+                     # исправилась — метка обязана уйти вместе с ней, поэтому
+                     # поле обновляется и пустым.
+                     "parse_problem",
                      # Застройщик и реновация приходят с карточки каталога и к
                      # нашему счёту отношения не имеют: обновляются и тогда,
                      # когда модель посчитать не удалось.
@@ -156,6 +160,11 @@ def score_row(project: dict[str, Any], screening: dict[str, Any]) -> dict[str, A
         "status": project.get("status"),
         "area_ha": project.get("area_ha"),
         "housing_gfa_sqm": project.get("housing_gfa_sqm"),
+        # Съезд разбора едет вместе со строкой. Экран прячет числа съехавшей
+        # карточки (`krtNumber`), но читал он это поле только из каталога:
+        # строка рейтинга приходила без него, и величины из неё — площадь,
+        # жильё, балл — выглядели измеренными.
+        "parse_problem": str(project.get("parse_problem") or ""),
         "computed_at": int(time.time()),
         # Чем посчитано, а не только когда. `computed_at` на вопрос «судит ли
         # эта строка по нынешней методике» не отвечает: прогон публикаций
@@ -201,6 +210,10 @@ def score_row(project: dict[str, Any], screening: dict[str, Any]) -> dict[str, A
         "margin_pct": metrics.get("margin_pct"),
         "net_profit_mln": metrics.get("net_profit_mln"),
         "phase_count": phasing.get("count"),
+        # Модель по объявленной цене торгов. Посчитанное на сервере, но не
+        # доехавшее до строки, неотличимо от непосчитанного: экран читает
+        # строку, а не скрининг.
+        "at_asking_price": screening.get("at_asking_price"),
     })
 
     if capacity.get("available") and saleable > 0:
@@ -237,6 +250,13 @@ def keep_computed(
     приходят от krt.mos.ru и к счёту отношения не имеют.
     """
     if fresh.get("available") or not (previous or {}).get("available"):
+        return _with_remembered_facts(previous, dict(fresh))
+    # Съехавшая карточка — не обычная неудача счёта. Прежние числа посчитаны на
+    # ЕЁ полях: у «ул. Мусоргского» площадь участка стояла 26 500 «га» (метры,
+    # съехавшие на поле), и модель выдала LLCR 1,10x, маржу 8,7% и балл 55.
+    # Оставить их «потому что посчитанное не выбрасывают» значит хранить вердикт
+    # из чисел не в своих колонках — а он выглядит ровно как настоящий.
+    if str(fresh.get("parse_problem") or "").strip():
         return _with_remembered_facts(previous, dict(fresh))
     kept = dict(previous or {})
     for field in _CATALOGUE_FIELDS:

@@ -117,7 +117,7 @@ def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
             ("nonresidential_gfa_sqm", "Нежилое, м²", 18),
             ("business_gfa_sqm", "Общественно-деловое, м²", 22),
             ("jobs", "Рабочие места", 17),
-            ("score", "Оценка Платона, балл", 19),
+            ("score", "Балл площадки", 19),
             ("traffic_light", "Светофор модели", 25),
             ("saleable_sqm", "Продаваемая площадь, м²", 22),
             ("entry_capacity_rub_per_sqm", "Потолок цены входа, ₽/м² продаваемой", 27),
@@ -173,7 +173,7 @@ def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
             ("total_gfa_sqm", "Общий объём, м²", 18),
             ("housing_gfa_sqm", "Жильё, м²", 16),
             ("price", "Цена, ₽", 18),
-            ("score", "Оценка Платона", 17),
+            ("score", "Балл лота", 17),
             ("status", "Статус", 22),
             ("url", "Источник", 42),
         ]
@@ -1203,6 +1203,26 @@ def install(app: FastAPI) -> None:
             return reader(clean[len("decision:"):])
         return krt_registry.requirements(clean)
 
+    def _asking_price_mln(slug: str) -> float | None:
+        """Цена входа, объявленная на торгах по этой площадке.
+
+        Связку «площадка ↔ лот» помнит сервер (`tender_lots.json`) — второго
+        ответа на «какие у площадки лоты» не заводим, а какая из названных цен
+        берётся, решает `krt_tenders.asking_price_mln`: правило живёт там же,
+        где сама связка.
+        """
+        from . import krt_tenders
+
+        reader = getattr(krt_registry, "tender_lots_known", None)
+        if not callable(reader) or not slug:
+            return None
+        try:
+            known = reader() or {}
+        except Exception:  # noqa: BLE001
+            logger.exception("KRT tender lots read failed")
+            return None
+        return krt_tenders.asking_price_mln((known.get(slug) or {}).get("lots") or [])
+
     def _screen_one(project: dict[str, Any]) -> dict[str, Any]:
         """Один прогон для рейтинга — тем же путём, что и открытая карточка.
 
@@ -1247,7 +1267,8 @@ def install(app: FastAPI) -> None:
                 logger.exception("KRT card facts failed slug=%s", slug)
                 card = {"available": False, "reason": f"{type(exc).__name__}: {exc}"}
         screening = build_krt_model_screening(
-            project, report, core, requirements=requirements)
+            project, report, core, requirements=requirements,
+            asking_price_mln=_asking_price_mln(slug))
         screening["card_facts"] = card
         # Занятость площадки — в прогон, а не по нажатию: пока она приходила
         # только кнопкой, каталог показывал «Планируемая» там, где договор
@@ -1911,7 +1932,14 @@ def install(app: FastAPI) -> None:
         что и площадку каталога; второго скрининга не заводим по той же
         причине, по которой нет копии `VERSION`.
 
-        Две границы названы вслух, а не молча.
+        Три границы названы вслух, а не молча.
+        **Съехавшая карточка не считается вовсе**: у «ул. Мусоргского» площадь
+        участка вышла 26 500 «га» — это метры, съехавшие на поле, — и модель
+        выдала на них LLCR 1,10x, маржу 8,7% и балл 55; у «2-й Звенигородской»
+        районом стало слово статуса, и адрес «Москва, район Планируемый» уехал
+        в геокодер, где нашёлся Краснодарский край. Правдоподобный вердикт из
+        чисел, стоящих не в своих колонках, хуже отсутствующего, а рыночный
+        отчёт по такому адресу ещё и платный.
         **Без адреса площадку не опознать**: заголовок решения опознаёт
         документ, а не место, и геокодер поставил бы точку куда угодно.
         **Нежилые пока не считаем** — решение владельца (05.09.2026): у
@@ -1920,6 +1948,12 @@ def install(app: FastAPI) -> None:
         показать посчитанным то, что посчитано не тем. Это ответ методики, а
         не наш пробел, и балл площадки от него не снижается.
         """
+        shift = str(project.get("parse_problem") or "").strip()
+        if shift:
+            return {
+                "available": False,
+                "reason": f"Карточка каталога разобрана со сдвигом ({shift}) — считать нечем",
+            }
         if not project.get("no_card"):
             return _screen_one(project)
         if not project.get("address_known"):

@@ -102,13 +102,16 @@ def _old_project() -> dict:
     return {"inputs": inputs, "tep": core.TEP_DEFAULT, "phasing": None, "scenario": "base"}
 
 
-def _krt_pending() -> dict:
+def _krt_pending(source: dict | None = None) -> dict:
     inputs = dict(core.DEFAULT_INPUTS)
     inputs.update({"site_area_ha": 15.0, "purchase_price_mln": 0.0,
                    "offices_gba_sqm": 0.0, "retail_gba_sqm": 0.0})
     tep = {key: dict(value) for key, value in core.TEP_DEFAULT.items()}
-    return {"krt_model": {"inputs": inputs, "tep": tep, "phasing": None},
-            "krt_name": "Площадка 15 га", "krt_slug": "site-15"}
+    pending = {"krt_model": {"inputs": inputs, "tep": tep, "phasing": None},
+               "krt_name": "Площадка 15 га", "krt_slug": "site-15"}
+    if source is not None:
+        pending["krt_source"] = source
+    return pending
 
 
 READ_STATE = """() => ({
@@ -171,6 +174,16 @@ def test_in_a_real_browser_the_krt_site_arrives_without_the_old_parcel() -> None
             # сохранённого проекта идёт тем же путём.
             own = page.evaluate("(s) => { applyProjectSnapshot(s); return (" + READ_STATE + ")(); }",
                                 {"inputs": _old_project()["inputs"], "tep": core.TEP_DEFAULT})
+            # Та же передача, но площадкой БЕЗ карточки каталога: 298 строк из
+            # 580 приходят проектом решения с mos.ru, и подпись обязана назвать
+            # его, а не соседнюю половину списка.
+            page.evaluate("(p) => sessionStorage.setItem('developaid.auction.pending.v1', JSON.stringify(p))",
+                          _krt_pending({"name": "проект решения на mos.ru",
+                                        "short": "mos.ru: проект решения",
+                                        "open": "Открыть проект решения"}))
+            page.goto(f"http://127.0.0.1:{PORT}/?krt_import=1", wait_until="networkidle")
+            time.sleep(1.5)
+            decision = page.evaluate(READ_STATE)
             browser.close()
     finally:
         server.should_exit = True
@@ -182,6 +195,12 @@ def test_in_a_real_browser_the_krt_site_arrives_without_the_old_parcel() -> None
     assert after["cadastral"] is None and after["land"] is None, after
     assert after["pdf_cads"] == [] and after["project_cads"] == [], after
     assert after["screening_shown"] == "none" and after["cad_field"] == ""
-    assert after["area_label"] == "из каталога КРТ (krt.mos.ru)", after["area_label"]
-    assert after["tep_label"].startswith("Каталог КРТ"), after["tep_label"]
+    # Подпись называет источник ТОЙ площадки, что приехала: половина каталога
+    # КРТ — площадки без карточки, у них это проект решения на mos.ru.
+    assert after["area_label"] == "из площадки КРТ (карточка krt.mos.ru)", after["area_label"]
+    assert after["tep_label"].startswith("Площадка КРТ"), after["tep_label"]
+    assert "карточка krt.mos.ru" in after["tep_label"], after["tep_label"]
     assert own["cadastral"] == OLD and own["site_area"] == 5 and own["cad_field"] == ", ".join(OLD), own
+    assert decision["area_label"] == "из площадки КРТ (проект решения на mos.ru)", decision["area_label"]
+    assert "проект решения на mos.ru" in decision["tep_label"], decision["tep_label"]
+    assert "krt.mos.ru" not in decision["tep_label"], decision["tep_label"]

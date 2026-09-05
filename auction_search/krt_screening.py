@@ -174,6 +174,45 @@ def _phase_rows(bundle: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def model_at_asking_price(
+    core: Any,
+    inputs: dict[str, Any],
+    tep: dict[str, dict[str, Any]],
+    phasing: dict[str, Any],
+    price_mln: float,
+) -> dict[str, Any]:
+    """Тот же проект, но с ценой входа, объявленной на торгах.
+
+    Базовый прогон идёт при НУЛЕВОЙ цене входа — так считается потолок, и это
+    верно: пока цены нет, придумывать её нечем. Но когда лот опубликован и цена
+    названа, «LLCR 1,26x при цене входа 0» отвечает не на тот вопрос, который
+    задаёт человек перед подачей заявки. Потолок отвечает «проходит или нет» по
+    порогу 1,20x и молчит о том, ЧТО выходит по этой цене: какой LLCR, какая
+    маржа, сколько остаётся прибыли.
+
+    Второй прогон — это те же вводные с одной изменённой строкой, а не вторая
+    модель: считает тот же `_run_authoritative_model`, и разойтись им негде.
+    """
+    priced = dict(inputs)
+    priced["purchase_price_mln"] = float(price_mln)
+    bundle = core._run_authoritative_model(priced, tep, [], phasing)
+    metrics = _snapshot(core, bundle["consolidated"])
+    phases = _phase_rows(bundle)
+    llcr = _number(metrics.get("llcr_x"))
+    weakest = min((row["llcr_x"] for row in phases), default=llcr)
+    return {
+        "price_mln": round(float(price_mln), 1),
+        "project_llcr_x": round(llcr, 3),
+        "weakest_phase_llcr_x": round(weakest, 3),
+        "margin_pct": round(_number(metrics.get("margin_pct")), 1),
+        "net_profit_mln": round(_number(metrics.get("net_profit_mln")), 1),
+        # Порог тот же, по которому подбирается потолок: два порога на один
+        # вопрос однажды дали бы «проходит» и «не проходит» об одном проекте.
+        "passes": llcr >= TARGET_LLCR,
+        "target_llcr_x": TARGET_LLCR,
+    }
+
+
 def _goal_seek_entry_capacity(
     core: Any,
     inputs: dict[str, Any],
@@ -534,6 +573,7 @@ def build_krt_model_screening(
     core: Any,
     tep_ratios: str = "",
     requirements: dict[str, Any] | None = None,
+    asking_price_mln: float | None = None,
 ) -> dict[str, Any]:
     """Run an on-demand, explicitly preliminary KRT scenario in DevelopAid.
 
@@ -547,6 +587,20 @@ def build_krt_model_screening(
     """
     if not project:
         return {"available": False, "reason": "Проект КРТ не найден в официальном каталоге"}
+    # Съехавшая карточка называет себя сама (`parse_problem`), и до модели она
+    # доходить не должна. На «ул. Мусоргского» площадь участка вышла 26 500 «га»
+    # — это метры, съехавшие на поле, — и на них расчёт выдал LLCR 1,10x, маржу
+    # 8,7% и балл 55: правдоподобный вердикт из чисел, которые стоят не в своих
+    # колонках. У «2-й Звенигородской» районом стало слово статуса, и адрес
+    # «Москва, район Планируемый» уехал в геокодер, где нашёлся Краснодарский
+    # край. Отказ с причиной честнее: экран уже показывает такую строку как
+    # «не разобрано», а балл непосчитанную модель не снижает.
+    problem = str(project.get("parse_problem") or "").strip()
+    if problem:
+        return {
+            "available": False,
+            "reason": f"Карточка каталога разобрана со сдвигом ({problem}) — считать нечем",
+        }
     housing_gfa = _number(project.get("housing_gfa_sqm"))
     if housing_gfa <= 0:
         return {
@@ -595,6 +649,9 @@ def build_krt_model_screening(
         "retail_gba_sqm": 0.0,
         "retail_saleable_sqm": 0.0,
         "above_parking_enabled": False,
+        # ФОК каталог КРТ не объявляет: включает его человек, а не память
+        # о прошлом проекте.
+        "sports_enabled": False,
     })
     # Площадка КРТ — другой участок, и всё, что относится к участку, обязано
     # обнулиться: список этих полей один, его держит страница
@@ -764,6 +821,18 @@ def build_krt_model_screening(
             "score": 55,
         }
     entry_capacity = _goal_seek_entry_capacity(core, inputs, tep, phasing, bundle)
+    # Цена названа — считаем по ней. Потолок отвечает «проходит или нет», а
+    # человек перед подачей заявки спрашивает, ЧТО выходит по этой цене.
+    at_asking: dict[str, Any] | None = None
+    asking = _number(asking_price_mln)
+    if asking > 0:
+        try:
+            at_asking = model_at_asking_price(core, inputs, tep, phasing, asking)
+        except Exception as exc:  # noqa: BLE001
+            # Отказ называется: молча пропущенный второй прогон неотличим от
+            # «цены нет», а цена есть и стоит рядом на экране.
+            at_asking = {"price_mln": round(asking, 1),
+                         "reason": f"{type(exc).__name__}: {exc}"}
     capped_at_five = (
         phasing["phase_count"] == MAX_PHASES
         and saleable > TARGET_PHASE_SALEABLE_SQM * MAX_PHASES
@@ -782,8 +851,13 @@ def build_krt_model_screening(
         + (f"; слабейшая очередь — {weakest_llcr:.2f}x." if len(phases) > 1 else ".")
     )
 
+    # Источник объёма называется по имени площадки: у 298 строк каталога из 580
+    # карточки на krt.mos.ru нет вовсе, и подпись «объём krt.mos.ru» была бы
+    # утверждением о документе, которого мы не читали.
+    housing_source = ("проекта решения на mos.ru" if project.get("no_card")
+                      else "krt.mos.ru")
     assumptions = [
-        f"Жилой объём krt.mos.ru {_ru_number(housing_gfa)} м² принят за ГНС; "
+        f"Жилой объём {housing_source} {_ru_number(housing_gfa)} м² принят за ГНС; "
         f"общая площадь — {_ru_number(total_area)} м² "
         f"({_number(apartment_ratios.get('total_of_gns')) * 100:.0f}% ГНС), "
         f"продаваемая — {_ru_number(saleable)} м² "
@@ -1048,6 +1122,10 @@ def build_krt_model_screening(
             "weakest_phase_llcr_x": round(weakest_llcr, 3),
         },
         "entry_capacity": entry_capacity,
+        # Модель по цене торгов: своё поле, а не подмена базового прогона.
+        # Базовый считает потолок при нулевой цене, и подменить его значило бы
+        # потерять ответ на «сколько эта площадка выдерживает вообще».
+        "at_asking_price": at_asking,
         "assumptions": assumptions,
         "exclusions": exclusions,
         "criterion": (

@@ -173,7 +173,12 @@ def test_a_known_saleable_area_fills_the_gns_in_the_inputs():
 
     handler = core.PAGE[core.PAGE.index("el.onchange=()=>{"):]
     handler = handler[:handler.index("wrap.appendChild(el)")]
-    assert "const derived=syncTep(false);if(filled||derived)renderInputs()" in handler
+    # Утверждение здесь одно: правка вводной, от которой зависит ТЭП,
+    # ПЕРЕСОБИРАЕТ форму — иначе дописанное в `inputs` число не видно в поле.
+    # Держать соседнюю строку целиком нельзя: она растёт от каждой правки
+    # рядом, и проверка падает, когда что-то ДОБАВИЛИ, а не сломали.
+    assert "const derived=syncTep(false);" in handler
+    assert re.search(r"if\([a-zA-Z|]*derived\)renderInputs\(\)", handler), handler[-200:]
 
 
 def _complaint(key: str, row: dict) -> str:

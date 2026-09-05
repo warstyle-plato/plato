@@ -142,5 +142,9 @@ def test_the_pdf_says_the_same(bundle) -> None:
         "rates": [], "phasing": PHASING, "scenario": "base", "project_name": "Эскроу"})
     text = "\n".join(page.extract_text() or ""
                      for page in pypdf.PdfReader(io.BytesIO(data)).pages)
-    assert "слоями по очередям" in text
-    assert "счета других очередей" in text
+    # Строка отчёта переносится по ширине листа, и место переноса ездит от
+    # каждой правки текста рядом. Утверждение здесь — «сказано то же», а не
+    # «уместилось в одну строку»: пробелы схлопываются перед сверкой.
+    flat = " ".join(text.split())
+    assert "слоями по очередям" in flat
+    assert "счета других очередей" in flat

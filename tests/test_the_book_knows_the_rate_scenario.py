@@ -149,9 +149,11 @@ def test_every_input_has_a_home_in_the_book() -> None:
         "offices_sales_profile": "50%@0; 50%@12",
         "retail_sales_profile": "50%@0; 50%@12",
         "above_parking_sales_profile": "50%@0; 50%@12",
+        "sports_sales_profile": "50%@0; 50%@12",
         "offices_enabled": True, "retail_enabled": True,
+        "sports_enabled": True, "sports_disposition": "sale",
         **{f"{prefix}growth_stage{step}_pct": 5
-           for prefix in ("", "offices_", "retail_", "above_parking_")
+           for prefix in ("", "offices_", "retail_", "above_parking_", "sports_")
            for step in (1, 2, 3, 4)},
     }
     content, _ = book("base", **filled)

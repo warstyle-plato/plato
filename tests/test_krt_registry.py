@@ -372,7 +372,7 @@ def test_auctions_exposes_krt_as_a_separate_tab_and_endpoint(monkeypatch) -> Non
     assert "const values=KRT_OKRUGS" in page.text
     assert "const KRT_OKRUGS=['ЦАО','САО'" in page.text
     assert "'НАО','ТАО','ЗелАО'" in page.text
-    assert "Оценка Платона" in page.text
+    assert "Балл площадки" in page.text
     # Отдельного списка задач в каталоге больше нет: он дублировал «Статус» и
     # «Назначение» (владелец, 01.09.2026: «убери этот фильтр, он дублирует
     # другие»). Мера балла следует выбранному назначению — это проверяет

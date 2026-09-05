@@ -154,7 +154,10 @@ def test_the_lots_table_has_the_score_column() -> None:
     page = auctions_page()
     head = page[page.index("<th>Лот</th>"):]
     head = head[:head.index("</thead>")]
-    assert "<th>Оценка Платона</th>" in head
+    assert "Балл лота" in head, head
+    # Балл собирается арифметикой соответствия профилю; Платон в нём не
+    # участвует, и его именем он больше не подписан.
+    assert "Оценка Платона" not in head, head
 
 
 # Масштаб лота у двух источников лежит в РАЗНЫХ полях: у городских ЭТП это
