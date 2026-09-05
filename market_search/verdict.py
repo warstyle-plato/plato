@@ -231,11 +231,17 @@ def absorption_note(block: dict[str, Any]) -> dict[str, Any]:
 def rooms_note(block: dict[str, Any]) -> dict[str, Any]:
     """Вымывание и ответ на «а не в наборе ли квартир дело».
 
-    Разрыв в цене метра раскладывается на две части: структура набора и
-    уровень цен. Внутри проекта метр тем дороже, чем мельче квартира, поэтому
-    проект с крупным набором показывает цену ниже при тех же ценах на каждый
-    товар; но по рынку связь обратная — крупные форматы строят в дорогих
-    классах. Значит на догадку отвечают числом своего проекта, а не правилом.
+    Разрыв в цене метра раскладывается на две части: набор квартир и сами
+    цены. Внутри проекта метр тем дороже, чем мельче квартира, поэтому проект
+    с крупным набором показывает цену ниже при тех же ценах на каждый товар;
+    но по рынку связь обратная — крупные форматы строят в дорогих классах.
+    Значит на догадку отвечают числом своего проекта, а не правилом.
+
+    Говорится это тремя короткими фразами подряд: что видно (наш метр дороже
+    или дешевле), что проверили (наш же прайс на наборе соседей) и что из
+    этого следует. Прежний текст называл величины их служебными именами —
+    «из этого набором квартир объясняется −12,4 %», — и читателю приходилось
+    складывать в уме проценты с разными знаками.
     """
     subject, peers = block.get("subject") or {}, block.get("peers") or {}
     rooms = subject.get("rooms") or {}
@@ -252,52 +258,87 @@ def rooms_note(block: dict[str, Any]) -> dict[str, Any]:
         best = max(drains, key=lambda pair: (pair[1]["sold_share_pct"] - pair[1]["rem_share_pct"]))
         worst = min(drains, key=lambda pair: (pair[1]["sold_share_pct"] - pair[1]["rem_share_pct"]))
         if best[1]["sold_share_pct"] - best[1]["rem_share_pct"] > 5:
-            # Имена комнатности — прилагательные во множественном («студии»,
-            # «1-комнатные»), и согласовать с ними глагол одной формой нельзя:
-            # оборот строится так, чтобы согласования не требовалось вовсе.
+            # Имена комнатности — существительные во множественном числе
+            # («студии», «1-комнатные»), и у неодушевлённых винительный
+            # совпадает с именительным: «разбирают студии», «уходят 3-комнатные».
             lines.append(
-                f"Быстрее всего уходит: {best[1]['title']} — {_num(best[1]['sold_share_pct'], 1)} % "
-                f"продаж при {_num(best[1]['rem_share_pct'], 1)} % остатка."
+                f"Быстрее всего разбирают {best[1]['title']}: "
+                f"{_num(best[1]['sold_share_pct'], 1)} % продаж при "
+                f"{_num(best[1]['rem_share_pct'], 1)} % остатка."
             )
         if worst[1]["rem_share_pct"] - worst[1]["sold_share_pct"] > 5:
             lines.append(
-                f"Копится в остатке: {worst[1]['title']} — {_num(worst[1]['rem_share_pct'], 1)} % "
-                f"остатка при {_num(worst[1]['sold_share_pct'], 1)} % продаж."
+                f"Хуже всего уходят {worst[1]['title']}: "
+                f"{_num(worst[1]['rem_share_pct'], 1)} % остатка при "
+                f"{_num(worst[1]['sold_share_pct'], 1)} % продаж."
             )
     mix = subject.get("mix") or {}
     tone = TONE_FLAT
     if mix:
-        gap, part, level = mix.get("gap_pct"), mix.get("mix_pct"), mix.get("level_pct")
-        lines.append(
-            f"Метр в прайсе по комнатности: у нас {_num(mix['own_at_own_mix'])} ₽, "
-            f"у соседей {_num(mix['peers_at_peers_mix'])} ₽ ({_pct(gap)})."
-        )
-        # Знак разложения важнее его величины: он отвечает, помогает набор или
-        # мешает, а «на столько-то процентов» без знака читается как оправдание.
-        if part is not None and abs(part) >= 2:
-            direction = "дешевле" if part < 0 else "дороже"
-            lines.append(
-                f"Из этого набором квартир объясняется {_pct(part)}: с набором соседей наш же "
-                f"прайс дал бы {_num(mix['own_at_peers_mix'])} ₽ — то есть {direction}. "
-                f"Остальное — уровень цен ({_pct(level)})."
-            )
-            tone = TONE_WATCH
-        else:
-            lines.append(
-                "Набор квартир разрыв не объясняет: с набором соседей наш прайс дал бы "
-                f"{_num(mix['own_at_peers_mix'])} ₽ — почти то же. Дело в уровне цен ({_pct(level)})."
-            )
-            tone = TONE_WATCH if gap is not None and abs(gap) > PRICE_BAND_PCT else TONE_FLAT
+        lines.extend(_mix_lines(mix))
+        tone = TONE_WATCH if abs(mix.get("gap_pct") or 0) > PRICE_BAND_PCT else TONE_FLAT
         if min(mix.get("cross_coverage_pct", 0), mix.get("peers_coverage_pct", 0)) < 70:
             lines.append(
-                "Цены известны не по всему набору — доля покрытия в таблице, и на ней это "
-                "оценка, а не измерение."
+                "Цены известны не по всей комнатности — доля покрытия стоит в таблице, "
+                "и на ней это оценка, а не измерение."
             )
     elif rooms:
-        lines.append("Цен по комнатности у соседей нет — набор с уровнем не развести.")
+        lines.append("Цен по комнатности у соседей нет — набор с ценами не развести.")
     if not lines:
         lines.append("Комнатность есть, но сравнивать её не с чем.")
     return {"tone": tone, "text": " ".join(lines)}
+
+
+def _mix_lines(mix: dict[str, Any]) -> list[str]:
+    """Разложение разрыва цены обычными словами.
+
+    Три величины: наш метр на нашем наборе, наш же метр на наборе соседей и
+    метр соседей. Первая пара отвечает, сколько даёт набор, вторая — сколько
+    дают сами цены. Порог в 2 % — ниже него разница не заслуживает
+    объяснения и читается как шум.
+    """
+    own = mix.get("own_at_own_mix")
+    cross = mix.get("own_at_peers_mix")
+    peers = mix.get("peers_at_peers_mix")
+    gap, part, level = mix.get("gap_pct"), mix.get("mix_pct"), mix.get("level_pct")
+    if own is None or cross is None or peers is None or gap is None:
+        return []
+    if abs(gap) < 1:
+        lines = [f"Наш метр стоит примерно как у соседей: {_num(own)} против {_num(peers)} ₽."]
+    else:
+        lines = [
+            f"Наш метр {'дороже' if gap > 0 else 'дешевле'} соседского на "
+            f"{_num(abs(gap), 1)} %: {_num(own)} против {_num(peers)} ₽."
+        ]
+    same_mix = (
+        f"продавай мы такой же набор, как у соседей, тот же наш прайс дал бы "
+        f"{_num(cross)} ₽ за метр"
+    )
+    big_part = part is not None and abs(part) >= 2
+    big_level = level is not None and abs(level) >= 2
+    if big_part and big_level:
+        lines.append(
+            f"Часть разницы делает набор: {same_mix} — на {_num(abs(part), 1)} % "
+            f"{'дешевле' if part < 0 else 'дороже'} нынешней цены."
+        )
+        lines.append(
+            f"Остальное — цены: на одинаковом наборе мы просим на {_num(abs(level), 1)} % "
+            f"{'больше' if level > 0 else 'меньше'} соседей."
+        )
+    elif big_part:
+        lines.append(f"Дело в наборе: {same_mix} — ровно как у них.")
+        lines.append(
+            "Цены на каждую комнатность у нас такие же, разницу делает только состав продаж."
+        )
+    elif big_level:
+        lines.append(f"Набор тут ни при чём: {same_mix} — почти столько же.")
+        lines.append(
+            f"Мы просто просим за метр на {_num(abs(level), 1)} % "
+            f"{'больше' if level > 0 else 'меньше'} соседей."
+        )
+    else:
+        lines.append("Мы вровень с соседями и по набору квартир, и по ценам на каждую комнатность.")
+    return lines
 
 
 def payment_note(block: dict[str, Any]) -> dict[str, Any]:
