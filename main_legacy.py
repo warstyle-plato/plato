@@ -9294,6 +9294,57 @@ OBJECT_PARKING_FIELDS = tuple(
 )
 
 
+OBJECT_PARKING_AREA_DEFAULT = 35.0
+
+
+def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
+    """Разместить приобъектные места по строкам ТЭП и вернуть тот же расчёт.
+
+    Считается ОДИН раз: `parking_demand` зовётся здесь, и его же ответ уходит в
+    отчёт. Второй вызов на тех же вводных однажды разошёлся бы с первым — и обе
+    цифры выглядели бы верными.
+
+    Паркинг объекта живёт на строке САМОГО объекта, а не отдельной строкой
+    проекта: «места объекта принадлежат объекту» (владелец, 24.08.2026), и
+    только так размещение по очередям следует за объектом, а не за общей кучей,
+    которая разносится своими правилами и приезжает не туда.
+
+    Два поля на строке, и оба обязаны попасть в карту деления по очередям —
+    поле, которого в ней нет, молча остаётся числом ПРОЕКТА в каждой очереди:
+    - `under_gns` — площадь своего подземного паркинга. Она ПОДЗЕМНАЯ, поэтому
+      в наземную ГНС не входит и считается вместе с гаражом и кладовыми.
+    - `parking_units` — мест приобъектного паркинга, построенных и продаваемых.
+
+    Продаваемая объекта уменьшается на метры мест ПЕРВЫХ ЭТАЖЕЙ: тот же этаж
+    нельзя продать дважды — офисом и машино-местами. ГНС при этом не меняется:
+    этажи и так его, здание того же размера (владелец, 05.09.2026: «стоп
+    надземные не вычитается, я ошибся, вычитается наземный»).
+    """
+    demand = parking_demand(inputs, tep)
+    per_space = n(inputs, "object_parking_area_per_space_sqm",
+                  OBJECT_PARKING_AREA_DEFAULT) or OBJECT_PARKING_AREA_DEFAULT
+    for item in demand.get("rows") or []:
+        row = (tep or {}).get(item.get("tep_key")) or None
+        if row is None:
+            continue
+        under = int(item.get("under_spaces") or 0)
+        over = int(item.get("over_spaces") or 0)
+        row["under_gns"] = under * per_space
+        row["parking_units"] = float(under + over)
+        # Метры первых этажей уходят из продаваемой, но не ниже нуля: заданное
+        # число мест больше самого объекта — это расхождение, и называет его
+        # контроль суммы, а не молчаливая обрезка продаваемой в минус.
+        taken = over * per_space
+        if taken > 0:
+            row["saleable"] = max(0.0, n(row, "saleable") - taken)
+            row["useful"] = max(0.0, n(row, "useful") - taken)
+        row["parking_saleable_taken"] = taken
+        item["under_gns"] = row["under_gns"]
+        item["saleable_taken_sqm"] = taken
+    demand["area_per_space_sqm"] = per_space
+    return demand
+
+
 def _object_parking_check(rows: list[dict[str, Any]],
                           missing: list[str]) -> dict[str, Any]:
     """Сходится ли размещение мест с нормативом — три ответа, зелёный один.
@@ -23269,7 +23320,11 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     storage = t.get("storage", {})
 
     core_above_gns = n(apartment, "gns") + n(commercial, "gns")
-    core_under_gns = n(underground, "gns") + n(storage, "gns")
+    # Свой подземный паркинг встроенной коммерции строится тем же домом, что и
+    # она сама: коммерция первого этажа — это МКД (решение владельца,
+    # 23.08.2026). У отдельно стоящих объектов он идёт их же CAPEX.
+    core_under_gns = (n(underground, "gns") + n(storage, "gns")
+                      + n(commercial, "under_gns"))
     core_total_gns = core_above_gns + core_under_gns
 
     revenue: dict[date, float] = defaultdict(float)
@@ -23335,6 +23390,27 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     standalone_capex = {}
     object_schedule_notes: dict[str, dict[str, Any]] = {"core": core_schedule_note}
 
+    # Приобъектный паркинг разложен по строкам ТЭП раньше (`apply_object_parking`),
+    # и деньги его оттуда ЧИТАЮТ, а не считают второй раз: два счёта одной
+    # величины однажды разошлись бы, и обе цифры выглядели бы верными.
+    # Продаваемая объекта приходит вводной, а не строкой ТЭП, поэтому метры
+    # первых этажей вычитаются здесь явно — у встроенной коммерции они уже
+    # ушли, там `core_product` читает саму строку.
+    def object_parking_row(tep_key: str) -> dict[str, Any]:
+        return (t or {}).get(tep_key) or {}
+
+    def object_saleable(tep_key: str, field: str) -> float:
+        return max(0.0, n(x, field) - n(object_parking_row(tep_key), "parking_saleable_taken"))
+
+    def object_parking_capex(tep_key: str) -> float:
+        """Свой подземный паркинг объекта стоит подземного метра.
+
+        Отдельной ставки у приобъектного паркинга нет — она была бы числом,
+        которого никто не задавал. Метры считаются по ставке подземной части
+        проекта, и это названо на экране.
+        """
+        return n(object_parking_row(tep_key), "under_gns") * n(x, "main_under_th_per_sqm") * 1000
+
     def object_schedule(prefix: str, sales_start: date, construction_start: date,
                         construction_months: int,
                         ) -> tuple[dict[date, float] | None, Callable[[date], float] | None]:
@@ -23362,17 +23438,18 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         offices_weights, offices_factor = object_schedule(
             "offices", offices_sales_start, d(x["offices_start"]), int(n(x, "offices_months", 24)))
         add_product("offices", sales_schedule(
-            n(x, "offices_saleable_sqm"), n(x, "offices_price_th_per_sqm") * 1000,
+            object_saleable("offices", "offices_saleable_sqm"), n(x, "offices_price_th_per_sqm") * 1000,
             offices_sales_start, offices_rve,
             offices_share, offices_residual,
             n(x, "offices_growth_pre_pct", 1.5) / 100,
             n(x, "offices_growth_post_pct", 0.25) / 100,
             weights_override=offices_weights, price_factor=offices_factor,
         ), quantity_schedule(
-            n(x, "offices_saleable_sqm"), offices_sales_start, offices_rve,
+            object_saleable("offices", "offices_saleable_sqm"), offices_sales_start, offices_rve,
             offices_share, offices_residual, weights_override=offices_weights,
         ))
         standalone_capex["offices"] = n(x, "offices_gba_sqm") * n(x, "offices_cost_th_per_sqm") * 1000
+        standalone_capex["offices"] += object_parking_capex("offices")
     else:
         revenue_by_product["offices"] = 0.0
         standalone_capex["offices"] = 0.0
@@ -23385,17 +23462,18 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         retail_weights, retail_factor = object_schedule(
             "retail", retail_sales_start, d(x["retail_start"]), int(n(x, "retail_months", 24)))
         add_product("standalone_retail", sales_schedule(
-            n(x, "retail_saleable_sqm"), n(x, "retail_price_th_per_sqm") * 1000,
+            object_saleable("standalone_retail", "retail_saleable_sqm"), n(x, "retail_price_th_per_sqm") * 1000,
             retail_sales_start, retail_rve,
             retail_share, retail_residual,
             n(x, "retail_growth_pre_pct", 1.5) / 100,
             n(x, "retail_growth_post_pct", 0.25) / 100,
             weights_override=retail_weights, price_factor=retail_factor,
         ), quantity_schedule(
-            n(x, "retail_saleable_sqm"), retail_sales_start, retail_rve,
+            object_saleable("standalone_retail", "retail_saleable_sqm"), retail_sales_start, retail_rve,
             retail_share, retail_residual, weights_override=retail_weights,
         ))
         standalone_capex["standalone_retail"] = n(x, "retail_gba_sqm") * n(x, "retail_cost_th_per_sqm") * 1000
+        standalone_capex["standalone_retail"] += object_parking_capex("standalone_retail")
     else:
         revenue_by_product["standalone_retail"] = 0.0
         standalone_capex["standalone_retail"] = 0.0
@@ -23430,6 +23508,7 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     # — метры строятся, но не продаются.
     if b(x, "sports_enabled"):
         standalone_capex["sports"] = n(x, "sports_gba_sqm") * n(x, "sports_cost_th_per_sqm") * 1000
+        standalone_capex["sports"] += object_parking_capex("sports")
     else:
         standalone_capex["sports"] = 0.0
     if b(x, "sports_enabled") and sports_is_sold(x):
@@ -23440,18 +23519,79 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         sports_weights, sports_factor = object_schedule(
             "sports", sports_sales_start, d(x["sports_start"]), int(n(x, "sports_months", 24)))
         add_product("sports", sales_schedule(
-            n(x, "sports_saleable_sqm"), n(x, "sports_price_th_per_sqm") * 1000,
+            object_saleable("sports", "sports_saleable_sqm"), n(x, "sports_price_th_per_sqm") * 1000,
             sports_sales_start, sports_rve,
             sports_share, sports_residual,
             n(x, "sports_growth_pre_pct", 1.5) / 100,
             n(x, "sports_growth_post_pct", 0.25) / 100,
             weights_override=sports_weights, price_factor=sports_factor,
         ), quantity_schedule(
-            n(x, "sports_saleable_sqm"), sports_sales_start, sports_rve,
+            object_saleable("sports", "sports_saleable_sqm"), sports_sales_start, sports_rve,
             sports_share, sports_residual, weights_override=sports_weights,
         ))
     else:
         revenue_by_product["sports"] = 0.0
+
+    # Приобъектные места нежилья продаются машино-местами (владелец,
+    # 05.09.2026: «продают машиноместами конечно»). Число мест берётся со
+    # СТРОК ТЭП, куда его положил `apply_object_parking`, — тогда очередь,
+    # считаемая своим срезом ТЭП, получает свою долю мест сама, без второго
+    # списка «чей это паркинг».
+    #
+    # Продукт один, а сроки у каждого объекта свои, поэтому ряды складываются:
+    # места офисника продаются по календарю офисника, места встроенной
+    # коммерции — по календарю дома. Один общий календарь продал бы паркинг
+    # офиса третьей очереди вместе с квартирами первой.
+    object_parking_value: dict[date, float] = defaultdict(float)
+    object_parking_units: dict[date, float] = defaultdict(float)
+    parking_price = n(x, "parking_price_th") * 1000
+
+    def sell_object_parking(tep_key: str, sales_start: date, end_ref: date,
+                            share_value: float, residual_months: int,
+                            growth_pre: float, growth_post: float,
+                            weights: dict[date, float] | None = None,
+                            factor: Callable[[date], float] | None = None,
+                            seasonal_value: float | None = None,
+                            pace_value: float | None = None) -> None:
+        spaces = n((t or {}).get(tep_key) or {}, "parking_units")
+        if spaces <= 0:
+            return
+        extra = {} if seasonal_value is None else {"seasonal": seasonal_value, "pace": pace_value}
+        value = sales_schedule(spaces, parking_price, sales_start, end_ref,
+                               share_value, residual_months, growth_pre, growth_post,
+                               weights_override=weights, price_factor=factor, **extra)
+        units = quantity_schedule(spaces, sales_start, end_ref, share_value,
+                                  residual_months, weights_override=weights,
+                                  **({} if seasonal_value is None
+                                     else {"seasonal": seasonal_value, "pace": pace_value}))
+        for month, amount in value.items():
+            object_parking_value[month] += amount
+        for month, amount in units.items():
+            object_parking_units[month] += amount
+
+    # Встроенная коммерция — часть МКД, и её места продаются его календарём.
+    sell_object_parking("ground_commercial", sales_start, rve, share, residual,
+                        growth_pre, growth_post, factor=core_factor,
+                        seasonal_value=seasonal, pace_value=pace)
+    if b(x, "offices_enabled"):
+        sell_object_parking("offices", offices_sales_start, offices_rve, offices_share,
+                            offices_residual, n(x, "offices_growth_pre_pct", 1.5) / 100,
+                            n(x, "offices_growth_post_pct", 0.25) / 100,
+                            offices_weights, offices_factor)
+    if b(x, "retail_enabled"):
+        sell_object_parking("standalone_retail", retail_sales_start, retail_rve, retail_share,
+                            retail_residual, n(x, "retail_growth_pre_pct", 1.5) / 100,
+                            n(x, "retail_growth_post_pct", 0.25) / 100,
+                            retail_weights, retail_factor)
+    if b(x, "sports_enabled") and sports_is_sold(x):
+        sell_object_parking("sports", sports_sales_start, sports_rve, sports_share,
+                            sports_residual, n(x, "sports_growth_pre_pct", 1.5) / 100,
+                            n(x, "sports_growth_post_pct", 0.25) / 100,
+                            sports_weights, sports_factor)
+    if object_parking_value:
+        add_product("object_parking", dict(object_parking_value), dict(object_parking_units))
+    else:
+        revenue_by_product["object_parking"] = 0.0
 
     # Scenario model:
     # base = 100% revenue / 100% project costs
@@ -24928,6 +25068,11 @@ def calculate(req: CalcRequest) -> dict:
             t["underground_parking"]["saleable"] = 0.0
             t["underground_parking"]["transfer"] = 0.0
 
+    # Приобъектный паркинг нежилья раскладывается ДО построения модели: он
+    # трогает продаваемую объекта, а значит выручку, и после счёта денег
+    # правка ТЭП была бы правкой того, что уже посчитано.
+    object_parking = apply_object_parking(x, t)
+
     op = build_operating_model(x, t, rates)
     # Прошлое действующего проекта не выдумывается — оно случилось. Наложение
     # стоит здесь, между построением модели и финансированием: подменённые ряды
@@ -25007,8 +25152,13 @@ def calculate(req: CalcRequest) -> dict:
     # пятую часть ниже того же показателя по наземной площади, и сравнить его
     # с чужой сметой было нельзя. Строительный объём — сумма обеих — остаётся
     # рядом своим числом: на нём считаются общие статьи.
-    underground_gns_sqm = sum(n(t.get(key) or {}, "gns") for key in UNDERGROUND_PRODUCTS)
-    construction_volume_sqm = sum(n(row, "gns") for row in t.values())
+    # Свой подземный паркинг объекта лежит полем на его же строке: строкой
+    # проекта он поехал бы по очередям чужими правилами. В наземную ГНС он не
+    # входит — под землёй наружных стен не бывает и у объекта тоже.
+    object_under_gns = sum(n(row, "under_gns") for row in t.values())
+    underground_gns_sqm = (sum(n(t.get(key) or {}, "gns") for key in UNDERGROUND_PRODUCTS)
+                           + object_under_gns)
+    construction_volume_sqm = sum(n(row, "gns") for row in t.values()) + object_under_gns
     project_gns_sqm = max(0.0, construction_volume_sqm - underground_gns_sqm)
     total_expenses = total_capex + fin["commercial_costs"] + fin["financing_cost"] + fin["profit_tax"] + fin.get("vat", 0.0)
 
@@ -25317,6 +25467,18 @@ def calculate(req: CalcRequest) -> dict:
             "unit": "шт.", "start_price": n(x, "storage_price_th"), "share": n(x, "share_before_rve_pct", 85)/100,
             "start": op["sales_start"], "end_ref": op["rve"], "residual": int(n(x, "residual_sales_months", 6))
         },
+        "object_parking": {
+            # Места нежилых объектов: часть в своём подземном, часть на первых
+            # этажах. Мера — место, а не метр: делить их деньги на площадь
+            # значит отвечать не на тот вопрос.
+            "label": "Приобъектный паркинг нежилья",
+            "quantity": sum(n(t.get(key, {}), "parking_units")
+                            for key, *_ in _PARKING_DEMAND_PRODUCTS),
+            "unit": "шт.", "start_price": n(x, "parking_price_th"),
+            "share": n(x, "share_before_rve_pct", 85)/100,
+            "start": op["sales_start"], "end_ref": op["rve"],
+            "residual": int(n(x, "residual_sales_months", 6))
+        },
         "offices": {
             "label": "Офисы / МФОЦ", "quantity": n(x, "offices_saleable_sqm") if b(x, "offices_enabled") else 0,
             "unit": "м²", "start_price": n(x, "offices_price_th_per_sqm"), "share": n(x, "offices_share_before_rve_pct", 85)/100,
@@ -25509,7 +25671,7 @@ def calculate(req: CalcRequest) -> dict:
         # всегда: офисник или ТЦ без парковки — это не «ноль мест», а не
         # заданный вопрос (владелец, 24.08.2026). Норма приходит готовой из
         # `parking_norms` вместе со своим основанием; второй экономики тут нет.
-        "parking": parking_demand(x, t),
+        "parking": object_parking,
         # Отчёт о наложении факта. Пустой словарь на обычном расчёте, а на
         # действующем проекте — что подменено, чем и с какими оговорками.
         # Наружу он идёт потому, что наложение меняет числа: приближение,
@@ -26008,8 +26170,9 @@ def _scale_tep_row(row: dict[str, Any], share_pct: float) -> dict[str, Any]:
     # выгрузки ГлавАПУ это девяносто гостевых мест, вычтенных из каждой
     # четверти паркинга вместо своей доли.
     for key in ("gns", "total_area", "useful", "saleable", "transfer", "units",
-                "guest_units", "transfer_units"):
-        if key in ("guest_units", "transfer_units") and key not in row:
+                "guest_units", "transfer_units", "under_gns", "parking_units"):
+        if key in ("guest_units", "transfer_units",
+                   "under_gns", "parking_units") and key not in row:
             continue
         result[key] = n(result, key) * factor
     return result
@@ -26041,6 +26204,9 @@ def _scale_tep_row_by_units(
     factor = (allocated / total_units) if total_units > 0 else 0.0
     for key in ("gns", "total_area", "useful", "saleable", "transfer"):
         result[key] = n(result, key) * factor
+    for key in ("under_gns", "parking_units"):
+        if key in row:
+            result[key] = n(result, key) * factor
     result["units"] = float(allocated)
     # Место неделимо и в гостевых, и в переданных: доля очереди округляется,
     # но не может превысить её же мест — иначе очередь «продаёт» меньше нуля.
@@ -27002,15 +27168,18 @@ def _consolidate_phase_results(
                 "gns": 0.0, "total_area": 0.0, "useful": 0.0,
                 "saleable": 0.0, "transfer": 0.0, "units": 0.0,
                 "guest_units": 0.0, "transfer_units": 0.0, "saleable_units": 0.0,
+                "under_gns": 0.0, "parking_units": 0.0,
             })
             for field in ("gns", "total_area", "useful", "saleable", "transfer", "units",
-                          "guest_units", "transfer_units", "saleable_units"):
+                          "guest_units", "transfer_units", "saleable_units",
+                          "under_gns", "parking_units"):
                 target[field] += float(row.get(field, 0.0) or 0.0)
     tep_rows = list(tep_map.values())
     tep_total = {
         field: sum(row[field] for row in tep_rows)
         for field in ("gns", "total_area", "useful", "saleable", "transfer", "units",
-                      "guest_units", "transfer_units", "saleable_units")
+                      "guest_units", "transfer_units", "saleable_units",
+                      "under_gns", "parking_units")
     }
 
     revenue = _sum_dicts([r["revenue"] for r in results])
