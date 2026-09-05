@@ -126,7 +126,9 @@ def test_every_measure_is_charted_and_money_leads() -> None:
     assert [item["name"] for item in drawn] == ["млн ₽", "Лотов"]
     # «₽/м²» здесь одна цифра и прочерк — линии из этого не выйдет.
     assert all(not item["second"] for item in drawn)
-    assert drawn[0]["categories"] == ["2026-07", "2026-06"]
+    # Таблица свода читается свежим вверх, а время на графике идёт вперёд:
+    # ряд переворачивается вместе со своими числами (04.09.2026).
+    assert drawn[0]["categories"] == ["2026-06", "2026-07"]
     assert all(len(item["values"]) == len(item["categories"]) for item in drawn)
 
 

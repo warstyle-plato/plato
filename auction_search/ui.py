@@ -615,6 +615,28 @@ function needLogin(e){
  if(e && e.status===401){ const err=new Error(NEED_LOGIN); err.status=401; throw err }
  throw e;
 }
+// Причина отказа словами. `detail` бывает не строкой: у проверки тела FastAPI
+// это СПИСОК замечаний, и `new Error(list)` даёт message «[object Object]» —
+// ровно это владелец увидел вместо отказа, нажав «Пересчитать только их»
+// (05.09.2026). Ответ разбирают, зная, что он может быть не тем, чего ждали:
+// то же правило, из-за которого здесь вообще читается текст, а не `r.json()`.
+function askWhy(d,status){
+ const detail=d&&d.detail;
+ if(typeof detail==='string'&&detail)return detail;
+ if(Array.isArray(detail)&&detail.length){
+  const said=detail.map(one=>{
+   const where=Array.isArray(one&&one.loc)?one.loc.filter(v=>v!=='body').join('.'):'';
+   const msg=String((one&&(one.msg||one.message))||'').trim();
+   return (where?where+': ':'')+(msg||'значение не принято');
+  });
+  return `Запрос отклонён проверкой (код ${status}). ${said.slice(0,3).join('; ')}`;
+ }
+ if(detail&&typeof detail==='object'){
+  const msg=String(detail.msg||detail.message||detail.reason||'').trim();
+  if(msg)return msg;
+ }
+ return (d&&d.error)||`Запрос отклонён (код ${status})`;
+}
 async function askJson(url, init){
  // Ответ бывает не JSON: 502 и 504 приходят HTML-страницей шлюза, и слепой
  // `r.json()` роняет разбор. Safari говорит на это «The string did not match
@@ -637,7 +659,7 @@ async function askJson(url, init){
   err.status=r.status; err.notJson=true; throw err;
  }
  if(!r.ok){
-  const err=new Error(d.detail||d.error||`Запрос отклонён (код ${r.status})`);
+  const err=new Error(askWhy(d,r.status));
   err.status=r.status; err.body=d; throw err;
  }
  return d;
