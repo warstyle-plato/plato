@@ -72,7 +72,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.22.7"
+VERSION = "0.22.9"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -35436,11 +35436,6 @@ details.cadastral-box>summary::marker{color:#888}
         <div class="note">Аналитическая прибыль после аллокации перераспределяет общепроектные расходы только для сравнения очередей. Сводный CF не меняется.</div>
         <div id="phaseDebtCarryNote" class="note" style="display:none"></div>
       </div>
-      <div class="card" id="phaseEscrowCard" style="display:none">
-        <div class="section-title">Эскроу против обязательств по ПФ — по очередям</div>
-        <div class="note">У каждой очереди своя дата раскрытия и своя линия. Свод по проекту на вопрос «какой очереди не хватило» не отвечает.</div>
-        <div id="phaseEscrowCharts"></div>
-      </div>
       </div>
 
       <div class="report-section" id="rsExpenses">
@@ -41723,8 +41718,13 @@ function renderPhaseComparison(){
 // один, — движком; здесь она просто доезжает до собранной разметки.
 const ESCROW_LEGEND_HTML=`__DEVELOPAID_ESCROW_LEGEND__`;
 function renderPhaseEscrowCharts(){
- const card=document.getElementById('phaseEscrowCard');
- const boxes=['phaseEscrowCharts','financeEscrowPhases','reportEscrowPhases']
+ // Ровно один набор на поверхность: на вкладке «Финансирование» и в отчёте,
+ // оба раза ПОД сводным графиком, к которому относится оговорка «линии
+ // очередей — ниже». Третья копия жила в разделе «Очереди проекта» того же
+ // отчёта — одна и та же картинка дважды в одном документе (владелец,
+ // 05.09.2026: «зачем графики эскроу и долга дважды»). PDF так и печатал с
+ // самого начала: блок очередей идёт сразу за сводным.
+ const boxes=['financeEscrowPhases','reportEscrowPhases']
    .map(id=>document.getElementById(id)).filter(Boolean);
  if(!boxes.length)return;
  const items=((phaseBundle&&phaseBundle.phases)||[]).map((p,i)=>{
@@ -41743,8 +41743,7 @@ function renderPhaseEscrowCharts(){
  // 0 а с 10 млрд, а 3 с 30»). Числа верны, неверно место: линии очередей
  // теперь стоят прямо под сводным графиком, а не на соседней вкладке.
  const head=items.length?'<div class="section-title" style="margin-top:18px">По очередям — у каждой свой договор</div>':'';
- boxes.forEach(box=>{box.innerHTML=(box.id==='phaseEscrowCharts'?'':head)+items.join('')});
- if(card)card.style.display=items.length?'':'none';
+ boxes.forEach(box=>{box.innerHTML=head+items.join('')});
 }
 function selectReportView(view){
  if(!phaseBundle||phaseBundle.mode!=='phased')return;reportView=view;phaseComparisonCard.style.display='none';
