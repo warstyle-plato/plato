@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sys
 import threading
 import time
@@ -562,7 +563,7 @@ def press_refusal_without_address() -> dict[str, Any]:
     }
 
 
-def krt_decision_rows(found: dict[str, Any]) -> list[dict[str, Any]]:
+def _krt_decision_rows_built(found: dict[str, Any]) -> list[dict[str, Any]]:
     """Строки площадок, у которых есть проект решения и нет карточки каталога.
 
     Собираются в ОДНОМ месте: их читает и список на экране, и еженедельный
@@ -620,6 +621,75 @@ def krt_decision_rows(found: dict[str, Any]) -> list[dict[str, Any]]:
                 row[key] = tep[key]
         rows.append(row)
     return rows
+
+
+def krt_decision_rows(found: dict[str, Any]) -> list[dict[str, Any]]:
+    """Строки площадок-решений, схлопнутые по второй публикации документа."""
+    return _without_second_publication(_krt_decision_rows_built(found))
+
+
+def _publication_section(url: str) -> str:
+    """Раздел портала, в котором лежит документ: dgi, dipp, dgp."""
+    found = re.search(r"mos\.ru/([^/]+)/documents/view/", str(url or ""))
+    return found.group(1) if found else ""
+
+
+def _without_second_publication(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Один документ, опубликованный двумя департаментами, — одна строка.
+
+    Замер на проде 05.09.2026: из 298 площадок-решений 38 стояли парами и
+    тройками, и во ВСЕХ 38 группах совпадали заголовок, площадь и ДЕНЬ
+    публикации, а различался только раздел портала — dgi, dipp, dgp. Это один
+    и тот же проект решения: город публикует его и у Департамента городского
+    имущества, и у Департамента инвестиционной и промышленной политики.
+    Человек видел «Котляково (территория № 1)» дважды подряд и различить
+    строки не мог ничем.
+
+    День публикации в ключе — не придирка, а граница правила: по одной
+    территории бывают РАЗНЫЕ документы, и они остаются. У «Алабушево» пара от
+    30.12.2021 — дубль, а документ от 20.05.2022 самостоятельный, и схлопнуть
+    его значило бы спрятать более позднее решение города.
+
+    Схлопнутое не выбрасывается молча: оставшаяся строка несёт адреса вторых
+    публикаций (`also_published`), а счёт убранных возвращается вызывающему,
+    чтобы экран назвал его под таблицей.
+    """
+    groups: dict[tuple[str, float | None, int], list[dict[str, Any]]] = {}
+    order: list[tuple[str, float | None, int]] = []
+    for row in rows:
+        when = int(row.get("draft_decision_at") or 0)
+        area = row.get("area_ha")
+        key = (str(row.get("name") or "").strip().casefold(),
+               round(float(area), 2) if isinstance(area, (int, float)) else None,
+               when // 86400 if when else 0)
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(row)
+
+    kept: list[dict[str, Any]] = []
+    for key in order:
+        same = groups[key]
+        sections = {_publication_section(one.get("draft_decision_url")) for one in same}
+        # Совпали заголовок, площадь и день, но раздел ОДИН — значит это два
+        # разных документа одного департамента, и решать за город, что один из
+        # них лишний, нам нечем.
+        if len(same) == 1 or len(sections) < len(same):
+            kept.extend(same)
+            continue
+        first = min(same, key=lambda one: (int(one.get("draft_decision_at") or 0),
+                                           str(one.get("slug") or "")))
+        first = dict(first)
+        # Имя ведомства едет вместе с адресом: раздел портала («dipp») читателю
+        # ничего не говорит, а departament у строки уже прочитан.
+        first["also_published"] = [
+            {"url": one.get("draft_decision_url") or "",
+             "section": _publication_section(one.get("draft_decision_url")),
+             "department": str(one.get("department") or "")}
+            for one in same if one is not first and one.get("slug") != first.get("slug")
+        ]
+        kept.append(first)
+    return kept
 
 
 def install(app: FastAPI) -> None:
@@ -949,6 +1019,7 @@ def install(app: FastAPI) -> None:
         # назвать его принятым значит показать стадию, которой не наступало.
         # Зато это самый ранний сигнал из всех: до торгов остаётся время.
         decision_rows: list[dict[str, Any]] = []
+        second_publications = 0
         tep_state: dict[str, Any] | None = None
         reader = getattr(krt_registry, "decisions", None)
         if callable(reader):
@@ -1004,7 +1075,14 @@ def install(app: FastAPI) -> None:
                     }
 
                 projects = [_with_decision(row) for row in projects]
-            decision_rows = krt_decision_rows(found)
+            # Считается по СОБРАННЫМ строкам, а не по числу документов:
+            # решение без идентификатора строкой не становится вовсе, и
+            # разность с ним назвала бы схлопнутым наш собственный пропуск.
+            built = _krt_decision_rows_built(found)
+            decision_rows = _without_second_publication(built)
+            # Схлопнутое называется числом: молча убранная строка читается как
+            # пропавшая площадка, а их 38 из 298 на снимке прода 05.09.2026.
+            second_publications = len(built) - len(decision_rows)
             projects = projects + decision_rows
         return {
             "source": CATALOGUE_URL,
@@ -1018,6 +1096,9 @@ def install(app: FastAPI) -> None:
                 for row in unparsed[:20]
             ],
             "no_card_count": len(decision_rows),
+            # Сколько строк убрано схлопыванием второй публикации одного и того
+            # же документа: у города он лежит и в разделе ДГИ, и в разделе ДИПП.
+            "second_publications": second_publications,
             "new_count": sum(1 for row in projects if row.get("is_new")),
             "new_for_days": NEW_FOR_SECONDS // 86400,
             # Охват карточек города: прочитано, не ответило и по какой причине.
