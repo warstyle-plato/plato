@@ -72,7 +72,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.22.6"
+VERSION = "0.22.9"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -42637,15 +42637,39 @@ function projectCadastral(){
 }
 
 async function saveProjectToServer(){
- const manualMeta=inputs._manual_tep_import||null;
- const suggested=(manualMeta&&manualMeta.project_name)||projectCadastral()[0]||'Проект';
- const name=prompt('Название проекта в хранилище',suggested);
- if(name===null)return;
+ // Открытый проект перезаписывается, а не удваивается. Спрашиваем прямо:
+ // «поверх» и «как новый» — разные намерения, и угадывать их нельзя.
+ // Про ссылку говорим фактом, а не предупреждением: перезапись обновляет её
+ // намеренно — получатель при следующем открытии увидит новые числа (решение
+ // владельца, 04.09.2026). Снимок остаётся снимком для уже открытой вкладки:
+ // она задним числом не меняется.
+ const opened=openedProject;
+ let id='',name='';
+ if(opened){
+  if(confirm('Сохранить поверх «'+opened.name+'»?\n\n'
+    +'ОК — записать в тот же проект, поверх прежних чисел.\n'
+    +'Отмена — сохранить как новый, прежний останется.'
+    +(opened.shareCode?'\n\nУ проекта есть ссылка «Поделиться»: получатель '
+      +'при следующем открытии увидит новые числа.':''))){
+   id=opened.id;name=opened.name;
+  }
+ }
+ if(!id){
+  const manualMeta=inputs._manual_tep_import||null;
+  const suggested=(manualMeta&&manualMeta.project_name)||projectCadastral()[0]||'Проект';
+  const asked=prompt('Название проекта в хранилище',suggested);
+  if(asked===null)return;
+  name=asked;
+ }
  try{
-  await projectsCall('/projects/save',{name,
+  const saved=await projectsCall('/projects/save',{id,name,
    payload:{inputs,tep,phasing,scenario:scenarioSelect.value||'base'},
    summary:projectSummaryForStore(),cadastral:projectCadastral()});
-  alert('Проект сохранён на сервере');
+  // Сохранённый проект становится открытым: следующее сохранение обязано
+  // предложить перезапись, иначе третий экземпляр заведётся тем же способом.
+  // У перезаписи ссылку берём прежнюю — карточка ответа её не несёт.
+  rememberOpenedProject(id&&opened?Object.assign({},saved,{share_code:opened.shareCode}):saved);
+  alert(id?'Проект перезаписан':'Проект сохранён на сервере');
   openProjects();
  }catch(e){
   // 428 от сервера — не отказ, а вопрос «кто вы»: открываем знакомство,
@@ -42843,6 +42867,23 @@ function changeProjectsKey(){
 // имя проекта: площадка КРТ на 15 га приходила «с парой кадастров на 5 га»
 // (владелец, 02.09.2026). Забывается разом и в одном месте; то, что несёт сам
 // снимок, поднимается заново из его вводных.
+// Какой проект хранилища сейчас открыт: `{id, name, shareCode}` или null.
+// Открытый проект правят и сохраняют обратно, а страница id не помнила —
+// `loadProject` его не запоминал, `saveProjectToServer` не слал, и сервер
+// честно заводил второй экземпляр (владелец, 04.09.2026: «открыл сохранённый,
+// внёс изменения, и надо сохранять новый»). Перезапись хранилище умеет давно:
+// при переданном id запись пишется под тем же именем файла, код «Поделиться»
+// сохраняется и против лимита такой проект не считается.
+let openedProject=null;
+
+function rememberOpenedProject(record){
+ // Помним ровно то, что нужно вопросу перед сохранением: чем перезаписывать,
+ // как проект зовут и есть ли у него живая ссылка.
+ openedProject=record&&record.id?{id:String(record.id),
+  name:String(record.name||'Проект'),
+  shareCode:String(record.share_code||'')}:null;
+}
+
 function forgetTerritoryState(){
  cadastralAnalysis=null;landLookup=null;landScreeningLast=null;LAND_MAP=null;
  glavapuImport=null;moResult=null;
@@ -42863,6 +42904,11 @@ function forgetTerritoryState(){
 
 function applyProjectSnapshot(data){
  data=data||{};
+ // Пришёл другой проект — значит открытый больше не открыт. Забывается здесь,
+ // в единственной точке подмены снимка: иначе «Сохранить поверх» записало бы
+ // чужие числа в тот проект, из которого их уже не достать — истории версий у
+ // хранилища нет. Кто открыл проект по-настоящему, скажет об этом следом.
+ openedProject=null;
  forgetTerritoryState();
  inputs=Object.assign(cloneValue(INPUT_DEFAULT),data.inputs||{});
  tep=cloneValue(TEP_DEFAULT);
@@ -42886,6 +42932,9 @@ async function loadProject(id){
  // Как и локальная загрузка: сохранённое накладывается на умолчания, а не
  // подменяет их — иначе поле, добавленное позже, исчезнет.
  applyProjectSnapshot(data);
+ // После наложения: `applyProjectSnapshot` забывает открытый проект, и это
+ // верно для всех её вызовов, кроме этого одного.
+ rememberOpenedProject(record);
  closeProjects();
  calculateAndOpen('report');
 }
@@ -43028,8 +43077,13 @@ function checkSharedLink(){
 
 async function deleteProject(id){
  if(!confirm('Удалить проект из хранилища?'))return;
- try{await projectsCall('/projects/delete',{id});openProjects()}
- catch(e){alert(String(e.message||e))}
+ try{
+  await projectsCall('/projects/delete',{id});
+  // Удалённый проект открытым не остаётся: «Сохранить поверх» завело бы его
+  // заново под тем же id, и удаление выглядело бы несработавшим.
+  if(openedProject&&openedProject.id===String(id))openedProject=null;
+  openProjects();
+ }catch(e){alert(String(e.message||e))}
 }
 
 // Состояние страницы, которое НЕ принадлежит проекту, — и потому сбросу не
@@ -43060,6 +43114,9 @@ function resetProjectState(){
  // 3 200 м²» под строкой паркинга, жалоба на пропорции ТЭП, разговор Платона
  // о прошлом проекте, отчёт чувствительности чужой площадки.
  lastResult=null;
+ // Открытый проект — тоже данные проекта: после сброса «Сохранить поверх»
+ // записало бы пустой расчёт в чужую запись.
+ openedProject=null;
  aiHistory=[];aiProposals=[];aiIntake=null;
  territoryCleared=[];tepRatioComplaint='';phaseTepEditWarning='';storageInsideParking=0;
  Object.keys(tepRefillNote).forEach(key=>{delete tepRefillNote[key]});
