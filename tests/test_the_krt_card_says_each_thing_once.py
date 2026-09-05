@@ -34,6 +34,16 @@
 названных в самом документе числах: площадь квартир известна у 44 площадок,
 нежилая наземная — у 91.
 
+**Длинные списки лежали открытыми.** «Всё должно быть последовательно и
+логично, длинные списки с возможностью свернуть» (владелец, 05.09.2026).
+Требования КРТ рисовали восемь списков подряд без единой складки: на Мира,
+вл. 122 это 102 строки, из них 19 объектов сноса и 43 кадастровых номера. А
+там, где списки пусты, восемь плашек «не найдено» подряд давали ту же стену из
+молчания. Теперь правило одно и порог назван один раз (`KRT_LIST_OPEN_LIMIT`):
+пусто — ничего или названная причина; коротко — открытым; длинно — складкой с
+числом. Ненайденное собирается в одну строку и по-прежнему говорит «не
+опубликовано», а не «нет».
+
 **Порядок был обратный самому решению.** «Срочно надо разумный блок карточки
 КРТ делать справа. Без хаоса» (владелец, 05.09.2026, третий раз про это поле).
 Балл со списком снижений стоял ВЫШЕ экономики, из которой он свёрнут, и одни и
@@ -137,8 +147,8 @@ def test_one_action_has_one_button_and_one_name():
     assert card.count("krtRatioBind(x)") == 1, card
 
 
-def test_an_empty_fold_is_not_drawn():
-    """«Что пока не учтено — 0 пункт(ов)» — пустой экран за нажатием.
+def test_a_list_folds_when_it_is_long_and_stays_open_when_short():
+    """Одно правило на все списки карточки, и порог назван один раз.
 
     Гоняется настоящая функция страницы: строковая проверка увидела бы её имя
     и в сломанном виде.
@@ -151,20 +161,44 @@ def test_an_empty_fold_is_not_drawn():
     program = "\n".join([
         # `esc` объявлена стрелкой — берём её строкой объявления, а не по границам функции.
         next(one for one in page.splitlines() if one.startswith("const esc=")),
-        _fn(page, "krtFold"),
-        "const row=x=>`<div class=\"item\">${esc(x)}</div>`;",
-        "const empty=krtFold('Что пока не учтено',[],row,'пункт(ов)');",
-        "const full=krtFold('Что пока не учтено',['снос','расселение'],row,'пункт(ов)');",
-        "console.log(JSON.stringify({empty,full}));",
+        next(one for one in page.splitlines() if one.startswith("const KRT_LIST_OPEN_LIMIT=")),
+        _fn(page, "krtList"),
+        "const many=Array.from({length:19},(_,i)=>'объект '+(i+1));",
+        "console.log(JSON.stringify({",
+        "  empty: krtList('Что пока не учтено',[],{word:'пункт(ов)'}),",
+        "  named: krtList('Что снести',[],{missing:'в решении не найдено'}),",
+        "  short: krtList('Что пока не учтено',['снос','расселение'],{word:'пункт(ов)'}),",
+        "  long: krtList('Что снести или реконструировать',many),",
+        "}));",
     ])
     done = subprocess.run([node.stdout.strip(), "-e", program],
                           capture_output=True, text=True, timeout=60)
     assert done.returncode == 0, done.stderr
     import json
     got = json.loads(done.stdout)
+
+    # Пусто и без названной причины — блока нет вовсе: «— 0» это экран за нажатием.
     assert got["empty"] == "", got["empty"]
-    assert "— 2 пункт(ов)" in got["full"], got["full"]
-    assert "расселение" in got["full"], got["full"]
+    # Пусто с названной причиной — причина, а не молчание.
+    assert "в решении не найдено" in got["named"], got["named"]
+    # Коротко — открытым: складка ради двух строк заставляет нажимать впустую.
+    assert "<details" not in got["short"], got["short"]
+    assert "— 2 пункт(ов)" in got["short"] and "расселение" in got["short"], got["short"]
+    # Длинно — складкой, и число стоит в заголовке.
+    assert "<details" in got["long"], got["long"][:200]
+    assert "— 19" in got["long"], got["long"][:200]
+    assert "объект 19" in got["long"], "список за складкой опустел"
+
+
+def test_the_requirements_do_not_stack_eight_open_lists():
+    """Найденное — списками по общему правилу, ненайденное — одной строкой."""
+    page = auctions_page()
+    block = _fn(page, "renderKrtRequirements")
+    assert "krtList(" in block, block[:300]
+    assert "krtRequirementList" not in page, "старый рисовальщик списков вернулся"
+    # Ненайденное собрано в одну строку и названо «не опубликовано», а не «нет».
+    assert "Не опубликовано в материалах города" in block, block[:400]
+    assert "а не «нет»" in block, block[:400]
 
 
 # --- источник ----------------------------------------------------------------

@@ -2271,10 +2271,6 @@ function renderKrtRatios(x){
  box.outerHTML=krtRatioBlock(x);
  krtRatioBind(x);
 }
-function krtRequirementList(title,items,missing){
- const rows=(items||[]).map(v=>`<div class="item">${esc(v)}</div>`).join('');
- return `<div class="section"><h3>${esc(title)}</h3>${rows?`<div class="items">${rows}</div>`:`<div class="notice warn">${esc(missing)}</div>`}</div>`;
-}
 function krtRequirementTotals(d){
  const actions=Array.isArray(d?.object_actions)?d.object_actions:[];
  function group(category,countKey,areaKey,knownKey,listKey){
@@ -2291,15 +2287,17 @@ function krtRequirementTotals(d){
  };
 }
 function krtDutyTotal(v){
- if(!v.count)return 'не найдено в опубликованном решении';
+ if(!v.count)return 'не найдено';
  const missing=Math.max(0,v.count-v.known),area=v.area>0?fmtArea(v.area)+' известной площади':'площадь не указана';
  return `${v.count} объект(ов) · ${area}${missing?` · без площади: ${missing}`:''}`;
 }
 function krtRequirementsSummary(d){
+ // Одна и та же длинная фраза в трёх строках подряд читается как стена: смысл
+ // «не найдено ≠ нет» сказан один раз под таблицей, а в строках стоит короткое.
  const t=krtRequirementTotals(d),res=t.resettlement
   ?`${t.resettlement} упоминани(й) · число квартир и жителей отдельно не опубликовано`
-  :'не найдено в опубликованном решении';
- return `<div class="section"><h3>Сводка обязательств</h3><div class="kv"><div>Снести</div><div>${esc(krtDutyTotal(t.demolition))}</div><div>Снести или реконструировать</div><div>${esc(krtDutyTotal(t.conditional))}</div><div>Реконструировать</div><div>${esc(krtDutyTotal(t.reconstruction))}</div><div>Сохранить</div><div>${esc(krtDutyTotal(t.preservation))}</div><div>Расселить / изъять</div><div>${esc(res)}</div></div><div class="source">Площадь суммируется только там, где она указана в опубликованном проекте решения. Непубликуемые значения не считаются нулём.</div></div>`;
+  :'не найдено';
+ return `<div class="section"><h3>Сводка обязательств</h3><div class="kv"><div>Снести</div><div>${esc(krtDutyTotal(t.demolition))}</div><div>Снести или реконструировать</div><div>${esc(krtDutyTotal(t.conditional))}</div><div>Реконструировать</div><div>${esc(krtDutyTotal(t.reconstruction))}</div><div>Сохранить</div><div>${esc(krtDutyTotal(t.preservation))}</div><div>Расселить / изъять</div><div>${esc(res)}</div></div><div class="source">«Не найдено» значит «не сказано в опубликованном решении», а не «нет». Площадь суммируется только там, где она указана; непубликуемые значения не считаются нулём.</div></div>`;
 }
 function renderKrtRequirements(d){
  if(!d.available)return `<div class="section"><h3>Требования КРТ</h3><div class="notice warn">${esc(d.warning||'Официальная карточка временно не ответила.')}</div></div>`;
@@ -2310,16 +2308,28 @@ function renderKrtRequirements(d){
  const cardSource=d.source_url?`<a href="${esc(d.source_url)}" target="_blank" rel="noopener">карточка krt.mos.ru</a>`:'карточка krt.mos.ru';
  const decision=d.decision||{};
  const decisionSource=decision.page_url?` · <a href="${esc(decision.page_url)}" target="_blank" rel="noopener">проект решения mos.ru</a>${decision.pdf_url?` · <a href="${esc(decision.pdf_url)}" target="_blank" rel="noopener">PDF</a>`:''}`:'';
+ // Восемь списков подряд открытым текстом — это стена (102 строки на Мира,
+ // вл. 122), а восемь плашек «не найдено» подряд — та же стена из молчания.
+ // Найденное идёт списками по общему правилу, ненайденное — ОДНОЙ строкой,
+ // и она по-прежнему говорит «не опубликовано», а не «нет»: разница та же,
+ // что у пустого ответа НСПД.
+ const parts=[
+  ['Что построить кроме жилья',d.construction],
+  ['Что разрешено разместить',d.permitted_uses],
+  ['Срок реализации',d.deadlines],
+  ['Что находится на территории сейчас',d.existing],
+  ['Что снести',d.demolition],
+  ['Что снести или реконструировать',d.demolition_or_reconstruction],
+  ['Что реконструировать или сохранить',[...(d.reconstruction||[]),...(d.preservation||[])]],
+  ['Расселение и изъятие',d.resettlement]];
+ const found=parts.filter(([,v])=>(v||[]).length).map(([t,v])=>krtList(t,v)).join('');
+ const silent=parts.filter(([,v])=>!(v||[]).length).map(([t])=>t.toLowerCase());
+ const nothing=silent.length
+  ? `<div class="source">Не опубликовано в материалах города: ${esc(silent.join('; '))}. Это «не сказано», а не «нет»: договор о КРТ проверяют отдельно.</div>`
+  : '';
  return `${krtRequirementsSummary(d)}<div class="section"><h3>Что требуется по КРТ</h3>${programme}</div>
-  ${krtRequirementList('Что построить кроме жилья',d.construction,'Состав объектов в краткой карточке не раскрыт — нужен проект решения о КРТ.')}
-  ${krtRequirementList('Что разрешено разместить',d.permitted_uses,'Виды разрешённого использования в PDF не распознаны.')}
-  ${krtRequirementList('Срок реализации',d.deadlines,'Срок реализации в опубликованных материалах не распознан.')}
-  ${krtRequirementList('Что находится на территории сейчас',d.existing,'Существующая застройка в карточке не описана.')}
-  ${krtRequirementList('Что снести',d.demolition,'Безусловный снос в опубликованных материалах не найден — это не означает, что сноса нет.')}
-  ${krtRequirementList('Что снести или реконструировать',d.demolition_or_reconstruction,'Объекты с альтернативой «снос/реконструкция» не опубликованы.')}
-  ${krtRequirementList('Что реконструировать или сохранить',[...(d.reconstruction||[]),...(d.preservation||[])],'Реконструкция и сохраняемые объекты в карточке не опубликованы.')}
-  ${krtRequirementList('Расселение и изъятие',d.resettlement,'Расселение/изъятие в опубликованных материалах не найдено — проверить договор.')}
-  <div class="notice warn">${esc(d.warning||'')}</div><div class="source">Источники: ${cardSource}${decisionSource}${d.transport==='read_only_renderer'?' · карточка получена через read-only транспорт':''}</div>`;
+  ${found}${nothing}
+  ${d.warning?`<div class="notice warn">${esc(d.warning)}</div>`:''}<div class="source">Источники: ${cardSource}${decisionSource}${d.transport==='read_only_renderer'?' · карточка получена через read-only транспорт':''}</div>`;
 }
 async function loadKrtRequirements(x){
  const box=document.getElementById('krtRequirementsBox');if(!box)return;
@@ -3197,19 +3207,33 @@ function renderKrtProgramme(p){
     : `<div class="source">Остаток нежилого за вычетом соцобъектов — ${fmtArea(p.commercial_gba_sqm)} ГНС на ОСЗ и ТЦ; общественно-деловое ${fmtArea(p.offices_gba_sqm)} принято офисами.</div>`)
   +`</div>`;
 }
-// Раскрытие с нулём в заголовке — это пустой экран, за который надо нажать:
-// «Что пока не учтено — 0 пункт(ов)» не отвечает ни на что. Список появляется
-// вместе с числом, как строка структуры расходов.
-function krtFold(title,items,row,word){
- const list=Array.isArray(items)?items:[];
- if(!list.length)return '';
- return `<details class="fold"><summary>${esc(title)} — ${list.length} ${esc(word)}</summary><div class="foldbody"><div class="items">${list.map(row).join('')}</div></div></details>`;
+// Список в карточке живёт ОДНИМ правилом, и порог назван здесь один раз:
+// пусто — ничего или названная причина; коротко — открытым; длинно — складкой
+// с числом. Раскрытие ради двух строк заставляет нажимать впустую, а двадцать
+// четыре объекта сноса открытым текстом — стена, в которой не видно соседних
+// разделов: на Мира, вл. 122 требования давали 102 строки подряд.
+// Число в заголовке обязательно: закрытый список без числа читается как
+// отсутствующий, а «— 0» — как пустой экран за нажатием.
+const KRT_LIST_OPEN_LIMIT=4;
+function krtList(title,items,opts){
+ const o=opts||{};
+ const list=Array.isArray(items)?items.filter(v=>v!==null&&v!==undefined&&v!==''):[];
+ if(!list.length)
+  return o.missing
+   ? `<div class="section"><h3>${esc(title)}</h3><div class="notice warn">${esc(o.missing)}</div></div>`
+   : '';
+ const row=o.row||(v=>`<div class="item">${esc(v)}</div>`);
+ const head=`${esc(title)} — ${list.length}${o.word?' '+esc(o.word):''}`;
+ const body=`<div class="items">${list.map(row).join('')}</div>`;
+ return list.length<=KRT_LIST_OPEN_LIMIT
+  ? `<div class="section"><h3>${head}</h3>${body}</div>`
+  : `<details class="fold"><summary>${head}</summary><div class="foldbody">${body}</div></details>`;
 }
 function renderKrtModel(m){
  if(!m?.available)return `<div class="section"><h3>Предварительный прогон модели</h3><div class="notice warn">${esc(m?.reason||'Модель не рассчитана')}</div></div>`;
  const t=m.traffic_light||{},market=m.market||{},ph=m.phasing||{},abs=m.absorption||{},k=m.metrics||{},cap=m.entry_capacity,phases=ph.phases||[];
  const pace=abs.available?`${new Intl.NumberFormat('ru-RU',{maximumFractionDigits:1}).format(abs.market_units_per_month)} ДДУ/мес. · ${esc(abs.sellout_months_per_phase)} мес. на очередь`:'не определён';
- return `<div class="section"><h3>Предварительный прогон модели</h3><div class="notice"><div class="fit ${esc(t.tone||'warn')}"><span class="light"></span>${esc(m.headline||t.label||'Рассчитано')}</div><div style="margin-top:6px">${esc(m.text||'')}</div><div class="source" style="margin-top:7px">${esc(m.criterion||'')}</div></div><div class="kv"><div>Класс из маркетинга</div><div>${esc(market.recommended_segment||'—')}</div><div>Стартовая цена</div><div class="money">${market.start_price_rub_sqm?new Intl.NumberFormat('ru-RU').format(market.start_price_rub_sqm)+' ₽/м²':'—'}</div><div>Темп / реализация</div><div>${pace}</div><div>Очереди</div><div>${esc(ph.count||1)} · автоматически${ph.target_saleable_sqm?', цель '+fmtArea(ph.target_saleable_sqm):''}</div><div>Продаваемая площадь</div><div>${fmtArea(ph.saleable_sqm)}</div><div>LLCR проекта</div><div>${Number.isFinite(Number(k.project_llcr_x))?Number(k.project_llcr_x).toFixed(2)+'x':'—'}</div><div>LLCR слабейшей очереди</div><div>${Number.isFinite(Number(k.weakest_phase_llcr_x))?Number(k.weakest_phase_llcr_x).toFixed(2)+'x':'—'}</div><div>Маржа до неизвестных обязательств</div><div>${Number.isFinite(Number(k.margin_pct))?Number(k.margin_pct).toFixed(1)+'%':'—'}</div><div>Чистая прибыль до цены входа</div><div>${fmtMln(k.net_profit_mln)}</div><div>Резерв при LLCR 1,20x</div><div>${cap?.available?fmtMln(cap.amount_mln):'—'}</div></div>${renderKrtProgramme(m.programme)}${cap?.available?`<div class="notice warn">${esc(cap.meaning)}</div>`:''}${phases.length>1?`<div class="items">${phases.map(p=>`<div class="item"><b>${esc(p.name)} · LLCR ${Number(p.llcr_x||0).toFixed(2)}x</b>${fmtArea(p.saleable_sqm)} продаваемых · маржа ${Number(p.margin_pct||0).toFixed(1)}%</div>`).join('')}</div>`:''}${krtFold('Что поставлено в модель',m.assumptions,x=>`<div class="item">${esc(x)}</div>`,'допущени(й)')}${krtFold('Что пока не учтено',m.exclusions,x=>`<div class="item"><b>Нужно добавить</b>${esc(x)}</div>`,'пункт(ов)')}</div>`
+ return `<div class="section"><h3>Предварительный прогон модели</h3><div class="notice"><div class="fit ${esc(t.tone||'warn')}"><span class="light"></span>${esc(m.headline||t.label||'Рассчитано')}</div><div style="margin-top:6px">${esc(m.text||'')}</div><div class="source" style="margin-top:7px">${esc(m.criterion||'')}</div></div><div class="kv"><div>Класс из маркетинга</div><div>${esc(market.recommended_segment||'—')}</div><div>Стартовая цена</div><div class="money">${market.start_price_rub_sqm?new Intl.NumberFormat('ru-RU').format(market.start_price_rub_sqm)+' ₽/м²':'—'}</div><div>Темп / реализация</div><div>${pace}</div><div>Очереди</div><div>${esc(ph.count||1)} · автоматически${ph.target_saleable_sqm?', цель '+fmtArea(ph.target_saleable_sqm):''}</div><div>Продаваемая площадь</div><div>${fmtArea(ph.saleable_sqm)}</div><div>LLCR проекта</div><div>${Number.isFinite(Number(k.project_llcr_x))?Number(k.project_llcr_x).toFixed(2)+'x':'—'}</div><div>LLCR слабейшей очереди</div><div>${Number.isFinite(Number(k.weakest_phase_llcr_x))?Number(k.weakest_phase_llcr_x).toFixed(2)+'x':'—'}</div><div>Маржа до неизвестных обязательств</div><div>${Number.isFinite(Number(k.margin_pct))?Number(k.margin_pct).toFixed(1)+'%':'—'}</div><div>Чистая прибыль до цены входа</div><div>${fmtMln(k.net_profit_mln)}</div><div>Резерв при LLCR 1,20x</div><div>${cap?.available?fmtMln(cap.amount_mln):'—'}</div></div>${renderKrtProgramme(m.programme)}${cap?.available?`<div class="notice warn">${esc(cap.meaning)}</div>`:''}${phases.length>1?`<div class="items">${phases.map(p=>`<div class="item"><b>${esc(p.name)} · LLCR ${Number(p.llcr_x||0).toFixed(2)}x</b>${fmtArea(p.saleable_sqm)} продаваемых · маржа ${Number(p.margin_pct||0).toFixed(1)}%</div>`).join('')}</div>`:''}${krtList('Что поставлено в модель',m.assumptions,{word:'допущени(й)'})}${krtList('Что пока не учтено',m.exclusions,{word:'пункт(ов)',row:x=>`<div class="item"><b>Нужно добавить</b>${esc(x)}</div>`})}</div>`
 }
 function renderKrtMarket(d,out){
  const peers=d.peers||[],hint=d.price_hint||{},c=d.comparison||{},analysis=d.analysis||{},verdict=analysis.site||analysis.overall||{};
