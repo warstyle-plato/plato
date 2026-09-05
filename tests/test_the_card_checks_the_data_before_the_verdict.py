@@ -189,4 +189,4 @@ def test_the_card_says_the_check_before_the_score() -> None:
         assert "сверять не с чем" in no_card, no_card
 
     # И порядок: проверка данных стоит ВЫШЕ вердикта — ради этого правка.
-    assert agrees.index("Проверка данных") < agrees.index("Оценка Платона"), agrees
+    assert agrees.index("Проверка данных") < agrees.index("Балл площадки"), agrees
