@@ -13125,8 +13125,8 @@ _ESCROW_CHART_LEGEND: tuple[tuple[str, str, str], ...] = (
     ("Обязательство: тело + начисленные проценты и комиссии", "#A35D00", "line"),
     ("Тело ПФ", "#A35D00", "dash4"),
     ("Чем эскроу не перекрыт", "#A35D00", "band"),
-    ("Раскрыто с эскроу, накопленно", "#1B5E77", "dash6"),
-    ("Продано после ввода, накопленно", "#1B5E77", "thin"),
+    ("Раскрыто с эскроу, накопленным итогом", "#1B5E77", "dash6"),
+    ("Продано после ввода, накопленным итогом", "#1B5E77", "thin"),
 )
 ESCROW_CHART_LEGEND_PLACEHOLDER = "__DEVELOPAID_ESCROW_LEGEND__"
 
@@ -14285,7 +14285,11 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         # эскроу ПЕРВОЙ, и одной площадью это читается как «выборка сразу
         # покрыта» (владелец, 04.09.2026). Отчёт носят в банк, и расходиться
         # с экраном ему нельзя — здесь те же слои.
-        parts = list((data[0] or {}).get("escrow_by_phase") or [])
+        # Число слоёв — по САМОЙ длинной строке, а не по первой: в первом
+        # месяце счёт может быть ещё не у всех очередей, и слой пропал бы
+        # молча вместе с очередью.
+        parts = list(range(max((len(row.get("escrow_by_phase") or []) for row in data),
+                               default=0)))
         if len(parts) > 1:
             for layer in range(len(parts)):
                 def _below(row: dict[str, Any], k: int = layer) -> float:
@@ -14300,9 +14304,13 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
                 band += [(x_at(i), y_at(_below(data[i]))) for i in reversed(range(len(data)))]
                 drawing.add(Polygon([c for point in band for c in point],
                                     fillColor=colors.HexColor("#2D6A4F"),
-                                    fillOpacity=0.16 + 0.16 * (layer % 3),
+                                    fillOpacity=0.14 + 0.10 * layer,
                                     strokeColor=colors.HexColor("#2D6A4F"), strokeWidth=0.4))
-            drawing.add(String(left + 4, bottom + plot_h - 8, "эскроу — слоями по очередям, снизу вверх",
+            layer_names = [str(x) for x in (cover.get("phase_names") or [])][:len(parts)]
+            drawing.add(String(left + 4, bottom + plot_h - 8,
+                               "эскроу — слоями снизу вверх"
+                               + (": " + " · ".join(layer_names)
+                                  if len(layer_names) == len(parts) else " по очередям"),
                                fontName=regular, fontSize=6.4,
                                fillColor=colors.HexColor("#2D6A4F")))
         else:
@@ -14423,7 +14431,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         drawing.add(String(left, axis_y, "долг и эскроу, млрд ₽", fontName=regular,
                            fontSize=6.4, textAnchor="start",
                            fillColor=colors.HexColor("#777777")))
-        drawing.add(String(width - 2, axis_y, "накопленно", fontName=regular,
+        drawing.add(String(width - 2, axis_y, "накопленным итогом, млрд ₽", fontName=regular,
                            fontSize=6.4, textAnchor="end",
                            fillColor=colors.HexColor("#1B5E77")))
         for index in sorted(set([0, len(data) // 2, len(data) - 1])):
@@ -23482,6 +23490,20 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
                 "Часть платежей ВРИ приходится на период до старта расчёта — "
                 "они отнесены на первый месяц."
             )
+    # Проект, пришедший файлом или ссылкой, страницу не проходил, и обнулить
+    # плату там было некому. Молчать нельзя: в КРТ платы за смену ВРИ нет, и
+    # оставшееся число идёт в CAPEX, в лимит БРИДЖа и в книгу как настоящее.
+    # Сами не убираем — вводная принадлежит человеку, а не расчёту; говорим.
+    if (str(x.get("social_area_source") or "norm") == "manual"
+            and n(x, "land_rights_cost_mln") > 0):
+        # Разделитель разрядов меняется У ЧИСЛА, а не у всей фразы: применённый
+        # к строке целиком, он съедает и запятые прозы.
+        _kept = f"{n(x, 'land_rights_cost_mln'):,.0f}".replace(",", " ")
+        vri["warnings"].append(
+            "Соцобъекты заданы требованием КРТ, а плата за смену ВРИ "
+            f"{_kept} млн ₽ осталась во вводных: в КРТ вид использования "
+            "меняется условием договора, отдельного платежа городу нет. "
+            "Уберите плату или снимите режим.")
     else:
         add_capex("land_rights", permit, amounts["land_rights"])
     amounts["vri_interest"] = vri["totals"]["interest"]
@@ -26356,11 +26378,22 @@ def _escrow_phase_lines(results: list[dict[str, Any]], names: list[str],
         if others <= 1e6:
             continue
         name = names[index] if index < len(names) else f"Очередь {index + 1}"
+        # Полное объяснение — один раз. Три одинаковых хвоста подряд перестают
+        # читаться, и это правило у нас уже записано на оговорке о дефолте.
+        #
+        # И само утверждение другое, чем стояло. Мерили мы вот что: в месяц
+        # первой выборки на сводной линии столько-то, своих у очереди столько.
+        # Прежний вывод «их деньги её выборку не покрывают» звучит как «не
+        # хватило» — то есть обещает сравнение с выборкой, которой в строке
+        # даже нет. Правда жёстче и проще: чужие счета её долг не гасят
+        # ВООБЩЕ, сколько бы на них ни стояло.
+        tail = ("Остальное — счета других очередей, и её долг они не гасят: "
+                "у каждой очереди свой счёт и своя дата раскрытия."
+                if not lines else "")
         lines.append(
             f"{name} открывает ПФ в {_month_ru(start)}: на сводной линии эскроу "
-            f"{_mln_ru(escrow_all)}, из них своих {_mln_ru(escrow_mine)}, "
-            f"остальное — счета других очередей. Их деньги её выборку не "
-            f"покрывают: у каждой очереди свой счёт и своя дата раскрытия.")
+            f"{_mln_ru(escrow_all)}, из них своих {_mln_ru(escrow_mine)}."
+            + (" " + tail if tail else ""))
     return lines
 
 
@@ -26370,7 +26403,14 @@ def _escrow_cover_with_phases(rows: list[dict[str, Any]], results: list[dict[str
     out = _escrow_cover(rows)
     if len(results) > 1:
         out["phase_lines"] = _escrow_phase_lines(results, names, rows)
-        out["lines"] = list(out.get("lines") or []) + out["phase_lines"]
+        # Порядок строк — это рассказ: сперва события по датам, потом выводы.
+        # Прежде «наибольший разрыв в 06.2030» стоял ПЕРВЫМ, а под ним шли
+        # 07.2029, 07.2030, 07.2031 — даты прыгали, и неверный порядок
+        # читается как ошибка счёта.
+        out["lines"] = out["phase_lines"] + list(out.get("lines") or [])
+        # Имена очередей нужны рисунку: слои сложены снизу вверх в этом
+        # порядке, и без имён подпись обещает то, чего не видно.
+        out["phase_names"] = [str(name) for name in names]
     return out
 
 
@@ -39621,6 +39661,13 @@ function renderInputs(){
        wrap.innerHTML+=`<div class="note" style="margin:0;padding:11px 12px">Определяется по выбранной очереди на вкладке «Очередность». По умолчанию — дата начала этой очереди.</div>`;
        grid.appendChild(wrap);return;
      }
+     if(id==='land_rights_cost_mln'&&krtRequirementEntered()){
+       const wasVri=Number(inputs._krt_vri_cleared_mln||0);
+       wrap.innerHTML+=`<div class="note" style="margin:0 0 6px;padding:11px 12px">`
+        +`Режим «Требование КРТ»: платы за смену ВРИ здесь нет — вид использования меняется условием договора о КРТ, а не отдельным платежом городу.`
+        +(wasVri>0?` Убрано ${num(wasVri)} млн ₽.`:'')
+        +` Если по этой площадке плата всё-таки есть — впишите её, она пойдёт в расчёт как есть.</div>`;
+     }
      if(type==='pf_steps'){renderPfStepsEditor(wrap);grid.appendChild(wrap);return;}
      // График — ячейками, а не строкой: значение, единица и срок отдельными
      // полями, строки добавляются и убираются.
@@ -39647,7 +39694,7 @@ function renderInputs(){
       el.disabled=true;
       el.title='Москва: платежи ежеквартально — установлено нормативно';
      }
-     el.onchange=()=>{inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='social_mode')inputs._social_mode_user_set=true;if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){renderInputs();return calculate()}if(['apartment_price_th','commercial_price_th','parking_price_th','main_above_th_per_sqm','main_under_th_per_sqm'].includes(id)){inputs.project_class='custom';syncProjectClassSelector()}if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(TEP_DERIVED_INPUTS.includes(id)){const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
+     el.onchange=()=>{inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='social_mode')inputs._social_mode_user_set=true;if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){renderInputs();return calculate()}if(['apartment_price_th','commercial_price_th','parking_price_th','main_above_th_per_sqm','main_under_th_per_sqm'].includes(id)){inputs.project_class='custom';syncProjectClassSelector()}if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(TEP_DERIVED_INPUTS.includes(id)){const cleared=id==='social_area_source'&&krtClearsVriFee();const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(cleared||filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
      wrap.appendChild(el);grid.appendChild(wrap);
    });det.appendChild(grid);(ownTab?vriBox:box).appendChild(det);
  });
@@ -40630,6 +40677,26 @@ const KRT_REQUIREMENT_LABELS={kindergarten_places:'места ДОО',school_pla
  social_clinic_norm_sqm:'норматив поликлиники',
  social_compensation_mln:'соцкомпенсация',land_rights_cost_mln:'плата за ВРИ'};
 function krtRequirementEntered(){return String(inputs.social_area_source||'norm')==='manual'}
+// В КРТ платы за смену ВРИ нет: вид использования меняется УСЛОВИЕМ ДОГОВОРА
+// о комплексном развитии, а не отдельным платежом городу. Режим «Требование
+// КРТ» её только ЗАПИРАЛ от пересчёта — число, попавшее в поле раньше (из
+// выгрузки ГлавАПУ или прошлого нормативного пересчёта), оставалось и шло в
+// CAPEX, в расчётный лимит БРИДЖа, в график платежей ВРИ и в книгу. На экране
+// разницы нет никакой: поле выглядит одинаково и с посчитанной платой, и с
+// платой, которой быть не должно («почему не убирается из расчёта ВРИ?»,
+// владелец, 05.09.2026). «Не тронули» читается как «убрали».
+//
+// Обнуляем — и говорим, что обнулили: молчаливое обнуление врёт не меньше
+// молчаливого сохранения, и вписать плату обратно должно быть можно, если по
+// этой площадке она всё-таки есть.
+function krtClearsVriFee(){
+ if(!krtRequirementEntered())return false;
+ const was=Number(inputs.land_rights_cost_mln||0);
+ if(!(was>0))return false;
+ inputs._krt_vri_cleared_mln=was;
+ inputs.land_rights_cost_mln=0;
+ return true;
+}
 // Пишет только незапертое и возвращает подпись о том, чего НЕ тронуло: молча
 // не тронутое поле выглядит так же, как не посчитанное.
 function applyDerivedInputs(values){
@@ -42755,19 +42822,25 @@ function escrowCoverSvg(rows,cover){
  // Сумма верна — неверно, что она отвечает на вопрос про очередь, поэтому
  // площадь эскроу на своде разложена по очередям слоями снизу вверх.
  // Считать здесь нечего: доли приходят готовыми, экран их только рисует.
- const parts=(data[0]&&data[0].escrow_by_phase)||[];
+ // Число слоёв — по самой длинной строке: в первом месяце счёт может быть
+ // ещё не у всех очередей, и слой пропал бы молча вместе с очередью.
+ const parts=Array.from({length:Math.max(0,...data.map(x=>(x.escrow_by_phase||[]).length))});
  const layers=parts.length>1?parts.map((_,k)=>{
    const below=x=>(x.escrow_by_phase||[]).slice(0,k).reduce((a,b)=>a+Number(b||0),0);
    const upto=x=>below(x)+Number((x.escrow_by_phase||[])[k]||0);
    const top=data.map((x,i)=>pt(i,upto(x))).join(' ');
    const back=data.slice().reverse().map((x,i)=>pt(data.length-1-i,below(x))).join(' ');
-   return `<polygon points="${top} ${back}" fill="#2D6A4F" fill-opacity="${(0.16+0.16*(k%3)).toFixed(2)}"`
+   return `<polygon points="${top} ${back}" fill="#2D6A4F" fill-opacity="${(0.14+0.10*k).toFixed(2)}"`
     +` stroke="#2D6A4F" stroke-opacity="0.35" stroke-width="0.8"></polygon>`;
  }).join(''):`<polygon points="${area(x=>Number(x.escrow||0))}" fill="#2D6A4F" fill-opacity="0.30"/>`;
  // Слои названы прямо на рисунке: без подписи разделённая площадь читается
  // как одна, и общая легенда («Эскроу накоплено») отвечала бы про сумму.
+ // Слои названы поимённо: «слоями по очередям» без имён не отвечает, какая
+ // очередь где, — а порядок у слоёв тот же, что у очередей.
+ const layerNames=((cover&&cover.phase_names)||[]).slice(0,parts.length);
  const layerNote=parts.length>1
-  ? `<text x="${pL+4}" y="${pT+11}" font-size="11" fill="#2D6A4F">эскроу — слоями по очередям, снизу вверх</text>` : '';
+  ? `<text x="${pL+4}" y="${pT+11}" font-size="11" fill="#2D6A4F">эскроу — слоями снизу вверх`
+    +`${layerNames.length===parts.length?': '+escapeHtml(layerNames.join(' · ')):' по очередям'}</text>` : '';
  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">${grid}
   ${layers}${layerNote}
   ${gaps}
@@ -42777,7 +42850,7 @@ function escrowCoverSvg(rows,cover){
   ${repaid}${rveMark}${endMark}
   ${cumGrid}
   <text x="${pL}" y="${pT-4}" font-size="11" fill="#777" text-anchor="start">долг и эскроу, млрд ₽</text>
-  <text x="${W-2}" y="${pT-4}" font-size="11" fill="#1B5E77" text-anchor="end">накопленно</text>
+  <text x="${W-2}" y="${pT-4}" font-size="11" fill="#1B5E77" text-anchor="end">накопленным итогом, млрд ₽</text>
   ${marks}</svg>`;
 }
 function escrowCoverLines(cover){
