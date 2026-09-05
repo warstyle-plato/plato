@@ -979,7 +979,11 @@ def test_the_report_can_be_dropped_whole() -> None:
     reset = reset[: reset.index("});")]
     for state in ("lastReport=null", "planData=null", "added.clear()",
                   "$('#out').innerHTML=''", "$('#hintout').innerHTML=''",
-                  "$('#askout').innerHTML=''"):
+                  # Ответ Платона переехал в общий ящик: стирается его вывод,
+                  # а не бывшая карточка. Разговор при этом сбрасывается и в
+                  # памяти (`marketTalk.reset()`) — оставшийся на экране, он
+                  # читался бы как разговор о новом отчёте.
+                  "$('#platoOut').innerHTML=''", "marketTalk.reset()"):
         assert state in reset, state
     # Поле загрузки плана убрано вместе со своей кнопкой: план приезжает файлом
     # проекта. Сброс не должен трогать поле, которого нет, — обращение к нему

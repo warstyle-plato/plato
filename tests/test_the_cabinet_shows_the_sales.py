@@ -99,18 +99,29 @@ def test_an_empty_fee_is_not_a_free_broker() -> None:
 
 
 def test_one_path_to_platon_for_the_whole_cabinet() -> None:
-    """Копия опроса по номеру была бы вторым местом, где чинят обрыв ответа."""
+    """Копия опроса по номеру была бы вторым местом, где чинят обрыв ответа.
+
+    Путь стал общим на ВСЕ поверхности, а не только на кабинет: копий было три
+    (кабинет, торги, расчёт), и расходились они молча — в торгах не
+    показывалась стадия. Здесь по-прежнему держим «опрос объявлен один раз»,
+    просто объявлен он теперь в пакете.
+    """
+    import plato_question
+
     body = script()
     assert body.count("/agent/result/") == 1, "опрос по номеру запуска объявлен один раз"
-    assert "async function platoAnswer(" in body
-    assert "await platoAnswer(" in body
+    assert plato_question.SCRIPT.count("/agent/result/") == 1, "в пакете копий тоже нет"
+    assert "async function platoAsk(" in plato_question.SCRIPT
+    assert "platoAsk(" in body, "кабинет ходит своим путём мимо общего"
 
 
 def test_platon_reads_the_numbers_and_does_not_recount_them() -> None:
     """Числа считает движок; темы разбора живут в подсказках диалога."""
     body = script()
-    ask = body[body.index("async function askPlatoSales("):]
-    ask = ask[:ask.index("\n}")]
+    # Сборка вопроса переехала в груз блока: ящик один на страницу, а что в
+    # него положить, решает тот блок, из которого нажали.
+    ask = body[body.index("const SALES_SURFACE={"):]
+    ask = ask[:ask.index("\n};")]
     assert "НЕ пересчитывай" in ask
 
     asks = body[body.index("const SALES_ASKS=["):]

@@ -113,5 +113,7 @@ def test_the_auctions_page_counts_the_whole_message() -> None:
     chunk = body[place: body.index("\nfunction renderAskContext(", place)]
     assert "preamble.length" in chunk and "tail.length" in chunk
     assert re.search(r"platoPack\(parts\.head,\s*parts\.groups", chunk)
-    # Сообщение собирается одной функцией, и её же зовёт кнопка.
-    assert "const message=askMessage(question);" in body
+    # Сообщение собирается одной функцией, и её же зовёт груз блока: кнопка
+    # открывает ящик, а что в нём спросить — решает поверхность.
+    assert "message: question=>askMessage(question)" in body
+    assert "platoOpen(AUCTION_SURFACE)" in body
