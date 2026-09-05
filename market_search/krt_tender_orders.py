@@ -20,9 +20,9 @@
 from __future__ import annotations
 
 import re
-import shutil
-import subprocess
 from typing import Any
+
+import pdf_ocr
 
 _SPACE = re.compile(r"\s+")
 
@@ -64,35 +64,23 @@ _UNITS = {
 }
 
 
-class OcrUnavailable(RuntimeError):
-    """Распознавания нет — это отказ, а не пустой ответ."""
+# Распознавание объявлено один раз — в `pdf_ocr`. Здесь остаётся то, что
+# принадлежит распоряжению: сколько его страниц читать и как разобрать
+# прочитанное. Своей копии не держим по той же причине, по которой нет копии
+# `VERSION`: копию негде обновлять. Имена оставлены прежние — их знают и
+# читатель реестра, и его проверки.
+OcrUnavailable = pdf_ocr.Unavailable
+ocr_available = pdf_ocr.available
 
 
-def ocr_available() -> bool:
-    return bool(shutil.which("tesseract"))
-
-
-def ocr(pdf: bytes, pages: int = 3, dpi: int = 200) -> str:
+def ocr(pdf: bytes, pages: int = 3, dpi: int = pdf_ocr.DEFAULT_DPI) -> str:
     """Распознать первые страницы распоряжения.
 
     Дальше третьей не идём: адрес, цена, шаг и задаток стоят в начале, а
     приложения — это таблицы участков на десяток страниц, и распознавать их
     ради привязки незачем.
     """
-    if not ocr_available():
-        raise OcrUnavailable(
-            "Распознавание недоступно: в образе нет tesseract. "
-            "Распоряжение о торгах — скан, и без него адрес из него не достать.")
-    import pymupdf
-
-    document = pymupdf.open(stream=pdf, filetype="pdf")
-    out: list[str] = []
-    for index in range(min(pages, document.page_count)):
-        png = document[index].get_pixmap(dpi=dpi).tobytes("png")
-        done = subprocess.run(["tesseract", "stdin", "stdout", "-l", "rus", "--psm", "6"],
-                              input=png, capture_output=True, timeout=180)
-        out.append(done.stdout.decode("utf-8", errors="replace"))
-    return "\n".join(out)
+    return pdf_ocr.text(pdf, pages=pages, dpi=dpi)
 
 
 def _digits(raw: str) -> int | None:

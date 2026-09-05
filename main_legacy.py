@@ -11890,9 +11890,10 @@ def _telegram_handle_intake_document(chat_id: int, data: bytes, filename: str) -
     посчитанного.
     """
     document = document_intake.extract_text(data, filename)
-    if document.get("scanned") or not document.get("text"):
+    if not document.get("text"):
         # Скан — не пустой документ. Сказать «ничего не нашли» значит соврать
-        # про источник: там всё есть, просто картинкой.
+        # про источник: там всё есть, просто картинкой. Признак скана гейтом
+        # быть перестал: распознанный скан — это скан С текстом.
         _telegram_send_message(
             chat_id,
             "<b>Документ принят, но прочитать нечего.</b>\n"
@@ -11953,7 +11954,11 @@ def _telegram_handle_intake_document(chat_id: int, data: bytes, filename: str) -
     for line in got.get("dropped") or []:
         lines.append(f"\nНе взято — {html.escape(str(line)[:200])}")
     lines.append("\nЧисла проверьте глазами: это то, что написано в документе, "
-                 "а не расчёт.")
+                 "а не расчёт."
+                 + (" Текст этого документа получен РАСПОЗНАВАНИЕМ скана: "
+                    "цитаты не дословны, а цифра, прочитанная неверно, "
+                    "выглядит как прочитанная верно."
+                    if document.get("recognized") else ""))
     # Кадастровый номер из документа — это участок, а участок мы считаем.
     # Своего пути для этого не заводим: номер уходит туда же, куда ушёл бы
     # присланный сообщением, — иначе на один участок появилось бы два расчёта.
@@ -34590,9 +34595,10 @@ def agent_document(req: AgentDocumentRequest, request: Request) -> dict[str, Any
             detail=(f"Файл больше {_DOCUMENT_INTAKE_MAX_BYTES // (1024 * 1024)} МБ. "
                     "Пришлите нужные страницы отдельно."))
     document = document_intake.extract_text(data, req.filename)
-    if document.get("scanned") or not document.get("text"):
+    if not document.get("text"):
         # Скан — не пустой документ, и выдавать «ничего не нашли» за ответ
-        # нельзя: человек решит, что в файле пусто.
+        # нельзя: человек решит, что в файле пусто. Гейт по признаку скана
+        # отказывал бы и распознанному — то есть ровно там, где сработало.
         return {"document": document, "fields": [], "questions": [], "notes": [],
                 "reason": document.get("reason") or "в документе нет текста"}
 
@@ -36567,7 +36573,8 @@ function renderAiIntake(data){
  if(doc.pages)html+=' <span style="color:#888">· страниц '+aiEsc(doc.pages)+'</span>';
  // Скан — не пустой документ. Выдать «ничего не нашли» за «там ничего нет»
  // значит соврать про источник.
- if(data.reason)html+='<div style="margin-top:6px;color:#8a4b08">'+aiEsc(data.reason)+'</div>';
+ const note=data.reason||doc.reason||'';
+ if(note)html+='<div style="margin-top:6px;color:#8a4b08">'+aiEsc(note)+'</div>';
  const fields=data.fields||[];
  if(fields.length){
   html+='<div style="margin-top:8px"><table style="width:100%;border-collapse:collapse;font-size:12px">'
@@ -36576,7 +36583,7 @@ function renderAiIntake(data){
    +'<td><input type="checkbox" class="ai-intake-pick" data-key="'+aiEsc(f.key)+'" checked></td>'
    +'<td>'+aiEsc(f.key)+'</td>'
    +'<td><b>'+aiEsc(f.value)+'</b> '+aiEsc(f.unit||'')+'</td>'
-   +'<td style="color:#666">«'+aiEsc(f.quote)+'»</td></tr>'});
+   +'<td style="color:#666">'+(doc.recognized?'распознано: ':'')+'«'+aiEsc(f.quote)+'»</td></tr>'});
   html+='</table><button class="btn dark" style="margin-top:8px" onclick="applyAiIntake()">Применить отмеченное</button></div>';
  }
  (data.questions||[]).forEach(q=>{
@@ -36587,7 +36594,7 @@ function renderAiIntake(data){
  // Отброшенное называется вслух: молча пропущенное поле читается как
  // «в документе такого нет».
  (data.dropped||[]).forEach(line=>{html+='<div style="margin-top:4px;color:#8a4b08;font-size:12px">Не взято — '+aiEsc(line)+'</div>'});
- if(!fields.length&&!(data.questions||[]).length&&!data.reason)html+='<div style="margin-top:6px">В документе не нашлось полей, которые понимает модель.</div>';
+ if(!fields.length&&!(data.questions||[]).length&&!note)html+='<div style="margin-top:6px">В документе не нашлось полей, которые понимает модель.</div>';
  box.innerHTML=html;aiMessages.appendChild(box);aiMessages.scrollTop=aiMessages.scrollHeight;
 }
 async function applyAiIntake(){
