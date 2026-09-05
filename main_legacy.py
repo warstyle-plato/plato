@@ -13989,43 +13989,49 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     # VRI is deliberately absent: it is funded directly by PF at RnS/permit.
     bridge_total = float(financing.get("calculated_bridge") or 0.0)
     capex_data = result.get("capex") or {}
+
     # Режим «строительство и компенсация» PDF не знал: денежная часть падала
     # в ноль и молча уезжала в «приобретение проекта», а сайт в той же строке
     # показывал её отдельно. Два достоверных на вид отчёта с разными числами —
     # ровно то, что правило «поверхности считают одинаково» запрещает.
-    social_mode_now = str(summary.get("social_payment_mode") or "")
-    social_construction = sum(
-        float(value or 0.0) * 1_000_000
-        for value in ((summary.get("social_payment_breakdown") or {}).get("construction") or {}).values()
-    )
-    if social_mode_now == "Денежная компенсация":
-        bridge_social = float(capex_data.get("social") or 0.0)
-    elif social_mode_now == SOCIAL_MODE_BOTH:
-        bridge_social = max(0.0, float(summary.get("social_payment") or 0.0) - social_construction)
-    else:
-        bridge_social = 0.0
-    bridge_design_p = float(capex_data.get("design_p") or 0.0)
-    bridge_design_rd = float(capex_data.get("design_rd") or 0.0)
-    bridge_purchase = max(
-        0.0,
-        bridge_total - bridge_social - bridge_design_p - bridge_design_rd,
-    )
-    bridge_uses = [
-        ("Приобретение проекта", bridge_purchase),
-        ("Социальная компенсация", bridge_social),
-        ("Проектирование - стадия П", bridge_design_p),
-        ("Проектирование - стадия РД", bridge_design_rd),
-    ]
-    bridge_uses = [(label, value) for label, value in bridge_uses if value > 0.5]
-    bridge_rows = [["Цель", "Сумма", "Доля"]]
-    for label, value in bridge_uses:
-        share = _pdf_num(value / bridge_total * 100, 1) + "%" if bridge_total else "—"
-        bridge_rows.append([label, _pdf_money(value), share])
-    bridge_rows.append([
-        "ИТОГО БРИДЖ",
-        _pdf_money(bridge_total),
-        "100,0%" if bridge_total else "—",
-    ])
+    def _bridge_uses(res: dict[str, Any]) -> tuple[float, list[tuple[str, float]]]:
+        res_summary = res.get("summary") or {}
+        res_capex = res.get("capex") or {}
+        total = float((((res.get("report") or {}).get("financing")) or {}).get("calculated_bridge") or 0.0)
+        mode = str(res_summary.get("social_payment_mode") or "")
+        built = sum(
+            float(value or 0.0) * 1_000_000
+            for value in ((res_summary.get("social_payment_breakdown") or {}).get("construction") or {}).values()
+        )
+        if mode == "Денежная компенсация":
+            social = float(res_capex.get("social") or 0.0)
+        elif mode == SOCIAL_MODE_BOTH:
+            social = max(0.0, float(res_summary.get("social_payment") or 0.0) - built)
+        else:
+            social = 0.0
+        design_p = float(res_capex.get("design_p") or 0.0)
+        design_rd = float(res_capex.get("design_rd") or 0.0)
+        purchase = max(0.0, total - social - design_p - design_rd)
+        uses = [
+            ("Приобретение проекта", purchase),
+            ("Социальная компенсация", social),
+            ("Проектирование - стадия П", design_p),
+            ("Проектирование - стадия РД", design_rd),
+        ]
+        return total, [(label, value) for label, value in uses if value > 0.5]
+
+    def _bridge_use_rows(total: float, uses: list[tuple[str, float]],
+                         footer: str) -> list[list[str]]:
+        rows = []
+        for label, value in uses:
+            share = _pdf_num(value / total * 100, 1) + "%" if total else "—"
+            rows.append([label, _pdf_money(value), share])
+        rows.append([footer, _pdf_money(total), "100,0%" if total else "—"])
+        return rows
+
+    bridge_total, bridge_uses = _bridge_uses(result)
+    bridge_rows = [["Цель", "Сумма", "Доля"]] + _bridge_use_rows(
+        bridge_total, bridge_uses, "ИТОГО БРИДЖ")
     # График платежей за покупку — до структуры БРИДЖа: лимит считается от
     # всей цены, а выборка идёт за платежами, и разница между ними видна
     # только когда напечатаны сроки.
@@ -14045,10 +14051,36 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             block.append(P(str(warning), small))
         story.append(KeepTogether(block))
 
-    story.append(KeepTogether([
-        P("Структура расчётного БРИДЖА", h2),
-        table(bridge_rows, [98*mm, 45*mm, 27*mm], font_size=8.0),
-    ]))
+    # Лимит БРИДЖа — цифра одного договора, и у проекта с очередями таких
+    # договоров столько же, сколько очередей: открыты они в разные годы, и
+    # сложенные в одну сумму дают лимит, которого никто не выдавал («это
+    # глупость, а не расчётный бридж», владелец, 04.09.2026). Экран уже
+    # разбирает его по очередям, и отчёт обязан говорить то же самое.
+    _bridge_limit_phases = [item for item in (payload.get("phases") or [])
+                            if isinstance(item, dict)]
+    if len(_bridge_limit_phases) > 1:
+        phase_bridge_rows = [["Цель", "Сумма", "Доля"]]
+        for item in _bridge_limit_phases:
+            name = str(item.get("name") or "Очередь")
+            total_q, uses_q = _bridge_uses(item.get("result") or {})
+            if not uses_q:
+                phase_bridge_rows.append([name + " - лимит БРИДЖа не рассчитывается", "", ""])
+                continue
+            phase_bridge_rows.append([name, "", ""])
+            phase_bridge_rows.extend(_bridge_use_rows(
+                total_q, uses_q, "Лимит БРИДЖа " + name))
+        story.append(KeepTogether([
+            P("Расчётный лимит БРИДЖа - по очередям", h2),
+            table(phase_bridge_rows, [98*mm, 45*mm, 27*mm], font_size=8.0),
+            P("Лимит считает банк по каждому договору отдельно: у каждой очереди "
+              "своя линия до открытия её ПФ. Сложенные вместе, лимиты дали бы "
+              "договор, которого никто не выдавал, поэтому свода здесь нет.", small),
+        ]))
+    else:
+        story.append(KeepTogether([
+            P("Структура расчётного БРИДЖА", h2),
+            table(bridge_rows, [98*mm, 45*mm, 27*mm], font_size=8.0),
+        ]))
 
     # Фактический пик — по статьям, оплаченным к его месяцу. Без этой таблицы
     # разница между лимитом методики и реальной потребностью («остальное
@@ -23386,6 +23418,14 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
 
     # Financing deductions are recognized when paid. The bridge and PF setup
     # fees are dated separately because they are not included in monthly rows.
+    #
+    # По п. 8 ст. 272 НК проценты признаются на конец КАЖДОГО МЕСЯЦА
+    # независимо от даты выплат, и здесь это пока не так. Переход на
+    # начисление написан и снят с этой ветки: он меняет налог там, где есть
+    # убыточная очередь (на проверочном проекте 890,9 → 922,3 млн ₽), а книга
+    # признаёт проценты строкой 53 листов CF, то есть по уплате. Методику
+    # меняют в двух местах, движок и книгу, одной правкой — иначе отчёт и
+    # книга скажут про один проект разное, и оба будут выглядеть верными.
     financing_deductions: dict[date, float] = defaultdict(float)
     for row in result["rows"]:
         financing_deductions[d(row["month"])] += float(row.get("interest_payment", 0.0) or 0.0)
@@ -34098,9 +34138,9 @@ details.cadastral-box>summary::marker{color:#888}
       </div>
 
       <div class="card">
-        <div class="section-title">Структура расчётного БРИДЖа</div>
+        <div class="section-title" id="bridgePurposeTitle">Структура расчётного БРИДЖа</div>
         <table class="metric-table metric-compact bridge-purpose-table" id="bridgePurposeTable"></table>
-        <div class="bridge-purpose-note">Смена ВРИ / земельные права, проценты и комиссии в расчётный лимит БРИДЖа не входят.</div>
+        <div class="bridge-purpose-note" id="bridgePurposeNote">Смена ВРИ / земельные права, проценты и комиссии в расчётный лимит БРИДЖа не входят.</div>
         <!-- Расчётный лимит расшифрован по целям методики, а фактический пик не
              был расшифрован ничем — и разница между ними, то самое «остальное
              вашими», разбиралась перепиской. -->
@@ -35256,6 +35296,21 @@ function setPhaseProductShare(k,i,v){
  phasing.phases.forEach(p=>{const product=(p.products||{})[k];if(!product)return;['gns','total_area','useful','saleable','transfer','units'].forEach(field=>delete product[field]);product.assumption_source='Распределено по долям очередей'});
  renderPhasing();calculate();
 }
+// Квартир, машино-мест и кладовых не бывает 412,94. Доли режут метры, а
+// штуки — считаются: раскладка идёт по наибольшему остатку, чтобы сумма
+// очередей сходилась со строкой проекта ровно, а не «почти» (владелец,
+// 04.09.2026: «штуки квартир не могут быть дробными»). Округление каждой
+// доли по отдельности этого не даёт — три очереди по 412,94 дают 1239 при
+// проектных 1238, и таблица честно показывает расхождение с проектом.
+function phaseIntegerSplit(master,shares,sum){
+ const total=Math.round(Math.max(0,Number(master)||0));
+ const raw=shares.map(v=>total*Math.max(0,Number(v||0))/(sum||1));
+ const base=raw.map(v=>Math.floor(v));
+ let left=total-base.reduce((s,v)=>s+v,0);
+ const order=raw.map((v,i)=>[v-Math.floor(v),i]).sort((a,b)=>b[0]-a[0]);
+ for(let k=0;k<order.length&&left>0;k++){base[order[k][1]]+=1;left--}
+ return base;
+}
 function phaseProductDerived(key,field,index){
  const master=Number((tep[key]||{})[field]||0),count=Number(phasing.phase_count||1);
  // Social objects are assigned by their registry, not by the generic fallback
@@ -35272,6 +35327,7 @@ function phaseProductDerived(key,field,index){
  }
  if(phasing.products[key]){
   const a=(phasing.products[key]||phaseWeightPreset(count)).slice(0,count),sum=a.reduce((s,v)=>s+Number(v||0),0)||100;
+  if(field==='units')return phaseIntegerSplit(master,a,sum)[index]||0;
   return master*Number(a[index]||0)/sum;
  }
  const assigned={offices:Math.min(3,count),standalone_retail:Math.min(2,count),above_parking:Math.min(2,count)}[key]||1;
@@ -35344,7 +35400,12 @@ function setPhaseProductGiven(index,key,value){
 function setPhaseProductTep(index,key,field,value){
  const phase=phasing.phases[index];if(!phase)return;if(!phase.products)phase.products={};
  if(!phase.products[key])phase.products[key]={assumption_source:'Введено пользователем'};
- const requested=value===''?null:Math.max(0,Number(value||0)),limit=phaseProductTepLimit(key,field,index),bounded=requested===null?null:(limit===null?requested:Math.min(limit,requested));
+ // Штука — счётчик: дробной её не принимаем ни из поля, ни из ограничения
+ // остатком, иначе округление на экране разойдётся с тем, что уедет в расчёт.
+ const count=field==='units';
+ const asked=value===''?null:Math.max(0,Number(value||0)),limit=phaseProductTepLimit(key,field,index);
+ const requested=asked===null?null:(count?Math.round(asked):asked);
+ let bounded=requested===null?null:(limit===null?requested:Math.min(count?Math.floor(limit+1e-6):limit,requested));
  phaseTepEditWarning=requested!==null&&bounded<requested-1e-6?`Значение ограничено до ${num(bounded)}: доступный остаток исходного ТЭП — ${num(limit)}.`:'';
  if(bounded===null)delete phase.products[key][field];else phase.products[key][field]=bounded;
  if(Object.keys(phase.products[key]).every(k=>k==='assumption_source'))delete phase.products[key];
@@ -35476,7 +35537,7 @@ function renderPhasing(){
   const totals={gns:0,saleable:0,units:0,given:0};
   const cells=phasing.phases.map((p,i)=>{
    const own=(p.products||{})[k]||{};
-   const inputsHtml=['gns','saleable','units'].map(field=>{const derived=phaseProductDerived(k,field,i),has=own[field]!==undefined,value=has?Number(own[field]):derived,isRemainder=!!phasing.products[k]&&i===phasing.phases.length-1,limit=phaseProductTepLimit(k,field,i),maxAttr=limit===null?'':`max="${Number(limit.toFixed(6))}"`;totals[field]+=value;return `<input type="number" min="0" ${maxAttr} step="any" value="${Number(value.toFixed(2))}" title="${isRemainder?'Автоматический остаток':field+(has?' — введено вручную':' — рассчитано по доле')+(limit===null?'':` · максимум ${num(limit)}`)}" ${isRemainder?'readonly':`onchange="setPhaseProductTep(${i},'${k}','${field}',this.value)"`}>`}).join('');
+   const inputsHtml=['gns','saleable','units'].map(field=>{const isCount=field==='units',derived=phaseProductDerived(k,field,i),has=own[field]!==undefined,raw=has?Number(own[field]):derived,value=isCount?Math.round(raw):raw,isRemainder=!!phasing.products[k]&&i===phasing.phases.length-1,limit=phaseProductTepLimit(k,field,i),maxAttr=limit===null?'':`max="${Number(limit.toFixed(6))}"`;totals[field]+=value;return `<input type="number" min="0" ${maxAttr} step="${isCount?'1':'any'}" value="${isCount?value:Number(value.toFixed(2))}" title="${isRemainder?'Автоматический остаток':field+(has?' — введено вручную':' — рассчитано по доле')+(limit===null?'':` · максимум ${num(limit)}`)}" ${isRemainder?'readonly':`onchange="setPhaseProductTep(${i},'${k}','${field}',this.value)"`}>`}).join('');
    // Передаваемое правится в ОЧЕРЕДИ, а проектная строка становится их суммой
    // (владелец, 04.09.2026: «приоритет в очередности»). Долями оно не делится:
    // отдают конкретные метры конкретной очереди и конкретные машино-места, а
@@ -35514,7 +35575,12 @@ function renderPhasing(){
    ? `<div style="font-size:11px;color:#7a1f1f;margin-top:3px">передаётся ${num(givenTotal)} `
      +`${phaseGivenField(k)==='transfer'?'м² — не продаются':'шт. — не продаются'}</div>`
    : '';
-  return `<tr><td><b>${tepLabels[k]}</b></td>${cells}<td>${totalCell}${givenCell}</td></tr>`;
+  // Чем меряется передача, у каждой строки своё: метры отдают метрами,
+  // машино-места и кладовые — штуками. В шапке это не сказать: она одна на
+  // все продукты, и «передаётся» без единицы читается как вопрос («что
+  // передаётся? штуки или метры?», владелец, 04.09.2026).
+  const givenUnit=phaseGivenField(k)==='transfer'?'м²':'шт.';
+  return `<tr><td><b>${tepLabels[k]}</b><div style="font-size:11px;color:#777">передаётся в ${givenUnit}</div></td>${cells}<td>${totalCell}${givenCell}</td></tr>`;
  }).join('');
  if(document.getElementById('phaseTepWarning'))phaseTepWarning.textContent=phaseTepEditWarning;
  const sl={purchase:'Покупка / вход',land_rights:'Земельные права / ВРИ',ird:'ИРД',design:'П + РД',preparation:'Подготовительные',utilities:'Наружные сети',social_compensation:'Соцкомпенсация',social_construction:'Соцобъекты — аналитическая аллокация'};
@@ -40151,6 +40217,13 @@ function renderPhaseComparison(){
 // Свод складывает эскроу и долг всех очередей, и по нему не видно, какая
 // очередь не рассчиталась: у каждой своя дата раскрытия. Поэтому график по
 // очередям отдельный — тем же рисовальщиком и на тех же числах сервера.
+//
+// Легенда у него та же и из того же места. У сводного графика и у отчёта она
+// стоит разметкой, потому что карточка написана руками; карточки очередей
+// собирает скрипт, и подставленная сюда легенда была потеряна — шесть линий
+// без единой подписи. Правило прежнее: легенда объявлена там же, где график
+// один, — движком; здесь она просто доезжает до собранной разметки.
+const ESCROW_LEGEND_HTML=`__DEVELOPAID_ESCROW_LEGEND__`;
 function renderPhaseEscrowCharts(){
  const card=document.getElementById('phaseEscrowCard'),box=document.getElementById('phaseEscrowCharts');
  if(!card||!box)return;
@@ -40160,7 +40233,7 @@ function renderPhaseEscrowCharts(){
   const svg=escrowCoverSvg(rows,cover);
   if(!svg)return '';
   const lines=escrowCoverLines(cover);
-  return `<div class="phase-escrow" style="margin-bottom:20px"><div class="section-title">${escapeHtml(p.name||('Очередь '+(i+1)))}</div>${svg}`
+  return `<div class="phase-escrow" style="margin-bottom:20px"><div class="section-title">${escapeHtml(p.name||('Очередь '+(i+1)))}</div>${svg}${ESCROW_LEGEND_HTML}`
    +(lines?`<div class="note">${lines}</div>`:'')+'</div>';
  }).filter(Boolean);
  box.innerHTML=items.join('');
@@ -40675,18 +40748,35 @@ function renderResult(){
     socialPerMetre(r)+socialNeedRow;
  }
 
- const bridgeTotal=Number(r.report.financing.calculated_bridge||0);
- const bridgeSocial=socialMode==='Денежная компенсация'?Number(r.capex.social||0)
-   :(socialMode==='Строительство и компенсация'?socialCash:0);
- const bridgeDesignP=Number(r.capex.design_p||0);
- const bridgeDesignRd=Number(r.capex.design_rd||0);
- const bridgePurchase=Math.max(0,bridgeTotal-bridgeSocial-bridgeDesignP-bridgeDesignRd);
- const bridgeUses=[
-   ['Приобретение проекта',bridgePurchase],
-   ['Социальная компенсация',bridgeSocial],
-   ['Проектирование — стадия П',bridgeDesignP],
-   ['Проектирование — стадия РД',bridgeDesignRd]
- ].filter(x=>x[1]>0.5);
+ // Расчётный лимит БРИДЖа — цифра ОДНОГО договора: покупка, денежная
+ // соцкомпенсация и проектирование, под которые банк открывает линию до РнС.
+ // У проекта с очередями таких договоров столько же, сколько очередей, и
+ // открыты они в разные годы — сложенные в одну сумму, они дают лимит,
+ // которого не выдавал никто («это глупость, а не расчётный бридж»,
+ // владелец, 04.09.2026). То же правило, по которому пиковый БРИДЖ уже
+ // разложен по очередям, и то же, по которому свод финансирования не
+ // складывает лимиты договоров под именем момента.
+ function bridgeUsesOf(res){
+  const cap=res.capex||{}, sum=res.summary||{};
+  const mode=sum.social_payment_mode||'—';
+  const built=(((sum.social_payment_breakdown||{}).construction)||{});
+  const builtTotal=Number(built.kindergarten_mln||0)+Number(built.school_mln||0)+Number(built.clinic_mln||0);
+  const cash=Math.max(0,Number(sum.social_payment||0)-builtTotal*1e6);
+  const total=Number(((res.report||{}).financing||{}).calculated_bridge||0);
+  const social=mode==='Денежная компенсация'?Number(cap.social||0)
+    :(mode==='Строительство и компенсация'?cash:0);
+  const designP=Number(cap.design_p||0), designRd=Number(cap.design_rd||0);
+  const purchase=Math.max(0,total-social-designP-designRd);
+  const uses=[
+    ['Приобретение проекта',purchase],
+    ['Социальная компенсация',social],
+    ['Проектирование — стадия П',designP],
+    ['Проектирование — стадия РД',designRd]
+  ].filter(x=>x[1]>0.5);
+  return {total:total,uses:uses};
+ }
+ const bridgeCalc=bridgeUsesOf(r);
+ const bridgeTotal=bridgeCalc.total, bridgeUses=bridgeCalc.uses;
  const bridgeShare=value=>bridgeTotal>0?(value/bridgeTotal*100).toLocaleString('ru-RU',{minimumFractionDigits:1,maximumFractionDigits:1})+'%':'—';
  function bridgeActualNoteText(queues){
   const base='Оплачено к месяцу пика. До открытия ПФ у очереди нет ни выручки, ни ПФ, поэтому остаток её БРИДЖа равен оплаченному. Разница с расчётным лимитом — расходы, под которые лимит не даётся.';
@@ -40697,10 +40787,30 @@ function renderResult(){
   return 'Пик свода — месяц, когда на БРИДЖе '+queues.on_bridge.join(', ')+(parts.length?'; '+parts.join('; '):'')+'. '+base;
  }
  const bridgePurposeEl=document.getElementById('bridgePurposeTable');
- bridgePurposeEl.innerHTML=
-   `<thead><tr><th>Цель</th><th>Сумма</th><th>Доля</th></tr></thead>`+
-   `<tbody>${bridgeUses.map(x=>`<tr><td>${x[0]}</td><td>${money(x[1])}</td><td>${bridgeShare(x[1])}</td></tr>`).join('')}</tbody>`+
-   `<tfoot><tr><th>Итого БРИДЖ</th><th>${money(bridgeTotal)}</th><th>${bridgeTotal>0?'100,0%':'—'}</th></tr></tfoot>`;
+ const bridgeLimitPhases=(phaseBundle&&phaseBundle.phases&&phaseBundle.phases.length>1&&r===phaseBundle.consolidated)?phaseBundle.phases:null;
+ const bridgePurposeTitle=document.getElementById('bridgePurposeTitle');
+ const bridgePurposeNote=document.getElementById('bridgePurposeNote');
+ if(bridgeLimitPhases){
+  const blocks=bridgeLimitPhases.map(p=>{
+   const calc=bridgeUsesOf(p.result||{});
+   const share=value=>calc.total>0?(value/calc.total*100).toLocaleString('ru-RU',{minimumFractionDigits:1,maximumFractionDigits:1})+'%':'—';
+   const name=escapeHtml(p.name||'Очередь');
+   if(!calc.uses.length)return `<tbody><tr><th colspan="3">${name} · лимит БРИДЖа не рассчитывается</th></tr></tbody>`;
+   return `<tbody><tr><th colspan="3">${name}</th></tr>`
+    +calc.uses.map(x=>`<tr><td>${x[0]}</td><td>${money(x[1])}</td><td>${share(x[1])}</td></tr>`).join('')
+    +`<tr><th>Лимит БРИДЖа ${name}</th><th>${money(calc.total)}</th><th>${calc.total>0?'100,0%':'—'}</th></tr></tbody>`;
+  }).join('');
+  bridgePurposeEl.innerHTML=`<thead><tr><th>Цель</th><th>Сумма</th><th>Доля</th></tr></thead>`+blocks;
+  if(bridgePurposeTitle)bridgePurposeTitle.textContent='Расчётный лимит БРИДЖа — по очередям';
+  if(bridgePurposeNote)bridgePurposeNote.textContent='Лимит считает банк по каждому договору отдельно: у каждой очереди своя линия до открытия её ПФ. Сложенные вместе, лимиты дали бы договор, которого никто не выдавал, поэтому свода здесь нет. Смена ВРИ / земельные права, проценты и комиссии в расчётный лимит не входят.';
+ }else{
+  bridgePurposeEl.innerHTML=
+    `<thead><tr><th>Цель</th><th>Сумма</th><th>Доля</th></tr></thead>`+
+    `<tbody>${bridgeUses.map(x=>`<tr><td>${x[0]}</td><td>${money(x[1])}</td><td>${bridgeShare(x[1])}</td></tr>`).join('')}</tbody>`+
+    `<tfoot><tr><th>Итого БРИДЖ</th><th>${money(bridgeTotal)}</th><th>${bridgeTotal>0?'100,0%':'—'}</th></tr></tfoot>`;
+  if(bridgePurposeTitle)bridgePurposeTitle.textContent='Структура расчётного БРИДЖа';
+  if(bridgePurposeNote)bridgePurposeNote.textContent='Смена ВРИ / земельные права, проценты и комиссии в расчётный лимит БРИДЖа не входят.';
+ }
 
  // Фактический пик — по статьям, оплаченным к месяцу пика. Лимит методики и
  // реальная потребность расходятся всегда, и разница — это то, что банк
