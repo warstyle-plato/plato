@@ -20,6 +20,8 @@ const SHELL = [
   '/v2/',
   '/v2/assets/app.js',
   '/v2/assets/styles.css',
+  '/v2/assets/structured_inputs.js',
+  '/v2/assets/structured_inputs.css',
   '/v2/manifest.webmanifest',
   '/v2/assets/icons/icon-192.png',
   '/v2/assets/icons/icon-512.png',
