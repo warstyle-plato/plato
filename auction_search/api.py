@@ -81,7 +81,13 @@ class KrtRankingRequest(BaseModel):
     по времени» — разные вопросы, и отвечать на них одним ключом нельзя.
     """
 
-    slugs: list[str] = Field(default_factory=list, max_length=400)
+    # Потолок был 400, когда каталог держал 124 площадки. Теперь их 580, и
+    # кнопка «Пересчитать только их» слала весь отобранный список: приходил
+    # 422, а его `detail` — СПИСОК, и на экране он показывался как
+    # «[object Object]» (владелец, 05.09.2026). То есть кнопка не работала
+    # вовсе, и сказать об этом было нечем. Потолок считается от каталога с
+    # запасом на рост, а не от числа, верного позапрошлым летом.
+    slugs: list[str] = Field(default_factory=list, max_length=2000)
     only_stale: bool = False
 
 
@@ -1558,8 +1564,14 @@ def install(app: FastAPI) -> None:
         finder = getattr(krt_registry, "find", None)
         project = finder(f"krt:{slug}") if callable(finder) else None
         if project is None:
+            # Площадка ищется в ОБЕИХ половинах списка — то же правило, что у
+            # кнопки публикаций. У площадки-решения карточки каталога нет
+            # вовсе: `find` её не знает, и служебный ключ уходил геокодеру как
+            # адрес — на экране стояло «Адрес „krt:decision:347614220“ не
+            # найден» (владелец, 05.09.2026). Спрашивать надо её адрес, он
+            # разобран из заголовка документа.
             project = next(
-                (item for item in krt_registry.catalogue() if item.get("slug") == slug), None)
+                (item for item in _krt_all_sites() if item.get("slug") == slug), None)
         if not project:
             raise HTTPException(status_code=404, detail="Территория КРТ не найдена")
         # Сначала официальный файл карты: у каждой площадки реестра там контур
@@ -1631,8 +1643,21 @@ def install(app: FastAPI) -> None:
             # Точка берётся тем же путём, что и точка отчёта, — `resolve_subject`:
             # свой геокодер здесь был четвёртым случаем одной ошибки (см. правило
             # в CLAUDE.md о точке карты и точке отчёта).
+            # Чем спрашивать: у карточки каталога — её ключ, который реестр
+            # знает; у площадки-решения ключа в реестре нет, и спрашивается её
+            # адрес. Ключ, отданный геокодеру, — это не «адреса нет», а наш
+            # служебный идентификатор, показанный человеку как его запрос.
+            query = f"krt:{slug}"
+            if project.get("no_card"):
+                address = str(project.get("address") or project.get("name") or "").strip()
+                if not project.get("address_known") or not address:
+                    raise HTTPException(
+                        status_code=422,
+                        detail="У площадки-решения нет адреса: заголовок документа называет "
+                               "район или границы, а по ним точку не поставить.")
+                query = address if address.lower().startswith("москва") else f"Москва, {address}"
             try:
-                subject = await run_in_threadpool(market.resolve_subject, f"krt:{slug}")
+                subject = await run_in_threadpool(market.resolve_subject, query)
             except (GeocodingError, RemoteServiceError, RuntimeError) as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
             data = subject.to_dict() if hasattr(subject, "to_dict") else {}
