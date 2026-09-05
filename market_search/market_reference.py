@@ -32,6 +32,15 @@ class ClassSnapshot:
     sold_total: int | None
     remainder_total: int | None
     discount_median_pct: float | None
+    # Появились с выпуска отчёта за август: доля ипотеки по классу и цена
+    # сделки по ДДУ. У прежних сводов их нет вовсе, поэтому оба с умолчанием —
+    # «не знаем», а не ноль.
+    mortgage_median_pct: float | None = None
+    discount_projects: int | None = None
+    discount_offering: int | None = None
+    discount_median_offered_pct: float | None = None
+    ddu_median: int | None = None
+    ddu_projects: int | None = None
 
     def position(self, price: int | None) -> dict[str, Any] | None:
         """Где цена проекта стоит относительно города.
@@ -142,6 +151,12 @@ class MoscowMarket:
             sold_total=row.get("sold_total"),
             remainder_total=row.get("rem_total"),
             discount_median_pct=row.get("disc_median"),
+            mortgage_median_pct=row.get("mortgage_median"),
+            discount_projects=row.get("disc_projects"),
+            discount_offering=row.get("disc_offering"),
+            discount_median_offered_pct=row.get("disc_median_offered"),
+            ddu_median=row.get("ddu_median"),
+            ddu_projects=row.get("ddu_projects"),
         )
 
     def okrug(self, okrug: str | None, segment: str | None) -> dict[str, Any] | None:
