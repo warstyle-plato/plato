@@ -309,9 +309,15 @@ def parse_problem(row: KrtTerritory) -> str:
 
 
 def _checked(row: KrtTerritory) -> KrtTerritory:
-    """Строка каталога несёт свой диагноз с собой, а не теряет его по дороге."""
-    problem = parse_problem(row)
-    return replace(row, parse_problem=problem) if problem else row
+    """Строка каталога несёт свой диагноз с собой, а не теряет его по дороге.
+
+    Поле ставится ВСЕГДА, в том числе пустым: диагноз — это ответ правила о
+    полях самой строки, и правило меняется чаще, чем обходится каталог. Пока
+    прежнее значение оставалось нетронутым, правка правила действовала только
+    после следующего обхода — на проде это сутки, — и «пять ложных тревог
+    сняты» читалось на экране как «ничего не изменилось».
+    """
+    return replace(row, parse_problem=parse_problem(row))
 
 
 def parse_catalogue(html: str) -> tuple[list[KrtTerritory], str | None]:
@@ -500,7 +506,10 @@ class KrtRegistry:
         for raw in (payload or {}).get("projects", []):
             clean = {key: raw.get(key) for key in KrtTerritory.__dataclass_fields__}
             try:
-                out.append(KrtTerritory(**clean))
+                # Снимок хранит поля источника, а диагноз считается при чтении:
+                # хранимый — это вторая копия ответа, которая расходится с
+                # правилом ровно до следующего обхода.
+                out.append(_checked(KrtTerritory(**clean)))
             except (TypeError, ValueError):
                 continue
         return out

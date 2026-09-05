@@ -226,3 +226,35 @@ def test_the_table_does_not_show_economy_of_a_shifted_card() -> None:
     # числами: гейт обязан стоять и там, где его рисуют.
     loader = page[page.index("async function loadKrtReport("):page.index("function renderKrtReport(")]
     assert "krtBroken(x)" in loader, "готовый отчёт съехавшей карточки всё равно рисуется"
+
+
+def test_the_diagnosis_is_recounted_when_the_snapshot_is_read(tmp_path) -> None:
+    """Правка правила действует сразу, а не после следующего обхода каталога.
+
+    Диагноз — ответ правила о полях самой строки, а снимок каталога живёт
+    сутки. Пока значение хранилось, правка «ЗелАо — это округ» на проде
+    выглядела как «ничего не изменилось»: восемь помеченных строк оставались
+    восемью до ближайшего обхода.
+    """
+    import json
+
+    from market_search.krt_registry import KrtRegistry
+
+    store = KrtRegistry(tmp_path, fetch=lambda url: b"")
+    store.path.parent.mkdir(parents=True, exist_ok=True)
+    store.path.write_text(json.dumps({
+        "schema_version": store.schema_version if hasattr(store, "schema_version") else None,
+        "complete": True,
+        "projects": [
+            # Снимок прежнего правила: округ верный, а диагноз в нём остался.
+            {"slug": "zelao", "name": "Алабушево", "url": "u", "okrug": "ЗелАо",
+             "status": "В реализации", "parse_problem": "округ «ЗелАо» не из московских"},
+            # И наоборот: съезд был, а в снимке о нём не сказано.
+            {"slug": "shifted", "name": "ул. Мусоргского", "url": "u",
+             "okrug": "ул. Декабристов", "status": "влд. 1", "parse_problem": ""},
+        ],
+    }), encoding="utf-8")
+
+    rows = {row.slug: row for row in store._decode(json.loads(store.path.read_text("utf-8")))}
+    assert rows["zelao"].parse_problem == "", "снятая тревога пережила правку правила"
+    assert rows["shifted"].parse_problem, "съезд не назван, потому что молчал снимок"

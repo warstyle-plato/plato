@@ -150,3 +150,21 @@ def match(lots: Iterable[dict[str, Any]], sites: Iterable[dict[str, Any]]) -> di
             orphans.append(summary)
     return {"by_site": by_site, "unmatched": orphans, "krt_lots": checked,
             "matched_by_area": matched_by_area}
+
+def asking_price_mln(lots: Iterable[dict[str, Any]]) -> float | None:
+    """Цена входа, объявленная торгами по этой площадке, в млн ₽.
+
+    Лотов у площадки бывает несколько, и берётся НАИМЕНЬШАЯ названная цена:
+    это самый мягкий вход, и модель по ней отвечает «даже так не проходит», а
+    не «не проходит по самому дорогому лоту». Неназванная цена — не ноль: лот
+    без неё в счёт не идёт вовсе, иначе бесплатный вход выглядел бы посчитанным.
+    """
+    prices: list[float] = []
+    for lot in lots or []:
+        try:
+            value = float(lot.get("price_rub"))
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            prices.append(value / 1_000_000.0)
+    return min(prices) if prices else None
