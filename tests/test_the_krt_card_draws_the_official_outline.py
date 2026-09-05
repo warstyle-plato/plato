@@ -86,7 +86,10 @@ def test_the_bridge_clears_the_previous_cadastre() -> None:
     krt = bridge[bridge.index("if(pending.krt_model){"):]
     krt = krt[: krt.index("return;\n  }")]
     assert "applyProjectSnapshot(model)" in krt
-    assert "'cadastralNumbers'" not in krt and "landPreview" not in krt
+    assert "field.value=''" not in krt, "мост завёл свой список чистки территории"
+    # Заполняет он поле ПОСЛЕ подмены проекта: она забывает территорию целиком,
+    # и вписанное до неё исчезло бы.
+    assert krt.index("applyProjectSnapshot(model)") < krt.index("field.value=cads.join")
     page = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
     snapshot = page[page.index("function applyProjectSnapshot("):]
     snapshot = snapshot[: snapshot.index("\n}\n")]

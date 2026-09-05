@@ -465,6 +465,34 @@ def _object_actions(text: str) -> list[dict[str, Any]]:
     return result
 
 
+_APPENDIX_MARKER = "перечень земельных участков и объектов капитального строительства"
+
+
+def appendix_cadastral_numbers(text: str) -> dict[str, Any]:
+    """Кадастровые номера из перечня участков и ОКС проекта решения.
+
+    Перечень — единственное место, где документ называет СОСТАВ территории:
+    участки и здания с номерами. Файл карты реестра несёт полигон не у каждой
+    площадки (у Варшавского ш., вл. 37 его нет — 35 строк каталога из 268 в
+    файле отсутствуют), и тогда контур собирается из участков ЕГРН по этим
+    номерам. Участок от здания по номеру не отличить — это скажет ЕГРН, здесь
+    номера отдаются как есть, в порядке документа, без повторов. Перечня нет —
+    берутся номера всего текста, и источник назван: «в тексте», а не «в
+    перечне», это разная уверенность.
+    """
+    low = text.casefold()
+    starts = [match.start() for match in re.finditer(_APPENDIX_MARKER, low)]
+    scope = text[starts[-1]:] if starts else text
+    numbers = list(dict.fromkeys(_CADASTRAL.findall(scope)))
+    if starts:
+        source = "appendix"
+    elif numbers:
+        source = "text"
+    else:
+        source = "none"
+    return {"numbers": numbers[:200], "source": source}
+
+
 def _object_label(item: dict[str, Any]) -> str:
     area = item.get("area_sqm")
     area_text = ""
@@ -558,8 +586,48 @@ def social_objects_from_decision(sentences: Any) -> list[dict[str, Any]]:
 # фонд реновации забирает 15 тысяч из 150 000? значит остальное рыночный
 # объём»). Доля меряется, а не оценивается на глаз.
 _RENOVATION_MARKERS = ("программ", "реновац")
+# Оборот, в котором стоит объём: «…для реализации Программы реновации … – 15 100
+# кв.м» либо «площадью не менее 15 100 кв.м в целях реализации Программы
+# реновации». Само слово ищется без пробельных артефактов PDF: в живом решении
+# по 5-му Верхнему Михайловскому стоит «объекты жило го назначения» и «объектов
+# кап итального строительства» — совпадение по целым словам там не сработало бы.
+_RENOVATION_CLAUSE = re.compile(r"(?iu)программ\w*\s+реновац\w*")
 _RENOVATION_AREA = re.compile(
     r"(?iu)(?<![\d.,])(\d[\d  ]*(?:[.,]\d+)?)\s*(?:кв\.?\s*м|м2|м²)")
+# Оборот кончается точкой с запятой списка или концом предложения: перечень
+# зоны идёт «- объекты жилого назначения – H кв.м, в том числе для реализации
+# Программы реновации – R кв.м; - объекты общественно-делового назначения – …».
+_CLAUSE_SPLIT = re.compile(r"[;\n]")
+
+
+def _renovation_clause(clause: str) -> dict[str, Any] | None:
+    """Объём реновации и парная ему площадь жилья в ОДНОМ обороте.
+
+    Возвращает `None`, если оборот не про реновацию или числа в нём нет.
+    """
+    mark = _RENOVATION_CLAUSE.search(clause)
+    if not mark:
+        return None
+    after = _RENOVATION_AREA.search(clause, mark.end())
+    if after:
+        # Форма ТЭП: «жилого назначения – H кв.м, в том числе для реализации
+        # Программы реновации – R кв.м». H — последняя площадь ДО оборота, и
+        # она нужна не для расчёта, а для самопроверки: сумма H по зонам
+        # обязана сойтись с жильём площадки, иначе перечень зон прочитан не
+        # весь и сумме R доверять нельзя.
+        before = list(_RENOVATION_AREA.finditer(clause[:mark.start()]))
+        return {
+            "kind": "tep",
+            "area_sqm": _social_number(after.group(1)),
+            "housing_sqm": _social_number(before[-1].group(1)) if before else None,
+        }
+    before = list(_RENOVATION_AREA.finditer(clause[:mark.start()]))
+    if before:
+        # Форма обязательства: «площадью не менее R кв.м в целях реализации
+        # Программы реновации». Здесь число ДО оборота — это сам объём.
+        return {"kind": "duty", "area_sqm": _social_number(before[-1].group(1)),
+                "housing_sqm": None}
+    return None
 
 
 def renovation_volume(sentences: Any) -> dict[str, Any]:
@@ -568,10 +636,25 @@ def renovation_volume(sentences: Any) -> dict[str, Any]:
     Ответов три, и они разные: назван объём, сказано о реновации без объёма,
     не сказано ничего. Второй нельзя показывать ни первым, ни третьим: «доля
     неизвестна» — это не «доли нет» и не «забирают всё».
+
+    Число берётся из ОБОРОТА, который называет программу, а не наибольшее в
+    предложении. Прежняя версия брала максимум, и на Задонском проезде это
+    давало 173 200 м² — предельную СПП всей площадки — вместо 15 100 м²
+    реновации: доля выходила 100% вместо 10%, и модель отменяла ВСЮ выручку
+    жилья. Соседнее решение (5-й Верхний Михайловский) ловилось тем же
+    способом: 87 690 м² итога зоны вместо 85 580 м² её реновации.
+
+    Зоны — части, и они складываются: у 5-го Верхнего Михайловского зона 1
+    отдаёт 9 600 м², зона 2 — 85 580, вместе ровно 95 180 м² жилья каталога.
+    Обязательственные обороты повторяют те же числа другими словами, поэтому в
+    сумму идут только обороты ТЭП; форма обязательства работает, лишь когда
+    оборотов ТЭП не нашлось вовсе, и тогда объём берётся один — сложить
+    повторы и части, не различая их, значит удвоить объём.
     """
     mentioned = False
     quote = ""
-    area: float | None = None
+    tep: list[dict[str, Any]] = []
+    duty: list[dict[str, Any]] = []
     for raw in list(sentences or [])[:200]:
         sentence = _SPACE.sub(" ", str(raw or "")).strip()
         low = sentence.casefold()
@@ -580,12 +663,114 @@ def renovation_volume(sentences: Any) -> dict[str, Any]:
         mentioned = True
         if not quote:
             quote = sentence[:400]
-        match = _RENOVATION_AREA.search(sentence)
-        value = _social_number(match.group(1)) if match else None
-        if value is not None and (area is None or value > area):
-            area = value
-            quote = sentence[:400]
-    return {"mentioned": mentioned, "area_sqm": area, "quote": quote}
+        for clause in _CLAUSE_SPLIT.split(sentence):
+            found = _renovation_clause(clause)
+            if not found or found["area_sqm"] is None:
+                continue
+            (tep if found["kind"] == "tep" else duty).append(found)
+            if found["kind"] == "tep":
+                quote = sentence[:400]
+    parts = tep or duty[:1]
+    area = sum(one["area_sqm"] for one in parts) if parts else None
+    housing = [one["housing_sqm"] for one in parts if one["housing_sqm"] is not None]
+    return {
+        "mentioned": mentioned,
+        "area_sqm": area,
+        # Сумма парных площадей жилья: самопроверка полноты перечня зон.
+        # Её отсутствие — не ошибка, а «сверить нечем», и вызывающий обязан
+        # отличать одно от другого.
+        "housing_sqm": sum(housing) if housing else None,
+        "zones": len(parts),
+        "basis": ("zone_programme_clause" if tep
+                  else ("duty_clause" if duty else "mentioned_without_volume")),
+        "quote": quote,
+    }
+
+
+# Объёмы, объявленные решением. Карточка каталога сама с собой не сходится: на
+# Варшавском ш., вл. 37 она даёт 229 490 жилья и 52 510 нежилого при заявленных
+# 443 700 всего. Решение сходится до метра — 229 490 + 214 210 = 443 700, — и
+# нежилого в нём вчетверо больше карточного. Читать надо документ.
+_VOLUME_FRAME = (r"суммарн", r"поэтажн")
+# Тире перечня и тире значения выглядят одинаково: «– объектов жилого» и
+# «стен – 443 700 кв. м». Разделяет то, что стоит следом: у перечня слово, у
+# значения цифра. Прежний набор `[;\n]|-\s` не знал ни `–`, ни `—` — то же
+# место, где мы уже спотыкались на ASCII-дефисе в именах ЖК, — и на
+# Малахитовой итог зоны 187 550 читался как объём жилья.
+_VOLUME_SPLIT = re.compile(r"[;\n]|(?<=\s)[-–—]\s+(?=\D)")
+_VOLUME_KINDS = (
+    ("business_sqm", (r"обществен\w*[\s-]*делов",)),
+    ("utility_sqm", (r"коммунальн",)),
+    ("nonresidential_sqm", (r"нежило\s*го",)),
+    ("housing_sqm", (r"жило\s*го",)),
+)
+
+
+def _volume_roots(low: str, *roots: str) -> bool:
+    return all(re.search(root, low) for root in roots)
+
+
+def programme_volumes(sentences: Any) -> dict[str, Any]:
+    """Что решение объявляет объёмом — по видам назначения и по зонам.
+
+    Число берётся из оборота, который его называет, а не наибольшее в
+    предложении: это уже стоило нам платы за ВРИ и доли реновации. И оборот
+    засчитывается только внутри рамки «суммарная поэтажная площадь» — без неё
+    «объект коммунального назначения (общественный туалет) площадью 90 кв. м»
+    на Левобережной читался как минимальный объём коммунальной застройки:
+    слово совпало, а вид утверждения — нет.
+
+    Зоны складываются, как у реновации. Полнота прочитанного проверяется
+    самим документом: слагаемые обязаны сойтись с его же итогом. Не сошлись —
+    перечень прочитан не весь, и числам из него верить нельзя; это `closes`,
+    и оно отличает «прочитали» от «прочитали не всё».
+    """
+    out: dict[str, Any] = {}
+    quotes: dict[str, str] = {}
+    zones = 0
+
+    def add(key: str, value: float, quote: str) -> None:
+        out[key] = float(out.get(key, 0.0)) + value
+        quotes.setdefault(key, quote)
+
+    for raw in list(sentences or [])[:60]:
+        sentence = _SPACE.sub(" ", str(raw or "")).strip()
+        low = sentence.casefold()
+        if not _volume_roots(low, *_VOLUME_FRAME):
+            continue
+        clauses = _VOLUME_SPLIT.split(sentence)
+        head, rest = clauses[0], clauses[1:]
+        if ("включа" in low or "в том числе" in low) and rest:
+            found = _RENOVATION_AREA.search(head)
+            if found:
+                zones += 1
+                add("total_sqm", _social_number(found.group(1)), head.strip()[:200])
+        elif not rest:
+            # Отдельное предложение об одном виде («Предельная (минимальная)
+            # СПП объектов коммунального… назначения – N кв. м») итогом зоны
+            # не является и в сумму слагаемых не идёт.
+            rest = [sentence]
+        for clause in rest:
+            low_clause = clause.casefold()
+            found = _RENOVATION_AREA.search(clause)
+            if not found:
+                continue
+            for key, roots in _VOLUME_KINDS:
+                if not _volume_roots(low_clause, *roots):
+                    continue
+                # «нежилого» содержит «жилого»: чей это оборот, решает более
+                # точное совпадение, иначе нежилое станет жильём.
+                if key == "housing_sqm" and re.search(r"нежило\s*го", low_clause):
+                    continue
+                add(key, _social_number(found.group(1)), clause.strip()[:200])
+                break
+    total = out.get("total_sqm")
+    parts = sum(float(out.get(key) or 0.0)
+                for key in ("housing_sqm", "nonresidential_sqm", "business_sqm"))
+    out["zones"] = zones
+    out["closes"] = None if not (total and parts) else abs(parts - float(total)) <= 1.0
+    out["quotes"] = quotes
+    return out
 
 
 def _construction_parameters(text: str) -> list[str]:
@@ -648,6 +833,7 @@ def parse_decision_requirements(text: str, title: str = "") -> dict[str, Any]:
             construction.append(sentence[:900])
 
     actions = _object_actions(text)
+    parcels = appendix_cadastral_numbers(text)
     grouped = {
         category: [_object_label(item) for item in actions if item["category"] == category]
         for category in (
@@ -661,9 +847,17 @@ def parse_decision_requirements(text: str, title: str = "") -> dict[str, Any]:
         "renovation": renovation_volume(sentences),
         "permitted_uses": list(dict.fromkeys(permitted_uses))[:30],
         "construction": list(dict.fromkeys(construction))[:20],
+        # Объём решения — числом, а не пересказом: карточка каталога сама с
+        # собой не сходится, а решение сходится, и нежилого в нём вчетверо
+        # больше карточного.
+        "volumes": programme_volumes(construction),
         "deadlines": list(dict.fromkeys(deadlines))[:5],
         "resettlement": list(dict.fromkeys(resettlement))[:20],
         "object_actions": actions[:100],
+        # Состав территории по документу — для контура из ЕГРН, когда файла
+        # карты у площадки нет. Чем найдены номера — часть ответа.
+        "cadastral_numbers": parcels["numbers"],
+        "cadastral_numbers_source": parcels["source"],
         **grouped,
     }
 
@@ -685,6 +879,10 @@ def merge_decision_requirements(
         result[key] = list(facts.get(key) or [])
     if facts.get("renovation"):
         result["renovation"] = facts["renovation"]
+    if facts.get("volumes"):
+        result["volumes"] = facts["volumes"]
+    result["cadastral_numbers"] = list(facts.get("cadastral_numbers") or [])
+    result["cadastral_numbers_source"] = str(facts.get("cadastral_numbers_source") or "none")
     result["disclosure"] = {
         key: "published_in_project_decision" if result.get(key)
         else "not_published_in_project_decision"

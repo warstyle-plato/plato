@@ -83,6 +83,46 @@ def test_a_decision_is_read_whole() -> None:
     assert one.department == "ДГП"
 
 
+# Пунктуация «по адресу» у города своя в каждом заголовке. Снято с прода
+# 04.09.2026: восемь заголовков из 298 оставались без адреса, и пять из них —
+# ровно на этой пунктуации. Адрес — это то, чем площадку ищут в публикациях;
+# без него её нельзя ни спросить, ни назвать по имени.
+PUNCTUATION = [
+    ("Проект решения о комплексном развитии территории нежилой застройки города "
+     "Москвы, расположенной по адресу; г. Москва, Боровский пр-д", "Боровский пр-д"),
+    ("Проект решения о комплексном развитии территории нежилой застройки города "
+     "Москвы, расположенной по адресу г. Москва, ул. Антонова-Овсеенко вл. 13-15",
+     "ул. Антонова-Овсеенко вл. 13-15"),
+    ("Проект решения о комплексном развитии территории нежилой застройки города "
+     "Москвы, расположенной адресу: г. Москва, в производственной зоне № 32 "
+     "«Котляково» (территория 1) (ЮАО)", "в производственной зоне № 32 «Котляково»"),
+]
+
+
+def test_the_address_survives_the_city_punctuation() -> None:
+    for title, expected in PUNCTUATION:
+        one = parse_decision({"id": "1", "title": title, "url": "", "date": 0})
+        assert one is not None
+        assert one.address.startswith(expected), f"адрес потерян: {title[:60]}"
+
+
+def test_a_title_without_an_address_stays_without_one() -> None:
+    """«Района» и «ограниченной улицами» адресом не становятся.
+
+    Район опознаёт квартал, а не площадку, — то же правило, что у якоря
+    публикации. Пустой адрес здесь верный ответ, и по нему прогон не платит
+    за поиск: он называет такую строку числом.
+    """
+    for title in (
+        "Проект решения о комплексном развитии территорий нежилой застройки "
+        "города Москвы, расположенных в районе Некрасовка (ЮВАО)",
+        "Проект решения о комплексном развитии территории нежилой застройки "
+        "города Москвы № 125, ограниченной Ленинградским проспектом",
+    ):
+        one = parse_decision({"id": "1", "title": title, "url": "", "date": 0})
+        assert one is not None and not one.address
+
+
 def test_a_document_that_is_not_about_krt_is_not_ours() -> None:
     assert parse_decision(LIVE[-1]) is None
     assert len(parse_decisions({"results": LIVE})) == len(LIVE) - 1
@@ -190,7 +230,7 @@ def test_the_row_disappears_the_moment_the_card_appears(tmp_path) -> None:
         return _json.dumps({"results": LIVE if page == 1 else []}).encode("utf-8")
 
     registry = KrtRegistry(tmp_path, fetch=fetch)
-    registry.catalogue = lambda: list(catalogue)  # type: ignore[assignment]
+    registry.catalogue = lambda **_: list(catalogue)  # type: ignore[assignment]
 
     first = registry.decisions()
     gaps = [one["address"] for one in first["decisions"]]

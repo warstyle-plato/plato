@@ -20,6 +20,9 @@ import openpyxl
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import v4_inputs  # noqa: E402
 
 import main as wrapper  # noqa: E402
 
@@ -84,7 +87,7 @@ def test_the_book_carries_engine_phase_volumes():
 
     content, _, meta = core.build_project_workbook(
         inputs, tep, [], phasing, finance_hints={})
-    sheet = openpyxl.load_workbook(io.BytesIO(content), data_only=False)["Вводные"]
+    sheet = v4_inputs.inputs(openpyxl.load_workbook(io.BytesIO(content), data_only=False))
     for index, item in enumerate(phases):
         row, phase_tep = 88 + index, item["tep"]
         assert sheet[f"W{row}"].value == pytest.approx(

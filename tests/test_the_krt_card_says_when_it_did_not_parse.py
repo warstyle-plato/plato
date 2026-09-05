@@ -102,7 +102,7 @@ def test_the_catalogue_route_counts_what_did_not_parse(monkeypatch) -> None:
     app = FastAPI()
     app.state.market_discovery_service = SimpleNamespace(
         krt=SimpleNamespace(
-            catalogue=lambda: [row.to_dict() for row in rows],
+            catalogue=lambda **_: [row.to_dict() for row in rows],
             status=lambda: {"complete": True, "refreshing": False},
         ),
     )

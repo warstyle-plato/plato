@@ -14,11 +14,12 @@ import time
 from dataclasses import asdict, dataclass, replace
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 from urllib.parse import urljoin
 
 from .http import RemoteServiceError, fresh, load_json, request_bytes, save_json
 from .krt_requirements import (
+    decision_intent,
     decision_search_urls,
     document_attachments_url,
     document_detail_url,
@@ -36,10 +37,20 @@ BASE_URL = "https://api.krt.mos.ru"
 CATALOGUE_URL = BASE_URL + "/projects/"
 JINA_PREFIX = "https://r.jina.ai/"
 CACHE_SCHEMA_VERSION = 3
-REQUIREMENTS_CACHE_SCHEMA_VERSION = 2
+REQUIREMENTS_CACHE_SCHEMA_VERSION = 3
 # Разбор карточки версионируется отдельно: он меняется чаще требований.
 CARD_FACTS_SCHEMA_VERSION = 1
-DECISIONS_CACHE_SCHEMA_VERSION = 2
+# ТЭП, вынутый из PDF проекта решения. Своя версия: разбор правится
+# отдельно от разбора карточки, и общая версия обесценивала бы чужое.
+DECISION_TEP_SCHEMA_VERSION = 1
+# Лоты, привязанные к площадке. Считает их сервер, а хранились они только
+# в памяти вкладки — и правило «живой лот сильнее публикации» работало
+# ровно до перезагрузки.
+TENDER_LOTS_SCHEMA_VERSION = 1
+# 3 — разбор адреса перестал требовать двоеточия и слова «по»: снимок
+# держит УЖЕ РАЗОБРАННЫЙ адрес, и без смены версии пять площадок ждали
+# бы суток, чтобы их стало можно спросить.
+DECISIONS_CACHE_SCHEMA_VERSION = 3
 TENDERS_CACHE_SCHEMA_VERSION = 1
 MAP_CACHE_SCHEMA_VERSION = 1
 # Поля записи решения — по ним кэш поднимается обратно в объект.
@@ -53,6 +64,108 @@ def _map_name_key(value: Any) -> str:
     """Имя площадки как ключ: регистр, «ё» и знаки препинания не различают."""
     text = str(value or "").casefold().replace("ё", "е")
     return _SPACE.sub(" ", re.sub(r"[^0-9a-zа-я]+", " ", text)).strip()
+
+
+# Сокращения адреса: список и карта портала пишут одно владение по-разному
+# («Варшавское шоссе, вл. 37» и «Варшавское ш., влд. 37»), и точный ключ не
+# совпадал — площадка уходила на геокодер, а на карте стояла чужая точка.
+_ADDRESS_ABBREVIATIONS = (
+    (r"\bшоссе\b", "ш"), (r"\bулица\b", "ул"), (r"\bпроспект\b", "пр"),
+    (r"\bпр\s*кт\b", "пр"), (r"\bпереулок\b", "пер"), (r"\bнабережная\b", "наб"),
+    (r"\bпроезд\b", "пр д"), (r"\bбульвар\b", "б р"), (r"\bплощадь\b", "пл"),
+    (r"\bвладение\b", "вл"), (r"\bвлд\b", "вл"), (r"\bдом\b", "д"),
+    (r"\bкорпус\b", "к"), (r"\bкорп\b", "к"), (r"\bстроение\b", "стр"),
+)
+
+
+def _address_key(value: Any) -> str:
+    """Ключ адреса без разницы в сокращениях."""
+    key = _map_name_key(value)
+    for pattern, short in _ADDRESS_ABBREVIATIONS:
+        key = re.sub(pattern, short, key)
+    return _SPACE.sub(" ", key).strip()
+
+
+def _address_parts(value: Any) -> list[str]:
+    """Составное имя «адрес, вл. N, адрес, вл. M» — по одному адресу.
+
+    Портал склеивает несколько владений в одно имя площадки; часть разделяет
+    запятой, а внутри одного адреса запятая стоит перед номером владения.
+    Поэтому режем по запятым и склеиваем «улица + номер» обратно.
+    """
+    pieces = [piece.strip() for piece in str(value or "").split(",") if piece.strip()]
+    parts: list[str] = []
+    for piece in pieces:
+        if parts and re.match(r"^(вл\.?|влд\.?|владение|д\.?|дом|стр\.?|к\.?|корп\.?)\s*\S", piece, re.I):
+            parts[-1] = parts[-1] + ", " + piece
+        else:
+            parts.append(piece)
+    return [_address_key(part) for part in parts if _address_key(part)]
+
+
+def _map_match(sites: list[dict[str, Any]], clean: str, name: str = "",
+               project: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Найти площадку в записях файла карты — слагом, именем, адресом, паспортом.
+
+    Правило совпадения одно на обе поверхности: карточка спрашивает про одну
+    площадку, обзорная карта — про все 268 сразу, и второе правило разошлось
+    бы с первым молча: одна площадка была бы «в файле» на карточке и «нет в
+    файле» на карте, обе поверхности выглядели бы верными.
+    """
+    for site in sites:
+        if str(site.get("slug") or "") == clean:
+            return {"site": dict(site), "problem": "", "matched": "slug"}
+    wanted = _map_name_key(name)
+    if wanted:
+        for site in sites:
+            if _map_name_key(site.get("name")) == wanted:
+                return {"site": dict(site), "problem": "", "matched": "name"}
+    # Имя одно, записано по-разному: сокращения адреса и составные имена
+    # из нескольких владений. У Варшавского ш., вл. 37 имя списка — два
+    # адреса через запятую, и точный ключ не совпадал ни с чем (владелец,
+    # 03.09.2026: «почему у него единственного нет верного контура»).
+    wanted_key = _address_key(name)
+    wanted_parts = set(_address_parts(name))
+    if wanted_key:
+        for site in sites:
+            site_key = _address_key(site.get("name"))
+            site_parts = set(_address_parts(site.get("name")))
+            if site_key == wanted_key or (wanted_parts and site_parts & wanted_parts):
+                return {"site": dict(site), "problem": "", "matched": "address"}
+    # Последний ключ — паспорт: район, площадь и жилой объём в обоих
+    # источниках из одного реестра.
+    if project:
+        twins = [site for site in sites if _same_territory(site, project)]
+        if len(twins) == 1:
+            return {"site": dict(twins[0]), "problem": "", "matched": "passport"}
+    return {"site": None,
+            "problem": f"площадки нет в файле карты реестра ({len(sites)} площадок)"}
+
+
+def _same_territory(site: dict[str, Any], project: dict[str, Any]) -> bool:
+    """Одна площадка по паспорту: район, площадь и жилой объём совпали.
+
+    Имя у списка и у карты может расходиться, а ТЭП в обоих источниках один и
+    тот же реестр: совпадение трёх паспортных чисел — не совпадение по
+    случайности.
+    """
+    def num(item: dict[str, Any], key: str) -> float | None:
+        try:
+            value = float(item.get(key) or 0.0)
+        except (TypeError, ValueError):
+            return None
+        return value if value > 0 else None
+
+    district = _map_name_key(site.get("district"))
+    if district and _map_name_key(project.get("district")) and \
+            district != _map_name_key(project.get("district")):
+        return False
+    area, area_p = num(site, "area_ha"), num(project, "area_ha")
+    housing, housing_p = num(site, "housing_gfa_sqm"), num(project, "housing_gfa_sqm")
+    if not (area and area_p and housing and housing_p):
+        return False
+    return abs(area - area_p) <= 0.02 * max(area, area_p) and \
+        abs(housing - housing_p) <= 0.01 * max(housing, housing_p)
 
 
 @dataclass(frozen=True)
@@ -241,15 +354,35 @@ class KrtRegistry:
         # Разобранная карточка каталога: застройщик и реновация. Лежит рядом с
         # требованиями и по тому же правилу — хранится разобранное, не страница.
         self.card_facts_dir = Path(data_dir) / "krt" / "cards"
+        # ТЭП из PDF проекта решения — единственные цифры площадки, у которой
+        # карточки в каталоге ещё нет. Хранится разобранное, а не документ: 298
+        # решений × полтора мегабайта PDF — это диск, который у нас уже
+        # кончался молча.
+        self.decision_tep_dir = Path(data_dir) / "krt" / "decision_tep"
+        # Контур площадки, собранный из участков ЕГРН по перечню проекта
+        # решения, — для тех, кого нет в файле карты реестра. Участки ЕГРН не
+        # двигаются, поэтому срок неделя; неответ ЕГРН помнится полчаса.
+        self.outline_dir = Path(data_dir) / "krt" / "outlines"
+        self.outline_ttl_seconds = 7 * 24 * 60 * 60
         # Отказ помнится полчаса: см. `card_facts`.
         self.card_facts_failure_ttl_seconds = 30 * 60
         self.tender_links_path = Path(data_dir) / "krt" / "tender_links.json"
+        # Лоты по площадкам: то, что посчитал маршрут, переживает вкладку.
+        self.tender_lots_path = Path(data_dir) / "krt" / "tender_lots.json"
         self.fetch = fetch or (lambda url: request_bytes(url, timeout=15, retries=1))
         self.ttl_seconds = 24 * 60 * 60
         self._refreshing = False
         self._refresh_lock = threading.Lock()
+        self._decisions_refreshing = False
+        self._decisions_lock = threading.Lock()
         self._cards_filling = False
+        self._outline_fill_lock = threading.Lock()
+        self._outline_filling = False
         self._cards_lock = threading.Lock()
+        self._tep_filling = False
+        self._tep_lock = threading.Lock()
+        self._outlines_filling = False
+        self._outlines_lock = threading.Lock()
 
     def projects(self, *, refresh: bool = False, max_pages: int = 100) -> list[KrtTerritory]:
         cached = load_json(self.path)
@@ -377,11 +510,21 @@ class KrtRegistry:
         ranked.sort(key=lambda row: (not row.name.casefold().startswith(needle), row.name))
         return [row.to_dict() for row in ranked[:limit]]
 
-    def catalogue(self) -> list[dict[str, Any]]:
-        """Return the snapshot immediately; all network work stays off-thread."""
+    def catalogue(self, *, refresh: bool = False) -> list[dict[str, Any]]:
+        """Return the snapshot immediately; all network work stays off-thread.
+
+        `refresh` — это нажатая человеком кнопка, и она обязана значить обход
+        источника. Прежде обход начинался только у ПРОСРОЧЕННОГО снимка, и
+        «Обновить каталог» на суточном сроке не читал ничего: страница
+        перерисовывала тот же файл, а новая площадка ждала своего часа
+        («Так я жал обновить, значит вручную не обновляется каталог?» —
+        владелец, 04.09.2026). Кнопка, которая ничего не делает, хуже
+        отсутствующей: по ней судят, что источник пуст.
+        """
         cached = load_json(self.path)
         rows = self._decode(cached) if cached else []
-        if (not self._cache_current(cached) or not fresh(self.path, self.ttl_seconds)
+        if (refresh or not self._cache_current(cached)
+                or not fresh(self.path, self.ttl_seconds)
                 or not cached.get("complete", True)):
             self.refresh_in_background()
         return [row.to_dict() for row in rows]
@@ -532,6 +675,174 @@ class KrtRegistry:
                     self._cards_filling = False
 
         threading.Thread(target=run, name="krt-card-facts", daemon=True).start()
+        return True
+
+    def decision_tep(self, document_id: str, *, refresh: bool = False) -> dict[str, Any]:
+        """ТЭП площадки из PDF проекта решения. У неё других цифр нет вовсе.
+
+        Площадка без карточки приезжает к нам одним заголовком решения, и на
+        экране это было «Оценка Платона: 0/100 · ТЭП не указан» — при том что
+        в самом решении на mos.ru стоят и площадь территории, и предельная СПП,
+        и площадь квартир («на самом mos.ru уже появилось pdf решения, а мы его
+        не видим и пишем в блоке КРТ что 0», владелец 04.09.2026).
+
+        Отказ записывается со своим коротким сроком — тем же правилом, что у
+        карточки города: неотвеченный документ иначе не становится «известным»
+        никогда, и посчитать, что не отвечает НИ ОДИН, нечем.
+        """
+        from . import krt_decision_tep
+
+        clean = str(document_id or "").strip()
+        if not re.fullmatch(r"\d{4,20}", clean):
+            return {"available": False, "reason": "Неверный номер документа"}
+        path = self.decision_tep_dir / f"{clean}.json"
+        cached = load_json(path)
+        if (not refresh and isinstance(cached, dict)
+                and cached.get("schema_version") == DECISION_TEP_SCHEMA_VERSION):
+            ttl = (self.ttl_seconds * 30 if cached.get("available")
+                   else self.card_facts_failure_ttl_seconds)
+            # Решение — документ опубликованный и неизменяемый: перечитывать
+            # его сутками незачем, поэтому у удачного чтения срок месяц.
+            if fresh(path, ttl):
+                return cached
+
+        def fail(reason: str) -> dict[str, Any]:
+            out = {"available": False, "document_id": clean, "reason": reason,
+                   "schema_version": DECISION_TEP_SCHEMA_VERSION,
+                   "checked_at": int(time.time())}
+            save_json(path, out)
+            return out
+
+        def remote_json(url: str) -> Any | None:
+            try:
+                return json.loads(self.fetch(url).decode("utf-8"))
+            except Exception:  # noqa: BLE001
+                return None
+
+        detail = remote_json(document_detail_url(clean))
+        title = str((detail or {}).get("title") or "")
+        institution_id = (detail or {}).get("institution_id")
+        if institution_id is None:
+            return fail("mos_document_detail: не указан орган публикации")
+        attachments = remote_json(document_attachments_url(clean, institution_id))
+        pdf_url = select_pdf_attachment(attachments)
+        if not pdf_url:
+            return fail("mos_document_attachments: PDF не опубликован")
+        try:
+            data = self.fetch(pdf_url)
+            if len(data) > 35 * 1024 * 1024:
+                raise RuntimeError("PDF проекта решения превышает 35 МБ")
+            text = pdf_text(data)
+        except Exception as exc:  # noqa: BLE001
+            return fail(f"mos_decision_pdf: {type(exc).__name__}: {exc}")
+        parsed = krt_decision_tep.parse(text)
+        # Тот же текст отвечает и на «чьё это КРТ»: вид, городские нужды,
+        # оператор. Скачивать документ второй раз ради этого незачем, а без
+        # него у площадки без карточки карточка писала «проект решения ещё не
+        # прочитан» при уже прочитанном решении.
+        try:
+            intent = decision_intent(text, title=title)
+        except Exception:  # noqa: BLE001 — разбор намерения не роняет ТЭП
+            intent = None
+        out = {
+            "schema_version": DECISION_TEP_SCHEMA_VERSION,
+            "document_id": clean,
+            # Прочитали, но величин не нашлось, — это ответ документа, а не наш
+            # отказ, и путать их нельзя: скан без текста и решение под дорогу с
+            # нулевой СПП выглядели бы одинаково.
+            "available": True,
+            "pdf_url": pdf_url,
+            "text_length": len(text or ""),
+            "checked_at": int(time.time()),
+            "intent": intent,
+            **parsed,
+        }
+        save_json(path, out)
+        return out
+
+    def decision_tep_known(self, ids: Iterable[str]) -> dict[str, dict[str, Any]]:
+        """Что о решениях УЖЕ прочитано — с диска, без единого запроса.
+
+        Маршрут каталога не имеет права ходить в сеть три сотни раз, пока
+        человек ждёт ответа: он показывает прочитанное, а недостающее
+        дочитывается фоном.
+        """
+        out: dict[str, dict[str, Any]] = {}
+        for one in ids:
+            clean = str(one or "").strip()
+            if not re.fullmatch(r"\d{4,20}", clean):
+                continue
+            cached = load_json(self.decision_tep_dir / f"{clean}.json")
+            if (isinstance(cached, dict)
+                    and cached.get("schema_version") == DECISION_TEP_SCHEMA_VERSION):
+                out[clean] = cached
+        return out
+
+    def decision_tep_coverage(self, ids: Iterable[str]) -> dict[str, Any]:
+        """Сколько решений прочитано, сколько не ответило и сколько не спрошено.
+
+        Молчащий цикл обязан иметь счётчик молчания: пустая колонка ТЭП без
+        него читается как «в решении цифр нет», а это чаще наш пробел.
+        """
+        read = failed = unknown = empty = 0
+        reasons: dict[str, int] = {}
+        for one in ids:
+            clean = str(one or "").strip()
+            if not re.fullmatch(r"\d{4,20}", clean):
+                continue
+            cached = load_json(self.decision_tep_dir / f"{clean}.json")
+            if not (isinstance(cached, dict)
+                    and cached.get("schema_version") == DECISION_TEP_SCHEMA_VERSION):
+                unknown += 1
+                continue
+            if not cached.get("available"):
+                failed += 1
+                reason = str(cached.get("reason") or "источник не ответил")
+                short = reason.split(":")[0].strip() or reason
+                reasons[short] = reasons.get(short, 0) + 1
+                continue
+            if cached.get("read"):
+                read += 1
+            else:
+                # Документ прочитан, а величин в нём не названо: ответ
+                # документа, и он не «не спрашивали».
+                empty += 1
+        return {"read": read, "failed": failed, "unknown": unknown,
+                "silent": empty,
+                "reasons": dict(sorted(reasons.items(), key=lambda pair: -pair[1]))}
+
+    def fill_decision_tep_in_background(self, ids: Iterable[str], *,
+                                        limit: int = 25) -> bool:
+        """Дочитать решения, которых ещё нет, — фоном и порциями.
+
+        Порция ограничена по той же причине, что у карточек города: три сотни
+        PDF подряд — это налёт на mos.ru, а не чтение. Следующее открытие
+        каталога дочитает следующую порцию.
+        """
+        missing = [str(one or "").strip() for one in ids]
+        missing = [one for one in missing
+                   if re.fullmatch(r"\d{4,20}", one or "")
+                   and not fresh(self.decision_tep_dir / f"{one}.json",
+                                 self.card_facts_failure_ttl_seconds)]
+        if not missing:
+            return False
+        with self._tep_lock:
+            if self._tep_filling:
+                return False
+            self._tep_filling = True
+
+        def run() -> None:
+            try:
+                for one in missing[:max(1, int(limit))]:
+                    try:
+                        self.decision_tep(one)
+                    except Exception:  # noqa: BLE001
+                        continue
+            finally:
+                with self._tep_lock:
+                    self._tep_filling = False
+
+        threading.Thread(target=run, name="krt-decision-tep", daemon=True).start()
         return True
 
     def requirements(self, slug: str, *, refresh: bool = False) -> dict[str, Any] | None:
@@ -691,6 +1002,9 @@ class KrtRegistry:
                 for one in (payload.get("all") or [])]
         split = krt_decisions.match_catalogue(rows, self.catalogue())
         out = dict(payload)
+        # Когда снят снимок решений — часть ответа: без даты «577 решений»
+        # читается как ответ источника сию секунду.
+        out["ttl_seconds"] = int(self.ttl_seconds)
         out["total"] = split["total"]
         out["matched"] = len(split["matched"])
         out["decisions"] = [one.to_dict() for one in split["unmatched"]]
@@ -700,8 +1014,21 @@ class KrtRegistry:
         # стояла пустой, будто документа не существует.
         out["matched_rows"] = [
             {"slug": one.matched_slug, "published_at": one.published_at,
-             "url": one.url, "title": one.title}
+             "url": one.url, "title": one.title, "id": one.id}
             for one in split["matched"] if one.matched_slug]
+        # ТЭП из самих документов: у площадки без карточки это её единственные
+        # цифры, у площадки с карточкой — самопроверка сопоставления. Читается
+        # то, что уже на диске; недостающее дочитывается фоном порциями.
+        ids = [one.id for one in rows if one.id]
+        out["tep"] = {key: value for key, value in self.decision_tep_known(ids).items()
+                      if value.get("available")}
+        out["tep_coverage"] = self.decision_tep_coverage(ids)
+        # Дочитывание живёт у маршрута, а не здесь: разложение решений на «с
+        # карточкой» и «без» считается при каждом чтении, и поход в сеть из
+        # него превратил бы дешёвую операцию в дорогую (тест держит это прямо:
+        # «разложение считается на месте, без нового похода в источник»).
+        out["tep_pending"] = [one for one in ids
+                              if one not in out["tep"]]
         return out
 
     def map_dataset(self, *, refresh: bool = False, step_m: float = 40.0) -> dict[str, Any]:
@@ -742,7 +1069,8 @@ class KrtRegistry:
         save_json(self.map_path, payload)
         return payload
 
-    def map_lookup(self, slug: str, name: str = "") -> dict[str, Any]:
+    def map_lookup(self, slug: str, name: str = "",
+                   project: dict[str, Any] | None = None) -> dict[str, Any]:
         """Площадка из файла карты и ПРИЧИНА, если её там не нашлось.
 
         Прежде отказ был один на два разных случая: файл карты не прочитан
@@ -766,22 +1094,258 @@ class KrtRegistry:
         except Exception as exc:  # noqa: BLE001 — это не «нет контура», а «нет ответа»
             return {"site": None,
                     "problem": f"файл карты реестра не прочитан: {type(exc).__name__}"}
-        sites = (payload or {}).get("sites") or []
-        for site in sites:
-            if str(site.get("slug") or "") == clean:
-                return {"site": dict(site), "problem": "", "matched": "slug"}
-        wanted = _map_name_key(name)
-        if wanted:
-            for site in sites:
-                if _map_name_key(site.get("name")) == wanted:
-                    return {"site": dict(site), "problem": "", "matched": "name"}
-        return {"site": None,
-                "problem": f"площадки нет в файле карты реестра ({len(sites)} площадок)"}
+        return _map_match((payload or {}).get("sites") or [], clean, name, project)
 
-    def map_site(self, slug: str, name: str = "") -> dict[str, Any] | None:
+    def map_site(self, slug: str, name: str = "",
+                 project: dict[str, Any] | None = None) -> dict[str, Any] | None:
         """Площадка из файла карты: официальный контур и центр."""
-        return self.map_lookup(slug, name).get("site")
+        return self.map_lookup(slug, name, project).get("site")
 
+    def decision_outline(self, slug: str, *, lookup: Callable[[list[str]], list[dict[str, Any]]],
+                         refresh: bool = False, max_numbers: int = 60) -> dict[str, Any]:
+        """Контур площадки из участков ЕГРН по перечню проекта решения.
+
+        Файл карты реестра — не весь реестр: у 35 строк каталога из 268 в нём
+        нет записи, и у Варшавского ш., вл. 37 контур не приезжал никаким
+        сопоставлением имён (владелец, 04.09.2026: «и что с контуром КРТ
+        Нагатино? почему его до сих пор нет»). Проект решения о КРТ при этом
+        перечисляет состав территории — участки и здания с кадастровыми
+        номерами, — а ЕГРН отдаёт контур каждого участка (`lookup` — путь
+        движка `_land_lookup_by_numbers`, второго клиента НСПД здесь нет).
+
+        Ответ подписан своим именем: это состав территории ПО ДОКУМЕНТУ, а не
+        официальный полигон границ. Здания контур не задают (их пятна лежат
+        внутри участков), ненайденные номера названы числом: молча выброшенный
+        участок читается как «его нет в территории».
+        """
+        clean = str(slug or "").strip()
+        if not re.fullmatch(r"[a-zA-Z0-9_-]{2,180}", clean):
+            return {"rings_merc": [], "centre_merc": None, "problem": "слаг площадки не задан"}
+        cache_path = self.outline_dir / f"{clean}.json"
+        cached = load_json(cache_path)
+        if not refresh and isinstance(cached, dict) and cached.get("schema_version") == 1:
+            ttl = (self.outline_ttl_seconds if cached.get("rings_merc")
+                   else self.card_facts_failure_ttl_seconds)
+            if fresh(cache_path, ttl):
+                return dict(cached)
+        requirements = self.requirements(clean)
+        numbers = list((requirements or {}).get("cadastral_numbers") or [])
+        decision = dict((requirements or {}).get("decision") or {})
+        if requirements and requirements.get("skipped"):
+            problem = "перечень участков читается из проекта решения, а он есть только у планируемых площадок"
+        elif not requirements or not requirements.get("available"):
+            problem = "требования по площадке не читаются"
+        elif not decision:
+            problem = "проект решения о КРТ на mos.ru не найден — перечня участков нет"
+        elif not numbers:
+            problem = "в проекте решения нет кадастровых номеров участков"
+        else:
+            problem = ""
+        result: dict[str, Any] = {
+            "schema_version": 1,
+            "slug": clean,
+            "decision": {key: decision.get(key) for key in ("title", "page_url", "pdf_url")},
+            "numbers_source": str((requirements or {}).get("cadastral_numbers_source") or "none"),
+            "counts": {"numbers": len(numbers), "asked": 0, "land": 0, "buildings": 0,
+                       "missing": 0},
+            "parcels": [],
+            "rings_merc": [],
+            "centre_merc": None,
+            "area_ha": None,
+            "problem": problem,
+            "retrieved_at": int(time.time()),
+        }
+        if problem:
+            save_json(cache_path, result)
+            return result
+        asked = numbers[:max_numbers]
+        result["counts"]["asked"] = len(asked)
+        if len(numbers) > max_numbers:
+            result["problem"] = (f"в перечне {len(numbers)} номеров, опрошены первые "
+                                 f"{max_numbers}: контур неполный")
+        try:
+            found = list(lookup(asked) or [])
+        except Exception as exc:  # noqa: BLE001 — неответ ЕГРН называется, а не молчит
+            result["problem"] = f"ЕГРН не ответил: {type(exc).__name__}"
+            save_json(cache_path, result)
+            return result
+        rings: list[list[list[float]]] = []
+        area_sqm = 0.0
+        for item in found:
+            if not isinstance(item, dict) or not item.get("found"):
+                result["counts"]["missing"] += 1
+                continue
+            if str(item.get("kind") or "") != "land":
+                result["counts"]["buildings"] += 1
+                continue
+            contour = [ring for ring in (item.get("contour_merc") or [])
+                       if isinstance(ring, list) and len(ring) >= 3]
+            if not contour:
+                result["counts"]["missing"] += 1
+                continue
+            result["counts"]["land"] += 1
+            rings.extend(contour)
+            area = item.get("area_sqm")
+            if isinstance(area, (int, float)):
+                area_sqm += float(area)
+            result["parcels"].append({
+                "cadastral_number": str(item.get("cadastral_number") or ""),
+                "area_sqm": area if isinstance(area, (int, float)) else None,
+            })
+        result["rings_merc"] = rings
+        if rings:
+            points = [point for ring in rings for point in ring]
+            xs = [float(p[0]) for p in points]
+            ys = [float(p[1]) for p in points]
+            result["centre_merc"] = [(min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0]
+            result["area_ha"] = round(area_sqm / 10000.0, 2) if area_sqm else None
+        elif not result["problem"]:
+            result["problem"] = "ни один номер перечня не найден в ЕГРН как участок с контуром"
+        save_json(cache_path, result)
+        return result
+
+    def outline_cached(self, slug: str) -> dict[str, Any] | None:
+        """Контур из решения, если он УЖЕ посчитан. Сеть здесь не трогается.
+
+        Обзорная карта рисует весь каталог сразу, и спрашивать ЕГРН по перечню
+        каждой недостающей площадки внутри запроса нельзя — это десятки
+        обходов на одно открытие. Поэтому карта показывает прочитанное, а
+        дочитывает фон (`fill_outlines_in_background`).
+
+        Просроченный ответ здесь годится: контур участка меняется реже, чем
+        живёт кэш, а не нарисовать вовсе — это показать площадку как
+        отсутствующую в реестре.
+        """
+        clean = str(slug or "").strip()
+        if not re.fullmatch(r"[a-zA-Z0-9_-]{2,180}", clean):
+            return None
+        cached = load_json(self.outline_dir / f"{clean}.json")
+        if isinstance(cached, dict) and cached.get("schema_version") == 1:
+            return dict(cached)
+        return None
+
+    def map_supplement(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Площадки каталога, которых нет в файле карты города, — и что с ними.
+
+        Файл карты реестра несёт 263 записи, каталог — 268, и совпадают не все:
+        у части строк нет соответствия ни слагом, ни именем, ни паспортом. На
+        обзорной карте их не было вовсе, и про Нагатино владелец спросил трижды
+        (04.09.2026: «На карте крт Нагатино так и нет. Хотя контур в карточке
+        верный»). Контур им собирает тот же путь, что уже у карточки, — участки
+        ЕГРН по перечню проекта решения; здесь он только читается из кэша.
+
+        Ответ разделяет три состояния, и это главное: **нарисовано по решению**,
+        **перечень не спрашивали** (наш пробел, дочитает фон) и **спросили, а
+        контура нет** — с причиной документа. Слитые в одно «не нарисовано»,
+        они читались бы как отсутствие площадки в реестре.
+        """
+        try:
+            data = payload if isinstance(payload, dict) else self.map_dataset()
+        except Exception as exc:  # noqa: BLE001 — неответ файла карты не «нет площадок»
+            return {"sites": [], "gaps": [],
+                    "counts": {"catalogue": 0, "in_map": 0, "drawn": 0,
+                               "unread": 0, "no_outline": 0},
+                    "problem": f"файл карты реестра не прочитан: {type(exc).__name__}"}
+        sites = list((data or {}).get("sites") or [])
+        try:
+            rows = list(self.catalogue())
+        except Exception as exc:  # noqa: BLE001
+            return {"sites": [], "gaps": [],
+                    "counts": {"catalogue": 0, "in_map": len(sites), "drawn": 0,
+                               "unread": 0, "no_outline": 0},
+                    "problem": f"каталог не прочитан: {type(exc).__name__}"}
+        extra: list[dict[str, Any]] = []
+        gaps: list[dict[str, Any]] = []
+        in_map = unread = no_outline = 0
+        for row in rows:
+            slug = str(row.get("slug") or "").strip()
+            if not slug:
+                continue
+            name = str(row.get("name") or "")
+            if _map_match(sites, slug, name, dict(row)).get("site"):
+                in_map += 1
+                continue
+            outline = self.outline_cached(slug)
+            if outline is None:
+                unread += 1
+                gaps.append({"slug": slug, "name": name, "kind": "unread",
+                             "reason": "перечень участков решения ещё не читали"})
+                continue
+            rings = list(outline.get("rings_merc") or [])
+            if not rings:
+                no_outline += 1
+                gaps.append({"slug": slug, "name": name, "kind": "no_outline",
+                             "reason": str(outline.get("problem")
+                                           or "в решении нет участков с контуром")})
+                continue
+            centre = outline.get("centre_merc")
+            extra.append({
+                "slug": slug,
+                "url": str(row.get("url") or ""),
+                "name": name,
+                "status": str(row.get("status") or ""),
+                "okrug": str(row.get("okrug") or ""),
+                "district": str(row.get("district") or ""),
+                "area_ha": row.get("area_ha"),
+                "housing_gfa_sqm": row.get("housing_gfa_sqm"),
+                "rings_merc": rings,
+                "centre_merc": centre,
+                # Контур подписан своим происхождением: это состав территории
+                # ПО ДОКУМЕНТУ, а не официальный полигон границ, и рисуется он
+                # иначе. Одинаково нарисованные, два источника выглядели бы
+                # одним, и приближение читалось бы как граница города.
+                "outline_source": "decision",
+                "outline_area_ha": outline.get("area_ha"),
+                "outline_note": str(outline.get("problem") or ""),
+            })
+        return {
+            "sites": extra,
+            "gaps": gaps,
+            "counts": {"catalogue": len(rows), "in_map": in_map, "drawn": len(extra),
+                       "unread": unread, "no_outline": no_outline},
+            "problem": "",
+        }
+
+    def fill_outlines_in_background(
+            self, slugs: list[str] | tuple[str, ...],
+            *, lookup: Callable[[list[str]], list[dict[str, Any]]],
+            limit: int = 8) -> bool:
+        """Дочитать перечни решений тех площадок, которых нет в файле карты.
+
+        Порция мала намеренно: за одним слагом стоит проект решения на mos.ru,
+        распознавание скана и до шестидесяти запросов в ЕГРН — десяток таких
+        подряд город вправе счесть налётом. Следующее открытие карты дочитает
+        следующую порцию.
+
+        Работу берёт один: воркеров два, память у них раздельная, и без замка
+        оба пошли бы читать одно и то же.
+        """
+        clean = [str(slug or "").strip() for slug in slugs]
+        missing = [slug for slug in clean
+                   if re.fullmatch(r"[a-zA-Z0-9_-]{2,180}", slug or "")
+                   and self.outline_cached(slug) is None]
+        if not missing:
+            return False
+        with self._outlines_lock:
+            if self._outlines_filling:
+                return False
+            self._outlines_filling = True
+
+        def run() -> None:
+            try:
+                for slug in missing[:max(1, int(limit))]:
+                    try:
+                        self.decision_outline(slug, lookup=lookup)
+                    except Exception:  # noqa: BLE001
+                        # Не ответила одна площадка — читаем остальные: один
+                        # отказ не должен оставлять карту без всех контуров.
+                        continue
+            finally:
+                with self._outlines_lock:
+                    self._outlines_filling = False
+
+        threading.Thread(target=run, name="krt-decision-outlines", daemon=True).start()
+        return True
     def _read_order_details(self, order: dict[str, Any]) -> dict[str, Any]:
         """Распознать скан одного распоряжения. Отказ называется, а не молчит."""
         from . import krt_requirements as requirements
@@ -850,6 +1414,46 @@ class KrtRegistry:
         save_json(self.tender_links_path, marks)
         return entry
 
+    def remember_tender_lots(self, by_site: dict[str, Any] | None) -> int:
+        """Запомнить, какие лоты привязались к площадкам.
+
+        Соответствие считает сервер по лотам, собранным вкладкой «Торги», а
+        жило оно ТОЛЬКО в памяти браузера: открыл каталог без соседней вкладки
+        — плашки «торги» нет, и правило «живой лот сильнее публикации» не
+        срабатывает вовсе. Находка публикации при этом лежит на диске и
+        переживает всё: на Варшавском ш., вл. 37 при идущем аукционе оставался
+        застройщик из объявления о продаже соседнего дома (владелец,
+        04.09.2026). Асимметрия хранения и есть ошибка.
+
+        Площадка, которой в этом заходе не нашлось, СВОЁ не теряет: обход
+        каталога ограничен сроком и бывает неполным, а «не собрали» — не
+        «лота нет». Устаревание решает срок подачи заявок, он лежит в самой
+        записи.
+        """
+        rows = by_site if isinstance(by_site, dict) else {}
+        stored = load_json(self.tender_lots_path)
+        stored = stored if isinstance(stored, dict) else {}
+        sites = stored.get("sites") if isinstance(stored.get("sites"), dict) else {}
+        now = int(time.time())
+        for slug, lots in rows.items():
+            clean = str(slug or "").strip()
+            if not re.fullmatch(r"[a-zA-Z0-9_-]{2,180}", clean) or not lots:
+                continue
+            sites[clean] = {"lots": list(lots)[:20], "seen_at": now}
+        payload = {"schema_version": TENDER_LOTS_SCHEMA_VERSION,
+                   "updated_at": now, "sites": sites}
+        save_json(self.tender_lots_path, payload)
+        return len(rows)
+
+    def tender_lots_known(self) -> dict[str, Any]:
+        """Что о лотах уже известно — с диска, без единого запроса."""
+        stored = load_json(self.tender_lots_path)
+        if not (isinstance(stored, dict)
+                and stored.get("schema_version") == TENDER_LOTS_SCHEMA_VERSION):
+            return {}
+        sites = stored.get("sites")
+        return sites if isinstance(sites, dict) else {}
+
     def tender_orders(self, *, refresh: bool = False, max_pages: int = 12) -> dict[str, Any]:
         """Распоряжения ДГП о проведении торгов по КРТ.
 
@@ -899,13 +1503,29 @@ class KrtRegistry:
         save_json(self.tenders_path, payload)
         return payload
 
-    def status(self) -> dict[str, bool]:
+    def status(self) -> dict[str, Any]:
+        """Полнота снимка, ход обхода и КОГДА снимок снят.
+
+        Даты не было, и на экране «577 решений» выглядело как ответ источника
+        сию секунду, хотя снимок мог быть суточной давности: новую площадку
+        города не видно, а понять это можно только измерением со стороны
+        (владелец, 04.09.2026). Возраст снимка — часть ответа, как метод опроса
+        у НСПД.
+        """
         cached = load_json(self.path)
+        stamp = 0
+        try:
+            stamp = int(self.path.stat().st_mtime)
+        except OSError:
+            stamp = 0
         return {
             "complete": bool(
                 self._cache_current(cached) and cached.get("complete", True)
             ),
             "refreshing": self._refreshing,
+            "decisions_refreshing": self._decisions_refreshing,
+            "retrieved_at": stamp,
+            "ttl_seconds": int(self.ttl_seconds),
         }
 
     def refresh_in_background(self) -> bool:
@@ -922,4 +1542,29 @@ class KrtRegistry:
                     self._refreshing = False
 
         threading.Thread(target=run, name="krt-catalogue-refresh", daemon=True).start()
+        return True
+
+    def refresh_decisions_in_background(self) -> bool:
+        """Перечитать решения mos.ru, не держа соединение с человеком.
+
+        Обход шестидесяти страниц поиска в срок ответа не укладывается, а
+        кнопка обязана ответить сразу: работу принимают, а не держат
+        соединением. Ход виден полем `decisions_refreshing` — страница
+        доспрашивает, пока обход идёт.
+        """
+        with self._decisions_lock:
+            if self._decisions_refreshing:
+                return False
+            self._decisions_refreshing = True
+
+        def run() -> None:
+            try:
+                self.decisions(refresh=True)
+            except Exception:  # noqa: BLE001 — отказ источника не роняет процесс
+                pass
+            finally:
+                with self._decisions_lock:
+                    self._decisions_refreshing = False
+
+        threading.Thread(target=run, name="krt-decisions-refresh", daemon=True).start()
         return True

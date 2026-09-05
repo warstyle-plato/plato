@@ -80,20 +80,51 @@ def _empty_tep(core: Any) -> dict[str, dict[str, Any]]:
     return tep
 
 
+# Версия МЕТОДИКИ скрининга: цена, очереди, соцобъекты, реновация, балл.
+# Поднимается рукой, когда правка меняет ЧИСЛА посчитанных строк, — и тогда всё,
+# что посчитано прежней, объявляется устаревшим. Версией приложения это делать
+# нельзя: выпусков в день бывает пять, а методику они трогают редко, и каталог
+# пришлось бы пересчитывать на каждый.
+#
+# Зачем: 04.09.2026 владелец спросил, «почему в Нагатино до сих пор цена для
+# расчёта 477». Правка «стартовая цена — рекомендация отчёта, а не медиана
+# входных цен соседей» уехала на прод в 0.21.81, а строка площадки была
+# посчитана 03.09 в 21:58 — до неё. Сегодняшний прогон по 56 площадкам был
+# прогоном ПУБЛИКАЦИЙ: он обновил находки и не тронул ни модель, ни цену.
+# Отличить такую строку от свежей было нечем: `computed_at` отвечает «когда», а
+# не «чем».
+SCREENING_RULES_VERSION = 1
+
+
 def _market_inputs(report: dict[str, Any]) -> tuple[str | None, float, float, str]:
+    """Стартовая цена скрининга — та же, что рекомендует отчёт о рынке.
+
+    Прежде бралась медиана цен входа соседей (их самые дешёвые лоты): на
+    Варшавском ш., вл. 37 это 350 тыс. против 670 у рекомендации того же
+    отчёта, и каталог называл площадку «Низкой» там, где расчёт владельца по
+    рекомендации давал 1,21x (владелец, 04.09.2026: «почему у каталога 350,
+    если само обращение к Пульсу даёт рекомендацию 670 нашим же механизмом»).
+    Два ответа одного модуля на один вопрос — это второй ответ; цена входа
+    остаётся справкой рядом, а не ценой модели.
+    """
     verdict = _verdict(report)
     hint = report.get("price_hint") or {}
     segment = normalize_segment(verdict.get("segment"))
     market_price = _number(verdict.get("price_per_sqm") or hint.get("price_per_sqm"))
     entry_price = _number(hint.get("entry_per_sqm"))
+    if market_price > 0:
+        return segment, market_price, market_price, "рекомендация отчёта о рынке — уровень цен сопоставимых проектов"
     if entry_price > 0:
-        return segment, entry_price, market_price, "медиана входных цен соседних проектов"
-    return segment, market_price, market_price, "медиана действующих прайсов рекомендованного класса"
+        return segment, entry_price, entry_price, "медиана входных цен соседних проектов (уровень рынка отчёт не определил)"
+    return segment, 0.0, 0.0, "цена не определена"
 
 
 def _phase_configuration(saleable_sqm: float, construction_months: int) -> dict[str, Any]:
     count = max(1, min(MAX_PHASES, math.ceil(saleable_sqm / TARGET_PHASE_SALEABLE_SQM)))
     return {
+        # Проектирование, подготовка и сети — по объёму очереди, как на
+        # странице: цена метра у каждой очереди равна вводной.
+        "shared_cash": {"design": "volume", "preparation": "volume", "utilities": "volume"},
         "enabled": count > 1,
         "user_enabled": False,
         "automatic": True,
@@ -160,7 +191,9 @@ def _goal_seek_entry_capacity(
         phasing=phasing,
         selected_view="all",
     )
-    scope = "weakest_phase" if bundle.get("mode") == "phased" else "consolidated"
+    # Охват — тот же, что у подбора везде: весь проект. Банк смотрит лимит в
+    # целом, ради этого и перенос долга между очередями (владелец, 04.09.2026).
+    scope = core._agent_scope_of(bundle)
     result = core._tool_goal_seek(
         request,
         bundle,
@@ -248,7 +281,8 @@ def _requirements_for_model(requirements: dict[str, Any] | None) -> dict[str, An
         # прочитанном не сказано», и вызывающий обязан отличать это от «нет».
         "renovation": (source.get("renovation")
                        or (source.get("decision") or {}).get("renovation")
-                       or {"mentioned": False, "area_sqm": None, "quote": ""}),
+                       or {"mentioned": False, "area_sqm": None, "housing_sqm": None,
+                           "zones": 0, "basis": "not_read", "quote": ""}),
         "decision": copy.deepcopy(source.get("decision")),
         "demolition_area_sqm": demolition_area,
         "demolition_objects": len(definite_demolition),
@@ -266,6 +300,18 @@ def _requirements_for_model(requirements: dict[str, Any] | None) -> dict[str, An
         "preservation_objects": len(preservation) or len(source.get("preservation") or []),
         "preservation_known_area_objects": sum(
             1 for item in preservation if _number(item.get("area_sqm")) > 0),
+        # Объём, объявленный решением, — числом. Карточка каталога сама с
+        # собой не сходится, а решение сходится: на Варшавском ш., вл. 37
+        # 229 490 + 214 210 = 443 700 при карточных 282 000 из 443 700.
+        "volumes": dict(source.get("volumes")
+                        or (source.get("decision") or {}).get("volumes") or {}),
+        # Состав территории по документу. Прежде перечень обрывался здесь:
+        # решение называет его поимённо (на Варшавском ш., вл. 37 — 60
+        # номеров, у шести проверенных площадок 8–60), карточка собирает по
+        # нему контур, а до модели не доезжал ни один. Здания и участки не
+        # разделяются тут: это делает ЕГРН, и делает один раз — в контуре.
+        "cadastral_numbers": list(source.get("cadastral_numbers") or []),
+        "cadastral_numbers_source": str(source.get("cadastral_numbers_source") or "none"),
         "resettlement": list(source.get("resettlement") or [])[:10],
         "resettlement_mentions": len(source.get("resettlement") or []),
         "construction": construction,
@@ -315,6 +361,33 @@ def _programme(
     nonresidential = _number(project.get("nonresidential_gfa_sqm"))
     business = _number(project.get("business_gfa_sqm"))
     total = _number(project.get("total_gfa_sqm"))
+    # Карточка каталога сама с собой не сходится: на Варшавском ш., вл. 37 её
+    # 229 490 + 52 510 дают 282 000 при заявленных 443 700. Решение сходится
+    # до метра и называет нежилого 214 210 — вчетверо больше. Документ сильнее
+    # карточки, но берётся он не на веру: только когда сошёлся сам с собой И
+    # его итог совпал с итогом каталога. Не совпал — значит прочитан не весь
+    # перечень зон (на Малахитовой это зона 1 из двух), и числа из него — это
+    # часть, выданная за целое.
+    volumes = dict(duties.get("volumes") or {})
+    decision_total = _number(volumes.get("total_sqm"))
+    volumes_taken = bool(
+        volumes.get("closes") and decision_total > 0 and total > 0
+        and abs(decision_total - total) <= 1.0)
+    utility = 0.0
+    if volumes_taken:
+        housing = _number(volumes.get("housing_sqm")) or housing
+        business = _number(volumes.get("business_sqm")) or business
+        # «Коммунального, производственного и иного назначения» решение задаёт
+        # МИНИМУМОМ и внутри нежилого. Продуктом девелопера этот объём не
+        # является: продать его по цене ТЦ значило бы выдумать выручку.
+        # Модель его не строит и не оценивает — и говорит об этом.
+        utility = _number(volumes.get("utility_sqm"))
+        named_non = _number(volumes.get("nonresidential_sqm"))
+        nonresidential = max(0.0, (named_non or business) - utility - business)
+    volumes["taken"] = volumes_taken
+    volumes["utility_sqm"] = utility or _number(volumes.get("utility_sqm"))
+    volumes["card_nonresidential_sqm"] = _number(project.get("nonresidential_gfa_sqm"))
+    volumes["card_total_sqm"] = total
     district = str(project.get("district") or "").strip()
     zone_two = core.district_zone_two(district)
     population = apartments_saleable_sqm / POPULATION_SQM_PER_PERSON
@@ -383,6 +456,16 @@ def _programme(
     # Соцобъекты строятся, а не откупаются: решение города называет объекты, и
     # денежная компенсация вместо них — другое обязательство, а не то же самое.
     inputs["social_mode"] = "Строительство"
+    # Садик — первым жильцам, школа — к заселению первых очередей: умолчание
+    # движка «поздняя раскладка, разгружаем первую очередь» уводит школу в
+    # последнюю очередь, и та тонет — на Варшавском ш., вл. 37 слабейшая
+    # очередь показывала 0,81× против 0,97× при том же проекте, а балл каталога
+    # снимал за это как за экономику площадки (владелец, 03.09.2026: «по факту
+    # это отличный КРТ»). Та же ловушка уже ловилась на пресете этой территории;
+    # срок ввода по условиям КРТ в решении не раскрыт — это допущение DevelopAid.
+    inputs["kindergarten_not_later_than"] = 1
+    inputs["school_not_later_than"] = 2
+    inputs["clinic_not_later_than"] = 2
 
     commercial = nonresidential - social_area
     retail_ratios = applied_ratios.get("standalone_retail") or {}
@@ -432,6 +515,10 @@ def _programme(
         "commercial_gba_sqm": round(commercial, 1),
         "commercial_negative": commercial < 0,
         "offices_gba_sqm": round(business, 1),
+        # Чем посчитан объём — карточкой или документом — часть ответа: два
+        # источника дают на Варшавском ш., вл. 37 разницу вчетверо, и на
+        # экране они выглядели бы одинаково достоверно.
+        "volumes": volumes,
         "balance": {
             "declared_sum_sqm": round(declared_sum, 1),
             "difference_sqm": round(difference, 1),
@@ -468,6 +555,7 @@ def build_krt_model_screening(
         }
 
     segment, start_price, market_price, price_basis = _market_inputs(market_report)
+    entry_price = _number(((market_report or {}).get("price_hint") or {}).get("entry_per_sqm"))
     if not segment or segment not in _CLASS_MAP:
         return {"available": False, "reason": "Маркетинг пока не определил класс продукта"}
     if start_price <= 0:
@@ -546,16 +634,62 @@ def build_krt_model_screening(
     # чужой продукт, а не наш.
     lot_area, lot_basis = core.average_flat_sqm("manual")
     neighbour_lot = _number(verdict.get("sold_lot_avg"))
+    # Метры Программы реновации СТРОЯТСЯ, но не продаются: это часть цены входа,
+    # уплаченная метрами (владелец, 03.09.2026: «это по сути часть стоимости
+    # входа в проект метрами»). Фонд реновации КРТ не торгует — он оператор КРТ
+    # и проводит конкурсы на подрядные работы, а не выкупает у инвестора метры:
+    # «Донские улицы», 136 910 м² каталога, ушли подрядчику за 14 млрд ₽, то
+    # есть по 102 тыс ₽/м² — это цена СТРОЙКИ, а не цена метра. Значит выручки
+    # за эти метры нет ни по рынку, ни по выкупу.
+    #
+    # ГНС и общая остаются полными — метры строят, и CAPEX за них платят; из
+    # продаваемой они вычитаются. То же правило, что у переданных
+    # муниципалитету метров: строятся, но не продаются.
+    #
+    # Объём вычитается только тогда, когда он ПРОЧИТАН и сошёлся. Прежде здесь
+    # стояло `min(объём, жильё)`, и обрезка молча превращала непонятое число в
+    # уверенные 100%: на Задонском проезде разбор брал 173 200 м² предельной
+    # СПП вместо 15 100 м² реновации, обрезка давала 150 940 — всё жильё, — и
+    # площадка выходила без рыночного продукта вовсе. Обрезка, прячущая
+    # противоречие, — не проверка, а её отсутствие.
+    renovation = duties.get("renovation") or {}
+    renovation_area = _number(renovation.get("area_sqm"))
+    renovation_note = ""
+    if renovation_area > 0 and housing_gfa > 0:
+        # Самопроверка полноты: решение перечисляет зоны, и сумма парных
+        # площадей жилья обязана сойтись с жильём площадки. Не сошлась —
+        # перечень прочитан не весь, и сумме объёмов доверять нельзя.
+        checked = _number(renovation.get("housing_sqm"))
+        if renovation_area > housing_gfa * 1.001:
+            renovation_note = (
+                f"объём реновации по решению ({_ru_number(renovation_area)} м²) больше "
+                f"всего жилья площадки ({_ru_number(housing_gfa)} м²) — прочитано не то "
+                "число, и вычитать по нему нельзя")
+        elif checked > 0 and abs(checked - housing_gfa) > housing_gfa * 0.01:
+            renovation_note = (
+                f"перечень зон решения сошёлся на {_ru_number(checked)} м² жилья против "
+                f"{_ru_number(housing_gfa)} м² каталога — прочитан не весь, и сумма "
+                "объёмов реновации неполна")
+    renovation_spp = renovation_area if not renovation_note else 0.0
+    renovation_share = renovation_spp / housing_gfa if housing_gfa > 0 else 0.0
+    saleable_market = saleable * (1 - renovation_share)
     tep["apartments"].update({
         "gns": housing_gfa,
         "total_area": total_area,
         "useful": saleable,
-        "saleable": saleable,
-        "units": saleable / lot_area,
+        "saleable": saleable_market,
+        # Переданное городу едет тем же полем, каким уже едут метры
+        # муниципалитету: второй механизм на одно явление однажды разошёлся бы
+        # с первым, и обе строки выглядели бы верными.
+        "transfer": saleable - saleable_market,
+        "units": saleable_market / lot_area,
     })
 
     # Нежилой объём города и соцобъекты — до паркинга: места считаются от жилья,
     # но продукты очереди и ТЭП должны быть собраны целиком до прогона модели.
+    # Население и нормативы считаются от ВСЕХ квартир, включая реновационные:
+    # в них живут люди, и места в саду, школе и паркинге им положены так же.
+    # Не продаётся — не значит не заселяется.
     programme = _programme(core, project, duties, inputs, tep, applied_ratios, saleable)
 
     # Места считает постановление, а не своя строка модуля (решение владельца,
@@ -565,7 +699,10 @@ def build_krt_model_screening(
     # наземной площади зданий, и К1 в постоянных местах больше нет. На 136 818 м²
     # квартир разница — 1 580 мест по норме против 2 100 по старой строке.
     # Формула объявлена в движке один раз; копий у неё быть не должно.
-    permanent = core.moscow_permanent_parking_2118(saleable)
+    # Число квартир здесь известно — по средней квартире, — поэтому места
+    # считаются пунктом 2 по её полосе: правка числа квартир двигает места.
+    permanent, parking_basis = core.moscow_permanent_parking_by_average(
+        saleable, saleable / lot_area if lot_area else 0.0)
     parking_spaces = permanent + math.ceil(permanent * PARKING_GUEST_SHARE)
     parking_gns = parking_spaces * UNDERGROUND_AREA_PER_SPACE
     tep["underground_parking"].update({
@@ -578,7 +715,7 @@ def build_krt_model_screening(
     inputs["underground_parking_disabled"] = False
 
     phasing = _phase_configuration(saleable, int(_number(inputs.get("construction_months")) or 24))
-    units_total = saleable / lot_area
+    units_total = saleable_market / lot_area
     observed_pace = _number(verdict.get("units_per_month"))
     absorption: dict[str, Any] = {"available": False}
     if observed_pace > 0:
@@ -648,7 +785,9 @@ def build_krt_model_screening(
         f"({_number(apartment_ratios.get('saleable_of_gns')) * 100:.1f}% ГНС). "
         + ("Доли — умолчание DevelopAid; правятся в карточке."
            if own_ratios else "Доли заданы вручную, а не нашей методикой."),
-        f"Стартовая цена {_ru_number(start_price)} ₽/м² взята из маркетинга: {price_basis}.",
+        f"Стартовая цена {_ru_number(start_price)} ₽/м² взята из маркетинга: {price_basis}."
+        + (f" Медиана цен входа соседей — {_ru_number(entry_price)} ₽/м² — справочно, в модель не идёт."
+           if entry_price > 0 and round(entry_price) != round(start_price) else ""),
         f"Себестоимость основного строительства взята из пресета «{class_label}»: "
         f"{_ru_number(preset.get('main_above_th_per_sqm'))} тыс. ₽/м² наземной и "
         f"{_ru_number(preset.get('main_under_th_per_sqm'))} тыс. ₽/м² подземной части.",
@@ -680,19 +819,66 @@ def build_krt_model_screening(
            if programme["city"]["district"] else " — район в карточке не назван, принята первая зона")
         + ". " + (social_text + "." if social_text else "Соцобъекты по нормативу не потребовались.")
     )
+    _volumes = programme.get("volumes") or {}
+    if _volumes.get("taken"):
+        assumptions.append(
+            "Объёмы взяты из проекта решения, а не из карточки каталога: карточка "
+            f"даёт нежилого {_ru_number(_volumes.get('card_nonresidential_sqm'))} м², "
+            f"решение — {_ru_number(_volumes.get('nonresidential_sqm'))} м², и "
+            "слагаемые решения сходятся с его же итогом, а слагаемые карточки — нет. "
+            "Документ сильнее карточки."
+        )
+    elif _volumes.get("total_sqm"):
+        assumptions.append(
+            "Проект решения объявляет свои объёмы "
+            f"({_ru_number(_volumes.get('total_sqm'))} м² всего), но в модель они не "
+            "взяты: перечень зон прочитан не весь — его итог не сошёлся с итогом "
+            "каталога. Часть, выданная за целое, хуже карточки."
+        )
     assumptions.append(
         f"Нежилой объём города {_ru_number(programme['city']['nonresidential_gfa_sqm'])} м² "
         f"за вычетом соцобъектов {_ru_number(programme['social_gba_sqm'])} м² дал "
         f"{_ru_number(programme['commercial_gba_sqm'])} м² ГНС на ОСЗ и ТЦ; "
         f"общественно-деловое назначение {_ru_number(programme['offices_gba_sqm'])} м² "
-        "принято офисами. Размещение объектов по очередям — умолчание модели."
+        "принято офисами. Размещение объектов по очередям — умолчание модели; "
+        "соцобъекты — не позже первой (ДОО) и второй (школа, поликлиника) очереди: "
+        "срок ввода по условиям КРТ не раскрыт, это допущение DevelopAid."
     )
+    if renovation_spp > 0:
+        assumptions.append(
+            f"Программа реновации — {_ru_number(renovation_spp)} м² СПП "
+            f"({renovation_share * 100:.1f}% жилья площадки): метры строятся и передаются "
+            f"городу, выручки не несут. Это часть ЦЕНЫ ВХОДА, уплаченная метрами, "
+            f"а не убыток: Фонд реновации КРТ не торгует — он оператор КРТ и проводит "
+            f"конкурсы на подрядные работы, а не выкупает у инвестора метры. "
+            f"Продаваемая по рынку — {_ru_number(saleable_market)} м² из "
+            f"{_ru_number(saleable)} м² построенных."
+            + (" Всё жильё площадки — Программа реновации: девелоперского продукта "
+               "здесь нет вовсе, войти можно подрядчиком."
+               if renovation_share >= 0.99 else "")
+        )
+    elif renovation_note:
+        assumptions.append(
+            f"Программа реновации в решении названа, но {renovation_note}: метры "
+            "продаются по рынку целиком. Это НАШ пробел чтения, а не решение "
+            "города, и выручка здесь заведомо завышена."
+        )
+    elif (renovation or {}).get("mentioned"):
+        assumptions.append(
+            "Программа реновации в решении названа, но объём не указан: метры "
+            "продаются по рынку целиком, потому что вычесть нечего. «Доля "
+            "неизвестна» — это не «доли нет»."
+        )
     assumptions.append(
-        f"Число квартир — {_ru_number(saleable / lot_area)} лотов по средней квартире "
+        f"Число квартир — {_ru_number(saleable_market / lot_area)} лотов по средней квартире "
         f"{lot_area:g} м²: {lot_basis}."
         + (f" У соседей средний проданный лот {_ru_number(neighbour_lot, 1)} м² — "
            "это наблюдение рынка, а не мера нашей нарезки."
            if neighbour_lot > 0 else "")
+    )
+    assumptions.append(
+        f"Машино-места: {_ru_number(parking_spaces)} ({_ru_number(permanent)} постоянных "
+        f"и гостевые десятой частью) — {parking_basis}."
     )
     if absorption["available"]:
         assumptions.append(
@@ -713,6 +899,15 @@ def build_krt_model_screening(
         "Цена приобретения / входа принята равной нулю.",
         "Плата за ВРИ и оформление земельных правоотношений не включены.",
     ]
+    if _volumes.get("taken") and _number(_volumes.get("utility_sqm")) > 0:
+        exclusions.append(
+            f"Решение обязывает построить не менее {_ru_number(_volumes.get('utility_sqm'))} м² "
+            "коммунального, производственного и иного назначения. Продуктом девелопера "
+            "этот объём не является, и модель его не строит и не оценивает: продать его "
+            "по цене ТЦ значило бы выдумать выручку, а построить бесплатно — спрятать "
+            "расход. Сколько из него — подземный паркинг, который модель уже строит, "
+            "решение не разделяет."
+        )
     if programme["commercial_gba_sqm"] > 0 or programme["offices_gba_sqm"] > 0:
         objects = " и ".join(filter(None, (
             "ОСЗ" if programme["commercial_gba_sqm"] > 0 else "",
@@ -803,6 +998,22 @@ def build_krt_model_screening(
             "phasing": copy.deepcopy(phasing),
         },
         "requirements": duties,
+        # Признак реновации едет ЧИСЛОМ, а не пересказом: метка на строке и
+        # предпосылка в отчёте обязаны считаться одним и тем же, иначе они
+        # однажды скажут про одну площадку разное.
+        "renovation": {
+            "spp_sqm": round(renovation_spp),
+            "share": round(renovation_share, 4),
+            "saleable_lost_sqm": round(saleable - saleable_market),
+            "whole_site": renovation_share >= 0.99,
+            "mentioned": bool((renovation or {}).get("mentioned")),
+            # Чем прочитан объём и сошёлся ли он — часть ответа: «объём не
+            # назван» и «мы его не поняли» на экране выглядят одинаково.
+            "basis": str((renovation or {}).get("basis") or "mentioned_without_volume"),
+            "zones": int((renovation or {}).get("zones") or 0),
+            "not_counted_reason": renovation_note,
+            "quote": str((renovation or {}).get("quote") or ""),
+        },
         "programme": programme,
         "headline": traffic["label"],
         "text": text,
@@ -812,6 +1023,7 @@ def build_krt_model_screening(
             "model_class_label": class_label,
             "start_price_rub_sqm": round(start_price),
             "market_price_rub_sqm": round(market_price) if market_price > 0 else None,
+            "entry_price_rub_sqm": round(entry_price) if entry_price > 0 else None,
             "price_basis": price_basis,
         },
         "phasing": {
@@ -819,8 +1031,8 @@ def build_krt_model_screening(
             "count": phasing["phase_count"],
             "target_saleable_sqm": TARGET_PHASE_SALEABLE_SQM,
             "gap_months": PHASE_GAP_MONTHS,
-            "saleable_sqm": round(saleable),
-            "average_saleable_sqm": round(saleable / phasing["phase_count"]),
+            "saleable_sqm": round(saleable_market),
+            "average_saleable_sqm": round(saleable_market / phasing["phase_count"]),
             "capped_at_five": capped_at_five,
             "phases": phases,
         },

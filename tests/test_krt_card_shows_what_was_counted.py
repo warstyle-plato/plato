@@ -69,11 +69,20 @@ def test_the_handoff_sends_the_counted_inputs_not_a_new_model() -> None:
 
 
 def test_the_list_always_shows_a_number(script_free: None = None) -> None:
-    """Балл не вытесняется вердиктом модели: сравнивать надо число с числом."""
+    """Балл не вытесняется вердиктом модели: сравнивать надо число с числом.
+
+    Число печатает `krtScoreNumber`, и оно же — единственное место, где число
+    может не появиться: у площадки, ТЭП которой неизвестен, считать потенциал
+    не из чего, и «0» там читался как посчитанная оценка («пишем в блоке КРТ
+    что 0», владелец 04.09.2026). Это не вердикт, вытеснивший балл, — это
+    отсутствие входных данных, названное своим именем.
+    """
     script = page_script(auctions_page())
     body = script[script.index("function renderKrt("):]
     body = body[:body.index("\nfunction krtSiteMap(")]
-    assert "${sc.score} · ${esc(sc.label)}" in body
+    assert "${krtScoreNumber(sc)} · ${esc(sc.label)}" in body
+    assert "function krtScoreNumber(sc){return sc.known?sc.score:'—'}" in script, \
+        "число балла снова считается на месте, а не одним ответом"
     assert "Модель · ${esc(light.label)}" not in body, "вердикт больше не заменяет балл"
     assert "krtScoreNote(sc)" in body, "рядом сказано, что балл снизило"
     assert "x.is_new" in body, "новая площадка помечается"

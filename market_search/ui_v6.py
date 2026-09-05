@@ -297,6 +297,19 @@ PRICE_HINT_SCRIPT = """<script id="market-v6-price-hint">
   // новое оставалось без неё, и вернуть её было некому — вставка была разовой.
   // Так кнопка пропадала ровно тогда, когда ей находилось применение: человек
   // ввёл участок, чтобы получить ориентир, и получил страницу без кнопки.
+  // Ответ может не быть ответом: шлюз отдаёт свою страницу, а сервер на
+  // неопознанном вводе отдавал текст «Internal Server Error». `response.json()`
+  // на таком теле бросает «Unexpected token», и человек видит поломку разбора
+  // вместо причины (владелец, 04.09.2026: «пишет unexpected token»). Правило
+  // уже выведено на странице торгов; здесь оно второй раз понадобилось.
+  async function daReadJson(response){
+    const text=await response.text();
+    try{return text?JSON.parse(text):null}
+    catch(error){
+      const head=String(text||'').replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim().slice(0,120);
+      throw new Error('сервер ответил не JSON (HTTP '+response.status+')'+(head?': '+head:''));
+    }
+  }
   function placed(){
     if(typeof mdApartmentPriceInput!=='function')return false;
     const input=mdApartmentPriceInput();
@@ -329,7 +342,7 @@ PRICE_HINT_SCRIPT = """<script id="market-v6-price-hint">
       try{
         const response=await fetch('/market/price-hint',{method:'POST',
           headers:{'Content-Type':'application/json'},body:JSON.stringify(where)});
-        const payload=await response.json();
+        const payload=await daReadJson(response);
         if(!response.ok||!payload||payload.available===false){
           note.textContent=(payload&&(payload.reason||payload.detail))||'Ориентир не рассчитан.';
           return;

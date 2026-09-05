@@ -31,6 +31,8 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import main_legacy as core  # noqa: E402
+
+import v4_inputs  # noqa: E402
 from xlsx_eval import Evaluator  # noqa: E402
 
 SCRATCH = ROOT / "tests" / "_scratch_schedules"
@@ -167,8 +169,8 @@ def test_the_book_pays_the_purchase_by_the_same_schedule() -> None:
     ev = _book(x)
     assert _months(ev, "CAPEX", 14) == {"2027-01-01": 300.0, "2027-07-01": 400.0, "2028-01-01": 300.0}
     # Блок графика лежит в «Вводных» и подписан — его правят в книге.
-    values = [str(ev.workbook["Вводные"].cell(row=r, column=1).value or "")
-              for r in range(1, ev.workbook["Вводные"].max_row + 1)]
+    values = [str(v4_inputs.inputs(ev.workbook).cell(row=r, column=1).value or "")
+              for r in range(1, v4_inputs.inputs(ev.workbook).max_row + 1)]
     assert "ГРАФИК ПЛАТЕЖЕЙ ЗА ПОКУПКУ" in values
 
 
@@ -289,8 +291,8 @@ def test_the_book_prices_apartments_by_the_same_ladder() -> None:
     assert book == engine
     # Блок этапов подписан готовностью, месяц в нём не хранится — его считает
     # формула из срока строительства очереди.
-    values = [str(ev.workbook["Вводные"].cell(row=r, column=1).value or "")
-              for r in range(1, ev.workbook["Вводные"].max_row + 1)]
+    values = [str(v4_inputs.inputs(ev.workbook).cell(row=r, column=1).value or "")
+              for r in range(1, v4_inputs.inputs(ev.workbook).max_row + 1)]
     assert "Этап 1 · готовность 25%" in values
 
 

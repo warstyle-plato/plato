@@ -105,6 +105,41 @@ _CATALOGUE_FIELDS = ("name", "okrug", "district", "status", "area_ha", "housing_
                      "press_facts")
 
 
+def _screening_rules_version() -> int:
+    """Версия методики скрининга. Модуль импортируется лениво: он тянет движок."""
+    try:
+        from . import krt_screening
+
+        return int(getattr(krt_screening, "SCREENING_RULES_VERSION", 0))
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _engine_version() -> str:
+    """Выпуск, которым посчитана строка. Объявлен один раз — `VERSION`."""
+    try:
+        import developaid_core as core  # type: ignore
+
+        return str(getattr(core, "VERSION", ""))
+    except Exception:  # noqa: BLE001
+        try:
+            import main_legacy as core  # type: ignore
+
+            return str(getattr(core, "VERSION", ""))
+        except Exception:  # noqa: BLE001
+            return ""
+
+
+def model_is_current(row: dict[str, Any]) -> bool:
+    """Посчитана ли строка нынешней методикой.
+
+    Правило то же, что у привязки публикаций (`ANCHOR_RULES_VERSION`): ответ
+    прежней версии — не ответ. Строка без версии посчитана до того, как её
+    завели, то есть заведомо прежней.
+    """
+    return int((row or {}).get("rules_version") or 0) >= _screening_rules_version()
+
+
 def score_row(project: dict[str, Any], screening: dict[str, Any]) -> dict[str, Any]:
     """Одна строка рейтинга. Ничего не считает сверх того, что дал скрининг.
 
@@ -122,6 +157,11 @@ def score_row(project: dict[str, Any], screening: dict[str, Any]) -> dict[str, A
         "area_ha": project.get("area_ha"),
         "housing_gfa_sqm": project.get("housing_gfa_sqm"),
         "computed_at": int(time.time()),
+        # Чем посчитано, а не только когда. `computed_at` на вопрос «судит ли
+        # эта строка по нынешней методике» не отвечает: прогон публикаций
+        # обновляет находки и не трогает модель, и строка выглядит свежей.
+        "rules_version": _screening_rules_version(),
+        "engine_version": _engine_version(),
     }
     if not screening.get("available"):
         row["available"] = False
@@ -147,6 +187,12 @@ def score_row(project: dict[str, Any], screening: dict[str, Any]) -> dict[str, A
         # городским нуждам находил их лишь у площадок, открытых руками.
         "card_facts": screening.get("card_facts") or {},
         "press_facts": screening.get("press_facts") or {},
+        # Объём городских нужд считает скрининг, а строка его не несла вовсе:
+        # на 268 площадках прода поле пустое у ВСЕХ, и экран падал в запасной
+        # путь «объём не назван» — то есть в утверждение о документе, сделанное
+        # из нашего пробела. Посчитанное на сервере, но не доехавшее до строки,
+        # неотличимо от непосчитанного.
+        "renovation": screening.get("renovation") or {},
         "saleable_sqm": round(saleable) if saleable else 0,
         "segment": market.get("recommended_segment"),
         "start_price_rub_sqm": market.get("start_price_rub_sqm"),
