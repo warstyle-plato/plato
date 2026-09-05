@@ -2131,6 +2131,18 @@ function krtPriceVerdict(x){
  const asking=krtAskingPrice(x);
  const ceiling=rank.entry_capacity_mln;
  if(!asking)return null;
+ // Цена названа и модель по ней посчитана — тогда и отвечаем ею. Потолок
+ // говорит «проходит или нет» по порогу 1,20x и молчит о том, ЧТО выходит по
+ // этой цене; сравнение с потолком остаётся ниже, когда второго прогона нет.
+ const priced=rank.at_asking_price;
+ if(priced&&priced.project_llcr_x!==null&&priced.project_llcr_x!==undefined){
+  const llcr=Number(priced.project_llcr_x);
+  return {asking:asking, ceiling:(ceiling===null||ceiling===undefined?null:Number(ceiling)),
+          over:!priced.passes, modelled:true,
+          text:'по цене торгов '+fmtMln(priced.price_mln)+' модель даёт LLCR '
+               +llcr.toFixed(2)+'x и маржу '+Number(priced.margin_pct||0).toFixed(1)+'%'
+               +(priced.passes?' — проходит':' — не проходит порог 1,20x')};
+ }
  if(ceiling===null||ceiling===undefined)
   return {asking:asking, ceiling:null, over:false,
           text:'цена торгов '+fmtMln(asking.mln)+' · потолок входа не подобран'};
@@ -2797,9 +2809,15 @@ function krtEntryHead(x){
  // Объявленная цена против потолка входа — первый вопрос инвестора после
  // «можно ли войти»: цена, по которой не проходит, закрывает разговор.
  const verdict=krtPriceVerdict(x);
+ // Потолок называется числом только там, где сама фраза его не назвала:
+ // «против потолка 2,4 млрд» и следом «потолок 2,4 млрд» — это одно число,
+ // сказанное дважды подряд.
  const priced=verdict?`<div class="source${verdict.over?' warn':''}">${esc(verdict.text)}`
-   +(verdict.ceiling!==null?'. Потолок посчитан при нулевой цене входа: столько проект '
-     +'способен заплатить при LLCR 1,20x':'')+`</div>`:'';
+   +(verdict.ceiling!==null
+      ? '. Потолок'+(verdict.modelled?' '+esc(fmtMln(verdict.ceiling)):'')
+        +' посчитан при нулевой цене входа: столько проект способен заплатить '
+        +'при LLCR 1,20x'
+      : '')+`</div>`:'';
  return `<div class="notice ${tone}"><b>${esc(title)}</b>`+priced
   +(facts.length?'<div>'+facts.join(' · ')+'</div>':'')
   +(why?`<div class="source">${why}</div>`:'')
