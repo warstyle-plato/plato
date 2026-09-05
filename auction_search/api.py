@@ -1142,11 +1142,38 @@ def install(app: FastAPI) -> None:
         if not callable(reader):
             raise HTTPException(status_code=503, detail="Реестр карты недоступен")
         try:
-            return await run_in_threadpool(
-                lambda: reader(refresh=bool(refresh), step_m=float(step_m)))
+            payload = dict(await run_in_threadpool(
+                lambda: reader(refresh=bool(refresh), step_m=float(step_m))))
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=502,
                                 detail=f"Карта КРТ не прочитана: {exc}") from exc
+        # Файл карты города — не весь реестр: часть строк каталога в нём не
+        # находится ничем, и на карте их не было вовсе (владелец, 04.09.2026:
+        # «На карте крт Нагатино так и нет. Хотя контур в карточке верный»).
+        # Тем, кого нет, контур собирает тот же путь, что уже у карточки —
+        # участки ЕГРН по перечню проекта решения, — и рисуется он иначе:
+        # это состав территории по документу, а не официальный полигон.
+        supplement = getattr(krt_registry, "map_supplement", None)
+        if callable(supplement):
+            try:
+                extra = dict(await run_in_threadpool(lambda: supplement(payload)))
+            except Exception as exc:  # noqa: BLE001 — свод карты не роняем добавкой
+                logger.exception("КРТ: добавка контуров по решениям не собралась")
+                extra = {"sites": [], "gaps": [],
+                         "counts": {}, "problem": f"{type(exc).__name__}: {exc}"[:160]}
+            payload["sites"] = list(payload.get("sites") or []) + list(extra.get("sites") or [])
+            payload["supplement"] = extra
+            payload["count"] = len(payload["sites"])
+            filler = getattr(krt_registry, "fill_outlines_in_background", None)
+            lookup = getattr(core, "_land_lookup_by_numbers", None) if core is not None else None
+            if callable(filler) and callable(lookup):
+                # Непрочитанные перечни дочитывает фон порциями: обход ЕГРН по
+                # десяткам площадок в срок ответа не укладывается, а держать
+                # соединение вместо этого мы уже пробовали.
+                await run_in_threadpool(lambda: filler(
+                    [gap.get("slug") for gap in (extra.get("gaps") or [])
+                     if gap.get("kind") == "unread"], lookup=lookup))
+        return payload
 
     @app.get("/auctions/krt/api-probe")
     async def auction_krt_api_probe(url: str = Query(default="")) -> dict[str, Any]:
@@ -1636,6 +1663,17 @@ def install(app: FastAPI) -> None:
                           or "Модель по этой площадке не собрана — передавать нечего"),
             )
         project = stored.get("project") or {}
+        # Участок едет вместе с моделью. Номера называет проект решения, а
+        # какие из них ЗЕМЛЯ — уже ответил ЕГРН, когда карточка собирала
+        # контур: на Варшавском ш., вл. 37 из 60 номеров 20 участков и 39
+        # зданий. Отдать все — это ровно та ошибка, что ловилась на лотах:
+        # ГлавАПУ примет площадь здания за площадь территории и сложит их.
+        # Второго опроса ЕГРН здесь нет — берётся тот же `decision_outline`.
+        outline = await _decision_outline(slug)
+        counts = dict(outline.get("counts") or {})
+        parcels = [str(item.get("cadastral_number") or "")
+                   for item in (outline.get("parcels") or [])
+                   if item.get("cadastral_number")]
         return {
             "slug": slug,
             "name": project.get("name") or slug,
@@ -1646,6 +1684,18 @@ def install(app: FastAPI) -> None:
             "requirements": screening.get("requirements") or {},
             "assumptions": screening.get("assumptions") or [],
             "exclusions": screening.get("exclusions") or [],
+            "cadastral_numbers": parcels,
+            # Чем прочитан перечень и что из него выброшено — часть ответа:
+            # пустое поле участка и «участков в документе нет» на экране
+            # выглядят одинаково.
+            "cadastral": {
+                "land": len(parcels),
+                "listed": int(counts.get("numbers") or 0),
+                "buildings": int(counts.get("buildings") or 0),
+                "missing": int(counts.get("missing") or 0),
+                "source": str(outline.get("numbers_source") or "none"),
+                "problem": str(outline.get("problem") or ""),
+            },
         }
 
     @app.post("/auctions/krt/{slug}/plato")

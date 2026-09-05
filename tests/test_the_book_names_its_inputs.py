@@ -26,6 +26,8 @@ sys.path.insert(0, str(ROOT))
 
 import main_legacy as core  # noqa: E402
 
+import v4_inputs  # noqa: E402
+
 openpyxl = pytest.importorskip("openpyxl")
 
 
@@ -33,7 +35,7 @@ openpyxl = pytest.importorskip("openpyxl")
 def sheet():
     content, _, _ = core.build_project_workbook(
         {**core.DEFAULT_INPUTS}, core.TEP_DEFAULT, [], {}, project_name="Имена")
-    return openpyxl.load_workbook(io.BytesIO(content), data_only=False)["Вводные"]
+    return v4_inputs.inputs(openpyxl.load_workbook(io.BytesIO(content), data_only=False))
 
 
 def test_every_mapped_input_carries_its_key(sheet):
@@ -90,7 +92,7 @@ def test_a_social_object_split_across_queues_carries_no_project_key():
     }
     content, _, _ = core.build_project_workbook(
         {**core.DEFAULT_INPUTS}, core.TEP_DEFAULT, [], phasing, project_name="Доли")
-    sheet = openpyxl.load_workbook(io.BytesIO(content), data_only=False)["Вводные"]
+    sheet = v4_inputs.inputs(openpyxl.load_workbook(io.BytesIO(content), data_only=False))
     for phase in (1, 2):
         row = next(number for number in range(1, sheet.max_row + 1)
                    if str(sheet[f"A{number}"].value or "") == f"ДОО — очередь {phase}")
@@ -114,7 +116,7 @@ BLOCK_INPUTS = {**core.DEFAULT_INPUTS, "purchase_price_mln": 1000,
 def blocks():
     content, _, _ = core.build_project_workbook(
         BLOCK_INPUTS, core.TEP_DEFAULT, [], {}, project_name="Блоки")
-    return openpyxl.load_workbook(io.BytesIO(content), data_only=False)["Вводные"]
+    return v4_inputs.inputs(openpyxl.load_workbook(io.BytesIO(content), data_only=False))
 
 
 def labels(sheet, column: str) -> set[str]:
@@ -162,7 +164,7 @@ def test_an_empty_payment_date_stays_empty(blocks):
     content, _, _ = core.build_project_workbook(
         {**core.DEFAULT_INPUTS, "social_comp_date": ""},
         core.TEP_DEFAULT, [], {}, project_name="Пустая дата")
-    sheet = openpyxl.load_workbook(io.BytesIO(content), data_only=False)["Вводные"]
+    sheet = v4_inputs.inputs(openpyxl.load_workbook(io.BytesIO(content), data_only=False))
     assert sheet["B18"].value in (None, ""), sheet["B18"].value
 
     cash = next(number for number in range(1, sheet.max_row + 1)

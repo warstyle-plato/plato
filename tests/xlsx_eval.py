@@ -138,9 +138,43 @@ def _match(args: list[Any]) -> int:
     raise FormulaError(f"MATCH: {target!r} не найдено")
 
 
+_CRITERIA_OP = re.compile(r"^(<=|>=|<>|<|>|=)?(.*)$", re.S)
+
+
+def _criteria(value: Any) -> tuple[str, Any]:
+    """Условие Excel: «<45000», «>=3», «Да» — оператор стоит внутри строки.
+
+    Прежде условие сравнивалось только на равенство, и всякое «<дата» молча
+    считалось несовпадением: SUMIF по месяцам до РнС вернул бы ноль, а ноль в
+    книге выглядит как посчитанный ответ.
+    """
+    if not isinstance(value, str):
+        return "=", value
+    match = _CRITERIA_OP.match(value)
+    operator, rest = (match.group(1) or "="), match.group(2).strip()
+    try:
+        return operator, _dt.date.fromisoformat(rest)
+    except ValueError:
+        pass
+    try:
+        return operator, float(rest.replace(",", "."))
+    except ValueError:
+        return operator, rest
+
+
 def _countif(args: list[Any]) -> int:
-    criteria = args[1]
-    return sum(1 for item in _flatten(args[0]) if _compare("=", item, criteria))
+    operator, target = _criteria(args[1])
+    return sum(1 for item in _flatten(args[0]) if _compare(operator, item, target))
+
+
+def _sumif(args: list[Any]) -> float:
+    """SUMIF(диапазон; условие[; диапазон_суммирования])."""
+    tested = _flatten(args[0])
+    summed = _flatten(args[2]) if len(args) > 2 else tested
+    operator, target = _criteria(args[1])
+    return sum(_as_number(value)
+               for item, value in zip(tested, summed)
+               if _compare(operator, item, target))
 
 
 def _npv(args: list[Any]) -> float:
@@ -201,6 +235,7 @@ FUNCTIONS: dict[str, Callable[[list[Any]], Any]] = {
     "ROUNDUP": lambda args: _excel_round(_as_number(args[0]), _as_number(args[1]), up=True),
     "COUNT": lambda args: len(_numbers(args)),
     "COUNTIF": _countif,
+    "SUMIF": _sumif,
     "INDEX": _index,
     "MATCH": _match,
     "TEXT": lambda args: _text(args[0]),

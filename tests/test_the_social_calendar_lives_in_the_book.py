@@ -31,6 +31,8 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 import main_legacy as core  # noqa: E402
 
+import v4_inputs  # noqa: E402
+
 openpyxl = pytest.importorskip("openpyxl")
 
 from openpyxl.utils import get_column_letter  # noqa: E402
@@ -92,7 +94,7 @@ def test_the_monthly_row_is_a_formula_not_a_number(phased):
 def test_the_block_has_a_row_for_every_pair(phased):
     """Строка есть и у пустой пары: включить объект в книге иначе было бы негде,
     а формула CAPEX ссылалась бы в пустоту."""
-    sheet = phased["Вводные"]
+    sheet = v4_inputs.inputs(phased)
     labels = [str(sheet[f"A{row}"].value or "") for row in range(1, sheet.max_row + 1)]
     for label in ("ДОО", "СОШ", "Поликлиника"):
         for phase in range(1, 5):
@@ -122,7 +124,7 @@ def test_the_total_still_equals_the_declared_social_load(phased):
     """Сумма месяцев обязана сойтись с B17 — иначе книга строит не то, что объявила."""
     evaluator = evaluated(phased)
     total = sum(evaluator.cell("CAPEX", f"B{row}") for row in CAPEX_SOCIAL_ROWS)
-    assert total == pytest.approx(evaluator.cell("Вводные", "B17"), abs=0.01)
+    assert total == pytest.approx(evaluator.cell("Параметры модели", "B17"), abs=0.01)
 
 
 def test_moving_the_start_inside_excel_moves_the_schedule(phased):
@@ -135,7 +137,7 @@ def test_moving_the_start_inside_excel_moves_the_schedule(phased):
               if abs(value) > 1e-9]
 
     moved = book()
-    sheet = moved["Вводные"]
+    sheet = v4_inputs.inputs(moved)
     row = next(number for number in range(1, sheet.max_row + 1)
                if str(sheet[f"A{number}"].value or "") == "ДОО — очередь 1")
     sheet[f"D{row}"] = sheet[f"D{row}"].value + 6      # начало на полгода позже
@@ -150,7 +152,7 @@ def test_stretching_the_term_inside_excel_thins_the_months(phased):
     before = monthly(evaluator, 31)
 
     longer = book()
-    sheet = longer["Вводные"]
+    sheet = v4_inputs.inputs(longer)
     row = next(number for number in range(1, sheet.max_row + 1)
                if str(sheet[f"A{number}"].value or "") == "ДОО — очередь 1")
     sheet[f"E{row}"] = sheet[f"E{row}"].value * 2
@@ -163,7 +165,7 @@ def test_stretching_the_term_inside_excel_thins_the_months(phased):
 def test_the_places_drive_the_cost(phased):
     """Мест вдвое больше — стоимость объекта вдвое выше: цена места ячейкой рядом."""
     doubled = book()
-    sheet = doubled["Вводные"]
+    sheet = v4_inputs.inputs(doubled)
     row = next(number for number in range(1, sheet.max_row + 1)
                if str(sheet[f"A{number}"].value or "") == "ДОО — очередь 1")
     base = evaluated(phased).cell("CAPEX", "B31")
@@ -178,9 +180,9 @@ def test_the_entered_payment_date_is_the_cell_and_the_rule_is_the_reader():
     не двигала, а из числа не было видно, что за ним стоит правило."""
     entered = book(phasing={}, social_mode=core.SOCIAL_MODE_BOTH,
                    social_comp_date="2028-01-01", social_compensation_mln=500)
-    assert entered["Вводные"]["B18"].value.strftime("%Y-%m-%d") == "2028-01-01"
+    assert v4_inputs.inputs(entered)["B18"].value.strftime("%Y-%m-%d") == "2028-01-01"
 
-    sheet = entered["Вводные"]
+    sheet = v4_inputs.inputs(entered)
     cash = next(number for number in range(1, sheet.max_row + 1)
                 if str(sheet[f"A{number}"].value or "").startswith("Денежная компенсация"))
     formula = sheet[f"D{cash}"].value
@@ -192,7 +194,7 @@ def test_the_deadline_wins_over_a_late_entered_date():
     late = book(phasing={}, social_mode=core.SOCIAL_MODE_BOTH,
                 social_comp_date="2035-01-01", social_compensation_mln=500)
     evaluator = evaluated(late)
-    sheet = late["Вводные"]
+    sheet = v4_inputs.inputs(late)
     cash = next(number for number in range(1, sheet.max_row + 1)
                 if str(sheet[f"A{number}"].value or "").startswith("Денежная компенсация"))
     # Вычислитель отдаёт то серийный номер, то дату — приводим к одной мере.
@@ -201,7 +203,7 @@ def test_the_deadline_wins_over_a_late_entered_date():
             return core._v4_excel_serial(str(value)[:10])
         return float(value)
 
-    paid = serial(evaluator.cell("Вводные", f"D{cash}"))
+    paid = serial(evaluator.cell("Параметры модели", f"D{cash}"))
     permit = serial(evaluator.cell("CF_1", "B7"))
     assert paid < core._v4_excel_serial("2035-01-01"), paid
     assert paid < permit, (paid, permit)

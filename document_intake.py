@@ -189,8 +189,33 @@ OBLIGATION_TARGETS = (
 )
 
 
-def intake_prompt(document: dict[str, Any]) -> str:
+# Сколько знаков документа помещается в задание. Предел вопроса Платону — это
+# предел ЧЕЛОВЕЧЕСКОГО вопроса; машинное задание с документом им мерить нельзя:
+# одна шапка задания занимает больше двух с половиной тысяч знаков, и на
+# документ от четырёх тысяч оставалось 1 484 — меньше одной страницы делового
+# PDF. Тизер поэтому отклонялся ВСЕГДА, а человек читал «Вопрос слишком
+# длинный», то есть претензию к себе (владелец, 04.09.2026: «Платон на сайте не
+# принимает тизеры, пишет что слишком большой запрос»).
+DOCUMENT_TEXT_BUDGET = 48_000
+
+
+def intake_text(document: dict[str, Any], budget: int = DOCUMENT_TEXT_BUDGET) -> dict[str, Any]:
+    """Текст документа в пределах бюджета — и сколько его прочитано.
+
+    Обрезка называется вслух: непрочитанный хвост, о котором не сказано,
+    читается как «в документе этого нет».
+    """
+    text = str(document.get("text") or "")
+    if len(text) <= budget:
+        return {"text": text, "read_chars": len(text), "total_chars": len(text),
+                "trimmed": False}
+    return {"text": text[:budget], "read_chars": budget, "total_chars": len(text),
+            "trimmed": True}
+
+
+def intake_prompt(document: dict[str, Any], budget: int = DOCUMENT_TEXT_BUDGET) -> str:
     """Задание модели: прочитать и процитировать, а не посчитать."""
+    portion = intake_text(document, budget)
     catalogue = "\n".join(
         f"- {row['key']} — {row['label']} ({row['unit']})" for row in INTAKE_FIELDS)
     ours = "\n".join(
@@ -227,9 +252,9 @@ def intake_prompt(document: dict[str, Any]) -> str:
  "notes": ["что важно, но в поля модели не ложится"]}}
 
 Документ «{document.get('filename') or 'без имени'}», страниц: {document.get('pages')}.
-
+{"ВНИМАНИЕ: документ прочитан не целиком — %d знаков из %d. О том, чего нет в прочитанной части, вопросов не задавай: скажи, что документ длиннее." % (portion["read_chars"], portion["total_chars"]) if portion["trimmed"] else ""}
 --- начало документа ---
-{document.get('text') or ''}
+{portion["text"]}
 --- конец документа ---"""
 
 

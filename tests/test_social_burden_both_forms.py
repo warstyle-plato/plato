@@ -36,6 +36,8 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 import main_legacy as core  # noqa: E402
 
+import v4_inputs  # noqa: E402
+
 openpyxl = pytest.importorskip("openpyxl")
 
 BASE = {**core.DEFAULT_INPUTS, "apartment_price_th": 650, "commercial_price_th": 650,
@@ -128,7 +130,7 @@ def test_the_workbook_agrees_with_the_engine(mode):
 
 
 def test_the_workbook_carries_both_parts():
-    book = workbook(core.SOCIAL_MODE_BOTH)["Вводные"]
+    book = v4_inputs.inputs(workbook(core.SOCIAL_MODE_BOTH))
     assert book["B17"].value == pytest.approx(
         result(core.SOCIAL_MODE_BOTH)["summary"]["social_payment"] / 1_000_000, rel=1e-6)
     assert book["B56"].value == pytest.approx(1149.23)
@@ -139,7 +141,7 @@ def test_the_other_modes_leave_the_cash_cell_empty():
     """Ячейка живёт только совмещённым режимом: в остальных её содержимое
     исказило бы базу комиссии."""
     for mode in ("Строительство", "Денежная компенсация"):
-        assert workbook(mode)["Вводные"]["B56"].value == 0
+        assert v4_inputs.inputs(workbook(mode))["B56"].value == 0
 
 
 def test_the_book_formula_knows_the_third_mode():
@@ -153,14 +155,23 @@ def test_the_book_formula_knows_the_third_mode():
 def test_the_book_opens_on_the_result():
     """Книгу открывают ради отчёта, а он лежал пятнадцатым листом — после
     четырёх CF, КРЕДИТОВ и КОНСОЛИДАТОРА. Порядок листов ничего не ломает:
-    формулы ссылаются по именам, а не по позиции."""
+    формулы ссылаются по именам, а не по позиции.
+
+    Разделение ввода едва не отобрало у отчёта его место: «Параметры модели»
+    встали вторым листом просто потому, что там раньше стояли «Вводные».
+    Печатать в них больше нечего, и стоять перед отчётом им незачем.
+
+    Инструкция стоит второй — сразу за листом, о котором она. Первой её
+    ставить нельзя: книгу открывают, чтобы печатать, а не читать инструкцию.
+    """
     names = workbook("Строительство").sheetnames
-    assert names[:3] == ["Вводные", "ОТЧЕТ", "Дашборд"]
+    assert names[:5] == ["Вводные", "ИНСТРУКЦИЯ", "ОТЧЕТ", "Дашборд",
+                         "Параметры модели"]
 
 
 def test_no_sheet_was_lost_in_the_reorder():
     names = workbook("Строительство").sheetnames
-    assert len(names) == len(set(names)) == 19
+    assert len(names) == len(set(names)) == 21
     for required in ("ПРОВЕРКИ", "CF_1", "CF_4", "КРЕДИТЫ", "ОБЪЕКТЫ"):
         assert required in names
 
@@ -256,7 +267,23 @@ def test_the_self_check_knows_all_three_modes():
 
 
 def test_the_pdf_splits_the_bridge_like_the_site():
-    """PDF не знал третьего режима: денежная часть уезжала в «приобретение»."""
-    source = __import__("inspect").getsource(core._build_developaid_pdf)
-    assert "SOCIAL_MODE_BOTH" in source, "PDF не разбирает совмещённый режим"
-    assert "social_payment_breakdown" in source
+    """Денежная часть стоит своей целью, а не уезжает в «приобретение».
+
+    Прежде проверка искала в исходнике печати строки `SOCIAL_MODE_BOTH` и
+    `social_payment_breakdown` — то есть закрепляла РЕАЛИЗАЦИЮ, а не
+    утверждение: обе поверхности выводили состав лимита вычитанием «итог минус
+    социалка минус П минус РД», и правило «поверхности считают одинаково»
+    держалось на том, что вычитаний два и они совпадают. Теперь состав лимита
+    считает движок один раз, и проверять надо его: печать и экран читают одно
+    поле, а денежная часть в нём названа своей целью.
+    """
+    parts = result(core.SOCIAL_MODE_BOTH)["report"]["financing"]["calculated_bridge_parts"]
+    assert parts["social"] == pytest.approx(1149.23 * 1_000_000, rel=1e-6), (
+        "денежная часть соцнагрузки не выделена в составе лимита")
+    assert parts["purchase"] + parts["social"] + parts["design_p"] + parts["design_rd"] \
+        == pytest.approx(
+            result(core.SOCIAL_MODE_BOTH)["report"]["financing"]["calculated_bridge"],
+            rel=1e-9), "состав лимита не складывается в сам лимит"
+    # Стройка соцобъектов в лимит не входит: её финансирует ПФ после РнС.
+    build_parts = result("Строительство")["report"]["financing"]["calculated_bridge_parts"]
+    assert build_parts["social"] == 0.0

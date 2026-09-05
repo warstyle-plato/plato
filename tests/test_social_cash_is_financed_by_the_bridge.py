@@ -6,7 +6,7 @@
 ПФ, платить ею нечего. Решение владельца, 18.08.2026: «верно как банк».
 
 До этого стороны считали по-разному и обе молча. Движок платил строго в дату из
-вводных; книга — за месяц до РнС своей формулой (`Вводные!B18`), а введённую
+вводных; книга — за месяц до РнС своей формулой (`Параметры модели!B18`), а введённую
 дату не видела вовсе: поля не было в карте записи — тот самый случай из правил
 проекта, когда ячейка остаётся мусором из шаблона. Пока умолчание совпадало с
 «месяцем до РнС», обе стороны сходились случайно. Стоило срокам проекта
@@ -31,6 +31,8 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import main_legacy as core  # noqa: E402
+
+import v4_inputs  # noqa: E402
 
 openpyxl = pytest.importorskip("openpyxl")
 
@@ -105,7 +107,7 @@ def test_the_payment_date_is_reported():
 def test_the_workbook_gets_the_same_date():
     """Ячейка подписана ключом движка, а жила на формуле шаблона. Пока дата
     умолчания совпадала с «месяцем до РнС», это не было видно."""
-    cell = workbook(social_comp_date="2027-06-01")["Вводные"]["B18"]
+    cell = v4_inputs.inputs(workbook(social_comp_date="2027-06-01"))["B18"]
     assert getattr(cell.value, "date", lambda: cell.value)() == date(2027, 6, 1)
 
 
@@ -120,14 +122,14 @@ def test_the_workbook_moves_a_late_date_the_same_way():
 
     sys.setrecursionlimit(400000)
     book = workbook(social_comp_date="2028-12-01")
-    assert getattr(book["Вводные"]["B18"].value, "date",
-                   lambda: book["Вводные"]["B18"].value)() == date(2028, 12, 1)
+    assert getattr(v4_inputs.inputs(book)["B18"].value, "date",
+                   lambda: v4_inputs.inputs(book)["B18"].value)() == date(2028, 12, 1)
 
     evaluator = Evaluator(book)
-    sheet = book["Вводные"]
+    sheet = v4_inputs.inputs(book)
     cash = next(number for number in range(1, sheet.max_row + 1)
                 if str(sheet[f"A{number}"].value or "").startswith("Денежная компенсация"))
-    paid = evaluator.cell("Вводные", f"D{cash}")
+    paid = evaluator.cell("Параметры модели", f"D{cash}")
     paid = paid if hasattr(paid, "isoformat") else (
         date(1899, 12, 30) + timedelta(days=int(paid)))
     assert str(paid)[:10] == "2028-06-01", paid
@@ -139,10 +141,10 @@ def test_the_workbook_pays_an_early_date_when_it_was_asked_to():
 
     sys.setrecursionlimit(400000)
     book = workbook(social_comp_date="2027-06-01")
-    sheet = book["Вводные"]
+    sheet = v4_inputs.inputs(book)
     cash = next(number for number in range(1, sheet.max_row + 1)
                 if str(sheet[f"A{number}"].value or "").startswith("Денежная компенсация"))
-    paid = Evaluator(book).cell("Вводные", f"D{cash}")
+    paid = Evaluator(book).cell("Параметры модели", f"D{cash}")
     paid = paid if hasattr(paid, "isoformat") else (
         date(1899, 12, 30) + timedelta(days=int(paid)))
     assert str(paid)[:10] == "2027-06-01", paid
