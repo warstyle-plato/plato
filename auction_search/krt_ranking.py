@@ -247,6 +247,13 @@ def keep_computed(
     """
     if fresh.get("available") or not (previous or {}).get("available"):
         return _with_remembered_facts(previous, dict(fresh))
+    # Съехавшая карточка — не обычная неудача счёта. Прежние числа посчитаны на
+    # ЕЁ полях: у «ул. Мусоргского» площадь участка стояла 26 500 «га» (метры,
+    # съехавшие на поле), и модель выдала LLCR 1,10x, маржу 8,7% и балл 55.
+    # Оставить их «потому что посчитанное не выбрасывают» значит хранить вердикт
+    # из чисел не в своих колонках — а он выглядит ровно как настоящий.
+    if str(fresh.get("parse_problem") or "").strip():
+        return _with_remembered_facts(previous, dict(fresh))
     kept = dict(previous or {})
     for field in _CATALOGUE_FIELDS:
         if field in fresh:

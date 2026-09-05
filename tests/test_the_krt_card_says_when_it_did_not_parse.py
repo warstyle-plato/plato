@@ -181,3 +181,48 @@ def test_the_shift_travels_with_the_ranking_row() -> None:
     kept = keep_computed({**row, "available": True, "margin_pct": 8.7}, healed)
     assert kept["parse_problem"] == "", "метка пережила починку карточки"
     assert kept["margin_pct"] == 8.7, "неудача пересчёта затёрла посчитанное"
+
+
+def test_numbers_counted_on_shifted_fields_do_not_survive() -> None:
+    """«Посчитанное не выбрасывают» — про счёт, а не про съехавший источник.
+
+    Прежние числа посчитаны на полях этой же карточки: у «ул. Мусоргского»
+    площадь участка стояла 26 500 «га». Оставить их значило бы хранить вердикт
+    из чисел не в своих колонках — а он выглядит ровно как настоящий.
+    """
+    from auction_search.krt_ranking import keep_computed
+
+    counted = {"slug": "ul-musorgskogo", "available": True, "margin_pct": 8.7,
+               "project_llcr_x": 1.099, "parse_problem": ""}
+    shifted = {"slug": "ul-musorgskogo", "available": False,
+               "reason": "Карточка каталога разобрана со сдвигом (…) — считать нечем",
+               "parse_problem": "статус «влд. 1» не опознан"}
+    kept = keep_computed(counted, shifted)
+    assert kept.get("margin_pct") is None, "вердикт из съехавших чисел остался"
+    assert kept.get("project_llcr_x") is None
+    assert kept["parse_problem"]
+
+    # Обычная неудача пересчёта по-прежнему не затирает посчитанное.
+    ordinary = {"slug": "ul-musorgskogo", "available": False,
+                "reason": "Маркетинг пока не дал ценового ориентира", "parse_problem": ""}
+    assert keep_computed(counted, ordinary)["margin_pct"] == 8.7
+
+
+def test_the_table_does_not_show_economy_of_a_shifted_card() -> None:
+    """Две правды в одной строке: колонки ТЭП «не разобрано», а рядом LLCR.
+
+    Экран прятал числа каталога и рисовал модель, посчитанную на тех же
+    съехавших числах, — то есть отвечал на один вопрос дважды и по-разному.
+    """
+    import auction_search.ui as ui
+
+    page = ui.auctions_page()
+    assert "function krtBrokenSlug(" in page
+    assert "krtBrokenModelNote" in page
+    body = page[page.index("function krtModelCell("):page.index("function krtRankCell(")]
+    assert "krtBrokenSlug(slug)" in body, "колонка модели про съезд не знает"
+
+    # Отчёт приходит ПОЗЖЕ отрисовки карточки и переписывал бы блок своими
+    # числами: гейт обязан стоять и там, где его рисуют.
+    loader = page[page.index("async function loadKrtReport("):page.index("function renderKrtReport(")]
+    assert "krtBroken(x)" in loader, "готовый отчёт съехавшей карточки всё равно рисуется"
