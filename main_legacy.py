@@ -1349,11 +1349,13 @@ def parse_manual_tep_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
             "units": units,
         }
 
-    # `other_mandatory` was added to the product model after the downloadable
-    # DevelopAid_TEP_2 workbook had already been issued. Old files remain
-    # valid: the new row is zero unless it is explicitly present. Requiring it
-    # would make the application reject the very template it still serves.
-    for key in {"other_mandatory"}:
+    # `other_mandatory`, а следом и `sports`, появились в модели продуктов
+    # ПОСЛЕ того, как скачиваемый шаблон DevelopAid_TEP_2 был выдан людям.
+    # Прежние файлы остаются годными: новая строка равна нулю, пока её в файле
+    # нет. Требовать её значило бы отвергать тот самый шаблон, который сервис
+    # до сих пор раздаёт, — и человек читал бы «в шаблоне нет строки sports»
+    # про файл, скачанный у нас же.
+    for key in {"other_mandatory", "sports"}:
         tep_mapping.setdefault(key, {
             "gns": 0.0,
             "total_area": 0.0,
@@ -16072,19 +16074,28 @@ def _v4_sports_inputs_block(xml: str, missing: list[str]) -> str:
     # Заголовок блока написан во всех четырёх ячейках — так его пишет шаблон.
     for column in ("K", "L", "M"):
         xml, _ = _v4_set_cell(xml, f"{column}121", text="ФОК / СПОРТИВНЫЙ ОБЪЕКТ")
-    # Признак «что с объектом дальше». Своей строкой и своим стилем «Да/Нет»:
-    # объект уходит целиком одним путём, долей метров он не делится.
-    xml = _v4_ensure_row(xml, _V4_SPORTS_DISPOSITION_ROW)
+    # Признак «что с объектом дальше» и остаточные продажи — две строки сверх
+    # блока ТЦ, и берутся они КОПИЕЙ его строк, а не пустыми ячейками. Лист
+    # ввода узнаёт вводную ПО ЦВЕТУ, и голая ячейка осталась бы на расчётном
+    # листе — то есть приглашала бы печатать там, где печатать нельзя. Образцы
+    # выбраны по типу значения: 40 — «Да/Нет», 49 — число.
+    for source_row, target_row in ((40, _V4_SPORTS_DISPOSITION_ROW),
+                                   (49, _V4_SPORTS_RESIDUAL_ROW)):
+        xml, written_extra = _v4_copy_block(xml, range(source_row, source_row + 1),
+                                            target_row - source_row)
+        if len(written_extra) != 1:
+            missing.append(f"ФОК: строка {target_row} «Вводных» не заведена")
+            continue
+        xml = re.sub(r'<x:c r="[A-D]%d"[^>]*?(?:/>|>.*?</x:c>)' % target_row, "", xml,
+                     flags=re.S)
     row = _V4_SPORTS_DISPOSITION_ROW
     for coord, text in ((f"J{row}", "Что с объектом дальше"),
                         (f"L{row}", f"{_V4_SPORTS_TRANSFER_WORD} / {_V4_SPORTS_SALE_WORD}"),
-                        (f"M{row}", "sports_disposition")):
-        xml, done = _v4_set_or_insert_cell(xml, coord, text=text)
+                        (f"M{row}", "sports_disposition"),
+                        (f"K{row}", _V4_SPORTS_TRANSFER_WORD)):
+        xml, done = _v4_set_cell(xml, coord, text=text)
         if not done:
             missing.append(f"ФОК: ячейка {coord}")
-    xml, done = _v4_set_or_insert_cell(xml, f"K{row}", text=_V4_SPORTS_TRANSFER_WORD)
-    if not done:
-        missing.append(f"ФОК: ячейка K{row}")
     # Продаваемая площадь ФОКа гаснет при передаче городу — той же формулой,
     # что и включение объекта: переданный ФОК строится, но не продаётся.
     # Стройка при этом идёт от РАСЧЁТНОЙ ОБЩЕЙ площади и остаётся на месте.
@@ -17591,6 +17602,12 @@ def _v4_social_capex_formula(base_row: int, phase_index: int, column: str) -> st
 
 
 V4_ENGINE_WRITTEN_CELLS: dict[tuple[str, str], str] = {
+    ("ТЭП", "D34"): (
+        "Строка 34 была итогом блока объектов, а стала строкой ФОКа: итог "
+        "переехал на пустую строку 35, ссылок на 31–35 нет ни на одном другом "
+        "листе. Колонка «Очередь» у строк объектов пуста — у офисов, ТЦ и "
+        "наземного паркинга тоже, — и формула суммы здесь была бы суммой "
+        "пустых клеток"),
     ("Вводные", "B18"): (
         "Заданная дата денежной компенсации — это ВВОДНАЯ (ключ social_comp_date), "
         "а не результат: формула шаблона стояла здесь потому, что места под "

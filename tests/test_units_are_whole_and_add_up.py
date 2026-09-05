@@ -91,12 +91,20 @@ def test_the_transfer_row_names_what_it_is_taken_from() -> None:
 
 
 def test_a_social_object_has_no_transfer_cell() -> None:
-    """Садик не отдают наполовину: продаваемой площади у него нет вовсе."""
+    """Садик не отдают наполовину: продаваемой площади у него нет вовсе.
+
+    С появлением ФОКа таких строк стало две породы: у соцобъекта передаётся
+    весь объект, у ФОКа передача решается признаком «что с объектом дальше».
+    Обе рисуются одинаково — «передаётся» не вводится руками, — и список у них
+    один: `DERIVED_TRANSFER_PRODUCTS`. Второй список разошёлся бы с первым
+    молча, и значение доехало бы мимо экрана.
+    """
     assert "const SOCIAL_TEP_PRODUCTS=['kindergarten','school','clinic'];" in PAGE
+    assert "const DERIVED_TRANSFER_PRODUCTS=SOCIAL_TEP_PRODUCTS.concat(['sports']);" in PAGE
     assert "передаётся городу целиком" in PAGE
-    assert "SOCIAL_TEP_PRODUCTS.includes(k)\n    ? `<div class=\"phase-given-none\"" in PAGE, (
+    assert "DERIVED_TRANSFER_PRODUCTS.includes(k)\n    ? `<div class=\"phase-given-none\"" in PAGE, (
         "у соцобъекта по-прежнему рисуется поле ввода")
     setter = PAGE[PAGE.index("function setPhaseProductGiven("):]
     setter = setter[:setter.index("\nfunction ")]
-    assert "if(SOCIAL_TEP_PRODUCTS.includes(key))return;" in setter, (
+    assert "if(DERIVED_TRANSFER_PRODUCTS.includes(key))return;" in setter, (
         "правило одно на отрисовку и на ввод — иначе значение доедет мимо экрана")

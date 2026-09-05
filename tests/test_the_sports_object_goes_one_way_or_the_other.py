@@ -162,26 +162,58 @@ def test_the_workbook_matches_the_engine_across_queues(disposition: str) -> None
 
 
 def test_the_workbook_zeroes_the_saleable_area_of_a_transferred_object() -> None:
-    """Гейт стоит в формуле книги, а не в числе: правка признака в книге работает."""
+    """Гейт стоит в формуле книги, а не в числе: правка признака в книге работает.
+
+    Ввод с 0.22.х живёт своим листом («Вводные»), а формулы шаблона — на
+    «Параметрах модели»; читается вводная насквозь через ссылку, как её читают
+    остальные проверки книги.
+    """
     openpyxl = pytest.importorskip("openpyxl")
+    import v4_inputs
+
     content, _, _ = core.build_project_workbook(
         _inputs(disposition="transfer"), _tep(), [], None, project_name="П")
     book = openpyxl.load_workbook(io.BytesIO(content))
-    inputs_sheet = book["Вводные"]
-    assert inputs_sheet["K139"].value == "Передаётся городу"
-    assert "Продаётся" in str(inputs_sheet["K129"].value), inputs_sheet["K129"].value
+    params = book[v4_inputs.PARAMS]
+    entered = v4_inputs.inputs(book)
+    assert entered[f"K{core._V4_SPORTS_DISPOSITION_ROW}"].value == "Передаётся городу"
+    assert "Продаётся" in str(params["K129"].value), params["K129"].value
     # Площадь стройки признаком не гасится: объект строится в любом случае.
-    assert str(inputs_sheet["K128"].value).startswith('=IF(K123="Да"')
-    assert inputs_sheet["K126"].value == pytest.approx(GBA)
+    assert str(params["K128"].value).startswith('=IF(K123="Да"')
+    assert entered["K126"].value == pytest.approx(GBA)
+
+
+def test_every_input_of_the_object_reaches_the_sheet_people_type_on() -> None:
+    """Голая ячейка осталась бы на расчётном листе — то есть звала бы печатать
+    туда, где печатать нельзя. Лист ввода узнаёт вводную по цвету."""
+    openpyxl = pytest.importorskip("openpyxl")
+    import v4_inputs
+
+    content, _, _ = core.build_project_workbook(_inputs(), _tep(), [], None, project_name="П")
+    book = openpyxl.load_workbook(io.BytesIO(content))
+    entry = book[v4_inputs.ENTRY]
+    keys = {str(cell.value) for row in entry.iter_rows() for cell in row
+            if isinstance(cell.value, str)}
+    for key in ("sports_enabled", "sports_disposition", "sports_gba_sqm",
+                "sports_saleable_sqm", "sports_start", "sports_months",
+                "sports_cost_th_per_sqm", "sports_sales_start",
+                "sports_price_th_per_sqm", "sports_share_before_rve_pct",
+                "sports_residual_months", "sports_growth_pre_pct",
+                "sports_growth_post_pct"):
+        assert key in keys, key
 
 
 def test_the_workbook_names_the_object_and_not_the_shopping_centre() -> None:
     """Блок скопирован с ТЦ — и подписи обязаны стать своими, включая ключ API."""
     openpyxl = pytest.importorskip("openpyxl")
+    import v4_inputs
+
     content, _, _ = core.build_project_workbook(_inputs(), _tep(), [], None, project_name="П")
     book = openpyxl.load_workbook(io.BytesIO(content))
     assert book["ОБЪЕКТЫ"]["A124"].value == "ФОК / СПОРТИВНЫЙ ОБЪЕКТ"
-    keys = [book["Вводные"][f"M{row}"].value for row in range(123, 140)]
+    params = book[v4_inputs.PARAMS]
+    keys = [params[f"M{row}"].value
+            for row in range(123, core._V4_SPORTS_RESIDUAL_ROW + 1)]
     assert all(str(key or "").startswith("sports_") for key in keys), keys
     assert book["ТЭП"]["B34"].value == "ФОК / спортивный объект"
     assert book["ТЭП"]["A35"].value == "ИТОГО ОБЪЕКТЫ"
