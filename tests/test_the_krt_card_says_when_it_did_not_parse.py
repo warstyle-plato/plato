@@ -124,3 +124,60 @@ def test_the_page_says_it_out_loud() -> None:
     assert "renderKrtUnparsedNote" in page
     assert "не разобрались" in page
     assert "d.unparsed" in page, "страница счёт с сервера не читает"
+
+
+def test_the_okrug_is_recognised_whatever_the_case() -> None:
+    """«ЗелАо» — это Зеленоградский округ, а не съехавшее поле.
+
+    Регистр каталог держит как придётся, а набор сравнивался буква в букву:
+    из восьми строк, объявленных неразобранными на снимке прода 05.09.2026,
+    пять были разобраны верно и стояли с пометкой о съезде. Кричащая зря
+    проверка хуже отсутствующей — её перестают читать, и настоящие три
+    съехавшие карточки тонут среди ложных пяти.
+    """
+    for written in ("ЗелАо", "ЗелАО", "зелао", "ЦАО", "цао"):
+        row = KrtTerritory(slug="s", name="n", url="u", okrug=written)
+        assert parse_problem(row) == "", f"«{written}» объявлен не московским"
+    # Набор при этом остаётся набором имён: чужой округ по-прежнему называется.
+    assert "не из московских" in parse_problem(
+        KrtTerritory(slug="s", name="n", url="u", okrug="Планируемый"))
+
+
+def test_a_shifted_card_is_not_run_through_the_model() -> None:
+    """Съехавшая карточка до модели не доходит, и отказ несёт диагноз.
+
+    На «ул. Мусоргского» площадь участка вышла 26 500 «га» — метры, съехавшие
+    на поле, — и модель посчитала на них LLCR 1,10x, маржу 8,7% и балл 55.
+    Правдоподобный вердикт из чисел, стоящих не в своих колонках, страшнее
+    отсутствующего: отличить его на экране не от чего.
+    """
+    from auction_search.krt_screening import build_krt_model_screening
+
+    project = {"slug": "ul-musorgskogo", "name": "ул. Мусоргского",
+               "housing_gfa_sqm": 26_500.0, "area_ha": 26_500.0,
+               "parse_problem": "округ «ул. Декабристов» не из московских"}
+    refused = build_krt_model_screening(project, {}, core=None)
+    assert refused["available"] is False
+    assert "со сдвигом" in refused["reason"]
+    assert "ул. Декабристов" in refused["reason"], "отказ не назвал, чем именно"
+
+
+def test_the_shift_travels_with_the_ranking_row() -> None:
+    """Экран прячет числа съехавшей карточки — но только если знает о съезде.
+
+    Поле читалось лишь из каталога: строка рейтинга приходила без него, и
+    площадь, жильё и балл в ней выглядели измеренными. А починившаяся карточка
+    обязана снять метку, поэтому поле обновляется и пустым.
+    """
+    from auction_search.krt_ranking import keep_computed, score_row
+
+    shifted = {"slug": "ul-musorgskogo", "name": "ул. Мусоргского",
+               "parse_problem": "статус «влд. 1» не опознан"}
+    row = score_row(shifted, {"available": False, "reason": "не считали"})
+    assert row["parse_problem"] == "статус «влд. 1» не опознан"
+
+    healed = score_row({"slug": "ul-musorgskogo", "name": "ул. Мусоргского"},
+                       {"available": False, "reason": "не считали"})
+    kept = keep_computed({**row, "available": True, "margin_pct": 8.7}, healed)
+    assert kept["parse_problem"] == "", "метка пережила починку карточки"
+    assert kept["margin_pct"] == 8.7, "неудача пересчёта затёрла посчитанное"
