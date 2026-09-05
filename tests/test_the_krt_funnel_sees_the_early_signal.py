@@ -63,7 +63,11 @@ def stage(site: dict, *, lots=None, press=None, intent=None, mark=None, order=No
         f"krtRequirements:{json.dumps({slug: {'intent': intent}} if intent else {})}}};\n"
         "const esc=s=>String(s);\n"
         "function krtWhen(t){return t?'дата':''}\n"
-        + _stages_const() + "\n" + _function("krtIntent") + "\n" + _function("krtStage") + "\n"
+        # Лоты площадки — один ответ на всю страницу (`krtLots`): связку
+        # считает сервер и он же её помнит, а не память вкладки.
+        + _stages_const() + "\n" + _function("krtIntent") + "\n"
+        + _function("krtLots") + "\n" + _function("krtLiveLot") + "\n"
+        + _function("krtStage") + "\n"
         + f"console.log(JSON.stringify(krtStage({json.dumps(site)})));"
     )
     done = subprocess.run([node, "-e", program], capture_output=True, text=True, timeout=60)
@@ -214,9 +218,14 @@ def test_a_draft_decision_can_be_chosen_by_status() -> None:
     статуса при любом выборе.
     """
     page = (Path(__file__).resolve().parent.parent / "auction_search" / "ui.py").read_text("utf-8")
-    assert '<option value="draft">Проект решения</option>' in page, \
-        "проект решения нельзя выбрать в списке статусов"
-    assert "if(status==='draft'){ if(x.status)return false; }" in page, \
-        "выбор «проект решения» не отбирает площадки без статуса каталога"
+    assert "{value:'draft',    name:'Проект решения'," in page, \
+        "проект решения нельзя выбрать в отборе по стадии"
+    assert "function krtFilterPass(x){" in page, \
+        "отбор по осям снова считается в каждой строке своим условием"
+    # Вид статуса — один ответ, приходящий с сервера. Пока его выводил экран,
+    # а сервер писал в строку слово, выбор давал ноль строк из 298 (владелец,
+    # 04.09.2026). Отбор нажатием проверяет test_the_krt_filters_actually_filter.
+    assert "function krtStatusKind(x){" in page
+    assert "if(x.status_kind)return x.status_kind;" in page
     # Прочерк на месте статуса читался как пробел в данных, а это ответ.
-    assert "x.draft_decision_at?'Проект решения':'—'" in page
+    assert "kind==='draft'?'Проект решения'" in page

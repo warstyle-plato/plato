@@ -135,7 +135,18 @@ def test_the_verdict_stays_open():
     box_start = page.index("function krtScoreBoxHtml")
     box = page[box_start:page.index("\nfunction ", box_start + 10)]
     assert "Оценка Платона" in box
-    assert "Жильё" in head and "Всего построить" in head
+    # Метры рисует паспорт площадки — он же несёт ссылку на бумагу. Проверяем
+    # вызов и содержимое самого паспорта: держать здесь текст соседней строки
+    # значит падать на всякой перестановке карточки, ничего не сказав о том,
+    # спрятаны метры или нет.
+    assert "krtPassport(x)" in head, "паспорт площадки уехал под кат"
+    passport_at = page.index("function krtPassport")
+    passport = page[passport_at:page.index("\nfunction ", passport_at + 10)]
+    for named in ("Жильё", "Всего построить", "Площадь"):
+        assert named in passport, named
+    # И первым в карточке стоит ответ на «можно ли войти», а не оценка.
+    assert head.index("krtEntryHead(x)") < head.index("krtScoreBoxHtml("), \
+        "оценка встала раньше вопроса о входе"
 
 
 # --- первоисточник -----------------------------------------------------------
