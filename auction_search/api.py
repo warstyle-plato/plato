@@ -983,8 +983,16 @@ def install(app: FastAPI) -> None:
                         # собрана неверно, и метрам такой пары верить нельзя.
                         # Расхождение НАЗЫВАЕТСЯ и каталог не подменяет: два
                         # достоверных на вид ТЭП одной площадки — ровно та
-                        # беда, которую мы ловим в отчёте и книге.
-                        "decision_tep_check": krt_decision_tep.catalogue_mismatch(tep, row),
+                        # беда, которую мы ловим в отчёте и книге. Ответ несёт
+                        # и то, ЧТО сверено: «сверять не с чем» — не «сошлось».
+                        "decision_tep_check": {
+                            **krt_decision_tep.catalogue_check(tep, row),
+                            # Было ли ЧТО сверять со стороны решения: без этого
+                            # «пара не найдена» и «пара есть, а величины в ней
+                            # не те» звучали бы одинаково, и экран утверждал бы
+                            # «решение прочитано» там, где решения нет вовсе.
+                            "read": bool(tep),
+                        },
                     }
 
                 projects = [_with_decision(row) for row in projects]
@@ -2276,6 +2284,26 @@ def install(app: FastAPI) -> None:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"Не удалось получить публичный каталог ЭТП: {exc}") from exc
+
+        # Связку «площадка ↔ лот» пишет тот, кто лоты СОБРАЛ. Прежде она
+        # писалась только маршрутом, куда список присылала страница, и потому
+        # появлялась, лишь если человек открыл соседнюю вкладку «Торги» в этой
+        # же вкладке браузера: на проде склад был пуст при восьми живых
+        # аукционах на право договора о КРТ, и фильтр честно показывал «Торги
+        # (0)» — ноль, который читается как ответ о рынке (владелец,
+        # 05.09.2026: «торги 0????»). Сервер видел эти лоты сам, и запомнить
+        # их — его работа, а не побочный эффект чужого нажатия.
+        try:
+            from . import krt_tenders
+
+            sites = await run_in_threadpool(krt_registry.catalogue)
+            matched = await run_in_threadpool(
+                krt_tenders.match, [_public_lot_dict(lot) for lot in lots], sites)
+            keeper = getattr(krt_registry, "remember_tender_lots", None)
+            if callable(keeper):
+                await run_in_threadpool(keeper, matched.get("by_site"))
+        except Exception:  # noqa: BLE001 — каталог лотов не роняем связкой
+            logger.exception("KRT: связка лотов с площадками при сборе не записалась")
 
         return {
             "source_policy": "official_etp_only",
