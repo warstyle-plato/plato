@@ -54,6 +54,7 @@ from auction_search.krt_ranking import (
 # методики — функция модуля: `krt_ranking.model_is_current` там разрешилось бы
 # на экземпляре и упало бы при первом же чтении рейтинга.
 from auction_search import krt_ranking as krt_ranking_rules
+from auction_search.krt_screening import _number as _screening_number
 from auction_search.krt_screening import build_krt_model_screening
 from auction_search.models import LotKind
 from auction_search.preset_mapper import build_project_preset
@@ -684,10 +685,11 @@ def install(app: FastAPI) -> None:
                             # 04.09.2026: «по решениям надо, раз в неделю как
                             # обычно»). Прогон публикаций по каталогу до них не
                             # доходил никогда, и все «не знаем» по входу и
-                            # реновации сидели ровно в них. Полного скрининга у
-                            # них нет — считать нечем, — а вопрос «кто здесь уже
-                            # собрался строить» у них тот же, и отвечают на него
-                            # те же публикации.
+                            # реновации сидели ровно в них. Вопрос «кто здесь
+                            # уже собрался строить» у них тот же, и отвечают на
+                            # него те же публикации; а когда в решении названо
+                            # жильё, считается и та же модель — цифры площадки
+                            # прочитаны из её PDF.
                             rows = rows + _decision_rows_for_run()
                             if rows and not krt_ranking.start(
                                     rows, _screen_for, scheduled=True, claimed=True):
@@ -1184,6 +1186,23 @@ def install(app: FastAPI) -> None:
             # выбрасывают» здесь то же самое.
             return stored or fresh
 
+    def _requirements_for(slug: str) -> dict[str, Any] | None:
+        """Обязательства площадки. Один ответ на модуль, а не у каждой двери.
+
+        Документ один и тот же — проект решения о КРТ, — но дорога до него
+        разная: у площадки каталога через её слаг, у площадки-решения через
+        номер документа, потому что слага у неё нет вовсе. Пока выбор жил у
+        каждого вызывающего, карточка и прогон читали бы одну площадку
+        по-разному, и оба ответа выглядели бы верными.
+        """
+        clean = str(slug or "")
+        if clean.startswith("decision:"):
+            reader = getattr(krt_registry, "decision_requirements", None)
+            if not callable(reader):
+                return None
+            return reader(clean[len("decision:"):])
+        return krt_registry.requirements(clean)
+
     def _screen_one(project: dict[str, Any]) -> dict[str, Any]:
         """Один прогон для рейтинга — тем же путём, что и открытая карточка.
 
@@ -1196,10 +1215,18 @@ def install(app: FastAPI) -> None:
             f"krt:{project.get('slug')}", radius_km=3.0, peers_limit=12,
             city_reference=False, include_project_totals=True,
         )
+        slug = str(project.get("slug") or "")
+        document_id = slug[len("decision:"):] if slug.startswith("decision:") else ""
         try:
-            requirements = krt_registry.requirements(str(project.get("slug") or ""))
+            # Обязательства площадки лежат в проекте решения. У площадки
+            # каталога до него ведёт её слаг, у площадки-решения слага нет
+            # вовсе — а документ тот же самый, и читать его надо так же:
+            # снос и расселение это CAPEX, а метры Программы реновации
+            # строятся и не продаются. Без них модель продаёт всё жильё по
+            # рынку — ошибка, уже пойманная на Задонском проезде.
+            requirements = _requirements_for(slug)
         except Exception as exc:  # noqa: BLE001
-            logger.exception("KRT requirements failed slug=%s", project.get("slug"))
+            logger.exception("KRT requirements failed slug=%s", slug)
             requirements = {
                 "available": False,
                 "warning": f"Документы обязательств временно не прочитаны: {type(exc).__name__}",
@@ -1207,11 +1234,18 @@ def install(app: FastAPI) -> None:
         # Карточка каталога — официальный и бесплатный источник застройщика и
         # реновации. Читается в прогоне, а не по нажатию: иначе фильтр по
         # оператору и городским нуждам работает только по открытым руками.
-        try:
-            card = krt_registry.card_facts(str(project.get("slug") or ""))
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("KRT card facts failed slug=%s", project.get("slug"))
-            card = {"available": False, "reason": f"{type(exc).__name__}: {exc}"}
+        if document_id:
+            # У площадки-решения карточки нет по построению, и это ответ
+            # источника, а не наш пробел: спрашивать её незачем, а молчать
+            # нельзя — пустая карточка читалась бы как неотвеченная.
+            card = {"available": False, "no_card": True,
+                    "reason": "Карточки в каталоге krt.mos.ru у этой площадки нет"}
+        else:
+            try:
+                card = krt_registry.card_facts(slug)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("KRT card facts failed slug=%s", slug)
+                card = {"available": False, "reason": f"{type(exc).__name__}: {exc}"}
         screening = build_krt_model_screening(
             project, report, core, requirements=requirements)
         screening["card_facts"] = card
@@ -1772,7 +1806,12 @@ def install(app: FastAPI) -> None:
                 status_code=503,
                 detail="Прогон требует и маркетингового движка, и движка DevelopAid",
             )
-        projects = await run_in_threadpool(krt_registry.catalogue)
+        # Прогон идёт по тому же списку, который видит человек: каталог плюс
+        # площадки-решения. Пока здесь стоял один каталог, кнопка «пересчитать
+        # отобранное» молча пропускала половину экрана, а отказ «ни одна из
+        # выбранных не найдена в каталоге» был утверждением о нашем списке, а
+        # не о выборе человека.
+        projects = await run_in_threadpool(_krt_all_sites)
         if not projects:
             raise HTTPException(
                 status_code=503,
@@ -1786,7 +1825,7 @@ def install(app: FastAPI) -> None:
             if not projects:
                 raise HTTPException(
                     status_code=422,
-                    detail="Ни одна из выбранных площадок не найдена в каталоге",
+                    detail="Ни одна из выбранных площадок не найдена в списке",
                 )
         skipped = 0
         if body is not None and body.only_stale:
@@ -1809,7 +1848,10 @@ def install(app: FastAPI) -> None:
                         "reason": ("Пересчитывать нечего: все выбранные площадки "
                                    "посчитаны нынешней методикой"),
                         "skipped": skipped, "progress": krt_ranking.progress()}
-        started = krt_ranking.start(projects, _screen_one)
+        # Чем считать строку, решает один и тот же выбор, что и в недельном
+        # прогоне: у площадки-решения свой путь к обязательствам, а у нежилой
+        # модели нет вовсе.
+        started = krt_ranking.start(projects, _screen_for)
         progress = krt_ranking.progress()
         if started:
             reason = ""
@@ -1860,14 +1902,36 @@ def install(app: FastAPI) -> None:
     def _screen_for(project: dict[str, Any]) -> dict[str, Any]:
         """Чем считать эту строку. Один ответ на весь модуль.
 
-        У площадки-решения нет ни карточки каталога, ни субъекта у рыночного
-        движка: полный скрининг ей считать нечем. Спросить у неё можно ровно
-        то, ради чего она в списке, — кто на ней уже собрался строить. Выбор
-        живёт здесь, а не у каждого вызывающего: разойдись они, недельный
-        прогон и кнопка посчитали бы одну площадку по-разному.
+        Выбор живёт здесь, а не у каждого вызывающего: разойдись они,
+        недельный прогон и кнопка посчитали бы одну площадку по-разному.
+
+        У площадки-решения карточки каталога нет, но субъект у неё теперь
+        есть — адрес из заголовка решения, — и цифры тоже: площадь, СПП и
+        жильё прочитаны из PDF. Значит считать её можно тем же скринингом,
+        что и площадку каталога; второго скрининга не заводим по той же
+        причине, по которой нет копии `VERSION`.
+
+        Две границы названы вслух, а не молча.
+        **Без адреса площадку не опознать**: заголовок решения опознаёт
+        документ, а не место, и геокодер поставил бы точку куда угодно.
+        **Нежилые пока не считаем** — решение владельца (05.09.2026): у
+        офисного центра своя экономика (свой выход площади, свой профиль
+        продаж, свой покупатель), и считать его пресетом жилья значило бы
+        показать посчитанным то, что посчитано не тем. Это ответ методики, а
+        не наш пробел, и балл площадки от него не снижается.
         """
-        if project.get("no_card"):
+        if not project.get("no_card"):
+            return _screen_one(project)
+        if not project.get("address_known"):
             return _press_only(project)
+        if _screening_number(project.get("housing_gfa_sqm")) <= 0:
+            answer = _press_only(project)
+            answer["reason"] = (
+                "Жилья в проекте решения нет — нежилую площадку модель пока не считает: "
+                "у офисов и торговли своя экономика, и считать их пресетом жилья нельзя. "
+                "Балл площадки при этом остаётся: это ответ методики, а не пробел."
+            )
+            return answer
         return _screen_one(project)
 
     @app.post("/auctions/krt/press/run")
@@ -2078,13 +2142,15 @@ def install(app: FastAPI) -> None:
                     f"krt:{slug}", radius_km=radius_km, peers_limit=peers_limit,
                     city_reference=False, include_project_totals=True,
                 )
-                finder = getattr(krt_registry, "find", None)
-                project = finder(f"krt:{slug}") if callable(finder) else None
+                # Площадка берётся из того же списка, что на экране: у
+                # площадки-решения цифры живут в её строке (они прочитаны из
+                # PDF), а `find` отвечает только адресом — этого хватает
+                # геокодеру и не хватает модели.
+                project = next(
+                    (item for item in _krt_all_sites() if item.get("slug") == slug), None)
                 if project is None:
-                    project = next(
-                        (item for item in krt_registry.catalogue() if item.get("slug") == slug),
-                        None,
-                    )
+                    finder = getattr(krt_registry, "find", None)
+                    project = finder(f"krt:{slug}") if callable(finder) else None
                 if core is None:
                     screening = {
                         "available": False,
@@ -2092,7 +2158,7 @@ def install(app: FastAPI) -> None:
                     }
                 else:
                     try:
-                        requirements = krt_registry.requirements(slug)
+                        requirements = _requirements_for(slug)
                         screening = build_krt_model_screening(
                             project, report, core, tep_ratios, requirements)
                     except Exception:
