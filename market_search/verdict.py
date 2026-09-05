@@ -228,12 +228,136 @@ def absorption_note(block: dict[str, Any]) -> dict[str, Any]:
     return {"tone": tone, "text": " ".join(lines)}
 
 
+def rooms_note(block: dict[str, Any]) -> dict[str, Any]:
+    """Вымывание и ответ на «а не в наборе ли квартир дело».
+
+    Разрыв в цене метра раскладывается на две части: структура набора и
+    уровень цен. Внутри проекта метр тем дороже, чем мельче квартира, поэтому
+    проект с крупным набором показывает цену ниже при тех же ценах на каждый
+    товар; но по рынку связь обратная — крупные форматы строят в дорогих
+    классах. Значит на догадку отвечают числом своего проекта, а не правилом.
+    """
+    subject, peers = block.get("subject") or {}, block.get("peers") or {}
+    rooms = subject.get("rooms") or {}
+    if not rooms and not subject.get("bands"):
+        return {"tone": TONE_FLAT, "text": "Комнатность проекта не раскрыта."}
+    lines: list[str] = []
+    # Вымывание: что уходит быстрее, чем лежит в остатке.
+    drains = [
+        (name, item)
+        for name, item in rooms.items()
+        if item.get("sold_share_pct") is not None and item.get("rem_share_pct") is not None
+    ]
+    if drains:
+        best = max(drains, key=lambda pair: (pair[1]["sold_share_pct"] - pair[1]["rem_share_pct"]))
+        worst = min(drains, key=lambda pair: (pair[1]["sold_share_pct"] - pair[1]["rem_share_pct"]))
+        if best[1]["sold_share_pct"] - best[1]["rem_share_pct"] > 5:
+            # Имена комнатности — прилагательные во множественном («студии»,
+            # «1-комнатные»), и согласовать с ними глагол одной формой нельзя:
+            # оборот строится так, чтобы согласования не требовалось вовсе.
+            lines.append(
+                f"Быстрее всего уходит: {best[1]['title']} — {_num(best[1]['sold_share_pct'], 1)} % "
+                f"продаж при {_num(best[1]['rem_share_pct'], 1)} % остатка."
+            )
+        if worst[1]["rem_share_pct"] - worst[1]["sold_share_pct"] > 5:
+            lines.append(
+                f"Копится в остатке: {worst[1]['title']} — {_num(worst[1]['rem_share_pct'], 1)} % "
+                f"остатка при {_num(worst[1]['sold_share_pct'], 1)} % продаж."
+            )
+    mix = subject.get("mix") or {}
+    tone = TONE_FLAT
+    if mix:
+        gap, part, level = mix.get("gap_pct"), mix.get("mix_pct"), mix.get("level_pct")
+        lines.append(
+            f"Метр в прайсе по комнатности: у нас {_num(mix['own_at_own_mix'])} ₽, "
+            f"у соседей {_num(mix['peers_at_peers_mix'])} ₽ ({_pct(gap)})."
+        )
+        # Знак разложения важнее его величины: он отвечает, помогает набор или
+        # мешает, а «на столько-то процентов» без знака читается как оправдание.
+        if part is not None and abs(part) >= 2:
+            direction = "дешевле" if part < 0 else "дороже"
+            lines.append(
+                f"Из этого набором квартир объясняется {_pct(part)}: с набором соседей наш же "
+                f"прайс дал бы {_num(mix['own_at_peers_mix'])} ₽ — то есть {direction}. "
+                f"Остальное — уровень цен ({_pct(level)})."
+            )
+            tone = TONE_WATCH
+        else:
+            lines.append(
+                "Набор квартир разрыв не объясняет: с набором соседей наш прайс дал бы "
+                f"{_num(mix['own_at_peers_mix'])} ₽ — почти то же. Дело в уровне цен ({_pct(level)})."
+            )
+            tone = TONE_WATCH if gap is not None and abs(gap) > PRICE_BAND_PCT else TONE_FLAT
+        if min(mix.get("cross_coverage_pct", 0), mix.get("peers_coverage_pct", 0)) < 70:
+            lines.append(
+                "Цены известны не по всему набору — доля покрытия в таблице, и на ней это "
+                "оценка, а не измерение."
+            )
+    elif rooms:
+        lines.append("Цен по комнатности у соседей нет — набор с уровнем не развести.")
+    if not lines:
+        lines.append("Комнатность есть, но сравнивать её не с чем.")
+    return {"tone": tone, "text": " ".join(lines)}
+
+
+def payment_note(block: dict[str, Any]) -> dict[str, Any]:
+    subject, peers, city = (
+        block.get("subject") or {},
+        block.get("peers") or {},
+        block.get("city") or {},
+    )
+    share = subject.get("mortgage_pct")
+    if share is None:
+        return {"tone": TONE_FLAT, "text": "Доли ипотеки у проекта нет: продаж не было."}
+    lines = [f"Ипотекой платят {_num(share, 1)} % сделок проекта."]
+    reference = peers.get("median")
+    if reference is None:
+        reference = city.get("mortgage_median_pct")
+        if reference is not None:
+            lines.append(f"У класса в Москве медиана {_num(reference, 1)} %.")
+    else:
+        lines.append(f"У соседей медиана {_num(reference, 1)} %.")
+    tone = TONE_FLAT
+    if reference:
+        # Зависимость от ипотеки — это чувствительность к ставке, а не оценка
+        # «хорошо/плохо»: она названа, а не приговорена.
+        if share > reference + 15:
+            lines.append("Проект опирается на ипотеку сильнее рынка — он чувствительнее к ставке.")
+            tone = TONE_WATCH
+        elif share < reference - 15:
+            lines.append("Ипотеки меньше, чем у рынка: платят своими деньгами.")
+    return {"tone": tone, "text": " ".join(lines)}
+
+
+def channel_note(block: dict[str, Any]) -> dict[str, Any]:
+    subject, peers = block.get("subject") or {}, block.get("peers") or {}
+    company = subject.get("company_pct")
+    if company is None:
+        return {"tone": TONE_FLAT, "text": "Состава покупателей у проекта нет: продаж не было."}
+    lines = [
+        f"Физлица берут {_num(subject.get('person_pct'), 1)} %, юрлица {_num(company, 1)} %."
+    ]
+    if peers.get("median") is not None:
+        lines.append(f"У соседей юрлиц {_num(peers['median'], 1)} % по медиане.")
+    tone = TONE_FLAT
+    if peers.get("median") is not None and company > peers["median"] + 15:
+        lines.append("Юрлиц заметно больше рынка: часть объёма уходит оптом, а не в розницу.")
+        tone = TONE_WATCH
+    resale = subject.get("resale_deals")
+    if resale:
+        lines.append(f"Переуступок за месяц {_num(resale)} — это вторичный оборот, не продажи застройщика.")
+    return {"tone": tone, "text": " ".join(lines)}
+
+
 NOTE_BUILDERS = {
     "price": price_note,
     "pace": pace_note,
     "stock": stock_note,
     "lot_size": lot_note,
     "absorption": absorption_note,
+    "rooms": rooms_note,
+    "payment": payment_note,
+    "channel": channel_note,
 }
 
 
