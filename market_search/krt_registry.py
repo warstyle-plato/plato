@@ -43,6 +43,8 @@ CARD_FACTS_SCHEMA_VERSION = 1
 # ТЭП, вынутый из PDF проекта решения. Своя версия: разбор правится
 # отдельно от разбора карточки, и общая версия обесценивала бы чужое.
 DECISION_TEP_SCHEMA_VERSION = 1
+# Обязательства из проекта решения: свой файл и своя версия схемы.
+DECISION_REQUIREMENTS_SCHEMA_VERSION = 1
 # Лоты, привязанные к площадке. Считает их сервер, а хранились они только
 # в памяти вкладки — и правило «живой лот сильнее публикации» работало
 # ровно до перезагрузки.
@@ -359,6 +361,11 @@ class KrtRegistry:
         # решений × полтора мегабайта PDF — это диск, который у нас уже
         # кончался молча.
         self.decision_tep_dir = Path(data_dir) / "krt" / "decision_tep"
+        # Обязательства из того же PDF: снос, расселение, городские нужды,
+        # названные городом соцобъекты. Лежат отдельно от ТЭП намеренно —
+        # ТЭП прочитан у 361 решения, и общая версия схемы заставила бы
+        # перечитать их все ради поля, которое нужно тем 29, где есть жильё.
+        self.decision_requirements_dir = Path(data_dir) / "krt" / "decision_requirements"
         # Контур площадки, собранный из участков ЕГРН по перечню проекта
         # решения, — для тех, кого нет в файле карты реестра. Участки ЕГРН не
         # двигаются, поэтому срок неделя; неответ ЕГРН помнится полчаса.
@@ -486,6 +493,13 @@ class KrtRegistry:
         text = _SPACE.sub(" ", str(query or "")).strip()
         slug = text[4:] if text.lower().startswith("krt:") else None
         low = text.casefold()
+        if slug and slug.startswith("decision:"):
+            # Площадка-решение: карточки в каталоге у неё нет, и по каталогу
+            # она не найдётся никогда. Пока это не было сказано здесь, ключ
+            # `krt:decision:…` доходил до геокодера как адрес человека, а
+            # экономика такой площадки не считалась вовсе: отчёт отказывал
+            # раньше, чем что-то посчитал.
+            return self.find_decision(slug[len("decision:"):])
         cached = load_json(self.path)
         rows = self._decode(cached) if cached else []
         if (not self._cache_current(cached) or not fresh(self.path, self.ttl_seconds)
@@ -494,6 +508,52 @@ class KrtRegistry:
         for item in rows:
             if (slug and item.slug == slug) or (not slug and item.name.casefold() == low):
                 return item.to_dict()
+        return None
+
+    def find_decision(self, document_id: str) -> dict[str, Any] | None:
+        """Площадка по номеру её проекта решения — с диска, без сети.
+
+        Читается снимок решений, а не разложение `decisions()`: то зовёт
+        каталог и сверяет два списка, а здесь нужен один адрес. Разбор
+        субъекта зовут из отчёта, и поход в источник оттуда — минуты чужого
+        ожидания.
+
+        Имя площадки — её адрес из заголовка решения: им её и ищут. Адреса
+        нет — нет и площадки: заголовок «Проект решения о комплексном
+        развитии территории» опознаёт документ, а не место, и геокодер по
+        нему поставил бы точку куда угодно.
+        """
+        clean = str(document_id or "").strip()
+        if not re.fullmatch(r"\d{4,20}", clean):
+            return None
+        cached = load_json(self.decisions_path)
+        if not isinstance(cached, dict):
+            return None
+        for one in (cached.get("all") or []):
+            if str(one.get("id") or "") != clean:
+                continue
+            address = " ".join(str(one.get("address") or "").split())
+            if not address:
+                return None
+            okrug = str(one.get("okrug") or "").strip()
+            return {
+                "slug": "decision:" + clean,
+                "name": address,
+                "url": one.get("url") or "",
+                "okrug": okrug or None,
+                "district": None,
+                "status": None,
+                "query": "krt:decision:" + clean,
+                # Округ районом не подменяем: он вшестеро крупнее, и точка по
+                # нему стояла бы в чужом квартале с уверенным видом. Адрес
+                # решения — единственное, чем эта площадка опознаётся.
+                "geocode_query": f"Москва, {address}",
+                "source": "mos.ru: проект решения о КРТ",
+                "geometry_status": "not_published_in_catalogue",
+                "no_card": True,
+                "draft_decision_at": one.get("published_at") or 0,
+                "draft_decision_url": one.get("url") or "",
+            }
         return None
 
     def suggest(self, query: str, limit: int = 8) -> list[dict[str, Any]]:
@@ -677,6 +737,108 @@ class KrtRegistry:
         threading.Thread(target=run, name="krt-card-facts", daemon=True).start()
         return True
 
+    def _decision_pdf(self, document_id: str) -> dict[str, Any]:
+        """PDF проекта решения одним ответом: текст, ссылка и заголовок.
+
+        Дорога до документа одна — карточка документа, её вложения, сам PDF, —
+        и читают её двое: ТЭП и обязательства. Второй экземпляр этой дороги
+        однажды разошёлся бы с первым (выбрал бы другое вложение), и оба
+        выглядели бы верными. Отказ называется своим шагом, а не общим «не
+        прочитано»: без шага непонятно, молчит ли документ или молчим мы.
+        """
+
+        def remote_json(url: str) -> Any | None:
+            try:
+                return json.loads(self.fetch(url).decode("utf-8"))
+            except Exception:  # noqa: BLE001
+                return None
+
+        detail = remote_json(document_detail_url(document_id))
+        title = str((detail or {}).get("title") or "")
+        institution_id = (detail or {}).get("institution_id")
+        if institution_id is None:
+            return {"ok": False, "reason": "mos_document_detail: не указан орган публикации"}
+        attachments = remote_json(document_attachments_url(document_id, institution_id))
+        pdf_url = select_pdf_attachment(attachments)
+        if not pdf_url:
+            return {"ok": False, "reason": "mos_document_attachments: PDF не опубликован"}
+        try:
+            data = self.fetch(pdf_url)
+            if len(data) > 35 * 1024 * 1024:
+                raise RuntimeError("PDF проекта решения превышает 35 МБ")
+            text = pdf_text(data)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "reason": f"mos_decision_pdf: {type(exc).__name__}: {exc}"}
+        return {"ok": True, "text": text, "title": title, "pdf_url": pdf_url}
+
+    def decision_requirements(self, document_id: str, *,
+                              refresh: bool = False) -> dict[str, Any]:
+        """Обязательства площадки, у которой карточки в каталоге нет.
+
+        У площадки с карточкой их читает `requirements` — по слагу каталога.
+        У площадки-решения слага нет вовсе, а обязательства те же самые и
+        лежат в том же PDF: снос и расселение (это CAPEX), городские нужды
+        (эти метры строятся и не продаются) и названные городом соцобъекты.
+        Без них модель продаёт всё жильё по рынку — ровно та ошибка, что уже
+        ловилась на Задонском проезде.
+
+        Читается по требованию, а не фоном вместе с ТЭП: жильё есть у горстки
+        решений, и платить чтением за все триста незачем.
+        """
+        clean = str(document_id or "").strip()
+        if not re.fullmatch(r"\d{4,20}", clean):
+            return {"available": False, "reason": "Неверный номер документа"}
+        path = self.decision_requirements_dir / f"{clean}.json"
+        cached = load_json(path)
+        if (not refresh and isinstance(cached, dict)
+                and cached.get("schema_version") == DECISION_REQUIREMENTS_SCHEMA_VERSION):
+            # Решение опубликовано и не меняется: у удачного чтения срок месяц,
+            # у отказа — полчаса, как у карточки города.
+            ttl = (self.ttl_seconds * 30 if cached.get("available")
+                   else self.card_facts_failure_ttl_seconds)
+            if fresh(path, ttl):
+                return cached
+        document = self._decision_pdf(clean)
+        if not document.get("ok"):
+            out = {
+                "schema_version": DECISION_REQUIREMENTS_SCHEMA_VERSION,
+                "document_id": clean,
+                "available": False,
+                "decision_available": False,
+                "checked_at": int(time.time()),
+                "reason": str(document.get("reason") or "PDF проекта решения не прочитан"),
+                # «Не прочитали» — это наш пробел, а не «город ничего не
+                # потребовал»: вызывающий обязан их различать.
+                "warning": ("Проект решения не прочитан — обязательства площадки "
+                            "неизвестны, а не отсутствуют."),
+            }
+            save_json(path, out)
+            return out
+        facts = parse_decision_requirements(document["text"], title=document["title"])
+        out = {
+            "schema_version": DECISION_REQUIREMENTS_SCHEMA_VERSION,
+            "document_id": clean,
+            "available": True,
+            "decision_available": True,
+            "source_level": "official_project_decision",
+            "pdf_url": document["pdf_url"],
+            "checked_at": int(time.time()),
+            "decision": facts,
+            "warning": (
+                "Прочитан опубликованный проект решения. Это проект, а не заключённый "
+                "договор: до утверждения требования могут измениться. Карточки в каталоге "
+                "у этой площадки нет — сверить документ с ней не с чем."
+            ),
+            **{key: facts.get(key) for key in (
+                "intent", "renovation", "construction", "volumes", "deadlines",
+                "resettlement", "object_actions", "permitted_uses",
+                "cadastral_numbers", "cadastral_numbers_source",
+                "demolition", "demolition_or_reconstruction", "reconstruction",
+                "preservation")},
+        }
+        save_json(path, out)
+        return out
+
     def decision_tep(self, document_id: str, *, refresh: bool = False) -> dict[str, Any]:
         """ТЭП площадки из PDF проекта решения. У неё других цифр нет вовсе.
 
@@ -713,28 +875,10 @@ class KrtRegistry:
             save_json(path, out)
             return out
 
-        def remote_json(url: str) -> Any | None:
-            try:
-                return json.loads(self.fetch(url).decode("utf-8"))
-            except Exception:  # noqa: BLE001
-                return None
-
-        detail = remote_json(document_detail_url(clean))
-        title = str((detail or {}).get("title") or "")
-        institution_id = (detail or {}).get("institution_id")
-        if institution_id is None:
-            return fail("mos_document_detail: не указан орган публикации")
-        attachments = remote_json(document_attachments_url(clean, institution_id))
-        pdf_url = select_pdf_attachment(attachments)
-        if not pdf_url:
-            return fail("mos_document_attachments: PDF не опубликован")
-        try:
-            data = self.fetch(pdf_url)
-            if len(data) > 35 * 1024 * 1024:
-                raise RuntimeError("PDF проекта решения превышает 35 МБ")
-            text = pdf_text(data)
-        except Exception as exc:  # noqa: BLE001
-            return fail(f"mos_decision_pdf: {type(exc).__name__}: {exc}")
+        document = self._decision_pdf(clean)
+        if not document.get("ok"):
+            return fail(str(document.get("reason") or "PDF проекта решения не прочитан"))
+        text, title, pdf_url = document["text"], document["title"], document["pdf_url"]
         parsed = krt_decision_tep.parse(text)
         # Тот же текст отвечает и на «чьё это КРТ»: вид, городские нужды,
         # оператор. Скачивать документ второй раз ради этого незачем, а без

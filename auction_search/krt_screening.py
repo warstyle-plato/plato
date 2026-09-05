@@ -551,7 +551,12 @@ def build_krt_model_screening(
     if housing_gfa <= 0:
         return {
             "available": False,
-            "reason": "В официальном каталоге нет жилого объёма для расчёта жилого продукта",
+            # Источник называется по имени: у площадки-решения карточки нет
+            # вовсе, и «в каталоге нет объёма» было бы утверждением о том,
+            # куда мы не смотрели.
+            "reason": ("В проекте решения нет жилого объёма для расчёта жилого продукта"
+                       if project.get("no_card") else
+                       "В официальном каталоге нет жилого объёма для расчёта жилого продукта"),
         }
 
     segment, start_price, market_price, price_basis = _market_inputs(market_report)
@@ -816,7 +821,7 @@ def build_krt_model_screening(
         + ("второй" if programme["city"]["zone_two"] else "первой")
         + " зоны Москвы"
         + (f" по району «{programme['city']['district']}»"
-           if programme["city"]["district"] else " — район в карточке не назван, принята первая зона")
+           if programme["city"]["district"] else " — район не назван, принята первая зона")
         + ". " + (social_text + "." if social_text else "Соцобъекты по нормативу не потребовались.")
     )
     _volumes = programme.get("volumes") or {}
