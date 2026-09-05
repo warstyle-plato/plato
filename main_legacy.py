@@ -72,7 +72,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.22.17"
+VERSION = "0.22.21"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -852,10 +852,22 @@ def _find_named_money_mln(
     return None
 
 
-def _find_parameter(rows: list[list[Any]], name: str) -> Any:
+def _find_parameter(rows: list[list[Any]], name: str, label: bool = False) -> Any:
+    """Значение параметра по имени; `label=True` возвращает саму подпись.
+
+    Совпадение по началу имени, а не по всей строке: подпись К2 несёт в себе
+    выбор — «(внутри ТТК)» или «(вне ТТК)», — и точное сравнение не нашло бы
+    её ни в одном из двух случаев. Подпись при этом нужна целиком: какое из
+    двух значений взято, читатель обязан видеть рядом с числом.
+    """
     target = name.strip().lower()
     for row in rows:
-        if row and str(row[0] or "").strip().lower() == target:
+        if not row:
+            continue
+        got = str(row[0] or "").strip()
+        if got.lower() == target or got.lower().startswith(target):
+            if label:
+                return got
             return row[1] if len(row) > 1 else None
     return None
 
@@ -982,6 +994,13 @@ def parse_glavapu_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
         "calculation_zone": _find_parameter(params_rows, "Расчётная зона"),
         "cadastral_quarter": _find_parameter(params_rows, "Кадастровый квартал"),
         "rent_coefficient": _ru_number(_find_parameter(params_rows, "Коэффициент аренды")),
+        # Коэффициенты приобъектной парковки. К2 приходит уже выбранным: у
+        # участка их два — внутри ТТК и вне, — и какой его, решает признак
+        # анализа. Подпись строки несёт этот выбор, поэтому читается по
+        # началу имени: два разных числа под одним именем никто не заметит.
+        "parking_k1_coefficient": _ru_number(_find_parameter(params_rows, "К1 — доступность")),
+        "parking_k2_coefficient": _ru_number(_find_parameter(params_rows, "К2 — деловая активность")),
+        "parking_k2_label": _find_parameter(params_rows, "К2 — деловая активность", label=True),
         "mpt_coefficient": _find_parameter(params_rows, "Коэффициент МПТ"),
         # Базовая стоимость МКД — третий множитель платы за ВРИ. Город
         # индексирует её поквартально, и расхождение платы между двумя
@@ -1049,6 +1068,16 @@ def parse_glavapu_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
         "social_school_gba_sqm": data_norm["actual_school_np_sqm"] or 0,
         "social_clinic_gba_sqm": data_norm["actual_clinic_np_sqm"] or 0,
     }
+    # Коэффициенты паркинга — в поля. Без них расчёт приобъектных мест нежилья
+    # отказывается и называет причину, а пустая строка читается как «требования
+    # нет»; при этом город присылает их по кадастру тем же ответом, что аренду
+    # и УПКС. Ноль не переносим: он и означает «не задан».
+    for field, key in (("parking_k1", "parking_k1_coefficient"),
+                       ("parking_k2", "parking_k2_coefficient")):
+        got = data_norm.get(key)
+        if got is not None and float(got or 0) > 0:
+            input_mapping[field] = float(got)
+
     if (data_norm.get("change_vri_mln") or 0) > 0:
         # Пришла плата за смену ВРИ — значит ВРИ требуется, как и для офисов
         # ниже: пришли площади — объект включён. Без этого сумма попадала в
@@ -10625,6 +10654,17 @@ def import_cadastral_tep(req: CadastralTepRequest) -> dict[str, Any]:
         ["Кадастровый квартал", territory.get("cadastral_quarter") or ""],
         ["Коэффициент аренды", coefficients.get("rent")],
         ["Коэффициент МПТ", coefficients.get("mpt_location")],
+        # К1 и К2 приобъектной парковки приходят тем же ответом, что аренда и
+        # УПКС, — и до полей не доезжали: расчёт нежилой парковки отказывался
+        # «не заданы коэффициенты», а заполнить их было неоткуда, хотя город
+        # их прислал. Какое из двух значений К2 взято, решает признак ТТК из
+        # того же ответа: в августе оговорка «признак анализ не отдаёт» была
+        # неверной, и приобъектные места считались по чужому числу.
+        ["К1 — доступность рельсового каркаса", coefficients.get("rail")],
+        ["К2 — деловая активность "
+         + ("(внутри ТТК)" if bool(territory.get("inside_ttc")) else "(вне ТТК)"),
+         coefficients.get("business_inside_ttc" if bool(territory.get("inside_ttc"))
+                          else "business_outside_ttc")],
     ]
     numbers = analysis.get("recognized") or analysis.get("requested") or []
     safe_numbers = "_".join(str(number).replace(":", "-") for number in numbers[:3]) or "территория"
