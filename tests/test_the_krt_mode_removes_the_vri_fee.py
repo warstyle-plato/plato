@@ -127,18 +127,24 @@ def test_in_a_real_browser_switching_the_mode_clears_the_fee() -> None:
             page.on("pageerror", lambda exc: errors.append(str(exc)))
             page.on("dialog", lambda dialog: dialog.accept())
             page.goto(f"http://127.0.0.1:{PORT}/", wait_until="networkidle")
+            # Подпись читается у САМОГО поля, а не по всему `innerText`:
+            # вкладка вводных может быть не активной, и скрытый текст в
+            # `innerText` не попадает — проверка падала бы от того, какая
+            # вкладка открыта, а не от того, работает ли правка.
+            read = ("(() => { const box=document.getElementById('f_land_rights_cost_mln')"
+                    ".closest('.field'); const text=box?box.textContent:'';"
+                    " return {fee: inputs.land_rights_cost_mln,"
+                    "  was: inputs._krt_vri_cleared_mln,"
+                    "  note: text.indexOf('платы за смену ВРИ здесь нет')>=0,"
+                    "  amount: (text.match(/Убрано [^.]+/)||[''])[0]}; })()")
             before = page.evaluate(
                 "() => { inputs.social_area_source='norm';"
                 " inputs.land_rights_cost_mln=2864.3; renderInputs();"
-                " return {fee: inputs.land_rights_cost_mln,"
-                "  note: document.body.innerText.indexOf('платы за смену ВРИ здесь нет')>=0}; }")
+                " return " + read + "; }")
             after = page.evaluate(
                 "() => { const el=document.getElementById('f_social_area_source');"
                 " el.value='manual'; el.onchange();"
-                " return {fee: inputs.land_rights_cost_mln,"
-                "  was: inputs._krt_vri_cleared_mln,"
-                "  note: document.body.innerText.indexOf('платы за смену ВРИ здесь нет')>=0,"
-                "  amount: (document.body.innerText.match(/Убрано [^.]+/)||[''])[0]}; }")
+                " return " + read + "; }")
             browser.close()
     finally:
         server.should_exit = True

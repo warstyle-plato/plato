@@ -89,6 +89,11 @@ def test_the_line_says_whose_money_it_is_not_that_it_fell_short(cover: dict) -> 
 def test_the_layers_are_named_for_the_picture(cover: dict) -> None:
     """«Слоями по очередям» без имён не отвечает, какая очередь где."""
     assert cover.get("phase_names") == ["О1", "О2", "О3", "О4"], cover.get("phase_names")
+    # Имена приписываются к прежней подписи, а не заменяют её: без имён (её
+    # зовут и с пустым сводом) строка обязана остаться прежней.
+    assert "эскроу — слоями по очередям, снизу вверх" in core.PAGE
+    source = Path(ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    assert '"эскроу — слоями по очередям, снизу вверх"' in source
 
 
 def test_every_queue_gets_its_own_shade() -> None:

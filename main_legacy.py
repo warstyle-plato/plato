@@ -14308,9 +14308,9 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
                                     strokeColor=colors.HexColor("#2D6A4F"), strokeWidth=0.4))
             layer_names = [str(x) for x in (cover.get("phase_names") or [])][:len(parts)]
             drawing.add(String(left + 4, bottom + plot_h - 8,
-                               "эскроу — слоями снизу вверх"
+                               "эскроу — слоями по очередям, снизу вверх"
                                + (": " + " · ".join(layer_names)
-                                  if len(layer_names) == len(parts) else " по очередям"),
+                                  if len(layer_names) == len(parts) else ""),
                                fontName=regular, fontSize=6.4,
                                fillColor=colors.HexColor("#2D6A4F")))
         else:
@@ -42845,8 +42845,8 @@ function escrowCoverSvg(rows,cover){
  // очередь где, — а порядок у слоёв тот же, что у очередей.
  const layerNames=((cover&&cover.phase_names)||[]).slice(0,parts.length);
  const layerNote=parts.length>1
-  ? `<text x="${pL+4}" y="${pT+11}" font-size="11" fill="#2D6A4F">эскроу — слоями снизу вверх`
-    +`${layerNames.length===parts.length?': '+escapeHtml(layerNames.join(' · ')):' по очередям'}</text>` : '';
+  ? `<text x="${pL+4}" y="${pT+11}" font-size="11" fill="#2D6A4F">эскроу — слоями по очередям, снизу вверх`
+    +`${layerNames.length===parts.length?': '+escapeHtml(layerNames.join(' · ')):''}</text>` : '';
  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">${grid}
   ${layers}${layerNote}
   ${gaps}
