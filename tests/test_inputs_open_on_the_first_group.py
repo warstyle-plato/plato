@@ -129,6 +129,9 @@ def render(inputs: dict, tail: str = "console.log(JSON.stringify(groups()));") -
         page_function("pfStepRemove"),
         page_function("pfStepAdd"),
         page_function("renderPfStepsEditor"),
+        # Режим «Требование КРТ» решает, показывать ли под платой за ВРИ
+        # объяснение, почему она убрана: без этой функции форма не строится.
+        page_function("krtRequirementEntered"),
         # График вводится ячейками, и `renderInputs` рисует его своим
         # редактором: без него форма не строится вовсе. Берётся блок целиком —
         # перечисление функций поимённо ломается от каждой новой, и ломается

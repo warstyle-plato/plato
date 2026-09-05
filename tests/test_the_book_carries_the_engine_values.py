@@ -59,8 +59,11 @@ LOADED = {
     "offices_enabled": True, "retail_enabled": True, "above_parking_enabled": True,
     "offices_sales_profile": "60%@0; 40%@12", "retail_sales_profile": "70%@0; 30%@6",
     "above_parking_sales_profile": "80%@0; 20%@6",
+    "sports_enabled": True, "sports_disposition": "sale",
+    "sports_sales_profile": "50%@0; 50%@9",
     "growth_stage1_pct": 10, "offices_growth_stage1_pct": 8,
     "retail_growth_stage1_pct": 5, "above_parking_growth_stage1_pct": 4,
+    "sports_growth_stage1_pct": 6,
 }
 
 

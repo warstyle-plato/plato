@@ -145,9 +145,20 @@ def test_the_other_modes_leave_the_cash_cell_empty():
 
 
 def test_the_book_formula_knows_the_third_mode():
-    formula = str(workbook(core.SOCIAL_MODE_BOTH)["CF_1"]["F57"].value)
-    assert "Строительство и компенсация" in formula
-    assert "$B$56" in formula
+    """Совмещённый режим знает БАЗА комиссии выдачи — где бы она ни считалась.
+
+    Прежде третий режим стоял прямо в строке 57 листов CF. С правкой «лимит
+    БРИДЖа — только платежи ДО РнС» база переехала в служебную строку 39 листа
+    CAPEX, и строка 57 её читает: знание не пропало, оно сменило место.
+    Проверка держится за утверждение, а не за координату — иначе она падает на
+    верном расчёте и её перестают читать.
+    """
+    book = workbook(core.SOCIAL_MODE_BOTH)
+    fee = str(book["CF_1"]["F57"].value)
+    assert "'CAPEX'!$D$39:$DS$39" in fee, "строка 57 не читает базу лимита"
+    base = str(book["CAPEX"]["F39"].value)
+    assert "Строительство и компенсация" in base
+    assert "$B$56" in base
 
 
 # --- порядок листов -------------------------------------------------------------

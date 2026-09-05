@@ -159,6 +159,7 @@ def inputs_from_glavapu(
     inputs["offices_enabled"] = False
     inputs["retail_enabled"] = False
     inputs["above_parking_enabled"] = False
+    inputs["sports_enabled"] = False
     inputs.update(mappings.get("inputs") or {})
     inputs["site_area_ha"] = normalized.get("site_area_ha") or 0
     # Плотность приезжает тем же файлом и не должна оставаться справочной:
