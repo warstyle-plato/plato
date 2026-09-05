@@ -210,6 +210,10 @@ def score_row(project: dict[str, Any], screening: dict[str, Any]) -> dict[str, A
         "margin_pct": metrics.get("margin_pct"),
         "net_profit_mln": metrics.get("net_profit_mln"),
         "phase_count": phasing.get("count"),
+        # Модель по объявленной цене торгов. Посчитанное на сервере, но не
+        # доехавшее до строки, неотличимо от непосчитанного: экран читает
+        # строку, а не скрининг.
+        "at_asking_price": screening.get("at_asking_price"),
     })
 
     if capacity.get("available") and saleable > 0:
