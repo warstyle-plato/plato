@@ -91,15 +91,19 @@ def test_the_hectares_are_the_self_check_of_the_pair():
     выдать одно за другое.
     """
     out = tep.parse(_decision("337332220"))
-    same = tep.catalogue_mismatch(out, {"area_ha": out["area_ha"],
-                                        "total_gfa_sqm": out["total_gfa_sqm"],
-                                        "housing_gfa_sqm": out["housing_gfa_sqm"]})
-    assert same == []
-    other = tep.catalogue_mismatch(out, {"area_ha": 0.93, "total_gfa_sqm": 51_040})
-    assert any("площадь территории" in one for one in other), other
-    assert any("общий объём" in one for one in other), other
-    # Нечего сверять — не «сошлось»: у карточки без величины пара не проверена.
-    assert tep.catalogue_mismatch(out, {}) == []
+    same = tep.catalogue_check(out, {"area_ha": out["area_ha"],
+                                     "total_gfa_sqm": out["total_gfa_sqm"],
+                                     "housing_gfa_sqm": out["housing_gfa_sqm"]})
+    assert same["problems"] == []
+    other = tep.catalogue_check(out, {"area_ha": 0.93, "total_gfa_sqm": 51_040})
+    assert any("площадь территории" in one for one in other["problems"]), other
+    assert any("общий объём" in one for one in other["problems"]), other
+    # Нечего сверять — не «сошлось», и раньше это было написано здесь словами,
+    # а утверждалось обратное: обе ветки возвращали пустой список. Различает их
+    # состав сверенного, и на экране это два разных ответа.
+    empty = tep.catalogue_check(out, {})
+    assert empty["problems"] == [] and empty["compared"] == [], empty
+    assert empty != same
 
 
 def test_the_decision_housing_matches_the_catalogue_column():
@@ -230,7 +234,11 @@ def test_the_route_puts_the_decision_numbers_into_the_row():
     # Карточка сильнее: её числа остаются, а расхождение с решением названо.
     card = rows["site"]
     assert card["total_gfa_sqm"] == 51_040, "решение подменило собой каталог"
-    assert any("площадь территории" in one for one in card["decision_tep_check"]), card
+    check = card["decision_tep_check"]
+    assert any("площадь территории" in one for one in check["problems"]), card
+    # Что сверено и было ли что сверять — часть ответа: без этого «сошлось» и
+    # «сверять не с чем» на экране звучали бы одинаково.
+    assert "площадь территории" in check["compared"] and check["read"] is True, card
     assert card["draft_decision_at"] == 1
 
     assert answer.json()["decision_tep_state"]["unknown"] == 3
