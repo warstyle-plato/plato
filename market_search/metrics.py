@@ -185,11 +185,25 @@ def price_block(subject: dict[str, Any], peers: list[dict[str, Any]], city: Mosc
             "observed_at": city.observed_at,
             **(snapshot.position(price) or {}),
         }
-        if snapshot.discount_median_pct:
-            block.notes.append(
-                f"Медианная скидка к прайсу по классу «{snapshot.segment}» в Москве — "
-                f"{snapshot.discount_median_pct} %; у проекта она может быть иной"
-            )
+        if snapshot.discount_projects:
+            # Медиана по всем объявившим выходит нулём — скидку даёт примерно
+            # каждый второй. Одно это число читается как «скидок на рынке нет»,
+            # поэтому рядом стоит, сколько проектов её дают и какая она у них.
+            offering = snapshot.discount_offering or 0
+            if offering:
+                block.notes.append(
+                    # «53 проектов» — падеж числительного. Оборот «53 из 85
+                    # проектов» верен при любом числе, и склонять нечего.
+                    f"Скидку к прайсу в классе «{snapshot.segment}» объявляют {offering} "
+                    f"из {snapshot.discount_projects} проектов; у них она "
+                    f"{snapshot.discount_median_offered_pct} % по медиане, у остальных "
+                    f"нулевая. Прайс и сделка — разные числа, и у проекта скидка своя"
+                )
+            else:
+                block.notes.append(
+                    f"Ни один проект класса «{snapshot.segment}» скидки к прайсу в этом "
+                    f"месяце не объявил"
+                )
     elif subject.get("segment"):
         block.notes.append("В своде рынка нет класса этого проекта")
     else:

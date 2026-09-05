@@ -130,3 +130,42 @@ def test_the_deals_summary_checks_itself_against_the_report() -> None:
     summary = imp.build_deals(deals, series, months=["2026-08"])
     assert summary["check"] == {"compared": 2, "matched": 1}
     assert summary["projects"]["1"]["bands"] == {"28-40": 3, "40-55": 1}
+
+
+def test_a_zero_discount_is_an_answer_and_does_not_speak_for_the_market() -> None:
+    """Медиана скидки по всем объявившим выходит нулём — её дают не все.
+
+    На августе это 194 проекта с числом, из них 88 с ненулевой скидкой и
+    медианой 13,9 %. Одна медиана по всем читается как «скидок на рынке нет»,
+    поэтому рядом стоит, сколько проектов её дают и какая она у них.
+    """
+    passport = {
+        "1": {"name": "А", "segment": "Бизнес"},
+        "2": {"name": "Б", "segment": "Бизнес"},
+        "3": {"name": "В", "segment": "Бизнес"},
+        "4": {"name": "Г", "segment": "Бизнес"},
+        "5": {"name": "Д", "segment": "Бизнес"},
+    }
+    series = {
+        "1": {"2026-08": {"price": 700_000, "disc": 0.0}},
+        "2": {"2026-08": {"price": 700_000, "disc": 0.0}},
+        "3": {"2026-08": {"price": 700_000, "disc": 12.0}},
+        "4": {"2026-08": {"price": 700_000, "disc": 16.0}},
+        "5": {"2026-08": {"price": 700_000, "disc": 0.0}},
+    }
+    snapshot = imp.build_market(passport, series, months=["2026-08"], source="проба")
+    row = snapshot["current"]["Бизнес"]
+    assert row["disc_median"] == 0.0
+    assert row["disc_projects"] == 5
+    assert row["disc_offering"] == 2
+    assert row["disc_median_offered"] == 14.0
+
+    # Пустая колонка — не нулевая скидка: проект без числа в счёт не идёт.
+    quiet = imp.build_market(
+        {"1": {"name": "А", "segment": "Бизнес"}},
+        {"1": {"2026-08": {"price": 700_000}}},
+        months=["2026-08"],
+        source="проба",
+    )
+    assert quiet["current"]["Бизнес"]["disc_projects"] == 0
+    assert quiet["current"]["Бизнес"]["disc_median"] is None

@@ -36,6 +36,9 @@ class ClassSnapshot:
     # сделки по ДДУ. У прежних сводов их нет вовсе, поэтому оба с умолчанием —
     # «не знаем», а не ноль.
     mortgage_median_pct: float | None = None
+    discount_projects: int | None = None
+    discount_offering: int | None = None
+    discount_median_offered_pct: float | None = None
     ddu_median: int | None = None
     ddu_projects: int | None = None
 
@@ -149,6 +152,9 @@ class MoscowMarket:
             remainder_total=row.get("rem_total"),
             discount_median_pct=row.get("disc_median"),
             mortgage_median_pct=row.get("mortgage_median"),
+            discount_projects=row.get("disc_projects"),
+            discount_offering=row.get("disc_offering"),
+            discount_median_offered_pct=row.get("disc_median_offered"),
             ddu_median=row.get("ddu_median"),
             ddu_projects=row.get("ddu_projects"),
         )

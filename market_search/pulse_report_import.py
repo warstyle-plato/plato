@@ -536,6 +536,7 @@ def _snapshot(points: list[dict[str, Any]]) -> dict[str, Any]:
     ddu = [float(p["ddu"]) for p in points if p.get("ddu")]
     sold = [float(p["sold"]) for p in points if p.get("sold") is not None]
     discounts = [float(p["disc"]) for p in points if p.get("disc") is not None]
+    offered = [value for value in discounts if value > 0]
     mortgage = [float(p["mortgage"]) for p in points if p.get("mortgage") is not None]
     remains = [float(p["rem"]) for p in points if p.get("rem") is not None]
     quarters = sorted(prices)
@@ -553,7 +554,15 @@ def _snapshot(points: list[dict[str, Any]]) -> dict[str, Any]:
         "sold_median": _round(_median(sold)),
         "sold_total": _round(sum(sold)),
         "rem_total": _round(sum(remains)),
+        # Ноль здесь — ответ, а не пропуск: половина проектов класса объявляет
+        # нулевую скидку, и медиана по всем выходит 0,0 %. Прочитанная как
+        # «скидок на рынке нет», она неверна — скидку даёт каждый второй, и у
+        # него она двузначная. Поэтому рядом стоит медиана СРЕДИ дающих и их
+        # число: одно число без второго читается как утверждение о рынке.
         "disc_median": _round(_median(discounts), 1),
+        "disc_projects": len(discounts),
+        "disc_offering": len(offered),
+        "disc_median_offered": _round(_median(offered), 1),
         "mortgage_median": _round(_median(mortgage), 1),
     }
     return out
