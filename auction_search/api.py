@@ -117,7 +117,7 @@ def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
             ("nonresidential_gfa_sqm", "Нежилое, м²", 18),
             ("business_gfa_sqm", "Общественно-деловое, м²", 22),
             ("jobs", "Рабочие места", 17),
-            ("score", "Оценка Платона, балл", 19),
+            ("score", "Балл площадки", 19),
             ("traffic_light", "Светофор модели", 25),
             ("saleable_sqm", "Продаваемая площадь, м²", 22),
             ("entry_capacity_rub_per_sqm", "Потолок цены входа, ₽/м² продаваемой", 27),
@@ -173,7 +173,7 @@ def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
             ("total_gfa_sqm", "Общий объём, м²", 18),
             ("housing_gfa_sqm", "Жильё, м²", 16),
             ("price", "Цена, ₽", 18),
-            ("score", "Оценка Платона", 17),
+            ("score", "Балл лота", 17),
             ("status", "Статус", 22),
             ("url", "Источник", 42),
         ]
