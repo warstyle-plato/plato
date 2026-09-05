@@ -872,6 +872,108 @@ def test_the_measures_of_a_section_stand_side_by_side_on_one_slide() -> None:
                    for series in plot.series), "цена не доехала линией"
 
 
+def test_every_chart_of_the_section_reaches_the_deck() -> None:
+    """«А воронку почему не нарисовал?» (владелец, 03.09.2026).
+
+    У «Отдела продаж» на экране два графика — воронка встреч и темы, — а
+    признак «здесь рисуют» был один на весь раздел, и колода чертила ПЕРВУЮ
+    таблицу. Воронка при этом пропадала молча: её числа лежат под её же
+    графиком, а не в первой таблице раздела.
+
+    Таблица под графиком — это его числа: помечается та, над которой график
+    стоит. Таблица без графика над собой остаётся таблицей — «Что мешало на
+    встрече» столбиками не читается, и экран её не рисует.
+    """
+    import io
+
+    from pptx import Presentation
+
+    html = ('<section class="salesblock"><h3>Отдел продаж</h3>'
+            '<svg viewBox="0 0 700 250"></svg>'
+            '<table><thead><tr><th>Месяц</th><th>Встреч в день</th>'
+            '<th>Броней разом</th></tr></thead><tbody>'
+            '<tr><td>2026-06</td><td>1,4</td><td>6,0</td></tr>'
+            '<tr><td>2026-07</td><td>1,1</td><td>5,2</td></tr></tbody></table>'
+            '<svg viewBox="0 0 700 250"></svg>'
+            '<table><thead><tr><th>Тема</th><th>Визитов</th></tr></thead><tbody>'
+            '<tr><td>площадь</td><td>43</td></tr>'
+            '<tr><td>бюджет</td><td>21</td></tr></tbody></table>'
+            '<table><thead><tr><th>Причина</th><th>Встреч</th></tr></thead><tbody>'
+            '<tr><td>бюджет и цена</td><td>8</td></tr>'
+            '<tr><td>этаж и виды</td><td>5</td></tr></tbody></table></section>')
+
+    blocks = sales_deck.sections(html)
+    marked = [table.get("charted") for table in blocks[0]["tables"]]
+    assert marked == [True, True, False], marked
+
+    deck = Presentation(io.BytesIO(sales_deck.build(
+        sales_deck.sections(html), title="Т", subtitle="с", footer="ф")))
+    slides = [slide for slide in deck.slides
+              if any(getattr(shape, "has_chart", False) for shape in slide.shapes)]
+    assert len(slides) == 2, "график экрана, у которого есть свои числа, обязан доехать"
+    series = [[s.name for shape in slide.shapes if getattr(shape, "has_chart", False)
+               for plot in shape.chart.plots for s in plot.series] for slide in slides]
+    # Воронка — одна картинка из своих рядов, а не три листа по ряду:
+    # встречи и брони стоят на одной шкале и на экране.
+    assert series[0] == ["Встреч в день", "Броней разом"], series[0]
+    assert series[1] == ["Визитов"], series[1]
+    # Таблица без графика над собой столбиков не получает.
+    assert "Причина" not in " ".join(str(item) for item in series)
+    cells = [cell.text for slide in deck.slides for shape in slide.shapes
+             if getattr(shape, "has_table", False)
+             for row in shape.table.rows for cell in row.cells]
+    assert "бюджет и цена" in cells, "таблица без графика не пропала, она едет ячейками"
+
+
+def test_time_runs_forward_on_the_chart() -> None:
+    """«Шкала времени в презентации инвертирована» (владелец, 04.09.2026).
+
+    Таблица свода читается свежим вверх — это её порядок и он верен. График
+    так читать нельзя: колода брала строки как есть, и «Динамика» шла справа
+    налево. Переворачивается только доказанный убывающий ряд времени; у тем,
+    каналов и продуктов свой порядок, и он остаётся.
+
+    Таблица при этом сохраняет порядок отчёта: у неё другой вопрос.
+    """
+    import io
+
+    from pptx import Presentation
+
+    months = {"head": ["Месяц", "млн ₽"],
+              "rows": [["2026-08", "55,6"], ["2026-07", "140,8"],
+                       ["2026-06", "301,2"]]}
+    drawn = sales_deck.charts(months)
+    assert drawn[0]["categories"] == ["2026-06", "2026-07", "2026-08"]
+    assert drawn[0]["values"] == [301.2, 140.8, 55.6], "ряд переехал без своих чисел"
+
+    quarters = sales_deck.charts({
+        "head": ["Квартал", "млн ₽"],
+        "rows": [["2026 Q2", "599,8"], ["2026 Q1", "554,0"],
+                 ["2025 Q4 (часть)", "624,0"]]})
+    assert quarters[0]["categories"] == ["2025 Q4 (часть)", "2026 Q1", "2026 Q2"]
+
+    # Не время — не переворачивается: у тем порядок по величине.
+    topics = sales_deck.charts({
+        "head": ["Тема", "Визитов"],
+        "rows": [["площадь", "43"], ["бюджет", "21"], ["ипотека", "9"]]})
+    assert topics[0]["categories"] == ["площадь", "бюджет", "ипотека"]
+
+    html = ('<section class="salesblock"><h3>Динамика</h3>'
+            '<svg viewBox="0 0 700 250"></svg>'
+            '<table><thead><tr><th>Месяц</th><th>млн ₽</th></tr></thead><tbody>'
+            '<tr><td>2026-08</td><td>55,6</td></tr>'
+            '<tr><td>2026-07</td><td>140,8</td></tr>'
+            '<tr><td>2026-06</td><td>301,2</td></tr></tbody></table></section>')
+    deck = Presentation(io.BytesIO(sales_deck.build(
+        sales_deck.sections(html), title="Т", subtitle="с", footer="ф")))
+    shapes = [shape for slide in deck.slides for shape in slide.shapes]
+    chart = next(shape.chart for shape in shapes if getattr(shape, "has_chart", False))
+    assert list(chart.plots[0].categories) == ["2026-06", "2026-07", "2026-08"]
+    grid = next(shape.table for shape in shapes if getattr(shape, "has_table", False))
+    assert [row.cells[0].text for row in grid.rows][1:] == ["2026-08", "2026-07", "2026-06"], \
+        "таблица читается свежим вверх — её порядок трогать нечем"
+
+
 def test_a_section_of_one_sentence_does_not_get_its_own_slide() -> None:
     """«Слайды 2-3 пустые вообще — там по одной строчке текста» (владелец,
     31.08.2026).

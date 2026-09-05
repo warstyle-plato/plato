@@ -69,5 +69,13 @@ def test_the_price_is_always_a_line_never_a_tab() -> None:
     plans = page[page.index("const PLAN_METRICS="):page.index("function salesPlansBlock(")]
     for block, where in ((metrics, "динамики"), (plans, "планов")):
         assert "'₽/м²'" not in block, f"цена осталась вкладкой у {where}"
-    # И присутствует на обоих графиках линией.
-    assert page.count("rightLines:") == 2
+    # И присутствует на обоих графиках линией. Считать `rightLines:` по всему
+    # файлу нельзя: утверждение здесь — «у этих двух графиков цена справа», а
+    # счёт по файлу запрещает ЗАВОДИТЬ правую ось где-либо ещё. Он и упал на
+    # воронке обращений, где справа стоит доля дошедших до брони, — то есть на
+    # добавленном, а не на сломанном. Границей служит сама функция.
+    for name, what in (("salesDynamicsChart", "цена"), ("salesPlansChart", "цена факт")):
+        start = page.index(f"function {name}(")
+        body = page[start:page.index("\nfunction ", start + 1)]
+        assert "rightLines:" in body, f"у {name} цена перестала быть линией справа"
+        assert what in body, f"правая ось {name} перестала называть цену"
