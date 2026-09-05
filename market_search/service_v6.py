@@ -24,7 +24,7 @@ from .entities import ProjectEntity, merge_geographic_duplicates, resolve_entiti
 from .geo_resolution import RESOLVED, ProjectGeoResolver, address_signature
 from .geocoder import GeoPoint
 from .http import RemoteServiceError
-from .dynamics import SalesDynamics
+from .dynamics import DealsSummary, SalesDynamics
 from .market_reference import MoscowMarket
 from .metrics import build_blocks
 from .narrative import analysis, findings
@@ -71,6 +71,26 @@ def _count_by_status(rows: list[dict[str, Any]]) -> dict[str, int]:
     return dict(sorted(counts.items(), key=lambda item: (-item[1], item[0])))
 
 
+# Из месячного отчёта в строку проекта уезжают не только продажи. Доля ипотеки,
+# доля юрлиц и скидка к прайсу считаются самим отчётом — своего счёта тех же
+# величин у нас нет и не будет. Полосы площади приходят из выписок: комнатность
+# на вопрос «что вымывается» не отвечает, двушка бывает и 44 м², и 84.
+REPORT_FIELDS = ("mortgage", "legal", "disc", "ddu", "resale")
+
+
+def _report_extras(
+    dynamics: SalesDynamics, deals: DealsSummary, complex_id: Any
+) -> dict[str, Any]:
+    out = dict(dynamics.latest(complex_id, REPORT_FIELDS))
+    bands = deals.bands(complex_id)
+    if bands:
+        out["bands"] = bands
+    banks = deals.banks(complex_id)
+    if banks:
+        out["banks"] = banks
+    return out
+
+
 class MarketDiscoveryService(LegacyMarketDiscoveryService):
     """Ревизованный конвейер.
 
@@ -96,6 +116,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         # История продаж и остатка: живой источник её не отдаёт, она вынута из
         # помесячного отчёта и едет с кодом.
         self.dynamics = SalesDynamics.bundled()
+        self.deals = DealsSummary.bundled()
         # Разбор кадастрового номера живёт в движке: там НСПД, там же его
         # используют ТЭП и анализ территории. Второй такой путь заводить нельзя,
         # иначе один и тот же номер даст в двух местах разные точки.
@@ -648,6 +669,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 **self.pulse.metrics(subject.project_id),
                 **self.pulse.project_totals(subject.project_id),
                 **self.pulse.remaining(subject.project_id),
+                **_report_extras(self.dynamics, self.deals, subject.project_id),
             }
 
         # Класс ставит «Пульс» — решение владельца от 18.08.2026, ручной подмены
@@ -786,6 +808,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
             # Остаток у соседа не спрашиваем поштучно — это ещё один запрос на
             # каждого. Он есть в помесячном отчёте: берётся последняя точка и
             # помечается своим источником, потому что она месячной давности.
+            row.update(_report_extras(self.dynamics, self.deals, row.get("complex_id")))
             last = next((p for p in reversed(row["sales_series"]) if p.get("rem") is not None), None)
             if last and row.get("remaining_units") is None:
                 row["remaining_units"] = last["rem"]
