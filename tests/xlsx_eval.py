@@ -138,6 +138,29 @@ def _match(args: list[Any]) -> int:
     raise FormulaError(f"MATCH: {target!r} не найдено")
 
 
+def _sumif(args: list[Any]) -> float:
+    """SUMIF(диапазон, условие[, диапазон сумм]) — только сравнение с числом.
+
+    Книга берёт им положительные месяцы налоговой базы очереди. Текстовых
+    условий и подстановок здесь нет намеренно: неподдержанное условие обязано
+    падать, а не считать по своему правилу.
+    """
+    values = _flatten(args[0])
+    target = _flatten(args[2]) if len(args) > 2 else values
+    criterion = str(args[1]).strip().strip('"')
+    for operator in (">=", "<=", "<>", ">", "<", "="):
+        if criterion.startswith(operator):
+            bound = float(criterion[len(operator):])
+            break
+    else:
+        operator, bound = "=", float(criterion)
+    total = 0.0
+    for value, addend in zip(values, target):
+        if _compare(operator, _as_number(value), bound):
+            total += _as_number(addend)
+    return total
+
+
 def _countif(args: list[Any]) -> int:
     criteria = args[1]
     return sum(1 for item in _flatten(args[0]) if _compare("=", item, criteria))
@@ -201,6 +224,7 @@ FUNCTIONS: dict[str, Callable[[list[Any]], Any]] = {
     "ROUNDUP": lambda args: _excel_round(_as_number(args[0]), _as_number(args[1]), up=True),
     "COUNT": lambda args: len(_numbers(args)),
     "COUNTIF": _countif,
+    "SUMIF": _sumif,
     "INDEX": _index,
     "MATCH": _match,
     "TEXT": lambda args: _text(args[0]),
