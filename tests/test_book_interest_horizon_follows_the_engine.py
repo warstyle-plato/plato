@@ -37,6 +37,8 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 import main_legacy as core  # noqa: E402
 
+import v4_inputs  # noqa: E402
+
 openpyxl = pytest.importorskip("openpyxl")
 
 BASE = {**core.DEFAULT_INPUTS, "purchase_price_mln": 4300, "land_rights_cost_mln": 0,
@@ -81,14 +83,14 @@ def evaluated(**overrides):
 
 def test_the_engine_horizon_reaches_the_workbook():
     book = workbook()
-    assert book["Вводные"]["D71"].value == "engine_horizon_end"
-    assert float(book["Вводные"]["B71"].value) > 0
+    assert v4_inputs.inputs(book)["D71"].value == "engine_horizon_end"
+    assert float(v4_inputs.inputs(book)["B71"].value) > 0
 
 
 def test_the_horizon_follows_the_last_cash_flow():
     """Садик строится дольше — горизонт длиннее, и книга должна это видеть."""
-    without = float(workbook(kindergarten_places=0)["Вводные"]["B71"].value)
-    with_school = float(workbook(school_places=500)["Вводные"]["B71"].value)
+    without = float(v4_inputs.inputs(workbook(kindergarten_places=0))["B71"].value)
+    with_school = float(v4_inputs.inputs(workbook(school_places=500))["B71"].value)
     assert with_school > without
 
 
@@ -96,7 +98,7 @@ def test_the_written_date_is_the_engine_horizon():
     operating = core.build_operating_model(
         {**core.DEFAULT_INPUTS, **BASE}, tep_of_a_real_project(), [])
     expected = core._v4_excel_serial(operating["end"].isoformat())
-    assert float(workbook()["Вводные"]["B71"].value) == pytest.approx(expected)
+    assert float(v4_inputs.inputs(workbook())["B71"].value) == pytest.approx(expected)
 
 
 # --- проценты идут, пока идёт горизонт ------------------------------------------
@@ -129,11 +131,11 @@ def test_the_formula_takes_the_later_of_two_bounds():
     двигать границу вслед за РВЭ, даже когда записанная дата устарела."""
     formula = str(workbook()["CF_1"]["F42"].value)
     assert "MAX(EDATE($B$8" in formula
-    assert "'Вводные'!$B$71" in formula
+    assert "'Параметры модели'!$B$71" in formula
 
 
 def test_an_empty_horizon_does_not_break_the_formula():
     """Ноль в ячейке — «движок не посчитал»: книга остаётся на своей границе,
     а не обнуляет проценты за весь проект."""
     formula = str(workbook()["CF_1"]["F42"].value)
-    assert "IF('Вводные'!$B$71=0,0," in formula
+    assert "IF('Параметры модели'!$B$71=0,0," in formula

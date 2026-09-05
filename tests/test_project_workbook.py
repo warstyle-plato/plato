@@ -22,6 +22,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import v4_inputs  # noqa: E402
 
 import main as wrapper  # noqa: E402
 
@@ -40,7 +43,7 @@ def build(inputs=None, tep=None, phasing=None, name="Тест"):
 @pytest.fixture(scope="module")
 def default_book():
     content, filename, meta = build()
-    sheet = openpyxl.load_workbook(io.BytesIO(content), data_only=False)["Вводные"]
+    sheet = v4_inputs.inputs(openpyxl.load_workbook(io.BytesIO(content), data_only=False))
     return content, filename, meta, sheet
 
 
@@ -136,8 +139,8 @@ def test_the_vri_switch_follows_the_payment_not_the_flag():
 
 def _book(inputs):
     content, filename, meta = build(inputs)
-    return content, filename, meta, openpyxl.load_workbook(
-        io.BytesIO(content), data_only=False)["Вводные"]
+    return content, filename, meta, v4_inputs.inputs(openpyxl.load_workbook(
+        io.BytesIO(content), data_only=False))
 
 
 def test_an_installment_is_written_in_the_words_of_the_book():
@@ -174,7 +177,7 @@ def test_the_phases_split_the_tep_by_their_weights():
         "cost_inflation_pct": 8, "sales_price_inflation_pct": 8,
     }
     content, _, meta = build(phasing=phasing)
-    sheet = openpyxl.load_workbook(io.BytesIO(content), data_only=False)["Вводные"]
+    sheet = v4_inputs.inputs(openpyxl.load_workbook(io.BytesIO(content), data_only=False))
     total = core.TEP_DEFAULT["apartments"]["gns"]
     assert meta["phased"] is True
     assert sheet["B88"].value == "Да" and sheet["B89"].value == "Да"
@@ -203,7 +206,7 @@ def test_percent_weights_are_normalized_to_shares():
         "cost_inflation_pct": 8, "sales_price_inflation_pct": 8,
     }
     content, _, _ = build(phasing=phasing)
-    sheet = openpyxl.load_workbook(io.BytesIO(content), data_only=False)["Вводные"]
+    sheet = v4_inputs.inputs(openpyxl.load_workbook(io.BytesIO(content), data_only=False))
     total = core.TEP_DEFAULT["apartments"]["gns"]
 
     assert sheet["W88"].value == pytest.approx(total * 0.40, rel=1e-6)
@@ -248,7 +251,7 @@ def test_social_construction_is_indexed_to_its_queue():
          "school_places": 950, "school_cost_mln_per_place": 3,
          "clinic_capacity": 124, "clinic_cost_mln_per_unit": 3},
         phasing=phasing)
-    sheet = openpyxl.load_workbook(io.BytesIO(content), data_only=False)["Вводные"]
+    sheet = v4_inputs.inputs(openpyxl.load_workbook(io.BytesIO(content), data_only=False))
 
     expected = (453 * 2.75 * 1.08 + 950 * 3 * 1.08 ** 2 + 124 * 3 * 1.08)
     assert sheet["B17"].value == pytest.approx(expected, rel=1e-6)
@@ -354,7 +357,7 @@ def test_a_fourth_queue_gets_its_own_cf_sheet():
     }
     content, _, meta = build(phasing=phasing)
     book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
-    sheet = book["Вводные"]
+    sheet = v4_inputs.inputs(book)
     total = core.TEP_DEFAULT["apartments"]["gns"]
 
     assert meta["missing"] == []
@@ -412,7 +415,7 @@ def test_a_fifth_queue_is_folded_into_the_fourth():
         "cost_inflation_pct": 8, "sales_price_inflation_pct": 8,
     }
     content, _, meta = build(phasing=phasing)
-    sheet = openpyxl.load_workbook(io.BytesIO(content), data_only=False)["Вводные"]
+    sheet = v4_inputs.inputs(openpyxl.load_workbook(io.BytesIO(content), data_only=False))
     total = core.TEP_DEFAULT["apartments"]["gns"]
 
     assert any("слиты в четвёртую" in str(item) for item in meta["missing"])
@@ -434,7 +437,7 @@ def test_the_objects_inherit_their_queue_from_the_phasing():
         "cost_inflation_pct": 8, "sales_price_inflation_pct": 8,
     }
     content, _, _ = build(phasing=phasing)
-    sheet = openpyxl.load_workbook(io.BytesIO(content), data_only=False)["Вводные"]
+    sheet = v4_inputs.inputs(openpyxl.load_workbook(io.BytesIO(content), data_only=False))
 
     assert sheet["K21"].value == pytest.approx(3)   # офисы
     assert sheet["K41"].value == pytest.approx(2)   # ТЦ
@@ -446,7 +449,7 @@ def test_the_objects_inherit_their_queue_from_the_phasing():
     assert sheet["K47"].value == datetime(2029, 7, 1)   # ТЦ: 2028-07 + 12 мес
 
     single, _, _ = build()  # без очередей всё в первой
-    sheet_single = openpyxl.load_workbook(io.BytesIO(single), data_only=False)["Вводные"]
+    sheet_single = v4_inputs.inputs(openpyxl.load_workbook(io.BytesIO(single), data_only=False))
     assert sheet_single["K21"].value == pytest.approx(1)
 
 
@@ -519,7 +522,7 @@ def test_the_queue_price_multiplier_carries_the_phase_indexation():
         "sales_price_inflation_pct": 8,
     }
     content, _, _ = build(phasing=phasing)
-    sheet = openpyxl.load_workbook(io.BytesIO(content), data_only=False)["Вводные"]
+    sheet = v4_inputs.inputs(openpyxl.load_workbook(io.BytesIO(content), data_only=False))
 
     assert sheet["S88"].value == pytest.approx(1.0)
     assert sheet["S89"].value == pytest.approx(1.08)
@@ -591,7 +594,7 @@ def test_the_fourth_queue_drives_the_whole_book_not_just_its_sheets():
     book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
     evaluator = Evaluator(book)
 
-    assert book["Вводные"]["K21"].value == pytest.approx(4)
+    assert v4_inputs.inputs(book)["K21"].value == pytest.approx(4)
     assert evaluator.cell("ПРОВЕРКИ", "B3") in (
         "ПРОЙДЕНО", "ПРОЙДЕНО С ПРЕДУПРЕЖДЕНИЯМИ"), [
         f'{book["ПРОВЕРКИ"][f"A{row}"].value}: '
@@ -731,7 +734,7 @@ def test_the_social_construction_is_spread_like_the_engine():
     book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
     evaluator = Evaluator(book)
 
-    sheet = book["Вводные"]
+    sheet = v4_inputs.inputs(book)
     row = next(number for number in range(1, sheet.max_row + 1)
                if str(sheet[f"A{number}"].value or "") == "ДОО — очередь 1")
     assert sheet[f"E{row}"].value == pytest.approx(24), "срок стройки садика"
@@ -807,7 +810,7 @@ def test_the_shared_costs_are_paid_by_the_cash_schedule():
         "cost_inflation_pct": 8, "sales_price_inflation_pct": 8,
     }
     content, _, _ = build(phasing=phasing)
-    sheet = openpyxl.load_workbook(io.BytesIO(content), data_only=False)["Вводные"]
+    sheet = v4_inputs.inputs(openpyxl.load_workbook(io.BytesIO(content), data_only=False))
     assert sheet["Q88"].value == pytest.approx(1.0)
     assert sheet["Q89"].value == pytest.approx(0.0)
     assert sheet["Q90"].value == pytest.approx(0.0)
@@ -846,7 +849,7 @@ def test_the_cadastre_77_09_regression_social_is_construction_only():
     content, _, _ = core.build_project_workbook(inputs, tep, [], {},
                                                 project_name="77:09")
     book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
-    assert book["Вводные"]["B17"].value == pytest.approx(social, abs=0.01), \
+    assert v4_inputs.inputs(book)["B17"].value == pytest.approx(social, abs=0.01), \
         "компенсация добавлена поверх строительства соцобъектов"
 
     engine = core.calculate_phased(core.PhasedCalcRequest(
@@ -892,7 +895,7 @@ def test_the_default_object_queues_match_on_both_surfaces():
 
     content, _, _ = core.build_project_workbook(inputs, tep, [], phasing,
                                                 project_name="Дефолт очередей")
-    sheet = openpyxl.load_workbook(io.BytesIO(content), data_only=False)["Вводные"]
+    sheet = v4_inputs.inputs(openpyxl.load_workbook(io.BytesIO(content), data_only=False))
     assert sheet["K21"].value == pytest.approx(3)
 
     # две очереди: дефолт капится, объект не пропадает
@@ -934,7 +937,7 @@ def test_the_social_construction_cash_follows_the_objects_queues():
     }
     content, _, _ = core.build_project_workbook(inputs, tep, [], phasing,
                                                 project_name="Соцдоли")
-    sheet = openpyxl.load_workbook(io.BytesIO(content), data_only=False)["Вводные"]
+    sheet = v4_inputs.inputs(openpyxl.load_workbook(io.BytesIO(content), data_only=False))
     shares = [float(sheet[f"R{r}"].value or 0) for r in (88, 89, 90)]
     assert sum(shares) == pytest.approx(1.0, abs=1e-9)
     assert shares[0] < 1.0, "вся социалка строительством по-прежнему в первой очереди"
@@ -984,7 +987,7 @@ def test_the_social_breakdown_is_visible_in_the_report_and_tep():
     assert report["F34"].value == 675 and report["G34"].value == "О2"
     assert report["F35"].value == 127
     parts = sum(float(report[c].value or 0) for c in ("H33", "H34", "H35", "H36"))
-    b17 = float(book["Вводные"]["B17"].value or 0)
+    b17 = float(v4_inputs.inputs(book)["B17"].value or 0)
     assert parts == pytest.approx(b17, abs=0.01), \
         "расшифровка обязана сходиться с суммой соцнагрузки B17"
     tep_sheet = book["ТЭП"]

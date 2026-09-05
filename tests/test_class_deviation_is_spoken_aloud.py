@@ -20,6 +20,9 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import v4_inputs  # noqa: E402
 
 import main as wrapper  # noqa: E402
 
@@ -106,6 +109,7 @@ def test_plato_marks_deviated_rate_in_column_h():
     inputs.update(BUSINESS_BASE, project_class="business",
                   apartment_price_th=700, main_above_th_per_sqm=210)
     data, report = core.fill_plato_template(inputs, core.TEP_DEFAULT, project_name="Проверка")
+    # Шаблон ПЛАТО держит свои «Вводные» и разделения листов не знает.
     sheet = openpyxl.load_workbook(io.BytesIO(data))["Вводные"]
     notes = {}
     for row in range(1, sheet.max_row + 1):
@@ -134,7 +138,7 @@ def test_v4_marks_deviated_rate_next_to_the_value():
         inputs, core.TEP_DEFAULT, [], {}, project_name="Проверка")
     assert [row["field"] for row in meta["class_deviations"]["rows"]] == [
         "main_above_th_per_sqm"]
-    sheet = openpyxl.load_workbook(io.BytesIO(content))["Вводные"]
+    sheet = v4_inputs.inputs(openpyxl.load_workbook(io.BytesIO(content)))
     coord = core._V4_INPUT_CELLS["main_above_th_per_sqm"]
     row = int(re.sub(r"[A-Z]+", "", coord))
     note = str(sheet.cell(row=row, column=5).value or "")

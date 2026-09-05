@@ -67,13 +67,18 @@ def test_forgetting_covers_every_land_variable_and_the_screening_in_flight() -> 
 
 
 def test_the_bridge_has_no_list_of_its_own() -> None:
-    """Второй список полей территории разошёлся бы с первым."""
+    """Второй список полей территории разошёлся бы с первым.
+
+    Прежде это проверялось тем, что ветка КРТ поля участка не трогает вовсе, —
+    и это было верно, пока у площадки не было кадастровых номеров. Проект
+    решения называет их поимённо, и поле теперь заполняется. Утверждение
+    осталось прежним: ЧИСТИТ территорию по-прежнему только подмена проекта, у
+    моста своего списка полей нет — он лишь вписывает то, что ему прислали.
+    """
     script = bridge.BRIDGE_SCRIPT
     krt_branch = script[script.index("if(pending.krt_model){"):script.index("const preset=pending.project_preset;")]
     assert "applyProjectSnapshot(model)" in krt_branch
-    # Лот торгов, наоборот, приносит свои номера участков и вписывает их в
-    # поле — это его ветка, и она остаётся.
-    assert "'cadastralNumbers'" not in krt_branch
+    assert "field.value=''" not in krt_branch, "мост завёл свой список чистки"
     assert "landPreview" not in krt_branch
     assert "kind:'krt'" in krt_branch, "источник площади и ТЭП назван"
 

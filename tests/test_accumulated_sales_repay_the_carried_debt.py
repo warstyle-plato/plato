@@ -258,9 +258,9 @@ def test_the_workbook_sweeps_the_same_money(with_sweep) -> None:
 def test_the_workbook_share_comes_from_the_engine() -> None:
     """Доля лежит в книге числом: читатель видит, на чём посчитано."""
     book, _ = _book(sweep=True)
-    assert float(book.cell("Вводные", "F92")) == pytest.approx(0.8)
+    assert float(book.cell("Параметры модели", "F92")) == pytest.approx(0.8)
     off, _ = _book(sweep=False)
-    assert float(off.cell("Вводные", "F92") or 0.0) == 0.0
+    assert float(off.cell("Параметры модели", "F92") or 0.0) == 0.0
     assert float(off.cell("CF_2", "B26") or 0.0) == 0.0
 
 

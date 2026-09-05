@@ -50,6 +50,10 @@ from auction_search.export_areas import export_areas
 from auction_search.krt_pipeline import enrich_krt_from_official_documents
 from auction_search.krt_ranking import (
     HEARTBEAT_SECONDS, NEW_FOR_SECONDS, KrtRanking, score_row)
+# Имя `krt_ranking` внутри маршрутов занято ЭКЗЕМПЛЯРОМ хранилища, а версия
+# методики — функция модуля: `krt_ranking.model_is_current` там разрешилось бы
+# на экземпляре и упало бы при первом же чтении рейтинга.
+from auction_search import krt_ranking as krt_ranking_rules
 from auction_search.krt_screening import build_krt_model_screening
 from auction_search.models import LotKind
 from auction_search.preset_mapper import build_project_preset
@@ -57,6 +61,7 @@ from auction_search.profile_fit import profile_fit
 from auction_search.service import AuctionSearchService
 from auction_search.ui import auctions_page
 from market_search.krt_registry import CATALOGUE_URL, KrtRegistry
+from market_search import krt_decision_tep
 from market_search import cabinet as market_cabinet
 from market_search.geocoder import GeocodingError
 from market_search.http import RemoteServiceError
@@ -67,9 +72,17 @@ logger = logging.getLogger(__name__)
 
 
 class KrtRankingRequest(BaseModel):
-    """Что считать: слаги отобранных площадок. Пусто — весь каталог."""
+    """Что считать: слаги отобранных площадок. Пусто — весь каталог.
+
+    `only_stale` оставляет из выбранного то, что посчитано ПРЕЖНЕЙ методикой
+    или не считалось вовсе. Умолчание — `False`: прогон по кнопке обязан
+    пересчитывать и свежие строки, потому что рынок движется и цена стареет
+    сама по себе, без всяких наших правок. «Устарело по методике» и «устарело
+    по времени» — разные вопросы, и отвечать на них одним ключом нельзя.
+    """
 
     slugs: list[str] = Field(default_factory=list, max_length=400)
+    only_stale: bool = False
 
 
 class AuctionIngestRequest(BaseModel):
@@ -525,6 +538,83 @@ def _plato_krt_prompt(stored: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def press_refusal_without_address() -> dict[str, Any]:
+    """Отказ спрашивать публикации там, где адреса нет.
+
+    Заголовок проекта решения без адреса — это «искать не по чему», а не
+    «в источниках пусто»: поиск по имени документа ответил бы про все проекты
+    решений сразу и стоил бы денег. Отказ ЗАПИСЫВАЕТСЯ — незаписанный отказ не
+    отличить от отсутствия признака, — и объявлен один раз: его отдаёт и
+    прогон, и кнопка на карточке.
+    """
+    return {
+        "available": False,
+        "checked_at": int(time.time()),
+        "reason": ("адрес в заголовке проекта решения не назван — "
+                   "искать публикации не по чему"),
+    }
+
+
+def krt_decision_rows(found: dict[str, Any]) -> list[dict[str, Any]]:
+    """Строки площадок, у которых есть проект решения и нет карточки каталога.
+
+    Собираются в ОДНОМ месте: их читает и список на экране, и еженедельный
+    прогон публикаций. Две сборки одной строки однажды разошлись бы — у
+    прогона оказался бы другой адрес, чем на экране, и обе выглядели бы
+    верными.
+    """
+    rows: list[dict[str, Any]] = []
+    tep_by_document = (found or {}).get("tep") or {}
+    for one in ((found or {}).get("decisions") or []):
+        document_id = str(one.get("id") or "")
+        if not document_id:
+            continue
+        # Цифры площадки без карточки берутся из её решения: прежде их
+        # не было вовсе, и карточка писала «Оценка Платона: 0/100 · ТЭП
+        # не указан» при опубликованном на mos.ru PDF с площадью,
+        # предельной СПП и площадью квартир (владелец, 04.09.2026).
+        # Ноль в решении — ответ города («строить нельзя»), поэтому
+        # берётся `is not None`, а не истинность значения.
+        tep = tep_by_document.get(document_id) or {}
+        address = str(one.get("address") or "").strip()
+        row = {
+            "slug": "decision:" + document_id,
+            "name": address or str(one.get("title") or ""),
+            "okrug": one.get("okrug") or "",
+            "district": "",
+            "status": "",
+            "status_kind": "draft",
+            "url": one.get("url"),
+            "no_card": True,
+            # Адрес из заголовка решения — это то, чем площадку ищут в
+            # публикациях. Его отсутствие названо признаком, а не выведено
+            # из имени: имя тогда несёт заголовок документа, и по нему
+            # поиск ответил бы про все проекты решений сразу.
+            "address_known": bool(address),
+            "krt_kind": one.get("kind") or "",
+            "draft_decision_at": one.get("published_at") or 0,
+            "draft_decision_url": one.get("url") or "",
+            "department": one.get("department") or "",
+            # Чем прочитано — часть ответа: «решение не прочитано» и
+            # «в решении величина не названа» — разные ответы, и ни
+            # один из них не «ноль».
+            "tep_source": ("decision" if tep.get("read") else
+                           "decision_silent" if tep.get("available") else ""),
+            "tep_document_url": tep.get("pdf_url") or "",
+            # Чьё это КРТ — из того же прочитанного документа. Без
+            # этого карточка площадки писала «проект решения ещё не
+            # прочитан» при уже прочитанном решении.
+            "decision_intent": tep.get("intent") or None,
+        }
+        for key in ("area_ha", "total_gfa_sqm", "housing_gfa_sqm",
+                    "nonresidential_gfa_sqm", "flats_sqm",
+                    "nonresidential_ground_sqm"):
+            if tep.get(key) is not None:
+                row[key] = tep[key]
+        rows.append(row)
+    return rows
+
+
 def install(app: FastAPI) -> None:
     if getattr(app.state, "auction_search_installed", False):
         return
@@ -584,8 +674,17 @@ def install(app: FastAPI) -> None:
                             projects = krt_registry.projects(refresh=True)
                             rows = [row.to_dict() if hasattr(row, "to_dict") else row
                                     for row in projects]
+                            # Площадки-решения идут тем же прогоном (владелец,
+                            # 04.09.2026: «по решениям надо, раз в неделю как
+                            # обычно»). Прогон публикаций по каталогу до них не
+                            # доходил никогда, и все «не знаем» по входу и
+                            # реновации сидели ровно в них. Полного скрининга у
+                            # них нет — считать нечем, — а вопрос «кто здесь уже
+                            # собрался строить» у них тот же, и отвечают на него
+                            # те же публикации.
+                            rows = rows + _decision_rows_for_run()
                             if rows and not krt_ranking.start(
-                                    rows, _screen_one, scheduled=True, claimed=True):
+                                    rows, _screen_for, scheduled=True, claimed=True):
                                 krt_ranking.release()
                         except Exception:
                             logger.exception("weekly KRT ranking failed")
@@ -703,6 +802,23 @@ def install(app: FastAPI) -> None:
             "document_access": "public_first_optional_service_account_session",
         }
 
+    # Виды статуса каталога. Город пишет два слова о стройке — «Планируемый» и
+    # «В реализации», — а третий вид у нас свой: у площадки, известной только
+    # проектом решения, карточки нет и статуса каталога не существует вовсе.
+    # Слово источника при этом остаётся словом источника: вид считается ОТ него,
+    # а не подменяет его на экране.
+    def _krt_status_kind(status: Any) -> str:
+        word = str(status or "").strip().casefold()
+        if not word:
+            return "draft"
+        if "планируем" in word:
+            return "planned"
+        if "реализац" in word:
+            return "running"
+        # Разбор карточки съехал на поле: статусом стал хвост адреса. Такой
+        # строке вид не присваивается — «не разобрано» не третий статус.
+        return "unparsed"
+
     @app.get("/auctions/krt")
     async def auction_krt_catalogue(refresh: bool = False) -> dict[str, Any]:
         """Каталог площадок КРТ. `refresh` — нажатая человеком кнопка.
@@ -734,7 +850,14 @@ def install(app: FastAPI) -> None:
         projects = [
             {**row,
              "first_seen_at": seen.get(str(row.get("slug") or "")) or 0,
-             "is_new": krt_ranking.is_new(seen.get(str(row.get("slug") or "")))}
+             "is_new": krt_ranking.is_new(seen.get(str(row.get("slug") or ""))),
+             # Вид статуса объявляется ЗДЕСЬ и один раз. Экран прежде выводил
+             # его сам из слова города, и когда сюда добавилась строка «Проект
+             # решения», выбор «Статус: проект решения» перестал давать хоть
+             # что-нибудь: фильтр искал пустое слово, а в строке стояло слово
+             # (владелец, 04.09.2026: «Статус проект решения вообще не даёт
+             # ничего»). Перечисление в двух местах расходится молча.
+             "status_kind": _krt_status_kind(row.get("status"))}
             for row in projects
         ]
         # Что карточка города говорит о застройщике и реновации — бесплатный
@@ -777,6 +900,25 @@ def install(app: FastAPI) -> None:
                 except Exception:  # noqa: BLE001
                     logger.exception("KRT card facts fill failed")
 
+        # Лоты, привязанные к площадкам, — запасной путь к тому, что уже
+        # посчитано: без него «идут торги» видно только тому, кто в этой же
+        # вкладке успел открыть соседнюю.
+        lots_known = getattr(krt_registry, "tender_lots_known", None)
+        if callable(lots_known):
+            try:
+                remembered = await run_in_threadpool(lots_known)
+            except Exception:  # noqa: BLE001
+                logger.exception("KRT tender lots cache failed")
+                remembered = {}
+            if remembered:
+                projects = [
+                    {**row,
+                     "tender_lots": (remembered.get(str(row.get("slug") or "")) or {}).get("lots") or [],
+                     "tender_lots_seen_at": (remembered.get(str(row.get("slug") or "")) or {}).get("seen_at") or 0}
+                    if remembered.get(str(row.get("slug") or "")) else row
+                    for row in projects
+                ]
+
         status = krt_registry.status()
         # Неразобранная карточка называется вслух. Её значения съезжают на
         # поле — округом становится статус, статусом хвост адреса, — и такая
@@ -799,6 +941,7 @@ def install(app: FastAPI) -> None:
         # назвать его принятым значит показать стадию, которой не наступало.
         # Зато это самый ранний сигнал из всех: до торгов остаётся время.
         decision_rows: list[dict[str, Any]] = []
+        tep_state: dict[str, Any] | None = None
         reader = getattr(krt_registry, "decisions", None)
         if callable(reader):
             try:
@@ -813,26 +956,39 @@ def install(app: FastAPI) -> None:
             # только датой документа, а не наличием карточки.
             by_slug = {str(one.get("slug") or ""): one
                        for one in (found.get("matched_rows") or [])}
+            # ТЭП, вынутый из самих PDF. У площадки без карточки это её
+            # единственные цифры; у площадки с карточкой — самопроверка пары
+            # «решение ↔ карточка», и расхождение называется, а не заменяет
+            # собой каталог.
+            tep_by_document = found.get("tep") or {}
+            tep_state = found.get("tep_coverage")
+            # Недостающие решения дочитываются фоном и порциями — как карточки
+            # города: три сотни PDF подряд это налёт на mos.ru, а не чтение.
+            tep_filler = getattr(krt_registry, "fill_decision_tep_in_background", None)
+            if callable(tep_filler) and found.get("tep_pending"):
+                try:
+                    tep_filler(found.get("tep_pending") or [])
+                except Exception:  # noqa: BLE001
+                    logger.exception("KRT decision TEP fill failed")
             if by_slug:
-                projects = [
-                    {**row,
-                     "draft_decision_at": (by_slug.get(str(row.get("slug") or "")) or {}).get("published_at") or 0,
-                     "draft_decision_url": (by_slug.get(str(row.get("slug") or "")) or {}).get("url") or ""}
-                    for row in projects
-                ]
-            for one in (found.get("decisions") or []):
-                decision_rows.append({
-                    "slug": "decision:" + str(one.get("id") or ""),
-                    "name": str(one.get("address") or one.get("title") or ""),
-                    "okrug": one.get("okrug") or "",
-                    "district": "",
-                    "status": "Проект решения",
-                    "url": one.get("url"),
-                    "no_card": True,
-                    "krt_kind": one.get("kind") or "",
-                    "draft_decision_at": one.get("published_at") or 0,
-                    "department": one.get("department") or "",
-                })
+                def _with_decision(row: dict[str, Any]) -> dict[str, Any]:
+                    one = by_slug.get(str(row.get("slug") or "")) or {}
+                    tep = tep_by_document.get(str(one.get("id") or "")) or {}
+                    return {
+                        **row,
+                        "draft_decision_at": one.get("published_at") or 0,
+                        "draft_decision_url": one.get("url") or "",
+                        # Чем ТЭП решения не сошёлся с карточкой. Гектары здесь
+                        # улика: расходится площадь территории — значит пара
+                        # собрана неверно, и метрам такой пары верить нельзя.
+                        # Расхождение НАЗЫВАЕТСЯ и каталог не подменяет: два
+                        # достоверных на вид ТЭП одной площадки — ровно та
+                        # беда, которую мы ловим в отчёте и книге.
+                        "decision_tep_check": krt_decision_tep.catalogue_mismatch(tep, row),
+                    }
+
+                projects = [_with_decision(row) for row in projects]
+            decision_rows = krt_decision_rows(found)
             projects = projects + decision_rows
         return {
             "source": CATALOGUE_URL,
@@ -850,8 +1006,40 @@ def install(app: FastAPI) -> None:
             "new_for_days": NEW_FOR_SECONDS // 86400,
             # Охват карточек города: прочитано, не ответило и по какой причине.
             "cards_state": cards_state,
+            # Сколько решений mos.ru прочитано ради их ТЭП: пустая колонка без
+            # этого числа читается как «в решении цифр нет», а это чаще наш
+            # пробел чтения.
+            "decision_tep_state": tep_state,
             "projects": projects,
         }
+
+    def _decision_rows_for_run() -> list[dict[str, Any]]:
+        """Площадки-решения строками — тем же сборщиком, что и на экране."""
+        reader = getattr(krt_registry, "decisions", None)
+        if not callable(reader):
+            return []
+        try:
+            found = reader()
+        except Exception:  # noqa: BLE001
+            # Источник не ответил — это ответ, а не «решений нет»: прогон идёт
+            # по каталогу, а недочитанное называется в логе.
+            logger.exception("KRT decisions read failed")
+            return []
+        return krt_decision_rows(found)
+
+    def _krt_all_sites() -> list[dict[str, Any]]:
+        """Все площадки списка: каталог плюс решения без карточки.
+
+        Обе половины экрана — один список. По нему ищется площадка по слагу и
+        по нему же считаются соседи: пока соседями были одни карточки каталога,
+        улица с площадкой-решением опознавала каждую из них.
+        """
+        try:
+            catalogue = list(krt_registry.catalogue())
+        except Exception:  # noqa: BLE001
+            logger.exception("KRT catalogue for siblings failed")
+            catalogue = []
+        return catalogue + _decision_rows_for_run()
 
     def _read_open_sources(project: dict[str, Any]) -> dict[str, Any]:
         """Что об этой площадке сказано в публикациях и каналах. Один разбор.
@@ -890,7 +1078,10 @@ def install(app: FastAPI) -> None:
         # где на той же улице стоит ещё одна площадка, засчитываются только
         # упоминания с номером владения или именем проекта.
         mine = str((project or {}).get("slug") or "")
-        siblings = [str(item.get("name") or "") for item in krt_registry.catalogue()
+        # Соседи считаются по ОБЕИМ половинам списка: у площадки-решения
+        # карточки в каталоге нет, и без её адреса в соседях улица, на которой
+        # стоят две площадки, опознавала бы каждую из них.
+        siblings = [str(item.get("name") or "") for item in _krt_all_sites()
                     if str(item.get("slug") or "") != mine]
         found = krt_open_sources.read_findings(docs, name, siblings)
         # Рынок знает площадку по имени проекта, а не по адресу: «Строгино 360»
@@ -1142,11 +1333,38 @@ def install(app: FastAPI) -> None:
         if not callable(reader):
             raise HTTPException(status_code=503, detail="Реестр карты недоступен")
         try:
-            return await run_in_threadpool(
-                lambda: reader(refresh=bool(refresh), step_m=float(step_m)))
+            payload = dict(await run_in_threadpool(
+                lambda: reader(refresh=bool(refresh), step_m=float(step_m))))
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=502,
                                 detail=f"Карта КРТ не прочитана: {exc}") from exc
+        # Файл карты города — не весь реестр: часть строк каталога в нём не
+        # находится ничем, и на карте их не было вовсе (владелец, 04.09.2026:
+        # «На карте крт Нагатино так и нет. Хотя контур в карточке верный»).
+        # Тем, кого нет, контур собирает тот же путь, что уже у карточки —
+        # участки ЕГРН по перечню проекта решения, — и рисуется он иначе:
+        # это состав территории по документу, а не официальный полигон.
+        supplement = getattr(krt_registry, "map_supplement", None)
+        if callable(supplement):
+            try:
+                extra = dict(await run_in_threadpool(lambda: supplement(payload)))
+            except Exception as exc:  # noqa: BLE001 — свод карты не роняем добавкой
+                logger.exception("КРТ: добавка контуров по решениям не собралась")
+                extra = {"sites": [], "gaps": [],
+                         "counts": {}, "problem": f"{type(exc).__name__}: {exc}"[:160]}
+            payload["sites"] = list(payload.get("sites") or []) + list(extra.get("sites") or [])
+            payload["supplement"] = extra
+            payload["count"] = len(payload["sites"])
+            filler = getattr(krt_registry, "fill_outlines_in_background", None)
+            lookup = getattr(core, "_land_lookup_by_numbers", None) if core is not None else None
+            if callable(filler) and callable(lookup):
+                # Непрочитанные перечни дочитывает фон порциями: обход ЕГРН по
+                # десяткам площадок в срок ответа не укладывается, а держать
+                # соединение вместо этого мы уже пробовали.
+                await run_in_threadpool(lambda: filler(
+                    [gap.get("slug") for gap in (extra.get("gaps") or [])
+                     if gap.get("kind") == "unread"], lookup=lookup))
+        return payload
 
     @app.get("/auctions/krt/api-probe")
     async def auction_krt_api_probe(url: str = Query(default="")) -> dict[str, Any]:
@@ -1197,6 +1415,15 @@ def install(app: FastAPI) -> None:
             raise HTTPException(status_code=422, detail="Список лотов не разобран")
         sites = await run_in_threadpool(krt_registry.catalogue)
         matched = await run_in_threadpool(krt_tenders.match, lots, sites)
+        # Посчитанное сервером сервер и хранит: связка жила в памяти вкладки,
+        # и без соседней вкладки «Торги» её не существовало вовсе — плашки
+        # нет, а правило «живой лот сильнее публикации» не срабатывает.
+        keeper = getattr(krt_registry, "remember_tender_lots", None)
+        if callable(keeper):
+            try:
+                await run_in_threadpool(keeper, matched.get("by_site"))
+            except Exception:  # noqa: BLE001
+                logger.exception("KRT tender lots remember failed")
         orders: dict[str, Any] = {}
         reader = getattr(krt_registry, "tender_orders", None)
         if callable(reader):
@@ -1237,10 +1464,17 @@ def install(app: FastAPI) -> None:
         и ручная таблица владельца. Ни один признак не ставится без цитаты и
         ссылки, а поиск — общий крючок сервиса, своего здесь не заводим.
         """
-        project = next((row for row in krt_registry.catalogue()
+        # Площадка ищется в ОБЕИХ половинах списка. У площадки-решения карточки
+        # каталога нет вовсе, и кнопка отвечала ей «не найдена» — при том что
+        # публикации у неё единственный источник ответа, а прогон её как раз
+        # спрашивает. Кнопка, отказывающая там, где отвечает прогон, читается
+        # как поломка.
+        project = next((row for row in _krt_all_sites()
                         if row.get("slug") == slug), None)
         if not str((project or {}).get("name") or ""):
             raise HTTPException(status_code=404, detail="Площадка не найдена в каталоге")
+        if project.get("no_card") and not project.get("address_known"):
+            return press_refusal_without_address()
         # Разбор один на кнопку и на прогон (`_read_open_sources`). Здесь
         # стояло имя `service`, а оно живёт локально внутри маршрута выдачи
         # лотов: снаружи его не существует, и кнопка «Что пишут об этой
@@ -1474,6 +1708,17 @@ def install(app: FastAPI) -> None:
             "stale_rules_count": sum(
                 1 for row in rows
                 if ((row.get("press_facts") or {}).get("stale_rules"))),
+            # Сколько строк судят по ПРЕЖНЕЙ методике счёта. Правка цены,
+            # очередей или соцобъектов меняет числа сразу у всех, а строка
+            # выглядит свежей: `computed_at` отвечает «когда», а не «чем», и
+            # прогон публикаций обновляет его, не тронув модель. Так на
+            # Нагатине осталась стартовая цена 477 тыс от 03.09, при том что
+            # правка «цена — рекомендация отчёта» уехала на прод 04.09
+            # (владелец: «почему в Нагатино до сих пор цена для расчёта 477»).
+            "stale_model_count": sum(
+                1 for row in rows
+                if row.get("available") and not krt_ranking_rules.model_is_current(row)),
+            "rules_version": krt_ranking_rules._screening_rules_version(),
         }
 
     @app.post("/auctions/krt/ranking/refresh")
@@ -1510,6 +1755,27 @@ def install(app: FastAPI) -> None:
                     status_code=422,
                     detail="Ни одна из выбранных площадок не найдена в каталоге",
                 )
+        skipped = 0
+        if body is not None and body.only_stale:
+            fresh_rows = {}
+            try:
+                fresh_rows = {str(row.get("slug") or ""): row
+                              for row in (krt_ranking.rows() or [])}
+            except Exception:  # noqa: BLE001
+                logger.exception("KRT ranking rows failed")
+            keep = []
+            for row in projects:
+                stored = fresh_rows.get(str(row.get("slug") or "")) or {}
+                if stored.get("available") and krt_ranking_rules.model_is_current(stored):
+                    skipped += 1
+                    continue
+                keep.append(row)
+            projects = keep
+            if not projects:
+                return {"started": False,
+                        "reason": ("Пересчитывать нечего: все выбранные площадки "
+                                   "посчитаны нынешней методикой"),
+                        "skipped": skipped, "progress": krt_ranking.progress()}
         started = krt_ranking.start(projects, _screen_one)
         progress = krt_ranking.progress()
         if started:
@@ -1522,7 +1788,10 @@ def install(app: FastAPI) -> None:
             # на экране ничего не движется, а кнопка отказывает.
             reason = ("Прогон уже идёт в соседнем процессе — строки появляются "
                       "в таблице по мере счёта")
-        return {"started": started, "reason": reason, "progress": progress}
+        # Сколько пропущено как посчитанное нынешней методикой — молча
+        # пропущенное читается как несостоявшийся прогон.
+        return {"started": started, "reason": reason, "progress": progress,
+                "planned": len(projects), "skipped": skipped}
 
     def _press_only(project: dict[str, Any]) -> dict[str, Any]:
         """Прогон одних публикаций: без рынка и без модели.
@@ -1538,11 +1807,35 @@ def install(app: FastAPI) -> None:
         ответ, а балл в строке остаётся прежним, потому что неудавшийся
         пересчёт не затирает удавшийся.
         """
+        if project.get("no_card") and not project.get("address_known"):
+            # Заголовок решения без адреса — это «искать не по чему», а не
+            # «в источниках пусто». Спросить по такому имени значило бы
+            # заплатить за выдачу про все проекты решений сразу. Отказ
+            # записывается: незаписанный отказ нельзя посчитать, и площадка
+            # выглядела бы неспрошенной по нашему недосмотру.
+            return {
+                "available": False,
+                "reason": "Прогон публикаций: модель и рынок в нём не считаются",
+                "press_facts": press_refusal_without_address(),
+            }
         return {
             "available": False,
             "reason": "Прогон публикаций: модель и рынок в нём не считаются",
             "press_facts": _open_sources_for_run(project),
         }
+
+    def _screen_for(project: dict[str, Any]) -> dict[str, Any]:
+        """Чем считать эту строку. Один ответ на весь модуль.
+
+        У площадки-решения нет ни карточки каталога, ни субъекта у рыночного
+        движка: полный скрининг ей считать нечем. Спросить у неё можно ровно
+        то, ради чего она в списке, — кто на ней уже собрался строить. Выбор
+        живёт здесь, а не у каждого вызывающего: разойдись они, недельный
+        прогон и кнопка посчитали бы одну площадку по-разному.
+        """
+        if project.get("no_card"):
+            return _press_only(project)
+        return _screen_one(project)
 
     @app.post("/auctions/krt/press/run")
     async def auction_krt_press_run(request: Request) -> dict[str, Any]:
@@ -1550,7 +1843,9 @@ def install(app: FastAPI) -> None:
 
         По планируемым — потому что вопрос «кто собрался строить» есть только у
         них: у площадки в реализации застройщика называет сама карточка города,
-        бесплатно и без поиска.
+        бесплатно и без поиска. Площадки-решения сюда входят: карточки у них
+        нет вовсе, значит публикации — единственный источник ответа, и до
+        04.09.2026 их не спрашивал никто (владелец: «по решениям надо»).
 
         Уже спрошенные пропускаются: занятая площадка свободной не станет, и
         платить за неё второй раз незачем (владелец, 01.09.2026). Замок общий с
@@ -1562,15 +1857,27 @@ def install(app: FastAPI) -> None:
                 status_code=503,
                 detail="Поиск по публикациям требует маркетингового движка",
             )
-        projects = await run_in_threadpool(krt_registry.catalogue)
-        if not projects:
+        projects = list(await run_in_threadpool(krt_registry.catalogue))
+        # Площадки-решения — та же половина списка и тот же вопрос: их
+        # спрашивает и недельный прогон. Отказ — только когда пусты ОБЕ
+        # половины: пустой каталог при живых решениях это не «спрашивать
+        # некого», а «одна половина не приехала».
+        decisions = await run_in_threadpool(_decision_rows_for_run)
+        if not projects and not decisions:
             raise HTTPException(
                 status_code=503,
                 detail="Каталог КРТ ещё не получен — обновите каталог и повторите",
             )
+        projects = projects + decisions
         planned = []
+        no_address = 0
         for row in projects:
             if "реализац" in str(row.get("status") or "").lower():
+                continue
+            if row.get("no_card") and not row.get("address_known"):
+                # Спросить не по чему — и это считается, а не пропускается
+                # молча: непосчитанный отказ выглядит как отсутствие признака.
+                no_address += 1
                 continue
             stored = {}
             try:
@@ -1584,7 +1891,8 @@ def install(app: FastAPI) -> None:
             planned.append(row)
         if not planned:
             return {"started": False, "reason": "Спрашивать нечего: планируемых площадок нет",
-                    "planned": 0, "progress": krt_ranking.progress()}
+                    "planned": 0, "no_address": no_address,
+                    "progress": krt_ranking.progress()}
         started = krt_ranking.start(planned, _press_only)
         progress = krt_ranking.progress()
         if started:
@@ -1595,7 +1903,8 @@ def install(app: FastAPI) -> None:
             reason = ("Прогон уже идёт в соседнем процессе — находки появляются "
                       "в таблице по мере чтения")
         return {"started": started, "reason": reason,
-                "planned": len(planned), "progress": progress}
+                "planned": len(planned), "no_address": no_address,
+                "progress": progress}
 
     def _stored_report(slug: str) -> dict[str, Any]:
         stored = krt_ranking.report(slug)
@@ -1636,6 +1945,17 @@ def install(app: FastAPI) -> None:
                           or "Модель по этой площадке не собрана — передавать нечего"),
             )
         project = stored.get("project") or {}
+        # Участок едет вместе с моделью. Номера называет проект решения, а
+        # какие из них ЗЕМЛЯ — уже ответил ЕГРН, когда карточка собирала
+        # контур: на Варшавском ш., вл. 37 из 60 номеров 20 участков и 39
+        # зданий. Отдать все — это ровно та ошибка, что ловилась на лотах:
+        # ГлавАПУ примет площадь здания за площадь территории и сложит их.
+        # Второго опроса ЕГРН здесь нет — берётся тот же `decision_outline`.
+        outline = await _decision_outline(slug)
+        counts = dict(outline.get("counts") or {})
+        parcels = [str(item.get("cadastral_number") or "")
+                   for item in (outline.get("parcels") or [])
+                   if item.get("cadastral_number")]
         return {
             "slug": slug,
             "name": project.get("name") or slug,
@@ -1646,6 +1966,18 @@ def install(app: FastAPI) -> None:
             "requirements": screening.get("requirements") or {},
             "assumptions": screening.get("assumptions") or [],
             "exclusions": screening.get("exclusions") or [],
+            "cadastral_numbers": parcels,
+            # Чем прочитан перечень и что из него выброшено — часть ответа:
+            # пустое поле участка и «участков в документе нет» на экране
+            # выглядят одинаково.
+            "cadastral": {
+                "land": len(parcels),
+                "listed": int(counts.get("numbers") or 0),
+                "buildings": int(counts.get("buildings") or 0),
+                "missing": int(counts.get("missing") or 0),
+                "source": str(outline.get("numbers_source") or "none"),
+                "problem": str(outline.get("problem") or ""),
+            },
         }
 
     @app.post("/auctions/krt/{slug}/plato")

@@ -22,6 +22,9 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import v4_inputs  # noqa: E402
 
 import main as wrapper  # noqa: E402
 
@@ -141,18 +144,22 @@ def test_the_printed_phase_report_prints_the_phase(monkeypatch):
 
 
 def _relief_cell(**extra) -> float:
-    """Что книга считает льготой: ячейка B82 листа «Вводные»."""
+    """Что книга считает льготой: вводная на координате B82.
+
+    Само значение переехало на лист ввода, а на B82 стоит ссылка на него.
+    Спрашивать надо величину, а не лист: разбор XML по имени «Вводные» после
+    разделения попадал бы уже на другой лист и на другую ячейку.
+    """
     import io
-    import re
-    import zipfile
+
+    import openpyxl
 
     data, _name, _meta = core.build_project_workbook(
         _inputs(**extra), _tep(), [], {}, project_name="проба")
-    book = zipfile.ZipFile(io.BytesIO(data))
-    xml = book.read(core._v4_inputs_sheet_path(book)).decode("utf-8")
-    found = re.search(r'<x:c r="B82"[^>]*>\s*<x:v>([^<]*)</x:v>', xml)
-    assert found, "ячейка льготы в книге не найдена"
-    return float(found.group(1))
+    book = openpyxl.load_workbook(io.BytesIO(data), data_only=False)
+    value = v4_inputs.value(book, "B82")
+    assert value is not None, "ячейка льготы в книге не найдена"
+    return float(value)
 
 
 def test_the_workbook_takes_the_relief_the_engine_calculated():

@@ -25,6 +25,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import v4_inputs  # noqa: E402
+import v4_entry_sheet  # noqa: E402
 
 import main as _wrapper  # noqa: E402
 
@@ -72,7 +76,7 @@ def test_the_shares_differ_from_the_tep_shares():
 
 
 def test_the_workbook_carries_the_cash_shares(book):
-    inputs = book["Вводные"]
+    inputs = v4_inputs.inputs(book)
     for column in ("AJ", "AK", "AL", "AM"):
         assert inputs[f"{column}88"].value == pytest.approx(0.55)
         assert inputs[f"{column}89"].value == pytest.approx(0.45)
@@ -86,11 +90,15 @@ def test_the_articles_take_the_project_area_not_the_queue_area(book):
     ТЭП, и оттуда бралась доля.
     """
     capex = book["CAPEX"]
+    # Движок пишет формулу под прежним именем листа, а разделение ввода
+    # переименовывает расчётный лист во всей книге разом. Сверять надо то же
+    # преобразование, а не второй список имён.
+    renamed = v4_entry_sheet.rename_in_formula
     for _key, row, column in core._V4_SHARED_CASH_ARTICLES:
         formula = str(capex[f"B{row}"].value)
-        assert core._V4_PROJECT_AREA in formula, f"B{row}: нет площади проекта"
-        assert f"'Вводные'!${column}$88" in formula, f"B{row}: нет кассовой доли"
-        assert core._V4_QUEUE_AREA.format(row=88) not in formula, (
+        assert renamed(core._V4_PROJECT_AREA) in formula, f"B{row}: нет площади проекта"
+        assert f"'{v4_inputs.PARAMS}'!${column}$88" in formula, f"B{row}: нет кассовой доли"
+        assert renamed(core._V4_QUEUE_AREA.format(row=88)) not in formula, (
             f"B{row}: осталась площадь очереди — статья по-прежнему делится по ТЭП")
 
 

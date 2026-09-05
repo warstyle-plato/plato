@@ -173,7 +173,15 @@ def test_consolidation_is_bottom_up_from_queue_products(imported):
     ))
     assert official_gns == pytest.approx(443700)
     assert products["underground_parking"]["gns"] == pytest.approx(101710)
-    assert bundle["consolidated"]["summary"]["project_gns_sqm"] == pytest.approx(
+    # ГНС проекта — НАЗЕМНАЯ площадь, и она сходится с ППТ до метра: подземный
+    # паркинг в неё не входит (решение владельца, 04.09.2026). Строительный
+    # объём — их сумма, и он назван своим полем; пока ГНС включала подземную,
+    # она была на 101 710 м² больше того, что стоит в документе города.
+    summary = bundle["consolidated"]["summary"]
+    assert summary["project_gns_sqm"] == pytest.approx(official_gns)
+    assert summary["underground_gns_sqm"] == pytest.approx(
+        products["underground_parking"]["gns"])
+    assert summary["construction_volume_sqm"] == pytest.approx(
         official_gns + products["underground_parking"]["gns"])
     assert all(products[key]["revenue"] == 0
                for key in ("school", "kindergarten", "other_mandatory"))

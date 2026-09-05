@@ -8,7 +8,13 @@
 
 Два органа управления на один вопрос однажды разойдутся, и оба будут выглядеть
 верными. Остался один: «Назначение» и отбирает, и говорит, чем мерить объём.
-Ничего не выбрано — меряем жильём, это и был прежний смысл.
+Ничего не выбрано — меряем ЖИЛЬЁМ там, где оно названо. Где не названо —
+мерой становится то, что у площадки есть: деловой объём, а нет и его — весь
+объём застройки (04.09.2026, «мне надо чтобы каталог для тех кто зашел впервые
+уже был готов и с баллами»). Прежде такая площадка получала прочерк при
+названном в источнике объёме — 406 строк из 580 на снимке прода. Мера при этом
+называется в строке: балл по жилью и балл по всей застройке — разные
+утверждения.
 
 Шкала при этом осталась прежней: якоря самого каталога (десятый и девяностый
 процентили по объёму), полнота ТЭП баллов не прибавляет, а ограничивает.
@@ -71,16 +77,20 @@ def _scores(purpose: str) -> dict:
         raise AssertionError(name)
 
     program = "\n".join([
-        f"const PURPOSE={json.dumps(purpose)};",
+        # Ось назначения стала флажковой: мера балла читает выбранный набор.
+        f"const state={{krtPick:{{purpose:new Set({json.dumps([purpose] if purpose else [])})}}}};",
         f"const SITES={json.dumps(SITES, ensure_ascii=False)};",
-        "const $=()=>({value:PURPOSE});",
         "const fmtArea=v=>String(v);",
         block("const KRT_SCALE=", "};"),
         func("krtVolumeShare"),
         func("krtTaskProfile"),
+        # Величина строки известна или нет — один ответ на всю страницу.
+        func("krtBroken"),
+        func("krtNumber"),
         func("krtFit"),
         "console.log(JSON.stringify(Object.fromEntries("
-        "SITES.map(x=>[x.slug,krtFit(x).score]))));",
+        "SITES.map(x=>[x.slug,{score:krtFit(x).score,measure:krtFit(x).measure,"
+        "known:krtFit(x).known}]))));",
     ])
     done = subprocess.run([node, "-e", program], capture_output=True, text=True, timeout=60)
     assert done.returncode == 0, done.stderr[:600]
@@ -90,21 +100,42 @@ def _scores(purpose: str) -> dict:
 def test_the_task_selector_is_gone():
     page = auctions_page()
     assert "krtProfile" not in page, "список задач вернулся и снова дублирует соседей"
-    assert 'id="krtPurpose"' in page and 'id="krtStatus"' in page, \
+    assert 'id="krtPurposeOptions"' in page and 'id="krtStageOptions"' in page, \
         "отбирать теперь нечем"
 
 
 def test_the_purpose_sets_the_measure():
     housing = _scores("")
-    business = _scores("business_gfa_sqm")
-    assert business["office"] > business["mid"], \
+    # Значение оси теперь её ключ, а не имя поля ТЭП.
+    business = _scores("business")
+    assert business["office"]["score"] > business["mid"]["score"], \
         "деловое назначение не поднимает деловую площадку"
-    assert housing["mid"] > housing["office"], \
-        "без выбора меряем жильём — жилая площадка обязана быть выше"
+    # Без выбора мера у площадки с жильём — жильё, и она считается им, а не
+    # своим деловым довеском.
+    assert housing["mid"]["measure"] == "жильё"
+    assert housing["big"]["measure"] == "жильё"
+    assert housing["big"]["score"] > housing["mid"]["score"], \
+        "среди жилых площадок объём перестал различать"
+
+
+def test_a_site_without_housing_is_not_a_dash_by_default():
+    """Прежнее «меряем жильём всегда» давало прочерк при названном объёме.
+
+    Это и было «мне надо чтобы каталог уже был готов и с баллами»: площадка,
+    у которой город назвал 300 000 м² делового объёма, стояла в каталоге без
+    оценки — не потому, что её нечем считать, а потому, что мы смотрели не на
+    то поле.
+    """
+    housing = _scores("")
+    assert housing["office"]["known"], "площадка без жилья снова без балла"
+    assert housing["office"]["measure"] == "деловой объём", \
+        "мера не названа — «65 по жилью» и «65 по деловому» неразличимы"
+    # А там, где не названо вообще ничего, балла по-прежнему нет.
+    assert not housing["blank"]["known"]
 
 
 def test_the_scale_is_not_a_wall_of_hundreds():
-    scores = _scores("")
+    scores = {slug: one["score"] for slug, one in _scores("").items()}
     assert scores["big"] > scores["mid"], "объём не различает площадки"
     assert scores["big"] < 100, "крупная площадка упирается в потолок шкалы"
     assert scores["mid"] < 75, "средняя по каталогу площадка не может быть «Высокой»"

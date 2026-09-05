@@ -31,9 +31,14 @@ sys.path.insert(0, str(ROOT))
 
 import main_legacy as core  # noqa: E402
 
+import v4_inputs  # noqa: E402
+
 openpyxl = pytest.importorskip("openpyxl")
 
-CROSS = re.compile(r"Вводные'?!\$?([A-Z]{1,2})\$?(\d+)\b")
+# Формулы книги читают лист параметров: ввод переехал на свой лист, а на
+# прежних координатах стоят ссылки на него. Читателем вводной считается тот,
+# кто читает КООРДИНАТУ из `_V4_INPUT_CELLS`, — она и указывает на параметры.
+CROSS = re.compile(v4_inputs.PARAMS + r"'?!\$?([A-Z]{1,2})\$?(\d+)\b")
 LOCAL = re.compile(r"(?<![A-Z0-9!:$])\$?([A-Z]{1,2})\$?(\d+)")
 
 
@@ -45,10 +50,10 @@ def book():
 
 
 def readers(book) -> collections.Counter:
-    """Сколько формул книги читают каждую ячейку «Вводных»."""
+    """Сколько формул книги читают каждую ячейку листа параметров."""
     found: collections.Counter = collections.Counter()
     for sheet in book.worksheets:
-        own = sheet.title == "Вводные"
+        own = sheet.title == v4_inputs.PARAMS
         for row in sheet.iter_rows():
             for cell in row:
                 if not (isinstance(cell.value, str) and cell.value.startswith("=")):
@@ -67,7 +72,7 @@ def test_the_sweep_actually_read_the_book(book):
     """Проверка отказывается судить о пустоте: ноль читателей у ВСЕГО значил бы,
     что разбор не нашёл формулы, а не что книга мертва."""
     found = readers(book)
-    assert len(found) > 100, f"ссылок на «Вводные» найдено {len(found)} — разбор не сработал"
+    assert len(found) > 100, f"ссылок на лист параметров найдено {len(found)} — разбор не сработал"
     assert found.get("B59", 0) > 100, "цену квартир читает вся книга — её обязано быть видно"
 
 
@@ -83,7 +88,7 @@ def test_every_mapped_input_has_at_least_one_reader(book):
 
 def test_the_two_found_cells_became_readouts(book):
     """Лаг и тренд теперь показывают значение очереди, а не притворяются вводной."""
-    sheet = book["Вводные"]
+    sheet = v4_inputs.inputs(book)
     assert sheet["B68"].value == "=G88", sheet["B68"].value
     assert sheet["B66"].value == "=AD88", sheet["B66"].value
     for coord in ("D66", "D68"):

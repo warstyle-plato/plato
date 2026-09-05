@@ -687,6 +687,92 @@ def renovation_volume(sentences: Any) -> dict[str, Any]:
     }
 
 
+# Объёмы, объявленные решением. Карточка каталога сама с собой не сходится: на
+# Варшавском ш., вл. 37 она даёт 229 490 жилья и 52 510 нежилого при заявленных
+# 443 700 всего. Решение сходится до метра — 229 490 + 214 210 = 443 700, — и
+# нежилого в нём вчетверо больше карточного. Читать надо документ.
+_VOLUME_FRAME = (r"суммарн", r"поэтажн")
+# Тире перечня и тире значения выглядят одинаково: «– объектов жилого» и
+# «стен – 443 700 кв. м». Разделяет то, что стоит следом: у перечня слово, у
+# значения цифра. Прежний набор `[;\n]|-\s` не знал ни `–`, ни `—` — то же
+# место, где мы уже спотыкались на ASCII-дефисе в именах ЖК, — и на
+# Малахитовой итог зоны 187 550 читался как объём жилья.
+_VOLUME_SPLIT = re.compile(r"[;\n]|(?<=\s)[-–—]\s+(?=\D)")
+_VOLUME_KINDS = (
+    ("business_sqm", (r"обществен\w*[\s-]*делов",)),
+    ("utility_sqm", (r"коммунальн",)),
+    ("nonresidential_sqm", (r"нежило\s*го",)),
+    ("housing_sqm", (r"жило\s*го",)),
+)
+
+
+def _volume_roots(low: str, *roots: str) -> bool:
+    return all(re.search(root, low) for root in roots)
+
+
+def programme_volumes(sentences: Any) -> dict[str, Any]:
+    """Что решение объявляет объёмом — по видам назначения и по зонам.
+
+    Число берётся из оборота, который его называет, а не наибольшее в
+    предложении: это уже стоило нам платы за ВРИ и доли реновации. И оборот
+    засчитывается только внутри рамки «суммарная поэтажная площадь» — без неё
+    «объект коммунального назначения (общественный туалет) площадью 90 кв. м»
+    на Левобережной читался как минимальный объём коммунальной застройки:
+    слово совпало, а вид утверждения — нет.
+
+    Зоны складываются, как у реновации. Полнота прочитанного проверяется
+    самим документом: слагаемые обязаны сойтись с его же итогом. Не сошлись —
+    перечень прочитан не весь, и числам из него верить нельзя; это `closes`,
+    и оно отличает «прочитали» от «прочитали не всё».
+    """
+    out: dict[str, Any] = {}
+    quotes: dict[str, str] = {}
+    zones = 0
+
+    def add(key: str, value: float, quote: str) -> None:
+        out[key] = float(out.get(key, 0.0)) + value
+        quotes.setdefault(key, quote)
+
+    for raw in list(sentences or [])[:60]:
+        sentence = _SPACE.sub(" ", str(raw or "")).strip()
+        low = sentence.casefold()
+        if not _volume_roots(low, *_VOLUME_FRAME):
+            continue
+        clauses = _VOLUME_SPLIT.split(sentence)
+        head, rest = clauses[0], clauses[1:]
+        if ("включа" in low or "в том числе" in low) and rest:
+            found = _RENOVATION_AREA.search(head)
+            if found:
+                zones += 1
+                add("total_sqm", _social_number(found.group(1)), head.strip()[:200])
+        elif not rest:
+            # Отдельное предложение об одном виде («Предельная (минимальная)
+            # СПП объектов коммунального… назначения – N кв. м») итогом зоны
+            # не является и в сумму слагаемых не идёт.
+            rest = [sentence]
+        for clause in rest:
+            low_clause = clause.casefold()
+            found = _RENOVATION_AREA.search(clause)
+            if not found:
+                continue
+            for key, roots in _VOLUME_KINDS:
+                if not _volume_roots(low_clause, *roots):
+                    continue
+                # «нежилого» содержит «жилого»: чей это оборот, решает более
+                # точное совпадение, иначе нежилое станет жильём.
+                if key == "housing_sqm" and re.search(r"нежило\s*го", low_clause):
+                    continue
+                add(key, _social_number(found.group(1)), clause.strip()[:200])
+                break
+    total = out.get("total_sqm")
+    parts = sum(float(out.get(key) or 0.0)
+                for key in ("housing_sqm", "nonresidential_sqm", "business_sqm"))
+    out["zones"] = zones
+    out["closes"] = None if not (total and parts) else abs(parts - float(total)) <= 1.0
+    out["quotes"] = quotes
+    return out
+
+
 def _construction_parameters(text: str) -> list[str]:
     low = text.casefold()
     marker = low.find("предельные параметры разрешенного строительства")
@@ -761,6 +847,10 @@ def parse_decision_requirements(text: str, title: str = "") -> dict[str, Any]:
         "renovation": renovation_volume(sentences),
         "permitted_uses": list(dict.fromkeys(permitted_uses))[:30],
         "construction": list(dict.fromkeys(construction))[:20],
+        # Объём решения — числом, а не пересказом: карточка каталога сама с
+        # собой не сходится, а решение сходится, и нежилого в нём вчетверо
+        # больше карточного.
+        "volumes": programme_volumes(construction),
         "deadlines": list(dict.fromkeys(deadlines))[:5],
         "resettlement": list(dict.fromkeys(resettlement))[:20],
         "object_actions": actions[:100],
@@ -789,6 +879,8 @@ def merge_decision_requirements(
         result[key] = list(facts.get(key) or [])
     if facts.get("renovation"):
         result["renovation"] = facts["renovation"]
+    if facts.get("volumes"):
+        result["volumes"] = facts["volumes"]
     result["cadastral_numbers"] = list(facts.get("cadastral_numbers") or [])
     result["cadastral_numbers_source"] = str(facts.get("cadastral_numbers_source") or "none")
     result["disclosure"] = {

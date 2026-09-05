@@ -25,6 +25,11 @@ if str(ROOT) not in sys.path:
 
 import main_legacy as core  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import v4_entry_sheet  # noqa: E402
+import v4_inputs  # noqa: E402
+
 openpyxl = pytest.importorskip("openpyxl")
 PAGE = core.PAGE
 
@@ -64,10 +69,16 @@ def test_the_book_names_the_guest_and_the_given_places() -> None:
     content, _, missing = core.build_project_workbook(
         dict(core.DEFAULT_INPUTS), _tep(), [], {}, project_name="П")
     assert not [m for m in missing if "гостев" in m.lower()], missing
-    ws = openpyxl.load_workbook(io.BytesIO(content))["Вводные"]
+    # Блок очередей остался на расчётном листе: там формулы, а «Вводные»
+    # теперь тот лист, на котором печатают.
+    ws = openpyxl.load_workbook(io.BytesIO(content))[v4_entry_sheet.PARAMS_SHEET]
     assert ws["AN87"].value == "Из них гостевых, шт."
     assert ws["AO87"].value == "Из них передано, шт."
-    assert float(ws["AB88"].value) == 335, "в продажи идут только непереданные негостевые"
+    # Значение переехало на лист ввода, на прежней координате — ссылка на него.
+    # Спрашивать надо величину, а не лист.
+    book = openpyxl.load_workbook(io.BytesIO(content))
+    assert float(v4_inputs.value(book, "AB88")) == 335, \
+        "в продажи идут только непереданные негостевые"
     assert float(ws["AN88"].value) == 40
     assert float(ws["AO88"].value) == 25
     # Обещание книги про место правки приведено к правде: колонки «База

@@ -140,7 +140,11 @@ def test_the_screen_shows_the_run_and_names_the_measure():
     assert "Потолок цены входа" in page, "колонка называет, что в ней"
     assert "format(per)} ₽/м²" in page, "единица подписана у каждой цифры"
     assert "всего ${esc(fmtMln" in page, "общая сумма отделена от цены за метр"
-    assert "Оценить все КРТ моделью" in page
+    # Подпись кнопки одна и та же в разметке и после нажатия: скрипт
+    # возвращал ей «Оценить все КРТ моделью», хотя считает она ОТОБРАННОЕ, —
+    # и соседняя проверка ниже прямо запрещает обещать «все».
+    assert "Оценить все КРТ моделью" not in page
+    assert page.count("Оценить отобранные моделью") >= 2
     assert "/auctions/krt/ranking" in page and "/auctions/krt/ranking/refresh" in page
     assert "из ${p.total}" in page and "p.elapsed_seconds" in page and "p.current" in page
     # Пустая ячейка обязана различать «не оценён» и «не выдерживает».

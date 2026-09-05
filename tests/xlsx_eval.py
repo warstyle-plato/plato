@@ -138,32 +138,43 @@ def _match(args: list[Any]) -> int:
     raise FormulaError(f"MATCH: {target!r} не найдено")
 
 
-def _sumif(args: list[Any]) -> float:
-    """SUMIF(диапазон, условие[, диапазон сумм]) — только сравнение с числом.
+_CRITERIA_OP = re.compile(r"^(<=|>=|<>|<|>|=)?(.*)$", re.S)
 
-    Книга берёт им положительные месяцы налоговой базы очереди. Текстовых
-    условий и подстановок здесь нет намеренно: неподдержанное условие обязано
-    падать, а не считать по своему правилу.
+
+def _criteria(value: Any) -> tuple[str, Any]:
+    """Условие Excel: «<45000», «>=3», «Да» — оператор стоит внутри строки.
+
+    Прежде условие сравнивалось только на равенство, и всякое «<дата» молча
+    считалось несовпадением: SUMIF по месяцам до РнС вернул бы ноль, а ноль в
+    книге выглядит как посчитанный ответ.
     """
-    values = _flatten(args[0])
-    target = _flatten(args[2]) if len(args) > 2 else values
-    criterion = str(args[1]).strip().strip('"')
-    for operator in (">=", "<=", "<>", ">", "<", "="):
-        if criterion.startswith(operator):
-            bound = float(criterion[len(operator):])
-            break
-    else:
-        operator, bound = "=", float(criterion)
-    total = 0.0
-    for value, addend in zip(values, target):
-        if _compare(operator, _as_number(value), bound):
-            total += _as_number(addend)
-    return total
+    if not isinstance(value, str):
+        return "=", value
+    match = _CRITERIA_OP.match(value)
+    operator, rest = (match.group(1) or "="), match.group(2).strip()
+    try:
+        return operator, _dt.date.fromisoformat(rest)
+    except ValueError:
+        pass
+    try:
+        return operator, float(rest.replace(",", "."))
+    except ValueError:
+        return operator, rest
 
 
 def _countif(args: list[Any]) -> int:
-    criteria = args[1]
-    return sum(1 for item in _flatten(args[0]) if _compare("=", item, criteria))
+    operator, target = _criteria(args[1])
+    return sum(1 for item in _flatten(args[0]) if _compare(operator, item, target))
+
+
+def _sumif(args: list[Any]) -> float:
+    """SUMIF(диапазон; условие[; диапазон_суммирования])."""
+    tested = _flatten(args[0])
+    summed = _flatten(args[2]) if len(args) > 2 else tested
+    operator, target = _criteria(args[1])
+    return sum(_as_number(value)
+               for item, value in zip(tested, summed)
+               if _compare(operator, item, target))
 
 
 def _npv(args: list[Any]) -> float:
