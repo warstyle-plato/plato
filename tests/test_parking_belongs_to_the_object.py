@@ -79,32 +79,55 @@ def test_the_base_is_the_above_ground_area_of_the_object() -> None:
 
 
 def test_places_go_underground_by_default() -> None:
+    """Оба поля нулевые — это «не задано», и умолчание названо допущением."""
     got = core.parking_demand(_inputs(), TEP)
-    assert got["to_surface"] == 0
+    assert got["to_overground"] == 0
+    assert got["to_underground"] == got["required_total"]
+    assert got["check"]["state"] == "ok"
+
+
+def test_the_two_numbers_move_only_their_own_object() -> None:
+    """Одна пара полей на проект отправила бы наверх и чужие места."""
+    got = core.parking_demand(_inputs(offices_parking_over_spaces=40,
+                                      offices_parking_under_spaces=40), TEP)
+    offices = next(r for r in got["rows"] if r["tep_key"] == "offices")
+    retail = next(r for r in got["rows"] if r["tep_key"] == "standalone_retail")
+    assert (offices["under_spaces"], offices["over_spaces"]) == (40, 40)
+    assert retail["over_spaces"] == 0
+    assert retail["under_spaces"] == retail["required_spaces"]
+    assert got["to_overground"] == 40
+
+
+def test_a_lost_field_means_underground_not_a_silent_move() -> None:
+    """Потерянное поле приходит нулём, и ноль обязан значить прежнее.
+
+    Поле, которого нет в сохранённом проекте, страница возвращает нулём — так
+    однажды потерялась «ВРИ включена в банковский бюджет». При нулях расчёт
+    ставит норматив в свой подземный, то есть ведёт себя как прежний снятый
+    чекбокс, а не переносит чужие места наверх молча.
+    """
+    stripped = {key: value for key, value in _inputs().items()
+                if "_parking_under_spaces" not in key
+                and "_parking_over_spaces" not in key}
+    got = core.parking_demand(stripped, TEP)
+    assert got["to_overground"] == 0
     assert got["to_underground"] == got["required_total"]
 
 
-def test_the_switch_moves_only_its_own_object() -> None:
-    """Один переключатель на проект отправил бы наверх и чужие места."""
-    got = core.parking_demand(_inputs(offices_parking_surface=True), TEP)
+def test_the_check_names_the_gap_instead_of_moving_the_number() -> None:
+    """Вводная принадлежит человеку: расхождение называется, а не чинится."""
+    got = core.parking_demand(_inputs(offices_parking_under_spaces=10), TEP)
     offices = next(r for r in got["rows"] if r["tep_key"] == "offices")
-    retail = next(r for r in got["rows"] if r["tep_key"] == "standalone_retail")
-    assert offices["placement"] == "surface"
-    assert retail["placement"] == "underground"
-    assert got["to_surface"] == offices["required_spaces"]
+    assert offices["under_spaces"] == 10, "движок не подгоняет число под норматив"
+    assert got["check"]["state"] == "mismatch"
+    assert "Офисы" in got["check"]["text"]
 
 
-def test_a_lost_switch_means_underground_not_a_silent_move() -> None:
-    """Поле называется «в наземный» ровно поэтому.
-
-    Чекбокс рисуется по `!!inputs[id]`, и поля, которого нет в сохранённом
-    проекте, приходит явным `false`. При имени «под землёй» такая потеря
-    переносила бы чужие места наверх молча.
-    """
-    stripped = {key: value for key, value in _inputs().items()
-                if "parking_surface" not in key}
-    got = core.parking_demand(stripped, TEP)
-    assert got["to_surface"] == 0
+def test_an_uncounted_norm_is_a_third_answer_not_a_green_one() -> None:
+    """«Сходится» на непосчитанном нормативе читается как пройденная проверка."""
+    got = core.parking_demand(_inputs(parking_k1=0, parking_k2=0), TEP)
+    assert got["check"]["state"] == "unknown"
+    assert got["check"]["text"].startswith("Сверить не с чем")
 
 
 def test_moscow_oblast_finally_counts_nonresidential() -> None:
@@ -151,8 +174,11 @@ def test_the_demand_reaches_the_calculation_result() -> None:
 def test_the_fields_are_declared_once_in_the_engine() -> None:
     """Страница берёт поля у движка — копии на странице быть не должно."""
     for key in ("parking_k1", "parking_k2", "parking_design_mode",
-                "offices_parking_surface", "retail_parking_surface",
-                "ground_commercial_parking_surface"):
+                "object_parking_area_per_space_sqm",
+                "offices_parking_under_spaces", "offices_parking_over_spaces",
+                "retail_parking_under_spaces", "retail_parking_over_spaces",
+                "ground_commercial_parking_under_spaces",
+                "sports_parking_over_spaces"):
         assert key in core.DEFAULT_INPUTS, key
     names = {group[0] for group in core.FIELD_GROUPS}
     assert "Приобъектная парковка нежилья" in names
