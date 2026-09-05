@@ -785,8 +785,13 @@ def build_krt_model_screening(
         + (f"; слабейшая очередь — {weakest_llcr:.2f}x." if len(phases) > 1 else ".")
     )
 
+    # Источник объёма называется по имени площадки: у 298 строк каталога из 580
+    # карточки на krt.mos.ru нет вовсе, и подпись «объём krt.mos.ru» была бы
+    # утверждением о документе, которого мы не читали.
+    housing_source = ("проекта решения на mos.ru" if project.get("no_card")
+                      else "krt.mos.ru")
     assumptions = [
-        f"Жилой объём krt.mos.ru {_ru_number(housing_gfa)} м² принят за ГНС; "
+        f"Жилой объём {housing_source} {_ru_number(housing_gfa)} м² принят за ГНС; "
         f"общая площадь — {_ru_number(total_area)} м² "
         f"({_number(apartment_ratios.get('total_of_gns')) * 100:.0f}% ГНС), "
         f"продаваемая — {_ru_number(saleable)} м² "

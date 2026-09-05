@@ -72,7 +72,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.22.9"
+VERSION = "0.22.12"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -40274,7 +40274,12 @@ function effectiveSiteDensity(){
 }
 function siteAreaSourceLabel(){
  if(inputs._site_area_user_set)return 'введена вручную';
- if((((inputs._manual_tep_import||{}).source||{}).kind)==='krt')return 'из каталога КРТ (krt.mos.ru)';
+ {
+  const krt=((inputs._manual_tep_import||{}).source||{});
+  // Источник приезжает вместе с площадкой: половина каталога КРТ — площадки
+  // без карточки, у них это проект решения на mos.ru, а не krt.mos.ru.
+  if(krt.kind==='krt')return 'из площадки КРТ ('+String(krt.origin||'карточка krt.mos.ru')+')';
+ }
  if(inputs._glavapu_import)return 'из калькулятора ГлавАПУ';
  if(inputs._mo_calc)return 'из калькулятора Подмосковья';
  if(inputs._cadastral_analysis||cadastralAnalysis)return 'из кадастра (ЕГРН)';

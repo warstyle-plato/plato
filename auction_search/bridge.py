@@ -68,7 +68,10 @@ BRIDGE_SCRIPT = r'''
     site_area_ha:Number((model.inputs||{}).site_area_ha||0),
     // Источник назван: подпись площади и шапка PDF читают его отсюда, а не
     // пишут «ручной шаблон» про каталог города.
-    source:{kind:'krt',label:'Каталог КРТ krt.mos.ru · предварительный прогон',slug:String(pending.krt_slug||'')}
+    source:{kind:'krt',label:'Площадка КРТ · '
+      +String((pending.krt_source||{}).name||'карточка krt.mos.ru')
+      +' · предварительный прогон',slug:String(pending.krt_slug||''),
+      origin:String((pending.krt_source||{}).name||'карточка krt.mos.ru')}
    };
    if(typeof calculateAndOpen==='function')calculateAndOpen('report');
    return;
