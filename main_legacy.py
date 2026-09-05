@@ -25249,6 +25249,13 @@ def calculate(req: CalcRequest) -> dict:
         add_event("Коммерция ОСЗ", d(x["retail_start"]), add_months(d(x["retail_start"]), int(n(x, "retail_months", 24))), group="Отдельные объекты")
     if b(x, "above_parking_enabled"):
         add_event("Наземный паркинг", d(x["above_parking_start"]), add_months(d(x["above_parking_start"]), int(n(x, "above_parking_months", 18))), group="Отдельные объекты")
+    if b(x, "sports_enabled"):
+        # Календарь показывает стройку, а не продажу: переданный городу ФОК
+        # строится ровно так же, и его срок в проекте виден.
+        add_event("ФОК / спорт" + ("" if sports_is_sold(x) else " (передаётся городу)"),
+                  d(x["sports_start"]),
+                  add_months(d(x["sports_start"]), int(n(x, "sports_months", 24))),
+                  group="Отдельные объекты")
 
     sales_months = [month for sched in op["revenue_product_schedules"].values() for month in sched]
     sales_end = max(sales_months) if sales_months else add_months(op["rve"], int(n(x, "residual_sales_months", 6)))

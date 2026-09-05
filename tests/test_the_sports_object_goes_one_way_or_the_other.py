@@ -230,3 +230,91 @@ def test_the_oblast_norm_steps_by_the_area_of_the_object() -> None:
     assert (large["norm_denominator_min"], large["norm_denominator_max"]) == (40.0, 55.0)
     assert any("менее 1000" in note for note in small["assumptions"])
     assert any("1000 м² и более" in note for note in large["assumptions"])
+
+
+# --- живая страница ---------------------------------------------------------
+# Строковый тест на «есть ли имя в PAGE» проходит и на сломанной странице:
+# скрипт там один блок на 340 килобайт, и любая ошибка внутри не даёт браузеру
+# определить НИ ОДНОЙ функции. Проверять надо ту поверхность, на которую
+# жалуются, — настоящим Chromium на живой странице.
+
+PORT = 18242
+
+READ_SPORTS = """() => {
+  const row = tep.sports || {};
+  return {
+    gns: row.gns, total_area: row.total_area,
+    saleable: row.saleable, transfer: row.transfer,
+    // Именно СТРОКА ТАБЛИЦЫ ТЭП, а не подпись группы вводных: «ФОК» в тексте
+    // страницы есть и без неё, и такая проверка была бы зелёной на пустой
+    // таблице.
+    row_on_screen: !!Array.from(document.querySelectorAll('#tepBody tr'))
+        .find(row => (row.textContent || '').indexOf('ФОК') >= 0),
+    rows_total: document.querySelectorAll('#tepBody tr').length,
+    assign: !!document.getElementById('assignSports'),
+    discrete: phasing.discrete.sports,
+  };
+}"""
+
+
+def test_in_a_real_browser_the_row_follows_the_disposition() -> None:
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception:  # pragma: no cover — образ без playwright
+        pytest.skip("playwright недоступен")
+    chrome = Path("/opt/pw-browsers/chromium-1194/chrome-linux/chrome")
+    if not chrome.exists():  # pragma: no cover
+        pytest.skip("chromium в образе не найден")
+    import threading
+    import time
+
+    import uvicorn
+
+    import main as wrapper
+
+    server = uvicorn.Server(uvicorn.Config(wrapper.app, host="127.0.0.1", port=PORT,
+                                           log_level="error"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    for _ in range(200):
+        if server.started:
+            break
+        time.sleep(0.05)
+    assert server.started
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(executable_path=str(chrome))
+            page = browser.new_page()
+            errors: list[str] = []
+            page.on("pageerror", lambda exc: errors.append(str(exc)))
+            page.on("dialog", lambda dialog: dialog.accept())
+            page.goto(f"http://127.0.0.1:{PORT}/", wait_until="networkidle")
+            sold = page.evaluate(
+                "() => { inputs.sports_enabled=true; inputs.sports_disposition='sale';"
+                f" inputs.sports_gba_sqm={GBA}; inputs.sports_saleable_sqm={SALEABLE};"
+                " syncTep(true); return (" + READ_SPORTS + ")(); }")
+            given = page.evaluate(
+                "() => { inputs.sports_disposition='transfer'; syncTep(true);"
+                " return (" + READ_SPORTS + ")(); }")
+            off = page.evaluate(
+                "() => { inputs.sports_enabled=false; syncTep(true);"
+                " return (" + READ_SPORTS + ")(); }")
+            browser.close()
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)
+
+    assert not errors, errors
+    assert sold["gns"] == pytest.approx(GBA)
+    assert sold["saleable"] == pytest.approx(SALEABLE)
+    assert sold["transfer"] == 0
+    # Переданный строится теми же метрами и не продаётся ни одним.
+    assert given["gns"] == pytest.approx(GBA)
+    assert given["saleable"] == 0
+    assert given["transfer"] == pytest.approx(given["total_area"])
+    assert off["gns"] == 0 and off["transfer"] == 0
+    # Строка видна в таблице ТЭП, и у объекта есть своя очередь.
+    assert sold["rows_total"] > 5, "таблица ТЭП не отрисовалась вовсе"
+    assert sold["row_on_screen"], "строки ФОКа нет в таблице ТЭП"
+    assert sold["assign"], "выпадающего списка очереди у ФОКа нет"
+    assert sold["discrete"] >= 1
