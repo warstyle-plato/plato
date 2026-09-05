@@ -687,7 +687,7 @@ function switchTab(showKrt){['auctionFilters','auctionStats','auctionLayout','co
 // обхода, а на экране это выглядело как «в источнике его нет» («Так я жал
 // обновить, значит вручную не обновляется каталог?» — владелец, 04.09.2026).
 // Нажатая рука значит обход обеих половин экрана: каталога и решений mos.ru.
-async function loadKrt(force){const b=$('krtRefresh');b.disabled=true;b.innerHTML='<span class="spinner"></span>Читаю krt.mos.ru';try{if(force)state.krtDecisionsLoaded=false;const d=await askJson('/auctions/krt'+(force?'?refresh=true':''),{cache:'no-store'});state.krt=d.projects||[];state.krtNew=Number(d.new_count||0);state.krtNewDays=Number(d.new_for_days||30);state.krtUnparsed=d.unparsed||[];state.krtCardsState=d.cards_state||null;state.krtSnapshot={at:Number(d.retrieved_at||0),ttl:Number(d.ttl_seconds||0),refreshing:!!d.refreshing,decisionsRefreshing:!!d.decisions_refreshing,complete:d.complete!==false};populateKrtOkrugs();$('krtEmpty').textContent=state.krt.length?'':'Официальный каталог обновляется в фоне. Первые проекты появятся автоматически.';filterKrt();renderKrtSnapshotNote();renderKrtNewNote();renderKrtUnparsedNote();renderKrtCardsNote();loadKrtDecisions();loadKrtTenders();
+async function loadKrt(force){const b=$('krtRefresh');b.disabled=true;b.innerHTML='<span class="spinner"></span>Читаю krt.mos.ru';try{if(force)state.krtDecisionsLoaded=false;const d=await askJson('/auctions/krt'+(force?'?refresh=true':''),{cache:'no-store'});state.krt=d.projects||[];state.krtNew=Number(d.new_count||0);state.krtNewDays=Number(d.new_for_days||30);state.krtUnparsed=d.unparsed||[];state.krtCardsState=d.cards_state||null;state.krtSnapshot={at:Number(d.retrieved_at||0),ttl:Number(d.ttl_seconds||0),refreshing:!!d.refreshing,decisionsRefreshing:!!d.decisions_refreshing,complete:d.complete!==false};state.krtSecondPublications=Number(d.second_publications||0);populateKrtOkrugs();$('krtEmpty').textContent=state.krt.length?'':'Официальный каталог обновляется в фоне. Первые проекты появятся автоматически.';filterKrt();renderKrtSnapshotNote();renderKrtNewNote();renderKrtUnparsedNote();renderKrtCardsNote();loadKrtDecisions();loadKrtTenders();
 // Обход идёт фоном, и его конец виден только доспросом: без этого нажавший
 // кнопку человек видит прежний список и решает, что обновление не работает.
 const busy=(!d.complete)||d.refreshing||d.decisions_refreshing;if(busy&&state.krtPolls<18){state.krtPolls++;clearTimeout(state.krtTimer);state.krtTimer=setTimeout(()=>loadKrt(false),10000)}else state.krtPolls=0}catch(e){$('krtEmpty').style.display='grid';$('krtEmpty').textContent=String(e.message||e)}finally{b.disabled=false;b.textContent='Обновить каталог'}}
@@ -706,6 +706,11 @@ function renderKrtSnapshotNote(){
  if(st.decisionsRefreshing)bits.push('идут решения mos.ru');
  const d=state.krtDecisionsAt||0;
  if(d)bits.push(`снимок решений: ${krtWhenExact(d)}`);
+ // Схлопнутое называется числом: молча убранная строка читается как пропавшая
+ // площадка. Один и тот же проект решения город публикует и в разделе ДГИ, и
+ // в разделе ДИПП — на снимке прода это 38 строк из 298.
+ const twice=Number(state.krtSecondPublications||0);
+ if(twice)bits.push(`убрано вторых публикаций одного документа: ${twice}`);
  box.textContent=bits.join(' · ')+'. Кнопка «Обновить каталог» читает оба источника заново.';
 }
 function updateKrtOkrugLabel(){const values=KRT_OKRUGS.filter(x=>state.krtOkrugs.has(x)),button=$('krtOkrugToggle');button.textContent=!values.length?'Все округа':values.length<=3?values.join(', '):`${values.slice(0,2).join(', ')} +${values.length-2}`;button.title=values.length?values.join(', '):'Все округа';$('krtOkrugClear').disabled=!values.length}
@@ -2919,6 +2924,13 @@ function krtPassport(x){
  if(x.url&&!x.no_card)links.push(`<a href="${esc(x.url)}" target="_blank" rel="noopener">карточка krt.mos.ru</a>`);
  if(x.draft_decision_url)links.push(`<a href="${esc(x.draft_decision_url)}" target="_blank" rel="noopener">проект решения на mos.ru</a>`);
  if(x.tep_document_url)links.push(`<a href="${esc(x.tep_document_url)}" target="_blank" rel="noopener">PDF, из которого взяты метры</a>`);
+ // Второй публикацией схлопнута строка списка, и назвать её обязательно:
+ // документ один, а лежит он у двух ведомств — молча убранная строка читается
+ // как пропавшая площадка, а не как та же самая, показанная один раз.
+ (x.also_published||[]).forEach(one=>{
+  const who=String(one.department||one.section||'другом разделе портала');
+  links.push(`<a href="${esc(one.url||'')}" target="_blank" rel="noopener">тот же документ: ${esc(who)}</a>`);
+ });
  return '<div class="kv">'+rows.map(([k,v])=>`<div>${esc(k)}</div><div>${v}</div>`).join('')+'</div>'
   +`<div class="source">${esc(krtTepSourceNote(x))}.`
   +(total>0&&nonres>0&&gap>1000
