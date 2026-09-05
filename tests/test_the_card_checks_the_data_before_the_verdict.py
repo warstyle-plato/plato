@@ -154,6 +154,14 @@ def test_the_card_says_the_check_before_the_score() -> None:
             def card(slug: str) -> str:
                 page.evaluate("(s)=>selectKrt(state.krt.find(x=>x.slug===s))", slug)
                 page.wait_for_timeout(120)
+                # Тихая проверка («сверять не с чем») с 0.22.10 живёт в разделе
+                # «чего не хватает»: на живом каталоге она у 501 строки из 580 и
+                # постоянной припиской сверху перестаёт читаться. Раскрываем всё,
+                # иначе innerText свёрнутого раздела её просто не покажет.
+                page.evaluate(
+                    "document.querySelectorAll('#krtSide details')"
+                    ".forEach(d=>{d.open=true})")
+                page.wait_for_timeout(60)
                 return page.evaluate("document.getElementById('krtSide').innerText")
 
             agrees = card("agrees")
@@ -188,5 +196,9 @@ def test_the_card_says_the_check_before_the_score() -> None:
     if no_card:
         assert "сверять не с чем" in no_card, no_card
 
-    # И порядок: проверка данных стоит ВЫШЕ вердикта — ради этого правка.
+    # И порядок: проверка, которой ЕСТЬ что сказать, стоит ВЫШЕ вердикта —
+    # ради этого правка. Молчащая уехала вниз, и это держит
+    # tests/test_the_krt_card_says_each_thing_once.py.
     assert agrees.index("Проверка данных") < agrees.index("Балл площадки"), agrees
+    assert differs.index("Проверка данных") < differs.index("Балл площадки"), differs
+    assert unread.index("Балл площадки") < unread.index("Проверка данных"), unread

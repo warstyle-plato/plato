@@ -143,7 +143,9 @@ def test_the_verdict_stays_open():
     # значит падать на всякой перестановке карточки, ничего не сказав о том,
     # спрятаны метры или нет.
     assert "krtPassport(x)" in head, "паспорт площадки уехал под кат"
-    passport_at = page.index("function krtPassport")
+    # Скобка обязательна: рядом объявлена krtPassportValue, и без неё срез
+    # берёт соседнюю функцию и падает не о том.
+    passport_at = page.index("function krtPassport(")
     passport = page[passport_at:page.index("\nfunction ", passport_at + 10)]
     for named in ("Жильё", "Всего построить", "Площадь"):
         assert named in passport, named

@@ -15,7 +15,7 @@ AUCTIONS_PAGE = r'''<!doctype html>
    кнопка, системный шрифт (замечание владельца, 23.08.2026). */
 :root{--bg:#f2f2ef;--panel:#fff;--text:#171717;--muted:#6b6b6b;--line:#dedede;--soft:#f7f7f5;--accent:#111;--ok:#1f6b3b;--warn:#8a5a00;--bad:#a33}
 
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}.shell{max-width:1540px;margin:0 auto;background:var(--panel);min-height:100vh}.brandbar{padding:22px 34px 0;background:var(--panel)}.brandbar img{display:block;width:min(360px,58vw);height:auto;mix-blend-mode:multiply}.brandline{height:8px;background:#050505;margin-top:12px}.head{display:flex;justify-content:space-between;gap:18px;align-items:flex-end;flex-wrap:wrap;padding:18px 34px 12px;border-bottom:1px solid var(--line)}.head h1{font-size:22px;font-weight:620;letter-spacing:.01em;line-height:1.1;margin:0}.head p{margin:5px 0 0;color:var(--muted);font-size:13px}.content{padding:24px 34px 40px}.badge{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:0;padding:6px 10px;font-size:12px;background:var(--panel)}.filters{display:grid;grid-template-columns:repeat(3,minmax(0,1fr)) minmax(0,1.5fr) auto;gap:9px;margin-bottom:14px}.filters.wide{grid-template-columns:minmax(0,2fr) repeat(4,minmax(0,1fr))}select,input,button{min-width:0;max-width:100%;text-overflow:ellipsis;min-height:42px;border:1px solid var(--line);border-radius:0;background:var(--panel);color:var(--text);padding:0 11px;font:inherit}button{cursor:pointer;font-weight:700;border-color:#111}button.primary{background:var(--accent);color:#fff}button:disabled{opacity:.45;cursor:not-allowed}.filter-actions{grid-column:1/-1;display:flex;gap:9px;justify-content:flex-end;flex-wrap:wrap}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin-bottom:14px}.stat{border:1px solid var(--line);border-radius:0;background:var(--panel);padding:12px}.stat b{font-size:22px;display:block}.stat span{font-size:12px;color:var(--muted)}.coverage{display:none}.layout{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(360px,.8fr);gap:12px}.tablewrap,.side{border:1px solid var(--line);background:var(--panel);border-radius:0;overflow:hidden}.tablecol{min-width:0;display:flex;flex-direction:column}.scrolltop{overflow-x:auto;overflow-y:hidden;height:14px;margin-bottom:-1px;border:1px solid var(--line);border-bottom:0;background:var(--panel)}.scrolltop>div{height:1px}.scrolltop[hidden]{display:none}.tablewrap{overflow:auto;min-height:420px}table{border-collapse:collapse;width:100%;min-width:900px}table.wide{min-width:1360px}th{position:sticky;top:0;background:var(--panel);z-index:1;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.045em;text-align:left;padding:11px 12px;border-bottom:1px solid var(--line)}td{padding:13px 12px;border-bottom:1px solid var(--line);vertical-align:top}tbody tr{cursor:pointer}tbody tr:hover{background:var(--soft)}.lotname{font-weight:700;margin-bottom:4px;max-width:360px}.cad{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted)}.tag{display:inline-flex;padding:4px 7px;border-radius:0;background:var(--soft);font-size:11px;font-weight:700}.tag.ok{color:var(--ok)}.tag.warn{color:var(--warn)}.tag.new{background:var(--accent);color:#fff;margin-left:7px;vertical-align:2px}.askcard{border:1px solid var(--line);background:var(--panel);padding:16px;margin-top:12px}.askcard h2{font-size:16px;margin:0 0 6px}.askhint{color:var(--muted);font-size:12px;margin-bottom:10px}.chips{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:10px}.chips button{min-height:34px;font-weight:500;font-size:12px;padding:0 10px;border-color:var(--line)}#askText{width:100%;min-height:74px;padding:9px 11px;resize:vertical;font:inherit}#askOut{margin-top:10px}.plato-answer{border-left:3px solid var(--accent);background:var(--soft);padding:11px 13px;font-size:13px;line-height:1.55;white-space:pre-wrap}details.fold{border:1px solid var(--line);margin-top:10px}details.fold>summary{cursor:pointer;padding:9px 11px;font-size:12px;font-weight:750;color:var(--muted);list-style:none;display:flex;justify-content:space-between;gap:10px}details.fold>summary::-webkit-details-marker{display:none}details.fold>summary:after{content:'развернуть';font-weight:500}details.fold[open]>summary:after{content:'свернуть'}details.fold>summary:hover{background:var(--soft)}.foldbody{padding:0 11px 11px}.ratio-row{display:grid;grid-template-columns:1fr auto;gap:7px;margin-bottom:7px}.brand{display:block;line-height:0}.legal-footer{display:flex;gap:18px;flex-wrap:wrap;margin:0 34px;padding:14px 0 22px;font-size:11px;color:var(--muted);border-top:1px solid var(--line)}.legal-footer a{color:var(--muted)}.plato-footer{margin:0;padding:0 34px;line-height:0}.plato-footer img{width:100%;height:auto;display:block}tr.family>td:first-child{border-left:3px solid var(--accent)}tr.family>td{background:var(--panel)}tr.sub>td:first-child{padding-left:30px}tr.sub>td{background:var(--soft)}.famcount{display:inline-flex;padding:3px 6px;margin-left:7px;background:var(--accent);color:#fff;font-size:11px;font-weight:700;vertical-align:2px}.money{font-weight:750;white-space:nowrap}.pbatt{position:relative;display:block;height:14px;margin-top:4px;border:1px solid var(--line);border-radius:0;background:var(--soft);overflow:hidden}.pbatt-fill{position:absolute;left:0;top:0;height:100%}.pbatt-pct{position:absolute;left:5px;top:0;font-size:10px;font-weight:750;color:#18202a;text-shadow:0 0 3px #fff,0 0 3px #fff}.side{padding:16px;min-height:420px}.side h2{font-size:18px;margin:0 0 4px}.side .sub{color:var(--muted);font-size:12px;margin-bottom:14px}.empty{display:grid;place-items:center;color:var(--muted);min-height:360px;text-align:center;padding:25px}.kv{display:grid;grid-template-columns:145px 1fr;gap:7px 10px;padding:10px 0;border-bottom:1px solid var(--line)}.kv div:nth-child(odd){color:var(--muted)}.actions{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0}.notice{border-radius:0;padding:10px 11px;background:var(--soft);font-size:12px;margin:10px 0}.notice.warn{color:var(--warn)}.section{margin-top:16px}.section h3{font-size:13px;margin:0 0 7px}.items{display:grid;gap:6px}.item{border:1px solid var(--line);border-radius:0;padding:8px 9px;font-size:12px}.item b{display:block;margin-bottom:2px}.source{font-size:11px;color:var(--muted);margin-top:4px}.source.warn{color:var(--warn)}.status{font-size:12px;color:var(--muted);margin-left:auto}.spinner{display:inline-block;width:13px;height:13px;border:2px solid var(--line);border-top-color:var(--text);border-radius:50%;animation:spin .7s linear infinite;vertical-align:-2px;margin-right:5px}@keyframes spin{to{transform:rotate(360deg)}}@media(max-width:950px){.filters,.filters.wide{grid-template-columns:repeat(2,minmax(0,1fr))}.stats{grid-template-columns:1fr 1fr}.layout{grid-template-columns:1fr}.side{min-height:0}.brandbar{padding:14px 16px 0}.head{padding:14px 16px 10px}.tabs{padding:0 16px;gap:18px}.content{padding:16px 16px 28px}.plato-footer{padding:0 16px}.legal-footer{margin:0 16px}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}.shell{max-width:1540px;margin:0 auto;background:var(--panel);min-height:100vh}.brandbar{padding:22px 34px 0;background:var(--panel)}.brandbar img{display:block;width:min(360px,58vw);height:auto;mix-blend-mode:multiply}.brandline{height:8px;background:#050505;margin-top:12px}.head{display:flex;justify-content:space-between;gap:18px;align-items:flex-end;flex-wrap:wrap;padding:18px 34px 12px;border-bottom:1px solid var(--line)}.head h1{font-size:22px;font-weight:620;letter-spacing:.01em;line-height:1.1;margin:0}.head p{margin:5px 0 0;color:var(--muted);font-size:13px}.content{padding:24px 34px 40px}.badge{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:0;padding:6px 10px;font-size:12px;background:var(--panel)}.filters{display:grid;grid-template-columns:repeat(3,minmax(0,1fr)) minmax(0,1.5fr) auto;gap:9px;margin-bottom:14px}.filters.wide{grid-template-columns:minmax(0,2fr) repeat(4,minmax(0,1fr))}select,input,button{min-width:0;max-width:100%;text-overflow:ellipsis;min-height:42px;border:1px solid var(--line);border-radius:0;background:var(--panel);color:var(--text);padding:0 11px;font:inherit}button{cursor:pointer;font-weight:700;border-color:#111}button.primary{background:var(--accent);color:#fff}button:disabled{opacity:.45;cursor:not-allowed}.filter-actions{grid-column:1/-1;display:flex;gap:9px;justify-content:flex-end;flex-wrap:wrap}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin-bottom:14px}.stat{border:1px solid var(--line);border-radius:0;background:var(--panel);padding:12px}.stat b{font-size:22px;display:block}.stat span{font-size:12px;color:var(--muted)}.coverage{display:none}.layout{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(360px,.8fr);gap:12px}.tablewrap,.side{border:1px solid var(--line);background:var(--panel);border-radius:0;overflow:hidden}.tablecol{min-width:0;display:flex;flex-direction:column}.scrolltop{overflow-x:auto;overflow-y:hidden;height:14px;margin-bottom:-1px;border:1px solid var(--line);border-bottom:0;background:var(--panel)}.scrolltop>div{height:1px}.scrolltop[hidden]{display:none}.tablewrap{overflow:auto;min-height:420px}table{border-collapse:collapse;width:100%;min-width:900px}table.wide{min-width:1360px}th{position:sticky;top:0;background:var(--panel);z-index:1;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.045em;text-align:left;padding:11px 12px;border-bottom:1px solid var(--line)}td{padding:13px 12px;border-bottom:1px solid var(--line);vertical-align:top}tbody tr{cursor:pointer}tbody tr:hover{background:var(--soft)}.lotname{font-weight:700;margin-bottom:4px;max-width:360px}.cad{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted)}.tag{display:inline-flex;padding:4px 7px;border-radius:0;background:var(--soft);font-size:11px;font-weight:700}.tag.ok{color:var(--ok)}.tag.warn{color:var(--warn)}.tag.new{background:var(--accent);color:#fff;margin-left:7px;vertical-align:2px}.askcard{border:1px solid var(--line);background:var(--panel);padding:16px;margin-top:12px}.askcard h2{font-size:16px;margin:0 0 6px}.askhint{color:var(--muted);font-size:12px;margin-bottom:10px}.chips{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:10px}.chips button{min-height:34px;font-weight:500;font-size:12px;padding:0 10px;border-color:var(--line)}#askText{width:100%;min-height:74px;padding:9px 11px;resize:vertical;font:inherit}#askOut{margin-top:10px}.plato-answer{border-left:3px solid var(--accent);background:var(--soft);padding:11px 13px;font-size:13px;line-height:1.55;white-space:pre-wrap}details.fold{border:1px solid var(--line);margin-top:10px}details.fold>summary{cursor:pointer;padding:9px 11px;font-size:12px;font-weight:750;color:var(--muted);list-style:none;display:flex;justify-content:space-between;gap:10px}details.fold>summary::-webkit-details-marker{display:none}details.fold>summary:after{content:'развернуть';font-weight:500}details.fold[open]>summary:after{content:'свернуть'}details.fold>summary:hover{background:var(--soft)}.foldbody{padding:0 11px 11px}.ratio-row{display:grid;grid-template-columns:1fr auto;gap:7px;margin-bottom:7px}.brand{display:block;line-height:0}.legal-footer{display:flex;gap:18px;flex-wrap:wrap;margin:0 34px;padding:14px 0 22px;font-size:11px;color:var(--muted);border-top:1px solid var(--line)}.legal-footer a{color:var(--muted)}.plato-footer{margin:0;padding:0 34px;line-height:0}.plato-footer img{width:100%;height:auto;display:block}tr.family>td:first-child{border-left:3px solid var(--accent)}tr.family>td{background:var(--panel)}tr.sub>td:first-child{padding-left:30px}tr.sub>td{background:var(--soft)}.famcount{display:inline-flex;padding:3px 6px;margin-left:7px;background:var(--accent);color:#fff;font-size:11px;font-weight:700;vertical-align:2px}.money{font-weight:750;white-space:nowrap}.pbatt{position:relative;display:block;height:14px;margin-top:4px;border:1px solid var(--line);border-radius:0;background:var(--soft);overflow:hidden}.pbatt-fill{position:absolute;left:0;top:0;height:100%}.pbatt-pct{position:absolute;left:5px;top:0;font-size:10px;font-weight:750;color:#18202a;text-shadow:0 0 3px #fff,0 0 3px #fff}.side{padding:16px;min-height:420px;position:sticky;top:12px;align-self:start;max-height:calc(100vh - 24px);overflow:auto}.side h2{font-size:18px;margin:0 0 4px}.side .sub{color:var(--muted);font-size:12px;margin-bottom:14px}.empty{display:grid;place-items:center;color:var(--muted);min-height:360px;text-align:center;padding:25px}.kv{display:grid;grid-template-columns:145px 1fr;gap:7px 10px;padding:10px 0;border-bottom:1px solid var(--line)}.kv div:nth-child(odd){color:var(--muted)}.actions{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0}.actions.minor{margin-top:-6px}.actions.minor button{min-height:34px;font-weight:500;font-size:12px;padding:0 10px;border-color:var(--line)}.notice{border-radius:0;padding:10px 11px;background:var(--soft);font-size:12px;margin:10px 0}.notice.warn{color:var(--warn)}.section{margin-top:16px}.section h3{font-size:13px;margin:0 0 7px}.items{display:grid;gap:6px}.item{border:1px solid var(--line);border-radius:0;padding:8px 9px;font-size:12px}.item b{display:block;margin-bottom:2px}.source{font-size:11px;color:var(--muted);margin-top:4px}.source.warn{color:var(--warn)}.status{font-size:12px;color:var(--muted);margin-left:auto}.spinner{display:inline-block;width:13px;height:13px;border:2px solid var(--line);border-top-color:var(--text);border-radius:50%;animation:spin .7s linear infinite;vertical-align:-2px;margin-right:5px}@keyframes spin{to{transform:rotate(360deg)}}@media(max-width:950px){.filters,.filters.wide{grid-template-columns:repeat(2,minmax(0,1fr))}.stats{grid-template-columns:1fr 1fr}.layout{grid-template-columns:1fr}.side{min-height:0;position:static;max-height:none;overflow:visible}.brandbar{padding:14px 16px 0}.head{padding:14px 16px 10px}.tabs{padding:0 16px;gap:18px}.content{padding:16px 16px 28px}.plato-footer{padding:0 16px}.legal-footer{margin:0 16px}}
 @media(max-width:640px){.filters,.filters.wide{grid-template-columns:minmax(0,1fr)}.stats{grid-template-columns:minmax(0,1fr)}.filter-actions{justify-content:stretch}.filter-actions button{flex:1 1 100%}.kv{grid-template-columns:minmax(0,1fr)}.kv div:nth-child(odd){padding-top:4px}}
 .tabs{display:flex;gap:28px;padding:0 34px;border-bottom:1px solid var(--line);overflow:auto;background:var(--panel)}.tabs .tab{border:0;background:none;min-height:0;padding:15px 0 12px;font-size:14px;font-weight:620;color:#777;white-space:nowrap;border-bottom:3px solid transparent}.tabs .tab.active{color:#000;border-color:#000}.hidden{display:none!important}.fit{display:inline-flex;align-items:center;gap:6px;font-weight:750;white-space:nowrap}.fit .light{width:10px;height:10px;border-radius:50%;background:var(--muted);}.fit.ok{color:var(--ok)}.fit.ok .light{background:var(--ok)}.fit.warn{color:var(--warn)}.fit.warn .light{background:var(--warn)}.fit.bad{color:var(--bad)}.fit.bad .light{background:var(--bad)}
 .multi{position:relative;min-width:0}.multi-toggle{width:100%;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-right:30px;position:relative}.multi-toggle:after{content:'⌄';position:absolute;right:11px;font-size:16px;line-height:1}.multi-toggle[aria-expanded="true"]:after{content:'⌃'}.multi-menu{position:absolute;z-index:20;top:calc(100% + 6px);left:0;width:max-content;min-width:100%;max-width:min(320px,80vw);padding:8px;border:1px solid var(--line);border-radius:0;background:var(--panel);}.multi-head{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:2px 4px 7px;font-size:12px;font-weight:750;color:var(--muted)}.multi-clear{min-height:28px;padding:0 7px;border:0;background:transparent;color:var(--muted);font-size:12px}.multi-options{display:grid;gap:2px;max-height:310px;overflow:auto}.multi-option{display:flex;align-items:center;gap:9px;min-height:36px;padding:5px 7px;border-radius:0;cursor:pointer}.multi-option:hover{background:var(--soft)}.multi-option input{flex:0 0 auto;width:17px;height:17px;min-height:0;margin:0;padding:0;accent-color:var(--accent)}
@@ -2341,22 +2341,30 @@ function selectKrt(x){state.selectedKrt=x;const sc=krtScore(x),fit=sc.fit,cached
  // одновременно паспортом, логом разбора и пультом администратора.
  // Перечни спрятаны под раскрытие и несут число в заголовке: закрытый список
  // без числа читается как отсутствующий.
+ // Карточка отвечает на четыре вопроса подряд, и у каждого есть имя на экране:
+ // МОЖНО ЛИ ВОЙТИ → ЧТО ЗА ПЛОЩАДКА → ЧТО ЭТО ДАЁТ → НАСКОЛЬКО ВЕРИМ, дальше
+ // действие и приложения. Прежде балл со списком снижений стоял ВЫШЕ экономики,
+ // из которой он свёрнут, и одни и те же LLCR с маржой рассказывались трижды:
+ // плашкой балла, списком снижений и таблицей модели.
+ const speaks=krtDataCheckSpeaks(x);
  $('krtSide').innerHTML=`<h2>${esc(x.name)}${x.is_new?'<span class="tag new">новое</span>':''}</h2>`
  +`<div class="sub">${esc(krtSource(x).short)}${[x.okrug,x.district].filter(Boolean).length?' · '+esc([x.okrug,x.district].filter(Boolean).join(' · ')):''}</div>`
  +krtEntryHead(x)
- +krtPassport(x)
- +krtDataCheck(x)
  +krtTenderBlock(x)
+ +`<div class="section"><h3>Что за площадка</h3>${krtPassport(x)}</div>`
+ +(speaks?krtDataCheck(x):'')
  +`${planned?'<div id="krtRequirementsBox"><div class="notice">Ищу проект решения и читаю требования…</div></div>':''}`
- +`<div class="notice" id="krtScoreBox">${krtScoreBoxHtml(sc)}</div>`
- +`<details class="fold"><summary>Почему такой балл — ${fit.reasons.length+fit.checks.length+sc.cuts.length} пункт(ов)</summary><div class="foldbody"><div class="items">${fit.reasons.map(one=>`<div class="item"><b>Соответствует запросу</b>${esc(one)}</div>`).join('')}${fit.checks.map(one=>`<div class="item"><b>Нужно проверить</b>${esc(one)}</div>`).join('')}${sc.cuts.map(c=>`<div class="item"><b>Балл снижен на ${c.points}%</b>${esc(c.label)}</div>`).join('')}</div></div></details>`
  +`<div id="krtMarketResult">${cached?renderKrtModel(cached):''}</div>`
- +`<div class="actions"><button class="primary" id="krtHandoff">Передать в расчёт DevelopAid</button><button id="krtMarket">Пересчитать сейчас</button><button id="krtPlato">Рекомендация Платона</button></div>`
+ +`<div class="section"><h3>Насколько этому верить</h3><div class="notice" id="krtScoreBox">${krtScoreBoxHtml(sc)}</div>`
+ +`<details class="fold"><summary>Почему такой балл — ${fit.reasons.length+fit.checks.length+sc.cuts.length} пункт(ов)</summary><div class="foldbody"><div class="items">${fit.reasons.map(one=>`<div class="item"><b>Соответствует запросу</b>${esc(one)}</div>`).join('')}${fit.checks.map(one=>`<div class="item"><b>Нужно проверить</b>${esc(one)}</div>`).join('')}${sc.cuts.map(c=>`<div class="item"><b>Балл снижен на ${c.points}%</b>${esc(c.label)}</div>`).join('')}</div></div></details></div>`
+ +`<div class="actions"><button class="primary" id="krtHandoff">Передать в расчёт DevelopAid</button><button id="krtMarket">Пересчитать сейчас</button></div>`
+ +`<div class="actions minor"><button id="krtPlato">Рекомендация Платона</button><button id="krtShare">Поделиться</button><button id="krtSource">${esc(krtSource(x).open)}</button></div>`
  +`<div id="krtShareNote" class="notice" style="display:none"></div>`
  +`<details class="fold"><summary>Что про площадку известно и чего не хватает</summary><div class="foldbody">`
+ +(speaks?'':krtDataCheck(x))
  +krtIntentBlock(x)
  +`<div id="krtPressBox"></div>`
- +`<div class="actions"><button id="krtPress">Что пишут об этой площадке</button><button id="krtShare">Поделиться</button><button id="krtSource">${esc(krtSource(x).open)}</button></div>`
+ +`<div class="actions"><button id="krtPress">Что пишут об этой площадке</button></div>`
  +`</div></details>`
  +`<details class="fold"><summary>Карта и границы</summary><div class="foldbody"><div id="krtMapBox"><div class="notice">Строю карту участка…</div></div></div></details>`
  +`<details class="fold"><summary>Остальные ТЭП и пропорции</summary><div class="foldbody">${x.no_card?'<div class="source">Общественно-делового объёма и рабочих мест проект решения не называет — эти строки есть только у карточки каталога, а её у площадки нет.</div>':`<div class="kv" style="border:0"><div>Общественно-деловое</div><div>${fmtArea(x.business_gfa_sqm)}</div><div>Рабочие места</div><div>${esc(x.jobs??'—')}</div></div>`}<div class="notice" id="krtOutlineNote">Границы: читаю файл карты реестра…</div>${krtRatioBlock(x)}</div></details>`
@@ -2385,13 +2393,15 @@ function selectKrt(x){state.selectedKrt=x;const sc=krtScore(x),fit=sc.fit,cached
 async function loadKrtReport(x){
  const out=$('krtMarketResult');
  if(state.krtReports[x.slug]){renderKrtReport(x,state.krtReports[x.slug],out);return}
- out.innerHTML='<div class="notice"><span class="spinner"></span>Открываю посчитанный отчёт…</div>';
+ out.innerHTML='<div class="section"><h3>Что это даёт</h3><div class="notice"><span class="spinner"></span>Открываю посчитанный отчёт…</div></div>';
  try{
   let d;
   try{ d=await askJson('/auctions/krt/'+encodeURIComponent(x.slug)+'/report',{cache:'no-store'}) }
   catch(e){
    // «Ещё не посчитан» — это состояние, а не отказ: оно объясняется спокойно.
-   if(e.status===404){out.innerHTML=`<div class="notice">${esc((e.body||{}).detail||'Отчёт ещё не посчитан.')}</div>`;return}
+   // Плашка без заголовка читается как обрывок: «Отчёт ещё не посчитан» под
+   // ничем неотличимо от сбоя вёрстки. У блока есть имя всегда.
+   if(e.status===404){out.innerHTML=`<div class="section"><h3>Что это даёт</h3><div class="notice">${esc((e.body||{}).detail||'Отчёт ещё не посчитан.')} Кнопка «Пересчитать сейчас» посчитает рынок и модель по этой площадке.</div></div>`;return}
    throw needLogin(e);
   }
   state.krtReports[x.slug]=d;
@@ -2401,7 +2411,7 @@ async function loadKrtReport(x){
    refreshKrtScoreBox(x);
   }
   renderKrtReport(x,d,out);
- }catch(e){out.innerHTML=`<div class="notice warn">${esc(e.message||e)}</div>`}
+ }catch(e){out.innerHTML=`<div class="section"><h3>Что это даёт</h3><div class="notice warn">${esc(e.message||e)}</div></div>`}
 }
 
 function renderKrtReport(x,d,out){
@@ -2769,6 +2779,17 @@ function krtEntryHead(x){
 // пройденная проверка. Гектары здесь улика: расходится площадь территории —
 // пара «решение ↔ карточка» собрана неверно, и метрам такой пары верить
 // нельзя, поэтому расхождение НАЗЫВАЕТСЯ, а каталог собой не подменяет.
+// Проверка данных говорит своё место сама. «Сверять не с чем» — это про НАШЕ
+// чтение, а не про площадку, и на живом каталоге таких строк 501 из 580: в
+// четвёртой позиции карточки она стояла постоянной припиской, которую
+// перестают читать. Громкое («сошлось», «расходится») остаётся выше вердикта —
+// ради этого правка и делалась; тихое уезжает в «чего не хватает».
+function krtDataCheckSpeaks(x){
+ if(!x||x.no_card)return false;
+ const check=x.decision_tep_check;
+ if(!check||!Array.isArray(check.compared))return false;
+ return check.compared.length>0;
+}
 function krtDataCheck(x){
  if(!x||x.no_card)
   return '<div class="notice"><b>Проверка данных: сверять не с чем</b>'
@@ -2806,25 +2827,36 @@ function krtDataCheck(x){
 // объявлено один раз: три копии разошлись бы молча.
 const KRT_SOURCE={
  card:{name:'карточка krt.mos.ru',short:'krt.mos.ru',open:'Открыть krt.mos.ru'},
- decision:{name:'проект решения на mos.ru',short:'mos.ru: проект решения',open:'Открыть проект решения'}};
+ decision:{name:'проект решения на mos.ru',short:'mos.ru: проект решения',open:'Открыть решение'}};
 function krtSource(x){return x&&x.no_card?KRT_SOURCE.decision:KRT_SOURCE.card}
+// Голый прочерк над названными ниже числами читается как поломка: у площадки
+// без карточки жилую СПП решение называет у 29 из 298, а площадь квартир — у 44,
+// и две пустые строки подряд стояли прямо над двумя заполненными. Прочерк
+// остаётся ответом, но называет причину: «не знаем» и «нет» — разные вещи.
+function krtPassportValue(x,key){
+ const known=krtNumber(x,key);
+ if(known!==null&&known!==undefined)return fmtArea(known);
+ return x&&x.no_card
+  ? '<span class="muted">решение не называет</span>'
+  : '<span class="muted">каталог не называет</span>';
+}
 function krtPassport(x){
  const rows=[['Статус',krtStatusCell(x)],
   ['Площадь',x.area_ha?esc(x.area_ha+' га'):'—'],
   ['Всего построить',fmtArea(x.total_gfa_sqm)],
-  ['Жильё',fmtArea(x.housing_gfa_sqm)],
+  ['Жильё',krtPassportValue(x,'housing_gfa_sqm')],
   // «Нежилое» у каталога — СВОЁ поле, а не дополнение жилья: на Варшавском
   // ш., вл. 37 это 52 510 м² при 443 700 всего и 229 490 жилья, то есть
   // 161 700 м² не объяснены источником вовсе. Печатаем обе величины и
   // говорим, что разрыв не наш.
-  [x.no_card?'Нежилое по решению':'Нежилое по каталогу',fmtArea(x.nonresidential_gfa_sqm)]];
+  [x.no_card?'Нежилое по решению':'Нежилое по каталогу',krtPassportValue(x,'nonresidential_gfa_sqm')]];
  // Проект решения называет СВОИ величины, и они не те же: площадь квартир —
  // не жилая СПП (30 304 против 50 400 м² в одном документе), нежилая наземная
  // — не «нежилое назначение». Пока их не было в паспорте, карточка стояла с
  // прочерками при названных в документе числах: квартиры известны у 44
  // площадок-решений, нежилая наземная у 91 из 298.
- if(x.flats_sqm)rows.push(['Площадь квартир по решению',fmtArea(x.flats_sqm)]);
- if(x.nonresidential_ground_sqm)rows.push(['Нежилая наземная по решению',fmtArea(x.nonresidential_ground_sqm)]);
+ if(x.flats_sqm)rows.push(['Квартиры по решению',fmtArea(x.flats_sqm)]);
+ if(x.nonresidential_ground_sqm)rows.push(['Нежилая наземная',fmtArea(x.nonresidential_ground_sqm)]);
  const total=krtNumber(x,'total_gfa_sqm')||0, housing=krtNumber(x,'housing_gfa_sqm')||0;
  const nonres=krtNumber(x,'nonresidential_gfa_sqm')||0;
  const gap=total-housing-nonres;
@@ -2833,7 +2865,7 @@ function krtPassport(x){
  if(x.draft_decision_url)links.push(`<a href="${esc(x.draft_decision_url)}" target="_blank" rel="noopener">проект решения на mos.ru</a>`);
  if(x.tep_document_url)links.push(`<a href="${esc(x.tep_document_url)}" target="_blank" rel="noopener">PDF, из которого взяты метры</a>`);
  return '<div class="kv">'+rows.map(([k,v])=>`<div>${esc(k)}</div><div>${v}</div>`).join('')+'</div>'
-  +`<div class="source">${esc(krtTepSourceNote(x))}`
+  +`<div class="source">${esc(krtTepSourceNote(x))}.`
   +(total>0&&nonres>0&&gap>1000
     ?` Всего минус жильё и нежилое оставляет ${esc(fmtArea(gap))} — эту разницу источник не объясняет.`:'')
   +(links.length?'<div>Источник: '+links.join(' · ')+'</div>':'')

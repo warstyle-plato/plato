@@ -34,6 +34,17 @@
 названных в самом документе числах: площадь квартир известна у 44 площадок,
 нежилая наземная — у 91.
 
+**Порядок был обратный самому решению.** «Срочно надо разумный блок карточки
+КРТ делать справа. Без хаоса» (владелец, 05.09.2026, третий раз про это поле).
+Балл со списком снижений стоял ВЫШЕ экономики, из которой он свёрнут, и одни и
+те же LLCR с маржой рассказывались трижды подряд: плашкой балла, списком
+снижений и таблицей модели. А четвёртым блоком сверху стояла «Проверка данных»
+— утверждение про НАШЕ чтение, и на живом каталоге она говорит «сверять не с
+чем» у 501 строки из 580, то есть была постоянной припиской, которую перестают
+читать. Теперь карточка отвечает на четыре вопроса подряд, и у каждого есть имя
+на экране: можно ли войти → что за площадка → что это даёт → насколько верим,
+дальше действие и приложения.
+
 Запуск: python3 -m pytest tests/test_the_krt_card_says_each_thing_once.py -q
 """
 
@@ -221,8 +232,8 @@ def test_the_decision_numbers_are_shown_under_their_own_names():
     """Числа документа стоят в паспорте — своими именами, а не вместо жилья."""
     # Intl ставит неразрывный пробел — сравниваем по обычному.
     html = _render("krtPassport", DECISION).replace("\u00a0", " ")
-    assert "Площадь квартир по решению" in html and "15 681" in html, html
-    assert "Нежилая наземная по решению" in html and "3 410" in html, html
+    assert "Квартиры по решению" in html and "15 681" in html, html
+    assert "Нежилая наземная" in html and "3 410" in html, html
     # Площадь квартир — не жилая СПП, и подменять ею строку «Жильё» нельзя:
     # в одном документе это 30 304 против 50 400 м².
     housing = html[html.index("<div>Жильё</div>"):]
@@ -231,3 +242,60 @@ def test_the_decision_numbers_are_shown_under_their_own_names():
     # У каталожной строки решения не появляются: их там нет.
     card = _render("krtPassport", CARD)
     assert "по решению" not in card, card
+
+
+# --- порядок карточки --------------------------------------------------------
+
+def test_the_card_answers_in_the_order_of_the_decision():
+    """Сначала можно ли войти, потом что за площадка, потом что это даёт."""
+    page = auctions_page()
+    card = _fn(page, "selectKrt")
+    order = [
+        ("можно ли войти", "krtEntryHead(x)"),
+        ("что за площадка", "<h3>Что за площадка</h3>"),
+        ("что это даёт", 'id="krtMarketResult"'),
+        ("насколько верим", "<h3>Насколько этому верить</h3>"),
+        ("что делать", 'id="krtHandoff"'),
+        ("приложения", "<summary>Карта и границы</summary>"),
+    ]
+    seen = []
+    for name, mark in order:
+        assert mark in card, f"в карточке нет блока «{name}»: {mark}"
+        seen.append((card.index(mark), name))
+    assert seen == sorted(seen), [name for _, name in seen]
+
+    # Балл — свёртка экономики, и стоит он ПОД ней, а не над.
+    assert card.index('id="krtMarketResult"') < card.index('id="krtScoreBox"'), card[:200]
+
+
+def test_a_silent_data_check_does_not_stand_above_the_verdict():
+    """«Сверять не с чем» — про наше чтение, и её место в «чего не хватает».
+
+    Громкое («сошлось», «расходится») остаётся выше вердикта: ради этого
+    правка и делалась, и её держит
+    tests/test_the_card_checks_the_data_before_the_verdict.py.
+    """
+    page = auctions_page()
+    card = _fn(page, "selectKrt")
+    assert "krtDataCheckSpeaks(x)" in card, card
+    # Громкая — до балла, тихая — после него, и обе из одной функции.
+    loud = card.index("(speaks?krtDataCheck(x):'')")
+    quiet = card.index("(speaks?'':krtDataCheck(x))")
+    assert loud < card.index('id="krtScoreBox"') < quiet, (loud, quiet)
+
+    speaks = _fn(page, "krtDataCheckSpeaks")
+    assert "no_card" in speaks and "compared" in speaks, speaks
+
+
+def test_an_unnamed_value_says_who_did_not_name_it():
+    """Прочерк остаётся ответом, но называет, чьё это молчание."""
+    node = subprocess.run(["which", "node"], capture_output=True, text=True)
+    if node.returncode:
+        pytest.skip("node недоступен")
+    html = _render("krtPassport", DECISION).replace("\u00a0", " ")
+    assert "решение не называет" in html, html
+    # У каталожной площадки молчит каталог, а не решение.
+    card = _render("krtPassport", dict(CARD, housing_gfa_sqm=None))
+    assert "каталог не называет" in card, card
+    # Названное число прочерком не подменяется.
+    assert "161 680" in _render("krtPassport", CARD).replace("\u00a0", " ")
