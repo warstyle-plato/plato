@@ -2285,6 +2285,26 @@ def install(app: FastAPI) -> None:
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"Не удалось получить публичный каталог ЭТП: {exc}") from exc
 
+        # Связку «площадка ↔ лот» пишет тот, кто лоты СОБРАЛ. Прежде она
+        # писалась только маршрутом, куда список присылала страница, и потому
+        # появлялась, лишь если человек открыл соседнюю вкладку «Торги» в этой
+        # же вкладке браузера: на проде склад был пуст при восьми живых
+        # аукционах на право договора о КРТ, и фильтр честно показывал «Торги
+        # (0)» — ноль, который читается как ответ о рынке (владелец,
+        # 05.09.2026: «торги 0????»). Сервер видел эти лоты сам, и запомнить
+        # их — его работа, а не побочный эффект чужого нажатия.
+        try:
+            from . import krt_tenders
+
+            sites = await run_in_threadpool(krt_registry.catalogue)
+            matched = await run_in_threadpool(
+                krt_tenders.match, [_public_lot_dict(lot) for lot in lots], sites)
+            keeper = getattr(krt_registry, "remember_tender_lots", None)
+            if callable(keeper):
+                await run_in_threadpool(keeper, matched.get("by_site"))
+        except Exception:  # noqa: BLE001 — каталог лотов не роняем связкой
+            logger.exception("KRT: связка лотов с площадками при сборе не записалась")
+
         return {
             "source_policy": "official_etp_only",
             "source": source,

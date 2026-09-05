@@ -1330,7 +1330,12 @@ const KRT_FILTERS=[
  {key:'stage', box:'krtStage', empty:'Любая стадия', options:[
   {value:'draft',    name:'Проект решения',       test:x=>!!x.no_card},
   {value:'planned',  name:'Планируемая',          test:x=>krtStatusKind(x)==='planned'},
-  {value:'tender',   name:'Торги',                test:x=>krtOnTender(x)},
+  {value:'tender',   name:'Торги',                test:x=>krtOnTender(x),
+   // Ноль здесь бывает двух видов, и путать их нельзя: «аукционов нет»
+   // и «лоты ни разу не собирали». Второй — наш пробел, а выглядит как
+   // ответ о рынке: на проде склад связок был пуст при восьми живых
+   // аукционах на право договора о КРТ (владелец, 05.09.2026).
+   blank:()=>krtTendersKnown()?'':'не собирали'},
   {value:'running',  name:'В реализации',         test:x=>krtStatusKind(x)==='running'},
   {value:'unparsed', name:'Карточка не разобрана',test:x=>krtBroken(x)},
  ]},
@@ -1441,7 +1446,18 @@ function krtValue(x,key){
 // список по имени (владелец, 04.09.2026: «шаги тоже не сортируют ничего»).
 // Внутри равных остаётся порядок списка по умолчанию — по баллу, — и имя
 // только последним, чтобы порядок был устойчив.
-function krtTieBreak(a,b){
+function krtTieBreak(a,b,key){
+ // У «Статуса» и «Шага» равных большинство, и у площадки-решения статуса
+ // города нет вовсе — экран печатает всем одно слово. Содержание такой строки
+ // и есть её ДАТА: «статус это дата и она не сортируется правильно»
+ // (владелец, 05.09.2026). Значит внутри одинакового статуса порядок задаёт
+ // дата проекта решения, новые выше, а балл и имя идут после неё.
+ if(key==='status'||key==='stage'){
+  const da=krtValue(a,'decided'), db=krtValue(b,'decided');
+  const ma=da===null||da===undefined, mb=db===null||db===undefined;
+  if(!ma&&!mb&&da!==db)return db-da;
+  if(ma!==mb)return ma?1:-1;
+ }
  const sa=krtValue(a,'score'), sb=krtValue(b,'score');
  const na=sa===null||sa===undefined, nb=sb===null||sb===undefined;
  if(!na&&!nb&&sa!==sb)return sb-sa;
@@ -1452,12 +1468,12 @@ function krtCompare(a,b){
  const {key,dir}=state.krtSort, va=krtValue(a,key), vb=krtValue(b,key);
  const na=va===null||va===undefined||va==='', nb=vb===null||vb===undefined||vb==='';
  // Неизвестное — вниз при любом направлении.
- if(na&&nb)return krtTieBreak(a,b);
+ if(na&&nb)return krtTieBreak(a,b,key);
  if(na)return 1;
  if(nb)return -1;
  if(typeof va==='string'||typeof vb==='string')
-  return dir*String(va).localeCompare(String(vb),'ru')||krtTieBreak(a,b);
- return dir*(va-vb)||krtTieBreak(a,b);
+  return dir*String(va).localeCompare(String(vb),'ru')||krtTieBreak(a,b,key);
+ return dir*(va-vb)||krtTieBreak(a,b,key);
 }
 function krtSortBy(key){
  // Второе нажатие переворачивает. У имени и статуса по умолчанию по возрастанию,
@@ -1529,6 +1545,15 @@ function krtFilterCount(axis,option){
  });
  return n;
 }
+// Собирали ли мы лоты вообще. Связку «площадка ↔ лот» помнит сервер и отдаёт
+// её со строками; пустой склад — это «не спрашивали», а не «торгов нет», и
+// подпись варианта обязана это различать. Тот же счётчик молчания, что у
+// карточек города.
+function krtTendersKnown(){
+ if(Object.keys(state.krtTenders||{}).length)return true;
+ return (state.krt||[]).some(x=>(x.tender_lots||[]).length||x.tender_lots_seen_at);
+}
+
 function renderKrtFilterCounts(){
  KRT_FILTERS.forEach(axis=>{
   const box=$(axis.box+'Options');
@@ -1540,7 +1565,8 @@ function renderKrtFilterCounts(){
          text=document.createElement('span');
    label.className='multi-option';
    input.type='checkbox';input.value=option.value;input.checked=chosen.has(option.value);
-   text.textContent=option.name+' ('+krtFilterCount(axis,option)+')';
+   const blank=typeof option.blank==='function'?option.blank():'';
+   text.textContent=option.name+' ('+(blank||krtFilterCount(axis,option))+')';
    input.onchange=()=>{
     input.checked?chosen.add(option.value):chosen.delete(option.value);
     filterKrt();
