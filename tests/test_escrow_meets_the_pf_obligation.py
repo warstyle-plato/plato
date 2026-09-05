@@ -119,8 +119,12 @@ def test_the_chart_legend_is_declared_once():
     assert core.PAGE.count(core.ESCROW_CHART_LEGEND_PLACEHOLDER) == 0, \
         "подстановка легенды не сработала — на странице остался плейсхолдер"
     names = [text for text, _colour, _style in core._ESCROW_CHART_LEGEND]
-    assert "Раскрыто с эскроу, накопленно" in names
-    assert "Продано после ввода, накопленно" in names
+    # Утверждение здесь — «легенда одна», а не «линия зовётся вот так». Имена
+    # держались строкой с ошибкой («накопленно»), и проверка закрепляла её:
+    # правка верного написания падала как поломка.
+    assert "Раскрыто с эскроу" in " ".join(names)
+    assert "Продано после ввода" in " ".join(names)
+    assert not [text for text in names if "накопленно" in text], names
     # Легенда стоит у каждого графика — у сводного, у отчётного и у карточек
     # очередей, — но подставлена везде одна и та же. Значит проверяется не
     # число вхождений (графиком больше — и проверка упала бы на верной
@@ -171,7 +175,20 @@ def test_the_report_shows_the_chart_the_pdf_prints():
     page = core.PAGE
     assert 'id="reportEscrowChart"' in page
     assert 'id="reportEscrowNote"' in page
-    body = page.split("function renderFinanceChart(")[1][:900]
+    # Границей служат скобки функции, а не окно в 900 знаков: комментарий
+    # рядом однажды выталкивает искомое за него, и проверка падает на верной
+    # правке. Функция — контракт, и мерить надо её.
+    start = page.index("function renderFinanceChart(")
+    depth, index, seen = 0, page.index("{", start), False
+    while index < len(page):
+        if page[index] == "{":
+            depth, seen = depth + 1, True
+        elif page[index] == "}":
+            depth -= 1
+            if seen and depth == 0:
+                break
+        index += 1
+    body = page[start:index + 1]
     assert "reportEscrowChart" in body, "отчёт не получает тот же график"
     assert "reportEscrowNote" in body
 

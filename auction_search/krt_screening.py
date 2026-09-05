@@ -547,6 +547,20 @@ def build_krt_model_screening(
     """
     if not project:
         return {"available": False, "reason": "Проект КРТ не найден в официальном каталоге"}
+    # Съехавшая карточка называет себя сама (`parse_problem`), и до модели она
+    # доходить не должна. На «ул. Мусоргского» площадь участка вышла 26 500 «га»
+    # — это метры, съехавшие на поле, — и на них расчёт выдал LLCR 1,10x, маржу
+    # 8,7% и балл 55: правдоподобный вердикт из чисел, которые стоят не в своих
+    # колонках. У «2-й Звенигородской» районом стало слово статуса, и адрес
+    # «Москва, район Планируемый» уехал в геокодер, где нашёлся Краснодарский
+    # край. Отказ с причиной честнее: экран уже показывает такую строку как
+    # «не разобрано», а балл непосчитанную модель не снижает.
+    problem = str(project.get("parse_problem") or "").strip()
+    if problem:
+        return {
+            "available": False,
+            "reason": f"Карточка каталога разобрана со сдвигом ({problem}) — считать нечем",
+        }
     housing_gfa = _number(project.get("housing_gfa_sqm"))
     if housing_gfa <= 0:
         return {
@@ -595,6 +609,9 @@ def build_krt_model_screening(
         "retail_gba_sqm": 0.0,
         "retail_saleable_sqm": 0.0,
         "above_parking_enabled": False,
+        # ФОК каталог КРТ не объявляет: включает его человек, а не память
+        # о прошлом проекте.
+        "sports_enabled": False,
     })
     # Площадка КРТ — другой участок, и всё, что относится к участку, обязано
     # обнулиться: список этих полей один, его держит страница
@@ -782,8 +799,13 @@ def build_krt_model_screening(
         + (f"; слабейшая очередь — {weakest_llcr:.2f}x." if len(phases) > 1 else ".")
     )
 
+    # Источник объёма называется по имени площадки: у 298 строк каталога из 580
+    # карточки на krt.mos.ru нет вовсе, и подпись «объём krt.mos.ru» была бы
+    # утверждением о документе, которого мы не читали.
+    housing_source = ("проекта решения на mos.ru" if project.get("no_card")
+                      else "krt.mos.ru")
     assumptions = [
-        f"Жилой объём krt.mos.ru {_ru_number(housing_gfa)} м² принят за ГНС; "
+        f"Жилой объём {housing_source} {_ru_number(housing_gfa)} м² принят за ГНС; "
         f"общая площадь — {_ru_number(total_area)} м² "
         f"({_number(apartment_ratios.get('total_of_gns')) * 100:.0f}% ГНС), "
         f"продаваемая — {_ru_number(saleable)} м² "

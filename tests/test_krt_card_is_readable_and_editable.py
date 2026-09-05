@@ -116,11 +116,14 @@ def test_a_custom_ratio_does_not_reach_the_shared_ranking():
 
 def test_the_card_folds_its_details():
     page = auctions_page()
-    for summary in ("Почему такой балл", "Остальные ТЭП каталога", "Пропорции ТЭП",
+    # «Пропорции ТЭП» и «Чьё это КРТ» с 0.22.8 — подзаголовки внутри своих
+    # разделов, а не складки внутри складок: их держит
+    # tests/test_the_krt_card_says_each_thing_once.py.
+    for summary in ("Почему такой балл", "Остальные ТЭП и пропорции", "Пропорции ТЭП",
                     "Что поставлено в модель", "Что пока не учтено",
                     "Реализуемые проекты рядом"):
         assert summary in page, summary
-    assert page.count("details class=\"fold\"") >= 6
+    assert page.count("details class=\"fold\"") >= 5
 
 
 def test_the_verdict_stays_open():
@@ -134,13 +137,15 @@ def test_the_verdict_stays_open():
     assert "krtScoreBoxHtml(" in head, "балл уехал под кат"
     box_start = page.index("function krtScoreBoxHtml")
     box = page[box_start:page.index("\nfunction ", box_start + 10)]
-    assert "Оценка Платона" in box
+    assert "Балл площадки" in box
     # Метры рисует паспорт площадки — он же несёт ссылку на бумагу. Проверяем
     # вызов и содержимое самого паспорта: держать здесь текст соседней строки
     # значит падать на всякой перестановке карточки, ничего не сказав о том,
     # спрятаны метры или нет.
     assert "krtPassport(x)" in head, "паспорт площадки уехал под кат"
-    passport_at = page.index("function krtPassport")
+    # Скобка обязательна: рядом объявлена krtPassportValue, и без неё срез
+    # берёт соседнюю функцию и падает не о том.
+    passport_at = page.index("function krtPassport(")
     passport = page[passport_at:page.index("\nfunction ", passport_at + 10)]
     for named in ("Жильё", "Всего построить", "Площадь"):
         assert named in passport, named

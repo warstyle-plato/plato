@@ -84,7 +84,27 @@ def test_the_field_asks_for_a_whole_number() -> None:
     assert "Math.floor(limit" in body, "ограничение остатком возвращает дробь"
 
 
-def test_the_transfer_unit_is_named_on_every_row() -> None:
-    """«Передаётся» без единицы — это вопрос, а не подпись."""
-    assert "передаётся в ${givenUnit}" in PAGE
-    assert "phaseGivenField(k)==='transfer'?'м²':'шт.'" in PAGE
+def test_the_transfer_row_names_what_it_is_taken_from() -> None:
+    """«Передаётся в м²» рядом с метрами И штуками не отвечает, из чего вычесть."""
+    assert "передаётся, м² — из продаваемой площади" in PAGE
+    assert "передаётся, шт. — из продаваемых мест" in PAGE
+
+
+def test_a_social_object_has_no_transfer_cell() -> None:
+    """Садик не отдают наполовину: продаваемой площади у него нет вовсе.
+
+    С появлением ФОКа таких строк стало две породы: у соцобъекта передаётся
+    весь объект, у ФОКа передача решается признаком «что с объектом дальше».
+    Обе рисуются одинаково — «передаётся» не вводится руками, — и список у них
+    один: `DERIVED_TRANSFER_PRODUCTS`. Второй список разошёлся бы с первым
+    молча, и значение доехало бы мимо экрана.
+    """
+    assert "const SOCIAL_TEP_PRODUCTS=['kindergarten','school','clinic'];" in PAGE
+    assert "const DERIVED_TRANSFER_PRODUCTS=SOCIAL_TEP_PRODUCTS.concat(['sports']);" in PAGE
+    assert "передаётся городу целиком" in PAGE
+    assert "DERIVED_TRANSFER_PRODUCTS.includes(k)\n    ? `<div class=\"phase-given-none\"" in PAGE, (
+        "у соцобъекта по-прежнему рисуется поле ввода")
+    setter = PAGE[PAGE.index("function setPhaseProductGiven("):]
+    setter = setter[:setter.index("\nfunction ")]
+    assert "if(DERIVED_TRANSFER_PRODUCTS.includes(key))return;" in setter, (
+        "правило одно на отрисовку и на ввод — иначе значение доедет мимо экрана")

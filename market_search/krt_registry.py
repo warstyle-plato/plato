@@ -98,11 +98,26 @@ def _address_parts(value: Any) -> list[str]:
     pieces = [piece.strip() for piece in str(value or "").split(",") if piece.strip()]
     parts: list[str] = []
     for piece in pieces:
-        if parts and re.match(r"^(вл\.?|влд\.?|владение|д\.?|дом|стр\.?|к\.?|корп\.?)\s*\S", piece, re.I):
+        # Продолжение предыдущего адреса — указатель владения («вл. 8») либо
+        # ГОЛОЕ ЧИСЛО: «стр. 1, 2» и «вл. 4, 6» — это одно владение с двумя
+        # строениями, а не второй адрес. Пока голое число становилось своей
+        # частью, оно ловило что угодно: «Большой Тишинский пер., влд. 8,
+        # стр. 1,2» совпадало по части «2» с «Генерала Алексеева пр-т … 4801
+        # пр-д, вл. 4, стр. 1, 2» в Зеленограде — 28 км от места, и контур
+        # чужой площадки стоял в карточке под подписью «официальный полигон».
+        # Та же ошибка, что у одинокой цифры в разборе публикаций.
+        continuation = re.match(
+            r"^(вл\.?|влд\.?|владение|д\.?|дом|стр\.?|к\.?|корп\.?|корпус)\s*\S", piece, re.I)
+        bare_number = re.fullmatch(r"\d+[а-яa-z]?(?:/\d+[а-яa-z]?)?", piece, re.I)
+        if parts and (continuation or bare_number):
             parts[-1] = parts[-1] + ", " + piece
         else:
             parts.append(piece)
-    return [_address_key(part) for part in parts if _address_key(part)]
+    # Ключом совпадения работает только та часть, где названо МЕСТО: слово
+    # длиной от трёх букв. «№17» или «2» местом не являются, и совпадение по
+    # ним — совпадение по букве, а не по адресу.
+    return [_address_key(part) for part in parts
+            if _address_key(part) and re.search(r"[а-яёa-z]{3,}", _address_key(part))]
 
 
 def _map_match(sites: list[dict[str, Any]], clean: str, name: str = "",
@@ -253,10 +268,18 @@ def _number(text: str) -> float | None:
 
 
 # Округа Москвы так, как их пишет сам каталог: ТАО и НАО там раздельно.
+#
+# Регистр каталог держит как придётся: Зеленоградский он пишет и «ЗелАО», и
+# «ЗелАо». Пока набор сравнивался буква в букву, пять верно разобранных строк
+# из восьми объявленных «неразобранными» (снимок прода 05.09.2026) стояли на
+# экране с пометкой о съезде — а кричащая зря проверка хуже отсутствующей, её
+# перестают читать. Сравнение идёт по свёрнутому регистру; список остаётся
+# списком имён, а не образцом.
 _OKRUGS = frozenset((
     "ЦАО", "САО", "СВАО", "ВАО", "ЮВАО", "ЮАО", "ЮЗАО", "ЗАО", "СЗАО",
     "ЗелАО", "ТАО", "НАО", "ТиНАО",
 ))
+_OKRUGS_FOLDED = frozenset(name.casefold() for name in _OKRUGS)
 
 
 def parse_problem(row: KrtTerritory) -> str:
@@ -274,7 +297,7 @@ def parse_problem(row: KrtTerritory) -> str:
     """
     problems: list[str] = []
     okrug = (row.okrug or "").strip()
-    if okrug and okrug not in _OKRUGS:
+    if okrug and okrug.casefold() not in _OKRUGS_FOLDED:
         problems.append(f"округ «{okrug}» не из московских")
     status = (row.status or "").strip().casefold()
     if status and "планируем" not in status and "реализац" not in status:
