@@ -103,6 +103,45 @@ def _address_parts(value: Any) -> list[str]:
     return [_address_key(part) for part in parts if _address_key(part)]
 
 
+def _map_match(sites: list[dict[str, Any]], clean: str, name: str = "",
+               project: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Найти площадку в записях файла карты — слагом, именем, адресом, паспортом.
+
+    Правило совпадения одно на обе поверхности: карточка спрашивает про одну
+    площадку, обзорная карта — про все 268 сразу, и второе правило разошлось
+    бы с первым молча: одна площадка была бы «в файле» на карточке и «нет в
+    файле» на карте, обе поверхности выглядели бы верными.
+    """
+    for site in sites:
+        if str(site.get("slug") or "") == clean:
+            return {"site": dict(site), "problem": "", "matched": "slug"}
+    wanted = _map_name_key(name)
+    if wanted:
+        for site in sites:
+            if _map_name_key(site.get("name")) == wanted:
+                return {"site": dict(site), "problem": "", "matched": "name"}
+    # Имя одно, записано по-разному: сокращения адреса и составные имена
+    # из нескольких владений. У Варшавского ш., вл. 37 имя списка — два
+    # адреса через запятую, и точный ключ не совпадал ни с чем (владелец,
+    # 03.09.2026: «почему у него единственного нет верного контура»).
+    wanted_key = _address_key(name)
+    wanted_parts = set(_address_parts(name))
+    if wanted_key:
+        for site in sites:
+            site_key = _address_key(site.get("name"))
+            site_parts = set(_address_parts(site.get("name")))
+            if site_key == wanted_key or (wanted_parts and site_parts & wanted_parts):
+                return {"site": dict(site), "problem": "", "matched": "address"}
+    # Последний ключ — паспорт: район, площадь и жилой объём в обоих
+    # источниках из одного реестра.
+    if project:
+        twins = [site for site in sites if _same_territory(site, project)]
+        if len(twins) == 1:
+            return {"site": dict(twins[0]), "problem": "", "matched": "passport"}
+    return {"site": None,
+            "problem": f"площадки нет в файле карты реестра ({len(sites)} площадок)"}
+
+
 def _same_territory(site: dict[str, Any], project: dict[str, Any]) -> bool:
     """Одна площадка по паспорту: район, площадь и жилой объём совпали.
 
@@ -342,6 +381,8 @@ class KrtRegistry:
         self._cards_lock = threading.Lock()
         self._tep_filling = False
         self._tep_lock = threading.Lock()
+        self._outlines_filling = False
+        self._outlines_lock = threading.Lock()
 
     def projects(self, *, refresh: bool = False, max_pages: int = 100) -> list[KrtTerritory]:
         cached = load_json(self.path)
@@ -1053,118 +1094,12 @@ class KrtRegistry:
         except Exception as exc:  # noqa: BLE001 — это не «нет контура», а «нет ответа»
             return {"site": None,
                     "problem": f"файл карты реестра не прочитан: {type(exc).__name__}"}
-        sites = (payload or {}).get("sites") or []
-        return self._map_match(sites, clean, name, project)
-
-    def _map_match(self, sites: list[dict[str, Any]], clean: str, name: str = "",
-                   project: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Сопоставление площадки с записью файла карты. Один разбор на всех.
-
-        Читает готовый список, а не файл: у карты Москвы это 282 сравнения на
-        один запрос, и чтение файла на каждое было бы чтением одного и того же
-        по три сотни раз.
-        """
-        for site in sites:
-            if str(site.get("slug") or "") == clean:
-                return {"site": dict(site), "problem": "", "matched": "slug"}
-        wanted = _map_name_key(name)
-        if wanted:
-            for site in sites:
-                if _map_name_key(site.get("name")) == wanted:
-                    return {"site": dict(site), "problem": "", "matched": "name"}
-        # Имя одно, записано по-разному: сокращения адреса и составные имена
-        # из нескольких владений. У Варшавского ш., вл. 37 имя списка — два
-        # адреса через запятую, и точный ключ не совпадал ни с чем (владелец,
-        # 03.09.2026: «почему у него единственного нет верного контура»).
-        wanted_key = _address_key(name)
-        wanted_parts = set(_address_parts(name))
-        if wanted_key:
-            for site in sites:
-                site_key = _address_key(site.get("name"))
-                site_parts = set(_address_parts(site.get("name")))
-                if site_key == wanted_key or (wanted_parts and site_parts & wanted_parts):
-                    return {"site": dict(site), "problem": "", "matched": "address"}
-        # Последний ключ — паспорт: район, площадь и жилой объём в обоих
-        # источниках из одного реестра.
-        if project:
-            twins = [site for site in sites if _same_territory(site, project)]
-            if len(twins) == 1:
-                return {"site": dict(twins[0]), "problem": "", "matched": "passport"}
-        return {"site": None,
-                "problem": f"площадки нет в файле карты реестра ({len(sites)} площадок)"}
+        return _map_match((payload or {}).get("sites") or [], clean, name, project)
 
     def map_site(self, slug: str, name: str = "",
                  project: dict[str, Any] | None = None) -> dict[str, Any] | None:
         """Площадка из файла карты: официальный контур и центр."""
         return self.map_lookup(slug, name, project).get("site")
-
-    def fill_decision_outlines_in_background(self, slugs, *, lookup, limit: int = 6) -> bool:
-        """Дочитать контуры по перечню решения — фоном и малыми порциями.
-
-        Порция маленькая намеренно: у одной площадки в перечне бывает шесть
-        десятков кадастровых номеров, и каждый — свой запрос в ЕГРН. Карта
-        показывает прочитанное и говорит, сколько ещё не прочитано; следующее
-        открытие дочитает следующую порцию.
-        """
-        clean = [str(slug or "").strip() for slug in slugs or []]
-        wanted = [slug for slug in clean
-                  if re.fullmatch(r"[a-zA-Z0-9_-]{2,180}", slug or "")
-                  and not fresh(self.outline_dir / f"{slug}.json", self.outline_ttl_seconds)]
-        if not wanted or not callable(lookup):
-            return False
-        with self._outline_fill_lock:
-            if self._outline_filling:
-                return False
-            self._outline_filling = True
-
-        def run() -> None:
-            try:
-                for slug in wanted[:max(1, int(limit))]:
-                    try:
-                        self.decision_outline(slug, lookup=lookup)
-                    except Exception:  # noqa: BLE001
-                        continue
-            finally:
-                with self._outline_fill_lock:
-                    self._outline_filling = False
-
-        threading.Thread(target=run, name="krt-outlines", daemon=True).start()
-        return True
-
-    def decision_outlines_known(self, slugs: list[str]) -> dict[str, dict[str, Any]]:
-        """Уже прочитанные контуры по документу. Наружу не ходит.
-
-        Нужна карте Москвы: файл реестра — не весь реестр, и у 35 площадок
-        каталога записи в нём нет вовсе. Спрашивать ЕГРН по всем ним в момент
-        отрисовки карты нельзя — это минуты; поэтому карта берёт прочитанное, а
-        недостающее дочитывается фоном, как карточки города.
-        """
-        out: dict[str, dict[str, Any]] = {}
-        for slug in slugs or []:
-            clean = str(slug or "").strip()
-            if not re.fullmatch(r"[a-zA-Z0-9_-]{2,180}", clean):
-                continue
-            cached = load_json(self.outline_dir / f"{clean}.json")
-            if (isinstance(cached, dict) and cached.get("schema_version") == 1
-                    and cached.get("rings_merc")):
-                out[clean] = dict(cached)
-        return out
-
-    def map_missing(self, projects: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Площадки каталога, которых нет в файле карты реестра."""
-        try:
-            payload = self.map_dataset()
-        except Exception:  # noqa: BLE001
-            return []
-        sites = (payload or {}).get("sites") or []
-        missing = []
-        for row in projects or []:
-            slug = str((row or {}).get("slug") or "").strip()
-            if not slug:
-                continue
-            if not self._map_match(sites, slug, str(row.get("name") or ""), row).get("site"):
-                missing.append(row)
-        return missing
 
     def decision_outline(self, slug: str, *, lookup: Callable[[list[str]], list[dict[str, Any]]],
                          refresh: bool = False, max_numbers: int = 60) -> dict[str, Any]:
@@ -1269,6 +1204,148 @@ class KrtRegistry:
         save_json(cache_path, result)
         return result
 
+    def outline_cached(self, slug: str) -> dict[str, Any] | None:
+        """Контур из решения, если он УЖЕ посчитан. Сеть здесь не трогается.
+
+        Обзорная карта рисует весь каталог сразу, и спрашивать ЕГРН по перечню
+        каждой недостающей площадки внутри запроса нельзя — это десятки
+        обходов на одно открытие. Поэтому карта показывает прочитанное, а
+        дочитывает фон (`fill_outlines_in_background`).
+
+        Просроченный ответ здесь годится: контур участка меняется реже, чем
+        живёт кэш, а не нарисовать вовсе — это показать площадку как
+        отсутствующую в реестре.
+        """
+        clean = str(slug or "").strip()
+        if not re.fullmatch(r"[a-zA-Z0-9_-]{2,180}", clean):
+            return None
+        cached = load_json(self.outline_dir / f"{clean}.json")
+        if isinstance(cached, dict) and cached.get("schema_version") == 1:
+            return dict(cached)
+        return None
+
+    def map_supplement(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Площадки каталога, которых нет в файле карты города, — и что с ними.
+
+        Файл карты реестра несёт 263 записи, каталог — 268, и совпадают не все:
+        у части строк нет соответствия ни слагом, ни именем, ни паспортом. На
+        обзорной карте их не было вовсе, и про Нагатино владелец спросил трижды
+        (04.09.2026: «На карте крт Нагатино так и нет. Хотя контур в карточке
+        верный»). Контур им собирает тот же путь, что уже у карточки, — участки
+        ЕГРН по перечню проекта решения; здесь он только читается из кэша.
+
+        Ответ разделяет три состояния, и это главное: **нарисовано по решению**,
+        **перечень не спрашивали** (наш пробел, дочитает фон) и **спросили, а
+        контура нет** — с причиной документа. Слитые в одно «не нарисовано»,
+        они читались бы как отсутствие площадки в реестре.
+        """
+        try:
+            data = payload if isinstance(payload, dict) else self.map_dataset()
+        except Exception as exc:  # noqa: BLE001 — неответ файла карты не «нет площадок»
+            return {"sites": [], "gaps": [],
+                    "counts": {"catalogue": 0, "in_map": 0, "drawn": 0,
+                               "unread": 0, "no_outline": 0},
+                    "problem": f"файл карты реестра не прочитан: {type(exc).__name__}"}
+        sites = list((data or {}).get("sites") or [])
+        try:
+            rows = list(self.catalogue())
+        except Exception as exc:  # noqa: BLE001
+            return {"sites": [], "gaps": [],
+                    "counts": {"catalogue": 0, "in_map": len(sites), "drawn": 0,
+                               "unread": 0, "no_outline": 0},
+                    "problem": f"каталог не прочитан: {type(exc).__name__}"}
+        extra: list[dict[str, Any]] = []
+        gaps: list[dict[str, Any]] = []
+        in_map = unread = no_outline = 0
+        for row in rows:
+            slug = str(row.get("slug") or "").strip()
+            if not slug:
+                continue
+            name = str(row.get("name") or "")
+            if _map_match(sites, slug, name, dict(row)).get("site"):
+                in_map += 1
+                continue
+            outline = self.outline_cached(slug)
+            if outline is None:
+                unread += 1
+                gaps.append({"slug": slug, "name": name, "kind": "unread",
+                             "reason": "перечень участков решения ещё не читали"})
+                continue
+            rings = list(outline.get("rings_merc") or [])
+            if not rings:
+                no_outline += 1
+                gaps.append({"slug": slug, "name": name, "kind": "no_outline",
+                             "reason": str(outline.get("problem")
+                                           or "в решении нет участков с контуром")})
+                continue
+            centre = outline.get("centre_merc")
+            extra.append({
+                "slug": slug,
+                "url": str(row.get("url") or ""),
+                "name": name,
+                "status": str(row.get("status") or ""),
+                "okrug": str(row.get("okrug") or ""),
+                "district": str(row.get("district") or ""),
+                "area_ha": row.get("area_ha"),
+                "housing_gfa_sqm": row.get("housing_gfa_sqm"),
+                "rings_merc": rings,
+                "centre_merc": centre,
+                # Контур подписан своим происхождением: это состав территории
+                # ПО ДОКУМЕНТУ, а не официальный полигон границ, и рисуется он
+                # иначе. Одинаково нарисованные, два источника выглядели бы
+                # одним, и приближение читалось бы как граница города.
+                "outline_source": "decision",
+                "outline_area_ha": outline.get("area_ha"),
+                "outline_note": str(outline.get("problem") or ""),
+            })
+        return {
+            "sites": extra,
+            "gaps": gaps,
+            "counts": {"catalogue": len(rows), "in_map": in_map, "drawn": len(extra),
+                       "unread": unread, "no_outline": no_outline},
+            "problem": "",
+        }
+
+    def fill_outlines_in_background(
+            self, slugs: list[str] | tuple[str, ...],
+            *, lookup: Callable[[list[str]], list[dict[str, Any]]],
+            limit: int = 8) -> bool:
+        """Дочитать перечни решений тех площадок, которых нет в файле карты.
+
+        Порция мала намеренно: за одним слагом стоит проект решения на mos.ru,
+        распознавание скана и до шестидесяти запросов в ЕГРН — десяток таких
+        подряд город вправе счесть налётом. Следующее открытие карты дочитает
+        следующую порцию.
+
+        Работу берёт один: воркеров два, память у них раздельная, и без замка
+        оба пошли бы читать одно и то же.
+        """
+        clean = [str(slug or "").strip() for slug in slugs]
+        missing = [slug for slug in clean
+                   if re.fullmatch(r"[a-zA-Z0-9_-]{2,180}", slug or "")
+                   and self.outline_cached(slug) is None]
+        if not missing:
+            return False
+        with self._outlines_lock:
+            if self._outlines_filling:
+                return False
+            self._outlines_filling = True
+
+        def run() -> None:
+            try:
+                for slug in missing[:max(1, int(limit))]:
+                    try:
+                        self.decision_outline(slug, lookup=lookup)
+                    except Exception:  # noqa: BLE001
+                        # Не ответила одна площадка — читаем остальные: один
+                        # отказ не должен оставлять карту без всех контуров.
+                        continue
+            finally:
+                with self._outlines_lock:
+                    self._outlines_filling = False
+
+        threading.Thread(target=run, name="krt-decision-outlines", daemon=True).start()
+        return True
     def _read_order_details(self, order: dict[str, Any]) -> dict[str, Any]:
         """Распознать скан одного распоряжения. Отказ называется, а не молчит."""
         from . import krt_requirements as requirements

@@ -27,6 +27,8 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 import main_legacy as core  # noqa: E402
 
+import v4_inputs  # noqa: E402
+
 openpyxl = pytest.importorskip("openpyxl")
 
 BASE = {**core.DEFAULT_INPUTS, "purchase_price_mln": 700, "land_rights_cost_mln": 0,
@@ -52,25 +54,25 @@ def workbook(phasing, **overrides):
 
 def test_a_disabled_phasing_does_not_dictate_the_term():
     """Тридцать шесть месяцев вводных, двадцать четыре — в выключенной очереди."""
-    assert workbook(STALE)["Вводные"]["F88"].value == 36
+    assert v4_inputs.inputs(workbook(STALE))["F88"].value == 36
 
 
 def test_a_disabled_phasing_does_not_shift_the_start():
     """Сдвиг старта — оттуда же и так же молча."""
     book = workbook({**STALE, "phases": [{"name": "О1", "start_offset_months": 18,
                                           "construction_months": 24}]})
-    assert book["Вводные"]["D88"].value == book["Вводные"]["B8"].value
+    assert v4_inputs.inputs(book)["D88"].value == v4_inputs.inputs(book)["B8"].value
 
 
 def test_an_absent_phasing_takes_the_term_from_the_inputs():
     """Контроль: без всякой очерёдности книга и раньше брала срок из вводных."""
-    assert workbook({})["Вводные"]["F88"].value == 36
+    assert v4_inputs.inputs(workbook({}))["F88"].value == 36
 
 
 def test_an_enabled_phasing_still_dictates_the_term():
     """Правило не переворачивается: включённая очерёдность сроки задаёт."""
     book = workbook({**STALE, "enabled": True})
-    assert [book["Вводные"][f"F{row}"].value for row in range(88, 91)] == [24, 24, 24]
+    assert [v4_inputs.inputs(book)[f"F{row}"].value for row in range(88, 91)] == [24, 24, 24]
 
 
 def test_the_engine_agrees_when_phasing_is_off():
@@ -79,4 +81,4 @@ def test_the_engine_agrees_when_phasing_is_off():
     engine = core.calculate_phased(core.PhasedCalcRequest(
         inputs=dict(BASE), tep=core.TEP_DEFAULT, rates=[], phasing=dict(STALE)))
     assert engine["mode"] == "single"
-    assert workbook(STALE)["Вводные"]["F88"].value == BASE["construction_months"]
+    assert v4_inputs.inputs(workbook(STALE))["F88"].value == BASE["construction_months"]

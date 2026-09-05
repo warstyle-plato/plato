@@ -26,6 +26,8 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 import main_legacy as core  # noqa: E402
 
+import v4_inputs  # noqa: E402
+
 openpyxl = pytest.importorskip("openpyxl")
 
 BASE = {**core.DEFAULT_INPUTS, "purchase_price_mln": 12000,
@@ -70,14 +72,14 @@ def phased():
 
 def test_the_limit_is_a_formula_not_a_number(single):
     """Число здесь неотличимо от посчитанного и не двигается ни от чего."""
-    value = single["Вводные"]["B26"].value
+    value = v4_inputs.inputs(single)["B26"].value
     assert isinstance(value, str) and value.startswith("=") and "CF_1" in value
 
 
 def test_the_share_of_a_queue_is_a_formula_too(phased):
     """Доля от числа при живом лимите разошлась бы с ним на первой же правке."""
     for row in range(88, 92):
-        value = phased["Вводные"][f"V{row}"].value
+        value = v4_inputs.inputs(phased)[f"V{row}"].value
         assert isinstance(value, str) and value.startswith("="), f"V{row}"
 
 
@@ -86,7 +88,7 @@ def test_the_limit_equals_the_engine_on_one_queue(single):
         inputs=BASE, tep=core.TEP_DEFAULT, rates=[]))
     engine = (result["report"]["financing"].get("pf_limit") or 0) / 1_000_000
     assert engine > 0
-    assert evaluated(single).cell("Вводные", "B26") == pytest.approx(engine, abs=0.01)
+    assert evaluated(single).cell("Параметры модели", "B26") == pytest.approx(engine, abs=0.01)
 
 
 def test_the_limit_equals_the_engine_on_three_queues(phased):
@@ -98,10 +100,10 @@ def test_the_limit_equals_the_engine_on_three_queues(phased):
     assert len(limits) == 3 and all(limit > 0 for limit in limits)
 
     evaluator = evaluated(phased)
-    total = evaluator.cell("Вводные", "B26")
+    total = evaluator.cell("Параметры модели", "B26")
     assert total == pytest.approx(sum(limits), abs=0.01)
 
-    shares = [evaluator.cell("Вводные", f"V{row}") for row in range(88, 92)]
+    shares = [evaluator.cell("Параметры модели", f"V{row}") for row in range(88, 92)]
     assert sum(shares) == pytest.approx(1.0, abs=1e-9)
     for index, limit in enumerate(limits):
         assert total * shares[index] == pytest.approx(limit, abs=0.01), f"очередь {index + 1}"
@@ -113,12 +115,12 @@ def test_a_longer_queue_moves_the_limit_inside_excel():
     Проверяется не подстановкой числа движка, а пересчётом книги: срок
     строительства длиннее — расходы дороже с инфляцией, выборка больше,
     лимит выше. Число на этом месте осталось бы прежним."""
-    short = evaluated(book({}, construction_months=24)).cell("Вводные", "B26")
-    long = evaluated(book({}, construction_months=36)).cell("Вводные", "B26")
+    short = evaluated(book({}, construction_months=24)).cell("Параметры модели", "B26")
+    long = evaluated(book({}, construction_months=36)).cell("Параметры модели", "B26")
     assert long > short, (short, long)
 
 
 def test_the_limit_is_a_multiple_of_ten(phased):
     """Методика движка — округление вверх до 10 млн, и книга округляет так же."""
-    total = evaluated(phased).cell("Вводные", "B26")
+    total = evaluated(phased).cell("Параметры модели", "B26")
     assert total % 10 == pytest.approx(0.0, abs=1e-6)

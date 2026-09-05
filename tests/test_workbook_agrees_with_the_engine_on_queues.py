@@ -82,7 +82,7 @@ def workbook_queue_totals(inputs, tep, count) -> dict[str, float]:
     for name, column in COLUMNS.items():
         total = 0.0
         for row in QUEUE_ROWS:
-            value = evaluator.cell("Вводные", f"{column}{row}")
+            value = evaluator.cell("Параметры модели", f"{column}{row}")
             if isinstance(value, (int, float)):
                 total += float(value)
         totals[name] = total

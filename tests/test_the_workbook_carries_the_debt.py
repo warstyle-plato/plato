@@ -24,6 +24,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import v4_inputs  # noqa: E402
 
 import main as _wrapper  # noqa: E402
 
@@ -179,8 +182,8 @@ def test_the_flag_carries_the_engine_decision_not_the_intent():
     бы очередь рассчитавшейся, пока отчёт зовёт её дефолтной.
     """
     row = int(core._V4_CARRY_FLAG_CELL[1:])
-    on = _book(True)["Вводные"]
-    off = _book(False)["Вводные"]
+    on = v4_inputs.inputs(_book(True))
+    off = v4_inputs.inputs(_book(False))
     assert on[f"B{row}"].value == "Да", "на этом проекте перенос обязан примениться"
     assert off[f"B{row}"].value == "Нет"
     assert off[f"D{row}"].value == "carry_debt_applied", (
@@ -208,4 +211,4 @@ def test_a_refused_transfer_does_not_reach_the_workbook_as_applied():
     assert meta["missing"] == [], meta["missing"]
     book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
     row = int(core._V4_CARRY_FLAG_CELL[1:])
-    assert book["Вводные"][f"B{row}"].value == "Нет"
+    assert v4_inputs.inputs(book)[f"B{row}"].value == "Нет"

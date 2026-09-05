@@ -2342,7 +2342,12 @@ async function handoffKrt(x){
   sessionStorage.setItem('developaid.auction.pending.v1',JSON.stringify({
    krt_model:{inputs:d.inputs,tep:d.tep,phasing:d.phasing},
    krt_name:d.name||x.name||'',
-   krt_slug:x.slug
+   krt_slug:x.slug,
+   // Участок едет вместе с моделью: только земельные КН, здания ЕГРН уже
+   // отделил в контуре. Счёт прочитанного — рядом, иначе пустое поле
+   // читается как «участков в документе нет».
+   krt_cadastres:d.cadastral_numbers||[],
+   krt_cadastre_note:d.cadastral||null
   }));
   location.href='/?krt_import=1';
  }catch(e){say(String(e.message||e))}
@@ -2766,6 +2771,30 @@ async function loadKrtMap(){
    +'Это не значит, что площадок нет — реестр не прочитан.</div>';
  }finally{KRT_MAP.busy=false}
 }
+// Чего на карте НЕТ — числом и причиной. Файл карты города несёт не весь
+// реестр, и молча пропущенная площадка читается как её отсутствие: про
+// Нагатино владелец спросил трижды, глядя на карту без него (04.09.2026).
+// Три состояния разные: нарисовано по решению, перечень ещё не читали (наш
+// пробел, дочитывает фон) и спросили — контура нет (ответ документа).
+function krtMapCoverage(d,drawn){
+ const sup=d.supplement||{}, c=sup.counts||{};
+ if(sup.problem)
+  return `<div class="notice warn">Полнота карты не проверена: ${esc(String(sup.problem))}. `
+   +'Это не значит, что нарисованы все площадки реестра.</div>';
+ const missing=(c.drawn||0)+(c.unread||0)+(c.no_outline||0);
+ if(!missing)return '';
+ const bits=[];
+ if(c.drawn)bits.push(`${c.drawn} нарисованы пунктиром — контур собран из участков ЕГРН `
+   +'по перечню проекта решения');
+ if(c.unread)bits.push(`${c.unread} ещё не прочитаны — перечни решений дочитываются фоном, `
+   +'откройте карту снова через минуту');
+ if(c.no_outline)bits.push(`${c.no_outline} не нарисованы: в решении нет участков с контуром`);
+ const gaps=(sup.gaps||[]).filter(g=>g.kind==='no_outline').slice(0,6)
+   .map(g=>`${esc(String(g.name||g.slug||''))} — ${esc(String(g.reason||''))}`).join('; ');
+ return `<div class="source" style="margin-top:8px">Из ${c.catalogue||0} площадок каталога `
+  +`${c.in_map||0} есть в файле карты города, остальные ${missing}: ${bits.join('; ')}.`
+  +(gaps?` Из ненарисованных: ${gaps}.`:'')+'</div>';
+}
 function krtMapMarkup(d){
  const sites=(d.sites||[]).filter(s=>(s.rings_merc||[]).length);
  if(!sites.length||!d.bbox_merc)
@@ -2780,13 +2809,12 @@ function krtMapMarkup(d){
   const colour=krtMapColour(s,lots);
   const paths=(s.rings_merc||[]).map(ring=>'M'+ring.map(p=>
     place.px(p[0]).toFixed(1)+' '+place.py(p[1]).toFixed(1)).join('L')+'Z').join(' ');
-  // Чем нарисовано — часть ответа: официальный полигон реестра идёт сплошной
-  // линией, а состав территории по перечню участков решения — пунктиром.
-  // Одинаково они читались бы как один источник, а это разные утверждения.
-  const byDoc=String(s.source||'')==='decision';
-  return `<path d="${paths}" fill="${colour}" fill-opacity="${byDoc?'0.22':'0.34'}" stroke="${colour}"`
-   +` stroke-width="${byDoc?'1.6':'1.1'}"${byDoc?' stroke-dasharray="7 5"':''}`
-   +` data-i="${i}" class="krtshape"></path>`;
+  // Контур из перечня решения рисуется пунктиром: это состав территории по
+  // документу, а не официальный полигон города. Нарисованные одинаково, два
+  // источника выглядели бы одним, и приближение читалось бы как граница.
+  const guess=s.outline_source==='decision';
+  return `<path d="${paths}" fill="${colour}" fill-opacity="${guess?'0.16':'0.34'}" stroke="${colour}"`
+   +` stroke-width="1.1"${guess?' stroke-dasharray="4 3"':''} data-i="${i}" class="krtshape"></path>`;
  }).join('');
  const counts={};
  sites.forEach(s=>{const k=s.status||'—';counts[k]=(counts[k]||0)+1});
@@ -2795,7 +2823,10 @@ function krtMapMarkup(d){
    +`background:${String(name).toLowerCase().includes('реализац')?'#4E9BDE':'#C0392B'};margin-right:5px"></span>`
    +`${esc(name)} — ${n}</span>`).join('')
   +'<span style="margin-right:14px;white-space:nowrap"><span style="display:inline-block;width:10px;height:10px;'
-  +'background:#C4581B;margin-right:5px"></span>есть лот на торгах</span>';
+  +'background:#C4581B;margin-right:5px"></span>есть лот на торгах</span>'
+  +(sites.some(s=>s.outline_source==='decision')
+    ? '<span style="margin-right:14px;white-space:nowrap"><span style="display:inline-block;width:10px;height:10px;'
+      +'border:1px dashed #555;margin-right:5px"></span>контур по перечню решения, не полигон города</span>' : '');
  // Живая карта — та же, что у карточки участка: тайлы, перетаскивание, колесо,
  // линейка. Печатную картинку она не подменяет (её видно сразу и она уезжает в
  // отчёт), а отвечает на другой вопрос — «что вокруг».
@@ -2817,6 +2848,7 @@ function krtMapMarkup(d){
           background:#fff;border:1px solid var(--line);padding:8px 10px;font-size:12px;max-width:320px"></div>
    </div></div>
   <div class="source" style="margin-top:8px">${legend}</div>
+  ${krtMapCoverage(d,sites)}
   <div class="source">Границы — официальные полигоны реестра КРТ (${sites.length} площадок).
    Подложка — та же карта улиц, что в карточке участка. Наведите на площадку, чтобы увидеть сводку;
    нажмите на неё, чтобы открыть карточку, а на свободное место — чтобы открыть живую карту.
@@ -2830,7 +2862,7 @@ function openKrtLiveMap(sites){
  const shapes=(sites||[]).filter(s=>(s.rings_merc||[]).length).map(s=>({
   rings:s.rings_merc,
   colour:krtMapColour(s,(state.krtTenders[s.slug]||[]).length),
-  dashed:String(s.source||'')==='decision',
+  dashed:s.outline_source==='decision',
   key:s.slug||'',
   title:[s.name,[s.okrug,s.district].filter(Boolean).join(' · '),s.status,
          s.area_ha?s.area_ha+' га':''].filter(Boolean).join(' — '),
@@ -2839,7 +2871,7 @@ function openKrtLiveMap(sites){
  // Сколько контуров пришло из перечня решения, а не из файла карты: подпись
  // обязана назвать источник, иначе пунктир читается как та же официальная
  // граница, только тоньше.
- const byDoc=(sites||[]).filter(s=>String(s.source||'')==='decision'
+ const byDoc=(sites||[]).filter(s=>s.outline_source==='decision'
    &&(s.rings_merc||[]).length).length;
  openLandMap({
   shapes:shapes,

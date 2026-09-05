@@ -300,6 +300,18 @@ def _requirements_for_model(requirements: dict[str, Any] | None) -> dict[str, An
         "preservation_objects": len(preservation) or len(source.get("preservation") or []),
         "preservation_known_area_objects": sum(
             1 for item in preservation if _number(item.get("area_sqm")) > 0),
+        # Объём, объявленный решением, — числом. Карточка каталога сама с
+        # собой не сходится, а решение сходится: на Варшавском ш., вл. 37
+        # 229 490 + 214 210 = 443 700 при карточных 282 000 из 443 700.
+        "volumes": dict(source.get("volumes")
+                        or (source.get("decision") or {}).get("volumes") or {}),
+        # Состав территории по документу. Прежде перечень обрывался здесь:
+        # решение называет его поимённо (на Варшавском ш., вл. 37 — 60
+        # номеров, у шести проверенных площадок 8–60), карточка собирает по
+        # нему контур, а до модели не доезжал ни один. Здания и участки не
+        # разделяются тут: это делает ЕГРН, и делает один раз — в контуре.
+        "cadastral_numbers": list(source.get("cadastral_numbers") or []),
+        "cadastral_numbers_source": str(source.get("cadastral_numbers_source") or "none"),
         "resettlement": list(source.get("resettlement") or [])[:10],
         "resettlement_mentions": len(source.get("resettlement") or []),
         "construction": construction,
@@ -349,6 +361,33 @@ def _programme(
     nonresidential = _number(project.get("nonresidential_gfa_sqm"))
     business = _number(project.get("business_gfa_sqm"))
     total = _number(project.get("total_gfa_sqm"))
+    # Карточка каталога сама с собой не сходится: на Варшавском ш., вл. 37 её
+    # 229 490 + 52 510 дают 282 000 при заявленных 443 700. Решение сходится
+    # до метра и называет нежилого 214 210 — вчетверо больше. Документ сильнее
+    # карточки, но берётся он не на веру: только когда сошёлся сам с собой И
+    # его итог совпал с итогом каталога. Не совпал — значит прочитан не весь
+    # перечень зон (на Малахитовой это зона 1 из двух), и числа из него — это
+    # часть, выданная за целое.
+    volumes = dict(duties.get("volumes") or {})
+    decision_total = _number(volumes.get("total_sqm"))
+    volumes_taken = bool(
+        volumes.get("closes") and decision_total > 0 and total > 0
+        and abs(decision_total - total) <= 1.0)
+    utility = 0.0
+    if volumes_taken:
+        housing = _number(volumes.get("housing_sqm")) or housing
+        business = _number(volumes.get("business_sqm")) or business
+        # «Коммунального, производственного и иного назначения» решение задаёт
+        # МИНИМУМОМ и внутри нежилого. Продуктом девелопера этот объём не
+        # является: продать его по цене ТЦ значило бы выдумать выручку.
+        # Модель его не строит и не оценивает — и говорит об этом.
+        utility = _number(volumes.get("utility_sqm"))
+        named_non = _number(volumes.get("nonresidential_sqm"))
+        nonresidential = max(0.0, (named_non or business) - utility - business)
+    volumes["taken"] = volumes_taken
+    volumes["utility_sqm"] = utility or _number(volumes.get("utility_sqm"))
+    volumes["card_nonresidential_sqm"] = _number(project.get("nonresidential_gfa_sqm"))
+    volumes["card_total_sqm"] = total
     district = str(project.get("district") or "").strip()
     zone_two = core.district_zone_two(district)
     population = apartments_saleable_sqm / POPULATION_SQM_PER_PERSON
@@ -476,6 +515,10 @@ def _programme(
         "commercial_gba_sqm": round(commercial, 1),
         "commercial_negative": commercial < 0,
         "offices_gba_sqm": round(business, 1),
+        # Чем посчитан объём — карточкой или документом — часть ответа: два
+        # источника дают на Варшавском ш., вл. 37 разницу вчетверо, и на
+        # экране они выглядели бы одинаково достоверно.
+        "volumes": volumes,
         "balance": {
             "declared_sum_sqm": round(declared_sum, 1),
             "difference_sqm": round(difference, 1),
@@ -776,6 +819,22 @@ def build_krt_model_screening(
            if programme["city"]["district"] else " — район в карточке не назван, принята первая зона")
         + ". " + (social_text + "." if social_text else "Соцобъекты по нормативу не потребовались.")
     )
+    _volumes = programme.get("volumes") or {}
+    if _volumes.get("taken"):
+        assumptions.append(
+            "Объёмы взяты из проекта решения, а не из карточки каталога: карточка "
+            f"даёт нежилого {_ru_number(_volumes.get('card_nonresidential_sqm'))} м², "
+            f"решение — {_ru_number(_volumes.get('nonresidential_sqm'))} м², и "
+            "слагаемые решения сходятся с его же итогом, а слагаемые карточки — нет. "
+            "Документ сильнее карточки."
+        )
+    elif _volumes.get("total_sqm"):
+        assumptions.append(
+            "Проект решения объявляет свои объёмы "
+            f"({_ru_number(_volumes.get('total_sqm'))} м² всего), но в модель они не "
+            "взяты: перечень зон прочитан не весь — его итог не сошёлся с итогом "
+            "каталога. Часть, выданная за целое, хуже карточки."
+        )
     assumptions.append(
         f"Нежилой объём города {_ru_number(programme['city']['nonresidential_gfa_sqm'])} м² "
         f"за вычетом соцобъектов {_ru_number(programme['social_gba_sqm'])} м² дал "
@@ -840,6 +899,15 @@ def build_krt_model_screening(
         "Цена приобретения / входа принята равной нулю.",
         "Плата за ВРИ и оформление земельных правоотношений не включены.",
     ]
+    if _volumes.get("taken") and _number(_volumes.get("utility_sqm")) > 0:
+        exclusions.append(
+            f"Решение обязывает построить не менее {_ru_number(_volumes.get('utility_sqm'))} м² "
+            "коммунального, производственного и иного назначения. Продуктом девелопера "
+            "этот объём не является, и модель его не строит и не оценивает: продать его "
+            "по цене ТЦ значило бы выдумать выручку, а построить бесплатно — спрятать "
+            "расход. Сколько из него — подземный паркинг, который модель уже строит, "
+            "решение не разделяет."
+        )
     if programme["commercial_gba_sqm"] > 0 or programme["offices_gba_sqm"] > 0:
         objects = " и ".join(filter(None, (
             "ОСЗ" if programme["commercial_gba_sqm"] > 0 else "",
