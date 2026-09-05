@@ -378,6 +378,65 @@ def _room_shares(rooms: dict[str, Any] | None) -> dict[str, Any]:
     return out
 
 
+def _weighted_price(prices: dict[str, float], weights: dict[str, float]) -> tuple[float | None, float]:
+    """Цена метра при заданном наборе квартир.
+
+    Возвращает саму цену и долю набора, на которую цена известна: комнатность,
+    у которой цены нет, из веса выбрасывается — иначе она молча считалась бы по
+    средней, а средняя тут и есть предмет спора. Доля покрытия печатается
+    рядом с числом: «580 тыс при наборе соседей» на трети набора — не ответ.
+    """
+    known = {name: weights.get(name, 0.0) for name in prices if weights.get(name)}
+    total_weight = sum(weights.values())
+    covered = sum(known.values())
+    if not covered:
+        return None, 0.0
+    price = sum(prices[name] * weight for name, weight in known.items()) / covered
+    return round(price), round(covered / total_weight * 100, 1) if total_weight else 0.0
+
+
+def _mix_effect(
+    own_prices: dict[str, float],
+    own_weights: dict[str, float],
+    peer_prices: dict[str, float],
+    peer_weights: dict[str, float],
+) -> dict[str, Any]:
+    """Сколько разрыва в цене метра объясняется набором квартир, а не уровнем цен.
+
+    Вопрос владельца (05.09.2026): «соседи продают крупные лоты больше, и
+    поэтому цена у них ниже?» Внутри одного проекта метр тем дороже, чем мельче
+    квартира — на живом примере студии 644 тыс против 379 у трёшек, — поэтому
+    проект с крупным набором показывает цену ниже при тех же ценах на каждый
+    товар. Но ПО РЫНКУ связь обратная: у 174 проектов августа корреляция
+    «средний проданный лот ↔ медианная цена метра» +0,64, потому что крупные
+    форматы строят в дорогих классах. Значит на догадку отвечать нельзя — надо
+    считать на своём проекте.
+    
+    Считается стандартизацией: наша цена при НАШЕМ наборе и наша же цена при
+    наборе соседей. Разница между ними — вклад структуры; остаток общего
+    разрыва — уровень цен. Обе половины считаются на ЦЕНАХ ПРАЙСА по
+    комнатности из одного источника: смешивать их со средней ценой экспозиции
+    из кабинета нельзя, это разные величины.
+    """
+    own_at_own, own_cover = _weighted_price(own_prices, own_weights)
+    own_at_peer, cross_cover = _weighted_price(own_prices, peer_weights)
+    peer_at_peer, peer_cover = _weighted_price(peer_prices, peer_weights)
+    if own_at_own is None or own_at_peer is None or peer_at_peer is None:
+        return {}
+    out: dict[str, Any] = {
+        "own_at_own_mix": own_at_own,
+        "own_at_peers_mix": own_at_peer,
+        "peers_at_peers_mix": peer_at_peer,
+        "own_coverage_pct": own_cover,
+        "peers_coverage_pct": peer_cover,
+        "cross_coverage_pct": cross_cover,
+        "gap_pct": round((own_at_own / peer_at_peer - 1) * 100, 1),
+        "mix_pct": round((own_at_peer / own_at_own - 1) * 100, 1),
+        "level_pct": round((own_at_peer / peer_at_peer - 1) * 100, 1),
+    }
+    return out
+
+
 def rooms_block(
     subject: dict[str, Any], peers: list[dict[str, Any]], city: MoscowMarket
 ) -> MetricBlock:
@@ -453,6 +512,39 @@ def rooms_block(
             band: {"deals": _round(count), "share_pct": round(count / total * 100, 1)}
             for band, count in sorted(pooled_bands.items())
         }
+    # Цена метра по комнатности — то, чем проверяется догадка «у соседей дешевле,
+    # потому что лоты крупнее». Веса берутся по ОСТАТКУ: цены здесь прайсовые,
+    # то есть про экспозицию, и взвешивать их проданным значило бы считать цену
+    # витрины по набору сделок.
+    own_prices = {
+        name: float(item["price"])
+        for name, item in (subject.get("room_mix") or {}).items()
+        if item.get("price")
+    }
+    peer_prices: dict[str, list[float]] = {}
+    for row in peers:
+        for name, item in (row.get("room_mix") or {}).items():
+            if item.get("price"):
+                peer_prices.setdefault(name, []).append(float(item["price"]))
+    peer_median = {name: _median(values) for name, values in peer_prices.items()}
+    if own_prices and peer_median:
+        for name, price in sorted(peer_median.items()):
+            row = block.peers.setdefault("rooms", {}).setdefault(
+                name, {"title": ROOM_TITLES.get(name, name)}
+            )
+            row["price_per_sqm"] = _round(price)
+            row["projects"] = len(peer_prices[name])
+            own = own_prices.get(name)
+            row["vs_own_pct"] = _ratio(own, price) if own else None
+        own_rem = {
+            name: float(item.get("rem") or 0)
+            for name, item in (subject.get("room_mix") or {}).items()
+        }
+        effect = _mix_effect(own_prices, own_rem, peer_median, pooled_rem)
+        if effect:
+            block.subject["mix"] = effect
+    elif own_prices:
+        block.notes.append("Цен по комнатности у соседей нет — набор с уровнем не развести")
     if not block.peers:
         block.notes.append("Комнатности соседей в отчёте нет — сравнивать не с чем")
     return block

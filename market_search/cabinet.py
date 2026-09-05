@@ -1549,20 +1549,59 @@ function roomsChart(rows, deals){
 // Комнатность и полосы площади рисуются таблицами, а не плитками: у них по
 // четыре числа на строку, и плитками это читается как набор процентов без
 // хозяина. Экран здесь ничего не считает — доли пришли с сервера.
+// Доли в проданном против долей в остатке — парные полосы. Вымывание это и
+// есть расхождение двух полос одной строки: продаётся больше, чем лежит в
+// остатке, значит товар уходит, и наоборот. Считает сервер, здесь только
+// длина полосы от максимума — оформление, а не экономика.
+function shareBars(rows, aName, bName, note){
+  const live=(rows||[]).filter(r=>r.a!==null&&r.a!==undefined||r.b!==null&&r.b!==undefined);
+  if(!live.length) return '';
+  const top=Math.max(...live.flatMap(r=>[r.a||0, r.b||0]), 1);
+  const H=26, W=640, L=132, R=52, T=26;
+  const height=T+live.length*H+10;
+  const len=v=>(v===null||v===undefined)?0:(W-L-R)*(v/top);
+  let svg=`<svg viewBox="0 0 ${W} ${height}" width="100%" role="img">`;
+  svg+=`<rect x="${L}" y="6" width="9" height="9" fill="#C4581B"/>`
+     +`<text x="${L+13}" y="14" font-size="10.5" fill="#5b6b7d">${esc(aName)}</text>`
+     +`<rect x="${L+120}" y="6" width="9" height="9" fill="#8ea6bd"/>`
+     +`<text x="${L+133}" y="14" font-size="10.5" fill="#5b6b7d">${esc(bName)}</text>`;
+  live.forEach((r,i)=>{
+    const y=T+i*H;
+    svg+=`<text x="${L-8}" y="${y+13}" text-anchor="end" font-size="11" fill="#16202b">${esc(r.title)}</text>`;
+    [[r.a,'#C4581B',0],[r.b,'#8ea6bd',9]].forEach(([v,colour,off])=>{
+      if(v===null||v===undefined) return;
+      svg+=`<rect x="${L}" y="${y+off}" width="${len(v).toFixed(1)}" height="8" rx="1.5" fill="${colour}"`
+         +` data-tip="${esc(r.title+': '+num(v,1)+' %')}"></rect>`;
+    });
+    const both=[r.a,r.b].filter(v=>v!==null&&v!==undefined).map(v=>num(v,1)+' %').join(' / ');
+    svg+=`<text x="${W-R+6}" y="${y+13}" font-size="10.5" fill="#5b6b7d">${esc(both)}</text>`;
+  });
+  svg+='</svg>';
+  return '<div class="wrap">'+svg+'</div>'
+    +(note?`<div class="muted" style="font-size:12.5px;margin-top:4px">${esc(note)}</div>`:'');
+}
+
 function roomsTable(b){
   const ours=(b.subject||{}).rooms||{}, theirs=(b.peers||{}).rooms||{};
   const names=Object.keys({...ours,...theirs});
   if(!names.length) return '';
   const cell=v=>v===null||v===undefined?'—':num(v,1)+' %';
-  return '<h3>Комнатность: что берут и что остаётся</h3><div class="wrap"><table class="peers">'
+  const bars=shareBars(names.map(k=>{const a=ours[k]||{}, c=theirs[k]||{};
+      return {title:a.title||c.title||k, a:a.sold_share_pct, b:a.rem_share_pct};}),
+    'доля в проданном','доля в остатке',
+    'Полоса продаж длиннее полосы остатка — товар вымывается; короче — копится.');
+  return '<h3>Комнатность: что берут и что остаётся</h3>'+bars+'<div class="wrap"><table class="peers">'
     +'<tr><th>Комнатность</th><th class="num">У нас продано</th><th class="num">У нас в остатке</th>'
     +'<th class="num">У соседей продано</th><th class="num">У соседей в остатке</th>'
-    +'<th class="num">Наш прайс, ₽/м²</th></tr>'
+    +'<th class="num">Наш прайс, ₽/м²</th><th class="num">Прайс соседей</th>'
+    +'<th class="num">Мы к ним</th></tr>'
     +names.map(k=>{const a=ours[k]||{}, c=theirs[k]||{};
       return `<tr><td>${esc(a.title||c.title||k)}</td>`
         +`<td class="num">${cell(a.sold_share_pct)}</td><td class="num">${cell(a.rem_share_pct)}</td>`
         +`<td class="num">${cell(c.sold_share_pct)}</td><td class="num">${cell(c.rem_share_pct)}</td>`
-        +`<td class="num">${a.price_per_sqm?num(a.price_per_sqm):'—'}</td></tr>`;}).join('')
+        +`<td class="num">${a.price_per_sqm?num(a.price_per_sqm):'—'}</td>`
+        +`<td class="num">${c.price_per_sqm?num(c.price_per_sqm):'—'}</td>`
+        +`<td class="num">${c.vs_own_pct===null||c.vs_own_pct===undefined?'—':pct(c.vs_own_pct)}</td></tr>`;}).join('')
     +'</table></div>';
 }
 
@@ -1572,7 +1611,10 @@ function bandsTable(b){
   if(!names.length) return '';
   const label=k=>k.endsWith('+')?'от '+k.slice(0,-1)+' м²':k.replace('-','–')+' м²';
   const cell=v=>v===null||v===undefined?'—':num(v,1)+' %';
-  return '<h3>Полосы площади в проданном</h3><div class="wrap"><table class="peers">'
+  const bars=shareBars(names.map(k=>{const a=ours[k]||{}, c=theirs[k]||{};
+      return {title:label(k), a:a.share_pct, b:c.share_pct};}),
+    'наши сделки','у соседей', '');
+  return '<h3>Полосы площади в проданном</h3>'+bars+'<div class="wrap"><table class="peers">'
     +'<tr><th>Полоса</th><th class="num">Наши сделки</th><th class="num">Доля</th>'
     +'<th class="num">У соседей</th><th class="num">Доля</th></tr>'
     +names.map(k=>{const a=ours[k]||{}, c=theirs[k]||{};
@@ -1620,11 +1662,17 @@ function blockCard(b,ctx){
       +cell(pct(s.gap_pct),'разрыв')
       +(p.median?cell(num(p.median,1)+' м²','медиана соседей'):'');
   } else if(b.code==='rooms'){
-    const ours=s.rooms||{}, theirs=p.rooms||{};
+    const ours=s.rooms||{}, m=s.mix||{};
     const sold=Object.values(ours).reduce((a,r)=>a+(r.sold||0),0);
     kv=cell(sold||'—','продано лотов за месяц')
       +cell(num(s.bands_deals)||'—','сделок в полосах')
-      +cell(p.projects||'—','соседей с комнатностью');
+      +cell(p.projects||'—','соседей с комнатностью')
+      // Разложение разрыва — ответ на «а не в наборе ли квартир дело»: наш же
+      // прайс, посчитанный по набору соседей, отделяет структуру от уровня цен.
+      +(m.own_at_own_mix?cell(num(m.own_at_own_mix)+' ₽/м²','наш прайс по комнатности'):'')
+      +(m.peers_at_peers_mix?cell(num(m.peers_at_peers_mix)+' ₽/м²','у соседей'):'')
+      +(m.mix_pct===undefined?'':cell(pct(m.mix_pct),'из разрыва — набор квартир'))
+      +(m.level_pct===undefined?'':cell(pct(m.level_pct),'из разрыва — уровень цен'));
   } else if(b.code==='payment'){
     kv=cell(s.mortgage_pct===undefined?'—':num(s.mortgage_pct,1)+' %','ипотека у проекта')
       +cell(p.median===undefined||p.median===null?'—':num(p.median,1)+' %','медиана соседей')
