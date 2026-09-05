@@ -268,10 +268,18 @@ def _number(text: str) -> float | None:
 
 
 # Округа Москвы так, как их пишет сам каталог: ТАО и НАО там раздельно.
+#
+# Регистр каталог держит как придётся: Зеленоградский он пишет и «ЗелАО», и
+# «ЗелАо». Пока набор сравнивался буква в букву, пять верно разобранных строк
+# из восьми объявленных «неразобранными» (снимок прода 05.09.2026) стояли на
+# экране с пометкой о съезде — а кричащая зря проверка хуже отсутствующей, её
+# перестают читать. Сравнение идёт по свёрнутому регистру; список остаётся
+# списком имён, а не образцом.
 _OKRUGS = frozenset((
     "ЦАО", "САО", "СВАО", "ВАО", "ЮВАО", "ЮАО", "ЮЗАО", "ЗАО", "СЗАО",
     "ЗелАО", "ТАО", "НАО", "ТиНАО",
 ))
+_OKRUGS_FOLDED = frozenset(name.casefold() for name in _OKRUGS)
 
 
 def parse_problem(row: KrtTerritory) -> str:
@@ -289,7 +297,7 @@ def parse_problem(row: KrtTerritory) -> str:
     """
     problems: list[str] = []
     okrug = (row.okrug or "").strip()
-    if okrug and okrug not in _OKRUGS:
+    if okrug and okrug.casefold() not in _OKRUGS_FOLDED:
         problems.append(f"округ «{okrug}» не из московских")
     status = (row.status or "").strip().casefold()
     if status and "планируем" not in status and "реализац" not in status:

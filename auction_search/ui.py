@@ -1007,6 +1007,15 @@ function krtNumber(x,key){
  const value=Number(raw);
  return Number.isFinite(value)?value:null;
 }
+function krtBrokenModelNote(x){
+ // Экономика съехавшей карточки — это не «пока не считали», а «посчитано не по
+ // тем числам»: на «ул. Мусоргского» площадь участка стояла 26 500 «га», и
+ // модель выдала на них LLCR 1,10x, маржу 8,7% и балл 55. Прежде посчитанное
+ // остаётся в файле до следующего прогона, поэтому блок называет причину, а не
+ // рисует числа: правдоподобный вердикт хуже отсутствующего, отличить его на
+ // экране не от чего.
+ return `<div class="section"><h3>Что это даёт</h3><div class="notice warn">Модель по этой площадке не считается: карточка каталога разобрана со сдвигом — ${esc(x.parse_problem||'значения съехали на поле')}. Числа стоят не в своих колонках, и посчитанное на них не показывается.</div></div>`;
+}
 function krtUnparsedCell(x){
  return `<span class="source" title="${esc('Карточка каталога разобрана со сдвигом: '+(x.parse_problem||'значения съехали на поле'))}">не разобрано</span>`;
 }
@@ -2131,8 +2140,20 @@ function krtPriceVerdict(x){
               +(over?' — по этой цене проект не проходит':' — умещается в потолок')};
 }
 
+// Съезд разбора решают в одном месте на обе половины экрана: строку рейтинга
+// он тоже помечает, и без этого таблица показывала два разных ответа об одной
+// площадке — колонки ТЭП «не разобрано», а рядом LLCR 1,10x и маржа 8,7%,
+// посчитанные на тех же съехавших числах.
+function krtBrokenSlug(slug){
+ const row=state.krtRank[slug];
+ if(row&&row.parse_problem)return String(row.parse_problem);
+ const site=(state.krt||[]).find(one=>one.slug===slug);
+ return site&&site.parse_problem?String(site.parse_problem):'';
+}
 function krtModelCell(slug,key){
  const row=state.krtRank[slug];
+ if(krtBrokenSlug(slug))
+  return `<span class="source" title="${esc('Посчитано на съехавших числах: '+krtBrokenSlug(slug))}">не разобрано</span>`;
  if(!row||!row.available)return '<span class="source">—</span>';
  const value=key==='llcr'?row.project_llcr_x:row.margin_pct;
  if(value===null||value===undefined)return '<span class="source">—</span>';
@@ -2148,6 +2169,8 @@ function krtModelCell(slug,key){
 }
 function krtRankCell(slug){
  const row=state.krtRank[slug];
+ if(krtBrokenSlug(slug))
+  return `<span class="source" title="${esc('Посчитано на съехавших числах: '+krtBrokenSlug(slug))}">не разобрано</span>`;
  if(!row)return '<span class="source">не оценён</span>';
  if(!row.available)return `<span class="source" title="${esc(row.reason||'')}">не посчитан</span>`;
  const per=row.entry_capacity_rub_per_sqm;
@@ -2364,7 +2387,7 @@ function selectKrt(x){state.selectedKrt=x;const sc=krtScore(x),fit=sc.fit,cached
  +`<div class="section"><h3>Что за площадка</h3>${krtPassport(x)}</div>`
  +(speaks?krtDataCheck(x):'')
  +`${planned?'<div id="krtRequirementsBox"><div class="notice">Ищу проект решения и читаю требования…</div></div>':''}`
- +`<div id="krtMarketResult">${cached?renderKrtModel(cached):''}</div>`
+ +`<div id="krtMarketResult">${krtBroken(x)?krtBrokenModelNote(x):(cached?renderKrtModel(cached):'')}</div>`
  +`<div class="section"><h3>Насколько этому верить</h3><div class="notice" id="krtScoreBox">${krtScoreBoxHtml(sc)}</div>`
  +`<details class="fold"><summary>Почему такой балл — ${fit.reasons.length+fit.checks.length+sc.cuts.length} пункт(ов)</summary><div class="foldbody"><div class="items">${fit.reasons.map(one=>`<div class="item"><b>Соответствует запросу</b>${esc(one)}</div>`).join('')}${fit.checks.map(one=>`<div class="item"><b>Нужно проверить</b>${esc(one)}</div>`).join('')}${sc.cuts.map(c=>`<div class="item"><b>Балл снижен на ${c.points}%</b>${esc(c.label)}</div>`).join('')}</div></div></details></div>`
  +`<div class="actions"><button class="primary" id="krtHandoff">Передать в расчёт DevelopAid</button><button id="krtMarket">Пересчитать сейчас</button></div>`
@@ -2402,6 +2425,10 @@ function selectKrt(x){state.selectedKrt=x;const sc=krtScore(x),fit=sc.fit,cached
 // говорится, и рядом остаётся кнопка пересчёта.
 async function loadKrtReport(x){
  const out=$('krtMarketResult');
+ // Съехавшая карточка отчёт всё равно имеет: он лежит файлом с прошлого
+ // прогона и посчитан на её же полях. Гейт стоит здесь, а не только в
+ // `selectKrt`: отчёт приходит позже и переписывал бы блок своими числами.
+ if(krtBroken(x)){out.innerHTML=krtBrokenModelNote(x);return}
  if(state.krtReports[x.slug]){renderKrtReport(x,state.krtReports[x.slug],out);return}
  out.innerHTML='<div class="section"><h3>Что это даёт</h3><div class="notice"><span class="spinner"></span>Открываю посчитанный отчёт…</div></div>';
  try{
