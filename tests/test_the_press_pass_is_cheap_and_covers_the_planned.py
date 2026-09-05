@@ -33,7 +33,9 @@ def _route() -> str:
 def test_the_pass_neither_models_nor_reads_the_market() -> None:
     """Дешёвый — значит без рынка и без движка, и это сказано вслух."""
     start = API.index("    def _press_only(")
-    body = API[start:API.index('\n    @app.post("/auctions/krt/press/run")', start)]
+    # Граница — следующее объявление, а не соседний маршрут: рядом с проходом
+    # стоит выбор «чем считать строку», и он в этот кусок не входит.
+    body = API[start:API.index("\n    def ", start + 1)]
     assert "_open_sources_for_run" in body
     for heavy in ("build_report", "_market_digest", "krt_registry.requirements"):
         assert heavy not in body, f"{heavy}: проход обязан оставаться дешёвым"

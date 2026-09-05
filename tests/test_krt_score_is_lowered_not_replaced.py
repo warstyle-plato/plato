@@ -57,8 +57,12 @@ def page_functions() -> str:
     # не плоская четверть, и без неё балл не считается вовсе. `krtRuleValue`
     # называет число правила в его единицах, `krtInt`/`krtPct` — оформление
     # подписи, а не арифметика балла.
-    for name in ("krtVolumeShare", "krtTaskProfile", "krtFit", "krtIntent",
-                 "krtInt", "krtPct", "krtRenovation", "krtRuleValue",
+    # `krtBroken`/`krtNumber` — один ответ на «известна ли величина строки»:
+    # у карточки, разбор которой съехал на поле, её значений нет ни в ячейке,
+    # ни в сортировке, ни в балле.
+    for name in ("krtVolumeShare", "krtTaskProfile", "krtBroken", "krtNumber",
+                 "krtFit", "krtIntent",
+                 "krtInt", "krtPct", "krtRenovation", "krtLots", "krtLiveLot", "krtAskingPrice", "krtPriceVerdict", "krtRuleValue",
                  "krtPenalty", "krtScoreSource", "krtScore", "krtScoreNote"):
         start = script.index(f"function {name}(")
         depth = 0
