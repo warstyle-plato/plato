@@ -22,7 +22,10 @@ from pathlib import Path
 from typing import Any
 
 
-BUNDLED_NAME = "moscow-dynamics-2026-07.json"
+# Имя файла зашивать нельзя: отчёт месячный, и следующий выпуск лёг бы рядом
+# с прежним, а читался бы всё равно старый — правку негде было бы заметить.
+# Берётся самый поздний по имени, как городской свод.
+BUNDLED_GLOB = "moscow-dynamics-*.json"
 
 
 class SalesDynamics:
@@ -33,13 +36,21 @@ class SalesDynamics:
         self._projects: dict[str, Any] = self.payload.get("projects") or {}
 
     @classmethod
-    def bundled(cls) -> "SalesDynamics":
-        path = Path(__file__).with_name("registry_data") / BUNDLED_NAME
+    def bundled(cls, directory: Path | None = None) -> "SalesDynamics":
+        folder = Path(directory) if directory else Path(__file__).with_name("registry_data")
+        newest: dict[str, Any] = {}
         try:
-            return cls(json.loads(path.read_text(encoding="utf-8")))
-        except (OSError, ValueError):
-            # Файла нет — модуль работает без истории продаж, а не падает.
-            return cls({})
+            paths = sorted(folder.glob(BUNDLED_GLOB))
+        except OSError:
+            paths = []
+        for path in paths:
+            try:
+                newest = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                # Битый файл не отменяет прежний: модуль работает без истории
+                # продаж, а не падает.
+                continue
+        return cls(newest)
 
     @property
     def available(self) -> bool:
@@ -83,3 +94,78 @@ class SalesDynamics:
 
     def coverage(self, complex_id: int | str | None) -> bool:
         return str(complex_id or "") in self._projects
+
+    def latest(self, complex_id: int | str | None, keys: tuple[str, ...]) -> dict[str, Any]:
+        """Последнее известное значение по каждому ключу, со своим месяцем.
+
+        У ключей разная заполненность: доля ипотеки есть только в месяцах, где
+        были продажи, а прайс стоит каждый месяц. Один общий «последний месяц»
+        на всех выдал бы пустоту там, где значение есть, — поэтому месяц свой у
+        каждого числа и он называется рядом.
+        """
+        row = self._projects.get(str(complex_id or ""))
+        if not row:
+            return {}
+        months = self.months
+        out: dict[str, Any] = {}
+        for key in keys:
+            values = row.get(key) or []
+            for index in range(min(len(values), len(months)) - 1, -1, -1):
+                if values[index] is not None:
+                    out[key] = values[index]
+                    out[f"{key}_at"] = months[index]
+                    break
+        if row.get("room_mix"):
+            out["room_mix"] = row["room_mix"]
+        return out
+
+
+class DealsSummary:
+    """Свод выписок: полосы площади и банки ипотеки по проекту.
+
+    Отдельно от рядов, потому что отвечает на другой вопрос и приезжает из
+    другого листа отчёта. Комнатности и доли ипотеки здесь нет намеренно — их
+    считает сам отчёт, и второй счёт тех же величин однажды разошёлся бы с
+    первым, а обе цифры выглядели бы верными.
+    """
+
+    BUNDLED_GLOB = "moscow-deals-*.json"
+
+    def __init__(self, payload: dict[str, Any] | None = None):
+        self.payload = payload or {}
+        self._projects: dict[str, Any] = self.payload.get("projects") or {}
+
+    @classmethod
+    def bundled(cls, directory: Path | None = None) -> "DealsSummary":
+        folder = Path(directory) if directory else Path(__file__).with_name("registry_data")
+        newest: dict[str, Any] = {}
+        try:
+            paths = sorted(folder.glob(cls.BUNDLED_GLOB))
+        except OSError:
+            paths = []
+        for path in paths:
+            try:
+                newest = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+        return cls(newest)
+
+    @property
+    def available(self) -> bool:
+        return bool(self._projects)
+
+    @property
+    def months(self) -> list[str]:
+        return list(self.payload.get("months") or [])
+
+    def project(self, complex_id: int | str | None) -> dict[str, Any]:
+        return dict(self._projects.get(str(complex_id or "")) or {})
+
+    def bands(self, complex_id: int | str | None) -> dict[str, int]:
+        """Доли полос площади в проданном. Пусто — значит сделок в окне нет."""
+        row = self.project(complex_id)
+        return dict(row.get("bands") or {})
+
+    def banks(self, complex_id: int | str | None) -> dict[str, int]:
+        row = self.project(complex_id)
+        return dict(row.get("banks") or {})

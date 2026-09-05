@@ -30,6 +30,9 @@ BLOCK_PACE = "pace"
 BLOCK_STOCK = "stock"
 BLOCK_LOT = "lot_size"
 BLOCK_ABSORPTION = "absorption"
+BLOCK_ROOMS = "rooms"
+BLOCK_PAYMENT = "payment"
+BLOCK_CHANNEL = "channel"
 
 BLOCK_TITLES = {
     BLOCK_PRICE: "Цена метра",
@@ -37,6 +40,9 @@ BLOCK_TITLES = {
     BLOCK_STOCK: "Остаток и экспозиция",
     BLOCK_LOT: "Размер лота",
     BLOCK_ABSORPTION: "Поглощение в метрах",
+    BLOCK_ROOMS: "Комнатность и вымывание",
+    BLOCK_PAYMENT: "Способы оплаты",
+    BLOCK_CHANNEL: "Кто покупает",
 }
 
 
@@ -67,6 +73,12 @@ class MetricBlock:
 def _median(values: list[float]) -> float | None:
     clean = [v for v in values if v is not None]
     return statistics.median(clean) if clean else None
+
+
+def _round(value: float | None, digits: int = 0) -> float | int | None:
+    if value is None:
+        return None
+    return int(round(value)) if digits == 0 else round(value, digits)
 
 
 def _ratio(value: float | None, base: float | None) -> float | None:
@@ -306,12 +318,209 @@ def absorption_block(subject: dict[str, Any], peers: list[dict[str, Any]], city:
     return block
 
 
+
+
+
+
+ROOM_TITLES = {
+    "studio": "студии",
+    "r1": "1-комнатные",
+    "r2": "2-комнатные",
+    "r3": "3-комнатные",
+    "r4": "4-комнатные",
+    "r5": "5-комнатные и больше",
+}
+
+
+def _room_shares(rooms: dict[str, Any] | None) -> dict[str, Any]:
+    """Доли в проданном и в остатке по комнатности.
+
+    Считаются от суммы известных строк, а не от «всего по ПД»: комнатность
+    части лотов источник не знает, и деление на общий объём молча занизило бы
+    каждую долю.
+    """
+    if not rooms:
+        return {}
+    sold_total = sum(float(item.get("sold") or 0) for item in rooms.values())
+    rem_total = sum(float(item.get("rem") or 0) for item in rooms.values())
+    out: dict[str, Any] = {}
+    for name, item in rooms.items():
+        row: dict[str, Any] = {"title": ROOM_TITLES.get(name, name)}
+        if item.get("total") is not None:
+            row["total"] = item["total"]
+        if item.get("rem") is not None:
+            row["rem"] = item["rem"]
+            row["rem_share_pct"] = round(item["rem"] / rem_total * 100, 1) if rem_total else None
+        if item.get("sold") is not None:
+            row["sold"] = item["sold"]
+            row["sold_share_pct"] = (
+                round(item["sold"] / sold_total * 100, 1) if sold_total else None
+            )
+        if item.get("price"):
+            row["price_per_sqm"] = item["price"]
+        if item.get("lot_avg"):
+            row["lot_avg"] = round(float(item["lot_avg"]), 1)
+        out[name] = row
+    return out
+
+
+def rooms_block(
+    subject: dict[str, Any], peers: list[dict[str, Any]], city: MoscowMarket
+) -> MetricBlock:
+    """Что берут и что остаётся — по комнатности и по полосам площади.
+
+    Комнатность отвечает на «какой продукт», полосы — на «какой метраж»: двушка
+    бывает и 44 м², и 84, и в вымывании это разные товары. Обе линейки стоят
+    рядом, потому что источник даёт первую отчётом, а вторую — выписками.
+    """
+    block = MetricBlock(BLOCK_ROOMS, BLOCK_TITLES[BLOCK_ROOMS])
+    own = _room_shares(subject.get("room_mix"))
+    bands = subject.get("bands") or {}
+    if not own and not bands:
+        block.notes.append(
+            "Комнатность проекта в отчёте не раскрыта — сравнивать продукт не с чем"
+        )
+        return block
+    if own:
+        block.subject["rooms"] = own
+        if not sum(float(item.get("sold") or 0) for item in (subject.get("room_mix") or {}).values()):
+            # Ноль в доле проданного и «в этом месяце не продавали» на экране
+            # выглядят одинаково, а это разные ответы.
+            block.notes.append(
+                "В последнем месяце отчёта у проекта продаж не было — доли считаны по остатку"
+            )
+    if bands:
+        total = sum(bands.values())
+        block.subject["bands"] = {
+            band: {"deals": count, "share_pct": round(count / total * 100, 1)}
+            for band, count in sorted(bands.items())
+        }
+        block.subject["bands_deals"] = total
+    # У соседей складывается ОБЪЁМ, а не среднее долей: проект на тысячу лотов
+    # и проект на сорок иначе весят одинаково.
+    pooled_sold: dict[str, float] = {}
+    pooled_rem: dict[str, float] = {}
+    pooled_bands: dict[str, float] = {}
+    counted = 0
+    for row in peers:
+        rooms = row.get("room_mix") or {}
+        if rooms:
+            counted += 1
+        for name, item in rooms.items():
+            pooled_sold[name] = pooled_sold.get(name, 0) + float(item.get("sold") or 0)
+            pooled_rem[name] = pooled_rem.get(name, 0) + float(item.get("rem") or 0)
+        for band, count in (row.get("bands") or {}).items():
+            pooled_bands[band] = pooled_bands.get(band, 0) + float(count)
+    if counted:
+        sold_total = sum(pooled_sold.values())
+        rem_total = sum(pooled_rem.values())
+        block.peers["projects"] = counted
+        block.peers["rooms"] = {
+            name: {
+                "title": ROOM_TITLES.get(name, name),
+                "sold": _round(pooled_sold.get(name)),
+                "sold_share_pct": (
+                    round(pooled_sold.get(name, 0) / sold_total * 100, 1) if sold_total else None
+                ),
+                "rem": _round(pooled_rem.get(name)),
+                "rem_share_pct": (
+                    round(pooled_rem.get(name, 0) / rem_total * 100, 1) if rem_total else None
+                ),
+            }
+            for name in sorted(set(pooled_sold) | set(pooled_rem))
+        }
+        if not sold_total:
+            block.notes.append(
+                "У соседей в последнем месяце продаж нет — доли считаны по остатку"
+            )
+    if pooled_bands:
+        total = sum(pooled_bands.values())
+        block.peers["bands"] = {
+            band: {"deals": _round(count), "share_pct": round(count / total * 100, 1)}
+            for band, count in sorted(pooled_bands.items())
+        }
+    if not block.peers:
+        block.notes.append("Комнатности соседей в отчёте нет — сравнивать не с чем")
+    return block
+
+
+def payment_block(
+    subject: dict[str, Any], peers: list[dict[str, Any]], city: MoscowMarket
+) -> MetricBlock:
+    """Ипотека: чем платят у нас, чем рядом и чем по классу в городе.
+
+    Доля считается источником от числа сделок месяца, поэтому у проекта без
+    продаж её нет вовсе — и это «не знаем», а не ноль.
+    """
+    block = MetricBlock(BLOCK_PAYMENT, BLOCK_TITLES[BLOCK_PAYMENT])
+    share = subject.get("mortgage")
+    banks = subject.get("banks") or {}
+    if share is None and not banks:
+        block.notes.append("Доли ипотеки у проекта нет: в последних месяцах продаж не было")
+    if share is not None:
+        block.subject["mortgage_pct"] = share
+        block.subject["observed_at"] = subject.get("mortgage_at")
+    if banks:
+        total = sum(banks.values())
+        block.subject["banks"] = {
+            name: {"deals": count, "share_pct": round(count / total * 100, 1)}
+            for name, count in sorted(banks.items(), key=lambda pair: -pair[1])
+        }
+        block.subject["banks_deals"] = total
+    stats = _peer_stats(peers, "mortgage")
+    if stats["count"]:
+        block.peers = {**stats, "vs_median_pct": _ratio(share, stats["median"])}
+    else:
+        block.notes.append("Ни у одного соседа доля ипотеки в отчёте не раскрыта")
+    snapshot = city.snapshot(subject.get("segment"))
+    if snapshot is not None and getattr(snapshot, "mortgage_median_pct", None) is not None:
+        block.city = {
+            "segment": snapshot.segment,
+            "mortgage_median_pct": snapshot.mortgage_median_pct,
+            "observed_at": city.observed_at,
+        }
+    return block
+
+
+def channel_block(
+    subject: dict[str, Any], peers: list[dict[str, Any]], city: MoscowMarket
+) -> MetricBlock:
+    """Кто покупает: физлица, юрлица и переуступки.
+
+    Юрлица в жилом проекте — это не обязательно инвестор: так же покупают
+    кладовые и машино-места, поэтому доля считается по жилым сделкам, а
+    переуступка стоит отдельной строкой — она про вторичный оборот, а не про
+    покупателя.
+    """
+    block = MetricBlock(BLOCK_CHANNEL, BLOCK_TITLES[BLOCK_CHANNEL])
+    legal = subject.get("legal")
+    resale = subject.get("resale")
+    if legal is None and resale is None:
+        block.notes.append("Состава покупателей у проекта в отчёте нет: продаж не было")
+        return block
+    if legal is not None:
+        block.subject["company_pct"] = legal
+        block.subject["person_pct"] = round(100 - legal, 1)
+        block.subject["observed_at"] = subject.get("legal_at")
+    if resale is not None:
+        block.subject["resale_deals"] = resale
+    stats = _peer_stats(peers, "legal")
+    if stats["count"]:
+        block.peers = {**stats, "vs_median_pct": _ratio(legal, stats["median"])}
+    else:
+        block.notes.append("У соседей состав покупателей в отчёте не раскрыт")
+    return block
+
+
 BUILDERS: dict[str, Callable[..., MetricBlock]] = {
     BLOCK_PRICE: price_block,
     BLOCK_PACE: pace_block,
     BLOCK_STOCK: stock_block,
     BLOCK_LOT: lot_size_block,
     BLOCK_ABSORPTION: absorption_block,
+    BLOCK_ROOMS: rooms_block,
+    BLOCK_PAYMENT: payment_block,
+    BLOCK_CHANNEL: channel_block,
 }
 
 

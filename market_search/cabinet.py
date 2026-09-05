@@ -114,6 +114,9 @@ SECTIONS: list[tuple[str, str, str]] = [
     ("lot_size", "Размер лота", "средний проданный лот против среднего лота в проекте"),
     ("absorption", "Поглощение в метрах", "метры в месяц — темп, свободный от квартирографии"),
     ("stock", "Остаток и экспозиция", "сколько осталось, сколько выставлено, на сколько месяцев"),
+    ("rooms", "Комнатность и вымывание", "что берут и что остаётся — по комнатам и по полосам площади"),
+    ("payment", "Способы оплаты", "доля ипотеки у проекта, у соседей и по классу в Москве"),
+    ("channel", "Кто покупает", "физлица, юрлица и переуступки"),
 ]
 
 
@@ -1543,6 +1546,53 @@ function roomsChart(rows, deals){
   return '<div class="wrap">'+svg+'</svg></div>';
 }
 
+// Комнатность и полосы площади рисуются таблицами, а не плитками: у них по
+// четыре числа на строку, и плитками это читается как набор процентов без
+// хозяина. Экран здесь ничего не считает — доли пришли с сервера.
+function roomsTable(b){
+  const ours=(b.subject||{}).rooms||{}, theirs=(b.peers||{}).rooms||{};
+  const names=Object.keys({...ours,...theirs});
+  if(!names.length) return '';
+  const cell=v=>v===null||v===undefined?'—':num(v,1)+' %';
+  return '<h3>Комнатность: что берут и что остаётся</h3><div class="wrap"><table class="peers">'
+    +'<tr><th>Комнатность</th><th class="num">У нас продано</th><th class="num">У нас в остатке</th>'
+    +'<th class="num">У соседей продано</th><th class="num">У соседей в остатке</th>'
+    +'<th class="num">Наш прайс, ₽/м²</th></tr>'
+    +names.map(k=>{const a=ours[k]||{}, c=theirs[k]||{};
+      return `<tr><td>${esc(a.title||c.title||k)}</td>`
+        +`<td class="num">${cell(a.sold_share_pct)}</td><td class="num">${cell(a.rem_share_pct)}</td>`
+        +`<td class="num">${cell(c.sold_share_pct)}</td><td class="num">${cell(c.rem_share_pct)}</td>`
+        +`<td class="num">${a.price_per_sqm?num(a.price_per_sqm):'—'}</td></tr>`;}).join('')
+    +'</table></div>';
+}
+
+function bandsTable(b){
+  const ours=(b.subject||{}).bands||{}, theirs=(b.peers||{}).bands||{};
+  const names=Object.keys({...ours,...theirs});
+  if(!names.length) return '';
+  const label=k=>k.endsWith('+')?'от '+k.slice(0,-1)+' м²':k.replace('-','–')+' м²';
+  const cell=v=>v===null||v===undefined?'—':num(v,1)+' %';
+  return '<h3>Полосы площади в проданном</h3><div class="wrap"><table class="peers">'
+    +'<tr><th>Полоса</th><th class="num">Наши сделки</th><th class="num">Доля</th>'
+    +'<th class="num">У соседей</th><th class="num">Доля</th></tr>'
+    +names.map(k=>{const a=ours[k]||{}, c=theirs[k]||{};
+      return `<tr><td>${esc(label(k))}</td>`
+        +`<td class="num">${a.deals===undefined?'—':num(a.deals)}</td><td class="num">${cell(a.share_pct)}</td>`
+        +`<td class="num">${c.deals===undefined?'—':num(c.deals)}</td><td class="num">${cell(c.share_pct)}</td></tr>`;}).join('')
+    +'</table></div>';
+}
+
+function banksTable(b){
+  const banks=(b.subject||{}).banks||{};
+  const names=Object.keys(banks);
+  if(!names.length) return '';
+  return '<h3>Чем платят: банки ипотеки</h3><div class="wrap"><table class="peers">'
+    +'<tr><th>Банк</th><th class="num">Сделок</th><th class="num">Доля</th></tr>'
+    +names.map(k=>`<tr><td>${esc(k)}</td><td class="num">${num(banks[k].deals)}</td>`
+      +`<td class="num">${num(banks[k].share_pct,1)} %</td></tr>`).join('')
+    +'</table></div>';
+}
+
 function blockCard(b,ctx){
   const s=b.subject||{}, p=b.peers||{}, c=b.city||{};
   const cell=(v,l)=>`<div><b>${v}</b><span>${l}</span></div>`;
@@ -1569,10 +1619,31 @@ function blockCard(b,ctx){
       +cell(num(s.project_lot_avg,1)+' м²','средний лот проекта')
       +cell(pct(s.gap_pct),'разрыв')
       +(p.median?cell(num(p.median,1)+' м²','медиана соседей'):'');
-  } else {
+  } else if(b.code==='rooms'){
+    const ours=s.rooms||{}, theirs=p.rooms||{};
+    const sold=Object.values(ours).reduce((a,r)=>a+(r.sold||0),0);
+    kv=cell(sold||'—','продано лотов за месяц')
+      +cell(num(s.bands_deals)||'—','сделок в полосах')
+      +cell(p.projects||'—','соседей с комнатностью');
+  } else if(b.code==='payment'){
+    kv=cell(s.mortgage_pct===undefined?'—':num(s.mortgage_pct,1)+' %','ипотека у проекта')
+      +cell(p.median===undefined||p.median===null?'—':num(p.median,1)+' %','медиана соседей')
+      +cell(c.mortgage_median_pct?num(c.mortgage_median_pct,1)+' %':'—','медиана класса в Москве')
+      +cell(num(s.banks_deals)||'—','ипотечных сделок в окне');
+  } else if(b.code==='channel'){
+    kv=cell(s.person_pct===undefined?'—':num(s.person_pct,1)+' %','физлица')
+      +cell(s.company_pct===undefined?'—':num(s.company_pct,1)+' %','юрлица')
+      +cell(p.median===undefined||p.median===null?'—':num(p.median,1)+' %','юрлица у соседей, медиана')
+      +cell(s.resale_deals===undefined?'—':num(s.resale_deals),'переуступок за месяц');
+  } else if(b.code==='absorption'){
     kv=cell(num(s.area_per_month),'м² в месяц')
       +cell(num(p.median),'медиана соседей')
       +cell(pct(p.vs_median_pct),'к соседям');
+  } else {
+    // Ветка «всё остальное» — не утверждение о величине, а признание, что
+    // раздел заведён, а показывать его нечем: молча нарисованные метры в месяц
+    // под чужим заголовком выглядели бы посчитанными.
+    kv=cell('—','раздел «'+esc(b.code)+'» на экране ещё не описан');
   }
   const notes=(b.notes||[]).map(n=>`<div class="note">${esc(n)}</div>`).join('');
   const empty=Object.keys(s).length?'':'<div class="muted">Данных по проекту нет — сравнивать нечего.</div>';
@@ -1588,8 +1659,10 @@ function blockCard(b,ctx){
     absorption:'Продажи по месяцам, м²',
     stock:'Остаток по месяцам, лотов'}[b.code]||'Динамика';
   const table=sectionTable(b.code,ctx);
+  const extra=b.code==='rooms'?roomsTable(b)+bandsTable(b)
+    :b.code==='payment'?banksTable(b):'';
   return `<div class="card"><h2>${esc(b.title)}</h2>${empty}<div class="kv">${kv}</div>`
-    +verdict+notes+(chart?`<h3>${chartTitle}</h3>${chart}`:'')+(table?`<h3>Сравнение</h3>${table}`:'')+`</div>`;
+    +verdict+notes+extra+(chart?`<h3>${chartTitle}</h3>${chart}`:'')+(table?`<h3>Сравнение</h3>${table}`:'')+`</div>`;
 }
 
 // Таблица под каждым разделом — та же выборка, но показанная колонками этого
@@ -1618,6 +1691,12 @@ function sectionTable(code,ctx){
               {t:'Средний в проекте',num:1,f:r=>num(r.lot_area_avg,1)}],
     absorption:[...base,{t:'м²/мес',num:1,f:r=>num(r.area_per_month)},
                 {t:'ДДУ/мес',num:1,f:r=>num(r.units_per_month,1)}],
+    payment:[...base,{t:'Ипотека, %',num:1,f:r=>num(r.mortgage,1)},
+             {t:'Скидка к прайсу, %',num:1,f:r=>num(r.disc,1)},
+             {t:'Месяц',f:r=>esc(r.mortgage_at||'—')}],
+    channel:[...base,{t:'Юрлица, %',num:1,f:r=>num(r.legal,1)},
+             {t:'Переуступок',num:1,f:r=>num(r.resale)},
+             {t:'Месяц',f:r=>esc(r.legal_at||'—')}],
   }[code];
   if(!cols) return '';
   // «Почему из двадцати тут только семь» — вопрос владельца. В выборке
@@ -1625,7 +1704,8 @@ function sectionTable(code,ctx){
   // стоят прочерками, и таблица выглядит наполовину пустой без объяснения.
   // Сколько соседей отвечают на вопрос этого раздела — сказано под ней.
   const KEY={price:'price_per_sqm',pace:'units_per_month',lot_size:'sold_lot_avg',
-             absorption:'area_per_month',stock:'remaining_units'}[code];
+             absorption:'area_per_month',stock:'remaining_units',
+             payment:'mortgage',channel:'legal'}[code];
   const peers=ctx.peers||[];
   const have=KEY?peers.filter(p=>p[KEY]!==null&&p[KEY]!==undefined).length:peers.length;
   const note=(KEY&&peers.length&&have<peers.length)

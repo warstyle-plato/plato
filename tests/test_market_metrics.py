@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import re
+
 from types import SimpleNamespace
 
 from market_search.market_reference import MoscowMarket
@@ -59,10 +61,16 @@ PEERS = [
 
 
 def test_moscow_reference_ships_with_the_code() -> None:
-    """Свод уезжает вместе с кодом: книга на 168 МБ в рантайме не нужна."""
+    """Свод уезжает вместе с кодом: книга на 177 МБ в рантайме не нужна.
+
+    Месяц свода здесь числом не закрепляется: отчёт выходит раз в месяц, и
+    равенство «2026-07» падало бы на каждом новом выпуске — то есть на верной
+    работе, а не на поломке. Утверждение другое: свод есть, он назвал свой
+    месяц, и месяц этот похож на месяц.
+    """
     city = MoscowMarket.bundled()
     assert city.available
-    assert city.observed_at == "2026-07"
+    assert re.fullmatch(r"20\d{2}-(0[1-9]|1[0-2])", str(city.observed_at)), city.observed_at
     snapshot = city.snapshot("Бизнес")
     assert snapshot is not None
     assert snapshot.projects > 50
@@ -1720,9 +1728,16 @@ def test_every_section_has_its_own_chart_and_the_stock_goes_last() -> None:
     """
     from market_search.cabinet import CABINET_PAGE, SECTIONS
 
-    assert [code for code, _, _ in SECTIONS] == [
-        "price", "pace", "lot_size", "absorption", "stock",
-    ]
+    # Утверждение здесь — ПОРЯДОК рассуждения, а не состав списка: равенство
+    # целиком запрещает заводить новый раздел, то есть падает на добавленном, а
+    # не на сломанном. Разделы о комнатности, оплате и покупателе встали после
+    # остатка — это уже разговор о продукте и сделке, а не о цене метра.
+    codes = [code for code, _, _ in SECTIONS]
+    order = [code for code in codes if code in {"price", "pace", "lot_size", "absorption", "stock"}]
+    assert order == ["price", "pace", "lot_size", "absorption", "stock"]
+    assert codes.index("stock") < min(
+        codes.index(code) for code in ("rooms", "payment", "channel")
+    )
     # Причина пустого графика приходит из ctx: у «Пульса» и у второго
     # источника она разная, и зашитая фраза называла бы одному чужую.
     assert "b.code==='lot_size'?lotChart(ctx.sales,ctx.salesNote)" in CABINET_PAGE
