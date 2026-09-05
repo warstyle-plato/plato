@@ -231,6 +231,25 @@ MO_RULES: tuple[dict[str, Any], ...] = (
     # Расчётная единица здесь не метры вовсе — переводить общепит в м² нельзя.
     {"function": "catering", "label": "Рестораны, кафе, бары",
      "unit": UNIT_SEATS, "min_denominator": 4.0, "max_denominator": 5.0},
+    # Спорт — единственная строка этой таблицы, СВЕРЕННАЯ по тексту акта:
+    # приложение № 10 к Нормативам в редакции 1400/45 от 29.12.2021, страницы
+    # 17–18, распознано с первичного PDF и со снимка владельца двумя проходами
+    # (05.09.2026). Поэтому у неё свой источник и своя отметка сверки: одна
+    # проверенная строка не делает проверенной всю таблицу, а общая пометка
+    # «не сверено» на ней была бы неправдой в другую сторону.
+    #
+    # Норматив ступенчатый по площади самого объекта, и ступень выбирается его
+    # общей площадью, а не площадью зала: колонка расчётной единицы у этой
+    # строки — «кв. м общей площади».
+    {"function": "fitness",
+     "label": "Оздоровительные комплексы (фитнес-клубы, ФОК, спортивные и тренажёрные залы)",
+     "unit": UNIT_TOTAL_AREA_SQM, "min_denominator": 25.0, "max_denominator": 55.0,
+     "steps": ((1000.0, 25.0, 40.0), (float("inf"), 40.0, 55.0)),
+     "step_labels": ("общая площадь менее 1000 м²", "общая площадь 1000 м² и более"),
+     "source": ("713/30, приложение № 10 в редакции 1400/45 от 29.12.2021: "
+                "оздоровительные комплексы (фитнес-клубы, ФОК, спортивные и "
+                "тренажёрные залы) — 1 машино-место на 25–55 кв. м общей площади"),
+     "source_confirmed": True},
 )
 MO_RULES_SOURCE = (
     "СП 42.13330.2016, таблица Ж.1 (текст на руках); приложение № 10 к 713/30 "
@@ -453,12 +472,28 @@ def mo_required(
         source, confirmed = MO_FALLBACK_SOURCE, True
         assumptions.append("функция в таблице не найдена — применено правило 1 место на 50 м²")
     else:
-        source, confirmed = MO_RULES_SOURCE, MO_RULES_CONFIRMED
+        # Сверенная строка несёт свой источник: общая пометка таблицы про неё
+        # неверна, и наоборот — её сверка не распространяется на соседей.
+        source = rule.get("source") or MO_RULES_SOURCE
+        confirmed = bool(rule.get("source_confirmed", MO_RULES_CONFIRMED))
 
     if amount <= 0:
         return {"jurisdiction": MOSCOW_OBLAST, "function": function,
                 "required_spaces": None, "reason": "нулевая расчётная величина",
                 "assumptions": assumptions}
+
+    # Ступень норматива выбирается величиной самого объекта. Взять диапазон
+    # целиком (25–55) там, где документ даёт ступень (25–40 или 40–55), значит
+    # расширить вилку вдвое и назвать это нормой.
+    steps = rule.get("steps")
+    if steps:
+        labels = rule.get("step_labels") or ()
+        for index, (upper, low, high) in enumerate(steps):
+            if amount < upper:
+                rule = {**rule, "min_denominator": low, "max_denominator": high}
+                if index < len(labels):
+                    assumptions.append(f"ступень норматива: {labels[index]}")
+                break
 
     # Больший делитель даёт меньше мест: min мест — от max_denominator.
     spaces_min = int(math.ceil(amount / rule["max_denominator"]))
