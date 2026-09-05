@@ -39598,7 +39598,12 @@ function effectiveSiteDensity(){
 }
 function siteAreaSourceLabel(){
  if(inputs._site_area_user_set)return 'введена вручную';
- if((((inputs._manual_tep_import||{}).source||{}).kind)==='krt')return 'из каталога КРТ (krt.mos.ru)';
+ {
+  const krt=((inputs._manual_tep_import||{}).source||{});
+  // Источник приезжает вместе с площадкой: половина каталога КРТ — площадки
+  // без карточки, у них это проект решения на mos.ru, а не krt.mos.ru.
+  if(krt.kind==='krt')return 'из площадки КРТ ('+String(krt.origin||'карточка krt.mos.ru')+')';
+ }
  if(inputs._glavapu_import)return 'из калькулятора ГлавАПУ';
  if(inputs._mo_calc)return 'из калькулятора Подмосковья';
  if(inputs._cadastral_analysis||cadastralAnalysis)return 'из кадастра (ЕГРН)';
