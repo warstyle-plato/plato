@@ -1203,6 +1203,26 @@ def install(app: FastAPI) -> None:
             return reader(clean[len("decision:"):])
         return krt_registry.requirements(clean)
 
+    def _asking_price_mln(slug: str) -> float | None:
+        """Цена входа, объявленная на торгах по этой площадке.
+
+        Связку «площадка ↔ лот» помнит сервер (`tender_lots.json`) — второго
+        ответа на «какие у площадки лоты» не заводим, а какая из названных цен
+        берётся, решает `krt_tenders.asking_price_mln`: правило живёт там же,
+        где сама связка.
+        """
+        from . import krt_tenders
+
+        reader = getattr(krt_registry, "tender_lots_known", None)
+        if not callable(reader) or not slug:
+            return None
+        try:
+            known = reader() or {}
+        except Exception:  # noqa: BLE001
+            logger.exception("KRT tender lots read failed")
+            return None
+        return krt_tenders.asking_price_mln((known.get(slug) or {}).get("lots") or [])
+
     def _screen_one(project: dict[str, Any]) -> dict[str, Any]:
         """Один прогон для рейтинга — тем же путём, что и открытая карточка.
 
@@ -1247,7 +1267,8 @@ def install(app: FastAPI) -> None:
                 logger.exception("KRT card facts failed slug=%s", slug)
                 card = {"available": False, "reason": f"{type(exc).__name__}: {exc}"}
         screening = build_krt_model_screening(
-            project, report, core, requirements=requirements)
+            project, report, core, requirements=requirements,
+            asking_price_mln=_asking_price_mln(slug))
         screening["card_facts"] = card
         # Занятость площадки — в прогон, а не по нажатию: пока она приходила
         # только кнопкой, каталог показывал «Планируемая» там, где договор
