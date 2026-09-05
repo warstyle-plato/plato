@@ -518,9 +518,18 @@ def _vritep_handle_text(chat_id: int, text: str) -> bool:
             district = match.group(2).strip() or None
             query = ""
     try:
-        result = core.vri_tep_quick(region, query, site_area_ha=area,
-                                    district=district,
-                                    density_sqm_per_ha=density)
+        if region == "msk":
+            # Москва идёт тем же путём, что и сайт: `/cadastral/tep-server`
+            # пересылает запрос на ядро, там штатный калькулятор ГлавАПУ, а
+            # формулы — фолбэк. Прежде кнопка звала формулы напрямую, и на
+            # Render, где браузера нет, другого ответа не бывало вовсе.
+            # Подмосковья это не касается: `mo_calculate` на ядро уже
+            # пересылает сам.
+            result = core.vri_tep_moscow(query)
+        else:
+            result = core.vri_tep_quick(region, query, site_area_ha=area,
+                                        district=district,
+                                        density_sqm_per_ha=density)
     except Exception as exc:
         detail = getattr(exc, "detail", None) or core._error_location(exc)
         _send_message(
