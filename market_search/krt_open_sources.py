@@ -412,17 +412,38 @@ _UNIT_AFTER = re.compile(
 # называет площадку.
 # Адресная позиция: улица названа непосредственно перед номером. Нужна там,
 # где номер — одна цифра и сам по себе не значит ничего.
+# «Корпус» из этого списка убран намеренно: номер корпуса — не номер владения,
+# а «Старт продаж ЖК „Квартал Мит“, корпус 41» доказывал нам владение 41 на
+# Талалихина (прод, 05.09.2026).
 _STREET_BEFORE = re.compile(
     r"(?iu)(?:улиц\w*|ул|проезд\w*|пр-д|шоссе|ш|бульвар\w*|б-р|переулок|пер|"
     r"проспект\w*|пр-т|набережн\w*|наб|площад\w*|пл|тупик|аллея|линия|"
-    r"вл|влд|владение|дом|д|корп\w*|к)\.?\s*,?\s*№?\s*$")
+    r"вл|влд|владение|дом|д)\.?\s*,?\s*№?\s*$")
+
+
+def _our_street_before(before: str, streets: set[str] | None) -> bool:
+    """Стоит ли прямо перед числом имя НАШЕЙ улицы: «ЖК Талалихина, 41»."""
+    if not streets:
+        return False
+    tail = re.search(r"(?iu)([а-яa-z]{3,})\W{0,3}$", before or "")
+    if not tail:
+        return False
+    word = tail.group(1)
+    return any(word.startswith(stem) for stem in streets if len(stem) >= 4)
 
 
 _HOUSE_RANGE = re.compile(r"(?<![\w./])(\d{1,3})\s*[-–—]\s*(\d{1,3})(?![\w./])")
 
 
-def _says_our_number(sentence: str, ours: set[str]) -> bool:
-    """Назван ли в предложении НАШ номер владения — хоть с «вл.», хоть без."""
+def _says_our_number(sentence: str, ours: set[str],
+                     streets: set[str] | None = None) -> bool:
+    """Назван ли в предложении НАШ номер владения — хоть с «вл.», хоть без.
+
+    `streets` — основы слов НАШЕГО адреса. Публикация пишет «ЖК Талалихина,
+    41»: улица названа своим именем, без «ул.», и без этого списка адрес
+    остался бы неопознанным. Чужое имя перед номером адресной позицией не
+    делает — иначе вернётся ровно то, ради чего правило и писано.
+    """
     if not ours:
         return False
     if _house_numbers(sentence) & ours:
@@ -433,13 +454,19 @@ def _says_our_number(sentence: str, ours: set[str]) -> bool:
                 rf"(?<![\w./,-]){re.escape(number)}(?![\w./-])", flat):
             if _UNIT_AFTER.match(flat[found.end():]):
                 continue
-            # Одинокая цифра («61А/1» даёт ещё и «1») сама по себе якорем не
-            # работает: она совпадает с чем угодно, и одна страница продаж
-            # засчиталась ДВУМ разным площадкам Варшавского шоссе — вл. 37 и
-            # вл. 61А/1 (измерено на проде 04.09.2026). Такая цифра считается
-            # номером только в адресной позиции — сразу после названия улицы:
-            # «на Светлый проезд, 4» это адрес, а «25 квартир … 1» — нет.
-            if len(number) < 2 and not _STREET_BEFORE.search(flat[:found.start()]):
+            # Число становится номером владения только в АДРЕСНОЙ позиции —
+            # сразу после названия улицы или указателя владения. Прежде это
+            # требовалось лишь от одинокой цифры, а двузначное число
+            # засчитывалось где угодно в тексте: «Квартиры от 41 000 руб/м²»
+            # доказывало владение 41, и страница продаж чужого ЖК становилась
+            # находкой «здесь уже продаётся ЖК» — минус 60% балла. Измерено на
+            # проде 05.09.2026: такую находку получили 174 площадки, среди них
+            # «ЖК ВернадSKY» у Талалихина, вл. 41 и «ЖК Акварель» (томский
+            # домен) у площадки в Щапове. Единица измерения рядом снимала
+            # только часть случаев: «41 000 руб» единицей не начинается.
+            before = flat[:found.start()]
+            if not (_STREET_BEFORE.search(before)
+                    or _our_street_before(before, streets)):
                 continue
             return True
     # Диапазон покрывает свои концы: «42-46» — это и 42, и 46. Считаем только
@@ -469,6 +496,29 @@ def _house_conflict(sentence: str, ours: set[str]) -> bool:
         return False
     theirs = _house_numbers(sentence)
     return bool(theirs) and not (theirs & ours)
+
+
+def usable_anchors(name: str, siblings: Iterable[str] | None = None
+                   ) -> tuple[set[str], list[str]]:
+    """Чем опознаётся ИМЕННО эта площадка, с оглядкой на соседей по списку.
+
+    Объявлено один раз: этим же набором ищутся находки и вынимается бренд.
+    Пока бренд брался по сырым якорям, отсев общего слова в находках ничего не
+    менял — имя ЖК с чужой статьи всё равно становилось вторым якорем и
+    открывало дорогу всей странице.
+    """
+    anchors, phrase = _site_anchor(name)
+    anchors = set(anchors)
+    if _house_numbers(name):
+        # Номер владения есть — общий якорь остаётся: строгий режим потребует
+        # наш номер в предложении.
+        return anchors, phrase
+    shared: set[str] = set()
+    for other in siblings or ():
+        text = str(other or "").strip()
+        if text and text != str(name):
+            shared |= _anchor_words(text)
+    return anchors - shared, phrase
 
 
 def _site_anchor(name: str) -> tuple[set[str], list[str]]:
@@ -549,13 +599,14 @@ def _is_sales_pitch(text: str) -> bool:
             and any(mark in flat for mark in _HOUSING))
 
 
-def brand_names(docs: Iterable[Any], name: str) -> list[str]:
+def brand_names(docs: Iterable[Any], name: str,
+                siblings: Iterable[str] | None = None) -> list[str]:
     """Как площадка называется на рынке — по соседству с её адресом.
 
     Пусто — значит пусто: имя, взятое из предложения без адреса, привязало бы
     к площадке чужой проект.
     """
-    anchors, phrase = _site_anchor(name)
+    anchors, phrase = usable_anchors(name, siblings)
     houses = _house_numbers(name)
     found: list[str] = []
     for doc in docs or []:
@@ -768,7 +819,13 @@ def _found(sentence: str, doc: Any) -> dict[str, Any]:
 #       страница продаж построенного дома называет застройщика ЭТОГО дома, а
 #       номер у владения и у дома один и тот же. И одинокая цифра больше не
 #       якорь — она совпадает с чем угодно.
-ANCHOR_RULES_VERSION = 6
+# 7: номер владения доказывается только в АДРЕСНОЙ позиции (любой, а не одна
+# цифра), «корпус N» номером владения не считается, а якорь, общий с соседней
+# площадкой списка, у площадки без номера снимается совсем. Прежним правилом
+# 174 площадки получили находку «здесь уже продаётся ЖК» — и с нею минус 60%
+# балла: «Квартиры от 41 000 руб/м²» доказывало владение 41, а статья про любую
+# производственную зону цеплялась к сотне площадок разом (прод, 05.09.2026).
+ANCHOR_RULES_VERSION = 7
 
 
 # Корзины находок объявлены ОДИН раз: по этому списку идут и счётчики, и
@@ -827,28 +884,41 @@ def read_findings(
     работает как прежде: требовать номер там значило бы терять настоящие
     находки — «на Фестивальной» пишут и без номера.
     """
-    anchors, phrase = _site_anchor(name)
-    anchors = set(anchors)
     houses = _house_numbers(name)
     neighbours: set[str] = set()
     for other in siblings or ():
         if str(other or "").strip() and str(other) != str(name):
             neighbours |= _anchor_words(other)
-    shared = anchors & neighbours
+    shared = set(_site_anchor(name)[0]) & neighbours
+    anchors, phrase = usable_anchors(name, siblings)
+    anchors = set(anchors)
+    # Якорь, общий с ДРУГОЙ площадкой списка, опознаёт квартал, а не площадку —
+    # правило то же, что у улицы, только считанное по самому списку. У имён
+    # площадок-решений это не улица, а общее слово: на снимке прода 05.09.2026
+    # якорь «произ» (производственной) стоял у 114 площадок, «зоне» — у 112,
+    # «застр» — у 20. Любая статья про производственную зону цеплялась к сотне
+    # площадок разом, и оттуда шли находки «здесь уже продаётся ЖК» и «оператор
+    # назван». Такой якорь снимается совсем: остаётся собственное имя
+    # («Бескудниково»), а не осталось ничего — площадку опознать нечем, и это
+    # честнее приписанной находки (`anchorless` говорит об этом вслух).
     strict = bool(houses) and bool(shared)
     # Бренд площадки, если он доказан соседством с адресом, работает якорем
     # наравне с адресом: статья, где сказано только «Строгино 360», иначе
     # проходит мимо.
     docs = list(docs or [])
-    brands = brand_names(docs, name)
+    brands = brand_names(docs, name, siblings)
     brand_anchors: set[str] = set()
     for brand in brands:
         brand_anchors |= _anchor_words(brand)
     anchors |= brand_anchors
 
+    # Основы слов собственного адреса: ими опознаётся «ЖК Талалихина, 41» —
+    # улица названа своим именем, без «ул.».
+    street_stems = _anchor_words(name)
+
     def named_ours(sentence: str) -> bool:
         """Назван ли в предложении наш номер владения либо имя проекта."""
-        if _says_our_number(sentence, houses):
+        if _says_our_number(sentence, houses, street_stems):
             return True
         return bool(brand_anchors) and _mentions(sentence, brand_anchors)
     # Корзины заводятся по объявленному списку, а не перечислением здесь:
@@ -896,7 +966,7 @@ def read_findings(
         # называет адрес в заголовке, а продаёт в тексте — «ЖК Страна.Озерная —
         # купить квартиру» и «Озёрная ул., вл. 42-46» стоят порознь. Правило
         # «в одном предложении» теряло здесь каждую находку.
-        sells_proved = ((_says_our_number(text, houses)
+        sells_proved = ((_says_our_number(text, houses, street_stems)
                          and not _house_conflict(text, houses))
                         if houses else proved)
         whole = text.lower().replace("ё", "е")

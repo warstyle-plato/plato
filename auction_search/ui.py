@@ -1026,6 +1026,13 @@ function krtStatusKind(x){
  if(word.includes('реализац'))return 'running';
  return 'unparsed';
 }
+// Слово статуса объявлено один раз: колонка его печатает, сортировка по нему
+// сравнивает. Две копии разошлись бы молча — так и было.
+function krtStatusWord(x){
+ const kind=krtStatusKind(x);
+ if(kind==='unparsed')return 'не разобрана';
+ return String(kind==='draft'?'Проект решения':(x.status||KRT_STATUS_KINDS[kind]||''));
+}
 function krtStatusCell(x){
  const kind=krtStatusKind(x);
  // Съехавший разбор карточки не выдаём за статус: «влд. 13» в колонке
@@ -1033,7 +1040,7 @@ function krtStatusCell(x){
  // 04.09.2026). Показывается то, что известно, а причина — в подсказке.
  if(kind==='unparsed')
   return `<span class="tag" title="${esc('Карточка каталога разобрана со сдвигом: '+(x.parse_problem||'значения съехали на поле')+'. Показывать съехавшее значение как статус нельзя')}">не разобрана</span>`;
- const label=esc(kind==='draft'?'Проект решения':(x.status||KRT_STATUS_KINDS[kind]||'—'));
+ const label=esc(krtStatusWord(x)||'—');
  return `<span class="tag" title="${esc('Статус krt.mos.ru, де-юре: отвечает на «начата ли стройка», а не на «свободна ли площадка». Занятость — в колонке «Шаг»')}">${label}</span>`;
 }
 function krtStageCell(x){
@@ -1436,7 +1443,14 @@ function krtValue(x,key){
  const rank=state.krtRank[x.slug]||{};
  switch(key){
   case 'name': return String(x.name||'');
-  case 'status': return String(x.status||'');
+  // По чему сортируется колонка — по тому, что в ней НАПИСАНО. Экран печатал
+  // «Проект решения» у 298 строк и «не разобрана» у трёх, а сортировка брала
+  // сырое поле: у решений оно пусто (значит «неизвестно» — вниз при любом
+  // направлении), а у трёх съехавших карточек в нём лежит кусок адреса, и
+  // «вл. 24» вставало отдельным блоком между «В реализации» и «Планируемым»
+  // (измерено на проде 05.09.2026). Одна величина, показанная одним словом и
+  // сортируемая другим, читается как несработавшая сортировка.
+  case 'status': return krtStatusWord(x);
   case 'score': {
    // Балл без ТЭП — «не знаем»: как ноль он вставал бы впереди худших
    // посчитанных при сортировке по возрастанию.
