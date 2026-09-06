@@ -117,6 +117,14 @@ class SalesDynamics:
                     break
         if row.get("room_mix"):
             out["room_mix"] = row["room_mix"]
+        # Помесячная комнатность едет вместе с месяцами: ряд без своей шкалы
+        # времени — это набор чисел, у которого нельзя спросить «за какой
+        # период». Справочник, собранный прежним импортом, её не несёт, и это
+        # «не знаем», а не «продаж не было».
+        for key in ("rooms_sold", "rooms_rem"):
+            if row.get(key):
+                out[key] = row[key]
+                out["rooms_months"] = list(months)
         return out
 
 
