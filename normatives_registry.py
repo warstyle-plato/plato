@@ -15,6 +15,7 @@ import hashlib
 import html
 import json
 import os
+import re
 import threading
 import time
 import urllib.error
@@ -251,6 +252,23 @@ def _changes_between(before: dict[str, Any], after: dict[str, Any],
     """
     changes: list[dict[str, Any]] = []
     for entry_id, check in after.items():
+        entry = entries.get(entry_id) or {}
+        # Находка открытых источников — новость сама по себе, даже когда ссылка
+        # жива и не переписана: акт отменяют, не трогая наш PDF.
+        signals = ((check or {}).get("sources") or {}).get("signals") or []
+        was_signals = ((before.get(entry_id) or {}).get("sources") or {}).get("signals") or []
+        if signals and len(signals) != len(was_signals):
+            first = signals[0]
+            changes.append({
+                "id": entry_id,
+                "scope": str(entry.get("scope") or ""),
+                "short_name": str(entry.get("short_name") or entry.get("title") or entry_id),
+                "result": "repealed" if first["kind"] == "repealed" else "amended",
+                "was": "",
+                "message": first["quote"],
+                "source_url": first.get("url") or str(entry.get("source_url") or ""),
+                "checked_at": str((check or {}).get("checked_at") or ""),
+            })
         result = str((check or {}).get("result") or "")
         if result not in _ANNOUNCE_RESULTS:
             continue
@@ -271,16 +289,147 @@ def _changes_between(before: dict[str, Any], after: dict[str, Any],
     return changes
 
 
-def _run_check() -> dict[str, Any]:
+# --- что о документе пишут в открытых источниках ----------------------------
+#
+# Отпечаток страницы отвечает на «страницу по ссылке переписали?» — и это НЕ тот
+# вопрос (владелец, 06.09.2026: «искать обновление надо не так»). Страница
+# правовой системы меняется от баннера и счётчика, а акт может быть отменён при
+# байт-в-байт том же PDF: у файла в библиотеке отпечаток не изменится НИКОГДА —
+# то есть именно там, где проверка нужнее всего, она молчит по построению.
+#
+# Спрашивать надо по ИМЕНИ документа: что о нём пишут — «утратил силу»,
+# «недействующая редакция», «внесены изменения». Ответ поисковика не решение, а
+# находка: она несёт цитату и ссылку, а реестр правит человек.
+
+_REPEAL_MARKERS = (
+    "утратил силу", "утратило силу", "утратила силу", "признан утратившим силу",
+    "признано утратившим силу", "недействующая редакция", "не действует",
+    "отменено", "отменён", "прекратил действие",
+)
+_AMEND_MARKERS = ("внесены изменения", "внесено изменение", "в редакции от",
+                  "изложен в новой редакции", "новая редакция")
+
+
+def watch_query(entry: dict[str, Any]) -> str:
+    """Запрос строится из реквизитов самого акта, а не из его ссылки.
+
+    Ссылка отвечает за «где лежит», а спрашиваем мы «что с ним стало».
+    """
+    name = str(entry.get("short_name") or "").split("—")[0].strip()
+    if not name:
+        name = str(entry.get("title") or "")[:60]
+    return f"{name} утратил силу или внесены изменения"
+
+
+def _sentences(text: str) -> list[str]:
+    return [part.strip() for part in re.split(r"(?<=[.!?;])\s+|\n", str(text or "")) if part.strip()]
+
+
+def find_repeal_signals(entry: dict[str, Any], docs: list[dict[str, Any]],
+                        ) -> list[dict[str, Any]]:
+    """Находки о судьбе акта — только там, где рядом стоит ЕГО номер.
+
+    Иначе сниппет про соседний акт заберёт находку себе: ровно этим у нас уже
+    отдавались чужие адреса и чужие застройщики в модуле рынка. Номер акта —
+    жёсткий якорь, и он обязан стоять в ТОМ ЖЕ предложении, что и слова об
+    отмене: «отменено» через абзац от нашего номера не значит ничего.
+    """
+    anchors = [str(term).strip().lower() for term in (entry.get("watch_terms") or [])
+               if str(term).strip()]
+    anchors = [a for a in anchors if any(ch.isdigit() for ch in a)]
+    if not anchors:
+        return []
+    found: list[dict[str, Any]] = []
+    for doc in docs or []:
+        text = " ".join(str(doc.get(key) or "") for key in ("title", "snippet", "text"))
+        for sentence in _sentences(text):
+            low = sentence.lower()
+            if not any(anchor in low for anchor in anchors):
+                continue
+            kind = ""
+            if any(marker in low for marker in _REPEAL_MARKERS):
+                kind = "repealed"
+            elif any(marker in low for marker in _AMEND_MARKERS):
+                kind = "amended"
+            if not kind:
+                continue
+            found.append({
+                "kind": kind,
+                "quote": sentence[:400],
+                "url": str(doc.get("url") or ""),
+                "source": str(doc.get("title") or "")[:200],
+            })
+            break                  # одна находка на документ: цитат хватает одной
+    # Отмена важнее правки: если сказано и то и другое, показываем худшее первым.
+    found.sort(key=lambda item: 0 if item["kind"] == "repealed" else 1)
+    return found[:5]
+
+
+def _search_client() -> Any:
+    """Поиск берётся у движка, а не заводится второй.
+
+    У рыночного модуля он уже есть — с ключом, кэшем и своей ценой. Второй
+    клиент значил бы второй счёт за те же запросы и вторую жизнь у настроек.
+    """
+    try:
+        from market_search.yandex_search import YandexSearchClient
+    except Exception:                                # noqa: BLE001
+        return None
+    try:
+        client = YandexSearchClient(_ROOT / "data")
+    except Exception:                                # noqa: BLE001
+        return None
+    return client if getattr(client, "configured", False) else None
+
+
+def _search_signals(entry: dict[str, Any], client: Any) -> dict[str, Any]:
+    """Что об акте пишут в открытых источниках.
+
+    Поиск платный, поэтому запрос один на акт и ходит он раз в неделю, а не
+    вместе с каждой проверкой ссылки. Пустой ответ — это «не нашли», а не
+    «действует»: разницу называем вслух, иначе молчание читается как
+    подтверждение актуальности.
+    """
+    if client is None:
+        return {"asked": False, "reason": "поиск не настроен"}
+    query = watch_query(entry)
+    try:
+        docs = client.search(query, groups_on_page=10)
+    except Exception as error:                       # noqa: BLE001
+        return {"asked": False, "query": query, "reason": f"поиск не ответил: {error}"}
+    rows = []
+    for doc in docs or []:
+        rows.append({"title": getattr(doc, "title", "") or "",
+                     "snippet": getattr(doc, "snippet", "") or "",
+                     "url": getattr(doc, "url", "") or ""})
+    signals = find_repeal_signals(entry, rows)
+    return {"asked": True, "query": query, "checked": len(rows), "signals": signals}
+
+
+def _run_check(search: bool = False) -> dict[str, Any]:
     old = _load_state().get("checks")
     old = old if isinstance(old, dict) else {}
     checks: dict[str, Any] = {}
     entries: dict[str, dict[str, Any]] = {}
+    client = _search_client() if search else None
     for entry in _load_registry():
         entry_id = str(entry.get("id") or "")
         entries[entry_id] = entry
         checks[entry_id] = _probe(entry, old.get(entry_id) or {})
+        if search:
+            # Два разных вопроса — два разных ответа рядом: «ссылка жива и не
+            # переписана» и «что об акте пишут». Свести их в один результат
+            # значит потерять тот, который важнее.
+            checks[entry_id]["sources"] = _search_signals(entry, client)
     state = {"last_run_at": _now_iso(), "checks": checks}
+    if search:
+        # Отметка платного захода своя: иначе ежедневная проверка ссылки
+        # сдвигала бы срок недельного поиска и он не наступал бы никогда.
+        state["last_search_at"] = state["last_run_at"]
+    else:
+        was = str(_load_state().get("last_search_at") or "")
+        if was:
+            state["last_search_at"] = was
     _save_state(state)
     changes = _changes_between(old, checks, entries)
     _queue_announcements(changes)
@@ -568,9 +717,9 @@ def install(app: Any, core: Any) -> None:
         threading.Thread(target=_watch_loop, name="normatives-watch", daemon=True).start()
 
 
-def _watch_due(hours: float) -> bool:
+def _watch_due(hours: float, key: str = "last_run_at") -> bool:
     """Пора ли проверять. Пустое состояние — пора: мы ещё ни разу не смотрели."""
-    stamp = str(_load_state().get("last_run_at") or "").strip()
+    stamp = str(_load_state().get(key) or "").strip()
     if not stamp:
         return True
     try:
@@ -581,11 +730,18 @@ def _watch_due(hours: float) -> bool:
 
 
 def _watch_loop() -> None:
+    """Ссылку смотрим сутками, открытые источники — раз в неделю.
+
+    Поиск платный, и вопросы у них разные: отпечаток отвечает «страницу
+    переписали?», поиск — «что с актом стало». Второе меняется медленно, а
+    стоит денег, поэтому и спрашивается реже.
+    """
     hours = max(1.0, float(os.getenv("NORMATIVES_WATCH_HOURS", "24") or 24))
+    search_hours = max(hours, float(os.getenv("NORMATIVES_SEARCH_HOURS", "168") or 168))
     while True:
         try:
             if _watch_due(hours):
-                _run_check()
+                _run_check(search=_watch_due(search_hours, key="last_search_at"))
         except Exception:
             pass          # сторож — удобство: молчание лучше падения фонового потока
         time.sleep(1800)

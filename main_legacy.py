@@ -32008,6 +32008,9 @@ def _tool_check_normatives(action: str) -> dict[str, Any]:
         return {"available": False, "reason": f"реестр не читается: {error}"}
     try:
         if str(action) == "run":
+            # Платный поиск по открытым источникам сюда не входит: он ходит
+            # своим недельным сроком. Платон спрашивает состояние и проверяет
+            # ссылки, а не заказывает выдачу по всему реестру.
             state = normatives_registry._run_check()
         else:
             state = normatives_registry._load_state()

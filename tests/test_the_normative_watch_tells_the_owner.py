@@ -173,3 +173,107 @@ def test_the_watch_waits_for_its_hour(monkeypatch) -> None:
     assert registry._watch_due(24) is False
     monkeypatch.setattr(registry, "_load_state", lambda: {"last_run_at": "не дата"})
     assert registry._watch_due(24) is True, "нечитаемая отметка — проверяем заново"
+
+
+# --- что об акте пишут в открытых источниках ----------------------------------
+#
+# «Искать обновление надо не так» (владелец, 06.09.2026): отпечаток страницы
+# отвечает на «страницу переписали?», а спрашивать надо «что с актом стало».
+# Страница правовой системы меняется от баннера, а акт отменяют, не трогая наш
+# PDF — у файла в библиотеке отпечаток не изменится НИКОГДА, то есть именно
+# там, где проверка нужнее всего, она молчит по построению.
+
+def test_the_query_is_built_from_the_act_not_from_its_link() -> None:
+    entry = {"short_name": "945-ПП — транспорт и парковки", "source_url": "https://x/y"}
+    query = registry.watch_query(entry)
+    assert query.startswith("945-ПП")
+    assert "утратил силу" in query and "изменения" in query
+    assert "http" not in query, "запрос построен из ссылки, а не из реквизитов"
+
+
+def test_a_signal_needs_the_number_of_this_act() -> None:
+    """Сниппет про соседний акт не имеет права забрать находку себе."""
+    entry = {"short_name": "945-ПП", "watch_terms": ["945-ПП", "2118-ПП"]}
+    docs = [{"title": "Новости", "snippet": "Постановление 123-ПП утратило силу.", "url": "u"}]
+    assert registry.find_repeal_signals(entry, docs) == []
+
+
+def test_the_repeal_is_found_with_its_quote_and_link() -> None:
+    entry = {"short_name": "945-ПП", "watch_terms": ["945-ПП"]}
+    docs = [{"title": "Гарант", "url": "u1",
+             "snippet": "Документ 945-ПП утратил силу с 1 января 2027 года."}]
+    got = registry.find_repeal_signals(entry, docs)
+    assert [x["kind"] for x in got] == ["repealed"]
+    assert "утратил силу" in got[0]["quote"] and got[0]["url"] == "u1"
+
+
+def test_the_worst_signal_comes_first() -> None:
+    entry = {"short_name": "945-ПП", "watch_terms": ["945-ПП"]}
+    docs = [{"title": "a", "snippet": "945-ПП в редакции от 05.08.2026.", "url": "u1"},
+            {"title": "b", "snippet": "945-ПП признано утратившим силу.", "url": "u2"}]
+    assert [x["kind"] for x in registry.find_repeal_signals(entry, docs)] == \
+        ["repealed", "amended"]
+
+
+def test_a_marker_in_another_sentence_is_not_a_signal() -> None:
+    """«Отменено» через абзац от нашего номера не значит ничего."""
+    entry = {"short_name": "945-ПП", "watch_terms": ["945-ПП"]}
+    docs = [{"title": "t", "url": "u",
+             "snippet": "945-ПП устанавливает нормативы. Постановление 77-ПП отменено."}]
+    assert registry.find_repeal_signals(entry, docs) == []
+
+
+def test_an_anchor_without_a_number_is_not_an_anchor() -> None:
+    """«Кзатр» или «парковка» опознают тему, а не документ."""
+    entry = {"short_name": "945-ПП", "watch_terms": ["парковка", "Кзатр"]}
+    docs = [{"title": "t", "snippet": "Парковка: документ утратил силу.", "url": "u"}]
+    assert registry.find_repeal_signals(entry, docs) == []
+
+
+def test_an_unconfigured_search_says_so_and_does_not_pretend() -> None:
+    """Пустой ответ поиска — «не нашли», а не «действует»."""
+    got = registry._search_signals({"short_name": "945-ПП"}, None)
+    assert got["asked"] is False and "не настроен" in got["reason"]
+
+
+def test_a_found_repeal_reaches_the_chat() -> None:
+    entries = {"a": {"short_name": "945-ПП", "scope": "Москва"}}
+    after = {"a": {"result": "ok", "sources": {"asked": True, "signals": [
+        {"kind": "repealed", "quote": "945-ПП утратил силу", "url": "u"}]}}}
+    changes = registry._changes_between({"a": {"result": "ok"}}, after, entries)
+    assert [c["result"] for c in changes] == ["repealed"]
+    assert changes[0]["message"] == "945-ПП утратил силу"
+    text = wrapper._normatives_announcement_text(changes)
+    assert "утратил силу" in text
+
+
+def test_the_same_signal_is_not_announced_twice() -> None:
+    entries = {"a": {"short_name": "945-ПП"}}
+    same = {"asked": True, "signals": [{"kind": "repealed", "quote": "q", "url": "u"}]}
+    assert registry._changes_between(
+        {"a": {"result": "ok", "sources": same}},
+        {"a": {"result": "ok", "sources": same}}, entries) == []
+
+
+def test_the_paid_search_has_its_own_slower_clock() -> None:
+    """Поиск платный: ссылку смотрим сутками, источники — раз в неделю.
+
+    И отметка у него своя: иначе ежедневная проверка ссылки сдвигала бы срок
+    поиска, и он не наступал бы никогда.
+    """
+    import inspect
+
+    body = inspect.getsource(registry._watch_loop)
+    assert "NORMATIVES_SEARCH_HOURS" in body
+    assert 'key="last_search_at"' in body
+    saved = inspect.getsource(registry._run_check)
+    assert '"last_search_at"' in saved
+
+
+def test_the_search_client_is_the_engines_own() -> None:
+    """Второй клиент — второй счёт за те же запросы и вторая жизнь у настроек."""
+    import inspect
+
+    body = inspect.getsource(registry._search_client)
+    assert "market_search.yandex_search" in body
+    assert "configured" in body
