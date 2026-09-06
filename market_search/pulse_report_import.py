@@ -490,6 +490,31 @@ def build_dynamics(
         last = by_month.get(months[-1]) if months else None
         if last and last.get("room_mix"):
             row["room_mix"] = last["room_mix"]
+        # Комнатность помесячно. «Что берут» за ОДИН месяц у одного ЖК — это
+        # десяток сделок, то есть шум; а в тихий месяц продаж нет вовсе, и
+        # доля в проданном не считается ни по одной строке (25 проектов из
+        # 202 на выпуске 2026-08). Ряд отвечает и на второй вопрос — как доля
+        # менялась («хотелось бы видеть в динамике как эта доля менялась. По
+        # месяцам», владелец, 06.09.2026).
+        #
+        # Кладём только продано и остаток: у блока комнатности восемь полей,
+        # и хранить все значило бы вырастить файл вчетверо ради чисел, на
+        # которые в динамике никто не смотрит.
+        names = sorted({
+            name
+            for month in months
+            for name in ((by_month.get(month) or {}).get("room_mix") or {})
+        })
+        for field in ("sold", "rem"):
+            line = {
+                name: [
+                    (((by_month.get(month) or {}).get("room_mix") or {}).get(name) or {}).get(field)
+                    for month in months
+                ]
+                for name in names
+            }
+            if any(any(value is not None for value in values) for values in line.values()):
+                row[f"rooms_{field}"] = line
         if filled:
             projects[key] = row
     return {

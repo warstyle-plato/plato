@@ -235,3 +235,201 @@ def test_the_block_is_drawn_with_bars_in_a_real_browser(tmp_path) -> None:
     assert "сколько дают сами цены" in drawn
     assert "если бы набор был как у соседей" in drawn
     assert "Дело в наборе" in drawn
+
+
+# Продажи по комнатности отчёт даёт помесячно, и в последнем месяце их у
+# проекта может не быть вовсе: на выпуске 2026-08 это 25 проектов из 202 —
+# каждый восьмой. Тогда оранжевой полосы нет ни в одной строке, а легенда её
+# по-прежнему обещала: на экране это читается как поломка отрисовки, а не как
+# молчание источника («а где доля то цветом её нет?», владелец, 06.09.2026).
+QUIET = {
+    "segment": "Бизнес",
+    "room_mix": {
+        "studio": {"sold": 0, "rem": 60, "total": 72, "price": LADDER["studio"]},
+        "r1": {"sold": 0, "rem": 30, "total": 38, "price": LADDER["r1"]},
+        "r2": {"sold": 0, "rem": 8, "total": 10, "price": LADDER["r2"]},
+    },
+}
+
+
+def test_a_month_without_sales_names_the_missing_bar() -> None:
+    block = metrics.rooms_block(QUIET, PEERS, CITY).to_dict()
+    gap = (block.get("subject") or {}).get("rooms_sold_gap")
+    assert gap and "продаж" in gap.lower(), block.get("subject")
+    rooms = block["subject"]["rooms"]
+    # Доля в остатке при этом считается: «продаж не было» — это утверждение о
+    # проданном, а не об остатке.
+    assert all(item["sold_share_pct"] is None for item in rooms.values())
+    assert any(item["rem_share_pct"] for item in rooms.values())
+
+
+def test_a_quiet_month_does_not_promise_a_bar_it_cannot_draw(tmp_path) -> None:
+    """Легенда обещает ровно те полосы, которые нарисованы.
+
+    Проверяется отрисовкой, а не строкой в исходнике: обе подписи в файле есть
+    всегда, и текстовый поиск был бы зелёным на сломанном экране.
+    """
+    import pytest
+
+    play = pytest.importorskip("playwright.sync_api")
+
+    import browser_launch
+
+    block = metrics.rooms_block(QUIET, PEERS, CITY).to_dict()
+    page = cabinet.cabinet_page("market").replace("__DEVELOPAID_VERSION__", "test")
+    file = tmp_path / "quiet.html"
+    file.write_text(page, encoding="utf-8")
+    with play.sync_playwright() as pw:
+        try:
+            browser = browser_launch.launch(pw)
+        except Exception as exc:  # noqa: BLE001
+            pytest.skip(f"Chromium недоступен: {exc}")
+        try:
+            tab = browser.new_page()
+            errors: list[str] = []
+            tab.on("pageerror", lambda exc: errors.append(str(exc)))
+            tab.route("**/*", lambda route: route.abort()
+                      if route.request.url.startswith("http") else route.continue_())
+            tab.goto(file.as_uri())
+            drawn = tab.evaluate("block => roomsTable(block)", block)
+            full = tab.evaluate("block => roomsTable(block)", _block())
+            tab.close()
+        finally:
+            browser.close()
+    assert not errors, errors
+    # Пустой серии нет ни в легенде, ни подписью под графиком — вместо неё
+    # стоит причина.
+    assert "доля в проданном" not in drawn.split("<table")[0]
+    assert "доля в остатке" in drawn
+    assert "вымывается" not in drawn, "подпись зовёт сравнить полосы, которых одна"
+    assert "продаж" in drawn.lower()
+    # А там, где обе полосы есть, обещание прежнее.
+    assert "доля в проданном" in full.split("<table")[0]
+    assert "вымывается" in full
+
+
+def test_plato_gets_the_numbers_of_these_sections_not_only_our_phrase(tmp_path) -> None:
+    """В вопрос Платону уезжают доли, а не пересказ нашего же вывода.
+
+    Раньше сводка несла по блоку только `say.text` — фразу, которую мы сами и
+    написали. Объяснить её Платон может, а ответить «что это значит против
+    соседей» — нет: долей комнатности, ипотеки и юрлиц у него на руках не было.
+    """
+    import pytest
+
+    play = pytest.importorskip("playwright.sync_api")
+
+    import browser_launch
+
+    from market_search.metrics import build_blocks
+
+    # У объекта этого файла есть только комнатность: доли ипотеки и юрлиц
+    # приезжают из тех же месячных строк отчёта, и без них проверялась бы
+    # половина сводки.
+    subject = {**SUBJECT, "mortgage": 28.6, "legal": 12.5, "resale": 2}
+    peers = [
+        {**PEERS[0], "mortgage": 52.0, "legal": 4.3},
+        {**PEERS[1], "mortgage": 61.0, "legal": 0.0},
+    ]
+    blocks = build_blocks(subject, peers, CITY, ["rooms", "payment", "channel"])
+    report = {
+        "subject": {"project_name": "Наш", "segment": "Бизнес"},
+        "comparison": {"radius_km": 3, "found": 3, "comparable": 2, "used": 2},
+        "retrieved_at": "2026-09-06",
+        "blocks": blocks,
+        "peers": [{"name": "Сосед А", "segment": "Бизнес", "distance_km": 1.2,
+                   "price_per_sqm": 640_000, "units_per_month": 9}],
+    }
+    page = cabinet.cabinet_page("market").replace("__DEVELOPAID_VERSION__", "test")
+    file = tmp_path / "digest.html"
+    file.write_text(page, encoding="utf-8")
+    with play.sync_playwright() as pw:
+        try:
+            browser = browser_launch.launch(pw)
+        except Exception as exc:  # noqa: BLE001
+            pytest.skip(f"Chromium недоступен: {exc}")
+        try:
+            tab = browser.new_page()
+            errors: list[str] = []
+            tab.on("pageerror", lambda exc: errors.append(str(exc)))
+            tab.route("**/*", lambda route: route.abort()
+                      if route.request.url.startswith("http") else route.continue_())
+            tab.goto(file.as_uri())
+            digest = tab.evaluate("d => reportDigest(d)", report)
+            tab.close()
+        finally:
+            browser.close()
+    assert not errors, errors
+    assert "Комнатность:" in digest and "остаток" in digest
+    assert "Разложение разрыва цены" in digest
+    assert "Ипотека:" in digest and "у соседей" in digest
+    assert "Покупатели:" in digest and "юрлиц" in digest
+
+
+def test_the_digest_keeps_the_question_inside_the_limit(tmp_path) -> None:
+    """Бюджет считают на всё сообщение, а не на его середину.
+
+    Предел вопроса у Платона 4 000 знаков. Сводка росла разделами, и на самом
+    полном отчёте — там, где данных больше всего, — она перевалила бы предел
+    молча, а человек прочитал бы «вопрос слишком длинный», то есть претензию к
+    себе. Не поместившееся называется вслух.
+    """
+    import pytest
+
+    play = pytest.importorskip("playwright.sync_api")
+
+    import browser_launch
+
+    from market_search.metrics import build_blocks
+
+    ladder = {"studio": 760_000, "r1": 700_000, "r2": 640_000,
+              "r3": 600_000, "r4": 580_000, "r5": 560_000}
+    subject = {"segment": "Бизнес", "price_per_sqm": 729_200, "mortgage": 28.6,
+               "legal": 12.5, "resale": 2,
+               "room_mix": {k: {"sold": 5, "rem": 40, "total": 80, "price": v}
+                            for k, v in ladder.items()}}
+    peers = [{"name": f"ЖК «Сосед номер {i}» — жилой комплекс бизнес-класса", "segment": "Бизнес",
+              "distance_km": round(0.4 * i, 2), "price_per_sqm": 600_000 + i * 7000,
+              "units_per_month": 6 + i, "mortgage": 50 + i, "legal": 3 + i,
+              "room_mix": {k: {"sold": 3, "rem": 30, "price": v} for k, v in ladder.items()}}
+             for i in range(1, 13)]
+    blocks = build_blocks(subject, peers, CITY,
+                          ["price", "pace", "stock", "rooms", "payment", "channel"])
+    # Разборы по разделам в сводке тоже стоят — на живом отчёте они есть
+    # всегда, и без них проверялся бы не тот объём.
+    notes = verdict.build_notes(blocks, None)
+    report = {"subject": {"project_name": "ЖК «Проект с довольно длинным именем»",
+                          "segment": "Бизнес", "segment_source": "Пульс"},
+              "comparison": {"radius_km": 3, "found": 40, "comparable": 18, "used": 12},
+              "retrieved_at": "2026-09-06", "blocks": blocks, "peers": peers,
+              "analysis": {"overall": notes["overall"], "blocks": notes["blocks"]}}
+    page = cabinet.cabinet_page("market").replace("__DEVELOPAID_VERSION__", "test")
+    file = tmp_path / "budget.html"
+    file.write_text(page, encoding="utf-8")
+    with play.sync_playwright() as pw:
+        try:
+            browser = browser_launch.launch(pw)
+        except Exception as exc:  # noqa: BLE001
+            pytest.skip(f"Chromium недоступен: {exc}")
+        try:
+            tab = browser.new_page()
+            errors: list[str] = []
+            tab.on("pageerror", lambda exc: errors.append(str(exc)))
+            tab.route("**/*", lambda route: route.abort()
+                      if route.request.url.startswith("http") else route.continue_())
+            tab.goto(file.as_uri())
+            digest = tab.evaluate("d => reportDigest(d)", report)
+            budget = tab.evaluate("() => DIGEST_BUDGET")
+            tab.close()
+        finally:
+            browser.close()
+    assert not errors, errors
+    # Хвост «не поместилось» пишется сверх бюджета: он и есть предупреждение,
+    # и обрезать его первым значило бы потерять именно то, ради чего он есть.
+    assert len(digest) <= budget + 160, len(digest)
+    # Обязательное — кто мы и на какой выборке — на месте всегда.
+    assert "Объект:" in digest and "В радиусе" in digest
+    # На этом отчёте бюджет действительно жмёт — иначе проверка была бы
+    # зелёной и без него, то есть не проверяла бы ничего.
+    assert "Не поместилось в вопрос:" in digest, len(digest)
+    assert digest.rstrip().endswith("спросите об этом отдельно.")

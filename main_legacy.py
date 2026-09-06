@@ -72,7 +72,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.22.41"
+VERSION = "0.22.45"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -30514,6 +30514,22 @@ def _goal_refusal_reason(
     unit = str(metric_meta.get("unit") or "")
     # Кратность банка читают с двумя знаками: «1,20x», а не «1,200x».
     digits = 2 if unit == "x" else int(metric_meta.get("digits") or 2)
+
+    def _rounded(value: float, places: int) -> str:
+        return f"{float(value):,.{places}f}"
+
+    # Округление не имеет права делать фразу самопротиворечивой. На площадке
+    # «Маршала Прошлякова ул., вл. 9» подбор отказал при LLCR 1,197x, а на
+    # экране стояло «LLCR не ниже 1,20x не достигается ни при одном значении…
+    # — даже при нулевом значении выходит 1,20x» (снимок владельца,
+    # 06.09.2026): два числа фразы округлились в одно, и отказ читается как
+    # ошибка счёта. Знаков берём столько, чтобы порог и достигнутое
+    # различались, — но только когда они и правда разные.
+    if (closest_metric is not None and math.isfinite(float(closest_metric))
+            and abs(float(closest_metric) - float(target_value)) > 1e-9):
+        while (digits < 4
+               and _rounded(closest_metric, digits) == _rounded(target_value, digits)):
+            digits += 1
 
     def fmt_metric(value: float | None) -> str:
         if value is None or not math.isfinite(float(value)):

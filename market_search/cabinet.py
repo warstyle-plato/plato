@@ -1371,6 +1371,53 @@ function verdictCard(d){
     +mix+`</div>`;
 }
 
+// Комментарий Платона приходит САМ, как только собран отчёт: «а можно
+// обновлять разбор в режиме онлайн Платоном? Загрузил отчёт и он его
+// пересчитал» (владелец, 06.09.2026). Раньше он молчал, пока не нажмут кнопку
+// внизу страницы, — то есть отвечал только тому, кто о ней догадался.
+//
+// Место — сразу под вердиктом движка и над связками: сначала что посчитано,
+// потом что об этом думают словами. Пустая карточка на бумаге читалась бы как
+// «Платону сказать нечего», поэтому до ответа она печататься не должна: класс
+// `noprint` снимается вместе с приходом текста.
+function briefCard(){
+  return `<div class="card noprint" id="briefcard"><h2>Комментарий Платона Сергеевича</h2>`
+    +`<div id="brief"><div class="muted">Платон Сергеевич читает отчёт…</div></div></div>`;
+}
+
+// Вопрос один и тот же на каждый отчёт: он не про проект, а про то, что
+// числа значат рядом с соседями. Числа Платон не пересчитывает — они уже
+// посчитаны движком, и второй счёт разошёлся бы с экраном.
+const BRIEF_ASK='Ниже готовый разбор рынка, посчитанный движком. Числа не пересчитывай '
+  +'и новых не выдумывай. Скажи в трёх-четырёх предложениях, что эти числа значат '
+  +'в сравнении с соседями и на что смотреть в первую очередь.';
+
+// Номер запуска, а не признак «идёт»: отчёт пересобирают, не дождавшись
+// прежнего ответа, и опоздавший ответ прежнего объекта уверенно встал бы под
+// числами нового.
+let briefRun=0;
+async function platoBrief(d){
+  const box=$('#brief'), card=$('#briefcard');
+  if(!box||!d) return;
+  const run=++briefRun;
+  const show=(html,done)=>{
+    if(run!==briefRun) return;
+    box.innerHTML=html;
+    // На бумагу карточка выходит только с ответом: ожидание в PDF читается
+    // как пустой раздел.
+    if(card) card.classList.toggle('noprint', !done);
+  };
+  try{
+    const text=await platoAnswer(BRIEF_ASK+'\n\n'+reportDigest(d),
+      note=>show(`<div class="muted">Платон Сергеевич: ${esc(note)}</div>`, false), []);
+    show(esc(text).replace(/\n/g,'<br>'), true);
+  }catch(e){
+    // Молчание объясняют: «комментария нет» и «Платон недоступен» на экране
+    // выглядят одинаково.
+    show(`<div class="muted">Платон не ответил: ${esc(e.message||e)}</div>`, false);
+  }
+}
+
 // «Что из этого следует» — связки между разделами. Читать их после пяти
 // карточек поздно: к тому моменту читатель уже связал числа сам, как получилось.
 function findingsCard(d){
@@ -1551,32 +1598,125 @@ function roomsChart(rows, deals){
 // есть расхождение двух полос одной строки: продаётся больше, чем лежит в
 // остатке, значит товар уходит, и наоборот. Считает сервер, здесь только
 // длина полосы от максимума — оформление, а не экономика.
-function shareBars(rows, aName, bName, note){
+function shareBars(rows, aName, bName, note, gap){
   const live=(rows||[]).filter(r=>r.a!==null&&r.a!==undefined||r.b!==null&&r.b!==undefined);
   if(!live.length) return '';
+  // Серия, которой нет НИ В ОДНОЙ строке, не рисуется и не обещается легендой:
+  // цветной квадрат с подписью «доля в проданном» над полем, где этой полосы
+  // нет, читается как поломка отрисовки, а не как молчание источника. Причина
+  // приезжает с сервера (`gap`) и встаёт подписью здесь же — там, где смотрят.
+  const has=k=>live.some(r=>r[k]!==null&&r[k]!==undefined);
+  const seen={a:has('a'), b:has('b')};
+  const both=seen.a&&seen.b;
   const top=Math.max(...live.flatMap(r=>[r.a||0, r.b||0]), 1);
-  const H=26, W=640, L=132, R=52, T=26;
+  const H=both?26:22, W=640, L=132, R=52, T=26;
   const height=T+live.length*H+10;
   const len=v=>(v===null||v===undefined)?0:(W-L-R)*(v/top);
   let svg=`<svg viewBox="0 0 ${W} ${height}" width="100%" role="img">`;
-  svg+=`<rect x="${L}" y="6" width="9" height="9" fill="#C4581B"/>`
-     +`<text x="${L+13}" y="14" font-size="10.5" fill="#5b6b7d">${esc(aName)}</text>`
-     +`<rect x="${L+120}" y="6" width="9" height="9" fill="#8ea6bd"/>`
-     +`<text x="${L+133}" y="14" font-size="10.5" fill="#5b6b7d">${esc(bName)}</text>`;
+  let lx=L;
+  [['a','#C4581B',aName],['b','#8ea6bd',bName]].forEach(([k,colour,name])=>{
+    if(!seen[k]) return;
+    svg+=`<rect x="${lx}" y="6" width="9" height="9" fill="${colour}"/>`
+       +`<text x="${lx+13}" y="14" font-size="10.5" fill="#5b6b7d">${esc(name)}</text>`;
+    lx+=120;
+  });
   live.forEach((r,i)=>{
     const y=T+i*H;
     svg+=`<text x="${L-8}" y="${y+13}" text-anchor="end" font-size="11" fill="#16202b">${esc(r.title)}</text>`;
-    [[r.a,'#C4581B',0],[r.b,'#8ea6bd',9]].forEach(([v,colour,off])=>{
+    [[r.a,'#C4581B',0],[r.b,'#8ea6bd',both?9:0]].forEach(([v,colour,off])=>{
       if(v===null||v===undefined) return;
       svg+=`<rect x="${L}" y="${y+off}" width="${len(v).toFixed(1)}" height="8" rx="1.5" fill="${colour}"`
          +` data-tip="${esc(r.title+': '+num(v,1)+' %')}"></rect>`;
     });
-    const both=[r.a,r.b].filter(v=>v!==null&&v!==undefined).map(v=>num(v,1)+' %').join(' / ');
-    svg+=`<text x="${W-R+6}" y="${y+13}" font-size="10.5" fill="#5b6b7d">${esc(both)}</text>`;
+    const shown=[r.a,r.b].filter(v=>v!==null&&v!==undefined).map(v=>num(v,1)+' %').join(' / ');
+    svg+=`<text x="${W-R+6}" y="${y+13}" font-size="10.5" fill="#5b6b7d">${esc(shown)}</text>`;
   });
   svg+='</svg>';
+  // Подпись обещает сравнение двух полос — но обещать его, когда полоса одна,
+  // значит звать читателя искать на рисунке то, чего там нет.
+  const caption=both?note:(gap||'');
   return '<div class="wrap">'+svg+'</div>'
-    +(note?`<div class="muted" style="font-size:12.5px;margin-top:4px">${esc(note)}</div>`:'');
+    +(caption?`<div class="muted" style="font-size:12.5px;margin-top:4px">${esc(caption)}</div>`:'');
+}
+
+// Как доля в проданном менялась по месяцам: «хотелось бы видеть в динамике как
+// эта доля менялась. По месяцам» (владелец, 06.09.2026). Полосы отвечают «что
+// берут сейчас», линия — «давно ли берут именно это»: вымывание бывает и
+// свежим, и годовалым, а на полосах это одно и то же.
+//
+// Числа не считаются здесь: доли приходят посчитанными с сервера. Второй счёт
+// той же величины однажды разошёлся бы с полосами выше, и обе картинки
+// выглядели бы верными.
+// За какой срок посчитано «продано». Месяц у одного ЖК — десяток сделок, то
+// есть шум; год — срок, за который проект успевает показать спрос на каждую
+// комнатность. Без подписи первую величину читают как вторую.
+function roomsWindowNote(b){
+  const w=(b.subject||{}).rooms_window;
+  if(!w) return '';
+  const p=b.peers||{};
+  // Про соседей говорим, только если они есть: утверждение об окне пустого
+  // множества читается как настоящая оговорка, а мерить там нечего.
+  const said=p.rooms&&(p.sold_projects||p.projects)
+    ? (p.rooms_window?'' :' У соседей продано — за последний месяц отчёта.')
+    : '';
+  // Остаток сегодняшний не у всех: у проекта без сделок в последнем месяце
+  // отчёта он снят тем месяцем, где назван, и «сегодняшний» было бы враньём о
+  // дате.
+  const at=(b.subject||{}).rooms_rem_at;
+  return ` Продано — за ${w.months} мес. (${w.from} — ${w.to}), ${num(w.deals)} сделок;`
+    +(at?` остаток — на ${at}.`:' остаток — сегодняшний.')+said;
+}
+
+function roomsTrend(b){
+  const s=b.subject||{}, series=s.rooms_series||[];
+  if(series.length<2){
+    const gap=s.rooms_series_gap;
+    return gap?`<h3>Как доля менялась по месяцам</h3>`
+      +`<div class="muted" style="font-size:12.5px">${esc(gap)}</div>`:'';
+  }
+  // Ось — календарь, а не список точек: месяцев без продаж в ряду нет вовсе,
+  // и поставь их встык — февраль окажется рядом с августом, а расстояние между
+  // ними прочитается как один шаг.
+  const step=m=>{const [y,n]=m.split('-').map(Number);
+    return n===12?`${y+1}-01`:`${y}-${String(n+1).padStart(2,'0')}`;};
+  const months=[]; for(let m=series[0].month; ; m=step(m)){ months.push(m);
+    if(m===series[series.length-1].month||months.length>120) break; }
+  const at={}; series.forEach(p=>{at[p.month]=p.shares||{}});
+  const names=[...new Set(series.flatMap(p=>Object.keys(p.shares||{})))];
+  const title=k=>((s.rooms||{})[k]||{}).title||k;
+  const colours=['#C4581B','#2f6f8f','#7a9a3b','#8e5aa8','#b8912f','#4a5a6b','#a8465a'];
+  const W=620,L=44,R=150,T=14,B=28,H=250;
+  const x=i=>L+i*(W-L-R)/Math.max(months.length-1,1);
+  const y=v=>T+(H-T-B)*(1-v/100);
+  let svg=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img">`;
+  [0,25,50,75,100].forEach(v=>{
+    svg+=`<line x1="${L}" y1="${y(v)}" x2="${W-R}" y2="${y(v)}" stroke="#e6ecf2"/>`
+       +`<text x="${L-6}" y="${y(v)+4}" text-anchor="end" font-size="10" fill="#8798a8">${v} %</text>`;});
+  const tick=Math.ceil(months.length/6);
+  months.forEach((m,i)=>{ if(i%tick) return;
+    svg+=`<text x="${x(i)}" y="${H-9}" text-anchor="middle" font-size="10" fill="#8798a8">${m.slice(2)}</text>`;});
+  names.forEach((k,n)=>{
+    const colour=colours[n%colours.length];
+    // Линия рвётся на месяце без продаж: протянутая через него, она показала бы
+    // состав спроса там, где спроса не было вовсе.
+    let d='', open=false;
+    months.forEach((m,i)=>{
+      const v=(at[m]||{})[k];
+      if(v===null||v===undefined){ open=false; return }
+      d+=(open?'L':'M')+x(i).toFixed(1)+' '+y(v).toFixed(1)+' '; open=true;
+      svg+=`<circle cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="2.4" fill="${colour}"`
+         +` data-tip="${esc(title(k)+' · '+m+': '+num(v,1)+' %')}"></circle>`;
+    });
+    if(d) svg+=`<path d="${d.trim()}" fill="none" stroke="${colour}" stroke-width="1.8"/>`;
+    svg+=`<rect x="${W-R+8}" y="${T+n*16}" width="9" height="9" fill="${colour}"/>`
+       +`<text x="${W-R+21}" y="${T+n*16+8}" font-size="10.5" fill="#5b6b7d">${esc(title(k))}</text>`;
+  });
+  svg+='</svg>';
+  const quiet=months.length-series.length;
+  return '<h3>Как доля менялась по месяцам</h3><div class="wrap">'+svg+'</div>'
+    +'<div class="muted" style="font-size:12.5px;margin-top:4px">Доля каждой комнатности'
+    +' в продажах месяца.'+(quiet>0?` Месяцев без продаж: ${quiet} — там линия рвётся,`
+      +' а не идёт нулём.':'')+'</div>';
 }
 
 function roomsTable(b){
@@ -1587,8 +1727,10 @@ function roomsTable(b){
   const bars=shareBars(names.map(k=>{const a=ours[k]||{}, c=theirs[k]||{};
       return {title:a.title||c.title||k, a:a.sold_share_pct, b:a.rem_share_pct};}),
     'доля в проданном','доля в остатке',
-    'Полоса продаж длиннее полосы остатка — товар вымывается; короче — копится.');
-  return '<h3>Комнатность: что берут и что остаётся</h3>'+bars+'<div class="wrap"><table class="peers">'
+    'Полоса продаж длиннее полосы остатка — товар вымывается; короче — копится.'
+      +roomsWindowNote(b),
+    (b.subject||{}).rooms_sold_gap);
+  return '<h3>Комнатность: что берут и что остаётся</h3>'+bars+roomsTrend(b)+'<div class="wrap"><table class="peers">'
     +'<tr><th>Комнатность</th><th class="num">У нас продано</th><th class="num">У нас в остатке</th>'
     +'<th class="num">У соседей продано</th><th class="num">У соседей в остатке</th>'
     +'<th class="num">Наш прайс, ₽/м²</th><th class="num">Прайс соседей</th>'
@@ -1783,11 +1925,65 @@ function reportDigest(d){
     const say=((d.analysis||{}).blocks||{})[b.code];
     if(say&&say.text) lines.push(`${b.title}: ${say.text}`);
   });
+  // Комнатность, оплата и покупатели уезжают ЧИСЛАМИ, а не только нашей
+  // фразой по блоку: пересказ своего же вывода Платон объяснить может, а
+  // ответить «а что это значит против соседей» — нет, потому что долей у него
+  // на руках не было вовсе.
+  const block=code=>(d.blocks||[]).find(b=>b.code===code)||{};
+  const rooms=(block('rooms').subject||{}).rooms||{};
+  const peerRooms=(block('rooms').peers||{}).rooms||{};
+  const share=v=>v===null||v===undefined?'—':num(v,1)+' %';
+  const mixRows=Object.keys(rooms).map(k=>{
+    const a=rooms[k]||{}, c=peerRooms[k]||{};
+    return `${a.title||c.title||k}: продано ${share(a.sold_share_pct)}, остаток ${share(a.rem_share_pct)}`
+      +(c.rem_share_pct===undefined?'':`, у соседей остаток ${share(c.rem_share_pct)}`)
+      +(a.price_per_sqm?`, наш прайс ${num(a.price_per_sqm)} ₽/м²`:'')
+      +(c.price_per_sqm?` против ${num(c.price_per_sqm)}`:'');
+  });
+  const extra=[];
+  if(mixRows.length) extra.push({name:'доли по комнатности',
+    text:'Комнатность: '+mixRows.join('; ')+'.'});
+  const gapNote=(block('rooms').subject||{}).rooms_sold_gap;
+  if(gapNote) lines.push('Оговорка по комнатности: '+gapNote+'.');  // оговорка обязательна
+  const mix=(block('rooms').subject||{}).mix||{};
+  if(mix.gap_pct!==undefined&&mix.gap_pct!==null)
+    extra.push({name:'разложение разрыва цены', text:`Разложение разрыва цены: наш метр ${num(mix.own_at_own_mix)} ₽, `
+      +`наш же прайс на наборе соседей ${num(mix.own_at_peers_mix)} ₽, `
+      +`у соседей ${num(mix.peers_at_peers_mix)} ₽ `
+      +`(разрыв ${share(mix.gap_pct)}, из него набор ${share(mix.mix_pct)}, цены ${share(mix.level_pct)}).`});
+  const pay=block('payment').subject||{}, payPeers=block('payment').peers||{};
+  if(pay.mortgage_pct!==undefined)
+    extra.push({name:'ипотека', text:`Ипотека: у нас ${share(pay.mortgage_pct)}`
+      +(payPeers.median===undefined?'':`, у соседей медиана ${share(payPeers.median)}`)+'.'});
+  const who=block('channel').subject||{}, whoPeers=block('channel').peers||{};
+  if(who.company_pct!==undefined)
+    extra.push({name:'состав покупателей', text:`Покупатели: юрлиц у нас ${share(who.company_pct)}`
+      +(whoPeers.median===undefined?'':`, у соседей медиана ${share(whoPeers.median)}`)
+      +(who.resale_deals?`; переуступок за месяц ${num(who.resale_deals)}`:'')+'.'});
   const peers=(d.peers||[]).slice(0,12).map(p=>
     `${p.name} (${p.segment||'—'}, ${p.distance_km} км): ${p.price_per_sqm||'—'} ₽/м²,`
     +` ${p.units_per_month??'—'} ДДУ/мес`).join('; ');
   if(peers) lines.push('Соседи: '+peers+'.');
-  return lines.join('\n');
+  return fit(lines, extra);
+}
+
+// Предел вопроса у Платона — 4 000 знаков на ВСЁ сообщение, вместе с обвязкой
+// и вопросом человека. Сводка росла разделами и однажды перевалила бы его
+// молча — а отказ пришёл бы ровно там, где данных больше всего. Поэтому
+// обязательное (кто мы, выборка, вывод движка, разбор по разделам) стоит
+// всегда, а подробности встают, пока есть бюджет, и НЕ поместившееся
+// называется: молча урезанная сводка даёт ответ, выглядящий полным.
+const DIGEST_BUDGET=3000;
+function fit(lines, extra){
+  const out=lines.slice(), dropped=[];
+  const size=()=>out.join('\n').length;
+  (extra||[]).forEach(row=>{
+    if(size()+row.text.length+1<=DIGEST_BUDGET) out.push(row.text);
+    else dropped.push(row.name);
+  });
+  if(dropped.length) out.push('Не поместилось в вопрос: '+dropped.join(', ')
+    +' — спросите об этом отдельно.');
+  return out.join('\n');
 }
 
 let lastReport=null;
@@ -3657,6 +3853,9 @@ async function build(){
     // Новый объект — новый разговор: Платон помнил бы числа прежнего и
     // уверенно отвечал бы по ним.
     lastReport=d; autoPicked=false; onChart.clear(); marketTalk.reset(); render(d);
+    // Комментарий не держит отчёт: он приходит сам и позже, а до тех пор на
+    // его месте стоит признак работы.
+    platoBrief(d);
   }catch(e){
     $('#out').innerHTML=`<div class="card err">${esc(e.message||e)}</div>`;
   }finally{clearInterval(timer);$('#go').disabled=false;$('#state').textContent='';}
@@ -3825,6 +4024,8 @@ function render(d){
     peers.filter(p=>(p.price_series||[]).length>1||(p.sales_series||[]).length>1)
       .slice(0,5).forEach(p=>onChart.add(String(p.complex_id)));
   }
+
+  html+=briefCard();
 
   // «Что из этого следует» — сразу за вердиктом и до графиков.
   html+=findingsCard(d);
