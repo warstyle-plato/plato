@@ -13066,17 +13066,22 @@ def _pdf_font_names() -> tuple[str, str]:
 
 
 def _above_ground_sqm(tep_report: dict[str, Any]) -> float:
-    """Наземная часть проекта: строительный объём минус подземная.
+    """Наземная часть проекта: строительный объём минус подземные СТРОКИ.
+
+    Вычитается только подземная часть, которая в этом объёме стоит, — гараж
+    МКД и кладовые. Гараж отдельно стоящего объекта живёт полем на его строке
+    и в `total.gns` не входит вовсе: вычесть его значило бы занизить наземную
+    площадь на объект, которого в ней и не было.
 
     Берётся из тех же строк ТЭП, что и вся таблица отчёта: заводить вторую
     арифметику ради подписи нельзя — она разойдётся с числами над ней.
     """
     return max(0.0, _number_or_zero((tep_report.get("total") or {}).get("gns"))
-               - _underground_sqm(tep_report))
+               - _core_underground_sqm(tep_report))
 
 
-def _underground_sqm(tep_report: dict[str, Any]) -> float:
-    """Подземная часть — та, что движок и так считает своей базой.
+def _core_underground_sqm(tep_report: dict[str, Any]) -> float:
+    """Подземная часть МКД — та, что движок и так считает своей базой.
 
     Читается `core_under_gns`, а не строка гаража: кладовые лежат на том же
     подземном этаже и в наземную площадь не входят, а перебор строк их терял —
@@ -13089,6 +13094,19 @@ def _underground_sqm(tep_report: dict[str, Any]) -> float:
     return sum(_number_or_zero(row.get("gns"))
                for row in (tep_report.get("rows") or [])
                if str(row.get("key")) in _UNDERGROUND_TEP_KEYS)
+
+
+def _underground_sqm(tep_report: dict[str, Any]) -> float:
+    """Вся подземная часть проекта: МКД, кладовые и гаражи объектов.
+
+    Гараж офисника или ТЦ — такая же подземная площадь, как гараж дома: своя
+    себестоимость метра, свой продукт местами. В подпись отчёта он не входил
+    вовсе, при том что в `summary.underground_gns_sqm` и в статье CAPEX он
+    есть, — две величины под одним именем.
+    """
+    return _core_underground_sqm(tep_report) + sum(
+        _number_or_zero(row.get("under_gns"))
+        for row in (tep_report.get("rows") or []))
 
 
 def _number_or_zero(value: Any) -> float:
@@ -43460,19 +43478,27 @@ function renderResult(){
  const underGns=Number(r.tep.core_under_gns||0);
  const isUnder=x=>UNDERGROUND_PRODUCTS.includes(x.key);
  const aboveGns=Math.max(0,Number(r.tep.total.gns||0)-underGns);
+ // Гараж отдельно стоящего объекта — такая же подземная площадь, как гараж
+ // дома, и живёт он полем на строке объекта. В колонке его не было вовсе, при
+ // том что в `summary.underground_gns_sqm` и в статье CAPEX он есть: две
+ // величины под одним именем. Итог берётся у движка, экран его не собирает.
+ const objUnder=x=>Number(x.under_gns||0);
+ const underTotal=Number(r.summary.underground_gns_sqm!==undefined
+  ?r.summary.underground_gns_sqm:underGns);
  const dash='<span style="color:#bbb">—</span>';
  reportTep.innerHTML=
   `<thead><tr><th>Продукт</th><th>ГНС наземная, м²</th><th>Подземная, м²</th><th>Продаваемая площадь, м²</th><th>Построено, шт.</th><th>Продаётся, шт.</th></tr></thead>`+
   `<tbody>`+
   r.tep.rows.map(x=>`<tr><td>${x.label}</td>`
-   +`<td>${isUnder(x)?dash:num(x.gns)}</td><td>${isUnder(x)?num(x.gns):dash}</td>`
+   +`<td>${isUnder(x)?dash:num(x.gns)}</td>`
+   +`<td>${isUnder(x)?num(x.gns):(objUnder(x)>0?num(objUnder(x)):dash)}</td>`
    +`<td>${num(x.saleable)}</td>`
    +`<td>${num(x.units)}${unitNote(x)}</td><td>${num(soldUnits(x))}</td></tr>`).join('')+
-  `</tbody><tfoot><tr><th>Итого</th><th>${num(aboveGns)}</th><th>${num(underGns)}</th>`
+  `</tbody><tfoot><tr><th>Итого</th><th>${num(aboveGns)}</th><th>${num(underTotal)}</th>`
   +`<th>${num(r.tep.total.saleable)}</th><th>${num(r.tep.total.units)}</th><th>${num(soldTotal)}</th></tr></tfoot>`;
  const tepNote=document.getElementById('reportTepNote');
- if(tepNote)tepNote.innerHTML=underGns>0
-  ? `Строительный объём — ${num(r.tep.total.gns)} м², наземная плюс подземная: на нём считаются общие статьи (ИРД, проектирование, подготовка, сети, благоустройство, сдача, содержание). Удельные «на метр» считаются на наземной ГНС: подземная в неё не входит — у неё своя себестоимость метра и свой продукт, продаваемый местами. ГНС — внутренний термин DevelopAid; город нагрузки считает от суммарной поэтажной площади.`
+ if(tepNote)tepNote.innerHTML=underTotal>0
+  ? `Строительный объём — ${num(Number(r.summary.construction_volume_sqm!==undefined?r.summary.construction_volume_sqm:r.tep.total.gns))} м², наземная плюс подземная: на нём считаются общие статьи (ИРД, проектирование, подготовка, сети, благоустройство, сдача, содержание). Удельные «на метр» считаются на наземной ГНС: подземная в неё не входит — у неё своя себестоимость метра и свой продукт, продаваемый местами. ГНС — внутренний термин DevelopAid; город нагрузки считает от суммарной поэтажной площади.`
   : 'ГНС — наземная площадь здания, внутренний термин DevelopAid. Город нагрузки считает от суммарной поэтажной площади.';
 }
 

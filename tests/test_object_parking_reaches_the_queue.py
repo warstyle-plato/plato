@@ -248,3 +248,34 @@ def test_the_share_is_taken_from_the_metres_not_from_a_second_rule() -> None:
     block = block[:block.index("carried_list")]
     assert "_phase_object_share" in block
     assert "discrete" not in block, "размещение выводится здесь вторым правилом"
+
+
+# --- подземная часть отчёта ---------------------------------------------------
+
+def test_the_garage_of_an_object_counts_as_underground() -> None:
+    """Гараж офисника — такая же подземная площадь, как гараж дома.
+
+    В колонке «Подземная, м²» отчёта его не было вовсе, при том что в
+    `summary.underground_gns_sqm` и в статье CAPEX он есть: две величины под
+    одним именем. Наземная при этом не уменьшается — гараж и не стоял в
+    `total.gns`.
+    """
+    result = core.calculate(core.CalcRequest(inputs=_inputs(), tep=_tep(), rates=[]))
+    tep = result["tep"]
+    garages = sum(float(row.get("under_gns") or 0.0) for row in tep["rows"])
+    assert garages > 0, "проверять нечего: гаража объектов на этих вводных нет"
+    assert core._underground_sqm(tep) == pytest.approx(
+        float(tep["core_under_gns"]) + garages)
+    assert core._underground_sqm(tep) == pytest.approx(
+        result["summary"]["underground_gns_sqm"])
+    assert core._above_ground_sqm(tep) == pytest.approx(
+        result["summary"]["project_gns_sqm"])
+
+
+def test_the_screen_shows_the_garage_in_the_underground_column() -> None:
+    """Колонка читает поле строки, а итог берётся у движка."""
+    start = core.PAGE.index(" const underGns=Number(r.tep.core_under_gns")
+    piece = core.PAGE[start:core.PAGE.index("const REPORT_SECTIONS", start)]
+    assert "objUnder(x)" in piece, "гараж объекта в колонке не показан"
+    assert "r.summary.underground_gns_sqm" in piece, "итог собирается на экране"
+    assert "num(underTotal)" in piece
