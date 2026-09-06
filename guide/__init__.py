@@ -72,12 +72,8 @@ _FOOTER_OWNER = re.compile(r"<span>(©[^<]+)</span>")
 
 
 def legal_links(core) -> list[tuple[str, str]]:
-    """Ссылки на документы ИП — те же, что в подвале `PAGE`. Пусто — подвал изменился.
-
-    Движка рядом может не быть вовсе — так поверхность поднимают в проверках.
-    Это тот же ответ «подвал не собран», а не поломка: разбирать нечего.
-    """
-    found = _FOOTER_IN_PAGE.search(getattr(core, "PAGE", "") or "")
+    """Ссылки на документы ИП — те же, что в подвале `PAGE`. Пусто — подвал изменился."""
+    found = _FOOTER_IN_PAGE.search(core.PAGE)
     if not found:
         return []
     return [(href, label.strip()) for href, label in _FOOTER_LINK.findall(found.group(1))]
@@ -85,7 +81,7 @@ def legal_links(core) -> list[tuple[str, str]]:
 
 def legal_owner(core) -> str:
     """Строка владельца из подвала `PAGE`."""
-    found = _FOOTER_IN_PAGE.search(getattr(core, "PAGE", "") or "")
+    found = _FOOTER_IN_PAGE.search(core.PAGE)
     owner = _FOOTER_OWNER.search(found.group(1)) if found else None
     return owner.group(1).strip() if owner else ""
 

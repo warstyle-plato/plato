@@ -243,6 +243,7 @@ padding:5px 12px;font-size:13px;cursor:pointer}
 .plato{background:#f8fafc;border-left:3px solid var(--ink);padding:12px 14px;border-radius:0 8px 8px 0;
 margin-top:12px;white-space:normal}
 #askout{margin-top:10px}
+__DEVELOPAID_PLATO_DRAWER_CSS__
 /* Баннер — в подвале и во всю ширину: он широкий, ему нужна ширина. Реплика
    в нём нарисована, поэтому текстом её рядом нет: одна и та же фраза дважды
    на экране читается как недосмотр, каковым и была. */
@@ -574,21 +575,18 @@ __DEVELOPAID_BNMAP__
 <!--/WORK-->
 <script>document.body.dataset.version='__DEVELOPAID_VERSION__';</script>
 <div id="tip" role="status"></div>
+  <!-- Разговор идёт в ящике справа — том же, что на расчёте (владелец,
+       04.09.2026). Блоков в кабинете два, а ящик один: два ящика рядом это
+       два разных Платона на одном экране. Груз даёт тот блок, из которого
+       нажали, — карточка остаётся кнопкой. -->
   <div class="card" id="askcard" style="display:none">
     <h2>Спросить Платона Сергеевича</h2>
     <div class="muted" style="font-size:13px;margin-bottom:8px">
       Он видит числа этого отчёта и объясняет их. Считает движок — модель не пересчитывает.
     </div>
-    <div class="chips">
-      <button type="button" data-q="Что здесь главное и что делать с ценой?">Что делать с ценой?</button>
-      <button type="button" data-q="Почему проект продаётся медленнее соседей? Разбери причины.">Почему медленно?</button>
-      <button type="button" data-q="Кто здесь ближайший конкурент и чем он опасен?">Кто конкурент?</button>
-      <button type="button" data-q="Какой прайс поставить, чтобы выйти на темп соседей?">Какой прайс ставить?</button>
-    </div>
-    <textarea id="ask" rows="3" placeholder="Например: обоснован ли прайс при таком темпе?"></textarea>
-    <button class="go" id="askbtn">Спросить</button>
-    <div id="askout"></div>
+    <button type="button" class="ai-open-btn" id="askbtn"><span class="ai-dot ready"></span><span class="ai-label">Спросить Платона</span></button>
   </div>
+__DEVELOPAID_PLATO_DRAWER__
   <footer class="plato-footer">
     <img src="/assets/platon-quote.webp" alt="Платон Сергеевич Федоскин: «Хорошие дома начинаются с правильных вопросов»" loading="lazy">
   </footer>
@@ -1797,71 +1795,13 @@ let lastReport=null;
 // Один путь к Платону на весь кабинет. Копия этого опроса была бы вторым
 // местом, где чинят обрыв длинного ответа: цепочка ядро → Render → OpenAI
 // одним соединением не держится, и за долгим ответом ходят по номеру запуска.
+// Путь к Платону объявлен один раз (`plato_question`) и общий для кабинета,
+// торгов и монитора: копий было три, и они разошлись ровно там, где это видно
+// человеку — здесь показывалась стадия и секунды, в торгах нет.
 async function platoAnswer(message, onStage, history){
-  const trace='cab'+Math.random().toString(36).slice(2,10);
-  // Разговор, а не один ответ: история несёт реплики, числа едут свежими в
-  // самом вопросе — источник мог смениться между репликами.
-  const r=await fetch('/cabinet/ask',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({message, history: history||[]})});
-  // Ответ бывает не JSON — например HTML страницы ошибки. Разбирать его
-  // вслепую значит показать «The string did not match the expected pattern»
-  // вместо причины.
-  const raw=await r.text();
-  let d;
-  try{ d=JSON.parse(raw) }
-  catch(_){ throw new Error(`Платон ответил не по-русски и не по-JSON (код ${r.status}): `+raw.slice(0,200)) }
-  if(!r.ok) throw new Error(d.detail||'Платон не ответил');
-  // Быстрый ответ приходит тем же запросом; за долгим ходим по номеру.
-  //
-  // Ожидание без признака работы читается как внезапность: пять минут «Платон
-  // Сергеевич думает…», а потом «ответ пустой». Стадию сервер и так пишет —
-  // `/agent/trace/{номер}`, — и её надо просто показать. Заодно она отвечает на
-  // вопрос, которого иначе не задать: работа не началась или не кончилась.
-  let text=d.reply||d.answer||d.text||'';
-  const began=Date.now();
-  let stage='', label='';
-  for(let i=0;!text&&d.trace_id&&i<120;i++){
-    await new Promise(done=>setTimeout(done,2500));
-    try{
-      const s=await fetch('/agent/trace/'+encodeURIComponent(d.trace_id));
-      if(s.ok){ const sd=await s.json();
-        stage=sd.stage||stage; label=sd.label||label;
-        if(onStage) onStage(`${label||stage||'работа принята'} · ${Math.round((Date.now()-began)/1000)} с`);
-      }
-    }catch(_){ /* стадия — удобство; ронять из-за неё ожидание нельзя */ }
-    const p=await fetch('/agent/result/'+encodeURIComponent(d.trace_id||trace));
-    if(!p.ok) continue;
-    const pd=await p.json();
-    if(pd.status==='error'){ throw new Error(pd.detail||pd.error||'Платон вернул ошибку') }
-    text=pd.reply||pd.answer||pd.text||'';
-  }
-  if(!text){
-    // «Ответ пустой» — неверный диагноз: работа могла идти и не кончиться.
-    // Различить это можно только стадией, и она называется вслух.
-    const waited=Math.round((Date.now()-began)/1000);
-    throw new Error(d.error||(stage
-      ? `Платон не ответил за ${waited} с. Последняя стадия: ${label||stage}.`
-      : `Платон не ответил за ${waited} с, и работа не начиналась: стадии нет. `
-        +`Маршрут модели виден в /agent/status.`));
-  }
-  return text;
+  return platoAsk(message, history||[], onStage);
 }
 
-// Разговор о рынке. Пересборка отчёта его обрывает: Платон помнил бы числа
-// прежнего объекта и уверенно отвечал бы по ним.
-const marketTalk=platoThread();
-
-// Разговор рисуется целиком: без него уточнение «а почему» повисает в воздухе
-// — на экране один ответ, и о чём он, через три реплики уже не сказать.
-function renderTalk(box, talk, pending){
-  const rows=[];
-  for(let i=talk.turns.length-2;i>=0;i-=2){
-    rows.push(`<div class="plato" style="margin-top:10px${i<talk.turns.length-2?';opacity:.75':''}">`
-      +`<div class="muted" style="font-size:12px;margin-bottom:4px">${esc(talk.turns[i].content)}</div>`
-      +esc(talk.turns[i+1].content).replace(/\n/g,'<br>')+'</div>');
-  }
-  box.innerHTML=(pending?`<div class="muted">${esc(pending)}</div>`:'')+rows.join('');
-}
 
 // Спрашивают о том отчёте, который перед глазами, поэтому у каждой поверхности
 // свои поле и вывод, — но путь к Платону один: платить за обрыв длинного
@@ -1869,37 +1809,31 @@ function renderTalk(box, talk, pending){
 //
 // Сводка приходит параметром: у второго источника свой состав чисел и своё имя,
 // и подставить ему сводку «Пульса» значило бы спросить не о том, что показано.
-async function askPlatoIn(ids, report, digest){
-  const field=$(ids.field), out=$(ids.out), btn=$(ids.button), talk=ids.talk;
-  if(!field||!out) return;
-  const q=field.value.trim();
-  if(!q){out.innerHTML='<div class="muted">Напишите вопрос.</div>';return}
-  if(!report){out.innerHTML='<div class="muted">Сначала соберите отчёт — Платону нужны числа.</div>';return}
-  if(btn) btn.disabled=true;
-  renderTalk(out, talk, 'Платон Сергеевич думает…');
-  const message='Ниже готовый разбор рынка, посчитанный движком. Числа не пересчитывай — '
-    +'объясни и ответь на вопрос по ним.\n\n'+digest(report)+'\n\nВопрос: '+q;
-  try{
-    const text=await platoAnswer(message,
-      note=>{renderTalk(out, talk, 'Платон Сергеевич: '+note)},
-      talk.history());
-    // В историю уходит вопрос человека, а не сообщение с разбором: движок
-    // обрезает реплику по длине, и разбор вернулся бы обрубком, выглядящим
-    // полным. Числа поэтому едут свежими в каждом вопросе.
-    talk.said(q, text);
-    field.value='';
-    renderTalk(out, talk, '');
-  }catch(e){
-    renderTalk(out, talk, '');
-    out.insertAdjacentHTML('afterbegin', `<div class="err">${esc(e.message||e)}</div>`);
-  }
-  finally{if(btn) btn.disabled=false}
-}
+// Разговор о рынке. Пересборка отчёта его обрывает: Платон помнил бы числа
+// прежнего объекта и уверенно отвечал бы по ним.
+const marketTalk=platoThread();
 
-function askPlato(){
-  return askPlatoIn({field:'#ask', out:'#askout', button:'#askbtn', talk:marketTalk},
-                    lastReport, reportDigest);
-}
+// Что кладёт в вопрос блок рынка. Опрос, отрисовка и оболочка живут в пакете
+// (`plato_question`): ящик на странице один, и груз ему даёт тот блок, из
+// которого спросили.
+const MARKET_SURFACE={
+  talk: marketTalk,
+  hint: 'Он видит числа этого отчёта и объясняет их. Считает движок — модель не пересчитывает.',
+  chips: [
+    ['Что делать с ценой?','Что здесь главное и что делать с ценой?'],
+    ['Почему медленно?','Почему проект продаётся медленнее соседей? Разбери причины.'],
+    ['Кто конкурент?','Кто здесь ближайший конкурент и чем он опасен?'],
+    ['Какой прайс ставить?','Какой прайс поставить, чтобы выйти на темп соседей?']
+  ],
+  message: question=>{
+    if(!lastReport) throw new Error('Сначала соберите отчёт — Платону нужны числа.');
+    return 'Ниже готовый разбор рынка, посчитанный движком. Числа не пересчитывай — '
+      +'объясни и ответь на вопрос по ним.\n\n'+reportDigest(lastReport)
+      +'\n\nВопрос: '+question;
+  }
+};
+
+function askPlato(){ return platoOpen(MARKET_SURFACE) }
 
 
 // Карточка соседа. Открывается по клику на имя и рисуется из уже пришедших
@@ -3248,12 +3182,9 @@ function renderSales(d){
      +'<h2 style="margin-top:0">Спросить Платона Сергеевича о продажах</h2>'
      +'<div class="muted" style="font-size:13px;margin-bottom:8px">'
      +'Он видит свод этого проекта и объясняет его. Считает движок — модель не пересчитывает.</div>'
-     +'<div class="chips" id="saleschips">'
-     +SALES_ASKS.map((q,i)=>`<button type="button" data-i="${i}">${esc(q.chip)}</button>`).join('')
-     +'</div>'
-     +`<textarea id="salesq" rows="3" placeholder="Например: чем объяснить разрыв между планом банка и фактом?">${esc(SALES_ASKS[0].text)}</textarea>`
-     +'<button class="go" id="salesask">Спросить</button>'
-     +'<div id="salesout"></div></div>';
+     +'<button type="button" class="ai-open-btn" id="salesask">'
+     +'<span class="ai-dot ready"></span><span class="ai-label">Спросить Платона</span></button>'
+     +'</div>';
   box.innerHTML=html+'</div>';
   $('#salesask').onclick=askPlatoSales;
   // Дата среза — самая свежая из источников: два файла разных дат, поданных
@@ -3312,9 +3243,6 @@ function renderSales(d){
       state.style.display='block';
     }finally{ btn.disabled=false; btn.textContent=was }
   };
-  box.querySelectorAll('#saleschips button').forEach(b=>{
-    b.onclick=()=>{ $('#salesq').value=SALES_ASKS[Number(b.dataset.i)].text; askPlatoSales() };
-  });
   box.querySelectorAll('.switch button').forEach(b=>{
     b.onclick=()=>{
       const target=b.dataset.for;
@@ -3590,39 +3518,27 @@ function salesDigest(d, limit){
 // уточнение «а почему» Платон понимает.
 const salesTalk=platoThread();
 
-async function askPlatoSales(){
-  if(!salesData){$('#salesout').innerHTML='<div class="muted">Сначала загрузите выгрузку ЦФ.</div>';return}
-  const ask=($('#salesq').value||'').trim()||SALES_ASKS[0].text;
-  const btn=$('#salesask');
-  btn.disabled=true;
-  renderTalk($('#salesout'), salesTalk, 'Платон Сергеевич читает продажи…');
-  const tail='\n\nВОПРОС: '+ask+'\n\nПиши по-русски, коротко, отдельным абзацем на каждую мысль.';
-  const preamble='Ниже свод продаж проекта, посчитанный движком по выгрузке ЦФ. '
-    +'Числа НЕ пересчитывай и не выдумывай того, чего в своде нет; чего в своде нет — '
-    +'так и скажи.\n\n';
-  // Бюджет свода считается от НАСТОЯЩЕЙ длины преамбулы и вопроса. Вопрос
-  // пишет человек, и длина его заранее не известна: назначенный на глазок
-  // бюджет вылезал бы за предел ровно на длинном вопросе.
-  const message=preamble+salesDigest(salesData, SALES_ASK_LIMIT-preamble.length-tail.length-20)+tail;
-  try{
-    // Ответы копятся, а не затирают друг друга: новый встаёт сверху — на
-    // телефоне дописанный снизу оказывается за краем экрана, и человек
-    // решает, что ничего не произошло. Вопрос стоит над ответом: через три
-    // реплики «он про что это» становится настоящим вопросом.
-    const answer=await platoAnswer(message,
-      note=>{renderTalk($('#salesout'), salesTalk, 'Платон Сергеевич: '+note)},
-      salesTalk.history());
-    // В историю уходит вопрос человека, а не сообщение со сводом: движок
-    // обрезает реплику по длине, и свод вернулся бы обрубком, выглядящим
-    // полным. Свод поэтому едет свежим в каждом вопросе.
-    salesTalk.said(ask, answer);
-    renderTalk($('#salesout'), salesTalk, '');
-  }catch(e){
-    renderTalk($('#salesout'), salesTalk, '');
-    $('#salesout').insertAdjacentHTML('afterbegin',
-      `<div class="err">${esc(String(e.message||e))}</div>`);
-  }finally{ btn.disabled=false }
-}
+// Что кладёт в вопрос блок продаж. Ящик тот же — груз свой: спрашивают о том
+// своде, который перед глазами.
+const SALES_SURFACE={
+  talk: salesTalk,
+  hint: 'Он видит свод продаж этого проекта и объясняет его. Считает движок — модель не пересчитывает.',
+  chips: SALES_ASKS.map(q=>[q.chip, q.text]),
+  message: question=>{
+    if(!salesData) throw new Error('Сначала загрузите выгрузку ЦФ.');
+    const tail='\n\nВОПРОС: '+question
+      +'\n\nПиши по-русски, коротко, отдельным абзацем на каждую мысль.';
+    const preamble='Ниже свод продаж проекта, посчитанный движком по выгрузке ЦФ. '
+      +'Числа НЕ пересчитывай и не выдумывай того, чего в своде нет; чего в своде нет — '
+      +'так и скажи.\n\n';
+    // Бюджет свода считается от НАСТОЯЩЕЙ длины преамбулы и вопроса: вопрос
+    // пишет человек, и длина его заранее не известна.
+    return preamble
+      +salesDigest(salesData, SALES_ASK_LIMIT-preamble.length-tail.length-20)+tail;
+  }
+};
+
+function askPlatoSales(){ return platoOpen(SALES_SURFACE) }
 
 // План продаж и отчёт правлению приезжают тем же файлом проекта, что и всё
 // остальное: своей кнопки у них больше нет. Две загрузки рядом означали два
@@ -4065,18 +3981,18 @@ on('#pdf','click',()=>{
 on('#reset','click',function(){
   lastReport=null; planData=null; added.clear(); bubbleView='speed'; selectedSubjectQuery=null;
   marketTalk.reset();
+  // Разговор стирается и С ЭКРАНА: сброшенный в памяти, но оставшийся в ящике,
+  // он читается как разговор о новом отчёте — а он о прежнем.
+  if($('#platoOut')) $('#platoOut').innerHTML='';
+  if($('#platoField')) $('#platoField').value='';
   $('#out').innerHTML=''; $('#hintout').innerHTML='';
   $('#planstate').textContent=''; $('#state').textContent='';
-  $('#ask').value=''; $('#askout').innerHTML='';
   $('#askcard').style.display='none';
   $('#pdf').style.display='none'; $('#reset').style.display='none';
   $('#q').focus();
 });
 on('#cf','change',e=>{if(e.target.files[0])loadContracting(e.target.files[0])});
 if($('#sales'))loadStoredSales();
-document.querySelectorAll('.chips button').forEach(b=>b.addEventListener('click',()=>{
-  $('#ask').value=b.dataset.q; askPlato();
-}));
 
 // Ориентир цены — то же число, что кнопка «Рекомендация DevelopAid» у поля
 // цены в основном сервисе. Здесь он нужен для площадки без проекта: по адресу
@@ -4259,6 +4175,25 @@ def cabinet_style() -> str:
 LEGAL_FOOTER_PLACEHOLDER = "__DEVELOPAID_LEGAL_FOOTER__"
 
 
+def plato_drawer() -> tuple[str, str]:
+    """Стили и разметка ящика Платона — из `PAGE`, копии здесь нет.
+
+    Ящик один на страницу: блоков в кабинете два (рынок и продажи), и второй
+    ящик рядом с первым означал бы двух разных Платонов на одном экране. Груз
+    даёт тот блок, из которого нажали.
+    Движка нет — ящик не рисуется вовсе: пустая оболочка без вида читается как
+    поломка страницы, а не как отсутствие движка.
+    """
+    try:
+        import main_legacy
+        import plato_question
+
+        return (plato_question.drawer_css(main_legacy),
+                plato_question.drawer_markup(plato_question.DRAWER_IDS))
+    except Exception:
+        return "", ""
+
+
 def legal_footer() -> str:
     """Подвал документов ИП. Состав берётся из `PAGE`, копии здесь нет."""
     try:
@@ -4324,11 +4259,14 @@ def cabinet_page(view: str = "home") -> str:
     # На титуле полоски контура нет: её работу делают карточки, а два меню
     # подряд — это одно и то же дважды.
     contour = "" if view == "home" else management_contour.markup(here)
+    _drawer_css, _drawer_markup = plato_drawer()
     return (
         _cut(CABINET_PAGE, _KEEP[view])
         .replace("__SECTIONS__", _sections_markup())
         .replace("__DEVELOPAID_ROOMS__", management_contour.rooms())
         .replace(plato_question.PLACEHOLDER, plato_question.script())
+        .replace(plato_question.DRAWER_CSS_PLACEHOLDER, _drawer_css)
+        .replace(plato_question.DRAWER_PLACEHOLDER, _drawer_markup)
         .replace(VERSION_PLACEHOLDER, app_version())
         .replace("__DEVELOPAID_CONTOUR_STYLE__", management_contour.STYLE)
         .replace(management_contour.PLACEHOLDER, contour)

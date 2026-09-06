@@ -15,7 +15,9 @@ AUCTIONS_PAGE = r'''<!doctype html>
    кнопка, системный шрифт (замечание владельца, 23.08.2026). */
 :root{--bg:#f2f2ef;--panel:#fff;--text:#171717;--muted:#6b6b6b;--line:#dedede;--soft:#f7f7f5;--accent:#111;--ok:#1f6b3b;--warn:#8a5a00;--bad:#a33}
 
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}.shell{max-width:1540px;margin:0 auto;background:var(--panel);min-height:100vh}.brandbar{padding:22px 34px 0;background:var(--panel)}.brandbar img{display:block;width:min(360px,58vw);height:auto;mix-blend-mode:multiply}.brandline{height:8px;background:#050505;margin-top:12px}.head{display:flex;justify-content:space-between;gap:18px;align-items:flex-end;flex-wrap:wrap;padding:18px 34px 12px;border-bottom:1px solid var(--line)}.head h1{font-size:22px;font-weight:620;letter-spacing:.01em;line-height:1.1;margin:0}.head p{margin:5px 0 0;color:var(--muted);font-size:13px}.content{padding:24px 34px 40px}.badge{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:0;padding:6px 10px;font-size:12px;background:var(--panel)}.filters{display:grid;grid-template-columns:repeat(3,minmax(0,1fr)) minmax(0,1.5fr) auto;gap:9px;margin-bottom:14px}.filters.wide{grid-template-columns:minmax(0,2fr) repeat(4,minmax(0,1fr))}select,input,button{min-width:0;max-width:100%;text-overflow:ellipsis;min-height:42px;border:1px solid var(--line);border-radius:0;background:var(--panel);color:var(--text);padding:0 11px;font:inherit}button{cursor:pointer;font-weight:700;border-color:#111}button.primary{background:var(--accent);color:#fff}button:disabled{opacity:.45;cursor:not-allowed}.filter-actions{grid-column:1/-1;display:flex;gap:9px;justify-content:flex-end;flex-wrap:wrap}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin-bottom:14px}.stat{border:1px solid var(--line);border-radius:0;background:var(--panel);padding:12px}.stat b{font-size:22px;display:block}.stat span{font-size:12px;color:var(--muted)}.coverage{display:none}.layout{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(360px,.8fr);gap:12px}.tablewrap,.side{border:1px solid var(--line);background:var(--panel);border-radius:0;overflow:hidden}.tablecol{min-width:0;display:flex;flex-direction:column}.scrolltop{overflow-x:auto;overflow-y:hidden;height:14px;margin-bottom:-1px;border:1px solid var(--line);border-bottom:0;background:var(--panel)}.scrolltop>div{height:1px}.scrolltop[hidden]{display:none}.tablewrap{overflow:auto;min-height:420px}table{border-collapse:collapse;width:100%;min-width:900px}table.wide{min-width:1360px}th{position:sticky;top:0;background:var(--panel);z-index:1;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.045em;text-align:left;padding:11px 12px;border-bottom:1px solid var(--line)}td{padding:13px 12px;border-bottom:1px solid var(--line);vertical-align:top}tbody tr{cursor:pointer}tbody tr:hover{background:var(--soft)}.lotname{font-weight:700;margin-bottom:4px;max-width:360px}.cad{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted)}.tag{display:inline-flex;padding:4px 7px;border-radius:0;background:var(--soft);font-size:11px;font-weight:700}.tag.ok{color:var(--ok)}.tag.warn{color:var(--warn)}.tag.new{background:var(--accent);color:#fff;margin-left:7px;vertical-align:2px}.askcard{border:1px solid var(--line);background:var(--panel);padding:16px;margin-top:12px}.askcard h2{font-size:16px;margin:0 0 6px}.askhint{color:var(--muted);font-size:12px;margin-bottom:10px}.chips{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:10px}.chips button{min-height:34px;font-weight:500;font-size:12px;padding:0 10px;border-color:var(--line)}#askText{width:100%;min-height:74px;padding:9px 11px;resize:vertical;font:inherit}#askOut{margin-top:10px}.plato-answer{border-left:3px solid var(--accent);background:var(--soft);padding:11px 13px;font-size:13px;line-height:1.55;white-space:pre-wrap}details.fold{border:1px solid var(--line);margin-top:10px}details.fold>summary{cursor:pointer;padding:9px 11px;font-size:12px;font-weight:750;color:var(--muted);list-style:none;display:flex;justify-content:space-between;gap:10px}details.fold>summary::-webkit-details-marker{display:none}details.fold>summary:after{content:'развернуть';font-weight:500}details.fold[open]>summary:after{content:'свернуть'}details.fold>summary:hover{background:var(--soft)}.foldbody{padding:0 11px 11px}.ratio-row{display:grid;grid-template-columns:1fr auto;gap:7px;margin-bottom:7px}.brand{display:block;line-height:0}.legal-footer{display:flex;gap:18px;flex-wrap:wrap;margin:0 34px;padding:14px 0 22px;font-size:11px;color:var(--muted);border-top:1px solid var(--line)}.legal-footer a{color:var(--muted)}.plato-footer{margin:0;padding:0 34px;line-height:0}.plato-footer img{width:100%;height:auto;display:block}tr.family>td:first-child{border-left:3px solid var(--accent)}tr.family>td{background:var(--panel)}tr.sub>td:first-child{padding-left:30px}tr.sub>td{background:var(--soft)}.famcount{display:inline-flex;padding:3px 6px;margin-left:7px;background:var(--accent);color:#fff;font-size:11px;font-weight:700;vertical-align:2px}.money{font-weight:750;white-space:nowrap}.pbatt{position:relative;display:block;height:14px;margin-top:4px;border:1px solid var(--line);border-radius:0;background:var(--soft);overflow:hidden}.pbatt-fill{position:absolute;left:0;top:0;height:100%}.pbatt-pct{position:absolute;left:5px;top:0;font-size:10px;font-weight:750;color:#18202a;text-shadow:0 0 3px #fff,0 0 3px #fff}.side{padding:16px;min-height:420px;position:sticky;top:12px;align-self:start;max-height:calc(100vh - 24px);overflow:auto}.side h2{font-size:18px;margin:0 0 4px}.side .sub{color:var(--muted);font-size:12px;margin-bottom:14px}.empty{display:grid;place-items:center;color:var(--muted);min-height:360px;text-align:center;padding:25px}.kv{display:grid;grid-template-columns:145px 1fr;gap:7px 10px;padding:10px 0;border-bottom:1px solid var(--line)}.kv div:nth-child(odd){color:var(--muted)}.actions{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0}.actions.minor{margin-top:-6px}.actions.minor button{min-height:34px;font-weight:500;font-size:12px;padding:0 10px;border-color:var(--line)}.notice{border-radius:0;padding:10px 11px;background:var(--soft);font-size:12px;margin:10px 0}.notice.warn{color:var(--warn)}.section{margin-top:16px}.section h3{font-size:13px;margin:0 0 7px}.items{display:grid;gap:6px}.item{border:1px solid var(--line);border-radius:0;padding:8px 9px;font-size:12px}.item b{display:block;margin-bottom:2px}.source{font-size:11px;color:var(--muted);margin-top:4px}.source.warn{color:var(--warn)}.status{font-size:12px;color:var(--muted);margin-left:auto}.spinner{display:inline-block;width:13px;height:13px;border:2px solid var(--line);border-top-color:var(--text);border-radius:50%;animation:spin .7s linear infinite;vertical-align:-2px;margin-right:5px}@keyframes spin{to{transform:rotate(360deg)}}@media(max-width:950px){.filters,.filters.wide{grid-template-columns:repeat(2,minmax(0,1fr))}.stats{grid-template-columns:1fr 1fr}.layout{grid-template-columns:1fr}.side{min-height:0;position:static;max-height:none;overflow:visible}.brandbar{padding:14px 16px 0}.head{padding:14px 16px 10px}.tabs{padding:0 16px;gap:18px}.content{padding:16px 16px 28px}.plato-footer{padding:0 16px}.legal-footer{margin:0 16px}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}.shell{max-width:1540px;margin:0 auto;background:var(--panel);min-height:100vh}.brandbar{padding:22px 34px 0;background:var(--panel)}.brandbar img{display:block;width:min(360px,58vw);height:auto;mix-blend-mode:multiply}.brandline{height:8px;background:#050505;margin-top:12px}.head{display:flex;justify-content:space-between;gap:18px;align-items:flex-end;flex-wrap:wrap;padding:18px 34px 12px;border-bottom:1px solid var(--line)}.head h1{font-size:22px;font-weight:620;letter-spacing:.01em;line-height:1.1;margin:0}.head p{margin:5px 0 0;color:var(--muted);font-size:13px}.content{padding:24px 34px 40px}.badge{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:0;padding:6px 10px;font-size:12px;background:var(--panel)}.filters{display:grid;grid-template-columns:repeat(3,minmax(0,1fr)) minmax(0,1.5fr) auto;gap:9px;margin-bottom:14px}.filters.wide{grid-template-columns:minmax(0,2fr) repeat(4,minmax(0,1fr))}select,input,button{min-width:0;max-width:100%;text-overflow:ellipsis;min-height:42px;border:1px solid var(--line);border-radius:0;background:var(--panel);color:var(--text);padding:0 11px;font:inherit}button{cursor:pointer;font-weight:700;border-color:#111}button.primary{background:var(--accent);color:#fff}button:disabled{opacity:.45;cursor:not-allowed}.filter-actions{grid-column:1/-1;display:flex;gap:9px;justify-content:flex-end;flex-wrap:wrap}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin-bottom:14px}.stat{border:1px solid var(--line);border-radius:0;background:var(--panel);padding:12px}.stat b{font-size:22px;display:block}.stat span{font-size:12px;color:var(--muted)}.coverage{display:none}.layout{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(360px,.8fr);gap:12px}.tablewrap,.side{border:1px solid var(--line);background:var(--panel);border-radius:0;overflow:hidden}.tablecol{min-width:0;display:flex;flex-direction:column}.scrolltop{overflow-x:auto;overflow-y:hidden;height:14px;margin-bottom:-1px;border:1px solid var(--line);border-bottom:0;background:var(--panel)}.scrolltop>div{height:1px}.scrolltop[hidden]{display:none}.tablewrap{overflow:auto;min-height:420px}table{border-collapse:collapse;width:100%;min-width:900px}table.wide{min-width:1360px}th{position:sticky;top:0;background:var(--panel);z-index:1;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.045em;text-align:left;padding:11px 12px;border-bottom:1px solid var(--line)}td{padding:13px 12px;border-bottom:1px solid var(--line);vertical-align:top}tbody tr{cursor:pointer}tbody tr:hover{background:var(--soft)}.lotname{font-weight:700;margin-bottom:4px;max-width:360px}.cad{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted)}.tag{display:inline-flex;padding:4px 7px;border-radius:0;background:var(--soft);font-size:11px;font-weight:700}.tag.ok{color:var(--ok)}.tag.warn{color:var(--warn)}.tag.new{background:var(--accent);color:#fff;margin-left:7px;vertical-align:2px}.askcard{border:1px solid var(--line);background:var(--panel);padding:16px;margin-top:12px}
+__DEVELOPAID_PLATO_DRAWER_CSS__
+.askcard h2{font-size:16px;margin:0 0 6px}.askhint{color:var(--muted);font-size:12px;margin-bottom:10px}.chips{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:10px}.chips button{min-height:34px;font-weight:500;font-size:12px;padding:0 10px;border-color:var(--line)}#askText{width:100%;min-height:74px;padding:9px 11px;resize:vertical;font:inherit}#askOut{margin-top:10px}.plato-answer{border-left:3px solid var(--accent);background:var(--soft);padding:11px 13px;font-size:13px;line-height:1.55;white-space:pre-wrap}details.fold{border:1px solid var(--line);margin-top:10px}details.fold>summary{cursor:pointer;padding:9px 11px;font-size:12px;font-weight:750;color:var(--muted);list-style:none;display:flex;justify-content:space-between;gap:10px}details.fold>summary::-webkit-details-marker{display:none}details.fold>summary:after{content:'развернуть';font-weight:500}details.fold[open]>summary:after{content:'свернуть'}details.fold>summary:hover{background:var(--soft)}.foldbody{padding:0 11px 11px}.ratio-row{display:grid;grid-template-columns:1fr auto;gap:7px;margin-bottom:7px}.brand{display:block;line-height:0}.legal-footer{display:flex;gap:18px;flex-wrap:wrap;margin:0 34px;padding:14px 0 22px;font-size:11px;color:var(--muted);border-top:1px solid var(--line)}.legal-footer a{color:var(--muted)}.plato-footer{margin:0;padding:0 34px;line-height:0}.plato-footer img{width:100%;height:auto;display:block}tr.family>td:first-child{border-left:3px solid var(--accent)}tr.family>td{background:var(--panel)}tr.sub>td:first-child{padding-left:30px}tr.sub>td{background:var(--soft)}.famcount{display:inline-flex;padding:3px 6px;margin-left:7px;background:var(--accent);color:#fff;font-size:11px;font-weight:700;vertical-align:2px}.money{font-weight:750;white-space:nowrap}.pbatt{position:relative;display:block;height:14px;margin-top:4px;border:1px solid var(--line);border-radius:0;background:var(--soft);overflow:hidden}.pbatt-fill{position:absolute;left:0;top:0;height:100%}.pbatt-pct{position:absolute;left:5px;top:0;font-size:10px;font-weight:750;color:#18202a;text-shadow:0 0 3px #fff,0 0 3px #fff}.side{padding:16px;min-height:420px;position:sticky;top:12px;align-self:start;max-height:calc(100vh - 24px);overflow:auto}.side h2{font-size:18px;margin:0 0 4px}.side .sub{color:var(--muted);font-size:12px;margin-bottom:14px}.empty{display:grid;place-items:center;color:var(--muted);min-height:360px;text-align:center;padding:25px}.kv{display:grid;grid-template-columns:145px 1fr;gap:7px 10px;padding:10px 0;border-bottom:1px solid var(--line)}.kv div:nth-child(odd){color:var(--muted)}.actions{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0}.actions.minor{margin-top:-6px}.actions.minor button{min-height:34px;font-weight:500;font-size:12px;padding:0 10px;border-color:var(--line)}.notice{border-radius:0;padding:10px 11px;background:var(--soft);font-size:12px;margin:10px 0}.notice.warn{color:var(--warn)}.section{margin-top:16px}.section h3{font-size:13px;margin:0 0 7px}.items{display:grid;gap:6px}.item{border:1px solid var(--line);border-radius:0;padding:8px 9px;font-size:12px}.item b{display:block;margin-bottom:2px}.source{font-size:11px;color:var(--muted);margin-top:4px}.source.warn{color:var(--warn)}.status{font-size:12px;color:var(--muted);margin-left:auto}.spinner{display:inline-block;width:13px;height:13px;border:2px solid var(--line);border-top-color:var(--text);border-radius:50%;animation:spin .7s linear infinite;vertical-align:-2px;margin-right:5px}@keyframes spin{to{transform:rotate(360deg)}}@media(max-width:950px){.filters,.filters.wide{grid-template-columns:repeat(2,minmax(0,1fr))}.stats{grid-template-columns:1fr 1fr}.layout{grid-template-columns:1fr}.side{min-height:0;position:static;max-height:none;overflow:visible}.brandbar{padding:14px 16px 0}.head{padding:14px 16px 10px}.tabs{padding:0 16px;gap:18px}.content{padding:16px 16px 28px}.plato-footer{padding:0 16px}.legal-footer{margin:0 16px}}
 @media(max-width:640px){.filters,.filters.wide{grid-template-columns:minmax(0,1fr)}.stats{grid-template-columns:minmax(0,1fr)}.filter-actions{justify-content:stretch}.filter-actions button{flex:1 1 100%}.kv{grid-template-columns:minmax(0,1fr)}.kv div:nth-child(odd){padding-top:4px}}
 .tabs{display:flex;gap:28px;padding:0 34px;border-bottom:1px solid var(--line);overflow:auto;background:var(--panel)}.tabs .tab{border:0;background:none;min-height:0;padding:15px 0 12px;font-size:14px;font-weight:620;color:#777;white-space:nowrap;border-bottom:3px solid transparent}.tabs .tab.active{color:#000;border-color:#000}.hidden{display:none!important}.fit{display:inline-flex;align-items:center;gap:6px;font-weight:750;white-space:nowrap}.fit .light{width:10px;height:10px;border-radius:50%;background:var(--muted);}.fit.ok{color:var(--ok)}.fit.ok .light{background:var(--ok)}.fit.warn{color:var(--warn)}.fit.warn .light{background:var(--warn)}.fit.bad{color:var(--bad)}.fit.bad .light{background:var(--bad)}
 .multi{position:relative;min-width:0}.multi-toggle{width:100%;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-right:30px;position:relative}.multi-toggle:after{content:'⌄';position:absolute;right:11px;font-size:16px;line-height:1}.multi-toggle[aria-expanded="true"]:after{content:'⌃'}.multi-menu{position:absolute;z-index:20;top:calc(100% + 6px);left:0;width:max-content;min-width:100%;max-width:min(320px,80vw);padding:8px;border:1px solid var(--line);border-radius:0;background:var(--panel);}.multi-head{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:2px 4px 7px;font-size:12px;font-weight:750;color:var(--muted)}.multi-clear{min-height:28px;padding:0 7px;border:0;background:transparent;color:var(--muted);font-size:12px}.multi-options{display:grid;gap:2px;max-height:310px;overflow:auto}.multi-option{display:flex;align-items:center;gap:9px;min-height:36px;padding:5px 7px;border-radius:0;cursor:pointer}.multi-option:hover{background:var(--soft)}.multi-option input{flex:0 0 auto;width:17px;height:17px;min-height:0;margin:0;padding:0;accent-color:var(--accent)}
@@ -75,7 +77,7 @@ __DEVELOPAID_CONTOUR__
       <div class="filter-actions"><button id="krtRefresh" class="primary">Обновить каталог</button><button id="krtRankBtn">Оценить отобранные моделью</button><button id="krtPressBtn" title="Читает публикации и каналы по ВСЕМ планируемым площадкам и по площадкам с проектом решения: до пяти поисковых запросов на площадку, по каждому её адресу. Уже спрошенные пропускаются — занятая площадка свободной не станет. У площадок в реализации застройщика называет сама карточка города, поиска они не требуют. У проекта решения без адреса в заголовке спрашивать нечего: такие названы числом, а не пропущены молча.">Прочитать публикации по планируемым</button><button id="krtExport">Выгрузить Excel</button></div>
     </div>
     <div class="stats"><div class="stat"><b id="krtCount">—</b><span id="krtCountNote">проектов</span></div><div class="stat"><b id="krtArea">—</b><span>га территории</span></div><div class="stat"><b id="krtHousing">—</b><span>м² жилья</span></div><div class="stat"><b id="krtGfa">—</b><span>м² всего</span></div></div>
-    <details class="fold" id="krtMapFold"><summary>Карта КРТ Москвы — 263 площадки с официальными границами</summary>
+    <details class="fold" id="krtMapFold"><summary id="krtMapSummary">Карта КРТ Москвы — официальные границы площадок</summary>
       <div class="foldbody"><div id="krtMapBody"><div class="notice">Открой, и карта построится.</div></div></div>
     </details>
     <div id="krtFilterNote" class="source" style="margin:6px 2px"></div>
@@ -108,20 +110,18 @@ __DEVELOPAID_CONTOUR__
   <!-- Разговор с Платоном там же, где смотрят на список: уводить человека на
        другую страницу, чтобы спросить про то, что у него перед глазами, —
        значит заставить его переписать вопрос по памяти. Числа он не считает:
-       в вопрос кладётся то, что уже посчитано. -->
+       в вопрос кладётся то, что уже посчитано.
+       Оболочка — тот же ящик справа, что на расчёте (владелец, 04.09.2026:
+       «может Платон будет так же расположен во всех блоках кабинета, как на
+       основном расчете? всплывающим справа для диалога?»). Разметка не
+       копируется: её строит `plato_question.drawer_markup`, стили берутся из
+       `PAGE`. -->
   <div class="askcard" id="askCard">
     <h2>Спросить Платона Сергеевича</h2>
     <div class="askhint" id="askContext">Он видит то, что открыто на экране: отобранные лоты и площадки КРТ, а с выбранной — её оценку и расчёт. Считает движок, модель ничего не пересчитывает.</div>
-    <div class="chips">
-      <button type="button" data-q="Что из отобранного стоит смотреть первым и почему?">Что смотреть первым?</button>
-      <button type="button" data-q="Чем опасна выбранная площадка? Назови три риска по убыванию цены вопроса.">Чем опасна выбранная?</button>
-      <button type="button" data-q="Каких данных не хватает, чтобы считать эту площадку всерьёз?">Чего не хватает?</button>
-      <button type="button" data-q="Сравни отобранные площадки между собой: где экономика лучше и за счёт чего?">Сравни отобранные</button>
-    </div>
-    <textarea id="askText" rows="3" placeholder="Например: почему у этой площадки низкий балл?"></textarea>
-    <button class="primary" id="askBtn">Спросить</button>
-    <div id="askOut"></div>
+    __DEVELOPAID_PLATO_LAUNCHER__
   </div>
+__DEVELOPAID_PLATO_DRAWER__
 
   </div>
   <footer class="plato-footer">
@@ -1922,8 +1922,18 @@ function renderKrt(){const a=state.krtFiltered,body=$('krtRows');body.innerHTML=
  // 01.09.2026: «в КРТ осталось 58 объектов, как так»). Число, названное не тем
  // именем, выглядит посчитанным — и проверить его нечем.
  const whole=(state.krt||[]).length;
- $('krtCountNote').textContent=whole&&whole!==a.length
-   ? 'проектов в отборе · всего в каталоге '+whole : 'проектов';$('krtArea').textContent=sumKrt(a,'area_ha',1);$('krtHousing').textContent=sumKrt(a,'housing_gfa_sqm',0);$('krtGfa').textContent=sumKrt(a,'total_gfa_sqm',0);a.forEach(x=>{const sc=krtScore(x),model=state.krtModels[x.slug],light=model?.traffic_light,tr=document.createElement('tr');
+ // Схлопнутое называется У ЧИСЛА, которое из-за него упало. Строка снимка под
+ // картой это уже говорила, а владелец смотрел на плитку и спросил «куда делись
+ // 38 КРТ?» (06.09.2026): ответ был двумя блоками ниже, среди служебных сведений
+ // о снимке, и на вопрос, заданный плиткой, не отвечал.
+ const twice=Number(state.krtSecondPublications||0);
+ const gone=twice?' · схлопнуто '+twice+' вторых публикаций одного документа':'';
+ $('krtCountNote').textContent=(whole&&whole!==a.length
+   ? 'проектов в отборе · всего в каталоге '+whole : 'проектов')+gone;
+ $('krtCountNote').title=twice
+   ? 'Проект решения о КРТ город публикует дважды — в разделе ДГИ и в разделе '
+     +'ДИПП. Это одна и та же бумага, поэтому строка одна: адрес второй '
+     +'публикации стоит в её карточке. Площадки при этом не потеряны.' : '';$('krtArea').textContent=sumKrt(a,'area_ha',1);$('krtHousing').textContent=sumKrt(a,'housing_gfa_sqm',0);$('krtGfa').textContent=sumKrt(a,'total_gfa_sqm',0);a.forEach(x=>{const sc=krtScore(x),model=state.krtModels[x.slug],light=model?.traffic_light,tr=document.createElement('tr');
  const title=sc.counted?`Потенциал по ТЭП ${sc.base}; расчёт снял ${sc.cut}%. ${light?.label||''}`:('Балл по ТЭП; модель ещё не считалась'+(sc.reason?'. '+sc.reason:''));
  const fresh=x.is_new?'<span class="tag new" title="Появилась в каталоге недавно">новое</span>':'';
  // Строка без карточки честно говорит, чего у неё нет: ТЭП, балла и модели.
@@ -2392,10 +2402,17 @@ function selectKrt(x){state.selectedKrt=x;const sc=krtScore(x),fit=sc.fit,cached
  // Перечни спрятаны под раскрытие и несут число в заголовке: закрытый список
  // без числа читается как отсутствующий.
  // Карточка отвечает на четыре вопроса подряд, и у каждого есть имя на экране:
- // МОЖНО ЛИ ВОЙТИ → ЧТО ЗА ПЛОЩАДКА → ЧТО ЭТО ДАЁТ → НАСКОЛЬКО ВЕРИМ, дальше
- // действие и приложения. Прежде балл со списком снижений стоял ВЫШЕ экономики,
+ // МОЖНО ЛИ ВОЙТИ → ЧТО ДАЛ ГОРОД → ЧТО ЭТО ДАЁТ → НАСКОЛЬКО ВЕРИМ, дальше
+ // Платон и приложения. Прежде балл со списком снижений стоял ВЫШЕ экономики,
  // из которой он свёрнут, и одни и те же LLCR с маржой рассказывались трижды:
  // плашкой балла, списком снижений и таблицей модели.
+ // Порядок нижней половины назвал владелец (06.09.2026): «вся нормативная
+ // информация должна быть собрана внизу, после неё должны идти кнопки расчёта
+ // и обновления, а потом данные модели и рекомендации Платона». Прежде
+ // нормативное было рассыпано — паспорт и требования выше модели, карта,
+ // остальные ТЭП и служебное под кнопками, — а Платон рисовался ВЫШЕ чисел, о
+ // которых говорит: его ответ шёл первой строкой того же контейнера, что и
+ // модель.
  const speaks=krtDataCheckSpeaks(x);
  $('krtSide').innerHTML=`<h2>${esc(x.name)}${x.is_new?'<span class="tag new">новое</span>':''}</h2>`
  +`<div class="sub">${esc(krtSource(x).short)}${[x.okrug,x.district].filter(Boolean).length?' · '+esc([x.okrug,x.district].filter(Boolean).join(' · ')):''}</div>`
@@ -2404,12 +2421,6 @@ function selectKrt(x){state.selectedKrt=x;const sc=krtScore(x),fit=sc.fit,cached
  +`<div class="section"><h3>Что за площадка</h3>${krtPassport(x)}</div>`
  +(speaks?krtDataCheck(x):'')
  +`${planned?'<div id="krtRequirementsBox"><div class="notice">Ищу проект решения и читаю требования…</div></div>':''}`
- +`<div id="krtMarketResult">${krtBroken(x)?krtBrokenModelNote(x):(cached?renderKrtModel(cached):'')}</div>`
- +`<div class="section"><h3>Насколько этому верить</h3><div class="notice" id="krtScoreBox">${krtScoreBoxHtml(sc)}</div>`
- +`<details class="fold"><summary>Почему такой балл — ${fit.reasons.length+fit.checks.length+sc.cuts.length} пункт(ов)</summary><div class="foldbody"><div class="items">${fit.reasons.map(one=>`<div class="item"><b>Соответствует запросу</b>${esc(one)}</div>`).join('')}${fit.checks.map(one=>`<div class="item"><b>Нужно проверить</b>${esc(one)}</div>`).join('')}${sc.cuts.map(c=>`<div class="item"><b>Балл снижен на ${c.points}%</b>${esc(c.label)}</div>`).join('')}</div></div></details></div>`
- +`<div class="actions"><button class="primary" id="krtHandoff">Передать в расчёт DevelopAid</button><button id="krtMarket">Пересчитать сейчас</button></div>`
- +`<div class="actions minor"><button id="krtPlato">Рекомендация Платона</button><button id="krtShare">Поделиться</button><button id="krtSource">${esc(krtSource(x).open)}</button></div>`
- +`<div id="krtShareNote" class="notice" style="display:none"></div>`
  +`<details class="fold"><summary>Что про площадку известно и чего не хватает</summary><div class="foldbody">`
  +(speaks?'':krtDataCheck(x))
  +krtIntentBlock(x)
@@ -2418,8 +2429,15 @@ function selectKrt(x){state.selectedKrt=x;const sc=krtScore(x),fit=sc.fit,cached
  +`</div></details>`
  +`<details class="fold"><summary>Карта и границы</summary><div class="foldbody"><div id="krtMapBox"><div class="notice">Строю карту участка…</div></div></div></details>`
  +`<details class="fold"><summary>Остальные ТЭП и пропорции</summary><div class="foldbody">${x.no_card?'<div class="source">Общественно-делового объёма и рабочих мест проект решения не называет — эти строки есть только у карточки каталога, а её у площадки нет.</div>':`<div class="kv" style="border:0"><div>Общественно-деловое</div><div>${fmtArea(x.business_gfa_sqm)}</div><div>Рабочие места</div><div>${esc(x.jobs??'—')}</div></div>`}<div class="notice" id="krtOutlineNote">Границы: читаю файл карты реестра…</div>${krtRatioBlock(x)}</div></details>`
- +`<details class="fold"><summary>Служебное: привязка распоряжений города</summary><div class="foldbody">${krtOrderBlock(x)}</div></details>`;
- $('krtMarket').onclick=()=>loadKrtMarket(x);krtOrderBind(x);$('krtSource').onclick=()=>window.open(x.url,'_blank','noopener');loadKrtCardFacts(x);$('krtPress').onclick=()=>loadKrtPress(x);krtRatioBind(x);
+ +`<details class="fold"><summary>Служебное: привязка распоряжений города</summary><div class="foldbody">${krtOrderBlock(x)}</div></details>`
+ +`<div class="actions"><button class="primary" id="krtHandoff">Передать в расчёт DevelopAid</button><button id="krtMarket">Пересчитать сейчас</button></div>`
+ +`<div id="krtMarketResult">${krtBroken(x)?krtBrokenModelNote(x):(cached?renderKrtModel(cached):'')}</div>`
+ +`<div class="section"><h3>Насколько этому верить</h3><div class="notice" id="krtScoreBox">${krtScoreBoxHtml(sc)}</div>`
+ +`<details class="fold"><summary>Почему такой балл — ${fit.reasons.length+fit.checks.length+sc.cuts.length} пункт(ов)</summary><div class="foldbody"><div class="items">${fit.reasons.map(one=>`<div class="item"><b>Соответствует запросу</b>${esc(one)}</div>`).join('')}${fit.checks.map(one=>`<div class="item"><b>Нужно проверить</b>${esc(one)}</div>`).join('')}${sc.cuts.map(c=>`<div class="item"><b>Балл снижен на ${c.points}%</b>${esc(c.label)}</div>`).join('')}</div></div></details></div>`
+ +`<div class="actions minor"><button id="krtPlato">Рекомендация Платона</button><button id="krtShare">Поделиться</button><button id="krtSource">${esc(krtSource(x).open)}</button></div>`
+ +`<div id="krtPlatoBox"></div>`
+ +`<div id="krtShareNote" class="notice" style="display:none"></div>`;
+$('krtMarket').onclick=()=>loadKrtMarket(x);krtOrderBind(x);$('krtSource').onclick=()=>window.open(x.url,'_blank','noopener');loadKrtCardFacts(x);$('krtPress').onclick=()=>loadKrtPress(x);krtRatioBind(x);
  $('krtShare').onclick=()=>shareKrt(x);
  $('krtHandoff').onclick=()=>handoffKrt(x);
  $('krtPlato').onclick=()=>askPlatoAboutKrt(x);
@@ -2474,8 +2492,14 @@ function renderKrtReport(x,d,out){
   ? `<div class="section"><h3>Рекомендация Платона</h3><div class="notice"><div style="white-space:pre-wrap">${esc(d.plato.text)}</div><div class="source" style="margin-top:7px">Спрошено ${d.plato.asked_at?new Date(d.plato.asked_at*1000).toLocaleString('ru-RU'):''} по маркетингу и по модели сразу.</div></div></div>`
   : '<div class="section"><h3>Рекомендация Платона</h3><div class="notice">Не спрошена. Кнопка «Рекомендация Платона» задаёт ему вопрос по этим же числам — маркетингу и модели вместе.</div></div>';
  const head=`<div class="notice"><b>Отчёт посчитан ${esc(when)}</b><div class="source" style="margin-top:5px">Числа ниже взяты из этого прогона. «Пересчитать сейчас» повторит его с сегодняшним рынком.</div></div>`;
- out.innerHTML=head+plato+renderKrtModel(d.screening);
+ out.innerHTML=head+renderKrtModel(d.screening);
  if(d.market)renderKrtMarketBlocks(d.market,out);
+ // Платон говорит О ЧИСЛАХ, значит стоит под ними, а не первой строкой над
+ // ними: его ответ рисовался в тот же контейнер, что и модель, и открывал
+ // раздел «что это даёт» мнением о цифрах, которых читатель ещё не видел
+ // (владелец, 06.09.2026).
+ const said=document.getElementById('krtPlatoBox');
+ if(said)said.innerHTML=plato;
 }
 
 // Передача в DevelopAid: те же вводные, которыми посчитан отчёт. Второй сборки
@@ -3002,6 +3026,12 @@ async function loadKrtMap(){
   KRT_MAP.data=d;
   box.innerHTML=krtMapMarkup(d);
   krtMapBind();
+  // Число площадок карты — ответ источника, а не подпись: в заголовке стояло
+  // зашитое «263 площадки», а файл города к 06.09.2026 нёс уже 277. Пока карту
+  // не открыли, числа нет вовсе: «не спрашивали» и «столько-то» — разные ответы.
+  const head=document.getElementById('krtMapSummary');
+  const seen=Number(d.count||(d.sites||[]).length||0);
+  if(head&&seen)head.textContent='Карта КРТ Москвы — '+seen+' площадок с официальными границами';
  }catch(e){
   // Источник не ответил — это ответ, а не пустая карта: пустое поле читалось
   // бы как «площадок нет».
@@ -3255,6 +3285,8 @@ function renderKrtProgramme(p){
   +`<div>Территория</div><div>${c.area_ha?new Intl.NumberFormat('ru-RU',{maximumFractionDigits:2}).format(c.area_ha)+' га':'не опубликована'}</div>`
   +`<div>Жилое назначение</div><div>${fmtArea(c.housing_gfa_sqm)}</div>`
   +`<div>Нежилое назначение</div><div>${fmtArea(c.nonresidential_gfa_sqm)}</div>`
+  +(Number(c.utility_gfa_sqm)>0
+    ? `<div title="Решение задаёт этот объём МИНИМУМОМ и внутри нежилого назначения. Продуктом девелопера он не является: модель его не строит и не оценивает — об этом сказано в «чего нет в расчёте».">Коммунальное, производственное и иное</div><div>${fmtArea(c.utility_gfa_sqm)} · минимум по решению</div>` : '')
   +`<div>Общественно-деловое</div><div>${fmtArea(c.business_gfa_sqm)}</div>`
   +`<div>Население по 33 м² квартир</div><div>${new Intl.NumberFormat('ru-RU').format(p.population||0)} чел.${c.zone_two?' · вторая зона нормирования':''}</div>`
   +`</div>${balance}`
@@ -3403,53 +3435,29 @@ function renderAskContext(){
 // нечем: Платон сказанного не помнил.
 const auctionTalk=platoThread();
 
-function renderAuctionTalk(pending){
- const out=$('askOut');
- const rows=[];
- for(let i=auctionTalk.turns.length-2;i>=0;i-=2){
-  rows.push(`<div class="plato-answer"${i<auctionTalk.turns.length-2?' style="opacity:.75"':''}>`
-   +`<div class="muted" style="font-size:12px;margin-bottom:4px">${esc(auctionTalk.turns[i].content)}</div>`
-   +esc(auctionTalk.turns[i+1].content)+'</div>');
- }
- out.innerHTML=(pending||'')+rows.join('');
-}
+// Что кладёт в вопрос страница торгов. Опрос, отрисовка разговора и оболочка
+// живут в пакете (`plato_question`): копий у них было три, и расходились они
+// молча — здесь, например, не показывалась стадия, и долгий ответ выглядел
+// зависанием.
+const AUCTION_SURFACE={
+ talk: auctionTalk,
+ hint: 'Он видит то, что открыто на экране: отобранные лоты и площадки КРТ, '
+   +'а с выбранной — её оценку и расчёт. Считает движок, модель ничего не пересчитывает.',
+ chips: [
+  ['Что смотреть первым?','Что из отобранного стоит смотреть первым и почему?'],
+  ['Чем опасна выбранная?','Чем опасна выбранная площадка? Назови три риска по убыванию цены вопроса.'],
+  ['Чего не хватает?','Каких данных не хватает, чтобы считать эту площадку всерьёз?'],
+  ['Сравни отобранные','Сравни отобранные площадки между собой: где экономика лучше и за счёт чего?']
+ ],
+ message: question=>askMessage(question),
+ // Закрытый кабинет называется своим именем: «Платон не ответил» на 401
+ // отправило бы человека искать поломку там, где надо просто войти.
+ error: e=>(e&&e.status===401)?NEED_LOGIN:((e&&e.message)||e)
+};
 
-async function askPlato(){
- const field=$('askText'), out=$('askOut'), button=$('askBtn');
- const question=(field.value||'').trim();
- if(!question){out.innerHTML='<div class="notice warn">Напишите вопрос.</div>';return}
- button.disabled=true;
- renderAuctionTalk('<div class="notice"><span class="spinner"></span>Платон Сергеевич думает…</div>');
- const message=askMessage(question);
- try{
-  let d;
-  try{
-   // История несёт реплики, а не списки: экран мог смениться между
-   // вопросами, и лоты едут свежими в самом сообщении.
-   d=await askJson('/cabinet/ask',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({message, history: auctionTalk.history()})});
-  }catch(e){
-   renderAuctionTalk(`<div class="notice warn">${esc(e.status===401?NEED_LOGIN:(e.message||e))}</div>`);return;
-  }
-  // Быстрый ответ приходит тем же запросом; за долгим ходим по номеру запуска.
-  let text=d.reply||d.answer||d.text||'';
-  for(let i=0;!text&&d.trace_id&&i<120;i++){
-   await new Promise(done=>setTimeout(done,2500));
-   const p=await fetch('/agent/result/'+encodeURIComponent(d.trace_id));
-   if(!p.ok)continue;
-   const pd=await p.json();
-   if(pd.status==='error'){text='Ошибка: '+(pd.detail||pd.error||'неизвестно');break}
-   text=pd.reply||pd.answer||pd.text||'';
-  }
-  if(text){ auctionTalk.said(question, text); field.value=''; renderAuctionTalk('') }
-  else renderAuctionTalk(`<div class="notice warn">${esc(d.error||'Ответ пустой — Платон ничего не сказал.')}</div>`);
- }catch(e){renderAuctionTalk(`<div class="notice warn">${esc(e.message||e)}</div>`)}
- finally{button.disabled=false}
-}
-$('askBtn').onclick=askPlato;
-$('askCard').querySelectorAll('.chips button').forEach(b=>{
- b.onclick=()=>{$('askText').value=b.dataset.q;askPlato()};
-});
+function askPlato(){ return platoOpen(AUCTION_SURFACE) }
+
+
 $('tabAuctions').onclick=()=>switchTab(false);$('tabKrt').onclick=()=>switchTab(true);$('krtRefresh').onclick=()=>loadKrt(true);$('krtRankBtn').onclick=startKrtRanking;$('krtPressBtn').onclick=readKrtPress;$('krtSearch').oninput=filterKrt;bindKrtFilters();document.getElementById('krtMapFold')?.addEventListener('toggle',ev=>{if(ev.target.open)loadKrtMap()});$('krtMinHousing').oninput=filterKrt;document.querySelectorAll('th[data-sort]').forEach(th=>{th.style.cursor='pointer';th.title=(th.title?th.title+'. ':'')+'Нажмите, чтобы отсортировать';th.onclick=()=>krtSortBy(th.dataset.sort)});
 $('krtOkrugToggle').onclick=e=>{e.stopPropagation();const menu=$('krtOkrugMenu'),open=menu.classList.contains('hidden');closeKrtMenus();menu.classList.toggle('hidden',!open);$('krtOkrugToggle').setAttribute('aria-expanded',String(open))};$('krtOkrugMenu').onclick=e=>e.stopPropagation();$('krtOkrugClear').onclick=()=>{state.krtOkrugs.clear();$('krtOkrugOptions').querySelectorAll('input').forEach(x=>x.checked=false);updateKrtOkrugLabel();filterKrt()};document.addEventListener('click',closeKrtMenus);document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeKrtMenus();$('krtOkrugToggle').focus()}});
 loadKrtRanking();
@@ -3489,8 +3497,21 @@ def auctions_page(core=None) -> str:
     from auction_search import land_map
 
     footer = legal_footer_html(core) if core is not None else ""
+    # Ящик Платона: стили и поведение — из `PAGE`, груз — свой. Без движка
+    # стили взять неоткуда, и тогда ящик не рисуется вовсе: пустая оболочка без
+    # вида читалась бы как поломка страницы.
+    drawer = css = ""
+    if core is not None:
+        css = plato_question.drawer_css(core)
+        drawer = plato_question.drawer_markup(plato_question.DRAWER_IDS)
     return (AUCTIONS_PAGE
             .replace(plato_question.PLACEHOLDER, plato_question.script())
+            .replace(plato_question.DRAWER_CSS_PLACEHOLDER, css)
+            .replace(plato_question.DRAWER_PLACEHOLDER, drawer)
+            .replace("__DEVELOPAID_PLATO_LAUNCHER__",
+                     plato_question.drawer_launcher(
+                         "Спросить Платона", "AUCTION_SURFACE")
+                     if core is not None else "")
             .replace(LEGAL_FOOTER_PLACEHOLDER, footer)
             # Живая карта — движковая, объявленная один раз в `PAGE`. Без движка
             # плейсхолдеры убираются, а кнопка на странице говорит об этом

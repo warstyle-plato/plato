@@ -534,12 +534,20 @@ def test_the_tab_asks_platon_about_its_own_numbers() -> None:
     опроса стала бы вторым местом, где чинят обрыв длинного ответа.
     """
     markup = bnmap_ui.markup()
-    assert 'id="bnask"' in markup and 'id="bnq"' in markup and 'id="bnaskbtn"' in markup
+    # Поле и подсказки переехали в общий ящик: свод на странице второй, а
+    # Платон один. Своим у вкладки осталось то, чем она отличается, — её груз.
+    assert 'id="bnask"' in markup and 'id="bnaskbtn"' in markup
+    assert "BNMAP_SURFACE" in markup, "у вкладки нет своего груза"
     script = re.search(r"<script>(.*?)</script>", markup, re.S).group(1)
-    assert "askPlatoIn(" in script and "platoAnswer(" not in script
+    # Общий путь называется `platoAsk` и живёт в пакете: `askPlatoIn` был
+    # кабинетной копией, и таких копий было три. Утверждение не изменилось —
+    # у вкладки свой вопрос, а путь к Платону один.
+    import plato_question
+
+    assert "platoOpen(BNMAP_SURFACE)" in script, "вкладка не спрашивает вовсе"
     page = cabinet.cabinet_page("market")
-    assert page.count("async function askPlatoIn(") == 1
-    assert "askPlatoIn({field:'#ask', out:'#askout'" in page
+    assert page.count("async function platoAsk(") == 1, "путь объявлен не один раз"
+    assert plato_question.SCRIPT.count("/agent/result/") == 1
     # Сводка вкладки называет свой источник и границы выборки: подставить ей
     # сводку «Пульса» значило бы спросить не о том, что показано.
     assert "bnMAP.pro (второй источник" in script
