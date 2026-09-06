@@ -127,4 +127,5 @@ def test_the_lookup_names_its_reason_field() -> None:
     body = core.PAGE
     assert "(landLookup||{}).reason" in body, "страница не читает причину поиска"
     source = Path(core.__file__).read_text(encoding="utf-8")
-    assert '"reason": next((note for note in warnings' in source
+    assert '"reason": reason,' in source, "ответ поиска не несёт причину"
+    assert "if note not in _LAND_LOOKUP_STANDING_NOTES" in source

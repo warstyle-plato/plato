@@ -3189,11 +3189,21 @@ def _land_fetch_json(
             ) as response:
                 raw = response.read(_LAND_LOOKUP_RESPONSE_LIMIT + 1)
     except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            return None
+        # 404 молча превращался в «ничего не найдено», и это была наша половина
+        # тёмного НСПД: 06.09.2026 портал отвечал 404 по ВСЕМ своим адресам —
+        # поиск, слои карты, GetFeatureInfo, — а продукт на всех поверхностях
+        # писал «участок не найден», и выглядело это как плохо введённый адрес
+        # (экран владельца). Ни один из вызовов здесь не адресует объект по
+        # идентификатору: это поиск, WMS и геокодеры, и у них 404 означает, что
+        # адреса нет у СЕРВИСА, а не что по запросу нет результатов. Отсутствие
+        # ответа внешнего источника нельзя показывать как его отрицательный
+        # ответ — правило старое, а эта ветка его обходила.
         raise HTTPException(
             status_code=400 if 400 <= exc.code < 500 else 502,
-            detail=f"{service}: {_external_error_message(exc)}",
+            detail=(f"{service}: адрес сервиса ответил 404 — сервис не отдал данные. "
+                    "Это не ответ «объекта нет». О своём состоянии портал "
+                    "сообщает у себя на странице."
+                    if exc.code == 404 else f"{service}: {_external_error_message(exc)}"),
         ) from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise HTTPException(
@@ -5903,6 +5913,14 @@ def land_lookup(req: LandLookupRequest) -> dict[str, Any]:
             "введите его кадастровый номер."
         )
     warnings.extend(_LAND_LOOKUP_STANDING_NOTES)
+    # Почему не нашлось. По адресу причина попадает в предупреждения, по
+    # кадастровому номеру — в примечание самой строки: у номера свой ответ на
+    # каждый, и один общий список их бы слил. Читателю нужна одна фраза, и
+    # берётся она оттуда, где лежит, а не выбирается по подстроке.
+    reason = next((note for note in warnings if note not in _LAND_LOOKUP_STANDING_NOTES), "")
+    if not reason:
+        reason = next((str(item.get("note") or "") for item in results
+                       if not item.get("found") and item.get("note")), "")
     return {
         "mode": mode,
         "query": query,
@@ -5911,12 +5929,7 @@ def land_lookup(req: LandLookupRequest) -> dict[str, Any]:
         "results": results,
         "found_count": len([item for item in results if item.get("found")]),
         "warnings": warnings,
-        # Почему не нашлось — ответ ЭТОГО поиска, а не общая приписка. Постоянная
-        # приписка стоит под каждым ответом и объяснять неудачу не может; без
-        # разделения вызывающему приходилось выбирать причину по подстроке, то
-        # есть угадывать. Пусто — значит поиск причины не назвал.
-        "reason": next((note for note in warnings
-                        if note not in _LAND_LOOKUP_STANDING_NOTES), ""),
+        "reason": reason,
         "source": {
             "service": "nspd.gov.ru (НСПД, ППК «Роскадастр»)",
             "requested_at": date.today().isoformat(),
