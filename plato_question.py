@@ -101,19 +101,49 @@ def drawer_markup(ids: dict[str, str]) -> str:
 </aside>"""
 
 
-def drawer_launcher(label: str, surface: str) -> str:
-    """Кнопка блока: открывает ящик СО СВОИМ грузом.
+# Кнопка, которая не уезжает вверх вместе с блоком. Её стилей в `PAGE` нет и
+# быть не может: на расчёте Платон стоит в шапке страницы и виден всегда, а в
+# кабинете шапка одна на несколько блоков. Поэтому кнопка объявлена здесь —
+# один раз на все поверхности, как и сам ящик.
+LAUNCHER_PLACEHOLDER = "__DEVELOPAID_PLATO_LAUNCHER__"
 
-    `surface` — имя объекта поверхности на самой странице (чей разговор, что
-    кладём в вопрос, какие подсказки). Без него ящик открылся бы с грузом того
-    блока, из которого спрашивали в прошлый раз, — и на экране это выглядело бы
-    как ответ не о том.
+LAUNCHER_CSS = """
+.ai-fab{position:fixed;right:18px;bottom:18px;z-index:998;display:inline-flex;
+ align-items:center;gap:8px;padding:11px 16px;border:1px solid #111;border-radius:999px;
+ background:#111;color:#fff;font:inherit;font-size:13px;font-weight:600;cursor:pointer;
+ box-shadow:0 10px 26px rgba(0,0,0,.22)}
+.ai-fab:hover{background:#000}
+.ai-fab .ai-dot{background:#7fd39a}
+/* `hidden` слабее `display:inline-flex`, и без этой строки спрятанная кнопка
+   остаётся на экране — в том числе поверх открытого ящика. */
+.ai-fab[hidden]{display:none}
+@media(max-width:700px){.ai-fab{right:12px;bottom:12px;padding:11px 13px}
+ .ai-fab .ai-fab-label{display:none}}
+@media print{.ai-fab{display:none !important}}
+"""
+
+
+def launcher_css() -> str:
+    """Стили всплывающей кнопки. Ставятся рядом со стилями ящика."""
+    return LAUNCHER_CSS.strip()
+
+
+def floating_launcher() -> str:
+    """Всплывающая кнопка: одна на страницу, груз — от блока перед глазами.
+
+    Карточка внизу блока отвечала на «где спросить» только тому, кто дочитал до
+    низа: у свода продаж это десять экранов (владелец, 06.09.2026 — «надо во
+    всех блоках кабинета, чтобы Платон был не внизу, а всплывал видимо, как на
+    основном расчёте модели»). Кнопка на экране ОДНА: вторая рядом означала бы
+    два разных Платона, и человек не знал бы, который его слушает. О каком
+    блоке спросит — написано на ней самой: молча сменившийся груз читается как
+    ответ не о том.
     """
-    import html as _html
-    return ('<button type="button" class="ai-open-btn" onclick="platoOpen('
-            + _html.escape(str(surface), quote=True) + ')">'
-            '<span class="ai-dot ready"></span><span class="ai-label">'
-            + _html.escape(str(label), quote=True) + "</span></button>")
+    return ('<button type="button" id="platoFab" class="ai-fab" hidden '
+            'onclick="platoOpenVisible()">'
+            '<span class="ai-dot ready"></span>'
+            '<span class="ai-fab-label" id="platoFabLabel">Спросить Платона</span>'
+            "</button>")
 
 SCRIPT = r"""
 // Разговор с Платоном — один на все поверхности. Копия этого правила была бы
@@ -297,6 +327,70 @@ function platoDrawer(open){
  box.classList.toggle('open',!!open);
  if(veil) veil.classList.toggle('open',!!open);
  if(open){ const field=box.querySelector('textarea'); if(field) setTimeout(()=>field.focus(),80) }
+ // Кнопка прячется под открытым ящиком: висеть поверх завесы ей незачем.
+ platoFabSync();
+}
+
+// Блоки, о которых есть что спросить. Карточка «Спросить Платона» стояла ВНИЗУ
+// блока и находилась только тем, кто дочитал до низа; в своде продаж это десять
+// экранов (владелец, 06.09.2026). Кнопка теперь висит над экраном, а блок она
+// выбирает тот, что перед глазами.
+const PLATO_BLOCKS=[];
+
+// Блок объявляет себя один раз: где он на странице, чей груз и как назвать его
+// на кнопке. Узел ищется КАЖДЫЙ раз по селектору, а не запоминается ссылкой:
+// отчёт перерисовывается целиком, и запомненный узел остался бы от прошлого.
+function platoBlock(selector, surface, title){
+ if(!selector||!surface) return;
+ const at=String(selector);
+ const known=PLATO_BLOCKS.find(block=>block.at===at);
+ if(known){ known.surface=surface; known.title=String(title||known.title||'') }
+ else PLATO_BLOCKS.push({at:at, surface:surface, title:String(title||'')});
+ platoFabSync();
+}
+
+// Какой блок сейчас перед глазами. Видимость меряется `getBoundingClientRect`,
+// а не `offsetParent`: у всего внутри `position:fixed` он равен null, и первая
+// версия такой проверки честно соврала «блоков нет». Нулевая высота — это
+// «блок ещё не построен»: пустой `div` шириной во всю страницу выглядел бы
+// видимым.
+function platoBlockInView(){
+ if(typeof document==='undefined'||!document.querySelector) return null;
+ const height=(typeof window!=='undefined'&&window.innerHeight)||0;
+ const middle=height/2;
+ let best=null, closest=Infinity;
+ PLATO_BLOCKS.forEach(block=>{
+  let node=null;
+  try{ node=document.querySelector(block.at) }catch(_){ node=null }
+  if(!node||!node.getBoundingClientRect) return;
+  const box=node.getBoundingClientRect();
+  if(!(box.height>0)) return;
+  const away=box.top>middle?box.top-middle:(box.bottom<middle?middle-box.bottom:0);
+  if(away<closest){ closest=away; best=block }
+ });
+ return best;
+}
+
+// Спрашивают о том, что на экране. Груз берётся у блока в этот миг, а не у
+// того, из которого спрашивали в прошлый раз.
+function platoOpenVisible(){
+ const block=platoBlockInView();
+ if(block) platoOpen(block.surface);
+}
+
+function platoFabSync(){
+ if(typeof document==='undefined'||!document.getElementById) return;
+ const fab=document.getElementById('platoFab');
+ if(!fab) return;
+ const block=platoBlockInView();
+ const open=!!(document.querySelector&&document.querySelector('.ai-drawer.open'));
+ fab.hidden=!block||open;
+ if(!block) return;
+ const label=document.getElementById('platoFabLabel');
+ // Имя блока на кнопке — часть ответа: «Спросить Платона» без него не говорит,
+ // о чём будет разговор, а блоков на странице несколько.
+ if(label) label.textContent='Спросить Платона'+(block.title?' '+block.title:'');
+ fab.title='Разговор о том, что на экране: '+(block.title||'этот блок');
 }
 // Спрашивают через `typeof`, а не надеются на окружение: пакет подставляется
 // на четыре поверхности и грузится в проверках голым, без DOM. Молча упавший
@@ -306,6 +400,21 @@ if(typeof document!=='undefined'&&document.addEventListener){
  document.addEventListener('keydown',e=>{
   if(e.key==='Escape'&&document.querySelector('.ai-drawer.open')) platoDrawer(false);
  });
+ // Прокрутка меняет то, что перед глазами, — значит и то, о чём спросят.
+ // Считается это не на каждое событие прокрутки, а раз на кадр: иначе кнопка
+ // пересчитывает подпись сотни раз в секунду на длинном своде.
+ let awaiting=false;
+ const soon=()=>{
+  if(awaiting) return;
+  awaiting=true;
+  const run=()=>{ awaiting=false; platoFabSync() };
+  if(typeof requestAnimationFrame==='function') requestAnimationFrame(run);
+  else setTimeout(run,80);
+ };
+ // Прокрутка ловится и внутри блоков (`true`): у таблиц кабинета своя.
+ document.addEventListener('scroll',soon,true);
+ document.addEventListener('DOMContentLoaded',()=>platoFabSync());
+ if(typeof window!=='undefined'&&window.addEventListener) window.addEventListener('resize',soon);
 }
 
 // Укладка вопроса Платону в бюджет. Объявлена один раз (plato_question.py) и

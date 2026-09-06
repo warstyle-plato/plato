@@ -137,8 +137,12 @@ def test_the_page_can_ask_platon_without_leaving_it() -> None:
     import plato_question
 
     body = script()
-    assert "function askPlato(" in body
-    assert "platoOpen(AUCTION_SURFACE)" in body, "кнопка открывает ящик со своим грузом"
+    # Зовёт ящик всплывающая кнопка страницы, и вкладка объявляет ей себя со
+    # своим грузом: карточка внизу списка находилась только тем, кто долистал.
+    assert "platoBlock('#auctionLayout', AUCTION_SURFACE," in body, (
+        "вкладка лотов не объявила себя со своим грузом")
+    assert "platoBlock('#krtPanel', AUCTION_SURFACE," in body, (
+        "вкладка КРТ прячет соседнюю классом — своей строки у неё нет")
     pack = plato_question.SCRIPT
     assert "'/cabinet/ask'" in pack, "тот же маршрут, что у кабинета рынка — своего не заводим"
     assert "/agent/result/" in pack, "за долгим ответом ходят по номеру запуска"
