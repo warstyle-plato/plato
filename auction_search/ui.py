@@ -2099,6 +2099,12 @@ function krtSiteMap(subject,areaHa){
  // району», «по запросу каталога». Прежде здесь стояла своя оценка точности
  // геокодера — а точка теперь берётся тем же путём, что и точка отчёта, и
  // объяснение приезжает вместе с ней.
+ // Подпись говорит про КАРТИНКУ — площадь по каталогу и размер кадра. ЧЕМ
+ // очерчена площадка (официальный полигон реестра, состав территории по
+ // документу или одна точка), говорит `krtOutlineNote` — ответ маршрута,
+ // стоящий прямо под картой. Пока карта лежала складкой во второй группе, а
+ // оговорка в блоке ТЭП, обе строки были нужны; рядом они стали одним и тем
+ // же, сказанным дважды подряд.
  const notes=Array.isArray(subject&&subject.notes)?subject.notes:[];
  const delta=Math.max(0.003,side/111000), bboxGeo=[lon-delta,lat-delta,lon+delta,lat+delta].join(',');
  const interactive='https://www.openstreetmap.org/export/embed.html?'+new URLSearchParams({bbox:bboxGeo,layer:'mapnik',marker:lat+','+lon});
@@ -2120,10 +2126,8 @@ function krtSiteMap(subject,areaHa){
    </div>
   </div>
   <div class="source" style="margin-top:7px">${rings.length
-   ?(subject.geometry_status==='decision_parcels'
-    ?`Контур — участки ЕГРН по перечню проекта решения о КРТ (mos.ru)${areaHa?', по каталогу '+areaHa+' га':''}; кадр ${Math.round(side)} м. Это состав территории по документу, а не официальный полигон границ.`
-    :`Контур — официальные границы территории из файла карты реестра КРТ (krt.mos.ru)${areaHa?', по каталогу '+areaHa+' га':''}; кадр ${Math.round(side)} м.`)
-   :`Метка — геокодированный центр территории, кадр ${Math.round(side)} м. Этой площадки в файле карты реестра нет, поэтому контур не показан: по метке пятно застройки не мерить.`}</div>
+   ?`Контур площадки${areaHa?', по каталогу '+areaHa+' га':''}; кадр ${Math.round(side)} м.`
+   :`Метка — геокодированный центр территории, кадр ${Math.round(side)} м. Контур не показан: по метке пятно застройки не мерить.`}</div>
   ${notes.length?`<div class="source" style="margin-top:5px">${notes.map(esc).join('<br>')}</div>`:''}
   ${krtNspdLink(subject&&subject.nspd_url)}
  </div>`;
@@ -2475,6 +2479,14 @@ function selectKrt(x){state.selectedKrt=x;const sc=krtScore(x),fit=sc.fit,cached
  const speaks=krtDataCheckSpeaks(x);
  $('krtSide').innerHTML=`<h2>${esc(x.name)}${x.is_new?'<span class="tag new">новое</span>':''}</h2>`
  +`<div class="sub">${esc(krtSource(x).short)}${[x.okrug,x.district].filter(Boolean).length?' · '+esc([x.okrug,x.district].filter(Boolean).join(' · ')):''}</div>`
+ // Карта — не вывод и не данные города, а ответ на «где это вообще»
+ // (владелец, 06.09.2026), и он нужен раньше любого суждения. Прежде она
+ // лежала складкой во второй группе: чтобы понять, о каком месте речь, надо
+ // было сперва прочитать вердикт о нём. Рядом стоит, ЧЕМ очерчено, — у
+ // площадки бывает официальный полигон, состав территории по документу или
+ // одна точка геокодера, и на картинке они выглядят одинаково уверенно.
+ +`<div id="krtMapBox"><div class="notice"><span class="spinner"></span>Строю карту участка…</div></div>`
+ +`<div class="notice" id="krtOutlineNote">Границы: читаю файл карты реестра…</div>`
  +krtGroup(1,'Предварительный вывод','что мы про площадку думаем',
    krtEntryHead(x)
    +krtTenderBlock(x)
@@ -2496,8 +2508,7 @@ function selectKrt(x){state.selectedKrt=x;const sc=krtScore(x),fit=sc.fit,cached
    +`<div id="krtPressBox"></div>`
    +`<div class="actions"><button id="krtPress">Что пишут об этой площадке</button></div>`
    +`</div></details>`
-   +`<details class="fold"><summary>Карта и границы</summary><div class="foldbody"><div id="krtMapBox"><div class="notice">Строю карту участка…</div></div></div></details>`
-   +`<details class="fold"><summary>Остальные ТЭП и пропорции</summary><div class="foldbody">${x.no_card?'<div class="source">Общественно-делового объёма и рабочих мест проект решения не называет — эти строки есть только у карточки каталога, а её у площадки нет.</div>':`<div class="kv" style="border:0"><div>Общественно-деловое</div><div>${fmtArea(x.business_gfa_sqm)}</div><div>Рабочие места</div><div>${esc(x.jobs??'—')}</div></div>`}<div class="notice" id="krtOutlineNote">Границы: читаю файл карты реестра…</div>${krtRatioBlock(x)}</div></details>`
+   +`<details class="fold"><summary>Остальные ТЭП и пропорции</summary><div class="foldbody">${x.no_card?'<div class="source">Общественно-делового объёма и рабочих мест проект решения не называет — эти строки есть только у карточки каталога, а её у площадки нет.</div>':`<div class="kv" style="border:0"><div>Общественно-деловое</div><div>${fmtArea(x.business_gfa_sqm)}</div><div>Рабочие места</div><div>${esc(x.jobs??'—')}</div></div>`}${krtRatioBlock(x)}</div></details>`
    +`<details class="fold"><summary>Служебное: привязка распоряжений города</summary><div class="foldbody">${krtOrderBlock(x)}</div></details>`)
  +krtGroup(3,'Детали прогона','модель по очередям и маркетинг по соседям',
    `<div class="actions"><button class="primary" id="krtHandoff">Передать в расчёт DevelopAid</button><button id="krtMarket">Пересчитать сейчас</button></div>`
