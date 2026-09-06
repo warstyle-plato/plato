@@ -57,3 +57,29 @@ def test_admin_button_is_rendered_for_existing_admin(monkeypatch):
 
     assert "Режим администратора DevelopAid" in page
     assert "Проверить источники" in page
+
+
+def test_registry_does_not_treat_a_mosru_draft_as_current_law():
+    rows = {row["id"]: row for row in registry._load_registry()}
+    item = rows["moscow-2152-pp"]
+
+    assert "projects/" not in item["source_url"]
+    assert "61-ПП" in item["latest_amendment"]
+    assert item["status"] == "review_required"
+
+
+def test_registry_tracks_the_latest_known_depr_index_document():
+    rows = {row["id"]: row for row in registry._load_registry()}
+    item = rows["moscow-depr-index"]
+
+    assert "ДПР-Р-20/26" in item["title"]
+    assert "ДПРР-18-26" not in item["title"]
+
+
+def test_mpt_card_exposes_the_july_2026_review_gap():
+    rows = {row["id"]: row for row in registry._load_registry()}
+    item = rows["moscow-1874-pp"]
+
+    assert "2072-ПП" in item["latest_amendment"]
+    assert "1965-ПП" in item["latest_amendment"]
+    assert item["status"] == "review_required"
