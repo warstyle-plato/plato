@@ -1661,8 +1661,12 @@ function roomsWindowNote(b){
   const said=p.rooms&&(p.sold_projects||p.projects)
     ? (p.rooms_window?'' :' У соседей продано — за последний месяц отчёта.')
     : '';
+  // Остаток сегодняшний не у всех: у проекта без сделок в последнем месяце
+  // отчёта он снят тем месяцем, где назван, и «сегодняшний» было бы враньём о
+  // дате.
+  const at=(b.subject||{}).rooms_rem_at;
   return ` Продано — за ${w.months} мес. (${w.from} — ${w.to}), ${num(w.deals)} сделок;`
-    +' остаток — сегодняшний.'+said;
+    +(at?` остаток — на ${at}.`:' остаток — сегодняшний.')+said;
 }
 
 function roomsTrend(b){

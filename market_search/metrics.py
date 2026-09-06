@@ -407,6 +407,37 @@ def _room_series(row: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+def _room_mix_from_series(row: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+    """Состав по комнатности из ряда, когда снимка последнего месяца нет.
+
+    Снимок «Пульс» кладёт только в тот месяц, где по проекту были сделки: на
+    августовской книге он есть у 202 проектов из 368, а годовой ряд — у 365.
+    Пересечение 197, и 75 проектов имеют ЦЕЛЫЙ ГОД продаж по комнатности, о
+    которых блок молчал — требовал снимок и без него не строил ничего. Это тот
+    же случай, что пустой ответ НСПД, выданный за отсутствие ограничений:
+    источник ответил, а мы показываем пустоту.
+
+    Проданное придёт окном, поэтому здесь только остаток — из ПОСЛЕДНЕГО
+    месяца, где он назван. Вместе с ним возвращается его месяц: остаток такого
+    проекта не сегодняшний, и подписать его «сегодняшним» значит соврать о
+    дате. Цен здесь нет вовсе — их помесячно не храним, и разложение разрыва
+    цены таким проектам не считается.
+    """
+    line = row.get("rooms_rem") or {}
+    months = row.get("rooms_months") or []
+    if not line or not months:
+        return {}, None
+    for index in range(min(len(months), max((len(v) for v in line.values()), default=0)) - 1, -1, -1):
+        at = {
+            name: values[index]
+            for name, values in line.items()
+            if index < len(values) and values[index] is not None
+        }
+        if at:
+            return {name: {"rem": value} for name, value in sorted(at.items())}, months[index]
+    return {}, None
+
+
 def _room_shares(
     rooms: dict[str, Any] | None, window: dict[str, Any] | None = None
 ) -> dict[str, Any]:
@@ -524,7 +555,10 @@ def rooms_block(
     """
     block = MetricBlock(BLOCK_ROOMS, BLOCK_TITLES[BLOCK_ROOMS])
     window = _room_window(subject)
-    own = _room_shares(subject.get("room_mix"), window)
+    mix, rem_at = subject.get("room_mix"), None
+    if not mix and window:
+        mix, rem_at = _room_mix_from_series(subject)
+    own = _room_shares(mix, window)
     bands = subject.get("bands") or {}
     if not own and not bands:
         block.notes.append(
@@ -542,6 +576,8 @@ def rooms_block(
                 "months": window["months"],
                 "deals": round(sum(window["sold"].values()), 1),
             }
+            if rem_at:
+                block.subject["rooms_rem_at"] = rem_at
             series = _room_series(subject)
             if len(series) > 1:
                 block.subject["rooms_series"] = series
@@ -595,10 +631,12 @@ def rooms_block(
     by_window = bool(window and windowed)
     sold_from = 0
     for row in peers:
+        their = windows[id(row)]
         rooms = row.get("room_mix") or {}
+        if not rooms and their:
+            rooms = _room_mix_from_series(row)[0]
         if rooms:
             counted += 1
-        their = windows[id(row)]
         if by_window:
             if their:
                 sold_from += 1

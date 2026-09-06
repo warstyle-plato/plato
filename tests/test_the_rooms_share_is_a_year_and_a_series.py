@@ -208,3 +208,79 @@ def test_the_screen_draws_the_series_and_names_the_window(tmp_path) -> None:
     said = "У соседей продано — за последний месяц отчёта"
     assert said not in drawn, "оговорка о соседях без соседей"
     assert said in withpeers
+
+
+# У «Пульса» снимок комнатности стоит только в том месяце, где по проекту были
+# сделки: на августовской книге он есть у 202 проектов из 368, а годовой ряд —
+# у 365. Пересечение 197, и 75 проектов имели ЦЕЛЫЙ ГОД продаж, о которых блок
+# молчал: он требовал снимок и без него не строил ничего. Тот же случай, что
+# пустой ответ НСПД, выданный за отсутствие ограничений.
+def _no_snapshot() -> dict:
+    row = _row()
+    row.pop("room_mix")
+    row["rooms_rem"] = {
+        "studio": [50, 48, 46, 44, 42, 42, 40, 38, 36, 34, 32, None],
+        "r3": [70, 69, 68, 66, 65, 65, 64, 63, 61, 60, 58, None],
+    }
+    return row
+
+
+def test_a_year_of_sales_is_shown_even_without_the_last_month_snapshot() -> None:
+    block = metrics.rooms_block(_no_snapshot(), [], CITY).to_dict()
+    rooms = block["subject"]["rooms"]
+    assert rooms["studio"]["sold_share_pct"] == 66.7
+    assert rooms["r3"]["sold_share_pct"] == 33.3
+    # Остаток берётся из последнего месяца, где он назван, — и вымывание видно.
+    assert rooms["studio"]["rem"] == 32 and rooms["r3"]["rem"] == 58
+    assert rooms["studio"]["rem_share_pct"] < rooms["studio"]["sold_share_pct"]
+
+
+def test_a_remainder_that_is_not_todays_names_its_month() -> None:
+    """«Сегодняшний» и «на июль» — разные ответы про одно число."""
+    block = metrics.rooms_block(_no_snapshot(), [], CITY).to_dict()
+    assert block["subject"]["rooms_rem_at"] == "2026-07"
+    # А там, где снимок есть, даты нет: остаток и правда сегодняшний.
+    assert "rooms_rem_at" not in metrics.rooms_block(_row(), [], CITY).to_dict()["subject"]
+
+
+def test_a_peer_without_a_snapshot_is_counted_too() -> None:
+    """Сосед с годом продаж и без снимка — это данные, а не пробел."""
+    block = metrics.rooms_block(_row(), [{"name": "Без снимка", **_no_snapshot()}], CITY).to_dict()
+    assert block["peers"]["projects"] == 1
+    assert block["peers"]["rooms"]["studio"]["sold"] == 56
+    assert block["peers"]["rooms"]["studio"]["rem"] == 32
+
+
+def test_the_screen_names_the_month_of_the_remainder(tmp_path) -> None:
+    import pytest
+
+    play = pytest.importorskip("playwright.sync_api")
+
+    import browser_launch
+
+    dated = metrics.rooms_block(_no_snapshot(), [], CITY).to_dict()
+    today = metrics.rooms_block(_row(), [], CITY).to_dict()
+    page = cabinet.cabinet_page("market").replace("__DEVELOPAID_VERSION__", "test")
+    file = tmp_path / "market.html"
+    file.write_text(page, encoding="utf-8")
+    with play.sync_playwright() as pw:
+        try:
+            browser = browser_launch.launch(pw)
+        except Exception as exc:  # noqa: BLE001
+            pytest.skip(f"Chromium недоступен: {exc}")
+        try:
+            tab = browser.new_page()
+            errors: list[str] = []
+            tab.on("pageerror", lambda exc: errors.append(str(exc)))
+            tab.route("**/*", lambda route: route.abort()
+                      if route.request.url.startswith("http") else route.continue_())
+            tab.goto(file.as_uri())
+            old = tab.evaluate("block => roomsTable(block)", dated)
+            now = tab.evaluate("block => roomsTable(block)", today)
+            tab.close()
+        finally:
+            browser.close()
+    assert not errors, errors
+    assert "остаток — на 2026-07" in old, old[:400]
+    assert "остаток — сегодняшний" not in old, "остаток чужого месяца назван сегодняшним"
+    assert "остаток — сегодняшний" in now
