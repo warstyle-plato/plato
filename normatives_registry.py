@@ -270,6 +270,13 @@ def _card(entry: dict[str, Any]) -> str:
 
 
 def _page(request: Request, core: Any) -> str:
+    # Подвал документов ИП и эмблема — общие у всех поверхностей продукта, и
+    # состав их объявлен один раз, в `PAGE`: копию негде обновлять, потому что
+    # копии нет. Страница, добавленная позже, попадает в проверку тем, что она
+    # появилась (`_html_surfaces`), — эта появилась без того и без другого.
+    from guide import legal_footer_html
+
+    legal_footer = legal_footer_html(core)
     admin = _is_admin(request, core)
     rows = _merged_registry()
     scopes = ("Москва", "Московская область", "Общие для РФ")
@@ -327,13 +334,18 @@ border-top:1px solid var(--line);padding-top:16px;margin-top:18px}}
 background:#17191d;color:#fff;border-radius:12px;padding:12px 14px;margin-bottom:18px;
 box-shadow:0 8px 30px rgba(0,0,0,.12)}}.adminbar button{{border:0;border-radius:8px;padding:9px 12px;cursor:pointer}}
 #checkMsg{{font-size:13px;opacity:.8}}.foot{{color:var(--muted);font-size:13px;margin-top:26px}}
+.brandbar{{padding:0 0 18px}}.brandbar img{{display:block;width:min(360px,58vw);height:auto;mix-blend-mode:multiply}}
+.brandline{{height:8px;background:#050505;margin-top:12px}}
+.legal-footer{{display:flex;gap:18px;flex-wrap:wrap;padding:16px 0 24px;margin-top:26px;
+font-size:11px;color:var(--muted);border-top:1px solid var(--line)}}.legal-footer a{{color:var(--muted)}}
 .hidden{{display:none!important}}
 @media(max-width:760px){{.summary,.meta,.twocol{{grid-template-columns:1fr}}
 .nhead,.source-row,.top{{display:block}}.badge{{display:inline-block;margin-top:10px}}
 .probe{{text-align:left;margin-top:10px}}h1{{font-size:28px}}.adminbar{{position:static;display:block}}
 .adminbar>*{{margin:4px 0;max-width:100%}}}}
 </style></head><body><div class="shell">
-<div class="top"><div class="brand">DevelopAid · Нормативная база</div>
+<div class="brandbar"><a href="/" title="DevelopAid"><img src="/guide/assets/logo.webp" alt="ПЛАТО"></a><div class="brandline"></div></div>
+<div class="top"><div class="brand">Нормативная база</div>
 <a href="/">Вернуться в DevelopAid</a></div>
 <h1>Нормативная документация движка</h1>
 <p class="lead">Рабочая карта нормативных зависимостей: какая редакция учтена,
@@ -349,7 +361,8 @@ box-shadow:0 8px 30px rgba(0,0,0,.12)}}.adminbar button{{border:0;border-radius:
 <div id="cards">{cards}</div>
 <p class="foot">«Реестр актуален на» — дата содержательной сверки карточки.
 Кнопка администратора проверяет доступность и изменение источника, но не подменяет
-юридическую проверку консолидированной редакции.</p></div>
+юридическую проверку консолидированной редакции.</p>
+{legal_footer}</div>
 <script>
 document.querySelectorAll('.filters button').forEach(btn=>btn.addEventListener('click',()=>{{
  document.querySelectorAll('.filters button').forEach(x=>x.classList.remove('active'));
