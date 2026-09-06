@@ -224,7 +224,20 @@ def test_the_table_does_not_show_economy_of_a_shifted_card() -> None:
 
     # Отчёт приходит ПОЗЖЕ отрисовки карточки и переписывал бы блок своими
     # числами: гейт обязан стоять и там, где его рисуют.
-    loader = page[page.index("async function loadKrtReport("):page.index("function renderKrtReport(")]
+    # Граница — скобки самой функции, а не соседняя строка: `renderKrtReport`
+    # исчез, когда карточку собрали одним отрисовщиком, и проверка упала
+    # `ValueError`, ничего не сказав о том, что она проверяет.
+    start = page.index("async function loadKrtReport(")
+    depth, seen, i = 0, False, page.index("{", start)
+    while i < len(page):
+        if page[i] == "{":
+            depth, seen = depth + 1, True
+        elif page[i] == "}":
+            depth -= 1
+            if seen and depth == 0:
+                break
+        i += 1
+    loader = page[start:i + 1]
     assert "krtBroken(x)" in loader, "готовый отчёт съехавшей карточки всё равно рисуется"
 
 

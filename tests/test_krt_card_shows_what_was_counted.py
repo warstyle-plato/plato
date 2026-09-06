@@ -50,19 +50,37 @@ def test_the_card_opens_the_stored_report() -> None:
     assert "'Пересчитать сейчас'" in script or "Пересчитать сейчас" in script
 
 
+def _fn(page: str, name: str) -> str:
+    """Кусок страницы по границам функции, а не по соседней строке.
+
+    Соседняя строка — не граница: прежде здесь стояла `\nfunction
+    renderKrtReport(`, и когда карточку собрали одним отрисовщиком, проверка
+    упала `ValueError: substring not found`, ничего не сказав о том, что она
+    проверяет.
+    """
+    start = page.index(f"function {name}(")
+    depth, seen, i = 0, False, page.index("{", start)
+    while i < len(page):
+        if page[i] == "{":
+            depth, seen = depth + 1, True
+        elif page[i] == "}":
+            depth -= 1
+            if seen and depth == 0:
+                return page[start:i + 1]
+        i += 1
+    raise AssertionError(f"на странице нет функции {name}")
+
+
 def test_a_missing_report_is_not_a_failure() -> None:
     """404 значит «ещё не считали» — это ответ, а не поломка."""
-    script = page_script(auctions_page())
-    body = script[script.index("async function loadKrtReport("):]
-    body = body[:body.index("\nfunction renderKrtReport(")]
+    body = _fn(page_script(auctions_page()), "loadKrtReport")
     assert "status===404" in body, "«ещё не считали» отличается от отказа"
     assert "needLogin(" in body, "закрытый кабинет называется своим именем"
 
 
 def test_the_handoff_sends_the_counted_inputs_not_a_new_model() -> None:
     script = page_script(auctions_page())
-    body = script[script.index("async function handoffKrt("):]
-    body = body[:body.index("\nasync function askPlatoAboutKrt(")]
+    body = _fn(script, "handoffKrt")
     assert "/handoff" in body, "вводные берутся с сервера, а не собираются здесь"
     assert "krt_model:{inputs:d.inputs,tep:d.tep,phasing:d.phasing}" in body
     assert "developaid.auction.pending.v1" in body, "тот же мост, что у лотов"
