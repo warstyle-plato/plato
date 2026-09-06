@@ -346,15 +346,91 @@ ROOM_TITLES = {
 }
 
 
-def _room_shares(rooms: dict[str, Any] | None) -> dict[str, Any]:
+# За сколько месяцев считается «что берут». Один месяц у одного ЖК — это
+# десяток сделок, то есть шум: доля пляшет от месяца к месяцу, а в тихий месяц
+# её нет вовсе. Год — срок, за который проект успевает показать спрос на каждую
+# комнатность, и он же граница памяти справочника.
+ROOM_WINDOW_MONTHS = 12
+
+
+def _room_window(row: dict[str, Any], span: int = ROOM_WINDOW_MONTHS) -> dict[str, Any] | None:
+    """Продано по комнатности за окно — и само окно, названное месяцами.
+
+    Ряда нет — возвращается `None`, и это «справочник собран прежним импортом»,
+    а не «продаж не было»: два разных ответа, и подменять первый вторым нельзя.
+    """
+    line = row.get("rooms_sold") or {}
+    months = row.get("rooms_months") or []
+    if not line or not months:
+        return None
+    span = min(span, len(months))
+    start = len(months) - span
+    sold: dict[str, float] = {}
+    for name, values in line.items():
+        total = sum(float(value) for value in values[start:] if value)
+        if total:
+            sold[name] = total
+    if not sold:
+        return None
+    return {"sold": sold, "from": months[start], "to": months[-1], "months": span}
+
+
+def _room_series(row: dict[str, Any]) -> list[dict[str, Any]]:
+    """Как доля в проданном менялась по месяцам.
+
+    Месяц без продаж выбрасывается, а не рисуется нулями: пропуск в ряду — не
+    ноль, и линия, протянутая через него, показала бы состав спроса там, где
+    спроса не было вовсе.
+    """
+    line = row.get("rooms_sold") or {}
+    months = row.get("rooms_months") or []
+    if not line or not months:
+        return []
+    out: list[dict[str, Any]] = []
+    for index, month in enumerate(months):
+        point = {
+            name: float(values[index])
+            for name, values in line.items()
+            if index < len(values) and values[index]
+        }
+        total = sum(point.values())
+        if not total:
+            continue
+        out.append({
+            "month": month,
+            "sold": round(total, 1),
+            "shares": {
+                name: round(value / total * 100, 1)
+                for name, value in sorted(point.items())
+            },
+        })
+    return out
+
+
+def _room_shares(
+    rooms: dict[str, Any] | None, window: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Доли в проданном и в остатке по комнатности.
 
     Считаются от суммы известных строк, а не от «всего по ПД»: комнатность
     части лотов источник не знает, и деление на общий объём молча занизило бы
     каждую долю.
+
+    Проданное берётся за окно, когда оно есть: месяц отвечает «что взяли в
+    августе», а вопрос у раздела другой — «что берут». Остаток остаётся
+    сегодняшним: он и есть сегодняшний.
     """
     if not rooms:
         return {}
+    sold_by_room = (window or {}).get("sold") if window else None
+    if sold_by_room is not None:
+        rooms = {
+            name: {**item, "sold": sold_by_room.get(name, 0)}
+            for name, item in rooms.items()
+        }
+        for name, value in sold_by_room.items():
+            if name not in rooms:
+                rooms[name] = {"sold": value}
     sold_total = sum(float(item.get("sold") or 0) for item in rooms.values())
     rem_total = sum(float(item.get("rem") or 0) for item in rooms.values())
     out: dict[str, Any] = {}
@@ -447,7 +523,8 @@ def rooms_block(
     рядом, потому что источник даёт первую отчётом, а вторую — выписками.
     """
     block = MetricBlock(BLOCK_ROOMS, BLOCK_TITLES[BLOCK_ROOMS])
-    own = _room_shares(subject.get("room_mix"))
+    window = _room_window(subject)
+    own = _room_shares(subject.get("room_mix"), window)
     bands = subject.get("bands") or {}
     if not own and not bands:
         block.notes.append(
@@ -456,7 +533,30 @@ def rooms_block(
         return block
     if own:
         block.subject["rooms"] = own
-        if not sum(float(item.get("sold") or 0) for item in (subject.get("room_mix") or {}).values()):
+        if window:
+            # Окно называется вслух: «доля в проданном» за месяц и за год —
+            # разные величины, и без подписи первую читают как вторую.
+            block.subject["rooms_window"] = {
+                "from": window["from"],
+                "to": window["to"],
+                "months": window["months"],
+                "deals": round(sum(window["sold"].values()), 1),
+            }
+            series = _room_series(subject)
+            if len(series) > 1:
+                block.subject["rooms_series"] = series
+            else:
+                block.subject["rooms_series_gap"] = (
+                    "Продажи по комнатности были только в одном месяце — "
+                    "динамику доли строить не из чего"
+                )
+        else:
+            block.subject["rooms_series_gap"] = (
+                "Помесячной комнатности в справочнике нет: он собран прежним "
+                "импортом. Перезалейте книгу «Пульса» — тогда появится и "
+                "динамика доли, и её счёт за год"
+            )
+        if not sum(float(item.get("sold") or 0) for item in own.values()):
             # Ноль в доле проданного и «в этом месяце не продавали» на экране
             # выглядят одинаково, а это разные ответы. Причина стоит У САМОГО
             # ГРАФИКА, а не строкой выше: легенда обещает две полосы, и когда
@@ -465,8 +565,13 @@ def rooms_block(
             # месяце у каждого восьмого проекта нет (25 из 202 на выпуске
             # 2026-08) — то есть это обычный случай, а не редкость.
             block.subject["rooms_sold_gap"] = (
-                "Продаж по комнатности в последнем месяце отчёта нет — "
-                "полосу проданного строить не из чего, показан только остаток"
+                (
+                    f"Продаж по комнатности за {window['months']} мес. "
+                    f"({window['from']} — {window['to']}) нет"
+                    if window
+                    else "Продаж по комнатности в последнем месяце отчёта нет"
+                )
+                + " — полосу проданного строить не из чего, показан только остаток"
             )
     if bands:
         total = sum(bands.values())
@@ -481,12 +586,30 @@ def rooms_block(
     pooled_rem: dict[str, float] = {}
     pooled_bands: dict[str, float] = {}
     counted = 0
+    # Проданное у соседей берётся тем же окном, что и у нас, — но только у тех,
+    # у кого ряд есть. Сложить год одного соседа с последним месяцем другого
+    # значит выдумать третью величину: она не за год и не за месяц. Остаток
+    # складывается по всем — он сегодняшний у любого.
+    windows = {id(row): _room_window(row) for row in peers}
+    windowed = sum(1 for row in peers if windows[id(row)])
+    by_window = bool(window and windowed)
+    sold_from = 0
     for row in peers:
         rooms = row.get("room_mix") or {}
         if rooms:
             counted += 1
+        their = windows[id(row)]
+        if by_window:
+            if their:
+                sold_from += 1
+                for name, value in their["sold"].items():
+                    pooled_sold[name] = pooled_sold.get(name, 0) + float(value)
+        else:
+            if rooms:
+                sold_from += 1
+            for name, item in rooms.items():
+                pooled_sold[name] = pooled_sold.get(name, 0) + float(item.get("sold") or 0)
         for name, item in rooms.items():
-            pooled_sold[name] = pooled_sold.get(name, 0) + float(item.get("sold") or 0)
             pooled_rem[name] = pooled_rem.get(name, 0) + float(item.get("rem") or 0)
         for band, count in (row.get("bands") or {}).items():
             pooled_bands[band] = pooled_bands.get(band, 0) + float(count)
@@ -494,6 +617,16 @@ def rooms_block(
         sold_total = sum(pooled_sold.values())
         rem_total = sum(pooled_rem.values())
         block.peers["projects"] = counted
+        block.peers["sold_projects"] = sold_from
+        if by_window:
+            block.peers["rooms_window"] = {
+                "from": window["from"], "to": window["to"], "months": window["months"],
+            }
+            if sold_from < counted:
+                block.notes.append(
+                    f"Помесячной комнатности нет у {counted - sold_from} из {counted} "
+                    "соседей — их проданное в полосу не вошло"
+                )
         block.peers["rooms"] = {
             name: {
                 "title": ROOM_TITLES.get(name, name),
@@ -510,7 +643,9 @@ def rooms_block(
         }
         if not sold_total:
             block.notes.append(
-                "У соседей в последнем месяце продаж нет — доли считаны по остатку"
+                ("У соседей за то же окно продаж нет" if by_window
+                 else "У соседей в последнем месяце продаж нет")
+                + " — доли считаны по остатку"
             )
     if pooled_bands:
         total = sum(pooled_bands.values())

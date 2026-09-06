@@ -1373,6 +1373,53 @@ function verdictCard(d){
     +mix+`</div>`;
 }
 
+// Комментарий Платона приходит САМ, как только собран отчёт: «а можно
+// обновлять разбор в режиме онлайн Платоном? Загрузил отчёт и он его
+// пересчитал» (владелец, 06.09.2026). Раньше он молчал, пока не нажмут кнопку
+// внизу страницы, — то есть отвечал только тому, кто о ней догадался.
+//
+// Место — сразу под вердиктом движка и над связками: сначала что посчитано,
+// потом что об этом думают словами. Пустая карточка на бумаге читалась бы как
+// «Платону сказать нечего», поэтому до ответа она печататься не должна: класс
+// `noprint` снимается вместе с приходом текста.
+function briefCard(){
+  return `<div class="card noprint" id="briefcard"><h2>Комментарий Платона Сергеевича</h2>`
+    +`<div id="brief"><div class="muted">Платон Сергеевич читает отчёт…</div></div></div>`;
+}
+
+// Вопрос один и тот же на каждый отчёт: он не про проект, а про то, что
+// числа значат рядом с соседями. Числа Платон не пересчитывает — они уже
+// посчитаны движком, и второй счёт разошёлся бы с экраном.
+const BRIEF_ASK='Ниже готовый разбор рынка, посчитанный движком. Числа не пересчитывай '
+  +'и новых не выдумывай. Скажи в трёх-четырёх предложениях, что эти числа значат '
+  +'в сравнении с соседями и на что смотреть в первую очередь.';
+
+// Номер запуска, а не признак «идёт»: отчёт пересобирают, не дождавшись
+// прежнего ответа, и опоздавший ответ прежнего объекта уверенно встал бы под
+// числами нового.
+let briefRun=0;
+async function platoBrief(d){
+  const box=$('#brief'), card=$('#briefcard');
+  if(!box||!d) return;
+  const run=++briefRun;
+  const show=(html,done)=>{
+    if(run!==briefRun) return;
+    box.innerHTML=html;
+    // На бумагу карточка выходит только с ответом: ожидание в PDF читается
+    // как пустой раздел.
+    if(card) card.classList.toggle('noprint', !done);
+  };
+  try{
+    const text=await platoAnswer(BRIEF_ASK+'\n\n'+reportDigest(d),
+      note=>show(`<div class="muted">Платон Сергеевич: ${esc(note)}</div>`, false), []);
+    show(esc(text).replace(/\n/g,'<br>'), true);
+  }catch(e){
+    // Молчание объясняют: «комментария нет» и «Платон недоступен» на экране
+    // выглядят одинаково.
+    show(`<div class="muted">Платон не ответил: ${esc(e.message||e)}</div>`, false);
+  }
+}
+
 // «Что из этого следует» — связки между разделами. Читать их после пяти
 // карточек поздно: к тому моменту читатель уже связал числа сам, как получилось.
 function findingsCard(d){
@@ -1594,6 +1641,77 @@ function shareBars(rows, aName, bName, note, gap){
     +(caption?`<div class="muted" style="font-size:12.5px;margin-top:4px">${esc(caption)}</div>`:'');
 }
 
+// Как доля в проданном менялась по месяцам: «хотелось бы видеть в динамике как
+// эта доля менялась. По месяцам» (владелец, 06.09.2026). Полосы отвечают «что
+// берут сейчас», линия — «давно ли берут именно это»: вымывание бывает и
+// свежим, и годовалым, а на полосах это одно и то же.
+//
+// Числа не считаются здесь: доли приходят посчитанными с сервера. Второй счёт
+// той же величины однажды разошёлся бы с полосами выше, и обе картинки
+// выглядели бы верными.
+// За какой срок посчитано «продано». Месяц у одного ЖК — десяток сделок, то
+// есть шум; год — срок, за который проект успевает показать спрос на каждую
+// комнатность. Без подписи первую величину читают как вторую.
+function roomsWindowNote(b){
+  const w=(b.subject||{}).rooms_window;
+  if(!w) return '';
+  const peers=(b.peers||{}).rooms_window;
+  return ` Продано — за ${w.months} мес. (${w.from} — ${w.to}), ${num(w.deals)} сделок;`
+    +' остаток — сегодняшний.'+(peers?'':' У соседей продано — за последний месяц отчёта.');
+}
+
+function roomsTrend(b){
+  const s=b.subject||{}, series=s.rooms_series||[];
+  if(series.length<2){
+    const gap=s.rooms_series_gap;
+    return gap?`<h3>Как доля менялась по месяцам</h3>`
+      +`<div class="muted" style="font-size:12.5px">${esc(gap)}</div>`:'';
+  }
+  // Ось — календарь, а не список точек: месяцев без продаж в ряду нет вовсе,
+  // и поставь их встык — февраль окажется рядом с августом, а расстояние между
+  // ними прочитается как один шаг.
+  const step=m=>{const [y,n]=m.split('-').map(Number);
+    return n===12?`${y+1}-01`:`${y}-${String(n+1).padStart(2,'0')}`;};
+  const months=[]; for(let m=series[0].month; ; m=step(m)){ months.push(m);
+    if(m===series[series.length-1].month||months.length>120) break; }
+  const at={}; series.forEach(p=>{at[p.month]=p.shares||{}});
+  const names=[...new Set(series.flatMap(p=>Object.keys(p.shares||{})))];
+  const title=k=>((s.rooms||{})[k]||{}).title||k;
+  const colours=['#C4581B','#2f6f8f','#7a9a3b','#8e5aa8','#b8912f','#4a5a6b','#a8465a'];
+  const W=620,L=44,R=150,T=14,B=28,H=250;
+  const x=i=>L+i*(W-L-R)/Math.max(months.length-1,1);
+  const y=v=>T+(H-T-B)*(1-v/100);
+  let svg=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img">`;
+  [0,25,50,75,100].forEach(v=>{
+    svg+=`<line x1="${L}" y1="${y(v)}" x2="${W-R}" y2="${y(v)}" stroke="#e6ecf2"/>`
+       +`<text x="${L-6}" y="${y(v)+4}" text-anchor="end" font-size="10" fill="#8798a8">${v} %</text>`;});
+  const tick=Math.ceil(months.length/6);
+  months.forEach((m,i)=>{ if(i%tick) return;
+    svg+=`<text x="${x(i)}" y="${H-9}" text-anchor="middle" font-size="10" fill="#8798a8">${m.slice(2)}</text>`;});
+  names.forEach((k,n)=>{
+    const colour=colours[n%colours.length];
+    // Линия рвётся на месяце без продаж: протянутая через него, она показала бы
+    // состав спроса там, где спроса не было вовсе.
+    let d='', open=false;
+    months.forEach((m,i)=>{
+      const v=(at[m]||{})[k];
+      if(v===null||v===undefined){ open=false; return }
+      d+=(open?'L':'M')+x(i).toFixed(1)+' '+y(v).toFixed(1)+' '; open=true;
+      svg+=`<circle cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="2.4" fill="${colour}"`
+         +` data-tip="${esc(title(k)+' · '+m+': '+num(v,1)+' %')}"></circle>`;
+    });
+    if(d) svg+=`<path d="${d.trim()}" fill="none" stroke="${colour}" stroke-width="1.8"/>`;
+    svg+=`<rect x="${W-R+8}" y="${T+n*16}" width="9" height="9" fill="${colour}"/>`
+       +`<text x="${W-R+21}" y="${T+n*16+8}" font-size="10.5" fill="#5b6b7d">${esc(title(k))}</text>`;
+  });
+  svg+='</svg>';
+  const quiet=months.length-series.length;
+  return '<h3>Как доля менялась по месяцам</h3><div class="wrap">'+svg+'</div>'
+    +'<div class="muted" style="font-size:12.5px;margin-top:4px">Доля каждой комнатности'
+    +' в продажах месяца.'+(quiet>0?` Месяцев без продаж: ${quiet} — там линия рвётся,`
+      +' а не идёт нулём.':'')+'</div>';
+}
+
 function roomsTable(b){
   const ours=(b.subject||{}).rooms||{}, theirs=(b.peers||{}).rooms||{};
   const names=Object.keys({...ours,...theirs});
@@ -1602,9 +1720,10 @@ function roomsTable(b){
   const bars=shareBars(names.map(k=>{const a=ours[k]||{}, c=theirs[k]||{};
       return {title:a.title||c.title||k, a:a.sold_share_pct, b:a.rem_share_pct};}),
     'доля в проданном','доля в остатке',
-    'Полоса продаж длиннее полосы остатка — товар вымывается; короче — копится.',
+    'Полоса продаж длиннее полосы остатка — товар вымывается; короче — копится.'
+      +roomsWindowNote(b),
     (b.subject||{}).rooms_sold_gap);
-  return '<h3>Комнатность: что берут и что остаётся</h3>'+bars+'<div class="wrap"><table class="peers">'
+  return '<h3>Комнатность: что берут и что остаётся</h3>'+bars+roomsTrend(b)+'<div class="wrap"><table class="peers">'
     +'<tr><th>Комнатность</th><th class="num">У нас продано</th><th class="num">У нас в остатке</th>'
     +'<th class="num">У соседей продано</th><th class="num">У соседей в остатке</th>'
     +'<th class="num">Наш прайс, ₽/м²</th><th class="num">Прайс соседей</th>'
@@ -3809,6 +3928,9 @@ async function build(){
     // Новый объект — новый разговор: Платон помнил бы числа прежнего и
     // уверенно отвечал бы по ним.
     lastReport=d; autoPicked=false; onChart.clear(); marketTalk.reset(); render(d);
+    // Комментарий не держит отчёт: он приходит сам и позже, а до тех пор на
+    // его месте стоит признак работы.
+    platoBrief(d);
   }catch(e){
     $('#out').innerHTML=`<div class="card err">${esc(e.message||e)}</div>`;
   }finally{clearInterval(timer);$('#go').disabled=false;$('#state').textContent='';}
@@ -3977,6 +4099,8 @@ function render(d){
     peers.filter(p=>(p.price_series||[]).length>1||(p.sales_series||[]).length>1)
       .slice(0,5).forEach(p=>onChart.add(String(p.complex_id)));
   }
+
+  html+=briefCard();
 
   // «Что из этого следует» — сразу за вердиктом и до графиков.
   html+=findingsCard(d);
