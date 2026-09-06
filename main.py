@@ -1609,31 +1609,64 @@ def _deliver_krt_announcements() -> None:
     targets = sorted(set(subscribers) | set(core.usage_admin_ids()))
     if not targets:
         return
+    text = _krt_announcement_text(records)
+    if not text:
+        return
     for chat_id in targets:
         try:
-            core._telegram_send_message(chat_id, _krt_announcement_text(records))
+            core._telegram_send_message(chat_id, text)
         except Exception:
             # Один недоставленный адресат не отменяет рассылку остальным.
             continue
 
 
+# Три новости, и называется каждая своим именем: «в каталоге новая площадка»,
+# «по площадке опубликовано решение» и «площадка выставлена на торги». Общее
+# слово «новинки» на все три читалось бы как одно событие, а решают они разное:
+# первая — что смотреть, вторая — что у города появился документ (это самый
+# ранний сигнал, до торгов есть время), третья — что заявки уже принимают.
+_KRT_NEWS = {
+    "site": ("В каталоге КРТ новая площадка", "В каталоге КРТ новых площадок: {n}"),
+    "decision": ("Опубликован проект решения о КРТ",
+                 "Опубликованы проекты решений о КРТ: {n}"),
+    "tender": ("Площадка КРТ выставлена на торги",
+               "Площадок КРТ выставлено на торги: {n}"),
+}
+
+
 def _krt_announcement_text(records: list[dict]) -> str:
     """Одно сообщение на всю пачку, а не письмо на площадку.
 
-    Каталог обновляется раз в неделю и приносит новинки скопом: двенадцать
-    сообщений подряд читаются как поломка бота, а не как новость.
+    Источник приносит новости скопом: двенадцать сообщений подряд читаются как
+    поломка бота, а не как новость. Виды при этом идут своими блоками — иначе
+    решение и торги встанут в один список с новыми площадками и будут
+    прочитаны как то же самое.
     """
     import html as _html
 
-    names = [str(r.get("name") or r.get("slug") or "").strip() for r in records]
-    names = [name for name in names if name]
-    head = ("В каталоге КРТ новая площадка" if len(names) == 1
-            else f"В каталоге КРТ новых площадок: {len(names)}")
-    lines = [f"<b>{_html.escape(head)}</b>"]
-    for name in names[:12]:
-        lines.append("— " + _html.escape(name))
-    if len(names) > 12:
-        lines.append(f"…и ещё {len(names) - 12}")
+    by_kind: dict[str, list[dict]] = {}
+    for record in records:
+        kind = str(record.get("kind") or "site")
+        by_kind.setdefault(kind if kind in _KRT_NEWS else "site", []).append(record)
+
+    lines: list[str] = []
+    for kind in ("tender", "decision", "site"):
+        rows = by_kind.get(kind) or []
+        named = [(str(r.get("name") or r.get("slug") or "").strip(), r) for r in rows]
+        named = [(name, r) for name, r in named if name]
+        if not named:
+            continue
+        one, many = _KRT_NEWS[kind]
+        head = one if len(named) == 1 else many.format(n=len(named))
+        if lines:
+            lines.append("")
+        lines.append(f"<b>{_html.escape(head)}</b>")
+        for name, record in named[:12]:
+            lines.append("— " + _html.escape(name) + _krt_news_fact(kind, record))
+        if len(named) > 12:
+            lines.append(f"…и ещё {len(named) - 12}")
+    if not lines:
+        return ""
     lines.append("")
     # Адрес берём у движка, а не пишем словами: команды «/torgi» в боте нет, и
     # ссылка на несуществующее — та же ложь, что подпись под чужим числом.
@@ -1642,6 +1675,24 @@ def _krt_announcement_text(records: list[dict]) -> str:
     lines.append(f"Открыть {where} — новинки помечены плашкой «новое».")
     lines.append("Отписаться — /krt выкл")
     return "\n".join(lines)
+
+
+def _krt_news_fact(kind: str, record: dict) -> str:
+    """Что известно о самой новости: дата решения, срок подачи заявок.
+
+    Только то, что пришло вместе с событием. Выдумывать нечего: «заявки до —»
+    у лота без срока значит «срок не опубликован», и молчание тут честнее
+    прочерка, притворяющегося датой.
+    """
+    import html as _html
+
+    if kind == "decision":
+        when = str(record.get("published_at") or "").strip()
+        return f" — решение от {_html.escape(when)}" if when else ""
+    if kind == "tender":
+        deadline = str(record.get("deadline") or "").strip()[:10]
+        return f" — заявки до {_html.escape(deadline)}" if deadline else ""
+    return ""
 
 
 def _krt_subscription(chat_id: int, wanted: bool | None = None) -> bool:

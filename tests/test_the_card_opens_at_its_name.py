@@ -136,9 +136,12 @@ def test_in_a_real_browser_the_card_opens_at_its_name():
 
             page.evaluate("()=>selectKrt(state.krt.find(x=>x.slug==='polimernaya-8'))")
             page.wait_for_timeout(300)
+            # Шапка входа — первая плашка ПЕРВОЙ ГРУППЫ, а не первая плашка
+            # карточки: наверху теперь стоит карта, и на стенде без геокодера
+            # она честно говорит, что не построилась.
             head = page.evaluate(
-                "()=>document.querySelector('#krtSide .notice').textContent"
-                ".replace(/\\s+/g,' ')")
+                "()=>document.querySelector('#krtSide .krtgroup .notice')"
+                ".textContent.replace(/\\s+/g,' ')")
             # Карточку дочитали до низа — и нажали соседнюю строку.
             page.evaluate("()=>{const s=document.getElementById('krtSide');s.scrollTop=s.scrollHeight}")
             page.wait_for_timeout(100)

@@ -727,6 +727,73 @@ def install(app: FastAPI) -> None:
 
     app.state.krt_announcements_take = _take_krt_announcements
 
+    def _remember_tender_links(lots: list[dict[str, Any]]) -> dict[str, Any]:
+        """Связать собранные лоты с площадками и запомнить связку.
+
+        Один код на два входа: маршрут сбора каталога и сторож каталога. Два
+        сборщика на одну связку однажды ответили бы про одну площадку разное, и
+        оба выглядели бы верными.
+        """
+        from . import krt_tenders
+
+        sites = krt_registry.catalogue()
+        matched = krt_tenders.match(list(lots or []), sites)
+        by_site = matched.get("by_site") or {}
+        keeper = getattr(krt_registry, "remember_tender_lots", None)
+        if callable(keeper):
+            keeper(by_site)
+        return by_site
+
+    def _collect_tender_links() -> dict[str, Any]:
+        """Сходить за лотами самому и связать их с площадками.
+
+        Сторожу нужен тот же сбор, что и вкладке «Торги»: до правки связка
+        появлялась ТОЛЬКО когда человек эту вкладку открывал, и «выставлена на
+        торги» не было новостью вовсе.
+        """
+        service = AuctionSearchService(_discovery_adapters("all"))
+        lots = service.discover_moscow(budget_seconds=DISCOVERY_BUDGET_SECONDS)
+        return _remember_tender_links([_public_lot_dict(lot) for lot in lots])
+
+    # Сторож каталога: свой срок у каждого источника, работу берёт один воркер
+    # из двух. Выключается `AUCTION_KRT_WATCH=0`.
+    # Поток просыпается часто и почти всегда просто смотрит на часы: спрашивает
+    # он источник только тогда, когда у того наступил свой срок.
+    WATCH_HEARTBEAT_SECONDS = 300.0
+    WATCH_LOCK = os.path.join(os.getenv("DATA_DIR", "data"), "market", "krt", "watch.lock")
+    WATCH_LOCK_TTL_SECONDS = 900.0
+
+    def _krt_watch_loop() -> None:
+        """Что у города изменилось — новостью, а не к следующему прогону.
+
+        «Надо через бота подписчиков уведомлять — появился новый проект КРТ,
+        или опубликовано решение по старому проекту КРТ, выставлен на торги. Но
+        если это будет раз в неделю то поздновато конечно» (владелец,
+        06.09.2026).
+
+        Раз в неделю считается РЕЙТИНГ — это про цифры. Новости идут своим
+        сроком у каждого источника (`krt_watch`), а очередь забирает бот каждые
+        пятнадцать минут, как знакомства.
+        """
+        from . import krt_watch
+
+        # Обход просит сам сторож: снимок каталога живёт сутки и обновлялся,
+        # только если кто-то откроет страницу. Не открыл никто — не случилось
+        # ничего, и «новая площадка» ждала чужого нажатия.
+        watch = krt_watch.KrtWatch(krt_registry, krt_ranking,
+                                   collect_lots=_collect_tender_links,
+                                   all_sites=_krt_all_sites)
+        while True:
+            try:
+                if krt_ranking_rules.claim_file(WATCH_LOCK, WATCH_LOCK_TTL_SECONDS):
+                    try:
+                        watch.poll()
+                    finally:
+                        krt_ranking_rules.release_file(WATCH_LOCK)
+            except Exception:  # noqa: BLE001 — сторож молчит, а не роняет процесс
+                logger.exception("KRT watch loop")
+            time.sleep(WATCH_HEARTBEAT_SECONDS)
+
     def _weekly_ranking() -> None:
         """Раз в неделю каталог обновляется и считается сам.
 
@@ -923,8 +990,16 @@ def install(app: FastAPI) -> None:
         # Каталог отмечается на каждом чтении: «новое» — это разница с прошлым
         # составом, и считать её должен тот, кто состав видит, а не человек
         # глазами по списку из ста двадцати строк.
+        #
+        # Отмечается СПИСОК ЭКРАНА целиком — каталог и площадки-решения. Прежде
+        # сюда шли только строки каталога (решения приезжают ниже по маршруту),
+        # и площадка, у которой опубликован проект решения, а карточки города
+        # нет, не считалась новой НИКОГДА: ни плашки, ни сообщения в чат. А это
+        # 247 строк из 529 на проде и самый ранний сигнал воронки.
         seen = await run_in_threadpool(
-            krt_ranking.mark_seen, [str(row.get("slug") or "") for row in projects])
+            krt_ranking.mark_seen,
+            [str(row.get("slug") or "") for row in projects]
+            + [str(row.get("slug") or "") for row in _decision_rows_for_run()])
         projects = [
             {**row,
              "first_seen_at": seen.get(str(row.get("slug") or "")) or 0,
@@ -2548,14 +2623,8 @@ def install(app: FastAPI) -> None:
         # 05.09.2026: «торги 0????»). Сервер видел эти лоты сам, и запомнить
         # их — его работа, а не побочный эффект чужого нажатия.
         try:
-            from . import krt_tenders
-
-            sites = await run_in_threadpool(krt_registry.catalogue)
-            matched = await run_in_threadpool(
-                krt_tenders.match, [_public_lot_dict(lot) for lot in lots], sites)
-            keeper = getattr(krt_registry, "remember_tender_lots", None)
-            if callable(keeper):
-                await run_in_threadpool(keeper, matched.get("by_site"))
+            await run_in_threadpool(_remember_tender_links,
+                                    [_public_lot_dict(lot) for lot in lots])
         except Exception:  # noqa: BLE001 — каталог лотов не роняем связкой
             logger.exception("KRT: связка лотов с площадками при сборе не записалась")
 
@@ -2675,3 +2744,5 @@ def install(app: FastAPI) -> None:
     # получила бы NameError.
     if os.getenv("AUCTION_KRT_WEEKLY", "1").strip() not in {"0", "false", "no"}:
         threading.Thread(target=_weekly_ranking, name="krt-weekly", daemon=True).start()
+    if os.getenv("AUCTION_KRT_WATCH", "1").strip() not in {"0", "false", "no"}:
+        threading.Thread(target=_krt_watch_loop, name="krt-watch", daemon=True).start()
