@@ -48,15 +48,28 @@ def test_the_social_objects_are_not_later_than_the_first_queues() -> None:
     allocation = {a["type"]: a for a in bundle.get("social_allocation") or []}
     assert allocation["kindergarten"]["phase"] == 1 and allocation["school"]["phase"] <= 2, allocation
     # Предохранитель: без размещения школа уезжала бы в последнюю очередь.
+    late_inputs = {**inputs, "kindergarten_not_later_than": None,
+                   "school_not_later_than": None}
     late = core._run_authoritative_model(
-        {**inputs, "kindergarten_not_later_than": None, "school_not_later_than": None},
-        screening["model_inputs"]["tep"], [], screening["model_inputs"]["phasing"])
+        late_inputs, screening["model_inputs"]["tep"], [],
+        screening["model_inputs"]["phasing"])
     late_alloc = {a["type"]: a for a in late.get("social_allocation") or []}
     count = int((screening["model_inputs"]["phasing"] or {}).get("phase_count") or 1)
     assert late_alloc["school"]["phase"] == count and count > 2, late_alloc
-    weakest = min(float(p["result"]["summary"]["llcr"]) for p in bundle["phases"])
-    weakest_late = min(float(p["result"]["summary"]["llcr"]) for p in late["phases"])
-    assert weakest > weakest_late
+    # Выигрыш раннего размещения меряется там, где он про ПЛОЩАДКУ, а не про
+    # наше допущение. С 06.09.2026 норматив приложения 6 без выгрузки ГлавАПУ
+    # берёт верхний край (К1 = К2 = 1), и гараж нежилой очереди раздувается
+    # настолько, что слабейшей становится ОНА: рано 0,9790 против поздно
+    # 0,9795 — то есть балл начинает судить нашу догадку. С коэффициентами
+    # выгрузки выигрыш на месте и велик: 1,0566 против 0,9795.
+    known = {"parking_k1": 0.75, "parking_k2": 0.5}
+    def _weakest(x: dict) -> float:
+        got = core._run_authoritative_model(
+            dict(x), screening["model_inputs"]["tep"], [],
+            screening["model_inputs"]["phasing"])
+        return min(float(p["result"]["summary"]["llcr"]) for p in got["phases"])
+
+    assert _weakest({**inputs, **known}) > _weakest({**late_inputs, **known})
 
 
 def test_the_assumption_names_it() -> None:

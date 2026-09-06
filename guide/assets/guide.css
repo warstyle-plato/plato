@@ -88,3 +88,20 @@ body{margin:0;background:#f2f2ef;color:var(--ink)}
   .gtop{padding:14px 20px}
   .gback{width:100%;text-align:center;margin-left:0}
 }
+
+/* Справочник нормативной базы: три уровня колонками, у каждой позиции — к чему
+   относится и ссылка на исходник. Состав приходит из реестра, копии здесь нет. */
+.gnorm{margin-top:34px}
+.gnorm-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;margin:14px 0}
+.gnorm-col{border:1px solid var(--line);background:#fff;padding:14px 16px}
+.gnorm-col h4{margin:0 0 10px;font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:#555}
+.gnorm-col ul{margin:0;padding:0;list-style:none}
+.gnorm-col li{border-top:1px solid var(--line);padding:10px 0}
+.gnorm-col li:first-child{border-top:0;padding-top:0}
+.gnorm-col li b{display:block;font-size:13px;line-height:1.35}
+.gnorm-col li span{display:block;font-size:12px;color:#555;margin-top:3px}
+.gnorm-col li em{display:block;font-size:11px;color:#888;font-style:normal;margin-top:3px}
+.gnorm-src a{font-size:11px}
+.gnorm-nolink{color:#a00}
+.gnorm-fail{border:1px solid #a00;color:#a00;padding:11px 14px;font-size:12px}
+@media(max-width:900px){.gnorm-grid{grid-template-columns:1fr}}
