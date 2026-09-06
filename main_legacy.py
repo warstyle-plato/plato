@@ -72,7 +72,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.22.31"
+VERSION = "0.22.35"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -17289,6 +17289,26 @@ def _v4_header_attr() -> str:
     return f' s="{style}"' if style is not None else ""
 
 
+@functools.lru_cache(maxsize=1)
+def _v4_label_style_id() -> "int | None":
+    """Стиль подписи строки — у шаблона, как ввод и заголовок.
+
+    Подпись дописанного блока («Шаг 1», «доля») — такая же подпись строки, как
+    «Проект» или «Ставка» у шаблона. Пока она шла без стиля, блок читался
+    чужой вставкой: шрифт другой, а на листе, где всё остальное книга
+    владельца, это выглядит поломкой, а не нашей строкой.
+    """
+    with zipfile.ZipFile(_V4_TEMPLATE_PATH) as source:
+        sheet = source.read(_v4_inputs_sheet_path(source)).decode("utf-8")
+        styles = source.read("xl/styles.xml").decode("utf-8")
+    return v4_entry_sheet.chrome_styles(sheet, styles)["label"]
+
+
+def _v4_label_attr() -> str:
+    style = _v4_label_style_id()
+    return f' s="{style}"' if style is not None else ""
+
+
 def _v4_head_cell(coord: str, value: str) -> str:
     """Ячейка строки-заголовка дописанного блока.
 
@@ -17596,7 +17616,8 @@ def _v4_schedule_rows_xml(xml: str, title: str, hint: str,
     refs: list[tuple[str, str]] = []
 
     def text_cell(coord: str, value: str) -> str:
-        return f'<x:c r="{coord}" t="inlineStr"><x:is><x:t>{html.escape(value, quote=False)}</x:t></x:is></x:c>'
+        return (f'<x:c r="{coord}"{_v4_label_attr()} t="inlineStr">'
+                f'<x:is><x:t>{html.escape(value, quote=False)}</x:t></x:is></x:c>')
 
     # Ключ движка — в шапке блока: вводная здесь ОДНА («30%@0; 40%@6»), а строк
     # у неё столько, сколько шагов. Подписать ключом каждую строку значило бы
@@ -17666,7 +17687,8 @@ def _v4_stage_rows_xml(xml: str, title: str, hint: str, growth: list[float],
     refs: list[str] = []
 
     def text_cell(coord: str, value: str) -> str:
-        return f'<x:c r="{coord}" t="inlineStr"><x:is><x:t>{html.escape(value, quote=False)}</x:t></x:is></x:c>'
+        return (f'<x:c r="{coord}"{_v4_label_attr()} t="inlineStr">'
+                f'<x:is><x:t>{html.escape(value, quote=False)}</x:t></x:is></x:c>')
 
     parts.append(f'<x:row r="{row_at}">' + text_cell(f"A{row_at}", title) + "</x:row>")
     row_at += 1
