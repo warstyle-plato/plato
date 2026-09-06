@@ -142,6 +142,13 @@ def install(app, core) -> None:
     page = page.replace("__DEVELOPAID_VERSION__", core.VERSION)
     page = page.replace("__GUIDE_CLASS_ROWS__", _class_rows(core))
     page = page.replace("__GUIDE_SCENARIO_ROWS__", _scenario_rows(core))
+    # Справочник нормативной базы собирается из реестра движка, а не пишется в
+    # руководстве вторым списком: копию негде обновлять, а разошедшись, она
+    # пообещала бы читателю основание, которого под числом нет.
+    import normatives_registry
+
+    page = page.replace("__GUIDE_NORMATIVE_REGISTRY__",
+                        normatives_registry.guide_reference_html())
 
     @app.get("/guide", response_class=HTMLResponse, include_in_schema=False)
     @app.get("/guide/", response_class=HTMLResponse, include_in_schema=False)

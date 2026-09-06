@@ -89,10 +89,13 @@ def test_a_transferred_sports_object_is_built_and_not_sold() -> None:
     given = _report(_inputs(disposition="transfer"))
     off = _report(_inputs(enabled=False))
 
-    cost = GBA * core.DEFAULT_INPUTS["sports_cost_th_per_sqm"] * 1000
-    assert sold["capex"]["sports"] == pytest.approx(cost)
-    # Переданный стоит ровно столько же: город получает построенный объект.
-    assert given["capex"]["sports"] == pytest.approx(cost)
+    # Метры здания — не вся стоимость объекта: с 06.09.2026 норматив
+    # приложения 6 заполняет его гараж, и подземные метры считаются по ставке
+    # подземной части. Утверждение здесь другое — переданный стоит РОВНО
+    # столько же, сколько проданный: город получает построенный объект.
+    building = GBA * core.DEFAULT_INPUTS["sports_cost_th_per_sqm"] * 1000
+    assert sold["capex"]["sports"] > building, "гараж объекта перестал стоить денег"
+    assert given["capex"]["sports"] == pytest.approx(sold["capex"]["sports"])
     assert off["capex"]["sports"] == 0.0
 
     assert _product(sold, "sports")["revenue"] > 0
@@ -108,7 +111,7 @@ def test_a_transferred_sports_object_has_no_tax_pool_of_its_own() -> None:
     """
     sold = _report(_inputs(disposition="sale"))["finance"]["tax_cost_by_product"]
     given = _report(_inputs(disposition="transfer"))["finance"]["tax_cost_by_product"]
-    cost = GBA * core.DEFAULT_INPUTS["sports_cost_th_per_sqm"] * 1000
+    cost = _report(_inputs(disposition="sale"))["capex"]["sports"]
     assert sold.get("sports", 0.0) == pytest.approx(cost)
     assert given.get("sports", 0.0) == 0.0
     # Стоимость не исчезла — она в общем пуле очереди.

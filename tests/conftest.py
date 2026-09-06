@@ -33,6 +33,9 @@ os.environ.setdefault("AUCTION_KRT_WEEKLY", "0")
 # сроком и в тестах ему делать нечего ровно по той же причине. Фоновая работа
 # приложения — не часть теста, и выключатель взводится здесь же, до импорта.
 os.environ.setdefault("AUCTION_KRT_WATCH", "0")
+# Сторож нормативной базы — та же история: он ходит к правовым порталам по
+# расписанию, и в прогоне это сеть, чужие ответы и мусор в логе.
+os.environ.setdefault("NORMATIVES_WATCH", "0")
 
 import main as _wrapper  # noqa: E402
 import main_legacy as _engine  # noqa: E402

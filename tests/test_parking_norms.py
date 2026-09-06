@@ -59,11 +59,34 @@ def test_the_edition_is_chosen_by_date_not_by_the_latest_one() -> None:
     assert new["x2"] == 63.0 and new["unit"] == pn.UNIT_ABOVE_NONRES_SQM
 
 
-def test_missing_coefficients_are_a_refusal_not_a_one() -> None:
-    """К1 и К2 только снижают: единица «пока не знаем» даёт максимум как норму."""
+def test_missing_coefficients_take_the_upper_edge_and_say_so() -> None:
+    """Без выгрузки берём верхний край — решение владельца (06.09.2026).
+
+    Прежде это был отказ, и довод стоял верный: К1 и К2 только СНИЖАЮТ
+    потребность, значит единица даёт МАКСИМУМ мест. Неверен был вывод. Отказ
+    честен по форме и бесполезен по делу: у площадки без выгрузки не
+    оставалось ни одного места, и в модели она выглядела как проект без
+    парковки вовсе. Максимум — самый строгий ответ, и с ним можно работать;
+    опасность у него ровно одна — быть принятым за расчёт города. Поэтому
+    число считается, а оговорка едет вместе с ним.
+    """
     got = pn.moscow_required("office", 100_000)
-    assert got["required_spaces"] is None
-    assert "К1" in got["reason"] and "К2" in got["reason"]
+    assert got["required_spaces"] == 1588              # ceil(100000 / 63)
+    assert got["k1"] == 1.0 and got["k2"] == 1.0
+    assert got["k1_assumed"] and got["k2_assumed"]
+    caveat = " ".join(got["assumptions"])
+    assert "ВЕРХНИЙ КРАЙ" in caveat and "не расчёт города" in caveat
+    assert "К1" in caveat and "К2" in caveat
+
+
+def test_a_given_coefficient_is_not_called_an_assumption() -> None:
+    """Пришедшее из выгрузки и принятое нами на экране выглядят одинаково."""
+    got = pn.moscow_required("office", 100_000, k1=0.75, k2=0.5)
+    assert not got["k1_assumed"] and not got["k2_assumed"]
+    assert not any("ВЕРХНИЙ КРАЙ" in line for line in got["assumptions"])
+    half = pn.moscow_required("office", 100_000, k1=0.75)
+    assert not half["k1_assumed"] and half["k2_assumed"]
+    assert "К1" not in " ".join(half["assumptions"])
 
 
 def test_small_trade_relief_follows_the_footnote() -> None:
@@ -184,11 +207,32 @@ def test_k1_is_read_from_walking_distance() -> None:
     assert pn.moscow_k1(0)["value"] is None
 
 
-def test_an_unknown_function_points_at_the_design_brief() -> None:
-    """Сноска 6: ВРИ вне приложения — число мест по заданию на проектирование."""
+def test_an_unknown_function_is_counted_by_our_own_logic() -> None:
+    """Нормы нет — ставим по логике и называем её своей.
+
+    Сноска 6 говорит, что для ВРИ вне приложения число мест определяется
+    заданием на проектирование, то есть норматива города здесь нет вовсе.
+    Отказываться нельзя (владелец, 06.09.2026: «если норм нет надо как-то из
+    логики ставить»), выдавать за норму — тем более: берётся ставка обычного
+    нежилого того же приложения, и оговорка говорит, что она наша.
+    """
     got = pn.moscow_required("spaceport", 1000, k1=1.0, k2=1.0)
-    assert got["required_spaces"] is None
-    assert "заданием на проектирование" in got["reason"]
+    assert got["required_spaces"] == 16                # ceil(1000 / 63)
+    assert got["x2"] == pn.MOSCOW_FALLBACK_X2
+    assert got["x2_assumed"]
+    caveat = " ".join(got["assumptions"])
+    assert "заданием на проектирование" in caveat
+    assert "собственная логика DevelopAid" in caveat
+    assert "не норматив города" in caveat
+    # «Источник не сверен по тексту акта» здесь звучало бы претензией к акту,
+    # которого нет: строка выше уже назвала ставку нашей.
+    assert not any("не сверен по тексту акта" in line for line in got["assumptions"])
+
+
+def test_our_own_rate_is_the_ordinary_nonresidential_one() -> None:
+    """Ставка взята не с потолка: она стоит у офисов и магазинов приложения 1."""
+    assert pn.moscow_x2("office")["x2"] == pn.MOSCOW_FALLBACK_X2
+    assert pn.moscow_x2("shop")["x2"] == pn.MOSCOW_FALLBACK_X2
 
 
 def test_the_result_carries_its_own_grounds() -> None:

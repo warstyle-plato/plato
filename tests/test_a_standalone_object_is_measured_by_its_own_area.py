@@ -83,11 +83,33 @@ def test_the_object_reproduces_its_own_input_rate() -> None:
         "удельная объекта посчитана не на его площадь")
     assert office["gns_sqm"] == pytest.approx(OFFICE_GBA)
     assert office["per_own_saleable_th"] == pytest.approx(
-        office["value"] / OFFICE_SALEABLE / 1000)
+        office["building_value"] / OFFICE_SALEABLE / 1000)
+
+
     # Прежнее число никуда не делось — оно проектное и стоит в колонках статьи.
     assert row["per_gns_th"] < OFFICE_RATE_TH / 5, (
         "проектная база должна остаться сильно ниже собственной — иначе "
         "проверка мерит одно и то же дважды")
+
+
+def test_the_garage_of_the_object_is_measured_by_its_own_metre() -> None:
+    """Гараж стоит подземного метра, и в наземную ГНС здания он не лежит.
+
+    С 06.09.2026 норматив приложения 6 заполняет гараж объекта, если человек
+    его не задал. Сложенный со зданием и делённый на его наземную площадь, он
+    поднимал удельную с вводных 200 до 249 тыс ₽/м² — третий показатель, не
+    сравнимый ни со сметой, ни со своей же вводной. Здание меряется своей
+    площадью, гараж — своим метром, и обе базы стоят рядом.
+    """
+    office = _item(_standalone(_structure()), "offices")
+    assert office["garage_value"] > 0, "гаража нет — проверять нечего"
+    assert office["value"] == pytest.approx(
+        office["building_value"] + office["garage_value"])
+    assert office["garage_per_gns_th"] == pytest.approx(
+        core.DEFAULT_INPUTS["main_under_th_per_sqm"], rel=1e-6)
+    # База названа рядом с числом: «на метр» без второй базы читается как
+    # другой показатель.
+    assert "гараж" in office["basis_label"] and "подземной" in office["basis_label"]
 
 
 def test_the_surface_parking_is_measured_by_places_not_metres() -> None:
