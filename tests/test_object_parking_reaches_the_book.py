@@ -48,6 +48,7 @@ def _inputs(**over) -> dict:
     x.update(offices_enabled=True, retail_enabled=True,
              parking_k1=1.0, parking_k2=0.5,
              offices_parking_under_spaces=80, offices_parking_over_spaces=20,
+             offices_parking_guest_spaces=8,
              retail_parking_under_spaces=60, retail_parking_over_spaces=0)
     x.update(over)
     return x
@@ -117,3 +118,45 @@ def test_the_book_counts_the_same_parking_as_the_engine() -> None:
                         f"против {evaluator.cell('ПРОВЕРКИ', f'C{row}')}")
     assert not problems, problems
     assert report["summary"]["revenue"] > 0
+
+
+def test_the_mall_builds_its_parking_and_sells_none_of_it() -> None:
+    """Место в ТЦ не покупают — там обеспеченность посетителей.
+
+    Владелец, 06.09.2026: «Если это про обеспеченность ТЦ, то там конечно
+    никто купить место не может! Где ты видел такие ТЦ?» Метры и CAPEX при
+    этом остаются: паркинг строится, он просто не товар.
+    """
+    t = _tep()
+    core.apply_object_parking(_inputs(), t)
+    assert t["standalone_retail"]["parking_units"] == 60, "места строятся"
+    assert t["standalone_retail"]["parking_saleable_units"] == 0, "и не продаются"
+    assert t["standalone_retail"]["under_gns"] == pytest.approx(60 * 35)
+
+
+def test_the_office_sells_all_but_the_guest_places() -> None:
+    """«Если офисник, то там продаются конечно и остается немного гостевых»."""
+    t = _tep()
+    core.apply_object_parking(_inputs(), t)
+    assert t["offices"]["parking_units"] == 100, "построено"
+    assert t["offices"]["parking_saleable_units"] == 92, "продаётся, кроме 8 гостевых"
+
+
+def test_the_book_sells_the_same_places_as_the_engine() -> None:
+    """Книга и движок продают одни места, а не два достоверных вида.
+
+    Проверка держит СВОИ вводные не зря: у ТЦ мест 60, и если книга продаст их
+    заодно с офисными, разрыв будет ровно на цену этих мест.
+    """
+    openpyxl = pytest.importorskip("openpyxl")
+    from xlsx_eval import Evaluator
+
+    x, t = _inputs(), _tep()
+    content, _, meta = core.build_project_workbook(
+        dict(x), copy.deepcopy(t), [], None, project_name="Паркинг")
+    assert not meta.get("missing"), meta.get("missing")
+    sys.setrecursionlimit(400000)
+    evaluator = Evaluator(openpyxl.load_workbook(io.BytesIO(content), data_only=False))
+    # Офисы продают 92 из 100, ТЦ — ни одного из 60.
+    assert evaluator.cell("ОБЪЕКТЫ", "B32") == pytest.approx(92)
+    assert evaluator.cell("ОБЪЕКТЫ", "B60") == pytest.approx(0)

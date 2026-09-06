@@ -237,3 +237,36 @@ def test_the_norm_is_not_reimplemented_in_the_engine() -> None:
     import inspect
     source = inspect.getsource(core.parking_demand)
     assert "63" not in source and "54" not in source and "/ 50" not in source
+
+
+def test_who_may_sell_a_place_is_decided_per_object() -> None:
+    """Одно правило на всю парковку неверно в обе стороны.
+
+    Владелец, 06.09.2026: у ТЦ «никто купить место не может», у офисника
+    «продаются конечно и остается немного гостевых». Общее «продаётся»
+    выдумало бы выручку ТЦ, общее «не продаётся» отняло бы её у офисника.
+    """
+    by_key = {key: sellable for key, _, _, sellable in core.OBJECT_PARKING_OBJECTS}
+    assert by_key["offices"] is True
+    assert by_key["standalone_retail"] is False
+    assert by_key["sports"] is False
+
+
+def test_guest_places_are_built_and_not_sold() -> None:
+    """Гостевые — число человека: доли у нас нет, а выдуманный процент
+    на экране неотличим от измеренного."""
+    tep = {key: dict(row) for key, row in TEP.items()}
+    core.apply_object_parking(
+        _inputs(offices_enabled=True, offices_parking_under_spaces=50,
+                offices_parking_guest_spaces=6), tep)
+    assert tep["offices"]["parking_units"] == 50
+    assert tep["offices"]["parking_saleable_units"] == 44
+    assert core.n(tep["offices"], "under_gns") == 50 * 35, "гостевые всё равно строятся"
+
+
+def test_more_guests_than_places_is_clamped_not_negative() -> None:
+    tep = {key: dict(row) for key, row in TEP.items()}
+    core.apply_object_parking(
+        _inputs(offices_enabled=True, offices_parking_under_spaces=10,
+                offices_parking_guest_spaces=99), tep)
+    assert tep["offices"]["parking_saleable_units"] == 0
