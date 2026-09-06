@@ -72,7 +72,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.22.37"
+VERSION = "0.22.38"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -32979,6 +32979,10 @@ def _project_card(record: dict[str, Any]) -> dict[str, Any]:
         "cadastral": record.get("cadastral") or [],
         "summary": {key: summary.get(key) for key in
                     ("revenue_mln", "net_profit_mln", "llcr", "purchase_price_mln")},
+        # Не сам код, а признак: запись поверх обновляет то, что видит
+        # получатель ссылки, и предупредить об этом надо ДО записи. Код в
+        # списке был бы выдачей секрета там, где хватает «да/нет».
+        "has_share": bool(record.get("share_code")),
     }
 
 
@@ -35808,8 +35812,15 @@ details.cadastral-box>summary::marker{color:#888}
            без него, а «Сохранить», которое всегда откажет, хуже отсутствия.
            Смена ключа без консоли браузера: ключ меняют, когда он засветился,
            и требовать для этого localStorage.removeItem — значит не менять. -->
-      <span id="projectsStorageActions" style="display:none;gap:14px">
-        <button class="btn dark" onclick="saveProjectToServer()">Сохранить текущий</button>
+      <span id="projectsStorageActions" style="display:none;gap:14px;align-items:center">
+        <!-- Два намерения — две кнопки. Прежде обе жили в одном «Сохранить
+             текущий», и выбор между ними человек делал в окне подтверждения:
+             ОК — поверх, Отмена — как новый. Кнопка с двумя смыслами не
+             видна заранее, а «Отмена» читается как «ничего не делать». -->
+        <button class="btn dark" id="projectsSaveOver" style="display:none"
+                onclick="saveOpenedProject()">Сохранить</button>
+        <button class="btn" onclick="saveProjectAsNew()">Сохранить как…</button>
+        <span id="projectsOpenedName" class="muted" style="font-size:12px"></span>
         <button class="btn" onclick="changeProjectsKey()">Сменить ключ</button>
       </span>
       <button class="btn" style="margin-left:auto" onclick="closeProjects()">Закрыть</button>
@@ -43587,8 +43598,19 @@ let projectsAdminKey=localStorage.getItem('plato_projects_key')||'';
 async function projectsCall(path,body){
  const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},
   body:JSON.stringify(Object.assign({session:activeSession(),key:projectsAdminKey},body||{}))});
- const data=await response.json().catch(()=>({}));
- if(!response.ok)throw new Error(data.detail||'Хранилище недоступно');
+ // Тело читаем текстом: «Хранилище недоступно» одинаково выглядело и на
+ // пятисотке, и на странице шлюза, и на обрыве сети — то есть не говорило
+ // ничего. Правило то же, что у askJson на странице торгов: называем код и
+ // первые слова ответа.
+ const raw=await response.text();
+ let data={};
+ try{data=raw?JSON.parse(raw):{}}catch(e){}
+ if(!response.ok){
+  const said=String(data.detail||'').trim()
+   ||raw.replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim().slice(0,160);
+  throw new Error(said?('Хранилище ответило '+response.status+': '+said)
+   :('Хранилище ответило кодом '+response.status+' и пустым телом'));
+ }
  return data;
 }
 
@@ -43643,40 +43665,26 @@ function projectCadastral(){
  return Array.isArray(source)?source.slice(0,20):[];
 }
 
-async function saveProjectToServer(){
- // Открытый проект перезаписывается, а не удваивается. Спрашиваем прямо:
- // «поверх» и «как новый» — разные намерения, и угадывать их нельзя.
- // Про ссылку говорим фактом, а не предупреждением: перезапись обновляет её
- // намеренно — получатель при следующем открытии увидит новые числа (решение
- // владельца, 04.09.2026). Снимок остаётся снимком для уже открытой вкладки:
- // она задним числом не меняется.
- const opened=openedProject;
- let id='',name='';
- if(opened){
-  if(confirm('Сохранить поверх «'+opened.name+'»?\n\n'
-    +'ОК — записать в тот же проект, поверх прежних чисел.\n'
-    +'Отмена — сохранить как новый, прежний останется.'
-    +(opened.shareCode?'\n\nУ проекта есть ссылка «Поделиться»: получатель '
-      +'при следующем открытии увидит новые числа.':''))){
-   id=opened.id;name=opened.name;
-  }
- }
- if(!id){
-  const manualMeta=inputs._manual_tep_import||null;
-  const suggested=(manualMeta&&manualMeta.project_name)||projectCadastral()[0]||'Проект';
-  const asked=prompt('Название проекта в хранилище',suggested);
-  if(asked===null)return;
-  name=asked;
- }
+function projectStorePayload(){
+ return {payload:{inputs,tep,phasing,scenario:scenarioSelect.value||'base'},
+  summary:projectSummaryForStore(),cadastral:projectCadastral()};
+}
+
+async function storeProject(id,name){
+ // Одна дверь на все три кнопки: «Сохранить», «Сохранить как…» и «Поверх» в
+ // строке списка. Три сборки одного запроса разошлись бы молча — так уже
+ // терялась периодичность платежей ВРИ у присланного проекта.
  try{
-  const saved=await projectsCall('/projects/save',{id,name,
-   payload:{inputs,tep,phasing,scenario:scenarioSelect.value||'base'},
-   summary:projectSummaryForStore(),cadastral:projectCadastral()});
-  // Сохранённый проект становится открытым: следующее сохранение обязано
-  // предложить перезапись, иначе третий экземпляр заведётся тем же способом.
-  // У перезаписи ссылку берём прежнюю — карточка ответа её не несёт.
-  rememberOpenedProject(id&&opened?Object.assign({},saved,{share_code:opened.shareCode}):saved);
-  alert(id?'Проект перезаписан':'Проект сохранён на сервере');
+  const saved=await projectsCall('/projects/save',
+   Object.assign({id,name},projectStorePayload()));
+  // Сохранённый проект становится открытым: следующее «Сохранить» пишет
+  // поверх него, а не заводит третий экземпляр. Ссылку карточка ответа не
+  // несёт — признак берём у того, поверх кого пишем.
+  const previous=(id&&openedProject&&openedProject.id===id)?openedProject:null;
+  rememberOpenedProject(Object.assign({},saved,{
+   share_code:previous?previous.shareCode:'',
+   has_share:previous?previous.shared:!!saved.has_share}));
+  alert(id?('Записано поверх «'+name+'»'):'Проект сохранён на сервере');
   openProjects();
  }catch(e){
   // 428 от сервера — не отказ, а вопрос «кто вы»: открываем знакомство,
@@ -43684,6 +43692,38 @@ async function saveProjectToServer(){
   if(String(e.message||e).indexOf('Заполните знакомство')>=0){openProfile();return}
   alert(String(e.message||e));
  }
+}
+
+function projectShareNote(shared){
+ return shared?'\n\nУ проекта есть ссылка «Поделиться»: получатель при '
+  +'следующем открытии увидит новые числа.':'';
+}
+
+function saveOpenedProject(){
+ // Кнопка видна только при открытом проекте, но состояние могло смениться
+ // между отрисовкой и нажатием: молчаливое «сохранил как новый» здесь было бы
+ // не тем, что человек просил.
+ if(!openedProject){alert('Открытого проекта нет — нажмите «Сохранить как…».');return}
+ if(!confirm('Записать поверх «'+openedProject.name+'»?'
+  +projectShareNote(openedProject.shared)))return;
+ storeProject(openedProject.id,openedProject.name);
+}
+
+function saveProjectAsNew(){
+ const manualMeta=inputs._manual_tep_import||null;
+ const suggested=(manualMeta&&manualMeta.project_name)||projectCadastral()[0]||'Проект';
+ const asked=prompt('Название проекта в хранилище',suggested);
+ if(asked===null)return;
+ storeProject('',String(asked));
+}
+
+function saveProjectOver(id,name,shared){
+ // Запись поверх прямо из строки: открывать проект ради перезаписи незачем,
+ // а истории версий у хранилища нет — поэтому спрашиваем именем проекта.
+ if(!confirm('Записать текущие вводные поверх «'+name+'»?\n\n'
+  +'Прежние числа этого проекта будут заменены — вернуть их будет неоткуда.'
+  +projectShareNote(shared)))return;
+ storeProject(id,name);
 }
 
 function renderProjectsLogin(reason){
@@ -43808,6 +43848,7 @@ async function openProjects(){
  // подгружается следом и только там, где хранилище настроено.
  projectsDialog.style.display='flex';
  renderAccountBox();
+ renderOpenedProjectButton();
  const stored=document.getElementById('projectsStored');
  if(!projectsStorageReady){
   if(stored)stored.style.display='none';
@@ -43845,6 +43886,10 @@ async function openProjects(){
    +`<td>${s.net_profit_mln?money(s.net_profit_mln*1e6):'—'}</td>`
    +`<td>${s.llcr?mult(s.llcr):'—'}</td>`
    +`<td><button class="btn" onclick="loadProject('${p.id}')">Открыть</button> `
+   +`<button class="btn" title="Записать текущие вводные поверх этого проекта" `
+   +`data-id="${escapeHtml(String(p.id||''))}" data-name="${escapeHtml(String(p.name||''))}" `
+   +`data-shared="${p.has_share?'1':''}" `
+   +`onclick="saveProjectOver(this.dataset.id,this.dataset.name,!!this.dataset.shared)">Поверх</button> `
    +`<button class="btn" onclick="shareProject('${p.id}')">Ссылка</button> `
    +`<button class="btn" onclick="downloadSettingsFile('${p.id}')">Файл</button> `
    +`<button class="btn" onclick="deleteProject('${p.id}')">Удалить</button></td></tr>`;
@@ -43888,7 +43933,32 @@ function rememberOpenedProject(record){
  // как проект зовут и есть ли у него живая ссылка.
  openedProject=record&&record.id?{id:String(record.id),
   name:String(record.name||'Проект'),
-  shareCode:String(record.share_code||'')}:null;
+  shareCode:String(record.share_code||''),
+  // Код ссылки страница знает не всегда (в строке списка его нет), а
+  // предупредить о живой ссылке надо и там: признак отдельно от кода.
+  shared:!!(record.share_code||record.has_share)}:null;
+ renderOpenedProjectButton();
+}
+
+function renderOpenedProjectButton(){
+ // «Сохранить» без открытого проекта записать не во что: кнопки нет, а рядом
+ // стоит имя того, поверх кого пишем, — иначе «Сохранить» и «Сохранить как…»
+ // на экране неразличимы.
+ // Функция зовётся из `rememberOpenedProject`, а его гоняют проверки в node,
+ // где документа нет вовсе: спрашиваем через typeof, а не надеемся.
+ if(typeof document==='undefined')return;
+ const button=document.getElementById('projectsSaveOver');
+ const label=document.getElementById('projectsOpenedName');
+ if(!button||!label)return;
+ if(openedProject){
+  button.style.display='';
+  button.title='Записать поверх «'+openedProject.name+'»';
+  label.textContent='открыт: '+openedProject.name;
+ }else{
+  button.style.display='none';
+  button.title='';
+  label.textContent='';
+ }
 }
 
 function forgetTerritoryState(){

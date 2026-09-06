@@ -8,6 +8,14 @@
 считает. Не умела страница — `loadProject` открытый id не запоминал, а
 `saveProjectToServer` его не слал, и сервер честно заводил второй экземпляр.
 
+Первая версия правки спрятала выбор в окно подтверждения: одна кнопка
+«Сохранить текущий», ОК — поверх, Отмена — как новый. Владелец (06.09.2026):
+«и где запись поверх? я думал будет кнопка в ряду ранее сохранённого проекта
+рядом с открыть или наверх Сохранить и Сохранить как…». Он прав: кнопка с
+двумя смыслами не видна заранее, а «Отмена» читается как «ничего не делать».
+Теперь три названные двери — «Сохранить», «Сохранить как…» и «Поверх» в строке
+списка, — и все три ведут в один `storeProject`.
+
 Опасная половина правки не в перезаписи, а в том, чтобы вовремя ЗАБЫТЬ
 открытый проект: истории версий у хранилища нет, и «Сохранить поверх» после
 подмены снимка записало бы чужие числа туда, откуда их не достать.
@@ -87,7 +95,13 @@ CODE = "\n".join([
     _piece("rememberOpenedProject"),
     _piece("applyProjectSnapshot"),
     _piece("loadProject", kind="async function"),
-    _piece("saveProjectToServer", kind="async function"),
+    _piece("projectStorePayload"),
+    _piece("storeProject", kind="async function"),
+    _piece("projectShareNote"),
+    _piece("saveOpenedProject"),
+    _piece("saveProjectAsNew"),
+    _piece("saveProjectOver"),
+    _piece("renderOpenedProjectButton"),
     _piece("deleteProject", kind="async function"),
     _piece("resetProjectState"),
 ])
@@ -97,8 +111,8 @@ def _script(body: str) -> str:
     return STUBS + CODE + "\n" + body
 
 
-def _sent(answer_overwrite: bool, record: dict | None) -> dict:
-    """Открыть проект (или нет) и сохранить, отвечая на вопрос о перезаписи."""
+def _sent(press: str, record: dict | None) -> dict:
+    """Открыть проект (или нет) и нажать названную кнопку кабинета."""
     return _run(_script("""
 const sent=[];
 function projectsCall(path,payload){
@@ -107,15 +121,15 @@ function projectsCall(path,payload){
   if(path==='/projects/save')return Promise.resolve({id:'new777',name:payload.name});
   return Promise.resolve({});
 }
-function confirm(text){asked.push(String(text));return %(overwrite)s}
+function confirm(text){asked.push(String(text));return true}
 function prompt(text,suggested){asked.push(String(text));return 'Новое имя'}
 (async()=>{
   if(%(open)s) await loadProject('abc123');
-  await saveProjectToServer();
+  await %(press)s;
   console.log(JSON.stringify({sent,asked,said,opened:openedProject}));
 })();
 """ % {"record": json.dumps(record or {}, ensure_ascii=False),
-       "overwrite": "true" if answer_overwrite else "false",
+       "press": press,
        "open": "true" if record else "false"}))
 
 
@@ -123,43 +137,58 @@ RECORD = {"id": "abc123", "name": "Румянцево", "share_code": "s3cr3t",
           "payload": {"inputs": {}, "tep": {}}}
 
 
-def test_an_opened_project_is_written_over_under_its_own_id() -> None:
-    got = _sent(True, RECORD)
+def test_the_save_button_writes_over_the_opened_project() -> None:
+    got = _sent("saveOpenedProject()", RECORD)
     save = [row for row in got["sent"] if row["path"] == "/projects/save"][0]
     assert save["payload"]["id"] == "abc123", "перезапись идёт под id открытого"
     assert save["payload"]["name"] == "Румянцево", "имя берётся у него же"
     assert "Румянцево" in " ".join(got["asked"]), "вопрос называет проект"
-    assert any("перезаписан" in line for line in got["said"])
+    assert any("поверх «Румянцево»" in line for line in got["said"])
 
 
-def test_the_answer_no_saves_a_new_project_and_keeps_the_old_one() -> None:
-    """«Отмена» — это второе намерение, а не отказ от сохранения."""
-    got = _sent(False, RECORD)
+def test_save_as_new_never_writes_over_anything() -> None:
+    """Второе намерение — своя кнопка, а не «Отмена» в чужом вопросе."""
+    got = _sent("saveProjectAsNew()", RECORD)
     save = [row for row in got["sent"] if row["path"] == "/projects/save"][0]
     assert save["payload"]["id"] == "", "новый проект идёт без id"
     assert save["payload"]["name"] == "Новое имя", "имя спрашивается заново"
+    assert not any("поверх" in line for line in got["asked"]), \
+        "у «Сохранить как…» вопроса о перезаписи нет вовсе"
+
+
+def test_a_row_is_written_over_without_opening_it() -> None:
+    """Кнопка «Поверх» стоит в строке списка: открывать ради записи незачем."""
+    got = _sent("saveProjectOver('row42','Нагатино',false)", None)
+    save = [row for row in got["sent"] if row["path"] == "/projects/save"][0]
+    assert save["payload"]["id"] == "row42"
+    assert save["payload"]["name"] == "Нагатино"
+    assert not any(row["path"] == "/projects/open" for row in got["sent"]), \
+        "проект для записи поверх не открывается"
+    assert "Нагатино" in " ".join(got["asked"]), "вопрос называет проект строки"
+
+
+def test_the_save_button_refuses_when_nothing_is_open() -> None:
+    """Молчаливое «сохранил как новый» здесь — не то, что человек просил."""
+    got = _sent("saveOpenedProject()", None)
+    assert not any(row["path"] == "/projects/save" for row in got["sent"])
+    assert any("Сохранить как" in line for line in got["said"]), \
+        "отказ называет кнопку, которая делает то, что нужно"
 
 
 def test_a_live_link_is_named_as_a_fact_before_the_overwrite() -> None:
     """Решение владельца: перезапись обновляет ссылку намеренно —
     «отлично что увидит». Значит это факт рядом с вопросом, а не пугалка."""
-    question = " ".join(_sent(True, RECORD)["asked"])
+    question = " ".join(_sent("saveOpenedProject()", RECORD)["asked"])
     assert "ссылка" in question and "увидит новые числа" in question
-    without = " ".join(_sent(True, dict(RECORD, share_code=""))["asked"])
+    without = " ".join(_sent("saveOpenedProject()", dict(RECORD, share_code=""))["asked"])
     assert "ссылка" not in without, "у проекта без ссылки строки о ней нет"
-
-
-def test_a_project_that_was_never_opened_is_saved_as_new() -> None:
-    got = _sent(False, None)
-    save = [row for row in got["sent"] if row["path"] == "/projects/save"][0]
-    assert save["payload"]["id"] == ""
-    assert not any("поверх" in line for line in got["asked"]), \
-        "перезаписывать нечего — и спрашивать не о чем"
+    row = " ".join(_sent("saveProjectOver('row42','Нагатино',true)", None)["asked"])
+    assert "ссылка" in row, "у строки списка признак ссылки свой — has_share"
 
 
 def test_the_saved_project_becomes_the_opened_one() -> None:
     """Иначе третий экземпляр заведётся тем же способом, что и второй."""
-    got = _sent(False, None)
+    got = _sent("saveProjectAsNew()", None)
     assert got["opened"] and got["opened"]["id"] == "new777"
 
 
