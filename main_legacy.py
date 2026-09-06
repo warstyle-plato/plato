@@ -23990,6 +23990,12 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     core_product("storage", storage_saleable_spaces(storage), n(x, "storage_price_th"))
 
     standalone_capex = {}
+    # Гараж объекта копится ОТДЕЛЬНО от здания: удельная «на свою ГНС»
+    # обязана воспроизводить вводную ставку, а гараж считается по подземному
+    # метру. Сложенные в одно число, они дают третий показатель, который не
+    # сравнить ни со сметой, ни со своей же вводной — 249 тыс ₽/м² при
+    # вводной 200.
+    standalone_garage_capex: dict[str, float] = {}
     object_schedule_notes: dict[str, dict[str, Any]] = {"core": core_schedule_note}
 
     # Паркинг объектов разложен по строкам ТЭП раньше (`apply_object_parking`),
@@ -24051,7 +24057,8 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
             offices_share, offices_residual, weights_override=offices_weights,
         ))
         standalone_capex["offices"] = n(x, "offices_gba_sqm") * n(x, "offices_cost_th_per_sqm") * 1000
-        standalone_capex["offices"] += object_parking_capex("offices")
+        standalone_garage_capex["offices"] = object_parking_capex("offices")
+        standalone_capex["offices"] += standalone_garage_capex["offices"]
     else:
         revenue_by_product["offices"] = 0.0
         standalone_capex["offices"] = 0.0
@@ -24075,7 +24082,8 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
             retail_share, retail_residual, weights_override=retail_weights,
         ))
         standalone_capex["standalone_retail"] = n(x, "retail_gba_sqm") * n(x, "retail_cost_th_per_sqm") * 1000
-        standalone_capex["standalone_retail"] += object_parking_capex("standalone_retail")
+        standalone_garage_capex["standalone_retail"] = object_parking_capex("standalone_retail")
+        standalone_capex["standalone_retail"] += standalone_garage_capex["standalone_retail"]
     else:
         revenue_by_product["standalone_retail"] = 0.0
         standalone_capex["standalone_retail"] = 0.0
@@ -24110,7 +24118,8 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     # — метры строятся, но не продаются.
     if b(x, "sports_enabled"):
         standalone_capex["sports"] = n(x, "sports_gba_sqm") * n(x, "sports_cost_th_per_sqm") * 1000
-        standalone_capex["sports"] += object_parking_capex("sports")
+        standalone_garage_capex["sports"] = object_parking_capex("sports")
+        standalone_capex["sports"] += standalone_garage_capex["sports"]
     else:
         standalone_capex["sports"] = 0.0
     if b(x, "sports_enabled") and sports_is_sold(x):
@@ -24550,6 +24559,10 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         "debt_capex": debt_capex,
         "operating": dict(operating),
         "capex_amounts": amounts,
+        # Гараж объекта внутри его статьи, но со своей базой: здание меряется
+        # своей ГНС, гараж — подземным метром. Без этой пары удельная объекта
+        # молча смешивает два показателя.
+        "standalone_garage_capex": dict(standalone_garage_capex),
         "purchase_schedule": purchase_schedule_info,
         "object_schedule_notes": object_schedule_notes,
         "core_above_gns": core_above_gns,
@@ -25960,6 +25973,15 @@ def calculate(req: CalcRequest) -> dict:
         row = t.get(key) or {}
         own_gns = n(row, "gns")
         own_saleable = n(row, "saleable")
+        # Гараж объекта стоит подземного метра и в его наземной ГНС не лежит:
+        # делённый на неё, он поднимал удельную с вводных 200 до 249 тыс ₽/м²,
+        # и сравнить это ни со сметой, ни со своей же вводной было нельзя.
+        # Здание меряется своей площадью, гараж — своим метром и своими
+        # местами, и обе базы названы рядом.
+        garage = float((op.get("standalone_garage_capex") or {}).get(key) or 0.0)
+        building = max(0.0, amount - garage)
+        garage_gns = n(row, "under_gns")
+        garage_units = n(row, "parking_units")
         # Делитель берётся оттуда же, откуда взялся числитель: CAPEX наземного
         # паркинга считается как `above_parking_spaces × себестоимость места`,
         # и строка ТЭП тут вторым источником быть не может — при вызове мимо
@@ -25978,8 +26000,19 @@ def calculate(req: CalcRequest) -> dict:
             item["basis"] = "area"
             item["basis_label"] = (f"{_amount_label(own_gns)} м² ГНС объекта"
                                    if own_gns else "площадь объекта не задана")
-            item["per_own_gns_th"] = per_sqm_th(amount, own_gns)
-            item["per_own_saleable_th"] = per_sqm_th(amount, own_saleable)
+            if garage > 0:
+                item["basis_label"] += (
+                    f" + гараж {_amount_label(garage_gns)} м² подземной"
+                    + (f" на {_amount_label(garage_units)} мест" if garage_units else ""))
+            item["building_value"] = building
+            item["garage_value"] = garage
+            item["garage_gns_sqm"] = garage_gns
+            item["garage_units"] = garage_units
+            # Удельная — на ЗДАНИЕ и его площадь: она обязана воспроизводить
+            # вводную ставку. Гараж стоит рядом своим числом на своей базе.
+            item["per_own_gns_th"] = per_sqm_th(building, own_gns)
+            item["per_own_saleable_th"] = per_sqm_th(building, own_saleable)
+            item["garage_per_gns_th"] = per_sqm_th(garage, garage_gns)
         standalone_items.append(item)
 
     expense_structure = []

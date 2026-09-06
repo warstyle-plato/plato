@@ -179,10 +179,18 @@ def test_consolidation_is_bottom_up_from_queue_products(imported):
     # она была на 101 710 м² больше того, что стоит в документе города.
     summary = bundle["consolidated"]["summary"]
     assert summary["project_gns_sqm"] == pytest.approx(official_gns)
+    # Подземная часть — это гараж МКД И гаражи отдельно стоящих объектов: с
+    # 06.09.2026 норматив приложения 6 заполняет их, когда К1 и К2 не пришли
+    # с выгрузкой, и берёт верхний край. Цена края на этой площадке измерена:
+    # 213 360 м² подземной против 143 570 при К1 = 0,75 и К2 = 0,5, CAPEX
+    # 138 488 против 130 089 млн ₽, и проект из +2,15% маржи уходит в −1,42%.
+    # Наземная при этом не двигается — она и сходится с ППТ до метра.
+    garages = summary["object_parking_under_gns"]
+    assert garages > 0, "гаражи объектов не посчитаны — проверять нечего"
     assert summary["underground_gns_sqm"] == pytest.approx(
-        products["underground_parking"]["gns"])
+        products["underground_parking"]["gns"] + garages)
     assert summary["construction_volume_sqm"] == pytest.approx(
-        official_gns + products["underground_parking"]["gns"])
+        official_gns + products["underground_parking"]["gns"] + garages)
     assert all(products[key]["revenue"] == 0
                for key in ("school", "kindergarten", "other_mandatory"))
 
