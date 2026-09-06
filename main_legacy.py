@@ -15097,6 +15097,20 @@ _V4_INPUT_CELLS: dict[str, str] = {
     "retail_cost_th_per_sqm": "K49", "retail_sales_start": "K50",
     "retail_price_th_per_sqm": "K51", "retail_share_before_rve_pct": "K52",
     "retail_growth_pre_pct": "K54", "retail_growth_post_pct": "K55",
+    # Приобъектный паркинг нежилья — свободный низ листа: вставить строку в
+    # занятое место нельзя, поедут все ссылки. Норматив (К1, К2, таблицы
+    # города) книге не сосчитать и он остаётся у движка, а РАЗМЕЩЕНИЕ — это
+    # два числа и множитель, их книга считает сама: «если величина в книге не
+    # выражается формулой, значит не хватает не формулы, а вводной».
+    "object_parking_area_per_space_sqm": "K158",
+    "ground_commercial_parking_under_spaces": "K159",
+    "ground_commercial_parking_over_spaces": "K160",
+    "offices_parking_under_spaces": "K161",
+    "offices_parking_over_spaces": "K162",
+    "retail_parking_under_spaces": "K163",
+    "retail_parking_over_spaces": "K164",
+    "sports_parking_under_spaces": "K165",
+    "sports_parking_over_spaces": "K166",
     "above_parking_spaces": "K63", "above_parking_area_per_space_sqm": "K64",
     "above_parking_cost_mln_per_space": "K67", "above_parking_start": "K68",
     "above_parking_months": "K69", "above_parking_sales_start": "K70",
@@ -15168,6 +15182,28 @@ def _v4_set_cell(
     else:
         replacement = f'<x:c r="{coord}"{style_attr}><x:v>{_v4_number(number)}</x:v></x:c>'
     return xml[:found.start()] + replacement + xml[found.end():], True
+
+
+def _v4_column_letter(number: int) -> str:
+    letters = ""
+    while number > 0:
+        number, rest = divmod(number - 1, 26)
+        letters = chr(65 + rest) + letters
+    return letters
+
+
+def _v4_cell_formula(xml: str, coord: str) -> str | None:
+    """Формула ячейки как есть. Нет ячейки или нет формулы — `None`.
+
+    Читается затем, чтобы правку строить НА НЕЙ, а не писать свою рядом: свою
+    пришлось бы держать в согласии с шаблоном вручную, и она разошлась бы молча.
+    """
+    found = re.search(
+        r'<x:c r="%s"[^>]*>(.*?)</x:c>' % re.escape(coord), xml, re.S)
+    if not found:
+        return None
+    formula = re.search(r"<x:f>(.*?)</x:f>", found.group(1), re.S)
+    return html.unescape(formula.group(1)) if formula else None
 
 
 def _v4_col_number(letters: str) -> int:
@@ -16290,6 +16326,238 @@ def _v4_sports_inputs_block(xml: str, missing: list[str]) -> str:
                  f'K127*IF(K125="Да",$K$15,1),0)'))
     if not done:
         missing.append("ФОК: формула продаваемой площади K129")
+    return xml
+
+
+# Приобъектный паркинг нежилья в книге. Три места, и все три обязательны:
+# подпись блока вводных, деньги объекта и дверь в CF.
+#
+# CAPEX своего подземного считается ПО ТОЙ ЖЕ ставке подземной части, что и у
+# движка, и теми же множителями инфляции очереди, что и остальной CAPEX
+# объекта: иначе книга и отчёт разойдутся ровно на инфляцию, а выглядеть это
+# будет как ошибка счёта.
+#
+# Выручка мест идёт СВОЕЙ строкой, а не прибавляется к «Продажам по договорам»:
+# там же рядом стоит «Цена реализации» = продажи / метры, и подмешанные в неё
+# деньги мест дали бы цену офисного метра, которой никто не назначал.
+_V4_OBJECT_PARKING = (
+    # (подпись, строка «включён», строка мест, строка выручки, ячейка CAPEX,
+    #  «мест под землёй», «мест на этажах», строка объёма продаж объекта,
+    #  строка цены объекта, ячейка цены объекта, ячейка GBA объекта)
+    ("МФОЦ / офисы", 7, 32, 33, "B28", "K161", "K162", 22, 23, "K31", "K25"),
+    ("ТЦ / ОСЗ", 35, 60, 61, "B56", "K163", "K164", 50, 51, "K51", "K45"),
+)
+_V4_OBJECT_PARKING_INPUT_ROWS = (
+    ("ПРИОБЪЕКТНЫЙ ПАРКИНГ НЕЖИЛЬЯ · РАЗМЕЩЕНИЕ МЕСТ", None, None),
+    ("Площадь на 1 место", "K158", "м²/место"),
+    ("Коммерция 1 эт. — мест в своём подземном", "K159", "шт."),
+    ("Коммерция 1 эт. — мест на первых этажах", "K160", "шт."),
+    ("Офисы — мест в своём подземном", "K161", "шт."),
+    ("Офисы — мест на первых этажах", "K162", "шт."),
+    ("ТЦ / ОСЗ — мест в своём подземном", "K163", "шт."),
+    ("ТЦ / ОСЗ — мест на первых этажах", "K164", "шт."),
+    ("ФОК — мест в своём подземном", "K165", "шт."),
+    ("ФОК — мест на первых этажах", "K166", "шт."),
+)
+
+
+def _v4_object_parking_input_labels(xml: str, missing: list[str]) -> str:
+    """Подписи блока размещения мест на листе «Параметры модели».
+
+    Значение и ключ пишет общая карта `_V4_INPUT_CELLS`; без подписи и единицы
+    рядом это столбик чисел, о котором человек не знает, что правит.
+    """
+    for offset, (label, coord, unit) in enumerate(_V4_OBJECT_PARKING_INPUT_ROWS):
+        row = 157 + offset
+        # Строки внизу листа не существует, пока её не завели: пустых строк в
+        # файле не бывает, и запись значения по карте ключей молча не нашла бы
+        # ячейку — так эти вводные и приезжали в книгу пустыми.
+        xml = _v4_ensure_row(xml, row)
+        xml, done = _v4_set_or_insert_cell(xml, f"J{row}", text=label)
+        if not done:
+            missing.append(f"паркинг объектов: подпись J{row}")
+        if unit:
+            xml, done = _v4_set_or_insert_cell(xml, f"L{row}", text=unit)
+            if not done:
+                missing.append(f"паркинг объектов: единица L{row}")
+        if coord:
+            # Место под значение — общая карта ключей пишет заменой и в
+            # несуществующую ячейку не попадёт.
+            xml, done = _v4_set_or_insert_cell(xml, coord, number=0)
+            if not done:
+                missing.append(f"паркинг объектов: место под значение {coord}")
+    return xml
+
+
+def _v4_object_parking_block(xml: str, missing: list[str]) -> str:
+    """Деньги приобъектного паркинга на листе ОБЪЕКТЫ.
+
+    Строки 32–33 и 60–61 в шаблоне пусты — это зазор между блоками объектов, и
+    ряд встаёт туда. Вставить строку в занятое место нельзя: поедет всё, что на
+    неё ссылается.
+    """
+    for (label, enabled_row, units_row, revenue_row, capex_cell, under, over,
+         volume_row, price_row, price_cell, gba_cell) in _V4_OBJECT_PARKING:
+        for row in (units_row, revenue_row):
+            if re.search(r'<x:c r="A%d"[ />]' % row, xml):
+                missing.append(f"паркинг объектов: строка {row} листа ОБЪЕКТЫ занята")
+                return xml
+            xml = _v4_ensure_row(xml, row)
+        # Мест продаётся столько, сколько построено: гостевых у приобъектного
+        # паркинга нет — это норматив для посетителей нежилья и есть.
+        block_sheet = re.search(r"('[^']+')!", _v4_cell_formula(xml, f"B{enabled_row}") or "")
+        params = block_sheet.group(1) if block_sheet else "'Вводные'"
+        spaces = f"({params}!${under[0]}${under[1:]}+{params}!${over[0]}${over[1:]})"
+        xml, done = _v4_set_or_insert_cell(
+            xml, f"A{units_row}", text="Приобъектный паркинг — мест")
+        if not done:
+            missing.append(f"паркинг объектов: подпись A{units_row}")
+        xml, done = _v4_set_or_insert_cell(
+            xml, f"B{units_row}",
+            formula=f'IF($B${enabled_row}="Да",{spaces},0)')
+        if not done:
+            missing.append(f"паркинг объектов: мест B{units_row}")
+        xml, done = _v4_set_or_insert_cell(
+            xml, f"A{revenue_row}", text="Приобъектный паркинг — выручка")
+        if not done:
+            missing.append(f"паркинг объектов: подпись A{revenue_row}")
+        # Продаются места тем же профилем, что и сам объект: строки 19 и 21 —
+        # нормированные веса до и после РВЭ, они уже посчитаны блоком.
+        xml, done = _v4_set_or_insert_cell(
+            xml, f"B{revenue_row}", formula=f"SUM(D{revenue_row}:DS{revenue_row})")
+        if not done:
+            missing.append(f"паркинг объектов: итог B{revenue_row}")
+        # Помесячно места продаются тем же профилем, что и метры объекта: доля
+        # проданного за месяц берётся из его же строки объёма. Второй набор
+        # весов однажды разошёлся бы с первым, и обе кривые выглядели бы верными.
+        # Цена — цена машино-места с тем же ростом, что у объекта: формула цены
+        # берётся из его строки и в ней подменяется базовая ставка. Написать
+        # свою значило бы завести вторую реализацию цены.
+        written = 0
+        for index in range(120):
+            column = _v4_column_letter(4 + index)
+            price = _v4_cell_formula(xml, f"{column}{price_row}")
+            if price is None:
+                break
+            own, swapped = re.subn(
+                r"\$%s\$%s\b" % (price_cell[0], price_cell[1:]), "$B$61", price)
+            if not swapped:
+                missing.append(f"паркинг объектов: цена {column}{price_row} не опознана")
+                break
+            xml, ok_units = _v4_set_or_insert_cell(
+                xml, f"{column}{units_row}",
+                formula=(f"IF($B${volume_row}=0,0,$B${units_row}"
+                         f"/$B${volume_row}*{column}{volume_row})"))
+            xml, ok_value = _v4_set_or_insert_cell(
+                xml, f"{column}{revenue_row}",
+                formula=f"{column}{units_row}*({own})/1000")
+            if not (ok_units and ok_value):
+                missing.append(f"паркинг объектов: месяц {column} блока {label}")
+                break
+            written += 1
+        if written < 100:
+            missing.append(f"паркинг объектов: у блока {label} расписано {written} месяцев")
+        # Маркетинг и расходы на продажи считаются от ВСЕЙ выручки объекта:
+        # в шаблоне они умножают строку продаж метров, а места продаются
+        # своей строкой. Не дописать её значит показать места бесплатными в
+        # продаже — на проверочном проекте это 23,1 млн ₽ EBITDA из ниоткуда.
+        # Те же деньги обязаны дойти и до эскроу: покрытие эскроу решает
+        # ступень ставки ПФ, и выручка, не попавшая на счёт, удешевляет
+        # финансирование ровно на свою долю покрытия. Строки 25–27 — приход на
+        # эскроу, прямой приход после РВЭ и раскрытие.
+        # Раскрытие эскроу (строка 27) в список не входит: оно копит строку
+        # прихода, а не считается от продаж, и деньги мест уже внутри неё.
+        # Тронуть её значило бы посчитать их дважды, а пожаловаться на
+        # «неопознанную формулу» — закричать там, где всё на месте.
+        for cost_row in (revenue_row - 8, revenue_row - 7,
+                         revenue_row - 4, revenue_row - 3):
+            for index in range(120):
+                column = _v4_column_letter(4 + index)
+                formula = _v4_cell_formula(xml, f"{column}{cost_row}")
+                if formula is None:
+                    break
+                if f"{column}{volume_row + 2}" not in formula:
+                    missing.append(f"паркинг объектов: {column}{cost_row} не опознана")
+                    break
+                if f"{column}{revenue_row}" in formula:
+                    continue
+                xml, done = _v4_set_cell(
+                    xml, f"{column}{cost_row}",
+                    formula=formula.replace(f"{column}{volume_row + 2}",
+                                            f"({column}{volume_row + 2}+{column}{revenue_row})"))
+                if not done:
+                    missing.append(f"паркинг объектов: {column}{cost_row}")
+                    break
+        # CAPEX своего подземного — по подземной ставке и теми же множителями
+        # инфляции очереди, что и остальной CAPEX объекта.
+        capex = _v4_cell_formula(xml, capex_cell)
+        if capex is None:
+            missing.append(f"паркинг объектов: CAPEX {capex_cell} не найден")
+            continue
+        sheet = re.search(r"('[^']+')!", capex)
+        params_name = sheet.group(1) if sheet else "'Вводные'"
+        under_ref = f"{params_name}!${under[0]}${under[1:]}"
+        area_ref = f"{params_name}!$K$158"
+        rate_ref = f"{params_name}!$B$45"
+        # Опознаём формулу по её базе: у офисов это $B$12, у ТЦ — $B$40, то есть
+        # строка «Расчётная общая площадь» СВОЕГО блока. Зашитый номер одной из
+        # них принял бы чужую формулу за неопознанную.
+        own_gba = f"$B${enabled_row + 5}"
+        if f"${gba_cell[0]}${gba_cell[1:]}" not in capex and own_gba not in capex:
+            missing.append(f"паркинг объектов: формула CAPEX {capex_cell} не опознана")
+            continue
+        addition = (f'+IF($B${enabled_row}="Да",{under_ref}*{area_ref}*{rate_ref}'
+                    f"/1000*{params_name}!$H$6"
+                    f"*INDEX({params_name}!$T$88:$T$91,$B${enabled_row + 1})"
+                    f"*INDEX({params_name}!$AH$88:$AH$91,$B${enabled_row + 1}),0)")
+        xml, done = _v4_set_cell(xml, capex_cell, formula=capex + addition)
+        if not done:
+            missing.append(f"паркинг объектов: CAPEX {capex_cell}")
+    return xml
+
+
+def _v4_object_parking_allocation(xml: str, missing: list[str]) -> str:
+    """Выручка мест доезжает до очередей той же дверью, что и сами объекты.
+
+    Блок аллокации — единственный путь объектов в CF: не расширить его значит
+    построить паркинг и не показать его нигде. Правится только строка выручки:
+    CAPEX паркинга уже внутри CAPEX объекта, а эскроу и раскрытие считаются от
+    выручки строками того же блока.
+    """
+    added = 0
+    for row in range(92, 123):
+        found = re.search(r'<x:row r="%d"(?:[ ][^>]*)?>(.*?)</x:row>' % row, xml, re.S)
+        if not found:
+            continue
+        # Строку выручки отбирает сам образец формулы, а не подпись: подписи
+        # шаблона лежат общими строками, и `<x:t>` в ячейке нет вовсе — проверка
+        # по подписи не срабатывала НИ РАЗУ, а счётчик при этом рапортовал успех.
+        def extend(match: "re.Match[str]") -> str:
+            formula = html.unescape(match.group(1))
+            # Продажи объектов стоят в формуле парами «очередь — ячейка»;
+            # места приписываются к своему объекту его же условием очереди.
+            for _, enabled_row, _, revenue_row, *_rest in _V4_OBJECT_PARKING:
+                queue_cell = f"$B${enabled_row + 1}"
+                anchor_row = revenue_row - 9 if revenue_row in (33, 61) else None
+                if anchor_row is None:
+                    continue
+                target = re.search(
+                    r"IF\(%s=(\d+),([A-Z]{1,3})%d,0\)" % (re.escape(queue_cell), anchor_row),
+                    formula)
+                if not target:
+                    return match.group(0)
+                queue, column = target.group(1), target.group(2)
+                formula = formula.replace(
+                    target.group(0),
+                    target.group(0) + f",IF({queue_cell}={queue},{column}{revenue_row},0)")
+            return "<x:f>" + xml_escape(formula) + "</x:f>"
+
+        before = found.group(1)
+        body = re.sub(r"<x:f>(.*?)</x:f>", extend, before, flags=re.S)
+        added += sum(1 for _ in re.finditer(r"IF\(\$B\$(?:8|36)=\d+,[A-Z]{1,3}(?:33|61),0\)", body))
+        xml = xml[:found.start(1)] + body + xml[found.end(1):]
+    if added < 4 * 100:
+        missing.append(f"паркинг объектов: аллокация расширена лишь в {added} ячейках")
     return xml
 
 
@@ -17532,38 +17800,6 @@ V4_INPUTS_NOT_IN_BOOK: dict[str, str] = {
     "parking_design_mode": (
         "край норматива Московской области — выбор внутри нормативного расчёта; "
         "в книгу приходит его результат"),
-    "object_parking_area_per_space_sqm": (
-        "площадь на место приобъектного паркинга — множитель нормативного "
-        "расчёта; в книгу приходят его метры строкой ТЭП и продаваемая "
-        "объекта, уже уменьшенная на места первых этажей"),
-    "ground_commercial_parking_under_spaces": (
-        "сколько мест коммерции 1 этажа строится в своём подземном; в книгу приходит "
-        "их площадь строкой подземного приобъектного паркинга ТЭП"),
-    "ground_commercial_parking_over_spaces": (
-        "сколько мест коммерции 1 этажа стоит на первых этажах объекта; ГНС объекта от "
-        "этого не меняется — этажи и так его, — а продаваемая приходит в "
-        "книгу уже уменьшенной на их метры"),
-    "offices_parking_under_spaces": (
-        "сколько мест офисов строится в своём подземном; в книгу приходит "
-        "их площадь строкой подземного приобъектного паркинга ТЭП"),
-    "offices_parking_over_spaces": (
-        "сколько мест офисов стоит на первых этажах объекта; ГНС объекта от "
-        "этого не меняется — этажи и так его, — а продаваемая приходит в "
-        "книгу уже уменьшенной на их метры"),
-    "retail_parking_under_spaces": (
-        "сколько мест ТЦ и ОСЗ строится в своём подземном; в книгу приходит "
-        "их площадь строкой подземного приобъектного паркинга ТЭП"),
-    "retail_parking_over_spaces": (
-        "сколько мест ТЦ и ОСЗ стоит на первых этажах объекта; ГНС объекта от "
-        "этого не меняется — этажи и так его, — а продаваемая приходит в "
-        "книгу уже уменьшенной на их метры"),
-    "sports_parking_under_spaces": (
-        "сколько мест ФОКа строится в своём подземном; в книгу приходит "
-        "их площадь строкой подземного приобъектного паркинга ТЭП"),
-    "sports_parking_over_spaces": (
-        "сколько мест ФОКа стоит на первых этажах объекта; ГНС объекта от "
-        "этого не меняется — этажи и так его, — а продаваемая приходит в "
-        "книгу уже уменьшенной на их метры"),
 }
 # Ячейки, в которых значение ПОКАЗАНО, но книгой не читается ни одной
 # формулой. Это не ввод: правка здесь не изменит ничего, а выглядит рабочей —
@@ -17609,24 +17845,6 @@ _V4_ENGINE_ONLY_ROWS: tuple[tuple[str, str, str], ...] = (
     ("parking_k1", "К1 — доступность рельсового каркаса", "Места приходят в строку ТЭП"),
     ("parking_k2", "К2 — деловая активность района", "Места приходят в строку ТЭП"),
     ("parking_design_mode", "Край норматива (Московская область)", "Места приходят в строку ТЭП"),
-    ("object_parking_area_per_space_sqm", "Площадь на 1 место приобъектного паркинга",
-     "Метры приходят в строку ТЭП"),
-    ("ground_commercial_parking_under_spaces", "Коммерция 1 эт. — мест в своём подземном",
-     "Площадь приходит в строку ТЭП"),
-    ("ground_commercial_parking_over_spaces", "Коммерция 1 эт. — мест на первых этажах",
-     "Продаваемая приходит уже уменьшенной"),
-    ("offices_parking_under_spaces", "Офисы — мест в своём подземном",
-     "Площадь приходит в строку ТЭП"),
-    ("offices_parking_over_spaces", "Офисы — мест на первых этажах",
-     "Продаваемая приходит уже уменьшенной"),
-    ("retail_parking_under_spaces", "ТЦ / ОСЗ — мест в своём подземном",
-     "Площадь приходит в строку ТЭП"),
-    ("retail_parking_over_spaces", "ТЦ / ОСЗ — мест на первых этажах",
-     "Продаваемая приходит уже уменьшенной"),
-    ("sports_parking_under_spaces", "ФОК — мест в своём подземном",
-     "Площадь приходит в строку ТЭП"),
-    ("sports_parking_over_spaces", "ФОК — мест на первых этажах",
-     "Продаваемая приходит уже уменьшенной"),
 )
 
 
@@ -17858,6 +18076,13 @@ def build_project_workbook(
     Пишутся только значения листа «Вводные»; весь расчёт — формулы книги.
     Ячейка без соответствия уходит в meta["missing"], а не молчит.
     """
+    # Книга считает по ТОМУ ЖЕ ТЭП, что и движок: приобъектный паркинг
+    # раскладывается по строкам объектов здесь же. Без этого строки приходят
+    # без своей подземной площади и без мест, и книга строит проект, которого
+    # движок не считал, — то есть ровно два достоверных на вид документа.
+    tep = copy.deepcopy(tep or {})
+    apply_object_parking(inputs, tep)
+
     x = {**DEFAULT_INPUTS, **{k: v for k, v in (inputs or {}).items() if not str(k).startswith("_")}}
     # Лимиты финансирования — из движка: книжная пропорция от CAPEX-блоков
     # занижала лимит ПФ очереди с офисами, и плата за невыбранный лимит
@@ -17923,6 +18148,7 @@ def build_project_workbook(
     # `put` умеет только заменять существующую ячейку, а строк 121–140 в
     # шаблоне нет вовсе.
     xml = _v4_sports_inputs_block(xml, missing)
+    xml = _v4_object_parking_input_labels(xml, missing)
 
     def num_row(row: dict[str, Any] | None, field: str) -> float:
         try:
@@ -17988,6 +18214,27 @@ def build_project_workbook(
         vri_gross = 0.0
         missing.append("land_rights_cost_mln: не число")
     relief_amount, _net = vri_relief(x, vri_gross)
+    # Книга несёт ПРИМЕНЁННОЕ размещение, а не желаемое. Оба поля пустые
+    # значат «не задано», и движок ставит весь норматив в свой подземный —
+    # записать в книгу нули значило бы показать ей проект без паркинга, то
+    # есть соврать. Та же развилка была у переноса долга между очередями:
+    # ячейка несёт решение, которое СОСТОЯЛОСЬ.
+    _applied_parking = parking_demand(x, tep)
+    for _item in _applied_parking.get("rows") or []:
+        _prefix = {"ground_commercial": "ground_commercial", "offices": "offices",
+                   "standalone_retail": "retail", "sports": "sports"}.get(
+                       _item.get("tep_key"))
+        if not _prefix:
+            continue
+        for _kind, _field in (("under", "under_spaces"), ("over", "over_spaces")):
+            _coord = _V4_INPUT_CELLS.get(f"{_prefix}_parking_{_kind}_spaces")
+            if not _coord:
+                continue
+            xml, _done = _v4_set_or_insert_cell(
+                xml, _coord, number=int(_item.get(_field) or 0))
+            if not _done:
+                missing.append(f"паркинг объектов: применённое размещение {_coord}")
+
     put(_V4_INPUT_CELLS["vri_relief_mln"], number=round(relief_amount / 1_000_000, 6),
         label="льгота по плате за ВРИ (движковая: доля, сумма и зачёт вместе)")
 
@@ -18320,6 +18567,8 @@ def build_project_workbook(
     objects_sheet_path = _v4_sheet_path(source, "ОБЪЕКТЫ")
     objects_xml = _v4_sports_object_block(
         source.read(objects_sheet_path).decode("utf-8"), missing)
+    objects_xml = _v4_object_parking_block(objects_xml, missing)
+    objects_xml = _v4_object_parking_allocation(objects_xml, missing)
     sales_sheet_path = _v4_sheet_path(source, "Продажи")
     sales_xml = source.read(sales_sheet_path).decode("utf-8")
     if social_monthly_by_phase is not None and social_base_row is not None:
@@ -18858,7 +19107,12 @@ def build_project_workbook(
             label="ГНС коммерции")
         # Не «ГНС подземная»: ГНС — наземная площадь здания, а под землёй
         # наружных стен не бывает. Здесь площадь подземного этажа.
-        put(f"Y{row}", number=num_row(crow.get("underground_parking"), "gns"),
+        # Свой подземный паркинг встроенной коммерции строится тем же домом:
+        # коммерция первого этажа — это МКД, и в движке её метры стоят в
+        # `core_under_gns`. Не прибавить их здесь значит недосчитать книге
+        # подземную стройку ровно на приобъектный паркинг коммерции.
+        put(f"Y{row}", number=(num_row(crow.get("underground_parking"), "gns")
+                               + num_row(crow.get("ground_commercial"), "under_gns")),
             label="Подземная площадь")
         put(f"Z{row}", number=num_row(crow.get("apartments"), "saleable"),
             label="прод. квартир")
@@ -18866,7 +19120,12 @@ def build_project_workbook(
             label="прод. коммерции")
         # Строится весь паркинг (ГНС в Y), а продаются только не гостевые места:
         # AB кормит «Продажи», поэтому здесь стоит проданное, а не построенное.
-        put(f"AB{row}", number=underground_saleable_spaces(crow.get("underground_parking") or {}),
+        # Места приобъектного паркинга встроенной коммерции продаются тем же
+        # календарём и по той же цене, что и места жителей, — движок кладёт их
+        # в свой продукт, книга к объёму паркинга очереди. Гостевых у них нет:
+        # приобъектная норма и есть места для посетителей нежилья.
+        put(f"AB{row}", number=(underground_saleable_spaces(crow.get("underground_parking") or {})
+                                + num_row(crow.get("ground_commercial"), "parking_units")),
             label="паркинг к продаже, шт.")
         # Кладовые — то же правило, что у паркинга: строится всё, продаётся
         # непереданное. AC кормит «Продажи».
