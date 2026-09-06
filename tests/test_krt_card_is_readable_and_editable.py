@@ -131,10 +131,20 @@ def test_the_verdict_stays_open():
     page = auctions_page()
     start = page.index("function selectKrt")
     card = page[start:page.index("\nfunction ", start + 10)]
-    head = card[:card.index("details class=\"fold\"")]
+    # «Не под катом» — это НЕ «до первой складки»: с 06.09.2026 нормативные
+    # складки стоят выше модели и балла (порядок назвал владелец), и прежний
+    # срез «всё до первого <details>» падал на верной перестановке, ничего не
+    # говоря о том, спрятан балл или нет. Считаем то, что утверждаем: вызов не
+    # лежит внутри раскрытия.
+    def not_folded(mark: str) -> bool:
+        at = card.index(mark)
+        opened = card.count("<details", 0, at)
+        closed = card.count("</details>", 0, at)
+        return opened == closed
     # Балл рисует krtScoreBoxHtml (один источник чисел для списка и карточки);
-    # шапка карточки обязана его звать, а он — называть оценку.
-    assert "krtScoreBoxHtml(" in head, "балл уехал под кат"
+    # карточка обязана его звать, а он — называть оценку.
+    assert "krtScoreBoxHtml(" in card, "балл из карточки пропал"
+    assert not_folded("krtScoreBoxHtml("), "балл уехал под кат"
     box_start = page.index("function krtScoreBoxHtml")
     box = page[box_start:page.index("\nfunction ", box_start + 10)]
     assert "Балл площадки" in box
@@ -142,7 +152,8 @@ def test_the_verdict_stays_open():
     # вызов и содержимое самого паспорта: держать здесь текст соседней строки
     # значит падать на всякой перестановке карточки, ничего не сказав о том,
     # спрятаны метры или нет.
-    assert "krtPassport(x)" in head, "паспорт площадки уехал под кат"
+    assert "krtPassport(x)" in card, "паспорт площадки из карточки пропал"
+    assert not_folded("krtPassport(x)"), "паспорт площадки уехал под кат"
     # Скобка обязательна: рядом объявлена krtPassportValue, и без неё срез
     # берёт соседнюю функцию и падает не о том.
     passport_at = page.index("function krtPassport(")
@@ -150,7 +161,7 @@ def test_the_verdict_stays_open():
     for named in ("Жильё", "Всего построить", "Площадь"):
         assert named in passport, named
     # И первым в карточке стоит ответ на «можно ли войти», а не оценка.
-    assert head.index("krtEntryHead(x)") < head.index("krtScoreBoxHtml("), \
+    assert card.index("krtEntryHead(x)") < card.index("krtScoreBoxHtml("), \
         "оценка встала раньше вопроса о входе"
 
 
