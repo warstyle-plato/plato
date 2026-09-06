@@ -40219,7 +40219,6 @@ function groupPeek(name,fields){
 // перерисовывает список, а устаревшее число в заголовке хуже пустого.
 function refreshGroupPeeks(){
  refreshScheduleTotals();
- renderObjectParkingCheck();
  document.querySelectorAll('details[data-group]').forEach(det=>{
   const grp=FIELD_GROUPS.find(g=>g[0]===det.dataset.group);if(!grp)return;
   const sum=det.querySelector('summary');if(!sum)return;
@@ -42535,6 +42534,11 @@ function pfRveWarningHtml(r){
  return `<div style="margin-bottom:6px"><b>${title}</b></div>`
   +lines.map(line=>`<div style="margin-top:4px">${line}</div>`).join('');
 }
+// Плашка следует за РЕЗУЛЬТАТОМ, а не за правкой поля: её зовёт `renderResult`,
+// и только он. Перерисовка полей без свежего расчёта оставляет её пустой — это
+// верно, а не досадно: прежний вердикт под новыми числами читался бы как
+// посчитанный, а «устаревшее число хуже пустого» здесь то же правило, что у
+// сводки в заголовке группы.
 // Три ответа, зелёный один: сходится с нормативом / не сходится на столько-то /
 // «сверить не с чем» — норматив не посчитан. Третий отдельный по той же причине,
 // что у сверки графика платежей за покупку: «сходится» на непосчитанной базе
