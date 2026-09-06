@@ -119,15 +119,64 @@ def test_a_room_without_a_price_leaves_the_weight_instead_of_averaging_it() -> N
 
 
 def test_the_note_answers_the_question_about_the_mix() -> None:
-    note = verdict.rooms_note(_block())
+    """Вывод отвечает на вопрос словами, а не именами величин.
+
+    «Ничего не понятно в выводах по комнатности, не русским понятным языком
+    описано» (владелец, 05.09.2026). Прежний текст говорил «из этого набором
+    квартир объясняется −12,4 %», и читателю приходилось складывать в уме
+    проценты с разными знаками. Проверяется не оборот речи, а то, что в тексте
+    названы ОБА сравниваемых метра и наш же метр на наборе соседей: без
+    третьего числа разложение проверить нечем.
+    """
+    block = _block()
+    mix = block["subject"]["mix"]
+    note = verdict.rooms_note(block)
     text = note["text"]
-    assert "набором квартир объясняется" in text, text
+    for value in (mix["own_at_own_mix"], mix["peers_at_peers_mix"], mix["own_at_peers_mix"]):
+        assert verdict._num(value) in text, (value, text)
+    assert "набор" in text, text
     # Вымывание названо своим числом, а не словом «вымывается».
     assert "% продаж при" in text, text
     assert note["tone"] in {verdict.TONE_WATCH, verdict.TONE_FLAT}
 
     empty = verdict.rooms_note({"subject": {}, "peers": {}})
     assert "не раскрыта" in empty["text"]
+
+
+def test_the_note_names_the_winner_of_the_two_causes() -> None:
+    """Три случая — набор, цены и оба — говорятся разными фразами.
+
+    Одна фраза на все три означала бы, что вывод не сделан: читатель узнаёт из
+    неё только то, что мы посчитали, а не что получилось.
+    """
+    def say(own: float, cross: float, peers: float) -> str:
+        return " ".join(
+            verdict._mix_lines(
+                {
+                    "own_at_own_mix": own,
+                    "own_at_peers_mix": cross,
+                    "peers_at_peers_mix": peers,
+                    "gap_pct": round((own / peers - 1) * 100, 1),
+                    "mix_pct": round((cross / own - 1) * 100, 1),
+                    "level_pct": round((cross / peers - 1) * 100, 1),
+                }
+            )
+        )
+
+    by_mix = say(729_200, 639_000, 639_000)
+    assert "Дело в наборе" in by_mix, by_mix
+    assert "639 000" in by_mix and "729 200" in by_mix, by_mix
+
+    by_price = say(800_000, 796_000, 640_000)
+    assert "Набор тут ни при чём" in by_price, by_price
+    assert "24,4 %" in by_price, by_price
+
+    by_both = say(830_000, 742_000, 640_000)
+    assert "Часть разницы делает набор" in by_both, by_both
+    assert "Остальное — цены" in by_both, by_both
+
+    level = say(642_000, 641_000, 640_000)
+    assert "вровень" in level, level
 
 
 def test_the_notes_exist_for_every_new_section() -> None:
@@ -179,7 +228,10 @@ def test_the_block_is_drawn_with_bars_in_a_real_browser(tmp_path) -> None:
     # Картинка стоит НАД своей таблицей: в колоде чертится та таблица, над
     # которой стоит график.
     assert drawn.index("<svg") < drawn.index("<table"), "график встал под таблицу"
-    # И числа разложения — на плитках, а не только в тексте вывода.
-    assert "из разрыва — набор квартир" in drawn
-    assert "из разрыва — уровень цен" in drawn
-    assert "набором квартир объясняется" in drawn
+    # И числа разложения — на плитках, а не только в тексте вывода. Подписи
+    # плиток названы вопросом, а не именем величины: «из разрыва — уровень цен»
+    # читателю пришлось бы расшифровывать.
+    assert "сколько из разницы даёт набор квартир" in drawn
+    assert "сколько дают сами цены" in drawn
+    assert "если бы набор был как у соседей" in drawn
+    assert "Дело в наборе" in drawn

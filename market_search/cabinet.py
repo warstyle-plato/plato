@@ -1594,7 +1594,7 @@ function roomsTable(b){
     +'<tr><th>Комнатность</th><th class="num">У нас продано</th><th class="num">У нас в остатке</th>'
     +'<th class="num">У соседей продано</th><th class="num">У соседей в остатке</th>'
     +'<th class="num">Наш прайс, ₽/м²</th><th class="num">Прайс соседей</th>'
-    +'<th class="num">Мы к ним</th></tr>'
+    +'<th class="num">Мы к соседям</th></tr>'
     +names.map(k=>{const a=ours[k]||{}, c=theirs[k]||{};
       return `<tr><td>${esc(a.title||c.title||k)}</td>`
         +`<td class="num">${cell(a.sold_share_pct)}</td><td class="num">${cell(a.rem_share_pct)}</td>`
@@ -1668,11 +1668,14 @@ function blockCard(b,ctx){
       +cell(num(s.bands_deals)||'—','сделок в полосах')
       +cell(p.projects||'—','соседей с комнатностью')
       // Разложение разрыва — ответ на «а не в наборе ли квартир дело»: наш же
-      // прайс, посчитанный по набору соседей, отделяет структуру от уровня цен.
-      +(m.own_at_own_mix?cell(num(m.own_at_own_mix)+' ₽/м²','наш прайс по комнатности'):'')
-      +(m.peers_at_peers_mix?cell(num(m.peers_at_peers_mix)+' ₽/м²','у соседей'):'')
-      +(m.mix_pct===undefined?'':cell(pct(m.mix_pct),'из разрыва — набор квартир'))
-      +(m.level_pct===undefined?'':cell(pct(m.level_pct),'из разрыва — уровень цен'));
+      // прайс, посчитанный по набору соседей, отделяет состав продаж от цен.
+      // Подпись называет плитку словами вопроса, а не именем величины: «из
+      // разрыва — уровень цен» читателю пришлось бы расшифровывать.
+      +(m.own_at_own_mix?cell(num(m.own_at_own_mix)+' ₽/м²','наш метр'):'')
+      +(m.own_at_peers_mix?cell(num(m.own_at_peers_mix)+' ₽/м²','наш метр, если бы набор был как у соседей'):'')
+      +(m.peers_at_peers_mix?cell(num(m.peers_at_peers_mix)+' ₽/м²','метр у соседей'):'')
+      +(m.mix_pct===undefined?'':cell(pct(m.mix_pct),'сколько из разницы даёт набор квартир'))
+      +(m.level_pct===undefined?'':cell(pct(m.level_pct),'сколько дают сами цены'));
   } else if(b.code==='payment'){
     kv=cell(s.mortgage_pct===undefined?'—':num(s.mortgage_pct,1)+' %','ипотека у проекта')
       +cell(p.median===undefined||p.median===null?'—':num(p.median,1)+' %','медиана соседей')

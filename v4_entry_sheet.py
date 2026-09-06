@@ -301,23 +301,21 @@ def chrome_styles(sheet: str, styles: str) -> dict[str, int | None]:
             "label": label, "header": min(heads) if heads else None}
 
 
-def sheet_prelude(sheet: str, freeze: int) -> str:
-    """Ширины колонок и закреплённая шапка — до `<x:sheetData>`.
+def _pane_xml(freeze: int) -> str:
+    """Закреплённая шапка листа — до `<x:sheetData>`.
 
-    Ширины берутся у шаблонного листа ВЕРБАТИМ: колонки на листе ввода те же
-    самые (ячейка переезжает строкой, а не колонкой), и своя ширина была бы
-    вторым ответом на «сколько места нужно подписи». Без этого лист открывается
-    восемью символами на колонку — единственный такой лист в книге, — и все
-    названия строк обрезаны.
+    Ширины сюда не идут: их отдаёт `_columns_xml`, и второй ответ на «сколько
+    места нужно подписи» разошёлся бы с первым молча. Здесь только то, чего у
+    листа не было вовсе: на ста тридцати строках шапка уезжает вверх, и человек
+    правит значение, не видя, чьё оно.
 
     Порядок тегов в схеме листа обязателен: sheetViews идёт ПЕРЕД cols, иначе
-    Excel объявляет книгу повреждённой.
+    Excel объявляет книгу повреждённой, а на экране это неотличимо от «книга не
+    собралась».
     """
-    pane = (f'<x:sheetViews><x:sheetView workbookViewId="0">'
+    return (f'<x:sheetViews><x:sheetView workbookViewId="0">'
             f'<x:pane ySplit="{freeze}" topLeftCell="A{freeze + 1}" '
             f'activePane="bottomLeft" state="frozen"/></x:sheetView></x:sheetViews>')
-    cols = re.search(r"<x:cols>.*?</x:cols>", sheet, re.S)
-    return pane + (cols.group(0) if cols else "")
 
 
 def _header_styles(styles: str) -> set[int]:
@@ -458,6 +456,44 @@ def plan(sheet: str, styles: str) -> dict[str, Any]:
             "restyle": restyle, "styles": smap, "headers": headers}
 
 
+
+_COLS = re.compile(r"<x:cols>.*?</x:cols>", re.S)
+_MERGE = re.compile(r'<x:mergeCell ref="([A-Z]+)(\d+):([A-Z]+)(\d+)"\s*/>')
+
+
+def _columns_xml(sheet: str) -> str:
+    """Ширины колонок — из того же листа, а не придуманные заново.
+
+    Без них подписи режутся шириной по умолчанию: «СТОИМОСТЬ СТРОИТЕЛЬСТВА»
+    показывается как «СТОИМОС», а ключ API не виден вовсе. Лист, на котором
+    нельзя прочитать имя поля, не выполняет того, ради чего заведён.
+    """
+    got = _COLS.search(sheet)
+    return got.group(0) if got else ""
+
+
+def _merges_xml(sheet: str, moved_rows: dict[int, int]) -> str:
+    """Объединения переносятся вместе со строками, на новые их номера.
+
+    Шаблон пишет заголовок раздела в ЧЕТЫРЕ ячейки подряд одним и тем же
+    текстом и прячет три из них объединением. Потерянное объединение не
+    оставляет пустоты — оно выпускает наружу три копии заголовка, каждая
+    обрезанная по своей колонке. Выглядит как поломка вёрстки, а на деле
+    потерян перенос.
+    """
+    kept = []
+    for left, first, right, last in _MERGE.findall(sheet):
+        if first != last:
+            continue
+        target = moved_rows.get(int(first))
+        if not target:
+            continue
+        kept.append(f'<x:mergeCell ref="{left}{target}:{right}{target}"/>')
+    if not kept:
+        return ""
+    return f'<x:mergeCells count="{len(kept)}">' + "".join(kept) + "</x:mergeCells>"
+
+
 def build(sheet: str, styles: str) -> tuple[str, str, dict[str, Any]]:
     """Лист ввода и расчётный лист: значения туда, читалки сюда.
 
@@ -471,6 +507,7 @@ def build(sheet: str, styles: str) -> tuple[str, str, dict[str, Any]]:
     chrome = chrome_styles(sheet, styles)
     AUTHORED.clear()
     moved: dict[str, str] = {}
+    moved_rows: dict[int, int] = {}
     out: list[str] = []
     at = 1
 
@@ -496,6 +533,7 @@ def build(sheet: str, styles: str) -> tuple[str, str, dict[str, Any]]:
                 parts.append(f'<x:c r="{target}"{cell["attrs"]}>{cell["body"]}</x:c>')
         if parts:
             out.append(f'<x:row r="{at}">' + "".join(parts) + "</x:row>")
+            moved_rows[number] = at
             at += 1
 
     at += 1
@@ -525,10 +563,15 @@ def build(sheet: str, styles: str) -> tuple[str, str, dict[str, Any]]:
         out.append(f'<x:row r="{at}">' + "".join(parts) + "</x:row>")
         at += 1
 
+    # Порядок частей в листе задан схемой: cols перед sheetData, mergeCells
+    # после. Переставишь — Excel объявит книгу повреждённой, а не поправит.
     entry_xml = ('<?xml version="1.0" encoding="utf-8"?>'
                  '<x:worksheet xmlns:x="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
-                 + sheet_prelude(sheet, 3)
-                 + f'<x:sheetData>{"".join(out)}</x:sheetData></x:worksheet>')
+                 + _pane_xml(3)
+                 + _columns_xml(sheet)
+                 + f'<x:sheetData>{"".join(out)}</x:sheetData>'
+                 + _merges_xml(sheet, moved_rows)
+                 + '</x:worksheet>')
 
     params = sheet
     for source, target in moved.items():
