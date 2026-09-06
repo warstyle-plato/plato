@@ -2445,7 +2445,7 @@ function selectKrt(x){state.selectedKrt=x;const sc=krtScore(x),fit=sc.fit,cached
  +`<div class="actions minor"><button id="krtPlato">Рекомендация Платона</button><button id="krtShare">Поделиться</button><button id="krtSource">${esc(krtSource(x).open)}</button></div>`
  +`<div id="krtPlatoBox"></div>`
  +`<div id="krtShareNote" class="notice" style="display:none"></div>`;
-// Карточка — своё окно прокрутки (`.side` со своим `max-height`), и она
+ // Карточка — своё окно прокрутки (`.side` со своим `max-height`), и она
  // помнит, докуда её дочитали. Нажатие на соседнюю строку меняет содержимое,
  // а прокрутку оставляло: новая карточка открывалась серединой, имени
  // площадки в окне не было вовсе, и это читалось как «жму и не могу открыть
