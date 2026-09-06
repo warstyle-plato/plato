@@ -535,7 +535,15 @@ def _programme(
     # Сходимость объявленного городом. Расхождение называется, а не
     # выравнивается: три числа карточки — его данные, и подгонять их под сумму
     # значит выдать нашу правку за его объём.
-    declared_sum = housing + nonresidential + business
+    # Вычтенное НАМИ в расхождение города не записывается. Коммунальный объём
+    # берётся из решения и вычитается из нежилого выше — а баланс считался по
+    # числам ПОСЛЕ этой правки и объявлял её несходимостью карточки: на
+    # Варшавском ш., вл. 37 «разница 167 788 м²» ровно равна тому, что мы сами
+    # убрали, и стояла под именем города (владелец, 06.09.2026: «не объединено
+    # выше?»). Своя правка, названная чужой ошибкой, — худший вид молчания:
+    # число выглядит находкой в источнике.
+    utility_named = _number(volumes.get("utility_sqm")) if volumes_taken else 0.0
+    declared_sum = housing + nonresidential + business + utility_named
     difference = total - declared_sum if total > 0 else 0.0
     return {
         "city": {
@@ -543,6 +551,9 @@ def _programme(
             "housing_gfa_sqm": housing,
             "nonresidential_gfa_sqm": nonresidential,
             "business_gfa_sqm": business,
+            # Строка разложения, а не примечание: этот объём город требует
+            # построить, и без него сумма не сходится с его же итогом.
+            "utility_gfa_sqm": round(utility_named, 1),
             "district": district,
             "zone_two": zone_two,
             "area_ha": _number(project.get("area_ha")),

@@ -74,8 +74,19 @@ def test_the_bot_keeps_waiting_in_its_own_thread() -> None:
 
 
 def test_the_page_takes_the_ticket_and_polls() -> None:
+    """Долгий ответ забирают по номеру запуска, а не держат соединением.
+
+    Прежде проверка брала тело `platoAnswer` со страницы кабинета — то есть
+    держала МЕСТО. Опрос объявлен один раз (`plato_question`), потому что
+    копий его было три и расходились они молча: в кабинете показывалась
+    стадия и секунды, в торгах нет. Утверждение то же — держим его.
+    """
+    import plato_question
+
     page = (ROOT / "market_search" / "cabinet.py").read_text()
-    body = page[page.index("async function platoAnswer("):]
-    body = body[:body.index("\n}")]
+    assert "platoAsk(" in page, "кабинет ходит мимо общего пути"
+    body = plato_question.SCRIPT[
+        plato_question.SCRIPT.index("async function platoAsk("):]
+    body = body[:body.index("\n}\n")]
     assert "/agent/result/" in body, "за долгим ответом ходят по номеру запуска"
     assert "d.trace_id" in body

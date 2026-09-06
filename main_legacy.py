@@ -72,7 +72,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.22.28"
+VERSION = "0.22.43"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -3189,11 +3189,21 @@ def _land_fetch_json(
             ) as response:
                 raw = response.read(_LAND_LOOKUP_RESPONSE_LIMIT + 1)
     except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            return None
+        # 404 молча превращался в «ничего не найдено», и это была наша половина
+        # тёмного НСПД: 06.09.2026 портал отвечал 404 по ВСЕМ своим адресам —
+        # поиск, слои карты, GetFeatureInfo, — а продукт на всех поверхностях
+        # писал «участок не найден», и выглядело это как плохо введённый адрес
+        # (экран владельца). Ни один из вызовов здесь не адресует объект по
+        # идентификатору: это поиск, WMS и геокодеры, и у них 404 означает, что
+        # адреса нет у СЕРВИСА, а не что по запросу нет результатов. Отсутствие
+        # ответа внешнего источника нельзя показывать как его отрицательный
+        # ответ — правило старое, а эта ветка его обходила.
         raise HTTPException(
             status_code=400 if 400 <= exc.code < 500 else 502,
-            detail=f"{service}: {_external_error_message(exc)}",
+            detail=(f"{service}: адрес сервиса ответил 404 — сервис не отдал данные. "
+                    "Это не ответ «объекта нет». О своём состоянии портал "
+                    "сообщает у себя на странице."
+                    if exc.code == 404 else f"{service}: {_external_error_message(exc)}"),
         ) from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise HTTPException(
@@ -5707,6 +5717,16 @@ def tep_derived_by_site(req: TepBySiteRequest) -> dict[str, Any]:
     }
 
 
+# Приписки, которые стоят под ЛЮБЫМ ответом поиска: они про источник данных, а
+# не про эту находку. Отделены затем, чтобы «почему не нашлось» бралось из
+# названной причины, а не из первой строки списка.
+_LAND_LOOKUP_STANDING_NOTES = (
+    "Сведения справочные, из открытых данных ЕГРН. "
+    "Для сделки нужна актуальная выписка Росреестра.",
+    "На внешние сервисы передаётся только строка поиска; финансовая модель не передаётся.",
+)
+
+
 @app.post("/land/lookup")
 def land_lookup(req: LandLookupRequest) -> dict[str, Any]:
     """Сведения ЕГРН по кадастровому номеру, адресу или координатам — по всей России."""
@@ -5892,11 +5912,15 @@ def land_lookup(req: LandLookupRequest) -> dict[str, Any]:
             "Для расчёта проекта нужен участок; чтобы увидеть конкретный объект, "
             "введите его кадастровый номер."
         )
-    warnings.append(
-        "Сведения справочные, из открытых данных ЕГРН. "
-        "Для сделки нужна актуальная выписка Росреестра."
-    )
-    warnings.append("На внешние сервисы передаётся только строка поиска; финансовая модель не передаётся.")
+    warnings.extend(_LAND_LOOKUP_STANDING_NOTES)
+    # Почему не нашлось. По адресу причина попадает в предупреждения, по
+    # кадастровому номеру — в примечание самой строки: у номера свой ответ на
+    # каждый, и один общий список их бы слил. Читателю нужна одна фраза, и
+    # берётся она оттуда, где лежит, а не выбирается по подстроке.
+    reason = next((note for note in warnings if note not in _LAND_LOOKUP_STANDING_NOTES), "")
+    if not reason:
+        reason = next((str(item.get("note") or "") for item in results
+                       if not item.get("found") and item.get("note")), "")
     return {
         "mode": mode,
         "query": query,
@@ -5905,6 +5929,7 @@ def land_lookup(req: LandLookupRequest) -> dict[str, Any]:
         "results": results,
         "found_count": len([item for item in results if item.get("found")]),
         "warnings": warnings,
+        "reason": reason,
         "source": {
             "service": "nspd.gov.ru (НСПД, ППК «Роскадастр»)",
             "requested_at": date.today().isoformat(),
@@ -10620,6 +10645,139 @@ def cadastral_tep_server(req: CadastralAnalysisRequest) -> dict[str, Any]:
     return result
 
 
+def _glavapu_row_values(rows: list[list[Any]]) -> dict[str, str]:
+    """Строки таблицы ТЭП как «код → значение». Читатель, а не счётчик."""
+    values: dict[str, str] = {}
+    for row in rows or []:
+        if not row or len(row) < 4:
+            continue
+        code = str(row[0] or "").strip()
+        if code:
+            values[code] = str(row[3] or "").strip()
+    return values
+
+
+def vri_tep_moscow(query: str) -> dict[str, Any]:
+    """Кнопка бота «Посчитать ВРИ и ТЭП» по Москве — тем же путём, что и сайт.
+
+    Прежде кнопка звала `vri_tep_quick("msk", …)` напрямую. Путь к штатному
+    калькулятору при этом существовал и работал: `/cadastral/tep-server` при
+    заданном `MO_CALC_API_URL` пересылает запрос на ядро, там headless-Chromium
+    гоняет калькулятор ГлавАПУ, а формулы включаются только при срыве браузера.
+    Эндпоинт бот обходил — на Render браузера нет, и подпись «Методика: Формулы
+    калькулятора ГлавАПУ» в файле значила не «сорвалось», а «иначе тут не
+    бывает»: сайт и бот отвечали по одному участку разными числами, и оба
+    выглядели верными. Четвёртый случай правила «модуль не заводит своего пути
+    туда, где у сервиса уже есть общий».
+
+    Карточка, файл и шаблон собираются ИЗ ТОЙ ЖЕ таблицы, которой посчитан
+    ТЭП. Считать их рядом нельзя: два счёта одной величины однажды разойдутся.
+    Калькулятор не ответил — возвращаются прежние формулы со своей карточкой и
+    своим предупреждением; второй заход по территории при этом попадает в кэш
+    участка, который сервер только что заполнил.
+    """
+    try:
+        numbers = _parse_cadastral_numbers(query)
+    except Exception:
+        numbers = []
+    if not numbers:
+        # Не кадастровый номер — спрашивать калькулятор нечем. Отказ вернёт
+        # прежний путь, своими словами: два разных отказа на одну причину
+        # человек читает как две разные поломки.
+        return vri_tep_quick("msk", query)
+    try:
+        served = cadastral_tep_server(CadastralAnalysisRequest(cadastral_numbers=query))
+    except Exception as exc:
+        logging.warning("бот: штатный расчёт ТЭП не удался (%s) — формулы", exc)
+        return vri_tep_quick("msk", query)
+
+    glavapu = served.get("glavapu") or {}
+    rows = list(glavapu.get("rows") or [])
+    if not glavapu.get("calculator") or not rows:
+        return vri_tep_quick("msk", query)
+
+    source = served.get("source") or {}
+    method = str(source.get("format") or "Штатный калькулятор ГлавАПУ")
+    values = _glavapu_row_values(rows)
+
+    def num(code: str) -> float:
+        return _ru_number(str(values.get(code, "")).split("(")[0]) or 0.0
+
+    def fmt(value: Any, digits: int = 1) -> str:
+        try:
+            return f"{float(value):,.{digits}f}".replace(",", " ").replace(".", ",")
+        except (TypeError, ValueError):
+            return "—"
+
+    area = num("1")
+    spp = num("6") * 1000.0
+    apartments_gns = num("7.1") * 1000.0
+    commerce_gns = num("7.2") * 1000.0
+    apartments = num("10") * 1000.0
+    commerce_np = num("9.1.2") * 1000.0
+    apartments_np = num("9.1.1") * 1000.0
+    population, units = num("4"), num("5")
+    dou, school = num("30"), num("31")
+    clinic_adult, clinic_child = num("33"), num("34")
+    compensation = num("54") + num("55") + num("56")
+    permanent, guest, onsite = num("42.1"), num("42.2"), num("42.3")
+    vri_mln = num("44")
+
+    parameters = [list(row) for row in (glavapu.get("parameters") or [])]
+    by_name = {str(row[0] or "").strip(): (row[1] if len(row) > 1 else "")
+               for row in parameters if row}
+    district = str(by_name.get("Район") or "")
+    # Чем посчитано — часть ответа: подпись «Формулы калькулятора ГлавАПУ»
+    # прежде стояла у любого файла бота и ни о чём не сообщала.
+    parameters.append(["Методика", method, "—"])
+
+    card = (
+        "<b>ВРИ и ТЭП · Москва</b>\n"
+        f"Участок: <code>{html.escape(str(query)[:80])}</code>\n"
+        f"• площадь — {fmt(area, 4)} га · район — "
+        f"{html.escape(district or '—')}\n"
+        f"• СПП — {fmt(spp / 1000, 1)} тыс. м² · квартиры — {fmt(apartments, 0)} м²\n"
+        f"• население — {fmt(population, 0)} чел. · квартир — {fmt(units, 0)}\n"
+        f"• соцпотребность — ДОО {fmt(dou, 0)} мест, СОШ {fmt(school, 0)} мест, "
+        f"поликлиники {fmt(clinic_adult, 0)}+{fmt(clinic_child, 0)} пос./см.\n"
+        + (f"• <b>компенсация за соцобъекты — {fmt(compensation, 1)} млн ₽</b>\n"
+           if compensation > 0 else "")
+        + (f"• паркинг — {fmt(permanent + guest, 0)} м/м (постоянные "
+           f"{fmt(permanent, 0)} + гостевые {fmt(guest, 0)}) · приобъектные "
+           f"{fmt(onsite, 0)}\n" if permanent + guest + onsite > 0 else "")
+        + (f"• <b>плата за смену ВРИ — {fmt(vri_mln, 1)} млн ₽</b>\n"
+           if vri_mln > 0 else "")
+        + f"<i>Считал {html.escape(method)}.</i>\n"
+        + ("<i>Льготы по ВРИ (МПТ, передача жилья городу), аренда и МАИП — в "
+           "мини-приложении: кнопка «Открыть и изменить расчёт».</i>\n")
+    )
+
+    workbook = _build_glavapu_xlsx_from_rows(rows, parameters)
+    safe = re.sub(r"[^0-9A-Za-zА-Яа-я_-]+", "_", str(query))[:40] or "участок"
+    today = date.today().isoformat()
+    payload: dict[str, Any] = {
+        "card": card, "file": workbook,
+        "filename": f"ВРИ_ТЭП_{safe}_{today}.xlsx",
+    }
+    try:
+        products: dict[str, dict[str, float]] = {
+            "apartments": {"gns": apartments_gns, "total_area": apartments_np,
+                           "saleable": apartments, "units": units},
+            "ground_commercial": {"gns": commerce_gns, "total_area": commerce_np,
+                                  "saleable": num("11") * 1000.0},
+        }
+        if permanent + guest > 0:
+            products["underground_parking"] = {"units": permanent + guest}
+        payload["template_file"] = _manual_tep_filled_template(
+            str(query).strip()[:80] or "Участок",
+            "Москва" + (f" · {district}" if district else ""),
+            area, vri_mln, compensation, products)
+        payload["template_filename"] = f"ТЭП_DevelopAid_{safe}_{today}.xlsx"
+    except Exception as exc:
+        _TELEGRAM_RUNTIME["last_error"] = "Шаблон ВРИ/ТЭП: " + _error_location(exc)
+    return payload
+
+
 @app.post("/cadastral/tep-from-calculator")
 def import_cadastral_tep(req: CadastralTepRequest) -> dict[str, Any]:
     if not 30 <= len(req.rows) <= 150:
@@ -10684,6 +10842,13 @@ def import_cadastral_tep(req: CadastralTepRequest) -> dict[str, Any]:
         0,
         "Показатели автоматически считаны из готовой таблицы genplan.tech.",
     )
+    # Таблица, которой посчитан этот ТЭП, едет вместе с ним. Строит её только
+    # калькулятор, и второй раз взять её неоткуда: кто соберёт по этому ответу
+    # свою карточку или свой файл, обязан читать те же строки, а не считать
+    # рядом свои. Строки — строки и None, поэтому переживают пересылку на ядро
+    # и обратно.
+    result["glavapu"] = {"rows": table_rows, "parameters": parameters,
+                         "calculator": True}
     # Каждый успешный сбор штатного калькулятора — бесплатная сверка серверных
     # формул: разошлись — значит, ГлавАПУ поменял методику, и путь Telegram
     # начал бы врать. Ошибка, ушедшая только в лог, — ошибка, которой нет,
@@ -11790,9 +11955,10 @@ def _telegram_handle_intake_document(chat_id: int, data: bytes, filename: str) -
     посчитанного.
     """
     document = document_intake.extract_text(data, filename)
-    if document.get("scanned") or not document.get("text"):
+    if not document.get("text"):
         # Скан — не пустой документ. Сказать «ничего не нашли» значит соврать
-        # про источник: там всё есть, просто картинкой.
+        # про источник: там всё есть, просто картинкой. Признак скана гейтом
+        # быть перестал: распознанный скан — это скан С текстом.
         _telegram_send_message(
             chat_id,
             "<b>Документ принят, но прочитать нечего.</b>\n"
@@ -11853,7 +12019,11 @@ def _telegram_handle_intake_document(chat_id: int, data: bytes, filename: str) -
     for line in got.get("dropped") or []:
         lines.append(f"\nНе взято — {html.escape(str(line)[:200])}")
     lines.append("\nЧисла проверьте глазами: это то, что написано в документе, "
-                 "а не расчёт.")
+                 "а не расчёт."
+                 + (" Текст этого документа получен РАСПОЗНАВАНИЕМ скана: "
+                    "цитаты не дословны, а цифра, прочитанная неверно, "
+                    "выглядит как прочитанная верно."
+                    if document.get("recognized") else ""))
     # Кадастровый номер из документа — это участок, а участок мы считаем.
     # Своего пути для этого не заводим: номер уходит туда же, куда ушёл бы
     # присланный сообщением, — иначе на один участок появилось бы два расчёта.
@@ -16810,6 +16980,26 @@ def _v4_header_attr() -> str:
     return f' s="{style}"' if style is not None else ""
 
 
+@functools.lru_cache(maxsize=1)
+def _v4_label_style_id() -> "int | None":
+    """Стиль подписи строки — у шаблона, как ввод и заголовок.
+
+    Подпись дописанного блока («Шаг 1», «доля») — такая же подпись строки, как
+    «Проект» или «Ставка» у шаблона. Пока она шла без стиля, блок читался
+    чужой вставкой: шрифт другой, а на листе, где всё остальное книга
+    владельца, это выглядит поломкой, а не нашей строкой.
+    """
+    with zipfile.ZipFile(_V4_TEMPLATE_PATH) as source:
+        sheet = source.read(_v4_inputs_sheet_path(source)).decode("utf-8")
+        styles = source.read("xl/styles.xml").decode("utf-8")
+    return v4_entry_sheet.chrome_styles(sheet, styles)["label"]
+
+
+def _v4_label_attr() -> str:
+    style = _v4_label_style_id()
+    return f' s="{style}"' if style is not None else ""
+
+
 def _v4_head_cell(coord: str, value: str) -> str:
     """Ячейка строки-заголовка дописанного блока.
 
@@ -17117,7 +17307,8 @@ def _v4_schedule_rows_xml(xml: str, title: str, hint: str,
     refs: list[tuple[str, str]] = []
 
     def text_cell(coord: str, value: str) -> str:
-        return f'<x:c r="{coord}" t="inlineStr"><x:is><x:t>{html.escape(value, quote=False)}</x:t></x:is></x:c>'
+        return (f'<x:c r="{coord}"{_v4_label_attr()} t="inlineStr">'
+                f'<x:is><x:t>{html.escape(value, quote=False)}</x:t></x:is></x:c>')
 
     # Ключ движка — в шапке блока: вводная здесь ОДНА («30%@0; 40%@6»), а строк
     # у неё столько, сколько шагов. Подписать ключом каждую строку значило бы
@@ -17187,7 +17378,8 @@ def _v4_stage_rows_xml(xml: str, title: str, hint: str, growth: list[float],
     refs: list[str] = []
 
     def text_cell(coord: str, value: str) -> str:
-        return f'<x:c r="{coord}" t="inlineStr"><x:is><x:t>{html.escape(value, quote=False)}</x:t></x:is></x:c>'
+        return (f'<x:c r="{coord}"{_v4_label_attr()} t="inlineStr">'
+                f'<x:is><x:t>{html.escape(value, quote=False)}</x:t></x:is></x:c>')
 
     parts.append(f'<x:row r="{row_at}">' + text_cell(f"A{row_at}", title) + "</x:row>")
     row_at += 1
@@ -32787,6 +32979,10 @@ def _project_card(record: dict[str, Any]) -> dict[str, Any]:
         "cadastral": record.get("cadastral") or [],
         "summary": {key: summary.get(key) for key in
                     ("revenue_mln", "net_profit_mln", "llcr", "purchase_price_mln")},
+        # Не сам код, а признак: запись поверх обновляет то, что видит
+        # получатель ссылки, и предупредить об этом надо ДО записи. Код в
+        # списке был бы выдачей секрета там, где хватает «да/нет».
+        "has_share": bool(record.get("share_code")),
     }
 
 
@@ -34490,9 +34686,10 @@ def agent_document(req: AgentDocumentRequest, request: Request) -> dict[str, Any
             detail=(f"Файл больше {_DOCUMENT_INTAKE_MAX_BYTES // (1024 * 1024)} МБ. "
                     "Пришлите нужные страницы отдельно."))
     document = document_intake.extract_text(data, req.filename)
-    if document.get("scanned") or not document.get("text"):
+    if not document.get("text"):
         # Скан — не пустой документ, и выдавать «ничего не нашли» за ответ
-        # нельзя: человек решит, что в файле пусто.
+        # нельзя: человек решит, что в файле пусто. Гейт по признаку скана
+        # отказывал бы и распознанному — то есть ровно там, где сработало.
         return {"document": document, "fields": [], "questions": [], "notes": [],
                 "reason": document.get("reason") or "в документе нет текста"}
 
@@ -35615,8 +35812,15 @@ details.cadastral-box>summary::marker{color:#888}
            без него, а «Сохранить», которое всегда откажет, хуже отсутствия.
            Смена ключа без консоли браузера: ключ меняют, когда он засветился,
            и требовать для этого localStorage.removeItem — значит не менять. -->
-      <span id="projectsStorageActions" style="display:none;gap:14px">
-        <button class="btn dark" onclick="saveProjectToServer()">Сохранить текущий</button>
+      <span id="projectsStorageActions" style="display:none;gap:14px;align-items:center">
+        <!-- Два намерения — две кнопки. Прежде обе жили в одном «Сохранить
+             текущий», и выбор между ними человек делал в окне подтверждения:
+             ОК — поверх, Отмена — как новый. Кнопка с двумя смыслами не
+             видна заранее, а «Отмена» читается как «ничего не делать». -->
+        <button class="btn dark" id="projectsSaveOver" style="display:none"
+                onclick="saveOpenedProject()">Сохранить</button>
+        <button class="btn" onclick="saveProjectAsNew()">Сохранить как…</button>
+        <span id="projectsOpenedName" class="muted" style="font-size:12px"></span>
         <button class="btn" onclick="changeProjectsKey()">Сменить ключ</button>
       </span>
       <button class="btn" style="margin-left:auto" onclick="closeProjects()">Закрыть</button>
@@ -36462,7 +36666,8 @@ function renderAiIntake(data){
  if(doc.pages)html+=' <span style="color:#888">· страниц '+aiEsc(doc.pages)+'</span>';
  // Скан — не пустой документ. Выдать «ничего не нашли» за «там ничего нет»
  // значит соврать про источник.
- if(data.reason)html+='<div style="margin-top:6px;color:#8a4b08">'+aiEsc(data.reason)+'</div>';
+ const note=data.reason||doc.reason||'';
+ if(note)html+='<div style="margin-top:6px;color:#8a4b08">'+aiEsc(note)+'</div>';
  const fields=data.fields||[];
  if(fields.length){
   html+='<div style="margin-top:8px"><table style="width:100%;border-collapse:collapse;font-size:12px">'
@@ -36471,7 +36676,7 @@ function renderAiIntake(data){
    +'<td><input type="checkbox" class="ai-intake-pick" data-key="'+aiEsc(f.key)+'" checked></td>'
    +'<td>'+aiEsc(f.key)+'</td>'
    +'<td><b>'+aiEsc(f.value)+'</b> '+aiEsc(f.unit||'')+'</td>'
-   +'<td style="color:#666">«'+aiEsc(f.quote)+'»</td></tr>'});
+   +'<td style="color:#666">'+(doc.recognized?'распознано: ':'')+'«'+aiEsc(f.quote)+'»</td></tr>'});
   html+='</table><button class="btn dark" style="margin-top:8px" onclick="applyAiIntake()">Применить отмеченное</button></div>';
  }
  (data.questions||[]).forEach(q=>{
@@ -36482,7 +36687,7 @@ function renderAiIntake(data){
  // Отброшенное называется вслух: молча пропущенное поле читается как
  // «в документе такого нет».
  (data.dropped||[]).forEach(line=>{html+='<div style="margin-top:4px;color:#8a4b08;font-size:12px">Не взято — '+aiEsc(line)+'</div>'});
- if(!fields.length&&!(data.questions||[]).length&&!data.reason)html+='<div style="margin-top:6px">В документе не нашлось полей, которые понимает модель.</div>';
+ if(!fields.length&&!(data.questions||[]).length&&!note)html+='<div style="margin-top:6px">В документе не нашлось полей, которые понимает модель.</div>';
  box.innerHTML=html;aiMessages.appendChild(box);aiMessages.scrollTop=aiMessages.scrollHeight;
 }
 async function applyAiIntake(){
@@ -37093,7 +37298,16 @@ async function obtainTep(){
  // и сказать об этом обязаны мы, а не он должен догадаться.
  const cadastral=/^\d{2}:\d{2}:\d{6,8}:\d+$/;
  const numbers=entered.filter(x=>cadastral.test(x));
- const rejected=entered.filter(x=>!cadastral.test(x));
+ const looksCadastral=numbers.length>0;
+ // Правило «несколько номеров через запятую» действует только там, где хоть
+ // один номер УЗНАН: тогда остальные строки — действительно пропущенные записи
+ // списка, ради чего оно и писалось (опечатка в одном из двух номеров,
+ // 26.08.2026). На чистом адресе запятые принадлежат самому адресу, и деление
+ // по ним резало «г Москва, ул Мишина, 46» на три «непохожих на кадастровый
+ // номер» куска — при том что поле само предлагает вводить адрес, и адрес
+ // целиком уходил в поиск. Совет исправить то, что исправлять не нужно, уводит
+ // человека искать ошибку там, где её нет (экран владельца, 06.09.2026).
+ const rejected=looksCadastral?entered.filter(x=>!cadastral.test(x)):[];
  // Молча отброшенная строка читается как отсутствующая. Называем её и
  // говорим, чем именно она не похожа на кадастровый номер.
  // Текст пришёл от человека и уходит в innerHTML — экранируем. Своего `esc`
@@ -37104,7 +37318,6 @@ async function obtainTep(){
   ? ' Пропущено, не похоже на кадастровый номер: '+rejected.map(x=>'«'+safe(x)+'»').join(', ')
     +' (нужен вид 77:01:0004621:72 — в третьем блоке 6–8 цифр).'
   : '';
- const looksCadastral=numbers.length>0;
  const regionOnly=looksCadastral&&numbers.every(x=>x.startsWith('50:'));
 
  if(!looksCadastral){
@@ -37119,8 +37332,16 @@ async function obtainTep(){
   if(!resolved.length){
    // «Не найден» и «введите номер» — разные вещи, и путать их нельзя: номер
    // человек уже ввёл, просто по нему ничего не нашлось.
+   // Причину называет сам поиск: адрес не распознан геокодером, в точке нет
+   // участка, найдены здания без участка — это разные ответы, и заменять их
+   // общим «не найден» значит закрашивать диагноз своим предположением.
+   // Постоянные приписки про источник данных сюда не идут: они стоят под
+   // любым ответом и о неудаче не говорят ничего.
+   const reason=String((landLookup||{}).reason||'').trim();
    status.innerHTML='<span class="import-error">По этому запросу участок не найден.'
-    +(rejected.length?rejectedNote:' Проверьте адрес или введите кадастровый номер.')+'</span>';return;
+    +(rejected.length?rejectedNote:'')
+    +(reason?' '+safe(reason):'')
+    +(rejected.length?'':' Проверьте адрес или введите кадастровый номер.')+'</span>';return;
   }
   field.value=resolved.join(', ');
   return obtainTep();
@@ -43377,8 +43598,19 @@ let projectsAdminKey=localStorage.getItem('plato_projects_key')||'';
 async function projectsCall(path,body){
  const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},
   body:JSON.stringify(Object.assign({session:activeSession(),key:projectsAdminKey},body||{}))});
- const data=await response.json().catch(()=>({}));
- if(!response.ok)throw new Error(data.detail||'Хранилище недоступно');
+ // Тело читаем текстом: «Хранилище недоступно» одинаково выглядело и на
+ // пятисотке, и на странице шлюза, и на обрыве сети — то есть не говорило
+ // ничего. Правило то же, что у askJson на странице торгов: называем код и
+ // первые слова ответа.
+ const raw=await response.text();
+ let data={};
+ try{data=raw?JSON.parse(raw):{}}catch(e){}
+ if(!response.ok){
+  const said=String(data.detail||'').trim()
+   ||raw.replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim().slice(0,160);
+  throw new Error(said?('Хранилище ответило '+response.status+': '+said)
+   :('Хранилище ответило кодом '+response.status+' и пустым телом'));
+ }
  return data;
 }
 
@@ -43433,16 +43665,26 @@ function projectCadastral(){
  return Array.isArray(source)?source.slice(0,20):[];
 }
 
-async function saveProjectToServer(){
- const manualMeta=inputs._manual_tep_import||null;
- const suggested=(manualMeta&&manualMeta.project_name)||projectCadastral()[0]||'Проект';
- const name=prompt('Название проекта в хранилище',suggested);
- if(name===null)return;
+function projectStorePayload(){
+ return {payload:{inputs,tep,phasing,scenario:scenarioSelect.value||'base'},
+  summary:projectSummaryForStore(),cadastral:projectCadastral()};
+}
+
+async function storeProject(id,name){
+ // Одна дверь на все три кнопки: «Сохранить», «Сохранить как…» и «Поверх» в
+ // строке списка. Три сборки одного запроса разошлись бы молча — так уже
+ // терялась периодичность платежей ВРИ у присланного проекта.
  try{
-  await projectsCall('/projects/save',{name,
-   payload:{inputs,tep,phasing,scenario:scenarioSelect.value||'base'},
-   summary:projectSummaryForStore(),cadastral:projectCadastral()});
-  alert('Проект сохранён на сервере');
+  const saved=await projectsCall('/projects/save',
+   Object.assign({id,name},projectStorePayload()));
+  // Сохранённый проект становится открытым: следующее «Сохранить» пишет
+  // поверх него, а не заводит третий экземпляр. Ссылку карточка ответа не
+  // несёт — признак берём у того, поверх кого пишем.
+  const previous=(id&&openedProject&&openedProject.id===id)?openedProject:null;
+  rememberOpenedProject(Object.assign({},saved,{
+   share_code:previous?previous.shareCode:'',
+   has_share:previous?previous.shared:!!saved.has_share}));
+  alert(id?('Записано поверх «'+name+'»'):'Проект сохранён на сервере');
   openProjects();
  }catch(e){
   // 428 от сервера — не отказ, а вопрос «кто вы»: открываем знакомство,
@@ -43450,6 +43692,38 @@ async function saveProjectToServer(){
   if(String(e.message||e).indexOf('Заполните знакомство')>=0){openProfile();return}
   alert(String(e.message||e));
  }
+}
+
+function projectShareNote(shared){
+ return shared?'\n\nУ проекта есть ссылка «Поделиться»: получатель при '
+  +'следующем открытии увидит новые числа.':'';
+}
+
+function saveOpenedProject(){
+ // Кнопка видна только при открытом проекте, но состояние могло смениться
+ // между отрисовкой и нажатием: молчаливое «сохранил как новый» здесь было бы
+ // не тем, что человек просил.
+ if(!openedProject){alert('Открытого проекта нет — нажмите «Сохранить как…».');return}
+ if(!confirm('Записать поверх «'+openedProject.name+'»?'
+  +projectShareNote(openedProject.shared)))return;
+ storeProject(openedProject.id,openedProject.name);
+}
+
+function saveProjectAsNew(){
+ const manualMeta=inputs._manual_tep_import||null;
+ const suggested=(manualMeta&&manualMeta.project_name)||projectCadastral()[0]||'Проект';
+ const asked=prompt('Название проекта в хранилище',suggested);
+ if(asked===null)return;
+ storeProject('',String(asked));
+}
+
+function saveProjectOver(id,name,shared){
+ // Запись поверх прямо из строки: открывать проект ради перезаписи незачем,
+ // а истории версий у хранилища нет — поэтому спрашиваем именем проекта.
+ if(!confirm('Записать текущие вводные поверх «'+name+'»?\n\n'
+  +'Прежние числа этого проекта будут заменены — вернуть их будет неоткуда.'
+  +projectShareNote(shared)))return;
+ storeProject(id,name);
 }
 
 function renderProjectsLogin(reason){
@@ -43574,6 +43848,7 @@ async function openProjects(){
  // подгружается следом и только там, где хранилище настроено.
  projectsDialog.style.display='flex';
  renderAccountBox();
+ renderOpenedProjectButton();
  const stored=document.getElementById('projectsStored');
  if(!projectsStorageReady){
   if(stored)stored.style.display='none';
@@ -43611,6 +43886,10 @@ async function openProjects(){
    +`<td>${s.net_profit_mln?money(s.net_profit_mln*1e6):'—'}</td>`
    +`<td>${s.llcr?mult(s.llcr):'—'}</td>`
    +`<td><button class="btn" onclick="loadProject('${p.id}')">Открыть</button> `
+   +`<button class="btn" title="Сохранить текущие вводные в этот проект, поверх прежних чисел" `
+   +`data-id="${escapeHtml(String(p.id||''))}" data-name="${escapeHtml(String(p.name||''))}" `
+   +`data-shared="${p.has_share?'1':''}" `
+   +`onclick="saveProjectOver(this.dataset.id,this.dataset.name,!!this.dataset.shared)">Сохранить</button> `
    +`<button class="btn" onclick="shareProject('${p.id}')">Ссылка</button> `
    +`<button class="btn" onclick="downloadSettingsFile('${p.id}')">Файл</button> `
    +`<button class="btn" onclick="deleteProject('${p.id}')">Удалить</button></td></tr>`;
@@ -43640,6 +43919,48 @@ function changeProjectsKey(){
 // имя проекта: площадка КРТ на 15 га приходила «с парой кадастров на 5 га»
 // (владелец, 02.09.2026). Забывается разом и в одном месте; то, что несёт сам
 // снимок, поднимается заново из его вводных.
+// Какой проект хранилища сейчас открыт: `{id, name, shareCode}` или null.
+// Открытый проект правят и сохраняют обратно, а страница id не помнила —
+// `loadProject` его не запоминал, `saveProjectToServer` не слал, и сервер
+// честно заводил второй экземпляр (владелец, 04.09.2026: «открыл сохранённый,
+// внёс изменения, и надо сохранять новый»). Перезапись хранилище умеет давно:
+// при переданном id запись пишется под тем же именем файла, код «Поделиться»
+// сохраняется и против лимита такой проект не считается.
+let openedProject=null;
+
+function rememberOpenedProject(record){
+ // Помним ровно то, что нужно вопросу перед сохранением: чем перезаписывать,
+ // как проект зовут и есть ли у него живая ссылка.
+ openedProject=record&&record.id?{id:String(record.id),
+  name:String(record.name||'Проект'),
+  shareCode:String(record.share_code||''),
+  // Код ссылки страница знает не всегда (в строке списка его нет), а
+  // предупредить о живой ссылке надо и там: признак отдельно от кода.
+  shared:!!(record.share_code||record.has_share)}:null;
+ renderOpenedProjectButton();
+}
+
+function renderOpenedProjectButton(){
+ // «Сохранить» без открытого проекта записать не во что: кнопки нет, а рядом
+ // стоит имя того, поверх кого пишем, — иначе «Сохранить» и «Сохранить как…»
+ // на экране неразличимы.
+ // Функция зовётся из `rememberOpenedProject`, а его гоняют проверки в node,
+ // где документа нет вовсе: спрашиваем через typeof, а не надеемся.
+ if(typeof document==='undefined')return;
+ const button=document.getElementById('projectsSaveOver');
+ const label=document.getElementById('projectsOpenedName');
+ if(!button||!label)return;
+ if(openedProject){
+  button.style.display='';
+  button.title='Записать поверх «'+openedProject.name+'»';
+  label.textContent='открыт: '+openedProject.name;
+ }else{
+  button.style.display='none';
+  button.title='';
+  label.textContent='';
+ }
+}
+
 function forgetTerritoryState(){
  cadastralAnalysis=null;landLookup=null;landScreeningLast=null;LAND_MAP=null;
  glavapuImport=null;moResult=null;
@@ -43660,6 +43981,11 @@ function forgetTerritoryState(){
 
 function applyProjectSnapshot(data){
  data=data||{};
+ // Пришёл другой проект — значит открытый больше не открыт. Забывается здесь,
+ // в единственной точке подмены снимка: иначе «Сохранить поверх» записало бы
+ // чужие числа в тот проект, из которого их уже не достать — истории версий у
+ // хранилища нет. Кто открыл проект по-настоящему, скажет об этом следом.
+ openedProject=null;
  forgetTerritoryState();
  inputs=Object.assign(cloneValue(INPUT_DEFAULT),data.inputs||{});
  tep=cloneValue(TEP_DEFAULT);
@@ -43683,6 +44009,9 @@ async function loadProject(id){
  // Как и локальная загрузка: сохранённое накладывается на умолчания, а не
  // подменяет их — иначе поле, добавленное позже, исчезнет.
  applyProjectSnapshot(data);
+ // После наложения: `applyProjectSnapshot` забывает открытый проект, и это
+ // верно для всех её вызовов, кроме этого одного.
+ rememberOpenedProject(record);
  closeProjects();
  calculateAndOpen('report');
 }
@@ -43825,8 +44154,13 @@ function checkSharedLink(){
 
 async function deleteProject(id){
  if(!confirm('Удалить проект из хранилища?'))return;
- try{await projectsCall('/projects/delete',{id});openProjects()}
- catch(e){alert(String(e.message||e))}
+ try{
+  await projectsCall('/projects/delete',{id});
+  // Удалённый проект открытым не остаётся: «Сохранить поверх» завело бы его
+  // заново под тем же id, и удаление выглядело бы несработавшим.
+  if(openedProject&&openedProject.id===String(id))openedProject=null;
+  openProjects();
+ }catch(e){alert(String(e.message||e))}
 }
 
 // Состояние страницы, которое НЕ принадлежит проекту, — и потому сбросу не
@@ -43857,6 +44191,9 @@ function resetProjectState(){
  // 3 200 м²» под строкой паркинга, жалоба на пропорции ТЭП, разговор Платона
  // о прошлом проекте, отчёт чувствительности чужой площадки.
  lastResult=null;
+ // Открытый проект — тоже данные проекта: после сброса «Сохранить поверх»
+ // записало бы пустой расчёт в чужую запись.
+ openedProject=null;
  aiHistory=[];aiProposals=[];aiIntake=null;
  territoryCleared=[];tepRatioComplaint='';phaseTepEditWarning='';storageInsideParking=0;
  Object.keys(tepRefillNote).forEach(key=>{delete tepRefillNote[key]});
