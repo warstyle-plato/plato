@@ -12,6 +12,7 @@ from market_search import install as install_market_search
 from market_search.ui_v6 import install as install_market_ui, install_price_hint
 from mpt_bot_menu import install as install_mpt_bot_menu
 from mpt_extension import install as install_mpt
+from normatives_registry import install as install_normatives
 from telegram_user_registry import install
 
 app = _base.app
@@ -24,6 +25,9 @@ install_auction_search(app)
 # Свод источников себестоимости — страница `/statistics` и её API. Модуль
 # перенесён из ветки «Сводного чата» один в один: у числа не бывает двух жизней.
 install_statistics(app, core)
+# Нормативная база — публичный реестр зависимостей движка и закрытая админом
+# проверка официальных источников. Юридическую редакцию HTTP-кодом не считаем.
+install_normatives(app, core)
 
 # Вкладка «Рынок» — сниппетный конвейер, который мы списываем: приёмка по нему
 # красная, и в production ему пока нечего делать. Умолчание выключено, и это
