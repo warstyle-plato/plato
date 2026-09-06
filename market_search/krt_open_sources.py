@@ -484,6 +484,70 @@ def _says_our_number(sentence: str, ours: set[str],
     return False
 
 
+# Паспорт площадки: её собственные числа. Публикация, назвавшая их, говорит
+# именно о нашей территории — сильнее, чем номер владения, который у площадки
+# и у построенного по соседству дома бывает один (решение владельца,
+# 06.09.2026: «прошлякова это просто развитие ЖК Строгино 360» — там номер
+# владения не называет никто, а гектары и объём называют).
+#
+# Допуски взяты те же, что у сверки «решение ↔ карточка»: город и пресса
+# округляют по-разному — «69,73 га» пишут как «69,7 га» и «около 70 га».
+_PASSPORT_TOLERANCE = {"area_ha": 0.02, "housing_gfa_sqm": 0.01,
+                       "total_gfa_sqm": 0.01}
+
+# Число берут ЦЕЛИКОМ и из своего оборота: «1 069,73 га» — не наши 69,73.
+# Отсечка слева повторяет ту, что уже стоит в разборе цен и объёмов.
+_MEASURE = re.compile(
+    r"(?iu)(?<![\d.,])(\d{1,3}(?:[\s\u00a0]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)?)"
+    r"\s*(тыс\.?|тысяч\w*|млн\.?|миллион\w*)?\s*"
+    r"(га(?![а-яё])|гектар\w*|кв\.?\s*м(?![а-яё])|кв\.?\s*метр\w*|м²|"
+    r"м2(?![\d])|квадратн\w*\s+метр\w*)")
+_SCALE = (("тыс", 1_000.0), ("млн", 1_000_000.0), ("миллион", 1_000_000.0))
+
+
+def _measures(text: str) -> dict[str, set[float]]:
+    """Площади, названные в тексте: гектары отдельно, метры отдельно."""
+    out: dict[str, set[float]] = {"ha": set(), "sqm": set()}
+    for found in _MEASURE.finditer(str(text or "")):
+        raw = found.group(1).replace("\u00a0", " ").replace(" ", "").replace(",", ".")
+        try:
+            value = float(raw)
+        except ValueError:
+            continue
+        scale = (found.group(2) or "").lower().replace("ё", "е")
+        for mark, times in _SCALE:
+            if scale.startswith(mark):
+                value *= times
+                break
+        unit = found.group(3).lower().replace("ё", "е")
+        out["ha" if unit.startswith(("га", "гектар")) else "sqm"].add(value)
+    return out
+
+
+def says_our_passport(text: str, passport: dict[str, Any] | None) -> bool:
+    """Названы ли в тексте СОБСТВЕННЫЕ числа площадки — её паспорт.
+
+    Отвечает на «эта публикация точно про нас?» там, где номера владения в ней
+    нет вовсе. Пустой паспорт — это «сверять не с чем», а не «совпало».
+    """
+    if not passport:
+        return False
+    said = _measures(text)
+    if not (said["ha"] or said["sqm"]):
+        return False
+    for key, tolerance in _PASSPORT_TOLERANCE.items():
+        try:
+            ours = float(passport.get(key) or 0)
+        except (TypeError, ValueError):
+            continue
+        if ours <= 0:
+            continue
+        for value in (said["ha"] if key == "area_ha" else said["sqm"]):
+            if value > 0 and abs(value / ours - 1.0) <= tolerance:
+                return True
+    return False
+
+
 def _house_conflict(sentence: str, ours: set[str]) -> bool:
     """Названы ли в предложении ДРУГИЕ номера владений и только они.
 
@@ -866,7 +930,8 @@ def _confidence(items: Iterable[dict[str, Any]]) -> str:
 
 
 def read_findings(
-    docs: Iterable[Any], name: str, siblings: Iterable[str] = ()
+    docs: Iterable[Any], name: str, siblings: Iterable[str] = (),
+    passport: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Разобрать выдачу по одной площадке. Без цитаты признак не ставится.
 
@@ -917,8 +982,13 @@ def read_findings(
     street_stems = _anchor_words(name)
 
     def named_ours(sentence: str) -> bool:
-        """Назван ли в предложении наш номер владения либо имя проекта."""
+        """Назван ли в предложении наш номер владения, имя проекта или паспорт."""
         if _says_our_number(sentence, houses, street_stems):
+            return True
+        # Паспорт площадки — её собственные гектары и объём. У площадки, о
+        # которой пишут именем соседнего ЖК, номер владения не называет никто,
+        # а числа называют: «69,73 га», «580 тыс. кв. м».
+        if says_our_passport(sentence, passport):
             return True
         return bool(brand_anchors) and _mentions(sentence, brand_anchors)
     # Корзины заводятся по объявленному списку, а не перечислением здесь:
@@ -945,6 +1015,8 @@ def read_findings(
         # требовать номер в той же фразе значило бы терять почти все находки.
         # Чужой номер при этом отсекается конфликтом ниже — так же, как раньше.
         proved = named_ours(text)
+        # Паспорт назван в САМОМ документе — этого хватает и строгому режиму.
+        passport_proved = says_our_passport(text, passport)
         # О чём вообще этот документ. «Кто здесь будет строить» — утверждение
         # про КРТ, и доказывать его страницей продаж квартир нельзя: она
         # называет застройщика ПОСТРОЕННОГО дома по тому же адресу. Номер
@@ -992,7 +1064,13 @@ def read_findings(
             low = sentence.lower().replace("ё", "е")
             # Якорь площадки в ТОМ ЖЕ предложении: сниппет повторяет запрос, и
             # без якоря сюда попадает любой соседний проект.
-            if not (_mentions(sentence, anchors)
+            #
+            # Документ, назвавший паспорт площадки, — исключение: он о НАШЕЙ
+            # территории целиком, и требовать якорь ещё и в каждой фразе значит
+            # выбросить ровно ту, ради которой документ прочитан. Публикация
+            # называет гектары в одном предложении, а застройщика в другом.
+            if not (passport_proved
+                    or _mentions(sentence, anchors)
                     or _mentions_phrase(sentence, phrase)):
                 continue
             # Улица совпала, а номер владения — чужой: это соседняя площадка.
@@ -1000,7 +1078,15 @@ def read_findings(
                 continue
             # Улица общая с соседней площадкой каталога: без нашего номера или
             # имени проекта предложение — о соседях, а не о нас.
-            if strict and not named_ours(sentence):
+            #
+            # Паспорт засчитывается ПО ДОКУМЕНТУ, а номер владения — по
+            # предложению, и это не послабление, а разная сила доказательства:
+            # номер у площадки и у построенного рядом дома бывает один
+            # («Варшавское шоссе, 37» на витрине продаж), а 69,73 га — только у
+            # неё. Публикация называет числа в одном месте, а застройщика в
+            # другом, и требовать их в одной фразе значило бы не увидеть ни
+            # одной такой находки.
+            if strict and not (passport_proved or named_ours(sentence)):
                 continue
             key = low[:120]
             if key in seen:
