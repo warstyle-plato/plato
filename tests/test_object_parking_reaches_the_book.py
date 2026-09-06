@@ -48,7 +48,7 @@ def _inputs(**over) -> dict:
     x.update(offices_enabled=True, retail_enabled=True,
              parking_k1=1.0, parking_k2=0.5,
              offices_parking_under_spaces=80, offices_parking_over_spaces=20,
-             offices_parking_guest_spaces=8,
+             offices_parking_guest_pct=10,
              retail_parking_under_spaces=60, retail_parking_over_spaces=0)
     x.update(over)
     return x
@@ -139,7 +139,7 @@ def test_the_office_sells_all_but_the_guest_places() -> None:
     t = _tep()
     core.apply_object_parking(_inputs(), t)
     assert t["offices"]["parking_units"] == 100, "построено"
-    assert t["offices"]["parking_saleable_units"] == 92, "продаётся, кроме 8 гостевых"
+    assert t["offices"]["parking_saleable_units"] == 90, "продаётся, кроме 10% гостевых"
 
 
 def test_the_book_sells_the_same_places_as_the_engine() -> None:
@@ -157,6 +157,6 @@ def test_the_book_sells_the_same_places_as_the_engine() -> None:
     assert not meta.get("missing"), meta.get("missing")
     sys.setrecursionlimit(400000)
     evaluator = Evaluator(openpyxl.load_workbook(io.BytesIO(content), data_only=False))
-    # Офисы продают 92 из 100, ТЦ — ни одного из 60.
-    assert evaluator.cell("ОБЪЕКТЫ", "B32") == pytest.approx(92)
+    # Офисы продают 90 из 100 (десятая часть гостевые), ТЦ — ни одного из 60.
+    assert evaluator.cell("ОБЪЕКТЫ", "B32") == pytest.approx(90)
     assert evaluator.cell("ОБЪЕКТЫ", "B60") == pytest.approx(0)
