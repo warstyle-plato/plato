@@ -72,7 +72,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.22.32"
+VERSION = "0.22.37"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -10645,6 +10645,139 @@ def cadastral_tep_server(req: CadastralAnalysisRequest) -> dict[str, Any]:
     return result
 
 
+def _glavapu_row_values(rows: list[list[Any]]) -> dict[str, str]:
+    """Строки таблицы ТЭП как «код → значение». Читатель, а не счётчик."""
+    values: dict[str, str] = {}
+    for row in rows or []:
+        if not row or len(row) < 4:
+            continue
+        code = str(row[0] or "").strip()
+        if code:
+            values[code] = str(row[3] or "").strip()
+    return values
+
+
+def vri_tep_moscow(query: str) -> dict[str, Any]:
+    """Кнопка бота «Посчитать ВРИ и ТЭП» по Москве — тем же путём, что и сайт.
+
+    Прежде кнопка звала `vri_tep_quick("msk", …)` напрямую. Путь к штатному
+    калькулятору при этом существовал и работал: `/cadastral/tep-server` при
+    заданном `MO_CALC_API_URL` пересылает запрос на ядро, там headless-Chromium
+    гоняет калькулятор ГлавАПУ, а формулы включаются только при срыве браузера.
+    Эндпоинт бот обходил — на Render браузера нет, и подпись «Методика: Формулы
+    калькулятора ГлавАПУ» в файле значила не «сорвалось», а «иначе тут не
+    бывает»: сайт и бот отвечали по одному участку разными числами, и оба
+    выглядели верными. Четвёртый случай правила «модуль не заводит своего пути
+    туда, где у сервиса уже есть общий».
+
+    Карточка, файл и шаблон собираются ИЗ ТОЙ ЖЕ таблицы, которой посчитан
+    ТЭП. Считать их рядом нельзя: два счёта одной величины однажды разойдутся.
+    Калькулятор не ответил — возвращаются прежние формулы со своей карточкой и
+    своим предупреждением; второй заход по территории при этом попадает в кэш
+    участка, который сервер только что заполнил.
+    """
+    try:
+        numbers = _parse_cadastral_numbers(query)
+    except Exception:
+        numbers = []
+    if not numbers:
+        # Не кадастровый номер — спрашивать калькулятор нечем. Отказ вернёт
+        # прежний путь, своими словами: два разных отказа на одну причину
+        # человек читает как две разные поломки.
+        return vri_tep_quick("msk", query)
+    try:
+        served = cadastral_tep_server(CadastralAnalysisRequest(cadastral_numbers=query))
+    except Exception as exc:
+        logging.warning("бот: штатный расчёт ТЭП не удался (%s) — формулы", exc)
+        return vri_tep_quick("msk", query)
+
+    glavapu = served.get("glavapu") or {}
+    rows = list(glavapu.get("rows") or [])
+    if not glavapu.get("calculator") or not rows:
+        return vri_tep_quick("msk", query)
+
+    source = served.get("source") or {}
+    method = str(source.get("format") or "Штатный калькулятор ГлавАПУ")
+    values = _glavapu_row_values(rows)
+
+    def num(code: str) -> float:
+        return _ru_number(str(values.get(code, "")).split("(")[0]) or 0.0
+
+    def fmt(value: Any, digits: int = 1) -> str:
+        try:
+            return f"{float(value):,.{digits}f}".replace(",", " ").replace(".", ",")
+        except (TypeError, ValueError):
+            return "—"
+
+    area = num("1")
+    spp = num("6") * 1000.0
+    apartments_gns = num("7.1") * 1000.0
+    commerce_gns = num("7.2") * 1000.0
+    apartments = num("10") * 1000.0
+    commerce_np = num("9.1.2") * 1000.0
+    apartments_np = num("9.1.1") * 1000.0
+    population, units = num("4"), num("5")
+    dou, school = num("30"), num("31")
+    clinic_adult, clinic_child = num("33"), num("34")
+    compensation = num("54") + num("55") + num("56")
+    permanent, guest, onsite = num("42.1"), num("42.2"), num("42.3")
+    vri_mln = num("44")
+
+    parameters = [list(row) for row in (glavapu.get("parameters") or [])]
+    by_name = {str(row[0] or "").strip(): (row[1] if len(row) > 1 else "")
+               for row in parameters if row}
+    district = str(by_name.get("Район") or "")
+    # Чем посчитано — часть ответа: подпись «Формулы калькулятора ГлавАПУ»
+    # прежде стояла у любого файла бота и ни о чём не сообщала.
+    parameters.append(["Методика", method, "—"])
+
+    card = (
+        "<b>ВРИ и ТЭП · Москва</b>\n"
+        f"Участок: <code>{html.escape(str(query)[:80])}</code>\n"
+        f"• площадь — {fmt(area, 4)} га · район — "
+        f"{html.escape(district or '—')}\n"
+        f"• СПП — {fmt(spp / 1000, 1)} тыс. м² · квартиры — {fmt(apartments, 0)} м²\n"
+        f"• население — {fmt(population, 0)} чел. · квартир — {fmt(units, 0)}\n"
+        f"• соцпотребность — ДОО {fmt(dou, 0)} мест, СОШ {fmt(school, 0)} мест, "
+        f"поликлиники {fmt(clinic_adult, 0)}+{fmt(clinic_child, 0)} пос./см.\n"
+        + (f"• <b>компенсация за соцобъекты — {fmt(compensation, 1)} млн ₽</b>\n"
+           if compensation > 0 else "")
+        + (f"• паркинг — {fmt(permanent + guest, 0)} м/м (постоянные "
+           f"{fmt(permanent, 0)} + гостевые {fmt(guest, 0)}) · приобъектные "
+           f"{fmt(onsite, 0)}\n" if permanent + guest + onsite > 0 else "")
+        + (f"• <b>плата за смену ВРИ — {fmt(vri_mln, 1)} млн ₽</b>\n"
+           if vri_mln > 0 else "")
+        + f"<i>Считал {html.escape(method)}.</i>\n"
+        + ("<i>Льготы по ВРИ (МПТ, передача жилья городу), аренда и МАИП — в "
+           "мини-приложении: кнопка «Открыть и изменить расчёт».</i>\n")
+    )
+
+    workbook = _build_glavapu_xlsx_from_rows(rows, parameters)
+    safe = re.sub(r"[^0-9A-Za-zА-Яа-я_-]+", "_", str(query))[:40] or "участок"
+    today = date.today().isoformat()
+    payload: dict[str, Any] = {
+        "card": card, "file": workbook,
+        "filename": f"ВРИ_ТЭП_{safe}_{today}.xlsx",
+    }
+    try:
+        products: dict[str, dict[str, float]] = {
+            "apartments": {"gns": apartments_gns, "total_area": apartments_np,
+                           "saleable": apartments, "units": units},
+            "ground_commercial": {"gns": commerce_gns, "total_area": commerce_np,
+                                  "saleable": num("11") * 1000.0},
+        }
+        if permanent + guest > 0:
+            products["underground_parking"] = {"units": permanent + guest}
+        payload["template_file"] = _manual_tep_filled_template(
+            str(query).strip()[:80] or "Участок",
+            "Москва" + (f" · {district}" if district else ""),
+            area, vri_mln, compensation, products)
+        payload["template_filename"] = f"ТЭП_DevelopAid_{safe}_{today}.xlsx"
+    except Exception as exc:
+        _TELEGRAM_RUNTIME["last_error"] = "Шаблон ВРИ/ТЭП: " + _error_location(exc)
+    return payload
+
+
 @app.post("/cadastral/tep-from-calculator")
 def import_cadastral_tep(req: CadastralTepRequest) -> dict[str, Any]:
     if not 30 <= len(req.rows) <= 150:
@@ -10709,6 +10842,13 @@ def import_cadastral_tep(req: CadastralTepRequest) -> dict[str, Any]:
         0,
         "Показатели автоматически считаны из готовой таблицы genplan.tech.",
     )
+    # Таблица, которой посчитан этот ТЭП, едет вместе с ним. Строит её только
+    # калькулятор, и второй раз взять её неоткуда: кто соберёт по этому ответу
+    # свою карточку или свой файл, обязан читать те же строки, а не считать
+    # рядом свои. Строки — строки и None, поэтому переживают пересылку на ядро
+    # и обратно.
+    result["glavapu"] = {"rows": table_rows, "parameters": parameters,
+                         "calculator": True}
     # Каждый успешный сбор штатного калькулятора — бесплатная сверка серверных
     # формул: разошлись — значит, ГлавАПУ поменял методику, и путь Telegram
     # начал бы врать. Ошибка, ушедшая только в лог, — ошибка, которой нет,
@@ -11815,9 +11955,10 @@ def _telegram_handle_intake_document(chat_id: int, data: bytes, filename: str) -
     посчитанного.
     """
     document = document_intake.extract_text(data, filename)
-    if document.get("scanned") or not document.get("text"):
+    if not document.get("text"):
         # Скан — не пустой документ. Сказать «ничего не нашли» значит соврать
-        # про источник: там всё есть, просто картинкой.
+        # про источник: там всё есть, просто картинкой. Признак скана гейтом
+        # быть перестал: распознанный скан — это скан С текстом.
         _telegram_send_message(
             chat_id,
             "<b>Документ принят, но прочитать нечего.</b>\n"
@@ -11878,7 +12019,11 @@ def _telegram_handle_intake_document(chat_id: int, data: bytes, filename: str) -
     for line in got.get("dropped") or []:
         lines.append(f"\nНе взято — {html.escape(str(line)[:200])}")
     lines.append("\nЧисла проверьте глазами: это то, что написано в документе, "
-                 "а не расчёт.")
+                 "а не расчёт."
+                 + (" Текст этого документа получен РАСПОЗНАВАНИЕМ скана: "
+                    "цитаты не дословны, а цифра, прочитанная неверно, "
+                    "выглядит как прочитанная верно."
+                    if document.get("recognized") else ""))
     # Кадастровый номер из документа — это участок, а участок мы считаем.
     # Своего пути для этого не заводим: номер уходит туда же, куда ушёл бы
     # присланный сообщением, — иначе на один участок появилось бы два расчёта.
@@ -34537,9 +34682,10 @@ def agent_document(req: AgentDocumentRequest, request: Request) -> dict[str, Any
             detail=(f"Файл больше {_DOCUMENT_INTAKE_MAX_BYTES // (1024 * 1024)} МБ. "
                     "Пришлите нужные страницы отдельно."))
     document = document_intake.extract_text(data, req.filename)
-    if document.get("scanned") or not document.get("text"):
+    if not document.get("text"):
         # Скан — не пустой документ, и выдавать «ничего не нашли» за ответ
-        # нельзя: человек решит, что в файле пусто.
+        # нельзя: человек решит, что в файле пусто. Гейт по признаку скана
+        # отказывал бы и распознанному — то есть ровно там, где сработало.
         return {"document": document, "fields": [], "questions": [], "notes": [],
                 "reason": document.get("reason") or "в документе нет текста"}
 
@@ -36509,7 +36655,8 @@ function renderAiIntake(data){
  if(doc.pages)html+=' <span style="color:#888">· страниц '+aiEsc(doc.pages)+'</span>';
  // Скан — не пустой документ. Выдать «ничего не нашли» за «там ничего нет»
  // значит соврать про источник.
- if(data.reason)html+='<div style="margin-top:6px;color:#8a4b08">'+aiEsc(data.reason)+'</div>';
+ const note=data.reason||doc.reason||'';
+ if(note)html+='<div style="margin-top:6px;color:#8a4b08">'+aiEsc(note)+'</div>';
  const fields=data.fields||[];
  if(fields.length){
   html+='<div style="margin-top:8px"><table style="width:100%;border-collapse:collapse;font-size:12px">'
@@ -36518,7 +36665,7 @@ function renderAiIntake(data){
    +'<td><input type="checkbox" class="ai-intake-pick" data-key="'+aiEsc(f.key)+'" checked></td>'
    +'<td>'+aiEsc(f.key)+'</td>'
    +'<td><b>'+aiEsc(f.value)+'</b> '+aiEsc(f.unit||'')+'</td>'
-   +'<td style="color:#666">«'+aiEsc(f.quote)+'»</td></tr>'});
+   +'<td style="color:#666">'+(doc.recognized?'распознано: ':'')+'«'+aiEsc(f.quote)+'»</td></tr>'});
   html+='</table><button class="btn dark" style="margin-top:8px" onclick="applyAiIntake()">Применить отмеченное</button></div>';
  }
  (data.questions||[]).forEach(q=>{
@@ -36529,7 +36676,7 @@ function renderAiIntake(data){
  // Отброшенное называется вслух: молча пропущенное поле читается как
  // «в документе такого нет».
  (data.dropped||[]).forEach(line=>{html+='<div style="margin-top:4px;color:#8a4b08;font-size:12px">Не взято — '+aiEsc(line)+'</div>'});
- if(!fields.length&&!(data.questions||[]).length&&!data.reason)html+='<div style="margin-top:6px">В документе не нашлось полей, которые понимает модель.</div>';
+ if(!fields.length&&!(data.questions||[]).length&&!note)html+='<div style="margin-top:6px">В документе не нашлось полей, которые понимает модель.</div>';
  box.innerHTML=html;aiMessages.appendChild(box);aiMessages.scrollTop=aiMessages.scrollHeight;
 }
 async function applyAiIntake(){
@@ -43497,15 +43644,39 @@ function projectCadastral(){
 }
 
 async function saveProjectToServer(){
- const manualMeta=inputs._manual_tep_import||null;
- const suggested=(manualMeta&&manualMeta.project_name)||projectCadastral()[0]||'Проект';
- const name=prompt('Название проекта в хранилище',suggested);
- if(name===null)return;
+ // Открытый проект перезаписывается, а не удваивается. Спрашиваем прямо:
+ // «поверх» и «как новый» — разные намерения, и угадывать их нельзя.
+ // Про ссылку говорим фактом, а не предупреждением: перезапись обновляет её
+ // намеренно — получатель при следующем открытии увидит новые числа (решение
+ // владельца, 04.09.2026). Снимок остаётся снимком для уже открытой вкладки:
+ // она задним числом не меняется.
+ const opened=openedProject;
+ let id='',name='';
+ if(opened){
+  if(confirm('Сохранить поверх «'+opened.name+'»?\n\n'
+    +'ОК — записать в тот же проект, поверх прежних чисел.\n'
+    +'Отмена — сохранить как новый, прежний останется.'
+    +(opened.shareCode?'\n\nУ проекта есть ссылка «Поделиться»: получатель '
+      +'при следующем открытии увидит новые числа.':''))){
+   id=opened.id;name=opened.name;
+  }
+ }
+ if(!id){
+  const manualMeta=inputs._manual_tep_import||null;
+  const suggested=(manualMeta&&manualMeta.project_name)||projectCadastral()[0]||'Проект';
+  const asked=prompt('Название проекта в хранилище',suggested);
+  if(asked===null)return;
+  name=asked;
+ }
  try{
-  await projectsCall('/projects/save',{name,
+  const saved=await projectsCall('/projects/save',{id,name,
    payload:{inputs,tep,phasing,scenario:scenarioSelect.value||'base'},
    summary:projectSummaryForStore(),cadastral:projectCadastral()});
-  alert('Проект сохранён на сервере');
+  // Сохранённый проект становится открытым: следующее сохранение обязано
+  // предложить перезапись, иначе третий экземпляр заведётся тем же способом.
+  // У перезаписи ссылку берём прежнюю — карточка ответа её не несёт.
+  rememberOpenedProject(id&&opened?Object.assign({},saved,{share_code:opened.shareCode}):saved);
+  alert(id?'Проект перезаписан':'Проект сохранён на сервере');
   openProjects();
  }catch(e){
   // 428 от сервера — не отказ, а вопрос «кто вы»: открываем знакомство,
@@ -43703,6 +43874,23 @@ function changeProjectsKey(){
 // имя проекта: площадка КРТ на 15 га приходила «с парой кадастров на 5 га»
 // (владелец, 02.09.2026). Забывается разом и в одном месте; то, что несёт сам
 // снимок, поднимается заново из его вводных.
+// Какой проект хранилища сейчас открыт: `{id, name, shareCode}` или null.
+// Открытый проект правят и сохраняют обратно, а страница id не помнила —
+// `loadProject` его не запоминал, `saveProjectToServer` не слал, и сервер
+// честно заводил второй экземпляр (владелец, 04.09.2026: «открыл сохранённый,
+// внёс изменения, и надо сохранять новый»). Перезапись хранилище умеет давно:
+// при переданном id запись пишется под тем же именем файла, код «Поделиться»
+// сохраняется и против лимита такой проект не считается.
+let openedProject=null;
+
+function rememberOpenedProject(record){
+ // Помним ровно то, что нужно вопросу перед сохранением: чем перезаписывать,
+ // как проект зовут и есть ли у него живая ссылка.
+ openedProject=record&&record.id?{id:String(record.id),
+  name:String(record.name||'Проект'),
+  shareCode:String(record.share_code||'')}:null;
+}
+
 function forgetTerritoryState(){
  cadastralAnalysis=null;landLookup=null;landScreeningLast=null;LAND_MAP=null;
  glavapuImport=null;moResult=null;
@@ -43723,6 +43911,11 @@ function forgetTerritoryState(){
 
 function applyProjectSnapshot(data){
  data=data||{};
+ // Пришёл другой проект — значит открытый больше не открыт. Забывается здесь,
+ // в единственной точке подмены снимка: иначе «Сохранить поверх» записало бы
+ // чужие числа в тот проект, из которого их уже не достать — истории версий у
+ // хранилища нет. Кто открыл проект по-настоящему, скажет об этом следом.
+ openedProject=null;
  forgetTerritoryState();
  inputs=Object.assign(cloneValue(INPUT_DEFAULT),data.inputs||{});
  tep=cloneValue(TEP_DEFAULT);
@@ -43746,6 +43939,9 @@ async function loadProject(id){
  // Как и локальная загрузка: сохранённое накладывается на умолчания, а не
  // подменяет их — иначе поле, добавленное позже, исчезнет.
  applyProjectSnapshot(data);
+ // После наложения: `applyProjectSnapshot` забывает открытый проект, и это
+ // верно для всех её вызовов, кроме этого одного.
+ rememberOpenedProject(record);
  closeProjects();
  calculateAndOpen('report');
 }
@@ -43888,8 +44084,13 @@ function checkSharedLink(){
 
 async function deleteProject(id){
  if(!confirm('Удалить проект из хранилища?'))return;
- try{await projectsCall('/projects/delete',{id});openProjects()}
- catch(e){alert(String(e.message||e))}
+ try{
+  await projectsCall('/projects/delete',{id});
+  // Удалённый проект открытым не остаётся: «Сохранить поверх» завело бы его
+  // заново под тем же id, и удаление выглядело бы несработавшим.
+  if(openedProject&&openedProject.id===String(id))openedProject=null;
+  openProjects();
+ }catch(e){alert(String(e.message||e))}
 }
 
 // Состояние страницы, которое НЕ принадлежит проекту, — и потому сбросу не
@@ -43920,6 +44121,9 @@ function resetProjectState(){
  // 3 200 м²» под строкой паркинга, жалоба на пропорции ТЭП, разговор Платона
  // о прошлом проекте, отчёт чувствительности чужой площадки.
  lastResult=null;
+ // Открытый проект — тоже данные проекта: после сброса «Сохранить поверх»
+ // записало бы пустой расчёт в чужую запись.
+ openedProject=null;
  aiHistory=[];aiProposals=[];aiIntake=null;
  territoryCleared=[];tepRatioComplaint='';phaseTepEditWarning='';storageInsideParking=0;
  Object.keys(tepRefillNote).forEach(key=>{delete tepRefillNote[key]});

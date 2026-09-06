@@ -59,17 +59,26 @@ def test_every_surface_carries_the_one_conversation_rule() -> None:
 
 
 def test_every_surface_sends_the_conversation_with_the_question() -> None:
-    """Помнить нечего, если история не уезжает вместе с вопросом."""
+    """Помнить нечего, если история не уезжает вместе с вопросом.
+
+    Разговор объявляет поверхность (`somethingTalk = platoThread()`), а
+    отправляет его общий путь — `platoAsk(message, …history(), …)`. Прежде эта
+    проверка искала `\w+Talk.history()` на самой странице: с тех пор как опрос
+    объявлен один раз, история уезжает через `surface.talk.history()`, и имя
+    разговора рядом с ней больше не стоит. Утверждение не изменилось — держим
+    его, а не способ.
+    """
     for name, page in _surfaces().items():
-        # Разговор доехал до вопроса: кабинет отдаёт его своему `platoAnswer`
-        # третьим доводом, торги и монитор — прямо в теле запроса.
-        assert re.search(r"\w+Talk\.history\(\)", page), (
-            f"{name}: вопрос уходит без истории — Платон отвечает с чистого листа")
-        # И до сервера: тело запроса несёт поле, иначе история никуда не идёт.
-        assert re.search(r"history:\s*(history\s*\|\||\w+Talk\.history\(\))", page), (
+        assert re.search(r"\w+Talk\s*=\s*platoThread\(\)", page), (
+            f"{name}: своего разговора у поверхности нет")
+        # История доезжает до тела запроса — своим путём или общим.
+        assert re.search(r"history:\s*(history\s*\|\||\w+\.history\(\))", page), (
             f"{name}: тело запроса истории не несёт")
-        assert re.search(r"\w+Talk\.said\(", page), (
+        assert re.search(r"(\w+Talk|\w+\.talk)\.said\(", page), (
             f"{name}: ответ не запоминается")
+        # И вопрос действительно отдаёт свою историю, а не пустой список.
+        assert re.search(r"\.history\(\)", page), (
+            f"{name}: вопрос уходит без истории — Платон отвечает с чистого листа")
 
 
 def test_the_conversation_carries_replies_not_the_data() -> None:

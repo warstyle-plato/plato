@@ -38,8 +38,13 @@ def test_a_scan_is_not_an_empty_document() -> None:
     writer.add_blank_page(width=200, height=200)
     buffer = io.BytesIO()
     writer.write(buffer)
-    got = di.extract_text(buffer.getvalue(), "скан.pdf")
+    # Распознавание выключено намеренно: здесь проверяется ОТКАЗ, а он
+    # обязан остаться честным там, где распознавать нечем (бот живёт на
+    # Render, и наш Dockerfile там не собирается). Что делает распознавание,
+    # когда оно есть, держит `test_a_scan_is_read_by_recognition.py`.
+    got = di.extract_text(buffer.getvalue(), "скан.pdf", recognize=False)
     assert got["scanned"] is True
+    assert got["recognized"] is False
     assert "скан" in got["reason"]
 
 
@@ -217,7 +222,18 @@ def test_both_surfaces_use_the_same_parser() -> None:
 
 
 def test_a_scan_is_named_a_scan_on_both_surfaces() -> None:
+    """Причина доносится до человека, а признак скана гейтом не служит.
+
+    Прежняя версия искала слово «scanned» в исходнике обеих поверхностей — то
+    есть держала СПОСОБ. Способ был неверен: скан остаётся сканом и после
+    распознавания, и гейт по этому признаку отказывал бы ровно там, где
+    распознавание сработало. Утверждение не изменилось: скан — не пустой
+    документ, и причина называется вслух.
+    """
     import inspect
     import main_legacy as core
-    assert "scanned" in inspect.getsource(core.agent_document)
-    assert "scanned" in inspect.getsource(core._telegram_handle_intake_document)
+    for source in (inspect.getsource(core.agent_document),
+                   inspect.getsource(core._telegram_handle_intake_document)):
+        assert 'document.get("reason")' in source, "причина не доходит до человека"
+        assert 'document.get("scanned")' not in source, \
+            "признак скана снова служит гейтом — распознанное будет отказано"

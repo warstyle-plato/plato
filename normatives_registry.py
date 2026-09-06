@@ -269,12 +269,26 @@ def _card(entry: dict[str, Any]) -> str:
 </article>"""
 
 
+def _legal_footer() -> str:
+    """Подвал документов ИП: состав разбирается из `PAGE`, копии здесь нет.
+
+    Движок берётся модулем, а не переданным `core`: у страницы он бывает
+    подставным, а подвал обязан быть тем же, что на остальных поверхностях.
+    """
+    import guide
+    import main_legacy
+
+    return guide.legal_footer_html(main_legacy)
+
+
 def _page(request: Request, core: Any) -> str:
     admin = _is_admin(request, core)
     rows = _merged_registry()
     scopes = ("Москва", "Московская область", "Общие для РФ")
     counts = {scope: sum(1 for row in rows if row.get("scope") == scope) for scope in scopes}
     cards = "".join(_card(row) for row in rows)
+
+    footer = _legal_footer()
 
     adminbar = ""
     if admin:
@@ -294,6 +308,8 @@ def _page(request: Request, core: Any) -> str:
 *{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--ink);
 font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}}a{{color:inherit}}
 .shell{{max-width:1180px;margin:auto;padding:28px 22px 64px}}
+.brandbar{{padding:4px 0 0}}.brandbar img{{display:block;width:min(360px,58vw);height:auto;mix-blend-mode:multiply}}.brandline{{height:8px;background:#050505;margin-top:12px}}
+.legal-footer{{display:flex;gap:18px;flex-wrap:wrap;padding:14px 0 4px;font-size:11px;color:var(--muted);border-top:1px solid var(--line)}}.legal-footer a{{color:var(--muted)}}
 .top{{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:26px}}
 .brand{{font-weight:800}}.top a{{text-decoration:none;border:1px solid var(--line);
 padding:9px 14px;border-radius:10px;background:#fff}}h1{{font-size:34px;line-height:1.1;margin:0 0 8px}}
@@ -333,7 +349,8 @@ box-shadow:0 8px 30px rgba(0,0,0,.12)}}.adminbar button{{border:0;border-radius:
 .probe{{text-align:left;margin-top:10px}}h1{{font-size:28px}}.adminbar{{position:static;display:block}}
 .adminbar>*{{margin:4px 0;max-width:100%}}}}
 </style></head><body><div class="shell">
-<div class="top"><div class="brand">DevelopAid · Нормативная база</div>
+<div class="brandbar"><a href="/" title="DevelopAid"><img src="/guide/assets/logo.webp" alt="ПЛАТО"></a><div class="brandline"></div></div>
+<div class="top"><div class="brand">Нормативная база</div>
 <a href="/">Вернуться в DevelopAid</a></div>
 <h1>Нормативная документация движка</h1>
 <p class="lead">Рабочая карта нормативных зависимостей: какая редакция учтена,
@@ -349,7 +366,8 @@ box-shadow:0 8px 30px rgba(0,0,0,.12)}}.adminbar button{{border:0;border-radius:
 <div id="cards">{cards}</div>
 <p class="foot">«Реестр актуален на» — дата содержательной сверки карточки.
 Кнопка администратора проверяет доступность и изменение источника, но не подменяет
-юридическую проверку консолидированной редакции.</p></div>
+юридическую проверку консолидированной редакции.</p>
+{footer}</div>
 <script>
 document.querySelectorAll('.filters button').forEach(btn=>btn.addEventListener('click',()=>{{
  document.querySelectorAll('.filters button').forEach(x=>x.classList.remove('active'));

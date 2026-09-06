@@ -70,7 +70,20 @@ def test_the_conclusion_calls_the_gap_a_neighbourhood_not_a_cause() -> None:
 
 def test_the_funnel_goes_into_the_question() -> None:
     page = CABINET.read_text()
-    body = page[page.index("function salesDigest("):page.index("async function askPlatoSales(")]
+    # Граница — конец самой `salesDigest`, а не начало соседа: сосед
+    # переписывается вместе с чужой правкой, и проверка падает, ничего не
+    # сказав о том, что сломалось. Считаем скобками.
+    start = page.index("function salesDigest(")
+    depth, index = 0, page.index("{", start)
+    while index < len(page):
+        if page[index] == "{":
+            depth += 1
+        elif page[index] == "}":
+            depth -= 1
+            if depth == 0:
+                break
+        index += 1
+    body = page[start:index + 1]
     assert "ВОРОНКА:" in body and "ИСТОЧНИК ${x.name}" in body
     assert "МЕНЕДЖЕР ${x.name}" in body
 
