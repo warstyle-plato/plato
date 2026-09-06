@@ -123,17 +123,31 @@ def _function(name: str) -> str:
     raise AssertionError(f"функция {name} на странице не закрыта")
 
 
+def _object(name: str) -> str:
+    """Объявление объекта страницы по его границам — фигурным скобкам."""
+    start = PAGE.index(f"const {name}=")
+    depth, index = 0, PAGE.index("{", start)
+    while index < len(PAGE):
+        if PAGE[index] == "{":
+            depth += 1
+        elif PAGE[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return PAGE[start:index + 1] + ";"
+        index += 1
+    raise AssertionError(f"объект {name} на странице не закрыт")
+
+
 def _question(summary: dict, ask: str | None = None) -> str:
     """Собираем вопрос настоящим кодом страницы, а не его пересказом."""
     digest = _function("salesDigest")
     asks = PAGE[PAGE.index("const SALES_ASKS=["):]
     asks = asks[:asks.index("\n];") + 3]
-    body = PAGE[PAGE.index("async function askPlatoSales(){"):]
-    body = body[:body.index("\n}\n")]
-    tail = body[body.index("const tail='") + len("const tail="):]
-    tail = tail[:tail.index(";\n")]
-    preamble = body[body.index("const preamble='") + len("const preamble="):]
-    preamble = preamble[:preamble.index(";\n")]
+    # Сборка вопроса живёт в грузе блока продаж (`SALES_SURFACE.message`) — его
+    # и зовём. Прежде преамбула и хвост выкусывались из `askPlatoSales` и
+    # склеивались здесь заново: это был ВТОРОЙ сборщик того же вопроса, и
+    # разойтись ему было где. Границей служат скобки объявления.
+    surface = _object("SALES_SURFACE")
     limit_line = PAGE[PAGE.index("const SALES_ASK_LIMIT="):]
     limit_line = limit_line[:limit_line.index(";") + 1]
 
@@ -149,13 +163,10 @@ def _question(summary: dict, ask: str | None = None) -> str:
         + plato_question.SCRIPT + "\n"
         + limit_line + "\n" + asks + "\n" + digest + "\n"
         + "const salesData=" + json.dumps(summary, ensure_ascii=False) + ";\n"
+        + "const salesTalk=platoThread();\n"
+        + surface + "\n"
         + "const ask=" + json.dumps(ask, ensure_ascii=False) + "||SALES_ASKS[0].text;\n"
-        + "const tail=" + tail + ";\n"
-        + "const preamble=" + preamble + ";\n"
-        + "const message=preamble"
-          "+salesDigest(salesData, SALES_ASK_LIMIT-preamble.length-tail.length-20)"
-          "+tail;\n"
-        + "process.stdout.write(message);\n"
+        + "process.stdout.write(SALES_SURFACE.message(ask));\n"
     )
     done = subprocess.run(["node", "-e", script], capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
@@ -274,11 +285,16 @@ def test_the_dialogue_has_preset_questions_and_one_of_them_stands_in_the_field()
     body = body[:body.index("\n];")]
     assert body.count("chip:") >= 4, "подсказок меньше четырёх — это не диалог"
 
+    # Поле и подсказки живут в ящике Платона: он один на страницу, а блоков в
+    # кабинете два. Раньше они стояли в самой карточке, и проверка держала это
+    # место; утверждение при этом было другое — «есть куда написать своё и есть
+    # что нажать», и держим теперь его.
+    surface = _object("SALES_SURFACE")
+    assert "chips: SALES_ASKS.map(" in surface, "подсказки не доезжают до ящика"
+    assert "message: question=>" in surface, "своему вопросу некуда деться"
     card = PAGE[PAGE.index("Спросить Платона Сергеевича о продажах"):]
     card = card[:card.index("box.innerHTML=html")]
-    assert "id=\"salesq\"" in card, "поле для своего вопроса"
-    assert "SALES_ASKS[0].text" in card, "разбор стоит в поле сразу"
-    assert "saleschips" in card, "подсказки нажимаются"
+    assert "ai-open-btn" in card, "ящик закрыт, и открыть его из карточки нечем"
 
 
 def test_the_answers_do_not_erase_each_other():
@@ -293,21 +309,17 @@ def test_the_answers_do_not_erase_each_other():
     """
     import plato_question
 
-    body = PAGE[PAGE.index("async function askPlatoSales(){"):]
-    body = body[:body.index("\n}\n")]
-    assert ".said(" in body, "сказанное никуда не записывается"
-    assert "renderTalk(" in body, "разговор не рисуется"
+    # Запись сказанного и отрисовка переехали в общий путь: копий было три, и
+    # расходились они молча. Гоняется по-прежнему сама отрисовка.
+    assert ".said(" in plato_question.SCRIPT, "сказанное никуда не записывается"
+    assert "platoTalkHtml(" in plato_question.SCRIPT, "разговор не рисуется"
 
     script = (
         plato_question.SCRIPT + "\n"
-        + "const esc=s=>String(s);\n"
-        + _function("renderTalk") + "\n"
-        + "const box={innerHTML:''};\n"
-          "const talk=platoThread();\n"
+        + "const talk=platoThread();\n"
           "talk.said('первый вопрос','первый ответ');\n"
           "talk.said('второй вопрос','второй ответ');\n"
-          "renderTalk(box, talk, '');\n"
-          "process.stdout.write(box.innerHTML);\n"
+          "process.stdout.write(platoTalkHtml(talk, ''));\n"
     )
     done = subprocess.run(["node", "-e", script], capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
@@ -369,7 +381,12 @@ def test_the_plan_is_read_by_one_parser_for_both_paths():
 def test_the_wait_shows_the_stage_and_the_timeout_names_it():
     """Ожидание без признака работы читается как внезапность: пять минут
     «Платон думает…», потом «ответ пустой» — а работа могла и не начинаться."""
-    body = PAGE[PAGE.index("async function platoAnswer(message"):]
+    # Опрос объявлен один раз (`plato_question`): три копии разошлись ровно
+    # тут — в кабинете стадия показывалась, в торгах нет.
+    import plato_question
+
+    body = plato_question.SCRIPT[
+        plato_question.SCRIPT.index("async function platoAsk("):]
     body = body[:body.index("\n}\n")]
     assert "/agent/trace/" in body, "стадию сервер пишет — её надо показать"
     assert "не ответил за" in body

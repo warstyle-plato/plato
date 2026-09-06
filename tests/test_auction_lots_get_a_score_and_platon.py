@@ -127,10 +127,23 @@ def test_the_score_never_exceeds_the_potential() -> None:
 # --- Платон и подвал -------------------------------------------------------------
 
 def test_the_page_can_ask_platon_without_leaving_it() -> None:
+    """Спросить можно со страницы, а путь к Платону — общий.
+
+    Прежде проверка искала `async function askPlato(`, маршрут и опрос в самом
+    исходнике страницы. С тех пор как путь объявлен один раз
+    (`plato_question`), здесь остаётся то, что принадлежит торгам: чем открыть
+    ящик и что положить в вопрос. Утверждение то же — держим его, а не способ.
+    """
+    import plato_question
+
     body = script()
-    assert "async function askPlato(" in body
-    assert "'/cabinet/ask'" in body, "тот же маршрут, что у кабинета рынка — своего не заводим"
-    assert "/agent/result/" in body, "за долгим ответом ходят по номеру запуска"
+    assert "function askPlato(" in body
+    assert "platoOpen(AUCTION_SURFACE)" in body, "кнопка открывает ящик со своим грузом"
+    pack = plato_question.SCRIPT
+    assert "'/cabinet/ask'" in pack, "тот же маршрут, что у кабинета рынка — своего не заводим"
+    assert "/agent/result/" in pack, "за долгим ответом ходят по номеру запуска"
+    # Закрытый кабинет называется своим именем — это знает поверхность, а не
+    # общий путь: у кабинета рынка на 401 своя причина.
     assert "status===401" in body, "закрытый кабинет называется своим именем"
 
 

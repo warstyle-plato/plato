@@ -97,20 +97,16 @@ def markup() -> str:
   <button class="go alt" id="bngo" style="margin-top:10px">Собрать тестовый свод</button>
   <span id="bnstate" class="muted" style="margin-left:10px"></span>
   <div id="bnout" style="margin-top:12px"></div>
+  <!-- Разговор идёт в общем ящике справа: на странице два свода сразу, и груз
+       ему даёт тот блок, из которого нажали. Второй ящик рядом с первым был бы
+       вторым Платоном на одном экране. -->
   <div class="card" id="bnask" style="display:none">
     <h2>Спросить Платона Сергеевича</h2>
     <div class="muted" style="font-size:13px;margin-bottom:8px">
       Он видит числа ЭТОГО свода — второго источника, а не «Пульса». Считает движок,
       модель не пересчитывает.
     </div>
-    <div class="chips" id="bnchips">
-      <button type="button" data-q="Что здесь главное и что делать с ценой?">Что делать с ценой?</button>
-      <button type="button" data-q="Чем этот свод отличается от отчёта по «Пульсу» и чему верить?">Чем отличается от «Пульса»?</button>
-      <button type="button" data-q="Кто здесь ближайший конкурент и чем он опасен?">Кто конкурент?</button>
-    </div>
-    <textarea id="bnq" rows="3" placeholder="Например: выборка из пяти соседей — насколько ей можно верить?"></textarea>
-    <button class="go" id="bnaskbtn">Спросить</button>
-    <div id="bnaskout"></div>
+    <button type="button" class="ai-open-btn" id="bnaskbtn"><span class="ai-dot ready"></span><span class="ai-label">Спросить Платона</span></button>
   </div>
 </div>
 </details>
@@ -155,18 +151,26 @@ function bnDigest(d){{
   return lines.join('\\n');
 }}
 
+// Что кладёт в вопрос вкладка второго источника. Сводка своя: подставить ей
+// сводку «Пульса» значило бы спросить не о том, что показано.
+const BNMAP_SURFACE={{
+  get talk(){{ return bnThread() }},
+  hint: 'Он видит числа ЭТОГО свода — второго источника, а не «Пульса». '
+    +'Считает движок, модель не пересчитывает.',
+  chips: [
+    ['Что делать с ценой?','Что здесь главное и что делать с ценой?'],
+    ['Чем отличается от «Пульса»?','Чем этот свод отличается от отчёта по «Пульсу» и чему верить?'],
+    ['Кто конкурент?','Кто здесь ближайший конкурент и чем он опасен?']
+  ],
+  message: question=>{{
+    if(!bnLast) throw new Error('Сначала соберите свод второго источника.');
+    return 'Ниже готовый разбор рынка, посчитанный движком. Числа не пересчитывай — '
+      +'объясни и ответь на вопрос по ним.\\n\\n'+bnDigest(bnLast)+'\\n\\nВопрос: '+question;
+  }}
+}};
+
 document.addEventListener('DOMContentLoaded', function(){{
-  on('#bnaskbtn','click',function(){{
-    askPlatoIn({{field:'#bnq', out:'#bnaskout', button:'#bnaskbtn', talk:bnThread()}},
-               bnLast, bnDigest);
-  }});
-  on('#bnchips','click',function(e){{
-    const btn=e.target.closest('button[data-q]');
-    if(!btn) return;
-    $('#bnq').value=btn.dataset.q;
-    askPlatoIn({{field:'#bnq', out:'#bnaskout', button:'#bnaskbtn', talk:bnThread()}},
-               bnLast, bnDigest);
-  }});
+  on('#bnaskbtn','click',function(){{ platoOpen(BNMAP_SURFACE) }});
   on('#bngo', 'click', async function(){{
     const q=($('#bnid').value||'').trim();
     $('#bnstate').textContent='спрашиваю bnMAP…'; $('#bnout').innerHTML='';

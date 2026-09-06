@@ -111,10 +111,23 @@ def test_the_image_carries_the_recogniser() -> None:
     assert "скан" in docker, "причина названа там же, где строка установки"
 
 
-def test_a_missing_recogniser_is_a_refusal_not_an_empty_answer() -> None:
+def test_a_missing_recogniser_is_a_refusal_not_an_empty_answer(monkeypatch) -> None:
+    """Проверяется отказ, а не строка в исходнике.
+
+    Прежняя версия искала «class OcrUnavailable» в файле — то есть держала
+    СПОСОБ, которым исполнено утверждение. Распознавание объявлено один раз и
+    переехало в `pdf_ocr`, имена здесь стали ссылками на него, и проверка
+    упала бы на верном поведении.
+    """
+    import pdf_ocr
     from market_search import krt_tender_orders as orders
 
-    source = (ROOT / "market_search" / "krt_tender_orders.py").read_text(encoding="utf-8")
-    assert "class OcrUnavailable" in source
-    assert "ocr_available" in source
+    monkeypatch.setattr(pdf_ocr.shutil, "which", lambda name: None)
+    assert orders.ocr_available() is False
+    try:
+        orders.ocr(b"%PDF-1.4")
+    except orders.OcrUnavailable as exc:
+        assert "tesseract" in str(exc)
+    else:  # pragma: no cover - отказ обязателен
+        raise AssertionError("пустой ответ вместо отказа")
     assert orders.ocr.__doc__ and "приложения" in orders.ocr.__doc__

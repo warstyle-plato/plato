@@ -39,17 +39,9 @@ def test_normatives_do_not_invent_a_second_admin_secret(monkeypatch):
     assert registry._is_admin(_request(), core) is False
 
 
-# Страница носит подвал документов ИП, а его состав разбирается из `PAGE`
-# движка — второго списка ссылок у продукта нет. Значит и заглушка движка
-# обязана нести `PAGE`: без него это не «страница без подвала», а движок,
-# которого не бывает.
-_PAGE = ('<footer class="legal"><span>© ИП</span>'
-         '<a href="/policy">Политика</a><a href="/consent">Согласие</a></footer>')
-
-
 def test_admin_button_is_not_rendered_for_public_user(monkeypatch):
     monkeypatch.setattr(registry, "_merged_registry", lambda: [])
-    core = SimpleNamespace(_is_admin_request=lambda request: False, PAGE=_PAGE)
+    core = SimpleNamespace(_is_admin_request=lambda request: False)
 
     page = registry._page(_request(), core)
 
@@ -59,7 +51,7 @@ def test_admin_button_is_not_rendered_for_public_user(monkeypatch):
 
 def test_admin_button_is_rendered_for_existing_admin(monkeypatch):
     monkeypatch.setattr(registry, "_merged_registry", lambda: [])
-    core = SimpleNamespace(_is_admin_request=lambda request: True, PAGE=_PAGE)
+    core = SimpleNamespace(_is_admin_request=lambda request: True)
 
     page = registry._page(_request(), core)
 

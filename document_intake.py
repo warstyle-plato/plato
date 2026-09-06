@@ -31,6 +31,8 @@ import json
 import re
 from typing import Any
 
+import pdf_ocr
+
 
 # Сколько страниц вообще читаем. Тизер — три страницы, справка — две, решение
 # ГЗК — четыре. Двадцать пять с запасом; всё, что длиннее, почти наверняка не
@@ -39,24 +41,38 @@ MAX_PAGES = 25
 # Порог, ниже которого страница считается картинкой. Скан отдаёт единицы
 # символов колонтитула — и «мало текста» надо отличать от «текста нет».
 MIN_CHARS_PER_PAGE = 40
+# Сколько страниц распознаём. Своё число, меньше MAX_PAGES: чтение текстового
+# слоя стоит миллисекунды, а распознавание — секунды на страницу, и человек
+# ждёт ответа в окне. Восемь закрывают тизер, справку и решение ГЗК целиком;
+# что не поместилось — называется вслух, как и обрезка по знакам.
+OCR_MAX_PAGES = 8
 
 
-def extract_text(data: bytes, filename: str = "") -> dict[str, Any]:
+def extract_text(data: bytes, filename: str = "",
+                 recognize: bool = True) -> dict[str, Any]:
     """Текст документа и честный ответ, если его там нет.
 
     Скан без текстового слоя — это не пустой документ. Молча вернуть пустую
     строку значит выдать «не смогли прочитать» за «в документе ничего нет».
+    Поэтому у скана есть второй ход: страницы распознаются (`pdf_ocr`, тот же
+    tesseract, которым читаются распоряжения о торгах). Распознанный текст —
+    это ТЕКСТ, но не дословный: буквы восстановлены по картинке, и цитата из
+    него ручается за смысл, а не за написание. Признак `recognized` едет
+    дальше, чтобы это было сказано и модели, и человеку.
+
+    Распознавания нет в образе — остаётся прежний отказ со своей причиной:
+    «не смогли» и «нечем» — разные ответы.
     """
     name = str(filename or "").strip()
     if not data:
-        return {"text": "", "pages": 0, "scanned": False,
+        return {"text": "", "pages": 0, "scanned": False, "recognized": False,
                 "reason": "пустой файл"}
     try:
         from pypdf import PdfReader
         import io
         reader = PdfReader(io.BytesIO(data))
     except Exception as exc:  # noqa: BLE001
-        return {"text": "", "pages": 0, "scanned": False,
+        return {"text": "", "pages": 0, "scanned": False, "recognized": False,
                 "reason": f"не удалось открыть PDF: {exc}"}
     pages = len(reader.pages)
     chunks = []
@@ -70,16 +86,43 @@ def extract_text(data: bytes, filename: str = "") -> dict[str, Any]:
     scanned = read_pages > 0 and len(re.sub(r"\s", "", text)) < MIN_CHARS_PER_PAGE * read_pages
     result = {
         "filename": name, "text": text, "pages": pages,
-        "pages_read": read_pages, "scanned": scanned, "reason": "",
+        "pages_read": read_pages, "scanned": scanned, "recognized": False,
+        "reason": "",
     }
-    if scanned:
-        result["reason"] = (
-            "в документе нет текстового слоя — это скан. Распознать его здесь "
-            "нечем: читать придётся глазами или прислать страницы картинками")
-    if pages > MAX_PAGES:
+    if scanned and recognize:
+        result = _recognized(result, data, pages)
+    elif scanned:
+        result["reason"] = _SCAN_REFUSAL
+    if pages > result["pages_read"]:
         result["reason"] = (result["reason"] + "; " if result["reason"] else "") + \
-            f"прочитаны первые {MAX_PAGES} страниц из {pages}"
+            f"прочитаны первые {result['pages_read']} страниц из {pages}"
     return result
+
+
+# Отказ прежний и остаётся: распознавания в образе может не быть (бот живёт на
+# Render, и наш Dockerfile там не собирается).
+_SCAN_REFUSAL = (
+    "в документе нет текстового слоя — это скан, а распознать его здесь нечем: "
+    "читать придётся глазами или прислать страницы картинками")
+
+
+def _recognized(result: dict[str, Any], data: bytes, pages: int) -> dict[str, Any]:
+    """Второй ход по скану: распознать страницы и сказать, что они распознаны."""
+    limit = min(pages, OCR_MAX_PAGES)
+    try:
+        text = pdf_ocr.text(data, pages=limit)
+    except pdf_ocr.Unavailable as exc:
+        return {**result, "reason": f"{_SCAN_REFUSAL} ({exc})"}
+    except Exception as exc:  # noqa: BLE001
+        # Сорвалось — это «не смогли», а не «в документе пусто».
+        return {**result, "reason": f"{_SCAN_REFUSAL}; распознавание сорвалось: {exc}"}
+    if len(re.sub(r"\s", "", text)) < MIN_CHARS_PER_PAGE:
+        return {**result, "reason": f"{_SCAN_REFUSAL}; распознавание не нашло букв"}
+    return {**result, "text": text.strip(), "recognized": True,
+            "pages_read": limit,
+            "reason": "текст получен распознаванием скана: буквы и цифры "
+                      "восстановлены по картинке, цитаты не дословны — числа "
+                      "сверьте с документом"}
 
 
 # Что документ вообще может принести. Ключи — настоящие поля движка; всё, чего
@@ -252,6 +295,7 @@ def intake_prompt(document: dict[str, Any], budget: int = DOCUMENT_TEXT_BUDGET) 
  "notes": ["что важно, но в поля модели не ложится"]}}
 
 Документ «{document.get('filename') or 'без имени'}», страниц: {document.get('pages')}.
+{"ВНИМАНИЕ: текст получен РАСПОЗНАВАНИЕМ скана. Буквы и цифры восстановлены по картинке и могут быть прочитаны неверно. Цитируй так, как стоит в тексте. Если цифры числа читаются неуверенно (разорваны, слиплись, соседствуют с мусором), НЕ выписывай значение вовсе — угаданное число выглядит на экране так же, как прочитанное." if document.get("recognized") else ""}
 {"ВНИМАНИЕ: документ прочитан не целиком — %d знаков из %d. О том, чего нет в прочитанной части, вопросов не задавай: скажи, что документ длиннее." % (portion["read_chars"], portion["total_chars"]) if portion["trimmed"] else ""}
 --- начало документа ---
 {portion["text"]}
