@@ -72,7 +72,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.22.21"
+VERSION = "0.22.22"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -40219,6 +40219,7 @@ function groupPeek(name,fields){
 // перерисовывает список, а устаревшее число в заголовке хуже пустого.
 function refreshGroupPeeks(){
  refreshScheduleTotals();
+ renderObjectParkingCheck();
  document.querySelectorAll('details[data-group]').forEach(det=>{
   const grp=FIELD_GROUPS.find(g=>g[0]===det.dataset.group);if(!grp)return;
   const sum=det.querySelector('summary');if(!sum)return;
@@ -40269,6 +40270,12 @@ function renderInputs(){
      if(phasing&&phasing.enabled&&['kindergarten_start','school_start','clinic_start'].includes(id)){
        wrap.innerHTML+=`<div class="note" style="margin:0;padding:11px 12px">Определяется по выбранной очереди на вкладке «Очередность». По умолчанию — дата начала этой очереди.</div>`;
        grid.appendChild(wrap);return;
+     }
+     // Контроль суммы приобъектного паркинга. Текст считает СЕРВЕР рядом с
+     // числами: собранный на странице, он был бы вторым счётом той же
+     // величины, и однажды разошёлся бы с отчётом. Здесь только место под него.
+     if(id==='sports_parking_over_spaces'){
+      wrap.innerHTML+='<div id="objectParkingCheck" style="margin-top:6px"></div>';
      }
      if(id==='land_rights_cost_mln'&&krtRequirementEntered()){
        const wasVri=Number(inputs._krt_vri_cleared_mln||0);
@@ -42528,8 +42535,26 @@ function pfRveWarningHtml(r){
  return `<div style="margin-bottom:6px"><b>${title}</b></div>`
   +lines.map(line=>`<div style="margin-top:4px">${line}</div>`).join('');
 }
+// Три ответа, зелёный один: сходится с нормативом / не сходится на столько-то /
+// «сверить не с чем» — норматив не посчитан. Третий отдельный по той же причине,
+// что у сверки графика платежей за покупку: «сходится» на непосчитанной базе
+// читается как пройденная проверка.
+function renderObjectParkingCheck(){
+ const box=document.getElementById('objectParkingCheck');
+ if(!box)return;
+ const check=((lastResult||{}).parking||{}).check;
+ if(!check||!check.text){box.innerHTML='';return;}
+ // Тон у плашки на странице ровно один — `warning`. Придуманные `ok` и `bad`
+ // отрисовались бы обычной плашкой: выглядит стилизованным, а стиля нет.
+ // Сходится — нейтральная плашка, не сходится и «сверить не с чем» — жёлтая.
+ const tone=check.state==='ok'?'note':'note warning';
+ box.innerHTML='<div class="'+tone+'" style="margin:0;padding:9px 11px;font-size:12px">'
+  +escapeHtml(check.text)+'</div>';
+}
+
 function renderResult(){
  if(!lastResult)return;const r=lastResult,f=r.finance;
+ renderObjectParkingCheck();
  hideCalcLocked();
  if(typeof feedbackCalcs!=='undefined'){feedbackCalcs+=1;feedbackMaybeAsk()}
 
