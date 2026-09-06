@@ -29678,6 +29678,22 @@ def _goal_refusal_reason(
     # Кратность банка читают с двумя знаками: «1,20x», а не «1,200x».
     digits = 2 if unit == "x" else int(metric_meta.get("digits") or 2)
 
+    def _rounded(value: float, places: int) -> str:
+        return f"{float(value):,.{places}f}"
+
+    # Округление не имеет права делать фразу самопротиворечивой. На площадке
+    # «Маршала Прошлякова ул., вл. 9» подбор отказал при LLCR 1,197x, а на
+    # экране стояло «LLCR не ниже 1,20x не достигается ни при одном значении…
+    # — даже при нулевом значении выходит 1,20x» (снимок владельца,
+    # 06.09.2026): два числа фразы округлились в одно, и отказ читается как
+    # ошибка счёта. Знаков берём столько, чтобы порог и достигнутое
+    # различались, — но только когда они и правда разные.
+    if (closest_metric is not None and math.isfinite(float(closest_metric))
+            and abs(float(closest_metric) - float(target_value)) > 1e-9):
+        while (digits < 4
+               and _rounded(closest_metric, digits) == _rounded(target_value, digits)):
+            digits += 1
+
     def fmt_metric(value: float | None) -> str:
         if value is None or not math.isfinite(float(value)):
             return "не посчитан"
