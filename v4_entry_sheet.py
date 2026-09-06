@@ -205,57 +205,117 @@ def guide(entry: str, params: str, styles: str, report: dict[str, Any],
 
     out: list[str] = []
     at = 1
-    head = smap.get("entry_default")
+    # Стили — той же книги: имя листа как имя книги, пояснение как пояснение,
+    # заголовок раздела как заголовок раздела. Своя краска здесь читалась бы
+    # как чужая вставка, а инструкция — часть книги.
+    chrome = chrome_styles(params, styles)
 
     def row(cells: str) -> None:
         nonlocal at
         out.append(f'<x:row r="{at}">' + cells + "</x:row>")
         at += 1
 
-    row(_text_cell(f"A{at}", "DEVELOPAID · КАК ЗАПОЛНЯТЬ КНИГУ", None))
+    row(_text_cell(f"A{at}", "DEVELOPAID · КАК ЗАПОЛНЯТЬ КНИГУ", chrome["title"]))
     row(_text_cell(f"A{at}", "Собрано из самой книги: разделы прочитаны с листа "
                              "ввода, цвета — из стилей шаблона. Второй правды о "
-                             "книге здесь нет.", None))
+                             "книге здесь нет.", chrome["note"]))
     at += 1
 
-    row(_text_cell(f"A{at}", "ПРАВИЛА", None))
+    row(_text_cell(f"A{at}", "ПРАВИЛА", chrome["header"]))
     for name, text in lines:
-        row(_text_cell(f"A{at}", name, None) + _text_cell(f"B{at}", text, None))
+        row(_text_cell(f"A{at}", name, chrome["label"])
+            + _text_cell(f"B{at}", text, chrome["label"]))
     at += 1
 
-    row(_text_cell(f"A{at}", "РАЗДЕЛЫ ЛИСТА ВВОДА", None))
-    row(_text_cell(f"A{at}", "Раздел", None) + _text_cell(f"B{at}", "Строки", None))
+    row(_text_cell(f"A{at}", "РАЗДЕЛЫ ЛИСТА ВВОДА", chrome["header"]))
+    row(_text_cell(f"A{at}", "Раздел", chrome["header"])
+        + _text_cell(f"B{at}", "Строки", chrome["header"]))
     for index, (number, title) in enumerate(sections):
         end = (sections[index + 1][0] - 1) if index + 1 < len(sections) else max(entry_rows)
-        row(_text_cell(f"A{at}", title, None)
-            + _text_cell(f"B{at}", f"{number}–{end}", None))
+        row(_text_cell(f"A{at}", title, chrome["label"])
+            + _text_cell(f"B{at}", f"{number}–{end}", chrome["label"]))
     at += 1
 
-    row(_text_cell(f"A{at}", "СКОЛЬКО ЯЧЕЕК", None))
-    row(_text_cell(f"A{at}", "Переехало на лист ввода", None)
-        + _text_cell(f"B{at}", str(report.get("moved", 0)), None))
-    row(_text_cell(f"A{at}", "Перекрашено (была жёлтой, стала формулой)", None)
-        + _text_cell(f"B{at}", str(report.get("restyled", 0)), None))
+    row(_text_cell(f"A{at}", "СКОЛЬКО ЯЧЕЕК", chrome["header"]))
+    row(_text_cell(f"A{at}", "Переехало на лист ввода", chrome["label"])
+        + _text_cell(f"B{at}", str(report.get("moved", 0)), chrome["label"]))
+    row(_text_cell(f"A{at}", "Перекрашено (была жёлтой, стала формулой)", chrome["label"])
+        + _text_cell(f"B{at}", str(report.get("restyled", 0)), chrome["label"]))
     at += 1
 
-    row(_text_cell(f"A{at}", "ЧЕГО КНИГА НЕ СЧИТАЕТ", None))
+    row(_text_cell(f"A{at}", "ЧЕГО КНИГА НЕ СЧИТАЕТ", chrome["header"]))
     left = list(missing or [])
     if left:
-        row(_text_cell(f"A{at}", "Движок сообщил при сборке:", None))
+        row(_text_cell(f"A{at}", "Движок сообщил при сборке:", chrome["label"]))
         for item in left[:40]:
-            row(_text_cell(f"A{at}", str(item)[:300], None))
+            row(_text_cell(f"A{at}", str(item)[:300], chrome["label"]))
     else:
         row(_text_cell(f"A{at}", "Всё, что движок умеет писать в книгу, в неё "
-                                 "попало: список несобранного пуст.", None))
+                                 "попало: список несобранного пуст.", chrome["label"]))
     row(_text_cell(f"A{at}", "Отдельно: нормативов города, справочника районов и "
                              "расчёта ГлавАПУ в книге нет — их считает сервис, а "
-                             "в книгу приезжает результат.", None))
+                             "в книгу приезжает результат.", chrome["label"]))
 
     return ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
             '<x:worksheet xmlns:x="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+            '<x:sheetViews><x:sheetView workbookViewId="0">'
+            '<x:pane ySplit="2" topLeftCell="A3" activePane="bottomLeft" state="frozen"/>'
+            '</x:sheetView></x:sheetViews>'
             '<x:cols><x:col min="1" max="1" width="46" customWidth="1"/>'
             '<x:col min="2" max="2" width="96" customWidth="1"/></x:cols>'
             "<x:sheetData>" + "".join(out) + "</x:sheetData></x:worksheet>")
+
+
+def chrome_styles(sheet: str, styles: str) -> dict[str, int | None]:
+    """Стили обвязки — имя листа, пояснение под ним, подпись строки.
+
+    Лист ввода собираем мы, а выглядеть он обязан книгой владельца, а не
+    вставкой. Поэтому стили не выдумываются: имя берётся у A1 шаблона
+    («DEVELOPAID · ПОЛНАЯ ИНВЕСТИЦИОННАЯ МОДЕЛЬ»), пояснение — у A2, подпись
+    строки — у самого частого простого стиля колонки A. Ровно те три строки,
+    которые перенос пропускает как «шапка шаблона»: свои они и есть.
+
+    Не нашлось — `None`, и ячейка идёт без стиля. Подставить похожий значило бы
+    сказать цветом то, чего шаблон не говорит: цвет здесь утверждение.
+    """
+    rows = scan(sheet)
+    heads, entry = _header_styles(styles), style_map(styles)["entry"]
+
+    def style_of(number: int) -> int | None:
+        cell = rows.get(number, {}).get("A")
+        return cell["style"] if cell else None
+
+    seen: dict[int, int] = {}
+    for number, cells in rows.items():
+        if number in TITLE_ROWS:
+            continue
+        cell = cells.get("A")
+        if not cell or cell["style"] is None or cell["formula"]:
+            continue
+        if cell["style"] in heads or cell["style"] in entry:
+            continue
+        if cell_text(cell["attrs"], cell["body"], []):
+            seen[cell["style"]] = seen.get(cell["style"], 0) + 1
+    label = max(sorted(seen), key=lambda one: seen[one]) if seen else None
+    return {"title": style_of(TITLE_ROWS[0]), "note": style_of(TITLE_ROWS[1]),
+            "label": label, "header": min(heads) if heads else None}
+
+
+def _pane_xml(freeze: int) -> str:
+    """Закреплённая шапка листа — до `<x:sheetData>`.
+
+    Ширины сюда не идут: их отдаёт `_columns_xml`, и второй ответ на «сколько
+    места нужно подписи» разошёлся бы с первым молча. Здесь только то, чего у
+    листа не было вовсе: на ста тридцати строках шапка уезжает вверх, и человек
+    правит значение, не видя, чьё оно.
+
+    Порядок тегов в схеме листа обязателен: sheetViews идёт ПЕРЕД cols, иначе
+    Excel объявляет книгу повреждённой, а на экране это неотличимо от «книга не
+    собралась».
+    """
+    return (f'<x:sheetViews><x:sheetView workbookViewId="0">'
+            f'<x:pane ySplit="{freeze}" topLeftCell="A{freeze + 1}" '
+            f'activePane="bottomLeft" state="frozen"/></x:sheetView></x:sheetViews>')
 
 
 def _header_styles(styles: str) -> set[int]:
@@ -289,7 +349,18 @@ QUEUE_ROWS = (88, 89, 90, 91)
 TITLE_ROWS = (1, 2, 3)
 
 
+AUTHORED: list[str] = []
+
+
 def _text_cell(coord: str, value: str, style: int | None) -> str:
+    """Ячейка, которую пишем МЫ, — в отличие от перенесённой ячейки шаблона.
+
+    Отличать их обязан не тест, а сам сборщик: снаружи наша подпись и
+    перенесённая подпись шаблона выглядят одинаково (`inlineStr` с текстом), и
+    проверка «у нашей ячейки есть стиль» на глазок спрашивала бы стиль и с
+    чужой — то есть требовала от книги владельца того, чего в ней нет.
+    """
+    AUTHORED.append(coord)
     attr = f' s="{style}"' if style is not None else ""
     return (f'<x:c r="{coord}"{attr} t="inlineStr"><x:is><x:t>'
             + value.replace("&", "&amp;").replace("<", "&lt;") + "</x:t></x:is></x:c>")
@@ -433,18 +504,21 @@ def build(sheet: str, styles: str) -> tuple[str, str, dict[str, Any]]:
     made = plan(sheet, styles)
     rows, smap = made["rows"], made["styles"]
     entry_styles, formula_style = smap["entry"], smap["formula"]
+    chrome = chrome_styles(sheet, styles)
+    AUTHORED.clear()
     moved: dict[str, str] = {}
     moved_rows: dict[int, int] = {}
     out: list[str] = []
     at = 1
 
     out.append(f'<x:row r="{at}">'
-               + _text_cell(f"A{at}", "DEVELOPAID · ВВОДНЫЕ ПРОЕКТА", None) + "</x:row>")
+               + _text_cell(f"A{at}", "DEVELOPAID · ВВОДНЫЕ ПРОЕКТА", chrome["title"])
+               + "</x:row>")
     at += 1
     out.append(f'<x:row r="{at}">'
                + _text_cell(f"A{at}", "Печатают только здесь. Лист «Параметры модели» "
                                       "читает эти ячейки и считает по ним — вписывать там нечего.",
-                            None) + "</x:row>")
+                            chrome["note"]) + "</x:row>")
     at += 2
 
     for number in made["keep"]:
@@ -464,21 +538,22 @@ def build(sheet: str, styles: str) -> tuple[str, str, dict[str, Any]]:
 
     at += 1
     out.append(f'<x:row r="{at}">'
-               + _text_cell(f"A{at}", "ТЭП И СРОКИ ПО ОЧЕРЕДЯМ", None) + "</x:row>")
+               + _text_cell(f"A{at}", "ТЭП И СРОКИ ПО ОЧЕРЕДЯМ", chrome["header"])
+               + "</x:row>")
     at += 1
     out.append(f'<x:row r="{at}">'
-               + _text_cell(f"A{at}", "Показатель", None)
+               + _text_cell(f"A{at}", "Показатель", chrome["header"])
                + "".join(_text_cell(f"{chr(ord('B') + index)}{at}",
                                     cell_text(rows[QUEUE_ROWS[index]].get("C", {}).get("attrs", ""),
                                               rows[QUEUE_ROWS[index]].get("C", {}).get("body", ""),
-                                              []) or f"Очередь {index + 1}", None)
+                                              []) or f"Очередь {index + 1}", chrome["header"])
                           for index in range(len(QUEUE_ROWS)))
                + "</x:row>")
     at += 1
     for column in made["queue_columns"]:
         head = made["queue_header"].get(column) or {}
         title = cell_text(head.get("attrs", ""), head.get("body", ""), []) or column
-        parts = [_text_cell(f"A{at}", title, None)]
+        parts = [_text_cell(f"A{at}", title, chrome["label"])]
         for index, number in enumerate(QUEUE_ROWS):
             cell = rows.get(number, {}).get(column)
             target = f"{chr(ord('B') + index)}{at}"
@@ -492,6 +567,7 @@ def build(sheet: str, styles: str) -> tuple[str, str, dict[str, Any]]:
     # после. Переставишь — Excel объявит книгу повреждённой, а не поправит.
     entry_xml = ('<?xml version="1.0" encoding="utf-8"?>'
                  '<x:worksheet xmlns:x="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+                 + _pane_xml(3)
                  + _columns_xml(sheet)
                  + f'<x:sheetData>{"".join(out)}</x:sheetData>'
                  + _merges_xml(sheet, moved_rows)
@@ -508,4 +584,5 @@ def build(sheet: str, styles: str) -> tuple[str, str, dict[str, Any]]:
         params = re.sub(r'(<x:c r="%s")[^>]*?s="\d+"' % re.escape(coord),
                         lambda m: m.group(1) + f' s="{formula_style}"', params, count=1)
     return params, entry_xml, {"moved": len(moved), "restyled": len(made["restyle"]),
-                               "rows": len(made["keep"]), "map": moved}
+                               "rows": len(made["keep"]), "map": moved,
+                               "authored": list(AUTHORED)}
