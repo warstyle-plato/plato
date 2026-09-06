@@ -1123,7 +1123,7 @@ def clone_report(data_dir: Any, query: str, *, base: str = "msk", date: str = ""
         segment = subject.get("segment")
         notes["findings"] = narrative.findings(
             subject, peers, comparison, segment=segment,
-            premium=notes.get("premium_series"))
+            premium=notes.get("premium_series"), blocks=blocks)
         notes["analysis"] = narrative.analysis(
             subject, peers, comparison, segment=segment,
             premium=notes.get("premium_series"), cost=notes.get("price_of_premium"))

@@ -1553,32 +1553,45 @@ function roomsChart(rows, deals){
 // есть расхождение двух полос одной строки: продаётся больше, чем лежит в
 // остатке, значит товар уходит, и наоборот. Считает сервер, здесь только
 // длина полосы от максимума — оформление, а не экономика.
-function shareBars(rows, aName, bName, note){
+function shareBars(rows, aName, bName, note, gap){
   const live=(rows||[]).filter(r=>r.a!==null&&r.a!==undefined||r.b!==null&&r.b!==undefined);
   if(!live.length) return '';
+  // Серия, которой нет НИ В ОДНОЙ строке, не рисуется и не обещается легендой:
+  // цветной квадрат с подписью «доля в проданном» над полем, где этой полосы
+  // нет, читается как поломка отрисовки, а не как молчание источника. Причина
+  // приезжает с сервера (`gap`) и встаёт подписью здесь же — там, где смотрят.
+  const has=k=>live.some(r=>r[k]!==null&&r[k]!==undefined);
+  const seen={a:has('a'), b:has('b')};
+  const both=seen.a&&seen.b;
   const top=Math.max(...live.flatMap(r=>[r.a||0, r.b||0]), 1);
-  const H=26, W=640, L=132, R=52, T=26;
+  const H=both?26:22, W=640, L=132, R=52, T=26;
   const height=T+live.length*H+10;
   const len=v=>(v===null||v===undefined)?0:(W-L-R)*(v/top);
   let svg=`<svg viewBox="0 0 ${W} ${height}" width="100%" role="img">`;
-  svg+=`<rect x="${L}" y="6" width="9" height="9" fill="#C4581B"/>`
-     +`<text x="${L+13}" y="14" font-size="10.5" fill="#5b6b7d">${esc(aName)}</text>`
-     +`<rect x="${L+120}" y="6" width="9" height="9" fill="#8ea6bd"/>`
-     +`<text x="${L+133}" y="14" font-size="10.5" fill="#5b6b7d">${esc(bName)}</text>`;
+  let lx=L;
+  [['a','#C4581B',aName],['b','#8ea6bd',bName]].forEach(([k,colour,name])=>{
+    if(!seen[k]) return;
+    svg+=`<rect x="${lx}" y="6" width="9" height="9" fill="${colour}"/>`
+       +`<text x="${lx+13}" y="14" font-size="10.5" fill="#5b6b7d">${esc(name)}</text>`;
+    lx+=120;
+  });
   live.forEach((r,i)=>{
     const y=T+i*H;
     svg+=`<text x="${L-8}" y="${y+13}" text-anchor="end" font-size="11" fill="#16202b">${esc(r.title)}</text>`;
-    [[r.a,'#C4581B',0],[r.b,'#8ea6bd',9]].forEach(([v,colour,off])=>{
+    [[r.a,'#C4581B',0],[r.b,'#8ea6bd',both?9:0]].forEach(([v,colour,off])=>{
       if(v===null||v===undefined) return;
       svg+=`<rect x="${L}" y="${y+off}" width="${len(v).toFixed(1)}" height="8" rx="1.5" fill="${colour}"`
          +` data-tip="${esc(r.title+': '+num(v,1)+' %')}"></rect>`;
     });
-    const both=[r.a,r.b].filter(v=>v!==null&&v!==undefined).map(v=>num(v,1)+' %').join(' / ');
-    svg+=`<text x="${W-R+6}" y="${y+13}" font-size="10.5" fill="#5b6b7d">${esc(both)}</text>`;
+    const shown=[r.a,r.b].filter(v=>v!==null&&v!==undefined).map(v=>num(v,1)+' %').join(' / ');
+    svg+=`<text x="${W-R+6}" y="${y+13}" font-size="10.5" fill="#5b6b7d">${esc(shown)}</text>`;
   });
   svg+='</svg>';
+  // Подпись обещает сравнение двух полос — но обещать его, когда полоса одна,
+  // значит звать читателя искать на рисунке то, чего там нет.
+  const caption=both?note:(gap||'');
   return '<div class="wrap">'+svg+'</div>'
-    +(note?`<div class="muted" style="font-size:12.5px;margin-top:4px">${esc(note)}</div>`:'');
+    +(caption?`<div class="muted" style="font-size:12.5px;margin-top:4px">${esc(caption)}</div>`:'');
 }
 
 function roomsTable(b){
@@ -1589,7 +1602,8 @@ function roomsTable(b){
   const bars=shareBars(names.map(k=>{const a=ours[k]||{}, c=theirs[k]||{};
       return {title:a.title||c.title||k, a:a.sold_share_pct, b:a.rem_share_pct};}),
     'доля в проданном','доля в остатке',
-    'Полоса продаж длиннее полосы остатка — товар вымывается; короче — копится.');
+    'Полоса продаж длиннее полосы остатка — товар вымывается; короче — копится.',
+    (b.subject||{}).rooms_sold_gap);
   return '<h3>Комнатность: что берут и что остаётся</h3>'+bars+'<div class="wrap"><table class="peers">'
     +'<tr><th>Комнатность</th><th class="num">У нас продано</th><th class="num">У нас в остатке</th>'
     +'<th class="num">У соседей продано</th><th class="num">У соседей в остатке</th>'
@@ -1785,11 +1799,65 @@ function reportDigest(d){
     const say=((d.analysis||{}).blocks||{})[b.code];
     if(say&&say.text) lines.push(`${b.title}: ${say.text}`);
   });
+  // Комнатность, оплата и покупатели уезжают ЧИСЛАМИ, а не только нашей
+  // фразой по блоку: пересказ своего же вывода Платон объяснить может, а
+  // ответить «а что это значит против соседей» — нет, потому что долей у него
+  // на руках не было вовсе.
+  const block=code=>(d.blocks||[]).find(b=>b.code===code)||{};
+  const rooms=(block('rooms').subject||{}).rooms||{};
+  const peerRooms=(block('rooms').peers||{}).rooms||{};
+  const share=v=>v===null||v===undefined?'—':num(v,1)+' %';
+  const mixRows=Object.keys(rooms).map(k=>{
+    const a=rooms[k]||{}, c=peerRooms[k]||{};
+    return `${a.title||c.title||k}: продано ${share(a.sold_share_pct)}, остаток ${share(a.rem_share_pct)}`
+      +(c.rem_share_pct===undefined?'':`, у соседей остаток ${share(c.rem_share_pct)}`)
+      +(a.price_per_sqm?`, наш прайс ${num(a.price_per_sqm)} ₽/м²`:'')
+      +(c.price_per_sqm?` против ${num(c.price_per_sqm)}`:'');
+  });
+  const extra=[];
+  if(mixRows.length) extra.push({name:'доли по комнатности',
+    text:'Комнатность: '+mixRows.join('; ')+'.'});
+  const gapNote=(block('rooms').subject||{}).rooms_sold_gap;
+  if(gapNote) lines.push('Оговорка по комнатности: '+gapNote+'.');  // оговорка обязательна
+  const mix=(block('rooms').subject||{}).mix||{};
+  if(mix.gap_pct!==undefined&&mix.gap_pct!==null)
+    extra.push({name:'разложение разрыва цены', text:`Разложение разрыва цены: наш метр ${num(mix.own_at_own_mix)} ₽, `
+      +`наш же прайс на наборе соседей ${num(mix.own_at_peers_mix)} ₽, `
+      +`у соседей ${num(mix.peers_at_peers_mix)} ₽ `
+      +`(разрыв ${share(mix.gap_pct)}, из него набор ${share(mix.mix_pct)}, цены ${share(mix.level_pct)}).`});
+  const pay=block('payment').subject||{}, payPeers=block('payment').peers||{};
+  if(pay.mortgage_pct!==undefined)
+    extra.push({name:'ипотека', text:`Ипотека: у нас ${share(pay.mortgage_pct)}`
+      +(payPeers.median===undefined?'':`, у соседей медиана ${share(payPeers.median)}`)+'.'});
+  const who=block('channel').subject||{}, whoPeers=block('channel').peers||{};
+  if(who.company_pct!==undefined)
+    extra.push({name:'состав покупателей', text:`Покупатели: юрлиц у нас ${share(who.company_pct)}`
+      +(whoPeers.median===undefined?'':`, у соседей медиана ${share(whoPeers.median)}`)
+      +(who.resale_deals?`; переуступок за месяц ${num(who.resale_deals)}`:'')+'.'});
   const peers=(d.peers||[]).slice(0,12).map(p=>
     `${p.name} (${p.segment||'—'}, ${p.distance_km} км): ${p.price_per_sqm||'—'} ₽/м²,`
     +` ${p.units_per_month??'—'} ДДУ/мес`).join('; ');
   if(peers) lines.push('Соседи: '+peers+'.');
-  return lines.join('\n');
+  return fit(lines, extra);
+}
+
+// Предел вопроса у Платона — 4 000 знаков на ВСЁ сообщение, вместе с обвязкой
+// и вопросом человека. Сводка росла разделами и однажды перевалила бы его
+// молча — а отказ пришёл бы ровно там, где данных больше всего. Поэтому
+// обязательное (кто мы, выборка, вывод движка, разбор по разделам) стоит
+// всегда, а подробности встают, пока есть бюджет, и НЕ поместившееся
+// называется: молча урезанная сводка даёт ответ, выглядящий полным.
+const DIGEST_BUDGET=3000;
+function fit(lines, extra){
+  const out=lines.slice(), dropped=[];
+  const size=()=>out.join('\n').length;
+  (extra||[]).forEach(row=>{
+    if(size()+row.text.length+1<=DIGEST_BUDGET) out.push(row.text);
+    else dropped.push(row.name);
+  });
+  if(dropped.length) out.push('Не поместилось в вопрос: '+dropped.join(', ')
+    +' — спросите об этом отдельно.');
+  return out.join('\n');
 }
 
 let lastReport=null;
