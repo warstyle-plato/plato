@@ -43,6 +43,17 @@ TEP = {
 }
 
 
+def _live_tep() -> dict:
+    """Копия TEP этого файла: `apply_object_parking` пишет в строки, и общий
+    словарь модуля от прогона к прогону накапливал бы чужие числа."""
+    import copy
+    got = copy.deepcopy(TEP)
+    for key in ("offices", "standalone_retail"):
+        got[key].setdefault("saleable", 60_000.0)
+        got[key].setdefault("useful", 60_000.0)
+    return got
+
+
 def test_every_nonresidential_object_gets_its_own_line() -> None:
     got = core.parking_demand(_inputs(), TEP)
     assert [row["tep_key"] for row in got["rows"]] == [
@@ -233,10 +244,18 @@ def test_moscow_oblast_built_in_uses_the_confirmed_rule() -> None:
     assert row["source_confirmed"] is True
 
 
-def test_missing_coefficients_are_reported_not_silently_zero() -> None:
+def test_missing_coefficients_are_the_upper_edge_not_a_silent_zero() -> None:
+    """Без коэффициентов норма считается по верхнему краю и говорит об этом.
+
+    Прежде здесь стоял отказ: `missing` заполнялся, мест выходило ноль. Отказ
+    честен по форме, но у площадки без выгрузки не оставалось ни одного места,
+    и проект выглядел построенным без парковки вовсе (решение владельца,
+    06.09.2026: «ставь по верхнему краю с оговоркой»).
+    """
     got = core.parking_demand(_inputs(parking_k1=0, parking_k2=0), TEP)
-    assert got["missing"]
-    assert got["required_total"] == 0
+    assert got["required_total"] > 0
+    assert got["k1"] == 1.0 and got["k2"] == 1.0 and got["k_assumed"] is True
+    assert any("ВЕРХНИЙ КРАЙ" in line for line in got["assumptions"])
 
 
 def test_the_demand_reaches_the_calculation_result() -> None:
@@ -308,3 +327,51 @@ def test_more_guests_than_places_is_clamped_not_negative() -> None:
         _inputs(offices_enabled=True, offices_parking_under_spaces=10,
                 offices_parking_guest_pct=999), tep)
     assert tep["offices"]["parking_saleable_units"] == 0
+
+
+# --- верхний край без выгрузки ------------------------------------------------
+
+def test_without_the_city_export_the_norm_takes_the_upper_edge() -> None:
+    """Норма считается и без К1/К2 — по верхнему краю (владелец, 06.09.2026).
+
+    Прежде без выгрузки ГлавАПУ норматив отказывался, поля гаража оставались
+    нулевыми, и проект выглядел построенным без парковки вовсе. Цена верхнего
+    края измерена на проверочных вводных: 345 мест и 12 075 м² подземной части
+    против 130 и 4 550 при К1 = 0,75 и К2 = 0,5 — то есть максимум, а не
+    «примерно норматив», и оговорка обязана стоять рядом с числом.
+    """
+    demand = core.apply_object_parking(
+        _inputs(offices_enabled=True, retail_enabled=True,
+                parking_k1=0, parking_k2=0), _live_tep())
+    assert demand["own_units"] > 0, "без коэффициентов гараж снова пуст"
+    assert demand["k1"] == 1.0 and demand["k2"] == 1.0
+    assert demand["k_assumed"] is True
+    # Наружу идёт ПРИНЯТЫЙ коэффициент, а не пришедший нулём во вводных:
+    # показать одно, а посчитать другим — это два ответа об одной величине.
+    assert demand["k_input"] == {"k1": 0.0, "k2": 0.0}
+
+
+def test_the_upper_edge_is_named_next_to_the_number() -> None:
+    """Верхний край, подписанный нормой, читается как расчёт города."""
+    note = core.apply_object_parking(_inputs(offices_enabled=True, retail_enabled=True,
+                parking_k1=0, parking_k2=0), _live_tep())["note"]
+    assert "ВЕРХНИЙ КРАЙ" in note
+    assert "не расчёт города" in note
+    assert "выгрузкой ГлавАПУ" in note
+
+
+def test_a_real_export_leaves_no_caveat_behind() -> None:
+    """Пришедший коэффициент оговорки не получает — иначе она перестанет читаться."""
+    note = core.apply_object_parking(_inputs(offices_enabled=True, retail_enabled=True,
+                parking_k1=0.75, parking_k2=0.5), _live_tep())["note"]
+    assert "ВЕРХНИЙ КРАЙ" not in note
+
+
+def test_the_upper_edge_really_costs_more_places() -> None:
+    """Предохранитель: край обязан быть ВЫШЕ расчёта по выгрузке."""
+    edge = core.apply_object_parking(_inputs(offices_enabled=True, retail_enabled=True,
+                parking_k1=0, parking_k2=0), _live_tep())
+    real = core.apply_object_parking(_inputs(offices_enabled=True, retail_enabled=True,
+                parking_k1=0.75, parking_k2=0.5), _live_tep())
+    assert edge["own_units"] > real["own_units"], (edge["own_units"], real["own_units"])
+    assert edge["own_under_gns"] > real["own_under_gns"]

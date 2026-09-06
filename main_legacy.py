@@ -9508,7 +9508,17 @@ def _object_parking_note(demand: dict[str, Any], own: list[dict[str, Any]]) -> s
     if in_house:
         head += (f" Из них {in_house} — встроенной коммерции МКД: её места в "
                  "подземном паркинге дома, своего гаража у неё нет.")
-    return (head + f" Строим {built}, продаётся {sold}: " + "; ".join(parts) + ".")
+    text = head + f" Строим {built}, продаётся {sold}: " + "; ".join(parts) + "."
+    # Оговорка живёт у числа, а не в соседнем месте. Без выгрузки ГлавАПУ норма
+    # берёт верхний край (К1 = К2 = 1) — это МАКСИМУМ мест, и подписанный
+    # нормой он читается как расчёт города. Число при этом попадает в поля
+    # гаража, то есть в метры, в CAPEX и в выручку: молчать о его
+    # происхождении дороже, чем показать длинную фразу.
+    caveats = [line for line in (demand.get("assumptions") or []) if line]
+    if caveats:
+        spoken = "; ".join(caveats)
+        text += " " + spoken[:1].upper() + spoken[1:] + "."
+    return text
 
 
 def parking_demand(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
@@ -9540,6 +9550,11 @@ def parking_demand(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any
                       or parking_norms.DESIGN_MODE_DEFAULT)
     rows: list[dict[str, Any]] = []
     required_named = 0
+    # Коэффициент, ПРИНЯТЫЙ расчётом, а не пришедший во вводных: без выгрузки
+    # ГлавАПУ норма берёт верхний край (решение владельца, 06.09.2026), и
+    # отдавать наружу ноль значило бы показать одно, а посчитать другим.
+    k1_applied = k2_applied = 0.0
+    k_assumed = False
     for tep_key, msk_function, mo_function, built_in in _PARKING_DEMAND_PRODUCTS:
         row = (tep or {}).get(tep_key) or {}
         # База у юрисдикций РАЗНАЯ, и это часть норматива, а не подробность.
@@ -9568,6 +9583,10 @@ def parking_demand(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any
                 "built_in" if built_in else mo_function, area, design_mode=design_mode)
         got["tep_key"] = tep_key
         got["label"] = row.get("label") or tep_key
+        if got.get("k1") is not None:
+            k1_applied = float(got.get("k1") or 0.0)
+            k2_applied = float(got.get("k2") or 0.0)
+            k_assumed = k_assumed or bool(got.get("k1_assumed") or got.get("k2_assumed"))
         required_named += int(got.get("required_spaces") or 0)
         rows.append(got)
     assumptions: list[str] = []
@@ -9576,7 +9595,9 @@ def parking_demand(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any
     missing = [f"{row['label']}: {row.get('reason')}" for row in rows if row.get("reason")]
     return {
         "jurisdiction": jurisdiction,
-        "k1": k1, "k2": k2,
+        "k1": k1_applied or k1, "k2": k2_applied or k2,
+        "k_input": {"k1": k1, "k2": k2},
+        "k_assumed": k_assumed,
         "design_mode": design_mode if jurisdiction == parking_norms.MOSCOW_OBLAST else "",
         "rows": rows,
         "required_total": required_named,
