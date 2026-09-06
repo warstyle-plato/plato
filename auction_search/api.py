@@ -1180,7 +1180,13 @@ def install(app: FastAPI) -> None:
         # стоят две площадки, опознавала бы каждую из них.
         siblings = [str(item.get("name") or "") for item in _krt_all_sites()
                     if str(item.get("slug") or "") != mine]
-        found = krt_open_sources.read_findings(docs, name, siblings)
+        # Паспорт площадки едет вместе с именем: публикация, назвавшая её
+        # гектары или объём, говорит о НАШЕЙ территории даже там, где номер
+        # владения не называет никто — «Прошлякова, вл. 9» знают как развитие
+        # ЖК «Строгино 360» (владелец, 06.09.2026).
+        passport = {key: (project or {}).get(key) for key in
+                    ("area_ha", "housing_gfa_sqm", "total_gfa_sqm")}
+        found = krt_open_sources.read_findings(docs, name, siblings, passport)
         # Рынок знает площадку по имени проекта, а не по адресу: «Строгино 360»
         # знают все, «Маршала Прошлякова ул., вл. 9» — никто. Имя берётся из
         # публикации, где оно стоит рядом с адресом, и вторым кругом ищется уже
@@ -1193,7 +1199,7 @@ def install(app: FastAPI) -> None:
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"{type(exc).__name__}: {exc}")
             else:
-                found = krt_open_sources.read_findings(docs, name, siblings)
+                found = krt_open_sources.read_findings(docs, name, siblings, passport)
         # Телеграм-каналы говорят о площадке раньше прессы (владелец,
         # 01.09.2026: «а поиск информации можно через телеграм-каналы ещё
         # вести?»). Спрашиваются тем же платным индексом с ограничением по
@@ -1208,7 +1214,7 @@ def install(app: FastAPI) -> None:
                 errors.append(f"{type(exc).__name__}: {exc}")
             else:
                 tg_ok = True
-                found = krt_open_sources.read_findings(docs, name, siblings)
+                found = krt_open_sources.read_findings(docs, name, siblings, passport)
         found.update({"available": True, "queries": asked, "errors": errors[:2],
                       "checked_at": int(time.time()),
                       # Спросили каналы и там пусто — не то же, что не спросили.
