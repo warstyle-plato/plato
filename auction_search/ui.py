@@ -75,7 +75,7 @@ __DEVELOPAID_CONTOUR__
       <div class="filter-actions"><button id="krtRefresh" class="primary">Обновить каталог</button><button id="krtRankBtn">Оценить отобранные моделью</button><button id="krtPressBtn" title="Читает публикации и каналы по ВСЕМ планируемым площадкам и по площадкам с проектом решения: до пяти поисковых запросов на площадку, по каждому её адресу. Уже спрошенные пропускаются — занятая площадка свободной не станет. У площадок в реализации застройщика называет сама карточка города, поиска они не требуют. У проекта решения без адреса в заголовке спрашивать нечего: такие названы числом, а не пропущены молча.">Прочитать публикации по планируемым</button><button id="krtExport">Выгрузить Excel</button></div>
     </div>
     <div class="stats"><div class="stat"><b id="krtCount">—</b><span id="krtCountNote">проектов</span></div><div class="stat"><b id="krtArea">—</b><span>га территории</span></div><div class="stat"><b id="krtHousing">—</b><span>м² жилья</span></div><div class="stat"><b id="krtGfa">—</b><span>м² всего</span></div></div>
-    <details class="fold" id="krtMapFold"><summary>Карта КРТ Москвы — 263 площадки с официальными границами</summary>
+    <details class="fold" id="krtMapFold"><summary id="krtMapSummary">Карта КРТ Москвы — официальные границы площадок</summary>
       <div class="foldbody"><div id="krtMapBody"><div class="notice">Открой, и карта построится.</div></div></div>
     </details>
     <div id="krtFilterNote" class="source" style="margin:6px 2px"></div>
@@ -1922,8 +1922,18 @@ function renderKrt(){const a=state.krtFiltered,body=$('krtRows');body.innerHTML=
  // 01.09.2026: «в КРТ осталось 58 объектов, как так»). Число, названное не тем
  // именем, выглядит посчитанным — и проверить его нечем.
  const whole=(state.krt||[]).length;
- $('krtCountNote').textContent=whole&&whole!==a.length
-   ? 'проектов в отборе · всего в каталоге '+whole : 'проектов';$('krtArea').textContent=sumKrt(a,'area_ha',1);$('krtHousing').textContent=sumKrt(a,'housing_gfa_sqm',0);$('krtGfa').textContent=sumKrt(a,'total_gfa_sqm',0);a.forEach(x=>{const sc=krtScore(x),model=state.krtModels[x.slug],light=model?.traffic_light,tr=document.createElement('tr');
+ // Схлопнутое называется У ЧИСЛА, которое из-за него упало. Строка снимка под
+ // картой это уже говорила, а владелец смотрел на плитку и спросил «куда делись
+ // 38 КРТ?» (06.09.2026): ответ был двумя блоками ниже, среди служебных сведений
+ // о снимке, и на вопрос, заданный плиткой, не отвечал.
+ const twice=Number(state.krtSecondPublications||0);
+ const gone=twice?' · схлопнуто '+twice+' вторых публикаций одного документа':'';
+ $('krtCountNote').textContent=(whole&&whole!==a.length
+   ? 'проектов в отборе · всего в каталоге '+whole : 'проектов')+gone;
+ $('krtCountNote').title=twice
+   ? 'Проект решения о КРТ город публикует дважды — в разделе ДГИ и в разделе '
+     +'ДИПП. Это одна и та же бумага, поэтому строка одна: адрес второй '
+     +'публикации стоит в её карточке. Площадки при этом не потеряны.' : '';$('krtArea').textContent=sumKrt(a,'area_ha',1);$('krtHousing').textContent=sumKrt(a,'housing_gfa_sqm',0);$('krtGfa').textContent=sumKrt(a,'total_gfa_sqm',0);a.forEach(x=>{const sc=krtScore(x),model=state.krtModels[x.slug],light=model?.traffic_light,tr=document.createElement('tr');
  const title=sc.counted?`Потенциал по ТЭП ${sc.base}; расчёт снял ${sc.cut}%. ${light?.label||''}`:('Балл по ТЭП; модель ещё не считалась'+(sc.reason?'. '+sc.reason:''));
  const fresh=x.is_new?'<span class="tag new" title="Появилась в каталоге недавно">новое</span>':'';
  // Строка без карточки честно говорит, чего у неё нет: ТЭП, балла и модели.
@@ -3002,6 +3012,12 @@ async function loadKrtMap(){
   KRT_MAP.data=d;
   box.innerHTML=krtMapMarkup(d);
   krtMapBind();
+  // Число площадок карты — ответ источника, а не подпись: в заголовке стояло
+  // зашитое «263 площадки», а файл города к 06.09.2026 нёс уже 277. Пока карту
+  // не открыли, числа нет вовсе: «не спрашивали» и «столько-то» — разные ответы.
+  const head=document.getElementById('krtMapSummary');
+  const seen=Number(d.count||(d.sites||[]).length||0);
+  if(head&&seen)head.textContent='Карта КРТ Москвы — '+seen+' площадок с официальными границами';
  }catch(e){
   // Источник не ответил — это ответ, а не пустая карта: пустое поле читалось
   // бы как «площадок нет».
