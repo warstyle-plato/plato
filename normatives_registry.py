@@ -269,6 +269,62 @@ def _card(entry: dict[str, Any]) -> str:
 </article>"""
 
 
+def guide_reference_html(css_prefix: str = "gnorm") -> str:
+    """Справочник нормативной базы для руководства: три колонки по уровням.
+
+    Состав берётся из САМОГО реестра, а не переписывается в руководство: копию
+    негде обновлять, а разошедшись, она пообещала бы читателю основание,
+    которого под числом нет. У каждой позиции — к чему относится и ссылка на
+    оригинальный исходник; проверить нас можно только по нему.
+
+    Реестр не прочитался — это говорится вслух. Пустой блок и отсутствующий
+    выглядят одинаково, а значат разное.
+    """
+    try:
+        rows = _merged_registry()
+    except Exception as error:                       # noqa: BLE001 - причина важнее типа
+        return (f'<p class="{css_prefix}-fail">Справочник нормативной базы не собран: '
+                f'{html.escape(str(error))}.</p>')
+    if not rows:
+        return (f'<p class="{css_prefix}-fail">Справочник нормативной базы пуст — '
+                'реестр не прочитан.</p>')
+
+    columns: list[tuple[str, list[dict[str, Any]]]] = []
+    for scope in ("Москва", "Московская область", "Общие для РФ"):
+        got = [row for row in rows if row.get("scope") == scope]
+        if got:
+            columns.append((scope, got))
+    # Уровень, которого нет в перечислении, не пропадает молча: он встаёт своей
+    # колонкой под собственным именем.
+    known = {scope for scope, _ in columns}
+    for row in rows:
+        scope = str(row.get("scope") or "").strip() or "Прочее"
+        if scope not in known:
+            known.add(scope)
+            columns.append((scope, [r for r in rows if str(r.get("scope") or "") == scope]))
+
+    parts = []
+    for scope, items in columns:
+        cells = []
+        for row in items:
+            name = html.escape(str(row.get("short_name") or row.get("title") or ""))
+            url = str(row.get("source_url") or "").strip()
+            title = html.escape(str(row.get("title") or ""))
+            affects = [str(x) for x in (row.get("affects") or []) if str(x).strip()]
+            what = html.escape("; ".join(affects[:2])) if affects else ""
+            amendment = html.escape(str(row.get("latest_amendment") or "").split(";")[0].strip())
+            link = (f'<a href="{html.escape(url)}" target="_blank" rel="noopener">исходник</a>'
+                    if url else '<span class="{0}-nolink">ссылки на исходник нет</span>'.format(css_prefix))
+            cells.append(
+                f'<li><b title="{title}">{name}</b>'
+                + (f'<span>{what}</span>' if what else "")
+                + (f'<em>в редакции: {amendment}</em>' if amendment else "")
+                + f'<span class="{css_prefix}-src">{link}</span></li>')
+        parts.append(f'<div class="{css_prefix}-col"><h4>{html.escape(scope)}</h4>'
+                     f'<ul>{"".join(cells)}</ul></div>')
+    return f'<div class="{css_prefix}-grid">{"".join(parts)}</div>'
+
+
 def _legal_footer() -> str:
     """Подвал документов ИП: состав разбирается из `PAGE`, копии здесь нет.
 
