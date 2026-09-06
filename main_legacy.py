@@ -9380,7 +9380,13 @@ def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[st
         # остальных величин: руками > документ КРТ > выгрузка ГлавАПУ >
         # норматив, — и вписанное руками норму перебивает.
         by_norm = False
-        if enabled and under + over == 0:
+        # Очередь, которой при делении досталось ноль мест из заданных руками,
+        # строит ноль — а не зовёт норматив заново. Пустое поле значит «не
+        # задано», а обнулённая доля — «здесь их нет»: без этого признака
+        # мелкая очередь получала бы норматив вместо своей нулевой доли, и
+        # сумма по очередям переставала сходиться с проектом.
+        by_hand = str(prefix) in set(inputs.get("_phase_parking_by_hand") or ())
+        if enabled and under + over == 0 and not by_hand:
             required = int((required_by_key.get(tep_key) or 0))
             if required > 0:
                 under, by_norm = required, True
@@ -9424,6 +9430,11 @@ def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[st
         })
     demand["own"] = own
     demand["own_units"] = sum(item["units"] for item in own if item["enabled"])
+    # Построенное и продаваемое — два разных числа, и складывает их движок, а
+    # не каждая поверхность заново: у ТЦ и ФОКа места не продаются вовсе, и
+    # второй счёт однажды сказал бы про них другое.
+    demand["own_saleable_units"] = sum(item["saleable_units"] for item in own if item["enabled"])
+    demand["own_under_gns"] = sum(item["under_gns"] for item in own if item["enabled"])
     demand["area_per_space_sqm"] = per_space
     demand["note"] = _object_parking_note(demand, own)
     return demand
@@ -25489,12 +25500,21 @@ def calculate(req: CalcRequest) -> dict:
             # поверхностью заново.
             "transfer_units": given,
             "saleable_units": max(0.0, units - guest - given),
+            # Гараж отдельно стоящего объекта живёт полем на его же строке, и
+            # до отчёта эти поля не доезжали вовсе: строка собирается по
+            # списку ключей, а их в списке не было. Свод очередей складывает
+            # строки отчётов — значит подземная площадь и места гаража на
+            # своде выходили нулём при живом гараже в каждой очереди.
+            "under_gns": n(row, "under_gns"),
+            "parking_units": n(row, "parking_units"),
+            "parking_saleable_units": n(row, "parking_saleable_units"),
         })
 
     tep_total = {
         key: sum(row[key] for row in tep_rows)
         for key in ("gns", "total_area", "useful", "saleable", "transfer", "units",
-                    "guest_units", "transfer_units", "saleable_units")
+                    "guest_units", "transfer_units", "saleable_units",
+                    "under_gns", "parking_units", "parking_saleable_units")
     }
 
     total_revenue = fin["total_revenue"]
@@ -26751,11 +26771,54 @@ def _phase_sales_price_inflation_factor(phasing: dict[str, Any], offset_months: 
 def _zero_tep_row(row: dict[str, Any]) -> dict[str, Any]:
     result = copy.deepcopy(row)
     for key in ("gns", "total_area", "useful", "saleable", "transfer", "units",
-                "guest_units", "transfer_units"):
-        if key in ("guest_units", "transfer_units") and key not in row:
+                "guest_units", "transfer_units",
+                "under_gns", "parking_units", "parking_saleable_units"):
+        if key not in row and key in ("guest_units", "transfer_units",
+                                      "under_gns", "parking_units",
+                                      "parking_saleable_units"):
             continue
         result[key] = 0.0
     return result
+
+
+def _phase_object_share(master_row: Any, phase_row: Any) -> float:
+    """Какая доля объекта досталась этой очереди — по его же метрам.
+
+    Второго правила размещения тут нет: у объекта, посаженного в очередь
+    целиком, доля равна единице в своей очереди и нулю в остальных; у
+    разложенного долями — его доле; у объявленного метрами очереди — доле
+    объявленного. Мера берётся та, что у объекта есть: ГНС, иначе продаваемая,
+    иначе штуки — у наземного паркинга метров нет вовсе.
+    """
+    master = master_row or {}
+    phase = phase_row or {}
+    for key in ("gns", "saleable", "units"):
+        base = n(master, key)
+        if base > 0:
+            return max(0.0, n(phase, key) / base)
+    return 0.0
+
+
+def _phase_place_allocation(
+    state: dict[str, tuple[float, int]],
+    key: str,
+    total: float,
+    share: float,
+) -> int:
+    """Целые места по нарастающей доле — сумма по очередям равна проектной.
+
+    Место неделимо, а доли очередей округляются каждая сама по себе: три
+    очереди по трети от ста мест дали бы 33+33+33 и потеряли бы место.
+    Считается нарастающим итогом, поэтому лишнее и недостающее забирает
+    следующая очередь, а последняя закрывает остаток.
+    """
+    total_places = max(0, int(round(float(total or 0.0))))
+    seen_share, given = state.get(key, (0.0, 0))
+    seen_share = min(1.0, seen_share + max(0.0, share))
+    target = int(round(total_places * seen_share))
+    allocated = max(0, target - given)
+    state[key] = (seen_share, given + allocated)
+    return allocated
 
 
 def _shift_iso(value: Any, months: int) -> Any:
@@ -27862,6 +27925,16 @@ def _consolidate_phase_results(
             "full_project_cost": full_cost,
             "monetizable_saleable_sqm": saleable,
             "apartment_saleable_sqm": apartment_saleable,
+            # Гараж отдельно стоящих объектов по всему проекту — сумма
+            # очередей, посчитанная ЗДЕСЬ, а не складываемая на экране: у
+            # свода и у таблицы очередей иначе вышло бы два ответа об одном
+            # обязательстве, и оба выглядели бы верными.
+            "object_parking_units": sum(
+                float((r.get("parking") or {}).get("own_units") or 0.0) for r in results),
+            "object_parking_saleable_units": sum(
+                float((r.get("parking") or {}).get("own_saleable_units") or 0.0) for r in results),
+            "object_parking_under_gns": sum(
+                float((r.get("parking") or {}).get("own_under_gns") or 0.0) for r in results),
             "average_apartment_price_th": avg_apt_price,
             "full_cost_per_saleable_th": per_th(full_cost, saleable),
             "full_cost_per_gns_th": per_th(full_cost, project_gns),
@@ -28231,6 +28304,10 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
             )
             total_social_construction += capacity * unit_cost * 1_000_000 * scenario_cost
 
+    # Нарастающая раздача мест гаража объектов: сумма по очередям обязана
+    # сойтись с проектной, а место неделимо.
+    object_parking_split: dict[str, tuple[float, int]] = {}
+
     for idx in range(count):
         cfg = phases_cfg[idx]
         name = str(cfg.get("name") or f"О{idx+1}")
@@ -28456,6 +28533,30 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
         # is authoritative once a user edits it; consolidation remains bottom-up.
         explicit_products = _apply_explicit_phase_products(p_tep, p_inputs, cfg)
 
+        # Места гаража объекта — вводная ПРОЕКТА, и в карте деления по очередям
+        # её не было: у объекта, разложенного долями, КАЖДАЯ очередь строила и
+        # продавала весь гараж. На офисе из 100 мест это 200 мест и 5 600 м²
+        # подземной части вместо 100 и 2 800 — двойной CAPEX подземной части и
+        # двойная выручка паркинга, при верном на вид ТЭП. Ровно так уже
+        # терялись гостевые места и решение по подземному паркингу проекта.
+        # Доля берётся у метров самого объекта, а не выводится вторым правилом
+        # размещения, и стоит ПОСЛЕ явных метров очереди: до них у объявленного
+        # метрами объекта в строке ещё проектное число.
+        for tep_key, prefix, enabled_key, _sellable in OBJECT_PARKING_OBJECTS:
+            share = _phase_object_share(t_master.get(tep_key), p_tep.get(tep_key))
+            if not p_inputs.get(enabled_key):
+                share = 0.0
+            by_hand = False
+            for suffix in ("under", "over"):
+                field = f"{prefix}_parking_{suffix}_spaces"
+                if n(x_master, field) > 0:
+                    by_hand = True
+                p_inputs[field] = float(_phase_place_allocation(
+                    object_parking_split, field, n(x_master, field), share))
+            if by_hand:
+                p_inputs["_phase_parking_by_hand"] = sorted(
+                    set(p_inputs.get("_phase_parking_by_hand") or ()) | {prefix})
+
         # Долг предыдущей очереди, принятый этой по генеральному соглашению.
         # Список кладёт обёртка calculate_phased после первого прохода: пока
         # очереди не посчитаны, переносить нечего.
@@ -28593,6 +28694,15 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
             "gns_sqm":p_gns,"total_expenses":p_expenses,
             "underground_gns_sqm":float(result["summary"].get("underground_gns_sqm") or 0.0),
             "construction_volume_sqm":float(result["summary"].get("construction_volume_sqm") or 0.0),
+            # Гараж отдельно стоящих объектов очереди: построено, продаётся и
+            # сколько это подземной площади. Считает движок очереди, экран
+            # только печатает — второй счёт той же величины однажды разошёлся
+            # бы с первым, и обе строки выглядели бы верными.
+            "object_parking_units":float((result.get("parking") or {}).get("own_units") or 0.0),
+            "object_parking_saleable_units":float(
+                (result.get("parking") or {}).get("own_saleable_units") or 0.0),
+            "object_parking_under_gns":float(
+                (result.get("parking") or {}).get("own_under_gns") or 0.0),
             "revenue_per_saleable_th":per_th(result["summary"]["revenue"], p_saleable),
             "revenue_per_gns_th":per_th(result["summary"]["revenue"], p_gns),
             "capex_per_gns_th":per_th(result["summary"]["capex"], p_gns),
@@ -42414,9 +42524,27 @@ function renderPhaseComparison(){
                  :'Непогашенный долг ПФ на конец очереди',
                  c.map(x=>money(x.ending_pf||0)),money(cons.finance.ending_pf||0)]);
  }
+ // Гараж отдельно стоящих объектов строится в СВОЕЙ очереди, и строка
+ // заводится вместе с числом: пустая «0 мест» у проекта без ОСЗ — шум.
+ // Построено и продаётся — два разных числа: у ТЦ и ФОКа места обеспечивают
+ // посетителей и не продаются вовсе, у офисника продаются все, кроме
+ // гостевых. Оба считает движок очереди, экран их только печатает.
+ const objParkRows=[];
+ if(c.some(x=>Number(x.object_parking_units||0)>0)){
+  objParkRows.push(['Паркинг отдельно стоящих объектов — мест',
+   c.map(x=>num(x.object_parking_units||0)+' шт.'),
+   num(cs.object_parking_units||0)+' шт.']);
+  objParkRows.push([' · из них продаётся',
+   c.map(x=>num(x.object_parking_saleable_units||0)+' шт.'),
+   num(cs.object_parking_saleable_units||0)+' шт.']);
+  objParkRows.push([' · подземная часть под объектами',
+   c.map(x=>num(x.object_parking_under_gns||0)+' м²'),
+   num(cs.object_parking_under_gns||0)+' м²']);
+ }
  const rows=[
   ['Продаваемая площадь',c.map(x=>num(x.saleable_sqm)+' м²'),num(csSale)+' м²'],
   ['Общая площадь — ГНС',c.map(x=>num(x.gns_sqm)+' м²'),num(csGns)+' м²'],
+  ...objParkRows,
   ['Выручка',c.map(x=>money(x.revenue)),money(cs.revenue)],
   ...prodRows,
   ['Цена реализации на м² продаваемой',c.map(x=>num2(x.revenue_per_saleable_th)+' тыс ₽/м²'),perTh(cs.revenue,csSale)],
