@@ -1,14 +1,19 @@
-"""Места объекта принадлежат объекту, а не общей куче.
+"""Приобъектная норма — справка; паркинг объекта — решение человека.
 
-Правило владельца (24.08.2026). Норматив порождает ОБЪЕКТ: у офисника в
-третьей очереди своя потребность, у ТЦ во второй — своя. Прибавлять их к общей
-потребности проекта нельзя: общая куча разносится по очередям своими правилами
-и приезжает не туда — сегодня `discrete.above_parking` по умолчанию вторая
-очередь, а `discrete.offices` третья, и паркинг офисника построился бы за год
-до офисника.
+Две величины меряются местами и стоят на экране рядом, и однажды их приняли за
+одно число: норматив приобъектной парковки взяли источником гаража, и модель
+построила 7 770 м² подземного паркинга, начислила 683,8 млн ₽ СМР и продала
+410,0 млн ₽ гостевых мест. Владелец (06.09.2026): «приобъектную нельзя
+поставить на кадастр значит нельзя и продать. Это кусок асфальта».
 
-Второе правило оттуда же: офисник или ТЦ без парковки — это не «ноль мест», а
-незаданный вопрос. Поэтому потребность считается всегда.
+Отсюда два утверждения, и оба держит этот файл:
+- норматив считается всегда и не строит НИЧЕГО — ни метров ТЭП, ни выручки;
+- гараж объекта задаётся двумя числами человека, и норматив в них не заглядывает.
+
+Правило места оттуда же (владелец, 24.08.2026): места объекта принадлежат
+объекту. Общая куча разносится по очередям своими правилами и приезжает не туда
+— `discrete.offices` по умолчанию третья очередь, и гараж офисника построился бы
+за год до офисника.
 
 Запуск: python3 -m pytest tests/test_parking_belongs_to_the_object.py -q
 """
@@ -78,56 +83,100 @@ def test_the_base_is_the_above_ground_area_of_the_object() -> None:
     assert row["input_unit"] == pn.UNIT_ABOVE_NONRES_SQM
 
 
-def test_places_go_underground_by_default() -> None:
-    """Оба поля нулевые — это «не задано», и умолчание названо допущением."""
-    got = core.parking_demand(_inputs(), TEP)
-    assert got["to_overground"] == 0
-    assert got["to_underground"] == got["required_total"]
-    assert got["check"]["state"] == "ok"
+def test_the_norm_builds_nothing_and_sells_nothing() -> None:
+    """Приобъектная стоянка — асфальт: ни метров ТЭП, ни выручки.
+
+    Её нельзя поставить на кадастр, значит нельзя и продать (владелец,
+    06.09.2026). Ровно этой проверки не было, когда норматив взяли источником
+    гаража: он построил 7 770 м² подземного паркинга и продал 410,0 млн ₽
+    гостевых мест, а весь набор остался зелёным.
+    """
+    tep = {key: dict(row) for key, row in TEP.items()}
+    got = core.apply_object_parking(_inputs(), tep)
+    assert got["required_total"] > 0, "иначе проверять нечего"
+    for key, row in tep.items():
+        assert core.n(row, "under_gns") == 0, key
+        assert core.n(row, "parking_units") == 0, key
+    assert got["own_units"] == 0
+
+
+def test_the_garage_is_a_human_number_not_the_norm() -> None:
+    """Число мест гаража задаёт человек. Норматив в него не заглядывает."""
+    tep = {key: dict(row) for key, row in TEP.items()}
+    got = core.apply_object_parking(
+        _inputs(offices_enabled=True,
+                offices_parking_under_spaces=40,
+                offices_parking_over_spaces=10), tep)
+    offices = next(item for item in got["own"] if item["tep_key"] == "offices")
+    assert (offices["under_spaces"], offices["over_spaces"]) == (40, 10)
+    # Норматив офисов — 596 мест; в гараж из них не уехало ни одного.
+    assert offices["units"] == 50
+    assert tep["offices"]["parking_units"] == 50
+    assert tep["offices"]["under_gns"] == 40 * got["area_per_space_sqm"]
 
 
 def test_the_two_numbers_move_only_their_own_object() -> None:
     """Одна пара полей на проект отправила бы наверх и чужие места."""
-    got = core.parking_demand(_inputs(offices_parking_over_spaces=40,
-                                      offices_parking_under_spaces=40), TEP)
-    offices = next(r for r in got["rows"] if r["tep_key"] == "offices")
-    retail = next(r for r in got["rows"] if r["tep_key"] == "standalone_retail")
-    assert (offices["under_spaces"], offices["over_spaces"]) == (40, 40)
-    assert retail["over_spaces"] == 0
-    assert retail["under_spaces"] == retail["required_spaces"]
-    assert got["to_overground"] == 40
+    tep = {key: dict(row) for key, row in TEP.items()}
+    core.apply_object_parking(
+        _inputs(offices_enabled=True, retail_enabled=True,
+                offices_parking_under_spaces=40,
+                offices_parking_over_spaces=40), tep)
+    assert tep["offices"]["parking_units"] == 80
+    assert tep["standalone_retail"]["parking_units"] == 0
 
 
-def test_a_lost_field_means_underground_not_a_silent_move() -> None:
-    """Потерянное поле приходит нулём, и ноль обязан значить прежнее.
+def test_built_in_commerce_has_no_garage_of_its_own() -> None:
+    """Её машино-места лежат в общем подземном паркинге проекта.
+
+    Свой гараж у встроенной коммерции был бы вторым счётом тех же мест.
+    """
+    prefixes = {prefix for prefix, _, _ in core.OBJECT_PARKING_FIELDS}
+    assert "ground_commercial" not in prefixes
+    for key in ("ground_commercial_parking_under_spaces",
+                "ground_commercial_parking_over_spaces"):
+        assert key not in core.DEFAULT_INPUTS, key
+
+
+def test_a_lost_field_leaves_no_garage_rather_than_inventing_one() -> None:
+    """Потерянное поле приходит нулём — и ноль значит «гаража нет».
 
     Поле, которого нет в сохранённом проекте, страница возвращает нулём — так
-    однажды потерялась «ВРИ включена в банковский бюджет». При нулях расчёт
-    ставит норматив в свой подземный, то есть ведёт себя как прежний снятый
-    чекбокс, а не переносит чужие места наверх молча.
+    однажды потерялась «ВРИ включена в банковский бюджет». Здесь ноль обязан
+    означать отсутствие гаража, а не «весь норматив под землю»: второе строит
+    объект, которого человек не заказывал.
     """
-    stripped = {key: value for key, value in _inputs().items()
+    stripped = {key: value for key, value in _inputs(offices_enabled=True).items()
                 if "_parking_under_spaces" not in key
                 and "_parking_over_spaces" not in key}
-    got = core.parking_demand(stripped, TEP)
-    assert got["to_overground"] == 0
-    assert got["to_underground"] == got["required_total"]
+    tep = {key: dict(row) for key, row in TEP.items()}
+    got = core.apply_object_parking(stripped, tep)
+    assert got["own_units"] == 0
+    assert core.n(tep["offices"], "under_gns") == 0
 
 
-def test_the_check_names_the_gap_instead_of_moving_the_number() -> None:
-    """Вводная принадлежит человеку: расхождение называется, а не чинится."""
-    got = core.parking_demand(_inputs(offices_parking_under_spaces=10), TEP)
-    offices = next(r for r in got["rows"] if r["tep_key"] == "offices")
-    assert offices["under_spaces"] == 10, "движок не подгоняет число под норматив"
-    assert got["check"]["state"] == "mismatch"
-    assert "Офисы" in got["check"]["text"]
+def test_a_disabled_object_leaves_no_parking_metres_behind() -> None:
+    """Выключенный объект своего гаража не строит.
+
+    Та же ловушка, что с площадью выключенных офисов: погашенный признак и
+    оставленное число дают метры в ТЭП, где объекта нет.
+    """
+    tep = {key: dict(row) for key, row in TEP.items()}
+    core.apply_object_parking(
+        _inputs(offices_enabled=False, offices_parking_under_spaces=40), tep)
+    assert core.n(tep["offices"], "under_gns") == 0
+    assert core.n(tep["offices"], "parking_units") == 0
 
 
-def test_an_uncounted_norm_is_a_third_answer_not_a_green_one() -> None:
-    """«Сходится» на непосчитанном нормативе читается как пройденная проверка."""
-    got = core.parking_demand(_inputs(parking_k1=0, parking_k2=0), TEP)
-    assert got["check"]["state"] == "unknown"
-    assert got["check"]["text"].startswith("Сверить не с чем")
+def test_the_note_separates_the_asphalt_from_the_garage() -> None:
+    """Обе величины меряются местами, и однажды их уже приняли за одно число."""
+    tep = {key: dict(row) for key, row in TEP.items()}
+    got = core.apply_object_parking(
+        _inputs(offices_enabled=True, offices_parking_under_spaces=40), tep)
+    note = got["note"]
+    assert "не продаётся" in note and "благоустройств" in note
+    assert str(got["required_total"]) in note
+    assert "40 подземных" in note
 
 
 def test_moscow_oblast_finally_counts_nonresidential() -> None:
@@ -177,11 +226,10 @@ def test_the_fields_are_declared_once_in_the_engine() -> None:
                 "object_parking_area_per_space_sqm",
                 "offices_parking_under_spaces", "offices_parking_over_spaces",
                 "retail_parking_under_spaces", "retail_parking_over_spaces",
-                "ground_commercial_parking_under_spaces",
-                "sports_parking_over_spaces"):
+                "sports_parking_under_spaces", "sports_parking_over_spaces"):
         assert key in core.DEFAULT_INPUTS, key
     names = {group[0] for group in core.FIELD_GROUPS}
-    assert "Приобъектная парковка нежилья" in names
+    assert "Парковка нежилья: норматив и паркинг объектов" in names
 
 
 def test_the_norm_is_not_reimplemented_in_the_engine() -> None:
