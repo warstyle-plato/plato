@@ -281,16 +281,27 @@ def test_the_decision_numbers_are_shown_under_their_own_names():
 # --- порядок карточки --------------------------------------------------------
 
 def test_the_card_answers_in_the_order_of_the_decision():
-    """Сначала можно ли войти, потом что за площадка, потом что это даёт."""
+    """Порядок, названный владельцем 06.09.2026.
+
+    «Вся нормативная информация должна быть собрана внизу, после неё должны
+    идти кнопки расчёта и обновления, а потом данные модели и рекомендации
+    Платона». Прежде нормативное было рассыпано: паспорт и требования стояли
+    выше модели, а карта, остальные ТЭП и служебное — под кнопками, то есть
+    ниже неё; Платон при этом рисовался ПЕРВОЙ строкой того же контейнера, что
+    и модель, — мнением о числах, которых читатель ещё не видел.
+    """
     page = auctions_page()
     card = _fn(page, "selectKrt")
     order = [
         ("можно ли войти", "krtEntryHead(x)"),
-        ("что за площадка", "<h3>Что за площадка</h3>"),
+        ("что дал город — паспорт", "<h3>Что за площадка</h3>"),
+        ("нормативное: карта и границы", "<summary>Карта и границы</summary>"),
+        ("нормативное: остальные ТЭП", "<summary>Остальные ТЭП и пропорции</summary>"),
+        ("нормативное: служебное", "<summary>Служебное: привязка распоряжений города</summary>"),
+        ("кнопки расчёта и обновления", 'id="krtHandoff"'),
         ("что это даёт", 'id="krtMarketResult"'),
         ("насколько верим", "<h3>Насколько этому верить</h3>"),
-        ("что делать", 'id="krtHandoff"'),
-        ("приложения", "<summary>Карта и границы</summary>"),
+        ("рекомендация Платона", 'id="krtPlatoBox"'),
     ]
     seen = []
     for name, mark in order:
@@ -300,6 +311,11 @@ def test_the_card_answers_in_the_order_of_the_decision():
 
     # Балл — свёртка экономики, и стоит он ПОД ней, а не над.
     assert card.index('id="krtMarketResult"') < card.index('id="krtScoreBox"'), card[:200]
+    # А Платон говорит о посчитанном — значит после чисел, и в своём блоке:
+    # общий контейнер с моделью ставил его ответ над ней.
+    report = _fn(page, "renderKrtReport")
+    assert "krtPlatoBox" in report, report
+    assert "head+renderKrtModel(" in report, "ответ Платона снова склеен с моделью"
 
 
 def test_a_silent_data_check_does_not_stand_above_the_verdict():
@@ -312,10 +328,14 @@ def test_a_silent_data_check_does_not_stand_above_the_verdict():
     page = auctions_page()
     card = _fn(page, "selectKrt")
     assert "krtDataCheckSpeaks(x)" in card, card
-    # Громкая — до балла, тихая — после него, и обе из одной функции.
+    # Громкая стоит открытым текстом, тихая — внутри складки «что известно и
+    # чего не хватает». Проверяется не расстоянием до балла (карточка
+    # переставлялась дважды, и такая проверка падала на верной перестановке),
+    # а тем, что видно: одна на виду, вторая под раскрытием.
     loud = card.index("(speaks?krtDataCheck(x):'')")
     quiet = card.index("(speaks?'':krtDataCheck(x))")
-    assert loud < card.index('id="krtScoreBox"') < quiet, (loud, quiet)
+    fold = card.index("<summary>Что про площадку известно и чего не хватает</summary>")
+    assert loud < fold < quiet, (loud, fold, quiet)
 
     speaks = _fn(page, "krtDataCheckSpeaks")
     assert "no_card" in speaks and "compared" in speaks, speaks

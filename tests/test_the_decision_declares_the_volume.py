@@ -95,3 +95,55 @@ def test_the_zones_add_up() -> None:
     assert volumes["total_sqm"] == 443_700.0 + 187_550.0
     assert volumes["housing_sqm"] == 229_490.0 + 179_150.0
     assert volumes["zones"] == 2
+
+
+def test_our_own_subtraction_is_not_called_the_city_s_gap(core=None) -> None:
+    """Вычтенное НАМИ не записывается в расхождение города.
+
+    Коммунальный объём решение задаёт минимумом и внутри нежилого; скрининг
+    вычитает его из нежилого, потому что продуктом девелопера он не является.
+    А баланс считался по числам ПОСЛЕ этой правки — и на Варшавском ш., вл. 37
+    объявлял «разница 167 788 м²» ровно на ту величину, которую мы сами и
+    убрали, под именем города (владелец, 06.09.2026: «не объединено выше?»).
+    Своя правка, названная чужой ошибкой, читается как находка в источнике.
+
+    Проверяется арифметикой разложения, а не строкой на экране: сумма
+    слагаемых обязана сойтись с итогом города, а вычтенный объём — стоять
+    своей строкой.
+    """
+    import importlib.util
+
+    from auction_search.krt_screening import build_krt_model_screening
+
+    spec = importlib.util.spec_from_file_location("developaid_core", ROOT / "main_legacy.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["developaid_core"] = module
+    spec.loader.exec_module(module)
+
+    project = {
+        "slug": "varshavskoe-shosse-vl-37", "name": "Варшавское шоссе, вл. 37",
+        "district": "Нагатино-Садовники", "area_ha": 14.62,
+        "total_gfa_sqm": 443_700.0, "housing_gfa_sqm": 229_490.0,
+        "nonresidential_gfa_sqm": 52_510.0, "business_gfa_sqm": 0.0,
+    }
+    market = {"analysis": {"site": {"segment": "Бизнес", "price_per_sqm": 450_000,
+                                    "sold_lot_avg": 58, "units_per_month": 25}},
+              "price_hint": {}}
+    result = build_krt_model_screening(
+        project, market, module,
+        requirements={"available": True, "volumes": programme_volumes(VARSHAVSKOE)})
+    programme = result["programme"]
+
+    assert programme["volumes"]["taken"] is True, "решение сошлось с итогом каталога — берём его"
+    assert programme["city"]["utility_gfa_sqm"] == 167_787.5, (
+        "вычтенный объём обязан стоять своей строкой разложения")
+    assert programme["balance"]["matches"] is True, (
+        "слагаемые с коммунальным объёмом сходятся с итогом города — "
+        f"{programme['balance']['declared_sum_sqm']} против "
+        f"{programme['city']['total_gfa_sqm']}")
+    assert abs(programme["balance"]["difference_sqm"]) <= 1.0
+
+    # И то, ради чего вычитание вообще есть: этот объём модель не строит и
+    # говорит об этом отдельной строкой, а не молчанием.
+    said = " ".join(result.get("exclusions") or [])
+    assert "коммунального, производственного" in said

@@ -2402,10 +2402,17 @@ function selectKrt(x){state.selectedKrt=x;const sc=krtScore(x),fit=sc.fit,cached
  // Перечни спрятаны под раскрытие и несут число в заголовке: закрытый список
  // без числа читается как отсутствующий.
  // Карточка отвечает на четыре вопроса подряд, и у каждого есть имя на экране:
- // МОЖНО ЛИ ВОЙТИ → ЧТО ЗА ПЛОЩАДКА → ЧТО ЭТО ДАЁТ → НАСКОЛЬКО ВЕРИМ, дальше
- // действие и приложения. Прежде балл со списком снижений стоял ВЫШЕ экономики,
+ // МОЖНО ЛИ ВОЙТИ → ЧТО ДАЛ ГОРОД → ЧТО ЭТО ДАЁТ → НАСКОЛЬКО ВЕРИМ, дальше
+ // Платон и приложения. Прежде балл со списком снижений стоял ВЫШЕ экономики,
  // из которой он свёрнут, и одни и те же LLCR с маржой рассказывались трижды:
  // плашкой балла, списком снижений и таблицей модели.
+ // Порядок нижней половины назвал владелец (06.09.2026): «вся нормативная
+ // информация должна быть собрана внизу, после неё должны идти кнопки расчёта
+ // и обновления, а потом данные модели и рекомендации Платона». Прежде
+ // нормативное было рассыпано — паспорт и требования выше модели, карта,
+ // остальные ТЭП и служебное под кнопками, — а Платон рисовался ВЫШЕ чисел, о
+ // которых говорит: его ответ шёл первой строкой того же контейнера, что и
+ // модель.
  const speaks=krtDataCheckSpeaks(x);
  $('krtSide').innerHTML=`<h2>${esc(x.name)}${x.is_new?'<span class="tag new">новое</span>':''}</h2>`
  +`<div class="sub">${esc(krtSource(x).short)}${[x.okrug,x.district].filter(Boolean).length?' · '+esc([x.okrug,x.district].filter(Boolean).join(' · ')):''}</div>`
@@ -2414,12 +2421,6 @@ function selectKrt(x){state.selectedKrt=x;const sc=krtScore(x),fit=sc.fit,cached
  +`<div class="section"><h3>Что за площадка</h3>${krtPassport(x)}</div>`
  +(speaks?krtDataCheck(x):'')
  +`${planned?'<div id="krtRequirementsBox"><div class="notice">Ищу проект решения и читаю требования…</div></div>':''}`
- +`<div id="krtMarketResult">${krtBroken(x)?krtBrokenModelNote(x):(cached?renderKrtModel(cached):'')}</div>`
- +`<div class="section"><h3>Насколько этому верить</h3><div class="notice" id="krtScoreBox">${krtScoreBoxHtml(sc)}</div>`
- +`<details class="fold"><summary>Почему такой балл — ${fit.reasons.length+fit.checks.length+sc.cuts.length} пункт(ов)</summary><div class="foldbody"><div class="items">${fit.reasons.map(one=>`<div class="item"><b>Соответствует запросу</b>${esc(one)}</div>`).join('')}${fit.checks.map(one=>`<div class="item"><b>Нужно проверить</b>${esc(one)}</div>`).join('')}${sc.cuts.map(c=>`<div class="item"><b>Балл снижен на ${c.points}%</b>${esc(c.label)}</div>`).join('')}</div></div></details></div>`
- +`<div class="actions"><button class="primary" id="krtHandoff">Передать в расчёт DevelopAid</button><button id="krtMarket">Пересчитать сейчас</button></div>`
- +`<div class="actions minor"><button id="krtPlato">Рекомендация Платона</button><button id="krtShare">Поделиться</button><button id="krtSource">${esc(krtSource(x).open)}</button></div>`
- +`<div id="krtShareNote" class="notice" style="display:none"></div>`
  +`<details class="fold"><summary>Что про площадку известно и чего не хватает</summary><div class="foldbody">`
  +(speaks?'':krtDataCheck(x))
  +krtIntentBlock(x)
@@ -2428,8 +2429,15 @@ function selectKrt(x){state.selectedKrt=x;const sc=krtScore(x),fit=sc.fit,cached
  +`</div></details>`
  +`<details class="fold"><summary>Карта и границы</summary><div class="foldbody"><div id="krtMapBox"><div class="notice">Строю карту участка…</div></div></div></details>`
  +`<details class="fold"><summary>Остальные ТЭП и пропорции</summary><div class="foldbody">${x.no_card?'<div class="source">Общественно-делового объёма и рабочих мест проект решения не называет — эти строки есть только у карточки каталога, а её у площадки нет.</div>':`<div class="kv" style="border:0"><div>Общественно-деловое</div><div>${fmtArea(x.business_gfa_sqm)}</div><div>Рабочие места</div><div>${esc(x.jobs??'—')}</div></div>`}<div class="notice" id="krtOutlineNote">Границы: читаю файл карты реестра…</div>${krtRatioBlock(x)}</div></details>`
- +`<details class="fold"><summary>Служебное: привязка распоряжений города</summary><div class="foldbody">${krtOrderBlock(x)}</div></details>`;
- $('krtMarket').onclick=()=>loadKrtMarket(x);krtOrderBind(x);$('krtSource').onclick=()=>window.open(x.url,'_blank','noopener');loadKrtCardFacts(x);$('krtPress').onclick=()=>loadKrtPress(x);krtRatioBind(x);
+ +`<details class="fold"><summary>Служебное: привязка распоряжений города</summary><div class="foldbody">${krtOrderBlock(x)}</div></details>`
+ +`<div class="actions"><button class="primary" id="krtHandoff">Передать в расчёт DevelopAid</button><button id="krtMarket">Пересчитать сейчас</button></div>`
+ +`<div id="krtMarketResult">${krtBroken(x)?krtBrokenModelNote(x):(cached?renderKrtModel(cached):'')}</div>`
+ +`<div class="section"><h3>Насколько этому верить</h3><div class="notice" id="krtScoreBox">${krtScoreBoxHtml(sc)}</div>`
+ +`<details class="fold"><summary>Почему такой балл — ${fit.reasons.length+fit.checks.length+sc.cuts.length} пункт(ов)</summary><div class="foldbody"><div class="items">${fit.reasons.map(one=>`<div class="item"><b>Соответствует запросу</b>${esc(one)}</div>`).join('')}${fit.checks.map(one=>`<div class="item"><b>Нужно проверить</b>${esc(one)}</div>`).join('')}${sc.cuts.map(c=>`<div class="item"><b>Балл снижен на ${c.points}%</b>${esc(c.label)}</div>`).join('')}</div></div></details></div>`
+ +`<div class="actions minor"><button id="krtPlato">Рекомендация Платона</button><button id="krtShare">Поделиться</button><button id="krtSource">${esc(krtSource(x).open)}</button></div>`
+ +`<div id="krtPlatoBox"></div>`
+ +`<div id="krtShareNote" class="notice" style="display:none"></div>`;
+$('krtMarket').onclick=()=>loadKrtMarket(x);krtOrderBind(x);$('krtSource').onclick=()=>window.open(x.url,'_blank','noopener');loadKrtCardFacts(x);$('krtPress').onclick=()=>loadKrtPress(x);krtRatioBind(x);
  $('krtShare').onclick=()=>shareKrt(x);
  $('krtHandoff').onclick=()=>handoffKrt(x);
  $('krtPlato').onclick=()=>askPlatoAboutKrt(x);
@@ -2484,8 +2492,14 @@ function renderKrtReport(x,d,out){
   ? `<div class="section"><h3>Рекомендация Платона</h3><div class="notice"><div style="white-space:pre-wrap">${esc(d.plato.text)}</div><div class="source" style="margin-top:7px">Спрошено ${d.plato.asked_at?new Date(d.plato.asked_at*1000).toLocaleString('ru-RU'):''} по маркетингу и по модели сразу.</div></div></div>`
   : '<div class="section"><h3>Рекомендация Платона</h3><div class="notice">Не спрошена. Кнопка «Рекомендация Платона» задаёт ему вопрос по этим же числам — маркетингу и модели вместе.</div></div>';
  const head=`<div class="notice"><b>Отчёт посчитан ${esc(when)}</b><div class="source" style="margin-top:5px">Числа ниже взяты из этого прогона. «Пересчитать сейчас» повторит его с сегодняшним рынком.</div></div>`;
- out.innerHTML=head+plato+renderKrtModel(d.screening);
+ out.innerHTML=head+renderKrtModel(d.screening);
  if(d.market)renderKrtMarketBlocks(d.market,out);
+ // Платон говорит О ЧИСЛАХ, значит стоит под ними, а не первой строкой над
+ // ними: его ответ рисовался в тот же контейнер, что и модель, и открывал
+ // раздел «что это даёт» мнением о цифрах, которых читатель ещё не видел
+ // (владелец, 06.09.2026).
+ const said=document.getElementById('krtPlatoBox');
+ if(said)said.innerHTML=plato;
 }
 
 // Передача в DevelopAid: те же вводные, которыми посчитан отчёт. Второй сборки
@@ -3271,6 +3285,8 @@ function renderKrtProgramme(p){
   +`<div>Территория</div><div>${c.area_ha?new Intl.NumberFormat('ru-RU',{maximumFractionDigits:2}).format(c.area_ha)+' га':'не опубликована'}</div>`
   +`<div>Жилое назначение</div><div>${fmtArea(c.housing_gfa_sqm)}</div>`
   +`<div>Нежилое назначение</div><div>${fmtArea(c.nonresidential_gfa_sqm)}</div>`
+  +(Number(c.utility_gfa_sqm)>0
+    ? `<div title="Решение задаёт этот объём МИНИМУМОМ и внутри нежилого назначения. Продуктом девелопера он не является: модель его не строит и не оценивает — об этом сказано в «чего нет в расчёте».">Коммунальное, производственное и иное</div><div>${fmtArea(c.utility_gfa_sqm)} · минимум по решению</div>` : '')
   +`<div>Общественно-деловое</div><div>${fmtArea(c.business_gfa_sqm)}</div>`
   +`<div>Население по 33 м² квартир</div><div>${new Intl.NumberFormat('ru-RU').format(p.population||0)} чел.${c.zone_two?' · вторая зона нормирования':''}</div>`
   +`</div>${balance}`
