@@ -72,7 +72,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.22.39"
+VERSION = "0.22.40"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -44023,10 +44023,10 @@ async function openProjects(){
    +`<td>${s.net_profit_mln?money(s.net_profit_mln*1e6):'—'}</td>`
    +`<td>${s.llcr?mult(s.llcr):'—'}</td>`
    +`<td><button class="btn" onclick="loadProject('${p.id}')">Открыть</button> `
-   +`<button class="btn" title="Записать текущие вводные поверх этого проекта" `
+   +`<button class="btn" title="Сохранить текущие вводные в этот проект, поверх прежних чисел" `
    +`data-id="${escapeHtml(String(p.id||''))}" data-name="${escapeHtml(String(p.name||''))}" `
    +`data-shared="${p.has_share?'1':''}" `
-   +`onclick="saveProjectOver(this.dataset.id,this.dataset.name,!!this.dataset.shared)">Поверх</button> `
+   +`onclick="saveProjectOver(this.dataset.id,this.dataset.name,!!this.dataset.shared)">Сохранить</button> `
    +`<button class="btn" onclick="shareProject('${p.id}')">Ссылка</button> `
    +`<button class="btn" onclick="downloadSettingsFile('${p.id}')">Файл</button> `
    +`<button class="btn" onclick="deleteProject('${p.id}')">Удалить</button></td></tr>`;
