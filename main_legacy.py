@@ -44784,10 +44784,10 @@ async function openProjects(){
    +`<td>${s.net_profit_mln?money(s.net_profit_mln*1e6):'—'}</td>`
    +`<td>${s.llcr?mult(s.llcr):'—'}</td>`
    +`<td><button class="btn" onclick="loadProject('${p.id}')">Открыть</button> `
-   +`<button class="btn" title="Записать текущие вводные поверх этого проекта" `
+   +`<button class="btn" title="Сохранить текущие вводные в этот проект, поверх прежних чисел" `
    +`data-id="${escapeHtml(String(p.id||''))}" data-name="${escapeHtml(String(p.name||''))}" `
    +`data-shared="${p.has_share?'1':''}" `
-   +`onclick="saveProjectOver(this.dataset.id,this.dataset.name,!!this.dataset.shared)">Поверх</button> `
+   +`onclick="saveProjectOver(this.dataset.id,this.dataset.name,!!this.dataset.shared)">Сохранить</button> `
    +`<button class="btn" onclick="shareProject('${p.id}')">Ссылка</button> `
    +`<button class="btn" onclick="downloadSettingsFile('${p.id}')">Файл</button> `
    +`<button class="btn" onclick="deleteProject('${p.id}')">Удалить</button></td></tr>`;
