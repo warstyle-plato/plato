@@ -38,6 +38,10 @@ PACE_GAP_RATIO = 1.5
 # Насколько премия должна сдвинуться за наблюдаемый период, чтобы это было
 # движением, а не колебанием прайса.
 PREMIUM_SHIFT_PP = 5.0
+# На сколько пунктов доля ипотеки или юрлиц должна разойтись с соседской, чтобы
+# это была особенность проекта, а не разброс месяца. Порог тот же, по которому
+# об этом говорит разбор раздела: два ответа на один вопрос разошлись бы.
+MONEY_GAP_PP = 15.0
 
 
 GENITIVE = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля",
@@ -422,6 +426,131 @@ def _horizon_finding(subject) -> dict[str, Any] | None:
     }
 
 
+def _block(blocks: list[dict[str, Any]] | None, code: str) -> dict[str, Any]:
+    for block in blocks or []:
+        if block.get("code") == code:
+            return block
+    return {}
+
+
+def _product_finding(blocks) -> dict[str, Any] | None:
+    """Что берут и что копится — и не в наборе ли квартир дело.
+
+    Раздел «Комнатность» рисует полосы и таблицу, а на вопрос «и что это
+    значит против соседей» до сих пор не отвечал ни один общий вывод: числа
+    стояли карточкой, а читатель складывал их сам. Здесь складываются два
+    ответа, которые порознь ничего не решают: какой товар вымывается и чем
+    объясняется разрыв цены метра — набором квартир или самими ценами.
+    """
+    block = _block(blocks, "rooms")
+    subject = block.get("subject") or {}
+    rooms = subject.get("rooms") or {}
+    mix = subject.get("mix") or {}
+    drains = [
+        item for item in rooms.values()
+        if item.get("sold_share_pct") is not None and item.get("rem_share_pct") is not None
+    ]
+    parts: list[str] = []
+    if drains:
+        best = max(drains, key=lambda item: item["sold_share_pct"] - item["rem_share_pct"])
+        worst = min(drains, key=lambda item: item["sold_share_pct"] - item["rem_share_pct"])
+        if best["sold_share_pct"] - best["rem_share_pct"] > 5:
+            parts.append(
+                f"Быстрее всего разбирают {best['title']}: {_num(best['sold_share_pct'], 1)} % "
+                f"продаж при {_num(best['rem_share_pct'], 1)} % остатка."
+            )
+        if worst["rem_share_pct"] - worst["sold_share_pct"] > 5:
+            parts.append(
+                f"Копятся {worst['title']}: {_num(worst['rem_share_pct'], 1)} % остатка "
+                f"при {_num(worst['sold_share_pct'], 1)} % продаж."
+            )
+    gap, part, level = mix.get("gap_pct"), mix.get("mix_pct"), mix.get("level_pct")
+    headline, tone = "Что берут и что остаётся", "flat"
+    if gap is not None and part is not None and level is not None:
+        own, peers_price = mix.get("own_at_own_mix"), mix.get("peers_at_peers_mix")
+        cross = mix.get("own_at_peers_mix")
+        side = "дороже" if gap > 0 else "дешевле"
+        parts.append(
+            f"Наш метр {side} соседского на {_num(abs(gap), 1)} %: "
+            f"{_num(own)} против {_num(peers_price)} ₽."
+        )
+        # Догадка «у соседей просто лоты крупнее» проверяется числом своего
+        # проекта: тот же наш прайс, но на наборе соседей.
+        if abs(level) < 2 and abs(part) >= 2:
+            headline, tone = "Разница в наборе квартир, а не в ценах", "good"
+            parts.append(
+                f"На наборе соседей тот же наш прайс дал бы {_num(cross)} ₽ за метр — "
+                f"ровно как у них: цены на каждую комнатность совпадают, "
+                f"разницу делает состав."
+            )
+        elif abs(part) < 2:
+            headline = "Мы просто просим больше" if level > 0 else "Мы просто просим меньше"
+            tone = "watch" if level > 0 else "good"
+            parts.append(
+                f"Набор тут ни при чём: на наборе соседей наш прайс дал бы {_num(cross)} ₽ — "
+                f"почти столько же. На одинаковом наборе мы просим на "
+                f"{_num(abs(level), 1)} % {'больше' if level > 0 else 'меньше'} соседей."
+            )
+        else:
+            headline = "Часть разрыва в цене делает набор квартир"
+            tone = "watch" if gap > 0 else "flat"
+            parts.append(
+                f"На наборе соседей наш прайс дал бы {_num(cross)} ₽ за метр; остальное — "
+                f"цены: на одинаковом наборе мы просим на {_num(abs(level), 1)} % "
+                f"{'больше' if level > 0 else 'меньше'}."
+            )
+    elif not parts:
+        return None
+    return {"code": "rooms", "headline": headline, "text": " ".join(parts), "tone": tone}
+
+
+def _money_finding(blocks) -> dict[str, Any] | None:
+    """Чем платят и кто покупает — против соседей.
+
+    Две доли из разных разделов стоят одним выводом: они отвечают на один
+    вопрос — чем держится спрос и насколько он чувствителен к чужому решению
+    (ставке ЦБ, оптовому покупателю). Порознь каждая читается как справка.
+    """
+    pay = _block(blocks, "payment")
+    who = _block(blocks, "channel")
+    share = (pay.get("subject") or {}).get("mortgage_pct")
+    peers_share = (pay.get("peers") or {}).get("median")
+    company = (who.get("subject") or {}).get("company_pct")
+    peers_company = (who.get("peers") or {}).get("median")
+    parts: list[str] = []
+    tone = "flat"
+    if share is not None and peers_share is not None:
+        diff = share - peers_share
+        parts.append(
+            f"Ипотекой платят {_num(share, 1)} % сделок проекта против "
+            f"{_num(peers_share, 1)} % у соседей."
+        )
+        if diff > MONEY_GAP_PP:
+            parts.append("Проект опирается на ипотеку сильнее соседей — он чувствительнее к ставке.")
+            tone = "watch"
+        elif diff < -MONEY_GAP_PP:
+            parts.append("Ипотеки меньше, чем у соседей: здесь платят своими деньгами.")
+    if company is not None and peers_company is not None:
+        parts.append(
+            f"Юрлиц {_num(company, 1)} % против {_num(peers_company, 1)} % у соседей."
+        )
+        if company - peers_company > MONEY_GAP_PP:
+            parts.append("Часть объёма уходит оптом, а не в розницу.")
+            tone = "watch"
+    if not parts:
+        return None
+    # Заголовок называет то, что в выводе главное. «Спрос держится на ипотеке» —
+    # это про чувствительность к ставке, и ставится он только по своей паре
+    # чисел: собрать его из доли юрлиц значило бы назвать вывод не тем именем.
+    leans = (
+        share is not None
+        and peers_share is not None
+        and share - peers_share > MONEY_GAP_PP
+    )
+    headline = "Спрос держится на ипотеке" if leans else "Чем платят и кто покупает"
+    return {"code": "payment", "headline": headline, "text": " ".join(parts), "tone": tone}
+
+
 def findings(
     subject: dict[str, Any],
     peers: list[dict[str, Any]],
@@ -429,16 +558,24 @@ def findings(
     *,
     segment: str | None,
     premium: list[dict[str, Any]] | None = None,
+    blocks: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Связные выводы по отчёту, в порядке чтения.
 
     Порядок не случаен и не совпадает с порядком разделов: сначала где стоит
     цена, потом подтверждают ли её продажи, потом кем нажит сегодняшний разрыв,
     и только затем масштаб и сроки. Это ход рассуждения, а не оглавление.
+
+    Комнатность, оплата и покупатели идут сразу за ценой и темпом: они и
+    отвечают на «почему так» — какой товар вымывается, не в наборе ли квартир
+    дело и чем держится спрос. Пока их здесь не было, разделы стояли на экране
+    таблицами, а вывод по ним читатель складывал сам.
     """
     built = [
         _price_finding(subject, peers, segment),
         _pace_finding(subject, peers),
+        _product_finding(blocks),
+        _money_finding(blocks),
         _premium_finding(premium or [], peers),
         _volume_finding(subject, peers),
         _alive_finding(comparison or {}, peers, segment),

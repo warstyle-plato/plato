@@ -132,3 +132,55 @@ def test_an_unknown_section_does_not_borrow_the_absorption_numbers() -> None:
 
     assert "b.code==='absorption'){" in CABINET_PAGE
     assert "на экране ещё не описан" in CABINET_PAGE
+
+
+# «И где здесь и в общих выводах комментарии по этим графикам и данным? что они
+# значат в сравнении с соседями» (владелец, 06.09.2026). Разделы рисовали
+# таблицы и графики, а в общий вывод не входили вовсе: «и что?» по ним читатель
+# складывал сам, глядя на проценты.
+def _findings() -> list[dict]:
+    from market_search import narrative
+    from market_search.metrics import build_blocks
+
+    blocks = build_blocks(SUBJECT, PEERS, CITY, ["rooms", "payment", "channel"])
+    return narrative.findings(
+        {**SUBJECT, "name": "Наш", "price_per_sqm": 760_000},
+        PEERS,
+        {"found": 3, "comparable": 2, "used": 2},
+        segment="Бизнес",
+        blocks=blocks,
+    )
+
+
+def test_the_general_conclusions_speak_about_the_rooms() -> None:
+    codes = [row["code"] for row in _findings()]
+    assert "rooms" in codes, codes
+    text = next(row for row in _findings() if row["code"] == "rooms")["text"]
+    # Вывод называет товар и числа, а не отсылает к таблице.
+    assert "%" in text and any(word in text for word in ("разбирают", "Копятся", "метр"))
+
+
+def test_the_general_conclusions_put_the_money_against_the_neighbours() -> None:
+    rows = [row for row in _findings() if row["code"] == "payment"]
+    assert rows, [row["code"] for row in _findings()]
+    text = rows[0]["text"]
+    # Своё число рядом с соседским — иначе это справка, а не сравнение.
+    assert "у соседей" in text
+    assert "28,6 %" in text and "юрлиц" in text.lower()
+
+
+def test_a_section_without_numbers_writes_no_conclusion() -> None:
+    """Пустой абзац «данных нет» читается как проделанная работа, а её не было."""
+    from market_search import narrative
+    from market_search.metrics import build_blocks
+
+    bare = {"segment": "Бизнес"}
+    blocks = build_blocks(bare, [], CITY, ["rooms", "payment", "channel"])
+    codes = [
+        row["code"]
+        for row in narrative.findings(
+            {**bare, "name": "Наш"}, [], {"found": 0, "comparable": 0, "used": 0},
+            segment="Бизнес", blocks=blocks,
+        )
+    ]
+    assert "rooms" not in codes and "payment" not in codes, codes
