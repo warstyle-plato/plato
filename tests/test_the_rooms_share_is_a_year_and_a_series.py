@@ -163,6 +163,9 @@ def test_the_screen_draws_the_series_and_names_the_window(tmp_path) -> None:
     bare = metrics.rooms_block(
         {"segment": "Бизнес", "room_mix": {"studio": {"sold": 3, "rem": 10}}}, [], CITY
     ).to_dict()
+    peered = metrics.rooms_block(
+        _row(), [{"name": "Без ряда", "room_mix": {"studio": {"sold": 9, "rem": 5}}}], CITY
+    ).to_dict()
     page = cabinet.cabinet_page("market").replace("__DEVELOPAID_VERSION__", "test")
     file = tmp_path / "market.html"
     file.write_text(page, encoding="utf-8")
@@ -180,6 +183,7 @@ def test_the_screen_draws_the_series_and_names_the_window(tmp_path) -> None:
             tab.goto(file.as_uri())
             drawn = tab.evaluate("block => roomsTable(block)", block)
             silent = tab.evaluate("block => roomsTable(block)", bare)
+            withpeers = tab.evaluate("block => roomsTable(block)", peered)
             tab.close()
         finally:
             browser.close()
@@ -199,3 +203,8 @@ def test_the_screen_draws_the_series_and_names_the_window(tmp_path) -> None:
     # А без ряда рисуется не пустое поле, а причина.
     assert "<svg" not in silent.split("<table")[0].split("Как доля")[-1]
     assert "прежним импортом" in silent
+    # Про окно соседей говорим, только когда соседи есть: оговорка об окне
+    # пустого множества читается как настоящая, а мерить там нечего.
+    said = "У соседей продано — за последний месяц отчёта"
+    assert said not in drawn, "оговорка о соседях без соседей"
+    assert said in withpeers

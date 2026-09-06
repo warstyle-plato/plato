@@ -1655,9 +1655,14 @@ function shareBars(rows, aName, bName, note, gap){
 function roomsWindowNote(b){
   const w=(b.subject||{}).rooms_window;
   if(!w) return '';
-  const peers=(b.peers||{}).rooms_window;
+  const p=b.peers||{};
+  // Про соседей говорим, только если они есть: утверждение об окне пустого
+  // множества читается как настоящая оговорка, а мерить там нечего.
+  const said=p.rooms&&(p.sold_projects||p.projects)
+    ? (p.rooms_window?'' :' У соседей продано — за последний месяц отчёта.')
+    : '';
   return ` Продано — за ${w.months} мес. (${w.from} — ${w.to}), ${num(w.deals)} сделок;`
-    +' остаток — сегодняшний.'+(peers?'':' У соседей продано — за последний месяц отчёта.');
+    +' остаток — сегодняшний.'+said;
 }
 
 function roomsTrend(b){
