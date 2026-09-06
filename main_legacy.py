@@ -35796,7 +35796,7 @@ details.cadastral-box>summary::marker{color:#888}
         <div class="toolbar"><button class="btn" onclick="syncTep()">Обновить производные ТЭП из вводных</button><button class="btn dark" onclick="recalcFromTep()">Пересчитать по параметрам исходного расчёта</button><span style="color:#777;font-size:12px">В интерфейсе показывается 1 знак после запятой. При загруженном ГлавАПУ подземный паркинг является производным: постоянные + гостевые × 35 м².</span></div>
         <div id="tepRatioNote" style="color:#777;font-size:11px;margin:2px 0 8px"></div>
         <div id="tepDerivedNote" class="import-status" style="display:none"></div>
-        <div class="scroll"><table class="teptable"><thead><tr><th>Продукт</th><th>ГНС, м²</th><th>Общая площадь, м²</th><th>Полезная площадь, м²</th><th>Продаваемая площадь, м²</th><th>Передаваемая площадь, м²</th><th>Количество, шт.</th></tr></thead><tbody id="tepBody"></tbody><tfoot><tr><th>Итого</th><th id="tg"></th><th id="ta"></th><th id="tu"></th><th id="ts"></th><th id="tt"></th><th id="tn"></th></tr></tfoot></table></div>
+        <div class="scroll"><table class="teptable"><thead><tr><th>Продукт</th><th>ГНС, м²</th><th>Общая площадь, м²</th><th>Полезная площадь, м²</th><th>Продаваемая площадь, м²</th><th>Передаваемая площадь, м²</th><th>Количество, шт.</th></tr></thead><tbody id="tepBody"></tbody><tfoot><tr><th>Итого</th><th id="tg"></th><th id="ta"></th><th id="tu"></th><th id="ts"></th><th id="tt"></th><th id="tn"></th></tr></tfoot></table></div><div id="tepUndergroundNote" class="hint" style="margin-top:6px"></div>
       </div>
     </div>
 
@@ -40592,6 +40592,29 @@ function apartmentUnitsNote(){
    + ` и от площади не пересчитывается.${off}${cityNote}`;
 }
 
+function renderTepUndergroundNote(aboveGns,underGns){
+ const box=document.getElementById('tepUndergroundNote');
+ if(!box)return;
+ if(!underGns){box.textContent='';return}
+ box.textContent=`Итог ГНС — наземная площадь: ${num(aboveGns)} м². `
+  +`Подземная часть (паркинг, кладовые, гаражи объектов) ${num(underGns)} м² — `
+  +`у неё своя экономика и в ГНС она не входит. `
+  +`Строительный объём ${num(aboveGns+underGns)} м².`;
+}
+
+function objectParkingNote(key){
+ const own=((lastResult||{}).parking||{}).own||[];
+ const item=own.find(o=>o&&o.tep_key===key&&o.enabled);
+ if(!item||!item.units)return '';
+ const where=`${num(item.under_spaces)} в подземном, ${num(item.over_spaces)} на первых этажах`;
+ const sold=item.sellable
+   ?`продаётся ${num(item.saleable_units)}${item.guest_spaces?`, гостевых ${num(item.guest_spaces)}`:''}`
+   :'не продаются — обеспеченность посетителей';
+ return `Паркинг объекта: ${num(item.units)} м/м (${where}), `
+  +`${num(item.under_gns)} м² подземной части, ${sold}`
+  +` · ${item.by_norm?'по нормативу приложения 6':'задано руками'}`;
+}
+
 function renderTep(){
  repairParkingFromGlavapu();
  const body=tepBody;body.innerHTML='';
@@ -40626,6 +40649,12 @@ function renderTep(){
      const note=apartmentUnitsNote();
      if(note)label+=` <span style="display:block;font-size:10px;color:#777;margin-top:3px">${escapeHtml(note)}</span>`;
    }
+   // Паркинг объекта строится, стоит денег и продаётся, а в строке его не было
+   // видно вовсе: посчитанное и не показанное неотличимо от непосчитанного.
+   // Своей колонки ему не заводим — таблица и так плотная, и лишние колонки
+   // владелец отклонял; подпись под строкой здесь уже штатный приём.
+   const parkNote=objectParkingNote(key);
+   if(parkNote)label+=` <span style="display:block;font-size:10px;color:#777;margin-top:3px">${escapeHtml(parkNote)}</span>`;
    // Какое из двух чисел чьё — иначе вписанное «по решению КРТ» молча
    // становится не тем: решение задаёт площадь В ГАБАРИТАХ НАРУЖНЫХ СТЕН, то
    // есть наземную, а поле во вводных называется общей.
@@ -40978,7 +41007,20 @@ let storageInsideParking=0;
 function updateTepTotals(){
  if(repairParkingFromGlavapu())storageInsideParking=underlayStorageInParking();
  const sums={gns:0,total_area:0,useful:0,saleable:0,transfer:0,units:0};
- Object.values(tep).forEach(r=>Object.keys(sums).forEach(k=>sums[k]+=Number(r[k]||0)));
+ // ГНС — НАЗЕМНАЯ площадь здания: под землёй наружных стен не бывает. В движке
+ // это разведено 04.09.2026 (`project_gns_sqm` против `underground_gns_sqm`), а
+ // итог таблицы всё это время складывал их в одну клетку под одним именем — то
+ // самое, что тем же правилом и запрещено. Список подземных продуктов приходит
+ // из движка плейсхолдером: второй копии, которую негде обновлять, нет.
+ let underGns=0;
+ Object.entries(tep).forEach(([k,r])=>{
+   Object.keys(sums).forEach(c=>{
+     if(c==='gns'&&UNDERGROUND_PRODUCTS.includes(k)){underGns+=Number(r[c]||0);return}
+     sums[c]+=Number(r[c]||0);
+   });
+   underGns+=Number(r.under_gns||0);
+ });
+ renderTepUndergroundNote(sums.gns,underGns);
  tg.textContent=num(sums.gns);ta.textContent=num(sums.total_area);tu.textContent=num(sums.useful);ts.textContent=num(sums.saleable);tt.textContent=num(sums.transfer);tn.textContent=num(sums.units);
  renderSitePanel();
 }
