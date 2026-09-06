@@ -16,6 +16,7 @@ import html
 import json
 import os
 import threading
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -181,15 +182,109 @@ def _merged_registry() -> list[dict[str, Any]]:
     return rows
 
 
+_ANNOUNCE_PATH = Path(
+    os.getenv("NORMATIVES_ANNOUNCE_FILE", "").strip()
+    or (_ROOT / "data" / "normatives" / "announcements.jsonl")
+)
+_ANNOUNCE_LOCK = threading.Lock()
+
+# Результаты, о которых стоит будить человека. «Источник не задан» сюда не
+# входит: это наш пробел, он и так виден в справочнике, а сообщение о нём
+# приходило бы после каждой проверки и перестало бы читаться.
+_ANNOUNCE_RESULTS = {"changed", "review_required", "unreachable"}
+
+
+def _queue_announcements(changes: list[dict[str, Any]]) -> None:
+    """Сложить находки в очередь для бота.
+
+    Отправляет не ядро: до api.telegram.org достаёт только хост с вебхуком.
+    Ядро копит, он забирает — тот же путь, что у знакомств и новинок каталога.
+    """
+    if not changes:
+        return
+    with _ANNOUNCE_LOCK:
+        try:
+            _ANNOUNCE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with _ANNOUNCE_PATH.open("a", encoding="utf-8") as handle:
+                for item in changes:
+                    handle.write(json.dumps(item, ensure_ascii=False) + "\n")
+        except Exception:
+            pass          # рассылка — удобство: молчание лучше падения проверки
+
+
+def take_announcements() -> list[dict[str, Any]]:
+    """Забрать очередь и очистить её. Забирает только один: файл переименовывается."""
+    with _ANNOUNCE_LOCK:
+        path = _ANNOUNCE_PATH
+        if not path.exists():
+            return []
+        taken = path.with_suffix(path.suffix + ".taken")
+        try:
+            path.replace(taken)
+        except Exception:
+            return []
+    records: list[dict[str, Any]] = []
+    try:
+        for line in taken.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                item = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(item, dict):
+                records.append(item)
+        taken.unlink()
+    except Exception:
+        pass
+    return records
+
+
+def _changes_between(before: dict[str, Any], after: dict[str, Any],
+                     entries: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """Что изменилось с прошлой проверки — построчно и с причиной.
+
+    Сообщается ПЕРЕХОД, а не состояние: источник, который лежит третью неделю,
+    новостью не является, и повторять о нём каждую проверку значит приучить
+    не читать эти сообщения вовсе.
+    """
+    changes: list[dict[str, Any]] = []
+    for entry_id, check in after.items():
+        result = str((check or {}).get("result") or "")
+        if result not in _ANNOUNCE_RESULTS:
+            continue
+        was = str(((before.get(entry_id) or {}) or {}).get("result") or "")
+        if was == result:
+            continue
+        entry = entries.get(entry_id) or {}
+        changes.append({
+            "id": entry_id,
+            "scope": str(entry.get("scope") or ""),
+            "short_name": str(entry.get("short_name") or entry.get("title") or entry_id),
+            "result": result,
+            "was": was,
+            "message": str((check or {}).get("message") or ""),
+            "source_url": str(entry.get("source_url") or ""),
+            "checked_at": str((check or {}).get("checked_at") or ""),
+        })
+    return changes
+
+
 def _run_check() -> dict[str, Any]:
     old = _load_state().get("checks")
     old = old if isinstance(old, dict) else {}
     checks: dict[str, Any] = {}
+    entries: dict[str, dict[str, Any]] = {}
     for entry in _load_registry():
         entry_id = str(entry.get("id") or "")
+        entries[entry_id] = entry
         checks[entry_id] = _probe(entry, old.get(entry_id) or {})
     state = {"last_run_at": _now_iso(), "checks": checks}
     _save_state(state)
+    changes = _changes_between(old, checks, entries)
+    _queue_announcements(changes)
+    state["changes"] = changes
     return state
 
 
@@ -454,8 +549,43 @@ def install(app: Any, core: Any) -> None:
             headers=_HEADERS,
         )
 
+    # Очередь находок забирает движок (`/internal/normatives/announcements`):
+    # у него общая с ботом подпись, а до api.telegram.org с ядра не дойти.
+    app.state.normatives_announcements_take = take_announcements
+
     @app.post("/api/normatives/check", include_in_schema=False)
     def normatives_check(request: Request) -> JSONResponse:
         if not _is_admin(request, core):
             raise HTTPException(status_code=403, detail="Только администратор DevelopAid")
         return JSONResponse({"ok": True, **_run_check()}, headers=_HEADERS)
+
+    # Проверка по расписанию: кнопка отвечает тому, кто открыл страницу, а
+    # сообщение — тому, кто не открывал. Раз в сутки, воркеров два — работу
+    # берёт один по возрасту состояния. Выключается NORMATIVES_WATCH=0;
+    # расписание, зависящее от календаря, иначе срабатывает в прогоне тестов
+    # ровно в тот день, когда его никто не ждёт.
+    if os.getenv("NORMATIVES_WATCH", "1").strip() not in {"0", "false", "no"}:
+        threading.Thread(target=_watch_loop, name="normatives-watch", daemon=True).start()
+
+
+def _watch_due(hours: float) -> bool:
+    """Пора ли проверять. Пустое состояние — пора: мы ещё ни разу не смотрели."""
+    stamp = str(_load_state().get("last_run_at") or "").strip()
+    if not stamp:
+        return True
+    try:
+        was = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except Exception:
+        return True
+    return (datetime.now(timezone.utc) - was).total_seconds() >= hours * 3600.0
+
+
+def _watch_loop() -> None:
+    hours = max(1.0, float(os.getenv("NORMATIVES_WATCH_HOURS", "24") or 24))
+    while True:
+        try:
+            if _watch_due(hours):
+                _run_check()
+        except Exception:
+            pass          # сторож — удобство: молчание лучше падения фонового потока
+        time.sleep(1800)

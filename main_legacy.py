@@ -31905,6 +31905,26 @@ _AGENT_TOOLS = [
         },
         "strict": True,
     },
+    {
+        "type": "function",
+        "name": "check_normatives",
+        "description": (
+            "Нормативная база DevelopAid: на каких актах стоят расчёты, в какой "
+            "редакции они учтены, когда источник проверялся в последний раз и что "
+            "с ним не так. Отвечай по этому списку, а не по памяти: акт, которого "
+            "здесь нет, у нас основанием не является. Действие «run» заново "
+            "опрашивает источники — оно долгое и зовётся только по прямой просьбе."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["status", "run"]},
+            },
+            "required": ["action"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
 ]
 
 
@@ -31954,7 +31974,52 @@ def _execute_agent_tool(
         return _tool_get_methodology(args["topic"])
     if name == "get_user_guide":
         return _tool_get_user_guide(args["section"])
+    if name == "check_normatives":
+        return _tool_check_normatives(args["action"])
     return {"error": f"Unknown tool: {name}"}
+
+
+def _tool_check_normatives(action: str) -> dict[str, Any]:
+    """Состояние нормативной базы — из самого реестра, а не из памяти модели.
+
+    Копии реестра у Платона нет по той же причине, по которой её нет у
+    руководства: разойдясь, она назвала бы основанием акт, которого под числом
+    нет. Отсутствие ссылки на исходник — тоже ответ, и он не прячется.
+    """
+    try:
+        import normatives_registry
+    except Exception as error:                       # noqa: BLE001
+        return {"available": False, "reason": f"реестр не читается: {error}"}
+    try:
+        if str(action) == "run":
+            state = normatives_registry._run_check()
+        else:
+            state = normatives_registry._load_state()
+        rows = normatives_registry._merged_registry()
+    except Exception as error:                       # noqa: BLE001
+        return {"available": False, "reason": f"реестр не читается: {error}"}
+    items = []
+    for row in rows:
+        check = row.get("check") if isinstance(row.get("check"), dict) else {}
+        items.append({
+            "scope": row.get("scope"),
+            "name": row.get("short_name") or row.get("title"),
+            "edition": row.get("latest_amendment"),
+            "status": row.get("status"),
+            "affects": row.get("affects") or [],
+            "source_url": row.get("source_url") or "",
+            "source_missing": not str(row.get("source_url") or "").strip(),
+            "last_check": {"result": check.get("result"), "at": check.get("checked_at"),
+                           "message": check.get("message")} if check else None,
+        })
+    return {
+        "available": True,
+        "count": len(items),
+        "last_run_at": state.get("last_run_at") or "",
+        "changes": state.get("changes") or [],
+        "items": items,
+        "page": "/normatives",
+    }
 
 
 def _extract_openai_text(data: dict[str, Any]) -> str:
@@ -34475,6 +34540,27 @@ def krt_announcements(req: WebLoginConfirmRequest) -> dict[str, Any]:
         raise HTTPException(status_code=503,
                             detail="Каталог КРТ на этом хосте не установлен.")
     return {"announcements": take(), "subscribers": _krt_subscribers()}
+
+
+@app.post("/internal/normatives/announcements")
+def normatives_announcements(req: WebLoginConfirmRequest) -> dict[str, Any]:
+    """Изменения в нормативной базе — для хоста с вебхуком. Подпись общая.
+
+    Проверку источников ведёт ядро: до правовых порталов ходит оно. До
+    api.telegram.org достаёт только хост с ботом, поэтому ядро копит находки,
+    а он их объявляет — тот же путь, что у знакомств и новинок каталога КРТ.
+    """
+    expected = _web_login_sign("normatives-announcements", int(req.chat_id or 0))
+    if not hmac.compare_digest(str(req.sign or "").encode("utf-8"),
+                               expected.encode("utf-8")):
+        raise HTTPException(status_code=403, detail="Подпись не сошлась.")
+    take = getattr(app.state, "normatives_announcements_take", None)
+    if take is None:
+        # Реестра на этом хосте нет — сказать это честно: пустой список
+        # читался бы как «в нормативной базе ничего не менялось».
+        raise HTTPException(status_code=503,
+                            detail="Нормативный реестр на этом хосте не установлен.")
+    return {"announcements": take()}
 
 
 @app.post("/internal/krt/subscribe")

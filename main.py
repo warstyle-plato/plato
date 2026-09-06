@@ -1544,6 +1544,10 @@ def _usage_digest_loop() -> None:
             _deliver_krt_announcements()
         except Exception:
             pass  # рассылка — удобство: молчание лучше падения фонового потока
+        try:
+            _deliver_normatives_announcements()
+        except Exception:
+            pass  # рассылка — удобство: молчание лучше падения фонового потока
         time.sleep(900)
 
 
@@ -1569,6 +1573,69 @@ def _deliver_profile_announcements() -> None:
         records = core._profile_take_announcements()
     for record in records:
         core._telegram_send_profile_card(record, admins)
+
+
+def _deliver_normatives_announcements() -> None:
+    """Изменения в нормативной базе — в чат владельцу.
+
+    Проверку источников ведёт ядро, а до api.telegram.org достаёт только этот
+    хост: ядро копит находки, мы их объявляем. Сообщается ПЕРЕХОД — источник,
+    который лежит третью неделю, новостью не является, и повторяемое каждые
+    четверть часа сообщение перестало бы читаться вовсе.
+
+    Получают владельцы: нормативная база — их ответственность, отдельной
+    подписки под неё не заводим.
+    """
+    admins = core.usage_admin_ids()
+    if not admins or not core._telegram_token() or not core._telegram_webhook_enabled():
+        return
+    remote = core._projects_remote_url("/internal/normatives/announcements")
+    if remote:
+        payload = {"code": "normatives-announcements", "chat_id": 0,
+                   "sign": core._web_login_sign("normatives-announcements", 0)}
+        data = core._core_post(remote, payload, 30.0)
+        records = list(data.get("announcements") or [])
+    else:
+        # Один хост на всё — очередь та же, только идти за ней некуда.
+        take = getattr(core.app.state, "normatives_announcements_take", None)
+        records = list(take()) if take is not None else []
+    if not records:
+        return
+    for chat_id in admins:
+        try:
+            core._telegram_send_message(chat_id, _normatives_announcement_text(records))
+        except Exception:
+            pass
+
+
+_NORMATIVES_RESULT_WORDS = {
+    "changed": "источник изменился",
+    "review_required": "источник требует проверки",
+    "unreachable": "источник не отвечает",
+}
+
+
+def _normatives_announcement_text(records: list[dict]) -> str:
+    """Одно сообщение на всю пачку: проверка идёт по всему реестру разом.
+
+    Тринадцать сообщений подряд читаются как поломка бота — ровно так же, как
+    это уже было с новинками каталога.
+    """
+    lines = ["<b>Нормативная база: есть изменения</b>"]
+    for item in records[:20]:
+        name = str(item.get("short_name") or item.get("id") or "")
+        word = _NORMATIVES_RESULT_WORDS.get(str(item.get("result") or ""), "изменение")
+        scope = str(item.get("scope") or "")
+        line = f"• {name}" + (f" ({scope})" if scope else "") + f" — {word}"
+        message = str(item.get("message") or "").strip()
+        if message:
+            line += f": {message}"
+        lines.append(line)
+    if len(records) > 20:
+        lines.append(f"…и ещё {len(records) - 20}")
+    lines.append("")
+    lines.append("Что именно изменилось — на странице «Нормативная база»: /normatives")
+    return "\n".join(lines)
 
 
 def _krt_take_announcements() -> tuple[list[dict], list[int]]:
