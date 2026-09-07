@@ -89,10 +89,17 @@ def _tender_events(by_site: dict[str, Any]) -> dict[str, dict[str, Any]]:
                          or one.get("lot_url") or one.get("url") or "").strip()
             if not number:
                 continue
+            # Имена полей у сырого лота и у хранимой выжимки РАЗНЫЕ
+            # (`application_deadline` против `deadline`), а сюда приходит
+            # выжимка: строка «— заявки до …» не печаталась бы никогда при
+            # живом сроке у лота. Читаются оба вида, потому что связку считают
+            # обе двери — сторож и вкладка «Торги».
             events[f"{site}|{number}"] = {
                 "slug": site,
-                "deadline": str(one.get("application_deadline") or ""),
-                "price_rub": one.get("current_price_rub") or one.get("start_price_rub"),
+                "deadline": str(one.get("application_deadline")
+                                or one.get("deadline") or ""),
+                "price_rub": (one.get("current_price_rub")
+                              or one.get("start_price_rub") or one.get("price_rub")),
                 "url": str(one.get("lot_url") or one.get("url") or ""),
             }
     return events
