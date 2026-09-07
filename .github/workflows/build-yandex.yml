@@ -56,9 +56,19 @@ jobs:
       # Две параллельные сессии взяли номер от одного и того же main и обе
       # написали 0.18.45 — разные правки, одна версия, и заметить это можно
       # было только по выкатке (18.08.2026). Общей памяти у сессий нет, общий
-      # у них репозиторий: пусть он и проверяет.
+      # у них репозиторий: пусть он и проверяет. Руководство — статическая
+      # поверхность того же движка: его правка не меняет VERSION, но образ
+      # пересобрать всё равно нужно, чтобы новый /guide попал в prod.
       - name: Версия строго растёт
-        run: python3 scripts/check_version_grows.py
+        run: |
+          set -euo pipefail
+          changed=$(git diff --name-only HEAD^ HEAD)
+          non_guide=$(printf '%s\n' "$changed" | grep -v '^guide/' || true)
+          if [ -z "$non_guide" ]; then
+            echo "Guide-only commit: VERSION остаётся версией расчётного движка."
+          else
+            python3 scripts/check_version_grows.py
+          fi
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
