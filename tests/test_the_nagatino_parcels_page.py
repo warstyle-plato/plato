@@ -1113,15 +1113,17 @@ def test_a_parcel_mostly_inside_the_site_keeps_its_colour():
 
 
 @pytest.mark.timeout(180)
-def test_in_a_real_browser_the_site_area_is_reconciled_right_under_the_total(monkeypatch):
-    """Строка сходимости стоит под тем итогом, который задаёт вопрос.
+def test_in_a_real_browser_the_site_area_is_reconciled_once_and_near_the_tiles(monkeypatch):
+    """Разложение 18,69 → 14,62 га стоит ОДИН раз и там, где ответ ищут.
 
-    «Это спрятано в картинке свёрнутой КРТ, а должно быть под основной
-    таблицей, где сейчас видно 186 до сих пор» (владелец, 07.09.2026). Прежде
-    вызов стоял ПОСЛЕ заголовка следующего раздела, и под итогом первой таблицы
-    не было ничего: 186 860 м² спорили с 14,62 га площадки, и оба числа
-    выглядели верными. Проверять это надо порядком узлов на странице, а не
-    наличием текста: текст был и тогда, просто не там.
+    Сперва оно жило под свёрнутой картинкой — «должно быть под основной
+    таблицей, где сейчас видно 186». Потом я поставил его под каждой таблицей,
+    и стало «дублирования много; я бы вот сюда просто в плашки вписал, сколько
+    площадь и сколько к выкупу, а не везде тиражировал эту фразу» (владелец,
+    07.09.2026). Ответ числом — в плитках, разложение — единожды под ними.
+
+    Проверяется отрисовкой: текст был на странице во всех трёх версиях, и
+    строковая проверка была бы зелёной у каждой.
     """
     try:
         from playwright.sync_api import sync_playwright
@@ -1153,13 +1155,20 @@ def test_in_a_real_browser_the_site_area_is_reconciled_right_under_the_total(mon
                       wait_until="domcontentloaded")
             page.wait_for_selector("#ownersTable table", timeout=20000)
             seen = page.evaluate("""() => {
-              const box = document.getElementById('ownersTable');
-              const kids = [...box.children];
-              // Итог первой таблицы и первая строка сходимости после него.
-              const table = kids.findIndex(n => n.querySelector && n.querySelector('table'));
-              const note = kids.findIndex(n => (n.textContent || '').includes('Сходится ли с площадкой'));
-              const head = kids.findIndex(n => n.tagName === 'H2');
-              return {table, note, head, text: box.textContent || ''};
+              const mark = 'Сходится ли с площадкой';
+              const nodes = [...document.querySelectorAll('.notice, .source')]
+                .filter(n => (n.textContent || '').includes(mark));
+              const tiles = document.getElementById('stats');
+              const tables = document.getElementById('ownersTable');
+              return {
+                copies: nodes.length,
+                afterTiles: nodes.length === 1 && !!tiles
+                  && (tiles.compareDocumentPosition(nodes[0]) & Node.DOCUMENT_POSITION_FOLLOWING) > 0,
+                beforeTables: nodes.length === 1 && !!tables
+                  && (nodes[0].compareDocumentPosition(tables) & Node.DOCUMENT_POSITION_FOLLOWING) > 0,
+                tiles: [...document.querySelectorAll('#stats .stat')].map(n => n.textContent || ''),
+                text: document.body.textContent || '',
+              };
             }""")
             browser.close()
     finally:
@@ -1167,13 +1176,17 @@ def test_in_a_real_browser_the_site_area_is_reconciled_right_under_the_total(mon
         thread.join(timeout=10)
 
     assert not errors, errors
-    assert seen["note"] > seen["table"] >= 0, "строки сходимости под первой таблицей нет"
-    assert seen["head"] < 0 or seen["note"] < seen["head"], (
-        "строка сходимости уехала за заголовок следующего раздела — "
-        "она отвечает на вопрос к ПЕРВОМУ итогу")
+    assert seen["copies"] == 1, f"строка сходимости на странице {seen['copies']} раз"
+    assert seen["afterTiles"] and seen["beforeTables"], (
+        "разложение стоит не под плитками — а ответ ищут именно там")
+
     totals = parcels.territory()["totals"]
-    for number in (totals["land_area_sqm"], totals["site_area_sqm"]):
-        assert f"{number:,.0f}".replace(",", " ") in seen["text"], number
+    site = f"{totals['site_area_sqm'] / 10000:,.2f}".replace(",", " ").replace(".", ",")
+    assert any(site in tile for tile in seen["tiles"]), (
+        f"площади площадки {site} га нет в плитках: {seen['tiles']}")
+    others = parcels.buyout()["others"]
+    assert any(f"{others['lands']} уч." in tile for tile in seen["tiles"]), (
+        f"того, что к выкупу, нет в плитках: {seen['tiles']}")
 
 
 def test_a_parcel_is_measured_against_the_site_outline_not_guessed():

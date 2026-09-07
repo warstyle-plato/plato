@@ -126,6 +126,7 @@ table.territory tr.obj td:first-child{border-left:14px solid var(--soft)}
     <div id="gate" class="notice warn" style="display:none"></div>
     <div id="progress" class="notice" style="display:none"></div>
     <div id="stats" class="stats"></div>
+    <div id="reconcile"></div>
     <div id="findings"></div>
     <div id="filter" class="filter"></div>
 
@@ -679,14 +680,27 @@ function filterMarkup(){
 
 function statsMarkup(){
  const T=(S.data.territory||{}).totals||{},o=S.data.outlines||{};
- return [[landNum(T.lands,0),'земельных участков'],
-         [landNum((T.land_area_sqm||0)/10000,2)+' га','площадь земли'],
+ const b=S.data.buyout||{},others=b.others||{};
+ // Ответ стоит числом в плитке, а не абзацем в каждой таблице: «я бы вот сюда
+ // просто в плашки вписал, сколько площадь и сколько к выкупу, а не везде
+ // тиражировал эту фразу» (владелец, 07.09.2026). Разложение — один раз, под
+ // плитками.
+ const tiles=[[landNum(T.lands,0),'земельных участков'],
+         [landNum((T.land_area_sqm||0)/10000,2)+' га','площадь земли по ЕГРН'],
          [mln(T.land_value_rub),'кадастровая стоимость земли'],
          [landNum(T.objects,0),'строений на них'],
          [m2(T.objects_area_sqm),'их площадь по выпискам'],
-         [mln(T.objects_value_rub),'кадастровая стоимость строений'],
-         [landNum(o.drawn,0)+' из '+landNum(o.parcels,0),'контуров получено из ЕГРН']]
-  .map(s=>`<div class="stat"><b>${s[0]}</b><span>${s[1]}</span></div>`).join('');
+         [mln(T.objects_value_rub),'кадастровая стоимость строений']];
+ if(T.site_area_sqm)
+  tiles.splice(2,0,[landNum(T.site_area_sqm/10000,2)+' га',
+                    'площадка КРТ по решению и извещению']);
+ if(others.holders)
+  tiles.push([`${others.lands} уч. · ${others.objects} стр.`,
+              'не городское — к выкупу или соглашению'],
+             [mln((others.land_value_rub||0)+(others.objects_value_rub||0)),
+              'их кадастровая стоимость — не цена выкупа']);
+ tiles.push([landNum(o.drawn,0)+' из '+landNum(o.parcels,0),'контуров получено из ЕГРН']);
+ return tiles.map(s=>`<div class="stat"><b>${s[0]}</b><span>${s[1]}</span></div>`).join('');
 }
 
 // Свод «ЗУ → объекты на нём» по официальным документам: состав территории из
@@ -868,28 +882,13 @@ function ownersBlock(rows,extra,unions){
   +hiddenNote(hiddenOwners?hiddenOwners+' владельцев':'');
 }
 
-// Участок, входящий в площадку частью, считается тут по ВХОДЯЩЕЙ площади, а не
-// по ЕГРН, и это называется числом: у дороги 77:05:0004001:40 разница в три
-// порядка — 43 288 м² по ЕГРН против 61 м² в площадке, — и посчитанная целиком
-// она давала владельцу её строений половину всей земли территории.
-function partsNote(unions){
- const parts=((unions||{}).total||{}).parts||[];
- if(!parts.length)return '';
- const T=S.data.territory||{};
- const named=parts.map(n=>{
-  const l=(T.lands||[]).find(x=>x.cadastral_number===n)||{};
-  return `${escapeHtml(n)} (${m2(l.area_sqm)} по ЕГРН, в площадку входит ${m2(l.notice_area_sqm)})`;
- }).join('; ');
- return ' Участок, входящий в площадку частью, взят ВХОДЯЩЕЙ площадью, а не полной по ЕГРН: '
-  +named+'. Иначе чужая улично-дорожная сеть целиком попадала бы в счёт владельца двух строений на ней.';
-}
-
 // Итог «20 участков, 186 860 м²» — площадь по ЕГРН, и рядом с ним обязана
 // стоять площадка КРТ: «может хоть какое-то указание, что с учётом УДС того
 // участка общая площадь соответствует заявленной в КРТ?» (владелец,
 // 07.09.2026). Без этой строки читатель видит 18,69 га там, где решение и
-// извещение говорят 14,62, и оба числа выглядят верными. Объявлена она один
-// раз и стоит под каждой таблицей, где есть итог земли.
+// извещение говорят 14,62, и оба числа выглядят верными. Стоит она ОДИН раз —
+// под плитками, где ответ и ищут: «в плашки вписал, а не везде тиражировал эту
+// фразу» (он же, тем же днём).
 function siteReconcileNote(){
  const t=(S.data.territory||{}).totals||{};
  if(!t.land_area_sqm||!t.site_area_sqm)return '';
@@ -902,9 +901,9 @@ function siteReconcileNote(){
   +`не все: ${named}. Вместе участки дают ${m2(t.land_area_in_notice_sqm)}, плюс `
   +`${m2(t.land_unformed_sqm)} земли, у которой кадастрового номера нет вовсе `
   +`(${escapeHtml(t.land_unformed_title||'участки не сформированы')} — так её называет сам `
-  +`документ) — ${m2(t.site_area_sqm)}, то есть `
-  +`${landNum(t.site_area_sqm/10000,2)} га: ровно та площадь, что заявлена в решении о КРТ и в `
-  +'шапке извещения. Оба числа верны и отвечают на разные вопросы.'
+  +`документ) — ${m2(t.site_area_sqm)}, то есть ${landNum(t.site_area_sqm/10000,2)} га: ровно та `
+  +'площадь, что заявлена в решении о КРТ и в шапке извещения. Оба числа верны и отвечают на '
+  +'разные вопросы.'
   // Два разных состояния под похожими словами: «участка нет» и «участок есть,
   // права не зарегистрированы». Второе в этой же таблице встречается
   // четырнадцать раз из двадцати, и без этой оговорки первое читается как оно.
@@ -925,14 +924,9 @@ function ownersTableMarkup(){
     +'складывать её нельзя, участок под строениями разных владельцев посчитан у каждого. Итог '
     +'группы — объединение участков, а не сумма строк; всего под строениями '
     +`${under.total.lands} участков из ${(S.data.territory||{}).lands.length} (${m2(under.total.area_sqm)}).`
-    +partsNote(under):'')
+    :'')
   +'</div>'
-  // Под итогом ПЕРВОЙ таблицы, а не после заголовка второй: 186 860 м² стоят
-  // здесь, и вопрос «сходится ли с 14,62 га» задают, глядя на них. Прежде
-  // строка стояла ниже заголовка следующего раздела — «это спрятано в картинке
-  // свёрнутой КРТ, а должно быть под основной таблицей, где сейчас видно 186 до
-  // сих пор» (владелец, 07.09.2026).
-  +siteReconcileNote();
+  ;
  const holdings=S.data.holdings||[];
  if(!holdings.length)return docs;
  // Второй взгляд — НАШ вывод, и он подписан своим именем. Слить его с первой
@@ -946,9 +940,7 @@ function ownersTableMarkup(){
   +'единственный собственник строений на нём, а если лица разные, но группа одна — группа. '
   +'Объект на нескольких участках посчитан один раз.</div>'
   +ownersBlock(holdings,true,S.data.holdings_under||null)
-  +siteReconcileNote()
-  +buyoutNote()
-  +`<div class="source">${partsNote(S.data.holdings_under||null).trim()}</div>`;
+  +buyoutNote();
 }
 
 // «Очевидно, что у Москвы ничего выкупать не надо» (владелец, 07.09.2026).
@@ -956,18 +948,17 @@ function ownersTableMarkup(){
 // вторым счётом той же величины и разошлась бы с таблицей над ней.
 // Кадастровая стоимость ценой выкупа не называется: она из ЕГРН, а выкуп идёт
 // по соглашению или по оценке, и подменять одно другим нельзя.
+// Числа «что выкупать не надо» стоят плиткой наверху и итогами групп в самой
+// таблице. Здесь остаётся оговорка, ради которой блок и написан: повторять те
+// же величины третий раз — это и есть «дублирования много» (владелец,
+// 07.09.2026).
 function buyoutNote(){
  const b=S.data.buyout; if(!b)return '';
- const c=b.city,o=b.others;
- return '<div class="notice"><b>Что выкупать не надо.</b> У города '
-  +`${c.lands} участков (${m2(c.land_area_sqm)}) и ${c.objects} строений (${m2(c.objects_area_sqm)}) — `
-  +`это его земля и его метры. Остальное у ${o.holders} владельцев: ${o.lands} участков `
-  +`(${m2(o.land_area_sqm)}, КС ${mln(o.land_value_rub)}) и ${o.objects} строений `
-  +`(${m2(o.objects_area_sqm)}, КС ${mln(o.objects_value_rub)}).`
-  +'<div class="source">Кадастровая стоимость — не цена выкупа: она из ЕГРН, а выкуп идёт по '
-  +'соглашению или по оценке. Считать по ней бюджет входа нельзя, сравнивать масштаб — можно. '
-  +'И это взгляд «по участку»: земля без записи в реестре отнесена городу по правилу '
-  +'неразграниченной земли и договорам аренды с ДГИ, а не потому, что так записано.</div></div>';
+ return '<div class="source">Строка «Итого · Москва» — то, что выкупать не надо. Кадастровая '
+  +'стоимость остальных не является ценой выкупа: она из ЕГРН, а выкуп идёт по соглашению или '
+  +'по оценке; считать по ней бюджет входа нельзя, сравнивать масштаб — можно. И это взгляд '
+  +'«по участку»: земля без записи в реестре отнесена городу по правилу неразграниченной земли '
+  +'и договорам аренды с ДГИ, а не потому, что так записано.</div>';
 }
 
 // Расхождение сумм самого файла — рядом с его таблицей. Молча взять свою
@@ -1080,7 +1071,7 @@ function decisionOutlineMarkup(){
  const a=auth(),t=(S.data.territory||{}).totals||{};
  const src='/krt/nagatino/decision-outline.png?'
    +new URLSearchParams({session:a.session,key:a.key});
- const road=((S.data.territory||{}).lands||[]).find(l=>l.part&&l.area_sqm>10000);
+ const road=null;
  const steps=road?`<div class="source">Почему 18,69 га участков и 14,62 га площадки: `
    +`убрать дорогу ${escapeHtml(road.cadastral_number)} целиком — ${m2(road.area_sqm)} — и выйдет `
    +`${landNum((t.land_area_sqm-road.area_sqm)/10000,2)} га, то есть «примерно 14». Точное число `
@@ -1186,6 +1177,7 @@ function render(){
   +((d.site||{}).okrug||'')+' · '+((d.site||{}).district||'')
   +(site.name?' · площадка реестра: '+site.name:'');
  $('stats').innerHTML=statsMarkup();
+ $('reconcile').innerHTML=siteReconcileNote();
  $('findings').innerHTML=findingsMarkup();
  $('filter').innerHTML=filterMarkup();
  bindFilter();
