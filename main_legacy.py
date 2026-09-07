@@ -72,7 +72,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.22.50"
+VERSION = "0.22.51"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -37386,10 +37386,20 @@ function frontLoadedPreset(count,kind){
  const a=phaseWeightPreset(count);if(count>1){a[0]+=10;for(let i=1;i<count;i++)a[i]-=10/(count-1)}
  const s=a.reduce((x,y)=>x+y,0);return a.map(x=>x*100/s);
 }
+// Срок строительства новой очереди берётся у того, что человек вписал во
+// «Вводные», а не у умолчания движка: вписал 36, включил очерёдность — и все
+// очереди строились 24, при том что поле «36» осталось на экране. Спрашивается
+// через `typeof`, а не порядком объявлений: `makeDefaultPhasing` зовётся из
+// инициализатора того же `let`, где объявлен `inputs`, и полагаться на порядок
+// в блоке на 340 КБ нельзя.
+function defaultConstructionMonths(){
+ const live=(typeof inputs!=='undefined'&&inputs)?Number(inputs.construction_months):NaN;
+ return Number.isFinite(live)&&live>0?live:Number(INPUT_DEFAULT.construction_months||24);
+}
 function makeDefaultPhasing(count=1){
  const w=phaseWeightPreset(count);
  return {enabled:false,user_enabled:false,default_version:'0.12.25',phase_count:count,target_size_sqm:70000,phase_gap_months:12,cost_inflation_pct:8,sales_price_inflation_pct:8,financing_strategy:'independent',carry_debt_forward:false,sweep_project_cash:true,cash_sweep_pct:80,
-  phases:Array.from({length:count},(_,i)=>({name:`О${i+1}`,start_offset_months:i*12,construction_months:Number(INPUT_DEFAULT.construction_months||24),products:{}})),
+  phases:Array.from({length:count},(_,i)=>({name:`О${i+1}`,start_offset_months:i*12,construction_months:defaultConstructionMonths(),products:{}})),
   products:{apartments:[...w],ground_commercial:[...w],underground_parking:[...w],storage:[...w]},
   shared_cash:{purchase:frontLoadedPreset(count,'purchase'),land_rights:frontLoadedPreset(count,'land_rights'),ird:frontLoadedPreset(count,'ird'),design:frontLoadedPreset(count,'design'),preparation:frontLoadedPreset(count,'preparation'),utilities:frontLoadedPreset(count,'utilities'),social_compensation:frontLoadedPreset(count,'social_compensation')},
   shared_allocation:{purchase:[...w],land_rights:[...w],ird:[...w],design:[...w],preparation:[...w],utilities:[...w],social_compensation:[...w],social_construction:[...w]},
@@ -41035,6 +41045,19 @@ function renderInputs(){
    grp[1].forEach(f=>{
      const [id,label,unit,type]=f;const wrap=document.createElement('div');wrap.className='field';
      wrap.innerHTML=`<label>${label} <span class="unit">${unit}</span></label>`;
+     // Срок строительства при очередности задаёт очередь, а не проект: движок
+     // читает проектное поле ТОЛЬКО когда очередь своего срока не назвала, а
+     // страница называет его всегда. Поле, которого никто не читает, — не
+     // вводная, и на экране оно неотличимо от работающего (владелец,
+     // 07.09.2026: «какой будет срок, если эти сроки противоречат друг другу?»).
+     // Сроки очередей названы здесь же: иначе гашение отвечает «не тут», не
+     // сказав «а где».
+     if(id==='construction_months'&&phasing&&phasing.enabled&&Number(phasing.phase_count||1)>1){
+       const terms=(phasing.phases||[]).map((ph,n)=>`${ph.name||('О'+(n+1))} — ${Number(ph.construction_months||0)}`).join(', ');
+       wrap.innerHTML+=`<div class="note" style="margin:0;padding:11px 12px">Задаётся по очередям на вкладке «Очередность» — это поле при очередности не читается.`
+        +(terms?` Сейчас: ${terms} мес.`:'')+`</div>`;
+       grid.appendChild(wrap);return;
+     }
      if(phasing&&phasing.enabled&&['kindergarten_start','school_start','clinic_start'].includes(id)){
        wrap.innerHTML+=`<div class="note" style="margin:0;padding:11px 12px">Определяется по выбранной очереди на вкладке «Очередность». По умолчанию — дата начала этой очереди.</div>`;
        grid.appendChild(wrap);return;
