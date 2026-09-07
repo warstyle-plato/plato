@@ -1625,7 +1625,11 @@ class KrtRegistry:
         now = int(time.time())
         for slug, lots in rows.items():
             clean = str(slug or "").strip()
-            if not re.fullmatch(r"[a-zA-Z0-9_-]{2,180}", clean) or not lots:
+            # Слаг здесь — КЛЮЧ в одном файле, а не имя файла: у площадки без
+            # карточки он вида `decision:<номер документа>`, и строгий набор
+            # без двоеточия отбрасывал такую связку молча. Остальные проверки
+            # слага в этом модуле стерегут ПУТЬ и остаются строгими.
+            if not re.fullmatch(r"[a-zA-Z0-9_:-]{2,180}", clean) or not lots:
                 continue
             sites[clean] = {"lots": list(lots)[:20], "seen_at": now}
         payload = {"schema_version": TENDER_LOTS_SCHEMA_VERSION,
