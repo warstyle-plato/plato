@@ -96,8 +96,14 @@ def _lines(pdf_path: Path) -> list[dict[str, str]]:
             by_line.setdefault(round(y0 / 3) * 3, []).append((x0, word))
         for key in sorted(by_line):
             tokens = sorted(by_line[key])
-            rows.append({name: " ".join(word for x, word in tokens if left <= x < right)
-                         for name, (left, right) in COLUMNS.items()})
+            row = {name: " ".join(word for x, word in tokens if left <= x < right)
+                   for name, (left, right) in COLUMNS.items()}
+            # Левая половина строки целиком — она нужна там, где читается не
+            # номер, а фраза: окно колонки участка узкое (оно ловит номер), и
+            # собранная из него проза теряет слова. Кривая цитата хуже её
+            # отсутствия: документ начинает выглядеть неграмотным.
+            row["head"] = " ".join(word for x, word in tokens if x < 240)
+            rows.append(row)
     return rows
 
 
@@ -122,9 +128,16 @@ def read(pdf_path: str | Path) -> dict[str, Any]:
         # 19 почти, а по решению 14» объяснялось наполовину.
         elif line["land"].startswith("Территори"):
             current = {"cadastral_number": "", "part": False, "area_raw": "",
-                       "unformed": True, "objects": []}
+                       # Как эту строку называет САМ документ. Без неё «земля
+                       # без кадастрового номера» читается как «участок есть, а
+                       # права не зарегистрированы» — а это другое состояние, и
+                       # оно в этой же таблице встречается четырнадцать раз из
+                       # двадцати. Здесь участка не существует вовсе.
+                       "title": "", "unformed": True, "objects": []}
             lands.append(current)
             current_object = None
+        if current is not None and current.get("unformed") and line["head"]:
+            current["title"] = (current["title"] + " " + line["head"]).strip()
         if current is None:
             continue
         if "часть" in line["land"]:
@@ -145,6 +158,16 @@ def read(pdf_path: str | Path) -> dict[str, Any]:
                                           + line["object_area"]).strip()
         if line["fate"]:
             current_object["fate"] = (current_object["fate"] + " " + line["fate"]).strip()
+    for land in lands:
+        # Фраза кончается там, где кончается сама формулировка: ниже по
+        # странице идут строки других колонок, и они попадают в ту же полосу
+        # координат. Резать по слову документа честнее, чем по числу строк.
+        title = " ".join((land.get("title") or "").split())
+        cut = title.find("сформированы")
+        if cut >= 0:
+            land["title"] = title[:cut + len("сформированы")]
+        elif title:
+            land["title"] = title[:120]
     if not lands:
         raise NoticeProblem("в документе не нашлось таблицы состава территории")
     objects: dict[str, dict[str, Any]] = {}

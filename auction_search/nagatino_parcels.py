@@ -841,6 +841,18 @@ def territory() -> dict[str, Any]:
             # ровно ту площадку, которую извещение называет в шапке.
             "land_unformed_sqm": _sum([item.get("area_sqm")
                                        for item in notice.get("unformed") or []]),
+            # Как эту землю называет САМ документ. «Земля без кадастрового
+            # номера» читается как «участок есть, а права не зарегистрированы»
+            # — а это другое состояние, и в той же таблице оно встречается
+            # четырнадцать раз из двадцати. Здесь участка не существует вовсе:
+            # он не образован, и в ЕГРН его нет.
+            "land_unformed_title": " / ".join(
+                str(item.get("title") or "") for item in notice.get("unformed") or []
+                if item.get("title")),
+            # Участков С номером, но БЕЗ записи о праве — второе состояние, и
+            # оно называется рядом, чтобы два разных ответа не сливались.
+            "lands_without_right": len([land for land in lands
+                                        if not (land.get("owner") or {}).get("name")]),
             "site_area_sqm": round(
                 _sum([item.get("notice_area_sqm") for item in lands])
                 + _sum([item.get("area_sqm") for item in notice.get("unformed") or []]), 1),
