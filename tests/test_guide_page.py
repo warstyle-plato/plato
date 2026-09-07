@@ -2,8 +2,10 @@
 
 Правила, закреплённые здесь:
 
-- руководство живёт внутри приложения: без iframe и без внешних доменов,
-  единственная внешняя ссылка — официальный калькулятор «СтроимПросто»;
+- руководство живёт внутри приложения: без iframe и без случайных внешних
+  доменов. Наружу оно ведёт в двух случаях — официальный калькулятор
+  «СтроимПросто» и исходники нормативных актов из реестра движка (справочник
+  внизу страницы, с 06.09.2026);
 - каждое упомянутое название кнопки или вкладки (пометка class="ui")
   существует на странице модели дословно — руководство не имеет права
   рассказывать про интерфейс, которого нет;
@@ -58,10 +60,28 @@ def test_the_guide_is_native_and_versioned(client: TestClient, page: str):
     assert client.get("/guide/").text == page
 
 
-def test_the_only_external_link_is_the_official_calculator(page: str):
+def test_the_only_external_links_are_the_calculator_and_the_acts(page: str):
+    """Наружу руководство ведёт в двух случаях, и оба названы.
+
+    Прежде разрешён был один адрес — штатный калькулятор. С 06.09.2026 внизу
+    стоит справочник нормативной базы, и у каждой позиции ссылка на
+    ОРИГИНАЛЬНЫЙ исходник: «проверять нас нужно по нему» (владелец). Правило
+    от этого не ослабло — оно стало точнее: разрешён калькулятор и ровно те
+    адреса, что стоят в реестре движка. Вписанный руками внешний адрес
+    по-прежнему поломка, и её ловит эта же проверка.
+    """
+    import html as _html
+
+    import normatives_registry
+
     external = set(re.findall(r"https?://[^\s\"'<>]+", page))
-    allowed = {url for url in external if url.startswith("https://stroimprosto.mos.ru")}
+    acts = {_html.escape(str(row.get("source_url") or "")).rstrip("/")
+            for row in normatives_registry._merged_registry()
+            if str(row.get("source_url") or "").strip()}
+    allowed = {url for url in external
+               if url.startswith("https://stroimprosto.mos.ru") or url.rstrip("/") in acts}
     assert external == allowed, f"лишние внешние адреса: {external - allowed}"
+    assert acts, "в реестре нет ни одной ссылки — проверять нечего"
 
 
 def test_every_mentioned_control_exists_on_the_page(page: str):

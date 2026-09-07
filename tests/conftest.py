@@ -29,6 +29,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 # 'build_report'» — строку «N passed» под ними пришлось искать скриптом.
 # Выключатель у нити есть; здесь он взводится до импорта приложения.
 os.environ.setdefault("AUCTION_KRT_WEEKLY", "0")
+# Сторож нормативной базы — та же история: он ходит к правовым порталам по
+# расписанию, и в прогоне это сеть, чужие ответы и мусор в логе.
+os.environ.setdefault("NORMATIVES_WATCH", "0")
 
 import main as _wrapper  # noqa: E402
 import main_legacy as _engine  # noqa: E402

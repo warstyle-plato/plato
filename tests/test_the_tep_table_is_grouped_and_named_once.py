@@ -92,8 +92,8 @@ TABLE_STATE = """() => {
   const foot = tb.querySelector('tfoot');
   return {
     rows,
-    gns_total: foot.querySelector('#tg').firstChild.textContent.trim(),
-    foot_note: (foot.querySelector('#tg .tep-note') || {}).textContent || '',
+    gns_total: foot.querySelector('#tg').textContent.trim(),
+    under_note: (document.getElementById('tepUndergroundNote') || {}).textContent || '',
     tep: JSON.parse(JSON.stringify(tep))};
 }"""
 
@@ -153,8 +153,10 @@ def test_the_total_gns_is_the_above_ground_one(screen) -> None:
     assert abs(shown - summary["project_gns_sqm"]) < 1.0, (
         f"в подвале {shown}, у движка {summary['project_gns_sqm']}")
     # Подземная и объём стройки названы рядом — иначе исчезли бы с экрана.
-    assert "подземная" in state["foot_note"]
-    assert "строительный объём" in state["foot_note"]
+    # Говорит это подпись под таблицей (`tepUndergroundNote`), и она одна:
+    # второе такое утверждение в клетке итога было бы тем же дважды.
+    assert "Подземная часть" in state["under_note"], state["under_note"]
+    assert "Строительный объём" in state["under_note"]
     volume = summary["construction_volume_sqm"]
     assert abs(shown - summary["project_gns_sqm"]) < abs(shown - volume), (
         "в клетке ГНС стоит строительный объём")
