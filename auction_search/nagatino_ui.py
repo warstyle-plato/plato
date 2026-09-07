@@ -220,15 +220,26 @@ function pathOf(rings,place){
    .map(p=>place.px(p[0]).toFixed(1)+' '+place.py(p[1]).toFixed(1)).join('L')+'Z').join(' ');
 }
 
+// Что рисуют обе карты — печатная и живая. Список один: разойдись они, одно
+// здание вышло бы двух цветов, и оба выглядели бы верными. Ровно это и было:
+// живая карта брала строки выгрузки, где владельца нет у 27 объектов из 39, и
+// строения «Жилищника» на ней были жёлтыми при зелёных на печатной.
+function drawnObjects(){
+ return (((S.data||{}).territory||{}).objects||[]).filter(p=>(p.rings_merc||[]).length)
+   .map(p=>({...p, colour:p.colour||(p.owner||{}).colour}));
+}
+function drawnLands(){
+ return (((S.data||{}).territory||{}).lands||[]).filter(l=>(l.rings_merc||[]).length);
+}
+
 function mapMarkup(){
  const d=S.data;
- const drawn=((d.territory||{}).objects||[]).filter(p=>(p.rings_merc||[]).length)
-   .map(p=>({...p, colour:p.colour||p.owner.colour}));
+ const drawn=drawnObjects();
  const site=(d.krt_site&&d.krt_site.rings_merc)||[];
  if(!drawn.length)
   return '<div class="notice warn">Ни одного контура пока нет — рисовать нечего. '
    +'Это не значит, что объектов нет: '+escapeHtml(String((d.outlines||{}).problem||'ЕГРН по ним ещё не спрашивали'))+'.</div>';
- const lands=((d.territory||{}).lands||[]).filter(l=>(l.rings_merc||[]).length);
+ const lands=drawnLands();
  const place=frame(drawn.flatMap(p=>p.rings_merc)
    .concat(lands.flatMap(l=>l.rings_merc)).concat(site));
  const src='/land/basemap?'+new URLSearchParams({
@@ -429,14 +440,14 @@ function bindMap(){
 function openLive(){
  if(typeof openLandMap!=='function')return;
  const d=S.data;
- const shapes=d.parcels.filter(p=>(p.rings_merc||[]).length)
+ const shapes=drawnObjects()
   .map(p=>({rings:p.rings_merc,colour:p.colour,key:p.cadastral_number,title:tipTitle(p)}))
   .sort((a,b)=>landRingArea(b.rings)-landRingArea(a.rings));
  const site=(d.krt_site&&d.krt_site.rings_merc)||[];
  // Участки идут теми же фигурами, но ПЕРВЫМИ и крупнее: живая карта рисует
  // список по порядку, и земля обязана лежать под зданиями.
- const landShapes=(d.lands||[]).filter(l=>(l.rings||[]).length).map(l=>({
-  rings:l.rings,colour:'#4a4a4a',key:'land:'+l.cadastral_number,title:landTitle(l),
+ const landShapes=drawnLands().map(l=>({
+  rings:l.rings_merc,colour:'#4a4a4a',key:'land:'+l.cadastral_number,title:landTitle(l),
  })).sort((a,b)=>landRingArea(b.rings)-landRingArea(a.rings));
  openLandMap({
   rings:site,
@@ -444,27 +455,28 @@ function openLive(){
   title:'КРТ Нагатино — '+shapes.length+' строений на '+landShapes.length
    +' участках, квартал 77:05:0004001',
   note:'Тяните карту мышью или пальцем, колесо — увеличение. Нажмите на объект, '
-   +'чтобы увидеть правообладателя. Цвет — группа владельца из выгрузки, чёрный пунктир — '
-   +'граница площадки КРТ из реестра города, подложка — OpenStreetMap.',
+   +'чтобы увидеть правообладателя. Цвет — группа собственника по выписке ЕГРН, '
+   +'чёрный пунктир — граница площадки КРТ из реестра города, подложка — OpenStreetMap.',
   onPick:number=>{
    if(!LAND_MAP)return;
    if(String(number).startsWith('land:')){
-    const l=(d.lands||[]).find(x=>'land:'+x.cadastral_number===number);
+    const l=drawnLands().find(x=>'land:'+x.cadastral_number===number);
     if(!l)return;
     LAND_MAP.note='Участок '+l.cadastral_number+' · '+m2(l.area_sqm)
      +' · КС '+mln(l.cadastral_value_rub)+' · '+(l.permitted_use||'ВРИ не указан')
-     +' · строений '+l.buildings+' ('+m2(l.buildings_area_sqm)+')'
+     +' · строений '+(l.objects||[]).length+' ('+m2(l.objects_area_sqm)+')'
      +' · правообладателя участка выгрузка не называет — она про владельцев зданий';
     renderLandMap();
     return;
    }
-   const p=d.parcels.find(x=>x.cadastral_number===number);
+   const p=drawnObjects().find(x=>x.cadastral_number===number);
    if(!p)return;
+   const ow=p.owner||{};
    LAND_MAP.note=p.cadastral_number+' · '
-    +(p.owner_name||'правообладатель в выгрузке не указан')
-    +(p.inn?' · ИНН '+p.inn:'')+(p.ogrn?' · ОГРН '+p.ogrn:'')
+    +(ow.name||ow.note||'правообладатель не назван')
+    +(ow.inn?' · ИНН '+ow.inn:'')
     +' · '+(p.area_sqm!=null?m2(p.area_sqm):'площадь не указана')
-    +' · КС '+mln(p.cadastral_value_rub)+' · группа: '+p.group_title;
+    +' · КС '+mln(p.cadastral_value_rub)+' · группа: '+(ow.group_title||'—');
    renderLandMap();
   },
  });
@@ -657,7 +669,13 @@ function tableMarkup(){
    +`<td class="num">${p.area_sqm!=null?m2(p.area_sqm):'—'}</td>`
    +`<td class="num">${mln(p.cadastral_value_rub)}</td>`
    +`<td>${p.owner_name?escapeHtml(p.owner_name):'<span class="source">в выгрузке не указан</span>'}`
-   +`${p.inn||p.ogrn?`<div class="source">${escapeHtml([p.inn?'ИНН '+p.inn:'',p.ogrn?'ОГРН '+p.ogrn:''].filter(Boolean).join(' · '))}</div>`:''}</td>`
+   +`${p.inn||p.ogrn?`<div class="source">${escapeHtml([p.inn?'ИНН '+p.inn:'',p.ogrn?'ОГРН '+p.ogrn:''].filter(Boolean).join(' · '))}</div>`:''}`
+   // Цвет строки считается по собственнику из выписки, и раз так — он назван
+   // здесь же. Расхождение с выгрузкой говорится вслух: молча выбранный
+   // источник читается как единственный.
+   +`${p.owner_conflict?`<div class="source">${escapeHtml(p.owner_conflict)}</div>`
+     :(p.egrn_owner_name&&!p.owner_name
+       ?`<div class="source">собственник по ЕГРН: ${escapeHtml(p.egrn_owner_name)}</div>`:'')}</td>`
    +`<td>${escapeHtml(p.group_title)}</td>`
    +`<td class="source">${p.egrn?escapeHtml(p.egrn.kind_label||'—'):'не спрашивали'}</td>`
    +`<td class="source">${(p.lands||[]).map(v=>escapeHtml(v)).join(', ')||'—'}</td>`

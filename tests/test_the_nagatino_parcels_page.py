@@ -83,19 +83,88 @@ def test_the_page_says_the_file_total_is_short_and_why():
 # --- группы ------------------------------------------------------------------
 
 def _by_group(data):
+    """Кого страница показывает в каждой группе — по СОБСТВЕННИКУ строки."""
     out = {}
     for parcel in data["parcels"]:
-        out.setdefault(parcel["group"], set()).add(parcel["owner"])
+        name = parcel.get("egrn_owner_name") or parcel.get("owner_name") or None
+        out.setdefault(parcel["group"], set()).add(name)
+    return out
+
+
+def _short(names):
+    """Первое слово имени юрлица — сравнивать полные названия ЕГРН нечитаемо."""
+    out = set()
+    for name in names:
+        if name is None:
+            out.add(None)
+            continue
+        head = re.sub(r'^(ОБЩЕСТВО[^"]*|Общество[^"]*|Закрытое[^"]*|Публичное[^"]*|'
+                      r'Акционерное[^"]*|Государственное[^"]*)"?', "", str(name)).strip('" ')
+        out.add(head or str(name))
     return out
 
 
 def test_the_owner_named_the_groups_and_we_did_not_invent_them():
+    """Группа — по собственнику из выписки, и она совпадает с названным.
+
+    «Новый проект, УНИКС покрасить как Брынцалов» (07.09.2026), следом
+    «Причал там же ген дир»; «Москва зелёная, остальные разной гаммы жёлтого»;
+    и, отдельным словом того же дня, — «город Москва по зданиям Жилищника
+    конечно красим в зелёный цвет Москвы».
+    """
     data = parcels.payload()
     groups = _by_group(data)
-    # «Причал» владелец отнёс к Брынцалову 07.09.2026 («там же ген дир»).
-    assert groups["bryntsalov"] == {"uniks", "novy-proekt", "prichal"}
-    assert groups["other"] == {"avtokombinat-19", "zhilishchnik", "rosseti"}
-    assert groups["none"] == {None}, "объект без правообладателя не приписан никому"
+    assert _short(groups["bryntsalov"]) == {"УНИКС", "НОВЫЙ ПРОЕКТ", "ПРИЧАЛ"}
+    # Город — одно лицо, как бы выписка его ни записала; его учреждение — тоже
+    # город, и это слово владельца, а не наша догадка.
+    assert all(name in ("город Москва", "Москва") or "Жилищник" in name
+               for name in groups["moscow"]), groups["moscow"]
+    assert _short(groups["other"]) == {
+        "АВТОКОМБИНАТ № 19", "Россети Московский регион", "Каллисто",
+        "Фабрика швейных изделий № 3",
+        "Научно-исследовательский институт по промышленной и санитарной очистке газов",
+    }
+    assert groups["none"] == {None}, "объект без собственника не приписан никому"
+
+
+def test_the_city_keeps_its_green_where_the_holder_is_the_zhilishchnik():
+    """«Город Москва по зданиям Жилищника конечно красим в зелёный цвет
+    Москвы» (владелец, 07.09.2026).
+
+    Проверяется не цвет ГБУ, а цвет ГОРОДА: собственник этих строений — город,
+    у учреждения оперативное управление. Выгрузка при этом называет ГБУ, и
+    расхождение источников стоит в строке словами, а не выбрано молча.
+    """
+    green = next(g["colour"] for g in parcels.registry()["groups"] if g["key"] == "moscow")
+    rows = [row for row in parcels.payload()["parcels"] if row["group"] == "moscow"]
+    # Девять строений называет собственником город сама выписка, десятое —
+    # только выгрузка, и там метка по ИНН учреждения и решает.
+    assert len(rows) == 10, [row["cadastral_number"] for row in rows]
+    assert len([row for row in rows if row["owner_source"] == "выписка ЕГРН"]) == 9
+    assert {row["colour"] for row in rows} == {green}
+    said = [row for row in rows if row["owner_conflict"]]
+    assert said, "выгрузка называет ГБУ — и об этом сказано"
+    assert all("оперативное управление" in row["owner_conflict"] for row in said)
+    assert all("Жилищник" in row["owner_conflict"] for row in said)
+
+
+def test_one_object_has_one_colour_on_every_surface():
+    """Цвет здания — одна величина, и ответ у неё один.
+
+    Прежде строка выгрузки красилась по владельцу ИЗ ФАЙЛА, а то же здание на
+    карте — по собственнику из выписки: на 27 объектах из 39 они расходились, и
+    оба ответа выглядели верными. Восемь строений «Жилищника» были на строке
+    жёлтыми при зелёных на карте.
+    """
+    data = parcels.payload()
+    drawn = {item["cadastral_number"]: item for item in data["territory"]["objects"]}
+    for row in data["parcels"]:
+        item = drawn.get(row["cadastral_number"])
+        if not item:
+            continue
+        assert row["colour"] == (item.get("colour") or item["owner"]["colour"]), (
+            f"{row['cadastral_number']}: строка и карта красят по-разному")
+        assert row["group"] == item["owner"]["group"]
 
 
 def test_an_unregistered_building_takes_the_shade_of_its_parcel_owner():
@@ -543,6 +612,85 @@ READ = """() => ({
     < [...document.querySelectorAll('#mapFrame svg path')]
       .findIndex(n => n.classList.contains('parcel')),
 })"""
+
+
+@pytest.mark.timeout(180)
+def test_in_a_real_browser_the_live_map_opens_and_paints_the_same_colours(monkeypatch):
+    """Живая карта рисует тот же список, что печатная, — и открывается вообще.
+
+    Она брала строки выгрузки, а у 27 объектов из 39 владельца там нет вовсе:
+    `tipTitle` читал `p.owner.name` у `null` и падал — окно не открывалось
+    НИКОГДА, а в исходнике и кнопка, и функция были на месте. Заодно цвета
+    расходились: строение «Жилищника» на печатной карте зелёное (собственник —
+    город), а на живой было жёлтым по владельцу из выгрузки.
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception:  # noqa: BLE001
+        pytest.skip("playwright недоступен")
+    chrome = Path("/opt/pw-browsers/chromium-1194/chrome-linux/chrome")
+    if not chrome.exists():
+        pytest.skip("chromium в образе не найден")
+    import uvicorn
+
+    monkeypatch.setenv("NAGATINO_EGRN_READ", "0")
+    city = [[[4187100, 7495100], [4187400, 7495100], [4187400, 7495400], [4187100, 7495400]]]
+    theirs = [[[4187500, 7495500], [4187800, 7495500], [4187800, 7495800], [4187500, 7495800]]]
+    land = [[[4187000, 7495000], [4187900, 7495000], [4187900, 7495900], [4187000, 7495900]]]
+    _seed({"77:05:0004001:1001": {"asked_at": time.time(), "rings": city, "reason": ""},
+           "77:05:0004001:1038": {"asked_at": time.time(), "rings": theirs, "reason": ""},
+           "77:05:0004001:1998": {"asked_at": time.time(), "rings": land, "reason": ""}})
+
+    server = uvicorn.Server(uvicorn.Config(_app(), host="127.0.0.1", port=PORT + 1,
+                                           log_level="error"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    for _ in range(200):
+        if server.started:
+            break
+        time.sleep(0.05)
+    assert server.started
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(executable_path=str(chrome))
+            page = browser.new_page()
+            errors: list[str] = []
+            page.on("pageerror", lambda exc: errors.append(str(exc)))
+            page.goto(f"http://127.0.0.1:{PORT + 1}/krt/nagatino",
+                      wait_until="domcontentloaded")
+            page.wait_for_selector("path.parcel", timeout=20000)
+            printed = page.evaluate("""() => {
+              const out = {};
+              document.querySelectorAll('#mapFrame svg path[data-cad]').forEach(
+                n => out[n.dataset.cad] = n.getAttribute('fill'));
+              return {colours: out,
+                      objects: document.querySelectorAll('path.parcel').length,
+                      lands: document.querySelectorAll('path.land').length};
+            }""")
+            page.click("#liveBtn")
+            page.wait_for_timeout(800)
+            live = page.evaluate("""() => {
+              const box = document.getElementById('landMapDialog');
+              const out = {};
+              document.querySelectorAll('#landMapDialog svg path[data-pick]').forEach(
+                n => out[n.dataset.pick] = n.getAttribute('fill'));
+              return {open: !!box && getComputedStyle(box).display !== 'none',
+                      colours: out, shapes: Object.keys(out).length};
+            }""")
+            browser.close()
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)
+
+    assert not errors, errors
+    assert live["open"], "окно живой карты не открылось"
+    # Живая рисует те же объекты и те же участки, что печатная.
+    assert live["shapes"] == printed["objects"] + printed["lands"], live["shapes"]
+    green = next(g["colour"] for g in parcels.registry()["groups"] if g["key"] == "moscow")
+    assert printed["colours"]["77:05:0004001:1001"] == green
+    for number in ("77:05:0004001:1001", "77:05:0004001:1038"):
+        assert live["colours"][number] == printed["colours"][number], (
+            f"{number}: живая и печатная карты красят по-разному")
 
 
 @pytest.mark.timeout(180)

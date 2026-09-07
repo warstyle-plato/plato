@@ -4,7 +4,11 @@
 кадастровая стоимость, правообладатель) и попросил отдельную страницу с картой
 Москвы, где эти участки нанесены, а по наведению видно, чей участок
 (07.09.2026). Группы он назвал сам: «Новый проект, УНИКС покрасить как
-Брынцалов, Россети, жилищник и автокомбинат как прочее».
+Брынцалов, Россети, жилищник и автокомбинат как прочее», следом «Причал там же
+ген дир» и «Москва зелёная, остальные разной гаммы жёлтого». Про «Жилищник» он
+в тот же день сказал иначе — «город Москва по зданиям Жилищника конечно красим
+в зелёный цвет Москвы», — и это отменяет первое слово: собственник у этих
+строений город, у ГБУ оперативное управление.
 
 Что здесь чьё:
 
@@ -17,6 +21,15 @@
   Второго клиента НСПД здесь нет.
 
 Четыре правила, за которые отвечает именно этот модуль.
+
+**Кто владелец — один ответ, и его даёт выписка.** Прежде строка выгрузки
+красилась по владельцу ИЗ ФАЙЛА, а то же здание на карте — по собственнику из
+выписки: на 27 объектах из 39 они расходились, и оба ответа выглядели верными.
+Восемь строений «Жилищника» на строке были жёлтыми при зелёных на карте.
+Выгрузка при этом не выброшена: её владелец стоит своей колонкой, а расхождение
+названо словами («в выгрузке назван ГБУ — у него оперативное управление;
+собственник по ЕГРН — город Москва»). Молчание расхождением не считается: у
+объекта без выписки ответ один, и его даёт файл.
 
 **Группа — утверждение о владельце участка, а не наша догадка.** ООО «Причал»
 владелец ни к «Брынцалову», ни к «прочему» не отнёс — оно стоит своей группой
@@ -352,6 +365,40 @@ def _owner_view(record: dict[str, Any], groups_by_inn: dict[str, str],
             "colour": _palette().get(owner.get("key") or "")
                       or str((groups.get(group) or {}).get("colour") or "#8a8a8a"),
             "group_title": str((groups.get(group) or {}).get("title") or "")}
+
+
+def _owner_conflict(file_owner: dict[str, Any], egrn_owner: dict[str, Any],
+                    record: dict[str, Any]) -> str:
+    """Что говорят о владельце выгрузка и выписка, когда они говорят разное.
+
+    Молчание расхождением не считается: у объекта без выписки или без
+    зарегистрированного права ответ один, а не два. Совпадение по ИНН — тоже
+    согласие, даже если имена написаны по-разному.
+    """
+    file_name = str(file_owner.get("short") or file_owner.get("name") or "")
+    egrn_name = str(egrn_owner.get("name") or "")
+    if not file_name or not egrn_name:
+        return ""
+    if str(file_owner.get("inn") or "") and str(file_owner.get("inn") or "") == str(egrn_owner.get("inn") or ""):
+        return ""
+    # Чаще всего это не спор, а разные вопросы: выгрузка называет того, кто
+    # зданием ПОЛЬЗУЕТСЯ, выписка — того, за кем оно записано. Так у восьми
+    # строений «Жилищника»: собственник город Москва, у ГБУ оперативное
+    # управление. Если названный выгрузкой держит на объекте иное право, так и
+    # сказано — иначе это настоящее расхождение источников.
+    inn = str(file_owner.get("inn") or "")
+    for right in (record.get("owner") or {}).get("others") or []:
+        holder = right if isinstance(right, dict) else {}
+        same = (inn and str(holder.get("inn") or "") == inn) or (
+            file_owner.get("name") and str(holder.get("name") or "") == str(file_owner.get("name")))
+        if same:
+            # Право называется тем словом, которым его назвала выписка:
+            # «оперативное управление» и «иное право» — разные утверждения.
+            right_type = str(holder.get("right_type") or "").strip()
+            named = right_type[:1].lower() + right_type[1:] if right_type else "иное право"
+            return (f"в выгрузке назван {file_name} — у него {named}; "
+                    f"собственник по ЕГРН — {egrn_name}")
+    return f"в выгрузке — {file_name}, собственник по ЕГРН — {egrn_name}"
 
 
 def fill_in_background(lookup: Callable[[list[str]], list[dict[str, Any]]],
@@ -725,21 +772,62 @@ def payload() -> dict[str, Any]:
     owners = {str(o.get("key")): o for o in data.get("owners") or []}
     groups = {str(g.get("key")): g for g in data.get("groups") or []}
     answers = _answers()
-    links = {item["cadastral_number"]: item["lands"] for item in territory()["objects"]}
+    # Свод по документам считается ОДИН раз: он же даёт участок под зданием и
+    # он же отвечает, кто собственник. Второй вызов — второй счёт того же.
+    lands_and_objects = territory()
+    by_number = {item["cadastral_number"]: item
+                 for item in lands_and_objects["objects"]}
     parcels = []
     for row in data.get("parcels") or []:
         number = str(row.get("cadastral_number") or "")
         owner_key = row.get("owner")
         owner = owners.get(owner_key) or {}
-        # Метка группы живёт в одном месте — `owner_groups` по ИНН. Второе поле
-        # у владельца однажды разошлось бы с первым.
-        group = (group_of(owner) if owner_key else "none")
         answer = answers.get(number) if isinstance(answers.get(number), dict) else None
+        # Кто владелец — ОДИН ответ на весь модуль, и его даёт выписка ЕГРН.
+        # Прежде цвет строки считался по владельцу из выгрузки, а цвет того же
+        # здания на карте — по собственнику из выписки, и на 27 объектах из 39
+        # они расходились: восемь строений «Жилищника» выгрузка красила жёлтым
+        # («прочие»), а выписка — зелёным, потому что собственник там город
+        # Москва, а у ГБУ оперативное управление. Два достоверных на вид ответа
+        # об одном здании: владелец 07.09.2026 назвал верный — зелёный.
+        # Выгрузка при этом не выброшена: её владелец стоит рядом своей
+        # колонкой, и расхождение названо вслух, а не выбрано молча.
+        drawn = by_number.get(number) or {}
+        egrn_owner = drawn.get("owner") or {}
+        colour_from = str(drawn.get("colour_from") or "")
+        if drawn:
+            group = str(egrn_owner.get("group") or "none")
+            # Цвет берётся у ТОГО ЖЕ объекта, что нарисован на карте, а не
+            # считается вторым разом по его владельцу: у строения без своего
+            # права он занят у владельца участка, и пересчёт по владельцу дал
+            # бы серый на строке при жёлтом на карте.
+            colour = str(drawn.get("colour")
+                         or egrn_owner.get("colour")
+                         or (groups.get(group) or {}).get("colour") or "#8a8a8a")
+            owner_source = "выписка ЕГРН" if egrn_owner.get("name") else ""
+        else:
+            # Выписки на объект нет или право не зарегистрировано — тогда
+            # отвечает выгрузка. «Не спрашивали» и «нет права» — разные ответы,
+            # и первый не отменяет того, что назвал человек.
+            group = (group_of(owner) if owner_key else "none")
+            colour = str((groups.get(group) or {}).get("colour") or "#8a8a8a")
+            owner_source = "выгрузка владельца" if owner_key else ""
+            colour_from = "владелец из выгрузки" if owner_key else "владелец не назван"
         parcels.append({
             **row,
             "group": group,
             "group_title": str((groups.get(group) or {}).get("title") or ""),
-            "colour": str((groups.get(group) or {}).get("colour") or "#8a8a8a"),
+            "colour": colour,
+            "owner_source": owner_source,
+            # Чем покрашено — часть ответа: у строения без своего права цвет
+            # занят у владельца участка, и без подписи он читается как право.
+            "colour_from": colour_from,
+            "egrn_owner_name": str(egrn_owner.get("name") or ""),
+            "egrn_owner_inn": str(egrn_owner.get("inn") or ""),
+            # Расхождение двух источников об одном лице. Пусто — они согласны
+            # либо один из них молчит; молчание расхождением не считается.
+            "owner_conflict": _owner_conflict(owner, egrn_owner,
+                                              (by_number.get(number) or {})),
             "owner_short": str(owner.get("short") or ""),
             "owner_name": str(owner.get("name") or ""),
             "inn": owner.get("inn"),
@@ -755,7 +843,7 @@ def payload() -> dict[str, Any]:
             # Участок под зданием называет ВЫПИСКА, а не наша геометрия:
             # точечный опрос отвечал на тот же вопрос вторым голосом и на двух
             # объектах из 39 расходился с документом.
-            "lands": list(links.get(number) or []),
+            "lands": list((by_number.get(number) or {}).get("lands") or []),
         })
     totals_by_group = []
     for group in data.get("groups") or []:
@@ -789,7 +877,7 @@ def payload() -> dict[str, Any]:
         "kinds": _kinds(parcels),
         # Свод по официальным документам: состав территории из извещения о
         # торгах, свойства и права — из выписок ЕГРН.
-        "territory": territory(),
+        "territory": lands_and_objects,
         "owners": owners_summary(),
         "outlines": {
             "parcels": len(parcels),
