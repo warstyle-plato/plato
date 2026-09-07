@@ -60,7 +60,16 @@ def _holder(node: ET.Element) -> dict[str, Any]:
                 "ogrn": (legal.findtext(".//ogrn") or "").strip()}
     public = node.find("public_formation")
     if public is not None:
+        # У публичного образования нет ни ИНН, ни ОГРН, и опознаётся оно ВИДОМ
+        # и КОДОМ, а не написанием имени: у одного и того же субъекта РФ 77 в
+        # выписке по земле стоит «Москва» с кодом, а в выписке по зданию —
+        # «город Москва» без кода. Сложенные по имени, они дают двух
+        # собственников вместо одного (замечание владельца, 07.09.2026:
+        # «город Москва и Москва — это одно и то же»).
+        kinds = [child.tag for child in (public.find("public_formation_type") or public)]
         return {"kind": "public",
+                "public_kind": kinds[0] if kinds else "",
+                "code": (public.findtext(".//name/code") or "").strip(),
                 "name": (public.findtext(".//name/value") or "").strip(),
                 "inn": "", "ogrn": ""}
     if node.find("individual") is not None or node.find("person") is not None:
@@ -69,16 +78,39 @@ def _holder(node: ET.Element) -> dict[str, Any]:
     return {"kind": "other", "name": "", "inn": "", "ogrn": ""}
 
 
-def holder_key(holder: dict[str, Any]) -> str:
-    """Ключ личности: ИНН, затем ОГРН, и только потом имя.
+# Слова, которыми публичное образование называют по-разному: «Москва» и
+# «город Москва» — один и тот же субъект РФ.
+_PUBLIC_PREFIX = re.compile(r"^(?:город(?:ской округ)?|г\.|гор\.)\s+", re.I)
 
-    Складывать по имени нельзя — одна компания приходит в разном написании.
+
+def public_name_key(name: str) -> str:
+    """Имя публичного образования без слова, которым его называют по-разному."""
+    return _PUBLIC_PREFIX.sub("", str(name or "").strip()).casefold()
+
+
+def holder_key(holder: dict[str, Any]) -> str:
+    """Ключ личности: ИНН, затем ОГРН, и только потом вид с кодом.
+
+    Складывать по имени нельзя — одно и то же лицо приходит в разном
+    написании: компания и капсом, и обычным письмом, а субъект РФ то «Москва»,
+    то «город Москва». У публичного образования ИНН нет вовсе, и его опознаёт
+    вид (субъект РФ, муниципалитет) плюс код; кода нет — имя без слова
+    «город», по которому эти двое и расходились.
     """
-    return (str(holder.get("inn") or "").strip()
-            or str(holder.get("ogrn") or "").strip()
-            or ("public:" + str(holder.get("name") or "").strip()
-                if holder.get("kind") == "public" else "")
-            or ("name:" + str(holder.get("name") or "").strip()))
+    if str(holder.get("inn") or "").strip():
+        return str(holder["inn"]).strip()
+    if str(holder.get("ogrn") or "").strip():
+        return str(holder["ogrn"]).strip()
+    if holder.get("kind") == "public":
+        # Ключом служит ИМЯ без слова «город», а не код: код проставлен не
+        # везде — у «города Москвы» в выписке по зданию его нет вовсе, и
+        # ключ «по коду, а иначе по имени» разводил бы одно лицо на двоих
+        # ровно там, где его и надо свести. Код остаётся при записи и годится
+        # для сверки: два разных кода под одним именем — это столкновение, и
+        # его видно.
+        kind = str(holder.get("public_kind") or "public")
+        return f"public:{kind}:{public_name_key(holder.get('name'))}"
+    return "name:" + str(holder.get("name") or "").strip()
 
 
 def _rights(root: ET.Element) -> list[dict[str, Any]]:

@@ -83,6 +83,49 @@ def test_identity_is_the_inn_and_not_the_spelling():
     assert egrn_extracts.holder_key(caps) == egrn_extracts.holder_key(plain)
 
 
+def test_the_city_is_one_owner_however_it_is_spelled():
+    """«Москва» и «город Москва» — одно лицо (владелец, 07.09.2026).
+
+    В выписке по земле стоит субъект РФ 77 с кодом и именем «Москва», в
+    выписке по зданию — тот же субъект без кода и с именем «город Москва».
+    Ключ «по коду, а иначе по имени» разводил бы их на двоих ровно там, где
+    надо свести: у второго кода нет вовсе.
+    """
+    with_code = {"kind": "public", "public_kind": "subject_of_rf",
+                 "code": "77", "name": "Москва"}
+    without = {"kind": "public", "public_kind": "subject_of_rf",
+               "code": "", "name": "город Москва"}
+    assert egrn_extracts.holder_key(with_code) == egrn_extracts.holder_key(without)
+    # Разные субъекты при этом не слипаются.
+    other = {"kind": "public", "public_kind": "subject_of_rf",
+             "code": "50", "name": "Московская область"}
+    assert egrn_extracts.holder_key(other) != egrn_extracts.holder_key(with_code)
+
+
+def test_the_city_appears_once_in_the_summary():
+    rows = [row for row in parcels.owners_summary()
+            if egrn_extracts.public_name_key(row["name"]) == "москва"]
+    assert len(rows) == 1, "город разошёлся на двух владельцев по написанию имени"
+    assert rows[0]["lands"] == 4 and rows[0]["objects"] == 9
+    assert rows[0]["name"] == "Москва", "показано имя без кода"
+
+
+def test_no_two_codes_hide_under_one_public_name():
+    """Ключ считается по имени, а код остаётся для сверки: два разных кода под
+    одним именем — это столкновение, и оно обязано быть видно."""
+    from collections import defaultdict
+
+    codes = defaultdict(set)
+    for path in EXTRACTS.glob("*.xml"):
+        record = egrn_extracts.read(path.read_bytes())
+        for right in record["rights"] + record["restrictions"]:
+            for holder in right["holders"]:
+                if holder.get("kind") == "public" and holder.get("code"):
+                    codes[egrn_extracts.holder_key(holder)].add(holder["code"])
+    clashes = {key: sorted(value) for key, value in codes.items() if len(value) > 1}
+    assert not clashes, clashes
+
+
 def test_an_unregistered_ownership_is_an_answer_not_a_gap():
     """У 14 участков из 20 собственность не зарегистрирована — это ответ."""
     lands = [egrn_extracts.read(path.read_bytes()) for path in EXTRACTS.glob("*.xml")]

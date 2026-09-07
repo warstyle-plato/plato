@@ -98,18 +98,36 @@ def test_the_owner_named_the_groups_and_we_did_not_invent_them():
 
 
 def test_an_unassigned_owner_is_not_folded_into_the_rest():
-    """«Причал» владелец к группе не отнёс — он стоит своей, а не «прочим».
+    """Лицо, которое владелец к группе не отнёс, стоит своей группой.
 
     Приписанная группа выглядит на экране ровно так же уверенно, как
-    названная, и цвет здесь — утверждение о владельце участка.
+    названная, и цвет здесь — утверждение о владельце объекта. «Причал»
+    владелец отнёс к Брынцалову 07.09.2026 («там же ген дир Брынцалова»), а
+    лица, открывшиеся в выписках, остались неотнесёнными.
     """
     data = parcels.payload()
-    assert _by_group(data)["unassigned"] == {"prichal"}
     unassigned = next(g for g in data["groups"] if g["key"] == "unassigned")
     assert unassigned["colour"] != next(g["colour"] for g in data["groups"] if g["key"] == "other")
     assert "не отнёс" in unassigned["note"] or "не назначена" in unassigned["title"]
     # И сказано это на экране, а не только в данных.
     assert "владелец не называл" in nagatino_ui.NAGATINO_PAGE
+    rows = parcels.owners_summary()
+    assert [row["name"] for row in rows if row["group"] == "unassigned"], \
+        "в выписках открылись лица, которых владелец не размечал"
+
+
+def test_the_group_follows_the_owners_word_and_names_its_ground():
+    """«Причал там же ген дир Брынцалова» — основание записано рядом с меткой.
+
+    Связи между этими юрлицами сам реестр не показывает: она названа
+    владельцем, и подписывать её реестром нельзя.
+    """
+    data = parcels.registry()
+    assert data["owner_groups"]["9724195199"] == "bryntsalov"
+    note = (data.get("owner_group_notes") or {})["9724195199"]
+    assert "ген дир" in note and "не запись ЕГРН" in note
+    inside = {row["inn"] for row in parcels.owners_summary() if row["group"] == "bryntsalov"}
+    assert inside == {"9724179743", "9724197693", "9724195199"}
 
 
 def test_every_parcel_carries_a_colour_and_a_group_title():

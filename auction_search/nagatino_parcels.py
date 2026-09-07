@@ -638,7 +638,14 @@ def owners_summary() -> list[dict[str, Any]]:
         # ОГРН, и все они сошлись бы в одну строку.
         key = (egrn_extracts.holder_key(owner) if owner.get("name")
                else "нет:" + (owner.get("note") or ""))
+        # Одно лицо приходит в разном написании — показываем то, при котором
+        # источник проставил код: у субъекта РФ 77 это «Москва».
+        row = seen.get(key)
+        if row is not None and owner.get("code") and not row.get("code"):
+            row["name"] = owner.get("name") or row["name"]
+            row["code"] = owner.get("code")
         row = seen.setdefault(key, {"name": owner.get("name") or owner.get("note") or "",
+                                    "code": owner.get("code") or "",
                                     "inn": owner.get("inn") or "", "ogrn": owner.get("ogrn") or "",
                                     "kind": owner.get("kind") or "", "group": owner.get("group"),
                                     "group_title": owner.get("group_title"),
