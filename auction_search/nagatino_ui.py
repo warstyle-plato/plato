@@ -565,20 +565,64 @@ function territoryMarkup(){
   +'</div>';
 }
 
-function ownersTableMarkup(){
- const rows=(S.data.owners||[]).map(r=>
-  `<tr><td>${escapeHtml(r.name)}${r.inn?`<div class="source">ИНН ${escapeHtml(r.inn)}</div>`:''}</td>`
-  +`<td><span class="swatch" style="background:${escapeHtml(r.colour||'#8a8a8a')}"></span>${escapeHtml(r.group_title||'')}</td>`
-  +`<td class="num">${r.lands||''}</td><td class="num">${r.land_area_sqm?m2(r.land_area_sqm):''}</td>`
+// Одна таблица владельцев: строки стоят внутри своей группы, у группы свой
+// промежуточный итог, у таблицы общий. Группа тут полоса, а не колонка:
+// колонкой её приходится читать глазами по всей высоте.
+function ownersBlock(rows,extra){
+ const groups=(S.data.groups||[]).map(g=>g.key);
+ const order=[];
+ groups.forEach(key=>{const inside=rows.filter(r=>r.group===key);if(inside.length)order.push([key,inside]);});
+ const rest=rows.filter(r=>!groups.includes(r.group));
+ if(rest.length)order.push([null,rest]);
+ const money=r=>('value_rub' in r)?(r.value_rub||0):((r.land_value_rub||0)+(r.objects_value_rub||0));
+ const cells=r=>`<td class="num">${r.lands||''}</td><td class="num">${r.land_area_sqm?m2(r.land_area_sqm):''}</td>`
   +`<td class="num">${r.objects||''}</td><td class="num">${r.objects_area_sqm?m2(r.objects_area_sqm):''}</td>`
-  +`<td class="num">${mln((r.land_value_rub||0)+(r.objects_value_rub||0))}</td></tr>`).join('');
- return '<div class="tablewrap"><table><thead><tr><th>Правообладатель</th><th>Группа</th>'
+  +`<td class="num">${mln(money(r))}</td>`+(extra?`<td class="source">${escapeHtml(r.by||'')}</td>`:'');
+ const sum=(inside,key)=>inside.reduce((a,r)=>a+Number(r[key]||0),0);
+ const body=order.map(([key,inside])=>{
+  const title=key?((S.data.groups||[]).find(g=>g.key===key)||{}).title
+                 :(inside[0].group_title||'Группа не назначена');
+  const colour=key?(((S.data.groups||[]).find(g=>g.key===key)||{}).colour||'#8a8a8a')
+                 :(inside[0].colour||'#8a8a8a');
+  const band=`<tr class="zu"><td colspan="${extra?7:6}">`
+   +`<span class="swatch" style="background:${escapeHtml(colour)}"></span>`
+   +`<b>${escapeHtml(title||'')}</b></td></tr>`;
+  const lines=inside.map(r=>`<tr><td>${escapeHtml(r.name||'')}`
+   +`${r.inn?`<div class="source">ИНН ${escapeHtml(r.inn)}</div>`:''}</td>`+cells(r)+'</tr>').join('');
+  const total={lands:sum(inside,'lands'),land_area_sqm:sum(inside,'land_area_sqm'),
+   objects:sum(inside,'objects'),objects_area_sqm:sum(inside,'objects_area_sqm'),
+   value_rub:inside.reduce((a,r)=>a+money(r),0)};
+  return band+lines+`<tr><td><b>Итого · ${escapeHtml(title||'')}</b></td>`+cells(total)+'</tr>';
+ }).join('');
+ const all={lands:sum(rows,'lands'),land_area_sqm:sum(rows,'land_area_sqm'),
+  objects:sum(rows,'objects'),objects_area_sqm:sum(rows,'objects_area_sqm'),
+  value_rub:rows.reduce((a,r)=>a+money(r),0)};
+ return '<div class="tablewrap"><table class="territory"><thead><tr><th>Правообладатель</th>'
   +'<th class="num">Участков</th><th class="num">Земли</th><th class="num">Строений</th>'
   +'<th class="num">Их площадь</th><th class="num">Кадастровая стоимость</th>'
-  +'</tr></thead><tbody>'+rows+'</tbody></table></div>'
+  +(extra?'<th>На чём основано</th>':'')
+  +'</tr></thead><tbody>'+body
+  +`<tr><td><b>ВСЕГО</b></td>${cells(all)}</tr></tbody></table></div>`;
+}
+
+function ownersTableMarkup(){
+ const docs=ownersBlock(S.data.owners||[],false)
   +'<div class="source">Строки сложены по ИНН, а не по написанию имени: одна компания приходит в '
   +'выписках и капсом, и обычным письмом, а «Автокомбинат № 19» — то ЗАО, то АО. Оперативное '
   +'управление собственностью не считается и стоит отдельной строкой у объекта.</div>';
+ const holdings=S.data.holdings||[];
+ if(!holdings.length)return docs;
+ // Второй взгляд — НАШ вывод, и он подписан своим именем. Слить его с первой
+ // таблицей нельзя: там ответ реестра, здесь наше прочтение, и под одной
+ // шапкой они читались бы как одно утверждение.
+ return docs
+  +'<h2>Чьё это, если считать по участку — вывод DevelopAid</h2>'
+  +'<div class="source" style="margin:0 0 8px">Строения приписаны хозяину земли, на которой стоят: '
+  +'«если строения на участке автокомбината, значит строения автокомбината, если там жилищник '
+  +'значит Москва» (решение владельца, 07.09.2026). Хозяина участка называет ЕГРН; нет записи — '
+  +'единственный собственник строений на нём, а если лица разные, но группа одна — группа. '
+  +'Объект на нескольких участках посчитан один раз.</div>'
+  +ownersBlock(holdings,true);
 }
 
 function kindsMarkup(){

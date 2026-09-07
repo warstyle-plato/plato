@@ -246,6 +246,63 @@ def test_the_workbook_is_built_from_the_same_numbers_as_the_screen():
     assert len(lands) == view["totals"]["lands"]
 
 
+def test_the_owners_sheet_holds_two_tables_with_subtotals():
+    """Лист владельцев: группы полосами, у каждой свой итог, и две таблицы.
+
+    «Может верхняя таблица с тем что на документах… обязательно с
+    промежуточными итогами?» и «вторая как мы понимаем: если строения на
+    участке автокомбината, значит строения автокомбината, если там жилищник
+    значит Москва» (владелец, 07.09.2026).
+
+    Проверяется не вёрстка, а два утверждения: итог группы сходится с её же
+    строками, и оба взгляда считают ОДНИ И ТЕ ЖЕ двадцать участков и тридцать
+    девять строений — расходись они, одна из таблиц теряла бы объект молча.
+    """
+    import openpyxl
+    from io import BytesIO
+
+    from auction_search import nagatino_export
+
+    book = openpyxl.load_workbook(BytesIO(nagatino_export.build(
+        parcels.territory(), parcels.owners_summary(), parcels.land_holdings(),
+        parcels.registry().get("groups") or [])))
+    sheet = book["Кто чем владеет"]
+    rows = list(sheet.iter_rows(values_only=True))
+    titles = [str(row[0] or "") for row in rows]
+    assert "Что записано в документах" in titles
+    ours = next(i for i, name in enumerate(titles)
+                if name.startswith("Чьё это, если считать по участку"))
+    # Наш вывод подписан своим именем, а не выдан за ответ реестра.
+    assert "вывод DevelopAid" in titles[ours]
+
+    heads = [i for i, name in enumerate(titles) if name == "Правообладатель"]
+    assert len(heads) == 2, "таблиц на листе не две"
+    # У второй таблицы своя колонка: чем именно определён хозяин участка.
+    assert "На чём основано" in [str(v or "") for v in rows[heads[1]]]
+
+    counts = []
+    for start, stop in ((heads[0] + 1, heads[1] - 2), (heads[1] + 1, len(rows))):
+        block = rows[start:stop]
+        subtotals = [row for row in block if str(row[0] or "").startswith("Итого · ")]
+        assert len(subtotals) >= 3, "промежуточных итогов нет"
+        # Итог группы считается по её же строкам, а не по своему кругу.
+        for index, row in enumerate(block):
+            if not str(row[0] or "").startswith("Итого · "):
+                continue
+            back = index - 1
+            inside = []
+            while back >= 0 and not str(block[back][0] or "").startswith("Итого · "):
+                if block[back][2] is not None and str(block[back][0] or ""):
+                    inside.append(block[back])
+                back -= 1
+            named = [line for line in inside if not str(line[0]).startswith("Итого")]
+            assert round(sum(float(line[2] or 0) for line in named), 1) == round(float(row[2] or 0), 1), \
+                f"итог группы {row[0]} не сходится со своими строками"
+        grand = next(row for row in block if str(row[0] or "") == "ВСЕГО")
+        counts.append((int(grand[2]), int(grand[4])))
+    assert counts[0] == counts[1] == (20, 39), counts
+
+
 def test_the_column_adds_up_to_the_total_line():
     """Строка итога сходится с колонкой. Объект на нескольких участках стоит у
     каждого, и его площадь напечатана ОДИН раз: иначе сумма колонки (56 323,3)

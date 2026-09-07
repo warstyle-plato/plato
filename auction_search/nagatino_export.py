@@ -61,19 +61,29 @@ SHEET_LANDS = (
     ("address", "Адрес по ЕГРН", 50),
 )
 
+# Лист «Кто чем владеет» — две таблицы, и они отвечают на РАЗНЫЕ вопросы.
+# Верхняя: что записано в документах. Нижняя: чьё это, если считать по участку
+# («если строения на участке автокомбината, значит строения автокомбината, если
+# там жилищник значит Москва», владелец 07.09.2026). Сложить их в одну нельзя:
+# первая — ответ ЕГРН, вторая — наш вывод, и под одной шапкой они читались бы
+# как одно утверждение. Группа при этом не колонка, а полоса: строки стоят
+# внутри своей группы, и у каждой группы свой промежуточный итог.
 SHEET_OWNERS = (
     ("name", "Правообладатель", 52),
     ("inn", "ИНН", 14),
-    ("group_title", "Группа", 24),
     ("lands", "Участков", 10),
     ("land_area_sqm", "Земли, м²", 14),
     ("objects", "Строений", 10),
     ("objects_area_sqm", "Их площадь, м²", 16),
     ("value_rub", "Кадастровая стоимость, ₽", 22),
 )
-
+SHEET_HOLDINGS = SHEET_OWNERS + (("by", "На чём основано", 30),)
+# Порядок групп — тот же, что в реестре и на экране: второй список разошёлся бы
+# с первым молча.
 _MONEY = '#,##0" ₽"'
 _AREA = '#,##0.0'
+_OWNER_FORMATS = {"land_area_sqm": _AREA, "objects_area_sqm": _AREA,
+                  "value_rub": _MONEY}
 
 
 def _owner_text(owner: dict[str, Any]) -> str:
@@ -225,7 +235,109 @@ def _fill(sheet, columns, rows: list[dict[str, Any]], formats: dict[str, str]) -
                 cell.font = Font(bold=True)
 
 
-def build(view: dict[str, Any], owners: list[dict[str, Any]]) -> bytes:
+GROUP_FILL = PatternFill("solid", fgColor="E7E7E1")
+TOTAL_FILL = PatternFill("solid", fgColor="F3F3EF")
+
+
+def _owners_table(sheet, columns, rows: list[dict[str, Any]], order: list[dict[str, Any]],
+                  title: str, note: str, start: int) -> int:
+    """Одна таблица листа владельцев: полосы групп и итог у каждой.
+
+    Возвращает номер строки ПОСЛЕ таблицы. Итог группы считается по её же
+    строкам — не по своему кругу: разойдясь, он назвал бы другую сумму под тем
+    же именем.
+    """
+    keys = [column[0] for column in columns]
+    sheet.cell(row=start, column=1, value=title).font = Font(bold=True, size=13)
+    sheet.cell(row=start + 1, column=1, value=note).font = Font(color="6B6B6B", size=10)
+    sheet.cell(row=start + 1, column=1).alignment = Alignment(wrap_text=True, vertical="top")
+    sheet.merge_cells(start_row=start + 1, start_column=1,
+                      end_row=start + 1, end_column=len(columns))
+    sheet.row_dimensions[start + 1].height = 30
+    head = start + 2
+    for index, (_key, caption, _width) in enumerate(columns, start=1):
+        cell = sheet.cell(row=head, column=index, value=caption)
+        cell.fill = HEADER_FILL
+        cell.font = Font(color="FFFFFF", bold=True)
+        cell.alignment = Alignment(vertical="center", wrap_text=True)
+    sheet.row_dimensions[head].height = 30
+    line = head + 1
+    counted: list[dict[str, Any]] = []
+    for group in order:
+        inside = [row for row in rows if row.get("group") == group.get("key")]
+        if not inside:
+            continue
+        band = sheet.cell(row=line, column=1, value=str(group.get("title") or ""))
+        band.font = Font(bold=True)
+        for index in range(1, len(columns) + 1):
+            sheet.cell(row=line, column=index).fill = GROUP_FILL
+        line += 1
+        for row in inside:
+            for index, key in enumerate(keys, start=1):
+                value = row.get(key)
+                cell = sheet.cell(row=line, column=index,
+                                  value="" if value is None else value)
+                if key in _OWNER_FORMATS:
+                    cell.number_format = _OWNER_FORMATS[key]
+                if key == "name":
+                    cell.alignment = Alignment(wrap_text=True, vertical="top")
+            line += 1
+        total = {"name": f"Итого · {group.get('title')}"}
+        for key in ("lands", "land_area_sqm", "objects", "objects_area_sqm", "value_rub"):
+            total[key] = round(sum(float(row.get(key) or 0) for row in inside), 1)
+        for index, key in enumerate(keys, start=1):
+            cell = sheet.cell(row=line, column=index, value=total.get(key, ""))
+            cell.font = Font(bold=True)
+            cell.fill = TOTAL_FILL
+            if key in _OWNER_FORMATS:
+                cell.number_format = _OWNER_FORMATS[key]
+        line += 1
+        counted += inside
+    # Строки, чья группа не названа вовсе, теряться не должны: молча
+    # пропущенная строка читается как её отсутствие в территории.
+    rest = [row for row in rows if row not in counted]
+    if rest:
+        # Имя полосы берут у самих строк: «группа не назначена» и «хозяин не
+        # определён» — разные утверждения, и второе принадлежит нижней таблице.
+        titles = {str(row.get("group_title") or "") for row in rest}
+        caption = titles.pop() if len(titles) == 1 and all(titles) else "Группа не назначена"
+        band = sheet.cell(row=line, column=1, value=caption)
+        band.font = Font(bold=True)
+        for index in range(1, len(columns) + 1):
+            sheet.cell(row=line, column=index).fill = GROUP_FILL
+        line += 1
+        for row in rest:
+            for index, key in enumerate(keys, start=1):
+                value = row.get(key)
+                cell = sheet.cell(row=line, column=index,
+                                  value="" if value is None else value)
+                if key in _OWNER_FORMATS:
+                    cell.number_format = _OWNER_FORMATS[key]
+            line += 1
+        total = {"name": f"Итого · {caption}"}
+        for key in ("lands", "land_area_sqm", "objects", "objects_area_sqm", "value_rub"):
+            total[key] = round(sum(float(row.get(key) or 0) for row in rest), 1)
+        for index, key in enumerate(keys, start=1):
+            cell = sheet.cell(row=line, column=index, value=total.get(key, ""))
+            cell.font = Font(bold=True)
+            cell.fill = TOTAL_FILL
+            if key in _OWNER_FORMATS:
+                cell.number_format = _OWNER_FORMATS[key]
+        line += 1
+    grand = {"name": "ВСЕГО"}
+    for key in ("lands", "land_area_sqm", "objects", "objects_area_sqm", "value_rub"):
+        grand[key] = round(sum(float(row.get(key) or 0) for row in rows), 1)
+    for index, key in enumerate(keys, start=1):
+        cell = sheet.cell(row=line, column=index, value=grand.get(key, ""))
+        cell.font = Font(bold=True)
+        if key in _OWNER_FORMATS:
+            cell.number_format = _OWNER_FORMATS[key]
+    return line + 1
+
+
+def build(view: dict[str, Any], owners: list[dict[str, Any]],
+          holdings: list[dict[str, Any]] | None = None,
+          groups: list[dict[str, Any]] | None = None) -> bytes:
     """Книга свода. Считает не она — она показывает посчитанное."""
     book = Workbook()
     rows = _land_rows(view)
@@ -263,11 +375,34 @@ def build(view: dict[str, Any], owners: list[dict[str, Any]]) -> bytes:
     sheet.cell(row=sheet.max_row, column=5).number_format = _MONEY
 
     second = book.create_sheet("Кто чем владеет")
-    _fill(second, SHEET_OWNERS,
-          [{**row, "value_rub": round((row.get("land_value_rub") or 0)
-                                      + (row.get("objects_value_rub") or 0), 1)}
-           for row in owners],
-          {"land_area_sqm": _AREA, "objects_area_sqm": _AREA, "value_rub": _MONEY})
+    second.sheet_view.showGridLines = False
+    for index, (_key, _caption, width) in enumerate(SHEET_HOLDINGS, start=1):
+        second.column_dimensions[get_column_letter(index)].width = width
+    order = list(groups or [])
+    line = _owners_table(
+        second, SHEET_OWNERS,
+        [{**row, "value_rub": round((row.get("land_value_rub") or 0)
+                                    + (row.get("objects_value_rub") or 0), 1)}
+         for row in owners],
+        order,
+        "Что записано в документах",
+        "Собственник по выпискам ЕГРН. Земля стоит там, где право на участок "
+        "зарегистрировано; у четырнадцати участков из двадцати его нет вовсе — "
+        "это ответ реестра, а не наш пробел. Оперативное управление ГБУ "
+        "«Жилищник» собственностью не является: эти строения записаны за городом.",
+        1)
+    if holdings:
+        _owners_table(
+            second, SHEET_HOLDINGS, holdings, order,
+            "Чьё это, если считать по участку — вывод DevelopAid",
+            "Строения приписаны хозяину земли, на которой стоят: «если строения "
+            "на участке автокомбината, значит строения автокомбината, если там "
+            "жилищник значит Москва» (решение владельца, 07.09.2026). Это НАШ "
+            "вывод, а не запись реестра. Хозяина участка называет ЕГРН; нет "
+            "записи — единственный собственник строений на нём, а если лица "
+            "разные, но группа одна — группа. Объект на нескольких участках "
+            "посчитан один раз.",
+            line + 1)
 
     third = book.create_sheet("Источники")
     source = view.get("source") or {}
