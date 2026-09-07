@@ -79,8 +79,15 @@ def test_result_surfaces_warn_about_the_rve_gap(monkeypatch):
     assert "Эскроу не погашает ПФ полностью в РВЭ" in text
     assert core._telegram_money_mln(2659.6) in text
 
+    # Допущение, снятое владельцем 30.08.2026, не должно жить второй копией.
+    assert "должен быть погашен последующими продажами" not in text, text
+    assert "переоформляет долг, либо фиксирует неисполнение" in text, text
+
+    # Утверждение здесь — «страница предупреждает о разрыве», а не конкретная
+    # фраза заголовка: заголовок называет охват и момент и меняется вместе с
+    # ними (см. tests/test_the_rve_plate_speaks_by_queue.py).
     assert 'id="pfRveWarning"' in core.PAGE
-    assert "Эскроу не погашает ПФ полностью." in core.PAGE
+    assert "function pfRveWarningHtml(" in core.PAGE
     assert "rve_pf_shortfall_mln:Number(f.rve_pf_shortfall||0)/1e6" in core.PAGE
     assert "Остаток ПФ после раскрытия эскроу в РВЭ" in core.PAGE
     assert "Остаток ПФ после раскрытия в РВЭ" in core.PAGE
