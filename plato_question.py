@@ -300,10 +300,16 @@ function platoOpen(surface){
 
 async function platoSend(){
  const surface=PLATO_SURFACE;
- if(!surface) return;
  const field=document.getElementById(PLATO_IDS.field);
  const button=document.getElementById(PLATO_IDS.button);
  const out=document.getElementById(PLATO_IDS.out);
+ // Нажали, а спрашивать не о чем: молчаливый возврат выглядит как сломанная
+ // кнопка. Причина у нас есть — блок не выбран, — и она называется.
+ if(!surface){
+  if(out) out.innerHTML='<div class="ai-msg system">Не выбран блок, о котором спрашивать. '
+   +'Откройте Платона кнопкой у нужного блока.</div>';
+  return;
+ }
  const question=String((field&&field.value)||'').trim();
  if(!question){ if(out) out.innerHTML='<div class="ai-msg system">Напишите вопрос.</div>'; return }
  // Груз блок собирает сам и вправе отказать: «сначала соберите отчёт» — это
@@ -312,7 +318,14 @@ async function platoSend(){
  try{ message=surface.message(question) }
  catch(e){ if(out) out.innerHTML='<div class="ai-msg system">'+String(e.message||e)+'</div>'; return }
  if(!message){ if(out) out.innerHTML='<div class="ai-msg system">Пока нечего показать Платону.</div>'; return }
- if(button) button.disabled=true;
+ // Пока ответ идёт, кнопка ГОВОРИТ об этом. Прежде она просто гасла, а признак
+ // работы уходил наверх ленты — то есть туда, куда человек в этот момент не
+ // смотрит: он смотрит на поле, в которое только что написал. На экране
+ // оставались серая «Спросить» и его собственный текст в поле, и читалось это
+ // как «второй вопрос не задать» (владелец, 07.09.2026). Ожидание без признака
+ // работы читается как поломка — правило уже было, ящик его не исполнял.
+ const label=button?button.textContent:'';
+ if(button){ button.disabled=true; button.textContent='Платон думает…' }
  platoRender('Платон Сергеевич думает…');
  try{
   // История несёт РАЗГОВОР, а не данные: числа едут свежими в самом вопросе —
@@ -330,7 +343,7 @@ async function platoSend(){
   if(out) out.insertAdjacentHTML('afterbegin',
    '<div class="ai-msg system">'+String(said).replace(/[<>&]/g,'')+'</div>');
  }
- finally{ if(button) button.disabled=false }
+ finally{ if(button){ button.disabled=false; button.textContent=label } }
 }
 
 // Ящик открывают и закрывают одинаково везде. Escape закрывает — иначе на
