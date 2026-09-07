@@ -1,0 +1,3 @@
+Guide architecture revision: scenario-first user guide with FAQ, multi-queue example, financing, obligations, parking, MPT, Platon, cabinet/share and export workflows.
+Page content commit: 4bfd2802b543ab33b3ca2771c16858f68e5d496f
+CI rule: guide-only image rebuilds keep the calculation-engine VERSION unchanged.
