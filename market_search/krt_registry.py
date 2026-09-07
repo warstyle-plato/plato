@@ -583,6 +583,18 @@ class KrtRegistry:
                 "source": "mos.ru: проект решения о КРТ",
                 "geometry_status": "not_published_in_catalogue",
                 "no_card": True,
+                # Признак адреса обязателен: маршруты площадки-решения читают
+                # ИМЕННО его («нет адреса — точку не поставить»), а не имя.
+                # Здесь адрес есть по построению — запись без него не
+                # возвращается вовсе (`if not address: return None`), — но
+                # ключа в словаре не было, и гейт читал отсутствующее поле как
+                # «адреса нет». Карта отказывала у ВСЕХ 247 площадок-решений
+                # (замер прода 07.09.2026: шесть слагов подряд, у каждого
+                # адрес в заголовке), и надпись винила документ города за наш
+                # пропущенный ключ. Второй сборщик той же строки
+                # (`_krt_decision_rows_built`) поле кладёт — и до него дело не
+                # доходило: `find` отвечает первой.
+                "address_known": True,
                 "draft_decision_at": one.get("published_at") or 0,
                 "draft_decision_url": one.get("url") or "",
             }
@@ -1613,7 +1625,11 @@ class KrtRegistry:
         now = int(time.time())
         for slug, lots in rows.items():
             clean = str(slug or "").strip()
-            if not re.fullmatch(r"[a-zA-Z0-9_-]{2,180}", clean) or not lots:
+            # Слаг здесь — КЛЮЧ в одном файле, а не имя файла: у площадки без
+            # карточки он вида `decision:<номер документа>`, и строгий набор
+            # без двоеточия отбрасывал такую связку молча. Остальные проверки
+            # слага в этом модуле стерегут ПУТЬ и остаются строгими.
+            if not re.fullmatch(r"[a-zA-Z0-9_:-]{2,180}", clean) or not lots:
                 continue
             sites[clean] = {"lots": list(lots)[:20], "seen_at": now}
         payload = {"schema_version": TENDER_LOTS_SCHEMA_VERSION,

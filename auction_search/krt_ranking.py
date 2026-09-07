@@ -541,6 +541,52 @@ class KrtRanking:
                 out[str(kind)] = {str(key): int(value or 0) for key, value in seen.items()}
         return out
 
+    def watch_state(self) -> dict[str, Any]:
+        """Что сторож уже видел и сколько новостей ждёт доставки.
+
+        Снаружи «новостей не было» и «сторож не работает» выглядят одинаково —
+        «мне ничего не пришло в телеграмме» (владелец, 07.09.2026), и ответить
+        на это было нечем: ни один счётчик наружу не выходил. У молчащего цикла
+        обязан быть счётчик молчания.
+
+        Очередь читается БЕЗ изъятия: забирает её бот, и второй читатель,
+        уносящий записи, оставил бы человека без уведомления ради ответа на
+        вопрос, дошло ли уведомление.
+        """
+        seen = self.watch_seen()
+        stamp = load_json(self.watch_seen_path)
+        updated_at = int((stamp or {}).get("updated_at") or 0) if isinstance(stamp, dict) else 0
+        pending = 0
+        last_queued = 0
+        by_kind: dict[str, int] = {}
+        try:
+            for line in self.announcements_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                pending += 1
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(record, dict):
+                    kind = str(record.get("kind") or "site")
+                    by_kind[kind] = by_kind.get(kind, 0) + 1
+                    last_queued = max(last_queued, int(record.get("seen_at") or 0))
+        except OSError:
+            pass
+        return {
+            # «Вида ещё не видели» и «видели, и он пуст» — разные ответы, и
+            # первый значит, что следующий заход НИКОГО не объявит: первый
+            # снимок вида запоминает состав.
+            "kinds": {kind: {"known": len(keys), "bootstrapped": True}
+                      for kind, keys in seen.items()},
+            "updated_at": updated_at,
+            "pending": pending,
+            "pending_by_kind": by_kind,
+            "last_queued_at": last_queued,
+        }
+
     def mark_watch(self, kind: str, events: dict[str, dict[str, Any]],
                    now: float | None = None) -> list[str]:
         """Отметить нынешний состав события вида `kind` и объявить появившееся.

@@ -1733,7 +1733,16 @@ def _krt_announcement_text(records: list[dict]) -> str:
             lines.append("")
         lines.append(f"<b>{_html.escape(head)}</b>")
         for name, record in named[:12]:
-            lines.append("— " + _html.escape(name) + _krt_news_fact(kind, record))
+            # Имя ведёт на саму новость: карточку лота или документ города.
+            # Адрес приезжал вместе с событием и никуда не печатался — «а
+            # ссылка на торги?» (владелец, 07.09.2026): сообщение говорило, что
+            # площадка выставлена, и не давало открыть лот. Ссылка на каталог
+            # внизу отвечает на другой вопрос — «где посмотреть список».
+            where = _krt_news_url(record)
+            shown = _html.escape(name)
+            if where:
+                shown = f'<a href="{_html.escape(where)}">{shown}</a>'
+            lines.append("— " + shown + _krt_news_fact(kind, record))
         if len(named) > 12:
             lines.append(f"…и ещё {len(named) - 12}")
     if not lines:
@@ -1746,6 +1755,17 @@ def _krt_announcement_text(records: list[dict]) -> str:
     lines.append(f"Открыть {where} — новинки помечены плашкой «новое».")
     lines.append("Отписаться — /krt выкл")
     return "\n".join(lines)
+
+
+def _krt_news_url(record: dict) -> str:
+    """Адрес новости, если он пришёл вместе с событием и это адрес.
+
+    Только http(s): в ссылку идёт то, что пришло с чужой площадки, и «ссылка»
+    вида `javascript:` — не ссылка. Пусто — печатаем имя без ссылки: обещание
+    открыть то, чего у нас нет, хуже молчания.
+    """
+    url = str((record or {}).get("url") or "").strip()
+    return url if url.startswith(("https://", "http://")) else ""
 
 
 def _krt_news_fact(kind: str, record: dict) -> str:

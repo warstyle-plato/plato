@@ -1,0 +1,142 @@
+name: Guide — быстрая сборка в Yandex Container Registry
+
+# Временный безопасный контур для guide-only релиза. Расчётный движок не меняется:
+# перед публикацией проверяется контракт Guide, затем собирается тот же production-образ.
+# Запуск намеренно только по guide/REVISION.txt, чтобы не дублировать обычный CI.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "guide/REVISION.txt"
+
+concurrency:
+  group: guide-hotfix-yandex
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  IMAGE: developaid
+  OIDC_AUDIENCE: https://github.com/warstyle-plato
+
+jobs:
+  guide-contract:
+    name: Контракт Guide
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Статическая проверка Guide
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          page = Path('guide/page.html').read_text(encoding='utf-8')
+          core = Path('main_legacy.py').read_text(encoding='utf-8')
+
+          required_placeholders = [
+              '__DEVELOPAID_VERSION__', '__GUIDE_CLASS_ROWS__',
+              '__GUIDE_SCENARIO_ROWS__', '__GUIDE_NORMATIVE_REGISTRY__'
+          ]
+          for token in required_placeholders:
+              assert token in page, f'нет placeholder {token}'
+
+          ids = re.findall(r'\bid="([^"]+)"', page)
+          assert len(ids) == len(set(ids)), 'дублирующиеся id'
+          idset = set(ids)
+          for href in re.findall(r'href="#([^"]+)"', page):
+              assert href in idset, f'битый якорь #{href}'
+
+          assert page.count('role="tablist"') == 1, 'должен быть один tablist'
+          tabs = re.findall(r'<button[^>]+role="tab"[^>]+aria-controls="([^"]+)"', page)
+          assert len(tabs) == 5, f'ожидалось 5 вкладок, найдено {len(tabs)}'
+          for pane in tabs:
+              assert pane in idset, f'нет tabpanel {pane}'
+
+          assert page.count('href="/normatives"') >= 2, 'нужно минимум две ссылки /normatives'
+          assert 'Площади: чей это термин' in page, 'потерян раздел площадей'
+          assert 'социальная нагрузка' in page.lower(), 'нет социальной нагрузки в руководстве'
+          assert page.lower().count('учебный пример') >= 2, 'оба сквозных примера должны быть учебными'
+
+          captions = re.findall(r'<figcaption>(.*?)</figcaption>', page, flags=re.S)
+          assert captions, 'нет подписей скриншотов'
+          for i, caption in enumerate(captions, 1):
+              text = re.sub('<[^>]+>', '', caption)
+              for marker in ('Где:', 'Нажать:', 'Проверить:'):
+                  assert marker in text, f'скриншот {i}: нет {marker}'
+
+          for src in re.findall(r'<img[^>]+src="/guide/assets/screens/([^"]+)"', page):
+              assert Path('guide/assets/screens', src).is_file(), f'нет скриншота {src}'
+
+          labels = [re.sub(r'<[^>]+>', '', x).strip()
+                    for x in re.findall(r'<b class="ui">(.*?)</b>', page, flags=re.S)]
+          for label in labels:
+              assert label in core, f'UI-метка отсутствует в main PAGE: {label}'
+
+          footer = ('© ИП Ситников В.Ю.', '/consent', '/privacy', '/ads-consent', '/guide')
+          for item in footer:
+              assert item in page, f'неполный общий подвал: {item}'
+
+          print(f'Guide OK: {len(ids)} id, {len(tabs)} tabs, {len(captions)} screenshots, {len(labels)} UI labels')
+          PY
+
+  build:
+    name: Сборка и публикация Guide
+    needs: [guide-contract]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: OIDC-токен GitHub
+        run: |
+          set -euo pipefail
+          curl -sS --fail -G "${ACTIONS_ID_TOKEN_REQUEST_URL}" \
+            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            --data-urlencode "audience=${OIDC_AUDIENCE}" \
+            -o "${RUNNER_TEMP}/oidc.json"
+          python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["value"])' \
+            "${RUNNER_TEMP}/oidc.json" > "${RUNNER_TEMP}/oidc.jwt"
+          echo "::add-mask::$(cat "${RUNNER_TEMP}/oidc.jwt")"
+
+      - name: Обмен на IAM-токен Яндекса
+        id: iam
+        run: |
+          set -euo pipefail
+          code=$(curl -sS -o "${RUNNER_TEMP}/iam.json" -w '%{http_code}' \
+            -X POST https://auth.yandex.cloud/oauth/token \
+            --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+            --data-urlencode "requested_token_type=urn:ietf:params:oauth:token-type:access_token" \
+            --data-urlencode "audience=${{ vars.YC_SERVICE_ACCOUNT_ID }}" \
+            --data-urlencode "subject_token@${RUNNER_TEMP}/oidc.jwt" \
+            --data-urlencode "subject_token_type=urn:ietf:params:oauth:token-type:id_token")
+          test "$code" = "200" || { cat "${RUNNER_TEMP}/iam.json" >&2; exit 1; }
+          token=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["access_token"])' "${RUNNER_TEMP}/iam.json")
+          echo "::add-mask::${token}"
+          echo "token=${token}" >> "$GITHUB_OUTPUT"
+          rm -f "${RUNNER_TEMP}/oidc.jwt" "${RUNNER_TEMP}/iam.json"
+
+      - name: Вход в реестр
+        run: |
+          printf '%s' '${{ steps.iam.outputs.token }}' | docker login --username iam --password-stdin cr.yandex
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Сборка и публикация
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          build-args: |
+            APP_COMMIT=${{ github.sha }}
+          tags: |
+            cr.yandex/${{ vars.YC_REGISTRY_ID }}/${{ env.IMAGE }}:${{ github.sha }}
+            cr.yandex/${{ vars.YC_REGISTRY_ID }}/${{ env.IMAGE }}:prod
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+          sbom: false
