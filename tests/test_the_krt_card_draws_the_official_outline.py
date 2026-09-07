@@ -67,9 +67,16 @@ def test_the_card_draws_the_outline_and_names_its_source() -> None:
     body = body[: body.index("\nfunction krtModelCell(")]
     assert "subject.rings_merc" in body, "контур с сервера не читается"
     assert "<path d=" in body and "vector-effect=\"non-scaling-stroke\"" in body
-    assert "официальные границы территории из файла карты реестра КРТ" in body
+    # Источник контура называет `krtOutlineNote` под самой картой — ответ
+    # маршрута, а не подпись под кадром: подпись говорит про картинку (площадь
+    # по каталогу и размер кадра), и, встав рядом, эти две строки повторяли
+    # друг друга дословно.
+    note = page[page.index("function krtOutlineNote("):]
+    note = note[: note.index("\nfunction ")]
+    assert "официальный полигон файла карты реестра" in note, note
     # Без контура — метка и честная причина, а не «не публикуется».
-    assert "Этой площадки в файле карты реестра нет" in body
+    assert "Контур не показан" in body
+    assert "не спрошены" in note, "«не знаем» и «границ нет» — разные ответы"
     assert "каталогом не публикуется" not in body
     # Живая карта — движковая, с этим контуром; своей проекции здесь нет.
     assert "openLandMap({" in body and "shapes:[{rings:rings" in body

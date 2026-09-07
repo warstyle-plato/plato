@@ -283,25 +283,35 @@ def test_the_decision_numbers_are_shown_under_their_own_names():
 def test_the_card_answers_in_the_order_of_the_decision():
     """Порядок, названный владельцем 06.09.2026.
 
-    «Вся нормативная информация должна быть собрана внизу, после неё должны
-    идти кнопки расчёта и обновления, а потом данные модели и рекомендации
-    Платона». Прежде нормативное было рассыпано: паспорт и требования стояли
-    выше модели, а карта, остальные ТЭП и служебное — под кнопками, то есть
-    ниже неё; Платон при этом рисовался ПЕРВОЙ строкой того же контейнера, что
-    и модель, — мнением о числах, которых читатель ещё не видел.
+    «Сначала выводы общие предварительные, потом данные города что дают, что
+    требуют, потом уже наверное детали предварительного прогона модели и
+    маркетинга по соседям. С явным названием блоком и выделением цветом
+    переходов между блоками как заливка в таблице экселя».
+
+    Прежний порядок (нормативное внизу, кнопки посреди карточки, вывод по
+    рынку в самом низу) читался как его отсутствие: «никакой логики нет».
+
+    Карта стоит ВЫШЕ первой группы: «карта возможно нужна сверху? чтобы понять
+    где это вообще» (владелец, 06.09.2026). Это не вывод и не данные города, а
+    опознание места, и оно нужно раньше любого суждения — прежде карта лежала
+    складкой во второй группе.
     """
     page = auctions_page()
     card = _fn(page, "selectKrt")
     order = [
+        ("где это вообще — карта", 'id="krtMapBox"'),
+        ("чем очерчено", 'id="krtOutlineNote"'),
+        ("группа 1 — предварительный вывод", "krtGroup(1,'Предварительный вывод'"),
         ("можно ли войти", "krtEntryHead(x)"),
-        ("что дал город — паспорт", "<h3>Что за площадка</h3>"),
-        ("нормативное: карта и границы", "<summary>Карта и границы</summary>"),
-        ("нормативное: остальные ТЭП", "<summary>Остальные ТЭП и пропорции</summary>"),
-        ("нормативное: служебное", "<summary>Служебное: привязка распоряжений города</summary>"),
-        ("кнопки расчёта и обновления", 'id="krtHandoff"'),
-        ("что это даёт", 'id="krtMarketResult"'),
+        ("вывод и рекомендация", 'id="krtOutcomeBox"'),
         ("насколько верим", "<h3>Насколько этому верить</h3>"),
-        ("рекомендация Платона", 'id="krtPlatoBox"'),
+        ("группа 2 — что дал город", "krtGroup(2,'Что дал город'"),
+        ("паспорт площадки", "<h3>Что за площадка</h3>"),
+        ("остальные ТЭП", "<summary>Остальные ТЭП и пропорции</summary>"),
+        ("служебное", "<summary>Служебное: привязка распоряжений города</summary>"),
+        ("группа 3 — детали прогона", "krtGroup(3,'Детали прогона'"),
+        ("кнопки расчёта и обновления", 'id="krtHandoff"'),
+        ("числа модели и соседи", 'id="krtMarketResult"'),
     ]
     seen = []
     for name, mark in order:
@@ -309,13 +319,43 @@ def test_the_card_answers_in_the_order_of_the_decision():
         seen.append((card.index(mark), name))
     assert seen == sorted(seen), [name for _, name in seen]
 
-    # Балл — свёртка экономики, и стоит он ПОД ней, а не над.
-    assert card.index('id="krtMarketResult"') < card.index('id="krtScoreBox"'), card[:200]
-    # А Платон говорит о посчитанном — значит после чисел, и в своём блоке:
-    # общий контейнер с моделью ставил его ответ над ней.
-    report = _fn(page, "renderKrtReport")
-    assert "krtPlatoBox" in report, report
-    assert "head+renderKrtModel(" in report, "ответ Платона снова склеен с моделью"
+    # Переход между группами виден заливкой, а не только словом: без полосы
+    # три раздела читались одной лентой.
+    assert ".krtgroup-head{" in page, "у группы нет заливки заголовка"
+    for step in (2, 3):
+        assert f".krtgroup.g{step} .krtgroup-head{{" in page, step
+
+
+def test_the_verdict_and_the_numbers_are_not_told_twice():
+    """Светофор стоит в выводе, таблицы — в деталях, и это разные блоки.
+
+    Пока вывод открывал тот же блок, в котором лежат его же числа, один и тот
+    же LLCR рассказывался дважды подряд.
+    """
+    page = auctions_page()
+    verdict = _fn(page, "krtModelVerdict")
+    numbers = _fn(page, "renderKrtModel")
+    assert "traffic_light" in verdict, verdict
+    assert "Предварительный прогон модели" in verdict
+    assert "traffic_light||{}" not in numbers or "class=\"fit " not in numbers, numbers
+    assert "Числа прогона модели" in numbers, numbers
+
+
+def test_the_outcome_is_drawn_by_one_renderer():
+    """Свежий прогон и сохранённый отчёт рисуются одним кодом.
+
+    Отрисовщиков было два: свежий показывал вывод по рынку и не показывал
+    Платона, сохранённый — наоборот. На экране это давало две разные карточки
+    об одной площадке, и обе выглядели верными (владелец, 06.09.2026:
+    «рекомендации одна вверху другая внизу»).
+    """
+    page = auctions_page()
+    assert "function renderKrtReport(" not in page, "второй отрисовщик вернулся"
+    assert "function renderKrtMarket(d,out)" not in page, "второй отрисовщик вернулся"
+    one = _fn(page, "renderKrtOutcome")
+    assert "krtOutcomeHtml(" in one and "krtMarketBlocks(" in one, one
+    for caller in ("loadKrtReport", "loadKrtMarket", "askPlatoAboutKrt"):
+        assert "renderKrtOutcome(" in _fn(page, caller), caller
 
 
 def test_a_silent_data_check_does_not_stand_above_the_verdict():

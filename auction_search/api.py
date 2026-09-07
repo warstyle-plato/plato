@@ -727,6 +727,73 @@ def install(app: FastAPI) -> None:
 
     app.state.krt_announcements_take = _take_krt_announcements
 
+    def _remember_tender_links(lots: list[dict[str, Any]]) -> dict[str, Any]:
+        """Связать собранные лоты с площадками и запомнить связку.
+
+        Один код на два входа: маршрут сбора каталога и сторож каталога. Два
+        сборщика на одну связку однажды ответили бы про одну площадку разное, и
+        оба выглядели бы верными.
+        """
+        from . import krt_tenders
+
+        sites = krt_registry.catalogue()
+        matched = krt_tenders.match(list(lots or []), sites)
+        by_site = matched.get("by_site") or {}
+        keeper = getattr(krt_registry, "remember_tender_lots", None)
+        if callable(keeper):
+            keeper(by_site)
+        return by_site
+
+    def _collect_tender_links() -> dict[str, Any]:
+        """Сходить за лотами самому и связать их с площадками.
+
+        Сторожу нужен тот же сбор, что и вкладке «Торги»: до правки связка
+        появлялась ТОЛЬКО когда человек эту вкладку открывал, и «выставлена на
+        торги» не было новостью вовсе.
+        """
+        service = AuctionSearchService(_discovery_adapters("all"))
+        lots = service.discover_moscow(budget_seconds=DISCOVERY_BUDGET_SECONDS)
+        return _remember_tender_links([_public_lot_dict(lot) for lot in lots])
+
+    # Сторож каталога: свой срок у каждого источника, работу берёт один воркер
+    # из двух. Выключается `AUCTION_KRT_WATCH=0`.
+    # Поток просыпается часто и почти всегда просто смотрит на часы: спрашивает
+    # он источник только тогда, когда у того наступил свой срок.
+    WATCH_HEARTBEAT_SECONDS = 300.0
+    WATCH_LOCK = os.path.join(os.getenv("DATA_DIR", "data"), "market", "krt", "watch.lock")
+    WATCH_LOCK_TTL_SECONDS = 900.0
+
+    def _krt_watch_loop() -> None:
+        """Что у города изменилось — новостью, а не к следующему прогону.
+
+        «Надо через бота подписчиков уведомлять — появился новый проект КРТ,
+        или опубликовано решение по старому проекту КРТ, выставлен на торги. Но
+        если это будет раз в неделю то поздновато конечно» (владелец,
+        06.09.2026).
+
+        Раз в неделю считается РЕЙТИНГ — это про цифры. Новости идут своим
+        сроком у каждого источника (`krt_watch`), а очередь забирает бот каждые
+        пятнадцать минут, как знакомства.
+        """
+        from . import krt_watch
+
+        # Обход просит сам сторож: снимок каталога живёт сутки и обновлялся,
+        # только если кто-то откроет страницу. Не открыл никто — не случилось
+        # ничего, и «новая площадка» ждала чужого нажатия.
+        watch = krt_watch.KrtWatch(krt_registry, krt_ranking,
+                                   collect_lots=_collect_tender_links,
+                                   all_sites=_krt_all_sites)
+        while True:
+            try:
+                if krt_ranking_rules.claim_file(WATCH_LOCK, WATCH_LOCK_TTL_SECONDS):
+                    try:
+                        watch.poll()
+                    finally:
+                        krt_ranking_rules.release_file(WATCH_LOCK)
+            except Exception:  # noqa: BLE001 — сторож молчит, а не роняет процесс
+                logger.exception("KRT watch loop")
+            time.sleep(WATCH_HEARTBEAT_SECONDS)
+
     def _weekly_ranking() -> None:
         """Раз в неделю каталог обновляется и считается сам.
 
@@ -923,8 +990,16 @@ def install(app: FastAPI) -> None:
         # Каталог отмечается на каждом чтении: «новое» — это разница с прошлым
         # составом, и считать её должен тот, кто состав видит, а не человек
         # глазами по списку из ста двадцати строк.
+        #
+        # Отмечается СПИСОК ЭКРАНА целиком — каталог и площадки-решения. Прежде
+        # сюда шли только строки каталога (решения приезжают ниже по маршруту),
+        # и площадка, у которой опубликован проект решения, а карточки города
+        # нет, не считалась новой НИКОГДА: ни плашки, ни сообщения в чат. А это
+        # 247 строк из 529 на проде и самый ранний сигнал воронки.
         seen = await run_in_threadpool(
-            krt_ranking.mark_seen, [str(row.get("slug") or "") for row in projects])
+            krt_ranking.mark_seen,
+            [str(row.get("slug") or "") for row in projects]
+            + [str(row.get("slug") or "") for row in _decision_rows_for_run()])
         projects = [
             {**row,
              "first_seen_at": seen.get(str(row.get("slug") or "")) or 0,
@@ -2206,13 +2281,54 @@ def install(app: FastAPI) -> None:
         модель по всему каталогу в еженедельном прогоне значит платить за сто
         двадцать ответов, из которых прочитают три. Готовый ответ возвращается
         сразу; `refresh=1` спрашивает заново.
+
+        Долгий ответ забирается вторым запросом по номеру запуска — тем же
+        `trace_id`, что и везде: цепочка ядро → Render → OpenAI одним
+        соединением не держится, и `plato_ask` отдаёт браузеру «работа
+        принята». Прежде маршрут читал это как пустой текст и отвечал 502
+        «Платон вернул пустой ответ» — принятая работа выглядела отказом
+        (владелец, 06.09.2026). Забирает готовое этот же маршрут, а не
+        `/agent/result` напрямую: ответ надо ещё положить в отчёт площадки, а
+        отчёт знает он.
         """
         market_cabinet.require_cabinet(request)
         stored = await run_in_threadpool(_stored_report, slug)
         refresh = str(request.query_params.get("refresh") or "").strip() in {"1", "true", "yes"}
         cached = stored.get("plato")
+        trace_id = str(request.query_params.get("trace_id") or "").strip()
+
+        async def _remember(text: str, trace: str = "") -> dict[str, Any]:
+            payload = {"text": text, "asked_at": int(time.time())}
+            stored["plato"] = payload
+            rest = {key: value for key, value in stored.items()
+                    if key not in {"schema_version", "slug", "computed_at"}}
+            await run_in_threadpool(
+                lambda: krt_ranking.save_report(
+                    slug, rest, computed_at=stored.get("computed_at")),
+            )
+            return {"slug": slug, "cached": False, "pending": False,
+                    "trace_id": trace, **payload}
+
+        if trace_id:
+            result = getattr(market, "plato_result", None) if market is not None else None
+            if result is None:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Платон недоступен: модуль рынка запущен без движка DevelopAid",
+                )
+            got = await run_in_threadpool(result, trace_id) or {}
+            if got.get("status") == "error":
+                raise HTTPException(
+                    status_code=502,
+                    detail=str(got.get("detail") or got.get("error")
+                               or "Платон не справился"))
+            text = str(got.get("reply") or got.get("text") or "").strip()
+            if not text:
+                return {"slug": slug, "pending": True, "trace_id": trace_id}
+            return await _remember(text, trace_id)
+
         if cached and not refresh:
-            return {"slug": slug, "cached": True, **cached}
+            return {"slug": slug, "cached": True, "pending": False, **cached}
         ask = getattr(market, "plato_ask", None) if market is not None else None
         if ask is None:
             raise HTTPException(
@@ -2228,18 +2344,19 @@ def install(app: FastAPI) -> None:
             raise HTTPException(
                 status_code=502, detail=f"Платон не ответил: {type(exc).__name__}: {exc}"
             ) from exc
-        text = str((answer or {}).get("reply") or (answer or {}).get("text") or "").strip()
+        answer = answer or {}
+        text = str(answer.get("reply") or answer.get("text") or "").strip()
         if not text:
-            raise HTTPException(status_code=502, detail="Платон вернул пустой ответ")
-        payload = {"text": text, "asked_at": int(time.time())}
-        stored["plato"] = payload
-        rest = {key: value for key, value in stored.items()
-                if key not in {"schema_version", "slug", "computed_at"}}
-        await run_in_threadpool(
-            lambda: krt_ranking.save_report(
-                slug, rest, computed_at=stored.get("computed_at")),
-        )
-        return {"slug": slug, "cached": False, **payload}
+            # Работа принята, а не пуста: номер запуска едет в окно, и оно
+            # забирает ответ вторым запросом. Билет один на весь вызов —
+            # повтор без него заказал бы вторую работу вместо начатой.
+            trace = str(answer.get("trace_id") or "").strip()
+            if trace:
+                return {"slug": slug, "pending": True, "trace_id": trace}
+            raise HTTPException(
+                status_code=502,
+                detail="Платон не ответил и не назвал номер запуска — забирать нечего.")
+        return await _remember(text, str(answer.get("trace_id") or ""))
 
     @app.get("/auctions/krt/{slug}/market")
     async def auction_krt_market(
@@ -2506,14 +2623,8 @@ def install(app: FastAPI) -> None:
         # 05.09.2026: «торги 0????»). Сервер видел эти лоты сам, и запомнить
         # их — его работа, а не побочный эффект чужого нажатия.
         try:
-            from . import krt_tenders
-
-            sites = await run_in_threadpool(krt_registry.catalogue)
-            matched = await run_in_threadpool(
-                krt_tenders.match, [_public_lot_dict(lot) for lot in lots], sites)
-            keeper = getattr(krt_registry, "remember_tender_lots", None)
-            if callable(keeper):
-                await run_in_threadpool(keeper, matched.get("by_site"))
+            await run_in_threadpool(_remember_tender_links,
+                                    [_public_lot_dict(lot) for lot in lots])
         except Exception:  # noqa: BLE001 — каталог лотов не роняем связкой
             logger.exception("KRT: связка лотов с площадками при сборе не записалась")
 
@@ -2633,3 +2744,5 @@ def install(app: FastAPI) -> None:
     # получила бы NameError.
     if os.getenv("AUCTION_KRT_WEEKLY", "1").strip() not in {"0", "false", "no"}:
         threading.Thread(target=_weekly_ranking, name="krt-weekly", daemon=True).start()
+    if os.getenv("AUCTION_KRT_WATCH", "1").strip() not in {"0", "false", "no"}:
+        threading.Thread(target=_krt_watch_loop, name="krt-watch", daemon=True).start()

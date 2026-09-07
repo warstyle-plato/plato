@@ -79,8 +79,20 @@ def _plato_ask(message: str, request, history=None):
     return core.plato_answer_handoff(payload, request)
 
 
+def _plato_result(trace_id: str):
+    """Готовый ответ по номеру запуска — тем же путём, что и у окна расчёта.
+
+    Своего хранилища ответов модуль не заводит: воркеров два, память у них
+    раздельная, и ответ лежит на диске у движка. Карточка КРТ ходит за
+    результатом в свой маршрут (он же кладёт ответ в отчёт площадки), а тот —
+    сюда.
+    """
+    return core.agent_result(trace_id)
+
+
 market_search.cadastre_lookup = _cadastre_from_egrn
 market_search.plato_ask = _plato_ask
+market_search.plato_result = _plato_result
 def _address_suggest(query: str, limit: int):
     """Адресные подсказки кабинета — тот же DaData, что у движка и ленты `/ia`.
 

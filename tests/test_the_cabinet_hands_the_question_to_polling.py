@@ -30,6 +30,19 @@ def test_the_cabinet_uses_the_handoff_not_the_bot_path() -> None:
     assert "core.plato_answer(" not in body, "это путь бота, а не окна"
 
 
+def test_the_result_is_taken_by_the_engine_path_not_a_second_store() -> None:
+    """Своего хранилища ответов модуль рынка не заводит: воркеров два.
+
+    Билет отдаётся окну, а готовое лежит на диске у движка — крючок ведёт туда
+    же, куда ходит `/agent/result`.
+    """
+    source = (ROOT / "main_registry.py").read_text()
+    body = source[source.index("def _plato_result("):]
+    body = body[:body.index("\n\n\n")]
+    assert "core.agent_result(" in body, body
+    assert "market_search.plato_result = _plato_result" in source
+
+
 def test_the_handoff_returns_a_ticket_when_the_work_is_slow(monkeypatch) -> None:
     import main_legacy
 
@@ -85,8 +98,13 @@ def test_the_page_takes_the_ticket_and_polls() -> None:
 
     page = (ROOT / "market_search" / "cabinet.py").read_text()
     assert "platoAsk(" in page, "кабинет ходит мимо общего пути"
+    # Спросить и дождаться — два шага одного пути: ожидание вынесено в
+    # `platoAwait`, потому что карточка КРТ забирает готовое своим маршрутом
+    # (он же кладёт ответ в отчёт площадки), а ждать обязана так же.
+    # Утверждение прежнее и проверяется там, где оно теперь живёт.
+    assert "return platoAwait(d, onStage)" in plato_question.SCRIPT
     body = plato_question.SCRIPT[
-        plato_question.SCRIPT.index("async function platoAsk("):]
+        plato_question.SCRIPT.index("async function platoAwait("):]
     body = body[:body.index("\n}\n")]
     assert "/agent/result/" in body, "за долгим ответом ходят по номеру запуска"
     assert "d.trace_id" in body
