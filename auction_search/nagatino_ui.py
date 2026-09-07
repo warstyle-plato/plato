@@ -314,6 +314,9 @@ function landHtml(l){
   ['Строений на участке',objs.length+' · '+m2(l.objects_area_sqm)],
   ['Цвет по',escapeHtml(l.colour_from||'—')],
  ];
+ if(l.disposal&&l.disposal.who)
+  rows.splice(4,0,['Кто распоряжается',escapeHtml(l.disposal.who)
+   +`<div class="source">${escapeHtml(l.disposal.ground||'')}</div>`]);
  burdenRows(l).forEach(r=>rows.push(r));
  if(l.address)rows.push(['Адрес по ЕГРН',escapeHtml(l.address)]);
  return `<b>Земельный участок ${escapeHtml(l.cadastral_number)}</b>`
@@ -484,7 +487,9 @@ function territoryMarkup(){
    +`<td class="num">${l.area_sqm!=null?m2(l.area_sqm):'—'}`
    +`<div class="source">строений ${m2(l.objects_area_sqm)}</div></td>`
    +`<td class="num">${mln(l.cadastral_value_rub)}</td>`
-   +`<td>${ownerCell(l.owner)}${lease}</td>`
+   +`<td>${ownerCell(l.owner)}`
+   +`${l.disposal&&l.disposal.who?`<div class="source">распоряжается ${escapeHtml(l.disposal.who)} — ${escapeHtml(l.disposal.ground||'')}</div>`:''}`
+   +`${lease}</td>`
    +`<td class="source">${l.objects.length?'':'объектов нет'}</td></tr>`+objs;
  }).join('');
  const outside=(T.objects_outside_notice||[]).map(o=>

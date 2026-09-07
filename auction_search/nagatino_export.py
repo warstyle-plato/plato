@@ -34,9 +34,19 @@ from openpyxl.utils import get_column_letter
 HEADER_FILL = PatternFill("solid", fgColor="171717")
 LAND_FILL = PatternFill("solid", fgColor="EFEFEA")
 
+# Земля идёт ПЕРЕД площадями и повторяется на каждой строке, включая строки
+# строений: «не понимаю, где статус земли» (владелец, 07.09.2026). В плоском
+# листе строка участка и строка строения выглядят одинаково, и чей под зданием
+# участок приходилось искать глазами вверх по листу. Повтор здесь не дубль:
+# он делает строку самодостаточной — по ней можно фильтровать и сводить.
 SHEET_LANDS = (
     ("row_kind", "Строка", 12),
     ("cadastral_number", "Кадастровый номер", 24),
+    ("land", "Участок", 24),
+    ("land_status", "Статус земли (запись ЕГРН)", 40),
+    ("land_disposal", "Кто распоряжается — вывод DevelopAid", 34),
+    ("land_disposal_ground", "На чём этот вывод", 56),
+    ("land_lease", "Аренда земли", 52),
     ("land_area_sqm", "Площадь земли, м²", 17),
     ("object_area_sqm", "Площадь строения, м²", 19),
     ("cadastral_value_rub", "Кадастровая стоимость, ₽", 22),
@@ -44,7 +54,7 @@ SHEET_LANDS = (
     ("inn", "ИНН", 14),
     ("since", "Право с", 12),
     ("other_rights", "Иное право (оперативное управление и т. п.)", 44),
-    ("lease", "Аренда: кто, до какого срока, договор", 52),
+    ("lease", "Аренда объекта", 46),
     ("encumbrance", "Иные обременения (ипотека, ограничения)", 52),
     ("permitted_use", "Разрешённое использование / назначение", 44),
     ("fate", "Судьба по извещению", 20),
@@ -100,6 +110,20 @@ def _burden_text(items: list[dict[str, Any]], *, with_kind: bool) -> str:
     return "; ".join(out)
 
 
+def _land_status(land: dict[str, Any]) -> str:
+    """Чья земля — словами документа, а не нашим выводом.
+
+    «Собственность не зарегистрирована» — это ответ ЕГРН. Что такой землёй
+    распоряжается город, видно по номерам договоров аренды («М-05-…»,
+    «…-05 ДГИ»), но записи о собственности Москвы в реестре нет, и писать её
+    в этой графе нельзя.
+    """
+    owner = land["owner"]
+    if owner.get("name"):
+        return f"собственность: {owner['name']}"
+    return "собственность в ЕГРН не зарегистрирована"
+
+
 def _land_rows(view: dict[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     # Объект на нескольких участках стоит в книге у каждого. Метры при этом его
@@ -109,9 +133,19 @@ def _land_rows(view: dict[str, Any]) -> list[dict[str, Any]]:
     # бы верными.
     counted: dict[str, str] = {}
     for land in view["lands"]:
+        status = _land_status(land)
+        disposal = land.get("disposal") or {}
+        land_lease = _burden_text(land.get("leases"), with_kind=False)
         rows.append({
             "row_kind": "участок",
             "cadastral_number": land["cadastral_number"] + (" (часть)" if land.get("part") else ""),
+            "land": land["cadastral_number"],
+            "land_status": status,
+            # Вывод стоит СВОЕЙ графой: в клетке статуса — ответ ЕГРН, здесь —
+            # наше суждение с основанием. Слитые, они читались бы как реестр.
+            "land_disposal": disposal.get("who") or "",
+            "land_disposal_ground": disposal.get("ground") or "",
+            "land_lease": land_lease,
             "land_area_sqm": land.get("area_sqm"),
             "object_area_sqm": None,
             "cadastral_value_rub": land.get("cadastral_value_rub"),
@@ -148,9 +182,18 @@ def _land_rows(view: dict[str, Any]) -> list[dict[str, Any]]:
                 area = None
             else:
                 counted[item["cadastral_number"]] = land["cadastral_number"]
+            # Строение на нескольких участках: свести их статусы в одну клетку
+            # значило бы сказать о земле то, чего документ не говорит.
+            many = len(item.get("lands") or []) > 1
             rows.append({
                 "row_kind": "строение",
                 "cadastral_number": item["cadastral_number"] + (" (часть)" if item.get("part") else ""),
+                "land": ", ".join(item.get("lands") or []) or "—",
+                "land_status": ("у каждого участка свой статус — см. их строки" if many
+                                else status),
+                "land_disposal": "" if many else (disposal.get("who") or ""),
+                "land_disposal_ground": "" if many else (disposal.get("ground") or ""),
+                "land_lease": "" if many else land_lease,
                 "land_area_sqm": None,
                 "object_area_sqm": area,
                 "cadastral_value_rub": item.get("cadastral_value_rub"),
@@ -218,10 +261,14 @@ def build(view: dict[str, Any], owners: list[dict[str, Any]]) -> bytes:
         note += (f"; по выпискам ЕГРН {egrn} м² — на один объект выписки нет, "
                  "его метры из извещения")
     sheet.append([])
-    sheet.append(["итого", f"{totals['lands']} участков и {totals['objects']} объектов",
-                  totals["land_area_sqm"], printed,
-                  round(totals["land_value_rub"] + totals["objects_value_rub"], 1),
-                  "", "", "", "", "", "", "", note, ""])
+    tail = {"row_kind": "итого",
+            "cadastral_number": f"{totals['lands']} участков и {totals['objects']} объектов",
+            "land_area_sqm": totals["land_area_sqm"], "object_area_sqm": printed,
+            "cadastral_value_rub": round(totals["land_value_rub"] + totals["objects_value_rub"], 1),
+            "note": note}
+    # Строка итога собирается ПО КЛЮЧАМ: список по позициям ломается молча,
+    # стоит колонке появиться в середине — а она только что появилась.
+    sheet.append([tail.get(key, "") for key, _title, _width in SHEET_LANDS])
     for cell in sheet[sheet.max_row]:
         cell.font = Font(bold=True)
     sheet.cell(row=sheet.max_row, column=3).number_format = _AREA
@@ -250,6 +297,12 @@ def build(view: dict[str, Any], owners: list[dict[str, Any]]) -> bytes:
                                    f"сформированы {extracts.get('formed_at', '')}"),
         ("Чего здесь нет", "Правообладателя участка там, где собственность не "
                            "зарегистрирована: это ответ ЕГРН, а не наш пробел"),
+        ("Где чей ответ", "Колонка «Статус земли» — запись ЕГРН. Колонка «Кто "
+                          "распоряжается» — вывод DevelopAid, и рядом стоит, на чём он "
+                          "сделан: у 11 участков это номер городского договора аренды "
+                          "(«М-05-…», «…-05 ДГИ»), у трёх — только общее правило: в "
+                          "Москве неразграниченная госсобственность в распоряжении "
+                          "города. Записи о собственности Москвы в ЕГРН по ним нет"),
         ("Оперативное управление", "Не собственность: у девяти строений собственник — "
                                    "город Москва, держатель — ГБУ «Жилищник»"),
         ("Земля и строения", "Разные величины и разные колонки: у участка площадь земли, "

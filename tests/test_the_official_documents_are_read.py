@@ -325,3 +325,50 @@ def test_the_export_route_asks_the_owner(monkeypatch):
     assert answer.status_code == 200
     assert answer.content[:2] == b"PK", "это не книга Excel"
     assert "attachment" in answer.headers.get("content-disposition", "")
+
+
+def test_the_registry_answer_and_our_inference_never_share_a_cell():
+    """«И твоё про „распоряжается город“ там тоже должно быть отмечено»
+    (владелец, 07.09.2026) — отмечено, но СВОЕЙ графой.
+
+    В клетке «Статус земли» стоит ответ ЕГРН, в соседней — наше суждение с его
+    основанием. Слитые в одну клетку, они читались бы как одна запись реестра.
+    """
+    import openpyxl
+    from io import BytesIO
+
+    from auction_search import nagatino_export
+
+    book = openpyxl.load_workbook(BytesIO(
+        nagatino_export.build(parcels.territory(), parcels.owners_summary())))
+    sheet = book["ЗУ и объекты"]
+    head = [cell.value for cell in sheet[1]]
+    status = head.index("Статус земли (запись ЕГРН)")
+    who = head.index("Кто распоряжается — вывод DevelopAid")
+    ground = head.index("На чём этот вывод")
+    number = head.index("Кадастровый номер")
+    rows = {str(row[number]).split()[0]: row for row in sheet.iter_rows(values_only=True)
+            if row[0] == "участок"}
+    free = rows["77:05:0004001:2475"]
+    assert free[status] == "собственность в ЕГРН не зарегистрирована"
+    assert "город" not in free[status], "вывод затесался в графу реестра"
+    assert free[who] == "город Москва"
+    assert "М-05-061753" in free[ground] and "вывод DevelopAid" in free[ground]
+    # Там, где документов нет, слабее и утверждение.
+    bare = rows["77:05:0004001:16"]
+    assert bare[who] == "вероятно город Москва"
+    assert "подтверждения в документах нет" in bare[ground]
+    # У собственника вывода нет вовсе — распоряжается он сам.
+    owned = rows["77:05:0004001:7"]
+    assert owned[status].startswith("собственность: ") and not owned[who]
+
+
+def test_the_city_contract_is_recognised_by_its_number():
+    """Арендодателя выписка не называет — его выдаёт номер договора."""
+    assert parcels.disposal_note(
+        {"owner": {}, "leases": [{"document_number": "М-05-061753"}]})["who"] == "город Москва"
+    assert parcels.disposal_note(
+        {"owner": {}, "leases": [{"document_number": "4827-05 ДГИ"}]})["who"] == "город Москва"
+    # Чужой номер городским не считается.
+    private = parcels.disposal_note({"owner": {}, "leases": [{"document_number": "1731/К-ЗН-1/24"}]})
+    assert "сдан в аренду" in private["ground"], "чужой номер выдан за городской"

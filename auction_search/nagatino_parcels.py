@@ -78,6 +78,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -478,6 +479,42 @@ def _kinds(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "buildings": len([r for r in rows if (r.get("egrn") or {}).get("kind") == "building"])}
 
 
+# Договор аренды городской земли в Москве нумеруется по-своему: «М-05-…»
+# (Департамент городского имущества) и «…-05 ДГИ» / «…-05 ДЗР» — его прежние
+# имена. По этому номеру видно арендодателя, которого сама выписка не называет.
+_CITY_CONTRACT = re.compile(r"^\s*(?:М-\d{2}-|\d+\s*-\s*\d{2}\s*(?:ДГИ|ДЗР))", re.I)
+
+
+def disposal_note(land: dict[str, Any]) -> dict[str, str]:
+    """Кто распоряжается участком — НАШ вывод, и он подписан как наш.
+
+    Владелец, 07.09.2026: «и твоё про „распоряжается город“ там тоже должно быть
+    отмечено». Отмечено — но отдельной графой: в клетке «статус земли» стоит
+    ответ ЕГРН, а здесь наше суждение с его основанием. Слитые в одну клетку,
+    они читались бы как одна запись реестра.
+
+    Оснований два, и они разной силы. Номер договора аренды городского вида —
+    это документ: арендодателем выступает город. Без такого договора остаётся
+    общее правило (в Москве неразграниченная госсобственность в распоряжении
+    города), и это сказано именно как правило, а не как факт об участке.
+    """
+    if land["owner"].get("name"):
+        return {"who": "", "ground": "распоряжается собственник"}
+    for item in land.get("leases") or []:
+        number = str(item.get("document_number") or "")
+        if number and _CITY_CONTRACT.match(number):
+            return {"who": "город Москва",
+                    "ground": f"вывод DevelopAid: договор аренды {number} — городской"}
+    if land.get("leases"):
+        return {"who": "город Москва",
+                "ground": ("вывод DevelopAid: участок сдан в аренду, а собственность не "
+                           "зарегистрирована — распоряжается город")}
+    return {"who": "вероятно город Москва",
+            "ground": ("вывод DevelopAid по общему правилу: в Москве неразграниченная "
+                       "государственная собственность в распоряжении города. "
+                       "По этому участку подтверждения в документах нет")}
+
+
 def territory() -> dict[str, Any]:
     """Свод «земельный участок → объекты на нём» по официальным документам.
 
@@ -602,6 +639,8 @@ def territory() -> dict[str, Any]:
         source_owner = next(iter(near.values()))
         item["colour"] = source_owner.get("colour")
         item["colour_from"] = f"владелец участка: {source_owner.get('name')}"
+    for land in lands:
+        land["disposal"] = disposal_note(land)
     lands.sort(key=lambda item: -(item.get("area_sqm") or item.get("notice_area_sqm") or 0))
     objects = list(objects_by_cad.values())
     return {
