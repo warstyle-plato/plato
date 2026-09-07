@@ -91,6 +91,16 @@ table.territory tr.zu td{background:var(--soft);border-top:2px solid #111}
 table.territory tr.obj td:first-child{border-left:14px solid var(--soft)}
 .tablewrap{overflow-x:auto;border:1px solid var(--line)}
 .swatch{display:inline-block;width:10px;height:10px;margin-right:6px;vertical-align:-1px}
+/* Отбор — флажками: внутри оси «или», и площадка, попавшая в два ответа, не
+   исчезает из второго. Кнопка-переключатель «или/или» такого не умеет. */
+.filter{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:12px 0}
+.filter label{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);padding:6px 10px;font-size:13px;cursor:pointer}
+.filter label.on{border-color:#111;background:var(--soft)}
+.filter .key{display:inline-block;width:11px;height:11px}
+.filter .cnt{color:var(--muted);font-size:12px}
+.fold{border:1px solid var(--line);margin:14px 0}
+.fold summary{padding:10px 12px;background:var(--soft);cursor:pointer;font-weight:620}
+.fold > details > div{padding:0 12px 12px}
 .legal-footer{border-top:1px solid var(--line);padding:18px 34px 26px;color:var(--muted);font-size:12px}
 .legal-footer a{color:var(--muted)}
 </style>
@@ -107,26 +117,30 @@ table.territory tr.obj td:first-child{border-left:14px solid var(--soft)}
     <div id="gate" class="notice warn" style="display:none"></div>
     <div id="progress" class="notice" style="display:none"></div>
     <div id="stats" class="stats"></div>
-    <div id="kinds"></div>
-    <div id="sourceNote" class="notice"></div>
+    <div id="findings"></div>
+    <div id="filter" class="filter"></div>
 
     <h2>Карта</h2>
     <div id="mapBox"><div class="notice">Строю карту…</div></div>
     <div id="legend" class="legend"></div>
     <div id="coverage" class="source"></div>
 
-    <h2>Земельные участки и объекты на них</h2>
-    <div class="source" style="margin:0 0 8px"><a id="exportLink" href="/krt/nagatino/export.xlsx">
-      Скачать свод в Excel</a> — те же числа, что здесь: книга собирается из того же расчёта,
-      второй сборки нет.</div>
-    <div id="territoryBox"></div>
-
     <h2>Кто чем владеет</h2>
     <div id="ownersTable"></div>
-
-    <h2>Строения выгрузки</h2>
-    <div id="tableBox"></div>
     <div id="ownersBox"></div>
+
+    <h2>Земельные участки и объекты на них</h2>
+    <div id="territoryBox"></div>
+
+    <div class="fold"><details id="rawFold"><summary id="rawSummary">Строения из присланного файла</summary>
+      <div id="kinds"></div>
+      <div id="tableBox"></div></details></div>
+    <div class="fold"><details><summary>На чём посчитано — источники</summary>
+      <div id="sourceNote" class="source"></div></details></div>
+
+    <div class="source" style="margin-top:18px"><a id="exportLink" href="/krt/nagatino/export.xlsx">
+      Скачать свод в Excel</a> — те же числа, что здесь: книга собирается из того же расчёта,
+      второй сборки нет. Выгрузка идёт по всем владельцам, а не по отбору на экране.</div>
   </div>
   __DEVELOPAID_LEGAL_FOOTER__
 </div>
@@ -136,7 +150,26 @@ __DEVELOPAID_LAND_MAP_KIT__
 // Кадр неподвижен намеренно: он же уходит в отчёт, а живая карта отвечает на
 // другой вопрос — «что вокруг».
 const FRAME={w:1180,h:720,pad:0.14};
-const S={data:null,timer:null,started:0,pick:null};
+const S={data:null,timer:null,started:0,pick:null,show:null};
+
+// Отбор по группе владельцев — один на всю страницу. Два состояния (своё у
+// карты, своё у таблицы) разошлись бы, и на экране оказались бы отобраны
+// разные объекты, оба достоверно. `null` значит «все»: пустое множество — это
+// «ничего не выбрано», и путать его с «выбрано всё» нельзя.
+const filtering=()=>S.show!==null;
+const shown=key=>!filtering()||S.show.has(String(key||'none'));
+// Скрытое считается и называется под таблицей: молча снятая строка читается
+// как отсутствие объекта в территории.
+//
+// Итоги при этом остаются по ЦЕЛОМУ и так подписаны. Считать их по отбору
+// значило бы завести вторую арифметику той же величины и поставить два разных
+// числа под одной подписью «Итого»: площадка — свойство площадки, а не моего
+// выбора на экране. Поэтому отбор прячет строки и говорит, сколько спрятал.
+function hiddenNote(what){
+ return what?`<div class="source">Отбор скрыл ${what}. Итоговая строка — по целому,`
+  +' а не по отбору: итог выбора и итог территории под одной подписью читались бы как одно'
+  +' число.</div>':'';
+}
 // Выделение — одно на карту и таблицу: два состояния разошлись бы, и на
 // экране оказались бы выделены разные строки.
 const picked=cad=>S.pick===cad;
@@ -215,6 +248,28 @@ function frame(rings){
   py:y=>(by-y)/(by-ay)*FRAME.h};
 }
 
+// Середина фигуры для подписи — центр её рамки. Настоящий центроид полигона
+// считать нечем и незачем: подпись стоит внутри вытянутого участка ничуть не
+// хуже, а лишняя геометрия на странице — это вторая реализация того, что уже
+// умеет движок.
+function centre(rings,place){
+ const pts=rings.flat().filter(p=>Array.isArray(p)&&p.length>=2);
+ if(!pts.length)return null;
+ const xs=pts.map(p=>place.px(p[0])),ys=pts.map(p=>place.py(p[1]));
+ return [(Math.min(...xs)+Math.max(...xs))/2,(Math.min(...ys)+Math.max(...ys))/2];
+}
+// Номер на карте — тот же, что в таблице: считает его сервер, страница только
+// печатает. Своя нумерация на карте разошлась бы с табличной молча, и обе
+// выглядели бы верными. Подпись не перехватывает указатель: иначе она закрыла
+// бы собой то, что подписывает.
+function labelAt(rings,place,text,size,colour){
+ const c=centre(rings,place); if(!c)return '';
+ return `<text x="${c[0].toFixed(1)}" y="${c[1].toFixed(1)}" text-anchor="middle"`
+  +` dominant-baseline="central" font-size="${size}" font-weight="700"`
+  +` fill="${colour}" stroke="#fff" stroke-width="3" paint-order="stroke"`
+  +` style="pointer-events:none">${escapeHtml(text)}</text>`;
+}
+
 function pathOf(rings,place){
  return rings.map(ring=>'M'+ring.filter(p=>Array.isArray(p)&&p.length>=2)
    .map(p=>place.px(p[0]).toFixed(1)+' '+place.py(p[1]).toFixed(1)).join('L')+'Z').join(' ');
@@ -226,10 +281,15 @@ function pathOf(rings,place){
 // строения «Жилищника» на ней были жёлтыми при зелёных на печатной.
 function drawnObjects(){
  return (((S.data||{}).territory||{}).objects||[]).filter(p=>(p.rings_merc||[]).length)
+   .filter(p=>shown((p.owner||{}).group))
    .map(p=>({...p, colour:p.colour||(p.owner||{}).colour}));
 }
+// Участок остаётся на карте, пока на нём показано хоть одно строение: убрав
+// землю из-под видимого здания, мы нарисовали бы его висящим в воздухе.
 function drawnLands(){
- return (((S.data||{}).territory||{}).lands||[]).filter(l=>(l.rings_merc||[]).length);
+ return (((S.data||{}).territory||{}).lands||[]).filter(l=>(l.rings_merc||[]).length)
+   .filter(l=>shown((l.owner||{}).group)
+     || (l.objects||[]).some(o=>shown((o.owner||{}).group)));
 }
 
 function mapMarkup(){
@@ -273,6 +333,10 @@ function mapMarkup(){
    +` stroke="${picked(p.cadastral_number)?'#111':escapeHtml(p.colour)}"`
    +` stroke-width="${picked(p.cadastral_number)?'2.6':'1.2'}" data-cad="${escapeHtml(p.cadastral_number)}"`
    +` class="parcel" style="cursor:pointer"><title>${escapeHtml(tipTitle(p))}</title></path>`).join('');
+ // Номера рисуются ПОСЛЕДНИМИ, поверх всех фигур: под контуром соседа подпись
+ // не читается, а читать её и есть весь смысл.
+ const marks=lands.map(l=>labelAt(l.rings_merc,place,'У'+l.no,15,'#111')).join('')
+  +order.map(({p})=>labelAt(p.rings_merc,place,'С'+p.no,12,'#111')).join('');
  const live=typeof openLandMap==='function'
   ? '<button type="button" id="liveBtn">Открыть живую карту — двигать и приближать</button> '
   : '<span class="source">Живая карта не подключена: страница поднята без движка.</span> ';
@@ -285,7 +349,7 @@ function mapMarkup(){
   +`<img src="${src}" alt="" width="${FRAME.w}" height="${FRAME.h}"`
   +` onerror="this.style.visibility='hidden';document.getElementById('mapBase').style.display=''">`
   +`<svg class="layer" viewBox="0 0 ${FRAME.w} ${FRAME.h}" preserveAspectRatio="none">`
-  +`${sitePath}${landPaths}${shapes}</svg>`
+  +`${sitePath}${landPaths}${shapes}${marks}</svg>`
   +`<div id="parcelTip"></div>`
   +`<div id="mapBase" style="display:none;position:absolute;left:8px;top:8px;`
   +`background:#fff;border:1px solid var(--line);padding:5px 8px;font-size:12px;color:var(--muted)">`
@@ -297,7 +361,8 @@ function mapMarkup(){
 // её ждать секунду, а на телефоне её нет вовсе — номер и владелец показываются
 // подписью, а не одной только `<title>`.
 function tipTitle(p){
- return p.cadastral_number+' · '+(p.owner.name||p.owner.note||'правообладатель не назван');
+ return 'С'+p.no+' · '+p.cadastral_number+' · '
+  +(p.owner.name||p.owner.note||'правообладатель не назван');
 }
 // ВРИ участка бывает на десять строк, и карточка становится выше карты.
 // Обрезка называется многоточием, а полный текст стоит в таблице ниже: молча
@@ -320,7 +385,8 @@ function burdenRows(x){
 }
 
 function landTitle(l){
- return 'Участок '+l.cadastral_number+' · '+m2(l.area_sqm)+' · строений '+(l.objects||[]).length;
+ return 'У'+l.no+' · участок '+l.cadastral_number+' · '+m2(l.area_sqm)
+  +' · строений '+(l.objects||[]).length;
 }
 // У участка своя карточка: мера у земли другая, и правообладателя её выгрузка
 // не называет вовсе — она про владельцев ЗДАНИЙ. Пока источника по земле нет,
@@ -375,13 +441,14 @@ function tipHtml(p){
 // обещало бы то, чего человек не видит.
 function mapLabelText(cad){
  const key=cad||S.pick;
- if(!key)return 'Наведите на контур — увидите номер. Нажмите, чтобы выделить и найти строку в таблице.';
+ if(!key)return 'Номера на карте — те же, что в таблице ниже: У — участок (20), С — строение (39). '
+  +'Наведите на контур, чтобы увидеть правообладателя; нажмите, чтобы выделить строку.';
  const T=S.data.territory||{};
  const l=(T.lands||[]).find(x=>x.cadastral_number===key);
- if(l)return 'Участок '+l.cadastral_number+' · '+m2(l.area_sqm)+' · '
+ if(l)return 'У'+l.no+' · участок '+l.cadastral_number+' · '+m2(l.area_sqm)+' · '
    +(l.owner.name||l.owner.note)+' · строений '+(l.objects||[]).length;
  const o=(T.objects||[]).find(x=>x.cadastral_number===key);
- if(o)return 'Строение '+o.cadastral_number+' · '
+ if(o)return 'С'+o.no+' · строение '+o.cadastral_number+' · '
    +(o.area_sqm!=null?m2(o.area_sqm):m2(o.notice_area_sqm)+' по извещению')+' · '
    +(o.owner.name||o.owner.note)+' · на участке '+((o.lands||[]).join(', ')||'—');
  return key;
@@ -487,6 +554,30 @@ function openLive(){
 // по земле, и потому две меры стоят двумя рядами, а не одним итогом.
 // Земля и строения меряются разным и в одну плитку не складываются: у участка
 // площадь земли, у здания — площадь здания, и плотность считается по земле.
+// Вариант отбора несёт своё число: «Брынцалов (17)» отвечает на «сколько
+// останется» ДО нажатия, а пустой выбор без числа читается как поломка.
+function filterMarkup(){
+ const T=S.data.territory||{};
+ const count=key=>{
+  const lands=(T.lands||[]).filter(l=>String((l.owner||{}).group||'none')===key).length;
+  const objs=(T.objects||[]).filter(o=>String((o.owner||{}).group||'none')===key).length;
+  return [lands,objs];
+ };
+ const boxes=(S.data.groups||[]).map(g=>{
+  const [lands,objs]=count(g.key);
+  const on=shown(g.key);
+  return `<label class="${on?'on':''}"><input type="checkbox" data-group="${escapeHtml(g.key)}"`
+   +`${on?' checked':''}><span class="key" style="background:${escapeHtml(g.colour)}"></span>`
+   +`${escapeHtml(g.title)} <span class="cnt">${lands?lands+' уч.':''}`
+   +`${lands&&objs?' · ':''}${objs?objs+' стр.':''}${!lands&&!objs?'нет объектов':''}</span></label>`;
+ }).join('');
+ return '<span class="source" style="margin:0 8px 0 0">Показывать:</span>'+boxes
+  +`<button type="button" id="filterAll"${filtering()?'':' disabled'}>Все</button>`
+  +(filtering()?'<span class="source" style="flex-basis:100%;margin:2px 0 0">Отбор действует на '
+    +'карту и на все таблицы разом: два отбора однажды показали бы разное об одном объекте. '
+    +'В книгу Excel он не уходит — выгрузка всегда по всей территории.</span>':'');
+}
+
 function statsMarkup(){
  const T=(S.data.territory||{}).totals||{},o=S.data.outlines||{};
  return [[landNum(T.lands,0),'земельных участков'],
@@ -519,10 +610,18 @@ function ownerCell(o){
 function territoryMarkup(){
  const T=S.data.territory; if(!T)return '';
  const t=T.totals;
- const rows=T.lands.map(l=>{
-  const objs=l.objects.map(o=>
+ // Участок остаётся, пока на нём показано хоть одно строение: убрав землю
+ // из-под видимого здания, таблица сказала бы, что оно стоит нигде.
+ const keepLand=l=>shown((l.owner||{}).group)
+   || (l.objects||[]).some(o=>shown((o.owner||{}).group));
+ const lands=T.lands.filter(keepLand);
+ let hiddenObjects=0;
+ const rows=lands.map(l=>{
+  const objs=l.objects.filter(o=>{
+   const keep=shown((o.owner||{}).group); if(!keep)hiddenObjects++; return keep;
+  }).map(o=>
     `<tr class="obj${picked(o.cadastral_number)?' pick':''}" id="${rowId(o.cadastral_number)}">`
-    +`<td></td><td>${escapeHtml(o.cadastral_number)}`
+    +`<td class="num"><b>С${o.no}</b></td><td></td><td>${escapeHtml(o.cadastral_number)}`
     +`${o.part?' <span class="source">(часть)</span>':''}`
     +`<div class="source">${escapeHtml([o.name,o.purpose,o.year_built?'постр. '+o.year_built:'']
         .filter(Boolean).join(' · '))||'&nbsp;'}</div></td>`
@@ -537,6 +636,7 @@ function territoryMarkup(){
   ).join('');
   const lease=burdenRows(l).map(r=>`<div class="source">${r[0]}: ${r[1]}</div>`).join('');
   return `<tr class="zu${picked(l.cadastral_number)?' pick':''}" id="${rowId(l.cadastral_number)}">`
+   +`<td class="num"><b>У${l.no}</b></td>`
    +`<td class="num">${l.objects.length||''}</td>`
    +`<td><b>${escapeHtml(l.cadastral_number)}</b>${l.part?' <span class="source">(часть)</span>':''}`
    +`<div class="source">${escapeHtml(shorten(l.permitted_use,90)||'—')}</div></td>`
@@ -552,6 +652,9 @@ function territoryMarkup(){
    +`${lease}</td>`
    +`<td class="source">${l.objects.length?'':'объектов нет'}</td></tr>`+objs;
  }).join('');
+ const hiddenLands=T.lands.length-lands.length;
+ const hidden=[hiddenLands?hiddenLands+' участков':'',hiddenObjects?hiddenObjects+' строений':'']
+   .filter(Boolean).join(' и ');
  // У объекта вне извещения называются и участки под ним: у 77:05:0004001:2077
  // это 77:05:0004001:7 и 77:05:0004001:2841, и второго в территории нет вовсе.
  // Номер, встречающийся в наших документах и молча нигде не показанный,
@@ -564,16 +667,23 @@ function territoryMarkup(){
  return '<div class="tablewrap"><table class="territory"><thead><tr>'
   // «Стр.» читалось как номер строки: «почему участки идут не по порядку, 2 и
   // 5?» (владелец, 07.09.2026). Это число строений на участке — так и назван.
+  +'<th class="num" title="Тот же номер стоит на карте: У — участок, С — строение">№</th>'
   +'<th class="num">Строений</th><th>Кадастровый номер</th><th class="num">Площадь</th>'
   +'<th class="num">Кадастровая стоимость</th><th>Правообладатель по ЕГРН</th>'
   +'<th>Судьба по извещению</th></tr></thead><tbody>'+rows
-  +`</tbody><tfoot><tr><th class="num">${t.objects}</th><th>Итого: ${t.lands} участков</th>`
+  +`</tbody><tfoot><tr><th></th><th class="num">${t.objects}</th>`
+  +`<th>Итого по территории: ${t.lands} участков</th>`
   +`<th class="num">${m2(t.land_area_sqm)}`
   +`${t.lands_partly_inside?`<div class="source">в площадку входит ${m2(t.land_area_in_notice_sqm)}`
     +`${t.land_unformed_sqm?` + ${m2(t.land_unformed_sqm)} без номера = ${m2(t.site_area_sqm)}`:''}</div>`:''}`
   +`<div class="source">строений ${m2(t.objects_area_sqm)}</div></th>`
   +`<th class="num">${mln(t.land_value_rub)}<div class="source">строений ${mln(t.objects_value_rub)}</div></th>`
   +'<th colspan="2"></th></tr></tfoot></table></div>'
+  +hiddenNote(hidden)
+  +'<div class="source">Номер «У…» стоит и на карте, и в этой таблице, «С…» — у строения: '
+  +'ряды независимые, участков 20 и строений 39, поэтому и буква разная. Строение на нескольких '
+  +'участках несёт ОДИН номер и повторяется под каждым — его метры при этом в итог входят один '
+  +'раз.</div>'
   +`<div class="source">Состав территории — извещение о торгах ${escapeHtml((T.source.notice||{}).number||'')} `
   +`от ${escapeHtml((T.source.notice||{}).date||'')}; площади, права и обременения — выписки ЕГРН от `
   +`${escapeHtml((T.source.egrn_extracts||{}).formed_at||'')}. В извещении ${t.rows_in_notice} строк — `
@@ -595,6 +705,8 @@ function territoryMarkup(){
 // колонкой её приходится читать глазами по всей высоте.
 function ownersBlock(rows,extra,unions){
  const groups=(S.data.groups||[]).map(g=>g.key);
+ const all=rows;
+ rows=rows.filter(r=>shown(r.group));
  const order=[];
  groups.forEach(key=>{const inside=rows.filter(r=>r.group===key);if(inside.length)order.push([key,inside]);});
  const rest=rows.filter(r=>!groups.includes(r.group));
@@ -624,20 +736,41 @@ function ownersBlock(rows,extra,unions){
    under_land_area_sqm:unions?(((unions.by_group||{})[key]||{}).area_sqm||0):0};
   return band+lines+`<tr><td><b>Итого · ${escapeHtml(title||'')}</b></td>`+cells(total)+'</tr>';
  }).join('');
- const all={lands:sum(rows,'lands'),land_area_sqm:sum(rows,'land_area_sqm'),
-  objects:sum(rows,'objects'),objects_area_sqm:sum(rows,'objects_area_sqm'),
-  value_rub:rows.reduce((a,r)=>a+money(r),0),
+ // ВСЕГО считается по ВСЕМ строкам, а не по показанным: сумма отбора под
+ // подписью «ВСЕГО» — второе число под одним именем.
+ const total={lands:sum(all,'lands'),land_area_sqm:sum(all,'land_area_sqm'),
+  objects:sum(all,'objects'),objects_area_sqm:sum(all,'objects_area_sqm'),
+  value_rub:all.reduce((a,r)=>a+money(r),0),
   under_land_area_sqm:unions?((unions.total||{}).area_sqm||0):0};
+ const hiddenOwners=all.length-rows.length;
  return '<div class="tablewrap"><table class="territory"><thead><tr><th>Правообладатель</th>'
   +'<th class="num">Участков</th><th class="num">Земли</th><th class="num">Строений</th>'
   +'<th class="num">Их площадь</th>'
-  +(unions?'<th class="num" title="Земля ПОД строениями этого владельца. Своей она ему не '
-    +'становится, и складывать колонку нельзя: участок под строениями разных владельцев '
-    +'посчитан у каждого">Земля под их строениями · справочно</th>':'')
+  +(unions?'<th class="num" title="Земля ПОД строениями этого владельца, в границах площадки. '
+    +'Своей она ему не становится, и складывать колонку нельзя: участок под строениями разных '
+    +'владельцев посчитан у каждого">Земля под их строениями<div class="source">в границах '
+    +'площадки</div></th>':'')
   +'<th class="num">Кадастровая стоимость</th>'
   +(extra?'<th>На чём основано</th>':'')
   +'</tr></thead><tbody>'+body
-  +`<tr><td><b>ВСЕГО</b></td>${cells(all)}</tr></tbody></table></div>`;
+  +`<tr><td><b>ВСЕГО</b></td>${cells(total)}</tr></tbody></table></div>`
+  +hiddenNote(hiddenOwners?hiddenOwners+' владельцев':'');
+}
+
+// Участок, входящий в площадку частью, считается тут по ВХОДЯЩЕЙ площади, а не
+// по ЕГРН, и это называется числом: у дороги 77:05:0004001:40 разница в три
+// порядка — 43 288 м² по ЕГРН против 61 м² в площадке, — и посчитанная целиком
+// она давала владельцу её строений половину всей земли территории.
+function partsNote(unions){
+ const parts=((unions||{}).total||{}).parts||[];
+ if(!parts.length)return '';
+ const T=S.data.territory||{};
+ const named=parts.map(n=>{
+  const l=(T.lands||[]).find(x=>x.cadastral_number===n)||{};
+  return `${escapeHtml(n)} (${m2(l.area_sqm)} по ЕГРН, в площадку входит ${m2(l.notice_area_sqm)})`;
+ }).join('; ');
+ return ' Участок, входящий в площадку частью, взят ВХОДЯЩЕЙ площадью, а не полной по ЕГРН: '
+  +named+'. Иначе чужая улично-дорожная сеть целиком попадала бы в счёт владельца двух строений на ней.';
 }
 
 function ownersTableMarkup(){
@@ -649,7 +782,8 @@ function ownersTableMarkup(){
   +(under?' Справочная колонка — земля ПОД строениями: своей она владельцу не становится, и '
     +'складывать её нельзя, участок под строениями разных владельцев посчитан у каждого. Итог '
     +'группы — объединение участков, а не сумма строк; всего под строениями '
-    +`${under.total.lands} участков из ${(S.data.territory||{}).lands.length} (${m2(under.total.area_sqm)}).`:'')
+    +`${under.total.lands} участков из ${(S.data.territory||{}).lands.length} (${m2(under.total.area_sqm)}).`
+    +partsNote(under):'')
   +'</div>';
  const holdings=S.data.holdings||[];
  if(!holdings.length)return docs;
@@ -663,7 +797,8 @@ function ownersTableMarkup(){
   +'значит Москва» (решение владельца, 07.09.2026). Хозяина участка называет ЕГРН; нет записи — '
   +'единственный собственник строений на нём, а если лица разные, но группа одна — группа. '
   +'Объект на нескольких участках посчитан один раз.</div>'
-  +ownersBlock(holdings,true,S.data.holdings_under||null);
+  +ownersBlock(holdings,true,S.data.holdings_under||null)
+  +`<div class="source">${partsNote(S.data.holdings_under||null).trim()}</div>`;
 }
 
 function kindsMarkup(){
@@ -688,8 +823,29 @@ function kindsMarkup(){
   +(rest?`; ${rest} ещё не спрашивали`:'')+'.</div>';
 }
 
+// Громкое стоит выше, молчащее уезжает под складку. Расхождение в присланном
+// файле и отсутствие границы площадки — находки о данных, и место им у
+// верхних плиток; перечисление источников — «на чём посчитано», и оно внизу.
+// Слитые в один абзац, находка и справка читаются одинаково, то есть никак.
+function findingsMarkup(){
+ const d=S.data,t=d.totals,out=[];
+ if(t.area_gap_sqm)
+  out.push('<div class="notice warn"><b>Итог площади в самом файле меньше суммы его строк:</b> '
+   +`${m2(t.own_total_area_sqm)} против ${m2(t.area_sqm)}, разница ${m2(t.area_gap_sqm)}. `
+   +`Причина не в объектах: ${(t.text_cells_skipped_by_sum||[]).length} площадей `
+   +`(${escapeHtml((t.text_cells_skipped_by_sum||[]).join(', '))}) лежат в книге текстом с `
+   +'неразрывным пробелом, и <code>SUM</code> их пропускает. Кадастровая стоимость при этом '
+   +'сходится до рубля — расходится ровно одна колонка. Здесь и ниже считаем по строкам.</div>');
+ const site=d.krt_site||{};
+ if(!(site.rings_merc&&site.rings_merc.length))
+  out.push('<div class="notice warn">Границы площадки КРТ на карте нет: '
+   +`${escapeHtml(site.problem||'реестр не спрошен')}. Это наш пробел, а не отсутствие площадки `
+   +'в реестре.</div>');
+ return out.join('');
+}
+
 function sourceMarkup(){
- const d=S.data,t=d.totals,src=d.source||{},T=d.territory||{};
+ const d=S.data,src=d.source||{},T=d.territory||{};
  const notice=(T.source||{}).notice||{},ext=(T.source||{}).egrn_extracts||{};
  const bits=[`Состав территории — извещение о торгах ${escapeHtml(notice.number||'')} от `
    +`${escapeHtml(notice.date||'')}; площади, права, аренда — ${escapeHtml(String(ext.count||''))} `
@@ -697,22 +853,11 @@ function sourceMarkup(){
    +`номеру: в выписках геометрия записана в ПМСК Москвы, и переводить её нам нечем. `
    +`Присланный владельцем файл (<code>${escapeHtml(src.file||'')}</code>) остаётся рядом как `
    +`отдельный источник — ниже сказано, чем он от них отличается.`];
- // Итог самой выгрузки не сходится с её же строками — это сказано вслух, а не
- // заменено нашей суммой молча: человек смотрит в файл и видит другое число.
- if(t.area_gap_sqm)
-  bits.push(`<b>Итог площади в самом файле меньше суммы его строк:</b> ${m2(t.own_total_area_sqm)} `
-   +`против ${m2(t.area_sqm)}, разница ${m2(t.area_gap_sqm)}. Причина не в объектах: `
-   +`${(t.text_cells_skipped_by_sum||[]).length} площадей (${(t.text_cells_skipped_by_sum||[]).join(', ')}) `
-   +`лежат в книге текстом с неразрывным пробелом, и <code>SUM</code> их пропускает. `
-   +`Кадастровая стоимость при этом сходится до рубля — расходится ровно одна колонка. `
-   +`Здесь и ниже считаем по строкам.`);
  const site=d.krt_site||{};
- bits.push(site.rings_merc&&site.rings_merc.length
-  ? `Граница площадки КРТ (чёрный пунктир) — запись реестра «${escapeHtml(site.name||'')}»`
-    +`${site.area_ha?', '+landNum(site.area_ha,2)+' га по каталогу':''}: она опознана геометрией — `
-    +'её полигон накрывает эти объекты.'
-  : `Границы площадки КРТ на карте нет: ${escapeHtml(site.problem||'реестр не спрошен')}. `
-    +'Это наш пробел, а не отсутствие площадки в реестре.');
+ if(site.rings_merc&&site.rings_merc.length)
+  bits.push(`Граница площадки КРТ (чёрный пунктир) — запись реестра «${escapeHtml(site.name||'')}»`
+   +`${site.area_ha?', '+landNum(site.area_ha,2)+' га по каталогу':''}: она опознана геометрией — `
+   +'её полигон накрывает эти объекты.');
  return bits.map(b=>`<div>${b}</div>`).join('');
 }
 
@@ -749,7 +894,8 @@ function coverageMarkup(){
 }
 
 function tableMarkup(){
- const rows=S.data.parcels.map(p=>{
+ const visible=S.data.parcels.filter(p=>shown(p.group));
+ const rows=visible.map(p=>{
   const state=p.outline_state==='drawn'?'на карте'
    :p.outline_state==='empty'?escapeHtml(p.outline_reason||'контура в ЕГРН нет')
    :'ещё не спрашивали';
@@ -772,12 +918,16 @@ function tableMarkup(){
    +`<td class="source">${state}</td></tr>`;
  }).join('');
  const t=S.data.totals;
- return '<div class="tablewrap"><table><thead><tr><th class="num">№</th><th>Кадастровый номер</th>'
+ return '<div class="tablewrap"><table><thead><tr>'
+  +'<th class="num" title="Номер строки в присланном файле — не тот, что на карте">№ в файле</th>'
+  +'<th>Кадастровый номер</th>'
   +'<th class="num">Площадь</th><th class="num">Кадастровая стоимость</th><th>Правообладатель</th>'
   +'<th>Группа</th><th>Вид по ЕГРН</th><th title="Назван выпиской ЕГРН на здание">'
   +'Участок под ним</th><th>Контур</th></tr></thead><tbody>'+rows
   +`</tbody><tfoot><tr><th></th><th>Итого по строкам</th><th class="num">${m2(t.area_sqm)}</th>`
-  +`<th class="num">${mln(t.cadastral_value_rub)}</th><th colspan="5"></th></tr></tfoot></table></div>`;
+  +`<th class="num">${mln(t.cadastral_value_rub)}</th><th colspan="5"></th></tr></tfoot></table></div>`
+  +hiddenNote(S.data.parcels.length-visible.length
+    ?(S.data.parcels.length-visible.length)+' строк файла':'');
 }
 
 function ownersMarkup(){
@@ -795,6 +945,9 @@ function render(){
   +((d.site||{}).okrug||'')+' · '+((d.site||{}).district||'')
   +(site.name?' · площадка реестра: '+site.name:'');
  $('stats').innerHTML=statsMarkup();
+ $('findings').innerHTML=findingsMarkup();
+ $('filter').innerHTML=filterMarkup();
+ bindFilter();
  $('kinds').innerHTML=kindsMarkup();
  $('sourceNote').innerHTML=sourceMarkup();
  $('mapBox').innerHTML=mapMarkup();
@@ -805,13 +958,41 @@ function render(){
  $('territoryBox').innerHTML=territoryMarkup();
  $('territoryBox').querySelectorAll('tr[id^="t-"]').forEach(row=>{
   row.style.cursor='pointer';
-  row.onclick=()=>{const cad=(row.querySelector('td:nth-child(2)')?.textContent||'').trim().split(' ')[0];
+  // Колонка кадастрового номера названа своим местом: перед ней стоят номер
+  // «У…»/«С…» и число строений. Считать её второй — значит выделять по числу.
+  row.onclick=()=>{const cad=(row.querySelector('td:nth-child(3)')?.textContent||'').trim().split(' ')[0];
    if(cad)pickShape(cad)};
  });
  $('ownersTable').innerHTML=ownersTableMarkup();
  $('tableBox').innerHTML=tableMarkup();
  $('ownersBox').innerHTML=ownersMarkup();
+ // Число в заголовке складки обязательно: закрытый список без него читается
+ // как отсутствующий.
+ const shownRows=(S.data.parcels||[]).filter(p=>shown(p.group)).length;
+ const summary=$('rawSummary');
+ if(summary)summary.textContent='Строения из присланного файла — '+shownRows
+   +(shownRows===(S.data.parcels||[]).length?'':' из '+(S.data.parcels||[]).length)
+   +' строк, сырьё под нашими таблицами';
  bindMap();
+}
+
+// Отбор объявлен один раз и правит одно состояние: снятая последняя галочка
+// значит «ничего не выбрано», а не «выбрано всё» — иначе пустой экран
+// читался бы как поломка.
+function bindFilter(){
+ const keys=(S.data.groups||[]).map(g=>g.key);
+ document.querySelectorAll('#filter input[data-group]').forEach(box=>{
+  box.onchange=()=>{
+   const on=new Set();
+   document.querySelectorAll('#filter input[data-group]').forEach(x=>{
+    if(x.checked)on.add(x.dataset.group);
+   });
+   S.show=(on.size===keys.length)?null:on;
+   render();
+  };
+ });
+ const all=$('filterAll');
+ if(all)all.onclick=()=>{S.show=null;render()};
 }
 
 // Без движка со страницы исчезает не только карта: `landNum`, `escapeHtml` и

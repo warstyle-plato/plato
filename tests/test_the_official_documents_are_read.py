@@ -392,9 +392,13 @@ def test_the_land_under_the_buildings_is_a_union_and_says_so():
 
     Величина считается МНОЖЕСТВОМ участков, а не суммой строк: на участке
     Автокомбината стоят и три строения без зарегистрированного права, и он
-    посчитан у обоих. Сумма строк Брынцалова даёт 149 458,2 м² при 97 563,1
-    настоящих, а сумма по группам — 232 919 при 186 860 существующих. Проверка
-    держит именно это: итог группы МЕНЬШЕ суммы своих строк.
+    посчитан у обоих. Сумма строк группы больше её объединения, а сумма по
+    группам — больше всей земли территории. Проверка держит именно это: итог
+    группы МЕНЬШЕ суммы своих строк.
+
+    Колонка ищется по НАЧАЛУ заголовка: полное имя называет ещё и меру («в
+    границах площадки»), и правка меры роняла бы проверку на верном поведении —
+    утверждение тут про объединение, а не про оборот речи.
     """
     import openpyxl
     from io import BytesIO
@@ -412,7 +416,8 @@ def test_the_land_under_the_buildings_is_a_union_and_says_so():
         parcels.registry().get("groups") or [], under)))
     rows = list(book["Кто чем владеет"].iter_rows(values_only=True))
     head = next(row for row in rows if str(row[0] or "") == "Правообладатель")
-    column = [str(cell or "") for cell in head].index("Земля под их строениями, м² · справочно")
+    column = next(i for i, cell in enumerate(head)
+                  if str(cell or "").startswith("Земля под их строениями"))
     start = rows.index(head)
     inside, subtotal = [], None
     for row in rows[start + 2:]:
@@ -429,7 +434,7 @@ def test_the_land_under_the_buildings_is_a_union_and_says_so():
     # Та же колонка есть и во второй таблице: «вторая таблица так же столбец
     # такой должна иметь» (владелец, 07.09.2026).
     lower = [row for row in rows if str(row[0] or "") == "Правообладатель"][1]
-    assert "Земля под их строениями, м² · справочно" in [str(cell or "") for cell in lower]
+    assert any(str(cell or "").startswith("Земля под их строениями") for cell in lower)
 
 
 def test_the_column_adds_up_to_the_total_line():

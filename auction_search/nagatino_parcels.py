@@ -740,6 +740,38 @@ def territory() -> dict[str, Any]:
                               "вероятно, строение его же")
     lands.sort(key=lambda item: -(item.get("area_sqm") or item.get("notice_area_sqm") or 0))
     objects = list(objects_by_cad.values())
+    # Номер участка и номер строения — чтобы связать карту с таблицей глазами
+    # («прономеруй от 1 до 20 все участки и здания от 1 до 39 на карте и в
+    # таблице, чтобы можно было привязью визуализировать», владелец,
+    # 07.09.2026). Считаются ЗДЕСЬ, а не на странице: у одного объекта один
+    # номер на карте, в таблице, в подсказке и в книге, а второй счёт дал бы
+    # свою нумерацию каждой поверхности. Ряды независимые: участок и строение —
+    # разные вещи, и общий счётчик читался бы как один список из 59 штук.
+    #
+    # Порядок — тот, в котором строки уже стоят: участки по убыванию площади,
+    # строения по составу извещения. Номер не свойство объекта, а место в
+    # ЭТОМ списке, поэтому и присваивается после сортировки.
+    for index, land in enumerate(lands, start=1):
+        land["no"] = index
+    # Строения нумеруются обходом участков в их порядке: у одного участка номера
+    # идут подряд, и на карте соседние здания подписаны соседними числами.
+    # Объект на нескольких участках получает номер у первого — считается он один
+    # раз, как и его метры.
+    order: list[str] = []
+    for land in lands:
+        for item in land["objects"]:
+            if item["cadastral_number"] not in order:
+                order.append(item["cadastral_number"])
+    for item in objects:
+        if item["cadastral_number"] not in order:
+            order.append(item["cadastral_number"])
+    numbered = {number: index for index, number in enumerate(order, start=1)}
+    for item in objects:
+        item["no"] = numbered.get(item["cadastral_number"])
+    objects.sort(key=lambda item: item["no"] or 0)
+    for land in lands:
+        for item in land["objects"]:
+            item["no"] = numbered.get(item["cadastral_number"])
     return {
         "lands": lands,
         "objects": objects,
@@ -836,6 +868,27 @@ def owners_summary(view: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     return rows
 
 
+def _land_area_in_site(land: dict[str, Any]) -> float:
+    """Площадь участка В ГРАНИЦАХ ПЛОЩАДКИ, а не по ЕГРН.
+
+    «Если этот участок с 40 на конце не Брынцалова, значит под его зданиями не
+    половина всех площадей» (владелец, 07.09.2026). Он прав, и разница тут в
+    три порядка: дорога 77:05:0004001:40 — 43 288,13 м² по ЕГРН, а в площадку
+    входит 61 м², ровно там, где на неё заходят два сносимых строения. Пока
+    справочная земля считалась площадью участка ЦЕЛИКОМ, у Брынцалова выходило
+    97 563 м² — 52% всей земли территории, — из которых 43 288 это чужая
+    улично-дорожная сеть, в площадке не участвующая. По площади, входящей в
+    площадку, у него 54 336 м², то есть 29%.
+
+    Правило объявлено один раз и служит обеим таблицам: два ответа на «сколько
+    земли под его строениями» разошлись бы молча, и оба выглядели бы верными.
+    Участок, входящий целиком, отвечает своей площадью — вопрос к нему тот же.
+    """
+    if land.get("part") and land.get("notice_area_sqm") is not None:
+        return float(land["notice_area_sqm"])
+    return float(land.get("area_sqm") or 0)
+
+
 def land_under_buildings(view: dict[str, Any] | None = None) -> dict[str, Any]:
     """Справочно: на какой земле стоят строения владельца и всей группы.
 
@@ -869,9 +922,14 @@ def land_under_buildings(view: dict[str, Any] | None = None) -> dict[str, Any]:
         everything |= numbers
 
     def measure(numbers: set[str]) -> dict[str, Any]:
+        inside = [lands[number] for number in sorted(numbers) if number in lands]
         return {"lands": len(numbers),
-                "area_sqm": round(sum(float(lands[number].get("area_sqm") or 0)
-                                      for number in numbers), 1)}
+                "area_sqm": round(sum(_land_area_in_site(land) for land in inside), 1),
+                # Площадь по ЕГРН стоит рядом, а не вместо: оба числа верны и
+                # отвечают на разные вопросы, и выбрать одно молча нельзя.
+                "egrn_area_sqm": round(sum(float(land.get("area_sqm") or 0)
+                                           for land in inside), 1),
+                "parts": [land["cadastral_number"] for land in inside if land.get("part")]}
 
     return {"by_owner": {key: measure(value) for key, value in by_owner.items()},
             "by_group": {key: measure(value) for key, value in by_group.items()},
@@ -991,8 +1049,12 @@ def land_holdings(view: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         numbers = row.pop("under_numbers")
         row["under_numbers"] = sorted(numbers)
         row["under_lands"] = len(numbers)
+        # По той же мере, что и верхняя таблица: площадь, входящая в площадку.
         row["under_land_area_sqm"] = round(
+            sum(_land_area_in_site(lands[number]) for number in numbers), 1)
+        row["under_egrn_area_sqm"] = round(
             sum(float(lands[number].get("area_sqm") or 0) for number in numbers), 1)
+        row["under_parts"] = [number for number in sorted(numbers) if lands[number].get("part")]
     out.sort(key=lambda row: -(row["land_area_sqm"] + row["objects_area_sqm"]))
     return out
 
@@ -1016,9 +1078,12 @@ def holdings_under(view: dict[str, Any] | None = None,
         everything |= numbers
 
     def measure(numbers: set[str]) -> dict[str, Any]:
+        inside = [lands[number] for number in sorted(numbers) if number in lands]
         return {"lands": len(numbers),
-                "area_sqm": round(sum(float((lands.get(number) or {}).get("area_sqm") or 0)
-                                      for number in numbers), 1)}
+                "area_sqm": round(sum(_land_area_in_site(land) for land in inside), 1),
+                "egrn_area_sqm": round(sum(float(land.get("area_sqm") or 0)
+                                           for land in inside), 1),
+                "parts": [land["cadastral_number"] for land in inside if land.get("part")]}
 
     return {"by_group": {key: measure(value) for key, value in by_group.items()},
             "total": measure(everything)}

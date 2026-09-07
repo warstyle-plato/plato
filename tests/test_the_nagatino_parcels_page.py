@@ -791,3 +791,160 @@ def test_in_a_real_browser_the_parcels_are_drawn_and_the_owner_pops_up(monkeypat
     finally:
         server.should_exit = True
         thread.join(timeout=10)
+
+
+def test_the_land_under_the_buildings_is_measured_inside_the_site():
+    """Справочная земля считается ВХОДЯЩЕЙ в площадку площадью, а не по ЕГРН.
+
+    «Если этот участок с 40 на конце не Брынцалова, значит под его зданиями не
+    половина всех площадей» (владелец, 07.09.2026). Дорога 77:05:0004001:40 —
+    43 288,13 м² по ЕГРН, а в площадку входит 61 м²: два сносимых строения
+    заходят на неё углом. Пока колонка брала площадь участка ЦЕЛИКОМ, у
+    владельца этих двух строений выходило 97 563 м² — больше половины всей
+    земли территории, — из которых 43 288 это чужая улично-дорожная сеть.
+
+    Проверка держит утверждение, а не число: под строениями группы не может
+    быть больше земли, чем её входит в площадку, и у участка, взятого частью,
+    в счёт идёт именно входящая часть.
+    """
+    view = parcels.territory()
+    lands = {land["cadastral_number"]: land for land in view["lands"]}
+    road = lands["77:05:0004001:40"]
+    assert road["part"] and road["notice_area_sqm"] < road["area_sqm"] / 100, (
+        "предохранитель: участок, ради которого написана проверка, перестал "
+        "входить в площадку частью — тогда проверять нечего")
+
+    under = parcels.land_under_buildings(view)
+    group = under["by_group"]["bryntsalov"]
+    assert "77:05:0004001:40" in group["parts"], group["parts"]
+    # Взятая целиком, дорога дала бы разницу в три порядка — и именно её.
+    assert round(group["egrn_area_sqm"] - group["area_sqm"], 1) == round(
+        road["area_sqm"] - road["notice_area_sqm"], 1)
+    inside = sum(parcels._land_area_in_site(land) for land in view["lands"])
+    assert group["area_sqm"] < inside, "под строениями одной группы земли больше, чем в площадке"
+    assert under["total"]["area_sqm"] <= inside
+
+    # Та же мера у второй таблицы: два ответа на один вопрос разошлись бы молча.
+    rows = parcels.land_holdings(view)
+    for row in rows:
+        assert row["under_land_area_sqm"] <= row["under_egrn_area_sqm"]
+    holdings = parcels.holdings_under(view, rows)
+    assert holdings["total"]["area_sqm"] <= inside
+
+
+def test_every_parcel_and_building_carries_a_number_shared_by_map_and_table():
+    """Номер считает сервер: один объект — один номер на всех поверхностях.
+
+    «Прономеруй от 1 до 20 все участки и здания от 1 до 39 на карте и в
+    таблице, чтобы можно было привязью визуализировать» (владелец,
+    07.09.2026). Своя нумерация на карте разошлась бы с табличной молча.
+    """
+    view = parcels.territory()
+    assert [land["no"] for land in view["lands"]] == list(range(1, len(view["lands"]) + 1))
+    assert sorted(item["no"] for item in view["objects"]) == list(
+        range(1, len(view["objects"]) + 1))
+
+    # Строение на нескольких участках несёт ОДИН номер и повторяется под каждым.
+    numbered: dict[str, set] = {}
+    for land in view["lands"]:
+        for item in land["objects"]:
+            numbered.setdefault(item["cadastral_number"], set()).add(item["no"])
+    assert all(len(seen) == 1 for seen in numbered.values()), {
+        number: seen for number, seen in numbered.items() if len(seen) > 1}
+    shared = [number for number in numbered
+              if sum(1 for land in view["lands"]
+                     for item in land["objects"]
+                     if item["cadastral_number"] == number) > 1]
+    assert shared, ("предохранитель: ни одно строение не стоит на нескольких участках — "
+                    "проверять единственность номера не на чем")
+
+    # Номера объявлены в движке, а страница их печатает: своих счётчиков нет.
+    page = nagatino_ui.NAGATINO_PAGE
+    assert "'У'+l.no" in page and "'С'+p.no" in page
+
+
+@pytest.mark.timeout(180)
+def test_in_a_real_browser_the_filter_hides_rows_and_the_numbers_stand_on_the_map(monkeypatch):
+    """Один экран: отбор правит карту и таблицы разом, номера связывают их.
+
+    «Мне надо один управленческий экран» (владелец, 07.09.2026). Проверять это
+    строкой нельзя: и отбор, и подписи-номера есть в исходнике у сломанной
+    страницы так же, как у рабочей, — считать надо нарисованное.
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception:  # noqa: BLE001
+        pytest.skip("playwright недоступен")
+    chrome = Path("/opt/pw-browsers/chromium-1194/chrome-linux/chrome")
+    if not chrome.exists():
+        pytest.skip("chromium в образе не найден")
+    import uvicorn
+
+    monkeypatch.setenv("NAGATINO_EGRN_READ", "0")
+    # Строение города и строение Брынцалова: отбор обязан оставить одно.
+    city = [[[4187100, 7495100], [4187400, 7495100], [4187400, 7495400], [4187100, 7495400]]]
+    theirs = [[[4187500, 7495500], [4187800, 7495500], [4187800, 7495800], [4187500, 7495800]]]
+    land = [[[4187000, 7495000], [4187900, 7495000], [4187900, 7495900], [4187000, 7495900]]]
+    _seed({"77:05:0004001:1001": {"asked_at": time.time(), "rings": city, "reason": ""},
+           "77:05:0004001:1038": {"asked_at": time.time(), "rings": theirs, "reason": ""},
+           "77:05:0004001:1998": {"asked_at": time.time(), "rings": land, "reason": ""}})
+
+    server = uvicorn.Server(uvicorn.Config(_app(), host="127.0.0.1", port=PORT + 2,
+                                           log_level="error"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    for _ in range(200):
+        if server.started:
+            break
+        time.sleep(0.05)
+    assert server.started
+    read = """() => ({
+      shapes: document.querySelectorAll('#mapFrame path.parcel').length,
+      lands: document.querySelectorAll('#mapFrame path.land').length,
+      marks: [...document.querySelectorAll('#mapFrame svg text')].map(n => n.textContent),
+      rows: document.querySelectorAll('#territoryBox tbody tr').length,
+      ownerRows: document.querySelectorAll('#ownersTable tbody tr').length,
+      total: document.querySelector('#territoryBox tfoot')?.textContent || '',
+      hidden: document.getElementById('territoryBox').textContent.includes('Отбор скрыл'),
+      boxes: document.querySelectorAll('#filter input[data-group]').length,
+    })"""
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(executable_path=str(chrome))
+            page = browser.new_page()
+            errors: list[str] = []
+            page.on("pageerror", lambda exc: errors.append(str(exc)))
+            page.goto(f"http://127.0.0.1:{PORT + 2}/krt/nagatino",
+                      wait_until="domcontentloaded")
+            page.wait_for_selector("path.parcel", timeout=20000)
+            whole = page.evaluate(read)
+
+            # Номера стоят на КАЖДОЙ нарисованной фигуре и различают ряды.
+            assert not errors, errors
+            assert len(whole["marks"]) == whole["shapes"] + whole["lands"], whole["marks"]
+            assert any(m.startswith("У") for m in whole["marks"])
+            assert any(m.startswith("С") for m in whole["marks"])
+            assert whole["boxes"] >= 2, "строки отбора нет"
+            assert not whole["hidden"], "отбор не тронут, а страница говорит о скрытом"
+
+            page.uncheck("#filter input[data-group='moscow']")
+            page.wait_for_timeout(400)
+            cut = page.evaluate(read)
+            assert not errors, errors
+            assert cut["shapes"] < whole["shapes"], "отбор не убрал строения с карты"
+            assert cut["rows"] < whole["rows"], "отбор не тронул таблицу состава"
+            assert cut["ownerRows"] < whole["ownerRows"], "отбор не тронул свод владельцев"
+            assert cut["hidden"], "скрытое не названо под таблицей"
+            # Итог остаётся по целому: сумма отбора под подписью «Итого» была бы
+            # вторым числом под одним именем.
+            assert cut["total"] == whole["total"], "итоговая строка поехала за отбором"
+            assert len(cut["marks"]) == cut["shapes"] + cut["lands"]
+
+            page.click("#filterAll")
+            page.wait_for_timeout(400)
+            back = page.evaluate(read)
+            assert back["shapes"] == whole["shapes"] and not back["hidden"]
+            browser.close()
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)
