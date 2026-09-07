@@ -206,6 +206,13 @@ th,td{text-align:left;padding:7px 9px;border-bottom:1px solid var(--line);white-
 th{color:var(--dim);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.03em}
 td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}tr.sumrow td{border-top:2px solid var(--line);background:#f7f9fb}
 .wrap{overflow-x:auto}
+/* Первая колонка широкой таблицы прибита к краю. Окно прокручено вправо —
+   и имя строки уезжает за край: на телефоне читалось «ОМНАТНОСТЬ», «тудии»,
+   «-комнатные», то есть числа стояли без того, к чему они относятся. */
+.wrap table.peers th:first-child,.wrap table.peers td:first-child{position:sticky;left:0;z-index:1;
+background:#fff;box-shadow:1px 0 0 var(--line)}
+.wrap table.peers tr.ownrow td:first-child{background:#fff5ee}
+.wrap table.peers tr.sumrow td:first-child{background:#f7f9fb}
 .note{background:#fff8f0;border-left:3px solid var(--rust);padding:8px 12px;font-size:13px;margin:8px 0;
 color:#5a3a1c;border-radius:0 6px 6px 0}
 .err{background:#fdecea;border-left:3px solid #B3261E;padding:10px 12px;border-radius:0 6px 6px 0;color:#7a1d16}
@@ -1664,55 +1671,62 @@ function roomsWindowNote(b){
 }
 
 function roomsTrend(b){
-  const s=b.subject||{}, series=s.rooms_series||[];
-  if(series.length<2){
-    const gap=s.rooms_series_gap;
-    return gap?`<h3>Как доля менялась по месяцам</h3>`
+  const s=b.subject||{}, points=s.rooms_trend||[];
+  if(points.length<2){
+    const gap=s.rooms_trend_gap;
+    return gap?`<h3>Как менялся состав спроса</h3>`
       +`<div class="muted" style="font-size:12.5px">${esc(gap)}</div>`:'';
   }
-  // Ось — календарь, а не список точек: месяцев без продаж в ряду нет вовсе,
-  // и поставь их встык — февраль окажется рядом с августом, а расстояние между
-  // ними прочитается как один шаг.
-  const step=m=>{const [y,n]=m.split('-').map(Number);
-    return n===12?`${y+1}-01`:`${y}-${String(n+1).padStart(2,'0')}`;};
-  const months=[]; for(let m=series[0].month; ; m=step(m)){ months.push(m);
-    if(m===series[series.length-1].month||months.length>120) break; }
-  const at={}; series.forEach(p=>{at[p.month]=p.shares||{}});
-  const names=[...new Set(series.flatMap(p=>Object.keys(p.shares||{})))];
+  // Состав спроса — это доли, дающие в сумме сто процентов, и рисуется он
+  // колонкой на сто процентов, а не пятью пересекающимися линиями: у линий
+  // читатель складывает состав в уме, а вымывание видно как рост своего
+  // куска. Шаг — квартал: помесячно у одного ЖК десяток сделок, и доля
+  // пляшет сильнее, чем меняется спрос.
+  //
+  // Числа не считаются здесь: доли и число сделок приходят с сервера. Второй
+  // счёт той же величины однажды разошёлся бы с полосами выше.
+  const names=[...new Set(points.flatMap(p=>Object.keys(p.shares||{})))];
   const title=k=>((s.rooms||{})[k]||{}).title||k;
   const colours=['#C4581B','#2f6f8f','#7a9a3b','#8e5aa8','#b8912f','#4a5a6b','#a8465a'];
-  const W=620,L=44,R=150,T=14,B=28,H=250;
-  const x=i=>L+i*(W-L-R)/Math.max(months.length-1,1);
+  const W=620,L=44,R=150,T=14,B=34,H=250;
+  const band=(W-L-R)/points.length, w=Math.min(band*0.62,64);
   const y=v=>T+(H-T-B)*(1-v/100);
+  const short=m=>{const [yy,mm]=String(m).split('-'); return mm+'.'+yy.slice(2)};
   let svg=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img">`;
   [0,25,50,75,100].forEach(v=>{
     svg+=`<line x1="${L}" y1="${y(v)}" x2="${W-R}" y2="${y(v)}" stroke="#e6ecf2"/>`
        +`<text x="${L-6}" y="${y(v)+4}" text-anchor="end" font-size="10" fill="#8798a8">${v} %</text>`;});
-  const tick=Math.ceil(months.length/6);
-  months.forEach((m,i)=>{ if(i%tick) return;
-    svg+=`<text x="${x(i)}" y="${H-9}" text-anchor="middle" font-size="10" fill="#8798a8">${m.slice(2)}</text>`;});
-  names.forEach((k,n)=>{
-    const colour=colours[n%colours.length];
-    // Линия рвётся на месяце без продаж: протянутая через него, она показала бы
-    // состав спроса там, где спроса не было вовсе.
-    let d='', open=false;
-    months.forEach((m,i)=>{
-      const v=(at[m]||{})[k];
-      if(v===null||v===undefined){ open=false; return }
-      d+=(open?'L':'M')+x(i).toFixed(1)+' '+y(v).toFixed(1)+' '; open=true;
-      svg+=`<circle cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="2.4" fill="${colour}"`
-         +` data-tip="${esc(title(k)+' · '+m+': '+num(v,1)+' %')}"></circle>`;
+  points.forEach((p,i)=>{
+    const cx=L+band*(i+0.5), x0=cx-w/2;
+    let acc=0;
+    names.forEach((k,n)=>{
+      const v=(p.shares||{})[k];
+      if(v===null||v===undefined) return;
+      const top=y(acc+v), bottom=y(acc);
+      svg+=`<rect x="${x0.toFixed(1)}" y="${top.toFixed(1)}" width="${w.toFixed(1)}"`
+         +` height="${Math.max(bottom-top,0).toFixed(1)}" fill="${colours[n%colours.length]}"`
+         +` data-tip="${esc(title(k)+' · '+short(p.from)+'–'+short(p.to)+': '+num(v,1)+' %')}"></rect>`;
+      acc+=v;
     });
-    if(d) svg+=`<path d="${d.trim()}" fill="none" stroke="${colour}" stroke-width="1.8"/>`;
-    svg+=`<rect x="${W-R+8}" y="${T+n*16}" width="9" height="9" fill="${colour}"/>`
+    // Сколько сделок в точке — часть ответа: доля на пяти сделках и доля на
+    // пятидесяти на картинке неразличимы.
+    svg+=`<text x="${cx.toFixed(1)}" y="${H-20}" text-anchor="middle" font-size="10" fill="#8798a8">`
+       +`${esc(short(p.from)+'–'+short(p.to))}</text>`
+       +`<text x="${cx.toFixed(1)}" y="${H-8}" text-anchor="middle" font-size="9.5" fill="#8798a8">`
+       +`${num(p.deals)} сд.</text>`;
+  });
+  names.forEach((k,n)=>{
+    svg+=`<rect x="${W-R+8}" y="${T+n*16}" width="9" height="9" fill="${colours[n%colours.length]}"/>`
        +`<text x="${W-R+21}" y="${T+n*16+8}" font-size="10.5" fill="#5b6b7d">${esc(title(k))}</text>`;
   });
   svg+='</svg>';
-  const quiet=months.length-series.length;
-  return '<h3>Как доля менялась по месяцам</h3><div class="wrap">'+svg+'</div>'
-    +'<div class="muted" style="font-size:12.5px;margin-top:4px">Доля каждой комнатности'
-    +' в продажах месяца.'+(quiet>0?` Месяцев без продаж: ${quiet} — там линия рвётся,`
-      +' а не идёт нулём.':'')+'</div>';
+  const thin=s.rooms_trend_thin;
+  return '<h3>Как менялся состав спроса</h3><div class="wrap">'+svg+'</div>'
+    +'<div class="muted" style="font-size:12.5px;margin-top:4px">Колонка — состав продаж'
+    +' квартала, все сто процентов. Шаг квартальный: в месяце у проекта обычно'
+    +' около десятка сделок, и там одна сделка двигает долю на десяток процентов.'
+    +(thin?` Кварталов, где сделок меньше десяти: ${thin} — доля в них случайна.`:'')
+    +'</div>';
 }
 
 function roomsTable(b){
@@ -1939,6 +1953,16 @@ function reportDigest(d){
   const extra=[];
   if(mixRows.length) extra.push({name:'доли по комнатности',
     text:'Комнатность: '+mixRows.join('; ')+'.'});
+  // Динамика уезжает числами по той же причине: наш вывод называет ОДИН
+  // сдвиг, а «что менялось у нас» — это вся таблица кварталов, и без неё
+  // Платону нечем ответить на вопрос о ней.
+  const trend=(block('rooms').subject||{}).rooms_trend||[];
+  if(trend.length>1){
+    const title=k=>(rooms[k]||{}).title||k;
+    extra.push({name:'динамика состава спроса', text:'Состав продаж по кварталам: '
+      +trend.map(p=>`${p.from}–${p.to} (${num(p.deals)} сд.): `
+        +Object.keys(p.shares||{}).map(k=>`${title(k)} ${share(p.shares[k])}`).join(', ')).join('; ')+'.'});
+  }
   const gapNote=(block('rooms').subject||{}).rooms_sold_gap;
   if(gapNote) lines.push('Оговорка по комнатности: '+gapNote+'.');  // оговорка обязательна
   const mix=(block('rooms').subject||{}).mix||{};

@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import math
 import statistics
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -375,36 +376,110 @@ def _room_window(row: dict[str, Any], span: int = ROOM_WINDOW_MONTHS) -> dict[st
     return {"sold": sold, "from": months[start], "to": months[-1], "months": span}
 
 
-def _room_series(row: dict[str, Any]) -> list[dict[str, Any]]:
-    """Как доля в проданном менялась по месяцам.
+# Помесячная доля рисует шум как сигнал. Замер по августовской книге (365
+# проектов с рядом): активных месяцев из двенадцати медианно семь, в 40 %
+# активных месяцев меньше десяти сделок — там одна сделка двигает долю на
+# десяток процентов, — а месячный скачок ведущей доли медианно 21,7 п.п. при
+# девяностом процентиле в 60. Квартал даёт 36 сделок в точке медианно и скачок
+# 17,7 п.п.: разброс падает вдвое, и остаток от него — не шум выборки, а
+# настоящая смена того, что вывели в продажу.
+ROOM_TREND_STEP = 3
 
-    Месяц без продаж выбрасывается, а не рисуется нулями: пропуск в ряду — не
-    ноль, и линия, протянутая через него, показала бы состав спроса там, где
-    спроса не было вовсе.
+# Ниже этого точку рисуем, но называем малой: доля на пяти сделках выглядит на
+# картинке ровно так же, как доля на пятидесяти.
+ROOM_TREND_MIN_DEALS = 10
+
+
+def _room_trend(
+    row: dict[str, Any],
+    span: int = ROOM_WINDOW_MONTHS,
+    step: int = ROOM_TREND_STEP,
+) -> list[dict[str, Any]]:
+    """Как менялся состав спроса — по кварталам окна.
+
+    Квартал, а не месяц: помесячно у одного ЖК десяток сделок, и доля пляшет
+    сильнее, чем меняется спрос (замер выше). Пустой квартал выбрасывается, а
+    не рисуется нулями: пропуск в ряду — не ноль, и колонка нулевой высоты
+    показала бы состав спроса там, где спроса не было вовсе.
+
+    Сколько сделок в точке — часть ответа: доля на пяти сделках и доля на
+    пятидесяти на картинке неразличимы.
     """
     line = row.get("rooms_sold") or {}
     months = row.get("rooms_months") or []
     if not line or not months:
         return []
+    span = min(span, len(months))
+    start = len(months) - span
     out: list[dict[str, Any]] = []
-    for index, month in enumerate(months):
-        point = {
-            name: float(values[index])
-            for name, values in line.items()
-            if index < len(values) and values[index]
-        }
-        total = sum(point.values())
-        if not total:
+    for left in range(start, len(months), step):
+        right = min(left + step, len(months))
+        point: dict[str, float] = {}
+        for name, values in line.items():
+            total = sum(
+                float(values[index])
+                for index in range(left, min(right, len(values)))
+                if values[index]
+            )
+            if total:
+                point[name] = total
+        deals = sum(point.values())
+        if not deals:
             continue
         out.append({
-            "month": month,
-            "sold": round(total, 1),
+            "from": months[left],
+            "to": months[right - 1],
+            "deals": round(deals, 1),
             "shares": {
-                name: round(value / total * 100, 1)
+                name: round(value / deals * 100, 1)
                 for name, value in sorted(point.items())
             },
         })
     return out
+
+
+def _room_shift(points: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Что сдвинулось между первой и последней точкой — если сдвиг читается.
+
+    Читается он не «на глаз»: доля, снятая с горстки сделок, гуляет сама по
+    себе, и порог берётся из числа сделок обеих точек — удвоенная ошибка
+    разности двух долей. Сдвиг ниже порога не называется вовсе: названный, он
+    выглядел бы измеренным ровно так же, как настоящий.
+    """
+    if len(points) < 2:
+        return None
+    first, last = points[0], points[-1]
+    n_first, n_last = float(first["deals"]), float(last["deals"])
+    if n_first <= 0 or n_last <= 0:
+        return None
+    # Порядок обхода задан: у двух комнатностей сдвиги равны по величине и
+    # противоположны по знаку, и множество отдавало победителя по-разному от
+    # запуска к запуску — один проект получал две разные фразы, и обе выглядели
+    # бы верными. При равенстве называется выросшая: «берут больше того-то»
+    # отвечает на вопрос раздела, «берут меньше того-то» — его зеркало.
+    best: dict[str, Any] | None = None
+    for name in sorted(set(first["shares"]) | set(last["shares"])):
+        was = float(first["shares"].get(name) or 0)
+        now = float(last["shares"].get(name) or 0)
+        delta = now - was
+        error = math.sqrt(
+            was / 100 * (1 - was / 100) / n_first + now / 100 * (1 - now / 100) / n_last
+        ) * 100
+        if abs(delta) <= 2 * error:
+            continue
+        better = best is None or (abs(delta), delta) > (abs(best["delta_pp"]), best["delta_pp"])
+        if better:
+            best = {
+                "name": name,
+                "was_pct": round(was, 1),
+                "now_pct": round(now, 1),
+                "delta_pp": round(delta, 1),
+                "deals_was": round(n_first, 1),
+                "deals_now": round(n_last, 1),
+                "from": first["from"],
+                "to": last["to"],
+            }
+    return best
 
 
 def _room_mix_from_series(row: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
@@ -578,16 +653,23 @@ def rooms_block(
             }
             if rem_at:
                 block.subject["rooms_rem_at"] = rem_at
-            series = _room_series(subject)
-            if len(series) > 1:
-                block.subject["rooms_series"] = series
+            trend = _room_trend(subject)
+            if len(trend) > 1:
+                block.subject["rooms_trend"] = trend
+                block.subject["rooms_trend_step"] = ROOM_TREND_STEP
+                shift = _room_shift(trend)
+                if shift:
+                    block.subject["rooms_shift"] = shift
+                thin = [point for point in trend if point["deals"] < ROOM_TREND_MIN_DEALS]
+                if thin:
+                    block.subject["rooms_trend_thin"] = len(thin)
             else:
-                block.subject["rooms_series_gap"] = (
-                    "Продажи по комнатности были только в одном месяце — "
-                    "динамику доли строить не из чего"
+                block.subject["rooms_trend_gap"] = (
+                    "Продажи по комнатности уложились в один квартал — "
+                    "сравнивать состав спроса не с чем"
                 )
         else:
-            block.subject["rooms_series_gap"] = (
+            block.subject["rooms_trend_gap"] = (
                 "Помесячной комнатности в справочнике нет: он собран прежним "
                 "импортом. Перезалейте книгу «Пульса» — тогда появится и "
                 "динамика доли, и её счёт за год"

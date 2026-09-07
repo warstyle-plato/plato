@@ -272,6 +272,26 @@ def rooms_note(block: dict[str, Any]) -> dict[str, Any]:
                 f"{_num(worst[1]['rem_share_pct'], 1)} % остатка при "
                 f"{_num(worst[1]['sold_share_pct'], 1)} % продаж."
             )
+    # Что сдвинулось за год. Сдвиг приходит посчитанным и уже отсеянным по
+    # числу сделок: доля, снятая с горстки, гуляет сама по себе, и названный
+    # без порога сдвиг выглядел бы измеренным ровно так же, как настоящий.
+    # Молчание тут — тоже ответ, и оно называется: пустое место под колонками
+    # читается как «сказать нечего», а не как «состав спроса не менялся».
+    shift = subject.get("rooms_shift") or {}
+    trend = subject.get("rooms_trend") or []
+    if shift:
+        title = (rooms.get(shift["name"]) or {}).get("title") or shift["name"]
+        lines.append(
+            f"За год состав спроса сместился: {title} — "
+            f"{_num(shift['was_pct'], 1)} % продаж в начале окна против "
+            f"{_num(shift['now_pct'], 1)} % в конце "
+            f"({_num(shift['deals_was'])} и {_num(shift['deals_now'])} сделок)."
+        )
+    elif len(trend) > 1:
+        lines.append(
+            "Состав спроса за год не сдвинулся: разница между кварталами меньше "
+            "того разброса, который дают сами сделки."
+        )
     mix = subject.get("mix") or {}
     tone = TONE_FLAT
     if mix:

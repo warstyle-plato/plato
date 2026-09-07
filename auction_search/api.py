@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import io
 import logging
 import os
 import re
 import sys
 import threading
 import time
-import io
+import urllib.parse
 from typing import Any
 from urllib.parse import urlparse
 
@@ -61,6 +62,8 @@ from auction_search.models import LotKind
 from auction_search.preset_mapper import build_project_preset
 from auction_search.profile_fit import profile_fit
 from auction_search.service import AuctionSearchService
+from auction_search import nagatino_parcels
+from auction_search.nagatino_ui import nagatino_page
 from auction_search.ui import auctions_page
 from market_search.krt_registry import CATALOGUE_URL, KrtRegistry
 from market_search import krt_decision_tep
@@ -1550,6 +1553,185 @@ def install(app: FastAPI) -> None:
         if not callable(reader):
             return {"links": {}}
         return {"links": await run_in_threadpool(lambda: reader(""))}
+
+    # --- служебная страница: участки КРТ Нагатино и их правообладатели -------
+    # Владелец, 07.09.2026: «отдельная страничка на карте Москвы по КРТ
+    # Нагатино», следом — «можно просто не включать в публичную часть кабинета,
+    # для служебных нужд сейчас». Поэтому оба маршрута скрыты из схемы, из
+    # публичной части кабинета на них ссылки нет, а числа за ними — владельцу
+    # сервиса: в выгрузке живые компании с ИНН и кадастровой стоимостью.
+
+    def _nagatino_gate(request: Request, session: str, key: str, share: str) -> None:
+        """Кто вправе видеть числа: владелец, кабинет рынка либо ссылка.
+
+        Ключей у сервиса ДВА, и они разные. `DEVELOPAID_ADMIN_KEY` — владелец
+        сервиса, едет параметром `key`. `MARKET_CABINET_KEY` — кабинет рынка,
+        живёт кукой `market_cabinet` и заголовком `X-Market-Key`, в
+        `localStorage` его нет вовсе. Человек с настоящим ключом кабинета
+        («ключ наш plato-rynok-2026») получал «только для владельца сервиса», и
+        отказ не называл, какого именно ключа не хватило: на экране два
+        рабочих ключа неразличимы. Кабинет закрывает лицензионные данные того
+        же класса и открыт той же команде — пускаем и по нему.
+
+        Ссылка бессрочная и открытая — решение владельца (07.09.2026), тот же
+        механизм, что у «Поделиться» проектом: код случайный и длинный, адрес
+        открывает любой, кто его получил, рядом всегда кнопка отзыва. Второго
+        механизма на один вопрос не заводим.
+
+        Код сверяется постоянным по времени сравнением: обычное `==` на
+        коротком коде выдаёт длину совпавшего начала, и подбор становится
+        линейным вместо переборного.
+        """
+        import hmac
+
+        code = nagatino_parcels.share_code()
+        if code and share and hmac.compare_digest(str(share), code):
+            return
+        if market_cabinet.authorised(request):
+            return
+        if core is not None and hasattr(core, "_require_admin"):
+            # Выгрузка называет живые компании с ИНН и кадастровой стоимостью:
+            # это не витрина. Механизм честно выключен там, где владельца
+            # опознать нечем, — иначе на машине без настроек страница пропала
+            # бы у всех, включая самого владельца.
+            core._require_admin(session, key, "Участки КРТ Нагатино")
+
+    @app.get("/krt/nagatino/share", include_in_schema=False)
+    async def nagatino_share(session: str = "", key: str = "",
+                             revoke: str = "") -> dict[str, Any]:
+        """Выдать или отозвать ссылку. Только владельцу — делится он.
+
+        Выданная ссылка не перевыдаётся: у человека на руках адрес, и молча
+        сменить его значило бы сломать чужую вкладку, ничего об этом не сказав.
+        """
+        if core is not None and hasattr(core, "_require_admin"):
+            core._require_admin(session, key, "Участки КРТ Нагатино")
+        # Признак читается строкой, а не `bool`. Браузер шлёт пустой параметр
+        # как `revoke=`, и разбор в `bool` отвечал 422 — то есть кнопка
+        # «Поделиться» не работала НИ РАЗУ, даже у владельца: «я жму
+        # поделиться, но ничего не происходит» (владелец, 07.09.2026). Пустое
+        # значение — это «не отзывать», а не негодный ввод.
+        if str(revoke).strip().lower() in ("1", "true", "yes", "on"):
+            await run_in_threadpool(nagatino_parcels.revoke_share_code)
+            return {"code": "", "revoked": True}
+        code = await run_in_threadpool(nagatino_parcels.issue_share_code)
+        return {"code": code, "revoked": False}
+
+    @app.get("/krt/nagatino", response_class=HTMLResponse, include_in_schema=False)
+    async def nagatino_parcels_home() -> HTMLResponse:
+        """Оболочка страницы. Проверки здесь нет по той же причине, что у
+        монитора: числа приходят отдельным маршрутом, и он спрашивает
+        владельца, — запирать ещё и оболочку значило бы дублировать проверку,
+        которая уже стоит на данных."""
+        return HTMLResponse(nagatino_page(core),
+                            headers={"Cache-Control": "no-store, must-revalidate"})
+
+    @app.get("/krt/nagatino/parcels", include_in_schema=False)
+    async def nagatino_parcels_data(request: Request, session: str = "", key: str = "",
+                                    share: str = "",
+                                    refresh: bool = False) -> dict[str, Any]:
+        """Участки выгрузки, их правообладатели и прочитанные контуры ЕГРН.
+
+        Сеть внутри запроса не трогается. Тридцать девять номеров по три в
+        потоке — это до пяти минут, а шлюз держит шестьдесят секунд: страница
+        отдала бы свою же ошибку вместо карты. Ответы копятся порциями на
+        диске, дочитывает фон, а страница показывает, чего ещё не спрашивали.
+        """
+        _nagatino_gate(request, session, key, share)
+        try:
+            data = await run_in_threadpool(nagatino_parcels.payload)
+        except nagatino_parcels.RegistryProblem as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        lookup = getattr(core, "_land_lookup_by_numbers", None) if core is not None else None
+        if callable(lookup):
+            started = await run_in_threadpool(
+                lambda: nagatino_parcels.fill_in_background(
+                    lookup, find_site=_nagatino_site_finder(refresh)))
+            if started:
+                data["outlines"]["reading"] = True
+        else:
+            data["outlines"]["problem"] = (data["outlines"]["problem"]
+                                           or "движок ЕГРН не подключён — контуры не спрашивались")
+        return data
+
+    @app.get("/krt/nagatino/export.xlsx", include_in_schema=False)
+    async def nagatino_parcels_export(request: Request, session: str = "", key: str = "",
+                                      share: str = "") -> Response:
+        """Свод книгой Excel. Собирается из того же `territory()`, что и экран.
+
+        Второй сборки нет: разойдясь, книга и страница дали бы два достоверных
+        на вид ответа об одной территории.
+        """
+        _nagatino_gate(request, session, key, share)
+        from auction_search import nagatino_export
+
+        try:
+            raw = await run_in_threadpool(
+                lambda: nagatino_export.build(
+                    nagatino_parcels.territory(),
+                    nagatino_parcels.owners_summary(),
+                    nagatino_parcels.land_holdings(),
+                    nagatino_parcels.registry().get("groups") or [],
+                    nagatino_parcels.land_under_buildings(),
+                    nagatino_parcels.holdings_under(),
+                    nagatino_parcels.buyout()))
+        except nagatino_parcels.RegistryProblem as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        name = "КРТ Нагатино — участки и объекты.xlsx"
+        quoted = urllib.parse.quote(name)
+        return Response(
+            raw,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quoted}"},
+        )
+
+    @app.get("/krt/nagatino/decision-outline.png", include_in_schema=False)
+    async def nagatino_decision_outline(request: Request, session: str = "", key: str = "",
+                                        share: str = "") -> Response:
+        """Картинка границ из приложения 1 к проекту решения — как есть.
+
+        Не наложение: растр без координат, и совмещать его на глаз значит
+        рисовать геометрию, которой у нас нет. Она стоит рядом с картой и
+        подписана источником.
+        """
+        _nagatino_gate(request, session, key, share)
+        try:
+            raw = await run_in_threadpool(nagatino_parcels.decision_outline_picture)
+        except nagatino_parcels.OutlinePictureProblem as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return Response(raw, media_type="image/png",
+                        headers={"Cache-Control": "public, max-age=86400"})
+
+    def _nagatino_site_finder(refresh: bool):
+        """Чем опознать площадку в реестре КРТ. Своей геометрии здесь нет:
+        полигоны — реестра, правило пересечения — движка.
+
+        Полигоны берутся тем же составом, что рисует общая карта КРТ: файл
+        карты города ПЛЮС контуры, собранные по перечням проектов решений.
+        Одного файла мало — 35 строк каталога из 268 в нём нет вовсе, и
+        Варшавское ш., вл. 37 (Нагатино-Садовники) как раз из них: искать
+        только в файле значило бы не найти ровно ту площадку, ради которой всё
+        это делается.
+        """
+        reader = getattr(krt_registry, "map_dataset", None)
+        supplement = getattr(krt_registry, "map_supplement", None)
+        crossings = getattr(core, "_row_crossings", None) if core is not None else None
+        if not callable(reader) or not callable(crossings):
+            return None
+
+        def find() -> dict[str, Any]:
+            data = reader(refresh=refresh) or {}
+            if data.get("problem"):
+                return {"problem": f"файл карты реестра не прочитан: {data['problem']}"}
+            sites = list(data.get("sites") or [])
+            if callable(supplement):
+                try:
+                    sites += list((supplement(data) or {}).get("sites") or [])
+                except Exception:  # noqa: BLE001 — добавка не роняет поиск
+                    logger.exception("КРТ Нагатино: добавка контуров по решениям не собралась")
+            return nagatino_parcels.resolve_site(sites, crossings)
+
+        return find
 
     @app.get("/auctions/krt/map")
     async def auction_krt_map(refresh: bool = False, step_m: float = Query(default=40.0, ge=1.0, le=200.0)) -> dict[str, Any]:
