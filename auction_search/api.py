@@ -566,6 +566,14 @@ def press_refusal_without_address() -> dict[str, Any]:
     }
 
 
+def krt_watch_periods() -> tuple[int, int, int]:
+    """Сроки сторожа — у самого сторожа, копией они разошлись бы молча."""
+    from . import krt_watch
+
+    return (krt_watch.CATALOGUE_PERIOD, krt_watch.DECISIONS_PERIOD,
+            krt_watch.TENDERS_PERIOD)
+
+
 def _krt_decision_rows_built(found: dict[str, Any]) -> list[dict[str, Any]]:
     """Строки площадок, у которых есть проект решения и нет карточки каталога.
 
@@ -721,8 +729,11 @@ def install(app: FastAPI) -> None:
         if not records:
             return []
         try:
+            # Обе половины списка: у площадки-решения карточки каталога нет, и
+            # по каталогу её имя не найти — в чат уехал бы слаг
+            # `decision:333331220`, немой для читателя.
             names = {str(row.get("slug") or ""): str(row.get("name") or "")
-                     for row in krt_registry.catalogue()}
+                     for row in _krt_all_sites()}
         except Exception:  # noqa: BLE001
             names = {}
         return [{**record, "name": names.get(str(record.get("slug") or ""), "")}
@@ -739,8 +750,11 @@ def install(app: FastAPI) -> None:
         """
         from . import krt_tenders
 
-        sites = krt_registry.catalogue()
-        matched = krt_tenders.match(list(lots or []), sites)
+        # Список экрана целиком, а не одна его половина: площадка-решение
+        # кандидатом не была вовсе, и «идут торги» по ней не могло появиться
+        # никогда — при живом лоте в соседней вкладке (Рубцовская наб., влд. 3,
+        # владелец 07.09.2026).
+        matched = krt_tenders.match(list(lots or []), _krt_all_sites())
         by_site = matched.get("by_site") or {}
         keeper = getattr(krt_registry, "remember_tender_lots", None)
         if callable(keeper):
@@ -1060,20 +1074,31 @@ def install(app: FastAPI) -> None:
         # посчитано: без него «идут торги» видно только тому, кто в этой же
         # вкладке успел открыть соседнюю.
         lots_known = getattr(krt_registry, "tender_lots_known", None)
+        remembered: dict[str, Any] = {}
         if callable(lots_known):
             try:
                 remembered = await run_in_threadpool(lots_known)
             except Exception:  # noqa: BLE001
                 logger.exception("KRT tender lots cache failed")
                 remembered = {}
-            if remembered:
-                projects = [
-                    {**row,
-                     "tender_lots": (remembered.get(str(row.get("slug") or "")) or {}).get("lots") or [],
-                     "tender_lots_seen_at": (remembered.get(str(row.get("slug") or "")) or {}).get("seen_at") or 0}
-                    if remembered.get(str(row.get("slug") or "")) else row
-                    for row in projects
-                ]
+
+        def _with_tender_lots(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            """Связку приписать ОБЕИМ половинам списка.
+
+            Прежде она приписывалась до того, как к каталогу добавлялись
+            площадки-решения, — то есть у половины строк её не бывало по
+            построению.
+            """
+            if not remembered:
+                return rows
+            out = []
+            for row in rows:
+                known = remembered.get(str(row.get("slug") or ""))
+                out.append({**row,
+                            "tender_lots": (known or {}).get("lots") or [],
+                            "tender_lots_seen_at": (known or {}).get("seen_at") or 0}
+                           if known else row)
+            return out
 
         status = krt_registry.status()
         # Неразобранная карточка называется вслух. Её значения съезжают на
@@ -1162,6 +1187,7 @@ def install(app: FastAPI) -> None:
             # пропавшая площадка, а их 38 из 298 на снимке прода 05.09.2026.
             second_publications = len(built) - len(decision_rows)
             projects = projects + decision_rows
+        projects = _with_tender_lots(projects)
         return {
             "source": CATALOGUE_URL,
             "geometry_status": "not_published_in_catalogue",
@@ -1826,7 +1852,9 @@ def install(app: FastAPI) -> None:
         lots = (payload or {}).get("lots") or []
         if not isinstance(lots, list) or len(lots) > 5000:
             raise HTTPException(status_code=422, detail="Список лотов не разобран")
-        sites = await run_in_threadpool(krt_registry.catalogue)
+        # Тот же список, что у сторожа и у экрана: половина площадок приходит
+        # из проектов решений, и по каталогу их не найти.
+        sites = await run_in_threadpool(_krt_all_sites)
         matched = await run_in_threadpool(krt_tenders.match, lots, sites)
         # Посчитанное сервером сервер и хранит: связка жила в памяти вкладки,
         # и без соседней вкладки «Торги» её не существовало вовсе — плашки
@@ -2107,6 +2135,35 @@ def install(app: FastAPI) -> None:
             "geometry_status": geometry_status,
             "rings_merc": rings,
             "centre_merc": centre,
+        }
+
+    @app.get("/auctions/krt/watch")
+    async def auction_krt_watch() -> dict[str, Any]:
+        """Состояние сторожа новостей: что он видел и что ждёт отправки.
+
+        «Ну мне ничего не пришло в телеграмме» (владелец, 07.09.2026) — и
+        проверить это было нечем: и «новостей не было», и «сторож не работает»
+        снаружи выглядят одинаковым молчанием. Здесь названы оба ответа:
+        сколько ключей вида уже запомнено (первый снимок вида никого не
+        объявляет — это не поломка, а правило), когда состав отмечен последний
+        раз, сколько записей ждёт бота и какого они вида.
+
+        Очередь не изымается: её забирает бот, и второй читатель унёс бы
+        уведомление ради ответа на вопрос, дошло ли уведомление.
+        """
+        state = await run_in_threadpool(krt_ranking.watch_state)
+        return {
+            **state,
+            # Сроки и выключатель называются здесь же: «сторож молчит» при
+            # выключенном стороже — ответ, а не поломка.
+            "enabled": os.getenv("AUCTION_KRT_WATCH", "1").strip() not in {"0", "false", "no"},
+            "periods_seconds": {
+                "site": krt_watch_periods()[0],
+                "decision": krt_watch_periods()[1],
+                "tender": krt_watch_periods()[2],
+            },
+            "delivery": ("бот забирает очередь каждые 15 минут и шлёт "
+                         "подписчикам /krt и владельцу"),
         }
 
     @app.get("/auctions/krt/ranking")

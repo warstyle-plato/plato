@@ -34,6 +34,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import main_legacy as core  # noqa: E402
+import page_blocks  # noqa: E402
 
 PRESETS = ROOT / "presets"
 
@@ -93,7 +94,9 @@ def live_import(preset_name: str) -> dict:
     # то есть на правке страницы, а не на импорте. Список поэтому идёт
     # от той функции, которую стенд действительно зовёт, вниз по её
     # соседям: пропущенное имя видно сразу, а не через чужое падение.
-    real = "\n".join(page_function(name) for name in (
+    # Замок «Требования КРТ» — по границам, а не именем: через него теперь
+    # пишет и выгрузка ГлавАПУ.
+    real = page_blocks.krt_lock() + "\n" + "\n".join(page_function(name) for name in (
         "getGlavapuUnderground", "undergroundAreaPerSpace",
         "normativeUnderground", "parkingRequirement",
         "repairParkingFromGlavapu", "fillUndergroundFromTep"))
