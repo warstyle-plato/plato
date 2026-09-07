@@ -52,12 +52,17 @@ REPORT_SCHEMA_VERSION = 1
 # Что каталог видел раньше. Нужно ровно для одного: отличить площадку, которая
 # появилась на этой неделе, от той, что лежит там полгода. Без этого «новое»
 # пришлось бы определять глазами по списку из ста двадцати строк.
-FIRST_SEEN_SCHEMA_VERSION = 1
+# Версия 2 с 07.09.2026: снимок версии 1 отравлен — его переписывало каждое
+# чтение каталога по неполному списку, и в нём равно недостоверны и состав, и
+# отметки «впервые увидено». Цена смены названа вслух: метка «новое» слетает
+# разом у всех до первого захода сторожа. Это дешевле, чем 3290 выдуманных
+# новостей в чате.
+FIRST_SEEN_SCHEMA_VERSION = 2
 # Состав ДРУГИХ событий каталога — «решение опубликовано» и «выставлено на
 # торги». Живут они отдельным файлом от `first_seen`: у того свой смысл —
 # когда площадка впервые попала в каталог, — и его схему трогать нельзя, иначе
 # метка «новое» слетит разом у всех.
-WATCH_SEEN_SCHEMA_VERSION = 1
+WATCH_SEEN_SCHEMA_VERSION = 2
 
 
 def claim_file(path, ttl_seconds: float) -> bool:
@@ -377,6 +382,10 @@ class KrtRanking:
         # сообщение: про Telegram модуль каталога знать не должен, до
         # api.telegram.org с ядра всё равно не дойти.
         self.announcements_path = Path(data_dir) / "krt" / "announcements.jsonl"
+        # Сколько записей выброшено последним сбросом и почему. Отдельным
+        # файлом, а не полем снимка: сбрасывают состав ОБА снимка, и запись
+        # должна пережить перезапись любого из них.
+        self.announcements_dropped_path = Path(data_dir) / "krt" / "announcements_dropped.json"
         # Что мы уже видели по каждому виду события. Правила те же, что у
         # `first_seen`: первый снимок вида не объявляет никого (мы только
         # начали смотреть), исчезнувшее забывается, а очередь пишется ПОСЛЕ
@@ -486,16 +495,39 @@ class KrtRanking:
         slugs = cached.get("slugs")
         return {str(key): int(value) for key, value in slugs.items()} if isinstance(slugs, dict) else {}
 
-    def mark_seen(self, slugs: list[str], now: float | None = None) -> dict[str, int]:
+    def mark_seen(self, slugs: list[str], now: float | None = None, *,
+                  complete: bool = False) -> dict[str, int]:
         """Отметить нынешний состав каталога и вернуть, когда что впервые увидено.
 
         Первый в жизни снимок никого новым не делает: мы только начали смотреть,
         и сто двадцать четыре «новинки» разом — это не новость, а шум. Новыми
         становятся те, кого не было в прошлом снимке.
+
+        **Состав пишет только тот, кто видит его целиком.** Прежде снимок
+        переписывало КАЖДОЕ чтение каталога — по тому списку, который собрался
+        у этого воркера. А половина списка (площадки-решения) приезжает фоном,
+        воркеров два, и память у них раздельная: замер прода 07.09.2026 дал в
+        одном ответе 767 строк, в следующем 514, а очередь уведомлений росла на
+        4–214 записей с КАЖДОГО открытия каталога — 4492 накопленных «новости»,
+        ни одна из которых не новость города. Забытое одним воркером второй
+        объявлял новым, и так по кругу.
+
+        Поэтому `complete` — не украшение: без него снимок только ЧИТАЕТСЯ.
+        Правило то же, что уже записано про рейтинг («кто пишет файл целиком,
+        тот теряет чужую запись»), просто про другой файл.
         """
         stamp = int(now if now is not None else time.time())
         known = self.first_seen()
+        if not complete:
+            # Неполный список не вправе ни забыть чужое, ни объявить своё
+            # новым: «этой площадки я не видел» и «этой площадки нет» — разные
+            # утверждения, а на диске они выглядят одинаково.
+            return known
         bootstrap = not known
+        if bootstrap:
+            # Снимок читается заново — значит и очередь, набитая прежним
+            # правилом, к этому составу отношения не имеет.
+            self.drop_announcements("состав каталога перечитан заново", stamp)
         seen = {str(slug) for slug in slugs if str(slug).strip()}
         # Вид площадки — своя ветка воронки: у каталога krt.mos.ru слаг простой,
         # у площадки-решения он `decision:<номер>`. Первый снимок ВИДА никого
@@ -554,6 +586,7 @@ class KrtRanking:
         вопрос, дошло ли уведомление.
         """
         seen = self.watch_seen()
+        first = self.first_seen()
         stamp = load_json(self.watch_seen_path)
         updated_at = int((stamp or {}).get("updated_at") or 0) if isinstance(stamp, dict) else 0
         pending = 0
@@ -579,12 +612,20 @@ class KrtRanking:
             # «Вида ещё не видели» и «видели, и он пуст» — разные ответы, и
             # первый значит, что следующий заход НИКОГО не объявит: первый
             # снимок вида запоминает состав.
-            "kinds": {kind: {"known": len(keys), "bootstrapped": True}
-                      for kind, keys in seen.items()},
+            # Вид «площадка» живёт в `first_seen`, а не в `watch_seen`: у него
+            # свой смысл — когда площадка впервые попала в каталог. Пока его
+            # здесь не было, счётчик молчал ровно о том виде, которого в
+            # очереди больше всего.
+            "kinds": {**{"site": {"known": len(first), "bootstrapped": bool(first)}},
+                      **{kind: {"known": len(keys), "bootstrapped": True}
+                         for kind, keys in seen.items()}},
             "updated_at": updated_at,
             "pending": pending,
             "pending_by_kind": by_kind,
             "last_queued_at": last_queued,
+            # Сброшенное называется числом: пустая очередь после сброса и
+            # пустая очередь от тишины на экране выглядят одинаково.
+            "dropped": self.announcements_dropped(),
         }
 
     def mark_watch(self, kind: str, events: dict[str, dict[str, Any]],
@@ -609,9 +650,23 @@ class KrtRanking:
         # ключ — не снято».
         known = state.get(str(kind))
         bootstrap = known is None
+        if bootstrap and not state:
+            # Снимок вида читается заново (сменилась схема) — очередь прежнего
+            # правила выбрасывается вместе с ним. `not state`: у пустого файла
+            # это первый вид, у непустого — просто новый вид рядом с прежними,
+            # и чужие записи выбрасывать нельзя.
+            self.drop_announcements("состав событий перечитан заново", stamp)
         known = known or {}
         fresh_keys = [key for key in events if key not in known]
-        state[str(kind)] = {key: known.get(key, 0 if bootstrap else stamp) for key in events}
+        # Состав события только РАСТЁТ: ключ здесь — «решение по этой площадке»
+        # и «этот лот по этой площадке», и исчезновение ключа из очередного
+        # захода не значит, что документа не стало. Заходы неполны по
+        # построению — сбор лотов ограничен сроком, поиск решений страницами, —
+        # и забывание превращало неполноту в новость: 9 запомненных ключей
+        # торгов против 28 записей в очереди и 106 против 1174 у решений
+        # (замер прода 07.09.2026). Вернувшийся лот — тот же лот, а не второй.
+        state[str(kind)] = {**{key: value for key, value in known.items()},
+                            **{key: known.get(key, 0 if bootstrap else stamp) for key in events}}
         save_json(self.watch_seen_path, {
             "schema_version": WATCH_SEEN_SCHEMA_VERSION,
             "updated_at": stamp,
@@ -625,6 +680,37 @@ class KrtRanking:
             extra=[{key_: value for key_, value in events[key].items() if key_ != "slug"}
                    for key in sorted(fresh_keys)])
         return sorted(fresh_keys)
+
+    def drop_announcements(self, reason: str, stamp: int) -> int:
+        """Выбросить накопленную очередь и СКАЗАТЬ, сколько выброшено.
+
+        Зовётся ровно там, где состав пересчитывается с нуля: очередь, набитая
+        прежним правилом, — это не новости, а след нашей ошибки, и доставить её
+        значит показать человеку 3290 «новых площадок», которых город не
+        объявлял. Молча выброшенное читается как отсутствие новостей, поэтому
+        число и причина ложатся рядом со снимком и печатаются в `/auctions/krt/watch`.
+        """
+        path = self.announcements_path
+        dropped = 0
+        try:
+            dropped = sum(1 for line in path.read_text(encoding="utf-8").splitlines()
+                          if line.strip())
+        except OSError:
+            return 0
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            return 0
+        if dropped:
+            logger.warning("KRT: очередь уведомлений сброшена (%s): %d записей", reason, dropped)
+            save_json(self.announcements_dropped_path, {
+                "dropped": dropped, "reason": str(reason), "at": int(stamp)})
+        return dropped
+
+    def announcements_dropped(self) -> dict[str, Any]:
+        """Что и когда выброшено последним сбросом. Пусто — не сбрасывали."""
+        record = load_json(self.announcements_dropped_path)
+        return record if isinstance(record, dict) else {}
 
     def _queue_announcements(self, slugs: list[str], stamp: int, *,
                              kind: str = "site",

@@ -183,18 +183,22 @@ def test_the_watch_thread_is_switchable_and_takes_the_lock() -> None:
 def test_the_screen_list_is_what_gets_marked() -> None:
     """Отмечается список ЭКРАНА — каталог и решения, а не одна его половина.
 
-    До правки `mark_seen` получал только строки каталога: решения приезжают
-    ниже по маршруту, и площадка, у которой опубликован проект решения, а
-    карточки города нет, не считалась новой НИКОГДА — ни плашки, ни сообщения.
-    На проде это 247 строк из 529, и ровно там самый ранний сигнал воронки.
+    Утверждение прежнее, а место другое. Прежде состав отмечал МАРШРУТ, и это
+    было верно ровно до замера прода 07.09.2026: половина списка приезжает
+    фоном, воркеров два, и каждое чтение переписывало снимок по тому, что
+    успел увидеть этот воркер. Теперь список экрана целиком отмечает сторож —
+    он под замком, то есть один, — а маршрут состав только читает.
     """
     source = (ROOT / "auction_search" / "api.py").read_text(encoding="utf-8")
     route = source[source.index('async def auction_krt_catalogue('):]
     route = route[: route.index("krt_ranking.is_new(")]
-    assert "krt_ranking.mark_seen" in route
-    assert "_decision_rows_for_run()" in route, "отмечена половина списка"
+    assert "krt_ranking.first_seen" in route, "маршрут обязан состав читать"
+    assert "mark_seen" not in route, "маршрут состав больше не пишет"
     watch = (ROOT / "auction_search" / "krt_watch.py").read_text(encoding="utf-8")
-    assert "self._all_sites" in watch, "сторож собирает список сам, а не берёт крючком"
+    assert "self._screen_list" in watch, "сторож собирает список сам, а не берёт крючком"
+    # Обе половины по-прежнему в одном списке — иначе площадка-решение снова
+    # не станет новой никогда.
+    assert "_decision_rows_state()" in source[source.index("def _krt_screen_list("):]
 
 
 def test_a_new_kind_of_site_does_not_arrive_as_a_flood(tmp_path) -> None:
@@ -205,10 +209,11 @@ def test_a_new_kind_of_site_does_not_arrive_as_a_flood(tmp_path) -> None:
     города.
     """
     ranking = KrtRanking(tmp_path)
-    ranking.mark_seen(["a", "b"])          # первый снимок: тишина
+    ranking.mark_seen(["a", "b"], complete=True)   # первый снимок: тишина
     ranking.take_announcements()
-    ranking.mark_seen(["a", "b", "decision:1", "decision:2"])
+    ranking.mark_seen(["a", "b", "decision:1", "decision:2"], complete=True)
     assert ranking.take_announcements() == [], "вид пришёл впервые — это не новости"
-    ranking.mark_seen(["a", "b", "decision:1", "decision:2", "decision:3", "c"])
+    ranking.mark_seen(["a", "b", "decision:1", "decision:2", "decision:3", "c"],
+                      complete=True)
     got = sorted(one["slug"] for one in ranking.take_announcements())
     assert got == ["c", "decision:3"], got
