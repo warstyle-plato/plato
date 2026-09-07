@@ -1031,14 +1031,14 @@ def test_in_a_real_browser_the_numbers_do_not_pile_up(monkeypatch):
     land = [[[4187000, 7495000], [4187600, 7495000], [4187600, 7495600], [4187000, 7495600]]]
     seed = {"77:05:0004001:2471": {"asked_at": time.time(), "rings": land, "reason": ""}}
     view = parcels.territory()
-    crowd = [item["cadastral_number"] for item in view["objects"]][:10]
-    # Тесно намеренно: десять строений по 14 м в квадрате 90 м — на карте это
-    # десяток пикселей, и номер там не помещается физически.
+    crowd = [item["cadastral_number"] for item in view["objects"]][:14]
+    # Тесно намеренно: четырнадцать строений по 6 м вплотную — на карте это
+    # несколько пикселей, и все номера рядом не помещаются физически.
     for index, number in enumerate(crowd):
-        x = 4187030 + (index % 5) * 18
-        y = 7495030 + (index // 5) * 18
+        x = 4187030 + (index % 7) * 7
+        y = 7495030 + (index // 7) * 7
         seed[number] = {"asked_at": time.time(), "reason": "",
-                        "rings": [[[x, y], [x + 14, y], [x + 14, y + 14], [x, y + 14]]]}
+                        "rings": [[[x, y], [x + 6, y], [x + 6, y + 6], [x, y + 6]]]}
     _seed(seed)
 
     server = uvicorn.Server(uvicorn.Config(_app(), host="127.0.0.1", port=PORT + 3,
@@ -1085,3 +1085,28 @@ def test_in_a_real_browser_the_numbers_do_not_pile_up(monkeypatch):
     # иначе проверка на непересечение ничего не значит.
     assert len(boxes) < seen["shapes"], (len(boxes), seen["shapes"])
     assert "Не подписано на карте" in seen["tail"], seen["tail"]
+
+
+def test_a_parcel_mostly_inside_the_site_keeps_its_colour():
+    """Бледнеет по ДОЛЕ вхождения, а не по самому признаку «часть».
+
+    «Зелёное не прогрузилось» (владелец, 07.09.2026) — грузилось всё: у
+    77:05:0004001:7 в площадку входит 12 148 из 15 654 (78%), а рисовался он
+    почти прозрачным наравне с дорогой 77:05:0004001:40, у которой входит 61 м²
+    из 43 288 (0,1%). Городской зелёный под строениями Москвы пропадал с экрана
+    вовсе.
+    """
+    view = parcels.territory()
+    shares = {land["cadastral_number"]: (land["notice_area_sqm"] or 0) / (land["area_sqm"] or 1)
+              for land in view["lands"] if land.get("part")}
+    assert shares, "предохранитель: участков, входящих частью, не осталось"
+    assert any(share >= 0.5 for share in shares.values()), (
+        "предохранитель: нет участка, который входит в площадку большей частью — "
+        "различать нечего")
+    assert any(share < 0.5 for share in shares.values()), (
+        "предохранитель: нет участка, который в площадке почти отсутствует")
+
+    page = nagatino_ui.NAGATINO_PAGE
+    block = page[page.index("const mostlyInside="):page.index("const sitePath=")]
+    assert "notice_area_sqm/l.area_sqm" in block, (
+        "заливка снова считается по признаку «часть», а не по доле вхождения")

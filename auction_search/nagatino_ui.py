@@ -309,8 +309,10 @@ function placeLabels(items){
  for(const it of items){
   const spot=widestSpot(it.rings,it.place);
   const need=labelWidth(it.text,it.size);
-  // Тесно в самой фигуре — подписывать нечего: текст вылезет на соседей.
-  if(!spot||spot.width<need*0.8){skipped++;continue}
+  // Номер вправе слегка выступать за мелкое строение — важно, чтобы он стоял
+  // НА нём и не сталкивался с соседним. Требование влезть целиком снимало
+  // подписи у большинства строений, а связать карту с таблицей было нечем.
+  if(!spot||spot.width<need*0.45){skipped++;continue}
   const box={x0:spot.x-need/2,x1:spot.x+need/2,
              y0:spot.y-it.size*0.7,y1:spot.y+it.size*0.7};
   if(!it.force&&taken.some(b=>b.x0<box.x1&&box.x0<b.x1&&b.y0<box.y1&&box.y0<b.y1)){
@@ -365,15 +367,18 @@ function mapMarkup(){
  // недостижимы. Своей меры у него другая, поэтому и вид другой.
  // Заливка участка бледная намеренно: он крупнее своих строений, и под
  // сплошным цветом их не видно. Цвет тот же, что у владельца.
- // Участок, входящий в площадку ЧАСТЬЮ, рисуется пунктиром и бледнее: он на
- // карте есть целиком, а в площадке его почти нет. Дорога 77:05:0004001:40 —
- // 4,33 га по ЕГРН и 61 м² в площадке, и залитая наравне с остальными она
- // читается как часть территории. «Это дорога? похоже её нет в КРТ»
- // (владелец, 07.09.2026) — вопрос был к картинке, и отвечать на него должна
- // картинка.
+ // Участок, входящий в площадку ЧАСТЬЮ, обводится пунктиром: он на карте есть
+ // целиком, а в площадке — не весь. Но БЛЕДНЕЕТ он не от самого признака, а от
+ // ДОЛИ вхождения: у дороги 77:05:0004001:40 это 61 м² из 43 288 (0,1%) — она
+ // на площадке практически отсутствует; у 77:05:0004001:7 — 12 148 из 15 654
+ // (78%), и он полноценный участок площадки. Пока бледнило по признаку,
+ // городской зелёный под строениями Москвы пропадал с экрана вовсе — «зелёное
+ // не прогрузилось» (владелец, 07.09.2026), хотя грузилось всё.
+ const mostlyInside=l=>!l.part||l.notice_area_sqm==null||!l.area_sqm
+   ||l.notice_area_sqm/l.area_sqm>=0.5;
  const landPaths=lands.map(l=>
    `<path d="${pathOf(l.rings_merc,place)}" fill="${escapeHtml(l.colour)}"`
-   +` fill-opacity="${picked(l.cadastral_number)?'0.42':(l.part?'0.07':'0.20')}"`
+   +` fill-opacity="${picked(l.cadastral_number)?'0.42':(mostlyInside(l)?'0.20':'0.07')}"`
    +` stroke="${picked(l.cadastral_number)?'#111':escapeHtml(l.colour)}"`
    +` stroke-width="${picked(l.cadastral_number)?'3':'1.4'}"`
    +(l.part?' stroke-dasharray="7 5"':'')
@@ -396,9 +401,11 @@ function mapMarkup(){
  // не читается, а читать её и есть весь смысл. Порядок — от крупного к
  // мелкому: место достаётся тому, у кого его больше, а выделенная фигура
  // подписана всегда.
- const wanted=lands.map(l=>({rings:l.rings_merc,place,text:'У'+l.no,size:14,colour:'#111',
+ // Мельче — значит больше номеров на экране: «номеров меньше чем по факту,
+ // может их мельче сделать?» (владелец, 07.09.2026).
+ const wanted=lands.map(l=>({rings:l.rings_merc,place,text:'У'+l.no,size:12,colour:'#111',
                              area:landRingArea(l.rings_merc),force:picked(l.cadastral_number)}))
-  .concat(drawn.map(p=>({rings:p.rings_merc,place,text:'С'+p.no,size:11,colour:'#111',
+  .concat(drawn.map(p=>({rings:p.rings_merc,place,text:'С'+p.no,size:9,colour:'#111',
                          area:landRingArea(p.rings_merc),force:picked(p.cadastral_number)})))
   .sort((a,b)=>(b.force-a.force)||(b.area-a.area));
  const placed=placeLabels(wanted);
@@ -1023,7 +1030,8 @@ function legendMarkup(){
    // имя владельца.
    +(((S.data.territory||{}).lands||[]).some(l=>l.part)
      ?'<span><span class="key" style="border:1px dashed #8a8a8a"></span>участок входит в площадку '
-      +'частью — на карте он целиком</span>':'')
+      +'частью — на карте он целиком; почти прозрачный значит, что в площадке от него меньше '
+      +'половины</span>':'')
    +'<div class="source" style="flex-basis:100%">Цвет — владелец: Брынцалов красный, город зелёный, '
    +'остальные жёлтой гаммой, у каждого свой оттенок. Участок красится своим собственником, '
    +'а где право не зарегистрировано — владельцем строений на нём, когда он один; строения '
