@@ -74,7 +74,12 @@ button[disabled]{opacity:.45;cursor:default}
 .mapwrap{position:relative;border:1px solid var(--line);background:var(--soft)}
 .mapwrap img{display:block;width:100%;height:auto}
 .mapwrap svg.layer{position:absolute;left:0;top:0;width:100%;height:100%}
-#parcelTip{position:absolute;display:none;z-index:4;pointer-events:none;background:#fff;border:1px solid #111;padding:9px 11px;font-size:12px;max-width:340px;max-height:70%;overflow:hidden;box-shadow:0 2px 10px rgba(0,0,0,.14)}
+/* Высота карточки НЕ обрезается: `max-height` с `overflow:hidden` резал её
+   молча — «при наведении не влезает информация» (владелец, 07.09.2026), и на
+   экране это выглядело как обрыв, а не как выбор. Прокрутить её нельзя, она
+   не берёт указатель. Значит ограничивать надо СОДЕРЖИМОЕ: в карточку идёт
+   короткий набор строк, остальное — в строке таблицы, куда ведёт нажатие. */
+#parcelTip{position:absolute;display:none;z-index:4;pointer-events:none;background:#fff;border:1px solid #111;padding:9px 11px;font-size:12px;max-width:330px;box-shadow:0 2px 10px rgba(0,0,0,.14)}
 #parcelTip b{display:block;font-size:13px;margin-bottom:3px}
 #parcelTip .dot{display:inline-block;width:9px;height:9px;margin-right:5px}
 #parcelTip dl{display:grid;grid-template-columns:auto 1fr;gap:2px 10px;margin:6px 0 0}
@@ -250,26 +255,71 @@ function frame(rings){
   py:y=>(by-y)/(by-ay)*FRAME.h};
 }
 
-// Середина фигуры для подписи — центр её рамки. Настоящий центроид полигона
-// считать нечем и незачем: подпись стоит внутри вытянутого участка ничуть не
-// хуже, а лишняя геометрия на странице — это вторая реализация того, что уже
-// умеет движок.
-function centre(rings,place){
- const pts=rings.flat().filter(p=>Array.isArray(p)&&p.length>=2);
- if(!pts.length)return null;
- const xs=pts.map(p=>place.px(p[0])),ys=pts.map(p=>place.py(p[1]));
- return [(Math.min(...xs)+Math.max(...xs))/2,(Math.min(...ys)+Math.max(...ys))/2];
+// Где поставить подпись. Центр рамки для этого не годится: у дороги
+// 77:05:0004001:40 рамка охватывает излучину, и её середина попадает в реку —
+// «У2» стояло посреди Москвы-реки. У Г-образного корпуса — так же мимо.
+//
+// Берётся самое широкое место фигуры: по одиннадцати горизонталям считаются
+// отрезки ВНУТРИ кольца, и подпись встаёт в середину самого длинного. Заодно
+// его длина отвечает на второй вопрос — влезает ли текст вообще.
+function widestSpot(rings,place){
+ const ring=(rings||[]).map(r=>r.filter(p=>Array.isArray(p)&&p.length>=2))
+   .filter(r=>r.length>=3)
+   .sort((a,b)=>landRingArea([b])-landRingArea([a]))[0];
+ if(!ring)return null;
+ const pts=ring.map(p=>[place.px(p[0]),place.py(p[1])]);
+ const ys=pts.map(p=>p[1]),top=Math.min(...ys),bottom=Math.max(...ys);
+ let best=null;
+ for(let i=1;i<12;i++){
+  const y=top+(bottom-top)*i/12;
+  const xs=[];
+  for(let k=0;k<pts.length;k++){
+   const a=pts[k],b=pts[(k+1)%pts.length];
+   if((a[1]>y)===(b[1]>y))continue;
+   xs.push(a[0]+(y-a[1])*(b[0]-a[0])/(b[1]-a[1]));
+  }
+  xs.sort((u,v)=>u-v);
+  for(let k=0;k+1<xs.length;k+=2){
+   const width=xs[k+1]-xs[k];
+   if(!best||width>best.width)best={x:(xs[k]+xs[k+1])/2,y,width};
+  }
+ }
+ return best;
 }
+// Ширина подписи на глаз: у нашего шрифта цифра примерно в шесть десятых
+// кегля. Точность тут не нужна — вопрос «влезет ли», а не «сколько ровно».
+const labelWidth=(text,size)=>text.length*size*0.62;
 // Номер на карте — тот же, что в таблице: считает его сервер, страница только
-// печатает. Своя нумерация на карте разошлась бы с табличной молча, и обе
-// выглядели бы верными. Подпись не перехватывает указатель: иначе она закрыла
-// бы собой то, что подписывает.
-function labelAt(rings,place,text,size,colour){
- const c=centre(rings,place); if(!c)return '';
- return `<text x="${c[0].toFixed(1)}" y="${c[1].toFixed(1)}" text-anchor="middle"`
+// печатает. Своя нумерация на карте разошлась бы с табличной молча. Подпись не
+// перехватывает указатель: иначе она закрыла бы собой то, что подписывает.
+function labelAt(spot,text,size,colour){
+ return `<text x="${spot.x.toFixed(1)}" y="${spot.y.toFixed(1)}" text-anchor="middle"`
   +` dominant-baseline="central" font-size="${size}" font-weight="700"`
   +` fill="${colour}" stroke="#fff" stroke-width="3" paint-order="stroke"`
   +` style="pointer-events:none">${escapeHtml(text)}</text>`;
+}
+// Подписи ставятся по убыванию фигур и НЕ наезжают друг на друга: на карте
+// двадцать участков и тридцать девять строений, и всё разом читается как каша
+// («нефункционально вышло», владелец, 07.09.2026). Не поместившееся считается
+// и называется под картой — молча снятая подпись читается как отсутствие
+// объекта.
+function placeLabels(items){
+ const taken=[],marks=[];
+ let skipped=0;
+ for(const it of items){
+  const spot=widestSpot(it.rings,it.place);
+  const need=labelWidth(it.text,it.size);
+  // Тесно в самой фигуре — подписывать нечего: текст вылезет на соседей.
+  if(!spot||spot.width<need*0.8){skipped++;continue}
+  const box={x0:spot.x-need/2,x1:spot.x+need/2,
+             y0:spot.y-it.size*0.7,y1:spot.y+it.size*0.7};
+  if(!it.force&&taken.some(b=>b.x0<box.x1&&box.x0<b.x1&&b.y0<box.y1&&box.y0<b.y1)){
+   skipped++;continue;
+  }
+  taken.push(box);
+  marks.push(labelAt(spot,it.text,it.size,it.colour));
+ }
+ return {html:marks.join(''),skipped};
 }
 
 function pathOf(rings,place){
@@ -343,9 +393,16 @@ function mapMarkup(){
    +` stroke-width="${picked(p.cadastral_number)?'2.6':'1.2'}" data-cad="${escapeHtml(p.cadastral_number)}"`
    +` class="parcel" style="cursor:pointer"><title>${escapeHtml(tipTitle(p))}</title></path>`).join('');
  // Номера рисуются ПОСЛЕДНИМИ, поверх всех фигур: под контуром соседа подпись
- // не читается, а читать её и есть весь смысл.
- const marks=lands.map(l=>labelAt(l.rings_merc,place,'У'+l.no,15,'#111')).join('')
-  +order.map(({p})=>labelAt(p.rings_merc,place,'С'+p.no,12,'#111')).join('');
+ // не читается, а читать её и есть весь смысл. Порядок — от крупного к
+ // мелкому: место достаётся тому, у кого его больше, а выделенная фигура
+ // подписана всегда.
+ const wanted=lands.map(l=>({rings:l.rings_merc,place,text:'У'+l.no,size:14,colour:'#111',
+                             area:landRingArea(l.rings_merc),force:picked(l.cadastral_number)}))
+  .concat(drawn.map(p=>({rings:p.rings_merc,place,text:'С'+p.no,size:11,colour:'#111',
+                         area:landRingArea(p.rings_merc),force:picked(p.cadastral_number)})))
+  .sort((a,b)=>(b.force-a.force)||(b.area-a.area));
+ const placed=placeLabels(wanted);
+ const marks=placed.html;
  const live=typeof openLandMap==='function'
   ? '<button type="button" id="liveBtn">Открыть живую карту — двигать и приближать</button> '
   : '<span class="source">Живая карта не подключена: страница поднята без движка.</span> ';
@@ -363,7 +420,11 @@ function mapMarkup(){
   +`<div id="mapBase" style="display:none;position:absolute;left:8px;top:8px;`
   +`background:#fff;border:1px solid var(--line);padding:5px 8px;font-size:12px;color:var(--muted)">`
   +`Подложка улиц не загрузилась — контуры на месте, а карты под ними нет.</div></div>`
-  +`<div class="maplabel" id="mapLabel">${mapLabelText()}</div>`;
+  +`<div class="maplabel" id="mapLabel">${mapLabelText()}</div>`
+  +(placed.skipped?`<div class="source">Не подписано на карте: ${placed.skipped} из `
+    +`${wanted.length} — фигура мельче своего номера или он лёг бы поверх соседнего. `
+    +'Номер такого объекта показывает наведение и строка таблицы; на живой карте, где можно '
+    +'приблизить, помещаются все.</div>':'');
 }
 
 // Всплывающая карточка правообладателя. Подсказка SVG для этого не годится:
@@ -404,46 +465,46 @@ function landTitle(l){
 function landHtml(l){
  const objs=l.objects||[];
  const rows=[
-  ['Площадь участка',m2(l.area_sqm)],
+  ['Площадь',m2(l.area_sqm)
+    +(l.part&&l.notice_area_sqm!=null
+      ? `<div class="source">в площадку входит ${m2(l.notice_area_sqm)}</div>`:'')],
   ['Кадастровая стоимость',mln(l.cadastral_value_rub)],
-  ['Разрешённое использование',escapeHtml(shorten(l.permitted_use,170)||'—')],
-  ['Правообладатель участка',ownerCell(l.owner)],
-  ['Строений на участке',objs.length+' · '+m2(l.objects_area_sqm)],
-  ['Цвет по',escapeHtml(l.colour_from||'—')],
+  ['Правообладатель',ownerCell(l.owner)],
+  ['Строений',objs.length+' · '+m2(l.objects_area_sqm)],
  ];
- if(l.disposal&&l.disposal.who)
-  rows.splice(4,0,['Кто распоряжается',escapeHtml(l.disposal.who)
-   +`<div class="source">${escapeHtml(l.disposal.ground||'')}</div>`]);
- burdenRows(l).forEach(r=>rows.push(r));
- if(l.address)rows.push(['Адрес по ЕГРН',escapeHtml(l.address)]);
- return `<b>Земельный участок ${escapeHtml(l.cadastral_number)}</b>`
-  +'<dl>'+rows.map(r=>`<dt>${r[0]}</dt><dd>${r[1]}</dd>`).join('')+'</dl>';
+ if(l.disposal&&l.disposal.who&&!(l.owner||{}).name)
+  rows.push(['Кто распоряжается',escapeHtml(l.disposal.who)]);
+ if(l.permitted_use)rows.push(['Использование',escapeHtml(shorten(l.permitted_use,64))]);
+ return `<b>У${l.no} · участок ${escapeHtml(l.cadastral_number)}</b>`
+  +'<dl>'+rows.map(r=>`<dt>${r[0]}</dt><dd>${r[1]}</dd>`).join('')+'</dl>'
+  +`<div class="source">${tipTail}</div>`;
 }
+
+// Хвост карточки: она короткая намеренно, и это сказано — обрезанная молча
+// читается как весь ответ источника.
+const tipTail='Нажмите — карточка выделит строку таблицы, там остальное: '
+ +'обременения, адрес, основание вывода.';
 
 function tipHtml(p){
  const rows=[
   ['Правообладатель',ownerCell(p.owner)],
-  ['Площадь строения',p.area_sqm!=null?m2(p.area_sqm)
+  ['Площадь',p.area_sqm!=null?m2(p.area_sqm)
     :(p.notice_area_sqm!=null?m2(p.notice_area_sqm)+' <span class="source">по извещению</span>':'—')],
   ['Кадастровая стоимость',mln(p.cadastral_value_rub)],
  ];
- const what=[p.name,p.purpose,p.year_built?'постр. '+p.year_built:''].filter(Boolean).join(' · ');
- if(what)rows.push(['Что это',escapeHtml(what)]);
  // Два источника на одну величину — расхождение называется вслух, а не
  // выбирается молча.
  if(p.notice_area_sqm!=null&&p.area_sqm!=null&&Math.abs(p.notice_area_sqm-p.area_sqm)>0.05)
   rows.push(['В извещении','<b>'+m2(p.notice_area_sqm)+'</b> — расходится с выпиской']);
- rows.push(['Участок под зданием',(p.lands||[]).map(v=>escapeHtml(v)).join(', ')||'—']);
- // Цвет соседства не равен праву: собственник выше — это ответ ЕГРН.
- if(p.colour_from&&p.colour_from!=='свой собственник')
-  rows.push(['Цвет по',escapeHtml(p.colour_from)]);
- burdenRows(p).forEach(r=>rows.push(r));
- if(p.fate)rows.push(['Судьба по извещению',escapeHtml(p.fate)]);
- if(p.address)rows.push(['Адрес по ЕГРН',escapeHtml(p.address)]);
+ const what=[p.name,p.purpose].filter(Boolean).join(' · ');
+ if(what)rows.push(['Что это',escapeHtml(shorten(what,64))]);
+ if(p.fate)rows.push(['Судьба',escapeHtml(p.fate)]);
+ rows.push(['На участке',(p.lands||[]).map(v=>escapeHtml(v)).join(', ')||'—']);
  return `<b><span class="dot" style="background:${escapeHtml(p.colour||p.owner.colour)}"></span>`
-  +`${escapeHtml(p.cadastral_number)}</b>`
+  +`С${p.no} · ${escapeHtml(p.cadastral_number)}</b>`
   +`<div class="source" style="margin:0">${escapeHtml(p.owner.group_title||'')}</div>`
-  +'<dl>'+rows.map(r=>`<dt>${r[0]}</dt><dd>${r[1]}</dd>`).join('')+'</dl>';
+  +'<dl>'+rows.map(r=>`<dt>${r[0]}</dt><dd>${r[1]}</dd>`).join('')+'</dl>'
+  +`<div class="source">${tipTail}</div>`;
 }
 
 // Подпись под картой: что под указателем или что выбрано. Всплывающую карточку
@@ -795,6 +856,28 @@ function partsNote(unions){
   +named+'. Иначе чужая улично-дорожная сеть целиком попадала бы в счёт владельца двух строений на ней.';
 }
 
+// Итог «20 участков, 186 860 м²» — площадь по ЕГРН, и рядом с ним обязана
+// стоять площадка КРТ: «может хоть какое-то указание, что с учётом УДС того
+// участка общая площадь соответствует заявленной в КРТ?» (владелец,
+// 07.09.2026). Без этой строки читатель видит 18,69 га там, где решение и
+// извещение говорят 14,62, и оба числа выглядят верными. Объявлена она один
+// раз и стоит под каждой таблицей, где есть итог земли.
+function siteReconcileNote(){
+ const t=(S.data.territory||{}).totals||{};
+ if(!t.land_area_sqm||!t.site_area_sqm)return '';
+ const parts=((S.data.territory||{}).lands||[]).filter(l=>l.part);
+ const named=parts.map(l=>`${escapeHtml(l.cadastral_number)} — ${m2(l.notice_area_sqm)} из `
+   +`${m2(l.area_sqm)}${(l.permitted_use||'').toLowerCase().includes('дорож')?' (улично-дорожная сеть)':''}`)
+  .join('; ');
+ return '<div class="source"><b>Сходится ли с площадкой КРТ.</b> '
+  +`${m2(t.land_area_sqm)} — это площадь участков по ЕГРН, целиком. В границы площадки они входят `
+  +`не все: ${named}. Вместе участки дают ${m2(t.land_area_in_notice_sqm)}, плюс `
+  +`${m2(t.land_unformed_sqm)} земли без кадастрового номера («территории, в границах которых `
+  +`земельные участки не сформированы») — ${m2(t.site_area_sqm)}, то есть `
+  +`${landNum(t.site_area_sqm/10000,2)} га: ровно та площадь, что заявлена в решении о КРТ и в `
+  +'шапке извещения. Оба числа верны и отвечают на разные вопросы.</div>';
+}
+
 function ownersTableMarkup(){
  const under=S.data.under||null;
  const docs=ownersBlock(S.data.owners||[],false,under)
@@ -808,7 +891,7 @@ function ownersTableMarkup(){
     +partsNote(under):'')
   +'</div>';
  const holdings=S.data.holdings||[];
- if(!holdings.length)return docs;
+ if(!holdings.length)return docs+siteReconcileNote();
  // Второй взгляд — НАШ вывод, и он подписан своим именем. Слить его с первой
  // таблицей нельзя: там ответ реестра, здесь наше прочтение, и под одной
  // шапкой они читались бы как одно утверждение.
@@ -819,7 +902,9 @@ function ownersTableMarkup(){
   +'значит Москва» (решение владельца, 07.09.2026). Хозяина участка называет ЕГРН; нет записи — '
   +'единственный собственник строений на нём, а если лица разные, но группа одна — группа. '
   +'Объект на нескольких участках посчитан один раз.</div>'
+  +siteReconcileNote()
   +ownersBlock(holdings,true,S.data.holdings_under||null)
+  +siteReconcileNote()
   +buyoutNote()
   +`<div class="source">${partsNote(S.data.holdings_under||null).trim()}</div>`;
 }
@@ -841,6 +926,20 @@ function buyoutNote(){
   +'соглашению или по оценке. Считать по ней бюджет входа нельзя, сравнивать масштаб — можно. '
   +'И это взгляд «по участку»: земля без записи в реестре отнесена городу по правилу '
   +'неразграниченной земли и договорам аренды с ДГИ, а не потому, что так записано.</div></div>';
+}
+
+// Расхождение сумм самого файла — рядом с его таблицей. Молча взять свою
+// сумму нельзя: человек смотрит в файл и видит другое число.
+function fileGapMarkup(){
+ const t=S.data.totals;
+ if(!t.area_gap_sqm)return '';
+ return '<div class="notice warn"><b>Итог площади в самом файле меньше суммы его строк:</b> '
+  +`${m2(t.own_total_area_sqm)} против ${m2(t.area_sqm)}, разница ${m2(t.area_gap_sqm)}. `
+  +`Причина не в объектах: ${(t.text_cells_skipped_by_sum||[]).length} площадей `
+  +`(${escapeHtml((t.text_cells_skipped_by_sum||[]).join(', '))}) лежат в книге текстом с `
+  +'неразрывным пробелом, и <code>SUM</code> их пропускает. Кадастровая стоимость при этом '
+  +'сходится до рубля — расходится ровно одна колонка. В таблице ниже считаем по строкам. '
+  +'На числа территории это не влияет: их считают извещение и выписки ЕГРН, а не этот файл.</div>';
 }
 
 function kindsMarkup(){
@@ -870,14 +969,13 @@ function kindsMarkup(){
 // верхних плиток; перечисление источников — «на чём посчитано», и оно внизу.
 // Слитые в один абзац, находка и справка читаются одинаково, то есть никак.
 function findingsMarkup(){
- const d=S.data,t=d.totals,out=[];
- if(t.area_gap_sqm)
-  out.push('<div class="notice warn"><b>Итог площади в самом файле меньше суммы его строк:</b> '
-   +`${m2(t.own_total_area_sqm)} против ${m2(t.area_sqm)}, разница ${m2(t.area_gap_sqm)}. `
-   +`Причина не в объектах: ${(t.text_cells_skipped_by_sum||[]).length} площадей `
-   +`(${escapeHtml((t.text_cells_skipped_by_sum||[]).join(', '))}) лежат в книге текстом с `
-   +'неразрывным пробелом, и <code>SUM</code> их пропускает. Кадастровая стоимость при этом '
-   +'сходится до рубля — расходится ровно одна колонка. Здесь и ниже считаем по строкам.</div>');
+ const d=S.data,out=[];
+ // Расхождение сумм В ПРИСЛАННОМ ФАЙЛЕ отсюда убрано: «зачем эта надпись?»
+ // (владелец, 07.09.2026). Она заработала верхнее место, когда файл был
+ // основанием страницы; теперь территорию считают извещение и выписки, а файл
+ // — отдельный источник под складкой, и находка о нём стоит у его же таблицы.
+ // Утверждение о втором источнике, поднятое к плиткам первого, читается как
+ // сомнение в первом.
  const site=d.krt_site||{};
  if(!(site.rings_merc&&site.rings_merc.length))
   out.push('<div class="notice warn">Границы площадки КРТ на карте нет: '
@@ -961,12 +1059,24 @@ function decisionOutlineMarkup(){
 
 function coverageMarkup(){
  const o=S.data.outlines,bits=[];
- if(o.unread)bits.push(`${o.unread} объектов ещё не спрашивали в ЕГРН — это наш пробел, а не их отсутствие`);
+ if(o.unread)bits.push(`${o.unread} строений ещё не спрашивали в ЕГРН — это наш пробел, а не их отсутствие`);
  if(o.empty)bits.push(`${o.empty} есть в ЕГРН, но контура у них нет`);
  if(o.problem)bits.push('ЕГРН отвечал с ошибкой: '+escapeHtml(o.problem));
- return bits.length
-  ? `Нарисовано ${o.drawn} из ${o.parcels}. Остальные: ${bits.join('; ')}.`
-  : `Нарисованы все ${o.drawn} объектов выгрузки.`;
+ const head=bits.length
+  ? `Строений нарисовано ${o.drawn} из ${o.parcels}. Остальные: ${bits.join('; ')}.`
+  : `Нарисованы все ${o.drawn} строений выгрузки.`;
+ // Участки считаются отдельно: счётчик выше — по строкам файла, а это здания.
+ // Ненарисованный участок иначе нигде не назван, и его отсутствие читается как
+ // отсутствие цвета у владельца: «почему зелёной подложки Москвы нет под
+ // строениями Москвы?» — участок под ними покрашен городским зелёным, просто
+ // контур его ещё не спрашивали.
+ if(o.lands==null)return head;
+ const left=o.lands-o.lands_drawn;
+ return head+' '+(left
+  ? `Земельных участков нарисовано ${o.lands_drawn} из ${o.lands}: у ${left} контур ЕГРН ещё `
+    +'не получен, поэтому под их строениями подложки нет — цвет владельца у них при этом уже '
+    +'посчитан и стоит в таблице. Нажмите «Дочитать контуры».'
+  : `Земельные участки нарисованы все ${o.lands}.`);
 }
 
 function tableMarkup(){
@@ -1024,7 +1134,7 @@ function render(){
  $('findings').innerHTML=findingsMarkup();
  $('filter').innerHTML=filterMarkup();
  bindFilter();
- $('kinds').innerHTML=kindsMarkup();
+ $('kinds').innerHTML=fileGapMarkup()+kindsMarkup();
  $('sourceNote').innerHTML=sourceMarkup();
  $('mapBox').innerHTML=mapMarkup();
  $('legend').innerHTML=legendMarkup();

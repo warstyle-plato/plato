@@ -790,15 +790,24 @@ def test_in_a_real_browser_the_parcels_are_drawn_and_the_owner_pops_up(monkeypat
             page.wait_for_selector("#parcelTip", state="visible", timeout=5000)
             tip = page.locator("#parcelTip").inner_text()
             assert "77:05:0004001:1004" in tip, tip
-            # Право не зарегистрировано — так и написано, а цвет назван соседством.
-            assert "не зарегистрировано" in tip and "владелец участка" in tip
+            # Право не зарегистрировано — так и написано, и рядом стоит НАШ
+            # вывод, подписанный своим именем. Держим утверждение, а не оборот:
+            # прежняя проверка искала слова «владелец участка» и упала, когда
+            # карточку укоротили, — при верном поведении.
+            assert "не зарегистрировано" in tip, tip
+            assert "вывод DevelopAid" in tip, tip
+            # Карточка короткая намеренно, и это сказано: обрезанная молча
+            # читается как весь ответ источника.
+            assert "там остальное" in tip, tip
 
             # Участок отвечает своей карточкой, в свободной от строений точке.
             page.locator("path.land").first.hover(position={"x": 12, "y": 12})
             page.wait_for_timeout(400)
             land_tip = page.locator("#parcelTip").inner_text()
-            assert "Земельный участок 77:05:0004001:2471" in land_tip, land_tip
-            assert "Автокомбинат" in land_tip and "Строений на участке" in land_tip
+            assert "77:05:0004001:2471" in land_tip, land_tip
+            assert land_tip.startswith("У"), ("номер участка в карточке первым — "
+                                              "по нему её связывают с картой")
+            assert "Автокомбинат" in land_tip and "Строений" in land_tip
             browser.close()
     finally:
         server.should_exit = True
@@ -933,7 +942,10 @@ def test_in_a_real_browser_the_filter_hides_rows_and_the_numbers_stand_on_the_ma
 
             # Номера стоят на КАЖДОЙ нарисованной фигуре и различают ряды.
             assert not errors, errors
-            assert len(whole["marks"]) == whole["shapes"] + whole["lands"], whole["marks"]
+            # Подписей не больше, чем фигур: не поместившиеся снимаются, и это
+            # названо числом под картой. Требовать «ровно столько же» нельзя —
+            # проверка падала бы на тесной карте, то есть на верном поведении.
+            assert 0 < len(whole["marks"]) <= whole["shapes"] + whole["lands"], whole["marks"]
             assert any(m.startswith("У") for m in whole["marks"])
             assert any(m.startswith("С") for m in whole["marks"])
             assert whole["boxes"] >= 2, "строки отбора нет"
@@ -950,7 +962,7 @@ def test_in_a_real_browser_the_filter_hides_rows_and_the_numbers_stand_on_the_ma
             # Итог остаётся по целому: сумма отбора под подписью «Итого» была бы
             # вторым числом под одним именем.
             assert cut["total"] == whole["total"], "итоговая строка поехала за отбором"
-            assert len(cut["marks"]) == cut["shapes"] + cut["lands"]
+            assert 0 < len(cut["marks"]) <= cut["shapes"] + cut["lands"]
 
             page.click("#filterAll")
             page.wait_for_timeout(400)
@@ -993,3 +1005,83 @@ def test_a_parcel_that_enters_only_partly_is_drawn_apart():
     lands_block = page[page.index("const landPaths="):page.index("const sitePath=")]
     assert "l.part" in lands_block and "stroke-dasharray" in lands_block, (
         "участок-часть рисуется наравне с целыми")
+
+
+@pytest.mark.timeout(180)
+def test_in_a_real_browser_the_numbers_do_not_pile_up(monkeypatch):
+    """Подписи не наезжают друг на друга, а не поместившиеся названы числом.
+
+    «Нефункционально вышло» (владелец, 07.09.2026): на карте двадцать участков
+    и тридцать девять строений, подпись стояла в центре РАМКИ фигуры, и они
+    легли кашей — «С25 24 С31», «У12 С34», а у дороги центр рамки пришёлся на
+    середину Москвы-реки. Проверять это можно только отрисовкой: в исходнике
+    подписи выглядят одинаково и у каши, и у порядка.
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception:  # noqa: BLE001
+        pytest.skip("playwright недоступен")
+    chrome = Path("/opt/pw-browsers/chromium-1194/chrome-linux/chrome")
+    if not chrome.exists():
+        pytest.skip("chromium в образе не найден")
+    import uvicorn
+
+    monkeypatch.setenv("NAGATINO_EGRN_READ", "0")
+    # Участок и десять строений вплотную: места на все номера заведомо нет.
+    land = [[[4187000, 7495000], [4187600, 7495000], [4187600, 7495600], [4187000, 7495600]]]
+    seed = {"77:05:0004001:2471": {"asked_at": time.time(), "rings": land, "reason": ""}}
+    view = parcels.territory()
+    crowd = [item["cadastral_number"] for item in view["objects"]][:10]
+    # Тесно намеренно: десять строений по 14 м в квадрате 90 м — на карте это
+    # десяток пикселей, и номер там не помещается физически.
+    for index, number in enumerate(crowd):
+        x = 4187030 + (index % 5) * 18
+        y = 7495030 + (index // 5) * 18
+        seed[number] = {"asked_at": time.time(), "reason": "",
+                        "rings": [[[x, y], [x + 14, y], [x + 14, y + 14], [x, y + 14]]]}
+    _seed(seed)
+
+    server = uvicorn.Server(uvicorn.Config(_app(), host="127.0.0.1", port=PORT + 3,
+                                           log_level="error"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    for _ in range(200):
+        if server.started:
+            break
+        time.sleep(0.05)
+    assert server.started
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(executable_path=str(chrome))
+            page = browser.new_page()
+            errors: list[str] = []
+            page.on("pageerror", lambda exc: errors.append(str(exc)))
+            page.goto(f"http://127.0.0.1:{PORT + 3}/krt/nagatino",
+                      wait_until="domcontentloaded")
+            page.wait_for_selector("path.parcel", timeout=20000)
+            page.wait_for_timeout(400)
+            seen = page.evaluate("""() => ({
+              boxes: [...document.querySelectorAll('#mapFrame svg text')].map(n => {
+                const b = n.getBoundingClientRect();
+                return {t: n.textContent, x0: b.left, x1: b.right, y0: b.top, y1: b.bottom};
+              }),
+              shapes: document.querySelectorAll('#mapFrame svg path[data-cad], #mapFrame svg path[data-land]').length,
+              tail: [...document.querySelectorAll('#mapBox .source')].map(n => n.textContent).pop() || '',
+            })""")
+            browser.close()
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)
+
+    assert not errors, errors
+    boxes = seen["boxes"]
+    assert boxes, "подписей нет вовсе"
+    for i, a in enumerate(boxes):
+        for b in boxes[i + 1:]:
+            assert not (a["x0"] < b["x1"] and b["x0"] < a["x1"]
+                        and a["y0"] < b["y1"] and b["y0"] < a["y1"]), (
+                f"подписи наехали: {a['t']} и {b['t']}")
+    # Предохранитель: на тесной карте часть номеров ОБЯЗАНА не поместиться,
+    # иначе проверка на непересечение ничего не значит.
+    assert len(boxes) < seen["shapes"], (len(boxes), seen["shapes"])
+    assert "Не подписано на карте" in seen["tail"], seen["tail"]

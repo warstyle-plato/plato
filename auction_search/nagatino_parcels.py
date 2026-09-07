@@ -1313,6 +1313,15 @@ def payload() -> dict[str, Any]:
             "drawn": len([p for p in parcels if p["rings_merc"]]),
             "empty": len([p for p in parcels if p["outline_state"] == "empty"]),
             "unread": len([p for p in parcels if p["outline_state"] == "unread"]),
+            # Земельные участки считаются ОТДЕЛЬНО: счётчик выше идёт по
+            # строкам присланного файла, а это здания. Пока участки в него не
+            # входили, ненарисованный участок нигде не назывался — и «почему
+            # зелёной подложки Москвы нет под строениями Москвы?» (владелец,
+            # 07.09.2026) ответа на экране не имело: участок 77:05:0004001:7
+            # покрашен городским зелёным, а контур его ещё не спрашивали.
+            "lands": len(lands_and_objects["lands"]),
+            "lands_drawn": len([land for land in lands_and_objects["lands"]
+                                if land.get("rings_merc")]),
             "reading": reading(),
             "problem": str((load_json(cache_path()) or {}).get("problem") or ""),
         },
