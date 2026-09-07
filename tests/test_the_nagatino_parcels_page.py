@@ -244,6 +244,114 @@ def test_the_egrn_disagreement_on_area_is_named_and_not_swallowed():
     assert "Площадь по выгрузке" in page
 
 
+# --- земля под строениями ----------------------------------------------------
+
+LAND = {"found": True, "kind": "land", "cadastral_number": "77:05:0004001:2046",
+        "area_sqm": 19026.0, "cadastral_value_rub": 274_000_000.0,
+        "permitted_use": "участки смешанного размещения производственных объектов",
+        "ownership": "Частная", "address": "Москва, Варшавское шоссе, 37А",
+        "contour_merc": [[[4188000, 7495000], [4189000, 7495000],
+                          [4189000, 7496000], [4188000, 7496000]]]}
+
+
+def _seed_read(numbers_with_centre: list[str]) -> None:
+    """Прочитанные строения с центром: без него землю спрашивать не по чему."""
+    _seed({number: {"asked_at": time.time(), "rings": SQUARE, "reason": "",
+                    "egrn": {"kind": "building", "kind_label": "Объект капитального строительства",
+                             "center": {"lat": 55.68, "lng": 37.62}}}
+           for number in numbers_with_centre})
+
+
+def test_the_parcel_under_a_building_is_taken_from_the_point_not_from_a_field():
+    """Поле «кадастровый номер ЗУ» у здания ЕГРН отдаёт пустым по всем 39
+    номерам выгрузки — привязка считается геометрией источника: что стоит в
+    точке центра здания."""
+    numbers = parcels.numbers()
+    _seed_read(numbers[:2])
+    asked: list[tuple[float, float]] = []
+
+    def at_point(lat, lng):
+        asked.append((lat, lng))
+        # Вместе с участком в точке стоит и само здание — берём только землю.
+        return [{"found": True, "kind": "building", "cadastral_number": "77:05:0004001:1052"},
+                dict(LAND)]
+
+    parcels.read_land_chunk(at_point, limit=2)
+    assert len(asked) == 2, "спрошены не все прочитанные строения"
+    data = parcels.payload()
+    linked = [row for row in data["parcels"] if row["land_state"] == "linked"]
+    assert len(linked) == 2
+    assert all(row["land"] == LAND["cadastral_number"] for row in linked)
+    assert data["land_totals"]["parcels"] == 1
+    assert data["land_totals"]["area_sqm"] == 19026.0
+    assert data["lands"][0]["buildings"] == 2
+
+
+def test_a_building_without_a_parcel_under_it_is_named_not_dropped():
+    numbers = parcels.numbers()
+    _seed_read(numbers[:1])
+    parcels.read_land_chunk(lambda lat, lng: [], limit=1)
+    row = next(r for r in parcels.payload()["parcels"] if r["cadastral_number"] == numbers[0])
+    assert row["land_state"] == "empty" and row["land_reason"], \
+        "молча потерянная привязка читается как отсутствие земли под зданием"
+
+
+def test_a_second_parcel_in_the_same_point_is_named_not_swallowed():
+    """Два участка под одной точкой значит, что выбор сделан за источник."""
+    numbers = parcels.numbers()
+    _seed_read(numbers[:1])
+    other = {**LAND, "cadastral_number": "77:05:0004001:9"}
+    parcels.read_land_chunk(lambda lat, lng: [dict(LAND), other], limit=1)
+    row = next(r for r in parcels.payload()["parcels"] if r["cadastral_number"] == numbers[0])
+    assert row["land"] == LAND["cadastral_number"]
+    assert row["land_others"] == ["77:05:0004001:9"]
+    assert "взят первый" in nagatino_ui.NAGATINO_PAGE
+
+
+def test_an_unread_building_is_not_asked_about_its_land():
+    """Точки у непрочитанного строения нет, и «не спрашивали» здесь наш пробел."""
+    _seed({})
+    assert parcels.land_unread() == []
+    _seed_read(parcels.numbers()[:3])
+    assert len(parcels.land_unread()) == 3
+
+
+def test_land_and_buildings_are_never_summed_into_one_measure():
+    """У участка площадь земли, у здания — площадь здания. Плотность считается
+    только по земле, и две меры стоят двумя итогами, а не одним."""
+    numbers = parcels.numbers()
+    _seed_read(numbers[:2])
+    parcels.read_land_chunk(lambda lat, lng: [dict(LAND)], limit=2)
+    data = parcels.payload()
+    assert data["totals"]["area_sqm"] != data["land_totals"]["area_sqm"]
+    assert "area_sqm" in data["land_totals"] and "area_sqm" in data["totals"]
+    page = nagatino_ui.NAGATINO_PAGE
+    assert "площадь земли" in page and "их площадь по строкам" in page
+
+
+def test_the_owner_of_the_land_is_not_the_owner_of_the_building():
+    """Выгрузка называет владельцев СТРОЕНИЙ, а ЕГРН по земле отдаёт только
+    форму собственности. Подписать одно другим значит сказать неправду."""
+    page = nagatino_ui.NAGATINO_PAGE
+    assert "Правообладатель участка" in page
+    assert "выгрузка называет владельцев зданий" in page
+    numbers = parcels.numbers()
+    _seed_read(numbers[:1])
+    parcels.read_land_chunk(lambda lat, lng: [dict(LAND)], limit=1)
+    land = parcels.payload()["lands"][0]
+    assert "owner" not in land and "owner_short" not in land, \
+        "у участка завёлся правообладатель, которого источник не называл"
+    assert "building_owners" in land, "чьи на нём строения — это другой вопрос, и он назван"
+
+
+def test_the_land_is_drawn_under_the_buildings():
+    """Участок крупнее здания: нарисованный поверх, он закрыл бы его целиком."""
+    page = nagatino_ui.NAGATINO_PAGE
+    assert page.index("${sitePath}${landPaths}${shapes}") > 0, \
+        "порядок слоёв не задан: земля обязана лежать под строениями"
+    assert "fill=\"rgba(17,17,17,0.04)\"" in page, "залитый участок перехватит указатель"
+
+
 # --- площадка КРТ: чужой контур, а не второй свой ----------------------------
 
 def test_the_site_is_recognised_by_geometry_not_by_name():
@@ -446,11 +554,17 @@ def test_the_work_is_taken_by_one_worker(monkeypatch):
 
 READ = """() => ({
   shapes: document.querySelectorAll('path.parcel').length,
+  lands: document.querySelectorAll('path.land').length,
   site: document.querySelectorAll('#mapFrame svg path[stroke-dasharray]').length,
   rows: document.querySelectorAll('#tableBox tbody tr').length,
+  landRows: document.querySelectorAll('#landBox tbody tr').length,
   legend: document.getElementById('legend').textContent,
   coverage: document.getElementById('coverage').textContent,
   source: document.getElementById('sourceNote').textContent,
+  landFirst: [...document.querySelectorAll('#mapFrame svg path')]
+    .findIndex(n => n.classList.contains('land'))
+    < [...document.querySelectorAll('#mapFrame svg path')]
+      .findIndex(n => n.classList.contains('parcel')),
 })"""
 
 
@@ -474,8 +588,16 @@ def test_in_a_real_browser_the_parcels_are_drawn_and_the_owner_pops_up(monkeypat
     small = [[[4187150, 7495150], [4187200, 7495150], [4187200, 7495200], [4187150, 7495200]]]
     uniks = next(p["cadastral_number"] for p in parcels.payload()["parcels"]
                  if p["owner"] == "uniks")
-    _seed({numbers[0]: {"asked_at": time.time(), "rings": big, "reason": ""},
-           uniks: {"asked_at": time.time(), "rings": small, "reason": ""}})
+    centre = {"lat": 55.68, "lng": 37.62}
+    _seed({numbers[0]: {"asked_at": time.time(), "rings": big, "reason": "",
+                        "egrn": {"kind": "building", "kind_label": "Объект капитального строительства",
+                                 "center": centre}},
+           uniks: {"asked_at": time.time(), "rings": small, "reason": "",
+                   "egrn": {"kind": "building", "kind_label": "Объект капитального строительства",
+                            "center": centre}}})
+    # Земля под ними: участок крупнее обоих строений и лежит под ними.
+    around = [[[4186800, 7494800], [4187600, 7494800], [4187600, 7495600], [4186800, 7495600]]]
+    parcels.read_land_chunk(lambda lat, lng: [{**LAND, "contour_merc": around}], limit=2)
     parcels.store_site({"slug": "nagatino", "name": "КРТ Нагатино",
                         "rings_merc": [[[4186900, 7494900], [4187500, 7494900],
                                         [4187500, 7495500], [4186900, 7495500]]]})
@@ -499,7 +621,10 @@ def test_in_a_real_browser_the_parcels_are_drawn_and_the_owner_pops_up(monkeypat
             page.wait_for_selector("path.parcel", timeout=20000)
             seen = page.evaluate(READ)
             assert not errors, errors
-            assert seen["shapes"] == 2, "нарисованы не все прочитанные участки"
+            assert seen["shapes"] == 2, "нарисованы не все прочитанные строения"
+            assert seen["lands"] == 1, "земля под строениями не нарисована"
+            assert seen["landFirst"], "земля нарисована ПОВЕРХ строений — она их закроет"
+            assert seen["landRows"] == 1, "свода по земле на странице нет"
             assert seen["site"] == 1, "границы площадки КРТ на карте нет"
             assert seen["rows"] == 39, "в таблице не все участки выгрузки"
             assert "Брынцалов" in seen["legend"] and "Прочее" in seen["legend"]
@@ -519,6 +644,18 @@ def test_in_a_real_browser_the_parcels_are_drawn_and_the_owner_pops_up(monkeypat
             tip = page.locator("#parcelTip").inner_text()
             assert "УНИКС" in tip, tip
             assert "Брынцалов" in tip and "ИНН" in tip
+            assert LAND["cadastral_number"] in tip, "участок под зданием не назван в карточке"
+
+            # Участок отвечает СВОЕЙ карточкой, а не карточкой здания: меры у
+            # них разные, и правообладателя земли выгрузка не называет вовсе.
+            # Наводить надо туда, где участок НЕ закрыт строением: строения
+            # лежат поверх намеренно, и в их точках указатель достаётся им.
+            page.locator("path.land").first.hover(position={"x": 20, "y": 20})
+            page.wait_for_timeout(400)
+            land_tip = page.locator("#parcelTip").inner_text()
+            assert "Земельный участок" in land_tip, land_tip
+            assert "выгрузка называет владельцев зданий" in land_tip
+            assert "Строений на участке" in land_tip
             browser.close()
     finally:
         server.should_exit = True

@@ -16,13 +16,17 @@
 серверная склейка `/land/basemap`, что у карты КРТ. Контур площадки приходит
 готовым из реестра.
 
-Четыре вещи, которые эта страница обязана говорить вслух:
+Пять вещей, которые эта страница обязана говорить вслух:
 
 - **чей объект — из выгрузки владельца, а контур и вид — из ЕГРН**: два
   источника на одну строку, и подпись называет каждый;
 - **это здания, а не земельные участки.** Живой ответ 07.09.2026: все 39
   номеров — объекты капитального строительства, и «пл» в выгрузке значит
   площадь здания, а не земли;
+- **земля и строения меряются разным и в одну колонку не складываются**: у
+  участка площадь земли, у здания — площадь здания, и плотность считается
+  только по земле. Участки лежат под строениями своим слоем и своей таблицей, а
+  правообладателя земли выгрузка не называет вовсе;
 - **не нарисованный объект назван причиной**, а «ещё не спрашивали» и «в ЕГРН
   контура нет» — разные ответы: слитые в «не нарисован», они читаются как
   отсутствие объекта в территории;
@@ -70,7 +74,7 @@ button[disabled]{opacity:.45;cursor:default}
 .mapwrap{position:relative;border:1px solid var(--line);background:var(--soft)}
 .mapwrap img{display:block;width:100%;height:auto}
 .mapwrap svg.layer{position:absolute;left:0;top:0;width:100%;height:100%}
-#parcelTip{position:absolute;display:none;z-index:4;pointer-events:none;background:#fff;border:1px solid #111;padding:9px 11px;font-size:12px;max-width:340px;box-shadow:0 2px 10px rgba(0,0,0,.14)}
+#parcelTip{position:absolute;display:none;z-index:4;pointer-events:none;background:#fff;border:1px solid #111;padding:9px 11px;font-size:12px;max-width:340px;max-height:70%;overflow:hidden;box-shadow:0 2px 10px rgba(0,0,0,.14)}
 #parcelTip b{display:block;font-size:13px;margin-bottom:3px}
 #parcelTip .dot{display:inline-block;width:9px;height:9px;margin-right:5px}
 #parcelTip dl{display:grid;grid-template-columns:auto 1fr;gap:2px 10px;margin:6px 0 0}
@@ -108,7 +112,10 @@ tr.pick{background:#fff6df}
     <div id="legend" class="legend"></div>
     <div id="coverage" class="source"></div>
 
-    <h2>Объекты выгрузки</h2>
+    <h2>Земля под строениями</h2>
+    <div id="landBox"></div>
+
+    <h2>Строения выгрузки</h2>
     <div id="tableBox"></div>
     <div id="ownersBox"></div>
   </div>
@@ -207,13 +214,22 @@ function mapMarkup(){
  if(!drawn.length)
   return '<div class="notice warn">Ни одного контура пока нет — рисовать нечего. '
    +'Это не значит, что объектов нет: '+escapeHtml(String((d.outlines||{}).problem||'ЕГРН по ним ещё не спрашивали'))+'.</div>';
- const place=frame(drawn.flatMap(p=>p.rings_merc).concat(site));
+ const lands=(d.lands||[]).filter(l=>(l.rings||[]).length);
+ const place=frame(drawn.flatMap(p=>p.rings_merc)
+   .concat(lands.flatMap(l=>l.rings)).concat(site));
  const src='/land/basemap?'+new URLSearchParams({
    bbox:[place.ax,place.ay,place.bx,place.by].join(','),width:String(FRAME.w)});
  // Заполненный контур перехватывает указатель на всей своей площади: крупные
  // рисуются вниз, мелкие наверх — иначе мелкий недостижим в принципе.
  const order=drawn.map((p,i)=>({p,i,a:landRingArea(p.rings_merc)}))
    .sort((x,y)=>y.a-x.a);
+ // Земля рисуется ПОД зданиями и без заливки: участок крупнее здания, и
+ // залитый он перехватил бы указатель на всей своей площади — здания стали бы
+ // недостижимы. Своей меры у него другая, поэтому и вид другой.
+ const landPaths=lands.map(l=>
+   `<path d="${pathOf(l.rings,place)}" fill="rgba(17,17,17,0.04)" stroke="#4a4a4a"`
+   +` stroke-width="1.1" data-land="${escapeHtml(l.cadastral_number)}" class="land"`
+   +` style="cursor:pointer"><title>${escapeHtml(landTitle(l))}</title></path>`).join('');
  const sitePath=site.length
   ? `<path d="${pathOf(site,place)}" fill="none" stroke="#111" stroke-width="2" stroke-dasharray="7 4"></path>` : '';
  // Фигура опознаётся кадастровым номером, а не местом в списке: список тут
@@ -236,7 +252,8 @@ function mapMarkup(){
   // читается как поломка страницы, хотя сломан чужой источник тайлов.
   +`<img src="${src}" alt="" width="${FRAME.w}" height="${FRAME.h}"`
   +` onerror="this.style.visibility='hidden';document.getElementById('mapBase').style.display=''">`
-  +`<svg class="layer" viewBox="0 0 ${FRAME.w} ${FRAME.h}" preserveAspectRatio="none">${sitePath}${shapes}</svg>`
+  +`<svg class="layer" viewBox="0 0 ${FRAME.w} ${FRAME.h}" preserveAspectRatio="none">`
+  +`${sitePath}${landPaths}${shapes}</svg>`
   +`<div id="parcelTip"></div>`
   +`<div id="mapBase" style="display:none;position:absolute;left:8px;top:8px;`
   +`background:#fff;border:1px solid var(--line);padding:5px 8px;font-size:12px;color:var(--muted)">`
@@ -249,6 +266,36 @@ function mapMarkup(){
 function tipTitle(p){
  return p.cadastral_number+' · '+(p.owner_short||'правообладатель в выгрузке не указан');
 }
+// ВРИ участка бывает на десять строк, и карточка становится выше карты.
+// Обрезка называется многоточием, а полный текст стоит в таблице ниже: молча
+// обрезанное читается как весь ответ источника.
+function shorten(text,limit){
+ const s=String(text||'');
+ return s.length>limit?s.slice(0,limit-1).replace(/[\s,;]+$/,'')+'…':s;
+}
+function landTitle(l){
+ return 'Участок '+l.cadastral_number+' · '+m2(l.area_sqm)+' · зданий '+l.buildings;
+}
+// У участка своя карточка: мера у земли другая, и правообладателя её выгрузка
+// не называет вовсе — она про владельцев ЗДАНИЙ. Пока источника по земле нет,
+// колонка честно пуста, а не заполнена владельцем здания: это разные лица.
+function landHtml(l){
+ const rows=[
+  ['Площадь участка',m2(l.area_sqm)],
+  ['Кадастровая стоимость',mln(l.cadastral_value_rub)],
+  ['Разрешённое использование',escapeHtml(shorten(l.permitted_use,170)||'—')],
+  ['Форма собственности',escapeHtml(l.ownership||'в ЕГРН не указана')],
+  ['Правообладатель участка','<i>источника нет — выгрузка называет владельцев зданий</i>'],
+  ['Строений на участке',l.buildings+' · '+m2(l.buildings_area_sqm)],
+ ];
+ if(l.building_owners&&l.building_owners.length)
+  rows.push(['Чьи это строения',escapeHtml(l.building_owners.join(', '))
+   +(l.unowned_buildings?' · и ещё '+l.unowned_buildings+' без правообладателя в выгрузке':'')]);
+ if(l.address)rows.push(['Адрес по ЕГРН',escapeHtml(l.address)]);
+ return `<b>Земельный участок ${escapeHtml(l.cadastral_number)}</b>`
+  +'<dl>'+rows.map(r=>`<dt>${r[0]}</dt><dd>${r[1]}</dd>`).join('')+'</dl>';
+}
+
 function tipHtml(p){
  const rows=[
   ['Правообладатель',p.owner_name?escapeHtml(p.owner_name):'<i>в выгрузке не указан</i>'],
@@ -265,6 +312,14 @@ function tipHtml(p){
  if(p.egrn&&p.egrn.area_sqm!=null&&p.area_sqm!=null
     &&Math.abs(p.egrn.area_sqm-p.area_sqm)>Math.max(1,p.area_sqm*0.02))
   rows.push(['Площадь по ЕГРН','<b>'+m2(p.egrn.area_sqm)+'</b> — расходится с выгрузкой']);
+ rows.push(['Участок под зданием', p.land_state==='linked'
+   ? escapeHtml(p.land)+' <span class="source">— по точке ЕГРН в центре здания</span>'
+     +(p.land_others&&p.land_others.length
+       ? ' <span class="source">· в этой точке ЕГРН показал ещё '+p.land_others.length
+         +', взят первый</span>' : '')
+   : p.land_state==='empty'
+     ? '<i>'+escapeHtml(p.land_reason||'участка в точке не нашлось')+'</i>'
+     : '<i>ещё не спрашивали</i>']);
  if(p.note)rows.push(['Пометка в выгрузке',escapeHtml(p.note)]);
  return `<b><span class="dot" style="background:${escapeHtml(p.colour)}"></span>${escapeHtml(p.cadastral_number)}</b>`
   +`<div class="source" style="margin:0">${escapeHtml(p.group_title)}</div>`
@@ -276,20 +331,33 @@ function bindMap(){
  const live=$('liveBtn'); if(live)live.onclick=openLive;
  const again=$('refetch'); if(again)again.onclick=()=>{again.disabled=true;load(true)};
  if(!frameBox||!tip)return;
+ // Наведение объявлено один раз на обе фигуры: здание и участок отвечают
+ // разными карточками, но показываются одинаково — две копии этой возни
+ // разошлись бы в мелочах, а выглядели бы обе верными.
+ const follow=(node,html)=>{
+  node.onmousemove=ev=>{
+   const box=frameBox.getBoundingClientRect();
+   tip.innerHTML=html();
+   tip.style.display='block';
+   const x=ev.clientX-box.left+14,y=ev.clientY-box.top+14;
+   tip.style.left=Math.max(8,Math.min(x,box.width-tip.offsetWidth-8))+'px';
+   tip.style.top=Math.max(8,Math.min(y,box.height-tip.offsetHeight-8))+'px';
+  };
+  node.onmouseleave=()=>{tip.style.display='none'};
+ };
  frameBox.querySelectorAll('path.parcel').forEach(node=>{
   const p=S.data.parcels.find(x=>x.cadastral_number===node.dataset.cad);
   if(!p)return;
-  node.onmousemove=ev=>{
-   const box=frameBox.getBoundingClientRect();
-   tip.innerHTML=tipHtml(p);
-   tip.style.display='block';
-   const x=ev.clientX-box.left+14,y=ev.clientY-box.top+14;
-   tip.style.left=Math.min(x,box.width-tip.offsetWidth-8)+'px';
-   tip.style.top=Math.min(y,box.height-tip.offsetHeight-8)+'px';
-  };
-  node.onmouseleave=()=>{tip.style.display='none'};
+  follow(node,()=>tipHtml(p));
   node.onclick=()=>{S.pick=p.cadastral_number;render();
    document.getElementById('row-'+p.no)?.scrollIntoView({block:'center'})};
+ });
+ frameBox.querySelectorAll('path.land').forEach(node=>{
+  const l=(S.data.lands||[]).find(x=>x.cadastral_number===node.dataset.land);
+  if(!l)return;
+  follow(node,()=>landHtml(l));
+  node.onclick=()=>{document.getElementById('land-'+l.cadastral_number.replace(/[^0-9]/g,'-'))
+    ?.scrollIntoView({block:'center'})};
  });
 }
 
@@ -303,16 +371,33 @@ function openLive(){
   .map(p=>({rings:p.rings_merc,colour:p.colour,key:p.cadastral_number,title:tipTitle(p)}))
   .sort((a,b)=>landRingArea(b.rings)-landRingArea(a.rings));
  const site=(d.krt_site&&d.krt_site.rings_merc)||[];
+ // Участки идут теми же фигурами, но ПЕРВЫМИ и крупнее: живая карта рисует
+ // список по порядку, и земля обязана лежать под зданиями.
+ const landShapes=(d.lands||[]).filter(l=>(l.rings||[]).length).map(l=>({
+  rings:l.rings,colour:'#4a4a4a',key:'land:'+l.cadastral_number,title:landTitle(l),
+ })).sort((a,b)=>landRingArea(b.rings)-landRingArea(a.rings));
  openLandMap({
   rings:site,
-  shapes:shapes,
-  title:'КРТ Нагатино — '+shapes.length+' объектов квартала 77:05:0004001',
+  shapes:landShapes.concat(shapes),
+  title:'КРТ Нагатино — '+shapes.length+' строений на '+landShapes.length
+   +' участках, квартал 77:05:0004001',
   note:'Тяните карту мышью или пальцем, колесо — увеличение. Нажмите на объект, '
    +'чтобы увидеть правообладателя. Цвет — группа владельца из выгрузки, чёрный пунктир — '
    +'граница площадки КРТ из реестра города, подложка — OpenStreetMap.',
   onPick:number=>{
+   if(!LAND_MAP)return;
+   if(String(number).startsWith('land:')){
+    const l=(d.lands||[]).find(x=>'land:'+x.cadastral_number===number);
+    if(!l)return;
+    LAND_MAP.note='Участок '+l.cadastral_number+' · '+m2(l.area_sqm)
+     +' · КС '+mln(l.cadastral_value_rub)+' · '+(l.permitted_use||'ВРИ не указан')
+     +' · строений '+l.buildings+' ('+m2(l.buildings_area_sqm)+')'
+     +' · правообладателя участка выгрузка не называет — она про владельцев зданий';
+    renderLandMap();
+    return;
+   }
    const p=d.parcels.find(x=>x.cadastral_number===number);
-   if(!p||!LAND_MAP)return;
+   if(!p)return;
    LAND_MAP.note=p.cadastral_number+' · '
     +(p.owner_name||'правообладатель в выгрузке не указан')
     +(p.inn?' · ИНН '+p.inn:'')+(p.ogrn?' · ОГРН '+p.ogrn:'')
@@ -323,13 +408,49 @@ function openLive(){
  });
 }
 
+// Земля и строения меряются разным, и в одну колонку не складываются: у
+// участка площадь земли, у здания — площадь здания. Плотность считается только
+// по земле, и потому две меры стоят двумя рядами, а не одним итогом.
 function statsMarkup(){
- const t=S.data.totals,o=S.data.outlines;
- return [[landNum(t.parcels,0),'объектов в выгрузке'],
-         [m2(t.area_sqm),'площадь по строкам выгрузки'],
-         [mln(t.cadastral_value_rub),'кадастровая стоимость'],
-         [landNum(o.drawn,0)+' из '+landNum(o.parcels,0),'контуров получено из ЕГРН']]
-  .map(s=>`<div class="stat"><b>${s[0]}</b><span>${s[1]}</span></div>`).join('');
+ const t=S.data.totals,o=S.data.outlines,L=S.data.land_totals||{};
+ const tiles=[[landNum(t.parcels,0),'строений в выгрузке'],
+              [m2(t.area_sqm),'их площадь по строкам'],
+              [mln(t.cadastral_value_rub),'кадастровая стоимость строений'],
+              [landNum(o.drawn,0)+' из '+landNum(o.parcels,0),'контуров строений из ЕГРН']];
+ if(L.parcels)tiles.push(
+   [landNum(L.parcels,0),'участков под ними'],
+   [landNum(L.area_sqm/10000,2)+' га','площадь земли'],
+   [mln(L.cadastral_value_rub),'кадастровая стоимость земли']);
+ return tiles.map(s=>`<div class="stat"><b>${s[0]}</b><span>${s[1]}</span></div>`).join('');
+}
+
+function landTableMarkup(){
+ const L=S.data.land_totals||{},lands=S.data.lands||[];
+ if(!lands.length)
+  return `<div class="notice">Земля под строениями ещё не спрошена`
+   +(L.unread?` — осталось ${L.unread} строений`:'')+'. '
+   +'Участок под зданием берётся из ЕГРН по точке центра здания: поле «кадастровый '
+   +'номер ЗУ» у этих объектов пустое во всех тридцати девяти.</div>';
+ const rows=lands.map(l=>
+  `<tr id="land-${escapeHtml(l.cadastral_number.replace(/[^0-9]/g,'-'))}">`
+  +`<td>${escapeHtml(l.cadastral_number)}</td>`
+  +`<td class="num">${m2(l.area_sqm)}</td>`
+  +`<td class="num">${mln(l.cadastral_value_rub)}</td>`
+  +`<td>${escapeHtml(l.permitted_use||'—')}</td>`
+  +`<td>${escapeHtml(l.ownership||'—')}</td>`
+  +`<td class="num">${l.buildings} · ${m2(l.buildings_area_sqm)}</td>`
+  +`<td>${escapeHtml((l.building_owners||[]).join(', ')||'—')}`
+  +`${l.unowned_buildings?`<div class="source">и ещё ${l.unowned_buildings} без правообладателя в выгрузке</div>`:''}</td>`
+  +'</tr>').join('');
+ return '<div class="tablewrap"><table><thead><tr><th>Участок</th><th class="num">Площадь земли</th>'
+  +'<th class="num">Кадастровая стоимость</th><th>Разрешённое использование</th>'
+  +'<th>Форма собственности</th><th class="num">Строений на нём</th>'
+  +'<th>Чьи строения (из выгрузки)</th></tr></thead><tbody>'+rows
+  +`</tbody><tfoot><tr><th>Итого</th><th class="num">${m2(L.area_sqm)}</th>`
+  +`<th class="num">${mln(L.cadastral_value_rub)}</th><th colspan="4"></th></tr></tfoot></table></div>`
+  +'<div class="source">Правообладателя САМОГО участка здесь нет: выгрузка называет владельцев '
+  +'строений, а ЕГРН по земле отдаёт только форму собственности. Чьи участки — отдельный источник; '
+  +'до него колонка пуста, а не заполнена владельцем здания: это разные лица.</div>';
 }
 
 // Вид объекта — не подробность, а поправка к самому предмету разговора.
@@ -383,6 +504,9 @@ function legendMarkup(){
   `<span title="${escapeHtml(g.note||'')}"><span class="key" style="background:${escapeHtml(g.colour)}"></span>`
   +`${escapeHtml(g.title)} — ${g.parcels} об., ${m2(g.area_sqm)}, ${mln(g.cadastral_value_rub)}`
   +`${g.owners.length?' · '+escapeHtml(g.owners.join(', ')):''}</span>`).join('')
+  +((S.data.lands||[]).length
+    ? '<span><span class="key" style="border:1px solid #4a4a4a;background:rgba(17,17,17,.04)"></span>'
+      +'земельный участок под строениями (ЕГРН, '+S.data.lands.length+')</span>' : '')
   +'<span><span class="key" style="border:1px dashed #111"></span>граница площадки КРТ (реестр города)</span>';
 }
 
@@ -410,14 +534,18 @@ function tableMarkup(){
    +`${p.inn||p.ogrn?`<div class="source">${escapeHtml([p.inn?'ИНН '+p.inn:'',p.ogrn?'ОГРН '+p.ogrn:''].filter(Boolean).join(' · '))}</div>`:''}</td>`
    +`<td>${escapeHtml(p.group_title)}</td>`
    +`<td class="source">${p.egrn?escapeHtml(p.egrn.kind_label||'—'):'не спрашивали'}</td>`
+   +`<td class="source">${p.land_state==='linked'?escapeHtml(p.land)
+      :p.land_state==='empty'?escapeHtml(p.land_reason||'не нашлось'):'не спрашивали'}</td>`
    +`<td class="source">${state}</td></tr>`;
  }).join('');
  const t=S.data.totals;
  return '<div class="tablewrap"><table><thead><tr><th class="num">№</th><th>Кадастровый номер</th>'
   +'<th class="num">Площадь</th><th class="num">Кадастровая стоимость</th><th>Правообладатель</th>'
-  +'<th>Группа</th><th>Вид по ЕГРН</th><th>Контур</th></tr></thead><tbody>'+rows
+  +'<th>Группа</th><th>Вид по ЕГРН</th><th title="Найден по точке центра здания в ЕГРН: '
+  +'поле «кадастровый номер ЗУ» у этих объектов пустое во всех тридцати девяти">Участок под ним</th>'
+  +'<th>Контур</th></tr></thead><tbody>'+rows
   +`</tbody><tfoot><tr><th></th><th>Итого по строкам</th><th class="num">${m2(t.area_sqm)}</th>`
-  +`<th class="num">${mln(t.cadastral_value_rub)}</th><th colspan="4"></th></tr></tfoot></table></div>`;
+  +`<th class="num">${mln(t.cadastral_value_rub)}</th><th colspan="5"></th></tr></tfoot></table></div>`;
 }
 
 function ownersMarkup(){
@@ -440,6 +568,7 @@ function render(){
  $('mapBox').innerHTML=mapMarkup();
  $('legend').innerHTML=legendMarkup();
  $('coverage').innerHTML=coverageMarkup();
+ $('landBox').innerHTML=landTableMarkup();
  $('tableBox').innerHTML=tableMarkup();
  $('ownersBox').innerHTML=ownersMarkup();
  bindMap();

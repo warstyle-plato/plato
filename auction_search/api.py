@@ -1593,13 +1593,32 @@ def install(app: FastAPI) -> None:
         if callable(lookup):
             started = await run_in_threadpool(
                 lambda: nagatino_parcels.fill_in_background(
-                    lookup, find_site=_nagatino_site_finder(refresh)))
+                    lookup, find_site=_nagatino_site_finder(refresh),
+                    point_lookup=_nagatino_point_lookup()))
             if started:
                 data["outlines"]["reading"] = True
         else:
             data["outlines"]["problem"] = (data["outlines"]["problem"]
                                            or "движок ЕГРН не подключён — контуры не спрашивались")
         return data
+
+    def _nagatino_point_lookup():
+        """Что стоит в точке — путь движка, второго клиента НСПД здесь нет.
+
+        Земельный участок под зданием ЕГРН полем «кадастровый номер ЗУ» не
+        отдаёт: по всем 39 объектам выгрузки оно пустое. Зато отдаёт объекты в
+        точке — тем же путём, которым `/land/lookup` отвечает на координаты.
+        """
+        features = getattr(core, "_nspd_point_features", None) if core is not None else None
+        normalize = getattr(core, "_land_lookup_features_to_results", None) if core is not None else None
+        if not callable(features) or not callable(normalize):
+            return None
+
+        def at(lat: float, lng: float) -> list[dict[str, Any]]:
+            found, _hidden = normalize(features(lat, lng), 10, only_land=False)
+            return list(found or [])
+
+        return at
 
     def _nagatino_site_finder(refresh: bool):
         """Чем опознать площадку в реестре КРТ. Своей геометрии здесь нет:
