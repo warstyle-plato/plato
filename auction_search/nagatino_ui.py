@@ -124,6 +124,8 @@ table.territory tr.obj td:first-child{border-left:14px solid var(--soft)}
     <div id="mapBox"><div class="notice">Строю карту…</div></div>
     <div id="legend" class="legend"></div>
     <div id="coverage" class="source"></div>
+    <div class="fold"><details><summary>Контур площадки, как его напечатал город</summary>
+      <div id="decisionOutline"></div></details></div>
 
     <h2>Кто чем владеет</h2>
     <div id="ownersTable"></div>
@@ -313,11 +315,18 @@ function mapMarkup(){
  // недостижимы. Своей меры у него другая, поэтому и вид другой.
  // Заливка участка бледная намеренно: он крупнее своих строений, и под
  // сплошным цветом их не видно. Цвет тот же, что у владельца.
+ // Участок, входящий в площадку ЧАСТЬЮ, рисуется пунктиром и бледнее: он на
+ // карте есть целиком, а в площадке его почти нет. Дорога 77:05:0004001:40 —
+ // 4,33 га по ЕГРН и 61 м² в площадке, и залитая наравне с остальными она
+ // читается как часть территории. «Это дорога? похоже её нет в КРТ»
+ // (владелец, 07.09.2026) — вопрос был к картинке, и отвечать на него должна
+ // картинка.
  const landPaths=lands.map(l=>
    `<path d="${pathOf(l.rings_merc,place)}" fill="${escapeHtml(l.colour)}"`
-   +` fill-opacity="${picked(l.cadastral_number)?'0.42':'0.20'}"`
+   +` fill-opacity="${picked(l.cadastral_number)?'0.42':(l.part?'0.07':'0.20')}"`
    +` stroke="${picked(l.cadastral_number)?'#111':escapeHtml(l.colour)}"`
    +` stroke-width="${picked(l.cadastral_number)?'3':'1.4'}"`
+   +(l.part?' stroke-dasharray="7 5"':'')
    +` data-land="${escapeHtml(l.cadastral_number)}" class="land"`
    +` style="cursor:pointer"><title>${escapeHtml(landTitle(l))}</title></path>`).join('');
  const sitePath=site.length
@@ -386,6 +395,7 @@ function burdenRows(x){
 
 function landTitle(l){
  return 'У'+l.no+' · участок '+l.cadastral_number+' · '+m2(l.area_sqm)
+  +(l.part&&l.notice_area_sqm!=null?' (в площадку входит '+m2(l.notice_area_sqm)+')':'')
   +' · строений '+(l.objects||[]).length;
 }
 // У участка своя карточка: мера у земли другая, и правообладателя её выгрузка
@@ -711,46 +721,58 @@ function ownersBlock(rows,extra,unions){
  groups.forEach(key=>{const inside=rows.filter(r=>r.group===key);if(inside.length)order.push([key,inside]);});
  const rest=rows.filter(r=>!groups.includes(r.group));
  if(rest.length)order.push([null,rest]);
- const money=r=>('value_rub' in r)?(r.value_rub||0):((r.land_value_rub||0)+(r.objects_value_rub||0));
+ // Стоимость земли и стоимость строений в одну колонку не складываются — то
+ // же правило, что у площадей, и здесь оно было нарушено: «можно понять, где
+ // кадастровая стоимость участков, а где строений?» (владелец, 07.09.2026).
+ // Сложенные, они отвечают на вопрос, которого никто не задавал: у соседа
+ // земли нет вовсе, и вся его стоимость в строениях, а у города своё и то и
+ // другое — и выкупать не надо ни то ни другое.
  // Справочная земля не суммируется — участок под строениями двух владельцев
  // посчитан у каждого. Поэтому у итога группы она берётся объединением,
  // посчитанным на сервере, а не складывается из строк.
- const cells=r=>`<td class="num">${r.lands||''}</td><td class="num">${r.land_area_sqm?m2(r.land_area_sqm):''}</td>`
-  +`<td class="num">${r.objects||''}</td><td class="num">${r.objects_area_sqm?m2(r.objects_area_sqm):''}</td>`
+ const cells=r=>`<td class="num">${r.lands||''}</td>`
+  +`<td class="num">${r.land_area_sqm?m2(r.land_area_sqm):''}</td>`
+  +`<td class="num">${r.land_value_rub?mln(r.land_value_rub):'—'}</td>`
+  +`<td class="num">${r.objects||''}</td>`
+  +`<td class="num">${r.objects_area_sqm?m2(r.objects_area_sqm):''}</td>`
+  +`<td class="num">${r.objects_value_rub?mln(r.objects_value_rub):'—'}</td>`
   +(unions?`<td class="num source">${r.under_land_area_sqm?m2(r.under_land_area_sqm):''}</td>`:'')
-  +`<td class="num">${mln(money(r))}</td>`+(extra?`<td class="source">${escapeHtml(r.by||'')}</td>`:'');
+  +(extra?`<td class="source">${escapeHtml(r.by||'')}</td>`:'');
  const sum=(inside,key)=>inside.reduce((a,r)=>a+Number(r[key]||0),0);
  const body=order.map(([key,inside])=>{
   const title=key?((S.data.groups||[]).find(g=>g.key===key)||{}).title
                  :(inside[0].group_title||'Группа не назначена');
   const colour=key?(((S.data.groups||[]).find(g=>g.key===key)||{}).colour||'#8a8a8a')
                  :(inside[0].colour||'#8a8a8a');
-  const band=`<tr class="zu"><td colspan="${6+(extra?1:0)+(unions?1:0)}">`
+  const band=`<tr class="zu"><td colspan="${7+(extra?1:0)+(unions?1:0)}">`
    +`<span class="swatch" style="background:${escapeHtml(colour)}"></span>`
    +`<b>${escapeHtml(title||'')}</b></td></tr>`;
   const lines=inside.map(r=>`<tr><td>${escapeHtml(r.name||'')}`
    +`${r.inn?`<div class="source">ИНН ${escapeHtml(r.inn)}</div>`:''}</td>`+cells(r)+'</tr>').join('');
   const total={lands:sum(inside,'lands'),land_area_sqm:sum(inside,'land_area_sqm'),
+   land_value_rub:sum(inside,'land_value_rub'),
    objects:sum(inside,'objects'),objects_area_sqm:sum(inside,'objects_area_sqm'),
-   value_rub:inside.reduce((a,r)=>a+money(r),0),
+   objects_value_rub:sum(inside,'objects_value_rub'),
    under_land_area_sqm:unions?(((unions.by_group||{})[key]||{}).area_sqm||0):0};
   return band+lines+`<tr><td><b>Итого · ${escapeHtml(title||'')}</b></td>`+cells(total)+'</tr>';
  }).join('');
  // ВСЕГО считается по ВСЕМ строкам, а не по показанным: сумма отбора под
  // подписью «ВСЕГО» — второе число под одним именем.
  const total={lands:sum(all,'lands'),land_area_sqm:sum(all,'land_area_sqm'),
+  land_value_rub:sum(all,'land_value_rub'),
   objects:sum(all,'objects'),objects_area_sqm:sum(all,'objects_area_sqm'),
-  value_rub:all.reduce((a,r)=>a+money(r),0),
+  objects_value_rub:sum(all,'objects_value_rub'),
   under_land_area_sqm:unions?((unions.total||{}).area_sqm||0):0};
  const hiddenOwners=all.length-rows.length;
  return '<div class="tablewrap"><table class="territory"><thead><tr><th>Правообладатель</th>'
-  +'<th class="num">Участков</th><th class="num">Земли</th><th class="num">Строений</th>'
-  +'<th class="num">Их площадь</th>'
+  +'<th class="num">Участков</th><th class="num">Земли, м²</th>'
+  +'<th class="num">КС земли</th>'
+  +'<th class="num">Строений</th><th class="num">Их площадь, м²</th>'
+  +'<th class="num">КС строений</th>'
   +(unions?'<th class="num" title="Земля ПОД строениями этого владельца, в границах площадки. '
     +'Своей она ему не становится, и складывать колонку нельзя: участок под строениями разных '
     +'владельцев посчитан у каждого">Земля под их строениями<div class="source">в границах '
     +'площадки</div></th>':'')
-  +'<th class="num">Кадастровая стоимость</th>'
   +(extra?'<th>На чём основано</th>':'')
   +'</tr></thead><tbody>'+body
   +`<tr><td><b>ВСЕГО</b></td>${cells(total)}</tr></tbody></table></div>`
@@ -798,7 +820,27 @@ function ownersTableMarkup(){
   +'единственный собственник строений на нём, а если лица разные, но группа одна — группа. '
   +'Объект на нескольких участках посчитан один раз.</div>'
   +ownersBlock(holdings,true,S.data.holdings_under||null)
+  +buyoutNote()
   +`<div class="source">${partsNote(S.data.holdings_under||null).trim()}</div>`;
+}
+
+// «Очевидно, что у Москвы ничего выкупать не надо» (владелец, 07.09.2026).
+// Считает это сервер, рядом с числами: собранная на экране, фраза была бы
+// вторым счётом той же величины и разошлась бы с таблицей над ней.
+// Кадастровая стоимость ценой выкупа не называется: она из ЕГРН, а выкуп идёт
+// по соглашению или по оценке, и подменять одно другим нельзя.
+function buyoutNote(){
+ const b=S.data.buyout; if(!b)return '';
+ const c=b.city,o=b.others;
+ return '<div class="notice"><b>Что выкупать не надо.</b> У города '
+  +`${c.lands} участков (${m2(c.land_area_sqm)}) и ${c.objects} строений (${m2(c.objects_area_sqm)}) — `
+  +`это его земля и его метры. Остальное у ${o.holders} владельцев: ${o.lands} участков `
+  +`(${m2(o.land_area_sqm)}, КС ${mln(o.land_value_rub)}) и ${o.objects} строений `
+  +`(${m2(o.objects_area_sqm)}, КС ${mln(o.objects_value_rub)}).`
+  +'<div class="source">Кадастровая стоимость — не цена выкупа: она из ЕГРН, а выкуп идёт по '
+  +'соглашению или по оценке. Считать по ней бюджет входа нельзя, сравнивать масштаб — можно. '
+  +'И это взгляд «по участку»: земля без записи в реестре отнесена городу по правилу '
+  +'неразграниченной земли и договорам аренды с ДГИ, а не потому, что так записано.</div></div>';
 }
 
 function kindsMarkup(){
@@ -869,6 +911,12 @@ function legendMarkup(){
    +`${escapeHtml(shorten(o.name,44))} — ${o.objects?o.objects+' стр.':''}`
    +`${o.objects&&o.lands?' · ':''}${o.lands?o.lands+' уч.':''}</span>`).join('')
    +'<span><span class="key" style="border:1px dashed #111"></span>граница площадки КРТ</span>'
+   // Скобки обязательны: `a + b ? c : d` — это `(a + b) ? c : d`, и вся
+   // легенда схлопывалась в одну эту строку. Поймал тест, искавший в легенде
+   // имя владельца.
+   +(((S.data.territory||{}).lands||[]).some(l=>l.part)
+     ?'<span><span class="key" style="border:1px dashed #8a8a8a"></span>участок входит в площадку '
+      +'частью — на карте он целиком</span>':'')
    +'<div class="source" style="flex-basis:100%">Цвет — владелец: Брынцалов красный, город зелёный, '
    +'остальные жёлтой гаммой, у каждого свой оттенок. Участок красится своим собственником, '
    +'а где право не зарегистрировано — владельцем строений на нём, когда он один; строения '
@@ -881,6 +929,34 @@ function legendMarkup(){
     ? '<span><span class="key" style="border:1px solid #4a4a4a;background:rgba(17,17,17,.04)"></span>'
       +'земельный участок под строениями (ЕГРН, '+S.data.lands.length+')</span>' : '')
   +'<span><span class="key" style="border:1px dashed #111"></span>граница площадки КРТ (реестр города)</span>';
+}
+
+// Картинка приложения 1 — рядом с картой, а не поверх неё: растр без
+// координат, и совмещение на глаз рисовало бы геометрию, которой у нас нет.
+// «Убираем дорогу и выходим примерно на 14 га?» (владелец, 07.09.2026) — да, и
+// разложение стоит тут же, потому что вопрос задают, глядя на этот контур.
+function decisionOutlineMarkup(){
+ const a=auth(),t=(S.data.territory||{}).totals||{};
+ const src='/krt/nagatino/decision-outline.png?'
+   +new URLSearchParams({session:a.session,key:a.key});
+ const road=((S.data.territory||{}).lands||[]).find(l=>l.part&&l.area_sqm>10000);
+ const steps=road?`<div class="source">Почему 18,69 га участков и 14,62 га площадки: `
+   +`убрать дорогу ${escapeHtml(road.cadastral_number)} целиком — ${m2(road.area_sqm)} — и выйдет `
+   +`${landNum((t.land_area_sqm-road.area_sqm)/10000,2)} га, то есть «примерно 14». Точное число `
+   +`складывается иначе: дорога входит не целиком, а ${m2(road.notice_area_sqm)}, у второго участка `
+   +`вне площадки остаётся ${m2(t.land_area_sqm-t.land_area_in_notice_sqm-(road.area_sqm-road.notice_area_sqm))}, `
+   +`вместе участки дают ${m2(t.land_area_in_notice_sqm)}, плюс ${m2(t.land_unformed_sqm)} земли без `
+   +`кадастрового номера — ${m2(t.site_area_sqm)}, ровно шапка извещения.</div>`:'';
+ return `<img src="${src}" alt="Границы КРТ по приложению 1 к проекту решения"`
+  +` style="display:block;width:100%;height:auto;border:1px solid var(--line)"`
+  +` onerror="this.replaceWith(Object.assign(document.createElement('div'),`
+  +`{className:'notice warn',textContent:'Картинка приложения 1 не отдалась.'}))">`
+  +'<div class="source">Приложение 1 к проекту решения о КРТ (mos.ru) — рисунок города. '
+  +'На нашу карту он НЕ накладывается: это растр без координат, и совместить его можно только '
+  +'на глаз, а нарисованная так граница выглядела бы ровно так же уверенно, как настоящая. '
+  +'Контур, который мы рисуем пунктиром на карте, собран из ПЕРЕЧНЯ того же решения: '
+  +'приложение 2 называет участки поимённо, а их границы отдаёт ЕГРН.</div>'
+  +steps;
 }
 
 function coverageMarkup(){
@@ -953,6 +1029,7 @@ function render(){
  $('mapBox').innerHTML=mapMarkup();
  $('legend').innerHTML=legendMarkup();
  $('coverage').innerHTML=coverageMarkup();
+ $('decisionOutline').innerHTML=decisionOutlineMarkup();
  const a=auth(),link=$('exportLink');
  if(link)link.href='/krt/nagatino/export.xlsx?'+new URLSearchParams({session:a.session,key:a.key});
  $('territoryBox').innerHTML=territoryMarkup();

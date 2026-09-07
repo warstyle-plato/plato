@@ -45,6 +45,11 @@ LAND_FILL = PatternFill("solid", fgColor="EFEFEA")
 # Колонка принадлежит одному виду строк; связь со своим участком держит
 # колонка «Участок», по ней и сводят.
 SHEET_LANDS = (
+    # Номер тот же, что на карте и на экране: «прономеруй от 1 до 20 все
+    # участки и здания от 1 до 39, чтобы можно было привязью визуализировать»
+    # (владелец, 07.09.2026). Считает его движок, книга печатает — своя
+    # нумерация в книге разошлась бы с картой молча.
+    ("no", "№", 7),
     ("row_kind", "Строка", 11),
     ("cadastral_number", "Кадастровый номер", 24),
     ("land", "Участок", 22),
@@ -73,8 +78,14 @@ SHEET_OWNERS = (
     ("inn", "ИНН", 14),
     ("lands", "Участков", 10),
     ("land_area_sqm", "Земли, м²", 14),
+    # Стоимость земли и стоимость строений — разные величины, и в одну колонку
+    # не складываются: «можно понять, где кадастровая стоимость участков, а где
+    # строений?» (владелец, 07.09.2026). То же правило, что у площадей, и стоят
+    # они каждая при своей мере, а не общим столбцом в конце.
+    ("land_value_rub", "КС земли, ₽", 20),
     ("objects", "Строений", 10),
     ("objects_area_sqm", "Их площадь, м²", 16),
+    ("objects_value_rub", "КС строений, ₽", 20),
     # Справочная колонка: земля ПОД строениями. Своей она владельцу не
     # становится, и складывать её нельзя — участок под строениями двух
     # владельцев посчитан у каждого. Итог группы поэтому объединение, а не
@@ -83,7 +94,6 @@ SHEET_OWNERS = (
     # ЕГРН и площадь, входящая в площадку, различаются в три порядка, и
     # два числа под одним именем «земля» читались бы как одно.
     ("under_land_area_sqm", "Земля под их строениями в границах площадки, м² · справочно", 30),
-    ("value_rub", "Кадастровая стоимость, ₽", 22),
 )
 # Та же справочная колонка есть и во взгляде «по участку» (владелец,
 # 07.09.2026: «вторая таблица так же столбец такой должна иметь»): у Брынцалова
@@ -94,7 +104,12 @@ SHEET_HOLDINGS = SHEET_OWNERS + (("by", "На чём основано", 34),)
 _MONEY = '#,##0" ₽"'
 _AREA = '#,##0.0'
 _OWNER_FORMATS = {"land_area_sqm": _AREA, "objects_area_sqm": _AREA,
-                  "under_land_area_sqm": _AREA, "value_rub": _MONEY}
+                  "under_land_area_sqm": _AREA,
+                  "land_value_rub": _MONEY, "objects_value_rub": _MONEY}
+# Колонки, которые складываются в промежуточный и общий итог. Справочная земля
+# сюда не входит намеренно: её итог — объединение, а не сумма.
+_OWNER_SUMS = ("lands", "land_area_sqm", "land_value_rub",
+               "objects", "objects_area_sqm", "objects_value_rub")
 
 
 def _owner_text(owner: dict[str, Any]) -> str:
@@ -152,6 +167,7 @@ def _land_rows(view: dict[str, Any]) -> list[dict[str, Any]]:
     for land in view["lands"]:
         disposal = land.get("disposal") or {}
         rows.append({
+            "no": f"У{land.get('no')}" if land.get("no") else "",
             "row_kind": "участок",
             "cadastral_number": land["cadastral_number"] + (" (часть)" if land.get("part") else ""),
             "land": land["cadastral_number"],
@@ -195,6 +211,7 @@ def _land_rows(view: dict[str, Any]) -> list[dict[str, Any]]:
             else:
                 counted[item["cadastral_number"]] = land["cadastral_number"]
             rows.append({
+                "no": f"С{item.get('no')}" if item.get("no") else "",
                 "row_kind": "строение",
                 "cadastral_number": item["cadastral_number"] + (" (часть)" if item.get("part") else ""),
                 # Земельные графы у строения пусты: они про участок, и стоят на
@@ -302,7 +319,7 @@ def _owners_table(sheet, columns, rows: list[dict[str, Any]], order: list[dict[s
                     cell.alignment = Alignment(wrap_text=True, vertical="top")
             line += 1
         total = {"name": f"Итого · {group.get('title')}"}
-        for key in ("lands", "land_area_sqm", "objects", "objects_area_sqm", "value_rub"):
+        for key in _OWNER_SUMS:
             total[key] = round(sum(float(row.get(key) or 0) for row in inside), 1)
         # Справочная земля не суммируется: у двух владельцев группы под
         # строениями бывает один участок, и сумма назвала бы метры, которых
@@ -342,7 +359,7 @@ def _owners_table(sheet, columns, rows: list[dict[str, Any]], order: list[dict[s
                     cell.number_format = _OWNER_FORMATS[key]
             line += 1
         total = {"name": f"Итого · {caption}"}
-        for key in ("lands", "land_area_sqm", "objects", "objects_area_sqm", "value_rub"):
+        for key in _OWNER_SUMS:
             total[key] = round(sum(float(row.get(key) or 0) for row in rest), 1)
         for index, key in enumerate(keys, start=1):
             cell = sheet.cell(row=line, column=index, value=total.get(key, ""))
@@ -352,7 +369,7 @@ def _owners_table(sheet, columns, rows: list[dict[str, Any]], order: list[dict[s
                 cell.number_format = _OWNER_FORMATS[key]
         line += 1
     grand = {"name": "ВСЕГО"}
-    for key in ("lands", "land_area_sqm", "objects", "objects_area_sqm", "value_rub"):
+    for key in _OWNER_SUMS:
         grand[key] = round(sum(float(row.get(key) or 0) for row in rows), 1)
     if unions is not None:
         grand["under_land_area_sqm"] = (unions.get("total") or {}).get("area_sqm", "")
@@ -364,11 +381,40 @@ def _owners_table(sheet, columns, rows: list[dict[str, Any]], order: list[dict[s
     return line + 1
 
 
+def _buyout_block(sheet, buyout: dict[str, Any]) -> None:
+    """Что выкупать не надо, а что придётся. Считает это движок, книга печатает.
+
+    «Очевидно, что у Москвы ничего выкупать не надо» (владелец, 07.09.2026).
+    Второй счёт той же величины в книге разошёлся бы с экраном, и оба ответа
+    выглядели бы верными.
+    """
+    city, others = buyout.get("city") or {}, buyout.get("others") or {}
+    line = sheet.max_row + 2
+    head = sheet.cell(row=line, column=1, value="Что выкупать не надо — вывод DevelopAid")
+    head.font = Font(bold=True, size=12)
+    for name, part in (("У города", city), ("У остальных", others)):
+        line += 1
+        sheet.cell(row=line, column=1, value=name).font = Font(bold=True)
+        sheet.cell(row=line, column=2, value=(
+            f"{part.get('lands', 0)} участков ({part.get('land_area_sqm', 0):,.1f} м², "
+            f"КС {part.get('land_value_rub', 0):,.0f} ₽), "
+            f"{part.get('objects', 0)} строений ({part.get('objects_area_sqm', 0):,.1f} м², "
+            f"КС {part.get('objects_value_rub', 0):,.0f} ₽)").replace(",", " "))
+    line += 1
+    sheet.cell(row=line, column=1, value="Оговорка")
+    sheet.cell(row=line, column=2, value=(
+        "Кадастровая стоимость — не цена выкупа: она из ЕГРН, а выкуп идёт по "
+        "соглашению или по оценке. И это взгляд «по участку»: земля без записи в "
+        "реестре отнесена городу по правилу неразграниченной земли и договорам "
+        "аренды с ДГИ, а не потому, что так записано."))
+
+
 def build(view: dict[str, Any], owners: list[dict[str, Any]],
           holdings: list[dict[str, Any]] | None = None,
           groups: list[dict[str, Any]] | None = None,
           under: dict[str, Any] | None = None,
-          under_holdings: dict[str, Any] | None = None) -> bytes:
+          under_holdings: dict[str, Any] | None = None,
+          buyout: dict[str, Any] | None = None) -> bytes:
     """Книга свода. Считает не она — она показывает посчитанное."""
     book = Workbook()
     rows = _land_rows(view)
@@ -401,9 +447,13 @@ def build(view: dict[str, Any], owners: list[dict[str, Any]],
     sheet.append([tail.get(key, "") for key, _title, _width in SHEET_LANDS])
     for cell in sheet[sheet.max_row]:
         cell.font = Font(bold=True)
-    sheet.cell(row=sheet.max_row, column=3).number_format = _AREA
-    sheet.cell(row=sheet.max_row, column=4).number_format = _AREA
-    sheet.cell(row=sheet.max_row, column=5).number_format = _MONEY
+    # Формат ставится по ЗАГОЛОВКУ, а не по номеру: номер держится за соседнюю
+    # колонку и ломается, стоит рядом появиться новой — так и вышло, когда
+    # первой встала колонка номера «У…»/«С…».
+    keys = [key for key, _title, _width in SHEET_LANDS]
+    for key, fmt in (("land_area_sqm", _AREA), ("object_area_sqm", _AREA),
+                     ("cadastral_value_rub", _MONEY)):
+        sheet.cell(row=sheet.max_row, column=keys.index(key) + 1).number_format = fmt
 
     second = book.create_sheet("Кто чем владеет")
     second.sheet_view.showGridLines = False
@@ -411,17 +461,17 @@ def build(view: dict[str, Any], owners: list[dict[str, Any]],
         second.column_dimensions[get_column_letter(index)].width = width
     order = list(groups or [])
     line = _owners_table(
-        second, SHEET_OWNERS,
-        [{**row, "value_rub": round((row.get("land_value_rub") or 0)
-                                    + (row.get("objects_value_rub") or 0), 1)}
-         for row in owners],
-        order,
+        second, SHEET_OWNERS, owners, order,
         "Что записано в документах",
         "Собственник по выпискам ЕГРН. Земля стоит там, где право на участок "
         "зарегистрировано; у четырнадцати участков из двадцати его нет вовсе — "
         "это ответ реестра, а не наш пробел. Оперативное управление ГБУ "
         "«Жилищник» собственностью не является: эти строения записаны за городом. "
-        "Последняя колонка справочная — земля ПОД строениями, своей она владельцу "
+        "Кадастровая стоимость земли и стоимость строений стоят РАЗНЫМИ колонками: "
+        "«можно понять, где кадастровая стоимость участков, а где строений?» "
+        "(владелец, 07.09.2026). Сложенные, они отвечают на вопрос, которого никто "
+        "не задавал: у одних владельцев земли нет вовсе. "
+        "Справочная колонка — земля ПОД строениями, своей она владельцу "
         "не становится. Складывать её нельзя: на одном участке стоят строения "
         "разных владельцев, и он посчитан у каждого; итог группы поэтому "
         "объединение участков, а не сумма строк.",
@@ -438,6 +488,8 @@ def build(view: dict[str, Any], owners: list[dict[str, Any]],
             "разные, но группа одна — группа. Объект на нескольких участках "
             "посчитан один раз.",
             line + 1, under_holdings)
+        if buyout:
+            _buyout_block(second, buyout)
 
     third = book.create_sheet("Источники")
     source = view.get("source") or {}

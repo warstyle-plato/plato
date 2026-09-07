@@ -334,13 +334,17 @@ def _seed_read(numbers_with_centre: list[str]) -> None:
 
 
 def test_the_land_is_drawn_under_the_buildings():
-    """Участок крупнее здания: нарисованный поверх, он закрыл бы его целиком."""
+    """Участок крупнее здания: нарисованный поверх, он закрыл бы его целиком.
+
+    Держится ПОРЯДОК слоёв — он и есть утверждение. Прежде рядом стояли две
+    проверки на литералы заливки (`'0.42':'0.20'`), и они падали от любой
+    правки числа, ничего не говоря о том, что сломалось: у участка появился
+    третий случай — входящий в площадку частью. Сама бледность меряется в
+    браузере, там, где она видна.
+    """
     page = nagatino_ui.NAGATINO_PAGE
     assert page.index("${sitePath}${landPaths}${shapes}") > 0, \
         "порядок слоёв не задан: земля обязана лежать под строениями"
-    assert "'0.42':'0.20'" in page, \
-        "у невыделенного участка заливка не бледная — он скроет свои строения"
-    assert "'0.85':'0.42'" in page, "у строения заливка плотнее, чем у участка"
 
 
 def test_the_colours_say_what_the_owner_said():
@@ -623,6 +627,10 @@ READ = """() => ({
     .findIndex(n => n.classList.contains('land'))
     < [...document.querySelectorAll('#mapFrame svg path')]
       .findIndex(n => n.classList.contains('parcel')),
+  landFill: [...document.querySelectorAll('path.land')]
+    .map(n => Number(n.getAttribute('fill-opacity'))),
+  buildFill: [...document.querySelectorAll('path.parcel')]
+    .map(n => Number(n.getAttribute('fill-opacity'))),
 })"""
 
 
@@ -753,6 +761,10 @@ def test_in_a_real_browser_the_parcels_are_drawn_and_the_owner_pops_up(monkeypat
             assert seen["shapes"] == 2, "нарисованы не все прочитанные строения"
             assert seen["lands"] == 1, "участок не нарисован"
             assert seen["landFirst"], "земля нарисована ПОВЕРХ строений — она их закроет"
+            # Бледность меряется, а не держится литералом: участок крупнее
+            # своих строений, и залитый наравне с ними он их прячет.
+            assert max(seen["landFill"]) < min(seen["buildFill"]), (
+                seen["landFill"], seen["buildFill"])
             assert seen["rows"] == 39, "в таблице не все строения выгрузки"
             assert seen["landRows"] >= 20, "свода «участок → объекты» на странице нет"
             assert "Автокомбинат" in seen["legend"], "легенда не называет владельцев"
@@ -948,3 +960,36 @@ def test_in_a_real_browser_the_filter_hides_rows_and_the_numbers_stand_on_the_ma
     finally:
         server.should_exit = True
         thread.join(timeout=10)
+
+
+def test_the_outline_picture_comes_from_the_decision_and_is_not_overlaid():
+    """Приложение 1 — картинка города, и она стоит РЯДОМ с картой, не поверх.
+
+    «Контур из пдф наложишь?» (владелец, 07.09.2026). Наложить нельзя: это
+    растр без координат, и совмещение на глаз рисовало бы геометрию, которой у
+    нас нет, — а выглядела бы она так же уверенно, как настоящая. Проверка
+    держит оба утверждения: картинка достаётся из первоисточника, и на карте
+    её нет.
+    """
+    raw = parcels.decision_outline_picture()
+    assert raw[:8] == b"\x89PNG\r\n\x1a\n", "это не PNG"
+    assert len(raw) > 50_000, "картинка подозрительно мелкая — это не карта"
+
+    page = nagatino_ui.NAGATINO_PAGE
+    frame = page[page.index("<div class=\"mapwrap\""):page.index("id=\"mapLabel\"")]
+    assert "decision-outline" not in frame, (
+        "картинка решения попала в кадр карты — это наложение на глаз")
+    assert "НЕ накладывается" in page, "почему не наложено — не сказано"
+
+
+def test_a_parcel_that_enters_only_partly_is_drawn_apart():
+    """Дорога входит в площадку 61 м² при 4,33 га по ЕГРН — залитая наравне с
+    остальными, она читается как часть территории («это дорога? похоже её нет в
+    КРТ», владелец, 07.09.2026). На карте она пунктиром и бледнее."""
+    view = parcels.territory()
+    parts = [land for land in view["lands"] if land.get("part")]
+    assert parts, "предохранитель: участков, входящих частью, не осталось"
+    page = nagatino_ui.NAGATINO_PAGE
+    lands_block = page[page.index("const landPaths="):page.index("const sitePath=")]
+    assert "l.part" in lands_block and "stroke-dasharray" in lands_block, (
+        "участок-часть рисуется наравне с целыми")

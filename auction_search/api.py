@@ -1621,7 +1621,8 @@ def install(app: FastAPI) -> None:
                     nagatino_parcels.land_holdings(),
                     nagatino_parcels.registry().get("groups") or [],
                     nagatino_parcels.land_under_buildings(),
-                    nagatino_parcels.holdings_under()))
+                    nagatino_parcels.holdings_under(),
+                    nagatino_parcels.buyout()))
         except nagatino_parcels.RegistryProblem as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
         name = "КРТ Нагатино — участки и объекты.xlsx"
@@ -1631,6 +1632,23 @@ def install(app: FastAPI) -> None:
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quoted}"},
         )
+
+    @app.get("/krt/nagatino/decision-outline.png", include_in_schema=False)
+    async def nagatino_decision_outline(session: str = "", key: str = "") -> Response:
+        """Картинка границ из приложения 1 к проекту решения — как есть.
+
+        Не наложение: растр без координат, и совмещать его на глаз значит
+        рисовать геометрию, которой у нас нет. Она стоит рядом с картой и
+        подписана источником.
+        """
+        if core is not None and hasattr(core, "_require_admin"):
+            core._require_admin(session, key, "Участки КРТ Нагатино")
+        try:
+            raw = await run_in_threadpool(nagatino_parcels.decision_outline_picture)
+        except nagatino_parcels.OutlinePictureProblem as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return Response(raw, media_type="image/png",
+                        headers={"Cache-Control": "public, max-age=86400"})
 
     def _nagatino_site_finder(refresh: bool):
         """Чем опознать площадку в реестре КРТ. Своей геометрии здесь нет:

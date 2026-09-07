@@ -229,6 +229,18 @@ def test_the_land_owner_is_shown_with_its_lease_not_instead_of_it():
 
 # --- выгрузка ----------------------------------------------------------------
 
+def _at(sheet, prefix: int | str) -> int:
+    """Номер колонки листа по её ЗАГОЛОВКУ.
+
+    Читать колонку по номеру нельзя: номер держится за соседнюю колонку и
+    ломается, стоит рядом появиться новой. Ровно так четыре проверки этого
+    файла упали разом, когда первой встала колонка номера «У…»/«С…» — и ни
+    одна не сказала о том, что сломалось на самом деле (ничего).
+    """
+    head = [str(cell.value or "") for cell in sheet[1]]
+    return next(i for i, name in enumerate(head) if name.startswith(str(prefix)))
+
+
 def test_the_workbook_is_built_from_the_same_numbers_as_the_screen():
     """Второй сборки нет: разойдясь, книга и страница дали бы два достоверных
     на вид ответа об одной территории."""
@@ -242,8 +254,9 @@ def test_the_workbook_is_built_from_the_same_numbers_as_the_screen():
     assert [sheet.title for sheet in book.worksheets] == [
         "ЗУ и объекты", "Кто чем владеет", "Источники"]
     sheet = book["ЗУ и объекты"]
+    kind = _at(sheet, "Строка")
     rows = list(sheet.iter_rows(values_only=True))[1:]
-    lands = [row for row in rows if row[0] == "участок"]
+    lands = [row for row in rows if row[kind] == "участок"]
     assert len(lands) == view["totals"]["lands"]
 
 
@@ -281,8 +294,18 @@ def test_the_owners_sheet_holds_two_tables_with_subtotals():
     # У второй таблицы своя колонка: чем именно определён хозяин участка.
     assert "На чём основано" in [str(v or "") for v in rows[heads[1]]]
 
+    # Колонки берутся по ЗАГОЛОВКУ, а не по номеру: номер держится за соседнюю
+    # колонку и ломается, стоит рядом появиться новой — так эта проверка и
+    # упала, когда стоимость разделилась на землю и строения. Правило в этом
+    # файле уже записано ниже, у листа «ЗУ и объекты».
+    def column(head_row, prefix):
+        return next(i for i, cell in enumerate(rows[head_row])
+                    if str(cell or "").startswith(prefix))
+
     counts = []
-    for start, stop in ((heads[0] + 1, heads[1] - 2), (heads[1] + 1, len(rows))):
+    for head, (start, stop) in zip(heads, ((heads[0] + 1, heads[1] - 2),
+                                           (heads[1] + 1, len(rows)))):
+        lands_at, objects_at = column(head, "Участков"), column(head, "Строений")
         block = rows[start:stop]
         subtotals = [row for row in block if str(row[0] or "").startswith("Итого · ")]
         assert len(subtotals) >= 3, "промежуточных итогов нет"
@@ -293,14 +316,15 @@ def test_the_owners_sheet_holds_two_tables_with_subtotals():
             back = index - 1
             inside = []
             while back >= 0 and not str(block[back][0] or "").startswith("Итого · "):
-                if block[back][2] is not None and str(block[back][0] or ""):
+                if block[back][lands_at] is not None and str(block[back][0] or ""):
                     inside.append(block[back])
                 back -= 1
             named = [line for line in inside if not str(line[0]).startswith("Итого")]
-            assert round(sum(float(line[2] or 0) for line in named), 1) == round(float(row[2] or 0), 1), \
+            assert round(sum(float(line[lands_at] or 0) for line in named), 1) \
+                == round(float(row[lands_at] or 0), 1), \
                 f"итог группы {row[0]} не сходится со своими строками"
         grand = next(row for row in block if str(row[0] or "") == "ВСЕГО")
-        counts.append((int(grand[2]), int(grand[4])))
+        counts.append((int(grand[lands_at]), int(grand[objects_at])))
     assert counts[0] == counts[1] == (20, 39), counts
 
 
@@ -453,12 +477,13 @@ def test_the_column_adds_up_to_the_total_line():
     # колонку и ломается, стоит рядом появиться новой.
     head = [cell.value for cell in sheet[1]]
     area = head.index("Площадь строения, м²")
+    kind = _at(sheet, "Строка")
     note = head.index("Примечание")
     rows = list(sheet.iter_rows(values_only=True))[1:]
     column = round(sum(row[area] for row in rows
-                       if row[0] == "строение" and isinstance(row[area], (int, float))), 1)
+                       if row[kind] == "строение" and isinstance(row[area], (int, float))), 1)
     total = rows[-1]
-    assert total[0] == "итого"
+    assert total[kind] == "итого"
     assert round(total[area], 1) == column, "итог не сходится с колонкой"
     repeats = [row for row in rows if row[note] and "повтор" in str(row[note])]
     assert repeats and all(row[area] in (None, "") for row in repeats), \
@@ -538,7 +563,7 @@ def test_the_registry_answer_and_our_inference_never_share_a_cell():
     who = head.index("Вывод DevelopAid — чьё это")
     number = head.index("Кадастровый номер")
     rows = {str(row[number]).split()[0]: row for row in sheet.iter_rows(values_only=True)
-            if row[0] == "участок"}
+            if row[_at(sheet, "Строка")] == "участок"}
     free = rows["77:05:0004001:2475"]
     assert free[status] == "право собственности не зарегистрировано"
     assert "город" not in free[status], "вывод затесался в графу реестра"
@@ -589,14 +614,15 @@ def test_a_column_belongs_to_one_kind_of_row():
     # строения, а наше суждение о самом строении.
     land_columns = [head.index("Площадь земли, м²")]
     link = head.index("Участок")
-    buildings = [row for row in sheet.iter_rows(values_only=True) if row[0] == "строение"]
+    kind = _at(sheet, "Строка")
+    buildings = [row for row in sheet.iter_rows(values_only=True) if row[kind] == "строение"]
     assert buildings
     for row in buildings:
         for index in land_columns:
             assert row[index] in (None, ""), \
                 f"{row[1]}: земельная графа заполнена на строке строения — {head[index]}"
         assert row[link], f"{row[1]}: связь со своим участком потеряна"
-    lands = [row for row in sheet.iter_rows(values_only=True) if row[0] == "участок"]
+    lands = [row for row in sheet.iter_rows(values_only=True) if row[kind] == "участок"]
     assert all(row[head.index("Площадь земли, м²")] for row in lands), \
         "площадь земли пуста на строке участка"
     # И одна графа «правообладатель» отвечает по своей строке: у участка это
@@ -617,3 +643,89 @@ def test_a_column_belongs_to_one_kind_of_row():
                                    "выписки на объект нет"), \
             f"{row[1]}: вывод приписан строению с названным собственником"
         assert "участок под ним" in str(row[guess])
+
+
+def test_land_value_and_building_value_never_share_a_column():
+    """«Можно понять, где кадастровая стоимость участков, а где строений?»
+    (владелец, 07.09.2026).
+
+    Нельзя было: одна колонка складывала обе величины — то же нарушение, что
+    уже закрыто для площадей («земля и строения меряются разным»). Проверка
+    держит утверждение: у каждой из двух стоимостей своя колонка, и ни одна
+    ячейка листа не равна их сумме.
+    """
+    import openpyxl
+    from io import BytesIO
+
+    from auction_search import nagatino_export
+
+    view = parcels.territory()
+    rows = parcels.land_holdings(view)
+    # У строк взгляда «по участку» стоимость тоже разведена, а не слита.
+    assert all("land_value_rub" in row and "objects_value_rub" in row for row in rows)
+    assert all("value_rub" not in row for row in rows), (
+        "склеенная стоимость осталась в строке — её прочитают как одну величину")
+
+    book = openpyxl.load_workbook(BytesIO(nagatino_export.build(
+        view, parcels.owners_summary(view), rows,
+        parcels.registry().get("groups") or [])))
+    sheet = book["Кто чем владеет"]
+    head = next(row for row in sheet.iter_rows(values_only=True)
+                if str(row[0] or "") == "Правообладатель")
+    names = [str(cell or "") for cell in head]
+    land_at = names.index("КС земли, ₽")
+    objects_at = names.index("КС строений, ₽")
+    assert not any(name.startswith("Кадастровая стоимость") for name in names), (
+        "колонка с общим именем осталась — под ним снова сложат две величины")
+
+    # Сверяем ВЕРХНЮЮ таблицу — она про документы; у нижней свои числа, и по
+    # имени они совпадают с верхними, а по величине нет: это два разных ответа.
+    all_rows = list(sheet.iter_rows(values_only=True))
+    heads = [i for i, row in enumerate(all_rows) if str(row[0] or "") == "Правообладатель"]
+    upper = all_rows[heads[0] + 1:heads[1]] if len(heads) > 1 else all_rows[heads[0] + 1:]
+    known = {row["name"]: row for row in parcels.owners_summary(view)}
+    seen = 0
+    counts_at = names.index("Строений")
+    for row in upper:
+        source = known.get(str(row[0] or ""))
+        # Полосу группы пропускаем: «Москва» — и название группы, и имя
+        # владельца, и по имени они неразличимы. У полосы чисел нет вовсе.
+        if source is None or not str(row[counts_at] or ""):
+            continue
+        seen += 1
+        assert float(row[land_at] or 0) == round(source["land_value_rub"], 1)
+        assert float(row[objects_at] or 0) == round(source["objects_value_rub"], 1)
+    assert seen >= 5, "строк владельцев в книге не нашлось — проверять нечего"
+
+
+def test_the_workbook_says_what_the_city_need_not_buy():
+    """«Очевидно, что у Москвы ничего выкупать не надо» (владелец, 07.09.2026).
+
+    Считает это движок, книга печатает: второй счёт той же величины разошёлся
+    бы с экраном, и оба ответа выглядели бы верными. Кадастровая стоимость при
+    этом ценой выкупа не называется — она из ЕГРН.
+    """
+    import openpyxl
+    from io import BytesIO
+
+    from auction_search import nagatino_export
+
+    view = parcels.territory()
+    rows = parcels.land_holdings(view)
+    figures = parcels.buyout(rows, view)
+    # Город и остальные вместе дают всю территорию — иначе кто-то потерян молча.
+    assert (figures["city"]["lands"] + figures["others"]["lands"]
+            == view["totals"]["lands"])
+    assert (figures["city"]["objects"] + figures["others"]["objects"]
+            == view["totals"]["objects"])
+    assert figures["city"]["lands"] > 0 and figures["others"]["objects"] > 0
+
+    book = openpyxl.load_workbook(BytesIO(nagatino_export.build(
+        view, parcels.owners_summary(view), rows,
+        parcels.registry().get("groups") or [], None, None, figures)))
+    text = "\n".join(str(cell or "")
+                     for row in book["Кто чем владеет"].iter_rows(values_only=True)
+                     for cell in row)
+    assert "Что выкупать не надо" in text
+    assert "не цена выкупа" in text, "оговорка о кадастровой стоимости потеряна"
+    assert f"{figures['others']['objects']} строений" in text

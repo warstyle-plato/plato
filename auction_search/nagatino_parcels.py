@@ -262,6 +262,47 @@ def read_chunk(lookup: Callable[[list[str]], list[dict[str, Any]]],
 EXTRACTS_DIR = Path(__file__).resolve().parent.parent / "reference_data" / "krt" / "egrn"
 NOTICE_PATH = (Path(__file__).resolve().parent.parent / "reference_data" / "krt"
                / "nagatino-auction-notice-2026-08-14.pdf")
+# Проект решения о КРТ (mos.ru). Его приложение 1 — картинка границ на снимке
+# города, и она лежит здесь же по той же причине, что и извещение: ссылка
+# протухает, файл нет.
+DECISION_PATH = (Path(__file__).resolve().parent.parent / "reference_data" / "krt"
+                 / "nagatino-decision-draft.pdf")
+
+
+class OutlinePictureProblem(RuntimeError):
+    """Картинки границ в документе нет. Это отказ, а не пустая картинка."""
+
+
+def decision_outline_picture() -> bytes:
+    """Приложение 1 к проекту решения — рисунок границ, как его напечатал город.
+
+    Наложить его на нашу карту НЕЛЬЗЯ: это растр без координат, и совмещать
+    его на глаз значит рисовать геометрию, которой у нас нет, — а выглядела бы
+    она ровно так же уверенно, как настоящая. Поэтому картинка стоит рядом с
+    картой, а не поверх неё, и подписана своим происхождением.
+
+    Настоящий контур площадки при этом собирается из ПЕРЕЧНЯ того же решения:
+    приложение 2 называет участки поимённо, а их границы отдаёт ЕГРН.
+    """
+    try:
+        import pymupdf
+    except Exception as exc:  # noqa: BLE001
+        raise OutlinePictureProblem(f"нечем прочитать PDF: {exc}") from exc
+    try:
+        document = pymupdf.open(DECISION_PATH)
+    except Exception as exc:  # noqa: BLE001
+        raise OutlinePictureProblem(f"проект решения не открылся: {exc}") from exc
+    for page in document:
+        for info in page.get_images(full=True):
+            pix = pymupdf.Pixmap(document, info[0])
+            if pix.n > 4:
+                pix = pymupdf.Pixmap(pymupdf.csRGB, pix)
+            # Мелкие картинки — это гербы и подписи, а не карта: берём первую
+            # крупную. Порог назван числом, а не «на глаз»: приложение 1 идёт
+            # снимком города почти на всю страницу.
+            if pix.width >= 500 and pix.height >= 500:
+                return pix.tobytes("png")
+    raise OutlinePictureProblem("в проекте решения не нашлось крупной картинки границ")
 
 _DOCS: dict[str, Any] = {}
 
@@ -1007,7 +1048,15 @@ def land_holdings(view: dict[str, Any] | None = None) -> list[dict[str, Any]]:
             "inn": holder.get("inn") or "", "group": holder.get("group"),
             "group_title": holder.get("group_title"), "colour": holder.get("colour"),
             "by": holder.get("by") or "", "lands": 0, "land_area_sqm": 0.0,
-            "objects": 0, "objects_area_sqm": 0.0, "value_rub": 0.0,
+            # Стоимость земли и стоимость строений — РАЗНЫЕ величины, и в одну
+            # колонку не складываются: «можно понять, где кадастровая стоимость
+            # участков, а где строений?» (владелец, 07.09.2026). Сложенные, они
+            # отвечают на вопрос, которого никто не задавал: у города своя земля
+            # и свои строения, и выкупать не надо ни то ни другое, а у соседа
+            # земли нет вовсе — вся его стоимость в строениях. Правило то же,
+            # что у площадей, и здесь оно было нарушено.
+            "objects": 0, "objects_area_sqm": 0.0,
+            "land_value_rub": 0.0, "objects_value_rub": 0.0,
             # Участки ПОД строениями этой строки — множеством, а не суммой:
             # то же справочное число, что и в верхней таблице, и по той же
             # причине несложимое.
@@ -1017,7 +1066,7 @@ def land_holdings(view: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         row = bucket(holder_of[number])
         row["lands"] += 1
         row["land_area_sqm"] += float(land.get("area_sqm") or 0)
-        row["value_rub"] += float(land.get("cadastral_value_rub") or 0)
+        row["land_value_rub"] += float(land.get("cadastral_value_rub") or 0)
 
     for item in view["objects"]:
         owner = dict(item.get("owner") or {})
@@ -1038,13 +1087,14 @@ def land_holdings(view: dict[str, Any] | None = None) -> list[dict[str, Any]]:
                               "group_title": "Хозяин по участку не определён"})
         row["objects"] += 1
         row["objects_area_sqm"] += float(item.get("area_sqm") or 0)
-        row["value_rub"] += float(item.get("cadastral_value_rub") or 0)
+        row["objects_value_rub"] += float(item.get("cadastral_value_rub") or 0)
         row["under_numbers"].update(number for number in item.get("lands") or []
                                     if number in lands)
 
     out = list(rows.values())
     for row in out:
-        for field in ("land_area_sqm", "objects_area_sqm", "value_rub"):
+        for field in ("land_area_sqm", "objects_area_sqm",
+                      "land_value_rub", "objects_value_rub"):
             row[field] = round(row[field], 1)
         numbers = row.pop("under_numbers")
         row["under_numbers"] = sorted(numbers)
@@ -1057,6 +1107,44 @@ def land_holdings(view: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         row["under_parts"] = [number for number in sorted(numbers) if lands[number].get("part")]
     out.sort(key=lambda row: -(row["land_area_sqm"] + row["objects_area_sqm"]))
     return out
+
+
+def buyout(rows: list[dict[str, Any]] | None = None,
+           view: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Что у города, а что придётся выкупать. По взгляду «по участку».
+
+    «Очевидно, что у Москвы ничего выкупать не надо» (владелец, 07.09.2026).
+    Верно, и потому вопрос сводится к остальному: сколько там участков,
+    строений и какая у них кадастровая стоимость. Считается ЗДЕСЬ, рядом с
+    числами: собранная на экране, эта фраза была бы вторым счётом той же
+    величины, и разойтись с таблицей ей ничего не мешало бы.
+
+    **Кадастровая стоимость — не цена выкупа**, и так и сказано вслух. Она
+    берётся из ЕГРН, а выкуп идёт по соглашению или по оценке; называть её
+    ценой значит выдать справочное число за коммерческое.
+    """
+    view = territory() if view is None else view
+    rows = land_holdings(view) if rows is None else rows
+    city = [row for row in rows if str(row.get("group") or "") == "moscow"]
+    rest = [row for row in rows if str(row.get("group") or "") != "moscow"]
+
+    def fold(part: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "holders": len(part),
+            "lands": sum(int(row.get("lands") or 0) for row in part),
+            "objects": sum(int(row.get("objects") or 0) for row in part),
+            "land_area_sqm": round(sum(float(row.get("land_area_sqm") or 0)
+                                       for row in part), 1),
+            "objects_area_sqm": round(sum(float(row.get("objects_area_sqm") or 0)
+                                          for row in part), 1),
+            "land_value_rub": round(sum(float(row.get("land_value_rub") or 0)
+                                        for row in part), 1),
+            "objects_value_rub": round(sum(float(row.get("objects_value_rub") or 0)
+                                           for row in part), 1),
+        }
+
+    return {"city": fold(city), "others": fold(rest),
+            "names": [str(row.get("name") or row.get("group_title") or "") for row in rest]}
 
 
 def holdings_under(view: dict[str, Any] | None = None,
@@ -1217,6 +1305,9 @@ def payload() -> dict[str, Any]:
         # перекрываются, и сложение назвало бы метры, которых нет.
         "under": land_under_buildings(lands_and_objects),
         "holdings_under": holdings_under(lands_and_objects, holdings),
+        # «Очевидно, что у Москвы ничего выкупать не надо» (владелец,
+        # 07.09.2026): что городское, а что нет, — по взгляду «по участку».
+        "buyout": buyout(holdings, lands_and_objects),
         "outlines": {
             "parcels": len(parcels),
             "drawn": len([p for p in parcels if p["rings_merc"]]),
