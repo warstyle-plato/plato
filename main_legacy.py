@@ -17636,6 +17636,161 @@ def _v4_head_cell(coord: str, value: str) -> str:
             f"<x:is><x:t>{html.escape(str(value), quote=False)}</x:t></x:is></x:c>")
 
 
+# Слова статусов реестра. Список не «на всякий случай»: неназванный статус
+# книга печатает как неназванный, а не подставляет «Действует» — статус это
+# утверждение о проверенности, и молча повысить его нельзя.
+_V4_NORMATIVE_STATUS_WORDS = {
+    "current": "Действует",
+    "verified": "Сверено по исходнику",
+    "verified_in_engine_source_pack": "Сверено по своду норм, не по акту",
+    "review_required": "Требует сверки",
+    "source_link_missing": "Нет ссылки на исходник",
+    "superseded": "Утратил силу",
+}
+
+
+def _v4_sheet_row_styles(xml: str, row: int) -> dict[str, str]:
+    """Стили ячеек одной строки листа — по колонкам.
+
+    Стили берутся у шаблона, а не выдумываются: у листа «Источники» своя
+    палитра, и `_v4_label_attr()` принёс бы сюда стиль соседнего листа. Ячейка
+    дописанной строки берёт стиль ячейки СВОЕЙ колонки у строки-образца.
+    """
+    found = re.search(rf'<x:row r="{row}"[^>]*>(.*?)</x:row>', xml, re.S)
+    if not found:
+        return {}
+    styles: dict[str, str] = {}
+    for coord, attrs in re.findall(r'<x:c r="([A-Z]+)\d+"([^>]*)>', found.group(1)):
+        style = re.search(r'\ss="(\d+)"', attrs)
+        if style:
+            styles[coord] = f' s="{style.group(1)}"'
+    return styles
+
+
+def _v4_normative_sources_rows(xml: str, region: str, missing: list[str]) -> str:
+    """Нормативные основания расчёта — строками того же листа «Источники».
+
+    Второго листа под них не заводим: лист «Источники» у шаблона уже есть и
+    отвечает ровно на этот вопрос — чем посчитано и какой редакцией. Реестр при
+    этом не копируется: строки собираются из `normatives_registry`, и копию
+    негде обновлять, потому что копии нет.
+
+    Отбор по юрисдикции — не украшение, а уже сделанная поломка: в книгу
+    областного проекта уезжало московское 593-ПП, и сверка честно читала это
+    как «источники от другой юрисдикции». Федеральные акты идут обоим.
+
+    Статус позиции печатается словом реестра, а не «Использовано»: у половины
+    строк он «Требует сверки», и выдать это за проверенное значит подписать
+    чужим именем. Неизвестный статус называет себя сам — молча пойти за
+    «Действует» он не может.
+    """
+    try:
+        import normatives_registry
+        rows = list(normatives_registry._merged_registry())
+    except Exception as exc:  # реестра нет — это молчание, а не «актов нет»
+        missing.append(f"Источники: реестр нормативов не прочитан ({exc})")
+        return xml
+    if not rows:
+        missing.append("Источники: реестр нормативов пуст")
+        return xml
+
+    # Отбрасывается ЧУЖОЙ субъект, а не «оставляем свой и федеральный»: имя
+    # федеральной области в реестре своё («Общие для РФ»), и спелленное здесь
+    # оно молча выкинуло бы 43-ФЗ. Два субъекта названы потому, что это наше
+    # поле `vri_region`, а не догадка о реестре.
+    scope_here = "Московская область" if str(region or "msk") == "mo" else "Москва"
+    other = "Москва" if scope_here == "Московская область" else "Московская область"
+    kept = [row for row in rows if str(row.get("scope") or "").strip() != other]
+    if not kept:
+        missing.append(f"Источники: в реестре нет актов юрисдикции «{scope_here}»")
+        return xml
+
+    numbers = [int(number) for number in re.findall(r'<x:row r="(\d+)"', xml)]
+    row_at = (max(numbers) if numbers else 0) + 2
+    title_styles = _v4_sheet_row_styles(xml, 1)
+    head_styles = _v4_sheet_row_styles(xml, 3)
+    body_styles = _v4_sheet_row_styles(xml, 4)
+
+    def cell(coord: str, value: str, styles: dict[str, str]) -> str:
+        column = re.match(r"[A-Z]+", coord).group(0)
+        return (f'<x:c r="{coord}"{styles.get(column, "")} t="inlineStr">'
+                f"<x:is><x:t>{html.escape(str(value), quote=False)}</x:t></x:is></x:c>")
+
+    parts: list[str] = []
+    parts.append(f'<x:row r="{row_at}">'
+                 + cell(f"A{row_at}", "НОРМАТИВНЫЕ ОСНОВАНИЯ РАСЧЁТА", title_styles)
+                 + "</x:row>")
+    row_at += 1
+    parts.append(
+        f'<x:row r="{row_at}">'
+        + cell(f"A{row_at}",
+               f"Акты, на которых стоит методика ({scope_here} и федеральный уровень). "
+               f"Реестр движка, снят {date.today().isoformat()}; проверять нас нужно "
+               "по исходнику, ссылка в колонке рядом.", head_styles)
+        + "</x:row>")
+    row_at += 1
+
+    # Шапка не переписывается словами, а берётся у строки 3 этого же листа:
+    # вторая формулировка тех же колонок разошлась бы с первой молча.
+    header = {}
+    found = re.search(r'<x:row r="3"[^>]*>(.*?)</x:row>', xml, re.S)
+    if found:
+        for coord, body in re.findall(r'<x:c r="([A-Z]+)3"[^>]*>(.*?)</x:c>',
+                                      found.group(1), re.S):
+            # Подпись лежит и `inlineStr`, и `t="str"` со значением: шапка этого
+            # листа записана вторым способом, и чтение только первого дало бы
+            # «шапка не прочитана» на исправном шаблоне.
+            text = (re.search(r"<x:t[^>]*>(.*?)</x:t>", body, re.S)
+                    or re.search(r"<x:v>(.*?)</x:v>", body, re.S))
+            if text:
+                header[coord] = html.unescape(text.group(1))
+    if header:
+        parts.append(f'<x:row r="{row_at}">'
+                     + "".join(cell(f"{col}{row_at}", value, head_styles)
+                               for col, value in sorted(header.items()))
+                     + "</x:row>")
+        row_at += 1
+    else:
+        missing.append("Источники: шапка колонок не прочитана — строки без подписей")
+
+    for index, row in enumerate(kept, start=1):
+        status = str(row.get("status") or "").strip()
+        word = _V4_NORMATIVE_STATUS_WORDS.get(status) or (
+            f"статус «{status}» реестру неизвестен" if status else "статус не задан")
+        applies = "; ".join(str(item) for item in (row.get("affects") or []) if item)
+        serial = _v4_excel_serial(row.get("current_as_of") or row.get("effective_from"))
+        values = {
+            "A": f"NRM-{index:02d}",
+            "B": str(row.get("scope") or ""),
+            "C": str(row.get("short_name") or row.get("title") or ""),
+            "D": str(row.get("source_url") or ""),
+            "F": "—",
+            "G": applies,
+            "H": word,
+            "I": str(row.get("latest_amendment") or ""),
+        }
+        # Ячейки строки идут по возрастанию колонки: дата дописанная в конец
+        # ставит книгу в тот же разряд, что `mergeCells` перед `sheetData` —
+        # Excel объявляет её повреждённой, а на экране это неотличимо от
+        # «книга не собралась».
+        if serial is not None:
+            date_cell = (f'<x:c r="E{row_at}"{body_styles.get("E", "")}>'
+                         f"<x:v>{_v4_number(serial)}</x:v></x:c>")
+        else:
+            date_cell = cell(f"E{row_at}", "дата не задана", body_styles)
+        cells = "".join(
+            date_cell if col == "E" else cell(f"{col}{row_at}", values[col], body_styles)
+            for col in sorted(set(values) | {"E"}))
+        parts.append(f'<x:row r="{row_at}">{cells}</x:row>')
+        row_at += 1
+
+    tail = "</x:sheetData>"
+    if tail not in xml:
+        missing.append("Источники: не нашлось конца данных листа")
+        return xml
+    return xml.replace(tail, "".join(parts) + tail, 1)
+
+
 def _v4_ladder_rows_xml(xml: str, steps: list[tuple[float, float]]
                         ) -> tuple[str, list[tuple[str, str]]]:
     """Блок ступеней в XML листа «Вводные» книги v4; возвращает ссылки.
@@ -19179,17 +19334,33 @@ def build_project_workbook(
     sources_xml, _ = _v4_set_cell(sources_xml, "D6", text=str(
         project_name or x.get("project_name") or "текущий проект"))
     if str(x.get("vri_region") or "msk") == "mo":
+        # Правка этой строки была применена НАПОЛОВИНУ: имя источника и ссылку
+        # заменили, а колонка «Применение» осталась с московским 593-ПП — то
+        # есть областная книга по-прежнему называла основанием чужой акт, и
+        # выглядело это как исправленная строка. Строка меняется целиком.
         sources_xml, _ = _v4_set_cell(
             sources_xml, "C7", text="Московская область")
         sources_xml, _ = _v4_set_cell(
             sources_xml, "D7",
             text="Диапазоны платы за смену ВРИ по округам МО (справочник DevelopAid)")
+        sources_xml, _ = _v4_set_cell(
+            sources_xml, "G7",
+            text="1745-ПП: коэффициент Кд по видам использования, плата считается "
+                 "по методике области")
+        sources_xml, _ = _v4_set_cell(
+            sources_xml, "I7",
+            text="Сумма платы приходит из расчёта; порядок, ставки и рассрочка — "
+                 "областные, московские здесь не применяются")
     calculation_id = _calculation_fingerprint(inputs, calculation_source_tep, phasing)
     sources_xml, _ = _v4_set_cell(
         sources_xml, "C16", text=f"Сборка DevelopAid {VERSION}")
     sources_xml, _ = _v4_set_cell(
         sources_xml, "D16",
         text=f"собрано {date.today().isoformat()} · расчёт {calculation_id}")
+    # Нормативные основания — строками ниже проектных источников: книга
+    # владельца отвечает «чем посчитано», а нормативы это половина ответа.
+    sources_xml = _v4_normative_sources_rows(
+        sources_xml, str(x.get("vri_region") or "msk"), missing)
 
     # Parity-блок ПРОВЕРОК: контрольные числа движка — значениями в C, допуск
     # в E; формулы книги в B посчитает Excel, и вердикт листа скажет FAIL,
