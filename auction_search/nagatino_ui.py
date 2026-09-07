@@ -1264,10 +1264,20 @@ function shareMarkup(){
 
 async function shareAsk(revoke){
  const a=auth();
- const r=await askJson('/krt/nagatino/share?'+new URLSearchParams(
-   {session:a.session,key:a.key,revoke:revoke?'1':''}));
- S.share=r.code||'';
- $('share').innerHTML=shareMarkup();
+ // Пустой параметр НЕ шлём: `revoke=` разбирался как негодный `bool` и давал
+ // 422 — кнопка не работала ни разу. И отказ показывается, а не пропадает:
+ // необработанный отказ обещания выглядит как «ничего не происходит», а
+ // кнопка при этом остаётся погашенной навсегда.
+ const params={session:a.session,key:a.key};
+ if(revoke)params.revoke='1';
+ try{
+  const r=await askJson('/krt/nagatino/share?'+new URLSearchParams(params));
+  S.share=r.code||'';
+  $('share').innerHTML=shareMarkup();
+ }catch(e){
+  $('share').innerHTML=shareMarkup()
+   +`<div class="notice bad">Ссылку выдать не удалось: ${escapeHtml(e.message)}</div>`;
+ }
  bindShare();
 }
 

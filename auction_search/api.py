@@ -1598,7 +1598,7 @@ def install(app: FastAPI) -> None:
 
     @app.get("/krt/nagatino/share", include_in_schema=False)
     async def nagatino_share(session: str = "", key: str = "",
-                             revoke: bool = False) -> dict[str, Any]:
+                             revoke: str = "") -> dict[str, Any]:
         """Выдать или отозвать ссылку. Только владельцу — делится он.
 
         Выданная ссылка не перевыдаётся: у человека на руках адрес, и молча
@@ -1606,7 +1606,12 @@ def install(app: FastAPI) -> None:
         """
         if core is not None and hasattr(core, "_require_admin"):
             core._require_admin(session, key, "Участки КРТ Нагатино")
-        if revoke:
+        # Признак читается строкой, а не `bool`. Браузер шлёт пустой параметр
+        # как `revoke=`, и разбор в `bool` отвечал 422 — то есть кнопка
+        # «Поделиться» не работала НИ РАЗУ, даже у владельца: «я жму
+        # поделиться, но ничего не происходит» (владелец, 07.09.2026). Пустое
+        # значение — это «не отзывать», а не негодный ввод.
+        if str(revoke).strip().lower() in ("1", "true", "yes", "on"):
             await run_in_threadpool(nagatino_parcels.revoke_share_code)
             return {"code": "", "revoked": True}
         code = await run_in_threadpool(nagatino_parcels.issue_share_code)

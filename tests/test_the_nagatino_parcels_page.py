@@ -1262,6 +1262,16 @@ def _check_share(client) -> None:
 
     # Выдать может только владелец.
     assert client.get("/krt/nagatino/share").status_code == 401
+
+    # Ровно так, как шлёт кнопка страницы: браузер отдаёт пустой параметр как
+    # `revoke=`. Разбор в `bool` отвечал на это 422, и кнопка «Поделиться» не
+    # работала НИ РАЗУ, даже у владельца — «я жму поделиться, но ничего не
+    # происходит» (владелец, 07.09.2026). Пустое значение — это «не отзывать».
+    empty = client.get("/krt/nagatino/share",
+                       params={"session": "", "key": "owner", "revoke": ""})
+    assert empty.status_code == 200, (empty.status_code, empty.text[:200])
+    assert empty.json()["code"], "ссылка не выдана на пустом признаке отзыва"
+    parcels.revoke_share_code()
     issued = client.get("/krt/nagatino/share", params={"key": "owner"})
     assert issued.status_code == 200
     code = issued.json()["code"]
@@ -1378,3 +1388,20 @@ def test_the_refusal_leads_to_the_cabinet_login_and_names_the_other_keys():
     assert "Поделиться" in gate, "самый простой путь для стороннего не назван"
     # Второго входа по ключу здесь нет: он у кабинета один.
     assert "cabinet/login" not in gate
+
+
+def test_the_share_button_shows_a_refusal_instead_of_going_quiet():
+    """Необработанный отказ обещания выглядит как «ничего не происходит».
+
+    Кнопка гасит себя перед запросом, и без `catch` она оставалась погашенной
+    навсегда, а причина уходила в консоль — то есть её не было. Правило уже
+    записано про хостинг: «ошибка, ушедшая только в лог, — это ошибка, которой
+    нет».
+    """
+    page = nagatino_ui.NAGATINO_PAGE
+    block = page[page.index("async function shareAsk("):page.index("function bindShare()")]
+    assert "catch" in block, "отказ выдачи ссылки пропадает молча"
+    assert "notice bad" in block, "причина отказа не показывается на экране"
+    # Пустой признак не шлётся вовсе: именно он давал 422.
+    assert "revoke:''" not in block and "revoke:\"\"" not in block
+    assert "if(revoke)params.revoke='1'" in block
