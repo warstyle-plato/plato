@@ -28,6 +28,7 @@
 from __future__ import annotations
 
 import base64
+import html
 import re
 from pathlib import Path
 
@@ -135,6 +136,44 @@ def _scenario_rows(core) -> str:
     return "".join(rows)
 
 
+_SECTION = re.compile(r'<section[^>]*\bid="([^"]+)"[^>]*>', re.S)
+_NAV_LABEL = re.compile(r'\bdata-nav="([^"]*)"')
+_H2 = re.compile(r"<h2[^>]*>(.*?)</h2>", re.S)
+
+
+def nav_items(page: str) -> list[tuple[str, str]]:
+    """Пункты меню — из САМИХ разделов, а не рукописным списком рядом.
+
+    Меню было перечислением из девяти ссылок, а разделов стало десять:
+    «Справочник нормативной базы» существовал и в меню не значился — дойти до
+    него можно было только прокруткой (владелец, 07.09.2026: «раздел, который
+    мы не пересобрали кстати увы по новым пунктам меню»). Тот же класс, что
+    подвал, собираемый из `PAGE`: следующий раздел попадает в меню тем, что он
+    появился, а не тем, что о нём вспомнили.
+
+    Короткая подпись живёт на разделе (`data-nav`) — иначе в меню уехали бы
+    заголовки целиком («Пять способов ввода данных» вместо «Способы ввода»).
+    Подписи нет — берётся заголовок: раздел без неё виден, а не пропадает.
+    """
+    items: list[tuple[str, str]] = []
+    for found in _SECTION.finditer(page):
+        section_id = found.group(1)
+        label = _NAV_LABEL.search(found.group(0))
+        if label:
+            items.append((section_id, label.group(1)))
+            continue
+        head = _H2.search(page, found.end())
+        title = re.sub(r"<[^>]+>", "", head.group(1)).strip() if head else section_id
+        items.append((section_id, title))
+    return items
+
+
+def _nav_html(page: str) -> str:
+    return "\n        ".join(
+        f'<a href="#{section_id}">{html.escape(label)}</a>'
+        for section_id, label in nav_items(page))
+
+
 def install(app, core) -> None:
     """Ставит /guide поверх собранного приложения."""
 
@@ -149,6 +188,8 @@ def install(app, core) -> None:
 
     page = page.replace("__GUIDE_NORMATIVE_REGISTRY__",
                         normatives_registry.guide_reference_html())
+    # Меню собирается ПОСЛЕДНИМ: разделы к этому моменту на месте.
+    page = page.replace("__GUIDE_NAV__", _nav_html(page))
 
     @app.get("/guide", response_class=HTMLResponse, include_in_schema=False)
     @app.get("/guide/", response_class=HTMLResponse, include_in_schema=False)

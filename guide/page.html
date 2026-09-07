@@ -19,21 +19,13 @@
       <input id="gsearch" type="search" placeholder="Поиск по разделам…" aria-label="Поиск по разделам">
       <div class="gprogress" title="Сколько руководства вы уже просмотрели"><div id="gprogressBar"></div></div>
       <nav id="gnavList" aria-label="Разделы руководства">
-        <a href="#start">Начните здесь</a>
-        <a href="#inputs">Способы ввода</a>
-        <a href="#example">Пример: Гродненская</a>
-        <a href="#first-run">Первый расчёт</a>
-        <a href="#project">Проект</a>
-        <a href="#economics">Экономика</a>
-        <a href="#result">Результат</a>
-        <a href="#areas">Площади: чей термин</a>
-        <a href="#export">PDF и Excel</a>
+        __GUIDE_NAV__
       </nav>
     </aside>
 
     <main class="gmain">
 
-      <section id="start" class="gsection">
+      <section id="start" class="gsection" data-nav="Начните здесь">
         <h1>Что потребуется от вас и что вы получите</h1>
         <div class="gcards">
           <div class="gcard">
@@ -65,7 +57,7 @@
           вход занимает несколько секунд и не требует регистрации.</p>
       </section>
 
-      <section id="inputs" class="gsection">
+      <section id="inputs" class="gsection" data-nav="Способы ввода">
         <h2>Пять способов ввода данных</h2>
         <div class="gtabs" role="tablist" aria-label="Способы ввода данных">
           <button role="tab" aria-selected="true" id="tab-address" aria-controls="pane-address">Адрес или кадастр</button>
@@ -137,7 +129,7 @@
 <figure class="gshot"><img src="/guide/assets/screens/input-correction.webp" alt="Группа «Продажи» во Вводных с открытыми для правки полями" loading="lazy" decoding="async"><figcaption><b>Где:</b> Экономика → Вводные, любая группа полей · <b>Нажать:</b> изменить значение — модель пересчитается сама · <b>Проверить:</b> статус расчёта в шапке: «Расчёт актуален» после пересчёта</figcaption></figure>        </div>
       </section>
 
-      <section id="example" class="gsection">
+      <section id="example" class="gsection" data-nav="Пример: Гродненская">
         <h2>Сквозной пример: Гродненская, 18</h2>
         <p>Во всех разделах руководства используется один учебный пример —
           <b>«Москва, Гродненская улица, дом 18»</b>, проект ЖК «Кутузов Сити».</p>
@@ -156,7 +148,7 @@
           ГПЗУ, АГР, проектом и официальным Excel ГлавАПУ.</p>
       </section>
 
-      <section id="first-run" class="gsection">
+      <section id="first-run" class="gsection" data-nav="Первый расчёт">
         <h2>Первый расчёт: пошаговый маршрут</h2>
         <p>Девять шагов от участка до выгрузки. Отмечайте пройденные — прогресс сохраняется
           в этом браузере.</p>
@@ -313,7 +305,7 @@
         </div>
       </section>
 
-      <section id="project" class="gsection">
+      <section id="project" class="gsection" data-nav="Проект">
         <h2>Раздел «Проект»: что строим</h2>
         <p>Три шага: <b class="ui">Участок</b>, <b class="ui">ТЭП</b>,
           <b class="ui">Очередность</b>. Здесь фиксируется физика проекта — земля, площади,
@@ -334,7 +326,7 @@
           и очередь, и консолидацию.</p>
       </section>
 
-      <section id="economics" class="gsection">
+      <section id="economics" class="gsection" data-nav="Экономика">
         <h2>Раздел «Экономика»: на каких условиях</h2>
         <p>Шаги <b class="ui">Вводные</b>, <b class="ui">ВРИ</b> и
           <b class="ui">Ключевая ставка</b>. Класс и сценарий — разные настройки:
@@ -367,7 +359,7 @@
         </table></div>
       </section>
 
-      <section id="result" class="gsection">
+      <section id="result" class="gsection" data-nav="Результат">
         <h2>Раздел «Результат»: что вышло</h2>
         <p>Шаги <b class="ui">Отчёт</b> и <b class="ui">Чувствительность</b>. Модель считает
           выручку, расходы, денежный поток, проценты, прибыль, IRR, NPV, LLCR, пики БРИДЖа и
@@ -410,7 +402,7 @@
           прямо в окне помощника.</p>
       </section>
 
-      <section id="areas" class="gsection">
+      <section id="areas" class="gsection" data-nav="Площади: чей термин">
         <h2>Площади: чей это термин</h2>
         <p>Одни и те же слова про площадь приходят из трёх разных мест: из
           градостроительной методики Москвы, из проектной документации и из
@@ -497,7 +489,7 @@
           города, берите его из раздела А и называйте так, как называет город.</p>
       </section>
 
-      <section id="export" class="gsection">
+      <section id="export" class="gsection" data-nav="PDF и Excel">
         <h2>PDF и Excel</h2>
         <div class="gcards">
           <div class="gcard">
@@ -529,7 +521,7 @@
         <p><a class="gbtn dark" href="/">Открыть DevelopAid и посчитать свой участок</a></p>
       </section>
 
-      <section class="gnorm" id="normative">
+      <section class="gnorm" id="normative" data-nav="Нормативная база">
         <h2>Справочник нормативной базы</h2>
         <p class="gnote">На чём стоят расчёты DevelopAid. Список собирается из
           нормативного реестра движка — того же, что показывает страница
