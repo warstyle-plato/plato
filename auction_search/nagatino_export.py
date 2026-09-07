@@ -75,15 +75,23 @@ SHEET_OWNERS = (
     ("land_area_sqm", "Земли, м²", 14),
     ("objects", "Строений", 10),
     ("objects_area_sqm", "Их площадь, м²", 16),
+    # Справочная колонка: земля ПОД строениями. Своей она владельцу не
+    # становится, и складывать её нельзя — участок под строениями двух
+    # владельцев посчитан у каждого. Итог группы поэтому объединение, а не
+    # сумма строк, и об этом сказано под таблицей.
+    ("under_land_area_sqm", "Земля под их строениями, м² · справочно", 24),
     ("value_rub", "Кадастровая стоимость, ₽", 22),
 )
-SHEET_HOLDINGS = SHEET_OWNERS + (("by", "На чём основано", 30),)
+# У взгляда «по участку» справочной колонки нет: там земля уже приписана, и
+# вторая колонка о том же читалась бы как другая величина.
+SHEET_HOLDINGS = tuple(column for column in SHEET_OWNERS
+                       if column[0] != "under_land_area_sqm") + (("by", "На чём основано", 30),)
 # Порядок групп — тот же, что в реестре и на экране: второй список разошёлся бы
 # с первым молча.
 _MONEY = '#,##0" ₽"'
 _AREA = '#,##0.0'
 _OWNER_FORMATS = {"land_area_sqm": _AREA, "objects_area_sqm": _AREA,
-                  "value_rub": _MONEY}
+                  "under_land_area_sqm": _AREA, "value_rub": _MONEY}
 
 
 def _owner_text(owner: dict[str, Any]) -> str:
@@ -240,7 +248,8 @@ TOTAL_FILL = PatternFill("solid", fgColor="F3F3EF")
 
 
 def _owners_table(sheet, columns, rows: list[dict[str, Any]], order: list[dict[str, Any]],
-                  title: str, note: str, start: int) -> int:
+                  title: str, note: str, start: int,
+                  unions: dict[str, Any] | None = None) -> int:
     """Одна таблица листа владельцев: полосы групп и итог у каждой.
 
     Возвращает номер строки ПОСЛЕ таблицы. Итог группы считается по её же
@@ -285,6 +294,14 @@ def _owners_table(sheet, columns, rows: list[dict[str, Any]], order: list[dict[s
         total = {"name": f"Итого · {group.get('title')}"}
         for key in ("lands", "land_area_sqm", "objects", "objects_area_sqm", "value_rub"):
             total[key] = round(sum(float(row.get(key) or 0) for row in inside), 1)
+        # Справочная земля не суммируется: у двух владельцев группы под
+        # строениями бывает один участок, и сумма назвала бы метры, которых
+        # нет. Итог группы — объединение, посчитанное там же, где сама
+        # величина.
+        if unions is not None:
+            total["under_land_area_sqm"] = ((unions.get("by_group") or {})
+                                            .get(str(group.get("key")))
+                                            or {}).get("area_sqm", "")
         for index, key in enumerate(keys, start=1):
             cell = sheet.cell(row=line, column=index, value=total.get(key, ""))
             cell.font = Font(bold=True)
@@ -327,6 +344,8 @@ def _owners_table(sheet, columns, rows: list[dict[str, Any]], order: list[dict[s
     grand = {"name": "ВСЕГО"}
     for key in ("lands", "land_area_sqm", "objects", "objects_area_sqm", "value_rub"):
         grand[key] = round(sum(float(row.get(key) or 0) for row in rows), 1)
+    if unions is not None:
+        grand["under_land_area_sqm"] = (unions.get("total") or {}).get("area_sqm", "")
     for index, key in enumerate(keys, start=1):
         cell = sheet.cell(row=line, column=index, value=grand.get(key, ""))
         cell.font = Font(bold=True)
@@ -337,7 +356,8 @@ def _owners_table(sheet, columns, rows: list[dict[str, Any]], order: list[dict[s
 
 def build(view: dict[str, Any], owners: list[dict[str, Any]],
           holdings: list[dict[str, Any]] | None = None,
-          groups: list[dict[str, Any]] | None = None) -> bytes:
+          groups: list[dict[str, Any]] | None = None,
+          under: dict[str, Any] | None = None) -> bytes:
     """Книга свода. Считает не она — она показывает посчитанное."""
     book = Workbook()
     rows = _land_rows(view)
@@ -389,8 +409,12 @@ def build(view: dict[str, Any], owners: list[dict[str, Any]],
         "Собственник по выпискам ЕГРН. Земля стоит там, где право на участок "
         "зарегистрировано; у четырнадцати участков из двадцати его нет вовсе — "
         "это ответ реестра, а не наш пробел. Оперативное управление ГБУ "
-        "«Жилищник» собственностью не является: эти строения записаны за городом.",
-        1)
+        "«Жилищник» собственностью не является: эти строения записаны за городом. "
+        "Последняя колонка справочная — земля ПОД строениями, своей она владельцу "
+        "не становится. Складывать её нельзя: на одном участке стоят строения "
+        "разных владельцев, и он посчитан у каждого; итог группы поэтому "
+        "объединение участков, а не сумма строк.",
+        1, under)
     if holdings:
         _owners_table(
             second, SHEET_HOLDINGS, holdings, order,

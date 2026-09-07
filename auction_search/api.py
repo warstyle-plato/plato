@@ -1619,7 +1619,8 @@ def install(app: FastAPI) -> None:
                     nagatino_parcels.territory(),
                     nagatino_parcels.owners_summary(),
                     nagatino_parcels.land_holdings(),
-                    nagatino_parcels.registry().get("groups") or []))
+                    nagatino_parcels.registry().get("groups") or [],
+                    nagatino_parcels.land_under_buildings()))
         except nagatino_parcels.RegistryProblem as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
         name = "КРТ Нагатино — участки и объекты.xlsx"

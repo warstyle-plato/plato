@@ -568,15 +568,19 @@ function territoryMarkup(){
 // Одна таблица владельцев: строки стоят внутри своей группы, у группы свой
 // промежуточный итог, у таблицы общий. Группа тут полоса, а не колонка:
 // колонкой её приходится читать глазами по всей высоте.
-function ownersBlock(rows,extra){
+function ownersBlock(rows,extra,unions){
  const groups=(S.data.groups||[]).map(g=>g.key);
  const order=[];
  groups.forEach(key=>{const inside=rows.filter(r=>r.group===key);if(inside.length)order.push([key,inside]);});
  const rest=rows.filter(r=>!groups.includes(r.group));
  if(rest.length)order.push([null,rest]);
  const money=r=>('value_rub' in r)?(r.value_rub||0):((r.land_value_rub||0)+(r.objects_value_rub||0));
+ // Справочная земля не суммируется — участок под строениями двух владельцев
+ // посчитан у каждого. Поэтому у итога группы она берётся объединением,
+ // посчитанным на сервере, а не складывается из строк.
  const cells=r=>`<td class="num">${r.lands||''}</td><td class="num">${r.land_area_sqm?m2(r.land_area_sqm):''}</td>`
   +`<td class="num">${r.objects||''}</td><td class="num">${r.objects_area_sqm?m2(r.objects_area_sqm):''}</td>`
+  +(unions?`<td class="num source">${r.under_land_area_sqm?m2(r.under_land_area_sqm):''}</td>`:'')
   +`<td class="num">${mln(money(r))}</td>`+(extra?`<td class="source">${escapeHtml(r.by||'')}</td>`:'');
  const sum=(inside,key)=>inside.reduce((a,r)=>a+Number(r[key]||0),0);
  const body=order.map(([key,inside])=>{
@@ -584,32 +588,44 @@ function ownersBlock(rows,extra){
                  :(inside[0].group_title||'Группа не назначена');
   const colour=key?(((S.data.groups||[]).find(g=>g.key===key)||{}).colour||'#8a8a8a')
                  :(inside[0].colour||'#8a8a8a');
-  const band=`<tr class="zu"><td colspan="${extra?7:6}">`
+  const band=`<tr class="zu"><td colspan="${6+(extra?1:0)+(unions?1:0)}">`
    +`<span class="swatch" style="background:${escapeHtml(colour)}"></span>`
    +`<b>${escapeHtml(title||'')}</b></td></tr>`;
   const lines=inside.map(r=>`<tr><td>${escapeHtml(r.name||'')}`
    +`${r.inn?`<div class="source">ИНН ${escapeHtml(r.inn)}</div>`:''}</td>`+cells(r)+'</tr>').join('');
   const total={lands:sum(inside,'lands'),land_area_sqm:sum(inside,'land_area_sqm'),
    objects:sum(inside,'objects'),objects_area_sqm:sum(inside,'objects_area_sqm'),
-   value_rub:inside.reduce((a,r)=>a+money(r),0)};
+   value_rub:inside.reduce((a,r)=>a+money(r),0),
+   under_land_area_sqm:unions?(((unions.by_group||{})[key]||{}).area_sqm||0):0};
   return band+lines+`<tr><td><b>Итого · ${escapeHtml(title||'')}</b></td>`+cells(total)+'</tr>';
  }).join('');
  const all={lands:sum(rows,'lands'),land_area_sqm:sum(rows,'land_area_sqm'),
   objects:sum(rows,'objects'),objects_area_sqm:sum(rows,'objects_area_sqm'),
-  value_rub:rows.reduce((a,r)=>a+money(r),0)};
+  value_rub:rows.reduce((a,r)=>a+money(r),0),
+  under_land_area_sqm:unions?((unions.total||{}).area_sqm||0):0};
  return '<div class="tablewrap"><table class="territory"><thead><tr><th>Правообладатель</th>'
   +'<th class="num">Участков</th><th class="num">Земли</th><th class="num">Строений</th>'
-  +'<th class="num">Их площадь</th><th class="num">Кадастровая стоимость</th>'
+  +'<th class="num">Их площадь</th>'
+  +(unions?'<th class="num" title="Земля ПОД строениями этого владельца. Своей она ему не '
+    +'становится, и складывать колонку нельзя: участок под строениями разных владельцев '
+    +'посчитан у каждого">Земля под их строениями · справочно</th>':'')
+  +'<th class="num">Кадастровая стоимость</th>'
   +(extra?'<th>На чём основано</th>':'')
   +'</tr></thead><tbody>'+body
   +`<tr><td><b>ВСЕГО</b></td>${cells(all)}</tr></tbody></table></div>`;
 }
 
 function ownersTableMarkup(){
- const docs=ownersBlock(S.data.owners||[],false)
+ const under=S.data.under||null;
+ const docs=ownersBlock(S.data.owners||[],false,under)
   +'<div class="source">Строки сложены по ИНН, а не по написанию имени: одна компания приходит в '
   +'выписках и капсом, и обычным письмом, а «Автокомбинат № 19» — то ЗАО, то АО. Оперативное '
-  +'управление собственностью не считается и стоит отдельной строкой у объекта.</div>';
+  +'управление собственностью не считается и стоит отдельной строкой у объекта.'
+  +(under?' Справочная колонка — земля ПОД строениями: своей она владельцу не становится, и '
+    +'складывать её нельзя, участок под строениями разных владельцев посчитан у каждого. Итог '
+    +'группы — объединение участков, а не сумма строк; всего под строениями '
+    +`${under.total.lands} участков из ${(S.data.territory||{}).lands.length} (${m2(under.total.area_sqm)}).`:'')
+  +'</div>';
  const holdings=S.data.holdings||[];
  if(!holdings.length)return docs;
  // Второй взгляд — НАШ вывод, и он подписан своим именем. Слить его с первой
@@ -622,7 +638,7 @@ function ownersTableMarkup(){
   +'значит Москва» (решение владельца, 07.09.2026). Хозяина участка называет ЕГРН; нет записи — '
   +'единственный собственник строений на нём, а если лица разные, но группа одна — группа. '
   +'Объект на нескольких участках посчитан один раз.</div>'
-  +ownersBlock(holdings,true);
+  +ownersBlock(holdings,true,null);
 }
 
 function kindsMarkup(){

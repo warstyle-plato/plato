@@ -303,6 +303,51 @@ def test_the_owners_sheet_holds_two_tables_with_subtotals():
     assert counts[0] == counts[1] == (20, 39), counts
 
 
+def test_the_land_under_the_buildings_is_a_union_and_says_so():
+    """«Справочно указывать какая площадь участков под всеми зданиями группы»
+    (владелец, 07.09.2026).
+
+    Величина считается МНОЖЕСТВОМ участков, а не суммой строк: на участке
+    Автокомбината стоят и три строения без зарегистрированного права, и он
+    посчитан у обоих. Сумма строк Брынцалова даёт 149 458,2 м² при 97 563,1
+    настоящих, а сумма по группам — 232 919 при 186 860 существующих. Проверка
+    держит именно это: итог группы МЕНЬШЕ суммы своих строк.
+    """
+    import openpyxl
+    from io import BytesIO
+
+    from auction_search import nagatino_export
+
+    view = parcels.territory()
+    under = parcels.land_under_buildings(view)
+    # Всего под строениями земли меньше, чем всей: у трёх участков строений нет.
+    total_land = round(sum(float(land.get("area_sqm") or 0) for land in view["lands"]), 1)
+    assert under["total"]["lands"] == 17 and under["total"]["area_sqm"] < total_land
+
+    book = openpyxl.load_workbook(BytesIO(nagatino_export.build(
+        view, parcels.owners_summary(view), parcels.land_holdings(view),
+        parcels.registry().get("groups") or [], under)))
+    rows = list(book["Кто чем владеет"].iter_rows(values_only=True))
+    head = next(row for row in rows if str(row[0] or "") == "Правообладатель")
+    column = [str(cell or "") for cell in head].index("Земля под их строениями, м² · справочно")
+    start = rows.index(head)
+    inside, subtotal = [], None
+    for row in rows[start + 2:]:
+        name = str(row[0] or "")
+        if name.startswith("Итого · Брынцалов"):
+            subtotal = row
+            break
+        if name and not name.startswith("Итого"):
+            inside.append(row)
+    assert subtotal is not None and inside
+    added = round(sum(float(row[column] or 0) for row in inside), 1)
+    assert float(subtotal[column]) == under["by_group"]["bryntsalov"]["area_sqm"]
+    assert float(subtotal[column]) < added, "итог группы посчитан суммой — это чужие метры"
+    # Вторая таблица этой колонки не несёт: там земля уже приписана.
+    lower = [row for row in rows if str(row[0] or "") == "Правообладатель"][1]
+    assert "Земля под их строениями, м² · справочно" not in [str(cell or "") for cell in lower]
+
+
 def test_the_column_adds_up_to_the_total_line():
     """Строка итога сходится с колонкой. Объект на нескольких участках стоит у
     каждого, и его площадь напечатана ОДИН раз: иначе сумма колонки (56 323,3)

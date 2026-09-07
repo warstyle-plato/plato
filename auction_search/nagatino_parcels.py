@@ -716,9 +716,9 @@ def territory() -> dict[str, Any]:
     }
 
 
-def owners_summary() -> list[dict[str, Any]]:
+def owners_summary(view: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """Кто чем владеет — по ИНН, а не по написанию имени."""
-    view = territory()
+    view = territory() if view is None else view
     seen: dict[str, dict[str, Any]] = {}
 
     from auction_search import egrn_extracts
@@ -751,12 +751,60 @@ def owners_summary() -> list[dict[str, Any]]:
         add("lands", land["owner"], land.get("area_sqm"), land.get("cadastral_value_rub"))
     for item in view["objects"]:
         add("objects", item["owner"], item.get("area_sqm"), item.get("cadastral_value_rub"))
+    under = land_under_buildings(view)["by_owner"]
     rows = list(seen.values())
+    for key, row in seen.items():
+        # Справочно: земля ПОД строениями этого владельца. Своей она ему не
+        # становится — колонка «Земли» рядом отвечает на другой вопрос.
+        row["under_lands"] = (under.get(key) or {}).get("lands", 0)
+        row["under_land_area_sqm"] = (under.get(key) or {}).get("area_sqm", 0.0)
     for row in rows:
         for key in ("land_area_sqm", "objects_area_sqm", "land_value_rub", "objects_value_rub"):
             row[key] = round(row[key], 1)
     rows.sort(key=lambda row: -(row["land_area_sqm"] + row["objects_area_sqm"]))
     return rows
+
+
+def land_under_buildings(view: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Справочно: на какой земле стоят строения владельца и всей группы.
+
+    «Надо наверное на сводной второй вкладке справочно указывать какая площадь
+    участков под всеми зданиями группы?» (владелец, 07.09.2026). У Брынцалова
+    земли по документам нет вовсе — его семнадцать строений стоят на чужой и
+    неразграниченной, — и без этой строки колонка «Земли» читается как «этот
+    владелец к земле отношения не имеет».
+
+    Число **не складывается**, и это свойство вопроса, а не ошибка счёта: на
+    участке Автокомбината стоят и три строения без зарегистрированного права,
+    поэтому его 43 288 м² считаются и у него, и у группы «право не
+    зарегистрировано». Поэтому участки собираются МНОЖЕСТВОМ, а итог группы
+    считается объединением, а не суммой строк: сумма дала бы 232 919 м² при
+    186 860 существующих. Складывать эту колонку нельзя, и так и написано.
+    """
+    from auction_search import egrn_extracts
+
+    view = territory() if view is None else view
+    lands = {land["cadastral_number"]: land for land in view["lands"]}
+    by_owner: dict[str, set[str]] = {}
+    by_group: dict[str, set[str]] = {}
+    everything: set[str] = set()
+    for item in view["objects"]:
+        owner = item.get("owner") or {}
+        key = (egrn_extracts.holder_key(owner) if owner.get("name")
+               else "нет:" + str(owner.get("note") or ""))
+        numbers = {number for number in item.get("lands") or [] if number in lands}
+        by_owner.setdefault(key, set()).update(numbers)
+        by_group.setdefault(str(owner.get("group") or ""), set()).update(numbers)
+        everything |= numbers
+
+    def measure(numbers: set[str]) -> dict[str, Any]:
+        return {"lands": len(numbers),
+                "area_sqm": round(sum(float(lands[number].get("area_sqm") or 0)
+                                      for number in numbers), 1)}
+
+    return {"by_owner": {key: measure(value) for key, value in by_owner.items()},
+            "by_group": {key: measure(value) for key, value in by_group.items()},
+            "total": measure(everything)}
 
 
 def land_holdings(view: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -996,10 +1044,13 @@ def payload() -> dict[str, Any]:
         # Свод по официальным документам: состав территории из извещения о
         # торгах, свойства и права — из выписок ЕГРН.
         "territory": lands_and_objects,
-        "owners": owners_summary(),
+        "owners": owners_summary(lands_and_objects),
         # Второй взгляд на тех же владельцев — по участку. Считается один раз
         # и здесь: экран и книга показывают посчитанное, а не считают порознь.
         "holdings": land_holdings(lands_and_objects),
+        # Справочная земля под строениями — объединениями, а не суммами: строки
+        # перекрываются, и сложение назвало бы метры, которых нет.
+        "under": land_under_buildings(lands_and_objects),
         "outlines": {
             "parcels": len(parcels),
             "drawn": len([p for p in parcels if p["rings_merc"]]),
