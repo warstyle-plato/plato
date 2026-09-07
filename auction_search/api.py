@@ -1561,6 +1561,46 @@ def install(app: FastAPI) -> None:
     # публичной части кабинета на них ссылки нет, а числа за ними — владельцу
     # сервиса: в выгрузке живые компании с ИНН и кадастровой стоимостью.
 
+    def _nagatino_gate(session: str, key: str, share: str) -> None:
+        """Кто вправе видеть числа: владелец либо предъявитель ссылки.
+
+        Ссылка бессрочная и открытая — решение владельца (07.09.2026), тот же
+        механизм, что у «Поделиться» проектом: код случайный и длинный, адрес
+        открывает любой, кто его получил, рядом всегда кнопка отзыва. Второго
+        механизма на один вопрос не заводим.
+
+        Код сверяется постоянным по времени сравнением: обычное `==` на
+        коротком коде выдаёт длину совпавшего начала, и подбор становится
+        линейным вместо переборного.
+        """
+        import hmac
+
+        code = nagatino_parcels.share_code()
+        if code and share and hmac.compare_digest(str(share), code):
+            return
+        if core is not None and hasattr(core, "_require_admin"):
+            # Выгрузка называет живые компании с ИНН и кадастровой стоимостью:
+            # это не витрина. Механизм честно выключен там, где владельца
+            # опознать нечем, — иначе на машине без настроек страница пропала
+            # бы у всех, включая самого владельца.
+            core._require_admin(session, key, "Участки КРТ Нагатино")
+
+    @app.get("/krt/nagatino/share", include_in_schema=False)
+    async def nagatino_share(session: str = "", key: str = "",
+                             revoke: bool = False) -> dict[str, Any]:
+        """Выдать или отозвать ссылку. Только владельцу — делится он.
+
+        Выданная ссылка не перевыдаётся: у человека на руках адрес, и молча
+        сменить его значило бы сломать чужую вкладку, ничего об этом не сказав.
+        """
+        if core is not None and hasattr(core, "_require_admin"):
+            core._require_admin(session, key, "Участки КРТ Нагатино")
+        if revoke:
+            await run_in_threadpool(nagatino_parcels.revoke_share_code)
+            return {"code": "", "revoked": True}
+        code = await run_in_threadpool(nagatino_parcels.issue_share_code)
+        return {"code": code, "revoked": False}
+
     @app.get("/krt/nagatino", response_class=HTMLResponse, include_in_schema=False)
     async def nagatino_parcels_home() -> HTMLResponse:
         """Оболочка страницы. Проверки здесь нет по той же причине, что у
@@ -1572,6 +1612,7 @@ def install(app: FastAPI) -> None:
 
     @app.get("/krt/nagatino/parcels", include_in_schema=False)
     async def nagatino_parcels_data(session: str = "", key: str = "",
+                                    share: str = "",
                                     refresh: bool = False) -> dict[str, Any]:
         """Участки выгрузки, их правообладатели и прочитанные контуры ЕГРН.
 
@@ -1580,12 +1621,7 @@ def install(app: FastAPI) -> None:
         отдала бы свою же ошибку вместо карты. Ответы копятся порциями на
         диске, дочитывает фон, а страница показывает, чего ещё не спрашивали.
         """
-        if core is not None and hasattr(core, "_require_admin"):
-            # Выгрузка называет живые компании с ИНН и кадастровой стоимостью:
-            # это не витрина. Механизм честно выключен там, где владельца
-            # опознать нечем, — иначе на машине без настроек страница пропала
-            # бы у всех, включая самого владельца.
-            core._require_admin(session, key, "Участки КРТ Нагатино")
+        _nagatino_gate(session, key, share)
         try:
             data = await run_in_threadpool(nagatino_parcels.payload)
         except nagatino_parcels.RegistryProblem as exc:
@@ -1603,14 +1639,14 @@ def install(app: FastAPI) -> None:
         return data
 
     @app.get("/krt/nagatino/export.xlsx", include_in_schema=False)
-    async def nagatino_parcels_export(session: str = "", key: str = "") -> Response:
+    async def nagatino_parcels_export(session: str = "", key: str = "",
+                                      share: str = "") -> Response:
         """Свод книгой Excel. Собирается из того же `territory()`, что и экран.
 
         Второй сборки нет: разойдясь, книга и страница дали бы два достоверных
         на вид ответа об одной территории.
         """
-        if core is not None and hasattr(core, "_require_admin"):
-            core._require_admin(session, key, "Участки КРТ Нагатино")
+        _nagatino_gate(session, key, share)
         from auction_search import nagatino_export
 
         try:
@@ -1634,15 +1670,15 @@ def install(app: FastAPI) -> None:
         )
 
     @app.get("/krt/nagatino/decision-outline.png", include_in_schema=False)
-    async def nagatino_decision_outline(session: str = "", key: str = "") -> Response:
+    async def nagatino_decision_outline(session: str = "", key: str = "",
+                                        share: str = "") -> Response:
         """Картинка границ из приложения 1 к проекту решения — как есть.
 
         Не наложение: растр без координат, и совмещать его на глаз значит
         рисовать геометрию, которой у нас нет. Она стоит рядом с картой и
         подписана источником.
         """
-        if core is not None and hasattr(core, "_require_admin"):
-            core._require_admin(session, key, "Участки КРТ Нагатино")
+        _nagatino_gate(session, key, share)
         try:
             raw = await run_in_threadpool(nagatino_parcels.decision_outline_picture)
         except nagatino_parcels.OutlinePictureProblem as exc:

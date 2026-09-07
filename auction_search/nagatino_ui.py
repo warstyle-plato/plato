@@ -124,6 +124,7 @@ table.territory tr.obj td:first-child{border-left:14px solid var(--soft)}
   </div>
   <div class="content">
     <div id="gate" class="notice warn" style="display:none"></div>
+    <div id="share" class="source"></div>
     <div id="progress" class="notice" style="display:none"></div>
     <div id="stats" class="stats"></div>
     <div id="reconcile"></div>
@@ -166,7 +167,7 @@ __DEVELOPAID_LAND_MAP_KIT__
 // объекты от этого мельчали, и номера на них не помещались. Отступ маленький по
 // той же причине.
 const FRAME={w:1180,h:1000,pad:0.05};
-const S={data:null,timer:null,started:0,pick:null,show:null};
+const S={data:null,timer:null,started:0,pick:null,show:null,share:''};
 
 // Отбор по группе владельцев — один на всю страницу. Два состояния (своё у
 // карты, своё у таблицы) разошлись бы, и на экране оказались бы отобраны
@@ -198,8 +199,14 @@ const mln=v=>(v===null||v===undefined)?'—':landNum(Number(v)/1e6,1)+' млн �
 // здесь нет, а второй завёл бы вторую личность у одного человека.
 function auth(){
  const get=(...keys)=>{try{for(const k of keys){const v=localStorage.getItem(k);if(v)return v}}catch(e){}return ''};
+ // Код ссылки читается из адреса ЭТОЙ страницы и уезжает во все запросы —
+ // данные, книга, картинка решения. Пришедший по ссылке владельцем не
+ // становится: выдать и отозвать её может только он.
+ let share='';
+ try{share=new URLSearchParams(location.search).get('share')||''}catch(e){}
  return {session:get('developaid_web_session','session','developaid_session'),
-         key:get('plato_projects_key','key','developaid_key')};
+         key:get('plato_projects_key','key','developaid_key'),
+         share:share};
 }
 // Ответ разбирают, зная, что он может быть не ответом: у шлюза своя страница
 // ошибки, и `r.json()` на ней даёт «не тот формат» вместо причины отказа.
@@ -214,7 +221,7 @@ async function askJson(url){
 
 async function load(refresh){
  const a=auth();
- const params=new URLSearchParams({session:a.session,key:a.key});
+ const params=new URLSearchParams({session:a.session,key:a.key,share:a.share});
  if(refresh)params.set('refresh','1');
  try{
   S.data=await askJson('/krt/nagatino/parcels?'+params.toString());
@@ -1070,7 +1077,7 @@ function legendMarkup(){
 function decisionOutlineMarkup(){
  const a=auth(),t=(S.data.territory||{}).totals||{};
  const src='/krt/nagatino/decision-outline.png?'
-   +new URLSearchParams({session:a.session,key:a.key});
+   +new URLSearchParams({session:a.session,key:a.key,share:a.share});
  const road=null;
  const steps=road?`<div class="source">Почему 18,69 га участков и 14,62 га площадки: `
    +`убрать дорогу ${escapeHtml(road.cadastral_number)} целиком — ${m2(road.area_sqm)} — и выйдет `
@@ -1177,6 +1184,8 @@ function render(){
   +((d.site||{}).okrug||'')+' · '+((d.site||{}).district||'')
   +(site.name?' · площадка реестра: '+site.name:'');
  $('stats').innerHTML=statsMarkup();
+ $('share').innerHTML=shareMarkup();
+ bindShare();
  $('reconcile').innerHTML=siteReconcileNote();
  $('findings').innerHTML=findingsMarkup();
  $('filter').innerHTML=filterMarkup();
@@ -1188,7 +1197,8 @@ function render(){
  $('coverage').innerHTML=coverageMarkup();
  $('decisionOutline').innerHTML=decisionOutlineMarkup();
  const a=auth(),link=$('exportLink');
- if(link)link.href='/krt/nagatino/export.xlsx?'+new URLSearchParams({session:a.session,key:a.key});
+ if(link)link.href='/krt/nagatino/export.xlsx?'
+   +new URLSearchParams({session:a.session,key:a.key,share:a.share});
  $('territoryBox').innerHTML=territoryMarkup();
  $('territoryBox').querySelectorAll('tr[id^="t-"]').forEach(row=>{
   row.style.cursor='pointer';
@@ -1208,6 +1218,42 @@ function render(){
    +(shownRows===(S.data.parcels||[]).length?'':' из '+(S.data.parcels||[]).length)
    +' строк, сырьё под нашими таблицами';
  bindMap();
+}
+
+// Ссылка для стороннего: бессрочная и открытая — решение владельца
+// (07.09.2026), тот же механизм, что у «Поделиться» проектом. Кнопки видит
+// только владелец: пришедший ПО ссылке ни выдать, ни отозвать её не может, и
+// показывать ему эти кнопки значило бы обещать то, чего он не сделает.
+//
+// И это ЖИВАЯ страница, а не снимок: получатель видит числа сегодняшние, а не
+// те, что были в день отправки. Сказано прямо — «поделился» у проектов
+// отдаёт снимок, и молча разное поведение под одним словом читается как одно.
+function shareMarkup(){
+ if(auth().share)return '';
+ const code=S.share||'';
+ if(!code)
+  return '<button type="button" id="shareBtn">Поделиться страницей</button>'
+   +' <span>Ссылка откроет эту страницу любому, кто её получит: числа за ней — '
+   +'живые компании с ИНН и кадастровой стоимостью.</span>';
+ const url=location.origin+location.pathname+'?share='+encodeURIComponent(code);
+ return `<b>Ссылка выдана:</b> <a href="${escapeHtml(url)}">${escapeHtml(url)}</a> `
+  +'<button type="button" id="shareOff">Отозвать</button>'
+  +'<div>Открывает любой, кто её получил, и живёт, пока не отозвана. Это ЖИВАЯ '
+  +'страница, а не снимок: ваши правки получатель увидит сразу.</div>';
+}
+
+async function shareAsk(revoke){
+ const a=auth();
+ const r=await askJson('/krt/nagatino/share?'+new URLSearchParams(
+   {session:a.session,key:a.key,revoke:revoke?'1':''}));
+ S.share=r.code||'';
+ $('share').innerHTML=shareMarkup();
+ bindShare();
+}
+
+function bindShare(){
+ const on=$('shareBtn'); if(on)on.onclick=()=>{on.disabled=true;shareAsk(false)};
+ const off=$('shareOff'); if(off)off.onclick=()=>{off.disabled=true;shareAsk(true)};
 }
 
 // Отбор объявлен один раз и правит одно состояние: снятая последняя галочка

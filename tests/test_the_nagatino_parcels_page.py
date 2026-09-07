@@ -1213,3 +1213,78 @@ def test_a_parcel_is_measured_against_the_site_outline_not_guessed():
     assert "inside_site_share" in page
     assert "В контуре площадки" in page
     assert "не сверено" in page, "неизмеренное обязано называться, а не молчать"
+
+
+def test_the_share_link_opens_the_page_for_someone_who_is_not_the_owner():
+    """«Как показать стороннему не владельцу эту страницу?» (владелец,
+    07.09.2026) — ответ: ссылкой, бессрочной, как у проектов (его решение).
+
+    Проверка держит четыре утверждения: без кода и без владельца числа
+    закрыты; код открывает их; отозванный код перестаёт работать; выдать и
+    отозвать может только владелец, а пришедший по ссылке — нет.
+    """
+    import sys
+    import types
+
+    from fastapi import FastAPI, HTTPException
+    from fastapi.testclient import TestClient
+
+    from auction_search.api import install
+
+    def require_admin(session: str, key: str, what: str) -> None:
+        """Владелец опознаётся ключом. Без ядра механизм честно выключен, и
+        проверять было бы нечего — поэтому ядро тут подставное."""
+        if key != "owner":
+            raise HTTPException(status_code=401, detail=f"{what}: не владелец")
+
+    core = types.ModuleType("developaid_core")
+    core._require_admin = require_admin  # type: ignore[attr-defined]
+    was = sys.modules.get("developaid_core")
+    sys.modules["developaid_core"] = core
+    try:
+        app = FastAPI()
+        install(app)
+        client = TestClient(app)
+        _check_share(client)
+    finally:
+        if was is None:
+            sys.modules.pop("developaid_core", None)
+        else:
+            sys.modules["developaid_core"] = was
+
+
+def _check_share(client) -> None:
+
+    parcels.revoke_share_code()
+    assert client.get("/krt/nagatino/parcels").status_code == 401, (
+        "числа открыты постороннему без всякой ссылки")
+
+    # Выдать может только владелец.
+    assert client.get("/krt/nagatino/share").status_code == 401
+    issued = client.get("/krt/nagatino/share", params={"key": "owner"})
+    assert issued.status_code == 200
+    code = issued.json()["code"]
+    assert len(code) >= 12, f"код короткий: {code!r}"
+    # Повторный вызов не меняет адрес: он уже у человека на руках.
+    assert client.get("/krt/nagatino/share", params={"key": "owner"}).json()["code"] == code
+
+    assert client.get("/krt/nagatino/parcels", params={"share": code}).status_code == 200
+    assert client.get("/krt/nagatino/parcels", params={"share": code + "x"}).status_code == 401
+
+    # Пришедший по ссылке ни выдать, ни отозвать её не может.
+    assert client.get("/krt/nagatino/share", params={"share": code}).status_code == 401
+
+    client.get("/krt/nagatino/share", params={"key": "owner", "revoke": "1"})
+    assert client.get("/krt/nagatino/parcels", params={"share": code}).status_code == 401, (
+        "отозванная ссылка продолжает открывать числа")
+
+
+def test_the_page_says_the_link_shows_live_numbers_not_a_snapshot():
+    """«Поделиться» у проектов отдаёт СНИМОК, здесь — живую страницу.
+
+    Молча разное поведение под одним словом читается как одно: получатель
+    решит, что видит то же, что видел отправитель в день отправки.
+    """
+    page = nagatino_ui.NAGATINO_PAGE
+    assert "ЖИВАЯ" in page and "не снимок" in page
+    assert "Отозвать" in page, "вечная открытая ссылка без отзыва рядом"

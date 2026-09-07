@@ -584,6 +584,45 @@ def share_inside(rings: list[list[list[float]]],
     return round(hit / own, 3)
 
 
+def share_path() -> Path:
+    """Где живёт код ссылки. ОТДЕЛЬНЫМ файлом от ответов ЕГРН намеренно.
+
+    Ответы дописывает фоновый читатель, и запись файла целиком однажды снесла
+    бы чужое — правило про `ranking.json` уже это стоило. Свой файл дешевле
+    любого слияния под замком.
+    """
+    return cache_path().parent / "nagatino-share.json"
+
+
+def share_code() -> str:
+    """Действующий код доступа. Пусто — ссылки нет."""
+    state = load_json(share_path())
+    code = (state or {}).get("code") if isinstance(state, dict) else None
+    return str(code or "")
+
+
+def issue_share_code() -> str:
+    """Выдать ссылку. Уже выданная не меняется: у человека на руках адрес.
+
+    Код случайный и длинный (`secrets.token_urlsafe`), а не идентификатор
+    страницы: адрес открывает любой, кто его получил. Так же устроено
+    «Поделиться» у проектов — второго механизма на один вопрос не заводим.
+    """
+    import secrets
+
+    code = share_code()
+    if code:
+        return code
+    code = secrets.token_urlsafe(12)
+    save_json(share_path(), {"code": code, "issued_at": int(time.time())})
+    return code
+
+
+def revoke_share_code() -> None:
+    """Отозвать. Ссылка вечная и открытая — значит отзыв обязан быть рядом."""
+    save_json(share_path(), {"code": "", "revoked_at": int(time.time())})
+
+
 def store_site(site: dict[str, Any]) -> None:
     """Положить опознанную площадку рядом с ответами ЕГРН, в тот же кэш."""
     state = load_json(cache_path())
