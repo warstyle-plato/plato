@@ -126,6 +126,11 @@ def test_the_trend_is_quarterly_because_a_month_draws_noise() -> None:
     # Сколько сделок в точке — часть ответа: доля на пяти сделках и доля на
     # пятидесяти на картинке неразличимы.
     assert [point["deals"] for point in trend] == [21, 21, 27, 15]
+    # Сколько месяцев в точке — тоже ответ: подпись «09.25–11.25» читается и
+    # как три месяца, и как два (вычитанием крайних), и оспорить второе
+    # прочтение нечем («у тебя написано что сдвиг квартальный, а на графике
+    # даты = 2 месяцам», владелец, 07.09.2026).
+    assert [point["months"] for point in trend] == [3, 3, 3, 3]
     assert trend[0]["shares"] == {"r3": 33.3, "studio": 66.7}
 
 
@@ -307,7 +312,7 @@ def test_the_screen_draws_the_series_and_names_the_window(tmp_path) -> None:
     # подписано, на скольких сделках она стоит.
     columns = drawn.split("Как менялся состав спроса")[1]
     assert columns.count("<rect") == 4 * 2 + 2, columns.count("<rect")
-    for label in ("09.25–11.25", "06.26–08.26", "21 сд.", "15 сд."):
+    for label in ("09.25–11.25", "06.26–08.26", "3 мес. · 21 сд.", "3 мес. · 15 сд."):
         assert label in columns, label
     # Шаг назван вслух: иначе квартальную долю читают как месячную.
     assert "Шаг квартальный" in drawn

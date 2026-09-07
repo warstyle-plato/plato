@@ -1717,7 +1717,7 @@ function roomsTrend(b){
     svg+=`<text x="${cx.toFixed(1)}" y="${H-20}" text-anchor="middle" font-size="10" fill="#8798a8">`
        +`${esc(short(p.from)+'–'+short(p.to))}</text>`
        +`<text x="${cx.toFixed(1)}" y="${H-8}" text-anchor="middle" font-size="9.5" fill="#8798a8">`
-       +`${num(p.deals)} сд.</text>`;
+       +`${p.months?num(p.months)+' мес. · ':''}${num(p.deals)} сд.</text>`;
   });
   names.forEach((k,n)=>{
     svg+=`<rect x="${W-R+8}" y="${T+n*16}" width="9" height="9" fill="${colours[n%colours.length]}"/>`
