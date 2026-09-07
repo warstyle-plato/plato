@@ -79,6 +79,7 @@ button[disabled]{opacity:.45;cursor:default}
 #parcelTip .dot{display:inline-block;width:9px;height:9px;margin-right:5px}
 #parcelTip dl{display:grid;grid-template-columns:auto 1fr;gap:2px 10px;margin:6px 0 0}
 #parcelTip dt{color:var(--muted)}#parcelTip dd{margin:0}
+.maplabel{margin:8px 0;padding:8px 11px;border:1px solid var(--line);background:var(--soft);font-size:13px;min-height:36px}
 .legend{display:flex;flex-wrap:wrap;gap:16px;margin:10px 0;font-size:12px}
 .legend span.key{display:inline-block;width:11px;height:11px;margin-right:6px;vertical-align:-1px}
 table{border-collapse:collapse;width:100%;font-size:13px}
@@ -136,6 +137,10 @@ __DEVELOPAID_LAND_MAP_KIT__
 // другой вопрос — «что вокруг».
 const FRAME={w:1180,h:720,pad:0.14};
 const S={data:null,timer:null,started:0,pick:null};
+// Выделение — одно на карту и таблицу: два состояния разошлись бы, и на
+// экране оказались бы выделены разные строки.
+const picked=cad=>S.pick===cad;
+const rowId=cad=>'t-'+String(cad).replace(/[^0-9]/g,'-');
 const $=id=>document.getElementById(id);
 const m2=v=>landNum(v,0)+' м²';
 const mln=v=>(v===null||v===undefined)?'—':landNum(Number(v)/1e6,1)+' млн ₽';
@@ -238,8 +243,10 @@ function mapMarkup(){
  // Заливка участка бледная намеренно: он крупнее своих строений, и под
  // сплошным цветом их не видно. Цвет тот же, что у владельца.
  const landPaths=lands.map(l=>
-   `<path d="${pathOf(l.rings_merc,place)}" fill="${escapeHtml(l.colour)}" fill-opacity="0.20"`
-   +` stroke="${escapeHtml(l.colour)}" stroke-width="1.4"`
+   `<path d="${pathOf(l.rings_merc,place)}" fill="${escapeHtml(l.colour)}"`
+   +` fill-opacity="${picked(l.cadastral_number)?'0.42':'0.20'}"`
+   +` stroke="${picked(l.cadastral_number)?'#111':escapeHtml(l.colour)}"`
+   +` stroke-width="${picked(l.cadastral_number)?'3':'1.4'}"`
    +` data-land="${escapeHtml(l.cadastral_number)}" class="land"`
    +` style="cursor:pointer"><title>${escapeHtml(landTitle(l))}</title></path>`).join('');
  const sitePath=site.length
@@ -250,8 +257,10 @@ function mapMarkup(){
  // раскодирует ДО разбора скрипта, то есть ровно на этом пути защита и
  // снимается.
  const shapes=order.map(({p})=>
-   `<path d="${pathOf(p.rings_merc,place)}" fill="${escapeHtml(p.colour)}" fill-opacity="0.42"`
-   +` stroke="${escapeHtml(p.colour)}" stroke-width="1.2" data-cad="${escapeHtml(p.cadastral_number)}"`
+   `<path d="${pathOf(p.rings_merc,place)}" fill="${escapeHtml(p.colour)}"`
+   +` fill-opacity="${picked(p.cadastral_number)?'0.85':'0.42'}"`
+   +` stroke="${picked(p.cadastral_number)?'#111':escapeHtml(p.colour)}"`
+   +` stroke-width="${picked(p.cadastral_number)?'2.6':'1.2'}" data-cad="${escapeHtml(p.cadastral_number)}"`
    +` class="parcel" style="cursor:pointer"><title>${escapeHtml(tipTitle(p))}</title></path>`).join('');
  const live=typeof openLandMap==='function'
   ? '<button type="button" id="liveBtn">Открыть живую карту — двигать и приближать</button> '
@@ -269,7 +278,8 @@ function mapMarkup(){
   +`<div id="parcelTip"></div>`
   +`<div id="mapBase" style="display:none;position:absolute;left:8px;top:8px;`
   +`background:#fff;border:1px solid var(--line);padding:5px 8px;font-size:12px;color:var(--muted)">`
-  +`Подложка улиц не загрузилась — контуры на месте, а карты под ними нет.</div></div>`;
+  +`Подложка улиц не загрузилась — контуры на месте, а карты под ними нет.</div></div>`
+  +`<div class="maplabel" id="mapLabel">${mapLabelText()}</div>`;
 }
 
 // Всплывающая карточка правообладателя. Подсказка SVG для этого не годится:
@@ -349,6 +359,35 @@ function tipHtml(p){
   +'<dl>'+rows.map(r=>`<dt>${r[0]}</dt><dd>${r[1]}</dd>`).join('')+'</dl>';
 }
 
+// Подпись под картой: что под указателем или что выбрано. Всплывающую карточку
+// ждать секунду, а на телефоне её нет вовсе — «наведите, увидите номер»
+// обещало бы то, чего человек не видит.
+function mapLabelText(cad){
+ const key=cad||S.pick;
+ if(!key)return 'Наведите на контур — увидите номер. Нажмите, чтобы выделить и найти строку в таблице.';
+ const T=S.data.territory||{};
+ const l=(T.lands||[]).find(x=>x.cadastral_number===key);
+ if(l)return 'Участок '+l.cadastral_number+' · '+m2(l.area_sqm)+' · '
+   +(l.owner.name||l.owner.note)+' · строений '+(l.objects||[]).length;
+ const o=(T.objects||[]).find(x=>x.cadastral_number===key);
+ if(o)return 'Строение '+o.cadastral_number+' · '
+   +(o.area_sqm!=null?m2(o.area_sqm):m2(o.notice_area_sqm)+' по извещению')+' · '
+   +(o.owner.name||o.owner.note)+' · на участке '+((o.lands||[]).join(', ')||'—');
+ return key;
+}
+
+function setMapLabel(cad){
+ const node=$('mapLabel'); if(node)node.textContent=mapLabelText(cad);
+}
+
+// Выделение одно на карту и таблицу: перерисовываем обе, а не одну.
+function pickShape(cad){
+ S.pick=(S.pick===cad)?null:cad;
+ render();
+ if(S.pick)document.getElementById(rowId(S.pick))
+   ?.scrollIntoView({block:'center',behavior:'smooth'});
+}
+
 function bindMap(){
  const frameBox=$('mapFrame'),tip=$('parcelTip');
  const live=$('liveBtn'); if(live)live.onclick=openLive;
@@ -366,21 +405,21 @@ function bindMap(){
    tip.style.left=Math.max(8,Math.min(x,box.width-tip.offsetWidth-8))+'px';
    tip.style.top=Math.max(8,Math.min(y,box.height-tip.offsetHeight-8))+'px';
   };
-  node.onmouseleave=()=>{tip.style.display='none'};
+  node.onmouseleave=()=>{tip.style.display='none';setMapLabel()};
  };
  frameBox.querySelectorAll('path.parcel').forEach(node=>{
   const p=((S.data.territory||{}).objects||[]).find(x=>x.cadastral_number===node.dataset.cad);
   if(!p)return;
   follow(node,()=>tipHtml(p));
-  node.onclick=()=>{S.pick=p.cadastral_number;render();
-   document.getElementById('row-'+p.no)?.scrollIntoView({block:'center'})};
+  node.onmouseenter=()=>setMapLabel(p.cadastral_number);
+  node.onclick=()=>pickShape(p.cadastral_number);
  });
  frameBox.querySelectorAll('path.land').forEach(node=>{
   const l=((S.data.territory||{}).lands||[]).find(x=>x.cadastral_number===node.dataset.land);
   if(!l)return;
   follow(node,()=>landHtml(l));
-  node.onclick=()=>{document.getElementById('land-'+l.cadastral_number.replace(/[^0-9]/g,'-'))
-    ?.scrollIntoView({block:'center'})};
+  node.onmouseenter=()=>setMapLabel(l.cadastral_number);
+  node.onclick=()=>pickShape(l.cadastral_number);
  });
 }
 
@@ -467,7 +506,8 @@ function territoryMarkup(){
  const t=T.totals;
  const rows=T.lands.map(l=>{
   const objs=l.objects.map(o=>
-    `<tr class="obj"><td></td><td>${escapeHtml(o.cadastral_number)}`
+    `<tr class="obj${picked(o.cadastral_number)?' pick':''}" id="${rowId(o.cadastral_number)}">`
+    +`<td></td><td>${escapeHtml(o.cadastral_number)}`
     +`${o.part?' <span class="source">(часть)</span>':''}`
     +`<div class="source">${escapeHtml([o.name,o.purpose,o.year_built?'постр. '+o.year_built:'']
         .filter(Boolean).join(' · '))||'&nbsp;'}</div></td>`
@@ -481,7 +521,8 @@ function territoryMarkup(){
     +`${(o.lands||[]).length>1?`<div class="source">стоит на ${o.lands.length} участках</div>`:''}</td></tr>`
   ).join('');
   const lease=burdenRows(l).map(r=>`<div class="source">${r[0]}: ${r[1]}</div>`).join('');
-  return `<tr class="zu"><td class="num">${l.objects.length||''}</td>`
+  return `<tr class="zu${picked(l.cadastral_number)?' pick':''}" id="${rowId(l.cadastral_number)}">`
+   +`<td class="num">${l.objects.length||''}</td>`
    +`<td><b>${escapeHtml(l.cadastral_number)}</b>${l.part?' <span class="source">(часть)</span>':''}`
    +`<div class="source">${escapeHtml(shorten(l.permitted_use,90)||'—')}</div></td>`
    +`<td class="num">${l.area_sqm!=null?m2(l.area_sqm):'—'}`
@@ -536,8 +577,8 @@ function kindsMarkup(){
    .map(([name,n])=>`${escapeHtml(name)} — ${n}`).join(', ');
  const rest=(k.counts||{})['не спрашивали']||0;
  if(k.buildings&&!k.land)
-  return `<div class="notice warn"><b>Это здания, а не земельные участки.</b> `
-   +`По ЕГРН ${k.buildings} из ${total} проверенных — объекты капитального строительства `
+  return `<div class="notice warn"><b>В присланном файле — здания, а не земельные участки.</b> `
+   +`По ЕГРН ${k.buildings} из ${total} его строк — объекты капитального строительства `
    +`(${escapeHtml(named)}). Значит «пл» в выгрузке — площадь ЗДАНИЯ, а не земли: в плотность `
    +`и в цену за метр земли её ставить нельзя, и земельные участки под ними — отдельный вопрос.`
    +(rest?` Остальные ${rest} ещё не спрашивали.`:'')+'</div>';
@@ -654,6 +695,11 @@ function render(){
  const a=auth(),link=$('exportLink');
  if(link)link.href='/krt/nagatino/export.xlsx?'+new URLSearchParams({session:a.session,key:a.key});
  $('territoryBox').innerHTML=territoryMarkup();
+ $('territoryBox').querySelectorAll('tr[id^="t-"]').forEach(row=>{
+  row.style.cursor='pointer';
+  row.onclick=()=>{const cad=(row.querySelector('td:nth-child(2)')?.textContent||'').trim().split(' ')[0];
+   if(cad)pickShape(cad)};
+ });
  $('ownersTable').innerHTML=ownersTableMarkup();
  $('tableBox').innerHTML=tableMarkup();
  $('ownersBox').innerHTML=ownersMarkup();

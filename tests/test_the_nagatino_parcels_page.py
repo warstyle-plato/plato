@@ -269,7 +269,9 @@ def test_the_land_is_drawn_under_the_buildings():
     page = nagatino_ui.NAGATINO_PAGE
     assert page.index("${sitePath}${landPaths}${shapes}") > 0, \
         "порядок слоёв не задан: земля обязана лежать под строениями"
-    assert 'fill-opacity="0.20"' in page, "сплошная заливка участка скроет его строения"
+    assert "'0.42':'0.20'" in page, \
+        "у невыделенного участка заливка не бледная — он скроет свои строения"
+    assert "'0.85':'0.42'" in page, "у строения заливка плотнее, чем у участка"
 
 
 def test_the_colours_say_what_the_owner_said():
@@ -535,6 +537,7 @@ READ = """() => ({
   legend: document.getElementById('legend').textContent,
   coverage: document.getElementById('coverage').textContent,
   source: document.getElementById('sourceNote').textContent,
+  label: document.getElementById('mapLabel').textContent,
   landFirst: [...document.querySelectorAll('#mapFrame svg path')]
     .findIndex(n => n.classList.contains('land'))
     < [...document.querySelectorAll('#mapFrame svg path')]
@@ -593,6 +596,22 @@ def test_in_a_real_browser_the_parcels_are_drawn_and_the_owner_pops_up(monkeypat
             assert seen["rows"] == 39, "в таблице не все строения выгрузки"
             assert seen["landRows"] >= 20, "свода «участок → объекты» на странице нет"
             assert "Автокомбинат" in seen["legend"], "легенда не называет владельцев"
+            assert "Наведите" in seen["label"], "подписи под картой нет"
+
+            # Выделение: нажатие красит контур и подсвечивает строку таблицы —
+            # выделение одно на обе поверхности, иначе выделены разные строки.
+            page.locator("path.land").first.click(position={"x": 12, "y": 12})
+            page.wait_for_timeout(500)
+            state = page.evaluate("""() => ({
+              label: document.getElementById('mapLabel').textContent,
+              picked: document.querySelectorAll('#territoryBox tr.pick').length,
+              wide: [...document.querySelectorAll('path.land')]
+                     .filter(n => Number(n.getAttribute('stroke-width')) > 2).length,
+            })""")
+            assert "77:05:0004001:2471" in state["label"], state["label"]
+            assert "Автокомбинат" in state["label"], "подпись не называет владельца"
+            assert state["picked"] == 1, "строка таблицы не выделилась вместе с контуром"
+            assert state["wide"] == 1, "выделенный контур не обведён"
 
             # Мелкое строение лежит поверх крупного и достижимо указателем.
             page.locator("path.parcel").last.hover()
