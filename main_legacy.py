@@ -72,7 +72,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.22.49"
+VERSION = "0.22.50"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -36170,11 +36170,11 @@ details.cadastral-box>summary::marker{color:#888}
 @media(max-width:600px){.phase-grid{grid-template-columns:1fr}}
 
 .ai-open-btn{display:inline-flex;align-items:center;gap:7px}.ai-dot{width:7px;height:7px;border-radius:50%;background:#999;display:inline-block}.ai-dot.ready{background:#1f7a3d}
-.ai-drawer{position:fixed;top:0;right:0;width:min(520px,96vw);height:100vh;background:#fff;border-left:1px solid #ccc;box-shadow:-12px 0 38px rgba(0,0,0,.12);z-index:1000;display:flex;flex-direction:column;transform:translateX(102%);transition:transform .18s ease}.ai-drawer.open{transform:translateX(0)}
+.ai-drawer{position:fixed;top:0;right:0;width:min(520px,96vw);height:100vh;height:100dvh;background:#fff;border-left:1px solid #ccc;box-shadow:-12px 0 38px rgba(0,0,0,.12);z-index:1000;display:flex;flex-direction:column;transform:translateX(102%);transition:transform .18s ease}.ai-drawer.open{transform:translateX(0)}
 .ai-head{padding:18px 20px 14px;border-bottom:1px solid #ddd;display:flex;align-items:flex-start;justify-content:space-between;gap:14px}.ai-head h2{margin:0;font-size:19px}.ai-head p{margin:5px 0 0;color:#777;font-size:11px;line-height:1.45}.ai-close{border:0;background:none;font-size:25px;cursor:pointer;line-height:1}
 .ai-quick{padding:12px 16px;border-bottom:1px solid #eee;display:flex;gap:7px;flex-wrap:wrap}.ai-chip{border:1px solid #bbb;background:#fff;padding:7px 9px;font-size:11px;cursor:pointer}.ai-chip:hover{background:#f5f5f3}
 .ai-messages{flex:1;overflow:auto;padding:18px;background:#fafaf8}.tep-refill{margin-left:8px;font-size:10px;padding:2px 7px;border:1px solid #d8d3c7;border-radius:999px;background:#fff;color:#555;cursor:pointer}.tep-refill:hover{background:#f2efe7}.ai-hero{display:flex;align-items:center;gap:14px;margin:0 0 16px}.ai-hero img{width:180px;height:auto;flex:none}.ai-hero-say{background:#fff;border:1px solid #e6e2d8;border-radius:14px;padding:12px 14px;font-size:14px;line-height:1.45}.ai-hero-say b{display:block;margin-bottom:4px}.ai-hero-say span{color:#555}@media(max-width:520px){.ai-hero img{width:120px}}.ai-msg{max-width:92%;margin:0 0 14px;padding:12px 14px;font-size:13px;line-height:1.55;white-space:pre-wrap;border:1px solid #ddd;background:#fff}.ai-msg.user{margin-left:auto;background:#111;color:#fff;border-color:#111}.ai-msg.system{color:#777;font-size:11px;background:transparent;border:0;padding:0;max-width:100%}.ai-msg.error{border-color:#b33;color:#8c1d1d;background:#fff7f7}
-.ai-compose{border-top:1px solid #ddd;padding:12px;background:#fff}.ai-compose textarea{width:100%;min-height:84px;max-height:180px;resize:vertical;border:1px solid #bbb;padding:11px;font:inherit;box-sizing:border-box}.ai-compose-row{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:8px}.ai-compose small{color:#888;font-size:10px;line-height:1.35}.ai-thinking{display:inline-block;color:#777;font-size:12px;padding:8px 0}
+.ai-compose{border-top:1px solid #ddd;padding:12px;padding-bottom:calc(12px + env(safe-area-inset-bottom,0px));background:#fff}.ai-compose textarea{width:100%;min-height:84px;max-height:180px;resize:vertical;border:1px solid #bbb;padding:11px;font:inherit;box-sizing:border-box}.ai-compose-row{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:8px}.ai-compose small{color:#888;font-size:10px;line-height:1.35}.ai-thinking{display:inline-block;color:#777;font-size:12px;padding:8px 0}
 .ai-overlay{position:fixed;inset:0;background:rgba(0,0,0,.18);z-index:999;display:none}.ai-overlay.open{display:block}
 @media(max-width:700px){.ai-drawer{width:100vw}.ai-open-btn .ai-label{display:none}}
 @media(max-width:700px){.cadastral-entry{grid-template-columns:1fr}.import-summary{grid-template-columns:1fr 1fr}}
