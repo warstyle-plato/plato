@@ -32,6 +32,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -1288,3 +1289,78 @@ def test_the_page_says_the_link_shows_live_numbers_not_a_snapshot():
     page = nagatino_ui.NAGATINO_PAGE
     assert "ЖИВАЯ" in page and "не снимок" in page
     assert "Отозвать" in page, "вечная открытая ссылка без отзыва рядом"
+
+
+def test_the_market_cabinet_key_opens_the_page_too():
+    """«У человека введён в личном кабинете ключ наш plato-rynok-2026, но он
+    видит это» (владелец, 07.09.2026) — и ключ был настоящий.
+
+    У сервиса ДВА разных ключа. `DEVELOPAID_ADMIN_KEY` — владелец, едет
+    параметром `key`. `MARKET_CABINET_KEY` — кабинет рынка, живёт кукой
+    `market_cabinet` и заголовком `X-Market-Key`, в `localStorage` его нет
+    вовсе. Проверено на живом проде: тот же ключ открывает `/cabinet` (200) и
+    получал отказ на странице участков. Кабинет закрывает лицензионные данные
+    того же класса и открыт той же команде — пускаем и по нему.
+    """
+    import sys
+    import types
+
+    from fastapi import FastAPI, HTTPException
+    from fastapi.testclient import TestClient
+
+    from auction_search.api import install
+    from market_search import cabinet as market_cabinet
+
+    def require_admin(session: str, key: str, what: str) -> None:
+        if key != "owner":
+            raise HTTPException(status_code=401, detail=f"{what}: не владелец")
+
+    core = types.ModuleType("developaid_core")
+    core._require_admin = require_admin  # type: ignore[attr-defined]
+    was = sys.modules.get("developaid_core")
+    sys.modules["developaid_core"] = core
+    old_key = os.environ.get(market_cabinet.ENV_NAME)
+    os.environ[market_cabinet.ENV_NAME] = "plato-rynok-2026"
+    try:
+        parcels.revoke_share_code()
+        app = FastAPI()
+        install(app)
+        client = TestClient(app)
+
+        assert client.get("/krt/nagatino/parcels").status_code == 401
+        # Ключ кабинета — заголовком и кукой, как его носит сам кабинет.
+        assert client.get("/krt/nagatino/parcels",
+                          headers={market_cabinet.HEADER_NAME: "plato-rynok-2026"}
+                          ).status_code == 200
+        assert client.get("/krt/nagatino/parcels",
+                          cookies={market_cabinet.COOKIE_NAME: "plato-rynok-2026"}
+                          ).status_code == 200
+        # Чужой ключ кабинета не пускает. Латиницей намеренно: кириллица в
+        # заголовке HTTP не проедет вовсе, и отказ вышел бы не по той причине —
+        # ровно об этом `cabinet.key_problem`.
+        assert client.get("/krt/nagatino/parcels",
+                          headers={market_cabinet.HEADER_NAME: "plato-rynok-2025"}
+                          ).status_code == 401
+        # Он же открывает книгу: отказ на полпути читался бы как поломка.
+        assert client.get("/krt/nagatino/export.xlsx",
+                          headers={market_cabinet.HEADER_NAME: "plato-rynok-2026"}
+                          ).status_code == 200
+    finally:
+        if old_key is None:
+            os.environ.pop(market_cabinet.ENV_NAME, None)
+        else:
+            os.environ[market_cabinet.ENV_NAME] = old_key
+        if was is None:
+            sys.modules.pop("developaid_core", None)
+        else:
+            sys.modules["developaid_core"] = was
+
+
+def test_the_refusal_names_both_keys_apart():
+    """Отказ обязан называть, КАКОГО ключа не хватило: их два, и на экране они
+    неразличимы. Прежний текст звал «задать ключ администратора», и человек с
+    верным ключом кабинета читал это как «ключ не тот»."""
+    page = nagatino_ui.NAGATINO_PAGE
+    assert "DEVELOPAID_ADMIN_KEY" in page and "MARKET_CABINET_KEY" in page
+    assert "Ключи РАЗНЫЕ" in page
+    assert "Поделиться" in page, "самый простой путь для стороннего не назван"
