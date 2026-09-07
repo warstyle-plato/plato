@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import io
 import logging
 import os
 import re
 import sys
 import threading
 import time
-import io
+import urllib.parse
 from typing import Any
 from urllib.parse import urlparse
 
@@ -1601,6 +1602,31 @@ def install(app: FastAPI) -> None:
             data["outlines"]["problem"] = (data["outlines"]["problem"]
                                            or "движок ЕГРН не подключён — контуры не спрашивались")
         return data
+
+    @app.get("/krt/nagatino/export.xlsx", include_in_schema=False)
+    async def nagatino_parcels_export(session: str = "", key: str = "") -> Response:
+        """Свод книгой Excel. Собирается из того же `territory()`, что и экран.
+
+        Второй сборки нет: разойдясь, книга и страница дали бы два достоверных
+        на вид ответа об одной территории.
+        """
+        if core is not None and hasattr(core, "_require_admin"):
+            core._require_admin(session, key, "Участки КРТ Нагатино")
+        from auction_search import nagatino_export
+
+        try:
+            raw = await run_in_threadpool(
+                lambda: nagatino_export.build(nagatino_parcels.territory(),
+                                              nagatino_parcels.owners_summary()))
+        except nagatino_parcels.RegistryProblem as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        name = "КРТ Нагатино — участки и объекты.xlsx"
+        quoted = urllib.parse.quote(name)
+        return Response(
+            raw,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quoted}"},
+        )
 
     def _nagatino_point_lookup():
         """Что стоит в точке — путь движка, второго клиента НСПД здесь нет.

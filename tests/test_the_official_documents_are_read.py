@@ -181,3 +181,63 @@ def test_the_land_owner_is_shown_with_its_lease_not_instead_of_it():
     assert land["owner"]["name"] == "", "у этого участка собственность не зарегистрирована"
     assert land["owner"]["note"]
     assert land["leases"], "аренда — единственное, что о нём известно, и она обязана быть"
+
+
+# --- выгрузка ----------------------------------------------------------------
+
+def test_the_workbook_is_built_from_the_same_numbers_as_the_screen():
+    """Второй сборки нет: разойдясь, книга и страница дали бы два достоверных
+    на вид ответа об одной территории."""
+    import openpyxl
+    from io import BytesIO
+
+    from auction_search import nagatino_export
+
+    view = parcels.territory()
+    book = openpyxl.load_workbook(BytesIO(nagatino_export.build(view, parcels.owners_summary())))
+    assert [sheet.title for sheet in book.worksheets] == [
+        "ЗУ и объекты", "Кто чем владеет", "Источники"]
+    sheet = book["ЗУ и объекты"]
+    rows = list(sheet.iter_rows(values_only=True))[1:]
+    lands = [row for row in rows if row[0] == "участок"]
+    assert len(lands) == view["totals"]["lands"]
+
+
+def test_the_column_adds_up_to_the_total_line():
+    """Строка итога сходится с колонкой. Объект на нескольких участках стоит у
+    каждого, и его площадь напечатана ОДИН раз: иначе сумма колонки (56 323,3)
+    разошлась бы с итогом, и обе выглядели бы верными."""
+    import openpyxl
+    from io import BytesIO
+
+    from auction_search import nagatino_export
+
+    book = openpyxl.load_workbook(BytesIO(
+        nagatino_export.build(parcels.territory(), parcels.owners_summary())))
+    rows = list(book["ЗУ и объекты"].iter_rows(values_only=True))[1:]
+    column = round(sum(row[3] for row in rows
+                       if row[0] == "строение" and isinstance(row[3], (int, float))), 1)
+    total = rows[-1]
+    assert total[0] == "итого"
+    assert round(total[3], 1) == column, "итог не сходится с колонкой"
+    repeats = [row for row in rows if row[11] and "повтор" in str(row[11])]
+    assert repeats and all(row[3] in (None, "") for row in repeats), \
+        "у повтора напечатана площадь — она посчитается дважды"
+
+
+def test_the_export_route_asks_the_owner(monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from auction_search.api import install
+
+    monkeypatch.setenv("DEVELOPAID_ADMIN_KEY", "секрет")
+    monkeypatch.setenv("DEVELOPAID_ADMIN_IDS", "1")
+    app = FastAPI()
+    install(app)
+    client = TestClient(app)
+    assert client.get("/krt/nagatino/export.xlsx").status_code == 403
+    answer = client.get("/krt/nagatino/export.xlsx", params={"key": "секрет"})
+    assert answer.status_code == 200
+    assert answer.content[:2] == b"PK", "это не книга Excel"
+    assert "attachment" in answer.headers.get("content-disposition", "")

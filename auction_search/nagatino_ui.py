@@ -115,6 +115,9 @@ table.territory tr.obj td:first-child{border-left:14px solid var(--soft)}
     <div id="coverage" class="source"></div>
 
     <h2>Земельные участки и объекты на них</h2>
+    <div class="source" style="margin:0 0 8px"><a id="exportLink" href="/krt/nagatino/export.xlsx">
+      Скачать свод в Excel</a> — те же числа, что здесь: книга собирается из того же расчёта,
+      второй сборки нет.</div>
     <div id="territoryBox"></div>
 
     <h2>Кто чем владеет</h2>
@@ -655,6 +658,8 @@ function render(){
  $('mapBox').innerHTML=mapMarkup();
  $('legend').innerHTML=legendMarkup();
  $('coverage').innerHTML=coverageMarkup();
+ const a=auth(),link=$('exportLink');
+ if(link)link.href='/krt/nagatino/export.xlsx?'+new URLSearchParams({session:a.session,key:a.key});
  $('territoryBox').innerHTML=territoryMarkup();
  $('ownersTable').innerHTML=ownersTableMarkup();
  $('landBox').innerHTML=landTableMarkup();
