@@ -72,7 +72,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.22.65"
+VERSION = "0.22.72"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -17101,25 +17101,180 @@ def _v4_sports_checks(xml: str, missing: list[str]) -> str:
     return xml
 
 
-def _v4_fix_tax_share_base(xml: str, missing: list[str]) -> str:
-    """Сводный налог раздаётся по ПОЛОЖИТЕЛЬНЫМ МЕСЯЦАМ базы, а не по её итогу.
+# Столбцы месяцев на листах CF: D..DS. Сетка у всех листов одна — строка 3
+# каждого берёт даты с «Ставок», — поэтому налоговый год месяца объявляется
+# ОДИН раз строкой на КОНСОЛИДАТОРЕ и читается всеми очередями.
+_V4_TAX_YEARS_SPAN = 12          # горизонт 120 месяцев = 10 лет; с запасом
+_V4_TAX_QUEUE_COLUMNS = ("C", "D", "E", "F")      # база очередей 1–4
+_V4_TAX_SHARE_COLUMNS = ("H", "I", "J", "K")      # налог очередей 1–4
+_V4_TAX_MONTHLY_COLUMNS = ("L", "M", "N", "O")    # запасная мера — месяцы с налогом
+_V4_TAX_RESERVE_TOTAL = "P"
 
-    Доля очереди считалась как `MAX(SUM(база за все месяцы),0)`. Сводный налог
-    рождается из МЕСЯЦЕВ с положительной базой — накопленная база гасит убытки
-    следующих месяцев, — и на убыточном проекте бывает так: у каждой очереди
-    итог базы отрицательный, доля у всех ноль, сумма долей ноль, и сводный
-    налог не вычитается из чистой прибыли ВООБЩЕ. Книга показывала прибыль
-    выше движка ровно на весь налог: 78,6 млн на переданном городу ФОКе и
-    23,4 млн на дорогом СМР без него — второе пряталось в допуске паритета.
+
+def _v4_tax_share_by_year(xml: str, missing: list[str]) -> str:
+    """Сводный налог раздаётся очередям ПО ГОДАМ, а не одним весом за горизонт.
+
+    Год — единственная мера, которую задаёт НК: налоговый период по налогу на
+    прибыль это календарный год (ст. 285), база считается нарастающим итогом с
+    начала периода (п. 7 ст. 274), а месяц объектом налогообложения не является
+    вовсе. Книга делила налог долей `MAX(SUM(база за все месяцы),0)`, потом —
+    долей ПОЛОЖИТЕЛЬНЫХ МЕСЯЦЕВ: обе меры приписывали очереди налог за месяцы и
+    годы, в которых проект не был должен бюджету ничего. На четырёх очередях с
+    шагом 24 месяца это 733 млн ₽ на строке очереди при совпадающем итоге.
+
+    Свёртка до РВЭ обязательна и повторяет `_profit_tax_schedule`: всё, что
+    признано до первого облагаемого месяца, приходит в ГОД этого месяца.
+    Наивная раздача «по календарному году» без неё даёт на том же проекте
+    770 млн вместо 1 847 — она выбрасывает отсрочку, которую делает сам расчёт
+    налога.
+
+    Блок дописывается в свободный низ листа: вставить строку в занятое место
+    нельзя — поедут все ссылки. Налоговый год месяца считается один раз строкой
+    `MAX(YEAR('CF'!D$3); первый облагаемый год)` — clamp и есть свёртка, и
+    после него у каждого года простое равенство, без условий по датам.
     """
-    for index, row in enumerate((30, 31, 32, 33), start=1):
+    rows = [int(number) for number in re.findall(r'<x:row r="(\d+)"', xml)]
+    if not rows:
+        missing.append("КОНСОЛИДАТОР: лист пуст — блок раздачи налога не дописан")
+        return xml
+    at = max(rows) + 2
+
+    def label(coord: str, text: str) -> str:
+        return (f'<x:c r="{coord}"{_v4_label_attr()} t="inlineStr">'
+                f"<x:is><x:t>{xml_escape(text)}</x:t></x:is></x:c>")
+
+    def formula(coord: str, text: str) -> str:
+        return (f'<x:c r="{coord}"{_v4_formula_attr()}>'
+                f"<x:f>{xml_escape(text)}</x:f></x:c>")
+
+    parts: list[str] = []
+    head = at
+    parts.append(f'<x:row r="{head}">'
+                 + _v4_head_cell(f"A{head}", "РАЗДАЧА СВОДНОГО НАЛОГА ПО ГОДАМ")
+                 + "</x:row>")
+    note = head + 1
+    parts.append(f'<x:row r="{note}">'
+                 + label(f"A{note}",
+                         "Налог каждого года делится по вкладу очередей в базу "
+                         "ЭТОГО года. Признанное до первого РВЭ отложено в год "
+                         "РВЭ — так же считает строка 37 листа CF. Считается, "
+                         "править нечего.")
+                 + "</x:row>")
+    gate = note + 1
+    # Первый облагаемый месяц объявлен на листе CF строкой 31 — оттуда его и
+    # берём. Второе объявление «с какого месяца облагается» разошлось бы с
+    # первым молча: у книги тогда две даты гейта, и обе выглядят верными.
+    # 99999 в строке 31 значит «включённых очередей нет» — год из него не
+    # берём вовсе.
+    parts.append(f'<x:row r="{gate}">'
+                 + label(f"A{gate}", "Первый облагаемый год — год строки 31 листа CF")
+                 + formula(f"B{gate}",
+                           "IF('CF'!$B$31>50000,0,IFERROR(YEAR('CF'!$B$31),0))")
+                 + "</x:row>")
+    years = gate + 1
+    year_cells = [label(f"A{years}", "Налоговый год месяца")]
+    for column in _v4_cf_columns():
+        year_cells.append(
+            formula(f"{column}{years}", f"MAX(YEAR('CF'!{column}$3),$B${gate})"))
+    parts.append(f'<x:row r="{years}">' + "".join(year_cells) + "</x:row>")
+    # Запасная мера на год, у которого налог есть, а годовая база
+    # отрицательна: внутри года накопленным итогом была прибыль, налог
+    # начислен и обратно не возвращается. Такой год делится по МЕСЯЦАМ, в
+    # которых налог и начислен, — по ним же считает движок.
+    monthly = years + 1
+    for index in range(len(_V4_TAX_QUEUE_COLUMNS)):
+        row = monthly + index
+        cells = [label(f"A{row}",
+                       f"База О{index + 1} в месяцы с начисленным налогом")]
+        for column in _v4_cf_columns():
+            cells.append(formula(
+                f"{column}{row}",
+                f"IF('CF'!{column}$37>0,MAX('CF_{index + 1}'!{column}$22,0),0)"))
+        parts.append(f'<x:row r="{row}">' + "".join(cells) + "</x:row>")
+    header = monthly + len(_V4_TAX_QUEUE_COLUMNS)
+    titles = ["Год", "Налог свода"]
+    titles += [f"База О{index + 1}" for index in range(len(_V4_TAX_QUEUE_COLUMNS))]
+    titles += ["Итого положительная"]
+    titles += [f"Налог О{index + 1}" for index in range(len(_V4_TAX_SHARE_COLUMNS))]
+    titles += [f"Запас О{index + 1}" for index in range(len(_V4_TAX_MONTHLY_COLUMNS))]
+    titles += ["Итого запас"]
+    parts.append(f'<x:row r="{header}">'
+                 + "".join(_v4_head_cell(f"{_v4_column_letter(index + 1)}{header}", title)
+                           for index, title in enumerate(titles))
+                 + "</x:row>")
+    grid = f"$D${years}:$DS${years}"
+    first = header + 1
+    last = first + _V4_TAX_YEARS_SPAN - 1
+    for offset in range(_V4_TAX_YEARS_SPAN):
+        row = first + offset
+        cells = [formula(f"A{row}", f"$B${gate}" if offset == 0 else f"A{row - 1}+1"),
+                 formula(f"B{row}", f"SUMIF({grid},$A{row},'CF'!$D$37:$DS$37)")]
+        for index, column in enumerate(_V4_TAX_QUEUE_COLUMNS):
+            cells.append(formula(
+                f"{column}{row}",
+                f"MAX(SUMIF({grid},$A{row},'CF_{index + 1}'!$D$22:$DS$22),0)"))
+        span = f"{_V4_TAX_QUEUE_COLUMNS[0]}{row}:{_V4_TAX_QUEUE_COLUMNS[-1]}{row}"
+        cells.append(formula(f"G{row}", f"SUM({span})"))
+        for index, column in enumerate(_V4_TAX_MONTHLY_COLUMNS):
+            cells.append(formula(
+                f"{column}{row}",
+                f"SUMIF({grid},$A{row},$D${monthly + index}:$DS${monthly + index})"))
+        reserve = (f"{_V4_TAX_MONTHLY_COLUMNS[0]}{row}:"
+                   f"{_V4_TAX_MONTHLY_COLUMNS[-1]}{row}")
+        cells.append(formula(f"{_V4_TAX_RESERVE_TOTAL}{row}", f"SUM({reserve})"))
+        for index, column in enumerate(_V4_TAX_SHARE_COLUMNS):
+            annual = f"{_V4_TAX_QUEUE_COLUMNS[index]}{row}"
+            monthly_cell = f"{_V4_TAX_MONTHLY_COLUMNS[index]}{row}"
+            total_reserve = f"${_V4_TAX_RESERVE_TOTAL}{row}"
+            # Год не дал ответа — делим по месяцам с налогом; не дали и они —
+            # поровну между ВКЛЮЧЁННЫМИ очередями: терять налог нельзя, а
+            # основания у деления в этом случае нет, и так и написано.
+            cells.append(formula(
+                f"{column}{row}",
+                f"IF($G{row}>0,$B{row}*{annual}/$G{row},"
+                f"IF({total_reserve}>0,$B{row}*{monthly_cell}/{total_reserve},"
+                f"IF($B${4 + index}=\"Да\",$B{row}/MAX(COUNTIF($B$4:$B$7,\"Да\"),1),0)))"))
+        parts.append(f'<x:row r="{row}">' + "".join(cells) + "</x:row>")
+    total = last + 1
+    total_cells = [label(f"A{total}", "Итого"),
+                   formula(f"B{total}", f"SUM(B{first}:B{last})")]
+    for column in _V4_TAX_SHARE_COLUMNS:
+        total_cells.append(
+            formula(f"{column}{total}", f"SUM({column}{first}:{column}{last})"))
+    parts.append(f'<x:row r="{total}">' + "".join(total_cells) + "</x:row>")
+    check = total + 1
+    parts.append(f'<x:row r="{check}">'
+                 + label(f"A{check}",
+                         "Расхождение со сводным налогом — обязано быть 0")
+                 + formula(f"B{check}", f"B{total}-$K$8")
+                 + "</x:row>")
+
+    tail = "</x:sheetData>"
+    if tail not in xml:
+        missing.append("КОНСОЛИДАТОР: конец sheetData не найден — блок не дописан")
+        return xml
+    xml = xml.replace(tail, "".join(parts) + tail, 1)
+
+    # Доля очереди теперь считается от её налога по годам, а не от базы за
+    # горизонт. Подпись столбца обязана переехать вместе с величиной: «доля»
+    # под двумя разными мерами — это два ответа на один вопрос.
+    for index, column in enumerate(_V4_TAX_SHARE_COLUMNS, start=1):
+        row = 29 + index
         old = f"MAX(SUM('CF_{index}'!$D$22:$DS$22),0)"
-        new = f"SUMIF('CF_{index}'!$D$22:$DS$22,\">0\")"
-        encoded = xml_escape(old)
-        if encoded not in xml:
+        alt = f"SUMIF('CF_{index}'!$D$22:$DS$22,\">0\")"
+        source = f"{column}{total}"
+        for candidate in (old, alt):
+            encoded = xml_escape(candidate)
+            if encoded in xml:
+                xml = xml.replace(encoded, xml_escape(source), 1)
+                break
+        else:
             missing.append(f"КОНСОЛИДАТОР: доля налога очереди {index} не опознана")
-            continue
-        xml = xml.replace(encoded, xml_escape(new))
+    was = "<x:t>Положительная база</x:t>"
+    if was in xml:
+        xml = xml.replace(was, "<x:t>Налог очереди по годам</x:t>", 1)
+    else:
+        missing.append("КОНСОЛИДАТОР: подпись «Положительная база» не опознана")
     return xml
 
 
@@ -17658,6 +17813,24 @@ def _v4_label_style_id() -> "int | None":
 
 def _v4_label_attr() -> str:
     style = _v4_label_style_id()
+    return f' s="{style}"' if style is not None else ""
+
+
+@functools.lru_cache(maxsize=1)
+def _v4_formula_style_id() -> "int | None":
+    """Стиль «здесь считается» — зелёный на голубой, конвенция шаблона.
+
+    Дописанная формульная строка без стиля читается чужой вставкой, а хуже
+    того — переезд ввода решает по цвету, что вводная: неокрашенная ячейка с
+    формулой не поедет никуда, но и не скажет читателю, что её не правят.
+    """
+    with zipfile.ZipFile(_V4_TEMPLATE_PATH) as source:
+        styles = source.read("xl/styles.xml").decode("utf-8")
+    return v4_entry_sheet.style_map(styles)["formula"]
+
+
+def _v4_formula_attr() -> str:
+    style = _v4_formula_style_id()
     return f' s="{style}"' if style is not None else ""
 
 
@@ -18673,8 +18846,9 @@ V4_REWRITTEN_FORMULA_ROWS: dict[str, tuple[tuple[int, ...], str]] = {
         (
         31, 37,
         ),
-        "Сводный налог раздаётся долями месяцев с положительной базой "
-        "(SUMIF), а не итогом за все месяцы "
+        "Первый облагаемый месяц свода — самый ранний РВЭ включённых "
+        "очередей — и сводный налог по методике движка: годовая база с "
+        "переносом убытка и половинным ограничением ст. 283 "
     ),
     "CF_1": (
         (
@@ -18727,7 +18901,9 @@ V4_REWRITTEN_FORMULA_ROWS: dict[str, tuple[tuple[int, ...], str]] = {
         (
         4, 5, 6, 7, 8, 30, 31, 32, 33,
         ),
-        "Свод по очередям с учётом четвёртого объекта и переноса долга "
+        "Свод по очередям с учётом четвёртого объекта и переноса долга; "
+        "доля налога очереди берётся из блока раздачи по годам внизу листа "
+        "(_v4_tax_share_by_year) "
     ),
     "ОБЪЕКТЫ": (
         (
@@ -19428,7 +19604,7 @@ def build_project_workbook(
     # только в снятой выгрузке детализации.
     consolidator_sheet_path = _v4_sheet_path(source, "КОНСОЛИДАТОР")
     consolidator_xml = _v4_revenue_by_product(
-        _v4_fix_tax_share_base(
+        _v4_tax_share_by_year(
             source.read(consolidator_sheet_path).decode("utf-8"), missing),
         list((finance_hints or {}).get("revenue_products") or []), missing)
 
@@ -27936,15 +28112,19 @@ def _aggregate_finance(results: list[dict[str, Any]],
     # путём — через налог, и только потому, что убыток обрезается нулём.
     tax_rate = _phase_tax_rate(results)
     consolidated_profit_tax: float | None = None
+    # Гейт объявляется здесь и уезжает в свод: его читает раздача налога по
+    # очередям. Второе объявление «с какого месяца облагается» разошлось бы с
+    # первым молча — и очередь получила бы долю налога за годы, которые сама
+    # эта отсрочка из счёта и убрала.
+    first_taxable = min(
+        (d(r["dates"]["rve"]) for r in results if (r.get("dates") or {}).get("rve")),
+        default=None)
     if rows and tax_rate > 0:
         months = [d(row["month"]) for row in rows]
         margins = {d(row["month"]): float(row.get("taxable_margin", 0.0) or 0.0)
                    for row in rows}
         financings = {d(row["month"]): float(row.get("financing_tax_deduction", 0.0) or 0.0)
                       for row in rows}
-        first_taxable = min(
-            (d(r["dates"]["rve"]) for r in results if (r.get("dates") or {}).get("rve")),
-            default=None)
         schedule, detail = _profit_tax_schedule(
             months, margins, financings, first_taxable, tax_rate)
         for row, line in zip(rows, detail):
@@ -28046,6 +28226,10 @@ def _aggregate_finance(results: list[dict[str, Any]],
         # применить: строки показывали бы одно, итог другое.
         "profit_tax": (consolidated_profit_tax if consolidated_profit_tax is not None
                        else sum(f["profit_tax"] for f in fs)),
+        # Первый облагаемый месяц свода — самый ранний РВЭ очередей. Всё, что
+        # признано раньше, приходит в ГОД этого месяца, а не пропадает; раздача
+        # налога по очередям обязана свернуть базы тем же правилом.
+        "first_taxable_month": first_taxable,
         "vat": sum(f.get("vat", 0.0) for f in fs),
         "vat_charged": sum(f.get("vat_charged", 0.0) for f in fs),
         "vat_input_deductible": sum(f.get("vat_input_deductible", 0.0) for f in fs),
@@ -28173,10 +28357,45 @@ def _profit_tax_schedule(
     return schedule, detail
 
 
+def _phase_tax_bases(
+    results: list[dict[str, Any]],
+    first_taxable_month: Any,
+) -> list[dict[int, float]]:
+    """База каждой очереди по НАЛОГОВЫМ годам свода.
+
+    Год — единственная мера, которую задаёт НК: налоговый период по налогу на
+    прибыль это календарный год (ст. 285), а база считается нарастающим итогом
+    с начала периода (п. 7 ст. 274). Месяц объектом налогообложения не
+    является вовсе — он отчётный период, и его база тоже с начала года.
+
+    Свёртка до гейта повторяет `_profit_tax_schedule`: всё, что признано до
+    первого облагаемого месяца, приходит в ГОД этого месяца. Без неё база
+    очереди живёт в годах, в которых налога не было, и раздача приписывает ей
+    долю за периоды, когда проект не был должен бюджету ничего.
+    """
+    gate = str(first_taxable_month) if first_taxable_month else None
+    gate_year = int(gate[:4]) if gate else None
+    bases: list[dict[int, float]] = []
+    for result in results:
+        years: dict[int, float] = {}
+        for row in result["finance"]["rows"]:
+            month = str(row["month"])
+            year = gate_year if (gate and month < gate) else int(month[:4])
+            years[year] = years.get(year, 0.0) + _phase_tax_base_of(row)
+        bases.append(years)
+    return bases
+
+
+def _phase_tax_base_of(row: dict[str, Any]) -> float:
+    """Облагаемая база месяца очереди — та же величина, что считает свод."""
+    return (float(row.get("taxable_margin", 0.0) or 0.0)
+            - float(row.get("financing_tax_deduction", 0.0) or 0.0))
+
+
 def _reallocate_phase_tax(
     results: list[dict[str, Any]],
     comparison: list[dict[str, Any]],
-    consolidated_tax: float,
+    finance: dict[str, Any],
 ) -> None:
     """Сводный налог раздаётся очередям по их вкладу в облагаемую базу.
 
@@ -28184,25 +28403,53 @@ def _reallocate_phase_tax(
     именно её убыток снизил налог остальным. Прибыль очереди правится на ту
     же величину, иначе сумма очередей разойдётся со сводом.
 
-    Веса берутся из положительной базы очереди, а не из её прибыли: прибыль
-    несёт в себе тот самый налог, который мы сейчас и заменяем.
+    Налог КАЖДОГО года раздаётся по вкладу очередей в базу ЭТОГО года. Прежде
+    веса брались суммой прибыльных лет за весь горизонт и этим весом делился
+    ВЕСЬ налог: очередь, прибыльная в 2033-м, получала долю налога 2038 года,
+    которого она не создавала. На двух и трёх очередях это совпадало с верным
+    ответом, поэтому и прожило; на четырёх с шагом 36 месяцев расхождение —
+    1 156 млн ₽ на строке очереди при совпадающем итоге.
+
+    У года бывает налог при отрицательной годовой базе: внутри года
+    накопленным итогом была прибыль, налог начислен и обратно не возвращается
+    (`tax_month = max(target - year_tax_paid, 0)`). Делить такой год по годовой
+    базе нечем — он делится по МЕСЯЦАМ, в которых налог и начислен. Мера
+    вынужденная и названа: год тут ответа не даёт, а терять налог нельзя —
+    сумма очередей обязана сойтись со сводом.
     """
-    # Вес — сумма ПРИБЫЛЬНЫХ лет очереди, а не её итог за весь срок. Итог
-    # бывает нулевым или отрицательным у очереди, которая всё равно платила
-    # налог: убыточные годы не гасят прибыльные целиком — по ст. 283 не более
-    # чем наполовину. Вес по итогу давал ноль там, где налог был.
-    weights = []
-    for result in results:
-        years: dict[int, float] = {}
-        for row in result["finance"]["rows"]:
+    consolidated_tax = float(finance.get("profit_tax", 0.0) or 0.0)
+    bases = _phase_tax_bases(results, finance.get("first_taxable_month"))
+    rows = list(finance.get("rows") or [])
+    tax_by_year: dict[int, float] = {}
+    taxed_months: dict[int, set[str]] = {}
+    for row in rows:
+        tax = float(row.get("profit_tax", 0.0) or 0.0)
+        if tax:
             year = int(str(row["month"])[:4])
-            years[year] = years.get(year, 0.0) + (
-                float(row.get("taxable_margin", 0.0) or 0.0)
-                - float(row.get("financing_tax_deduction", 0.0) or 0.0))
-        weights.append(sum(value for value in years.values() if value > 0))
-    total = sum(weights)
+            tax_by_year[year] = tax_by_year.get(year, 0.0) + tax
+            taxed_months.setdefault(year, set()).add(str(row["month"]))
+    shares = [0.0] * len(results)
+    for year, tax in tax_by_year.items():
+        positive = [max(base.get(year, 0.0), 0.0) for base in bases]
+        if sum(positive) <= 0:
+            months = taxed_months.get(year) or set()
+            positive = [
+                sum(max(_phase_tax_base_of(row), 0.0)
+                    for row in result["finance"]["rows"]
+                    if str(row["month"]) in months)
+                for result in results]
+        total_year = sum(positive)
+        if total_year <= 0:
+            # Ни годовой базы, ни положительных месяцев — делить не по чему.
+            # Поровну: налог в строках очередей обязан остаться, а выдумывать
+            # за него основание нечем, и это сказано вслух здесь.
+            positive = [1.0] * len(results)
+            total_year = float(len(results)) or 1.0
+        for index in range(len(results)):
+            shares[index] += tax * positive[index] / total_year
+    total = sum(shares)
     for index, result in enumerate(results):
-        share = (weights[index] / total) if total else 0.0
+        share = (shares[index] / total) if total else 0.0
         was = float((result.get("summary") or {}).get("profit_tax", 0.0) or 0.0)
         now = consolidated_tax * share
         result["summary"]["profit_tax"] = now
@@ -28315,7 +28562,7 @@ def _consolidate_phase_results(
         for r in results) - finance["profit_tax"]
     if abs(phase_tax_delta) > 0.5:
         net_profit += phase_tax_delta
-        _reallocate_phase_tax(results, comparison, finance["profit_tax"])
+        _reallocate_phase_tax(results, comparison, finance)
 
     saleable = sum(r["summary"]["monetizable_saleable_sqm"] for r in results)
     apartment_saleable = sum(r["summary"]["apartment_saleable_sqm"] for r in results)
