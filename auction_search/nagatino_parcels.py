@@ -643,17 +643,32 @@ def territory() -> dict[str, Any]:
         own = _owner_view(extract, by_inn, groups)
         keys = {item["owner"].get("key") for item in here if item["owner"].get("name")}
         borrowed = ""
+        colour = own["colour"]
         if not own.get("name") and len(keys) == 1:
             source_owner = next(item["owner"] for item in here if item["owner"].get("key"))
             borrowed = source_owner.get("name") or ""
             colour = source_owner.get("colour") or own["colour"]
-        else:
-            colour = own["colour"]
+        elif not own.get("name") and len(keys) > 1:
+            # Лица разные, а группа одна — участок красится ГРУППОЙ. «Почему
+            # этот участок не красный?» (владелец, 07.09.2026): на 77:05:0004001:15
+            # стоят «Причал» и «Новый проект», оба у Брынцалова, и правило
+            # «владелец должен быть один» красило землю серым — то есть
+            # «неизвестно чья» там, где известно, чья группа. Оттенок берётся
+            # групповой, а не личный: личный принадлежит одному из них, а
+            # участок общий.
+            near_groups = {str((item["owner"] or {}).get("group") or "")
+                           for item in here if item["owner"].get("key")}
+            if len(near_groups) == 1 and near_groups != {""}:
+                key = near_groups.pop()
+                colour = str((groups.get(key) or {}).get("colour") or own["colour"])
+                borrowed = f"группа {(groups.get(key) or {}).get('title') or key}"
         lands.append({
             "cadastral_number": cad,
             "part": bool(land.get("part")),
             "colour": colour,
             "colour_from": ("свой собственник" if own.get("name")
+                            else f"строения одной группы: {borrowed.split('группа ')[-1]}"
+                            if borrowed.startswith("группа ")
                             else f"владелец строений: {borrowed}" if borrowed
                             else "строения разных владельцев" if len(keys) > 1
                             else "владелец не назван"),
@@ -729,6 +744,21 @@ def territory() -> dict[str, Any]:
         "totals": {
             "lands": len(lands),
             "land_area_sqm": _sum([item.get("area_sqm") for item in lands]),
+            # Два участка входят в территорию ЧАСТЬЮ, и по ЕГРН они считаются
+            # целыми: 18,69 га против 14,01 по извещению. «По решению 14 га
+            # отдают, а у тебя сумма участков 19 почти» (владелец, 07.09.2026)
+            # — обе величины верны, но отвечают на разные вопросы: сколько
+            # земли у участков и сколько её входит в площадку.
+            "land_area_in_notice_sqm": _sum([item.get("notice_area_sqm") for item in lands]),
+            "lands_partly_inside": len([item for item in lands if item.get("part")]),
+            # Плюс земля без кадастрового номера: «территории, в границах
+            # которых земельные участки не сформированы». Вместе они дают
+            # ровно ту площадку, которую извещение называет в шапке.
+            "land_unformed_sqm": _sum([item.get("area_sqm")
+                                       for item in notice.get("unformed") or []]),
+            "site_area_sqm": round(
+                _sum([item.get("notice_area_sqm") for item in lands])
+                + _sum([item.get("area_sqm") for item in notice.get("unformed") or []]), 1),
             "land_value_rub": _sum([item.get("cadastral_value_rub") for item in lands]),
             "objects": len(objects),
             # Объект на нескольких участках считается ОДИН раз: строк в таблице

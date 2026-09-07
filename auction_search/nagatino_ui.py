@@ -541,21 +541,30 @@ function territoryMarkup(){
    +`<td><b>${escapeHtml(l.cadastral_number)}</b>${l.part?' <span class="source">(часть)</span>':''}`
    +`<div class="source">${escapeHtml(shorten(l.permitted_use,90)||'—')}</div></td>`
    +`<td class="num">${l.area_sqm!=null?m2(l.area_sqm):'—'}`
+   // Участок, входящий в территорию частью, по ЕГРН считается целым: без этой
+   // строки сумма земли (18,69 га) спорит с площадкой извещения (14,62).
+   +`${l.part&&l.notice_area_sqm!=null?`<div class="source">в площадку входит ${m2(l.notice_area_sqm)}</div>`:''}`
    +`<div class="source">строений ${m2(l.objects_area_sqm)}</div></td>`
    +`<td class="num">${mln(l.cadastral_value_rub)}</td>`
    +`<td>${ownerCell(l.owner)}`
-   +`${l.disposal&&l.disposal.who?`<div class="source">распоряжается ${escapeHtml(l.disposal.who)} — ${escapeHtml(l.disposal.ground||'')}</div>`:''}`
+   // Строка «распоряжается …» отсюда убрана: тот же вывод печатает ownerCell
+   // под ответом реестра. Две копии одного суждения читаются как два факта.
    +`${lease}</td>`
    +`<td class="source">${l.objects.length?'':'объектов нет'}</td></tr>`+objs;
  }).join('');
  const outside=(T.objects_outside_notice||[]).map(o=>
    `${escapeHtml(o.cadastral_number)} (${m2(o.area_sqm)})`).join(', ');
  return '<div class="tablewrap"><table class="territory"><thead><tr>'
-  +'<th class="num">Стр.</th><th>Кадастровый номер</th><th class="num">Площадь</th>'
+  // «Стр.» читалось как номер строки: «почему участки идут не по порядку, 2 и
+  // 5?» (владелец, 07.09.2026). Это число строений на участке — так и назван.
+  +'<th class="num">Строений</th><th>Кадастровый номер</th><th class="num">Площадь</th>'
   +'<th class="num">Кадастровая стоимость</th><th>Правообладатель по ЕГРН</th>'
   +'<th>Судьба по извещению</th></tr></thead><tbody>'+rows
   +`</tbody><tfoot><tr><th class="num">${t.objects}</th><th>Итого: ${t.lands} участков</th>`
-  +`<th class="num">${m2(t.land_area_sqm)}<div class="source">строений ${m2(t.objects_area_sqm)}</div></th>`
+  +`<th class="num">${m2(t.land_area_sqm)}`
+  +`${t.lands_partly_inside?`<div class="source">в площадку входит ${m2(t.land_area_in_notice_sqm)}`
+    +`${t.land_unformed_sqm?` + ${m2(t.land_unformed_sqm)} без номера = ${m2(t.site_area_sqm)}`:''}</div>`:''}`
+  +`<div class="source">строений ${m2(t.objects_area_sqm)}</div></th>`
   +`<th class="num">${mln(t.land_value_rub)}<div class="source">строений ${mln(t.objects_value_rub)}</div></th>`
   +'<th colspan="2"></th></tr></tfoot></table></div>'
   +`<div class="source">Состав территории — извещение о торгах ${escapeHtml((T.source.notice||{}).number||'')} `
@@ -563,6 +572,12 @@ function territoryMarkup(){
   +`${escapeHtml((T.source.egrn_extracts||{}).formed_at||'')}. В извещении ${t.rows_in_notice} строк — `
   +`это ${t.objects} объектов: стоящий на нескольких участках повторяется у каждого, и его метры в итог `
   +'входят один раз. Землю и строения не складываем: у участка площадь земли, у здания — площадь здания.'
+  +(t.lands_partly_inside?` Площадь участков по ЕГРН ${m2(t.land_area_sqm)}, а в площадку входит `
+    +`${m2(t.land_area_in_notice_sqm)}: ${t.lands_partly_inside} участка взяты частью, и по ЕГРН они `
+    +'считаются целыми. Оба числа верны — они отвечают на разные вопросы.'
+    +(t.land_unformed_sqm?` Плюс ${m2(t.land_unformed_sqm)} земли без кадастрового номера `
+      +'(«территории, в границах которых земельные участки не сформированы») — вместе '
+      +`${m2(t.site_area_sqm)}, это и есть площадка извещения.`:''):'')
   +(outside?` Выписка есть, а в извещении объекта нет: ${outside} — это ответ документа о составе территории.`:'')
   +(t.objects_without_extract?` Объектов без выписки: ${t.objects_without_extract}.`:'')
   +'</div>';

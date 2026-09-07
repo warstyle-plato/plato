@@ -366,17 +366,29 @@ def test_the_shade_does_not_wander_between_runs():
     assert first == second
 
 
-def test_a_parcel_takes_the_colour_of_its_buildings_only_when_they_agree():
-    """«Участки под его зданиями такого же оттенка» — но лишь когда владелец
-    строений один: иначе цвет был бы утверждением о владельце земли, которого
-    никто не делал."""
+def test_a_parcel_takes_the_colour_of_its_buildings_when_the_group_agrees():
+    """«Участки под его зданиями такого же оттенка» — включая случай, когда
+    юрлица разные, а группа одна.
+
+    Прежде правило требовало ОДНОГО владельца, и участок 77:05:0004001:15, где
+    стоят «Причал» и «Новый проект» — оба у Брынцалова, — красился серым:
+    «почему этот участок не красный?» (владелец, 07.09.2026). Серый значит
+    «неизвестно чей», а тут известна группа. Личный оттенок при этом не берётся
+    — он принадлежит одному из них, а участок общий.
+    """
     lands = {item["cadastral_number"]: item for item in parcels.territory()["lands"]}
+    groups = {g["key"]: g for g in parcels.registry()["groups"]}
     borrowed = lands["77:05:0004001:2475"]
     assert borrowed["owner"]["name"] == "", "у этого участка собственность не зарегистрирована"
     assert borrowed["colour"] == "#C0392B" and "владелец строений" in borrowed["colour_from"]
-    mixed = lands["77:05:0004001:40"]
-    assert "разных владельцев" in mixed["colour_from"]
-    assert mixed["colour"] != "#C0392B"
+    shared = lands["77:05:0004001:15"]
+    assert shared["owner"]["name"] == ""
+    assert shared["colour"] == groups["bryntsalov"]["colour"]
+    assert "одной группы" in shared["colour_from"] and "Брынцалов" in shared["colour_from"]
+    # А там, где не сходится и группа, цвет по-прежнему не приписывается.
+    lone = lands["77:05:0004001:16"]
+    assert lone["colour_from"] == "владелец не назван"
+    assert lone["colour"] == groups["none"]["colour"]
     own = lands["77:05:0004001:7"]
     assert own["colour_from"] == "свой собственник" and own["colour"].lower() == "#1f6b3b"
 
