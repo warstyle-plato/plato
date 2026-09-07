@@ -808,23 +808,29 @@ def land_under_buildings(view: dict[str, Any] | None = None) -> dict[str, Any]:
 
 
 def land_holdings(view: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    """Второй взгляд: чьё это, если считать ПО УЧАСТКУ.
+    """Второй взгляд: чьё это, если считать по участку.
 
-    «Если строения на участке автокомбината, значит строения автокомбината;
-    если там жилищник, значит Москва» (владелец, 07.09.2026). Это НАШ вывод, а
-    не ответ документа, и подписан он своим именем: у трёх строений право не
-    зарегистрировано вовсе, и по выпискам они ничьи — а стоят они на чужой
-    земле и живут её судьбой.
+    Правило владельца (07.09.2026) узкое, и шире его брать нельзя: «разница
+    только в том, что бесхозные строения на земле автокомбината — явно
+    автокомбината. А правообладатель там, где не указано, что собственность
+    Москвы, но есть договор аренды с ДГИ, — ставим Москву».
 
-    Держателя участка называет запись ЕГРН; её нет — единственный собственник
-    строений на этом участке (по ИНН, а не по написанию имени: одно лицо
-    приходит в выписках и прописными, и строчными). Ни того ни другого — так и
-    сказано, а не приписано ближайшему.
+    Отсюда ровно две правки к документам, и обе названы у каждой строки:
 
-    Объект на нескольких участках считается ОДИН раз: у пяти объектов из
-    тридцати девяти участков больше одного, и сложение по строкам дало бы
-    метры, которых не существует. Участки этих объектов у одного держателя —
-    расхождение назвали бы отдельной строкой.
+    1. **Земля.** Собственник по ЕГРН; записи нет, но участок сдан городом в
+       аренду (договор «М-05-…» или «…-05 ДГИ») — Москва. Договора нет вовсе —
+       тоже Москва, но по общему правилу: неразграниченной землёй в Москве
+       распоряжается город, и основание у такой строки слабее, о чём сказано.
+    2. **Строения.** Своё право сильнее всего: собственник остаётся собой.
+       Приписывается только то, у чего права нет вовсе, — хозяину участка, на
+       котором стоит.
+
+    Чего здесь НЕ делается: земля не приписывается владельцу стоящих на ней
+    строений. Первая версия так и считала — и нарисовала владельцами земли
+    «Фабрику швейных изделий», НИИОГАЗ, «Каллисто» и «Россети», которых в
+    реестре нет: «а у тебя куча владельцев земли нарисовалась, откуда?»
+    Приписанное владение выглядит на экране ровно так же уверенно, как
+    записанное.
     """
     from auction_search import egrn_extracts
 
@@ -835,61 +841,48 @@ def land_holdings(view: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     def key_of(owner: dict[str, Any]) -> str:
         return egrn_extracts.holder_key(owner) if owner.get("name") else ""
 
+    def city(ground: str) -> dict[str, Any]:
+        return {"name": "Москва", "inn": "", "group": "moscow",
+                "group_title": str((groups.get("moscow") or {}).get("title") or ""),
+                "colour": str((groups.get("moscow") or {}).get("colour") or "#8a8a8a"),
+                "by": ground}
+
     holder_of: dict[str, dict[str, Any]] = {}
     for number, land in lands.items():
         owner = dict(land.get("owner") or {})
         if owner.get("name"):
-            holder_of[number] = {**owner, "by": "запись ЕГРН по участку"}
+            holder_of[number] = {**owner, "by": "собственник по ЕГРН"}
             continue
-        # Единственный собственник строений на участке — и есть его хозяин по
-        # этому взгляду. «Единственный» считается по ИНН.
-        by_key = {}
-        for item in land.get("objects") or []:
-            item_owner = dict(item.get("owner") or {})
-            if item_owner.get("name"):
-                by_key[key_of(item_owner)] = item_owner
-        if len(by_key) == 1:
-            holder_of[number] = {**next(iter(by_key.values())),
-                                 "by": "по строениям на участке"}
-        elif len({str(owner.get("group") or "") for owner in by_key.values()}) == 1 and by_key:
-            # Лица разные, а группа одна: на двух участках стоят строения УНИКСа
-            # и «Нового проекта» вперемешку — оба в группе Брынцалова, названной
-            # владельцем. Тогда участок держит группа, и строкой стоит она, а не
-            # выбранное за источник лицо.
-            sample = next(iter(by_key.values()))
-            holder_of[number] = {
-                "name": f"{sample.get('group_title') or 'группа'} — несколько лиц группы",
-                "note": "", "inn": "", "group": sample.get("group"),
-                "group_title": sample.get("group_title"), "colour": sample.get("colour"),
-                "by": "по группе строений"}
+        # Договор аренды с городом — это ответ документа, а не наша догадка:
+        # его номер напечатан в выписке и стоит в основании строки.
+        disposal = land.get("disposal") or {}
+        ground = str(disposal.get("ground") or "")
+        contract = re.search(r"договор аренды ([^\s—]+)", ground)
+        if contract:
+            holder_of[number] = city(f"аренда у города, договор {contract.group(1)}")
+        elif str(disposal.get("who") or ""):
+            holder_of[number] = city("неразграниченная земля — общее правило, "
+                                     "договора в выписке нет")
         else:
-            # Три молчания разные, и слить их нельзя: «строить не на чем»,
-            # «право не зарегистрировано ни у кого» и «владельцы разные» — это
-            # три разных ответа, а не один пробел.
-            if not (land.get("objects") or []):
-                note = "строений на участке нет"
-            elif not by_key:
-                note = "ни у участка, ни у его строений права не зарегистрированы"
-            else:
-                note = "у строений разные собственники"
-            # Группа тут своя, а не «право не зарегистрировано»: там ответ
-            # реестра о ПРАВЕ, здесь — что не смог определить наш вывод. Под
-            # одним именем они читались бы как один ответ.
-            holder_of[number] = {"name": "", "note": note, "group": None,
-                                 "colour": str((groups.get("none") or {}).get("colour") or "#8a8a8a"),
+            holder_of[number] = {"name": "", "note": "хозяин участка не назван",
+                                 "group": None, "by": "не определён",
                                  "group_title": "Хозяин по участку не определён",
-                                 "by": "не определён"}
+                                 "colour": str((groups.get("none") or {}).get("colour") or "#8a8a8a")}
 
     rows: dict[str, dict[str, Any]] = {}
 
     def bucket(holder: dict[str, Any]) -> dict[str, Any]:
-        key = key_of(holder) or ("нет:" + str(holder.get("note") or ""))
+        key = key_of(holder) or ("нет:" + str(holder.get("note") or holder.get("by") or ""))
         return rows.setdefault(key, {
             "name": holder.get("name") or holder.get("note") or "",
             "inn": holder.get("inn") or "", "group": holder.get("group"),
             "group_title": holder.get("group_title"), "colour": holder.get("colour"),
             "by": holder.get("by") or "", "lands": 0, "land_area_sqm": 0.0,
-            "objects": 0, "objects_area_sqm": 0.0, "value_rub": 0.0})
+            "objects": 0, "objects_area_sqm": 0.0, "value_rub": 0.0,
+            # Участки ПОД строениями этой строки — множеством, а не суммой:
+            # то же справочное число, что и в верхней таблице, и по той же
+            # причине несложимое.
+            "under_numbers": set()})
 
     for number, land in lands.items():
         row = bucket(holder_of[number])
@@ -898,31 +891,66 @@ def land_holdings(view: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         row["value_rub"] += float(land.get("cadastral_value_rub") or 0)
 
     for item in view["objects"]:
-        owners = {key_of(holder_of[number]) or ("нет:" + str(holder_of[number].get("note") or ""))
-                  for number in item.get("lands") or [] if number in holder_of}
-        if len(owners) == 1:
-            row = bucket(holder_of[next(number for number in item["lands"]
-                                        if number in holder_of)])
-        elif not owners:
-            row = bucket({"name": "", "note": "участок под строением не назван", "group": None,
-                          "group_title": "Хозяин по участку не определён",
-                          "by": "не определён"})
+        owner = dict(item.get("owner") or {})
+        if owner.get("name"):
+            # Собственник строения записан — приписывать его земле незачем.
+            row = bucket({**owner, "by": "собственник по ЕГРН"})
         else:
-            # Объект стоит на участках РАЗНЫХ держателей. Приписать его одному
-            # значит выбрать за источник; он стоит своей строкой.
-            row = bucket({"name": "", "note": "на участках разных владельцев", "group": None,
-                          "group_title": "Хозяин по участку не определён",
-                          "by": "не определён"})
+            # Права нет: строение живёт судьбой земли под собой. Участки
+            # разошлись — так и сказано, а не выбрано за источник.
+            under = [holder_of[number] for number in item.get("lands") or []
+                     if number in holder_of]
+            keys = {key_of(holder) or ("нет:" + str(holder.get("by") or "")) for holder in under}
+            if len(keys) == 1:
+                row = bucket({**under[0], "by": f"строение без права — {under[0].get('by')}"})
+            else:
+                row = bucket({"name": "", "note": "строение без права на участках разных хозяев",
+                              "group": None, "by": "не определён",
+                              "group_title": "Хозяин по участку не определён"})
         row["objects"] += 1
         row["objects_area_sqm"] += float(item.get("area_sqm") or 0)
         row["value_rub"] += float(item.get("cadastral_value_rub") or 0)
+        row["under_numbers"].update(number for number in item.get("lands") or []
+                                    if number in lands)
 
     out = list(rows.values())
     for row in out:
         for field in ("land_area_sqm", "objects_area_sqm", "value_rub"):
             row[field] = round(row[field], 1)
+        numbers = row.pop("under_numbers")
+        row["under_numbers"] = sorted(numbers)
+        row["under_lands"] = len(numbers)
+        row["under_land_area_sqm"] = round(
+            sum(float(lands[number].get("area_sqm") or 0) for number in numbers), 1)
     out.sort(key=lambda row: -(row["land_area_sqm"] + row["objects_area_sqm"]))
     return out
+
+
+def holdings_under(view: dict[str, Any] | None = None,
+                   rows: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Справочная земля под строениями для взгляда «по участку».
+
+    Считается из тех же строк, что показаны, — второй проход по объектам дал бы
+    вторую приписку и разошёлся бы с таблицей. Итог группы, как и в верхней
+    таблице, объединение участков, а не сумма строк.
+    """
+    view = territory() if view is None else view
+    rows = land_holdings(view) if rows is None else rows
+    lands = {land["cadastral_number"]: land for land in view["lands"]}
+    by_group: dict[str, set[str]] = {}
+    everything: set[str] = set()
+    for row in rows:
+        numbers = set(row.get("under_numbers") or [])
+        by_group.setdefault(str(row.get("group") or ""), set()).update(numbers)
+        everything |= numbers
+
+    def measure(numbers: set[str]) -> dict[str, Any]:
+        return {"lands": len(numbers),
+                "area_sqm": round(sum(float((lands.get(number) or {}).get("area_sqm") or 0)
+                                      for number in numbers), 1)}
+
+    return {"by_group": {key: measure(value) for key, value in by_group.items()},
+            "total": measure(everything)}
 
 
 def _sum(values: list[Any]) -> float:
@@ -1026,6 +1054,7 @@ def payload() -> dict[str, Any]:
                        for key in dict.fromkeys(p["owner"] for p in rows if p["owner"])
                        if key in owners],
         })
+    holdings = land_holdings(lands_and_objects)
     source = dict(data.get("source") or {})
     area_by_rows = _sum([p.get("area_sqm") for p in parcels])
     value_by_rows = _sum([p.get("cadastral_value_rub") for p in parcels])
@@ -1047,10 +1076,11 @@ def payload() -> dict[str, Any]:
         "owners": owners_summary(lands_and_objects),
         # Второй взгляд на тех же владельцев — по участку. Считается один раз
         # и здесь: экран и книга показывают посчитанное, а не считают порознь.
-        "holdings": land_holdings(lands_and_objects),
+        "holdings": holdings,
         # Справочная земля под строениями — объединениями, а не суммами: строки
         # перекрываются, и сложение назвало бы метры, которых нет.
         "under": land_under_buildings(lands_and_objects),
+        "holdings_under": holdings_under(lands_and_objects, holdings),
         "outlines": {
             "parcels": len(parcels),
             "drawn": len([p for p in parcels if p["rings_merc"]]),

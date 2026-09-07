@@ -82,10 +82,10 @@ SHEET_OWNERS = (
     ("under_land_area_sqm", "Земля под их строениями, м² · справочно", 24),
     ("value_rub", "Кадастровая стоимость, ₽", 22),
 )
-# У взгляда «по участку» справочной колонки нет: там земля уже приписана, и
-# вторая колонка о том же читалась бы как другая величина.
-SHEET_HOLDINGS = tuple(column for column in SHEET_OWNERS
-                       if column[0] != "under_land_area_sqm") + (("by", "На чём основано", 30),)
+# Та же справочная колонка есть и во взгляде «по участку» (владелец,
+# 07.09.2026: «вторая таблица так же столбец такой должна иметь»): у Брынцалова
+# своей земли нет ни в одном взгляде, а под его строениями 97 563 м².
+SHEET_HOLDINGS = SHEET_OWNERS + (("by", "На чём основано", 34),)
 # Порядок групп — тот же, что в реестре и на экране: второй список разошёлся бы
 # с первым молча.
 _MONEY = '#,##0" ₽"'
@@ -357,7 +357,8 @@ def _owners_table(sheet, columns, rows: list[dict[str, Any]], order: list[dict[s
 def build(view: dict[str, Any], owners: list[dict[str, Any]],
           holdings: list[dict[str, Any]] | None = None,
           groups: list[dict[str, Any]] | None = None,
-          under: dict[str, Any] | None = None) -> bytes:
+          under: dict[str, Any] | None = None,
+          under_holdings: dict[str, Any] | None = None) -> bytes:
     """Книга свода. Считает не она — она показывает посчитанное."""
     book = Workbook()
     rows = _land_rows(view)
@@ -426,7 +427,7 @@ def build(view: dict[str, Any], owners: list[dict[str, Any]],
             "записи — единственный собственник строений на нём, а если лица "
             "разные, но группа одна — группа. Объект на нескольких участках "
             "посчитан один раз.",
-            line + 1)
+            line + 1, under_holdings)
 
     third = book.create_sheet("Источники")
     source = view.get("source") or {}

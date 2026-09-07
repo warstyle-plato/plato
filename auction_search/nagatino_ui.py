@@ -638,7 +638,7 @@ function ownersTableMarkup(){
   +'значит Москва» (решение владельца, 07.09.2026). Хозяина участка называет ЕГРН; нет записи — '
   +'единственный собственник строений на нём, а если лица разные, но группа одна — группа. '
   +'Объект на нескольких участках посчитан один раз.</div>'
-  +ownersBlock(holdings,true,null);
+  +ownersBlock(holdings,true,S.data.holdings_under||null);
 }
 
 function kindsMarkup(){

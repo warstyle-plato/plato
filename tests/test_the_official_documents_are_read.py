@@ -303,6 +303,39 @@ def test_the_owners_sheet_holds_two_tables_with_subtotals():
     assert counts[0] == counts[1] == (20, 39), counts
 
 
+def test_a_building_on_several_parcels_of_one_group_stays_with_the_group():
+    """«Почему у Брынцалова по документам площадь больше, чем понятийно? это
+    бред» (владелец, 07.09.2026).
+
+    Он был прав. Пять объектов из тридцати девяти стоят сразу на нескольких
+    участках, и все пять — внутри группы Брынцалова; правило сравнивало
+    держателей ПОИМЁННО, три объекта уходили в «хозяин не определён», и по
+    участку у группы выходило 15 строений (15 486,6 м²) против 18 по
+    документам (16 832,8). Это не второй взгляд, а наша потеря: взгляд по
+    участку не может ОТНИМАТЬ у группы то, что стоит на её же земле.
+    """
+    view = parcels.territory()
+    by_documents: dict[str, float] = {}
+    for row in parcels.owners_summary(view):
+        by_documents[row["group_title"]] = round(
+            by_documents.get(row["group_title"], 0) + row["objects_area_sqm"], 1)
+    by_land: dict[str, float] = {}
+    for row in parcels.land_holdings(view):
+        by_land[row["group_title"]] = round(
+            by_land.get(row["group_title"], 0) + row["objects_area_sqm"], 1)
+    assert by_land["Брынцалов"] == by_documents["Брынцалов"]
+
+    # И причина названа механизмом, а не совпадением чисел: у объекта на
+    # нескольких участках группа держателей одна — значит он у этой группы.
+    holders = {row["cadastral_number"]: row for row in view["lands"]}
+    multi = [item for item in view["objects"] if len(item.get("lands") or []) > 1]
+    assert multi, "проверять нечего — объектов на нескольких участках нет"
+    for item in multi:
+        groups = {str((holders[number]["owner"] or {}).get("group") or "")
+                  for number in item["lands"] if number in holders}
+        assert groups, item["cadastral_number"]
+
+
 def test_the_land_under_the_buildings_is_a_union_and_says_so():
     """«Справочно указывать какая площадь участков под всеми зданиями группы»
     (владелец, 07.09.2026).
@@ -343,9 +376,10 @@ def test_the_land_under_the_buildings_is_a_union_and_says_so():
     added = round(sum(float(row[column] or 0) for row in inside), 1)
     assert float(subtotal[column]) == under["by_group"]["bryntsalov"]["area_sqm"]
     assert float(subtotal[column]) < added, "итог группы посчитан суммой — это чужие метры"
-    # Вторая таблица этой колонки не несёт: там земля уже приписана.
+    # Та же колонка есть и во второй таблице: «вторая таблица так же столбец
+    # такой должна иметь» (владелец, 07.09.2026).
     lower = [row for row in rows if str(row[0] or "") == "Правообладатель"][1]
-    assert "Земля под их строениями, м² · справочно" not in [str(cell or "") for cell in lower]
+    assert "Земля под их строениями, м² · справочно" in [str(cell or "") for cell in lower]
 
 
 def test_the_column_adds_up_to_the_total_line():
