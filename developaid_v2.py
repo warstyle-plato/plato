@@ -132,6 +132,17 @@ def install(app: FastAPI) -> None:
                             media_type="application/javascript",
                             headers=_REVALIDATE)
 
+    @app.get("/v2/assets/structured_inputs.css", include_in_schema=False)
+    async def developaid_v2_structured_inputs_styles() -> FileResponse:
+        return FileResponse(_FRONTEND / "structured_inputs.css", media_type="text/css",
+                            headers=_REVALIDATE)
+
+    @app.get("/v2/assets/structured_inputs.js", include_in_schema=False)
+    async def developaid_v2_structured_inputs_script() -> FileResponse:
+        return FileResponse(_FRONTEND / "structured_inputs.js",
+                            media_type="application/javascript",
+                            headers=_REVALIDATE)
+
     @app.get("/v2/manifest.webmanifest", include_in_schema=False)
     async def developaid_v2_manifest() -> FileResponse:
         return FileResponse(_FRONTEND / "manifest.webmanifest",
