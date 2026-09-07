@@ -1,0 +1,416 @@
+{
+ "schema_version": 1,
+ "site": {
+  "slug": "nagatino",
+  "name": "КРТ Нагатино",
+  "okrug": "ЮАО",
+  "district": "Нагатино-Садовники",
+  "quarter": "77:05:0004001"
+ },
+ "source": {
+  "kind": "owner_file",
+  "file": "docs/krt/nagatino-parcels-2026-09-07.xlsx",
+  "received_at": "2026-09-07",
+  "note": "Выгрузка владельца по кварталу 77:05:0004001. Правообладатель, площадь и кадастровая стоимость — из неё; контур участка приходит из ЕГРН по номеру.",
+  "own_total_area_sqm": 33543.1,
+  "own_total_value_rub": 4077207190.0,
+  "text_cells_skipped_by_sum": [
+   "D2",
+   "D3",
+   "D5",
+   "D10",
+   "D23",
+   "D25"
+  ]
+ },
+ "groups": [
+  {
+   "key": "bryntsalov",
+   "title": "Брынцалов",
+   "colour": "#C0392B",
+   "note": "Отнесены владельцем: «Новый проект, УНИКС покрасить как Брынцалов»."
+  },
+  {
+   "key": "other",
+   "title": "Прочее",
+   "colour": "#4E9BDE",
+   "note": "Отнесены владельцем: «Россети, жилищник и автокомбинат как прочее»."
+  },
+  {
+   "key": "unassigned",
+   "title": "Группа не назначена",
+   "colour": "#C4581B",
+   "note": "Владелец эту компанию к группе не отнёс. К «прочему» её не приписываем: цвет группы — утверждение о владельце участка, а не наша догадка."
+  },
+  {
+   "key": "none",
+   "title": "Правообладатель не указан",
+   "colour": "#8a8a8a",
+   "note": "В выгрузке у участка правообладателя нет. Это молчание файла, а не «город»."
+  }
+ ],
+ "owners": [
+  {
+   "key": "uniks",
+   "short": "ООО «УНИКС»",
+   "name": "ОБЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ \"УНИКС\"",
+   "inn": "9724179743",
+   "ogrn": "1247700153667",
+   "group": "bryntsalov"
+  },
+  {
+   "key": "novy-proekt",
+   "short": "ООО «Новый проект»",
+   "name": "ОБЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ \"НОВЫЙ ПРОЕКТ\"",
+   "inn": "9724197693",
+   "ogrn": "1247700515810",
+   "group": "bryntsalov"
+  },
+  {
+   "key": "prichal",
+   "short": "ООО «Причал»",
+   "name": "ОБЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ \"ПРИЧАЛ\"",
+   "inn": null,
+   "ogrn": "1247700457894",
+   "group": "unassigned"
+  },
+  {
+   "key": "avtokombinat-19",
+   "short": "ЗАО «Автокомбинат № 19»",
+   "name": "Закрытое акционерное общество \"АВТОКОМБИНАТ № 19\"",
+   "inn": "7724020727",
+   "ogrn": "1027700173808",
+   "group": "other"
+  },
+  {
+   "key": "zhilishchnik",
+   "short": "ГБУ «Жилищник района Нагатино-Садовники»",
+   "name": "Государственное бюджетное учреждение города Москвы \"Жилищник района Нагатино-Садовники\"",
+   "inn": "7725796400",
+   "ogrn": "1137746579585",
+   "group": "other"
+  },
+  {
+   "key": "rosseti",
+   "short": "ПАО «Россети Московский регион»",
+   "name": "Публичное акционерное общество \"Россети Московский регион\"",
+   "inn": "5036065113",
+   "ogrn": "1057746555811",
+   "group": "other"
+  }
+ ],
+ "parcels": [
+  {
+   "no": 1,
+   "cadastral_number": "77:05:0004001:1052",
+   "area_sqm": 2522.0,
+   "cadastral_value_rub": 153352838.0,
+   "owner": null,
+   "note": null
+  },
+  {
+   "no": 2,
+   "cadastral_number": "77:05:0004001:1040",
+   "area_sqm": 1046.0,
+   "cadastral_value_rub": 79944238.0,
+   "owner": null,
+   "note": null
+  },
+  {
+   "no": 3,
+   "cadastral_number": "77:05:0004001:1039",
+   "area_sqm": 1017.0,
+   "cadastral_value_rub": 62194647.0,
+   "owner": null,
+   "note": null
+  },
+  {
+   "no": 4,
+   "cadastral_number": "77:05:0004001:1038",
+   "area_sqm": 7477.0,
+   "cadastral_value_rub": 419940022.0,
+   "owner": null,
+   "note": null
+  },
+  {
+   "no": 5,
+   "cadastral_number": "77:05:0004001:1043",
+   "area_sqm": 106.0,
+   "cadastral_value_rub": 3711051.0,
+   "owner": null,
+   "note": null
+  },
+  {
+   "no": 6,
+   "cadastral_number": "77:05:0004001:1041",
+   "area_sqm": 676.0,
+   "cadastral_value_rub": 40197597.0,
+   "owner": null,
+   "note": null
+  },
+  {
+   "no": 7,
+   "cadastral_number": "77:05:0004001:1045",
+   "area_sqm": 33.0,
+   "cadastral_value_rub": 2022913.0,
+   "owner": null,
+   "note": null
+  },
+  {
+   "no": 8,
+   "cadastral_number": "77:05:0004001:2053",
+   "area_sqm": 818.0,
+   "cadastral_value_rub": 45950389.0,
+   "owner": "uniks",
+   "note": null
+  },
+  {
+   "no": 9,
+   "cadastral_number": "77:05:0004001:1046",
+   "area_sqm": 6567.0,
+   "cadastral_value_rub": 618187500.0,
+   "owner": null,
+   "note": null
+  },
+  {
+   "no": 10,
+   "cadastral_number": "77:05:0004001:1100",
+   "area_sqm": 339.0,
+   "cadastral_value_rub": 18517658.0,
+   "owner": "novy-proekt",
+   "note": "мангазея"
+  },
+  {
+   "no": 11,
+   "cadastral_number": "77:05:0004001:1104",
+   "area_sqm": 40.0,
+   "cadastral_value_rub": null,
+   "owner": "novy-proekt",
+   "note": null
+  },
+  {
+   "no": 12,
+   "cadastral_number": "77:05:0004001:1103",
+   "area_sqm": 48.0,
+   "cadastral_value_rub": null,
+   "owner": "novy-proekt",
+   "note": null
+  },
+  {
+   "no": 13,
+   "cadastral_number": "77:05:0004001:1102",
+   "area_sqm": 634.0,
+   "cadastral_value_rub": 57169333.0,
+   "owner": "novy-proekt",
+   "note": null
+  },
+  {
+   "no": 14,
+   "cadastral_number": "77:05:0004001:2080",
+   "area_sqm": 339.0,
+   "cadastral_value_rub": 21271998.0,
+   "owner": "novy-proekt",
+   "note": null
+  },
+  {
+   "no": 15,
+   "cadastral_number": "77:05:0004001:2091",
+   "area_sqm": 653.0,
+   "cadastral_value_rub": 34821059.0,
+   "owner": "novy-proekt",
+   "note": null
+  },
+  {
+   "no": 16,
+   "cadastral_number": "77:05:0004001:2092",
+   "area_sqm": 618.0,
+   "cadastral_value_rub": 35125085.0,
+   "owner": "novy-proekt",
+   "note": null
+  },
+  {
+   "no": 17,
+   "cadastral_number": "77:05:0004001:1098",
+   "area_sqm": 266.0,
+   "cadastral_value_rub": 15101419.0,
+   "owner": "prichal",
+   "note": null
+  },
+  {
+   "no": 18,
+   "cadastral_number": "77:05:0004001:1004",
+   "area_sqm": 2030.0,
+   "cadastral_value_rub": 134424826.0,
+   "owner": null,
+   "note": null
+  },
+  {
+   "no": 19,
+   "cadastral_number": "77:05:0004001:1055",
+   "area_sqm": 41.0,
+   "cadastral_value_rub": 3882331.0,
+   "owner": null,
+   "note": null
+  },
+  {
+   "no": 20,
+   "cadastral_number": "77:05:0004001:1093",
+   "area_sqm": 1304.0,
+   "cadastral_value_rub": 171148109.0,
+   "owner": "avtokombinat-19",
+   "note": null
+  },
+  {
+   "no": 21,
+   "cadastral_number": "77:05:0004001:1095",
+   "area_sqm": 1218.0,
+   "cadastral_value_rub": 38116568.0,
+   "owner": null,
+   "note": null
+  },
+  {
+   "no": 22,
+   "cadastral_number": "77:05:0004001:1951",
+   "area_sqm": 2490.0,
+   "cadastral_value_rub": 187106444.0,
+   "owner": null,
+   "note": null
+  },
+  {
+   "no": 23,
+   "cadastral_number": "77:05:0004001:1069",
+   "area_sqm": 3861.0,
+   "cadastral_value_rub": 379735494.0,
+   "owner": null,
+   "note": null
+  },
+  {
+   "no": 24,
+   "cadastral_number": "77:05:0004001:1952",
+   "area_sqm": 1108.0,
+   "cadastral_value_rub": 78608712.0,
+   "owner": "avtokombinat-19",
+   "note": null
+  },
+  {
+   "no": 25,
+   "cadastral_number": "77:05:0004001:1071",
+   "area_sqm": 6527.0,
+   "cadastral_value_rub": 506112359.0,
+   "owner": null,
+   "note": null
+  },
+  {
+   "no": 26,
+   "cadastral_number": "77:05:0004001:1034",
+   "area_sqm": 7660.0,
+   "cadastral_value_rub": 547821041.0,
+   "owner": null,
+   "note": null
+  },
+  {
+   "no": 27,
+   "cadastral_number": "77:05:0004001:1001",
+   "area_sqm": 1882.0,
+   "cadastral_value_rub": 208336634.0,
+   "owner": null,
+   "note": null
+  },
+  {
+   "no": 28,
+   "cadastral_number": "77:05:0004001:1068",
+   "area_sqm": 344.0,
+   "cadastral_value_rub": 21552881.0,
+   "owner": null,
+   "note": null
+  },
+  {
+   "no": 29,
+   "cadastral_number": "77:05:0004001:1080",
+   "area_sqm": 367.0,
+   "cadastral_value_rub": 11741145.0,
+   "owner": null,
+   "note": null
+  },
+  {
+   "no": 30,
+   "cadastral_number": "77:05:0004001:1082",
+   "area_sqm": 445.0,
+   "cadastral_value_rub": 25148395.0,
+   "owner": null,
+   "note": null
+  },
+  {
+   "no": 31,
+   "cadastral_number": "77:05:0004001:1077",
+   "area_sqm": 134.0,
+   "cadastral_value_rub": 6976736.0,
+   "owner": null,
+   "note": null
+  },
+  {
+   "no": 32,
+   "cadastral_number": "77:05:0004001:2078",
+   "area_sqm": 514.0,
+   "cadastral_value_rub": 71182556.0,
+   "owner": "zhilishchnik",
+   "note": null
+  },
+  {
+   "no": 33,
+   "cadastral_number": "77:05:0004001:1089",
+   "area_sqm": 813.0,
+   "cadastral_value_rub": 47351798.0,
+   "owner": null,
+   "note": null
+  },
+  {
+   "no": 34,
+   "cadastral_number": "77:05:0004001:1079",
+   "area_sqm": 353.1,
+   "cadastral_value_rub": 11245059.0,
+   "owner": null,
+   "note": null
+  },
+  {
+   "no": 35,
+   "cadastral_number": "77:05:0004001:1117",
+   "area_sqm": 296.0,
+   "cadastral_value_rub": 8258355.0,
+   "owner": "rosseti",
+   "note": null
+  },
+  {
+   "no": 36,
+   "cadastral_number": "77:05:0004001:2077",
+   "area_sqm": 23.0,
+   "cadastral_value_rub": null,
+   "owner": "zhilishchnik",
+   "note": null
+  },
+  {
+   "no": 37,
+   "cadastral_number": "77:05:0004001:2099",
+   "area_sqm": 42.0,
+   "cadastral_value_rub": 3500000.0,
+   "owner": "zhilishchnik",
+   "note": null
+  },
+  {
+   "no": 38,
+   "cadastral_number": "77:05:0004001:2100",
+   "area_sqm": 71.0,
+   "cadastral_value_rub": 6650000.0,
+   "owner": "uniks",
+   "note": null
+  },
+  {
+   "no": 39,
+   "cadastral_number": "77:05:0004001:2101",
+   "area_sqm": 31.0,
+   "cadastral_value_rub": 800000.0,
+   "owner": "rosseti",
+   "note": null
+  }
+ ]
+}
