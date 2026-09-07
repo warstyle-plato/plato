@@ -134,9 +134,43 @@ def test_platon_reads_the_registry_and_not_his_memory() -> None:
     assert got["available"] and got["count"] == len(registry._merged_registry())
     names = [item["name"] for item in got["items"]]
     assert any("945-ПП" in str(name) for name in names)
-    # Отсутствие ссылки — тоже ответ, и оно не прячется.
-    assert any(item["source_missing"] for item in got["items"])
+    # Отсутствие ссылки — тоже ответ, и оно не прячется: поле стоит у КАЖДОЙ
+    # позиции. Прежде здесь стояло `any(... source_missing)` — и держалось оно
+    # не на утверждении, а на живом пробеле: у приказа ДГИ № 303 не было
+    # ссылки. Пробел закрыт 06.09.2026, и проверка упала на ХОРОШЕЙ новости.
+    # Утверждение было другое, и теперь оно записано словами.
+    assert all("source_missing" in item for item in got["items"])
     assert got["page"] == "/normatives"
+
+
+def test_a_row_without_a_link_says_so() -> None:
+    """Пробел ссылки называется — на своём примере, а не на живом реестре.
+
+    Проверка, ждущая настоящего пробела, зеленеет ровно до того дня, когда его
+    закроют, и падение читается как поломка. Пример держится здесь.
+    """
+    rows = list(registry._merged_registry())
+    blind = dict(rows[0]); blind["source_url"] = ""
+    seeing = dict(rows[0]); seeing["source_url"] = "https://example.org/act"
+    original = registry._merged_registry
+    try:
+        registry._merged_registry = lambda: [blind, seeing]  # type: ignore[assignment]
+        got = core._tool_check_normatives("status")
+    finally:
+        registry._merged_registry = original  # type: ignore[assignment]
+    assert [item["source_missing"] for item in got["items"]] == [True, False]
+
+
+def test_todays_registry_has_no_link_gaps() -> None:
+    """Замер, а не обещание: у всех позиций есть адрес исходника.
+
+    Число здесь не закрепляется — растёт реестр, растёт и оно; закреплено
+    ровно то, ради чего заводился признак: непроверяемых позиций нет.
+    """
+    blind = [str(row.get("short_name") or row.get("title"))
+             for row in registry._merged_registry()
+             if not str(row.get("source_url") or "").strip()]
+    assert not blind, "позиции реестра без ссылки на исходник: " + ", ".join(blind)
 
 
 def test_the_tool_is_declared_and_dispatched() -> None:
