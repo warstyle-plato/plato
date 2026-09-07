@@ -129,3 +129,37 @@ def test_the_announcement_names_a_site_without_a_card(tmp_path, monkeypatch):
     records = take()
     assert records and records[0]["slug"] == SLUG
     assert records[0]["name"] == NAME, "площадка-решение приехала бы слагом"
+
+
+def test_the_message_links_to_the_lot_itself():
+    """«А ссылка на торги?» — адрес приезжал с событием и не печатался.
+
+    Ссылка внизу сообщения ведёт в каталог и отвечает на другой вопрос: «где
+    посмотреть список». Открыть сам лот было нечем.
+    """
+    import main as wrapper
+
+    text = wrapper._krt_announcement_text([
+        {"slug": SLUG, "name": NAME, "kind": "tender",
+         "deadline": LOT["deadline"], "url": LOT["url"]},
+    ])
+    assert LOT["url"] in text, "адрес лота до сообщения не доезжает"
+    assert f'<a href="{LOT["url"]}">' in text and NAME in text
+    assert "заявки до 09.10.26" in text, "срок подачи — часть новости"
+
+
+def test_a_news_without_an_address_stays_a_plain_line():
+    """Обещание открыть то, чего у нас нет, хуже молчания."""
+    import main as wrapper
+
+    text = wrapper._krt_announcement_text([
+        {"slug": SLUG, "name": NAME, "kind": "tender"},
+    ])
+    assert NAME in text
+    assert f"— {NAME}" in text, "имя без адреса печатается как есть"
+
+    # И «ссылка» чужой площадки, которая не адрес, ссылкой не становится.
+    dodgy = wrapper._krt_announcement_text([
+        {"slug": SLUG, "name": NAME, "kind": "tender", "url": "javascript:alert(1)"},
+    ])
+    assert "javascript:" not in dodgy
