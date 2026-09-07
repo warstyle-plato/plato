@@ -1,16 +1,22 @@
-"""Доля в проданном по комнатности: за окно и в динамике по месяцам.
+"""Доля в проданном по комнатности: за год и в динамике по кварталам.
 
 «На счёт доли — но хотелось бы видеть в динамике как эта доля менялась. По
-месяцам. Если это невозможно, то на твоё усмотрение с момента начала продаж
-наверное или год» (владелец, 06.09.2026).
+месяцам» (владелец, 06.09.2026), и следом, увидев результат: «Абсолютно не
+информативные графики» (07.09.2026).
 
-До этого доля считалась по ОДНОМУ месяцу — последнему в отчёте «Пульса»: у
-одного ЖК это десяток сделок, то есть шум, а в тихий месяц продаж нет вовсе, и
-полосы «доля в проданном» не было ни одной (25 проектов из 202 на выпуске
-2026-08). Помесячные числа в книге есть — импорт их выбрасывал, оставляя снимок
-последнего месяца.
+Оба замечания верны, и второе объясняет первое. Помесячная доля рисует шум как
+сигнал: замер по августовской книге (365 проектов с рядом) дал 40 % активных
+месяцев с менее чем десятью сделками и медианный месячный скачок ведущей доли
+21,7 п.п. при девяностом процентиле в 60. Квартал даёт 36 сделок в точке и
+скачок 17,7 п.п. Поэтому шаг квартальный, состав рисуется колонкой на сто
+процентов, а не пятью пересекающимися линиями, и сдвиг называется, только если
+он больше того разброса, который дают сами сделки.
 
-Запуск: python3 -m pytest tests/test_the_rooms_share_is_a_year_and_a_series.py -q
+До всего этого доля считалась по ОДНОМУ месяцу — последнему в отчёте «Пульса»:
+в тихий месяц продаж нет вовсе, и полосы «доля в проданном» не было ни одной
+(25 проектов из 202 на выпуске 2026-08).
+
+Запуск: python3 -m pytest tests/test_the_rooms_share_is_a_year_and_a_trend.py -q
 """
 
 from __future__ import annotations
@@ -23,6 +29,28 @@ sys.path.insert(0, str(ROOT))
 
 from market_search import cabinet, dynamics, metrics, pulse_report_import  # noqa: E402
 from market_search.market_reference import MoscowMarket  # noqa: E402
+
+
+PAGE = cabinet.cabinet_page("market")
+
+
+def _body(name: str) -> str:
+    """Тело функции по скобкам, а не по соседней строке.
+
+    Функция — контракт: она либо есть, либо её нет, и второе настоящая
+    поломка. Границу считаем скобками, иначе проверка падает при правке соседа.
+    """
+    start = PAGE.index(f"function {name}(")
+    depth, opened = 0, False
+    for index in range(start, len(PAGE)):
+        if PAGE[index] == "{":
+            depth += 1
+            opened = True
+        elif PAGE[index] == "}":
+            depth -= 1
+            if opened and depth == 0:
+                return PAGE[start:index + 1]
+    raise AssertionError(f"не нашёл конца функции {name}")
 
 
 CITY = MoscowMarket({"last_month": "2026-08", "current": {"Бизнес": {"projects": 90}}})
@@ -64,7 +92,7 @@ def test_a_reference_without_the_series_says_so_instead_of_a_zero() -> None:
     assert metrics._room_window({"room_mix": {"studio": {"sold": 3}}}) is None
     block = metrics.rooms_block({"segment": "Бизнес", "room_mix": {
         "studio": {"sold": 3, "rem": 10}}}, [], CITY).to_dict()
-    gap = block["subject"]["rooms_series_gap"]
+    gap = block["subject"]["rooms_trend_gap"]
     assert "прежним импортом" in gap, gap
     assert "rooms_window" not in block["subject"]
 
@@ -82,22 +110,101 @@ def test_the_share_is_counted_over_the_window_not_the_last_month() -> None:
     assert rooms["r3"]["rem"] == 60
 
 
-def test_a_month_without_sales_breaks_the_series_instead_of_drawing_a_zero() -> None:
-    series = metrics._room_series(_row())
-    months = [point["month"] for point in series]
-    assert "2026-08" not in months and "2026-02" not in months, "тихий месяц нарисован нулём"
-    assert len(series) == 10
-    first = series[0]
-    assert first["month"] == "2025-09" and first["sold"] == 6
-    assert first["shares"] == {"r3": 33.3, "studio": 66.7}
+def test_the_trend_is_quarterly_because_a_month_draws_noise() -> None:
+    """Помесячная доля рисует шум как сигнал — это измерено, а не решено на глаз.
+
+    Замер по августовской книге (365 проектов с рядом): в 40 % активных
+    месяцев меньше десяти сделок, а месячный скачок ведущей доли медианно
+    21,7 п.п. при девяностом процентиле в 60. Квартал даёт 36 сделок в точке и
+    скачок 17,7 п.п.
+    """
+    trend = metrics._room_trend(_row())
+    assert metrics.ROOM_TREND_STEP == 3
+    assert len(trend) == 4
+    assert trend[0]["from"] == "2025-09" and trend[0]["to"] == "2025-11"
+    assert trend[-1]["from"] == "2026-06" and trend[-1]["to"] == "2026-08"
+    # Сколько сделок в точке — часть ответа: доля на пяти сделках и доля на
+    # пятидесяти на картинке неразличимы.
+    assert [point["deals"] for point in trend] == [21, 21, 27, 15]
+    assert trend[0]["shares"] == {"r3": 33.3, "studio": 66.7}
 
 
-def test_a_single_month_of_sales_is_not_a_dynamic() -> None:
-    """Одна точка — не динамика, и линию из неё рисовать нельзя."""
+def test_an_empty_quarter_is_dropped_instead_of_drawn_as_a_zero() -> None:
+    """Пропуск в ряду — не ноль: колонка нулевой высоты показала бы состав
+    спроса там, где спроса не было вовсе."""
+    row = _row(rooms_sold={"studio": [4, 6, 4, 0, 0, 0, 4, 6, 8, 4, 6, 2]})
+    trend = metrics._room_trend(row)
+    assert [point["from"] for point in trend] == ["2025-09", "2026-03", "2026-06"]
+
+
+def test_a_single_quarter_of_sales_is_not_a_dynamic() -> None:
+    """Одна точка — не динамика, и колонку из неё сравнивать не с чем."""
     row = _row(rooms_sold={"studio": [None] * 11 + [5]})
     block = metrics.rooms_block(row, [], CITY).to_dict()
-    assert "rooms_series" not in block["subject"]
-    assert "одном месяце" in block["subject"]["rooms_series_gap"]
+    assert "rooms_trend" not in block["subject"]
+    assert "один квартал" in block["subject"]["rooms_trend_gap"]
+
+
+def test_a_thin_quarter_is_drawn_but_named_thin() -> None:
+    row = _row(rooms_sold={"studio": [1, 1, 1, 8, 6, 4, 4, 6, 8, 4, 6, 2]},
+               rooms_r3=None)
+    row["rooms_sold"] = {"studio": [1, 1, 1, 8, 6, 4, 4, 6, 8, 4, 6, 2],
+                         "r3": [0, 0, 0, 4, 3, 2, 2, 3, 4, 2, 3, 1]}
+    row.pop("rooms_r3", None)
+    block = metrics.rooms_block(row, [], CITY).to_dict()
+    assert block["subject"]["rooms_trend"][0]["deals"] == 3
+    assert block["subject"]["rooms_trend_thin"] == 1
+
+
+def test_a_shift_is_named_only_when_it_beats_the_deals_it_stands_on() -> None:
+    """Доля, снятая с горстки сделок, гуляет сама по себе.
+
+    Порог берётся из числа сделок обеих точек, а не из ощущения: названный без
+    него сдвиг выглядел бы измеренным ровно так же, как настоящий.
+    """
+    # Ровный год: доли не меняются вовсе — сдвига нет.
+    assert metrics._room_shift(metrics._room_trend(_row())) is None
+
+    # Настоящий разворот на сотнях сделок.
+    moved = _row(rooms_sold={
+        "studio": [10, 10, 10, 20, 20, 20, 40, 40, 40, 60, 60, 60],
+        "r3": [50, 50, 50, 40, 40, 40, 25, 25, 25, 10, 10, 10],
+    })
+    shift = metrics._room_shift(metrics._room_trend(moved))
+    # При равных по величине сдвигах называется выросшая комнатность: «берут
+    # больше студий» отвечает на вопрос раздела, «берут меньше трёшек» — его
+    # зеркало. И называется она ОДНА И ТА ЖЕ на каждом запуске: порядок
+    # множества давал то одну, то другую, и обе выглядели бы верными.
+    assert shift["name"] == "studio"
+    assert all(metrics._room_shift(metrics._room_trend(moved))["name"] == "studio"
+               for _ in range(5))
+    assert shift["was_pct"] == 16.7 and shift["now_pct"] == 85.7
+    assert shift["deals_was"] == 180 and shift["deals_now"] == 210
+
+    # Тот же разворот, но на горстке сделок, — не называется.
+    tiny = _row(rooms_sold={"studio": [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2],
+                            "r3": [3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]})
+    assert metrics._room_shift(metrics._room_trend(tiny)) is None
+
+
+def test_the_engine_writes_the_conclusion_under_the_columns() -> None:
+    """Разбор под разделом пишет движок, а не Платон.
+
+    И молчание тоже: пустое место под колонками читается как «сказать нечего»,
+    а не как «состав спроса не менялся».
+    """
+    from market_search import verdict
+
+    moved = _row(rooms_sold={
+        "studio": [10, 10, 10, 20, 20, 20, 40, 40, 40, 60, 60, 60],
+        "r3": [50, 50, 50, 40, 40, 40, 25, 25, 25, 10, 10, 10],
+    })
+    said = verdict.rooms_note(metrics.rooms_block(moved, [], CITY).to_dict())["text"]
+    assert "состав спроса сместился" in said, said
+    assert "16,7 %" in said and "85,7 %" in said and "180" in said
+
+    flat = verdict.rooms_note(metrics.rooms_block(_row(), [], CITY).to_dict())["text"]
+    assert "не сдвинулся" in flat, flat
 
 
 def test_peers_are_pooled_over_the_same_window_and_the_rest_are_named() -> None:
@@ -188,20 +295,26 @@ def test_the_screen_draws_the_series_and_names_the_window(tmp_path) -> None:
         finally:
             browser.close()
     assert not errors, errors
-    # Две картинки: полосы и линия по месяцам.
+    # Две картинки: полосы и колонки состава спроса.
     assert drawn.count("<svg") == 2, drawn.count("<svg")
-    assert "Как доля менялась по месяцам" in drawn
+    assert "Как менялся состав спроса" in drawn
     # Окно названо у самой полосы: «за месяц» и «за год» — разные величины.
     assert "за 12 мес. (2025-09 — 2026-08)" in drawn, drawn[:600]
-    # Тихий месяц линию рвёт, а не ведёт нулём, и это сказано вслух.
-    assert "Месяцев без продаж: 1" in drawn
-    assert drawn.count("<path") == 2, "линия на комнатность"
-    # Точек столько, сколько месяцев с продажами, у каждой из двух линий.
-    assert drawn.count("<circle") == 20, drawn.count("<circle")
+    # Пять пересекающихся линий сняты: состав — это доли, дающие сто
+    # процентов, и рисуется он колонкой на сто процентов.
+    assert "<path" not in drawn and "<circle" not in drawn
+    # Четыре квартала на две комнатности — восемь кусков, и у каждой колонки
+    # подписано, на скольких сделках она стоит.
+    columns = drawn.split("Как менялся состав спроса")[1]
+    assert columns.count("<rect") == 4 * 2 + 2, columns.count("<rect")
+    for label in ("09.25–11.25", "06.26–08.26", "21 сд.", "15 сд."):
+        assert label in columns, label
+    # Шаг назван вслух: иначе квартальную долю читают как месячную.
+    assert "Шаг квартальный" in drawn
     # Оба графика стоят НАД таблицей.
     assert drawn.rindex("<svg") < drawn.index("<table")
     # А без ряда рисуется не пустое поле, а причина.
-    assert "<svg" not in silent.split("<table")[0].split("Как доля")[-1]
+    assert "<svg" not in silent.split("<table")[0].split("Как менялся")[-1]
     assert "прежним импортом" in silent
     # Про окно соседей говорим, только когда соседи есть: оговорка об окне
     # пустого множества читается как настоящая, а мерить там нечего.
@@ -284,3 +397,69 @@ def test_the_screen_names_the_month_of_the_remainder(tmp_path) -> None:
     assert "остаток — на 2026-07" in old, old[:400]
     assert "остаток — сегодняшний" not in old, "остаток чужого месяца назван сегодняшним"
     assert "остаток — сегодняшний" in now
+
+
+def test_the_dynamic_reaches_plato_by_numbers_not_by_our_sentence() -> None:
+    """Пересказ своего же вывода Платон объяснить может, ответить о динамике — нет.
+
+    Наш вывод называет ОДИН сдвиг; «что менялось у нас» — это вся таблица
+    кварталов, и без неё вопрос о ней остаётся без ответа.
+    """
+    body = _body("reportDigest")
+    assert "rooms_trend" in body, "динамика до Платона не доезжает"
+    assert "по кварталам" in body
+    # Числа берутся у сервера, а не считаются заново: второй счёт той же
+    # величины однажды разошёлся бы с колонками, и обе картинки выглядели бы
+    # верными.
+    inside = body[body.index("rooms_trend"):body.index("rooms_sold_gap")]
+    assert not any(sign in inside for sign in ("/100", "*100", "reduce(")), inside
+
+
+def test_a_wide_table_keeps_its_first_column_when_scrolled(tmp_path) -> None:
+    """Имя строки уезжает за край — и числа стоят без того, к чему относятся.
+
+    На телефоне это читалось как «ОМНАТНОСТЬ», «тудии», «-комнатные» (экран
+    владельца, 07.09.2026). Ширина — поведение, и меряется она браузером, а не
+    чтением стилей.
+    """
+    import pytest
+
+    play = pytest.importorskip("playwright.sync_api")
+
+    import browser_launch
+
+    block = metrics.rooms_block(_row(), [], CITY).to_dict()
+    page = cabinet.cabinet_page("market").replace("__DEVELOPAID_VERSION__", "test")
+    file = tmp_path / "market.html"
+    file.write_text(page, encoding="utf-8")
+    with play.sync_playwright() as pw:
+        try:
+            browser = browser_launch.launch(pw)
+        except Exception as exc:  # noqa: BLE001
+            pytest.skip(f"Chromium недоступен: {exc}")
+        try:
+            tab = browser.new_page(viewport={"width": 390, "height": 780})
+            tab.route("**/*", lambda route: route.abort()
+                      if route.request.url.startswith("http") else route.continue_())
+            tab.goto(file.as_uri())
+            left = tab.evaluate(
+                """block => {
+                  const host=document.createElement('div');
+                  host.style.width='390px';
+                  host.innerHTML=roomsTable(block);
+                  document.body.appendChild(host);
+                  const wrap=[...host.querySelectorAll('.wrap')]
+                    .find(w=>w.querySelector('table.peers'));
+                  wrap.scrollLeft=wrap.scrollWidth;
+                  const cell=wrap.querySelector('table.peers td');
+                  return {cell:cell.getBoundingClientRect().left,
+                          box:wrap.getBoundingClientRect().left,
+                          text:cell.textContent, scrolled:wrap.scrollLeft};
+                }""",
+                block,
+            )
+            tab.close()
+        finally:
+            browser.close()
+    assert left["scrolled"] > 0, "таблица не прокручивается — мерить нечего"
+    assert left["cell"] >= left["box"] - 1, left
