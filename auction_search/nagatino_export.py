@@ -54,7 +54,7 @@ SHEET_LANDS = (
     ("owner", "Правообладатель — по этой строке", 54),
     ("inn", "ИНН", 13),
     ("burden", "Аренда и обременения", 60),
-    ("disposal", "Распоряжается землёй — вывод DevelopAid", 56),
+    ("disposal", "Вывод DevelopAid — чьё это", 56),
     ("permitted_use", "Разрешённое использование / назначение", 42),
     ("fate", "Судьба по извещению", 19),
     ("note", "Примечание", 32),
@@ -101,6 +101,9 @@ def _owner_text(owner: dict[str, Any]) -> str:
     отвечали на один вопрос — «с кем разговаривать»: собственник в одной графе,
     оперативное управление в другой, дата в третьей.
     """
+    # Вывод сюда НЕ попадает: у него своя графа. Слитые в одну клетку, ответ
+    # реестра и наше прочтение читались бы как одна запись — на экране их
+    # разводит мелкий шрифт, а в книге клетка есть клетка.
     if not owner.get("name"):
         return str(owner.get("note") or "")
     line = str(owner["name"])
@@ -201,7 +204,11 @@ def _land_rows(view: dict[str, Any]) -> list[dict[str, Any]]:
                 "inn": item["owner"].get("inn") or "",
                 "burden": _burden_text((item.get("leases") or []) + (item.get("encumbrances") or []),
                                        with_kind=True),
-                "disposal": "",
+                # У строения без своего права графа вывода не пустует: «по
+                # зданиям, о которых мы говорили, что это автокомбинат, так же
+                # писать, что судя по тому, что на участке автокомбината, это
+                # их собственность» (владелец, 07.09.2026).
+                "disposal": str((item.get("owner") or {}).get("guess") or ""),
                 "permitted_use": " · ".join(x for x in (item.get("name"), item.get("purpose"),
                                                         f"постр. {item['year_built']}"
                                                         if item.get("year_built") else "") if x),

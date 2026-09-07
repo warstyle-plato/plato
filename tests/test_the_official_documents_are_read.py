@@ -37,8 +37,8 @@ sys.path.insert(0, str(ROOT))
 from auction_search import egrn_extracts, krt_notice  # noqa: E402
 from auction_search import nagatino_parcels as parcels  # noqa: E402
 
-EXTRACTS = ROOT / "docs" / "krt" / "egrn"
-NOTICE = ROOT / "docs" / "krt" / "nagatino-auction-notice-2026-08-14.pdf"
+EXTRACTS = ROOT / "reference_data" / "krt" / "egrn"
+NOTICE = ROOT / "reference_data" / "krt" / "nagatino-auction-notice-2026-08-14.pdf"
 
 
 def _read(number: str):
@@ -303,6 +303,32 @@ def test_the_owners_sheet_holds_two_tables_with_subtotals():
     assert counts[0] == counts[1] == (20, 39), counts
 
 
+def test_the_documents_the_app_reads_are_copied_into_the_image():
+    """Файл, который читает приложение, обязан лежать там, куда его кладёт сборка.
+
+    Выписки и извещение лежали в `docs/`, а `.dockerignore` исключает его
+    целиком — «документация и заметки для человека, не для контейнера».
+    На стенде страница вышла с нулями во ВСЕХ плитках при тридцати шести
+    полученных контурах: разбор был исправен, читать было нечего. Локально это
+    не видно вовсе — там каталог на месте.
+
+    Проверяется не путь, а свойство: первый сегмент пути к первоисточнику не
+    должен стоять в `.dockerignore`.
+    """
+    ignored = set()
+    for line in (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or line.startswith("!"):
+            continue
+        ignored.add(line.strip("/").split("/")[0])
+    for path in (parcels.EXTRACTS_DIR, parcels.NOTICE_PATH):
+        assert path.exists(), path
+        top = path.resolve().relative_to(ROOT.resolve()).parts[0]
+        assert top not in ignored, (
+            f"{path.name} лежит в '{top}', а сборка его не копирует — "
+            "в образе разбору будет нечего читать")
+
+
 def test_a_building_on_several_parcels_of_one_group_stays_with_the_group():
     """«Почему у Брынцалова по документам площадь больше, чем понятийно? это
     бред» (владелец, 07.09.2026).
@@ -480,7 +506,7 @@ def test_the_registry_answer_and_our_inference_never_share_a_cell():
     sheet = book["ЗУ и объекты"]
     head = [cell.value for cell in sheet[1]]
     status = head.index("Правообладатель — по этой строке")
-    who = head.index("Распоряжается землёй — вывод DevelopAid")
+    who = head.index("Вывод DevelopAid — чьё это")
     number = head.index("Кадастровый номер")
     rows = {str(row[number]).split()[0]: row for row in sheet.iter_rows(values_only=True)
             if row[0] == "участок"}
@@ -527,8 +553,12 @@ def test_a_column_belongs_to_one_kind_of_row():
         nagatino_export.build(parcels.territory(), parcels.owners_summary())))
     sheet = book["ЗУ и объекты"]
     head = [cell.value for cell in sheet[1]]
-    land_columns = [head.index(title) for title in
-                    ("Распоряжается землёй — вывод DevelopAid", "Площадь земли, м²")]
+    # Земельные графы — только на строке участка. Графа вывода в этот список
+    # больше не входит намеренно: у неё своё утверждение у каждого вида строк —
+    # у участка «кто им распоряжается», у бесхозного строения «на чьей земле
+    # оно стоит» (владелец, 07.09.2026). Это не земельная величина в строке
+    # строения, а наше суждение о самом строении.
+    land_columns = [head.index("Площадь земли, м²")]
     link = head.index("Участок")
     buildings = [row for row in sheet.iter_rows(values_only=True) if row[0] == "строение"]
     assert buildings
@@ -545,3 +575,16 @@ def test_a_column_belongs_to_one_kind_of_row():
     owner = head.index("Правообладатель — по этой строке")
     assert all(row[owner] for row in lands)
     assert all(row[owner] for row in buildings)
+    # А графа вывода у строений заполнена ровно там, где своего права нет.
+    guess = head.index("Вывод DevelopAid — чьё это")
+    said = [row for row in buildings if row[guess]]
+    assert said, "бесхозное строение осталось без нашего вывода"
+    # Условие одно: собственник не НАЗВАН. Причины у этого две и они разные —
+    # «право не зарегистрировано» (ответ реестра) и «выписки на объект нет»
+    # (наш пробел), — но вывод уместен при обеих: строение всё равно стоит на
+    # чьей-то земле. А там, где собственник записан, вывода быть не должно.
+    for row in said:
+        assert str(row[owner]) in ("право собственности не зарегистрировано",
+                                   "выписки на объект нет"), \
+            f"{row[1]}: вывод приписан строению с названным собственником"
+        assert "участок под ним" in str(row[guess])

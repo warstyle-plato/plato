@@ -505,12 +505,15 @@ function statsMarkup(){
 // выглядели бы верными.
 function ownerCell(o){
  if(!o)return '—';
- if(!o.name)return `<span class="source">${escapeHtml(o.note||'—')}</span>`;
+ // Право не зарегистрировано — но молчанием строка не кончается: под ответом
+ // реестра стоит мелким наш вывод, подписанный своим именем.
+ const guess=o.guess?`<div class="source">${escapeHtml(o.guess)}</div>`:'';
+ if(!o.name)return `<span class="source">${escapeHtml(o.note||'—')}</span>`+guess;
  const ids=[o.inn?'ИНН '+o.inn:'',o.ogrn?'ОГРН '+o.ogrn:''].filter(Boolean).join(' · ');
  const others=(o.others||[]).map(r=>
    `<div class="source">${escapeHtml(r.right_type)}: ${escapeHtml(r.name)}</div>`).join('');
  return `<span class="swatch" style="background:${escapeHtml(o.colour||'#8a8a8a')}"></span>`
-  +escapeHtml(o.name)+(ids?`<div class="source">${escapeHtml(ids)}</div>`:'')+others;
+  +escapeHtml(o.name)+(ids?`<div class="source">${escapeHtml(ids)}</div>`:'')+others+guess;
 }
 
 function territoryMarkup(){

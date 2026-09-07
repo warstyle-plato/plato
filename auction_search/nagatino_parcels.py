@@ -13,7 +13,8 @@
 Что здесь чьё:
 
 - **правообладатель, площадь и кадастровая стоимость — из выгрузки.** Она
-  лежит и файлом (`docs/krt/nagatino-parcels-2026-09-07.xlsx`), и разобранным
+  лежит и файлом (`docs/krt/nagatino-parcels-2026-09-07.xlsx` — его приложение не
+  читает), и разобранным
   рядом (`reference_data/krt/nagatino_parcels.json`) — как нормативный пакет:
   ссылки протухают, файл нет;
 - **контур участка — из ЕГРН** по кадастровому номеру, тем же путём движка
@@ -252,8 +253,14 @@ def read_chunk(lookup: Callable[[list[str]], list[dict[str, Any]]],
 # площадь, собственник, аренда, участок под зданием, судьба объекта — из
 # документов: они отвечают на то, чего публичный ответ НСПД не отдаёт.
 
-EXTRACTS_DIR = Path(__file__).resolve().parent.parent / "docs" / "krt" / "egrn"
-NOTICE_PATH = (Path(__file__).resolve().parent.parent / "docs" / "krt"
+# Первоисточники лежат в `reference_data`, а НЕ в `docs`, и это не вкусовщина:
+# `.dockerignore` исключает `docs` целиком — «для человека, не для
+# контейнера», — и на стенде страница вышла с нулями во всех плитках при
+# тридцати шести полученных контурах. Разбор был исправен, читать было нечего.
+# Файл, который читает приложение, это данные, а не документация, и лежать он
+# обязан там, куда его копирует сборка.
+EXTRACTS_DIR = Path(__file__).resolve().parent.parent / "reference_data" / "krt" / "egrn"
+NOTICE_PATH = (Path(__file__).resolve().parent.parent / "reference_data" / "krt"
                / "nagatino-auction-notice-2026-08-14.pdf")
 
 _DOCS: dict[str, Any] = {}
@@ -688,6 +695,28 @@ def territory() -> dict[str, Any]:
         item["colour_from"] = f"владелец участка: {source_owner.get('name')}"
     for land in lands:
         land["disposal"] = disposal_note(land)
+        # Право не зарегистрировано — строка не должна кончаться молчанием:
+        # «может писать мелко, что судя по договору аренды с ДГИ это тоже
+        # Москва» (владелец, 07.09.2026). Вывод стоит МЕЛКИМ и подписан своим
+        # именем: запись реестра и наше прочтение под одной строкой читались бы
+        # как одно утверждение.
+        if not (land["owner"] or {}).get("name") and land["disposal"].get("who"):
+            # Подпись «вывод DevelopAid» уже стоит в самом основании — второй
+            # раз её не приписываем.
+            land["owner"]["guess"] = (f"{land['disposal']['ground']} — "
+                                      f"распоряжается {land['disposal']['who']}")
+    # То же у строения без своего права: оно стоит на чьей-то земле, и чьей —
+    # сказано. «Судя по тому, что на участке автокомбината, это их
+    # собственность» — вывод, а не запись ЕГРН, и так и написано.
+    for item in objects_by_cad.values():
+        owner = item.get("owner") or {}
+        if owner.get("name") or not item.get("colour_from", "").startswith("владелец участка"):
+            continue
+        near = [cad for cad in item.get("lands") or [] if cad in owner_of_land]
+        holder = owner_of_land.get(near[0]) if near else None
+        if holder:
+            owner["guess"] = (f"вывод DevelopAid: участок под ним — {holder.get('name')}; "
+                              "вероятно, строение его же")
     lands.sort(key=lambda item: -(item.get("area_sqm") or item.get("notice_area_sqm") or 0))
     objects = list(objects_by_cad.values())
     return {
