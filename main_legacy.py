@@ -72,7 +72,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.22.51"
+VERSION = "0.22.54"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -40313,7 +40313,13 @@ async function applyGlavapu(){
  const previousMode=inputs.social_mode||'Строительство';
  const preserveMode=!!inputs._social_mode_user_set||!!inputs._glavapu_import;
 
- Object.assign(inputs,glavapuImport.mappings.inputs||{});
+ // Замок «Требования КРТ» держит и против выгрузки ГлавАПУ. Прежде здесь
+ // стоял `Object.assign` — он писал плату за ВРИ, места, площади и
+ // соцкомпенсацию поверх запертых полей и не говорил ни слова: так в поле
+ // платы оказывались 10 166,649 млн ₽ при включённом режиме. Приоритет по
+ // полю объявлен один раз и не зависит от того, кто пишет: руками > документ
+ // лота КРТ > выгрузка ГлавАПУ > норматив.
+ const glavapuSkipped=applyDerivedInputs(glavapuImport.mappings.inputs||{});
 
  inputs._glavapu_import={
    source:glavapuImport.source,
@@ -40370,7 +40376,7 @@ async function applyGlavapu(){
  const socialNote=inputs.social_mode==='Строительство'
   ? 'Соцрежим: строительство; расчётные мощности ГлавАПУ используются при нулевых фактических объектах.'
   : 'Соцрежим: денежная компенсация.';
- glavapuStatus.innerHTML='<span class="import-ok">Данные ТЭП применены. Денежные единицы приведены к млн ₽. '+socialNote+' Подземный паркинг собран из жилого блока и, при наличии, отдельного блока МФК.'+(presetNote?' <b>'+presetNote+'</b>':'')+territoryClearedNote()+'</span>';
+ glavapuStatus.innerHTML='<span class="import-ok">Данные ТЭП применены. Денежные единицы приведены к млн ₽. '+socialNote+' Подземный паркинг собран из жилого блока и, при наличии, отдельного блока МФК.'+(presetNote?' <b>'+presetNote+'</b>':'')+(glavapuSkipped?' <b>'+escapeHtml(glavapuSkipped)+'</b>':'')+territoryClearedNote()+'</span>';
  await calculate();
  await sendTelegramResult();
 }
@@ -41012,11 +41018,7 @@ function renderInputs(){
       wrap.innerHTML+='<div id="objectParkingNote" style="margin-top:6px"></div>';
      }
      if(id==='land_rights_cost_mln'&&krtRequirementEntered()){
-       const wasVri=Number(inputs._krt_vri_cleared_mln||0);
-       wrap.innerHTML+=`<div class="note" style="margin:0 0 6px;padding:11px 12px">`
-        +`Режим «Требование КРТ»: платы за смену ВРИ здесь нет — вид использования меняется условием договора о КРТ, а не отдельным платежом городу.`
-        +(wasVri>0?` Убрано ${num(wasVri)} млн ₽.`:'')
-        +` Если по этой площадке плата всё-таки есть — впишите её, она пойдёт в расчёт как есть.</div>`;
+       wrap.innerHTML+=krtVriFeeNote();
      }
      if(type==='pf_steps'){renderPfStepsEditor(wrap);grid.appendChild(wrap);return;}
      // График — ячейками, а не строкой: значение, единица и срок отдельными
@@ -42094,6 +42096,47 @@ function krtClearsVriFee(){
  inputs.land_rights_cost_mln=0;
  return true;
 }
+
+// Надпись о плате за ВРИ смотрит на ПОЛЕ, а не только на режим. Прежде она
+// говорила «платы здесь нет» безусловно — и стояла над полем с 10 166,649
+// млн ₽ (экран владельца, 07.09.2026: «надпись противоречит 10 млрд»). Число
+// при этом верное: заданная плата идёт в расчёт как есть — в CAPEX, в лимит
+// БРИДЖа, в график платежей и в книгу. Неверна была надпись: утверждение о
+// методике КРТ она подавала как утверждение о ТЕКУЩЕМ состоянии поля.
+//
+// Три состояния, и они разные: поле пусто — методика; поле заполнено — что
+// именно стоит и куда оно идёт, с кнопкой убрать; только что убрано — сколько
+// убрано. Молчаливое обнуление врёт не меньше молчаливого сохранения, поэтому
+// убирает человек нажатием, а не мы за него.
+function krtVriFeeNote(){
+ const fee=Number(inputs.land_rights_cost_mln||0);
+ const wasVri=Number(inputs._krt_vri_cleared_mln||0);
+ const head='<div class="note" style="margin:0 0 6px;padding:11px 12px">';
+ if(fee>0){
+  return head
+   +`В поле стоит <b>${num(fee)} млн ₽</b> — эта плата идёт в расчёт как есть: `
+   +`в CAPEX, в расчётный лимит БРИДЖа, в график платежей ВРИ и в книгу. `
+   +`В КРТ отдельного платежа городу за смену ВРИ нет — вид использования меняется `
+   +`условием договора о КРТ. Если это не ваш случай — уберите плату. `
+   +`<button class="btn" type="button" style="margin-top:8px" onclick="clearKrtVriFee()">Убрать плату за ВРИ</button></div>`;
+ }
+ return head
+  +`Режим «Требование КРТ»: платы за смену ВРИ здесь нет — вид использования меняется условием договора о КРТ, а не отдельным платежом городу.`
+  +(wasVri>0?` Убрано ${num(wasVri)} млн ₽.`:'')
+  +` Если по этой площадке плата всё-таки есть — впишите её, она пойдёт в расчёт как есть.</div>`;
+}
+
+// Убирает человек — и видит, сколько убрано. Правка вводной зовёт пересчёт
+// оттуда же, откуда его зовёт всякая другая: плата сидит в CAPEX и в лимите
+// БРИДЖа, и молча оставленный прежний результат читался бы как посчитанный.
+function clearKrtVriFee(){
+ if(!(Number(inputs.land_rights_cost_mln||0)>0))return;
+ krtClearsVriFee();
+ renderInputs();
+ refreshGroupPeeks();
+ calculate();
+}
+
 // Пишет только незапертое и возвращает подпись о том, чего НЕ тронуло: молча
 // не тронутое поле выглядит так же, как не посчитанное.
 function applyDerivedInputs(values){

@@ -27,6 +27,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import main as wrapper  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import page_blocks  # noqa: E402
+
 core = wrapper.core
 
 NODE = shutil.which("node")
@@ -48,7 +52,9 @@ def apply_harness() -> str:
     body = re.search(r"(function resetTerritoryData\(.*?)\nfunction getGlavapuUnderground",
                      core.PAGE, re.S)
     assert keys and body, "функции применения ГлавАПУ не найдены на странице"
-    return keys.group(1) + "\n" + body.group(1)
+    # Замок «Требования КРТ» — по границам, а не именем: через него теперь
+    # пишет и выгрузка ГлавАПУ.
+    return page_blocks.krt_lock() + "\n" + keys.group(1) + "\n" + body.group(1)
 
 
 def run_flow(scenario_js: str) -> dict:
