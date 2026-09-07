@@ -222,6 +222,78 @@ def read_chunk(lookup: Callable[[list[str]], list[dict[str, Any]]],
     return state
 
 
+# --- официальные документы: выписки ЕГРН и извещение о торгах -----------------
+# Контуры по-прежнему приходят из НСПД: геометрия в выписках записана в ПМСК
+# Москвы, а не в веб-меркаторе, и переводить её нам нечем. Всё остальное —
+# площадь, собственник, аренда, участок под зданием, судьба объекта — из
+# документов: они отвечают на то, чего публичный ответ НСПД не отдаёт.
+
+EXTRACTS_DIR = Path(__file__).resolve().parent.parent / "docs" / "krt" / "egrn"
+NOTICE_PATH = (Path(__file__).resolve().parent.parent / "docs" / "krt"
+               / "nagatino-auction-notice-2026-08-14.pdf")
+
+_DOCS: dict[str, Any] = {}
+
+
+def documents() -> dict[str, Any]:
+    """Разобранные первоисточники. Читаются один раз на процесс.
+
+    Разобранной копии на диске не заводим: копию негде обновлять, а разбор
+    59 файлов стоит десятки миллисекунд. Извещение — PDF на 46 страниц, и его
+    разбор кэшируется здесь же, а не пересчитывается на каждый запрос.
+    """
+    if _DOCS:
+        return _DOCS
+    from auction_search import egrn_extracts, krt_notice
+
+    builds: dict[str, Any] = {}
+    lands: dict[str, Any] = {}
+    problems: list[str] = []
+    for path in sorted(EXTRACTS_DIR.glob("*.xml")):
+        try:
+            record = egrn_extracts.read(path.read_bytes())
+        except Exception as exc:  # noqa: BLE001 — негодный файл называется поимённо
+            problems.append(f"{path.name}: {type(exc).__name__}: {exc}"[:200])
+            continue
+        (lands if record["kind"] == "land" else builds)[record["cadastral_number"]] = record
+    try:
+        notice = krt_notice.read(NOTICE_PATH)
+    except Exception as exc:  # noqa: BLE001
+        notice = {"lands": [], "objects": [], "rows": 0,
+                  "problem": f"{type(exc).__name__}: {exc}"[:200]}
+    _DOCS.update({"builds": builds, "lands": lands, "notice": notice, "problems": problems})
+    return _DOCS
+
+
+def _owner_view(record: dict[str, Any], groups_by_inn: dict[str, str],
+                groups: dict[str, Any]) -> dict[str, Any]:
+    """Собственник объекта в том виде, в каком его показывают.
+
+    Пусто — ответ документа, а не наш пробел: у 14 участков из 20 право
+    собственности не зарегистрировано вовсе. Так и написано.
+    """
+    from auction_search import egrn_extracts
+
+    owner = egrn_extracts.owner_of(record) if record else None
+    # Иное право — не собственность: девять строений записаны за городом, а
+    # держит их ГБУ «Жилищник» на оперативном управлении. Назвать учреждение
+    # собственником значит показать не то лицо.
+    others = egrn_extracts.other_rights(record) if record else []
+    if not owner:
+        return {"name": "", "inn": "", "ogrn": "", "kind": "", "others": others,
+                "note": ("право собственности не зарегистрировано"
+                         if record else "выписки на объект нет"),
+                "group": "none", "colour": str((groups.get("none") or {}).get("colour") or "#8a8a8a"),
+                "group_title": str((groups.get("none") or {}).get("title") or "")}
+    group = groups_by_inn.get(str(owner.get("inn") or "")) or "unassigned"
+    return {"name": owner.get("name") or "", "inn": owner.get("inn") or "",
+            "ogrn": owner.get("ogrn") or "", "kind": owner.get("kind") or "",
+            "since": owner.get("since") or "", "note": "", "others": others,
+            "group": group,
+            "colour": str((groups.get(group) or {}).get("colour") or "#8a8a8a"),
+            "group_title": str((groups.get(group) or {}).get("title") or "")}
+
+
 def _lands_state() -> tuple[dict[str, Any], dict[str, Any]]:
     """Что уже спрошено про землю: ответ по каждому зданию и сами участки."""
     cached = load_json(cache_path())
@@ -447,6 +519,148 @@ def _kinds(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "buildings": len([r for r in rows if (r.get("egrn") or {}).get("kind") == "building"])}
 
 
+def territory() -> dict[str, Any]:
+    """Свод «земельный участок → объекты на нём» по официальным документам.
+
+    Состав территории берётся из ИЗВЕЩЕНИЯ (оно свежее проекта решения и оно
+    основание торгов), а свойства объектов — из выписок ЕГРН. Расхождение
+    между документами называется вслух, а не выбирается молча: в извещении
+    есть объект, которого нет в выписках, и наоборот.
+
+    Складывать площадь земли с площадью строений нельзя — это разные величины;
+    объект, стоящий на нескольких участках, повторяется у каждого, и его метры
+    в итог территории входят ОДИН раз.
+    """
+    data = registry()
+    docs = documents()
+    groups = {str(g.get("key")): g for g in data.get("groups") or []}
+    by_inn = {str(k): str(v) for k, v in (data.get("owner_groups") or {}).items()}
+    notice = docs["notice"]
+    answers = _answers()
+    _asked, cached_lands = _lands_state()
+
+    objects_by_cad: dict[str, dict[str, Any]] = {}
+    for item in notice.get("objects") or []:
+        cad = item["cadastral_number"]
+        extract = docs["builds"].get(cad)
+        objects_by_cad[cad] = {
+            "cadastral_number": cad,
+            # Площадь объекта — из выписки, а рядом та, что стоит в извещении:
+            # два источника на одну величину, и расхождение видно, а не выбрано.
+            "area_sqm": (extract or {}).get("area_sqm"),
+            "notice_area_sqm": item.get("area_sqm"),
+            "notice_area_raw": item.get("area_raw") or "",
+            "fate": item.get("fate") or "",
+            "part": bool(item.get("part")),
+            "lands": list(item.get("lands") or []),
+            "name": (extract or {}).get("name") or "",
+            "purpose": (extract or {}).get("purpose") or "",
+            "floors": (extract or {}).get("floors") or "",
+            "year_built": (extract or {}).get("year_built") or "",
+            "address": (extract or {}).get("address") or "",
+            "cadastral_value_rub": (extract or {}).get("cadastral_value_rub"),
+            "owner": _owner_view(extract, by_inn, groups),
+            "extract": bool(extract),
+            "rings_merc": list(((answers.get(cad) or {}).get("rings")) or []),
+        }
+    # Объект, на который выписка есть, а в извещении его нет, — это ответ
+    # документа о составе территории, и он называется отдельно.
+    outside = sorted(set(docs["builds"]) - set(objects_by_cad))
+
+    from auction_search import egrn_extracts
+
+    lands = []
+    for land in notice.get("lands") or []:
+        cad = land["cadastral_number"]
+        extract = docs["lands"].get(cad)
+        here = [objects_by_cad[o["cadastral_number"]] for o in land.get("objects") or []
+                if o["cadastral_number"] in objects_by_cad]
+        seen: dict[str, dict[str, Any]] = {}
+        for item in here:
+            seen.setdefault(item["cadastral_number"], item)
+        here = list(seen.values())
+        lands.append({
+            "cadastral_number": cad,
+            "part": bool(land.get("part")),
+            "area_sqm": (extract or {}).get("area_sqm"),
+            "notice_area_sqm": land.get("area_sqm"),
+            "area_kind": (extract or {}).get("area_kind") or "",
+            "category": (extract or {}).get("category") or "",
+            "permitted_use": (extract or {}).get("permitted_use") or "",
+            "address": (extract or {}).get("address") or "",
+            "cadastral_value_rub": (extract or {}).get("cadastral_value_rub"),
+            "special_notes": (extract or {}).get("special_notes") or "",
+            "owner": _owner_view(extract, by_inn, groups),
+            "leases": egrn_extracts.leases(extract) if extract else [],
+            "objects": here,
+            "objects_area_sqm": _sum([item.get("area_sqm") for item in here]),
+            "rings_merc": list(((cached_lands.get(cad) or {}).get("rings")) or []),
+            "extract": bool(extract),
+        })
+    lands.sort(key=lambda item: -(item.get("area_sqm") or item.get("notice_area_sqm") or 0))
+    objects = list(objects_by_cad.values())
+    return {
+        "lands": lands,
+        "objects": objects,
+        "objects_outside_notice": [{"cadastral_number": cad,
+                                    "area_sqm": docs["builds"][cad].get("area_sqm"),
+                                    "owner": _owner_view(docs["builds"][cad], by_inn, groups)}
+                                   for cad in outside],
+        "totals": {
+            "lands": len(lands),
+            "land_area_sqm": _sum([item.get("area_sqm") for item in lands]),
+            "land_value_rub": _sum([item.get("cadastral_value_rub") for item in lands]),
+            "objects": len(objects),
+            # Объект на нескольких участках считается ОДИН раз: строк в таблице
+            # извещения 47, объектов 39.
+            "objects_area_sqm": _sum([item.get("area_sqm") for item in objects]),
+            "objects_notice_area_sqm": _sum([item.get("notice_area_sqm") for item in objects]),
+            "objects_value_rub": _sum([item.get("cadastral_value_rub") for item in objects]),
+            "rows_in_notice": notice.get("rows") or 0,
+            "objects_without_extract": len([o for o in objects if not o["extract"]]),
+            "lands_without_extract": len([item for item in lands if not item["extract"]]),
+        },
+        "source": {**dict(data.get("source") or {}), "notice_problem": notice.get("problem", "")},
+        "problems": list(docs.get("problems") or []),
+    }
+
+
+def owners_summary() -> list[dict[str, Any]]:
+    """Кто чем владеет — по ИНН, а не по написанию имени."""
+    view = territory()
+    seen: dict[str, dict[str, Any]] = {}
+
+    from auction_search import egrn_extracts
+
+    def add(bucket: str, owner: dict[str, Any], area: Any, value: Any) -> None:
+        # Ключ личности объявлен один раз — в разборе выписок. Свой второй
+        # слепил бы разных владельцев: у публичного образования нет ни ИНН, ни
+        # ОГРН, и все они сошлись бы в одну строку.
+        key = (egrn_extracts.holder_key(owner) if owner.get("name")
+               else "нет:" + (owner.get("note") or ""))
+        row = seen.setdefault(key, {"name": owner.get("name") or owner.get("note") or "",
+                                    "inn": owner.get("inn") or "", "ogrn": owner.get("ogrn") or "",
+                                    "kind": owner.get("kind") or "", "group": owner.get("group"),
+                                    "group_title": owner.get("group_title"),
+                                    "colour": owner.get("colour"),
+                                    "lands": 0, "land_area_sqm": 0.0, "land_value_rub": 0.0,
+                                    "objects": 0, "objects_area_sqm": 0.0, "objects_value_rub": 0.0})
+        row[bucket] += 1
+        row[f"{'land' if bucket == 'lands' else 'objects'}_area_sqm"] += float(area or 0)
+        row[f"{'land' if bucket == 'lands' else 'objects'}_value_rub"] += float(value or 0)
+
+    for land in view["lands"]:
+        add("lands", land["owner"], land.get("area_sqm"), land.get("cadastral_value_rub"))
+    for item in view["objects"]:
+        add("objects", item["owner"], item.get("area_sqm"), item.get("cadastral_value_rub"))
+    rows = list(seen.values())
+    for row in rows:
+        for key in ("land_area_sqm", "objects_area_sqm", "land_value_rub", "objects_value_rub"):
+            row[key] = round(row[key], 1)
+    rows.sort(key=lambda row: -(row["land_area_sqm"] + row["objects_area_sqm"]))
+    return rows
+
+
 def _land_rows(lands: dict[str, Any], rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Участки со зданиями, которые на них стоят, и с их владельцами.
 
@@ -565,6 +779,10 @@ def payload() -> dict[str, Any]:
         "kinds": _kinds(parcels),
         "lands": _land_rows(lands, parcels),
         "land_totals": _land_totals(lands, parcels),
+        # Свод по официальным документам: состав территории из извещения о
+        # торгах, свойства и права — из выписок ЕГРН.
+        "territory": territory(),
+        "owners": owners_summary(),
         "outlines": {
             "parcels": len(parcels),
             "drawn": len([p for p in parcels if p["rings_merc"]]),

@@ -86,6 +86,8 @@ th,td{border-bottom:1px solid var(--line);padding:7px 9px;text-align:left;vertic
 th{background:var(--soft);font-weight:620;white-space:nowrap}
 td.num,th.num{text-align:right;white-space:nowrap}
 tr.pick{background:#fff6df}
+table.territory tr.zu td{background:var(--soft);border-top:2px solid #111}
+table.territory tr.obj td:first-child{border-left:14px solid var(--soft)}
 .tablewrap{overflow-x:auto;border:1px solid var(--line)}
 .swatch{display:inline-block;width:10px;height:10px;margin-right:6px;vertical-align:-1px}
 .legal-footer{border-top:1px solid var(--line);padding:18px 34px 26px;color:var(--muted);font-size:12px}
@@ -112,7 +114,13 @@ tr.pick{background:#fff6df}
     <div id="legend" class="legend"></div>
     <div id="coverage" class="source"></div>
 
-    <h2>Земля под строениями</h2>
+    <h2>Земельные участки и объекты на них</h2>
+    <div id="territoryBox"></div>
+
+    <h2>Кто чем владеет</h2>
+    <div id="ownersTable"></div>
+
+    <h2>Земля под строениями — по точке ЕГРН</h2>
     <div id="landBox"></div>
 
     <h2>Строения выгрузки</h2>
@@ -424,6 +432,85 @@ function statsMarkup(){
  return tiles.map(s=>`<div class="stat"><b>${s[0]}</b><span>${s[1]}</span></div>`).join('');
 }
 
+// Свод «ЗУ → объекты на нём» по официальным документам: состав территории из
+// извещения о торгах, права и площади — из выписок ЕГРН. Считает всё сервер:
+// второй счёт тех же долей однажды разошёлся бы с картой, и обе строки
+// выглядели бы верными.
+function ownerCell(o){
+ if(!o)return '—';
+ if(!o.name)return `<span class="source">${escapeHtml(o.note||'—')}</span>`;
+ const ids=[o.inn?'ИНН '+o.inn:'',o.ogrn?'ОГРН '+o.ogrn:''].filter(Boolean).join(' · ');
+ const others=(o.others||[]).map(r=>
+   `<div class="source">${escapeHtml(r.right_type)}: ${escapeHtml(r.name)}</div>`).join('');
+ return `<span class="swatch" style="background:${escapeHtml(o.colour||'#8a8a8a')}"></span>`
+  +escapeHtml(o.name)+(ids?`<div class="source">${escapeHtml(ids)}</div>`:'')+others;
+}
+
+function territoryMarkup(){
+ const T=S.data.territory; if(!T)return '';
+ const t=T.totals;
+ const rows=T.lands.map(l=>{
+  const objs=l.objects.map(o=>
+    `<tr class="obj"><td></td><td>${escapeHtml(o.cadastral_number)}`
+    +`${o.part?' <span class="source">(часть)</span>':''}`
+    +`<div class="source">${escapeHtml([o.name,o.purpose,o.year_built?'постр. '+o.year_built:'']
+        .filter(Boolean).join(' · '))||'&nbsp;'}</div></td>`
+    +`<td class="num">${o.area_sqm!=null?m2(o.area_sqm):'<span class="source">нет выписки</span>'}`
+    +`${o.notice_area_sqm!=null&&o.area_sqm!=null&&Math.abs(o.notice_area_sqm-o.area_sqm)>0.05
+        ? `<div class="source">в извещении ${m2(o.notice_area_sqm)}</div>`:''}</td>`
+    +`<td class="num">${mln(o.cadastral_value_rub)}</td>`
+    +`<td>${ownerCell(o.owner)}</td>`
+    +`<td class="source">${escapeHtml(o.fate||'—')}`
+    +`${(o.lands||[]).length>1?`<div class="source">стоит на ${o.lands.length} участках</div>`:''}</td></tr>`
+  ).join('');
+  const lease=(l.leases||[]).map(x=>
+    `<div class="source">Аренда: ${escapeHtml(x.name||'—')}`
+    +`${x.until?' до '+escapeHtml(x.until):(x.term?' · '+escapeHtml(shorten(x.term,40)):'')}</div>`).join('');
+  return `<tr class="zu"><td class="num">${l.objects.length||''}</td>`
+   +`<td><b>${escapeHtml(l.cadastral_number)}</b>${l.part?' <span class="source">(часть)</span>':''}`
+   +`<div class="source">${escapeHtml(shorten(l.permitted_use,90)||'—')}</div></td>`
+   +`<td class="num">${l.area_sqm!=null?m2(l.area_sqm):'—'}`
+   +`<div class="source">строений ${m2(l.objects_area_sqm)}</div></td>`
+   +`<td class="num">${mln(l.cadastral_value_rub)}</td>`
+   +`<td>${ownerCell(l.owner)}${lease}</td>`
+   +`<td class="source">${l.objects.length?'':'объектов нет'}</td></tr>`+objs;
+ }).join('');
+ const outside=(T.objects_outside_notice||[]).map(o=>
+   `${escapeHtml(o.cadastral_number)} (${m2(o.area_sqm)})`).join(', ');
+ return '<div class="tablewrap"><table class="territory"><thead><tr>'
+  +'<th class="num">Стр.</th><th>Кадастровый номер</th><th class="num">Площадь</th>'
+  +'<th class="num">Кадастровая стоимость</th><th>Правообладатель по ЕГРН</th>'
+  +'<th>Судьба по извещению</th></tr></thead><tbody>'+rows
+  +`</tbody><tfoot><tr><th class="num">${t.objects}</th><th>Итого: ${t.lands} участков</th>`
+  +`<th class="num">${m2(t.land_area_sqm)}<div class="source">строений ${m2(t.objects_area_sqm)}</div></th>`
+  +`<th class="num">${mln(t.land_value_rub)}<div class="source">строений ${mln(t.objects_value_rub)}</div></th>`
+  +'<th colspan="2"></th></tr></tfoot></table></div>'
+  +`<div class="source">Состав территории — извещение о торгах ${escapeHtml((T.source.notice||{}).number||'')} `
+  +`от ${escapeHtml((T.source.notice||{}).date||'')}; площади, права и обременения — выписки ЕГРН от `
+  +`${escapeHtml((T.source.egrn_extracts||{}).formed_at||'')}. В извещении ${t.rows_in_notice} строк — `
+  +`это ${t.objects} объектов: стоящий на нескольких участках повторяется у каждого, и его метры в итог `
+  +'входят один раз. Землю и строения не складываем: у участка площадь земли, у здания — площадь здания.'
+  +(outside?` Выписка есть, а в извещении объекта нет: ${outside} — это ответ документа о составе территории.`:'')
+  +(t.objects_without_extract?` Объектов без выписки: ${t.objects_without_extract}.`:'')
+  +'</div>';
+}
+
+function ownersTableMarkup(){
+ const rows=(S.data.owners||[]).map(r=>
+  `<tr><td>${escapeHtml(r.name)}${r.inn?`<div class="source">ИНН ${escapeHtml(r.inn)}</div>`:''}</td>`
+  +`<td><span class="swatch" style="background:${escapeHtml(r.colour||'#8a8a8a')}"></span>${escapeHtml(r.group_title||'')}</td>`
+  +`<td class="num">${r.lands||''}</td><td class="num">${r.land_area_sqm?m2(r.land_area_sqm):''}</td>`
+  +`<td class="num">${r.objects||''}</td><td class="num">${r.objects_area_sqm?m2(r.objects_area_sqm):''}</td>`
+  +`<td class="num">${mln((r.land_value_rub||0)+(r.objects_value_rub||0))}</td></tr>`).join('');
+ return '<div class="tablewrap"><table><thead><tr><th>Правообладатель</th><th>Группа</th>'
+  +'<th class="num">Участков</th><th class="num">Земли</th><th class="num">Строений</th>'
+  +'<th class="num">Их площадь</th><th class="num">Кадастровая стоимость</th>'
+  +'</tr></thead><tbody>'+rows+'</tbody></table></div>'
+  +'<div class="source">Строки сложены по ИНН, а не по написанию имени: одна компания приходит в '
+  +'выписках и капсом, и обычным письмом, а «Автокомбинат № 19» — то ЗАО, то АО. Оперативное '
+  +'управление собственностью не считается и стоит отдельной строкой у объекта.</div>';
+}
+
 function landTableMarkup(){
  const L=S.data.land_totals||{},lands=S.data.lands||[];
  if(!lands.length)
@@ -568,6 +655,8 @@ function render(){
  $('mapBox').innerHTML=mapMarkup();
  $('legend').innerHTML=legendMarkup();
  $('coverage').innerHTML=coverageMarkup();
+ $('territoryBox').innerHTML=territoryMarkup();
+ $('ownersTable').innerHTML=ownersTableMarkup();
  $('landBox').innerHTML=landTableMarkup();
  $('tableBox').innerHTML=tableMarkup();
  $('ownersBox').innerHTML=ownersMarkup();

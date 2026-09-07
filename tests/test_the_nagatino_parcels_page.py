@@ -419,6 +419,21 @@ def test_without_the_engine_the_page_does_not_die_silently():
         "страница зовёт load() мимо сторожа — он молчит в том случае, ради которого написан"
 
 
+def test_no_function_is_declared_twice_on_the_page():
+    """Одноимённая функция съедает предыдущую молча — и `node --check` доволен.
+
+    Так на этой самой странице свод по владельцам был съеден плашкой про
+    «Причал»: обе объявлены, работает последняя, а на экране пусто там, где
+    ждали таблицу. Правило записано для тестов и для кода — здесь оно про
+    страницу.
+    """
+    from collections import Counter
+
+    names = re.findall(r"^function\s+(\w+)", nagatino_ui.NAGATINO_PAGE, re.M)
+    twice = [name for name, count in Counter(names).items() if count > 1]
+    assert not twice, f"объявлены дважды: {twice}"
+
+
 def test_the_page_script_parses():
     """Незакрытая кавычка не даёт браузеру определить ни одной функции, и
     строковые проверки этого не видят: искомая строка есть и в сломанном файле."""
