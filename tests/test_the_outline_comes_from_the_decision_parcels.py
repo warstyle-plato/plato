@@ -160,7 +160,15 @@ def test_the_page_names_the_document_outline() -> None:
     assert "decision_parcels" in note and "не официальный полигон" in note
     # Геокодерная точка теперь значит: и перечня участков не нашлось.
     assert "перечня участков" in note
+    # Источник контура называется РЯДОМ С КАРТОЙ и один раз: оговорку говорит
+    # `krtOutlineNote`, стоящий прямо под кадром. Пока карта лежала складкой во
+    # второй группе, а оговорка в блоке ТЭП, то же самое приходилось повторять
+    # подписью под кадром — рядом это стало одним и тем же дважды подряд.
+    card = page[page.index("function selectKrt("):]
+    card = card[: card.index('krtGroup(2,')]
+    assert card.index('id="krtMapBox"') < card.index('id="krtOutlineNote"'), card[:400]
     site_map = page[page.index("function krtSiteMap("):]
     site_map = site_map[: site_map.index("\nfunction krtModelCell(")]
-    assert site_map.count("decision_parcels") == 2, \
-        "подпись под кадром и подпись живой карты обе различают источник контура"
+    assert site_map.count("decision_parcels") == 1, \
+        "подпись живой карты различает источник контура — и только она"
+    assert "openLandMap({" in site_map
