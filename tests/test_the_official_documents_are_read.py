@@ -35,7 +35,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from auction_search import egrn_extracts, krt_notice  # noqa: E402
-from auction_search import nagatino_parcels as parcels  # noqa: E402
+from auction_search import nagatino_parcels as parcels
+from auction_search import nagatino_ui  # noqa: E402
 
 EXTRACTS = ROOT / "reference_data" / "krt" / "egrn"
 NOTICE = ROOT / "reference_data" / "krt" / "nagatino-auction-notice-2026-08-14.pdf"
@@ -301,6 +302,29 @@ def test_the_owners_sheet_holds_two_tables_with_subtotals():
         grand = next(row for row in block if str(row[0] or "") == "ВСЕГО")
         counts.append((int(grand[2]), int(grand[4])))
     assert counts[0] == counts[1] == (20, 39), counts
+
+
+def test_a_parcel_named_only_by_a_neighbour_is_not_silently_dropped():
+    """«В списках нигде нет 77:05:0004001:2841» (владелец, 07.09.2026).
+
+    И не должно быть: в составе территории по извещению его нет, выписки на
+    него не присылали. Но в наших документах он встречается — участком под
+    объектом 77:05:0004001:2077, которого тоже нет в извещении (он есть в
+    проекте решения). Номер, который в документах есть, а на экране молчит,
+    читается как пропажа, поэтому он назван вместе со своим объектом.
+    """
+    view = parcels.territory()
+    outside = {item["cadastral_number"]: item
+               for item in view.get("objects_outside_notice") or []}
+    lonely = outside["77:05:0004001:2077"]
+    assert lonely["lands"] == ["77:05:0004001:7", "77:05:0004001:2841"]
+    # Один из двух участков в территорию не входит — и это сказано отдельно.
+    assert lonely["lands_outside"] == ["77:05:0004001:2841"]
+    inside = {land["cadastral_number"] for land in view["lands"]}
+    assert "77:05:0004001:2841" not in inside
+    # На экран это доезжает: молчаливо пропущенный номер читается как пропажа.
+    page = nagatino_ui.NAGATINO_PAGE
+    assert "lands_outside" in page and "в состав территории не входит" in page
 
 
 def test_the_documents_the_app_reads_are_copied_into_the_image():

@@ -623,7 +623,13 @@ def territory() -> dict[str, Any]:
         }
     # Объект, на который выписка есть, а в извещении его нет, — это ответ
     # документа о составе территории, и он называется отдельно.
+    # У объекта, которого нет в извещении, называются и участки под ним: у
+    # 77:05:0004001:2077 это 77:05:0004001:7 и 77:05:0004001:2841, и второго в
+    # территории нет вовсе. «В списках нигде нет 77:05:0004001:2841» (владелец,
+    # 07.09.2026) — он и не должен там быть, но раз номер встречается в наших
+    # документах, молчать о нём нельзя: молчание читается как пропажа.
     outside = sorted(set(docs["builds"]) - set(objects_by_cad))
+    lands_by_cad = {item["cadastral_number"] for item in notice.get("lands") or []}
 
     lands = []
     for land in notice.get("lands") or []:
@@ -737,10 +743,16 @@ def territory() -> dict[str, Any]:
     return {
         "lands": lands,
         "objects": objects,
-        "objects_outside_notice": [{"cadastral_number": cad,
-                                    "area_sqm": docs["builds"][cad].get("area_sqm"),
-                                    "owner": _owner_view(docs["builds"][cad], by_inn, groups)}
-                                   for cad in outside],
+        "objects_outside_notice": [
+            {"cadastral_number": cad,
+             "area_sqm": docs["builds"][cad].get("area_sqm"),
+             "owner": _owner_view(docs["builds"][cad], by_inn, groups),
+             "lands": list(docs["builds"][cad].get("lands") or []),
+             # Участок под таким объектом может не входить в территорию вовсе —
+             # тогда он назван, а не пропущен.
+             "lands_outside": [number for number in docs["builds"][cad].get("lands") or []
+                               if number not in lands_by_cad]}
+            for cad in outside],
         "totals": {
             "lands": len(lands),
             "land_area_sqm": _sum([item.get("area_sqm") for item in lands]),

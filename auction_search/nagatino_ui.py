@@ -552,8 +552,15 @@ function territoryMarkup(){
    +`${lease}</td>`
    +`<td class="source">${l.objects.length?'':'объектов нет'}</td></tr>`+objs;
  }).join('');
+ // У объекта вне извещения называются и участки под ним: у 77:05:0004001:2077
+ // это 77:05:0004001:7 и 77:05:0004001:2841, и второго в территории нет вовсе.
+ // Номер, встречающийся в наших документах и молча нигде не показанный,
+ // читается как пропажа.
  const outside=(T.objects_outside_notice||[]).map(o=>
-   `${escapeHtml(o.cadastral_number)} (${m2(o.area_sqm)})`).join(', ');
+   `${escapeHtml(o.cadastral_number)} (${m2(o.area_sqm)}`
+   +`${(o.lands||[]).length?`, стоит на ${o.lands.map(v=>escapeHtml(v)).join(' и ')}`:''}`
+   +`${(o.lands_outside||[]).length?`; ${o.lands_outside.map(v=>escapeHtml(v)).join(', ')} в состав территории не входит`:''})`
+ ).join('; ');
  return '<div class="tablewrap"><table class="territory"><thead><tr>'
   // «Стр.» читалось как номер строки: «почему участки идут не по порядку, 2 и
   // 5?» (владелец, 07.09.2026). Это число строений на участке — так и назван.
