@@ -36,10 +36,20 @@ def test_every_section_has_a_menu_item() -> None:
 
 
 def test_the_normative_reference_is_in_the_menu() -> None:
-    """Ровно то, чего не хватало: раздел был, пункта не было."""
+    """Ровно то, чего не хватало: раздел был, пункта не было.
+
+    Раздел ищется по тому, что он НЕСЁТ, а не по своему идентификатору:
+    первая версия держала `normative`, сосед назвал его `normatives`, и
+    проверка упала на верном поведении, ничего не сказав о меню. Реестр
+    подставляется в один-единственный раздел — он и есть контракт.
+    """
+    holder = re.search(
+        r'<section[^>]*\bid="([^"]+)"[^>]*>(?:(?!</section>).)*?'
+        r"__GUIDE_NORMATIVE_REGISTRY__", PAGE, re.S)
+    assert holder, "раздела с нормативным реестром в руководстве нет"
     menu = dict(guide.nav_items(PAGE))
-    assert "normative" in menu, menu
-    assert "орматив" in menu["normative"], menu["normative"]
+    assert holder.group(1) in menu, menu
+    assert "орматив" in menu[holder.group(1)], menu[holder.group(1)]
 
 
 def test_a_section_added_later_appears_by_itself() -> None:
