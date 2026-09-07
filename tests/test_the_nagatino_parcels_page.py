@@ -32,6 +32,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -1261,6 +1262,16 @@ def _check_share(client) -> None:
 
     # Выдать может только владелец.
     assert client.get("/krt/nagatino/share").status_code == 401
+
+    # Ровно так, как шлёт кнопка страницы: браузер отдаёт пустой параметр как
+    # `revoke=`. Разбор в `bool` отвечал на это 422, и кнопка «Поделиться» не
+    # работала НИ РАЗУ, даже у владельца — «я жму поделиться, но ничего не
+    # происходит» (владелец, 07.09.2026). Пустое значение — это «не отзывать».
+    empty = client.get("/krt/nagatino/share",
+                       params={"session": "", "key": "owner", "revoke": ""})
+    assert empty.status_code == 200, (empty.status_code, empty.text[:200])
+    assert empty.json()["code"], "ссылка не выдана на пустом признаке отзыва"
+    parcels.revoke_share_code()
     issued = client.get("/krt/nagatino/share", params={"key": "owner"})
     assert issued.status_code == 200
     code = issued.json()["code"]
@@ -1288,3 +1299,109 @@ def test_the_page_says_the_link_shows_live_numbers_not_a_snapshot():
     page = nagatino_ui.NAGATINO_PAGE
     assert "ЖИВАЯ" in page and "не снимок" in page
     assert "Отозвать" in page, "вечная открытая ссылка без отзыва рядом"
+
+
+def test_the_market_cabinet_key_opens_the_page_too():
+    """«У человека введён в личном кабинете ключ наш plato-rynok-2026, но он
+    видит это» (владелец, 07.09.2026) — и ключ был настоящий.
+
+    У сервиса ДВА разных ключа. `DEVELOPAID_ADMIN_KEY` — владелец, едет
+    параметром `key`. `MARKET_CABINET_KEY` — кабинет рынка, живёт кукой
+    `market_cabinet` и заголовком `X-Market-Key`, в `localStorage` его нет
+    вовсе. Проверено на живом проде: тот же ключ открывает `/cabinet` (200) и
+    получал отказ на странице участков. Кабинет закрывает лицензионные данные
+    того же класса и открыт той же команде — пускаем и по нему.
+    """
+    import sys
+    import types
+
+    from fastapi import FastAPI, HTTPException
+    from fastapi.testclient import TestClient
+
+    from auction_search.api import install
+    from market_search import cabinet as market_cabinet
+
+    def require_admin(session: str, key: str, what: str) -> None:
+        if key != "owner":
+            raise HTTPException(status_code=401, detail=f"{what}: не владелец")
+
+    core = types.ModuleType("developaid_core")
+    core._require_admin = require_admin  # type: ignore[attr-defined]
+    was = sys.modules.get("developaid_core")
+    sys.modules["developaid_core"] = core
+    old_key = os.environ.get(market_cabinet.ENV_NAME)
+    os.environ[market_cabinet.ENV_NAME] = "plato-rynok-2026"
+    try:
+        parcels.revoke_share_code()
+        app = FastAPI()
+        install(app)
+        client = TestClient(app)
+
+        assert client.get("/krt/nagatino/parcels").status_code == 401
+        # Ключ кабинета — заголовком и кукой, как его носит сам кабинет.
+        assert client.get("/krt/nagatino/parcels",
+                          headers={market_cabinet.HEADER_NAME: "plato-rynok-2026"}
+                          ).status_code == 200
+        assert client.get("/krt/nagatino/parcels",
+                          cookies={market_cabinet.COOKIE_NAME: "plato-rynok-2026"}
+                          ).status_code == 200
+        # Чужой ключ кабинета не пускает. Латиницей намеренно: кириллица в
+        # заголовке HTTP не проедет вовсе, и отказ вышел бы не по той причине —
+        # ровно об этом `cabinet.key_problem`.
+        assert client.get("/krt/nagatino/parcels",
+                          headers={market_cabinet.HEADER_NAME: "plato-rynok-2025"}
+                          ).status_code == 401
+        # Он же открывает книгу: отказ на полпути читался бы как поломка.
+        assert client.get("/krt/nagatino/export.xlsx",
+                          headers={market_cabinet.HEADER_NAME: "plato-rynok-2026"}
+                          ).status_code == 200
+    finally:
+        if old_key is None:
+            os.environ.pop(market_cabinet.ENV_NAME, None)
+        else:
+            os.environ[market_cabinet.ENV_NAME] = old_key
+        if was is None:
+            sys.modules.pop("developaid_core", None)
+        else:
+            sys.modules["developaid_core"] = was
+
+
+def test_the_refusal_leads_to_the_cabinet_login_and_names_the_other_keys():
+    """«Мне нужно, чтобы эту страницу видели все, у кого есть ключ Plato rynok»
+    (владелец, 07.09.2026).
+
+    Отказ обязан говорить не «нужен ключ», а ЧТО СДЕЛАТЬ: ключей у сервиса
+    три, на экране они неразличимы, и прежний текст звал «задать ключ
+    администратора» — то есть предлагал сделать ровно то, что человек с
+    настоящим ключом кабинета уже сделал. Первым действием стоит вход в
+    кабинет: кука ставится на весь домен, и одного входа хватает этой
+    странице.
+
+    Своей формы ключа тут нет намеренно: вход у кабинета один, и второй
+    сломался бы отдельно от первого.
+    """
+    page = nagatino_ui.NAGATINO_PAGE
+    gate = page[page.index("$('gate').innerHTML"):page.index("function poll(")]
+    assert 'href="/cabinet"' in gate, "в отказе нет входа ключом кабинета"
+    assert "MARKET_CABINET_KEY" in gate and "DEVELOPAID_ADMIN_KEY" in gate
+    assert "ДРУГОЙ ключ" in gate, "два ключа не разведены — их путают"
+    assert "Поделиться" in gate, "самый простой путь для стороннего не назван"
+    # Второго входа по ключу здесь нет: он у кабинета один.
+    assert "cabinet/login" not in gate
+
+
+def test_the_share_button_shows_a_refusal_instead_of_going_quiet():
+    """Необработанный отказ обещания выглядит как «ничего не происходит».
+
+    Кнопка гасит себя перед запросом, и без `catch` она оставалась погашенной
+    навсегда, а причина уходила в консоль — то есть её не было. Правило уже
+    записано про хостинг: «ошибка, ушедшая только в лог, — это ошибка, которой
+    нет».
+    """
+    page = nagatino_ui.NAGATINO_PAGE
+    block = page[page.index("async function shareAsk("):page.index("function bindShare()")]
+    assert "catch" in block, "отказ выдачи ссылки пропадает молча"
+    assert "notice bad" in block, "причина отказа не показывается на экране"
+    # Пустой признак не шлётся вовсе: именно он давал 422.
+    assert "revoke:''" not in block and "revoke:\"\"" not in block
+    assert "if(revoke)params.revoke='1'" in block

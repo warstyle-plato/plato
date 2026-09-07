@@ -229,8 +229,28 @@ async function load(refresh){
  }catch(e){
   // Отказ доступа и поломка — разные ответы, и на экране они разные.
   $('gate').style.display='';
-  $('gate').textContent='Данные не показаны: '+e.message
-   +' Страница служебная: числа отдаются владельцу сервиса — войдите через Telegram в «Личном кабинете» или задайте ключ администратора.';
+  // Отказ называет не «нужен ключ», а ЧТО СДЕЛАТЬ. Ключей у сервиса два, на
+  // экране они неразличимы, и прежний текст звал «задайте ключ
+  // администратора» — то есть предлагал сделать ровно то, что человек с
+  // настоящим ключом кабинета уже сделал.
+  //
+  // Первым идёт вход ключом кабинета: «мне нужно, чтобы эту страницу видели
+  // все, у кого есть ключ Plato rynok» (владелец, 07.09.2026). Своей формы
+  // ключа здесь НЕТ намеренно — вход у кабинета один, и второй сломался бы
+  // отдельно от первого; кука он ставит на весь домен, поэтому одного входа
+  // хватает и этой странице.
+  $('gate').innerHTML='<b>Данные не показаны.</b> '+escapeHtml(e.message)
+   +'<div style="margin:10px 0"><a href="/cabinet" style="display:inline-block;'
+   +'border:1px solid #111;padding:8px 14px;font-weight:700;text-decoration:none;'
+   +'color:inherit">Войти ключом кабинета рынка</a></div>'
+   +'<div>Введите там ключ один раз и вернитесь сюда: он запоминается на всём '
+   +'сайте на 30 дней. Это ключ <code>MARKET_CABINET_KEY</code> — тот же, что '
+   +'открывает «Кабинет рынка», и в «Личном кабинете» он не задаётся.</div>'
+   +'<div class="source" style="margin-top:8px">Ещё два пути: вход через Telegram '
+   +'в «Личном кабинете», если ваш аккаунт в списке владельцев; и ссылка '
+   +'«Поделиться» от владельца — она открывает страницу без ключей вовсе. '
+   +'Ключ администратора сервиса (<code>DEVELOPAID_ADMIN_KEY</code>) — это третий, '
+   +'ДРУГОЙ ключ.</div>';
   return;
  }
  render();
@@ -1244,10 +1264,20 @@ function shareMarkup(){
 
 async function shareAsk(revoke){
  const a=auth();
- const r=await askJson('/krt/nagatino/share?'+new URLSearchParams(
-   {session:a.session,key:a.key,revoke:revoke?'1':''}));
- S.share=r.code||'';
- $('share').innerHTML=shareMarkup();
+ // Пустой параметр НЕ шлём: `revoke=` разбирался как негодный `bool` и давал
+ // 422 — кнопка не работала ни разу. И отказ показывается, а не пропадает:
+ // необработанный отказ обещания выглядит как «ничего не происходит», а
+ // кнопка при этом остаётся погашенной навсегда.
+ const params={session:a.session,key:a.key};
+ if(revoke)params.revoke='1';
+ try{
+  const r=await askJson('/krt/nagatino/share?'+new URLSearchParams(params));
+  S.share=r.code||'';
+  $('share').innerHTML=shareMarkup();
+ }catch(e){
+  $('share').innerHTML=shareMarkup()
+   +`<div class="notice bad">Ссылку выдать не удалось: ${escapeHtml(e.message)}</div>`;
+ }
  bindShare();
 }
 
