@@ -1110,3 +1110,67 @@ def test_a_parcel_mostly_inside_the_site_keeps_its_colour():
     block = page[page.index("const mostlyInside="):page.index("const sitePath=")]
     assert "notice_area_sqm/l.area_sqm" in block, (
         "заливка снова считается по признаку «часть», а не по доле вхождения")
+
+
+@pytest.mark.timeout(180)
+def test_in_a_real_browser_the_site_area_is_reconciled_right_under_the_total(monkeypatch):
+    """Строка сходимости стоит под тем итогом, который задаёт вопрос.
+
+    «Это спрятано в картинке свёрнутой КРТ, а должно быть под основной
+    таблицей, где сейчас видно 186 до сих пор» (владелец, 07.09.2026). Прежде
+    вызов стоял ПОСЛЕ заголовка следующего раздела, и под итогом первой таблицы
+    не было ничего: 186 860 м² спорили с 14,62 га площадки, и оба числа
+    выглядели верными. Проверять это надо порядком узлов на странице, а не
+    наличием текста: текст был и тогда, просто не там.
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception:  # noqa: BLE001
+        pytest.skip("playwright недоступен")
+    chrome = Path("/opt/pw-browsers/chromium-1194/chrome-linux/chrome")
+    if not chrome.exists():
+        pytest.skip("chromium в образе не найден")
+    import uvicorn
+
+    monkeypatch.setenv("NAGATINO_EGRN_READ", "0")
+    _seed({})
+    server = uvicorn.Server(uvicorn.Config(_app(), host="127.0.0.1", port=PORT + 4,
+                                           log_level="error"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    for _ in range(200):
+        if server.started:
+            break
+        time.sleep(0.05)
+    assert server.started
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(executable_path=str(chrome))
+            page = browser.new_page()
+            errors: list[str] = []
+            page.on("pageerror", lambda exc: errors.append(str(exc)))
+            page.goto(f"http://127.0.0.1:{PORT + 4}/krt/nagatino",
+                      wait_until="domcontentloaded")
+            page.wait_for_selector("#ownersTable table", timeout=20000)
+            seen = page.evaluate("""() => {
+              const box = document.getElementById('ownersTable');
+              const kids = [...box.children];
+              // Итог первой таблицы и первая строка сходимости после него.
+              const table = kids.findIndex(n => n.querySelector && n.querySelector('table'));
+              const note = kids.findIndex(n => (n.textContent || '').includes('Сходится ли с площадкой'));
+              const head = kids.findIndex(n => n.tagName === 'H2');
+              return {table, note, head, text: box.textContent || ''};
+            }""")
+            browser.close()
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)
+
+    assert not errors, errors
+    assert seen["note"] > seen["table"] >= 0, "строки сходимости под первой таблицей нет"
+    assert seen["head"] < 0 or seen["note"] < seen["head"], (
+        "строка сходимости уехала за заголовок следующего раздела — "
+        "она отвечает на вопрос к ПЕРВОМУ итогу")
+    totals = parcels.territory()["totals"]
+    for number in (totals["land_area_sqm"], totals["site_area_sqm"]):
+        assert f"{number:,.0f}".replace(",", " ") in seen["text"], number

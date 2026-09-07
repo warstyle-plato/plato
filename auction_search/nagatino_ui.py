@@ -876,7 +876,7 @@ function siteReconcileNote(){
  const named=parts.map(l=>`${escapeHtml(l.cadastral_number)} — ${m2(l.notice_area_sqm)} из `
    +`${m2(l.area_sqm)}${(l.permitted_use||'').toLowerCase().includes('дорож')?' (улично-дорожная сеть)':''}`)
   .join('; ');
- return '<div class="source"><b>Сходится ли с площадкой КРТ.</b> '
+ return '<div class="notice"><b>Сходится ли с площадкой КРТ.</b> '
   +`${m2(t.land_area_sqm)} — это площадь участков по ЕГРН, целиком. В границы площадки они входят `
   +`не все: ${named}. Вместе участки дают ${m2(t.land_area_in_notice_sqm)}, плюс `
   +`${m2(t.land_unformed_sqm)} земли, у которой кадастрового номера нет вовсе `
@@ -905,9 +905,15 @@ function ownersTableMarkup(){
     +'группы — объединение участков, а не сумма строк; всего под строениями '
     +`${under.total.lands} участков из ${(S.data.territory||{}).lands.length} (${m2(under.total.area_sqm)}).`
     +partsNote(under):'')
-  +'</div>';
+  +'</div>'
+  // Под итогом ПЕРВОЙ таблицы, а не после заголовка второй: 186 860 м² стоят
+  // здесь, и вопрос «сходится ли с 14,62 га» задают, глядя на них. Прежде
+  // строка стояла ниже заголовка следующего раздела — «это спрятано в картинке
+  // свёрнутой КРТ, а должно быть под основной таблицей, где сейчас видно 186 до
+  // сих пор» (владелец, 07.09.2026).
+  +siteReconcileNote();
  const holdings=S.data.holdings||[];
- if(!holdings.length)return docs+siteReconcileNote();
+ if(!holdings.length)return docs;
  // Второй взгляд — НАШ вывод, и он подписан своим именем. Слить его с первой
  // таблицей нельзя: там ответ реестра, здесь наше прочтение, и под одной
  // шапкой они читались бы как одно утверждение.
@@ -918,7 +924,6 @@ function ownersTableMarkup(){
   +'значит Москва» (решение владельца, 07.09.2026). Хозяина участка называет ЕГРН; нет записи — '
   +'единственный собственник строений на нём, а если лица разные, но группа одна — группа. '
   +'Объект на нескольких участках посчитан один раз.</div>'
-  +siteReconcileNote()
   +ownersBlock(holdings,true,S.data.holdings_under||null)
   +siteReconcileNote()
   +buyoutNote()
