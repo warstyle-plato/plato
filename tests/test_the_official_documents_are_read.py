@@ -372,3 +372,36 @@ def test_the_city_contract_is_recognised_by_its_number():
     # Чужой номер городским не считается.
     private = parcels.disposal_note({"owner": {}, "leases": [{"document_number": "1731/К-ЗН-1/24"}]})
     assert "сдан в аренду" in private["ground"], "чужой номер выдан за городской"
+
+
+def test_a_column_belongs_to_one_kind_of_row():
+    """«Почему в столбце Д, где речь об участках, указаны и данные про
+    строения? это путаница» (владелец, 07.09.2026).
+
+    Сперва земельные графы повторялись и у строений — чтобы строка была
+    самодостаточной. Вышло хуже: рядом оказывались два собственника, земли и
+    строения, и различить их было нечем. Колонка принадлежит одному виду
+    строк; связь держит колонка «Участок».
+    """
+    import openpyxl
+    from io import BytesIO
+
+    from auction_search import nagatino_export
+
+    book = openpyxl.load_workbook(BytesIO(
+        nagatino_export.build(parcels.territory(), parcels.owners_summary())))
+    sheet = book["ЗУ и объекты"]
+    head = [cell.value for cell in sheet[1]]
+    land_columns = [head.index(title) for title in
+                    ("Статус земли (запись ЕГРН)", "Кто распоряжается — вывод DevelopAid",
+                     "На чём этот вывод", "Аренда земли", "Площадь земли, м²")]
+    link = head.index("Участок")
+    buildings = [row for row in sheet.iter_rows(values_only=True) if row[0] == "строение"]
+    assert buildings
+    for row in buildings:
+        for index in land_columns:
+            assert row[index] in (None, ""), \
+                f"{row[1]}: земельная графа заполнена на строке строения — {head[index]}"
+        assert row[link], f"{row[1]}: связь со своим участком потеряна"
+    lands = [row for row in sheet.iter_rows(values_only=True) if row[0] == "участок"]
+    assert all(row[land_columns[0]] for row in lands), "статус земли пуст на строке участка"
