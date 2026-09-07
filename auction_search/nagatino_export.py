@@ -45,26 +45,20 @@ LAND_FILL = PatternFill("solid", fgColor="EFEFEA")
 # Колонка принадлежит одному виду строк; связь со своим участком держит
 # колонка «Участок», по ней и сводят.
 SHEET_LANDS = (
-    ("row_kind", "Строка", 12),
+    ("row_kind", "Строка", 11),
     ("cadastral_number", "Кадастровый номер", 24),
-    ("land", "Участок", 24),
-    ("land_status", "Статус земли (запись ЕГРН)", 40),
-    ("land_disposal", "Кто распоряжается — вывод DevelopAid", 34),
-    ("land_disposal_ground", "На чём этот вывод", 56),
-    ("land_lease", "Аренда земли", 52),
-    ("land_area_sqm", "Площадь земли, м²", 17),
-    ("object_area_sqm", "Площадь строения, м²", 19),
-    ("cadastral_value_rub", "Кадастровая стоимость, ₽", 22),
-    ("owner", "Правообладатель (собственность)", 46),
-    ("inn", "ИНН", 14),
-    ("since", "Право с", 12),
-    ("other_rights", "Иное право (оперативное управление и т. п.)", 44),
-    ("lease", "Аренда объекта", 46),
-    ("encumbrance", "Иные обременения (ипотека, ограничения)", 52),
-    ("permitted_use", "Разрешённое использование / назначение", 44),
-    ("fate", "Судьба по извещению", 20),
-    ("note", "Примечание", 34),
-    ("address", "Адрес по ЕГРН", 52),
+    ("land", "Участок", 22),
+    ("land_area_sqm", "Площадь земли, м²", 16),
+    ("object_area_sqm", "Площадь строения, м²", 18),
+    ("cadastral_value_rub", "Кадастровая стоимость, ₽", 21),
+    ("owner", "Правообладатель — по этой строке", 54),
+    ("inn", "ИНН", 13),
+    ("burden", "Аренда и обременения", 60),
+    ("disposal", "Распоряжается землёй — вывод DevelopAid", 56),
+    ("permitted_use", "Разрешённое использование / назначение", 42),
+    ("fate", "Судьба по извещению", 19),
+    ("note", "Примечание", 32),
+    ("address", "Адрес по ЕГРН", 50),
 )
 
 SHEET_OWNERS = (
@@ -83,12 +77,20 @@ _AREA = '#,##0.0'
 
 
 def _owner_text(owner: dict[str, Any]) -> str:
-    return str(owner.get("name") or owner.get("note") or "")
+    """Кто держит объект ЭТОЙ строки: собственность, дата и иные права разом.
 
-
-def _others_text(owner: dict[str, Any]) -> str:
-    return "; ".join(f"{item.get('right_type')}: {item.get('name')}"
-                     for item in owner.get("others") or [])
+    Раньше это были три колонки. Их стало слишком много, а разнесённые они не
+    отвечали на один вопрос — «с кем разговаривать»: собственник в одной графе,
+    оперативное управление в другой, дата в третьей.
+    """
+    if not owner.get("name"):
+        return str(owner.get("note") or "")
+    line = str(owner["name"])
+    if owner.get("since"):
+        line += f", право с {owner['since']}"
+    for item in owner.get("others") or []:
+        line += f"\n{item.get('right_type')}: {item.get('name')}"
+    return line
 
 
 def _burden_text(items: list[dict[str, Any]], *, with_kind: bool) -> str:
@@ -115,20 +117,6 @@ def _burden_text(items: list[dict[str, Any]], *, with_kind: bool) -> str:
     return "; ".join(out)
 
 
-def _land_status(land: dict[str, Any]) -> str:
-    """Чья земля — словами документа, а не нашим выводом.
-
-    «Собственность не зарегистрирована» — это ответ ЕГРН. Что такой землёй
-    распоряжается город, видно по номерам договоров аренды («М-05-…»,
-    «…-05 ДГИ»), но записи о собственности Москвы в реестре нет, и писать её
-    в этой графе нельзя.
-    """
-    owner = land["owner"]
-    if owner.get("name"):
-        return f"собственность: {owner['name']}"
-    return "собственность в ЕГРН не зарегистрирована"
-
-
 def _land_rows(view: dict[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     # Объект на нескольких участках стоит в книге у каждого. Метры при этом его
@@ -138,28 +126,23 @@ def _land_rows(view: dict[str, Any]) -> list[dict[str, Any]]:
     # бы верными.
     counted: dict[str, str] = {}
     for land in view["lands"]:
-        status = _land_status(land)
         disposal = land.get("disposal") or {}
-        land_lease = _burden_text(land.get("leases"), with_kind=False)
         rows.append({
             "row_kind": "участок",
             "cadastral_number": land["cadastral_number"] + (" (часть)" if land.get("part") else ""),
             "land": land["cadastral_number"],
-            "land_status": status,
-            # Вывод стоит СВОЕЙ графой: в клетке статуса — ответ ЕГРН, здесь —
-            # наше суждение с основанием. Слитые, они читались бы как реестр.
-            "land_disposal": disposal.get("who") or "",
-            "land_disposal_ground": disposal.get("ground") or "",
-            "land_lease": land_lease,
             "land_area_sqm": land.get("area_sqm"),
             "object_area_sqm": None,
             "cadastral_value_rub": land.get("cadastral_value_rub"),
             "owner": _owner_text(land["owner"]),
             "inn": land["owner"].get("inn") or "",
-            "other_rights": _others_text(land["owner"]),
-            "since": land["owner"].get("since") or "",
-            "lease": _burden_text(land.get("leases"), with_kind=False),
-            "encumbrance": _burden_text(land.get("encumbrances"), with_kind=True),
+            # Аренда и прочие обременения — один вопрос «чем связан объект», а
+            # вид стоит в самой строке: «Аренда: …», «Ипотека: …».
+            "burden": _burden_text((land.get("leases") or []) + (land.get("encumbrances") or []),
+                                   with_kind=True),
+            # Вывод подписан как вывод и стоит вместе со своим основанием.
+            "disposal": (f"{disposal['who']} — {disposal['ground']}"
+                         if disposal.get("who") else ""),
             "permitted_use": land.get("permitted_use") or "",
             "fate": "",
             "note": ("объектов на участке нет" if not land["objects"] else
@@ -193,19 +176,14 @@ def _land_rows(view: dict[str, Any]) -> list[dict[str, Any]]:
                 # Земельные графы у строения пусты: они про участок, и стоят на
                 # его строке. Здесь остаётся только связь — чей это участок.
                 "land": ", ".join(item.get("lands") or []) or "—",
-                "land_status": "",
-                "land_disposal": "",
-                "land_disposal_ground": "",
-                "land_lease": "",
                 "land_area_sqm": None,
                 "object_area_sqm": area,
                 "cadastral_value_rub": item.get("cadastral_value_rub"),
                 "owner": _owner_text(item["owner"]),
                 "inn": item["owner"].get("inn") or "",
-                "other_rights": _others_text(item["owner"]),
-                "since": item["owner"].get("since") or "",
-                "lease": _burden_text(item.get("leases"), with_kind=False),
-                "encumbrance": _burden_text(item.get("encumbrances"), with_kind=True),
+                "burden": _burden_text((item.get("leases") or []) + (item.get("encumbrances") or []),
+                                       with_kind=True),
+                "disposal": "",
                 "permitted_use": " · ".join(x for x in (item.get("name"), item.get("purpose"),
                                                         f"постр. {item['year_built']}"
                                                         if item.get("year_built") else "") if x),
@@ -228,12 +206,18 @@ def _fill(sheet, columns, rows: list[dict[str, Any]], formats: dict[str, str]) -
         cell.font = Font(color="FFFFFF", bold=True)
         cell.alignment = Alignment(vertical="center", wrap_text=True)
     sheet.row_dimensions[1].height = 40
+    # Колонки, где текст многострочный: без переноса вторая строка «Оперативное
+    # управление: …» не видна вовсе, а она про то, с кем разговаривать.
+    wrapped = {"owner", "burden", "disposal", "permitted_use", "note", "address"}
     for index, (key, _title, width) in enumerate(columns, start=1):
         letter = get_column_letter(index)
         sheet.column_dimensions[letter].width = width
         if key in formats:
             for cell in sheet[letter][1:]:
                 cell.number_format = formats[key]
+        if key in wrapped:
+            for cell in sheet[letter][1:]:
+                cell.alignment = Alignment(wrap_text=True, vertical="top")
     for index, row in enumerate(rows, start=2):
         if row.get("row_kind") == "участок":
             for cell in sheet[index]:

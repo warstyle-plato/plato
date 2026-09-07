@@ -287,7 +287,7 @@ def test_every_encumbrance_reaches_the_workbook_not_only_the_lease():
         nagatino_export.build(parcels.territory(), parcels.owners_summary())))
     sheet = book["ЗУ и объекты"]
     head = [cell.value for cell in sheet[1]]
-    column = head.index("Иные обременения (ипотека, ограничения)")
+    column = head.index("Аренда и обременения")
     number = head.index("Кадастровый номер")
     found = {str(row[number]).split()[0]: str(row[column])
              for row in sheet.iter_rows(values_only=True) if row[column]}
@@ -343,24 +343,23 @@ def test_the_registry_answer_and_our_inference_never_share_a_cell():
         nagatino_export.build(parcels.territory(), parcels.owners_summary())))
     sheet = book["ЗУ и объекты"]
     head = [cell.value for cell in sheet[1]]
-    status = head.index("Статус земли (запись ЕГРН)")
-    who = head.index("Кто распоряжается — вывод DevelopAid")
-    ground = head.index("На чём этот вывод")
+    status = head.index("Правообладатель — по этой строке")
+    who = head.index("Распоряжается землёй — вывод DevelopAid")
     number = head.index("Кадастровый номер")
     rows = {str(row[number]).split()[0]: row for row in sheet.iter_rows(values_only=True)
             if row[0] == "участок"}
     free = rows["77:05:0004001:2475"]
-    assert free[status] == "собственность в ЕГРН не зарегистрирована"
+    assert free[status] == "право собственности не зарегистрировано"
     assert "город" not in free[status], "вывод затесался в графу реестра"
-    assert free[who] == "город Москва"
-    assert "М-05-061753" in free[ground] and "вывод DevelopAid" in free[ground]
+    assert free[who].startswith("город Москва — ")
+    assert "М-05-061753" in free[who] and "вывод DevelopAid" in free[who]
     # Там, где документов нет, слабее и утверждение.
     bare = rows["77:05:0004001:16"]
-    assert bare[who] == "вероятно город Москва"
-    assert "подтверждения в документах нет" in bare[ground]
+    assert bare[who].startswith("вероятно город Москва")
+    assert "подтверждения в документах нет" in bare[who]
     # У собственника вывода нет вовсе — распоряжается он сам.
     owned = rows["77:05:0004001:7"]
-    assert owned[status].startswith("собственность: ") and not owned[who]
+    assert owned[status].startswith("Москва") and not owned[who]
 
 
 def test_the_city_contract_is_recognised_by_its_number():
@@ -393,8 +392,7 @@ def test_a_column_belongs_to_one_kind_of_row():
     sheet = book["ЗУ и объекты"]
     head = [cell.value for cell in sheet[1]]
     land_columns = [head.index(title) for title in
-                    ("Статус земли (запись ЕГРН)", "Кто распоряжается — вывод DevelopAid",
-                     "На чём этот вывод", "Аренда земли", "Площадь земли, м²")]
+                    ("Распоряжается землёй — вывод DevelopAid", "Площадь земли, м²")]
     link = head.index("Участок")
     buildings = [row for row in sheet.iter_rows(values_only=True) if row[0] == "строение"]
     assert buildings
@@ -404,4 +402,10 @@ def test_a_column_belongs_to_one_kind_of_row():
                 f"{row[1]}: земельная графа заполнена на строке строения — {head[index]}"
         assert row[link], f"{row[1]}: связь со своим участком потеряна"
     lands = [row for row in sheet.iter_rows(values_only=True) if row[0] == "участок"]
-    assert all(row[land_columns[0]] for row in lands), "статус земли пуст на строке участка"
+    assert all(row[head.index("Площадь земли, м²")] for row in lands), \
+        "площадь земли пуста на строке участка"
+    # И одна графа «правообладатель» отвечает по своей строке: у участка это
+    # владелец земли, у строения — владелец строения.
+    owner = head.index("Правообладатель — по этой строке")
+    assert all(row[owner] for row in lands)
+    assert all(row[owner] for row in buildings)
