@@ -208,4 +208,4 @@ def test_the_card_says_the_check_before_the_score() -> None:
     assert unread.index(gaps) < unread.index("Проверка данных"), unread
     # Громкая — выше вердикта, и это по-прежнему утверждение, а не следствие
     # порядка: она стоит до кнопок расчёта, то есть до самой модели.
-    assert agrees.index("Проверка данных") < agrees.index("Что это даёт"), agrees
+    assert agrees.index("Проверка данных") < agrees.index("Предварительный прогон модели"), agrees

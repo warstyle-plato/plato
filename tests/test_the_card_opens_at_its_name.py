@@ -136,9 +136,12 @@ def test_in_a_real_browser_the_card_opens_at_its_name():
 
             page.evaluate("()=>selectKrt(state.krt.find(x=>x.slug==='polimernaya-8'))")
             page.wait_for_timeout(300)
+            # Шапка входа — первая плашка ПЕРВОЙ ГРУППЫ, а не первая плашка
+            # карточки: наверху теперь стоит карта, и на стенде без геокодера
+            # она честно говорит, что не построилась.
             head = page.evaluate(
-                "()=>document.querySelector('#krtSide .notice').textContent"
-                ".replace(/\\s+/g,' ')")
+                "()=>document.querySelector('#krtSide .krtgroup .notice')"
+                ".textContent.replace(/\\s+/g,' ')")
             # Карточку дочитали до низа — и нажали соседнюю строку.
             page.evaluate("()=>{const s=document.getElementById('krtSide');s.scrollTop=s.scrollHeight}")
             page.wait_for_timeout(100)
@@ -150,12 +153,18 @@ def test_in_a_real_browser_the_card_opens_at_its_name():
               return {top:Math.round(s.scrollTop),name:h.textContent,
                       seen:r.top>=g.top-1&&r.bottom<=g.bottom+1,
                       tall:s.scrollHeight>s.clientHeight}}""")
-            # Низ карточки достижим прокруткой самой карточки: кнопка Платона
-            # лежит ниже окна, и добраться до неё можно только так.
-            reach = page.evaluate("""()=>{const s=document.getElementById('krtSide');s.scrollTop=s.scrollHeight;
+            # Кнопки достижимы прокруткой самой карточки, и лежат они в ПЕРВОЙ
+            # группе: «а где кнопки все? Платона вообще нет» (владелец,
+            # 06.09.2026) — они стояли ниже окна, а полосы прокрутки на macOS
+            # не видно, пока её не двинут.
+            reach = page.evaluate("""()=>{const s=document.getElementById('krtSide');
               const b=document.getElementById('krtPlato');if(!b)return null;
+              b.scrollIntoView({block:'center'});
               const r=b.getBoundingClientRect(),g=s.getBoundingClientRect();
-              return {seen:r.top>=g.top-1&&r.bottom<=g.bottom+1}}""")
+              const groups=[...s.querySelectorAll('.krtgroup')];
+              return {seen:r.top>=g.top-1&&r.bottom<=g.bottom+1,
+                      groups:groups.length,
+                      inFirst:groups.length>1&&groups[0].contains(b)}}""")
             browser.close()
     finally:
         server.should_exit = True
@@ -171,4 +180,6 @@ def test_in_a_real_browser_the_card_opens_at_its_name():
     assert after["tall"], "карточка короче окна — проверять нечего"
     assert after["top"] == 0, f"новая карточка открылась серединой: {after}"
     assert after["seen"], f"имя площадки вне окна карточки: {after}"
-    assert reach and reach["seen"], "низ карточки прокруткой недостижим — кнопок не будет"
+    assert reach and reach["seen"], "кнопка Платона прокруткой недостижима"
+    assert reach["groups"] == 3, f"карточка не разбита на три группы: {reach}"
+    assert reach["inFirst"], "кнопки уехали из группы предварительного вывода"

@@ -162,6 +162,22 @@ async function platoAsk(message, history, onStage){
   refusal.status=r.status;
   throw refusal;
  }
+ return platoAwait(d, onStage);
+}
+
+// Ожидание ответа — общее для всех, кто спрашивает из браузера. «Работа
+// принята» и «пустой ответ» с виду одинаковы: и там и там текста нет, — и
+// поверхность, которая ждать не умеет, показывает принятую работу как отказ
+// («Платон вернул пустой ответ» в карточке КРТ, владелец 06.09.2026).
+//
+// Где забирать готовое, решает поверхность: кабинет ходит по номеру запуска в
+// движок, карточка КРТ — в свой маршрут, потому что там ответ ещё и
+// сохраняется в отчёт площадки. Ждут при этом одинаково.
+async function platoAwait(d, onStage, poll){
+ const ready=poll||(async id=>{
+  const p=await fetch('/agent/result/'+encodeURIComponent(id));
+  return p.ok?p.json():null;
+ });
  // Быстрый ответ приходит тем же запросом; за долгим ходим по номеру запуска:
  // цепочка ядро → Render → OpenAI одним соединением не держится.
  let text=d.reply||d.answer||d.text||'';
@@ -176,9 +192,8 @@ async function platoAsk(message, history, onStage){
     if(onStage) onStage(`${label||stage||'работа принята'} · ${Math.round((Date.now()-began)/1000)} с`);
    }
   }catch(_){}
-  const p=await fetch('/agent/result/'+encodeURIComponent(d.trace_id));
-  if(!p.ok) continue;
-  const pd=await p.json();
+  const pd=await ready(d.trace_id);
+  if(!pd) continue;
   if(pd.status==='error'){ throw new Error(pd.detail||pd.error||'Платон не справился') }
   text=pd.reply||pd.answer||pd.text||'';
  }

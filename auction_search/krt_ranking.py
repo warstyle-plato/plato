@@ -53,6 +53,57 @@ REPORT_SCHEMA_VERSION = 1
 # появилась на этой неделе, от той, что лежит там полгода. Без этого «новое»
 # пришлось бы определять глазами по списку из ста двадцати строк.
 FIRST_SEEN_SCHEMA_VERSION = 1
+# Состав ДРУГИХ событий каталога — «решение опубликовано» и «выставлено на
+# торги». Живут они отдельным файлом от `first_seen`: у того свой смысл —
+# когда площадка впервые попала в каталог, — и его схему трогать нельзя, иначе
+# метка «новое» слетит разом у всех.
+WATCH_SEEN_SCHEMA_VERSION = 1
+
+
+def claim_file(path, ttl_seconds: float) -> bool:
+    """Взять работу может только один воркер из двух.
+
+    Память у воркеров раздельная, поэтому договариваются они файлом: создание
+    атомарное, проигравший получает отказ и просто уходит спать. Тот же приём,
+    что у очереди заданий Платона.
+
+    Замок объявлен ОДИН раз: недельный прогон и сторож каталога берут его по
+    своим путям. Вторая такая же реализация разошлась бы с первой на сроке
+    протухания, и обе выглядели бы верными.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    for _ in range(2):
+        try:
+            handle = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            try:
+                age = time.time() - path.stat().st_mtime
+            except OSError:
+                return False
+            if age <= float(ttl_seconds):
+                return False
+            # Протухший замок снимаем и пробуем ещё раз — ровно один.
+            try:
+                path.unlink()
+            except OSError:
+                return False
+            continue
+        except OSError:
+            return False
+        try:
+            os.write(handle, str(int(time.time())).encode("ascii"))
+        finally:
+            os.close(handle)
+        return True
+    return False
+
+
+def release_file(path) -> None:
+    try:
+        Path(path).unlink()
+    except OSError:
+        pass
 # Сколько площадка считается новой после появления. Месяц: каталог обновляется
 # раз в неделю, и метка, живущая один прогон, до человека может не дожить.
 NEW_FOR_SECONDS = 30 * 24 * 60 * 60
@@ -326,6 +377,12 @@ class KrtRanking:
         # сообщение: про Telegram модуль каталога знать не должен, до
         # api.telegram.org с ядра всё равно не дойти.
         self.announcements_path = Path(data_dir) / "krt" / "announcements.jsonl"
+        # Что мы уже видели по каждому виду события. Правила те же, что у
+        # `first_seen`: первый снимок вида не объявляет никого (мы только
+        # начали смотреть), исчезнувшее забывается, а очередь пишется ПОСЛЕ
+        # снимка — сбой записи снимка объявил бы новость, которую мы не
+        # запомнили, и она пришла бы снова.
+        self.watch_seen_path = Path(data_dir) / "krt" / "watch_seen.json"
         self.ttl_seconds = ttl_seconds
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
@@ -372,31 +429,7 @@ class KrtRanking:
         создание атомарное, проигравший получает отказ и просто уходит спать.
         Тот же приём, что у очереди заданий Платона.
         """
-        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
-        for _ in range(2):
-            try:
-                handle = os.open(self.lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            except FileExistsError:
-                try:
-                    age = time.time() - self.lock_path.stat().st_mtime
-                except OSError:
-                    return False
-                if age <= LOCK_TTL_SECONDS:
-                    return False
-                # Протухший замок снимаем и пробуем ещё раз — ровно один.
-                try:
-                    self.lock_path.unlink()
-                except OSError:
-                    return False
-                continue
-            except OSError:
-                return False
-            try:
-                os.write(handle, str(int(time.time())).encode("ascii"))
-            finally:
-                os.close(handle)
-            return True
-        return False
+        return claim_file(self.lock_path, LOCK_TTL_SECONDS)
 
     def heartbeat(self) -> None:
         """Отметить, что прогон жив. Зовётся после каждой посчитанной площадки."""
@@ -464,6 +497,16 @@ class KrtRanking:
         known = self.first_seen()
         bootstrap = not known
         seen = {str(slug) for slug in slugs if str(slug).strip()}
+        # Вид площадки — своя ветка воронки: у каталога krt.mos.ru слаг простой,
+        # у площадки-решения он `decision:<номер>`. Первый снимок ВИДА никого
+        # новым не делает по той же причине, по которой не делает первый снимок
+        # вообще: половина списка приехала в счёт позже, и объявить её разом —
+        # это двести сорок семь «новостей» об одном нашем недосмотре, а не
+        # новость города.
+        def _kind(slug: str) -> str:
+            return slug.split(":", 1)[0] if ":" in slug else "site"
+
+        known_kinds = {_kind(slug) for slug in known}
         # Исчезнувшие из каталога забываются: вернувшаяся площадка — это снова
         # новость, а вечный список слагов рос бы без конца.
         updated = {slug: known.get(slug, 0 if bootstrap else stamp) for slug in seen}
@@ -478,11 +521,73 @@ class KrtRanking:
         # пишется ПОСЛЕ снимка намеренно — иначе сбой записи снимка объявил бы
         # новинку, которую каталог не запомнил, и она пришла бы снова.
         if not bootstrap:
-            self._queue_announcements(sorted(slug for slug in seen if slug not in known), stamp)
+            self._queue_announcements(
+                sorted(slug for slug in seen
+                       if slug not in known and _kind(slug) in known_kinds), stamp)
         return updated
 
-    def _queue_announcements(self, slugs: list[str], stamp: int) -> None:
-        """Кладёт появившиеся площадки в очередь доставки.
+    # --- другие события каталога: решение и торги -------------------------
+
+    def watch_seen(self) -> dict[str, dict[str, int]]:
+        cached = load_json(self.watch_seen_path)
+        if not isinstance(cached, dict) or cached.get("schema_version") != WATCH_SEEN_SCHEMA_VERSION:
+            return {}
+        kinds = cached.get("kinds")
+        if not isinstance(kinds, dict):
+            return {}
+        out: dict[str, dict[str, int]] = {}
+        for kind, seen in kinds.items():
+            if isinstance(seen, dict):
+                out[str(kind)] = {str(key): int(value or 0) for key, value in seen.items()}
+        return out
+
+    def mark_watch(self, kind: str, events: dict[str, dict[str, Any]],
+                   now: float | None = None) -> list[str]:
+        """Отметить нынешний состав события вида `kind` и объявить появившееся.
+
+        `events` — «ключ события → что о нём сказать». Ключ у решения свой
+        (площадка плюс номер документа: по одной территории у города бывает
+        несколько решений разных дат), у торгов — площадка плюс номер лота.
+        Ключом не может быть один слаг: тогда второе решение по той же
+        площадке молча не наступило бы.
+
+        Первый снимок вида никого новым не делает: мы только начали смотреть,
+        и полсотни «новостей» разом — это шум, а не новость.
+        """
+        stamp = int(now if now is not None else time.time())
+        state = self.watch_seen()
+        # «Вида ещё не видели» и «видели, и он был пуст» — разные ответы, и
+        # отличает их наличие КЛЮЧА, а не его непустота. По истине значения
+        # первое событие вида не объявлялось бы никогда: снимок пустого вида
+        # снова читался бы как первый в жизни. Та же ошибка, что «отсутствующий
+        # ключ — не снято».
+        known = state.get(str(kind))
+        bootstrap = known is None
+        known = known or {}
+        fresh_keys = [key for key in events if key not in known]
+        state[str(kind)] = {key: known.get(key, 0 if bootstrap else stamp) for key in events}
+        save_json(self.watch_seen_path, {
+            "schema_version": WATCH_SEEN_SCHEMA_VERSION,
+            "updated_at": stamp,
+            "kinds": state,
+        })
+        if bootstrap or not fresh_keys:
+            return []
+        self._queue_announcements(
+            [str(events[key].get("slug") or "") for key in sorted(fresh_keys)], stamp,
+            kind=str(kind),
+            extra=[{key_: value for key_, value in events[key].items() if key_ != "slug"}
+                   for key in sorted(fresh_keys)])
+        return sorted(fresh_keys)
+
+    def _queue_announcements(self, slugs: list[str], stamp: int, *,
+                             kind: str = "site",
+                             extra: list[dict[str, Any]] | None = None) -> None:
+        """Кладёт случившееся в очередь доставки.
+
+        Вид события едет вместе с записью: «в каталоге новая площадка», «по
+        площадке опубликовано решение» и «площадка выставлена на торги» — три
+        разные новости, и одним словом их не назвать.
 
         Очередь — доставка, а не каталог: сбой записи не должен ронять чтение
         каталога, поэтому ошибки здесь глотаются. Потеря объявления — потеря
@@ -490,12 +595,15 @@ class KrtRanking:
         """
         if not slugs:
             return
+        facts = list(extra or [])
         try:
             self.announcements_path.parent.mkdir(parents=True, exist_ok=True)
             with self.announcements_path.open("a", encoding="utf-8") as handle:
-                for slug in slugs:
-                    handle.write(json.dumps({"slug": slug, "seen_at": stamp},
-                                            ensure_ascii=False) + "\n")
+                for index, slug in enumerate(slugs):
+                    record = {"slug": slug, "seen_at": stamp, "kind": kind}
+                    if index < len(facts) and isinstance(facts[index], dict):
+                        record.update(facts[index])
+                    handle.write(json.dumps(record, ensure_ascii=False) + "\n")
         except OSError:
             pass
 

@@ -385,8 +385,10 @@ def test_the_wait_shows_the_stage_and_the_timeout_names_it():
     # тут — в кабинете стадия показывалась, в торгах нет.
     import plato_question
 
+    # Ожидание вынесено в `platoAwait`: карточка КРТ забирает готовое своим
+    # маршрутом (он же кладёт ответ в отчёт площадки), а ждать обязана так же.
     body = plato_question.SCRIPT[
-        plato_question.SCRIPT.index("async function platoAsk("):]
+        plato_question.SCRIPT.index("async function platoAwait("):]
     body = body[:body.index("\n}\n")]
     assert "/agent/trace/" in body, "стадию сервер пишет — её надо показать"
     assert "не ответил за" in body
