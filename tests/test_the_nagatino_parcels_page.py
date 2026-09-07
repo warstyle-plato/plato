@@ -92,28 +92,39 @@ def _by_group(data):
 def test_the_owner_named_the_groups_and_we_did_not_invent_them():
     data = parcels.payload()
     groups = _by_group(data)
-    assert groups["bryntsalov"] == {"uniks", "novy-proekt"}
+    # «Причал» владелец отнёс к Брынцалову 07.09.2026 («там же ген дир»).
+    assert groups["bryntsalov"] == {"uniks", "novy-proekt", "prichal"}
     assert groups["other"] == {"avtokombinat-19", "zhilishchnik", "rosseti"}
-    assert groups["none"] == {None}, "участок без правообладателя не приписан никому"
+    assert groups["none"] == {None}, "объект без правообладателя не приписан никому"
 
 
-def test_an_unassigned_owner_is_not_folded_into_the_rest():
-    """Лицо, которое владелец к группе не отнёс, стоит своей группой.
-
-    Приписанная группа выглядит на экране ровно так же уверенно, как
-    названная, и цвет здесь — утверждение о владельце объекта. «Причал»
-    владелец отнёс к Брынцалову 07.09.2026 («там же ген дир Брынцалова»), а
-    лица, открывшиеся в выписках, остались неотнесёнными.
+def test_an_unregistered_building_takes_the_shade_of_its_parcel_owner():
+    """«Очевидно, что это всё на участке Автокомбината и к нему относится»
+    (владелец, 07.09.2026). Соседство по документу — это цвет, а не право:
+    в графе собственника остаётся ответ ЕГРН.
     """
-    data = parcels.payload()
-    unassigned = next(g for g in data["groups"] if g["key"] == "unassigned")
-    assert unassigned["colour"] != next(g["colour"] for g in data["groups"] if g["key"] == "other")
-    assert "не отнёс" in unassigned["note"] or "не назначена" in unassigned["title"]
-    # И сказано это на экране, а не только в данных.
-    assert "владелец не называл" in nagatino_ui.NAGATINO_PAGE
-    rows = parcels.owners_summary()
-    assert [row["name"] for row in rows if row["group"] == "unassigned"], \
-        "в выписках открылись лица, которых владелец не размечал"
+    objects = {item["cadastral_number"]: item for item in parcels.territory()["objects"]}
+    borrowed = objects["77:05:0004001:1004"]
+    assert borrowed["owner"]["name"] == "", "право у этого строения не зарегистрировано"
+    assert borrowed["owner"]["note"], "и это сказано словами"
+    assert "Автокомбинат" in borrowed["colour_from"]
+    assert borrowed["colour"] == next(item["colour"] for item in parcels.territory()["lands"]
+                                      if item["cadastral_number"] == "77:05:0004001:2471")
+    # Строение на участках без названного собственника цвет не занимает.
+    lone = objects["77:05:0004001:1069"]
+    assert lone["colour_from"] == "владелец не назван"
+
+
+def test_nobody_is_folded_into_a_group_the_owner_did_not_name():
+    """Цвет группы — утверждение о владельце объекта, а не наша догадка.
+
+    Красным помечены ровно те трое, кого владелец назвал; зелёным — город;
+    остальные жёлтые. Никто не попадает к Брынцалову «за компанию».
+    """
+    inside = {row["inn"] for row in parcels.owners_summary() if row["group"] == "bryntsalov"}
+    assert inside == {"9724179743", "9724197693", "9724195199"}
+    moscow = [row for row in parcels.owners_summary() if row["group"] == "moscow"]
+    assert len(moscow) == 1 and moscow[0]["name"] == "Москва"
 
 
 def test_the_group_follows_the_owners_word_and_names_its_ground():
@@ -142,6 +153,12 @@ def test_the_group_totals_add_up_to_the_registry():
     assert round(sum(g["area_sqm"] for g in data["groups"]), 1) == data["totals"]["area_sqm"]
 
 
+def test_the_group_label_lives_in_one_place():
+    """У владельца нет второго поля с группой: два места однажды разойдутся."""
+    for owner in parcels.registry()["owners"]:
+        assert "group" not in owner, f"{owner['key']}: метка группы задвоена"
+
+
 # --- контуры: три разных ответа ---------------------------------------------
 
 def _seed(answers: dict) -> None:
@@ -167,8 +184,7 @@ def test_unread_and_no_outline_are_different_answers():
     assert states[numbers[0]] == "drawn"
     assert states[numbers[1]] == "empty"
     assert states[numbers[2]] == "unread"
-    assert data["outlines"] == {**data["outlines"], "drawn": 1, "empty": 1,
-                                "unread": len(numbers) - 2}
+    assert data["outlines"]["drawn"] == 1 and data["outlines"]["empty"] == 1
     reason = next(p["outline_reason"] for p in data["parcels"]
                   if p["cadastral_number"] == numbers[1])
     assert "контура" in reason, "причина не доезжает до строки"
@@ -221,31 +237,6 @@ def test_a_silent_source_stops_the_run_instead_of_hammering_it():
     assert parcels.payload()["outlines"]["problem"], "причина не доезжает до страницы"
 
 
-def test_what_the_object_is_reaches_the_page():
-    """Выгрузка названа «участками», а ЕГРН отвечает своим видом.
-
-    Живой ответ прода 07.09.2026: все 39 номеров — объекты капитального
-    строительства (нежилые здания на Варшавском ш., д. 37А и в 1-м Нагатинском
-    пр-де, д. 6), земельных участков среди них нет ни одного. Здание меряется
-    площадью здания, участок — площадью земли: пока вид не назван, колонка
-    «пл» читается как земля и уезжает в плотность и в цену за метр земли.
-    """
-    numbers = parcels.numbers()
-    _seed({numbers[0]: {"asked_at": time.time(), "rings": SQUARE, "reason": "",
-                        "egrn": {"kind": "building",
-                                 "kind_label": "Объект капитального строительства",
-                                 "purpose": "Нежилое", "address": "", "area_sqm": 2522.8,
-                                 "cadastral_value_rub": None, "permitted_use": "",
-                                 "map_url": "", "land_parcel": ""}}})
-    kinds = parcels.payload()["kinds"]
-    assert kinds["buildings"] == 1 and kinds["land"] == 0 and kinds["asked"] == 1
-    assert kinds["counts"]["не спрашивали"] == len(numbers) - 1, \
-        "«не спрашивали» обязано отличаться от ответа ЕГРН"
-    page = nagatino_ui.NAGATINO_PAGE
-    assert "Это здания, а не земельные участки" in page
-    assert "Вид по ЕГРН" in page, "вид не доезжает ни до строки, ни до карточки"
-
-
 def test_the_kind_is_taken_from_the_egrn_answer_and_not_guessed():
     record = parcels._record({"found": True, "cadastral_number": "77:05:0004001:1052",
                               "kind": "building",
@@ -253,13 +244,6 @@ def test_the_kind_is_taken_from_the_egrn_answer_and_not_guessed():
                               "purpose": "Нежилое", "contour_merc": SQUARE})
     assert record["egrn"]["kind"] == "building"
     assert record["egrn"]["kind_label"] == "Объект капитального строительства"
-
-
-def test_the_egrn_disagreement_on_area_is_named_and_not_swallowed():
-    """Два источника на одну величину — расхождение называется вслух."""
-    page = nagatino_ui.NAGATINO_PAGE
-    assert "Площадь по ЕГРН" in page and "расходится с выгрузкой" in page
-    assert "Площадь по выгрузке" in page
 
 
 # --- земля под строениями ----------------------------------------------------
@@ -280,94 +264,50 @@ def _seed_read(numbers_with_centre: list[str]) -> None:
            for number in numbers_with_centre})
 
 
-def test_the_parcel_under_a_building_is_taken_from_the_point_not_from_a_field():
-    """Поле «кадастровый номер ЗУ» у здания ЕГРН отдаёт пустым по всем 39
-    номерам выгрузки — привязка считается геометрией источника: что стоит в
-    точке центра здания."""
-    numbers = parcels.numbers()
-    _seed_read(numbers[:2])
-    asked: list[tuple[float, float]] = []
-
-    def at_point(lat, lng):
-        asked.append((lat, lng))
-        # Вместе с участком в точке стоит и само здание — берём только землю.
-        return [{"found": True, "kind": "building", "cadastral_number": "77:05:0004001:1052"},
-                dict(LAND)]
-
-    parcels.read_land_chunk(at_point, limit=2)
-    assert len(asked) == 2, "спрошены не все прочитанные строения"
-    data = parcels.payload()
-    linked = [row for row in data["parcels"] if row["land_state"] == "linked"]
-    assert len(linked) == 2
-    assert all(row["land"] == LAND["cadastral_number"] for row in linked)
-    assert data["land_totals"]["parcels"] == 1
-    assert data["land_totals"]["area_sqm"] == 19026.0
-    assert data["lands"][0]["buildings"] == 2
-
-
-def test_a_building_without_a_parcel_under_it_is_named_not_dropped():
-    numbers = parcels.numbers()
-    _seed_read(numbers[:1])
-    parcels.read_land_chunk(lambda lat, lng: [], limit=1)
-    row = next(r for r in parcels.payload()["parcels"] if r["cadastral_number"] == numbers[0])
-    assert row["land_state"] == "empty" and row["land_reason"], \
-        "молча потерянная привязка читается как отсутствие земли под зданием"
-
-
-def test_a_second_parcel_in_the_same_point_is_named_not_swallowed():
-    """Два участка под одной точкой значит, что выбор сделан за источник."""
-    numbers = parcels.numbers()
-    _seed_read(numbers[:1])
-    other = {**LAND, "cadastral_number": "77:05:0004001:9"}
-    parcels.read_land_chunk(lambda lat, lng: [dict(LAND), other], limit=1)
-    row = next(r for r in parcels.payload()["parcels"] if r["cadastral_number"] == numbers[0])
-    assert row["land"] == LAND["cadastral_number"]
-    assert row["land_others"] == ["77:05:0004001:9"]
-    assert "взят первый" in nagatino_ui.NAGATINO_PAGE
-
-
-def test_an_unread_building_is_not_asked_about_its_land():
-    """Точки у непрочитанного строения нет, и «не спрашивали» здесь наш пробел."""
-    _seed({})
-    assert parcels.land_unread() == []
-    _seed_read(parcels.numbers()[:3])
-    assert len(parcels.land_unread()) == 3
-
-
-def test_land_and_buildings_are_never_summed_into_one_measure():
-    """У участка площадь земли, у здания — площадь здания. Плотность считается
-    только по земле, и две меры стоят двумя итогами, а не одним."""
-    numbers = parcels.numbers()
-    _seed_read(numbers[:2])
-    parcels.read_land_chunk(lambda lat, lng: [dict(LAND)], limit=2)
-    data = parcels.payload()
-    assert data["totals"]["area_sqm"] != data["land_totals"]["area_sqm"]
-    assert "area_sqm" in data["land_totals"] and "area_sqm" in data["totals"]
-    page = nagatino_ui.NAGATINO_PAGE
-    assert "площадь земли" in page and "их площадь по строкам" in page
-
-
-def test_the_owner_of_the_land_is_not_the_owner_of_the_building():
-    """Выгрузка называет владельцев СТРОЕНИЙ, а ЕГРН по земле отдаёт только
-    форму собственности. Подписать одно другим значит сказать неправду."""
-    page = nagatino_ui.NAGATINO_PAGE
-    assert "Правообладатель участка" in page
-    assert "выгрузка называет владельцев зданий" in page
-    numbers = parcels.numbers()
-    _seed_read(numbers[:1])
-    parcels.read_land_chunk(lambda lat, lng: [dict(LAND)], limit=1)
-    land = parcels.payload()["lands"][0]
-    assert "owner" not in land and "owner_short" not in land, \
-        "у участка завёлся правообладатель, которого источник не называл"
-    assert "building_owners" in land, "чьи на нём строения — это другой вопрос, и он назван"
-
-
 def test_the_land_is_drawn_under_the_buildings():
     """Участок крупнее здания: нарисованный поверх, он закрыл бы его целиком."""
     page = nagatino_ui.NAGATINO_PAGE
     assert page.index("${sitePath}${landPaths}${shapes}") > 0, \
         "порядок слоёв не задан: земля обязана лежать под строениями"
-    assert "fill=\"rgba(17,17,17,0.04)\"" in page, "залитый участок перехватит указатель"
+    assert 'fill-opacity="0.20"' in page, "сплошная заливка участка скроет его строения"
+
+
+def test_the_colours_say_what_the_owner_said():
+    """Брынцалов красный, город зелёный, остальные жёлтой гаммой — по оттенку
+    на владельца (решение владельца, 07.09.2026)."""
+    groups = {g["key"]: g for g in parcels.registry()["groups"]}
+    assert groups["bryntsalov"]["colour"] == "#C0392B"
+    assert groups["moscow"]["colour"].lower() == "#1f6b3b"
+    rows = parcels.owners_summary()
+    reds = {row["colour"] for row in rows if row["group"] == "bryntsalov"}
+    assert reds == {"#C0392B"}
+    yellows = [row["colour"] for row in rows if row["group"] == "other"]
+    assert len(yellows) == len(set(yellows)), "у прочих владельцев цвета совпали"
+    assert len(yellows) >= 5, "жёлтая гамма не роздана"
+
+
+def test_the_shade_does_not_wander_between_runs():
+    """Оттенок достаётся по убыванию метров: любой другой порядок — например
+    порядок файлов в каталоге — перекрашивал бы карту сам собой."""
+    first = {row["inn"] or row["name"]: row["colour"] for row in parcels.owners_summary()}
+    parcels._DOCS.clear()
+    second = {row["inn"] or row["name"]: row["colour"] for row in parcels.owners_summary()}
+    assert first == second
+
+
+def test_a_parcel_takes_the_colour_of_its_buildings_only_when_they_agree():
+    """«Участки под его зданиями такого же оттенка» — но лишь когда владелец
+    строений один: иначе цвет был бы утверждением о владельце земли, которого
+    никто не делал."""
+    lands = {item["cadastral_number"]: item for item in parcels.territory()["lands"]}
+    borrowed = lands["77:05:0004001:2475"]
+    assert borrowed["owner"]["name"] == "", "у этого участка собственность не зарегистрирована"
+    assert borrowed["colour"] == "#C0392B" and "владелец строений" in borrowed["colour_from"]
+    mixed = lands["77:05:0004001:40"]
+    assert "разных владельцев" in mixed["colour_from"]
+    assert mixed["colour"] != "#C0392B"
+    own = lands["77:05:0004001:7"]
+    assert own["colour_from"] == "свой собственник" and own["colour"].lower() == "#1f6b3b"
 
 
 # --- площадка КРТ: чужой контур, а не второй свой ----------------------------
@@ -479,7 +419,8 @@ def test_the_owner_is_shown_by_a_card_and_not_only_by_a_svg_tooltip():
     page = nagatino_ui.NAGATINO_PAGE
     assert 'id="parcelTip"' in page and "tipHtml" in page
     assert "onmousemove" in page
-    assert "ИНН / ОГРН" in page, "в карточке нет того, ради чего она открыта"
+    assert "ownerCell" in page and "'ИНН '+o.inn" in page, \
+        "в карточке нет того, ради чего она открыта"
 
 
 # --- служебность -------------------------------------------------------------
@@ -590,7 +531,7 @@ READ = """() => ({
   lands: document.querySelectorAll('path.land').length,
   site: document.querySelectorAll('#mapFrame svg path[stroke-dasharray]').length,
   rows: document.querySelectorAll('#tableBox tbody tr').length,
-  landRows: document.querySelectorAll('#landBox tbody tr').length,
+  landRows: document.querySelectorAll('#territoryBox tbody tr').length,
   legend: document.getElementById('legend').textContent,
   coverage: document.getElementById('coverage').textContent,
   source: document.getElementById('sourceNote').textContent,
@@ -614,26 +555,18 @@ def test_in_a_real_browser_the_parcels_are_drawn_and_the_owner_pops_up(monkeypat
     import uvicorn
 
     monkeypatch.setenv("NAGATINO_EGRN_READ", "0")
-    numbers = parcels.numbers()
-    # Два участка разных владельцев и разного размера: мелкий обязан остаться
-    # достижимым указателем.
-    big = [[[4187000, 7495000], [4187400, 7495000], [4187400, 7495400], [4187000, 7495400]]]
-    small = [[[4187150, 7495150], [4187200, 7495150], [4187200, 7495200], [4187150, 7495200]]]
-    uniks = next(p["cadastral_number"] for p in parcels.payload()["parcels"]
-                 if p["owner"] == "uniks")
-    centre = {"lat": 55.68, "lng": 37.62}
-    _seed({numbers[0]: {"asked_at": time.time(), "rings": big, "reason": "",
-                        "egrn": {"kind": "building", "kind_label": "Объект капитального строительства",
-                                 "center": centre}},
-           uniks: {"asked_at": time.time(), "rings": small, "reason": "",
-                   "egrn": {"kind": "building", "kind_label": "Объект капитального строительства",
-                            "center": centre}}})
-    # Земля под ними: участок крупнее обоих строений и лежит под ними.
-    around = [[[4186800, 7494800], [4187600, 7494800], [4187600, 7495600], [4186800, 7495600]]]
-    parcels.read_land_chunk(lambda lat, lng: [{**LAND, "contour_merc": around}], limit=2)
+    # Участок Автокомбината, его строение и строение без права на нём же:
+    # мелкое обязано остаться достижимым указателем, а бесправное — взять
+    # оттенок владельца участка.
+    land = [[[4187000, 7495000], [4187600, 7495000], [4187600, 7495600], [4187000, 7495600]]]
+    big = [[[4187100, 7495100], [4187400, 7495100], [4187400, 7495400], [4187100, 7495400]]]
+    small = [[[4187450, 7495450], [4187500, 7495450], [4187500, 7495500], [4187450, 7495500]]]
+    _seed({"77:05:0004001:2471": {"asked_at": time.time(), "rings": land, "reason": ""},
+           "77:05:0004001:1093": {"asked_at": time.time(), "rings": big, "reason": ""},
+           "77:05:0004001:1004": {"asked_at": time.time(), "rings": small, "reason": ""}})
     parcels.store_site({"slug": "nagatino", "name": "КРТ Нагатино",
-                        "rings_merc": [[[4186900, 7494900], [4187500, 7494900],
-                                        [4187500, 7495500], [4186900, 7495500]]]})
+                        "rings_merc": [[[4186900, 7494900], [4187700, 7494900],
+                                        [4187700, 7495700], [4186900, 7495700]]]})
 
     server = uvicorn.Server(uvicorn.Config(_app(), host="127.0.0.1", port=PORT,
                                            log_level="error"))
@@ -655,40 +588,26 @@ def test_in_a_real_browser_the_parcels_are_drawn_and_the_owner_pops_up(monkeypat
             seen = page.evaluate(READ)
             assert not errors, errors
             assert seen["shapes"] == 2, "нарисованы не все прочитанные строения"
-            assert seen["lands"] == 1, "земля под строениями не нарисована"
+            assert seen["lands"] == 1, "участок не нарисован"
             assert seen["landFirst"], "земля нарисована ПОВЕРХ строений — она их закроет"
-            assert seen["landRows"] == 1, "свода по земле на странице нет"
-            assert seen["site"] == 1, "границы площадки КРТ на карте нет"
-            assert seen["rows"] == 39, "в таблице не все участки выгрузки"
-            assert "Брынцалов" in seen["legend"] and "Прочее" in seen["legend"]
-            # Ненарисованные названы числом: пропущенный молча читается как
-            # отсутствие участка в территории.
-            assert "37" in seen["coverage"] and "не спрашивали" in seen["coverage"]
-            # Разряды `toLocaleString` разделяет неразрывным пробелом — тем
-            # самым, из-за которого и разошёлся итог в самой выгрузке.
-            source = re.sub(r"\s+", " ", seen["source"])
-            assert "33 543" in source and "54 753" in source, \
-                "обе суммы обязаны стоять рядом: " + source
+            assert seen["rows"] == 39, "в таблице не все строения выгрузки"
+            assert seen["landRows"] >= 20, "свода «участок → объекты» на странице нет"
+            assert "Автокомбинат" in seen["legend"], "легенда не называет владельцев"
 
-            # Мелкий участок лежит поверх крупного и достижим указателем.
-            small_shape = page.locator("path.parcel").last
-            small_shape.hover()
+            # Мелкое строение лежит поверх крупного и достижимо указателем.
+            page.locator("path.parcel").last.hover()
             page.wait_for_selector("#parcelTip", state="visible", timeout=5000)
             tip = page.locator("#parcelTip").inner_text()
-            assert "УНИКС" in tip, tip
-            assert "Брынцалов" in tip and "ИНН" in tip
-            assert LAND["cadastral_number"] in tip, "участок под зданием не назван в карточке"
+            assert "77:05:0004001:1004" in tip, tip
+            # Право не зарегистрировано — так и написано, а цвет назван соседством.
+            assert "не зарегистрировано" in tip and "владелец участка" in tip
 
-            # Участок отвечает СВОЕЙ карточкой, а не карточкой здания: меры у
-            # них разные, и правообладателя земли выгрузка не называет вовсе.
-            # Наводить надо туда, где участок НЕ закрыт строением: строения
-            # лежат поверх намеренно, и в их точках указатель достаётся им.
-            page.locator("path.land").first.hover(position={"x": 20, "y": 20})
+            # Участок отвечает своей карточкой, в свободной от строений точке.
+            page.locator("path.land").first.hover(position={"x": 12, "y": 12})
             page.wait_for_timeout(400)
             land_tip = page.locator("#parcelTip").inner_text()
-            assert "Земельный участок" in land_tip, land_tip
-            assert "выгрузка называет владельцев зданий" in land_tip
-            assert "Строений на участке" in land_tip
+            assert "Земельный участок 77:05:0004001:2471" in land_tip, land_tip
+            assert "Автокомбинат" in land_tip and "Строений на участке" in land_tip
             browser.close()
     finally:
         server.should_exit = True

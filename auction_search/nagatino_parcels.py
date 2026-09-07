@@ -120,9 +120,19 @@ def registry() -> dict[str, Any]:
 
 
 def numbers() -> list[str]:
-    return [str(row.get("cadastral_number") or "")
-            for row in registry().get("parcels") or []
-            if row.get("cadastral_number")]
+    """Номера, по которым спрашивается контур: строения И участки территории.
+
+    Состав берётся из извещения о торгах — это официальный состав территории;
+    строки присланного владельцем файла добавляются к нему, а не заменяют его:
+    один объект есть в файле и нет в извещении.
+    """
+    out = [str(row.get("cadastral_number") or "")
+           for row in registry().get("parcels") or []
+           if row.get("cadastral_number")]
+    notice = documents()["notice"]
+    out += [str(item["cadastral_number"]) for item in notice.get("objects") or []]
+    out += [str(item["cadastral_number"]) for item in notice.get("lands") or []]
+    return list(dict.fromkeys(number for number in out if number))
 
 
 def cache_path() -> Path:
@@ -265,6 +275,51 @@ def documents() -> dict[str, Any]:
     return _DOCS
 
 
+def _palette() -> dict[str, str]:
+    """Оттенок каждому владельцу. Считается один раз и не зависит от порядка чтения.
+
+    Брынцалов красный, Москва зелёная, остальные — жёлтая гамма по своему
+    оттенку на владельца (решение владельца, 07.09.2026). Оттенок достаётся по
+    УБЫВАНИЮ метров: любой другой порядок — например порядок файлов в каталоге —
+    перекрашивал бы карту сама собой от прогона к прогону.
+    """
+    from auction_search import egrn_extracts
+
+    data = registry()
+    groups = {str(g.get("key")): g for g in data.get("groups") or []}
+    by_key = {str(k): str(v) for k, v in (data.get("owner_groups") or {}).items()}
+    shades = list(data.get("other_shades") or []) or ["#C9922A"]
+    docs = documents()
+    weight: dict[str, float] = {}
+    named: dict[str, dict[str, Any]] = {}
+    for record in list(docs["builds"].values()) + list(docs["lands"].values()):
+        owner = egrn_extracts.owner_of(record)
+        if not owner:
+            continue
+        key = owner["key"]
+        named.setdefault(key, owner)
+        weight[key] = weight.get(key, 0.0) + float(record.get("area_sqm") or 0)
+    colours: dict[str, str] = {}
+    rest: list[str] = []
+    for key in sorted(weight, key=lambda item: (-weight[item], item)):
+        group = by_key.get(str(named[key].get("inn") or "")) or by_key.get(key) or "other"
+        if group in ("bryntsalov", "moscow"):
+            colours[key] = str((groups.get(group) or {}).get("colour") or "#8a8a8a")
+        else:
+            rest.append(key)
+    for index, key in enumerate(rest):
+        colours[key] = shades[index % len(shades)]
+    return colours
+
+
+def group_of(owner: dict[str, Any]) -> str:
+    """Группа владельца: по ИНН, а у публичного лица — по его ключу."""
+    data = registry()
+    by_key = {str(k): str(v) for k, v in (data.get("owner_groups") or {}).items()}
+    return (by_key.get(str(owner.get("inn") or ""))
+            or by_key.get(str(owner.get("key") or "")) or "other")
+
+
 def _owner_view(record: dict[str, Any], groups_by_inn: dict[str, str],
                 groups: dict[str, Any]) -> dict[str, Any]:
     """Собственник объекта в том виде, в каком его показывают.
@@ -285,108 +340,21 @@ def _owner_view(record: dict[str, Any], groups_by_inn: dict[str, str],
                          if record else "выписки на объект нет"),
                 "group": "none", "colour": str((groups.get("none") or {}).get("colour") or "#8a8a8a"),
                 "group_title": str((groups.get("none") or {}).get("title") or "")}
-    group = groups_by_inn.get(str(owner.get("inn") or "")) or "unassigned"
+    group = group_of(owner)
     return {"name": owner.get("name") or "", "inn": owner.get("inn") or "",
             "ogrn": owner.get("ogrn") or "", "kind": owner.get("kind") or "",
+            "code": owner.get("code") or "", "key": owner.get("key") or "",
             "since": owner.get("since") or "", "note": "", "others": others,
             "group": group,
-            "colour": str((groups.get(group) or {}).get("colour") or "#8a8a8a"),
+            # Оттенок — свойство ВЛАДЕЛЬЦА, а не группы: у «прочих» их семеро, и
+            # одним цветом они на карте неразличимы.
+            "colour": _palette().get(owner.get("key") or "")
+                      or str((groups.get(group) or {}).get("colour") or "#8a8a8a"),
             "group_title": str((groups.get(group) or {}).get("title") or "")}
 
 
-def _lands_state() -> tuple[dict[str, Any], dict[str, Any]]:
-    """Что уже спрошено про землю: ответ по каждому зданию и сами участки."""
-    cached = load_json(cache_path())
-    if not (isinstance(cached, dict) and cached.get("schema_version") == 1):
-        return {}, {}
-    asked = cached.get("land_answers")
-    lands = cached.get("lands")
-    return (dict(asked) if isinstance(asked, dict) else {},
-            dict(lands) if isinstance(lands, dict) else {})
-
-
-def land_unread() -> list[str]:
-    """Здания, под которыми землю ещё не спрашивали или ответ протух.
-
-    Спрашивать можно только у прочитанного здания: точки у непрочитанного нет,
-    и «не спрашивали» здесь — наш пробел, а не отсутствие участка.
-    """
-    answers = _answers()
-    asked, _ = _lands_state()
-    out = []
-    for number in numbers():
-        answer = answers.get(number)
-        if not isinstance(answer, dict) or not (answer.get("egrn") or {}).get("center"):
-            continue
-        known = asked.get(number)
-        if not isinstance(known, dict):
-            out.append(number)
-            continue
-        ttl = ANSWER_TTL_SECONDS if known.get("land") else REFUSAL_TTL_SECONDS
-        at = known.get("asked_at")
-        if not isinstance(at, (int, float)) or time.time() - float(at) > ttl:
-            out.append(number)
-    return out
-
-
-def read_land_chunk(point_lookup: Callable[[float, float], list[dict[str, Any]]],
-                    *, limit: int = CHUNK) -> dict[str, Any]:
-    """Спросить ЕГРН, какой участок лежит под очередной порцией зданий.
-
-    Привязка считается ГЕОМЕТРИЕЙ источника — что стоит в точке центра здания,
-    — а не полем «кадастровый номер ЗУ»: по этим объектам оно пустое во всех
-    тридцати девяти. Здание, под которым участка не нашлось, называется
-    причиной: молча потерянное читается как отсутствие земли под ним.
-    """
-    answers = _answers()
-    asked, lands = _lands_state()
-    todo = land_unread()[:max(1, int(limit))]
-    state = load_json(cache_path())
-    state = dict(state) if isinstance(state, dict) and state.get("schema_version") == 1 else {
-        "schema_version": 1, "answers": answers, "problem": ""}
-    for number in todo:
-        centre = ((answers.get(number) or {}).get("egrn") or {}).get("center") or {}
-        try:
-            found = list(point_lookup(float(centre["lat"]), float(centre["lng"])) or [])
-        except Exception as exc:  # noqa: BLE001 — неответ называется, а не молчит
-            state["problem"] = f"ЕГРН не ответил про землю: {type(exc).__name__}: {exc}"[:300]
-            break
-        parcels_here = [item for item in found
-                        if isinstance(item, dict) and item.get("found")
-                        and str(item.get("kind") or "") == "land"]
-        if not parcels_here:
-            asked[number] = {"asked_at": int(time.time()), "land": "",
-                             "reason": "в точке центра здания ЕГРН участка не показал"}
-            continue
-        first = parcels_here[0]
-        cad = str(first.get("cadastral_number") or "")
-        asked[number] = {"asked_at": int(time.time()), "land": cad, "reason": "",
-                         # Сколько участков вернулось — часть ответа: два под
-                         # одной точкой значит, что выбор сделан за источник.
-                         "others": [str(x.get("cadastral_number") or "")
-                                    for x in parcels_here[1:]]}
-        lands[cad] = {
-            "cadastral_number": cad,
-            "area_sqm": first.get("area_sqm"),
-            "cadastral_value_rub": first.get("cadastral_value_rub"),
-            "permitted_use": str(first.get("permitted_use") or ""),
-            "ownership": str(first.get("ownership") or ""),
-            "address": str(first.get("address") or ""),
-            "map_url": str(first.get("map_url") or ""),
-            "rings": [ring for ring in (first.get("contour_merc") or [])
-                      if isinstance(ring, list) and len(ring) >= 3],
-        }
-    state["land_answers"] = asked
-    state["lands"] = lands
-    state["updated_at"] = int(time.time())
-    save_json(cache_path(), state)
-    return state
-
-
 def fill_in_background(lookup: Callable[[list[str]], list[dict[str, Any]]],
-                       *, find_site: Callable[[], dict[str, Any]] | None = None,
-                       point_lookup: Callable[[float, float], list[dict[str, Any]]] | None = None
-                       ) -> bool:
+                       *, find_site: Callable[[], dict[str, Any]] | None = None) -> bool:
     """Дочитать недостающие контуры фоном. Работу берёт один.
 
     Воркеров два, память у них раздельная: без замка оба пошли бы спрашивать
@@ -403,8 +371,7 @@ def fill_in_background(lookup: Callable[[list[str]], list[dict[str, Any]]],
     # же причине, по которой там не должно быть недельного обхода каталога.
     if os.getenv("NAGATINO_EGRN_READ", "1").strip().lower() in ("0", "no", "off", "false"):
         return False
-    if (not unread() and not (point_lookup is not None and land_unread())
-            and (find_site is None or cached_site().get("rings_merc"))):
+    if not unread() and (find_site is None or cached_site().get("rings_merc")):
         return False
     with _LOCK:
         if _READING:
@@ -419,14 +386,6 @@ def fill_in_background(lookup: Callable[[list[str]], list[dict[str, Any]]],
                 state = read_chunk(lookup)
                 if state.get("problem") or len(unread()) >= before:
                     break  # портал молчит — не долбимся, следующее открытие повторит
-            # Земля под зданиями читается ПОСЛЕ них: точки у непрочитанного
-            # здания нет, и спрашивать не по чему.
-            if point_lookup is not None:
-                while land_unread():
-                    before = len(land_unread())
-                    state = read_land_chunk(point_lookup)
-                    if state.get("problem") or len(land_unread()) >= before:
-                        break
             if find_site is not None and not cached_site().get("rings_merc"):
                 try:
                     store_site(find_site())
@@ -537,7 +496,6 @@ def territory() -> dict[str, Any]:
     by_inn = {str(k): str(v) for k, v in (data.get("owner_groups") or {}).items()}
     notice = docs["notice"]
     answers = _answers()
-    _asked, cached_lands = _lands_state()
 
     objects_by_cad: dict[str, dict[str, Any]] = {}
     for item in notice.get("objects") or []:
@@ -560,6 +518,10 @@ def territory() -> dict[str, Any]:
             "address": (extract or {}).get("address") or "",
             "cadastral_value_rub": (extract or {}).get("cadastral_value_rub"),
             "owner": _owner_view(extract, by_inn, groups),
+            "colour": _owner_view(extract, by_inn, groups)["colour"],
+            "colour_from": ("свой собственник"
+                            if _owner_view(extract, by_inn, groups).get("name")
+                            else "владелец не назван"),
             "extract": bool(extract),
             "rings_merc": list(((answers.get(cad) or {}).get("rings")) or []),
         }
@@ -579,9 +541,28 @@ def territory() -> dict[str, Any]:
         for item in here:
             seen.setdefault(item["cadastral_number"], item)
         here = list(seen.values())
+        # Цвет участка: свой собственник, если право зарегистрировано; иначе —
+        # владелец строений на нём, когда он один («участки под его зданиями
+        # такого же оттенка», владелец 07.09.2026). Строения разных владельцев
+        # на одном участке одним цветом не красим: это было бы утверждением о
+        # владельце земли, которого никто не делал.
+        own = _owner_view(extract, by_inn, groups)
+        keys = {item["owner"].get("key") for item in here if item["owner"].get("name")}
+        borrowed = ""
+        if not own.get("name") and len(keys) == 1:
+            source_owner = next(item["owner"] for item in here if item["owner"].get("key"))
+            borrowed = source_owner.get("name") or ""
+            colour = source_owner.get("colour") or own["colour"]
+        else:
+            colour = own["colour"]
         lands.append({
             "cadastral_number": cad,
             "part": bool(land.get("part")),
+            "colour": colour,
+            "colour_from": ("свой собственник" if own.get("name")
+                            else f"владелец строений: {borrowed}" if borrowed
+                            else "строения разных владельцев" if len(keys) > 1
+                            else "владелец не назван"),
             "area_sqm": (extract or {}).get("area_sqm"),
             "notice_area_sqm": land.get("area_sqm"),
             "area_kind": (extract or {}).get("area_kind") or "",
@@ -594,9 +575,28 @@ def territory() -> dict[str, Any]:
             "leases": egrn_extracts.leases(extract) if extract else [],
             "objects": here,
             "objects_area_sqm": _sum([item.get("area_sqm") for item in here]),
-            "rings_merc": list(((cached_lands.get(cad) or {}).get("rings")) or []),
+            "rings_merc": list(((answers.get(cad) or {}).get("rings")) or []),
             "extract": bool(extract),
         })
+    # Строение без зарегистрированного права красится по СВОЕМУ участку, когда
+    # у того собственник назван и он один («очевидно, что это всё на участке и
+    # рядом с Автокомбинатом и к нему относится» — владелец, 07.09.2026). Это
+    # соседство по документу, а не право: в графе собственника по-прежнему
+    # стоит ответ ЕГРН, а цвет подписан «по владельцу участка». Круга здесь
+    # нет: участок занимает цвет только у строений с НАЗВАННЫМ владельцем, а
+    # строение — только у участка с названным.
+    owner_of_land = {item["cadastral_number"]: item["owner"] for item in lands
+                     if item["owner"].get("name")}
+    for item in objects_by_cad.values():
+        if item["owner"].get("name"):
+            continue
+        near = {owner_of_land[cad]["key"]: owner_of_land[cad]
+                for cad in item.get("lands") or [] if cad in owner_of_land}
+        if len(near) != 1:
+            continue
+        source_owner = next(iter(near.values()))
+        item["colour"] = source_owner.get("colour")
+        item["colour_from"] = f"владелец участка: {source_owner.get('name')}"
     lands.sort(key=lambda item: -(item.get("area_sqm") or item.get("notice_area_sqm") or 0))
     objects = list(objects_by_cad.values())
     return {
@@ -668,45 +668,6 @@ def owners_summary() -> list[dict[str, Any]]:
     return rows
 
 
-def _land_rows(lands: dict[str, Any], rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Участки со зданиями, которые на них стоят, и с их владельцами.
-
-    Правообладателя САМОГО участка здесь нет и быть не может: выгрузка
-    называет владельцев ЗДАНИЙ, а ЕГРН по земле отдаёт только форму
-    собственности. Чьи участки — приедет отдельным источником, и до тех пор
-    колонка честно пуста, а не заполнена владельцем здания: это разные лица, и
-    подписать одно другим значит сказать неправду.
-    """
-    out = []
-    for cad, land in lands.items():
-        here = [row for row in rows if row.get("land") == cad]
-        out.append({
-            **land,
-            "buildings": len(here),
-            "buildings_area_sqm": _sum([row.get("area_sqm") for row in here]),
-            "building_owners": [name for name in dict.fromkeys(
-                row.get("owner_short") or "" for row in here) if name],
-            "unowned_buildings": len([row for row in here if not row.get("owner")]),
-            "groups": [key for key in dict.fromkeys(row.get("group") for row in here)],
-        })
-    return sorted(out, key=lambda item: -(item.get("area_sqm") or 0))
-
-
-def _land_totals(lands: dict[str, Any], rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """Земля своей мерой. Складывать её с площадью строений нельзя — это
-    разные величины, и «плотность» считается только по земле."""
-    return {
-        "parcels": len(lands),
-        "area_sqm": _sum([land.get("area_sqm") for land in lands.values()]),
-        "cadastral_value_rub": _sum([land.get("cadastral_value_rub")
-                                     for land in lands.values()]),
-        "drawn": len([land for land in lands.values() if land.get("rings")]),
-        "linked": len([row for row in rows if row.get("land_state") == "linked"]),
-        "empty": len([row for row in rows if row.get("land_state") == "empty"]),
-        "unread": len([row for row in rows if row.get("land_state") == "unread"]),
-    }
-
-
 def _sum(values: list[Any]) -> float:
     return round(sum(float(v) for v in values if isinstance(v, (int, float))), 1)
 
@@ -720,13 +681,15 @@ def payload() -> dict[str, Any]:
     owners = {str(o.get("key")): o for o in data.get("owners") or []}
     groups = {str(g.get("key")): g for g in data.get("groups") or []}
     answers = _answers()
-    land_answers, lands = _lands_state()
+    links = {item["cadastral_number"]: item["lands"] for item in territory()["objects"]}
     parcels = []
     for row in data.get("parcels") or []:
         number = str(row.get("cadastral_number") or "")
         owner_key = row.get("owner")
         owner = owners.get(owner_key) or {}
-        group = str(owner.get("group") or "none") if owner_key else "none"
+        # Метка группы живёт в одном месте — `owner_groups` по ИНН. Второе поле
+        # у владельца однажды разошлось бы с первым.
+        group = (group_of(owner) if owner_key else "none")
         answer = answers.get(number) if isinstance(answers.get(number), dict) else None
         parcels.append({
             **row,
@@ -745,14 +708,10 @@ def payload() -> dict[str, Any]:
                               else "empty" if answer else "unread"),
             "outline_reason": str((answer or {}).get("reason") or ""),
             "egrn": (answer or {}).get("egrn") or None,
-            # Участок под зданием и КАК он найден: «по точке ЕГРН» — это
-            # геометрия источника, а не поле «кадастровый номер ЗУ», которое у
-            # этих объектов пустое во всех тридцати девяти.
-            "land": str((land_answers.get(number) or {}).get("land") or ""),
-            "land_state": ("linked" if (land_answers.get(number) or {}).get("land")
-                           else "empty" if number in land_answers else "unread"),
-            "land_reason": str((land_answers.get(number) or {}).get("reason") or ""),
-            "land_others": list((land_answers.get(number) or {}).get("others") or []),
+            # Участок под зданием называет ВЫПИСКА, а не наша геометрия:
+            # точечный опрос отвечал на тот же вопрос вторым голосом и на двух
+            # объектах из 39 расходился с документом.
+            "lands": list(links.get(number) or []),
         })
     totals_by_group = []
     for group in data.get("groups") or []:
@@ -784,8 +743,6 @@ def payload() -> dict[str, Any]:
         # отвечают. Берётся у реестра, второго пути к нему нет.
         "krt_site": cached_site(),
         "kinds": _kinds(parcels),
-        "lands": _land_rows(lands, parcels),
-        "land_totals": _land_totals(lands, parcels),
         # Свод по официальным документам: состав территории из извещения о
         # торгах, свойства и права — из выписок ЕГРН.
         "territory": territory(),
