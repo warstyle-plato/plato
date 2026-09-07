@@ -383,8 +383,6 @@ def _room_window(row: dict[str, Any], span: int = ROOM_WINDOW_MONTHS) -> dict[st
 # девяностом процентиле в 60. Квартал даёт 36 сделок в точке медианно и скачок
 # 17,7 п.п.: разброс падает вдвое, и остаток от него — не шум выборки, а
 # настоящая смена того, что вывели в продажу.
-ROOM_TREND_STEP = 3
-
 # Ниже этого точку рисуем, но называем малой: доля на пяти сделках выглядит на
 # картинке ровно так же, как доля на пятидесяти.
 ROOM_TREND_MIN_DEALS = 10
@@ -393,17 +391,24 @@ ROOM_TREND_MIN_DEALS = 10
 def _room_trend(
     row: dict[str, Any],
     span: int = ROOM_WINDOW_MONTHS,
-    step: int = ROOM_TREND_STEP,
 ) -> list[dict[str, Any]]:
-    """Как менялся состав спроса — по кварталам окна.
+    """Как менялся состав спроса — по КАЛЕНДАРНЫМ кварталам окна.
 
     Квартал, а не месяц: помесячно у одного ЖК десяток сделок, и доля пляшет
-    сильнее, чем меняется спрос (замер выше). Пустой квартал выбрасывается, а
-    не рисуется нулями: пропуск в ряду — не ноль, и колонка нулевой высоты
-    показала бы состав спроса там, где спроса не было вовсе.
+    сильнее, чем меняется спрос (замер выше). Календарный, а не «три месяца от
+    конца окна»: «1 кв. 2025» читается однозначно, а «09.25–11.25» и как три
+    месяца, и как два (вычитанием краёв) — и второе прочтение оспорить нечем
+    (владелец, 07.09.2026). Нарезка от конца окна кварталом НЕ является, и
+    подписать её кварталом значило бы соврать: менять надо саму нарезку.
 
-    Сколько сделок в точке — часть ответа: доля на пяти сделках и доля на
-    пятидесяти на картинке неразличимы.
+    Цена честного имени — неполные края: окно в двенадцать месяцев кончается
+    месяцем отчёта, поэтому первый и последний кварталы бывают короче. Сколько
+    месяцев в точке, она говорит сама, а не выдаёт часть за целое.
+
+    Пустой квартал выбрасывается, а не рисуется нулями: пропуск в ряду — не
+    ноль, и колонка нулевой высоты показала бы состав спроса там, где спроса не
+    было вовсе. Сколько сделок в точке — тоже часть ответа: доля на пяти
+    сделках и доля на пятидесяти на картинке неразличимы.
     """
     line = row.get("rooms_sold") or {}
     months = row.get("rooms_months") or []
@@ -411,15 +416,20 @@ def _room_trend(
         return []
     span = min(span, len(months))
     start = len(months) - span
+
+    buckets: dict[tuple[int, int], list[int]] = {}
+    for index in range(start, len(months)):
+        year, month = (int(part) for part in str(months[index]).split("-")[:2])
+        buckets.setdefault((year, (month - 1) // 3 + 1), []).append(index)
+
     out: list[dict[str, Any]] = []
-    for left in range(start, len(months), step):
-        right = min(left + step, len(months))
+    for (year, quarter), indexes in sorted(buckets.items()):
         point: dict[str, float] = {}
         for name, values in line.items():
             total = sum(
                 float(values[index])
-                for index in range(left, min(right, len(values)))
-                if values[index]
+                for index in indexes
+                if index < len(values) and values[index]
             )
             if total:
                 point[name] = total
@@ -427,13 +437,13 @@ def _room_trend(
         if not deals:
             continue
         out.append({
-            "from": months[left],
-            "to": months[right - 1],
-            # Сколько месяцев в точке — считает сервер, а не экран: подпись
-            # «09.25–11.25» читается и как три месяца, и как два (вычитанием),
-            # и второй прочтение оспорить нечем. Последняя точка окна бывает
-            # короче шага, и тогда число говорит это само.
-            "months": right - left,
+            "year": year,
+            "quarter": quarter,
+            "from": months[indexes[0]],
+            "to": months[indexes[-1]],
+            # Длина точки — ответ сервера, а не экрана: неполный край окна
+            # обязан назвать себя, а не выглядеть целым кварталом.
+            "months": len(indexes),
             "deals": round(deals, 1),
             "shares": {
                 name: round(value / deals * 100, 1)
@@ -661,7 +671,6 @@ def rooms_block(
             trend = _room_trend(subject)
             if len(trend) > 1:
                 block.subject["rooms_trend"] = trend
-                block.subject["rooms_trend_step"] = ROOM_TREND_STEP
                 shift = _room_shift(trend)
                 if shift:
                     block.subject["rooms_shift"] = shift

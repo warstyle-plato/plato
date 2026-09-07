@@ -1695,7 +1695,10 @@ function roomsTrend(b){
   const W=620,L=44,R=150,T=14,B=34,H=250;
   const band=(W-L-R)/points.length, w=Math.min(band*0.62,64);
   const y=v=>T+(H-T-B)*(1-v/100);
-  const short=m=>{const [yy,mm]=String(m).split('-'); return mm+'.'+yy.slice(2)};
+  // Имя точки — календарный квартал: «1 кв. 2025» читается однозначно, а
+  // «09.25–11.25» и как три месяца, и как два. Квартал приходит с сервера
+  // числом — он решает нарезку, экран только называет её.
+  const qname=p=>`${p.quarter} кв. ${p.year}`;
   let svg=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img">`;
   [0,25,50,75,100].forEach(v=>{
     svg+=`<line x1="${L}" y1="${y(v)}" x2="${W-R}" y2="${y(v)}" stroke="#e6ecf2"/>`
@@ -1709,13 +1712,13 @@ function roomsTrend(b){
       const top=y(acc+v), bottom=y(acc);
       svg+=`<rect x="${x0.toFixed(1)}" y="${top.toFixed(1)}" width="${w.toFixed(1)}"`
          +` height="${Math.max(bottom-top,0).toFixed(1)}" fill="${colours[n%colours.length]}"`
-         +` data-tip="${esc(title(k)+' · '+short(p.from)+'–'+short(p.to)+': '+num(v,1)+' %')}"></rect>`;
+         +` data-tip="${esc(title(k)+' · '+qname(p)+': '+num(v,1)+' %')}"></rect>`;
       acc+=v;
     });
     // Сколько сделок в точке — часть ответа: доля на пяти сделках и доля на
     // пятидесяти на картинке неразличимы.
     svg+=`<text x="${cx.toFixed(1)}" y="${H-20}" text-anchor="middle" font-size="10" fill="#8798a8">`
-       +`${esc(short(p.from)+'–'+short(p.to))}</text>`
+       +`${esc(qname(p))}</text>`
        +`<text x="${cx.toFixed(1)}" y="${H-8}" text-anchor="middle" font-size="9.5" fill="#8798a8">`
        +`${p.months?num(p.months)+' мес. · ':''}${num(p.deals)} сд.</text>`;
   });
@@ -1727,8 +1730,10 @@ function roomsTrend(b){
   const thin=s.rooms_trend_thin;
   return '<h3>Как менялся состав спроса</h3><div class="wrap">'+svg+'</div>'
     +'<div class="muted" style="font-size:12.5px;margin-top:4px">Колонка — состав продаж'
-    +' квартала, все сто процентов. Шаг квартальный: в месяце у проекта обычно'
-    +' около десятка сделок, и там одна сделка двигает долю на десяток процентов.'
+    +' календарного квартала, все сто процентов. Квартал, а не месяц: в месяце у'
+    +' проекта обычно около десятка сделок, и там одна сделка двигает долю на'
+    +' десяток процентов. Окно кончается месяцем отчёта, поэтому крайние кварталы'
+    +' бывают неполными — сколько в них месяцев, написано под колонкой.'
     +(thin?` Кварталов, где сделок меньше десяти: ${thin} — доля в них случайна.`:'')
     +'</div>';
 }
