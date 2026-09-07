@@ -285,6 +285,19 @@ function shorten(text,limit){
  const s=String(text||'');
  return s.length>limit?s.slice(0,limit-1).replace(/[\s,;]+$/,'')+'…':s;
 }
+// Обременение — не только аренда: на 77:05:0004001:2045 и на здании
+// 77:05:0004001:1046 висит ипотека Совкомбанка до 2034 года. Молча выброшенное
+// ограничение читается как его отсутствие, а у залога это худшее из молчаний.
+function burdenRows(x){
+ const line=b=>escapeHtml(b.name||'—')
+   +(b.until?' до '+escapeHtml(b.until)
+     :(/\d/.test(b.term||'')?' · '+escapeHtml(shorten(b.term,42))
+       :' <span class="source">срок в записи ЕГРН не указан</span>'))
+   +(b.document_number?` <span class="source">договор ${escapeHtml(b.document_number)}</span>`:'');
+ return (x.leases||[]).map(b=>['Аренда',line(b)])
+   .concat((x.encumbrances||[]).map(b=>[escapeHtml(b.kind||'Обременение'),line(b)]));
+}
+
 function landTitle(l){
  return 'Участок '+l.cadastral_number+' · '+m2(l.area_sqm)+' · строений '+(l.objects||[]).length;
 }
@@ -301,8 +314,7 @@ function landHtml(l){
   ['Строений на участке',objs.length+' · '+m2(l.objects_area_sqm)],
   ['Цвет по',escapeHtml(l.colour_from||'—')],
  ];
- (l.leases||[]).forEach(x=>rows.push(['Аренда',escapeHtml(x.name||'—')
-   +(x.until?' до '+escapeHtml(x.until):'')]));
+ burdenRows(l).forEach(r=>rows.push(r));
  if(l.address)rows.push(['Адрес по ЕГРН',escapeHtml(l.address)]);
  return `<b>Земельный участок ${escapeHtml(l.cadastral_number)}</b>`
   +'<dl>'+rows.map(r=>`<dt>${r[0]}</dt><dd>${r[1]}</dd>`).join('')+'</dl>';
@@ -325,6 +337,7 @@ function tipHtml(p){
  // Цвет соседства не равен праву: собственник выше — это ответ ЕГРН.
  if(p.colour_from&&p.colour_from!=='свой собственник')
   rows.push(['Цвет по',escapeHtml(p.colour_from)]);
+ burdenRows(p).forEach(r=>rows.push(r));
  if(p.fate)rows.push(['Судьба по извещению',escapeHtml(p.fate)]);
  if(p.address)rows.push(['Адрес по ЕГРН',escapeHtml(p.address)]);
  return `<b><span class="dot" style="background:${escapeHtml(p.colour||p.owner.colour)}"></span>`
@@ -459,13 +472,12 @@ function territoryMarkup(){
     +`${o.notice_area_sqm!=null&&o.area_sqm!=null&&Math.abs(o.notice_area_sqm-o.area_sqm)>0.05
         ? `<div class="source">в извещении ${m2(o.notice_area_sqm)}</div>`:''}</td>`
     +`<td class="num">${mln(o.cadastral_value_rub)}</td>`
-    +`<td>${ownerCell(o.owner)}</td>`
+    +`<td>${ownerCell(o.owner)}`
+    +burdenRows(o).map(r=>`<div class="source">${r[0]}: ${r[1]}</div>`).join('')+'</td>' 
     +`<td class="source">${escapeHtml(o.fate||'—')}`
     +`${(o.lands||[]).length>1?`<div class="source">стоит на ${o.lands.length} участках</div>`:''}</td></tr>`
   ).join('');
-  const lease=(l.leases||[]).map(x=>
-    `<div class="source">Аренда: ${escapeHtml(x.name||'—')}`
-    +`${x.until?' до '+escapeHtml(x.until):(x.term?' · '+escapeHtml(shorten(x.term,40)):'')}</div>`).join('');
+  const lease=burdenRows(l).map(r=>`<div class="source">${r[0]}: ${r[1]}</div>`).join('');
   return `<tr class="zu"><td class="num">${l.objects.length||''}</td>`
    +`<td><b>${escapeHtml(l.cadastral_number)}</b>${l.part?' <span class="source">(часть)</span>':''}`
    +`<div class="source">${escapeHtml(shorten(l.permitted_use,90)||'—')}</div></td>`

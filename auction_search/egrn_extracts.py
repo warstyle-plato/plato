@@ -230,20 +230,37 @@ def other_rights(record: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
-def leases(record: dict[str, Any]) -> list[dict[str, Any]]:
-    """Аренда участка: кто, по какому договору и до какого срока."""
+def encumbrances(record: dict[str, Any], *, lease: bool | None = None) -> list[dict[str, Any]]:
+    """Обременения: кто, чем, по какому документу и до какого срока.
+
+    `lease=True` — только аренда, `False` — всё остальное, `None` — всё.
+    Показывать одну аренду нельзя: на 77:05:0004001:2045 и на здании
+    77:05:0004001:1046 висит ипотека Совкомбанка до 2034 года, а на :9 и :2121
+    — «прочие ограничения». Молча выброшенное ограничение читается как его
+    отсутствие, а у залога это худший вид молчания.
+    """
     out = []
     for item in record.get("restrictions") or []:
-        if "ренд" not in item.get("type", ""):
+        is_lease = "ренд" in item.get("type", "")
+        if lease is not None and is_lease is not lease:
             continue
         for holder in item.get("holders") or [{}]:
             out.append({
+                "kind": item.get("type") or "",
+                "lease": is_lease,
                 "name": holder.get("name") or "",
                 "key": holder_key(holder) if holder.get("name") else "",
                 "until": item.get("end") or "",
+                "since": item.get("start") or "",
                 "term": item.get("term") or "",
+                "number": item.get("number") or "",
                 "document": item.get("document") or "",
                 "document_number": item.get("document_number") or "",
                 "subject": item.get("subject") or "",
             })
     return out
+
+
+def leases(record: dict[str, Any]) -> list[dict[str, Any]]:
+    """Только аренда. Второго разбора обременений здесь нет."""
+    return encumbrances(record, lease=True)

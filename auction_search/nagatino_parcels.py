@@ -497,6 +497,8 @@ def territory() -> dict[str, Any]:
     notice = docs["notice"]
     answers = _answers()
 
+    from auction_search import egrn_extracts
+
     objects_by_cad: dict[str, dict[str, Any]] = {}
     for item in notice.get("objects") or []:
         cad = item["cadastral_number"]
@@ -518,6 +520,9 @@ def territory() -> dict[str, Any]:
             "address": (extract or {}).get("address") or "",
             "cadastral_value_rub": (extract or {}).get("cadastral_value_rub"),
             "owner": _owner_view(extract, by_inn, groups),
+            "leases": egrn_extracts.leases(extract) if extract else [],
+            "encumbrances": (egrn_extracts.encumbrances(extract, lease=False)
+                             if extract else []),
             "colour": _owner_view(extract, by_inn, groups)["colour"],
             "colour_from": ("свой собственник"
                             if _owner_view(extract, by_inn, groups).get("name")
@@ -528,8 +533,6 @@ def territory() -> dict[str, Any]:
     # Объект, на который выписка есть, а в извещении его нет, — это ответ
     # документа о составе территории, и он называется отдельно.
     outside = sorted(set(docs["builds"]) - set(objects_by_cad))
-
-    from auction_search import egrn_extracts
 
     lands = []
     for land in notice.get("lands") or []:
@@ -573,6 +576,8 @@ def territory() -> dict[str, Any]:
             "special_notes": (extract or {}).get("special_notes") or "",
             "owner": _owner_view(extract, by_inn, groups),
             "leases": egrn_extracts.leases(extract) if extract else [],
+            "encumbrances": (egrn_extracts.encumbrances(extract, lease=False)
+                             if extract else []),
             "objects": here,
             "objects_area_sqm": _sum([item.get("area_sqm") for item in here]),
             "rings_merc": list(((answers.get(cad) or {}).get("rings")) or []),

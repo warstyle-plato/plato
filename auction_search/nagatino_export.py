@@ -42,8 +42,10 @@ SHEET_LANDS = (
     ("cadastral_value_rub", "Кадастровая стоимость, ₽", 22),
     ("owner", "Правообладатель (собственность)", 46),
     ("inn", "ИНН", 14),
+    ("since", "Право с", 12),
     ("other_rights", "Иное право (оперативное управление и т. п.)", 44),
-    ("lease", "Аренда", 46),
+    ("lease", "Аренда: кто, до какого срока, договор", 52),
+    ("encumbrance", "Иные обременения (ипотека, ограничения)", 52),
     ("permitted_use", "Разрешённое использование / назначение", 44),
     ("fate", "Судьба по извещению", 20),
     ("note", "Примечание", 34),
@@ -74,11 +76,27 @@ def _others_text(owner: dict[str, Any]) -> str:
                      for item in owner.get("others") or [])
 
 
-def _lease_text(land: dict[str, Any]) -> str:
+def _burden_text(items: list[dict[str, Any]], *, with_kind: bool) -> str:
+    """Обременение строкой: кто, до какого срока и по какому документу.
+
+    Показывать одну аренду нельзя: ипотека и «прочие ограничения» — тоже
+    обременения, и молча выброшенное читается как его отсутствие.
+    """
     out = []
-    for item in land.get("leases") or []:
-        when = item.get("until") or item.get("term") or ""
-        out.append(f"{item.get('name') or '—'}{(' до ' + when) if item.get('until') else (' · ' + when if when else '')}")
+    for item in items or []:
+        parts = [item.get("name") or "—"]
+        if item.get("until"):
+            parts.append(f"до {item['until']}")
+        elif any(char.isdigit() for char in item.get("term") or ""):
+            parts.append(item["term"])
+        else:
+            # У 77:05:0004001:1093 сама запись ЕГРН обрывается на слове «до».
+            # Печатать это как срок значит выдать обрыв документа за ответ.
+            parts.append("срок в записи ЕГРН не указан")
+        if item.get("document_number"):
+            parts.append(f"договор {item['document_number']}")
+        line = ", ".join(parts)
+        out.append(f"{item.get('kind')}: {line}" if with_kind else line)
     return "; ".join(out)
 
 
@@ -100,7 +118,9 @@ def _land_rows(view: dict[str, Any]) -> list[dict[str, Any]]:
             "owner": _owner_text(land["owner"]),
             "inn": land["owner"].get("inn") or "",
             "other_rights": _others_text(land["owner"]),
-            "lease": _lease_text(land),
+            "since": land["owner"].get("since") or "",
+            "lease": _burden_text(land.get("leases"), with_kind=False),
+            "encumbrance": _burden_text(land.get("encumbrances"), with_kind=True),
             "permitted_use": land.get("permitted_use") or "",
             "fate": "",
             "note": ("объектов на участке нет" if not land["objects"] else
@@ -137,7 +157,9 @@ def _land_rows(view: dict[str, Any]) -> list[dict[str, Any]]:
                 "owner": _owner_text(item["owner"]),
                 "inn": item["owner"].get("inn") or "",
                 "other_rights": _others_text(item["owner"]),
-                "lease": "",
+                "since": item["owner"].get("since") or "",
+                "lease": _burden_text(item.get("leases"), with_kind=False),
+                "encumbrance": _burden_text(item.get("encumbrances"), with_kind=True),
                 "permitted_use": " · ".join(x for x in (item.get("name"), item.get("purpose"),
                                                         f"постр. {item['year_built']}"
                                                         if item.get("year_built") else "") if x),
@@ -198,8 +220,8 @@ def build(view: dict[str, Any], owners: list[dict[str, Any]]) -> bytes:
     sheet.append([])
     sheet.append(["итого", f"{totals['lands']} участков и {totals['objects']} объектов",
                   totals["land_area_sqm"], printed,
-                  round(totals["land_value_rub"] + totals["objects_value_rub"], 1), "", "", "", "", "",
-                  "", note, ""])
+                  round(totals["land_value_rub"] + totals["objects_value_rub"], 1),
+                  "", "", "", "", "", "", "", note, ""])
     for cell in sheet[sheet.max_row]:
         cell.font = Font(bold=True)
     sheet.cell(row=sheet.max_row, column=3).number_format = _AREA

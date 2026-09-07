@@ -257,15 +257,56 @@ def test_the_column_adds_up_to_the_total_line():
 
     book = openpyxl.load_workbook(BytesIO(
         nagatino_export.build(parcels.territory(), parcels.owners_summary())))
-    rows = list(book["ЗУ и объекты"].iter_rows(values_only=True))[1:]
-    column = round(sum(row[3] for row in rows
-                       if row[0] == "строение" and isinstance(row[3], (int, float))), 1)
+    sheet = book["ЗУ и объекты"]
+    # Колонку ищем по ЗАГОЛОВКУ, а не по номеру: номер держится за соседнюю
+    # колонку и ломается, стоит рядом появиться новой.
+    head = [cell.value for cell in sheet[1]]
+    area = head.index("Площадь строения, м²")
+    note = head.index("Примечание")
+    rows = list(sheet.iter_rows(values_only=True))[1:]
+    column = round(sum(row[area] for row in rows
+                       if row[0] == "строение" and isinstance(row[area], (int, float))), 1)
     total = rows[-1]
     assert total[0] == "итого"
-    assert round(total[3], 1) == column, "итог не сходится с колонкой"
-    repeats = [row for row in rows if row[11] and "повтор" in str(row[11])]
-    assert repeats and all(row[3] in (None, "") for row in repeats), \
+    assert round(total[area], 1) == column, "итог не сходится с колонкой"
+    repeats = [row for row in rows if row[note] and "повтор" in str(row[note])]
+    assert repeats and all(row[area] in (None, "") for row in repeats), \
         "у повтора напечатана площадь — она посчитается дважды"
+
+
+def test_every_encumbrance_reaches_the_workbook_not_only_the_lease():
+    """Ипотека Совкомбанка висит и на участке 77:05:0004001:2045, и на здании
+    77:05:0004001:1046. Молча выброшенное ограничение читается как его
+    отсутствие, а у залога это худшее из молчаний."""
+    import openpyxl
+    from io import BytesIO
+
+    from auction_search import nagatino_export
+
+    book = openpyxl.load_workbook(BytesIO(
+        nagatino_export.build(parcels.territory(), parcels.owners_summary())))
+    sheet = book["ЗУ и объекты"]
+    head = [cell.value for cell in sheet[1]]
+    column = head.index("Иные обременения (ипотека, ограничения)")
+    number = head.index("Кадастровый номер")
+    found = {str(row[number]).split()[0]: str(row[column])
+             for row in sheet.iter_rows(values_only=True) if row[column]}
+    assert "Ипотека" in found.get("77:05:0004001:2045", "")
+    assert "Ипотека" in found.get("77:05:0004001:1046", "")
+    assert "Совкомбанк" in found["77:05:0004001:1046"]
+    assert "2034-05-02" in found["77:05:0004001:1046"], "срок залога не показан"
+
+
+def test_a_term_without_a_date_is_named_not_printed_as_a_dangling_word():
+    """У 77:05:0004001:1093 сама запись ЕГРН обрывается на слове «до».
+    Печатать это как срок значит выдать обрыв документа за ответ."""
+    from auction_search import nagatino_export
+
+    text = nagatino_export._burden_text(
+        [{"kind": "Аренда", "name": "физическое лицо", "until": "", "term": "до"}],
+        with_kind=False)
+    assert "срок в записи ЕГРН не указан" in text
+    assert not text.rstrip().endswith("до")
 
 
 def test_the_export_route_asks_the_owner(monkeypatch):
