@@ -1174,3 +1174,29 @@ def test_in_a_real_browser_the_site_area_is_reconciled_right_under_the_total(mon
     totals = parcels.territory()["totals"]
     for number in (totals["land_area_sqm"], totals["site_area_sqm"]):
         assert f"{number:,.0f}".replace(",", " ") in seen["text"], number
+
+
+def test_a_parcel_is_measured_against_the_site_outline_not_guessed():
+    """«У11 ты уверен, что он в контуре КРТ?» (владелец, 07.09.2026).
+
+    «Уверен» тут плохой ответ: контур участка у нас из ЕГРН, полигон площадки —
+    из реестра города, и вопрос решается измерением. Считается сеткой, как
+    движок меряет зоны НСПД на участке.
+
+    И это сверка ДВУХ документов: участок из перечня извещения, лежащий вне
+    полигона реестра, — расхождение источников, а не наш выбор.
+    """
+    square = lambda x, y, w, h: [[[x, y], [x + w, y], [x + w, y + h], [x, y + h]]]  # noqa: E731
+    site = square(0, 0, 100, 100)
+    assert parcels.share_inside(square(10, 10, 10, 10), site) == 1.0
+    assert parcels.share_inside(square(200, 200, 10, 10), site) == 0.0
+    assert parcels.share_inside(square(90, 10, 20, 10), site) == 0.5
+    # Мерить нечем — это `None`, а не ноль: ноль читается как «участок снаружи».
+    assert parcels.share_inside(square(10, 10, 10, 10), []) is None
+    assert parcels.share_inside([], site) is None
+
+    # На экране стоит измеренная доля, а не слово.
+    page = nagatino_ui.NAGATINO_PAGE
+    assert "inside_site_share" in page
+    assert "В контуре площадки" in page
+    assert "не сверено" in page, "неизмеренное обязано называться, а не молчать"

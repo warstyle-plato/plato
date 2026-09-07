@@ -537,6 +537,53 @@ def resolve_site(sites: list[dict[str, Any]],
                         "площадки в файле карты города нет либо её границы другие")}
 
 
+def _inside_ring(rings: list[list[list[float]]], x: float, y: float) -> bool:
+    """Точка внутри многоконтурной фигуры. Луч вправо, чётность пересечений."""
+    hits = 0
+    for ring in rings:
+        for index in range(len(ring)):
+            ax, ay = ring[index][0], ring[index][1]
+            bx, by = ring[(index + 1) % len(ring)][0], ring[(index + 1) % len(ring)][1]
+            if (ay > y) == (by > y):
+                continue
+            if ax + (y - ay) * (bx - ax) / (by - ay) > x:
+                hits += 1
+    return hits % 2 == 1
+
+
+def share_inside(rings: list[list[list[float]]],
+                 outline: list[list[list[float]]], grid: int = 40) -> float | None:
+    """Какая доля фигуры лежит внутри контура. `None` — мерить нечем.
+
+    «У11 ты уверен, что он в контуре КРТ?» (владелец, 07.09.2026). «Уверен» —
+    плохой ответ: у нас есть и контур участка из ЕГРН, и полигон площадки из
+    реестра города, и вопрос решается измерением. Считается сеткой, а не
+    клиппингом полигонов: библиотеки в образе нет, а точность порядка процента
+    отвечает на вопрос «внутри или снаружи» — тем же способом, каким движок
+    меряет зоны НСПД на участке.
+    """
+    points = [p for ring in rings or [] for p in ring if isinstance(p, list) and len(p) >= 2]
+    if not points or not outline:
+        return None
+    xs = [float(p[0]) for p in points]
+    ys = [float(p[1]) for p in points]
+    if max(xs) == min(xs) or max(ys) == min(ys):
+        return None
+    own = hit = 0
+    for i in range(grid):
+        x = min(xs) + (max(xs) - min(xs)) * (i + 0.5) / grid
+        for j in range(grid):
+            y = min(ys) + (max(ys) - min(ys)) * (j + 0.5) / grid
+            if not _inside_ring(rings, x, y):
+                continue
+            own += 1
+            if _inside_ring(outline, x, y):
+                hit += 1
+    if not own:
+        return None
+    return round(hit / own, 3)
+
+
 def store_site(site: dict[str, Any]) -> None:
     """Положить опознанную площадку рядом с ответами ЕГРН, в тот же кэш."""
     state = load_json(cache_path())
@@ -1291,6 +1338,25 @@ def payload() -> dict[str, Any]:
                        if key in owners],
         })
     holdings = land_holdings(lands_and_objects)
+    # Сколько каждого участка лежит внутри полигона площадки из реестра города.
+    # «У11 ты уверен, что он в контуре КРТ?» (владелец, 07.09.2026) — «уверен»
+    # тут плохой ответ: контур участка у нас из ЕГРН, полигон площадки из
+    # реестра, и вопрос решается измерением. Два источника, а не один: если
+    # участок из перечня извещения лежит вне полигона реестра, это расхождение
+    # ДОКУМЕНТОВ, и его надо назвать, а не выбрать любимый молча.
+    site = cached_site()
+    outline = [ring for ring in (site.get("rings_merc") or [])
+               if isinstance(ring, list) and len(ring) >= 3]
+    for land in lands_and_objects["lands"]:
+        land["inside_site_share"] = (share_inside(land.get("rings_merc") or [], outline)
+                                     if outline else None)
+    outside = [land for land in lands_and_objects["lands"]
+               if land.get("inside_site_share") is not None
+               and land["inside_site_share"] < 0.5]
+    lands_and_objects["totals"]["lands_outside_outline"] = len(outside)
+    lands_and_objects["totals"]["lands_outline_measured"] = len(
+        [land for land in lands_and_objects["lands"]
+         if land.get("inside_site_share") is not None])
     source = dict(data.get("source") or {})
     area_by_rows = _sum([p.get("area_sqm") for p in parcels])
     value_by_rows = _sum([p.get("cadastral_value_rub") for p in parcels])
@@ -1304,7 +1370,7 @@ def payload() -> dict[str, Any]:
         # Контур площадки КРТ — подложка под участками: он отвечает на «что из
         # квартала входит в территорию», а сами участки на этот вопрос не
         # отвечают. Берётся у реестра, второго пути к нему нет.
-        "krt_site": cached_site(),
+        "krt_site": site,
         "kinds": _kinds(parcels),
         # Свод по официальным документам: состав территории из извещения о
         # торгах, свойства и права — из выписок ЕГРН.

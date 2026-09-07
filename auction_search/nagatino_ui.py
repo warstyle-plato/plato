@@ -71,8 +71,12 @@ button[disabled]{opacity:.45;cursor:default}
 .stat{border:1px solid var(--line);padding:9px 13px;min-width:150px}
 .stat b{display:block;font-size:19px;font-weight:640}
 .stat span{color:var(--muted);font-size:12px}
-.mapwrap{position:relative;border:1px solid var(--line);background:var(--soft)}
-.mapwrap img{display:block;width:100%;height:auto}
+/* Высоту кадру задаёт ПРОПОРЦИЯ, а не картинка подложки. Пока высоту держал
+   `<img>`, неудачная загрузка подложки (а её `onerror` картинку прячет)
+   схлопывала кадр в ноль, и контуры вместе с номерами исчезали с экрана —
+   выглядело это как «объектов нет», хотя сломан чужой источник тайлов. */
+.mapwrap{position:relative;border:1px solid var(--line);background:var(--soft);aspect-ratio:1180/1000}
+.mapwrap img{position:absolute;inset:0;display:block;width:100%;height:100%;object-fit:fill}
 .mapwrap svg.layer{position:absolute;left:0;top:0;width:100%;height:100%}
 /* Высота карточки НЕ обрезается: `max-height` с `overflow:hidden` резал её
    молча — «при наведении не влезает информация» (владелец, 07.09.2026), и на
@@ -156,7 +160,11 @@ __DEVELOPAID_LAND_MAP_DIALOG__
 __DEVELOPAID_LAND_MAP_KIT__
 // Кадр неподвижен намеренно: он же уходит в отчёт, а живая карта отвечает на
 // другой вопрос — «что вокруг».
-const FRAME={w:1180,h:720,pad:0.14};
+// Кадр вытянут по вертикали: сама территория тянется с северо-запада на
+// юго-восток, а под широкую рамку поправка на форму окна дорисовывала полреки —
+// объекты от этого мельчали, и номера на них не помещались. Отступ маленький по
+// той же причине.
+const FRAME={w:1180,h:1000,pad:0.05};
 const S={data:null,timer:null,started:0,pick:null,show:null};
 
 // Отбор по группе владельцев — один на всю страницу. Два состояния (своё у
@@ -354,8 +362,17 @@ function mapMarkup(){
   return '<div class="notice warn">Ни одного контура пока нет — рисовать нечего. '
    +'Это не значит, что объектов нет: '+escapeHtml(String((d.outlines||{}).problem||'ЕГРН по ним ещё не спрашивали'))+'.</div>';
  const lands=drawnLands();
- const place=frame(drawn.flatMap(p=>p.rings_merc)
-   .concat(lands.flatMap(l=>l.rings_merc)).concat(site));
+ const mostlyInside=l=>!l.part||l.notice_area_sqm==null||!l.area_sqm
+   ||l.notice_area_sqm/l.area_sqm>=0.5;
+ // Кадр строится по ПЛОЩАДКЕ, а не по всему нарисованному: дорога
+ // 77:05:0004001:40 тянется вдоль набережной далеко за территорию, входит в
+ // площадку на 0,1% и растягивала кадр на себя — всё остальное мельчало, и
+ // «визуально не все участки и не все здания» (владелец, 07.09.2026) начиналось
+ // с этого. Сама дорога рисуется по-прежнему, просто может выходить за край.
+ const framing=lands.filter(l=>mostlyInside(l)).flatMap(l=>l.rings_merc)
+   .concat(drawn.flatMap(p=>p.rings_merc)).concat(site);
+ const place=frame(framing.length?framing
+   : drawn.flatMap(p=>p.rings_merc).concat(lands.flatMap(l=>l.rings_merc)));
  const src='/land/basemap?'+new URLSearchParams({
    bbox:[place.ax,place.ay,place.bx,place.by].join(','),width:String(FRAME.w)});
  // Заполненный контур перехватывает указатель на всей своей площади: крупные
@@ -374,8 +391,6 @@ function mapMarkup(){
  // (78%), и он полноценный участок площадки. Пока бледнило по признаку,
  // городской зелёный под строениями Москвы пропадал с экрана вовсе — «зелёное
  // не прогрузилось» (владелец, 07.09.2026), хотя грузилось всё.
- const mostlyInside=l=>!l.part||l.notice_area_sqm==null||!l.area_sqm
-   ||l.notice_area_sqm/l.area_sqm>=0.5;
  const landPaths=lands.map(l=>
    `<path d="${pathOf(l.rings_merc,place)}" fill="${escapeHtml(l.colour)}"`
    +` fill-opacity="${picked(l.cadastral_number)?'0.42':(mostlyInside(l)?'0.20':'0.07')}"`
@@ -481,6 +496,12 @@ function landHtml(l){
  ];
  if(l.disposal&&l.disposal.who&&!(l.owner||{}).name)
   rows.push(['Кто распоряжается',escapeHtml(l.disposal.who)]);
+ // Не «уверен», а померено: контур участка из ЕГРН, полигон площадки из
+ // реестра города, доля считается сеткой.
+ if(l.inside_site_share!=null)
+  rows.push(['В контуре площадки',l.inside_site_share>=0.995?'целиком'
+    :(l.inside_site_share<=0.005?'<b>вне контура</b>'
+      :landNum(l.inside_site_share*100,1)+'% площади')]);
  if(l.permitted_use)rows.push(['Использование',escapeHtml(shorten(l.permitted_use,64))]);
  return `<b>У${l.no} · участок ${escapeHtml(l.cadastral_number)}</b>`
   +'<dl>'+rows.map(r=>`<dt>${r[0]}</dt><dd>${r[1]}</dd>`).join('')+'</dl>'
@@ -1093,12 +1114,24 @@ function coverageMarkup(){
  // строениями Москвы?» — участок под ними покрашен городским зелёным, просто
  // контур его ещё не спрашивали.
  if(o.lands==null)return head;
+ const T=S.data.territory||{},tot=T.totals||{};
+ const outside=(T.lands||[]).filter(l=>l.inside_site_share!=null&&l.inside_site_share<0.5);
+ const check=tot.lands_outline_measured
+  ? ' Сверено с полигоном площадки из реестра города: '
+    +`${tot.lands_outline_measured} участков. `
+    +(outside.length
+      ? 'ВНЕ контура: '+outside.map(l=>`У${l.no} (${escapeHtml(l.cadastral_number)}, `
+          +`внутри ${landNum((l.inside_site_share||0)*100,1)}% площади)`).join('; ')
+        +'. Это расхождение ДВУХ документов города — перечня извещения и полигона реестра, '
+        +'и выбирать между ними мы не вправе.'
+      : 'все внутри.')
+  : ' С полигоном площадки не сверено: его ещё не получили.';
  const left=o.lands-o.lands_drawn;
  return head+' '+(left
   ? `Земельных участков нарисовано ${o.lands_drawn} из ${o.lands}: у ${left} контур ЕГРН ещё `
     +'не получен, поэтому под их строениями подложки нет — цвет владельца у них при этом уже '
     +'посчитан и стоит в таблице. Нажмите «Дочитать контуры».'
-  : `Земельные участки нарисованы все ${o.lands}.`);
+  : `Земельные участки нарисованы все ${o.lands}.`)+check;
 }
 
 function tableMarkup(){
