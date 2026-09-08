@@ -41959,6 +41959,16 @@ function markParkingByHand(prefix){
 function objectParkingFieldNote(prefix){
  const own=((lastResult||{}).parking||{}).own||[];
  const item=own.find(o=>o&&o.prefix===prefix);
+ // Расчёта не было — норме взяться неоткуда, и молчать об этом нельзя.
+ // Число мы намеренно не показываем (прежнее под новыми вводными читалось бы
+ // как посчитанное), но ПРИЧИНУ обязаны: на экране иначе стоят обещание в
+ // подсказке и ноль в поле, а по той же подсказке ноль значит «гаража нет»
+ // (экран владельца, 08.09.2026, объект уже включён). Расчёт закрыт входом
+ // (`calc_requires_login`), и на телефоне вход бывает не тот, что на ноутбуке:
+ // хранилище у каждого браузера своё.
+ if(!lastResult||!lastResult.parking)
+  return 'Расчёт не выполнен — норматив появится после пересчёта. '
+   +'Если модель не считается, проверьте вход: расчёт закрыт входом через бота.';
  if(!item)return '';
  // Выключенный объект не строится — значит и мест у него нет, и норматив ему
  // не считается. Прежде подпись здесь просто МОЛЧАЛА, а подсказка у поля
@@ -44220,9 +44230,14 @@ function renderObjectParkingNote(){
  // Норма у каждого объекта — своим числом под его же полем. Свод остаётся
  // плашкой: «положено 3053, строим 2956» отвечает на вопрос обо всём проекте,
  // а «сколько положено офисам» — на вопрос о поле, и одно другое не заменяет.
- (((lastResult||{}).parking||{}).own||[]).forEach(item=>{
-  const cell=item&&item.prefix?document.getElementById('parkNorm_'+item.prefix):null;
-  if(cell)cell.textContent=objectParkingFieldNote(item.prefix);
+ // Обход идёт по СПИСКУ ОБЪЕКТОВ, а не по ответу расчёта. Прежде он шёл по
+ // `own`: нет расчёта — список пуст — подпись не зовётся ни разу, и функция,
+ // написанная объяснять молчание, молчала сама. Объекты у страницы известны
+ // всегда (`OBJECT_PARKING_PREFIXES`), а что сказать про каждый — решает
+ // подпись, и решать это должна она одна.
+ OBJECT_PARKING_PREFIXES.forEach(prefix=>{
+  const cell=document.getElementById('parkNorm_'+prefix);
+  if(cell)cell.textContent=objectParkingFieldNote(prefix);
  });
  const box=document.getElementById('objectParkingNote');
  if(!box)return;

@@ -49,7 +49,10 @@ const box = {innerHTML: ""};
 global.document = {getElementById: id => (id === 'objectParkingNote' ? box : null)};
 function escapeHtml(s){return String(s).replace(/[&<>"]/g, c =>
   ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+const num = v => String(v);
+%(prefixes)s
 let lastResult = %(result)s;
+%(note)s
 %(fn)s
 renderObjectParkingNote();
 console.log(JSON.stringify({html: box.innerHTML}));
@@ -58,6 +61,8 @@ console.log(JSON.stringify({html: box.innerHTML}));
 
 def _render(result) -> str:
     script = HARNESS % {"result": json.dumps(result, ensure_ascii=False),
+                        "prefixes": _const("OBJECT_PARKING_PREFIXES"),
+                        "note": _piece("objectParkingFieldNote"),
                         "fn": _piece("renderObjectParkingNote")}
     out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=60)
     assert out.returncode == 0, out.stderr[-2000:]
@@ -100,6 +105,17 @@ def _executable(body: str) -> str:
     return "".join(out)
 
 
+def _const(name: str) -> str:
+    """Объявление константы страницы — из самой страницы, а не переписанное.
+
+    Вторая копия списка объектов разошлась бы с первой молча, и стенд проверял
+    бы не то, что рисует страница.
+    """
+    start = PAGE.index(f"const {name}=")
+    end = PAGE.index(";", start)
+    return PAGE[start:end + 1]
+
+
 def _render_fields(result):
     """Отрисовать подписи и поля так, как их рисует страница."""
     script = """
@@ -110,6 +126,7 @@ const cells = {parkNorm_offices:{textContent:""}, parkNorm_retail:{textContent:"
 global.document = {getElementById: id => cells[id] || null, activeElement: null};
 function escapeHtml(s){return String(s)}
 const num = v => String(v);
+%(prefixes)s
 let inputs = {};
 let lastResult = %(result)s;
 %(a)s
@@ -122,6 +139,7 @@ console.log(JSON.stringify({
   field_retail: (cells.f_retail_parking_under_spaces||{value:null}).value,
   inputs}));
 """ % {"result": json.dumps(result, ensure_ascii=False),
+       "prefixes": _const("OBJECT_PARKING_PREFIXES"),
        "a": _piece("objectParkingFieldNote"),
        "b": _piece("renderObjectParkingNote")}
     out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=60)
@@ -238,22 +256,39 @@ def test_the_hand_keeps_the_field_and_the_norm_follows_the_tep() -> None:
     assert run(200000.0, offices_parking_under_spaces=40) == (40, False)
 
 
-def test_a_field_says_nothing_before_the_first_calculation() -> None:
-    """Прежняя норма под новыми метрами читается как посчитанная."""
+def test_a_field_shows_no_stale_number_but_names_the_reason() -> None:
+    """До расчёта поле не несёт ЧИСЛА, но называет причину.
+
+    Прежняя редакция требовала полного молчания, и это было верно наполовину:
+    прежняя норма под новыми метрами действительно читается как посчитанная.
+    Но молчание читается не лучше — на экране владельца 08.09.2026 стояли
+    обещание в подсказке, ноль в поле и пустота под ним, и вместе это читалось
+    как «норматив решил, что мест не надо».
+
+    Утверждение, верное СЕЙЧАС: числа нет, причина есть. Прежнее беспокойство
+    держится тем же тестом — в подписи не должно быть старого числа.
+
+    Случай не редкий: `lastResult` обнуляет и `renderCalcLocked` — расчёт закрыт
+    входом, а вход у каждого браузера свой.
+    """
     script = """
 const cell = {textContent:"дырка"};
 global.document = {getElementById: id => (id === 'parkNorm_offices' ? cell : null)};
 function escapeHtml(s){return String(s)}
 const num = v => String(v);
+%(prefixes)s
 let lastResult = null;
 %(a)s
 %(b)s
 renderObjectParkingNote();
 console.log(JSON.stringify({left: cell.textContent}));
-""" % {"a": _piece("objectParkingFieldNote"), "b": _piece("renderObjectParkingNote")}
+""" % {"prefixes": _const("OBJECT_PARKING_PREFIXES"),
+       "a": _piece("objectParkingFieldNote"), "b": _piece("renderObjectParkingNote")}
     out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=60)
     assert out.returncode == 0, out.stderr[-2000:]
-    assert json.loads(out.stdout)["left"] == "дырка"
+    left = json.loads(out.stdout)["left"]
+    assert "дырка" not in left, "прежнее число осталось стоять — читается как посчитанное"
+    assert "Расчёт не выполнен" in left, left
 
 
 def test_the_field_hint_does_not_promise_an_empty_box() -> None:
@@ -360,3 +395,37 @@ def test_the_field_hint_does_not_promise_the_norm_unconditionally() -> None:
     for hint in hints:
         assert "нормативом приложения 6" in hint, hint
         assert "ВКЛЮЧЁННОГО" in hint, f"обещание безусловно: {hint}"
+
+
+def test_without_a_calculation_the_note_says_so() -> None:
+    """Нет расчёта — подпись называет причину, а не молчит.
+
+    Экран владельца 08.09.2026, второй заход: объект уже ВКЛЮЧЁН, поле по-прежнему
+    0, подписи нет. Цепочка при этом исправна — померено сквозь: движок даёт 159
+    мест, писатель ставит 159 в поле. Молчало потому, что расчёта не было вовсе:
+    `/calculate` закрыт входом и на телефоне отвечает 401, а `lastResult` тогда
+    пуст.
+
+    Число мы намеренно не показываем — прежнее под новыми вводными читалось бы
+    как посчитанное. Но причина обязана быть сказана: обещание в подсказке плюс
+    ноль в поле плюс тишина читаются как «норматив решил, что мест не надо».
+    """
+    seen = _render_fields({})
+    note = seen["note_offices"]
+    assert note, "без расчёта подпись пуста — молчание не объяснено"
+    assert "Расчёт не выполнен" in note, note
+    assert "вход" in note, "не названа самая частая причина — расчёт закрыт входом"
+
+
+def test_a_fresh_result_still_fills_the_field() -> None:
+    """Предохранитель: объяснение молчания не должно съесть саму норму.
+
+    Проверяется то, ради чего всё писалось, — при свежем расчёте число встаёт
+    В ПОЛЕ, а подпись говорит, чьё оно.
+    """
+    seen = _render_fields({"parking": {"own": [
+        {"prefix": "offices", "enabled": True, "by_norm": True,
+         "required_spaces": 159, "under_spaces": 159, "over_spaces": 0},
+    ]}})
+    assert seen["field_offices"] == 159, seen
+    assert "нормативу приложения 6" in seen["note_offices"], seen["note_offices"]
