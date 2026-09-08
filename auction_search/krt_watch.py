@@ -110,6 +110,7 @@ class KrtWatch:
 
     def __init__(self, registry, ranking, *, collect_lots: Callable[[], Any] | None = None,
                  all_sites: Callable[[], list] | None = None,
+                 screen_list: Callable[[], tuple] | None = None,
                  now: Callable[[], float] = time.time) -> None:
         self.registry = registry
         self.ranking = ranking
@@ -118,13 +119,24 @@ class KrtWatch:
         # крючком, а не собирается заново: два сборщика одного списка однажды
         # ответили бы разное, и оба выглядели бы верными.
         self._all_sites = all_sites
+        # Тот же список вместе с ответом «виден ли он целиком». Полноту решает
+        # маршрут, рядом со сборкой: второй ответ на «дочитан ли список»
+        # разошёлся бы с первым молча.
+        self._screen_list = screen_list
         self.now = now
         self._last: dict[str, float] = {}
 
     def sites(self) -> list:
+        return self.screen_list()[0]
+
+    def screen_list(self) -> tuple[list, bool]:
+        """Список экрана и полнота. Без крючка полноту не утверждаем."""
+        if self._screen_list is not None:
+            rows, whole = self._screen_list()
+            return list(rows), bool(whole)
         if self._all_sites is not None:
-            return list(self._all_sites())
-        return list(self.registry.catalogue(refresh=True))
+            return list(self._all_sites()), False
+        return list(self.registry.catalogue(refresh=True)), False
 
     def due(self, kind: str, period: int) -> bool:
         return float(self.now()) - float(self._last.get(kind, 0.0)) >= float(period)
@@ -165,12 +177,18 @@ class KrtWatch:
                 self.registry.catalogue(refresh=True)
             except Exception:  # noqa: BLE001
                 logger.exception("KRT watch: обход каталога не начат")
-            rows = self.sites()
+            rows, whole = self.screen_list()
         except Exception:  # noqa: BLE001
             logger.exception("KRT watch: каталог не прочитан")
             return []
+        if not whole:
+            # Недочитанный список состав не отмечает: забытая половина
+            # объявилась бы новой следующим заходом, и так по кругу. Это
+            # «ещё не видели», а не «этого нет».
+            logger.info("KRT watch: список экрана дочитан не весь — состав не отмечаем")
+            return []
         before = set(self.ranking.first_seen())
-        self.ranking.mark_seen([str(row.get("slug") or "") for row in rows])
+        self.ranking.mark_seen([str(row.get("slug") or "") for row in rows], complete=True)
         after = self.ranking.first_seen()
         return sorted(slug for slug in after if slug not in before) if before else []
 

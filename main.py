@@ -749,6 +749,25 @@ def _core_disk_line() -> str:
     return f"\nМесто на диске ({where}): {free} МБ"
 
 
+def _krt_delivery_line() -> str:
+    """Что сделал последний заход доставки новостей КРТ. Одна строка."""
+    state = krt_delivery_state()
+    when = int(state.get("at") or 0)
+    if not when:
+        return "\nНовости КРТ: заходов доставки ещё не было"
+    ago = max(0, int(time.time()) - when)
+    said = f"\nНовости КРТ: заход {ago // 60} мин назад"
+    taken = int(state.get("taken") or 0)
+    if state.get("stopped_by"):
+        said += f" · {html.escape(str(state['stopped_by']))}"
+    if taken:
+        said += (f" · забрано {taken}, адресатов {int(state.get('targets') or 0)},"
+                 f" отправлено {int(state.get('sent') or 0)}")
+    if state.get("last_error"):
+        said += f" · <i>{html.escape(str(state['last_error'])[:160])}</i>"
+    return said
+
+
 def _status_message(chat_id: int, user_id: int) -> None:
     configured = bool(core._TELEGRAM_RUNTIME.get("configured"))
     _, context = _resolve_context(chat_id)
@@ -768,6 +787,10 @@ def _status_message(chat_id: int, user_id: int) -> None:
         f"Память расчётов: {_state_health(chat_id)}"
         + _core_disk_line()
         + _glavapu_status_line()
+        # Очередь новостей копится на ядре, а забирает её этот хост: без
+        # строки «что сделала доставка» тишина в чате неотличима от тишины
+        # каталога. Спрашивают про это бота — здесь она и стоит.
+        + _krt_delivery_line()
         # Справочник устаревает тихо: расчёт идёт, числа выглядят как обычно,
         # а под ними прошлогодний тариф. Напоминание тут потому, что /status
         # смотрят, когда что-то проверяют.
@@ -1662,6 +1685,39 @@ def _krt_take_announcements() -> tuple[list[dict], list[int]]:
     return list(data.get("announcements") or []), [int(x) for x in (data.get("subscribers") or [])]
 
 
+# Что сделала доставка в последний раз. У молчащего цикла обязан быть счётчик
+# молчания — правило уже применено к сторожу на ядре (`/auctions/krt/watch`), и
+# ровно оно нашло 4492 выдуманных «новости». Вторая половина того же вопроса
+# живёт здесь: очередь на ядре стоит, а забирает её этот хост, и снаружи
+# «новостей не было», «цикл не дошёл» и «ядро не ответило» — одно молчание.
+_KRT_DELIVERY: dict[str, Any] = {
+    "at": 0, "stopped_by": "ещё не заходили", "taken": 0,
+    "targets": 0, "sent": 0, "last_error": "", "delivered_at": 0,
+}
+
+
+def krt_delivery_state() -> dict[str, Any]:
+    """Снимок последнего захода доставки. Адресатов не называем — их числом."""
+    return dict(_KRT_DELIVERY)
+
+
+@app.get("/krt/delivery")
+def krt_delivery() -> dict[str, Any]:
+    """Что сделала доставка новостей КРТ — измеримо со стороны.
+
+    Пара к `/auctions/krt/watch`: тот отвечает за очередь на ядре, этот — за
+    того, кто её забирает. Ядро и бот живут на разных машинах, и пока обе
+    половины не называют своё молчание, ответить на «мне ничего не пришло»
+    нечем. Ни адресатов, ни текста здесь нет — только числа.
+    """
+    state = krt_delivery_state()
+    return {**state,
+            "webhook_host": bool(core._telegram_token()
+                                 and core._telegram_webhook_enabled()),
+            "queue_at_core": bool(core._projects_remote_url("/internal/krt/announcements")),
+            "period_seconds": 900}
+
+
 def _deliver_krt_announcements() -> None:
     """Новые площадки КРТ — в чат подписчикам.
 
@@ -1672,23 +1728,49 @@ def _deliver_krt_announcements() -> None:
     Владелец получает их всегда: подписка — для остальных, а он и есть тот,
     ради кого каталог читается.
     """
-    if not core._telegram_token() or not core._telegram_webhook_enabled():
+    _KRT_DELIVERY.update({"at": int(time.time()), "taken": 0, "targets": 0,
+                          "sent": 0, "last_error": "", "stopped_by": ""})
+    if not core._telegram_token():
+        _KRT_DELIVERY["stopped_by"] = "нет TELEGRAM_BOT_TOKEN"
         return
-    records, subscribers = _krt_take_announcements()
+    if not core._telegram_webhook_enabled():
+        _KRT_DELIVERY["stopped_by"] = "вебхук выключен на этом хосте"
+        return
+    try:
+        records, subscribers = _krt_take_announcements()
+    except Exception as exc:  # noqa: BLE001
+        # Ядро не ответило — это ответ, а не «новостей нет»: без этой строки
+        # отказ выглядел бы точно так же, как тишина каталога.
+        _KRT_DELIVERY.update({"stopped_by": "очередь у ядра не забрана",
+                              "last_error": str(exc)[:300]})
+        raise
+    _KRT_DELIVERY["taken"] = len(records)
     if not records:
+        _KRT_DELIVERY["stopped_by"] = "очередь пуста"
         return
     targets = sorted(set(subscribers) | set(core.usage_admin_ids()))
+    _KRT_DELIVERY["targets"] = len(targets)
     if not targets:
+        # Забранное уже не вернуть: очередь изымается перед этой проверкой, и
+        # молчание здесь означало бы потерянные новости.
+        _KRT_DELIVERY["stopped_by"] = "некому слать: ни подписчиков, ни владельцев"
         return
     text = _krt_announcement_text(records)
     if not text:
+        _KRT_DELIVERY["stopped_by"] = "нечего сказать по этим записям"
         return
+    sent = 0
     for chat_id in targets:
         try:
             core._telegram_send_message(chat_id, text)
-        except Exception:
-            # Один недоставленный адресат не отменяет рассылку остальным.
+            sent += 1
+        except Exception as exc:  # noqa: BLE001
+            # Один недоставленный адресат не отменяет рассылку остальным, но
+            # молчаливый отказ всех адресатов неотличим от отсутствия новостей.
+            _KRT_DELIVERY["last_error"] = str(exc)[:300]
             continue
+    _KRT_DELIVERY.update({"sent": sent, "delivered_at": int(time.time()),
+                          "stopped_by": "" if sent else "ни один адресат не принял"})
 
 
 # Три новости, и называется каждая своим именем: «в каталоге новая площадка»,

@@ -132,7 +132,7 @@ __DEVELOPAID_PLATO_DRAWER__
 __DEVELOPAID_LAND_MAP_DIALOG__
 <script>
 __DEVELOPAID_LAND_MAP_KIT__
-const state={lots:[],filtered:[],families:[],openFamilies:new Set(),coverage:[],quality:{},selected:null,ingested:null,krt:[],krtFiltered:[],krtOkrugs:new Set(),krtModels:{},krtReports:{},krtRequirements:{},krtNew:0,krtNewDays:30,krtPolls:0,krtTimer:null,krtRank:{},krtRankProgress:null,krtRankTimer:null,krtPress:{},krtCards:{},krtTenderLinks:{},krtOrderBySite:{},krtTenders:{},krtOrders:[],krtOrphanLots:[],krtSort:{key:'score',dir:-1},krtHidden:{small:0,unknown:0},krtPick:{stage:new Set(),entry:new Set(),renovation:new Set(),purpose:new Set()}};
+const state={lots:[],filtered:[],families:[],openFamilies:new Set(),coverage:[],quality:{},selected:null,ingested:null,krt:[],krtFiltered:[],krtOkrugs:new Set(),krtModels:{},krtScreening:{},krtReports:{},krtRequirements:{},krtNew:0,krtNewDays:30,krtPolls:0,krtTimer:null,krtRank:{},krtRankProgress:null,krtRankTimer:null,krtPress:{},krtCards:{},krtTenderLinks:{},krtOrderBySite:{},krtTenders:{},krtOrders:[],krtOrphanLots:[],krtSort:{key:'score',dir:-1},krtHidden:{small:0,unknown:0},krtPick:{stage:new Set(),entry:new Set(),renovation:new Set(),purpose:new Set()}};
 const KRT_OKRUGS=['ЦАО','САО','СВАО','ВАО','ЮВАО','ЮАО','ЮЗАО','ЗАО','СЗАО','НАО','ТАО','ЗелАО'];
 const $=id=>document.getElementById(id);
 // Ноль и «цены нет» — разные вещи. Number(null) равен нулю, и лот без
@@ -727,7 +727,13 @@ function populateKrtOkrugs(){const values=KRT_OKRUGS,options=$('krtOkrugOptions'
 // СПП по назначениям, известен только он. Якоря сняты с самого каталога
 // тем же способом, что и остальные: десятый и девяностый процентили по
 // 263 строкам с названным объёмом (04.09.2026).
-const KRT_SCALE={housing:[20600,399180],business:[4944,187340],total:[18826,437392]};
+// Четвёртая и пятая шкалы — на те величины, которые называет ПРОЕКТ
+// РЕШЕНИЯ, когда СПП по назначениям в нём нет: площадь квартир и нежилая
+// наземная. Мерить их шкалой жилья или делового объёма нельзя — это
+// другие базы; якоря сняты с самого каталога тем же способом, что и
+// прежние три: десятый и девяностый процентили по 51 и 114 строкам с
+// названной величиной (замер прода 08.09.2026).
+const KRT_SCALE={housing:[20600,399180],business:[4944,187340],total:[18826,437392],flats:[9750,98980],ground:[1365,122819]};
 // Логарифм, а не доля от максимума: двухмиллионный проект иначе забирает всю
 // шкалу, и весь остальной каталог жмётся к нулю.
 function krtVolumeShare(value,[low,high]){
@@ -777,6 +783,20 @@ function krtFit(x){
    what=profile==='business'?'жильё':'деловой объём';
   }else if(total>0){
    wanted=total; scale=KRT_SCALE.total; what='объём застройки'; shareable=false;
+  }else{
+   // Последняя ступень — то, что называет сам проект решения. У 18 строк из
+   // 598 (замер прода 08.09.2026) это единственная названная величина, а балл
+   // писал им «ТЭП не указан» при числах, которые карточка печатает двумя
+   // блоками ниже («как это нет данных и сразу есть?», владелец, 08.09.2026).
+   // Порядок — по задаче: жилищной ближе площадь квартир, деловой — нежилая
+   // наземная. Доля под задачу не считается: обе величины не части общего
+   // объёма, и делить их на него значит завести третье число.
+   const flats=krtNumber(x,'flats_sqm')||0, ground=krtNumber(x,'nonresidential_ground_sqm')||0;
+   const steps=profile==='business'
+    ?[[ground,KRT_SCALE.ground,'нежилая наземная площадь'],[flats,KRT_SCALE.flats,'площадь квартир']]
+    :[[flats,KRT_SCALE.flats,'площадь квартир'],[ground,KRT_SCALE.ground,'нежилая наземная площадь']];
+   const step=steps.find(one=>one[0]>0);
+   if(step){ wanted=step[0]; scale=step[1]; what=step[2]; shareable=false }
   }
  }
  // Объём под задачу — шестьдесят баллов, доля под задачу — сорок. Больше в
@@ -2511,7 +2531,13 @@ function selectKrt(x){state.selectedKrt=x;const sc=krtScore(x),fit=sc.fit,cached
    +`<details class="fold"><summary>Остальные ТЭП и пропорции</summary><div class="foldbody">${x.no_card?'<div class="source">Общественно-делового объёма и рабочих мест проект решения не называет — эти строки есть только у карточки каталога, а её у площадки нет.</div>':`<div class="kv" style="border:0"><div>Общественно-деловое</div><div>${fmtArea(x.business_gfa_sqm)}</div><div>Рабочие места</div><div>${esc(x.jobs??'—')}</div></div>`}${krtRatioBlock(x)}</div></details>`
    +`<details class="fold"><summary>Служебное: привязка распоряжений города</summary><div class="foldbody">${krtOrderBlock(x)}</div></details>`)
  +krtGroup(3,'Детали прогона','модель по очередям и маркетинг по соседям',
-   `<div class="actions"><button class="primary" id="krtHandoff">Передать в расчёт DevelopAid</button><button id="krtMarket">Пересчитать сейчас</button></div>`
+   `<div class="actions"><button class="primary" id="krtHandoff"${krtHandoffBlock(x,cached)?` disabled title="${esc(krtHandoffBlock(x,cached))}"`:''}>${KRT_HANDOFF_LABEL}</button><button id="krtMarket">Пересчитать сейчас</button></div>`
+   // Отказ печатается ТАМ, ГДЕ НАЖАЛИ. Прежде причина уезжала в
+   // `krtShareNote` первой группы — двумя экранами выше кнопки, — и человек
+   // видел только серый «Передаю»: «кнопка передать в девелопэид не активна»
+   // (владелец, 08.09.2026).
+   +`<div id="krtHandoffNote" class="notice" style="display:none"></div>`
+   +`<div id="krtHandoffWhy" class="source"${krtHandoffBlock(x,cached)?'':' style="display:none"'}>${esc(krtHandoffBlock(x,cached))}</div>`
    +`<div id="krtMarketResult">${krtBroken(x)?'':(cached?renderKrtModel(cached):'')}</div>`);
  // Карточка — своё окно прокрутки (`.side` со своим `max-height`), и она
  // помнит, докуда её дочитали. Нажатие на соседнюю строку меняет содержимое,
@@ -2569,6 +2595,7 @@ async function loadKrtReport(x){
    throw needLogin(e);
   }
   state.krtReports[x.slug]=d;
+  if(d.screening)state.krtScreening[x.slug]=d.screening;
   if(d.screening&&d.screening.available){
    state.krtModels[x.slug]={...d.screening,computed_at:Number(d.computed_at||0)};
    renderKrt();
@@ -2578,10 +2605,30 @@ async function loadKrtReport(x){
  }catch(e){out.innerHTML=`<div class="section"><h3>Числа прогона модели</h3><div class="notice warn">${esc(e.message||e)}</div></div>`}
 }
 
+// Подпись кнопки объявлена ОДИН раз: нарисована она была «Передать в расчёт
+// DevelopAid», а `finally` возвращал «Передать в DevelopAid» — после первого
+// же нажатия кнопка молча меняла имя. Та же болезнь, что у «Оценить все КРТ
+// моделью» и у «Пересчитать сейчас».
+const KRT_HANDOFF_LABEL='Передать в расчёт DevelopAid';
+// Почему передавать нечего — или пусто, если есть чем. Отказ, о котором
+// сказано заранее, — свойство площадки; отказ после клика — поломка (правило
+// выведено на кнопке разбора лота). Маршрут отвечает 409 «в проекте решения
+// нет жилого объёма» ровно тогда, когда модель не посчитана, — гейт читает
+// тот же признак, а не заводит второе правило.
+function krtHandoffBlock(x,cached){
+ if(krtBroken(x))return 'Карточка каталога разобрана со сдвигом — передавать нечего';
+ const model=cached||state.krtModels[x.slug];
+ if(model&&model.available!==false)return '';
+ const said=state.krtScreening[x.slug]||model||null;
+ if(said&&said.available)return '';
+ const why=String((said||{}).reason||'').trim();
+ return why?('Модель не посчитана: '+why+'. Передавать нечего.')
+  :'Модель ещё не посчитана — нажмите «Пересчитать сейчас», тогда будет что передать.';
+}
 // Передача в DevelopAid: те же вводные, которыми посчитан отчёт. Второй сборки
 // модели здесь нет — иначе карточка и калькулятор однажды разошлись бы.
 async function handoffKrt(x){
- const b=$('krtHandoff'),note=$('krtShareNote');
+ const b=$('krtHandoff'),note=$('krtHandoffNote');
  const say=t=>{if(note){note.textContent=t;note.style.display=''}};
  b.disabled=true;b.innerHTML='<span class="spinner"></span>Передаю';
  try{
@@ -2601,7 +2648,7 @@ async function handoffKrt(x){
   }));
   location.href='/?krt_import=1';
  }catch(e){say(String(e.message||e))}
- finally{b.disabled=false;b.textContent='Передать в DevelopAid'}
+ finally{b.disabled=false;b.textContent=KRT_HANDOFF_LABEL}
 }
 
 async function askPlatoAboutKrt(x){
@@ -3377,7 +3424,7 @@ async function shareKrt(x){
   say('Скопировать не удалось: '+(e&&e.message?e.message:e));
  }
 }
-async function loadKrtMarket(x){const b=$('krtMarket'),out=$('krtMarketResult');b.disabled=true;b.innerHTML='<span class="spinner"></span>Рынок → модель';out.innerHTML='<div class="notice"><span class="spinner"></span>Определяю продукт и цену, затем запускаю финансовый движок и автоматические очереди…</div>';try{const q=new URLSearchParams();const rr=krtRatios();if(rr)q.set('tep_ratios',rr);const d=await askJson('/auctions/krt/'+encodeURIComponent(x.slug)+'/market'+(q.toString()?'?'+q:''),{cache:'no-store'}).catch(needLogin);if(d.model_screening?.available){state.krtModels[x.slug]=d.model_screening;renderKrt()}renderKrtRatios(x);delete state.krtReports[x.slug];loadKrtRanking();renderKrtOutcome(x,d)}catch(e){const box=$('krtOutcomeBox');if(box)box.innerHTML=`<div class="section"><h3>Предварительный прогон модели</h3><div class="notice warn">${esc(e.message||e)}</div></div>`;out.innerHTML=''}finally{b.disabled=false;b.textContent='Пересчитать сейчас'}}
+async function loadKrtMarket(x){const b=$('krtMarket'),out=$('krtMarketResult');b.disabled=true;b.innerHTML='<span class="spinner"></span>Рынок → модель';out.innerHTML='<div class="notice"><span class="spinner"></span>Определяю продукт и цену, затем запускаю финансовый движок и автоматические очереди…</div>';try{const q=new URLSearchParams();const rr=krtRatios();if(rr)q.set('tep_ratios',rr);const d=await askJson('/auctions/krt/'+encodeURIComponent(x.slug)+'/market'+(q.toString()?'?'+q:''),{cache:'no-store'}).catch(needLogin);if(d.model_screening)state.krtScreening[x.slug]=d.model_screening;if(d.model_screening?.available){state.krtModels[x.slug]=d.model_screening;renderKrt()}renderKrtRatios(x);delete state.krtReports[x.slug];loadKrtRanking();renderKrtOutcome(x,d)}catch(e){const box=$('krtOutcomeBox');if(box)box.innerHTML=`<div class="section"><h3>Предварительный прогон модели</h3><div class="notice warn">${esc(e.message||e)}</div></div>`;out.innerHTML=''}finally{b.disabled=false;b.textContent='Пересчитать сейчас'}}
 // Что дал город и во что это разложено. Три слагаемых карточки — жилое,
 // нежилое и общественно-деловое — это его данные; наше здесь только правило
 // раскладки, и оно названо у каждой строки. Своей арифметики блок не ведёт:
@@ -3442,6 +3489,14 @@ function renderKrtModel(m){
 // отчёта, и раскладывается по двум местам карточки: вывод — в первую группу,
 // числа и соседи — в третью. Пока отрисовщика было два, свежий прогон показывал
 // вывод по рынку без Платона, а сохранённый — Платона без вывода.
+// Кнопка передачи и строка под ней — один ответ на «есть ли что передавать».
+function refreshKrtHandoff(x){
+ const b=$('krtHandoff'); if(!b)return;
+ const why=krtHandoffBlock(x,state.krtModels[x.slug]);
+ b.disabled=!!why; b.title=why||''; b.textContent=KRT_HANDOFF_LABEL;
+ const said=$('krtHandoffWhy');
+ if(said){ said.textContent=why||''; said.style.display=why?'':'none' }
+}
 function renderKrtOutcome(x,d){
  const o=krtOutcome(d);
  // Ответ Платона приходит один, без модели и рынка: посчитанное не
@@ -3449,6 +3504,9 @@ function renderKrtOutcome(x,d){
  if(!o.model&&state.krtModels[x.slug])o.model=state.krtModels[x.slug];
  const box=$('krtOutcomeBox');
  if(box)box.innerHTML=krtOutcomeHtml(o);
+ // Ответ приезжает ПОЗЖЕ отрисовки карточки, а кнопка передачи гасится по
+ // нему: без этого она осталась бы обещать действие, которого не будет.
+ refreshKrtHandoff(x);
  const out=$('krtMarketResult');
  if(!out)return;
  const when=o.when?new Date(o.when*1000).toLocaleString('ru-RU'):'';

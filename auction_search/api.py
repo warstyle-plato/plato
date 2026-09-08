@@ -799,7 +799,8 @@ def install(app: FastAPI) -> None:
         # ничего, и «новая площадка» ждала чужого нажатия.
         watch = krt_watch.KrtWatch(krt_registry, krt_ranking,
                                    collect_lots=_collect_tender_links,
-                                   all_sites=_krt_all_sites)
+                                   all_sites=_krt_all_sites,
+                                   screen_list=_krt_screen_list)
         while True:
             try:
                 if krt_ranking_rules.claim_file(WATCH_LOCK, WATCH_LOCK_TTL_SECONDS):
@@ -1004,19 +1005,15 @@ def install(app: FastAPI) -> None:
                     asked()
                 except Exception:  # noqa: BLE001
                     logger.exception("KRT decisions refresh failed to start")
-        # Каталог отмечается на каждом чтении: «новое» — это разница с прошлым
-        # составом, и считать её должен тот, кто состав видит, а не человек
-        # глазами по списку из ста двадцати строк.
-        #
-        # Отмечается СПИСОК ЭКРАНА целиком — каталог и площадки-решения. Прежде
-        # сюда шли только строки каталога (решения приезжают ниже по маршруту),
-        # и площадка, у которой опубликован проект решения, а карточки города
-        # нет, не считалась новой НИКОГДА: ни плашки, ни сообщения в чат. А это
-        # 247 строк из 529 на проде и самый ранний сигнал воронки.
-        seen = await run_in_threadpool(
-            krt_ranking.mark_seen,
-            [str(row.get("slug") or "") for row in projects]
-            + [str(row.get("slug") or "") for row in _decision_rows_for_run()])
+        # Состав каталога здесь только ЧИТАЕТСЯ. Прежде каждое чтение страницы
+        # переписывало снимок по тому списку, который собрался у ЭТОГО воркера,
+        # — а половина списка (площадки-решения) приезжает фоном, воркеров два,
+        # память раздельная. Замер прода 07.09.2026: 767 строк в одном ответе и
+        # 514 в следующем, очередь уведомлений растёт на 4–214 записей с каждого
+        # открытия каталога, 4492 накопленных «новости» — ни одна не новость
+        # города. Пишет состав тот, кто видит его целиком: сторож под замком,
+        # один воркер из двух.
+        seen = await run_in_threadpool(krt_ranking.first_seen)
         projects = [
             {**row,
              "first_seen_at": seen.get(str(row.get("slug") or "")) or 0,
@@ -1214,19 +1211,50 @@ def install(app: FastAPI) -> None:
             "projects": projects,
         }
 
-    def _decision_rows_for_run() -> list[dict[str, Any]]:
-        """Площадки-решения строками — тем же сборщиком, что и на экране."""
+    def _decision_rows_state() -> tuple[list[dict[str, Any]], bool]:
+        """Площадки-решения строками и ответ «дочитаны ли они».
+
+        Полнота — часть ответа, а не подробность: решения приезжают фоном
+        страницами, и «этих решений я ещё не видел» на диске выглядит ровно
+        как «этих решений нет».
+        """
         reader = getattr(krt_registry, "decisions", None)
         if not callable(reader):
-            return []
+            return [], False
         try:
             found = reader()
         except Exception:  # noqa: BLE001
             # Источник не ответил — это ответ, а не «решений нет»: прогон идёт
             # по каталогу, а недочитанное называется в логе.
             logger.exception("KRT decisions read failed")
-            return []
-        return krt_decision_rows(found)
+            return [], False
+        whole = bool(found.get("complete")) and not found.get("stale")
+        return krt_decision_rows(found), whole
+
+    def _decision_rows_for_run() -> list[dict[str, Any]]:
+        """Площадки-решения строками — тем же сборщиком, что и на экране."""
+        return _decision_rows_state()[0]
+
+    def _krt_screen_list() -> tuple[list[dict[str, Any]], bool]:
+        """Список экрана и ответ на «виден ли он целиком».
+
+        Целиком — значит каталог прочитан и не обновляется прямо сейчас, а
+        решения дочитаны. Только такой список вправе отметить состав: неполный
+        забыл бы чужую половину, и следующий заход объявил бы её новой.
+        """
+        try:
+            catalogue = list(krt_registry.catalogue())
+        except Exception:  # noqa: BLE001
+            logger.exception("KRT catalogue for siblings failed")
+            catalogue = []
+        decisions, decisions_whole = _decision_rows_state()
+        try:
+            state = krt_registry.status()
+        except Exception:  # noqa: BLE001
+            state = {}
+        catalogue_whole = bool(catalogue) and bool(state.get("complete")) \
+            and not state.get("refreshing") and not state.get("decisions_refreshing")
+        return catalogue + decisions, catalogue_whole and decisions_whole
 
     def _krt_all_sites() -> list[dict[str, Any]]:
         """Все площадки списка: каталог плюс решения без карточки.
@@ -1235,12 +1263,7 @@ def install(app: FastAPI) -> None:
         по нему же считаются соседи: пока соседями были одни карточки каталога,
         улица с площадкой-решением опознавала каждую из них.
         """
-        try:
-            catalogue = list(krt_registry.catalogue())
-        except Exception:  # noqa: BLE001
-            logger.exception("KRT catalogue for siblings failed")
-            catalogue = []
-        return catalogue + _decision_rows_for_run()
+        return _krt_screen_list()[0]
 
     def _read_open_sources(project: dict[str, Any]) -> dict[str, Any]:
         """Что об этой площадке сказано в публикациях и каналах. Один разбор.
