@@ -94,3 +94,18 @@ def housing_kind(flats: int | None, apartments: int | None) -> str | None:
     if flats:
         return FLATS
     return None
+
+
+def housing_kind_from_flag(value: Any) -> str | None:
+    """Тот же словарь для источника, который отдаёт признак, а не состав.
+
+    У bnMAP это флаг «апартаменты» на карточке, у «Пульса» — два числа. Слова
+    при этом одни и те же, и объявлены они здесь: две копии словаря однажды
+    напишут «апарт.» в одной таблице и «апартаменты» в другой, а сравнить их
+    станет нечем. Пустое значение — «не назван», а не «квартиры».
+    """
+    if value is None or value == "":
+        return None
+    if isinstance(value, str) and value.strip().casefold() in {"0", "false", "нет"}:
+        return FLATS
+    return APARTMENTS if value else FLATS

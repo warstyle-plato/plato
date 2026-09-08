@@ -176,14 +176,18 @@ def test_the_screen_shows_the_kind_of_every_row(tmp_path) -> None:
     page = cabinet.cabinet_page("market").replace("__DEVELOPAID_VERSION__", "test")
     file = tmp_path / "market.html"
     file.write_text(page, encoding="utf-8")
+    block = price_block(APARTMENTS, MIXED_PEERS, MoscowMarket({})).to_dict()
     payload = {
         "subject": {"project_name": "Зорге 9", "segment": "Бизнес",
                     "metrics": {"housing_kind": "апартаменты"}},
         "retrieved_at": "2026-09-08",
         "comparison": {"radius_km": 3, "found": 3, "comparable": 2, "used": 2,
                        "housing_kind_known": 1},
+        # Сводка Платону собирается по блокам отчёта: без блока цены числа
+        # вида ей взять неоткуда.
+        "blocks": [block],
+        "analysis": {"blocks": {}},
     }
-    block = price_block(APARTMENTS, MIXED_PEERS, MoscowMarket({})).to_dict()
     with play.sync_playwright() as pw:
         try:
             browser = browser_launch.launch(pw)
@@ -220,6 +224,35 @@ def test_the_screen_shows_the_kind_of_every_row(tmp_path) -> None:
     # Охват тоже уезжает Платону: без него «в выборке квартиры» читается как
     # утверждение обо всех соседях, а не о тех, чей состав назван.
     assert "вид назван у 1 из 2" in digest
+    # И сами числа, а не одна метка: без медианы своего вида Платон не ответит
+    # на «а с кем тогда сравнили цену».
+    # Число на странице печатается с неразрывным пробелом — сверяем тем же
+    # знаком, иначе проверка падает на верном экране.
+    assert "таких соседей 1 из 3" in digest and "497\u00a0800" in digest
     # Вид объекта стоит в шапке рядом с классом: два разных товара под одним
     # классом иначе неразличимы.
     assert "класс: Бизнес" in head and "· апартаменты ·" in head
+
+
+def test_the_second_source_speaks_the_same_word() -> None:
+    """У bnMAP признак свой, а слово общее — иначе сравнить их нечем.
+
+    bnMAP отдаёт флаг «апартаменты» на карточке, «Пульс» — два числа состава.
+    Пока таблица bnMAP выводила слово сама, у одной величины было два ответа в
+    одном модуле; теперь ключ один (`housing_kind`), и медиану своего вида с
+    выводом «с чем сравнили цену» считает тот же код на обоих источниках.
+    """
+    from market_search.cards import housing_kind_from_flag
+
+    assert housing_kind_from_flag(1) == "апартаменты"
+    assert housing_kind_from_flag("1") == "апартаменты"
+    assert housing_kind_from_flag(0) == "квартиры"
+    assert housing_kind_from_flag("False") == "квартиры"
+    # Пусто — «не назван», а не «квартиры»: молчание источника не ответ.
+    assert housing_kind_from_flag(None) is None
+    assert housing_kind_from_flag("") is None
+
+    # Своего слова у таблицы bnMAP больше нет: она печатает ключ строки.
+    from market_search import bnmap_ui
+    source = Path(bnmap_ui.__file__).read_text(encoding="utf-8")
+    assert "\"апартаменты\" if" not in source

@@ -122,6 +122,8 @@ from typing import Any
 from auction_search.adapters.browser_probe import probe_browser as browser_probe
 from auction_search.adapters.torgi_gov import trust_context, trust_report
 
+from .cards import housing_kind_from_flag
+
 HOST = "bnmap.pro"
 BASE = "https://bnmap.pro"
 USER_AGENT = "DevelopAid/1.0 (+https://developaid.ru)"
@@ -822,6 +824,10 @@ def _metric_row(card: dict[str, Any], name: str, distance: Any, observed: str,
         # Апартаменты — не квартиры: другой правовой статус, другая цена метра
         # и другой покупатель. «Пульс» этого признака не отдаёт.
         "apartments": card.get("apartments"),
+        # Тот же ключ, что у «Пульса»: медиана своего вида и вывод «с чем
+        # сравнили цену» считаются одним кодом на обоих источниках, а слово
+        # объявлено один раз в `cards`.
+        "housing_kind": housing_kind_from_flag(card.get("apartments")),
         "buildings": _float(card.get("dsc_count")),
         "commission_first": card.get("initial_dsc"),
         "commission_soon": _float(card.get("before_date_state_commission")),

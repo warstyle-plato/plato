@@ -1978,6 +1978,16 @@ function reportDigest(d){
       +(c.price_per_sqm?` против ${num(c.price_per_sqm)}`:'');
   });
   const extra=[];
+  // Вид жилья уезжает ЧИСЛАМИ, а не одной меткой в шапке: «у нас апартаменты»
+  // Платон пересказать может, а ответить «а с кем тогда сравнили цену» — нет,
+  // потому что медиан по видам у него на руках не было. Сам вывод живёт в
+  // связках («Разбор»), а связки в сводку не уезжают вовсе.
+  const kindStat=(block('price').peers||{}).same_kind;
+  if(kindStat&&kindStat.median) extra.push({name:'медиана своего вида жилья',
+    text:`Вид жилья: у проекта «${kindStat.kind}», таких соседей ${kindStat.count} из `
+      +`${kindStat.known} с названным видом, их медиана ${num(kindStat.median)} ₽/м²`
+      +(kindStat.vs_median_pct===undefined||kindStat.vs_median_pct===null?'.'
+        :` (наш прайс ${pct(kindStat.vs_median_pct)} к ней).`)});
   if(mixRows.length) extra.push({name:'доли по комнатности',
     text:'Комнатность: '+mixRows.join('; ')+'.'});
   // Динамика уезжает числами по той же причине: наш вывод называет ОДИН

@@ -522,8 +522,9 @@ def _delivery(peers: Any, subject: Any) -> str:
         return ""
     body = []
     for row in rows:
-        apartments = row.get("apartments")
-        mark = "—" if apartments in (None, "") else ("апартаменты" if str(apartments) not in ("0", "False") else "квартиры")
+        # Вид жилья читается из строки, а не выводится здесь во второй раз:
+        # ключ общий с «Пульсом», и слово объявлено в `cards`.
+        mark = row.get("housing_kind") or "—"
         body.append("<tr><td>" + escape(str(row.get("name") or ""))
                     + (' <span class="self">— объект</span>'
                        if row is rows[0] and row is subject else "")
