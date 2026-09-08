@@ -24,6 +24,7 @@ from __future__ import annotations
 import re
 from typing import Any, Iterable
 
+from auction_search.parsing import deadline_iso
 from market_search.krt_decisions import same_place
 
 _CADASTRAL = re.compile(r"\b\d{2}:\d{2}:\d{5,8}:\d+\b")
@@ -138,6 +139,10 @@ def match(lots: Iterable[dict[str, Any]], sites: Iterable[dict[str, Any]]) -> di
             "address": str(lot.get("address") or ""),
             "price_rub": lot.get("current_price_rub") or lot.get("start_price_rub"),
             "deadline": lot.get("application_deadline"),
+            # Момент считает сервер: строку площадки браузер разбирает
+            # американским порядком дня и месяца (см. `deadline_moment`),
+            # и живой лот от этого выглядит просроченным.
+            "deadline_iso": deadline_iso(lot.get("application_deadline")),
             "auction_date": lot.get("auction_date"),
             "source": str((lot.get("source") or {}).get("catalogue")
                           or (lot.get("source") or {}).get("name") or ""),
@@ -150,6 +155,27 @@ def match(lots: Iterable[dict[str, Any]], sites: Iterable[dict[str, Any]]) -> di
             orphans.append(summary)
     return {"by_site": by_site, "unmatched": orphans, "krt_lots": checked,
             "matched_by_area": matched_by_area}
+
+def with_moment(lots: Iterable[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Момент срока у запомненной связки: производную считаем при ЧТЕНИИ.
+
+    Связка живёт на диске (`tender_lots.json`) и пережила выпуски, в которых
+    момента ещё не было: у таких записей `deadline_iso` нет вовсе, а «момента
+    не поняли» на экране означает «лот живой» — то есть у прошедшего срока
+    снова обещались бы идущие торги. Хранимая производная расходится с
+    правилом молча, поэтому она не хранится, а считается на чтении; заново
+    обходить площадки для этого не надо.
+    """
+    out: list[dict[str, Any]] = []
+    for lot in lots or []:
+        if not isinstance(lot, dict):
+            continue
+        if lot.get("deadline_iso"):
+            out.append(lot)
+            continue
+        out.append({**lot, "deadline_iso": deadline_iso(lot.get("deadline"))})
+    return out
+
 
 def asking_price_mln(lots: Iterable[dict[str, Any]]) -> float | None:
     """Цена входа, объявленная торгами по этой площадке, в млн ₽.

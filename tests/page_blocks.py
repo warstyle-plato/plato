@@ -24,9 +24,14 @@ if str(ROOT) not in sys.path:
 import main_legacy as core  # noqa: E402
 
 
-def function(name: str) -> str:
-    """Тело функции страницы целиком, по балансу скобок."""
-    page = core.PAGE
+def function(name: str, page: str | None = None) -> str:
+    """Тело функции страницы целиком, по балансу скобок.
+
+    Страница по умолчанию основная (`PAGE`); у торгов своя, и берётся она тем
+    же способом — иначе у одного правила «где живёт этот кусок» завелось бы
+    два ответа.
+    """
+    page = core.PAGE if page is None else page
     declaration = f"function {name}("
     start = page.find(declaration)
     if start < 0:
@@ -56,3 +61,15 @@ def krt_lock() -> str:
     if end < 0:
         raise AssertionError("на странице нет общего писателя вводных applyDerivedInputs")
     return page[start:end] + function("applyDerivedInputs")
+
+
+def auctions_function(*names: str) -> str:
+    """Те же куски, но со страницы торгов (`auction_search.ui`).
+
+    Страница там собирается плейсхолдерами, поэтому берётся СОБРАННАЯ: в сырой
+    константе на месте кусков стоят метки, и стенд падал бы первой же строкой.
+    """
+    from auction_search import ui  # локально: движок тянуть незачем
+
+    page = ui.auctions_page()
+    return "\n".join(function(name, page) for name in names)

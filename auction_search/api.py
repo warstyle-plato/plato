@@ -45,6 +45,7 @@ from auction_search.adapters.roseltorg_probe import (
 )
 from auction_search.bridge import auction_page_with_handoff, install_page_bridge
 from auction_search.catalogue_quality import catalogue_quality
+from auction_search.parsing import deadline_iso
 from auction_search import equity_stake
 from auction_search.developaid_mapper import build_developaid_seed
 from auction_search.documents import DocumentExtractionError
@@ -431,6 +432,11 @@ def _coverage_row(adapter: Any) -> dict[str, Any]:
 def _public_lot_dict(lot) -> dict[str, Any]:
     data = lot.to_dict()
     data.pop("raw", None)
+    # Момент срока считает сервер и отдаёт его ISO рядом со строкой площадки.
+    # Строка остаётся такой, какой её написала площадка, — её и печатают; а
+    # разбирать русскую дату в браузере нельзя: `new Date('09.10.26 15:00')`
+    # читает первое число месяцем (см. `deadline_moment`).
+    data["application_deadline_iso"] = deadline_iso(data.get("application_deadline"))
     return data
 
 
@@ -1079,6 +1085,8 @@ def install(app: FastAPI) -> None:
                 logger.exception("KRT tender lots cache failed")
                 remembered = {}
 
+        from . import krt_tenders as _krt_tenders
+
         def _with_tender_lots(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             """Связку приписать ОБЕИМ половинам списка.
 
@@ -1092,7 +1100,11 @@ def install(app: FastAPI) -> None:
             for row in rows:
                 known = remembered.get(str(row.get("slug") or ""))
                 out.append({**row,
-                            "tender_lots": (known or {}).get("lots") or [],
+                            # Момент срока считает сервер и для запомненных
+                            # лотов тоже: связка старше правила, и без него
+                            # прошедший срок читается как идущие торги.
+                            "tender_lots": _krt_tenders.with_moment(
+                                (known or {}).get("lots") or []),
                             "tender_lots_seen_at": (known or {}).get("seen_at") or 0}
                            if known else row)
             return out
