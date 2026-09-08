@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from datetime import datetime, timedelta
@@ -93,7 +94,8 @@ def _run(script: str) -> dict:
     стенд, а не про то, что он проверяет.
     """
     blocks = page_blocks.auctions_function(
-        "shortDate", "lotDeadline", "lotDeadlineDays", "krtLots", "krtLiveLot")
+        "deadlineFormat", "shortDate", "lotDeadline", "lotDeadlineDays",
+        "krtLots", "krtLiveLot")
     # `krtLots` смотрит в состояние страницы: свежие лоты сильнее запомненных.
     harness = "const state={krtTenders:{}};\n"
     proc = subprocess.run(
@@ -145,6 +147,61 @@ def test_a_live_krt_lot_stays_live() -> None:
     # Момента нет — лот считается живым: «срока не поняли» это не «срок прошёл».
     assert answer["unreadable"] is True
     assert answer["stale"] is False
+
+
+def _run_in_zone(script: str, zone: str) -> dict:
+    """Тот же стенд, но часами зрителя: зона решает, что он увидит."""
+    blocks = page_blocks.auctions_function(
+        "deadlineFormat", "shortDate", "lotDeadline")
+    proc = subprocess.run(
+        ["node", "-e", blocks + "\n" + script],
+        capture_output=True, text=True, timeout=120,
+        env={**os.environ, "TZ": zone},
+    )
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    return json.loads(proc.stdout.strip().splitlines()[-1])
+
+
+# Часы зрителя. Москва тут не для полноты: на ней ошибка НЕ видна вовсе —
+# владелец сидит в Москве, и незакреплённая зона у него совпадает с верной.
+VIEWER_ZONES = ("Europe/Moscow", "UTC", "America/Los_Angeles", "Asia/Vladivostok")
+
+
+@pytest.mark.parametrize("zone", VIEWER_ZONES)
+def test_the_hour_is_moscow_in_any_viewer_zone(zone: str) -> None:
+    """Срок площадка объявляет по Москве — значит зона часть величины.
+
+    Без пришпиленной зоны один и тот же лот показывает 15:00 в Москве и
+    12:00 в Лондоне, и ни один из двух не совпадает с тем, что написано на
+    самой площадке. Замер: тот же код прода в UTC печатал «09.10.26, 12:00».
+    """
+    answer = _run_in_zone(
+        "console.log(JSON.stringify({shown:lotDeadline("
+        "{application_deadline:'09.10.26 15:00',"
+        "application_deadline_iso:'2026-10-09T15:00:00+03:00'})}))",
+        zone,
+    )
+    assert answer["shown"] == "09.10.26, 15:00 МСК", zone
+
+
+def test_the_platform_string_is_printed_as_written() -> None:
+    """Момента нет — печатаем строку площадки и своей пометки к ней не ставим.
+
+    «МСК» — это подпись под НАШИМ пересчётом момента в час; приписанная к
+    чужой строке, она утверждала бы о ней больше, чем мы знаем.
+    """
+    answer = _run_in_zone(
+        "console.log(JSON.stringify({shown:lotDeadline("
+        "{application_deadline:'09.10.26 15:00'})}))",
+        "America/Los_Angeles",
+    )
+    assert answer["shown"] == "09.10.26 15:00"
+
+
+def test_the_zone_is_named_once() -> None:
+    """Копия зоны в соседнем месте разошлась бы с этой молча."""
+    source = Path(ui.__file__).read_text(encoding="utf-8")
+    assert source.count("Europe/Moscow") == 1, "зона названа не один раз"
 
 
 def test_the_page_has_no_parser_of_its_own() -> None:
