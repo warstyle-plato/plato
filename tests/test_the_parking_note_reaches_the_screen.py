@@ -320,3 +320,43 @@ console.log(JSON.stringify({legacy, fresh: inputs._parking_by_hand}));
     seen = json.loads(out.stdout)
     assert seen["legacy"] == ["offices"], seen
     assert seen["fresh"] == [], "пересев затёр список проекта"
+
+
+def test_a_disabled_object_says_why_the_field_is_empty() -> None:
+    """Выключенный объект называет причину, а не молчит.
+
+    Экран владельца 08.09.2026: «как было так и есть». В блоке «МФОЦ / офисы»
+    признак «Объект включён» снят, поле паркинга — 0, подписи под ним нет
+    вовсе, а подсказка у поля обещает норму. Выходило обещание, ноль и тишина;
+    и по той же подсказке ноль читается как «гаража нет, вписано руками».
+
+    Расчёт при этом верен: выключенный объект не строится, значит и мест у него
+    нет (`take_norm = enabled and not by_hand`). Врал экран, и чинится он, а не
+    движок.
+    """
+    seen = _render_fields({"parking": {"own": [
+        {"prefix": "offices", "enabled": False, "by_norm": False,
+         "required_spaces": 0, "under_spaces": 0, "over_spaces": 0},
+    ]}})
+    note = seen["note_offices"]
+    assert note, "подпись у выключенного объекта пуста — молчание не объяснено"
+    assert "выключен" in note, note
+    assert "Включите" in note, "не сказано, что сделать, чтобы поле заполнилось"
+    assert seen["field_offices"] in (None, 0), "выключенному объекту норму не пишем"
+
+
+def test_the_field_hint_does_not_promise_the_norm_unconditionally() -> None:
+    """Подсказка у поля — утверждение о ПОЛЕ, а не о методике.
+
+    То же правило уже было выведено 07.09.2026 на плате за ВРИ и здесь не
+    применялось: подсказка обещала «заполняется нормативом» всегда, в том числе
+    у выключенного объекта, где норма не считается вовсе.
+    """
+    import main_legacy as core
+
+    hints = [field[2] for _title, fields in core.FIELD_GROUPS for field in fields
+             if str(field[0]).endswith(("_parking_under_spaces", "_parking_over_spaces"))]
+    assert hints, "поля паркинга объектов не найдены"
+    for hint in hints:
+        assert "нормативом приложения 6" in hint, hint
+        assert "ВКЛЮЧЁННОГО" in hint, f"обещание безусловно: {hint}"
