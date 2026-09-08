@@ -47,6 +47,45 @@ def function(name: str, page: str | None = None) -> str:
     raise AssertionError(f"тело функции {name} не закрыто скобкой")
 
 
+def constant(name: str, page: str | None = None) -> str:
+    """Объявление константы страницы целиком — до `;` вне скобок.
+
+    Функция страницы часто читает объявленную рядом константу (`PARKING_2118`
+    подставляется движком плейсхолдером), и стенд, который берёт только
+    функции, падает на «X is not defined» — то есть на своей неполноте, а не на
+    том, что проверяет.
+    """
+    page = core.PAGE if page is None else page
+    for keyword in ("const ", "let ", "var "):
+        start = page.find(f"{keyword}{name}=")
+        if start >= 0:
+            break
+    else:
+        raise AssertionError(f"на странице нет константы {name}")
+    depth = 0
+    for position in range(start, len(page)):
+        symbol = page[position]
+        if symbol in "([{":
+            depth += 1
+        elif symbol in ")]}":
+            depth -= 1
+        elif symbol == ";" and depth == 0:
+            return page[start:position + 1]
+    raise AssertionError(f"объявление {name} не закрыто точкой с запятой")
+
+
+def piece(name: str, page: str | None = None) -> str:
+    """Кусок страницы по имени: функция, а нет такой — объявление константы.
+
+    Ответ на «где живёт этот кусок» один: стенд, разрешающий зависимости сам,
+    не перечисляет их списком, который отстаёт от страницы.
+    """
+    try:
+        return function(name, page)
+    except AssertionError:
+        return constant(name, page)
+
+
 def krt_lock() -> str:
     """Замок «Требования КРТ» со списком запертых полей и общим писателем.
 

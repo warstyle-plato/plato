@@ -163,14 +163,44 @@ def test_the_project_area_does_not_grow_with_queues(project, count):
         single["summary"]["project_gns_sqm"], rel=1e-6)
 
 
-def test_the_social_rows_are_counted_once(project):
-    """Денежная компенсация: соцобъекты не строятся, но в ТЭП проекта они есть —
-    и должны быть там ровно один раз."""
+def test_a_paid_off_social_object_is_not_in_the_tep_at_all(project):
+    """Денежная компенсация: объект не строится — значит его нет и в ТЭП.
+
+    Прежде тест держал здесь 6 510 и 8 100 м²: правка, ловившая утроение по
+    очередям, остановила размножение и оставила сам фантом. Строка объекта,
+    который в этом режиме не строят, стоит в строительном объёме — а по нему
+    считаются ВСЕ удельные показатели, о чём говорит docstring этого же файла
+    («ГНС проекта росла на 29 220 м² из воздуха»).
+
+    Верное утверждение сейчас то же, что делает страница: в этом режиме
+    `syncTep` обнуляет соцстроки, и движок обязан отвечать так же — иначе
+    расчёт со страницы и расчёт из файла разойдутся на объект целиком.
+    """
     inputs, tep = project
+    assert tep["kindergarten"]["total_area"] == 6510, "фикстура обязана нести фантом"
     total = phase_rows(core.calculate_phased(core.PhasedCalcRequest(
         inputs=inputs, tep=tep, rates=[], phasing=phasing(3))))
-    assert total["kindergarten"]["total_area"] == pytest.approx(6510, abs=1.0)
-    assert total["school"]["total_area"] == pytest.approx(8100, abs=1.0)
+    assert total["kindergarten"]["total_area"] == pytest.approx(0, abs=1.0)
+    assert total["school"]["total_area"] == pytest.approx(0, abs=1.0)
+
+
+def test_a_built_social_object_is_counted_once(project):
+    """А то, ради чего прежний тест писался, — на своём примере.
+
+    Утроение по очередям ловится там, где объект СТРОИТСЯ: сумма очередей
+    обязана равняться проекту, а не трём его копиям.
+    """
+    inputs, tep = project
+    inputs = dict(inputs, social_mode="Строительство")
+    single = core.calculate(core.CalcRequest(
+        inputs=inputs, tep=copy.deepcopy(tep), rates=[]))
+    master = {row["key"]: row for row in single["tep"]["rows"]}
+    assert master["kindergarten"]["total_area"] > 0, "объект обязан строиться"
+    total = phase_rows(core.calculate_phased(core.PhasedCalcRequest(
+        inputs=inputs, tep=copy.deepcopy(tep), rates=[], phasing=phasing(3))))
+    for key in ("kindergarten", "school"):
+        assert total[key]["total_area"] == pytest.approx(
+            master[key]["total_area"], abs=1.0), f"{key}: очереди размножили объект"
 
 
 # --- деньги от правки не поехали --------------------------------------------------

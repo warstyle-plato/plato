@@ -76,7 +76,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.22.82"
+VERSION = "0.22.83"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -1660,6 +1660,144 @@ def social_area_per_place(inputs: dict[str, Any], kind: str) -> float:
     if field > 0:
         return field
     return float(moscow_social_area_per_place(kind, places) or 0.0)
+
+
+# Выгрузка города приносит СВОЮ площадь объекта — СПП и наземную. Она сильнее
+# норматива: город посчитал этот объект, а норматив описывает любой такой.
+SOCIAL_GLAVAPU_AREA_KEYS: dict[str, tuple[str, str]] = {
+    "kindergarten": ("actual_kindergarten_spp_sqm", "actual_kindergarten_np_sqm"),
+    "school": ("actual_school_spp_sqm", "actual_school_np_sqm"),
+    "clinic": ("actual_clinic_spp_sqm", "actual_clinic_np_sqm"),
+}
+# Соцобъект строится в обоих режимах, где он вообще строится: «Строительство и
+# компенсация» — это тоже стройка, и выпав из списка, объект исчезал из ТЭП при
+# живом объекте в проекте.
+SOCIAL_BUILD_MODES = ("Строительство", "Строительство и компенсация")
+
+
+def social_builds(inputs: dict[str, Any]) -> bool:
+    """Строится ли соцобъект при выбранной форме соцнагрузки."""
+    return str(inputs.get("social_mode") or "") in SOCIAL_BUILD_MODES
+
+
+def _social_glavapu(inputs: dict[str, Any], kind: str) -> tuple[float, float]:
+    """СПП и наземная площадь объекта из выгрузки ГлавАПУ; (0, 0) — выгрузки нет."""
+    normalized = ((inputs.get("_glavapu_import") or {}).get("normalized") or {})
+    keys = SOCIAL_GLAVAPU_AREA_KEYS.get(kind)
+    if not keys or not normalized:
+        return 0.0, 0.0
+    return float(normalized.get(keys[0]) or 0.0), float(normalized.get(keys[1]) or 0.0)
+
+
+def social_object_area(inputs: dict[str, Any], kind: str) -> float:
+    """Общая площадь соцобъекта — ОДИН ответ на все поверхности.
+
+    До этой функции ответов было четыре, и все на одном садике: строка ТЭП
+    одиночного расчёта брала то, что лежало в таблице (в `TEP_DEFAULT` это
+    3 000 м² на 250 мест, то есть 12 м²/место — ниже городского минимума в
+    любой ёмкости), свод очередей считал по нормативу 4 500, поле «Вводных»
+    несло своё число, а книга читала поле. Порядок здесь тот же, что у
+    страницы, и другого быть не может: **приоритет по полю** — вписанное
+    руками сильнее выгрузки города, выгрузка сильнее норматива.
+    """
+    keys = SOCIAL_TEP_FIELDS.get(kind)
+    if not keys or not social_builds(inputs):
+        return 0.0
+    places_key, area_key, _norm_key = keys
+    places = float(inputs.get(places_key) or 0.0)
+    area = float(inputs.get(area_key) or 0.0)
+    # Ручной режим — требование договора КРТ: город даёт места И площадь, и они
+    # с нормативом не совпадают. Ноль в поле тогда значит «объекта нет», а не
+    # «посчитай за меня»: посчитанный за человека ноль неотличим от его нуля.
+    if str(inputs.get("social_area_source") or "norm") == "manual":
+        return area
+    if places <= 0:
+        return 0.0
+    _spp, np_area = _social_glavapu(inputs, kind)
+    # Своя площадь из выгрузки сильнее норматива — она про ЭТОТ объект.
+    if np_area > 0:
+        return np_area
+    per_place = social_area_per_place(inputs, kind)
+    if per_place > 0:
+        return places * per_place
+    # Норматива нет и выгрузки нет — остаётся то, что стоит в поле: своего
+    # ответа у нас здесь не существует, а ноль читался бы как «объекта нет».
+    return area
+
+
+def social_object_gns(inputs: dict[str, Any], kind: str, area: float) -> float:
+    """Наземная площадь соцобъекта: СПП выгрузки, иначе та же пропорция, что в ТЭП."""
+    if area <= 0:
+        return 0.0
+    spp, _np = _social_glavapu(inputs, kind)
+    if spp > 0:
+        return spp
+    share = float((TEP_RATIOS.get("apartments") or {}).get("total_of_gns") or 0.9)
+    return area / share if share > 0 else 0.0
+
+
+# Признак «площадь задана требованием, а не нормативом» — один на все три
+# объекта, потому что поле во «Вводных» одно.
+SOCIAL_AREA_BY_REQUIREMENT = "manual"
+
+
+def declare_social_requirement(inputs: dict[str, Any]) -> bool:
+    """Помечает площади соцобъектов требованием документа — если оно есть.
+
+    Город в решении о КРТ и в документах лота даёт места И площадь, и они с
+    нормативом не совпадают: на Варшавском ш. школа — 22 220 м² на 1 000 мест,
+    то есть 22,22 м²/место против 15 по РНГП. Пока признака нет, площадь
+    считается нормативом — и требование города теряется молча, а на экране это
+    выглядит как посчитанное число (`приоритет по полю`: руками > документ лота
+    КРТ > выгрузка ГлавАПУ > норматив).
+
+    Признак один на три объекта, поэтому объект, у которого документ площадь не
+    назвал, сперва получает свою по нормативу: без этого «ручной» режим прочёл
+    бы его пустое поле как «объекта нет» и снёс бы объект целиком.
+    """
+    named = [kind for kind, keys in SOCIAL_TEP_FIELDS.items()
+             if float(inputs.get(keys[1]) or 0.0) > 0]
+    if not named:
+        return False
+    for kind, (places_key, area_key, norm_key) in SOCIAL_TEP_FIELDS.items():
+        places = float(inputs.get(places_key) or 0.0)
+        if places <= 0 or float(inputs.get(area_key) or 0.0) > 0:
+            continue
+        per_place = (float(inputs.get(norm_key) or 0.0)
+                     or float(moscow_social_area_per_place(kind, places) or 0.0))
+        if per_place > 0:
+            inputs[area_key] = places * per_place
+    inputs["social_area_source"] = SOCIAL_AREA_BY_REQUIREMENT
+    return True
+
+
+def apply_social_tep(inputs: dict[str, Any], tep: dict[str, Any]) -> None:
+    """Приводит строки ТЭП соцобъектов к вводным — как это уже делает паркинг.
+
+    `calculate` чинит строку подземного паркинга из вводных перед КАЖДЫМ
+    расчётом, потому что таблица приходит из браузера и бывает устаревшей.
+    У соцобъектов такой починки не было вовсе: расчёт со страницы был верен
+    (там синхронизирует `syncTep`), а тот же проект из сохранённого файла, из
+    ссылки, из моста КРТ или из бота считался по строке, которая с местами и
+    площадью во «Вводных» не связана ничем. Свод очередей при этом строку
+    пересчитывал — и одна и та же площадка давала разный ТЭП в зависимости от
+    того, одна у неё очередь или две.
+    """
+    for kind, (places_key, _area_key, _norm_key) in SOCIAL_TEP_FIELDS.items():
+        row = tep.get(kind)
+        if not isinstance(row, dict):
+            continue
+        builds = social_builds(inputs)
+        units = float(inputs.get(places_key) or 0.0) if builds else 0.0
+        area = social_object_area(inputs, kind)
+        row["units"] = units
+        row["total_area"] = area
+        # Соцобъект строится и передаётся городу целиком: продаваемой у него
+        # нет, а переданные метры строятся и не продаются.
+        row["transfer"] = area
+        row["saleable"] = 0.0
+        row["useful"] = 0.0
+        row["gns"] = social_object_gns(inputs, kind, area)
 
 
 def build_freeform_tep(text: str, raw_values: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -19472,7 +19610,10 @@ def build_project_workbook(
     # вставить строку в занятое место нельзя — поедут все ссылки.
     xml, social_base_row = _v4_social_rows_xml(
         xml, social_rows, cost_per, months_by_type, social_cash_mln,
-        areas={typ: (n(x, _V4_SOCIAL_AREA_KEYS[typ][0], 0.0),
+        # Площадь берётся тем же ответом, что и строка ТЭП: книга читала поле
+        # «Вводных» напрямую, и на местах, введённых без площади, показывала
+        # ноль там, где модель строила объект по нормативу.
+        areas={typ: (social_object_area(x, typ),
                      social_area_per_place(x, typ))
                for typ in _V4_SOCIAL_AREA_KEYS})
 
@@ -26248,6 +26389,12 @@ def calculate(req: CalcRequest) -> dict:
             n(x, "rate_curve_shape", 2.0),
         )
 
+    # Строки соцобъектов приводятся к вводным тем же правилом и по той же
+    # причине, что и паркинг ниже: таблица приходит из браузера и бывает
+    # устаревшей, а из файла, ссылки и моста КРТ она не проходила `syncTep`
+    # вовсе. Ответ один на все поверхности — `social_object_area`.
+    apply_social_tep(x, t)
+
     # ГлавАПУ is the authoritative source for required underground parking.
     # Repair stale browser/localStorage TEP values before every calculation.
     # Заданная руками площадь — исключение и главнее импорта: норматив 35 м²
@@ -29394,6 +29541,13 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
                 # её оттуда, и оставленная от проекта она показала бы в каждой
                 # очереди метры ВСЕХ садиков разом.
                 p_inputs[SOCIAL_TEP_FIELDS[typ][1]] = area
+                # И норматив на место — тоже: очередь строит ЧАСТЬ проектного
+                # объекта, а ступень РНГП идёт по ёмкости. Не передай его, и
+                # очередь на 400 мест меряла бы школу проекта на 800 своей
+                # ступенью (18 м²/место против 15), то есть свод разошёлся бы с
+                # проектом на 2 400 м² при тех же вводных. Ответ на «сколько
+                # метров на место» один, и решает его проект.
+                p_inputs[SOCIAL_TEP_FIELDS[typ][2]] = per_place
 
         # Дефолтные очереди объектов — те же, что на странице и в билдере
         # книги (офисы — 3, ТЦ и паркинг — 2): без discrete движок сажал
