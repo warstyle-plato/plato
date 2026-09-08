@@ -31,7 +31,10 @@ from market_search.installments import Installments  # noqa: E402
 from market_search.market_reference import MoscowMarket  # noqa: E402
 from market_search.metrics import BLOCK_INSTALLMENT, installment_block  # noqa: E402
 from market_search.narrative import findings  # noqa: E402
-from market_search.normalize import canonical_key  # noqa: E402
+from market_search.normalize import (  # noqa: E402
+    canonical_key,
+    drop_duplicate_parenthetical,
+)
 from market_search.verdict import NOTE_BUILDERS  # noqa: E402
 
 # Настоящие номера «Пульса» из поставляемого свода: фикстуры здесь не годятся —
@@ -82,6 +85,16 @@ def test_a_latin_name_and_its_cyrillic_twin_are_one_project() -> None:
     # И «c» перед прочими буквами по-прежнему «к»: иначе «Cult» и «Культ»
     # разошлись бы ради того, ради чего правило и написано.
     assert canonical_key("Cult") == canonical_key("Культ")
+
+    # Тождество для сравнения и тождество для показа — разные вопросы. Ключ
+    # алфавит стирает намеренно; имя на экране его хранит, и двуязычная
+    # вывеска задвоением не становится, сколько бы ключи ни совпадали.
+    for pair in ("Сидней Сити (Sidney City)", "Cult (Культ)"):
+        assert drop_duplicate_parenthetical(pair) == pair, pair
+    # А настоящее задвоение — тот же алфавит — по-прежнему снимается.
+    assert drop_duplicate_parenthetical(
+        "Клубный дом «Саввинская 17» (Саввинская 17)"
+    ) == "Клубный дом «Саввинская 17»"
     assert Installments.bundled().facts(SYDNEY).get("installment") is not None
 
 
