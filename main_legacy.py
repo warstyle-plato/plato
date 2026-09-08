@@ -76,7 +76,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.22.83"
+VERSION = "0.22.84"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -27662,6 +27662,16 @@ def _apply_explicit_phase_products(
 ) -> dict[str, dict[str, Any]]:
     """Overlay manually edited queue TEP and synchronize atomic input aliases."""
     explicit = _explicit_phase_products(cfg)
+    # Соцобъект очереди меряется МЕСТАМИ, а не вписанными метрами: сколько его
+    # в этой очереди, говорит таблица соцобъектов (`social_objects`), а метры
+    # считает `social_object_area` от мест. Наложить сюда вписанное значит
+    # собрать строку из двух источников: редактор очереди правит ГНС,
+    # продаваемую и штуки, а общую площадь оставляет от норматива — на 250
+    # местах проекта это ГНС 9 999 при общей 4 500 и 111 местах, и ни одно из
+    # трёх чисел не отвечает двум другим. Метры при этом уходят в строительный
+    # объём, то есть в знаменатель всех удельных.
+    explicit = {key: value for key, value in explicit.items()
+                if key not in SOCIAL_TEP_FIELDS}
     # Переданные штуки правятся в очереди наравне с остальными полями:
     # приоритет у очереди, проектная строка — их сумма (владелец, 04.09.2026).
     numeric_fields = ("gns", "total_area", "useful", "saleable", "transfer", "units",
@@ -38907,6 +38917,31 @@ function derivedTransferNote(key){
   ? 'ФОК уходит целиком: продажа или передача — поле «Что с объектом дальше»'
   : 'Соцобъект передаётся городу целиком: своей продаваемой площади у него нет';
 }
+// Соцобъект очереди меряется МЕСТАМИ: сколько его в этой очереди, говорит
+// таблица соцобъектов ниже, а метры считаются от мест тем же нормативом, что и
+// у проекта (`social_area_per_place` в движке — на странице это поле норматива,
+// которое `syncTep` держит равным ступени РНГП или фактическому при требовании
+// КРТ). Своей арифметики здесь нет: второй ответ на «сколько метров у садика»
+// разошёлся бы с расчётом, и обе строки выглядели бы верными.
+function phaseSocialTepRow(key,index){
+ // Своя таблица пуста — размещает движок сам («поздняя раскладка: разгружаем
+ // первую очередь»), и на 250 местах он строит садик во ВТОРОЙ очереди. Пока
+ // вкладка считала только по своей таблице, она показывала нули там, где
+ // модель строит объект, — то есть повторяла ту же ошибку, что чинится:
+ // показанное расходилось с посчитанным. Умолчание не переписываем второй
+ // раз — берём ПРИМЕНЁННОЕ размещение из ответа движка (`social_allocation`).
+ const own=(phasing.social_objects||[]).filter(o=>o&&Number(o.capacity||0)>0);
+ const applied=own.length?own
+  :((phaseBundle&&phaseBundle.social_allocation)||[]);
+ const places=applied
+  .filter(o=>o&&o.type===key&&Number(o.phase||1)===index+1)
+  .reduce((sum,o)=>sum+Number(o.capacity||0),0);
+ const perPlace=Number(inputs[SOCIAL_TEP_NORM_INPUTS[key]]||0);
+ const area=places>0?places*perPlace:0;
+ const share=socialTotalShare();
+ // Продаваемой у соцобъекта нет вовсе: он передаётся городу целиком.
+ return {gns:area>0&&share>0?area/share:0,saleable:0,units:places,area:area};
+}
 function phaseGivenField(key){
  return PHASE_GIVEN_IN_UNITS.includes(key)?'transfer_units':'transfer';
 }
@@ -39079,7 +39114,19 @@ function renderPhasing(){
   const totals={gns:0,saleable:0,units:0,given:0};
   const cells=phasing.phases.map((p,i)=>{
    const own=(p.products||{})[k]||{};
-   const inputsHtml=['gns','saleable','units'].map(field=>{const isCount=field==='units',derived=phaseProductDerived(k,field,i),has=own[field]!==undefined,raw=has?Number(own[field]):derived,value=isCount?Math.round(raw):raw,isRemainder=!!phasing.products[k]&&i===phasing.phases.length-1,limit=phaseProductTepLimit(k,field,i),maxAttr=limit===null?'':`max="${Number(limit.toFixed(6))}"`;totals[field]+=value;return `<input type="number" min="0" ${maxAttr} step="${isCount?'1':'any'}" value="${isCount?value:Number(value.toFixed(2))}" title="${isRemainder?'Автоматический остаток':field+(has?' — введено вручную':' — рассчитано по доле')+(limit===null?'':` · максимум ${num(limit)}`)}" ${isRemainder?'readonly':`onchange="setPhaseProductTep(${i},'${k}','${field}',this.value)"`}>`}).join('');
+   // Соцстрока очереди не правится здесь: её метры считаются от мест, а места
+   // задаёт таблица соцобъектов ниже. Редактируемая ячейка обещала бы правку,
+   // которой не будет, — вписанное затиралось бы на первом же расчёте, и
+   // молча: до 08.09.2026 вписанное вообще ДОЕЗЖАЛО до движка поверх
+   // норматива, и строка выходила из двух источников разом — ГНС 9 999 при
+   // общей 4 500 и 111 местах, где ни одно число не отвечает двум другим.
+   const socialRow=SOCIAL_TEP_PRODUCTS.includes(k)?phaseSocialTepRow(k,i):null;
+   const inputsHtml=socialRow
+    ? ['gns','saleable','units'].map(field=>{const v=Number(socialRow[field]||0);totals[field]+=v;
+       return `<input type="number" value="${field==='units'?Math.round(v):Number(v.toFixed(2))}" readonly`
+        +` style="margin:0;background:#f3f3f1;color:#555"`
+        +` title="считается от мест этой очереди: ${num(socialRow.units)} × ${landNum(Number(inputs[SOCIAL_TEP_NORM_INPUTS[k]]||0),2)} м²/место. Места задаются в таблице соцобъектов ниже">`}).join('')
+    : ['gns','saleable','units'].map(field=>{const isCount=field==='units',derived=phaseProductDerived(k,field,i),has=own[field]!==undefined,raw=has?Number(own[field]):derived,value=isCount?Math.round(raw):raw,isRemainder=!!phasing.products[k]&&i===phasing.phases.length-1,limit=phaseProductTepLimit(k,field,i),maxAttr=limit===null?'':`max="${Number(limit.toFixed(6))}"`;totals[field]+=value;return `<input type="number" min="0" ${maxAttr} step="${isCount?'1':'any'}" value="${isCount?value:Number(value.toFixed(2))}" title="${isRemainder?'Автоматический остаток':field+(has?' — введено вручную':' — рассчитано по доле')+(limit===null?'':` · максимум ${num(limit)}`)}" ${isRemainder?'readonly':`onchange="setPhaseProductTep(${i},'${k}','${field}',this.value)"`}>`}).join('');
    // Передаваемое правится в ОЧЕРЕДИ, а проектная строка становится их суммой
    // (владелец, 04.09.2026: «приоритет в очередности»). Долями оно не делится:
    // отдают конкретные метры конкретной очереди и конкретные машино-места, а
@@ -42489,6 +42536,10 @@ const TEP_ROW_INPUTS={offices:{gns:'offices_gba_sqm',saleable:'offices_saleable_
 // площадей продукта.
 const TEP_SOCIAL_INPUTS={kindergarten:'social_dou_gba_sqm',
  school:'social_school_gba_sqm',clinic:'social_clinic_gba_sqm'};
+// Норматив на место — своё поле у каждого объекта; им меряется и строка
+// очереди, и строка проекта.
+const SOCIAL_TEP_NORM_INPUTS={kindergarten:'social_dou_norm_sqm',
+ school:'social_school_norm_sqm',clinic:'social_clinic_norm_sqm'};
 // Доля объявлена в движке и подставлена на страницу; второй копии числа здесь
 // нет — она бы разошлась с той, по которой считает `syncTep`.
 function socialTotalShare(){

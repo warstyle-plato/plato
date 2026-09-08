@@ -214,6 +214,35 @@ def test_the_badge_does_not_wipe_an_object_it_did_not_name():
     assert core.social_object_area(inputs, "kindergarten") == pytest.approx(250 * 18)
 
 
+def test_the_queue_editor_does_not_overlay_a_social_row():
+    """Соцстрока очереди меряется местами — вписанные метры её не подменяют.
+
+    Таблица ТЭП во вкладке «Очерёдность» рисует соцстроки наравне с
+    продуктами, и вписанное туда доезжало до движка ПОВЕРХ норматива —
+    `_apply_explicit_phase_products` накладывает поля после соцблока. Но
+    накладывались только те три поля, что есть в редакторе (ГНС, продаваемая,
+    штуки), а общая площадь оставалась от норматива: строка выходила из двух
+    источников разом — ГНС 9 999 при общей 4 500 и 111 местах, где ни одно
+    число не отвечает двум другим, а метры уходят в строительный объём.
+    """
+    inputs = _inputs(kindergarten_places=250, school_places=0,
+                     social_dou_norm_sqm=18)
+    phasing = {"enabled": True, "step_months": 24,
+               "phases": [{"name": "О1", "products": {
+                              "kindergarten": {"gns": 9999, "saleable": 777, "units": 111}}},
+                          {"name": "О2"}],
+               "social_objects": [{"type": "kindergarten", "capacity": 250, "phase": 1}]}
+    bundle = core.calculate_phased(core.PhasedCalcRequest(
+        inputs=copy.deepcopy(inputs), tep=copy.deepcopy(core.TEP_DEFAULT),
+        phasing=phasing))
+    row = (bundle["phases"][0].get("tep") or {})["kindergarten"]
+    assert row["units"] == pytest.approx(250), "места очереди задаёт таблица соцобъектов"
+    assert row["total_area"] == pytest.approx(250 * 18)
+    # Строка целая: ГНС отвечает своей же общей площади, а не вписанному числу.
+    assert row["gns"] == pytest.approx(row["total_area"] / 0.9, rel=1e-6)
+    assert row["saleable"] == pytest.approx(0), "соцобъект передаётся городу целиком"
+
+
 PAGE_CASES = [
     # места, норматив в поле, площадь в поле, режим площади, форма соцнагрузки
     (250, 18, 4500, "norm", "Строительство"),
@@ -264,6 +293,64 @@ def _run_page(tail: str):
         bodies.append(page_blocks.piece(name))
         taken.append(name)
     raise AssertionError("зависимостей больше, чем разумно разрешать")
+
+
+def test_the_queue_tab_shows_what_the_engine_builds():
+    """Вкладка «Очерёдность» меряет соцстроку тем же, чем движок.
+
+    Ячейки там заперты — метры считаются от мест, — и потому обязаны совпадать
+    с расчётом: показанное, разошедшееся с посчитанным, и есть та поломка,
+    ради которой всё это чинится. Отдельный случай — пустая таблица
+    соцобъектов: движок размещает объект сам («поздняя раскладка»), и вкладка
+    берёт ПРИМЕНЁННОЕ размещение из его же ответа, а не переписывает умолчание
+    вторым правилом.
+    """
+    script = "\n".join([
+        "const TEP_RATIOS=" + json.dumps(core.TEP_RATIOS, ensure_ascii=False) + ";",
+        "const SOCIAL_TEP_PRODUCTS="
+        + json.dumps(list(core.SOCIAL_TEP_FIELDS), ensure_ascii=False) + ";",
+        page_blocks.constant("SOCIAL_TEP_NORM_INPUTS"),
+        page_blocks.function("socialTotalShare"),
+        page_blocks.function("phaseSocialTepRow"),
+        "let inputs={},phasing={},phaseBundle=null;",
+    ])
+    placements = [
+        [{"type": "kindergarten", "capacity": 250, "phase": 1}],
+        [{"type": "kindergarten", "capacity": 125, "phase": 1},
+         {"type": "kindergarten", "capacity": 125, "phase": 2}],
+        [],  # размещает движок
+    ]
+    for objects in placements:
+        inputs = _inputs(kindergarten_places=250, school_places=0,
+                         social_dou_norm_sqm=18)
+        phasing = {"enabled": True, "step_months": 24,
+                   "phases": [{"name": "О1"}, {"name": "О2"}],
+                   "social_objects": objects}
+        bundle = core.calculate_phased(core.PhasedCalcRequest(
+            inputs=copy.deepcopy(inputs), tep=copy.deepcopy(core.TEP_DEFAULT),
+            phasing=phasing))
+        tail = ("inputs=%s;phasing=%s;phaseBundle=%s;"
+                "console.log(JSON.stringify([0,1].map("
+                "i=>phaseSocialTepRow('kindergarten',i))));" % (
+                    json.dumps(inputs, ensure_ascii=False),
+                    json.dumps(phasing, ensure_ascii=False),
+                    json.dumps({"social_allocation": bundle.get("social_allocation")},
+                               ensure_ascii=False)))
+        done = subprocess.run(["node", "-e", script + tail],
+                              capture_output=True, text=True)
+        assert done.returncode == 0, done.stderr[-2000:]
+        shown = json.loads(done.stdout)
+        for index, phase in enumerate(bundle["phases"]):
+            row = (phase.get("tep") or {}).get("kindergarten", {})
+            where = f"размещение {objects or 'умолчанием движка'}, очередь {index + 1}"
+            assert shown[index]["units"] == pytest.approx(
+                float(row.get("units") or 0.0)), where
+            assert shown[index]["gns"] == pytest.approx(
+                float(row.get("gns") or 0.0), abs=0.01), where
+
+    # Предохранитель: пример обязан ловить разницу между очередями, иначе
+    # совпадение ничего не значит.
+    assert placements[1][0]["phase"] != placements[1][1]["phase"]
 
 
 def test_the_page_and_the_engine_measure_the_object_the_same():
