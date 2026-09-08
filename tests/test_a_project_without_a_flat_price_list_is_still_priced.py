@@ -164,3 +164,52 @@ def test_a_neighbour_without_any_series_stays_without_a_price(tmp_path) -> None:
     assert peer["price_status"] == "нет"
     assert report["comparison"]["no_price"] == 1
     assert report["comparison"]["price_from_series"] == 0
+
+
+def test_the_screen_names_how_many_prices_came_from_the_series(tmp_path) -> None:
+    """Молча подставленная цена неотличима от прайсовой — значит она названа.
+
+    Строка охвата уже говорит «цены нет вовсе у стольких-то»; рядом с ней стоит
+    и число цен, взятых из ряда. Проверяется отрисовкой: строка есть в исходнике
+    страницы всегда, а появляется она только при непустом числе.
+    """
+    import pytest
+
+    play = pytest.importorskip("playwright.sync_api")
+
+    import browser_launch
+    from market_search import cabinet
+
+    page = cabinet.cabinet_page("market").replace("__DEVELOPAID_VERSION__", "test")
+    file = tmp_path / "market.html"
+    file.write_text(page, encoding="utf-8")
+    payload = {
+        "subject": {"project_name": "Зорге 9", "metrics": {}},
+        "retrieved_at": "2026-09-08",
+        "comparison": {"radius_km": 3, "found": 69, "comparable": 66, "used": 40,
+                       "stale_price": 6, "no_price": 13, "fresh_since": "2026-03-01",
+                       "price_from_series": 1},
+    }
+    silent = {**payload, "comparison": {**payload["comparison"], "price_from_series": 0}}
+    with play.sync_playwright() as pw:
+        try:
+            browser = browser_launch.launch(pw)
+        except Exception as exc:  # noqa: BLE001
+            pytest.skip(f"Chromium недоступен: {exc}")
+        try:
+            tab = browser.new_page()
+            errors: list[str] = []
+            tab.on("pageerror", lambda exc: errors.append(str(exc)))
+            tab.route("**/*", lambda route: route.abort()
+                      if route.request.url.startswith("http") else route.continue_())
+            tab.goto(file.as_uri())
+            said = tab.evaluate("d => printHead(d)", payload)
+            quiet = tab.evaluate("d => printHead(d)", silent)
+            tab.close()
+        finally:
+            browser.close()
+    assert not errors, errors
+    assert "цена взята из помесячного ряда" in said
+    assert "цены нет вовсе у 13" in said
+    # Ни одной такой цены — и строки нет: постоянная приписка перестаёт читаться.
+    assert "помесячного ряда" not in quiet
