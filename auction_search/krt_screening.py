@@ -613,15 +613,34 @@ def build_krt_model_screening(
             "reason": f"Карточка каталога разобрана со сдвигом ({problem}) — считать нечем",
         }
     housing_gfa = _number(project.get("housing_gfa_sqm"))
-    if housing_gfa <= 0:
+    # Площадь квартир — не жилая СПП, но это тоже названный городом объём
+    # жилья, и на 11 площадках прода она названа там, где СПП молчит. У
+    # Рубцовской наб., влд. 3 это 4 290 м²: карточка печатает их двумя блоками
+    # ниже отказа «считать не из чего» — «как это нет данных и сразу есть?»
+    # (владелец, 08.09.2026).
+    flats_named = _number(project.get("flats_sqm"))
+    # Квартир больше жилой СПП не бывает: они её часть. На проде такие пары
+    # есть (Енисейская 89 690 при 67 580, Красного маяка 108 060 при 3 450) —
+    # это ошибка разбора решения, и считать по ней нельзя ни по одному из двух
+    # чисел. Отказ с причиной, как у съехавшей карточки.
+    if housing_gfa > 0 and flats_named > housing_gfa:
+        return {
+            "available": False,
+            "reason": (f"Решение разобрано неверно: площадь квартир "
+                       f"{_ru_number(flats_named)} м² больше жилого объёма "
+                       f"{_ru_number(housing_gfa)} м² — считать нечем"),
+        }
+    if housing_gfa <= 0 and flats_named <= 0:
         return {
             "available": False,
             # Источник называется по имени: у площадки-решения карточки нет
             # вовсе, и «в каталоге нет объёма» было бы утверждением о том,
             # куда мы не смотрели.
-            "reason": ("В проекте решения нет жилого объёма для расчёта жилого продукта"
+            "reason": ("В проекте решения нет ни жилого объёма, ни площади квартир "
+                       "для расчёта жилого продукта"
                        if project.get("no_card") else
-                       "В официальном каталоге нет жилого объёма для расчёта жилого продукта"),
+                       "В официальном каталоге нет ни жилого объёма, ни площади квартир "
+                       "для расчёта жилого продукта"),
         }
 
     segment, start_price, market_price, price_basis = _market_inputs(market_report)
@@ -695,7 +714,17 @@ def build_krt_model_screening(
     applied_ratios, ratio_warnings = core.tep_ratios_applied(tep_ratios)
     apartment_ratios = applied_ratios["apartments"]
     own_ratios = not core.tep_ratios_changed(tep_ratios)
-    saleable = housing_gfa * _number(apartment_ratios.get("saleable_of_gns"))
+    saleable_of_gns = _number(apartment_ratios.get("saleable_of_gns"))
+    # Жилой объём восстанавливается из площади квартир ТОЙ ЖЕ долей, которой
+    # модель считает продаваемую, — и в обратную сторону. Второй доли здесь не
+    # заводим: своя дала бы два ответа на «сколько квартир в жилом объёме», и
+    # оба выглядели бы верными. Следствие приятное: `saleable` после этого в
+    # точности равна числу города, то есть выручка стоит на его метре, а не на
+    # нашем пересчёте.
+    housing_from_flats = housing_gfa <= 0 and flats_named > 0 and saleable_of_gns > 0
+    if housing_from_flats:
+        housing_gfa = flats_named / saleable_of_gns
+    saleable = housing_gfa * saleable_of_gns
     total_area = housing_gfa * _number(apartment_ratios.get("total_of_gns"))
     verdict = _verdict(market_report)
     # Средняя квартира объявлена в движке с ОСНОВАНИЕМ: площадку КРТ мы
@@ -868,7 +897,13 @@ def build_krt_model_screening(
     housing_source = ("проекта решения на mos.ru" if project.get("no_card")
                       else "krt.mos.ru")
     assumptions = [
-        f"Жилой объём {housing_source} {_ru_number(housing_gfa)} м² принят за ГНС; "
+        # Восстановленный объём называется восстановленным: «принят за ГНС»
+        # рядом с числом, которого в документе нет, читается как цифра города.
+        (f"Жилой объём {housing_source} не назван — восстановлен из площади квартир "
+         f"{_ru_number(flats_named)} м² делением на долю продаваемой "
+         f"{saleable_of_gns * 100:.1f}%: это НАШ пересчёт, а не число города. "
+         if housing_from_flats else "")
+        + f"Жилой объём {housing_source} {_ru_number(housing_gfa)} м² принят за ГНС; "
         f"общая площадь — {_ru_number(total_area)} м² "
         f"({_number(apartment_ratios.get('total_of_gns')) * 100:.0f}% ГНС), "
         f"продаваемая — {_ru_number(saleable)} м² "

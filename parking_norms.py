@@ -36,7 +36,10 @@
 
 from __future__ import annotations
 
+import csv
 import math
+import pathlib
+import re
 from typing import Any
 
 
@@ -187,13 +190,21 @@ MOSCOW_BUILT_IN_SOURCE = (
     "945-ПП, приложение 6: для встроенно-пристроенных нежилых помещений жилой "
     "застройки — 90 кв. м нежилой наземной площади на одно место")
 
-# СВОЕЙ ТАБЛИЦЫ К2 ПО РАЙОНАМ У НАС НЕТ И НЕ БУДЕТ — решение владельца
-# (24.08.2026): «ГлавАПУ всё верно посчитает без нас». Приложение 3 несёт 132
-# строки, и второй справочник жил бы отдельной жизнью, а однажды разошёлся бы с
-# городом — та же причина, по которой плату за ВРИ считает штатный калькулятор,
-# а формулы остались фолбэком. К2 и К1 приходят из выгрузки; без выгрузки
-# расчёт по Москве отказывается, и это честно: у такого участка нет ни ТЭП, ни
-# коэффициентов. В Московской области коэффициентов не существует вовсе.
+# ТАБЛИЦА К2 ЗАВЕДЕНА, НО ВТОРОЙ ВЛАСТЬЮ НЕ СТАЛА — решение владельца
+# (06.09.2026, «естественно»), поправка к решению 24.08.2026 «ГлавАПУ всё верно
+# посчитает без нас». Прежний довод остаётся верным ровно в одном: второй
+# справочник, поставленный ПЕРВЫМ, однажды разойдётся с городом и будет
+# выглядеть расчётом города. Поэтому лестница, а не замена: выгрузка ГлавАПУ →
+# таблица приложения 3 → верхний край. Пришёл коэффициент города — таблица
+# молчит; города нет — она отвечает и НАЗЫВАЕТ СЕБЯ снимком текста с датой.
+#
+# Цену прежнего отказа измерили: без выгрузки К2 принимался единицей, то есть
+# верхним краем, — а по приложению 3 у половины Москвы он 0,2–0,5. Разница
+# между «принято 1,0, потому что не знаем» и «0,2 по приложению 3» — в пять
+# раз, и первое выглядит на экране так же уверенно, как второе.
+#
+# В Московской области коэффициентов не существует вовсе, и таблица туда не
+# ходит.
 #
 # Приложение 6 в действующей редакции: Nв = X / X2 × K1 × K2, где K1 —
 # коэффициент пешей доступности рельсового каркаса, K2 — деловая активность
@@ -211,6 +222,148 @@ MOSCOW_K1_STEPS: tuple[tuple[float, float, str], ...] = (
     (2200.0, 0.90, "1200–2200 м"),
     (float("inf"), 1.00, "более 2200 м"),
 )
+
+# Приложение 3 к 945-ПП — 132 строки К2 по районам, снятые с текста
+# постановления в редакции на 01.09.2025; само приложение в этом тексте стоит
+# «в ред. 3074-ПП от 24.12.2024». ПОСЛЕ этой даты 945-ПП правили дважды
+# (2755-ПП от 17.11.2025 и 1856-ПП от 08.07.2026), и трогали ли они приложение
+# 3, мы не проверяли: снимок обязан называть свой возраст, иначе он читается
+# как действующая редакция.
+MOSCOW_K2_TABLE_PATH = pathlib.Path(__file__).resolve().parent / "data" / "moscow_parking_k2.csv"
+MOSCOW_K2_SOURCE = (
+    "945-ПП, приложение 3 (К2 деловой активности по районам), в ред. 3074-ПП "
+    "от 24.12.2024; снято с текста постановления в редакции на 01.09.2025")
+MOSCOW_K2_STALE_NOTE = (
+    "снимок приложения 3 на 01.09.2025: поправки 945-ПП от 17.11.2025 "
+    "(2755-ПП) и от 08.07.2026 (1856-ПП) по этому приложению не сверены")
+
+_MOSCOW_K2_CACHE: dict[str, dict[str, Any]] | None = None
+
+
+def _district_key(name: Any) -> str:
+    """Ключ района: «Академический», «район Академический» и «Академический
+    район» — одно и то же место, а буква в букву не совпадает ни разу.
+
+    Ё приводится к Е намеренно: у Москвы «Северное Тушино» и «Тёплый Стан»
+    пишутся в источниках и так и так, а разные ключи дали бы ненайденный район
+    там, где он есть.
+    """
+    text = str(name or "").strip().lower().replace("ё", "е")
+    text = re.sub(r"[^а-я0-9]+", " ", text)
+    text = re.sub(r"\b(район|р-?н|муниципальный округ|мо|поселение|г о|городской округ)\b",
+                  " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _ru(value: float) -> str:
+    """Число в подписи пишется по-русски: 0.2 в русском тексте читается как
+    опечатка, а не как коэффициент."""
+    return f"{value:g}".replace(".", ",")
+
+
+def moscow_k2_table() -> dict[str, dict[str, Any]]:
+    """Таблица приложения 3, прочитанная один раз.
+
+    Файла нет — это пустая таблица, а не поломка: без него лестница просто
+    падает на верхний край и говорит об этом. Молчаливое исключение здесь
+    остановило бы весь расчёт из-за справочника, который стоит ВТОРОЙ ступенью.
+    """
+    global _MOSCOW_K2_CACHE
+    if _MOSCOW_K2_CACHE is not None:
+        return _MOSCOW_K2_CACHE
+    table: dict[str, dict[str, Any]] = {}
+    try:
+        with MOSCOW_K2_TABLE_PATH.open(encoding="utf-8") as handle:
+            for row in csv.DictReader(handle):
+                key = _district_key(row.get("district"))
+                if not key:
+                    continue
+                table[key] = {
+                    "district": str(row.get("district") or "").strip(),
+                    "inside_ttk": _number(str(row.get("k2_inside_ttk") or "").replace(",", ".")),
+                    "outside_ttk": _number(str(row.get("k2_outside_ttk") or "").replace(",", ".")),
+                    "plain": _number(str(row.get("k2") or "").replace(",", ".")),
+                    "raw": str(row.get("k2") or "").strip(),
+                }
+    except OSError:
+        table = {}
+    _MOSCOW_K2_CACHE = table
+    return table
+
+
+def moscow_k2_for_district(district: Any, inside_ttk: Any = None) -> dict[str, Any]:
+    """К2 района по приложению 3 — со своим основанием и своими отказами.
+
+    Ответов три, и путать их нельзя: нашли и он один; нашли, но строка сама
+    даёт два числа (внутри ТТК и вне, либо оговорка про эксклав) — тогда без
+    признака берётся БОЛЬШЕЕ, потому что К2 только снижает потребность и
+    большее есть верхний край; не нашли вовсе.
+
+    «Не нашли» и «нашли ноль» — разные ответы: нулевого К2 в приложении 3 нет,
+    и вернуть ноль значило бы обнулить потребность целиком.
+    """
+    key = _district_key(district)
+    if not key:
+        return {"value": 0.0, "found": False, "reason": "район участка не известен"}
+    row = moscow_k2_table().get(key)
+    if not row:
+        return {"value": 0.0, "found": False,
+                "reason": f"района «{str(district).strip()}» нет в приложении 3"}
+    inside = row["inside_ttk"]
+    outside = row["outside_ttk"]
+    if inside > 0 and outside > 0:
+        if inside_ttk is None:
+            return {"value": max(inside, outside), "found": True, "ambiguous": True,
+                    "district": row["district"], "source": MOSCOW_K2_SOURCE,
+                    "note": MOSCOW_K2_STALE_NOTE,
+                    "reason": (f"у района «{row['district']}» приложение 3 даёт два числа "
+                               f"— {_ru(inside)} внутри ТТК и {_ru(outside)} вне; признак "
+                               f"ТТК не задан, поэтому взят верхний край "
+                               f"{_ru(max(inside, outside))}")}
+        value = inside if inside_ttk else outside
+        return {"value": value, "found": True, "ambiguous": False,
+                "district": row["district"], "source": MOSCOW_K2_SOURCE,
+                "note": MOSCOW_K2_STALE_NOTE,
+                "reason": f"{row['district']}, {'внутри' if inside_ttk else 'вне'} ТТК"}
+    # Строка «0,7, за исключением территории Рублёво-Успенского эксклава 0,9» —
+    # это тоже два числа, и какое из них наше, решает не таблица. Числа берутся
+    # ИЗ САМОЙ СТРОКИ, а не из разобранной колонки: у составной строки колонка
+    # числом не читается вовсе, и «прочитана без числа» было бы неправдой —
+    # числа там два.
+    named = sorted({float(m.replace(",", ".")) for m in re.findall(r"\d+(?:,\d+)?", row["raw"])})
+    if len(named) > 1:
+        return {"value": max(named), "found": True, "ambiguous": True,
+                "district": row["district"], "source": MOSCOW_K2_SOURCE,
+                "note": MOSCOW_K2_STALE_NOTE,
+                "reason": (f"строка приложения 3 по району «{row['district']}» несёт "
+                           f"оговорку по части территории ({row['raw']}); какая часть наша, "
+                           f"таблица не решает — взят верхний край {_ru(max(named))}")}
+    if named:
+        return {"value": named[0], "found": True, "ambiguous": False,
+                "district": row["district"], "source": MOSCOW_K2_SOURCE,
+                "note": MOSCOW_K2_STALE_NOTE, "reason": row["district"]}
+    return {"value": 0.0, "found": False,
+            "reason": f"строка «{row['district']}» приложения 3 прочитана без числа"}
+
+
+def moscow_k1_for_distance(metres: Any) -> dict[str, Any]:
+    """К1 пешей доступности рельсового каркаса по расстоянию до станции.
+
+    Расстояние меряется по ПЕШЕХОДНЫМ путям, а у нас его нет: подсказка адреса
+    даёт расстояние по прямой. Прямая всегда КОРОЧЕ пешего пути, то есть даёт
+    К1 не больше настоящего, — а К1 снижает потребность, значит ошибка идёт в
+    сторону меньшего числа мест. Поэтому она названа, а не спрятана.
+    """
+    value = _number(metres)
+    if value <= 0:
+        return {"value": 0.0, "found": False, "reason": "расстояние до станции не известно"}
+    for limit, k1, label in MOSCOW_K1_STEPS:
+        if value < limit:
+            return {"value": k1, "found": True, "distance_m": value, "step": label,
+                    "source": "945-ПП, приложение 6, примечание 1 — К1 пешей доступности",
+                    "reason": f"{value:g} м до станции — ступень «{label}»"}
+    return {"value": 0.0, "found": False, "reason": "расстояние до станции не разобрано"}
+
 
 # Примечания приложения 1: послабления для торговли. Распространять их на
 # другие функции нельзя — это исключение, а не общее правило.
@@ -375,6 +528,9 @@ def moscow_required(
     at: str = "",
     built_in: bool = False,
     specialty_shop: bool = False,
+    district: Any = None,
+    inside_ttk: Any = None,
+    rail_distance_m: Any = None,
 ) -> dict[str, Any]:
     """Приобъектная парковка Москвы: N = ceil(X / X2 × K1 × K2).
 
@@ -408,8 +564,35 @@ def moscow_required(
             "source_confirmed": False, "edition": "945pp_annex1", "note": "",
         }
 
+    # Лестница коэффициентов: выгрузка ГлавАПУ → своя таблица/ступень →
+    # верхний край. Каждая ступень называет СЕБЯ: пришедшее из города,
+    # посчитанное нами по акту и принятое от незнания на экране выглядят
+    # одинаково, и разводит их только подпись.
     k1_value = _number(k1)
+    k1_origin = "glavapu" if k1_value > 0 else ""
+    k1_why = k2_why = ""
+    if k1_value <= 0:
+        k1_step = moscow_k1_for_distance(rail_distance_m)
+        k1_why = str(k1_step.get("reason") or "")
+        if k1_step["found"]:
+            k1_value = k1_step["value"]
+            k1_origin = "table"
+            assumptions.append(
+                f"К1 не пришёл из выгрузки — посчитан по приложению 6: "
+                f"{k1_step['reason']}. Расстояние взято по прямой, а норматив меряет "
+                "по пешеходным путям: пеший путь длиннее, значит настоящий К1 не "
+                "меньше принятого")
     k2_value = _number(k2)
+    k2_origin = "glavapu" if k2_value > 0 else ""
+    if k2_value <= 0:
+        k2_row = moscow_k2_for_district(district, inside_ttk)
+        k2_why = str(k2_row.get("reason") or "")
+        if k2_row["found"]:
+            k2_value = k2_row["value"]
+            k2_origin = "table"
+            assumptions.append(
+                f"К2 не пришёл из выгрузки — взят из приложения 3: {k2_row['reason']} "
+                f"({_ru(k2_value)}). {MOSCOW_K2_STALE_NOTE}")
     # Коэффициента нет — берём верхний край и говорим об этом (решение
     # владельца, 06.09.2026). К1 и К2 только СНИЖАЮТ потребность, значит
     # единица — это МАКСИМУМ мест, самый строгий ответ. Опасность у него ровно
@@ -418,6 +601,10 @@ def moscow_required(
     k1_assumed = k1_value <= 0
     k2_assumed = k2_value <= 0
     if k1_assumed:
+        k1_origin = "upper_edge"
+    if k2_assumed:
+        k2_origin = "upper_edge"
+    if k1_assumed:
         k1_value = MOSCOW_K_UPPER_EDGE
     if k2_assumed:
         k2_value = MOSCOW_K_UPPER_EDGE
@@ -425,13 +612,19 @@ def moscow_required(
         both = k1_assumed and k2_assumed
         names = " и ".join(name for name, missing in (("К1", k1_assumed), ("К2", k2_assumed))
                            if missing)
+        # Почему НЕ сработала вторая ступень — часть ответа: «не знаем района»
+        # и «район есть, но его нет в приложении 3» лечатся по-разному, а на
+        # экране без причины выглядят одинаково.
+        why = "; ".join(dict.fromkeys(w for w in (k1_why if k1_assumed else "",
+                                                  k2_why if k2_assumed else "") if w))
         assumptions.append(
             ("не заданы " if both else "не задан ") + names
             + (" — приняты по " if both else " — принят ")
             + f"{MOSCOW_K_UPPER_EDGE:.1f}".replace(".", ",")
             + ": это ВЕРХНИЙ КРАЙ, максимум мест, а не "
               "расчёт города. Коэффициенты приходят с выгрузкой ГлавАПУ по "
-              "кадастровому номеру и потребность только снижают")
+              "кадастровому номеру и потребность только снижают"
+            + (f" ({why})" if why else ""))
 
     factor = 1.0
     if not built_in and x2_meta.get("vri") in MOSCOW_TRADE_VRI:
@@ -479,6 +672,11 @@ def moscow_required(
         # выгрузки на экране выглядят одинаково.
         "k1_assumed": k1_assumed,
         "k2_assumed": k2_assumed,
+        # Не «принято или нет», а ЧЬЁ: город, акт или наше незнание. Между
+        # таблицей приложения 3 и верхним краем разница впятеро, и оба они
+        # «assumed».
+        "k1_origin": k1_origin,
+        "k2_origin": k2_origin,
         "x2_assumed": x2_assumed,
         "raw_spaces": raw,
         "required_spaces": int(math.ceil(raw)) if raw > 0 else 0,

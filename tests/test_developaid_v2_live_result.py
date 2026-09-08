@@ -41,6 +41,10 @@ from developaid_v2 import install  # noqa: E402
 
 core = wrapper.core
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import page_blocks  # noqa: E402
+
 _ADAPTER = Path(__file__).resolve().parent.parent / "developaid_v2_result.py"
 
 
@@ -384,7 +388,10 @@ def test_the_transfer_matches_the_engine_page(tmp_path):
         f"let inputs={json.dumps(core.DEFAULT_INPUTS)};\n"
         f"let tep={json.dumps(core.TEP_DEFAULT)};\nlet glavapuImport=null;\n")
     script = (f"const payload={json.dumps(parsed, ensure_ascii=False, default=str)};\n"
-              + stubs + keys.group(1) + "\n" + body.group(1)
+              # Замок «Требования КРТ» — по границам, а не именем: через него
+              # теперь пишет и выгрузка ГлавАПУ.
+              + stubs + page_blocks.krt_lock() + "\n"
+              + keys.group(1) + "\n" + body.group(1)
               + "\n(async()=>{glavapuImport=payload;await applyGlavapu();"
                 "console.log(JSON.stringify({inputs,tep}));})()")
     done = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=120)

@@ -70,9 +70,21 @@ def test_the_paper_differs_from_the_screen_in_three_named_things() -> None:
 
 
 def test_the_conversation_with_platon_does_not_go_to_paper() -> None:
+    """Кнопка на бумаге не текст. Своей карточки у свода больше нет — зовёт
+    ящик всплывающая кнопка страницы, — и на бумагу она не попадает дважды:
+    её нет внутри отчёта, который клонируется под печать, и печатный стиль
+    прячет её отдельно."""
+    import plato_question
+
+    from market_search.cabinet import cabinet_style
+
     body = script()
-    ask = body[body.index("Спросить Платона Сергеевича о продажах") - 200:]
-    assert "noprint" in ask[:200], "поле ввода на бумаге не текст"
+    assert "Спросить Платона" not in body[body.index("function renderSales("):
+                                          body.index("function salesPrintHtml(")], (
+        "кнопка вернулась внутрь свода — она уедет в бумагу вместе с ним")
+    assert "@media print{.ai-fab{display:none !important}}" in plato_question.LAUNCHER_CSS
+    assert ".ai-fab" in cabinet_style().split("@media print")[1][:400], (
+        "печатный стиль кабинета кнопку не прячет")
 
 
 def test_a_section_of_the_screen_is_a_page_of_the_document() -> None:
@@ -124,13 +136,18 @@ def test_the_printed_markup_is_the_screen_without_its_tools(tmp_path) -> None:
             tab.goto(file.as_uri())
             printed = tab.evaluate(
                 "(d)=>{renderSales(d); return {print:salesPrintHtml(),"
-                " screen:document.querySelector('#sales .card').innerHTML}}", _payload())
+                " screen:document.querySelector('#sales .card').innerHTML,"
+                " fab:!!document.getElementById('platoFab'),"
+                " fab_inside:!!document.querySelector('#sales #platoFab')}}", _payload())
         finally:
             browser.close()
 
     assert not errors, f"страница упала: {errors[:2]}"
     paper, screen = printed["print"], printed["screen"]
-    assert "Спросить Платона" in screen and "Спросить Платона" not in paper
+    # Кнопка Платона на странице есть, но ВНЕ свода: клонируется под печать
+    # именно свод, и стоящая внутри него кнопка уехала бы на бумагу.
+    assert printed["fab"] and not printed["fab_inside"], "кнопка Платона внутри отчёта"
+    assert "Спросить Платона" not in screen and "Спросить Платона" not in paper
     assert "salespdf" in screen and "salespdf" not in paper
     assert 'class="switch"' not in paper
     assert re.search(r"<details(?![^>]*open)", paper) is None, "в документе осталось раскрытие"

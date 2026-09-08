@@ -536,7 +536,9 @@ def test_the_tab_asks_platon_about_its_own_numbers() -> None:
     markup = bnmap_ui.markup()
     # Поле и подсказки переехали в общий ящик: свод на странице второй, а
     # Платон один. Своим у вкладки осталось то, чем она отличается, — её груз.
-    assert 'id="bnask"' in markup and 'id="bnaskbtn"' in markup
+    # Зовёт ящик всплывающая кнопка страницы, поэтому своей карточки внизу у
+    # вкладки нет: она находилась только тем, кто дочитал свод до конца.
+    assert 'id="bnask"' not in markup and 'id="bnaskbtn"' not in markup
     assert "BNMAP_SURFACE" in markup, "у вкладки нет своего груза"
     script = re.search(r"<script>(.*?)</script>", markup, re.S).group(1)
     # Общий путь называется `platoAsk` и живёт в пакете: `askPlatoIn` был
@@ -544,7 +546,7 @@ def test_the_tab_asks_platon_about_its_own_numbers() -> None:
     # у вкладки свой вопрос, а путь к Платону один.
     import plato_question
 
-    assert "platoOpen(BNMAP_SURFACE)" in script, "вкладка не спрашивает вовсе"
+    assert "platoBlock('#bnout', BNMAP_SURFACE," in script, "вкладка не спрашивает вовсе"
     page = cabinet.cabinet_page("market")
     assert page.count("async function platoAsk(") == 1, "путь объявлен не один раз"
     assert plato_question.SCRIPT.count("/agent/result/") == 1

@@ -32,7 +32,7 @@ BUILD = WORKFLOWS / "build-yandex.yml"
 # В YAML голое `on` разбирается как булево True — ключ триггеров лежит там.
 TRIGGERS = True
 
-COMMAND = "python3 -m pytest tests -q"
+COMMAND = "python3 -m pytest tests -q --durations=25"
 
 
 def _load(path: Path) -> dict:
@@ -60,6 +60,27 @@ def test_it_runs_the_same_command_as_the_build():
     assert any(COMMAND in run for run in _run_steps(_load(ON_PR)))
     assert any(COMMAND in run for run in _run_steps(_load(BUILD))), \
         "команда в сборке изменилась — приведите к ней и проверку на PR"
+
+
+def test_both_runs_share_one_ceiling():
+    """Сборка прямо оговаривает: потолок у неё тот же, что на PR.
+
+    Оговорка стояла без сторожа, а это память, а не правило. Разъехавшись,
+    они дают зелёный PR и снятую по таймауту сборку из main — и пока сборка
+    красная, любая выкатка тянет прошлое.
+
+    Само число здесь не закрепляется: набор растёт, потолок мерят заново
+    (06.09.2026 прогоны шли 40 минут, вечером того же дня 74). Закреплено
+    равенство — и то, что запас есть: 08.09.2026 прогон 408 был снят на
+    75:10 при потолке ровно в 75, и отменённый по таймауту прогон не
+    говорит ни «прошло», ни «упало».
+    """
+    on_pr = _load(ON_PR)["jobs"]["test"]["timeout-minutes"]
+    build = _load(BUILD)["jobs"]["test"]["timeout-minutes"]
+    assert on_pr == build, f"потолки разъехались: PR {on_pr}, сборка {build}"
+    assert on_pr >= 90, (
+        f"потолок {on_pr} мин: измеренный набор идёт 74 минуты, "
+        "запас меньше четверти уже дважды кусал в день установки")
 
 
 def test_the_workflow_checks_itself():

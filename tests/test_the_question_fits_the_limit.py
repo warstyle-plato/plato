@@ -292,9 +292,11 @@ def test_the_dialogue_has_preset_questions_and_one_of_them_stands_in_the_field()
     surface = _object("SALES_SURFACE")
     assert "chips: SALES_ASKS.map(" in surface, "подсказки не доезжают до ящика"
     assert "message: question=>" in surface, "своему вопросу некуда деться"
-    card = PAGE[PAGE.index("Спросить Платона Сергеевича о продажах"):]
-    card = card[:card.index("box.innerHTML=html")]
-    assert "ai-open-btn" in card, "ящик закрыт, и открыть его из карточки нечем"
+    # Своей карточки у свода больше нет: она стояла под десятью экранами
+    # таблиц. Зовёт ящик всплывающая кнопка, и блок объявляет ей себя вместе
+    # со своим грузом.
+    assert "platoBlock('#salesreport', SALES_SURFACE," in PAGE, (
+        "свод не объявил себя — открыть ящик с его числами нечем")
 
 
 def test_the_answers_do_not_erase_each_other():

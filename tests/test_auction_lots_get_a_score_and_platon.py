@@ -55,9 +55,14 @@ def lot_score(lot: dict) -> dict:
     сделок владельца, и страница его только показывает. Подсунуть в проверку
     лот без `fit` значит проверить не то, что увидит человек.
     """
+    from auction_search.parsing import deadline_iso
     from auction_search.profile_fit import profile_fit
 
-    lot = {**lot, "fit": profile_fit(lot)}
+    # Момент срока сервер кладёт рядом со строкой площадки (`_public_lot_dict`):
+    # своего разбора даты у страницы нет вовсе, и лот без момента она увидеть
+    # не может. Считается он тем же кодом, что и на маршруте.
+    lot = {**lot, "fit": profile_fit(lot),
+           "application_deadline_iso": deadline_iso(lot.get("application_deadline"))}
     node = shutil.which("node")
     if not node:
         pytest.skip("node недоступен")
@@ -137,8 +142,12 @@ def test_the_page_can_ask_platon_without_leaving_it() -> None:
     import plato_question
 
     body = script()
-    assert "function askPlato(" in body
-    assert "platoOpen(AUCTION_SURFACE)" in body, "кнопка открывает ящик со своим грузом"
+    # Зовёт ящик всплывающая кнопка страницы, и вкладка объявляет ей себя со
+    # своим грузом: карточка внизу списка находилась только тем, кто долистал.
+    assert "platoBlock('#auctionLayout', AUCTION_SURFACE," in body, (
+        "вкладка лотов не объявила себя со своим грузом")
+    assert "platoBlock('#krtPanel', AUCTION_SURFACE," in body, (
+        "вкладка КРТ прячет соседнюю классом — своей строки у неё нет")
     pack = plato_question.SCRIPT
     assert "'/cabinet/ask'" in pack, "тот же маршрут, что у кабинета рынка — своего не заводим"
     assert "/agent/result/" in pack, "за долгим ответом ходят по номеру запуска"

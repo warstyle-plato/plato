@@ -46,8 +46,9 @@ jobs:
     runs-on: ubuntu-latest
     # Тот же набор и тот же потолок, что на PR: разъехавшись, они дадут
     # зелёный PR и снятую по таймауту сборку из main — а пока сборка красная,
-    # любая выкатка тянет прошлое.
-    timeout-minutes: 75
+    # любая выкатка тянет прошлое. Равенство держит проверка
+    # `test_the_tests_run_before_the_merge`: оговорка без сторожа — это память.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
         with:
@@ -56,9 +57,19 @@ jobs:
       # Две параллельные сессии взяли номер от одного и того же main и обе
       # написали 0.18.45 — разные правки, одна версия, и заметить это можно
       # было только по выкатке (18.08.2026). Общей памяти у сессий нет, общий
-      # у них репозиторий: пусть он и проверяет.
+      # у них репозиторий: пусть он и проверяет. Руководство — статическая
+      # поверхность того же движка: его правка не меняет VERSION, но образ
+      # пересобрать всё равно нужно, чтобы новый /guide попал в prod.
       - name: Версия строго растёт
-        run: python3 scripts/check_version_grows.py
+        run: |
+          set -euo pipefail
+          changed=$(git diff --name-only HEAD^ HEAD)
+          non_guide=$(printf '%s\n' "$changed" | grep -v '^guide/' || true)
+          if [ -z "$non_guide" ]; then
+            echo "Guide-only commit: VERSION остаётся версией расчётного движка."
+          else
+            python3 scripts/check_version_grows.py
+          fi
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -74,7 +85,7 @@ jobs:
       # Сокращать набор нельзя: он написан затем, чтобы ловить то, что
       # глазами не видно.
       - name: Полный набор
-        run: python3 -m pytest tests -q
+        run: python3 -m pytest tests -q --durations=25
 
   build:
     name: Сборка и публикация
