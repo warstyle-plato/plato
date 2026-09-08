@@ -131,11 +131,11 @@ def test_in_a_real_browser_each_queue_is_drawn_once_per_surface() -> None:
     chrome = Path("/opt/pw-browsers/chromium-1194/chrome-linux/chrome")
     if not chrome.exists():  # pragma: no cover
         pytest.skip("chromium в образе не найден")
-    import json
     import threading
     import time
 
     import uvicorn
+    from fastapi.encoders import jsonable_encoder
 
     import main as wrapper
 
@@ -161,14 +161,19 @@ def test_in_a_real_browser_each_queue_is_drawn_once_per_surface() -> None:
             page.on("dialog", lambda dialog: dialog.accept())
             page.goto(f"http://127.0.0.1:{PORT}/", wait_until="networkidle")
             # Числа считает движок; страница их только рисует — иначе проверка
-            # мерила бы вторую реализацию расчёта.
+            # мерила бы вторую реализацию расчёта. Кормим страницу тем же
+            # кодировщиком, что и маршрут: свой `default=float` не знает про
+            # `datetime.date` (`first_taxable_month` — дата), и проверка падала
+            # бы на сериализации, а браузер получает от `/calculate-phased`
+            # готовую строку. Второй способ подачи — это второй ответ на
+            # «что видит страница».
             count = page.evaluate(
                 "(data) => { phaseBundle=data; lastResult=data.consolidated;"
                 " const fin=lastResult.finance||{};"
                 " renderFinanceChart(fin.rows||[],"
                 "  ((lastResult.report||{}).financing||{}).escrow_cover||{});"
                 " return (" + COUNT + ")(); }",
-                json.loads(json.dumps(bundle, default=float)))
+                jsonable_encoder(bundle))
             browser.close()
     finally:
         server.should_exit = True
