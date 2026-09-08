@@ -83,3 +83,40 @@ def test_mpt_card_exposes_the_july_2026_review_gap():
     assert "2072-ПП" in item["latest_amendment"]
     assert "1965-ПП" in item["latest_amendment"]
     assert item["status"] == "review_required"
+
+
+def test_a_source_link_carries_no_click_id():
+    """Метка перехода в ссылке источника — факт о нашем поиске, а не о документе.
+
+    08.09.2026 ссылка на 214-ФЗ пришла из выдачи Яндекса с хвостом `ysclid`.
+    Такой хвост протухает вместе с сессией поиска, а в реестре живёт вечно и
+    выглядит частью адреса документа. Хуже того, он рассказывает, где мы искали,
+    в публичном репозитории.
+
+    Проверка держит утверждение, а не список: запрещены параметры перехода у
+    ЛЮБОЙ карточки, включая те, что появятся позже.
+    """
+    import urllib.parse
+
+    junk = {"ysclid", "utm_source", "utm_medium", "utm_campaign", "utm_term",
+            "utm_content", "gclid", "fbclid", "yclid", "_openstat"}
+    found = []
+    for row in registry._load_registry():
+        query = urllib.parse.urlsplit(row.get("source_url") or "").query
+        marks = sorted(set(urllib.parse.parse_qs(query)) & junk)
+        if marks:
+            found.append((row.get("id"), marks))
+    assert not found, f"в ссылке источника осталась метка перехода: {found}"
+
+
+def test_the_click_id_guard_fails_on_a_forged_link(monkeypatch):
+    """Сторож обязан падать на поломке — иначе он не сторож.
+
+    Правило проверяется подделкой: карточка с `ysclid` должна быть найдена.
+    Без этого «нарушений нет» означало бы, что не сработал сам обход.
+    """
+    forged = [{"id": "поддельная", "source_url": "http://example.org/doc?nd=1&ysclid=abc"}]
+    monkeypatch.setattr(registry, "_load_registry", lambda: forged)
+    import pytest
+    with pytest.raises(AssertionError, match="метка перехода"):
+        test_a_source_link_carries_no_click_id()
