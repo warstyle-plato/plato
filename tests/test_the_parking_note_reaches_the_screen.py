@@ -203,17 +203,17 @@ def test_the_norm_fills_the_field_and_the_note_says_whose_it_is() -> None:
     """
     result = {"parking": {"note": "Свод.", "own": [
         {"prefix": "offices", "tep_key": "offices", "enabled": True,
-         "by_norm": True, "required_spaces": 2956, "units": 2956,
-         "under_spaces": 2956, "over_spaces": 0},
+         "by_norm": True, "required_spaces": 2778, "units": 2778,
+         "under_spaces": 2778, "over_spaces": 0},
         {"prefix": "retail", "tep_key": "standalone_retail", "enabled": True,
          "by_norm": False, "required_spaces": 310, "units": 40,
          "under_spaces": 40, "over_spaces": 0},
     ]}}
     seen = _render_fields(result)
-    assert seen["field_offices"] == 2956, "норма не доехала до самого поля"
-    assert seen["inputs"]["offices_parking_under_spaces"] == 2956
+    assert seen["field_offices"] == 2778, "норма не доехала до самого поля"
+    assert seen["inputs"]["offices_parking_under_spaces"] == 2778
     assert "норматив" in seen["note_offices"].lower()
-    assert "2956" not in seen["note_offices"], "число сказано дважды подряд"
+    assert "2778" not in seen["note_offices"], "число сказано дважды подряд"
     # Перебитое руками поле норма не трогает, а подпись называет ОБА числа:
     # одно без другого не сравнить.
     assert seen["field_retail"] is None, "норма затёрла вписанное руками"
@@ -243,10 +243,10 @@ def test_the_hand_keeps_the_field_and_the_norm_follows_the_tep() -> None:
         return row["under_spaces"], row["by_norm"]
 
     filled, by_norm = run(186180.0, _parking_by_hand=[],
-                          offices_parking_under_spaces=2956)
-    assert (filled, by_norm) == (2956, True)
+                          offices_parking_under_spaces=2778)
+    assert (filled, by_norm) == (2778, True)
     grew, by_norm = run(200000.0, _parking_by_hand=[],
-                        offices_parking_under_spaces=2956)
+                        offices_parking_under_spaces=2778)
     assert by_norm and grew > filled, "поле замерло на вчерашнем числе"
     # Тронутое руками норма не перебивает — включая ноль. Прежде сказать
     # «гаража у объекта нет» было нечем вовсе: ноль читался как «не задано».
@@ -350,7 +350,7 @@ console.log(JSON.stringify({legacy, fresh: inputs._parking_by_hand}));
 """ % {"seed": _piece("seedParkingByHand"),
        "legacy": json.dumps({"offices_parking_under_spaces": 40,
                              "retail_parking_under_spaces": 0}),
-       "fresh": json.dumps({"offices_parking_under_spaces": 2956,
+       "fresh": json.dumps({"offices_parking_under_spaces": 2778,
                             "_parking_by_hand": []})}
     script = "const OBJECT_PARKING_PREFIXES=['offices','retail','sports'];\n" + script
     out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=60)
