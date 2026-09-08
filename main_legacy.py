@@ -76,7 +76,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.22.84"
+VERSION = "0.22.85"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -41768,7 +41768,7 @@ function renderInputs(){
       el.disabled=true;
       el.title='Москва: платежи ежеквартально — установлено нормативно';
      }
-     el.onchange=()=>{inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='social_mode')inputs._social_mode_user_set=true;if(/^(offices|retail|sports)_parking_(under|over)_spaces$/.test(id))markParkingByHand(id.split('_')[0]);if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){renderInputs();return calculate()}if(['apartment_price_th','commercial_price_th','parking_price_th','main_above_th_per_sqm','main_under_th_per_sqm'].includes(id)){inputs.project_class='custom';syncProjectClassSelector()}if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(TEP_DERIVED_INPUTS.includes(id)){const cleared=id==='social_area_source'&&krtClearsVriFee();const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(cleared||filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
+     el.onchange=()=>{inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='social_mode')inputs._social_mode_user_set=true;if(/^(offices|retail|sports)_parking_(under|over)_spaces$/.test(id)){if(String(el.value).trim()==='')restoreParkingNorm(id.split('_')[0]);else markParkingByHand(id.split('_')[0]);}if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){renderInputs();return calculate()}if(['apartment_price_th','commercial_price_th','parking_price_th','main_above_th_per_sqm','main_under_th_per_sqm'].includes(id)){inputs.project_class='custom';syncProjectClassSelector()}if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(TEP_DERIVED_INPUTS.includes(id)){const cleared=id==='social_area_source'&&krtClearsVriFee();const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(cleared||filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
      wrap.appendChild(el);grid.appendChild(wrap);
    });det.appendChild(grid);(ownTab?vriBox:box).appendChild(det);
  });
@@ -41974,13 +41974,43 @@ function seedParkingByHand(){
  // Список приехал вместе с проектом — он и есть ответ, пересев затёр бы его:
  // заполненное нормой поле стало бы «тронутым руками» и замерло бы навсегда.
  if(Array.isArray(inputs._parking_by_hand))return;
+ // Иначе непустое поле читается как вписанное руками — и в этом ловушка:
+ // норма САМА заполняет поле с 07.09.2026, а при следующей загрузке её же
+ // число неотличимо от человеческого. На живом проекте офисы замерли на
+ // 2 956 мест при норме 134 286 (владелец, 09.09.2026: «машиноместа не
+ // пересчитались вообще»). Поэтому норма помечает своё число (`_parking_by_norm`),
+ // и посев такие поля тронутыми не считает.
+ const byNorm=new Set(Array.isArray(inputs._parking_by_norm)?inputs._parking_by_norm:[]);
  inputs._parking_by_hand=OBJECT_PARKING_PREFIXES.filter(pfx=>
-  Number(inputs[pfx+'_parking_under_spaces']||0)||Number(inputs[pfx+'_parking_over_spaces']||0));
+  !byNorm.has(pfx)&&
+  (Number(inputs[pfx+'_parking_under_spaces']||0)||Number(inputs[pfx+'_parking_over_spaces']||0)));
+}
+
+function markParkingByNorm(prefix){
+ // Число поставила норма — значит оно ЕЁ, и переживать загрузку обязано
+ // именно так. Из «тронутых руками» prefix при этом уходит: иначе один
+ // список говорит «моё», второй «человеческое», и кто прав — решает порядок.
+ const norm=new Set(Array.isArray(inputs._parking_by_norm)?inputs._parking_by_norm:[]);
+ norm.add(prefix);inputs._parking_by_norm=Array.from(norm);
+ if(Array.isArray(inputs._parking_by_hand))
+  inputs._parking_by_hand=inputs._parking_by_hand.filter(x=>x!==prefix);
+}
+
+function restoreParkingNorm(prefix){
+ // Обратная кнопка к «вписал руками». У всякого замка спрашивают, чем его
+ // открыть: без неё поле старого проекта заперто навсегда, а замершее число
+ // на экране выглядит посчитанным.
+ inputs._parking_by_hand=(inputs._parking_by_hand||[]).filter(x=>x!==prefix);
+ markParkingByNorm(prefix);
+ calculate();
 }
 function markParkingByHand(prefix){
  const marks=new Set(inputs._parking_by_hand||[]);
  marks.add(prefix);
  inputs._parking_by_hand=Array.from(marks);
+ // Тронутое руками перестаёт быть числом нормы — иначе посев вернёт его ей.
+ if(Array.isArray(inputs._parking_by_norm))
+  inputs._parking_by_norm=inputs._parking_by_norm.filter(x=>x!==prefix);
 }
 
 // Норма стоит У ТОГО ПОЛЯ, которое человек правит. Прежде число жило одной
@@ -42024,8 +42054,15 @@ function objectParkingFieldNote(prefix){
  if(item.by_norm)return req
   ?'Число по нормативу приложения 6 — следует за ТЭП. Впишите своё, чтобы перебить; ноль руками значит «гаража нет».'
   :'По нормативу приложения 6 мест не требуется.';
- if(!req)return 'Задано руками. По нормативу приложения 6 мест не требуется.';
- return `Задано руками, по нормативу приложения 6 — ${num(req)} мест.`;
+ // Замок обязан называть, чем его открыть. Проект, сохранённый до того, как
+ // норма начала заполнять поле, приходит без списков — и её же число читается
+ // как человеческое и замирает: на живом проекте офисы стояли 2 956 при норме
+ // 134 286 (владелец, 09.09.2026: «машиноместа не пересчитались вообще»).
+ // Разойтись эти два числа могут на два порядка, поэтому норматив называется
+ // рядом, а путь назад — очистить поле — сказан прямо.
+ const back=' Очистите поле — вернётся норматив и снова пойдёт за ТЭП.';
+ if(!req)return 'Задано руками. По нормативу приложения 6 мест не требуется.' + back;
+ return `Задано руками, по нормативу приложения 6 — ${num(req)} мест.` + back;
 }
 
 function renderTep(){
@@ -44259,6 +44296,9 @@ function renderObjectParkingNote(){
  // перерисовывается ПОСРЕДИ ввода, и человек терял бы набранное.
  (((lastResult||{}).parking||{}).own||[]).forEach(item=>{
   if(!item||!item.prefix||!item.by_norm)return;
+  // Число поставила норма — помечаем его, иначе при следующей загрузке
+  // проекта оно неотличимо от вписанного руками и замрёт навсегда.
+  markParkingByNorm(item.prefix);
   [['under_spaces','_parking_under_spaces'],['over_spaces','_parking_over_spaces']].forEach(pair=>{
    const key=item.prefix+pair[1];
    inputs[key]=item[pair[0]];

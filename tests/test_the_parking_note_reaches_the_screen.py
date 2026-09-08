@@ -130,6 +130,7 @@ const num = v => String(v);
 let inputs = %(inputs)s;
 let lastResult = %(result)s;
 %(a)s
+%(mark)s
 %(b)s
 renderObjectParkingNote();
 console.log(JSON.stringify({
@@ -143,6 +144,9 @@ console.log(JSON.stringify({
        "inputs": json.dumps(inputs or {}, ensure_ascii=False),
        "prefixes": _const("OBJECT_PARKING_PREFIXES"),
        "a": _piece("objectParkingFieldNote"),
+       # Норма помечает своё число — без этой функции стенд падает на
+       # неопределённом имени, и падение выходит про стенд, а не про подпись.
+       "mark": _piece("markParkingByNorm"),
        "b": _piece("renderObjectParkingNote")}
     out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=60)
     assert out.returncode == 0, out.stderr[-2000:]
@@ -182,7 +186,11 @@ def test_the_screen_shows_the_numbers_and_does_not_recount_them() -> None:
     движок, а сводные величины (`required_total`, `rows`, `own_units`,
     `area_per_space_sqm`) отрисовка не трогает и не пересобирает.
     """
-    for name in ("renderObjectParkingNote", "objectParkingFieldNote"):
+    # Норма помечает своё число (`markParkingByNorm`) — без неё стенд падает
+    # на неопределённом имени, и падение выходит про стенд, а не про то,
+    # что он проверяет.
+    for name in ("renderObjectParkingNote", "objectParkingFieldNote",
+                 "markParkingByNorm"):
         code = _executable(_piece(name))
         for sign in ("*", "/", "Math."):
             assert sign not in code, f"{name}: на экране считают ({sign})"
@@ -282,11 +290,14 @@ const num = v => String(v);
 let inputs = {};
 let lastResult = null;
 %(a)s
+%(mark)s
 %(b)s
 renderObjectParkingNote();
 console.log(JSON.stringify({left: cell.textContent}));
 """ % {"prefixes": _const("OBJECT_PARKING_PREFIXES"),
-       "a": _piece("objectParkingFieldNote"), "b": _piece("renderObjectParkingNote")}
+       "a": _piece("objectParkingFieldNote"),
+       "mark": _piece("markParkingByNorm"),
+       "b": _piece("renderObjectParkingNote")}
     out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=60)
     assert out.returncode == 0, out.stderr[-2000:]
     left = json.loads(out.stdout)["left"]
@@ -325,7 +336,11 @@ def test_the_screen_does_not_claim_the_norm_and_the_garage_agree() -> None:
     стрелочной функции, и запрет на него падал бы на верном коде.
     """
     verdicts = ("сходится", "не сходится", "расхожд", "недостро", "нехват", "превыш")
-    for name in ("renderObjectParkingNote", "objectParkingFieldNote"):
+    # Норма помечает своё число (`markParkingByNorm`) — без неё стенд падает
+    # на неопределённом имени, и падение выходит про стенд, а не про то,
+    # что он проверяет.
+    for name in ("renderObjectParkingNote", "objectParkingFieldNote",
+                 "markParkingByNorm"):
         low = _piece(name).lower()
         for word in verdicts:
             assert word not in low, f"{name}: вердикт о согласии ({word})"
@@ -468,3 +483,68 @@ def test_a_truly_disabled_object_still_says_it_is_off() -> None:
         inputs={"retail_enabled": False},
     )
     assert "Объект выключен" in seen["note_retail"], seen["note_retail"]
+
+
+def test_a_number_the_norm_wrote_does_not_freeze_after_reload() -> None:
+    """Число нормы переживает загрузку как ЕЁ число, а не как человеческое.
+
+    Норма заполняет поле с 07.09.2026, а посев списка тронутых полей считал
+    непустое число вписанным руками — и её же число замирало навсегда. На
+    живом проекте офисы стояли 2 956 мест при норме 134 286: правь ГНС хоть
+    до девяти миллионов, поле не двигалось (владелец, 09.09.2026:
+    «машиноместа не пересчитались вообще»). Два порядка разницы, и на экране
+    замершее число выглядит посчитанным.
+
+    Утверждений здесь три, и каждое своё:
+    - поле, помеченное нормой, посев тронутым не считает;
+    - правка руками пометку нормы снимает — иначе посев вернёт число ей;
+    - старый проект БЕЗ обоих списков остаётся человеческим: молча переписать
+      вписанное руками хуже, чем оставить, — но подпись обязана назвать путь
+      назад, и это держит соседняя проверка.
+    """
+    script = """
+%(seed)s
+%(mark)s
+%(hand)s
+const out = {};
+let inputs = {offices_parking_under_spaces: 2956, _parking_by_norm: ['offices']};
+seedParkingByHand();
+out.norm_written = inputs._parking_by_hand;
+inputs = {offices_parking_under_spaces: 2956, _parking_by_norm: ['offices']};
+markParkingByHand('offices');
+out.after_hand_norm = inputs._parking_by_norm;
+out.after_hand_hand = inputs._parking_by_hand;
+inputs = {offices_parking_under_spaces: 2956};
+seedParkingByHand();
+out.legacy = inputs._parking_by_hand;
+console.log(JSON.stringify(out));
+""" % {"seed": _piece("seedParkingByHand"),
+       "mark": _piece("markParkingByNorm"),
+       "hand": _piece("markParkingByHand")}
+    script = "const OBJECT_PARKING_PREFIXES=['offices','retail','sports'];\n" + script
+    out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stderr[-2000:]
+    got = json.loads(out.stdout)
+    assert got["norm_written"] == [], (
+        "число нормы посев записал в «тронутые руками» — оно замрёт навсегда")
+    assert got["after_hand_hand"] == ["offices"], got
+    assert got["after_hand_norm"] == [], "правка руками не сняла пометку нормы"
+    assert got["legacy"] == ["offices"], (
+        "старый проект без списков: вписанное руками молча переписывать нельзя")
+
+
+def test_a_hand_written_field_names_the_way_back() -> None:
+    """Замок называет, чем его открыть.
+
+    Без этого поле старого проекта заперто навсегда, а норматив рядом молчит:
+    2 956 на экране и 134 286 по норме выглядят одинаково посчитанными.
+    """
+    seen = _render_fields(
+        {"parking": {"own": [{"prefix": "offices", "enabled": True, "by_norm": False,
+                              "units": 2956, "required_spaces": 134286,
+                              "under_spaces": 2956, "over_spaces": 0}], "rows": []}},
+        inputs={"offices_enabled": True})
+    note = seen["note_offices"]
+    assert "Задано руками" in note, note
+    assert "134286" in note.replace(" ", "").replace(" ", ""), note
+    assert "Очистите поле" in note, "путь назад не назван"
