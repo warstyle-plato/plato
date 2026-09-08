@@ -52,6 +52,9 @@ function escapeHtml(s){return String(s).replace(/[&<>"]/g, c =>
 const num = v => String(v);
 %(prefixes)s
 let lastResult = %(result)s;
+// Сверка старого проекта читает вводные: без них стенд падает на «inputs is
+// not defined», и падение выходит про стенд, а не про подпись.
+let inputs = {_parking_by_norm: []};
 %(note)s
 %(fn)s
 renderObjectParkingNote();
@@ -62,7 +65,9 @@ console.log(JSON.stringify({html: box.innerHTML}));
 def _render(result) -> str:
     script = HARNESS % {"result": json.dumps(result, ensure_ascii=False),
                         "prefixes": _const("OBJECT_PARKING_PREFIXES"),
-                        "note": _piece("objectParkingFieldNote"),
+                        "note": _piece("objectParkingFieldNote") + "\n"
+                        + _piece("markParkingByNorm") + "\n"
+                        + _piece("reconcileLegacyParking"),
                         "fn": _piece("renderObjectParkingNote")}
     out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=60)
     assert out.returncode == 0, out.stderr[-2000:]
@@ -146,7 +151,8 @@ console.log(JSON.stringify({
        "a": _piece("objectParkingFieldNote"),
        # Норма помечает своё число — без этой функции стенд падает на
        # неопределённом имени, и падение выходит про стенд, а не про подпись.
-       "mark": _piece("markParkingByNorm"),
+       "mark": _piece("markParkingByNorm") + "\n"
+                 + _piece("reconcileLegacyParking"),
        "b": _piece("renderObjectParkingNote")}
     out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=60)
     assert out.returncode == 0, out.stderr[-2000:]
@@ -296,7 +302,8 @@ renderObjectParkingNote();
 console.log(JSON.stringify({left: cell.textContent}));
 """ % {"prefixes": _const("OBJECT_PARKING_PREFIXES"),
        "a": _piece("objectParkingFieldNote"),
-       "mark": _piece("markParkingByNorm"),
+       "mark": _piece("markParkingByNorm") + "\n"
+                 + _piece("reconcileLegacyParking"),
        "b": _piece("renderObjectParkingNote")}
     out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=60)
     assert out.returncode == 0, out.stderr[-2000:]
@@ -519,7 +526,8 @@ seedParkingByHand();
 out.legacy = inputs._parking_by_hand;
 console.log(JSON.stringify(out));
 """ % {"seed": _piece("seedParkingByHand"),
-       "mark": _piece("markParkingByNorm"),
+       "mark": _piece("markParkingByNorm") + "\n"
+                 + _piece("reconcileLegacyParking"),
        "hand": _piece("markParkingByHand")}
     script = "const OBJECT_PARKING_PREFIXES=['offices','retail','sports'];\n" + script
     out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=60)
@@ -548,3 +556,34 @@ def test_a_hand_written_field_names_the_way_back() -> None:
     assert "Задано руками" in note, note
     assert "134286" in note.replace(" ", "").replace(" ", ""), note
     assert "Очистите поле" in note, "путь назад не назван"
+
+
+def test_a_saved_project_recognises_the_norms_own_number() -> None:
+    """Сохранённый проект узнаёт число нормы совпадением, а не пометкой.
+
+    «Это не работает, только если грузить сохранённый проект. Если заново вбить
+    ТЭП — всё работает» (владелец, 09.09.2026). Разница ровно в посеве: у
+    сохранённого поле непустое, и оно объявлялось человеческим. Пометок у такого
+    проекта нет вовсе, зато есть сравнение: стоит ровно то, что даёт норма на
+    тех же вводных — значит её. Числа при этом не меняются (они и так равны);
+    меняется другое: со следующей правки ТЭП поле снова идёт за нормой.
+
+    Обратный случай держит вторая половина проверки: число, НЕ равное норме,
+    остаётся человеческим — молча переписать вписанное руками нельзя.
+    """
+    saved = {"offices_enabled": True, "offices_parking_under_spaces": 560,
+             "offices_parking_over_spaces": 0}
+    result = {"parking": {"own": [{"prefix": "offices", "enabled": True, "by_norm": False,
+                                   "units": 560, "required_spaces": 560,
+                                   "under_spaces": 560, "over_spaces": 0}], "rows": []}}
+    seen = _render_fields(result, inputs=saved)
+    assert seen["inputs"].get("_parking_by_norm") == ["offices"], (
+        "совпавшее с нормой число осталось «вписанным руками» — оно замрёт")
+
+    other = dict(saved, offices_parking_under_spaces=2956)
+    result_other = json.loads(json.dumps(result))
+    result_other["parking"]["own"][0].update(units=2956, under_spaces=2956,
+                                             required_spaces=134286)
+    seen_other = _render_fields(result_other, inputs=other)
+    assert seen_other["inputs"].get("_parking_by_norm") == [], (
+        "число, не равное норме, объявлено её — так переписывают вписанное руками")
