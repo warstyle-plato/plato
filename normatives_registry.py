@@ -93,12 +93,35 @@ def _fmt_date(value: Any) -> str:
 
 
 def _status_label(status: str) -> tuple[str, str]:
+    """Наш внутренний контур: очередь сверки редакций. Виден администратору."""
     return {
         "verified": ("Актуальность сверена", "ok"),
         "verified_in_engine_source_pack": ("Подтверждено source pack движка", "ok"),
         "review_required": ("Требует ревизии", "warn"),
         "manual_source_required": ("Нужен первичный источник", "warn"),
     }.get(status, (status or "Статус не задан", "muted"))
+
+
+# Что показывать ЧИТАТЕЛЮ. «Требует ревизии» — отметка НАША: мы не сверили
+# консолидированную редакцию. Человеку она говорит «половине нашей базы не
+# верьте», при том что расчёт на этих нормах уже идёт (владелец, 07.09.2026:
+# «Зачем пользователю видеть что источник требует проверки»). Читателя касается
+# другое: какая редакция учтена и не изменился ли документ у публикатора —
+# и то и другое приходит от ИСТОЧНИКА, а не из нашей очереди.
+_READER_SOURCE_NEWS = {
+    "changed": ("Источник изменился — редакция уточняется", "warn"),
+    "unreachable": ("Источник сейчас не отвечает", "muted"),
+    "repealed": ("В источниках: документ утратил силу", "bad"),
+    "amended": ("В источниках: вышла новая редакция", "warn"),
+}
+
+
+def _reader_label(entry: dict[str, Any], check_result: str) -> tuple[str, str]:
+    """Новость от источника — или учтённая редакция. Наша очередь молчит."""
+    if check_result in _READER_SOURCE_NEWS:
+        return _READER_SOURCE_NEWS[check_result]
+    stamp = _fmt_date(entry.get("current_as_of"))
+    return (f"Учтено на {stamp}" if stamp and stamp != "—" else "Учтено", "ok")
 
 
 def _probe(entry: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any]:
@@ -441,17 +464,17 @@ def _li(values: Any) -> str:
     return "".join(f"<li>{html.escape(str(value))}</li>" for value in (values or []))
 
 
-def _card(entry: dict[str, Any]) -> str:
-    label, badge = _status_label(str(entry.get("status") or ""))
+def _card(entry: dict[str, Any], admin: bool = False) -> str:
     check = entry.get("check") if isinstance(entry.get("check"), dict) else {}
     check_result = str(check.get("result") or "")
-    if check_result in {"changed", "review_required", "unreachable"}:
-        label = {
-            "changed": "Источник изменился — нужна ревизия",
-            "review_required": "Источник требует проверки",
-            "unreachable": "Источник недоступен",
-        }[check_result]
-        badge = "bad" if check_result == "unreachable" else "warn"
+    label, badge = _reader_label(entry, check_result)
+    # Наша очередь сверки и HTTP-код источника — рабочий контур, а не сведения
+    # для читателя. Показываем их тому, кто может по ним что-то сделать.
+    admin_badge = ""
+    if admin:
+        inner_label, inner_badge = _status_label(str(entry.get("status") or ""))
+        admin_badge = ('<span class="badge %s">%s</span>'
+                       % (inner_badge, html.escape(inner_label)))
 
     usage = "".join(
         "<li><b>%s</b><span>%s</span></li>"
@@ -470,27 +493,40 @@ def _card(entry: dict[str, Any]) -> str:
             "</summary><ul>%s</ul></details>" % (len(history), _li(history))
         )
 
-    if check:
+    # Сообщение пробы и HTTP-код — тоже рабочий контур: читателю «HTTP 200»
+    # не говорит ничего, а «источник не отвечает» он узнает из подписи выше.
+    check_html = ""
+    if admin:
         check_html = (
-            "<span>%s</span><small>Проверено: %s · HTTP %s</small>"
+            "<div class='probe'><span>%s</span><small>Проверено: %s · HTTP %s</small></div>"
             % (
                 html.escape(str(check.get("message") or "")),
                 html.escape(str(check.get("checked_at") or "—").replace("T", " ")),
                 html.escape(str(check.get("http_status") or "—")),
             )
+        ) if check else (
+            "<div class='probe'><span>Техническая проверка источника "
+            "ещё не запускалась.</span></div>"
         )
-    else:
-        check_html = "<span>Техническая проверка источника ещё не запускалась.</span>"
 
     notes = html.escape(str(entry.get("notes") or ""))
     source_url = html.escape(str(entry.get("source_url") or "#"), quote=True)
+    # Тринадцать развёрнутых карточек — стена, которую не читают (владелец,
+    # 07.09.2026: «вся информация должна быть свернута и при необходимости
+    # только открыта из списка»). Свёрнутая строка отвечает на «что это и на
+    # что влияет», раскрытая — на всё остальное. Порог тот же, что у списков
+    # карточки КРТ: длинный список сворачивается, и в заголовке стоит суть, а
+    # не одно имя, иначе закрытый список читается как отсутствующий.
+    affects = [str(x) for x in (entry.get('affects') or []) if str(x).strip()]
+    gist = affects[0] if affects else str(entry.get('title') or '')
     return f"""
-<article class="ncard" data-scope="{html.escape(str(entry.get('scope') or ''))}">
-  <div class="nhead">
+<details class="ncard" data-scope="{html.escape(str(entry.get('scope') or ''))}">
+  <summary class="nhead">
     <div><div class="eyebrow">{html.escape(str(entry.get('scope') or ''))}</div>
-    <h2>{html.escape(str(entry.get('short_name') or ''))}</h2></div>
-    <span class="badge {badge}">{html.escape(label)}</span>
-  </div>
+    <h2>{html.escape(str(entry.get('short_name') or ''))}</h2>
+    <div class="gist">{html.escape(gist)}</div></div>
+    <span class="badge {badge}">{html.escape(label)}</span>{admin_badge}
+  </summary>
   <p class="full-title">{html.escape(str(entry.get('title') or ''))}</p>
   <div class="meta">
     <div><b>Принят</b><span>{_fmt_date(entry.get('adopted_at'))}</span></div>
@@ -507,10 +543,10 @@ def _card(entry: dict[str, Any]) -> str:
   <div class="source-row">
     <a href="{source_url}" target="_blank" rel="noopener">
       {html.escape(str(entry.get('source_label') or 'Источник'))} ↗</a>
-    <div class="probe">{check_html}</div>
+    {check_html}
   </div>
   {f'<p class="notes">{notes}</p>' if notes else ''}
-</article>"""
+</details>"""
 
 
 def guide_reference_html(css_prefix: str = "gnorm") -> str:
@@ -586,7 +622,7 @@ def _page(request: Request, core: Any) -> str:
     rows = _merged_registry()
     scopes = ("Москва", "Московская область", "Общие для РФ")
     counts = {scope: sum(1 for row in rows if row.get("scope") == scope) for scope in scopes}
-    cards = "".join(_card(row) for row in rows)
+    cards = "".join(_card(row, admin=admin) for row in rows)
 
     footer = _legal_footer()
 
@@ -621,6 +657,10 @@ padding:9px 14px;border-radius:10px;background:#fff}}h1{{font-size:34px;line-hei
 .filters button{{border:1px solid var(--line);background:#fff;border-radius:999px;padding:8px 12px;cursor:pointer}}
 .filters button.active{{background:var(--accent);color:#fff;border-color:var(--accent)}}
 .ncard{{background:#fff;border:1px solid var(--line);border-radius:18px;padding:22px;margin-bottom:14px}}
+.ncard>summary{{cursor:pointer;list-style:none}}
+.ncard>summary::-webkit-details-marker{{display:none}}
+.ncard[open]>summary{{border-bottom:1px solid var(--line);padding-bottom:14px;margin-bottom:4px}}
+.gist{{color:var(--muted);margin-top:6px;font-size:13px}}
 .nhead{{display:flex;justify-content:space-between;align-items:flex-start;gap:14px}}
 .eyebrow{{text-transform:uppercase;letter-spacing:.08em;font-size:11px;color:var(--muted);font-weight:700}}
 h2{{font-size:21px;margin:4px 0 0}}.full-title{{color:#454b55;margin:12px 0 16px}}

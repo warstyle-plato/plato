@@ -78,6 +78,12 @@ def restore(saved: dict) -> dict:
         "phasing={},rates=[];\n"
         "const scenarioSelect={value:'base'};\n"
         "function makeDefaultPhasing(){return {enabled:false}}\n"
+        # `loadLocal` сеет список тронутых полей паркинга: заполненное нормой
+        # поле не должно ожить «вписанным руками». Стенд перечисляет функции
+        # поимённо, и это его слабое место — соседняя функция роняет его на
+        # верном коде, а `catch` восстановления делал падение НЕМЫМ.
+        "const OBJECT_PARKING_PREFIXES=['offices','retail','sports'];\n"
+        + page_function("seedParkingByHand") + "\n"
         f"const localStorage={{getItem:()=>{json.dumps(json.dumps(saved))}}};\n"
         + load_local_body() + "\n"
         "loadLocal();\n"
@@ -213,3 +219,39 @@ def test_the_deal_price_belongs_to_the_territory():
     block = page[start:page.index("];", start)]
 
     assert "'purchase_price_mln'" in block
+
+
+def test_a_broken_restore_says_so_instead_of_dropping_the_project() -> None:
+    """Молчащий `catch` стоил бы весь сохранённый проект.
+
+    Любая ошибка внутри восстановления сбрасывала человека на умолчания и не
+    говорила НИЧЕГО — на экране это «проект пропал», и искать причину негде.
+    Ровно так же однажды молчала рекурсия в `cloneValue`. Поломка здесь
+    подделывается: в стенде нет функции, которую зовёт восстановление, — и
+    именно на этом стенд падал молча, пока `catch` был пустым.
+    """
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node недоступен")
+    saved = {"inputs": {"apartment_price_th": 400}, "tep": {}}
+    script = (
+        f"const INPUT_DEFAULT={defaults('INPUT_DEFAULT')};\n"
+        f"const TEP_DEFAULT={defaults('TEP_DEFAULT')};\n"
+        + page_function("cloneValue") + "\n"
+        "let inputs=cloneValue(INPUT_DEFAULT),tep=cloneValue(TEP_DEFAULT),"
+        "phasing={},rates=[];\n"
+        "const scenarioSelect={value:'base'};\n"
+        "function makeDefaultPhasing(){return {enabled:false}}\n"
+        # seedParkingByHand НЕ объявлена — это и есть подделанная поломка.
+        "let said='';\n"
+        "function pageFailureBox(){return {set textContent(v){said=v}}}\n"
+        f"const localStorage={{getItem:()=>{json.dumps(json.dumps(saved))}}};\n"
+        + load_local_body() + "\n"
+        "loadLocal();\n"
+        "console.log(JSON.stringify({said}));\n"
+    )
+    done = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+    assert done.returncode == 0, done.stderr
+    said = json.loads(done.stdout)["said"]
+    assert said, "восстановление упало молча — проект пропал без причины"
+    assert "умолчани" in said, said

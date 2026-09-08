@@ -85,7 +85,7 @@ jobs:
       # Сокращать набор нельзя: он написан затем, чтобы ловить то, что
       # глазами не видно.
       - name: Полный набор
-        run: python3 -m pytest tests -q
+        run: python3 -m pytest tests -q --durations=25
 
   build:
     name: Сборка и публикация

@@ -29,27 +29,12 @@
   <input id="gsearch" type="search" placeholder="Найти ответ…" aria-label="Поиск по руководству">
   <div class="gprogress" title="Сколько руководства вы уже просмотрели"><div id="gprogressBar"></div></div>
   <nav id="gnavList" aria-label="Разделы руководства">
-    <a href="#start">С чего начать</a>
-    <a href="#case-fast">Быстрый пример</a>
-    <a href="#case-queues">Проект с очередями</a>
-    <a href="#faq">FAQ</a>
-    <a href="#inputs">Участок и ТЭП</a>
-    <a href="#parking">Парковки</a>
-    <a href="#obligations">Обязательства</a>
-    <a href="#queues">Очереди и календарь</a>
-    <a href="#finance">БРИДЖ и ПФ</a>
-    <a href="#vri">ВРИ и МПТ</a>
-    <a href="#decision">Результат и анализ</a>
-    <a href="#plato">Платон</a>
-    <a href="#cabinet">Личный кабинет</a>
-    <a href="#export">PDF и Excel</a>
-    <a href="#areas">Площади: чей термин</a>
-    <a href="#normatives">Нормативная база</a>
+    __GUIDE_NAV__
   </nav>
 </aside>
 
 <main class="gmain">
-<section id="start" class="gsection">
+<section id="start" class="gsection" data-nav="С чего начать">
   <h1>От участка к инвестиционному решению</h1>
   <p class="glead">DevelopAid можно начать использовать с неполными данными. Для первого расчёта достаточно адреса, кадастрового номера или собственных ТЭП. Дальше исходные данные уточняются по мере появления документов, а модель пересчитывает экономику, календарь, финансирование и итоговые показатели.</p>
   <div class="gscenario-grid">
@@ -72,7 +57,7 @@
   <p class="gnote">Нормативные основания собраны отдельно: <a href="/normatives">открыть нормативный реестр DevelopAid</a>.</p>
 </section>
 
-<section id="case-fast" class="gsection">
+<section id="case-fast" class="gsection" data-nav="Быстрый пример">
   <h2>Сквозной пример А: быстрая оценка участка</h2>
   <p><b>Учебный пример.</b> Маршрут — Москва, Гродненская улица, дом 18. Здесь важна последовательность действий, а не зафиксированная прибыль конкретной версии модели.</p>
   <div class="gpath"><span>Участок</span><span>ТЭП</span><span>Парковки</span><span>Экономика</span><span>ВРИ</span><span>Финансирование</span><span>Результат</span><span>Чувствительность</span></div>
@@ -93,7 +78,7 @@
   <figure class="gshot"><img src="/guide/assets/screens/result-report.webp" alt="Карточка инвестиционного решения" loading="lazy" decoding="async"><figcaption><b>Где:</b> Результат → <b class="ui">Отчёт</b> · <b>Нажать:</b> <b class="ui">Пересчитать модель</b> · <b>Проверить:</b> вердикт, долг, LLCR и предупреждения</figcaption></figure>
 </section>
 
-<section id="case-queues" class="gsection">
+<section id="case-queues" class="gsection" data-nav="Проект с очередями">
   <h2>Сквозной пример Б: проект с несколькими очередями</h2>
   <p><b>Учебный пример.</b> Условный master-project: три очереди; ОСЗ в первой, ДОО во второй, ФОК и отдельный наземный паркинг в третьей; покупка участка через БРИДЖ; ПФ открывается по мере РнС очередей. Цифры здесь иллюстративные — задача показать механику.</p>
   <div class="gpath"><span>Общие ТЭП</span><span>Обязательства</span><span>Очереди</span><span>Календарь</span><span>Финансирование</span><span>Результат по очередям</span><span>Свод</span></div>
@@ -109,7 +94,7 @@
   <figure class="gshot"><img src="/guide/assets/screens/queues-social-obligations.webp" alt="Социальные объекты по очередям" loading="lazy" decoding="async"><figcaption><b>Где:</b> Проект → <b class="ui">Очередность</b> · <b>Нажать:</b> назначить объект нужной очереди · <b>Проверить:</b> что обязательство не потеряно и не задвоено</figcaption></figure>
 </section>
 
-<section id="faq" class="gsection">
+<section id="faq" class="gsection" data-nav="FAQ">
   <h2>FAQ: типовые ситуации</h2>
   <p class="gnote">Названия элементов интерфейса в Guide сверяются с текущей моделью: <b class="ui">Личный кабинет</b>, <b class="ui">Очередность</b>, <b class="ui">Количество очередей</b>, <b class="ui">Распределение массовых продуктов</b>, <b class="ui">Социальные объекты</b>, <b class="ui">Отдельные коммерческие объекты</b>, <b class="ui">ВРИ</b>, <b class="ui">Ключевая ставка</b>, <b class="ui">Чувствительность</b>, <b class="ui">Платон · AI-помощник</b>, <b class="ui">Экспорт PDF</b> и <b class="ui">Скачать модель (Excel)</b>.</p>
   <div class="gfaq">
@@ -128,7 +113,7 @@
   </div>
 </section>
 
-<section id="inputs" class="gsection">
+<section id="inputs" class="gsection" data-nav="Участок и ТЭП">
   <h2>Участок и ТЭП: пять способов ввода</h2>
   <div class="gtabs" role="tablist" aria-label="Способы ввода исходных данных">
     <button role="tab" aria-selected="true" id="tab-address" aria-controls="pane-address">Адрес или кадастр</button>
@@ -159,7 +144,7 @@
   </div>
 </section>
 
-<section id="parking" class="gsection">
+<section id="parking" class="gsection" data-nav="Парковки">
   <h2>Парковки: четыре разных показателя</h2>
   <div class="gscroll"><table class="gtable"><tr><th>Показатель</th><th>Что означает</th><th>Где влияет</th></tr>
     <tr><td class="gl">Нормативная потребность</td><td>Сколько мест требует применимая методика.</td><td>Реализуемость ТЭП.</td></tr>
@@ -170,14 +155,14 @@
   <p class="gnote">Контроль: места ↔ норматив площади на место ↔ площадь паркинга ↔ CAPEX. Отдельно: продаваемые места × цена = выручка. Эти цепочки нельзя смешивать.</p>
 </section>
 
-<section id="obligations" class="gsection">
+<section id="obligations" class="gsection" data-nav="Обязательства">
   <h2>Обязательства и отдельные объекты</h2>
   <p>Не всё, что обязан построить или передать девелопер, выводится из базовых ТЭП. Отдельно учитывайте объекты из ППТ, КРТ, договора, технических условий или инвестиционного соглашения. Для социальной инфраструктуры используйте штатные действия <b class="ui">+ ДОО</b>, <b class="ui">+ СОШ</b> и <b class="ui">+ Поликлиника</b>.</p>
   <div class="gcards"><div class="gcard"><div class="gcard-title">Типичные объекты</div><p>ФОК, ДОО, СОШ, поликлиника, ОСЗ, отдельный офис/ТЦ, наземный паркинг, инфраструктурный объект.</p></div><div class="gcard"><div class="gcard-title">Что задать объекту</div><p>Площадь или мощность, CAPEX, доход/безвозмездность, срок и очередь.</p></div></div>
   <p class="gnote">Используйте <b class="ui">Социальные объекты</b> и <b class="ui">Отдельные коммерческие объекты</b> как самостоятельные сущности. Не прячьте юридически значимое обязательство в общей строке СМР.</p>
 </section>
 
-<section id="queues" class="gsection">
+<section id="queues" class="gsection" data-nav="Очереди и календарь">
   <h2>Очереди и календарь</h2>
   <p>Очередность включают, когда части проекта отличаются по срокам, продукту, РнС/РВЭ, финансированию или обязательствам. <b>Социальная нагрузка</b> распределяется по очередям вручную там, где обязательство относится к конкретной очереди.</p>
   <div class="gscroll"><table class="gtable"><tr><th>Проверка</th><th>Почему важно</th></tr>
@@ -189,7 +174,7 @@
   <figure class="gshot"><img src="/guide/assets/screens/queues-overview.webp" alt="Очереди" loading="lazy" decoding="async"><figcaption><b>Где:</b> Проект → <b class="ui">Очередность</b> · <b>Нажать:</b> задать очереди и сроки · <b>Проверить:</b> контроль распределения</figcaption></figure>
 </section>
 
-<section id="finance" class="gsection">
+<section id="finance" class="gsection" data-nav="БРИДЖ и ПФ">
   <h2>БРИДЖ, ПФ, эскроу и межочередное финансирование</h2>
   <p>Читайте финансирование как последовательность источников во времени: собственный капитал/БРИДЖ → открытие ПФ → поступления на эскроу → погашение или перенос долга.</p>
   <div class="gscroll"><table class="gtable"><tr><th>Термин</th><th>Практический вопрос</th></tr>
@@ -203,13 +188,13 @@
   <p>Отдельно проверьте <b class="ui">Ключевая ставка</b>: ставка БРИДЖа, ставка ПФ и эффект покрытия эскроу — разные элементы модели.</p>
 </section>
 
-<section id="vri" class="gsection">
+<section id="vri" class="gsection" data-nav="ВРИ и МПТ">
   <h2>ВРИ и МПТ</h2>
   <p>Для ВРИ важны сумма, юридическое основание, дата обязательства, рассрочка и источник финансирования. МПТ влияет на эту цепочку через льготу, поэтому его нельзя сводить к одной строке «скидка».</p>
   <figure class="gshot"><img src="/guide/assets/screens/vri-schedule.webp" alt="График ВРИ" loading="lazy" decoding="async"><figcaption><b>Где:</b> Экономика → <b class="ui">ВРИ</b> · <b>Нажать:</b> проверить сумму и платежи · <b>Проверить:</b> источник и даты</figcaption></figure>
 </section>
 
-<section id="decision" class="gsection">
+<section id="decision" class="gsection" data-nav="Результат и анализ">
   <h2>Результат: как принять решение</h2>
   <p>Начинайте с устойчивости долга и предупреждений, затем переходите к доходности. Высокая прибыль при непогашенном долге или плохом LLCR — не хороший проект.</p>
   <div class="gscroll"><table class="gtable"><tr><th>Инструмент</th><th>Какой вопрос закрывает</th></tr>
@@ -223,13 +208,13 @@
   <figure class="gshot"><img src="/guide/assets/screens/result-report.webp" alt="Результат проекта" loading="lazy" decoding="async"><figcaption><b>Где:</b> Результат → <b class="ui">Отчёт</b> · <b>Нажать:</b> <b class="ui">Пересчитать модель</b> · <b>Проверить:</b> вердикт, долг, LLCR, капитал и предупреждения</figcaption></figure>
 </section>
 
-<section id="plato" class="gsection">
+<section id="plato" class="gsection" data-nav="Платон">
   <h2>Платон: AI-помощник над расчётным движком</h2>
   <p><b class="ui">Платон · AI-помощник</b> нужен не для того, чтобы придумывать финансовые цифры, а чтобы быстрее разобрать рассчитанный проект и запустить понятный следующий шаг.</p>
   <div class="gcards"><div class="gcard"><div class="gcard-title">Полезные вопросы</div><ul><li>Почему LLCR ниже цели?</li><li>Какая очередь создаёт проблему?</li><li>Что сильнее всего влияет на результат?</li><li>Какую максимальную цену участка выдерживает проект?</li></ul></div><div class="gcard"><div class="gcard-title">Граница ответственности</div><p>Число должно происходить из расчётного движка, Goal Seek или другого детерминированного расчёта. AI объясняет и связывает результат, но не является источником финансовой цифры.</p></div></div>
 </section>
 
-<section id="cabinet" class="gsection">
+<section id="cabinet" class="gsection" data-nav="Личный кабинет">
   <h2>Личный кабинет: сохранить, сравнить, поделиться</h2>
   <p><b class="ui">Личный кабинет</b> хранит рабочее состояние проекта, чтобы расчёт можно было продолжить, сравнить с альтернативой или передать без потери вводных. Для сохранения и передачи авторизуйтесь через <b class="ui">Войти через Telegram</b>.</p>
   <div class="gscroll"><table class="gtable"><tr><th>Задача</th><th>Что делать</th></tr>
@@ -242,14 +227,14 @@
   <p class="gdecision"><b>Правило совместной работы:</b> сначала сохраните конкретную версию проекта, затем передавайте именно её или экспорт из неё. Если коллега меняет вводные, работайте через копию.</p>
 </section>
 
-<section id="export" class="gsection">
+<section id="export" class="gsection" data-nav="PDF и Excel">
   <h2>PDF и Excel: что передавать наружу</h2>
   <p><b class="ui">Экспорт PDF</b> — управленческий снимок расчёта для руководителя, инвесткомитета или банка. <b class="ui">Скачать модель (Excel)</b> — рабочая книга для формул, трассировки и дополнительного анализа.</p>
   <p class="gnote">Для сложной или недавно добавленной логики финансирования проверяйте предупреждения текущей версии: веб/PDF и Excel — разные расчётные поверхности, и паритет должен подтверждаться регрессионной проверкой, а не предполагаться автоматически.</p>
   <figure class="gshot"><img src="/guide/assets/screens/result-export.webp" alt="Экспорт PDF и Excel" loading="lazy" decoding="async"><figcaption><b>Где:</b> Результат → <b class="ui">Отчёт</b> · <b>Нажать:</b> выбрать PDF или Excel · <b>Проверить:</b> что выгружается нужная версия проекта</figcaption></figure>
 </section>
 
-<section id="areas" class="gsection">
+<section id="areas" class="gsection" data-nav="Площади: чей термин">
   <h2>Площади: чей это термин</h2>
   <p>Одни и те же слова про площадь приходят из трёх разных мест: из градостроительной методики Москвы, из проектной документации и из финансовой модели девелопера. Считаются они по-разному, и подменять один другим нельзя.</p>
   <p class="gnote"><b>Что здесь важно.</b> Показатель из блока «финансовая модель DevelopAid» — наш, а не городской: он полезен для экономики проекта, но нормативным термином не является.</p>
@@ -283,7 +268,7 @@
   <div class="gscroll"><table class="gtable"><tr><th>Сценарий</th><th>Доходы</th><th>Расходы</th></tr><tbody>__GUIDE_SCENARIO_ROWS__</tbody></table></div>
 </section>
 
-<section id="normatives" class="gsection gnorm">
+<section id="normatives" class="gsection gnorm" data-nav="Нормативная база">
   <h2>Справочник нормативной базы</h2>
   <p>Состав и редакции приходят из нормативного реестра движка, а не поддерживаются второй копией в Guide. <a href="/normatives">Открыть нормативный реестр отдельной страницей</a>.</p>
   __GUIDE_NORMATIVE_REGISTRY__

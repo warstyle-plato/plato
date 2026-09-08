@@ -70,4 +70,4 @@ jobs:
       # ловить то, что глазами не видно, — гостевые машино-места в выручке
       # книги нашлись именно им.
       - name: Полный набор
-        run: python3 -m pytest tests -q
+        run: python3 -m pytest tests -q --durations=25

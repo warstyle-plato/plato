@@ -20,8 +20,8 @@
       "05.08.2026 № 2118-ПП"
     ],
     "status": "verified",
-    "source_url": "https://base.garant.ru/414735575/",
-    "source_label": "Текст 2118-ПП и новая редакция приложения 5",
+    "source_url": "https://www.mos.ru/upload/documents/files/5917/945-ppS1092025.pdf",
+    "source_label": "mos.ru — текст постановления (PDF)",
     "watch_terms": [
       "2118-ПП",
       "945-ПП",
@@ -145,8 +145,8 @@
     "current_as_of": "2026-09-06",
     "latest_amendment": "Приказ ДИиПП Москвы от 10.03.2026 № ДИПП-ПР-33/26: Кзатр 166,23078 с 01.01.2026; со II квартала 2026 года — квартальная индексация.",
     "status": "verified_in_engine_source_pack",
-    "source_url": "https://base.garant.ru/414500943/",
-    "source_label": "ДИПП-ПР-33/26 — изменение приказа о Кзатр",
+    "source_url": "https://www.mos.ru/dipp/documents/prikazy-i-rasporyazheniya-departamenta/view/345031220/",
+    "source_label": "mos.ru — приказ ДИиПП",
     "watch_terms": [
       "ДИПП-ПР-33/26",
       "ДИПП-ПР-34/20",
@@ -175,8 +175,8 @@
     "current_as_of": "2026-09-06",
     "latest_amendment": "На 06.09.2026 это последнее найденное распоряжение ДЭПР об обобщённых индексах. Для расчётов 2026-Q2 и 2026-Q3 движок использует значения из уже опубликованной цепочки; Q4 требует индекса за сентябрь и не должен вычисляться заранее.",
     "status": "verified_in_engine_source_pack",
-    "source_url": "https://www.mos.ru/depr/documents/",
-    "source_label": "ДЭПР Москвы — официальный раздел документов",
+    "source_url": "https://www.mos.ru/depr/documents/view/265344220/",
+    "source_label": "mos.ru — карточка документа ДЭПиР",
     "watch_terms": [
       "ДПР-Р-20/26",
       "обобщенных индексов",
@@ -362,9 +362,9 @@
     "effective_from": "2026-07-30",
     "current_as_of": "2026-09-06",
     "latest_amendment": "k1 = 1,9296 с 30.07.2026.",
-    "status": "source_link_missing",
-    "source_url": "",
-    "source_label": "",
+    "status": "current",
+    "source_url": "https://www.mos.ru/dgi/documents/normativnye-dokumenty/view/346331220/",
+    "source_label": "mos.ru, ДГИ — нормативные документы",
     "watch_terms": [
       "ДГИ",
       "303",
@@ -380,7 +380,7 @@
         "usage": "MOSCOW_VRI_PRICE_INDEX — k1 = 1,9296 с 30.07.2026"
       }
     ],
-    "notes": "Реквизиты есть в движке, ссылки на исходник нет: на mos.ru поиском 06.09.2026 не найдено. Пока ссылки нет, число стоит в справочнике без подтверждения — и справочник это показывает."
+    "notes": "Скан приказа прочитан распознаванием (docs/normative/moscow_vri_index_dgi303_20260730.pdf и .ocr.txt): «Утвердить с 30 июля 2026 г. коэффициент изменения цен, равный 1,9296» — то самое число, что стоит в движке. Приказ издан в целях 273-ПП и 593-ПП, и обе эти позиции реестра стоят рядом."
   },
   {
     "id": "mo-1745-vri-kd",
