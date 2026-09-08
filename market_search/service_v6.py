@@ -63,6 +63,49 @@ def _fresh_price_since(today) -> str:
     return f"{year:04d}-{month:02d}-01"
 
 
+def _price_from_series(
+    points: list[dict[str, Any]] | None, fresh_since: str
+) -> dict[str, Any] | None:
+    """Цена метра по помесячному ряду источника — там, где прайс-лист пуст.
+
+    Это не второй источник и не другая методика: у соседей, где есть оба
+    числа, последняя точка ряда совпадает с прайсом до рубля — в отчёте по
+    Зорге 9 от 08.09.2026 ИНДИ Тауэрз 612 278 и Ракурс 582 029 стоят одним и
+    тем же числом и в столбиках прайсов, и в легенде ряда. Разница в том, о
+    чём спрошен источник: прайс-лист приходит по КВАРТИРАМ
+    (`current_price.flat_sqm_price`), а ряд — по жилью целиком
+    (`object_type: "living"`). У проекта, где квартир нет вовсе — на Зорге 9
+    это 921 апартамент и ни одной квартиры, — прайс-лист пуст по построению.
+
+    Отчёт из-за этого спорил сам с собой: раздел «Цена метра» писал «данных по
+    проекту нет», а страницей ниже тот же отчёт считал премию к соседям +16,0 %
+    по этой самой цене. Владелец прочитал это как «проект не найден»
+    (08.09.2026) — и был прав по сути: у источника цена есть, а мы спрашивали
+    его не о том.
+
+    Свежесть проверяется тем же порогом, что у прайс-листа: месяц точки против
+    месяца порога. Старая точка ценой не становится — она называется отдельно,
+    чтобы «цены нет» не значило «когда-то её тоже не было».
+    """
+    last = next(
+        (
+            point
+            for point in reversed(points or [])
+            if isinstance(point, dict) and point.get("value") and point.get("month")
+        ),
+        None,
+    )
+    if not last:
+        return None
+    month = str(last["month"])[:7]
+    return {
+        "price_per_sqm": int(last["value"]),
+        "observed_at": month,
+        "price_basis": "помесячный ряд источника",
+        "price_fresh": month >= str(fresh_since)[:7],
+    }
+
+
 def _count_by_status(rows: list[dict[str, Any]]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for row in rows:
@@ -800,8 +843,19 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         history = self.pulse.price_history(
             [subject.project_id] + [row["complex_id"] for row in peers if row.get("complex_id")]
         )
+        # Сосед без прайс-листа — не сосед без цены: у источника она бывает в
+        # помесячном ряду. Правило одно на объект и на соседей: два ответа об
+        # одной величине однажды разойдутся, и оба будут выглядеть верными.
+        from_series = 0
         for row in peers:
             row["price_series"] = history.get(row.get("complex_id")) or []
+            if row.get("price_status") == "нет":
+                recovered = _price_from_series(row["price_series"], fresh_since)
+                if recovered and recovered.pop("price_fresh"):
+                    row.update(recovered)
+                    row["price_status"] = "по ряду"
+                    priceless -= 1
+                    from_series += 1
             row["sales_series"] = self.dynamics.series(
                 row.get("complex_id"), keys=("sold", "rem", "area")
             )
@@ -856,6 +910,19 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         subject_metrics = own or {"name": subject.project_name or query, "segment": segment}
         subject_series = history.get(subject.project_id) or []
         subject_sales = self.dynamics.series(subject.project_id, keys=("sold", "rem", "area"))
+        # То же и с самим объектом. Прайс-листа квартир у него может не быть
+        # вовсе — а цена у источника есть, и отчёт ею уже считает премию.
+        if not subject_metrics.get("price_per_sqm"):
+            recovered = _price_from_series(subject_series, fresh_since)
+            if recovered:
+                if recovered.pop("price_fresh"):
+                    subject_metrics.update(recovered)
+                else:
+                    # Старая точка ценой не становится: она называет, когда
+                    # цену видели в последний раз. «Цены нет» и «цены нет с
+                    # ноября» — разные ответы.
+                    subject_metrics["last_known_price_month"] = recovered["observed_at"]
+                    subject_metrics["last_known_price_per_sqm"] = recovered["price_per_sqm"]
         # Свод собран по одному отчёту, «Москва старая». Вне его покрытия
         # городская база не подставляется вовсе: медианы чужого города,
         # выданные молча, выглядят исправным сравнением.
@@ -995,6 +1062,9 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 "used": len(peers),
                 "stale_price": stale,
                 "no_price": priceless,
+                # Сколько цен взято не из прайс-листа, а из помесячного ряда
+                # источника. Молча подставленная цена неотличима от прайсовой.
+                "price_from_series": from_series,
                 # Сколько соседей в выборке поставил человек, а не источник.
                 # Число печатается рядом с остальными: выборка, наполовину
                 # собранная руками, и выборка из источника — разные вещи, и

@@ -163,14 +163,34 @@ def price_block(subject: dict[str, Any], peers: list[dict[str, Any]], city: Mosc
     price = subject.get("price_per_sqm")
     if not price:
         block.notes.append("У проекта нет действующего прайса, сравнивать нечего")
+        # «Цены нет» и «цены нет с ноября» — разные ответы, и второй у нас
+        # есть: помесячный ряд источника помнит последнюю точку. Без неё
+        # раздел читается как «проекта нет вовсе».
+        month = subject.get("last_known_price_month")
+        if month:
+            known = f"{int(subject['last_known_price_per_sqm']):,}".replace(",", " ")
+            block.notes.append(
+                f"Последний раз цену источник показывал в {month} — {known} ₽/м²; "
+                "это старше порога действующего прайса"
+            )
         return block
+    # Основание цены — часть самого числа. Прайс-лист источник отдаёт по
+    # квартирам, и у проекта апартаментов он пуст по построению; помесячный ряд
+    # у того же источника по тому же проекту есть. Подписать ряд прайс-листом
+    # значит назвать одно другим.
+    basis = subject.get("price_basis")
     block.subject = {
         "price_per_sqm": price,
         "price_min": subject.get("price_per_sqm_min"),
         "price_max": subject.get("price_per_sqm_max"),
         "observed_at": subject.get("observed_at"),
-        "basis": "прайс-лист, не сделка",
+        "basis": f"{basis}, не сделка" if basis else "прайс-лист, не сделка",
     }
+    if basis:
+        block.notes.append(
+            f"Прайс-листа квартир у проекта нет; цена метра — {basis} "
+            f"за {subject.get('observed_at') or '—'}"
+        )
     stats = _peer_stats(peers, "price_per_sqm")
     if stats["count"]:
         block.peers = {**stats, "vs_median_pct": _ratio(price, stats["median"])}
