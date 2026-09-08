@@ -43,6 +43,13 @@ PREMIUM_SHIFT_PP = 5.0
 # об этом говорит разбор раздела: два ответа на один вопрос разошлись бы.
 MONEY_GAP_PP = 15.0
 
+# Насколько наши условия рассрочки должны разойтись с медианой соседей, чтобы
+# это назвать. Пороги разные у взноса и у срока: пять пунктов взноса — это шаг,
+# которым свод и написан (10, 15, 20, 30 %), а три месяца — шаг сроков (3, 6, 9,
+# 12). Меньший разрыв внутри шага источника ничего не значит.
+INSTALLMENT_GAP_PP = 5.0
+INSTALLMENT_GAP_MONTHS = 3
+
 
 GENITIVE = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля",
             "августа", "сентября", "октября", "ноября", "декабря"]
@@ -609,6 +616,56 @@ def _money_finding(blocks) -> dict[str, Any] | None:
     return {"code": "payment", "headline": headline, "text": " ".join(parts), "tone": tone}
 
 
+def _installment_finding(blocks) -> dict[str, Any] | None:
+    """Чем сосед торгует помимо цены.
+
+    Цену мы сравниваем витриной против витрины — так и подписано. Рассрочка эту
+    витрину двигает: сосед с тем же прайсом, взносом 10 % и годом рассрочки
+    продаёт мягче, а сосед с удорожанием за рассрочку — дороже, чем выглядит.
+    Вывод ставится и тогда, когда про сам проект свод молчит: условия соседей —
+    это уже утверждение о рынке, а наше молчание названо отдельно.
+    """
+    block = _block(blocks, "installment")
+    peers = block.get("peers") or {}
+    subject = block.get("subject") or {}
+    if not peers.get("known"):
+        return None
+    down = (peers.get("down_payment") or {}).get("median")
+    term = (peers.get("term") or {}).get("median")
+    parts = [
+        f"Рассрочку дают {_num(peers.get('offering'))} соседей из "
+        f"{_num(peers.get('known'))}, известных своду."
+    ]
+    if down is not None and term is not None:
+        parts.append(f"Медиана условий — взнос {_num(down, 1)} % на {_num(term)} мес.")
+    tone = "flat"
+    headline = "Условия у соседей"
+    if subject.get("installment") is None:
+        parts.append("Условий самого проекта в своде нет — это «не знаем», а не «рассрочки нет».")
+    elif not subject.get("installment"):
+        parts.append(
+            "У проекта рассрочки нет: при равном прайсе сосед с рассрочкой продаёт мягче."
+        )
+        tone, headline = "watch", "Мы продаём жёстче соседей"
+    else:
+        ours_down, ours_term = subject.get("down_payment_pct"), subject.get("term_months")
+        if ours_down is not None and ours_term is not None:
+            parts.append(f"У нас взнос {_num(ours_down, 1)} % на {_num(ours_term)} мес.")
+        harder = (
+            down is not None and ours_down is not None and ours_down > down + INSTALLMENT_GAP_PP
+        ) or (term is not None and ours_term is not None and ours_term < term - INSTALLMENT_GAP_MONTHS)
+        if harder:
+            tone, headline = "watch", "Мы продаём жёстче соседей"
+            parts.append("Вход в проект дороже или короче рыночного — при той же цене метра.")
+    terms = peers.get("price_terms") or {}
+    if terms.get("скидка") or terms.get("удорожание"):
+        parts.append(
+            f"У соседей {_num(terms.get('скидка', 0))} программ со скидкой к прайсу и "
+            f"{_num(terms.get('удорожание', 0))} с удорожанием — прайс не равен цене сделки."
+        )
+    return {"code": "installment", "headline": headline, "text": " ".join(parts), "tone": tone}
+
+
 def findings(
     subject: dict[str, Any],
     peers: list[dict[str, Any]],
@@ -636,6 +693,7 @@ def findings(
         _pace_finding(subject, peers),
         _product_finding(blocks),
         _money_finding(blocks),
+        _installment_finding(blocks),
         _premium_finding(premium or [], peers),
         _volume_finding(subject, peers),
         _alive_finding(comparison or {}, peers, segment),

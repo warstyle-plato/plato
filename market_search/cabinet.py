@@ -117,6 +117,7 @@ SECTIONS: list[tuple[str, str, str]] = [
     ("rooms", "Комнатность и вымывание", "что берут и что остаётся — по комнатам и по полосам площади"),
     ("payment", "Способы оплаты", "доля ипотеки у проекта, у соседей и по классу в Москве"),
     ("channel", "Кто покупает", "физлица, юрлица и переуступки"),
+    ("installment", "Рассрочка у соседей", "первый взнос, срок и что рассрочка делает с прайсом"),
 ]
 
 
@@ -1850,6 +1851,17 @@ function blockCard(b,ctx){
       +cell(s.company_pct===undefined?'—':num(s.company_pct,1)+' %','юрлица')
       +cell(p.median===undefined||p.median===null?'—':num(p.median,1)+' %','юрлица у соседей, медиана')
       +cell(s.resale_deals===undefined?'—':num(s.resale_deals),'переуступок за месяц');
+  } else if(b.code==='installment'){
+    // Три ответа разные: условия названы, рассрочки нет, условий не знаем.
+    // Прочерк без подписи читался бы как «рассрочки не даёт».
+    const d=p.down_payment||{}, t=p.term||{};
+    kv=cell(s.installment===undefined?'—':(s.installment?'есть':'нет'),'рассрочка у проекта')
+      +cell(s.down_payment_pct===undefined?'—':num(s.down_payment_pct,1)+' %','первый взнос, самая мягкая программа')
+      +cell(s.term_months===undefined?'—':num(s.term_months)+' мес.','срок, самая мягкая программа')
+      +cell(d.median===undefined?'—':num(d.median,1)+' %','взнос у соседей, медиана')
+      +cell(t.median===undefined?'—':num(t.median)+' мес.','срок у соседей, медиана')
+      +cell(p.offering===undefined?'—':num(p.offering)+' из '+num(p.known),'соседей дают рассрочку')
+      +cell(p.keys_before_payment===undefined?'—':num(p.keys_before_payment),'соседей отдают ключи до полной оплаты');
   } else if(b.code==='absorption'){
     kv=cell(num(s.area_per_month),'м² в месяц')
       +cell(num(p.median),'медиана соседей')
@@ -1916,6 +1928,11 @@ function sectionTable(code,ctx){
     channel:[...base,{t:'Юрлица, %',num:1,f:r=>num(r.legal,1)},
              {t:'Переуступок',num:1,f:r=>num(r.resale)},
              {t:'Месяц',f:r=>esc(r.legal_at||'—')}],
+    installment:[...base,{t:'Рассрочка',f:r=>r.installment===undefined?'—':(r.installment?'есть':'нет')},
+                 {t:'ПВ, %',num:1,f:r=>num(r.installment_down_payment_pct,1)},
+                 {t:'Срок, мес.',num:1,f:r=>num(r.installment_term_months)},
+                 {t:'Ключи до оплаты',f:r=>r.installment_keys_before_payment===undefined?'—':(r.installment_keys_before_payment?'да':'нет')},
+                 {t:'Программ',num:1,f:r=>num(r.installment_programs)}],
   }[code];
   if(!cols) return '';
   // «Почему из двадцати тут только семь» — вопрос владельца. В выборке
@@ -1924,7 +1941,7 @@ function sectionTable(code,ctx){
   // Сколько соседей отвечают на вопрос этого раздела — сказано под ней.
   const KEY={price:'price_per_sqm',pace:'units_per_month',lot_size:'sold_lot_avg',
              absorption:'area_per_month',stock:'remaining_units',
-             payment:'mortgage',channel:'legal'}[code];
+             payment:'mortgage',channel:'legal',installment:'installment'}[code];
   const peers=ctx.peers||[];
   const have=KEY?peers.filter(p=>p[KEY]!==null&&p[KEY]!==undefined).length:peers.length;
   const note=(KEY&&peers.length&&have<peers.length)
@@ -2017,6 +2034,24 @@ function reportDigest(d){
     extra.push({name:'состав покупателей', text:`Покупатели: юрлиц у нас ${share(who.company_pct)}`
       +(whoPeers.median===undefined?'':`, у соседей медиана ${share(whoPeers.median)}`)
       +(who.resale_deals?`; переуступок за месяц ${num(who.resale_deals)}`:'')+'.'});
+  // Рассрочка уезжает числами по той же причине, что комнатность: наш вывод
+  // Платон пересказать может, а ответить «дороже ли у нас вход» — нет, пока
+  // взносов и сроков у него на руках не было.
+  const inst=block('installment').subject||{}, instPeers=block('installment').peers||{};
+  if(instPeers.known){
+    const d1=instPeers.down_payment||{}, t1=instPeers.term||{};
+    const terms=instPeers.price_terms||{};
+    extra.push({name:'рассрочка', text:'Рассрочка: '
+      +(inst.installment===undefined?'условий проекта в своде нет (это «не знаем», а не «нет рассрочки»)'
+        :inst.installment?`у нас взнос ${share(inst.down_payment_pct)}, срок ${num(inst.term_months)} мес.`
+        :'у проекта рассрочки нет')
+      +`; дают ${num(instPeers.offering)} соседей из ${num(instPeers.known)}`
+      +(d1.median===undefined?'':`, медиана взноса ${share(d1.median)}`)
+      +(t1.median===undefined?'':`, срок ${num(t1.median)} мес.`)
+      +(terms['скидка']||terms['удорожание']
+        ? `; программ со скидкой к прайсу ${num(terms['скидка']||0)}, с удорожанием ${num(terms['удорожание']||0)}`:'')
+      +'.'});
+  }
   const peers=(d.peers||[]).slice(0,12).map(p=>
     `${p.name} (${p.segment||'—'}, ${p.distance_km} км): ${p.price_per_sqm||'—'} ₽/м²,`
     +` ${p.units_per_month??'—'} ДДУ/мес`).join('; ');
@@ -4000,7 +4035,15 @@ function printHead(d){
     // подставленная, она читалась бы как обычный прайс.
     +(c.price_from_series?`; у ${num(c.price_from_series)} цена взята из помесячного`
       +` ряда источника — прайс-листа квартир у них нет`:'')
-    +(c.added_by_hand?`; вписано вручную ${num(c.added_by_hand)}`:'')+`.</div></div>`;
+    +(c.added_by_hand?`; вписано вручную ${num(c.added_by_hand)}`:'')+`.`
+    // Охват свода рассрочек — часть ответа: он накрывает четверть справочника,
+    // и без числа молчание про соседа читается как «рассрочки не даёт».
+    +(c.installments_known!==undefined&&c.used
+      ? ` Условия рассрочки известны у ${num(c.installments_known)} соседей из ${num(c.used)}`
+        +` (${esc(c.installments_source||'свод рассрочек')}, срез`
+        +` ${esc(c.installments_saved_at?dayDate(c.installments_saved_at):'—')}).`
+      :'')
+    +`</div></div>`;
 }
 
 function render(d){

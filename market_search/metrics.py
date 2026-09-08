@@ -34,6 +34,7 @@ BLOCK_ABSORPTION = "absorption"
 BLOCK_ROOMS = "rooms"
 BLOCK_PAYMENT = "payment"
 BLOCK_CHANNEL = "channel"
+BLOCK_INSTALLMENT = "installment"
 
 BLOCK_TITLES = {
     BLOCK_PRICE: "Цена метра",
@@ -44,6 +45,7 @@ BLOCK_TITLES = {
     BLOCK_ROOMS: "Комнатность и вымывание",
     BLOCK_PAYMENT: "Способы оплаты",
     BLOCK_CHANNEL: "Кто покупает",
+    BLOCK_INSTALLMENT: "Рассрочка у соседей",
 }
 
 
@@ -957,6 +959,73 @@ def channel_block(
     return block
 
 
+def installment_block(
+    subject: dict[str, Any], peers: list[dict[str, Any]], city: MoscowMarket
+) -> MetricBlock:
+    """Чем сосед торгует помимо цены.
+
+    Сравнение цен у нас витрина против витрины — так и подписано. Но витрину
+    двигает рассрочка: сосед с тем же прайсом, взносом 10 % и годом рассрочки
+    продаёт мягче, чем выглядит в таблице цен, а сосед, берущий за рассрочку
+    удорожание, — жёстче. Свод TrendAgent отвечает на это по 175 проектам из
+    685, поэтому охват стоит рядом с числами.
+
+    Три ответа здесь разные, и слить их нельзя: «рассрочка есть» (условия
+    названы), «рассрочки нет» (так сказал свод) и «условий не знаем» (проекта в
+    своде нет). Третий — наш пробел, а не отказ застройщика.
+    """
+    block = MetricBlock(BLOCK_INSTALLMENT, BLOCK_TITLES[BLOCK_INSTALLMENT])
+    known = [row for row in peers if row.get("installment") is not None]
+    offering = [row for row in known if row.get("installment")]
+    if subject.get("installment") is None:
+        block.notes.append("Условий рассрочки по проекту в своде нет — это «не знаем», а не «рассрочки нет»")
+    else:
+        block.subject = {
+            "installment": bool(subject.get("installment")),
+            "programs": subject.get("installment_programs"),
+        }
+        for key in ("down_payment_pct", "term_months", "keys_before_payment"):
+            if subject.get("installment_" + key) is not None:
+                block.subject[key] = subject["installment_" + key]
+        terms = subject.get("installment_price_terms") or {}
+        if terms:
+            block.subject["price_terms"] = terms
+
+    if not known:
+        block.notes.append("Ни одного соседа в своде рассрочек нет: сравнивать не с чем")
+        return block
+
+    down = _peer_stats(offering, "installment_down_payment_pct")
+    term = _peer_stats(offering, "installment_term_months")
+    block.peers = {
+        "known": len(known),
+        "total": len(peers),
+        "offering": len(offering),
+        "keys_before_payment": sum(1 for row in offering if row.get("installment_keys_before_payment")),
+    }
+    if down["count"]:
+        block.peers["down_payment"] = down
+        block.peers["vs_down_payment_pct"] = _ratio(
+            subject.get("installment_down_payment_pct"), down["median"]
+        )
+    if term["count"]:
+        block.peers["term"] = term
+        block.peers["vs_term_pct"] = _ratio(
+            subject.get("installment_term_months"), term["median"]
+        )
+    counts: dict[str, int] = {}
+    for row in offering:
+        for name, count in (row.get("installment_price_terms") or {}).items():
+            counts[name] = counts.get(name, 0) + int(count or 0)
+    if counts:
+        block.peers["price_terms"] = dict(sorted(counts.items(), key=lambda pair: -pair[1]))
+    if len(known) < len(peers):
+        block.notes.append(
+            f"Условия известны у {len(known)} соседей из {len(peers)}: остальных в своде нет"
+        )
+    return block
+
+
 BUILDERS: dict[str, Callable[..., MetricBlock]] = {
     BLOCK_PRICE: price_block,
     BLOCK_PACE: pace_block,
@@ -966,6 +1035,7 @@ BUILDERS: dict[str, Callable[..., MetricBlock]] = {
     BLOCK_ROOMS: rooms_block,
     BLOCK_PAYMENT: payment_block,
     BLOCK_CHANNEL: channel_block,
+    BLOCK_INSTALLMENT: installment_block,
 }
 
 

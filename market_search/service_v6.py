@@ -42,6 +42,7 @@ from .pulse import PulseClient
 from .price_evidence import VerifiedPriceEnricher
 from .recommendation import market_recommendation, official_recommendation
 from .cards import ProjectCards
+from .installments import Installments
 from .registry import ProjectRegistry
 from .subject import Subject, resolve_subject
 from .segments import SegmentResolver, detect_district, districts_match, segments_comparable
@@ -164,6 +165,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         # самого начала и не читался никем — отчёт сравнивал апартаменты с
         # квартирами, не называя этого.
         self.cards = ProjectCards.bundled()
+        self.installments = Installments.bundled()
         self.deals = DealsSummary.bundled()
         # Разбор кадастрового номера живёт в движке: там НСПД, там же его
         # используют ТЭП и анализ территории. Второй такой путь заводить нельзя,
@@ -654,6 +656,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
             **self.pulse.project_totals(project.complex_id),
             **self.pulse.remaining(project.complex_id),
             **self.cards.facts(project.complex_id),
+            **self.installments.facts(project.complex_id, project.name),
         }
         if latitude is not None and longitude is not None:
             row["distance_km"] = round(
@@ -720,6 +723,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 **self.pulse.remaining(subject.project_id),
                 **_report_extras(self.dynamics, self.deals, subject.project_id),
                 **self.cards.facts(subject.project_id),
+                **self.installments.facts(subject.project_id, subject.project_name),
             }
 
         # Класс ставит «Пульс» — решение владельца от 18.08.2026, ручной подмены
@@ -820,6 +824,9 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 # Вид жилья читается тем же ключом, что у объекта: правило одно
                 # на обе стороны сравнения, разойтись им негде.
                 **self.cards.facts(project.complex_id),
+                # Условия рассрочки — тем же ключом и с тем же словарём, что у
+                # объекта: сравнивать иначе было бы нечего.
+                **self.installments.facts(project.complex_id, project.name),
             }
             if include_project_totals:
                 row.update(self.pulse.project_totals(project.complex_id))
@@ -1081,6 +1088,14 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 "housing_kind_known": sum(
                     1 for row in peers if row.get("housing_kind")
                 ),
+                # У скольких соседей известны условия рассрочки. Свод накрывает
+                # четверть справочника, и молчание про соседа — это «не знаем»,
+                # а не «рассрочки не даёт»; без числа охват выглядел бы полным.
+                "installments_known": sum(
+                    1 for row in peers if row.get("installment") is not None
+                ),
+                "installments_source": self.installments.source,
+                "installments_saved_at": self.installments.saved_at,
                 # Сколько соседей в выборке поставил человек, а не источник.
                 # Число печатается рядом с остальными: выборка, наполовину
                 # собранная руками, и выборка из источника — разные вещи, и
