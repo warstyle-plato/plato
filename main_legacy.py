@@ -76,7 +76,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.22.82"
+VERSION = "0.22.83"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -15643,6 +15643,27 @@ def _v4_set_or_insert_cell(
 _V4_ROW_CELL_RE = re.compile(r'<x:c r="([A-Z]{1,3})(\d+)"[^>]*?(?:/>|>.*?</x:c>)', re.S)
 
 
+def _v4_row_formulas(xml: str, row: int) -> dict[str, str]:
+    """Формулы всей строки за один проход по листу.
+
+    Обратная сторона `_v4_set_cells`: читать ячейку за ячейкой так же дорого,
+    как писать. Блок паркинга объектов читал 120 месяцев по четырём строкам в
+    четырёх блоках — почти пять тысяч проходов по мегабайтному листу, и сборка
+    книги подорожала с 3,2 до 15,0 секунды. Платил за это весь набор: книгу
+    собирают 34 файла проверок, и полный прогон на CI вырос с 40 минут до 74.
+    """
+    found = re.search(
+        r'<x:row r="%d"[^>]*?(?:/>|>(?P<body>.*?)</x:row>)' % row, xml, re.S)
+    if not found:
+        return {}
+    out: dict[str, str] = {}
+    for cell in _V4_ROW_CELL_RE.finditer(found.group("body") or ""):
+        formula = re.search(r"<x:f>(.*?)</x:f>", cell.group(0), re.S)
+        if formula:
+            out[cell.group(1) + cell.group(2)] = html.unescape(formula.group(1))
+    return out
+
+
 def _v4_set_cells(xml: str, row: int, cells: dict[str, dict[str, Any]],
                   styles: dict[str, str | None] | None = None) -> tuple[str, bool]:
     """Пишет пачку ячеек ОДНОЙ строки за один проход по листу.
@@ -16876,10 +16897,16 @@ def _v4_object_parking_block(xml: str, missing: list[str]) -> str:
         # Цена — цена машино-места с тем же ростом, что у объекта: формула цены
         # берётся из его строки и в ней подменяется базовая ставка. Написать
         # свою значило бы завести вторую реализацию цены.
+        # Месяцы пишутся ПАЧКОЙ на строку, а не ячейка за ячейкой: лист
+        # мегабайтный, и проход по нему на каждую ячейку стоит дороже самой
+        # записи (см. `_v4_set_cells` и `_v4_row_formulas`).
+        prices = _v4_row_formulas(xml, price_row)
+        month_units: dict[str, dict[str, Any]] = {}
+        month_value: dict[str, dict[str, Any]] = {}
         written = 0
         for index in range(120):
             column = _v4_column_letter(4 + index)
-            price = _v4_cell_formula(xml, f"{column}{price_row}")
+            price = prices.get(f"{column}{price_row}")
             if price is None:
                 break
             own, swapped = re.subn(
@@ -16887,17 +16914,18 @@ def _v4_object_parking_block(xml: str, missing: list[str]) -> str:
             if not swapped:
                 missing.append(f"паркинг объектов: цена {column}{price_row} не опознана")
                 break
-            xml, ok_units = _v4_set_or_insert_cell(
-                xml, f"{column}{units_row}",
-                formula=(f"IF($B${volume_row}=0,0,$B${units_row}"
-                         f"/$B${volume_row}*{column}{volume_row})"))
-            xml, ok_value = _v4_set_or_insert_cell(
-                xml, f"{column}{revenue_row}",
-                formula=f"{column}{units_row}*({own})/1000")
-            if not (ok_units and ok_value):
-                missing.append(f"паркинг объектов: месяц {column} блока {label}")
-                break
+            month_units[f"{column}{units_row}"] = {
+                "formula": (f"IF($B${volume_row}=0,0,$B${units_row}"
+                            f"/$B${volume_row}*{column}{volume_row})")}
+            month_value[f"{column}{revenue_row}"] = {
+                "formula": f"{column}{units_row}*({own})/1000"}
             written += 1
+        for target, payload in ((units_row, month_units), (revenue_row, month_value)):
+            if not payload:
+                continue
+            xml, done = _v4_set_cells(xml, target, payload)
+            if not done:
+                missing.append(f"паркинг объектов: месяцы строки {target} блока {label}")
         if written < 100:
             missing.append(f"паркинг объектов: у блока {label} расписано {written} месяцев")
         # Маркетинг и расходы на продажи считаются от ВСЕЙ выручки объекта:
@@ -16914,9 +16942,11 @@ def _v4_object_parking_block(xml: str, missing: list[str]) -> str:
         # «неопознанную формулу» — закричать там, где всё на месте.
         for cost_row in (revenue_row - 8, revenue_row - 7,
                          revenue_row - 4, revenue_row - 3):
+            formulas = _v4_row_formulas(xml, cost_row)
+            payload: dict[str, dict[str, Any]] = {}
             for index in range(120):
                 column = _v4_column_letter(4 + index)
-                formula = _v4_cell_formula(xml, f"{column}{cost_row}")
+                formula = formulas.get(f"{column}{cost_row}")
                 if formula is None:
                     break
                 if f"{column}{volume_row + 2}" not in formula:
@@ -16924,13 +16954,15 @@ def _v4_object_parking_block(xml: str, missing: list[str]) -> str:
                     break
                 if f"{column}{revenue_row}" in formula:
                     continue
-                xml, done = _v4_set_cell(
-                    xml, f"{column}{cost_row}",
-                    formula=formula.replace(f"{column}{volume_row + 2}",
-                                            f"({column}{volume_row + 2}+{column}{revenue_row})"))
-                if not done:
-                    missing.append(f"паркинг объектов: {column}{cost_row}")
-                    break
+                payload[f"{column}{cost_row}"] = {
+                    "formula": formula.replace(
+                        f"{column}{volume_row + 2}",
+                        f"({column}{volume_row + 2}+{column}{revenue_row})")}
+            if not payload:
+                continue
+            xml, done = _v4_set_cells(xml, cost_row, payload)
+            if not done:
+                missing.append(f"паркинг объектов: строка {cost_row}")
         # CAPEX своего подземного — по подземной ставке и теми же множителями
         # инфляции очереди, что и остальной CAPEX объекта.
         capex = _v4_cell_formula(xml, capex_cell)
