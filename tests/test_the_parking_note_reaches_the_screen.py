@@ -116,7 +116,7 @@ def _const(name: str) -> str:
     return PAGE[start:end + 1]
 
 
-def _render_fields(result):
+def _render_fields(result, inputs=None):
     """Отрисовать подписи и поля так, как их рисует страница."""
     script = """
 const cells = {parkNorm_offices:{textContent:""}, parkNorm_retail:{textContent:""},
@@ -127,7 +127,7 @@ global.document = {getElementById: id => cells[id] || null, activeElement: null}
 function escapeHtml(s){return String(s)}
 const num = v => String(v);
 %(prefixes)s
-let inputs = {};
+let inputs = %(inputs)s;
 let lastResult = %(result)s;
 %(a)s
 %(b)s
@@ -137,8 +137,10 @@ console.log(JSON.stringify({
   note_retail: cells.parkNorm_retail.textContent,
   field_offices: cells.f_offices_parking_under_spaces.value,
   field_retail: (cells.f_retail_parking_under_spaces||{value:null}).value,
+  note_retail: cells.parkNorm_retail.textContent,
   inputs}));
 """ % {"result": json.dumps(result, ensure_ascii=False),
+       "inputs": json.dumps(inputs or {}, ensure_ascii=False),
        "prefixes": _const("OBJECT_PARKING_PREFIXES"),
        "a": _piece("objectParkingFieldNote"),
        "b": _piece("renderObjectParkingNote")}
@@ -277,6 +279,7 @@ global.document = {getElementById: id => (id === 'parkNorm_offices' ? cell : nul
 function escapeHtml(s){return String(s)}
 const num = v => String(v);
 %(prefixes)s
+let inputs = {};
 let lastResult = null;
 %(a)s
 %(b)s
@@ -429,3 +432,39 @@ def test_a_fresh_result_still_fills_the_field() -> None:
     ]}})
     assert seen["field_offices"] == 159, seen
     assert "нормативу приложения 6" in seen["note_offices"], seen["note_offices"]
+
+
+def test_a_stale_result_is_not_called_a_disabled_object() -> None:
+    """Галочка стоит, а расчёт её не видел — так и говорим.
+
+    Экран владельца 08.09.2026, «ТЦ / коммерция ОСЗ»: объект включён, поле 0.
+    Движок требование считает — 186 мест по X2=54, они строятся и не продаются,
+    — и писатель их ставит; померено сквозь. Не совпадали не числа, а моменты:
+    ответ расчёта старше галочки.
+
+    Первая редакция этой подписи сказала бы в такую минуту «объект выключен» —
+    неправду о том, что человек видит строкой выше. Признак берётся из вводных
+    (`inputs[prefix+'_enabled']`), а не из ответа: ответ и есть то, что устарело.
+    """
+    seen = _render_fields(
+        {"parking": {"own": [
+            {"prefix": "retail", "enabled": False, "by_norm": False,
+             "required_spaces": 0, "under_spaces": 0, "over_spaces": 0},
+        ]}},
+        inputs={"retail_enabled": True},
+    )
+    note = seen["note_retail"]
+    assert "ещё не видел" in note, note
+    assert "выключен" not in note, f"сказано неправдой о включённом объекте: {note}"
+
+
+def test_a_truly_disabled_object_still_says_it_is_off() -> None:
+    """Предохранитель: различение не съело сам ответ про выключённый объект."""
+    seen = _render_fields(
+        {"parking": {"own": [
+            {"prefix": "retail", "enabled": False, "by_norm": False,
+             "required_spaces": 0, "under_spaces": 0, "over_spaces": 0},
+        ]}},
+        inputs={"retail_enabled": False},
+    )
+    assert "Объект выключен" in seen["note_retail"], seen["note_retail"]
