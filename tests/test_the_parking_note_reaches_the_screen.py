@@ -23,6 +23,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
@@ -68,7 +70,8 @@ def _render(result) -> str:
                         "note": _piece("objectParkingFieldNote") + "\n"
                         + _piece("markParkingByNorm") + "\n"
                         + _piece("reconcileLegacyParking"),
-                        "fn": _piece("renderObjectParkingNote")}
+                        "fn": _piece("renderObjectParkingFieldNotes") + "\n"
+                        + _piece("renderObjectParkingNote")}
     out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=60)
     assert out.returncode == 0, out.stderr[-2000:]
     return json.loads(out.stdout)["html"]
@@ -153,10 +156,21 @@ console.log(JSON.stringify({
        # неопределённом имени, и падение выходит про стенд, а не про подпись.
        "mark": _piece("markParkingByNorm") + "\n"
                  + _piece("reconcileLegacyParking"),
-       "b": _piece("renderObjectParkingNote")}
+       # Писатель подписей — своя функция: её зовёт и форма, и результат.
+       "b": _piece("renderObjectParkingFieldNotes") + "\n"
+              + _piece("renderObjectParkingNote")}
     out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=60)
     assert out.returncode == 0, out.stderr[-2000:]
     return json.loads(out.stdout)
+
+def _result(by_norm: bool, under: int, over: int):
+    """Ответ расчёта об офисах — чтобы состояния подписи читались рядом."""
+    return {"parking": {"own": [
+        {"prefix": "offices", "tep_key": "offices", "enabled": True,
+         "by_norm": by_norm, "required_spaces": under + over,
+         "units": under + over, "under_spaces": under, "over_spaces": over},
+    ]}}
+
 
 def test_the_asphalt_is_named_asphalt() -> None:
     html = _render({"parking": {"note": (
@@ -304,7 +318,9 @@ console.log(JSON.stringify({left: cell.textContent}));
        "a": _piece("objectParkingFieldNote"),
        "mark": _piece("markParkingByNorm") + "\n"
                  + _piece("reconcileLegacyParking"),
-       "b": _piece("renderObjectParkingNote")}
+       # Писатель подписей — своя функция: её зовёт и форма, и результат.
+       "b": _piece("renderObjectParkingFieldNotes") + "\n"
+              + _piece("renderObjectParkingNote")}
     out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=60)
     assert out.returncode == 0, out.stderr[-2000:]
     left = json.loads(out.stdout)["left"]
@@ -325,7 +341,11 @@ def test_the_field_hint_does_not_promise_an_empty_box() -> None:
     assert hints, "полей паркинга объекта на экране нет"
     for hint in hints:
         assert "пусто" not in hint, hint
-        assert "норматив" in hint and "перебива" in hint, hint
+    # Обещание пустоты снято, а обещание нормы переехало в подпись — там оно и
+    # проверяется: подсказка теперь несёт единицу, чтобы не говорить то же
+    # самое дважды подряд.
+    said = _render_fields(_result(True, 159, 0), {"offices_enabled": True})["note_offices"]
+    assert "норматив" in said and "перебить" in said, said
 
 
 def test_the_screen_does_not_claim_the_norm_and_the_garage_agree() -> None:
@@ -405,21 +425,64 @@ def test_a_disabled_object_says_why_the_field_is_empty() -> None:
     assert seen["field_offices"] in (None, 0), "выключенному объекту норму не пишем"
 
 
-def test_the_field_hint_does_not_promise_the_norm_unconditionally() -> None:
-    """Подсказка у поля — утверждение о ПОЛЕ, а не о методике.
+def test_the_field_hint_does_not_repeat_the_note() -> None:
+    """Про норму говорит подпись, и только она.
 
-    То же правило уже было выведено 07.09.2026 на плате за ВРИ и здесь не
-    применялось: подсказка обещала «заполняется нормативом» всегда, в том числе
-    у выключенного объекта, где норма не считается вовсе.
+    Прежде это же утверждение — «подсказка не обещает норму безусловно» —
+    держалось оговоркой «у ВКЛЮЧЁННОГО объекта» прямо в подсказке. Оговорка
+    была верна, а цена её видна на телефоне: полторы сотни знаков серым у
+    КАЖДОГО из шести полей, и ровно то же слово в слово повторяет подпись под
+    полем (экран владельца, 09.09.2026). Одно и то же дважды подряд перестают
+    читать — и первым перестают читать нижнее, а именно оно отвечает про
+    состояние ЭТОГО поля.
+
+    Теперь подсказка несёт единицу, а обещание живёт в подписи, где оно и так
+    условно по построению: у каждого состояния своя строка.
     """
     import main_legacy as core
 
-    hints = [field[2] for _title, fields in core.FIELD_GROUPS for field in fields
+    hints = [(field[0], field[2]) for _title, fields in core.FIELD_GROUPS
+             for field in fields
              if str(field[0]).endswith(("_parking_under_spaces", "_parking_over_spaces"))]
-    assert hints, "поля паркинга объектов не найдены"
-    for hint in hints:
-        assert "нормативом приложения 6" in hint, hint
-        assert "ВКЛЮЧЁННОГО" in hint, f"обещание безусловно: {hint}"
+    assert len(hints) == 6, f"полей паркинга объектов найдено {len(hints)}"
+    for key, hint in hints:
+        assert "приложения 6" not in hint, (
+            f"{key}: подсказка повторяет подпись под полем — {hint}")
+        assert len(hint) < 40, f"{key}: подсказка длиной {len(hint)} — это снова стена"
+    # А сама норма при этом названа: подпись говорит и чьё число, и чем перебить.
+    said = _render_fields(_result(True, 159, 0), {"offices_enabled": True})["note_offices"]
+    assert "приложения 6" in said and "перебить" in said, said
+
+
+def test_no_state_of_the_note_is_silent() -> None:
+    """У подписи нет состояния, в котором она молчит.
+
+    Молчание под полем с нулём читается как ответ: по прежней подсказке ноль
+    значит «гаража нет». Замер в настоящем Chromium нашёл ровно такую дыру —
+    расчёт есть, объект включён, а в его ответе этого объекта ещё нет (галочку
+    тронули, пересчёт не дошёл): подпись возвращала пустую строку.
+    """
+    states = {
+        "расчёта нет": ({}, {}),
+        "объект включён, а расчёта о нём ещё нет":
+            ({"parking": {"own": []}}, {"offices_enabled": True}),
+        "объект выключен и расчёта о нём нет": ({"parking": {"own": []}}, {}),
+        "число от нормы": (_result(True, 159, 0), {"offices_enabled": True}),
+        "норма даёт ноль": (_result(True, 0, 0), {"offices_enabled": True}),
+    }
+    for name, (result, inputs) in states.items():
+        note = _render_fields(result, inputs)["note_offices"]
+        assert note, f"состояние «{name}»: подпись молчит"
+
+
+def test_the_note_stands_under_both_parking_fields() -> None:
+    """Подпись отвечает за оба поля объекта — значит стоит после обоих.
+
+    Между ними она объясняла бы только верхнее, а число нормы приходит в оба.
+    """
+    place = PAGE.index("parkNorm_${id.split('_')[0]}")
+    head = PAGE.rindex("if(/^(offices|retail|sports)_parking_", 0, place)
+    assert "_parking_over_spaces$/" in PAGE[head:place], PAGE[head:place]
 
 
 def test_without_a_calculation_the_note_says_so() -> None:
@@ -453,7 +516,7 @@ def test_a_fresh_result_still_fills_the_field() -> None:
          "required_spaces": 159, "under_spaces": 159, "over_spaces": 0},
     ]}})
     assert seen["field_offices"] == 159, seen
-    assert "нормативу приложения 6" in seen["note_offices"], seen["note_offices"]
+    assert "приложения 6" in seen["note_offices"], seen["note_offices"]
 
 
 def test_a_stale_result_is_not_called_a_disabled_object() -> None:
@@ -587,3 +650,61 @@ def test_a_saved_project_recognises_the_norms_own_number() -> None:
     seen_other = _render_fields(result_other, inputs=other)
     assert seen_other["inputs"].get("_parking_by_norm") == [], (
         "число, не равное норме, объявлено её — так переписывают вписанное руками")
+
+def test_in_a_real_browser_the_note_is_written_by_the_form() -> None:
+    """Подпись стоит под полем на живой странице, а не только в стенде.
+
+    Все проверки выше гоняют саму функцию через node — и были зелёными, пока
+    ячейка на экране оставалась ПУСТОЙ: писателя звал только `renderResult`, то
+    есть подпись появлялась после удачного расчёта и не появлялась там, где она
+    и нужна, — когда расчёта нет. Замер в Chromium: `parkNorm_offices` пуст, а
+    вызов функции руками тут же даёт текст. Стенд такого не видит по
+    построению: он зовёт то, что проверяет.
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception:
+        pytest.skip("playwright недоступен")
+    chrome = Path("/opt/pw-browsers/chromium-1194/chrome-linux/chrome")
+    if not chrome.exists():
+        pytest.skip("chromium в образе не найден")
+    import threading
+    import time as _time
+
+    import uvicorn
+
+    import main as wrapper
+
+    port = 18402
+    server = uvicorn.Server(uvicorn.Config(
+        wrapper.app, host="127.0.0.1", port=port, log_level="error"))
+    threading.Thread(target=server.run, daemon=True).start()
+    for _ in range(300):
+        if server.started:
+            break
+        _time.sleep(0.05)
+    assert server.started
+
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(executable_path=str(chrome))
+        page = browser.new_page(viewport={"width": 390, "height": 844})
+        errors: list[str] = []
+        page.on("pageerror", lambda exc: errors.append(str(exc)))
+        page.goto(f"http://127.0.0.1:{port}/", wait_until="networkidle")
+        seen = page.evaluate("""() => {
+          inputs.offices_enabled = true;
+          inputs.offices_gba_sqm = 186000;
+          inputs.offices_saleable_sqm = 87000;
+          renderInputs();
+          const cell = document.getElementById('parkNorm_offices');
+          const field = document.getElementById('f_offices_parking_under_spaces');
+          const label = field ? field.closest('div').querySelector('label') : null;
+          return {note: cell ? cell.textContent.trim() : null,
+                  label: label ? label.textContent.trim() : null};
+        }""")
+        browser.close()
+    assert not errors, errors[:3]
+    assert seen["note"], "подпись под полем пуста на отрисованной форме"
+    assert "приложения 6" not in (seen["label"] or ""), (
+        f"подсказка снова повторяет подпись: {seen['label']}")
+
