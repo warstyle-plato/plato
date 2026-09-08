@@ -381,7 +381,7 @@ __DEVELOPAID_CONTOUR_STYLE__
   body{background:#fff}
   header{border:0;padding:0 0 8px}
   main{max-width:none;padding:0}
-  #form, #askcard, .chips, button, #hintout, .cardwrap{display:none !important}
+  #form, .ai-fab, .chips, button, #hintout, .cardwrap{display:none !important}
   #bubble{display:none}
   .whoshow,#tip{display:none !important}
   /* Рабочая карточка — это пульт: чем опознан объект, кого добавить, кого
@@ -583,16 +583,12 @@ __DEVELOPAID_BNMAP__
 <script>document.body.dataset.version='__DEVELOPAID_VERSION__';</script>
 <div id="tip" role="status"></div>
   <!-- Разговор идёт в ящике справа — том же, что на расчёте (владелец,
-       04.09.2026). Блоков в кабинете два, а ящик один: два ящика рядом это
-       два разных Платона на одном экране. Груз даёт тот блок, из которого
-       нажали, — карточка остаётся кнопкой. -->
-  <div class="card" id="askcard" style="display:none">
-    <h2>Спросить Платона Сергеевича</h2>
-    <div class="muted" style="font-size:13px;margin-bottom:8px">
-      Он видит числа этого отчёта и объясняет их. Считает движок — модель не пересчитывает.
-    </div>
-    <button type="button" class="ai-open-btn" id="askbtn"><span class="ai-dot ready"></span><span class="ai-label">Спросить Платона</span></button>
-  </div>
+       04.09.2026). Блоков в кабинете несколько, а ящик один: два ящика рядом
+       это два разных Платона на одном экране. Кнопка тоже одна и висит над
+       экраном: карточка внизу блока находилась только тем, кто дочитал до
+       низа, а у свода продаж это десять экранов (владелец, 06.09.2026). О
+       каком блоке спросит — написано на самой кнопке; груз даёт он же. -->
+__DEVELOPAID_PLATO_LAUNCHER__
 __DEVELOPAID_PLATO_DRAWER__
   <footer class="plato-footer">
     <img src="/assets/platon-quote.webp" alt="Платон Сергеевич Федоскин: «Хорошие дома начинаются с правильных вопросов»" loading="lazy">
@@ -2053,7 +2049,11 @@ const MARKET_SURFACE={
   }
 };
 
-function askPlato(){ return platoOpen(MARKET_SURFACE) }
+// Блок объявляет себя всплывающей кнопке: пока `#out` пуст, спрашивать о рынке
+// нечего, и кнопка о нём не говорит. Название на кнопке — часть ответа: блоков
+// на странице несколько, и «Спросить Платона» без него не говорит, о чём будет
+// разговор.
+platoBlock('#out', MARKET_SURFACE, 'об отчёте о рынке');
 
 
 // Карточка соседа. Открывается по клику на имя и рисуется из уже пришедших
@@ -3393,20 +3393,14 @@ function renderSales(d){
     html+=`<div class="muted" style="font-size:12.5px;margin-top:6px">Не прочитано — ${esc(line)}</div>`;
   });
 
-  // Разговор, а не одна кнопка. Кнопка задавала один вопрос и на этом
-  // кончалась: не понравился ответ — переспросить негде (владелец,
-  // 27.08.2026). Устройство то же, что у диалога о рынке выше: подсказки
-  // одним нажатием, поле для своего вопроса, ответ под ним. Вопрос о разборе
-  // стоит в поле сразу — печатать его каждый раз незачем.
-  html+='<div class="card noprint" style="margin-top:16px;padding:14px">'
-     +'<h2 style="margin-top:0">Спросить Платона Сергеевича о продажах</h2>'
-     +'<div class="muted" style="font-size:13px;margin-bottom:8px">'
-     +'Он видит свод этого проекта и объясняет его. Считает движок — модель не пересчитывает.</div>'
-     +'<button type="button" class="ai-open-btn" id="salesask">'
-     +'<span class="ai-dot ready"></span><span class="ai-label">Спросить Платона</span></button>'
-     +'</div>';
+  // Разговор идёт в ящике справа, а зовёт его всплывающая кнопка: своей
+  // карточки у свода больше нет. Она стояла ПОД сводом — то есть под десятью
+  // экранами таблиц, — и находил её только тот, кто дочитал до низа (владелец,
+  // 06.09.2026). Что Платон видит и чего не считает, сказано в шапке самого
+  // ящика: это `SALES_SURFACE.hint`, и второй такой подписи рядом не бывает.
   box.innerHTML=html+'</div>';
-  $('#salesask').onclick=askPlatoSales;
+  // Свод построен — кнопке есть о чём говорить.
+  platoFabSync();
   // Дата среза — самая свежая из источников: два файла разных дат, поданных
   // как один проект, — худший исход, и в документе это должно быть видно.
   const salesDay=()=>String((salesData&&salesData.sources||[])
@@ -3758,7 +3752,7 @@ const SALES_SURFACE={
   }
 };
 
-function askPlatoSales(){ return platoOpen(SALES_SURFACE) }
+platoBlock('#salesreport', SALES_SURFACE, 'о продажах');
 
 // План продаж и отчёт правлению приезжают тем же файлом проекта, что и всё
 // остальное: своей кнопки у них больше нет. Две загрузки рядом означали два
@@ -4094,7 +4088,9 @@ function render(d){
   html+=finalCard(d);
   $('#out').innerHTML=html;
   wireBubbles(market, 'bubble');
-  $('#askcard').style.display='block';
+  // Блок построен — значит есть о чём спросить. Кнопку показывает не эта
+  // строка, а сам блок: пока `#out` пуст, спрашивать о нём нечего.
+  platoFabSync();
   $('#pdf').style.display='inline-block';
   $('#reset').style.display='inline-block';
   wireCards();
@@ -4179,7 +4175,6 @@ async function printPdf({html, title, footer, file, button, state}){
 }
 
 on('#go','click',build);
-on('#askbtn','click',askPlato);
 // PDF — печатью самой страницы. Второй вёрстки не заводим: она разошлась бы с
 // первой, и мы получили бы два достоверных на вид отчёта с разными числами.
 // PDF печатает сервер: номер страницы браузер из CSS ставить не умеет, а
@@ -4212,7 +4207,7 @@ on('#reset','click',function(){
   if($('#platoField')) $('#platoField').value='';
   $('#out').innerHTML=''; $('#hintout').innerHTML='';
   $('#planstate').textContent=''; $('#state').textContent='';
-  $('#askcard').style.display='none';
+  platoFabSync();
   $('#pdf').style.display='none'; $('#reset').style.display='none';
   $('#q').focus();
 });
@@ -4413,7 +4408,11 @@ def plato_drawer() -> tuple[str, str]:
         import main_legacy
         import plato_question
 
-        return (plato_question.drawer_css(main_legacy),
+        # Стили ящика — из `PAGE`; стили всплывающей кнопки — из пакета: на
+        # расчёте Платон стоит в шапке страницы и виден всегда, поэтому такой
+        # кнопки там нет и брать её оттуда неоткуда.
+        return (plato_question.drawer_css(main_legacy)
+                + "\n" + plato_question.launcher_css(),
                 plato_question.drawer_markup(plato_question.DRAWER_IDS))
     except Exception:
         return "", ""
@@ -4492,6 +4491,9 @@ def cabinet_page(view: str = "home") -> str:
         .replace(plato_question.PLACEHOLDER, plato_question.script())
         .replace(plato_question.DRAWER_CSS_PLACEHOLDER, _drawer_css)
         .replace(plato_question.DRAWER_PLACEHOLDER, _drawer_markup)
+        # Кнопка живёт вместе с ящиком: нет движка — нет ящика, и звать нечего.
+        .replace(plato_question.LAUNCHER_PLACEHOLDER,
+                 plato_question.floating_launcher() if _drawer_markup else "")
         .replace(VERSION_PLACEHOLDER, app_version())
         .replace("__DEVELOPAID_CONTOUR_STYLE__", management_contour.STYLE)
         .replace(management_contour.PLACEHOLDER, contour)
