@@ -76,7 +76,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.22.86"
+VERSION = "0.22.87"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -15836,6 +15836,27 @@ def _v4_sheet_path(archive: zipfile.ZipFile, name: str) -> str:
     return "xl/" + target.lstrip("/").removeprefix("xl/")
 
 
+def _v4_sheet_names_by_path(archive: zipfile.ZipFile) -> dict[str, str]:
+    """Путь листа в архиве -> его имя в книге.
+
+    Продление сетки решается по ИМЕНИ листа, а имя лежит в `workbook.xml`:
+    угадывать его по номеру файла нельзя — порядок `sheetN.xml` в шаблоне
+    имени не соответствует (CF_4 лежит в sheet19.xml).
+    """
+    workbook = archive.read("xl/workbook.xml").decode("utf-8")
+    rels = archive.read("xl/_rels/workbook.xml.rels").decode("utf-8")
+    targets = {match.group(2): match.group(1) for match in re.finditer(
+        r'Target="([^"]+)"[^>]*?Id="([^"]+)"', rels)}
+    targets.update({match.group(1): match.group(2) for match in re.finditer(
+        r'Id="([^"]+)"[^>]*?Target="([^"]+)"', rels)})
+    out: dict[str, str] = {}
+    for match in re.finditer(r'<x:sheet name="([^"]+)"[^>]*?r:id="([^"]+)"', workbook):
+        target = targets.get(match.group(2))
+        if target:
+            out["xl/" + target.lstrip("/").removeprefix("xl/")] = match.group(1)
+    return out
+
+
 def _v4_inputs_sheet_path(archive: zipfile.ZipFile) -> str:
     return _v4_sheet_path(archive, "Вводные")
 
@@ -16688,6 +16709,369 @@ def _v4_copy_block(xml: str, rows: range, offset: int, *,
     if not parts or tail not in xml:
         return xml, []
     return xml.replace(tail, "".join(parts) + tail, 1), written
+
+
+# ---------------------------------------------------------------------------
+# Горизонт книги. Сетка месяцев шаблона — колонки D..DS, 120 месяцев (у листа
+# «СРОКИ» E..DT: левее стоят даты начала и окончания вехи). Проект длиннее
+# сетки обрезался МОЛЧА: итоги считаются `SUM(D..DS)`, хвост просто не
+# складывался, и `missing` при этом оставался пуст. Измерено на умолчаниях:
+# четыре очереди с шагом 24 — 127 месяцев (хвост пуст, книга сходится с
+# движком), с шагом 36 — 163 месяца и 638,2 млн ₽ потока за сеткой, с шагом
+# 48 — 199 месяцев и 2 363,9 млн. Пресеты владельца в сетку помещаются (91 и
+# 103 месяца) — поэтому поломка и дожила: ни один прогон в неё не заходил.
+#
+# Ряд продолжается ДО ГОРИЗОНТА ДВИЖКА, а не расширяется навсегда: обычный
+# проект не платит ни одной лишней колонки. Формулы не сочиняются — копируется
+# последняя колонка со сдвигом ссылок; не опознали строку — `missing`, а не
+# молчание.
+# ---------------------------------------------------------------------------
+
+_V4_GRID_SHEETS: dict[str, tuple[str, str]] = {
+    "Ставки": ("D", "DS"), "Продажи": ("D", "DS"), "ВРИ": ("D", "DS"),
+    "CAPEX": ("D", "DS"), "CF_1": ("D", "DS"), "CF_2": ("D", "DS"),
+    "CF_3": ("D", "DS"), "CF_4": ("D", "DS"), "CF": ("D", "DS"),
+    "КРЕДИТЫ": ("D", "DS"), "ОБЪЕКТЫ": ("D", "DS"), "СРОКИ": ("E", "DT"),
+}
+# Сетка бывает не только у шаблона: блок раздачи налога по годам движок
+# дописывает на КОНСОЛИДАТОР сам, и у него те же 120 месяцев (строки 39–44).
+# Пропущенный, он оставлял `SUMIF($D$39:$DS$39,…)` на прежнем конце при
+# продлённом `'CF'!$D$37:$FL$37` — год считался по одной сетке, налог по
+# другой. Объявлен отдельно, потому что в шаблоне этих колонок нет и сверять
+# их с ним нечем.
+_V4_GRID_SHEETS_BUILT: dict[str, tuple[str, str]] = {"КОНСОЛИДАТОР": ("D", "DS")}
+_V4_GRID_SHEETS.update(_V4_GRID_SHEETS_BUILT)
+_V4_GRID_MONTHS = 120
+# Номер месяца — строка 4; у «СРОКИ» её нет, там в четвёртой строке даты вех.
+_V4_GRID_PERIOD_ROW = 4
+_V4_GRID_SHEETS_WITHOUT_PERIOD = frozenset({"СРОКИ", "КОНСОЛИДАТОР"})
+# Предохранитель: горизонт приходит числом из движка, и опечатка в нём стоила
+# бы книги на тысячу колонок. Сорок лет заведомо больше любого проекта.
+_V4_GRID_MAX_MONTHS = 480
+# Квартальная сводка «Дашборда» — строки 4..43, сорок кварталов, те же 120
+# месяцев по три. Диаграммы читают её, а не сетку, поэтому продлевать её надо
+# отдельно: без этого графики показывают первые десять лет и молчат об этом.
+_V4_DASHBOARD_SHEET = "Дашборд"
+_V4_DASHBOARD_FIRST_QUARTER_ROW = 4
+_V4_DASHBOARD_QUARTERS = 40
+_V4_DASHBOARD_CHART_ROWS = (4, 43)
+
+_V4_REF_RE = re.compile(
+    r"'(?P<quoted>[^']+)'!(?P<qdc>\$?)(?P<qcol>[A-Z]{1,3})(?P<qdr>\$?)(?P<qrow>\d+)"
+    r"|(?<![A-Za-z0-9_$!])(?P<dc>\$?)(?P<col>[A-Z]{1,3})(?P<dr>\$?)(?P<row>\d+)")
+
+
+def _v4_formula_refs(formula: str, sheet: str) -> list[dict[str, Any]]:
+    """Ссылки формулы с листом, к которому каждая относится.
+
+    Второй конец диапазона наследует лист первого: в `'CF'!D17:DS17` колонка
+    DS живёт на CF, а не на том листе, где стоит формула. Без наследования
+    правка «продлить конец диапазона» прошла бы мимо 396 ссылок ОТЧЁТа —
+    и он показал бы первые десять лет как весь проект.
+    """
+    found: list[dict[str, Any]] = []
+    for match in _V4_REF_RE.finditer(formula):
+        quoted = match.group("quoted")
+        after_colon = match.start() > 0 and formula[match.start() - 1] == ":"
+        previous = found[-1] if found else None
+        sheet_of = quoted or (previous["sheet"] if after_colon and previous else sheet)
+        found.append({
+            "match": match, "sheet": sheet_of,
+            "column": match.group("qcol") or match.group("col"),
+            "row": int(match.group("qrow") or match.group("row")),
+            "absolute": bool(match.group("qdc") or match.group("dc")),
+            "after_colon": after_colon,
+            "place": "single",
+        })
+    for index, ref in enumerate(found):
+        if not ref["after_colon"] or index == 0:
+            continue
+        start, end = found[index - 1], ref
+        start["place"], end["place"] = "start", "end"
+        start["partner"], end["partner"] = end, start
+    return found
+
+
+def _v4_rewrite_refs(formula: str, sheet: str,
+                     decide: "Callable[[dict[str, Any]], str | None]") -> str:
+    """Переписывает колонки ссылок, оставляя всё прочее нетронутым."""
+    refs = _v4_formula_refs(formula, sheet)
+    out: list[str] = []
+    position = 0
+    for ref in refs:
+        column = decide(ref)
+        if column is None:
+            continue
+        match = ref["match"]
+        text = match.group(0)
+        head = text.index(ref["column"])
+        out.append(formula[position:match.start()])
+        out.append(text[:head] + column + text[head + len(ref["column"]):])
+        position = match.end()
+    out.append(formula[position:])
+    return "".join(out)
+
+
+def _v4_grid_bounds(sheet: str) -> tuple[int, int] | None:
+    bounds = _V4_GRID_SHEETS.get(sheet)
+    if not bounds:
+        return None
+    return _v4_col_number(bounds[0]), _v4_col_number(bounds[1])
+
+
+def _v4_shift_grid_columns(formula: str, sheet: str, host: int, offset: int) -> str:
+    """Сдвиг колонок при копировании столбца сетки вправо.
+
+    Правило выведено разбором самого шаблона, а не догадкой; все встреченные в
+    нём формы им покрыты. Относительная колонка едет — это обычная семантика
+    копирования (`EDATE(DR3,1)`, `DS10*DS9`, `SUM(DS12:DS14)`). Абсолютная
+    стоит на месте: `$D10:$DS10` — это весь ряд сетки, а не «по этот месяц»,
+    и начало у него не двигается. Исключение одно и названо: одиночная
+    абсолютная ссылка на СВОЮ колонку — `'Ставки'!$DS$3` в столбце DS — значит
+    «дата этого месяца», и она едет вместе со столбцом.
+
+    Колонка листа, который сеткой не является, не двигается вовсе:
+    `'Вводные'!$H$88` — это колонка H, а не восьмой месяц.
+    """
+    def decide(ref: dict[str, Any]) -> str | None:
+        bounds = _v4_grid_bounds(ref["sheet"])
+        if not bounds:
+            return None
+        low, high = bounds
+        column = _v4_col_number(ref["column"])
+        if not low <= column <= high:
+            return None
+        if ref["absolute"] and not (ref["place"] == "single" and column == host):
+            return None
+        return _v4_column_letter(column + offset)
+
+    return _v4_rewrite_refs(formula, sheet, decide)
+
+
+def _v4_extend_grid_ends(formula: str, sheet: str, host_in_grid: bool,
+                         extra: int) -> str:
+    """Продлевает концы диапазонов, упирающиеся в последнюю колонку сетки.
+
+    Вне сетки двух смыслов у такой ссылки нет: `SUM(D10:DS10)` в колонке
+    «Итого», `MAX('CF'!D17:DS17)` в ОТЧЁТе, `'Ставки'!$DS$3` в ПРОВЕРКАХ —
+    всё это «до конца сетки», и всё едет.
+
+    Внутри сетки смысла два, и различает их шаблон сам: `$D10:$DS10` и
+    двумерный `$D$118:$DS$128` — сетка целиком (обе колонки абсолютные и
+    разные), а `$D$26:DS$26` — «по этот месяц» (конец относительный) и
+    `DS12:DS14` — три строки своей колонки. Едет только первый.
+
+    Равенство строк у концов сюда не годится, и это стоило захода: доля
+    расходов очереди считается `SUM(D118:D128)/SUM($D$118:$DS$128)`, где у
+    концов РАЗНЫЕ строки. Непродлённый знаменатель на четвёртой очереди дал
+    CAPEX минус 230 млрд ₽ при 11 млрд у соседних очередей — а сверка «ничего
+    лишнего не изменилось» этого не видит: пропущенное продление выглядит как
+    нетронутая ячейка.
+    """
+    def decide(ref: dict[str, Any]) -> str | None:
+        bounds = _v4_grid_bounds(ref["sheet"])
+        if not bounds:
+            return None
+        high = bounds[1]
+        if _v4_col_number(ref["column"]) != high:
+            return None
+        if host_in_grid:
+            partner = ref.get("partner")
+            if not (ref["place"] == "end" and ref["absolute"] and partner
+                    and partner["column"] != ref["column"]):
+                return None
+        return _v4_column_letter(high + extra)
+
+    return _v4_rewrite_refs(formula, sheet, decide)
+
+
+def _v4_sheet_cells(body: str) -> list["re.Match[str]"]:
+    return list(_V4_ROW_CELL_RE.finditer(body))
+
+
+def _v4_extend_month_grid(xml: str, sheet: str, extra: int,
+                          missing: list[str]) -> str:
+    """Продлевает сетку месяцев листа на `extra` колонок.
+
+    Копируется ПОСЛЕДНЯЯ колонка: у неё те же формулы, что у всех остальных,
+    только со своими ссылками, — значит ряд продолжается тем же правилом,
+    каким он собран. Стиль едет вместе с содержимым: дописанная колонка без
+    стиля видна на листе с первого взгляда.
+    """
+    bounds = _v4_grid_bounds(sheet)
+    if not bounds or extra <= 0:
+        return xml
+    low, high = bounds
+    last = _v4_column_letter(high)
+    grown = 0
+    numbered: list[str] = []
+
+    def grow_row(found: "re.Match[str]") -> str:
+        nonlocal grown
+        body = found.group("body")
+        if body is None:
+            return found.group(0)
+        source = None
+        for cell in _v4_sheet_cells(body):
+            if _v4_col_number(cell.group(1)) == high:
+                source = cell
+        if source is None:
+            return found.group(0)
+        row = source.group(2)
+        added: list[str] = []
+        # Номер месяца — не формула, а само число: у CF-листов он лежит
+        # константой в `<x:f>120</x:f>`, у «Ставок» и «ОБЪЕКТОВ» — в `<x:v>`.
+        # Скопированный как есть, он объявляет каждый новый месяц сто
+        # двадцатым, а по нему считается кривая ключевой ставки.
+        counter = re.search(
+            r"<x:(?:f|v)>%d</x:(?:f|v)>" % _V4_GRID_MONTHS, source.group(0)
+        ) if int(row) == _V4_GRID_PERIOD_ROW else None
+        for step in range(1, extra + 1):
+            column = _v4_column_letter(high + step)
+            text = source.group(0).replace(f'r="{last}{row}"', f'r="{column}{row}"', 1)
+            if counter:
+                text = text.replace(counter.group(0), counter.group(0).replace(
+                    str(_V4_GRID_MONTHS), str(_V4_GRID_MONTHS + step)), 1)
+                numbered.append(f"{column}{row}")
+            text = re.sub(
+                r"<x:f>(.*?)</x:f>",
+                lambda m: "<x:f>" + xml_escape(_v4_shift_grid_columns(
+                    html.unescape(m.group(1)), sheet, high, step)) + "</x:f>",
+                text, flags=re.S)
+            added.append(text)
+        grown += 1
+        return (found.group(0)[:-len("</x:row>")] + "".join(added) + "</x:row>")
+
+    xml = re.sub(r'<x:row r="\d+"[^>]*?(?:/>|>(?P<body>.*?)</x:row>)',
+                 grow_row, xml, flags=re.S)
+    if not grown:
+        missing.append(f"{sheet} · сетка месяцев: последняя колонка {last} не найдена")
+        return xml
+    if not numbered and sheet not in _V4_GRID_SHEETS_WITHOUT_PERIOD:
+        # Номер месяца стоит строкой 4 у одиннадцати листов из двенадцати
+        # (у «СРОКИ» там даты). Не нашли — значит шаблон переписали, и новые
+        # колонки остались бы сто двадцатыми при живом виде.
+        missing.append(f"{sheet} · сетка месяцев: номер месяца в колонке {last} не опознан")
+
+    # Концы диапазонов — по всему листу, включая дописанные колонки: в них
+    # `$D10:$DS10` приехал копией и тоже обязан дотянуться до нового конца.
+    def stretch(cell: "re.Match[str]") -> str:
+        column = _v4_col_number(cell.group(1))
+        host_in_grid = low <= column <= high + extra
+        return re.sub(
+            r"<x:f>(.*?)</x:f>",
+            lambda m: "<x:f>" + xml_escape(_v4_extend_grid_ends(
+                html.unescape(m.group(1)), sheet, host_in_grid, extra)) + "</x:f>",
+            cell.group(0), flags=re.S)
+
+    xml = _V4_ROW_CELL_RE.sub(stretch, xml)
+    xml = _v4_widen_columns(xml, high, extra)
+    xml = _v4_widen_merges(xml, high, extra)
+    return xml
+
+
+def _v4_widen_columns(xml: str, high: int, extra: int) -> str:
+    """Ширина дописанных колонок — та же, что у последней месячной.
+
+    Своя ширина была бы вторым ответом на «сколько места нужно месяцу», а лист
+    без ширин открывается восемью символами на колонку.
+    """
+    found = re.search(r"<x:cols>(.*?)</x:cols>", xml, re.S)
+    if not found:
+        return xml
+    template = None
+    for col in re.finditer(r"<x:col [^>]*?/>", found.group(1)):
+        numbers = re.search(r'min="(\d+)" max="(\d+)"', col.group(0))
+        if numbers and int(numbers.group(1)) <= high <= int(numbers.group(2)):
+            template = col.group(0)
+    if not template:
+        return xml
+    added = "".join(
+        re.sub(r'min="\d+" max="\d+"', f'min="{high + step}" max="{high + step}"',
+               template)
+        for step in range(1, extra + 1))
+    return xml[:found.end(1)] + added + xml[found.end(1):]
+
+
+def _v4_widen_merges(xml: str, high: int, extra: int) -> str:
+    """Шапка листа объединена по всю сетку — объединение едет вместе с ней."""
+    last, wider = _v4_column_letter(high), _v4_column_letter(high + extra)
+    return re.sub(r'(<x:mergeCell ref="[A-Z]{1,3}(\d+):)%s(\d+)" />' % last,
+                  lambda m: f'{m.group(1)}{wider}{m.group(3)}" />', xml)
+
+
+def _v4_extend_other_sheet(xml: str, sheet: str, extra: int) -> str:
+    """Лист без сетки: у него продлеваются только концы диапазонов в неё."""
+    def stretch(cell: "re.Match[str]") -> str:
+        return re.sub(
+            r"<x:f>(.*?)</x:f>",
+            lambda m: "<x:f>" + xml_escape(_v4_extend_grid_ends(
+                html.unescape(m.group(1)), sheet, False, extra)) + "</x:f>",
+            cell.group(0), flags=re.S)
+
+    return _V4_ROW_CELL_RE.sub(stretch, xml)
+
+
+def _v4_shift_dashboard_quarter(formula: str, step: int) -> str:
+    """Квартал вниз: месяцы едут вправо на три, свои ссылки — на строку вниз."""
+    moved = _v4_shift_grid_columns(formula, _V4_DASHBOARD_SHEET, 0, 3 * step)
+    last = _V4_DASHBOARD_FIRST_QUARTER_ROW + _V4_DASHBOARD_QUARTERS - 1
+    return _v4_shift_formula(moved, range(last, last + 1), step)
+
+
+def _v4_extend_dashboard(xml: str, extra_quarters: int, missing: list[str]) -> str:
+    """Квартальная сводка «Дашборда» — вниз, по три месяца на строку.
+
+    Общее правило продления концов сюда не идёт: `SUM('CF'!DQ6:'CF'!DS6)` —
+    это сороковой квартал, а не «до конца сетки», и продлённый он собрал бы в
+    одну точку весь хвост проекта. Строки 44–60 на листе уже есть и пусты,
+    поэтому квартал пишется В НИХ: дописанная сверху вторая строка 44 сделала
+    бы книгу повреждённой.
+    """
+    if extra_quarters <= 0:
+        return xml
+    last = _V4_DASHBOARD_FIRST_QUARTER_ROW + _V4_DASHBOARD_QUARTERS - 1
+    found = re.search(r'<x:row r="%d"[^>]*?>(.*?)</x:row>' % last, xml, re.S)
+    if not found:
+        missing.append(f"Дашборд · квартальная сводка: строки {last} нет")
+        return xml
+    source = found.group(1)
+    for step in range(1, extra_quarters + 1):
+        target = last + step
+        body = re.sub(r'(<x:c r="[A-Z]{1,3})%d"' % last,
+                      lambda m: f'{m.group(1)}{target}"', source)
+        body = re.sub(r"<x:f>(.*?)</x:f>",
+                      lambda m: "<x:f>" + xml_escape(_v4_shift_dashboard_quarter(
+                          html.unescape(m.group(1)), step)) + "</x:f>",
+                      body, flags=re.S)
+        xml = _v4_ensure_row(xml, target)
+        xml, done = _v4_replace_row(xml, target, body)
+        if not done:
+            missing.append(f"Дашборд · квартал {target}: строка не записана")
+            return xml
+    return xml
+
+
+def _v4_replace_row(xml: str, row: int, body: str) -> tuple[str, bool]:
+    """Заменяет содержимое существующей строки, сохраняя её атрибуты."""
+    found = re.search(
+        r'<x:row r="%d"(?P<attrs>[^>]*?)(?:/>|>(?P<body>.*?)</x:row>)' % row, xml, re.S)
+    if not found:
+        return xml, False
+    attrs = (found.group("attrs") or "").rstrip("/")
+    return (xml[:found.start()] + f'<x:row r="{row}"{attrs}>' + body + "</x:row>"
+            + xml[found.end():]), True
+
+
+def _v4_extend_charts(xml: str, extra_quarters: int) -> str:
+    """Диаграммы читают квартальную сводку — их диапазоны едут вместе с ней."""
+    if extra_quarters <= 0:
+        return xml
+    first, last = _V4_DASHBOARD_CHART_ROWS
+    grown = last + extra_quarters
+    return re.sub(
+        r"(<c:f>'?Дашборд'?!\$[A-Z]{1,3}\$%d:\$[A-Z]{1,3}\$)%d(</c:f>)" % (first, last),
+        lambda m: f"{m.group(1)}{grown}{m.group(2)}", xml)
 
 
 def _v4_sports_inputs_block(xml: str, missing: list[str]) -> str:
@@ -18298,6 +18682,13 @@ def _v4_finance_hints(bundle: dict[str, Any]) -> dict[str, Any]:
             "bridge_peak_by_phase": [float(finance.get("peak_bridge", 0.0)) / 1e6],
         }
     hints["parity"] = _v4_parity_targets(bundle.get("consolidated") or {})
+    # Горизонт — такое же контрольное число, как паритет, и объявляется здесь
+    # же: у книги своя сетка на 120 месяцев, и проект длиннее неё обрезался бы
+    # молча. Второго ответа на «сколько месяцев в проекте» не заводим — иначе
+    # книга из бота и книга с сайта продлятся по-разному.
+    months = ((bundle.get("consolidated") or {}).get("cashflow") or {}).get("months") or []
+    if months:
+        hints["horizon_months"] = len(months)
     # Применён ли перенос — решает движок гейтом по общему LLCR, и книга этого
     # LLCR не знает. Полагаясь на одно намерение пользователя, она перенесла бы
     # долг там, где банк отказал, и показала бы очередь рассчитавшейся, пока
@@ -20317,6 +20708,27 @@ def build_project_workbook(
         except Exception as exc:  # noqa: BLE001 — молчащая инструкция хуже отсутствующей
             missing.append("Вводные · лист инструкции не собран: " + _error_location(exc))
 
+    # Сетка книги — 120 месяцев; проект длиннее неё обрезался молча. Горизонт
+    # приходит контрольным числом движка: не пришёл — продлевать не от чего, и
+    # это сказано вслух, а не изображено рабочей книгой.
+    horizon = int((finance_hints or {}).get("horizon_months") or 0)
+    extra_months = extra_quarters = 0
+    if horizon > _V4_GRID_MONTHS:
+        # Сетка растёт кварталами: «Дашборд» собирает месяцы по три, и ряд,
+        # оборванный на середине квартала, заставил бы последнюю его строку
+        # заглядывать за край сетки. Цена выравнивания — две колонки.
+        months = -(-min(horizon, _V4_GRID_MAX_MONTHS) // 3) * 3
+        extra_months = months - _V4_GRID_MONTHS
+        extra_quarters = months // 3 - _V4_DASHBOARD_QUARTERS
+        if horizon > _V4_GRID_MAX_MONTHS:
+            missing.append(
+                f"сетка месяцев: проект на {horizon} мес., книга продлена до "
+                f"{_V4_GRID_MAX_MONTHS} — хвост в неё не помещается")
+    elif not horizon:
+        missing.append("сетка месяцев: горизонт проекта не измерен, "
+                       f"книга осталась на {_V4_GRID_MONTHS} месяцах")
+    grid_names = _v4_sheet_names_by_path(source) if extra_months else {}
+
     out = io.BytesIO()
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
         for item in source.infolist():
@@ -20358,6 +20770,14 @@ def build_project_workbook(
                 # новый лист, и второй проход увёл бы их обратно.
                 if item.filename != sheet_path:
                     text = v4_entry_sheet.rename_sheet_refs(text)
+                if extra_months:
+                    name = grid_names.get(item.filename, "")
+                    if name in _V4_GRID_SHEETS:
+                        text = _v4_extend_month_grid(text, name, extra_months, missing)
+                    elif name == _V4_DASHBOARD_SHEET:
+                        text = _v4_extend_dashboard(text, extra_quarters, missing)
+                    elif name:
+                        text = _v4_extend_other_sheet(text, name, extra_months)
                 payload = text.encode("utf-8")
             elif item.filename == "xl/workbook.xml":
                 payload = _v4_workbook_with_entry(
@@ -20366,6 +20786,9 @@ def build_project_workbook(
                 payload = _v4_rels_with_entry(payload.decode("utf-8")).encode("utf-8")
             elif item.filename == "[Content_Types].xml" and entry_xml:
                 payload = _v4_types_with_entry(payload.decode("utf-8")).encode("utf-8")
+            elif extra_quarters and "drawings/charts/chart" in item.filename:
+                payload = _v4_extend_charts(
+                    payload.decode("utf-8"), extra_quarters).encode("utf-8")
             archive.writestr(item, payload)
         if entry_xml:
             archive.writestr(_V4_ENTRY_SHEET_PATH, entry_xml.encode("utf-8"))
