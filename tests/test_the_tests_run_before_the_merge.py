@@ -32,7 +32,7 @@ BUILD = WORKFLOWS / "build-yandex.yml"
 # В YAML голое `on` разбирается как булево True — ключ триггеров лежит там.
 TRIGGERS = True
 
-COMMAND = "python3 -m pytest tests -q"
+COMMAND = "python3 -m pytest tests -q --durations=25"
 
 
 def _load(path: Path) -> dict:
