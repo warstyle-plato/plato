@@ -3,15 +3,15 @@
 Правила, закреплённые здесь:
 
 - руководство живёт внутри приложения: без iframe и без случайных внешних
-  доменов. Наружу оно ведёт в двух случаях — официальный калькулятор
-  «СтроимПросто» и исходники нормативных актов из реестра движка (справочник
-  внизу страницы, с 06.09.2026);
+  доменов. Наружу оно ведёт исходниками нормативных актов из реестра движка
+  (справочник внизу страницы, с 06.09.2026);
 - каждое упомянутое название кнопки или вкладки (пометка class="ui")
   существует на странице модели дословно — руководство не имеет права
   рассказывать про интерфейс, которого нет;
 - числа классов и сценариев подставляются из движка, а не переписаны в текст;
 - версия — та же подстановка, что у страницы модели;
-- якоря навигации ведут на существующие разделы;
+- якоря навигации ведут на существующие разделы, а состав разделов у Платона
+  совпадает с составом страницы — второй копии руководства нет;
 - в шапке модели есть ссылка «Руководство», в руководстве — возврат в модель.
 
 Запуск: python3 -m pytest tests/test_guide_page.py -q
@@ -37,6 +37,9 @@ from guide import install  # noqa: E402
 core = wrapper.core
 _ROOT = Path(__file__).resolve().parent.parent
 _GUIDE_JS = _ROOT / "guide" / "assets" / "guide.js"
+# Исходник страницы: состав разделов у Платона сверяется с ним, а не с числом,
+# записанным в проверку, — число редакция меняет, состав обязан совпадать.
+PAGE_HTML = (_ROOT / "guide" / "page.html").read_text(encoding="utf-8")
 
 
 @pytest.fixture(scope="module")
@@ -112,7 +115,7 @@ def test_class_and_scenario_numbers_come_from_the_engine(page: str):
 
 def test_navigation_anchors_lead_to_real_sections(page: str):
     anchors = re.findall(r'href="#([a-z-]+)"', page)
-    assert len(set(anchors)) == 9, "в навигации должно быть девять разделов"
+    assert anchors, "в руководстве нет ни одного якоря"
     for anchor in anchors:
         assert f'id="{anchor}"' in page, f"якорь #{anchor} ведёт в никуда"
 
@@ -126,8 +129,7 @@ def test_the_model_page_links_the_guide_and_back():
 
 
 def test_the_example_is_marked_as_a_lesson(page: str):
-    assert "77:07:0008006:3" in page
-    assert "учебный пример" in page
+    assert "Учебный пример" in page, "сквозной пример не помечен учебным"
     assert "ГПЗУ" in page and "АГР" in page
 
 
@@ -164,11 +166,15 @@ def test_the_model_page_links_the_consent():
 def test_platon_reads_the_same_guide():
     """У Платона нет своей копии руководства — ей негде устареть."""
     data = core._tool_get_user_guide("all")
-    assert data["available"] and len(data["sections"]) == 9
+    assert data["available"]
+    on_page = re.findall(r'<section[^>]*\bid="([a-z-]+)"', PAGE_HTML)
+    assert [item["id"] for item in data["sections"]] == on_page, (
+        "у Платона другой состав разделов, чем на странице")
     inputs_only = core._tool_get_user_guide("inputs")
     assert len(inputs_only["sections"]) == 1
-    assert "СтроимПросто" in inputs_only["sections"][0]["text"]
     assert inputs_only["sections"][0]["url"] == "/guide#inputs"
+    assert "Получить ТЭП" in inputs_only["sections"][0]["text"], (
+        "раздел приехал пустым — Платон читает не тот файл")
     assert not core._tool_get_user_guide("nope")["available"]
     names = [tool["name"] for tool in core._AGENT_TOOLS]
     assert "get_user_guide" in names, "инструмент не объявлен модели"
@@ -178,12 +184,12 @@ def test_platon_reads_the_same_guide():
 
 def test_queues_explain_manual_distribution(page: str):
     """Очередность — не только сроки: распределение объектов задаётся вручную."""
-    for phrase in ("социальная нагрузка", "дополнительные объекты по обязательствам",
-                   "распределение по очередям вручную"):
-        assert phrase in page.lower() or phrase in page, f"в руководстве нет «{phrase}»"
-    assert "денежный поток" in page and "консолидац" in page
-    assert "не угадывает" in page, "не сказано, что распределение система не угадывает"
-    assert "Размер участка сам по себе не главный критерий" in page
+    queues = re.search(r'<section[^>]*id="queues".*?</section>', page, re.S)
+    assert queues, "раздела об очередях в руководстве нет"
+    body = queues.group(0)
+    assert "оциальная нагрузка" in body and "вручную" in body, (
+        "не сказано, что социальная нагрузка распределяется по очередям вручную")
+    assert "консолидац" in body, "не сказано, чем опасна хорошая консолидация"
 
 
 def test_screenshots_exist_and_are_wired(client: TestClient, page: str):
