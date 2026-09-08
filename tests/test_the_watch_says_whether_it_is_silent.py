@@ -20,6 +20,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+ROOT = Path(__file__).resolve().parents[1]
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 SLUG = "decision:333331220"
@@ -37,7 +39,11 @@ def _ranking(tmp_path):
 def test_the_first_snapshot_is_named_a_snapshot_not_a_failure(tmp_path):
     """Первый снимок вида никого не объявляет — и это видно снаружи."""
     ranking = _ranking(tmp_path)
-    assert ranking.watch_state()["kinds"] == {}, "до первого захода видов нет"
+    # Вид «площадка» стоит в счётчике всегда: он живёт в `first_seen`, и пока
+    # его здесь не было, сторож молчал ровно о том, чего в очереди больше
+    # всего. «Ещё не видели» говорится признаком, а не отсутствием строки.
+    kinds = ranking.watch_state()["kinds"]
+    assert kinds == {"site": {"known": 0, "bootstrapped": False}}, kinds
 
     events = {f"{SLUG}|1": {"slug": SLUG, "deadline": LOT["deadline"]}}
     assert ranking.mark_watch("tender", events) == [], "первый снимок — состав"
@@ -163,3 +169,63 @@ def test_a_news_without_an_address_stays_a_plain_line():
         {"slug": SLUG, "name": NAME, "kind": "tender", "url": "javascript:alert(1)"},
     ])
     assert "javascript:" not in dodgy
+
+
+def test_the_delivery_says_what_it_did(monkeypatch) -> None:
+    """У доставки тоже есть счётчик молчания — и он на половине бота.
+
+    Замер прода 07.09.2026: очередь на ядре стояла на 4827 записях и не падала
+    ни через границу пятнадцати минут, ни через две. Забирает её бот, а он на
+    другой машине, и снаружи «новостей не было», «цикл не дошёл» и «ядро не
+    ответило» — одно молчание. `/auctions/krt/watch` отвечает за очередь,
+    `/krt/delivery` — за того, кто её забирает.
+    """
+    import main as wrapper
+
+    monkeypatch.setattr(wrapper.core, "_telegram_token", lambda: "токен")
+    monkeypatch.setattr(wrapper.core, "_telegram_webhook_enabled", lambda: True)
+    monkeypatch.setattr(wrapper.core, "usage_admin_ids", lambda: [7])
+    sent: list[tuple[int, str]] = []
+    monkeypatch.setattr(wrapper.core, "_telegram_send_message",
+                        lambda chat_id, text, **kw: sent.append((chat_id, text)))
+
+    monkeypatch.setattr(wrapper, "_krt_take_announcements", lambda: ([], []))
+    wrapper._deliver_krt_announcements()
+    assert wrapper.krt_delivery_state()["stopped_by"] == "очередь пуста"
+
+    records = [{"slug": "a", "kind": "site", "seen_at": 1, "name": "Площадка"}]
+    monkeypatch.setattr(wrapper, "_krt_take_announcements", lambda: (records, []))
+    wrapper._deliver_krt_announcements()
+    state = wrapper.krt_delivery_state()
+    assert (state["taken"], state["targets"], state["sent"]) == (1, 1, 1), state
+    assert not state["stopped_by"], state
+    assert sent and sent[0][0] == 7
+
+    # Отказ ядра — это ответ, а не «новостей нет».
+    def _boom() -> tuple[list, list]:
+        raise RuntimeError("ядро не ответило")
+
+    monkeypatch.setattr(wrapper, "_krt_take_announcements", _boom)
+    try:
+        wrapper._deliver_krt_announcements()
+    except RuntimeError:
+        pass
+    state = wrapper.krt_delivery_state()
+    assert state["stopped_by"] == "очередь у ядра не забрана"
+    assert "ядро не ответило" in state["last_error"]
+
+
+def test_the_delivery_line_stands_where_the_bot_is_asked() -> None:
+    """Про доставку спрашивают бота — строка стоит в /status.
+
+    Диск ядра и связка с ГлавАПУ уже там по той же причине: смотрят туда,
+    когда что-то проверяют.
+    """
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    body = source[source.index("def _status_message("):]
+    body = body[: body.index("@app.post(")]
+    assert "_krt_delivery_line()" in body, "в /status нет строки о доставке новостей"
+    # Счётчик читают и снаружи, но адресатов он не называет — только числом.
+    route = source[source.index('@app.get("/krt/delivery")'):]
+    route = route[: route.index("\ndef ", route.index("def krt_delivery("))]
+    assert "usage_admin_ids" not in route and "subscribers" not in route

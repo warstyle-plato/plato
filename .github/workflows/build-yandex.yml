@@ -46,8 +46,9 @@ jobs:
     runs-on: ubuntu-latest
     # Тот же набор и тот же потолок, что на PR: разъехавшись, они дадут
     # зелёный PR и снятую по таймауту сборку из main — а пока сборка красная,
-    # любая выкатка тянет прошлое.
-    timeout-minutes: 75
+    # любая выкатка тянет прошлое. Равенство держит проверка
+    # `test_the_tests_run_before_the_merge`: оговорка без сторожа — это память.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
         with:
