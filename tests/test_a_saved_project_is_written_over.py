@@ -93,6 +93,12 @@ let asked=[];
 CODE = "\n".join([
     PAGE[PAGE.index("let openedProject=null;"):PAGE.index("function rememberOpenedProject(")],
     _piece("rememberOpenedProject"),
+    # Список тронутых полей паркинга сеется в `applyProjectSnapshot` — стенд
+    # берёт его вместе с ней. Перечисление имён здесь и есть слабое место
+    # стенда: функция, добавленная рядом, роняет его `ReferenceError` на
+    # верном коде, и выглядит это как поломка правки.
+    "const OBJECT_PARKING_PREFIXES=['offices','retail','sports'];",
+    _piece("seedParkingByHand"),
     _piece("applyProjectSnapshot"),
     _piece("loadProject", kind="async function"),
     _piece("projectStorePayload"),
