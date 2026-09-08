@@ -97,7 +97,12 @@ def test_the_row_carries_the_remembered_lot(tmp_path):
     answer = TestClient(_app(tmp_path)).get("/auctions/krt")
     assert answer.status_code == 200
     row = answer.json()["projects"][0]
-    assert row["tender_lots"] == [LOT], "связка до строки не доезжает"
+    # Момент срока сервер считает при ЧТЕНИИ: связка лежит на диске и старше
+    # правила, а «момента не поняли» на экране значит «лот живой» — то есть у
+    # прошедшего срока обещались бы идущие торги.
+    stored, = row["tender_lots"]
+    assert stored["deadline_iso"], "момент срока до строки не доезжает"
+    assert {key: stored[key] for key in LOT} == LOT, "связка до строки не доезжает"
     assert row["tender_lots_seen_at"] > 0, "когда узнали — часть ответа"
 
 
@@ -155,7 +160,8 @@ def test_in_a_real_browser_the_auction_beats_the_publication(tmp_path):
             # Соседнюю вкладку «Торги» никто не открывал: в памяти пусто.
             empty = page.evaluate("Object.keys(state.krtTenders||{}).length")
             # А со вчерашним сроком подачи «идут торги» больше не обещаем.
-            page.evaluate("()=>{state.krt[0].tender_lots=[{deadline:'2020-01-01'}]}")
+            page.evaluate("()=>{state.krt[0].tender_lots=[{deadline:'2020-01-01',"
+                          "deadline_iso:'2020-01-01T23:59:59+03:00'}]}")
             stale = page.evaluate(READ)
             browser.close()
     finally:

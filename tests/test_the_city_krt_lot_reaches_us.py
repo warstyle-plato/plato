@@ -22,6 +22,8 @@
 from __future__ import annotations
 
 import sys
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -30,7 +32,11 @@ sys.path.insert(0, str(ROOT))
 from auction_search.adapters.roseltorg import RoseltorgAdapter  # noqa: E402
 from auction_search.classifier import classify_lot  # noqa: E402
 from auction_search.models import AuctionLot, AuctionSource, SourceKind  # noqa: E402
-from auction_search.parsing import mentions_moscow, parse_hectares_sqm  # noqa: E402
+from auction_search.parsing import (  # noqa: E402
+    deadline_is_current,
+    mentions_moscow,
+    parse_hectares_sqm,
+)
 
 OWNER_TITLE = ("Аукцион на право заключения договора о комплексном развитии "
                "территорий нежилой застройки города Москвы, площадью 14,62 га")
@@ -83,8 +89,13 @@ def test_a_deadline_without_an_hour_is_the_end_of_that_day() -> None:
     просроченный: «часа не назвали» превращалось в «время вышло».
     """
     assert RoseltorgAdapter._deadline("Прием заявок до 21.09.26") == "21.09.26"
-    assert RoseltorgAdapter._has_current_deadline("21.09.26")
-    assert not RoseltorgAdapter._has_current_deadline("01.01.2020")
+    # Гейт «срок ещё не прошёл» объявлен один раз в `parsing`: у читателя
+    # площадки своей копии нет, и день без часа длится до конца дня у всех.
+    # День берётся относительный: закреплённый числом, он однажды протухнет и
+    # упадёт на ВЕРНОМ поведении, а не на поломке.
+    ahead = (datetime.now(ZoneInfo("Europe/Moscow")) + timedelta(days=13)).strftime("%d.%m.%y")
+    assert deadline_is_current(ahead)
+    assert not deadline_is_current("01.01.2020")
     # Час, если он назван, не теряется: образцы с часом стоят первыми.
     assert RoseltorgAdapter._deadline(
         "Дата и время окончания приема заявок | 21.09.2026 10:00") == "21.09.2026 10:00"

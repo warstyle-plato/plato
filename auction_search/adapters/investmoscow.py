@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime
 from html.parser import HTMLParser
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
 from urllib.request import Request, urlopen
-from zoneinfo import ZoneInfo
 
 from auction_search import deadline as clock
 from auction_search.adapters.base import AuctionPlatformAdapter
@@ -15,10 +13,7 @@ from auction_search.adapters.roseltorg_public import RoseltorgAdapter
 from auction_search.adapters.sberbank_ast import SberbankASTAdapter
 from auction_search.adapters.nistp import NistpAdapter
 from auction_search.models import AuctionLot
-from auction_search.parsing import mentions_moscow
-
-
-_MOSCOW = ZoneInfo("Europe/Moscow")
+from auction_search.parsing import deadline_is_current, mentions_moscow
 
 
 class _LinksParser(HTMLParser):
@@ -174,27 +169,6 @@ class InvestMoscowDiscoveryAdapter(AuctionPlatformAdapter):
     def _confirmed_moscow(lot: AuctionLot) -> bool:
         return mentions_moscow(lot.address, lot.title, lot.raw.get("region"))
 
-    @staticmethod
-    def _has_current_deadline(deadline: str | None) -> bool:
-        if not deadline:
-            return False
-        raw = deadline.strip()
-        try:
-            parsed = datetime.fromisoformat(raw)
-        except ValueError:
-            parsed = None
-            for fmt in ("%d.%m.%Y %H:%M:%S", "%d.%m.%Y %H:%M", "%d.%m.%y %H:%M:%S", "%d.%m.%y %H:%M"):
-                try:
-                    parsed = datetime.strptime(raw, fmt)
-                    break
-                except ValueError:
-                    continue
-            if parsed is None:
-                return False
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=_MOSCOW)
-        return parsed.astimezone(_MOSCOW) >= datetime.now(_MOSCOW)
-
     def _read_html(self, url: str) -> str:
         req = Request(url, headers={
             "User-Agent": self.USER_AGENT,
@@ -279,7 +253,7 @@ class InvestMoscowDiscoveryAdapter(AuctionPlatformAdapter):
                 except Exception as exc:
                     self.last_report["errors"].append(f"{etp_url}: {type(exc).__name__}")
                     continue
-                if not self._confirmed_moscow(lot) or not self._has_current_deadline(lot.application_deadline):
+                if not self._confirmed_moscow(lot) or not deadline_is_current(lot.application_deadline):
                     continue
                 lot.raw["discovered_via"] = "Официальный портал Торги Москвы"
                 lot.raw["discovery_url"] = city_card_url

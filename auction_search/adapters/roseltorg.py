@@ -23,6 +23,7 @@ from auction_search.models import (
     utc_now_iso,
 )
 from auction_search.parsing import (
+    deadline_is_current,
     cadastral_numbers,
     mentions_moscow,
     normalize_space,
@@ -260,29 +261,6 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
         )
         return lot.lot_kind == LotKind.KRT or any(marker in text for marker in disposal)
 
-    @staticmethod
-    def _has_current_deadline(deadline: str | None) -> bool:
-        if not deadline:
-            return False
-        raw = deadline.strip()
-        for fmt in ("%d.%m.%Y %H:%M:%S", "%d.%m.%Y %H:%M", "%d.%m.%y %H:%M:%S", "%d.%m.%y %H:%M"):
-            try:
-                return datetime.strptime(raw, fmt).replace(tzinfo=_MOSCOW) >= datetime.now(_MOSCOW)
-            except ValueError:
-                continue
-        # Срок без часа — это «до конца того дня», а не «в полночь того дня».
-        # Извещения города так и пишут: «заявки до 21.09.26». Прежде такой срок
-        # не читался вовсе, и лот выбрасывался как просроченный — то есть
-        # «часа не назвали» превращалось в «время вышло».
-        for fmt in ("%d.%m.%Y", "%d.%m.%y"):
-            try:
-                day = datetime.strptime(raw, fmt)
-            except ValueError:
-                continue
-            end_of_day = day.replace(hour=23, minute=59, second=59, tzinfo=_MOSCOW)
-            return end_of_day >= datetime.now(_MOSCOW)
-        return False
-
     def discover_moscow(self, *, deadline: float | None = None) -> list[AuctionLot]:
         # Список страниц ограничен тремя, а вот лотов на них бывает много, и за
         # каждым идёт свой запрос по двадцать пять секунд. Потолок в страницах
@@ -435,7 +413,7 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
             if not self._is_actionable_status(lot.status):
                 drop(f"статус «{lot.status or 'не назван'}»", is_krt)
                 continue
-            if not self._has_current_deadline(lot.application_deadline):
+            if not deadline_is_current(lot.application_deadline):
                 drop("срок подачи прошёл или не назван", is_krt)
                 continue
             if lot.canonical_key in seen_lots:
