@@ -58,7 +58,9 @@ def test_every_surface_shows_the_same_drawer() -> None:
         assert page.count('class="ai-drawer"') == 1, (
             f"{name}: ящиков два — это два разных Платона на одном экране")
         assert ".ai-drawer{position:fixed" in page, f"{name}: стили ящика не подставлены"
-        assert "ai-open-btn" in page, f"{name}: ящик закрыт, и открыть его нечем"
+        # Зовёт ящик всплывающая кнопка: карточка внизу блока находилась только
+        # тем, кто дочитал до низа (владелец, 06.09.2026).
+        assert 'id="platoFab"' in page, f"{name}: ящик закрыт, и открыть его нечем"
 
 
 def test_the_look_comes_from_the_page_not_from_a_copy() -> None:
@@ -230,8 +232,10 @@ def test_every_block_that_asks_has_its_own_load() -> None:
     for name, (surface, source) in blocks.items():
         assert f"{surface}=" in source or f"{surface}={{" in source, (
             f"{name}: своего груза нет")
-        assert f"platoOpen({surface})" in source, (
-            f"{name}: кнопка открывает ящик без своего груза")
+        # Блок объявляет себя всплывающей кнопке вместе со своим грузом:
+        # открытый из продаж с грузом рынка, ящик ответил бы о другом отчёте.
+        assert re.search(r"platoBlock\('#[A-Za-z0-9_-]+', " + surface + r",", source), (
+            f"{name}: блок не объявил себя со своим грузом")
         # Каждый груз обязан уметь отказать: «сначала соберите отчёт» — это
         # ответ блока, а не поломка ящика.
         assert "message:" in source

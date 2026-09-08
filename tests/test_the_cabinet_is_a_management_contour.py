@@ -263,8 +263,13 @@ def test_each_view_of_the_cabinet_opens_without_a_script_error(tmp_path) -> None
                           if route.request.url.startswith("http")
                           else route.continue_())
                 tab.goto(file.as_uri())
-                # Функции объявляются только если блок доработал до конца.
-                alive = tab.evaluate("() => typeof askPlato === 'function'")
+                # Доработал ли скрипт до конца, отвечает ПОСЛЕДНЕЕ, что он
+                # делает. Объявление функции для этого не годится вовсе: оно
+                # поднимается наверх при разборе и остаётся на месте даже у
+                # скрипта, упавшего на первой строке.
+                alive = tab.evaluate(
+                    "() => { try { return typeof incomingKrt !== 'undefined' }"
+                    " catch (e) { return false } }")
                 if errors or not alive:
                     broken[view] = errors or ["скрипт не доработал до конца"]
                 tab.close()
