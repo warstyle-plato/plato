@@ -4,6 +4,7 @@ from urllib.parse import parse_qs, urlparse
 
 from auction_search.adapters.roseltorg import RoseltorgAdapter
 from auction_search.models import AuctionLot, AuctionSource, LotKind, SourceKind
+from auction_search.parsing import deadline_is_current
 
 
 def _source():
@@ -156,9 +157,12 @@ def test_current_discovery_rejects_expired_or_missing_deadlines():
     now = datetime.now(ZoneInfo("Europe/Moscow"))
     future = (now + timedelta(days=2)).strftime("%d.%m.%y %H:%M")
     past = (now - timedelta(days=2)).strftime("%d.%m.%y %H:%M")
-    assert RoseltorgAdapter._has_current_deadline(future) is True
-    assert RoseltorgAdapter._has_current_deadline(past) is False
-    assert RoseltorgAdapter._has_current_deadline(None) is False
+    # «Срок ещё не прошёл» — один вопрос на все площадки, и разбор у него один
+    # (`parsing.deadline_is_current`). Своей копии у читателя больше нет: три
+    # копии отвечали по-разному, и у РАД русская запись дня не читалась вовсе.
+    assert deadline_is_current(future) is True
+    assert deadline_is_current(past) is False
+    assert deadline_is_current(None) is False
 
 
 def test_roseltorg_title_stops_before_procurement_card_chrome():

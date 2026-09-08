@@ -142,4 +142,10 @@ def test_the_row_gets_the_lot_even_without_the_neighbouring_tab(tmp_path):
     from market_search.krt_registry import KrtRegistry
 
     KrtRegistry(tmp_path).remember_tender_lots({SLUG: [{"url": LOT_URL}]})
-    assert _row(_client(tmp_path)).get("tender_lots") == [{"url": LOT_URL}]
+    # Сверяется НАЗВАННАЯ величина, а не словарь целиком: равенство целиком
+    # запрещает добавлять поле, а утверждение здесь другое — связка доехала до
+    # строки. Сервер кладёт рядом момент срока (`deadline_iso`), и у лота без
+    # срока он пуст — «не поняли», а не «прошёл».
+    lots = _row(_client(tmp_path)).get("tender_lots") or []
+    assert [lot["url"] for lot in lots] == [LOT_URL]
+    assert lots[0]["deadline_iso"] is None
