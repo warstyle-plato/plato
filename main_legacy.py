@@ -25,6 +25,10 @@ import re
 import shutil
 import ssl
 import zipfile
+
+# Кем Платон думает — переключатель, а не найденный ключ:
+# перевод запроса и ответа живёт на границе поставщика.
+import plato_provider
 import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape as xml_escape
 
@@ -72,7 +76,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.22.72"
+VERSION = "0.22.75"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -32786,13 +32790,94 @@ def _plato_transport_failure(exc: Exception) -> bool:
     return any(marker in str(reason or exc).lower() for marker in _PLATO_TRANSPORT_MARKERS)
 
 
+def _anthropic_direct_request(payload: dict[str, Any],
+                              budget_seconds: float | None = None) -> dict[str, Any]:
+    """Тот же вопрос, заданный Anthropic. Ключ нужен только здесь.
+
+    Цикл агента об этом не знает и знать не должен: он говорит во внутренней
+    форме, а перевод в обе стороны делает `plato_provider`. Второй реализации
+    цикла у нас нет — она разошлась бы с первой, и обе выглядели бы верными.
+    """
+    api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+    if not api_key:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "PLATO_MODEL_PROVIDER=anthropic, но ANTHROPIC_API_KEY не задан. "
+                "Ключ берётся на console.anthropic.com и живёт там же, где раньше "
+                "жил ключ OpenAI, — на сервере, который зовёт модель."
+            ),
+        )
+    try:
+        import anthropic  # ставится в requirements; на ядре не нужен вовсе
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Не установлен пакет anthropic: {exc}. Он нужен на том сервере, где зовут модель.",
+        )
+
+    model = plato_provider.anthropic_model(str(payload.get("model") or ""))
+    try:
+        tools = plato_provider.tools_for_anthropic(payload.get("tools") or [])
+        messages = plato_provider.messages_for_anthropic(payload.get("input") or [])
+    except plato_provider.ProviderError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    if not messages:
+        raise HTTPException(status_code=500, detail="Пустой разговор: Anthropic нечего отправить.")
+
+    request: dict[str, Any] = {
+        "model": model,
+        "max_tokens": int(payload.get("max_output_tokens") or 2600),
+        "messages": messages,
+        # Размышление адаптивное: глубину задаёт effort, а не потолок токенов.
+        "thinking": {"type": "adaptive"},
+    }
+    if payload.get("instructions"):
+        request["system"] = str(payload["instructions"])
+    if tools:
+        request["tools"] = tools
+    effort = ((payload.get("reasoning") or {}).get("effort") or "").strip()
+    if effort:
+        request["output_config"] = {"effort": effort}
+
+    client = anthropic.Anthropic(
+        api_key=api_key,
+        timeout=float(budget_seconds or _PLATO_AI_TIMEOUT_SECONDS),
+    )
+    try:
+        message = client.messages.create(**request)
+    except anthropic.APIStatusError as exc:
+        # Причина доносится в чат: ошибка, ушедшая только в лог, — это ошибка,
+        # которой нет. Ключ и секреты в текст не попадают.
+        raise HTTPException(status_code=502,
+                            detail=f"Anthropic API ({exc.status_code}): {str(exc)[:600]}")
+    except anthropic.APIConnectionError as exc:
+        raise HTTPException(status_code=502,
+                            detail=f"Не удалось обратиться к Anthropic API: {str(exc)[:500]}")
+
+    if getattr(message, "stop_reason", "") == "refusal":
+        details = getattr(message, "stop_details", None)
+        category = getattr(details, "category", "") or "не названа"
+        raise HTTPException(
+            status_code=502,
+            detail=f"Модель отклонила запрос (категория: {category}). Это ответ модели, а не сбой связи.",
+        )
+    return plato_provider.response_to_internal(message, turn_id=secrets.token_hex(8))
+
+
 def _openai_direct_request(payload: dict[str, Any],
                            budget_seconds: float | None = None) -> dict[str, Any]:
-    """Прямой вызов OpenAI. Ключ нужен только здесь.
+    """Прямой вызов модели. Ключ нужен только здесь.
+
+    Кем думать — решает `PLATO_MODEL_PROVIDER`, а не то, какой ключ нашёлся:
+    молчаливый выбор поставщика по найденному ключу увёл бы вопрос не туда, и
+    снаружи это выглядело бы обычным ответом.
 
     Срок задаётся снаружи ради самопроверки: ей нужен короткий ответ «дошло или
     нет», а не полный срок тяжёлого вопроса.
     """
+    if plato_provider.provider_name() == "anthropic":
+        return _anthropic_direct_request(payload, budget_seconds)
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key:
         # Сюда попадают двумя путями, и лечатся они по-разному: на Render не
