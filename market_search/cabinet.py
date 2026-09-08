@@ -1533,11 +1533,12 @@ function peersCard(peers){
   if(!(peers||[]).length) return '';
   return `<div class="card"><h2>Соседи в выборке</h2>
     <div class="wrap"><table class="peers">
-    <tr><th>Проект</th><th>Застройщик</th><th class="num">км</th><th>Класс</th>
+    <tr><th>Проект</th><th>Застройщик</th><th class="num">км</th><th>Класс</th><th>Вид</th>
     <th class="num">₽/м²</th><th class="num">ДДУ/мес</th><th class="num">м²/мес</th><th class="num">Лотов</th><th>Прайс от</th></tr>`
     +peers.map((p,i)=>`<tr${p.added_by_hand?' class="added byhand"':''}><td class="link" data-peer="${i}">`
       +`${esc(p.name)}${p.added_by_hand?' <span class="muted">+</span>':''}</td><td class="muted">${esc(p.developer||'—')}</td>
       <td class="num">${num(p.distance_km,2)}</td><td>${esc(p.segment||'—')}</td>
+      <td class="muted">${esc(p.housing_kind||'—')}</td>
       <td class="num">${p.price_per_sqm?num(p.price_per_sqm)
         :`<span class="muted" title="в расчёт не идёт">${p.price_status==='устарела'
           ?num(p.stale_price_per_sqm)+' · '+esc(p.stale_observed_at||'')
@@ -1803,6 +1804,10 @@ function blockCard(b,ctx){
       +cell(num(p.median)+' ₽/м²','медиана соседей ('+(p.count||0)+')')
       +cell(pct(p.vs_median_pct),'к соседям')
       +(p.same_class?cell(num(p.same_class.median)+' ₽/м²','медиана своего класса ('+p.same_class.count+')'):'')
+      // Апартаменты и квартиры лежат в одном классе, а продаются разным
+      // покупателям: плитка называет медиану своего вида рядом с общей.
+      +(p.same_kind?cell(num(p.same_kind.median)+' ₽/м²','медиана своего вида: '
+        +esc(p.same_kind.kind)+' ('+p.same_kind.count+' из '+p.same_kind.known+')'):'')
       +(c.median?cell(num(c.median)+' ₽/м²','медиана класса в Москве'):'')
       +(c.band?cell({above_p75:'выше верхнего квартиля',interquartile:'внутри квартилей',below_p25:'ниже нижнего квартиля'}[c.band]||c.band,'место в городе'):'');
   } else if(b.code==='pace'){
@@ -1886,7 +1891,11 @@ function sectionTable(code,ctx){
   const base=[{t:'Проект',f:r=>esc(r.name)+(r.__own?' <span class="self">— объект</span>':''),
                attr:(r,i)=>r.__own?'':` class="link" data-peer="${i-1}"`},
               {t:'км',num:1,f:r=>r.__own?'—':num(r.distance_km,2)},
-              {t:'Класс',f:r=>esc(r.segment||'—')}];
+              {t:'Класс',f:r=>esc(r.segment||'—')},
+              // Вид жилья стоит рядом с классом во ВСЕХ разделах: он различает
+              // товар так же, как класс, и у темпа с лотом разница измерена не
+              // меньшая, чем у цены.
+              {t:'Вид',f:r=>esc(r.housing_kind||'—')}];
   const cols={
     price:[...base,{t:'₽/м²',num:1,f:r=>num(r.price_per_sqm)},
            {t:'мин',num:1,f:r=>num(r.price_per_sqm_min)},{t:'макс',num:1,f:r=>num(r.price_per_sqm_max)},
@@ -1936,8 +1945,17 @@ function sectionTable(code,ctx){
 function reportDigest(d){
   if(!d) return '';
   const s=d.subject||{}, c=d.comparison||{}, a=(d.analysis||{}).overall||{};
+  const m=s.metrics||{};
   const lines=[`Объект: ${s.project_name||s.address||s.query}; класс ${s.segment||'—'}`
-    +` (источник класса: ${s.segment_source||'—'}); данные на ${d.retrieved_at}.`,
+    +` (источник класса: ${s.segment_source||'—'})`
+    // Вид жилья — часть товара, а не подробность: апартаменты и квартиры
+    // сравниваются с разными соседями, и без этого Платон сравнит не то.
+    +(m.housing_kind?`; вид жилья ${m.housing_kind}`
+      // Сколько соседей с названным видом — часть того же ответа: у 117
+      // карточек из 685 состав не назван, и молчание нельзя складывать с
+      // «квартиры».
+      +(c.housing_kind_known!==undefined?` (вид назван у ${c.housing_kind_known} из ${c.used||0} соседей)`:''):'')
+    +`; данные на ${d.retrieved_at}.`,
     `В радиусе ${c.radius_km} км ${c.found} проектов, сопоставимых ${c.comparable}, в выборке ${c.used}.`];
   if(a.headline) lines.push(`Вывод движка: ${a.headline}. ${a.text}`);
   (d.blocks||[]).forEach(b=>{
@@ -3989,7 +4007,7 @@ function render(d){
     +` окружение · срез ${esc(String(d.retrieved_at||'').slice(0,10))} · источник:`
     +` Пульс Продаж Новостроек</div>`
     +`<div class="card headcard"><h2>${esc(s.project_name||s.address||s.query)}</h2>
-    <div class="muted" style="font-size:13px">Опознан ${esc(src)} · класс: ${cls} · данные на ${esc(d.retrieved_at)}</div>
+    <div class="muted" style="font-size:13px">Опознан ${esc(src)} · класс: ${cls}${m.housing_kind?' · '+esc(m.housing_kind):''} · данные на ${esc(d.retrieved_at)}</div>
     <div class="kv" style="margin-top:12px">
       <div><b>${num(c.found)}</b><span>проектов в ${c.radius_km} км</span></div>
       <div><b>${num(c.comparable)}</b><span>сопоставимы по классу</span></div>

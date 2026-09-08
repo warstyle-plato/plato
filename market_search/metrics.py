@@ -158,6 +158,49 @@ def _add_same_class(
     )
 
 
+def _add_same_kind(
+    block: MetricBlock,
+    subject: dict[str, Any],
+    peers: list[dict[str, Any]],
+    price: float,
+) -> None:
+    """Медиана своего вида жилья — рядом с общей, когда выборка смешанная.
+
+    Апартаменты и квартиры продаются разным покупателям и по разной цене, а в
+    выборку попадают вместе: класс у них общий. Разница измерена на выгрузке за
+    2026-08 — в 25 парах «тот же район, тот же класс» апартаменты дешевле в 21,
+    медиана разницы −21,0 %. Но поправки здесь нет и быть не может: в премиуме
+    апартаменты дороже (Хамовники +12,8 %, Басманный +31,1 %), то есть ответ у
+    каждого проекта свой — его и считаем по своей выборке.
+
+    Правило то же, что у соседнего класса: выборку не сужаем, а называем, из
+    чего сложилась общая медиана. Своего вида нет ни у кого — строки нет вовсе:
+    сравнивать не с чем, и пустая строка читалась бы как сравнение.
+    """
+    own = subject.get("housing_kind")
+    if not own:
+        return
+    same = [row for row in peers if row.get("housing_kind") == own]
+    known = [row for row in peers if row.get("housing_kind")]
+    if not same or len(same) == len(known):
+        return
+    exact = _peer_stats(same, "price_per_sqm")
+    if not exact["count"]:
+        return
+    block.peers["same_kind"] = {
+        **exact,
+        "kind": own,
+        "vs_median_pct": _ratio(price, exact["median"]),
+        "known": len(known),
+    }
+    median = f"{exact['median']:,.0f}".replace(",", " ")
+    block.notes.append(
+        f"В выборке смешаны разные виды жилья; у проекта это «{own}» — "
+        f"таких соседей {exact['count']} из {len(known)} с названным видом, "
+        f"их медиана {median} ₽/м²"
+    )
+
+
 def price_block(subject: dict[str, Any], peers: list[dict[str, Any]], city: MoscowMarket) -> MetricBlock:
     block = MetricBlock(BLOCK_PRICE, BLOCK_TITLES[BLOCK_PRICE])
     price = subject.get("price_per_sqm")
@@ -195,6 +238,7 @@ def price_block(subject: dict[str, Any], peers: list[dict[str, Any]], city: Mosc
     if stats["count"]:
         block.peers = {**stats, "vs_median_pct": _ratio(price, stats["median"])}
         _add_same_class(block, subject, peers, price)
+        _add_same_kind(block, subject, peers, price)
     else:
         block.notes.append("Ни у одного сопоставимого соседа нет действующего прайса")
 

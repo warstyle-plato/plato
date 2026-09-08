@@ -26,7 +26,7 @@ from typing import Any
 
 from .segments import _LADDER, normalize_segment
 from .stage import adjust as stage_adjust
-from .verdict import _num, _pct
+from .verdict import _median, _num, _pct
 
 MONTHS = ["январе", "феврале", "марте", "апреле", "мае", "июне", "июле",
           "августе", "сентябре", "октябре", "ноябре", "декабре"]
@@ -239,6 +239,64 @@ def _price_finding(subject, peers, segment) -> dict[str, Any] | None:
         )
         tone = "good"
     return {"code": "price", "headline": headline, "text": text, "tone": tone}
+
+
+def _kind_finding(subject, peers) -> dict[str, Any] | None:
+    """С кем на самом деле сравнили цену: апартаменты это или квартиры.
+
+    Класс у апартаментов и квартир общий, поэтому в выборку они попадают
+    вместе, — а товар разный, и покупатель разный. На выгрузке за 2026-08 в 25
+    парах «тот же район, тот же класс» апартаменты дешевле в 21 паре, медиана
+    разницы −21,0 %; в бизнесе они и продаются медленнее (10,2 против 16,2
+    ДДУ/мес) и мельче (47,2 против 56,9 м²). Но поправки отсюда не выводится:
+    в премиуме апартаменты ДОРОЖЕ квартир (Хамовники +12,8 %, Басманный
+    +31,1 %), то есть ответ у каждого проекта свой — он и считается по его
+    собственной выборке.
+
+    Вывод появляется, только когда есть о чём сказать: вид жилья у объекта
+    известен, а выборка смешанная. Одинаковый вид у всех — это не новость.
+    """
+    own = subject.get("housing_kind")
+    if not own:
+        return None
+    known = [row for row in _priced(peers) if row.get("housing_kind")]
+    if not known:
+        return None
+    same = [row for row in known if row["housing_kind"] == own]
+    other = [row for row in known if row["housing_kind"] != own]
+    if not other:
+        return None
+    price = subject.get("price_per_sqm")
+    other_median = _median([row["price_per_sqm"] for row in other])
+    same_median = _median([row["price_per_sqm"] for row in same]) if same else None
+    kinds: dict[str, int] = {}
+    for row in known:
+        kinds[row["housing_kind"]] = kinds.get(row["housing_kind"], 0) + 1
+    listed = ", ".join(f"{name} — {count}" for name, count in sorted(kinds.items()))
+
+    if not same:
+        text = (
+            f"Проект продаёт «{own}», и в выборке таких соседей нет ни одного: "
+            f"{listed}. Медиана {_num(other_median)} ₽/м² посчитана по другому "
+            f"товару — сравнивать с ней можно, но это сравнение видов, а не цен."
+        )
+        return {"code": "housing_kind", "tone": "watch",
+                "headline": f"Сравнение идёт с другим товаром: у нас «{own}»", "text": text}
+
+    gap = round(100 * (same_median / other_median - 1), 1) if other_median else None
+    text = (
+        f"Проект продаёт «{own}»; в выборке {listed}. Медиана своего вида "
+        f"{_num(same_median)} ₽/м² против {_num(other_median)} у остальных"
+        + (f" ({_pct(gap)})." if gap is not None else ".")
+    )
+    if price and same_median:
+        text += (
+            f" Наш прайс {_num(price)} — это "
+            f"{_pct(round(100 * (price / same_median - 1), 1))} к своему виду."
+        )
+    tone = "watch" if gap is not None and abs(gap) >= 10 else "good"
+    return {"code": "housing_kind", "tone": tone,
+            "headline": f"В выборке смешаны виды жилья, у проекта «{own}»", "text": text}
 
 
 def _pace_finding(subject, peers) -> dict[str, Any] | None:
@@ -573,6 +631,8 @@ def findings(
     """
     built = [
         _price_finding(subject, peers, segment),
+        # Сразу за ценой: он отвечает не «дорого ли», а «с чем сравнили».
+        _kind_finding(subject, peers),
         _pace_finding(subject, peers),
         _product_finding(blocks),
         _money_finding(blocks),

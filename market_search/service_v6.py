@@ -41,6 +41,7 @@ from .price_hint import price_hint
 from .pulse import PulseClient
 from .price_evidence import VerifiedPriceEnricher
 from .recommendation import market_recommendation, official_recommendation
+from .cards import ProjectCards
 from .registry import ProjectRegistry
 from .subject import Subject, resolve_subject
 from .segments import SegmentResolver, detect_district, districts_match, segments_comparable
@@ -159,6 +160,10 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         # История продаж и остатка: живой источник её не отдаёт, она вынута из
         # помесячного отчёта и едет с кодом.
         self.dynamics = SalesDynamics.bundled()
+        # Карточки отчёта: вид жилья и состав дома. Файл собирался импортом с
+        # самого начала и не читался никем — отчёт сравнивал апартаменты с
+        # квартирами, не называя этого.
+        self.cards = ProjectCards.bundled()
         self.deals = DealsSummary.bundled()
         # Разбор кадастрового номера живёт в движке: там НСПД, там же его
         # используют ТЭП и анализ территории. Второй такой путь заводить нельзя,
@@ -648,6 +653,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
             **self.pulse.metrics(project.complex_id),
             **self.pulse.project_totals(project.complex_id),
             **self.pulse.remaining(project.complex_id),
+            **self.cards.facts(project.complex_id),
         }
         if latitude is not None and longitude is not None:
             row["distance_km"] = round(
@@ -713,6 +719,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 **self.pulse.project_totals(subject.project_id),
                 **self.pulse.remaining(subject.project_id),
                 **_report_extras(self.dynamics, self.deals, subject.project_id),
+                **self.cards.facts(subject.project_id),
             }
 
         # Класс ставит «Пульс» — решение владельца от 18.08.2026, ручной подмены
@@ -810,6 +817,9 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 "latitude": project.latitude,
                 "longitude": project.longitude,
                 **metrics,
+                # Вид жилья читается тем же ключом, что у объекта: правило одно
+                # на обе стороны сравнения, разойтись им негде.
+                **self.cards.facts(project.complex_id),
             }
             if include_project_totals:
                 row.update(self.pulse.project_totals(project.complex_id))
@@ -1065,6 +1075,12 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 # Сколько цен взято не из прайс-листа, а из помесячного ряда
                 # источника. Молча подставленная цена неотличима от прайсовой.
                 "price_from_series": from_series,
+                # У скольких соседей выборки известен вид жилья. Состав дома
+                # называет отчёт «Пульса», и назван он не у всех: «не назван» —
+                # это не «квартиры», и молчание нельзя складывать с ответом.
+                "housing_kind_known": sum(
+                    1 for row in peers if row.get("housing_kind")
+                ),
                 # Сколько соседей в выборке поставил человек, а не источник.
                 # Число печатается рядом с остальными: выборка, наполовину
                 # собранная руками, и выборка из источника — разные вещи, и
