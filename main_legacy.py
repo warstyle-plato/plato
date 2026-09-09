@@ -76,7 +76,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.23.5"
+VERSION = "0.23.6"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -25316,8 +25316,7 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
 
     works_base = (
         amounts["main_above"] + amounts["main_under"] + amounts["social"]
-        + amounts["offices"] + amounts["standalone_retail"] + amounts["above_parking"]
-        + amounts["sports"]
+        + sum(amounts[obj.key] for obj in standalone_objects())
     )
     design_base = amounts["design_p"] + amounts["design_rd"]
 
@@ -26420,15 +26419,14 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     # стоимость постройки осталась бы непризнанной до конца проекта. Переданный
     # ФОК ведёт себя как соцобъект — его CAPEX уходит в общий пул `core`.
     sports_sold = b(x, "sports_enabled") and sports_is_sold(x)
-    krt_products = ("offices", "standalone_retail", "above_parking") + (
-        ("sports",) if sports_sold else ())
-    product_costs = {
-        "offices": op["capex_amounts"].get("offices", 0.0),
-        "standalone_retail": op["capex_amounts"].get("standalone_retail", 0.0),
-        "above_parking": op["capex_amounts"].get("above_parking", 0.0),
-    }
-    if sports_sold:
-        product_costs["sports"] = op["capex_amounts"].get("sports", 0.0)
+    krt_products = tuple(
+        obj.key for obj in standalone_objects()
+        if obj.key != "sports" or sports_sold
+    )
+    # Состав пула и состав его стоимостей — один список, а не два: разойдись
+    # они, объект попал бы в выручку и не попал в расход, и обе строки
+    # выглядели бы верными.
+    product_costs = {key: op["capex_amounts"].get(key, 0.0) for key in krt_products}
     core_cost = max(
         total_capex + commercial_costs - sum(product_costs.values()), 0.0
     )
@@ -27566,11 +27564,12 @@ def calculate(req: CalcRequest) -> dict:
     }
 
 
-_OBJECT_SCHEDULE_PREFIX = {"offices": "offices", "standalone_retail": "retail",
-                           "above_parking": "above_parking", "sports": "sports",
-                           # Основные продукты — одна лестница на четверых.
-                           "apartments": "core", "ground_commercial": "core",
-                           "underground_parking": "core", "storage": "core"}
+_OBJECT_SCHEDULE_PREFIX = {
+    **{obj.key: obj.prefix for obj in standalone_objects()},
+    # Основные продукты — одна лестница на четверых.
+    "apartments": "core", "ground_commercial": "core",
+    "underground_parking": "core", "storage": "core",
+}
 
 
 def _product_schedule_fields(notes: dict[str, dict[str, Any]], key: str) -> dict[str, Any]:
@@ -28701,11 +28700,11 @@ def _aggregate_finance(results: list[dict[str, Any]],
         "vat_input_deductible": sum(f.get("vat_input_deductible", 0.0) for f in fs),
         "tax_margin_by_product": {
             key: sum(float((f.get("tax_margin_by_product") or {}).get(key, 0.0) or 0.0) for f in fs)
-            for key in ("core", "offices", "standalone_retail", "above_parking", "sports")
+            for key in ("core",) + STANDALONE_PRODUCTS
         },
         "tax_cost_by_product": {
             key: sum(float((f.get("tax_cost_by_product") or {}).get(key, 0.0) or 0.0) for f in fs)
-            for key in ("core", "offices", "standalone_retail", "above_parking", "sports")
+            for key in ("core",) + STANDALONE_PRODUCTS
         },
         "financing_tax_deductions": sum(float(f.get("financing_tax_deductions", 0.0) or 0.0) for f in fs),
         "profit_before_tax": sum(f["profit_before_tax"] for f in fs),
