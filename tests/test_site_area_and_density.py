@@ -190,6 +190,9 @@ def run_apply(inputs: dict, tep: dict, extra_js: str = "") -> dict:
     script = (
         f"const inputs={json.dumps(inputs)};\n"
         f"const tep={json.dumps(tep)};\n"
+        # Доля СПП объявлена в движке и подставлена на страницу: стенд берёт её
+        # оттуда же, а не вписывает своим числом.
+        f"const MKD_SPP_SPLIT={json.dumps(core.MKD_SPP_SPLIT)};\n"
         "const cadastralAnalysis=null;\n"
         "const shown=[];\n"
         "const document={getElementById:()=>({style:{},set innerHTML(v){shown.push(v)}})};\n"

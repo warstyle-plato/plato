@@ -76,7 +76,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.22.93"
+VERSION = "0.22.94"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -409,6 +409,13 @@ TEP_RATIOS: dict[str, dict[str, float]] = {
     "sports": {"total_of_gns": 0.94, "saleable_of_gns": 0.564,
                "source": "как у офисов и ТЦ: общая 94% ГНС (толщина стен)"},
 }
+# Как делится СПП жилых зданий: жильё и встроенное нежилое первого этажа.
+# Восстановлено по двум выгрузкам ГлавАПУ вместе с остальными долями и до сих
+# пор жило ЧЕТЫРЬМЯ литералами — в свободном вводе ТЭП, в расчёте по плотности,
+# в быстром ТЭП участка и на странице. Копию негде обновлять, потому что копии
+# нет: доля объявлена здесь и подставляется на страницу, как `TEP_RATIOS`.
+MKD_SPP_SPLIT: dict[str, float] = {"apartments": 0.94, "ground_commercial": 0.06}
+MKD_SPP_SPLIT_PLACEHOLDER = "__DEVELOPAID_MKD_SPP_SPLIT__"
 TEP_RATIOS_PLACEHOLDER = "__DEVELOPAID_TEP_RATIOS__"
 # Ступени норматива площади соцобъекта. Подставляются, а не копируются: у
 # норматива города одно место жительства.
@@ -1864,8 +1871,8 @@ def build_freeform_tep(text: str, raw_values: dict[str, Any] | None = None) -> d
             apartment_gns = max(0.0, project_total_gns - commercial_gns)
             calculated.append("жилая ГНС рассчитана как ГНС проекта за вычетом введённой коммерции")
         else:
-            apartment_gns = project_total_gns * 0.94
-            commercial_gns = project_total_gns * 0.06
+            apartment_gns = project_total_gns * MKD_SPP_SPLIT["apartments"]
+            commercial_gns = project_total_gns * MKD_SPP_SPLIT["ground_commercial"]
             commercial_saleable = commercial_gns * 0.9
             assumptions.append(
                 "при вводе только общей ГНС применено стандартное соотношение жилой/нежилой части МКД 94%/6%"
@@ -1879,8 +1886,8 @@ def build_freeform_tep(text: str, raw_values: dict[str, Any] | None = None) -> d
         if commercial_gns:
             apartment_gns = max(0.0, total_spp - commercial_gns)
         else:
-            apartment_gns = total_spp * 0.94
-            commercial_gns = total_spp * 0.06
+            apartment_gns = total_spp * MKD_SPP_SPLIT["apartments"]
+            commercial_gns = total_spp * MKD_SPP_SPLIT["ground_commercial"]
             commercial_saleable = commercial_gns * 0.9
             assumptions.append("при вводе только плотности применено стандартное соотношение жилой/нежилой части МКД 94%/6%")
         apartment_saleable = apartment_gns * 0.65
@@ -8032,9 +8039,9 @@ def vri_tep_quick(region: str, query: str,
         # обслуживание — нормативы на тысячу жителей с округлением вверх.
         density = 35000.0
         spp = area * density
-        apartments_gns = spp * 0.94
+        apartments_gns = spp * MKD_SPP_SPLIT["apartments"]
         apartments = apartments_gns * 0.65
-        commerce_gns = spp * 0.06
+        commerce_gns = spp * MKD_SPP_SPLIT["ground_commercial"]
         population = math.ceil(apartments / 33.0) if apartments > 0 else 0
         units = round(population / 2.1) if population else 0
         dou = round(population * 44 / 1000)
@@ -42260,8 +42267,10 @@ function renderTep(){
          +`«Социальная нагрузка → Соцобъекты и плата за ВРИ → Требование КРТ».</span>`;
    }
    if(TEP_RATIOS[key]){
-     const bad=tepRefillNote[key]||tepRowComplaint(key,row);
-     if(bad)label+=` <span class="tep-note bad">${escapeHtml(bad)}</span>`;
+     const own=tepNoteText(key);
+     const text=own||tepRowComplaint(key,row);
+     const tone=own?tepNoteTone(key):'bad';
+     if(text)label+=` <span class="tep-note ${tone}">${escapeHtml(text)}</span>`;
    }
    // Выключенный объект: строка в таблице нулевая, потому что нулевой её видит
    // модель, — но метры человека при этом никуда не делись, и молчать о них
@@ -42501,7 +42510,7 @@ function enableTepRow(key){
  const sw=TEP_ROW_SWITCH[key];
  if(!sw)return;
  inputs[sw[0]]=true;
- tepRefillNote[key]='';
+ setTepNote(key,'');
  syncTep(false);renderInputs();renderTep();
  scheduleTepAutoRecalc();
  calculate();
@@ -42514,7 +42523,7 @@ function refillTepRow(key){
  if(!r)return;
  const row=tep[key];
  const gns=Number(row.gns||0),sale=Number(row.saleable||0);
- const say=text=>{tepRefillNote[key]=text;renderTep()};
+ const say=text=>{setTepNote(key,text);renderTep()};
  const sw=TEP_ROW_SWITCH[key];
  if(sw&&!inputs[sw[0]]){
   say('Объект выключен во вводных: включите «'+sw[1]+' → Объект включен», иначе строка обнуляется при каждом пересчёте.');
@@ -42528,7 +42537,10 @@ function refillTepRow(key){
                  :{gns:0,total_area:0,saleable:sale,useful:0};
  const filled=tepFillByRatios(key,base);
  ['gns','total_area','saleable','useful'].forEach(field=>{row[field]=filled[field]});
- tepRefillNote[key]='';
+ setTepNote(key,'');
+ // Жилая СПП двинулась — за ней идёт встроенная коммерция, как и при правке
+ // ячейки: правило одно, а закрытое в одном месте соседнее не защищает.
+ if(key==='apartments'&&Math.abs(Number(row.gns||0)-gns)>0.05)rescaleBuiltInCommercial();
  // Посчитанное возвращается во вводные — иначе `syncTep` вернёт прежнее.
  if(tepRowToInputs(key))renderInputs();
  renderTep();
@@ -42536,8 +42548,16 @@ function refillTepRow(key){
  calculate();
 }
 
-// Ответ кнопки живёт до следующей перерисовки строки.
+// Ответ кнопки живёт до следующей перерисовки строки. У заметки есть тон:
+// жалоба красная, а сообщение о посчитанном — обычная подпись. Красным
+// покрашенный пересчёт читается как тревога, а тревожиться не о чем.
 const tepRefillNote={};
+function setTepNote(key,text,tone){
+ if(!text){delete tepRefillNote[key];return}
+ tepRefillNote[key]={text:String(text),tone:tone===undefined?'bad':tone};
+}
+function tepNoteText(key){const n=tepRefillNote[key];return n?n.text:''}
+function tepNoteTone(key){const n=tepRefillNote[key];return n&&n.tone?n.tone:''}
 
 // Строки офисов и ТЦ производные: их пересобирает `syncTep` из вводных, и
 // вписанное прямо в таблицу исчезало при первом же пересчёте — «в обратную
@@ -42573,8 +42593,8 @@ function tepRowToInputs(key){
  if(sw&&!inputs[sw[0]]&&Number(tep[key].gns||0)>0){
   // Выключенный объект обнулит строку на первом же пересчёте. Числа сохранены,
   // но включать объект за человека нельзя: это меняет экономику проекта.
-  tepRefillNote[key]='Площади сохранены во вводных, но объект выключен: включите «'+sw[1]+
-   ' → Объект включен», иначе строка обнулится при пересчёте.';
+  setTepNote(key,'Площади сохранены во вводных, но объект выключен: включите «'+sw[1]+
+   ' → Объект включен», иначе строка обнулится при пересчёте.');
  }
  return true;
 }
@@ -42585,6 +42605,37 @@ function tepRowToInputs(key){
 // Прежняя защита введённого руками давала строку, которую нельзя досчитать: у
 // квартир оставался ГНС 50 000 при продаваемой 50 000, и модель считала по
 // нелепице, пока человек не удалит ячейку.
+// Встроенная коммерция первого этажа — доля той же СПП жилых зданий, что и
+// квартиры: у ГлавАПУ это 94/6. Правка жилья руками её не двигала — соседние
+// строки правка ячейки не трогает вовсе, — и на фактическом ТЭП выходило
+// смешанное: квартиры по решению ГЗК, коммерция нормативная. Молчали при этом
+// не только метры: плата за ВРИ считается от жилой СПП ВМЕСТЕ со встроенной,
+// то есть её база наполовину оставалась прежней, а выручка коммерции — тоже
+// (владелец, 09.09.2026: «почему коммерция первого этажа пропорционально не
+// изменилась?»). Пересчитываем пропорцией и НАЗЫВАЕМ это: молча переписанная
+// строка неотличима от невнимательности, а своё число человек вписывает сюда
+// же — оно сильнее, пока жильё не правят снова.
+function rescaleBuiltInCommercial(){
+ const row=tep.ground_commercial;
+ if(!row)return;
+ const living=Number((tep.apartments&&tep.apartments.gns)||0);
+ const per=Number(MKD_SPP_SPLIT.apartments||0);
+ const share=Number(MKD_SPP_SPLIT.ground_commercial||0);
+ // Пустое жильё — это «человек стирает и печатает», а не «коммерции нет».
+ if(!(living>0)||!(per>0)||!(share>0))return;
+ const was=Number(row.gns||0);
+ const want=Math.round(living/per*share*10)/10;
+ if(Math.abs(want-was)<0.05)return;
+ const filled=tepFillByRatios('ground_commercial',
+  {gns:want,total_area:0,saleable:0,useful:0});
+ ['gns','total_area','saleable'].forEach(field=>{row[field]=filled[field]});
+ row.useful=row.saleable;
+ setTepNote('ground_commercial',
+  'Пересчитана пропорцией '+Math.round(per*100)+'/'+Math.round(share*100)+
+  ' от жилой СПП: было '+landNum(was,0)+' → стало '+landNum(want,0)+
+  ' м² ГНС. Своё число вписывается здесь же.', '');
+}
+
 function tepCellChanged(key,col,value){
  const was=Number(tep[key][col]||0);
  tep[key][col]=Number(value||0);
@@ -42596,9 +42647,10 @@ function tepCellChanged(key,col,value){
   const delta=Number(tep[key][col]||0)-was;
   tep[key].saleable=Math.max(0,Math.round((Number(tep[key].saleable||0)-delta)*10)/10);
   tep[key].useful=tep[key].saleable;
-  tepRefillNote[key]=delta>0
+  // Это сообщение о посчитанном, а не жалоба: тон обычный.
+  setTepNote(key, delta>0
    ? 'Переданные '+landNum(delta,0)+' м² убраны из продаваемой площади: метры строятся, но не продаются.'
-   : '';
+   : '', '');
   tepRowToInputs(key);
   renderInputs();
   renderTep();
@@ -42631,8 +42683,9 @@ function tepCellChanged(key,col,value){
   const filled=tepFillByRatios(key,base);
   ['gns','total_area','saleable'].forEach(field=>{tep[key][field]=filled[field]});
   tep[key].useful=tep[key].saleable;
-  tepRefillNote[key]='';
+  setTepNote(key,'');
   tepRowToInputs(key);
+  if(key==='apartments')rescaleBuiltInCommercial();
   renderInputs();
   renderTep();
  }else{tepRowToInputs(key);updateTepTotals()}
@@ -42806,11 +42859,11 @@ function applyDensityToTep(){
  // Москва с ГлавАПУ: квартиры — 94% СПП, коммерция 1 этажа — 6%;
  // продаваемая квартир — 65% ГНС, коммерции — 90%; общая площадь — 90% ГНС.
  const spp=area*density;
- tep.apartments.gns=spp*0.94;
+ tep.apartments.gns=spp*MKD_SPP_SPLIT.apartments;
  tep.apartments.total_area=tep.apartments.gns*0.9;
  tep.apartments.saleable=tep.apartments.gns*0.65;
  tep.apartments.useful=tep.apartments.saleable;
- tep.ground_commercial.gns=spp*0.06;
+ tep.ground_commercial.gns=spp*MKD_SPP_SPLIT.ground_commercial;
  tep.ground_commercial.total_area=tep.ground_commercial.gns*0.9;
  tep.ground_commercial.saleable=tep.ground_commercial.gns*0.9;
  tep.ground_commercial.useful=tep.ground_commercial.saleable;
@@ -42944,6 +42997,9 @@ function applyRequiredSocialProgramFromGlavapu(){
 // обработчике `onchange`, и площадь офиса в неё не попала — объект включался,
 // а метры до таблицы не доезжали (замечание владельца, 19.08.2026). Тест
 // сверяет список с тем, что `syncTep` читает на самом деле.
+// Как делится СПП жилых зданий на жильё и встроенное нежилое. Подставляется
+// движком: доля объявлена там один раз, копии здесь нет.
+const MKD_SPP_SPLIT=__DEVELOPAID_MKD_SPP_SPLIT__;
 const TEP_RATIOS=__DEVELOPAID_TEP_RATIOS__;
 // Норматив площади соцобъекта — ступень по ёмкости здания (РНГП, редакция
 // 2579-ПП). Таблица приходит из движка подстановкой: второй копии числа нет.
@@ -46999,6 +47055,7 @@ PAGE = PAGE.replace(INPUT_DEFAULT_PLACEHOLDER,
 PAGE = PAGE.replace(TEP_DEFAULT_PLACEHOLDER,
                     json.dumps(TEP_DEFAULT, ensure_ascii=False))
 PAGE = PAGE.replace(TEP_RATIOS_PLACEHOLDER, json.dumps(TEP_RATIOS, ensure_ascii=False))
+PAGE = PAGE.replace(MKD_SPP_SPLIT_PLACEHOLDER, json.dumps(MKD_SPP_SPLIT, ensure_ascii=False))
 PAGE = PAGE.replace(
     SOCIAL_AREA_STEPS_PLACEHOLDER,
     json.dumps({kind: [[None if limit == float("inf") else limit, value]
