@@ -131,6 +131,32 @@ def _reader_label(entry: dict[str, Any], check_result: str) -> tuple[str, str]:
     return (f"Учтено на {stamp}" if stamp and stamp != "—" else "Учтено", "ok")
 
 
+def _decode(body: bytes, content_type: str) -> tuple[str, str]:
+    """Текст читается той кодировкой, которую объявил сервер.
+
+    Страницы правовых порталов приходят в windows-1251, а разбор читал их как
+    utf-8 с `errors="ignore"`: кириллица при этом пропадает целиком, и ни одно
+    русское слово документа не находится НИКОГДА. На проде 09.09.2026 это дало
+    «своих слов не найдено» у источников, где они есть, а следом — ложное
+    «содержимое изменилось». Чем прочитано — часть ответа, поэтому имя
+    кодировки уезжает в запись проверки.
+    """
+    declared = ""
+    match = re.search(r"charset=\s*\"?([\w\-]+)", content_type or "")
+    if match:
+        declared = match.group(1).strip().lower()
+    for name in (declared, "utf-8", "cp1251"):
+        if not name:
+            continue
+        try:
+            return body.decode(name), name
+        except (UnicodeDecodeError, LookupError):
+            continue
+    # Ни одна кодировка не подошла целиком — читаем как есть и говорим об этом:
+    # молча испорченный текст неотличим от текста, где слов и правда нет.
+    return body.decode("utf-8", errors="ignore"), "utf-8 с потерями"
+
+
 def _probe(entry: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any]:
     url = str(entry.get("source_url") or "").strip()
     checked_at = _now_iso()
@@ -171,28 +197,44 @@ def _probe(entry: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any]:
     found: list[str] = []
     missing: list[str] = []
     is_text = any(kind in content_type for kind in ("text/", "json", "xml"))
+    charset = ""
     if is_text and terms:
-        decoded = body.decode("utf-8", errors="ignore").lower()
+        decoded, charset = _decode(body, content_type)
+        low = decoded.lower()
         for term in terms:
-            (found if term.lower() in decoded else missing).append(term)
+            (found if term.lower() in low else missing).append(term)
 
-    result = "changed" if changed else "ok"
-    message = (
-        "Источник доступен; содержимое не изменилось с предыдущей проверкой"
-        if old_digest
-        else "Источник доступен; зафиксирован контрольный отпечаток"
-    )
-    if changed:
-        message = "Содержимое источника изменилось — нужна ревизия редакции"
-    elif is_text and terms and not found:
+    # Порядок ответов здесь и есть утверждение. «Содержимое изменилось» — это
+    # заявление О ДОКУМЕНТЕ, и делать его, не найдя в теле ни одного его
+    # собственного слова, нельзя: чаще это значит, что скачана не та страница —
+    # обёртка, редирект или заглушка. Пока документ не опознан, честный ответ
+    # «нужна ревизия», а не «сменилась редакция». Прежде проверка маркеров
+    # стояла в `elif` ПОСЛЕ `changed` и до неё не доходило вовсе: на проде
+    # 09.09.2026 шесть источников из семи объявили смену редакции, не найдя у
+    # себя ни одного своего слова. Хуже того, переход объявляется один раз
+    # (`_changes_between`), и застрявший в ложном «изменилось» источник
+    # настоящую смену редакции уже не объявит никогда.
+    unrecognised = bool(is_text and terms and not found)
+    if unrecognised:
         result = "review_required"
-        message = "Источник доступен, но контрольные маркеры документа не найдены"
+        message = ("Источник доступен, но контрольные маркеры документа не найдены"
+                   + (" — содержимое изменилось, и это похоже не на новую редакцию, "
+                      "а на другую страницу" if changed else ""))
+    elif changed:
+        result = "changed"
+        message = "Содержимое источника изменилось — нужна ревизия редакции"
+    else:
+        result = "ok"
+        message = ("Источник доступен; содержимое не изменилось с предыдущей проверкой"
+                   if old_digest
+                   else "Источник доступен; зафиксирован контрольный отпечаток")
 
     return {
         "checked_at": checked_at,
         "result": result,
         "http_status": http_status,
         "content_type": content_type,
+        "charset": charset,
         "last_modified": last_modified,
         "sha256": digest,
         "changed": changed,
