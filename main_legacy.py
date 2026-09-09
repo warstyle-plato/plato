@@ -76,7 +76,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.22.86"
+VERSION = "0.22.89"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -15579,6 +15579,24 @@ def _v4_column_letter(number: int) -> str:
     return letters
 
 
+# Ширина помесячной сетки книги объявлена ЗДЕСЬ и больше нигде. Прежде тот же
+# факт стоял в трёх видах — этой константой, числом `_V4_CAPEX_MONTH_COLUMNS`
+# и одиннадцатью литералами `$DS$` внутри f-строк, — и протянуть книгу со 120
+# месяцев до 180 значило найти все три копии. Цена промаха измерена: на четырёх
+# очередях с шагом 36 горизонт движка 163 месяца, а книга обрезала его до 120 и
+# собиралась МОЛЧА — CAPEX 36 769 против 49 085 млн ₽, EBITDA 190 против 2 701.
+_V4_CF_FIRST_COL = 4                 # D
+_V4_CF_LAST_COL = 183                # GA — 180 месяцев
+_V4_LAST_COLUMN = _v4_column_letter(_V4_CF_LAST_COL)
+_V4_MONTH_COLUMNS = _V4_CF_LAST_COL - _V4_CF_FIRST_COL + 1
+
+
+def _v4_month_span(row: int, sheet: str = "") -> str:
+    """Диапазон «весь горизонт» по строке листа: `$D$37:$GA$37`."""
+    prefix = f"'{sheet}'!" if sheet else ""
+    return f"{prefix}$D${row}:${_V4_LAST_COLUMN}${row}"
+
+
 def _v4_cell_formula(xml: str, coord: str) -> str | None:
     """Формула ячейки как есть. Нет ячейки или нет формулы — `None`.
 
@@ -15964,7 +15982,7 @@ _V4_CAPEX_EXTRA_ROWS = (
 )
 _V4_CAPEX_TOTAL_ROW = 32
 _V4_CAPEX_RESERVE_ROW = 30
-_V4_CAPEX_MONTH_COLUMNS = 120  # D..DS, как у шаблона
+_V4_CAPEX_MONTH_COLUMNS = _V4_MONTH_COLUMNS
 
 
 def _v4_apply_demolition_rows(xml: str, missing: list[str]) -> str:
@@ -16249,14 +16267,14 @@ def _v4_apply_management_profile(xml: str, missing: list[str]) -> str:
         top, bottom = first + base, last + base
         drop = [row + base for row in excluded]
         pattern = re.compile(
-            r"SUM\((?P<col>[A-Z]{1,2})%d:(?P=col)%d\)/SUM\(\$D\$%d:\$DS\$%d\)"
-            % (top, bottom, top, bottom))
+            r"SUM\((?P<col>[A-Z]{1,2})%d:(?P=col)%d\)/SUM\(\$D\$%d:\$%s\$%d\)"
+            % (top, bottom, top, _V4_LAST_COLUMN, bottom))
         def replace(match: "re.Match[str]") -> str:
             column = match.group("col")
             month = (f"(SUM({column}{top}:{column}{bottom})-"
                      + "-".join(f"{column}{row}" for row in drop) + ")")
-            total = (f"(SUM($D${top}:$DS${bottom})-"
-                     + "-".join(f"SUM($D${row}:$DS${row})" for row in drop) + ")")
+            total = (f"(SUM($D${top}:${_V4_LAST_COLUMN}${bottom})-"
+                     + "-".join(f"SUM({_v4_month_span(row)})" for row in drop) + ")")
             return f"{month}/{total}"
         xml, count = pattern.subn(replace, xml)
         if not count:
@@ -16279,8 +16297,6 @@ _V4_CARRY_PASSED_ROW = 65            # ПФ — долг передан след
 # Строка 29 листов CF в шаблоне пуста — ряд встаёт, не сдвигая ссылок.
 _V4_RVE_UNPAID_ROW = 29
 _V4_CARRY_FLAG_CELL = "B92"          # признак на «Вводных»
-_V4_CF_FIRST_COL = 4                 # D
-_V4_CF_LAST_COL = 123                # DS
 _V4_CF_QUEUE_ENABLED_ROW = 88        # 'Вводные'!B88 — очередь 1 включена
 _V4_BRIDGE_FEE_ROW = 57              # база комиссии выдачи = лимит БРИДЖа
 
@@ -17218,23 +17234,24 @@ def _v4_tax_share_by_year(xml: str, missing: list[str]) -> str:
                  + "".join(_v4_head_cell(f"{_v4_column_letter(index + 1)}{header}", title)
                            for index, title in enumerate(titles))
                  + "</x:row>")
-    grid = f"$D${years}:$DS${years}"
+    grid = _v4_month_span(years)
     first = header + 1
     last = first + _V4_TAX_YEARS_SPAN - 1
     for offset in range(_V4_TAX_YEARS_SPAN):
         row = first + offset
         cells = [formula(f"A{row}", f"$B${gate}" if offset == 0 else f"A{row - 1}+1"),
-                 formula(f"B{row}", f"SUMIF({grid},$A{row},'CF'!$D$37:$DS$37)")]
+                 formula(f"B{row}", f"SUMIF({grid},$A{row},{_v4_month_span(37, 'CF')})")]
         for index, column in enumerate(_V4_TAX_QUEUE_COLUMNS):
             cells.append(formula(
                 f"{column}{row}",
-                f"MAX(SUMIF({grid},$A{row},'CF_{index + 1}'!$D$22:$DS$22),0)"))
+                f"MAX(SUMIF({grid},$A{row},"
+                f"{_v4_month_span(22, f'CF_{index + 1}')}),0)"))
         span = f"{_V4_TAX_QUEUE_COLUMNS[0]}{row}:{_V4_TAX_QUEUE_COLUMNS[-1]}{row}"
         cells.append(formula(f"G{row}", f"SUM({span})"))
         for index, column in enumerate(_V4_TAX_MONTHLY_COLUMNS):
             cells.append(formula(
                 f"{column}{row}",
-                f"SUMIF({grid},$A{row},$D${monthly + index}:$DS${monthly + index})"))
+                f"SUMIF({grid},$A{row},{_v4_month_span(monthly + index)})"))
         reserve = (f"{_V4_TAX_MONTHLY_COLUMNS[0]}{row}:"
                    f"{_V4_TAX_MONTHLY_COLUMNS[-1]}{row}")
         cells.append(formula(f"{_V4_TAX_RESERVE_TOTAL}{row}", f"SUM({reserve})"))
@@ -17276,8 +17293,9 @@ def _v4_tax_share_by_year(xml: str, missing: list[str]) -> str:
     # под двумя разными мерами — это два ответа на один вопрос.
     for index, column in enumerate(_V4_TAX_SHARE_COLUMNS, start=1):
         row = 29 + index
-        old = f"MAX(SUM('CF_{index}'!$D$22:$DS$22),0)"
-        alt = f"SUMIF('CF_{index}'!$D$22:$DS$22,\">0\")"
+        span = _v4_month_span(22, f"CF_{index}")
+        old = f"MAX(SUM({span}),0)"
+        alt = f"SUMIF({span},\">0\")"
         source = f"{column}{total}"
         for candidate in (old, alt):
             encoded = xml_escape(candidate)
@@ -17420,7 +17438,7 @@ def _v4_use_bridge_base_row(xml: str, phase: int, missing: list[str]) -> str:
     old = (f"('CAPEX'!$B${purchase}+'CAPEX'!$B${design_p}+'CAPEX'!$B${design_rd}"
            f"+IF('Вводные'!$B$37=\"Денежная компенсация\",'CAPEX'!$B${social},"
            f"IF('Вводные'!$B$37=\"{SOCIAL_MODE_BOTH}\",{cash},0)))")
-    new = f"SUM('CAPEX'!$D${row}:$DS${row})"
+    new = f"SUM({_v4_month_span(row, 'CAPEX')})"
 
     def build(_column: str, body: str) -> str:
         return body.replace(old, new)
@@ -17447,8 +17465,8 @@ def _v4_apply_sports_tax_row(xml: str, phase: int, missing: list[str]) -> str:
     alloc_row = 96 + 8 * (phase - 1)
     sold = f"'Вводные'!$K${_V4_SPORTS_DISPOSITION_ROW}=\"{_V4_SPORTS_SALE_WORD}\""
     mine = f"'ОБЪЕКТЫ'!$B$126={queue}"
-    pool_old = f"(SUM($D$20:$DS$20)-'ОБЪЕКТЫ'!$B${alloc_row})"
-    pool_new = (f"(SUM($D$20:$DS$20)-'ОБЪЕКТЫ'!$B${alloc_row}"
+    pool_old = f"(SUM({_v4_month_span(20)})-'ОБЪЕКТЫ'!$B${alloc_row})"
+    pool_new = (f"(SUM({_v4_month_span(20)})-'ОБЪЕКТЫ'!$B${alloc_row}"
                 f"+IF({sold},0,IF({mine},'ОБЪЕКТЫ'!$B$146,0)))")
 
     def build(column: str, body: str) -> str:
@@ -18361,6 +18379,12 @@ def _v4_finance_hints(bundle: dict[str, Any]) -> dict[str, Any]:
             "bridge_peak_by_phase": [float(finance.get("peak_bridge", 0.0)) / 1e6],
         }
     hints["parity"] = _v4_parity_targets(bundle.get("consolidated") or {})
+    # Горизонт движка — сколько месяцев он посчитал. Книга кончается своей
+    # колонкой, и всё, что за ней, она молча теряет: на четырёх очередях с
+    # шагом 36 это 43 месяца и −12,3 млрд ₽ CAPEX при собранном без единого
+    # слова файле. Обрезка обязана назваться, поэтому длина едет в подсказках.
+    hints["horizon_months"] = len(
+        (((bundle or {}).get("consolidated") or {}).get("finance") or {}).get("rows") or [])
     # Применён ли перенос — решает движок гейтом по общему LLCR, и книга этого
     # LLCR не знает. Полагаясь на одно намерение пользователя, она перенесла бы
     # долг там, где банк отказал, и показала бы очередь рассчитавшейся, пока
@@ -19147,6 +19171,18 @@ def build_project_workbook(
             # сошёлся». Причина уходит туда же, куда неопознанная формула.
             finance_hints = {}
             missing.append("контрольные числа движка: " + _error_location(exc))
+
+    # Сетка книги конечна, а горизонт движка — нет. Не влезло — это `missing`
+    # числами, а не молчание: обрезанная книга выглядит целой, и половина её
+    # показателей при этом верна (БРИДЖ живёт в первых колонках и сходится),
+    # то есть ошибка не выглядит ошибкой.
+    horizon = int((finance_hints or {}).get("horizon_months") or 0)
+    if horizon > _V4_MONTH_COLUMNS:
+        missing.append(
+            f"горизонт расчёта {horizon} мес. длиннее сетки книги "
+            f"({_V4_MONTH_COLUMNS} мес.): последние {horizon - _V4_MONTH_COLUMNS} "
+            f"в книгу не поместились. Протянуть сетку — "
+            f"scripts/widen_v4_horizon.py")
 
     # Статья «по объёму» стоит в phasing словом; числа посчитал движок и
     # отдал в подсказках. Книга берёт их оттуда — второго счёта долей нет.
