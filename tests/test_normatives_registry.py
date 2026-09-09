@@ -7,7 +7,7 @@ from starlette.requests import Request
 import normatives_registry as registry
 
 
-def _request() -> Request:
+def _request(query: str = "") -> Request:
     return Request({
         "type": "http",
         "asgi": {"version": "3.0", "spec_version": "2.3"},
@@ -16,47 +16,82 @@ def _request() -> Request:
         "scheme": "https",
         "path": "/normatives",
         "raw_path": b"/normatives",
-        "query_string": b"",
+        "query_string": query.encode("utf-8"),
         "headers": [],
         "client": ("test", 1),
         "server": ("developaid", 443),
     })
 
 
-def test_normatives_reuse_the_developaid_admin_checker():
-    request = _request()
-    seen = []
-    core = SimpleNamespace(_is_admin_request=lambda value: seen.append(value) or True)
+# Заглушка ОБЯЗАНА иметь сигнатуру настоящего гейта движка: `(session, key)`.
+# Пока она принимала целиком `Request`, эти проверки были зелёными на коде,
+# который не опознавал владельца НИ РАЗУ, — то есть они не «не поймали»
+# поломку, а заказали её: единственный способ их позеленить был передать гейту
+# то, чего он не принимает. Правило то же, что с `structuredClone`: подделка
+# чужого помощника проверяет наш код только тогда, когда повторяет его форму.
+def _checker(seen: list | None = None, answer: bool = True):
+    def gate(session: str = "", key: str = "") -> bool:
+        if seen is not None:
+            seen.append((session, key))
+        return answer
+    return gate
 
-    assert registry._is_admin(request, core) is True
-    assert seen == [request]
+
+def test_normatives_reuse_the_developaid_admin_checker():
+    """Гейт зовётся так, как он объявлен: сессией и ключом, а не запросом."""
+    seen: list = []
+    core = SimpleNamespace(_is_admin_request=_checker(seen))
+
+    assert registry._is_admin(_request("key=secret"), core) is True
+    assert seen == [("", "secret")], seen
+
+
+def test_the_session_reaches_the_checker_too():
+    """Владельца опознают и по сессии — вход через бота, а не только ключом."""
+    seen: list = []
+    core = SimpleNamespace(_is_admin_request=_checker(seen))
+
+    assert registry._is_admin(_request("session=abc"), core) is True
+    assert seen == [("abc", "")], seen
 
 
 def test_normatives_do_not_invent_a_second_admin_secret(monkeypatch):
     monkeypatch.setenv("NORMATIVES_ADMIN_KEY", "must-not-be-used")
-    core = SimpleNamespace(_is_admin_request=lambda request: False)
+    core = SimpleNamespace(_is_admin_request=_checker(answer=False))
 
-    assert registry._is_admin(_request(), core) is False
+    assert registry._is_admin(_request("key=secret"), core) is False
+
+
+def _admin_bar(page: str) -> str:
+    """Сама панель, а не подстрока с именем кнопки.
+
+    `#checkBtn` стоит ещё и в стилях, то есть присутствует на странице ВСЕГДА:
+    проверка по имени кнопки отвечала бы «панель есть» и там, где её нет.
+    """
+    start = page.find('<div class="adminbar">')
+    return "" if start < 0 else page[start:start + 900]
 
 
 def test_admin_button_is_not_rendered_for_public_user(monkeypatch):
     monkeypatch.setattr(registry, "_merged_registry", lambda: [])
-    core = SimpleNamespace(_is_admin_request=lambda request: False)
+    core = SimpleNamespace(_is_admin_request=_checker(answer=False))
 
     page = registry._page(_request(), core)
 
-    assert "Проверить источники" not in page
+    assert _admin_bar(page) == ""
     assert "NORMATIVES_ADMIN_KEY" not in page
 
 
 def test_admin_button_is_rendered_for_existing_admin(monkeypatch):
     monkeypatch.setattr(registry, "_merged_registry", lambda: [])
-    core = SimpleNamespace(_is_admin_request=lambda request: True)
+    core = SimpleNamespace(_is_admin_request=_checker())
 
-    page = registry._page(_request(), core)
+    bar = _admin_bar(registry._page(_request("key=secret"), core))
 
-    assert "Режим администратора DevelopAid" in page
-    assert "Проверить источники" in page
+    assert "Режим администратора DevelopAid" in bar
+    # Вопроса два, и кнопка называет свой: «Проверить источники» обещала и
+    # отмену акта, которую отпечаток не видит по построению.
+    assert "Проверить ссылки" in bar
 
 
 def test_registry_does_not_treat_a_mosru_draft_as_current_law():
