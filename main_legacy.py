@@ -1662,6 +1662,41 @@ def social_area_per_place(inputs: dict[str, Any], kind: str) -> float:
     return float(moscow_social_area_per_place(kind, places) or 0.0)
 
 
+def social_tep_row(kind: str, places: float, inputs: dict[str, Any]) -> dict[str, float]:
+    """Строка ТЭП соцобъекта по числу мест — один ответ на все поверхности.
+
+    Площадь считает объявленный один раз `social_area_per_place`, ГНС — та же
+    пропорция общей к наземной, что на странице. Счёт этот жил в двух местах
+    (свод очередей и умолчание `TEP_DEFAULT`), и второе отстало: там стояли
+    литералом 3000 м² на 250 мест, то есть 12 м²/место — ставка, снятая
+    03.09.2026 как «ниже городского минимума в любой ёмкости». `DEFAULT_INPUTS`
+    тогда поправили до 18, а строку ТЭП забыли, и один садик получал 3000 м² в
+    одиночном расчёте против 4500 в своде очередей.
+
+    Передаваемая равна всей площади: соцобъект уходит городу целиком.
+    """
+    count = float(places or 0.0)
+    area = count * social_area_per_place(inputs, kind)
+    share = float((TEP_RATIOS.get("apartments") or {}).get("total_of_gns") or 0.9)
+    return {
+        "gns": area / share if area > 0 and share > 0 else 0.0,
+        "total_area": area, "useful": 0.0, "saleable": 0.0,
+        "transfer": area, "units": count,
+    }
+
+
+# Умолчание строки ТЭП считается тем же ответом, а не пишется литералом: копию
+# негде обновлять, потому что копии нет. Страница переписывает эти строки
+# первым же `syncTep`, поэтому на экране расхождения не видно вовсе — а прямые
+# вызовы `calculate` (скрининг КРТ, пресеты, присланная ссылка, API) переписывать
+# их некому, и там садик считался по снятой ставке с нулевой ГНС.
+for _social_kind, (_social_places_key, _, _) in SOCIAL_TEP_FIELDS.items():
+    if _social_kind in TEP_DEFAULT:
+        TEP_DEFAULT[_social_kind].update(social_tep_row(
+            _social_kind, DEFAULT_INPUTS.get(_social_places_key) or 0.0, DEFAULT_INPUTS))
+del _social_kind, _social_places_key
+
+
 def build_freeform_tep(text: str, raw_values: dict[str, Any] | None = None) -> dict[str, Any]:
     raw = copy.deepcopy(raw_values) if raw_values is not None else _recognize_freeform_tep_text(text)
 
@@ -29546,16 +29581,12 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
             for typ, label, tep_key in (("kindergarten","ДОО","kindergarten"),
                                         ("school","СОШ","school"),
                                         ("clinic","Поликлиника","clinic")):
-                per_place = social_area_per_place(x_master, typ)
-                area = sums[typ] * per_place
+                row = social_tep_row(typ, sums[typ], x_master)
+                area = row["total_area"]
                 # ГНС соцобъекта — та же пропорция общей к наземной, что на
                 # странице. Ноль здесь занижал бы строительный объём очереди
                 # ровно на объект, который она строит.
-                share = float((TEP_RATIOS.get("apartments") or {}).get("total_of_gns") or 0.9)
-                p_tep[tep_key] = {**p_tep.get(tep_key,{"label":label}),
-                    "gns": area/share if area>0 and share>0 else 0.0,
-                    "total_area":area,"useful":0.0,"saleable":0.0,
-                    "transfer":area,"units":sums[typ]}
+                p_tep[tep_key] = {**p_tep.get(tep_key,{"label":label}), **row}
                 # Площадь очереди уходит и во вводные: книга и выгрузка читают
                 # её оттуда, и оставленная от проекта она показала бы в каждой
                 # очереди метры ВСЕХ садиков разом.
