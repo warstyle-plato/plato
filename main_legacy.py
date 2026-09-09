@@ -76,7 +76,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.22.93"
+VERSION = "0.22.94"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -16303,7 +16303,7 @@ def _v4_apply_vri_monthly_accrual(xml: str, missing: list[str]) -> str:
         accrual = _V4_VRI_ACCRUAL_ROW + base
         xml = _v4_ensure_row(xml, accrual)
         carried_cells = {f"A{accrual}": dict(text="Накопленные проценты (служебная строка)"),
-                         f"B{accrual}": dict(formula=f"DS{accrual}")}
+                         f"B{accrual}": dict(formula=f"{_V4_LAST_COLUMN}{accrual}")}
         styles = {f"A{accrual}": label_style, f"B{accrual}": None}
         paid_cells: dict[str, dict[str, Any]] = {}
         for index in range(_V4_CAPEX_MONTH_COLUMNS):
@@ -16355,11 +16355,13 @@ def _v4_apply_vri_interest_row(xml: str, missing: list[str]) -> str:
         vri_row = _V4_CAPEX_VRI_ROW + base
         xml = _v4_ensure_row(xml, row)
         extra = {f"A{row}": dict(text="Проценты и обеспечение по рассрочке ВРИ"),
-                 f"B{row}": dict(formula=(f"SUM('ВРИ'!D{interest}:DS{interest})"
-                                          f"+SUM('ВРИ'!D{security}:DS{security})")),
+                 f"B{row}": dict(formula=(
+                     f"SUM('ВРИ'!D{interest}:{_V4_LAST_COLUMN}{interest})"
+                     f"+SUM('ВРИ'!D{security}:{_V4_LAST_COLUMN}{security})")),
                  f"C{row}": dict(text="млн ₽")}
         styles = {f"A{row}": label_style, f"B{row}": amount_style, f"C{row}": None}
-        body = {f"B{vri_row}": dict(formula=f"SUM('ВРИ'!D{principal}:DS{principal})")}
+        body = {f"B{vri_row}": dict(
+            formula=f"SUM('ВРИ'!D{principal}:{_V4_LAST_COLUMN}{principal})")}
         for index in range(_V4_CAPEX_MONTH_COLUMNS):
             column = _col(4 + index)
             extra[f"{column}{row}"] = dict(
@@ -16532,7 +16534,7 @@ def _v4_carry_row_xml(row: int, label: str, formulas: dict[str, str]) -> str:
     """
     cells = [
         f'<x:c r="A{row}" s="113" t="str"><x:v>{xml_escape(label)}</x:v></x:c>',
-        f'<x:c r="B{row}" s="113" t="n"><x:f>SUM(D{row}:DS{row})</x:f></x:c>',
+        f'<x:c r="B{row}" s="113" t="n"><x:f>SUM(D{row}:{_V4_LAST_COLUMN}{row})</x:f></x:c>',
         f'<x:c r="C{row}" s="113" t="str"><x:v>млн ₽</x:v></x:c>',
     ]
     for column in _v4_cf_columns():
@@ -17057,7 +17059,8 @@ def _v4_object_parking_block(xml: str, missing: list[str]) -> str:
         # Продаются места тем же профилем, что и сам объект: строки 19 и 21 —
         # нормированные веса до и после РВЭ, они уже посчитаны блоком.
         xml, done = _v4_set_or_insert_cell(
-            xml, f"B{revenue_row}", formula=f"SUM(D{revenue_row}:DS{revenue_row})")
+            xml, f"B{revenue_row}",
+            formula=f"SUM(D{revenue_row}:{_V4_LAST_COLUMN}{revenue_row})")
         if not done:
             missing.append(f"паркинг объектов: итог B{revenue_row}")
         # Помесячно места продаются тем же профилем, что и метры объекта: доля
@@ -17073,8 +17076,8 @@ def _v4_object_parking_block(xml: str, missing: list[str]) -> str:
         month_units: dict[str, dict[str, Any]] = {}
         month_value: dict[str, dict[str, Any]] = {}
         written = 0
-        for index in range(120):
-            column = _v4_column_letter(4 + index)
+        for index in range(_V4_MONTH_COLUMNS):
+            column = _v4_column_letter(_V4_CF_FIRST_COL + index)
             price = prices.get(f"{column}{price_row}")
             if price is None:
                 break
@@ -17113,8 +17116,8 @@ def _v4_object_parking_block(xml: str, missing: list[str]) -> str:
                          revenue_row - 4, revenue_row - 3):
             formulas = _v4_row_formulas(xml, cost_row)
             payload: dict[str, dict[str, Any]] = {}
-            for index in range(120):
-                column = _v4_column_letter(4 + index)
+            for index in range(_V4_MONTH_COLUMNS):
+                column = _v4_column_letter(_V4_CF_FIRST_COL + index)
                 formula = formulas.get(f"{column}{cost_row}")
                 if formula is None:
                     break
@@ -17593,7 +17596,7 @@ def _v4_apply_bridge_limit_before_permit(xml: str, missing: list[str]) -> str:
         cash = f"'Вводные'!$B$56*'Вводные'!$R${queue_row}*'Вводные'!$H$6"
         xml = _v4_ensure_row(xml, row)
         cells = {f"A{row}": dict(text="Справочно: база лимита БРИДЖа (платежи до РнС)"),
-                 f"B{row}": dict(formula=f"SUM(D{row}:DS{row})"),
+                 f"B{row}": dict(formula=f"SUM(D{row}:{_V4_LAST_COLUMN}{row})"),
                  f"C{row}": dict(text="млн ₽")}
         styles = {f"A{row}": label_style, f"B{row}": amount_style, f"C{row}": None}
         for index in range(_V4_CAPEX_MONTH_COLUMNS):
@@ -17684,7 +17687,7 @@ def _v4_accrual_row_xml(row: int, label: str, formulas: dict[str, str]) -> str:
     Свой формат посреди блока Excel показал бы чужим."""
     cells = [
         f'<x:c r="A{row}" t="inlineStr"><x:is><x:t>{xml_escape(label)}</x:t></x:is></x:c>',
-        f'<x:c r="B{row}"><x:f>SUM(D{row}:DS{row})</x:f></x:c>',
+        f'<x:c r="B{row}"><x:f>SUM(D{row}:{_V4_LAST_COLUMN}{row})</x:f></x:c>',
         f'<x:c r="C{row}" t="str"><x:v>млн ₽</x:v></x:c>',
     ]
     for column in _v4_cf_columns():
@@ -17814,20 +17817,28 @@ def _v4_apply_cash_sweep(xml: str, phase: int, missing: list[str]) -> str:
     for row, pattern, replacement in (
             (47, "{c}38+{c}45+{c}64-{c}46-{c}65", "{c}38+{c}45+{c}64-{c}46-{c}65-{c}26"),
             (61, "{c}38+{c}45+{c}64-{c}46-{c}65", "{c}38+{c}45+{c}64-{c}46-{c}65-{c}26")):
+        # Строка читается и пишется ОДНИМ проходом на каждую: правка по ячейке
+        # копировала мегабайтный лист на каждый из 180 месяцев — 1440 копий на
+        # сборку, 1,4 секунды. Цена прохода растёт вместе с сеткой, и сторож,
+        # считающий ПРОХОДЫ, этого подорожания не видит.
+        formulas = _v4_row_formulas(xml, row)
+        cells: dict[str, dict[str, Any]] = {}
         for column in columns:
+            coord = f"{column}{row}"
+            formula = formulas.get(coord)
+            if formula is None:
+                # Ячейка может и быть — без формулы. Читатель об этом узнаёт.
+                missing.append(f"{sheet}: формулы {coord} нет")
+                break
             old = pattern.format(c=column)
-            new = replacement.format(c=column)
-            marker = f'<x:c r="{column}{row}"'
-            at = xml.find(marker)
-            if at < 0:
-                missing.append(f"{sheet}: ячейка {column}{row} не найдена")
+            if old not in formula:
+                missing.append(f"{sheet}: формула {coord} не опознана")
                 break
-            end = xml.find("</x:c>", at)
-            cell = xml[at:end]
-            if old not in cell:
-                missing.append(f"{sheet}: формула {column}{row} не опознана")
-                break
-            xml = xml[:at] + cell.replace(old, new, 1) + xml[end:]
+            cells[coord] = dict(formula=formula.replace(old, replacement.format(c=column), 1))
+        if cells:
+            xml, done = _v4_set_cells(xml, row, cells)
+            if not done:
+                missing.append(f"{sheet}: строка {row} не найдена")
     return xml
 
 
@@ -19845,18 +19856,14 @@ def build_project_workbook(
         from openpyxl.utils import get_column_letter as _col
         for phase_index in range(4):
             row = 31 + 34 * phase_index
-            for column_index in range(120):
-                column = _col(4 + column_index)
-                capex_xml, done = _v4_set_cell(
-                    capex_xml, f"{column}{row}",
+            cells = {f"B{row}": dict(formula=f"SUM(D{row}:{_V4_LAST_COLUMN}{row})")}
+            for column_index in range(_V4_MONTH_COLUMNS):
+                column = _col(_V4_CF_FIRST_COL + column_index)
+                cells[f"{column}{row}"] = dict(
                     formula=_v4_social_capex_formula(social_base_row, phase_index, column))
-                if not done:
-                    missing.append(f"соцграфик CAPEX: колонка {column_index} очереди {phase_index + 1}")
-                    break
-            capex_xml, done = _v4_set_cell(
-                capex_xml, f"B{row}", formula=f"SUM(D{row}:DS{row})")
+            capex_xml, done = _v4_set_cells(capex_xml, row, cells)
             if not done:
-                missing.append(f"соцграфик CAPEX: итог очереди {phase_index + 1}")
+                missing.append(f"соцграфик CAPEX: строка {row} очереди {phase_index + 1}")
 
     # Ключевая ставка — движковой кривой, а не линейкой шаблона: движок ведёт
     # экспоненциальное снижение от даты стартовой ставки (generate_rate_curve),
@@ -20489,8 +20496,8 @@ def build_project_workbook(
     _rc_offset_ref = (f"'Вводные'!{_rc_refs['offset']}" if _rc_refs
                       else f"{_rc_offset:d}")
     from openpyxl.utils import get_column_letter as _rate_col
-    for _rate_index in range(120):
-        _X = _rate_col(4 + _rate_index)
+    for _rate_index in range(_V4_MONTH_COLUMNS):
+        _X = _rate_col(_V4_CF_FIRST_COL + _rate_index)
         _progress = (f"(1-EXP(-{_rc_shape_ref}*MIN(MAX(0,{_X}$4-1+{_rc_offset_ref}),"
                      f"'Вводные'!$B$35)/'Вводные'!$B$35))/(1-EXP(-{_rc_shape_ref}))")
         rates_xml, done = _v4_set_cell(

@@ -30,11 +30,19 @@ sys.path.insert(0, str(ROOT))
 
 import main_legacy as core  # noqa: E402
 
-# Проходов по листу на одну сборку. Потолок с запасом: сейчас их около 1 300,
+# Проходов по листу на одну сборку. Потолок с запасом: сейчас их около 860,
 # до правки было 5 243. Упёрлись — значит новый блок пишет ячейку за ячейкой, и
 # лечится это `_v4_set_cells` (запись пачкой) и `_v4_row_formulas` (чтение
 # строки), а не поднятием потолка.
-SCAN_CEILING = 2200
+SCAN_CEILING = 1400
+
+# Сколько ЛИСТА прочитано за сборку — проходы, умноженные на их длину. Счёт
+# проходов на этот вопрос не отвечает: 08.09.2026 сетку книги протянули со 120
+# месяцев до 180, лист вырос в полтора раза, и каждый проход подорожал с 2,64 до
+# 3,99 мс при НЕИЗМЕННОМ числе проходов. Прогон на CI вырос с 74 минут до 108
+# при тех же 5026 проверках — то есть сторож, считающий проходы, этого не видел
+# вовсе. Сейчас 0,48 ГБ на сборку, до правки было 1,69.
+BYTES_CEILING_GB = 0.80
 
 
 def _scans(monkeypatch) -> dict[str, int]:
@@ -61,6 +69,40 @@ def test_the_sheet_is_scanned_per_row_not_per_cell(monkeypatch) -> None:
         f"проходов по листу {total} при потолке {SCAN_CEILING}: "
         f"{counts}. Значит блок пишет ячейку за ячейкой — переведите его на "
         "`_v4_set_cells` и `_v4_row_formulas`, а не поднимайте потолок")
+
+
+def _scanned_bytes(monkeypatch) -> tuple[int, int]:
+    """Сколько байт листа прочитано за сборку и сколькими проходами."""
+    state = {"bytes": 0, "calls": 0}
+    for name in ("_v4_set_cell", "_v4_cell_formula", "_v4_set_cells",
+                 "_v4_row_formulas", "_v4_set_or_insert_cell", "_v4_ensure_row"):
+        original = getattr(core, name)
+
+        def wrapped(xml, *args, _original=original, **kwargs):
+            state["bytes"] += len(xml)
+            state["calls"] += 1
+            return _original(xml, *args, **kwargs)
+
+        monkeypatch.setattr(core, name, wrapped)
+    core.build_project_workbook(
+        json.loads(json.dumps(core.DEFAULT_INPUTS)), core.TEP_DEFAULT, [], {},
+        project_name="П")
+    return state["bytes"], state["calls"]
+
+
+def test_the_sheet_is_not_re_read_by_the_gigabyte(monkeypatch) -> None:
+    """Мерится то, что дорого: проходы, умноженные на ширину сетки.
+
+    Проходов может стать меньше, а сборка подорожать — так и вышло, когда лист
+    стал шире. Это единственная мера, которая ловит обе беды сразу.
+    """
+    scanned, calls = _scanned_bytes(monkeypatch)
+    gb = scanned / 1e9
+    assert gb <= BYTES_CEILING_GB, (
+        f"за сборку прочитано {gb:.2f} ГБ листа за {calls} проходов при потолке "
+        f"{BYTES_CEILING_GB} ГБ. Блок ходит по всему листу на каждую ячейку — "
+        "переведите его на `_v4_set_cells` и `_v4_row_formulas`. Потолок не "
+        "поднимают: за ним стоит время прогона всего набора")
 
 
 def test_the_batch_writers_are_actually_used(monkeypatch) -> None:
