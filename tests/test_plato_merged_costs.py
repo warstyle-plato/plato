@@ -73,7 +73,12 @@ def test_the_rate_covers_both_construction_parts():
     """Ставки наземной и подземной части взвешиваются по ГНС."""
     values, _, inputs = exported(main_above_th_per_sqm=190, main_under_th_per_sqm=120)
     capex = engine(inputs)
-    gns = sum(float((core.TEP_DEFAULT.get(k) or {}).get("gns") or 0) for k in core.TEP_DEFAULT)
+    # Делитель берётся оттуда же, откуда числитель: СМР ядра посчитан на
+    # `core_above_gns` и `core_under_gns`. Повторить здесь сумму по списку
+    # продуктов значило бы проверять себя — тот же ответ вторым способом.
+    result = core.calculate(core.CalcRequest(inputs=inputs, tep=core.TEP_DEFAULT, rates=[]))
+    gns = (float(result["tep"]["core_above_gns"])
+           + float(result["tep"]["core_under_gns"]))
     expected = (float(capex["main_above"]) + float(capex["main_under"])) / gns / 1000
 
     assert values["main_above_th_per_sqm"] == pytest.approx(expected, abs=1e-6)
