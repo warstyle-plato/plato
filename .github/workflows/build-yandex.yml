@@ -82,7 +82,7 @@ jobs:
     # зелёный PR и снятую по таймауту сборку из main — а пока сборка красная,
     # любая выкатка тянет прошлое. Равенство держит проверка
     # `test_the_tests_run_before_the_merge`: оговорка без сторожа — это память.
-    timeout-minutes: 70
+    timeout-minutes: 80
     strategy:
       fail-fast: false
       matrix:
