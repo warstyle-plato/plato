@@ -160,12 +160,12 @@ const kindLabel=k=>({krt:'КРТ',land_sale:'Продажа земли',land_lea
 // Зона названа ОДИН раз и живёт внутри функции: объявленная рядом константа
 // стенду на node не видна (он берёт куски по скобкам), и копия литерала в
 // соседнем месте разошлась бы с этой молча.
-function deadlineFormat(opts){
+function moscowFormat(opts){
  return new Intl.DateTimeFormat('ru-RU',Object.assign({timeZone:'Europe/Moscow'},opts));
 }
 function shortDate(iso,raw){
  if(iso){const d=new Date(iso);if(!Number.isNaN(d.getTime()))
-  return deadlineFormat({day:'2-digit',month:'2-digit',year:'2-digit',hour:'2-digit',minute:'2-digit'}).format(d)+' МСК'}
+  return moscowFormat({day:'2-digit',month:'2-digit',year:'2-digit',hour:'2-digit',minute:'2-digit'}).format(d)+' МСК'}
  return raw?String(raw).slice(0,16):'—';
 }
 // Срок лота — один ответ на «когда заявка»: сперва момент сервера, потом
@@ -444,7 +444,7 @@ function renderRows(){
  });
  renderFoldNote();renderAskContext();
 }
-function stats(){const a=state.filtered;$('sCount').textContent=a.length;$('sKrt').textContent=a.filter(x=>x.lot_kind==='krt').length;$('sLand').textContent=a.filter(x=>['land_sale','land_lease'].includes(x.lot_kind)).length;const ds=a.map(x=>new Date(x.application_deadline_iso||'')).filter(x=>!Number.isNaN(x.getTime())).sort((a,b)=>a-b);$('sDeadline').textContent=ds.length?deadlineFormat({day:'2-digit',month:'2-digit'}).format(ds[0]):'—'}
+function stats(){const a=state.filtered;$('sCount').textContent=a.length;$('sKrt').textContent=a.filter(x=>x.lot_kind==='krt').length;$('sLand').textContent=a.filter(x=>['land_sale','land_lease'].includes(x.lot_kind)).length;const ds=a.map(x=>new Date(x.application_deadline_iso||'')).filter(x=>!Number.isNaN(x.getTime())).sort((a,b)=>a-b);$('sDeadline').textContent=ds.length?moscowFormat({day:'2-digit',month:'2-digit'}).format(ds[0]):'—'}
 async function exportRows(rows,kind){if(!rows.length){alert('В текущей выборке нет строк для выгрузки.');return}const payload=rows.map(r=>{const rank=kind==='krt'?(state.krtRank[r.slug]||{}):{},intent=kind==='krt'?(krtIntent(r)||{}):{},score=kind==='krt'?krtScore(r):lotScore(r),duties=krtRequirementTotals(state.krtRequirements[r.slug]||rank.requirements||{});return{section:kind==='krt'?'КРТ':'Торги',name:r.name||r.title||'',okrug:r.okrug||'',district:r.district||'',address:r.address||'',cadastre:(r.cadastral_numbers||[]).join(', '),type:kind==='krt'?'КРТ':kindLabel(r.lot_kind),land_area_sqm:r.land_area_sqm??'',building_area_sqm:r.building_area_sqm??'',krt_area_ha:kind==='krt'?(r.area_ha??''):'',total_gfa_sqm:r.total_gfa_sqm??'',housing_gfa_sqm:r.housing_gfa_sqm??'',nonresidential_gfa_sqm:r.nonresidential_gfa_sqm??'',business_gfa_sqm:r.business_gfa_sqm??'',jobs:r.jobs??'',price:r.current_price_rub??r.start_price_rub??'',score:score.score,traffic_light:rank.traffic_light?.label||score.label||'',saleable_sqm:rank.saleable_sqm??'',entry_capacity_rub_per_sqm:rank.entry_capacity_rub_per_sqm??'',entry_capacity_mln:rank.entry_capacity_mln??'',project_llcr_x:rank.project_llcr_x??'',weakest_phase_llcr_x:rank.weakest_phase_llcr_x??'',margin_pct:rank.margin_pct??'',demolition_objects:duties.demolition.count||'',demolition_area_sqm:duties.demolition.area||'',conditional_objects:duties.conditional.count||'',conditional_area_sqm:duties.conditional.area||'',reconstruction_objects:duties.reconstruction.count||'',reconstruction_area_sqm:duties.reconstruction.area||'',preservation_objects:duties.preservation.count||'',preservation_area_sqm:duties.preservation.area||'',resettlement_mentions:duties.resettlement||'',status:r.status||'',krt_kind:kind==='krt'?(intent.kind||''):'',krt_city_needs:kind==='krt'?krtIntentCell(intent,'city_needs'):'',krt_operator:kind==='krt'?krtIntentCell(intent,'operator'):'',url:r.source?.lot_url||r.url||''}});const res=await fetch('/auctions/export.xlsx',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rows:payload,kind})});if(!res.ok)throw new Error('Не удалось подготовить Excel');const blob=await res.blob(),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=kind==='krt'?'developaid-krt.xlsx':'developaid-auctions.xlsx';a.click();URL.revokeObjectURL(a.href)}
 function coverageLine(r){
  // Каждый источник говорит за себя. Числа у читателей разной формы: у
@@ -971,7 +971,7 @@ function krtStage(x){
  if(lots.length){why.push('лот на торгах опубликован');return {key:'auction',why}}
  const auto=state.krtOrderBySite[x.slug];
  if(auto&&auto.number){
-  why.push('распоряжение '+auto.number+(auto.published_at?' от '+krtWhen(auto.published_at):'')
+  why.push('распоряжение '+auto.number+(auto.published_at?' от '+krtCityDay(auto.published_at):'')
     +' — адрес распознан в самом документе');
   return {key:'upcoming',why};
  }
@@ -979,7 +979,7 @@ function krtStage(x){
  if(mark&&mark.number){
   // Отметка человека, открывшего распоряжение. Машине привязать нечем: адреса
   // в распоряжении нет, PDF — скан.
-  why.push('отмечено вручную: распоряжение '+mark.number+(mark.published_at?' от '+krtWhen(mark.published_at):''));
+  why.push('отмечено вручную: распоряжение '+mark.number+(mark.published_at?' от '+krtCityDay(mark.published_at):''));
   return {key:'upcoming',why};
  }
  if(status.includes('торг')){why.push('статус каталога «'+esc(x.status)+'»');return {key:'upcoming',why}}
@@ -988,7 +988,7 @@ function krtStage(x){
  }
  if(intent&&intent.decision_read){why.push('прочитан проект решения о КРТ');return {key:'decision',why}}
  if(x.draft_decision_at){
-  why.push('проект решения опубликован '+krtWhen(x.draft_decision_at)
+  why.push('проект решения опубликован '+krtCityDay(x.draft_decision_at)
    +(x.no_card?' — карточки в каталоге города пока нет':' — площадка есть и в каталоге города'));
   return {key:'decision',why};
  }
@@ -1379,6 +1379,23 @@ function krtWhenExact(stamp){
 function krtWhen(stamp){
  if(!Number(stamp))return '';
  try{return new Date(Number(stamp)*1000).toLocaleDateString('ru-RU',{day:'numeric',month:'long',year:'numeric'})}catch(e){return ''}
+}
+// День ГОРОДСКОГО документа — по Москве, а не по часам зрителя. Отметку ставит
+// город, и хранится она полуночью московской: свежайшее распоряжение лежит на
+// 02.09 21:00 UTC, то есть 03.09 00:00 МСК. Без пришпиленной зоны один и тот же
+// документ показывает 3 сентября в Москве и 2 сентября западнее — «а какое из
+// них?» с одним ответом на человека. То же правило, что у срока подачи заявки.
+//
+// «МСК» рядом не печатается намеренно: здесь величина — ДЕНЬ, и зона решает
+// только, какой именно, а не сдвигает час. В колонке дат приписка была бы
+// шумом; наши собственные отметки (возраст снимка, «посчитано», «отмечено
+// вручную») остаются в зоне зрителя и идут через `krtWhen`.
+function krtCityDay(stamp){
+ if(!Number(stamp))return '';
+ // Зона берётся у `moscowFormat` — она объявлена один раз на страницу, и
+ // копия литерала рядом разошлась бы с ней молча.
+ try{return moscowFormat({day:'numeric',month:'long',year:'numeric'})
+   .format(new Date(Number(stamp)*1000))}catch(e){return ''}
 }
 // Число балла показывается, только когда есть из чего его считать. «0/100»
 // и «оценки нет» — разные ответы, и первый читается как приговор площадке.
@@ -2012,10 +2029,10 @@ function renderKrt(){const a=state.krtFiltered,body=$('krtRows');body.innerHTML=
  // (владелец, 04.09.2026: «на самом mos.ru уже появилось pdf решения, а мы
  // его не видим и пишем в блоке КРТ что 0»).
  const nocard=x.no_card?'<span class="tag warn" title="'+esc('Проект решения о КРТ опубликован'
-  +(x.draft_decision_at?' '+krtWhen(x.draft_decision_at):'')
+  +(x.draft_decision_at?' '+krtCityDay(x.draft_decision_at):'')
   +'. Решение ещё не принято — город собирает мнения правообладателей. Карточки в каталоге krt.mos.ru нет; '
   +krtTepSourceNote(x))+'">только проект решения</span>':'';
- tr.innerHTML=`<td><div class="lotname">${esc(x.name)}${fresh}${tender}${nocard}${marks}</div><div class="source">${esc(krtBroken(x)?'разбор карточки съехал на поле — округ и ТЭП не показаны':[x.okrug,x.district].filter(Boolean).join(' · '))}</div></td><td><span class="fit ${sc.tone}" title="${esc(title)}"><span class="light"></span>${krtScoreNumber(sc)} · ${esc(sc.label)}</span><div class="source">${esc(krtScoreNote(sc))}</div></td><td class="money">${krtRankCell(x.slug)}</td><td class="money">${krtModelCell(x.slug,'llcr')}</td><td class="money">${krtModelCell(x.slug,'margin')}</td><td>${krtStageCell(x)}</td><td>${x.draft_decision_at?(x.draft_decision_url?`<a href="${esc(x.draft_decision_url)}" target="_blank" rel="noopener" title="Проект решения о КРТ на mos.ru">${esc(krtWhen(x.draft_decision_at))}</a>`:esc(krtWhen(x.draft_decision_at))):'<span class="source">—</span>'}</td><td>${krtStatusCell(x)}</td><td>${krtBroken(x)?krtUnparsedCell(x):(x.area_ha?esc(x.area_ha+' га'):'—')}</td><td>${krtBroken(x)?krtUnparsedCell(x):fmtArea(x.total_gfa_sqm)}</td><td>${krtBroken(x)?krtUnparsedCell(x):fmtArea(x.housing_gfa_sqm)}</td><td>${krtBroken(x)?krtUnparsedCell(x):esc(x.jobs??'—')}</td>`;tr.onclick=()=>selectKrt(x);body.appendChild(tr)});renderAskContext();syncTopScroll()}
+ tr.innerHTML=`<td><div class="lotname">${esc(x.name)}${fresh}${tender}${nocard}${marks}</div><div class="source">${esc(krtBroken(x)?'разбор карточки съехал на поле — округ и ТЭП не показаны':[x.okrug,x.district].filter(Boolean).join(' · '))}</div></td><td><span class="fit ${sc.tone}" title="${esc(title)}"><span class="light"></span>${krtScoreNumber(sc)} · ${esc(sc.label)}</span><div class="source">${esc(krtScoreNote(sc))}</div></td><td class="money">${krtRankCell(x.slug)}</td><td class="money">${krtModelCell(x.slug,'llcr')}</td><td class="money">${krtModelCell(x.slug,'margin')}</td><td>${krtStageCell(x)}</td><td>${x.draft_decision_at?(x.draft_decision_url?`<a href="${esc(x.draft_decision_url)}" target="_blank" rel="noopener" title="Проект решения о КРТ на mos.ru">${esc(krtCityDay(x.draft_decision_at))}</a>`:esc(krtCityDay(x.draft_decision_at))):'<span class="source">—</span>'}</td><td>${krtStatusCell(x)}</td><td>${krtBroken(x)?krtUnparsedCell(x):(x.area_ha?esc(x.area_ha+' га'):'—')}</td><td>${krtBroken(x)?krtUnparsedCell(x):fmtArea(x.total_gfa_sqm)}</td><td>${krtBroken(x)?krtUnparsedCell(x):fmtArea(x.housing_gfa_sqm)}</td><td>${krtBroken(x)?krtUnparsedCell(x):esc(x.jobs??'—')}</td>`;tr.onclick=()=>selectKrt(x);body.appendChild(tr)});renderAskContext();syncTopScroll()}
 // Балл — потолок цены входа на метр продаваемой (решение владельца,
 // 23.08.2026). На метр, а не в абсолюте: потолок в рублях выгоден крупным
 // площадкам просто по размеру. Пустая ячейка значит «не посчитали», и это не
@@ -2912,11 +2929,19 @@ function renderKrtTenderNote(d){
  if(!sites&&!orphans&&!orders)return;
  const last=(d.orders||[])[0];
  box.style.display='';
+ // У числа обязано быть окно и предмет. «Город объявил 55» без них читается
+ // как «идёт 55 аукционов» и сравнивается с восемью лотами соседней вкладки
+ // (владелец, 09.09.2026) — а это документы города с 2017 года. Считает их
+ // сервер: второй счёт тех же строк на экране однажды разошёлся бы с первым.
+ const recent=d.orders_recent_12m, addressed=d.orders_with_address||0,
+   bound=Object.keys(d.orders_by_site||{}).length;
  box.innerHTML+=`<div class="source" style="margin-top:8px"><b>Торги по КРТ.</b> `
-  +`Город объявил ${orders} распоряжени${orders===1?'е':(orders<5?'я':'й')} о проведении аукциона`
-  +(last?`, свежайшее ${esc(last.number||'—')} от ${esc(krtWhen(last.published_at))}`:'')
-  +'. '+esc(d.orders_note||'')
-  +` Среди собранных лотов про КРТ — ${d.krt_lots||0}; привязано к площадкам ${sites}`
+  +`Распоряжений города о проведении аукциона — ${orders} за всё время`
+  +(Number.isFinite(recent)?`, из них за последние 12 месяцев ${recent}`:'')
+  +(last?`; свежайшее ${esc(last.number||'—')} от ${esc(krtCityDay(last.published_at))}`:'')
+  +`. Адрес прочитан у ${addressed}, к площадкам привязано ${bound}. `
+  +esc(d.orders_note||'')
+  +` Собранных сейчас лотов про КРТ — ${d.krt_lots||0}; привязано к площадкам ${sites}`
   +(orphans?`, ещё ${orphans} про КРТ, но площадка не опознана`:'')+'.</div>';
 }
 // Распоряжение о торгах на карточке площадки. Ставится РУКАМИ: адреса в
@@ -2929,12 +2954,12 @@ function krtOrderBlock(x){
  const mark=state.krtTenderLinks[x.slug]||null, orders=state.krtOrders||[];
  const chosen=mark&&mark.order_id?mark.order_id:'';
  const options=orders.map(o=>`<option value="${esc(o.id)}"${o.id===chosen?' selected':''}>`
-   +`${esc(o.number||o.id)}${o.published_at?' · '+esc(krtWhen(o.published_at)):''}`
+   +`${esc(o.number||o.id)}${o.published_at?' · '+esc(krtCityDay(o.published_at)):''}`
    +`${o.kind?' · '+esc(o.kind):''}</option>`).join('');
  const auto=state.krtOrderBySite[x.slug]||null;
  const money=v=>v?new Intl.NumberFormat('ru-RU').format(v)+' ₽':'';
  const found=auto?`<div class="item"><b>Объявлены торги</b>Согласно распоряжению ${esc(auto.number||auto.id)}`
-   +`${auto.published_at?' от '+esc(krtWhen(auto.published_at)):''} `
+   +`${auto.published_at?' от '+esc(krtCityDay(auto.published_at)):''} `
    +`${auto.url?`<a href="${esc(auto.url)}" target="_blank" rel="noopener">открыть документ</a>`:''}`
    +`${auto.start_price_rub?`<div>Начальная цена ${esc(money(auto.start_price_rub))}`
      +`${auto.deposit_rub?' · задаток '+esc(money(auto.deposit_rub)):''}`
@@ -2944,7 +2969,7 @@ function krtOrderBlock(x){
    +`${(auto.ocr_notes||[]).length?' '+esc(auto.ocr_notes.join('; ')):''}</div></div>`:'';
  const said=found||mark&&mark.number
   ? `<div class="item"><b>Объявлены торги</b>Согласно распоряжению ${esc(mark.number)}`
-    +`${mark.published_at?' от '+esc(krtWhen(mark.published_at)):''} `
+    +`${mark.published_at?' от '+esc(krtCityDay(mark.published_at)):''} `
     +`${mark.url?`<a href="${esc(mark.url)}" target="_blank" rel="noopener">открыть документ</a>`:''}`
     +`<div class="source">Отмечено вручную${mark.marked_at?' '+esc(krtWhen(mark.marked_at)):''}: `
     +'адреса в распоряжении нет, машине привязать нечем.</div></div>'

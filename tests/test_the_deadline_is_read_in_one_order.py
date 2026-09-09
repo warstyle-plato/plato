@@ -94,7 +94,7 @@ def _run(script: str) -> dict:
     стенд, а не про то, что он проверяет.
     """
     blocks = page_blocks.auctions_function(
-        "deadlineFormat", "shortDate", "lotDeadline", "lotDeadlineDays",
+        "moscowFormat", "shortDate", "lotDeadline", "lotDeadlineDays",
         "krtLots", "krtLiveLot")
     # `krtLots` смотрит в состояние страницы: свежие лоты сильнее запомненных.
     harness = "const state={krtTenders:{}};\n"
@@ -152,7 +152,7 @@ def test_a_live_krt_lot_stays_live() -> None:
 def _run_in_zone(script: str, zone: str) -> dict:
     """Тот же стенд, но часами зрителя: зона решает, что он увидит."""
     blocks = page_blocks.auctions_function(
-        "deadlineFormat", "shortDate", "lotDeadline")
+        "moscowFormat", "shortDate", "lotDeadline")
     proc = subprocess.run(
         ["node", "-e", blocks + "\n" + script],
         capture_output=True, text=True, timeout=120,

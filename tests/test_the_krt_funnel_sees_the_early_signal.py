@@ -62,7 +62,11 @@ def stage(site: dict, *, lots=None, press=None, intent=None, mark=None, order=No
         f"krtOrderBySite:{json.dumps(order or {})},"
         f"krtRequirements:{json.dumps({slug: {'intent': intent}} if intent else {})}}};\n"
         "const esc=s=>String(s);\n"
+        # Дата здесь не предмет: стенд про ШАГ воронки. Заглушки две, потому
+        # что городская отметка печатается по Москве (`krtCityDay`), а наши
+        # собственные мгновения — часами зрителя (`krtWhen`).
         "function krtWhen(t){return t?'дата':''}\n"
+        "function krtCityDay(t){return t?'дата':''}\n"
         # Лоты площадки — один ответ на всю страницу (`krtLots`): связку
         # считает сервер и он же её помнит, а не память вкладки.
         + _stages_const() + "\n" + _function("krtIntent") + "\n"
