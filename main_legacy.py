@@ -20841,7 +20841,16 @@ def _plato_merge_management_and_smr(
                            "label": "Управление проектом · с техзаказчиком и надзором",
                            "value": share})
 
-    gns = sum(float((tep.get(key) or {}).get("gns") or 0.0) for key in tep)
+    # Делитель берут оттуда же, откуда числитель. СМР ядра посчитан на
+    # `core_above_gns` и `core_under_gns`; ГНС ВСЕХ строк ТЭП сюда не годится —
+    # там же садик, школа, офисы и ОСЗ, которых эта статья не строит. Пока у
+    # них у всех ГНС стоял нулём, две суммы совпадали и ошибки не было видно:
+    # с включёнными офисами ставка выходила 170,9 при обеих заданных 190, то
+    # есть занижалась ровно на чужие метры. Вылезло это, когда у соцобъекта
+    # умолчания ГНС перестал быть нулём.
+    tep_totals = result.get("tep") or {}
+    gns = (float(tep_totals.get("core_above_gns") or 0.0)
+           + float(tep_totals.get("core_under_gns") or 0.0))
     smr = amount("main_above") + amount("main_under")
     if gns > 0 and smr > 0:
         rows = rows_by_label.get(_plato_normalize("Основное строительство ЖК")) or []
