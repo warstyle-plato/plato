@@ -1000,6 +1000,11 @@ def install(app: FastAPI) -> None:
         """
         projects = await run_in_threadpool(
             lambda: krt_registry.catalogue(refresh=bool(refresh)))
+        # Тот же список едет в разложение решений. Второе чтение каталога в
+        # этом же ответе однажды застало бы файл подменённым фоновым обходом —
+        # и площадка встала бы дважды: карточкой из первого чтения и строкой
+        # «карточки нет» из второго.
+        catalogue_read = list(projects)
         if refresh:
             # Решения mos.ru — второй источник этого же экрана, и человек
             # нажимает одну кнопку. Обход идёт фоном: шестьдесят страниц поиска
@@ -1136,7 +1141,8 @@ def install(app: FastAPI) -> None:
         reader = getattr(krt_registry, "decisions", None)
         if callable(reader):
             try:
-                found = await run_in_threadpool(reader)
+                found = await run_in_threadpool(
+                    lambda: reader(catalogue=catalogue_read))
             except Exception as exc:  # noqa: BLE001
                 logger.exception("KRT decisions failed")
                 found = {"decisions": [], "error": f"{type(exc).__name__}: {exc}"}
@@ -1223,18 +1229,25 @@ def install(app: FastAPI) -> None:
             "projects": projects,
         }
 
-    def _decision_rows_state() -> tuple[list[dict[str, Any]], bool]:
+    def _decision_rows_state(
+        catalogue: list[dict[str, Any]] | None = None,
+    ) -> tuple[list[dict[str, Any]], bool]:
         """Площадки-решения строками и ответ «дочитаны ли они».
 
         Полнота — часть ответа, а не подробность: решения приезжают фоном
         страницами, и «этих решений я ещё не видел» на диске выглядит ровно
         как «этих решений нет».
+
+        `catalogue` — список, уже прочитанный вызывающим. Две половины одного
+        экрана обязаны спорить о том, у кого есть карточка, по ОДНОМУ входу:
+        два чтения снимка ловят подмену файла фоновым обходом, и площадка
+        встаёт строкой дважды.
         """
         reader = getattr(krt_registry, "decisions", None)
         if not callable(reader):
             return [], False
         try:
-            found = reader()
+            found = reader() if catalogue is None else reader(catalogue=catalogue)
         except Exception:  # noqa: BLE001
             # Источник не ответил — это ответ, а не «решений нет»: прогон идёт
             # по каталогу, а недочитанное называется в логе.
@@ -1259,7 +1272,7 @@ def install(app: FastAPI) -> None:
         except Exception:  # noqa: BLE001
             logger.exception("KRT catalogue for siblings failed")
             catalogue = []
-        decisions, decisions_whole = _decision_rows_state()
+        decisions, decisions_whole = _decision_rows_state(catalogue)
         try:
             state = krt_registry.status()
         except Exception:  # noqa: BLE001

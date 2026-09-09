@@ -428,9 +428,22 @@ class KrtRegistry:
         rows: list[KrtTerritory] = []
         seen_urls: set[str] = set()
         seen_slugs: set[str] = set()
+        # Есть ли на диске ПОЛНЫЙ снимок. Пока этого вопроса не было, каждая
+        # прочитанная страница переписывала файл усечённым списком: посреди
+        # обхода каталог на экране падал с 282 строк до 84, а площадки, чьи
+        # карточки ещё не дочитаны, вставали строками «карточки нет» — то есть
+        # наш пробел чтения показывался ответом источника. Недособранный обход
+        # прежний полный снимок не трогает; он пишется только там, где полного
+        # снимка нет вовсе — на первом в жизни обходе, где «пусто» хуже
+        # неполного.
+        had_complete = bool(self._cache_current(cached)
+                            and cached.get("complete")
+                            and cached.get("projects"))
 
         def persist(*, complete: bool) -> None:
             if not rows:
+                return
+            if not complete and had_complete:
                 return
             save_json(self.path, {
                 "schema_version": CACHE_SCHEMA_VERSION,
@@ -1147,7 +1160,8 @@ class KrtRegistry:
         save_json(cache_path, result)
         return result
 
-    def decisions(self, *, refresh: bool = False, max_pages: int = 60) -> dict[str, Any]:
+    def decisions(self, *, refresh: bool = False, max_pages: int = 60,
+                  catalogue: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         """Решения о КРТ и разложение их на «карточка есть» и «карточки нет».
 
         Кэш держит САМИ решения, а разложение считается на каждом чтении. Иначе
@@ -1159,6 +1173,17 @@ class KrtRegistry:
 
         Недособранный список, выданный за полный, читается как «таких решений
         больше нет», поэтому `complete` едет вместе с числами, а не вместо них.
+
+        `catalogue` — тот самый список, который уже прочитал вызывающий. Пока
+        его не было, ответ одного экрана собирался ДВУМЯ чтениями каталога:
+        маршрут читал снимок для строк, а разложение читало его заново — и
+        между двумя чтениями фоновый обход подменял файл. Площадка, попавшая в
+        первое чтение и не попавшая во второе, вставала в список ДВАЖДЫ: строкой
+        карточки и строкой «проект решения, карточки нет». Замер прода
+        09.09.2026 в 00:46: 796 строк вместо 530 — полный каталог 282 плюс все
+        514 решений как «без карточки» («Задвоились?», владелец). Правило то же,
+        что у балла площадки: одна функция ещё не значит один ответ — ответ
+        один, когда один вход.
         """
         from . import krt_decisions
 
@@ -1188,7 +1213,8 @@ class KrtRegistry:
         rows = [krt_decisions.KrtDecision(**{key: value for key, value in one.items()
                                              if key in _DECISION_FIELDS})
                 for one in (payload.get("all") or [])]
-        split = krt_decisions.match_catalogue(rows, self.catalogue())
+        split = krt_decisions.match_catalogue(
+            rows, self.catalogue() if catalogue is None else list(catalogue))
         out = dict(payload)
         # Когда снят снимок решений — часть ответа: без даты «577 решений»
         # читается как ответ источника сию секунду.

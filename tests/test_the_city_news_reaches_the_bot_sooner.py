@@ -197,8 +197,16 @@ def test_the_screen_list_is_what_gets_marked() -> None:
     watch = (ROOT / "auction_search" / "krt_watch.py").read_text(encoding="utf-8")
     assert "self._screen_list" in watch, "сторож собирает список сам, а не берёт крючком"
     # Обе половины по-прежнему в одном списке — иначе площадка-решение снова
-    # не станет новой никогда.
-    assert "_decision_rows_state()" in source[source.index("def _krt_screen_list("):]
+    # не станет новой никогда. Держится ВЫЗОВ и сложение половин, а не форма
+    # записи: проверка стояла как `_decision_rows_state()` со скобками впритык
+    # и упала, когда сборщику начали передавать уже прочитанный каталог, — то
+    # есть на правке, которая ничего из утверждаемого не трогала. Кусок берётся
+    # до следующего объявления того же уровня: «до конца файла» ловит и чужие
+    # функции.
+    body = source[source.index("def _krt_screen_list("):]
+    body = body[: body.index("\n    def ", 1)]
+    assert "_decision_rows_state(" in body, "список экрана собирает не тот сборщик"
+    assert "catalogue + decisions" in body, "половины списка перестали складываться"
 
 
 def test_a_new_kind_of_site_does_not_arrive_as_a_flood(tmp_path) -> None:
