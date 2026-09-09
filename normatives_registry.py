@@ -66,18 +66,25 @@ def _save_state(state: dict[str, Any]) -> None:
 
 
 def _is_admin(request: Request, core: Any) -> bool:
-    """Используем единую авторизацию DevelopAid, второй секрет не заводим."""
+    """Используем единую авторизацию DevelopAid, второй секрет не заводим.
+
+    Гейт движка принимает ДВЕ СТРОКИ — сессию и ключ, — а сюда передавался
+    целиком `Request`: он молча вставал на место сессии, ключ до проверки не
+    доезжал вовсе, и `TypeError`, ради которого стоял запасной путь, не
+    возникал никогда. Значит владелец не опознавался НИ РАЗУ: кнопка проверки
+    источников не показывалась никому, а `POST /api/normatives/check` отвечал
+    403 всем и всегда. Ошибка того же рода, что «пустой параметр в `bool`»:
+    снаружи кнопка выглядит существующей, а нажать её нельзя.
+    """
     checker = getattr(core, "_is_admin_request", None)
     if not callable(checker):
         return False
+    params = getattr(request, "query_params", {}) or {}
+    cookies = getattr(request, "cookies", {}) or {}
+    session = str(params.get("session") or cookies.get("developaid_session") or "")
+    key = str(params.get("key") or cookies.get("developaid_admin_key") or "")
     try:
-        return bool(checker(request))
-    except TypeError:
-        # Совместимость со старой сигнатурой helper'а.
-        try:
-            return bool(checker())
-        except Exception:
-            return False
+        return bool(checker(session, key))
     except Exception:
         return False
 
@@ -263,6 +270,58 @@ def take_announcements() -> list[dict[str, Any]]:
     except Exception:
         pass
     return records
+
+
+def queued_count() -> int:
+    """Сколько находок ждёт бота. Очередь читается, а не изымается.
+
+    Забрать её может только один — файл переименовывается, — и второй
+    читатель унёс бы уведомление ради ответа на вопрос, дошло ли уведомление.
+    """
+    try:
+        if not _ANNOUNCE_PATH.exists():
+            return 0
+        return sum(1 for line in _ANNOUNCE_PATH.read_text(encoding="utf-8").splitlines()
+                   if line.strip())
+    except Exception:
+        return 0
+
+
+def watch_state() -> dict[str, Any]:
+    """Состояние сторожа нормативной базы — числом, а не молчанием.
+
+    Снаружи «в базе ничего не менялось», «сторож выключен», «проверка ни разу
+    не заходила» и «очередь копится, а забрать её некому» — одно и то же
+    молчание. Ровно этим вопросом уже отвечал `/auctions/krt/watch`; здесь та
+    же половина ответа, только про нормативы. Пара к нему — `/normatives/delivery`
+    на хосте с ботом: очередь копится тут, а забирают её там.
+    """
+    state = _load_state()
+    checks = state.get("checks")
+    checks = checks if isinstance(checks, dict) else {}
+    results: dict[str, int] = {}
+    for item in checks.values():
+        if isinstance(item, dict):
+            key = str(item.get("result") or "unknown")
+            results[key] = results.get(key, 0) + 1
+    hours = max(1.0, float(os.getenv("NORMATIVES_WATCH_HOURS", "24") or 24))
+    search_hours = max(hours, float(os.getenv("NORMATIVES_SEARCH_HOURS", "168") or 168))
+    return {
+        "enabled": os.getenv("NORMATIVES_WATCH", "1").strip() not in {"0", "false", "no"},
+        "entries": len(_load_registry()),
+        "checked": len(checks),
+        "results": results,
+        "last_run_at": state.get("last_run_at") or "",
+        "last_search_at": state.get("last_search_at") or "",
+        "link_period_hours": hours,
+        "search_period_hours": search_hours,
+        "link_check_due": _watch_due(hours),
+        "search_due": _watch_due(search_hours, key="last_search_at"),
+        # Платный поиск отвечает на «отменён ли акт»: без ключа он не идёт
+        # вовсе, и тогда отмена до нас не доедет никаким путём.
+        "search_available": _search_client() is not None,
+        "queued": queued_count(),
+    }
 
 
 def _changes_between(before: dict[str, Any], after: dict[str, Any],
@@ -605,6 +664,34 @@ def guide_reference_html(css_prefix: str = "gnorm") -> str:
     return f'<div class="{css_prefix}-grid">{"".join(parts)}</div>'
 
 
+def _watch_note(watch: dict[str, Any]) -> str:
+    """Строка «что сделал сторож» — под кнопками, там, где на неё смотрят.
+
+    Без неё «изменений не приходило» неотличимо от «сторож не заходил», «поиск
+    не настроен» и «находки лежат в очереди, а забрать их некому».
+    """
+    if not watch.get("enabled"):
+        return ('<div class="watchnote">Сторож выключен '
+                '(<code>NORMATIVES_WATCH=0</code>): проверка сама не заходит.</div>')
+    parts: list[str] = []
+    # `_fmt_date` на пустом значении отдаёт прочерк, а прочерк читается как
+    # «не знаем». Здесь ответ другой и он известен: проверка не заходила ни разу.
+    def when(key: str) -> str:
+        return _fmt_date(watch.get(key)) if str(watch.get(key) or "").strip() else "ни разу"
+
+    parts.append("Ссылки сверены: " + when("last_run_at"))
+    if watch.get("search_available"):
+        parts.append("открытые источники спрошены: " + when("last_search_at"))
+    else:
+        parts.append("открытые источники не спрашиваются — поиск не настроен")
+    queued = int(watch.get("queued") or 0)
+    # Ноль в очереди — это ответ, а не пустая строка: он и означает «переходов
+    # с прошлой проверки не было», то есть сообщать боту нечего.
+    parts.append(f"в очереди боту: {queued}" if queued
+                 else "в очереди боту пусто — переходов с прошлой проверки не было")
+    return '<div class="watchnote">' + html.escape(" · ".join(parts)) + "</div>"
+
+
 def _legal_footer() -> str:
     """Подвал документов ИП: состав разбирается из `PAGE`, копии здесь нет.
 
@@ -628,16 +715,33 @@ def _page(request: Request, core: Any) -> str:
 
     adminbar = ""
     if admin:
+        # Две кнопки, потому что вопроса два и цена у них разная. «Проверить
+        # ссылки» отвечает на «страницу переписали?» — отпечаток, бесплатно.
+        # «Спросить об отмене» ходит в открытые источники: только он видит,
+        # что акт утратил силу или вышел в новой редакции, и он платный.
+        # Одна кнопка на оба вопроса обещала бы ответ, которого не давала.
+        watch = watch_state()
+        search_btn = (
+            '<button id="searchBtn" onclick="checkAll(true)">'
+            'Спросить об отмене и редакциях (платный поиск)</button>'
+            if watch.get("search_available") else
+            '<span class="nomuted">Поиск по открытым источникам не настроен — '
+            'отмену акта спросить нечем</span>'
+        )
         adminbar = (
             '<div class="adminbar"><b>Режим администратора DevelopAid</b>'
-            '<button id="checkBtn" onclick="checkAll()">Проверить источники</button>'
+            '<button id="checkBtn" onclick="checkAll(false)">Проверить ссылки</button>'
+            + search_btn +
             '<span id="checkMsg"></span></div>'
+            + _watch_note(watch)
         )
 
     return f"""<!doctype html><html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Нормативная база — DevelopAid</title>
 <style>
+.watchnote{{margin-top:8px;font-size:13px;color:#6d7480;line-height:1.5}}
+.nomuted{{font-size:13px;color:#6d7480}}
 :root{{--bg:#f5f6f8;--paper:#fff;--ink:#17191d;--muted:#6d7480;--line:#e2e5e9;
 --accent:#20252b;--ok:#166534;--okbg:#ecfdf3;--warn:#92400e;--warnbg:#fff7ed;
 --bad:#991b1b;--badbg:#fef2f2}}
@@ -714,12 +818,24 @@ document.querySelectorAll('.filters button').forEach(btn=>btn.addEventListener('
  btn.classList.add('active');const f=btn.dataset.filter;
  document.querySelectorAll('.ncard').forEach(c=>c.classList.toggle('hidden',f!=='all'&&c.dataset.scope!==f));
 }}));
-async function checkAll(){{
- const b=document.getElementById('checkBtn'),m=document.getElementById('checkMsg');
- b.disabled=true;m.textContent='Проверяю официальные источники…';
- try{{const r=await fetch('/api/normatives/check',{{method:'POST'}});
- if(!r.ok)throw new Error('HTTP '+r.status);m.textContent='Готово. Обновляю…';location.reload();}}
- catch(e){{m.textContent='Ошибка: '+e.message;b.disabled=false;}}
+async function checkAll(search){{
+ const ids=['checkBtn','searchBtn'].map(i=>document.getElementById(i)).filter(Boolean);
+ const m=document.getElementById('checkMsg');
+ ids.forEach(b=>b.disabled=true);
+ // Кнопка называет, что делает ИМЕННО она: «проверяю источники» на обеих
+ // читалось бы как один и тот же вопрос, а вопроса два.
+ m.textContent=search?'Спрашиваю открытые источники об отмене и редакциях…'
+                     :'Сверяю ссылки реестра…';
+ try{{const r=await fetch('/api/normatives/check'+(search?'?search=1':''),{{method:'POST'}});
+ if(!r.ok){{
+  // Ответ разбирают, зная, что он может быть не ответом: причина отказа
+  // приезжает текстом, и «HTTP 503» вместо неё — поломка разбора, а не ответ.
+  let why='HTTP '+r.status;
+  try{{const t=await r.text();const j=JSON.parse(t);why=j.detail||why;}}catch(_){{}}
+  throw new Error(why);
+ }}
+ m.textContent='Готово. Обновляю…';location.reload();}}
+ catch(e){{m.textContent='Ошибка: '+e.message;ids.forEach(b=>b.disabled=false);}}
 }}
 </script></body></html>"""
 
@@ -742,11 +858,39 @@ def install(app: Any, core: Any) -> None:
     # у него общая с ботом подпись, а до api.telegram.org с ядра не дойти.
     app.state.normatives_announcements_take = take_announcements
 
+    @app.get("/api/normatives/watch", include_in_schema=False)
+    def normatives_watch() -> JSONResponse:
+        """Состояние сторожа: измеримо со стороны, без ключа и без адресатов.
+
+        «Молчащая проверка неотличима от отсутствующей» — счётчик молчания и
+        отвечает на «мне ничего не пришло»: заходил ли сторож, когда, что
+        нашёл и сколько находок ждёт бота.
+        """
+        return JSONResponse(watch_state(), headers=_HEADERS)
+
     @app.post("/api/normatives/check", include_in_schema=False)
-    def normatives_check(request: Request) -> JSONResponse:
+    def normatives_check(request: Request, search: str = "") -> JSONResponse:
+        """Проверка источников. `search=1` — платный вопрос об отмене акта.
+
+        Вопроса два, и они разные: «страницу переписали?» отвечает отпечаток
+        ссылки (бесплатно, каждый заход), «акт отменён или вышла новая
+        редакция?» — поиск по открытым источникам, и он платный. Кнопка,
+        обещавшая второе и делавшая первое, отвечала на не тот вопрос:
+        владелец просил проверять, что документы «не получили изменений
+        редакции или вовсе отменены», а отмену отпечаток не видит по
+        построению — акт отменяют, не трогая нашу страницу.
+        """
         if not _is_admin(request, core):
             raise HTTPException(status_code=403, detail="Только администратор DevelopAid")
-        return JSONResponse({"ok": True, **_run_check()}, headers=_HEADERS)
+        wanted = str(search or "").strip().lower() in {"1", "true", "yes", "on"}
+        if wanted and _search_client() is None:
+            # Отказ называет причину: молча пройдя без поиска, кнопка второй
+            # раз пообещала бы ответ, которого не давала.
+            raise HTTPException(
+                status_code=503,
+                detail="Поиск по открытым источникам не настроен — отмену акта спросить нечем.")
+        return JSONResponse({"ok": True, "searched": wanted, **_run_check(search=wanted)},
+                            headers=_HEADERS)
 
     # Проверка по расписанию: кнопка отвечает тому, кто открыл страницу, а
     # сообщение — тому, кто не открывал. Раз в сутки, воркеров два — работу
