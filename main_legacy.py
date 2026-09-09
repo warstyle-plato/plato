@@ -1775,12 +1775,24 @@ def social_tep_row(inputs: dict[str, Any], kind: str,
     return {"units": units, "total_area": area, "transfer": area, "gns": gns}
 
 
+# Строка, объявленная очередью, — требование договора КРТ, и она сильнее
+# вывода из вводных: город даёт объекту И места, И площадь, и они с нормативом
+# не совпадают. Признак едет НА строке, потому что `calculate` видит только
+# ТЭП — вторая карта «какие строки объявлены» разошлась бы с первой молча.
+TEP_ROW_DECLARED = "declared"
+
+
 def apply_social_tep_rows(inputs: dict[str, Any],
                           tep: dict[str, dict[str, Any]]) -> None:
-    """Привести строки соцобъектов к вводным. Правится на месте."""
+    """Привести строки соцобъектов к вводным. Правится на месте.
+
+    Объявленную очередью строку не трогаем вовсе: у неё свой источник, и
+    пересчёт по нормативу подменил бы требование города нашим числом — на
+    школе КРТ это 16 667 м² ГНС вместо объявленных 22 220.
+    """
     for kind in SOCIAL_TEP_FIELDS:
         row = tep.get(kind)
-        if isinstance(row, dict):
+        if isinstance(row, dict) and not row.get(TEP_ROW_DECLARED):
             row.update(social_tep_row(inputs, kind))
 
 
@@ -21211,7 +21223,7 @@ def _plato_merge_management_and_smr(
 
     Разложить их в книге некуда, поэтому передаётся то же самое одним числом:
     процент, дающий сумму трёх статей на базе книги, и ставка, дающая сумму
-    обеих частей на всём ГНС.
+    обеих частей на ядре МКД — на той базе, на которую СМР и начислен.
     """
     result = calculate(CalcRequest(inputs=dict(inputs), tep=dict(tep), rates=[]))
     capex = result.get("capex") or {}
@@ -21239,7 +21251,13 @@ def _plato_merge_management_and_smr(
                            "label": "Управление проектом · с техзаказчиком и надзором",
                            "value": share})
 
-    gns = sum(float((tep.get(key) or {}).get("gns") or 0.0) for key in tep)
+    # Делитель — та база, на которую СМР и НАЧИСЛЕН: ядро МКД, наземное плюс
+    # подземное. Прежде здесь стояла сумма ГНС ВСЕХ строк ТЭП, то есть
+    # строительный объём, и совпадала она с базой только потому, что у
+    # соцобъекта ГНС был нулём. Стоило ему появиться — и ставка 190 тыс ₽/м²
+    # уезжала в 184,8: метры, которых СМР не касается, разбавляли её молча.
+    core = result.get("tep") or {}
+    gns = float(core.get("core_above_gns") or 0.0) + float(core.get("core_under_gns") or 0.0)
     smr = amount("main_above") + amount("main_under")
     if gns > 0 and smr > 0:
         rows = rows_by_label.get(_plato_normalize("Основное строительство ЖК")) or []
@@ -28109,6 +28127,9 @@ def _apply_explicit_phase_products(
                 row[field] = max(0.0, float(override.get(field) or 0.0))
         if override.get("generates_revenue") is False:
             row["saleable"] = 0.0
+        # Объявленная очередью строка не пересчитывается по нормативу: у
+        # соцобъекта это требование договора, а не наша оценка.
+        row[TEP_ROW_DECLARED] = True
         p_tep[key] = row
         for field, input_key in _PHASE_PRODUCT_INPUT_ALIASES.get(key, {}).items():
             p_inputs[input_key] = float(row.get(field) or 0.0)

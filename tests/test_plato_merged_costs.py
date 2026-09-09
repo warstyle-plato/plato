@@ -70,10 +70,17 @@ def test_management_carries_the_technical_supervision():
 
 
 def test_the_rate_covers_both_construction_parts():
-    """Ставки наземной и подземной части взвешиваются по ГНС."""
+    """Ставки наземной и подземной части взвешиваются по ЯДРУ МКД.
+
+    Делитель — та база, на которую СМР начислен, а не сумма ГНС всех строк
+    ТЭП: соцобъект строится по цене МЕСТА, и его метры разбавили бы ставку.
+    Пока ГНС соцстроки был нулём, две базы совпадали, и разницы не было видно.
+    """
     values, _, inputs = exported(main_above_th_per_sqm=190, main_under_th_per_sqm=120)
     capex = engine(inputs)
-    gns = sum(float((core.TEP_DEFAULT.get(k) or {}).get("gns") or 0) for k in core.TEP_DEFAULT)
+    tep = core.calculate(core.CalcRequest(
+        inputs=inputs, tep=core.TEP_DEFAULT, rates=[]))["tep"]
+    gns = float(tep["core_above_gns"]) + float(tep["core_under_gns"])
     expected = (float(capex["main_above"]) + float(capex["main_under"])) / gns / 1000
 
     assert values["main_above_th_per_sqm"] == pytest.approx(expected, abs=1e-6)

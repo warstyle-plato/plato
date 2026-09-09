@@ -164,13 +164,41 @@ def test_the_project_area_does_not_grow_with_queues(project, count):
 
 
 def test_the_social_rows_are_counted_once(project):
-    """Денежная компенсация: соцобъекты не строятся, но в ТЭП проекта они есть —
-    и должны быть там ровно один раз."""
+    """Соцобъект, который проект СТРОИТ, стоит в своде ровно один раз.
+
+    Утверждение теста — «не втрое», ради него он и написан. Прежде он держал
+    его на денежной компенсации с непустыми строками ТЭП — состоянии, которого
+    страница не создаёт вовсе: `syncTep` обнуляет метры соцобъекта, как только
+    режим перестаёт быть стройкой. С 0.22.89 то же делает и движок
+    (`social_tep_row`), поэтому проверять «не втрое» надо там, где метры
+    существуют, — в режиме стройки.
+    """
     inputs, tep = project
+    inputs = {**inputs, "social_mode": "Строительство"}
     total = phase_rows(core.calculate_phased(core.PhasedCalcRequest(
         inputs=inputs, tep=tep, rates=[], phasing=phasing(3))))
-    assert total["kindergarten"]["total_area"] == pytest.approx(6510, abs=1.0)
-    assert total["school"]["total_area"] == pytest.approx(8100, abs=1.0)
+    single = core.calculate(core.CalcRequest(inputs=inputs, tep=tep, rates=[]))
+    master = {row["key"]: row for row in single["tep"]["rows"]}
+    for kind in ("kindergarten", "school"):
+        assert total[kind]["total_area"] == pytest.approx(
+            master[kind]["total_area"], abs=1.0), f"{kind}: очереди размножили объект"
+        assert total[kind]["total_area"] > 0
+
+
+def test_money_instead_of_a_building_leaves_no_metres(project):
+    """Денежная компенсация — не объект, и метров его в проекте нет.
+
+    Прежде строки оставались с метрами: объект «строился» бесплатно, а его
+    площадь стояла в строительном объёме — знаменателе всех удельных. На этом
+    проекте это 14 610 м² из воздуха. Страница обнуляла их с самого начала
+    (`syncTep`), движок — с 0.22.89.
+    """
+    inputs, tep = project
+    single = core.calculate(core.CalcRequest(inputs=inputs, tep=tep, rates=[]))
+    rows = {row["key"]: row for row in single["tep"]["rows"]}
+    for kind in ("kindergarten", "school"):
+        assert rows[kind]["total_area"] == 0.0, kind
+        assert rows[kind]["gns"] == 0.0, kind
 
 
 # --- деньги от правки не поехали --------------------------------------------------
