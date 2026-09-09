@@ -45,7 +45,7 @@ import urllib.request
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from math import ceil, pow, exp
-from typing import Any, Callable
+from typing import Any, Callable, NamedTuple
 from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, Request, HTTPException
@@ -76,7 +76,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.23.3"
+VERSION = "0.23.4"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -9524,11 +9524,72 @@ _PARKING_DEMAND_PRODUCTS = (
 # выручки не дают: они обеспечивают посетителей. У офисника те же места
 # продаются машино-местами, кроме гостевых. Одно правило на оба объекта было
 # бы неверно в обе стороны: у ТЦ оно выдумало бы выручку, у офисника отняло.
-OBJECT_PARKING_OBJECTS = (
-    # (ключ ТЭП, приставка полей, признак включения объекта, места продаются)
-    ("offices", "offices", "offices_enabled", True),
-    ("standalone_retail", "retail", "retail_enabled", False),
-    ("sports", "sports", "sports_enabled", False),
+class StandaloneObject(NamedTuple):
+    """Отдельно стоящий объект: состав объявлен ОДИН раз.
+
+    Состав был перечислен двадцать два раза — в движке, на странице и в
+    пресете, — и «поставить пару ОСЗ» означало двадцать вторую правку списка.
+    Копию негде обновлять, потому что копии нет: всё, что знало состав,
+    считается отсюда, а новый объект — это строка здесь.
+
+    Грани взяты из тех самых перечислений, а не придуманы: приставка полей у
+    ТЦ «retail», а строка ТЭП «standalone_retail» — на этом и спотыкались;
+    у наземного паркинга своего гаража нет вовсе, и меряется он местами, а не
+    метрами, поэтому и ставки у него за место.
+    """
+    key: str                # строка ТЭП
+    prefix: str             # приставка вводных
+    label: str              # имя для человека
+    default_queue: int      # куда садится при `discrete`, пока не сказано иначе
+    garage: bool            # есть ли СВОЙ подземный гараж
+    garage_sellable: bool   # продаются ли его места (решение владельца 06.09.2026)
+    measure: str            # "sqm" — метры, "spaces" — места
+    rate_cost: str
+    rate_price: str
+
+    @property
+    def enabled_key(self) -> str:
+        return f"{self.prefix}_enabled"
+
+    @property
+    def aliases(self) -> dict[str, str]:
+        """Какая вводная стоит за полем строки ТЭП."""
+        if self.measure == "spaces":
+            return {"units": f"{self.prefix}_spaces"}
+        return {"gns": f"{self.prefix}_gba_sqm", "saleable": f"{self.prefix}_saleable_sqm"}
+
+
+# Порядок — тот, что виден на экране строками таблицы ТЭП. У списка гаражей он
+# был другим, с офисов: один состав двумя списками в разном порядке накопился
+# сам, и держать два ответа на «в каком порядке» незачем.
+STANDALONE_OBJECTS: tuple[StandaloneObject, ...] = (
+    StandaloneObject("standalone_retail", "retail", "ТЦ", 2, True, False, "sqm",
+                     "retail_cost_th_per_sqm", "retail_price_th_per_sqm"),
+    StandaloneObject("offices", "offices", "офисы", 3, True, True, "sqm",
+                     "offices_cost_th_per_sqm", "offices_price_th_per_sqm"),
+    StandaloneObject("above_parking", "above_parking", "наземный паркинг", 2, False,
+                     False, "spaces", "above_parking_cost_mln_per_space",
+                     "above_parking_price_mln_per_space"),
+    StandaloneObject("sports", "sports", "ФОК", 2, True, False, "sqm",
+                     "sports_cost_th_per_sqm", "sports_price_th_per_sqm"),
+)
+
+
+def standalone_objects(keys: tuple[str, ...] = ()) -> tuple[StandaloneObject, ...]:
+    """Потребитель называет СВОЙ набор, а не считает, что все объекты его.
+
+    У книги v2 ФОКа нет статьёй вовсе, и её список работ честно короче: это
+    граница поверхности, а не пропуск.
+    """
+    return STANDALONE_OBJECTS if not keys else tuple(
+        o for o in STANDALONE_OBJECTS if o.key in keys)
+
+
+# Прежние имена остаются и СЧИТАЮТСЯ отсюда: снаружи не меняется ничего, и
+# приёмка перекладки — «ни одно число не сдвинулось» — проверяет ровно это.
+OBJECT_PARKING_OBJECTS = tuple(
+    (o.key, o.prefix, o.enabled_key, o.garage_sellable)
+    for o in STANDALONE_OBJECTS if o.garage
 )
 
 # Поля объявлены один раз: по ним собирается и форма, и книга, и страница.
@@ -16058,9 +16119,8 @@ def _v4_fold_tail(weights: list[float], enabled: int, book: int) -> list[float]:
 MKD_PRODUCTS: tuple[str, ...] = (
     "apartments", "ground_commercial", "underground_parking", "storage",
 )
-STANDALONE_PRODUCTS: tuple[str, ...] = (
-    "standalone_retail", "offices", "above_parking", "sports",
-)
+# Состав объявлен один раз — в STANDALONE_OBJECTS; здесь только его ключи.
+STANDALONE_PRODUCTS: tuple[str, ...] = tuple(o.key for o in STANDALONE_OBJECTS)
 
 # Разделы таблицы ТЭП. Двенадцать строк одним списком читаются как двенадцать
 # равных продуктов, а это три разные вещи: дом, который мы строим и продаём;
