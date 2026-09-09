@@ -59,15 +59,40 @@ def _single(inputs, tep=None):
     return _rows(core.calculate(request))
 
 
+def _stale_table():
+    """Таблица, какой её присылает вкладка, открытая до починки.
+
+    Пример строится здесь, а не берётся у `TEP_DEFAULT`: само умолчание с
+    0.22.85 приведено к своим вводным той же функцией, и на нём проверять
+    устаревшую строку стало нечем. Числа — те, что стояли в умолчании и на
+    которые жаловался владелец: 3 000 м² на 250 мест (12 м² на место, ниже
+    городского минимума в любой ёмкости) и ГНС 0.
+    """
+    stale = copy.deepcopy(core.TEP_DEFAULT)
+    stale["kindergarten"].update(total_area=3000, transfer=3000, gns=0, units=250)
+    return stale
+
+
+def test_the_default_agrees_with_its_own_inputs():
+    """Умолчание — тоже строка, и расходиться со своими вводными не вправе.
+
+    `TEP_DEFAULT` нёс 3 000 м² при 4 500 во «Вводных» и нормативе 18 м² на
+    место: пока страница не позвала `syncTep`, человек видел одно, а движок
+    считал другое — подвал таблицы ТЭП расходился с отчётом на 5 000 м².
+    """
+    fresh = copy.deepcopy(core.TEP_DEFAULT)
+    core.apply_social_tep(copy.deepcopy(core.DEFAULT_INPUTS), fresh)
+    for kind in core.SOCIAL_TEP_FIELDS:
+        assert fresh[kind] == core.TEP_DEFAULT[kind], kind
+
+
 def test_a_stale_table_does_not_decide_the_social_area():
     """Строка из браузера устарела — считает вводная, а не она.
 
-    Это и есть та поломка, на которую жаловался владелец: `TEP_DEFAULT` несёт
+    Это и есть та поломка, на которую жаловался владелец: вкладка присылает
     3 000 м² на 250 мест, и без починки расчёт шёл по ним.
     """
-    stale = copy.deepcopy(core.TEP_DEFAULT)
-    assert stale["kindergarten"]["total_area"] == 3000, "пример устарел вместе с умолчанием"
-
+    stale = _stale_table()
     rows = _single(_inputs(kindergarten_places=250, social_dou_norm_sqm=18), stale)
     kindergarten = rows["kindergarten"]
     assert kindergarten["units"] == pytest.approx(250)
@@ -87,7 +112,8 @@ def test_the_check_falls_over_when_the_repair_is_gone(monkeypatch):
     строке: иначе зелёный тест выше не значил бы ничего.
     """
     monkeypatch.setattr(core, "apply_social_tep", lambda inputs, tep: None)
-    rows = _single(_inputs(kindergarten_places=250, social_dou_norm_sqm=18))
+    rows = _single(_inputs(kindergarten_places=250, social_dou_norm_sqm=18),
+                   _stale_table())
     assert rows["kindergarten"]["total_area"] == pytest.approx(3000), (
         "без починки строка обязана остаться устаревшей — иначе проверка "
         "выше сторожит не то")
