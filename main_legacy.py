@@ -76,7 +76,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.23.2"
+VERSION = "0.23.3"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -26386,7 +26386,8 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
         core_months.update(revenue_schedules.get(key, {}))
         core_months.update(quantity_schedules.get(key, {}))
     core_margin: dict[date, float] = {}
-    for month in core_months:
+    # По порядку, а не порядком множества — та же причина, что ниже у продуктов.
+    for month in sorted(core_months):
         revenue_month = sum(
             revenue_schedules.get(key, {}).get(month, 0.0) for key in core_products
         )
@@ -26405,7 +26406,16 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     for key in krt_products:
         quantity_total = sum(quantity_schedules.get(key, {}).values())
         unit_cost = product_costs[key] / quantity_total if quantity_total else 0.0
-        product_months = set(revenue_schedules.get(key, {})) | set(quantity_schedules.get(key, {}))
+        # Месяцы обходятся ПО ПОРЯДКУ, а не порядком множества. Ключи здесь
+        # строки, а порядок множества строк меняет `PYTHONHASHSEED` от процесса
+        # к процессу: сумма float'ов складывалась каждый раз иначе, и один и тот
+        # же расчёт на одних вводных давал разный последний разряд —
+        # `tax_margin_by_product` не воспроизводился сам с собой. Ловится это
+        # только двумя ПРОЦЕССАМИ: внутри одного порядок один и тот же, и в
+        # прогоне поломка невидима. Сортировка здесь ещё и естественная —
+        # расписание складывают по возрастанию месяца.
+        product_months = sorted(set(revenue_schedules.get(key, {}))
+                                | set(quantity_schedules.get(key, {})))
         tax_margin_schedules[key] = {
             month: (
                 revenue_schedules.get(key, {}).get(month, 0.0)
