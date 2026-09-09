@@ -91,9 +91,55 @@ class Installments:
         if not found:
             return {}
         out: dict[str, Any] = {"installment": bool(found.get("has_installment"))}
-        for key in ("down_payment_pct", "term_months", "keys_before_payment", "price_terms"):
+        for key in ("down_payment_pct", "term_months", "keys_before_payment",
+                    "price_terms", "term_deadline_programs"):
             if found.get(key) is not None:
                 out["installment_" + key] = found[key]
         if found.get("programs"):
             out["installment_programs"] = int(found["programs"])
+        return out
+
+
+    def district_terms(self, project: str, registry: Any) -> dict[str, Any]:
+        """Наши условия и условия соседей ПО РАЙОНУ — для свода продаж.
+
+        Свод продаж отвечает на «почему не покупают» нашими числами, а витрину
+        двигает не только наш прайс: у соседа есть рассрочка. Обе половины
+        нужны в одном вопросе — иначе предложение по акции строится на одной.
+
+        Соседи здесь берутся `registry.by_district` — тем же правилом, что и
+        везде у справочника, и это НЕ выборка отчёта о рынке (там радиус и
+        класс). Разница названа вслух в ответе: два разных набора под одним
+        словом «соседи» читались бы как один.
+
+        Незнание не выдаётся за ответ: сосед вне свода стоит в `unknown`, а не
+        среди тех, у кого рассрочки нет.
+        """
+        out: dict[str, Any] = {
+            "source": self.source,
+            "saved_at": self.saved_at,
+            "peers_rule": "соседи по району справочника, не выборка отчёта о рынке",
+            "ours": {},
+            "peers": [],
+            "unknown": [],
+        }
+        if not self.available or not project:
+            out["missing"] = "свод рассрочек не прочитан" if not self.available else ""
+            return out
+        out["ours"] = self.facts(None, project)
+        found = registry.find(project) if registry is not None else None
+        if found is None or not getattr(found, "district", None):
+            out["missing"] = "проект не найден в справочнике — соседей не собрать"
+            return out
+        out["district"] = found.district
+        for neighbour in registry.by_district(found.district):
+            if canonical_key(neighbour.name) == canonical_key(project):
+                continue
+            facts = self.facts(None, neighbour.name)
+            if facts:
+                out["peers"].append({"name": neighbour.name, **facts})
+            else:
+                out["unknown"].append(neighbour.name)
+        out["known"] = len(out["peers"])
+        out["total"] = len(out["peers"]) + len(out["unknown"])
         return out

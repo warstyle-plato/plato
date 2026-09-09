@@ -9,6 +9,7 @@
    "name": "Ситимикс",
    "offered": 1,
    "programs": 1,
+   "term_deadline_programs": 0,
    "to_mortgage": true
   },
   "1226": {
@@ -27,6 +28,7 @@
     "базовая": 6
    },
    "programs": 6,
+   "term_deadline_programs": 6,
    "term_months": 18,
    "to_mortgage": true
   },
@@ -40,6 +42,7 @@
     "базовая": 2
    },
    "programs": 2,
+   "term_deadline_programs": 2,
    "term_months": 11,
    "to_mortgage": true
   },
@@ -53,6 +56,7 @@
     "базовая": 3
    },
    "programs": 3,
+   "term_deadline_programs": 2,
    "term_months": 6,
    "to_mortgage": true
   },
@@ -67,6 +71,7 @@
     "удорожание": 2
    },
    "programs": 4,
+   "term_deadline_programs": 0,
    "term_months": 24,
    "to_mortgage": true
   },
@@ -93,7 +98,8 @@
    "has_installment": true,
    "name": "SkyView",
    "offered": 1,
-   "programs": 1
+   "programs": 1,
+   "term_deadline_programs": 1
   },
   "1686": {
    "down_payment_pct": 40.0,
@@ -104,6 +110,7 @@
     "скидка": 1
    },
    "programs": 1,
+   "term_deadline_programs": 1,
    "term_months": 7,
    "to_mortgage": true
   },
@@ -117,6 +124,7 @@
     "базовая": 5
    },
    "programs": 5,
+   "term_deadline_programs": 0,
    "term_months": 30,
    "to_mortgage": true
   },
@@ -130,6 +138,7 @@
     "удорожание": 1
    },
    "programs": 1,
+   "term_deadline_programs": 0,
    "term_months": 5,
    "to_mortgage": true
   },
@@ -143,6 +152,7 @@
     "скидка": 2
    },
    "programs": 2,
+   "term_deadline_programs": 1,
    "term_months": 14,
    "to_mortgage": true
   },
@@ -157,6 +167,7 @@
     "скидка": 2
    },
    "programs": 3,
+   "term_deadline_programs": 0,
    "term_months": 18,
    "to_mortgage": true
   },
@@ -170,6 +181,7 @@
     "удорожание": 6
    },
    "programs": 6,
+   "term_deadline_programs": 0,
    "term_months": 36,
    "to_mortgage": true
   },
@@ -183,6 +195,7 @@
     "базовая": 1
    },
    "programs": 1,
+   "term_deadline_programs": 1,
    "term_months": 9,
    "to_mortgage": true
   },
@@ -196,7 +209,8 @@
    "has_installment": true,
    "name": "Сиреневый парк",
    "offered": 1,
-   "programs": 2
+   "programs": 2,
+   "term_deadline_programs": 0
   },
   "2095": {
    "down_payment_pct": 25.0,
@@ -208,6 +222,7 @@
     "базовая": 7
    },
    "programs": 7,
+   "term_deadline_programs": 0,
    "term_months": 12,
    "to_mortgage": true
   },
@@ -221,6 +236,7 @@
     "базовая": 6
    },
    "programs": 6,
+   "term_deadline_programs": 1,
    "term_months": 10,
    "to_mortgage": true
   },
@@ -230,6 +246,7 @@
    "name": "Red 7",
    "offered": 1,
    "programs": 1,
+   "term_deadline_programs": 0,
    "to_mortgage": true
   },
   "2351": {
@@ -243,6 +260,7 @@
     "удорожание": 3
    },
    "programs": 15,
+   "term_deadline_programs": 5,
    "term_months": 25,
    "to_mortgage": true
   },
@@ -256,6 +274,7 @@
     "скидка": 3
    },
    "programs": 3,
+   "term_deadline_programs": 0,
    "term_months": 18,
    "to_mortgage": true
   },
@@ -269,6 +288,7 @@
     "базовая": 1
    },
    "programs": 1,
+   "term_deadline_programs": 0,
    "term_months": 9
   },
   "2552": {
@@ -281,13 +301,15 @@
     "базовая": 1
    },
    "programs": 1,
+   "term_deadline_programs": 0,
    "term_months": 9
   },
   "2559": {
    "has_installment": true,
    "name": "Бадаевский",
    "offered": 1,
-   "programs": 1
+   "programs": 1,
+   "term_deadline_programs": 0
   },
   "2649": {
    "down_payment_pct": 30.0,
@@ -299,6 +321,7 @@
     "скидка": 2
    },
    "programs": 2,
+   "term_deadline_programs": 0,
    "term_months": 12,
    "to_mortgage": true
   },
@@ -312,6 +335,7 @@
     "базовая": 1
    },
    "programs": 1,
+   "term_deadline_programs": 1,
    "term_months": 9,
    "to_mortgage": true
   },
@@ -325,6 +349,7 @@
     "удорожание": 1
    },
    "programs": 1,
+   "term_deadline_programs": 0,
    "term_months": 12,
    "to_mortgage": true
   },
@@ -337,6 +362,7 @@
     "скидка": 1
    },
    "programs": 1,
+   "term_deadline_programs": 0,
    "term_months": 12,
    "to_mortgage": true
   },
@@ -350,6 +376,7 @@
     "базовая": 2
    },
    "programs": 2,
+   "term_deadline_programs": 2,
    "term_months": 15,
    "to_mortgage": true
   },
@@ -364,6 +391,7 @@
     "удорожание": 1
    },
    "programs": 3,
+   "term_deadline_programs": 0,
    "term_months": 12,
    "to_mortgage": true
   },
@@ -378,6 +406,7 @@
     "удорожание": 1
    },
    "programs": 2,
+   "term_deadline_programs": 0,
    "term_months": 24,
    "to_mortgage": true
   },
@@ -392,6 +421,7 @@
     "удорожание": 1
    },
    "programs": 3,
+   "term_deadline_programs": 0,
    "term_months": 34,
    "to_mortgage": true
   },
@@ -405,6 +435,7 @@
     "базовая": 4
    },
    "programs": 4,
+   "term_deadline_programs": 0,
    "to_mortgage": true
   },
   "3031": {
@@ -417,6 +448,7 @@
     "базовая": 1
    },
    "programs": 1,
+   "term_deadline_programs": 0,
    "to_mortgage": true
   },
   "3043": {
@@ -435,6 +467,7 @@
     "базовая": 1
    },
    "programs": 1,
+   "term_deadline_programs": 0,
    "term_months": 9
   },
   "3048": {
@@ -448,6 +481,7 @@
     "удорожание": 2
    },
    "programs": 3,
+   "term_deadline_programs": 1,
    "term_months": 36,
    "to_mortgage": true
   },
@@ -462,6 +496,7 @@
     "удорожание": 3
    },
    "programs": 4,
+   "term_deadline_programs": 0,
    "term_months": 24,
    "to_mortgage": true
   },
@@ -476,6 +511,7 @@
     "удорожание": 2
    },
    "programs": 3,
+   "term_deadline_programs": 1,
    "term_months": 6,
    "to_mortgage": true
   },
@@ -488,7 +524,8 @@
    "price_terms": {
     "базовая": 1
    },
-   "programs": 1
+   "programs": 1,
+   "term_deadline_programs": 0
   },
   "3251": {
    "down_payment_pct": 20.0,
@@ -500,6 +537,7 @@
     "базовая": 2
    },
    "programs": 2,
+   "term_deadline_programs": 0,
    "term_months": 9,
    "to_mortgage": true
   },
@@ -513,6 +551,7 @@
     "удорожание": 1
    },
    "programs": 1,
+   "term_deadline_programs": 0,
    "term_months": 12,
    "to_mortgage": true
   },
@@ -544,6 +583,7 @@
     "базовая": 1
    },
    "programs": 1,
+   "term_deadline_programs": 0,
    "term_months": 9
   },
   "3379": {
@@ -557,6 +597,7 @@
     "удорожание": 1
    },
    "programs": 3,
+   "term_deadline_programs": 0,
    "term_months": 24,
    "to_mortgage": true
   },
@@ -575,6 +616,7 @@
     "базовая": 2
    },
    "programs": 2,
+   "term_deadline_programs": 0,
    "term_months": 25,
    "to_mortgage": true
   },
@@ -590,6 +632,7 @@
     "удорожание": 3
    },
    "programs": 8,
+   "term_deadline_programs": 7,
    "term_months": 6,
    "to_mortgage": true
   },
@@ -603,6 +646,7 @@
     "базовая": 7
    },
    "programs": 7,
+   "term_deadline_programs": 0,
    "term_months": 13,
    "to_mortgage": true
   },
@@ -616,6 +660,7 @@
     "базовая": 1
    },
    "programs": 1,
+   "term_deadline_programs": 1,
    "term_months": 7,
    "to_mortgage": true
   },
@@ -641,6 +686,7 @@
     "удорожание": 2
    },
    "programs": 2,
+   "term_deadline_programs": 0,
    "term_months": 8,
    "to_mortgage": true
   },
@@ -654,6 +700,7 @@
     "удорожание": 2
    },
    "programs": 3,
+   "term_deadline_programs": 0,
    "term_months": 36,
    "to_mortgage": true
   },
@@ -667,6 +714,7 @@
     "базовая": 8
    },
    "programs": 8,
+   "term_deadline_programs": 0,
    "term_months": 36,
    "to_mortgage": true
   },
@@ -686,6 +734,7 @@
     "базовая": 9
    },
    "programs": 9,
+   "term_deadline_programs": 1,
    "term_months": 36,
    "to_mortgage": true
   },
@@ -699,6 +748,7 @@
     "базовая": 1
    },
    "programs": 1,
+   "term_deadline_programs": 0,
    "term_months": 24
   },
   "3683": {
@@ -711,6 +761,7 @@
     "скидка": 2
    },
    "programs": 2,
+   "term_deadline_programs": 2,
    "term_months": 21,
    "to_mortgage": true
   },
@@ -724,19 +775,22 @@
     "базовая": 1
    },
    "programs": 1,
+   "term_deadline_programs": 0,
    "term_months": 9
   },
   "4061": {
    "has_installment": true,
    "name": "Космо 4/22",
    "offered": 1,
-   "programs": 1
+   "programs": 1,
+   "term_deadline_programs": 0
   },
   "4069": {
    "has_installment": true,
    "name": "АХЕД",
    "offered": 1,
-   "programs": 1
+   "programs": 1,
+   "term_deadline_programs": 0
   },
   "4074": {
    "down_payment_pct": 30.0,
@@ -748,6 +802,7 @@
     "скидка": 1
    },
    "programs": 1,
+   "term_deadline_programs": 0,
    "term_months": 12,
    "to_mortgage": true
   },
@@ -762,6 +817,7 @@
     "скидка": 2
    },
    "programs": 6,
+   "term_deadline_programs": 0,
    "term_months": 12,
    "to_mortgage": true
   },
@@ -775,6 +831,7 @@
     "базовая": 1
    },
    "programs": 1,
+   "term_deadline_programs": 0,
    "term_months": 3,
    "to_mortgage": true
   },
@@ -793,6 +850,7 @@
     "удорожание": 1
    },
    "programs": 1,
+   "term_deadline_programs": 0,
    "term_months": 24,
    "to_mortgage": true
   },
@@ -806,6 +864,7 @@
     "удорожание": 1
    },
    "programs": 1,
+   "term_deadline_programs": 0,
    "term_months": 2,
    "to_mortgage": true
   },
@@ -820,6 +879,7 @@
     "удорожание": 1
    },
    "programs": 3,
+   "term_deadline_programs": 2,
    "term_months": 36,
    "to_mortgage": true
   },
@@ -845,6 +905,7 @@
     "базовая": 2
    },
    "programs": 2,
+   "term_deadline_programs": 2,
    "term_months": 7,
    "to_mortgage": true
   },
@@ -864,6 +925,7 @@
     "базовая": 1
    },
    "programs": 1,
+   "term_deadline_programs": 0,
    "term_months": 6
   },
   "4245": {
@@ -872,6 +934,7 @@
    "name": "Ситимикс Новокосино",
    "offered": 1,
    "programs": 1,
+   "term_deadline_programs": 0,
    "to_mortgage": true
   },
   "4257": {
@@ -884,6 +947,7 @@
     "скидка": 2
    },
    "programs": 2,
+   "term_deadline_programs": 0,
    "to_mortgage": true
   },
   "4263": {
@@ -896,13 +960,15 @@
     "базовая": 1
    },
    "programs": 1,
+   "term_deadline_programs": 1,
    "term_months": 3
   },
   "4294": {
    "has_installment": true,
    "name": "Брюсов",
    "offered": 1,
-   "programs": 1
+   "programs": 1,
+   "term_deadline_programs": 0
   },
   "4302": {
    "down_payment_pct": 30.0,
@@ -914,6 +980,7 @@
     "базовая": 3
    },
    "programs": 3,
+   "term_deadline_programs": 3,
    "term_months": 27,
    "to_mortgage": true
   },
@@ -933,6 +1000,7 @@
     "базовая": 1
    },
    "programs": 1,
+   "term_deadline_programs": 0,
    "term_months": 12,
    "to_mortgage": true
   },
@@ -946,6 +1014,7 @@
     "базовая": 2
    },
    "programs": 2,
+   "term_deadline_programs": 2,
    "term_months": 15,
    "to_mortgage": true
   },
@@ -960,6 +1029,7 @@
     "удорожание": 1
    },
    "programs": 3,
+   "term_deadline_programs": 2,
    "term_months": 24,
    "to_mortgage": true
   },
@@ -973,6 +1043,7 @@
     "базовая": 1
    },
    "programs": 1,
+   "term_deadline_programs": 0,
    "term_months": 9
   },
   "476": {
@@ -985,6 +1056,7 @@
     "скидка": 11
    },
    "programs": 11,
+   "term_deadline_programs": 0,
    "term_months": 18,
    "to_mortgage": true
   },
@@ -1004,6 +1076,7 @@
     "базовая": 1
    },
    "programs": 1,
+   "term_deadline_programs": 0,
    "to_mortgage": true
   },
   "5030": {
@@ -1016,6 +1089,7 @@
     "базовая": 4
    },
    "programs": 4,
+   "term_deadline_programs": 0,
    "term_months": 10,
    "to_mortgage": true
   },
@@ -1029,6 +1103,7 @@
     "базовая": 2
    },
    "programs": 2,
+   "term_deadline_programs": 1,
    "term_months": 17,
    "to_mortgage": true
   },
@@ -1042,6 +1117,7 @@
     "скидка": 5
    },
    "programs": 5,
+   "term_deadline_programs": 4,
    "term_months": 7,
    "to_mortgage": true
   },
@@ -1055,6 +1131,7 @@
     "базовая": 1
    },
    "programs": 1,
+   "term_deadline_programs": 1,
    "term_months": 3,
    "to_mortgage": true
   },
@@ -1074,6 +1151,7 @@
     "удорожание": 1
    },
    "programs": 1,
+   "term_deadline_programs": 0,
    "term_months": 1,
    "to_mortgage": true
   },
@@ -1086,7 +1164,8 @@
    "price_terms": {
     "базовая": 1
    },
-   "programs": 1
+   "programs": 1,
+   "term_deadline_programs": 0
   },
   "5247": {
    "down_payment_pct": 30.0,
@@ -1099,6 +1178,7 @@
     "удорожание": 1
    },
    "programs": 9,
+   "term_deadline_programs": 5,
    "term_months": 36,
    "to_mortgage": true
   },
@@ -1112,6 +1192,7 @@
     "базовая": 1
    },
    "programs": 1,
+   "term_deadline_programs": 0,
    "to_mortgage": true
   },
   "5403": {
@@ -1125,6 +1206,7 @@
     "скидка": 5
    },
    "programs": 8,
+   "term_deadline_programs": 6,
    "term_months": 15,
    "to_mortgage": true
   },
@@ -1138,6 +1220,7 @@
     "удорожание": 1
    },
    "programs": 1,
+   "term_deadline_programs": 0,
    "term_months": 12,
    "to_mortgage": true
   },
@@ -1151,6 +1234,7 @@
     "удорожание": 3
    },
    "programs": 3,
+   "term_deadline_programs": 3,
    "term_months": 20,
    "to_mortgage": true
   },
@@ -1164,6 +1248,7 @@
     "базовая": 1
    },
    "programs": 1,
+   "term_deadline_programs": 1,
    "term_months": 15,
    "to_mortgage": true
   },
@@ -1177,6 +1262,7 @@
     "скидка": 6
    },
    "programs": 6,
+   "term_deadline_programs": 0,
    "term_months": 10,
    "to_mortgage": true
   },
@@ -1190,6 +1276,7 @@
     "базовая": 3
    },
    "programs": 3,
+   "term_deadline_programs": 0,
    "to_mortgage": true
   },
   "5501": {
@@ -1201,7 +1288,8 @@
    "price_terms": {
     "базовая": 2
    },
-   "programs": 2
+   "programs": 2,
+   "term_deadline_programs": 0
   },
   "5504": {
    "down_payment_pct": 40.0,
@@ -1213,6 +1301,7 @@
     "базовая": 1
    },
    "programs": 2,
+   "term_deadline_programs": 0,
    "term_months": 9
   },
   "5506": {
@@ -1226,6 +1315,7 @@
     "удорожание": 1
    },
    "programs": 2,
+   "term_deadline_programs": 1,
    "term_months": 36,
    "to_mortgage": true
   },
@@ -1239,6 +1329,7 @@
     "базовая": 11
    },
    "programs": 11,
+   "term_deadline_programs": 3,
    "term_months": 36,
    "to_mortgage": true
   },
@@ -1252,6 +1343,7 @@
     "базовая": 2
    },
    "programs": 2,
+   "term_deadline_programs": 1,
    "term_months": 10,
    "to_mortgage": true
   },
@@ -1265,6 +1357,7 @@
     "базовая": 1
    },
    "programs": 1,
+   "term_deadline_programs": 0,
    "term_months": 12
   },
   "5519": {
@@ -1277,6 +1370,7 @@
     "базовая": 3
    },
    "programs": 3,
+   "term_deadline_programs": 3,
    "term_months": 6,
    "to_mortgage": true
   },
@@ -1290,6 +1384,7 @@
     "базовая": 3
    },
    "programs": 3,
+   "term_deadline_programs": 1,
    "term_months": 10,
    "to_mortgage": true
   },
@@ -1309,6 +1404,7 @@
     "базовая": 5
    },
    "programs": 5,
+   "term_deadline_programs": 5,
    "term_months": 17,
    "to_mortgage": true
   },
@@ -1316,7 +1412,8 @@
    "has_installment": true,
    "name": "Монблан",
    "offered": 1,
-   "programs": 1
+   "programs": 1,
+   "term_deadline_programs": 0
   },
   "5561": {
    "down_payment_pct": 20.0,
@@ -1328,6 +1425,7 @@
     "скидка": 18
    },
    "programs": 18,
+   "term_deadline_programs": 0,
    "term_months": 10,
    "to_mortgage": true
   },
@@ -1341,6 +1439,7 @@
     "базовая": 3
    },
    "programs": 3,
+   "term_deadline_programs": 3,
    "term_months": 9
   },
   "5577": {
@@ -1353,6 +1452,7 @@
     "базовая": 4
    },
    "programs": 4,
+   "term_deadline_programs": 0,
    "to_mortgage": true
   },
   "5578": {
@@ -1365,6 +1465,7 @@
     "удорожание": 1
    },
    "programs": 1,
+   "term_deadline_programs": 0,
    "term_months": 16,
    "to_mortgage": true
   },
@@ -1378,6 +1479,7 @@
     "скидка": 1
    },
    "programs": 1,
+   "term_deadline_programs": 0,
    "term_months": 18,
    "to_mortgage": true
   },
@@ -1392,6 +1494,7 @@
     "удорожание": 3
    },
    "programs": 5,
+   "term_deadline_programs": 0,
    "term_months": 9,
    "to_mortgage": true
   },
@@ -1406,6 +1509,7 @@
     "скидка": 5
    },
    "programs": 6,
+   "term_deadline_programs": 0,
    "term_months": 12,
    "to_mortgage": true
   },
@@ -1419,6 +1523,7 @@
     "базовая": 8
    },
    "programs": 8,
+   "term_deadline_programs": 0,
    "term_months": 36,
    "to_mortgage": true
   },
@@ -1432,6 +1537,7 @@
     "базовая": 9
    },
    "programs": 9,
+   "term_deadline_programs": 0,
    "term_months": 12,
    "to_mortgage": true
   },
@@ -1445,6 +1551,7 @@
     "скидка": 7
    },
    "programs": 7,
+   "term_deadline_programs": 0,
    "term_months": 15,
    "to_mortgage": true
   },
@@ -1458,6 +1565,7 @@
     "базовая": 4
    },
    "programs": 4,
+   "term_deadline_programs": 2,
    "term_months": 15,
    "to_mortgage": true
   },
@@ -1471,6 +1579,7 @@
     "скидка": 5
    },
    "programs": 5,
+   "term_deadline_programs": 1,
    "term_months": 30,
    "to_mortgage": true
   },
@@ -1484,6 +1593,7 @@
     "скидка": 2
    },
    "programs": 2,
+   "term_deadline_programs": 0,
    "to_mortgage": true
   },
   "575": {
@@ -1496,6 +1606,7 @@
     "базовая": 2
    },
    "programs": 2,
+   "term_deadline_programs": 2,
    "to_mortgage": true
   },
   "5758": {
@@ -1508,6 +1619,7 @@
     "базовая": 3
    },
    "programs": 3,
+   "term_deadline_programs": 0,
    "term_months": 20
   },
   "5759": {
@@ -1520,6 +1632,7 @@
     "скидка": 2
    },
    "programs": 2,
+   "term_deadline_programs": 2,
    "term_months": 8,
    "to_mortgage": true
   },
@@ -1533,6 +1646,7 @@
     "скидка": 3
    },
    "programs": 3,
+   "term_deadline_programs": 0,
    "term_months": 17,
    "to_mortgage": true
   },
@@ -1546,6 +1660,7 @@
     "базовая": 3
    },
    "programs": 3,
+   "term_deadline_programs": 0,
    "to_mortgage": true
   },
   "5771": {
@@ -1559,6 +1674,7 @@
     "скидка": 5
    },
    "programs": 7,
+   "term_deadline_programs": 3,
    "term_months": 15,
    "to_mortgage": true
   },
@@ -1573,6 +1689,7 @@
     "удорожание": 1
    },
    "programs": 2,
+   "term_deadline_programs": 0,
    "term_months": 12,
    "to_mortgage": true
   },
@@ -1587,6 +1704,7 @@
     "удорожание": 1
    },
    "programs": 4,
+   "term_deadline_programs": 3,
    "term_months": 9,
    "to_mortgage": true
   },
@@ -1601,6 +1719,7 @@
     "скидка": 1
    },
    "programs": 2,
+   "term_deadline_programs": 2,
    "term_months": 13,
    "to_mortgage": true
   },
@@ -1614,6 +1733,7 @@
     "удорожание": 1
    },
    "programs": 1,
+   "term_deadline_programs": 0,
    "term_months": 12,
    "to_mortgage": true
   },
@@ -1628,6 +1748,7 @@
     "удорожание": 1
    },
    "programs": 24,
+   "term_deadline_programs": 0,
    "term_months": 18,
    "to_mortgage": true
   },
@@ -1640,6 +1761,7 @@
     "базовая": 3
    },
    "programs": 3,
+   "term_deadline_programs": 1,
    "term_months": 15,
    "to_mortgage": true
   },
@@ -1653,6 +1775,7 @@
     "базовая": 1
    },
    "programs": 1,
+   "term_deadline_programs": 1,
    "term_months": 25,
    "to_mortgage": true
   },
@@ -1666,6 +1789,7 @@
     "базовая": 4
    },
    "programs": 4,
+   "term_deadline_programs": 4,
    "term_months": 15,
    "to_mortgage": true
   },
@@ -1679,6 +1803,7 @@
     "базовая": 3
    },
    "programs": 3,
+   "term_deadline_programs": 2,
    "term_months": 20,
    "to_mortgage": true
   },
@@ -1693,6 +1818,7 @@
     "скидка": 1
    },
    "programs": 2,
+   "term_deadline_programs": 0,
    "term_months": 12,
    "to_mortgage": true
   },
@@ -1705,6 +1831,7 @@
     "базовая": 1
    },
    "programs": 1,
+   "term_deadline_programs": 1,
    "term_months": 20
   },
   "5996": {
@@ -1717,6 +1844,7 @@
     "базовая": 1
    },
    "programs": 1,
+   "term_deadline_programs": 1,
    "term_months": 33,
    "to_mortgage": true
   },
@@ -1730,6 +1858,7 @@
     "базовая": 8
    },
    "programs": 8,
+   "term_deadline_programs": 0,
    "term_months": 36,
    "to_mortgage": true
   },
@@ -1750,6 +1879,7 @@
     "скидка": 1
    },
    "programs": 4,
+   "term_deadline_programs": 3,
    "term_months": 42,
    "to_mortgage": true
   },
@@ -1763,6 +1893,7 @@
     "скидка": 1
    },
    "programs": 1,
+   "term_deadline_programs": 0,
    "to_mortgage": true
   },
   "6043": {
@@ -1775,6 +1906,7 @@
     "скидка": 1
    },
    "programs": 1,
+   "term_deadline_programs": 0,
    "term_months": 21,
    "to_mortgage": true
   },
@@ -1787,6 +1919,7 @@
     "базовая": 1
    },
    "programs": 2,
+   "term_deadline_programs": 0,
    "term_months": 5,
    "to_mortgage": true
   },
@@ -1800,6 +1933,7 @@
     "базовая": 1
    },
    "programs": 1,
+   "term_deadline_programs": 0,
    "term_months": 24,
    "to_mortgage": true
   },
@@ -1814,6 +1948,7 @@
     "скидка": 3
    },
    "programs": 4,
+   "term_deadline_programs": 4,
    "term_months": 30,
    "to_mortgage": true
   },
@@ -1828,6 +1963,7 @@
     "скидка": 1
    },
    "programs": 2,
+   "term_deadline_programs": 0,
    "term_months": 24,
    "to_mortgage": true
   },
@@ -1842,6 +1978,7 @@
     "удорожание": 1
    },
    "programs": 2,
+   "term_deadline_programs": 0,
    "term_months": 2,
    "to_mortgage": true
   },
@@ -1856,6 +1993,7 @@
     "скидка": 18
    },
    "programs": 19,
+   "term_deadline_programs": 0,
    "term_months": 24,
    "to_mortgage": true
   },
@@ -1869,6 +2007,7 @@
     "скидка": 3
    },
    "programs": 3,
+   "term_deadline_programs": 0,
    "term_months": 24,
    "to_mortgage": true
   },
@@ -1882,6 +2021,7 @@
     "базовая": 4
    },
    "programs": 4,
+   "term_deadline_programs": 0,
    "to_mortgage": true
   },
   "6159": {
@@ -1894,6 +2034,7 @@
     "скидка": 2
    },
    "programs": 2,
+   "term_deadline_programs": 0,
    "term_months": 24,
    "to_mortgage": true
   },
@@ -1908,6 +2049,7 @@
     "скидка": 5
    },
    "programs": 8,
+   "term_deadline_programs": 0,
    "term_months": 60,
    "to_mortgage": true
   },
@@ -1921,6 +2063,7 @@
     "базовая": 1
    },
    "programs": 1,
+   "term_deadline_programs": 0,
    "term_months": 12,
    "to_mortgage": true
   },
@@ -1934,6 +2077,7 @@
     "базовая": 5
    },
    "programs": 5,
+   "term_deadline_programs": 0,
    "term_months": 36
   },
   "6243": {
@@ -1947,6 +2091,7 @@
     "удорожание": 6
    },
    "programs": 7,
+   "term_deadline_programs": 0,
    "term_months": 30,
    "to_mortgage": true
   },
@@ -1961,6 +2106,7 @@
     "скидка": 1
    },
    "programs": 2,
+   "term_deadline_programs": 0,
    "term_months": 24,
    "to_mortgage": true
   },
@@ -1974,6 +2120,7 @@
     "базовая": 3
    },
    "programs": 3,
+   "term_deadline_programs": 0,
    "term_months": 30,
    "to_mortgage": true
   },
@@ -1987,6 +2134,7 @@
     "скидка": 4
    },
    "programs": 4,
+   "term_deadline_programs": 0,
    "term_months": 36,
    "to_mortgage": true
   },
@@ -2000,6 +2148,7 @@
     "базовая": 4
    },
    "programs": 4,
+   "term_deadline_programs": 0,
    "to_mortgage": true
   },
   "6334": {
@@ -2012,6 +2161,7 @@
     "скидка": 1
    },
    "programs": 1,
+   "term_deadline_programs": 0,
    "term_months": 30,
    "to_mortgage": true
   },
@@ -2025,6 +2175,7 @@
     "базовая": 1
    },
    "programs": 1,
+   "term_deadline_programs": 0,
    "term_months": 24,
    "to_mortgage": true
   },
@@ -2038,6 +2189,7 @@
     "удорожание": 1
    },
    "programs": 1,
+   "term_deadline_programs": 0,
    "term_months": 30,
    "to_mortgage": true
   },
@@ -2051,6 +2203,7 @@
     "базовая": 2
    },
    "programs": 2,
+   "term_deadline_programs": 0,
    "to_mortgage": true
   },
   "764": {
@@ -2064,6 +2217,7 @@
     "удорожание": 1
    },
    "programs": 2,
+   "term_deadline_programs": 1,
    "term_months": 12,
    "to_mortgage": true
   },
@@ -2077,6 +2231,7 @@
     "скидка": 1
    },
    "programs": 1,
+   "term_deadline_programs": 0,
    "term_months": 9,
    "to_mortgage": true
   }

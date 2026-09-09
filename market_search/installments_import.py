@@ -147,6 +147,18 @@ def down_payment_pct(value: Any) -> float | None:
     return round(number * 100, 1)
 
 
+def term_is_deadline(value: Any) -> bool:
+    """Срок задан календарной датой, а не длиной от сделки.
+
+    Разница не косметическая: «до 31.12.2027» тает каждый месяц — сегодня это
+    год с лишним, летом будет полгода, — а «2 года» отсчитывается от сделки и
+    не тает. По своду так живёт треть программ (331 из 1024), и в рекламе обе
+    формы выглядят одинаково.
+    """
+    text = str(value or "").strip().casefold()
+    return bool(text) and bool(re.search(r"\d{1,2}\.\d{1,2}\.\d{4}", text))
+
+
 def term_months(value: Any, *, today: datetime.date | None = None) -> int | None:
     """Срок рассрочки в месяцах.
 
@@ -226,6 +238,7 @@ def read_programs(path: Path, *, today: datetime.date | None = None) -> list[dic
                 "has_installment": yes_no(value(COL_HAS)),
                 "down_payment_pct": down_payment_pct(value(COL_DOWN)),
                 "term_months": term_months(value(COL_TERM), today=today),
+                "term_is_deadline": term_is_deadline(value(COL_TERM)),
                 "price_term": price_term(value(COL_PRICE)),
                 "keys_before_payment": yes_no(value(COL_KEYS)),
                 "to_mortgage": yes_no(value(COL_MORTGAGE)),
@@ -262,6 +275,11 @@ def _fold_programs(programs: Iterable[dict[str, Any]]) -> dict[str, Any]:
         out["price_terms"] = {
             term: price_terms.count(term) for term in sorted(set(price_terms))
         }
+    dated = [p for p in offered if p.get("term_is_deadline")]
+    if offered:
+        # «Все программы жёсткой датой» и «часть» — разные ответы: у первого
+        # срок тает целиком, у второго покупателю есть что выбрать.
+        out["term_deadline_programs"] = len(dated)
     if any(p.get("keys_before_payment") for p in offered):
         out["keys_before_payment"] = True
     elif offered and all(p.get("keys_before_payment") is False for p in offered):

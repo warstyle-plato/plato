@@ -3262,6 +3262,49 @@ const NOTE_NEEDS={
   bank:'плана банка',
   escrow:'листа «КРЕДИТЫ» книги финмодели',
 };
+// Рассрочка у нас и у соседей. Ничего не считает: сервер отдаёт готовое, и
+// второй счёт той же величины однажды разошёлся бы с вопросом Платона.
+//
+// Соседи здесь — ПО РАЙОНУ справочника, и это другой набор, чем выборка отчёта
+// о рынке (там радиус и класс). Правило приезжает вместе с числами и стоит под
+// таблицей: два разных набора под одним словом «соседи» читались бы как один.
+function salesTermsBlock(d){
+  const t=d.market_terms||{}, mine=t.ours||{};
+  const peers=t.peers||[];
+  // Свода нет вовсе — раздела нет; свод есть, а про проект молчит — это
+  // названная причина, а не пустая таблица.
+  if(mine.installment===undefined&&!peers.length)
+    return t.missing?`<div class="muted">${esc(t.missing)}</div>`:'';
+  const priceTerms=x=>{const p=x.installment_price_terms||{};
+    const keys=Object.keys(p); return keys.length?keys.map(k=>k+' '+num(p[k])).join(', '):'—'};
+  const yesNo=v=>v===undefined||v===null?'—':(v?'да':'нет');
+  const row=(name, x, own)=>[
+    (own?'<b>'+esc(name)+'</b>':esc(name)),
+    x.installment===false?'нет':(x.installment_down_payment_pct===undefined?'—'
+      :num(x.installment_down_payment_pct,1)+'%'),
+    x.installment_term_months===undefined?'—':num(x.installment_term_months),
+    // «Жёсткой датой» — не украшение: такой срок тает каждый месяц, а в
+    // рекламе выглядит как обычный.
+    x.installment_term_deadline_programs===undefined?'—'
+      :num(x.installment_term_deadline_programs)+' из '+num(x.installment_programs),
+    priceTerms(x),
+    yesNo(x.installment_keys_before_payment)];
+  const rows=[];
+  if(mine.installment!==undefined) rows.push(row(d.project||'наш проект', mine, true));
+  peers.forEach(p=>rows.push(row(p.name, p, false)));
+  const foot=[];
+  if(t.total!==undefined)
+    foot.push(`Соседи — ${esc(t.peers_rule||'по району')}`
+      +`${t.district?' («'+esc(t.district)+'»)':''}: условия известны у ${num(t.known)} из ${num(t.total)}.`);
+  if((t.unknown||[]).length)
+    foot.push(`Условий нет у: ${t.unknown.map(esc).join(', ')} — это «не знаем», `
+      +`а не «рассрочки не дают».`);
+  if(t.source) foot.push(`Источник: ${esc(t.source)}${t.saved_at?', срез '+esc(t.saved_at):''}.`);
+  if(t.missing) foot.push(esc(t.missing));
+  return salesTable(['Проект','ПВ','Срок, мес.','Программ жёсткой датой','Цена','Ключи до оплаты'], rows)
+    +`<div class="muted" style="font-size:12.5px;margin-top:6px">${foot.join(' ')}</div>`;
+}
+
 function salesNote(d, key){
   const text=(d.conclusions||{})[key];
   if(text) return `<div class="sumup">${esc(text)}</div>`;
@@ -3429,6 +3472,11 @@ function renderSales(d){
     salesEscrowBlock(d), salesNote(d,'escrow'));
 
   html+=salesSection('sb-ch','Каналы продаж', salesChannelsBlock(d), salesNote(d,'channels'));
+
+  // Условия рынка: чем сосед торгует помимо цены. Посчитанное на сервере, но
+  // не показанное на экране, неотличимо от непосчитанного, — а раздел уезжает
+  // в вопрос Платону, и человек обязан видеть то же, что и он.
+  html+=salesSection('sb-terms','Рассрочка: мы и соседи', salesTermsBlock(d));
 
   // Отдел продаж — после каналов и до расторжений: сначала чем и как продавали,
   // потом что говорили в переговорной, потом что сорвалось.
@@ -3608,6 +3656,14 @@ const SALES_ASKS=[
   {chip:'Мы идём по плану?',
    text:'Сравни факт с планом нашей финмодели и с планом банка: где расхождение, '
      +'насколько велико и чем оно объясняется по имеющимся числам.'},
+  {chip:'Предложи акции',
+   text:'Предложи две-три акционные программы, чтобы поднять продажи. Опирайся '
+     +'на то, что вымывается и что копится в витрине, на воронку и на условия '
+     +'соседей из раздела «условия рынка». По каждой программе скажи: кому она '
+     +'адресована, что именно меняется в условиях, чем она отличается от того, '
+     +'что уже дают соседи, и чем рискуем. Насколько акция поднимет темп, в своде '
+     +'не измерено ничем — не выдумывай это число, а назови его неизвестным. '
+     +'Числа не пересчитывай.'},
   {chip:'Что делать в этом месяце?',
    text:'Назови три действия на ближайший месяц, каждое — со ссылкой на число из свода.'},
 ];
@@ -3725,6 +3781,38 @@ function salesDigest(d, limit){
     term.push(`РАСТОРЖЕНИЙ: ${d.terminated.length}, возвращено с эскроу ${num(back/1e6,1)} млн ₽`);
   }
   add('расторжения', term);
+  // Условия рынка: наша рассрочка и рассрочка соседей по району. Витрину
+  // двигает не только прайс, и предложение по акции без этой половины
+  // строится на одной. Числа считает сервер (свод рассрочек), здесь строки.
+  const mt=d.market_terms||{}, mine=mt.ours||{};
+  const termLines=[];
+  const terms=t=>{const p=t.installment_price_terms||{};
+    return Object.keys(p).map(k=>k+' '+num(p[k])).join(', ')||'—'};
+  const one=(who,t)=>`${who}: ПВ ${t.installment_down_payment_pct===undefined?'—'
+      :num(t.installment_down_payment_pct,1)+'%'}`
+    +`, срок ${t.installment_term_months===undefined?'—':num(t.installment_term_months)+' мес.'}`
+    +`${t.installment_term_deadline_programs?' (из них '+num(t.installment_term_deadline_programs)
+        +' программ жёсткой датой — такой срок тает)':''}`
+    +`, программ ${num(t.installment_programs)}, цена: ${terms(t)}`
+    +`, ключи до полной оплаты ${t.installment_keys_before_payment===undefined?'—'
+        :(t.installment_keys_before_payment?'да':'нет')}`;
+  if(mine.installment===true) termLines.push('НАША РАССРОЧКА — '+one('мы', mine));
+  else if(mine.installment===false) termLines.push('НАША РАССРОЧКА: свод говорит, что её нет.');
+  (mt.peers||[]).forEach(p=>{
+    if(p.installment) termLines.push('РАССРОЧКА СОСЕДА — '+one(p.name, p));
+    else termLines.push(`РАССРОЧКА СОСЕДА ${p.name}: свод говорит, что её нет.`);
+  });
+  if(termLines.length||mt.missing){
+    // Охват и правило отбора стоят В САМОМ разделе: «соседи» без этого
+    // читаются как выборка отчёта о рынке, а это другой набор.
+    termLines.unshift(`УСЛОВИЯ РЫНКА (${(mt.source||'свод рассрочек')}`
+      +`${mt.saved_at?', срез '+mt.saved_at:''}; ${(mt.peers_rule||'')}`
+      +`${mt.district?'; район '+mt.district:''}`
+      +`${mt.total?'; условия известны у '+num(mt.known)+' соседей из '+num(mt.total):''}). `
+      +`У кого условий нет — это «не знаем», а не «рассрочки не дают».`);
+    if(mt.missing) termLines.push('НЕ ЗНАЕМ ПРО РАССРОЧКУ: '+mt.missing);
+  }
+  add('условия рынка', termLines, 8);
   // Чат отдела продаж отвечает на то, чего в CRM нет: что человек говорил на
   // встрече и до чего дошёл разговор. Числа считает сервер, здесь только строки.
   //
@@ -3790,7 +3878,7 @@ function salesDigest(d, limit){
   // же «почему не покупают», только числами витрины, и вытеснять их новой
   // темой значит менять один ответ на другой, а не добавлять.
   const ORDER=['выводы','не прочитано','чат: воронка от встреч','оплата','каналы',
-    'пул и вымывание','чат: о чём говорят','размерность','продукты',
+    'пул и вымывание','условия рынка','чат: о чём говорят','размерность','продукты',
     'воронка обращений','план ФМ','план банка','расторжения','динамика'];
   const rank=name=>(ORDER.indexOf(name)+1)||99;
   groups.sort((a,b)=>rank(a.name)-rank(b.name));
