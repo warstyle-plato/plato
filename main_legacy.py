@@ -76,7 +76,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.22.91"
+VERSION = "0.22.92"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -1660,6 +1660,41 @@ def social_area_per_place(inputs: dict[str, Any], kind: str) -> float:
     if field > 0:
         return field
     return float(moscow_social_area_per_place(kind, places) or 0.0)
+
+
+def social_tep_row(kind: str, places: float, inputs: dict[str, Any]) -> dict[str, float]:
+    """Строка ТЭП соцобъекта по числу мест — один ответ на все поверхности.
+
+    Площадь считает объявленный один раз `social_area_per_place`, ГНС — та же
+    пропорция общей к наземной, что на странице. Счёт этот жил в двух местах
+    (свод очередей и умолчание `TEP_DEFAULT`), и второе отстало: там стояли
+    литералом 3000 м² на 250 мест, то есть 12 м²/место — ставка, снятая
+    03.09.2026 как «ниже городского минимума в любой ёмкости». `DEFAULT_INPUTS`
+    тогда поправили до 18, а строку ТЭП забыли, и один садик получал 3000 м² в
+    одиночном расчёте против 4500 в своде очередей.
+
+    Передаваемая равна всей площади: соцобъект уходит городу целиком.
+    """
+    count = float(places or 0.0)
+    area = count * social_area_per_place(inputs, kind)
+    share = float((TEP_RATIOS.get("apartments") or {}).get("total_of_gns") or 0.9)
+    return {
+        "gns": area / share if area > 0 and share > 0 else 0.0,
+        "total_area": area, "useful": 0.0, "saleable": 0.0,
+        "transfer": area, "units": count,
+    }
+
+
+# Умолчание строки ТЭП считается тем же ответом, а не пишется литералом: копию
+# негде обновлять, потому что копии нет. Страница переписывает эти строки
+# первым же `syncTep`, поэтому на экране расхождения не видно вовсе — а прямые
+# вызовы `calculate` (скрининг КРТ, пресеты, присланная ссылка, API) переписывать
+# их некому, и там садик считался по снятой ставке с нулевой ГНС.
+for _social_kind, (_social_places_key, _, _) in SOCIAL_TEP_FIELDS.items():
+    if _social_kind in TEP_DEFAULT:
+        TEP_DEFAULT[_social_kind].update(social_tep_row(
+            _social_kind, DEFAULT_INPUTS.get(_social_places_key) or 0.0, DEFAULT_INPUTS))
+del _social_kind, _social_places_key
 
 
 def build_freeform_tep(text: str, raw_values: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -20806,7 +20841,16 @@ def _plato_merge_management_and_smr(
                            "label": "Управление проектом · с техзаказчиком и надзором",
                            "value": share})
 
-    gns = sum(float((tep.get(key) or {}).get("gns") or 0.0) for key in tep)
+    # Делитель берут оттуда же, откуда числитель. СМР ядра посчитан на
+    # `core_above_gns` и `core_under_gns`; ГНС ВСЕХ строк ТЭП сюда не годится —
+    # там же садик, школа, офисы и ОСЗ, которых эта статья не строит. Пока у
+    # них у всех ГНС стоял нулём, две суммы совпадали и ошибки не было видно:
+    # с включёнными офисами ставка выходила 170,9 при обеих заданных 190, то
+    # есть занижалась ровно на чужие метры. Вылезло это, когда у соцобъекта
+    # умолчания ГНС перестал быть нулём.
+    tep_totals = result.get("tep") or {}
+    gns = (float(tep_totals.get("core_above_gns") or 0.0)
+           + float(tep_totals.get("core_under_gns") or 0.0))
     smr = amount("main_above") + amount("main_under")
     if gns > 0 and smr > 0:
         rows = rows_by_label.get(_plato_normalize("Основное строительство ЖК")) or []
@@ -29546,16 +29590,12 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
             for typ, label, tep_key in (("kindergarten","ДОО","kindergarten"),
                                         ("school","СОШ","school"),
                                         ("clinic","Поликлиника","clinic")):
-                per_place = social_area_per_place(x_master, typ)
-                area = sums[typ] * per_place
+                row = social_tep_row(typ, sums[typ], x_master)
+                area = row["total_area"]
                 # ГНС соцобъекта — та же пропорция общей к наземной, что на
                 # странице. Ноль здесь занижал бы строительный объём очереди
                 # ровно на объект, который она строит.
-                share = float((TEP_RATIOS.get("apartments") or {}).get("total_of_gns") or 0.9)
-                p_tep[tep_key] = {**p_tep.get(tep_key,{"label":label}),
-                    "gns": area/share if area>0 and share>0 else 0.0,
-                    "total_area":area,"useful":0.0,"saleable":0.0,
-                    "transfer":area,"units":sums[typ]}
+                p_tep[tep_key] = {**p_tep.get(tep_key,{"label":label}), **row}
                 # Площадь очереди уходит и во вводные: книга и выгрузка читают
                 # её оттуда, и оставленная от проекта она показала бы в каждой
                 # очереди метры ВСЕХ садиков разом.
