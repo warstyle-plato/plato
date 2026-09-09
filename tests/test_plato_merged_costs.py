@@ -70,15 +70,18 @@ def test_management_carries_the_technical_supervision():
 
 
 def test_the_rate_covers_both_construction_parts():
-    """Ставки наземной и подземной части взвешиваются по ГНС."""
+    """Ставки наземной и подземной части взвешиваются по ГНС ЯДРА.
+
+    Делитель берут оттуда же, откуда числитель: СМР посчитан на
+    `core_above_gns` и `core_under_gns`. Прежде здесь стояла сумма ГНС ВСЕХ
+    строк ТЭП — то есть проверка повторяла за реализацией её же ошибку и
+    зеленела на ней.
+    """
     values, _, inputs = exported(main_above_th_per_sqm=190, main_under_th_per_sqm=120)
     capex = engine(inputs)
-    # Делитель берётся оттуда же, откуда числитель: СМР ядра посчитан на
-    # `core_above_gns` и `core_under_gns`. Повторить здесь сумму по списку
-    # продуктов значило бы проверять себя — тот же ответ вторым способом.
-    result = core.calculate(core.CalcRequest(inputs=inputs, tep=core.TEP_DEFAULT, rates=[]))
-    gns = (float(result["tep"]["core_above_gns"])
-           + float(result["tep"]["core_under_gns"]))
+    tep = core.calculate(core.CalcRequest(
+        inputs=inputs, tep=core.TEP_DEFAULT, rates=[]))["tep"]
+    gns = float(tep["core_above_gns"]) + float(tep["core_under_gns"])
     expected = (float(capex["main_above"]) + float(capex["main_under"])) / gns / 1000
 
     assert values["main_above_th_per_sqm"] == pytest.approx(expected, abs=1e-6)
@@ -90,6 +93,38 @@ def test_equal_rates_stay_the_same():
     values, _, _ = exported(main_above_th_per_sqm=190, main_under_th_per_sqm=190)
 
     assert values["main_above_th_per_sqm"] == pytest.approx(190, abs=0.01)
+
+
+def test_equal_rates_survive_a_building_the_article_does_not_build():
+    """Та самая ветка, до которой не доходил ни один прогон.
+
+    Пока у соцобъектов и отдельно стоящих ГНС в умолчании стоял нулём, сумма
+    «ГНС всех строк» случайно совпадала с ГНС ядра, и делитель выглядел
+    верным. Стоило включить офисы — и ставка выходила 170,9 при обеих
+    заданных 190: занижена ровно на чужие метры, которых статья «Основное
+    строительство ЖК» не строит.
+
+    Предохранитель: офисы обязаны нести свою ГНС, иначе проверять нечего.
+    """
+    inputs = dict(core.DEFAULT_INPUTS)
+    inputs.update(purchase_price_mln=700, main_above_th_per_sqm=190,
+                  main_under_th_per_sqm=190, offices_enabled=True,
+                  offices_gba_sqm=18800)
+    tep = {key: dict(value) for key, value in core.TEP_DEFAULT.items()}
+    tep["offices"] = {**tep["offices"], "gns": 20000.0, "total_area": 18800.0,
+                      "saleable": 18800.0}
+    assert float(tep["offices"]["gns"]) > 0, "офисы должны нести метры"
+
+    data, _ = core.fill_plato_template(inputs, tep, project_name="Проверка")
+    sheet = openpyxl.load_workbook(io.BytesIO(data))["Вводные"]
+    rate = None
+    for row in range(1, sheet.max_row + 1):
+        if str(sheet.cell(row, 2).value or "").strip() == "Основное строительство ЖК":
+            rate = float(sheet.cell(row, 4).value)
+            break
+    assert rate is not None, "строки «Основное строительство ЖК» нет в книге"
+    assert rate == pytest.approx(190, abs=0.01), (
+        f"{rate:.2f} вместо 190 — в делитель попали чужие метры")
 
 
 def test_the_scenario_switch_survives():

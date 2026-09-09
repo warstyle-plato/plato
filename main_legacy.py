@@ -76,7 +76,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.22.95"
+VERSION = "0.22.96"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -1814,6 +1814,32 @@ def apply_social_tep(inputs: dict[str, Any], tep: dict[str, Any]) -> None:
 # считал другое, и подвал таблицы расходился с отчётом на 5000 м². Правится
 # той же функцией, а не вторым набором чисел: копию негде обновлять.
 apply_social_tep(DEFAULT_INPUTS, TEP_DEFAULT)
+
+
+def social_tep_row(kind: str, places: float, inputs: dict[str, Any]) -> dict[str, float]:
+    """Строка ТЭП соцобъекта по числу мест — один ответ на все поверхности.
+
+    Площадь считает объявленный один раз `social_area_per_place`, ГНС —
+    `social_object_gns`: у обоих ответ один, второй разошёлся бы молча.
+    Приоритет по полю (руками > выгрузка > норматив) знает `apply_social_tep`;
+    сюда места приходят готовым числом — суммой очереди, — и выбирать не из
+    чего. Счёт этот жил в двух местах
+    (свод очередей и умолчание `TEP_DEFAULT`), и второе отстало: там стояли
+    литералом 3000 м² на 250 мест, то есть 12 м²/место — ставка, снятая
+    03.09.2026 как «ниже городского минимума в любой ёмкости». `DEFAULT_INPUTS`
+    тогда поправили до 18, а строку ТЭП забыли, и один садик получал 3000 м² в
+    одиночном расчёте против 4500 в своде очередей.
+
+    Передаваемая равна всей площади: соцобъект уходит городу целиком.
+    """
+    count = float(places or 0.0)
+    area = count * social_area_per_place(inputs, kind)
+    return {
+        "gns": social_object_gns(inputs, kind, area),
+        "total_area": area, "useful": 0.0, "saleable": 0.0,
+        "transfer": area, "units": count,
+    }
+
 
 
 def build_freeform_tep(text: str, raw_values: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -15733,6 +15759,24 @@ def _v4_column_letter(number: int) -> str:
     return letters
 
 
+# Ширина помесячной сетки книги объявлена ЗДЕСЬ и больше нигде. Прежде тот же
+# факт стоял в трёх видах — этой константой, числом `_V4_CAPEX_MONTH_COLUMNS`
+# и одиннадцатью литералами `$DS$` внутри f-строк, — и протянуть книгу со 120
+# месяцев до 180 значило найти все три копии. Цена промаха измерена: на четырёх
+# очередях с шагом 36 горизонт движка 163 месяца, а книга обрезала его до 120 и
+# собиралась МОЛЧА — CAPEX 36 769 против 49 085 млн ₽, EBITDA 190 против 2 701.
+_V4_CF_FIRST_COL = 4                 # D
+_V4_CF_LAST_COL = 183                # GA — 180 месяцев
+_V4_LAST_COLUMN = _v4_column_letter(_V4_CF_LAST_COL)
+_V4_MONTH_COLUMNS = _V4_CF_LAST_COL - _V4_CF_FIRST_COL + 1
+
+
+def _v4_month_span(row: int, sheet: str = "") -> str:
+    """Диапазон «весь горизонт» по строке листа: `$D$37:$GA$37`."""
+    prefix = f"'{sheet}'!" if sheet else ""
+    return f"{prefix}$D${row}:${_V4_LAST_COLUMN}${row}"
+
+
 def _v4_cell_formula(xml: str, coord: str) -> str | None:
     """Формула ячейки как есть. Нет ячейки или нет формулы — `None`.
 
@@ -16118,7 +16162,7 @@ _V4_CAPEX_EXTRA_ROWS = (
 )
 _V4_CAPEX_TOTAL_ROW = 32
 _V4_CAPEX_RESERVE_ROW = 30
-_V4_CAPEX_MONTH_COLUMNS = 120  # D..DS, как у шаблона
+_V4_CAPEX_MONTH_COLUMNS = _V4_MONTH_COLUMNS
 
 
 def _v4_apply_demolition_rows(xml: str, missing: list[str]) -> str:
@@ -16403,14 +16447,14 @@ def _v4_apply_management_profile(xml: str, missing: list[str]) -> str:
         top, bottom = first + base, last + base
         drop = [row + base for row in excluded]
         pattern = re.compile(
-            r"SUM\((?P<col>[A-Z]{1,2})%d:(?P=col)%d\)/SUM\(\$D\$%d:\$DS\$%d\)"
-            % (top, bottom, top, bottom))
+            r"SUM\((?P<col>[A-Z]{1,2})%d:(?P=col)%d\)/SUM\(\$D\$%d:\$%s\$%d\)"
+            % (top, bottom, top, _V4_LAST_COLUMN, bottom))
         def replace(match: "re.Match[str]") -> str:
             column = match.group("col")
             month = (f"(SUM({column}{top}:{column}{bottom})-"
                      + "-".join(f"{column}{row}" for row in drop) + ")")
-            total = (f"(SUM($D${top}:$DS${bottom})-"
-                     + "-".join(f"SUM($D${row}:$DS${row})" for row in drop) + ")")
+            total = (f"(SUM($D${top}:${_V4_LAST_COLUMN}${bottom})-"
+                     + "-".join(f"SUM({_v4_month_span(row)})" for row in drop) + ")")
             return f"{month}/{total}"
         xml, count = pattern.subn(replace, xml)
         if not count:
@@ -16433,8 +16477,6 @@ _V4_CARRY_PASSED_ROW = 65            # ПФ — долг передан след
 # Строка 29 листов CF в шаблоне пуста — ряд встаёт, не сдвигая ссылок.
 _V4_RVE_UNPAID_ROW = 29
 _V4_CARRY_FLAG_CELL = "B92"          # признак на «Вводных»
-_V4_CF_FIRST_COL = 4                 # D
-_V4_CF_LAST_COL = 123                # DS
 _V4_CF_QUEUE_ENABLED_ROW = 88        # 'Вводные'!B88 — очередь 1 включена
 _V4_BRIDGE_FEE_ROW = 57              # база комиссии выдачи = лимит БРИДЖа
 
@@ -17372,23 +17414,24 @@ def _v4_tax_share_by_year(xml: str, missing: list[str]) -> str:
                  + "".join(_v4_head_cell(f"{_v4_column_letter(index + 1)}{header}", title)
                            for index, title in enumerate(titles))
                  + "</x:row>")
-    grid = f"$D${years}:$DS${years}"
+    grid = _v4_month_span(years)
     first = header + 1
     last = first + _V4_TAX_YEARS_SPAN - 1
     for offset in range(_V4_TAX_YEARS_SPAN):
         row = first + offset
         cells = [formula(f"A{row}", f"$B${gate}" if offset == 0 else f"A{row - 1}+1"),
-                 formula(f"B{row}", f"SUMIF({grid},$A{row},'CF'!$D$37:$DS$37)")]
+                 formula(f"B{row}", f"SUMIF({grid},$A{row},{_v4_month_span(37, 'CF')})")]
         for index, column in enumerate(_V4_TAX_QUEUE_COLUMNS):
             cells.append(formula(
                 f"{column}{row}",
-                f"MAX(SUMIF({grid},$A{row},'CF_{index + 1}'!$D$22:$DS$22),0)"))
+                f"MAX(SUMIF({grid},$A{row},"
+                f"{_v4_month_span(22, f'CF_{index + 1}')}),0)"))
         span = f"{_V4_TAX_QUEUE_COLUMNS[0]}{row}:{_V4_TAX_QUEUE_COLUMNS[-1]}{row}"
         cells.append(formula(f"G{row}", f"SUM({span})"))
         for index, column in enumerate(_V4_TAX_MONTHLY_COLUMNS):
             cells.append(formula(
                 f"{column}{row}",
-                f"SUMIF({grid},$A{row},$D${monthly + index}:$DS${monthly + index})"))
+                f"SUMIF({grid},$A{row},{_v4_month_span(monthly + index)})"))
         reserve = (f"{_V4_TAX_MONTHLY_COLUMNS[0]}{row}:"
                    f"{_V4_TAX_MONTHLY_COLUMNS[-1]}{row}")
         cells.append(formula(f"{_V4_TAX_RESERVE_TOTAL}{row}", f"SUM({reserve})"))
@@ -17430,8 +17473,9 @@ def _v4_tax_share_by_year(xml: str, missing: list[str]) -> str:
     # под двумя разными мерами — это два ответа на один вопрос.
     for index, column in enumerate(_V4_TAX_SHARE_COLUMNS, start=1):
         row = 29 + index
-        old = f"MAX(SUM('CF_{index}'!$D$22:$DS$22),0)"
-        alt = f"SUMIF('CF_{index}'!$D$22:$DS$22,\">0\")"
+        span = _v4_month_span(22, f"CF_{index}")
+        old = f"MAX(SUM({span}),0)"
+        alt = f"SUMIF({span},\">0\")"
         source = f"{column}{total}"
         for candidate in (old, alt):
             encoded = xml_escape(candidate)
@@ -17574,7 +17618,7 @@ def _v4_use_bridge_base_row(xml: str, phase: int, missing: list[str]) -> str:
     old = (f"('CAPEX'!$B${purchase}+'CAPEX'!$B${design_p}+'CAPEX'!$B${design_rd}"
            f"+IF('Вводные'!$B$37=\"Денежная компенсация\",'CAPEX'!$B${social},"
            f"IF('Вводные'!$B$37=\"{SOCIAL_MODE_BOTH}\",{cash},0)))")
-    new = f"SUM('CAPEX'!$D${row}:$DS${row})"
+    new = f"SUM({_v4_month_span(row, 'CAPEX')})"
 
     def build(_column: str, body: str) -> str:
         return body.replace(old, new)
@@ -17601,8 +17645,8 @@ def _v4_apply_sports_tax_row(xml: str, phase: int, missing: list[str]) -> str:
     alloc_row = 96 + 8 * (phase - 1)
     sold = f"'Вводные'!$K${_V4_SPORTS_DISPOSITION_ROW}=\"{_V4_SPORTS_SALE_WORD}\""
     mine = f"'ОБЪЕКТЫ'!$B$126={queue}"
-    pool_old = f"(SUM($D$20:$DS$20)-'ОБЪЕКТЫ'!$B${alloc_row})"
-    pool_new = (f"(SUM($D$20:$DS$20)-'ОБЪЕКТЫ'!$B${alloc_row}"
+    pool_old = f"(SUM({_v4_month_span(20)})-'ОБЪЕКТЫ'!$B${alloc_row})"
+    pool_new = (f"(SUM({_v4_month_span(20)})-'ОБЪЕКТЫ'!$B${alloc_row}"
                 f"+IF({sold},0,IF({mine},'ОБЪЕКТЫ'!$B$146,0)))")
 
     def build(column: str, body: str) -> str:
@@ -17623,6 +17667,102 @@ def _v4_apply_sports_tax_row(xml: str, phase: int, missing: list[str]) -> str:
     xml, count = _v4_rewrite_row_formulas(xml, 22, "'ОБЪЕКТЫ'!$B$64=", build)
     if count < 100:
         missing.append(f"CF_{phase}: строка налоговой базы не знает о ФОКе ({count})")
+    return xml
+
+
+_V4_ACCRUAL_ROW = 58                 # Финансовые расходы месяца (начисление)
+
+
+def _v4_accrual_row_xml(row: int, label: str, formulas: dict[str, str]) -> str:
+    """Строка листа CF деньгами — стилями строк 53 и 57, ближайших соседей той
+    же природы: у них месяц стоит стилем 117, а подпись и итог идут без своего.
+    Свой формат посреди блока Excel показал бы чужим."""
+    cells = [
+        f'<x:c r="A{row}" t="inlineStr"><x:is><x:t>{xml_escape(label)}</x:t></x:is></x:c>',
+        f'<x:c r="B{row}"><x:f>SUM(D{row}:DS{row})</x:f></x:c>',
+        f'<x:c r="C{row}" t="str"><x:v>млн ₽</x:v></x:c>',
+    ]
+    for column in _v4_cf_columns():
+        cells.append(
+            f'<x:c r="{column}{row}" s="117">'
+            f"<x:f>{xml_escape(formulas[column])}</x:f></x:c>")
+    return f'<x:row r="{row}">' + "".join(cells) + "</x:row>"
+
+
+def _v4_apply_interest_accrual(xml: str, phase: int, missing: list[str]) -> str:
+    """Проценты уменьшают базу налога в месяце НАЧИСЛЕНИЯ (п. 8 ст. 272 НК).
+
+    Строка 53 «ПФ — уплата процентов и комиссий» отвечает на вопрос кассы, и
+    там она и остаётся: вклад капитала (49), распределение собственнику (50) и
+    проверка фондирования (63) считают деньги. А база налога (строка 22)
+    вычитала её же — то есть признавала расход в месяце ВЫПЛАТЫ, а платится в
+    этой модели всё разом в РВЭ. Пока очереди прибыльны, разницы нет; она
+    появляется на убыточной очереди, где половинное ограничение ст. 283
+    считает по годам и год признания решает, сколько убытка зачтётся.
+
+    Начисление собирается из строк, которые уже есть, а не считается второй
+    раз: проценты БРИДЖа (32) и их капитализация — та же величина, что растит
+    строку 37, — проценты ПФ (42), плата за лимит (43) и капитализация ПФ,
+    растящая строку 48. Гейты повторяют гейты этих строк слово в слово, иначе
+    начисленное за горизонт не сойдётся с уплаченным.
+
+    Капитализацию в базе не путать с капитализацией в ДОЛГЕ: та лимит ПФ не
+    выбирает (решение владельца 04.08.2026) и живёт отдельным обязательством —
+    здесь речь только о том, в каком месяце расход признан.
+    """
+    sheet = f"CF_{phase}"
+    columns = _v4_cf_columns()
+    row = _V4_ACCRUAL_ROW
+
+    formulas: dict[str, str] = {}
+    for index, column in enumerate(columns):
+        previous = columns[index - 1] if index else "C"
+        # Капитализация БРИДЖа — тем же условием, что у строки 37, и по ставке
+        # БРИДЖа: строка 37 берёт её оттуда же.
+        bridge_cap = (f"IF(AND({column}$3<$B$7,$B$5=1),"
+                      f"{previous}37*'Ставки'!{column}$6/12,0)")
+        # Капитализация ПФ живёт, пока копится строка 48: с РнС и по РВЭ
+        # включительно — в сам месяц РВЭ её начисляет строка 53, грубя
+        # накопленное на (1+ставка/12).
+        pf_cap = (f"IF(AND({column}$3>=$B$7,{column}$3<=$B$8),"
+                  f"{previous}48*{column}41/12,0)")
+        formulas[column] = (f"{column}32+{bridge_cap}"
+                            f"+{column}42+{column}43+{pf_cap}")
+
+    body = _v4_accrual_row_xml(row, "Финансовые расходы месяца (начисление)", formulas)
+    existing = re.search(r'<x:row r="%d"[^>]*>(.*?)</x:row>' % row, xml, re.S)
+    if not existing:
+        missing.append(f"{sheet}: строка {row} не найдена")
+        return xml
+    # «Занята» — это формула или число в МЕСЯЧНЫХ ячейках. Подпись и единица
+    # строки-разделителя наши: в шаблоне там пустая строка и знак «×».
+    taken = [column for column, cell in re.findall(
+        r'<x:c r="([A-Z]{1,3})%d"[^>]*>(.*?)</x:c>' % row, existing.group(1), re.S)
+        if column in set(columns) and ("<x:f>" in cell or "<x:v>" in cell)]
+    if taken:
+        missing.append(f"{sheet}: строка {row} занята ({taken[0]}{row})")
+        return xml
+    xml = xml[:existing.start()] + body + xml[existing.end():]
+
+    # База налога вычитает начисленное вместо уплаченного. Хвост формулы
+    # колонко-зависимый — «-D53-D57-D21» в колонке D и «-E53-E57-E21» в
+    # соседней: искать его строкой одной колонки значит не найти ни в одной,
+    # кроме первой.
+    changed = 0
+
+    def swap(column: str, formula: str) -> str:
+        nonlocal changed
+        tail = f"-{column}53-{column}57-{column}21"
+        if tail not in formula:
+            return formula
+        changed += 1
+        return formula.replace(tail, f"-{column}{row}-{column}57-{column}21")
+
+    xml, seen = _v4_rewrite_row_formulas(xml, 22, "'ОБЪЕКТЫ'!", swap)
+    if changed < len(columns):
+        missing.append(
+            f"{sheet}: база налога не отдала выплату процентов начислению "
+            f"({changed} из {len(columns)}, узнано {seen})")
     return xml
 
 
@@ -18419,6 +18559,12 @@ def _v4_finance_hints(bundle: dict[str, Any]) -> dict[str, Any]:
             "bridge_peak_by_phase": [float(finance.get("peak_bridge", 0.0)) / 1e6],
         }
     hints["parity"] = _v4_parity_targets(bundle.get("consolidated") or {})
+    # Горизонт движка — сколько месяцев он посчитал. Книга кончается своей
+    # колонкой, и всё, что за ней, она молча теряет: на четырёх очередях с
+    # шагом 36 это 43 месяца и −12,3 млрд ₽ CAPEX при собранном без единого
+    # слова файле. Обрезка обязана назваться, поэтому длина едет в подсказках.
+    hints["horizon_months"] = len(
+        (((bundle or {}).get("consolidated") or {}).get("finance") or {}).get("rows") or [])
     # Применён ли перенос — решает движок гейтом по общему LLCR, и книга этого
     # LLCR не знает. Полагаясь на одно намерение пользователя, она перенесла бы
     # долг там, где банк отказал, и показала бы очередь рассчитавшейся, пока
@@ -19022,35 +19168,39 @@ V4_REWRITTEN_FORMULA_ROWS: dict[str, tuple[tuple[int, ...], str]] = {
     ),
     "CF_1": (
         (
-        21, 22, 40, 41, 42, 43, 44, 46, 47, 57, 61,
+        21, 22, 40, 41, 42, 43, 44, 46, 47, 57, 58, 61,
         ),
         "Ставка ПФ по методике движка со ступенями, горизонт начисления, "
-        "признак закрытой линии, перенос долга между очередями и "
-        "кэш-свип "
+        "признак закрытой линии, перенос долга между очередями, "
+        "кэш-свип и признание процентов в месяце начисления "
+        "(_v4_apply_interest_accrual) "
     ),
     "CF_2": (
         (
-        21, 22, 40, 41, 42, 43, 44, 46, 47, 57, 61,
+        21, 22, 40, 41, 42, 43, 44, 46, 47, 57, 58, 61,
         ),
         "Ставка ПФ по методике движка со ступенями, горизонт "
         "начисления, признак закрытой линии, перенос долга между "
-        "очередями и кэш-свип "
+        "очередями, кэш-свип и признание процентов в месяце "
+        "начисления (_v4_apply_interest_accrual) "
     ),
     "CF_3": (
         (
-        21, 22, 40, 41, 42, 43, 44, 46, 47, 57, 61,
+        21, 22, 40, 41, 42, 43, 44, 46, 47, 57, 58, 61,
         ),
         "Ставка ПФ по методике движка со ступенями, горизонт "
         "начисления, признак закрытой линии, перенос долга между "
-        "очередями и кэш-свип "
+        "очередями, кэш-свип и признание процентов в месяце "
+        "начисления (_v4_apply_interest_accrual) "
     ),
     "CF_4": (
         (
-        21, 22, 40, 41, 42, 43, 44, 46, 47, 57, 61,
+        21, 22, 40, 41, 42, 43, 44, 46, 47, 57, 58, 61,
         ),
         "Ставка ПФ по методике движка со ступенями, горизонт "
         "начисления, признак закрытой линии, перенос долга между "
-        "очередями и кэш-свип "
+        "очередями, кэш-свип и признание процентов в месяце "
+        "начисления (_v4_apply_interest_accrual) "
     ),
     "ВРИ": (
         (
@@ -19201,6 +19351,18 @@ def build_project_workbook(
             # сошёлся». Причина уходит туда же, куда неопознанная формула.
             finance_hints = {}
             missing.append("контрольные числа движка: " + _error_location(exc))
+
+    # Сетка книги конечна, а горизонт движка — нет. Не влезло — это `missing`
+    # числами, а не молчание: обрезанная книга выглядит целой, и половина её
+    # показателей при этом верна (БРИДЖ живёт в первых колонках и сходится),
+    # то есть ошибка не выглядит ошибкой.
+    horizon = int((finance_hints or {}).get("horizon_months") or 0)
+    if horizon > _V4_MONTH_COLUMNS:
+        missing.append(
+            f"горизонт расчёта {horizon} мес. длиннее сетки книги "
+            f"({_V4_MONTH_COLUMNS} мес.): последние {horizon - _V4_MONTH_COLUMNS} "
+            f"в книгу не поместились. Протянуть сетку — "
+            f"scripts/widen_v4_horizon.py")
 
     # Статья «по объёму» стоит в phasing словом; числа посчитал движок и
     # отдал в подсказках. Книга берёт их оттуда — второго счёта долей нет.
@@ -19764,11 +19926,17 @@ def build_project_workbook(
             missing.append(f"{_name}: лист не найден")
             continue
         cf_sheet_paths[_name] = _path
-        cf_sheet_xml[_name] = _v4_apply_sports_tax_row(
-            _v4_use_bridge_base_row(
-                _v4_apply_cash_sweep(
-                    _v4_apply_debt_carry(
-                        source.read(_path).decode("utf-8"), _phase, _queue_count, missing),
+        # Начисление процентов идёт ПОСЛЕДНИМ: оно переводит базу налога со
+        # строки выплаты на свою, а до него ту же строку 22 правит признание
+        # ФОКа — по хвосту «-D53-D57-D21», которого после нас там уже нет.
+        cf_sheet_xml[_name] = _v4_apply_interest_accrual(
+            _v4_apply_sports_tax_row(
+                _v4_use_bridge_base_row(
+                    _v4_apply_cash_sweep(
+                        _v4_apply_debt_carry(
+                            source.read(_path).decode("utf-8"),
+                            _phase, _queue_count, missing),
+                        _phase, missing),
                     _phase, missing),
                 _phase, missing),
             _phase, missing)
@@ -26233,19 +26401,34 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
         for month, value in schedule.items():
             tax_margin_by_month[month] += value
 
-    # Financing deductions are recognized when paid. The bridge and PF setup
-    # fees are dated separately because they are not included in monthly rows.
+    # Проценты признаются на конец КАЖДОГО МЕСЯЦА, независимо от даты выплат
+    # (п. 8 ст. 272 НК). Прежде база вычитала УПЛАЧЕННОЕ — `interest_payment`, —
+    # а платится в этой модели всё разом в РВЭ: до раскрытия эскроу проценты
+    # отсрочены. То есть вычет уезжал на год-полтора вперёд от месяца, в
+    # котором расход возник, а остаток (проценты БРИДЖа, оплаченные капиталом
+    # на РнС) вообще доезжал до конца горизонта строкой сверки. Пока очереди
+    # прибыльны, разницы нет: база копится нарастающим итогом и всё равно
+    # доходит до налога. Она появляется там, где есть УБЫТОЧНАЯ очередь и год
+    # закрывается с убытком: половинное ограничение ст. 283 считает по годам, и
+    # год, в котором расход признан, решает, сколько убытка можно зачесть.
     #
-    # По п. 8 ст. 272 НК проценты признаются на конец КАЖДОГО МЕСЯЦА
-    # независимо от даты выплат, и здесь это пока не так. Переход на
-    # начисление написан и снят с этой ветки: он меняет налог там, где есть
-    # убыточная очередь (на проверочном проекте 890,9 → 922,3 млн ₽), а книга
-    # признаёт проценты строкой 53 листов CF, то есть по уплате. Методику
-    # меняют в двух местах, движок и книгу, одной правкой — иначе отчёт и
-    # книга скажут про один проект разное, и оба будут выглядеть верными.
+    # В начисление входит ровно то, из чего сложена стоимость финансирования:
+    # проценты БРИДЖа и их капитализация, проценты ПФ и их капитализация, плата
+    # за лимит. Капитализация — это проценты на отсроченные проценты, расход
+    # того же месяца; путать её с капитализацией в ДОЛГЕ нельзя: та лимит ПФ не
+    # выбирает (решение владельца 04.08.2026) и живёт отдельным обязательством,
+    # а здесь речь только о базе налога.
+    #
+    # Комиссии выдачи стоят своими датами: они и не в месячных строках.
     financing_deductions: dict[date, float] = defaultdict(float)
     for row in result["rows"]:
-        financing_deductions[d(row["month"])] += float(row.get("interest_payment", 0.0) or 0.0)
+        financing_deductions[d(row["month"])] += (
+            float(row.get("bridge_interest", 0.0) or 0.0)
+            + float(row.get("bridge_capitalization", 0.0) or 0.0)
+            + float(row.get("pf_interest", 0.0) or 0.0)
+            + float(row.get("pf_interest_capitalization", 0.0) or 0.0)
+            + float(row.get("limit_fee", 0.0) or 0.0)
+        )
     financing_deductions[project_start] += result["bridge_fee"]
     financing_deductions[permit] += result["pf_reservation_fee"]
 
@@ -28469,10 +28652,19 @@ def _aggregate_finance(results: list[dict[str, Any]],
 
 # Налог на прибыль: перенос убытка по ст. 283 НК.
 #
-# Убыток прошлых лет переносится бессрочно (десятилетний лимит снят с 2017
-# года), но уменьшить им базу можно НЕ БОЛЕЕ ЧЕМ НАПОЛОВИНУ — ограничение
-# продлено до конца 2030 года. Внутри одного года доходы и расходы сходятся
-# свободно: половинное правило касается только убытка ЗАКРЫТЫХ лет.
+# Убыток прошлых лет переносится БЕССРОЧНО — десятилетний лимит снят с 2017
+# года, и убыток расходуется столько лет, сколько нужно (подтверждено
+# владельцем 08.09.2026). Ограничение теперь не в сроке, а в доле: уменьшить
+# базу прошлым убытком можно НЕ БОЛЕЕ ЧЕМ НАПОЛОВИНУ, и половинное правило
+# продлено до конца 2030 года (владелец, 08.09.2026). Внутри одного года
+# доходы и расходы сходятся свободно: половина касается только убытка
+# ЗАКРЫТЫХ лет.
+#
+# Что будет после 2030 года, движок не гадает: половина применяется всегда,
+# без проверки года. Это допущение, и оно осторожное — налог выходит не ниже
+# должного. Цена его видна: на проекте с убыточным стартом и прибылью в
+# 2031-2033 это 2 203 млн против 137 при полном зачёте. Продлят правило ещё
+# раз или дадут ему истечь — решение владельца, а не догадка кода.
 #
 # Прежде движок вёл базу накопленной с начала проекта и гасил ею прибыль
 # целиком: это мягче закона — налог начинался позже, чем на самом деле.
@@ -29562,16 +29754,16 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
             for typ, label, tep_key in (("kindergarten","ДОО","kindergarten"),
                                         ("school","СОШ","school"),
                                         ("clinic","Поликлиника","clinic")):
+                # Норматив на место — ответ проекта (ступень РНГП идёт по
+                # ЕМКОСТИ), и он же считает площадь очереди: два ответа на
+                # «сколько метров на место» разошлись бы на разрезанном объекте.
                 per_place = social_area_per_place(x_master, typ)
-                area = sums[typ] * per_place
+                row = social_tep_row(typ, sums[typ], x_master)
+                area = row["total_area"]
                 # ГНС соцобъекта — та же пропорция общей к наземной, что на
                 # странице. Ноль здесь занижал бы строительный объём очереди
                 # ровно на объект, который она строит.
-                share = float((TEP_RATIOS.get("apartments") or {}).get("total_of_gns") or 0.9)
-                p_tep[tep_key] = {**p_tep.get(tep_key,{"label":label}),
-                    "gns": area/share if area>0 and share>0 else 0.0,
-                    "total_area":area,"useful":0.0,"saleable":0.0,
-                    "transfer":area,"units":sums[typ]}
+                p_tep[tep_key] = {**p_tep.get(tep_key,{"label":label}), **row}
                 # Площадь очереди уходит и во вводные: книга и выгрузка читают
                 # её оттуда, и оставленная от проекта она показала бы в каждой
                 # очереди метры ВСЕХ садиков разом.

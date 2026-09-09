@@ -143,7 +143,10 @@ def test_the_route_says_how_many_were_collapsed() -> None:
         krt=SimpleNamespace(
             catalogue=lambda **_: [],
             status=lambda: {"complete": True, "refreshing": False},
-            decisions=lambda: {
+            # Маршрут отдаёт разложению ТОТ список каталога, который уже
+            # прочитал сам: два чтения снимка ловят подмену файла фоновым
+            # обходом, и площадка встаёт строкой дважды.
+            decisions=lambda **_: {
                 "decisions": [
                     {"id": "265145220", "url": KOTLYAKOVO[0]["draft_decision_url"],
                      "address": KOTLYAKOVO[0]["name"], "published_at": 1645021704,
