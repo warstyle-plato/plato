@@ -126,8 +126,8 @@ def test_the_book_stops_accruals_and_declares_the_default():
 
     debt = float(evaluator.cell("CF_1", "B86"))
     assert debt > 0, "дефолтные вводные должны оставлять долг в книге"
-    assert float(evaluator.cell("CF_1", "DS47")) == pytest.approx(debt, rel=1e-6)
-    assert float(evaluator.cell("CF_1", "DS42")) == pytest.approx(0.0, abs=1e-9), \
+    assert float(evaluator.cell("CF_1", f"{core._V4_LAST_COLUMN}47")) == pytest.approx(debt, rel=1e-6)
+    assert float(evaluator.cell("CF_1", f"{core._V4_LAST_COLUMN}42")) == pytest.approx(0.0, abs=1e-9), \
         "проценты ПФ продолжают начисляться после конца проекта"
 
     assert evaluator.cell("CF_1", "B80") == NA

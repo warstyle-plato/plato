@@ -645,7 +645,7 @@ def test_the_project_aggregates_include_the_fourth_block():
     assert "'Продажи'!B85" in flat(template["ОТЧЕТ"]["E46"])
     assert "'ОБЪЕКТЫ'!B116" in flat(template["ПРОВЕРКИ"]["B50"])
     assert "'ОБЪЕКТЫ'!B120" in flat(template["ПРОВЕРКИ"]["B51"])
-    assert "$D$83:$DS$83" in flat(template["ОТЧЕТ"]["B87"]), \
+    assert core._v4_month_span(83) in flat(template["ОТЧЕТ"]["B87"]), \
         "темп квартир проекта не видит четвёртый блок продаж"
 
     # выпадающие списки: объект можно поставить в четвёртую очередь,
@@ -671,14 +671,17 @@ def test_the_project_aggregates_include_the_fourth_block():
     for cell in ("D63", "D64", "D71", "D72"):
         assert "CF_4" not in flat(template["ОТЧЕТ"][cell]), \
             f"колонка О3 ({cell}) несёт данные четвёртой очереди"
-    assert "'CF_4'!$D$38:$DS$38,'CF_4'!$D$39:$DS$39" in flat(template["ОТЧЕТ"]["F71"])
+    assert (f"{core._v4_month_span(38, 'CF_4')},"
+            f"{core._v4_month_span(39, 'CF_4')}") in flat(template["ОТЧЕТ"]["F71"])
     assert "$I$88:$K$88" in flat(template["ОТЧЕТ"]["B58"])
     assert "$I$89:$K$89" in flat(template["ОТЧЕТ"]["C58"])
     assert "$I$90:$K$90" in flat(template["ОТЧЕТ"]["D58"])
     for cell in ("D65", "D68", "E65", "E68", "F65", "F68"):
         formula = flat(template["ОТЧЕТ"][cell])
-        for two_rows in ("$D$63:$DS$64", "$D$66:$DS$67", "$D$69:$DS$70",
-                         "$D$86:$DS$87", "$D$89:$DS$90", "$D$92:$DS$93"):
+        last = core._V4_LAST_COLUMN
+        for two_rows in (f"$D$63:${last}$64", f"$D$66:${last}$67",
+                         f"$D$69:${last}$70", f"$D$86:${last}$87",
+                         f"$D$89:${last}$90", f"$D$92:${last}$93"):
             assert two_rows not in formula, \
                 f"{cell}: в объём продаж попадает строка цены ({two_rows})"
 
