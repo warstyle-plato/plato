@@ -2734,6 +2734,35 @@ function salesSizesOnly(d){
     +'поэтому пул и остаток витрины показать не из чего.</div>';
 }
 
+// Комнатность проданного. Соседний блок режет метражными полосами книги, и в
+// одной полосе 28,3-40 м² лежат и студия, и однокомнатная — а покупатель
+// выбирает комнаты. Доли считает `salesShareBar` от сумм сервера.
+//
+// Пула по комнатам в источниках НЕТ, и об этом сказано под таблицей: без
+// второй половины «продано 39 однокомнатных» — не показатель, а число.
+// Этажа нет ни одной колонкой ни в одном из 27 листов выгрузки ЦФ — это
+// ответ источника, а не наш пробел, и он называется здесь же.
+function salesRoomsBlock(d){
+  const rows=d.by_rooms||[];
+  if(!rows.length) return '';
+  const known=Number(d.rooms_known)||0, whole=Number(d.rooms_total)||0;
+  let html=salesShareBar(rows, x=>x.rooms)
+    +'<details style="margin-top:8px" open><summary>Комнатность числами</summary>'
+    +salesTable(['Комнат','Лотов','м²','Средняя, м²','млн ₽','₽/м²'],
+      rows.map(x=>[esc(x.rooms), num(x.contracts), num(x.area),
+        x.contracts?num(x.area/x.contracts,1):'—',
+        num(x.amount/1e6,1), x.area?num(x.price_per_sqm):'—']))
+    +'</details>';
+  html+='<div class="muted" style="font-size:12.5px;margin-top:6px">'
+    +(known<whole?('Комнатность названа у '+num(known)+' квартир из '+num(whole)+'. '):'')
+    +'Доли пула по комнатам нет: квартирография книги нарезана метражными '
+    +'полосами, и вымывание по комнатам показать не из чего. '
+    +'Этажа в выгрузке ЦФ нет ни одной колонкой — ни у договора, ни у лота; '
+    +'«Корпус» несёт дом и номер квартиры, из которых этаж не выводится.'
+    +'</div>';
+  return html;
+}
+
 // Хватит ли эскроу к погашению ПФ. Три ряда на одной шкале: план накопления,
 // факт по договорам и продолжение нынешнего темпа. Продолжение — не прогноз,
 // и подпись говорит именно это: оно рисуется только вперёд от последнего
@@ -3227,6 +3256,7 @@ function salesPlansBlock(d){
 const SALES_BLOCKS=[
   {id:'sb-dyn',  name:'Динамика'},
   {id:'sb-mix',  name:'Квартирография'},
+  {id:'sb-rms',  name:'Комнатность'},
   {id:'sb-want', name:'Спрос'},
   {id:'sb-lead', name:'Обращения'},
   {id:'sb-room', name:'Отдел продаж'},
@@ -3252,6 +3282,7 @@ const NOTE_NEEDS={
   pool:'плана финмодели — из него берётся ожидаемая выручка проекта',
   dynamics:'хотя бы четырёх месяцев продаж',
   bands:'квартирографии книги — листа «график продажи_1»',
+  rooms:'колонки «Кол-во комнат» в листе «Контрактация» выгрузки ЦФ',
   demand:'выгрузки сделок CRM',
   funnel:'выгрузки сделок CRM',
   products:'договоров хотя бы по одному продукту',
@@ -3395,6 +3426,7 @@ function renderSales(d){
   const have=[];
   if((d.dynamics||[]).length>1) have.push('sb-dyn');
   if((pool.bands||[]).length||(d.by_size||[]).length) have.push('sb-mix');
+  if((d.by_rooms||[]).length) have.push('sb-rms');
   if(((d.demand||{}).bands||[]).length) have.push('sb-want');
   if((((d.demand||{}).funnel||{}).by_source||[]).length) have.push('sb-lead');
   if((d.by_product||[]).length) have.push('sb-prod');
@@ -3430,6 +3462,11 @@ function renderSales(d){
   html+=salesSection('sb-mix',
     (pool.bands||[]).length?'Квартирография: пул, продажи, остаток':'Размерность проданного',
     salesMixBlock(d), salesNote(d,'bands'));
+
+  if((d.by_rooms||[]).length){
+    html+=salesSection('sb-rms','Комнатность проданного',
+      salesRoomsBlock(d), salesNote(d,'rooms'));
+  }
 
   html+=salesSection('sb-want','Спрос против витрины',
     salesDemandBlock(d), salesNote(d,'demand'));
@@ -3774,6 +3811,15 @@ function salesDigest(d, limit){
     }
   }
   add('размерность', (d.by_size||[]).map(x=>`РАЗМЕР ${x.band}: ${num(x.contracts)} шт, ${num(x.area)} м², ${num(x.amount/1e6,1)} млн ₽`));
+  // Комнатность — своя строка, а не пересказ размерности: полоса 28,3-40 м²
+  // держит и студию, и однокомнатную. Границу говорим в самой сводке — иначе
+  // Платон сравнит наши доли с чьим-нибудь пулом, которого у нас нет.
+  const rms=(d.by_rooms||[]).map(x=>`КОМНАТ ${x.rooms}: ${num(x.contracts)} шт, средняя `
+    +`${num(x.area/(x.contracts||1),1)} м², ${num(x.amount/1e6,1)} млн ₽`
+    +`${x.area?', '+num(x.price_per_sqm)+' ₽/м²':''}`);
+  if(rms.length) rms.push('Доли пула по комнатам нет: книга нарезана метражными полосами. '
+    +'Этажа в выгрузке нет ни одной колонкой — по этажам не спрашивай и не выдумывай.');
+  add('комнатность', rms);
   add('продукты', (d.by_product||[]).map(x=>`ПРОДУКТ ${x.product}: ${num(x.contracts)} шт, ${num(x.amount/1e6,1)} млн ₽`));
   const term=[];
   if((d.terminated||[]).length){
@@ -3878,7 +3924,7 @@ function salesDigest(d, limit){
   // же «почему не покупают», только числами витрины, и вытеснять их новой
   // темой значит менять один ответ на другой, а не добавлять.
   const ORDER=['выводы','не прочитано','чат: воронка от встреч','оплата','каналы',
-    'пул и вымывание','условия рынка','чат: о чём говорят','размерность','продукты',
+    'пул и вымывание','условия рынка','чат: о чём говорят','размерность','комнатность','продукты',
     'воронка обращений','план ФМ','план банка','расторжения','динамика'];
   const rank=name=>(ORDER.indexOf(name)+1)||99;
   groups.sort((a,b)=>rank(a.name)-rank(b.name));
