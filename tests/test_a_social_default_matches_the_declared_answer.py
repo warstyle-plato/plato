@@ -31,7 +31,9 @@ def test_the_default_row_is_the_declared_answer() -> None:
     """Умолчание не литерал, а тот же счёт, что у всех остальных."""
     for kind, (places_key, _, _) in core.SOCIAL_TEP_FIELDS.items():
         places = core.DEFAULT_INPUTS.get(places_key) or 0.0
-        expected = core.social_tep_row(kind, places, core.DEFAULT_INPUTS)
+        # Сигнатура одна на модуль: строка знает ёмкость ЗДАНИЯ, выгрузку
+        # ГлавАПУ и ручной режим, поэтому вводные идут первым доводом.
+        expected = core.social_tep_row(core.DEFAULT_INPUTS, kind, places)
         row = core.TEP_DEFAULT[kind]
         for field, value in expected.items():
             assert row[field] == pytest.approx(value), f"{kind}.{field}"

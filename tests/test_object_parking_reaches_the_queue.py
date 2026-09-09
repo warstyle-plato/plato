@@ -84,6 +84,21 @@ def _phased(inputs=None, phasing=None):
         inputs=inputs or _inputs(), tep=_tep(), phasing=phasing or _phasing()))
 
 
+def _own(inputs: dict, key: str) -> dict:
+    """Объект своего счёта ищется по ключу строки, а не по месту в списке.
+
+    Место в списке — не имя: порядок объектов сведён к экранному (таблица ТЭП
+    начинается с ТЦ), и проверка, читавшая `own[0]` в значении «офисы», упала
+    на верном коде, ничего не сказав о том, что сломалось (ничего). Ровно то
+    же правило, что у колонок книги: падает, когда рядом что-то ПЕРЕставили,
+    а не когда что-то сломали.
+    """
+    for item in core.apply_object_parking(dict(inputs), _tep())["own"]:
+        if item.get("tep_key") == key:
+            return item
+    raise AssertionError(f"объекта {key} в счёте паркинга нет")
+
+
 def _row(result: dict, key: str) -> dict:
     for row in ((result.get("tep") or {}).get("rows") or []):
         if row.get("key") == key:
@@ -148,7 +163,7 @@ def test_a_shared_object_does_not_build_its_garage_twice() -> None:
     rows = [_row(item["result"], "offices") for item in bundle["phases"]]
     assert [row["parking_units"] for row in rows] == [50.0, 50.0]
     assert sum(row["under_gns"] for row in rows) == pytest.approx(
-        core.apply_object_parking(_inputs(), _tep())["own"][0]["under_gns"])
+        _own(_inputs(), "offices")["under_gns"])
 
 
 @pytest.mark.parametrize("weights,expected", [

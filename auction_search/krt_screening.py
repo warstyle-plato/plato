@@ -449,6 +449,10 @@ def _programme(
 
     social_rows: list[dict[str, Any]] = []
     social_area = 0.0
+    # Признак стройки ставится ДО расчёта строк: `social_tep_row` отвечает
+    # нулями на денежную компенсацию, и объявленный после цикла режим давал бы
+    # объекту нулевой ТЭП при названных городом местах.
+    inputs["social_mode"] = "Строительство"
     for kind, (tep_key, places_key, area_key, norm_key, label) in _SOCIAL_ROWS.items():
         norm_sqm = _number(inputs.get(norm_key))
         demanded = named.get(kind)
@@ -479,7 +483,10 @@ def _programme(
             area = places * norm_sqm
         inputs[places_key] = places
         inputs[area_key] = area
-        tep[tep_key].update({"total_area": area, "transfer": area, "units": places})
+        # Строку считает движок (`social_tep_row`), а не скрининг: здесь
+        # писались площадь и места и НЕ писалась ГНС вовсе — объект строился,
+        # а строительного объёма у него не было.
+        tep[tep_key].update(core.social_tep_row(inputs, kind))
         social_area += area
         social_rows.append({
             "kind": kind,
@@ -494,7 +501,7 @@ def _programme(
         })
     # Соцобъекты строятся, а не откупаются: решение города называет объекты, и
     # денежная компенсация вместо них — другое обязательство, а не то же самое.
-    inputs["social_mode"] = "Строительство"
+    # Сам признак стоит выше цикла — там, где он нужен расчёту строк.
     # Садик — первым жильцам, школа — к заселению первых очередей: умолчание
     # движка «поздняя раскладка, разгружаем первую очередь» уводит школу в
     # последнюю очередь, и та тонет — на Варшавском ш., вл. 37 слабейшая
