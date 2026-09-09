@@ -155,7 +155,8 @@ def test_the_book_formula_knows_the_third_mode():
     """
     book = workbook(core.SOCIAL_MODE_BOTH)
     fee = str(book["CF_1"]["F57"].value)
-    assert "'CAPEX'!$D$39:$DS$39" in fee, "строка 57 не читает базу лимита"
+    assert core._v4_month_span(39, "CAPEX") in fee, \
+        "строка 57 не читает базу лимита"
     base = str(book["CAPEX"]["F39"].value)
     assert "Строительство и компенсация" in base
     assert "$B$56" in base
