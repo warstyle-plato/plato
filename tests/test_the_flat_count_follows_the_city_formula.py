@@ -149,5 +149,8 @@ def test_the_caption_stops_claiming_it_is_frozen():
         "console.log(JSON.stringify({row:tep.apartments,note:apartmentUnitsNote()}));",
     ])
     shown, _ = _run(tail)
-    assert "вписано руками" in shown["note"], shown["note"]
+    # Подпись называет источник и РАСХОЖДЕНИЕ, а не происхождение числа:
+    # «вписано руками» — утверждение, которого она проверить не может.
+    assert "из выгрузки ГлавАПУ" in shown["note"], shown["note"]
+    assert "не сходится" in shown["note"], shown["note"]
     assert str(_city_flats(float(shown["row"]["saleable"]))) in shown["note"], shown["note"]
