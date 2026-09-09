@@ -76,7 +76,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.22.92"
+VERSION = "0.22.95"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -35343,6 +35343,21 @@ def _profile_remember_telegram_name(owner: int, name: str) -> None:
     _profile_store(owner, record)
 
 
+# Объявлена ВЫШЕ маршрутов, которые её принимают, и это не вкусовщина.
+# Файл стоит на `from __future__ import annotations`: аннотация — строка, и
+# FastAPI разбирает её в момент навешивания декоратора. Пока класс лежал ниже,
+# имя в тот момент не существовало, тип не опознавался, и `req` уезжал в
+# ПАРАМЕТРЫ СТРОКИ ЗАПРОСА вместо тела: всякий POST с телом получал 422
+# «loc: query.req». Так молчали разом все три канала уведомлений — новые
+# площадки КРТ, новые регистрации и нормативы; на проде 09.09.2026 в очереди
+# ядра лежало 168 новостей, а бот каждые 15 минут получал отказ.
+class WebLoginConfirmRequest(BaseModel):
+    code: str = ""
+    chat_id: int = 0
+    sign: str = ""
+    name: str = ""
+
+
 def _profile_forward(path: str, req: ProfileRequest) -> dict[str, Any] | None:
     url = _projects_remote_url(path)
     if not url:
@@ -35657,13 +35672,6 @@ def _web_login_bot_username() -> str:
 
 class WebLoginClaimRequest(BaseModel):
     code: str = ""
-
-
-class WebLoginConfirmRequest(BaseModel):
-    code: str = ""
-    chat_id: int = 0
-    sign: str = ""
-    name: str = ""
 
 
 class FeedbackRequest(BaseModel):
