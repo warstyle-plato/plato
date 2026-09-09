@@ -32,7 +32,15 @@ BUILD = WORKFLOWS / "build-yandex.yml"
 # В YAML голое `on` разбирается как булево True — ключ триггеров лежит там.
 TRIGGERS = True
 
-COMMAND = "python3 -m pytest tests -q --durations=25"
+# Команда объявлена в репозитории, а не строкой в двух YAML сразу: её зовут и
+# PR, и сборка, и рука. Прежде здесь стоял сам вызов pytest, и «набор тот же»
+# держалось совпадением ТЕКСТА в двух местах.
+COMMAND = "bash scripts/run_tests.sh"
+
+# Последний измеренный полный прогон, минуты: «5324 passed, 86 skipped in
+# 5923.40s (1:38:43)», прогон 440 от 09.09.2026. Число здесь стареет и мерить
+# его надо заново — оно и стоит одной строкой, чтобы правилось в одном месте.
+LAST_MEASURED_MINUTES = 99
 
 
 def _load(path: Path) -> dict:
@@ -78,9 +86,29 @@ def test_both_runs_share_one_ceiling():
     on_pr = _load(ON_PR)["jobs"]["test"]["timeout-minutes"]
     build = _load(BUILD)["jobs"]["test"]["timeout-minutes"]
     assert on_pr == build, f"потолки разъехались: PR {on_pr}, сборка {build}"
-    assert on_pr >= 90, (
-        f"потолок {on_pr} мин: измеренный набор идёт 74 минуты, "
-        "запас меньше четверти уже дважды кусал в день установки")
+
+    # Запас считается по всем долям сразу: потолок стоит на доле, а работа
+    # делится между ними. Последний измеренный полный прогон — 1:38:43
+    # (прогон 440, 09.09.2026), и запас держим двукратным. Две доли по 60
+    # минут дают 120 — и это меньше двух измеренных прогонов, то есть запас
+    # снова стал тонким; проверка на этом падает, а не молчит.
+    shards = len(_load(ON_PR)["jobs"]["test"]["strategy"]["matrix"]["shard"])
+    assert on_pr * shards >= 2 * LAST_MEASURED_MINUTES, (
+        f"{shards} долей по {on_pr} мин: запас меньше двукратного к "
+        f"измеренным {LAST_MEASURED_MINUTES} минутам полного прогона")
+
+
+def test_neither_workflow_calls_pytest_by_hand():
+    """Вызов pytest живёт в одном файле — иначе «та же команда» снова про текст.
+
+    Запрещаем МЕСТО, а не слово: `scripts/run_tests.sh` зовёт pytest и обязан,
+    речь про шаги workflow.
+    """
+    for path in (ON_PR, BUILD):
+        for run in _run_steps(_load(path)):
+            assert "pytest" not in run, (
+                f"{path.name}: pytest зовётся прямо в workflow — "
+                "команда объявлена в scripts/run_tests.sh")
 
 
 def test_the_workflow_checks_itself():

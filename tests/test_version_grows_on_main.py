@@ -74,9 +74,15 @@ def test_an_untouched_engine_needs_no_bump(tmp_path):
 def test_the_build_runs_the_check_before_the_tests():
     workflow = (ROOT / ".github" / "workflows" / "build-yandex.yml").read_text(encoding="utf-8")
     assert "scripts/check_version_grows.py" in workflow
-    assert workflow.index("check_version_grows.py") < workflow.index("Полный набор"), (
-        "смысл проверки — падать раньше двадцатиминутного прогона"
-    )
+    # Утверждение — «проверка версии падает РАНЬШЕ долгого прогона», а не
+    # «стоит выше по тексту». Тесты идут долями, версия проверяется своим
+    # заданием, и порядок задают `needs`, а не порядок строк в файле.
+    import yaml as _yaml
+    jobs = _yaml.safe_load(workflow)["jobs"]
+    assert "check_version_grows.py" in "\n".join(
+        str(step.get("run") or "") for step in jobs["version"]["steps"])
+    assert "version" in (jobs["test"].get("needs") or []), (
+        "смысл проверки — падать раньше долгого прогона, а доли её не ждут")
     assert "fetch-depth: 2" in workflow, "без предыдущего коммита сравнивать не с чем"
 
 

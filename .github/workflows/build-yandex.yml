@@ -41,14 +41,13 @@ env:
   OIDC_AUDIENCE: https://github.com/warstyle-plato
 
 jobs:
-  test:
-    name: Тесты
+  # Проверка версии стоит своим заданием, а не первым шагом тестов: тесты
+  # теперь идут долями, и в общем задании она гонялась бы четыре раза подряд,
+  # отвечая одно и то же.
+  version:
+    name: Версия строго растёт
     runs-on: ubuntu-latest
-    # Тот же набор и тот же потолок, что на PR: разъехавшись, они дадут
-    # зелёный PR и снятую по таймауту сборку из main — а пока сборка красная,
-    # любая выкатка тянет прошлое. Равенство держит проверка
-    # `test_the_tests_run_before_the_merge`: оговорка без сторожа — это память.
-    timeout-minutes: 120
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
         with:
@@ -70,6 +69,26 @@ jobs:
           else
             python3 scripts/check_version_grows.py
           fi
+
+  test:
+    name: Доля ${{ matrix.shard }}
+    # Смысл проверки версии — падать РАНЬШЕ долгого прогона: не выросла версия,
+    # и четыре доли не начинались вовсе. Стоит она минуту, и эта минута ожидания
+    # дешевле четырёх раннеров, потраченных на выпуск, который всё равно не
+    # соберётся.
+    needs: [version]
+    runs-on: ubuntu-latest
+    # Тот же набор и тот же потолок, что на PR: разъехавшись, они дадут
+    # зелёный PR и снятую по таймауту сборку из main — а пока сборка красная,
+    # любая выкатка тянет прошлое. Равенство держит проверка
+    # `test_the_tests_run_before_the_merge`: оговорка без сторожа — это память.
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -78,18 +97,19 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements-dev.txt
-      # Штатная команда проекта, та же, что гоняется руками: около сорока
-      # минут на ~5000 тестов (измерено 06.09.2026). Прежняя оценка —
-      # девятнадцать минут на 1266 тестов — устарела вчетверо по числу
-      # тестов; число в комментарии тоже стареет, и по нему выбирают потолок.
-      # Сокращать набор нельзя: он написан затем, чтобы ловить то, что
-      # глазами не видно.
-      - name: Полный набор
-        run: python3 -m pytest tests -q --durations=25
+      # Штатная команда проекта, та же, что гоняется руками и на PR: объявлена
+      # в `scripts/run_tests.sh` и больше нигде. Сокращать набор нельзя: он
+      # написан затем, чтобы ловить то, что глазами не видно.
+      - name: Доля набора
+        env:
+          TEST_SHARDS: ${{ strategy.job-total }}
+          TEST_SHARD: ${{ matrix.shard }}
+        run: bash scripts/run_tests.sh
 
   build:
     name: Сборка и публикация
-    needs: [test]
+    # Матрица в `needs` требует ВСЕХ своих долей: одна упавшая — сборки нет.
+    needs: [version, test]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     outputs:
