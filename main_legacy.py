@@ -76,7 +76,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.22.94"
+VERSION = "0.22.95"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -42118,16 +42118,28 @@ function apartmentUnitsNote(){
  const region=String(inputs.vri_region||'msk')==='mo'?'mo':'manual';
  const yard=AVERAGE_FLAT[region]||AVERAGE_FLAT.manual;
  const byYard=yard&&yard.sqm>0?Math.ceil(saleable/yard.sqm):0;
- let off='';
+ // Выгрузка ГлавАПУ: число квартир — выход формулы города, и с 09.09.2026 оно
+ // идёт за метрами (решение владельца). Значит подпись «от площади не
+ // пересчитывается» тут больше не верна, а совпадение с формулой спрашивается,
+ // а не хранится: хранимая производная расходится с правилом молча.
  if(inputs._glavapu_import){
-  off=' Делитель к нему не применяется: число квартир названо городом.';
- } else if(byYard>0&&Math.abs(units-byYard)/byYard>=0.15){
+  if(byNorm>0&&units===byNorm){
+   return `Средняя квартира ${num(Math.round(per*10)/10)} м² — число квартир по формуле`
+    + ` ГлавАПУ: население по ${num(perPerson)} м², квартиры по ${String(household).replace('.',',')}`
+    + ` жителя. Правка метров его двигает.`;
+  }
+  return `Средняя квартира ${num(Math.round(per*10)/10)} м² — число квартир вписано руками`
+   + ` и сильнее формулы.`
+   + (byNorm>0?` По формуле ГлавАПУ на этих метрах вышло бы ${num(byNorm)}.`:'');
+ }
+ let off='';
+ if(byYard>0&&Math.abs(units-byYard)/byYard>=0.15){
   off=` При средней квартире ${num(Math.round(yard.sqm*10)/10)} м² (${escapeHtml(yard.basis)})`
    +` вышло бы ${num(byYard)}.`;
  }
  // Норматив Москвы называется только тогда, когда число квартир к нему близко
  // и человек может принять его за меру квартиры: 69,3 м² — это про жителей.
- const cityNote=(!inputs._glavapu_import&&region!=='mo'&&byNorm>0
+ const cityNote=(region!=='mo'&&byNorm>0
    &&Math.abs(units-byNorm)/byNorm<0.02)
   ? ` Это норматив населения Москвы (${num(Math.round(norm*10)/10)} м² на жителя×домовладение), а не мера квартиры.`
   : '';
@@ -42540,7 +42552,9 @@ function refillTepRow(key){
  setTepNote(key,'');
  // Жилая СПП двинулась — за ней идёт встроенная коммерция, как и при правке
  // ячейки: правило одно, а закрытое в одном месте соседнее не защищает.
- if(key==='apartments'&&Math.abs(Number(row.gns||0)-gns)>0.05)rescaleBuiltInCommercial();
+ if(key==='apartments'&&Math.abs(Number(row.gns||0)-gns)>0.05){
+  rescaleApartmentUnits();rescaleBuiltInCommercial();
+ }
  // Посчитанное возвращается во вводные — иначе `syncTep` вернёт прежнее.
  if(tepRowToInputs(key))renderInputs();
  renderTep();
@@ -42636,6 +42650,37 @@ function rescaleBuiltInCommercial(){
   ' м² ГНС. Своё число вписывается здесь же.', '');
 }
 
+// Число квартир выгрузки — не независимое число города, а ВЫХОД его же
+// формулы: население = площадь квартир / 33, квартиры = население / 2,1. В
+// выгрузке по 77:01:0006018:75 стоит население 525 и ровно 250 квартир, то
+// есть средняя 69,3 м² — те самые 33 × 2,1. Правя метры, человек меняет вход
+// этой формулы, и её выход обязан идти следом: иначе 250 квартир остаются
+// числом города для ПРЕЖНИХ метров (владелец, 09.09.2026: «кстати машиноместа
+// похоже не меняются увы»).
+//
+// Цена заморозки видна на паркинге. Постоянные места по пункту 2 — это
+// «квартиры × коэффициент полосы», и как только средняя перевалила 100 м²,
+// коэффициент упирается в 1,6: 45 000, 50 000 и 60 000 м² ГНС дают одни и те
+// же 400 + 40 мест. Площадь перестаёт двигать паркинг вовсе.
+function rescaleApartmentUnits(){
+ // Решение касается выгрузки ГлавАПУ: у собранного руками и у Подмосковья
+ // делитель свой, и трогать их этой правкой нельзя.
+ if(!inputs._glavapu_import)return;
+ const row=tep.apartments;
+ if(!row)return;
+ const saleable=Number(row.saleable||0);
+ if(!(saleable>0))return;
+ const perPerson=Number(PARKING_2118.sqm_per_person||0);
+ const household=Number(PARKING_2118.household||0);
+ if(!(perPerson>0)||!(household>0))return;
+ const was=Number(row.units||0);
+ // Тем же порядком, что в движке: два округления вверх, а не одно деление на
+ // 69,3 — подпись, разошедшаяся с расчётом на квартиру, читается как ошибка.
+ const want=Math.ceil(Math.ceil(saleable/perPerson)/household);
+ if(!(want>0)||want===was)return;
+ row.units=want;
+}
+
 function tepCellChanged(key,col,value){
  const was=Number(tep[key][col]||0);
  tep[key][col]=Number(value||0);
@@ -42685,7 +42730,7 @@ function tepCellChanged(key,col,value){
   tep[key].useful=tep[key].saleable;
   setTepNote(key,'');
   tepRowToInputs(key);
-  if(key==='apartments')rescaleBuiltInCommercial();
+  if(key==='apartments'){rescaleApartmentUnits();rescaleBuiltInCommercial()}
   renderInputs();
   renderTep();
  }else{tepRowToInputs(key);updateTepTotals()}
