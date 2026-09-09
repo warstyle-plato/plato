@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import time
 import sys
 from pathlib import Path
 
@@ -110,6 +111,36 @@ def test_an_open_application_window_is_bidding() -> None:
                 lots=[{"title": "лот", "deadline": "2026-09-30"}])
     assert got["key"] == "bidding"
     assert "2026-09-30" in got["why"][0]
+
+
+def test_a_passed_deadline_is_not_bidding() -> None:
+    """Запомненная связка со вчерашним сроком — «торги были», а не «идут».
+
+    Шаг воронки брал `lots.find(v=>v.deadline)` — НАЛИЧИЕ поля. Правило
+    «живым лот делает срок» выведено 08.09.2026 и закрыто в `krtLiveLot`, а
+    сюда не доехало: `krtLiveLot` звался из пяти мест и мимо того
+    единственного, где решается шаг. Связка живёт на диске и переживает всё,
+    поэтому площадка с прошлогодним лотом бесконечно писала «идёт аукцион».
+
+    Момент у запомненной связки считает сервер при чтении (`with_moment`),
+    поэтому здесь он и подан — на строке без момента ответ прежний, и это
+    отдельный открытый вопрос: «срока не поняли» пока значит «живой».
+    """
+    got = stage({"slug": "past", "status": "Планируемый"},
+                lots=[{"title": "лот", "deadline": "01.08.26 15:00",
+                       "deadline_iso": "2026-08-01T15:00:00+03:00"}])
+    assert got["key"] == "auction", "прошедший срок объявлен идущими торгами"
+    assert any("закончился" in line for line in got["why"]), got["why"]
+    assert any("01.08.26" in line for line in got["why"]), "срок не назван"
+
+
+def test_an_open_deadline_with_a_moment_is_still_bidding() -> None:
+    """Починка не должна гасить живой лот: у него момент впереди."""
+    ahead = time.strftime("%Y-%m-%dT%H:%M:%S+03:00",
+                          time.gmtime(time.time() + 10 * 86400))
+    got = stage({"slug": "live", "status": "Планируемый"},
+                lots=[{"title": "лот", "deadline": "заявки до", "deadline_iso": ahead}])
+    assert got["key"] == "bidding"
 
 
 def test_a_named_operator_ends_the_funnel() -> None:
