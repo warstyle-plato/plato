@@ -1,8 +1,8 @@
 """First-page summary for the existing DevelopAid PDF report.
 
-The extension deliberately does not change model calculations.  It only adds
+The extension deliberately does not change model calculations. It only adds
 flowables to the report header and reuses values already present in the result
-payload.  Parcel geometry is read from the saved EGRN lookup snapshot; when it
+payload. Parcel geometry is read from the saved EGRN lookup snapshot; when it
 is absent or malformed the report is still generated without a map.
 """
 
@@ -28,8 +28,9 @@ def _recommended_price(result: dict[str, Any]) -> float:
     """Use an already-calculated recommendation if the engine exposes one.
 
     No goal seek is started from PDF generation: a report must not silently run
-    another investment calculation.  The aliases make the presentation work
-    with both current and older/newer result payloads.
+    another investment calculation. The aliases keep presentation compatible
+    with result payloads that already expose the recommendation under one of
+    the established names.
     """
     summary = result.get("summary") or {}
     report = result.get("report") or {}
@@ -56,17 +57,16 @@ def _purchase_price(result: dict[str, Any]) -> float:
 def _parcel_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
     inputs = payload.get("inputs") or {}
     snapshot = inputs.get("_land_lookup") or {}
-    items = [
+    return [
         item for item in (snapshot.get("results") or [])
         if isinstance(item, dict) and item.get("found")
         and isinstance(item.get("contour_merc"), list)
     ]
-    return items
 
 
-def _parcel_drawing(payload: dict[str, Any], core: Any, width: float = 272,
-                    height: float = 132):
-    from reportlab.graphics.shapes import Drawing, Line, PolyLine, Rect, String
+def _parcel_drawing(payload: dict[str, Any], core: Any, width: float = 260,
+                    height: float = 126):
+    from reportlab.graphics.shapes import Drawing, Line, Polygon, Rect, String
     from reportlab.lib import colors
 
     items = _parcel_items(payload)
@@ -94,8 +94,8 @@ def _parcel_drawing(payload: dict[str, Any], core: Any, width: float = 272,
                      fillColor=colors.HexColor("#F6F6F4"),
                      strokeColor=colors.HexColor("#D8D8D8"), strokeWidth=0.6))
 
-    # Quiet map-like context.  This is intentionally schematic: the factual
-    # geometry is the EGRN contour; decorative lines are not presented as roads.
+    # Quiet schematic context. The only factual geometry here is the EGRN
+    # contour; background lines are deliberately neutral and unlabeled.
     for fraction in (0.24, 0.50, 0.76):
         drawing.add(Line(width * fraction, 0, width * fraction, height,
                          strokeColor=colors.HexColor("#E7E7E4"), strokeWidth=0.45))
@@ -119,11 +119,11 @@ def _parcel_drawing(payload: dict[str, Any], core: Any, width: float = 272,
         projected = [project(point) for point in ring]
         if len(projected) < 3:
             continue
-        projected.append(projected[0])
-        drawing.add(PolyLine(projected,
-                             strokeColor=colors.HexColor("#222222"),
-                             strokeWidth=1.6,
-                             fillColor=colors.Color(0.95, 0.95, 0.94, alpha=0.50)))
+        flat = [coordinate for point in projected for coordinate in point]
+        drawing.add(Polygon(flat,
+                            strokeColor=colors.HexColor("#222222"),
+                            strokeWidth=1.5,
+                            fillColor=colors.HexColor("#EFEFEC")))
 
     label = "Контур ЕГРН"
     if len(items) > 1:
@@ -184,10 +184,17 @@ def _front_page_flowables(payload: dict[str, Any], core: Any) -> list[Any]:
 
     cells = []
     for label, value in kpis:
-        cells.append(Table([[para(label, label_style)], [para(value, value_style)]],
-                           colWidths=[55 * mm], rowHeights=[5.2 * mm, 8.2 * mm]))
-    rows = [cells[:3], cells[3:]]
-    card_table = Table(rows, colWidths=[56.5 * mm] * 3,
+        cell = Table([[para(label, label_style)], [para(value, value_style)]],
+                     colWidths=[53.5 * mm], rowHeights=[5.2 * mm, 8.2 * mm])
+        cell.setStyle(TableStyle([
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ]))
+        cells.append(cell)
+    card_table = Table([cells[:3], cells[3:]], colWidths=[56.5 * mm] * 3,
                        rowHeights=[14.5 * mm, 14.5 * mm], hAlign="LEFT")
     card_style = [
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
@@ -213,16 +220,21 @@ def _front_page_flowables(payload: dict[str, Any], core: Any) -> list[Any]:
             total_area = _number(inputs.get("site_area_ha")) * 10000.0
         tep = result.get("tep") or {}
         total_tep = tep.get("total") or {}
-        transfer = sum(_number(row.get("transfer")) for row in ((payload.get("tep") or {}).values())
-                       if isinstance(row, dict))
+        transfer = sum(
+            _number(row.get("transfer"))
+            for row in ((payload.get("tep") or {}).values())
+            if isinstance(row, dict)
+        )
         info_rows = [
             [para("Площадь ЗУ", label_style), para(core._pdf_num(total_area, 0) + " м²", normal)],
             [para("Строит. объём", label_style), para(core._pdf_num(total_tep.get("gns"), 0) + " м²", normal)],
             [para("Продаваемая", label_style), para(core._pdf_num(total_tep.get("saleable"), 0) + " м²", normal)],
         ]
         if transfer > 0:
-            info_rows.append([para("Передаваемая бесплатно", label_style),
-                              para(core._pdf_num(transfer, 0) + " м²", normal)])
+            info_rows.append([
+                para("Передаваемая бесплатно", label_style),
+                para(core._pdf_num(transfer, 0) + " м²", normal),
+            ])
         info = Table(info_rows, colWidths=[34 * mm, 41 * mm], hAlign="LEFT")
         info.setStyle(TableStyle([
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
