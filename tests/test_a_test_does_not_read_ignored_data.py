@@ -49,12 +49,56 @@ def code_only(source: str) -> str:
     return " ".join(pieces)
 
 
-def hidden_data_dirs() -> list[str]:
-    files = [str(p.relative_to(ROOT)) for p in ROOT.rglob("*") if p.is_file()]
-    out = subprocess.run(["git", "check-ignore", "--stdin"], input="\n".join(files),
-                         capture_output=True, text=True, cwd=ROOT)
-    return sorted({"/".join(path.split("/")[:3])
-                   for path in out.stdout.splitlines() if path.startswith("data/")})
+def hidden_data_dirs(root: Path = ROOT) -> list[str]:
+    """Каталоги данных, которые git прячет, — по ПРАВИЛАМ, а не по остаткам.
+
+    Прежде список собирался обходом РЕАЛЬНЫХ файлов, и на пустом `data/` он
+    выходил пустым: в целом наборе туда успевал написать сосед по прогону, а
+    в своей доле писать некому. Доля 4 упала ровно на этом (09.09.2026), и
+    это находка деления, а не его цена: проверка зависела от порядка тестов —
+    ровно та болезнь, ради которой она и написана, только с другой стороны.
+
+    `git check-ignore` отвечает по правилам и не требует, чтобы путь
+    существовал. Значит спрашивать надо о путях из самого `.gitignore`:
+    ответ тогда одинаков в любой доле и на чистой машине. Правило остаётся
+    авторитетным — строку, которая на деле ничего не прячет, git не
+    подтвердит.
+    """
+    # У каталога спрашиваем про файл внутри него: `check-ignore` отвечает про
+    # путь, а не про запись в дереве. Отвечать при этом надо ОБЪЯВЛЕННЫМ путём,
+    # а не пробным — его и ищут потом в коде тестов.
+    declared: dict[str, str] = {}
+    for raw in (root / ".gitignore").read_text("utf-8").splitlines():
+        line = raw.strip()
+        # Отрицание («!path») прячет ОБРАТНОЕ, и в список скрытого не идёт.
+        if not line or line.startswith("#") or line.startswith("!"):
+            continue
+        if not line.startswith("data/"):
+            continue
+        declared[line + "probe" if line.endswith("/") else line] = line.rstrip("/")
+    if not declared:
+        return []
+    out = subprocess.run(["git", "check-ignore", "--stdin"], input="\n".join(declared),
+                         capture_output=True, text=True, cwd=root)
+    return sorted({declared[path] for path in out.stdout.splitlines() if path in declared})
+
+
+def test_the_answer_does_not_depend_on_leftover_files() -> None:
+    """Ответ один и тот же на пустом дереве — иначе он зависит от соседа.
+
+    Это и была поломка: в целом наборе под `data/` успевал написать сосед по
+    прогону, в отдельной доле — некому, и проверка объявляла себя пустой.
+    Дерево здесь заводится своё и БЕЗ единого файла под данными.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True,
+                       capture_output=True)
+        (root / ".gitignore").write_text("data/fake_zone/\n", encoding="utf-8")
+        assert hidden_data_dirs(root) == ["data/fake_zone"], (
+            "правило прочитано только там, где под данными уже лежат файлы")
 
 
 def test_no_test_reads_a_gitignored_file() -> None:

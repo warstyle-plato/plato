@@ -76,7 +76,13 @@ def test_the_deploy_script_keeps_the_old_container_until_the_new_one_proves():
 def test_the_workflow_stops_before_a_red_test():
     """Красные тесты не должны доезжать до реестра."""
     workflow = Path(".github/workflows/build-yandex.yml").read_text(encoding="utf-8")
-    assert "needs: [test]" in workflow
+    # Утверждение здесь — «сборка ждёт тесты», а не «в файле есть такая
+    # строка». Тесты идут долями, и `needs` у сборки стало списком; текстовая
+    # проверка падала бы на верной перестановке, ничего не сказав о том, что
+    # сломалось на самом деле. Матрица в `needs` требует ВСЕХ своих долей.
+    import yaml as _yaml
+    needs = _yaml.safe_load(workflow)["jobs"]["build"]["needs"]
+    assert "test" in needs, f"сборка не ждёт тесты: needs {needs}"
     assert "workflow_dispatch" in workflow
     # Один latest не даёт ни откатиться, ни понять, что подняли.
     assert ":${{ github.sha }}" in workflow
