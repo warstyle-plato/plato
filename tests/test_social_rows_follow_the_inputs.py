@@ -19,7 +19,7 @@
 
 Правило то же, что у подземного паркинга: таблица приходит из браузера и бывает
 устаревшей, поэтому `calculate` чинит строку из вводных ПЕРЕД каждым расчётом.
-Ответ на «сколько метров у этого объекта» один — `social_object_area`, — и
+Ответ на «сколько метров у этого объекта» один — `social_tep_row`, — и
 приоритет в нём по полю: руками > выгрузка ГлавАПУ > норматив.
 
 Запуск: python3 -m pytest tests/test_social_rows_follow_the_inputs.py -q
@@ -81,7 +81,7 @@ def test_the_default_agrees_with_its_own_inputs():
     считал другое — подвал таблицы ТЭП расходился с отчётом на 5 000 м².
     """
     fresh = copy.deepcopy(core.TEP_DEFAULT)
-    core.apply_social_tep(copy.deepcopy(core.DEFAULT_INPUTS), fresh)
+    core.apply_social_tep_rows(copy.deepcopy(core.DEFAULT_INPUTS), fresh)
     for kind in core.SOCIAL_TEP_FIELDS:
         assert fresh[kind] == core.TEP_DEFAULT[kind], kind
 
@@ -111,7 +111,7 @@ def test_the_check_falls_over_when_the_repair_is_gone(monkeypatch):
     Снимаем починку и убеждаемся, что расчёт снова считает по устаревшей
     строке: иначе зелёный тест выше не значил бы ничего.
     """
-    monkeypatch.setattr(core, "apply_social_tep", lambda inputs, tep: None)
+    monkeypatch.setattr(core, "apply_social_tep_rows", lambda inputs, tep: None)
     rows = _single(_inputs(kindergarten_places=250, social_dou_norm_sqm=18),
                    _stale_table())
     assert rows["kindergarten"]["total_area"] == pytest.approx(3000), (
@@ -192,7 +192,7 @@ def test_the_book_reads_the_same_area_as_the_row():
     inputs = _inputs(school_places=800, social_school_gba_sqm=0,
                      social_school_norm_sqm=0)
     assert core.n(inputs, "social_school_gba_sqm", 0.0) == 0
-    assert core.social_object_area(inputs, "school") == pytest.approx(800 * 15)
+    assert core.social_tep_row(inputs, "school")["total_area"] == pytest.approx(800 * 15)
 
 
 def test_the_city_area_is_a_requirement_not_a_norm():
@@ -217,13 +217,13 @@ def test_the_city_area_is_a_requirement_not_a_norm():
         "пример держится на том, что требование с нормативом НЕ совпадает")
 
     named = screened([{"kind": "school", "places": 1000, "area_sqm": 22220}])
-    assert core.social_object_area(named, "school") == pytest.approx(22220)
+    assert core.social_tep_row(named, "school")["total_area"] == pytest.approx(22220)
 
     # Площадь документ не назвал — считаем нормативом, и признак не ставим:
     # «ручной» режим прочёл бы правку мест как «площадь не следует за ними».
     plain = screened([{"kind": "school", "places": 1000}])
     assert plain.get("social_area_source") != core.SOCIAL_AREA_BY_REQUIREMENT
-    assert core.social_object_area(plain, "school") == pytest.approx(1000 * 15)
+    assert core.social_tep_row(plain, "school")["total_area"] == pytest.approx(1000 * 15)
 
 
 def test_the_badge_does_not_wipe_an_object_it_did_not_name():
@@ -236,8 +236,9 @@ def test_the_badge_does_not_wipe_an_object_it_did_not_name():
                      social_school_norm_sqm=0,
                      kindergarten_places=250, social_dou_gba_sqm=0)
     assert core.declare_social_requirement(inputs) is True
-    assert core.social_object_area(inputs, "school") == pytest.approx(22220)
-    assert core.social_object_area(inputs, "kindergarten") == pytest.approx(250 * 18)
+    assert core.social_tep_row(inputs, "school")["total_area"] == pytest.approx(22220)
+    assert core.social_tep_row(
+        inputs, "kindergarten")["total_area"] == pytest.approx(250 * 18)
 
 
 def test_the_queue_editor_does_not_overlay_a_social_row():
@@ -406,7 +407,7 @@ console.log(JSON.stringify(CASES.map(x=>{
 
     for inputs, shown in zip(cases, page_rows):
         row = {"kindergarten": copy.deepcopy(core.TEP_DEFAULT["kindergarten"])}
-        core.apply_social_tep(inputs, row)
+        core.apply_social_tep_rows(inputs, row)
         engine = row["kindergarten"]
         where = (f'мест {inputs["kindergarten_places"]}, '
                  f'норматив {inputs["social_dou_norm_sqm"]}, '

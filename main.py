@@ -749,14 +749,18 @@ def _core_disk_line() -> str:
     return f"\nМесто на диске ({where}): {free} МБ"
 
 
-def _krt_delivery_line() -> str:
-    """Что сделал последний заход доставки новостей КРТ. Одна строка."""
-    state = krt_delivery_state()
+def _delivery_line(title: str, state: dict[str, Any]) -> str:
+    """Что сделал последний заход доставки. Одна строка на любую очередь.
+
+    Очередей у нас две — новости каталога КРТ и изменения нормативной базы, —
+    и обе копятся на ядре, а забирает их этот хост. Формат один: вторая копия
+    строки разошлась бы с первой молча, а читают их рядом, в одном `/status`.
+    """
     when = int(state.get("at") or 0)
     if not when:
-        return "\nНовости КРТ: заходов доставки ещё не было"
+        return f"\n{title}: заходов доставки ещё не было"
     ago = max(0, int(time.time()) - when)
-    said = f"\nНовости КРТ: заход {ago // 60} мин назад"
+    said = f"\n{title}: заход {ago // 60} мин назад"
     taken = int(state.get("taken") or 0)
     if state.get("stopped_by"):
         said += f" · {html.escape(str(state['stopped_by']))}"
@@ -766,6 +770,14 @@ def _krt_delivery_line() -> str:
     if state.get("last_error"):
         said += f" · <i>{html.escape(str(state['last_error'])[:160])}</i>"
     return said
+
+
+def _krt_delivery_line() -> str:
+    return _delivery_line("Новости КРТ", krt_delivery_state())
+
+
+def _normatives_delivery_line() -> str:
+    return _delivery_line("Нормативная база", normatives_delivery_state())
 
 
 def _status_message(chat_id: int, user_id: int) -> None:
@@ -791,6 +803,10 @@ def _status_message(chat_id: int, user_id: int) -> None:
         # строки «что сделала доставка» тишина в чате неотличима от тишины
         # каталога. Спрашивают про это бота — здесь она и стоит.
         + _krt_delivery_line()
+        # Вторая очередь того же устройства. Владелец спрашивал «мне ничего не
+        # пришло» про новости КРТ — про нормативы ответить было бы нечем тем
+        # же образом: молчание сторожа неотличимо от молчания источников.
+        + _normatives_delivery_line()
         # Справочник устаревает тихо: расчёт идёт, числа выглядят как обычно,
         # а под ними прошлогодний тариф. Напоминание тут потому, что /status
         # смотрят, когда что-то проверяют.
@@ -1609,26 +1625,58 @@ def _deliver_normatives_announcements() -> None:
     Получают владельцы: нормативная база — их ответственность, отдельной
     подписки под неё не заводим.
     """
+    _NORMATIVES_DELIVERY.update({"at": int(time.time()), "taken": 0, "targets": 0,
+                                 "sent": 0, "last_error": "", "stopped_by": ""})
+    if not core._telegram_token():
+        _NORMATIVES_DELIVERY["stopped_by"] = "нет TELEGRAM_BOT_TOKEN"
+        return
+    if not core._telegram_webhook_enabled():
+        _NORMATIVES_DELIVERY["stopped_by"] = "вебхук выключен на этом хосте"
+        return
     admins = core.usage_admin_ids()
-    if not admins or not core._telegram_token() or not core._telegram_webhook_enabled():
+    _NORMATIVES_DELIVERY["targets"] = len(admins)
+    if not admins:
+        # Очередь НЕ забираем: забранное уже не вернуть, а адресат появится,
+        # как только будет задан DEVELOPAID_ADMIN_IDS. Молчание при этом
+        # названо — иначе оно неотличимо от «в базе ничего не менялось».
+        _NORMATIVES_DELIVERY["stopped_by"] = "некому слать: DEVELOPAID_ADMIN_IDS пуст"
         return
     remote = core._projects_remote_url("/internal/normatives/announcements")
-    if remote:
-        payload = {"code": "normatives-announcements", "chat_id": 0,
-                   "sign": core._web_login_sign("normatives-announcements", 0)}
-        data = core._core_post(remote, payload, 30.0)
-        records = list(data.get("announcements") or [])
-    else:
-        # Один хост на всё — очередь та же, только идти за ней некуда.
-        take = getattr(core.app.state, "normatives_announcements_take", None)
-        records = list(take()) if take is not None else []
+    try:
+        if remote:
+            payload = {"code": "normatives-announcements", "chat_id": 0,
+                       "sign": core._web_login_sign("normatives-announcements", 0)}
+            data = core._core_post(remote, payload, 30.0)
+            records = list(data.get("announcements") or [])
+        else:
+            # Один хост на всё — очередь та же, только идти за ней некуда.
+            take = getattr(core.app.state, "normatives_announcements_take", None)
+            if take is None:
+                _NORMATIVES_DELIVERY["stopped_by"] = "реестра на этом хосте нет"
+                return
+            records = list(take())
+    except Exception as exc:  # noqa: BLE001
+        # Ядро не ответило — это ответ, а не «изменений нет».
+        _NORMATIVES_DELIVERY.update({"stopped_by": "очередь у ядра не забрана",
+                                     "last_error": str(exc)[:300]})
+        raise
+    _NORMATIVES_DELIVERY["taken"] = len(records)
     if not records:
+        _NORMATIVES_DELIVERY["stopped_by"] = "очередь пуста"
         return
+    text = _normatives_announcement_text(records)
+    sent = 0
     for chat_id in admins:
         try:
-            core._telegram_send_message(chat_id, _normatives_announcement_text(records))
-        except Exception:
-            pass
+            core._telegram_send_message(chat_id, text)
+            sent += 1
+        except Exception as exc:  # noqa: BLE001
+            # Один недоставленный адресат не отменяет рассылку остальным, а
+            # молчаливый отказ ВСЕХ неотличим от отсутствия изменений.
+            _NORMATIVES_DELIVERY["last_error"] = str(exc)[:300]
+            continue
+    _NORMATIVES_DELIVERY.update({"sent": sent, "delivered_at": int(time.time()),
+                                 "stopped_by": "" if sent else "ни один адресат не принял"})
 
 
 _NORMATIVES_RESULT_WORDS = {
@@ -1701,6 +1749,20 @@ def krt_delivery_state() -> dict[str, Any]:
     return dict(_KRT_DELIVERY)
 
 
+# Вторая очередь того же устройства: изменения нормативной базы. Пока её заход
+# молчал, «в базе ничего не менялось», «адресатов нет», «ядро не ответило» и
+# «сторож выключен» были одним и тем же молчанием — а спрашивают про это бота.
+_NORMATIVES_DELIVERY: dict[str, Any] = {
+    "at": 0, "stopped_by": "ещё не заходили", "taken": 0,
+    "targets": 0, "sent": 0, "last_error": "", "delivered_at": 0,
+}
+
+
+def normatives_delivery_state() -> dict[str, Any]:
+    """Снимок последнего захода доставки изменений нормативной базы."""
+    return dict(_NORMATIVES_DELIVERY)
+
+
 @app.get("/krt/delivery")
 def krt_delivery() -> dict[str, Any]:
     """Что сделала доставка новостей КРТ — измеримо со стороны.
@@ -1715,6 +1777,22 @@ def krt_delivery() -> dict[str, Any]:
             "webhook_host": bool(core._telegram_token()
                                  and core._telegram_webhook_enabled()),
             "queue_at_core": bool(core._projects_remote_url("/internal/krt/announcements")),
+            "period_seconds": 900}
+
+
+@app.get("/normatives/delivery")
+def normatives_delivery() -> dict[str, Any]:
+    """Что сделала доставка изменений нормативной базы — измеримо со стороны.
+
+    Пара к `/api/normatives/watch`: тот отвечает за проверку и очередь на
+    ядре, этот — за того, кто её забирает. Ни адресатов, ни текста здесь нет —
+    только числа.
+    """
+    return {**normatives_delivery_state(),
+            "webhook_host": bool(core._telegram_token()
+                                 and core._telegram_webhook_enabled()),
+            "queue_at_core": bool(
+                core._projects_remote_url("/internal/normatives/announcements")),
             "period_seconds": 900}
 
 
