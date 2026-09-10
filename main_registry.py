@@ -13,10 +13,12 @@ from market_search.ui_v6 import install as install_market_ui, install_price_hint
 from mpt_bot_menu import install as install_mpt_bot_menu
 from mpt_extension import install as install_mpt
 from normatives_registry import install as install_normatives
+from pdf_first_page_extension import install as install_pdf_first_page
 from telegram_user_registry import install
 
 app = _base.app
 core = _base.core
+install_pdf_first_page(core)
 install_mpt(_base)
 install_mpt_bot_menu(_base)
 registry = install(_base)
@@ -93,6 +95,7 @@ def _plato_result(trace_id: str):
 market_search.cadastre_lookup = _cadastre_from_egrn
 market_search.plato_ask = _plato_ask
 market_search.plato_result = _plato_result
+
 def _address_suggest(query: str, limit: int):
     """Адресные подсказки кабинета — тот же DaData, что у движка и ленты `/ia`.
 
