@@ -1887,6 +1887,7 @@ def _krt_announcement_text(records: list[dict]) -> str:
         named = [(name, r) for name, r in named if name]
         if not named:
             continue
+        named = _krt_news_order(kind, named)
         one, many = _KRT_NEWS[kind]
         head = one if len(named) == 1 else many.format(n=len(named))
         if lines:
@@ -1917,6 +1918,40 @@ def _krt_announcement_text(records: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _krt_news_order(kind: str, named: list[tuple[str, dict]]) -> list[tuple[str, dict]]:
+    """Порядок строк: в сообщение помещается двенадцать, и важно, КАКИЕ.
+
+    Пачка приходит скопом — 168 проектов решений разом, — а показать можно
+    дюжину, дальше «…и ещё 156». Пока порядок был случайным, наверх попадали
+    документы 2023–2024 годов, а свежайшие тонули в остатке (экран владельца,
+    09.09.2026): та же ошибка, что при чтении чужого раздела с потолком по
+    времени — сначала читают то, за чем пришли.
+
+    У решения важнее свежесть — сверху позднее опубликованные; у торгов
+    важнее срочность — сверху те, чьи заявки кончаются раньше. У новой
+    площадки ключа сортировки нет вовсе, и выдумывать его нечего: порядок
+    остаётся тем, в каком её увидели.
+    """
+    from auction_search import parsing as _parsing
+
+    if kind == "decision":
+        def freshness(pair: tuple[str, dict]) -> tuple[int, int]:
+            try:
+                stamp = int(float(str(pair[1].get("published_at") or 0)))
+            except (TypeError, ValueError):
+                stamp = 0
+            # Документ без даты — «не знаем», и наверх он не поднимается:
+            # ноль там встал бы рядом с самыми старыми, а это утверждение.
+            return (0 if stamp else 1, -stamp)
+        return sorted(named, key=freshness)
+    if kind == "tender":
+        def urgency(pair: tuple[str, dict]) -> tuple[int, float]:
+            moment = _parsing.deadline_moment(pair[1].get("deadline"))
+            return (1, 0.0) if moment is None else (0, moment.timestamp())
+        return sorted(named, key=urgency)
+    return named
+
+
 def _krt_news_url(record: dict) -> str:
     """Адрес новости, если он пришёл вместе с событием и это адрес.
 
@@ -1937,11 +1972,17 @@ def _krt_news_fact(kind: str, record: dict) -> str:
     """
     import html as _html
 
+    from auction_search import parsing as _parsing
+
+    # Печатает поверхность, а СЧИТАЕТ разбор: отметка города приезжает
+    # секундами эпохи, срок площадки — её собственной записью. Оба здесь
+    # печатались сырыми: «решение от 1688749200» и «заявки до 09.10.26 1»
+    # (обрубок часа от резки строки по длине). Своего разбора даты у бота нет.
     if kind == "decision":
-        when = str(record.get("published_at") or "").strip()
+        when = _parsing.stamp_day(record.get("published_at"))
         return f" — решение от {_html.escape(when)}" if when else ""
     if kind == "tender":
-        deadline = str(record.get("deadline") or "").strip()[:10]
+        deadline = _parsing.deadline_label(record.get("deadline"))
         return f" — заявки до {_html.escape(deadline)}" if deadline else ""
     return ""
 
