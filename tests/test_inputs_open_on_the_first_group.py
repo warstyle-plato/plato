@@ -143,6 +143,12 @@ def render(inputs: dict, tail: str = "console.log(JSON.stringify(groups()));",
         # ошибка правки страницы.
         PAGE[PAGE.index("const SCHEDULE_FIELDS={"):PAGE.index("function renderPfStepsEditor(")],
         page_function("renderInputs"),
+        # Форма пишет подпись под полями паркинга объектов сама: ячейки она же
+        # и создаёт, а пустая ячейка под нулём читается как «гаража нет».
+        PAGE[PAGE.index("const OBJECT_PARKING_PREFIXES="):
+             PAGE.index(";", PAGE.index("const OBJECT_PARKING_PREFIXES=")) + 1],
+        page_function("renderObjectParkingFieldNotes"),
+        page_function("objectParkingFieldNote"),
         DOM.replace("__PHASING__", json.dumps(phasing or {"enabled": False})),
         f"const inputs=Object.assign(structuredClone(INPUT_DEFAULT),{json.dumps(inputs)});",
         "renderInputs();",
