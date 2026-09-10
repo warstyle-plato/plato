@@ -13,7 +13,7 @@ from market_search.ui_v6 import install as install_market_ui, install_price_hint
 from mpt_bot_menu import install as install_mpt_bot_menu
 from mpt_extension import install as install_mpt
 from normatives_registry import install as install_normatives
-from pdf_first_page_extension import install as install_pdf_first_page
+from pdf_first_page_v2 import install as install_pdf_first_page
 from telegram_user_registry import install
 
 app = _base.app
@@ -99,11 +99,13 @@ market_search.plato_result = _plato_result
 def _address_suggest(query: str, limit: int):
     """Адресные подсказки кабинета — тот же DaData, что у движка и ленты `/ia`.
 
-    Свой геокодер в модуле рынка не заводится: две реализации разошлись бы на
-    нормализации, и одна строка приводила бы к разным точкам.
+    Свой геокодер в модуле рынка знает только Яндекс и Nominatim, а ключа
+    Яндекса на ядре нет — значит на деле один Nominatim. «Москва, Саввинская
+    наб, д 25» он не находит вовсе, и кабинет отвечал «место не найдено» на
+    адрес, который основной сервис разбирает без запинки.
 
-    Без ключа движок возвращает пустой список — и «ключа нет» стало бы
-    неотличимо от «адрес не найден». Отсутствие доступа называется вслух.
+    Третий случай одной и той же ошибки за день: своё правило там, где уже
+    есть общее. Первым был разбор ввода у кнопки цены, вторым — подсказки.
     """
     if not os.getenv("DADATA_API_KEY", "").strip():
         raise RuntimeError("адресные подсказки выключены: не задан DADATA_API_KEY")
