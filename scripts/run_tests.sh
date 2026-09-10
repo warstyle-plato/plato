@@ -14,6 +14,11 @@
 # Доли считает `test_shards.py`, и объединение долей ВСЕГДА равно всему
 # набору при любом их числе. Поэтому разное число долей у PR и у сборки —
 # не дыра в покрытии: обе гоняют всё, просто разными горстями.
+# `-rs` печатает ПРИЧИНУ каждого пропуска, а не только их число. Пропуск —
+# честный ответ («на этой машине нечем»), но невидимая причина превращает его
+# в молчание: три недели в CLAUDE.md стояло «82 браузерные проверки CI не
+# гонял», а измерение показало 29 браузерных — остальное другие семьи, и
+# спутать их было нечем, потому что в логе стояло голое «N skipped».
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -23,7 +28,7 @@ shards="${TEST_SHARDS:-1}"
 shard="${TEST_SHARD:-1}"
 
 if [ "$shards" -le 1 ]; then
-  exec python3 -m pytest tests -q --durations=25
+  exec python3 -m pytest tests -q -rs --durations=25
 fi
 
 mapfile -t files < <(python3 scripts/test_shards.py --shards "$shards" --shard "$shard")
@@ -34,4 +39,4 @@ if [ "${#files[@]}" -eq 0 ]; then
   exit 1
 fi
 echo "Доля $shard из $shards: файлов ${#files[@]}"
-exec python3 -m pytest "${files[@]}" -q --durations=25
+exec python3 -m pytest "${files[@]}" -q -rs --durations=25
