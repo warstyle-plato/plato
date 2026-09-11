@@ -1,0 +1,101 @@
+name: Выкатка в Yandex Cloud
+
+# Второй этап CI/CD: build-yandex.yml только собирает и публикует образ.
+# Этот workflow запускается ПОСЛЕ успешной сборки main и поднимает именно
+# тот commit-tag, который только что прошёл тесты и был опубликован.
+#
+# Push-триггер только на сам этот файл нужен один раз при восстановлении
+# контура: после merge он выкатит уже опубликованный тег prod. Обычные правки
+# приложения этим trigger не ловятся, поэтому прод никогда не обновляется
+# раньше завершения build-yandex.yml.
+
+on:
+  workflow_run:
+    workflows: ["Сборка образа в Yandex Container Registry"]
+    types: [completed]
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/deploy-yandex.yml"
+
+concurrency:
+  group: deploy-yandex
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Выкатка на ядро
+    if: >-
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main') ||
+      github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Выбрать образ
+        id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            echo "image_ref=${{ github.event.workflow_run.head_sha }}" >> "$GITHUB_OUTPUT"
+            echo "expected_commit=${{ github.event.workflow_run.head_sha }}" >> "$GITHUB_OUTPUT"
+          else
+            # Bootstrap после восстановления workflow: build текущего main уже
+            # завершён и тег prod указывает на готовый образ.
+            echo "image_ref=prod" >> "$GITHUB_OUTPUT"
+            echo "expected_commit=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Запуск безопасной выкатки по SSH
+        uses: appleboy/ssh-action@v1
+        env:
+          DEPLOY_REF: ${{ steps.target.outputs.image_ref }}
+        with:
+          host: ${{ secrets.CORE_HOST }}
+          username: ${{ secrets.CORE_USER }}
+          key: ${{ secrets.CORE_SSH_KEY }}
+          envs: DEPLOY_REF
+          command_timeout: 15m
+          script: |
+            set -eu
+            cd ~/plato
+            git fetch --quiet origin main
+            git checkout --quiet -B main origin/main
+            sh deploy-developaid.sh "$DEPLOY_REF"
+
+      - name: Проверить production снаружи
+        env:
+          EXPECTED_COMMIT: ${{ steps.target.outputs.expected_commit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          body=$(mktemp)
+          trap 'rm -f "$body"' EXIT
+          for attempt in $(seq 1 20); do
+            if curl -fsS --max-time 10 https://developaid.ru/health -o "$body"; then
+              if python3 - "$body" "$EXPECTED_COMMIT" <<'PY'
+import json, sys
+path, expected = sys.argv[1], sys.argv[2]
+with open(path, encoding="utf-8") as fh:
+    data = json.load(fh)
+if data.get("status") != "ok":
+    raise SystemExit(f"status={data.get('status')!r}")
+if expected and data.get("commit") != expected:
+    raise SystemExit(f"commit={data.get('commit')!r}, expected={expected!r}")
+print(f"production OK: version={data.get('version')}, commit={data.get('commit')}")
+PY
+              then
+                exit 0
+              fi
+            fi
+            sleep 6
+          done
+          echo "Production не подтвердил новую версию за две минуты." >&2
+          cat "$body" >&2 2>/dev/null || true
+          exit 1
