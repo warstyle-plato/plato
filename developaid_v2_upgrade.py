@@ -11,7 +11,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
@@ -270,6 +270,49 @@ def parse_tep_text(text: str, tep_block: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _drop_get_routes(app: FastAPI, paths: set[str]) -> None:
+    """Replace only the GET surfaces extended by v2, without middleware.
+
+    FastAPI forbids adding middleware after the ASGI application has started.
+    Some integration tests intentionally import ``main_registry`` after a
+    TestClient has already started the shared app, so route replacement is the
+    late-install-safe mechanism here. The router itself supports adding and
+    removing routes at that point.
+    """
+    app.router.routes[:] = [
+        route for route in app.router.routes
+        if not (
+            getattr(route, "path", None) in paths
+            and "GET" in set(getattr(route, "methods", ()) or ())
+        )
+    ]
+
+
+def _promote_exact_get(app: FastAPI, exact_path: str, before_path: str) -> None:
+    """Put an exact route before an earlier dynamic route that would catch it."""
+    exact_index = next(
+        (i for i, route in enumerate(app.router.routes)
+         if getattr(route, "path", None) == exact_path
+         and "GET" in set(getattr(route, "methods", ()) or ())),
+        None,
+    )
+    before_index = next(
+        (i for i, route in enumerate(app.router.routes)
+         if getattr(route, "path", None) == before_path
+         and "GET" in set(getattr(route, "methods", ()) or ())),
+        None,
+    )
+    if exact_index is None or before_index is None or exact_index < before_index:
+        return
+    route = app.router.routes.pop(exact_index)
+    before_index = next(
+        i for i, candidate in enumerate(app.router.routes)
+        if getattr(candidate, "path", None) == before_path
+        and "GET" in set(getattr(candidate, "methods", ()) or ())
+    )
+    app.router.routes.insert(before_index, route)
+
+
 def install(app: FastAPI, core: Any) -> None:
     @app.get("/v2/assets/upgrade.js", include_in_schema=False)
     async def upgrade_script() -> FileResponse:
@@ -298,36 +341,43 @@ def install(app: FastAPI, core: Any) -> None:
             )
         return JSONResponse(parsed, headers=_NO_STORE)
 
-    @app.middleware("http")
-    async def v2_upgrade(request: Request, call_next):
-        path = request.url.path
-        if request.method == "GET" and path in {"/v2", "/v2/"}:
-            source = (_FRONTEND / "index.html").read_text(encoding="utf-8")
-            marker = '<script src="/v2/assets/app.js" defer></script>'
-            if marker not in source:
-                raise RuntimeError("В index.html /v2 не найден app.js")
-            injected = '<script src="/v2/assets/upgrade.js" defer></script>\n  ' + marker
-            return HTMLResponse(source.replace(marker, injected, 1), headers=_REVALIDATE)
+    # The stock v2 routes were installed immediately before this extension.
+    # Replace only the three GET surfaces we need; no application-wide
+    # middleware is involved, so late imports in the integration suite remain
+    # valid and unrelated pages are untouched.
+    _drop_get_routes(app, {"/v2", "/v2/", "/api/v2/projects"})
 
-        if request.method == "GET" and path == "/api/v2/projects":
-            catalog = [{
-                "slug": "new", "name": "Новый проект", "region": "",
-                "subtitle": "Умолчания движка · без демонстрационной предустановки",
-                "demo": False,
-            }]
-            catalog.extend(demo.list_scenarios())
-            return JSONResponse(catalog, headers=_NO_STORE)
+    @app.get("/v2", include_in_schema=False)
+    @app.get("/v2/", include_in_schema=False)
+    async def upgraded_index() -> HTMLResponse:
+        source = (_FRONTEND / "index.html").read_text(encoding="utf-8")
+        marker = '<script src="/v2/assets/app.js" defer></script>'
+        if marker not in source:
+            raise RuntimeError("В index.html /v2 не найден app.js")
+        injected = '<script src="/v2/assets/upgrade.js" defer></script>\n  ' + marker
+        return HTMLResponse(source.replace(marker, injected, 1), headers=_REVALIDATE)
 
-        if request.method == "GET" and path == "/api/v2/projects/new":
-            raw = str(request.query_params.get("sensitivity", "true")).strip().lower()
-            sensitivity = raw not in {"0", "false", "no", "off"}
-            try:
-                result = _new_project(core, sensitivity)
-            except HTTPException:
-                raise
-            except Exception as exc:  # noqa: BLE001
-                locate = getattr(core, "_error_location", lambda error: str(error))
-                raise HTTPException(500, str(locate(exc))[:300]) from exc
-            return JSONResponse(result, headers=_NO_STORE)
+    @app.get("/api/v2/projects")
+    def upgraded_projects() -> JSONResponse:
+        catalog = [{
+            "slug": "new", "name": "Новый проект", "region": "",
+            "subtitle": "Умолчания движка · без демонстрационной предустановки",
+            "demo": False,
+        }]
+        catalog.extend(demo.list_scenarios())
+        return JSONResponse(catalog, headers=_NO_STORE)
 
-        return await call_next(request)
+    @app.get("/api/v2/projects/new")
+    def upgraded_new_project(sensitivity: bool = True) -> JSONResponse:
+        try:
+            result = _new_project(core, sensitivity)
+        except HTTPException:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            locate = getattr(core, "_error_location", lambda error: str(error))
+            raise HTTPException(500, str(locate(exc))[:300]) from exc
+        return JSONResponse(result, headers=_NO_STORE)
+
+    # `/api/v2/projects/{slug}` was registered by the stock module first and
+    # would otherwise treat `new` as a demo slug. Exact path wins by order.
+    _promote_exact_get(app, "/api/v2/projects/new", "/api/v2/projects/{slug}")
