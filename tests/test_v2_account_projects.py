@@ -1,5 +1,10 @@
 from pathlib import Path
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+import developaid_v2_account_projects as account_projects
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -25,16 +30,14 @@ def test_v2_old_demo_query_does_not_override_neutral_start():
 
 
 def test_v2_account_bridge_is_loaded_before_stock_application():
-    shell = (ROOT / "developaid_v2_account_projects.py").read_text(encoding="utf-8")
     registry = (ROOT / "main_registry.py").read_text(encoding="utf-8")
+    app = FastAPI()
+    account_projects.install(app)
+    html = TestClient(app).get("/v2/").text
 
     upgrade = '<script src="/v2/assets/upgrade.js" defer></script>'
     accounts = '<script src="/v2/assets/account-projects.js" defer></script>'
     stock = '<script src="/v2/assets/app.js" defer></script>'
 
-    assert "/v2/assets/account-projects.js" in shell
-    assert upgrade in shell
-    assert accounts in shell
-    assert stock in shell
-    assert shell.index(upgrade) < shell.index(accounts) < shell.index(stock)
+    assert html.index(upgrade) < html.index(accounts) < html.index(stock)
     assert "install_v2_account_projects(app)" in registry
