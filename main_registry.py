@@ -18,6 +18,24 @@ from telegram_user_registry import install
 
 app = _base.app
 core = _base.core
+
+# Production runs through this registry. The underlying legacy module is kept
+# untouched by presentation-only patches because its source is a regression
+# contract; expose the release number here as well so a generated report cannot
+# look identical to the previous production image after a PDF hotfix.
+# Never downgrade a newer core if another release lands before this branch.
+def _version_tuple(value: str) -> tuple[int, ...]:
+    try:
+        return tuple(int(part) for part in str(value).split("."))
+    except (TypeError, ValueError):
+        return (0,)
+
+
+_RELEASE_VERSION = "0.23.10"
+if _version_tuple(getattr(core, "VERSION", "0")) < _version_tuple(_RELEASE_VERSION):
+    core.VERSION = _RELEASE_VERSION
+    _base.VERSION = _RELEASE_VERSION
+
 install_pdf_first_page(core)
 install_mpt(_base)
 install_mpt_bot_menu(_base)
