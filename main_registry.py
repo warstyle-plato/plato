@@ -6,6 +6,7 @@ import main as _base
 from auction_search import install as install_auction_search
 from developaid_statistics_page import install as install_statistics
 from developaid_v2 import install as install_v2
+from developaid_v2_upgrade import install as install_v2_upgrade
 from guide import install as install_guide
 from ia_preview import install as install_ia_preview
 from market_search import install as install_market_search
@@ -180,6 +181,9 @@ def _local_asset(url: str):
 market_search.local_asset = _local_asset
 market_search.geocode_address = _geocode_for_market
 install_v2(app)
+# UI-расширение ставится после штатных маршрутов v2 и использует тот же core:
+# Telegram-сессия, нейтральный старт и OCR не заводят второй расчётный движок.
+install_v2_upgrade(app, core)
 # Тестовый адрес новой информационной архитектуры: та же PAGE, другой порядок.
 install_ia_preview(app, core)
 # Руководство пользователя — обычная страница приложения на /guide.
