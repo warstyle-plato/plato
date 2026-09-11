@@ -6,6 +6,7 @@ import main as _base
 from auction_search import install as install_auction_search
 from developaid_statistics_page import install as install_statistics
 from developaid_v2 import install as install_v2
+from developaid_v2_account_projects import install as install_v2_account_projects
 from developaid_v2_upgrade import install as install_v2_upgrade
 from guide import install as install_guide
 from ia_preview import install as install_ia_preview
@@ -184,6 +185,10 @@ install_v2(app)
 # UI-расширение ставится после штатных маршрутов v2 и использует тот же core:
 # Telegram-сессия, нейтральный старт и OCR не заводят второй расчётный движок.
 install_v2_upgrade(app, core)
+# Сохранённые проекты используют ту же Telegram-сессию и те же /projects/*,
+# а не отдельное хранилище v2. Ставится после upgrade, чтобы финальная /v2
+# загрузила account-projects.js между auth/photo hook и штатным app.js.
+install_v2_account_projects(app)
 # Тестовый адрес новой информационной архитектуры: та же PAGE, другой порядок.
 install_ia_preview(app, core)
 # Руководство пользователя — обычная страница приложения на /guide.
