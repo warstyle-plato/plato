@@ -91,6 +91,17 @@ def tep_cell_stand() -> str:
         function("tepFillByRatios"),
         function("tepApplyTransfer"),
         function("tepCellChanged"),
+        # Пересборка строки по долям — тот же путь, что правка ячейки:
+        # «наши» и правка доли обязаны считать переданное так же.
+        "let tepRatioComplaint='';",
+        "const TEP_ROW_SWITCH={};",
+        "let RATIO_STORE={};",
+        function("tepRatioChain"),
+        function("tepRatioWrite"),
+        function("tepRatioChangedKeys"),
+        function("refillTepRow"),
+        function("tepRatioSet"),
+        function("tepRatioReset"),
     ]
     return "\n".join(pieces) + "\n"
 

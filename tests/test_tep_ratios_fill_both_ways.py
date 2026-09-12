@@ -155,11 +155,17 @@ def test_the_ratios_stand_under_their_own_numbers():
     Прежде доли лежали под раскрытием над таблицей — свёрнутым по умолчанию, и
     это читалось как «их нет вовсе» (владелец, 21.08.2026). Колонкой слева было
     бы непонятно: доля без своего числа рядом не читается.
+
+    Утверждение держится за ЧИСЛО, а не за имя колонки: «% общей» строит ВАЛ,
+    и с тех пор как переданное городу вычитается из продаваемой, вал лежит в
+    полезной. Прежняя проверка держала литерал `col==='saleable'` — то есть
+    спорила с собственной подписью и упала бы на верной правке.
     """
     body = core.PAGE[core.PAGE.index("const ratioField=col=>{"):]
     body = body[:body.index("['gns','total_area'")]
     assert "col==='total_area'?'total'" in body, "«% ГНС» — под общей площадью"
-    assert "col==='saleable'?'saleable'" in body, "«% общей» — под продаваемой"
+    assert "col==='useful'?'saleable'" in body, "«% общей» — под полезной: доля строит вал"
+    assert "col==='saleable'?" not in body, "под продаваемой доли быть не должно: там вал минус переданное"
     assert "% ГНС" in body and "% общей" in body
     assert "tepRatioSet(" in body, "поле правит долю, а не только показывает её"
     assert 'id="tepRatioNote"' in core.PAGE

@@ -76,7 +76,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.23.18"
+VERSION = "0.23.19"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -43069,9 +43069,15 @@ function renderTep(){
    // без своего числа рядом не читается.
    const chain=TEP_RATIOS[key]?tepRatioChain(tepRatio(key)):null;
    const own=chain&&tepRatioChangedKeys().includes(key);
+   // «% общей» стоит под ПОЛЕЗНОЙ, а не под продаваемой: доля строит вал, а в
+   // продаваемой лежит вал МИНУС переданное городу. Пока передачи нет, числа
+   // равны и разницы не видно; при передаче 4 500 м² под 9 420 стояло
+   // «72,22 % общей», то есть подпись описывала соседнюю величину — «ну вот
+   // как это понимать?» (владелец, 12.09.2026). Правило то же, что было
+   // записано здесь с самого начала, просто число сменило колонку.
    const ratioField=col=>{
     if(!chain)return '';
-    const which=col==='total_area'?'total':(col==='saleable'?'saleable':'');
+    const which=col==='total_area'?'total':(col==='useful'?'saleable':'');
     if(!which)return '';
     const value=Math.round((which==='total'?chain[0]:chain[1])*1e4)/100;
     const of=which==='total'?'% ГНС':'% общей';
@@ -43295,22 +43301,29 @@ function refillTepRow(key){
  const r=tepRatio(key);
  if(!r)return;
  const row=tep[key];
- const gns=Number(row.gns||0),sale=Number(row.saleable||0);
+ const gns=Number(row.gns||0);
+ // Вал полезной площади: продаваемая уже без переданного, полезная — с ним.
+ const gross=Math.max(Number(row.useful||0),Number(row.saleable||0)+Number(row.transfer||0));
  const say=text=>{tepRefillNote[key]=text;renderTep()};
  const sw=TEP_ROW_SWITCH[key];
  if(sw&&!inputs[sw[0]]){
   say('Объект выключен во вводных: включите «'+sw[1]+' → Объект включен», иначе строка обнуляется при каждом пересчёте.');
   return;
  }
- if(gns<=0&&sale<=0){
+ if(gns<=0&&gross<=0){
   say('Нечего пересчитывать: впишите ГНС или продаваемую площадь — остальное достроится само.');
   return;
  }
+ // Пересобирается ВАЛ, а не остаток: в `saleable` лежит уже вычтенное
+ // переданное, и пересчёт от него уменьшал бы строку на него второй раз.
  const base=gns>0?{gns:gns,total_area:0,saleable:0,useful:0}
-                 :{gns:0,total_area:0,saleable:sale,useful:0};
+                 :{gns:0,total_area:0,saleable:gross,useful:0};
  const filled=tepFillByRatios(key,base);
  ['gns','total_area','saleable','useful'].forEach(field=>{row[field]=filled[field]});
- tepRefillNote[key]='';
+ // Переданное городу вычитается ТЕМ ЖЕ тождеством, что и в правке ячейки:
+ // без этого правка доли и кнопка «наши» возвращали отданные метры в продажу
+ // (замер 12.09.2026: 4 500 м² квартир снова становились продаваемыми).
+ tepApplyTransfer(key,filled.saleable);
  // Посчитанное возвращается во вводные — иначе `syncTep` вернёт прежнее.
  if(tepRowToInputs(key))renderInputs();
  renderTep();

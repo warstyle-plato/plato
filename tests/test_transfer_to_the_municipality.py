@@ -339,3 +339,65 @@ def test_the_social_object_is_named_as_transferred():
         "inputs": inputs, "tep": tep,
     })
     assert "Передаётся городу" in pdf_text(data)
+
+
+def _refill(edits: list) -> dict:
+    """Прогон настоящих функций страницы: правка ячейки И пересборка по долям.
+
+    Стенд объявлен один раз (`page_blocks.tep_cell_stand`) и несёт теперь оба
+    пути: `tepCellChanged` и `refillTepRow` с её вызывающими. Две копии стенда
+    расходятся молча, и одна из них однажды проверяла бы прошлое поведение.
+    """
+    if not shutil.which("node"):
+        pytest.skip("node недоступен")
+    row = copy.deepcopy(core.TEP_DEFAULT["apartments"])
+    script = page_blocks.tep_cell_stand() + (
+        "tep={apartments:" + json.dumps(row, ensure_ascii=False) + "};\n"
+        + "\n".join(edits) + "\n"
+        + "const r=tep.apartments;"
+        "console.log(JSON.stringify({gns:r.gns,total:r.total_area,useful:r.useful,"
+        "saleable:r.saleable,transfer:r.transfer}));\n")
+    done = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout.strip().splitlines()[-1])
+
+
+def test_a_ratio_edit_does_not_return_the_given_metres_to_sale():
+    """Правка доли и кнопка «наши» пересобирают ВАЛ и снова вычитают переданное.
+
+    Замер 12.09.2026 на живых функциях страницы: при переданных 4 500 м²
+    `tepRatioSet` и `tepRatioReset` возвращали продаваемую к 13 919,8 — то есть
+    отданные городу метры снова становились товаром, и строка выглядела верной.
+    Правило «соседняя ячейка возвращала отданное в продажу» было закрыто в
+    правке ячейки и не защитило соседний путь.
+    """
+    start = ["tepCellChanged('apartments','gns',21415);",
+             "tepCellChanged('apartments','transfer',4500);"]
+    handed = _refill(start)
+    # Предохранитель: без передачи проверять нечего.
+    assert handed["transfer"] == pytest.approx(4500.0)
+    assert handed["saleable"] == pytest.approx(handed["useful"] - 4500.0, abs=0.2)
+
+    after_ratio = _refill(start + ["tepRatioSet('apartments','saleable',72.22);"])
+    after_reset = _refill(start + ["tepRatioReset('apartments');"])
+    for name, got in (("правка доли", after_ratio), ("кнопка «наши»", after_reset)):
+        assert got["transfer"] == pytest.approx(4500.0), name
+        # Вал не съеден и не удвоен: полезная осталась валом строки.
+        assert got["useful"] == pytest.approx(handed["useful"], abs=1.0), name
+        # И переданное по-прежнему вычтено.
+        assert got["saleable"] == pytest.approx(got["useful"] - 4500.0, abs=0.2), name
+
+
+def test_the_refill_rebuilds_the_gross_not_the_remainder():
+    """Пересборка от продаваемой берёт ВАЛ: в ячейке лежит остаток.
+
+    Иначе переданное вычиталось бы второй раз — строка молча уменьшалась на
+    него при каждом нажатии «наши».
+    """
+    # Состояние задаётся прямо: через правку ячейки нулевой ГНС не получить —
+    # доли достраивают её из продаваемой. Так строка приезжает из снимка.
+    start = ["Object.assign(tep.apartments,{gns:0,total_area:0,"
+             "useful:13919.8,saleable:9419.8,transfer:4500});"]
+    got = _refill(start + ["tepRatioReset('apartments');"])
+    assert got["useful"] == pytest.approx(13919.8, abs=1.0)
+    assert got["saleable"] == pytest.approx(9419.8, abs=1.0)
