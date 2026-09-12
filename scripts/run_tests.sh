@@ -19,6 +19,10 @@
 # в молчание: три недели в CLAUDE.md стояло «82 браузерные проверки CI не
 # гонял», а измерение показало 29 браузерных — остальное другие семьи, и
 # спутать их было нечем, потому что в логе стояло голое «N skipped».
+# Буквы перечисляют ВСЁ, что нужно видеть, а не только добавленное: `-rs`
+# ЗАМЕНЯЕТ умолчание `-rfE`, и на первом же прогоне 12.09.2026 имена упавших
+# тестов исчезли из итоговой сводки — «1 failed» стояло, а какой именно,
+# приходилось искать глазами в теле лога. Отсюда `f` и `E` рядом с `s`.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -28,7 +32,7 @@ shards="${TEST_SHARDS:-1}"
 shard="${TEST_SHARD:-1}"
 
 if [ "$shards" -le 1 ]; then
-  exec python3 -m pytest tests -q -rs --durations=25
+  exec python3 -m pytest tests -q -rsfE --durations=25
 fi
 
 mapfile -t files < <(python3 scripts/test_shards.py --shards "$shards" --shard "$shard")
@@ -39,4 +43,4 @@ if [ "${#files[@]}" -eq 0 ]; then
   exit 1
 fi
 echo "Доля $shard из $shards: файлов ${#files[@]}"
-exec python3 -m pytest "${files[@]}" -q -rs --durations=25
+exec python3 -m pytest "${files[@]}" -q -rsfE --durations=25

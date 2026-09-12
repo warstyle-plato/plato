@@ -87,6 +87,52 @@ def test_the_guard_falls_on_a_planted_example(tmp_path):
     assert any(root in "/opt/" + "pw-browsers/x" for root in _ROOTS)
 
 
+# Признаки собираются из кусков по той же причине, что образец выше: проверка,
+# написанная как «такой строки быть не должно», иначе запрещает саму себя — её
+# объяснение содержит ровно то, что она ищет.
+_FROM_DISK = "as_" + "uri()"
+_SERVED_BY_INTERCEPT = "route." + "fulfill"
+
+
+def test_a_page_whose_own_requests_matter_is_not_opened_from_disk():
+    """Страницу проверяют по тому адресу, по которому её открывает человек.
+
+    Две проверки открывали собранную страницу файлом с диска, а её собственный
+    запрос к `/tep/...` перехватывали и обслуживали TestClient'ом. Держалось
+    это на том, что Chromium вообще выпускает такой запрос по схеме файла, а
+    playwright его перехватывает: в сборке 1194 так и было, в 151.0.7922.34
+    (playwright 1234) перестало — и обе покраснели на ВЕРНОМ коде при первом же
+    прогоне с браузером на CI, каждая на своём «число не доехало». Такой схемы
+    у продукта нет нигде: он отвечает по http, и поднять его на порт умеет
+    `browser.serve`.
+
+    Диску остаются проверки, которым от страницы нужна она сама — разметка,
+    геометрия, состояние: там посторонние запросы глушит `route.abort()`, и
+    глушить их можно в любом браузере.
+    """
+    guilty = []
+    for path in _sources():
+        text = path.read_text(encoding="utf-8")
+        if _FROM_DISK in text and _SERVED_BY_INTERCEPT in text:
+            guilty.append(path.name)
+    assert not guilty, (
+        "страница открыта с диска, а её собственные запросы обслуживаются "
+        "перехватом — " + ", ".join(guilty) + ". Это держится на поведении "
+        "конкретной сборки браузера и молча ломается при её обновлении. "
+        "Поднимать надо сервер: `with browser.serve(app, PORT) as base`.")
+
+
+def test_that_guard_falls_on_a_planted_page_opened_from_disk(tmp_path):
+    """Проверка, которая не падает на поломке, — не проверка."""
+    planted = tmp_path / "test_planted.py"
+    planted.write_text(
+        "tab.goto(page_file.resolve()." + _FROM_DISK + ")\n"
+        + _SERVED_BY_INTERCEPT + "(status=200, body='{}')\n",
+        encoding="utf-8")
+    text = planted.read_text(encoding="utf-8")
+    assert _FROM_DISK in text and _SERVED_BY_INTERCEPT in text
+
+
 def test_the_answer_is_the_service_one_not_a_copy():
     """Своего перебора каталогов у помощника нет — он зовёт сервисный."""
     text = (TESTS / "browser.py").read_text(encoding="utf-8")

@@ -35,6 +35,7 @@ python3 -m pytest tests/test_the_browser_is_found_not_remembered.py -q
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 from pathlib import Path
@@ -109,3 +110,43 @@ def chromium_or_skip() -> Path:
                 f"В каталогах браузеров лежит: {_where_we_looked()}")
         pytest.skip(f"chromium не найден. В каталогах браузеров: {_where_we_looked()}")
     return chrome
+
+
+@contextlib.contextmanager
+def serve(app, port: int):
+    """Поднять приложение на 127.0.0.1:port и отдать адрес его корня.
+
+    Страницу проверяют на том адресе, по которому её открывает человек.
+    Открытая с диска (`file://`), она живёт в другом мире: её собственные
+    запросы к `/tep/...` становятся `file:///tep/...`, и держались они на том,
+    что Chromium такой запрос вообще выпускает, а playwright его перехватывает.
+    В сборке 1194 это работало, в 151.0.7922.34 (playwright 1234) перестало —
+    и две проверки покраснели на верном коде при первом же прогоне с браузером
+    на CI. Схемы `file://` у продукта нет нигде: он отвечает по http, и
+    проверять надо то, что видно.
+
+    Пятнадцать проверок поднимают сервер своей копией этих строк — они
+    остаются, пока их не свели сюда одной правкой; новой копии заводить незачем.
+    """
+    import threading
+    import time
+
+    import uvicorn
+
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port,
+                                           log_level="error"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    for _ in range(400):
+        if server.started:
+            break
+        time.sleep(0.05)
+    if not server.started:
+        server.should_exit = True
+        thread.join(timeout=10)
+        raise RuntimeError(f"сервер проверок не поднялся на порту {port}")
+    try:
+        yield f"http://127.0.0.1:{port}"
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)

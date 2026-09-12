@@ -137,3 +137,15 @@ def test_the_runner_is_the_only_place_that_calls_pytest_in_ci() -> None:
     line = whole[0]
     assert "-q" in line and "--durations=25" in line, (
         "прогон всего набора перестал быть прежним: " + line)
+    # Итоговая сводка обязана называть и пропуски, и падения. `-r` ЗАМЕНЯЕТ
+    # умолчание `-rfE`, и один голый `-rs` стёр из сводки имена упавших тестов:
+    # «1 failed» стояло, а какой именно — приходилось искать в теле лога
+    # (прогон 12.09.2026). Буквы проверяются по каждой строке запуска.
+    for run in body.splitlines():
+        if "-m pytest" not in run:
+            continue
+        letters = [word for word in run.split() if word.startswith("-r")]
+        assert letters, "запуск не печатает сводку: " + run
+        said = letters[0][2:]
+        for letter, what in (("s", "пропуски"), ("f", "падения"), ("E", "ошибки")):
+            assert letter in said, f"сводка не называет {what}: {run}"
