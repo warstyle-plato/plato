@@ -91,15 +91,29 @@ def test_transfer_reduces_saleable_and_useful_instead_of_gns():
 
 
 def test_v2_shell_loads_sync_after_stock_app():
-    shell = (ROOT / "developaid_v2_account_projects.py").read_text(encoding="utf-8")
-    stock = '<script src="/v2/assets/app.js" defer></script>'
-    sync = '<script src="/v2/assets/tep-sync.js" defer></script>'
+    """Пересчёт грузится ПОСЛЕ штатного приложения — на собранной странице.
 
-    assert '@app.post("/api/v2/tep-sync"' in shell
-    assert '@app.get("/v2/assets/tep-sync.js"' in shell
-    assert shell.index('+ marker') < shell.index('/v2/assets/tep-sync.js')
-    assert stock in shell
-    assert sync in shell
+    Утверждение было то же, а меряло себя: позиции двух строк в ИСХОДНИКЕ.
+    `shell.index('/v2/assets/tep-sync.js')` находит первым объявление маршрута
+    отдачи файла, а не подстановку в страницу, — и порядок объявлений в файле
+    выдавался за порядок скриптов у читателя. Стоило маршрут поднять выше
+    сборщика страницы, и проверка покраснела на верном коде: собранная `/v2`
+    всё это время несла `app.js` перед `tep-sync.js`, а сборка образа из main
+    падала дважды подряд, то есть тег `prod` оставался на прошлом выпуске.
+    Правило записано дважды и оба раза этим же: проверять надо то, что видно,
+    а не соседнюю строку.
+    """
+    from fastapi.testclient import TestClient
+
+    import main_registry
+
+    page = TestClient(main_registry.app).get("/v2")
+    assert page.status_code == 200
+    stock = page.text.find("/v2/assets/app.js")
+    sync = page.text.find("/v2/assets/tep-sync.js")
+    assert stock >= 0, "штатный app.js не доехал до собранной /v2"
+    assert sync >= 0, "tep-sync.js не доехал до собранной /v2"
+    assert stock < sync, "пересчёт грузится раньше штатного приложения"
 
 
 def test_v2_renames_duplicate_tep_tab_and_marks_derived_values():
