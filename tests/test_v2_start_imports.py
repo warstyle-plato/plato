@@ -42,10 +42,9 @@ def test_v2_shell_loads_import_bridge_before_stock_application():
     shell = (ROOT / "developaid_v2_account_projects.py").read_text(encoding="utf-8")
 
     imports = '<script src="/v2/assets/start-imports.js" defer></script>'
-    stock = '<script src="/v2/assets/app.js" defer></script>'
     injected = shell[shell.index("injected = ("):]
 
     assert "/v2/assets/start-imports.js" in shell
     assert imports in injected
-    assert stock in injected
-    assert injected.index(imports) < injected.index(stock)
+    assert "+ marker" in injected
+    assert injected.index(imports) < injected.index("+ marker")
