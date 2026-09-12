@@ -7,10 +7,10 @@ from html.parser import HTMLParser
 from urllib.parse import (
     parse_qsl, urlencode, urljoin, urlparse, urlsplit, urlunsplit,
 )
-from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 from auction_search import deadline as clock
+from auction_search import reading
 from auction_search.adapters.base import AuctionPlatformAdapter
 from auction_search.classifier import classify_lot, origin_from_evidence
 from auction_search.models import (
@@ -67,6 +67,14 @@ class _RoseltorgHTML(HTMLParser):
         return normalize_space(" ".join(self.parts))
 
 
+class RoseltorgRefused(RuntimeError):
+    """Площадка ответила страницей отказа, а не карточкой.
+
+    Отдельный тип нужен, чтобы охват мог сказать «нас не пустили», а не
+    «источник не ответил»: лечится это по-разному, и путать их нельзя.
+    """
+
+
 class RoseltorgAdapter(AuctionPlatformAdapter):
     """Official public Roseltorg search + procedure-card adapter.
 
@@ -95,6 +103,36 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
     # такая карточка читается тем же `fetch_lot`, что и раньше. Ссылок нет —
     # раздел не добавит ни одного лота и скажет это строкой охвата; выдуманный
     # разбор чужой разметки однажды уже приехал на прод гаражами.
+    @classmethod
+    def _read(cls, url: str, timeout: float) -> str:
+        """Страница площадки нашими корнями — и отказ, названный отказом.
+
+        Своего `urlopen` здесь больше нет: корни у сервиса объявлены один раз
+        (`trusted_roots`), и читатель, ходивший мимо них, получал с ядра
+        `CERTIFICATE_VERIFY_FAILED` там, где проба того же хоста в ту же минуту
+        получала 200.
+
+        Страница отказа («Web Page Blocked», «403 Forbidden») — это отказ, а не
+        пустой раздел: разобранная как обычная, она даёт ноль ссылок, и на
+        экране это неотличимо от «лотов нет».
+        """
+        answer = reading.fetch(url, timeout=timeout,
+                               headers={"User-Agent": cls.USER_AGENT})
+        html = answer.text()
+        title = ""
+        start = html.lower().find("<title")
+        if start >= 0:
+            head = html[start:start + 400]
+            opened = head.find(">")
+            closed = head.lower().find("</title>")
+            if opened >= 0 and closed > opened:
+                title = " ".join(head[opened + 1:closed].split())
+        refusal = reading.refusal_reason(title, html[:4_000])
+        if refusal:
+            raise RoseltorgRefused(
+                f"площадка отказала страницей «{title or refusal}» (примета: {refusal})")
+        return html
+
     SECTION_URLS = (
         ("Развитие территории (имущество, Москва)",
          "https://www.roseltorg.ru/imuschestvo/prochee/razvitie-territorii"
@@ -296,11 +334,7 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
                     break
                 page_url = self._paged(section_url, page)
                 try:
-                    req = Request(page_url, headers={"User-Agent": self.USER_AGENT})
-                    with urlopen(req, timeout=clock.timeout(deadline, 25)) as response:
-                        html = response.read().decode(
-                            response.headers.get_content_charset() or "utf-8",
-                            errors="replace")
+                    html = self._read(page_url, clock.timeout(deadline, 25))
                 except Exception as exc:  # noqa: BLE001
                     # Неответ раздела — строка охвата, а не отказ всей разведке:
                     # молчание источника нельзя показывать как отсутствие лотов.
@@ -334,9 +368,7 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
                         f"остановлено по времени на странице {page}")
                     break
                 search_url = self._discovery_url(tag, page)
-                req = Request(search_url, headers={"User-Agent": self.USER_AGENT})
-                with urlopen(req, timeout=clock.timeout(deadline, 25)) as response:
-                    html = response.read().decode(response.headers.get_content_charset() or "utf-8", errors="replace")
+                html = self._read(search_url, clock.timeout(deadline, 25))
                 parser = _RoseltorgHTML()
                 parser.feed(html)
                 page_urls = self._procedure_urls(search_url, parser.links)
@@ -493,9 +525,7 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
         if "/procedure/" not in urlparse(lot_url).path:
             raise ValueError("Roseltorg URL must point to a public /procedure/ card")
 
-        req = Request(lot_url, headers={"User-Agent": self.USER_AGENT})
-        with urlopen(req, timeout=clock.timeout(deadline, 20)) as response:
-            html = response.read().decode(response.headers.get_content_charset() or "utf-8", errors="replace")
+        html = self._read(lot_url, clock.timeout(deadline, 20))
         parser = _RoseltorgHTML()
         parser.feed(html)
         text = parser.text

@@ -145,8 +145,21 @@ def test_a_page_of_refusal_is_not_a_loaded_source() -> None:
     """
     body = shared()
     assert '"blocked"' in body
-    assert "REFUSAL_TITLE_MARKS" in body
-    assert "Forbidden" in body and "403" in body
+    # Утверждение здесь про ОТВЕТ пробы, а не про то, в каком файле лежит
+    # список примет: он переехал в `auction_search.reading`, чтобы браузерная
+    # проба и читатель не расходились. Держась за литерал соседнего файла,
+    # проверка падала бы на переезде — то есть когда рядом что-то ПЕРЕНЕСЛИ, а
+    # не когда что-то сломали.
+    from auction_search import reading
+
+    assert reading.refusal_reason("403 Forbidden")
+    assert reading.refusal_reason("Access denied")
+    # Живой ответ Росэлторга с ядра 12.09.2026: браузер получает страницу
+    # блокировки, а поле `blocked` говорило `false` — этой формулировки список
+    # не знал.
+    assert reading.refusal_reason("The URL you requested has been blocked")
+    assert reading.refusal_reason("", "Web Page Blocked! The page cannot be displayed.")
+    assert not reading.refusal_reason("Купить услуги строительства и развития территорий")
 
 
 def test_the_probe_asks_the_address_it_is_given() -> None:

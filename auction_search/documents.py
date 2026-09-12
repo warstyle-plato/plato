@@ -10,6 +10,7 @@ from urllib.parse import quote, urlparse, urlunparse
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree as ET
 
+from auction_search import reading
 from auction_search.models import AuctionDocument
 
 
@@ -109,7 +110,11 @@ def download_document(url: str, *, timeout: int = 25) -> tuple[bytes, str, bool]
     headers, authenticated = _request_headers(url)
     req = Request(safe_url(url), headers=headers)
     try:
-        with urlopen(req, timeout=timeout) as response:
+        # Корни объявлены один раз (`trusted_roots`) и здесь берутся оттуда же,
+        # чем ходят проба площадки и модуль рынка. Без них загрузка вложения
+        # падала с `CERTIFICATE_VERIFY_FAILED` там, где проба того же хоста в
+        # ту же минуту получала 200, — и документ выглядел недоступным.
+        with urlopen(req, timeout=timeout, context=reading.trust()) as response:
             content_type = (response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
             length = response.headers.get("Content-Length")
             if length and int(length) > MAX_DOCUMENT_BYTES:
@@ -125,6 +130,14 @@ def download_document(url: str, *, timeout: int = 25) -> tuple[bytes, str, bool]
 
     if _looks_like_login_page(final_url, content_type, data):
         raise DocumentAuthorizationRequired("official ETP redirected the document request to authentication")
+    # Страница отказа приходит с кодом 200 и телом HTML — по содержимому это не
+    # документ, и разбирать её как документ значит показать «формат не
+    # поддержан» там, где нас просто не пустили.
+    if "html" in content_type:
+        refusal = reading.refusal_reason("", data[:4_000].decode("utf-8", errors="ignore"))
+        if refusal:
+            raise DocumentExtractionError(
+                f"площадка ответила страницей отказа (примета: {refusal}), а не документом")
     return data, content_type, authenticated
 
 

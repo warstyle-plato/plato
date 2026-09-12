@@ -2793,6 +2793,7 @@ def install(app: FastAPI) -> None:
     @app.get("/auctions/roseltorg/probe")
     async def auction_roseltorg_probe(
         seconds: float = Query(default=45.0, ge=5.0, le=90.0),
+        url: str = Query(default=""),
     ) -> dict[str, Any]:
         """Чем отвечает раздел «Развитие территории» Росэлторга. Разбора нет.
 
@@ -2815,8 +2816,15 @@ def install(app: FastAPI) -> None:
         раздел, который открывает владелец.
 
         Из песочницы roseltorg.ru закрыт, поэтому проба ходит только с ядра.
+
+        `url` — адрес карточки лота, если спрашивают про неё: раздел отвечает,
+        а карточка с ядра отвечала таймаутом, и померить это было нечем.
+        Только официальный хост площадки, и рядом печатается, сколько
+        сертификатов прислал сервер: `CERTIFICATE_VERIFY_FAILED` — вопрос
+        «чего не хватает», а не диагноз.
         """
-        return await run_in_threadpool(lambda: roseltorg_probe(seconds=float(seconds)))
+        return await run_in_threadpool(
+            lambda: roseltorg_probe(seconds=float(seconds), url=url.strip()))
 
     @app.get("/auctions/roseltorg/browser")
     async def auction_roseltorg_browser(
