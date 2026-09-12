@@ -1,5 +1,9 @@
 from pathlib import Path
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+import developaid_v2_account_projects as account_projects
 from developaid_v2_account_projects import TepSyncRequest, _sync_tep
 
 
@@ -91,15 +95,35 @@ def test_transfer_reduces_saleable_and_useful_instead_of_gns():
 
 
 def test_v2_shell_loads_sync_after_stock_app():
+    """Синхронизация грузится ПОСЛЕ штатного app.js — и это меряется страницей.
+
+    Прежняя запись сравнивала смещения в ИСХОДНИКЕ: `shell.index('+ marker')`
+    против `shell.index('/v2/assets/tep-sync.js')`. Первое вхождение второго —
+    это объявление маршрута `@app.get("/v2/assets/tep-sync.js")`, и стоит оно
+    выше инъекции. Пока маршрут лежал ниже, проверка проходила; соседний PR
+    дописал код рядом — и она упала на ВЕРНОМ поведении, уронив main. Ровно тот
+    признак, что записан в знании о проекте: проверка падает, когда рядом
+    что-то ДОБАВИЛИ, а не когда что-то сломали.
+
+    Порядок тегов — это то, что видно, значит и меряется отрисовкой: страница
+    собирается за долю секунды и ядра не спрашивает.
+    """
     shell = (ROOT / "developaid_v2_account_projects.py").read_text(encoding="utf-8")
-    stock = '<script src="/v2/assets/app.js" defer></script>'
-    sync = '<script src="/v2/assets/tep-sync.js" defer></script>'
 
     assert '@app.post("/api/v2/tep-sync"' in shell
     assert '@app.get("/v2/assets/tep-sync.js"' in shell
-    assert shell.index('+ marker') < shell.index('/v2/assets/tep-sync.js')
-    assert stock in shell
-    assert sync in shell
+
+    app = FastAPI()
+    account_projects.install(app)
+    page = TestClient(app).get("/v2")
+    assert page.status_code == 200, page.status_code
+
+    html = page.text
+    stock = '<script src="/v2/assets/app.js" defer></script>'
+    sync = '<script src="/v2/assets/tep-sync.js" defer></script>'
+    assert stock in html
+    assert sync in html
+    assert html.index(stock) < html.index(sync), "sync обязан идти после app.js"
 
 
 def test_v2_renames_duplicate_tep_tab_and_marks_derived_values():
