@@ -1,4 +1,4 @@
-"""DevelopAid 2.0 account projects: existing Telegram session + existing project store."""
+"""DevelopAid 2.0 account projects and new-project entry bridges."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ def _drop_v2_index(app: FastAPI) -> None:
 
 
 def install(app: FastAPI) -> None:
-    """Load the account bridge before app.js without touching the calculation API."""
+    """Load account/start bridges before app.js without touching calculation APIs."""
 
     @app.get("/v2/assets/account-projects.js", include_in_schema=False)
     async def account_projects_script() -> FileResponse:
@@ -33,9 +33,17 @@ def install(app: FastAPI) -> None:
             headers=_REVALIDATE,
         )
 
+    @app.get("/v2/assets/start-imports.js", include_in_schema=False)
+    async def start_imports_script() -> FileResponse:
+        return FileResponse(
+            _FRONTEND / "start_imports.js",
+            media_type="application/javascript",
+            headers=_REVALIDATE,
+        )
+
     # developaid_v2_upgrade installed the final /v2 page immediately before us.
     # Replace only that page so script order is deterministic:
-    # auth/photo hook -> saved-project hook -> stock v2 application.
+    # auth/photo hook -> saved-project hook -> start/import hook -> stock v2 app.
     _drop_v2_index(app)
 
     @app.get("/v2", include_in_schema=False)
@@ -48,6 +56,7 @@ def install(app: FastAPI) -> None:
         injected = (
             '<script src="/v2/assets/upgrade.js" defer></script>\n  '
             '<script src="/v2/assets/account-projects.js" defer></script>\n  '
+            '<script src="/v2/assets/start-imports.js" defer></script>\n  '
             + marker
         )
         return HTMLResponse(source.replace(marker, injected, 1), headers=_REVALIDATE)
