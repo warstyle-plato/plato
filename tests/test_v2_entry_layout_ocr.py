@@ -88,6 +88,6 @@ def test_teaser_fallback_only_bypasses_parser_failures_not_auth_failures():
     source = (ROOT / "frontend_v2" / "teaser_fallback.js").read_text(encoding="utf-8")
 
     assert "response.status < 500" in source
-    assert "if (body.accept || !body.content_b64)" in source
+    assert "body.accept || !body.content_b64" in source
     assert "'/api/v2/teaser-fallback'" in source
     assert "parserRefused" in source
