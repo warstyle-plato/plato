@@ -39,10 +39,47 @@ def per_sqm(mln: float) -> float:
 @pytest.mark.parametrize("key,fact_mln,tolerance", [
     ("preparation_th_per_sqm", 53.4, 0.2),      # подготовительный период
     ("utilities_th_per_sqm", 198.0, 0.2),       # наружные инженерные сети
-    ("landscaping_th_per_sqm", 223.2, 0.2),     # благоустройство и озеленение
 ])
 def test_the_unit_rates_follow_the_budget(key, fact_mln, tolerance):
     assert core.DEFAULT_INPUTS[key] == pytest.approx(per_sqm(fact_mln), abs=tolerance)
+
+
+LANDSCAPING_FACT_MLN = 223.2  # благоустройство и озеленение, тот же бюджет
+
+
+def test_the_landscaping_rule_disagrees_with_the_measured_budget():
+    """ОТКРЫТЫЙ вопрос, а не пройденная проверка.
+
+    Благоустройство с 10.09.2026 считается по физической площади двора:
+    «5 метров на человека, далее по площади комфорт 10, бизнес 25, элитный 50
+    на метр» (решение владельца). База верна — благоустраивают двор, а не дом,
+    — а вот два числа с бюджетом ЕГО ЖЕ проекта не сходятся.
+
+    На Гродненской, 18 статья стоила 223,2 млн ₽ при 19 341,14 м² наземной
+    ГНС. По новой норме тот же проект получает около 381 жителя, 1 905 м²
+    двора и 19,1 млн ₽ — в 11,7 раза меньше замера. Обратным счётом сходится
+    либо 58,6 м² на человека при ставке 10, либо 117,2 тыс ₽/м² при норме 5.
+    Какое из двух чисел неверно, решает владелец: «расхождение двух источников
+    — не всегда ошибка одного из них», норма бывает полом, а проект строит
+    больше. Пока не решено, расхождение стоит здесь числом — молча оставленное,
+    оно читается как согласие.
+    """
+    import math
+
+    apartments = GNS_ABOVE_SQM * 0.65        # доля продаваемой в ГНС у жилья
+    population = math.ceil(apartments / core._PARKING_2118_SQM_PER_PERSON)
+    per_person = core.DEFAULT_INPUTS["landscaping_area_per_person_sqm"]
+    rate = core.DEFAULT_INPUTS["landscaping_th_per_sqm"]
+    by_rule_mln = population * per_person * rate / 1000.0
+
+    assert (per_person, rate) == (5.0, 10), (
+        "числа владельца изменились — перемерьте расхождение заново")
+    assert by_rule_mln == pytest.approx(19.1, abs=0.2), by_rule_mln
+    ratio = LANDSCAPING_FACT_MLN / by_rule_mln
+    assert ratio == pytest.approx(11.7, abs=0.3), ratio
+    # Обратный счёт — те два числа, между которыми выбирать владельцу.
+    assert LANDSCAPING_FACT_MLN * 1000 / (population * rate) == pytest.approx(58.6, abs=0.3)
+    assert LANDSCAPING_FACT_MLN * 1000 / (population * per_person) == pytest.approx(117.2, abs=0.5)
 
 
 def test_the_site_maintenance_excludes_the_contractor_fee():
