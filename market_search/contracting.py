@@ -949,7 +949,12 @@ def summarise(contracts: dict[str, Any], ledger: dict[str, Any] | None = None) -
     months: dict[str, dict[str, Any]] = {}
     for row in rows:
         month = months.setdefault(row["month"], {"month": row["month"], "by_product": {}})
-        product = month["by_product"].setdefault(row["product"], {"units": 0.0, "area": 0.0, "amount": 0.0})
+        # Имя продукта приводится к одному виду здесь же, где считается: CRM
+        # пишет «Машиноместа», план «Машиноместо», книга «М/М», и под двумя
+        # именами один товар стоял на одном экране двумя строками — раздел
+        # «Продукты» звал его так, плитка пула иначе.
+        product = month["by_product"].setdefault(
+            product_name(row["product"]), {"units": 0.0, "area": 0.0, "amount": 0.0})
         product["units"] += row["units"]
         product["area"] += row["area"]
         product["amount"] += row["amount"]
@@ -977,7 +982,7 @@ def summarise(contracts: dict[str, Any], ledger: dict[str, Any] | None = None) -
 
     products = {}
     for row in rows:
-        products.setdefault(row["product"], []).append(row)
+        products.setdefault(product_name(row["product"]), []).append(row)
     by_product = [{"product": key, **_totals(items)} for key, items in products.items()]
     by_product.sort(key=lambda item: -item["amount"])
 
@@ -992,6 +997,11 @@ def summarise(contracts: dict[str, Any], ledger: dict[str, Any] | None = None) -
     # называют цену именно квартир, и сравнивать её надо с ней же.
     by_quarter_flats = {key: _totals([r for r in items if r["product"] == "Квартира"])
                         for key, items in sorted(quarters.items())}
+
+    # Порядок продуктов объявляется ОДИН раз и по всему своду, а не внутри
+    # месяца: слои столбика красятся по этому порядку, и посчитанный заново в
+    # каждом месяце он давал бы продукту то один цвет, то другой.
+    product_order = [item["product"] for item in by_product]
 
     by_payment = _payment_structure(rows)
 
@@ -1019,7 +1029,7 @@ def summarise(contracts: dict[str, Any], ledger: dict[str, Any] | None = None) -
     broker_source = next((row["broker_source"] for row in rows
                           if row.get("broker_source")), "")
 
-    flats = [r for r in rows if r["product"] == "Квартира"]
+    flats = [r for r in rows if product_name(r["product"]) == "Квартира"]
     bands: dict[str, list] = {}
     for row in flats:
         bands.setdefault(size_band(row["area"]), []).append(row)
@@ -1053,6 +1063,7 @@ def summarise(contracts: dict[str, Any], ledger: dict[str, Any] | None = None) -
         "by_quarter": by_quarter,
         "by_quarter_flats": by_quarter_flats,
         "by_product": by_product,
+        "product_order": product_order,
         "by_payment": by_payment,
         "by_channel": by_channel,
         "broker_column": broker_column,

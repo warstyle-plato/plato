@@ -2524,6 +2524,9 @@ function showSales(d){
 }
 
 const SALES_COLORS=['#4E9BDE','#C4581B','#5FA98A','#8E7CC3','#D0A24C','#8798a8'];
+// Цена живёт своей линией на каждом графике продаж, и её цвет объявлен один
+// раз: копия разошлась бы с палитрой слоёв молча.
+const SALES_PRICE_COLOR='#C4581B';
 
 // Показатель одного графика. Переключается кнопками, как в рыночном отчёте:
 // «один график с переключателем — в метрах, лотах, со средней ценой»
@@ -2596,8 +2599,24 @@ function barChart(rows, opts){
   rows.forEach((r,i)=>{
     if(!has(r.value)) return;
     const top=y(r.value), h=Math.max(1,(H-T-B)-(top-T));
-    svg+=`<rect x="${(x(i)-bw/2).toFixed(1)}" y="${top.toFixed(1)}" width="${bw}" height="${h.toFixed(1)}"`
-       +` rx="2" fill="${r.pale?'#9dc4e6':'#4E9BDE'}" data-tip="${esc(r.tip||'')}"></rect>`;
+    // Столбик, у которого объявлен состав, рисуется слоями: «9 лотов» из
+    // четырёх квартир и пяти машино-мест читается как девять квартир, а лот
+    // квартиры и лот машино-места — разные товары. Высота слоя — геометрия от
+    // присланных сервером величин, своего счёта здесь нет.
+    const parts=(r.parts||[]).filter(p=>Number(p.value)>0);
+    if(parts.length>1){
+      let acc=0;
+      parts.forEach(p=>{
+        const y0=y(acc+Number(p.value)), y1=y(acc);
+        svg+=`<rect x="${(x(i)-bw/2).toFixed(1)}" y="${y0.toFixed(1)}" width="${bw}"`
+           +` height="${Math.max(1,y1-y0).toFixed(1)}" rx="2" fill="${p.color}"`
+           +` data-tip="${esc(r.label+' · '+p.name+': '+opts.show(p.value))}"></rect>`;
+        acc+=Number(p.value);
+      });
+    } else {
+      svg+=`<rect x="${(x(i)-bw/2).toFixed(1)}" y="${top.toFixed(1)}" width="${bw}" height="${h.toFixed(1)}"`
+         +` rx="2" fill="${parts.length?parts[0].color:(r.pale?'#9dc4e6':'#4E9BDE')}" data-tip="${esc(r.tip||'')}"></rect>`;
+    }
     if(r.over) svg+=`<text x="${x(i).toFixed(1)}" y="${(top-4).toFixed(1)}" text-anchor="middle"`
        +` font-size="9" fill="#5b6b7d">${esc(r.over)}</text>`;
   });
@@ -2637,7 +2656,8 @@ function barChart(rows, opts){
     if(rows.length>16&&i%2) return;
     svg+=`<text x="${x(i).toFixed(1)}" y="${H-26}" text-anchor="middle" font-size="9" fill="#8798a8">${esc(r.short||r.label)}</text>`;
   });
-  const legend=[{name:opts.factName||'факт',color:'#4E9BDE'}]
+  const legend=(opts.partLegend&&opts.partLegend.length?opts.partLegend.slice()
+      :[{name:opts.factName||'факт',color:'#4E9BDE'}])
     .concat(lines.map(l=>({name:l.name,color:l.color})))
     .concat(right.map(l=>({name:l.name,color:l.color})));
   svg+=`<text x="${L}" y="${H-8}" font-size="10" fill="#8798a8">${esc(opts.caption||'')}`
@@ -2657,18 +2677,45 @@ function barChart(rows, opts){
 // до которой не дошли, там просто отсутствует — то же правило, что у
 // свёрнутой таблицы: раскрыть её читателю нечем. На бумагу поэтому идут ВСЕ
 // меры, как это уже сделано у карты рынка (`.printviews`).
+// Динамика продаж. Столбик разложен по продуктам: «лоты» и «м²» складывать
+// через продукт нельзя — лот квартиры и лот машино-места разные товары, а метр
+// паркинга и метр квартиры тем более (на Кутузов Сити январь 2026 это 9 «лотов»
+// из четырёх квартир и пяти машино-мест, май — 9 из двух квартир, шести
+// коммерческих помещений и машино-места). Для цены это правило уже применено —
+// у неё своя линия квартир; объём его ждал.
+//
+// Рубли складываются законно, и итог столбика остаётся суммой; слои говорят,
+// чем он набран. Порядок и цвет продукта приходят с сервера одним списком:
+// посчитанный в каждом месяце заново, он красил бы продукт по-разному.
+function salesDynamicsProducts(d){
+  const order=(d.product_order||[]).slice();
+  if(!order.length) (d.by_product||[]).forEach(p=>{ if(!order.includes(p.product)) order.push(p.product) });
+  // Цвет цены на этом же поле занят, и продукт им красить нельзя: слой и линия
+  // одного цвета читаются как одна величина.
+  const palette=SALES_COLORS.filter(c=>c!==SALES_PRICE_COLOR);
+  return order.map((name,i)=>({name, color:palette[i%palette.length]}));
+}
+
 function salesDynamicsChart(d, metric){
+  const products=salesDynamicsProducts(d);
   const rows=(d.dynamics||[]).filter(m=>m.amount>0).map(m=>({
     label:m.month, short:String(m.month).slice(2),
     value:metric.of(m), over:metric.key==='amount'?num(m.units):'',
     price:m.price_flats,
+    parts:products.map(p=>({name:p.name, color:p.color,
+      value:((m.by_product||{})[p.name]||{})[metric.key]||0})),
     tip:m.month+': '+num(m.amount/1e6,1)+' млн ₽, '+num(m.units)+' лот(ов), '+num(m.area)+' м²'
        +(m.price_per_sqm?', '+num(m.price_per_sqm)+' ₽/м²':''),
   }));
+  // Продукт, которого нет ни в одном месяце, в легенду не идёт: обещанный
+  // цветом и отсутствующий на поле, он читается как поломка отрисовки.
+  const shown=products.filter(p=>rows.some(r=>(r.parts.find(x=>x.name===p.name)||{}).value>0));
   return barChart(rows,{axis:metric.axis,show:metric.show,factName:'факт, '+metric.name,
-    rightLines:[{key:'price',name:'цена квартир, ₽/м²',color:'#C4581B'}],
+    partLegend:shown.length>1?shown:null,
+    rightLines:[{key:'price',name:'цена квартир, ₽/м²',color:SALES_PRICE_COLOR}],
     rightAxis:v=>num(v/1000)+' тыс', rightShow:v=>num(v)+' ₽/м²', rightName:'цена квартир',
-    caption:metric.name+' по месяцам'+(metric.key==='amount'?'; цифра над столбиком — лотов':'')});
+    caption:metric.name+' по месяцам'+(shown.length>1?'; столбик разложен по продуктам':'')
+      +(metric.key==='amount'?'; цифра над столбиком — лотов всего':'')});
 }
 
 function salesChartBlock(d){
