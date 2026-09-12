@@ -127,5 +127,13 @@ def test_the_runner_is_the_only_place_that_calls_pytest_in_ci() -> None:
     body = RUNNER.read_text(encoding="utf-8")
     assert "pytest" in body
     # Полный набор одной командой остаётся: рука зовёт тот же файл без
-    # переменных, и это должно быть ровно прежним прогоном.
-    assert "pytest tests -q --durations=25" in body
+    # переменных, и это тот же прогон. Утверждение здесь про НАБОР и про то,
+    # чем он считается, — а не про порядок слов в строке: держась за точную
+    # склейку, проверка падала на добавленном `-rs`, то есть на правке, которая
+    # трогает только ПЕЧАТЬ и ни одного теста не отменяет. Это та же болезнь,
+    # что «проверка держит оборот речи, а не утверждение».
+    whole = [line for line in body.splitlines() if "pytest tests" in line]
+    assert whole, "прогон всего набора одной командой пропал"
+    line = whole[0]
+    assert "-q" in line and "--durations=25" in line, (
+        "прогон всего набора перестал быть прежним: " + line)
