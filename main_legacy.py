@@ -76,7 +76,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.23.14"
+VERSION = "0.23.15"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -421,6 +421,49 @@ TEP_RATIOS_PLACEHOLDER = "__DEVELOPAID_TEP_RATIOS__"
 # Наземный паркинг сюда не идёт — его строка выводится из числа мест, и правка
 # метров ей не принадлежит.
 TEP_ROW_INPUTS_PLACEHOLDER = "__DEVELOPAID_TEP_ROW_INPUTS__"
+
+# Продукт выручки, у которого нет строки ТЭП, всё равно имеет имя. Паркинг
+# отдельно стоящих объектов продаётся местами и своей строки в ТЭП не имеет —
+# и на экране владельца в структуре выручки стоял сырым ключом
+# «object_parking» (10.09.2026), рядом с «Квартиры» и «Кладовые». Таблица
+# «Темпы и цены продаж» при этом показывала человеческое имя: оно жило в
+# `products` расчёта, а `productName` знала только строки ТЭП. Правило прежнее
+# и уже стоило латиницы в расходах: имя без единой русской буквы — это не имя,
+# а ключ.
+NON_TEP_PRODUCT_LABELS: dict[str, str] = {
+    "object_parking": "Паркинг отдельно стоящих объектов",
+}
+PRODUCT_LABELS_PLACEHOLDER = "__DEVELOPAID_PRODUCT_LABELS__"
+
+
+# Переданные городу метры строятся, но не продаются. Ответ на «сколько тогда
+# продаём» был объявлен ЧЕТЫРЕ раза и в двух видах: страница и /v2 считали
+# полезную площадь равной продаваемой (то есть уменьшали её на переданное), а
+# скрининг КРТ — равной полной. Одна величина под одним именем означала разное.
+# Владелец прочитал экран и сказал прямо: «может быть полезная как раз не
+# должна уменьшаться?» (10.09.2026) — метры построены и полезны, просто не
+# наши. Отсюда тождество строки: полезная это построенная площадь, продаваемая
+# это она же за вычетом переданного. Дельту помнить не нужно вовсе — правка
+# передаваемой пересчитывает продаваемую заново, и прежнее «минус разница»
+# больше не может разойтись с полем.
+def saleable_after_transfer(useful_sqm: Any, transfer_sqm: Any) -> tuple[float, float]:
+    """→ (продаваемая, переданное сверх построенного).
+
+    Переданное больше построенного не обрезается молча: это расхождение
+    человека с его же строкой, и называется оно вторым числом, а не нулём.
+    """
+    useful = max(0.0, float(useful_sqm or 0.0))
+    transfer = max(0.0, float(transfer_sqm or 0.0))
+    return max(0.0, useful - transfer), max(0.0, transfer - useful)
+
+
+def product_labels() -> dict[str, str]:
+    """Имя продукта — один ответ на все поверхности: строки ТЭП плюс те
+    продукты, у которых строки нет."""
+    labels = {key: str((row or {}).get("label") or key)
+              for key, row in TEP_DEFAULT.items()}
+    labels.update(NON_TEP_PRODUCT_LABELS)
+    return labels
 # Ступени норматива площади соцобъекта. Подставляются, а не копируются: у
 # норматива города одно место жительства.
 SOCIAL_AREA_STEPS_PLACEHOLDER = "__DEVELOPAID_SOCIAL_AREA_STEPS__"
@@ -14536,13 +14579,32 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         ], [45*mm, 125*mm], header=False, font_size=8.0),
     ]))
     story.append(_PdfSection("tep"));story.append(P("ТЭП",h2))
-    tep_rows=[["Продукт","Строит. объём, м²","Продаваемая, м²","Кол-во"]]
-    for row in tep_report.get('rows') or []:
-        if not any(float(row.get(k) or 0) for k in ('gns','saleable','units')): continue
-        tep_rows.append([row.get('label') or row.get('key') or '—',_pdf_num(row.get('gns'),0),_pdf_num(row.get('saleable'),0),_pdf_num(row.get('units'),0)])
+    # Переданные городу метры строятся и не продаются: в продаваемой их нет.
+    # В книге колонка «Передаётся городу» была с самого начала, а отчёт о
+    # переданном молчал — и читался так, будто продано всё построенное
+    # (владелец, 10.09.2026). Колонка появляется вместе с числом: постоянный
+    # столбец нулей — шум, а не полнота.
+    rows_data = [row for row in (tep_report.get('rows') or [])
+                 if any(float(row.get(k) or 0) for k in ('gns', 'saleable', 'units'))]
     total=tep_report.get('total') or {}
-    tep_rows.append(["Итого",_pdf_num(total.get('gns'),0),_pdf_num(total.get('saleable'),0),_pdf_num(total.get('units'),0)])
-    story.append(table(tep_rows,[75*mm,32*mm,38*mm,25*mm]))
+    given = sum(float(row.get('transfer') or 0) for row in rows_data)
+    if given > 0:
+        tep_rows=[["Продукт","Строит. объём, м²","Продаваемая, м²","Передаётся городу, м²","Кол-во"]]
+        for row in rows_data:
+            tep_rows.append([row.get('label') or row.get('key') or '—',
+                             _pdf_num(row.get('gns'),0),_pdf_num(row.get('saleable'),0),
+                             _pdf_num(row.get('transfer'),0),_pdf_num(row.get('units'),0)])
+        tep_rows.append(["Итого",_pdf_num(total.get('gns'),0),_pdf_num(total.get('saleable'),0),
+                         _pdf_num(given,0),_pdf_num(total.get('units'),0)])
+        story.append(table(tep_rows,[58*mm,30*mm,32*mm,35*mm,15*mm]))
+        story.append(P("Переданные городу метры строятся, но не продаются: "
+                       "в продаваемой площади их нет.", small))
+    else:
+        tep_rows=[["Продукт","Строит. объём, м²","Продаваемая, м²","Кол-во"]]
+        for row in rows_data:
+            tep_rows.append([row.get('label') or row.get('key') or '—',_pdf_num(row.get('gns'),0),_pdf_num(row.get('saleable'),0),_pdf_num(row.get('units'),0)])
+        tep_rows.append(["Итого",_pdf_num(total.get('gns'),0),_pdf_num(total.get('saleable'),0),_pdf_num(total.get('units'),0)])
+        story.append(table(tep_rows,[75*mm,32*mm,38*mm,25*mm]))
 
     # Очередность меняет проект целиком — сроки, инфляцию затрат, стартовые цены
     # и нагрузку по финансированию, — а отчёт о ней молчал: сводные цифры были,
@@ -27204,7 +27266,7 @@ def calculate(req: CalcRequest) -> dict:
             # не метр: делить их деньги на площадь значит отвечать не на тот
             # вопрос. Приобъектной стоянки здесь нет — её на кадастр не
             # поставить, значит и продать нельзя.
-            "label": "Паркинг отдельно стоящих объектов",
+            "label": NON_TEP_PRODUCT_LABELS["object_parking"],
             "quantity": sum(n(t.get(key, {}), "parking_saleable_units")
                             for key, _prefix, enabled_key, _sellable in OBJECT_PARKING_OBJECTS
                             if b(x, enabled_key)
@@ -28000,6 +28062,17 @@ def _apply_explicit_phase_products(
         for field in numeric_fields:
             if field in override:
                 row[field] = max(0.0, float(override.get(field) or 0.0))
+        # Очередь объявила передаваемую и не объявила продаваемую — значит
+        # вычесть переданное обязан движок. Правило «переданные метры строятся,
+        # но не продаются» было закрыто на СТРАНИЦЕ и только там: проект,
+        # приехавший пресетом КРТ, файлом или ссылкой, продавал метры, отданные
+        # городу, — 5 000 м² квартир это 2 163,7 млн ₽ выручки, которой нет.
+        # Объявлены оба числа — приоритет у них: продаваемая очереди уже нетто,
+        # и второе вычитание отняло бы переданное дважды.
+        if "transfer" in override and "saleable" not in override:
+            gross = max(n(row, "useful"), n(row, "saleable"))
+            row["useful"] = gross
+            row["saleable"], _excess = saleable_after_transfer(gross, row.get("transfer"))
         if override.get("generates_revenue") is False:
             row["saleable"] = 0.0
         # Объявленная очередью строка не пересчитывается по нормативу: у
@@ -38304,9 +38377,12 @@ const TEP_DEFAULT=__DEVELOPAID_TEP_DEFAULT__;
 // «ФОК / спорт» и «ФОК / спортивный объект». Человек читал одну страницу и
 // видел у одного продукта до четырёх имён. Объявление одно — в движке
 // (`TEP_DEFAULT`), здесь только чтение.
+const PRODUCT_LABELS=__DEVELOPAID_PRODUCT_LABELS__;
 function productName(key){
- const row=TEP_DEFAULT[key];
- return (row&&row.label)||String(key||'');
+ // Карта приходит из движка и покрывает продукты БЕЗ строки ТЭП тоже: раньше
+ // такой продукт уезжал на экран сырым ключом («object_parking» в структуре
+ // выручки), потому что имя читалось только из TEP_DEFAULT.
+ return PRODUCT_LABELS[key]||String(key||'');
 }
 const FIELD_GROUPS=__DEVELOPAID_FIELD_GROUPS__;
 const INPUT_DEFAULT=__DEVELOPAID_INPUT_DEFAULT__;
@@ -39278,8 +39354,15 @@ function setPhaseProductGiven(index,key,value){
   // Переданные метры строятся, но не продаются: продаваемая ЭТОЙ очереди
   // падает ровно на них, и очередь становится заданной — доля проекта её
   // больше не двигает, иначе отданное вернулось бы при первом пересчёте.
-  const current=own.saleable!==undefined?Number(own.saleable):phaseProductDerived(key,'saleable',index);
-  own.saleable=Math.max(0,Number((current-(now-was)).toFixed(2)));
+  // Тождество то же, что в таблице ТЭП: полезная — построенная площадь,
+  // продаваемая — за вычетом переданного. Полезная уезжает в очередь своим
+  // полем: движок вычитает переданное сам ровно тогда, когда продаваемой ему
+  // не объявили, и два вычитания отняли бы отданное дважды.
+  const net=own.saleable!==undefined?Number(own.saleable):phaseProductDerived(key,'saleable',index);
+  const gross=Math.max(net+was,
+   own.useful!==undefined?Number(own.useful):phaseProductDerived(key,'useful',index));
+  own.useful=Number(gross.toFixed(2));
+  own.saleable=Math.max(0,Number((gross-now).toFixed(2)));
   syncPhaseProductSharesFromTep(key,'saleable',index);
  }
  // Проектная строка — сумма очередей: приоритет у очередности.
@@ -39287,11 +39370,14 @@ function setPhaseProductGiven(index,key,value){
  if(!tep[key])tep[key]={};
  tep[key][field]=Number(sum.toFixed(field==='transfer'?2:0));
  if(field==='transfer'){
-  tep[key].saleable=phasing.phases.reduce((total,p,i)=>{
+  // Проектная строка — сумма очередей: продаваемая складывается из их нетто,
+  // а полная площадь это она же плюс всё переданное. Тождество считает один
+  // помощник — второй счёт той же величины однажды разошёлся бы с первым.
+  const net=phasing.phases.reduce((total,p,i)=>{
    const row=(p.products||{})[key]||{};
    return total+(row.saleable!==undefined?Number(row.saleable):phaseProductDerived(key,'saleable',i));
   },0);
-  tep[key].useful=tep[key].saleable;
+  tepApplyTransfer(key,net+Number(tep[key].transfer||0));
   tepRowToInputs(key);
  }
  renderPhasing();renderTep();renderInputs();calculate();
@@ -42976,12 +43062,12 @@ function tepCellChanged(key,col,value){
  // ВРИ, сумма зачёта вводится во «Вводных» (замечание владельца, 19.08.2026).
  // У соцобъектов передаваемая — это вся площадь объекта, там правило другое.
  if(col==='transfer'&&TEP_RATIOS[key]){
-  const delta=Number(tep[key][col]||0)-was;
-  tep[key].saleable=Math.max(0,Math.round((Number(tep[key].saleable||0)-delta)*10)/10);
-  tep[key].useful=tep[key].saleable;
-  tepRefillNote[key]=delta>0
-   ? 'Переданные '+landNum(delta,0)+' м² убраны из продаваемой площади: метры строятся, но не продаются.'
-   : '';
+  // Полная площадь берётся из полезной, а у строки старого проекта полезная
+  // равна НЕТТО — там она восстанавливается как «продаваемая плюс прежняя
+  // передаваемая». Максимум из двух подходит обоим случаям и не требует знать,
+  // какой это проект.
+  const gross=Math.max(Number(tep[key].useful||0),Number(tep[key].saleable||0)+was);
+  tepApplyTransfer(key,gross);
   tepRowToInputs(key);
   renderInputs();
   renderTep();
@@ -43009,12 +43095,16 @@ function tepCellChanged(key,col,value){
   return;
  }
  if(['gns','total_area','saleable'].includes(col)&&TEP_RATIOS[key]){
+  // Вписанная продаваемая — НЕТТО: переданное из неё уже вычтено. Значит
+  // пропорцию надо гнать от полной площади, иначе ГНС потеряет метры, которые
+  // строятся. Прежде правка ГНС затирала продаваемую полным числом из
+  // пропорции, и переданное молча возвращалось в продажу.
+  const transfer=Math.max(0,Number(tep[key].transfer||0));
   const base={gns:0,total_area:0,saleable:0,useful:0};
-  base[col]=Number(value||0);
+  base[col]=col==='saleable'?Number(value||0)+transfer:Number(value||0);
   const filled=tepFillByRatios(key,base);
-  ['gns','total_area','saleable'].forEach(field=>{tep[key][field]=filled[field]});
-  tep[key].useful=tep[key].saleable;
-  tepRefillNote[key]='';
+  ['gns','total_area'].forEach(field=>{tep[key][field]=filled[field]});
+  tepApplyTransfer(key,filled.saleable);
   tepRowToInputs(key);
   renderInputs();
   renderTep();
@@ -43402,6 +43492,36 @@ function tepFillByRatios(key,row){
  // а нулевая полезная при непустой продаваемой ломает удельные показатели.
  if(!Number(out.useful||0))out.useful=out.saleable;
  return out;
+}
+
+// Переданные городу метры строятся, но не продаются. Тождество строки одно, и
+// объявлено оно в движке (`saleable_after_transfer`): полезная — построенная
+// площадь, продаваемая — она же за вычетом переданного. Полезная от передачи
+// НЕ уменьшается: метры построены и полезны, просто не наши (владелец,
+// 10.09.2026).
+//
+// Прежде здесь считалась ДЕЛЬТА — «минус разница с прошлым числом», — и
+// подпись под строкой называла именно её: в поле стояло 5 000, а на экране
+// «Переданные 4 000 м² убраны из продаваемой» (экран владельца, 10.09.2026).
+// Дельту помнить не нужно вовсе: полная площадь известна, и продаваемая
+// считается заново.
+function tepApplyTransfer(key,usefulGross){
+ const row=tep[key];if(!row)return 0;
+ const round=v=>Math.round(Number(v||0)*10)/10;
+ const useful=Math.max(0,round(usefulGross));
+ const transfer=Math.max(0,Number(row.transfer||0));
+ row.useful=useful;
+ row.saleable=Math.max(0,round(useful-transfer));
+ // Переданное больше построенного не обрезается молча — это расхождение
+ // человека с его же строкой, и оно называется.
+ tepRefillNote[key]=transfer>0
+  ? (transfer>useful
+     ? 'Передаётся '+landNum(transfer,0)+' м² при полезной площади '+landNum(useful,0)
+       +' м²: передаётся больше, чем строится.'
+     : 'Передаётся городу '+landNum(transfer,0)+' м² из '+landNum(useful,0)
+       +' м² полезной площади — они строятся, но не продаются.')
+  : '';
+ return row.saleable;
 }
 
 const UNDERGROUND_PAIR_INPUTS=['underground_manual_spaces','underground_manual_gns_sqm',
@@ -45490,16 +45610,27 @@ function renderResult(){
  const underTotal=Number(r.summary.underground_gns_sqm!==undefined
   ?r.summary.underground_gns_sqm:underGns);
  const dash='<span style="color:#bbb">—</span>';
+ // Переданные городу метры строятся и не продаются: в продаваемой их нет, и
+ // без приписки отчёт читается так, будто продано всё построенное — «в отчёте
+ // вообще нет указания на передаваемую! Чтобы не забыть, что вообще-то не всё
+ // продал» (владелец, 10.09.2026). Штуки так подписаны с 04.09; метры —
+ // соседнее место, и правило до него не дошло.
+ const areaNote=x=>Number(x.transfer||0)>0
+  ? `<span style="display:block;font-size:10px;color:#777">передано городу ${num(x.transfer)} м²</span>`
+  : '';
+ const transferTotal=r.tep.rows.reduce((sum,x)=>sum+Number(x.transfer||0),0);
  reportTep.innerHTML=
   `<thead><tr><th>Продукт</th><th>ГНС наземная, м²</th><th>Подземная, м²</th><th>Продаваемая площадь, м²</th><th>Построено, шт.</th><th>Продаётся, шт.</th></tr></thead>`+
   `<tbody>`+
   r.tep.rows.map(x=>`<tr><td>${x.label}</td>`
    +`<td>${isUnder(x)?dash:num(x.gns)}</td>`
    +`<td>${isUnder(x)?num(x.gns):(objUnder(x)>0?num(objUnder(x)):dash)}</td>`
-   +`<td>${num(x.saleable)}</td>`
+   +`<td>${num(x.saleable)}${areaNote(x)}</td>`
    +`<td>${num(x.units)}${unitNote(x)}</td><td>${num(soldUnits(x))}</td></tr>`).join('')+
   `</tbody><tfoot><tr><th>Итого</th><th>${num(aboveGns)}</th><th>${num(underTotal)}</th>`
-  +`<th>${num(r.tep.total.saleable)}</th><th>${num(r.tep.total.units)}</th><th>${num(soldTotal)}</th></tr></tfoot>`;
+  +`<th>${num(r.tep.total.saleable)}`
+  +(transferTotal>0?`<span style="display:block;font-size:10px;color:#777">передано городу ${num(transferTotal)} м²</span>`:'')
+  +`</th><th>${num(r.tep.total.units)}</th><th>${num(soldTotal)}</th></tr></tfoot>`;
  const tepNote=document.getElementById('reportTepNote');
  if(tepNote)tepNote.innerHTML=underTotal>0
   ? `Строительный объём — ${num(Number(r.summary.construction_volume_sqm!==undefined?r.summary.construction_volume_sqm:r.tep.total.gns))} м², наземная плюс подземная: на нём считаются общие статьи (ИРД, проектирование, подготовка, сети, благоустройство, сдача, содержание). Удельные «на метр» считаются на наземной ГНС: подземная в неё не входит — у неё своя себестоимость метра и свой продукт, продаваемый местами. ГНС — внутренний термин DevelopAid; город нагрузки считает от суммарной поэтажной площади.`
@@ -47405,6 +47536,8 @@ PAGE = PAGE.replace(INPUT_DEFAULT_PLACEHOLDER,
 PAGE = PAGE.replace(TEP_DEFAULT_PLACEHOLDER,
                     json.dumps(TEP_DEFAULT, ensure_ascii=False))
 PAGE = PAGE.replace(TEP_RATIOS_PLACEHOLDER, json.dumps(TEP_RATIOS, ensure_ascii=False))
+PAGE = PAGE.replace(PRODUCT_LABELS_PLACEHOLDER,
+                    json.dumps(product_labels(), ensure_ascii=False))
 PAGE = PAGE.replace(
     TEP_ROW_INPUTS_PLACEHOLDER,
     json.dumps({obj.key: tep_row_inputs(obj.key)

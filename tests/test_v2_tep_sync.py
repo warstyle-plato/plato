@@ -44,6 +44,7 @@ class FakeCore:
     # однажды позеленела на гейте, который не опознавал владельца ни разу.
     # Ровно ради того, чтобы /v2 звал движок, эти имена здесь настоящие.
     tep_row_inputs = staticmethod(engine.tep_row_inputs)
+    saleable_after_transfer = staticmethod(engine.saleable_after_transfer)
     social_tep_row = staticmethod(engine.social_tep_row)
     SOCIAL_TEP_FIELDS = engine.SOCIAL_TEP_FIELDS
     STANDALONE_OBJECTS = engine.STANDALONE_OBJECTS
@@ -78,27 +79,54 @@ def test_teaser_gns_replaces_stale_default_dependants():
     assert "units" in result["derived"]
 
 
-def test_transfer_reduces_saleable_and_useful_instead_of_gns():
+def _transferred(given, **row):
+    base = {"label": "Квартиры", "gns": 31000, "total_area": 27900,
+            "useful": 20150, "saleable": 20150, "transfer": 0, "units": 336}
+    base.update(row)
     request = TepSyncRequest(
         inputs={"vri_region": "msk"},
-        tep={
-            "apartments": {
-                "label": "Квартиры", "gns": 31000, "total_area": 27900,
-                "useful": 20150, "saleable": 20150, "transfer": 0, "units": 336,
-            }
-        },
+        tep={"apartments": base},
         row_key="apartments",
         field_key="transfer",
-        value=1500,
+        value=given,
     )
+    return _sync_tep(FakeCore(), request)["tep"]["apartments"]
 
-    row = _sync_tep(FakeCore(), request)["tep"]["apartments"]
-    assert row["gns"] == 31000
+
+def test_transfer_reduces_saleable_and_not_the_built_area():
+    """Полезная от передачи НЕ уменьшается — решение владельца (10.09.2026).
+
+    Прежде эта проверка держала обратное: `useful == saleable` и после
+    передачи. Утверждение было верно ровно до того, как владелец прочитал
+    экран: метры построены и полезны, просто не наши. Тождество «полезная
+    равна продаваемой» осталось там, где передачи нет, — соседней проверкой.
+    """
+    row = _transferred(1500)
+    assert row["gns"] == 31000, "ГНС не меняется: переданные метры строятся"
     assert row["total_area"] == 27900
     assert row["transfer"] == 1500
     assert row["saleable"] == 18650
-    assert row["useful"] == 18650
+    assert row["useful"] == 20150, "полезная площадь потеряла переданные метры"
     assert row["units"] == 311
+
+
+def test_without_a_transfer_the_useful_area_equals_the_saleable_one():
+    row = _transferred(0)
+    assert row["useful"] == row["saleable"] == 20150
+
+
+def test_a_second_edit_of_the_transfer_is_not_counted_twice():
+    """Дельту помнить не надо: продаваемая считается заново.
+
+    Прежде здесь стояло «минус разница с прошлым числом», и подпись называла
+    именно разницу: в поле 5 000, на экране «переданные 4 000».
+    """
+    once = _transferred(5000)
+    again = _transferred(5000, **{"useful": once["useful"],
+                                  "saleable": once["saleable"],
+                                  "transfer": 5000})
+    assert again["saleable"] == once["saleable"] == 15150
+    assert again["useful"] == once["useful"] == 20150
 
 
 def test_v2_shell_loads_sync_after_stock_app():

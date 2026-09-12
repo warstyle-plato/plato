@@ -281,6 +281,7 @@ def _sync_tep(core: Any, req: TepSyncRequest) -> dict[str, Any]:
     elif ratio and field in {"gns", "total_area", "saleable"}:
         total_of_gns = _number(ratio.get("total_of_gns"))
         saleable_of_gns = _number(ratio.get("saleable_of_gns"))
+        transfer = _number(row.get("transfer"))
         if value <= 0 or total_of_gns <= 0 or saleable_of_gns <= 0:
             gns = total = saleable = 0.0
         elif field == "gns":
@@ -292,19 +293,30 @@ def _sync_tep(core: Any, req: TepSyncRequest) -> dict[str, Any]:
             gns = total / total_of_gns
             saleable = gns * saleable_of_gns
         else:
-            saleable = value
+            # Вписанная продаваемая — НЕТТО: переданное из неё уже вычтено, и
+            # пропорцию надо гнать от полной площади, иначе ГНС потеряет метры,
+            # которые строятся.
+            saleable = value + transfer
             gns = saleable / saleable_of_gns
             total = gns * total_of_gns
         row["gns"] = _round_area(gns)
         row["total_area"] = _round_area(total)
-        row["saleable"] = _round_area(saleable)
-        row["useful"] = row["saleable"]
+        # Тождество строки объявлено в движке: полезная — построенная площадь,
+        # продаваемая — она же за вычетом переданного. Прежде правка ГНС
+        # затирала продаваемую полным числом, и переданное молча возвращалось в
+        # продажу.
+        row["useful"] = _round_area(saleable)
+        net, excess = core.saleable_after_transfer(row["useful"], transfer)
+        row["saleable"] = _round_area(net)
         derived.update({
             "gns": "связано с площадями строки",
             "total_area": f"{total_of_gns * 100:g}% ГНС",
-            "saleable": f"{saleable_of_gns * 100:g}% ГНС",
-            "useful": "равна продаваемой",
+            "saleable": (f"{saleable_of_gns * 100:g}% ГНС минус передаваемая"
+                         if transfer > 0 else f"{saleable_of_gns * 100:g}% ГНС"),
+            "useful": "построенная площадь строки",
         })
+        if excess > 0:
+            derived["saleable"] = "передаётся больше, чем строится"
         if key == "apartments":
             units, basis = _apartments_units(core, inputs, row["saleable"])
             if basis:
@@ -312,11 +324,16 @@ def _sync_tep(core: Any, req: TepSyncRequest) -> dict[str, Any]:
                 derived["units"] = basis
 
     elif ratio and field == "transfer":
-        delta = value - old_value
-        row["saleable"] = _round_area(max(0.0, _number(row.get("saleable")) - delta))
-        row["useful"] = row["saleable"]
-        derived["saleable"] = "уменьшена на передаваемую площадь"
-        derived["useful"] = "равна продаваемой"
+        # Дельту помнить не нужно: полная площадь известна, продаваемая
+        # считается заново. Прежнее «минус разница» называло в подписи именно
+        # разницу — в поле 5 000, а на экране «переданные 4 000».
+        gross = max(_number(row.get("useful")), _number(row.get("saleable")) + old_value)
+        row["useful"] = _round_area(gross)
+        net, excess = core.saleable_after_transfer(row["useful"], value)
+        row["saleable"] = _round_area(net)
+        derived["saleable"] = ("передаётся больше, чем строится" if excess > 0
+                               else "построенная площадь минус передаваемая")
+        derived["useful"] = "построенная площадь строки — передача её не уменьшает"
         if key == "apartments":
             units, basis = _apartments_units(core, inputs, row["saleable"])
             if basis:

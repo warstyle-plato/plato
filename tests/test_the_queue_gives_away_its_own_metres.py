@@ -79,6 +79,10 @@ def test_the_queue_leads_and_the_project_row_is_the_sum() -> None:
         "const tep={apartments:{gns:100000,saleable:60000,useful:60000,transfer:0},"
         "underground_parking:{gns:14000,units:400,saleable:0,transfer_units:0}};\n"
         "const phasing={phases:[{name:'О1',products:{}},{name:'О2',products:{}}]};\n"
+        # Тождество строки считает один помощник — он же в таблице ТЭП.
+        "let tepRefillNote={};\n"
+        "const landNum=(v,d)=>Number(v||0).toFixed(d===undefined?1:d);\n"
+        + _function("tepApplyTransfer") + "\n"
         + PAGE[PAGE.index("const PHASE_GIVEN_IN_UNITS="):PAGE.index("function setPhaseProductTep(")]
         + "\nsetPhaseProductGiven(0,'apartments',5000);\n"
         "setPhaseProductGiven(1,'underground_parking',40);\n"
@@ -95,7 +99,10 @@ def test_the_queue_leads_and_the_project_row_is_the_sum() -> None:
     # Проектная строка — сумма очередей, и переданное в ней тоже сумма.
     assert flats["transfer"] == 5000
     assert abs(flats["saleable"] - (25000 + 30000)) < 0.01, flats
-    assert flats["useful"] == flats["saleable"]
+    # Полезная — построенная площадь: переданное из неё НЕ вычитается (решение
+    # владельца, 10.09.2026). Прежде здесь стояло «полезная равна продаваемой»,
+    # и это было верно ровно до того, как он прочитал экран.
+    assert abs(flats["useful"] - (flats["saleable"] + flats["transfer"])) < 0.01, flats
     # Машино-места: отдаются штуками, построенные не трогаются.
     park = got["tep"]["underground_parking"]
     second = got["phasing"]["phases"][1]["products"]["underground_parking"]
