@@ -198,10 +198,25 @@
   decorateTepEditor();
   maybeSyncTeaserImport();
 
+  let observerScheduled = false;
   const observer = new MutationObserver(() => {
-    renameTerritoryView();
-    decorateTepEditor();
-    maybeSyncTeaserImport();
+    // decorateTepEditor itself adds/removes chips. Watching those mutations while
+    // decorating creates a self-triggering microtask loop that starves taps,
+    // file-picker change events and uploads on iPhone. Collapse external DOM
+    // changes to one animation frame and disconnect while we mutate our own UI.
+    if (observerScheduled) return;
+    observerScheduled = true;
+    requestAnimationFrame(() => {
+      observerScheduled = false;
+      observer.disconnect();
+      try {
+        renameTerritoryView();
+        decorateTepEditor();
+        maybeSyncTeaserImport();
+      } finally {
+        observer.observe(document.body, { childList: true, subtree: true });
+      }
+    });
   });
   observer.observe(document.body, { childList: true, subtree: true });
 })();
