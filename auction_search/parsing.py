@@ -189,3 +189,67 @@ def deadline_is_current(raw: str | None, *, now: datetime | None = None) -> bool
     if moment is None:
         return False
     return moment >= (now or datetime.now(_MOSCOW_TZ))
+
+
+def stamp_day(raw: object) -> str:
+    """День городской отметки времени — по Москве и числами.
+
+    Отметка приезжает секундами эпохи, и печаталась она как есть: в сообщении
+    бота стояло «решение от 1688749200» (экран владельца, 09.09.2026). Число
+    вместо даты — половина беды; вторая в том, что по одному адресу у города
+    бывает несколько решений разных лет, и в списке «2-й Тушинский пр-д, вл. 12»
+    стоял трижды подряд. Различала эти три строки ровно отметка, которую
+    прочитать было нельзя.
+
+    Зона — часть величины: отметку ставит город, и день у неё московский. Без
+    пришпиленной зоны решение, опубликованное поздним вечером, у читателя
+    западнее съезжает на сутки назад. Это про отметку ГОРОДА; наши собственные
+    мгновения (возраст снимка, «спрошено») остаются в зоне зрителя.
+
+    Числами, а не словами: в списке из двенадцати строк «07.07.2023» короче
+    «7 июля 2023» и не заводит третьего списка названий месяцев. Год полный —
+    у двузначного прочтений два.
+    """
+    text = normalize_space(str(raw) if raw is not None else "")
+    if not text:
+        return ""
+    try:
+        seconds = int(float(text))
+    except (TypeError, ValueError):
+        seconds = 0
+    if seconds > 0:
+        try:
+            return datetime.fromtimestamp(seconds, _MOSCOW_TZ).strftime("%d.%m.%Y")
+        except (OverflowError, OSError, ValueError):
+            return ""
+    # Записью ISO эта отметка не приходит ни от одного нынешнего источника
+    # (`KrtDecision.published_at` — секунды), но читается и она: молча
+    # выброшенная дата неотличима от даты, которой у документа нет.
+    try:
+        moment = datetime.fromisoformat(text)
+    except ValueError:
+        return ""
+    if moment.tzinfo is not None:
+        moment = moment.astimezone(_MOSCOW_TZ)
+    return moment.strftime("%d.%m.%Y")
+
+
+def deadline_label(raw: str | None) -> str:
+    """Срок заявки строкой — тем же разбором, каким считается сам срок.
+
+    Резать сырую строку по длине нельзя: «09.10.26 15:00»[:10] даёт
+    «09.10.26 1» — обрубок часа, читаемый как часть даты. Разбор у срока один
+    (`deadline_moment`), поверхность его только печатает; неразобранное
+    печатается как написано — придумывать за площадку нечего.
+
+    Час печатается, только когда его назвала сама площадка: у дня без часа
+    момент поставлен на конец дня, и «23:59 МСК» выдавало бы наше допущение за
+    объявленное время.
+    """
+    moment = deadline_moment(raw)
+    if moment is None:
+        return normalize_space(raw if isinstance(raw, str) else "")
+    moment = moment.astimezone(_MOSCOW_TZ)
+    if ":" not in normalize_space(str(raw)):
+        return moment.strftime("%d.%m.%Y")
+    return moment.strftime("%d.%m.%Y, %H:%M") + " МСК"

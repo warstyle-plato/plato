@@ -1936,9 +1936,21 @@ def install(app: FastAPI) -> None:
                 order_by_site.setdefault(str(site.get("slug") or ""), one)
             elif one.get("address") or one.get("krt_name"):
                 unbound.append(one)
+        # Счёт распоряжений считает сервер, а не экран: у числа обязано быть
+        # ОКНО и ПРЕДМЕТ. «Город объявил 55» без них читалось как «идёт 55
+        # аукционов» и сравнивалось с восемью лотами соседней вкладки
+        # (владелец, 09.09.2026) — а это документы с 2017 года, из них за
+        # последние двенадцать месяцев 16.
+        year_ago = time.time() - 365 * 86400
+        recent = sum(1 for one in rows
+                     if float(one.get("published_at") or 0) > year_ago)
+        addressed = sum(1 for one in rows if one.get("address"))
         return {**matched, "orders": rows,
                 "orders_by_site": order_by_site,
                 "orders_unbound": unbound[:40],
+                "orders_total": len(rows),
+                "orders_recent_12m": recent,
+                "orders_with_address": addressed,
                 "orders_note": orders.get("note") or "",
                 "orders_complete": orders.get("complete"),
                 "orders_error": orders.get("error") or ""}
