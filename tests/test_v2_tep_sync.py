@@ -115,6 +115,7 @@ def test_without_a_transfer_the_useful_area_equals_the_saleable_one():
     assert row["useful"] == row["saleable"] == 20150
 
 
+
 def test_a_second_edit_of_the_transfer_is_not_counted_twice():
     """Дельту помнить не надо: продаваемая считается заново.
 
@@ -153,6 +154,9 @@ def test_v2_shell_loads_sync_after_stock_app():
     assert stock >= 0, "штатный app.js не доехал до собранной /v2"
     assert sync >= 0, "tep-sync.js не доехал до собранной /v2"
     assert stock < sync, "пересчёт грузится раньше штатного приложения"
+    # Маршруты при этом объявлены — иначе собранная страница ссылалась бы
+    # на файл, которого никто не отдаёт.
+    assert TestClient(main_registry.app).get("/v2/assets/tep-sync.js").status_code == 200
 
 
 def test_v2_renames_duplicate_tep_tab_and_marks_derived_values():

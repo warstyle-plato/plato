@@ -18737,6 +18737,18 @@ def _v4_finance_hints(bundle: dict[str, Any]) -> dict[str, Any]:
             "bridge_peak_by_phase": [float(finance.get("peak_bridge", 0.0)) / 1e6],
         }
     hints["parity"] = _v4_parity_targets(bundle.get("consolidated") or {})
+    # ТЭП, на котором посчитан отчёт. Книга писала присланный страницей, а
+    # движок приводит строку ТЭП к вводным: заданная руками площадь гаража
+    # сильнее норматива, выгрузка ГлавАПУ сильнее устаревшей строки, соцобъект
+    # считается от мест. Правки книга не видела и строила проект, которого
+    # движок не считал: на 77:07:0013006 это 23 310 м² подземной части против
+    # 15 540 у отчёта при одинаковых 666 местах — 1 494,6 млн ₽ CAPEX, LLCR
+    # 0,98 против 1,03, то есть книга говорила «не проходит», а отчёт
+    # «проходит». Оба документа выглядели верными.
+    hints["tep_applied"] = {
+        str(row.get("key")): {key: value for key, value in row.items() if key != "key"}
+        for row in ((((bundle or {}).get("consolidated") or {}).get("tep") or {}).get("rows") or [])
+        if row.get("key")}
     # Горизонт движка — сколько месяцев он посчитал. Книга кончается своей
     # колонкой, и всё, что за ней, она молча теряет: на четырёх очередях с
     # шагом 36 это 43 месяца и −12,3 млрд ₽ CAPEX при собранном без единого
@@ -19529,6 +19541,22 @@ def build_project_workbook(
             # сошёлся». Причина уходит туда же, куда неопознанная формула.
             finance_hints = {}
             missing.append("контрольные числа движка: " + _error_location(exc))
+
+    # Книга считает по ТОМУ ЖЕ ТЭП, что и отчёт. Присланная страницей строка —
+    # не то, на чём посчитано: `calculate` приводит её к вводным, и правки
+    # книга не видела. Приобъектный паркинг в применённом ТЭП уже разложен,
+    # поэтому второй раз его звать нельзя — `apply_object_parking` не
+    # идемпотентна, метры первых этажей вычитаются из продаваемой при каждом
+    # вызове. Справка о паркинге снята выше, на присланном ТЭП: она считается
+    # от вводных и от подмены строки не зависит.
+    _tep_applied = (finance_hints or {}).get("tep_applied") or {}
+    if _tep_applied:
+        tep = {key: dict(value) for key, value in _tep_applied.items()
+               if isinstance(value, dict)}
+    else:
+        missing.append(
+            "ТЭП движка: книга пишет присланный — строка, приведённая расчётом "
+            "к вводным (площадь гаража, выгрузка ГлавАПУ, соцобъект), до неё не дошла")
 
     # Сетка книги конечна, а горизонт движка — нет. Не влезло — это `missing`
     # числами, а не молчание: обрезанная книга выглядит целой, и половина её
@@ -41760,8 +41788,14 @@ function repairParkingFromGlavapu(){
  if(manualSpaces>0||manualArea>0){
   const per=undergroundAreaPerSpace();
   const spaces=manualSpaces>0?manualSpaces:Math.round(manualArea/per);
+  // Площадь берётся так же, как её берёт движок: заданная руками сильнее
+  // норматива ВСЕГДА, а не только когда мест не назвали. Прежде при
+  // заполненных обоих полях страница выбрасывала введённую площадь и ставила
+  // `места × 35`: на 666 местах с заданными 15 540 м² в строке ТЭП вставало
+  // 23 310 — 7 770 м² подземной части, которых движок не строит. На экране
+  // одно число, в расчёте другое, и оба выглядели заданными.
   tep.underground_parking.units=spaces;
-  tep.underground_parking.gns=manualSpaces>0?spaces*per:manualArea;
+  tep.underground_parking.gns=manualArea>0?manualArea:spaces*per;
   tep.underground_parking.total_area=tep.underground_parking.gns;
   tep.underground_parking.useful=0;
   tep.underground_parking.saleable=0;
