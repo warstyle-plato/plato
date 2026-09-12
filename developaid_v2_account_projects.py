@@ -41,9 +41,18 @@ def install(app: FastAPI) -> None:
             headers=_REVALIDATE,
         )
 
+    @app.get("/v2/assets/entry-layout.js", include_in_schema=False)
+    async def entry_layout_script() -> FileResponse:
+        return FileResponse(
+            _FRONTEND / "entry_layout.js",
+            media_type="application/javascript",
+            headers=_REVALIDATE,
+        )
+
     # developaid_v2_upgrade installed the final /v2 page immediately before us.
     # Replace only that page so script order is deterministic:
-    # auth/photo hook -> saved-project hook -> start/import hook -> stock v2 app.
+    # auth/photo hook -> saved-project hook -> start/import hook -> layout hook
+    # -> stock v2 application. All hooks stay presentation-only.
     _drop_v2_index(app)
 
     @app.get("/v2", include_in_schema=False)
@@ -57,6 +66,7 @@ def install(app: FastAPI) -> None:
             '<script src="/v2/assets/upgrade.js" defer></script>\n  '
             '<script src="/v2/assets/account-projects.js" defer></script>\n  '
             '<script src="/v2/assets/start-imports.js" defer></script>\n  '
+            '<script src="/v2/assets/entry-layout.js" defer></script>\n  '
             + marker
         )
         return HTMLResponse(source.replace(marker, injected, 1), headers=_REVALIDATE)
