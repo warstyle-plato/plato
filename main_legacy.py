@@ -76,7 +76,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.23.12"
+VERSION = "0.23.14"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -41673,8 +41673,14 @@ function repairParkingFromGlavapu(){
  if(manualSpaces>0||manualArea>0){
   const per=undergroundAreaPerSpace();
   const spaces=manualSpaces>0?manualSpaces:Math.round(manualArea/per);
+  // Площадь берётся так же, как её берёт движок: заданная руками сильнее
+  // норматива ВСЕГДА, а не только когда мест не назвали. Прежде при
+  // заполненных обоих полях страница выбрасывала введённую площадь и ставила
+  // `места × 35`: на 666 местах с заданными 15 540 м² в строке ТЭП вставало
+  // 23 310 — 7 770 м² подземной части, которых движок не строит. На экране
+  // одно число, в расчёте другое, и оба выглядели заданными.
   tep.underground_parking.units=spaces;
-  tep.underground_parking.gns=manualSpaces>0?spaces*per:manualArea;
+  tep.underground_parking.gns=manualArea>0?manualArea:spaces*per;
   tep.underground_parking.total_area=tep.underground_parking.gns;
   tep.underground_parking.useful=0;
   tep.underground_parking.saleable=0;
