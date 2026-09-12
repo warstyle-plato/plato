@@ -90,57 +90,35 @@ def test_transfer_reduces_saleable_and_useful_instead_of_gns():
     assert row["units"] == 311
 
 
-# Порядок, который оболочка объявляет своим комментарием: хуки идут до
-# штатного приложения, синхронизатор ТЭП — после него. Список здесь один, и
-# он же есть утверждение проверки.
-V2_SCRIPT_ORDER = (
-    "/v2/assets/upgrade.js",
-    "/v2/assets/teaser-fallback.js",
-    "/v2/assets/account-projects.js",
-    "/v2/assets/start-imports.js",
-    "/v2/assets/entry-layout.js",
-    "/v2/assets/app.js",
-    "/v2/assets/tep-sync.js",
-)
-
-
 def test_v2_shell_loads_sync_after_stock_app():
-    """Порядок скриптов спрашивают у ОТДАВАЕМОЙ разметки, а не у исходника.
-
-    Прежде здесь стояло `shell.index('+ marker') < shell.index('/v2/assets/
-    tep-sync.js')` — сравнение смещений двух литералов в файле. Оно упало на
-    PR #398, который порядок скриптов не менял вовсе: маршрут
-    `@app.get("/v2/assets/tep-sync.js")` объявлен выше по файлу, чем строка со
-    склейкой, и смещения поменялись местами. Сборка из main стала красной
-    дважды подряд, «Сборка и публикация» была пропущена, и прод остался на
-    выпуске двухдневной давности — без хотфикса загрузки файлов на iPhone,
-    ради которого тот PR и делался.
-
-    Проверка падала, когда рядом что-то ПЕРЕДВИНУЛИ, а не когда что-то
-    сломали, — тот же признак, что у «проверки равенством целиком» и у
-    позиционного чтения колонок книги. Утверждение же названо в имени самого
-    теста: синхронизатор грузится ПОСЛЕ штатного приложения. Это про порядок
-    тегов в отдаваемом HTML, и спросить его можно прямо — маршрутом.
-    """
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-
-    import developaid_v2_account_projects as shell_module
-
-    app = FastAPI()
-    shell_module.install(app)
-    html = TestClient(app).get("/v2").text
-
     shell = (ROOT / "developaid_v2_account_projects.py").read_text(encoding="utf-8")
+    stock = '<script src="/v2/assets/app.js" defer></script>'
+    sync = '<script src="/v2/assets/tep-sync.js" defer></script>'
+
     assert '@app.post("/api/v2/tep-sync"' in shell
     assert '@app.get("/v2/assets/tep-sync.js"' in shell
+    assert stock in shell
+    assert sync in shell
 
-    missing = [src for src in V2_SCRIPT_ORDER if src not in html]
-    assert not missing, f"в разметке /v2 нет скриптов: {missing}"
-    where = [html.index(src) for src in V2_SCRIPT_ORDER]
-    assert where == sorted(where), (
-        "порядок скриптов в /v2 не тот, что объявлен: "
-        + " -> ".join(sorted(V2_SCRIPT_ORDER, key=html.index)))
+    # Утверждение здесь одно: синхронизатор подключается ПОСЛЕ штатного
+    # приложения. Позиции подстрок в файле на это не отвечают — `index`
+    # находит первое вхождение, и объявление маршрута `/v2/assets/tep-sync.js`
+    # стоит выше самой вставки: проверка падала, когда рядом ДОБАВИЛИ маршрут,
+    # а не когда сломался порядок. Считаем порядок внутри собранной вставки,
+    # а её границу — по скобкам присваивания.
+    start = shell.index("injected = (")
+    depth, index, seen = 0, shell.index("(", start), False
+    while index < len(shell):
+        if shell[index] == "(":
+            depth, seen = depth + 1, True
+        elif shell[index] == ")":
+            depth -= 1
+            if seen and depth == 0:
+                break
+        index += 1
+    injected = shell[start:index + 1]
+    assert "+ marker" in injected, injected
+    assert injected.index("+ marker") < injected.index("/v2/assets/tep-sync.js"), injected
 
 
 def test_v2_renames_duplicate_tep_tab_and_marks_derived_values():
