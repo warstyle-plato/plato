@@ -2536,10 +2536,12 @@ const SALES_PRICE_COLOR='#C4581B';
 // бывает: она про другое, чем объём, и живёт линией на своей шкале справа, на
 // каждом графике — «цена должна была присутствовать всегда только линией, а не
 // отдельной вкладкой и столбиками» (владелец, 26.08.2026).
+// `whole` — мера, которая складывается через товары. Такая одна: у суммы денег
+// есть имя, выручка. У «лотов» и «м²» его нет, и они идут по товару.
 const SALES_METRICS=[
-  {key:'amount', name:'млн ₽',  of:m=>m.amount,  show:v=>num(v/1e6,1), axis:v=>num(v/1e6)},
-  {key:'area',   name:'м²',     of:m=>m.area,    show:v=>num(v),        axis:v=>num(v)},
-  {key:'units',  name:'лоты',   of:m=>m.units,   show:v=>num(v),        axis:v=>num(v)},
+  {key:'amount', name:'млн ₽', whole:true, show:v=>num(v/1e6,1), axis:v=>num(v/1e6)},
+  {key:'area',   name:'м²',              show:v=>num(v),        axis:v=>num(v)},
+  {key:'units',  name:'лоты',  show:v=>num(v),        axis:v=>num(v)},
 ];
 let salesMetric='amount';
 let plansMetric='amount';
@@ -2599,24 +2601,8 @@ function barChart(rows, opts){
   rows.forEach((r,i)=>{
     if(!has(r.value)) return;
     const top=y(r.value), h=Math.max(1,(H-T-B)-(top-T));
-    // Столбик, у которого объявлен состав, рисуется слоями: «9 лотов» из
-    // четырёх квартир и пяти машино-мест читается как девять квартир, а лот
-    // квартиры и лот машино-места — разные товары. Высота слоя — геометрия от
-    // присланных сервером величин, своего счёта здесь нет.
-    const parts=(r.parts||[]).filter(p=>Number(p.value)>0);
-    if(parts.length>1){
-      let acc=0;
-      parts.forEach(p=>{
-        const y0=y(acc+Number(p.value)), y1=y(acc);
-        svg+=`<rect x="${(x(i)-bw/2).toFixed(1)}" y="${y0.toFixed(1)}" width="${bw}"`
-           +` height="${Math.max(1,y1-y0).toFixed(1)}" rx="2" fill="${p.color}"`
-           +` data-tip="${esc(r.label+' · '+p.name+': '+opts.show(p.value))}"></rect>`;
-        acc+=Number(p.value);
-      });
-    } else {
-      svg+=`<rect x="${(x(i)-bw/2).toFixed(1)}" y="${top.toFixed(1)}" width="${bw}" height="${h.toFixed(1)}"`
-         +` rx="2" fill="${parts.length?parts[0].color:(r.pale?'#9dc4e6':'#4E9BDE')}" data-tip="${esc(r.tip||'')}"></rect>`;
-    }
+    svg+=`<rect x="${(x(i)-bw/2).toFixed(1)}" y="${top.toFixed(1)}" width="${bw}" height="${h.toFixed(1)}"`
+       +` rx="2" fill="${r.pale?'#9dc4e6':(opts.fill||'#4E9BDE')}" data-tip="${esc(r.tip||'')}"></rect>`;
     if(r.over) svg+=`<text x="${x(i).toFixed(1)}" y="${(top-4).toFixed(1)}" text-anchor="middle"`
        +` font-size="9" fill="#5b6b7d">${esc(r.over)}</text>`;
   });
@@ -2656,8 +2642,7 @@ function barChart(rows, opts){
     if(rows.length>16&&i%2) return;
     svg+=`<text x="${x(i).toFixed(1)}" y="${H-26}" text-anchor="middle" font-size="9" fill="#8798a8">${esc(r.short||r.label)}</text>`;
   });
-  const legend=(opts.partLegend&&opts.partLegend.length?opts.partLegend.slice()
-      :[{name:opts.factName||'факт',color:'#4E9BDE'}])
+  const legend=[{name:opts.factName||'факт',color:opts.fill||'#4E9BDE'}]
     .concat(lines.map(l=>({name:l.name,color:l.color})))
     .concat(right.map(l=>({name:l.name,color:l.color})));
   svg+=`<text x="${L}" y="${H-8}" font-size="10" fill="#8798a8">${esc(opts.caption||'')}`
@@ -2677,58 +2662,95 @@ function barChart(rows, opts){
 // до которой не дошли, там просто отсутствует — то же правило, что у
 // свёрнутой таблицы: раскрыть её читателю нечем. На бумагу поэтому идут ВСЕ
 // меры, как это уже сделано у карты рынка (`.printviews`).
-// Динамика продаж. Столбик разложен по продуктам: «лоты» и «м²» складывать
-// через продукт нельзя — лот квартиры и лот машино-места разные товары, а метр
-// паркинга и метр квартиры тем более (на Кутузов Сити январь 2026 это 9 «лотов»
-// из четырёх квартир и пяти машино-мест, май — 9 из двух квартир, шести
-// коммерческих помещений и машино-места). Для цены это правило уже применено —
-// у неё своя линия квартир; объём его ждал.
+// Динамика продаж. Рубли через продукты складываются законно — у суммы есть
+// имя, выручка. У «лотов» и «м²» имени нет: лот квартиры и лот машино-места —
+// разные товары, а метр паркинга и метр квартиры тем более (на Кутузов Сити
+// январь 2026 это 9 «лотов» из четырёх квартир и пяти машино-мест, май — 9 из
+// двух квартир, шести коммерческих помещений и машино-места). Для цены это
+// правило уже применено — у неё своя линия квартир; объём его ждал.
 //
-// Рубли складываются законно, и итог столбика остаётся суммой; слои говорят,
-// чем он набран. Порядок и цвет продукта приходят с сервера одним списком:
-// посчитанный в каждом месяце заново, он красил бы продукт по-разному.
+// Стопкой это НЕ лечится: у стопки та же общая высота, то есть та же сумма,
+// только нарисованная, — «это разные продукты и вводят в заблуждение эксперта»
+// (владелец, 12.09.2026). Поэтому штуки и метры рисуются ПО ТОВАРУ: свой
+// график, своя шкала, своё имя, своя линия цены и свои числа под ним, — и ни
+// одного «всего» рядом с ними.
+//
+// Порядок и цвет продукта приходят с сервера одним списком: посчитанный в
+// каждом месяце заново, он красил бы продукт по-разному.
 function salesDynamicsProducts(d){
   const order=(d.product_order||[]).slice();
   if(!order.length) (d.by_product||[]).forEach(p=>{ if(!order.includes(p.product)) order.push(p.product) });
-  // Цвет цены на этом же поле занят, и продукт им красить нельзя: слой и линия
-  // одного цвета читаются как одна величина.
+  // Цвет цены на этом же поле занят, и товар им красить нельзя: столбик и
+  // линия одного цвета читаются как одна величина.
   const palette=SALES_COLORS.filter(c=>c!==SALES_PRICE_COLOR);
   return order.map((name,i)=>({name, color:palette[i%palette.length]}));
 }
 
-function salesDynamicsChart(d, metric){
-  const products=salesDynamicsProducts(d);
-  const rows=(d.dynamics||[]).filter(m=>m.amount>0).map(m=>({
-    label:m.month, short:String(m.month).slice(2),
-    value:metric.of(m), over:metric.key==='amount'?num(m.units):'',
-    price:m.price_flats,
-    parts:products.map(p=>({name:p.name, color:p.color,
-      value:((m.by_product||{})[p.name]||{})[metric.key]||0})),
-    tip:m.month+': '+num(m.amount/1e6,1)+' млн ₽, '+num(m.units)+' лот(ов), '+num(m.area)+' м²'
-       +(m.price_per_sqm?', '+num(m.price_per_sqm)+' ₽/м²':''),
-  }));
-  // Продукт, которого нет ни в одном месяце, в легенду не идёт: обещанный
-  // цветом и отсутствующий на поле, он читается как поломка отрисовки.
-  const shown=products.filter(p=>rows.some(r=>(r.parts.find(x=>x.name===p.name)||{}).value>0));
-  return barChart(rows,{axis:metric.axis,show:metric.show,factName:'факт, '+metric.name,
-    partLegend:shown.length>1?shown:null,
-    rightLines:[{key:'price',name:'цена квартир, ₽/м²',color:SALES_PRICE_COLOR}],
-    rightAxis:v=>num(v/1000)+' тыс', rightShow:v=>num(v)+' ₽/м²', rightName:'цена квартир',
-    caption:metric.name+' по месяцам'+(shown.length>1?'; столбик разложен по продуктам':'')
-      +(metric.key==='amount'?'; цифра над столбиком — лотов всего':'')});
+// Один график: либо выручка всего проекта, либо объём ОДНОГО товара.
+function salesDynamicsChart(d, metric, product){
+  const rows=(d.dynamics||[]).filter(m=>m.amount>0).map(m=>{
+    // Товара в этом месяце не продавали — это пропуск, а не ноль: столбика
+    // просто нет, и линия цены рвётся.
+    const own=product?((m.by_product||{})[product.name]||null):null;
+    const value=product?(own?own[metric.key]:null):m[metric.key];
+    const price=product?(own?own.price:null):m.price_flats;
+    return {label:m.month, short:String(m.month).slice(2), value, price,
+      tip:m.month+': '+(product?product.name+', ':'')
+         +(has(value)?metric.show(value):'—')+' '+metric.name};
+  });
+  const priceName=product?'цена, ₽/м²':'цена квартир, ₽/м²';
+  return barChart(rows,{axis:metric.axis, show:metric.show, fill:product?product.color:null,
+    factName:(product?product.name:'выручка')+', '+metric.name,
+    rightLines:[{key:'price',name:priceName,color:SALES_PRICE_COLOR}],
+    rightAxis:v=>num(v/1000)+' тыс', rightShow:v=>num(v)+' ₽/м²',
+    rightName:product?'цена этого товара':'цена квартир',
+    caption:(product?product.name+' · '+metric.name:metric.name+' по месяцам')});
+}
+
+// Помесячные числа ОДНОГО товара. Общей строки «лотов всего» здесь нет — это
+// та же сумма разных товаров, только в таблице. Удельное считает сервер.
+function salesMonthTable(d, name){
+  const rows=[];
+  (d.dynamics||[]).slice().reverse().forEach(m=>{
+    const p=name?((m.by_product||{})[name]):null;
+    if(name){ if(!p||!p.amount) return;
+      rows.push([esc(m.month), num(p.units), num(p.area), num(p.amount/1e6,1),
+        has(p.price)?num(p.price):'—']);
+    } else {
+      if(!m.amount) return;
+      rows.push([esc(m.month), num(m.amount/1e6,1), has(m.price_flats)?num(m.price_flats):'—']);
+    }
+  });
+  return name
+    ? salesTable(['Месяц','Лотов','м²','млн ₽','₽/м²'], rows)
+    : salesTable(['Месяц','млн ₽','цена квартир, ₽/м²'], rows);
+}
+
+// График стоит над своими числами: так их видит и колода.
+function salesMetricCharts(d, metric){
+  const box=(title, chart, table)=>
+    (title?'<div class="muted" style="font-size:12px;margin-top:10px">'+esc(title)+'</div>':'')
+    +chart+'<details style="margin-top:6px"><summary>'
+    +esc(title?title+' — помесячно числами':'Помесячно числами')+'</summary>'+table+'</details>';
+  if(metric.whole) return box('', salesDynamicsChart(d, metric, null), salesMonthTable(d, null));
+  const products=salesDynamicsProducts(d).filter(p=>
+    (d.dynamics||[]).some(m=>((m.by_product||{})[p.name]||{})[metric.key]>0));
+  if(!products.length) return '<div class="muted" style="font-size:12.5px">Показывать нечего.</div>';
+  let html=products.map(p=>box(p.name, salesDynamicsChart(d, metric, p),
+    salesMonthTable(d, p.name))).join('');
+  if(products.length>1) html+='<div class="muted" style="font-size:12px;margin-top:6px">'
+    +'Товары не складываются: лот квартиры и лот машино-места — разные товары, '
+    +'у каждого своя шкала. Складывается только выручка — у её суммы есть имя.</div>';
+  return html;
 }
 
 function salesChartBlock(d){
   const metric=SALES_METRICS.find(m=>m.key===salesMetric)||SALES_METRICS[0];
-  let html=salesDynamicsChart(d, metric);
+  let html=salesMetricCharts(d, metric);
   const rest=SALES_METRICS.filter(m=>m.key!==metric.key);
   if(rest.length) html+='<div class="printviews">'
-    +rest.map(m=>salesDynamicsChart(d, m)).join('')+'</div>';
-  html+='<details style="margin-top:8px"><summary>Помесячно числами</summary>';
-  html+=salesTable(['Месяц','Лотов','м²','млн ₽','₽/м²'],
-    (d.dynamics||[]).slice().reverse().map(m=>[esc(m.month), num(m.units), num(m.area),
-      num(m.amount/1e6,1), m.price_per_sqm?num(m.price_per_sqm):'—']));
-  return html+'</details>';
+    +rest.map(m=>salesMetricCharts(d, m)).join('')+'</div>';
+  return html;
 }
 
 // Квартирография: чем был пул, что из него ушло и что осталось показывать.

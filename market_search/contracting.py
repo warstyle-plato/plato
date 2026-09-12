@@ -975,9 +975,14 @@ def summarise(contracts: dict[str, Any], ledger: dict[str, Any] | None = None) -
         # Цена сравнивается с ценой того же товара: у банка и у финмодели это
         # квартиры своей строкой. Общая цена метра мешает паркинг с жильём и
         # даёт третье число, не сравнимое ни с чем.
+        #
+        # Поэтому удельное считается ВНУТРИ каждого товара: у графика продукта
+        # своя линия цены, и брать на неё общую цену метра значит подписать
+        # чужое число именем этого продукта.
+        for stats in item["by_product"].values():
+            stats["price"] = stats["amount"] / stats["area"] if stats["area"] else None
         flats = item["by_product"].get("Квартира") or {}
-        item["price_flats"] = (flats.get("amount", 0.0) / flats["area"]
-                               if flats.get("area") else None)
+        item["price_flats"] = flats.get("price")
         dynamics.append(item)
 
     products = {}
