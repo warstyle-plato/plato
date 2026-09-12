@@ -17,9 +17,11 @@ from mpt_extension import install as install_mpt
 from normatives_registry import install as install_normatives
 from pdf_first_page_v2 import install as install_pdf_first_page
 from telegram_user_registry import install
+from tep_progress_ui import install as install_tep_progress_ui
 
 app = _base.app
 core = _base.core
+install_tep_progress_ui(_base)
 install_pdf_first_page(core)
 install_mpt(_base)
 install_mpt_bot_menu(_base)
