@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import main_legacy as engine
 from developaid_v2_account_projects import TepSyncRequest, _sync_tep
 
 
@@ -37,6 +38,16 @@ class FakeCore:
     @staticmethod
     def average_flat_sqm(_source):
         return 60.0, "рынок — 60 м² на квартиру"
+
+    # Объявленные один раз ответы заглушка не подделывает, а БЕРЁТ: подделка со
+    # своей сигнатурой проверяет себя, а не наш код, — так проверка нормативов
+    # однажды позеленела на гейте, который не опознавал владельца ни разу.
+    # Ровно ради того, чтобы /v2 звал движок, эти имена здесь настоящие.
+    tep_row_inputs = staticmethod(engine.tep_row_inputs)
+    social_tep_row = staticmethod(engine.social_tep_row)
+    SOCIAL_TEP_FIELDS = engine.SOCIAL_TEP_FIELDS
+    STANDALONE_OBJECTS = engine.STANDALONE_OBJECTS
+    DEFAULT_INPUTS = engine.DEFAULT_INPUTS
 
 
 def test_teaser_gns_replaces_stale_default_dependants():
@@ -124,3 +135,117 @@ def test_v2_renames_duplicate_tep_tab_and_marks_derived_values():
     assert "авто · ${rule}" in source
     assert "из тизера" in source
     assert "/api/v2/tep-sync" in source
+
+
+def _project_with_offices():
+    """Включённые офисы: на нуле метров правка ничего не двигает и проверка
+    зелена на сломанном коде — перестановка нулей невидима."""
+    import copy
+
+    inputs = dict(engine.DEFAULT_INPUTS)
+    inputs["offices_enabled"] = True
+    tep = copy.deepcopy(engine.TEP_DEFAULT)
+    tep["offices"] = dict(
+        tep["offices"], gns=inputs["offices_gba_sqm"],
+        total_area=inputs["offices_gba_sqm"] * 0.94,
+        saleable=inputs["offices_saleable_sqm"], useful=inputs["offices_saleable_sqm"])
+    assert inputs["offices_gba_sqm"] > 0, "без метров офисов проверка не проверяет ничего"
+    return inputs, tep
+
+
+def test_a_v2_edit_reaches_the_input_the_engine_reads():
+    """Правка строки доезжает до вводной — деньги считаются на ней, не на прежней.
+
+    Мерено в рублях: правка ГНС офисов 10 000 → 20 000 давала на экране 20 000
+    при CAPEX 2 920,9 млн ₽ вместо 4 920,9 — ровно 10 000 м² по ставке
+    200 тыс ₽/м². Половина последствий за правкой шла (приобъектная норма
+    читает общую площадь строки), половина нет.
+    """
+    import copy
+
+    inputs, tep = _project_with_offices()
+    answer = _sync_tep(engine, TepSyncRequest(
+        inputs=copy.deepcopy(inputs), tep=copy.deepcopy(tep),
+        row_key="offices", field_key="gns", value=20000.0))
+
+    assert answer["tep"]["offices"]["gns"] == 20000.0
+    assert answer["inputs"]["offices_gba_sqm"] == 20000.0
+    assert answer["inputs"]["offices_saleable_sqm"] == answer["tep"]["offices"]["saleable"]
+
+    ours = engine.calculate(engine.CalcRequest(
+        inputs=answer["inputs"], tep=answer["tep"]))
+    # Та же правка, доведённая до вводных руками, — это и есть ответ страницы.
+    page_inputs = copy.deepcopy(answer["inputs"])
+    page_inputs["offices_gba_sqm"] = 20000.0
+    page_inputs["offices_saleable_sqm"] = answer["tep"]["offices"]["saleable"]
+    theirs = engine.calculate(engine.CalcRequest(
+        inputs=page_inputs, tep=copy.deepcopy(answer["tep"])))
+    assert ours["capex"]["offices"] == theirs["capex"]["offices"]
+
+
+def test_a_social_row_comes_from_the_engine_answer():
+    """Строка соцобъекта — объявленный ответ движка, а не пятое число."""
+    import copy
+
+    inputs = dict(engine.DEFAULT_INPUTS)
+    inputs["social_mode"] = "Строительство"
+    answer = _sync_tep(engine, TepSyncRequest(
+        inputs=copy.deepcopy(inputs), tep=copy.deepcopy(engine.TEP_DEFAULT),
+        row_key="kindergarten", field_key="units", value=300))
+
+    assert answer["inputs"]["kindergarten_places"] == 300
+    want = engine.social_tep_row({**inputs, "kindergarten_places": 300}, "kindergarten")
+    got = answer["tep"]["kindergarten"]
+    for field in ("units", "total_area", "gns", "transfer"):
+        assert round(float(got[field]), 3) == round(float(want[field]), 3), field
+    assert float(want["gns"]) > 0, "на нулевой ГНС проверка не различает ответы"
+
+
+def test_a_disabled_object_says_so_instead_of_saving_silently():
+    """Площади ушли во вводные выключенного объекта — и об этом сказано.
+
+    Включать объект за человека нельзя: это меняет экономику проекта. Но
+    молчание читается как принятая правка, а строка обнулится на первом же
+    пересчёте — ровно то же говорит страница.
+    """
+    import copy
+
+    inputs, tep = _project_with_offices()
+    inputs["offices_enabled"] = False
+    answer = _sync_tep(engine, TepSyncRequest(
+        inputs=copy.deepcopy(inputs), tep=copy.deepcopy(tep),
+        row_key="offices", field_key="gns", value=20000.0))
+
+    assert answer["inputs"]["offices_gba_sqm"] == 20000.0
+    said = " ".join(answer.get("notes") or [])
+    assert "выключен" in said, said
+
+
+def test_the_row_input_map_is_declared_once():
+    """«Какая вводная за каким полем» — один ответ, и страница берёт его.
+
+    Карт было две неполные (страница и очереди движка) плюс третья, которая
+    вводные не писала вовсе. Литерала на странице больше нет: он приходит
+    подстановкой, как `VERSION` и доли ТЭП.
+    """
+    page = engine.PAGE
+    assert "const TEP_ROW_INPUTS=" in page
+    assert engine.TEP_ROW_INPUTS_PLACEHOLDER not in page, "подстановка не выполнена"
+    assert "offices_gba_sqm'" not in page.split("const TEP_ROW_INPUTS=")[1][:200], (
+        "карта снова написана руками")
+    for obj in engine.standalone_objects():
+        if obj.measure != "sqm":
+            continue
+        assert engine.tep_row_inputs(obj.key) == obj.aliases, obj.key
+
+
+def test_the_per_space_area_is_not_hard_coded():
+    """Ставка площади на место — у движка: копию негде обновлять."""
+    source = (ROOT / "developaid_v2_account_projects.py").read_text(encoding="utf-8")
+    body = source.split("def _per_space")[1]
+    assert "core.DEFAULT_INPUTS" in body.split("def ")[0]
+    for literal in ("35.0", "25.0"):
+        assert literal not in source, f"в модуле снова литерал {literal}"
+    assert engine.DEFAULT_INPUTS["underground_area_per_space_sqm"] > 0
+    assert engine.DEFAULT_INPUTS["above_parking_area_per_space_sqm"] > 0
+

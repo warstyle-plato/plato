@@ -417,6 +417,10 @@ TEP_RATIOS: dict[str, dict[str, float]] = {
                "source": "как у офисов и ТЦ: общая 94% ГНС (толщина стен)"},
 }
 TEP_RATIOS_PLACEHOLDER = "__DEVELOPAID_TEP_RATIOS__"
+# Строки, которые страница возвращает во вводные: метровые объекты реестра.
+# Наземный паркинг сюда не идёт — его строка выводится из числа мест, и правка
+# метров ей не принадлежит.
+TEP_ROW_INPUTS_PLACEHOLDER = "__DEVELOPAID_TEP_ROW_INPUTS__"
 # Ступени норматива площади соцобъекта. Подставляются, а не копируются: у
 # норматива города одно место жительства.
 SOCIAL_AREA_STEPS_PLACEHOLDER = "__DEVELOPAID_SOCIAL_AREA_STEPS__"
@@ -1780,6 +1784,31 @@ def social_tep_row(inputs: dict[str, Any], kind: str,
 # не совпадают. Признак едет НА строке, потому что `calculate` видит только
 # ТЭП — вторая карта «какие строки объявлены» разошлась бы с первой молча.
 TEP_ROW_DECLARED = "declared"
+
+
+def tep_row_inputs(row_key: str) -> dict[str, str]:
+    """Какая вводная стоит за полем строки ТЭП. Ответ ОДИН на все поверхности.
+
+    Карт было две, и обе неполные: страница держала свою (`TEP_ROW_INPUTS` —
+    три строки), движок очередей свою (`_PHASE_PRODUCT_INPUT_ALIASES` —
+    восемь). Третьим стал серверный пересчёт `/v2`, и он вводные не писал
+    ВОВСЕ: правка ГНС офисов 10 000 → 20 000 показывала на экране 20 000, а
+    деньги считались на 10 000 — CAPEX 2 920,9 млн ₽ против 4 920,9, ровно на
+    10 000 м² по ставке 200 тыс ₽/м². Половина последствий за правкой всё же
+    шла (приобъектная норма читает общую площадь строки), половина нет, и на
+    экране это неотличимо от посчитанного.
+
+    Свои списки здесь не заводятся: метровые и местовые объекты приходят из
+    реестра (`aliases`), соцобъекты из `SOCIAL_TEP_FIELDS`, подземный паркинг
+    своей парой «решение проекта». Правило то же, что у `VERSION`: копию негде
+    обновлять, потому что копии нет.
+    """
+    if row_key in SOCIAL_TEP_FIELDS:
+        places_key, area_key, _norm_key = SOCIAL_TEP_FIELDS[row_key]
+        # Ёмкость и площадь — разные вводные, и правка каждой идёт в свою:
+        # площадь по норме выводится из мест, а вписанная руками сильнее нормы.
+        return {"units": places_key, "total_area": area_key}
+    return dict(_PHASE_PRODUCT_INPUT_ALIASES.get(row_key) or {})
 
 
 def apply_social_tep_rows(inputs: dict[str, Any],
@@ -27931,11 +27960,12 @@ _PHASE_MASS_PRODUCTS = ("apartments", "ground_commercial", "underground_parking"
 # Absolute queue TEP is the authoritative layer above legacy percentage weights.
 # The aliases keep the atomic engine unchanged: several KRT products are read
 # from inputs, while the rest are read directly from TEP rows.
+# Отдельно стоящие объекты приходят из реестра: их приставки и меры там уже
+# объявлены (`aliases`), и перечисление руками отставало бы на следующем
+# объекте — ровно так пресет молча терял ФОК. Остальные строки своей вводной
+# пары в реестре не имеют, и стоят здесь.
 _PHASE_PRODUCT_INPUT_ALIASES = {
-    "offices": {"gns": "offices_gba_sqm", "saleable": "offices_saleable_sqm"},
-    "standalone_retail": {"gns": "retail_gba_sqm", "saleable": "retail_saleable_sqm"},
-    "above_parking": {"units": "above_parking_spaces"},
-    "sports": {"gns": "sports_gba_sqm", "saleable": "sports_saleable_sqm"},
+    **{obj.key: obj.aliases for obj in STANDALONE_OBJECTS},
     "underground_parking": {
         "gns": "underground_manual_gns_sqm", "units": "underground_manual_spaces",
     },
@@ -42902,9 +42932,7 @@ const tepRefillNote={};
 // вписанное прямо в таблицу исчезало при первом же пересчёте — «в обратную
 // сторону не работает» (замечание владельца, 19.08.2026). Число надо не
 // защищать от пересчёта, а вернуть туда, откуда пересчёт его берёт.
-const TEP_ROW_INPUTS={offices:{gns:'offices_gba_sqm',saleable:'offices_saleable_sqm'},
- standalone_retail:{gns:'retail_gba_sqm',saleable:'retail_saleable_sqm'},
- sports:{gns:'sports_gba_sqm',saleable:'sports_saleable_sqm'}};
+const TEP_ROW_INPUTS=__DEVELOPAID_TEP_ROW_INPUTS__;
 // Соцобъект во вводных живёт ОДНИМ числом — общей площадью, а ГНС из неё
 // выводится. Пока обратного пути не было, правка ГНС в таблице не доезжала
 // никуда: ячейка выглядела редактируемой, а на следующем пересчёте ГНС
@@ -47377,6 +47405,11 @@ PAGE = PAGE.replace(INPUT_DEFAULT_PLACEHOLDER,
 PAGE = PAGE.replace(TEP_DEFAULT_PLACEHOLDER,
                     json.dumps(TEP_DEFAULT, ensure_ascii=False))
 PAGE = PAGE.replace(TEP_RATIOS_PLACEHOLDER, json.dumps(TEP_RATIOS, ensure_ascii=False))
+PAGE = PAGE.replace(
+    TEP_ROW_INPUTS_PLACEHOLDER,
+    json.dumps({obj.key: tep_row_inputs(obj.key)
+                for obj in standalone_objects() if obj.measure == "sqm"},
+               ensure_ascii=False))
 PAGE = PAGE.replace(
     SOCIAL_AREA_STEPS_PLACEHOLDER,
     json.dumps({kind: [[None if limit == float("inf") else limit, value]

@@ -184,6 +184,50 @@ def _apartments_units(core: Any, inputs: dict[str, Any], saleable: float) -> tup
     return (int(math.ceil(saleable / sqm)) if saleable > 0 and sqm > 0 else 0), basis
 
 
+def _per_space(core: Any, inputs: dict[str, Any], key: str) -> float:
+    """Площадь на машино-место: заданная человеком, иначе умолчание ДВИЖКА.
+
+    Стояли литералы 35 и 25 — сегодня они совпадают с `DEFAULT_INPUTS`, и
+    расхождения нет, но это копия версионируемого числа: её негде обновлять, а
+    задача «площадь на место зависит от класса проекта» её разведёт.
+    """
+    given = _number(inputs.get(key))
+    if given > 0:
+        return given
+    # Умолчание спрашивается у движка прямо: `getattr(..., None) or {}` вокруг
+    # вызова это не совместимость, а глушитель — движок без умолчаний молча
+    # считал бы по нулю, и «0 м² на место» выглядело бы ответом.
+    return _number(core.DEFAULT_INPUTS.get(key))
+
+
+def _row_to_inputs(core: Any, inputs: dict[str, Any], key: str,
+                   row: dict[str, Any]) -> list[str]:
+    """Правка строки возвращается во вводную — движок читает ВВОДНУЮ.
+
+    Страница делает это в каждой ветке (`tepRowToInputs`), а серверный пересчёт
+    не делал ни в одной: на экране стояла правка, а деньги считались на прежнем
+    числе — CAPEX офисов 2 920,9 млн ₽ против 4 920,9 на правке ГНС
+    10 000 → 20 000, ровно 10 000 м² по ставке. Какая вводная за каким полем,
+    отвечает движок (`tep_row_inputs`): второй карты не бывает.
+    """
+    notes: list[str] = []
+    mapping = core.tep_row_inputs(key)
+    for field, input_key in mapping.items():
+        if field in row:
+            inputs[input_key] = _number(row.get(field))
+    if not mapping:
+        return notes
+    # Выключенный объект обнулит строку на первом же пересчёте. Числа сохранены,
+    # но включать объект за человека нельзя: это меняет экономику проекта, —
+    # поэтому о расхождении говорится вслух, как и на странице.
+    switch = next((obj.enabled_key for obj in core.STANDALONE_OBJECTS
+                   if obj.key == key), "")
+    if switch and not inputs.get(switch) and _number(row.get("gns")) > 0:
+        notes.append(f"Площади сохранены во вводных, но объект выключен: "
+                     f"включите его, иначе строка обнулится при пересчёте.")
+    return notes
+
+
 def _sync_tep(core: Any, req: TepSyncRequest) -> dict[str, Any]:
     """One edited TEP cell -> the dependent cells, using live engine rules.
 
@@ -206,8 +250,35 @@ def _sync_tep(core: Any, req: TepSyncRequest) -> dict[str, Any]:
     row[field] = value
     derived: dict[str, str] = {}
     ratio = _tep_ratio(core, inputs, key)
+    social = key in core.SOCIAL_TEP_FIELDS
 
-    if ratio and field in {"gns", "total_area", "saleable"}:
+    if social and field in {"units", "total_area", "gns"}:
+        # Ответ на строку соцобъекта объявлен ОДИН раз (`social_tep_row`), и
+        # считать её здесь во второй раз значило бы завести пятое число: у
+        # одного садика уже выходило 3 000 м² с нулевой ГНС в одиночном расчёте
+        # и 4 500 с ГНС 5 000 в своде очередей. Правим вводную и берём строку у
+        # движка — так же, как это делает страница.
+        mapping = core.tep_row_inputs(key)
+        if field == "units":
+            inputs[mapping["units"]] = value
+        else:
+            # ГНС обводит объект по НАРУЖНЫМ стенам, во вводной стоит общая:
+            # отношение между ними одно и то же, что у движка, — доля жилья.
+            share = _number((core.TEP_RATIOS.get("apartments") or {}).get("total_of_gns")) or 0.9
+            inputs[mapping["total_area"]] = value * share if field == "gns" else value
+        row.update(core.social_tep_row(inputs, key))
+        derived[field] = "вводная соцобъекта"
+        for other in ("units", "total_area", "gns", "transfer"):
+            if other != field:
+                derived[other] = "считает движок по вводным соцобъекта"
+        if str(inputs.get("social_area_source") or "norm") != "manual" and field != "units":
+            # Молчать об этом нельзя: в нормативном режиме площадь города
+            # перебивает вписанную, и правка выглядит принятой, а числа прежние.
+            derived[field] = ("вводная соцобъекта; в нормативном режиме площадь "
+                              "считает город — выберите ручной режим, чтобы "
+                              "ваше число осталось")
+
+    elif ratio and field in {"gns", "total_area", "saleable"}:
         total_of_gns = _number(ratio.get("total_of_gns"))
         saleable_of_gns = _number(ratio.get("saleable_of_gns"))
         if value <= 0 or total_of_gns <= 0 or saleable_of_gns <= 0:
@@ -253,7 +324,7 @@ def _sync_tep(core: Any, req: TepSyncRequest) -> dict[str, Any]:
                 derived["units"] = basis
 
     elif key == "underground_parking" and field in {"units", "gns", "total_area"}:
-        per = _number(inputs.get("underground_area_per_space_sqm")) or 35.0
+        per = _per_space(core, inputs, "underground_area_per_space_sqm")
         if field == "units":
             area = value * per
             row["gns"] = _round_area(area)
@@ -272,7 +343,7 @@ def _sync_tep(core: Any, req: TepSyncRequest) -> dict[str, Any]:
         row["transfer"] = 0
 
     elif key == "above_parking" and field in {"units", "gns", "total_area"}:
-        per = _number(inputs.get("above_parking_area_per_space_sqm")) or 25.0
+        per = _per_space(core, inputs, "above_parking_area_per_space_sqm")
         if field == "units":
             area = value * per
             row["gns"] = _round_area(area)
@@ -288,12 +359,14 @@ def _sync_tep(core: Any, req: TepSyncRequest) -> dict[str, Any]:
             derived["units"] = f"ГНС / {per:g} м²"
 
     tep[key] = row
+    notes = _row_to_inputs(core, inputs, key, row)
     return {
         "tep": tep,
         "inputs": inputs,
         "row_key": key,
         "changed_field": field,
         "derived": derived,
+        "notes": notes,
         "ratio_source": (ratio or {}).get("source") if ratio else "",
     }
 
