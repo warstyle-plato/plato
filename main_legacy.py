@@ -18017,6 +18017,31 @@ def _v4_add_carry_parity_row(xml: str, target_mln: float, missing: list[str]) ->
     return updated
 
 
+def _v4_object_phase_by_result(phases: list[dict[str, Any]]) -> dict[str, int]:
+    """В какой очереди движок ПОСТРОИЛ каждый отдельно стоящий объект.
+
+    Читается результат, а не правила: очередь, где у объекта есть метры (или
+    места у наземного паркинга), и есть его очередь. Повторять здесь лестницу
+    приоритета нельзя — это был бы третий ответ на вопрос, у которого уже два.
+
+    Объект, которого нет ни в одной очереди, в ответ не попадает вовсе: пустое
+    значит «движок его не строил», и книга останется на своём умолчании, а не
+    получит выдуманную единицу.
+    """
+    out: dict[str, int] = {}
+    for index, phase in enumerate(phases or []):
+        rows = (((phase or {}).get("result") or {}).get("tep") or {}).get("rows") or []
+        for row in rows:
+            key = str(row.get("key") or "")
+            if key not in _V4_OBJECT_PRODUCT_CELLS:
+                continue
+            built = (float(row.get("gns") or 0) or float(row.get("total_area") or 0)
+                     or float(row.get("units") or 0))
+            if built and key not in out:
+                out[key] = index + 1
+    return out
+
+
 def _v4_parity_targets(consolidated: dict[str, Any]) -> dict[str, float]:
     """Контрольные числа движка для parity-блока листа ПРОВЕРКИ."""
     summary = consolidated.get("summary") or {}
@@ -18658,6 +18683,20 @@ def _v4_finance_hints(bundle: dict[str, Any]) -> dict[str, Any]:
         str(row.get("key")): {key: value for key, value in row.items() if key != "key"}
         for row in ((((bundle or {}).get("consolidated") or {}).get("tep") or {}).get("rows") or [])
         if row.get("key")}
+    # В какой очереди объект ПОСТРОЕН — по применённому расчёту, а не по
+    # намерению. Очередь объекта решают двое, и решали по-разному: у движка
+    # лестница «объявлено продуктами очереди → `discrete` → умолчание», у
+    # сборщика книги только `discrete` с зашитым «ТЦ и паркинг во второй».
+    # Пресет КРТ Нагатино размещает ТЦ продуктами четвёртой очереди и `discrete`
+    # не заполняет вовсе — книга ставила ТЦ во ВТОРУЮ, то есть на два года
+    # раньше: он продавался и строился дешевле, и на одних вводных выручка
+    # расходилась на 7 910 млн ₽, CAPEX на 6 692, налог на 584. Пик БРИДЖа при
+    # этом сходился до копейки, а LLCR проходил допуск — паритет выглядел
+    # «почти сошедшимся» там, где очередь строит не тот объект.
+    # Ответ спрашивается у результата, а не выводится второй раз: очередь, где
+    # у объекта есть метры, и есть та, в которой движок его построил. Вывести
+    # лестницу заново значило бы завести третий ответ на тот же вопрос.
+    hints["object_phase"] = _v4_object_phase_by_result(phases)
     # Горизонт движка — сколько месяцев он посчитал. Книга кончается своей
     # колонкой, и всё, что за ней, она молча теряет: на четырёх очередях с
     # шагом 36 это 43 месяца и −12,3 млрд ₽ CAPEX при собранном без единого
@@ -20331,7 +20370,24 @@ def build_project_workbook(
         ("sports", "K124", 2, ("K130", "K133"),
          ("sports_start", "sports_sales_start")),
     ):
-        queue = max(1, min(queue_cap, int(float(discrete.get(field) or default))))
+        # Применённое движком размещение сильнее нашего вывода: объект,
+        # объявленный продуктами очереди, до `discrete` не доходит вовсе, и
+        # книга ставила его по умолчанию — ТЦ во вторую вместо четвёртой.
+        # Подсказок нет (движок не ответил) — остаёмся на прежнем пути, но
+        # молчать об этом нельзя: разъехавшееся размещение выглядит на экране
+        # как посчитанное.
+        applied = (finance_hints or {}).get("object_phase") or {}
+        if field in applied:
+            queue = max(1, min(queue_cap, int(applied[field])))
+        else:
+            queue = max(1, min(queue_cap, int(float(discrete.get(field) or default))))
+            if (phasing or {}).get("enabled") and bool(x.get(
+                    {"offices": "offices_enabled", "standalone_retail": "retail_enabled",
+                     "above_parking": "above_parking_enabled",
+                     "sports": "sports_enabled"}[field])):
+                missing.append(
+                    f"очередь объекта «{field}»: движок не назвал применённую — "
+                    f"книга взяла {queue} по своему умолчанию")
         put(coord, number=float(queue), label=f"очередь {field}")
         # Даты объекта сдвигаются на сдвиг старта его очереди — как в движке.
         # Сырая мастер-дата строила офисы третьей очереди на два года раньше:
