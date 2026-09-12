@@ -97,9 +97,28 @@ def test_v2_shell_loads_sync_after_stock_app():
 
     assert '@app.post("/api/v2/tep-sync"' in shell
     assert '@app.get("/v2/assets/tep-sync.js"' in shell
-    assert shell.index('+ marker') < shell.index('/v2/assets/tep-sync.js')
     assert stock in shell
     assert sync in shell
+
+    # Утверждение здесь одно: синхронизатор подключается ПОСЛЕ штатного
+    # приложения. Позиции подстрок в файле на это не отвечают — `index`
+    # находит первое вхождение, и объявление маршрута `/v2/assets/tep-sync.js`
+    # стоит выше самой вставки: проверка падала, когда рядом ДОБАВИЛИ маршрут,
+    # а не когда сломался порядок. Считаем порядок внутри собранной вставки,
+    # а её границу — по скобкам присваивания.
+    start = shell.index("injected = (")
+    depth, index, seen = 0, shell.index("(", start), False
+    while index < len(shell):
+        if shell[index] == "(":
+            depth, seen = depth + 1, True
+        elif shell[index] == ")":
+            depth -= 1
+            if seen and depth == 0:
+                break
+        index += 1
+    injected = shell[start:index + 1]
+    assert "+ marker" in injected, injected
+    assert injected.index("+ marker") < injected.index("/v2/assets/tep-sync.js"), injected
 
 
 def test_v2_renames_duplicate_tep_tab_and_marks_derived_values():
