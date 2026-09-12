@@ -54,18 +54,32 @@ def test_the_area_is_the_population_times_the_norm():
     # 80 000 м² квартир ÷ 33 = 2 425 человек; 5 м² на человека.
     assert summary["landscaping_area_sqm"] == pytest.approx(2425 * 5)
     assert "2425 чел" in summary["landscaping_basis"], summary["landscaping_basis"]
-    assert result["capex"]["landscaping"] == pytest.approx(2425 * 5 * 10 * 1000)
+    # Ставка берётся у умолчаний, а не переписывается числом: класс её правит.
+    rate = core.DEFAULT_INPUTS["landscaping_th_per_sqm"]
+    assert result["capex"]["landscaping"] == pytest.approx(2425 * 5 * rate * 1000)
 
 
-def test_the_rate_follows_the_class():
-    """Ставка класса — 10 / 25 / 50, и на странице копии её нет."""
-    rates = {key: preset["landscaping_th_per_sqm"]
-             for key, preset in core.PROJECT_CLASS_PRESETS.items()}
-    assert rates == {"comfort": 10, "business": 25, "elite": 50}
-    for key, rate in rates.items():
+def test_the_class_sets_both_the_yard_and_its_rate():
+    """Класс различает И площадь двора, И ставку метра (владелец, 12.09.2026:
+    «Ставка разная как и площадь — 5-15-20, 15-35-50»).
+
+    Прежде по классу шла одна ставка 10/25/50 при общих 5 м²/чел — то есть
+    предполагалось, что у элитки двор такой же, как у комфорта, просто дороже
+    замощён. Владелец поправил: у бизнеса и элита двора БОЛЬШЕ, а метр его
+    стоит около сорока тысяч, а не десяти.
+    """
+    profile = {key: (preset["landscaping_area_per_person_sqm"],
+                     preset["landscaping_th_per_sqm"])
+               for key, preset in core.PROJECT_CLASS_PRESETS.items()}
+    assert profile == {"comfort": (5, 15), "business": (15, 35), "elite": (20, 50)}
+    for key, (per_person, rate) in profile.items():
         preset = {k: v for k, v in core.PROJECT_CLASS_PRESETS[key].items() if k != "label"}
         money = _single(project_class=key, **preset)["capex"]["landscaping"]
-        assert money == pytest.approx(2425 * 5 * rate * 1000), key
+        assert money == pytest.approx(2425 * per_person * rate * 1000), key
+    # Умолчания движка и есть комфорт: иначе расчёт на них покажет отклонение
+    # от базы класса на ровном месте.
+    assert (core.DEFAULT_INPUTS["landscaping_area_per_person_sqm"],
+            core.DEFAULT_INPUTS["landscaping_th_per_sqm"]) == (5.0, 15)
 
 
 def test_the_base_is_not_the_construction_volume():
@@ -181,9 +195,14 @@ def test_the_norm_lives_in_the_class_profile():
     м²/чел., как назвал владелец; заданная руками ПЛОЩАДЬ в профиль не идёт —
     она сильнее норматива и принадлежит участку, а не классу.
     """
+    # Площадь двора на человека — своя у каждого класса (владелец, 12.09.2026):
+    # у бизнеса и элита двора больше, а не только метр дороже.
     for key, preset in core.PROJECT_CLASS_PRESETS.items():
-        assert preset["landscaping_area_per_person_sqm"] == pytest.approx(5.0), key
+        assert preset["landscaping_area_per_person_sqm"] > 0, key
         assert "landscaping_area_sqm" not in preset, key
+    assert len({preset["landscaping_area_per_person_sqm"]
+                for preset in core.PROJECT_CLASS_PRESETS.values()}) == 3, (
+        "норматив снова одинаков у всех классов — класс перестал различать двор")
     # Умолчания движка и есть «Комфорт» — иначе расчёт на них покажет
     # отклонение от базы класса на ровном месте.
     assert core.DEFAULT_INPUTS["landscaping_area_per_person_sqm"] == pytest.approx(
@@ -191,7 +210,7 @@ def test_the_norm_lives_in_the_class_profile():
     # Сверка отклонений читает пресет, значит норматив попал и в неё — а с ним
     # обязана приехать единица: «5 → 8» без неё читается ставкой.
     changed = {**core.DEFAULT_INPUTS, "project_class": "comfort",
-               "landscaping_area_per_person_sqm": 8.0}
+               "landscaping_area_per_person_sqm": 8.0}  # 8 ≠ комфортных 5
     rows = core.project_class_deviations(changed)["rows"]
     assert [one["field"] for one in rows] == ["landscaping_area_per_person_sqm"]
     assert rows[0]["unit"] == "м²/чел." and rows[0]["base"] == pytest.approx(5.0)
@@ -285,11 +304,16 @@ def test_the_class_window_shows_the_norm_with_its_unit():
     by_key = {one["key"]: one for one in rows}
     norm = by_key.get("landscaping_area_per_person_sqm")
     assert norm, f"строки норматива в окне нет: {sorted(by_key)}"
-    assert norm["values"][:3] == ["5", "5", "5"], norm
+    expected = [str(core.PROJECT_CLASS_PRESETS[key]["landscaping_area_per_person_sqm"])
+                for key in ("comfort", "business", "elite")]
+    assert norm["values"][:3] == expected, norm
     assert "м²/чел." in norm["label"], norm["label"]
     # Единица стоит у КАЖДОЙ строки: одна подписанная среди восьми безымянных
     # читается как исключение, а не как мера.
     for key, row in by_key.items():
         assert core.class_field_unit(key) in row["label"], (key, row["label"])
-    assert applied == pytest.approx(5.0), applied
+    # Применяется норматив ВЫБРАННОГО класса, а не общее число: у элита
+    # двор больше комфортного, и класс обязан это принести.
+    assert applied == pytest.approx(
+        core.PROJECT_CLASS_PRESETS["elite"]["landscaping_area_per_person_sqm"]), applied
     assert owned == pytest.approx(8.0), owned
