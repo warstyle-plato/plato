@@ -6,6 +6,8 @@ import main as _base
 from auction_search import install as install_auction_search
 from developaid_statistics_page import install as install_statistics
 from developaid_v2 import install as install_v2
+from developaid_v2_account_projects import install as install_v2_account_projects
+from developaid_v2_upgrade import install as install_v2_upgrade
 from guide import install as install_guide
 from ia_preview import install as install_ia_preview
 from market_search import install as install_market_search
@@ -13,10 +15,12 @@ from market_search.ui_v6 import install as install_market_ui, install_price_hint
 from mpt_bot_menu import install as install_mpt_bot_menu
 from mpt_extension import install as install_mpt
 from normatives_registry import install as install_normatives
+from pdf_first_page_v2 import install as install_pdf_first_page
 from telegram_user_registry import install
 
 app = _base.app
 core = _base.core
+install_pdf_first_page(core)
 install_mpt(_base)
 install_mpt_bot_menu(_base)
 registry = install(_base)
@@ -93,14 +97,17 @@ def _plato_result(trace_id: str):
 market_search.cadastre_lookup = _cadastre_from_egrn
 market_search.plato_ask = _plato_ask
 market_search.plato_result = _plato_result
+
 def _address_suggest(query: str, limit: int):
     """Адресные подсказки кабинета — тот же DaData, что у движка и ленты `/ia`.
 
-    Свой геокодер в модуле рынка не заводится: две реализации разошлись бы на
-    нормализации, и одна строка приводила бы к разным точкам.
+    Свой геокодер в модуле рынка знает только Яндекс и Nominatim, а ключа
+    Яндекса на ядре нет — значит на деле один Nominatim. «Москва, Саввинская
+    наб, д 25» он не находит вовсе, и кабинет отвечал «место не найдено» на
+    адрес, который основной сервис разбирает без запинки.
 
-    Без ключа движок возвращает пустой список — и «ключа нет» стало бы
-    неотличимо от «адрес не найден». Отсутствие доступа называется вслух.
+    Третий случай одной и той же ошибки за день: своё правило там, где уже
+    есть общее. Первым был разбор ввода у кнопки цены, вторым — подсказки.
     """
     if not os.getenv("DADATA_API_KEY", "").strip():
         raise RuntimeError("адресные подсказки выключены: не задан DADATA_API_KEY")
@@ -175,6 +182,13 @@ def _local_asset(url: str):
 market_search.local_asset = _local_asset
 market_search.geocode_address = _geocode_for_market
 install_v2(app)
+# UI-расширение ставится после штатных маршрутов v2 и использует тот же core:
+# Telegram-сессия, нейтральный старт и OCR не заводят второй расчётный движок.
+install_v2_upgrade(app, core)
+# Сохранённые проекты используют ту же Telegram-сессию и те же /projects/*,
+# а не отдельное хранилище v2. Ставится после upgrade, чтобы финальная /v2
+# загрузила account-projects.js между auth/photo hook и штатным app.js.
+install_v2_account_projects(app)
 # Тестовый адрес новой информационной архитектуры: та же PAGE, другой порядок.
 install_ia_preview(app, core)
 # Руководство пользователя — обычная страница приложения на /guide.
