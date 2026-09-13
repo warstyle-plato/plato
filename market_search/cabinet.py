@@ -2688,6 +2688,14 @@ function barChart(rows, opts){
 //
 // Порядок и цвет продукта приходят с сервера одним списком: посчитанный в
 // каждом месяце заново, он красил бы продукт по-разному.
+// Мера товара приезжает с сервера (`by_product[].measure`): машино-место и
+// кладовая продаются штукой. Второй список «кто чем меряется» на странице
+// разошёлся бы с первым молча — и обе подписи выглядели бы верными.
+function salesMeasureOf(d, name){
+  const row=(d.by_product||[]).find(p=>p.product===name);
+  return (row&&row.measure)||'area';
+}
+
 function salesDynamicsProducts(d){
   const order=(d.product_order||[]).slice();
   if(!order.length) (d.by_product||[]).forEach(p=>{ if(!order.includes(p.product)) order.push(p.product) });
@@ -2699,21 +2707,29 @@ function salesDynamicsProducts(d){
 
 // Один график: либо выручка всего проекта, либо объём ОДНОГО товара.
 function salesDynamicsChart(d, metric, product){
+  // Цена — в мере своего товара: у машино-места это рубли за лот. Считает её
+  // сервер, здесь только подпись.
+  const byPiece=product&&salesMeasureOf(d, product.name)==='units';
+  const priceUnit=byPiece?'₽ за лот':'₽/м²';
   const rows=(d.dynamics||[]).filter(m=>m.amount>0).map(m=>{
     // Товара в этом месяце не продавали — это пропуск, а не ноль: столбика
     // просто нет, и линия цены рвётся.
     const own=product?((m.by_product||{})[product.name]||null):null;
-    const value=product?(own?own[metric.key]:null):m[metric.key];
+    let value=product?(own?own[metric.key]:null):m[metric.key];
+    // Лот продан, а «Проектная S» не заполнена: метров мы не знаем, и ноль
+    // здесь нарисовал бы столбик в пиксель — «продали ноль метров».
+    const blind=metric.key==='area'&&own&&own.units>0&&!own.area;
+    if(blind) value=null;
     const price=product?(own?own.price:null):m.price_flats;
     return {label:m.month, short:String(m.month).slice(2), value, price,
       tip:m.month+': '+(product?product.name+', ':'')
          +(has(value)?metric.show(value):'—')+' '+metric.name};
   });
-  const priceName=product?'цена, ₽/м²':'цена квартир, ₽/м²';
+  const priceName=product?('цена, '+priceUnit):'цена квартир, ₽/м²';
   return barChart(rows,{axis:metric.axis, show:metric.show, fill:product?product.color:null,
     factName:(product?product.name:'выручка')+', '+metric.name,
     rightLines:[{key:'price',name:priceName,color:SALES_PRICE_COLOR}],
-    rightAxis:v=>num(v/1000)+' тыс', rightShow:v=>num(v)+' ₽/м²',
+    rightAxis:v=>num(v/1000)+' тыс', rightShow:v=>num(v)+' '+priceUnit,
     rightName:product?'цена этого товара':'цена квартир',
     caption:(product?product.name+' · '+metric.name:metric.name+' по месяцам')});
 }
@@ -2721,20 +2737,28 @@ function salesDynamicsChart(d, metric, product){
 // Помесячные числа ОДНОГО товара. Общей строки «лотов всего» здесь нет — это
 // та же сумма разных товаров, только в таблице. Удельное считает сервер.
 function salesMonthTable(d, name){
+  // Товар, который продаётся штукой, колонки метров не получает вовсе: она
+  // отвечала бы не на тот вопрос, а у части лотов площади в выгрузке нет.
+  const byPiece=name&&salesMeasureOf(d, name)==='units';
   const rows=[];
   (d.dynamics||[]).slice().reverse().forEach(m=>{
     const p=name?((m.by_product||{})[name]):null;
     if(name){ if(!p||!p.amount) return;
-      rows.push([esc(m.month), num(p.units), num(p.area), num(p.amount/1e6,1),
-        has(p.price)?num(p.price):'—']);
+      const price=has(p.price)?num(p.price):'—';
+      if(byPiece) rows.push([esc(m.month), num(p.units), num(p.amount/1e6,1), price]);
+      // Площадь не заполнена — прочерк, а не ноль: ноль читается как
+      // измеренная величина.
+      else rows.push([esc(m.month), num(p.units),
+        (p.units>0&&!p.area)?'—':num(p.area), num(p.amount/1e6,1), price]);
     } else {
       if(!m.amount) return;
       rows.push([esc(m.month), num(m.amount/1e6,1), has(m.price_flats)?num(m.price_flats):'—']);
     }
   });
-  return name
-    ? salesTable(['Месяц','Лотов','м²','млн ₽','₽/м²'], rows)
-    : salesTable(['Месяц','млн ₽','цена квартир, ₽/м²'], rows);
+  if(!name) return salesTable(['Месяц','млн ₽','цена квартир, ₽/м²'], rows);
+  return byPiece
+    ? salesTable(['Месяц','Лотов','млн ₽','₽ за лот'], rows)
+    : salesTable(['Месяц','Лотов','м²','млн ₽','₽/м²'], rows);
 }
 
 // График стоит над своими числами: так их видит и колода.
@@ -2744,15 +2768,35 @@ function salesMetricCharts(d, metric){
     +chart+'<details style="margin-top:6px"><summary>'
     +esc(title?title+' — помесячно числами':'Помесячно числами')+'</summary>'+table+'</details>';
   if(metric.whole) return box('', salesDynamicsChart(d, metric, null), salesMonthTable(d, null));
-  const products=salesDynamicsProducts(d).filter(p=>
-    (d.dynamics||[]).some(m=>((m.by_product||{})[p.name]||{})[metric.key]>0));
-  if(!products.length) return '<div class="muted" style="font-size:12.5px">Показывать нечего.</div>';
+  const all=salesDynamicsProducts(d).filter(p=>
+    (d.dynamics||[]).some(m=>((m.by_product||{})[p.name]||{}).amount>0));
+  // Метрами товар, который продаётся штукой, не меряется вовсе: «в
+  // машиноместах не метры интересны, а лоты» (владелец, 13.09.2026).
+  const fits=p=>metric.key!=='area'||salesMeasureOf(d, p.name)!=='units';
+  const products=all.filter(p=>fits(p)&&(d.dynamics||[]).some(
+    m=>((m.by_product||{})[p.name]||{})[metric.key]>0));
+  const byPiece=all.filter(p=>!fits(p)).map(p=>p.name);
+  // Молча снятый товар читается как его отсутствие в продажах, поэтому он
+  // назван и сказано, где его смотреть.
+  const aside=byPiece.length?'<div class="muted" style="font-size:12px;margin-top:6px">'
+    +esc(byPiece.join(', ')+(byPiece.length>1?' продаются':' продаётся')
+      +' штукой — метрами не меряются, они во вкладке «лоты».')+'</div>':'';
+  if(!products.length) return aside
+    ||'<div class="muted" style="font-size:12.5px">Показывать нечего.</div>';
   let html=products.map(p=>box(p.name, salesDynamicsChart(d, metric, p),
     salesMonthTable(d, p.name))).join('');
   if(products.length>1) html+='<div class="muted" style="font-size:12px;margin-top:6px">'
     +'Товары не складываются: лот квартиры и лот машино-места — разные товары, '
     +'у каждого своя шкала. Складывается только выручка — у её суммы есть имя.</div>';
-  return html;
+  // Проданный лот без заполненной «Проектной S» стоит на графике метров
+  // пропуском — столбика у него нет вовсе, и молча это читается как «товара
+  // не продавали». Сколько таких, считает сервер.
+  const blind=Math.round(((d.total||{}).area_unknown)||0);
+  if(metric.key==='area'&&blind) html+='<div class="muted" style="font-size:12px;margin-top:6px">'
+    +esc('У '+blind+' '+(blind===1?'договора':'договоров')+' площадь в выгрузке не заполнена'
+      +' — '+(blind===1?'его месяц стоит':'их месяцы стоят')+' пропуском, а не нулём:'
+      +' лоты и деньги посчитаны, метры неизвестны.')+'</div>';
+  return html+aside;
 }
 
 function salesChartBlock(d){
@@ -3608,9 +3652,13 @@ function renderSales(d){
     html+=salesSection('sb-prod','Продукты',
       salesShareBar(d.by_product, x=>x.product)
       +'<details style="margin-top:8px"><summary>Продукты числами</summary>'
-      +salesTable(['Продукт','Договоров','м²','млн ₽','₽/м²'],
-        d.by_product.map(x=>[esc(x.product), num(x.contracts), num(x.area),
-          num(x.amount/1e6,1), x.area?num(x.price_per_sqm):'—']))+'</details>',
+      // Цена — в мере своего товара: у машино-места рубли за лот. Одна
+      // колонка «₽/м²» на все товары подписала бы его деньги чужой единицей.
+      +salesTable(['Продукт','Договоров','м²','млн ₽','Цена'],
+        d.by_product.map(x=>[esc(x.product), num(x.contracts),
+          x.measure==='units'?'—':num(x.area), num(x.amount/1e6,1),
+          has(x.price)?num(x.price)+(x.measure==='units'?' ₽ за лот':' ₽/м²'):'—']))
+      +'</details>',
       salesNote(d,'products'));
   }
 
