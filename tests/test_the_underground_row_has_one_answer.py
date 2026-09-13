@@ -6,10 +6,17 @@
 1 107,51 места — дробное число мест, которых не строят, — и 38 763 м² против
 1 199 и 41 965 у страницы; правка норматива 35 → 40 движок не двигала.
 
-Кладовые лежат на том же подземном этаже: страница их вычитала, движок нет, а
-базу подземной части считает как «паркинг плюс кладовые» — на 6 000 м²
-кладовых это 47 965 м² против 41 965, CAPEX +877,4 млн ₽ и LLCR 0,9529 против
-0,9775 на одних вводных.
+Кладовые при этом площадь гаража НЕ уменьшают, а прибавляют свою (решение
+владельца, 13.09.2026). Страница их вычитала, и норматив 35 м²/место
+превращался в фактические 33,67 при 400 кладовых по 4 м²: гараж терял метры,
+которых в нём и не было — ни один источник не даёт нам этаж целиком, всюду
+стоит «места × норматив».
+
+Прежний сторож этого места (`test_storage_shares_the_underground_floor.py`)
+держал ОБРАТНОЕ утверждение и вместе с ним функцию страницы, которой больше
+нет: он снят, а не ослаблен — двух сторожей у одного утверждения не бывает, они
+расходятся молча. Страничную половину держит здесь же сверка веток: она гоняет
+настоящий код страницы на ТЭП с кладовыми.
 
 Запуск: python3 -m pytest tests/test_the_underground_row_has_one_answer.py -q
 """
@@ -74,8 +81,7 @@ def _page_stand(tmp_path: Path) -> Path:
         function("parkingRequirement"),
         function("undergroundAreaPerSpace"),
         function("repairParkingFromGlavapu"),
-        function("underlayStorageInParking"),
-        "if(repairParkingFromGlavapu())underlayStorageInParking();",
+        "repairParkingFromGlavapu();",
         "console.log(JSON.stringify(tep.underground_parking));",
     )), encoding="utf-8")
     return stand
@@ -105,24 +111,29 @@ def shutil_which(name: str) -> str | None:
     return shutil.which(name)
 
 
-def test_the_storage_floor_is_counted_once() -> None:
-    """Кладовые лежат НА этаже гаража, а не рядом с ним.
+def test_the_storage_adds_its_metres_and_the_garage_keeps_the_norm() -> None:
+    """Кладовые прибавляют свои метры, а гараж остаётся «места × норматив».
 
-    База подземной части — «паркинг плюс кладовые», значит из строки гаража
-    кладовые вычтены. Проверяется тождеством, а не числом: база обязана
-    совпасть с самим этажом.
+    Вычитание превращало норматив в фактические 33,67 м²/место и отнимало у
+    гаража метры, которых в нём не было: площадь гаража всюду считается как
+    «места × норматив» — и в выгрузке ГлавАПУ, и в ручном шаблоне, и в паре
+    «места ↔ площадь» на странице. Этажа целиком нам не даёт ни один источник.
     """
-    tep = _tep(STORAGE_SQM)
     inputs = copy.deepcopy(core.DEFAULT_INPUTS)
-    bare = core.calculate(core.CalcRequest(
-        inputs=copy.deepcopy(inputs), tep=_tep(), rows=[]))
+    bare = _row(inputs, _tep())
     with_storage = core.calculate(core.CalcRequest(
-        inputs=copy.deepcopy(inputs), tep=tep, rows=[]))
-    envelope = next(row for row in bare["tep"]["rows"]
-                    if row["key"] == "underground_parking")["gns"]
+        inputs=copy.deepcopy(inputs), tep=_tep(STORAGE_SQM), rows=[]))
+    row = next(item for item in with_storage["tep"]["rows"]
+               if item["key"] == "underground_parking")
     # Предохранитель: на пустых кладовых проверка не значит ничего.
-    assert STORAGE_SQM > 0 and envelope > STORAGE_SQM
-    assert with_storage["tep"]["core_under_gns"] == pytest.approx(envelope, abs=0.2)
+    assert STORAGE_SQM > 0 and bare["gns"] > STORAGE_SQM
+    # Гараж не заметил кладовых вовсе.
+    assert row["gns"] == pytest.approx(bare["gns"], abs=0.2)
+    assert row["gns"] == pytest.approx(
+        row["units"] * core.underground_area_per_space(inputs), abs=0.2)
+    # А подземная база выросла ровно на их метры.
+    assert with_storage["tep"]["core_under_gns"] == pytest.approx(
+        bare["gns"] + STORAGE_SQM, abs=0.2)
 
 
 def test_the_norm_moves_the_row() -> None:

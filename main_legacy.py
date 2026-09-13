@@ -9398,11 +9398,14 @@ def underground_tep_row(inputs: dict[str, Any],
     места) и потому следует за строкой, а `/v2` пересчитывает пару при правке
     ячейки — обе поверхности верны ровно настолько, насколько верна строка.
 
-    Кладовые лежат на ТОМ ЖЕ подземном этаже и вычитаются здесь, а не
-    прибавляются: базу подземной части движок считает как «паркинг плюс
-    кладовые», и этаж, посчитанный дважды, даёт метры, которых не строят. На
-    6 000 м² кладовых это было 47 965 м² базы против 41 965 у страницы — CAPEX
-    +877,4 млн ₽, полная стоимость +1 066,1 млн ₽, LLCR 0,9529 против 0,9775.
+    Кладовые площадь гаража НЕ уменьшают — они прибавляют свою (решение
+    владельца, 13.09.2026: «конечно они добавляют подземную площадь, иначе на
+    машиноместа и хватит просто площадей»). Здесь стоит ровно «места ×
+    норматив»: ни один источник не даёт нам этаж целиком — ни выгрузка ГлавАПУ,
+    ни ручной шаблон, ни поле «Площадь подземной парковки», которое пара
+    «места ↔ площадь» держит на том же нормативе. Вычитание превращало
+    норматив 35 м²/место в фактические 33,67 при 400 кладовых по 4 м², то есть
+    молча отнимало у гаража метры, которых в нём и не было.
 
     Возвращает `None`, когда считать не из чего: ни отказа, ни ручных полей,
     ни выгрузки, ни квартир. Тогда строку не трогают — «мы не знаем» не то же
@@ -9433,7 +9436,6 @@ def underground_tep_row(inputs: dict[str, Any],
         if not need:
             return None
         spaces, area, guest = need["spaces"], need["gns"], need["guest"]
-    area = max(0.0, area - _underground_number((tep or {}).get("storage") or {}, "gns"))
     computed = dict(zero)
     computed["units"] = float(spaces)
     computed["gns"] = round(area, 1)
@@ -42529,23 +42531,6 @@ function repairParkingFromGlavapu(){
  return true;
 }
 
-// Кладовые лежат на том же подземном этаже, что и гараж: их площадь входит в
-// подземную ГНС, а не прибавляется к ней. Иначе один этаж считается дважды —
-// и в ГНС проекта, и в себестоимости подземной части (замечание владельца,
-// 19.08.2026). Вычитание идёт только из посчитанной площади: если человек
-// вписал площадь гаража руками, это его число, и трогать его нельзя.
-function underlayStorageInParking(){
- const storage=Number((tep.storage||{}).gns||0);
- const parking=tep.underground_parking;
- if(!parking||storage<=0)return 0;
- const envelope=Number(parking.gns||0);
- if(envelope<=0)return 0;
- const left=Math.max(0,envelope-storage);
- parking.gns=Math.round(left*10)/10;
- parking.total_area=parking.gns;
- return Math.min(storage,envelope);
-}
-
 function syncUndergroundPair(changed){
  // Места и площадь — одна величина в двух видах, а не два независимых поля.
  // Раньше в них могли одновременно стоять 50 мест и 3 000 м² при нормативе
@@ -43496,10 +43481,7 @@ function renderTep(){
      label+=` <span class="tep-note">Задано проектом: ${num(spaces)} м/м × ${num(per)} м²/место (гросс) = ${num(area)} м². Менять — в разделе «Подземный паркинг».</span>`;
      if(shortfall)label+=` <span class="tep-note bad">${shortfall}</span>`;
    }
-   if(key==='underground_parking'&&storageInsideParking>0){
-     label+=` <span class="tep-note">Кладовые ${num(storageInsideParking)} м² лежат на этом же этаже: их площадь вычтена из гаража, а не добавлена к подземной ГНС.</span>`;
-   }
-   else if(key==='underground_parking'&&importedParking){
+   if(key==='underground_parking'&&importedParking){
      label+=` <span class="tep-note">Потребность: ${num(importedParking.permanent)} постоянных + ${num(importedParking.guest)} гостевых${importedParking.mfc?` + ${num(importedParking.mfc)} МФК`:''} = ${num(importedParking.spaces)} м/м · ${escapeHtml(importedParking.basis||'')}</span>`;
    }
    // Прежде здесь стояла кнопка «⟳ по пропорциям»: она пересчитывала строку от
@@ -43926,11 +43908,8 @@ function tepCellChanged(key,col,value){
  calculate();
 }
 
-// Сколько кладовых уже сидит внутри подземного этажа — для подписи в таблице.
-let storageInsideParking=0;
-
 function updateTepTotals(){
- if(repairParkingFromGlavapu())storageInsideParking=underlayStorageInParking();
+ repairParkingFromGlavapu();
  const sums={gns:0,total_area:0,useful:0,saleable:0,transfer:0,units:0};
  // ГНС — НАЗЕМНАЯ площадь здания: под землёй наружных стен не бывает. В движке
  // это разведено 04.09.2026 (`project_gns_sqm` против `underground_gns_sqm`), а
@@ -44863,7 +44842,7 @@ function syncTep(rerender=true){
   tep[row].gns=area>0?(imported>0?imported:area/share):0;
  });
  // ГлавАПУ has priority over any old/stale underground-parking TEP values.
- if(repairParkingFromGlavapu())storageInsideParking=underlayStorageInParking();
+ repairParkingFromGlavapu();
  // Без перерисовки обновлялась только строка итогов, а ячейки продуктов
  // оставались с прежними числами: правка машино-мест на «Вводных» доходила до
  // таблицы ТЭП лишь со следующим полным рендером — то есть после расчёта. Не
@@ -47851,7 +47830,7 @@ function resetProjectState(){
  // записало бы пустой расчёт в чужую запись.
  openedProject=null;
  aiHistory=[];aiProposals=[];aiIntake=null;
- territoryCleared=[];tepRatioComplaint='';phaseTepEditWarning='';storageInsideParking=0;
+ territoryCleared=[];tepRatioComplaint='';phaseTepEditWarning='';
  Object.keys(tepRefillNote).forEach(key=>{delete tepRefillNote[key]});
  moLastQuery='';moAutoApartments=null;
  presetPreview=null;sensitivityOptions=null;sensitivityReport=null;sensitivityPicked=null;
