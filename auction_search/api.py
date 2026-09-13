@@ -53,6 +53,7 @@ from auction_search.documents import DocumentExtractionError
 from auction_search.export_areas import export_areas
 from auction_search import archives, egrn_archive, egrn_store
 from auction_search.krt_pipeline import (
+    documents_summary,
     egrn_summary,
     egrn_view,
     enrich_krt_from_official_documents,
@@ -3061,7 +3062,7 @@ def install(app: FastAPI) -> None:
 
         def work() -> dict[str, Any]:
             parsed = egrn_archive.read(data, name=name)
-            kept = egrn_store.save(_egrn_dir(), key, parsed, name)
+            kept = egrn_store.save(_market_dir(), key, parsed, name)
             return {"parsed": parsed, "kept": kept}
 
         try:
@@ -3102,7 +3103,7 @@ def install(app: FastAPI) -> None:
         market_cabinet.require_cabinet(request)
         if not str(key).strip():
             raise HTTPException(status_code=422, detail="Не сказано, какая площадка")
-        kept = await run_in_threadpool(egrn_store.load, _egrn_dir(), key)
+        kept = await run_in_threadpool(egrn_store.load, _market_dir(), key)
         return {
             "key": key,
             "egrn": egrn_view(egrn_store.block(kept)) if kept.get("records") else None,
@@ -3111,8 +3112,12 @@ def install(app: FastAPI) -> None:
             "broken": kept.get("broken") or "",
         }
 
-    def _egrn_dir() -> Path:
-        """Где лежит склад выписок — спрашивается при обращении.
+    def _market_dir() -> Path:
+        """Каталог данных рынка — спрашивается при обращении.
+
+        Складов в нём два, и оба про лот: разобранные выписки (`egrn_store`) и
+        скачанные вложения (`lot_documents`). Каталог один, потому что два
+        ответа на «где данные рынка» разошлись бы молча.
 
         Замороженный на импорте путь означает, что проверка пишет в рабочее
         дерево репозитория: приложение собирается один раз, а `DATA_DIR` у
@@ -3144,7 +3149,13 @@ def install(app: FastAPI) -> None:
             adapter = _adapter_for(req.url)
             lot = await run_in_threadpool(adapter.fetch_lot, req.url)
             if lot.lot_kind == LotKind.KRT and req.enrich_krt_documents:
-                lot = await run_in_threadpool(enrich_krt_from_official_documents, lot)
+                # Склад скачанного — тот же каталог данных, что у разобранных
+                # выписок: спрашивается при обращении, а не замораживается на
+                # импорте (замороженный означает, что проверка пишет в рабочее
+                # дерево репозитория).
+                lot = await run_in_threadpool(
+                    lambda: enrich_krt_from_official_documents(
+                        lot, store_dir=_market_dir()))
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except DocumentExtractionError as exc:
@@ -3196,6 +3207,11 @@ def install(app: FastAPI) -> None:
                 # никем не показанное неотличимо от непосчитанного, поэтому
                 # свод едет в ответ, а считает его один `egrn_summary`.
                 "egrn": egrn_summary(lot),
+                # Сколько вложений спросили, сколько прочитали и что площадка
+                # не отдала. Счёт лежал в `raw`, а `include_raw` у карточки
+                # выключен: на экране стояло «Документов 26» и ни слова о
+                # четырёх неотданных.
+                "documents": documents_summary(lot) if lot.lot_kind == LotKind.KRT else None,
                 "ready_for_financial_model": (
                     bool(lot.krt_program or lot.obligations) and not lot.raw.get("krt_document_warnings")
                     if lot.lot_kind == LotKind.KRT
