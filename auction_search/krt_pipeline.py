@@ -54,6 +54,11 @@ def enrich_krt_from_official_documents(lot: AuctionLot) -> AuctionLot:
         # есть с 18.08.2026 (владелец, 12.09.2026: «собственники участков и
         # зданий это важно и оно есть в документации на росэлторг»).
         if document.document_type == "egrn":
+            # Отказ по вложению ЕГРН ложится и в общие предупреждения, и в сам
+            # блок: без второй записи `lot.raw["egrn"]` не появляется вовсе, и
+            # свод отвечает «не спрашивали» там, где площадка отказала. На лоте
+            # 21000005000000033023 Росэлторг ответил 503 по трём вложениям —
+            # ответ площадки, выданный за отсутствие вопроса.
             try:
                 found = _read_egrn(document)
             except DocumentAuthorizationRequired as exc:
@@ -61,10 +66,20 @@ def enrich_krt_from_official_documents(lot: AuctionLot) -> AuctionLot:
                 document.auth_required = True
                 warnings.append({"document": document.title, "url": document.url,
                                  "error": str(exc), "kind": "auth_required"})
+                egrn_documents.append({
+                    "document": document.title, "url": document.url,
+                    "entries": 0, "read": 0, "unread": [], "companions": [],
+                    "duplicates": [], "error": str(exc), "kind": "auth_required",
+                })
                 continue
             except DocumentExtractionError as exc:
                 warnings.append({"document": document.title, "url": document.url,
                                  "error": str(exc), "kind": "extraction_error"})
+                egrn_documents.append({
+                    "document": document.title, "url": document.url,
+                    "entries": 0, "read": 0, "unread": [], "companions": [],
+                    "duplicates": [], "error": str(exc), "kind": "extraction_error",
+                })
                 continue
             parcels.extend(found["records"])
             egrn_documents.append({
@@ -156,16 +171,46 @@ def egrn_summary(lot: AuctionLot) -> dict | None:
 
     Незарегистрированное право — ответ документа, а не наш пробел, поэтому оно
     стоит своим числом, а не подмешивается к владельцам.
+
+    Состояний три, и слить их нельзя. Вложений с выписками у лота нет — свода
+    нет вовсе (`None`), это «не спрашивали». Вложения есть, а площадка
+    отказала — свод есть, владельцев в нём нет, и отказ назван поимённо с
+    причиной: 503 Росэлторга это ответ площадки, а не отсутствие вопроса.
+    Прочитали — владельцы по ИНН.
+
+    И у пустого ответа причина стоит рядом с числами (`reason`): машинной
+    выписки в лоте может не быть вовсе — у Росэлторга выписки лотовой
+    документации приходят печатными PDF (13.09.2026: пять живых КРТ-лотов, 32
+    PDF и ни одного XML). «Владельцев нет» и «читать было нечего» на экране
+    неразличимы, пока причина не написана.
     """
     egrn = lot.raw.get("egrn")
     if not egrn:
         return None
+    return egrn_view(egrn)
+
+
+def egrn_view(egrn: dict) -> dict:
+    """Блок выписок → свод. Один свод на лот и на присланный руками архив.
+
+    Зип с выписками приходит и загрузчиком, и рукой человека, и свод у них
+    обязан быть один: два сборщика на один вопрос однажды ответят про одну
+    площадку разное, и обе картинки будут выглядеть верными.
+    """
     records = egrn.get("records") or []
     owners: dict[str, dict] = {}
     without = 0
+    withheld = 0
     for record in records:
+        state = egrn_extracts.owner_state(record)
+        if state == "withheld":
+            # Право зарегистрировано, а имени в этом виде выписки нет. Считать
+            # это «правообладатель не назван реестром» нельзя: лечится оно своим
+            # запросом в ЕГРН, а не перечитыванием того же файла.
+            withheld += 1
+            continue
         owner = egrn_extracts.owner_of(record)
-        if not owner or not owner.get("name"):
+        if state != "named" or not owner or not owner.get("name"):
             without += 1
             continue
         row = owners.setdefault(owner["key"], {
@@ -176,16 +221,72 @@ def egrn_summary(lot: AuctionLot) -> dict | None:
         row["objects"] += 1
         row["area_sqm"] += float(record.get("area_sqm") or 0)
     documents = egrn.get("documents") or []
+    refused = [{"document": item.get("document") or "",
+                "url": item.get("url") or "",
+                "reason": item.get("error") or "",
+                "kind": item.get("kind") or ""}
+               for item in documents if item.get("error")]
+    answered = [item for item in documents if not item.get("error")]
+    companions = [companion for item in answered
+                  for companion in (item.get("companions") or [])]
+    print_forms = sum(1 for companion in companions
+                      if companion.get("kind") == "print_form")
+    # Чем прочитаны сами записи: печатная форма отвечает не на все вопросы
+    # машинной, и «владельцев нет» при четырнадцати печатных формах значит
+    # другое, чем при четырнадцати машинных выписках.
+    from_print = sum(1 for record in records
+                     if record.get("source") == "print_form")
+    scanned = sum(1 for record in records if record.get("text_source") == "ocr")
+    unread = sum(len(item.get("unread") or []) for item in answered)
+    rows = sorted(owners.values(), key=lambda row: (-row["objects"], row["name"]))
     return {
         "documents": len(documents),
+        "answered": len(answered),
+        "refused": refused,
         "records": len(records),
         "lands": egrn.get("lands", 0),
         "builds": egrn.get("builds", 0),
-        "owners": sorted(owners.values(), key=lambda row: (-row["objects"], row["name"])),
+        "owners": rows,
         "without_registered_owner": without,
-        "unread": sum(len(item.get("unread") or []) for item in documents),
-        "companions": sum(len(item.get("companions") or []) for item in documents),
+        "holders_withheld": withheld,
+        "from_print_form": from_print,
+        "recognised": scanned,
+        "unread": unread,
+        "companions": len(companions),
+        "print_forms": print_forms,
+        "reason": _egrn_reason(len(documents), len(answered), len(records),
+                               len(rows), without, withheld, unread),
     }
+
+
+def _egrn_reason(documents: int, answered: int, records: int, owners: int,
+                 without: int, withheld: int, unread: int) -> str:
+    """Почему владельцев не видно. Пустая строка — видно, объяснять нечего.
+
+    Прежняя причина «машинной выписки в лоте нет — приехала только печатная
+    форма, а разбор написан по XML» СНЯТА: печатная форма читается с 0.23.41.
+    Оговорка «мы этого не читаем» устаревает молча и продолжает читаться как
+    правда — это уже стоило нам двух неверных строк на экране.
+    """
+    if owners:
+        return ""
+    if answered == 0:
+        return (f"площадка не отдала ни одного вложения с выписками "
+                f"(спросили {documents})")
+    if records == 0 and unread:
+        return f"выписки не прочитаны: {unread}"
+    if records == 0:
+        return "во вложении нет выписок"
+    parts = []
+    if withheld:
+        parts.append(
+            f"у {withheld} объект(ов) право зарегистрировано, а имени "
+            "правообладателя выписка об объекте недвижимости не раскрывает — "
+            "нужен свой запрос в ЕГРН")
+    if without:
+        parts.append(f"у {without} объект(ов) право собственности не "
+                     "зарегистрировано — так сказано в выписках")
+    return "; ".join(parts)
 
 
 def _norm(value: str | None) -> str:

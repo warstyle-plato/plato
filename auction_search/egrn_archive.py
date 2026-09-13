@@ -29,23 +29,38 @@ from __future__ import annotations
 
 from typing import Any
 
-from auction_search import archives, egrn_extracts
+from auction_search import archives, egrn_extracts, egrn_print_form
+
+# Сколько печатных форм БЕЗ текстового слоя распознаём на один архив.
+# Распознавание стоит до минуты на страницу (`pdf_ocr.PAGE_TIMEOUT_SECONDS`), а
+# архив приходит с чужой машины: четыреста сканов держали бы человека часами.
+# Предел назван числом, и упёршийся в него файл стоит в непрочитанном со своей
+# причиной — обрезка без слов неотличима от архива без выписок.
+OCR_BUDGET_DOCUMENTS = 3
 
 # Спутники выписки: лежат в архиве по построению и выпиской не являются.
+#
+# Вид спутника назван рядом с причиной, и это не украшение. Подпись и таблица
+# стилей лежат РЯДОМ с машинной выпиской, а печатная форма бывает единственным
+# содержимым архива: у Росэлторга так приходят все выписки лотовой
+# документации (измерено 13.09.2026 на пяти живых КРТ-лотах — 32 PDF и ни
+# одного XML). «Рядом с выпиской лежала подпись» и «машинной выписки в лоте
+# нет вовсе» — разные ответы, а одним числом `companions` они неразличимы.
 COMPANION_SUFFIXES = {
-    ".sig": "отсоединённая подпись",
-    ".p7s": "отсоединённая подпись",
-    ".sgn": "отсоединённая подпись",
-    ".xsl": "таблица стилей выписки",
-    ".xslt": "таблица стилей выписки",
-    ".pdf": "печатная форма выписки",
-    ".html": "печатная форма выписки",
-    ".htm": "печатная форма выписки",
-    ".png": "картинка приложения",
-    ".jpg": "картинка приложения",
-    ".jpeg": "картинка приложения",
-    ".tif": "картинка приложения",
-    ".tiff": "картинка приложения",
+    ".sig": ("signature", "отсоединённая подпись"),
+    ".p7s": ("signature", "отсоединённая подпись"),
+    ".sgn": ("signature", "отсоединённая подпись"),
+    ".xsl": ("stylesheet", "таблица стилей выписки"),
+    ".xslt": ("stylesheet", "таблица стилей выписки"),
+    # HTML-формы в руках не было ни одной: разбор написан по PDF, и пускать в
+    # него чужой вид значило бы отвечать ошибкой там, где файл цел.
+    ".html": ("print_form", "печатная форма выписки"),
+    ".htm": ("print_form", "печатная форма выписки"),
+    ".png": ("image", "картинка приложения"),
+    ".jpg": ("image", "картинка приложения"),
+    ".jpeg": ("image", "картинка приложения"),
+    ".tif": ("image", "картинка приложения"),
+    ".tiff": ("image", "картинка приложения"),
 }
 
 
@@ -74,14 +89,26 @@ def read(data: bytes, *, name: str = "") -> dict[str, Any]:
     result["entries"] = len(entries)
 
     seen: dict[str, int] = {}
+    # Печатные формы читаются ВТОРЫМ проходом: машинная выписка отвечает на то,
+    # чего печатная не раскрывает вовсе (имя правообладателя), и при двух
+    # документах на один объект выбор между ними делаем не порядком записей в
+    # архиве. Печатная форма того же объекта не выбрасывается молча — она
+    # названа спутником с причиной.
+    print_forms: list[archives.Entry] = []
+    ocr_spent = 0
     for entry in entries:
+        companion = COMPANION_SUFFIXES.get(entry.suffix)
+        if companion:
+            kind, reason = companion
+            result["companions"].append(
+                {"name": entry.name, "kind": kind, "reason": reason})
+            continue
+        if entry.suffix == ".pdf" or archives.looks_like_pdf(entry.data):
+            print_forms.append(entry)
+            continue
         # Спутник опознаётся ИМЕНЕМ и до разбора: таблица стилей — тоже XML, и
         # пущенная в разбор выписки она отвечает ошибкой, то есть попадала бы в
         # непрочитанное и обвиняла архив там, где всё на месте.
-        companion = COMPANION_SUFFIXES.get(entry.suffix)
-        if companion:
-            result["companions"].append({"name": entry.name, "reason": companion})
-            continue
         if not looks_like_xml(entry.data):
             result["unread"].append({"name": entry.name, "reason": "не XML выписки"})
             continue
@@ -96,8 +123,40 @@ def read(data: bytes, *, name: str = "") -> dict[str, Any]:
             continue
         number = str(record.get("cadastral_number") or "")
         seen[number] = seen.get(number, 0) + 1
+        record["source"] = "xml"
         record["source_entry"] = entry.name
         result["records"].append(record)
+
+    from_xml = {str(record.get("cadastral_number") or "")
+                for record in result["records"]}
+    for entry in print_forms:
+        try:
+            record = egrn_print_form.read(
+                entry.data, ocr=ocr_spent < OCR_BUDGET_DOCUMENTS)
+        except egrn_print_form.NoTextLayer as exc:
+            ocr_spent += 1
+            result["unread"].append({"name": entry.name, "reason": str(exc)})
+            continue
+        except Exception as exc:  # noqa: BLE001
+            result["unread"].append({
+                "name": entry.name,
+                "reason": (str(exc) if isinstance(exc, ValueError)
+                           else f"{type(exc).__name__}: {exc}")[:200],
+            })
+            continue
+        if record.get("text_source") == "ocr":
+            ocr_spent += 1
+        number = str(record.get("cadastral_number") or "")
+        if number in from_xml:
+            result["companions"].append({
+                "name": entry.name, "kind": "print_form",
+                "reason": f"печатная форма {number} рядом с машинной выпиской",
+            })
+            continue
+        seen[number] = seen.get(number, 0) + 1
+        record["source_entry"] = entry.name
+        result["records"].append(record)
+
     result["duplicates"] = sorted(number for number, count in seen.items() if count > 1)
     result["read"] = len(result["records"])
     return result
