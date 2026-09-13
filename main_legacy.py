@@ -66,6 +66,7 @@ from developaid_monitor_page import MONITOR_PAGE as _MONITOR_PAGE_RAW
 # документах, движок — об экономике, и смешивать их незачем.
 import document_intake
 import v4_entry_sheet
+import v4_value_cache
 import management_contour
 import parking_norms
 import plato_question
@@ -19478,6 +19479,10 @@ def v4_hard_value_reason(sheet: str, coord: str) -> str | None:
     return V4_ENGINE_WRITTEN_CELLS.get((sheet, f"строка {row}"))
 
 
+class _SkipValueCache(Exception):
+    """Проход сохранённых значений выключен — это выбор, а не сбой."""
+
+
 def build_project_workbook(
     inputs: dict[str, Any],
     tep: dict[str, dict[str, Any]],
@@ -19487,6 +19492,7 @@ def build_project_workbook(
     project_name: str = "",
     scenario: str = "base",
     finance_hints: dict[str, Any] | None = None,
+    cache_values: bool | None = None,
 ) -> tuple[bytes, str, dict[str, Any]]:
     """Книга DevelopAid v4, заполненная текущими вводными.
 
@@ -20885,9 +20891,40 @@ def build_project_workbook(
         # ставке, отчёт по лестнице, и оба будут выглядеть достоверно.
         missing.append("CF · ступени ставки по покрытию эскроу")
 
+    # Значения кладутся рядом с формулами, а не вместо них. Без них книга
+    # пуста везде, где формулы не считают: предпросмотр в телеграме, Quick Look,
+    # телефон, диски — и владелец открыл выгрузку 13.09.2026 со словами «модель
+    # пустая вообще». Считает их наш же вычислитель; `fullCalcOnLoad="1"`
+    # остаётся, поэтому в Excel число живёт ровно до открытия и устареть не
+    # может. Сбой оставляет книгу без значений и говорит об этом: выгрузка без
+    # чисел хуже, чем с ними, но несобранная выгрузка хуже обеих.
+    content = out.getvalue()
+    # Счёт всей книги стоит около четырнадцати секунд — для выгрузки это
+    # ничто, а для набора тестов много: книгу собирают 62 файла, и на каждой
+    # сборке набор подорожал бы получасом. Поэтому `tests/conftest.py` гасит
+    # проход, а проверка, которая его и держит, включает обратно. Умолчание —
+    # ВКЛЮЧЕНО: выгрузка без значений и есть та болезнь, от которой всё это.
+    if cache_values is None:
+        cache_values = os.environ.get("DEVELOPAID_WORKBOOK_CACHE", "1") not in (
+            "0", "false", "no", "")
+    try:
+        if not cache_values:
+            raise _SkipValueCache
+        content, cache_report = v4_value_cache.with_cached_values(content)
+        if cache_report.get("unresolved"):
+            missing.append(
+                f"сохранённые значения: {cache_report['unresolved']} формул "
+                f"вычислитель не понял, эти клетки останутся пустыми вне Excel "
+                f"({', '.join(cache_report.get('examples') or [])})")
+    except _SkipValueCache:
+        pass
+    except Exception as exc:  # noqa: BLE001 — молчащая потеря значений и есть болезнь
+        content = out.getvalue()
+        missing.append("сохранённые значения не записаны: " + _error_location(exc))
+
     stem = _safe_file_stem(title, "project")
     filename = f"DevelopAid_модель_{stem}_{date.today().isoformat()}.xlsx"
-    return out.getvalue(), filename, {"missing": missing, "phased": count > 1,
+    return content, filename, {"missing": missing, "phased": count > 1,
                                       "class_deviations": class_deviations}
 
 
