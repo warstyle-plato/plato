@@ -52,6 +52,7 @@ SITE = {"slug": "nizhnie-polya", "name": "Нижние Поля ул.", "status"
 
 LOT = {"title": "21000005000000033023 Лот 1 Аукцион на право заключения договора о КРТ",
        "url": "https://www.roseltorg.ru/procedure/21000005000000033023/1",
+       "address": "г. Москва, Нижние Поля ул.",
        "deadline": "2026-12-01", "price_rub": 1_000_000_000,
        "store_key": "21000005000000033023/1"}
 
@@ -217,10 +218,22 @@ def _app(tmp_path):
     registry = KrtRegistry(tmp_path)
     registry.remember_tender_lots({SITE["slug"]: [dict(LOT)]})
     app = FastAPI()
+
+
+    def _bomb(*_args, **_kwargs):
+        """Каталог внутри запроса страницы не спрашивается — и это проверяется.
+
+        Первая версия брала имя площадки из общего списка, а тот при
+        просроченном снимке уходит обходить krt.mos.ru: страница вставала
+        насмерть, и пять браузерных проверок Нагатино упали таймаутом.
+        """
+        raise AssertionError("каталог спрошен внутри запроса страницы")
+
     app.state.market_discovery_service = SimpleNamespace(
         krt=SimpleNamespace(
-            catalogue=lambda **_: [dict(SITE)],
+            catalogue=_bomb,
             status=lambda: {"complete": True, "refreshing": False},
+            find=lambda query: (dict(SITE) if query == f"krt:{SITE['slug']}" else None),
             tender_lots_known=registry.tender_lots_known,
             remember_tender_lots=registry.remember_tender_lots,
         ),
@@ -461,7 +474,11 @@ def test_the_gated_page_says_where_the_other_sites_are(tmp_path, monkeypatch):
     client = TestClient(_app(tmp_path))
     data = client.get(f"/krt/site/{SITE['slug']}/parcels").json()
     row, = data["siblings"]
-    assert row["slug"] == SITE["slug"] and row["name"] == SITE["name"]
+    assert row["slug"] == SITE["slug"]
+    # Имя — адрес лота из связки, и подписано тем, чем является: каталог
+    # внутри запроса страницы не спрашивается.
+    assert row["name"] == LOT["address"], row
+    assert row["name_source"] == "адрес лота", row
     assert row["url"] == f"/krt/site/{SITE['slug']}"
     assert row["deadline"] == LOT["deadline"], row
     # Момент считается при ЧТЕНИИ: связка лежит на диске и старше правила.

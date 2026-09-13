@@ -1871,17 +1871,30 @@ def install(app: FastAPI) -> None:
     def _krt_site_source(slug: str) -> tuple[dict[str, Any], Any]:
         """Площадка каталога и её источник свода.
 
-        Ищется в ОБЕИХ половинах списка — то же правило, что у кнопки
-        публикаций и у точки на карте: у площадки-решения карточки каталога нет
-        вовсе, и `find` её не знает.
+        **Сеть здесь не трогается**: это правило страницы, и первая версия его
+        нарушила — площадка искалась в общем списке (`_krt_all_sites`), а тот
+        при просроченном снимке уходит обходить krt.mos.ru и mos.ru, и
+        собственный запрос страницы не возвращался вовсе. Спрашивается то, что
+        лежит на диске: `find` читает снимок каталога (у площадки-решения —
+        снимок решений) и только заводит фоновое обновление, а связка с лотами
+        лежит файлом. Не знает ни один — 404 с причиной: пустой свод читался бы
+        как территория без объектов.
         """
         finder = getattr(krt_registry, "find", None)
         project = finder(f"krt:{slug}") if callable(finder) else None
         if project is None:
-            project = next(
-                (item for item in _krt_all_sites() if item.get("slug") == slug), None)
+            # Каталожной карточки нет (или снимок её ещё не принёс), а лот у
+            # площадки есть: имя берём из связки и подписываем, чьё оно.
+            known = next((item for item in _krt_sites_with_lots()
+                          if item["slug"] == slug), None)
+            if known:
+                project = {"slug": slug, "name": known["name"],
+                           "name_source": known["name_source"]}
         if not project:
-            raise HTTPException(status_code=404, detail="Территория КРТ не найдена")
+            raise HTTPException(
+                status_code=404,
+                detail="Территории КРТ с таким слагом нет ни в снимке каталога, "
+                       "ни в связке с лотами торгов")
         numbers: list[str] = []
         try:
             numbers = [str(number) for number
@@ -1913,12 +1926,19 @@ def install(app: FastAPI) -> None:
         потому перейти между территориями можно только ОТСЮДА: страница без
         такого списка отвечала бы «где искать остальные» молчанием.
 
+        **Каталог здесь не спрашивается.** Сеть внутри запроса страницы не
+        трогается — это правило модуля, и первая версия его нарушила: имя
+        площадки бралось из списка каталога, а тот при просроченном снимке
+        уходит обходить krt.mos.ru и mos.ru. Страница вставала насмерть (её
+        собственный запрос не возвращался вовсе), и пять браузерных проверок
+        Нагатино упали таймаутом — на верном на вид коде. Имя берётся из самой
+        связки: там лежит адрес лота, и он назван своим именем.
+
         «Лот живой» здесь НЕ утверждается: правило живости живёт у каталога
         (`krtLiveLot`), и второе такое правило однажды ответило бы про один лот
-        иначе. Печатается срок в том виде, в каком его объявила площадка, — по
-        нему читатель и видит, идут торги или прошли; момент считается при
-        чтении (`with_moment`), потому что связка лежит на диске и старше
-        правила разбора даты.
+        иначе. Печатается срок в том виде, в каком его объявила площадка;
+        момент считается при чтении (`with_moment`), потому что связка лежит на
+        диске и старше правила разбора даты.
         """
         from . import krt_tenders as rules
 
@@ -1930,17 +1950,17 @@ def install(app: FastAPI) -> None:
         except Exception:  # noqa: BLE001
             logger.exception("КРТ: связка с лотами не прочитана")
             return []
-        names = {str(item.get("slug")): item for item in _krt_all_sites()}
         out: list[dict[str, Any]] = []
         for slug, record in known.items():
             lots = rules.with_moment((record or {}).get("lots") or [])
             if not lots:
                 continue
-            project = names.get(str(slug)) or {}
             out.append({
                 "slug": str(slug),
-                "name": str(project.get("name") or slug),
-                "okrug": str(project.get("okrug") or ""),
+                # Имя — адрес лота из связки; каталожного имени здесь нет, и
+                # подписано оно тем, чем является.
+                "name": str(lots[0].get("address") or slug),
+                "name_source": "адрес лота" if lots[0].get("address") else "слаг площадки",
                 "lots": len(lots),
                 "deadline": str(lots[0].get("deadline") or ""),
                 "deadline_iso": str(lots[0].get("deadline_iso") or ""),
