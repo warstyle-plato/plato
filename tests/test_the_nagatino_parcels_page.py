@@ -42,6 +42,8 @@ from pathlib import Path
 
 import pytest
 
+from browser import chromium_or_skip
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
@@ -645,13 +647,11 @@ def test_in_a_real_browser_the_live_map_opens_and_paints_the_same_colours(monkey
     расходились: строение «Жилищника» на печатной карте зелёное (собственник —
     город), а на живой было жёлтым по владельцу из выгрузки.
     """
-    try:
-        from playwright.sync_api import sync_playwright
-    except Exception:  # noqa: BLE001
-        pytest.skip("playwright недоступен")
-    chrome = Path("/opt/pw-browsers/chromium-1194/chrome-linux/chrome")
-    if not chrome.exists():
-        pytest.skip("chromium в образе не найден")
+    # Где браузер — один ответ на весь набор (`tests/browser.py`): он ищет, а
+    # не помнит номер сборки, и на машине, где браузер ОБЯЗАН быть, его
+    # отсутствие красит проверку красным, а не пропускает её молча.
+    chrome = chromium_or_skip()
+    from playwright.sync_api import sync_playwright
     import uvicorn
 
     monkeypatch.setenv("NAGATINO_EGRN_READ", "0")
@@ -717,13 +717,11 @@ def test_in_a_real_browser_the_live_map_opens_and_paints_the_same_colours(monkey
 @pytest.mark.timeout(180)
 def test_in_a_real_browser_the_parcels_are_drawn_and_the_owner_pops_up(monkeypatch):
     """Строковая проверка зелена и на сломанной странице: нужен браузер."""
-    try:
-        from playwright.sync_api import sync_playwright
-    except Exception:  # noqa: BLE001
-        pytest.skip("playwright недоступен")
-    chrome = Path("/opt/pw-browsers/chromium-1194/chrome-linux/chrome")
-    if not chrome.exists():
-        pytest.skip("chromium в образе не найден")
+    # Где браузер — один ответ на весь набор (`tests/browser.py`): он ищет, а
+    # не помнит номер сборки, и на машине, где браузер ОБЯЗАН быть, его
+    # отсутствие красит проверку красным, а не пропускает её молча.
+    chrome = chromium_or_skip()
+    from playwright.sync_api import sync_playwright
     import uvicorn
 
     monkeypatch.setenv("NAGATINO_EGRN_READ", "0")
@@ -893,13 +891,11 @@ def test_in_a_real_browser_the_filter_hides_rows_and_the_numbers_stand_on_the_ma
     строкой нельзя: и отбор, и подписи-номера есть в исходнике у сломанной
     страницы так же, как у рабочей, — считать надо нарисованное.
     """
-    try:
-        from playwright.sync_api import sync_playwright
-    except Exception:  # noqa: BLE001
-        pytest.skip("playwright недоступен")
-    chrome = Path("/opt/pw-browsers/chromium-1194/chrome-linux/chrome")
-    if not chrome.exists():
-        pytest.skip("chromium в образе не найден")
+    # Где браузер — один ответ на весь набор (`tests/browser.py`): он ищет, а
+    # не помнит номер сборки, и на машине, где браузер ОБЯЗАН быть, его
+    # отсутствие красит проверку красным, а не пропускает её молча.
+    chrome = chromium_or_skip()
+    from playwright.sync_api import sync_playwright
     import uvicorn
 
     monkeypatch.setenv("NAGATINO_EGRN_READ", "0")
@@ -1018,13 +1014,11 @@ def test_in_a_real_browser_the_numbers_do_not_pile_up(monkeypatch):
     середину Москвы-реки. Проверять это можно только отрисовкой: в исходнике
     подписи выглядят одинаково и у каши, и у порядка.
     """
-    try:
-        from playwright.sync_api import sync_playwright
-    except Exception:  # noqa: BLE001
-        pytest.skip("playwright недоступен")
-    chrome = Path("/opt/pw-browsers/chromium-1194/chrome-linux/chrome")
-    if not chrome.exists():
-        pytest.skip("chromium в образе не найден")
+    # Где браузер — один ответ на весь набор (`tests/browser.py`): он ищет, а
+    # не помнит номер сборки, и на машине, где браузер ОБЯЗАН быть, его
+    # отсутствие красит проверку красным, а не пропускает её молча.
+    chrome = chromium_or_skip()
+    from playwright.sync_api import sync_playwright
     import uvicorn
 
     monkeypatch.setenv("NAGATINO_EGRN_READ", "0")
@@ -1126,13 +1120,11 @@ def test_in_a_real_browser_the_site_area_is_reconciled_once_and_near_the_tiles(m
     Проверяется отрисовкой: текст был на странице во всех трёх версиях, и
     строковая проверка была бы зелёной у каждой.
     """
-    try:
-        from playwright.sync_api import sync_playwright
-    except Exception:  # noqa: BLE001
-        pytest.skip("playwright недоступен")
-    chrome = Path("/opt/pw-browsers/chromium-1194/chrome-linux/chrome")
-    if not chrome.exists():
-        pytest.skip("chromium в образе не найден")
+    # Где браузер — один ответ на весь набор (`tests/browser.py`): он ищет, а
+    # не помнит номер сборки, и на машине, где браузер ОБЯЗАН быть, его
+    # отсутствие красит проверку красным, а не пропускает её молча.
+    chrome = chromium_or_skip()
+    from playwright.sync_api import sync_playwright
     import uvicorn
 
     monkeypatch.setenv("NAGATINO_EGRN_READ", "0")

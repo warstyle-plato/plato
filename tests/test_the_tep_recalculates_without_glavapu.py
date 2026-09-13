@@ -25,12 +25,16 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from browser import chromium_or_skip, serve
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import main_legacy as core  # noqa: E402
 
 PAGE = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+
+PORT = 18264
 
 SITE = {"apartment_area_sqm": 80_000, "residential_living_spp_sqm": 130_716,
         "nonresidential_np_sqm": 8_695}
@@ -131,41 +135,29 @@ def test_the_page_calls_the_norms_instead_of_refusing() -> None:
         assert sign not in body, f"на экране появилась арифметика: {sign}"
 
 
-def test_the_page_really_fills_the_fields(tmp_path) -> None:
-    """Проверяется настоящим браузером на собранной странице: сервер отвечает
-    тем же кодом, что в бою, но без сети — запрос перехватывается и
-    обслуживаетсяTestClient'ом."""
-    play = pytest.importorskip("playwright.sync_api")
-    import json
+def test_the_page_really_fills_the_fields() -> None:
+    """Проверяется настоящим браузером на собранной странице по тому адресу, по
+    которому её открывает человек.
 
-    import browser_launch
+    Прежде страница открывалась с диска (`file://`), а её запрос к
+    `/tep/derived-by-site` перехватывался и обслуживался TestClient'ом. Держалось
+    это на том, что Chromium выпускает запрос к `file:///tep/derived-by-site`, а
+    playwright его перехватывает: в сборке 1194 так и было, в 151.0.7922.34
+    (playwright 1234) перестало — и проверка покраснела на верном коде при первом
+    же прогоне с браузером на CI. Схемы `file://` у продукта нет нигде.
+    """
+    chrome = chromium_or_skip()
+    from playwright.sync_api import sync_playwright
 
     from main_registry import app as registry_app
 
-    served = TestClient(registry_app)
-    page_file = tmp_path / "classic.html"
-    page_file.write_text(served.get("/classic").text, encoding="utf-8")
-
-    def answer(route):
-        request = route.request
-        if request.url.endswith("/tep/derived-by-site"):
-            reply = served.post("/tep/derived-by-site", json=json.loads(request.post_data))
-            route.fulfill(status=reply.status_code, content_type="application/json",
-                          body=reply.text)
-            return
-        route.abort() if request.url.startswith("http") else route.continue_()
-
-    with play.sync_playwright() as pw:
-        try:
-            browser = browser_launch.launch(pw)
-        except Exception as exc:  # noqa: BLE001
-            pytest.skip(f"Chromium недоступен: {exc}")
+    with serve(registry_app, PORT) as base, sync_playwright() as pw:
+        browser = pw.chromium.launch(executable_path=str(chrome))
         try:
             tab = browser.new_page()
             errors: list[str] = []
             tab.on("pageerror", lambda e: errors.append(str(e)))
-            tab.route("**/*", answer)
-            tab.goto(page_file.resolve().as_uri())
+            tab.goto(f"{base}/classic", wait_until="domcontentloaded")
             tab.wait_for_timeout(600)
             got = tab.evaluate("""async ()=>{
               cadastralAnalysis={territory:{district:'Некрасовка', inside_moscow:true}};
@@ -184,8 +176,8 @@ def test_the_page_really_fills_the_fields(tmp_path) -> None:
         finally:
             browser.close()
 
-    # «Failed to fetch» — это оборванные нами же посторонние запросы страницы
-    # (карта, справочники): в тесте сети нет намеренно. Всё прочее — поломка.
+    # «Failed to fetch» — посторонние запросы страницы во внешний мир (карта,
+    # справочники): сети в прогоне нет намеренно. Всё прочее — поломка.
     other = [line for line in errors if "Failed to fetch" not in line]
     assert not other, f"страница упала: {other[:2]}"
     assert (got["dou"], got["school"], got["clinic"]) == (153, 301, 47), \

@@ -37,6 +37,8 @@ from pathlib import Path
 
 import pytest
 
+from browser import chromium_or_skip
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
@@ -99,15 +101,11 @@ __DRAWER__
 
 @pytest.fixture(scope="module")
 def phone(tmp_path_factory):
-    try:
-        from playwright.sync_api import sync_playwright
-    except Exception:  # pragma: no cover - в песочнице без playwright
-        pytest.skip("playwright недоступен")
-    chrome = None
-    for guess in sorted(Path("/opt/pw-browsers").glob("chromium-*/chrome-linux/chrome")):
-        chrome = guess
-    if chrome is None or not chrome.exists():  # pragma: no cover
-        pytest.skip("chromium в образе не найден")
+    # Где браузер — один ответ на весь набор (`tests/browser.py`): он ищет, а
+    # не помнит номер сборки, и на машине, где браузер ОБЯЗАН быть, его
+    # отсутствие красит проверку красным, а не пропускает её молча.
+    chrome = chromium_or_skip()
+    from playwright.sync_api import sync_playwright
 
     import main_legacy
 
