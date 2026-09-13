@@ -23,6 +23,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import page_blocks  # noqa: E402
 import main as wrapper  # noqa: E402
 
 core = wrapper.core
@@ -70,7 +71,7 @@ def restore(saved: dict) -> dict:
     node = shutil.which("node")
     if not node:
         pytest.skip("node недоступен")
-    script = (
+    prelude = (
         f"const INPUT_DEFAULT={defaults('INPUT_DEFAULT')};\n"
         f"const TEP_DEFAULT={defaults('TEP_DEFAULT')};\n"
         + page_function("cloneValue") + "\n"
@@ -78,20 +79,19 @@ def restore(saved: dict) -> dict:
         "phasing={},rates=[];\n"
         "const scenarioSelect={value:'base'};\n"
         "function makeDefaultPhasing(){return {enabled:false}}\n"
-        # `loadLocal` сеет список тронутых полей паркинга: заполненное нормой
-        # поле не должно ожить «вписанным руками». Стенд перечисляет функции
-        # поимённо, и это его слабое место — соседняя функция роняет его на
-        # верном коде, а `catch` восстановления делал падение НЕМЫМ.
-        "const OBJECT_PARKING_PREFIXES=['offices','retail','sports'];\n"
-        + page_function("seedParkingByHand") + "\n"
         f"const localStorage={{getItem:()=>{json.dumps(json.dumps(saved))}}};\n"
         + load_local_body() + "\n"
+    )
+    # Куски страницы стенд добирает сам по имени из ошибки — но падение ВНУТРИ
+    # `loadLocal` глушит его `catch`, и добирать было бы нечего. Поэтому то,
+    # что `loadLocal` зовёт, зовётся здесь ДО него: там ReferenceError виден.
+    tail = (
+        "fillUndergroundFromTep();\n"
+        "seedParkingByHand();\n"
         "loadLocal();\n"
         "console.log(JSON.stringify({inputs,tep}));\n"
     )
-    done = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
-    assert done.returncode == 0, done.stderr
-    return json.loads(done.stdout)
+    return page_blocks.run_json(prelude, tail)
 
 
 # Проект, сохранённый браузером до появления блока ВРИ.

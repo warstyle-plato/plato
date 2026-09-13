@@ -77,7 +77,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.23.45"
+VERSION = "0.23.46"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -42627,6 +42627,10 @@ async function applyGlavapu(){
  // иначе в них остались бы места и метры предыдущего проекта.
  inputs.underground_manual_spaces=0;
  inputs.underground_manual_gns_sqm=0;
+ // Вместе с числом снимается и замок: он про прежний участок, а этот другой.
+ // Иначе пара осталась бы пустой, и поля показывали бы ноль там, где норма
+ // нового участка уже посчитана.
+ markParkingByNorm(PROJECT_PARKING_KEY);
  fillUndergroundFromTep();
  repairParkingFromGlavapu();
 
@@ -42832,13 +42836,38 @@ function fillUndergroundFromTep(){
  // Поля показывают расчёт участка, а не пустоту со значением «возьми
  // норматив»: человек пришёл править числа, которые видит, и ноль в поле
  // читался как «паркинга нет». Новый импорт ГлавАПУ перезаписывает пару.
+ //
+ // Но заполнить мало — надо сказать, ЧЬЁ это число. Прежде пара, заполненная
+ // нормой при загрузке сохранённого проекта, дальше читалась как решение
+ // человека: строка ТЭП подписывалась «Задано проектом», правка квартир мест
+ // не двигала, а вернуть поле к норме можно было только вписав норму руками —
+ // и тогда оно запиралось снова. Владелец, 13.09.2026: «когда я поменял ТЭПы
+ // после расчёта, машиноместа не будут двигаться? Это неверно».
+ //
+ // Пометка — та же, что у паркинга объектов, и списки те же: тронутое руками
+ // норма не трогает, своё число она обновляет вместе с ТЭП.
  if(inputs.underground_parking_disabled)return false;
- if(Number(inputs.underground_manual_spaces||0)>0||Number(inputs.underground_manual_gns_sqm||0)>0)return false;
+ if(parkingByHand(PROJECT_PARKING_KEY))return false;
+ const spaces=Number(inputs.underground_manual_spaces||0);
+ const area=Number(inputs.underground_manual_gns_sqm||0);
  const p=parkingRequirement();
  if(!p||!(p.spaces>0))return false;
  const per=undergroundAreaPerSpace();
- inputs.underground_manual_spaces=Math.round(p.spaces);
- inputs.underground_manual_gns_sqm=Math.round(p.gns||p.spaces*per);
+ const wantSpaces=Math.round(p.spaces);
+ const wantArea=Math.round(p.gns||p.spaces*per);
+ // Проект, сохранённый до этой правки, пометок не несёт вовсе, и разобрать по
+ // ним нечего. Зато есть сравнение — то же, что у `reconcileLegacyParking`:
+ // пара, равная норме на ТЕХ ЖЕ вводных, поставлена нормой, другого объяснения
+ // совпадению до единицы нет; несовпадающая — человеческая, и её не трогаем.
+ // Пустая пара — тоже нормина: ноль означал «взять норматив».
+ if(!parkingByNorm(PROJECT_PARKING_KEY)&&(spaces>0||area>0)){
+  const mine=(spaces===wantSpaces)||(spaces<=0&&area===wantArea);
+  if(!mine){markParkingByHand(PROJECT_PARKING_KEY);return false}
+ }
+ markParkingByNorm(PROJECT_PARKING_KEY);
+ if(spaces===wantSpaces&&area===wantArea)return false;
+ inputs.underground_manual_spaces=wantSpaces;
+ inputs.underground_manual_gns_sqm=wantArea;
  return true;
 }
 
@@ -43341,7 +43370,7 @@ function renderInputs(){
       el.disabled=true;
       el.title='Москва: платежи ежеквартально — установлено нормативно';
      }
-     el.onchange=()=>{inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='social_mode')inputs._social_mode_user_set=true;if(/^(offices|retail|sports)_parking_(under|over)_spaces$/.test(id)){if(String(el.value).trim()==='')restoreParkingNorm(id.split('_')[0]);else markParkingByHand(id.split('_')[0]);}if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){renderInputs();return calculate()}if(['apartment_price_th','commercial_price_th','parking_price_th','main_above_th_per_sqm','main_under_th_per_sqm'].includes(id)){inputs.project_class='custom';syncProjectClassSelector()}if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(TEP_DERIVED_INPUTS.includes(id)){const cleared=id==='social_area_source'&&krtClearsVriFee();const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(cleared||filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
+     el.onchange=()=>{inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='social_mode')inputs._social_mode_user_set=true;if(/^(offices|retail|sports)_parking_(under|over)_spaces$/.test(id)){if(String(el.value).trim()==='')restoreParkingNorm(id.split('_')[0]);else markParkingByHand(id.split('_')[0]);}if(id==='underground_manual_spaces'||id==='underground_manual_gns_sqm'){if(Number(el.value)>0)markParkingByHand(PROJECT_PARKING_KEY);else markParkingByNorm(PROJECT_PARKING_KEY);}if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){renderInputs();return calculate()}if(['apartment_price_th','commercial_price_th','parking_price_th','main_above_th_per_sqm','main_under_th_per_sqm'].includes(id)){inputs.project_class='custom';syncProjectClassSelector()}if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(TEP_DERIVED_INPUTS.includes(id)){const cleared=id==='social_area_source'&&krtClearsVriFee();const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(cleared||filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
      wrap.appendChild(el);
      // Смягчение, которое даёт ГОРОД по своему решению, — справка у числа, а
      // не множитель в расчёте (решение владельца, 13.09.2026: «это зависит от
@@ -43606,6 +43635,21 @@ function objectParkingNote(key){
 // писала, значит непустое число — человеческое. Без такого посева проект,
 // сохранённый до правки, потерял бы вписанные числа при первом же пересчёте.
 const OBJECT_PARKING_PREFIXES=['offices','retail','sports'];
+// Проектный подземный паркинг — такой же паркинг, только поля у него зовутся
+// иначе. Прежде посев выводил имя поля из приставки (`pfx+'_parking_under_spaces'`),
+// и места в списке ему не было вовсе: пару заполняла норма при загрузке
+// сохранённого проекта, а дальше строка ТЭП замирала. Измерено 13.09.2026:
+// первый визит 1199 мест идут за нормой, возврат — пара 1199 заполнена, и
+// удвоение квартир поднимает норму до 2397 при строке, застывшей на 1199.
+// Карта — один ответ на «где лежит число этого паркинга», и по ней идёт посев.
+const PROJECT_PARKING_KEY='underground';
+const PARKING_OWNER_FIELDS={
+ offices:['offices_parking_under_spaces','offices_parking_over_spaces'],
+ retail:['retail_parking_under_spaces','retail_parking_over_spaces'],
+ sports:['sports_parking_under_spaces','sports_parking_over_spaces'],
+ underground:['underground_manual_spaces','underground_manual_gns_sqm']};
+function parkingByHand(key){return (inputs._parking_by_hand||[]).includes(key)}
+function parkingByNorm(key){return (inputs._parking_by_norm||[]).includes(key)}
 function seedParkingByHand(){
  // Список приехал вместе с проектом — он и есть ответ, пересев затёр бы его:
  // заполненное нормой поле стало бы «тронутым руками» и замерло бы навсегда.
@@ -43617,9 +43661,12 @@ function seedParkingByHand(){
  // пересчитались вообще»). Поэтому норма помечает своё число (`_parking_by_norm`),
  // и посев такие поля тронутыми не считает.
  const byNorm=new Set(Array.isArray(inputs._parking_by_norm)?inputs._parking_by_norm:[]);
- inputs._parking_by_hand=OBJECT_PARKING_PREFIXES.filter(pfx=>
-  !byNorm.has(pfx)&&
-  (Number(inputs[pfx+'_parking_under_spaces']||0)||Number(inputs[pfx+'_parking_over_spaces']||0)));
+ // Проектный подземный здесь намеренно НЕ засевается: его пару заполняет
+ // норма, и на этом шаге `tep` ещё не загружен — сравнить с нормой нечем.
+ // Решает `fillUndergroundFromTep`, когда ТЭП уже на месте.
+ inputs._parking_by_hand=Object.keys(PARKING_OWNER_FIELDS).filter(key=>
+  key!==PROJECT_PARKING_KEY&&!byNorm.has(key)&&
+  PARKING_OWNER_FIELDS[key].some(field=>Number(inputs[field]||0)));
 }
 
 function markParkingByNorm(prefix){
@@ -43798,7 +43845,10 @@ function renderTep(){
      const spaces=Number(tep.underground_parking.units||0);
      const area=Number(tep.underground_parking.gns||0);
      const shortfall=undergroundShortfallNote();
-     label+=` <span class="tep-note">Задано проектом: ${num(spaces)} м/м × ${num(per)} м²/место (гросс) = ${num(area)} м². Менять — в разделе «Подземный паркинг».</span>`;
+     // Чьё это число, а не «задано проектом» на любое. Пару заполняет норма, и
+     // её же число под этой подписью читалось как решение человека.
+     const byHand=parkingByHand(PROJECT_PARKING_KEY);
+     label+=` <span class="tep-note">${byHand?'Решение проекта':'По нормативу'}: ${num(spaces)} м/м × ${num(per)} м²/место (гросс) = ${num(area)} м². Менять — в разделе «Подземный паркинг»${byHand?'; очистить поле — вернуться к нормативу':''}.</span>`;
      if(shortfall)label+=` <span class="tep-note bad">${shortfall}</span>`;
    }
    if(key==='underground_parking'&&storageInsideParking>0){
@@ -45164,6 +45214,11 @@ function syncTep(rerender=true){
  // Пропорция может дописать вводные (известна продаваемая — считается ГНС).
  // Тогда поле обязано показать своё число, а не остаться пустым.
  let inputsFilled=false;
+ // Пара «места ↔ площадь» идёт за ТЭП, пока её не тронули руками: правка
+ // квартир меняет норму, и число в поле обязано меняться вместе с ней.
+ // Раньше пересчёт звался только при импорте ГлавАПУ и при загрузке проекта,
+ // то есть ровно один раз, — и дальше поле замирало.
+ if(fillUndergroundFromTep())inputsFilled=true;
  if(inputs.underground_parking_disabled||Number(inputs.underground_manual_spaces||0)>0||Number(inputs.underground_manual_gns_sqm||0)>0){repairParkingFromGlavapu()}else{tep.underground_parking.gns=Number(tep.underground_parking.units||0)*undergroundAreaPerSpace()}tep.underground_parking.total_area=tep.underground_parking.gns;
  [['offices','offices_enabled','offices_gba_sqm','offices_saleable_sqm'],
   ['standalone_retail','retail_enabled','retail_gba_sqm','retail_saleable_sqm']].forEach(([key,flag,gbaId,saleId])=>{
