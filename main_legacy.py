@@ -29194,23 +29194,62 @@ def _escrow_cover_with_phases(rows: list[dict[str, Any]], results: list[dict[str
 def _aggregate_finance(results: list[dict[str, Any]],
                       names: list[str] | None = None) -> dict[str, Any]:
     month_map: dict[str, dict[str, float]] = {}
-    additive = (
+    # Поток и остаток складываются по-разному, и это не оттенок. Поток
+    # (выборка, погашение, проценты, выручка) после конца горизонта очереди
+    # равен нулю — её строк больше нет, и складывать нечего. А ОСТАТОК — долг,
+    # счёт эскроу, начисленное к уплате — никуда не девается: очередь, чья
+    # линия кончилась с непогашенным долгом, должна банку и дальше.
+    #
+    # Складывалось всё одинаково, и очередь после своего горизонта выпадала из
+    # суммы месяца целиком. На пресете Нагатино О1 кончается 2033-01 с долгом
+    # 3 193,61 млн, О2 — 2034-01 с 1 536,86: с этих месяцев сводный долг падал
+    # ровно на них, и пик «одновременно открытых линий» выходил 94 250,21 млн
+    # против 97 443,30 у книги. Движок при этом ЗНАЛ, что долг остался, — их
+    # сумма 4 730,47 стоит у него в `ending_pf` свода до копейки, — но в
+    # помесячный ряд она не попадала. Книга держала хвосты и была права.
+    #
+    # Где хвостов нет (все очереди рассчитались), последний остаток нулевой и
+    # правка не двигает ничего: она бьёт ровно там, где очередь ушла в дефолт.
+    flows = (
         "bridge_draw", "bridge_repayment", "bridge_interest", "bridge_capitalization",
-        "bridge_balance", "project_cash_draw", "own_funds_draw",
+        "project_cash_draw", "own_funds_draw",
         "pf_draw", "pf_repayment", "pf_interest",
-        "pf_interest_capitalization", "pf_balance", "pf_payable", "pf_obligation",
-        "sales_after_rve", "escrow", "escrow_release", "limit_fee",
+        "pf_interest_capitalization",
+        "sales_after_rve", "escrow_release", "limit_fee",
         "interest_payment", "profit_tax", "taxable_margin",
         "financing_tax_deduction", "taxable_profit_cumulative",
         "revenue", "capex", "operating",
     )
+    stocks = ("bridge_balance", "pf_balance", "pf_payable", "escrow")
+    # `pf_obligation` здесь не складывается: это тело плюс начисленное, и ниже
+    # он считается из уже сложенных остатков. Сложенный третьим слагаемым, он
+    # разошёлся бы с ними на первой же правке.
+    additive = flows + stocks
     source_rows: dict[tuple[int, str], dict[str, Any]] = {}
     for ri, result in enumerate(results):
         for row in result["finance"]["rows"]:
             source_rows[(ri, row["month"])] = row
-            agg = month_map.setdefault(row["month"], {key: 0.0 for key in additive})
-            for key in additive:
-                agg[key] += float(row.get(key, 0.0) or 0.0)
+            month_map.setdefault(row["month"], {key: 0.0 for key in additive})
+    # Потоки складываются только там, где строка есть; остатки — с переносом
+    # последнего известного значения очереди на месяцы после её горизонта.
+    # Обход идёт ПО МЕСЯЦАМ, а не по очередям: перенос обязан знать, какой
+    # месяц последний у каждой, а это видно только в общем календаре.
+    carried: dict[int, dict[str, float]] = {
+        ri: {key: 0.0 for key in stocks} for ri in range(len(results))}
+    escrow_by_phase_map: dict[str, list[float]] = {}
+    for month in sorted(month_map):
+        agg = month_map[month]
+        for ri in range(len(results)):
+            row = source_rows.get((ri, month))
+            if row is not None:
+                for key in flows:
+                    agg[key] += float(row.get(key, 0.0) or 0.0)
+                for key in stocks:
+                    carried[ri][key] = float(row.get(key, 0.0) or 0.0)
+            for key in stocks:
+                agg[key] += carried[ri][key]
+        escrow_by_phase_map[month] = [carried[ri]["escrow"]
+                                      for ri in range(len(results))]
 
     # Накопленные ряды свода считаются заново по сложенному потоку. Сложить
     # два накопленных итога нельзя: горизонты очередей разной длины, и в
@@ -29222,6 +29261,10 @@ def _aggregate_finance(results: list[dict[str, Any]],
     for month in sorted(month_map):
         agg = month_map[month]
         key_rate = 0.0
+        # Средняя ставка взвешивается по ЖИВЫМ линиям: у очереди, чья линия
+        # кончилась, ставки в этот месяц нет вовсе — договор закрыт, — и
+        # приписать ей ноль значило бы занизить среднюю по остальным. Долг её
+        # при этом в сумме остатков стоит: он не обслуживается, но и не исчез.
         bridge_num = bridge_den = pf_num = pf_den = 0.0
         for ri, result in enumerate(results):
             row = source_rows.get((ri, month))
@@ -29251,9 +29294,11 @@ def _aggregate_finance(results: list[dict[str, Any]],
         # второй очереди сразу покрыта» (владелец, 04.09.2026: «Это деньги
         # первой очереди или что?»). Сумма верна, неверно, что она отвечает
         # на вопрос про очередь, — поэтому доли едут вместе с ней.
-        out["escrow_by_phase"] = [
-            float((source_rows.get((ri, month)) or {}).get("escrow", 0.0) or 0.0)
-            for ri in range(len(results))]
+        # Долю очереди берём из той же суммы, что и сам остаток: слой,
+        # посчитанный по строке, исчезал бы в месяце, где строки уже нет, а
+        # общая площадь оставалась — на рисунке это читается как «эскроу
+        # ничьё».
+        out["escrow_by_phase"] = list(escrow_by_phase_map.get(month) or [])
         out.update(running)
         rows.append(out)
 
