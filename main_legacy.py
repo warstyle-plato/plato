@@ -16122,6 +16122,24 @@ MKD_PRODUCTS: tuple[str, ...] = (
 # Состав объявлен один раз — в STANDALONE_OBJECTS; здесь только его ключи.
 STANDALONE_PRODUCTS: tuple[str, ...] = tuple(o.key for o in STANDALONE_OBJECTS)
 
+# Продукты, делящие ОДИН остаточный пул расходов: у них нет своей статьи CAPEX,
+# и себестоимость признаётся долей проданного количества. У отдельно стоящего
+# объекта пул свой (его CAPEX — отдельная статья), а вот его паркинг своей
+# статьи не имеет: места строятся тем же подземным метром, и деньги за них
+# лежат в общем пуле. Отсюда и место в этом списке — не «он часть МКД»
+# (`MKD_PRODUCTS` отвечает на другой вопрос: чем он построен), а «его расход
+# признаётся из остатка».
+#
+# Списка было два, одинаковых с виду: налоговая база и разбивка расходов по
+# продуктам в отчёте. Оба перечисляли четыре продукта МКД руками, а
+# `object_parking` завели позже (06.09.2026, «продаётся то, что можно
+# поставить на кадастр»), и он не попал ни в один. Выручка от него собиралась,
+# налога с неё не брали вовсе: на пресете Нагатино это 5 366,6 млн ₽ выручки
+# мимо базы, 395,6 млн налога и 556,3 млн чистой прибыли — а на проекте
+# владельца от 13.09.2026 уже 5 138,8 млн налога и 6 101,4 млн прибыли.
+# Книга при этом считала верно, и её же блок паритета об этом кричал.
+COST_POOL_PRODUCTS: tuple[str, ...] = MKD_PRODUCTS + ("object_parking",)
+
 # Разделы таблицы ТЭП. Двенадцать строк одним списком читаются как двенадцать
 # равных продуктов, а это три разные вещи: дом, который мы строим и продаём;
 # отдельно стоящие объекты со своей экономикой; и объекты, которые уходят
@@ -26531,9 +26549,9 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     # Profit tax follows the workbook's cumulative realization method.
     # Core products share one residual cost pool; every standalone KRT object
     # recognizes its own construction cost by physical m2 / parking spaces sold.
-    core_products = (
-        "apartments", "ground_commercial", "underground_parking", "storage"
-    )
+    # Список объявлен один раз — `COST_POOL_PRODUCTS`. Перечисленный здесь
+    # руками, он уже разошёлся с отчётом и с книгой на `object_parking`.
+    core_products = COST_POOL_PRODUCTS
     # ФОК стоит в этом списке ТОЛЬКО когда продаётся. У переданного городу
     # выручки нет вовсе, и собственный пул расходов ему признавать нечем:
     # стоимость постройки осталась бы непризнанной до конца проекта. Переданный
@@ -27348,7 +27366,9 @@ def calculate(req: CalcRequest) -> dict:
         **({"sports": float(op["capex_amounts"].get("sports", 0.0) or 0.0)}
            if b(x, "sports_enabled") and sports_is_sold(x) else {}),
     }
-    report_core_keys = ("apartments", "ground_commercial", "underground_parking", "storage")
+    # Тот же пул, что у налоговой базы, и объявлен он там же: две копии одного
+    # списка разошлись бы молча — доли расходов перестали бы давать единицу.
+    report_core_keys = COST_POOL_PRODUCTS
     report_core_quantity = sum(float(product_specs[key]["quantity"] or 0.0)
                                for key in report_core_keys)
     report_core_cost = max(total_capex - sum(report_krt_costs.values()), 0.0)
