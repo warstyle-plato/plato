@@ -41,13 +41,17 @@ sys.path.insert(0, str(ROOT))
 
 import main_legacy as core  # noqa: E402
 
-# Ячейки блока баз ТЭП на листе «Вводные»: их читает блок очередей книги.
-BASE_CELLS = {
-    "B147": ("apartments", "gns"),
-    "B148": ("ground_commercial", "gns"),
-    "B149": ("underground_parking", "gns"),
-    "B150": ("apartments", "saleable"),
-    "B151": ("ground_commercial", "saleable"),
+# Строки блока баз ТЭП на листе «Вводные»: их читает блок очередей книги.
+# Ищутся по ПОДПИСИ, а не по номеру: строка, добавленная в блок вводных выше,
+# двигает весь низ листа — так норматив благоустройства сдвинул этот блок на
+# три строки, и проверка упала, ничего не сказав о том, что сломалось
+# (ничего). То же правило, что у колонок книги: читают по заголовку.
+BASE_ROWS = {
+    "База ГНС квартир": ("apartments", "gns"),
+    "База ГНС коммерции": ("ground_commercial", "gns"),
+    "База ГНС подземная": ("underground_parking", "gns"),
+    "База прод. квартир": ("apartments", "saleable"),
+    "База прод. коммерции": ("ground_commercial", "saleable"),
 }
 
 
@@ -68,7 +72,14 @@ def _inputs() -> dict:
 def _book_bases(inputs: dict, tep: dict) -> tuple[dict, list]:
     content, _name, meta = core.build_project_workbook(inputs, copy.deepcopy(tep), [], {})
     sheet = openpyxl.load_workbook(io.BytesIO(content))["Вводные"]
-    return {coord: sheet[coord].value for coord in BASE_CELLS}, list(meta.get("missing") or [])
+    found: dict[str, float] = {}
+    for row in range(1, sheet.max_row + 1):
+        label = str(sheet[f"A{row}"].value or "").strip()
+        if label in BASE_ROWS:
+            found[label] = sheet[f"B{row}"].value
+    missing_rows = [label for label in BASE_ROWS if label not in found]
+    assert not missing_rows, f"строк блока баз ТЭП нет на листе: {missing_rows}"
+    return found, list(meta.get("missing") or [])
 
 
 @pytest.fixture(scope="module")
@@ -86,9 +97,9 @@ def test_the_scenario_actually_differs_from_what_was_sent(applied: dict) -> None
 
 def test_the_book_takes_the_area_the_engine_calculated(applied: dict) -> None:
     bases, _missing = _book_bases(_inputs(), _sent_tep())
-    for coord, (key, field) in BASE_CELLS.items():
-        assert abs(float(bases[coord]) - float(applied[key][field])) < 0.6, (
-            f"{coord}: книга {bases[coord]}, движок {applied[key][field]}")
+    for label, (key, field) in BASE_ROWS.items():
+        assert abs(float(bases[label]) - float(applied[key][field])) < 0.6, (
+            f"«{label}»: книга {bases[label]}, движок {applied[key][field]}")
 
 
 def test_the_object_parking_is_not_applied_twice() -> None:

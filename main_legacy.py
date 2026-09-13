@@ -76,7 +76,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.23.21"
+VERSION = "0.23.28"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -18127,6 +18127,7 @@ def _v4_apply_cash_sweep(xml: str, phase: int, missing: list[str]) -> str:
 
 
 _V4_CARRY_PARITY_ROW = 85
+_V4_VAT_PARITY_ROW = 86
 
 
 _V4_REPORT_DEFAULT_ROW = 21          # ОТЧЕТ: строка под «Статусом модели»
@@ -18198,19 +18199,19 @@ def _v4_relax_limit_check_for_carried_debt(xml: str, missing: list[str]) -> str:
     return xml[:found.start(1)] + changed + xml[found.end(1):]
 
 
-def _v4_add_carry_parity_row(xml: str, target_mln: float, missing: list[str]) -> str:
-    """Строка паритета «долг, переданный между очередями» на листе ПРОВЕРКИ.
+def _v4_add_parity_row(xml: str, row: int, label: str, total: str,
+                       target_mln: float, missing: list[str], what: str) -> str:
+    """Ещё одна строка паритета в свободный низ листа ПРОВЕРКИ.
 
-    Без неё книга могла бы переносить не то и не тогда, а вердикт листа остался
-    бы «ПРОЙДЕНО»: остальные строки паритета смотрят на итоги, а перенос между
-    очередями итоги проекта почти не двигает — он меняет, КТО платит.
+    Две таких строки были написаны копией, и различались они только подписью и
+    формулой: вторая копия однажды забыла бы расширить вердикт B3 на свою же
+    строку — она красная, а лист «ПРОЙДЕНО». Допуск считается той же мерой,
+    что у строк блока выше.
     """
-    row = _V4_CARRY_PARITY_ROW
-    total = "+".join(f"'CF_{phase}'!$B${_V4_CARRY_PASSED_ROW}" for phase in range(1, 5))
     tolerance = max(1.0, abs(target_mln) * 0.005)
     body = (
-        f'<x:c r="A{row}" t="inlineStr"><x:is><x:t>Паритет: долг, переданный '
-        f'между очередями, млн</x:t></x:is></x:c>'
+        f'<x:c r="A{row}" t="inlineStr"><x:is><x:t>{xml_escape(label)}'
+        f'</x:t></x:is></x:c>'
         f'<x:c r="B{row}"><x:f>{total}</x:f></x:c>'
         f'<x:c r="C{row}"><x:v>{_v4_number(round(target_mln, 4))}</x:v></x:c>'
         f'<x:c r="D{row}"><x:f>IF(C{row}="","",B{row}-C{row})</x:f></x:c>'
@@ -18219,15 +18220,45 @@ def _v4_add_carry_parity_row(xml: str, target_mln: float, missing: list[str]) ->
         f'"OK","FAIL"))</x:f></x:c>')
     updated, done = _v4_insert_row(xml, row, body, None)
     if not done:
-        missing.append(f"паритет переноса долга: строка {row} ПРОВЕРОК занята")
+        missing.append(f"{what}: строка {row} ПРОВЕРОК занята")
         return xml
     # Вердикт листа считает по диапазону — новая строка обязана в него войти,
     # иначе она красная, а лист «ПРОЙДЕНО».
     before = updated
-    updated = updated.replace("COUNTIF(F6:F84,", f"COUNTIF(F6:F{row},")
+    updated = re.sub(r"COUNTIF\(F6:F\d+,", f"COUNTIF(F6:F{row},", updated)
     if updated == before:
-        missing.append("паритет переноса долга: вердикт B3 не расширен на новую строку")
+        missing.append(f"{what}: вердикт B3 не расширен на строку {row}")
     return updated
+
+
+def _v4_add_carry_parity_row(xml: str, target_mln: float, missing: list[str]) -> str:
+    """Строка паритета «долг, переданный между очередями» на листе ПРОВЕРКИ.
+
+    Без неё книга могла бы переносить не то и не тогда, а вердикт листа остался
+    бы «ПРОЙДЕНО»: остальные строки паритета смотрят на итоги, а перенос между
+    очередями итоги проекта почти не двигает — он меняет, КТО платит.
+    """
+    return _v4_add_parity_row(
+        xml, _V4_CARRY_PARITY_ROW, "Паритет: долг, переданный между очередями, млн",
+        "+".join(f"'CF_{phase}'!$B${_V4_CARRY_PASSED_ROW}" for phase in range(1, 5)),
+        target_mln, missing, "паритет переноса долга")
+
+
+def _v4_add_vat_parity_row(xml: str, target_mln: float, missing: list[str]) -> str:
+    """Строка паритета НДС.
+
+    Своей строки у НДС не было, и проверялся он только внутри чистой прибыли —
+    вместе с EBITDA и стоимостью финансирования, у которых допуск считается
+    долей от их собственной величины. На проекте с околонулевой прибылью это
+    поймало настоящую ошибку (движок не облагал выручку паркинга отдельно
+    стоящих объектов — 166,0 млн выручки и 4,7 млн налога), но узнать, что дело
+    в НДС, было нельзя: строка называла прибыль. Теперь величина проверяется
+    там, где она считается, а прибыль отвечает за себя.
+    """
+    return _v4_add_parity_row(
+        xml, _V4_VAT_PARITY_ROW, "Паритет: НДС к уплате, млн",
+        "+".join(f"'CF_{phase}'!$B$21" for phase in range(1, 5)),
+        target_mln, missing, "паритет НДС")
 
 
 def _v4_parity_targets(consolidated: dict[str, Any]) -> dict[str, float]:
@@ -18241,6 +18272,7 @@ def _v4_parity_targets(consolidated: dict[str, Any]) -> dict[str, float]:
         "financing_mln": float(summary.get("financing_cost") or 0) / 1e6,
         "tax_mln": float(summary.get("profit_tax") or 0) / 1e6,
         "net_profit_mln": float(summary.get("net_profit") or 0) / 1e6,
+        "vat_mln": float(finance.get("vat") or 0) / 1e6,
         "llcr": float(summary.get("llcr") or 0),
         "peak_bridge_mln": float(finance.get("peak_bridge") or 0) / 1e6,
         "peak_pf_mln": float(finance.get("peak_pf") or 0) / 1e6,
@@ -19348,6 +19380,7 @@ def _v4_landscaping_rows_xml(xml: str, inputs: dict[str, Any],
         return f'<x:c r="{coord}"{_v4_entry_attr()}><x:v>{_v4_number(round(value, 6))}</x:v></x:c>'
 
     per_person, basis = landscaping_area_per_person(inputs, tep)
+    given = float(inputs.get("landscaping_area_sqm") or 0.0)
     population_norm = (MO_NORMS_DEFAULT["living_space_per_person_sqm"]
                        if str(inputs.get("vri_region") or "msk").lower() == "mo"
                        else _PARKING_2118_SQM_PER_PERSON)
@@ -19366,21 +19399,46 @@ def _v4_landscaping_rows_xml(xml: str, inputs: dict[str, Any],
     per_row = base_row + 2
     parts.append(f'<x:row r="{per_row}">'
                  + text_cell(f"A{per_row}", "Норматив площади на человека, м²/чел.")
-                 + number_cell(f"B{per_row}", per_person)
-                 + text_cell(f"C{per_row}", basis)
+                 + number_cell(f"B{per_row}", float(inputs.get(
+                     "landscaping_area_per_person_sqm") or 0.0))
+                 + text_cell(f"C{per_row}", "норматив класса проекта; работает, пока площадь "
+                                            "двора ниже не задана")
                  + text_cell(f"D{per_row}", "landscaping_area_per_person_sqm")
                  + "</x:row>")
-    norm_row = base_row + 3
+    given_row = base_row + 3
+    parts.append(f'<x:row r="{given_row}">'
+                 + text_cell(f"A{given_row}", "Заданная площадь двора, м² (0 — считать по нормативу)")
+                 + number_cell(f"B{given_row}", given)
+                 + text_cell(f"C{given_row}", "у человека на руках бывает ППТ или АГР со своей "
+                                              "территорией; заданная площадь сильнее норматива")
+                 + text_cell(f"D{given_row}", "landscaping_area_sqm")
+                 + "</x:row>")
+    norm_row = base_row + 4
     parts.append(f'<x:row r="{norm_row}">'
                  + text_cell(f"A{norm_row}", "Площадь квартир на человека (норматив региона), м²")
                  + number_cell(f"B{norm_row}", float(population_norm))
                  + text_cell(f"C{norm_row}", "приложение 5 к 945-ПП для Москвы, РНГП для области — "
                                              "норматив города, не наша величина")
                  + "</x:row>")
+    # Применяемая мера — формулой, а не числом: иначе заданная площадь стоит на
+    # листе вводной, которую никто не читает, — правка выглядит рабочей и не
+    # меняет ничего. Население здесь ПРОЕКТНОЕ (сумма квартир всех очередей):
+    # так приводит заданную площадь и движок, а очередь потом считает свой двор
+    # своим населением, и сумма очередей сходится с проектом сама.
+    flats = "+".join(f"$L${_V4_CF_QUEUE_ENABLED_ROW + phase}"
+                     for phase in range(_V4_CAPEX_PHASES))
+    applied_row = base_row + 5
+    applied = (f'IF($B${given_row}&gt;0,$B${given_row}/MAX(1,ROUNDUP(({flats})'
+               f'/MAX(1,$B${norm_row}),0)),$B${per_row})')
+    parts.append(f'<x:row r="{applied_row}">'
+                 + text_cell(f"A{applied_row}", "Применяется, м²/чел.")
+                 + f'<x:c r="B{applied_row}"><x:f>{applied}</x:f></x:c>'
+                 + text_cell(f"C{applied_row}", basis)
+                 + "</x:row>")
     tail = "</x:sheetData>"
     assert tail in xml
     return (xml.replace(tail, "".join(parts) + tail, 1),
-            f"$B${per_row}", f"$B${norm_row}")
+            f"$B${applied_row}", f"$B${norm_row}")
 
 
 def _v4_apply_landscaping_base(xml: str, per_person: str, population_norm: str,
@@ -20385,11 +20443,37 @@ def build_project_workbook(
             (79, "financing_mln"), (80, "tax_mln"), (81, "net_profit_mln"),
             (82, "llcr"), (83, "peak_bridge_mln"), (84, "peak_pf_mln"),
         )
+        # Допуск: полпроцента от величины, но не уже 1 млн (LLCR: 0,02) —
+        # ловим методические разъезды, а не шум сериализации.
+        def _own_tolerance(key: str) -> float:
+            if key == "llcr":
+                return 0.02
+            return max(1.0, abs(float(_parity.get(key) or 0.0)) * 0.005)
+
+        # Производная величина не может быть точнее своих слагаемых. У EBITDA и
+        # стоимости финансирования допуск считается долей ОТ НИХ САМИХ —
+        # десятки млн на проекте в сорок миллиардов, — а прибыль и налог бывают
+        # околонулевыми, и им доставался пол в 1 млн. Строка краснела на сумме
+        # допусков соседей, то есть на их шуме, и сказать по ней, ЧТО
+        # разошлось, было нельзя. Ответ не в том, чтобы ослабить проверку:
+        # каждая величина отвечает за себя своей строкой — НДС с 0.23.23 тоже,
+        # и первым же своим прогоном он назвал настоящую ошибку в базе налога.
+        _base_parts = ("ebitda_mln", "financing_mln")
+        _derived_tolerance = {
+            # База налога — разность EBITDA и стоимости финансирования, а сам
+            # налог её доля: на 25% разрыв в пять млн базы даёт 1,3 млн налога.
+            "tax_mln": lambda: sum(_own_tolerance(part) for part in _base_parts)
+            * max(0.0, n(x, "profit_tax_pct", 25)) / 100,
+            "net_profit_mln": lambda: (
+                sum(_own_tolerance(part) for part in (*_base_parts, "vat_mln"))
+                + max(_own_tolerance("tax_mln"),
+                      _derived_tolerance["tax_mln"]())),
+        }
         for _row, _key in _parity_rows:
             _target = float(_parity.get(_key) or 0.0)
-            # Допуск: полпроцента от величины, но не уже 1 млн (LLCR: 0,02) —
-            # ловим методические разъезды, а не шум сериализации.
-            _tol = 0.02 if _key == "llcr" else max(1.0, abs(_target) * 0.005)
+            _tol = _own_tolerance(_key)
+            if _key in _derived_tolerance:
+                _tol = max(_tol, _derived_tolerance[_key]())
             checks_xml, done = _v4_set_cell(checks_xml, f"C{_row}", number=round(_target, 4))
             if done:
                 checks_xml, done = _v4_set_cell(checks_xml, f"E{_row}", number=round(_tol, 4))
@@ -20398,6 +20482,12 @@ def build_project_workbook(
                 break
     checks_xml = _v4_add_carry_parity_row(
         checks_xml, float((finance_hints or {}).get("carried_debt_mln") or 0.0), missing)
+    if _parity:
+        # Без контрольных чисел движка строки паритета не бывает: ноль в
+        # цели — это не «налога нет», а «нам его не сказали», и строка
+        # краснела бы на любом проекте с НДС.
+        checks_xml = _v4_add_vat_parity_row(
+            checks_xml, float(_parity.get("vat_mln") or 0.0), missing)
 
     def _put_extra(sheet_xml: str, coord: str, *, number=None, text=None) -> str:
         updated, done = _v4_set_cell(sheet_xml, coord, number=number, text=text)
@@ -26901,8 +26991,18 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     # них, остаётся в себестоимости (п. 4 ст. 170 НК). Отсюда частая ошибка
     # «стройка 10 млрд — вернут 1,8»: возвращают только долю нежилого.
     vat_rate = max(0.0, n(x, "vat_pct", 22)) / 100
+    # Облагается всё, кроме квартир: продажа жилых помещений освобождена
+    # (пп. 22-23 п. 3 ст. 149 НК), машино-места и коммерция — нет. Список
+    # продуктов здесь не перечисляется: паркинг отдельно стоящих объектов
+    # завели позже обоих пулов и ни в один не вписали, поэтому 166,0 млн его
+    # выручки выпадали из базы — 4,7 млн НДС, ровно на которые книга и отчёт
+    # расходились при совпадающих до сотой доли CAPEX, выручке и EBITDA. Книга
+    # считает то же самое и без списка: вся выручка минус строка квартир.
+    # Берём ключи самих графиков выручки — продукт, заведённый завтра,
+    # попадает в базу тем, что у него есть выручка, а не тем, что о нём
+    # вспомнили.
     vat_taxable_products = tuple(
-        key for key in (*core_products, *krt_products) if key != "apartments"
+        key for key in revenue_schedules if key != "apartments"
     )
     vat_schedule: dict[date, float] = {}
     vat_charged = vat_input_deductible = 0.0
