@@ -58,9 +58,11 @@ def test_2_one_chart_switches_between_metres_lots_and_price() -> None:
 
 
 def test_3_the_dynamics_table_is_folded() -> None:
+    # Таблица стоит под своим графиком — у выручки одна, у каждого товара своя:
+    # «лоты» и «м²» через товары не складываются.
     body = _render()
-    start = body.index("function salesChartBlock(")
-    block = body[start:body.index("\n// ", start + 10)]
+    start = body.index("function salesMetricCharts(")
+    block = body[start:body.index("\nfunction salesChartBlock(", start)]
     assert "<details" in block and "Помесячно числами" in block
 
 
@@ -147,7 +149,10 @@ def test_the_tables_do_not_repeat_what_the_picture_says() -> None:
     body = _render()
     # Каждая таблица свода стоит под раскрытием, кроме расторжений: там
     # таблица и есть содержание, картинки из двух строк не выйдет.
-    for summary in ("Помесячно числами", "Полосы числами", "Продукты числами",
+    # Таблицы динамики здесь нет: её подпись собирается из имени товара
+    # («Квартира — помесячно числами»), литералом в исходнике её не найти.
+    # Свёрнутость динамики держит `test_3_the_dynamics_table_is_folded`.
+    for summary in ("Полосы числами", "Продукты числами",
                     "Условия числами", "Список каналов числами"):
         assert f"<summary>{summary}</summary>" in body, f"«{summary}» не свёрнуто"
 

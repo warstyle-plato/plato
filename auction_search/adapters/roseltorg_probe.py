@@ -49,7 +49,9 @@
 from __future__ import annotations
 
 import re
+import shutil
 import ssl
+import subprocess
 import urllib.error
 import urllib.request
 from html.parser import HTMLParser
@@ -288,7 +290,46 @@ def _dom_facts(page: Any) -> dict[str, Any]:
     return page.evaluate(_DOM_FACTS_JS)
 
 
-def probe(seconds: float = 45.0, directory: str = "") -> dict[str, Any]:
+def _certificates(url: str) -> dict[str, Any]:
+    """Сколько сертификатов прислал сам сервер — и кто выпустил лист.
+
+    `CERTIFICATE_VERIFY_FAILED` — это вопрос «чего не хватает», а не диагноз.
+    Прислал один лист — не хватает промежуточного, и браузер дотягивает его
+    сам по ссылке AIA, а Python нет; прислала цепочку — дело в корне. Сначала
+    считают, потом решают, и уж точно не выключают проверку.
+
+    Считает `openssl s_client`: `SSLSocket.get_unverified_chain()` появился
+    только в Python 3.13, а в образе 3.11. Нет и его — так и говорим: «нечем
+    посчитать» и «сервер прислал один» читаются одинаково, а значат разное.
+    """
+    parsed = urllib.parse.urlparse(url)
+    host, port = parsed.hostname or "", parsed.port or 443
+    if not host:
+        return {"reason": "в адресе нет хоста"}
+    if not shutil.which("openssl"):
+        return {"reason": "openssl в образе нет — посчитать цепочку нечем"}
+    try:
+        done = subprocess.run(
+            ["openssl", "s_client", "-showcerts", "-servername", host,
+             "-connect", f"{host}:{port}"],
+            input=b"", capture_output=True, timeout=TIMEOUT_SECONDS)
+    except Exception as exc:  # noqa: BLE001
+        return {"reason": f"{type(exc).__name__}: {exc}"}
+    out = done.stdout.decode("utf-8", errors="replace")
+    issuer = ""
+    for line in out.splitlines():
+        if line.strip().startswith("issuer=") and not issuer:
+            issuer = line.split("=", 1)[1].strip()
+    return {
+        "sent_by_server": out.count("BEGIN CERTIFICATE"),
+        "leaf_issuer": issuer[:160],
+        "verify": next((line.strip() for line in out.splitlines()
+                        if line.startswith("Verify return code")), ""),
+    }
+
+
+def probe(seconds: float = 45.0, directory: str = "",
+          url: str = "") -> dict[str, Any]:
     """Чем отвечает раздел имущества — простым запросом и живым браузером.
 
     Разбора нет: сначала ответ источника, потом код. Обе половины нужны и
@@ -300,9 +341,24 @@ def probe(seconds: float = 45.0, directory: str = "") -> dict[str, Any]:
     """
     context = trust_context(directory)
     attempts = []
-    for label, url in SECTIONS:
-        attempts.append({"asked": label, "url": url,
-                         **_fetch(_for_urllib(url), context)})
+    # Адрес человека спрашивается тем же чтением, что и раздел, — и только
+    # официальный хост площадки: проба не должна становиться способом сходить
+    # с нашего сервера куда угодно. Карточку лота иначе не измерить вовсе:
+    # с ядра она отвечала таймаутом, и «мы её не читаем» было единственным,
+    # что мы могли сказать.
+    asked = (url or "").strip()
+    if asked:
+        host = (urllib.parse.urlparse(asked).hostname or "").lower()
+        if host == "roseltorg.ru" or host.endswith(".roseltorg.ru"):
+            attempts.append({"asked": "Адрес, который спросили", "url": asked,
+                             "certificates": _certificates(asked),
+                             **_fetch(_for_urllib(asked), context)})
+        else:
+            attempts.append({"asked": "Адрес, который спросили", "url": asked,
+                             "reason": "проба ходит только на roseltorg.ru"})
+    for label, section_url in SECTIONS:
+        attempts.append({"asked": label, "url": section_url,
+                         **_fetch(_for_urllib(section_url), context)})
     return {
         "source": "Росэлторг · развитие территорий · Москва",
         # Оговорка обязана пережить смену источника: раздел мы читаем с

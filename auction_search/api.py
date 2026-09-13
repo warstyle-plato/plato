@@ -50,7 +50,7 @@ from auction_search import equity_stake
 from auction_search.developaid_mapper import build_developaid_seed
 from auction_search.documents import DocumentExtractionError
 from auction_search.export_areas import export_areas
-from auction_search.krt_pipeline import enrich_krt_from_official_documents
+from auction_search.krt_pipeline import egrn_summary, enrich_krt_from_official_documents
 from auction_search.krt_ranking import (
     HEARTBEAT_SECONDS, NEW_FOR_SECONDS, KrtRanking, score_row)
 # Имя `krt_ranking` внутри маршрутов занято ЭКЗЕМПЛЯРОМ хранилища, а версия
@@ -818,6 +818,29 @@ def install(app: FastAPI) -> None:
                 logger.exception("KRT watch loop")
             time.sleep(WATCH_HEARTBEAT_SECONDS)
 
+    def _market_source_off() -> str:
+        """Почему рынок отвечать не может — или пустая строка.
+
+        Прогон КРТ считает модель по каждой площадке, а модель начинается с
+        рыночного отчёта. Доступ к источнику живёт в окружении
+        (`PULSE_LOGIN`/`PULSE_PASSWORD`), и он есть не у всякого хоста: бот на
+        Render поднимает тот же модуль, что и ядро, и 07.09.2026 его журнал
+        показал `RemoteServiceError` по КАЖДОЙ площадке подряд — прогон честно
+        ходил в каталог, честно падал на первом же шаге и записывал строке
+        «Расчёт не выполнен».
+
+        Наличие модуля признаком не является — как маршрут Платона решает
+        `PLATO_AI_URL`, а не наличие ключа. Спрашиваем то, что отвечает на
+        вопрос: включён ли источник.
+        """
+        if market is None:
+            return "Финансовый модуль рынка на этом хосте не подключён"
+        pulse = getattr(market, "pulse", None)
+        if pulse is not None and not getattr(pulse, "available", True):
+            return ("Источник рыночных данных выключен: "
+                    "не заданы PULSE_LOGIN и PULSE_PASSWORD")
+        return ""
+
     def _weekly_ranking() -> None:
         """Раз в неделю каталог обновляется и считается сам.
 
@@ -834,9 +857,21 @@ def install(app: FastAPI) -> None:
         файловому замку. Проигравший просто спит дальше. Отключается
         переменной `AUCTION_KRT_WEEKLY=0`.
         """
+        said = ""
         while True:
             try:
-                if market is not None and core is not None and krt_ranking.due():
+                # Хост без источника рынка прогон не ведёт вовсе. Прежде он его
+                # вёл: падала каждая площадка, в журнал уходило по трассировке
+                # на каждую, а в рейтинг — «Расчёт не выполнен» на диск, который
+                # у бота живёт до следующей выкатки. Причина называется ОДИН
+                # раз: строка на каждый удар сердца — это тот же шум, только
+                # тише.
+                off = _market_source_off()
+                if off:
+                    if off != said:
+                        logger.warning("Недельный прогон КРТ здесь не идёт: %s", off)
+                        said = off
+                elif core is not None and krt_ranking.due():
                     if krt_ranking.claim():
                         try:
                             projects = krt_registry.projects(refresh=True)
@@ -2330,6 +2365,12 @@ def install(app: FastAPI) -> None:
                         "reason": ("Пересчитывать нечего: все выбранные площадки "
                                    "посчитаны нынешней методикой"),
                         "skipped": skipped, "progress": krt_ranking.progress()}
+        # Кнопка на хосте без источника рынка отвечает причиной, а не
+        # шестьюстами строками «Расчёт не выполнен»: отказ, названный заранее,
+        # это свойство хоста, отказ после нажатия — поломка.
+        off = _market_source_off()
+        if off:
+            return {"started": False, "reason": off, "progress": krt_ranking.progress()}
         # Чем считать строку, решает один и тот же выбор, что и в недельном
         # прогоне: у площадки-решения свой путь к обязательствам, а у нежилой
         # модели нет вовсе.
@@ -2793,6 +2834,7 @@ def install(app: FastAPI) -> None:
     @app.get("/auctions/roseltorg/probe")
     async def auction_roseltorg_probe(
         seconds: float = Query(default=45.0, ge=5.0, le=90.0),
+        url: str = Query(default=""),
     ) -> dict[str, Any]:
         """Чем отвечает раздел «Развитие территории» Росэлторга. Разбора нет.
 
@@ -2811,12 +2853,19 @@ def install(app: FastAPI) -> None:
         итоге оказалось в DOM. Пустой список запросов при видимых карточках
         значит «всё пришло первым ответом», а не «карточек нет».
 
-        Произвольного адреса здесь нет намеренно: спрашивается ровно тот
-        раздел, который открывает владелец.
-
         Из песочницы roseltorg.ru закрыт, поэтому проба ходит только с ядра.
+
+        Адрес раздела зашит и остаётся тем, который открывает владелец. Рядом
+        появился `url` — и прежняя оговорка «произвольного адреса здесь нет
+        намеренно» снята не по забывчивости: 12.09.2026 РАЗДЕЛ отвечал 200, а
+        карточка лота с того же ядра — таймаутом, и сказать об этом было
+        нечем, кроме как «мы её не читаем». Ограничение осталось там, где оно
+        и держит: только официальный хост площадки, никакого разбора, а рядом
+        печатается, сколько сертификатов прислал сервер —
+        `CERTIFICATE_VERIFY_FAILED` это вопрос «чего не хватает», а не диагноз.
         """
-        return await run_in_threadpool(lambda: roseltorg_probe(seconds=float(seconds)))
+        return await run_in_threadpool(
+            lambda: roseltorg_probe(seconds=float(seconds), url=url.strip()))
 
     @app.get("/auctions/roseltorg/browser")
     async def auction_roseltorg_browser(
@@ -3030,6 +3079,10 @@ def install(app: FastAPI) -> None:
                 "krt_auth_required": (
                     bool(lot.raw.get("krt_auth_required")) if lot.lot_kind == LotKind.KRT else None
                 ),
+                # Правообладатели из выписок лота. Посчитанное за маршрутом и
+                # никем не показанное неотличимо от непосчитанного, поэтому
+                # свод едет в ответ, а считает его один `egrn_summary`.
+                "egrn": egrn_summary(lot),
                 "ready_for_financial_model": (
                     bool(lot.krt_program or lot.obligations) and not lot.raw.get("krt_document_warnings")
                     if lot.lot_kind == LotKind.KRT

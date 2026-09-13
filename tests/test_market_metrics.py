@@ -2368,8 +2368,24 @@ def test_the_printed_report_opens_as_a_document_not_as_a_control_panel(tmp_path)
 
     from market_search.cabinet import CABINET_PAGE
 
+    # Кусок берётся от объявления месяцев до КОНЦА `printHead`, посчитанного
+    # скобками. Прежде концом служила соседняя строка `+`.</div></div>`;` — и
+    # правка последней строки шапки уронила тест на `substring not found`,
+    # ничего не сказав о том, что сломалось (а не сломалось ничего). Функция —
+    # контракт: она либо есть, либо её нет, и второе настоящая поломка.
     start = CABINET_PAGE.index("const MONTHS_OF=")
-    end = CABINET_PAGE.index("\n}", CABINET_PAGE.index("+`.</div></div>`;", start)) + 2
+    head = CABINET_PAGE.index("function printHead(", start)
+    depth, opened = 0, CABINET_PAGE.index("{", head)
+    end = None
+    for position in range(opened, len(CABINET_PAGE)):
+        if CABINET_PAGE[position] == "{":
+            depth += 1
+        elif CABINET_PAGE[position] == "}":
+            depth -= 1
+            if depth == 0:
+                end = position + 1
+                break
+    assert end is not None, "printHead не закрылась"
     source = CABINET_PAGE[start:end]
 
     harness = """
@@ -2456,15 +2472,16 @@ def test_the_printed_page_carries_its_own_name_and_hides_the_controls() -> None:
 
 
 def _chromium_path() -> str:
-    """Chromium из образа: в проде он лежит там, где его ставит playwright."""
-    import glob
-    import os
+    """Chromium этой машины — одним ответом на весь набор.
 
-    root = os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or ""
-    if not root:
-        return ""
-    found = sorted(glob.glob(os.path.join(root, "chromium-*", "chrome-linux", "chrome")))
-    return found[-1] if found else ""
+    Своя копия поиска отвечала пустотой, когда `PLAYWRIGHT_BROWSERS_PATH` не
+    задана, — то есть ровно на CI, где браузер и лежит в умолчании playwright.
+    И держала имя `chrome-linux`, которое у свежих сборок уже `chrome-linux64`.
+    """
+    from browser import chromium_path
+
+    found = chromium_path()
+    return str(found) if found else ""
 
 
 def test_the_pdf_is_printed_by_the_server_with_page_numbers(tmp_path) -> None:
