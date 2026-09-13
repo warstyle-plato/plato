@@ -77,7 +77,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.23.48"
+VERSION = "0.23.51"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -46323,7 +46323,6 @@ function renderObjectParkingNote(){
  // всегда (`OBJECT_PARKING_PREFIXES`), а что сказать про каждый — решает
  // подпись, и решать это должна она одна.
  renderObjectParkingFieldNotes();
- renderLandscapingRateNote();
  const box=document.getElementById('objectParkingNote');
  if(!box)return;
  const note=((lastResult||{}).parking||{}).note;
@@ -46337,6 +46336,11 @@ function renderObjectParkingNote(){
 function renderResult(){
  if(!lastResult)return;const r=lastResult,f=r.finance;
  renderObjectParkingNote();
+ // Подпись под ставкой благоустройства зовётся и формой, и результатом:
+ // написанная объяснять молчание, она молчала бы ровно до первого расчёта.
+ // Место — здесь, а не внутри подписи паркинга: к паркингу она отношения не
+ // имеет, а чужая связь ломает стенды, перечисляющие куски руками.
+ renderLandscapingRateNote();
  hideCalcLocked();
  if(typeof feedbackCalcs!=='undefined'){feedbackCalcs+=1;feedbackMaybeAsk()}
 

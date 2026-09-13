@@ -149,6 +149,13 @@ def render(inputs: dict, tail: str = "console.log(JSON.stringify(groups()));",
              PAGE.index(";", PAGE.index("const OBJECT_PARKING_PREFIXES=")) + 1],
         page_function("renderObjectParkingFieldNotes"),
         page_function("objectParkingFieldNote"),
+        # Та же история у подписи под ставкой благоустройства: ячейку создаёт
+        # форма, поэтому и заполняет её форма. Состояние страницы подделкой не
+        # заменяется — `lastResult` объявлен на странице тем же `let`, и без
+        # расчёта подпись честно говорит, что двор ещё не посчитан.
+        "let lastResult=null;",
+        page_function("landscapingRateNote"),
+        page_function("renderLandscapingRateNote"),
         DOM.replace("__PHASING__", json.dumps(phasing or {"enabled": False})),
         f"const inputs=Object.assign(structuredClone(INPUT_DEFAULT),{json.dumps(inputs)});",
         "renderInputs();",
