@@ -117,14 +117,18 @@ def tep_cell_stand() -> str:
     return "\n".join(pieces) + "\n"
 
 
-def page_const(name: str) -> str:
+def page_const(name: str, page: str | None = None) -> str:
     """Объявление константы страницы целиком, как оно стоит на СОБРАННОЙ странице.
 
     Литерал в стенде был бы второй копией методики: доли ТЭП, имена продуктов и
     умолчания объявлены в движке и приезжают подстановкой. Взятые со страницы,
     они не могут отстать.
+
+    Страница по умолчанию основная; у торгов своя, и берётся она тем же
+    способом — как и у `function`, иначе у одного правила «где живёт этот
+    кусок» завелось бы два ответа.
     """
-    page = core.PAGE
+    page = core.PAGE if page is None else page
     head = f"const {name}="
     start = page.find(head)
     if start < 0:
@@ -146,3 +150,11 @@ def auctions_function(*names: str) -> str:
 
     page = ui.auctions_page()
     return "\n".join(function(name, page) for name in names)
+
+
+def auctions_const(*names: str) -> str:
+    """Константы страницы торгов — тем же способом, что и её функции."""
+    from auction_search import ui  # локально: движок тянуть незачем
+
+    page = ui.auctions_page()
+    return "\n".join(page_const(name, page) for name in names)
