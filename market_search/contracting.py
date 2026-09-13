@@ -75,6 +75,10 @@ _COLUMNS = {
     "product": "Объект недвижимости",
     "unit": "Корпус",
     "kind": "Тип объекта недвижимости",
+    # Комнатность лежала в выгрузке с самого начала и не читалась никем: свод
+    # резал проданное метражными полосами книги, а «1К» и «3К» в 40 м² одна
+    # полоса. Этажа в этой шапке нет ни одной колонкой — см. `rooms_label`.
+    "rooms": "Кол-во комнат",
     "finish": "Вид отделки",
     "area": "Проектная S",
     "contract": "Договор",
@@ -94,6 +98,41 @@ _COLUMNS = {
     "left_to_pay": "остаток к оплате",
     "escrow_total": "оплачено эскроу всего",
 }
+
+# Комнатность в выгрузке пишется «1К»…«5К», но соседний файл того же отдела
+# пишет её числом, а третий — словом. Приводим к одному виду здесь: под двумя
+# написаниями одна комнатность выглядит двумя строками свода.
+#
+# Этажа рядом НЕТ. Проверено байтовым поиском по всем 27 листам файла ЦФ
+# (08.09.2026): слова «этаж» в подписях нет ни разу, а «Этажность … этажей»
+# нашлась только в кэше связанной книги — это паспортная строка дома рядом с
+# «Монолитный» и «Класс ЖК», а не этаж лота. «Корпус» несёт «корп 3 кв.168» —
+# дом и номер квартиры, из которых этаж не выводится.
+_ROOMS = re.compile(r"^(\d+)\s*(?:к|комн)", re.I)
+
+
+def rooms_label(value: Any) -> str:
+    """Комнатность одной подписью. Пусто — «не названа», а не «студия»."""
+    text = _text(value)
+    if not text:
+        return ""
+    hit = _ROOMS.match(text)
+    if hit:
+        return f"{int(hit.group(1))}К"
+    if re.fullmatch(r"\d+", text):
+        return f"{int(text)}К"
+    if "студи" in text.lower():
+        return "Студия"
+    return text
+
+
+def _rooms_order(label: str) -> tuple[int, str]:
+    """Порядок строк: студия впереди, дальше по числу комнат."""
+    if label == "Студия":
+        return (0, "")
+    hit = re.match(r"^(\d+)", label)
+    return (int(hit.group(1)), "") if hit else (99, label)
+
 
 # Признак юридического лица в имени покупателя. Само имя наружу не идёт.
 _COMPANY = re.compile(r"\b(ООО|АО|ПАО|ЗАО|ИП|НАО|ГК)\b|\bООО\b", re.I)
@@ -261,6 +300,7 @@ def read_contracts(data: bytes) -> dict[str, Any]:
             "product": str(cell("product") or "").strip(),
             "unit": str(cell("unit") or "").strip(),
             "kind": str(cell("kind") or "").strip(),
+            "rooms": rooms_label(cell("rooms")),
             "area": _number(cell("area")),
             "contract": str(cell("contract") or "").strip(),
             "contract_type": str(cell("contract_type") or "").strip(),
@@ -909,7 +949,12 @@ def summarise(contracts: dict[str, Any], ledger: dict[str, Any] | None = None) -
     months: dict[str, dict[str, Any]] = {}
     for row in rows:
         month = months.setdefault(row["month"], {"month": row["month"], "by_product": {}})
-        product = month["by_product"].setdefault(row["product"], {"units": 0.0, "area": 0.0, "amount": 0.0})
+        # Имя продукта приводится к одному виду здесь же, где считается: CRM
+        # пишет «Машиноместа», план «Машиноместо», книга «М/М», и под двумя
+        # именами один товар стоял на одном экране двумя строками — раздел
+        # «Продукты» звал его так, плитка пула иначе.
+        product = month["by_product"].setdefault(
+            product_name(row["product"]), {"units": 0.0, "area": 0.0, "amount": 0.0})
         product["units"] += row["units"]
         product["area"] += row["area"]
         product["amount"] += row["amount"]
@@ -930,14 +975,19 @@ def summarise(contracts: dict[str, Any], ledger: dict[str, Any] | None = None) -
         # Цена сравнивается с ценой того же товара: у банка и у финмодели это
         # квартиры своей строкой. Общая цена метра мешает паркинг с жильём и
         # даёт третье число, не сравнимое ни с чем.
+        #
+        # Поэтому удельное считается ВНУТРИ каждого товара: у графика продукта
+        # своя линия цены, и брать на неё общую цену метра значит подписать
+        # чужое число именем этого продукта.
+        for stats in item["by_product"].values():
+            stats["price"] = stats["amount"] / stats["area"] if stats["area"] else None
         flats = item["by_product"].get("Квартира") or {}
-        item["price_flats"] = (flats.get("amount", 0.0) / flats["area"]
-                               if flats.get("area") else None)
+        item["price_flats"] = flats.get("price")
         dynamics.append(item)
 
     products = {}
     for row in rows:
-        products.setdefault(row["product"], []).append(row)
+        products.setdefault(product_name(row["product"]), []).append(row)
     by_product = [{"product": key, **_totals(items)} for key, items in products.items()]
     by_product.sort(key=lambda item: -item["amount"])
 
@@ -952,6 +1002,11 @@ def summarise(contracts: dict[str, Any], ledger: dict[str, Any] | None = None) -
     # называют цену именно квартир, и сравнивать её надо с ней же.
     by_quarter_flats = {key: _totals([r for r in items if r["product"] == "Квартира"])
                         for key, items in sorted(quarters.items())}
+
+    # Порядок продуктов объявляется ОДИН раз и по всему своду, а не внутри
+    # месяца: слои столбика красятся по этому порядку, и посчитанный заново в
+    # каждом месяце он давал бы продукту то один цвет, то другой.
+    product_order = [item["product"] for item in by_product]
 
     by_payment = _payment_structure(rows)
 
@@ -979,13 +1034,29 @@ def summarise(contracts: dict[str, Any], ledger: dict[str, Any] | None = None) -
     broker_source = next((row["broker_source"] for row in rows
                           if row.get("broker_source")), "")
 
-    flats = [r for r in rows if r["product"] == "Квартира"]
+    flats = [r for r in rows if product_name(r["product"]) == "Квартира"]
     bands: dict[str, list] = {}
     for row in flats:
         bands.setdefault(size_band(row["area"]), []).append(row)
     by_size = [{"band": key, **_totals(items)} for key, items in bands.items()]
     by_size.sort(key=lambda item: [b[0] for b in _SIZE_BANDS].index(item["band"])
                  if item["band"] in [b[0] for b in _SIZE_BANDS] else 99)
+
+    # Комнатность проданного. Полосы `by_size` режут метрами, и «1К» в 44 м²
+    # с «2К» в 46 м² попадают в разные полосы при одном товаре — а покупателя
+    # и застройщика различает как раз комнатность.
+    #
+    # Пула по комнатам у нас НЕТ: квартирография книги нарезана метражными
+    # полосами, и вымывание по комнатам показать не из чего. Молчание об этом
+    # читалось бы как «вымывания нет», поэтому число известных комнатностей
+    # едет рядом со сводом, а вывод говорит границу вслух.
+    rooms: dict[str, list] = {}
+    for row in flats:
+        if row.get("rooms"):
+            rooms.setdefault(row["rooms"], []).append(row)
+    by_rooms = [{"rooms": key, **_totals(items)} for key, items in rooms.items()]
+    by_rooms.sort(key=lambda item: _rooms_order(item["rooms"]))
+    rooms_known = sum(len(items) for items in rooms.values())
 
     broker_rows = [r for r in rows if r["broker"]]
     own_rows = [r for r in rows if not r["broker"]]
@@ -997,11 +1068,21 @@ def summarise(contracts: dict[str, Any], ledger: dict[str, Any] | None = None) -
         "by_quarter": by_quarter,
         "by_quarter_flats": by_quarter_flats,
         "by_product": by_product,
+        "product_order": product_order,
         "by_payment": by_payment,
         "by_channel": by_channel,
         "broker_column": broker_column,
         "broker_source": broker_source,
         "by_size": by_size,
+        "by_rooms": by_rooms,
+        # «Комнатность названа у 57 договоров из 57» и «названа у 12 из 57» —
+        # разные утверждения о том же своде, и без второго числа доля читается
+        # как доля по всем квартирам.
+        "rooms_known": float(rooms_known),
+        "rooms_total": float(len(flats)),
+        # Этажности в источнике нет вовсе — это ответ выгрузки, а не наш
+        # пробел, и говорится он вслух там же, где комнатность.
+        "floors_known": False,
         "brokers": _totals(broker_rows),
         "own_sales": _totals(own_rows),
         "sales_bonus_paid": sum(r["sales_bonus_paid"] for r in rows),
@@ -1331,6 +1412,13 @@ def _absorption(rows: list[dict[str, Any]], pool: dict[str, Any] | None,
 # собранная на экране из своей арифметики, — это второй счёт той же величины.
 
 
+def _thousands(value: float | None) -> str:
+    """Число с разрядами через неразрывный пробел."""
+    if value is None:
+        return "—"
+    return f"{value:,.0f}".replace(",", "\u00a0")
+
+
 def _pct(value: float | None, digits: int = 1) -> str:
     return "—" if value is None else f"{value * 100:.{digits}f}%".replace(".", ",")
 
@@ -1391,6 +1479,34 @@ def conclusions(summary: dict[str, Any]) -> dict[str, str]:
                 f"{_pct(coldest['pool_share'])} пула против {_pct(coldest['sold_share'])} продаж. "
                 f"В остатке витрины она уже {_pct(coldest.get('left_share'))}: чем дальше, тем "
                 f"крупнее то, что остаётся показывать.")
+
+    by_rooms = [r for r in (summary.get("by_rooms") or []) if r.get("amount")]
+    if by_rooms:
+        sold = sum(r["contracts"] for r in by_rooms)
+        lead = max(by_rooms, key=lambda r: r["contracts"])
+        dear = max(by_rooms, key=lambda r: r["price_per_sqm"])
+        known = float(summary.get("rooms_known") or 0.0)
+        whole_flats = float(summary.get("rooms_total") or 0.0)
+        # Доля считается от того, у чего комнатность НАЗВАНА, и знаменатель
+        # стоит рядом: посчитанная от всех квартир, она была бы занижена ровно
+        # на непрочитанное и выглядела бы точно так же.
+        #
+        # У самой дорогой комнатности стоит число договоров: «дороже всего
+        # метр у 5К» на одной сделке и на двадцати — разные утверждения, а
+        # выглядят они одинаково.
+        out["rooms"] = (
+            f"Из {sold:.0f} квартир с названной комнатностью {lead['contracts']:.0f} — "
+            f"{lead['rooms']} ({_pct(lead['contracts'] / sold if sold else None)} лотов, "
+            f"средняя {_dec(lead['area'] / lead['contracts'], 1)} м², "
+            f"{_thousands(lead['price_per_sqm'])} ₽/м²). Дороже всего метр у "
+            f"{dear['rooms']} — {_thousands(dear['price_per_sqm'])} ₽/м² "
+            f"на {dear['contracts']:.0f} "
+            f"{_plural(dear['contracts'], 'сделке', 'сделках', 'сделках')}."
+            + (f" Комнатность названа у {known:.0f} квартир из {whole_flats:.0f}."
+               if known < whole_flats else "")
+            + " Доли пула по комнатам нет: квартирография книги нарезана "
+              "метражными полосами, а этажа в выгрузке нет ни одной колонкой — "
+              "вымывание по комнатам и по этажам отсюда не считается.")
 
     products = [p for p in (summary.get("by_product") or []) if p.get("amount")]
     if products:
