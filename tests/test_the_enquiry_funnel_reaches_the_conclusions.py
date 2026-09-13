@@ -46,7 +46,9 @@ def test_what_the_funnel_cannot_do_is_said() -> None:
     got = demand.funnel([])
     assert any("ни номера договора" in note for note in got["notes"])
     assert any("сколько выручки" in note for note in got["notes"])
-    assert any("ещё рано" in note for note in got["notes"])
+    # Утверждение, а не оборот: доля свежего месяца занижена по построению —
+    # месяц ставится по дате обращения, а бронь приходит позже.
+    assert any("занижена" in note and "дате ОБРАЩЕНИЯ" in note for note in got["notes"])
 
 
 def test_the_share_travels_with_its_count() -> None:
@@ -123,14 +125,20 @@ def test_the_funnel_is_drawn_and_the_picture_reaches_the_deck(tmp_path) -> None:
 
     got = importlib.import_module(
         "test_the_sales_report_survives_a_full_project").full_summary()
-    lead = got.setdefault("demand", {}).setdefault("funnel", {})
-    lead["by_source"] = [{"name": "Звонок", "deals": 518, "booked": 16, "share": 0.031},
-                         {"name": "Агент", "deals": 44, "booked": 16, "share": 0.364},
-                         {"name": "Сайт", "deals": 11, "booked": 1, "share": 0.091}]
-    lead["by_manager"] = [{"name": "Иванова", "deals": 200, "booked": 25, "share": 0.125},
-                          {"name": "Петров", "deals": 160, "booked": 2, "share": 0.012}]
-    lead.setdefault("quality", {"calls": 573, "target": 449,
-                                "booked_target": 0.031, "blank": 231})
+    # Воронка собирается НАСТОЯЩИМ `demand.funnel` по выдуманным сделкам, а не
+    # пишется словарём руками: рукописный груз — это второй ответ на «что видит
+    # экран», и он однажды разойдётся с настоящим, ничего не сказав.
+    deals = []
+    for index, month in enumerate(("2026-04", "2026-05", "2026-06", "2026-07", "2026-08")):
+        for number in range(100):
+            who = "Иванова" if number % 2 else "Петров"
+            source = "Звонок" if number % 10 else ("Агент" if number % 20 else "Сайт")
+            deals.append({"month": month, "source": source, "manager": who,
+                          "booked": number % (7 + index) == 0,
+                          "need_asked": number % 3 == 0, "next_step": number % 5 == 0,
+                          "not_a_lead": number % 11 == 0})
+    lead = demand.funnel(deals, {"last_created": "2026-08-21"})
+    got.setdefault("demand", {})["funnel"] = lead
 
     file = tmp_path / "cabinet.html"
     file.write_text(cabinet.cabinet_page("sales").replace("__DEVELOPAID_VERSION__", "t"),
@@ -152,16 +160,25 @@ def test_the_funnel_is_drawn_and_the_picture_reaches_the_deck(tmp_path) -> None:
     block = next(page for page in sales_deck.sections(markup)
                  if str(page.get("title") or "").startswith("Воронка"))
     drawn = [table for table in (block.get("tables") or []) if table.get("charted")]
-    assert [table["head"][0] for table in drawn] == ["Источник", "Менеджер"], \
-        "картинки нет ни у источников, ни у менеджеров"
+    assert [table["head"][0] for table in drawn] == ["Месяц", "Источник", "Менеджер"], \
+        "картинки нет ни у месяцев, ни у источников, ни у менеджеров"
     for table in drawn:
         charts = sales_deck.charts(table)
-        assert len(charts) == 1, "воронка — одна картинка, а не лист на колонку"
-        rows = [charts[0]["name"], *[extra["name"] for extra in charts[0]["extra"]]]
-        assert rows == ["Обращений", "Броней"], rows
-        # Доля — линия справа на своей шкале, как на экране: своим листом со
-        # столбиками она читалась бы как ещё один объём.
-        assert [line["name"] for line in charts[0]["second"]] == ["Доля"]
+        # По графику на МЕРУ, а не на колонку: все счётные колонки — один
+        # график, все доли — второй. Разъехавшись по колонкам, воронка
+        # превратилась бы в четыре почти одинаковых листа подряд.
+        assert len(charts) <= 2, [chart["name"] for chart in charts]
+        volume = [charts[0]["name"], *[extra["name"] for extra in charts[0]["extra"]]]
+        assert all("Доля" not in name for name in volume), volume
+        assert len(volume) >= 2, volume
+    # У месяцев доля ОДНА — и идёт линией справа, как на экране. У источников
+    # их две (за всё время и за окно), и второй шкале их не унести: они
+    # встают своим графиком рядом. Это правило колоды, а не потеря.
+    assert [line["name"] for line in sales_deck.charts(drawn[0])[0]["second"]] \
+        == ["Доля в бронь"]
+    shares = sales_deck.charts(drawn[1])[1]
+    assert [shares["name"], *[extra["name"] for extra in shares["extra"]]] \
+        == ["Доля", "Доля за 3 мес."]
 
     import io
 
@@ -173,5 +190,5 @@ def test_the_funnel_is_drawn_and_the_picture_reaches_the_deck(tmp_path) -> None:
                 if shape.has_text_frame and 700000 < shape.top < 1_150_000]
     funnel = [line for line in headings if line.startswith("Воронка обращений ·")
               and "продолжение" not in line]
-    assert len(funnel) == 2 and len(set(funnel)) == 2, \
-        f"два листа воронки нечем различить: {funnel}"
+    assert len(funnel) == 3 and len(set(funnel)) == 3, \
+        f"листы воронки нечем различить: {funnel}"
