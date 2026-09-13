@@ -26,6 +26,7 @@ if str(ROOT) not in sys.path:
 import page_blocks  # noqa: E402
 
 import main_legacy as core  # noqa: E402
+import page_blocks  # noqa: E402
 
 PAGE = core.PAGE
 

@@ -265,9 +265,13 @@ def test_in_a_real_browser_the_report_names_the_transferred_metres():
     foot = table[table.index("<tfoot>"):]
     # Строка и итог названы порознь: одна приписка на обе половины закрыла бы
     # проверку второй половины молча.
-    assert "передано городу" in body, (
+    # Слово берётся у движка: получателя модель не знает, и проверка,
+    # державшая «городу», закрепляла бы неверное утверждение о сделке.
+    assert core.TRANSFER_NOTE_WORD in body, (
         "у строки переданные метры не названы — читается как «продано всё»")
-    assert "передано городу" in foot, "итог таблицы молчит о переданном"
+    assert core.TRANSFER_NOTE_WORD in foot, "итог таблицы молчит о переданном"
+    assert "городу" not in body and "городу" not in foot, (
+        "получатель назван, а модель его не знает")
 
 
 def test_the_print_names_the_transferred_metres():
@@ -284,8 +288,10 @@ def test_the_print_names_the_transferred_metres():
     })
     assert data and len(data) > 20_000, "PDF не собрался"
     text = pdf_text(data)
-    assert "Передаётся городу" in text, "колонка переданного не напечатана"
+    assert core.TRANSFER_WORD in text, "колонка переданного не напечатана"
     assert "но не продаются" in text, "не сказано, что переданное не продаётся"
+    assert "продавец участка или соинвестор" in text, (
+        "получатель не назван условием соглашения — читается как «городу»")
 
 
 def test_without_a_transfer_the_print_keeps_the_short_table():
@@ -311,7 +317,7 @@ def test_without_a_transfer_the_print_keeps_the_short_table():
         "inputs": inputs, "tep": tep,
     })
     text = pdf_text(data)
-    assert "Передаётся городу" not in text
+    assert f"{core.TRANSFER_WORD}, м²" not in text
 
 
 def test_the_social_object_is_named_as_transferred():
@@ -332,7 +338,7 @@ def test_the_social_object_is_named_as_transferred():
         "result": bundle["consolidated"], "project_name": "Садик городу",
         "inputs": inputs, "tep": tep,
     })
-    assert "Передаётся городу" in pdf_text(data)
+    assert core.TRANSFER_WORD in pdf_text(data)
 
 
 def _refill(edits: list) -> dict:

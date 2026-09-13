@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -112,6 +113,12 @@ def tep_cell_stand() -> str:
     """
     pieces = [
         page_const("TEP_RATIOS"),
+        # Подписи переданных метров — со страницы, а не литералом: получателя
+        # модель не знает, и вторая копия слова разошлась бы с движком молча.
+        page_const("TRANSFER_LABELS"),
+        page_const("TRANSFER_WORD"),
+        page_const("TRANSFER_NOTE_WORD"),
+        page_const("TRANSFER_RECIPIENT_NOTE"),
         "const inputs={};",
         "let tep={};",
         "const landNum=(v,d)=>Number(v||0).toFixed(d===undefined?1:d);",
@@ -163,6 +170,7 @@ def run(prelude: str, tail: str, limit: int = 60) -> tuple[str, list[str]]:
         pytest.skip("node недоступен")
     taken: list[str] = []
     bodies: list[str] = []
+    moved: set[str] = set()
     for _ in range(limit):
         script = prelude + "\n" + "\n".join(bodies) + "\n" + tail
         done = subprocess.run([node, "-e", script], capture_output=True,
@@ -174,9 +182,27 @@ def run(prelude: str, tail: str, limit: int = 60) -> tuple[str, list[str]]:
             raise AssertionError(error[-2500:])
         name = error.split("ReferenceError: ")[1].split(" is not defined")[0].strip()
         if name in taken:
-            raise AssertionError(f"{name} не разрешается\n{error[-1500:]}")
-        bodies.append(piece(name))
-        taken.append(name)
+            # Имя уже добрано, а node его всё равно не видит — значит порядок:
+            # кусок стоит ПОСЛЕ того, кто его читает. Один перенос вперёд, и
+            # только потом отказ: иначе настоящий цикл крутился бы до предела.
+            if name in moved:
+                raise AssertionError(f"{name} не разрешается\n{error[-1500:]}")
+            moved.add(name)
+            at = taken.index(name)
+            bodies.insert(0, bodies.pop(at))
+            taken.insert(0, taken.pop(at))
+            continue
+        # Добранный кусок встаёт перед СВОИМ читателем, а не в конец и не в
+        # начало. В конец нельзя: `const`, объявленный ниже того, кто его
+        # читает, падает временной мёртвой зоной, и падение выглядит как
+        # «имени нет», хотя оно есть строкой ниже. В начало — тоже: у
+        # `TRANSFER_LABELS` два читателя, и добранный последним
+        # `TRANSFER_RECIPIENT_NOTE` уезжал впереди них обоих (13.09.2026).
+        body = piece(name)
+        reader = next((i for i, text in enumerate(bodies)
+                       if re.search(rf"\b{re.escape(name)}\b", text)), 0)
+        bodies.insert(reader, body)
+        taken.insert(reader, name)
     raise AssertionError(f"зависимостей больше {limit} — стенд не сходится")
 
 
