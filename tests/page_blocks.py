@@ -73,6 +73,12 @@ def tep_cell_stand() -> str:
     """
     pieces = [
         page_const("TEP_RATIOS"),
+        # Подписи переданных метров — со страницы, а не литералом: получателя
+        # модель не знает, и вторая копия слова разошлась бы с движком молча.
+        page_const("TRANSFER_LABELS"),
+        page_const("TRANSFER_WORD"),
+        page_const("TRANSFER_NOTE_WORD"),
+        page_const("TRANSFER_RECIPIENT_NOTE"),
         "const inputs={};",
         "let tep={};",
         "let tepRefillNote={};",
