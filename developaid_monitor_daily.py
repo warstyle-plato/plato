@@ -75,7 +75,20 @@ def _day(value: Any) -> datetime.date:
 # Разделители, которыми в отчёте отбивают имя подрядчика от его работы:
 # «Сталко -сборка лесов», «Бизнес Инжиниринг : устройство плитки»,
 # «Моэк ( теплосети)- монтаж ограждения».
-_INLINE_SPLIT = re.compile(r"\s*[:\-—–]\s*")
+# Разделитель ищется перебором, а не шаблоном `\s*[:\-—–]\s*`: звёздочка по обе
+# стороны от одного знака даёт перебор на строке из одних пробелов — та же
+# болезнь, что была у секций, и CodeQL назвал её тем же правилом. Поиск первого
+# разделителя линеен и делает ровно то же: приставка без хвостовых пробелов,
+# остаток без ведущих.
+_INLINE_SEPARATORS = ":-—–"
+
+
+def _split_inline(line: str) -> list[str]:
+    """Приставка и остаток по первому разделителю. Нет разделителя — один кусок."""
+    for index, char in enumerate(str(line or "")):
+        if char in _INLINE_SEPARATORS:
+            return [line[:index].rstrip(), line[index + 1:].lstrip()]
+    return [str(line or "")]
 
 
 def _known_party(prefix: str, known: list[str]) -> str:
@@ -125,7 +138,7 @@ def attribute_works(works: list[dict[str, Any]], known: list[str]) -> list[dict[
         if header != last_header:
             last_header, running = header, ""
         line = str(item.get("line") or "")
-        parts = _INLINE_SPLIT.split(line, maxsplit=1)
+        parts = _split_inline(line)
         name = _known_party(parts[0], known) if len(parts) == 2 else ""
         if name:
             running = name
