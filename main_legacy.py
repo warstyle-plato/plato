@@ -35987,6 +35987,31 @@ class SiteChatReportRequest(BaseModel):
     taken_at: str = ""
 
 
+# Имя проекта из чата становится ИМЕНЕМ КАТАЛОГА на диске (`_project_dir` у
+# монитора). Внутри оно чистится, но чистка — это молчаливая правка чужого
+# значения: «Гродненская/../../etc» превратилась бы в другое имя, и человек
+# увидел бы отчёт не там, где ждал. Поэтому проверка стоит на границе и
+# отказывает, а не исправляет. Разделители пути и «..» запрещены прямо.
+_SITE_NAME_EXTRA = " -—–.,«»\"'()№"
+
+
+def _site_project_name(value: Any) -> str:
+    """Годное имя проекта или пустая строка. Пустая — это отказ, а не «любое».
+
+    Имя не просто проверяется, а ПЕРЕСОБИРАЕТСЯ из разрешённых знаков и обязано
+    совпасть с исходным: совпало — возвращаем собранное, разошлось — отказ. Так
+    в путь уезжает строка, построенная нами, а не пришедшая снаружи, и при этом
+    молчаливой правки чужого значения нет — её место занимает названный отказ.
+    """
+    name = str(value or "").strip()
+    if not name or len(name) > 64 or ".." in name:
+        return ""
+    built = "".join(ch for ch in name if ch.isalnum() or ch in _SITE_NAME_EXTRA)
+    if built != name:
+        return ""
+    return built
+
+
 def _site_chats_path() -> Path:
     """Реестр «чат стройки → проект». На ядре, рядом с профилями.
 
@@ -36011,8 +36036,9 @@ def _site_chats() -> dict[str, str]:
             number = int(key)
         except (TypeError, ValueError):
             continue
-        if number and name:
-            found[str(number)] = name
+        safe = _site_project_name(name)
+        if number and safe:
+            found[str(number)] = safe
     return found
 
 
@@ -36024,7 +36050,10 @@ def _site_chat_bind(chat_id: int, project: str) -> str:
     """Привязать чат к проекту. Пустое имя снимает привязку."""
     chats = _site_chats()
     key = str(int(chat_id or 0))
-    name = str(project or "").strip()
+    name = _site_project_name(project)
+    if str(project or "").strip() and not name:
+        raise HTTPException(400, "Имя проекта не годится для каталога на диске: "
+                                 "уберите косые черты и точки подряд.")
     if name:
         chats[key] = name
     else:
@@ -36152,7 +36181,7 @@ def internal_monitor_daily(req: SiteChatReportRequest) -> dict[str, Any]:
         raise HTTPException(status_code=403, detail="Подпись не сошлась.")
     if req.project:
         return {"bound": _site_chat_bind(int(req.chat_id or 0), req.project)}
-    project = _site_chat_project(int(req.chat_id or 0))
+    project = _site_project_name(_site_chat_project(int(req.chat_id or 0)))
     if not project:
         # «Чат не привязан» — это ответ, а не отказ: человеку надо сказать, чем
         # привязать, иначе отчёт молча падает в никуда и выглядит принятым.

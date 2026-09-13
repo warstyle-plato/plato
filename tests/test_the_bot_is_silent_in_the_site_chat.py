@@ -119,3 +119,33 @@ def test_the_bot_counts_what_it_saw_in_groups(monkeypatch, tmp_path):
     assert seen["count"] == 2
     assert seen["title"] == "Гродненская — реализация"
     assert seen["last"]
+
+
+def test_the_project_name_never_becomes_a_path(monkeypatch, tmp_path):
+    """Имя проекта становится именем каталога — значит оно проверяется на границе.
+
+    Внутри монитора имя чистится, но чистка — это молчаливая правка чужого
+    значения: «Гродненская/../x» превратилась бы в другое имя, и отчёт лёг бы
+    не туда, где его ищут. Поэтому граница отказывает, а не исправляет, и
+    отказ назван.
+    """
+    bot = _Bot(monkeypatch, tmp_path)
+
+    for bad in ("../../etc/passwd", "a/b", "..", "Гродненская/../x", "x" * 70):
+        assert core._site_project_name(bad) == "", bad
+    for good in ("Гродненская — реализация", "Нагатино", "ЖК «Тест» №2"):
+        assert core._site_project_name(good) == good
+
+    core._telegram_group_message(_chat(), _message("/site ../../etc/passwd"))
+    assert core._site_chat_project(_chat()["id"]) == ""
+    assert "не годится" in bot.said[-1] or "Привязка не удалась" in bot.said[-1]
+
+
+def test_a_bad_name_left_in_the_registry_is_not_trusted(monkeypatch, tmp_path):
+    """Запись могла лечь до появления проверки — читаем реестр тоже через неё."""
+    _Bot(monkeypatch, tmp_path)
+    path = core._site_chats_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"chats": {"-100500": "../../etc"}}', encoding="utf-8")
+
+    assert core._site_chat_project(-100500) == ""
