@@ -49,17 +49,19 @@ def summary() -> dict:
 
 
 def test_a_month_carries_its_product_mix_and_its_own_price() -> None:
-    """У месяца состав по товарам, и цена метра посчитана ВНУТРИ товара.
+    """У месяца состав по товарам, и цена посчитана ВНУТРИ товара, в его мере.
 
     Общая цена метра мешает паркинг с жильём и даёт третье число, не
     сравнимое ни с чем; линия цены на графике товара обязана быть ценой
-    этого товара.
+    этого товара. У квартиры мера — метры, у машино-места — лоты: «в
+    машиноместах не метры интересны, а лоты» (владелец, 13.09.2026).
     """
     month = next(m for m in summary()["dynamics"] if m["month"] == "2026-01")
     mix = {name: item["units"] for name, item in month["by_product"].items()}
     assert mix == {"Квартира": 2.0, "Машиноместо": 2.0}, mix
     assert month["by_product"]["Квартира"]["price"] == 600_000.0
-    assert month["by_product"]["Машиноместо"]["price"] == 8_000_000.0 / 28.0
+    # Продаётся место, а не метр: 8 млн на два лота.
+    assert month["by_product"]["Машиноместо"]["price"] == 4_000_000.0
     # Цена квартир — та же величина, а не второй счёт.
     assert month["price_flats"] == month["by_product"]["Квартира"]["price"]
 
@@ -147,7 +149,8 @@ def test_lots_are_drawn_one_chart_per_product() -> None:
     # Ни одного столбика без имени товара: «2026-01: 4 лоты» — это и есть та
     # сумма разных товаров, из-за которой всё затевалось.
     assert 'data-tip="2026-01: 4 ' not in seen
-    assert 'data-tip="2026-01: Квартира, 2 лоты"' in seen
+    # Единица при числе склоняется: «2 лота», а не «2 лоты».
+    assert 'data-tip="2026-01: Квартира, 2 лота"' in seen
 
 
 def test_a_single_product_promises_no_composition() -> None:
