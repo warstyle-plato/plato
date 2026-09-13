@@ -33,6 +33,12 @@ import re
 from pathlib import Path
 from typing import Any
 
+# Каталог склада объявлен один раз: его же спрашивает у git проверка, что склад
+# не пишется в рабочее дерево репозитория. Строки в `.gitignore` не было, и
+# набор тестов писал в НАСТОЯЩИЙ каталог данных — ровно так три файла с тестовым
+# слагом уехали коммитом 83c4139.
+DIRNAME = "egrn"
+
 _SLUG = re.compile(r"[^a-zа-яё0-9]+", re.I)
 # Порядок предпочтения источника записи: машинная выписка сильнее печатной формы.
 _RANK = {"xml": 2, "print_form": 1}
@@ -45,7 +51,7 @@ def slug(key: str) -> str:
 
 
 def _path(data_dir: Path, key: str) -> Path:
-    return Path(data_dir) / "egrn" / f"{slug(key)}.json"
+    return Path(data_dir) / DIRNAME / f"{slug(key)}.json"
 
 
 def load(data_dir: Path, key: str) -> dict[str, Any]:

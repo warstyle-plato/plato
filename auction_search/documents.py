@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import os
 import re
+import time
 import zipfile
 from html.parser import HTMLParser
 from urllib.error import HTTPError
@@ -10,11 +11,21 @@ from urllib.parse import quote, urlparse, urlunparse
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree as ET
 
-from auction_search import archives, reading
+from auction_search import archives, deadline as budget, reading
 from auction_search.models import AuctionDocument
 
 
 MAX_DOCUMENT_BYTES = 35 * 1024 * 1024
+# Повтор загрузки: площадка отвечает через раз, и один запрос выдаёт её перебой
+# за отсутствие документа. Измерено на лоте 33444 (13.09.2026): из 26 вложений
+# четыре ответили HTTP 503 — «Сведения о земельных участках», «График КРТ»,
+# «Схема границ», «Материалы градостроительного потенциала», — а лот 33452 за
+# один заход отдал 0 документов, за следующий 26.
+RETRIABLE_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
+DOWNLOAD_ATTEMPTS = 3
+# Отступ растёт: перебой длится секунды, и три запроса подряд без паузы — это
+# один запрос, посланный трижды.
+RETRY_BACKOFF_SECONDS = (2.0, 5.0)
 _ALLOWED_ETP_HOST_SUFFIXES = ("roseltorg.ru", "lot-online.ru")
 _USER_AGENT = "DevelopAid-AuctionCollector/0.1 (+https://developaid.ru)"
 
@@ -33,6 +44,17 @@ class DocumentExtractionError(RuntimeError):
 
 class DocumentAuthorizationRequired(DocumentExtractionError):
     """The official ETP requires an authenticated participant/session."""
+
+
+class DocumentTemporaryRefusal(DocumentExtractionError):
+    """Площадка отказала временно: 503, таймаут, обрыв соединения.
+
+    Вид отказа отдельный затем, что ответы разные. «Формат не поддержан» второй
+    попытки не заслуживает — он не изменится; 503 заслуживает, и при следующем
+    разборе лота такое вложение спрашивается снова, тогда как прочитанное
+    берётся со склада. Без этого различия перебой площадки и её ответ «такого
+    документа нет» на экране выглядят одинаково.
+    """
 
 
 class _HTMLText(HTMLParser):
@@ -100,13 +122,49 @@ def safe_url(url: str) -> str:
     ))
 
 
-def download_document(url: str, *, timeout: int = 25) -> tuple[bytes, str, bool]:
-    """Download an official ETP attachment, public-first.
+def download_document(url: str, *, timeout: int = 25,
+                      attempts: int = DOWNLOAD_ATTEMPTS,
+                      deadline: float | None = None) -> tuple[bytes, str, bool]:
+    """Вложение официальной ЭТП: сперва публично, при временном отказе — снова.
 
-    Returns (bytes, content_type, authenticated_session_used). If the platform
-    requires login and no valid service-account session is available, raises
-    DocumentAuthorizationRequired rather than treating the document as missing.
+    Возвращает (байты, тип, шёл ли запрос под сессией). Требует площадка входа —
+    это `DocumentAuthorizationRequired`, а не «документа нет».
+
+    Повтор стоит здесь, а не у вызывающего, и он ОДИН: два механизма на одно
+    явление в этом проекте всегда расходились. Повторяется только то, что имеет
+    смысл повторять, — 503 и обрыв соединения; 401, 403 и 404 не повторяются
+    вовсе, потому что второй такой же запрос получит тот же ответ.
+
+    Число попыток называется в отказе: «HTTP 503» и «HTTP 503 после трёх
+    попыток» — разные утверждения о площадке, и по первому нельзя понять,
+    спрашивали ли мы её всерьёз.
+
+    Срок сбора сильнее повтора: пауза, которая не укладывается в остаток,
+    съедает время остальных вложений — тогда недобранным окажется весь лот, а
+    не одно вложение.
     """
+    total = max(1, int(attempts))
+    tried = 0
+    last = ""
+    while tried < total:
+        tried += 1
+        try:
+            return _download_once(url, timeout=budget.timeout(deadline, timeout))
+        except DocumentTemporaryRefusal as exc:
+            last = str(exc)
+            if tried >= total:
+                break
+            pause = RETRY_BACKOFF_SECONDS[min(tried - 1, len(RETRY_BACKOFF_SECONDS) - 1)]
+            remaining = budget.left(deadline)
+            if remaining is not None and remaining <= pause:
+                break
+            time.sleep(pause)
+    raise DocumentTemporaryRefusal(
+        f"{last}; попыток: {tried} из {total}")
+
+
+def _download_once(url: str, *, timeout: float) -> tuple[bytes, str, bool]:
+    """Один запрос к площадке. Временный отказ отличён от окончательного."""
     headers, authenticated = _request_headers(url)
     req = Request(safe_url(url), headers=headers)
     try:
@@ -126,7 +184,17 @@ def download_document(url: str, *, timeout: int = 25) -> tuple[bytes, str, bool]
     except HTTPError as exc:
         if exc.code in (401, 403):
             raise DocumentAuthorizationRequired("official ETP requires authentication for this document") from exc
+        if exc.code in RETRIABLE_STATUS:
+            raise DocumentTemporaryRefusal(f"площадка ответила HTTP {exc.code}") from exc
         raise DocumentExtractionError(f"document download failed: HTTP {exc.code}") from exc
+    except OSError as exc:
+        # Таймаут и обрыв соединения прежде уходили наружу СЫРЫМИ: `urllib`
+        # бросает не наш класс, вызывающий его не ловит, и одно повисшее
+        # вложение роняло разбор ЛОТА целиком — маршрут отвечал 502 «не удалось
+        # прочитать официальный лот». Та же беда уже была у сбора: одна
+        # недоступная карточка РАД снимала весь каталог.
+        raise DocumentTemporaryRefusal(
+            f"соединение не состоялось: {type(exc).__name__}: {exc}") from exc
 
     if _looks_like_login_page(final_url, content_type, data):
         raise DocumentAuthorizationRequired("official ETP redirected the document request to authentication")

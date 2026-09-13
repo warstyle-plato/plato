@@ -796,9 +796,49 @@ async function ingest(){const l=state.selected;if(!l)return;const b=$('ingestBtn
  // калькулятор принять площадь дома за площадь территории.
  if(cads.length){try{const ctx=await askJson('/land/lot-context',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cadastral_numbers:cads})});const land=(ctx.land_parcels||[]).map(x=>x.cadastral_number).filter(Boolean);if(land.length){d.project_preset.project.cadastral_numbers=land;d.project_preset.project.cadastral_numbers_input=land.join(', ');d.project_preset.land.cadastral_numbers=land;d.project_preset.land.cadastral_numbers_csv=land.join(', ');d.project_preset.project.cadastral_import.mode=land.length>1?'bulk':'single';d.project_preset.project.cadastral_import.note+=' В КН для расчёта включены только земельные участки; здания/ОКС исключены.';d.developaid_seed.site.cadastral_numbers=land;l._landCadastralNumbers=land}}catch(_){/* карточка остаётся доступной; ручная проверка НСПД не блокирует разбор */}}
  state.ingested=d;renderAnalysis(d);renderEgrn()}catch(e){status.className='notice warn';status.textContent=String(e.message||e)}finally{b.disabled=false;b.textContent='Разобрать заново'}}
+// Три ответа о вложении, и слить их нельзя: прочитано, площадка не отдала (с
+// причиной), не спрашивали намеренно. Считает их сервер рядом с самими
+// вложениями (`documents_summary`), страница печатает — второй счёт тех же
+// вложений однажды разошёлся бы с первым, и оба выглядели бы верными.
+//
+// «Документов 26» отвечало не на тот вопрос: четыре из них площадка не
+// отдала, и на экране это было неотличимо от разобранных (лот 33444,
+// 13.09.2026).
+function docsRead(v,total){
+ if(!v)return String(total||0);
+ const bits=[`прочитано ${v.read} из ${v.total}`];
+ const refused=(v.refused||[]).length;
+ if(refused)bits.push(`площадка не отдала ${refused}`);
+ const skipped=(v.skipped||[]).length;
+ if(skipped)bits.push(`не спрашивали ${skipped}`);
+ if(v.from_store)bits.push(`со склада ${v.from_store}`);
+ return bits.join(' · ');
+}
+function docsRefusalKind(k){
+ return k==='auth_required'?'нужен вход на ЭТП'
+  :k==='temporary'?'площадка отказала временно'
+  :'не разобралось';
+}
+// Причина стоит у самого числа, а не в журнале: отказ, ушедший только в raw,
+// это отказ, которого на экране нет. И «спросим снова» говорится вслух —
+// иначе неотданное вложение читается как окончательный ответ площадки, хотя
+// прочитанное уже лежит на складе и заново поедет только оно.
+function docsRefusalNote(v){
+ if(!v)return '';
+ const rows=v.refused||[],skipped=v.skipped||[],again=(v.ask_again||[]).length;
+ if(!rows.length&&!skipped.length)return '';
+ const parts=[];
+ if(rows.length)parts.push(`<div><b>Площадка не отдала ${rows.length}:</b> `
+  +rows.slice(0,8).map(r=>`${esc(r.document||r.url||'вложение')} — ${esc(docsRefusalKind(r.kind))}`).join('; ')
+  +(rows.length>8?` и ещё ${rows.length-8}`:'')+'</div>');
+ if(again)parts.push(`<div>Спросим снова при следующем разборе: ${again}. Прочитанное лежит на складе — заново поедет только неотданное.</div>`);
+ if(skipped.length)parts.push(`<div>Не спрашивали намеренно: `
+  +skipped.slice(0,4).map(r=>`${esc(r.document||'вложение')} — ${esc(r.why||'')}`).join('; ')+'</div>');
+ return `<div class="notice warn">${parts.join('')}</div>`;
+}
 function renderAnalysis(d){const s=d.screening||{},l=d.lot||{},a=$('analysis'),status=$('detailStatus');if(s.krt_auth_required){status.className='notice warn';status.textContent='Часть документации требует входа на ЭТП. Лот сохранён, но DevelopAid не считает закрытые документы отсутствующими.'}else if(s.krt_documents_complete===true){status.className='notice';status.textContent='Официальные документы КРТ разобраны без пропусков, обнаруженных загрузчиком.'}else{status.className='notice';status.textContent='Карточка ЭТП сверена. Для обычной земли следующий слой — кадастр/градпроверка DevelopAid.'}
  const program=l.krt_program||[],obs=l.obligations||[],docs=l.documents||[],px=s.platon_explanation||{};
- a.innerHTML=`<div class="section"><h3>Оценка Платона: ${esc(px.rating||s.rating||'—')}</h3><div class="notice"><b>Почему здесь:</b> ${esc(px.why_here||s.why_here||'—')}</div><div class="items">${(px.concerns||[]).map(x=>`<div class="item"><b>Что настораживает</b>${esc(x)}</div>`).join('')}${(px.verify_before_calculation||[]).map(x=>`<div class="item"><b>Что проверить до расчёта</b>${esc(x)}</div>`).join('')}</div></div><div class="section"><h3>Готовность к DevelopAid</h3><div class="kv"><div>Структура сделки</div><div>${esc(kindLabel(s.legal_structure))}</div><div>Требует условий КРТ</div><div>${s.requires_krt_terms?'да':'нет'}</div><div>Документов</div><div>${docs.length}</div><div>Программа КРТ</div><div>${program.length}</div><div>Обязательств</div><div>${obs.length}</div></div></div>${program.length?`<div class="section"><h3>Программа застройки из документов</h3><div class="items">${program.slice(0,12).map(x=>`<div class="item"><b>${esc(x.category)} · ${esc(x.area_sqm?fmtArea(x.area_sqm):x.quantity?x.quantity+' '+(x.unit||''):'')}</b>${esc(x.title)}<div class="source">${esc(x.provenance?.source_document||'')}</div></div>`).join('')}</div></div>`:''}${obs.length?`<div class="section"><h3>Обязательства инвестора</h3><div class="items">${obs.slice(0,12).map(x=>`<div class="item"><b>${esc(x.category)}${x.quantity?' · '+x.quantity+' '+(x.unit||''):''}</b>${esc(x.title)}<div class="source">${esc(x.provenance?.source_document||'')}</div></div>`).join('')}</div></div>`:''}<div class="actions"><button id="copySeed">Скопировать seed</button><button id="modelBtn" ${s.ready_for_financial_model?'':'disabled'}>Подготовить в DevelopAid</button></div><div id="modelNote" class="notice">Handoff использует штатный project-preset import; отдельный расчётный движок для торгов не создаётся.</div>`;
+ a.innerHTML=`<div class="section"><h3>Оценка Платона: ${esc(px.rating||s.rating||'—')}</h3><div class="notice"><b>Почему здесь:</b> ${esc(px.why_here||s.why_here||'—')}</div><div class="items">${(px.concerns||[]).map(x=>`<div class="item"><b>Что настораживает</b>${esc(x)}</div>`).join('')}${(px.verify_before_calculation||[]).map(x=>`<div class="item"><b>Что проверить до расчёта</b>${esc(x)}</div>`).join('')}</div></div><div class="section"><h3>Готовность к DevelopAid</h3><div class="kv"><div>Структура сделки</div><div>${esc(kindLabel(s.legal_structure))}</div><div>Требует условий КРТ</div><div>${s.requires_krt_terms?'да':'нет'}</div><div>Вложений</div><div>${docsRead(s.documents,docs.length)}</div><div>Программа КРТ</div><div>${program.length}</div><div>Обязательств</div><div>${obs.length}</div></div>${docsRefusalNote(s.documents)}</div>${program.length?`<div class="section"><h3>Программа застройки из документов</h3><div class="items">${program.slice(0,12).map(x=>`<div class="item"><b>${esc(x.category)} · ${esc(x.area_sqm?fmtArea(x.area_sqm):x.quantity?x.quantity+' '+(x.unit||''):'')}</b>${esc(x.title)}<div class="source">${esc(x.provenance?.source_document||'')}</div></div>`).join('')}</div></div>`:''}${obs.length?`<div class="section"><h3>Обязательства инвестора</h3><div class="items">${obs.slice(0,12).map(x=>`<div class="item"><b>${esc(x.category)}${x.quantity?' · '+x.quantity+' '+(x.unit||''):''}</b>${esc(x.title)}<div class="source">${esc(x.provenance?.source_document||'')}</div></div>`).join('')}</div></div>`:''}<div class="actions"><button id="copySeed">Скопировать seed</button><button id="modelBtn" ${s.ready_for_financial_model?'':'disabled'}>Подготовить в DevelopAid</button></div><div id="modelNote" class="notice">Handoff использует штатный project-preset import; отдельный расчётный движок для торгов не создаётся.</div>`;
  $('copySeed').onclick=async()=>{await navigator.clipboard.writeText(JSON.stringify(d.developaid_seed,null,2));$('copySeed').textContent='Скопировано'};$('modelBtn').onclick=()=>{const note=$('modelNote');note.textContent='Project-preset handoff подключается следующим слоем: цена лота → цена входа, КРТ-ТЭП → planning, обязательства → отдельные cost/constraint lines.'}
 }
 function switchTab(showKrt){['auctionFilters','auctionStats','auctionLayout','coverage'].forEach(id=>$(id).classList.toggle('hidden',showKrt));$('krtPanel').classList.toggle('hidden',!showKrt);$('tabAuctions').classList.toggle('active',!showKrt);$('tabKrt').classList.toggle('active',showKrt);renderAskContext();if(showKrt&&!state.krt.length)loadKrt()}
