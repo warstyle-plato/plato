@@ -36,6 +36,11 @@ def function(name: str, page: str | None = None) -> str:
     start = page.find(declaration)
     if start < 0:
         raise AssertionError(f"на странице нет функции {name}")
+    # `async` стоит ПЕРЕД словом `function`, и срез от него терял это слово:
+    # node отвечал «await is only valid in async functions», то есть падал на
+    # стенде, а не на том, что стенд проверяет.
+    if page[max(0, start - 6):start] == "async ":
+        start -= 6
     depth = 0
     for position in range(page.index("{", start), len(page)):
         if page[position] == "{":
@@ -61,6 +66,74 @@ def krt_lock() -> str:
     if end < 0:
         raise AssertionError("на странице нет общего писателя вводных applyDerivedInputs")
     return page[start:end] + function("applyDerivedInputs")
+
+
+def tep_cell_stand() -> str:
+    """Стенд для правки ячейки ТЭП: настоящие функции страницы плюс заглушки.
+
+    Ответ на «как погонять `tepCellChanged`» один на все проверки: две копии
+    стенда разошлись бы молча, и одна из них однажды проверяла бы прошлое
+    поведение. Заглушками стоит только то, что к арифметике строки отношения
+    не имеет — отрисовка, вводные, расчёт.
+    """
+    pieces = [
+        page_const("TEP_RATIOS"),
+        # Подписи переданных метров — со страницы, а не литералом: получателя
+        # модель не знает, и вторая копия слова разошлась бы с движком молча.
+        page_const("TRANSFER_LABELS"),
+        page_const("TRANSFER_WORD"),
+        page_const("TRANSFER_NOTE_WORD"),
+        page_const("TRANSFER_RECIPIENT_NOTE"),
+        "const inputs={};",
+        "let tep={};",
+        "let tepRefillNote={};",
+        "const landNum=(v,d)=>Number(v||0).toFixed(d===undefined?1:d);",
+        "let recalcs=0;",
+        "function tepRowToInputs(){}",
+        "function renderInputs(){}",
+        "function renderTep(){}",
+        "function updateTepTotals(){}",
+        "function scheduleTepAutoRecalc(){}",
+        "function calculate(){recalcs++}",
+        "const TEP_SOCIAL_INPUTS={};",
+        "function socialTotalShare(){return 0.9}",
+        function("tepRatioOverrides"),
+        function("tepRatio"),
+        function("tepFillByRatios"),
+        function("tepApplyTransfer"),
+        function("tepCellChanged"),
+        # Пересборка строки по долям — тот же путь, что правка ячейки:
+        # «наши» и правка доли обязаны считать переданное так же.
+        "let tepRatioComplaint='';",
+        "const TEP_ROW_SWITCH={};",
+        "let RATIO_STORE={};",
+        function("tepRatioChain"),
+        function("tepRatioWrite"),
+        function("tepRatioChangedKeys"),
+        function("refillTepRow"),
+        function("tepRatioSet"),
+        function("tepRatioReset"),
+    ]
+    return "\n".join(pieces) + "\n"
+
+
+def page_const(name: str) -> str:
+    """Объявление константы страницы целиком, как оно стоит на СОБРАННОЙ странице.
+
+    Литерал в стенде был бы второй копией методики: доли ТЭП, имена продуктов и
+    умолчания объявлены в движке и приезжают подстановкой. Взятые со страницы,
+    они не могут отстать.
+    """
+    page = core.PAGE
+    head = f"const {name}="
+    start = page.find(head)
+    if start < 0:
+        raise AssertionError(f"на странице нет константы {name}")
+    end = page.find("\n", start)
+    line = page[start:end if end > 0 else len(page)].rstrip()
+    if not line.endswith(";"):
+        raise AssertionError(f"объявление {name} не в одну строку — стенд возьмёт половину")
+    return line
 
 
 def auctions_function(*names: str) -> str:
