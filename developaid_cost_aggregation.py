@@ -34,6 +34,23 @@ MODEL_KEYS: dict[str, str] = {
     "site_maintenance": "site_maintenance_th_per_sqm",
 }
 
+# База поля модели — не всегда та, на которой меряет свод, и на экране они
+# неразличимы. Благоустраивают ДВОР: с 10.09.2026 поле
+# `landscaping_th_per_sqm` меряет метр благоустроенной территории, а свод по
+# этой статье собран на метр ГНС. Подставленное число выглядит ровно так же,
+# как годное, — на умолчаниях бизнеса это 214,6 млн ₽ вместо 1 273,1, в шесть
+# раз мимо при верном на вид поле (владелец, 13.09.2026: «почему тут 5.9?»).
+# Поэтому у поля объявлена ЕГО база; разошлась со сводом — подстановка
+# отказывает и называет причину, а само число остаётся на экране ориентиром:
+# базы разные, сравнивать порядок это не мешает.
+MODEL_KEY_BASES: dict[str, str] = {
+    "landscaping_th_per_sqm": "yard",
+}
+
+MODEL_KEY_BASE_LABELS: dict[str, str] = {
+    "yard": "м² благоустроенной территории (двора)",
+}
+
 UNIT_AREA_KEYS: dict[str, str] = {
     "gba": "gba_sqm",
     "above_ground": "above_ground_gns_sqm",
@@ -413,6 +430,20 @@ def build_cost_recommendation(
             delta_pct = (float(recommended) / float(baseline) - 1.0) * 100.0
 
         model_key = MODEL_KEYS.get(key)
+        # Свод и поле обязаны мерить одно и то же. Не совпало — число не
+        # подставляется, и отказ несёт обе базы: «нельзя» без «почему» чинят
+        # обходом, а обход выглядит правкой.
+        base_refusal = None
+        if model_key:
+            field_base = MODEL_KEY_BASES.get(model_key, expected_unit)
+            if field_base != expected_unit:
+                base_refusal = (
+                    "свод меряет "
+                    + str(UNIT_LABELS.get(expected_unit, expected_unit))
+                    + ", а поле модели — "
+                    + str(MODEL_KEY_BASE_LABELS.get(field_base, field_base))
+                    + ": базы разные, подставлять нельзя"
+                )
         recommendations.append(
             {
                 "key": key,
@@ -432,7 +463,9 @@ def build_cost_recommendation(
                 "grade_counts": {g: sum(1 for c in included if c["grade"] == g) for g in ("A", "B", "C")},
                 "included_sources": included,
                 "excluded_sources": excluded,
-                "applyable": model_key is not None and recommended is not None,
+                "applyable": (model_key is not None and recommended is not None
+                              and base_refusal is None),
+                "not_applyable_reason": base_refusal,
             }
         )
 
