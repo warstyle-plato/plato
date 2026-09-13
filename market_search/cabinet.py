@@ -117,6 +117,7 @@ SECTIONS: list[tuple[str, str, str]] = [
     ("rooms", "Комнатность и вымывание", "что берут и что остаётся — по комнатам и по полосам площади"),
     ("payment", "Способы оплаты", "доля ипотеки у проекта, у соседей и по классу в Москве"),
     ("channel", "Кто покупает", "физлица, юрлица и переуступки"),
+    ("installment", "Рассрочка у соседей", "первый взнос, срок и что рассрочка делает с прайсом"),
 ]
 
 
@@ -1529,11 +1530,12 @@ function peersCard(peers){
   if(!(peers||[]).length) return '';
   return `<div class="card"><h2>Соседи в выборке</h2>
     <div class="wrap"><table class="peers">
-    <tr><th>Проект</th><th>Застройщик</th><th class="num">км</th><th>Класс</th>
+    <tr><th>Проект</th><th>Застройщик</th><th class="num">км</th><th>Класс</th><th>Вид</th>
     <th class="num">₽/м²</th><th class="num">ДДУ/мес</th><th class="num">м²/мес</th><th class="num">Лотов</th><th>Прайс от</th></tr>`
     +peers.map((p,i)=>`<tr${p.added_by_hand?' class="added byhand"':''}><td class="link" data-peer="${i}">`
       +`${esc(p.name)}${p.added_by_hand?' <span class="muted">+</span>':''}</td><td class="muted">${esc(p.developer||'—')}</td>
       <td class="num">${num(p.distance_km,2)}</td><td>${esc(p.segment||'—')}</td>
+      <td class="muted">${esc(p.housing_kind||'—')}</td>
       <td class="num">${p.price_per_sqm?num(p.price_per_sqm)
         :`<span class="muted" title="в расчёт не идёт">${p.price_status==='устарела'
           ?num(p.stale_price_per_sqm)+' · '+esc(p.stale_observed_at||'')
@@ -1691,7 +1693,10 @@ function roomsTrend(b){
   const W=620,L=44,R=150,T=14,B=34,H=250;
   const band=(W-L-R)/points.length, w=Math.min(band*0.62,64);
   const y=v=>T+(H-T-B)*(1-v/100);
-  const short=m=>{const [yy,mm]=String(m).split('-'); return mm+'.'+yy.slice(2)};
+  // Имя точки — календарный квартал: «1 кв. 2025» читается однозначно, а
+  // «09.25–11.25» и как три месяца, и как два. Квартал приходит с сервера
+  // числом — он решает нарезку, экран только называет её.
+  const qname=p=>`${p.quarter} кв. ${p.year}`;
   let svg=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img">`;
   [0,25,50,75,100].forEach(v=>{
     svg+=`<line x1="${L}" y1="${y(v)}" x2="${W-R}" y2="${y(v)}" stroke="#e6ecf2"/>`
@@ -1705,15 +1710,15 @@ function roomsTrend(b){
       const top=y(acc+v), bottom=y(acc);
       svg+=`<rect x="${x0.toFixed(1)}" y="${top.toFixed(1)}" width="${w.toFixed(1)}"`
          +` height="${Math.max(bottom-top,0).toFixed(1)}" fill="${colours[n%colours.length]}"`
-         +` data-tip="${esc(title(k)+' · '+short(p.from)+'–'+short(p.to)+': '+num(v,1)+' %')}"></rect>`;
+         +` data-tip="${esc(title(k)+' · '+qname(p)+': '+num(v,1)+' %')}"></rect>`;
       acc+=v;
     });
     // Сколько сделок в точке — часть ответа: доля на пяти сделках и доля на
     // пятидесяти на картинке неразличимы.
     svg+=`<text x="${cx.toFixed(1)}" y="${H-20}" text-anchor="middle" font-size="10" fill="#8798a8">`
-       +`${esc(short(p.from)+'–'+short(p.to))}</text>`
+       +`${esc(qname(p))}</text>`
        +`<text x="${cx.toFixed(1)}" y="${H-8}" text-anchor="middle" font-size="9.5" fill="#8798a8">`
-       +`${num(p.deals)} сд.</text>`;
+       +`${p.months?num(p.months)+' мес. · ':''}${num(p.deals)} сд.</text>`;
   });
   names.forEach((k,n)=>{
     svg+=`<rect x="${W-R+8}" y="${T+n*16}" width="9" height="9" fill="${colours[n%colours.length]}"/>`
@@ -1723,8 +1728,10 @@ function roomsTrend(b){
   const thin=s.rooms_trend_thin;
   return '<h3>Как менялся состав спроса</h3><div class="wrap">'+svg+'</div>'
     +'<div class="muted" style="font-size:12.5px;margin-top:4px">Колонка — состав продаж'
-    +' квартала, все сто процентов. Шаг квартальный: в месяце у проекта обычно'
-    +' около десятка сделок, и там одна сделка двигает долю на десяток процентов.'
+    +' календарного квартала, все сто процентов. Квартал, а не месяц: в месяце у'
+    +' проекта обычно около десятка сделок, и там одна сделка двигает долю на'
+    +' десяток процентов. Окно кончается месяцем отчёта, поэтому крайние кварталы'
+    +' бывают неполными — сколько в них месяцев, написано под колонкой.'
     +(thin?` Кварталов, где сделок меньше десяти: ${thin} — доля в них случайна.`:'')
     +'</div>';
 }
@@ -1794,6 +1801,10 @@ function blockCard(b,ctx){
       +cell(num(p.median)+' ₽/м²','медиана соседей ('+(p.count||0)+')')
       +cell(pct(p.vs_median_pct),'к соседям')
       +(p.same_class?cell(num(p.same_class.median)+' ₽/м²','медиана своего класса ('+p.same_class.count+')'):'')
+      // Апартаменты и квартиры лежат в одном классе, а продаются разным
+      // покупателям: плитка называет медиану своего вида рядом с общей.
+      +(p.same_kind?cell(num(p.same_kind.median)+' ₽/м²','медиана своего вида: '
+        +esc(p.same_kind.kind)+' ('+p.same_kind.count+' из '+p.same_kind.known+')'):'')
       +(c.median?cell(num(c.median)+' ₽/м²','медиана класса в Москве'):'')
       +(c.band?cell({above_p75:'выше верхнего квартиля',interquartile:'внутри квартилей',below_p25:'ниже нижнего квартиля'}[c.band]||c.band,'место в городе'):'');
   } else if(b.code==='pace'){
@@ -1836,6 +1847,17 @@ function blockCard(b,ctx){
       +cell(s.company_pct===undefined?'—':num(s.company_pct,1)+' %','юрлица')
       +cell(p.median===undefined||p.median===null?'—':num(p.median,1)+' %','юрлица у соседей, медиана')
       +cell(s.resale_deals===undefined?'—':num(s.resale_deals),'переуступок за месяц');
+  } else if(b.code==='installment'){
+    // Три ответа разные: условия названы, рассрочки нет, условий не знаем.
+    // Прочерк без подписи читался бы как «рассрочки не даёт».
+    const d=p.down_payment||{}, t=p.term||{};
+    kv=cell(s.installment===undefined?'—':(s.installment?'есть':'нет'),'рассрочка у проекта')
+      +cell(s.down_payment_pct===undefined?'—':num(s.down_payment_pct,1)+' %','первый взнос, самая мягкая программа')
+      +cell(s.term_months===undefined?'—':num(s.term_months)+' мес.','срок, самая мягкая программа')
+      +cell(d.median===undefined?'—':num(d.median,1)+' %','взнос у соседей, медиана')
+      +cell(t.median===undefined?'—':num(t.median)+' мес.','срок у соседей, медиана')
+      +cell(p.offering===undefined?'—':num(p.offering)+' из '+num(p.known),'соседей дают рассрочку')
+      +cell(p.keys_before_payment===undefined?'—':num(p.keys_before_payment),'соседей отдают ключи до полной оплаты');
   } else if(b.code==='absorption'){
     kv=cell(num(s.area_per_month),'м² в месяц')
       +cell(num(p.median),'медиана соседей')
@@ -1877,7 +1899,11 @@ function sectionTable(code,ctx){
   const base=[{t:'Проект',f:r=>esc(r.name)+(r.__own?' <span class="self">— объект</span>':''),
                attr:(r,i)=>r.__own?'':` class="link" data-peer="${i-1}"`},
               {t:'км',num:1,f:r=>r.__own?'—':num(r.distance_km,2)},
-              {t:'Класс',f:r=>esc(r.segment||'—')}];
+              {t:'Класс',f:r=>esc(r.segment||'—')},
+              // Вид жилья стоит рядом с классом во ВСЕХ разделах: он различает
+              // товар так же, как класс, и у темпа с лотом разница измерена не
+              // меньшая, чем у цены.
+              {t:'Вид',f:r=>esc(r.housing_kind||'—')}];
   const cols={
     price:[...base,{t:'₽/м²',num:1,f:r=>num(r.price_per_sqm)},
            {t:'мин',num:1,f:r=>num(r.price_per_sqm_min)},{t:'макс',num:1,f:r=>num(r.price_per_sqm_max)},
@@ -1898,6 +1924,11 @@ function sectionTable(code,ctx){
     channel:[...base,{t:'Юрлица, %',num:1,f:r=>num(r.legal,1)},
              {t:'Переуступок',num:1,f:r=>num(r.resale)},
              {t:'Месяц',f:r=>esc(r.legal_at||'—')}],
+    installment:[...base,{t:'Рассрочка',f:r=>r.installment===undefined?'—':(r.installment?'есть':'нет')},
+                 {t:'ПВ, %',num:1,f:r=>num(r.installment_down_payment_pct,1)},
+                 {t:'Срок, мес.',num:1,f:r=>num(r.installment_term_months)},
+                 {t:'Ключи до оплаты',f:r=>r.installment_keys_before_payment===undefined?'—':(r.installment_keys_before_payment?'да':'нет')},
+                 {t:'Программ',num:1,f:r=>num(r.installment_programs)}],
   }[code];
   if(!cols) return '';
   // «Почему из двадцати тут только семь» — вопрос владельца. В выборке
@@ -1906,7 +1937,7 @@ function sectionTable(code,ctx){
   // Сколько соседей отвечают на вопрос этого раздела — сказано под ней.
   const KEY={price:'price_per_sqm',pace:'units_per_month',lot_size:'sold_lot_avg',
              absorption:'area_per_month',stock:'remaining_units',
-             payment:'mortgage',channel:'legal'}[code];
+             payment:'mortgage',channel:'legal',installment:'installment'}[code];
   const peers=ctx.peers||[];
   const have=KEY?peers.filter(p=>p[KEY]!==null&&p[KEY]!==undefined).length:peers.length;
   const note=(KEY&&peers.length&&have<peers.length)
@@ -1927,8 +1958,17 @@ function sectionTable(code,ctx){
 function reportDigest(d){
   if(!d) return '';
   const s=d.subject||{}, c=d.comparison||{}, a=(d.analysis||{}).overall||{};
+  const m=s.metrics||{};
   const lines=[`Объект: ${s.project_name||s.address||s.query}; класс ${s.segment||'—'}`
-    +` (источник класса: ${s.segment_source||'—'}); данные на ${d.retrieved_at}.`,
+    +` (источник класса: ${s.segment_source||'—'})`
+    // Вид жилья — часть товара, а не подробность: апартаменты и квартиры
+    // сравниваются с разными соседями, и без этого Платон сравнит не то.
+    +(m.housing_kind?`; вид жилья ${m.housing_kind}`
+      // Сколько соседей с названным видом — часть того же ответа: у 117
+      // карточек из 685 состав не назван, и молчание нельзя складывать с
+      // «квартиры».
+      +(c.housing_kind_known!==undefined?` (вид назван у ${c.housing_kind_known} из ${c.used||0} соседей)`:''):'')
+    +`; данные на ${d.retrieved_at}.`,
     `В радиусе ${c.radius_km} км ${c.found} проектов, сопоставимых ${c.comparable}, в выборке ${c.used}.`];
   if(a.headline) lines.push(`Вывод движка: ${a.headline}. ${a.text}`);
   (d.blocks||[]).forEach(b=>{
@@ -1951,6 +1991,16 @@ function reportDigest(d){
       +(c.price_per_sqm?` против ${num(c.price_per_sqm)}`:'');
   });
   const extra=[];
+  // Вид жилья уезжает ЧИСЛАМИ, а не одной меткой в шапке: «у нас апартаменты»
+  // Платон пересказать может, а ответить «а с кем тогда сравнили цену» — нет,
+  // потому что медиан по видам у него на руках не было. Сам вывод живёт в
+  // связках («Разбор»), а связки в сводку не уезжают вовсе.
+  const kindStat=(block('price').peers||{}).same_kind;
+  if(kindStat&&kindStat.median) extra.push({name:'медиана своего вида жилья',
+    text:`Вид жилья: у проекта «${kindStat.kind}», таких соседей ${kindStat.count} из `
+      +`${kindStat.known} с названным видом, их медиана ${num(kindStat.median)} ₽/м²`
+      +(kindStat.vs_median_pct===undefined||kindStat.vs_median_pct===null?'.'
+        :` (наш прайс ${pct(kindStat.vs_median_pct)} к ней).`)});
   if(mixRows.length) extra.push({name:'доли по комнатности',
     text:'Комнатность: '+mixRows.join('; ')+'.'});
   // Динамика уезжает числами по той же причине: наш вывод называет ОДИН
@@ -1980,6 +2030,24 @@ function reportDigest(d){
     extra.push({name:'состав покупателей', text:`Покупатели: юрлиц у нас ${share(who.company_pct)}`
       +(whoPeers.median===undefined?'':`, у соседей медиана ${share(whoPeers.median)}`)
       +(who.resale_deals?`; переуступок за месяц ${num(who.resale_deals)}`:'')+'.'});
+  // Рассрочка уезжает числами по той же причине, что комнатность: наш вывод
+  // Платон пересказать может, а ответить «дороже ли у нас вход» — нет, пока
+  // взносов и сроков у него на руках не было.
+  const inst=block('installment').subject||{}, instPeers=block('installment').peers||{};
+  if(instPeers.known){
+    const d1=instPeers.down_payment||{}, t1=instPeers.term||{};
+    const terms=instPeers.price_terms||{};
+    extra.push({name:'рассрочка', text:'Рассрочка: '
+      +(inst.installment===undefined?'условий проекта в своде нет (это «не знаем», а не «нет рассрочки»)'
+        :inst.installment?`у нас взнос ${share(inst.down_payment_pct)}, срок ${num(inst.term_months)} мес.`
+        :'у проекта рассрочки нет')
+      +`; дают ${num(instPeers.offering)} соседей из ${num(instPeers.known)}`
+      +(d1.median===undefined?'':`, медиана взноса ${share(d1.median)}`)
+      +(t1.median===undefined?'':`, срок ${num(t1.median)} мес.`)
+      +(terms['скидка']||terms['удорожание']
+        ? `; программ со скидкой к прайсу ${num(terms['скидка']||0)}, с удорожанием ${num(terms['удорожание']||0)}`:'')
+      +'.'});
+  }
   const peers=(d.peers||[]).slice(0,12).map(p=>
     `${p.name} (${p.segment||'—'}, ${p.distance_km} км): ${p.price_per_sqm||'—'} ₽/м²,`
     +` ${p.units_per_month??'—'} ДДУ/мес`).join('; ');
@@ -2456,6 +2524,9 @@ function showSales(d){
 }
 
 const SALES_COLORS=['#4E9BDE','#C4581B','#5FA98A','#8E7CC3','#D0A24C','#8798a8'];
+// Цена живёт своей линией на каждом графике продаж, и её цвет объявлен один
+// раз: копия разошлась бы с палитрой слоёв молча.
+const SALES_PRICE_COLOR='#C4581B';
 
 // Показатель одного графика. Переключается кнопками, как в рыночном отчёте:
 // «один график с переключателем — в метрах, лотах, со средней ценой»
@@ -2465,10 +2536,12 @@ const SALES_COLORS=['#4E9BDE','#C4581B','#5FA98A','#8E7CC3','#D0A24C','#8798a8']
 // бывает: она про другое, чем объём, и живёт линией на своей шкале справа, на
 // каждом графике — «цена должна была присутствовать всегда только линией, а не
 // отдельной вкладкой и столбиками» (владелец, 26.08.2026).
+// `whole` — мера, которая складывается через товары. Такая одна: у суммы денег
+// есть имя, выручка. У «лотов» и «м²» его нет, и они идут по товару.
 const SALES_METRICS=[
-  {key:'amount', name:'млн ₽',  of:m=>m.amount,  show:v=>num(v/1e6,1), axis:v=>num(v/1e6)},
-  {key:'area',   name:'м²',     of:m=>m.area,    show:v=>num(v),        axis:v=>num(v)},
-  {key:'units',  name:'лоты',   of:m=>m.units,   show:v=>num(v),        axis:v=>num(v)},
+  {key:'amount', name:'млн ₽', whole:true, show:v=>num(v/1e6,1), axis:v=>num(v/1e6)},
+  {key:'area',   name:'м²',              show:v=>num(v),        axis:v=>num(v)},
+  {key:'units',  name:'лоты',  show:v=>num(v),        axis:v=>num(v)},
 ];
 let salesMetric='amount';
 let plansMetric='amount';
@@ -2529,7 +2602,7 @@ function barChart(rows, opts){
     if(!has(r.value)) return;
     const top=y(r.value), h=Math.max(1,(H-T-B)-(top-T));
     svg+=`<rect x="${(x(i)-bw/2).toFixed(1)}" y="${top.toFixed(1)}" width="${bw}" height="${h.toFixed(1)}"`
-       +` rx="2" fill="${r.pale?'#9dc4e6':'#4E9BDE'}" data-tip="${esc(r.tip||'')}"></rect>`;
+       +` rx="2" fill="${r.pale?'#9dc4e6':(opts.fill||'#4E9BDE')}" data-tip="${esc(r.tip||'')}"></rect>`;
     if(r.over) svg+=`<text x="${x(i).toFixed(1)}" y="${(top-4).toFixed(1)}" text-anchor="middle"`
        +` font-size="9" fill="#5b6b7d">${esc(r.over)}</text>`;
   });
@@ -2569,7 +2642,7 @@ function barChart(rows, opts){
     if(rows.length>16&&i%2) return;
     svg+=`<text x="${x(i).toFixed(1)}" y="${H-26}" text-anchor="middle" font-size="9" fill="#8798a8">${esc(r.short||r.label)}</text>`;
   });
-  const legend=[{name:opts.factName||'факт',color:'#4E9BDE'}]
+  const legend=[{name:opts.factName||'факт',color:opts.fill||'#4E9BDE'}]
     .concat(lines.map(l=>({name:l.name,color:l.color})))
     .concat(right.map(l=>({name:l.name,color:l.color})));
   svg+=`<text x="${L}" y="${H-8}" font-size="10" fill="#8798a8">${esc(opts.caption||'')}`
@@ -2589,31 +2662,95 @@ function barChart(rows, opts){
 // до которой не дошли, там просто отсутствует — то же правило, что у
 // свёрнутой таблицы: раскрыть её читателю нечем. На бумагу поэтому идут ВСЕ
 // меры, как это уже сделано у карты рынка (`.printviews`).
-function salesDynamicsChart(d, metric){
-  const rows=(d.dynamics||[]).filter(m=>m.amount>0).map(m=>({
-    label:m.month, short:String(m.month).slice(2),
-    value:metric.of(m), over:metric.key==='amount'?num(m.units):'',
-    price:m.price_flats,
-    tip:m.month+': '+num(m.amount/1e6,1)+' млн ₽, '+num(m.units)+' лот(ов), '+num(m.area)+' м²'
-       +(m.price_per_sqm?', '+num(m.price_per_sqm)+' ₽/м²':''),
-  }));
-  return barChart(rows,{axis:metric.axis,show:metric.show,factName:'факт, '+metric.name,
-    rightLines:[{key:'price',name:'цена квартир, ₽/м²',color:'#C4581B'}],
-    rightAxis:v=>num(v/1000)+' тыс', rightShow:v=>num(v)+' ₽/м²', rightName:'цена квартир',
-    caption:metric.name+' по месяцам'+(metric.key==='amount'?'; цифра над столбиком — лотов':'')});
+// Динамика продаж. Рубли через продукты складываются законно — у суммы есть
+// имя, выручка. У «лотов» и «м²» имени нет: лот квартиры и лот машино-места —
+// разные товары, а метр паркинга и метр квартиры тем более (на Кутузов Сити
+// январь 2026 это 9 «лотов» из четырёх квартир и пяти машино-мест, май — 9 из
+// двух квартир, шести коммерческих помещений и машино-места). Для цены это
+// правило уже применено — у неё своя линия квартир; объём его ждал.
+//
+// Стопкой это НЕ лечится: у стопки та же общая высота, то есть та же сумма,
+// только нарисованная, — «это разные продукты и вводят в заблуждение эксперта»
+// (владелец, 12.09.2026). Поэтому штуки и метры рисуются ПО ТОВАРУ: свой
+// график, своя шкала, своё имя, своя линия цены и свои числа под ним, — и ни
+// одного «всего» рядом с ними.
+//
+// Порядок и цвет продукта приходят с сервера одним списком: посчитанный в
+// каждом месяце заново, он красил бы продукт по-разному.
+function salesDynamicsProducts(d){
+  const order=(d.product_order||[]).slice();
+  if(!order.length) (d.by_product||[]).forEach(p=>{ if(!order.includes(p.product)) order.push(p.product) });
+  // Цвет цены на этом же поле занят, и товар им красить нельзя: столбик и
+  // линия одного цвета читаются как одна величина.
+  const palette=SALES_COLORS.filter(c=>c!==SALES_PRICE_COLOR);
+  return order.map((name,i)=>({name, color:palette[i%palette.length]}));
+}
+
+// Один график: либо выручка всего проекта, либо объём ОДНОГО товара.
+function salesDynamicsChart(d, metric, product){
+  const rows=(d.dynamics||[]).filter(m=>m.amount>0).map(m=>{
+    // Товара в этом месяце не продавали — это пропуск, а не ноль: столбика
+    // просто нет, и линия цены рвётся.
+    const own=product?((m.by_product||{})[product.name]||null):null;
+    const value=product?(own?own[metric.key]:null):m[metric.key];
+    const price=product?(own?own.price:null):m.price_flats;
+    return {label:m.month, short:String(m.month).slice(2), value, price,
+      tip:m.month+': '+(product?product.name+', ':'')
+         +(has(value)?metric.show(value):'—')+' '+metric.name};
+  });
+  const priceName=product?'цена, ₽/м²':'цена квартир, ₽/м²';
+  return barChart(rows,{axis:metric.axis, show:metric.show, fill:product?product.color:null,
+    factName:(product?product.name:'выручка')+', '+metric.name,
+    rightLines:[{key:'price',name:priceName,color:SALES_PRICE_COLOR}],
+    rightAxis:v=>num(v/1000)+' тыс', rightShow:v=>num(v)+' ₽/м²',
+    rightName:product?'цена этого товара':'цена квартир',
+    caption:(product?product.name+' · '+metric.name:metric.name+' по месяцам')});
+}
+
+// Помесячные числа ОДНОГО товара. Общей строки «лотов всего» здесь нет — это
+// та же сумма разных товаров, только в таблице. Удельное считает сервер.
+function salesMonthTable(d, name){
+  const rows=[];
+  (d.dynamics||[]).slice().reverse().forEach(m=>{
+    const p=name?((m.by_product||{})[name]):null;
+    if(name){ if(!p||!p.amount) return;
+      rows.push([esc(m.month), num(p.units), num(p.area), num(p.amount/1e6,1),
+        has(p.price)?num(p.price):'—']);
+    } else {
+      if(!m.amount) return;
+      rows.push([esc(m.month), num(m.amount/1e6,1), has(m.price_flats)?num(m.price_flats):'—']);
+    }
+  });
+  return name
+    ? salesTable(['Месяц','Лотов','м²','млн ₽','₽/м²'], rows)
+    : salesTable(['Месяц','млн ₽','цена квартир, ₽/м²'], rows);
+}
+
+// График стоит над своими числами: так их видит и колода.
+function salesMetricCharts(d, metric){
+  const box=(title, chart, table)=>
+    (title?'<div class="muted" style="font-size:12px;margin-top:10px">'+esc(title)+'</div>':'')
+    +chart+'<details style="margin-top:6px"><summary>'
+    +esc(title?title+' — помесячно числами':'Помесячно числами')+'</summary>'+table+'</details>';
+  if(metric.whole) return box('', salesDynamicsChart(d, metric, null), salesMonthTable(d, null));
+  const products=salesDynamicsProducts(d).filter(p=>
+    (d.dynamics||[]).some(m=>((m.by_product||{})[p.name]||{})[metric.key]>0));
+  if(!products.length) return '<div class="muted" style="font-size:12.5px">Показывать нечего.</div>';
+  let html=products.map(p=>box(p.name, salesDynamicsChart(d, metric, p),
+    salesMonthTable(d, p.name))).join('');
+  if(products.length>1) html+='<div class="muted" style="font-size:12px;margin-top:6px">'
+    +'Товары не складываются: лот квартиры и лот машино-места — разные товары, '
+    +'у каждого своя шкала. Складывается только выручка — у её суммы есть имя.</div>';
+  return html;
 }
 
 function salesChartBlock(d){
   const metric=SALES_METRICS.find(m=>m.key===salesMetric)||SALES_METRICS[0];
-  let html=salesDynamicsChart(d, metric);
+  let html=salesMetricCharts(d, metric);
   const rest=SALES_METRICS.filter(m=>m.key!==metric.key);
   if(rest.length) html+='<div class="printviews">'
-    +rest.map(m=>salesDynamicsChart(d, m)).join('')+'</div>';
-  html+='<details style="margin-top:8px"><summary>Помесячно числами</summary>';
-  html+=salesTable(['Месяц','Лотов','м²','млн ₽','₽/м²'],
-    (d.dynamics||[]).slice().reverse().map(m=>[esc(m.month), num(m.units), num(m.area),
-      num(m.amount/1e6,1), m.price_per_sqm?num(m.price_per_sqm):'—']));
-  return html+'</details>';
+    +rest.map(m=>salesMetricCharts(d, m)).join('')+'</div>';
+  return html;
 }
 
 // Квартирография: чем был пул, что из него ушло и что осталось показывать.
@@ -2664,6 +2801,35 @@ function salesSizesOnly(d){
     +'<div class="muted" style="font-size:12.5px;margin-top:6px">'
     +'Полосы наши, а не проектные: квартирография книги не загружена, '
     +'поэтому пул и остаток витрины показать не из чего.</div>';
+}
+
+// Комнатность проданного. Соседний блок режет метражными полосами книги, и в
+// одной полосе 28,3-40 м² лежат и студия, и однокомнатная — а покупатель
+// выбирает комнаты. Доли считает `salesShareBar` от сумм сервера.
+//
+// Пула по комнатам в источниках НЕТ, и об этом сказано под таблицей: без
+// второй половины «продано 39 однокомнатных» — не показатель, а число.
+// Этажа нет ни одной колонкой ни в одном из 27 листов выгрузки ЦФ — это
+// ответ источника, а не наш пробел, и он называется здесь же.
+function salesRoomsBlock(d){
+  const rows=d.by_rooms||[];
+  if(!rows.length) return '';
+  const known=Number(d.rooms_known)||0, whole=Number(d.rooms_total)||0;
+  let html=salesShareBar(rows, x=>x.rooms)
+    +'<details style="margin-top:8px" open><summary>Комнатность числами</summary>'
+    +salesTable(['Комнат','Лотов','м²','Средняя, м²','млн ₽','₽/м²'],
+      rows.map(x=>[esc(x.rooms), num(x.contracts), num(x.area),
+        x.contracts?num(x.area/x.contracts,1):'—',
+        num(x.amount/1e6,1), x.area?num(x.price_per_sqm):'—']))
+    +'</details>';
+  html+='<div class="muted" style="font-size:12.5px;margin-top:6px">'
+    +(known<whole?('Комнатность названа у '+num(known)+' квартир из '+num(whole)+'. '):'')
+    +'Доли пула по комнатам нет: квартирография книги нарезана метражными '
+    +'полосами, и вымывание по комнатам показать не из чего. '
+    +'Этажа в выгрузке ЦФ нет ни одной колонкой — ни у договора, ни у лота; '
+    +'«Корпус» несёт дом и номер квартиры, из которых этаж не выводится.'
+    +'</div>';
+  return html;
 }
 
 // Хватит ли эскроу к погашению ПФ. Три ряда на одной шкале: план накопления,
@@ -3159,6 +3325,7 @@ function salesPlansBlock(d){
 const SALES_BLOCKS=[
   {id:'sb-dyn',  name:'Динамика'},
   {id:'sb-mix',  name:'Квартирография'},
+  {id:'sb-rms',  name:'Комнатность'},
   {id:'sb-want', name:'Спрос'},
   {id:'sb-lead', name:'Обращения'},
   {id:'sb-room', name:'Отдел продаж'},
@@ -3184,6 +3351,7 @@ const NOTE_NEEDS={
   pool:'плана финмодели — из него берётся ожидаемая выручка проекта',
   dynamics:'хотя бы четырёх месяцев продаж',
   bands:'квартирографии книги — листа «график продажи_1»',
+  rooms:'колонки «Кол-во комнат» в листе «Контрактация» выгрузки ЦФ',
   demand:'выгрузки сделок CRM',
   funnel:'выгрузки сделок CRM',
   products:'договоров хотя бы по одному продукту',
@@ -3194,6 +3362,49 @@ const NOTE_NEEDS={
   bank:'плана банка',
   escrow:'листа «КРЕДИТЫ» книги финмодели',
 };
+// Рассрочка у нас и у соседей. Ничего не считает: сервер отдаёт готовое, и
+// второй счёт той же величины однажды разошёлся бы с вопросом Платона.
+//
+// Соседи здесь — ПО РАЙОНУ справочника, и это другой набор, чем выборка отчёта
+// о рынке (там радиус и класс). Правило приезжает вместе с числами и стоит под
+// таблицей: два разных набора под одним словом «соседи» читались бы как один.
+function salesTermsBlock(d){
+  const t=d.market_terms||{}, mine=t.ours||{};
+  const peers=t.peers||[];
+  // Свода нет вовсе — раздела нет; свод есть, а про проект молчит — это
+  // названная причина, а не пустая таблица.
+  if(mine.installment===undefined&&!peers.length)
+    return t.missing?`<div class="muted">${esc(t.missing)}</div>`:'';
+  const priceTerms=x=>{const p=x.installment_price_terms||{};
+    const keys=Object.keys(p); return keys.length?keys.map(k=>k+' '+num(p[k])).join(', '):'—'};
+  const yesNo=v=>v===undefined||v===null?'—':(v?'да':'нет');
+  const row=(name, x, own)=>[
+    (own?'<b>'+esc(name)+'</b>':esc(name)),
+    x.installment===false?'нет':(x.installment_down_payment_pct===undefined?'—'
+      :num(x.installment_down_payment_pct,1)+'%'),
+    x.installment_term_months===undefined?'—':num(x.installment_term_months),
+    // «Жёсткой датой» — не украшение: такой срок тает каждый месяц, а в
+    // рекламе выглядит как обычный.
+    x.installment_term_deadline_programs===undefined?'—'
+      :num(x.installment_term_deadline_programs)+' из '+num(x.installment_programs),
+    priceTerms(x),
+    yesNo(x.installment_keys_before_payment)];
+  const rows=[];
+  if(mine.installment!==undefined) rows.push(row(d.project||'наш проект', mine, true));
+  peers.forEach(p=>rows.push(row(p.name, p, false)));
+  const foot=[];
+  if(t.total!==undefined)
+    foot.push(`Соседи — ${esc(t.peers_rule||'по району')}`
+      +`${t.district?' («'+esc(t.district)+'»)':''}: условия известны у ${num(t.known)} из ${num(t.total)}.`);
+  if((t.unknown||[]).length)
+    foot.push(`Условий нет у: ${t.unknown.map(esc).join(', ')} — это «не знаем», `
+      +`а не «рассрочки не дают».`);
+  if(t.source) foot.push(`Источник: ${esc(t.source)}${t.saved_at?', срез '+esc(t.saved_at):''}.`);
+  if(t.missing) foot.push(esc(t.missing));
+  return salesTable(['Проект','ПВ','Срок, мес.','Программ жёсткой датой','Цена','Ключи до оплаты'], rows)
+    +`<div class="muted" style="font-size:12.5px;margin-top:6px">${foot.join(' ')}</div>`;
+}
+
 function salesNote(d, key){
   const text=(d.conclusions||{})[key];
   if(text) return `<div class="sumup">${esc(text)}</div>`;
@@ -3284,6 +3495,7 @@ function renderSales(d){
   const have=[];
   if((d.dynamics||[]).length>1) have.push('sb-dyn');
   if((pool.bands||[]).length||(d.by_size||[]).length) have.push('sb-mix');
+  if((d.by_rooms||[]).length) have.push('sb-rms');
   if(((d.demand||{}).bands||[]).length) have.push('sb-want');
   if((((d.demand||{}).funnel||{}).by_source||[]).length) have.push('sb-lead');
   if((d.by_product||[]).length) have.push('sb-prod');
@@ -3319,6 +3531,11 @@ function renderSales(d){
   html+=salesSection('sb-mix',
     (pool.bands||[]).length?'Квартирография: пул, продажи, остаток':'Размерность проданного',
     salesMixBlock(d), salesNote(d,'bands'));
+
+  if((d.by_rooms||[]).length){
+    html+=salesSection('sb-rms','Комнатность проданного',
+      salesRoomsBlock(d), salesNote(d,'rooms'));
+  }
 
   html+=salesSection('sb-want','Спрос против витрины',
     salesDemandBlock(d), salesNote(d,'demand'));
@@ -3361,6 +3578,11 @@ function renderSales(d){
     salesEscrowBlock(d), salesNote(d,'escrow'));
 
   html+=salesSection('sb-ch','Каналы продаж', salesChannelsBlock(d), salesNote(d,'channels'));
+
+  // Условия рынка: чем сосед торгует помимо цены. Посчитанное на сервере, но
+  // не показанное на экране, неотличимо от непосчитанного, — а раздел уезжает
+  // в вопрос Платону, и человек обязан видеть то же, что и он.
+  html+=salesSection('sb-terms','Рассрочка: мы и соседи', salesTermsBlock(d));
 
   // Отдел продаж — после каналов и до расторжений: сначала чем и как продавали,
   // потом что говорили в переговорной, потом что сорвалось.
@@ -3534,6 +3756,14 @@ const SALES_ASKS=[
   {chip:'Мы идём по плану?',
    text:'Сравни факт с планом нашей финмодели и с планом банка: где расхождение, '
      +'насколько велико и чем оно объясняется по имеющимся числам.'},
+  {chip:'Предложи акции',
+   text:'Предложи две-три акционные программы, чтобы поднять продажи. Опирайся '
+     +'на то, что вымывается и что копится в витрине, на воронку и на условия '
+     +'соседей из раздела «условия рынка». По каждой программе скажи: кому она '
+     +'адресована, что именно меняется в условиях, чем она отличается от того, '
+     +'что уже дают соседи, и чем рискуем. Насколько акция поднимет темп, в своде '
+     +'не измерено ничем — не выдумывай это число, а назови его неизвестным. '
+     +'Числа не пересчитывай.'},
   {chip:'Что делать в этом месяце?',
    text:'Назови три действия на ближайший месяц, каждое — со ссылкой на число из свода.'},
 ];
@@ -3644,6 +3874,15 @@ function salesDigest(d, limit){
     }
   }
   add('размерность', (d.by_size||[]).map(x=>`РАЗМЕР ${x.band}: ${num(x.contracts)} шт, ${num(x.area)} м², ${num(x.amount/1e6,1)} млн ₽`));
+  // Комнатность — своя строка, а не пересказ размерности: полоса 28,3-40 м²
+  // держит и студию, и однокомнатную. Границу говорим в самой сводке — иначе
+  // Платон сравнит наши доли с чьим-нибудь пулом, которого у нас нет.
+  const rms=(d.by_rooms||[]).map(x=>`КОМНАТ ${x.rooms}: ${num(x.contracts)} шт, средняя `
+    +`${num(x.area/(x.contracts||1),1)} м², ${num(x.amount/1e6,1)} млн ₽`
+    +`${x.area?', '+num(x.price_per_sqm)+' ₽/м²':''}`);
+  if(rms.length) rms.push('Доли пула по комнатам нет: книга нарезана метражными полосами. '
+    +'Этажа в выгрузке нет ни одной колонкой — по этажам не спрашивай и не выдумывай.');
+  add('комнатность', rms);
   add('продукты', (d.by_product||[]).map(x=>`ПРОДУКТ ${x.product}: ${num(x.contracts)} шт, ${num(x.amount/1e6,1)} млн ₽`));
   const term=[];
   if((d.terminated||[]).length){
@@ -3651,6 +3890,38 @@ function salesDigest(d, limit){
     term.push(`РАСТОРЖЕНИЙ: ${d.terminated.length}, возвращено с эскроу ${num(back/1e6,1)} млн ₽`);
   }
   add('расторжения', term);
+  // Условия рынка: наша рассрочка и рассрочка соседей по району. Витрину
+  // двигает не только прайс, и предложение по акции без этой половины
+  // строится на одной. Числа считает сервер (свод рассрочек), здесь строки.
+  const mt=d.market_terms||{}, mine=mt.ours||{};
+  const termLines=[];
+  const terms=t=>{const p=t.installment_price_terms||{};
+    return Object.keys(p).map(k=>k+' '+num(p[k])).join(', ')||'—'};
+  const one=(who,t)=>`${who}: ПВ ${t.installment_down_payment_pct===undefined?'—'
+      :num(t.installment_down_payment_pct,1)+'%'}`
+    +`, срок ${t.installment_term_months===undefined?'—':num(t.installment_term_months)+' мес.'}`
+    +`${t.installment_term_deadline_programs?' (из них '+num(t.installment_term_deadline_programs)
+        +' программ жёсткой датой — такой срок тает)':''}`
+    +`, программ ${num(t.installment_programs)}, цена: ${terms(t)}`
+    +`, ключи до полной оплаты ${t.installment_keys_before_payment===undefined?'—'
+        :(t.installment_keys_before_payment?'да':'нет')}`;
+  if(mine.installment===true) termLines.push('НАША РАССРОЧКА — '+one('мы', mine));
+  else if(mine.installment===false) termLines.push('НАША РАССРОЧКА: свод говорит, что её нет.');
+  (mt.peers||[]).forEach(p=>{
+    if(p.installment) termLines.push('РАССРОЧКА СОСЕДА — '+one(p.name, p));
+    else termLines.push(`РАССРОЧКА СОСЕДА ${p.name}: свод говорит, что её нет.`);
+  });
+  if(termLines.length||mt.missing){
+    // Охват и правило отбора стоят В САМОМ разделе: «соседи» без этого
+    // читаются как выборка отчёта о рынке, а это другой набор.
+    termLines.unshift(`УСЛОВИЯ РЫНКА (${(mt.source||'свод рассрочек')}`
+      +`${mt.saved_at?', срез '+mt.saved_at:''}; ${(mt.peers_rule||'')}`
+      +`${mt.district?'; район '+mt.district:''}`
+      +`${mt.total?'; условия известны у '+num(mt.known)+' соседей из '+num(mt.total):''}). `
+      +`У кого условий нет — это «не знаем», а не «рассрочки не дают».`);
+    if(mt.missing) termLines.push('НЕ ЗНАЕМ ПРО РАССРОЧКУ: '+mt.missing);
+  }
+  add('условия рынка', termLines, 8);
   // Чат отдела продаж отвечает на то, чего в CRM нет: что человек говорил на
   // встрече и до чего дошёл разговор. Числа считает сервер, здесь только строки.
   //
@@ -3716,7 +3987,7 @@ function salesDigest(d, limit){
   // же «почему не покупают», только числами витрины, и вытеснять их новой
   // темой значит менять один ответ на другой, а не добавлять.
   const ORDER=['выводы','не прочитано','чат: воронка от встреч','оплата','каналы',
-    'пул и вымывание','чат: о чём говорят','размерность','продукты',
+    'пул и вымывание','условия рынка','чат: о чём говорят','размерность','комнатность','продукты',
     'воронка обращений','план ФМ','план банка','расторжения','динамика'];
   const rank=name=>(ORDER.indexOf(name)+1)||99;
   groups.sort((a,b)=>rank(a.name)-rank(b.name));
@@ -3956,7 +4227,20 @@ function printHead(d){
     +` ${num(c.used)}. Прайс старше ${esc(c.fresh_since?dayDate(c.fresh_since):'—')}`
     +` — у ${num(c.stale_price)},`
     +` цены нет вовсе у ${num(c.no_price)}`
-    +(c.added_by_hand?`; вписано вручную ${num(c.added_by_hand)}`:'')+`.</div></div>`;
+    // Цена, взятая не из прайс-листа, а из помесячного ряда источника, на вид
+    // от прайсовой неотличима — значит она называется числом. Молча
+    // подставленная, она читалась бы как обычный прайс.
+    +(c.price_from_series?`; у ${num(c.price_from_series)} цена взята из помесячного`
+      +` ряда источника — прайс-листа квартир у них нет`:'')
+    +(c.added_by_hand?`; вписано вручную ${num(c.added_by_hand)}`:'')+`.`
+    // Охват свода рассрочек — часть ответа: он накрывает четверть справочника,
+    // и без числа молчание про соседа читается как «рассрочки не даёт».
+    +(c.installments_known!==undefined&&c.used
+      ? ` Условия рассрочки известны у ${num(c.installments_known)} соседей из ${num(c.used)}`
+        +` (${esc(c.installments_source||'свод рассрочек')}, срез`
+        +` ${esc(c.installments_saved_at?dayDate(c.installments_saved_at):'—')}).`
+      :'')
+    +`</div></div>`;
 }
 
 function render(d){
@@ -3973,7 +4257,7 @@ function render(d){
     +` окружение · срез ${esc(String(d.retrieved_at||'').slice(0,10))} · источник:`
     +` Пульс Продаж Новостроек</div>`
     +`<div class="card headcard"><h2>${esc(s.project_name||s.address||s.query)}</h2>
-    <div class="muted" style="font-size:13px">Опознан ${esc(src)} · класс: ${cls} · данные на ${esc(d.retrieved_at)}</div>
+    <div class="muted" style="font-size:13px">Опознан ${esc(src)} · класс: ${cls}${m.housing_kind?' · '+esc(m.housing_kind):''} · данные на ${esc(d.retrieved_at)}</div>
     <div class="kv" style="margin-top:12px">
       <div><b>${num(c.found)}</b><span>проектов в ${c.radius_km} км</span></div>
       <div><b>${num(c.comparable)}</b><span>сопоставимы по классу</span></div>

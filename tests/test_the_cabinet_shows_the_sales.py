@@ -73,7 +73,9 @@ def test_the_screen_does_no_arithmetic_of_its_own() -> None:
     # миллионы — оформление, а не экономика, и он разрешён.
     for forbidden in ("/x.amount", "/x.area", "/m.area", "/m.amount", "*1.2", "0.9*"):
         assert forbidden not in block, f"экран считает сам: {forbidden}"
-    for ready in ("x.fee_of_escrow", "x.cost_of_sales", "x.filled", "m.price_per_sqm"):
+    # Удельное приходит готовым, и приходит ВНУТРИ своего товара: `p.price` —
+    # цена метра этого товара, а не общая, мешающая паркинг с жильём.
+    for ready in ("x.fee_of_escrow", "x.cost_of_sales", "x.filled", "p.price"):
         assert ready in block, f"готовое значение {ready} не используется"
 
 
