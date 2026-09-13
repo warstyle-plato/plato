@@ -29,15 +29,30 @@ import developaid_monitor as monitor
 _ITR = re.compile(r"итр\D{0,12}?(\d+)", re.IGNORECASE)
 _WORKERS = re.compile(r"рабоч\w*\D{0,12}?(\d+)", re.IGNORECASE)
 _LEAD_NUM = re.compile(r"^\s*\d+\s*[.)\-—–]*\s*")
-_SECTION_WORKS = re.compile(r"^\s*по\s+работам\b", re.IGNORECASE)
-# Секцию называют словом стройки, а не нашим: в живом отчёте с Гродненской
-# стоит «Завоз:», и пока разбор искал только «Поставку», три строки —
-# блок, минвата, каркасы — становились подрядчиком «Завоз», а поставки
-# оставались пустыми. Та же ошибка, что с «городскими нуждами» вместо
-# «Программы реновации»: свой словарь вместо словаря источника даёт
-# честный ноль на полном источнике.
-_SECTION_SUPPLY = re.compile(r"^\s*(?:поставк\w*|завоз\w*)\s*:?\s*$", re.IGNORECASE)
-_SECTION_REMOVAL = re.compile(r"^\s*вывоз\s*:?\s*$", re.IGNORECASE)
+# Секции опознаются РАЗБОРОМ, а не регуляркой. Регулярки здесь стояли вида
+# `^\s*слово\s*:?\s*$` — два звёздочных пробельных куска подряд у якоря конца
+# строки, и на строке «поставка» с полусотней тысяч пробелов такой шаблон
+# уходит в перебор. Пока текст приходил загрузкой из кабинета, это было
+# теоретическим; с 13.09.2026 его пишет кто угодно в групповом чате, и CodeQL
+# честно назвал три таких места высокой важностью. Разбор по словам линеен и
+# заодно понятнее шаблона.
+_SECTION_SUPPLY_WORDS = ("поставк", "завоз")
+
+
+def _section_of(line: str) -> str:
+    """Какую секцию открывает строка: works / supply / removal или пусто."""
+    norm = " ".join(str(line or "").split()).lower()
+    if norm.startswith("по работам"):
+        return "works"
+    bare = norm.rstrip(":").strip()
+    if not bare or " " in bare:
+        return ""
+    if bare == "вывоз":
+        return "removal"
+    for word in _SECTION_SUPPLY_WORDS:
+        if bare.startswith(word) and bare[len(word):].isalpha() or bare == word:
+            return "supply"
+    return ""
 _GREETING = re.compile(r"^\s*(добрый|доброе|здравствуй|привет)", re.IGNORECASE)
 # Слово короче четырёх букв («на», «эт», «и») совпадает со всем подряд и
 # превращает сверку по словам в шум.
@@ -140,13 +155,14 @@ def parse_daily_report(text: str) -> dict[str, Any]:
         line = raw.strip()
         if not line:
             continue
-        if _SECTION_WORKS.match(line):
+        section = _section_of(line)
+        if section == "works":
             mode, current = "works", ""
             continue
-        if _SECTION_SUPPLY.match(line):
+        if section == "supply":
             mode = "supply"
             continue
-        if _SECTION_REMOVAL.match(line):
+        if section == "removal":
             mode = "removal"
             continue
         if mode == "head":
