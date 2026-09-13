@@ -77,7 +77,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.23.39"
+VERSION = "0.23.49"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -494,7 +494,35 @@ NON_TEP_PRODUCT_LABELS: dict[str, str] = {
 PRODUCT_LABELS_PLACEHOLDER = "__DEVELOPAID_PRODUCT_LABELS__"
 
 
-# Переданные городу метры строятся, но не продаются. Ответ на «сколько тогда
+# Получатель переданных метров — НЕ всегда город. Механизм зачёта писался под
+# Подмосковье, где метры уходят муниципалитету; по КРТ их забирает оператор
+# или Фонд реновации; по сделке метрами платят продавцу участка или
+# соинвестору — «Передано городу или продавцу / инвестору» (владелец,
+# 13.09.2026). Кто именно, модель не знает и знать не может: это условие
+# соглашения, а не расчёт, и поля под получателя нет. Значит подпись не имеет
+# права его называть: названный город там, где его нет, читается как факт
+# сделки, а не как наше умолчание.
+#
+# Слово «городу» стояло ШЕСТЬЮ копиями — колонка PDF, колонка книги, колонка
+# /v2, приписка у строки ТЭП, приписка у строки отчёта и приписка у итога, —
+# и правились бы они порознь. Объявлено один раз; на страницу едет
+# плейсхолдером, как `VERSION` и `PRODUCT_LABELS`.
+#
+# Деньги от этого не двигаются, и это измеряется, а не обещается: зачёт перед
+# получателем — отдельное ручное поле `vri_transfer_offset_mln`, оно своё и
+# сумму по цене продажи мы не считаем (правило 19.08.2026).
+#
+# Исключение названо вслух и не трогается: соцобъект и переданный ФОК уходят
+# ГОРОДУ по решению владельца (05.09.2026) — там получатель известен, и
+# нейтральная подпись была бы потерей, а не честностью.
+TRANSFER_WORD = "Передаётся"
+TRANSFER_NOTE_WORD = "передано"
+TRANSFER_RECIPIENT_NOTE = ("кому — условие соглашения: город, муниципалитет, "
+                           "продавец участка или соинвестор")
+TRANSFER_LABELS_PLACEHOLDER = "__DEVELOPAID_TRANSFER_LABELS__"
+
+
+# Переданные метры строятся, но не продаются. Ответ на «сколько тогда
 # продаём» был объявлен ЧЕТЫРЕ раза и в двух видах: страница и /v2 считали
 # полезную площадь равной продаваемой (то есть уменьшали её на переданное), а
 # скрининг КРТ — равной полной. Одна величина под одним именем означала разное.
@@ -9737,6 +9765,18 @@ class StandaloneObject(NamedTuple):
     measure: str            # "sqm" — метры, "spaces" — места
     rate_cost: str
     rate_price: str
+    # Умолчания календаря и роста цены. Прежде они стояли литералами внутри
+    # четырёх почти одинаковых блоков выручки, и различались там ровно они:
+    # у наземного паркинга стройка 18 месяцев и рост 0,75/0,2, у прочих 24 и
+    # 1,5/0,25. Пока блоки были написаны порознь, «второй офисник» означал
+    # пятый такой блок; теперь это строка здесь.
+    default_months: int = 24
+    growth_pre_default: float = 1.5
+    growth_post_default: float = 0.25
+    # Продаётся ли объект безусловно. У ФОКа ответ даёт признак «что с
+    # объектом дальше» — он уходит целиком одним путём (решение владельца,
+    # 05.09.2026), — и строится он в любом случае.
+    sale_gate: str = ""
 
     @property
     def enabled_key(self) -> str:
@@ -9760,9 +9800,11 @@ STANDALONE_OBJECTS: tuple[StandaloneObject, ...] = (
                      "offices_cost_th_per_sqm", "offices_price_th_per_sqm"),
     StandaloneObject("above_parking", "above_parking", "наземный паркинг", 2, False,
                      False, "spaces", "above_parking_cost_mln_per_space",
-                     "above_parking_price_mln_per_space"),
+                     "above_parking_price_mln_per_space",
+                     default_months=18, growth_pre_default=0.75, growth_post_default=0.2),
     StandaloneObject("sports", "sports", "ФОК", 2, True, False, "sqm",
-                     "sports_cost_th_per_sqm", "sports_price_th_per_sqm"),
+                     "sports_cost_th_per_sqm", "sports_price_th_per_sqm",
+                     sale_gate="sports_disposition"),
 )
 
 
@@ -14698,8 +14740,8 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         ], [45*mm, 125*mm], header=False, font_size=8.0),
     ]))
     story.append(_PdfSection("tep"));story.append(P("ТЭП",h2))
-    # Переданные городу метры строятся и не продаются: в продаваемой их нет.
-    # В книге колонка «Передаётся городу» была с самого начала, а отчёт о
+    # Переданные метры строятся и не продаются: в продаваемой их нет.
+    # В книге колонка переданного была с самого начала, а отчёт о
     # переданном молчал — и читался так, будто продано всё построенное
     # (владелец, 10.09.2026). Колонка появляется вместе с числом: постоянный
     # столбец нулей — шум, а не полнота.
@@ -14708,7 +14750,8 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     total=tep_report.get('total') or {}
     given = sum(float(row.get('transfer') or 0) for row in rows_data)
     if given > 0:
-        tep_rows=[["Продукт","Строит. объём, м²","Продаваемая, м²","Передаётся городу, м²","Кол-во"]]
+        tep_rows=[["Продукт","Строит. объём, м²","Продаваемая, м²",
+                   f"{TRANSFER_WORD}, м²","Кол-во"]]
         for row in rows_data:
             tep_rows.append([row.get('label') or row.get('key') or '—',
                              _pdf_num(row.get('gns'),0),_pdf_num(row.get('saleable'),0),
@@ -14716,8 +14759,9 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         tep_rows.append(["Итого",_pdf_num(total.get('gns'),0),_pdf_num(total.get('saleable'),0),
                          _pdf_num(given,0),_pdf_num(total.get('units'),0)])
         story.append(table(tep_rows,[58*mm,30*mm,32*mm,35*mm,15*mm]))
-        story.append(P("Переданные городу метры строятся, но не продаются: "
-                       "в продаваемой площади их нет.", small))
+        story.append(P("Переданные метры строятся, но не продаются: в продаваемой "
+                       f"площади их нет. {TRANSFER_RECIPIENT_NOTE.capitalize()}.",
+                       small))
     else:
         tep_rows=[["Продукт","Строит. объём, м²","Продаваемая, м²","Кол-во"]]
         for row in rows_data:
@@ -22968,7 +23012,7 @@ def build_plato_model_v2(
     ws_tep["A1"].font = styles["title"]
     ws_tep["A2"] = "Площади — исходные данные проекта. Всё, что ниже, книга считает от них."
     headers = ["Продукт", "ГНС, м²", "Общая площадь, м²", "Полезная, м²",
-               "Продаваемая, м²", "Передаётся городу, м²", "Единиц",
+               "Продаваемая, м²", f"{TRANSFER_WORD}, м²", "Единиц",
                "Гостевых, ед.", "Продаётся, ед."]
     for column, label in enumerate(headers, start=1):
         ws_tep.cell(row=4, column=column, value=label).font = styles["bold"]
@@ -25725,110 +25769,60 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         }
         return weights, factor
 
-    if b(x, "offices_enabled"):
-        offices_sales_start = d(x["offices_sales_start"])
-        offices_rve = add_months(d(x["offices_start"]), int(n(x, "offices_months", 24)))
-        offices_share = n(x, "offices_share_before_rve_pct", 85) / 100
-        offices_residual = int(n(x, "offices_residual_months", 6))
-        offices_weights, offices_factor = object_schedule(
-            "offices", offices_sales_start, d(x["offices_start"]), int(n(x, "offices_months", 24)))
-        add_product("offices", sales_schedule(
-            object_saleable("offices", "offices_saleable_sqm"), n(x, "offices_price_th_per_sqm") * 1000,
-            offices_sales_start, offices_rve,
-            offices_share, offices_residual,
-            n(x, "offices_growth_pre_pct", 1.5) / 100,
-            n(x, "offices_growth_post_pct", 0.25) / 100,
-            weights_override=offices_weights, price_factor=offices_factor,
+    # Выручка и CAPEX отдельно стоящих объектов — ОДИН обход реестра, а не
+    # блок на объект. Четыре почти одинаковых блока различались ровно тремя
+    # вещами (умолчание срока стройки, умолчание роста цены и признак «чем
+    # меряется»), и все три теперь стоят строкой в `STANDALONE_OBJECTS`:
+    # «поставить пару ОСЗ» перестало означать пятый такой блок.
+    #
+    # Календарь продаж каждого объекта складывается тут же (`sold`): его
+    # читают продажи мест его гаража ниже. Собранный там второй раз, он
+    # однажды разошёлся бы с этим, и обе половины выглядели бы верными.
+    sold: dict[str, dict[str, Any]] = {}
+    for obj in standalone_objects():
+        if not b(x, obj.enabled_key):
+            revenue_by_product[obj.key] = 0.0
+            standalone_capex[obj.key] = 0.0
+            continue
+        months = int(n(x, f"{obj.prefix}_months", obj.default_months))
+        build_start = d(x[f"{obj.prefix}_start"])
+        # Себестоимость считается на том же, чем объект меряется: у метровых
+        # это ГНС × ставка метра, у наземного паркинга места × ставка места.
+        if obj.measure == "spaces":
+            volume = n(x, f"{obj.prefix}_spaces")
+            standalone_capex[obj.key] = volume * n(x, obj.rate_cost) * 1_000_000
+            price = n(x, obj.rate_price) * 1_000_000
+        else:
+            standalone_capex[obj.key] = n(x, f"{obj.prefix}_gba_sqm") * n(x, obj.rate_cost) * 1000
+            volume = object_saleable(obj.key, f"{obj.prefix}_saleable_sqm")
+            price = n(x, obj.rate_price) * 1000
+        if obj.garage:
+            standalone_garage_capex[obj.key] = object_parking_capex(obj.key)
+            standalone_capex[obj.key] += standalone_garage_capex[obj.key]
+        # Признак продажи гасит ВЫРУЧКУ, а не стройку: переданный объект
+        # строится за те же деньги и ведёт себя как соцобъект.
+        if obj.sale_gate and not sports_is_sold(x):
+            revenue_by_product[obj.key] = 0.0
+            continue
+        sales_start = d(x[f"{obj.prefix}_sales_start"])
+        end_ref = add_months(build_start, months)
+        share_value = n(x, f"{obj.prefix}_share_before_rve_pct", 85) / 100
+        residual = int(n(x, f"{obj.prefix}_residual_months", 6))
+        growth_pre = n(x, f"{obj.prefix}_growth_pre_pct", obj.growth_pre_default) / 100
+        growth_post = n(x, f"{obj.prefix}_growth_post_pct", obj.growth_post_default) / 100
+        weights, factor = object_schedule(obj.prefix, sales_start, build_start, months)
+        add_product(obj.key, sales_schedule(
+            volume, price, sales_start, end_ref, share_value, residual,
+            growth_pre, growth_post,
+            weights_override=weights, price_factor=factor,
         ), quantity_schedule(
-            object_saleable("offices", "offices_saleable_sqm"), offices_sales_start, offices_rve,
-            offices_share, offices_residual, weights_override=offices_weights,
+            volume, sales_start, end_ref, share_value, residual,
+            weights_override=weights,
         ))
-        standalone_capex["offices"] = n(x, "offices_gba_sqm") * n(x, "offices_cost_th_per_sqm") * 1000
-        standalone_garage_capex["offices"] = object_parking_capex("offices")
-        standalone_capex["offices"] += standalone_garage_capex["offices"]
-    else:
-        revenue_by_product["offices"] = 0.0
-        standalone_capex["offices"] = 0.0
-
-    if b(x, "retail_enabled"):
-        retail_sales_start = d(x["retail_sales_start"])
-        retail_rve = add_months(d(x["retail_start"]), int(n(x, "retail_months", 24)))
-        retail_share = n(x, "retail_share_before_rve_pct", 85) / 100
-        retail_residual = int(n(x, "retail_residual_months", 6))
-        retail_weights, retail_factor = object_schedule(
-            "retail", retail_sales_start, d(x["retail_start"]), int(n(x, "retail_months", 24)))
-        add_product("standalone_retail", sales_schedule(
-            object_saleable("standalone_retail", "retail_saleable_sqm"), n(x, "retail_price_th_per_sqm") * 1000,
-            retail_sales_start, retail_rve,
-            retail_share, retail_residual,
-            n(x, "retail_growth_pre_pct", 1.5) / 100,
-            n(x, "retail_growth_post_pct", 0.25) / 100,
-            weights_override=retail_weights, price_factor=retail_factor,
-        ), quantity_schedule(
-            object_saleable("standalone_retail", "retail_saleable_sqm"), retail_sales_start, retail_rve,
-            retail_share, retail_residual, weights_override=retail_weights,
-        ))
-        standalone_capex["standalone_retail"] = n(x, "retail_gba_sqm") * n(x, "retail_cost_th_per_sqm") * 1000
-        standalone_garage_capex["standalone_retail"] = object_parking_capex("standalone_retail")
-        standalone_capex["standalone_retail"] += standalone_garage_capex["standalone_retail"]
-    else:
-        revenue_by_product["standalone_retail"] = 0.0
-        standalone_capex["standalone_retail"] = 0.0
-
-    if b(x, "above_parking_enabled"):
-        above_parking_end = add_months(d(x["above_parking_start"]), int(n(x, "above_parking_months", 18)))
-        above_parking_sales_start = d(x["above_parking_sales_start"])
-        above_parking_share = n(x, "above_parking_share_before_rve_pct", 85) / 100
-        above_parking_residual = int(n(x, "above_parking_residual_months", 6))
-        parking_weights, parking_factor = object_schedule(
-            "above_parking", above_parking_sales_start, d(x["above_parking_start"]),
-            int(n(x, "above_parking_months", 18)))
-        add_product("above_parking", sales_schedule(
-            n(x, "above_parking_spaces"), n(x, "above_parking_price_mln_per_space") * 1_000_000,
-            above_parking_sales_start, above_parking_end,
-            above_parking_share, above_parking_residual,
-            n(x, "above_parking_growth_pre_pct", 0.75) / 100,
-            n(x, "above_parking_growth_post_pct", 0.2) / 100,
-            weights_override=parking_weights, price_factor=parking_factor,
-        ), quantity_schedule(
-            n(x, "above_parking_spaces"), above_parking_sales_start, above_parking_end,
-            above_parking_share, above_parking_residual, weights_override=parking_weights,
-        ))
-        standalone_capex["above_parking"] = n(x, "above_parking_spaces") * n(x, "above_parking_cost_mln_per_space") * 1_000_000
-    else:
-        revenue_by_product["above_parking"] = 0.0
-        standalone_capex["above_parking"] = 0.0
-
-    # ФОК строится в любом случае — деньги на него тратятся и при передаче
-    # городу. Продаётся он только по признаку: «всё или так, или так»
-    # (решение владельца, 05.09.2026). Переданный ФОК ведёт себя как соцобъект
-    # — метры строятся, но не продаются.
-    if b(x, "sports_enabled"):
-        standalone_capex["sports"] = n(x, "sports_gba_sqm") * n(x, "sports_cost_th_per_sqm") * 1000
-        standalone_garage_capex["sports"] = object_parking_capex("sports")
-        standalone_capex["sports"] += standalone_garage_capex["sports"]
-    else:
-        standalone_capex["sports"] = 0.0
-    if b(x, "sports_enabled") and sports_is_sold(x):
-        sports_sales_start = d(x["sports_sales_start"])
-        sports_rve = add_months(d(x["sports_start"]), int(n(x, "sports_months", 24)))
-        sports_share = n(x, "sports_share_before_rve_pct", 85) / 100
-        sports_residual = int(n(x, "sports_residual_months", 6))
-        sports_weights, sports_factor = object_schedule(
-            "sports", sports_sales_start, d(x["sports_start"]), int(n(x, "sports_months", 24)))
-        add_product("sports", sales_schedule(
-            object_saleable("sports", "sports_saleable_sqm"), n(x, "sports_price_th_per_sqm") * 1000,
-            sports_sales_start, sports_rve,
-            sports_share, sports_residual,
-            n(x, "sports_growth_pre_pct", 1.5) / 100,
-            n(x, "sports_growth_post_pct", 0.25) / 100,
-            weights_override=sports_weights, price_factor=sports_factor,
-        ), quantity_schedule(
-            object_saleable("sports", "sports_saleable_sqm"), sports_sales_start, sports_rve,
-            sports_share, sports_residual, weights_override=sports_weights,
-        ))
-    else:
-        revenue_by_product["sports"] = 0.0
+        sold[obj.key] = {"sales_start": sales_start, "end_ref": end_ref,
+                         "share": share_value, "residual": residual,
+                         "growth_pre": growth_pre, "growth_post": growth_post,
+                         "weights": weights, "factor": factor}
 
     # Места гаражей объектов продаются машино-местами (владелец,
     # 05.09.2026: «продают машиноместами конечно»). Число мест берётся со
@@ -25870,21 +25864,17 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     # Встроенной коммерции МКД здесь нет: её машино-места лежат в общем
     # подземном паркинге проекта, у которого своя строка ТЭП и своя выручка.
     # Свой гараж у неё был бы вторым счётом тех же мест.
-    if b(x, "offices_enabled"):
-        sell_object_parking("offices", offices_sales_start, offices_rve, offices_share,
-                            offices_residual, n(x, "offices_growth_pre_pct", 1.5) / 100,
-                            n(x, "offices_growth_post_pct", 0.25) / 100,
-                            offices_weights, offices_factor)
-    if b(x, "retail_enabled"):
-        sell_object_parking("standalone_retail", retail_sales_start, retail_rve, retail_share,
-                            retail_residual, n(x, "retail_growth_pre_pct", 1.5) / 100,
-                            n(x, "retail_growth_post_pct", 0.25) / 100,
-                            retail_weights, retail_factor)
-    if b(x, "sports_enabled") and sports_is_sold(x):
-        sell_object_parking("sports", sports_sales_start, sports_rve, sports_share,
-                            sports_residual, n(x, "sports_growth_pre_pct", 1.5) / 100,
-                            n(x, "sports_growth_post_pct", 0.25) / 100,
-                            sports_weights, sports_factor)
+    # Гараж продаётся календарём СВОЕГО объекта — тем же, что посчитан выше.
+    # У наземного паркинга гаража нет вовсе, и в `sold` он стоит без него:
+    # обход спрашивает реестр, а не перечисляет объекты по памяти.
+    for obj in standalone_objects():
+        plan = sold.get(obj.key)
+        if not obj.garage or plan is None:
+            continue
+        sell_object_parking(obj.key, plan["sales_start"], plan["end_ref"],
+                            plan["share"], plan["residual"],
+                            plan["growth_pre"], plan["growth_post"],
+                            plan["weights"], plan["factor"])
     if object_parking_value:
         add_product("object_parking", dict(object_parking_value), dict(object_parking_units))
     else:
@@ -25939,10 +25929,9 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         "landscaping": landscaping_sqm * n(x, "landscaping_th_per_sqm") * 1000,
         "commissioning": core_total_gns * n(x, "commissioning_th_per_sqm") * 1000,
         "site_maintenance": core_total_gns * n(x, "site_maintenance_th_per_sqm") * 1000,
-        "offices": standalone_capex["offices"],
-        "standalone_retail": standalone_capex["standalone_retail"],
-        "above_parking": standalone_capex["above_parking"],
-        "sports": standalone_capex["sports"],
+        # Статьи объектов — по реестру, а не перечислением: снятый оттуда
+        # объект иначе валит расчёт KeyError'ом, то есть список тут второй.
+        **{obj.key: standalone_capex.get(obj.key, 0.0) for obj in standalone_objects()},
     }
 
     social_program = effective_social_program(x)
@@ -26177,14 +26166,11 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     # разницы четыре месяца подряд — итог CAPEX сходился, профиль нет. Меньше
     # потрачено — меньше долг, выше покрытие эскроу, другая ступень лестницы
     # ставки ПФ: 14,75 млн ₽ расхождения по стоимости финансирования.
-    if amounts["offices"]:
-        spread_s_curve("offices", amounts["offices"], d(x["offices_start"]), int(n(x, "offices_months", 24)))
-    if amounts["standalone_retail"]:
-        spread_s_curve("standalone_retail", amounts["standalone_retail"], d(x["retail_start"]), int(n(x, "retail_months", 24)))
-    if amounts["above_parking"]:
-        spread_s_curve("above_parking", amounts["above_parking"], d(x["above_parking_start"]), int(n(x, "above_parking_months", 18)))
-    if amounts["sports"]:
-        spread_s_curve("sports", amounts["sports"], d(x["sports_start"]), int(n(x, "sports_months", 24)))
+    for obj in standalone_objects():
+        if not amounts.get(obj.key):
+            continue
+        spread_s_curve(obj.key, amounts[obj.key], d(x[f"{obj.prefix}_start"]),
+                       int(n(x, f"{obj.prefix}_months", obj.default_months)))
 
     # GC, reserve and project management belong to the construction phase rather than the pre-RnS bridge period.
     # This is closer to the timing used in the current Excel cash-flow model.
@@ -39027,6 +39013,12 @@ const TEP_DEFAULT=__DEVELOPAID_TEP_DEFAULT__;
 // видел у одного продукта до четырёх имён. Объявление одно — в движке
 // (`TEP_DEFAULT`), здесь только чтение.
 const PRODUCT_LABELS=__DEVELOPAID_PRODUCT_LABELS__;
+// Подпись переданных метров — из движка: получателя модель не знает, и
+// называть его нельзя. Копии слова «городу» на странице больше нет.
+const TRANSFER_LABELS=__DEVELOPAID_TRANSFER_LABELS__;
+const TRANSFER_WORD=TRANSFER_LABELS.word;
+const TRANSFER_NOTE_WORD=TRANSFER_LABELS.note_word;
+const TRANSFER_RECIPIENT_NOTE=TRANSFER_LABELS.recipients;
 function productName(key){
  // Карта приходит из движка и покрывает продукты БЕЗ строки ТЭП тоже: раньше
  // такой продукт уезжал на экран сырым ключом («object_parking» в структуре
@@ -43468,7 +43460,7 @@ function renderTep(){
    const chain=TEP_RATIOS[key]?tepRatioChain(tepRatio(key)):null;
    const own=chain&&tepRatioChangedKeys().includes(key);
    // «% общей» стоит под ПОЛЕЗНОЙ, а не под продаваемой: доля строит вал, а в
-   // продаваемой лежит вал МИНУС переданное городу. Пока передачи нет, числа
+   // продаваемой лежит вал МИНУС переданное. Пока передачи нет, числа
    // равны и разницы не видно; при передаче 4 500 м² под 9 420 стояло
    // «72,22 % общей», то есть подпись описывала соседнюю величину — «ну вот
    // как это понимать?» (владелец, 12.09.2026). Правило то же, что было
@@ -43718,7 +43710,7 @@ function refillTepRow(key){
                  :{gns:0,total_area:0,saleable:gross,useful:0};
  const filled=tepFillByRatios(key,base);
  ['gns','total_area','saleable','useful'].forEach(field=>{row[field]=filled[field]});
- // Переданное городу вычитается ТЕМ ЖЕ тождеством, что и в правке ячейки:
+ // Переданное вычитается ТЕМ ЖЕ тождеством, что и в правке ячейки:
  // без этого правка доли и кнопка «наши» возвращали отданные метры в продажу
  // (замер 12.09.2026: 4 500 м² квартир снова становились продаваемыми).
  tepApplyTransfer(key,filled.saleable);
@@ -44212,7 +44204,7 @@ function tepFillByRatios(key,row){
  return out;
 }
 
-// Переданные городу метры строятся, но не продаются. Тождество строки одно, и
+// Переданные метры строятся, но не продаются. Тождество строки одно, и
 // объявлено оно в движке (`saleable_after_transfer`): полезная — построенная
 // площадь, продаваемая — она же за вычетом переданного. Полезная от передачи
 // НЕ уменьшается: метры построены и полезны, просто не наши (владелец,
@@ -44236,8 +44228,9 @@ function tepApplyTransfer(key,usefulGross){
   ? (transfer>useful
      ? 'Передаётся '+landNum(transfer,0)+' м² при полезной площади '+landNum(useful,0)
        +' м²: передаётся больше, чем строится.'
-     : 'Передаётся городу '+landNum(transfer,0)+' м² из '+landNum(useful,0)
-       +' м² полезной площади — они строятся, но не продаются.')
+     : TRANSFER_WORD+' '+landNum(transfer,0)+' м² из '+landNum(useful,0)
+       +' м² полезной площади — они строятся, но не продаются. '
+       +TRANSFER_RECIPIENT_NOTE+'.')
   : '';
  return row.saleable;
 }
@@ -46341,13 +46334,13 @@ function renderResult(){
  const underTotal=Number(r.summary.underground_gns_sqm!==undefined
   ?r.summary.underground_gns_sqm:underGns);
  const dash='<span style="color:#bbb">—</span>';
- // Переданные городу метры строятся и не продаются: в продаваемой их нет, и
+ // Переданные метры строятся и не продаются: в продаваемой их нет, и
  // без приписки отчёт читается так, будто продано всё построенное — «в отчёте
  // вообще нет указания на передаваемую! Чтобы не забыть, что вообще-то не всё
  // продал» (владелец, 10.09.2026). Штуки так подписаны с 04.09; метры —
  // соседнее место, и правило до него не дошло.
  const areaNote=x=>Number(x.transfer||0)>0
-  ? `<span style="display:block;font-size:10px;color:#777">передано городу ${num(x.transfer)} м²</span>`
+  ? `<span style="display:block;font-size:10px;color:#777">${TRANSFER_NOTE_WORD} ${num(x.transfer)} м²</span>`
   : '';
  const transferTotal=r.tep.rows.reduce((sum,x)=>sum+Number(x.transfer||0),0);
  reportTep.innerHTML=
@@ -46360,7 +46353,7 @@ function renderResult(){
    +`<td>${num(x.units)}${unitNote(x)}</td><td>${num(soldUnits(x))}</td></tr>`).join('')+
   `</tbody><tfoot><tr><th>Итого</th><th>${num(aboveGns)}</th><th>${num(underTotal)}</th>`
   +`<th>${num(r.tep.total.saleable)}`
-  +(transferTotal>0?`<span style="display:block;font-size:10px;color:#777">передано городу ${num(transferTotal)} м²</span>`:'')
+  +(transferTotal>0?`<span style="display:block;font-size:10px;color:#777">${TRANSFER_NOTE_WORD} ${num(transferTotal)} м²</span>`:'')
   +`</th><th>${num(r.tep.total.units)}</th><th>${num(soldTotal)}</th></tr></tfoot>`;
  const tepNote=document.getElementById('reportTepNote');
  if(tepNote)tepNote.innerHTML=underTotal>0
@@ -48290,6 +48283,11 @@ PAGE = PAGE.replace(CAPEX_NAMES_PLACEHOLDER, json.dumps(
 # Состав МКД — из движка, копии на странице нет.
 PAGE = PAGE.replace("__DEVELOPAID_MKD_PRODUCTS__",
                     json.dumps(list(MKD_PRODUCTS), ensure_ascii=False))
+# Подпись переданных метров — из движка: получателя мы не знаем, и шесть копий
+# слова «городу» правились бы порознь.
+PAGE = PAGE.replace(TRANSFER_LABELS_PLACEHOLDER, json.dumps(
+    {"word": TRANSFER_WORD, "note_word": TRANSFER_NOTE_WORD,
+     "recipients": TRANSFER_RECIPIENT_NOTE}, ensure_ascii=False))
 PAGE = PAGE.replace("__DEVELOPAID_UNDERGROUND_PRODUCTS__",
                     json.dumps(list(UNDERGROUND_PRODUCTS), ensure_ascii=False))
 # Разделы таблицы ТЭП — оттуда же, где объявлены составы: два списка и

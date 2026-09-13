@@ -157,6 +157,10 @@ def read(raw: bytes) -> dict[str, Any]:
     text = lambda path: (root.findtext(path) or "").strip()  # noqa: E731
     record: dict[str, Any] = {
         "kind": kind,
+        # Чем прочитана запись — часть записи: печатная форма отвечает не на
+        # все вопросы машинной, и поверхность обязана это знать, не спрашивая
+        # второй раз (`egrn_print_form` ставит здесь "print_form").
+        "source": "xml",
         "cadastral_number": text(base + "/object/common_data/cad_number"),
         "quarter": text(base + "/object/common_data/quarter_cad_number"),
         "address": text(".//readable_address"),
@@ -208,6 +212,37 @@ def owner_of(record: dict[str, Any]) -> dict[str, Any] | None:
                 return {**holder, "key": holder_key(holder),
                         "right_type": right.get("type"), "since": right.get("date")}
     return None
+
+
+def owner_state(record: dict[str, Any]) -> str:
+    """Что документ говорит о собственнике: назван, не раскрыт или права нет.
+
+    Ответов три, и слить их в «владельца нет» нельзя.
+
+    `named` — собственность зарегистрирована и держатель назван.
+
+    `withheld` — собственность ЗАРЕГИСТРИРОВАНА (вид, номер и дата стоят), а
+    имени в документе нет. Так устроена печатная форма выписки «об объекте
+    недвижимости»: у 77:05:0012007:2054 стоит «Собственность
+    77-77/005-77/009/277/2016-603/2 от 23.12.2016», а клетка «Правообладатель»
+    пуста — проверено отрисовкой страницы, там нет ни текста, ни картинки. Это
+    свойство ВИДА выписки, а не молчание реестра, и лечится оно своим запросом
+    в ЕГРН, а не перечитыванием того же файла.
+
+    `unregistered` — права собственности нет вовсе. Это ответ реестра: у 14
+    участков квартала 77:05:0004001 из 20 собственность не зарегистрирована.
+
+    Выдать второе за третье значит сказать «право не зарегистрировано» там, где
+    оно зарегистрировано, — и на экране эти два ответа неразличимы.
+    """
+    if (owner_of(record) or {}).get("name"):
+        return "named"
+    for right in record.get("rights") or []:
+        if "обственност" not in (right.get("type") or ""):
+            continue
+        if not any((holder or {}).get("name") for holder in right.get("holders") or []):
+            return "withheld"
+    return "unregistered"
 
 
 def other_rights(record: dict[str, Any]) -> list[dict[str, Any]]:

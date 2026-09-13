@@ -36,6 +36,11 @@ def function(name: str, page: str | None = None) -> str:
     start = page.find(declaration)
     if start < 0:
         raise AssertionError(f"на странице нет функции {name}")
+    # `async` стоит ПЕРЕД словом `function`, и срез от него терял это слово:
+    # node отвечал «await is only valid in async functions», то есть падал на
+    # стенде, а не на том, что стенд проверяет.
+    if page[max(0, start - 6):start] == "async ":
+        start -= 6
     depth = 0
     for position in range(page.index("{", start), len(page)):
         if page[position] == "{":
@@ -73,6 +78,12 @@ def tep_cell_stand() -> str:
     """
     pieces = [
         page_const("TEP_RATIOS"),
+        # Подписи переданных метров — со страницы, а не литералом: получателя
+        # модель не знает, и вторая копия слова разошлась бы с движком молча.
+        page_const("TRANSFER_LABELS"),
+        page_const("TRANSFER_WORD"),
+        page_const("TRANSFER_NOTE_WORD"),
+        page_const("TRANSFER_RECIPIENT_NOTE"),
         "const inputs={};",
         "let tep={};",
         "let tepRefillNote={};",
@@ -106,14 +117,18 @@ def tep_cell_stand() -> str:
     return "\n".join(pieces) + "\n"
 
 
-def page_const(name: str) -> str:
+def page_const(name: str, page: str | None = None) -> str:
     """Объявление константы страницы целиком, как оно стоит на СОБРАННОЙ странице.
 
     Литерал в стенде был бы второй копией методики: доли ТЭП, имена продуктов и
     умолчания объявлены в движке и приезжают подстановкой. Взятые со страницы,
     они не могут отстать.
+
+    Страница по умолчанию основная; у торгов своя, и берётся она тем же
+    способом — как и у `function`, иначе у одного правила «где живёт этот
+    кусок» завелось бы два ответа.
     """
-    page = core.PAGE
+    page = core.PAGE if page is None else page
     head = f"const {name}="
     start = page.find(head)
     if start < 0:
@@ -135,3 +150,11 @@ def auctions_function(*names: str) -> str:
 
     page = ui.auctions_page()
     return "\n".join(function(name, page) for name in names)
+
+
+def auctions_const(*names: str) -> str:
+    """Константы страницы торгов — тем же способом, что и её функции."""
+    from auction_search import ui  # локально: движок тянуть незачем
+
+    page = ui.auctions_page()
+    return "\n".join(page_const(name, page) for name in names)

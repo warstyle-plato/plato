@@ -24,6 +24,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import main_legacy as core  # noqa: E402
+import page_blocks  # noqa: E402
 
 PAGE = core.PAGE
 
@@ -82,6 +83,11 @@ def test_the_queue_leads_and_the_project_row_is_the_sum() -> None:
         # Тождество строки считает один помощник — он же в таблице ТЭП.
         "let tepRefillNote={};\n"
         "const landNum=(v,d)=>Number(v||0).toFixed(d===undefined?1:d);\n"
+        # Подписи переданных метров — со страницы: получателя модель не знает,
+        # и литерал в стенде был бы второй копией слова.
+        + page_blocks.page_const("TRANSFER_LABELS") + "\n"
+        + page_blocks.page_const("TRANSFER_WORD") + "\n"
+        + page_blocks.page_const("TRANSFER_RECIPIENT_NOTE") + "\n"
         + _function("tepApplyTransfer") + "\n"
         + PAGE[PAGE.index("const PHASE_GIVEN_IN_UNITS="):PAGE.index("function setPhaseProductTep(")]
         + "\nsetPhaseProductGiven(0,'apartments',5000);\n"

@@ -37,9 +37,16 @@ _TEP_FIELD_LABELS = {
     "total_area": ("Общая площадь", "м²"),
     "useful": ("Полезная", "м²"),
     "saleable": ("Продаваемая", "м²"),
-    "transfer": ("Передаётся городу", "м²"),
     "units": ("Количество", "шт."),
 }
+
+# Подпись передаваемой площади получателя НЕ называет: его модель не знает —
+# метры уходят городу, муниципалитету, продавцу участка или соинвестору, и это
+# условие соглашения. Слово берётся у движка, копии здесь нет.
+def _tep_field_label(core: Any, name: str) -> tuple[str, str]:
+    if name == "transfer":
+        return core.TRANSFER_WORD, "м²"
+    return _TEP_FIELD_LABELS.get(name, (name, ""))
 
 _PHASING_FIELDS = [
     ("enabled", "Считать проект по очередям", "Да / Нет", "checkbox"),
@@ -82,8 +89,8 @@ def _tep_block(core: Any) -> dict[str, Any]:
     for key, row in core.TEP_DEFAULT.items():
         fields = [
             {"key": name,
-             "label": _TEP_FIELD_LABELS.get(name, (name, ""))[0],
-             "unit": _TEP_FIELD_LABELS.get(name, (name, ""))[1]}
+             "label": _tep_field_label(core, name)[0],
+             "unit": _tep_field_label(core, name)[1]}
             for name in row if name != _TEP_LABEL_FIELD
         ]
         rows.append({"key": key, "label": str(row.get("label") or key), "fields": fields})

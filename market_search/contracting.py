@@ -622,6 +622,9 @@ def _totals(rows: Iterable[dict[str, Any]]) -> dict[str, float]:
         "contracts": float(len(rows)),
         "units": sum(r["units"] for r in rows),
         "area": area,
+        # Сколько строк пришли без «Проектной S»: их метры в сумму не попали,
+        # и без этого числа занижённая площадь выглядит измеренной.
+        "area_unknown": float(sum(1 for r in rows if not r["area"])),
         "amount": amount,
         "escrow": escrow,
         "broker_fee": fee,
@@ -954,10 +957,17 @@ def summarise(contracts: dict[str, Any], ledger: dict[str, Any] | None = None) -
         # именами один товар стоял на одном экране двумя строками — раздел
         # «Продукты» звал его так, плитка пула иначе.
         product = month["by_product"].setdefault(
-            product_name(row["product"]), {"units": 0.0, "area": 0.0, "amount": 0.0})
+            product_name(row["product"]),
+            {"units": 0.0, "area": 0.0, "amount": 0.0, "area_unknown": 0.0})
         product["units"] += row["units"]
         product["area"] += row["area"]
         product["amount"] += row["amount"]
+        # Проданный лот не бывает нулевой площади — ноль здесь значит, что
+        # «Проектная S» не заполнена. Сложенный как ноль, он молча занижает
+        # метры месяца, а на графике рисуется столбиком в пиксель: пропуск,
+        # выданный за измеренный ноль.
+        if not row["area"]:
+            product["area_unknown"] += 1
     dynamics = []
     for month in sorted(months):
         item = months[month]
@@ -966,6 +976,7 @@ def summarise(contracts: dict[str, Any], ledger: dict[str, Any] | None = None) -
         item.update({
             "units": sum(p["units"] for p in item["by_product"].values()),
             "area": area,
+            "area_unknown": sum(p["area_unknown"] for p in item["by_product"].values()),
             "amount": amount,
             # Удельное считает тот, кто считает выручку. Посчитанное на экране
             # было бы вторым счётом той же величины: разойдись они, обе строки
@@ -979,8 +990,13 @@ def summarise(contracts: dict[str, Any], ledger: dict[str, Any] | None = None) -
         # Поэтому удельное считается ВНУТРИ каждого товара: у графика продукта
         # своя линия цены, и брать на неё общую цену метра значит подписать
         # чужое число именем этого продукта.
-        for stats in item["by_product"].values():
-            stats["price"] = stats["amount"] / stats["area"] if stats["area"] else None
+        for name, stats in item["by_product"].items():
+            # Цена — в мере СВОЕГО товара: у машино-места это рубли за лот, и
+            # делить его деньги на метры незачем — продаётся место, а не метр.
+            if product_measure(name) == "units":
+                stats["price"] = stats["amount"] / stats["units"] if stats["units"] else None
+            else:
+                stats["price"] = stats["amount"] / stats["area"] if stats["area"] else None
         flats = item["by_product"].get("Квартира") or {}
         item["price_flats"] = flats.get("price")
         dynamics.append(item)
@@ -988,7 +1004,14 @@ def summarise(contracts: dict[str, Any], ledger: dict[str, Any] | None = None) -
     products = {}
     for row in rows:
         products.setdefault(product_name(row["product"]), []).append(row)
-    by_product = [{"product": key, **_totals(items)} for key, items in products.items()]
+    by_product = [{"product": key, "measure": product_measure(key), **_totals(items)}
+                  for key, items in products.items()]
+    for item in by_product:
+        # Цена товара — в его собственной мере. Одна колонка «₽/м²» на все
+        # товары подписала бы деньги машино-места чужой единицей.
+        item["price_per_unit"] = (item["amount"] / item["units"]) if item["units"] else None
+        item["price"] = (item["price_per_unit"] if item["measure"] == "units"
+                         else (item["price_per_sqm"] or None))
     by_product.sort(key=lambda item: -item["amount"])
 
     # Факт по кварталам: план банка квартальный, и сравнивать его с месяцами
@@ -1136,6 +1159,20 @@ def product_name(label: str) -> str:
     """Имя продукта, одинаковое во всех источниках."""
     text = _text(label)
     return _PRODUCT_ALIASES.get(text.lower(), text)
+
+
+# Мера товара — часть самого товара, и объявлена она там же, где его имя.
+# Машино-место и кладовая продаются ШТУКОЙ: «в машиноместах не метры интересны,
+# а лоты» (владелец, 13.09.2026). Метры у них в выгрузке есть, но отвечают не на
+# тот вопрос — цена метра паркинга ни с чем не сравнима, — а лот с незаполненной
+# «Проектной S» встаёт на графике «м²» нулевым столбиком и читается как
+# «продали ноль метров»: ровно так пропал из виду сентябрьский договор на 6 млн.
+_UNIT_PRODUCTS = ("Машиноместо", "Кладовая")
+
+
+def product_measure(label: str) -> str:
+    """«units» — товар продаётся штукой, «area» — метрами."""
+    return "units" if product_name(label) in _UNIT_PRODUCTS else "area"
 
 
 _POOL_SOLD = "Продано, шт"
@@ -1514,6 +1551,19 @@ def conclusions(summary: dict[str, Any]) -> dict[str, str]:
         out["products"] = (
             f"{first['product']} — {_pct(first['amount'] / total['amount'] if total.get('amount') else None)} "
             f"выручки, всего продуктов в продажах {len(products)}.")
+        by_piece = [p["product"] for p in products if p.get("measure") == "units"]
+        if by_piece:
+            out["products"] += (
+                f" {', '.join(by_piece)} продаётся штукой — мера у "
+                f"{'них' if len(by_piece) > 1 else 'него'} лоты, а не метры, "
+                f"и цена своя: рубли за лот.")
+        blind = int(sum(p.get("area_unknown") or 0 for p in products))
+        if blind:
+            out["products"] += (
+                f" У {blind} {_plural(blind, 'договора', 'договоров', 'договоров')} "
+                f"не заполнена «Проектная S»: "
+                f"{_plural(blind, 'его метры', 'их метры', 'их метры')} "
+                f"в площадь не попали — это пропуск выгрузки, а не ноль.")
 
     payment = summary.get("by_payment") or []
     if payment:
@@ -1683,6 +1733,20 @@ def conclusions(summary: dict[str, Any]) -> dict[str, str]:
             f"Звонков {int(quality['calls'])}, из них целевых "
             f"{int(quality['target'])}; до брони доходит "
             f"{_pct(quality.get('booked_target'))}. ")
+        # Число за всё время не отвечает на «как сейчас»: канал, работавший год
+        # назад, и канал, живущий сегодня, в нём неразличимы. Окно и его имя
+        # приходят посчитанными — второй счёт той же доли разошёлся бы с
+        # экраном, и обе фразы выглядели бы верными.
+        window, before = lead.get("recent") or {}, lead.get("before") or {}
+        if window.get("target") and window.get("share") is not None:
+            line += (f"За {window['label']} целевых {int(window['target'])}, "
+                     f"до брони {_pct(window['share'])}")
+            line += (f" против {_pct(before['share'])} за {before['label']}. "
+                     if before.get("share") is not None else ". ")
+            if lead.get("partial_month"):
+                line += ("Последний месяц окна неполон, и доля свежих месяцев "
+                         "занижена по построению: месяц ставится по дате "
+                         "обращения, а бронь приходит позже. ")
         if best is not main and best.get("share"):
             line += (f"У «{main['name']}» это {_pct(main.get('share'))} при "
                      f"{int(main['deals'])} обращениях, у «{best['name']}» — "

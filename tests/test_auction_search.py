@@ -410,10 +410,13 @@ def test_krt_auth_required_is_not_mistaken_for_no_obligations(monkeypatch):
         documents=[AuctionDocument(title="Проект договора КРТ.pdf", url="https://catalog.lot-online.ru/doc.pdf")],
     )
 
-    def require_auth(_document):
+    def require_auth(url, **kwargs):
         raise DocumentAuthorizationRequired("login required")
 
-    monkeypatch.setattr("auction_search.krt_pipeline.extract_document_paragraphs", require_auth)
+    # Вход площадка требует на ЗАГРУЗКЕ, и с 0.23.х байты берутся отдельно от
+    # разбора: один запрос на вложение, дальше его читают разные читатели.
+    # Прежде подменялся разбор — теперь на этом шаге отказывать уже некому.
+    monkeypatch.setattr("auction_search.krt_pipeline.download_document", require_auth)
     enriched = enrich_krt_from_official_documents(lot)
     assert enriched.raw["krt_auth_required"] is True
     assert enriched.raw["krt_extraction_complete"] is False
