@@ -45,6 +45,8 @@ from auction_search.models import (  # noqa: E402
 EXTRACTS = ROOT / "reference_data" / "krt" / "egrn"
 LAND = "77:05:0004001:15"
 BUILD = "77:05:0004001:1098"
+# Строение с зарегистрированным правом — «УНИКС», ИНН 9724179743.
+OWNED = "77:05:0004001:1038"
 
 
 def extract(number: str) -> bytes:
@@ -236,3 +238,107 @@ def test_one_company_in_two_spellings_is_one_owner(monkeypatch):
 def test_a_lot_without_extracts_has_no_summary_instead_of_an_empty_one():
     """Свод без выписок — это «не спрашивали», а не «владельцев нет»."""
     assert krt_pipeline.egrn_summary(lot()) is None
+
+
+# ── Три состояния свода: не спрашивали / площадка отказала / прочитали ──
+#
+# Измерено на проде 13.09.2026: лот 21000005000000033023 (Варшавское ш.,
+# 17004837) несёт три вложения с выписками, и Росэлторг ответил 503 по
+# каждому. Отказ лежал в общих предупреждениях, а `lot.raw["egrn"]` не
+# появлялся вовсе — свод отдавал `None`, то есть «не спрашивали». Ответ
+# площадки, выданный за отсутствие вопроса.
+
+
+def refusing_lot(monkeypatch, error: str = "document download failed: HTTP 503"):
+    def refuse(url, **kwargs):
+        raise krt_pipeline.DocumentExtractionError(error)
+
+    monkeypatch.setattr(krt_pipeline, "download_document", refuse)
+    return krt_pipeline.enrich_krt_from_official_documents(lot(
+        AuctionDocument(title="Территория.Выписка ЕГРН для здания.zip",
+                        url="https://178fz.roseltorg.ru/file/get/1.zip",
+                        document_type="egrn"),
+        AuctionDocument(title="Территория.Выписка ЕГРН для участка.zip",
+                        url="https://178fz.roseltorg.ru/file/get/2.zip",
+                        document_type="egrn"),
+    ))
+
+
+def test_a_refusal_of_the_platform_is_not_the_absence_of_a_question(monkeypatch):
+    summary = krt_pipeline.egrn_summary(refusing_lot(monkeypatch))
+    assert summary is not None, "спросили — значит свод есть, пусть и без владельцев"
+    assert (summary["documents"], summary["answered"]) == (2, 0)
+    assert summary["owners"] == []
+    assert [item["reason"] for item in summary["refused"]] == [
+        "document download failed: HTTP 503"] * 2
+    assert "площадка не отдала" in summary["reason"]
+    # Отказ по-прежнему стоит и в общих предупреждениях: свод его не подменяет.
+    kinds = [item["kind"] for item in refusing_lot(monkeypatch)
+             .raw["krt_document_warnings"]]
+    assert kinds == ["extraction_error"] * 2
+
+
+def test_a_lot_that_was_never_asked_has_no_summary_at_all():
+    """Предохранитель к проверке выше: без вложений свода нет вовсе."""
+    assert krt_pipeline.egrn_summary(lot(
+        AuctionDocument(title="Лотовая документация.pdf",
+                        url="https://178fz.roseltorg.ru/file/get/9.pdf",
+                        document_type="other"))) is None
+
+
+def test_a_print_form_alone_says_there_was_nothing_machine_readable(monkeypatch):
+    """Печатная форма как единственное содержимое — это «читать было нечем».
+
+    У Росэлторга выписки лотовой документации приходят печатными PDF: на пяти
+    живых КРТ-лотах 13.09.2026 — 32 PDF и ни одного XML. Разбор написан по XML,
+    и отказ назван; молчание читалось бы как «владельцев нет».
+    """
+    data = zipped({"ЕГРН 1021.pdf": b"%PDF-1.4 ...", "ЕГРН 1022.pdf": b"%PDF-1.4 ..."})
+    monkeypatch.setattr(krt_pipeline, "download_document",
+                        lambda url, **kwargs: (data, "application/zip", False))
+    summary = krt_pipeline.egrn_summary(krt_pipeline.enrich_krt_from_official_documents(
+        lot(AuctionDocument(title="Территория.Выписка ЕГРН для здания.zip",
+                            url="https://178fz.roseltorg.ru/file/get/1.zip",
+                            document_type="egrn"))))
+    assert (summary["answered"], summary["records"]) == (1, 0)
+    assert summary["print_forms"] == 2
+    assert "печатная форма" in summary["reason"]
+    assert summary["refused"] == []
+
+
+def test_a_signature_next_to_a_live_extract_explains_nothing(monkeypatch):
+    """Спутник рядом с машинной выпиской — не причина: владельцы прочитаны.
+
+    Одним числом `companions` подпись у живой выписки и печатная форма вместо
+    выписки неразличимы — поэтому у спутника есть вид.
+    """
+    # Берётся выписка с ЗАРЕГИСТРИРОВАННЫМ правом: у 77:05:0004001:15 его нет
+    # (17 объектов квартала из 59 без права — ответ выписки), и на ней проверка
+    # ничего бы не значила.
+    data = zipped({"здание.xml": extract(OWNED), "здание.xml.sig": b"\x30\x82\x00\x01"})
+    monkeypatch.setattr(krt_pipeline, "download_document",
+                        lambda url, **kwargs: (data, "application/zip", False))
+    summary = krt_pipeline.egrn_summary(krt_pipeline.enrich_krt_from_official_documents(
+        lot(AuctionDocument(title="Выписки ЕГРН.zip",
+                            url="https://178fz.roseltorg.ru/file/get/1.zip",
+                            document_type="egrn"))))
+    assert summary["owners"], "выписка прочитана — владелец обязан быть"
+    assert (summary["companions"], summary["print_forms"]) == (1, 0)
+    assert summary["reason"] == ""
+
+
+def test_the_kind_of_a_companion_is_named_not_only_its_reason():
+    data = zipped({
+        "земля.xml": extract(LAND),
+        "земля.xml.sig": b"\x30\x82\x00\x01",
+        "стиль.xsl": b"<?xml version='1.0'?><xsl:stylesheet/>",
+        "ЕГРН 1021.pdf": b"%PDF-1.4 ...",
+        "план.png": b"\x89PNG\r\n\x1a\n",
+    })
+    kinds = {item["name"]: item["kind"] for item in egrn_archive.read(data)["companions"]}
+    assert kinds == {
+        "земля.xml.sig": "signature",
+        "стиль.xsl": "stylesheet",
+        "ЕГРН 1021.pdf": "print_form",
+        "план.png": "image",
+    }
