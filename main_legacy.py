@@ -76,7 +76,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.23.36"
+VERSION = "0.23.40"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -493,7 +493,35 @@ NON_TEP_PRODUCT_LABELS: dict[str, str] = {
 PRODUCT_LABELS_PLACEHOLDER = "__DEVELOPAID_PRODUCT_LABELS__"
 
 
-# Переданные городу метры строятся, но не продаются. Ответ на «сколько тогда
+# Получатель переданных метров — НЕ всегда город. Механизм зачёта писался под
+# Подмосковье, где метры уходят муниципалитету; по КРТ их забирает оператор
+# или Фонд реновации; по сделке метрами платят продавцу участка или
+# соинвестору — «Передано городу или продавцу / инвестору» (владелец,
+# 13.09.2026). Кто именно, модель не знает и знать не может: это условие
+# соглашения, а не расчёт, и поля под получателя нет. Значит подпись не имеет
+# права его называть: названный город там, где его нет, читается как факт
+# сделки, а не как наше умолчание.
+#
+# Слово «городу» стояло ШЕСТЬЮ копиями — колонка PDF, колонка книги, колонка
+# /v2, приписка у строки ТЭП, приписка у строки отчёта и приписка у итога, —
+# и правились бы они порознь. Объявлено один раз; на страницу едет
+# плейсхолдером, как `VERSION` и `PRODUCT_LABELS`.
+#
+# Деньги от этого не двигаются, и это измеряется, а не обещается: зачёт перед
+# получателем — отдельное ручное поле `vri_transfer_offset_mln`, оно своё и
+# сумму по цене продажи мы не считаем (правило 19.08.2026).
+#
+# Исключение названо вслух и не трогается: соцобъект и переданный ФОК уходят
+# ГОРОДУ по решению владельца (05.09.2026) — там получатель известен, и
+# нейтральная подпись была бы потерей, а не честностью.
+TRANSFER_WORD = "Передаётся"
+TRANSFER_NOTE_WORD = "передано"
+TRANSFER_RECIPIENT_NOTE = ("кому — условие соглашения: город, муниципалитет, "
+                           "продавец участка или соинвестор")
+TRANSFER_LABELS_PLACEHOLDER = "__DEVELOPAID_TRANSFER_LABELS__"
+
+
+# Переданные метры строятся, но не продаются. Ответ на «сколько тогда
 # продаём» был объявлен ЧЕТЫРЕ раза и в двух видах: страница и /v2 считали
 # полезную площадь равной продаваемой (то есть уменьшали её на переданное), а
 # скрининг КРТ — равной полной. Одна величина под одним именем означала разное.
@@ -14697,8 +14725,8 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         ], [45*mm, 125*mm], header=False, font_size=8.0),
     ]))
     story.append(_PdfSection("tep"));story.append(P("ТЭП",h2))
-    # Переданные городу метры строятся и не продаются: в продаваемой их нет.
-    # В книге колонка «Передаётся городу» была с самого начала, а отчёт о
+    # Переданные метры строятся и не продаются: в продаваемой их нет.
+    # В книге колонка переданного была с самого начала, а отчёт о
     # переданном молчал — и читался так, будто продано всё построенное
     # (владелец, 10.09.2026). Колонка появляется вместе с числом: постоянный
     # столбец нулей — шум, а не полнота.
@@ -14707,7 +14735,8 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     total=tep_report.get('total') or {}
     given = sum(float(row.get('transfer') or 0) for row in rows_data)
     if given > 0:
-        tep_rows=[["Продукт","Строит. объём, м²","Продаваемая, м²","Передаётся городу, м²","Кол-во"]]
+        tep_rows=[["Продукт","Строит. объём, м²","Продаваемая, м²",
+                   f"{TRANSFER_WORD}, м²","Кол-во"]]
         for row in rows_data:
             tep_rows.append([row.get('label') or row.get('key') or '—',
                              _pdf_num(row.get('gns'),0),_pdf_num(row.get('saleable'),0),
@@ -14715,8 +14744,9 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         tep_rows.append(["Итого",_pdf_num(total.get('gns'),0),_pdf_num(total.get('saleable'),0),
                          _pdf_num(given,0),_pdf_num(total.get('units'),0)])
         story.append(table(tep_rows,[58*mm,30*mm,32*mm,35*mm,15*mm]))
-        story.append(P("Переданные городу метры строятся, но не продаются: "
-                       "в продаваемой площади их нет.", small))
+        story.append(P("Переданные метры строятся, но не продаются: в продаваемой "
+                       f"площади их нет. {TRANSFER_RECIPIENT_NOTE.capitalize()}.",
+                       small))
     else:
         tep_rows=[["Продукт","Строит. объём, м²","Продаваемая, м²","Кол-во"]]
         for row in rows_data:
@@ -22810,7 +22840,7 @@ def build_plato_model_v2(
     ws_tep["A1"].font = styles["title"]
     ws_tep["A2"] = "Площади — исходные данные проекта. Всё, что ниже, книга считает от них."
     headers = ["Продукт", "ГНС, м²", "Общая площадь, м²", "Полезная, м²",
-               "Продаваемая, м²", "Передаётся городу, м²", "Единиц",
+               "Продаваемая, м²", f"{TRANSFER_WORD}, м²", "Единиц",
                "Гостевых, ед.", "Продаётся, ед."]
     for column, label in enumerate(headers, start=1):
         ws_tep.cell(row=4, column=column, value=label).font = styles["bold"]
@@ -38822,6 +38852,12 @@ const TEP_DEFAULT=__DEVELOPAID_TEP_DEFAULT__;
 // видел у одного продукта до четырёх имён. Объявление одно — в движке
 // (`TEP_DEFAULT`), здесь только чтение.
 const PRODUCT_LABELS=__DEVELOPAID_PRODUCT_LABELS__;
+// Подпись переданных метров — из движка: получателя модель не знает, и
+// называть его нельзя. Копии слова «городу» на странице больше нет.
+const TRANSFER_LABELS=__DEVELOPAID_TRANSFER_LABELS__;
+const TRANSFER_WORD=TRANSFER_LABELS.word;
+const TRANSFER_NOTE_WORD=TRANSFER_LABELS.note_word;
+const TRANSFER_RECIPIENT_NOTE=TRANSFER_LABELS.recipients;
 function productName(key){
  // Карта приходит из движка и покрывает продукты БЕЗ строки ТЭП тоже: раньше
  // такой продукт уезжал на экран сырым ключом («object_parking» в структуре
@@ -43263,7 +43299,7 @@ function renderTep(){
    const chain=TEP_RATIOS[key]?tepRatioChain(tepRatio(key)):null;
    const own=chain&&tepRatioChangedKeys().includes(key);
    // «% общей» стоит под ПОЛЕЗНОЙ, а не под продаваемой: доля строит вал, а в
-   // продаваемой лежит вал МИНУС переданное городу. Пока передачи нет, числа
+   // продаваемой лежит вал МИНУС переданное. Пока передачи нет, числа
    // равны и разницы не видно; при передаче 4 500 м² под 9 420 стояло
    // «72,22 % общей», то есть подпись описывала соседнюю величину — «ну вот
    // как это понимать?» (владелец, 12.09.2026). Правило то же, что было
@@ -43513,7 +43549,7 @@ function refillTepRow(key){
                  :{gns:0,total_area:0,saleable:gross,useful:0};
  const filled=tepFillByRatios(key,base);
  ['gns','total_area','saleable','useful'].forEach(field=>{row[field]=filled[field]});
- // Переданное городу вычитается ТЕМ ЖЕ тождеством, что и в правке ячейки:
+ // Переданное вычитается ТЕМ ЖЕ тождеством, что и в правке ячейки:
  // без этого правка доли и кнопка «наши» возвращали отданные метры в продажу
  // (замер 12.09.2026: 4 500 м² квартир снова становились продаваемыми).
  tepApplyTransfer(key,filled.saleable);
@@ -44007,7 +44043,7 @@ function tepFillByRatios(key,row){
  return out;
 }
 
-// Переданные городу метры строятся, но не продаются. Тождество строки одно, и
+// Переданные метры строятся, но не продаются. Тождество строки одно, и
 // объявлено оно в движке (`saleable_after_transfer`): полезная — построенная
 // площадь, продаваемая — она же за вычетом переданного. Полезная от передачи
 // НЕ уменьшается: метры построены и полезны, просто не наши (владелец,
@@ -44031,8 +44067,9 @@ function tepApplyTransfer(key,usefulGross){
   ? (transfer>useful
      ? 'Передаётся '+landNum(transfer,0)+' м² при полезной площади '+landNum(useful,0)
        +' м²: передаётся больше, чем строится.'
-     : 'Передаётся городу '+landNum(transfer,0)+' м² из '+landNum(useful,0)
-       +' м² полезной площади — они строятся, но не продаются.')
+     : TRANSFER_WORD+' '+landNum(transfer,0)+' м² из '+landNum(useful,0)
+       +' м² полезной площади — они строятся, но не продаются. '
+       +TRANSFER_RECIPIENT_NOTE+'.')
   : '';
  return row.saleable;
 }
@@ -46136,13 +46173,13 @@ function renderResult(){
  const underTotal=Number(r.summary.underground_gns_sqm!==undefined
   ?r.summary.underground_gns_sqm:underGns);
  const dash='<span style="color:#bbb">—</span>';
- // Переданные городу метры строятся и не продаются: в продаваемой их нет, и
+ // Переданные метры строятся и не продаются: в продаваемой их нет, и
  // без приписки отчёт читается так, будто продано всё построенное — «в отчёте
  // вообще нет указания на передаваемую! Чтобы не забыть, что вообще-то не всё
  // продал» (владелец, 10.09.2026). Штуки так подписаны с 04.09; метры —
  // соседнее место, и правило до него не дошло.
  const areaNote=x=>Number(x.transfer||0)>0
-  ? `<span style="display:block;font-size:10px;color:#777">передано городу ${num(x.transfer)} м²</span>`
+  ? `<span style="display:block;font-size:10px;color:#777">${TRANSFER_NOTE_WORD} ${num(x.transfer)} м²</span>`
   : '';
  const transferTotal=r.tep.rows.reduce((sum,x)=>sum+Number(x.transfer||0),0);
  reportTep.innerHTML=
@@ -46155,7 +46192,7 @@ function renderResult(){
    +`<td>${num(x.units)}${unitNote(x)}</td><td>${num(soldUnits(x))}</td></tr>`).join('')+
   `</tbody><tfoot><tr><th>Итого</th><th>${num(aboveGns)}</th><th>${num(underTotal)}</th>`
   +`<th>${num(r.tep.total.saleable)}`
-  +(transferTotal>0?`<span style="display:block;font-size:10px;color:#777">передано городу ${num(transferTotal)} м²</span>`:'')
+  +(transferTotal>0?`<span style="display:block;font-size:10px;color:#777">${TRANSFER_NOTE_WORD} ${num(transferTotal)} м²</span>`:'')
   +`</th><th>${num(r.tep.total.units)}</th><th>${num(soldTotal)}</th></tr></tfoot>`;
  const tepNote=document.getElementById('reportTepNote');
  if(tepNote)tepNote.innerHTML=underTotal>0
@@ -48085,6 +48122,11 @@ PAGE = PAGE.replace(CAPEX_NAMES_PLACEHOLDER, json.dumps(
 # Состав МКД — из движка, копии на странице нет.
 PAGE = PAGE.replace("__DEVELOPAID_MKD_PRODUCTS__",
                     json.dumps(list(MKD_PRODUCTS), ensure_ascii=False))
+# Подпись переданных метров — из движка: получателя мы не знаем, и шесть копий
+# слова «городу» правились бы порознь.
+PAGE = PAGE.replace(TRANSFER_LABELS_PLACEHOLDER, json.dumps(
+    {"word": TRANSFER_WORD, "note_word": TRANSFER_NOTE_WORD,
+     "recipients": TRANSFER_RECIPIENT_NOTE}, ensure_ascii=False))
 PAGE = PAGE.replace("__DEVELOPAID_UNDERGROUND_PRODUCTS__",
                     json.dumps(list(UNDERGROUND_PRODUCTS), ensure_ascii=False))
 # Разделы таблицы ТЭП — оттуда же, где объявлены составы: два списка и
