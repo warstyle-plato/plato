@@ -23,6 +23,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import page_blocks  # noqa: E402
+
 import main_legacy as core  # noqa: E402
 
 PAGE = core.PAGE
@@ -65,9 +67,6 @@ def test_the_measure_follows_the_product() -> None:
 
 def test_the_queue_leads_and_the_project_row_is_the_sum() -> None:
     """Правка в очереди уменьшает её продаваемую, а проект становится суммой."""
-    node = shutil.which("node")
-    if not node:
-        pytest.skip("node недоступен")
     program = (
         "const num=v=>String(v);\n"
         "let renders=0;\n"
@@ -79,18 +78,20 @@ def test_the_queue_leads_and_the_project_row_is_the_sum() -> None:
         "const tep={apartments:{gns:100000,saleable:60000,useful:60000,transfer:0},"
         "underground_parking:{gns:14000,units:400,saleable:0,transfer_units:0}};\n"
         "const phasing={phases:[{name:'О1',products:{}},{name:'О2',products:{}}]};\n"
-        # Тождество строки считает один помощник — он же в таблице ТЭП.
-        "let tepRefillNote={};\n"
+        # Тождество строки считает один помощник — он же в таблице ТЭП. Сам
+        # помощник и его заметку добирает разрешитель: перечисленные руками,
+        # они отстают от страницы (13.09.2026 — «setTepNote is not defined»).
         "const landNum=(v,d)=>Number(v||0).toFixed(d===undefined?1:d);\n"
-        + _function("tepApplyTransfer") + "\n"
         + PAGE[PAGE.index("const PHASE_GIVEN_IN_UNITS="):PAGE.index("function setPhaseProductTep(")]
-        + "\nsetPhaseProductGiven(0,'apartments',5000);\n"
+    )
+    # Действия — хвостом, а не прелюдией: добранные куски встают МЕЖДУ ними,
+    # и объявленная там константа заметок иначе читается до объявления.
+    tail = (
+        "setPhaseProductGiven(0,'apartments',5000);\n"
         "setPhaseProductGiven(1,'underground_parking',40);\n"
         "process.stdout.write(JSON.stringify({tep,phasing,renders}));"
     )
-    done = subprocess.run([node, "-e", program], capture_output=True, text=True, timeout=60)
-    assert done.returncode == 0, done.stderr[:900]
-    got = json.loads(done.stdout)
+    got = page_blocks.run_json(program, tail)
     flats = got["tep"]["apartments"]
     first = got["phasing"]["phases"][0]["products"]["apartments"]
     # Отдала первая очередь: её продаваемая упала на переданное, вторая цела.
