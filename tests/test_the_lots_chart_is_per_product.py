@@ -149,7 +149,8 @@ def test_lots_are_drawn_one_chart_per_product() -> None:
     # Ни одного столбика без имени товара: «2026-01: 4 лоты» — это и есть та
     # сумма разных товаров, из-за которой всё затевалось.
     assert 'data-tip="2026-01: 4 ' not in seen
-    assert 'data-tip="2026-01: Квартира, 2 лоты"' in seen
+    # Единица при числе склоняется: «2 лота», а не «2 лоты».
+    assert 'data-tip="2026-01: Квартира, 2 лота"' in seen
 
 
 def test_a_single_product_promises_no_composition() -> None:

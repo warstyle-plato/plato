@@ -177,7 +177,7 @@ def test_the_metres_view_leaves_the_parking_out_and_says_so() -> None:
 def test_the_lots_view_shows_the_september_deal() -> None:
     """В «лотах» сентябрьский лот на месте и подписан своим товаром."""
     seen = _draw("units", _payload(summary()))
-    assert 'data-tip="2026-09: Машиноместо, 1 лоты"' in seen, seen
+    assert 'data-tip="2026-09: Машиноместо, 1 лот"' in seen, seen
     # Цена этого товара подписана его мерой, а не чужой.
     assert "цена, ₽ за лот" in seen, seen[:1500]
     assert "цена, ₽/м²" not in seen.split("Квартира")[0], seen[:1500]
@@ -204,7 +204,7 @@ def test_a_lot_without_an_area_is_a_gap_not_a_zero() -> None:
     assert 'data-tip="2026-01: Квартира, 40 м²"' in seen, seen
     # В «лотах» тот же договор на месте — он продан, просто без метров.
     lots = _draw("units", _payload(got))
-    assert 'data-tip="2026-02: Квартира, 1 лоты"' in lots, lots
+    assert 'data-tip="2026-02: Квартира, 1 лот"' in lots, lots
     assert "площадь в выгрузке не заполнена" not in lots, lots[-800:]
 
 

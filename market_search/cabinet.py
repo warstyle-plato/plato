@@ -2538,10 +2538,22 @@ const SALES_PRICE_COLOR='#C4581B';
 // отдельной вкладкой и столбиками» (владелец, 26.08.2026).
 // `whole` — мера, которая складывается через товары. Такая одна: у суммы денег
 // есть имя, выручка. У «лотов» и «м²» его нет, и они идут по товару.
+// Имя меры и единица при числе — разные формы: «лоты» подписывают вкладку и
+// легенду, а рядом с числом склоняются («6 лотов», а не «6 лоты»). «млн ₽» и
+// «м²» не склоняются вовсе, поэтому у них единица совпадает с именем.
+function ruPlural(value, one, few, many){
+  const n=Math.abs(Math.round(Number(value)||0));
+  if(n%100>=11&&n%100<=14) return many;
+  if(n%10===1) return one;
+  if(n%10>=2&&n%10<=4) return few;
+  return many;
+}
+
 const SALES_METRICS=[
   {key:'amount', name:'млн ₽', whole:true, show:v=>num(v/1e6,1), axis:v=>num(v/1e6)},
   {key:'area',   name:'м²',              show:v=>num(v),        axis:v=>num(v)},
-  {key:'units',  name:'лоты',  show:v=>num(v),        axis:v=>num(v)},
+  {key:'units',  name:'лоты',  show:v=>num(v),        axis:v=>num(v),
+   unit:v=>ruPlural(v,'лот','лота','лотов')},
 ];
 let salesMetric='amount';
 let plansMetric='amount';
@@ -2723,7 +2735,8 @@ function salesDynamicsChart(d, metric, product){
     const price=product?(own?own.price:null):m.price_flats;
     return {label:m.month, short:String(m.month).slice(2), value, price,
       tip:m.month+': '+(product?product.name+', ':'')
-         +(has(value)?metric.show(value):'—')+' '+metric.name};
+         +(has(value)?metric.show(value):'—')+' '
+         +(metric.unit?metric.unit(value):metric.name)};
   });
   const priceName=product?('цена, '+priceUnit):'цена квартир, ₽/м²';
   return barChart(rows,{axis:metric.axis, show:metric.show, fill:product?product.color:null,
