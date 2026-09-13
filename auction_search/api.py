@@ -818,6 +818,29 @@ def install(app: FastAPI) -> None:
                 logger.exception("KRT watch loop")
             time.sleep(WATCH_HEARTBEAT_SECONDS)
 
+    def _market_source_off() -> str:
+        """Почему рынок отвечать не может — или пустая строка.
+
+        Прогон КРТ считает модель по каждой площадке, а модель начинается с
+        рыночного отчёта. Доступ к источнику живёт в окружении
+        (`PULSE_LOGIN`/`PULSE_PASSWORD`), и он есть не у всякого хоста: бот на
+        Render поднимает тот же модуль, что и ядро, и 07.09.2026 его журнал
+        показал `RemoteServiceError` по КАЖДОЙ площадке подряд — прогон честно
+        ходил в каталог, честно падал на первом же шаге и записывал строке
+        «Расчёт не выполнен».
+
+        Наличие модуля признаком не является — как маршрут Платона решает
+        `PLATO_AI_URL`, а не наличие ключа. Спрашиваем то, что отвечает на
+        вопрос: включён ли источник.
+        """
+        if market is None:
+            return "Финансовый модуль рынка на этом хосте не подключён"
+        pulse = getattr(market, "pulse", None)
+        if pulse is not None and not getattr(pulse, "available", True):
+            return ("Источник рыночных данных выключен: "
+                    "не заданы PULSE_LOGIN и PULSE_PASSWORD")
+        return ""
+
     def _weekly_ranking() -> None:
         """Раз в неделю каталог обновляется и считается сам.
 
@@ -834,9 +857,21 @@ def install(app: FastAPI) -> None:
         файловому замку. Проигравший просто спит дальше. Отключается
         переменной `AUCTION_KRT_WEEKLY=0`.
         """
+        said = ""
         while True:
             try:
-                if market is not None and core is not None and krt_ranking.due():
+                # Хост без источника рынка прогон не ведёт вовсе. Прежде он его
+                # вёл: падала каждая площадка, в журнал уходило по трассировке
+                # на каждую, а в рейтинг — «Расчёт не выполнен» на диск, который
+                # у бота живёт до следующей выкатки. Причина называется ОДИН
+                # раз: строка на каждый удар сердца — это тот же шум, только
+                # тише.
+                off = _market_source_off()
+                if off:
+                    if off != said:
+                        logger.warning("Недельный прогон КРТ здесь не идёт: %s", off)
+                        said = off
+                elif core is not None and krt_ranking.due():
                     if krt_ranking.claim():
                         try:
                             projects = krt_registry.projects(refresh=True)
@@ -2330,6 +2365,12 @@ def install(app: FastAPI) -> None:
                         "reason": ("Пересчитывать нечего: все выбранные площадки "
                                    "посчитаны нынешней методикой"),
                         "skipped": skipped, "progress": krt_ranking.progress()}
+        # Кнопка на хосте без источника рынка отвечает причиной, а не
+        # шестьюстами строками «Расчёт не выполнен»: отказ, названный заранее,
+        # это свойство хоста, отказ после нажатия — поломка.
+        off = _market_source_off()
+        if off:
+            return {"started": False, "reason": off, "progress": krt_ranking.progress()}
         # Чем считать строку, решает один и тот же выбор, что и в недельном
         # прогоне: у площадки-решения свой путь к обязательствам, а у нежилой
         # модели нет вовсе.
