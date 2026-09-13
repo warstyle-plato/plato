@@ -42,7 +42,7 @@ openpyxl = pytest.importorskip("openpyxl")
 TEMPLATE = ROOT / "templates" / "DevelopAid_model_v4.xlsx"
 
 
-def read(source) -> dict[str, dict[str, tuple[str, str]]]:
+def read(source, full: bool = False) -> dict[str, dict[str, tuple[str, str]]]:
     """{лист: {клетка: ('f'|'v', содержимое)}} — формула или значение.
 
     Ввод переехал на свой лист, и на прежней координате стоит ссылка на него.
@@ -71,7 +71,7 @@ def read(source) -> dict[str, dict[str, tuple[str, str]]]:
                 if value is None:
                     continue
                 if isinstance(value, str) and value.startswith("="):
-                    cells[cell.coordinate] = ("f", value[:90])
+                    cells[cell.coordinate] = ("f", value if full else value[:90])
                 else:
                     cells[cell.coordinate] = ("v", str(value)[:40])
         out["Вводные" if view is not None else sheet.title] = cells

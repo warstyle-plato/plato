@@ -55,7 +55,9 @@ def test_in_a_real_browser_every_object_gets_its_queue_field() -> None:
         browser = pw.chromium.launch(executable_path=str(chrome))
         try:
             page = browser.new_page()
-            page.goto(root, wait_until="load")
+            errors: list[str] = []
+            page.on("pageerror", lambda exc: errors.append(str(exc)))
+            page.goto(root, wait_until="networkidle")
             # Объявление функции поднимается наверх и существует ещё до того,
             # как страница доработала; `phasing` — `let`, и до своей строки он
             # в мёртвой зоне, где даже `typeof` бросает. Поэтому ждём само
@@ -63,11 +65,17 @@ def test_in_a_real_browser_every_object_gets_its_queue_field() -> None:
             page.wait_for_function(
                 "(()=>{try{return typeof phasing!=='undefined'}"
                 "catch(e){return false}})()", timeout=30000)
-            # Вкладка открывается так же, как её открывает человек: поле на
-            # закрытой панели существует и невидимо, а «невидимое поле» и
-            # «поля нет» на экране — одно и то же.
-            page.click("button.tab[data-tab='phasing']")
-            page.check("#phasingEnabled")
+            # Панель открывается тем же вызовом, что стоит в `onclick` вкладки,
+            # а не кликом по ней. Полосу вкладок двигает слой перестройки —
+            # корень отдаёт `PAGE` вместе с ним, — и клик по ней зависит от
+            # того, кто успел раньше: в одиночку тест выигрывал эту гонку, а
+            # под полным набором проигрывал, и падение выходило про слой, а не
+            # про реестр объектов. Что вкладка на месте, держит соседняя
+            # проверка разметки, а сюда приезжает то, что рисует `renderPhasing`.
+            page.evaluate(
+                "openTab('phasing',document.querySelector(\"button.tab[data-tab='phasing']\"))")
+            page.evaluate("document.getElementById('phasingEnabled').checked=true;"
+                          "togglePhasing(true)")
             page.wait_for_function(
                 "document.querySelectorAll('#assignObjects select[data-object]').length>0",
                 timeout=30000)
@@ -94,5 +102,7 @@ def test_in_a_real_browser_every_object_gets_its_queue_field() -> None:
             assert wanted[key] != 1
             page.select_option(f"#assignObjects select[data-object='{key}']", "1")
             assert page.evaluate(f"phasing.discrete['{key}']") == 1
+            # Молчащая ошибка скрипта неотличима от исправной страницы.
+            assert not errors, errors
         finally:
             browser.close()

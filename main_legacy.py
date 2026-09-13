@@ -77,7 +77,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.23.42"
+VERSION = "0.23.45"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -17340,6 +17340,11 @@ _V4_SALES_PRODUCT_ROW = {                 # строка выручки в бл�
     "underground_parking": 22,
     "storage": 25,
 }
+# Ключ продукта «паркинг объектов» объявлен в движке
+# (`NON_TEP_PRODUCT_LABELS`) — здесь только имя, по которому книга узнаёт свой
+# случай; строки его выручки стоят в `_V4_OBJECT_PARKING`.
+_V4_OBJECT_PARKING_PRODUCT = "object_parking"
+
 _V4_OBJECT_PRODUCT_CELLS = {              # (очередь объекта, его выручка)
     "offices": (8, 24),
     "standalone_retail": (36, 52),
@@ -17347,6 +17352,19 @@ _V4_OBJECT_PRODUCT_CELLS = {              # (очередь объекта, ег
     # Четвёртый блок — копия блока ТЦ со сдвигом на 90 строк.
     "sports": (126, 142),
 }
+# Шаблон несёт ТРИ блока объектов; всё, что ниже, дописано копированием — и
+# лист ПРОВЕРКИ о дописанном узнаёт отсюда, а не из выписанных формул.
+_V4_TEMPLATE_OBJECT_REVENUE_ROWS = (24, 52, 80)
+_V4_OBJECT_CHECKS_CAPEX_SHIFT = 4         # строка CAPEX блока = его выручка + 4
+# Проверки объекта на листе ПРОВЕРКИ: строка «реализованный объём» и строка
+# «CAPEX», по строке «включён» блока ОБЪЕКТЫ. У ФОКа своих строк в шаблоне нет
+# — он дописан ниже трёх шаблонных, и проверок ему не заведено; сказано вслух,
+# чтобы молчание не читалось как «его проверяют».
+_V4_OBJECT_CHECK_ROWS = {
+    7: (39, 40),        # МФОЦ / офисы
+    35: (42, 43),       # ТЦ / ОСЗ
+}
+_V4_TEP_REVENUE_CHECK = "'ТЭП'!G36"       # строка 49: выручка продуктов ТЭП
 
 
 # --- ФОК в книге v4 ---------------------------------------------------------
@@ -17903,21 +17921,44 @@ def _v4_sports_tep_row(xml: str, missing: list[str]) -> str:
     return xml
 
 
-def _v4_sports_checks(xml: str, missing: list[str]) -> str:
-    """Учит лист ПРОВЕРКИ знать о четвёртом объекте.
+def _v4_object_checks(xml: str, missing: list[str]) -> str:
+    """Учит лист ПРОВЕРКИ знать о дописанных объектах.
 
     Проверка, не знающая о новой строке, кричит «FAIL» на верном расчёте — и
     её перестают читать. Это уже было с проверкой лимита при переносе долга.
+
+    Строки берутся из `_V4_OBJECT_PRODUCT_CELLS`, а не выписываются: объект,
+    заведённый завтра, попадает сюда тем, что он появился, — иначе пятый
+    объект снова дал бы FAIL на верном расчёте.
     """
+    template = _V4_TEMPLATE_OBJECT_REVENUE_ROWS
+    added = tuple(row for _, row in _V4_OBJECT_PRODUCT_CELLS.values()
+                  if row not in template)
+    if not added:
+        return xml
+
+    def objects(rows: tuple[int, ...], shift: int = 0) -> str:
+        return ",".join(f"'ОБЪЕКТЫ'!B{row + shift}" for row in rows)
+
+    sales = "'Продажи'!B26,'Продажи'!B49,'Продажи'!B72,'Продажи'!B95"
+    whole = template + added
+    # Гараж объекта — отдельный продукт (`NON_TEP_PRODUCT_LABELS`), и своей
+    # строки в ТЭП у него нет: его выручка стоит СВОЕЙ строкой у каждого
+    # объекта. В аллокацию и в CF она входит, а в суммы выручки продуктов и
+    # объектов не входила вовсе — и обе проверки кричали FAIL на верном
+    # расчёте ровно на её величину. CAPEX гаража этого не требует: он уже
+    # внутри CAPEX объекта (`_v4_object_parking_block`).
+    garage = tuple(row for _, _, _, row, *_rest in _V4_OBJECT_PARKING)
+    with_garage = ",".join(f"'ОБЪЕКТЫ'!B{row}" for row in garage)
     swaps = (
-        ("SUM('Продажи'!B26,'Продажи'!B49,'Продажи'!B72,'Продажи'!B95,"
-         "'ОБЪЕКТЫ'!B24,'ОБЪЕКТЫ'!B52,'ОБЪЕКТЫ'!B80)",
-         "SUM('Продажи'!B26,'Продажи'!B49,'Продажи'!B72,'Продажи'!B95,"
-         "'ОБЪЕКТЫ'!B24,'ОБЪЕКТЫ'!B52,'ОБЪЕКТЫ'!B80,'ОБЪЕКТЫ'!B142)"),
-        ("SUM('ОБЪЕКТЫ'!B24,'ОБЪЕКТЫ'!B52,'ОБЪЕКТЫ'!B80)",
-         "SUM('ОБЪЕКТЫ'!B24,'ОБЪЕКТЫ'!B52,'ОБЪЕКТЫ'!B80,'ОБЪЕКТЫ'!B142)"),
-        ("SUM('ОБЪЕКТЫ'!B28,'ОБЪЕКТЫ'!B56,'ОБЪЕКТЫ'!B84)",
-         "SUM('ОБЪЕКТЫ'!B28,'ОБЪЕКТЫ'!B56,'ОБЪЕКТЫ'!B84,'ОБЪЕКТЫ'!B146)"),
+        (f"SUM({sales},{objects(template)})",
+         f"SUM({sales},{objects(whole)},{with_garage})"),
+        (f"SUM({objects(template)})", f"SUM({objects(whole)},{with_garage})"),
+        (f"SUM({objects(template, _V4_OBJECT_CHECKS_CAPEX_SHIFT)})",
+         f"SUM({objects(whole, _V4_OBJECT_CHECKS_CAPEX_SHIFT)})"),
+        # Строка 49 сравнивает выручку ТЭП с CF, а гараж в ТЭП не живёт —
+        # единственный читатель G36 и есть эта проверка.
+        (_V4_TEP_REVENUE_CHECK, f"{_V4_TEP_REVENUE_CHECK}+SUM({with_garage})"),
     )
     for old, new in swaps:
         encoded = xml_escape(old)
@@ -17925,6 +17966,71 @@ def _v4_sports_checks(xml: str, missing: list[str]) -> str:
             missing.append("ПРОВЕРКИ: формула не опознана — " + old[:48])
             continue
         xml = xml.replace(encoded, xml_escape(new))
+    return xml
+
+
+def _v4_object_parking_in_checks(xml: str, missing: list[str]) -> str:
+    """Учит проверки объекта тому, что у него есть гараж.
+
+    Гараж заведён 06.09.2026, а две проверки на объект остались прежними и с
+    тех пор кричат «FAIL» на верном расчёте: «реализованный объём» сравнивает
+    проданное с СЫРОЙ вводной продаваемой, хотя метры первых этажей из неё
+    вычтены (тот же этаж нельзя продать дважды), а «CAPEX» сравнивает
+    фактический расход с «GBA × ставка» без подземного гаража. Кричащая зря
+    проверка хуже отсутствующей — её перестают читать.
+
+    Формулы не сочиняются: множители снимаются с самой формулы шаблона, а имя
+    листа вводных берётся из неё же — он переименован, и зашитое имя однажды
+    перестанет совпадать.
+    """
+    for (label, enabled_row, _units, _revenue, _capex_cell, under, over,
+         *_rest) in _V4_OBJECT_PARKING:
+        rows = _V4_OBJECT_CHECK_ROWS.get(enabled_row)
+        if rows is None:
+            continue                      # своих проверок у объекта нет
+        volume_row, capex_row = rows
+        for row, kind in ((volume_row, "объём"), (capex_row, "CAPEX")):
+            formula = _v4_cell_formula(xml, f"C{row}")
+            if formula is None or not formula.endswith(",0)"):
+                missing.append(f"ПРОВЕРКИ: C{row} ({label}, {kind}) не опознана")
+                continue
+            sheet = re.search(r"('[^']+')!", formula)
+            if sheet is None:
+                missing.append(f"ПРОВЕРКИ: C{row} ({label}) без листа вводных")
+                continue
+            params = sheet.group(1)
+            per_space = f"{params}!$K$158"
+            over_ref = f"{params}!${over[0]}${over[1:]}"
+            if kind == "объём":
+                # Площадь мест первых этажей уходит из продаваемой — тем же
+                # `MAX(0, …)`, что и в самом блоке: мест больше здания это
+                # расхождение, а не отрицательная площадь.
+                area = re.search(r",('[^']+'!\$[A-Z]+\$\d+),0\)$", formula)
+                if area is None:
+                    missing.append(f"ПРОВЕРКИ: C{row} ({label}) без продаваемой")
+                    continue
+                cell = area.group(1)
+                updated = formula.replace(
+                    f",{cell},0)", f",MAX(0,{cell}-{over_ref}*{per_space}),0)")
+            else:
+                queue = re.search(
+                    r"INDEX\('[^']+'!\$B\$88:\$B\$91,('[^']+'!\$[A-Z]+\$\d+)\)",
+                    formula)
+                if queue is None:
+                    missing.append(f"ПРОВЕРКИ: C{row} ({label}) без очереди")
+                    continue
+                phase = queue.group(1)
+                under_ref = f"{params}!${under[0]}${under[1:]}"
+                # Те же множители, что у самого CAPEX гаража: подземная ставка,
+                # инфляция затрат очереди и её коэффициент.
+                addition = (f"+{under_ref}*{per_space}*{params}!$B$45/1000"
+                            f"*{params}!$H$6"
+                            f"*INDEX({params}!$T$88:$T$91,{phase})"
+                            f"*INDEX({params}!$AH$88:$AH$91,{phase})")
+                updated = formula[:-3] + addition + ",0)"
+            xml, done = _v4_set_cell(xml, f"C{row}", formula=updated)
+            if not done:
+                missing.append(f"ПРОВЕРКИ: C{row} ({label}, {kind}) не записана")
     return xml
 
 
@@ -18132,6 +18238,21 @@ def _v4_revenue_by_product(xml: str, products: list[dict[str, Any]],
             per_queue = [f"IF('ОБЪЕКТЫ'!$B${phase_cell}={index + 1},"
                          f"'ОБЪЕКТЫ'!$B${revenue_cell},0)"
                          for index in range(len(_V4_CONSOLIDATOR_ROWS))]
+        elif key == _V4_OBJECT_PARKING_PRODUCT:
+            # Паркинг отдельно стоящих объектов — не один блок, а строка
+            # выручки у КАЖДОГО объекта со своим гаражом, и очередь у неё та
+            # же, что у самого объекта: гараж строится и продаётся вместе с
+            # ним. Продукт завели позже обеих карт выше (06.09.2026), и
+            # колонка не строилась вовсе — свод очередей молчал о том, чем
+            # живёт очередь с офисником. Строки берутся оттуда же, где они уже
+            # объявлены: второй список разошёлся бы с первым молча.
+            per_queue = [
+                "SUM(" + ",".join(
+                    f"IF('ОБЪЕКТЫ'!$B${enabled_row + 1}={index + 1},"
+                    f"'ОБЪЕКТЫ'!$B${revenue_row},0)"
+                    for _, enabled_row, _, revenue_row, *_rest in _V4_OBJECT_PARKING
+                ) + ")"
+                for index in range(len(_V4_CONSOLIDATOR_ROWS))]
         else:
             missing.append(f"КОНСОЛИДАТОР: книга не умеет считать выручку «{labels[key]}»")
             continue
@@ -20099,11 +20220,13 @@ V4_REWRITTEN_FORMULA_ROWS: dict[str, tuple[tuple[int, ...], str]] = {
     ),
     "ПРОВЕРКИ": (
         (
-        3, 29, 39, 40, 42, 43, 45, 46, 50, 51, 52, 53, 54, 55, 57, 58,
-        59, 71, 72,
+        3, 29, 39, 40, 42, 43, 45, 46, 48, 49, 50, 51, 52, 53, 54, 55,
+        57, 58, 59, 71, 72,
         ),
         "Строки паритета и самопроверки под четвёртый объект, перенос "
-        "долга и кэш-свип "
+        "долга, кэш-свип и гараж отдельно стоящего объекта: его метры уходят "
+        "из продаваемой, его CAPEX входит в расход объекта, а его выручка — "
+        "в суммы выручки продуктов и объектов "
     ),
     "Продажи": (
         (
@@ -20828,7 +20951,9 @@ def build_project_workbook(
 
     checks_sheet_path = _v4_sheet_path(source, "ПРОВЕРКИ")
     checks_xml = _v4_relax_limit_check_for_carried_debt(
-        _v4_sports_checks(source.read(checks_sheet_path).decode("utf-8"), missing),
+        _v4_object_parking_in_checks(
+            _v4_object_checks(source.read(checks_sheet_path).decode("utf-8"), missing),
+            missing),
         missing)
     _parity = (finance_hints or {}).get("parity") or {}
     if _parity:
