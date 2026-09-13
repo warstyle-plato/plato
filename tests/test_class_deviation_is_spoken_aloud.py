@@ -165,11 +165,20 @@ def test_v4_note_insertion_keeps_workbook_openable():
 
 
 def test_pdf_names_the_class_and_its_deviations():
+    """Утверждение — «отчёт называет класс и отклонение», а не «в исходнике
+    стоит такая-то фраза».
+
+    Держала она именно фразу, и слово «Ставки» из неё пришлось снять: профиль
+    класса перестал быть только деньгами — норматив площади на человека это
+    м²/чел., и звать его ставкой нельзя. Проверка упала бы на верной правке.
+    """
     import inspect
     source = inspect.getsource(core._build_developaid_pdf)
     assert "project_class_deviations" in source
-    assert "Ставки отличаются от базы класса" in source
+    assert "от базы класса" in source
     assert "Класс проекта" in source
+    # И единица едет вместе с числом: «5 → 8» без неё читается ставкой.
+    assert "item['unit']" in source
 
 
 def test_pdf_still_builds_with_a_deviated_class():

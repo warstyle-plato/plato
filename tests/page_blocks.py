@@ -63,6 +63,68 @@ def krt_lock() -> str:
     return page[start:end] + function("applyDerivedInputs")
 
 
+def tep_cell_stand() -> str:
+    """Стенд для правки ячейки ТЭП: настоящие функции страницы плюс заглушки.
+
+    Ответ на «как погонять `tepCellChanged`» один на все проверки: две копии
+    стенда разошлись бы молча, и одна из них однажды проверяла бы прошлое
+    поведение. Заглушками стоит только то, что к арифметике строки отношения
+    не имеет — отрисовка, вводные, расчёт.
+    """
+    pieces = [
+        page_const("TEP_RATIOS"),
+        "const inputs={};",
+        "let tep={};",
+        "let tepRefillNote={};",
+        "const landNum=(v,d)=>Number(v||0).toFixed(d===undefined?1:d);",
+        "let recalcs=0;",
+        "function tepRowToInputs(){}",
+        "function renderInputs(){}",
+        "function renderTep(){}",
+        "function updateTepTotals(){}",
+        "function scheduleTepAutoRecalc(){}",
+        "function calculate(){recalcs++}",
+        "const TEP_SOCIAL_INPUTS={};",
+        "function socialTotalShare(){return 0.9}",
+        function("tepRatioOverrides"),
+        function("tepRatio"),
+        function("tepFillByRatios"),
+        function("tepApplyTransfer"),
+        function("tepCellChanged"),
+        # Пересборка строки по долям — тот же путь, что правка ячейки:
+        # «наши» и правка доли обязаны считать переданное так же.
+        "let tepRatioComplaint='';",
+        "const TEP_ROW_SWITCH={};",
+        "let RATIO_STORE={};",
+        function("tepRatioChain"),
+        function("tepRatioWrite"),
+        function("tepRatioChangedKeys"),
+        function("refillTepRow"),
+        function("tepRatioSet"),
+        function("tepRatioReset"),
+    ]
+    return "\n".join(pieces) + "\n"
+
+
+def page_const(name: str) -> str:
+    """Объявление константы страницы целиком, как оно стоит на СОБРАННОЙ странице.
+
+    Литерал в стенде был бы второй копией методики: доли ТЭП, имена продуктов и
+    умолчания объявлены в движке и приезжают подстановкой. Взятые со страницы,
+    они не могут отстать.
+    """
+    page = core.PAGE
+    head = f"const {name}="
+    start = page.find(head)
+    if start < 0:
+        raise AssertionError(f"на странице нет константы {name}")
+    end = page.find("\n", start)
+    line = page[start:end if end > 0 else len(page)].rstrip()
+    if not line.endswith(";"):
+        raise AssertionError(f"объявление {name} не в одну строку — стенд возьмёт половину")
+    return line
+
+
 def auctions_function(*names: str) -> str:
     """Те же куски, но со страницы торгов (`auction_search.ui`).
 

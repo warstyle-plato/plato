@@ -20,6 +20,9 @@
 from __future__ import annotations
 
 import copy
+import json
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -28,6 +31,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import page_blocks  # noqa: E402
 import v4_inputs  # noqa: E402
 
 import main as wrapper  # noqa: E402
@@ -76,15 +80,78 @@ def test_the_offset_reaches_the_model():
     assert "vri_transfer_offset_mln" in labels, "поля нет на вкладке «Вводные»"
 
 
+def _tep_cell(edits):
+    """Гоняет НАСТОЯЩУЮ правку ячейки страницы через node.
+
+    Прежде проверка держала форму записи — `tep[key].saleable=Math.max(0` — и
+    падала, когда арифметику переставили, ничего не сказав о том, что
+    сломалось (ничего). Утверждение здесь другое: ГНС на месте, продаваемая
+    меньше на переданное, полезная не меньше. Это видно, и это гоняется.
+    """
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node недоступен")
+    program = page_blocks.tep_cell_stand() + (
+        "tep={apartments:{label:'Квартиры',gns:31000,total_area:27900,"
+        "useful:20150,saleable:20150,transfer:0,units:336}};\n"
+        + "".join(f"tepCellChanged('apartments','{col}',{value});\n"
+                  for col, value in edits)
+        + "process.stdout.write(JSON.stringify("
+          "{row:tep.apartments,note:tepRefillNote.apartments||''}));"
+    )
+    done = subprocess.run([node, "-e", program], capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0, done.stderr[:900]
+    return json.loads(done.stdout)
+
+
 def test_the_transferred_metres_leave_the_saleable_area():
     """Метры строятся, но не продаются: ГНС на месте, продаваемая меньше."""
-    body = core.PAGE[core.PAGE.index("function tepCellChanged"):]
-    body = body[:body.index("let storageInsideParking")]
-    assert "col==='transfer'" in body
-    assert "tep[key].saleable=Math.max(0" in body
-    assert "не продаются" in body
-    # У соцобъектов передаваемая — вся площадь объекта, правило туда не идёт.
-    assert "TEP_RATIOS[key]" in body.split("col==='transfer'")[1][:120]
+    got = _tep_cell([("transfer", 5000)])
+    row = got["row"]
+    assert row["gns"] == 31000 and row["total_area"] == 27900, row
+    assert row["transfer"] == 5000
+    assert row["saleable"] == 15150, row
+    # Полезная — построенная площадь, и передача её не уменьшает: метры
+    # построены и полезны, просто не наши (владелец, 10.09.2026).
+    assert row["useful"] == 20150, row
+    assert "не продаются" in got["note"]
+
+
+def test_the_note_names_the_whole_transfer_not_the_change():
+    """«Пишешь 5.000 она пишет то 0 то 4000» (владелец, 10.09.2026).
+
+    Подпись считалась от ДЕЛЬТЫ: вписал 1 000, потом 5 000 — и на экране
+    «переданные 4 000» при поле 5 000. Дельту помнить не нужно вовсе.
+    """
+    got = _tep_cell([("transfer", 1000), ("transfer", 5000)])
+    assert got["row"]["saleable"] == 15150, got["row"]
+    assert got["row"]["useful"] == 20150, got["row"]
+    assert "5000" in got["note"].replace("\u00a0", "").replace(" ", ""), got["note"]
+    assert "4000" not in got["note"].replace("\u00a0", "").replace(" ", ""), got["note"]
+
+
+def test_editing_a_neighbour_cell_does_not_return_the_given_metres():
+    """Правка ГНС затирала продаваемую полным числом из пропорции.
+
+    Переданное при этом оставалось в своей колонке — и молча возвращалось в
+    продажу: строка выглядела верной, а метры города продавались.
+    """
+    got = _tep_cell([("transfer", 5000), ("gns", 31000)])
+    assert got["row"]["transfer"] == 5000
+    assert got["row"]["saleable"] == 15150, got["row"]
+
+
+def test_a_typed_saleable_area_is_the_net_one():
+    """Вписанная продаваемая — НЕТТО: ГНС считается от полной площади.
+
+    Иначе ГНС теряет переданные метры, которые строятся, и строительный объём
+    выходит меньше стройки.
+    """
+    got = _tep_cell([("transfer", 5000), ("saleable", 15150)])
+    row = got["row"]
+    assert row["saleable"] == 15150 and row["transfer"] == 5000, row
+    assert row["useful"] == 20150, row
+    assert abs(row["gns"] - 31000) < 1, row
 
 
 def test_the_workbook_gets_the_offset_too():
@@ -137,3 +204,199 @@ def test_the_workbook_builds_on_the_reduced_saleable_area():
     gns_after, saleable_after = cells(handed)
     assert gns_before == gns_after, "ГНС не меняется: метры строятся"
     assert saleable_before - saleable_after == pytest.approx(10000)
+
+
+def _with_transfer(area: float = 5000.0):
+    tep = copy.deepcopy(core.TEP_DEFAULT)
+    row = tep["apartments"]
+    row["useful"] = row["saleable"]
+    row["transfer"] = area
+    row["saleable"] = row["useful"] - area
+    return tep
+
+
+def test_in_a_real_browser_the_report_names_the_transferred_metres():
+    """«В отчёте вообще нет указания на передаваемую!» (владелец, 10.09.2026).
+
+    Штуки так подписаны с 04.09 («из них передано N»), метры — нет, и таблица
+    читалась так, будто продано всё построенное. Таблицу рисует `renderResult`
+    — функция на полторы тысячи строк, стендом её не позвать, — поэтому мерим
+    то, что видно: живую страницу в настоящем Chromium. На умолчаниях передача
+    есть: садик на 250 мест уходит городу целиком.
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception:
+        pytest.skip("playwright недоступен")
+    import threading
+    import time
+
+    import browser as browser_helper
+
+    chrome = browser_helper.chromium_or_skip()
+    import uvicorn
+
+    port = 8791
+    server = uvicorn.Server(uvicorn.Config(
+        wrapper.app, host="127.0.0.1", port=port, log_level="error"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    for _ in range(400):
+        if server.started:
+            break
+        time.sleep(0.05)
+    assert server.started
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(executable_path=str(chrome))
+            page = browser.new_page()
+            errors: list[str] = []
+            page.on("pageerror", lambda exc: errors.append(str(exc)))
+            page.on("dialog", lambda dialog: dialog.accept())
+            page.goto(f"http://127.0.0.1:{port}/", wait_until="networkidle")
+            page.evaluate("() => calculate()")
+            page.wait_for_function(
+                "() => (document.getElementById('reportTep')||{}).innerHTML"
+                "&& document.getElementById('reportTep').innerHTML.includes('Итого')",
+                timeout=120_000)
+            table = page.evaluate("() => document.getElementById('reportTep').innerHTML")
+            browser.close()
+    finally:
+        server.should_exit = True
+        thread.join(timeout=15)
+
+    assert not errors, errors
+    body = table[table.index("<tbody>"):table.index("</tbody>")]
+    foot = table[table.index("<tfoot>"):]
+    # Строка и итог названы порознь: одна приписка на обе половины закрыла бы
+    # проверку второй половины молча.
+    assert "передано городу" in body, (
+        "у строки переданные метры не названы — читается как «продано всё»")
+    assert "передано городу" in foot, "итог таблицы молчит о переданном"
+
+
+def test_the_print_names_the_transferred_metres():
+    """Отчёт носят в банк, и расходиться с экраном ему нельзя."""
+    pytest.importorskip("reportlab", reason="reportlab нужен только для PDF")
+    from market_search.krt_requirements import pdf_text
+
+    inputs = dict(core.DEFAULT_INPUTS)
+    tep = _with_transfer()
+    bundle = core._run_authoritative_model(inputs, tep, [], {})
+    data = core._build_developaid_pdf({
+        "result": bundle["consolidated"], "project_name": "Передача городу",
+        "inputs": inputs, "tep": tep,
+    })
+    assert data and len(data) > 20_000, "PDF не собрался"
+    text = pdf_text(data)
+    assert "Передаётся городу" in text, "колонка переданного не напечатана"
+    assert "но не продаются" in text, "не сказано, что переданное не продаётся"
+
+
+def test_without_a_transfer_the_print_keeps_the_short_table():
+    """Постоянный столбец нулей — шум, а не полнота.
+
+    На умолчаниях колонка стоит почти всегда, и это верно: садик передаётся
+    городу целиком, то есть число в ней настоящее. Проверять надо проект, где
+    передавать нечего вовсе — без соцобъектов.
+    """
+    pytest.importorskip("reportlab", reason="reportlab нужен только для PDF")
+    from market_search.krt_requirements import pdf_text
+
+    inputs = {**core.DEFAULT_INPUTS, "kindergarten_places": 0, "school_places": 0,
+              "clinic_capacity": 0, "social_dou_gba_sqm": 0,
+              "social_school_gba_sqm": 0, "social_clinic_gba_sqm": 0}
+    tep = copy.deepcopy(core.TEP_DEFAULT)
+    bundle = core._run_authoritative_model(inputs, tep, [], {})
+    given = sum(float(row.get("transfer") or 0)
+                for row in bundle["consolidated"]["tep"]["rows"])
+    assert given == 0, f"передавать нечего, а в строках {given} м²"
+    data = core._build_developaid_pdf({
+        "result": bundle["consolidated"], "project_name": "Без передачи",
+        "inputs": inputs, "tep": tep,
+    })
+    text = pdf_text(data)
+    assert "Передаётся городу" not in text
+
+
+def test_the_social_object_is_named_as_transferred():
+    """Соцобъект передаётся городу целиком — и в отчёте это сказано.
+
+    Умолчания несут садик на 250 мест: его 4 500 м² строятся и не продаются,
+    и до сих пор отчёт об этом молчал.
+    """
+    pytest.importorskip("reportlab", reason="reportlab нужен только для PDF")
+    from market_search.krt_requirements import pdf_text
+
+    inputs = dict(core.DEFAULT_INPUTS)
+    tep = copy.deepcopy(core.TEP_DEFAULT)
+    bundle = core._run_authoritative_model(inputs, tep, [], {})
+    rows = {row["key"]: row for row in bundle["consolidated"]["tep"]["rows"]}
+    assert float(rows["kindergarten"]["transfer"]) > 0, "садик не помечен переданным"
+    data = core._build_developaid_pdf({
+        "result": bundle["consolidated"], "project_name": "Садик городу",
+        "inputs": inputs, "tep": tep,
+    })
+    assert "Передаётся городу" in pdf_text(data)
+
+
+def _refill(edits: list) -> dict:
+    """Прогон настоящих функций страницы: правка ячейки И пересборка по долям.
+
+    Стенд объявлен один раз (`page_blocks.tep_cell_stand`) и несёт теперь оба
+    пути: `tepCellChanged` и `refillTepRow` с её вызывающими. Две копии стенда
+    расходятся молча, и одна из них однажды проверяла бы прошлое поведение.
+    """
+    if not shutil.which("node"):
+        pytest.skip("node недоступен")
+    row = copy.deepcopy(core.TEP_DEFAULT["apartments"])
+    script = page_blocks.tep_cell_stand() + (
+        "tep={apartments:" + json.dumps(row, ensure_ascii=False) + "};\n"
+        + "\n".join(edits) + "\n"
+        + "const r=tep.apartments;"
+        "console.log(JSON.stringify({gns:r.gns,total:r.total_area,useful:r.useful,"
+        "saleable:r.saleable,transfer:r.transfer}));\n")
+    done = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout.strip().splitlines()[-1])
+
+
+def test_a_ratio_edit_does_not_return_the_given_metres_to_sale():
+    """Правка доли и кнопка «наши» пересобирают ВАЛ и снова вычитают переданное.
+
+    Замер 12.09.2026 на живых функциях страницы: при переданных 4 500 м²
+    `tepRatioSet` и `tepRatioReset` возвращали продаваемую к 13 919,8 — то есть
+    отданные городу метры снова становились товаром, и строка выглядела верной.
+    Правило «соседняя ячейка возвращала отданное в продажу» было закрыто в
+    правке ячейки и не защитило соседний путь.
+    """
+    start = ["tepCellChanged('apartments','gns',21415);",
+             "tepCellChanged('apartments','transfer',4500);"]
+    handed = _refill(start)
+    # Предохранитель: без передачи проверять нечего.
+    assert handed["transfer"] == pytest.approx(4500.0)
+    assert handed["saleable"] == pytest.approx(handed["useful"] - 4500.0, abs=0.2)
+
+    after_ratio = _refill(start + ["tepRatioSet('apartments','saleable',72.22);"])
+    after_reset = _refill(start + ["tepRatioReset('apartments');"])
+    for name, got in (("правка доли", after_ratio), ("кнопка «наши»", after_reset)):
+        assert got["transfer"] == pytest.approx(4500.0), name
+        # Вал не съеден и не удвоен: полезная осталась валом строки.
+        assert got["useful"] == pytest.approx(handed["useful"], abs=1.0), name
+        # И переданное по-прежнему вычтено.
+        assert got["saleable"] == pytest.approx(got["useful"] - 4500.0, abs=0.2), name
+
+
+def test_the_refill_rebuilds_the_gross_not_the_remainder():
+    """Пересборка от продаваемой берёт ВАЛ: в ячейке лежит остаток.
+
+    Иначе переданное вычиталось бы второй раз — строка молча уменьшалась на
+    него при каждом нажатии «наши».
+    """
+    # Состояние задаётся прямо: через правку ячейки нулевой ГНС не получить —
+    # доли достраивают её из продаваемой. Так строка приезжает из снимка.
+    start = ["Object.assign(tep.apartments,{gns:0,total_area:0,"
+             "useful:13919.8,saleable:9419.8,transfer:4500});"]
+    got = _refill(start + ["tepRatioReset('apartments');"])
+    assert got["useful"] == pytest.approx(13919.8, abs=1.0)
+    assert got["saleable"] == pytest.approx(9419.8, abs=1.0)

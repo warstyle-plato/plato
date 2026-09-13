@@ -39,10 +39,69 @@ def per_sqm(mln: float) -> float:
 @pytest.mark.parametrize("key,fact_mln,tolerance", [
     ("preparation_th_per_sqm", 53.4, 0.2),      # подготовительный период
     ("utilities_th_per_sqm", 198.0, 0.2),       # наружные инженерные сети
-    ("landscaping_th_per_sqm", 223.2, 0.2),     # благоустройство и озеленение
 ])
 def test_the_unit_rates_follow_the_budget(key, fact_mln, tolerance):
     assert core.DEFAULT_INPUTS[key] == pytest.approx(per_sqm(fact_mln), abs=tolerance)
+
+
+LANDSCAPING_FACT_MLN = 223.2  # благоустройство и озеленение, тот же бюджет
+
+
+def test_the_landscaping_rule_meets_the_measured_budget():
+    """Норма сошлась с бюджетом ЕГО ЖЕ проекта — после двух поправок владельца.
+
+    Была открытым вопросом: при 5 м²/чел на все классы и ставке 25 у бизнеса
+    норма давала 47,6 млн против факта 223,2 — разрыв 4,7 раза. Владелец
+    назвал причину и числа: «Себестоимость действительно тысяч 40 на метр.
+    Значит 5 это норматив для условного комфорта, а бизнес и элит
+    благоустройства больше» → «Ставка разная как и площадь: 5-15-20,
+    15-35-50» (12.09.2026). Различает класс И ПЛОЩАДЬ двора, и ставку метра.
+
+    На Гродненской, 18 (бизнес): 12 571,7 м² квартир, 381 житель,
+    15 м²/чел → 5 715 м² двора × 35 тыс ₽ = 200,0 млн ₽ против факта
+    223,2 млн — норма даёт 90% замера. Норматив бывает полом, проект строит
+    больше: двенадцать процентов это согласие, а не расхождение.
+    """
+    import math
+
+    apartments = GNS_ABOVE_SQM * 0.65        # доля продаваемой в ГНС у жилья
+    population = math.ceil(apartments / core._PARKING_2118_SQM_PER_PERSON)
+    # Класс проекта берётся из справочника, а не из умолчаний движка: первый
+    # замер сравнил факт бизнес-проекта с комфортной ставкой и объявил разрыв
+    # в 11,7 раза. Делитель берут оттуда же, откуда числитель.
+    benchmark_class = _benchmark_housing_class()
+    assert benchmark_class == "business"
+    preset = core.PROJECT_CLASS_PRESETS[benchmark_class]
+    per_person = preset["landscaping_area_per_person_sqm"]
+    rate = preset["landscaping_th_per_sqm"]
+    by_rule_mln = population * per_person * rate / 1000.0
+
+    assert (per_person, rate) == (15, 35), (
+        "числа владельца изменились — перемерьте расхождение заново")
+    assert (population, population * per_person) == (381, 5715), (
+        "физическая цепочка сдвинулась — перемерьте")
+    assert by_rule_mln == pytest.approx(200.0, abs=0.5), by_rule_mln
+    # Норма — пол: она НЕ выше факта и отстаёт от него не больше чем на четверть.
+    ratio = LANDSCAPING_FACT_MLN / by_rule_mln
+    assert 1.0 <= ratio <= 1.25, ratio
+    # Предохранитель: на прежних числах (5 м²/чел, ставка 25) разрыв был 4,7 —
+    # проверка обязана их отвергнуть, иначе она зелена на любом наборе.
+    assert LANDSCAPING_FACT_MLN / (population * 5 * 25 / 1000.0) > 4.0
+
+
+def _benchmark_housing_class() -> str:
+    """Класс собственного проекта — из справочника, один ответ на оба файла."""
+    import json
+
+    root = Path(__file__).resolve().parent.parent / "reference_data" / "statistics"
+    rows = json.loads((root / "normalized_benchmarks.json").read_text("utf-8"))
+    named = {str(row.get("housing_class")) for row in rows
+             if "родненск" in str(row.get("source", ""))}
+    structure = json.loads((root / "developaid_cost_structure.json").read_text("utf-8"))
+    named |= {str(one.get("housing_class")) for one in structure.get("sources", [])
+              if "родненск" in str(one.get("source", ""))}
+    assert len(named) == 1, f"справочник называет класс по-разному: {named}"
+    return named.pop()
 
 
 def test_the_site_maintenance_excludes_the_contractor_fee():
