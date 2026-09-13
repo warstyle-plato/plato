@@ -69,7 +69,7 @@ console.log(JSON.stringify({html: box.innerHTML}));
 def _render(result) -> str:
     script = HARNESS % {"result": json.dumps(result, ensure_ascii=False),
                         "prefixes": _const("OBJECT_PARKING_PREFIXES"),
-                        "note": _piece("objectParkingFieldNote") + "\n"
+                        "note": _piece("objectParkingGap") + "\n" + _piece("objectParkingFieldNote") + "\n"
                         + _piece("markParkingByNorm") + "\n"
                         + _piece("reconcileLegacyParking"),
                         "fn": _piece("renderObjectParkingFieldNotes") + "\n"
@@ -129,7 +129,12 @@ def _const(name: str) -> str:
 def _render_fields(result, inputs=None):
     """Отрисовать подписи и поля так, как их рисует страница."""
     script = """
-const cells = {parkNorm_offices:{textContent:""}, parkNorm_retail:{textContent:""},
+// `style` у заглушки обязателен: подпись несёт не только текст, но и тон —
+// дефицит красный, — и у настоящего элемента страницы `style` есть всегда.
+// Без него стенд падает на нашей же правке, и падение выходит про стенд.
+const cells = {parkNorm_offices:{textContent:"",style:{}},
+               parkNorm_retail:{textContent:"",style:{}},
+               parkNorm_sports:{textContent:"",style:{}},
                objectParkingNote:{innerHTML:""},
                f_offices_parking_under_spaces:{value:null},
                f_offices_parking_over_spaces:{value:null}};
@@ -153,7 +158,7 @@ console.log(JSON.stringify({
 """ % {"result": json.dumps(result, ensure_ascii=False),
        "inputs": json.dumps(inputs or {}, ensure_ascii=False),
        "prefixes": _const("OBJECT_PARKING_PREFIXES"),
-       "a": _piece("objectParkingFieldNote"),
+       "a": _piece("objectParkingGap") + "\n" + _piece("objectParkingFieldNote"),
        # Норма помечает своё число — без этой функции стенд падает на
        # неопределённом имени, и падение выходит про стенд, а не про подпись.
        "mark": _piece("markParkingByNorm") + "\n"
@@ -304,7 +309,7 @@ def test_a_field_shows_no_stale_number_but_names_the_reason() -> None:
     входом, а вход у каждого браузера свой.
     """
     script = """
-const cell = {textContent:"дырка"};
+const cell = {textContent:"дырка",style:{}};
 global.document = {getElementById: id => (id === 'parkNorm_offices' ? cell : null)};
 function escapeHtml(s){return String(s)}
 const num = v => String(v);
@@ -317,7 +322,7 @@ let lastResult = null;
 renderObjectParkingNote();
 console.log(JSON.stringify({left: cell.textContent}));
 """ % {"prefixes": _const("OBJECT_PARKING_PREFIXES"),
-       "a": _piece("objectParkingFieldNote"),
+       "a": _piece("objectParkingGap") + "\n" + _piece("objectParkingFieldNote"),
        "mark": _piece("markParkingByNorm") + "\n"
                  + _piece("reconcileLegacyParking"),
        # Писатель подписей — своя функция: её зовёт и форма, и результат.
@@ -482,7 +487,7 @@ def test_the_note_stands_under_both_parking_fields() -> None:
 
     Между ними она объясняла бы только верхнее, а число нормы приходит в оба.
     """
-    place = PAGE.index("parkNorm_${id.split('_')[0]}")
+    place = PAGE.index("normCell.id='parkNorm_'")
     head = PAGE.rindex("if(/^(offices|retail|sports)_parking_", 0, place)
     assert "_parking_over_spaces$/" in PAGE[head:place], PAGE[head:place]
 

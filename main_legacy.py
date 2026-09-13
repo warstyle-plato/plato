@@ -42911,13 +42911,6 @@ function renderInputs(){
      if(id==='sports_parking_over_spaces'){
       wrap.innerHTML+='<div id="objectParkingNote" style="margin-top:6px"></div>';
      }
-     // Место под норму — у того поля, которое человек правит. Заполняет его
-     // `renderObjectParkingNote` вместе с плашкой: число следует за РАСЧЁТОМ,
-     // а не за правкой поля, иначе прежняя норма под новыми метрами читается
-     // как посчитанная.
-     if(/^(offices|retail|sports)_parking_over_spaces$/.test(id)){
-      wrap.innerHTML+=`<div id="parkNorm_${id.split('_')[0]}" style="margin-top:4px;font-size:10px;color:#777"></div>`;
-     }
      if(id==='land_rights_cost_mln'&&krtRequirementEntered()){
        wrap.innerHTML+=krtVriFeeNote();
      }
@@ -42948,7 +42941,23 @@ function renderInputs(){
       el.title='Москва: платежи ежеквартально — установлено нормативно';
      }
      el.onchange=()=>{inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='social_mode')inputs._social_mode_user_set=true;if(/^(offices|retail|sports)_parking_(under|over)_spaces$/.test(id)){if(String(el.value).trim()==='')restoreParkingNorm(id.split('_')[0]);else markParkingByHand(id.split('_')[0]);}if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){renderInputs();return calculate()}if(['apartment_price_th','commercial_price_th','parking_price_th','main_above_th_per_sqm','main_under_th_per_sqm'].includes(id)){inputs.project_class='custom';syncProjectClassSelector()}if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(TEP_DERIVED_INPUTS.includes(id)){const cleared=id==='social_area_source'&&krtClearsVriFee();const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(cleared||filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
-     wrap.appendChild(el);grid.appendChild(wrap);
+     wrap.appendChild(el);
+     // Место под норму — ПОСЛЕ поля, а не до него. Стоя над вводом, подпись
+     // приклеивалась к подписи поля и читалась как утверждение о нём: «по
+     // нормативу приложения 6 — 1 493 мест» под строкой «мест на первых
+     // этажах» (экран владельца, 13.09.2026). Норматив при этом на ОБЪЕКТ, то
+     // есть на оба поля вместе. Правило «подпись переехала под оба поля»
+     // записано 09.09 и было применено наполовину: div висел у второго поля
+     // и выше его ввода. Заполняет его `renderObjectParkingFieldNotes`: число
+     // следует за РАСЧЁТОМ, а не за правкой поля, иначе прежняя норма под
+     // новыми метрами читается как посчитанная.
+     if(/^(offices|retail|sports)_parking_over_spaces$/.test(id)){
+      const normCell=document.createElement('div');
+      normCell.id='parkNorm_'+id.split('_')[0];
+      normCell.style.cssText='margin-top:4px;font-size:10px;color:#777';
+      wrap.appendChild(normCell);
+     }
+     grid.appendChild(wrap);
    });det.appendChild(grid);(ownTab?vriBox:box).appendChild(det);
  });
  rateScenario.value=inputs.rate_scenario||'base';
@@ -43228,6 +43237,19 @@ function markParkingByHand(prefix){
 // нормативу то этому?», владелец, 07.09.2026). Приставку поля несёт сам
 // объект (`prefix`), второй карты «какое поле у какого объекта» здесь нет.
 // Число не считается: берётся из результата, посчитанного движком.
+// Сколько строим против того, сколько положено, — одним ответом на двух
+// читателей: текст подписи и её тон. Второй счёт той же разницы однажды
+// покрасил бы спокойным то, о чём подпись говорит «дефицит».
+//
+// Считать это обязана страница, а не сервер: оба слагаемых уже лежат в его
+// ответе (`required_spaces` и `units`), и разницу двух его же чисел он не
+// пересчитывает — здесь нет экономики, есть вычитание.
+function objectParkingGap(item){
+ const required=Number((item||{}).required_spaces||0);
+ const built=Number((item||{}).units||0);
+ return {required:required,built:built,diff:built-required};
+}
+
 function objectParkingFieldNote(prefix){
  const own=((lastResult||{}).parking||{}).own||[];
  const item=own.find(o=>o&&o.prefix===prefix);
@@ -43279,7 +43301,28 @@ function objectParkingFieldNote(prefix){
  // рядом, а путь назад — очистить поле — сказан прямо.
  const back=' Очистите поле — вернётся норматив и снова пойдёт за ТЭП.';
  if(!req)return 'Задано руками. По нормативу приложения 6 мест не требуется.' + back;
- return `Задано руками, по нормативу приложения 6 — ${num(req)} мест.` + back;
+ // Норматив — обязательство ОБЪЕКТА, а не одного из двух полей: места при
+ // объекте бывают и под ним, и на первых этажах. Пока это не сказано, число
+ // под полем «мест на первых этажах» читается как норма ЭТОГО поля.
+ //
+ // И главное, ради чего строка переписана: у величины есть мера, а сравнения
+ // с ней рядом не стояло. Владелец вписал 500 мест на первые этажи, подземные
+ // остались нормативными 1 493 — строится 1 993 при норме 1 493, — и на
+ // экране об этом не было ни слова («почему подземная не изменилась», 
+ // 13.09.2026). Обратная сторона молчала так же: 400 мест при норме 1 590
+ // печатались двумя числами подряд, а дефицит в 1 093 места числом не
+ // назывался. Оба случая модель знала и не говорила.
+ const gap=objectParkingGap(item);
+ const norm=`Задано руками. Норматив приложения 6 — ${num(req)} мест на объект: `
+  +'это оба поля вместе, под зданием и на первых этажах.';
+ // Перебор — решение человека, а не ошибка, поэтому он назван, но не
+ // выделен: он же и подсказывает, на сколько можно снизить подземные.
+ if(gap.diff>0)return norm
+  +` Строим ${num(gap.built)} — на ${num(gap.diff)} больше положенного;`
+  +` на столько же можно снизить места в подземном.` + back;
+ if(gap.diff<0)return norm
+  +` Строим ${num(gap.built)} — дефицит ${num(-gap.diff)} мест.` + back;
+ return norm + ` Строим ровно норматив.` + back;
 }
 
 function renderTep(){
@@ -45565,7 +45608,20 @@ function pfRveWarningHtml(r){
 function renderObjectParkingFieldNotes(){
  OBJECT_PARKING_PREFIXES.forEach(prefix=>{
   const cell=document.getElementById('parkNorm_'+prefix);
-  if(cell)cell.textContent=objectParkingFieldNote(prefix);
+  if(!cell)return;
+  cell.textContent=objectParkingFieldNote(prefix);
+  // Красным — только ДЕФИЦИТ: перебор это решение человека, а не ошибка
+  // (владелец, 13.09.2026: «может там хотя бы красным писать уведомление…
+  // или наоборот если руками правишь, то может возникнуть дефицит»).
+  // Красное на обоих случаях сразу перестало бы различать их вовсе.
+  // Разрыв берётся у `objectParkingGap` — у того же счёта, что и текст:
+  // два ответа на одну разницу однажды разошлись бы, и подпись говорила бы
+  // «дефицит» спокойным серым.
+  const own=((lastResult||{}).parking||{}).own||[];
+  const item=own.find(o=>o&&o.prefix===prefix);
+  const gap=item?objectParkingGap(item):null;
+  const short=!!(gap&&gap.required>0&&gap.diff<0);
+  cell.style.color=short?'#a33':'#777';
  });
 }
 
