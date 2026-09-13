@@ -118,7 +118,7 @@ table.territory tr.obj td:first-child{border-left:14px solid var(--soft)}
 <div class="shell">
   <div class="brandbar"><a class="brand" href="/" title="DevelopAid"><img src="/guide/assets/logo.webp" alt="ПЛАТО"></a><div class="brandline"></div></div>
   <div class="head">
-    <div><h1>КРТ Нагатино · объекты и правообладатели</h1>
+    <div><h1 id="pageTitle">КРТ Нагатино · объекты и правообладатели</h1>
       <p id="siteLine">Квартал 77:05:0004001 · выгрузка владельца, контуры — ЕГРН</p></div>
     <div class="badge">служебная страница</div>
   </div>
@@ -151,7 +151,7 @@ table.territory tr.obj td:first-child{border-left:14px solid var(--soft)}
     <div class="fold"><details><summary>На чём посчитано — источники</summary>
       <div id="sourceNote" class="source"></div></details></div>
 
-    <div class="source" style="margin-top:18px"><a id="exportLink" href="/krt/nagatino/export.xlsx">
+    <div class="source" style="margin-top:18px"><a id="exportLink" href="#">
       Скачать свод в Excel</a> — те же числа, что здесь: книга собирается из того же расчёта,
       второй сборки нет. Выгрузка идёт по всем владельцам, а не по отбору на экране.</div>
   </div>
@@ -208,6 +208,20 @@ function auth(){
          key:get('plato_projects_key','key','developaid_key'),
          share:share};
 }
+// Чья это территория, решает АДРЕС страницы, а не второй экран. Форка у
+// страницы нет: копию негде обновлять, а два экрана об одной территории
+// однажды показали бы разное. Маршруты данных живут рядом со страницей —
+// `/krt/nagatino/parcels` у Нагатино, `/krt/site/<слаг>/parcels` у прочих, —
+// поэтому база берётся из `location`, а не пишется строкой.
+const BASE=(function(){
+ try{return location.pathname.replace(/\/+$/,'')||'/krt/nagatino'}
+ catch(e){return '/krt/nagatino'}
+})();
+// Выгрузка владельца есть только у Нагатино: у неё свои группы и своя картинка
+// границ. Спрашивать их у площадки с торгов нечего, и молчание об этом
+// читалось бы как поломка.
+const IS_NAGATINO=BASE.indexOf('/krt/site/')<0;
+
 // Ответ разбирают, зная, что он может быть не ответом: у шлюза своя страница
 // ошибки, и `r.json()` на ней даёт «не тот формат» вместо причины отказа.
 async function askJson(url){
@@ -224,7 +238,7 @@ async function load(refresh){
  const params=new URLSearchParams({session:a.session,key:a.key,share:a.share});
  if(refresh)params.set('refresh','1');
  try{
-  S.data=await askJson('/krt/nagatino/parcels?'+params.toString());
+  S.data=await askJson(BASE+'/parcels?'+params.toString());
   $('gate').style.display='none';
  }catch(e){
   // Отказ доступа и поломка — разные ответы, и на экране они разные.
@@ -1096,6 +1110,7 @@ function legendMarkup(){
 // разложение стоит тут же, потому что вопрос задают, глядя на этот контур.
 function decisionOutlineMarkup(){
  const a=auth(),t=(S.data.territory||{}).totals||{};
+ if(!IS_NAGATINO)return '';  // картинка границ — приложение к решению Нагатино
  const src='/krt/nagatino/decision-outline.png?'
    +new URLSearchParams({session:a.session,key:a.key,share:a.share});
  const road=null;
@@ -1200,12 +1215,26 @@ function ownersMarkup(){
 function render(){
  const d=S.data; if(!d)return;
  const site=d.krt_site||{};
- $('siteLine').textContent='Квартал '+((d.site||{}).quarter||'')+' · '
-  +((d.site||{}).okrug||'')+' · '+((d.site||{}).district||'')
-  +(site.name?' · площадка реестра: '+site.name:'');
+ const own=d.site||{};
+ // Имя площадки берётся из ОТВЕТА, а не из заголовка страницы: страница одна
+ // на все территории, и зашитое имя называло бы чужую.
+ const title=IS_NAGATINO
+   ? 'КРТ Нагатино · объекты и правообладатели'
+   : 'КРТ '+(own.name||own.slug||'площадка')+' · объекты и правообладатели';
+ const heading=$('pageTitle');
+ if(heading)heading.textContent=title;
+ try{document.title='DevelopAid · '+title}catch(e){}
+ $('siteLine').textContent=IS_NAGATINO
+  ? ('Квартал '+(own.quarter||'')+' · '+(own.okrug||'')+' · '+(own.district||'')
+     +(site.name?' · площадка реестра: '+site.name:''))
+  : ([own.okrug||'',own.district||'',own.status||'',
+      own.area_ha?(own.area_ha+' га по каталогу'):'' ].filter(Boolean).join(' · ')
+     +' · состав территории — документы лота, контуры — ЕГРН');
  $('stats').innerHTML=statsMarkup();
- $('share').innerHTML=shareMarkup();
- bindShare();
+ // «Поделиться» есть только у Нагатино: код ссылки один на страницу, и кнопка
+ // на площадке с торгов выдала бы адрес чужой территории.
+ if(IS_NAGATINO){$('share').innerHTML=shareMarkup(); bindShare();}
+ else{$('share').innerHTML='';}
  $('reconcile').innerHTML=siteReconcileNote();
  $('findings').innerHTML=findingsMarkup();
  $('filter').innerHTML=filterMarkup();
@@ -1217,7 +1246,7 @@ function render(){
  $('coverage').innerHTML=coverageMarkup();
  $('decisionOutline').innerHTML=decisionOutlineMarkup();
  const a=auth(),link=$('exportLink');
- if(link)link.href='/krt/nagatino/export.xlsx?'
+ if(link)link.href=BASE+'/export.xlsx?'
    +new URLSearchParams({session:a.session,key:a.key,share:a.share});
  $('territoryBox').innerHTML=territoryMarkup();
  $('territoryBox').querySelectorAll('tr[id^="t-"]').forEach(row=>{
@@ -1232,10 +1261,15 @@ function render(){
  $('ownersBox').innerHTML=ownersMarkup();
  // Число в заголовке складки обязательно: закрытый список без него читается
  // как отсутствующий.
+ const all=(S.data.parcels||[]).length;
  const shownRows=(S.data.parcels||[]).filter(p=>shown(p.group)).length;
- const summary=$('rawSummary');
+ const summary=$('rawSummary'),fold=$('rawFold');
+ // Выгрузки владельца у площадки с торгов нет вовсе, и пустая складка
+ // читалась бы как потерянные строки. Её не рисуем, а почему — сказано в
+ // источниках свода.
+ if(fold)fold.style.display=all?'':'none';
  if(summary)summary.textContent='Строения из присланного файла — '+shownRows
-   +(shownRows===(S.data.parcels||[]).length?'':' из '+(S.data.parcels||[]).length)
+   +(shownRows===all?'':' из '+all)
    +' строк, сырьё под нашими таблицами';
  bindMap();
 }

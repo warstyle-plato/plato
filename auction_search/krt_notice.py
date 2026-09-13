@@ -83,12 +83,19 @@ def _number(text: str) -> float | None:
         return None
 
 
-def _lines(pdf_path: Path) -> list[dict[str, str]]:
+def _lines(source: Path | bytes) -> list[dict[str, str]]:
     try:
         import pymupdf
     except Exception as exc:  # noqa: BLE001 — отсутствие растеризатора называется
         raise NoticeProblem(f"нечем прочитать PDF: {exc}") from exc
-    document = pymupdf.open(pdf_path)
+    # Байты и путь — один разбор. Вложение лота приезжает байтами (скачанное
+    # держит склад, а не рабочий каталог), а первоисточник Нагатино лежит
+    # файлом: второй разбор на ту же таблицу однажды ответил бы про один
+    # документ иначе, чем первый.
+    if isinstance(source, (bytes, bytearray)):
+        document = pymupdf.open(stream=bytes(source), filetype="pdf")
+    else:
+        document = pymupdf.open(source)
     rows: list[dict[str, str]] = []
     for page in document:
         by_line: dict[float, list[tuple[float, str]]] = {}
@@ -108,11 +115,16 @@ def _lines(pdf_path: Path) -> list[dict[str, str]]:
 
 
 def read(pdf_path: str | Path) -> dict[str, Any]:
-    """Состав территории по извещению: участки и объекты на них."""
+    """Состав территории по извещению-файлу: участки и объекты на них."""
+    return read_bytes(Path(pdf_path))
+
+
+def read_bytes(source: bytes | Path) -> dict[str, Any]:
+    """То же по байтам вложения. Разбор один — см. `_lines`."""
     lands: list[dict[str, Any]] = []
     current: dict[str, Any] | None = None
     current_object: dict[str, Any] | None = None
-    for line in _lines(Path(pdf_path)):
+    for line in _lines(source):
         head = line["land"].split()[0] if line["land"] else ""
         if CAD.match(head):
             current = {"cadastral_number": head, "part": "часть" in line["land"],
