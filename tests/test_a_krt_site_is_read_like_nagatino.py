@@ -444,3 +444,47 @@ def test_in_a_real_browser_the_page_asks_its_own_address(tmp_path, monkeypatch):
     # «Поделиться» у площадки с торгов нет: код ссылки один на страницу, и
     # кнопка выдала бы адрес чужой территории.
     assert share == "", share
+
+
+def test_the_gated_page_says_where_the_other_sites_are(tmp_path, monkeypatch):
+    """Ссылки в публичной части нет — значит переход живёт на самой странице.
+
+    Служебную страницу владелец просил не выносить в публичную часть (там
+    живые компании с ИНН и кадастровая стоимость), и проверка это держит. Но
+    тогда перейти между территориями можно только отсюда: страница без списка
+    отвечала бы «а где остальные» молчанием.
+    """
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("NAGATINO_EGRN_READ", "0")
+    client = TestClient(_app(tmp_path))
+    data = client.get(f"/krt/site/{SITE['slug']}/parcels").json()
+    row, = data["siblings"]
+    assert row["slug"] == SITE["slug"] and row["name"] == SITE["name"]
+    assert row["url"] == f"/krt/site/{SITE['slug']}"
+    assert row["deadline"] == LOT["deadline"], row
+    # Момент считается при ЧТЕНИИ: связка лежит на диске и старше правила.
+    assert row["deadline_iso"], row
+    # «Торги идут» страница не утверждает: правило живости живёт у каталога, и
+    # второе такое правило однажды ответило бы про один лот иначе.
+    assert "live" not in row, row
+    # Тот же список у Нагатино: с него владелец и заходит.
+    assert client.get("/krt/nagatino/parcels",
+                      params={"key": ""}).status_code in (200, 403)
+
+
+def test_the_public_auctions_page_does_not_offer_the_service_page():
+    """Публичная страница торгов ссылки на служебную не несёт.
+
+    Правило владельца, и однажды я его уже нарушил кнопкой в карточке: страница
+    торгов открыта всем, а за этим адресом лицензионные данные — живые компании
+    с ИНН и кадастровая стоимость. Проверка соседняя (в тестах страницы
+    Нагатино) держит то же; здесь она стоит рядом с правкой, которая её
+    нарушила.
+    """
+    from auction_search import ui
+
+    page = ui.auctions_page(None)
+    assert "/krt/nagatino" not in page
+    assert "/krt/site/" not in page

@@ -2712,7 +2712,7 @@ function selectKrt(x){state.selectedKrt=x;const sc=krtScore(x),fit=sc.fit,cached
    +`<div id="krtOutcomeBox">${krtBroken(x)?krtBrokenModelNote(x):(cached?krtOutcomeHtml({model:cached,market:null,plato:null,when:Number(cached.computed_at||0)}):krtOutcomeWaiting())}</div>`
    +`<div class="section"><h3>Насколько этому верить</h3><div class="notice" id="krtScoreBox">${krtScoreBoxHtml(sc)}</div>`
    +`<details class="fold"><summary>Почему такой балл — ${fit.reasons.length+fit.checks.length+sc.cuts.length} пункт(ов)</summary><div class="foldbody"><div class="items">${fit.reasons.map(one=>`<div class="item"><b>Соответствует запросу</b>${esc(one)}</div>`).join('')}${fit.checks.map(one=>`<div class="item"><b>Нужно проверить</b>${esc(one)}</div>`).join('')}${sc.cuts.map(c=>`<div class="item"><b>Балл снижен на ${c.points}%</b>${esc(c.label)}</div>`).join('')}</div></div></details></div>`
-   +`<div class="actions minor"><button id="krtPlato">Рекомендация Платона</button><button id="krtShare">Поделиться</button><button id="krtSource">${esc(krtSource(x).open)}</button><button id="krtParcels">Участки и правообладатели</button></div>`
+   +`<div class="actions minor"><button id="krtPlato">Рекомендация Платона</button><button id="krtShare">Поделиться</button><button id="krtSource">${esc(krtSource(x).open)}</button></div>`
    +`<div id="krtShareNote" class="notice" style="display:none"></div>`)
  +krtGroup(2,'Что дал город','что даёт и что требует',
    `<div class="section"><h3>Что за площадка</h3>${krtPassport(x)}</div>`
@@ -2742,14 +2742,7 @@ function selectKrt(x){state.selectedKrt=x;const sc=krtScore(x),fit=sc.fit,cached
  // px до нажатия, 159 px после — заголовок на 142 px выше окна). Новую
  // карточку читают с её имени.
  $('krtSide').scrollTop=0;
- $('krtMarket').onclick=()=>loadKrtMarket(x);krtOrderBind(x);$('krtSource').onclick=()=>window.open(x.url,'_blank','noopener');
- // Свод территории — отдельная страница: карта участков, собственники по
- // выпискам ЕГРН, что на каком участке стоит и что сносят. У Нагатино свой
- // адрес (там сверх этого лежит присланная владельцем выгрузка), у остальных
- // общий — адрес и решает, чья территория.
- $('krtParcels').onclick=()=>window.open(
-   x.slug==='nagatino'?'/krt/nagatino':'/krt/site/'+encodeURIComponent(x.slug),
-   '_blank','noopener');loadKrtCardFacts(x);$('krtPress').onclick=()=>loadKrtPress(x);krtRatioBind(x);
+ $('krtMarket').onclick=()=>loadKrtMarket(x);krtOrderBind(x);$('krtSource').onclick=()=>window.open(x.url,'_blank','noopener');loadKrtCardFacts(x);$('krtPress').onclick=()=>loadKrtPress(x);krtRatioBind(x);
  $('krtShare').onclick=()=>shareKrt(x);
  $('krtHandoff').onclick=()=>handoffKrt(x);
  $('krtPlato').onclick=()=>askPlatoAboutKrt(x);

@@ -1758,6 +1758,7 @@ def install(app: FastAPI) -> None:
             data = await run_in_threadpool(nagatino_parcels.payload)
         except nagatino_parcels.RegistryProblem as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
+        data["siblings"] = await run_in_threadpool(_krt_sites_with_lots)
         lookup = getattr(core, "_land_lookup_by_numbers", None) if core is not None else None
         if callable(lookup):
             started = await run_in_threadpool(
@@ -1905,6 +1906,50 @@ def install(app: FastAPI) -> None:
             decision_numbers=numbers, root=_market_dir())
         return dict(project), site
 
+    def _krt_sites_with_lots() -> list[dict[str, Any]]:
+        """Площадки, у которых есть лот торгов — список для служебной страницы.
+
+        Ссылки на эту страницу в публичной части нет (решение владельца), и
+        потому перейти между территориями можно только ОТСЮДА: страница без
+        такого списка отвечала бы «где искать остальные» молчанием.
+
+        «Лот живой» здесь НЕ утверждается: правило живости живёт у каталога
+        (`krtLiveLot`), и второе такое правило однажды ответило бы про один лот
+        иначе. Печатается срок в том виде, в каком его объявила площадка, — по
+        нему читатель и видит, идут торги или прошли; момент считается при
+        чтении (`with_moment`), потому что связка лежит на диске и старше
+        правила разбора даты.
+        """
+        from . import krt_tenders as rules
+
+        reader = getattr(krt_registry, "tender_lots_known", None)
+        if not callable(reader):
+            return []
+        try:
+            known = reader() or {}
+        except Exception:  # noqa: BLE001
+            logger.exception("КРТ: связка с лотами не прочитана")
+            return []
+        names = {str(item.get("slug")): item for item in _krt_all_sites()}
+        out: list[dict[str, Any]] = []
+        for slug, record in known.items():
+            lots = rules.with_moment((record or {}).get("lots") or [])
+            if not lots:
+                continue
+            project = names.get(str(slug)) or {}
+            out.append({
+                "slug": str(slug),
+                "name": str(project.get("name") or slug),
+                "okrug": str(project.get("okrug") or ""),
+                "lots": len(lots),
+                "deadline": str(lots[0].get("deadline") or ""),
+                "deadline_iso": str(lots[0].get("deadline_iso") or ""),
+                "url": ("/krt/nagatino" if str(slug) == "nagatino"
+                        else "/krt/site/" + urllib.parse.quote(str(slug))),
+            })
+        out.sort(key=lambda item: item["name"])
+        return out
+
     def _krt_site_finder(slug: str, name: str):
         """Контур площадки для её свода: сперва файл карты города, потом перечень.
 
@@ -1956,6 +2001,7 @@ def install(app: FastAPI) -> None:
         _nagatino_gate(request, session, key, share)
         project, site = await run_in_threadpool(_krt_site_source, slug)
         data = await run_in_threadpool(lambda: nagatino_parcels.payload(site))
+        data["siblings"] = await run_in_threadpool(_krt_sites_with_lots)
         data["site"] = {"slug": slug, "name": project.get("name") or slug,
                         "okrug": project.get("okrug") or "",
                         "district": project.get("district") or "",

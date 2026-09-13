@@ -125,6 +125,7 @@ table.territory tr.obj td:first-child{border-left:14px solid var(--soft)}
   <div class="content">
     <div id="gate" class="notice warn" style="display:none"></div>
     <div id="share" class="source"></div>
+    <div id="siblings" class="source"></div>
     <div id="progress" class="notice" style="display:none"></div>
     <div id="stats" class="stats"></div>
     <div id="reconcile"></div>
@@ -1212,6 +1213,25 @@ function ownersMarkup(){
   +'о владельце объекта, а не наша догадка. Скажите, куда её отнести, — это одна строка в реестре.</div>';
 }
 
+// Куда ещё пойти. Ссылки на эту страницу в публичной части нет — решение
+// владельца, — и перейти между территориями можно только отсюда: без списка
+// страница отвечала бы «а где остальные» молчанием. «Торги идут» здесь не
+// утверждается: печатается срок, как его объявила площадка, и читатель видит
+// сам — второе правило живости разошлось бы с каталогом.
+function siblingsMarkup(){
+ const rows=S.data.siblings||[];
+ if(!rows.length)return 'Площадок с лотом торгов в связке пока нет — '
+   +'связку собирает обход каталога, и «не собрали» это не «лотов нет».';
+ const here=BASE;
+ return 'Площадки с лотом торгов ('+rows.length+'): '
+  +rows.map(r=>{
+    const name=escapeHtml(r.name||r.slug)
+      +(r.deadline?' <span style="color:var(--muted)">до '+escapeHtml(r.deadline)+'</span>':'');
+    return (r.url===here)?('<b>'+name+'</b>')
+      :('<a href="'+escapeHtml(r.url)+'">'+name+'</a>');
+   }).join(' · ');
+}
+
 function render(){
  const d=S.data; if(!d)return;
  const site=d.krt_site||{};
@@ -1231,6 +1251,7 @@ function render(){
       own.area_ha?(own.area_ha+' га по каталогу'):'' ].filter(Boolean).join(' · ')
      +' · состав территории — документы лота, контуры — ЕГРН');
  $('stats').innerHTML=statsMarkup();
+ $('siblings').innerHTML=siblingsMarkup();
  // «Поделиться» есть только у Нагатино: код ссылки один на страницу, и кнопка
  // на площадке с торгов выдала бы адрес чужой территории.
  if(IS_NAGATINO){$('share').innerHTML=shareMarkup(); bindShare();}
