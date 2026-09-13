@@ -244,13 +244,10 @@ def test_the_class_window_shows_the_norm_with_its_unit():
     окно. Профиль был весь в тыс ₽: бесподписное 5 рядом с 10/25/50 читается
     как ставка.
     """
-    chrome = Path("/opt/pw-browsers/chromium-1194/chrome-linux/chrome")
-    if not chrome.exists():
-        pytest.skip("chromium в образе не найден")
-    try:
-        from playwright.sync_api import sync_playwright
-    except Exception:
-        pytest.skip("playwright недоступен")
+    import browser as browser_helper
+
+    chrome = browser_helper.chromium_or_skip()
+    from playwright.sync_api import sync_playwright
 
     import threading
     import time

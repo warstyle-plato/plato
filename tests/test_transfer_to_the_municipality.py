@@ -231,10 +231,9 @@ def test_in_a_real_browser_the_report_names_the_transferred_metres():
     import threading
     import time
 
-    chrome = next(iter(sorted(
-        Path("/opt/pw-browsers").glob("chromium-*/chrome-linux/chrome"))), None)
-    if chrome is None or not chrome.exists():
-        pytest.skip("chromium в образе не найден")
+    import browser as browser_helper
+
+    chrome = browser_helper.chromium_or_skip()
     import uvicorn
 
     port = 8791

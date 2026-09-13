@@ -76,7 +76,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.23.28"
+VERSION = "0.23.31"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -16517,6 +16517,7 @@ _V4_VRI_SECURITY_ROW = 14      # расходы на обеспечение
 # Строка CAPEX, куда уходят проценты и обеспечение: 36 и 37 заняты сносом и
 # расселением, 38 в шаблоне пуста.
 _V4_CAPEX_VRI_EXTRA_ROW = 38
+_V4_CF_VAT_ROW = 21                  # CF очереди: «НДС к уплате»
 _V4_CAPEX_VRI_ROW = 15
 
 
@@ -16607,6 +16608,48 @@ def _v4_apply_vri_monthly_accrual(xml: str, missing: list[str]) -> str:
             if not done:
                 missing.append(f"ВРИ · накопление процентов: строка {target} не записана")
                 return xml
+    return xml
+
+
+def _v4_apply_vat_base(xml: str, phase: int, missing: list[str]) -> str:
+    """Проценты по рассрочке ВРИ НДС не облагаются — значит и вычета не дают.
+
+    Строка 21 листа CF берёт базу вычета как «все расходы очереди минус покупка
+    и минус тело платы за ВРИ». Проценты и обеспечение рассрочки приезжают в
+    расходы строкой 38 CAPEX (0.23.х) и в эту базу входили, то есть книга
+    возвращала НДС с процентов. Движок их из базы вычитает
+    (`vri_interest`, `vri_security` в `vat_bearing_costs`), и на проекте с
+    трёхлетней рассрочкой расхождение выходило 5,9 млн ₽ — при совпадающих
+    CAPEX, выручке и EBITDA. Нашла его строка паритета НДС первым же прогоном.
+
+    Формула шаблона не опознана — `missing`, а не тихий вычет по прежней базе.
+    """
+    row = _V4_CF_VAT_ROW
+    # `phase` здесь — НОМЕР листа CF (1..4), как в остальных проходах этого
+    # цикла: блок CAPEX у первой очереди идёт без смещения.
+    extra = (f"'CAPEX'!$B$"
+             f"{_V4_CAPEX_VRI_EXTRA_ROW + _V4_CAPEX_BLOCK_STRIDE * (phase - 1)}")
+    was = "(SUM($D$20:$GA$20)-"
+    now = f"(SUM($D$20:$GA$20)-{extra}-"
+    formulas = _v4_row_formulas(xml, row)
+    cells: dict[str, dict[str, Any]] = {}
+    for coord, formula in formulas.items():
+        # Колонка берётся целиком: «AC21» начинается на «A», и проверка по
+        # первой букве выбрасывала весь блок AA..CZ — 81 ячейку из 183, ровно
+        # ту середину строки, где и стоит живой месяц. Снаружи это выглядело
+        # как «правка не сработала»: D21 с правкой, а число прежнее.
+        column = re.match(r"[A-Z]+", coord).group(0)
+        if column in ("A", "B", "C"):
+            continue
+        if was not in formula:
+            continue
+        cells[coord] = dict(formula=formula.replace(was, now, 1))
+    if not cells:
+        missing.append(f"CF очереди {phase}: база НДС в строке {row} не опознана")
+        return xml
+    xml, done = _v4_set_cells(xml, row, cells)
+    if not done:
+        missing.append(f"CF очереди {phase}: база НДС строки {row} не записана")
     return xml
 
 
@@ -20412,13 +20455,20 @@ def build_project_workbook(
         # Начисление процентов идёт ПОСЛЕДНИМ: оно переводит базу налога со
         # строки выплаты на свою, а до него ту же строку 22 правит признание
         # ФОКа — по хвосту «-D53-D57-D21», которого после нас там уже нет.
-        cf_sheet_xml[_name] = _v4_apply_interest_accrual(
-            _v4_apply_sports_tax_row(
-                _v4_use_bridge_base_row(
-                    _v4_apply_cash_sweep(
-                        _v4_apply_debt_carry(
-                            source.read(_path).decode("utf-8"),
-                            _phase, _queue_count, missing),
+        # База вычета НДС правится ПОСЛЕДНЕЙ, и это измерено, а не выбрано:
+        # поставленная первой, она доезжала до 102 ячеек строки из 183 —
+        # соседний проход переписывал середину строки 21 прежней формулой, и
+        # живой месяц (AC) оказывался ровно в ней. Снаружи это выглядело как
+        # «правка не сработала»: D21 в книге с правкой, а число прежнее.
+        cf_sheet_xml[_name] = _v4_apply_vat_base(
+            _v4_apply_interest_accrual(
+                _v4_apply_sports_tax_row(
+                    _v4_use_bridge_base_row(
+                        _v4_apply_cash_sweep(
+                            _v4_apply_debt_carry(
+                                source.read(_path).decode("utf-8"),
+                                _phase, _queue_count, missing),
+                            _phase, missing),
                         _phase, missing),
                     _phase, missing),
                 _phase, missing),
