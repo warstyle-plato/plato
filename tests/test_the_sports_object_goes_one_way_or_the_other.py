@@ -303,7 +303,10 @@ READ_SPORTS = """() => {
     row_on_screen: !!Array.from(document.querySelectorAll('#tepBody tr'))
         .find(row => (row.textContent || '').indexOf('ФОК') >= 0),
     rows_total: document.querySelectorAll('#tepBody tr').length,
-    assign: !!document.getElementById('assignSports'),
+    // Поле очереди ищется по ОБЪЕКТУ, а не по имени узла: поля рисует
+    // реестр, и зашитый `assignSports` держал бы устройство разметки, а
+    // утверждение здесь — «у объекта есть своя очередь».
+    assign: !!document.querySelector("#assignObjects select[data-object='sports']"),
     discrete: phasing.discrete.sports,
   };
 }"""
