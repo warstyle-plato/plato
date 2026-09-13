@@ -128,6 +128,18 @@ def _rough(value: str) -> str:
     return _fold(_TYPE_PREFIX_RE.sub("", str(value or "")))
 
 
+def _alphabet(value: str) -> str | None:
+    """Каким алфавитом набрано имя. Без букв — ответа нет, а не «латиница»."""
+    text = str(value or "").lower()
+    cyrillic = any("а" <= char <= "я" or char == "ё" for char in text)
+    latin = any("a" <= char <= "z" for char in text)
+    if cyrillic and not latin:
+        return "cyrillic"
+    if latin and not cyrillic:
+        return "latin"
+    return None
+
+
 def drop_duplicate_parenthetical(value: str) -> str:
     """Убрать хвост в скобках, повторяющий само название.
 
@@ -136,7 +148,11 @@ def drop_duplicate_parenthetical(value: str) -> str:
     ключ страницы savinskaya17 против savinskaya17savinskaya17, похожесть 0,67
     при пороге 0,92. Следствием были и «цена не найдена», и потеря адреса.
 
-    Двуязычная пара — «Сидней Сити (Sidney City)» — не задвоение и остаётся.
+    Двуязычная пара — «Сидней Сити (Sidney City)», «Cult (Культ)» — не
+    задвоение и остаётся. Решает это АЛФАВИТ, а не ключ: ключ алфавит стирает
+    намеренно (ради того свёртка и написана), и, пока решение о показе брало
+    равенство ключей, оно ломалось ровно тем, что свёртка становилась лучше.
+    Тождество для сравнения и тождество для показа — разные вопросы.
     """
     text = " ".join(str(value or "").split())
     match = _TRAILING_PAREN_RE.search(text)
@@ -144,6 +160,8 @@ def drop_duplicate_parenthetical(value: str) -> str:
         return text
     head, inner = text[: match.start()].strip(), match.group(1).strip()
     if not head or not inner:
+        return text
+    if _alphabet(head) and _alphabet(inner) and _alphabet(head) != _alphabet(inner):
         return text
     head_key, inner_key = _rough(head), _rough(inner)
     if not head_key or not inner_key:
@@ -222,7 +240,14 @@ def _fold(value: str) -> str:
     folded = transliterate(value)
     folded = re.sub(r"[^a-z0-9]+", "", folded)
     folded = re.sub(r"(.)\1+", r"\1", folded)
+    # «c» латиницы — два звука, и кириллица пишет их разными буквами: «City» это
+    # «Сити», а «Cult» — «Культ». Пока c сводилось к одному знаку, «Sydney City»
+    # и «Сидней Сити» давали разные ключи, то есть один проект жил дважды —
+    # ровно то, ради чего свёртка и написана. Перед i, e и y это «с», иначе «к».
+    folded = re.sub(r"c(?=[iey])", "s", folded)
     folded = folded.replace("ck", "k").replace("ph", "f").replace("z", "s")
+    # «x» кириллица пишет двумя буквами: «Citimix» — «Ситимикс».
+    folded = folded.replace("x", "ks").replace("c", "k")
     # «й» и «ый» латиница пишет то через i, то через y: «Бродский» и «Brodsky» —
     # одна вывеска, но по буквам они расходились на последнем знаке, и дом
     # показывался в выдаче дважды. y и i здесь один звук, сводим к одному знаку.
