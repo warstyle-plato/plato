@@ -749,6 +749,37 @@ def _core_disk_line() -> str:
     return f"\nМесто на диске ({where}): {free} МБ"
 
 
+def _delivery_line(title: str, state: dict[str, Any]) -> str:
+    """Что сделал последний заход доставки. Одна строка на любую очередь.
+
+    Очередей у нас две — новости каталога КРТ и изменения нормативной базы, —
+    и обе копятся на ядре, а забирает их этот хост. Формат один: вторая копия
+    строки разошлась бы с первой молча, а читают их рядом, в одном `/status`.
+    """
+    when = int(state.get("at") or 0)
+    if not when:
+        return f"\n{title}: заходов доставки ещё не было"
+    ago = max(0, int(time.time()) - when)
+    said = f"\n{title}: заход {ago // 60} мин назад"
+    taken = int(state.get("taken") or 0)
+    if state.get("stopped_by"):
+        said += f" · {html.escape(str(state['stopped_by']))}"
+    if taken:
+        said += (f" · забрано {taken}, адресатов {int(state.get('targets') or 0)},"
+                 f" отправлено {int(state.get('sent') or 0)}")
+    if state.get("last_error"):
+        said += f" · <i>{html.escape(str(state['last_error'])[:160])}</i>"
+    return said
+
+
+def _krt_delivery_line() -> str:
+    return _delivery_line("Новости КРТ", krt_delivery_state())
+
+
+def _normatives_delivery_line() -> str:
+    return _delivery_line("Нормативная база", normatives_delivery_state())
+
+
 def _status_message(chat_id: int, user_id: int) -> None:
     configured = bool(core._TELEGRAM_RUNTIME.get("configured"))
     _, context = _resolve_context(chat_id)
@@ -768,6 +799,14 @@ def _status_message(chat_id: int, user_id: int) -> None:
         f"Память расчётов: {_state_health(chat_id)}"
         + _core_disk_line()
         + _glavapu_status_line()
+        # Очередь новостей копится на ядре, а забирает её этот хост: без
+        # строки «что сделала доставка» тишина в чате неотличима от тишины
+        # каталога. Спрашивают про это бота — здесь она и стоит.
+        + _krt_delivery_line()
+        # Вторая очередь того же устройства. Владелец спрашивал «мне ничего не
+        # пришло» про новости КРТ — про нормативы ответить было бы нечем тем
+        # же образом: молчание сторожа неотличимо от молчания источников.
+        + _normatives_delivery_line()
         # Справочник устаревает тихо: расчёт идёт, числа выглядят как обычно,
         # а под ними прошлогодний тариф. Напоминание тут потому, что /status
         # смотрят, когда что-то проверяют.
@@ -1586,26 +1625,58 @@ def _deliver_normatives_announcements() -> None:
     Получают владельцы: нормативная база — их ответственность, отдельной
     подписки под неё не заводим.
     """
+    _NORMATIVES_DELIVERY.update({"at": int(time.time()), "taken": 0, "targets": 0,
+                                 "sent": 0, "last_error": "", "stopped_by": ""})
+    if not core._telegram_token():
+        _NORMATIVES_DELIVERY["stopped_by"] = "нет TELEGRAM_BOT_TOKEN"
+        return
+    if not core._telegram_webhook_enabled():
+        _NORMATIVES_DELIVERY["stopped_by"] = "вебхук выключен на этом хосте"
+        return
     admins = core.usage_admin_ids()
-    if not admins or not core._telegram_token() or not core._telegram_webhook_enabled():
+    _NORMATIVES_DELIVERY["targets"] = len(admins)
+    if not admins:
+        # Очередь НЕ забираем: забранное уже не вернуть, а адресат появится,
+        # как только будет задан DEVELOPAID_ADMIN_IDS. Молчание при этом
+        # названо — иначе оно неотличимо от «в базе ничего не менялось».
+        _NORMATIVES_DELIVERY["stopped_by"] = "некому слать: DEVELOPAID_ADMIN_IDS пуст"
         return
     remote = core._projects_remote_url("/internal/normatives/announcements")
-    if remote:
-        payload = {"code": "normatives-announcements", "chat_id": 0,
-                   "sign": core._web_login_sign("normatives-announcements", 0)}
-        data = core._core_post(remote, payload, 30.0)
-        records = list(data.get("announcements") or [])
-    else:
-        # Один хост на всё — очередь та же, только идти за ней некуда.
-        take = getattr(core.app.state, "normatives_announcements_take", None)
-        records = list(take()) if take is not None else []
+    try:
+        if remote:
+            payload = {"code": "normatives-announcements", "chat_id": 0,
+                       "sign": core._web_login_sign("normatives-announcements", 0)}
+            data = core._core_post(remote, payload, 30.0)
+            records = list(data.get("announcements") or [])
+        else:
+            # Один хост на всё — очередь та же, только идти за ней некуда.
+            take = getattr(core.app.state, "normatives_announcements_take", None)
+            if take is None:
+                _NORMATIVES_DELIVERY["stopped_by"] = "реестра на этом хосте нет"
+                return
+            records = list(take())
+    except Exception as exc:  # noqa: BLE001
+        # Ядро не ответило — это ответ, а не «изменений нет».
+        _NORMATIVES_DELIVERY.update({"stopped_by": "очередь у ядра не забрана",
+                                     "last_error": str(exc)[:300]})
+        raise
+    _NORMATIVES_DELIVERY["taken"] = len(records)
     if not records:
+        _NORMATIVES_DELIVERY["stopped_by"] = "очередь пуста"
         return
+    text = _normatives_announcement_text(records)
+    sent = 0
     for chat_id in admins:
         try:
-            core._telegram_send_message(chat_id, _normatives_announcement_text(records))
-        except Exception:
-            pass
+            core._telegram_send_message(chat_id, text)
+            sent += 1
+        except Exception as exc:  # noqa: BLE001
+            # Один недоставленный адресат не отменяет рассылку остальным, а
+            # молчаливый отказ ВСЕХ неотличим от отсутствия изменений.
+            _NORMATIVES_DELIVERY["last_error"] = str(exc)[:300]
+            continue
+    _NORMATIVES_DELIVERY.update({"sent": sent, "delivered_at": int(time.time()),
+                                 "stopped_by": "" if sent else "ни один адресат не принял"})
 
 
 _NORMATIVES_RESULT_WORDS = {
@@ -1662,6 +1733,69 @@ def _krt_take_announcements() -> tuple[list[dict], list[int]]:
     return list(data.get("announcements") or []), [int(x) for x in (data.get("subscribers") or [])]
 
 
+# Что сделала доставка в последний раз. У молчащего цикла обязан быть счётчик
+# молчания — правило уже применено к сторожу на ядре (`/auctions/krt/watch`), и
+# ровно оно нашло 4492 выдуманных «новости». Вторая половина того же вопроса
+# живёт здесь: очередь на ядре стоит, а забирает её этот хост, и снаружи
+# «новостей не было», «цикл не дошёл» и «ядро не ответило» — одно молчание.
+_KRT_DELIVERY: dict[str, Any] = {
+    "at": 0, "stopped_by": "ещё не заходили", "taken": 0,
+    "targets": 0, "sent": 0, "last_error": "", "delivered_at": 0,
+}
+
+
+def krt_delivery_state() -> dict[str, Any]:
+    """Снимок последнего захода доставки. Адресатов не называем — их числом."""
+    return dict(_KRT_DELIVERY)
+
+
+# Вторая очередь того же устройства: изменения нормативной базы. Пока её заход
+# молчал, «в базе ничего не менялось», «адресатов нет», «ядро не ответило» и
+# «сторож выключен» были одним и тем же молчанием — а спрашивают про это бота.
+_NORMATIVES_DELIVERY: dict[str, Any] = {
+    "at": 0, "stopped_by": "ещё не заходили", "taken": 0,
+    "targets": 0, "sent": 0, "last_error": "", "delivered_at": 0,
+}
+
+
+def normatives_delivery_state() -> dict[str, Any]:
+    """Снимок последнего захода доставки изменений нормативной базы."""
+    return dict(_NORMATIVES_DELIVERY)
+
+
+@app.get("/krt/delivery")
+def krt_delivery() -> dict[str, Any]:
+    """Что сделала доставка новостей КРТ — измеримо со стороны.
+
+    Пара к `/auctions/krt/watch`: тот отвечает за очередь на ядре, этот — за
+    того, кто её забирает. Ядро и бот живут на разных машинах, и пока обе
+    половины не называют своё молчание, ответить на «мне ничего не пришло»
+    нечем. Ни адресатов, ни текста здесь нет — только числа.
+    """
+    state = krt_delivery_state()
+    return {**state,
+            "webhook_host": bool(core._telegram_token()
+                                 and core._telegram_webhook_enabled()),
+            "queue_at_core": bool(core._projects_remote_url("/internal/krt/announcements")),
+            "period_seconds": 900}
+
+
+@app.get("/normatives/delivery")
+def normatives_delivery() -> dict[str, Any]:
+    """Что сделала доставка изменений нормативной базы — измеримо со стороны.
+
+    Пара к `/api/normatives/watch`: тот отвечает за проверку и очередь на
+    ядре, этот — за того, кто её забирает. Ни адресатов, ни текста здесь нет —
+    только числа.
+    """
+    return {**normatives_delivery_state(),
+            "webhook_host": bool(core._telegram_token()
+                                 and core._telegram_webhook_enabled()),
+            "queue_at_core": bool(
+                core._projects_remote_url("/internal/normatives/announcements")),
+            "period_seconds": 900}
+
+
 def _deliver_krt_announcements() -> None:
     """Новые площадки КРТ — в чат подписчикам.
 
@@ -1672,23 +1806,49 @@ def _deliver_krt_announcements() -> None:
     Владелец получает их всегда: подписка — для остальных, а он и есть тот,
     ради кого каталог читается.
     """
-    if not core._telegram_token() or not core._telegram_webhook_enabled():
+    _KRT_DELIVERY.update({"at": int(time.time()), "taken": 0, "targets": 0,
+                          "sent": 0, "last_error": "", "stopped_by": ""})
+    if not core._telegram_token():
+        _KRT_DELIVERY["stopped_by"] = "нет TELEGRAM_BOT_TOKEN"
         return
-    records, subscribers = _krt_take_announcements()
+    if not core._telegram_webhook_enabled():
+        _KRT_DELIVERY["stopped_by"] = "вебхук выключен на этом хосте"
+        return
+    try:
+        records, subscribers = _krt_take_announcements()
+    except Exception as exc:  # noqa: BLE001
+        # Ядро не ответило — это ответ, а не «новостей нет»: без этой строки
+        # отказ выглядел бы точно так же, как тишина каталога.
+        _KRT_DELIVERY.update({"stopped_by": "очередь у ядра не забрана",
+                              "last_error": str(exc)[:300]})
+        raise
+    _KRT_DELIVERY["taken"] = len(records)
     if not records:
+        _KRT_DELIVERY["stopped_by"] = "очередь пуста"
         return
     targets = sorted(set(subscribers) | set(core.usage_admin_ids()))
+    _KRT_DELIVERY["targets"] = len(targets)
     if not targets:
+        # Забранное уже не вернуть: очередь изымается перед этой проверкой, и
+        # молчание здесь означало бы потерянные новости.
+        _KRT_DELIVERY["stopped_by"] = "некому слать: ни подписчиков, ни владельцев"
         return
     text = _krt_announcement_text(records)
     if not text:
+        _KRT_DELIVERY["stopped_by"] = "нечего сказать по этим записям"
         return
+    sent = 0
     for chat_id in targets:
         try:
             core._telegram_send_message(chat_id, text)
-        except Exception:
-            # Один недоставленный адресат не отменяет рассылку остальным.
+            sent += 1
+        except Exception as exc:  # noqa: BLE001
+            # Один недоставленный адресат не отменяет рассылку остальным, но
+            # молчаливый отказ всех адресатов неотличим от отсутствия новостей.
+            _KRT_DELIVERY["last_error"] = str(exc)[:300]
             continue
+    _KRT_DELIVERY.update({"sent": sent, "delivered_at": int(time.time()),
+                          "stopped_by": "" if sent else "ни один адресат не принял"})
 
 
 # Три новости, и называется каждая своим именем: «в каталоге новая площадка»,
@@ -1727,13 +1887,23 @@ def _krt_announcement_text(records: list[dict]) -> str:
         named = [(name, r) for name, r in named if name]
         if not named:
             continue
+        named = _krt_news_order(kind, named)
         one, many = _KRT_NEWS[kind]
         head = one if len(named) == 1 else many.format(n=len(named))
         if lines:
             lines.append("")
         lines.append(f"<b>{_html.escape(head)}</b>")
         for name, record in named[:12]:
-            lines.append("— " + _html.escape(name) + _krt_news_fact(kind, record))
+            # Имя ведёт на саму новость: карточку лота или документ города.
+            # Адрес приезжал вместе с событием и никуда не печатался — «а
+            # ссылка на торги?» (владелец, 07.09.2026): сообщение говорило, что
+            # площадка выставлена, и не давало открыть лот. Ссылка на каталог
+            # внизу отвечает на другой вопрос — «где посмотреть список».
+            where = _krt_news_url(record)
+            shown = _html.escape(name)
+            if where:
+                shown = f'<a href="{_html.escape(where)}">{shown}</a>'
+            lines.append("— " + shown + _krt_news_fact(kind, record))
         if len(named) > 12:
             lines.append(f"…и ещё {len(named) - 12}")
     if not lines:
@@ -1748,6 +1918,51 @@ def _krt_announcement_text(records: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _krt_news_order(kind: str, named: list[tuple[str, dict]]) -> list[tuple[str, dict]]:
+    """Порядок строк: в сообщение помещается двенадцать, и важно, КАКИЕ.
+
+    Пачка приходит скопом — 168 проектов решений разом, — а показать можно
+    дюжину, дальше «…и ещё 156». Пока порядок был случайным, наверх попадали
+    документы 2023–2024 годов, а свежайшие тонули в остатке (экран владельца,
+    09.09.2026): та же ошибка, что при чтении чужого раздела с потолком по
+    времени — сначала читают то, за чем пришли.
+
+    У решения важнее свежесть — сверху позднее опубликованные; у торгов
+    важнее срочность — сверху те, чьи заявки кончаются раньше. У новой
+    площадки ключа сортировки нет вовсе, и выдумывать его нечего: порядок
+    остаётся тем, в каком её увидели.
+    """
+    from auction_search import parsing as _parsing
+
+    if kind == "decision":
+        def freshness(pair: tuple[str, dict]) -> tuple[int, int]:
+            try:
+                stamp = int(float(str(pair[1].get("published_at") or 0)))
+            except (TypeError, ValueError):
+                stamp = 0
+            # Документ без даты — «не знаем», и наверх он не поднимается:
+            # ноль там встал бы рядом с самыми старыми, а это утверждение.
+            return (0 if stamp else 1, -stamp)
+        return sorted(named, key=freshness)
+    if kind == "tender":
+        def urgency(pair: tuple[str, dict]) -> tuple[int, float]:
+            moment = _parsing.deadline_moment(pair[1].get("deadline"))
+            return (1, 0.0) if moment is None else (0, moment.timestamp())
+        return sorted(named, key=urgency)
+    return named
+
+
+def _krt_news_url(record: dict) -> str:
+    """Адрес новости, если он пришёл вместе с событием и это адрес.
+
+    Только http(s): в ссылку идёт то, что пришло с чужой площадки, и «ссылка»
+    вида `javascript:` — не ссылка. Пусто — печатаем имя без ссылки: обещание
+    открыть то, чего у нас нет, хуже молчания.
+    """
+    url = str((record or {}).get("url") or "").strip()
+    return url if url.startswith(("https://", "http://")) else ""
+
+
 def _krt_news_fact(kind: str, record: dict) -> str:
     """Что известно о самой новости: дата решения, срок подачи заявок.
 
@@ -1757,11 +1972,17 @@ def _krt_news_fact(kind: str, record: dict) -> str:
     """
     import html as _html
 
+    from auction_search import parsing as _parsing
+
+    # Печатает поверхность, а СЧИТАЕТ разбор: отметка города приезжает
+    # секундами эпохи, срок площадки — её собственной записью. Оба здесь
+    # печатались сырыми: «решение от 1688749200» и «заявки до 09.10.26 1»
+    # (обрубок часа от резки строки по длине). Своего разбора даты у бота нет.
     if kind == "decision":
-        when = str(record.get("published_at") or "").strip()
+        when = _parsing.stamp_day(record.get("published_at"))
         return f" — решение от {_html.escape(when)}" if when else ""
     if kind == "tender":
-        deadline = str(record.get("deadline") or "").strip()[:10]
+        deadline = _parsing.deadline_label(record.get("deadline"))
         return f" — заявки до {_html.escape(deadline)}" if deadline else ""
     return ""
 

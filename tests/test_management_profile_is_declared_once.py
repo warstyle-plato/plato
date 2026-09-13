@@ -104,7 +104,9 @@ def test_every_queue_block_of_the_workbook_is_rewritten():
         base = core._V4_CAPEX_BLOCK_STRIDE * phase
         formula = str(sheet.cell(row=row + base, column=6).value)
         assert f"-F{skip + base}" in formula, formula
-        assert f"$D${skip + base}:$DS${skip + base}" in formula, formula
+        # Буква последней колонки живёт в движке: восьмой копией ширины сетки
+        # была ровно эта строка, и grep по литералу `$DS$` её не видел.
+        assert core._v4_month_span(skip + base) in formula, formula
 
 
 def test_the_monthly_capex_of_the_book_matches_the_engine():

@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pytest
 
+from browser import chromium_or_skip
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -124,18 +126,16 @@ COUNT = """() => {
 
 
 def test_in_a_real_browser_each_queue_is_drawn_once_per_surface() -> None:
-    try:
-        from playwright.sync_api import sync_playwright
-    except Exception:  # pragma: no cover — образ без playwright
-        pytest.skip("playwright недоступен")
-    chrome = Path("/opt/pw-browsers/chromium-1194/chrome-linux/chrome")
-    if not chrome.exists():  # pragma: no cover
-        pytest.skip("chromium в образе не найден")
-    import json
+    # Где браузер — один ответ на весь набор (`tests/browser.py`): он ищет, а
+    # не помнит номер сборки, и на машине, где браузер ОБЯЗАН быть, его
+    # отсутствие красит проверку красным, а не пропускает её молча.
+    chrome = chromium_or_skip()
+    from playwright.sync_api import sync_playwright
     import threading
     import time
 
     import uvicorn
+    from fastapi.encoders import jsonable_encoder
 
     import main as wrapper
 
@@ -161,14 +161,19 @@ def test_in_a_real_browser_each_queue_is_drawn_once_per_surface() -> None:
             page.on("dialog", lambda dialog: dialog.accept())
             page.goto(f"http://127.0.0.1:{PORT}/", wait_until="networkidle")
             # Числа считает движок; страница их только рисует — иначе проверка
-            # мерила бы вторую реализацию расчёта.
+            # мерила бы вторую реализацию расчёта. Кормим страницу тем же
+            # кодировщиком, что и маршрут: свой `default=float` не знает про
+            # `datetime.date` (`first_taxable_month` — дата), и проверка падала
+            # бы на сериализации, а браузер получает от `/calculate-phased`
+            # готовую строку. Второй способ подачи — это второй ответ на
+            # «что видит страница».
             count = page.evaluate(
                 "(data) => { phaseBundle=data; lastResult=data.consolidated;"
                 " const fin=lastResult.finance||{};"
                 " renderFinanceChart(fin.rows||[],"
                 "  ((lastResult.report||{}).financing||{}).escrow_cover||{});"
                 " return (" + COUNT + ")(); }",
-                json.loads(json.dumps(bundle, default=float)))
+                jsonable_encoder(bundle))
             browser.close()
     finally:
         server.should_exit = True

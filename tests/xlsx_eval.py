@@ -254,6 +254,13 @@ class Evaluator:
     def __init__(self, workbook) -> None:
         self.workbook = workbook
         self._cache: dict[tuple[str, str], Any] = {}
+        # Диапазон помнится целиком, а не собирается заново из уже посчитанных
+        # ячеек. Книга статична, ячейки и так кэшируются — заново собирался
+        # только список. Замер на умолчаниях: 29 437 обращений к диапазонам, из
+        # них различных 3 293; `Продажи!D9:GA9` спрашивался 1 620 раз, и каждый
+        # раз это 180 обращений к ячейке. После протяжки сетки со 120 месяцев до
+        # 180 счёт книги подорожал вместе с ней.
+        self._ranges: dict[tuple[str, str, str], "RangeValue"] = {}
         self._stack: set[tuple[str, str]] = set()
         self._tokens: list[tuple[str, str]] = []
         self._pos = 0
@@ -279,13 +286,21 @@ class Evaluator:
 
     def _range(self, sheet: str, start: str, end: str) -> list[Any]:
         start, end = start.replace("$", "").upper(), end.replace("$", "").upper()
+        key = (sheet, start, end)
+        remembered = self._ranges.get(key)
+        if remembered is not None:
+            return remembered
         c1, r1 = _split(start)
         c2, r2 = _split(end)
         out = []
         for row in range(min(r1, r2), max(r1, r2) + 1):
             for column in range(min(c1, c2), max(c1, c2) + 1):
                 out.append(self.cell(sheet, f"{get_column_letter(column)}{row}"))
-        return RangeValue(out, abs(r2 - r1) + 1, abs(c2 - c1) + 1)
+        # Кладётся только досчитанный диапазон: круговая ссылка бросает из
+        # `cell`, и до этой строки исполнение не доходит.
+        value = RangeValue(out, abs(r2 - r1) + 1, abs(c2 - c1) + 1)
+        self._ranges[key] = value
+        return value
 
     # --- разбор ------------------------------------------------------------
 

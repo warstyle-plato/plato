@@ -152,19 +152,64 @@ def test_the_message_names_each_kind() -> None:
 
     text = main._krt_announcement_text([
         {"slug": "a", "name": "Полимерная", "kind": "site"},
+        # Отметка города приезжает СЕКУНДАМИ ЭПОХИ — так её кладёт
+        # `_decision_events`, так объявлена `KrtDecision.published_at`. Прежде
+        # сюда подавалась запись ISO, то есть проверка кормила поверхность тем,
+        # чего поверхность не видит: сообщение печатало «решение от
+        # 1688749200», а тест был зелёным (экран владельца, 09.09.2026).
         {"slug": "b", "name": "Мусоргского", "kind": "decision",
-         "published_at": "2026-09-06"},
+         "published_at": "1788696000"},
         {"slug": "c", "name": "Варшавское", "kind": "tender",
          "deadline": "2026-09-21T00:00:00"},
     ])
     assert "новая площадка" in text and "Полимерная" in text
-    assert "Опубликован проект решения" in text and "решение от 2026-09-06" in text
-    assert "выставлена на торги" in text and "заявки до 2026-09-21" in text
+    assert "Опубликован проект решения" in text and "решение от 06.09.2026" in text
+    # Час печатается тот, что назвала площадка, и назван по Москве — как на
+    # странице. Резать сырую строку по длине было нельзя: «09.10.26 15:00»[:10]
+    # даёт «09.10.26 1», обрубок часа, читаемый как часть даты.
+    assert "выставлена на торги" in text and "заявки до 21.09.2026, 00:00 МСК" in text
+    # А день БЕЗ часа остаётся днём: момент у него поставлен на конец суток
+    # нами, и «23:59 МСК» выдавало бы наше допущение за объявленное время.
+    day_only = main._krt_announcement_text([
+        {"slug": "c", "name": "Варшавское", "kind": "tender", "deadline": "21.09.26"}])
+    assert "заявки до 21.09.2026" in day_only and "МСК" not in day_only
     # Порядок — по срочности: торги раньше решения, решение раньше новинки.
     assert text.index("торги") < text.index("проект решения") < text.index("новая площадка")
     # Запись без вида читается как новая площадка: старая очередь их не несла.
     old = main._krt_announcement_text([{"slug": "a", "name": "Полимерная"}])
     assert "новая площадка" in old
+
+
+def test_the_twelve_shown_are_the_ones_worth_showing() -> None:
+    """В сообщение помещается дюжина, и важно, какая именно.
+
+    168 решений разом, показать можно двенадцать, дальше «…и ещё 156». Пока
+    порядок был случайным, наверх попадали документы 2023–2024 годов, а
+    свежайшие тонули в остатке (экран владельца, 09.09.2026). У решения важнее
+    свежесть, у торгов — срочность.
+    """
+    import main
+
+    stamps = {"старое": "1688749200",     # 07.07.2023
+              "среднее": "1734185580",    # 14.12.2024
+              "свежее": "1788696000"}     # 06.09.2026
+    text = main._krt_announcement_text(
+        [{"slug": name, "name": name, "kind": "decision", "published_at": stamp}
+         for name, stamp in stamps.items()])
+    assert text.index("свежее") < text.index("среднее") < text.index("старое")
+
+    # Документ без даты — «не знаем», и наверх он не поднимается: ноль встал бы
+    # рядом с самыми старыми, а это утверждение о документе.
+    tail = main._krt_announcement_text([
+        {"slug": "b", "name": "безымянная", "kind": "decision"},
+        {"slug": "a", "name": "датированная", "kind": "decision",
+         "published_at": "1688749200"}])
+    assert tail.index("датированная") < tail.index("безымянная")
+
+    lots = main._krt_announcement_text([
+        {"slug": "p", "name": "поздняя", "kind": "tender", "deadline": "21.12.26"},
+        {"slug": "r", "name": "ранняя", "kind": "tender", "deadline": "21.09.26"}])
+    assert lots.index("ранняя") < lots.index("поздняя")
 
 
 def test_the_watch_thread_is_switchable_and_takes_the_lock() -> None:
@@ -183,18 +228,30 @@ def test_the_watch_thread_is_switchable_and_takes_the_lock() -> None:
 def test_the_screen_list_is_what_gets_marked() -> None:
     """Отмечается список ЭКРАНА — каталог и решения, а не одна его половина.
 
-    До правки `mark_seen` получал только строки каталога: решения приезжают
-    ниже по маршруту, и площадка, у которой опубликован проект решения, а
-    карточки города нет, не считалась новой НИКОГДА — ни плашки, ни сообщения.
-    На проде это 247 строк из 529, и ровно там самый ранний сигнал воронки.
+    Утверждение прежнее, а место другое. Прежде состав отмечал МАРШРУТ, и это
+    было верно ровно до замера прода 07.09.2026: половина списка приезжает
+    фоном, воркеров два, и каждое чтение переписывало снимок по тому, что
+    успел увидеть этот воркер. Теперь список экрана целиком отмечает сторож —
+    он под замком, то есть один, — а маршрут состав только читает.
     """
     source = (ROOT / "auction_search" / "api.py").read_text(encoding="utf-8")
     route = source[source.index('async def auction_krt_catalogue('):]
     route = route[: route.index("krt_ranking.is_new(")]
-    assert "krt_ranking.mark_seen" in route
-    assert "_decision_rows_for_run()" in route, "отмечена половина списка"
+    assert "krt_ranking.first_seen" in route, "маршрут обязан состав читать"
+    assert "mark_seen" not in route, "маршрут состав больше не пишет"
     watch = (ROOT / "auction_search" / "krt_watch.py").read_text(encoding="utf-8")
-    assert "self._all_sites" in watch, "сторож собирает список сам, а не берёт крючком"
+    assert "self._screen_list" in watch, "сторож собирает список сам, а не берёт крючком"
+    # Обе половины по-прежнему в одном списке — иначе площадка-решение снова
+    # не станет новой никогда. Держится ВЫЗОВ и сложение половин, а не форма
+    # записи: проверка стояла как `_decision_rows_state()` со скобками впритык
+    # и упала, когда сборщику начали передавать уже прочитанный каталог, — то
+    # есть на правке, которая ничего из утверждаемого не трогала. Кусок берётся
+    # до следующего объявления того же уровня: «до конца файла» ловит и чужие
+    # функции.
+    body = source[source.index("def _krt_screen_list("):]
+    body = body[: body.index("\n    def ", 1)]
+    assert "_decision_rows_state(" in body, "список экрана собирает не тот сборщик"
+    assert "catalogue + decisions" in body, "половины списка перестали складываться"
 
 
 def test_a_new_kind_of_site_does_not_arrive_as_a_flood(tmp_path) -> None:
@@ -205,10 +262,11 @@ def test_a_new_kind_of_site_does_not_arrive_as_a_flood(tmp_path) -> None:
     города.
     """
     ranking = KrtRanking(tmp_path)
-    ranking.mark_seen(["a", "b"])          # первый снимок: тишина
+    ranking.mark_seen(["a", "b"], complete=True)   # первый снимок: тишина
     ranking.take_announcements()
-    ranking.mark_seen(["a", "b", "decision:1", "decision:2"])
+    ranking.mark_seen(["a", "b", "decision:1", "decision:2"], complete=True)
     assert ranking.take_announcements() == [], "вид пришёл впервые — это не новости"
-    ranking.mark_seen(["a", "b", "decision:1", "decision:2", "decision:3", "c"])
+    ranking.mark_seen(["a", "b", "decision:1", "decision:2", "decision:3", "c"],
+                      complete=True)
     got = sorted(one["slug"] for one in ranking.take_announcements())
     assert got == ["c", "decision:3"], got

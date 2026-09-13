@@ -93,7 +93,7 @@ const boxes={inputGroups:makeEl('div'),vriInputGroups:makeEl('div')};
 const document={createElement:makeEl,getElementById:(id)=>boxes[id]||null,
  querySelectorAll:(sel)=>sel==='details[data-group]'
    ?created.filter(n=>n.tagName==='details'&&n.dataset.group):[]};
-const phasing={enabled:false};
+const phasing=__PHASING__;
 const rateScenario={value:''};
 const syncProjectClassSelector=()=>{},syncTep=()=>{},syncUndergroundPair=()=>{};
 const calculate=()=>{},applyRequiredSocialProgramFromGlavapu=()=>false;
@@ -108,7 +108,11 @@ function groups(){
 """
 
 
-def render(inputs: dict, tail: str = "console.log(JSON.stringify(groups()));") -> list:
+def render(inputs: dict, tail: str = "console.log(JSON.stringify(groups()));",
+           phasing: dict | None = None) -> list:
+    """Стенд один на всех, кто гоняет `renderInputs`: вторая копия подделки
+    DOM разошлась бы с первой молча. Очередность — параметр, потому что
+    часть полей при ней гасится."""
     node = shutil.which("node")
     if not node:
         pytest.skip("node недоступен")
@@ -139,7 +143,13 @@ def render(inputs: dict, tail: str = "console.log(JSON.stringify(groups()));") -
         # ошибка правки страницы.
         PAGE[PAGE.index("const SCHEDULE_FIELDS={"):PAGE.index("function renderPfStepsEditor(")],
         page_function("renderInputs"),
-        DOM,
+        # Форма пишет подпись под полями паркинга объектов сама: ячейки она же
+        # и создаёт, а пустая ячейка под нулём читается как «гаража нет».
+        PAGE[PAGE.index("const OBJECT_PARKING_PREFIXES="):
+             PAGE.index(";", PAGE.index("const OBJECT_PARKING_PREFIXES=")) + 1],
+        page_function("renderObjectParkingFieldNotes"),
+        page_function("objectParkingFieldNote"),
+        DOM.replace("__PHASING__", json.dumps(phasing or {"enabled": False})),
         f"const inputs=Object.assign(structuredClone(INPUT_DEFAULT),{json.dumps(inputs)});",
         "renderInputs();",
         tail,

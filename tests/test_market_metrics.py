@@ -2472,15 +2472,16 @@ def test_the_printed_page_carries_its_own_name_and_hides_the_controls() -> None:
 
 
 def _chromium_path() -> str:
-    """Chromium из образа: в проде он лежит там, где его ставит playwright."""
-    import glob
-    import os
+    """Chromium этой машины — одним ответом на весь набор.
 
-    root = os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or ""
-    if not root:
-        return ""
-    found = sorted(glob.glob(os.path.join(root, "chromium-*", "chrome-linux", "chrome")))
-    return found[-1] if found else ""
+    Своя копия поиска отвечала пустотой, когда `PLAYWRIGHT_BROWSERS_PATH` не
+    задана, — то есть ровно на CI, где браузер и лежит в умолчании playwright.
+    И держала имя `chrome-linux`, которое у свежих сборок уже `chrome-linux64`.
+    """
+    from browser import chromium_path
+
+    found = chromium_path()
+    return str(found) if found else ""
 
 
 def test_the_pdf_is_printed_by_the_server_with_page_numbers(tmp_path) -> None:

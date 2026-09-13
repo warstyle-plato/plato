@@ -26,6 +26,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from browser import chromium_or_skip
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 PORT = 18795
@@ -97,7 +99,12 @@ def test_the_row_carries_the_remembered_lot(tmp_path):
     answer = TestClient(_app(tmp_path)).get("/auctions/krt")
     assert answer.status_code == 200
     row = answer.json()["projects"][0]
-    assert row["tender_lots"] == [LOT], "связка до строки не доезжает"
+    # Момент срока сервер считает при ЧТЕНИИ: связка лежит на диске и старше
+    # правила, а «момента не поняли» на экране значит «лот живой» — то есть у
+    # прошедшего срока обещались бы идущие торги.
+    stored, = row["tender_lots"]
+    assert stored["deadline_iso"], "момент срока до строки не доезжает"
+    assert {key: stored[key] for key in LOT} == LOT, "связка до строки не доезжает"
     assert row["tender_lots_seen_at"] > 0, "когда узнали — часть ответа"
 
 
@@ -117,13 +124,11 @@ READ = """() => {
 @pytest.mark.timeout(180)
 def test_in_a_real_browser_the_auction_beats_the_publication(tmp_path):
     """Плашка есть без соседней вкладки, а застройщик с ней не спорит."""
-    try:
-        from playwright.sync_api import sync_playwright
-    except Exception:  # noqa: BLE001
-        pytest.skip("playwright недоступен")
-    chrome = Path("/opt/pw-browsers/chromium-1194/chrome-linux/chrome")
-    if not chrome.exists():
-        pytest.skip("chromium в образе не найден")
+    # Где браузер — один ответ на весь набор (`tests/browser.py`): он ищет, а
+    # не помнит номер сборки, и на машине, где браузер ОБЯЗАН быть, его
+    # отсутствие красит проверку красным, а не пропускает её молча.
+    chrome = chromium_or_skip()
+    from playwright.sync_api import sync_playwright
     import uvicorn
 
     server = uvicorn.Server(uvicorn.Config(_app(tmp_path), host="127.0.0.1", port=PORT,
@@ -155,7 +160,8 @@ def test_in_a_real_browser_the_auction_beats_the_publication(tmp_path):
             # Соседнюю вкладку «Торги» никто не открывал: в памяти пусто.
             empty = page.evaluate("Object.keys(state.krtTenders||{}).length")
             # А со вчерашним сроком подачи «идут торги» больше не обещаем.
-            page.evaluate("()=>{state.krt[0].tender_lots=[{deadline:'2020-01-01'}]}")
+            page.evaluate("()=>{state.krt[0].tender_lots=[{deadline:'2020-01-01',"
+                          "deadline_iso:'2020-01-01T23:59:59+03:00'}]}")
             stale = page.evaluate(READ)
             browser.close()
     finally:

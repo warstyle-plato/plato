@@ -97,17 +97,10 @@ def markup() -> str:
   <button class="go alt" id="bngo" style="margin-top:10px">Собрать тестовый свод</button>
   <span id="bnstate" class="muted" style="margin-left:10px"></span>
   <div id="bnout" style="margin-top:12px"></div>
-  <!-- Разговор идёт в общем ящике справа: на странице два свода сразу, и груз
-       ему даёт тот блок, из которого нажали. Второй ящик рядом с первым был бы
-       вторым Платоном на одном экране. -->
-  <div class="card" id="bnask" style="display:none">
-    <h2>Спросить Платона Сергеевича</h2>
-    <div class="muted" style="font-size:13px;margin-bottom:8px">
-      Он видит числа ЭТОГО свода — второго источника, а не «Пульса». Считает движок,
-      модель не пересчитывает.
-    </div>
-    <button type="button" class="ai-open-btn" id="bnaskbtn"><span class="ai-dot ready"></span><span class="ai-label">Спросить Платона</span></button>
-  </div>
+  <!-- Разговор идёт в общем ящике справа, а зовёт его всплывающая кнопка
+       страницы: на экране два свода сразу, и груз ей даёт тот, что перед
+       глазами. Своей кнопки внизу у вкладки нет — она находилась только тем,
+       кто дочитал до низа свода. -->
 </div>
 </details>
 <script>
@@ -170,7 +163,9 @@ const BNMAP_SURFACE={{
 }};
 
 document.addEventListener('DOMContentLoaded', function(){{
-  on('#bnaskbtn','click',function(){{ platoOpen(BNMAP_SURFACE) }});
+  // Вкладка объявляет себя всплывающей кнопке: пока `#bnout` пуст, свода нет и
+  // спрашивать о нём нечего.
+  platoBlock('#bnout', BNMAP_SURFACE, 'о втором источнике');
   on('#bngo', 'click', async function(){{
     const q=($('#bnid').value||'').trim();
     $('#bnstate').textContent='спрашиваю bnMAP…'; $('#bnout').innerHTML='';
@@ -263,8 +258,9 @@ document.addEventListener('DOMContentLoaded', function(){{
         +'<div class="card">'+(data.html||'')+'</div>'
         +essayCard(data)+finalCard(data);
       wireBubbles(market, 'bnbubble');
-      $('#bnask').style.display='block';
       bnLast=data;
+      // Свод построен — кнопке есть о чём говорить.
+      platoFabSync();
     }}catch(e){{ $('#bnstate').textContent='не дошло до сервера: '+e; }}
   }});
 }});

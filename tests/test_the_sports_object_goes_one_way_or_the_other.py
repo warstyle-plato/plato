@@ -25,10 +25,13 @@ from __future__ import annotations
 
 import copy
 import io
+import re
 import sys
 from pathlib import Path
 
 import pytest
+
+from browser import chromium_or_skip
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -224,20 +227,34 @@ def test_the_workbook_names_the_object_and_not_the_shopping_centre() -> None:
     assert book["ТЭП"]["G36"].value == "=SUM(G28,G35)"
 
 
-def test_the_consolidated_tax_is_shared_by_positive_months_not_by_the_total() -> None:
-    """Доля очереди — по положительным МЕСЯЦАМ базы, иначе налог теряется.
+def test_the_consolidated_tax_is_not_lost_on_a_losing_project() -> None:
+    """Сводный налог доходит до строк очередей, а не теряется по дороге.
 
-    На убыточном проекте итог базы у каждой очереди отрицательный, доля у всех
-    ноль, сумма долей ноль — и сводный налог не вычитался из чистой прибыли
-    вовсе. Книга показывала прибыль выше движка ровно на весь налог.
+    Утверждение прежнее, мера новая. Прежде доля очереди считалась от итога
+    базы за весь горизонт: на убыточном проекте итог у каждой отрицательный,
+    доля у всех ноль, сумма долей ноль — и налог не вычитался из чистой
+    прибыли вовсе, книга показывала прибыль выше движка ровно на весь налог.
+    Потом мерой стали положительные МЕСЯЦЫ, теперь — налог по ГОДАМ (ст. 285
+    и п. 7 ст. 274 НК: налоговый период это год). Проверять надо деньги, а не
+    текст формулы: он у сломанной книги выглядит так же, как у исправной.
     """
     openpyxl = pytest.importorskip("openpyxl")
-    content, _, _ = core.build_project_workbook(
+    from xlsx_eval import Evaluator
+
+    sys.setrecursionlimit(400000)
+    content, _, meta = core.build_project_workbook(
         _inputs(disposition="transfer"), _tep(), [], _phasing(), project_name="П")
+    assert meta["missing"] == []
     book = openpyxl.load_workbook(io.BytesIO(content))
-    for row, queue in zip(range(30, 34), range(1, 5)):
-        assert book["КОНСОЛИДАТОР"][f"B{row}"].value == (
-            f"=SUMIF('CF_{queue}'!$D$22:$DS$22,\">0\")")
+    # Доля берётся из блока раздачи по годам, а не из базы за горизонт.
+    for row, column in zip(range(30, 34), core._V4_TAX_SHARE_COLUMNS):
+        value = str(book["КОНСОЛИДАТОР"][f"B{row}"].value or "")
+        assert re.fullmatch(rf"={column}\d+", value), (row, value)
+    evaluator = Evaluator(book)
+    total = evaluator.cell("КОНСОЛИДАТОР", "K8")
+    rows = [evaluator.cell("КОНСОЛИДАТОР", f"K{n}") for n in range(4, 8)]
+    assert total > 0, "проверять нечего: на этом проекте налога нет вовсе"
+    assert sum(rows) == pytest.approx(total, rel=1e-6)
 
 
 # --- норматив парковки ------------------------------------------------------
@@ -293,13 +310,11 @@ READ_SPORTS = """() => {
 
 
 def test_in_a_real_browser_the_row_follows_the_disposition() -> None:
-    try:
-        from playwright.sync_api import sync_playwright
-    except Exception:  # pragma: no cover — образ без playwright
-        pytest.skip("playwright недоступен")
-    chrome = Path("/opt/pw-browsers/chromium-1194/chrome-linux/chrome")
-    if not chrome.exists():  # pragma: no cover
-        pytest.skip("chromium в образе не найден")
+    # Где браузер — один ответ на весь набор (`tests/browser.py`): он ищет, а
+    # не помнит номер сборки, и на машине, где браузер ОБЯЗАН быть, его
+    # отсутствие красит проверку красным, а не пропускает её молча.
+    chrome = chromium_or_skip()
+    from playwright.sync_api import sync_playwright
     import threading
     import time
 

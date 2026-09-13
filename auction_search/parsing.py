@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import Optional
 
 
@@ -102,3 +104,152 @@ def value_after_label(text: str, label: str, *, stop_labels: tuple[str, ...] = (
         if stop_idx >= 0:
             end = min(end, start + stop_idx)
     return normalized[start:end].strip(" :-") or None
+
+
+# Срок подачи заявки разбирается ОДИН раз и здесь.
+#
+# 08.09.2026 владелец прислал два экрана: на Росэлторге по лоту «Рубцовская
+# наб., влд. 3» стоит «Окончание приёма заявок 09.10.26 15:00», а у нас —
+# «10.09.26, 15:00» и снятие балла «до конца приёма заявок 2 дн.». На айфоне
+# при этом дата была верная. Сервер тут ни при чём: он хранит ровно строку
+# площадки, `'09.10.26 15:00'`. Считал её БРАУЗЕР — `new Date('09.10.26 15:00')`
+# в V8 читает первое число месяцем и даёт 10 сентября; Safari на ту же строку
+# отвечает Invalid Date, и страница печатала её как есть — то есть верным
+# оказывался запасной путь, а не основной.
+#
+# Цена была не в подписи. `02.10.26 15:00` тот же разбор уводит в 10 февраля —
+# в ПРОШЛОЕ: балл снимается на 60% «срок подачи заявки истёк», а `krtLiveLot`
+# перестаёт считать лот живым, и с площадки исчезает плашка «идут торги».
+# Дни с 13-го по 31-е при этом не читаются вовсе и потому показываются верно:
+# ошибка выборочна ровно настолько, чтобы не выглядеть ошибкой.
+#
+# Поэтому порядок дня и месяца больше нигде не угадывается: момент считает
+# сервер и отдаёт его отдельным полем в ISO, а строку площадки поверхности
+# печатают как написано. Американский порядок здесь не принимается никогда —
+# у «09.10» два прочтения, различающиеся на месяц, и одно из них неверно.
+_MOSCOW_TZ = ZoneInfo("Europe/Moscow")
+_DEADLINE_WITH_TIME = (
+    "%d.%m.%Y %H:%M:%S", "%d.%m.%Y %H:%M",
+    "%d.%m.%y %H:%M:%S", "%d.%m.%y %H:%M",
+)
+_DEADLINE_DAY_ONLY = ("%d.%m.%Y", "%d.%m.%y")
+
+
+def deadline_moment(raw: str | None) -> Optional[datetime]:
+    """Момент окончания приёма заявок из того, что записала площадка.
+
+    Понимает и ISO (так пишут РАД и ГИС Торги), и русскую запись дня
+    (Росэлторг, ИнвестМосква). Час назван не всегда: «заявки до 21.09.26» —
+    это «до конца того дня», а не «в полночь того дня», иначе живой лот
+    выбрасывается как просроченный.
+    """
+    if not raw:
+        return None
+    text = normalize_space(str(raw))
+    try:
+        moment = datetime.fromisoformat(str(raw).strip())
+    except ValueError:
+        moment = None
+    if moment is not None and ":" not in text:
+        # День без часа кончается вместе с днём — хоть «21.09.26», хоть
+        # «2026-09-21»: запись разная, ответ один, иначе живой лот с утра
+        # объявлен просроченным.
+        moment = moment.replace(hour=23, minute=59, second=59)
+    if moment is None:
+        for fmt in _DEADLINE_WITH_TIME:
+            try:
+                moment = datetime.strptime(text, fmt)
+                break
+            except ValueError:
+                continue
+    if moment is None:
+        for fmt in _DEADLINE_DAY_ONLY:
+            try:
+                moment = datetime.strptime(text, fmt).replace(
+                    hour=23, minute=59, second=59)
+                break
+            except ValueError:
+                continue
+    if moment is None:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=_MOSCOW_TZ)
+    return moment
+
+
+def deadline_iso(raw: str | None) -> Optional[str]:
+    """Тот же момент строкой ISO — её браузеру разбирать нечем ошибиться."""
+    moment = deadline_moment(raw)
+    return moment.isoformat() if moment is not None else None
+
+
+def deadline_is_current(raw: str | None, *, now: datetime | None = None) -> bool:
+    """Срок ещё не прошёл. Неразобранный срок — это «не знаем», а не «прошёл»."""
+    moment = deadline_moment(raw)
+    if moment is None:
+        return False
+    return moment >= (now or datetime.now(_MOSCOW_TZ))
+
+
+def stamp_day(raw: object) -> str:
+    """День городской отметки времени — по Москве и числами.
+
+    Отметка приезжает секундами эпохи, и печаталась она как есть: в сообщении
+    бота стояло «решение от 1688749200» (экран владельца, 09.09.2026). Число
+    вместо даты — половина беды; вторая в том, что по одному адресу у города
+    бывает несколько решений разных лет, и в списке «2-й Тушинский пр-д, вл. 12»
+    стоял трижды подряд. Различала эти три строки ровно отметка, которую
+    прочитать было нельзя.
+
+    Зона — часть величины: отметку ставит город, и день у неё московский. Без
+    пришпиленной зоны решение, опубликованное поздним вечером, у читателя
+    западнее съезжает на сутки назад. Это про отметку ГОРОДА; наши собственные
+    мгновения (возраст снимка, «спрошено») остаются в зоне зрителя.
+
+    Числами, а не словами: в списке из двенадцати строк «07.07.2023» короче
+    «7 июля 2023» и не заводит третьего списка названий месяцев. Год полный —
+    у двузначного прочтений два.
+    """
+    text = normalize_space(str(raw) if raw is not None else "")
+    if not text:
+        return ""
+    try:
+        seconds = int(float(text))
+    except (TypeError, ValueError):
+        seconds = 0
+    if seconds > 0:
+        try:
+            return datetime.fromtimestamp(seconds, _MOSCOW_TZ).strftime("%d.%m.%Y")
+        except (OverflowError, OSError, ValueError):
+            return ""
+    # Записью ISO эта отметка не приходит ни от одного нынешнего источника
+    # (`KrtDecision.published_at` — секунды), но читается и она: молча
+    # выброшенная дата неотличима от даты, которой у документа нет.
+    try:
+        moment = datetime.fromisoformat(text)
+    except ValueError:
+        return ""
+    if moment.tzinfo is not None:
+        moment = moment.astimezone(_MOSCOW_TZ)
+    return moment.strftime("%d.%m.%Y")
+
+
+def deadline_label(raw: str | None) -> str:
+    """Срок заявки строкой — тем же разбором, каким считается сам срок.
+
+    Резать сырую строку по длине нельзя: «09.10.26 15:00»[:10] даёт
+    «09.10.26 1» — обрубок часа, читаемый как часть даты. Разбор у срока один
+    (`deadline_moment`), поверхность его только печатает; неразобранное
+    печатается как написано — придумывать за площадку нечего.
+
+    Час печатается, только когда его назвала сама площадка: у дня без часа
+    момент поставлен на конец дня, и «23:59 МСК» выдавало бы наше допущение за
+    объявленное время.
+    """
+    moment = deadline_moment(raw)
+    if moment is None:
+        return normalize_space(raw if isinstance(raw, str) else "")
+    moment = moment.astimezone(_MOSCOW_TZ)
+    if ":" not in normalize_space(str(raw)):
+        return moment.strftime("%d.%m.%Y")
+    return moment.strftime("%d.%m.%Y, %H:%M") + " МСК"

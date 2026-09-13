@@ -134,9 +134,43 @@ def test_platon_reads_the_registry_and_not_his_memory() -> None:
     assert got["available"] and got["count"] == len(registry._merged_registry())
     names = [item["name"] for item in got["items"]]
     assert any("945-ПП" in str(name) for name in names)
-    # Отсутствие ссылки — тоже ответ, и оно не прячется.
-    assert any(item["source_missing"] for item in got["items"])
+    # Отсутствие ссылки — тоже ответ, и оно не прячется: поле стоит у КАЖДОЙ
+    # позиции. Прежде здесь стояло `any(... source_missing)` — и держалось оно
+    # не на утверждении, а на живом пробеле: у приказа ДГИ № 303 не было
+    # ссылки. Пробел закрыт 06.09.2026, и проверка упала на ХОРОШЕЙ новости.
+    # Утверждение было другое, и теперь оно записано словами.
+    assert all("source_missing" in item for item in got["items"])
     assert got["page"] == "/normatives"
+
+
+def test_a_row_without_a_link_says_so() -> None:
+    """Пробел ссылки называется — на своём примере, а не на живом реестре.
+
+    Проверка, ждущая настоящего пробела, зеленеет ровно до того дня, когда его
+    закроют, и падение читается как поломка. Пример держится здесь.
+    """
+    rows = list(registry._merged_registry())
+    blind = dict(rows[0]); blind["source_url"] = ""
+    seeing = dict(rows[0]); seeing["source_url"] = "https://example.org/act"
+    original = registry._merged_registry
+    try:
+        registry._merged_registry = lambda: [blind, seeing]  # type: ignore[assignment]
+        got = core._tool_check_normatives("status")
+    finally:
+        registry._merged_registry = original  # type: ignore[assignment]
+    assert [item["source_missing"] for item in got["items"]] == [True, False]
+
+
+def test_todays_registry_has_no_link_gaps() -> None:
+    """Замер, а не обещание: у всех позиций есть адрес исходника.
+
+    Число здесь не закрепляется — растёт реестр, растёт и оно; закреплено
+    ровно то, ради чего заводился признак: непроверяемых позиций нет.
+    """
+    blind = [str(row.get("short_name") or row.get("title"))
+             for row in registry._merged_registry()
+             if not str(row.get("source_url") or "").strip()]
+    assert not blind, "позиции реестра без ссылки на исходник: " + ", ".join(blind)
 
 
 def test_the_tool_is_declared_and_dispatched() -> None:
@@ -277,3 +311,200 @@ def test_the_search_client_is_the_engines_own() -> None:
     body = inspect.getsource(registry._search_client)
     assert "market_search.yandex_search" in body
     assert "configured" in body
+
+
+# --- счётчик молчания ---------------------------------------------------------
+#
+# «Ну мне ничего не пришло в телеграмме» (владелец, 07.09.2026) — тогда это было
+# про новости КРТ, и ответом стал `/auctions/krt/watch` с парой `/krt/delivery`.
+# У нормативной базы обе половины молчали так же: снаружи «в базе ничего не
+# менялось», «сторож выключен», «адресатов нет» и «ядро не ответило» — одно и
+# то же молчание. Проверки ниже держат ровно это: у каждого молчания есть имя.
+
+
+def test_the_watch_counts_its_own_silence(queue, tmp_path, monkeypatch) -> None:
+    """Сторож называет, заходил ли он, что нашёл и сколько ждёт бота."""
+    monkeypatch.setattr(registry, "_STATE_PATH", tmp_path / "state.json")
+    registry._save_state({"last_run_at": "2026-09-09T01:41:11+03:00",
+                          "checks": {"a": {"result": "changed"},
+                                     "b": {"result": "ok"},
+                                     "c": {"result": "unreachable"}}})
+    registry._queue_announcements([{"id": "a", "result": "changed"}])
+    state = registry.watch_state()
+    assert state["checked"] == 3
+    assert state["results"] == {"changed": 1, "ok": 1, "unreachable": 1}
+    assert state["queued"] == 1
+    assert state["last_run_at"].startswith("2026-09-09")
+    # Заход платного поиска — своя отметка: без неё «источники спрошены» и
+    # «спрошены только ссылки» на экране выглядят одинаково.
+    assert state["last_search_at"] == ""
+    assert "search_available" in state and "enabled" in state
+
+
+def test_reading_the_queue_does_not_take_it(queue) -> None:
+    """Счётчик читает очередь, а не изымает: забрать её может только бот.
+
+    Второй читатель унёс бы уведомление ради ответа на вопрос, дошло ли
+    уведомление.
+    """
+    registry._queue_announcements([{"id": "a", "result": "changed"}])
+    assert registry.queued_count() == 1
+    assert registry.queued_count() == 1
+    assert len(registry.take_announcements()) == 1
+    assert registry.queued_count() == 0
+
+
+def test_the_page_says_what_the_watch_did() -> None:
+    """Строка под кнопками отвечает на «мне ничего не пришло»."""
+    import inspect
+
+    body = inspect.getsource(registry._watch_note)
+    assert "NORMATIVES_WATCH=0" in body, "выключенный сторож не называет себя"
+    said = registry._watch_note({"enabled": True, "last_run_at": "", "queued": 0,
+                                 "search_available": False})
+    assert "ни разу" in said, "не сказано, что проверка ещё не заходила"
+    assert "поиск не настроен" in said
+    assert "переходов" in said, "пустая очередь не названа своим ответом"
+
+
+def test_the_delivery_names_every_silence() -> None:
+    """У каждого молчаливого выхода доставки есть имя.
+
+    Прежде их было пять и все молчали: нет токена, вебхук выключен, адресатов
+    нет, реестра на хосте нет, очередь пуста. Снаружи это неотличимо от
+    «в нормативной базе ничего не менялось».
+    """
+    import inspect
+
+    body = inspect.getsource(wrapper._deliver_normatives_announcements)
+    for reason in ("нет TELEGRAM_BOT_TOKEN", "вебхук выключен",
+                   "DEVELOPAID_ADMIN_IDS пуст", "реестра на этом хосте нет",
+                   "очередь пуста", "очередь у ядра не забрана",
+                   "ни один адресат не принял"):
+        assert reason in body, reason
+    # Пустой список адресатов не должен изымать очередь: забранное не вернуть.
+    admins = body.index("if not admins:")
+    remote = body.index('_projects_remote_url("/internal/normatives/announcements")')
+    assert admins < remote, "очередь забирается раньше, чем проверены адресаты"
+
+
+def test_the_delivery_line_is_declared_once() -> None:
+    """Очередей две, формат строки один: копия разошлась бы молча."""
+    import inspect
+
+    assert "_delivery_line(" in inspect.getsource(wrapper._krt_delivery_line)
+    assert "_delivery_line(" in inspect.getsource(wrapper._normatives_delivery_line)
+    said = wrapper._delivery_line("Нормативная база", {
+        "at": 0, "stopped_by": "ещё не заходили"})
+    assert "заходов доставки ещё не было" in said
+
+
+def test_the_status_carries_the_normatives_line() -> None:
+    """Спрашивают про это бота — строка стоит в `/status`."""
+    import inspect
+
+    body = inspect.getsource(wrapper._status_message)
+    assert "_normatives_delivery_line()" in body
+
+
+# --- кнопка спрашивает то, что обещает ----------------------------------------
+
+def test_the_button_can_ask_about_repeal() -> None:
+    """«Не получили изменений редакции или вовсе отменены» — это платный поиск.
+
+    Отпечаток ссылки на отмену не отвечает по построению: акт отменяют, не
+    трогая нашу страницу. Кнопка звала `_run_check()` без поиска и обещала
+    ответ, которого не давала.
+    """
+    page = registry._page.__doc__ or ""
+    import inspect
+
+    src = inspect.getsource(registry.install)
+    assert "search: str = \"\"" in src, "маршрут проверки не принимает платный вопрос"
+    assert "_run_check(search=wanted)" in src
+    assert "не настроен" in src, "отказ платного поиска не называет причину"
+
+    body = inspect.getsource(registry._page)
+    assert "checkAll(true)" in body and "checkAll(false)" in body, (
+        "на странице нет двух кнопок — два вопроса под одной подписью")
+    assert "платный" in body, "цена платного вопроса не названа"
+    assert page is not None
+
+
+def test_the_watch_route_is_open_and_carries_no_names() -> None:
+    """Счётчик молчания измерим со стороны и адресатов не называет."""
+    import inspect
+
+    src = inspect.getsource(registry.install)
+    assert '"/api/normatives/watch"' in src
+    assert "watch_state()" in src
+    state = registry.watch_state()
+    text = json.dumps(state, ensure_ascii=False)
+    assert "chat" not in text and "@" not in text
+
+
+# --- кнопка была недостижима вообще -------------------------------------------
+#
+# `_is_admin` передавала гейту движка ЦЕЛИКОМ `Request`, а тот принимает две
+# строки — сессию и ключ. Объект молча вставал на место сессии, ключ до проверки
+# не доезжал вовсе, и `TypeError`, ради которого стоял запасной путь, не
+# возникал никогда. Владелец не опознавался НИ РАЗУ: админской панели не было
+# ни у кого, а `POST /api/normatives/check` отвечал 403 всем и всегда.
+#
+# Строковые проверки этого не видят: и кнопка, и её обработчик присутствуют в
+# исходнике страницы у сломанного кода так же, как у рабочего. Ловится только
+# отрисовкой — и мерить надо САМУ панель, а не подстроку «checkBtn»: она стоит
+# ещё и в стилях, то есть есть на странице всегда.
+
+
+@pytest.fixture()
+def client(tmp_path, monkeypatch):
+    monkeypatch.setenv("DEVELOPAID_ADMIN_KEY", "test-key")
+    monkeypatch.setenv("NORMATIVES_WATCH", "0")
+    monkeypatch.setattr(registry, "_STATE_PATH", tmp_path / "state.json")
+    monkeypatch.setattr(registry, "_ANNOUNCE_PATH", tmp_path / "a.jsonl")
+    fastapi_testclient = pytest.importorskip("fastapi.testclient")
+    import main_registry  # noqa: PLC0415
+
+    return fastapi_testclient.TestClient(main_registry.app)
+
+
+def _admin_bar(text: str) -> str:
+    start = text.find('<div class="adminbar">')
+    return "" if start < 0 else text[start:start + 900]
+
+
+def test_the_owner_sees_the_buttons(client) -> None:
+    """Панель отрисовывается владельцу — по ключу администратора."""
+    bar = _admin_bar(client.get("/normatives?key=test-key").text)
+    assert bar, "владелец не опознан: панели нет вовсе"
+    assert "Проверить ссылки" in bar
+    # Платный вопрос либо кнопкой, либо названной причиной, почему его нет.
+    assert ("Спросить об отмене" in bar) or ("не настроен" in bar)
+
+
+def test_a_stranger_sees_no_buttons(client) -> None:
+    """Без ключа панели нет: проверка источников — не витрина."""
+    assert _admin_bar(client.get("/normatives").text) == ""
+
+
+def test_the_check_route_answers_the_owner(client) -> None:
+    """403 всем и всегда — это не «только администратору», это сломанный гейт."""
+    assert client.post("/api/normatives/check").status_code == 403
+    got = client.post("/api/normatives/check?key=test-key")
+    assert got.status_code == 200, got.text
+    assert got.json().get("searched") is False, "бесплатная кнопка не должна платить"
+
+
+def test_the_paid_question_refuses_with_a_reason(client) -> None:
+    """Молча пройдя без поиска, кнопка второй раз пообещала бы ответ."""
+    got = client.post("/api/normatives/check?search=1&key=test-key")
+    assert got.status_code == 503
+    assert "отмену" in str(got.json().get("detail"))
+
+
+def test_the_watch_route_is_readable_without_a_key(client) -> None:
+    """Счётчик молчания — про наше устройство, а не про чужие данные."""
+    got = client.get("/api/normatives/watch")
+    assert got.status_code == 200
+    assert set(got.json()) >= {"enabled", "queued", "last_run_at", "search_available"}

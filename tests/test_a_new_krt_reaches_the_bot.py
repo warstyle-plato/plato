@@ -34,15 +34,15 @@ def ranking() -> KrtRanking:
 def test_the_first_snapshot_announces_nobody() -> None:
     """Мы только начали смотреть — сто двадцать «новинок» разом это шум."""
     r = ranking()
-    r.mark_seen(["a", "b", "c"])
+    r.mark_seen(["a", "b", "c"], complete=True)
     assert r.take_announcements() == []
 
 
 def test_a_site_that_appeared_is_announced_once() -> None:
     r = ranking()
-    r.mark_seen(["a", "b"])
+    r.mark_seen(["a", "b"], complete=True)
     r.take_announcements()
-    r.mark_seen(["a", "b", "c"])
+    r.mark_seen(["a", "b", "c"], complete=True)
     got = r.take_announcements()
     assert [x["slug"] for x in got] == ["c"]
     assert got[0]["seen_at"] > 0
@@ -52,19 +52,19 @@ def test_a_site_that_appeared_is_announced_once() -> None:
 
 def test_an_unchanged_catalogue_says_nothing() -> None:
     r = ranking()
-    r.mark_seen(["a"]); r.take_announcements()
-    r.mark_seen(["a"])
-    r.mark_seen(["a"])
+    r.mark_seen(["a"], complete=True); r.take_announcements()
+    r.mark_seen(["a"], complete=True)
+    r.mark_seen(["a"], complete=True)
     assert r.take_announcements() == []
 
 
 def test_a_returning_site_is_news_again() -> None:
     """Исчезнувшая площадка забывается — вернувшаяся снова новость."""
     r = ranking()
-    r.mark_seen(["a", "b"]); r.take_announcements()
-    r.mark_seen(["a"])
+    r.mark_seen(["a", "b"], complete=True); r.take_announcements()
+    r.mark_seen(["a"], complete=True)
     r.take_announcements()
-    r.mark_seen(["a", "b"])
+    r.mark_seen(["a", "b"], complete=True)
     assert [x["slug"] for x in r.take_announcements()] == ["b"]
 
 

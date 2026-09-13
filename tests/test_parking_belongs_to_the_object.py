@@ -7,8 +7,13 @@
 поставить на кадастр значит нельзя и продать. Это кусок асфальта».
 
 Отсюда два утверждения, и оба держит этот файл:
-- норматив считается всегда и не строит НИЧЕГО — ни метров ТЭП, ни выручки;
-- гараж объекта задаётся двумя числами человека, и норматив в них не заглядывает.
+- норматив считается всегда и сам по себе не строит НИЧЕГО — ни метров ТЭП, ни
+  выручки: приобъектная стоянка это асфальт в благоустройстве;
+- гараж объекта — два числа, и они принадлежат человеку. Норматив их ЗАПОЛНЯЕТ,
+  пока поле не тронули (владелец, 07.09.2026: «а почему нельзя туда где я скрин
+  прислал стоит пусто ставить этот норматив»), и следует за ТЭП, пока заполняет:
+  замерев, оно стало бы сохранённым значением, которое сильнее базы. Тронутое
+  руками сильнее нормы — включая ноль, и ноль тогда значит «гаража нет».
 
 Правило места оттуда же (владелец, 24.08.2026): места объекта принадлежат
 объекту. Общая куча разносится по очередям своими правилами и приезжает не туда
@@ -64,7 +69,8 @@ def test_moscow_uses_the_act_for_standalone_objects() -> None:
     got = core.parking_demand(_inputs(), TEP)
     by_key = {row["tep_key"]: row for row in got["rows"]}
     assert by_key["offices"]["x2"] == 63.0
-    assert by_key["offices"]["required_spaces"] == 596
+    # 94 000 м² ННП (100 000 ГНС × 0,94) / 63 × 0,75 × 0,5
+    assert by_key["offices"]["required_spaces"] == 560
     assert by_key["standalone_retail"]["x2"] == 54.0
 
 
@@ -86,12 +92,30 @@ def test_built_in_base_is_the_nonresidential_above_ground_area() -> None:
     assert got["rows"][0]["input_value"] == 9_000
 
 
-def test_the_base_is_the_above_ground_area_of_the_object() -> None:
-    """Сноска 2 приложения 1: нежилая наземная площадь. В нашем ТЭП это gns."""
+def test_the_base_is_the_premises_area_not_the_building_outline() -> None:
+    """ННП — площадь в габаритах ВНУТРЕННИХ стен, то есть общая, а не ГНС.
+
+    Формулировка владельца (08.09.2026). Прежде здесь стояло обратное — «в
+    нашем ТЭП это gns», — и одна единица приложения 1 стояла над двумя разными
+    базами: встроенная коммерция считалась от общей площади помещений, а
+    отдельно стоящие от ГНС целиком. На офиснике 100 000 м² это 596 мест против
+    560, то есть толщина наружных стен становилась машино-местами.
+
+    Доля берётся из ПРИМЕНЁННЫХ долей продукта, а не зашивается: `total_of_gns`
+    версионируема и правится человеком.
+    """
     got = core.parking_demand(_inputs(), TEP)
     row = next(r for r in got["rows"] if r["tep_key"] == "offices")
-    assert row["input_value"] == 100_000
+    share = core.TEP_RATIOS["offices"]["total_of_gns"]
+    assert row["input_value"] == 100_000 * share == 94_000
     assert row["input_unit"] == pn.UNIT_ABOVE_NONRES_SQM
+
+
+def test_the_given_premises_area_wins_over_the_ratio() -> None:
+    """Доля — запасной путь: вписанная общая площадь сильнее её."""
+    tep = {"offices": {"label": "Офисы", "gns": 100_000, "total_area": 90_000}}
+    row = core.parking_demand(_inputs(), tep)["rows"][0]
+    assert row["input_value"] == 90_000, "взята доля вместо заданной общей"
 
 
 def test_the_norm_builds_nothing_and_sells_nothing() -> None:
@@ -120,7 +144,7 @@ def test_the_garage_is_a_human_number_not_the_norm() -> None:
                 offices_parking_over_spaces=10), tep)
     offices = next(item for item in got["own"] if item["tep_key"] == "offices")
     assert (offices["under_spaces"], offices["over_spaces"]) == (40, 10)
-    # Норматив офисов — 596 мест; в гараж из них не уехало ни одного.
+    # Норматив офисов — 560 мест; в гараж из них не уехало ни одного.
     assert offices["units"] == 50
     assert tep["offices"]["parking_units"] == 50
     assert tep["offices"]["under_gns"] == 40 * got["area_per_space_sqm"]
@@ -164,9 +188,9 @@ def test_an_empty_field_takes_the_norm_not_zero() -> None:
     got = core.apply_object_parking(stripped, tep)
     offices = next(item for item in got["own"] if item["tep_key"] == "offices")
     assert offices["by_norm"] is True
-    assert offices["units"] == offices["required_spaces"] == 596
-    assert offices["under_spaces"] == 596, "норматив идёт в подземный"
-    assert core.n(tep["offices"], "under_gns") == 596 * 35
+    assert offices["units"] == offices["required_spaces"] == 560
+    assert offices["under_spaces"] == 560, "норматив идёт в подземный"
+    assert core.n(tep["offices"], "under_gns") == 560 * 35
 
 
 def test_a_hand_written_number_overrides_the_norm() -> None:
@@ -177,7 +201,7 @@ def test_a_hand_written_number_overrides_the_norm() -> None:
     offices = next(item for item in got["own"] if item["tep_key"] == "offices")
     assert offices["units"] == 40, "движок не подгоняет число под норматив"
     assert offices["by_norm"] is False
-    assert offices["required_spaces"] == 596, "а норматив рядом назван"
+    assert offices["required_spaces"] == 560, "а норматив рядом назван"
 
 
 def test_a_disabled_object_leaves_no_parking_metres_behind() -> None:
@@ -225,8 +249,10 @@ def test_moscow_oblast_finally_counts_nonresidential() -> None:
     """До этого офисник в подмосковном проекте получал ноль мест."""
     got = core.parking_demand(_inputs(vri_region="mo"), TEP)
     by_key = {row["tep_key"]: row for row in got["rows"]}
-    assert by_key["offices"]["required_spaces_min"] == 1667
-    assert by_key["offices"]["required_spaces_max"] == 2000
+    # 94 000 м² общей (100 000 ГНС × 0,94): область тоже считает от площади
+    # помещений, а не от обвода здания по наружным стенам.
+    assert by_key["offices"]["required_spaces_min"] == 1567
+    assert by_key["offices"]["required_spaces_max"] == 1880
     assert by_key["standalone_retail"]["required_spaces"] > 0
 
 
@@ -240,7 +266,7 @@ def test_moscow_oblast_built_in_uses_the_confirmed_rule() -> None:
     """774-ПП называет встроенно-пристроенные помещения первых этажей прямо."""
     got = core.parking_demand(_inputs(vri_region="mo"), TEP)
     row = next(r for r in got["rows"] if r["tep_key"] == "ground_commercial")
-    assert row["required_spaces"] == 200        # 10 000 / 50
+    assert row["required_spaces"] == 180        # 9 000 общей / 50
     assert row["source_confirmed"] is True
 
 

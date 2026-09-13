@@ -20,6 +20,7 @@ from auction_search.models import (
     utc_now_iso,
 )
 from auction_search.parsing import (
+    deadline_is_current,
     cadastral_numbers,
     mentions_moscow,
     normalize_space,
@@ -195,19 +196,6 @@ class LotOnlineAdapter(AuctionPlatformAdapter):
         title = normalize_space(lot.title or "").lower()
         return bool(re.match(r"^\[?\s*тест\s*\]?\b", title)) or "тестовый лот" in title
 
-    @staticmethod
-    def _has_current_deadline(deadline: str | None) -> bool:
-        """Current discovery must have a parseable, non-expired application deadline."""
-        if not deadline:
-            return False
-        try:
-            parsed = datetime.fromisoformat(deadline.strip())
-        except ValueError:
-            return False
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=_MOSCOW)
-        return parsed.astimezone(_MOSCOW) >= datetime.now(_MOSCOW)
-
     def discover_moscow(self, *, deadline: float | None = None) -> list[AuctionLot]:
         """Enumerate active Moscow development lots from the public RAD catalogue.
 
@@ -255,7 +243,7 @@ class LotOnlineAdapter(AuctionPlatformAdapter):
             # The public catalogue currently leaks old and test cards even with
             # is_archive=false. The official card is authoritative: without a
             # future application deadline this is not a current opportunity.
-            if not self._has_current_deadline(lot.application_deadline):
+            if not deadline_is_current(lot.application_deadline):
                 continue
             lot.raw["discovery_mode"] = "current"
             lot.raw["discovery_category_ids"] = list(category_ids)
