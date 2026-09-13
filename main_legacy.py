@@ -76,7 +76,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.23.27"
+VERSION = "0.23.32"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -13281,63 +13281,99 @@ def _site_chat_store(chat_id: int, text: str, taken_at: str,
     return internal_monitor_daily(SiteChatReportRequest(**payload))
 
 
-def _telegram_group_seen(chat: dict[str, Any]) -> None:
+def _telegram_group_seen(chat: dict[str, Any], outcome: str = "") -> None:
     """Счётчик увиденного в группах — иначе молчание нечем объяснить.
 
     «Privacy mode не сняли», «бота не переподключили» и «мост не дописан»
-    снаружи выглядят одинаково: бот молчит. Счётчик отвечает, дошло ли до нас
-    хоть одно сообщение и из какого чата, — то же правило, что у сторожа
-    новостей КРТ.
+    снаружи выглядят одинаково: бот молчит. А с 13.09.2026 он молчит и по
+    решению владельца («в чат ничего не надо»), то есть молчание перестало
+    быть признаком поломки вовсе — значит счётчик тут не удобство, а
+    единственный ответ на «дошло ли». Рядом с числом лежит ИСХОД последнего
+    разбора: привязка, принятая сводка с числами, отказ с причиной.
     """
     seen = getattr(app.state, "telegram_group_seen", None)
     if seen is None:
         seen = {}
         app.state.telegram_group_seen = seen
     key = str(int((chat or {}).get("id") or 0))
-    row = seen.setdefault(key, {"title": "", "count": 0, "last": ""})
+    row = seen.setdefault(key, {"title": "", "count": 0, "last": "", "outcome": ""})
     row["title"] = str((chat or {}).get("title") or row["title"])
     row["count"] = int(row["count"]) + 1
     row["last"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    if outcome:
+        row["outcome"] = str(outcome)
 
 
 def _telegram_group_seen_line() -> str:
-    """Строка о группах для /status: сколько сообщений бот оттуда увидел.
+    """Строка о группах для /status: что бот оттуда увидел и чем это кончилось.
 
     Пустой счётчик — это ответ, а не прочерк: privacy mode Telegram по
     умолчанию включён, и тогда обычных сообщений группы бот не получает вовсе.
     Отличить это от «мост не дописан» иначе нечем.
+
+    Счёт идёт с запуска ЭТОГО воркера, и так и написано: воркеров два, память
+    у них раздельная, и пустая строка у второго — не «бот ничего не видел».
+    Сама привязка при этом живёт на ядре и выкатку переживает.
     """
     seen = getattr(app.state, "telegram_group_seen", None) or {}
     if not seen:
-        return ("\nГрупп: сообщений не видел ни одного. Если ждёте сводку с площадки — "
-                "у бота включён privacy mode либо его не переподключили к группе.")
+        return ("\nГруппы: сообщений не видел ни одного (счёт с запуска этого воркера). "
+                "Если ждёте сводку с площадки — у бота включён privacy mode либо его "
+                "не переподключили к группе.")
     rows = sorted(seen.values(), key=lambda row: int(row.get("count") or 0), reverse=True)
-    parts = [f"{row.get('title') or 'без имени'} — {int(row.get('count') or 0)}" for row in rows[:5]]
-    return "\nГруппы (сообщений с запуска): " + "; ".join(parts)
+    parts = []
+    for row in rows[:5]:
+        line = f"{row.get('title') or 'без имени'} — {int(row.get('count') or 0)}"
+        if row.get("outcome"):
+            line += "; " + str(row.get("outcome"))
+        parts.append(line)
+    return "\nГруппы (с запуска этого воркера):\n• " + "\n• ".join(parts)
+
+
+def _telegram_group_reply(message: dict[str, Any], text: str) -> bool:
+    """Ответ уходит в ЛИЧКУ тому, кто написал, а не в групповой чат.
+
+    Решение владельца 13.09.2026: «в чат ничего не надо». Но человек, набравший
+    `/site`, обязан узнать, сработало ли, — молчание в ответ на команду
+    неотличимо от сломанной команды. Личка это и есть ответ ему: он сам начал,
+    и группа при этом не видит ничего.
+
+    Не начинавшему разговор с ботом Telegram написать не даст — это не поломка,
+    а его настройка, и тогда исход остаётся в счётчике `/status`.
+    """
+    user_id = int((message.get("from") or {}).get("id") or 0)
+    if not user_id:
+        return False
+    try:
+        _telegram_send_message(user_id, text)
+    except Exception:
+        return False
+    return True
 
 
 def _telegram_group_message(chat: dict[str, Any], message: dict[str, Any]) -> None:
-    """Групповой чат: молчим, пока это не отчёт с площадки и не наша команда.
+    """Групповой чат: бот не пишет туда ничего и никогда.
 
-    Прежде на КАЖДОЕ сообщение из группы бот отвечал «DevelopAid работает в
+    Прежде на КАЖДОЕ сообщение из группы он отвечал «DevelopAid работает в
     личном чате с ботом». Пока privacy mode был включён, он видел только
-    команды, и это почти не замечалось; со снятым privacy (владелец сделал это
-    13.09.2026) в рабочем чате на четырнадцать человек это стало бы потоком.
-    Отвечаем только на то, что адресовано нам: разобравшийся отчёт и команду
-    привязки. Всё прочее — тишина, а не «я вас не понял».
+    команды, и это почти не замечалось; со снятым privacy в рабочем чате на
+    четырнадцать человек это стало бы потоком. Первая правка оставила ответы
+    на адресованное — сводку и `/site`; владелец снял и их: «в чат ничего не
+    надо» (13.09.2026).
+
+    Отсюда правило: у группы бот только ЧИТАТЕЛЬ. Что он прочёл, видно в двух
+    местах — в личке у того, кто написал команду, и в `/status`.
     """
     chat_id = int((chat or {}).get("id") or 0)
     if not chat_id:
         return
-    _telegram_group_seen(chat)
     text = str(message.get("text") or message.get("caption") or "").strip()
     if not text:
+        _telegram_group_seen(chat)
         return
 
-    username = (_web_login_bot_username() or "").lower()
     head = text.split(maxsplit=1)[0].lower() if text.startswith("/") else ""
     command = head.split("@", 1)[0]
-    addressed = ("@" + username) in head if username else False
 
     if command == "/site":
         # Имя проекта берём из команды, а нет его — из названия группы: не
@@ -13345,17 +13381,24 @@ def _telegram_group_message(chat: dict[str, Any], message: dict[str, Any]) -> No
         wanted = text.split(maxsplit=1)[1].strip() if " " in text else ""
         wanted = wanted or str((chat or {}).get("title") or "").strip()
         if not wanted:
-            _telegram_send_message(chat_id, "Название проекта не задано: <code>/site Имя объекта</code>.")
+            _telegram_group_seen(chat, "имя проекта не задано")
+            _telegram_group_reply(message, "Название проекта не задано: "
+                                           "<code>/site Имя объекта</code>.")
             return
         try:
             answer = _site_chat_store(chat_id, "", "", project=wanted)
         except Exception as exc:
-            _telegram_send_message(chat_id, "Привязка не удалась: " + html.escape(str(exc)))
+            _telegram_group_seen(chat, "привязка не удалась: " + str(exc)[:80])
+            _telegram_group_reply(message, "Привязка не удалась: " + html.escape(str(exc)))
             return
-        _telegram_send_message(
-            chat_id,
-            "<b>Чат привязан к проекту «" + html.escape(str(answer.get("bound") or wanted)) +
-            "».</b>\nЕжедневную сводку с численностью буду читать отсюда сам.")
+        bound = str(answer.get("bound") or wanted)
+        _telegram_group_seen(chat, "привязан к проекту «" + bound + "»")
+        _telegram_group_reply(
+            message,
+            "<b>Чат «" + html.escape(str((chat or {}).get("title") or "")) +
+            "» привязан к проекту «" + html.escape(bound) + "».</b>\n"
+            "Ежедневную сводку с численностью читаю оттуда сам и в чат "
+            "ничего не пишу.")
         return
 
     parsed = None
@@ -13366,11 +13409,8 @@ def _telegram_group_message(chat: dict[str, Any], message: dict[str, Any]) -> No
     except Exception:
         parsed = None
     if not parsed or not parsed.get("contractors"):
-        # Не отчёт — молчим. Ответ «я вас не понял» на рабочую переписку хуже
-        # отсутствия бота: его выключат вместе с полезным.
-        if addressed:
-            _telegram_send_message(chat_id, "Здесь я читаю ежедневную сводку с площадки. "
-                                            "Расчёты — в личном чате.")
+        # Не отчёт — просто считаем. Рабочая переписка нас не касается.
+        _telegram_group_seen(chat)
         return
 
     stamp = message.get("date")
@@ -13382,25 +13422,21 @@ def _telegram_group_message(chat: dict[str, Any], message: dict[str, Any]) -> No
     try:
         answer = _site_chat_store(chat_id, text, taken_at)
     except Exception as exc:
-        _telegram_send_message(chat_id, "Сводка не сохранена: " + html.escape(str(exc)))
+        _telegram_group_seen(chat, "сводка не сохранена: " + str(exc)[:80])
         return
     if not answer.get("bound"):
-        _telegram_send_message(
-            chat_id,
-            "<b>Сводку вижу, но чат не привязан к проекту.</b>\n"
-            "Пришлите <code>/site Имя объекта</code> — и дальше буду читать сам.")
+        # Сводка есть, а проекта нет — класть её некуда. Это наш пробел, и он
+        # обязан быть виден: молча выброшенный отчёт читается как «сводки не
+        # было». В чат при этом не пишем — там о нашей привязке не знают.
+        _telegram_group_seen(chat, "сводка прочитана, но чат не привязан — нужен /site")
         return
-    works = len(parsed.get("works") or [])
-    _telegram_send_message(
-        chat_id,
-        "<b>Сводка принята"
-        + (" за " + html.escape(taken_at) if taken_at else "")
-        + ".</b>\nПодрядчиков "
+    _telegram_group_seen(
+        chat,
+        "сводка" + (" за " + taken_at if taken_at else "") + ": подрядчиков "
         + str(len(parsed.get("contractors") or []))
         + ", ИТР " + str(parsed.get("itr_total") or 0)
         + ", рабочих " + str(parsed.get("workers_total") or 0)
-        + ", строк работ " + str(works)
-        + ".\nПроект: " + html.escape(str(answer.get("bound"))) + ".")
+        + " → «" + str(answer.get("bound")) + "»")
 
 
 def _telegram_handle_message(message: dict[str, Any]) -> None:
