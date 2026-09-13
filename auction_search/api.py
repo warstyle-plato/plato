@@ -50,7 +50,7 @@ from auction_search import equity_stake
 from auction_search.developaid_mapper import build_developaid_seed
 from auction_search.documents import DocumentExtractionError
 from auction_search.export_areas import export_areas
-from auction_search.krt_pipeline import enrich_krt_from_official_documents
+from auction_search.krt_pipeline import egrn_summary, enrich_krt_from_official_documents
 from auction_search.krt_ranking import (
     HEARTBEAT_SECONDS, NEW_FOR_SECONDS, KrtRanking, score_row)
 # Имя `krt_ranking` внутри маршрутов занято ЭКЗЕМПЛЯРОМ хранилища, а версия
@@ -2834,6 +2834,7 @@ def install(app: FastAPI) -> None:
     @app.get("/auctions/roseltorg/probe")
     async def auction_roseltorg_probe(
         seconds: float = Query(default=45.0, ge=5.0, le=90.0),
+        url: str = Query(default=""),
     ) -> dict[str, Any]:
         """Чем отвечает раздел «Развитие территории» Росэлторга. Разбора нет.
 
@@ -2852,12 +2853,19 @@ def install(app: FastAPI) -> None:
         итоге оказалось в DOM. Пустой список запросов при видимых карточках
         значит «всё пришло первым ответом», а не «карточек нет».
 
-        Произвольного адреса здесь нет намеренно: спрашивается ровно тот
-        раздел, который открывает владелец.
-
         Из песочницы roseltorg.ru закрыт, поэтому проба ходит только с ядра.
+
+        Адрес раздела зашит и остаётся тем, который открывает владелец. Рядом
+        появился `url` — и прежняя оговорка «произвольного адреса здесь нет
+        намеренно» снята не по забывчивости: 12.09.2026 РАЗДЕЛ отвечал 200, а
+        карточка лота с того же ядра — таймаутом, и сказать об этом было
+        нечем, кроме как «мы её не читаем». Ограничение осталось там, где оно
+        и держит: только официальный хост площадки, никакого разбора, а рядом
+        печатается, сколько сертификатов прислал сервер —
+        `CERTIFICATE_VERIFY_FAILED` это вопрос «чего не хватает», а не диагноз.
         """
-        return await run_in_threadpool(lambda: roseltorg_probe(seconds=float(seconds)))
+        return await run_in_threadpool(
+            lambda: roseltorg_probe(seconds=float(seconds), url=url.strip()))
 
     @app.get("/auctions/roseltorg/browser")
     async def auction_roseltorg_browser(
@@ -3071,6 +3079,10 @@ def install(app: FastAPI) -> None:
                 "krt_auth_required": (
                     bool(lot.raw.get("krt_auth_required")) if lot.lot_kind == LotKind.KRT else None
                 ),
+                # Правообладатели из выписок лота. Посчитанное за маршрутом и
+                # никем не показанное неотличимо от непосчитанного, поэтому
+                # свод едет в ответ, а считает его один `egrn_summary`.
+                "egrn": egrn_summary(lot),
                 "ready_for_financial_model": (
                     bool(lot.krt_program or lot.obligations) and not lot.raw.get("krt_document_warnings")
                     if lot.lot_kind == LotKind.KRT

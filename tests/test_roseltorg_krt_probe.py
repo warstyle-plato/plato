@@ -53,16 +53,30 @@ def test_the_same_address_is_asked_by_urllib_only_percent_encoded() -> None:
     assert encoded.split("?")[0] == roseltorg_probe.CATALOGUE_URL.split("?")[0]
 
 
-def test_the_route_has_no_arbitrary_url_and_no_parser() -> None:
+def test_the_route_asks_only_the_platform_and_parses_nothing() -> None:
+    """Адрес спрашивать можно, но только у площадки, и без разбора.
+
+    Прежде здесь стояло «произвольного адреса нет вовсе», и это было верно,
+    пока спрашивали один раздел. 12.09.2026 замер сказал иначе: раздел
+    отвечает 200, а карточка лота с того же ядра — таймаутом, и померить это
+    было нечем. Утверждение теперь другое и уже: проба ходит ТОЛЬКО на
+    официальный хост площадки (иначе маршрут становится способом сходить с
+    нашего сервера куда угодно) и по-прежнему ничего не разбирает —
+    придуманных имён полей у неё нет.
+    """
     api = (ROOT / "auction_search" / "api.py").read_text(encoding="utf-8")
     start = api.index('    @app.get("/auctions/roseltorg/probe")')
     end = api.index("\n    @app.get", start + 10)
     route = api[start:end]
 
-    assert "url:" not in route
     assert "roseltorg_probe" in route
     for invented in ("lot_id", "start_price", "application_deadline", "AuctionLot"):
         assert invented not in route
+
+    # Чужой хост проба не спрашивает — проверяется запуском, а не чтением.
+    answer = roseltorg_probe.probe(seconds=5.0, url="https://example.com/lot/1")
+    asked = [a for a in answer["attempts"] if a["asked"] == "Адрес, который спросили"]
+    assert asked and "roseltorg.ru" in asked[0].get("reason", ""), asked
 
 
 def test_the_dom_is_asked_by_what_a_card_is_not_by_a_guessed_class() -> None:
