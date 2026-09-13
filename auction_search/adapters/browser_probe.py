@@ -18,6 +18,8 @@ Chromium, которым считается калькулятор ГлавАП�
 
 from __future__ import annotations
 
+from auction_search import reading
+
 import json
 import re
 from typing import Any
@@ -46,8 +48,12 @@ THIRD_PARTY = (
 )
 
 # Заголовок страницы отказа. 200 с такой страницей — это отказ, а не пустой
-# источник, и считать его успехом значит выдать одно за другое.
-REFUSAL_TITLE_MARKS = ("403", "401", "Forbidden", "Access denied", "Доступ запрещ")
+# источник, и считать его успехом значит выдать одно за другое. Приметы живут
+# одним списком на весь модуль торгов (`auction_search.reading`): свой список
+# здесь знал «403 Forbidden» и не знал «The URL you requested has been
+# blocked» — страницу, которую браузер с ядра получает от Росэлторга, — и поле
+# `blocked` честно отвечало `false` на явной блокировке.
+REFUSAL_TITLE_MARKS = reading.REFUSAL_TITLE_MARKS
 
 _BODY_SHOWN = 4_000
 _SECRET_KEY = re.compile(
@@ -211,7 +217,11 @@ def probe_browser(url: str, seconds: float = 45.0, save_to: str = "",
                 title = page.title()
                 report.update({
                     "ok": True,
-                    "blocked": any(mark in title for mark in REFUSAL_TITLE_MARKS),
+                    # Смотреть надо и в текст: у страницы блокировки заголовок
+                    # бывает свой, а слова — её собственные («Web Page
+                    # Blocked! … Client IP: …»).
+                    "blocked": bool(reading.refusal_reason(
+                        title, page.inner_text("body")[:_BODY_SHOWN])),
                     "final_url": page.url,
                     "title": title,
                     "captcha": any(mark in body for mark in CHALLENGE_MARKERS),
