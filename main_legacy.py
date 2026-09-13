@@ -66,6 +66,7 @@ from developaid_monitor_page import MONITOR_PAGE as _MONITOR_PAGE_RAW
 # документах, движок — об экономике, и смешивать их незачем.
 import document_intake
 import v4_entry_sheet
+import v4_value_cache
 import management_contour
 import parking_norms
 import plato_question
@@ -76,7 +77,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.23.42"
+VERSION = "0.23.43"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -16559,6 +16560,30 @@ MKD_PRODUCTS: tuple[str, ...] = (
 # Состав объявлен один раз — в STANDALONE_OBJECTS; здесь только его ключи.
 STANDALONE_PRODUCTS: tuple[str, ...] = tuple(o.key for o in STANDALONE_OBJECTS)
 
+# Продукты, делящие ОДИН остаточный пул расходов: у них нет своей статьи CAPEX,
+# и себестоимость признаётся долей проданного количества. У отдельно стоящего
+# объекта пул свой (его CAPEX — отдельная статья), а вот его паркинг своей
+# статьи не имеет: места строятся тем же подземным метром, и деньги за них
+# лежат в общем пуле. Отсюда и место в этом списке — не «он часть МКД»
+# (`MKD_PRODUCTS` отвечает на другой вопрос: чем он построен), а «его расход
+# признаётся из остатка».
+#
+# Списка было два, одинаковых с виду: налоговая база и разбивка расходов по
+# продуктам в отчёте. Оба перечисляли четыре продукта МКД руками, а
+# `object_parking` завели позже (06.09.2026, «продаётся то, что можно
+# поставить на кадастр»), и он не попал ни в один. Выручка от него собиралась,
+# налога с неё не брали вовсе: на пресете Нагатино это 5 366,6 млн ₽ выручки
+# мимо базы, 395,6 млн налога и 556,3 млн чистой прибыли — а на проекте
+# владельца от 13.09.2026 уже 5 138,8 млн налога и 6 101,4 млн прибыли.
+# Книга при этом считала верно, и её же блок паритета об этом кричал.
+#
+# Третьим списком был НДС, и его закрыли отдельно и лучше: облагаемые продукты
+# берутся из самих расписаний выручки (`vat_taxable_products`), то есть перечня
+# там больше нет вовсе. Здесь так нельзя — пул отвечает не на «кто продаётся»,
+# а на «чей расход признаётся из остатка», и у объекта со своей статьёй CAPEX
+# ответ обратный.
+COST_POOL_PRODUCTS: tuple[str, ...] = MKD_PRODUCTS + ("object_parking",)
+
 # Разделы таблицы ТЭП. Двенадцать строк одним списком читаются как двенадцать
 # равных продуктов, а это три разные вещи: дом, который мы строим и продаём;
 # отдельно стоящие объекты со своей экономикой; и объекты, которые уходят
@@ -18498,6 +18523,36 @@ def _v4_add_parity_row(xml: str, row: int, label: str, total: str,
     return updated
 
 
+def _v4_object_phase_by_result(phases: list[dict[str, Any]]) -> dict[str, int]:
+    """В какой очереди движок ПОСТРОИЛ каждый отдельно стоящий объект.
+
+    Читается результат, а не правила: очередь, в чьих вводных объект ВКЛЮЧЁН,
+    и есть его очередь — это то, что движок применил, разложив проект. Повторять
+    здесь лестницу приоритета нельзя: это был бы третий ответ на вопрос, у
+    которого уже два.
+
+    Первая версия смотрела на строку ТЭП очереди и ошибалась молча: площадь
+    объекта движок читает из `offices_gba_sqm`, а строка ТЭП при этом может
+    быть нулевой — так устроены умолчания, и на них объект «нигде не построен»
+    при живых 10 000 м² и 2 519 млн ₽ CAPEX в четвёртой очереди. Признак
+    включения верен и для ПЕРЕДАННОГО городу объекта, у которого ни выручки,
+    ни своего пула расходов нет вовсе.
+
+    Объект, не включённый ни в одной очереди, в ответ не попадает: пустое
+    значит «движок его не строил», и книга останется на своём умолчании, а не
+    получит выдуманную единицу.
+    """
+    out: dict[str, int] = {}
+    for index, phase in enumerate(phases or []):
+        phase_inputs = (phase or {}).get("inputs") or {}
+        for obj in standalone_objects():
+            if obj.key in out:
+                continue
+            if bool(phase_inputs.get(f"{obj.prefix}_enabled")):
+                out[obj.key] = index + 1
+    return out
+
+
 def _v4_add_carry_parity_row(xml: str, target_mln: float, missing: list[str]) -> str:
     """Строка паритета «долг, переданный между очередями» на листе ПРОВЕРКИ.
 
@@ -19170,6 +19225,35 @@ def _v4_finance_hints(bundle: dict[str, Any]) -> dict[str, Any]:
         str(row.get("key")): {key: value for key, value in row.items() if key != "key"}
         for row in ((((bundle or {}).get("consolidated") or {}).get("tep") or {}).get("rows") or [])
         if row.get("key")}
+    # В какой очереди объект ПОСТРОЕН — по применённому расчёту, а не по
+    # намерению. Очередь объекта решают двое, и решали по-разному: у движка
+    # лестница «объявлено продуктами очереди → `discrete` → умолчание», у
+    # сборщика книги только `discrete` с зашитым «ТЦ и паркинг во второй».
+    # Пресет КРТ Нагатино размещает ТЦ продуктами четвёртой очереди и `discrete`
+    # не заполняет вовсе — книга ставила ТЦ во ВТОРУЮ, то есть на два года
+    # раньше: он продавался и строился дешевле, и на одних вводных выручка
+    # расходилась на 7 910 млн ₽, CAPEX на 6 692, налог на 584. Пик БРИДЖа при
+    # этом сходился до копейки, а LLCR проходил допуск — паритет выглядел
+    # «почти сошедшимся» там, где очередь строит не тот объект.
+    # Ответ спрашивается у результата, а не выводится второй раз: очередь, где
+    # у объекта есть метры, и есть та, в которой движок его построил. Вывести
+    # лестницу заново значило бы завести третий ответ на тот же вопрос.
+    hints["object_phase"] = _v4_object_phase_by_result(phases)
+    # ТЭП КАЖДОЙ очереди — по применённому расчёту. Книга выводила разбивку
+    # заново (`_phase_tep_product_rows`) и на пресете КРТ Нагатино, который
+    # объявляет очередям РАВНЫЕ метры, разложила проект своим убывающим
+    # пресетом: 69 031 / 56 087 / 47 459 / 43 144 м² ГНС квартир против
+    # 53 930 у каждой. Итог при этом сходится до десятой — метры не теряются,
+    # а переезжают между очередями, и потому расхождение выглядит не потерей,
+    # а другой экономикой: выручка и CAPEX первых очередей завышены, последних
+    # занижены, и пик ПФ первой очереди вылезал за её же банковский лимит.
+    # Тот же корень, что у размещения объекта: явное объявление очереди до
+    # книги не доезжало вовсе.
+    hints["tep_by_phase"] = [
+        {str(row.get("key")): {k: v for k, v in row.items() if k != "key"}
+         for row in ((((item or {}).get("result") or {}).get("tep") or {}).get("rows") or [])
+         if row.get("key")}
+        for item in (phases or [])]
     # Горизонт движка — сколько месяцев он посчитал. Книга кончается своей
     # колонкой, и всё, что за ней, она молча теряет: на четырёх очередях с
     # шагом 36 это 43 месяца и −12,3 млрд ₽ CAPEX при собранном без единого
@@ -20042,6 +20126,10 @@ def v4_hard_value_reason(sheet: str, coord: str) -> str | None:
     return V4_ENGINE_WRITTEN_CELLS.get((sheet, f"строка {row}"))
 
 
+class _SkipValueCache(Exception):
+    """Проход сохранённых значений выключен — это выбор, а не сбой."""
+
+
 def build_project_workbook(
     inputs: dict[str, Any],
     tep: dict[str, dict[str, Any]],
@@ -20051,6 +20139,7 @@ def build_project_workbook(
     project_name: str = "",
     scenario: str = "base",
     finance_hints: dict[str, Any] | None = None,
+    cache_values: bool | None = None,
 ) -> tuple[bytes, str, dict[str, Any]]:
     """Книга DevelopAid v4, заполненная текущими вводными.
 
@@ -21015,7 +21104,25 @@ def build_project_workbook(
         ("sports", "K124", 2, ("K130", "K133"),
          ("sports_start", "sports_sales_start")),
     ):
-        queue = max(1, min(queue_cap, int(float(discrete.get(field) or default))))
+        # Применённое движком размещение сильнее нашего вывода: объект,
+        # объявленный продуктами очереди, до `discrete` не доходит вовсе, и
+        # книга ставила его по умолчанию — ТЦ во вторую вместо четвёртой.
+        # Подсказок нет (движок не ответил) — остаёмся на прежнем пути, но
+        # молчать об этом нельзя: разъехавшееся размещение выглядит на экране
+        # как посчитанное.
+        applied = (finance_hints or {}).get("object_phase") or {}
+        if field in applied:
+            queue = max(1, min(queue_cap, int(applied[field])))
+        else:
+            queue = max(1, min(queue_cap, int(float(discrete.get(field) or default))))
+            # Приставка вводных объявлена один раз — в `STANDALONE_OBJECTS`;
+            # список «ключ → признак включения» здесь был её копией.
+            _enabled = next(f"{o.prefix}_enabled"
+                            for o in standalone_objects() if o.key == field)
+            if (phasing or {}).get("enabled") and bool(x.get(_enabled)):
+                missing.append(
+                    f"очередь объекта «{field}»: движок не назвал применённую — "
+                    f"книга взяла {queue} по своему умолчанию")
         put(coord, number=float(queue), label=f"очередь {field}")
         # Даты объекта сдвигаются на сдвиг старта его очереди — как в движке.
         # Сырая мастер-дата строила офисы третьей очереди на два года раньше:
@@ -21061,11 +21168,31 @@ def build_project_workbook(
     # ТЭП очередей — канонической аллокацией движка (_phase_tep_product_rows):
     # книга получает готовые числа и не может разойтись с расчётом ни в долях,
     # ни в округлении штучных продуктов.
-    canon_rows = _v4_fold_tep_rows(
-        _phase_tep_product_rows(
-            {key: dict(value) for key, value in (tep or {}).items() if isinstance(value, dict)},
-            p, max(1, min(5, enabled_phases)))[0],
-        count)
+    # ТЭП очередей берётся у движка — тот, на котором посчитан отчёт. Книга
+    # выводила разбивку заново, и на проекте, объявляющем очередям РАВНЫЕ метры
+    # (пресет КРТ Нагатино), раскладывала проект своим убывающим пресетом:
+    # 69 031 / 56 087 / 47 459 / 43 144 м² ГНС квартир против 53 930 у каждой.
+    # Итог сходится до десятой — метры не теряются, а переезжают между
+    # очередями, поэтому расхождение выглядит не потерей, а другой экономикой:
+    # выручка и CAPEX первых очередей завышены, последних занижены, и пик ПФ
+    # первой очереди вылезал за её же банковский лимит (35 324 при 29 600).
+    # Не ответил движок — считаем как прежде и говорим об этом: молча взятая
+    # своя разбивка на экране неотличима от посчитанной.
+    _by_phase = list((finance_hints or {}).get("tep_by_phase") or [])
+    if _by_phase:
+        canon_rows = _v4_fold_tep_rows(
+            [{key: dict(value) for key, value in (item or {}).items()
+              if isinstance(value, dict)} for item in _by_phase], count)
+    else:
+        canon_rows = _v4_fold_tep_rows(
+            _phase_tep_product_rows(
+                {key: dict(value) for key, value in (tep or {}).items() if isinstance(value, dict)},
+                p, max(1, min(5, enabled_phases)))[0],
+            count)
+        if bool(p.get("enabled")) and count > 1:
+            missing.append(
+                "ТЭП очередей: движок не назвал применённую разбивку — "
+                "книга разложила проект своими весами")
     shared = {key: _v4_shared_weights(p, key, count, enabled_phases)
               for key in ("purchase", "land_rights", "social_compensation", "own_funds",
                           # ИРД, проектирование, подготовка и наружные сети: движок
@@ -21460,9 +21587,40 @@ def build_project_workbook(
         # ставке, отчёт по лестнице, и оба будут выглядеть достоверно.
         missing.append("CF · ступени ставки по покрытию эскроу")
 
+    # Значения кладутся рядом с формулами, а не вместо них. Без них книга
+    # пуста везде, где формулы не считают: предпросмотр в телеграме, Quick Look,
+    # телефон, диски — и владелец открыл выгрузку 13.09.2026 со словами «модель
+    # пустая вообще». Считает их наш же вычислитель; `fullCalcOnLoad="1"`
+    # остаётся, поэтому в Excel число живёт ровно до открытия и устареть не
+    # может. Сбой оставляет книгу без значений и говорит об этом: выгрузка без
+    # чисел хуже, чем с ними, но несобранная выгрузка хуже обеих.
+    content = out.getvalue()
+    # Счёт всей книги стоит около четырнадцати секунд — для выгрузки это
+    # ничто, а для набора тестов много: книгу собирают 62 файла, и на каждой
+    # сборке набор подорожал бы получасом. Поэтому `tests/conftest.py` гасит
+    # проход, а проверка, которая его и держит, включает обратно. Умолчание —
+    # ВКЛЮЧЕНО: выгрузка без значений и есть та болезнь, от которой всё это.
+    if cache_values is None:
+        cache_values = os.environ.get("DEVELOPAID_WORKBOOK_CACHE", "1") not in (
+            "0", "false", "no", "")
+    try:
+        if not cache_values:
+            raise _SkipValueCache
+        content, cache_report = v4_value_cache.with_cached_values(content)
+        if cache_report.get("unresolved"):
+            missing.append(
+                f"сохранённые значения: {cache_report['unresolved']} формул "
+                f"вычислитель не понял, эти клетки останутся пустыми вне Excel "
+                f"({', '.join(cache_report.get('examples') or [])})")
+    except _SkipValueCache:
+        pass
+    except Exception as exc:  # noqa: BLE001 — молчащая потеря значений и есть болезнь
+        content = out.getvalue()
+        missing.append("сохранённые значения не записаны: " + _error_location(exc))
+
     stem = _safe_file_stem(title, "project")
     filename = f"DevelopAid_модель_{stem}_{date.today().isoformat()}.xlsx"
-    return out.getvalue(), filename, {"missing": missing, "phased": count > 1,
+    return content, filename, {"missing": missing, "phased": count > 1,
                                       "class_deviations": class_deviations}
 
 
@@ -27143,9 +27301,9 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     # Profit tax follows the workbook's cumulative realization method.
     # Core products share one residual cost pool; every standalone KRT object
     # recognizes its own construction cost by physical m2 / parking spaces sold.
-    core_products = (
-        "apartments", "ground_commercial", "underground_parking", "storage"
-    )
+    # Список объявлен один раз — `COST_POOL_PRODUCTS`. Перечисленный здесь
+    # руками, он уже разошёлся с отчётом и с книгой на `object_parking`.
+    core_products = COST_POOL_PRODUCTS
     # ФОК стоит в этом списке ТОЛЬКО когда продаётся. У переданного городу
     # выручки нет вовсе, и собственный пул расходов ему признавать нечем:
     # стоимость постройки осталась бы непризнанной до конца проекта. Переданный
@@ -27975,7 +28133,9 @@ def calculate(req: CalcRequest) -> dict:
         **({"sports": float(op["capex_amounts"].get("sports", 0.0) or 0.0)}
            if b(x, "sports_enabled") and sports_is_sold(x) else {}),
     }
-    report_core_keys = ("apartments", "ground_commercial", "underground_parking", "storage")
+    # Тот же пул, что у налоговой базы, и объявлен он там же: две копии одного
+    # списка разошлись бы молча — доли расходов перестали бы давать единицу.
+    report_core_keys = COST_POOL_PRODUCTS
     report_core_quantity = sum(float(product_specs[key]["quantity"] or 0.0)
                                for key in report_core_keys)
     report_core_cost = max(total_capex - sum(report_krt_costs.values()), 0.0)
@@ -43160,13 +43320,6 @@ function renderInputs(){
      if(id==='sports_parking_over_spaces'){
       wrap.innerHTML+='<div id="objectParkingNote" style="margin-top:6px"></div>';
      }
-     // Место под норму — у того поля, которое человек правит. Заполняет его
-     // `renderObjectParkingNote` вместе с плашкой: число следует за РАСЧЁТОМ,
-     // а не за правкой поля, иначе прежняя норма под новыми метрами читается
-     // как посчитанная.
-     if(/^(offices|retail|sports)_parking_over_spaces$/.test(id)){
-      wrap.innerHTML+=`<div id="parkNorm_${id.split('_')[0]}" style="margin-top:4px;font-size:10px;color:#777"></div>`;
-     }
      if(id==='land_rights_cost_mln'&&krtRequirementEntered()){
        wrap.innerHTML+=krtVriFeeNote();
      }
@@ -43197,7 +43350,23 @@ function renderInputs(){
       el.title='Москва: платежи ежеквартально — установлено нормативно';
      }
      el.onchange=()=>{inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='social_mode')inputs._social_mode_user_set=true;if(/^(offices|retail|sports)_parking_(under|over)_spaces$/.test(id)){if(String(el.value).trim()==='')restoreParkingNorm(id.split('_')[0]);else markParkingByHand(id.split('_')[0]);}if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){renderInputs();return calculate()}if(['apartment_price_th','commercial_price_th','parking_price_th','main_above_th_per_sqm','main_under_th_per_sqm'].includes(id)){inputs.project_class='custom';syncProjectClassSelector()}if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(TEP_DERIVED_INPUTS.includes(id)){const cleared=id==='social_area_source'&&krtClearsVriFee();const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(cleared||filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
-     wrap.appendChild(el);grid.appendChild(wrap);
+     wrap.appendChild(el);
+     // Место под норму — ПОСЛЕ поля, а не до него. Стоя над вводом, подпись
+     // приклеивалась к подписи поля и читалась как утверждение о нём: «по
+     // нормативу приложения 6 — 1 493 мест» под строкой «мест на первых
+     // этажах» (экран владельца, 13.09.2026). Норматив при этом на ОБЪЕКТ, то
+     // есть на оба поля вместе. Правило «подпись переехала под оба поля»
+     // записано 09.09 и было применено наполовину: div висел у второго поля
+     // и выше его ввода. Заполняет его `renderObjectParkingFieldNotes`: число
+     // следует за РАСЧЁТОМ, а не за правкой поля, иначе прежняя норма под
+     // новыми метрами читается как посчитанная.
+     if(/^(offices|retail|sports)_parking_over_spaces$/.test(id)){
+      const normCell=document.createElement('div');
+      normCell.id='parkNorm_'+id.split('_')[0];
+      normCell.style.cssText='margin-top:4px;font-size:10px;color:#777';
+      wrap.appendChild(normCell);
+     }
+     grid.appendChild(wrap);
    });det.appendChild(grid);(ownTab?vriBox:box).appendChild(det);
  });
  rateScenario.value=inputs.rate_scenario||'base';
@@ -43492,6 +43661,19 @@ function markParkingByHand(prefix){
 // нормативу то этому?», владелец, 07.09.2026). Приставку поля несёт сам
 // объект (`prefix`), второй карты «какое поле у какого объекта» здесь нет.
 // Число не считается: берётся из результата, посчитанного движком.
+// Сколько строим против того, сколько положено, — одним ответом на двух
+// читателей: текст подписи и её тон. Второй счёт той же разницы однажды
+// покрасил бы спокойным то, о чём подпись говорит «дефицит».
+//
+// Считать это обязана страница, а не сервер: оба слагаемых уже лежат в его
+// ответе (`required_spaces` и `units`), и разницу двух его же чисел он не
+// пересчитывает — здесь нет экономики, есть вычитание.
+function objectParkingGap(item){
+ const required=Number((item||{}).required_spaces||0);
+ const built=Number((item||{}).units||0);
+ return {required:required,built:built,diff:built-required};
+}
+
 function objectParkingFieldNote(prefix){
  const own=((lastResult||{}).parking||{}).own||[];
  const item=own.find(o=>o&&o.prefix===prefix);
@@ -43543,7 +43725,28 @@ function objectParkingFieldNote(prefix){
  // рядом, а путь назад — очистить поле — сказан прямо.
  const back=' Очистите поле — вернётся норматив и снова пойдёт за ТЭП.';
  if(!req)return 'Задано руками. По нормативу приложения 6 мест не требуется.' + back;
- return `Задано руками, по нормативу приложения 6 — ${num(req)} мест.` + back;
+ // Норматив — обязательство ОБЪЕКТА, а не одного из двух полей: места при
+ // объекте бывают и под ним, и на первых этажах. Пока это не сказано, число
+ // под полем «мест на первых этажах» читается как норма ЭТОГО поля.
+ //
+ // И главное, ради чего строка переписана: у величины есть мера, а сравнения
+ // с ней рядом не стояло. Владелец вписал 500 мест на первые этажи, подземные
+ // остались нормативными 1 493 — строится 1 993 при норме 1 493, — и на
+ // экране об этом не было ни слова («почему подземная не изменилась», 
+ // 13.09.2026). Обратная сторона молчала так же: 400 мест при норме 1 590
+ // печатались двумя числами подряд, а дефицит в 1 093 места числом не
+ // назывался. Оба случая модель знала и не говорила.
+ const gap=objectParkingGap(item);
+ const norm=`Задано руками. Норматив приложения 6 — ${num(req)} мест на объект: `
+  +'это оба поля вместе, под зданием и на первых этажах.';
+ // Перебор — решение человека, а не ошибка, поэтому он назван, но не
+ // выделен: он же и подсказывает, на сколько можно снизить подземные.
+ if(gap.diff>0)return norm
+  +` Строим ${num(gap.built)} — на ${num(gap.diff)} больше положенного;`
+  +` на столько же можно снизить места в подземном.` + back;
+ if(gap.diff<0)return norm
+  +` Строим ${num(gap.built)} — дефицит ${num(-gap.diff)} мест.` + back;
+ return norm + ` Строим ровно норматив.` + back;
 }
 
 function renderTep(){
@@ -45917,7 +46120,20 @@ function pfRveWarningHtml(r){
 function renderObjectParkingFieldNotes(){
  OBJECT_PARKING_PREFIXES.forEach(prefix=>{
   const cell=document.getElementById('parkNorm_'+prefix);
-  if(cell)cell.textContent=objectParkingFieldNote(prefix);
+  if(!cell)return;
+  cell.textContent=objectParkingFieldNote(prefix);
+  // Красным — только ДЕФИЦИТ: перебор это решение человека, а не ошибка
+  // (владелец, 13.09.2026: «может там хотя бы красным писать уведомление…
+  // или наоборот если руками правишь, то может возникнуть дефицит»).
+  // Красное на обоих случаях сразу перестало бы различать их вовсе.
+  // Разрыв берётся у `objectParkingGap` — у того же счёта, что и текст:
+  // два ответа на одну разницу однажды разошлись бы, и подпись говорила бы
+  // «дефицит» спокойным серым.
+  const own=((lastResult||{}).parking||{}).own||[];
+  const item=own.find(o=>o&&o.prefix===prefix);
+  const gap=item?objectParkingGap(item):null;
+  const short=!!(gap&&gap.required>0&&gap.diff<0);
+  cell.style.color=short?'#a33':'#777';
  });
 }
 
