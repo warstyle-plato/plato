@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import io
+import re
 import sys
 from pathlib import Path
 
@@ -170,8 +171,15 @@ def test_the_parity_row_watches_the_transfer():
     assert "перевед" in str(checks[f"A{row}"].value).lower() or "переданный" in str(
         checks[f"A{row}"].value)
     assert float(checks[f"C{row}"].value) > 1_000, "контрольное число движка пусто"
-    assert f"F6:F{row}" in str(book["ПРОВЕРКИ"]["B3"].value), (
-        "новая строка не входит в вердикт листа: она красная, а лист «ПРОЙДЕНО»")
+    # Утверждение — «строка ВНУТРИ диапазона вердикта», а не «диапазон
+    # кончается на ней»: следующая дописанная строка паритета (НДС встал
+    # 86-й) сдвигает конец, и проверка на литерал упала бы на верной правке.
+    verdict = str(book["ПРОВЕРКИ"]["B3"].value)
+    ends = {int(end) for end in re.findall(r"COUNTIF\(F6:F(\d+),", verdict)}
+    assert ends, f"вердикт листа не считает диапазон строк: {verdict}"
+    assert min(ends) >= row, (
+        "новая строка не входит в вердикт листа: она красная, а лист «ПРОЙДЕНО»; "
+        f"вердикт считает до {sorted(ends)}, строка {row}")
 
 
 def test_the_flag_carries_the_engine_decision_not_the_intent():
