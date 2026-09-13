@@ -22,12 +22,22 @@
 Москвы 69,3 м² остаётся мерой НАСЕЛЕНИЯ: подпись называет его только там, где
 число квартир к нему близко и его можно принять за меру квартиры.
 
+09.09.2026 это уточнено, и уточнение касается только выгрузки: «Следовать
+формуле города» (решение владельца) — число квартир ГлавАПУ идёт за метрами по
+ЕГО же формуле (население по 33 м², квартиры по 2,1 жителя), потому что правка
+метров иначе двигала машино-места и не двигала квартиры. Значит про выгрузку
+подпись «от площади не пересчитывается» больше не верна, а расхождение строки с
+формулой города НАЗЫВАЕТСЯ: молча оставленное, оно выглядит посчитанным. Что не
+изменилось: НАШ делитель (60 м² рынка, РНГП области) к числу города
+по-прежнему не применяется — второй ответ на вопрос, на который город ответил.
+
 Запуск: python3 -m pytest tests/test_the_apartment_count_names_its_origin.py -q
 """
 
 from __future__ import annotations
 
 import json
+import math
 import shutil
 import subprocess
 import sys
@@ -97,12 +107,58 @@ def test_the_market_divisor_is_visible_and_flagged() -> None:
     assert f"{flat:g}" in note, note
 
 
+def _city_flats(saleable: float) -> int:
+    """Формула города тем же порядком, что в движке: два округления вверх.
+
+    Одним делением на 69,3 выходит то же не всегда, и подпись, разошедшаяся с
+    расчётом на единицу, читалась бы как ошибка расчёта.
+    """
+    per_person = float(core.PARKING_2118_PARAMS["sqm_per_person"])
+    household = float(core.PARKING_2118_PARAMS["household"])
+    return math.ceil(math.ceil(saleable / per_person) / household)
+
+
 def test_the_city_export_is_not_divided_by_our_yardstick() -> None:
-    """Город назвал число квартир — свой делитель к нему не применяется вовсе."""
+    """Наш делитель к числу города не применяется — ни в метрах, ни в подписи.
+
+    Утверждение узкое намеренно: с 09.09.2026 подпись сверяет строку с формулой
+    ГОРОДА (см. соседний тест), и запрет на «вышло бы» держал бы форму, а не
+    смысл. Запрещено ровно то, что запрещено решением 03.09.2026: мерить
+    выгрузку нашей средней квартирой.
+    """
     note = _note(136818, 3800, glavapu=True)
-    assert "из выгрузки ГлавАПУ" in note
-    assert "Делитель к нему не применяется" in note, note
-    assert "вышло бы" not in note, "второй ответ на вопрос, на который город уже ответил"
+    assert "из выгрузки ГлавАПУ" in note, note
+
+    yard, basis = core.average_flat_sqm("manual")
+    ours = -(-136818 // int(yard))  # 136 818 ÷ 60 = 2 280,3 → 2 281
+    plain = note.replace(" ", "").replace("\u00a0", "")
+    assert str(ours) not in plain, note
+    assert basis not in note, note
+
+
+def test_the_city_export_is_measured_by_the_city_formula() -> None:
+    """Решение владельца 09.09.2026: «Следовать формуле города».
+
+    Строка не сошлась с ней на этих метрах — подпись называет её число, а не
+    молчит: молча оставленные 3 800 выглядят посчитанными.
+    """
+    note = _note(136818, 3800, glavapu=True)
+    plain = note.replace(" ", "").replace("\u00a0", "")
+    assert str(_city_flats(136818)) in plain, note
+    assert "не сходится" in note, note
+
+
+def test_the_city_export_that_agrees_is_not_accused() -> None:
+    """Сошлось — подпись говорит это и обещает, что метры его двигают.
+
+    Предохранитель: без него «называем расхождение» зеленело бы и на подписи,
+    которая кричит о расхождении всегда.
+    """
+    units = _city_flats(136818)
+    note = _note(136818, units, glavapu=True)
+    assert "по формуле" in note, note
+    assert "Правка метров его двигает" in note, note
+    assert "не сходится" not in note, note
 
 
 def test_the_region_changes_the_yardstick() -> None:

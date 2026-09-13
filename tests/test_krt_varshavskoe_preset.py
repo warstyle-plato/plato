@@ -84,9 +84,21 @@ def test_explicit_saleable_assumptions_replace_foreign_ratios(imported):
 
 
 def test_separate_social_objects_keep_their_exact_gfa(imported):
+    """Площадь документа — НАЗЕМНАЯ, и стоять она обязана в ГНС.
+
+    Решение о КРТ задаёт площадь «в габаритах наружных стен»; прежде она
+    попадала в «общую», а ГНС строки оставалась нулём — страница считала её
+    сама (22 220 / 0,9 = 24 689), то есть расходилась с пресетом на 11%. Что
+    верно именно ГНС, доказывает сверка с ППТ: сумма ГНС проекта сходится с
+    443 700 м² города только с числом документа в этой колонке (её держит
+    `test_consolidation_is_bottom_up_from_queue_products`).
+    """
     _, data, _ = imported
-    assert data["applied_tep"]["school"]["total_area"] == 22220
-    assert data["applied_tep"]["kindergarten"]["total_area"] == 6300
+    assert data["applied_tep"]["school"]["gns"] == 22220
+    assert data["applied_tep"]["kindergarten"]["gns"] == 6300
+    # Общая считается от наземной той же долей, что у соседних строк пресета.
+    assert data["applied_tep"]["school"]["total_area"] == pytest.approx(19998)
+    assert data["applied_tep"]["kindergarten"]["total_area"] == pytest.approx(5670)
 
 
 def test_real_product_tep_reaches_every_queue(imported):

@@ -76,7 +76,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.23.30"
+VERSION = "0.23.34"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -416,6 +416,13 @@ TEP_RATIOS: dict[str, dict[str, float]] = {
     "sports": {"total_of_gns": 0.94, "saleable_of_gns": 0.564,
                "source": "как у офисов и ТЦ: общая 94% ГНС (толщина стен)"},
 }
+# Как делится СПП жилых зданий: жильё и встроенное нежилое первого этажа.
+# Восстановлено по двум выгрузкам ГлавАПУ вместе с остальными долями и до сих
+# пор жило ЧЕТЫРЬМЯ литералами — в свободном вводе ТЭП, в расчёте по плотности,
+# в быстром ТЭП участка и на странице. Копию негде обновлять, потому что копии
+# нет: доля объявлена здесь и подставляется на страницу, как `TEP_RATIOS`.
+MKD_SPP_SPLIT: dict[str, float] = {"apartments": 0.94, "ground_commercial": 0.06}
+MKD_SPP_SPLIT_PLACEHOLDER = "__DEVELOPAID_MKD_SPP_SPLIT__"
 TEP_RATIOS_PLACEHOLDER = "__DEVELOPAID_TEP_RATIOS__"
 # Ступени норматива площади соцобъекта. Подставляются, а не копируются: у
 # норматива города одно место жительства.
@@ -1782,6 +1789,41 @@ def social_tep_row(inputs: dict[str, Any], kind: str,
 TEP_ROW_DECLARED = "declared"
 
 
+# Признак «площадь задана требованием, а не нормативом» — один на все три
+# объекта, потому что поле во «Вводных» одно.
+SOCIAL_AREA_BY_REQUIREMENT = "manual"
+
+
+def declare_social_requirement(inputs: dict[str, Any]) -> bool:
+    """Помечает площади соцобъектов требованием документа — если оно есть.
+
+    Город в решении о КРТ и в документах лота даёт места И площадь, и они с
+    нормативом не совпадают: на Варшавском ш. школа — 22 220 м² на 1 000 мест,
+    то есть 22,22 м²/место против 15 по РНГП. Пока признака нет, площадь
+    считается нормативом — и требование города теряется молча, а на экране это
+    выглядит как посчитанное число (приоритет по полю: руками > документ лота
+    КРТ > выгрузка ГлавАПУ > норматив).
+
+    Признак один на три объекта, поэтому объект, у которого документ площадь не
+    назвал, сперва получает свою по нормативу: без этого «ручной» режим прочёл
+    бы его пустое поле как «объекта нет» и снёс бы объект целиком.
+    """
+    named = [kind for kind, keys in SOCIAL_TEP_FIELDS.items()
+             if float(inputs.get(keys[1]) or 0.0) > 0]
+    if not named:
+        return False
+    for kind, (places_key, area_key, norm_key) in SOCIAL_TEP_FIELDS.items():
+        places = float(inputs.get(places_key) or 0.0)
+        if places <= 0 or float(inputs.get(area_key) or 0.0) > 0:
+            continue
+        per_place = (float(inputs.get(norm_key) or 0.0)
+                     or float(moscow_social_area_per_place(kind, places) or 0.0))
+        if per_place > 0:
+            inputs[area_key] = places * per_place
+    inputs["social_area_source"] = SOCIAL_AREA_BY_REQUIREMENT
+    return True
+
+
 def apply_social_tep_rows(inputs: dict[str, Any],
                           tep: dict[str, dict[str, Any]]) -> None:
     """Привести строки соцобъектов к вводным. Правится на месте.
@@ -1862,8 +1904,8 @@ def build_freeform_tep(text: str, raw_values: dict[str, Any] | None = None) -> d
             apartment_gns = max(0.0, project_total_gns - commercial_gns)
             calculated.append("жилая ГНС рассчитана как ГНС проекта за вычетом введённой коммерции")
         else:
-            apartment_gns = project_total_gns * 0.94
-            commercial_gns = project_total_gns * 0.06
+            apartment_gns = project_total_gns * MKD_SPP_SPLIT["apartments"]
+            commercial_gns = project_total_gns * MKD_SPP_SPLIT["ground_commercial"]
             commercial_saleable = commercial_gns * 0.9
             assumptions.append(
                 "при вводе только общей ГНС применено стандартное соотношение жилой/нежилой части МКД 94%/6%"
@@ -1877,8 +1919,8 @@ def build_freeform_tep(text: str, raw_values: dict[str, Any] | None = None) -> d
         if commercial_gns:
             apartment_gns = max(0.0, total_spp - commercial_gns)
         else:
-            apartment_gns = total_spp * 0.94
-            commercial_gns = total_spp * 0.06
+            apartment_gns = total_spp * MKD_SPP_SPLIT["apartments"]
+            commercial_gns = total_spp * MKD_SPP_SPLIT["ground_commercial"]
             commercial_saleable = commercial_gns * 0.9
             assumptions.append("при вводе только плотности применено стандартное соотношение жилой/нежилой части МКД 94%/6%")
         apartment_saleable = apartment_gns * 0.65
@@ -8027,9 +8069,9 @@ def vri_tep_quick(region: str, query: str,
         # обслуживание — нормативы на тысячу жителей с округлением вверх.
         density = 35000.0
         spp = area * density
-        apartments_gns = spp * 0.94
+        apartments_gns = spp * MKD_SPP_SPLIT["apartments"]
         apartments = apartments_gns * 0.65
-        commerce_gns = spp * 0.06
+        commerce_gns = spp * MKD_SPP_SPLIT["ground_commercial"]
         population = math.ceil(apartments / 33.0) if apartments > 0 else 0
         units = round(population / 2.1) if population else 0
         dou = round(population * 44 / 1000)
@@ -13216,6 +13258,187 @@ def _telegram_handle_cadastral_numbers(chat_id: int, numbers: list[str], query: 
     _telegram_cad_class_menu(chat_id, dialog)
 
 
+_TELEGRAM_MOSCOW = timezone(timedelta(hours=3))
+
+
+def _site_chat_store(chat_id: int, text: str, taken_at: str,
+                     project: str = "") -> dict[str, Any]:
+    """Отдать отчёт ядру. На ядре — тот же маршрут, но без сети.
+
+    Второй реализации хранения не заводим: разойдясь, бот и загрузка положили
+    бы один отчёт в два места, и оба выглядели бы верными.
+    """
+    payload = {
+        "chat_id": int(chat_id or 0),
+        "sign": _web_login_sign("monitor-daily", int(chat_id or 0)),
+        "text": str(text or ""),
+        "project": str(project or ""),
+        "taken_at": str(taken_at or ""),
+    }
+    url = _core_api_url("/internal/monitor/daily")
+    if url:
+        return _core_post(url, payload, 30.0)
+    return internal_monitor_daily(SiteChatReportRequest(**payload))
+
+
+def _telegram_group_seen(chat: dict[str, Any], outcome: str = "") -> None:
+    """Счётчик увиденного в группах — иначе молчание нечем объяснить.
+
+    «Privacy mode не сняли», «бота не переподключили» и «мост не дописан»
+    снаружи выглядят одинаково: бот молчит. А с 13.09.2026 он молчит и по
+    решению владельца («в чат ничего не надо»), то есть молчание перестало
+    быть признаком поломки вовсе — значит счётчик тут не удобство, а
+    единственный ответ на «дошло ли». Рядом с числом лежит ИСХОД последнего
+    разбора: привязка, принятая сводка с числами, отказ с причиной.
+    """
+    seen = getattr(app.state, "telegram_group_seen", None)
+    if seen is None:
+        seen = {}
+        app.state.telegram_group_seen = seen
+    key = str(int((chat or {}).get("id") or 0))
+    row = seen.setdefault(key, {"title": "", "count": 0, "last": "", "outcome": ""})
+    row["title"] = str((chat or {}).get("title") or row["title"])
+    row["count"] = int(row["count"]) + 1
+    row["last"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    if outcome:
+        row["outcome"] = str(outcome)
+
+
+def _telegram_group_seen_line() -> str:
+    """Строка о группах для /status: что бот оттуда увидел и чем это кончилось.
+
+    Пустой счётчик — это ответ, а не прочерк: privacy mode Telegram по
+    умолчанию включён, и тогда обычных сообщений группы бот не получает вовсе.
+    Отличить это от «мост не дописан» иначе нечем.
+
+    Счёт идёт с запуска ЭТОГО воркера, и так и написано: воркеров два, память
+    у них раздельная, и пустая строка у второго — не «бот ничего не видел».
+    Сама привязка при этом живёт на ядре и выкатку переживает.
+    """
+    seen = getattr(app.state, "telegram_group_seen", None) or {}
+    if not seen:
+        return ("\nГруппы: сообщений не видел ни одного (счёт с запуска этого воркера). "
+                "Если ждёте сводку с площадки — у бота включён privacy mode либо его "
+                "не переподключили к группе.")
+    rows = sorted(seen.values(), key=lambda row: int(row.get("count") or 0), reverse=True)
+    parts = []
+    for row in rows[:5]:
+        line = f"{row.get('title') or 'без имени'} — {int(row.get('count') or 0)}"
+        if row.get("outcome"):
+            line += "; " + str(row.get("outcome"))
+        parts.append(line)
+    return "\nГруппы (с запуска этого воркера):\n• " + "\n• ".join(parts)
+
+
+def _telegram_group_reply(message: dict[str, Any], text: str) -> bool:
+    """Ответ уходит в ЛИЧКУ тому, кто написал, а не в групповой чат.
+
+    Решение владельца 13.09.2026: «в чат ничего не надо». Но человек, набравший
+    `/site`, обязан узнать, сработало ли, — молчание в ответ на команду
+    неотличимо от сломанной команды. Личка это и есть ответ ему: он сам начал,
+    и группа при этом не видит ничего.
+
+    Не начинавшему разговор с ботом Telegram написать не даст — это не поломка,
+    а его настройка, и тогда исход остаётся в счётчике `/status`.
+    """
+    user_id = int((message.get("from") or {}).get("id") or 0)
+    if not user_id:
+        return False
+    try:
+        _telegram_send_message(user_id, text)
+    except Exception:
+        return False
+    return True
+
+
+def _telegram_group_message(chat: dict[str, Any], message: dict[str, Any]) -> None:
+    """Групповой чат: бот не пишет туда ничего и никогда.
+
+    Прежде на КАЖДОЕ сообщение из группы он отвечал «DevelopAid работает в
+    личном чате с ботом». Пока privacy mode был включён, он видел только
+    команды, и это почти не замечалось; со снятым privacy в рабочем чате на
+    четырнадцать человек это стало бы потоком. Первая правка оставила ответы
+    на адресованное — сводку и `/site`; владелец снял и их: «в чат ничего не
+    надо» (13.09.2026).
+
+    Отсюда правило: у группы бот только ЧИТАТЕЛЬ. Что он прочёл, видно в двух
+    местах — в личке у того, кто написал команду, и в `/status`.
+    """
+    chat_id = int((chat or {}).get("id") or 0)
+    if not chat_id:
+        return
+    text = str(message.get("text") or message.get("caption") or "").strip()
+    if not text:
+        _telegram_group_seen(chat)
+        return
+
+    head = text.split(maxsplit=1)[0].lower() if text.startswith("/") else ""
+    command = head.split("@", 1)[0]
+
+    if command == "/site":
+        # Имя проекта берём из команды, а нет его — из названия группы: не
+        # заставлять печатать то, что Telegram уже прислал.
+        wanted = text.split(maxsplit=1)[1].strip() if " " in text else ""
+        wanted = wanted or str((chat or {}).get("title") or "").strip()
+        if not wanted:
+            _telegram_group_seen(chat, "имя проекта не задано")
+            _telegram_group_reply(message, "Название проекта не задано: "
+                                           "<code>/site Имя объекта</code>.")
+            return
+        try:
+            answer = _site_chat_store(chat_id, "", "", project=wanted)
+        except Exception as exc:
+            _telegram_group_seen(chat, "привязка не удалась: " + str(exc)[:80])
+            _telegram_group_reply(message, "Привязка не удалась: " + html.escape(str(exc)))
+            return
+        bound = str(answer.get("bound") or wanted)
+        _telegram_group_seen(chat, "привязан к проекту «" + bound + "»")
+        _telegram_group_reply(
+            message,
+            "<b>Чат «" + html.escape(str((chat or {}).get("title") or "")) +
+            "» привязан к проекту «" + html.escape(bound) + "».</b>\n"
+            "Ежедневную сводку с численностью читаю оттуда сам и в чат "
+            "ничего не пишу.")
+        return
+
+    parsed = None
+    try:
+        import developaid_monitor_daily as daily
+
+        parsed = daily.parse_daily_report(text)
+    except Exception:
+        parsed = None
+    if not parsed or not parsed.get("contractors"):
+        # Не отчёт — просто считаем. Рабочая переписка нас не касается.
+        _telegram_group_seen(chat)
+        return
+
+    stamp = message.get("date")
+    try:
+        taken_at = datetime.fromtimestamp(
+            int(stamp), _TELEGRAM_MOSCOW).date().isoformat()
+    except (TypeError, ValueError, OSError):
+        taken_at = ""
+    try:
+        answer = _site_chat_store(chat_id, text, taken_at)
+    except Exception as exc:
+        _telegram_group_seen(chat, "сводка не сохранена: " + str(exc)[:80])
+        return
+    if not answer.get("bound"):
+        # Сводка есть, а проекта нет — класть её некуда. Это наш пробел, и он
+        # обязан быть виден: молча выброшенный отчёт читается как «сводки не
+        # было». В чат при этом не пишем — там о нашей привязке не знают.
+        _telegram_group_seen(chat, "сводка прочитана, но чат не привязан — нужен /site")
+        return
+    _telegram_group_seen(
+        chat,
+        "сводка" + (" за " + taken_at if taken_at else "") + ": подрядчиков "
+        + str(len(parsed.get("contractors") or []))
+        + ", ИТР " + str(parsed.get("itr_total") or 0)
+        + ", рабочих " + str(parsed.get("workers_total") or 0)
+        + " → «" + str(answer.get("bound")) + "»")
+
+
 def _telegram_handle_message(message: dict[str, Any]) -> None:
     chat = message.get("chat") or {}
     sender = message.get("from") or {}
@@ -13224,7 +13447,7 @@ def _telegram_handle_message(message: dict[str, Any]) -> None:
     if not chat_id:
         return
     if str(chat.get("type") or "") != "private":
-        _telegram_send_message(chat_id, "DevelopAid работает в личном чате с ботом.")
+        _telegram_group_message(chat, message)
         return
     text = str(message.get("text") or "").strip()
     command = text.split(maxsplit=1)[0].split("@", 1)[0].lower() if text.startswith("/") else ""
@@ -13263,7 +13486,8 @@ def _telegram_handle_message(message: dict[str, Any]) -> None:
         status = "подключён" if _TELEGRAM_RUNTIME.get("configured") else "запускается"
         _telegram_send_message(
             chat_id,
-            f"<b>DevelopAid bot:</b> {status}\nTelegram ID: <code>{user_id}</code>\nВерсия: {VERSION}",
+            f"<b>DevelopAid bot:</b> {status}\nTelegram ID: <code>{user_id}</code>\nВерсия: {VERSION}"
+            + _telegram_group_seen_line(),
         )
         return
     if command == "/cancel":
@@ -19903,7 +20127,10 @@ def build_project_workbook(
     # вставить строку в занятое место нельзя — поедут все ссылки.
     xml, social_base_row = _v4_social_rows_xml(
         xml, social_rows, cost_per, months_by_type, social_cash_mln,
-        areas={typ: (n(x, _V4_SOCIAL_AREA_KEYS[typ][0], 0.0),
+        # Площадь берётся тем же ответом, что и строка ТЭП: книга читала поле
+        # «Вводных» напрямую, и на местах, введённых без площади, показывала
+        # ноль там, где модель строила объект по нормативу.
+        areas={typ: (social_tep_row(x, typ)["total_area"],
                      social_area_per_place(x, typ))
                for typ in _V4_SOCIAL_AREA_KEYS})
 
@@ -26715,6 +26942,12 @@ def calculate(req: CalcRequest) -> dict:
             n(x, "rate_curve_shape", 2.0),
         )
 
+    # Строки соцобъектов приводятся к вводным тем же правилом и по той же
+    # причине, что и паркинг ниже: таблица приходит из браузера и бывает
+    # устаревшей, а из файла, ссылки и моста КРТ она не проходила `syncTep`
+    # вовсе. Ответ один на все поверхности — `social_tep_row`.
+    apply_social_tep_rows(x, t)
+
     # ГлавАПУ is the authoritative source for required underground parking.
     # Repair stale browser/localStorage TEP values before every calculation.
     # Заданная руками площадь — исключение и главнее импорта: норматив 35 м²
@@ -27990,6 +28223,16 @@ def _apply_explicit_phase_products(
 ) -> dict[str, dict[str, Any]]:
     """Overlay manually edited queue TEP and synchronize atomic input aliases."""
     explicit = _explicit_phase_products(cfg)
+    # Соцобъект очереди меряется МЕСТАМИ, а не вписанными метрами: сколько его
+    # в этой очереди, говорит таблица соцобъектов (`social_objects`), а метры
+    # считает `social_tep_row` от мест. Наложить сюда вписанное значит
+    # собрать строку из двух источников: редактор очереди правит ГНС,
+    # продаваемую и штуки, а общую площадь оставляет от норматива — на 250
+    # местах проекта это ГНС 9 999 при общей 4 500 и 111 местах, и ни одно из
+    # трёх чисел не отвечает двум другим. Метры при этом уходят в строительный
+    # объём, то есть в знаменатель всех удельных.
+    explicit = {key: value for key, value in explicit.items()
+                if key not in SOCIAL_TEP_FIELDS}
     # Переданные штуки правятся в очереди наравне с остальными полями:
     # приоритет у очереди, проектная строка — их сумма (владелец, 04.09.2026).
     numeric_fields = ("gns", "total_area", "useful", "saleable", "transfer", "units",
@@ -35762,6 +36005,102 @@ def profile_announcements(req: WebLoginConfirmRequest) -> dict[str, Any]:
 # с контейнером — молча, как исчезал журнал.
 
 
+class SiteChatReportRequest(BaseModel):
+    """Отчёт с площадки из группового чата — от бота к ядру.
+
+    Модель объявлена ВЫШЕ своего маршрута намеренно: файл стоит на
+    `from __future__ import annotations`, аннотация читается строкой в момент
+    навешивания декоратора, и объявленная ниже модель молча уводит тело
+    запроса в параметры строки. Это уже стоило нам трёх молчащих каналов
+    уведомлений (09.09.2026).
+    """
+
+    chat_id: int = 0
+    sign: str = ""
+    title: str = ""
+    text: str = ""
+    project: str = ""
+    taken_at: str = ""
+
+
+# Имя проекта из чата становится ИМЕНЕМ КАТАЛОГА на диске (`_project_dir` у
+# монитора). Внутри оно чистится, но чистка — это молчаливая правка чужого
+# значения: «Гродненская/../../etc» превратилась бы в другое имя, и человек
+# увидел бы отчёт не там, где ждал. Поэтому проверка стоит на границе и
+# отказывает, а не исправляет. Разделители пути и «..» запрещены прямо.
+_SITE_NAME_EXTRA = " -—–.,«»\"'()№"
+
+
+def _site_project_name(value: Any) -> str:
+    """Годное имя проекта или пустая строка. Пустая — это отказ, а не «любое».
+
+    Имя не просто проверяется, а ПЕРЕСОБИРАЕТСЯ из разрешённых знаков и обязано
+    совпасть с исходным: совпало — возвращаем собранное, разошлось — отказ. Так
+    в путь уезжает строка, построенная нами, а не пришедшая снаружи, и при этом
+    молчаливой правки чужого значения нет — её место занимает названный отказ.
+    """
+    name = str(value or "").strip()
+    if not name or len(name) > 64 or ".." in name:
+        return ""
+    built = "".join(ch for ch in name if ch.isalnum() or ch in _SITE_NAME_EXTRA)
+    if built != name:
+        return ""
+    return built
+
+
+def _site_chats_path() -> Path:
+    """Реестр «чат стройки → проект». На ядре, рядом с профилями.
+
+    Диск бота на Render живёт до следующей выкатки, а привязка обязана её
+    пережить: иначе после каждого выпуска отчёты падали бы в никуда, и
+    выглядело бы это как «бот перестал читать».
+    """
+    return _PROJECTS_DIR.parent / "site_chats.json"
+
+
+def _site_chats() -> dict[str, str]:
+    try:
+        raw = json.loads(_site_chats_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    found: dict[str, str] = {}
+    for key, value in (raw.get("chats") or {}).items():
+        name = str(value or "").strip()
+        try:
+            number = int(key)
+        except (TypeError, ValueError):
+            continue
+        safe = _site_project_name(name)
+        if number and safe:
+            found[str(number)] = safe
+    return found
+
+
+def _site_chat_project(chat_id: int) -> str:
+    return _site_chats().get(str(int(chat_id or 0)), "")
+
+
+def _site_chat_bind(chat_id: int, project: str) -> str:
+    """Привязать чат к проекту. Пустое имя снимает привязку."""
+    chats = _site_chats()
+    key = str(int(chat_id or 0))
+    name = _site_project_name(project)
+    if str(project or "").strip() and not name:
+        raise HTTPException(400, "Имя проекта не годится для каталога на диске: "
+                                 "уберите косые черты и точки подряд.")
+    if name:
+        chats[key] = name
+    else:
+        chats.pop(key, None)
+    path = _site_chats_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"chats": chats}, ensure_ascii=False, indent=1),
+                    encoding="utf-8")
+    return name
+
+
 def _krt_subscribers_path() -> Path:
     return _PROJECTS_DIR.parent / "krt_subscribers.json"
 
@@ -35861,6 +36200,38 @@ def normatives_announcements(req: WebLoginConfirmRequest) -> dict[str, Any]:
         raise HTTPException(status_code=503,
                             detail="Нормативный реестр на этом хосте не установлен.")
     return {"announcements": take()}
+
+
+# Скрыт из схемы, как и все маршруты монитора: это дорога хост-хост под общей
+# подписью, а не публичный метод. Правило держит
+# `test_the_routes_are_hidden_and_gated` — оно и поймало пропуск на CI.
+@app.post("/internal/monitor/daily", include_in_schema=False)
+def internal_monitor_daily(req: SiteChatReportRequest) -> dict[str, Any]:
+    """Отчёт из чата стройки: бот на Render принял, ядро сохранило.
+
+    Ядро до api.telegram.org не достаёт, а монитор живёт на ядре — значит
+    дорога та же, что у уведомлений: подпись общим токеном бота. Разбор при
+    этом один на всех (`store_daily_report`), второго не заводим: он однажды
+    разошёлся бы с тем, что читает маршрут загрузки.
+    """
+    expected = _web_login_sign("monitor-daily", int(req.chat_id or 0))
+    if not hmac.compare_digest(str(req.sign or "").encode("utf-8"),
+                               expected.encode("utf-8")):
+        raise HTTPException(status_code=403, detail="Подпись не сошлась.")
+    if req.project:
+        return {"bound": _site_chat_bind(int(req.chat_id or 0), req.project)}
+    project = _site_project_name(_site_chat_project(int(req.chat_id or 0)))
+    if not project:
+        # «Чат не привязан» — это ответ, а не отказ: человеку надо сказать, чем
+        # привязать, иначе отчёт молча падает в никуда и выглядит принятым.
+        return {"bound": ""}
+    import developaid_monitor_daily as daily
+
+    try:
+        stored = daily.store_daily_report(project, req.text, req.taken_at or None)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"bound": project, "stored": stored}
 
 
 @app.post("/internal/krt/subscribe")
@@ -39261,6 +39632,31 @@ function derivedTransferNote(key){
   ? 'ФОК уходит целиком: продажа или передача — поле «Что с объектом дальше»'
   : 'Соцобъект передаётся городу целиком: своей продаваемой площади у него нет';
 }
+// Соцобъект очереди меряется МЕСТАМИ: сколько его в этой очереди, говорит
+// таблица соцобъектов ниже, а метры считаются от мест тем же нормативом, что и
+// у проекта (`social_area_per_place` в движке — на странице это поле норматива,
+// которое `syncTep` держит равным ступени РНГП или фактическому при требовании
+// КРТ). Своей арифметики здесь нет: второй ответ на «сколько метров у садика»
+// разошёлся бы с расчётом, и обе строки выглядели бы верными.
+function phaseSocialTepRow(key,index){
+ // Своя таблица пуста — размещает движок сам («поздняя раскладка: разгружаем
+ // первую очередь»), и на 250 местах он строит садик во ВТОРОЙ очереди. Пока
+ // вкладка считала только по своей таблице, она показывала нули там, где
+ // модель строит объект, — то есть повторяла ту же ошибку, что чинится:
+ // показанное расходилось с посчитанным. Умолчание не переписываем второй
+ // раз — берём ПРИМЕНЁННОЕ размещение из ответа движка (`social_allocation`).
+ const own=(phasing.social_objects||[]).filter(o=>o&&Number(o.capacity||0)>0);
+ const applied=own.length?own
+  :((phaseBundle&&phaseBundle.social_allocation)||[]);
+ const places=applied
+  .filter(o=>o&&o.type===key&&Number(o.phase||1)===index+1)
+  .reduce((sum,o)=>sum+Number(o.capacity||0),0);
+ const perPlace=Number(inputs[SOCIAL_TEP_NORM_INPUTS[key]]||0);
+ const area=places>0?places*perPlace:0;
+ const share=socialTotalShare();
+ // Продаваемой у соцобъекта нет вовсе: он передаётся городу целиком.
+ return {gns:area>0&&share>0?area/share:0,saleable:0,units:places,area:area};
+}
 function phaseGivenField(key){
  return PHASE_GIVEN_IN_UNITS.includes(key)?'transfer_units':'transfer';
 }
@@ -39433,7 +39829,19 @@ function renderPhasing(){
   const totals={gns:0,saleable:0,units:0,given:0};
   const cells=phasing.phases.map((p,i)=>{
    const own=(p.products||{})[k]||{};
-   const inputsHtml=['gns','saleable','units'].map(field=>{const isCount=field==='units',derived=phaseProductDerived(k,field,i),has=own[field]!==undefined,raw=has?Number(own[field]):derived,value=isCount?Math.round(raw):raw,isRemainder=!!phasing.products[k]&&i===phasing.phases.length-1,limit=phaseProductTepLimit(k,field,i),maxAttr=limit===null?'':`max="${Number(limit.toFixed(6))}"`;totals[field]+=value;return `<input type="number" min="0" ${maxAttr} step="${isCount?'1':'any'}" value="${isCount?value:Number(value.toFixed(2))}" title="${isRemainder?'Автоматический остаток':field+(has?' — введено вручную':' — рассчитано по доле')+(limit===null?'':` · максимум ${num(limit)}`)}" ${isRemainder?'readonly':`onchange="setPhaseProductTep(${i},'${k}','${field}',this.value)"`}>`}).join('');
+   // Соцстрока очереди не правится здесь: её метры считаются от мест, а места
+   // задаёт таблица соцобъектов ниже. Редактируемая ячейка обещала бы правку,
+   // которой не будет, — вписанное затиралось бы на первом же расчёте, и
+   // молча: до 08.09.2026 вписанное вообще ДОЕЗЖАЛО до движка поверх
+   // норматива, и строка выходила из двух источников разом — ГНС 9 999 при
+   // общей 4 500 и 111 местах, где ни одно число не отвечает двум другим.
+   const socialRow=SOCIAL_TEP_PRODUCTS.includes(k)?phaseSocialTepRow(k,i):null;
+   const inputsHtml=socialRow
+    ? ['gns','saleable','units'].map(field=>{const v=Number(socialRow[field]||0);totals[field]+=v;
+       return `<input type="number" value="${field==='units'?Math.round(v):Number(v.toFixed(2))}" readonly`
+        +` style="margin:0;background:#f3f3f1;color:#555"`
+        +` title="считается от мест этой очереди: ${num(socialRow.units)} × ${landNum(Number(inputs[SOCIAL_TEP_NORM_INPUTS[k]]||0),2)} м²/место. Места задаются в таблице соцобъектов ниже">`}).join('')
+    : ['gns','saleable','units'].map(field=>{const isCount=field==='units',derived=phaseProductDerived(k,field,i),has=own[field]!==undefined,raw=has?Number(own[field]):derived,value=isCount?Math.round(raw):raw,isRemainder=!!phasing.products[k]&&i===phasing.phases.length-1,limit=phaseProductTepLimit(k,field,i),maxAttr=limit===null?'':`max="${Number(limit.toFixed(6))}"`;totals[field]+=value;return `<input type="number" min="0" ${maxAttr} step="${isCount?'1':'any'}" value="${isCount?value:Number(value.toFixed(2))}" title="${isRemainder?'Автоматический остаток':field+(has?' — введено вручную':' — рассчитано по доле')+(limit===null?'':` · максимум ${num(limit)}`)}" ${isRemainder?'readonly':`onchange="setPhaseProductTep(${i},'${k}','${field}',this.value)"`}>`}).join('');
    // Передаваемое правится в ОЧЕРЕДИ, а проектная строка становится их суммой
    // (владелец, 04.09.2026: «приоритет в очередности»). Долями оно не делится:
    // отдают конкретные метры конкретной очереди и конкретные машино-места, а
@@ -42409,16 +42817,31 @@ function apartmentUnitsNote(){
  const region=String(inputs.vri_region||'msk')==='mo'?'mo':'manual';
  const yard=AVERAGE_FLAT[region]||AVERAGE_FLAT.manual;
  const byYard=yard&&yard.sqm>0?Math.ceil(saleable/yard.sqm):0;
- let off='';
+ // Выгрузка ГлавАПУ: число квартир — выход формулы города, и с 09.09.2026 оно
+ // идёт за метрами (решение владельца). Значит подпись «от площади не
+ // пересчитывается» тут больше не верна, а совпадение с формулой спрашивается,
+ // а не хранится: хранимая производная расходится с правилом молча.
  if(inputs._glavapu_import){
-  off=' Делитель к нему не применяется: число квартир названо городом.';
- } else if(byYard>0&&Math.abs(units-byYard)/byYard>=0.15){
+  if(byNorm>0&&units===byNorm){
+   return `Средняя квартира ${num(Math.round(per*10)/10)} м² — число квартир по формуле`
+    + ` ГлавАПУ: население по ${num(perPerson)} м², квартиры по ${String(household).replace('.',',')}`
+    + ` жителя. Правка метров его двигает.`;
+  }
+  // «Вписано руками» — утверждение о происхождении, которого подпись не знает:
+  // число могло прийти из выгрузки и просто не сойтись с формулой на новых
+  // метрах. Называем то, что видно: источник и расхождение.
+  return `Средняя квартира ${num(Math.round(per*10)/10)} м² — число квартир из выгрузки`
+   + ` ГлавАПУ, и с его формулой на этих метрах не сходится`
+   + (byNorm>0?`: по ней вышло бы ${num(byNorm)}.`:'.');
+ }
+ let off='';
+ if(byYard>0&&Math.abs(units-byYard)/byYard>=0.15){
   off=` При средней квартире ${num(Math.round(yard.sqm*10)/10)} м² (${escapeHtml(yard.basis)})`
    +` вышло бы ${num(byYard)}.`;
  }
  // Норматив Москвы называется только тогда, когда число квартир к нему близко
  // и человек может принять его за меру квартиры: 69,3 м² — это про жителей.
- const cityNote=(!inputs._glavapu_import&&region!=='mo'&&byNorm>0
+ const cityNote=(region!=='mo'&&byNorm>0
    &&Math.abs(units-byNorm)/byNorm<0.02)
   ? ` Это норматив населения Москвы (${num(Math.round(norm*10)/10)} м² на жителя×домовладение), а не мера квартиры.`
   : '';
@@ -42654,8 +43077,10 @@ function renderTep(){
          +`«Социальная нагрузка → Соцобъекты и плата за ВРИ → Требование КРТ».</span>`;
    }
    if(TEP_RATIOS[key]){
-     const bad=tepRefillNote[key]||tepRowComplaint(key,row);
-     if(bad)label+=` <span class="tep-note bad">${escapeHtml(bad)}</span>`;
+     const own=tepNoteText(key);
+     const text=own||tepRowComplaint(key,row);
+     const tone=own?tepNoteTone(key):'bad';
+     if(text)label+=` <span class="tep-note ${tone}">${escapeHtml(text)}</span>`;
    }
    // Выключенный объект: строка в таблице нулевая, потому что нулевой её видит
    // модель, — но метры человека при этом никуда не делись, и молчать о них
@@ -42895,7 +43320,7 @@ function enableTepRow(key){
  const sw=TEP_ROW_SWITCH[key];
  if(!sw)return;
  inputs[sw[0]]=true;
- tepRefillNote[key]='';
+ setTepNote(key,'');
  syncTep(false);renderInputs();renderTep();
  scheduleTepAutoRecalc();
  calculate();
@@ -42908,7 +43333,7 @@ function refillTepRow(key){
  if(!r)return;
  const row=tep[key];
  const gns=Number(row.gns||0),sale=Number(row.saleable||0);
- const say=text=>{tepRefillNote[key]=text;renderTep()};
+ const say=text=>{setTepNote(key,text);renderTep()};
  const sw=TEP_ROW_SWITCH[key];
  if(sw&&!inputs[sw[0]]){
   say('Объект выключен во вводных: включите «'+sw[1]+' → Объект включен», иначе строка обнуляется при каждом пересчёте.');
@@ -42922,7 +43347,12 @@ function refillTepRow(key){
                  :{gns:0,total_area:0,saleable:sale,useful:0};
  const filled=tepFillByRatios(key,base);
  ['gns','total_area','saleable','useful'].forEach(field=>{row[field]=filled[field]});
- tepRefillNote[key]='';
+ setTepNote(key,'');
+ // Жилая СПП двинулась — за ней идёт встроенная коммерция, как и при правке
+ // ячейки: правило одно, а закрытое в одном месте соседнее не защищает.
+ if(key==='apartments'&&Math.abs(Number(row.gns||0)-gns)>0.05){
+  rescaleApartmentUnits();rescaleBuiltInCommercial();
+ }
  // Посчитанное возвращается во вводные — иначе `syncTep` вернёт прежнее.
  if(tepRowToInputs(key))renderInputs();
  renderTep();
@@ -42930,8 +43360,16 @@ function refillTepRow(key){
  calculate();
 }
 
-// Ответ кнопки живёт до следующей перерисовки строки.
+// Ответ кнопки живёт до следующей перерисовки строки. У заметки есть тон:
+// жалоба красная, а сообщение о посчитанном — обычная подпись. Красным
+// покрашенный пересчёт читается как тревога, а тревожиться не о чем.
 const tepRefillNote={};
+function setTepNote(key,text,tone){
+ if(!text){delete tepRefillNote[key];return}
+ tepRefillNote[key]={text:String(text),tone:tone===undefined?'bad':tone};
+}
+function tepNoteText(key){const n=tepRefillNote[key];return n?n.text:''}
+function tepNoteTone(key){const n=tepRefillNote[key];return n&&n.tone?n.tone:''}
 
 // Строки офисов и ТЦ производные: их пересобирает `syncTep` из вводных, и
 // вписанное прямо в таблицу исчезало при первом же пересчёте — «в обратную
@@ -42948,6 +43386,10 @@ const TEP_ROW_INPUTS={offices:{gns:'offices_gba_sqm',saleable:'offices_saleable_
 // площадей продукта.
 const TEP_SOCIAL_INPUTS={kindergarten:'social_dou_gba_sqm',
  school:'social_school_gba_sqm',clinic:'social_clinic_gba_sqm'};
+// Норматив на место — своё поле у каждого объекта; им меряется и строка
+// очереди, и строка проекта.
+const SOCIAL_TEP_NORM_INPUTS={kindergarten:'social_dou_norm_sqm',
+ school:'social_school_norm_sqm',clinic:'social_clinic_norm_sqm'};
 // Доля объявлена в движке и подставлена на страницу; второй копии числа здесь
 // нет — она бы разошлась с той, по которой считает `syncTep`.
 function socialTotalShare(){
@@ -42963,8 +43405,8 @@ function tepRowToInputs(key){
  if(sw&&!inputs[sw[0]]&&Number(tep[key].gns||0)>0){
   // Выключенный объект обнулит строку на первом же пересчёте. Числа сохранены,
   // но включать объект за человека нельзя: это меняет экономику проекта.
-  tepRefillNote[key]='Площади сохранены во вводных, но объект выключен: включите «'+sw[1]+
-   ' → Объект включен», иначе строка обнулится при пересчёте.';
+  setTepNote(key,'Площади сохранены во вводных, но объект выключен: включите «'+sw[1]+
+   ' → Объект включен», иначе строка обнулится при пересчёте.');
  }
  return true;
 }
@@ -42975,6 +43417,68 @@ function tepRowToInputs(key){
 // Прежняя защита введённого руками давала строку, которую нельзя досчитать: у
 // квартир оставался ГНС 50 000 при продаваемой 50 000, и модель считала по
 // нелепице, пока человек не удалит ячейку.
+// Встроенная коммерция первого этажа — доля той же СПП жилых зданий, что и
+// квартиры: у ГлавАПУ это 94/6. Правка жилья руками её не двигала — соседние
+// строки правка ячейки не трогает вовсе, — и на фактическом ТЭП выходило
+// смешанное: квартиры по решению ГЗК, коммерция нормативная. Молчали при этом
+// не только метры: плата за ВРИ считается от жилой СПП ВМЕСТЕ со встроенной,
+// то есть её база наполовину оставалась прежней, а выручка коммерции — тоже
+// (владелец, 09.09.2026: «почему коммерция первого этажа пропорционально не
+// изменилась?»). Пересчитываем пропорцией и НАЗЫВАЕМ это: молча переписанная
+// строка неотличима от невнимательности, а своё число человек вписывает сюда
+// же — оно сильнее, пока жильё не правят снова.
+function rescaleBuiltInCommercial(){
+ const row=tep.ground_commercial;
+ if(!row)return;
+ const living=Number((tep.apartments&&tep.apartments.gns)||0);
+ const per=Number(MKD_SPP_SPLIT.apartments||0);
+ const share=Number(MKD_SPP_SPLIT.ground_commercial||0);
+ // Пустое жильё — это «человек стирает и печатает», а не «коммерции нет».
+ if(!(living>0)||!(per>0)||!(share>0))return;
+ const was=Number(row.gns||0);
+ const want=Math.round(living/per*share*10)/10;
+ if(Math.abs(want-was)<0.05)return;
+ const filled=tepFillByRatios('ground_commercial',
+  {gns:want,total_area:0,saleable:0,useful:0});
+ ['gns','total_area','saleable'].forEach(field=>{row[field]=filled[field]});
+ row.useful=row.saleable;
+ setTepNote('ground_commercial',
+  'Пересчитана пропорцией '+Math.round(per*100)+'/'+Math.round(share*100)+
+  ' от жилой СПП: было '+landNum(was,0)+' → стало '+landNum(want,0)+
+  ' м² ГНС. Своё число вписывается здесь же.', '');
+}
+
+// Число квартир выгрузки — не независимое число города, а ВЫХОД его же
+// формулы: население = площадь квартир / 33, квартиры = население / 2,1. В
+// выгрузке по 77:01:0006018:75 стоит население 525 и ровно 250 квартир, то
+// есть средняя 69,3 м² — те самые 33 × 2,1. Правя метры, человек меняет вход
+// этой формулы, и её выход обязан идти следом: иначе 250 квартир остаются
+// числом города для ПРЕЖНИХ метров (владелец, 09.09.2026: «кстати машиноместа
+// похоже не меняются увы»).
+//
+// Цена заморозки видна на паркинге. Постоянные места по пункту 2 — это
+// «квартиры × коэффициент полосы», и как только средняя перевалила 100 м²,
+// коэффициент упирается в 1,6: 45 000, 50 000 и 60 000 м² ГНС дают одни и те
+// же 400 + 40 мест. Площадь перестаёт двигать паркинг вовсе.
+function rescaleApartmentUnits(){
+ // Решение касается выгрузки ГлавАПУ: у собранного руками и у Подмосковья
+ // делитель свой, и трогать их этой правкой нельзя.
+ if(!inputs._glavapu_import)return;
+ const row=tep.apartments;
+ if(!row)return;
+ const saleable=Number(row.saleable||0);
+ if(!(saleable>0))return;
+ const perPerson=Number(PARKING_2118.sqm_per_person||0);
+ const household=Number(PARKING_2118.household||0);
+ if(!(perPerson>0)||!(household>0))return;
+ const was=Number(row.units||0);
+ // Тем же порядком, что в движке: два округления вверх, а не одно деление на
+ // 69,3 — подпись, разошедшаяся с расчётом на квартиру, читается как ошибка.
+ const want=Math.ceil(Math.ceil(saleable/perPerson)/household);
+ if(!(want>0)||want===was)return;
+ row.units=want;
+}
+
 function tepCellChanged(key,col,value){
  const was=Number(tep[key][col]||0);
  tep[key][col]=Number(value||0);
@@ -42986,9 +43490,10 @@ function tepCellChanged(key,col,value){
   const delta=Number(tep[key][col]||0)-was;
   tep[key].saleable=Math.max(0,Math.round((Number(tep[key].saleable||0)-delta)*10)/10);
   tep[key].useful=tep[key].saleable;
-  tepRefillNote[key]=delta>0
+  // Это сообщение о посчитанном, а не жалоба: тон обычный.
+  setTepNote(key, delta>0
    ? 'Переданные '+landNum(delta,0)+' м² убраны из продаваемой площади: метры строятся, но не продаются.'
-   : '';
+   : '', '');
   tepRowToInputs(key);
   renderInputs();
   renderTep();
@@ -43021,8 +43526,9 @@ function tepCellChanged(key,col,value){
   const filled=tepFillByRatios(key,base);
   ['gns','total_area','saleable'].forEach(field=>{tep[key][field]=filled[field]});
   tep[key].useful=tep[key].saleable;
-  tepRefillNote[key]='';
+  setTepNote(key,'');
   tepRowToInputs(key);
+  if(key==='apartments'){rescaleApartmentUnits();rescaleBuiltInCommercial()}
   renderInputs();
   renderTep();
  }else{tepRowToInputs(key);updateTepTotals()}
@@ -43196,11 +43702,11 @@ function applyDensityToTep(){
  // Москва с ГлавАПУ: квартиры — 94% СПП, коммерция 1 этажа — 6%;
  // продаваемая квартир — 65% ГНС, коммерции — 90%; общая площадь — 90% ГНС.
  const spp=area*density;
- tep.apartments.gns=spp*0.94;
+ tep.apartments.gns=spp*MKD_SPP_SPLIT.apartments;
  tep.apartments.total_area=tep.apartments.gns*0.9;
  tep.apartments.saleable=tep.apartments.gns*0.65;
  tep.apartments.useful=tep.apartments.saleable;
- tep.ground_commercial.gns=spp*0.06;
+ tep.ground_commercial.gns=spp*MKD_SPP_SPLIT.ground_commercial;
  tep.ground_commercial.total_area=tep.ground_commercial.gns*0.9;
  tep.ground_commercial.saleable=tep.ground_commercial.gns*0.9;
  tep.ground_commercial.useful=tep.ground_commercial.saleable;
@@ -43334,6 +43840,9 @@ function applyRequiredSocialProgramFromGlavapu(){
 // обработчике `onchange`, и площадь офиса в неё не попала — объект включался,
 // а метры до таблицы не доезжали (замечание владельца, 19.08.2026). Тест
 // сверяет список с тем, что `syncTep` читает на самом деле.
+// Как делится СПП жилых зданий на жильё и встроенное нежилое. Подставляется
+// движком: доля объявлена там один раз, копии здесь нет.
+const MKD_SPP_SPLIT=__DEVELOPAID_MKD_SPP_SPLIT__;
 const TEP_RATIOS=__DEVELOPAID_TEP_RATIOS__;
 // Норматив площади соцобъекта — ступень по ёмкости здания (РНГП, редакция
 // 2579-ПП). Таблица приходит из движка подстановкой: второй копии числа нет.
@@ -47412,6 +47921,7 @@ PAGE = PAGE.replace(INPUT_DEFAULT_PLACEHOLDER,
 PAGE = PAGE.replace(TEP_DEFAULT_PLACEHOLDER,
                     json.dumps(TEP_DEFAULT, ensure_ascii=False))
 PAGE = PAGE.replace(TEP_RATIOS_PLACEHOLDER, json.dumps(TEP_RATIOS, ensure_ascii=False))
+PAGE = PAGE.replace(MKD_SPP_SPLIT_PLACEHOLDER, json.dumps(MKD_SPP_SPLIT, ensure_ascii=False))
 PAGE = PAGE.replace(
     SOCIAL_AREA_STEPS_PLACEHOLDER,
     json.dumps({kind: [[None if limit == float("inf") else limit, value]

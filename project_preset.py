@@ -64,6 +64,9 @@ SOCIAL_MODE_BOTH = "Строительство и компенсация"
 SALEABLE_RATIO_APARTMENTS = 0.75   # ППТ Румянцева, не норматив
 SALEABLE_RATIO_COMMERCIAL = 0.90   # методика ГлавАПУ: продаваемая = НП
 SALEABLE_RATIO_OFFICES = 0.678     # решение владельца: башни 110 м
+# Общая к наземной — та же доля, что у соседних строк этого же файла
+# (`* 0.9`). Названная, она перестаёт быть литералом в четырёх местах.
+TOTAL_OF_GNS = 0.90
 
 # Паркинг: одно постоянное место на 90 м² НП жилых зданий (НП — 90% ГНС), то
 # есть на 100 м² жилой ГНС; гостевые — десятая часть. Сверено по двум выгрузкам
@@ -324,6 +327,12 @@ def map_tep(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
                 or DEFAULT_LOT_AREA_SQM)
     apartment_units = apartments / lot_area if lot_area > 0 else 0.0
     guest_declared = _number(underground_plan.get("guest_spaces"))
+    # Общая доля площадей образования делится между школой и садиком по местам:
+    # число одно на оба объекта, и разнести его надо тем же, чем они меряются.
+    education_places = max(1.0, school_places + preschool_places)
+    school_gns = school_gfa + shared_education_gfa * school_places / education_places
+    preschool_gns = preschool_gfa + shared_education_gfa * preschool_places / education_places
+
     tep = {
         "apartments": {"gns": residential_gns, "saleable": apartments,
                        "total_area": residential_gns * 0.9, "useful": apartments,
@@ -342,12 +351,16 @@ def map_tep(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
                                 **({"guest_units": int(round(guest_declared))}
                                    if guest_declared is not None else {})},
         "above_parking": {"gns": garage_gns, "units": above, "saleable": 0.0},
-        "school": {"units": school_places,
-                   "total_area": school_gfa + shared_education_gfa * school_places /
-                   max(1.0, school_places + preschool_places)},
-        "kindergarten": {"units": preschool_places,
-                         "total_area": preschool_gfa + shared_education_gfa * preschool_places /
-                         max(1.0, school_places + preschool_places)},
+        # Решение о КРТ задаёт площадь соцобъекта «в габаритах наружных стен»,
+        # то есть НАЗЕМНУЮ, — она и есть ГНС, а общая считается от неё, как у
+        # соседних строк. Прежде число документа стояло в «общей», и ГНС строки
+        # оставалась нулём: страница считала её сама (22 220 / 0,9 = 24 689) и
+        # расходилась с пресетом на 11%, а сумма ГНС переставала сходиться с
+        # ППТ — те самые 443 700 м², по которым пресет и сверяют.
+        "school": {"units": school_places, "gns": school_gns,
+                   "total_area": school_gns * TOTAL_OF_GNS},
+        "kindergarten": {"units": preschool_places, "gns": preschool_gns,
+                         "total_area": preschool_gns * TOTAL_OF_GNS},
     }
 
     notes.extend([
@@ -492,6 +505,13 @@ def map_inputs(data: dict[str, Any], tep: dict[str, Any]) -> tuple[dict[str, Any
     inputs["kindergarten_places"] = tep.get("kindergarten", {}).get("units", 0.0)
     inputs["social_school_gba_sqm"] = tep.get("school", {}).get("total_area", 0.0)
     inputs["social_dou_gba_sqm"] = tep.get("kindergarten", {}).get("total_area", 0.0)
+    # Метры соцобъектов пресет берёт из документов лота — это ТРЕБОВАНИЕ города,
+    # а не норматив, и они не совпадают: школа на Варшавском ш. — 22 220 м² на
+    # 1 000 мест (22,22 м²/место против 15 по РНГП). Без признака площадь
+    # считалась бы нормативом, и требование терялось бы молча.
+    import main_legacy as core  # локально: движок импортирует этот модуль
+
+    core.declare_social_requirement(inputs)
     return inputs, notes
 
 

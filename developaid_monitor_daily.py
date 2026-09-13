@@ -29,9 +29,30 @@ import developaid_monitor as monitor
 _ITR = re.compile(r"итр\D{0,12}?(\d+)", re.IGNORECASE)
 _WORKERS = re.compile(r"рабоч\w*\D{0,12}?(\d+)", re.IGNORECASE)
 _LEAD_NUM = re.compile(r"^\s*\d+\s*[.)\-—–]*\s*")
-_SECTION_WORKS = re.compile(r"^\s*по\s+работам\b", re.IGNORECASE)
-_SECTION_SUPPLY = re.compile(r"^\s*поставк\w*\s*:?\s*$", re.IGNORECASE)
-_SECTION_REMOVAL = re.compile(r"^\s*вывоз\s*:?\s*$", re.IGNORECASE)
+# Секции опознаются РАЗБОРОМ, а не регуляркой. Регулярки здесь стояли вида
+# `^\s*слово\s*:?\s*$` — два звёздочных пробельных куска подряд у якоря конца
+# строки, и на строке «поставка» с полусотней тысяч пробелов такой шаблон
+# уходит в перебор. Пока текст приходил загрузкой из кабинета, это было
+# теоретическим; с 13.09.2026 его пишет кто угодно в групповом чате, и CodeQL
+# честно назвал три таких места высокой важностью. Разбор по словам линеен и
+# заодно понятнее шаблона.
+_SECTION_SUPPLY_WORDS = ("поставк", "завоз")
+
+
+def _section_of(line: str) -> str:
+    """Какую секцию открывает строка: works / supply / removal или пусто."""
+    norm = " ".join(str(line or "").split()).lower()
+    if norm.startswith("по работам"):
+        return "works"
+    bare = norm.rstrip(":").strip()
+    if not bare or " " in bare:
+        return ""
+    if bare == "вывоз":
+        return "removal"
+    for word in _SECTION_SUPPLY_WORDS:
+        if bare.startswith(word) and bare[len(word):].isalpha() or bare == word:
+            return "supply"
+    return ""
 _GREETING = re.compile(r"^\s*(добрый|доброе|здравствуй|привет)", re.IGNORECASE)
 # Слово короче четырёх букв («на», «эт», «и») совпадает со всем подряд и
 # превращает сверку по словам в шум.
@@ -54,7 +75,20 @@ def _day(value: Any) -> datetime.date:
 # Разделители, которыми в отчёте отбивают имя подрядчика от его работы:
 # «Сталко -сборка лесов», «Бизнес Инжиниринг : устройство плитки»,
 # «Моэк ( теплосети)- монтаж ограждения».
-_INLINE_SPLIT = re.compile(r"\s*[:\-—–]\s*")
+# Разделитель ищется перебором, а не шаблоном `\s*[:\-—–]\s*`: звёздочка по обе
+# стороны от одного знака даёт перебор на строке из одних пробелов — та же
+# болезнь, что была у секций, и CodeQL назвал её тем же правилом. Поиск первого
+# разделителя линеен и делает ровно то же: приставка без хвостовых пробелов,
+# остаток без ведущих.
+_INLINE_SEPARATORS = ":-—–"
+
+
+def _split_inline(line: str) -> list[str]:
+    """Приставка и остаток по первому разделителю. Нет разделителя — один кусок."""
+    for index, char in enumerate(str(line or "")):
+        if char in _INLINE_SEPARATORS:
+            return [line[:index].rstrip(), line[index + 1:].lstrip()]
+    return [str(line or "")]
 
 
 def _known_party(prefix: str, known: list[str]) -> str:
@@ -87,13 +121,37 @@ def attribute_works(works: list[dict[str, Any]], known: list[str]) -> list[dict[
     с известным именем — из численности того же отчёта, из реестров РСС или из
     реестра ГУ. Иначе «Бетонирование ПП - 68,5 м3» стало бы подрядчиком
     «Бетонирование ПП».
+
+    Имя, названное в строке, ведёт и СЛЕДУЮЩИЕ строки — до нового имени или
+    нового заголовка. Прежде оно правило только собственную строку, и на живом
+    отчёте с Гродненской «Монтаж кранштейнов и стоек…» — продолжение Сталко —
+    возвращалось к последнему нумерованному заголовку «4. Клодо( кладка)»: у
+    Клодо выходило шесть строк вместо четырёх, и две из них чужие. Заголовок
+    при этом сильнее задержавшегося имени: сменился он — рассказ начался
+    заново.
     """
     out: list[dict[str, Any]] = []
+    running = ""
+    last_header = None
     for item in works or []:
+        header = item.get("contractor", "")
+        if header != last_header:
+            last_header, running = header, ""
         line = str(item.get("line") or "")
-        parts = _INLINE_SPLIT.split(line, maxsplit=1)
+        parts = _split_inline(line)
         name = _known_party(parts[0], known) if len(parts) == 2 else ""
-        out.append({**item, "contractor": name or item.get("contractor", ""),
+        if name:
+            running = name
+        elif len(parts) == 2:
+            # Приставка с разделителем похожа на имя, а доказать его нечем:
+            # «Моэк ( теплосети)- монтаж ограждения» (он вывел работы и не
+            # выводил людей, значит в численности его нет) и «Корпус 3 -
+            # 3,4,5,7 эт.» выглядят одинаково. Такая строка возвращается
+            # заголовку И ОБРЫВАЕТ задержавшееся имя: увести за собой
+            # следующие строки значило бы подписать их именем, которое мы
+            # только что не смогли подтвердить.
+            running = ""
+        out.append({**item, "contractor": running or header,
                     **({"named_inline": True} if name else {})})
     return out
 
@@ -110,13 +168,14 @@ def parse_daily_report(text: str) -> dict[str, Any]:
         line = raw.strip()
         if not line:
             continue
-        if _SECTION_WORKS.match(line):
+        section = _section_of(line)
+        if section == "works":
             mode, current = "works", ""
             continue
-        if _SECTION_SUPPLY.match(line):
+        if section == "supply":
             mode = "supply"
             continue
-        if _SECTION_REMOVAL.match(line):
+        if section == "removal":
             mode = "removal"
             continue
         if mode == "head":
