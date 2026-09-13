@@ -30,6 +30,7 @@ from browser import chromium_or_skip
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+import page_blocks  # noqa: E402
 import main_legacy as core  # noqa: E402
 
 PAGE = core.PAGE
@@ -68,7 +69,7 @@ console.log(JSON.stringify({html: box.innerHTML}));
 
 def _render(result) -> str:
     script = HARNESS % {"result": json.dumps(result, ensure_ascii=False),
-                        "prefixes": _const("OBJECT_PARKING_PREFIXES"),
+                        "prefixes": page_blocks.object_roster(),
                         "note": _piece("objectParkingGap") + "\n" + _piece("objectParkingFieldNote") + "\n"
                         + _piece("markParkingByNorm") + "\n"
                         + _piece("reconcileLegacyParking"),
@@ -157,7 +158,7 @@ console.log(JSON.stringify({
   inputs}));
 """ % {"result": json.dumps(result, ensure_ascii=False),
        "inputs": json.dumps(inputs or {}, ensure_ascii=False),
-       "prefixes": _const("OBJECT_PARKING_PREFIXES"),
+       "prefixes": page_blocks.object_roster(),
        "a": _piece("objectParkingGap") + "\n" + _piece("objectParkingFieldNote"),
        # Норма помечает своё число — без этой функции стенд падает на
        # неопределённом имени, и падение выходит про стенд, а не про подпись.
@@ -321,7 +322,7 @@ let lastResult = null;
 %(b)s
 renderObjectParkingNote();
 console.log(JSON.stringify({left: cell.textContent}));
-""" % {"prefixes": _const("OBJECT_PARKING_PREFIXES"),
+""" % {"prefixes": page_blocks.object_roster(),
        "a": _piece("objectParkingGap") + "\n" + _piece("objectParkingFieldNote"),
        "mark": _piece("markParkingByNorm") + "\n"
                  + _piece("reconcileLegacyParking"),
@@ -401,7 +402,7 @@ console.log(JSON.stringify({legacy, fresh: inputs._parking_by_hand}));
                              "retail_parking_under_spaces": 0}),
        "fresh": json.dumps({"offices_parking_under_spaces": 2778,
                             "_parking_by_hand": []})}
-    script = "const OBJECT_PARKING_PREFIXES=['offices','retail','sports'];\n" + script
+    script = page_blocks.object_roster() + "\n" + script
     out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=60)
     assert out.returncode == 0, out.stderr[-2000:]
     seen = json.loads(out.stdout)
@@ -599,7 +600,7 @@ console.log(JSON.stringify(out));
        "mark": _piece("markParkingByNorm") + "\n"
                  + _piece("reconcileLegacyParking"),
        "hand": _piece("markParkingByHand")}
-    script = "const OBJECT_PARKING_PREFIXES=['offices','retail','sports'];\n" + script
+    script = page_blocks.object_roster() + "\n" + script
     out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=60)
     assert out.returncode == 0, out.stderr[-2000:]
     got = json.loads(out.stdout)

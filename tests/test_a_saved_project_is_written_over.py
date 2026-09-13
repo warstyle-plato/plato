@@ -33,6 +33,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+import page_blocks  # noqa: E402
 import main_legacy as core  # noqa: E402
 
 PAGE = core.PAGE
@@ -97,7 +98,7 @@ CODE = "\n".join([
     # берёт его вместе с ней. Перечисление имён здесь и есть слабое место
     # стенда: функция, добавленная рядом, роняет его `ReferenceError` на
     # верном коде, и выглядит это как поломка правки.
-    "const OBJECT_PARKING_PREFIXES=['offices','retail','sports'];",
+    page_blocks.object_roster(),
     _piece("seedParkingByHand"),
     _piece("applyProjectSnapshot"),
     _piece("loadProject", kind="async function"),

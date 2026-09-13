@@ -37,6 +37,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import page_blocks  # noqa: E402
 import main_legacy as core  # noqa: E402
 from test_the_parking_note_reaches_the_screen import _const, _piece  # noqa: E402
 
@@ -77,7 +78,7 @@ console.log(JSON.stringify({text: cells.parkNorm_offices.textContent,
                             color: cells.parkNorm_offices.style.color}));
 """ % {"result": json.dumps(result, ensure_ascii=False),
        "inputs": json.dumps(inputs or {"offices_enabled": True}, ensure_ascii=False),
-       "prefixes": _const("OBJECT_PARKING_PREFIXES"),
+       "prefixes": page_blocks.object_roster(),
        "gap": _piece("objectParkingGap"),
        "note": _piece("objectParkingFieldNote"),
        "render": _piece("renderObjectParkingFieldNotes")}
