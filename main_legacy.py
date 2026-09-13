@@ -705,7 +705,12 @@ FIELD_GROUPS = [['Сделка и сроки', [['purchase_price_mln', 'Стои
 # задаёт ставку ПФ, и на 71% проект по умолчаниям перестаёт гасить долг.
 # Ставки классов (PROJECT_CLASS_PRESETS) проверку прошли и не менялись: старт
 # квартир 644,94 против пресета 650, машино-место 5 000 против 5 000.
-DEFAULT_INPUTS = {'project_class': 'comfort', 'purchase_price_mln': 0, 'purchase_schedule': '', 'construction_months': 24, 'apartment_price_th': 350, 'commercial_price_th': 350, 'parking_price_th': 1500, 'storage_price_th': 1000, 'share_before_rve_pct': 85, 'pace_adjustment_pct': 25, 'inflation_after_rve_pct': 3, 'seasonal_reduction_pct': -15, 'growth_stage1_pct': 0, 'growth_stage2_pct': 0, 'growth_stage3_pct': 0, 'growth_stage4_pct': 0, 'demolition_area_sqm': 0.0, 'demolition_cost_th_per_sqm': 0.0, 'resettlement_cost_mln': 0.0, 'ird_th_per_sqm': 1, 'design_p_th_per_sqm': 6.0, 'design_rd_th_per_sqm': 8.5, 'preparation_th_per_sqm': 2.75, 'main_above_th_per_sqm': 110, 'utilities_th_per_sqm': 10.25, 'landscaping_th_per_sqm': 15, 'landscaping_area_sqm': 0.0, 'landscaping_area_per_person_sqm': 5.0, 'commissioning_th_per_sqm': 1, 'site_maintenance_th_per_sqm': 4.7, 'gc_fee_pct': 7, 'reserve_pct': 5, 'project_management_pct': 5, 'technical_supervision_pct': 5, 'author_supervision_pct': 3, 'marketing_pct': 4.5, 'selling_pct': 2.5, 'profit_tax_pct': 25, 'vat_pct': 22, 'pre_pf_own_funds_mln': 0.0, 'bridge_spread_pp': 6, 'bridge_cap_spread_pp': 6, 'pf_spread_pp': 4.5, 'pf_special_pct': 4.5, 'pf_limit_approved_mln': 0.0, 'pf_special_steps': PF_SPECIAL_STEPS_DEFAULT, 'limit_fee_pct': 0.7, 'reservation_fee_pct': 0.1, 'discount_rate_pct': 20, 'monthly_growth_pre_pct': 1.5, 'monthly_growth_post_pct': 0.25, 'ird_months': 18, 'sales_lag_months': 0, 'bridge_repay_lag_months': 0, 'residual_sales_months': 6, 'social_comp_date': '2028-06-01', 'social_compensation_mln': 0, 'kindergarten_places': 250, 'kindergarten_cost_mln_per_place': 2.75, 'kindergarten_start': '2028-06-01', 'kindergarten_months': 24, 'school_places': 0, 'school_cost_mln_per_place': 3, 'school_start': '2028-06-01', 'school_months': 30, 'clinic_capacity': 0, 'clinic_cost_mln_per_unit': 3, 'clinic_start': '2028-06-01', 'clinic_months': 24, 'offices_gba_sqm': 10000, 'offices_saleable_sqm': 6000, 'offices_start': '2028-07-01', 'offices_months': 24, 'offices_cost_th_per_sqm': 200, 'offices_sales_start': '2028-07-01', 'offices_price_th_per_sqm': 500, 'offices_share_before_rve_pct': 85, 'offices_residual_months': 6, 'offices_growth_pre_pct': 1.5, 'offices_growth_post_pct': 0.25, 'offices_sales_profile': '', 'offices_growth_stage1_pct': 0, 'offices_growth_stage2_pct': 0, 'offices_growth_stage3_pct': 0, 'offices_growth_stage4_pct': 0, 'retail_gba_sqm': 10000, 'retail_saleable_sqm': 6000, 'retail_start': '2028-07-01', 'retail_months': 24, 'retail_cost_th_per_sqm': 200, 'retail_sales_start': '2028-07-01', 'retail_price_th_per_sqm': 500, 'retail_share_before_rve_pct': 85, 'retail_residual_months': 6, 'retail_growth_pre_pct': 1.5, 'retail_growth_post_pct': 0.25, 'retail_sales_profile': '', 'retail_growth_stage1_pct': 0, 'retail_growth_stage2_pct': 0, 'retail_growth_stage3_pct': 0, 'retail_growth_stage4_pct': 0, 'above_parking_spaces': 550, 'above_parking_cost_mln_per_space': 1, 'above_parking_start': '2028-07-01', 'above_parking_months': 18, 'above_parking_sales_start': '2028-07-01', 'above_parking_price_mln_per_space': 2, 'above_parking_share_before_rve_pct': 85, 'above_parking_residual_months': 6, 'above_parking_growth_pre_pct': 0.75, 'above_parking_growth_post_pct': 0.2, 'above_parking_sales_profile': '', 'above_parking_growth_stage1_pct': 0, 'above_parking_growth_stage2_pct': 0, 'above_parking_growth_stage3_pct': 0, 'above_parking_growth_stage4_pct': 0, 'sports_enabled': False, 'sports_disposition': 'transfer', 'sports_gba_sqm': 5000, 'sports_saleable_sqm': 3500, 'sports_start': '2028-07-01', 'sports_months': 24, 'sports_cost_th_per_sqm': 150, 'sports_sales_start': '2028-07-01', 'sports_price_th_per_sqm': 300, 'sports_share_before_rve_pct': 85, 'sports_residual_months': 6, 'sports_growth_pre_pct': 1.5, 'sports_growth_post_pct': 0.25, 'sports_sales_profile': '', 'sports_growth_stage1_pct': 0, 'sports_growth_stage2_pct': 0, 'sports_growth_stage3_pct': 0, 'sports_growth_stage4_pct': 0, 'sports_parking_under_spaces': 0, 'sports_parking_over_spaces': 0, 'social_dou_gba_sqm': 4500, 'social_school_gba_sqm': 0, 'social_clinic_gba_sqm': 0, 'project_start': '2027-01-01', 'main_under_th_per_sqm': 88, 'social_mode': 'Строительство', 'social_area_source': 'norm', 'social_dou_norm_sqm': 18, 'social_school_norm_sqm': 0, 'social_clinic_norm_sqm': 15, 'offices_enabled': False, 'retail_enabled': False, 'above_parking_enabled': False, 'above_parking_area_per_space_sqm': 25, 'underground_area_per_space_sqm': 35, 'parking_k1': 0.0, 'parking_rail_distance_m': 0.0, 'parking_k2': 0.0, 'parking_design_mode': 'maximum', 'object_parking_area_per_space_sqm': 35, 'offices_parking_under_spaces': 0, 'offices_parking_over_spaces': 0, 'offices_parking_guest_pct': 10, 'retail_parking_under_spaces': 0, 'retail_parking_over_spaces': 0, 'underground_manual_gns_sqm': 0, 'underground_manual_spaces': 0, 'underground_parking_disabled': False, 'rate_scenario': 'base', 'land_rights_cost_mln': 2864.291514155844, 'bridge_interest_mode': 'Капитализация в ПФ', 'rate_start_pct': 14.0, 'rate_start_date': '2026-07-24', 'rate_target_high_pct': 11.0, 'rate_target_base_pct': 9.0, 'rate_target_low_pct': 7.0, 'rate_normalization_months': 24, 'rate_curve_shape': 2.0, 'vri_required': True, 'vri_region': 'msk', 'land_right': 'ownership', 'vri_obligation_date': '', 'vri_payment_mode': 'lump', 'vri_installment_years': 3, 'vri_periodicity_months': 3, 'vri_schedule_mode': 'auto', 'vri_interest_enabled': '', 'vri_interest_spread_pp': 3.0, 'vri_early_repay_after_pf': False, 'vri_pf_open_date': '', 'vri_in_bank_budget': True, 'vri_financing_mode': 'auto', 'vri_share_bridge_pct': 0.0, 'vri_share_pf_pct': 0.0, 'vri_share_equity_pct': 0.0, 'vri_security_cost_mln': 0.0, 'vri_relief_mode': 'none', 'vri_relief_pct': 0.0, 'vri_relief_mln': 0.0, 'vri_transfer_offset_mln': 0.0, 'vri_obligation_date_mode': 'before_rns_1m', 'vri_months_after_purchase': 12, 'vri_initial_pct': 0.0, 'tep_ratios_custom': ''}
+_DEFAULT_INPUTS_LITERAL = {'project_class': 'comfort', 'purchase_price_mln': 0, 'purchase_schedule': '', 'construction_months': 24, 'apartment_price_th': 350, 'commercial_price_th': 350, 'parking_price_th': 1500, 'storage_price_th': 1000, 'share_before_rve_pct': 85, 'pace_adjustment_pct': 25, 'inflation_after_rve_pct': 3, 'seasonal_reduction_pct': -15, 'growth_stage1_pct': 0, 'growth_stage2_pct': 0, 'growth_stage3_pct': 0, 'growth_stage4_pct': 0, 'demolition_area_sqm': 0.0, 'demolition_cost_th_per_sqm': 0.0, 'resettlement_cost_mln': 0.0, 'ird_th_per_sqm': 1, 'design_p_th_per_sqm': 6.0, 'design_rd_th_per_sqm': 8.5, 'preparation_th_per_sqm': 2.75, 'main_above_th_per_sqm': 110, 'utilities_th_per_sqm': 10.25, 'landscaping_th_per_sqm': 15, 'landscaping_area_sqm': 0.0, 'landscaping_area_per_person_sqm': 5.0, 'commissioning_th_per_sqm': 1, 'site_maintenance_th_per_sqm': 4.7, 'gc_fee_pct': 7, 'reserve_pct': 5, 'project_management_pct': 5, 'technical_supervision_pct': 5, 'author_supervision_pct': 3, 'marketing_pct': 4.5, 'selling_pct': 2.5, 'profit_tax_pct': 25, 'vat_pct': 22, 'pre_pf_own_funds_mln': 0.0, 'bridge_spread_pp': 6, 'bridge_cap_spread_pp': 6, 'pf_spread_pp': 4.5, 'pf_special_pct': 4.5, 'pf_limit_approved_mln': 0.0, 'pf_special_steps': PF_SPECIAL_STEPS_DEFAULT, 'limit_fee_pct': 0.7, 'reservation_fee_pct': 0.1, 'discount_rate_pct': 20, 'monthly_growth_pre_pct': 1.5, 'monthly_growth_post_pct': 0.25, 'ird_months': 18, 'sales_lag_months': 0, 'bridge_repay_lag_months': 0, 'residual_sales_months': 6, 'social_comp_date': '2028-06-01', 'social_compensation_mln': 0, 'kindergarten_places': 250, 'kindergarten_cost_mln_per_place': 2.75, 'kindergarten_start': '2028-06-01', 'kindergarten_months': 24, 'school_places': 0, 'school_cost_mln_per_place': 3, 'school_start': '2028-06-01', 'school_months': 30, 'clinic_capacity': 0, 'clinic_cost_mln_per_unit': 3, 'clinic_start': '2028-06-01', 'clinic_months': 24, 'social_dou_gba_sqm': 4500, 'social_school_gba_sqm': 0, 'social_clinic_gba_sqm': 0, 'project_start': '2027-01-01', 'main_under_th_per_sqm': 88, 'social_mode': 'Строительство', 'social_area_source': 'norm', 'social_dou_norm_sqm': 18, 'social_school_norm_sqm': 0, 'social_clinic_norm_sqm': 15, 'underground_area_per_space_sqm': 35, 'parking_k1': 0.0, 'parking_rail_distance_m': 0.0, 'parking_k2': 0.0, 'parking_design_mode': 'maximum', 'object_parking_area_per_space_sqm': 35, 'underground_manual_gns_sqm': 0, 'underground_manual_spaces': 0, 'underground_parking_disabled': False, 'rate_scenario': 'base', 'land_rights_cost_mln': 2864.291514155844, 'bridge_interest_mode': 'Капитализация в ПФ', 'rate_start_pct': 14.0, 'rate_start_date': '2026-07-24', 'rate_target_high_pct': 11.0, 'rate_target_base_pct': 9.0, 'rate_target_low_pct': 7.0, 'rate_normalization_months': 24, 'rate_curve_shape': 2.0, 'vri_required': True, 'vri_region': 'msk', 'land_right': 'ownership', 'vri_obligation_date': '', 'vri_payment_mode': 'lump', 'vri_installment_years': 3, 'vri_periodicity_months': 3, 'vri_schedule_mode': 'auto', 'vri_interest_enabled': '', 'vri_interest_spread_pp': 3.0, 'vri_early_repay_after_pf': False, 'vri_pf_open_date': '', 'vri_in_bank_budget': True, 'vri_financing_mode': 'auto', 'vri_share_bridge_pct': 0.0, 'vri_share_pf_pct': 0.0, 'vri_share_equity_pct': 0.0, 'vri_security_cost_mln': 0.0, 'vri_relief_mode': 'none', 'vri_relief_pct': 0.0, 'vri_relief_mln': 0.0, 'vri_transfer_offset_mln': 0.0, 'vri_obligation_date_mode': 'before_rns_1m', 'vri_months_after_purchase': 12, 'vri_initial_pct': 0.0, 'tep_ratios_custom': ''}
+# Поля объектов сюда не пишутся: их порождает реестр. Пока они стояли
+# литералом, новый объект означал ещё двадцать строк здесь — то есть список,
+# расходящийся с реестром молча.
+DEFAULT_INPUTS: dict[str, Any] = dict(_DEFAULT_INPUTS_LITERAL)
+
 # --- ФОК: объект уходит целиком одним путём ---------------------------------
 # Решение владельца (05.09.2026): «Скорее нет, все или так или так». ФОК может
 # и продаваться, и передаваться городу — но НЕ половиной метров сразу. Поэтому
@@ -9777,6 +9782,9 @@ class StandaloneObject(NamedTuple):
     # объектом дальше» — он уходит целиком одним путём (решение владельца,
     # 05.09.2026), — и строится он в любом случае.
     sale_gate: str = ""
+    # Собственные числа объекта: метры или места, ставки себестоимости и цены.
+    # Общая форма вводных к ним прибавляется генератором.
+    defaults: dict[str, Any] = {}
 
     @property
     def enabled_key(self) -> str:
@@ -9795,17 +9803,79 @@ class StandaloneObject(NamedTuple):
 # сам, и держать два ответа на «в каком порядке» незачем.
 STANDALONE_OBJECTS: tuple[StandaloneObject, ...] = (
     StandaloneObject("standalone_retail", "retail", "ТЦ", 2, True, False, "sqm",
-                     "retail_cost_th_per_sqm", "retail_price_th_per_sqm"),
+                     "retail_cost_th_per_sqm", "retail_price_th_per_sqm",
+                     defaults={"gba_sqm": 10000, "saleable_sqm": 6000,
+                               "cost_th_per_sqm": 200, "price_th_per_sqm": 500}),
     StandaloneObject("offices", "offices", "офисы", 3, True, True, "sqm",
-                     "offices_cost_th_per_sqm", "offices_price_th_per_sqm"),
+                     "offices_cost_th_per_sqm", "offices_price_th_per_sqm",
+                     defaults={"gba_sqm": 10000, "saleable_sqm": 6000,
+                               "cost_th_per_sqm": 200, "price_th_per_sqm": 500}),
     StandaloneObject("above_parking", "above_parking", "наземный паркинг", 2, False,
                      False, "spaces", "above_parking_cost_mln_per_space",
                      "above_parking_price_mln_per_space",
-                     default_months=18, growth_pre_default=0.75, growth_post_default=0.2),
+                     default_months=18, growth_pre_default=0.75, growth_post_default=0.2,
+                     defaults={"spaces": 550, "cost_mln_per_space": 1,
+                               "price_mln_per_space": 2, "area_per_space_sqm": 25}),
     StandaloneObject("sports", "sports", "ФОК", 2, True, False, "sqm",
                      "sports_cost_th_per_sqm", "sports_price_th_per_sqm",
-                     sale_gate="sports_disposition"),
+                     sale_gate="sports_disposition",
+                     defaults={"gba_sqm": 5000, "saleable_sqm": 3500,
+                               "cost_th_per_sqm": 150, "price_th_per_sqm": 300}),
 )
+
+
+# Вводные объекта порождаются его строкой реестра, а не пишутся руками.
+# Умолчаний у объекта 17–20, и на четырёх объектах это 76 полей литералом:
+# «поставить пару ОСЗ» означало вписать ещё 72 — то есть завести пятый,
+# шестой и седьмой список там, где состав объявлен один раз. Форма при этом
+# регулярна и проверена на всех четырёх: общие поля одинаковы, различаются
+# ровно те, что уже стоят в реестре (срок, рост, мера), да собственные числа
+# объекта.
+_OBJECT_SHARED_DEFAULTS: dict[str, Any] = {
+    "enabled": False,
+    "start": "2028-07-01",
+    "sales_start": "2028-07-01",
+    "residual_months": 6,
+    "share_before_rve_pct": 85,
+    "sales_profile": "",
+    "growth_stage1_pct": 0,
+    "growth_stage2_pct": 0,
+    "growth_stage3_pct": 0,
+    "growth_stage4_pct": 0,
+}
+
+
+def standalone_object_defaults(obj: StandaloneObject) -> dict[str, Any]:
+    """Умолчания одного объекта: общая форма плюс его собственные числа."""
+    out: dict[str, Any] = dict(_OBJECT_SHARED_DEFAULTS)
+    out["months"] = obj.default_months
+    out["growth_pre_pct"] = obj.growth_pre_default
+    out["growth_post_pct"] = obj.growth_post_default
+    out.update(obj.defaults)
+    # Поля гаража заводит признак гаража, а не память: у наземного паркинга
+    # своего гаража нет вовсе, а доля гостевых — только там, где места
+    # продаются (решение владельца 06.09.2026).
+    if obj.garage:
+        out["parking_under_spaces"] = 0
+        out["parking_over_spaces"] = 0
+        if obj.garage_sellable:
+            out["parking_guest_pct"] = 10
+    if obj.sale_gate:
+        out["disposition"] = "transfer"
+    return {f"{obj.prefix}_{key}": value for key, value in out.items()}
+
+
+# Умолчания объектов дописываются здесь, а не у литерала: реестр объявлен
+# ниже по файлу, и `DEFAULT_INPUTS` наверху его ещё не видит. Порядок
+# объявлений — это поведение, и полагаться на него молча нельзя.
+for _obj in STANDALONE_OBJECTS:
+    DEFAULT_INPUTS.update(standalone_object_defaults(_obj))
+
+
+def standalone_object_field_keys() -> frozenset[str]:
+    """Все поля всех объектов — по ним литерал вводных и чистится."""
+    return frozenset(
+        key for obj in STANDALONE_OBJECTS for key in standalone_object_defaults(obj))
 
 
 def standalone_objects(keys: tuple[str, ...] = ()) -> tuple[StandaloneObject, ...]:
