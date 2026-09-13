@@ -9764,6 +9764,18 @@ class StandaloneObject(NamedTuple):
     measure: str            # "sqm" — метры, "spaces" — места
     rate_cost: str
     rate_price: str
+    # Умолчания календаря и роста цены. Прежде они стояли литералами внутри
+    # четырёх почти одинаковых блоков выручки, и различались там ровно они:
+    # у наземного паркинга стройка 18 месяцев и рост 0,75/0,2, у прочих 24 и
+    # 1,5/0,25. Пока блоки были написаны порознь, «второй офисник» означал
+    # пятый такой блок; теперь это строка здесь.
+    default_months: int = 24
+    growth_pre_default: float = 1.5
+    growth_post_default: float = 0.25
+    # Продаётся ли объект безусловно. У ФОКа ответ даёт признак «что с
+    # объектом дальше» — он уходит целиком одним путём (решение владельца,
+    # 05.09.2026), — и строится он в любом случае.
+    sale_gate: str = ""
 
     @property
     def enabled_key(self) -> str:
@@ -9787,9 +9799,11 @@ STANDALONE_OBJECTS: tuple[StandaloneObject, ...] = (
                      "offices_cost_th_per_sqm", "offices_price_th_per_sqm"),
     StandaloneObject("above_parking", "above_parking", "наземный паркинг", 2, False,
                      False, "spaces", "above_parking_cost_mln_per_space",
-                     "above_parking_price_mln_per_space"),
+                     "above_parking_price_mln_per_space",
+                     default_months=18, growth_pre_default=0.75, growth_post_default=0.2),
     StandaloneObject("sports", "sports", "ФОК", 2, True, False, "sqm",
-                     "sports_cost_th_per_sqm", "sports_price_th_per_sqm"),
+                     "sports_cost_th_per_sqm", "sports_price_th_per_sqm",
+                     sale_gate="sports_disposition"),
 )
 
 
@@ -25597,110 +25611,60 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         }
         return weights, factor
 
-    if b(x, "offices_enabled"):
-        offices_sales_start = d(x["offices_sales_start"])
-        offices_rve = add_months(d(x["offices_start"]), int(n(x, "offices_months", 24)))
-        offices_share = n(x, "offices_share_before_rve_pct", 85) / 100
-        offices_residual = int(n(x, "offices_residual_months", 6))
-        offices_weights, offices_factor = object_schedule(
-            "offices", offices_sales_start, d(x["offices_start"]), int(n(x, "offices_months", 24)))
-        add_product("offices", sales_schedule(
-            object_saleable("offices", "offices_saleable_sqm"), n(x, "offices_price_th_per_sqm") * 1000,
-            offices_sales_start, offices_rve,
-            offices_share, offices_residual,
-            n(x, "offices_growth_pre_pct", 1.5) / 100,
-            n(x, "offices_growth_post_pct", 0.25) / 100,
-            weights_override=offices_weights, price_factor=offices_factor,
+    # Выручка и CAPEX отдельно стоящих объектов — ОДИН обход реестра, а не
+    # блок на объект. Четыре почти одинаковых блока различались ровно тремя
+    # вещами (умолчание срока стройки, умолчание роста цены и признак «чем
+    # меряется»), и все три теперь стоят строкой в `STANDALONE_OBJECTS`:
+    # «поставить пару ОСЗ» перестало означать пятый такой блок.
+    #
+    # Календарь продаж каждого объекта складывается тут же (`sold`): его
+    # читают продажи мест его гаража ниже. Собранный там второй раз, он
+    # однажды разошёлся бы с этим, и обе половины выглядели бы верными.
+    sold: dict[str, dict[str, Any]] = {}
+    for obj in standalone_objects():
+        if not b(x, obj.enabled_key):
+            revenue_by_product[obj.key] = 0.0
+            standalone_capex[obj.key] = 0.0
+            continue
+        months = int(n(x, f"{obj.prefix}_months", obj.default_months))
+        build_start = d(x[f"{obj.prefix}_start"])
+        # Себестоимость считается на том же, чем объект меряется: у метровых
+        # это ГНС × ставка метра, у наземного паркинга места × ставка места.
+        if obj.measure == "spaces":
+            volume = n(x, f"{obj.prefix}_spaces")
+            standalone_capex[obj.key] = volume * n(x, obj.rate_cost) * 1_000_000
+            price = n(x, obj.rate_price) * 1_000_000
+        else:
+            standalone_capex[obj.key] = n(x, f"{obj.prefix}_gba_sqm") * n(x, obj.rate_cost) * 1000
+            volume = object_saleable(obj.key, f"{obj.prefix}_saleable_sqm")
+            price = n(x, obj.rate_price) * 1000
+        if obj.garage:
+            standalone_garage_capex[obj.key] = object_parking_capex(obj.key)
+            standalone_capex[obj.key] += standalone_garage_capex[obj.key]
+        # Признак продажи гасит ВЫРУЧКУ, а не стройку: переданный объект
+        # строится за те же деньги и ведёт себя как соцобъект.
+        if obj.sale_gate and not sports_is_sold(x):
+            revenue_by_product[obj.key] = 0.0
+            continue
+        sales_start = d(x[f"{obj.prefix}_sales_start"])
+        end_ref = add_months(build_start, months)
+        share_value = n(x, f"{obj.prefix}_share_before_rve_pct", 85) / 100
+        residual = int(n(x, f"{obj.prefix}_residual_months", 6))
+        growth_pre = n(x, f"{obj.prefix}_growth_pre_pct", obj.growth_pre_default) / 100
+        growth_post = n(x, f"{obj.prefix}_growth_post_pct", obj.growth_post_default) / 100
+        weights, factor = object_schedule(obj.prefix, sales_start, build_start, months)
+        add_product(obj.key, sales_schedule(
+            volume, price, sales_start, end_ref, share_value, residual,
+            growth_pre, growth_post,
+            weights_override=weights, price_factor=factor,
         ), quantity_schedule(
-            object_saleable("offices", "offices_saleable_sqm"), offices_sales_start, offices_rve,
-            offices_share, offices_residual, weights_override=offices_weights,
+            volume, sales_start, end_ref, share_value, residual,
+            weights_override=weights,
         ))
-        standalone_capex["offices"] = n(x, "offices_gba_sqm") * n(x, "offices_cost_th_per_sqm") * 1000
-        standalone_garage_capex["offices"] = object_parking_capex("offices")
-        standalone_capex["offices"] += standalone_garage_capex["offices"]
-    else:
-        revenue_by_product["offices"] = 0.0
-        standalone_capex["offices"] = 0.0
-
-    if b(x, "retail_enabled"):
-        retail_sales_start = d(x["retail_sales_start"])
-        retail_rve = add_months(d(x["retail_start"]), int(n(x, "retail_months", 24)))
-        retail_share = n(x, "retail_share_before_rve_pct", 85) / 100
-        retail_residual = int(n(x, "retail_residual_months", 6))
-        retail_weights, retail_factor = object_schedule(
-            "retail", retail_sales_start, d(x["retail_start"]), int(n(x, "retail_months", 24)))
-        add_product("standalone_retail", sales_schedule(
-            object_saleable("standalone_retail", "retail_saleable_sqm"), n(x, "retail_price_th_per_sqm") * 1000,
-            retail_sales_start, retail_rve,
-            retail_share, retail_residual,
-            n(x, "retail_growth_pre_pct", 1.5) / 100,
-            n(x, "retail_growth_post_pct", 0.25) / 100,
-            weights_override=retail_weights, price_factor=retail_factor,
-        ), quantity_schedule(
-            object_saleable("standalone_retail", "retail_saleable_sqm"), retail_sales_start, retail_rve,
-            retail_share, retail_residual, weights_override=retail_weights,
-        ))
-        standalone_capex["standalone_retail"] = n(x, "retail_gba_sqm") * n(x, "retail_cost_th_per_sqm") * 1000
-        standalone_garage_capex["standalone_retail"] = object_parking_capex("standalone_retail")
-        standalone_capex["standalone_retail"] += standalone_garage_capex["standalone_retail"]
-    else:
-        revenue_by_product["standalone_retail"] = 0.0
-        standalone_capex["standalone_retail"] = 0.0
-
-    if b(x, "above_parking_enabled"):
-        above_parking_end = add_months(d(x["above_parking_start"]), int(n(x, "above_parking_months", 18)))
-        above_parking_sales_start = d(x["above_parking_sales_start"])
-        above_parking_share = n(x, "above_parking_share_before_rve_pct", 85) / 100
-        above_parking_residual = int(n(x, "above_parking_residual_months", 6))
-        parking_weights, parking_factor = object_schedule(
-            "above_parking", above_parking_sales_start, d(x["above_parking_start"]),
-            int(n(x, "above_parking_months", 18)))
-        add_product("above_parking", sales_schedule(
-            n(x, "above_parking_spaces"), n(x, "above_parking_price_mln_per_space") * 1_000_000,
-            above_parking_sales_start, above_parking_end,
-            above_parking_share, above_parking_residual,
-            n(x, "above_parking_growth_pre_pct", 0.75) / 100,
-            n(x, "above_parking_growth_post_pct", 0.2) / 100,
-            weights_override=parking_weights, price_factor=parking_factor,
-        ), quantity_schedule(
-            n(x, "above_parking_spaces"), above_parking_sales_start, above_parking_end,
-            above_parking_share, above_parking_residual, weights_override=parking_weights,
-        ))
-        standalone_capex["above_parking"] = n(x, "above_parking_spaces") * n(x, "above_parking_cost_mln_per_space") * 1_000_000
-    else:
-        revenue_by_product["above_parking"] = 0.0
-        standalone_capex["above_parking"] = 0.0
-
-    # ФОК строится в любом случае — деньги на него тратятся и при передаче
-    # городу. Продаётся он только по признаку: «всё или так, или так»
-    # (решение владельца, 05.09.2026). Переданный ФОК ведёт себя как соцобъект
-    # — метры строятся, но не продаются.
-    if b(x, "sports_enabled"):
-        standalone_capex["sports"] = n(x, "sports_gba_sqm") * n(x, "sports_cost_th_per_sqm") * 1000
-        standalone_garage_capex["sports"] = object_parking_capex("sports")
-        standalone_capex["sports"] += standalone_garage_capex["sports"]
-    else:
-        standalone_capex["sports"] = 0.0
-    if b(x, "sports_enabled") and sports_is_sold(x):
-        sports_sales_start = d(x["sports_sales_start"])
-        sports_rve = add_months(d(x["sports_start"]), int(n(x, "sports_months", 24)))
-        sports_share = n(x, "sports_share_before_rve_pct", 85) / 100
-        sports_residual = int(n(x, "sports_residual_months", 6))
-        sports_weights, sports_factor = object_schedule(
-            "sports", sports_sales_start, d(x["sports_start"]), int(n(x, "sports_months", 24)))
-        add_product("sports", sales_schedule(
-            object_saleable("sports", "sports_saleable_sqm"), n(x, "sports_price_th_per_sqm") * 1000,
-            sports_sales_start, sports_rve,
-            sports_share, sports_residual,
-            n(x, "sports_growth_pre_pct", 1.5) / 100,
-            n(x, "sports_growth_post_pct", 0.25) / 100,
-            weights_override=sports_weights, price_factor=sports_factor,
-        ), quantity_schedule(
-            object_saleable("sports", "sports_saleable_sqm"), sports_sales_start, sports_rve,
-            sports_share, sports_residual, weights_override=sports_weights,
-        ))
-    else:
-        revenue_by_product["sports"] = 0.0
+        sold[obj.key] = {"sales_start": sales_start, "end_ref": end_ref,
+                         "share": share_value, "residual": residual,
+                         "growth_pre": growth_pre, "growth_post": growth_post,
+                         "weights": weights, "factor": factor}
 
     # Места гаражей объектов продаются машино-местами (владелец,
     # 05.09.2026: «продают машиноместами конечно»). Число мест берётся со
@@ -25742,21 +25706,17 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     # Встроенной коммерции МКД здесь нет: её машино-места лежат в общем
     # подземном паркинге проекта, у которого своя строка ТЭП и своя выручка.
     # Свой гараж у неё был бы вторым счётом тех же мест.
-    if b(x, "offices_enabled"):
-        sell_object_parking("offices", offices_sales_start, offices_rve, offices_share,
-                            offices_residual, n(x, "offices_growth_pre_pct", 1.5) / 100,
-                            n(x, "offices_growth_post_pct", 0.25) / 100,
-                            offices_weights, offices_factor)
-    if b(x, "retail_enabled"):
-        sell_object_parking("standalone_retail", retail_sales_start, retail_rve, retail_share,
-                            retail_residual, n(x, "retail_growth_pre_pct", 1.5) / 100,
-                            n(x, "retail_growth_post_pct", 0.25) / 100,
-                            retail_weights, retail_factor)
-    if b(x, "sports_enabled") and sports_is_sold(x):
-        sell_object_parking("sports", sports_sales_start, sports_rve, sports_share,
-                            sports_residual, n(x, "sports_growth_pre_pct", 1.5) / 100,
-                            n(x, "sports_growth_post_pct", 0.25) / 100,
-                            sports_weights, sports_factor)
+    # Гараж продаётся календарём СВОЕГО объекта — тем же, что посчитан выше.
+    # У наземного паркинга гаража нет вовсе, и в `sold` он стоит без него:
+    # обход спрашивает реестр, а не перечисляет объекты по памяти.
+    for obj in standalone_objects():
+        plan = sold.get(obj.key)
+        if not obj.garage or plan is None:
+            continue
+        sell_object_parking(obj.key, plan["sales_start"], plan["end_ref"],
+                            plan["share"], plan["residual"],
+                            plan["growth_pre"], plan["growth_post"],
+                            plan["weights"], plan["factor"])
     if object_parking_value:
         add_product("object_parking", dict(object_parking_value), dict(object_parking_units))
     else:
@@ -25811,10 +25771,9 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         "landscaping": landscaping_sqm * n(x, "landscaping_th_per_sqm") * 1000,
         "commissioning": core_total_gns * n(x, "commissioning_th_per_sqm") * 1000,
         "site_maintenance": core_total_gns * n(x, "site_maintenance_th_per_sqm") * 1000,
-        "offices": standalone_capex["offices"],
-        "standalone_retail": standalone_capex["standalone_retail"],
-        "above_parking": standalone_capex["above_parking"],
-        "sports": standalone_capex["sports"],
+        # Статьи объектов — по реестру, а не перечислением: снятый оттуда
+        # объект иначе валит расчёт KeyError'ом, то есть список тут второй.
+        **{obj.key: standalone_capex.get(obj.key, 0.0) for obj in standalone_objects()},
     }
 
     social_program = effective_social_program(x)
@@ -26049,14 +26008,11 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     # разницы четыре месяца подряд — итог CAPEX сходился, профиль нет. Меньше
     # потрачено — меньше долг, выше покрытие эскроу, другая ступень лестницы
     # ставки ПФ: 14,75 млн ₽ расхождения по стоимости финансирования.
-    if amounts["offices"]:
-        spread_s_curve("offices", amounts["offices"], d(x["offices_start"]), int(n(x, "offices_months", 24)))
-    if amounts["standalone_retail"]:
-        spread_s_curve("standalone_retail", amounts["standalone_retail"], d(x["retail_start"]), int(n(x, "retail_months", 24)))
-    if amounts["above_parking"]:
-        spread_s_curve("above_parking", amounts["above_parking"], d(x["above_parking_start"]), int(n(x, "above_parking_months", 18)))
-    if amounts["sports"]:
-        spread_s_curve("sports", amounts["sports"], d(x["sports_start"]), int(n(x, "sports_months", 24)))
+    for obj in standalone_objects():
+        if not amounts.get(obj.key):
+            continue
+        spread_s_curve(obj.key, amounts[obj.key], d(x[f"{obj.prefix}_start"]),
+                       int(n(x, f"{obj.prefix}_months", obj.default_months)))
 
     # GC, reserve and project management belong to the construction phase rather than the pre-RnS bridge period.
     # This is closer to the timing used in the current Excel cash-flow model.
