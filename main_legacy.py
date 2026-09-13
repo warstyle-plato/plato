@@ -38546,11 +38546,9 @@ details.cadastral-box>summary::marker{color:#888}
 
       <div class="card phase-config-only">
         <div class="section-title">Отдельные коммерческие объекты</div>
-        <div class="phase-grid">
-          <div class="field"><label>Офисы / МФОЦ</label><select id="assignOffices" onchange="phasing.discrete.offices=Number(this.value)"></select></div>
-          <div class="field"><label>Коммерция ОСЗ</label><select id="assignRetail" onchange="phasing.discrete.standalone_retail=Number(this.value)"></select></div>
-          <div class="field"><label>ФОК / спорт</label><select id="assignSports" onchange="phasing.discrete.sports=Number(this.value)"></select></div>
-          <div class="field"><label>Наземный паркинг</label><select id="assignAboveParking" onchange="phasing.discrete.above_parking=Number(this.value)"></select></div>
+        <div class="phase-grid" id="assignObjects">
+          <!-- Поля рисует renderPhasing по реестру объектов: разметкой стояли
+               четыре, и пятый объект остался бы без очереди молча. -->
         </div>
         <div class="note">Коммерция первых этажей, подземный паркинг и кладовые делятся по очередям процентами. ОСЗ, офисы и отдельный наземный паркинг относятся целиком к выбранной очереди.</div>
       </div>
@@ -39179,6 +39177,20 @@ const TEP_DEFAULT=__DEVELOPAID_TEP_DEFAULT__;
 // видел у одного продукта до четырёх имён. Объявление одно — в движке
 // (`TEP_DEFAULT`), здесь только чтение.
 const PRODUCT_LABELS=__DEVELOPAID_PRODUCT_LABELS__;
+// Отдельно стоящие объекты — из движка. Страница знала о них четырьмя
+// рукописными перечислениями: умолчание очереди в двух местах, четыре поля
+// выбора очереди в разметке и приставки объектов с гаражом. Пятый объект в
+// любом из них молчит: на экране он выглядит объектом без очереди и без
+// гаража, а расчёт при этом его строит.
+const STANDALONE_OBJECTS=__DEVELOPAID_STANDALONE_OBJECTS__;
+// Куда садится объект, пока человек не сказал иначе. Ответ один на обе
+// стороны — умолчание сборки очередей и умолчание пересчёта строки ТЭП, —
+// иначе они разойдутся молча, и обе будут выглядеть верными.
+function discreteDefaults(count){
+ const out={};
+ for(const o of STANDALONE_OBJECTS)out[o.key]=Math.min(o.default_queue,count);
+ return out;
+}
 // Подпись переданных метров — из движка: получателя модель не знает, и
 // называть его нельзя. Копии слова «городу» на странице больше нет.
 const TRANSFER_LABELS=__DEVELOPAID_TRANSFER_LABELS__;
@@ -39420,7 +39432,7 @@ function makeDefaultPhasing(count=1){
   products:{apartments:[...w],ground_commercial:[...w],underground_parking:[...w],storage:[...w]},
   shared_cash:{purchase:frontLoadedPreset(count,'purchase'),land_rights:frontLoadedPreset(count,'land_rights'),ird:frontLoadedPreset(count,'ird'),design:frontLoadedPreset(count,'design'),preparation:frontLoadedPreset(count,'preparation'),utilities:frontLoadedPreset(count,'utilities'),social_compensation:frontLoadedPreset(count,'social_compensation')},
   shared_allocation:{purchase:[...w],land_rights:[...w],ird:[...w],design:[...w],preparation:[...w],utilities:[...w],social_compensation:[...w],social_construction:[...w]},
-  social_objects:[],discrete:{offices:Math.min(3,count),standalone_retail:Math.min(2,count),above_parking:Math.min(2,count),sports:Math.min(2,count)}
+  social_objects:[],discrete:discreteDefaults(count)
  };
 }
 // structuredClone есть не везде: в Safari он появился в 15.4, а стоял этот
@@ -40098,7 +40110,7 @@ function phaseProductDerived(key,field,index){
   if(field==='units')return phaseIntegerSplit(master,a,sum)[index]||0;
   return master*Number(a[index]||0)/sum;
  }
- const assigned={offices:Math.min(3,count),standalone_retail:Math.min(2,count),above_parking:Math.min(2,count),sports:Math.min(2,count)}[key]||1;
+ const assigned=discreteDefaults(count)[key]||1;
  return index+1===Number((phasing.discrete||{})[key]||assigned)?master:0;
 }
 let phaseTepEditWarning='';
@@ -40392,8 +40404,14 @@ function renderPhasing(){
  const sl={purchase:'Покупка / вход',land_rights:'Земельные права / ВРИ',ird:'ИРД',design:'П + РД',preparation:'Подготовительные',utilities:'Наружные сети',social_compensation:'Соцкомпенсация',social_construction:'Соцобъекты — аналитическая аллокация'};
  renderShareTable('phaseCashHead','phaseCashBody',phasing.shared_cash,sl,'shared_cash');renderShareTable('phaseAllocHead','phaseAllocBody',phasing.shared_allocation,sl,'shared_allocation');
  socialObjectsBody.innerHTML=phasing.social_objects.map((o,i)=>`<tr><td><input value="${o.name||''}" onchange="updateSocialObject(${i},'name',this.value)"></td><td><select onchange="updateSocialObject(${i},'type',this.value)"><option value="kindergarten" ${o.type==='kindergarten'?'selected':''}>${productName('kindergarten')}</option><option value="school" ${o.type==='school'?'selected':''}>${productName('school')}</option><option value="clinic" ${o.type==='clinic'?'selected':''}>${productName('clinic')}</option></select></td><td><input type="number" value="${Number(o.capacity||0)}" onchange="updateSocialObject(${i},'capacity',this.value)"></td><td><select onchange="updateSocialObject(${i},'phase',this.value)">${phaseOptions(o.phase)}</select></td><td><input type="date" value="${o.start_date||''}" onchange="updateSocialObject(${i},'start_date',this.value)"></td><td><button class="btn" onclick="deleteSocialObject(${i})">×</button></td></tr>`).join('');renderSocialStatus();
- assignOffices.innerHTML=phaseOptions(phasing.discrete.offices);assignRetail.innerHTML=phaseOptions(phasing.discrete.standalone_retail);assignAboveParking.innerHTML=phaseOptions(phasing.discrete.above_parking);assignSports.innerHTML=phaseOptions(phasing.discrete.sports);
- assignOffices.value=String(phasing.discrete.offices||1);assignRetail.value=String(phasing.discrete.standalone_retail||1);assignAboveParking.value=String(phasing.discrete.above_parking||1);assignSports.value=String(phasing.discrete.sports||1)
+ assignObjects.innerHTML=STANDALONE_OBJECTS.map(o=>
+  `<div class="field"><label>${escapeHtml(productName(o.key))}</label>`
+  +`<select data-object="${escapeHtml(o.key)}">${phaseOptions(phasing.discrete[o.key])}</select></div>`).join('');
+ assignObjects.querySelectorAll('select[data-object]').forEach(sel=>{
+  const key=sel.dataset.object;
+  sel.value=String(phasing.discrete[key]||1);
+  sel.onchange=function(){phasing.discrete[key]=Number(this.value);calculate()};
+ })
  renderPhaseFinancing();
 }
 
@@ -43363,7 +43381,7 @@ function objectParkingNote(key){
 // проект приходит на страницу: в этот момент норма в поля ещё ничего не
 // писала, значит непустое число — человеческое. Без такого посева проект,
 // сохранённый до правки, потерял бы вписанные числа при первом же пересчёте.
-const OBJECT_PARKING_PREFIXES=['offices','retail','sports'];
+const OBJECT_PARKING_PREFIXES=STANDALONE_OBJECTS.filter(o=>o.garage).map(o=>o.prefix);
 function seedParkingByHand(){
  // Список приехал вместе с проектом — он и есть ответ, пересев затёр бы его:
  // заполненное нормой поле стало бы «тронутым руками» и замерло бы навсегда.
@@ -48449,6 +48467,14 @@ PAGE = PAGE.replace(CAPEX_NAMES_PLACEHOLDER, json.dumps(
 # Состав МКД — из движка, копии на странице нет.
 PAGE = PAGE.replace("__DEVELOPAID_MKD_PRODUCTS__",
                     json.dumps(list(MKD_PRODUCTS), ensure_ascii=False))
+# Отдельно стоящие объекты — из движка: страница держала четыре рукописных
+# перечисления, и пятый объект молчал бы в каждом. Едет ровно то, что странице
+# нужно; имя она берёт у строки ТЭП через `productName`.
+PAGE = PAGE.replace("__DEVELOPAID_STANDALONE_OBJECTS__", json.dumps(
+    [{"key": o.key, "prefix": o.prefix, "default_queue": o.default_queue,
+      "garage": o.garage, "garage_sellable": o.garage_sellable,
+      "measure": o.measure}
+     for o in STANDALONE_OBJECTS], ensure_ascii=False))
 # Подпись переданных метров — из движка: получателя мы не знаем, и шесть копий
 # слова «городу» правились бы порознь.
 PAGE = PAGE.replace(TRANSFER_LABELS_PLACEHOLDER, json.dumps(
