@@ -1683,6 +1683,20 @@ def conclusions(summary: dict[str, Any]) -> dict[str, str]:
             f"Звонков {int(quality['calls'])}, из них целевых "
             f"{int(quality['target'])}; до брони доходит "
             f"{_pct(quality.get('booked_target'))}. ")
+        # Число за всё время не отвечает на «как сейчас»: канал, работавший год
+        # назад, и канал, живущий сегодня, в нём неразличимы. Окно и его имя
+        # приходят посчитанными — второй счёт той же доли разошёлся бы с
+        # экраном, и обе фразы выглядели бы верными.
+        window, before = lead.get("recent") or {}, lead.get("before") or {}
+        if window.get("target") and window.get("share") is not None:
+            line += (f"За {window['label']} целевых {int(window['target'])}, "
+                     f"до брони {_pct(window['share'])}")
+            line += (f" против {_pct(before['share'])} за {before['label']}. "
+                     if before.get("share") is not None else ". ")
+            if lead.get("partial_month"):
+                line += ("Последний месяц окна неполон, и доля свежих месяцев "
+                         "занижена по построению: месяц ставится по дате "
+                         "обращения, а бронь приходит позже. ")
         if best is not main and best.get("share"):
             line += (f"У «{main['name']}» это {_pct(main.get('share'))} при "
                      f"{int(main['deals'])} обращениях, у «{best['name']}» — "

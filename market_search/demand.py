@@ -181,6 +181,9 @@ def read_demand(data: bytes) -> dict[str, Any]:
             at[key] = found
 
     deals = []
+    # Когда снята выгрузка, говорит она сама — датой последнего обращения.
+    # Без неё «последний месяц неполон» было бы догадкой, а не измерением.
+    last_created = ""
     for row in rows[1:]:
         def cell(key: str) -> Any:
             place = at.get(key)
@@ -192,6 +195,8 @@ def read_demand(data: bytes) -> dict[str, Any]:
         created = _excel_date(cell("created"))
         areas = areas_asked(comment)
         budgets = budgets_asked(comment)
+        if created:
+            last_created = max(last_created, created.strftime("%Y-%m-%d"))
         deals.append({
             # Номер сделки — не человек: он нужен, чтобы не считать одну сделку
             # дважды, и больше ни для чего.
@@ -230,7 +235,8 @@ def read_demand(data: bytes) -> dict[str, Any]:
         if not any(_text(row[place]) for row in rows[1:] if place < len(row)):
             empty.append(title)
     return {"sheet": sheet, "deals": deals, "missing": missing,
-            "empty_columns": empty, "rows": len(rows) - 1}
+            "empty_columns": empty, "rows": len(rows) - 1,
+            "last_created": last_created}
 
 
 # ---------------------------------------------------------------------------
@@ -371,6 +377,49 @@ NOT_A_LEAD = re.compile(
     r"реклам|предлага(ет|л) (услуги|разместить)|яндекс еда|сотруднич|поставщик|"
     r"вакансн|резюме|подключени[ею] к", re.I)
 CALL_SOURCE = "Звонок"
+# Сколько месяцев считать свежими. «Разложить по месяцам и отдельно подсветить
+# последние 3 месяца» (владелец, 12.09.2026): помесячный ряд отвечает на «как
+# менялось», окно — на «как сейчас».
+RECENT_MONTHS = 3
+# Именительный падеж месяца. Рядом уже живут родительный (`MONTHS_OF` на
+# странице) и предложный (`narrative.MONTHS`) — это разные падежи, а не копия
+# одного списка: объявить их один раз на три формы нечем.
+_MONTHS_NOMINATIVE = ("январь", "февраль", "март", "апрель", "май", "июнь",
+                      "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь")
+
+
+def _month_length(year: int, month: int) -> int:
+    """Сколько дней в месяце. Календарь считает календарь, а не наша память."""
+    import calendar  # noqa: PLC0415 — нужен только здесь
+
+    return calendar.monthrange(year, month)[1]
+
+
+def _month_name(key: str, with_year: bool) -> str:
+    """«2026-08» → «август 2026». Ключ не разбирается — это имя месяца."""
+    try:
+        year, month = key.split("-")
+        name = _MONTHS_NOMINATIVE[int(month) - 1]
+    except (ValueError, IndexError):
+        return key
+    return f"{name} {year}" if with_year else name
+
+
+def _months_label(keys: list[str]) -> str:
+    """Имя периода лучше его границ: «июнь, июль и август 2026».
+
+    Диапазон, написанный краями, читается вычитанием — это уже стоило спора о
+    квартальном сдвиге. Месяцы перечисляются, а год ставится у того месяца,
+    после которого он меняется: «декабрь 2025, январь и февраль 2026».
+    """
+    if not keys:
+        return ""
+    years = [key.split("-")[0] for key in keys]
+    names = [_month_name(key, years[i] != years[-1]) for i, key in enumerate(keys)]
+    names[-1] = _month_name(keys[-1], True)
+    if len(names) == 1:
+        return names[0]
+    return ", ".join(names[:-1]) + " и " + names[-1]
 
 
 def _budget_cut(rows: list[dict[str, Any]], budget_median: float | None) -> dict[str, Any]:
@@ -415,19 +464,71 @@ def funnel(deals: list[dict[str, Any]], read: dict[str, Any] | None = None) -> d
     не «не купили». Поэтому доли идут вместе с числом обращений: на пяти
     бронях доля не значит ничего, и человек должен это видеть.
     """
+    # Помесячный ряд и окно последних месяцев считаются ЗДЕСЬ, рядом с
+    # обращениями: собранные на экране, они были бы вторым счётом той же
+    # воронки, и обе картинки выглядели бы верными.
+    months: dict[str, dict[str, float]] = {}
+    undated = 0
+    for deal in deals or []:
+        month = str(deal.get("month") or "")
+        if not month:
+            # Обращение без даты создания на ряд не ложится. Молча выброшенное,
+            # оно читалось бы как «его не было»: счёт стоит в оговорках.
+            undated += 1
+            continue
+        # Ряд считается по ЗВОНКАМ, как и плитки блока: «обращение» в нём уже
+        # значит «звонок», и второе значение того же слова в одном блоке читать
+        # было бы нечем. Свежесть остальных источников стоит своей колонкой в
+        # таблице источников.
+        block = months.setdefault(month, {
+            "calls": 0.0, "target": 0.0, "booked": 0.0, "blank": 0.0})
+        if (deal.get("source") or "") != CALL_SOURCE:
+            continue
+        block["calls"] += 1
+        if deal.get("not_a_lead"):
+            continue
+        block["target"] += 1
+        block["booked"] += 1 if deal.get("booked") else 0
+        block["blank"] += 0 if (deal.get("need_asked") or deal.get("next_step")) else 1
+
+    order = sorted(months)
+    recent_keys = order[-RECENT_MONTHS:]
+    by_month = [{"month": key, **months[key],
+                 "share": (months[key]["booked"] / months[key]["target"]
+                           if months[key]["target"] else None),
+                 "recent": key in recent_keys}
+                for key in order]
+
+    def window(keys: list[str]) -> dict[str, Any]:
+        total = {name: sum(months[key][name] for key in keys)
+                 for name in ("calls", "target", "booked", "blank")}
+        total["months"] = keys
+        total["label"] = _months_label(keys)
+        total["share"] = total["booked"] / total["target"] if total["target"] else None
+        return total
+
+    recent = window(recent_keys) if recent_keys else None
+    before = window(order[:-RECENT_MONTHS]) if len(order) > RECENT_MONTHS else None
+
     by_source: dict[str, dict[str, float]] = {}
     by_manager: dict[str, dict[str, float]] = {}
     for deal in deals or []:
         booked = bool(deal.get("booked"))
+        fresh = str(deal.get("month") or "") in recent_keys
         for where, key in ((by_source, deal.get("source") or "—"),
                            (by_manager, deal.get("manager") or "—")):
-            block = where.setdefault(str(key)[:40], {"deals": 0.0, "booked": 0.0})
+            block = where.setdefault(str(key)[:40], {
+                "deals": 0.0, "booked": 0.0, "recent_deals": 0.0, "recent_booked": 0.0})
             block["deals"] += 1
             block["booked"] += 1 if booked else 0
+            block["recent_deals"] += 1 if fresh else 0
+            block["recent_booked"] += 1 if fresh and booked else 0
 
     def rows(where: dict[str, dict[str, float]]) -> list[dict[str, Any]]:
         out = [{"name": name, **value,
-                "share": value["booked"] / value["deals"] if value["deals"] else None}
+                "share": value["booked"] / value["deals"] if value["deals"] else None,
+                "recent_share": (value["recent_booked"] / value["recent_deals"]
+                                 if value["recent_deals"] else None)}
                for name, value in where.items()]
         return sorted(out, key=lambda item: -item["deals"])
 
@@ -452,8 +553,9 @@ def funnel(deals: list[dict[str, Any]], read: dict[str, Any] | None = None) -> d
         "booked_target": booked_share(target),
     }
     notes = [
-        "Бронь — не сделка, а «нет брони» у свежего обращения значит «ещё рано»: "
-        "по недавним месяцам доля занижена.",
+        "Месяц ставится по дате ОБРАЩЕНИЯ, а не по дате брони: доля месяца — "
+        "это судьба его обращений, и у свежих месяцев она занижена по "
+        "построению — часть их обращений ещё дойдёт до брони.",
         "Связать обращение с договором нечем: ни номера договора, ни объекта в "
         "выгрузке нет. Ряды стоят рядом помесячно, а не сшиты.",
         "Денег у обращения нет: сумма заполнена у единиц, поэтому «сколько выручки "
@@ -464,5 +566,26 @@ def funnel(deals: list[dict[str, Any]], read: dict[str, Any] | None = None) -> d
     ]
     for title in (read or {}).get("empty_columns") or []:
         notes.append(f"Колонка «{title}» есть в шапке и не заполнена ни разу.")
+    # Последний месяц выгрузки почти всегда неполон: она снята его серединой.
+    # Это меряется, а не предполагается — по дате последнего обращения в ней.
+    partial_month = ""
+    last_created = str((read or {}).get("last_created") or "")
+    if last_created[:7] and last_created[:7] == (order[-1] if order else ""):
+        year, month, day = (int(x) for x in last_created.split("-"))
+        length = _month_length(year, month)
+        if day < length:
+            partial_month = last_created[:7]
+            notes.append(
+                f"{_month_name(partial_month, True).capitalize()} — неполный месяц: "
+                f"выгрузка снята {day}-го, а в месяце {length} "
+                f"{_plural(length, 'день', 'дня', 'дней')}.")
+    if undated:
+        notes.append(
+            f"Помесячный ряд не считает {undated} "
+            f"{_plural(undated, 'обращение', 'обращения', 'обращений')} без даты создания — "
+            f"в общих числах {_plural(undated, 'оно стоит', 'они стоят', 'они стоят')}.")
     return {"by_source": rows(by_source), "by_manager": rows(by_manager),
-            "quality": quality, "notes": notes}
+            "quality": quality, "by_month": by_month, "recent": recent,
+            "before": before, "recent_months": RECENT_MONTHS,
+            "partial_month": partial_month, "undated": float(undated),
+            "notes": notes}
