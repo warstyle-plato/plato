@@ -77,7 +77,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.23.45"
+VERSION = "0.23.48"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -282,6 +282,15 @@ PROJECT_CLASS_PRESETS = {
     # не выделяют вовсе. Владелец признал точку непоказательной. В пресетах
     # живёт ОТНОШЕНИЕ, а не три отдельных числа, и тест проверяет именно его.
     #
+    # Площадь на машино-место тоже физическая и тоже классовая (решение
+    # владельца, 13.09.2026: «35 37,5 40»). Место у комфорта 2,5 м в ширину, у
+    # бизнеса и элитки 2,7–3,0 — шире место, шире проезд, и гросс на место
+    # растёт вместе с ними. Шкала намеренно мягче благоустройства: там двор
+    # отличается вчетверо, здесь гараж на седьмую часть — ширина места
+    # ограничена сверху машиной, а не кошельком. Цена на умолчаниях: бизнес
+    # 35 → 37,5 это +2 997,5 м² подземной части и LLCR 0,9656 → 0,9533, элит
+    # 35 → 40 это +5 995 м² и 0,9412.
+    #
     # Норматив площади благоустройства на человека стоит здесь же, рядом со
     # своей ставкой (решение владельца, 10.09.2026: «может это в настройки
     # класса вставить методику от количества людей»). Это ПЕРВОЕ в профиле
@@ -304,6 +313,7 @@ PROJECT_CLASS_PRESETS = {
         "utilities_th_per_sqm": 10.25,
         "landscaping_th_per_sqm": 15,
         "landscaping_area_per_person_sqm": 5,
+        "underground_area_per_space_sqm": 35,
     },
     "business": {
         "label": "Бизнес",
@@ -316,6 +326,7 @@ PROJECT_CLASS_PRESETS = {
         "utilities_th_per_sqm": 10.25,
         "landscaping_th_per_sqm": 35,
         "landscaping_area_per_person_sqm": 15,
+        "underground_area_per_space_sqm": 37.5,
     },
     "elite": {
         "label": "Элитный",
@@ -328,6 +339,7 @@ PROJECT_CLASS_PRESETS = {
         "utilities_th_per_sqm": 10.25,
         "landscaping_th_per_sqm": 50,
         "landscaping_area_per_person_sqm": 20,
+        "underground_area_per_space_sqm": 40,
     },
 }
 
@@ -9608,6 +9620,183 @@ def moscow_permanent_parking_by_mix(small: float, medium: float, large: float) -
     return math.ceil(counts[0] * _PARKING_2118_MIX["small"]
                      + counts[1] * _PARKING_2118_MIX["medium"]
                      + counts[2] * _PARKING_2118_MIX["large"])
+# `n` и `b` стоят здесь, а не ниже по файлу: строка ТЭП подземного
+# паркинга считается ими ПРИ ИМПОРТЕ, когда собирается умолчание, и
+# объявление ниже своего читателя дало бы `NameError` на ровном месте.
+def n(x: dict, key: str, default: float = 0.0) -> float:
+    try:
+        value = x.get(key, default)
+        return float(default if value in (None, "") else value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def b(x: dict, key: str) -> bool:
+    value = x.get(key, False)
+    if isinstance(value, bool):
+        return value
+    return str(value).lower() in ("1", "true", "да", "yes", "on")
+
+
+# --- строка ТЭП подземного паркинга ------------------------------------------
+def _underground_number(source: dict[str, Any], key: str) -> float:
+    try:
+        return max(0.0, float(source.get(key) or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def underground_area_per_space(inputs: dict[str, Any]) -> float:
+    """Норматив площади на машино-место: гросс — рампы и проезды внутри.
+
+    Ноль и пустое значат «умолчание», а не «площади нет»: поле приходит со
+    страницы явным нулём, когда его не было в сохранённом проекте.
+    """
+    fallback = _underground_number(DEFAULT_INPUTS, "underground_area_per_space_sqm")
+    return (_underground_number(inputs, "underground_area_per_space_sqm")
+            or fallback or 35.0)
+
+
+def underground_parking_requirement(inputs: dict[str, Any],
+                                    tep: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
+    """Потребность в подземных местах: выгрузка города первой, её нет — норма.
+
+    Выгрузка идёт первой потому, что знает приобъектные места нежилья; наша
+    норма их не считает и говорит это в основании — К1 и К2 квартала без
+    выгрузки неизвестны, а единица «пока не знаем» отдала бы максимум,
+    выданный за норматив.
+    """
+    rows = tep or {}
+    per = underground_area_per_space(inputs)
+    apartment_row = rows.get("apartments") or {}
+    apartments = _underground_number(apartment_row, "saleable")
+    normalized = (inputs.get("_glavapu_import") or {}).get("normalized") or {}
+    imported_permanent = _underground_number(normalized, "parking_permanent")
+    imported_guest = _underground_number(normalized, "parking_guest")
+    imported_mfc = _underground_number(normalized, "mfc_parking_spaces")
+    if imported_permanent + imported_guest + imported_mfc > 0:
+        permanent, guest = imported_permanent, imported_guest
+        basis = "норматив ГлавАПУ по нормативному ТЭП"
+        if apartments > 0:
+            # Метры правили после выгрузки — места пересчитываются нормой от
+            # НОВОЙ площади квартир: число города посчитано на его же ТЭП.
+            permanent = float(moscow_permanent_parking_2118(apartments))
+            guest = float(math.ceil(permanent * _PARKING_GUEST_SHARE))
+            basis = f"2118-ПП от {apartments:,.0f} м² квартир".replace(",", " ")
+        mfc = imported_mfc
+        was_office = _underground_number(normalized, "office_gba_sqm")
+        if imported_mfc > 0 and was_office > 0:
+            now_office = (_underground_number(rows.get("offices") or {}, "gns")
+                          + _underground_number(rows.get("standalone_retail") or {}, "gns"))
+            mfc = float(math.ceil(imported_mfc * now_office / was_office))
+        spaces = permanent + guest + mfc
+        if spaces <= 0:
+            return None
+        # Площадь паркинга МФЦ город назвал сам — пересчитывать её нашим
+        # нормативом незачем, пока число мест осталось его.
+        mfc_area = mfc * per
+        if imported_mfc > 0 and mfc == imported_mfc:
+            mfc_area = _underground_number(normalized, "mfc_parking_area_sqm") or mfc * per
+        return {"permanent": permanent, "guest": guest, "mfc": mfc, "spaces": spaces,
+                "basis": basis, "gns": (permanent + guest) * per + mfc_area}
+    if apartments <= 0:
+        return None
+    permanent_places, basis = moscow_permanent_parking_by_average(
+        apartments, _underground_number(apartment_row, "units"))
+    permanent = float(permanent_places)
+    guest = float(math.ceil(permanent * _PARKING_GUEST_SHARE))
+    spaces = permanent + guest
+    if spaces <= 0:
+        return None
+    return {"permanent": permanent, "guest": guest, "mfc": 0.0, "spaces": spaces,
+            "basis": basis + "; приобъектные места нежилья не учтены",
+            "gns": spaces * per}
+
+
+def underground_tep_row(inputs: dict[str, Any],
+                        tep: dict[str, dict[str, Any]]) -> dict[str, float] | None:
+    """Строка ТЭП подземного паркинга — производная, и ответ у неё ОДИН.
+
+    Считали её четверо и по-разному. Страница (`repairParkingFromGlavapu`)
+    шла по порядку «отказ → руками → выгрузка → норматив»; движок последней
+    ступени не имел ВОВСЕ и на проекте без ручных полей и без выгрузки брал
+    присланное — на умолчаниях это 1 107,51 места (дробное число мест!) и
+    38 763 м² против 1 199 и 41 965 у страницы, а правка норматива 35 → 40 не
+    двигала в движке ничего. Книга показывает ФАКТИЧЕСКИЙ норматив (площадь ÷
+    места) и потому следует за строкой, а `/v2` пересчитывает пару при правке
+    ячейки — обе поверхности верны ровно настолько, насколько верна строка.
+
+    Кладовые лежат на ТОМ ЖЕ подземном этаже и вычитаются здесь, а не
+    прибавляются: базу подземной части движок считает как «паркинг плюс
+    кладовые», и этаж, посчитанный дважды, даёт метры, которых не строят. На
+    6 000 м² кладовых это было 47 965 м² базы против 41 965 у страницы — CAPEX
+    +877,4 млн ₽, полная стоимость +1 066,1 млн ₽, LLCR 0,9529 против 0,9775.
+
+    Возвращает `None`, когда считать не из чего: ни отказа, ни ручных полей,
+    ни выгрузки, ни квартир. Тогда строку не трогают — «мы не знаем» не то же
+    самое, что «паркинга нет».
+    """
+    row = (tep or {}).get("underground_parking")
+    if not isinstance(row, dict):
+        return None
+    zero = {"units": 0.0, "gns": 0.0, "total_area": 0.0,
+            "useful": 0.0, "saleable": 0.0, "transfer": 0.0}
+    if b(inputs, "underground_parking_disabled"):
+        # Отказ от подземного паркинга: потребность закрывает наземный гараж.
+        # Ноль в поле мест значит «по нормативу», поэтому отказ — свой признак.
+        return dict(zero)
+    per = underground_area_per_space(inputs)
+    manual_spaces = _underground_number(inputs, "underground_manual_spaces")
+    manual_area = _underground_number(inputs, "underground_manual_gns_sqm")
+    guest: float | None = None
+    if manual_spaces > 0 or manual_area > 0:
+        # Заданная руками площадь сильнее норматива ВСЕГДА, а не только когда
+        # мест не назвали: реальный подземный этаж диктуют пятно застройки,
+        # рампы и техпомещения, а норматив описывает потребность.
+        spaces = manual_spaces if manual_spaces > 0 else (
+            round(manual_area / per) if per > 0 else 0.0)
+        area = manual_area if manual_area > 0 else spaces * per
+    else:
+        need = underground_parking_requirement(inputs, tep)
+        if not need:
+            return None
+        spaces, area, guest = need["spaces"], need["gns"], need["guest"]
+    area = max(0.0, area - _underground_number((tep or {}).get("storage") or {}, "gns"))
+    computed = dict(zero)
+    computed["units"] = float(spaces)
+    computed["gns"] = round(area, 1)
+    computed["total_area"] = computed["gns"]
+    if guest is not None:
+        # Точное число гостевых известно из самой нормы — выводить его из доли
+        # незачем, а потерять значит продать их.
+        computed["guest_units"] = guest
+    return computed
+
+
+def apply_underground_tep_row(inputs: dict[str, Any],
+                              tep: dict[str, dict[str, Any]]) -> None:
+    """Привести строку подземного паркинга к вводным. Правится на месте.
+
+    Объявленную очередью строку не трогаем: её площадь — доля уже посчитанной
+    проектной, и повторный вычет кладовых снял бы их дважды.
+    """
+    row = (tep or {}).get("underground_parking")
+    if not isinstance(row, dict) or row.get(TEP_ROW_DECLARED):
+        return
+    computed = underground_tep_row(inputs, tep)
+    if computed:
+        row.update(computed)
+
+
+# Умолчание строки считается тем же ответом, а не пишется литералом: копию
+# негде обновлять, потому что копии нет. Прежний литерал нёс 1 107,5142857
+# места — дробное число мест, которых не строят, — и 38 763 м², то есть ответ
+# ещё одной, пятой методики.
+if "underground_parking" in TEP_DEFAULT:
+    _underground_default = underground_tep_row(DEFAULT_INPUTS, TEP_DEFAULT)
+    if _underground_default:
+        TEP_DEFAULT["underground_parking"].update(_underground_default)
+    del _underground_default
 
 
 # Делители платы за смену ВРИ по праву на участок — из формулы калькулятора
@@ -24826,20 +25015,6 @@ def download_server_preset(preset_id: str, session: str = "", key: str = ""):
     )
 
 
-def n(x: dict, key: str, default: float = 0.0) -> float:
-    try:
-        value = x.get(key, default)
-        return float(default if value in (None, "") else value)
-    except (TypeError, ValueError):
-        return float(default)
-
-
-def b(x: dict, key: str) -> bool:
-    value = x.get(key, False)
-    if isinstance(value, bool):
-        return value
-    return str(value).lower() in ("1", "true", "да", "yes", "on")
-
 
 def d(value: str | date) -> date:
     return value if isinstance(value, date) else date.fromisoformat(str(value))
@@ -27680,53 +27855,13 @@ def calculate(req: CalcRequest) -> dict:
             n(x, "rate_curve_shape", 2.0),
         )
 
-    # ГлавАПУ is the authoritative source for required underground parking.
-    # Repair stale browser/localStorage TEP values before every calculation.
-    # Заданная руками площадь — исключение и главнее импорта: норматив 35 м²
-    # на место описывает потребность, а реальный подземный этаж диктуют пятно
-    # застройки, рампы и техпомещения. Пока поле пустое, защита от устаревших
-    # значений работает как раньше.
-    # Ведущее — количество мест: девелопер решает, сколько машино-мест ему
-    # нужно, а ГлавАПУ даёт лишь норматив обеспеченности (минимум). Нужно
-    # больше — строится ещё подземный этаж, и площадь растёт пропорционально:
-    # 50 мест это 1 750 м², а не 980 от норматива. Норматив 35 м² — гросс,
-    # рампы, проезды и техпомещения уже внутри. Площадь можно задать и прямо,
-    # когда она известна из проекта.
-    manual_spaces = n(x, "underground_manual_spaces")
-    manual_underground = n(x, "underground_manual_gns_sqm")
-    area_per_space = n(x, "underground_area_per_space_sqm", 35.0) or 35.0
-    imported = (x.get("_glavapu_import") or {}).get("normalized", {})
-    if b(x, "underground_parking_disabled") and "underground_parking" in t:
-        # Подземного паркинга нет вовсе: в области нормативную потребность
-        # закрывают наземным гаражом, и он дешевле. Ноль в поле мест значит
-        # «по нормативу», поэтому отказ выражается отдельным признаком —
-        # иначе импорт ГлавАПУ восстановил бы паркинг при первом пересчёте.
-        for field in ("units", "gns", "total_area", "useful", "saleable", "transfer"):
-            t["underground_parking"][field] = 0.0
-    elif (manual_spaces > 0 or manual_underground > 0) and "underground_parking" in t:
-        spaces = (manual_spaces if manual_spaces > 0
-                  else round(manual_underground / area_per_space))
-        area = manual_underground if manual_underground > 0 else spaces * area_per_space
-        t["underground_parking"]["units"] = spaces
-        t["underground_parking"]["gns"] = area
-        t["underground_parking"]["total_area"] = area
-        t["underground_parking"]["useful"] = 0.0
-        t["underground_parking"]["saleable"] = 0.0
-        t["underground_parking"]["transfer"] = 0.0
-    elif imported:
-        permanent = n(imported, "parking_permanent")
-        guest = n(imported, "parking_guest")
-        underground_spaces = permanent + guest
-        if underground_spaces > 0 and "underground_parking" in t:
-            t["underground_parking"]["units"] = underground_spaces
-            # Точное число гостевых известно из выгрузки — выводить его из доли
-            # незачем, а потерять значит продать их.
-            t["underground_parking"]["guest_units"] = guest
-            t["underground_parking"]["gns"] = underground_spaces * area_per_space
-            t["underground_parking"]["total_area"] = underground_spaces * area_per_space
-            t["underground_parking"]["useful"] = 0.0
-            t["underground_parking"]["saleable"] = 0.0
-            t["underground_parking"]["transfer"] = 0.0
+    # Строка подземного паркинга — производная от вводных, и ответ у неё ОДИН
+    # (`underground_tep_row`). Здесь была своя ветвистая копия порядка
+    # «отказ → руками → выгрузка», у которой не было последней ступени —
+    # норматива: проект без ручных полей и без выгрузки оставался с тем, что
+    # прислали, и правка норматива 35 → 40 не двигала ничего. Кладовые при
+    # этом лежат на том же этаже, и движок считал их дважды.
+    apply_underground_tep_row(x, t)
 
     # Соцобъект приводится к вводным здесь же, где чинится подземный паркинг,
     # и по той же причине: строка ТЭП у него — производная, а хранимая
@@ -30575,6 +30710,13 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
         single = calculate(CalcRequest(inputs=x_master, tep=t_master, rates=rates))
         return {"mode": "single", "consolidated": single, "phases": [], "comparison": []}
 
+    # Строка подземного паркинга выводится ДО деления: очередь получает долю
+    # уже посчитанной проектной площади. Прежде деление шло по присланной
+    # строке, а проект считался по выведенной — на 6 000 м² кладовых сумма
+    # очередей выходила 41 965 м² против 35 965 у одиночного расчёта, то есть
+    # этаж кладовых доставался очередям вторым экземпляром.
+    apply_underground_tep_row(x_master, t_master)
+
     while len(phases_cfg) < count:
         phases_cfg.append({
             "name": f"О{len(phases_cfg)+1}",
@@ -30754,6 +30896,12 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
             if n(x_master, "underground_manual_spaces") > 0 or n(x_master, "underground_manual_gns_sqm") > 0:
                 p_inputs["underground_manual_spaces"] = n(parking_row, "units")
                 p_inputs["underground_manual_gns_sqm"] = n(parking_row, "gns")
+            # Доля очереди посчитана здесь — значит она объявлена, и движок её
+            # не выводит заново. Иначе норматив пересчитал бы строку от квартир
+            # ОЧЕРЕДИ и разбиение исчезло бы, а кладовые вычлись бы дважды:
+            # площадь очереди — доля уже очищенной проектной.
+            if isinstance(parking_row, dict):
+                parking_row[TEP_ROW_DECLARED] = True
 
         # Cost inflation belongs to the queue wrapper, not to the atomic engine.
         cost_inflation_factor = _phase_cost_inflation_factor(phasing, offset)
