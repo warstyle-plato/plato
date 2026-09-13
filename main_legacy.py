@@ -36166,7 +36166,10 @@ def normatives_announcements(req: WebLoginConfirmRequest) -> dict[str, Any]:
     return {"announcements": take()}
 
 
-@app.post("/internal/monitor/daily")
+# Скрыт из схемы, как и все маршруты монитора: это дорога хост-хост под общей
+# подписью, а не публичный метод. Правило держит
+# `test_the_routes_are_hidden_and_gated` — оно и поймало пропуск на CI.
+@app.post("/internal/monitor/daily", include_in_schema=False)
 def internal_monitor_daily(req: SiteChatReportRequest) -> dict[str, Any]:
     """Отчёт из чата стройки: бот на Render принял, ядро сохранило.
 
