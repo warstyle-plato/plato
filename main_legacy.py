@@ -43343,6 +43343,35 @@ function renderInputs(){
      }
      el.onchange=()=>{inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='social_mode')inputs._social_mode_user_set=true;if(/^(offices|retail|sports)_parking_(under|over)_spaces$/.test(id)){if(String(el.value).trim()==='')restoreParkingNorm(id.split('_')[0]);else markParkingByHand(id.split('_')[0]);}if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){renderInputs();return calculate()}if(['apartment_price_th','commercial_price_th','parking_price_th','main_above_th_per_sqm','main_under_th_per_sqm'].includes(id)){inputs.project_class='custom';syncProjectClassSelector()}if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(TEP_DERIVED_INPUTS.includes(id)){const cleared=id==='social_area_source'&&krtClearsVriFee();const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(cleared||filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
      wrap.appendChild(el);
+     // Смягчение, которое даёт ГОРОД по своему решению, — справка у числа, а
+     // не множитель в расчёте (решение владельца, 13.09.2026: «это зависит от
+     // решения мэрии, так что мы же можем просто указать на такую возможность
+     // справочно»). Стоит она у нормы площади двора: это единственное место,
+     // где человек этот метраж и правит. Первой строкой сказано, ЧЬЁ число в
+     // поле, — наши 5/15/20 м²/чел. это стоимость двора по классу, а не норма
+     // города, и одно под другим читалось бы как ссылка на акт там, где стоит
+     // экспертная ставка. Только Москва: 2152-ПП другим регионам не писан.
+     //
+     // Место — ПОСЛЕ поля, и отдельным узлом, а не `innerHTML+=` до него: там
+     // справка встаёт над вводом и приклеивается к подписи поля, то есть
+     // читается как утверждение о нём. Замер поймал это на первом же прогоне —
+     // 200 px выше поля; тот же капкан, что 13.09.2026 на нормативе паркинга.
+     if(id==='landscaping_area_per_person_sqm'&&String(inputs.vri_region||'msk')==='msk'){
+      const relief=document.createElement('div');
+      relief.className='note';
+      relief.style.cssText='margin:6px 0 0;padding:11px 12px';
+      relief.innerHTML='<b>Справка, в расчёт не входит.</b> Поле выше — наша ставка площади '
+       +'двора по классу, а не норма города. Город (2152-ПП, табл. 1.4.2, территория '
+       +'преобразования) требует 5,0 м²/чел. озеленённых территорий ЖК, из них 3,5 — зелёные '
+       +'насаждения. С 18.08.2026 (2260-ПП) часть нормы разрешено не добирать метрами, а '
+       +'платить деньгами в бюджет по решению ГЗК через инфраструктурный договор: −15% при '
+       +'ОТОП ≥5 га, ООПТ или ООЗТ в радиусе 500 м; внутри Садового кольца при участке '
+       +'0,5–1 га — от 3,0 м²/чел., при участке меньше 0,5 га или реконструкции без нового '
+       +'строительства — можно без озеленения вовсе. Модель платит полную ставку всегда и '
+       +'компенсацию не считает: порядок её расчёта определит акт ДГП, а его нет. '
+       +'Согласованное снижение вносится площадью в поле ниже.';
+      wrap.appendChild(relief);
+     }
      // Место под норму — ПОСЛЕ поля, а не до него. Стоя над вводом, подпись
      // приклеивалась к подписи поля и читалась как утверждение о нём: «по
      // нормативу приложения 6 — 1 493 мест» под строкой «мест на первых
