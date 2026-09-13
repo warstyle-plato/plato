@@ -102,6 +102,111 @@ def krt_lock() -> str:
     return page[start:end] + function("applyDerivedInputs")
 
 
+def tep_cell_stand() -> str:
+    """Стенд для правки ячейки ТЭП: настоящие функции страницы плюс заглушки.
+
+    Ответ на «как погонять `tepCellChanged`» один на все проверки: две копии
+    стенда разошлись бы молча, и одна из них однажды проверяла бы прошлое
+    поведение. Заглушками стоит только то, что к арифметике строки отношения
+    не имеет — отрисовка, вводные, расчёт.
+    """
+    pieces = [
+        page_const("TEP_RATIOS"),
+        "const inputs={};",
+        "let tep={};",
+        "const landNum=(v,d)=>Number(v||0).toFixed(d===undefined?1:d);",
+        "let recalcs=0;",
+        "function tepRowToInputs(){}",
+        "function renderInputs(){}",
+        "function renderTep(){}",
+        "function updateTepTotals(){}",
+        "function scheduleTepAutoRecalc(){}",
+        "function calculate(){recalcs++}",
+        "const TEP_SOCIAL_INPUTS={};",
+        "function socialTotalShare(){return 0.9}",
+        function("tepRatioOverrides"),
+        function("tepRatio"),
+        function("tepFillByRatios"),
+        function("tepApplyTransfer"),
+        function("tepCellChanged"),
+        # Пересборка строки по долям — тот же путь, что правка ячейки:
+        # «наши» и правка доли обязаны считать переданное так же.
+        "let tepRatioComplaint='';",
+        "const TEP_ROW_SWITCH={};",
+        "let RATIO_STORE={};",
+        function("tepRatioChain"),
+        function("tepRatioWrite"),
+        function("tepRatioChangedKeys"),
+        function("refillTepRow"),
+        function("tepRatioSet"),
+        function("tepRatioReset"),
+    ]
+    return "\n".join(pieces) + "\n"
+
+
+def run(prelude: str, tail: str, limit: int = 60) -> tuple[str, list[str]]:
+    """Гоняет стенд на node, добирая недостающие куски страницы по именам.
+
+    Тот же приём был выписан копиями в трёх проверках, а общий стенд
+    перечислял зависимости руками — и падал на своей неполноте, когда рядом
+    заводили функцию: «setTepNote is not defined» вместо утверждения о строке.
+    Имя берётся из самой ошибки, кусок — у страницы; имени на странице нет —
+    падаем с ним, а не подсовываем заглушку: заглушка ответила бы за страницу.
+    """
+    import shutil  # noqa: PLC0415 — нужны только здесь
+    import subprocess  # noqa: PLC0415
+
+    node = shutil.which("node")
+    if not node:
+        import pytest  # noqa: PLC0415
+
+        pytest.skip("node недоступен")
+    taken: list[str] = []
+    bodies: list[str] = []
+    for _ in range(limit):
+        script = prelude + "\n" + "\n".join(bodies) + "\n" + tail
+        done = subprocess.run([node, "-e", script], capture_output=True,
+                              text=True, timeout=60)
+        if done.returncode == 0:
+            return done.stdout, taken
+        error = done.stderr
+        if "ReferenceError" not in error or " is not defined" not in error:
+            raise AssertionError(error[-2500:])
+        name = error.split("ReferenceError: ")[1].split(" is not defined")[0].strip()
+        if name in taken:
+            raise AssertionError(f"{name} не разрешается\n{error[-1500:]}")
+        bodies.append(piece(name))
+        taken.append(name)
+    raise AssertionError(f"зависимостей больше {limit} — стенд не сходится")
+
+
+def run_json(prelude: str, tail: str, limit: int = 60):
+    """То же, но ответ разбирается как JSON — стенды печатают им."""
+    import json  # noqa: PLC0415
+
+    out, _taken = run(prelude, tail, limit)
+    return json.loads(out)
+
+
+def page_const(name: str) -> str:
+    """Объявление константы страницы целиком, как оно стоит на СОБРАННОЙ странице.
+
+    Литерал в стенде был бы второй копией методики: доли ТЭП, имена продуктов и
+    умолчания объявлены в движке и приезжают подстановкой. Взятые со страницы,
+    они не могут отстать.
+    """
+    page = core.PAGE
+    head = f"const {name}="
+    start = page.find(head)
+    if start < 0:
+        raise AssertionError(f"на странице нет константы {name}")
+    end = page.find("\n", start)
+    line = page[start:end if end > 0 else len(page)].rstrip()
+    if not line.endswith(";"):
+        raise AssertionError(f"объявление {name} не в одну строку — стенд возьмёт половину")
+    return line
+
+
 def auctions_function(*names: str) -> str:
     """Те же куски, но со страницы торгов (`auction_search.ui`).
 

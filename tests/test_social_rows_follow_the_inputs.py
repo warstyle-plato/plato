@@ -304,22 +304,8 @@ def _run_page(tail: str):
     Имени нет на странице — падаем с этим именем, а не подсовываем заглушку:
     заглушка ответила бы за страницу.
     """
-    taken: list[str] = []
-    bodies: list[str] = []
-    for _ in range(60):
-        script = PRELUDE + "\n" + "\n".join(bodies) + "\n" + tail
-        done = subprocess.run(["node", "-e", script], capture_output=True, text=True)
-        if done.returncode == 0:
-            return json.loads(done.stdout), taken
-        error = done.stderr
-        if "ReferenceError" not in error or " is not defined" not in error:
-            raise AssertionError(error[-2500:])
-        name = error.split("ReferenceError: ")[1].split(" is not defined")[0].strip()
-        if name in taken:
-            raise AssertionError(f"{name} не разрешается\n{error[-1500:]}")
-        bodies.append(page_blocks.piece(name))
-        taken.append(name)
-    raise AssertionError("зависимостей больше, чем разумно разрешать")
+    out, taken = page_blocks.run(PRELUDE, tail)
+    return json.loads(out), taken
 
 
 def test_the_queue_tab_shows_what_the_engine_builds():

@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import json
 import re
-import subprocess
 import sys
 from pathlib import Path
 
@@ -63,22 +62,8 @@ def _run_page(tail: str, split=None):
     страницы, и стенд падает на своей неполноте вместо своего утверждения.
     """
     prelude = _prelude(split or core.MKD_SPP_SPLIT)
-    taken: list[str] = []
-    bodies: list[str] = []
-    for _ in range(60):
-        script = prelude + "\n" + "\n".join(bodies) + "\n" + tail
-        done = subprocess.run(["node", "-e", script], capture_output=True, text=True)
-        if done.returncode == 0:
-            return json.loads(done.stdout), taken
-        error = done.stderr
-        if "ReferenceError" not in error or " is not defined" not in error:
-            raise AssertionError(error[-2500:])
-        name = error.split("ReferenceError: ")[1].split(" is not defined")[0].strip()
-        if name in taken:
-            raise AssertionError(f"{name} не разрешается\n{error[-1500:]}")
-        bodies.append(page_blocks.piece(name))
-        taken.append(name)
-    raise AssertionError("зависимостей больше, чем разумно разрешать")
+    out, taken = page_blocks.run(prelude, tail)
+    return json.loads(out), taken
 
 
 def _edit(field: str, value: float, split=None):
@@ -164,7 +149,11 @@ def test_the_refill_button_pulls_it_too():
     """
     tail = "\n".join([
         "tep.apartments.gns=0;tep.apartments.total_area=0;",
-        "tep.apartments.saleable=45000;",
+        # Полезная идёт вместе с продаваемой: на странице их держит один
+        # `tepApplyTransfer`, и строки с устаревшей полезной рядом со свежей
+        # продаваемой не бывает. Оставь её прежней — стенд задал бы состояние,
+        # которого у человека нет, и пересборка честно взяла бы вал оттуда.
+        "tep.apartments.saleable=45000;tep.apartments.useful=45000;",
         "refillTepRow('apartments');",
         "console.log(JSON.stringify({apartments:tep.apartments,"
         "commercial:tep.ground_commercial,"

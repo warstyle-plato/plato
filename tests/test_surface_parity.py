@@ -121,8 +121,26 @@ def test_the_workbook_matches_the_engine():
         result["summary"]["llcr"], rel=0.005)
     assert book.cell("ОТЧЕТ", "B5") == pytest.approx(
         result["summary"]["revenue"] / 1e6, rel=0.005)
-    assert book.cell("ОТЧЕТ", "B12") == pytest.approx(
-        result["summary"]["net_profit"] / 1e6, rel=0.005)
+    # Чистая прибыль проверяется допуском СВОЕЙ строки паритета, а не долей от
+    # себя самой: она разность EBITDA, стоимости финансирования, налога и НДС,
+    # и точнее слагаемых быть не может — на околонулевой прибыли доля от неё
+    # уже пола этих слагаемых. Каждое из них при этом проверено своей строкой,
+    # поэтому ослабления здесь нет: перебираем весь блок паритета, а не одно
+    # число.
+    checks = book.workbook["ПРОВЕРКИ"]
+    seen = []
+    for row in range(1, 130):
+        name = str(checks[f"A{row}"].value or "")
+        if not name.lower().startswith("паритет"):
+            continue
+        seen.append(name)
+        assert book.cell("ПРОВЕРКИ", f"F{row}") == "OK", (
+            f"{name}: книга {book.cell('ПРОВЕРКИ', f'B{row}')} против "
+            f"{book.cell('ПРОВЕРКИ', f'C{row}')} при допуске "
+            f"{book.cell('ПРОВЕРКИ', f'E{row}')}")
+    assert len(seen) >= 10, f"строк паритета найдено {len(seen)} — блок не прочитан"
+    assert any("чистая прибыль" in name.lower() for name in seen)
+    assert any("НДС" in name for name in seen)
 
 
 def test_the_attachments_use_the_server_calculation(monkeypatch):
