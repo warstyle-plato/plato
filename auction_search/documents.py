@@ -10,7 +10,7 @@ from urllib.parse import quote, urlparse, urlunparse
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree as ET
 
-from auction_search import reading
+from auction_search import archives, reading
 from auction_search.models import AuctionDocument
 
 
@@ -188,22 +188,66 @@ def _pdf_text(data: bytes) -> list[str]:
         raise DocumentExtractionError(f"cannot read PDF: {exc}") from exc
 
 
+def _by_format(low_name: str, low_type: str, data: bytes, title: str) -> list[str]:
+    """Текст по виду файла. Вид решают расширение, тип и первые байты."""
+    if low_name.endswith(".docx") or "wordprocessingml.document" in low_type:
+        return _docx_text(data)
+    if low_name.endswith(".pdf") or low_type == "application/pdf" or data[:4] == b"%PDF":
+        return _pdf_text(data)
+    if low_name.endswith((".html", ".htm")) or "text/html" in low_type:
+        parser = _HTMLText()
+        parser.feed(data.decode("utf-8", errors="replace"))
+        return parser.parts
+    if low_name.endswith((".txt", ".csv")) or low_type.startswith("text/"):
+        return _paragraphs(data.decode("utf-8", errors="replace"))
+    if low_name.endswith(".xml"):
+        # Выписку ЕГРН читает `egrn_archive`, а не текстовый разбор: у неё не
+        # абзацы, а записи. Назвать это «формат не поддержан» значило бы выдать
+        # чужой формат за наш пробел ровно там, где он прочитан другим путём.
+        raise DocumentExtractionError("XML — не текстовый документ (выписки читает разбор ЕГРН)")
+    raise DocumentExtractionError(f"unsupported document format: {title}")
+
+
+def _zip_paragraphs(title: str, data: bytes) -> list[str]:
+    """Текст архива: абзацы читаемых записей, а непрочитанные — названы.
+
+    Каждый абзац подписан именем своей записи: архив лотовой документации
+    несёт по десятку файлов, и «в каком из них это сказано» — часть ответа.
+    Ни одной читаемой записи — это отказ с перечнем того, что внутри: пустой
+    список абзацев читался бы как пустой документ.
+    """
+    try:
+        opened = archives.open_zip(data)
+    except archives.ArchiveProblem as exc:
+        raise DocumentExtractionError(f"{title}: {exc}") from exc
+    out: list[str] = []
+    unread: list[str] = [f"{item['name']} — {item['reason']}" for item in opened.refused]
+    for entry in opened.entries:
+        try:
+            part = _by_format(entry.name.lower(), "", entry.data, entry.name)
+        except DocumentExtractionError as exc:
+            unread.append(f"{entry.name} — {exc}")
+            continue
+        out.extend(f"[{entry.name}] {item}" for item in part)
+    if not out:
+        if unread:
+            raise DocumentExtractionError(
+                f"в архиве «{title}» нет читаемого текста: " + "; ".join(unread[:20]))
+        raise DocumentExtractionError(f"архив «{title}» пуст")
+    if unread:
+        out.append("[архив] не прочитано: " + "; ".join(unread[:20]))
+    return out
+
+
 def extract_document_paragraphs(document: AuctionDocument, data: bytes | None = None, content_type: str = "") -> list[str]:
     """Extract text without OCR; scanned PDFs fail explicitly instead of inventing content."""
     if data is None:
         data, content_type, authenticated = download_document(document.url)
         document.access_status = "authenticated" if authenticated else "public"
         document.auth_required = False
-    low_url = document.url.lower()
-    low_type = (content_type or "").lower()
-    if low_url.endswith(".docx") or "wordprocessingml.document" in low_type:
-        return _docx_text(data)
-    if low_url.endswith(".pdf") or low_type == "application/pdf" or data[:4] == b"%PDF":
-        return _pdf_text(data)
-    if low_url.endswith((".html", ".htm")) or "text/html" in low_type:
-        parser = _HTMLText()
-        parser.feed(data.decode("utf-8", errors="replace"))
-        return parser.parts
-    if low_url.endswith((".txt", ".csv")) or low_type.startswith("text/"):
-        return _paragraphs(data.decode("utf-8", errors="replace"))
-    raise DocumentExtractionError(f"unsupported document format: {document.title}")
+    # Архив вложений читается по записям, а DOCX и ODT устроены архивом, но
+    # документами и остаются: их разбирает свой читатель.
+    if archives.looks_like_zip(data) and not archives.is_office_package(data):
+        return _zip_paragraphs(document.title or document.url, data)
+    return _by_format(document.url.lower(), (content_type or "").lower(), data,
+                      document.title)
