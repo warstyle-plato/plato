@@ -94,6 +94,17 @@ def isolated_platon_state(tmp_path, monkeypatch):
     # зависящая от оставленного файла, врёт в обе стороны, и зелёный прогон
     # здесь не значит ничего: на CI контейнер чистый, и там этого не видно.
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    # Снимки монитора живут своим каталогом (`DEVELOPAID_MONITOR_DIR`, иначе
+    # `data/monitor` рядом с кодом), и в изоляцию он не входил: ежедневный
+    # отчёт из теста ложился в рабочий каталог репозитория, а `git add -A`
+    # готов был увезти его в публичный git вместе с именами подрядчиков живого
+    # объекта. Путь берётся у самого модуля, а не собирается второй раз.
+    try:
+        import developaid_monitor as _monitor
+
+        monkeypatch.setattr(_monitor, "_SNAPSHOT_DIR", tmp_path / "monitor")
+    except Exception:  # модуль монитора может быть не установлен
+        pass
     for name in ("_PLATON_CONTEXT_BY_SESSION", "_PLATON_LAST_SESSION",
                  "_PLATON_TEP_CONTEXT", "_PLATON_MODE", "_PLATON_HISTORY",
                  "_PLATON_PENDING", "_PLATON_LAST_URL"):

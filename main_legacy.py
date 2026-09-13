@@ -76,7 +76,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.23.25"
+VERSION = "0.23.27"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -13258,6 +13258,151 @@ def _telegram_handle_cadastral_numbers(chat_id: int, numbers: list[str], query: 
     _telegram_cad_class_menu(chat_id, dialog)
 
 
+_TELEGRAM_MOSCOW = timezone(timedelta(hours=3))
+
+
+def _site_chat_store(chat_id: int, text: str, taken_at: str,
+                     project: str = "") -> dict[str, Any]:
+    """Отдать отчёт ядру. На ядре — тот же маршрут, но без сети.
+
+    Второй реализации хранения не заводим: разойдясь, бот и загрузка положили
+    бы один отчёт в два места, и оба выглядели бы верными.
+    """
+    payload = {
+        "chat_id": int(chat_id or 0),
+        "sign": _web_login_sign("monitor-daily", int(chat_id or 0)),
+        "text": str(text or ""),
+        "project": str(project or ""),
+        "taken_at": str(taken_at or ""),
+    }
+    url = _core_api_url("/internal/monitor/daily")
+    if url:
+        return _core_post(url, payload, 30.0)
+    return internal_monitor_daily(SiteChatReportRequest(**payload))
+
+
+def _telegram_group_seen(chat: dict[str, Any]) -> None:
+    """Счётчик увиденного в группах — иначе молчание нечем объяснить.
+
+    «Privacy mode не сняли», «бота не переподключили» и «мост не дописан»
+    снаружи выглядят одинаково: бот молчит. Счётчик отвечает, дошло ли до нас
+    хоть одно сообщение и из какого чата, — то же правило, что у сторожа
+    новостей КРТ.
+    """
+    seen = getattr(app.state, "telegram_group_seen", None)
+    if seen is None:
+        seen = {}
+        app.state.telegram_group_seen = seen
+    key = str(int((chat or {}).get("id") or 0))
+    row = seen.setdefault(key, {"title": "", "count": 0, "last": ""})
+    row["title"] = str((chat or {}).get("title") or row["title"])
+    row["count"] = int(row["count"]) + 1
+    row["last"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _telegram_group_seen_line() -> str:
+    """Строка о группах для /status: сколько сообщений бот оттуда увидел.
+
+    Пустой счётчик — это ответ, а не прочерк: privacy mode Telegram по
+    умолчанию включён, и тогда обычных сообщений группы бот не получает вовсе.
+    Отличить это от «мост не дописан» иначе нечем.
+    """
+    seen = getattr(app.state, "telegram_group_seen", None) or {}
+    if not seen:
+        return ("\nГрупп: сообщений не видел ни одного. Если ждёте сводку с площадки — "
+                "у бота включён privacy mode либо его не переподключили к группе.")
+    rows = sorted(seen.values(), key=lambda row: int(row.get("count") or 0), reverse=True)
+    parts = [f"{row.get('title') or 'без имени'} — {int(row.get('count') or 0)}" for row in rows[:5]]
+    return "\nГруппы (сообщений с запуска): " + "; ".join(parts)
+
+
+def _telegram_group_message(chat: dict[str, Any], message: dict[str, Any]) -> None:
+    """Групповой чат: молчим, пока это не отчёт с площадки и не наша команда.
+
+    Прежде на КАЖДОЕ сообщение из группы бот отвечал «DevelopAid работает в
+    личном чате с ботом». Пока privacy mode был включён, он видел только
+    команды, и это почти не замечалось; со снятым privacy (владелец сделал это
+    13.09.2026) в рабочем чате на четырнадцать человек это стало бы потоком.
+    Отвечаем только на то, что адресовано нам: разобравшийся отчёт и команду
+    привязки. Всё прочее — тишина, а не «я вас не понял».
+    """
+    chat_id = int((chat or {}).get("id") or 0)
+    if not chat_id:
+        return
+    _telegram_group_seen(chat)
+    text = str(message.get("text") or message.get("caption") or "").strip()
+    if not text:
+        return
+
+    username = (_web_login_bot_username() or "").lower()
+    head = text.split(maxsplit=1)[0].lower() if text.startswith("/") else ""
+    command = head.split("@", 1)[0]
+    addressed = ("@" + username) in head if username else False
+
+    if command == "/site":
+        # Имя проекта берём из команды, а нет его — из названия группы: не
+        # заставлять печатать то, что Telegram уже прислал.
+        wanted = text.split(maxsplit=1)[1].strip() if " " in text else ""
+        wanted = wanted or str((chat or {}).get("title") or "").strip()
+        if not wanted:
+            _telegram_send_message(chat_id, "Название проекта не задано: <code>/site Имя объекта</code>.")
+            return
+        try:
+            answer = _site_chat_store(chat_id, "", "", project=wanted)
+        except Exception as exc:
+            _telegram_send_message(chat_id, "Привязка не удалась: " + html.escape(str(exc)))
+            return
+        _telegram_send_message(
+            chat_id,
+            "<b>Чат привязан к проекту «" + html.escape(str(answer.get("bound") or wanted)) +
+            "».</b>\nЕжедневную сводку с численностью буду читать отсюда сам.")
+        return
+
+    parsed = None
+    try:
+        import developaid_monitor_daily as daily
+
+        parsed = daily.parse_daily_report(text)
+    except Exception:
+        parsed = None
+    if not parsed or not parsed.get("contractors"):
+        # Не отчёт — молчим. Ответ «я вас не понял» на рабочую переписку хуже
+        # отсутствия бота: его выключат вместе с полезным.
+        if addressed:
+            _telegram_send_message(chat_id, "Здесь я читаю ежедневную сводку с площадки. "
+                                            "Расчёты — в личном чате.")
+        return
+
+    stamp = message.get("date")
+    try:
+        taken_at = datetime.fromtimestamp(
+            int(stamp), _TELEGRAM_MOSCOW).date().isoformat()
+    except (TypeError, ValueError, OSError):
+        taken_at = ""
+    try:
+        answer = _site_chat_store(chat_id, text, taken_at)
+    except Exception as exc:
+        _telegram_send_message(chat_id, "Сводка не сохранена: " + html.escape(str(exc)))
+        return
+    if not answer.get("bound"):
+        _telegram_send_message(
+            chat_id,
+            "<b>Сводку вижу, но чат не привязан к проекту.</b>\n"
+            "Пришлите <code>/site Имя объекта</code> — и дальше буду читать сам.")
+        return
+    works = len(parsed.get("works") or [])
+    _telegram_send_message(
+        chat_id,
+        "<b>Сводка принята"
+        + (" за " + html.escape(taken_at) if taken_at else "")
+        + ".</b>\nПодрядчиков "
+        + str(len(parsed.get("contractors") or []))
+        + ", ИТР " + str(parsed.get("itr_total") or 0)
+        + ", рабочих " + str(parsed.get("workers_total") or 0)
+        + ", строк работ " + str(works)
+        + ".\nПроект: " + html.escape(str(answer.get("bound"))) + ".")
+
+
 def _telegram_handle_message(message: dict[str, Any]) -> None:
     chat = message.get("chat") or {}
     sender = message.get("from") or {}
@@ -13266,7 +13411,7 @@ def _telegram_handle_message(message: dict[str, Any]) -> None:
     if not chat_id:
         return
     if str(chat.get("type") or "") != "private":
-        _telegram_send_message(chat_id, "DevelopAid работает в личном чате с ботом.")
+        _telegram_group_message(chat, message)
         return
     text = str(message.get("text") or "").strip()
     command = text.split(maxsplit=1)[0].split("@", 1)[0].lower() if text.startswith("/") else ""
@@ -13305,7 +13450,8 @@ def _telegram_handle_message(message: dict[str, Any]) -> None:
         status = "подключён" if _TELEGRAM_RUNTIME.get("configured") else "запускается"
         _telegram_send_message(
             chat_id,
-            f"<b>DevelopAid bot:</b> {status}\nTelegram ID: <code>{user_id}</code>\nВерсия: {VERSION}",
+            f"<b>DevelopAid bot:</b> {status}\nTelegram ID: <code>{user_id}</code>\nВерсия: {VERSION}"
+            + _telegram_group_seen_line(),
         )
         return
     if command == "/cancel":
@@ -35823,6 +35969,73 @@ def profile_announcements(req: WebLoginConfirmRequest) -> dict[str, Any]:
 # с контейнером — молча, как исчезал журнал.
 
 
+class SiteChatReportRequest(BaseModel):
+    """Отчёт с площадки из группового чата — от бота к ядру.
+
+    Модель объявлена ВЫШЕ своего маршрута намеренно: файл стоит на
+    `from __future__ import annotations`, аннотация читается строкой в момент
+    навешивания декоратора, и объявленная ниже модель молча уводит тело
+    запроса в параметры строки. Это уже стоило нам трёх молчащих каналов
+    уведомлений (09.09.2026).
+    """
+
+    chat_id: int = 0
+    sign: str = ""
+    title: str = ""
+    text: str = ""
+    project: str = ""
+    taken_at: str = ""
+
+
+def _site_chats_path() -> Path:
+    """Реестр «чат стройки → проект». На ядре, рядом с профилями.
+
+    Диск бота на Render живёт до следующей выкатки, а привязка обязана её
+    пережить: иначе после каждого выпуска отчёты падали бы в никуда, и
+    выглядело бы это как «бот перестал читать».
+    """
+    return _PROJECTS_DIR.parent / "site_chats.json"
+
+
+def _site_chats() -> dict[str, str]:
+    try:
+        raw = json.loads(_site_chats_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    found: dict[str, str] = {}
+    for key, value in (raw.get("chats") or {}).items():
+        name = str(value or "").strip()
+        try:
+            number = int(key)
+        except (TypeError, ValueError):
+            continue
+        if number and name:
+            found[str(number)] = name
+    return found
+
+
+def _site_chat_project(chat_id: int) -> str:
+    return _site_chats().get(str(int(chat_id or 0)), "")
+
+
+def _site_chat_bind(chat_id: int, project: str) -> str:
+    """Привязать чат к проекту. Пустое имя снимает привязку."""
+    chats = _site_chats()
+    key = str(int(chat_id or 0))
+    name = str(project or "").strip()
+    if name:
+        chats[key] = name
+    else:
+        chats.pop(key, None)
+    path = _site_chats_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"chats": chats}, ensure_ascii=False, indent=1),
+                    encoding="utf-8")
+    return name
+
+
 def _krt_subscribers_path() -> Path:
     return _PROJECTS_DIR.parent / "krt_subscribers.json"
 
@@ -35922,6 +36135,35 @@ def normatives_announcements(req: WebLoginConfirmRequest) -> dict[str, Any]:
         raise HTTPException(status_code=503,
                             detail="Нормативный реестр на этом хосте не установлен.")
     return {"announcements": take()}
+
+
+@app.post("/internal/monitor/daily")
+def internal_monitor_daily(req: SiteChatReportRequest) -> dict[str, Any]:
+    """Отчёт из чата стройки: бот на Render принял, ядро сохранило.
+
+    Ядро до api.telegram.org не достаёт, а монитор живёт на ядре — значит
+    дорога та же, что у уведомлений: подпись общим токеном бота. Разбор при
+    этом один на всех (`store_daily_report`), второго не заводим: он однажды
+    разошёлся бы с тем, что читает маршрут загрузки.
+    """
+    expected = _web_login_sign("monitor-daily", int(req.chat_id or 0))
+    if not hmac.compare_digest(str(req.sign or "").encode("utf-8"),
+                               expected.encode("utf-8")):
+        raise HTTPException(status_code=403, detail="Подпись не сошлась.")
+    if req.project:
+        return {"bound": _site_chat_bind(int(req.chat_id or 0), req.project)}
+    project = _site_chat_project(int(req.chat_id or 0))
+    if not project:
+        # «Чат не привязан» — это ответ, а не отказ: человеку надо сказать, чем
+        # привязать, иначе отчёт молча падает в никуда и выглядит принятым.
+        return {"bound": ""}
+    import developaid_monitor_daily as daily
+
+    try:
+        stored = daily.store_daily_report(project, req.text, req.taken_at or None)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"bound": project, "stored": stored}
 
 
 @app.post("/internal/krt/subscribe")
