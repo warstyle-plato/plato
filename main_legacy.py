@@ -18039,25 +18039,30 @@ def _v4_add_carry_parity_row(xml: str, target_mln: float, missing: list[str]) ->
 def _v4_object_phase_by_result(phases: list[dict[str, Any]]) -> dict[str, int]:
     """В какой очереди движок ПОСТРОИЛ каждый отдельно стоящий объект.
 
-    Читается результат, а не правила: очередь, где у объекта есть метры (или
-    места у наземного паркинга), и есть его очередь. Повторять здесь лестницу
-    приоритета нельзя — это был бы третий ответ на вопрос, у которого уже два.
+    Читается результат, а не правила: очередь, в чьих вводных объект ВКЛЮЧЁН,
+    и есть его очередь — это то, что движок применил, разложив проект. Повторять
+    здесь лестницу приоритета нельзя: это был бы третий ответ на вопрос, у
+    которого уже два.
 
-    Объект, которого нет ни в одной очереди, в ответ не попадает вовсе: пустое
+    Первая версия смотрела на строку ТЭП очереди и ошибалась молча: площадь
+    объекта движок читает из `offices_gba_sqm`, а строка ТЭП при этом может
+    быть нулевой — так устроены умолчания, и на них объект «нигде не построен»
+    при живых 10 000 м² и 2 519 млн ₽ CAPEX в четвёртой очереди. Признак
+    включения верен и для ПЕРЕДАННОГО городу объекта, у которого ни выручки,
+    ни своего пула расходов нет вовсе.
+
+    Объект, не включённый ни в одной очереди, в ответ не попадает: пустое
     значит «движок его не строил», и книга останется на своём умолчании, а не
     получит выдуманную единицу.
     """
     out: dict[str, int] = {}
     for index, phase in enumerate(phases or []):
-        rows = (((phase or {}).get("result") or {}).get("tep") or {}).get("rows") or []
-        for row in rows:
-            key = str(row.get("key") or "")
-            if key not in _V4_OBJECT_PRODUCT_CELLS:
+        phase_inputs = (phase or {}).get("inputs") or {}
+        for obj in standalone_objects():
+            if obj.key in out:
                 continue
-            built = (float(row.get("gns") or 0) or float(row.get("total_area") or 0)
-                     or float(row.get("units") or 0))
-            if built and key not in out:
-                out[key] = index + 1
+            if bool(phase_inputs.get(f"{obj.prefix}_enabled")):
+                out[obj.key] = index + 1
     return out
 
 
@@ -20420,10 +20425,11 @@ def build_project_workbook(
             queue = max(1, min(queue_cap, int(applied[field])))
         else:
             queue = max(1, min(queue_cap, int(float(discrete.get(field) or default))))
-            if (phasing or {}).get("enabled") and bool(x.get(
-                    {"offices": "offices_enabled", "standalone_retail": "retail_enabled",
-                     "above_parking": "above_parking_enabled",
-                     "sports": "sports_enabled"}[field])):
+            # Приставка вводных объявлена один раз — в `STANDALONE_OBJECTS`;
+            # список «ключ → признак включения» здесь был её копией.
+            _enabled = next(f"{o.prefix}_enabled"
+                            for o in standalone_objects() if o.key == field)
+            if (phasing or {}).get("enabled") and bool(x.get(_enabled)):
                 missing.append(
                     f"очередь объекта «{field}»: движок не назвал применённую — "
                     f"книга взяла {queue} по своему умолчанию")
