@@ -76,7 +76,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.23.37"
+VERSION = "0.23.42"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -37931,7 +37931,7 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
 .rate-good{color:var(--positive)}.rate-warn{color:var(--warn)}.negative{color:var(--negative)}
 .phase-given-none{display:flex;align-items:center;justify-content:center;color:#aaa;font-size:12px}
 .chart{height:230px;border:1px solid var(--line);margin-top:14px;position:relative;background:linear-gradient(to bottom,#fff,#fafafa)}
-.chart svg{width:100%;height:100%}.legend{display:flex;gap:18px;font-size:11px;color:#666;margin-top:8px}.legend i{display:inline-block;width:18px;height:3px;background:#111;vertical-align:middle;margin-right:5px}.legend i.gray{background:#999}
+.chart svg{width:100%;height:100%}.legend{display:flex;flex-wrap:wrap;gap:8px 18px;font-size:11px;color:#666;margin-top:8px}.legend i{display:inline-block;width:18px;height:3px;background:#111;vertical-align:middle;margin-right:5px}.legend i.gray{background:#999}
 .monthly th{position:sticky;top:0;z-index:2}.monthly td{white-space:nowrap}.monthly .money{font-variant-numeric:tabular-nums}
 .toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:13px}
 /* Оглавление отчёта: он длинный, и до календаря доезжали прокруткой. */
@@ -38156,6 +38156,7 @@ details.cadastral-box>summary::marker{color:#888}
   body.print-report table{font-size:7.2pt!important;width:100%!important}
   body.print-report th,body.print-report td{padding:1.5mm 1.8mm!important}
   body.print-report .scroll{overflow:visible!important;max-height:none!important}
+  body.print-report .gantt-wrap{overflow:visible!important}
   body.print-report .expense-row{grid-template-columns:1.3fr 2.8fr 55px 95px!important;font-size:7pt!important;gap:5px!important}
   body.print-report .expense-track{height:9px!important}
   body.print-report .note{font-size:7pt!important}
@@ -38898,7 +38899,7 @@ details.cadastral-box>summary::marker{color:#888}
         <div class="report-section-title">Календарный план</div>
       <div class="card">
         <div class="dates" id="reportCalendarDates"></div>
-        <div id="reportCalendarGantt" class="gantt"></div>
+        <div id="reportCalendarGantt" class="gantt-wrap"></div>
       </div>
       </div>
 
