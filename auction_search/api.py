@@ -8,8 +8,9 @@ import sys
 import threading
 import time
 import urllib.parse
+from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
@@ -50,7 +51,12 @@ from auction_search import equity_stake
 from auction_search.developaid_mapper import build_developaid_seed
 from auction_search.documents import DocumentExtractionError
 from auction_search.export_areas import export_areas
-from auction_search.krt_pipeline import egrn_summary, enrich_krt_from_official_documents
+from auction_search import archives, egrn_archive, egrn_store
+from auction_search.krt_pipeline import (
+    egrn_summary,
+    egrn_view,
+    enrich_krt_from_official_documents,
+)
 from auction_search.krt_ranking import (
     HEARTBEAT_SECONDS, NEW_FOR_SECONDS, KrtRanking, score_row)
 # Имя `krt_ranking` внутри маршрутов занято ЭКЗЕМПЛЯРОМ хранилища, а версия
@@ -3024,6 +3030,113 @@ def install(app: FastAPI) -> None:
         return {"latitude": data.get("latitude"), "longitude": data.get("longitude"),
                 "address": data.get("address") or req.query, "precision": data.get("precision"),
                 "nspd_url": data.get("nspd_url") or ""}
+
+    # Зип с выписками ЕГРН руками. Загрузчик получает от Росэлторга 503 через
+    # раз, и присланный человеком архив бывает ЕДИНСТВЕННЫМ источником сведений
+    # об объектах площадки (владелец, 13.09.2026: «надо сделать там возможность
+    # загружать зип с ЕГРН и распознавать его»).
+    #
+    # Без multipart нарочно — как у плана продаж в кабинете: `UploadFile` тянет
+    # python-multipart, которого в зависимостях нет, а архив приходит один и
+    # целиком, то есть тело запроса и есть файл.
+    @app.post("/auctions/egrn/archive")
+    async def auction_egrn_archive(request: Request, key: str = "",
+                                   file: str = "") -> dict[str, Any]:
+        """Архив выписок → записи, свод и склад. Второго разбора выписки нет."""
+        market_cabinet.require_cabinet(request)
+        # Ключ обязателен: без него архивы разных площадок легли бы в одну
+        # кучу, и на экране это выглядело бы как сведения об этой площадке.
+        if not str(key).strip():
+            raise HTTPException(
+                status_code=422,
+                detail="Не сказано, к какой площадке архив: нужен ключ лота или КРТ")
+        data = await request.body()
+        if not data:
+            raise HTTPException(status_code=422, detail="Пустой файл")
+        if len(data) > 60 * 1024 * 1024:
+            raise HTTPException(
+                status_code=413,
+                detail="Архив больше 60 МБ — столько лотовая документация не весит")
+        name = _uploaded_name(file) or "архив"
+
+        def work() -> dict[str, Any]:
+            parsed = egrn_archive.read(data, name=name)
+            kept = egrn_store.save(_egrn_dir(), key, parsed, name)
+            return {"parsed": parsed, "kept": kept}
+
+        try:
+            done = await run_in_threadpool(work)
+        except archives.ArchiveProblem as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        parsed, kept = done["parsed"], done["kept"]
+        upload = (kept.get("uploads") or [{}])[0]
+        return {
+            "key": key,
+            "file": name,
+            # Что принёс ИМЕННО этот архив, и что лежит на складе ВСЕГО —
+            # разные числа: второй зип дополняет первый, и «прочитано 14» про
+            # файл читается как про площадку, пока их не развели.
+            "upload": {
+                "entries": parsed.get("entries", 0),
+                "read": parsed.get("read", 0),
+                "unread": parsed.get("unread", []),
+                "companions": parsed.get("companions", []),
+                "duplicates": parsed.get("duplicates", []),
+                "added": upload.get("added", 0),
+                "replaced": upload.get("replaced", 0),
+                "superseded": upload.get("superseded", 0),
+            },
+            "egrn": egrn_view(egrn_store.block(kept)),
+            "records": kept.get("records") or [],
+            "uploads": kept.get("uploads") or [],
+        }
+
+    @app.get("/auctions/egrn/archive")
+    async def auction_egrn_stored(request: Request, key: str = "") -> dict[str, Any]:
+        """Что уже прочитано по этой площадке. Разбирать второй раз незачем.
+
+        Без этого маршрута загрузка была бы разовым взглядом: закрыл вкладку —
+        и присланный архив нужно грузить снова, а разобранное уже лежит на
+        ядре.
+        """
+        market_cabinet.require_cabinet(request)
+        if not str(key).strip():
+            raise HTTPException(status_code=422, detail="Не сказано, какая площадка")
+        kept = await run_in_threadpool(egrn_store.load, _egrn_dir(), key)
+        return {
+            "key": key,
+            "egrn": egrn_view(egrn_store.block(kept)) if kept.get("records") else None,
+            "records": kept.get("records") or [],
+            "uploads": kept.get("uploads") or [],
+            "broken": kept.get("broken") or "",
+        }
+
+    def _egrn_dir() -> Path:
+        """Где лежит склад выписок — спрашивается при обращении.
+
+        Замороженный на импорте путь означает, что проверка пишет в рабочее
+        дерево репозитория: приложение собирается один раз, а `DATA_DIR` у
+        проверки свой. Это уже стоило нам зелёной проверки, находившей в
+        рабочем `data/` снимок соседа.
+        """
+        return Path(os.getenv("DATA_DIR", "data")) / "market"
+
+    def _uploaded_name(value: str) -> str:
+        """Имя присланного файла: заголовок кодируют, чтобы раскодировать.
+
+        Имя едет процентным кодированием, потому что заголовок обязан быть
+        ASCII. Заменять проценты «чтобы не мешали» нельзя: раскодировать это
+        потом нечем — так «Продажи Кутузов Сити.xlsx» показывалось двумястами
+        знаков нечитаемой строки. Не раскодировалось — оставляем как пришло.
+        """
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        try:
+            raw = unquote(raw)
+        except Exception:  # noqa: BLE001
+            pass
+        return raw.rsplit("/", 1)[-1].rsplit("\\", 1)[-1][:200]
 
     @app.post("/auctions/ingest")
     async def auction_ingest(req: AuctionIngestRequest) -> dict[str, Any]:

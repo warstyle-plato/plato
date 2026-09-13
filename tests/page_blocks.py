@@ -36,6 +36,11 @@ def function(name: str, page: str | None = None) -> str:
     start = page.find(declaration)
     if start < 0:
         raise AssertionError(f"на странице нет функции {name}")
+    # `async` стоит ПЕРЕД словом `function`, и срез от него терял это слово:
+    # node отвечал «await is only valid in async functions», то есть падал на
+    # стенде, а не на том, что стенд проверяет.
+    if page[max(0, start - 6):start] == "async ":
+        start -= 6
     depth = 0
     for position in range(page.index("{", start), len(page)):
         if page[position] == "{":

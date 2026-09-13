@@ -34,6 +34,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from auction_search import egrn_archive, egrn_extracts, krt_pipeline  # noqa: E402
+from egrn_fixtures import LIVE as LIVE_PRINT_FORM, print_form_pdf  # noqa: E402
 from auction_search.models import (  # noqa: E402
     AuctionDocument,
     AuctionLot,
@@ -286,24 +287,47 @@ def test_a_lot_that_was_never_asked_has_no_summary_at_all():
                         document_type="other"))) is None
 
 
-def test_a_print_form_alone_says_there_was_nothing_machine_readable(monkeypatch):
-    """Печатная форма как единственное содержимое — это «читать было нечем».
+def test_a_lot_with_only_a_print_form_still_gets_its_objects(monkeypatch):
+    """Печатная форма как единственное содержимое — это ЗАПИСИ, а не отказ.
 
-    У Росэлторга выписки лотовой документации приходят печатными PDF: на пяти
-    живых КРТ-лотах 13.09.2026 — 32 PDF и ни одного XML. Разбор написан по XML,
-    и отказ назван; молчание читалось бы как «владельцев нет».
+    Прежнее утверждение этой проверки — «машинной выписки нет, читать было
+    нечем» — было верно до 0.23.41 и перестало быть верным с ней: печатная
+    форма читается, и у Росэлторга выписки лотовой документации приходят
+    только ею (13.09.2026: пять живых КРТ-лотов, 32 PDF и ни одного XML).
+    Утверждение теперь другое: объекты доезжают, а имя правообладателя эта
+    форма не раскрывает — и свод говорит именно это, а не «владельцев нет».
     """
-    data = zipped({"ЕГРН 1021.pdf": b"%PDF-1.4 ...", "ЕГРН 1022.pdf": b"%PDF-1.4 ..."})
+    data = zipped({"ЕГРН 2054.pdf": print_form_pdf()})
     monkeypatch.setattr(krt_pipeline, "download_document",
                         lambda url, **kwargs: (data, "application/zip", False))
     summary = krt_pipeline.egrn_summary(krt_pipeline.enrich_krt_from_official_documents(
         lot(AuctionDocument(title="Территория.Выписка ЕГРН для здания.zip",
                             url="https://178fz.roseltorg.ru/file/get/1.zip",
                             document_type="egrn"))))
+    assert (summary["answered"], summary["records"]) == (1, 1)
+    assert summary["from_print_form"] == 1
+    assert summary["holders_withheld"] == 1
+    assert "не раскрывает" in summary["reason"]
+    assert summary["refused"] == [] and summary["unread"] == 0
+
+
+def test_an_unreadable_print_form_is_named_not_silently_absent(monkeypatch):
+    """Негодный файл называется своей ошибкой — прежнее утверждение на своём примере.
+
+    Молча выброшенная выписка читается как отсутствие собственника; поэтому
+    файл, который не открылся, стоит в непрочитанном, а причина доезжает до
+    свода числом.
+    """
+    data = zipped({"ЕГРН 1021.pdf": b"%PDF-1.4 ...", "ЕГРН 1022.pdf": b"%PDF-1.4 ..."})
+    monkeypatch.setattr(krt_pipeline, "download_document",
+                        lambda url, **kwargs: (data, "application/zip", False))
+    summary = krt_pipeline.egrn_summary(krt_pipeline.enrich_krt_from_official_documents(
+        lot(AuctionDocument(title="Выписки ЕГРН.zip",
+                            url="https://178fz.roseltorg.ru/file/get/1.zip",
+                            document_type="egrn"))))
     assert (summary["answered"], summary["records"]) == (1, 0)
-    assert summary["print_forms"] == 2
-    assert "печатная форма" in summary["reason"]
-    assert summary["refused"] == []
+    assert summary["unread"] == 2
+    assert "не прочитаны" in summary["reason"]
 
 
 def test_a_signature_next_to_a_live_extract_explains_nothing(monkeypatch):
@@ -328,17 +352,36 @@ def test_a_signature_next_to_a_live_extract_explains_nothing(monkeypatch):
 
 
 def test_the_kind_of_a_companion_is_named_not_only_its_reason():
+    """Вид спутника назван у каждого рода.
+
+    Печатной формы среди спутников больше нет там, где она ЕДИНСТВЕННОЕ
+    содержимое: с 0.23.41 она читается. Спутником она остаётся рядом с машинной
+    выпиской ТОГО ЖЕ объекта — и это отдельный род со своей причиной, а не
+    «файл не того вида».
+    """
     data = zipped({
         "земля.xml": extract(LAND),
         "земля.xml.sig": b"\x30\x82\x00\x01",
         "стиль.xsl": b"<?xml version='1.0'?><xsl:stylesheet/>",
-        "ЕГРН 1021.pdf": b"%PDF-1.4 ...",
         "план.png": b"\x89PNG\r\n\x1a\n",
     })
     kinds = {item["name"]: item["kind"] for item in egrn_archive.read(data)["companions"]}
     assert kinds == {
         "земля.xml.sig": "signature",
         "стиль.xsl": "stylesheet",
-        "ЕГРН 1021.pdf": "print_form",
         "план.png": "image",
     }
+
+    # Печатная форма рядом с машинной выпиской того же объекта: вид назван, и
+    # причина называет номер — иначе выбор между двумя документами делал бы
+    # порядок записей в архиве.
+    # Номер берётся у настоящей выписки квартала, а печатная форма
+    # переписывается на него: иначе это были бы два разных объекта, и
+    # вытеснять было бы нечего.
+    printed_text = LIVE_PRINT_FORM[:6600].replace("77:05:0012007:2054", OWNED)
+    same = zipped({"выписка.xml": extract(OWNED),
+                   f"ЕГРН {OWNED.rsplit(':', 1)[-1]}.pdf": print_form_pdf(printed_text)})
+    got = egrn_archive.read(same)
+    printed = [item for item in got["companions"] if item["kind"] == "print_form"]
+    assert [record["source"] for record in got["records"]] == ["xml"]
+    assert printed and OWNED in printed[0]["reason"]

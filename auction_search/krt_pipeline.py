@@ -187,12 +187,30 @@ def egrn_summary(lot: AuctionLot) -> dict | None:
     egrn = lot.raw.get("egrn")
     if not egrn:
         return None
+    return egrn_view(egrn)
+
+
+def egrn_view(egrn: dict) -> dict:
+    """Блок выписок → свод. Один свод на лот и на присланный руками архив.
+
+    Зип с выписками приходит и загрузчиком, и рукой человека, и свод у них
+    обязан быть один: два сборщика на один вопрос однажды ответят про одну
+    площадку разное, и обе картинки будут выглядеть верными.
+    """
     records = egrn.get("records") or []
     owners: dict[str, dict] = {}
     without = 0
+    withheld = 0
     for record in records:
+        state = egrn_extracts.owner_state(record)
+        if state == "withheld":
+            # Право зарегистрировано, а имени в этом виде выписки нет. Считать
+            # это «правообладатель не назван реестром» нельзя: лечится оно своим
+            # запросом в ЕГРН, а не перечитыванием того же файла.
+            withheld += 1
+            continue
         owner = egrn_extracts.owner_of(record)
-        if not owner or not owner.get("name"):
+        if state != "named" or not owner or not owner.get("name"):
             without += 1
             continue
         row = owners.setdefault(owner["key"], {
@@ -213,6 +231,12 @@ def egrn_summary(lot: AuctionLot) -> dict | None:
                   for companion in (item.get("companions") or [])]
     print_forms = sum(1 for companion in companions
                       if companion.get("kind") == "print_form")
+    # Чем прочитаны сами записи: печатная форма отвечает не на все вопросы
+    # машинной, и «владельцев нет» при четырнадцати печатных формах значит
+    # другое, чем при четырнадцати машинных выписках.
+    from_print = sum(1 for record in records
+                     if record.get("source") == "print_form")
+    scanned = sum(1 for record in records if record.get("text_source") == "ocr")
     unread = sum(len(item.get("unread") or []) for item in answered)
     rows = sorted(owners.values(), key=lambda row: (-row["objects"], row["name"]))
     return {
@@ -224,32 +248,45 @@ def egrn_summary(lot: AuctionLot) -> dict | None:
         "builds": egrn.get("builds", 0),
         "owners": rows,
         "without_registered_owner": without,
+        "holders_withheld": withheld,
+        "from_print_form": from_print,
+        "recognised": scanned,
         "unread": unread,
         "companions": len(companions),
         "print_forms": print_forms,
         "reason": _egrn_reason(len(documents), len(answered), len(records),
-                               len(rows), without, unread, print_forms),
+                               len(rows), without, withheld, unread),
     }
 
 
 def _egrn_reason(documents: int, answered: int, records: int, owners: int,
-                 without: int, unread: int, print_forms: int) -> str:
-    """Почему владельцев не видно. Пустая строка — видно, объяснять нечего."""
+                 without: int, withheld: int, unread: int) -> str:
+    """Почему владельцев не видно. Пустая строка — видно, объяснять нечего.
+
+    Прежняя причина «машинной выписки в лоте нет — приехала только печатная
+    форма, а разбор написан по XML» СНЯТА: печатная форма читается с 0.23.41.
+    Оговорка «мы этого не читаем» устаревает молча и продолжает читаться как
+    правда — это уже стоило нам двух неверных строк на экране.
+    """
     if owners:
         return ""
     if answered == 0:
         return (f"площадка не отдала ни одного вложения с выписками "
                 f"(спросили {documents})")
-    if records == 0 and print_forms and unread == 0:
-        return (f"машинной выписки в лоте нет — приехала только печатная форма "
-                f"({print_forms} файл(ов)), а разбор написан по XML")
     if records == 0 and unread:
         return f"выписки не прочитаны: {unread}"
     if records == 0:
         return "во вложении нет выписок"
-    if without == records:
-        return "право не зарегистрировано ни у одного объекта — так сказано в выписках"
-    return ""
+    parts = []
+    if withheld:
+        parts.append(
+            f"у {withheld} объект(ов) право зарегистрировано, а имени "
+            "правообладателя выписка об объекте недвижимости не раскрывает — "
+            "нужен свой запрос в ЕГРН")
+    if without:
+        parts.append(f"у {without} объект(ов) право собственности не "
+                     "зарегистрировано — так сказано в выписках")
+    return "; ".join(parts)
 
 
 def _norm(value: str | None) -> str:
