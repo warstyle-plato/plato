@@ -150,9 +150,14 @@
 
       if (options.recalculate !== false) await recalculateCurrentProject();
       if (status) {
-        status.textContent = Object.keys(data.derived || {}).length
+        const said = Object.keys(data.derived || {}).length
           ? 'Связанные ТЭП пересчитаны. Экономика проекта обновлена тем же движком.'
           : 'Значение принято. Экономика проекта обновлена.';
+        // Оговорка сервера доносится до экрана: выключенный объект обнулит
+        // строку на первом же пересчёте, и молча это читается как принятая
+        // правка. Ошибка, ушедшая только в ответ, — ошибка, которой нет.
+        const notes = Array.isArray(data.notes) ? data.notes.filter(Boolean) : [];
+        status.textContent = notes.length ? said + ' ' + notes.join(' ') : said;
       }
     } catch (error) {
       if (status) status.textContent = String(error.message || error);

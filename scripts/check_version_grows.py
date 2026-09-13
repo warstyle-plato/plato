@@ -118,15 +118,28 @@ def main() -> int:
         except subprocess.CalledProcessError:
             raise SystemExit(f"Не удалось прочитать {ENGINE} в {reference}.")
         taken, unread = _remote_versions()
-        holder = reference
-        for branch, version in taken.items():
+        for version in taken.values():
             if version > highest:
-                highest, holder = version, branch
+                highest = version
+        # Держателей у максимума бывает НЕСКОЛЬКО, и назвать одного значит
+        # спрятать столкновение: 12.09.2026 соседняя ветка взяла 0.23.15
+        # одновременно с этой, строка назвала только эту — и свой номер выглядел
+        # свободным, хотя его уже держал сосед. Это тот же выпуск назад, из-за
+        # которого 23.08 прод откатился, только увиденный до слияния.
+        holders = sorted(branch for branch, version in taken.items()
+                         if version == highest)
+        if not holders:
+            holders = [reference]
         print(_next_version(highest))
         # Чем посчитано — часть ответа: «свободный номер» без списка веток
         # неотличим от номера, посчитанного по одной базе.
+        word = "держат" if len(holders) > 1 else "держит"
         print(f"Взято выше {'.'.join(map(str, highest))} — максимума по "
-              f"{len(taken) or 1} веткам (держит {holder}).", file=sys.stderr)
+              f"{len(taken) or 1} веткам ({word} {', '.join(holders)}).",
+              file=sys.stderr)
+        if len(holders) > 1:
+            print("Максимум держат несколько веток разом — значит этот номер "
+                  "уже занят соседом, а не только вами.", file=sys.stderr)
         if unread:
             # Одной строкой: в репозитории живут десятки давно брошенных
             # веток, и строка на каждую утопила бы саму находку — список всех

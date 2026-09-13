@@ -40,6 +40,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from browser import chromium_or_skip
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 PORT = 18797
@@ -100,13 +102,11 @@ def test_the_card_column_is_a_scroll_box_with_a_visible_bar():
 @pytest.mark.timeout(240)
 def test_in_a_real_browser_the_card_opens_at_its_name():
     """Нажатие на соседнюю строку показывает имя площадки, а не середину."""
-    try:
-        from playwright.sync_api import sync_playwright
-    except Exception:  # noqa: BLE001
-        pytest.skip("playwright недоступен")
-    chrome = Path("/opt/pw-browsers/chromium-1194/chrome-linux/chrome")
-    if not chrome.exists():
-        pytest.skip("chromium в образе не найден")
+    # Где браузер — один ответ на весь набор (`tests/browser.py`): он ищет, а
+    # не помнит номер сборки, и на машине, где браузер ОБЯЗАН быть, его
+    # отсутствие красит проверку красным, а не пропускает её молча.
+    chrome = chromium_or_skip()
+    from playwright.sync_api import sync_playwright
     import uvicorn
 
     server = uvicorn.Server(uvicorn.Config(_app(), host="127.0.0.1", port=PORT,

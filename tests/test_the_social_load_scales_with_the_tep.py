@@ -19,12 +19,13 @@
 
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+
+from browser import chromium_or_skip, serve
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -32,6 +33,8 @@ sys.path.insert(0, str(ROOT))
 import main_legacy as core  # noqa: E402
 
 PAGE = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+
+PORT = 18265
 
 LOADED = {"apartment_area_before_sqm": 80_000, "apartment_area_after_sqm": 40_000,
           "kindergarten_places": 107, "school_places": 219, "clinic_capacity": 47,
@@ -122,38 +125,27 @@ def test_the_basis_is_stamped_where_the_numbers_appear() -> None:
     assert "stampSocialBasis('нормативы Москвы')" in PAGE
 
 
-def test_the_proportion_works_outside_moscow(tmp_path) -> None:
-    """Главный случай владельца: Подмосковье, где нормативов Москвы нет."""
-    play = pytest.importorskip("playwright.sync_api")
-    import browser_launch
+def test_the_proportion_works_outside_moscow() -> None:
+    """Главный случай владельца: Подмосковье, где нормативов Москвы нет.
+
+    Страница проверяется по тому адресу, по которому её открывает человек.
+    Прежде она открывалась с диска, а её запрос к `/tep/rescale-social`
+    перехватывался и обслуживался TestClient'ом — держалось это на том, что
+    Chromium выпускает запрос к `file:///tep/rescale-social`: в сборке 1194 так
+    и было, в 151.0.7922.34 (playwright 1234) перестало.
+    """
+    chrome = chromium_or_skip()
+    from playwright.sync_api import sync_playwright
 
     from main_registry import app as registry_app
 
-    served = TestClient(registry_app)
-    page_file = tmp_path / "classic.html"
-    page_file.write_text(served.get("/classic").text, encoding="utf-8")
-
-    def answer(route):
-        request = route.request
-        for path in ("/tep/rescale-social", "/tep/derived-by-site"):
-            if request.url.endswith(path):
-                reply = served.post(path, json=json.loads(request.post_data))
-                route.fulfill(status=reply.status_code, content_type="application/json",
-                              body=reply.text)
-                return
-        route.abort() if request.url.startswith("http") else route.continue_()
-
-    with play.sync_playwright() as pw:
-        try:
-            browser = browser_launch.launch(pw)
-        except Exception as exc:  # noqa: BLE001
-            pytest.skip(f"Chromium недоступен: {exc}")
+    with serve(registry_app, PORT) as base, sync_playwright() as pw:
+        browser = pw.chromium.launch(executable_path=str(chrome))
         try:
             tab = browser.new_page()
             errors: list[str] = []
             tab.on("pageerror", lambda e: errors.append(str(e)))
-            tab.route("**/*", answer)
-            tab.goto(page_file.resolve().as_uri())
+            tab.goto(f"{base}/classic", wait_until="domcontentloaded")
             tab.wait_for_timeout(600)
             got = tab.evaluate("""async ()=>{
               cadastralAnalysis={territory:{district:'Одинцово', inside_moscow:false}};

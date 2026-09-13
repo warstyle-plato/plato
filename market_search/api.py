@@ -700,6 +700,13 @@ def install(app: FastAPI) -> MarketDiscoveryService:
         if room:
             got["salesroom"] = salesroom.summarise(
                 room, (got.get("pool") or {}).get("bands") or [])
+        # Условия рынка: наша рассрочка и рассрочка соседей по району. Свод
+        # продаж отвечает на «почему не покупают» нашими числами, а витрину
+        # двигает не только наш прайс — без второй половины предложение по
+        # акции строится на одной. Считает это свод рассрочек, экран только
+        # печатает; охват и правило отбора соседей едут вместе с числами.
+        got["market_terms"] = service.installments.district_terms(
+            got.get("project") or "", service.registry)
         got["conclusions"] = contracting.conclusions(got)
         # План продаж и отчёт правлению едут отсюда же: у них была своя кнопка
         # загрузки, то есть свой файл и своя дата рядом с общим складом.

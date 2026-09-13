@@ -100,3 +100,39 @@ def test_the_helper_answers_above_every_branch() -> None:
                 break
     assert parse(printed) > highest, (
         f"напечатан {printed}, а на ветках уже есть {'.'.join(map(str, highest))}")
+
+
+def test_every_holder_of_the_maximum_is_named() -> None:
+    """Держателей у максимума бывает несколько — и назвать одного значит
+    спрятать столкновение.
+
+    12.09.2026 соседняя ветка взяла 0.23.15 одновременно с этой, а строка
+    назвала только эту: свой номер выглядел свободным при том, что его уже
+    держал сосед. Это тот же выпуск назад, из-за которого 23.08 прод
+    откатился, — только увиденный до слияния.
+    """
+    source = SCRIPT.read_text("utf-8")
+    main_body = source[source.index("def main("):]
+    head = main_body[:main_body.index("previous_ref =")]
+    assert "version == highest" in head, (
+        "держатели максимума не собираются — строка назовёт одного из двух")
+    assert "уже занят соседом" in head, (
+        "столкновение не названо вслух: две ветки на одном номере читаются "
+        "как свободный номер")
+
+
+def test_a_tie_at_the_maximum_is_spoken_aloud() -> None:
+    """Сторож, не падающий на поломке, — не сторож: гоняем на подделке."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("_version_guard", SCRIPT)
+    guard = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(guard)
+
+    taken = {"ветка-А": (0, 23, 15), "ветка-Б": (0, 23, 15), "ветка-В": (0, 23, 9)}
+    highest = max(taken.values())
+    holders = sorted(branch for branch, version in taken.items()
+                     if version == highest)
+    assert holders == ["ветка-А", "ветка-Б"], holders
+    assert guard._next_version(highest) == "0.23.16"
