@@ -247,6 +247,11 @@ FUNCTIONS: dict[str, Callable[[list[Any]], Any]] = {
     "INDEX": _index,
     "MATCH": _match,
     "TEXT": lambda args: _text(args[0]),
+    # Строковые: подпись очередей соцобъекта собирается формулой, чтобы не
+    # устаревать после правки мест прямо в книге.
+    "LEN": lambda args: float(len(_text(args[0]))),
+    "LEFT": lambda args: _text(args[0])[:int(_as_number(args[1]))
+                                        if len(args) > 1 else 1],
     "NPV": _npv,
     "XIRR": _xirr,
 }

@@ -77,7 +77,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.23.71"
+VERSION = "0.23.72"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -20152,6 +20152,16 @@ _V4_SOCIAL_TYPES: tuple[tuple[str, str], ...] = (
     ("kindergarten", "ДОО"), ("school", "СОШ"), ("clinic", "Поликлиника"))
 
 
+def _v4_social_total_of_gns() -> float:
+    """Доля общей площади соцобъекта к его ГНС — та же, что у жилья.
+
+    Движок считает ГНС соцобъекта как `общая / total_of_gns` (0,9). В книге
+    этого числа не было вовсе, поэтому ГНС приезжала готовой — а значит после
+    правки мест или площади прямо в книге оставалась прежней.
+    """
+    return float((TEP_RATIOS.get("apartments") or {}).get("total_of_gns") or 0.9)
+
+
 def _v4_social_row(base_row: int, type_index: int, phase_index: int) -> int:
     """Строка пары «тип объекта × очередь» в блоке соцобъектов «Вводных»."""
     return base_row + 2 + type_index * 4 + phase_index
@@ -20332,6 +20342,7 @@ def _v4_social_rows_xml(xml: str, rows: dict[tuple[int, str], dict[str, Any]],
         + _v4_head_cell(f"M{header}", "Норматив, м²/место")
         + _v4_head_cell(f"N{header}", "Ключ API: площадь")
         + _v4_head_cell(f"O{header}", "Ключ API: норматив")
+        + _v4_head_cell(f"P{header}", "Доля общей площади к ГНС")
         + "</x:row>")
     for type_index, (typ, label) in enumerate(_V4_SOCIAL_TYPES):
         # Ключ движка ставится только там, где строка несёт ВСЮ вводную: тип
@@ -20370,6 +20381,11 @@ def _v4_social_rows_xml(xml: str, rows: dict[tuple[int, str], dict[str, Any]],
                     text_cell(f"N{row}", _V4_SOCIAL_AREA_KEYS[typ][0]),
                     text_cell(f"O{row}", _V4_SOCIAL_AREA_KEYS[typ][1]),
                 )) if phase_index == sole else "")
+                # Доля общей площади к ГНС — одна на все три объекта, и стоит
+                # она один раз: три копии одного числа разошлись бы. Без неё
+                # ГНС соцобъекта в книге считать нечем, и она приезжала числом.
+                + (number_cell(f"P{row}", _v4_social_total_of_gns())
+                   if (type_index, phase_index) == (0, 0) else "")
                 + "</x:row>")
     cash_row = _v4_social_cash_row(base_row)
     # Дата платежа — методикой движка: min(заданная B18, РнС − 1 мес.).
@@ -20564,12 +20580,13 @@ V4_REWRITTEN_FORMULA_ROWS: dict[str, tuple[tuple[int, ...], str]] = {
 }
 
 V4_ENGINE_WRITTEN_CELLS: dict[tuple[str, str], str] = {
-    ("ТЭП", "D34"): (
+    ("ТЭП", "E34"): (
         "Строка 34 была итогом блока объектов, а стала строкой ФОКа: итог "
         "переехал на пустую строку 35, ссылок на 31–35 нет ни на одном другом "
-        "листе. Колонка «Очередь» у строк объектов пуста — у офисов, ТЦ и "
-        "наземного паркинга тоже, — и формула суммы здесь была бы суммой "
-        "пустых клеток"),
+        "листе. Колонка «Единицы» у строк объектов пуста — у офисов, ТЦ и "
+        "наземного паркинга тоже: они меряются метрами, — и формула суммы "
+        "здесь была бы суммой пустых клеток. Продаваемая площадь ФОКа стоит "
+        "в своей колонке D, а не здесь"),
     ("Вводные", "B18"): (
         "Заданная дата денежной компенсации — это ВВОДНАЯ (ключ social_comp_date), "
         "а не результат: формула шаблона стояла здесь потому, что места под "
@@ -21336,36 +21353,88 @@ def build_project_workbook(
         ("school", 34, 41, "school_places", "social_school_gba_sqm"),
         ("clinic", 35, 42, "clinic_capacity", "social_clinic_gba_sqm"),
     )
-    for typ, report_row, tep_row, places_key, gba_key in _social_rows:
+    # Детализация соцнагрузки — ФОРМУЛАМИ от блока «Вводных», а не числами на
+    # дату сборки. Цена измерена: удвоив места школы прямо в книге, человек
+    # получал CAPEX 147 193 вместо 144 578 — денежная цепочка пересчитывается
+    # сама, — и рядом замершие 373 места за 2 349 млн. Два разных ответа об
+    # одном объекте в одном файле. Ссылки идут на «Вводные» напрямую, как
+    # формула соцстройки на листе CAPEX: у этого блока такой путь уже принят.
+    def _social_span(type_index: int, letter: str) -> str:
+        first = _v4_social_row(social_base_row, type_index, 0)
+        last = _v4_social_row(social_base_row, type_index, 3)
+        return f"'Вводные'!${letter}${first}:${letter}${last}"
+
+    for type_index, (typ, report_row, tep_row, places_key, gba_key) in enumerate(_social_rows):
         slot = social_breakdown[typ]
         places = slot["places"] if social_is_construction else float(x.get(places_key) or 0)
         cost = round(slot["cost"], 3)
         queue_label = ("+".join(f"О{n}" for n in sorted(slot["phases"]))
                        if slot["phases"] else "—")
-        report_xml = _put_extra(report_xml, f"F{report_row}", number=round(places))
-        report_xml = _put_extra(report_xml, f"G{report_row}", text=queue_label)
-        report_xml = _put_extra(report_xml, f"H{report_row}", number=cost)
-        tep_xml = _put_extra(tep_xml, f"B{tep_row}", number=round(places))
-        tep_xml = _put_extra(tep_xml, f"C{tep_row}", number=round(float(x.get(gba_key) or 0)))
-        tep_xml = _put_extra(tep_xml, f"D{tep_row}", text=queue_label)
-        tep_xml = _put_extra(tep_xml, f"E{tep_row}", number=cost)
-        # ГНС соцобъекта — своей колонкой: в блоке стояла только общая площадь
-        # (GBA), а строительный объём книги считается по ГНС, и без этой
-        # колонки соцобъекты в него не входили вовсе — 28 520 м² на проекте
-        # владельца. Колонка E у блока занята стоимостью, поэтому F.
-        # Колонки F у блока в шаблоне нет вовсе — ячейку надо завести, а не
-        # переписать: `_v4_set_cell` правит существующую и молчит о пустом
-        # месте только в `missing`.
-        tep_xml, _done = _v4_set_or_insert_cell(
-            tep_xml, f"F{tep_row}",
-            number=round(float((tep.get(typ) or {}).get("gns") or 0.0)))
-        if not _done:
-            missing.append(f"расшифровка соцнагрузки: ГНС F{tep_row}")
+        if social_base_row is None:
+            # Блока в книге нет — тогда честнее число, чем ссылка в никуда.
+            report_xml = _put_extra(report_xml, f"F{report_row}", number=round(places))
+            report_xml = _put_extra(report_xml, f"G{report_row}", text=queue_label)
+            report_xml = _put_extra(report_xml, f"H{report_row}", number=cost)
+            tep_xml = _put_extra(tep_xml, f"B{tep_row}", number=round(places))
+            tep_xml = _put_extra(tep_xml, f"C{tep_row}",
+                                 number=round(float(x.get(gba_key) or 0)))
+            tep_xml = _put_extra(tep_xml, f"D{tep_row}", text=queue_label)
+            tep_xml = _put_extra(tep_xml, f"E{tep_row}", number=cost)
+            continue
+        capacity = _social_span(type_index, "B")
+        money = _social_span(type_index, "F")
+        area = _social_span(type_index, "L")
+        norm = _social_span(type_index, "M")
+        ratio = f"'Вводные'!$P${_v4_social_row(social_base_row, 0, 0)}"
+        # Метка очередей — тоже производная: объект переставили в книге, и
+        # подпись обязана переехать за ним, иначе она говорит о прошлом.
+        parts = "&".join(
+            f"IF('Вводные'!$B${_v4_social_row(social_base_row, type_index, phase)}>0,"
+            f'"О{phase + 1}+","")' for phase in range(4))
+        label = f'IF(SUM({capacity})>0,LEFT({parts},LEN({parts})-1),"—")'
+        for where, coord, formula in (
+                ("tep", f"B{tep_row}", f"SUM({capacity})"),
+                ("tep", f"C{tep_row}", f"IF(SUM({area})>0,SUM({area}),"
+                                       f"SUM({capacity})*SUM({norm}))"),
+                ("tep", f"D{tep_row}", label),
+                ("tep", f"E{tep_row}", f"SUM({money})"),
+                # ГНС соцобъекта — своей колонкой: в блоке стояла только общая
+                # площадь, а строительный объём считается по ГНС, и соцобъекты
+                # в него не входили вовсе — 28 520 м² на проекте владельца.
+                ("tep", f"F{tep_row}", f"IFERROR(C{tep_row}/{ratio},0)"),
+                ("report", f"F{report_row}", f"'ТЭП'!B{tep_row}"),
+                ("report", f"G{report_row}", f"'ТЭП'!D{tep_row}"),
+                ("report", f"H{report_row}", f"'ТЭП'!E{tep_row}"),
+        ):
+            target = tep_xml if where == "tep" else report_xml
+            target, done = _v4_set_or_insert_cell(target, coord, formula=formula)
+            if not done:
+                missing.append(f"детализация соцнагрузки формулой: {coord}")
+            if where == "tep":
+                tep_xml = target
+            else:
+                report_xml = target
     tep_xml, _done = _v4_set_or_insert_cell(tep_xml, "F39", text="ГНС, м²")
     if not _done:
         missing.append("расшифровка соцнагрузки: подпись F39")
-    report_xml = _put_extra(report_xml, "H36", number=round(social_compensation_amount, 3))
-    tep_xml = _put_extra(tep_xml, "E43", number=round(social_compensation_amount, 3))
+    # Денежная компенсация — та же вводная, что кормит CAPEX: ссылкой, а не
+    # числом на дату сборки. Правка суммы в книге обязана двигать и строку.
+    if social_base_row is not None:
+        cash_cell = f"'Вводные'!$F${_v4_social_cash_row(social_base_row)}"
+        for target_name, coord in (("tep", "E43"), ("report", "H36")):
+            target = tep_xml if target_name == "tep" else report_xml
+            target, done = _v4_set_or_insert_cell(target, coord, formula=cash_cell)
+            if not done:
+                missing.append(f"денежная компенсация формулой: {coord}")
+            if target_name == "tep":
+                tep_xml = target
+            else:
+                report_xml = target
+    else:
+        report_xml = _put_extra(report_xml, "H36",
+                                number=round(social_compensation_amount, 3))
+        tep_xml = _put_extra(tep_xml, "E43",
+                             number=round(social_compensation_amount, 3))
 
     # Лимит БРИДЖ в книге режет выборку (CF r34). Логика вводных DevelopAid —
     # «всё финансирует банк», поэтому лимит расчётный: сделка, ВРИ, социалка
