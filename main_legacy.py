@@ -77,7 +77,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.23.69"
+VERSION = "0.23.70"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -2080,6 +2080,35 @@ def tep_row_inputs(row_key: str) -> dict[str, str]:
         # площадь по норме выводится из мест, а вписанная руками сильнее нормы.
         return {"units": places_key, "total_area": area_key}
     return dict(_PHASE_PRODUCT_INPUT_ALIASES.get(row_key) or {})
+
+
+def above_parking_tep_row(inputs: dict[str, Any]) -> dict[str, float]:
+    """Строка ТЭП наземного паркинга по вводным: места, метры, общая площадь.
+
+    Считала её только страница (`syncTep`), и правило «строка, которую чинит
+    только страница, чинится не везде» здесь стоило метров: проект, пришедший
+    файлом, ссылкой, мостом КРТ, ботом или скринингом, строил наземный гараж
+    (CAPEX и выручка идут от числа мест) и не показывал ни одного его метра —
+    ни в строке ТЭП, ни в ГНС проекта, ни в строительном объёме. А на этом
+    объёме считаются общие статьи и все удельные показатели.
+    """
+    enabled = bool(inputs.get("above_parking_enabled"))
+    spaces = max(0.0, float(inputs.get("above_parking_spaces") or 0.0)) if enabled else 0.0
+    per_space = float(inputs.get("above_parking_area_per_space_sqm") or 0.0) or 25.0
+    area = spaces * per_space
+    return {"units": spaces, "gns": area, "total_area": area}
+
+
+def apply_above_parking_tep_row(inputs: dict[str, Any],
+                                tep: dict[str, dict[str, Any]]) -> None:
+    """Привести строку наземного паркинга к вводным. Правится на месте.
+
+    Объявленную очередью строку не трогаем — у неё свой источник, как у
+    соцобъекта.
+    """
+    row = tep.get("above_parking")
+    if isinstance(row, dict) and not row.get(TEP_ROW_DECLARED):
+        row.update(above_parking_tep_row(inputs))
 
 
 def apply_social_tep_rows(inputs: dict[str, Any],
@@ -27895,6 +27924,9 @@ def calculate(req: CalcRequest) -> dict:
     # двигала ни строку, ни строительный объём, а тот же садик в своде
     # очередей выходил другим.
     apply_social_tep_rows(x, t)
+    # Наземный паркинг — той же природы: места задаёт человек, метры из них
+    # выводятся, и без этого объект строится, а его площади нет нигде.
+    apply_above_parking_tep_row(x, t)
 
     # Паркинг объектов раскладывается ДО построения модели: он
     # трогает продаваемую объекта, а значит выручку, и после счёта денег
@@ -28178,9 +28210,17 @@ def calculate(req: CalcRequest) -> dict:
         return f"{value:,.0f}".replace(",", "\u00a0")
 
     standalone_items = []
-    for key, label in (("offices", "Офисы / МФОЦ"),
-                       ("standalone_retail", "ТЦ / коммерция ОСЗ"),
-                       ("above_parking", "Наземный паркинг")):
+    # Список объектов — тот, что объявлен в движке, а не перечисление руками:
+    # ФОК завели четвёртым 05.09.2026, в это перечисление он не вошёл, и его
+    # 3 616 млн ₽ (19% строки) стояли в итоге и не были названы ни одной
+    # подстрокой. То же правило, что у корзин находок: корзина, заведённая
+    # позже, в перечисление не попадает. Имя берётся у `product_labels` —
+    # второго ответа на «как зовётся продукт» не бывает.
+    _labels = product_labels()
+    _object_names = {"offices": "Офисы / МФОЦ", "standalone_retail": "ТЦ / коммерция ОСЗ"}
+    for _obj in STANDALONE_OBJECTS:
+        key = _obj.key
+        label = _object_names.get(key) or _labels.get(key) or key
         amount = op["capex_amounts"].get(key, 0.0)
         if amount <= 0:
             continue
@@ -28200,11 +28240,12 @@ def calculate(req: CalcRequest) -> dict:
         # паркинга считается как `above_parking_spaces × себестоимость места`,
         # и строка ТЭП тут вторым источником быть не может — при вызове мимо
         # страницы она приходит нулём, и «за место» вышло бы делением на ноль.
-        own_units = n(x, "above_parking_spaces") if key == "above_parking" else n(row, "units")
+        own_units = (n(x, f"{_obj.prefix}_spaces") if _obj.measure == "spaces"
+                     else n(row, "units"))
         item = {"key": key, "label": label, "value": amount,
                 "gns_sqm": own_gns, "saleable_sqm": own_saleable,
                 "units": own_units}
-        if key == "above_parking":
+        if _obj.measure == "spaces":
             # Мера продукта — место, и делить его деньги на метры значит
             # отвечать не на тот вопрос.
             item["basis"] = "units"
