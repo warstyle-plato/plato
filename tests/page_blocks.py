@@ -140,6 +140,25 @@ def page_const(name: str, page: str | None = None) -> str:
     return line
 
 
+def object_roster() -> str:
+    """Реестр объектов и всё, что из него на странице считается.
+
+    Стенды несли ЧЕТЫРЕ копии состава литералом (`['offices','retail',
+    'sports']`) — вторая жизнь у списка, который объявлен один раз в движке.
+    Копия не расходится, пока объектов четыре, и заговорит ровно в тот день,
+    ради которого реестр и заводился: пятый объект в стенде выглядит
+    несуществующим, а на странице он есть.
+
+    Берётся со СОБРАННОЙ страницы: `STANDALONE_OBJECTS` приезжает туда
+    подстановкой, а `discreteDefaults` и `OBJECT_PARKING_PREFIXES` из него
+    считаются — порознь они в стенде падают на неопределённом имени, и
+    падение выходит про стенд, а не про то, что он проверяет.
+    """
+    return "\n".join((page_const("STANDALONE_OBJECTS"),
+                       function("discreteDefaults"),
+                       page_const("OBJECT_PARKING_PREFIXES")))
+
+
 def auctions_function(*names: str) -> str:
     """Те же куски, но со страницы торгов (`auction_search.ui`).
 

@@ -23,6 +23,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import page_blocks  # noqa: E402
 import main as wrapper  # noqa: E402
 
 core = wrapper.core
@@ -82,7 +83,7 @@ def restore(saved: dict) -> dict:
         # поле не должно ожить «вписанным руками». Стенд перечисляет функции
         # поимённо, и это его слабое место — соседняя функция роняет его на
         # верном коде, а `catch` восстановления делал падение НЕМЫМ.
-        "const OBJECT_PARKING_PREFIXES=['offices','retail','sports'];\n"
+        + page_blocks.object_roster() + "\n"
         + page_function("seedParkingByHand") + "\n"
         f"const localStorage={{getItem:()=>{json.dumps(json.dumps(saved))}}};\n"
         + load_local_body() + "\n"

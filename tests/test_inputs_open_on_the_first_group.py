@@ -31,6 +31,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import page_blocks  # noqa: E402
 import main as wrapper  # noqa: E402
 
 core = wrapper.core
@@ -145,8 +146,9 @@ def render(inputs: dict, tail: str = "console.log(JSON.stringify(groups()));",
         page_function("renderInputs"),
         # Форма пишет подпись под полями паркинга объектов сама: ячейки она же
         # и создаёт, а пустая ячейка под нулём читается как «гаража нет».
-        PAGE[PAGE.index("const OBJECT_PARKING_PREFIXES="):
-             PAGE.index(";", PAGE.index("const OBJECT_PARKING_PREFIXES=")) + 1],
+        # Приставки объектов с гаражом считаются из реестра, а он приезжает
+        # на страницу подстановкой: одной строки мало, нужен её источник.
+        page_blocks.object_roster(),
         page_function("renderObjectParkingFieldNotes"),
         page_function("objectParkingFieldNote"),
         DOM.replace("__PHASING__", json.dumps(phasing or {"enabled": False})),
