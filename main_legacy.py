@@ -16041,6 +16041,33 @@ def _v4_column_letter(number: int) -> str:
     return letters
 
 
+def _v4_column_number(letters: str) -> int:
+    number = 0
+    for letter in letters:
+        number = number * 26 + ord(letter) - 64
+    return number
+
+
+def _v4_row_xml(row: int, cells: list[str]) -> str:
+    """Собирает строку листа, расставляя ячейки по возрастанию колонки.
+
+    Excel требует от ячеек строки возрастающего порядка ссылок и молча
+    выбрасывает те, что стоят после старшей колонки. Блок раздачи налога
+    писал `A B C D E F G L M N O P H I J K` — и в Excel колонки «Налог О1…О4»
+    оказывались ПУСТЫМИ, а «Итого» под ними нулём: чистая прибыль ОТЧЁТа шла
+    без налога на прибыль (на четырёх очередях 56 598,6 вместо 42 128,6 при
+    налоге 14 470,0). Наш вычислитель читает ячейки по координате и порядка
+    не замечает — то есть книга и проверки расходились молча, а поймал это
+    владелец глазами (14.09.2026).
+
+    Поэтому строку собирает эта функция, а не конкатенация в порядке
+    написания кода: порядок ячеек — свойство файла, а не порядка вычислений.
+    """
+    ordered = sorted(cells, key=lambda cell: _v4_column_number(
+        re.match(r'<x:c r="([A-Z]+)', cell).group(1)))
+    return f'<x:row r="{row}">' + "".join(ordered) + "</x:row>"
+
+
 # Ширина помесячной сетки книги объявлена ЗДЕСЬ и больше нигде. Прежде тот же
 # факт стоял в трёх видах — этой константой, числом `_V4_CAPEX_MONTH_COLUMNS`
 # и одиннадцатью литералами `$DS$` внутри f-строк, — и протянуть книгу со 120
@@ -17792,7 +17819,7 @@ def _v4_tax_share_by_year(xml: str, missing: list[str]) -> str:
     for column in _v4_cf_columns():
         year_cells.append(
             formula(f"{column}{years}", f"MAX(YEAR('CF'!{column}$3),$B${gate})"))
-    parts.append(f'<x:row r="{years}">' + "".join(year_cells) + "</x:row>")
+    parts.append(_v4_row_xml(years, year_cells))
     # Запасная мера на год, у которого налог есть, а годовая база
     # отрицательна: внутри года накопленным итогом была прибыль, налог
     # начислен и обратно не возвращается. Такой год делится по МЕСЯЦАМ, в
@@ -17806,7 +17833,7 @@ def _v4_tax_share_by_year(xml: str, missing: list[str]) -> str:
             cells.append(formula(
                 f"{column}{row}",
                 f"IF('CF'!{column}$37>0,MAX('CF_{index + 1}'!{column}$22,0),0)"))
-        parts.append(f'<x:row r="{row}">' + "".join(cells) + "</x:row>")
+        parts.append(_v4_row_xml(row, cells))
     header = monthly + len(_V4_TAX_QUEUE_COLUMNS)
     titles = ["Год", "Налог свода"]
     titles += [f"База О{index + 1}" for index in range(len(_V4_TAX_QUEUE_COLUMNS))]
@@ -17851,14 +17878,14 @@ def _v4_tax_share_by_year(xml: str, missing: list[str]) -> str:
                 f"IF($G{row}>0,$B{row}*{annual}/$G{row},"
                 f"IF({total_reserve}>0,$B{row}*{monthly_cell}/{total_reserve},"
                 f"IF($B${4 + index}=\"Да\",$B{row}/MAX(COUNTIF($B$4:$B$7,\"Да\"),1),0)))"))
-        parts.append(f'<x:row r="{row}">' + "".join(cells) + "</x:row>")
+        parts.append(_v4_row_xml(row, cells))
     total = last + 1
     total_cells = [label(f"A{total}", "Итого"),
                    formula(f"B{total}", f"SUM(B{first}:B{last})")]
     for column in _V4_TAX_SHARE_COLUMNS:
         total_cells.append(
             formula(f"{column}{total}", f"SUM({column}{first}:{column}{last})"))
-    parts.append(f'<x:row r="{total}">' + "".join(total_cells) + "</x:row>")
+    parts.append(_v4_row_xml(total, total_cells))
     check = total + 1
     parts.append(f'<x:row r="{check}">'
                  + label(f"A{check}",
