@@ -2298,6 +2298,16 @@ def _handle_message(message: dict[str, Any]) -> None:
     core.usage_track("command" if command else "message", chat_id=chat_id, user_id=user_id,
                      name=_sender_name(message), text=text)
     _user_to_core(chat_id, _sender_name(message), "command" if command else "message")
+    chat = message.get("chat") or {}
+    if str(chat.get("type") or "") != "private":
+        # У группы бот только читатель — решает это одно место, движковое.
+        # Гейт стоял ТОЛЬКО у движка, а Telegram ходит сюда: обёртка
+        # перехватывает `_telegram_handle_update`, и её разбор команд отвечал
+        # раньше гейта — `/help`, `/status`, `/notify` и `/krt` писали прямо в
+        # рабочий чат. Проверка на это была и оставалась зелёной: она звала
+        # дверь движка, а не ту, в которую ходят.
+        core._telegram_group_message(chat, message)
+        return
     if command == "/status":
         _status_message(chat_id, user_id)
         return

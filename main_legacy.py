@@ -77,7 +77,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.23.56"
+VERSION = "0.23.57"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -13980,8 +13980,18 @@ def _telegram_process_update(update: dict[str, Any]) -> None:
         where = _error_location(exc)
         _TELEGRAM_RUNTIME["last_error"] = where
         message = update.get("message") if isinstance(update, dict) else None
-        chat_id = ((message or {}).get("chat") or {}).get("id") if isinstance(message, dict) else None
-        if chat_id:
+        chat = (message or {}).get("chat") if isinstance(message, dict) else None
+        chat_id = (chat or {}).get("id") if isinstance(chat, dict) else None
+        if str((chat or {}).get("type") or "private") != "private":
+            # В группу бот не пишет НИЧЕГО и никогда — верхний перехват не
+            # исключение. Он им и был: 429 «Too Many Requests» приезжал
+            # ответом в тот самый чат, где бот и без того наговорил лишнего
+            # (экран владельца, 14.09.2026). Исход группы виден в `/status`.
+            chat_id = None
+        if chat_id and "429" not in where and "Too Many Requests" not in where:
+            # Отказ по частоте не докладывают ещё одним сообщением: причина
+            # ошибки — как раз лишние сообщения, и доклад её усиливает. Он
+            # остаётся в `/status` строкой last_error.
             try:
                 _telegram_send_message(
                     int(chat_id),
