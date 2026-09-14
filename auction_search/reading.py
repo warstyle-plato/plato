@@ -27,9 +27,12 @@ been blocked» и текстом «Web Page Blocked! … Client IP: …», а п
 from __future__ import annotations
 
 import ssl
+import time
 from dataclasses import dataclass
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+from auction_search import deadline as budget
 
 try:  # модуль торгов поднимается и отдельно от движка
     from trusted_roots import trust_context as _trust_context
@@ -45,6 +48,41 @@ REFUSAL_TITLE_MARKS = (
     "403", "401", "Forbidden", "Access denied", "Доступ запрещ",
     "has been blocked", "Web Page Blocked", "Страница заблокирована",
 )
+
+
+# Повтор: что имеет смысл спрашивать второй раз. Политика объявлена ЗДЕСЬ
+# одна — её берут и загрузка вложений, и чтение карточки лота: два механизма на
+# одно явление в этом проекте всегда расходились.
+#
+# 401, 403 и 404 не повторяются вовсе — второй такой же запрос получит тот же
+# ответ. Повторяются перебой сервера и обрыв связи, и это измерено: 14.09.2026
+# карточка лота Росэлторга с прода отвечала 502/502/200/200/502/502 при паузах
+# по сорок секунд, а проход за извещениями получил пять таймаутов подряд и
+# записал пять отказов площадки там, где она отвечает через раз.
+RETRIABLE_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
+ATTEMPTS = 3
+# Отступ растёт: перебой длится секунды, и три запроса подряд без паузы — это
+# один запрос, посланный трижды.
+BACKOFF_SECONDS = (2.0, 5.0)
+
+
+class Refused(URLError):
+    """Площадка не ответила, и число попыток названо.
+
+    «HTTP 503» и «HTTP 503 после трёх попыток» — разные утверждения о
+    площадке, и по первому нельзя понять, спрашивали ли мы её всерьёз.
+
+    Наследуется от `URLError` (то есть от `OSError`) намеренно: у читателей
+    площадок уже написаны ветки на сетевой отказ, и новый класс не обязан их
+    ломать ради своей подписи.
+    """
+
+    def __init__(self, said: str) -> None:
+        super().__init__(said)
+        self.said = said
+
+    def __str__(self) -> str:  # без обёртки «<urlopen error …>»
+        return self.said
 
 
 def trust() -> ssl.SSLContext | None:
@@ -85,12 +123,52 @@ class Answer:
 
 
 def fetch(url: str, *, timeout: float, headers: dict[str, str] | None = None,
-          max_bytes: int | None = None, keep_http_error: bool = False) -> Answer:
+          max_bytes: int | None = None, keep_http_error: bool = False,
+          attempts: int = 1, deadline: float | None = None) -> Answer:
     """Прочитать страницу площадки нашими корнями.
 
     `keep_http_error` — вернуть тело ответа с кодом 4xx/5xx вместо исключения:
     пробе нужно ПОКАЗАТЬ, чем ответил источник, а читателю — упасть.
+
+    `attempts` — сколько раз спрашивать при перебое; по умолчанию один раз,
+    то есть прежнее поведение. Повторяется только то, что имеет смысл
+    повторять (`RETRIABLE_STATUS` и обрыв связи), окончательный отказ не
+    повторяется вовсе, а исчерпанные попытки называются числом в `Refused`.
+
+    **Срок сильнее повтора**: пауза, которая не укладывается в остаток
+    `deadline`, съедает время остальных — тогда недобранным окажется весь
+    сбор, а не одна страница.
     """
+    total = max(1, int(attempts))
+    tried = 0
+    last = ""
+    while True:
+        tried += 1
+        try:
+            return _fetch_once(url, timeout=budget.timeout(deadline, timeout),
+                               headers=headers, max_bytes=max_bytes,
+                               keep_http_error=keep_http_error)
+        except HTTPError as exc:
+            if exc.code not in RETRIABLE_STATUS:
+                raise
+            last = f"площадка ответила HTTP {exc.code}"
+        except Refused:
+            raise
+        except OSError as exc:
+            last = f"соединение не состоялось: {type(exc).__name__}: {exc}"
+        if tried >= total:
+            break
+        pause = BACKOFF_SECONDS[min(tried - 1, len(BACKOFF_SECONDS) - 1)]
+        left = budget.left(deadline)
+        if left is not None and left <= pause:
+            break
+        time.sleep(pause)
+    raise Refused(f"{last}; попыток: {tried} из {total}")
+
+
+def _fetch_once(url: str, *, timeout: float, headers: dict[str, str] | None = None,
+                max_bytes: int | None = None, keep_http_error: bool = False) -> Answer:
+    """Один запрос к площадке."""
     request = Request(url, headers=dict(headers or {}))
     try:
         with urlopen(request, timeout=timeout, context=trust()) as response:
