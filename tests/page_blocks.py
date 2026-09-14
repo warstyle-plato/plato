@@ -156,7 +156,8 @@ def tep_cell_stand() -> str:
     return "\n".join(pieces) + "\n"
 
 
-def run(prelude: str, tail: str, limit: int = 60) -> tuple[str, list[str]]:
+def run(prelude: str, tail: str, limit: int = 60,
+        page: str | None = None) -> tuple[str, list[str]]:
     """Гоняет стенд на node, добирая недостающие куски страницы по именам.
 
     Тот же приём был выписан копиями в трёх проверках, а общий стенд
@@ -164,6 +165,10 @@ def run(prelude: str, tail: str, limit: int = 60) -> tuple[str, list[str]]:
     заводили функцию: «setTepNote is not defined» вместо утверждения о строке.
     Имя берётся из самой ошибки, кусок — у страницы; имени на странице нет —
     падаем с ним, а не подсовываем заглушку: заглушка ответила бы за страницу.
+
+    `page` — чья это страница. По умолчанию основная (`PAGE`); у торгов своя, и
+    без этого разрешитель искал бы имена её функций на чужой странице, то есть
+    падал бы на своей неполноте ровно там, ради чего написан.
     """
     import shutil  # noqa: PLC0415 — нужны только здесь
     import subprocess  # noqa: PLC0415
@@ -203,7 +208,7 @@ def run(prelude: str, tail: str, limit: int = 60) -> tuple[str, list[str]]:
         # «имени нет», хотя оно есть строкой ниже. В начало — тоже: у
         # `TRANSFER_LABELS` два читателя, и добранный последним
         # `TRANSFER_RECIPIENT_NOTE` уезжал впереди них обоих (13.09.2026).
-        body = piece(name)
+        body = piece(name, page)
         reader = next((i for i, text in enumerate(bodies)
                        if re.search(rf"\b{re.escape(name)}\b", text)), 0)
         bodies.insert(reader, body)
@@ -211,11 +216,11 @@ def run(prelude: str, tail: str, limit: int = 60) -> tuple[str, list[str]]:
     raise AssertionError(f"зависимостей больше {limit} — стенд не сходится")
 
 
-def run_json(prelude: str, tail: str, limit: int = 60):
+def run_json(prelude: str, tail: str, limit: int = 60, page: str | None = None):
     """То же, но ответ разбирается как JSON — стенды печатают им."""
     import json  # noqa: PLC0415
 
-    out, _taken = run(prelude, tail, limit)
+    out, _taken = run(prelude, tail, limit, page)
     return json.loads(out)
 
 

@@ -1153,10 +1153,27 @@ function legendMarkup(){
 // координат, и совмещение на глаз рисовало бы геометрию, которой у нас нет.
 // «Убираем дорогу и выходим примерно на 14 га?» (владелец, 07.09.2026) — да, и
 // разложение стоит тут же, потому что вопрос задают, глядя на этот контур.
+// Отказ маршрута — словами маршрута. У <img> текста отказа нет, и прежнее
+// «Картинка приложения 1 не отдалась» одинаково отвечало и на «лота не
+// знаем», и на «в вложениях схемы нет», и на «документ не открылся».
+function outlinePictureFailed(img){
+ const box=Object.assign(document.createElement('div'),
+   {className:'notice warn',textContent:'Рисунок города не прочитан.'});
+ img.replaceWith(box);
+ fetch(img.src).then(r=>r.ok?null:r.json().catch(()=>null)).then(d=>{
+  const why=d&&d.detail?String(d.detail):'';
+  if(why)box.textContent='Рисунок города не прочитан: '+why+'.';
+ }).catch(()=>{});
+}
 function decisionOutlineMarkup(){
  const a=auth(),t=(S.data.territory||{}).totals||{};
- if(!IS_NAGATINO)return '';  // картинка границ — приложение к решению Нагатино
- const src='/krt/nagatino/decision-outline.png?'
+ // Раскрытие «Контур площадки, как его напечатал город» стоит в разметке у
+ // ВСЕХ площадок, а картинку отдавал маршрут, который был только у Нагатино:
+ // у остальных человек открывал блок и видел пустоту (экран владельца,
+ // 14.09.2026). Пустого раскрытия не бывает — либо картинка, либо названная
+ // причина, и её называет сам маршрут (у площадки с торгов рисунок лежит в
+ // «Схеме границ» лотовой документации).
+ const src=(IS_NAGATINO?'/krt/nagatino/decision-outline.png?':BASE+'/decision-outline.png?')
    +new URLSearchParams({session:a.session,key:a.key,share:a.share});
  const road=null;
  const steps=road?`<div class="source">Почему 18,69 га участков и 14,62 га площадки: `
@@ -1166,11 +1183,14 @@ function decisionOutlineMarkup(){
    +`вне площадки остаётся ${m2(t.land_area_sqm-t.land_area_in_notice_sqm-(road.area_sqm-road.notice_area_sqm))}, `
    +`вместе участки дают ${m2(t.land_area_in_notice_sqm)}, плюс ${m2(t.land_unformed_sqm)} земли без `
    +`кадастрового номера — ${m2(t.site_area_sqm)}, ровно шапка извещения.</div>`:'';
- return `<img src="${src}" alt="Границы КРТ по приложению 1 к проекту решения"`
+ // Причину печатает САМ маршрут, и потому картинка забирается запросом:
+ // `onerror` у <img> текста отказа не видит, и «не отдалась» одинаково
+ // отвечало бы и на «лота не знаем», и на «в вложениях схемы нет».
+ return `<img src="${src}" alt="Рисунок границ, как его напечатал город"`
   +` style="display:block;width:100%;height:auto;border:1px solid var(--line)"`
-  +` onerror="this.replaceWith(Object.assign(document.createElement('div'),`
-  +`{className:'notice warn',textContent:'Картинка приложения 1 не отдалась.'}))">`
-  +'<div class="source">Приложение 1 к проекту решения о КРТ (mos.ru) — рисунок города. '
+  +` onerror="outlinePictureFailed(this)">`
+  +'<div class="source">Приложение 1 к проекту решения о КРТ (mos.ru) или схема границ '
+  +'из документации лота — рисунок города. '
   +'На нашу карту он НЕ накладывается: это растр без координат, и совместить его можно только '
   +'на глаз, а нарисованная так граница выглядела бы ровно так же уверенно, как настоящая. '
   +'Контур, который мы рисуем пунктиром на карте, собран из ПЕРЕЧНЯ того же решения: '

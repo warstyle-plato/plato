@@ -53,6 +53,7 @@ from auction_search.documents import DocumentExtractionError
 from auction_search.export_areas import export_areas
 from auction_search import archives, egrn_archive, egrn_store
 from auction_search import krt_pipeline
+from auction_search import lot_documents
 from auction_search.krt_pipeline import (
     documents_summary,
     egrn_summary,
@@ -1971,6 +1972,84 @@ def install(app: FastAPI) -> None:
             slug, str(project.get("name") or slug), key=key,
             decision_numbers=numbers, root=_market_dir())
         return dict(project), site
+
+    # Рисунок границ, как его напечатал город. Раскрытие «Контур площадки, как
+    # его напечатал город» стоит в разметке страницы у ВСЕХ площадок, а
+    # картинку отдавал маршрут, который был только у Нагатино: у остальных 580
+    # человек открывал блок и видел пустоту (экран владельца, 14.09.2026).
+    # Пустого раскрытия не бывает — либо картинка, либо названная причина.
+    _OUTLINE_MARKS = ("схема границ", "границ территории", "схема территории")
+
+    def _site_outline_picture(slug: str) -> tuple[bytes, str]:
+        """Картинка и чем она найдена — или отказ с причиной.
+
+        Сеть здесь не трогается: берутся УЖЕ скачанные вложения лота
+        (`lot_documents`) и приложение к решению Нагатино, лежащее файлом.
+        Иначе один открытый блок уводил бы страницу на минуты в Росэлторг, а
+        шлюз отвечал бы своей страницей вместо картинки.
+        """
+        key = ""
+        reader = getattr(krt_registry, "tender_lots_known", None)
+        if callable(reader):
+            try:
+                lots = ((reader() or {}).get(slug) or {}).get("lots") or []
+            except Exception:  # noqa: BLE001
+                logger.exception("КРТ: связка с лотами не прочитана slug=%s", slug)
+                lots = []
+            key = next((str(lot.get("store_key") or "") for lot in lots
+                        if lot.get("store_key")), "")
+        if not key:
+            raise nagatino_parcels.OutlinePictureProblem(
+                "рисунок города берётся из документации лота, а лота у этой "
+                "площадки мы не знаем")
+        kept = lot_documents.manifest(_market_dir(), key)
+        # Подпись вложения лежит под тем же ключом, каким её пишет склад
+        # (`title`); её же читает счёт вложений. Имя файла — запасной путь:
+        # площадка кладёт его в адрес.
+        names = [(url, str((entry or {}).get("title")
+                           or (entry or {}).get("file") or url))
+                 for url, entry in (kept.get("files") or {}).items()]
+        found = [(url, name) for url, name in names
+                 if any(mark in name.casefold() for mark in _OUTLINE_MARKS)]
+        if not found:
+            raise nagatino_parcels.OutlinePictureProblem(
+                "в скачанных вложениях лота схемы границ нет"
+                + (f" (вложений на складе {len(names)})" if names else
+                   ": склад по этому лоту пуст"))
+        said = ""
+        for url, name in found:
+            got = lot_documents.load(_market_dir(), key, url)
+            if not got:
+                said = said or f"«{name}» на складе числится, а байтов нет"
+                continue
+            try:
+                return nagatino_parcels.outline_picture_from(
+                    got[0], what=f"«{name}»"), name
+            except nagatino_parcels.OutlinePictureProblem as exc:
+                said = said or str(exc)
+        raise nagatino_parcels.OutlinePictureProblem(
+            said or "схема границ не прочиталась")
+
+    @app.get("/krt/site/{slug}/decision-outline.png", include_in_schema=False)
+    async def krt_site_outline(slug: str, request: Request, session: str = "",
+                               key: str = "", share: str = "") -> Response:
+        """Рисунок границ площадки — как есть, без наложения на нашу карту.
+
+        Растр без координат: совместить его с картой можно только на глаз, а
+        нарисованная так граница выглядела бы ровно так же уверенно, как
+        настоящая. Поэтому он стоит рядом с картой и подписан источником.
+        """
+        _nagatino_gate(request, session, key, share)
+        try:
+            raw, name = await run_in_threadpool(_site_outline_picture, slug)
+        except nagatino_parcels.OutlinePictureProblem as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return Response(raw, media_type="image/png", headers={
+            "Cache-Control": "public, max-age=86400",
+            # Чем найдено — часть ответа: подпись под картинкой называет
+            # документ, из которого она вынута.
+            "X-Outline-Source": urllib.parse.quote(name),
+        })
 
     def _krt_sites_with_lots() -> list[dict[str, Any]]:
         """Площадки, у которых есть лот торгов — список для служебной страницы.
