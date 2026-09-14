@@ -172,3 +172,66 @@ def test_the_instructions_do_not_send_a_class_field_to_the_inputs_only():
     for key in ("landscaping_th_per_sqm", "landscaping_area_per_person_sqm",
                 "landscaping_area_sqm"):
         assert core.input_field_place(key)["label"] in text, key
+
+
+class _Req:
+    """Запрос агента в том виде, в каком его видит инструмент."""
+
+    def __init__(self, apartments_sqm: float, region: str = "msk"):
+        self.tep = {"apartments": {"saleable": apartments_sqm}}
+        self.inputs = {"vri_region": region}
+
+
+def test_the_reverse_count_is_done_by_the_engine_not_by_the_person():
+    """«Поделите на расчётное население» — задание человеку, а не ответ.
+
+    В «Настройках классов» поля площади нет вовсе, там только норматив на
+    человека: обратный счёт там единственный путь (владелец, 14.09.2026).
+    Значит население обязан дать движок, а не языковая модель на глаз.
+    """
+    answer = core._tool_where_to_edit("благоустройство", _Req(12_571.7))
+    # 12 571,7 м² квартир ÷ 33 м² на человека = 381 (приложение 5 к 945-ПП).
+    assert answer["population"] == 381
+    assert "945-ПП" in answer["population_basis"]
+    assert "381" in answer["per_person_conversion"]
+    assert "делить его не проси" in answer["per_person_conversion"]
+
+
+def test_the_dispatcher_hands_the_project_to_the_tool():
+    """Платон ходит через диспетчер, и проект до инструмента обязан доезжать.
+
+    Проверка звала инструмент напрямую и была зелёной, когда `req` из вызова
+    убрали: обратный счёт молча пропадал, а Платон возвращался к «поделите
+    сами». Проверять надо ту дверь, в которую ходят.
+    """
+    answer = core._execute_agent_tool(
+        "where_to_edit", {"query": "благоустройство"}, _Req(12_571.7), {})
+    assert answer["population"] == 381
+
+
+def test_an_unmeasurable_population_is_named_not_guessed():
+    """Квартир в ТЭП нет — пересчитать не на что, и это говорится вслух."""
+    answer = core._tool_where_to_edit("благоустройство", _Req(0))
+    assert "population" not in answer
+    assert "пересчитать" in answer["per_person_conversion"]
+
+
+def test_the_conversion_is_offered_only_where_the_measure_is_per_person():
+    """Ставка за метр двора в пересчёте не нуждается — она уже в мере человека."""
+    answer = core._tool_where_to_edit("резерв", _Req(12_571.7))
+    assert "per_person_conversion" not in answer
+
+
+def test_the_per_gns_rate_is_a_check_not_an_input():
+    """«Площадь × цена ÷ ГНС» — сверка со сметой, а не число для поля.
+
+    Статья считается от площади двора (ставка × площадь), а «на метр ГНС»
+    движок отдаёт производной. Вписанная в поле ставки, она уронила бы статью
+    в разы: поле умножается на площадь двора, а не на строительный объём.
+    """
+    text = core._AGENT_INSTRUCTIONS
+    assert "landscaping_per_gns_th" in text
+    assert "ПРОВЕРКА, а не ввод" in text
+    # Поле само называет свою базу — подсказка и инструкция говорят одно.
+    assert "а не строительного объёма" in core.input_field_place(
+        "landscaping_th_per_sqm")["hint"]
