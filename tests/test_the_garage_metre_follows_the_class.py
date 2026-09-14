@@ -85,3 +85,67 @@ def test_the_class_reaches_the_row_and_the_money(project_class: str) -> None:
     assert units == pytest.approx(comfort_units)
     assert gns > comfort_gns
     assert volume - comfort_volume == pytest.approx(gns - comfort_gns, abs=0.2)
+
+
+def _switch_class_in_browser(manual_area: float | None, to: str) -> dict:
+    """Переключить класс на живой странице и вернуть состояние пары.
+
+    Проверяет это браузер, а не стенд: `applyProjectClassPreset` пишет поля
+    напрямую, и «поле записано» в исходнике выглядит одинаково у верного кода
+    и у сломанного — видно только то, что стало с производными.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import browser  # noqa: PLC0415
+    from playwright.sync_api import sync_playwright  # noqa: PLC0415
+
+    chromium = browser.chromium_or_skip()
+    with browser.serve(core.app, 8411) as base:
+        with sync_playwright() as play:
+            engine = play.chromium.launch(executable_path=str(chromium))
+            page = engine.new_page()
+            page.goto(base, wait_until="load")
+            page.wait_for_function("typeof applyProjectClassPreset==='function'")
+            page.wait_for_timeout(2000)
+            state = page.evaluate(
+                """([manual, to]) => {
+                  inputs.underground_manual_spaces = 3194;
+                  syncUndergroundPair('underground_manual_spaces');
+                  if (manual !== null) { inputs.underground_manual_gns_sqm = manual; }
+                  syncTep(false); renderTep();
+                  const was = Number(inputs.underground_manual_gns_sqm || 0);
+                  applyProjectClassPreset(to);
+                  const note = [...document.querySelectorAll('#tepBody tr')]
+                    .map(t => t.innerText).find(t => /Подземный паркинг/.test(t)) || '';
+                  return {was, per: inputs.underground_area_per_space_sqm,
+                          spaces: inputs.underground_manual_spaces,
+                          area: inputs.underground_manual_gns_sqm, note};
+                }""", [manual_area, to])
+            engine.close()
+    return state
+
+
+def test_the_class_moves_the_area_it_had_produced() -> None:
+    """Смена класса двигает площадь, которую сама же и посчитала.
+
+    Поля профиля писались напрямую, мимо всех пересчётов: класс менял
+    норматив 35 → 37,5, а площадь паркинга оставалась прежней — «ничего не
+    меняется в блоке машиномест» (владелец, 14.09.2026).
+    """
+    state = _switch_class_in_browser(None, "business")
+    assert state["per"] == OWNER_SCALE["business"]
+    assert state["was"] == pytest.approx(3194 * OWNER_SCALE["comfort"], abs=1)
+    assert state["area"] == pytest.approx(3194 * OWNER_SCALE["business"], abs=1)
+
+
+def test_a_hand_written_area_survives_the_class() -> None:
+    """А вписанное руками пятно застройки смену класса переживает.
+
+    Признак измеримый: площадь, полученная нормативом, равна «места ×
+    норматив»; вписанная ему не равна. И расхождение НАЗЫВАЕТСЯ — два числа
+    об одной величине, стоящие молча, читаются как одно.
+    """
+    state = _switch_class_in_browser(100000, "elite")
+    assert state["per"] == OWNER_SCALE["elite"]
+    assert state["area"] == pytest.approx(100000)
+    assert "31,3 м²/место" in state["note"], state["note"]
+    assert "Норматив класса — 40 м²/место" in state["note"], state["note"]

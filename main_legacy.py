@@ -77,7 +77,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.23.65"
+VERSION = "0.23.66"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -43251,8 +43251,28 @@ function applyProjectClassPreset(selectedKey){
  // а отклонение от ОБЩЕЙ базы по-прежнему считает сервер и печатает в PDF.
  // Список полей — сам пресет: поле, добавленное в профиль класса позже,
  // применяется без правки здесь.
+ // Профиль класса перестал быть только деньгами: в нём живут физические
+ // нормативы — метры на машино-место, метры двора на человека, площадь
+ // кладовой. Поля писались напрямую, мимо всех пересчётов, и производные за
+ // ними не шли: класс менял норматив 35 → 37,5, а площадь паркинга стояла
+ // прежней («ничего не меняется в блоке машиномест», владелец, 14.09.2026).
+ // Пересчитывается то, что из норматива и ПОЛУЧЕНО: признак измеримый —
+ // площадь равна «места × прежний норматив». Вписанное руками пятно
+ // застройки смену класса переживает, потому что нормативу оно не равно.
+ const wasPer=undergroundAreaPerSpace();
+ const wasStoragePer=storageAreaPerUnit();
  Object.keys(p).filter(k=>k!=='label').forEach(k=>inputs[k]=classValue(key,k));
+ (function(){
+  const spaces=Number(inputs.underground_manual_spaces||0);
+  const area=Number(inputs.underground_manual_gns_sqm||0);
+  if(spaces>0&&Math.abs(area-spaces*wasPer)<1)syncUndergroundPair('underground_manual_spaces');
+  const storage=tep.storage||{};
+  const units=Number(storage.units||0);
+  if(units>0&&Math.abs(Number(storage.gns||0)-units*wasStoragePer)<1)syncStoragePair('units');
+ })();
+ syncTep(false);
  renderInputs();
+ renderTep();
  if(document.getElementById('projectClassSelect'))document.getElementById('projectClassSelect').value=key;
  renderProjectClassPreview();
  calculate();
@@ -44121,7 +44141,17 @@ function renderTep(){
      const spaces=Number(tep.underground_parking.units||0);
      const area=Number(tep.underground_parking.gns||0);
      const shortfall=undergroundShortfallNote();
-     label+=` <span class="tep-note">Задано проектом: ${num(spaces)} м/м × ${num(per)} м²/место (гросс) = ${num(area)} м². Менять — в разделе «Подземный паркинг».</span>`;
+     // Печатается ФАКТИЧЕСКИЙ показатель — площадь ÷ места, — а не норматив
+     // класса: подпись утверждает равенство, и с чужим множителем оно не
+     // сходилось («3 194 м/м × 37,5 = 111 790 м²» при 119 775 по арифметике).
+     // Норматив класса называется рядом ровно тогда, когда он расходится:
+     // два числа об одной величине, стоящие молча, читаются как одно.
+     const factPer=spaces>0?area/spaces:per;
+     label+=` <span class="tep-note">Задано проектом: ${num(spaces)} м/м × ${num(factPer)} м²/место (гросс) = ${num(area)} м². Менять — в разделе «Подземный паркинг».`
+      +(spaces>0&&Math.abs(factPer-per)>0.05
+        ? ` Норматив класса — ${num(per)} м²/место: площадь задана и его не применяет.`
+        : '')
+      +`</span>`;
      if(shortfall)label+=` <span class="tep-note bad">${shortfall}</span>`;
    }
    if(key==='underground_parking'&&importedParking){
