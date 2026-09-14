@@ -629,3 +629,140 @@ def test_the_composition_is_found_in_the_attachment_the_platform_actually_sends(
     assert stored["lands"], (
         "состав территории не прочитан из вложения, которое площадка присылает")
     assert stored["document"] == "Территория.Лотовая документация.pdf", stored
+
+
+BUILD2 = {**BUILD, "cadastral_number": "77:04:0004010:78"}
+SQUARE2 = [[[4187500, 7495000], [4187700, 7495000], [4187700, 7495200],
+            [4187500, 7495200]]]
+
+
+def _notice_with_two_objects(root: Path) -> None:
+    krt_territory.remember_notice(
+        LOT["store_key"],
+        {"lands": [{"cadastral_number": LAND["cadastral_number"], "part": False,
+                    "area_raw": "5 000", "area_sqm": 5_000.0,
+                    "objects": [{"cadastral_number": BUILD["cadastral_number"],
+                                 "area_sqm": 900.0, "fate": "снос"},
+                                {"cadastral_number": BUILD2["cadastral_number"],
+                                 "area_sqm": 400.0, "fate": "снос"}]}],
+         "objects": [{"cadastral_number": BUILD["cadastral_number"],
+                      "area_sqm": 900.0, "fate": "снос",
+                      "lands": [LAND["cadastral_number"]]},
+                     {"cadastral_number": BUILD2["cadastral_number"],
+                      "area_sqm": 400.0, "fate": "снос",
+                      "lands": [LAND["cadastral_number"]]}],
+         "rows": 3, "problem": ""},
+        document="Лотовая документация.pdf", root=root)
+
+
+def test_the_outline_counters_count_what_the_reader_reads(tmp_path, monkeypatch):
+    """Счётчик контуров считает СВОЮ величину, а не строки присланного файла.
+
+    Читатель идёт по объединению номеров (`numbers`): строки выгрузки ПЛЮС
+    состав извещения. Счётчики свода при этом были только по выгрузке, которой
+    у площадки с торгов не бывает вовсе, — и на экране стояло «контуров
+    получено 0 из 0, осталось спросить 0» ровно в те секунды, когда ЕГРН
+    спрашивали о тридцати девяти номерах (замер прода 14.09.2026, Варшавское
+    ш., вл. 37), а о трёх строениях без контура не говорил никто.
+
+    Число спрашиваемых берётся из ТОГО ЖЕ списка, по которому ходит читатель:
+    второй список «что спрашиваем» разошёлся бы с первым молча.
+    """
+    monkeypatch.setenv("NAGATINO_EGRN_READ", "0")
+    root = tmp_path / "market"
+    root.mkdir(parents=True, exist_ok=True)
+    _store(root, LAND)
+    _notice_with_two_objects(root)
+    site = krt_territory.site_for(SITE["slug"], SITE["name"],
+                                  key=LOT["store_key"], root=root)
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    _seed_outline(root, site, {
+        LAND["cadastral_number"]: {"asked_at": time.time(), "rings": SQUARE,
+                                   "reason": ""},
+        BUILD["cadastral_number"]: {"asked_at": time.time(), "rings": SQUARE2,
+                                    "reason": ""},
+        # Спросили, а контура ЕГРН не дал — это ОТВЕТ, а не наш пробел.
+        BUILD2["cadastral_number"]: {"asked_at": time.time(), "rings": [],
+                                     "reason": "контура у объекта нет"},
+    })
+
+    view = nagatino_parcels.payload(site)
+    o = view["outlines"]
+    # Спрашивается объединение, и счётчик берёт его у самого читателя.
+    assert o["asked"] == len(nagatino_parcels.numbers(site)) == 3, o
+    assert o["asked_drawn"] == 2, o
+    assert o["asked_unread"] == 0, o
+    # Строения СОСТАВА считаются своей парой: у выгрузки их нет вовсе.
+    assert (o["objects"], o["objects_drawn"]) == (2, 1), o
+    assert (o["objects_empty"], o["objects_unread"]) == (1, 0), o
+    assert (o["parcels"], o["drawn"]) == (0, 0), "строк выгрузки здесь нет"
+    assert (o["lands"], o["lands_drawn"]) == (1, 1), o
+    assert (o["lands_empty"], o["lands_unread"]) == (0, 0), o
+    # Три состояния контура — одно правило на выгрузку и на состав.
+    states = {item["cadastral_number"]: item["outline_state"]
+              for item in view["territory"]["objects"]}
+    assert states == {BUILD["cadastral_number"]: "drawn",
+                      BUILD2["cadastral_number"]: "empty"}, states
+    assert view["territory"]["lands"][0]["outline_state"] == "drawn"
+
+
+def test_in_a_real_browser_the_progress_counts_the_numbers_it_asks(
+        tmp_path, monkeypatch):
+    """Прогресс и охват называют состав, а не пустую выгрузку.
+
+    «Читаю ЕГРН: контуров получено 0 из 0, осталось спросить 0» — так строка
+    выглядела у площадки с торгов при живом чтении, потому что считала строки
+    присланного файла. И охват после первой правки замолчал о строениях
+    состава вовсе: 36 из 39 с контуром, а о трёх не говорил никто — молчание
+    читается как «всё нарисовано».
+
+    Меряется браузером: в исходнике сломанный и починенный счётчик выглядят
+    одинаково, а строка на экране — это то, что видно.
+    """
+    from browser import chromium_or_skip, serve
+
+    chrome = chromium_or_skip()
+    from playwright.sync_api import sync_playwright
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("NAGATINO_EGRN_READ", "0")
+    root = tmp_path / "market"
+    root.mkdir(parents=True, exist_ok=True)
+    _store(root, LAND)
+    _notice_with_two_objects(root)
+    site = krt_territory.site_for(SITE["slug"], SITE["name"],
+                                  key=LOT["store_key"], root=root)
+    _seed_outline(root, site, {
+        LAND["cadastral_number"]: {"asked_at": time.time(), "rings": SQUARE,
+                                   "reason": ""},
+        BUILD["cadastral_number"]: {"asked_at": time.time(), "rings": SQUARE2,
+                                    "reason": ""},
+        BUILD2["cadastral_number"]: {"asked_at": time.time(), "rings": [],
+                                     "reason": "контура у объекта нет"},
+    })
+    # Читатель «в работе»: ровно то состояние, в котором строка и врала.
+    monkeypatch.setattr(nagatino_parcels, "_READING", {site.key})
+
+    with serve(_app(tmp_path), 18799) as base:
+        with sync_playwright() as play:
+            browser = play.chromium.launch(executable_path=str(chrome))
+            page = browser.new_page()
+            errors: list[str] = []
+            page.on("pageerror", lambda exc: errors.append(str(exc)))
+            page.goto(f"{base}/krt/site/{SITE['slug']}", wait_until="domcontentloaded")
+            page.wait_for_function(
+                "() => (document.getElementById('progress').textContent||'').trim()")
+            seen = page.evaluate("""() => ({
+              progress: (document.getElementById('progress').textContent || '').trim(),
+              coverage: (document.getElementById('coverage').textContent || '').trim(),
+            })""")
+            browser.close()
+
+    assert not errors, errors
+    assert "0 из 0" not in seen["progress"], seen["progress"]
+    assert "получено 2 из 3" in seen["progress"], seen["progress"]
+    # Охват называет строения состава и разводит два состояния: «спросили, а
+    # контура нет» — ответ ЕГРН, «не спрашивали» — наш пробел.
+    assert "Строений состава нарисовано 1 из 2" in seen["coverage"], seen["coverage"]
+    assert "контура у них нет" in seen["coverage"], seen["coverage"]
+    assert "строений выгрузки" not in seen["coverage"], seen["coverage"]

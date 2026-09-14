@@ -727,6 +727,27 @@ def reading(site: Site | None = None) -> bool:
     return (site or NAGATINO).key in _READING
 
 
+def _outline_state(answer: dict[str, Any] | None) -> str:
+    """Три состояния контура, и они разные.
+
+    Нарисован; спросили, а контура ЕГРН не дал; ещё не спрашивали. Слитые в
+    «не нарисован», они читаются как отсутствие объекта в территории — то же,
+    что пустой ответ НСПД, принятый за отсутствие ограничений.
+
+    Правило объявлено один раз: его читают и строки присланного файла, и
+    состав территории из извещения. Две копии разошлись бы молча, и один и
+    тот же объект был бы «не спрашивали» в одном счётчике и «контура нет» в
+    другом.
+    """
+    if (answer or {}).get("rings"):
+        return "drawn"
+    return "empty" if answer else "unread"
+
+
+def _state_count(rows: list[dict[str, Any]], state: str) -> int:
+    return len([row for row in rows if row.get("outline_state") == state])
+
+
 def _kinds(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Что это по ЕГРН — здания или участки, и сколько чего.
 
@@ -835,6 +856,7 @@ def territory(site: Site | None = None) -> dict[str, Any]:
                             else "владелец не назван"),
             "extract": bool(extract),
             "rings_merc": list(((answers.get(cad) or {}).get("rings")) or []),
+            "outline_state": _outline_state(answers.get(cad)),
         }
     # Объект, на который выписка есть, а в извещении его нет, — это ответ
     # документа о составе территории, и он называется отдельно.
@@ -908,6 +930,7 @@ def territory(site: Site | None = None) -> dict[str, Any]:
             "objects": here,
             "objects_area_sqm": _sum([item.get("area_sqm") for item in here]),
             "rings_merc": list(((answers.get(cad) or {}).get("rings")) or []),
+            "outline_state": _outline_state(answers.get(cad)),
             "extract": bool(extract),
         })
     # Строение без зарегистрированного права красится по СВОЕМУ участку, когда
@@ -1443,11 +1466,7 @@ def payload(site: Site | None = None) -> dict[str, Any]:
             "inn": owner.get("inn"),
             "ogrn": owner.get("ogrn"),
             "rings_merc": list((answer or {}).get("rings") or []),
-            # Три состояния разные: нарисован, спросили и контура нет, ещё не
-            # спрашивали. Слитые в «не нарисован», они читаются как отсутствие
-            # участка в территории.
-            "outline_state": ("drawn" if (answer or {}).get("rings")
-                              else "empty" if answer else "unread"),
+            "outline_state": _outline_state(answer),
             "outline_reason": str((answer or {}).get("reason") or ""),
             "egrn": (answer or {}).get("egrn") or None,
             # Участок под зданием называет ВЫПИСКА, а не наша геометрия:
@@ -1491,6 +1510,10 @@ def payload(site: Site | None = None) -> dict[str, Any]:
         [land for land in lands_and_objects["lands"]
          if land.get("inside_site_share") is not None])
     source = dict(data.get("source") or {})
+    # Номера, по которым спрашивается контур, — тот же список, по которому
+    # ходит фоновый читатель. Второй список «что спрашиваем» разошёлся бы с
+    # первым молча, и прогресс считал бы не то, что читают.
+    ask = numbers(site)
     area_by_rows = _sum([p.get("area_sqm") for p in parcels])
     value_by_rows = _sum([p.get("cadastral_value_rub") for p in parcels])
     own_area = source.get("own_total_area_sqm")
@@ -1533,6 +1556,29 @@ def payload(site: Site | None = None) -> dict[str, Any]:
             "lands": len(lands_and_objects["lands"]),
             "lands_drawn": len([land for land in lands_and_objects["lands"]
                                 if land.get("rings_merc")]),
+            "lands_empty": _state_count(lands_and_objects["lands"], "empty"),
+            "lands_unread": _state_count(lands_and_objects["lands"], "unread"),
+            # Строения СОСТАВА, а не присланного файла. Счётчики выше идут по
+            # строкам выгрузки, которой у площадки с торгов не бывает вовсе: у
+            # Варшавского ш., вл. 37 их ноль при 36 полученных контурах
+            # строений из 39 (замер прода 14.09.2026), и «0 из 0» на экране
+            # читалось как «пула не знаем», а о трёх строениях без контура не
+            # говорил никто. У молчащего читателя обязан быть счётчик молчания.
+            "objects": len(lands_and_objects["objects"]),
+            "objects_drawn": len([item for item in lands_and_objects["objects"]
+                                  if item.get("rings_merc")]),
+            "objects_empty": _state_count(lands_and_objects["objects"], "empty"),
+            "objects_unread": _state_count(lands_and_objects["objects"], "unread"),
+            # Сколько спрашивает сам читатель. Он идёт по ОБЪЕДИНЕНИЮ
+            # (`numbers`): строки файла плюс состав извещения, номера без
+            # повторов, — и ни один счётчик выше на этот вопрос не отвечает.
+            # Прогресс «читаю ЕГРН» обязан считать то, что читают: он брал
+            # строки файла и на площадке с торгов писал «0 из 0» при живом
+            # чтении тридцати девяти номеров.
+            "asked": len(ask),
+            "asked_drawn": len([number for number in ask
+                                if (answers.get(number) or {}).get("rings")]),
+            "asked_unread": len(unread(answers, site=site)),
             "reading": reading(site),
             "problem": str((load_json(cache_path(site)) or {}).get("problem") or ""),
         },
