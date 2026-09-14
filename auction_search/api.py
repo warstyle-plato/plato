@@ -784,7 +784,7 @@ def install(app: FastAPI) -> None:
         торги» не было новостью вовсе.
         """
         service = AuctionSearchService(_discovery_adapters("all"))
-        lots = service.discover_moscow(budget_seconds=DISCOVERY_BUDGET_SECONDS)
+        lots = service.discover_moscow(budget_seconds=WATCH_DISCOVERY_BUDGET_SECONDS)
         by_site = _remember_tender_links([_public_lot_dict(lot) for lot in lots])
         _read_krt_notices(by_site)
         return by_site
@@ -795,6 +795,16 @@ def install(app: FastAPI) -> None:
     # состав не спрашивается вовсе. Недочитанное дочитает следующий заход, и
     # это названо в своде, а не молчит.
     NOTICES_BUDGET_SECONDS = float(os.getenv("AUCTION_KRT_NOTICES_BUDGET", "240") or 240)
+
+    # Сколько секунд сторож собирает лоты. У маршрута это сорок секунд, и они
+    # про ШЛЮЗ: он рвёт соединение на шестидесяти. У сторожа окна запроса нет
+    # вовсе, а раздел Росэлторга обещает пятьдесят одну карточку и за каждой
+    # идёт свой запрос: на проде 14.09.2026 прочитано было 12, и непрочитанные
+    # 39 — наш пробел, который на экране читался как «столько лотов на рынке»
+    # (владелец: «так всего реально на торгах сколько сейчас крт?» — одиннадцать
+    # при семи на вкладке). Своим сроком сбор дочитывает раздел целиком.
+    WATCH_DISCOVERY_BUDGET_SECONDS = float(
+        os.getenv("AUCTION_WATCH_DISCOVERY_BUDGET", "300") or 300)
 
     def _read_krt_notices(by_site: dict[str, Any]) -> dict[str, Any]:
         """Извещения берутся сами — по связке «площадка ↔ лот».
@@ -2349,7 +2359,20 @@ def install(app: FastAPI) -> None:
         recent = sum(1 for one in rows
                      if float(one.get("published_at") or 0) > year_ago)
         addressed = sum(1 for one in rows if one.get("address"))
+        # Связок помним больше, чем собрали сейчас, и оба числа обязаны стоять
+        # рядом: меньшее — наш сбор (раздел читается не целиком), а не рынок.
+        # «Живым» здесь никто не объявляется: правило живости живёт у каталога
+        # (`krtLiveLot`), и второе такое правило ответило бы про один лот иначе.
+        known = 0
+        known_reader = getattr(krt_registry, "tender_lots_known", None)
+        if callable(known_reader):
+            try:
+                known = sum(len((row or {}).get("lots") or [])
+                            for row in (known_reader() or {}).values())
+            except Exception:  # noqa: BLE001 — связка необязательна для свода
+                logger.exception("КРТ: связка с лотами не прочитана")
         return {**matched, "orders": rows,
+                "known_links": known,
                 "orders_by_site": order_by_site,
                 "orders_unbound": unbound[:40],
                 "orders_total": len(rows),
