@@ -77,7 +77,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.23.62"
+VERSION = "0.23.63"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -16335,6 +16335,33 @@ def _v4_column_letter(number: int) -> str:
     return letters
 
 
+def _v4_column_number(letters: str) -> int:
+    number = 0
+    for letter in letters:
+        number = number * 26 + ord(letter) - 64
+    return number
+
+
+def _v4_row_xml(row: int, cells: list[str]) -> str:
+    """Собирает строку листа, расставляя ячейки по возрастанию колонки.
+
+    Excel требует от ячеек строки возрастающего порядка ссылок и молча
+    выбрасывает те, что стоят после старшей колонки. Блок раздачи налога
+    писал `A B C D E F G L M N O P H I J K` — и в Excel колонки «Налог О1…О4»
+    оказывались ПУСТЫМИ, а «Итого» под ними нулём: чистая прибыль ОТЧЁТа шла
+    без налога на прибыль (на четырёх очередях 56 598,6 вместо 42 128,6 при
+    налоге 14 470,0). Наш вычислитель читает ячейки по координате и порядка
+    не замечает — то есть книга и проверки расходились молча, а поймал это
+    владелец глазами (14.09.2026).
+
+    Поэтому строку собирает эта функция, а не конкатенация в порядке
+    написания кода: порядок ячеек — свойство файла, а не порядка вычислений.
+    """
+    ordered = sorted(cells, key=lambda cell: _v4_column_number(
+        re.match(r'<x:c r="([A-Z]+)', cell).group(1)))
+    return f'<x:row r="{row}">' + "".join(ordered) + "</x:row>"
+
+
 # Ширина помесячной сетки книги объявлена ЗДЕСЬ и больше нигде. Прежде тот же
 # факт стоял в трёх видах — этой константой, числом `_V4_CAPEX_MONTH_COLUMNS`
 # и одиннадцатью литералами `$DS$` внутри f-строк, — и протянуть книгу со 120
@@ -18086,7 +18113,7 @@ def _v4_tax_share_by_year(xml: str, missing: list[str]) -> str:
     for column in _v4_cf_columns():
         year_cells.append(
             formula(f"{column}{years}", f"MAX(YEAR('CF'!{column}$3),$B${gate})"))
-    parts.append(f'<x:row r="{years}">' + "".join(year_cells) + "</x:row>")
+    parts.append(_v4_row_xml(years, year_cells))
     # Запасная мера на год, у которого налог есть, а годовая база
     # отрицательна: внутри года накопленным итогом была прибыль, налог
     # начислен и обратно не возвращается. Такой год делится по МЕСЯЦАМ, в
@@ -18100,7 +18127,7 @@ def _v4_tax_share_by_year(xml: str, missing: list[str]) -> str:
             cells.append(formula(
                 f"{column}{row}",
                 f"IF('CF'!{column}$37>0,MAX('CF_{index + 1}'!{column}$22,0),0)"))
-        parts.append(f'<x:row r="{row}">' + "".join(cells) + "</x:row>")
+        parts.append(_v4_row_xml(row, cells))
     header = monthly + len(_V4_TAX_QUEUE_COLUMNS)
     titles = ["Год", "Налог свода"]
     titles += [f"База О{index + 1}" for index in range(len(_V4_TAX_QUEUE_COLUMNS))]
@@ -18145,14 +18172,14 @@ def _v4_tax_share_by_year(xml: str, missing: list[str]) -> str:
                 f"IF($G{row}>0,$B{row}*{annual}/$G{row},"
                 f"IF({total_reserve}>0,$B{row}*{monthly_cell}/{total_reserve},"
                 f"IF($B${4 + index}=\"Да\",$B{row}/MAX(COUNTIF($B$4:$B$7,\"Да\"),1),0)))"))
-        parts.append(f'<x:row r="{row}">' + "".join(cells) + "</x:row>")
+        parts.append(_v4_row_xml(row, cells))
     total = last + 1
     total_cells = [label(f"A{total}", "Итого"),
                    formula(f"B{total}", f"SUM(B{first}:B{last})")]
     for column in _V4_TAX_SHARE_COLUMNS:
         total_cells.append(
             formula(f"{column}{total}", f"SUM({column}{first}:{column}{last})"))
-    parts.append(f'<x:row r="{total}">' + "".join(total_cells) + "</x:row>")
+    parts.append(_v4_row_xml(total, total_cells))
     check = total + 1
     parts.append(f'<x:row r="{check}">'
                  + label(f"A{check}",
@@ -18576,6 +18603,49 @@ def _v4_add_report_default_row(xml: str, missing: list[str]) -> str:
         xml, done = _v4_set_cell(xml, coord, **kwargs)
         if not done:
             missing.append(f"ОТЧЁТ: ячейка {coord} не найдена")
+    return xml
+
+
+_V4_REPORT_NET_PROFIT_ROW = 12       # ОТЧЕТ: «Чистая прибыль»
+_V4_CF_VAT_ROW = 21                  # CF очереди: НДС к уплате
+
+
+def _v4_report_net_profit_from_its_own_rows(xml: str, missing: list[str]) -> str:
+    """Чистая прибыль считается из строк ТОГО ЖЕ листа, а не из чужого блока.
+
+    В шаблоне `ОТЧЕТ!B12` читает `КОНСОЛИДАТОР!L8` — там чистая собирается по
+    очередям, и из каждой вычитается её доля налога (`K4:K7 = K8 × доля`). У
+    владельца Excel посчитал эти доли нулями, и налог не вычелся ни у одной
+    очереди: на экране стояло 56 598,6 вместо 42 128,6 — ровно на налог
+    14 470,0 больше (14.09.2026). Наш вычислитель на том же файле давал верное
+    число, то есть расхождение живёт между Excel и цепочкой раздачи, а не в
+    методике, и искать в ней виноватую ячейку нечем: формулы там законные.
+
+    Лечится тем, что **величину, которую читает человек, собирают из величин
+    рядом с ней**: прибыль до налога (B10) минус налог (B11) минус НДС. Обе
+    строки Excel считает верно — это видно на том же экране, — и потерять
+    налог по дороге больше негде.
+
+    НДС стоит внутри формулы, а не своей строкой: свободной строки на листе
+    нет, а вставить её значит сдвинуть все ссылки. Поэтому лист по-прежнему не
+    складывается глазами (B10 − B11 ≠ B12) — это отдельная правка, и она про
+    вёрстку, а не про число.
+
+    Раздача налога по очередям остаётся там, где ей место, — в таблице
+    сравнения очередей.
+    """
+    row = _V4_REPORT_NET_PROFIT_ROW
+    before = re.search(r'<x:c r="B%d"[^>]*>(.*?)</x:c>' % row, xml, re.S)
+    if not before or "КОНСОЛИДАТОР" not in (before.group(1) or ""):
+        # Формула шаблона не опознана — значит лист другой, и писать поверх
+        # нельзя: расхождение уходит в missing, а не проходит молча.
+        missing.append(f"ОТЧЁТ: формула чистой прибыли в B{row} не опознана")
+        return xml
+    vat = "+".join(f"'CF_{phase}'!$B${_V4_CF_VAT_ROW}" for phase in range(1, 5))
+    xml, done = _v4_set_cell(
+        xml, f"B{row}", formula=f"B{row - 2}-B{row - 1}-({vat})")
+    if not done:
+        missing.append(f"ОТЧЁТ: ячейка B{row} не найдена")
     return xml
 
 
@@ -20175,10 +20245,11 @@ V4_REWRITTEN_FORMULA_ROWS: dict[str, tuple[tuple[int, ...], str]] = {
     ),
     "ОТЧЕТ": (
         (
-        2, 58, 61,
+        2, 12, 58, 61,
         ),
-        "Наземная ГНС, строительный объём и непогашенный долг при "
-        "переносе между очередями "
+        "Наземная ГНС, строительный объём, непогашенный долг при "
+        "переносе между очередями и чистая прибыль из строк того же "
+        "листа (12) "
     ),
     "ПРОВЕРКИ": (
         (
@@ -20766,6 +20837,7 @@ def build_project_workbook(
     tep_sheet_path = _v4_sheet_path(source, "ТЭП")
     report_xml = source.read(report_sheet_path).decode("utf-8")
     report_xml = _v4_add_report_default_row(report_xml, missing)
+    report_xml = _v4_report_net_profit_from_its_own_rows(report_xml, missing)
     report_xml = _v4_rename_labels(report_xml, "ОТЧЕТ", missing)
     tep_xml = _v4_sports_tep_row(
         source.read(tep_sheet_path).decode("utf-8"), missing)
@@ -29503,23 +29575,62 @@ def _escrow_cover_with_phases(rows: list[dict[str, Any]], results: list[dict[str
 def _aggregate_finance(results: list[dict[str, Any]],
                       names: list[str] | None = None) -> dict[str, Any]:
     month_map: dict[str, dict[str, float]] = {}
-    additive = (
+    # Поток и остаток складываются по-разному, и это не оттенок. Поток
+    # (выборка, погашение, проценты, выручка) после конца горизонта очереди
+    # равен нулю — её строк больше нет, и складывать нечего. А ОСТАТОК — долг,
+    # счёт эскроу, начисленное к уплате — никуда не девается: очередь, чья
+    # линия кончилась с непогашенным долгом, должна банку и дальше.
+    #
+    # Складывалось всё одинаково, и очередь после своего горизонта выпадала из
+    # суммы месяца целиком. На пресете Нагатино О1 кончается 2033-01 с долгом
+    # 3 193,61 млн, О2 — 2034-01 с 1 536,86: с этих месяцев сводный долг падал
+    # ровно на них, и пик «одновременно открытых линий» выходил 94 250,21 млн
+    # против 97 443,30 у книги. Движок при этом ЗНАЛ, что долг остался, — их
+    # сумма 4 730,47 стоит у него в `ending_pf` свода до копейки, — но в
+    # помесячный ряд она не попадала. Книга держала хвосты и была права.
+    #
+    # Где хвостов нет (все очереди рассчитались), последний остаток нулевой и
+    # правка не двигает ничего: она бьёт ровно там, где очередь ушла в дефолт.
+    flows = (
         "bridge_draw", "bridge_repayment", "bridge_interest", "bridge_capitalization",
-        "bridge_balance", "project_cash_draw", "own_funds_draw",
+        "project_cash_draw", "own_funds_draw",
         "pf_draw", "pf_repayment", "pf_interest",
-        "pf_interest_capitalization", "pf_balance", "pf_payable", "pf_obligation",
-        "sales_after_rve", "escrow", "escrow_release", "limit_fee",
+        "pf_interest_capitalization",
+        "sales_after_rve", "escrow_release", "limit_fee",
         "interest_payment", "profit_tax", "taxable_margin",
         "financing_tax_deduction", "taxable_profit_cumulative",
         "revenue", "capex", "operating",
     )
+    stocks = ("bridge_balance", "pf_balance", "pf_payable", "escrow")
+    # `pf_obligation` здесь не складывается: это тело плюс начисленное, и ниже
+    # он считается из уже сложенных остатков. Сложенный третьим слагаемым, он
+    # разошёлся бы с ними на первой же правке.
+    additive = flows + stocks
     source_rows: dict[tuple[int, str], dict[str, Any]] = {}
     for ri, result in enumerate(results):
         for row in result["finance"]["rows"]:
             source_rows[(ri, row["month"])] = row
-            agg = month_map.setdefault(row["month"], {key: 0.0 for key in additive})
-            for key in additive:
-                agg[key] += float(row.get(key, 0.0) or 0.0)
+            month_map.setdefault(row["month"], {key: 0.0 for key in additive})
+    # Потоки складываются только там, где строка есть; остатки — с переносом
+    # последнего известного значения очереди на месяцы после её горизонта.
+    # Обход идёт ПО МЕСЯЦАМ, а не по очередям: перенос обязан знать, какой
+    # месяц последний у каждой, а это видно только в общем календаре.
+    carried: dict[int, dict[str, float]] = {
+        ri: {key: 0.0 for key in stocks} for ri in range(len(results))}
+    escrow_by_phase_map: dict[str, list[float]] = {}
+    for month in sorted(month_map):
+        agg = month_map[month]
+        for ri in range(len(results)):
+            row = source_rows.get((ri, month))
+            if row is not None:
+                for key in flows:
+                    agg[key] += float(row.get(key, 0.0) or 0.0)
+                for key in stocks:
+                    carried[ri][key] = float(row.get(key, 0.0) or 0.0)
+            for key in stocks:
+                agg[key] += carried[ri][key]
+        escrow_by_phase_map[month] = [carried[ri]["escrow"]
+                                      for ri in range(len(results))]
 
     # Накопленные ряды свода считаются заново по сложенному потоку. Сложить
     # два накопленных итога нельзя: горизонты очередей разной длины, и в
@@ -29531,6 +29642,10 @@ def _aggregate_finance(results: list[dict[str, Any]],
     for month in sorted(month_map):
         agg = month_map[month]
         key_rate = 0.0
+        # Средняя ставка взвешивается по ЖИВЫМ линиям: у очереди, чья линия
+        # кончилась, ставки в этот месяц нет вовсе — договор закрыт, — и
+        # приписать ей ноль значило бы занизить среднюю по остальным. Долг её
+        # при этом в сумме остатков стоит: он не обслуживается, но и не исчез.
         bridge_num = bridge_den = pf_num = pf_den = 0.0
         for ri, result in enumerate(results):
             row = source_rows.get((ri, month))
@@ -29560,9 +29675,11 @@ def _aggregate_finance(results: list[dict[str, Any]],
         # второй очереди сразу покрыта» (владелец, 04.09.2026: «Это деньги
         # первой очереди или что?»). Сумма верна, неверно, что она отвечает
         # на вопрос про очередь, — поэтому доли едут вместе с ней.
-        out["escrow_by_phase"] = [
-            float((source_rows.get((ri, month)) or {}).get("escrow", 0.0) or 0.0)
-            for ri in range(len(results))]
+        # Долю очереди берём из той же суммы, что и сам остаток: слой,
+        # посчитанный по строке, исчезал бы в месяце, где строки уже нет, а
+        # общая площадь оставалась — на рисунке это читается как «эскроу
+        # ничьё».
+        out["escrow_by_phase"] = list(escrow_by_phase_map.get(month) or [])
         out.update(running)
         rows.append(out)
 
