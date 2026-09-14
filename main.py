@@ -2299,7 +2299,7 @@ def _handle_message(message: dict[str, Any]) -> None:
                      name=_sender_name(message), text=text)
     _user_to_core(chat_id, _sender_name(message), "command" if command else "message")
     chat = message.get("chat") or {}
-    if str(chat.get("type") or "") != "private":
+    if core._telegram_is_group(chat):
         # У группы бот только читатель — решает это одно место, движковое.
         # Гейт стоял ТОЛЬКО у движка, а Telegram ходит сюда: обёртка
         # перехватывает `_telegram_handle_update`, и её разбор команд отвечал

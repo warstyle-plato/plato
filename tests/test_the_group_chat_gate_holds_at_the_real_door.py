@@ -133,3 +133,36 @@ def test_the_gate_is_decided_in_one_place(bot) -> None:
     """
     source = Path(ROOT / "main.py").read_text(encoding="utf-8")
     assert "core._telegram_group_message(chat, message)" in source
+
+
+def typeless(chat_id: int, text: str = "/help") -> dict:
+    """Сообщение без `type` — так его собирает код, а не Telegram."""
+    return {"message": {"chat": {"id": chat_id}, "from": {"id": abs(chat_id)},
+                        "text": text, "date": 1757721600}}
+
+
+def test_a_message_without_a_chat_type_does_not_silence_a_private_chat(bot) -> None:
+    """«Не private» — не то же самое, что «группа».
+
+    Первая редакция гейта читала отсутствующий `type` как «не личка» и онемляла
+    её: три проверки Платона разом получили пустой ответ там, где бот обязан
+    отвечать. Telegram `type` присылает всегда, а собранное в коде сообщение —
+    нет, и умолчание «раз не сказано, значит группа» ломает ровно тот путь,
+    который чинить не просили.
+    """
+    bot.sent.clear()
+    bot._handle_update(typeless(4242))
+    assert [chat for chat, _text in bot.sent] == [4242]
+
+
+def test_a_negative_chat_id_is_a_group_even_without_a_type(bot) -> None:
+    """Признак самой группы, а не догадка о её отсутствии: номер отрицательный."""
+    bot.sent.clear()
+    bot._handle_update(typeless(GROUP))
+    assert into_group(bot) == []
+
+
+@pytest.mark.parametrize("kind,is_group", [("private", False), ("group", True),
+                                           ("supergroup", True), ("channel", True)])
+def test_the_kind_is_read_positively(bot, kind, is_group) -> None:
+    assert bot.core._telegram_is_group({"id": 1, "type": kind}) is is_group

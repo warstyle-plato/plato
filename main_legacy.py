@@ -77,7 +77,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.23.57"
+VERSION = "0.23.58"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -13711,6 +13711,27 @@ def _telegram_group_message(chat: dict[str, Any], message: dict[str, Any]) -> No
         + " → «" + str(answer.get("bound")) + "»")
 
 
+def _telegram_is_group(chat: dict[str, Any] | None) -> bool:
+    """Групповой ли это чат. Один ответ на оба входа — движка и обёртки.
+
+    Опознаём ПОЛОЖИТЕЛЬНО, а не «всё, что не private». Telegram `type`
+    присылает всегда, а собранное в коде сообщение его не несёт — и правило
+    «не private, значит группа» онемляло личку: три проверки Платона разом
+    получили пустой ответ там, где бот обязан ответить. Молчащий в личке бот
+    выглядит сломанным, и умолчанием это не лечится.
+
+    Типа нет — смотрим номер чата: отрицательный бывает только у групп и
+    каналов. Это признак самой группы, а не догадка о её отсутствии.
+    """
+    kind = str((chat or {}).get("type") or "").strip().lower()
+    if kind:
+        return kind in {"group", "supergroup", "channel"}
+    try:
+        return int((chat or {}).get("id") or 0) < 0
+    except (TypeError, ValueError):
+        return False
+
+
 def _telegram_handle_message(message: dict[str, Any]) -> None:
     chat = message.get("chat") or {}
     sender = message.get("from") or {}
@@ -13718,7 +13739,7 @@ def _telegram_handle_message(message: dict[str, Any]) -> None:
     user_id = int(sender.get("id") or chat_id)
     if not chat_id:
         return
-    if str(chat.get("type") or "") != "private":
+    if _telegram_is_group(chat):
         _telegram_group_message(chat, message)
         return
     text = str(message.get("text") or "").strip()
@@ -13982,7 +14003,7 @@ def _telegram_process_update(update: dict[str, Any]) -> None:
         message = update.get("message") if isinstance(update, dict) else None
         chat = (message or {}).get("chat") if isinstance(message, dict) else None
         chat_id = (chat or {}).get("id") if isinstance(chat, dict) else None
-        if str((chat or {}).get("type") or "private") != "private":
+        if _telegram_is_group(chat):
             # В группу бот не пишет НИЧЕГО и никогда — верхний перехват не
             # исключение. Он им и был: 429 «Too Many Requests» приезжал
             # ответом в тот самый чат, где бот и без того наговорил лишнего
