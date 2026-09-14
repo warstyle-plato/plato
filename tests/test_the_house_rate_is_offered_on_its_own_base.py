@@ -112,12 +112,19 @@ console.log(JSON.stringify(out));
 
 
 def test_in_a_real_browser_the_note_stands_under_its_own_field() -> None:
-    """Подпись стоит ПОД своим полем, а не над ним и не под соседним.
+    """Подпись стоит ПОД своим полем и в блоке своего поля.
 
     Замер уже ловил этот капкан дважды — на нормативе паркинга и на ставке
     двора: справка, встающая над вводом, приклеивается к подписи СОСЕДНЕЙ
     строки и читается как утверждение о ней. Это геометрия, и в исходнике
     сломанное выглядит как верное.
+
+    «Не приклеилась к соседней» меряется РОДИТЕЛЕМ, а не расстоянием до чужой
+    подписи. Прежняя мера сравнивала только вертикаль — |top − top| > 4, — и
+    на раннере CI упала при верной вёрстке: форма двухколоночная, и подпись
+    ставки двора стоит в ДРУГОЙ колонке; при других шрифтах переносы сошлись
+    так, что верхние края совпали. Одинаковая высота в разных колонках — это
+    законная сетка, а не «оба в одном месте».
     """
     chrome = chromium_or_skip()
     from playwright.sync_api import sync_playwright
@@ -138,16 +145,21 @@ def test_in_a_real_browser_the_note_stands_under_its_own_field() -> None:
             seen = page.evaluate("""() => {
               const note=document.getElementById('landscapingHouseRateNote');
               const field=document.getElementById('f_landscaping_gns_th_per_sqm');
-              const other=document.getElementById('landscapingRateNote');
-              if(!note||!field||!other)return null;
+              if(!note||!field)return null;
               const n=note.getBoundingClientRect(), f=field.getBoundingClientRect();
-              return {text: note.textContent, below: n.top >= f.bottom - 1,
-                      apart: Math.abs(n.top - other.getBoundingClientRect().top) > 4};
+              const box=note.parentElement;
+              return {text: note.textContent,
+                      below: n.top >= f.bottom - 1,
+                      ownBox: box === field.parentElement,
+                      inputs: box ? box.querySelectorAll('input,select,textarea').length : -1};
             }""")
             browser.close()
 
     assert not errors, errors
     assert seen, "поля ставки на метр дома или подписи под ним на странице нет"
     assert seen["below"], "подпись встала НАД вводом — читается как подпись соседней строки"
-    assert seen["apart"], "обе подписи в одном месте — их не различить"
+    assert seen["ownBox"], "подпись лежит не в блоке своего поля — она у соседней строки"
+    assert seen["inputs"] == 1, (
+        "в блоке подписи не одно поле — значит она говорит сразу о нескольких",
+        seen["inputs"])
     assert "наземной части дома" in seen["text"], seen["text"]
