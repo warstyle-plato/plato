@@ -162,10 +162,16 @@ def test_registry_reads_mos_decision_only_for_a_planned_project(
     }), encoding="utf-8")
     calls = []
 
+    CARD = b"# Description of the object\n# What will be built\nBusiness centre"
+
     def fetch(url: str) -> bytes:
         calls.append(url)
-        if "r.jina.ai" in url:
-            return b"# Description of the object\n# What will be built\nBusiness centre"
+        # Карточку отдают ОБА транспорта: утверждение этой проверки — «решение
+        # mos.ru читается только у планируемой площадки», и порядок транспортов
+        # к нему не относится. Прежняя заглушка знала только адрес читалки и
+        # падала на прямом пути, то есть держала форму, а не утверждение.
+        if "r.jina.ai" in url or url == "https://api.krt.mos.ru/projects/mira":
+            return CARD
         if "/aisearch/" in url:
             return json.dumps({"results": [{
                 "id": "337386220", "category": "ДГП",

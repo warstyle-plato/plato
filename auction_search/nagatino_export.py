@@ -414,8 +414,18 @@ def build(view: dict[str, Any], owners: list[dict[str, Any]],
           groups: list[dict[str, Any]] | None = None,
           under: dict[str, Any] | None = None,
           under_holdings: dict[str, Any] | None = None,
-          buyout: dict[str, Any] | None = None) -> bytes:
-    """Книга свода. Считает не она — она показывает посчитанное."""
+          buyout: dict[str, Any] | None = None,
+          subject: str = "",
+          site_notes: list[tuple[str, str]] | None = None) -> bytes:
+    """Книга свода. Считает не она — она показывает посчитанное.
+
+    `subject` и `site_notes` — утверждения о КОНКРЕТНОЙ территории: её адрес и
+    то, что на ней нашлось (девять строений за ГБУ, расхождение выписок с
+    извещением). Книга собирается для любой площадки КРТ, и оставленные
+    умолчанием слова Нагатино были бы неправдой о чужой территории — ровно тот
+    же род ошибки, что подпись «по ДДС» под числом из РСС. Не передали —
+    строки нет вовсе: молчание честнее чужого факта.
+    """
     book = Workbook()
     rows = _land_rows(view)
     sheet = book.active
@@ -498,8 +508,7 @@ def build(view: dict[str, Any], owners: list[dict[str, Any]],
     third.column_dimensions["A"].width = 34
     third.column_dimensions["B"].width = 104
     for name, value in (
-        ("Территория", "КРТ нежилой застройки 14,62 га, Варшавское ш., влд. 37, "
-                       "Нагатинская ул., влд. 3А/6 (ЮАО, Нагатино-Садовники)"),
+        (("Территория", subject),) if subject else ()) + (
         ("Состав территории", f"Извещение о торгах {notice.get('number', '')} "
                               f"от {notice.get('date', '')} — приложение № 2"),
         ("Площади, права, аренда", f"Выписки ЕГРН, {extracts.get('count', '')} шт., "
@@ -516,13 +525,9 @@ def build(view: dict[str, Any], owners: list[dict[str, Any]],
                           "(«М-05-…», «…-05 ДГИ»), у трёх — только общее правило: в "
                           "Москве неразграниченная госсобственность в распоряжении "
                           "города. Записи о собственности Москвы в ЕГРН по ним нет"),
-        ("Оперативное управление", "Не собственность: у девяти строений собственник — "
-                                   "город Москва, держатель — ГБУ «Жилищник»"),
         ("Земля и строения", "Разные величины и разные колонки: у участка площадь земли, "
                              "у здания площадь здания; плотность считается только по земле"),
-        ("Расхождение документов", "77:05:0004001:2077 есть в выписках и нет в извещении; "
-                                   "77:05:0004001:1951 наоборот"),
-    ):
+    ) + tuple(site_notes or ()):
         third.append([name, value])
         third.cell(row=third.max_row, column=1).font = Font(bold=True)
         third.cell(row=third.max_row, column=2).alignment = Alignment(wrap_text=True, vertical="top")

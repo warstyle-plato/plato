@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from auction_search import egrn_archive, egrn_extracts, lot_documents
+from auction_search import (
+    egrn_archive, egrn_extracts, egrn_store, krt_notice, lot_documents,
+)
 from auction_search.documents import (
     DocumentAuthorizationRequired,
     DocumentExtractionError,
@@ -16,16 +18,46 @@ from auction_search.models import AuctionLot, LotKind
 
 _PROGRAM_DOC_TYPES = {"krt_decision", "agreement", "notice", "annex", "other"}
 _OBLIGATION_DOC_TYPES = {"agreement", "notice", "annex", "krt_decision", "other"}
+# Где искать таблицу состава территории. Раньше здесь стояли «извещение» и
+# «приложение» — виды, которых Росэлторг не ставит: тип он выводит из ИМЕНИ
+# файла по словам «извещ»/«прилож», а площадка зовёт документ «Территория.
+# Лотовая документация.pdf» и «Территория.Сведения о земельных участках.pdf».
+# Живой счёт по лоту 21000005000000033023 (14.09.2026): 14 «прочее», 13
+# «договор», 3 «ЕГРН» и ни одного «извещения» — гейт не срабатывал ни разу, а
+# состав приезжал запасным перечнем проекта решения.
+#
+# Поэтому таблицу ищет сам разбор, в тех же вложениях, что программу и
+# обязательства: их байты уже в руках, а `krt_notice` отвечает «таблицы здесь
+# нет» даром и пустым разбором прочитанного не вытесняет.
+_NOTICE_DOC_TYPES = _PROGRAM_DOC_TYPES
 
 
-def store_key(lot: AuctionLot) -> str:
+def krt_territory():
+    """Склад состава территории. Импортируется при вызове, а не на модуле:
+    `krt_territory` тянет `nagatino_parcels`, а тот — этот же пайплайн через
+    маршруты, и круговой импорт разрешался бы порядком загрузки."""
+    from auction_search import krt_territory as module
+
+    return module
+
+
+def store_key(lot: AuctionLot | dict) -> str:
     """Ключ лота на складе скачанного. Один ответ на «чей это файл».
 
     Берётся номер процедуры площадки: адрес лота у Росэлторга меняется вместе
     со строкой запроса, а номер — то, чем лот зовут и люди, и сама площадка.
     Нет номера — канонический ключ лота, тот же, которым он сводится внутри
     DevelopAid.
+
+    Принимает и сам лот, и его словарь: связка «площадка ↔ лот» хранится
+    словарём, и ключ склада ей нужен тот же. Свой второй разбор номера из
+    адреса лота был бы второй реализацией формата площадки — а формат этот
+    объявлен в её адаптере.
     """
+    if isinstance(lot, dict):
+        source = lot.get("source") or {}
+        external = str(source.get("external_lot_id") or "").strip()
+        return external or str(lot.get("canonical_key") or "")
     external = str(getattr(lot.source, "external_lot_id", "") or "").strip()
     return external or lot.canonical_key
 
@@ -191,6 +223,20 @@ def enrich_krt_from_official_documents(
                 "duplicates": found["duplicates"],
             })
             ledger["read"] = int(ledger["read"]) + 1
+            # Разобранное ложится на тот же склад, куда кладёт присланный
+            # руками зип: склад отвечает на «что мы знаем об объектах этого
+            # лота», и второй ответ на этот вопрос разошёлся бы с первым.
+            # Прежде разбор загрузчика жил только в ответе маршрута — то есть
+            # свод территории читать его было нечем, и площадка выглядела
+            # непрочитанной при двадцати шести прочитанных вложениях.
+            if store is not None:
+                try:
+                    egrn_store.save(store, key, found,
+                                    document.title or document.url)
+                except Exception as exc:  # noqa: BLE001 — отказ склада назван
+                    not_kept.append({"document": document.title,
+                                     "url": document.url,
+                                     "why": f"склад разобранного: {exc}"[:200]})
             # Запись, которую не прочитали, — наш пробел, и он назван: молча
             # выброшенная выписка читается как отсутствие собственника.
             if found["unread"]:
@@ -202,6 +248,27 @@ def enrich_krt_from_official_documents(
                     "kind": "egrn_unread",
                 })
             continue
+
+        if document.document_type in _NOTICE_DOC_TYPES and store is not None:
+            # Приложение 2 к извещению — состав территории: участок, объекты на
+            # нём и их судьба. Таблица стоит в ОДНОМ вложении из многих, и
+            # неудача на остальных её не отменяет — пустой разбор прочитанного
+            # не вытесняет (`remember_notice`). Читается тем же `krt_notice`,
+            # которым читается извещение Нагатино: второй разбор той же
+            # таблицы однажды ответил бы про один документ иначе.
+            try:
+                notice = krt_notice.read_bytes(data)
+            except Exception as exc:  # noqa: BLE001 — отказ разбора назван, а не молчит
+                # Отказ пишется у того вложения, где таблицу искали и не
+                # разобрали. Прежде он писался только у вида «извещение» —
+                # то есть у вида, которого площадка не ставит.
+                ledger["skipped"].append({
+                    "document": document.title, "url": document.url,
+                    "why": f"состав территории не разобран: {exc}"[:200]})
+            else:
+                krt_territory().remember_notice(
+                    key, notice, document=document.title or document.url,
+                    root=Path(store))
 
         try:
             paragraphs = extract_document_paragraphs(document, data, content_type)
