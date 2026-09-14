@@ -70,7 +70,7 @@ from auction_search.models import LotKind
 from auction_search.preset_mapper import build_project_preset
 from auction_search.profile_fit import profile_fit
 from auction_search.service import AuctionSearchService
-from auction_search import nagatino_parcels
+from auction_search import krt_territory, nagatino_parcels
 from auction_search.nagatino_ui import nagatino_page
 from auction_search.ui import auctions_page
 from market_search.krt_registry import CATALOGUE_URL, KrtRegistry
@@ -1758,6 +1758,7 @@ def install(app: FastAPI) -> None:
             data = await run_in_threadpool(nagatino_parcels.payload)
         except nagatino_parcels.RegistryProblem as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
+        data["siblings"] = await run_in_threadpool(_krt_sites_with_lots)
         lookup = getattr(core, "_land_lookup_by_numbers", None) if core is not None else None
         if callable(lookup):
             started = await run_in_threadpool(
@@ -1790,7 +1791,20 @@ def install(app: FastAPI) -> None:
                     nagatino_parcels.registry().get("groups") or [],
                     nagatino_parcels.land_under_buildings(),
                     nagatino_parcels.holdings_under(),
-                    nagatino_parcels.buyout()))
+                    nagatino_parcels.buyout(),
+                    # Адрес территории и её находки — утверждения об ЭТОЙ
+                    # площадке, и живут они у неё, а не умолчанием в книге:
+                    # оставленные умолчанием, они уехали бы в книгу чужой.
+                    subject="КРТ нежилой застройки 14,62 га, Варшавское ш., влд. 37, "
+                            "Нагатинская ул., влд. 3А/6 (ЮАО, Нагатино-Садовники)",
+                    site_notes=[
+                        ("Оперативное управление",
+                         "Не собственность: у девяти строений собственник — "
+                         "город Москва, держатель — ГБУ «Жилищник»"),
+                        ("Расхождение документов",
+                         "77:05:0004001:2077 есть в выписках и нет в извещении; "
+                         "77:05:0004001:1951 наоборот"),
+                    ]))
         except nagatino_parcels.RegistryProblem as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
         name = "КРТ Нагатино — участки и объекты.xlsx"
@@ -1848,6 +1862,222 @@ def install(app: FastAPI) -> None:
             return nagatino_parcels.resolve_site(sites, crossings)
 
         return find
+
+    # --- тот же свод для любой площадки КРТ ---------------------------------
+    # «Цель была чтобы все крт с торгов разбирались по образу и подобию
+    # Нагатино» (владелец, 13.09.2026). Сборщик свода ОДИН — тот, что собирает
+    # Нагатино; здесь меняются только источники: состав территории из извещения
+    # лота, свойства и собственники из его выписок, контур площадки из реестра.
+    def _krt_site_source(slug: str) -> tuple[dict[str, Any], Any]:
+        """Площадка каталога и её источник свода.
+
+        **Сеть здесь не трогается**: это правило страницы, и первая версия его
+        нарушила — площадка искалась в общем списке (`_krt_all_sites`), а тот
+        при просроченном снимке уходит обходить krt.mos.ru и mos.ru, и
+        собственный запрос страницы не возвращался вовсе. Спрашивается то, что
+        лежит на диске: `find` читает снимок каталога (у площадки-решения —
+        снимок решений) и только заводит фоновое обновление, а связка с лотами
+        лежит файлом. Не знает ни один — 404 с причиной: пустой свод читался бы
+        как территория без объектов.
+        """
+        finder = getattr(krt_registry, "find", None)
+        project = finder(f"krt:{slug}") if callable(finder) else None
+        if project is None:
+            # Каталожной карточки нет (или снимок её ещё не принёс), а лот у
+            # площадки есть: имя берём из связки и подписываем, чьё оно.
+            known = next((item for item in _krt_sites_with_lots()
+                          if item["slug"] == slug), None)
+            if known:
+                project = {"slug": slug, "name": known["name"],
+                           "name_source": known["name_source"]}
+        if not project:
+            raise HTTPException(
+                status_code=404,
+                detail="Территории КРТ с таким слагом нет ни в снимке каталога, "
+                       "ни в связке с лотами торгов")
+        numbers: list[str] = []
+        try:
+            numbers = [str(number) for number
+                       in ((_requirements_for(slug) or {}).get("cadastral_numbers") or [])]
+        except Exception:  # noqa: BLE001 — перечень необязателен, отказ назовёт свод
+            logger.exception("КРТ: перечень участков решения не прочитан slug=%s", slug)
+        # Ключ склада берётся у связки «площадка ↔ лот»: выписки и вложения
+        # лежат по ключу ЛОТА, а не площадки. Своего разбора номера из адреса
+        # лота здесь нет — формат объявлен в адаптере площадки.
+        key = ""
+        reader = getattr(krt_registry, "tender_lots_known", None)
+        if callable(reader):
+            try:
+                lots = ((reader() or {}).get(slug) or {}).get("lots") or []
+            except Exception:  # noqa: BLE001
+                logger.exception("КРТ: связка с лотами не прочитана slug=%s", slug)
+                lots = []
+            key = next((str(lot.get("store_key") or "") for lot in lots
+                        if lot.get("store_key")), "")
+        site = krt_territory.site_for(
+            slug, str(project.get("name") or slug), key=key,
+            decision_numbers=numbers, root=_market_dir())
+        return dict(project), site
+
+    def _krt_sites_with_lots() -> list[dict[str, Any]]:
+        """Площадки, у которых есть лот торгов — список для служебной страницы.
+
+        Ссылки на эту страницу в публичной части нет (решение владельца), и
+        потому перейти между территориями можно только ОТСЮДА: страница без
+        такого списка отвечала бы «где искать остальные» молчанием.
+
+        **Каталог здесь не спрашивается.** Сеть внутри запроса страницы не
+        трогается — это правило модуля, и первая версия его нарушила: имя
+        площадки бралось из списка каталога, а тот при просроченном снимке
+        уходит обходить krt.mos.ru и mos.ru. Страница вставала насмерть (её
+        собственный запрос не возвращался вовсе), и пять браузерных проверок
+        Нагатино упали таймаутом — на верном на вид коде. Имя берётся из самой
+        связки: там лежит адрес лота, и он назван своим именем.
+
+        «Лот живой» здесь НЕ утверждается: правило живости живёт у каталога
+        (`krtLiveLot`), и второе такое правило однажды ответило бы про один лот
+        иначе. Печатается срок в том виде, в каком его объявила площадка;
+        момент считается при чтении (`with_moment`), потому что связка лежит на
+        диске и старше правила разбора даты.
+        """
+        from . import krt_tenders as rules
+
+        reader = getattr(krt_registry, "tender_lots_known", None)
+        if not callable(reader):
+            return []
+        try:
+            known = reader() or {}
+        except Exception:  # noqa: BLE001
+            logger.exception("КРТ: связка с лотами не прочитана")
+            return []
+        out: list[dict[str, Any]] = []
+        for slug, record in known.items():
+            lots = rules.with_moment((record or {}).get("lots") or [])
+            if not lots:
+                continue
+            out.append({
+                "slug": str(slug),
+                # Имя — адрес лота из связки; каталожного имени здесь нет, и
+                # подписано оно тем, чем является.
+                "name": str(lots[0].get("address") or slug),
+                "name_source": "адрес лота" if lots[0].get("address") else "слаг площадки",
+                "lots": len(lots),
+                "deadline": str(lots[0].get("deadline") or ""),
+                "deadline_iso": str(lots[0].get("deadline_iso") or ""),
+                "url": ("/krt/nagatino" if str(slug) == "nagatino"
+                        else "/krt/site/" + urllib.parse.quote(str(slug))),
+            })
+        out.sort(key=lambda item: item["name"])
+        return out
+
+    def _krt_site_finder(slug: str, name: str):
+        """Контур площадки для её свода: сперва файл карты города, потом перечень.
+
+        Тот же порядок, что у точки на карте (`/point`), и те же две дороги:
+        второго пути к контуру в модуле нет. Опознавать геометрией здесь не
+        нужно — слаг площадки известен.
+        """
+        def find() -> dict[str, Any]:
+            lookup = getattr(krt_registry, "map_lookup", None)
+            found = (lookup(slug, name, None) or {}) if callable(lookup) else {}
+            site = found.get("site") or {}
+            rings = [ring for ring in (site.get("rings_merc") or [])
+                     if isinstance(ring, list) and len(ring) >= 3]
+            if rings:
+                return {"slug": slug, "name": str(site.get("name") or name),
+                        "rings_merc": rings, "matched": str(found.get("matched") or "map"),
+                        "source": "официальный файл карты реестра КРТ", "problem": ""}
+            outline = _decision_outline_now(slug)
+            rings = [ring for ring in (outline.get("rings_merc") or [])
+                     if isinstance(ring, list) and len(ring) >= 3]
+            if rings:
+                return {"slug": slug, "name": name, "rings_merc": rings,
+                        "matched": "decision",
+                        "source": "состав территории по проекту решения, "
+                                  "а не официальный полигон",
+                        "problem": str(outline.get("problem") or "")}
+            return {"problem": (str(found.get("problem") or "")
+                                or str(outline.get("problem") or "")
+                                or "контур площадки не собрался: её нет ни в файле "
+                                   "карты города, ни в перечне проекта решения")}
+
+        return find
+
+    @app.get("/krt/site/{slug}", response_class=HTMLResponse, include_in_schema=False)
+    async def krt_site_home(slug: str) -> HTMLResponse:
+        """Оболочка той же страницы. Адрес решает, чья это территория.
+
+        Форка страницы нет: копию негде обновлять, а два экрана об одной
+        территории однажды показали бы разное. Свой адрес страница узнаёт из
+        `location`, и маршруты данных живут рядом с ней.
+        """
+        return HTMLResponse(nagatino_page(core),
+                            headers={"Cache-Control": "no-store, must-revalidate"})
+
+    @app.get("/krt/site/{slug}/parcels", include_in_schema=False)
+    async def krt_site_parcels(request: Request, slug: str, session: str = "",
+                               key: str = "", share: str = "") -> dict[str, Any]:
+        """Свод территории площадки. Сеть внутри запроса не трогается."""
+        _nagatino_gate(request, session, key, share)
+        project, site = await run_in_threadpool(_krt_site_source, slug)
+        data = await run_in_threadpool(lambda: nagatino_parcels.payload(site))
+        data["siblings"] = await run_in_threadpool(_krt_sites_with_lots)
+        data["site"] = {"slug": slug, "name": project.get("name") or slug,
+                        "okrug": project.get("okrug") or "",
+                        "district": project.get("district") or "",
+                        "status": project.get("status") or "",
+                        "area_ha": project.get("area_ha"),
+                        "source": krt_registry.KRT_SOURCE if hasattr(
+                            krt_registry, "KRT_SOURCE") else ""}
+        lookup = getattr(core, "_land_lookup_by_numbers", None) if core is not None else None
+        if callable(lookup):
+            started = await run_in_threadpool(
+                lambda: nagatino_parcels.fill_in_background(
+                    lookup, find_site=_krt_site_finder(
+                        slug, str(project.get("name") or slug)),
+                    site=site))
+            if started:
+                data["outlines"]["reading"] = True
+        else:
+            data["outlines"]["problem"] = (data["outlines"]["problem"]
+                                           or "движок ЕГРН не подключён — контуры не спрашивались")
+        return data
+
+    @app.get("/krt/site/{slug}/export.xlsx", include_in_schema=False)
+    async def krt_site_export(request: Request, slug: str, session: str = "",
+                              key: str = "", share: str = "") -> Response:
+        """Свод книгой Excel. Собирается из того же `territory()`, что и экран."""
+        _nagatino_gate(request, session, key, share)
+        project, site = await run_in_threadpool(_krt_site_source, slug)
+        from auction_search import nagatino_export
+
+        def build() -> bytes:
+            view = nagatino_parcels.territory(site)
+            holdings = nagatino_parcels.land_holdings(view, site)
+            return nagatino_export.build(
+                view,
+                nagatino_parcels.owners_summary(view, site),
+                holdings,
+                nagatino_parcels.registry(site).get("groups") or [],
+                nagatino_parcels.land_under_buildings(view, site),
+                nagatino_parcels.holdings_under(view, holdings, site),
+                nagatino_parcels.buyout(holdings, view, site),
+                subject=" · ".join(part for part in (
+                    f"КРТ {project.get('name') or slug}",
+                    f"{project.get('area_ha')} га по каталогу"
+                    if project.get("area_ha") else "",
+                    " ".join(str(project.get(key) or "")
+                             for key in ("okrug", "district")).strip(),
+                ) if part))
+
+        raw = await run_in_threadpool(build)
+        name = f"КРТ {project.get('name') or slug} — участки и объекты.xlsx"
+        quoted = urllib.parse.quote(name)
+        return Response(
+            raw,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quoted}"},
+        )
 
     @app.get("/auctions/krt/map")
     async def auction_krt_map(refresh: bool = False, step_m: float = Query(default=40.0, ge=1.0, le=200.0)) -> dict[str, Any]:
@@ -2061,11 +2291,11 @@ def install(app: FastAPI) -> None:
             raise HTTPException(status_code=404, detail="Территория КРТ не найдена")
         return result
 
-    async def _decision_outline(slug: str) -> dict[str, Any]:
-        """Контур из участков проекта решения — или причина, почему его нет.
+    def _decision_outline_now(slug: str) -> dict[str, Any]:
+        """То же, но синхронно: фоновому читателю ждать нечем.
 
-        ЕГРН спрашивает путь движка (`_land_lookup_by_numbers`): второго
-        клиента НСПД в модуле торгов нет. Без движка — «не спрашивали».
+        Ответ один на обе двери. Второй сбор того же контура однажды ответил бы
+        про одну площадку иначе, и оба ответа выглядели бы верными.
         """
         reader = getattr(krt_registry, "decision_outline", None)
         lookup = getattr(core, "_land_lookup_by_numbers", None) if core is not None else None
@@ -2073,10 +2303,18 @@ def install(app: FastAPI) -> None:
             return {"rings_merc": [], "problem": "контур по перечню решения не спрашивался — "
                                                  "нет движка ЕГРН"}
         try:
-            return dict(await run_in_threadpool(lambda: reader(slug, lookup=lookup)) or {})
+            return dict(reader(slug, lookup=lookup) or {})
         except Exception as exc:  # noqa: BLE001 — причина едет в подпись, а не в лог
             logger.exception("КРТ: контур по перечню решения не собрался slug=%s", slug)
             return {"rings_merc": [], "problem": f"{type(exc).__name__}: {exc}"[:160]}
+
+    async def _decision_outline(slug: str) -> dict[str, Any]:
+        """Контур из участков проекта решения — или причина, почему его нет.
+
+        ЕГРН спрашивает путь движка (`_land_lookup_by_numbers`): второго
+        клиента НСПД в модуле торгов нет. Без движка — «не спрашивали».
+        """
+        return await run_in_threadpool(_decision_outline_now, slug)
 
     @app.get("/auctions/krt/{slug}/point")
     async def auction_krt_point(slug: str) -> dict[str, Any]:

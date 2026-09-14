@@ -1074,23 +1074,40 @@ class KrtRegistry:
 
         source_url = str(project.get("url") or f"{BASE_URL}/projects/{clean_slug}")
         document = ""
-        transport = "official_host"
+        # Не «official_host», а пусто: начальное значение называло удачное
+        # чтение официальным хостом и там, где не прочитано НИЧЕГО — оба
+        # транспорта отказали. Поле «чем прочитано» обязано уметь сказать
+        # «не прочитано», иначе его ответ неотличим от настоящего.
+        transport = ""
         errors: list[str] = []
-        # The KRT host currently presents a certificate chain that standard
-        # server trust stores reject.  The renderer transports the same public
-        # page and returns in seconds; the official host remains a fallback.
-        # The legally relevant PDF below is always downloaded directly from
-        # mos.ru and never through the renderer.
-        for url, label in ((JINA_PREFIX + source_url, "read_only_renderer"),
-                           (source_url, "official_host")):
+        # Отказ превзойдённого транспорта — не ошибка чтения: значение получено
+        # запасным путём. Своим списком он стоит потому, что `errors` обрезается
+        # до трёх и отвечает на «почему величины НЕ получилось»; отказ, который
+        # всегда первый и всегда неудачный, вытеснял бы оттуда настоящие
+        # причины (mos_decision_pdf, mos_document_attachments) и читался бы
+        # причиной сам. Ровно так 13.09.2026 был поставлен неверный диагноз:
+        # шесть КРТ без перечня участков объявлены молчащими из-за читалки,
+        # тогда как у них решения не нашёл поиск mos.ru.
+        attempts: list[str] = []
+        # Прямой путь идёт ПЕРВЫМ: общие корни (`trusted_roots`) заведены для
+        # api.krt.mos.ru в 0.23.30, и замер прода 13.09.2026 по одиннадцати КРТ
+        # с живым лотом дал transport=official_host у всех десяти прочитанных,
+        # а отказ читалки (HTTP 451 от r.jina.ai) — у всех десяти же. Читатель
+        # каталога выше уже ходит этим порядком; здесь он остался обратным, и
+        # цена была один заведомо неудачный внешний запрос на каждое чтение.
+        # Юридически значимый PDF ниже качается прямо с mos.ru и через читалку
+        # не ходит никогда.
+        for url, label in ((source_url, "official_host"),
+                           (JINA_PREFIX + source_url, "read_only_renderer")):
             try:
                 document = self.fetch(url).decode("utf-8", errors="replace")
             except (RemoteServiceError, OSError, UnicodeError) as exc:
-                errors.append(f"{label}: {type(exc).__name__}: {exc}")
+                attempts.append(f"{label}: {type(exc).__name__}: {exc}")
                 continue
             if document.strip():
                 transport = label
                 break
+            attempts.append(f"{label}: ответ пуст")
         result = parse_project_requirements(document, project)
         result["status"] = project.get("status")
 
@@ -1155,6 +1172,12 @@ class KrtRegistry:
             "available": True,
             "retrieved_at": int(time.time()),
             "transport": transport,
+            # Чем прочитано — часть ответа, поэтому отвергнутые попытки названы,
+            # а не выброшены: молча пропавший отказ читается как «его и не
+            # пробовали». Но стоят они своим полем: `errors` отвечает на
+            # «почему величины НЕ получилось», и превзойдённый транспорт в этот
+            # вопрос не входит.
+            "transport_attempts": attempts[:2],
             "errors": errors[:3],
         })
         save_json(cache_path, result)

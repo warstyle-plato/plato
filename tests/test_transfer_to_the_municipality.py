@@ -21,8 +21,6 @@ from __future__ import annotations
 
 import copy
 import json
-import shutil
-import subprocess
 import sys
 from pathlib import Path
 
@@ -88,20 +86,17 @@ def _tep_cell(edits):
     сломалось (ничего). Утверждение здесь другое: ГНС на месте, продаваемая
     меньше на переданное, полезная не меньше. Это видно, и это гоняется.
     """
-    node = shutil.which("node")
-    if not node:
-        pytest.skip("node недоступен")
-    program = page_blocks.tep_cell_stand() + (
+    tail = (
         "tep={apartments:{label:'Квартиры',gns:31000,total_area:27900,"
         "useful:20150,saleable:20150,transfer:0,units:336}};\n"
         + "".join(f"tepCellChanged('apartments','{col}',{value});\n"
                   for col, value in edits)
+        # Заметку спрашиваем ЧЕРЕЗ её контракт: у карты внутри `{текст, тон}`,
+        # и проверка, читающая карту напрямую, держала бы форму хранения.
         + "process.stdout.write(JSON.stringify("
-          "{row:tep.apartments,note:tepRefillNote.apartments||''}));"
+          "{row:tep.apartments,note:tepNoteText('apartments')}));"
     )
-    done = subprocess.run([node, "-e", program], capture_output=True, text=True, timeout=60)
-    assert done.returncode == 0, done.stderr[:900]
-    return json.loads(done.stdout)
+    return page_blocks.run_json(page_blocks.tep_cell_stand(), tail)
 
 
 def test_the_transferred_metres_leave_the_saleable_area():
@@ -353,18 +348,15 @@ def _refill(edits: list) -> dict:
     пути: `tepCellChanged` и `refillTepRow` с её вызывающими. Две копии стенда
     расходятся молча, и одна из них однажды проверяла бы прошлое поведение.
     """
-    if not shutil.which("node"):
-        pytest.skip("node недоступен")
     row = copy.deepcopy(core.TEP_DEFAULT["apartments"])
-    script = page_blocks.tep_cell_stand() + (
+    tail = (
         "tep={apartments:" + json.dumps(row, ensure_ascii=False) + "};\n"
         + "\n".join(edits) + "\n"
         + "const r=tep.apartments;"
         "console.log(JSON.stringify({gns:r.gns,total:r.total_area,useful:r.useful,"
         "saleable:r.saleable,transfer:r.transfer}));\n")
-    done = subprocess.run(["node", "-e", script], capture_output=True, text=True)
-    assert done.returncode == 0, done.stderr
-    return json.loads(done.stdout.strip().splitlines()[-1])
+    out, _taken = page_blocks.run(page_blocks.tep_cell_stand(), tail)
+    return json.loads(out.strip().splitlines()[-1])
 
 
 def test_a_ratio_edit_does_not_return_the_given_metres_to_sale():

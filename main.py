@@ -1571,7 +1571,8 @@ def _usage_digest_loop() -> None:
     while True:
         try:
             if _usage_digest_due():
-                for admin in sorted(core.usage_admin_ids()):
+                # Сводка тоже приходит сама, значит тоже обязана уметь молчать.
+                for admin in _notification_targets("digest"):
                     _stats_message(admin, admin, "1")
         except Exception:
             pass  # сводка — удобство: молчание лучше падения фонового потока
@@ -1590,6 +1591,43 @@ def _usage_digest_loop() -> None:
         time.sleep(900)
 
 
+def _notification_overrides() -> dict[str, dict[str, bool]]:
+    """Что человек сказал про рассылки. Карта живёт на ядре, рядом с профилями.
+
+    Диск бота на Render живёт до следующей выкатки, и настройка исчезала бы
+    вместе с контейнером — молча, как исчезал журнал. Отказ ядра — это «не
+    знаем», а не «никто ничего не выключал», поэтому он поднимается наверх:
+    рассылка, продолжившая идти после «выключить», хуже несостоявшейся.
+    """
+    remote = core._projects_remote_url("/internal/notifications")
+    if remote:
+        payload = {"chat_id": 0, "sign": core._web_login_sign("chat-notifications", 0)}
+        return dict(core._core_post(remote, payload, 20.0).get("chats") or {})
+    return core.chat_notification_overrides()
+
+
+def _notification_targets(channel: str, *, admins: set[int] | None = None,
+                          subscribers: list[int] | None = None,
+                          overrides: dict[str, dict[str, bool]] | None = None) -> list[int]:
+    """Кому эта рассылка идёт сейчас. Правило одно — движковое.
+
+    Признак владельца перестал быть приговором: прежде новинки каталога шли
+    ему мимо подписки, и «/krt выкл» отвечало «выключено», ничего не выключив.
+    """
+    said = overrides if overrides is not None else _notification_overrides()
+    owners = core.usage_admin_ids() if admins is None else set(admins)
+    wanted: set[int] = set()
+    for chat in owners:
+        if core.notification_enabled(channel, owner=True,
+                                     override=said.get(str(chat))):
+            wanted.add(int(chat))
+    for chat in subscribers or []:
+        if core.notification_enabled(channel, subscribed=True,
+                                     override=said.get(str(chat))):
+            wanted.add(int(chat))
+    return sorted(chat for chat in wanted if chat)
+
+
 def _deliver_profile_announcements() -> None:
     """Знакомства с ядра — в чат владельцу.
 
@@ -1598,8 +1636,8 @@ def _deliver_profile_announcements() -> None:
     очередь, мы забираем её и объявляем — иначе «новая регистрация» не дошла бы
     ни до кого (18.08.2026).
     """
-    admins = core.usage_admin_ids()
-    if not admins or not core._telegram_token() or not core._telegram_webhook_enabled():
+    if not core.usage_admin_ids() or not core._telegram_token() \
+            or not core._telegram_webhook_enabled():
         return
     remote = core._projects_remote_url("/internal/profile/announcements")
     if remote:
@@ -1607,9 +1645,16 @@ def _deliver_profile_announcements() -> None:
                    "sign": core._web_login_sign("profile-announcements", 0)}
         data = core._core_post(remote, payload, 30.0)
         records = list(data.get("announcements") or [])
+        overrides = dict(data.get("notifications") or {})
     else:
         # Один хост на всё — очередь та же, только идти за ней некуда.
         records = core._profile_take_announcements()
+        overrides = core.chat_notification_overrides()
+    admins = set(_notification_targets("profiles", overrides=overrides))
+    if not admins:
+        # Выключено всеми, кому это шлют. Забранное уже не вернуть, и это
+        # верно: отложенное молчание — та же рассылка, только позже.
+        return
     for record in records:
         core._telegram_send_profile_card(record, admins)
 
@@ -1634,7 +1679,6 @@ def _deliver_normatives_announcements() -> None:
         _NORMATIVES_DELIVERY["stopped_by"] = "вебхук выключен на этом хосте"
         return
     admins = core.usage_admin_ids()
-    _NORMATIVES_DELIVERY["targets"] = len(admins)
     if not admins:
         # Очередь НЕ забираем: забранное уже не вернуть, а адресат появится,
         # как только будет задан DEVELOPAID_ADMIN_IDS. Молчание при этом
@@ -1648,6 +1692,7 @@ def _deliver_normatives_announcements() -> None:
                        "sign": core._web_login_sign("normatives-announcements", 0)}
             data = core._core_post(remote, payload, 30.0)
             records = list(data.get("announcements") or [])
+            overrides = dict(data.get("notifications") or {})
         else:
             # Один хост на всё — очередь та же, только идти за ней некуда.
             take = getattr(core.app.state, "normatives_announcements_take", None)
@@ -1655,14 +1700,22 @@ def _deliver_normatives_announcements() -> None:
                 _NORMATIVES_DELIVERY["stopped_by"] = "реестра на этом хосте нет"
                 return
             records = list(take())
+            overrides = core.chat_notification_overrides()
     except Exception as exc:  # noqa: BLE001
         # Ядро не ответило — это ответ, а не «изменений нет».
         _NORMATIVES_DELIVERY.update({"stopped_by": "очередь у ядра не забрана",
                                      "last_error": str(exc)[:300]})
         raise
     _NORMATIVES_DELIVERY["taken"] = len(records)
+    admins = set(_notification_targets("normatives", admins=admins, overrides=overrides))
+    _NORMATIVES_DELIVERY["targets"] = len(admins)
     if not records:
         _NORMATIVES_DELIVERY["stopped_by"] = "очередь пуста"
+        return
+    if not admins:
+        # Выключено получателями — это ответ, а не «изменений нет»: без этой
+        # строки молчание по просьбе человека и поломка выглядят одинаково.
+        _NORMATIVES_DELIVERY["stopped_by"] = "выключено получателями"
         return
     text = _normatives_announcement_text(records)
     sent = 0
@@ -1713,7 +1766,7 @@ def _normatives_announcement_text(records: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _krt_take_announcements() -> tuple[list[dict], list[int]]:
+def _krt_take_announcements() -> tuple[list[dict], list[int], dict[str, dict[str, bool]]]:
     """Новинки каталога КРТ и подписчики — с ядра или из своей очереди.
 
     Каталог читается на ядре, а до api.telegram.org достаём только мы: тот же
@@ -1728,9 +1781,12 @@ def _krt_take_announcements() -> tuple[list[dict], list[int]]:
     else:
         take = getattr(core.app.state, "krt_announcements_take", None)
         if take is None:
-            return [], []
-        data = {"announcements": take(), "subscribers": core._krt_subscribers()}
-    return list(data.get("announcements") or []), [int(x) for x in (data.get("subscribers") or [])]
+            return [], [], {}
+        data = {"announcements": take(), "subscribers": core.krt_recipients(),
+                "notifications": core.chat_notification_overrides()}
+    return (list(data.get("announcements") or []),
+            [int(x) for x in (data.get("subscribers") or [])],
+            dict(data.get("notifications") or {}))
 
 
 # Что сделала доставка в последний раз. У молчащего цикла обязан быть счётчик
@@ -1815,7 +1871,7 @@ def _deliver_krt_announcements() -> None:
         _KRT_DELIVERY["stopped_by"] = "вебхук выключен на этом хосте"
         return
     try:
-        records, subscribers = _krt_take_announcements()
+        records, subscribers, overrides = _krt_take_announcements()
     except Exception as exc:  # noqa: BLE001
         # Ядро не ответило — это ответ, а не «новостей нет»: без этой строки
         # отказ выглядел бы точно так же, как тишина каталога.
@@ -1826,12 +1882,15 @@ def _deliver_krt_announcements() -> None:
     if not records:
         _KRT_DELIVERY["stopped_by"] = "очередь пуста"
         return
-    targets = sorted(set(subscribers) | set(core.usage_admin_ids()))
+    targets = _notification_targets("krt", subscribers=subscribers, overrides=overrides)
     _KRT_DELIVERY["targets"] = len(targets)
     if not targets:
         # Забранное уже не вернуть: очередь изымается перед этой проверкой, и
-        # молчание здесь означало бы потерянные новости.
-        _KRT_DELIVERY["stopped_by"] = "некому слать: ни подписчиков, ни владельцев"
+        # молчание здесь означало бы потерянные новости. Но выключено оно или
+        # адресата не было вовсе — разные ответы, и называются они порознь.
+        _KRT_DELIVERY["stopped_by"] = ("выключено получателями"
+                                       if subscribers or core.usage_admin_ids()
+                                       else "некому слать: ни подписчиков, ни владельцев")
         return
     text = _krt_announcement_text(records)
     if not text:
@@ -1998,9 +2057,13 @@ def _krt_subscription(chat_id: int, wanted: bool | None = None) -> bool:
                "sign": core._web_login_sign("krt-subscribe", int(chat_id))}
     if remote:
         return bool(core._core_post(remote, payload, 20.0).get("subscribed"))
+    said = core.chat_notification_overrides().get(str(int(chat_id))) or {}
     if wanted is None:
-        return int(chat_id) in core._krt_subscribers()
-    return bool(core._krt_subscribe(int(chat_id), bool(wanted)))
+        return core.notification_enabled(
+            "krt", owner=int(chat_id) in core.usage_admin_ids(),
+            subscribed=int(chat_id) in core._krt_subscribers(),
+            override=said)
+    return bool(core.chat_notification_set(int(chat_id), "krt", bool(wanted)))
 
 
 # --- анкета в боте -----------------------------------------------------------
@@ -2235,6 +2298,16 @@ def _handle_message(message: dict[str, Any]) -> None:
     core.usage_track("command" if command else "message", chat_id=chat_id, user_id=user_id,
                      name=_sender_name(message), text=text)
     _user_to_core(chat_id, _sender_name(message), "command" if command else "message")
+    chat = message.get("chat") or {}
+    if core._telegram_is_group(chat):
+        # У группы бот только читатель — решает это одно место, движковое.
+        # Гейт стоял ТОЛЬКО у движка, а Telegram ходит сюда: обёртка
+        # перехватывает `_telegram_handle_update`, и её разбор команд отвечал
+        # раньше гейта — `/help`, `/status`, `/notify` и `/krt` писали прямо в
+        # рабочий чат. Проверка на это была и оставалась зелёной: она звала
+        # дверь движка, а не ту, в которую ходят.
+        core._telegram_group_message(chat, message)
+        return
     if command == "/status":
         _status_message(chat_id, user_id)
         return
@@ -2243,6 +2316,9 @@ def _handle_message(message: dict[str, Any]) -> None:
         return
     if command in {"/krt", "/крт"}:
         _krt_command(chat_id, text)
+        return
+    if command in {"/notify", "/уведомления", "/тихо"}:
+        _notify_command(chat_id, text)
         return
     if command in {"/feedback", "/оценить"}:
         _feedback_start(chat_id, _sender_name(message))
@@ -2374,6 +2450,98 @@ def _configure_platon_command() -> None:
         core._telegram_api("setMyCommands", {"commands": core.TELEGRAM_BOT_COMMANDS})
     except Exception as exc:
         core._TELEGRAM_RUNTIME["last_error"] = str(exc)
+
+
+# Как назвать рассылку словом. Ключи объявлены в движке
+# (`NOTIFICATION_CHANNELS`), здесь только имена, которыми её зовёт человек:
+# второй список каналов разошёлся бы с первым молча.
+_NOTIFY_WORDS = {
+    "krt": {"крт", "krt", "каталог", "площадки"},
+    "normatives": {"нормативы", "нормативка", "normatives", "база"},
+    "profiles": {"регистрации", "знакомства", "profiles", "анкеты"},
+    "digest": {"сводка", "статистика", "digest", "stats"},
+}
+_NOTIFY_ON = {"вкл", "включить", "on", "да", "подписаться"}
+_NOTIFY_OFF = {"выкл", "выключить", "off", "нет", "стоп", "отписаться", "тихо"}
+
+
+def _notification_channel_by_word(word: str) -> str:
+    for channel, words in _NOTIFY_WORDS.items():
+        if word in words:
+            return channel
+    return ""
+
+
+def _notification_set(chat_id: int, channel: str, wanted: bool) -> None:
+    """Сохраняет сказанное человеком. Настройка живёт на ядре, рядом с профилями."""
+    remote = core._projects_remote_url("/internal/notifications")
+    if remote:
+        core._core_post(remote, {"chat_id": int(chat_id), "channel": channel,
+                                 "on": bool(wanted),
+                                 "sign": core._web_login_sign("chat-notifications",
+                                                              int(chat_id))}, 20.0)
+        return
+    core.chat_notification_set(int(chat_id), channel, bool(wanted))
+
+
+def _notification_lines(chat_id: int) -> list[str]:
+    """Состояние всех рассылок этого чата — по списку движка, а не по памяти."""
+    said = _notification_overrides().get(str(int(chat_id))) or {}
+    owner = int(chat_id) in core.usage_admin_ids()
+    subscribed = int(chat_id) in core._krt_subscribers()
+    lines: list[str] = []
+    for channel, title, _who in core.NOTIFICATION_CHANNELS:
+        on = core.notification_enabled(channel, owner=owner, subscribed=subscribed,
+                                       override=said)
+        word = sorted(_NOTIFY_WORDS[channel])[0]
+        lines.append(f"• {title} — {'включено' if on else 'выключено'} "
+                     f"(/notify {'выкл' if on else 'вкл'} {word})")
+    return lines
+
+
+def _notify_command(chat_id: int, text: str) -> None:
+    """Что бот пишет сам, без вопроса, — и как это выключить.
+
+    Рассылок четыре, и выключателя у них не было ни одного: признак владельца
+    работал сильнее подписки, а у нормативов, регистраций и сводки подписки не
+    было вовсе. Команда отвечает на «как сделать, чтобы не писал» целиком —
+    одним словом «выкл» гасятся все, названием гасится одна.
+
+    Состояние называется всегда: и когда его меняли, и когда просто спросили.
+    """
+    argument = text.split(maxsplit=1)[1].strip().lower() if " " in text.strip() else ""
+    parts = argument.split()
+    verb = parts[0] if parts else ""
+    target = parts[1] if len(parts) > 1 else ""
+    wanted: bool | None = True if verb in _NOTIFY_ON else \
+        (False if verb in _NOTIFY_OFF else None)
+    if verb and wanted is None:
+        _send_message(chat_id, "Не понял. <code>/notify выкл</code> — замолчать совсем, "
+                               "<code>/notify выкл крт</code> — выключить одну.\n\n"
+                      + "\n".join(_notification_lines(chat_id)))
+        return
+    if wanted is not None:
+        channels = core.NOTIFICATION_CHANNEL_KEYS
+        if target:
+            channel = _notification_channel_by_word(target)
+            if not channel:
+                # Названная и не понятая рассылка — это отказ, а не повод
+                # выключить все: молча расширенная команда хуже непонятой.
+                _send_message(chat_id, f"Нет такой рассылки: {target}.\n\n"
+                              + "\n".join(_notification_lines(chat_id)))
+                return
+            channels = [channel]
+        try:
+            for channel in channels:
+                _notification_set(chat_id, channel, wanted)
+        except Exception as exc:  # noqa: BLE001
+            _send_message(chat_id, f"Настройку сохранить не удалось: {exc}")
+            return
+    head = "<b>Что бот пишет сам</b>" if wanted is None else (
+        "<b>Готово.</b> Что бот пишет сам" if wanted else "<b>Молчу.</b> Что бот пишет сам")
+    _send_message(chat_id, head + "\n" + "\n".join(_notification_lines(chat_id))
+                  + "\n\nОтветы на ваши вопросы это не трогает — только то, "
+                    "что приходит без спроса.")
 
 
 def _krt_command(chat_id: int, text: str) -> None:

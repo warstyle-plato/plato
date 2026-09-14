@@ -51,12 +51,14 @@ def _phased(count: int, **extra):
 def test_the_area_is_the_population_times_the_norm():
     result = _single()
     summary = result["summary"]
-    # 80 000 м² квартир ÷ 33 = 2 425 человек; 5 м² на человека.
-    assert summary["landscaping_area_sqm"] == pytest.approx(2425 * 5)
+    # 80 000 м² квартир ÷ 33 = 2 425 человек. Норма берётся у умолчаний, а не
+    # пишется числом: пример, взятый у умолчания, умирает вместе с его правкой,
+    # а утверждение здесь — «площадь есть население × норма», а не «норма 5».
+    norm = core.DEFAULT_INPUTS["landscaping_area_per_person_sqm"]
+    assert summary["landscaping_area_sqm"] == pytest.approx(2425 * norm)
     assert "2425 чел" in summary["landscaping_basis"], summary["landscaping_basis"]
-    # Ставка берётся у умолчаний, а не переписывается числом: класс её правит.
     rate = core.DEFAULT_INPUTS["landscaping_th_per_sqm"]
-    assert result["capex"]["landscaping"] == pytest.approx(2425 * 5 * rate * 1000)
+    assert result["capex"]["landscaping"] == pytest.approx(2425 * norm * rate * 1000)
 
 
 def test_the_class_sets_both_the_yard_and_its_rate():
@@ -71,7 +73,16 @@ def test_the_class_sets_both_the_yard_and_its_rate():
     profile = {key: (preset["landscaping_area_per_person_sqm"],
                      preset["landscaping_th_per_sqm"])
                for key, preset in core.PROJECT_CLASS_PRESETS.items()}
-    assert profile == {"comfort": (5, 15), "business": (15, 35), "elite": (20, 50)}
+    # Комфорт — 11 м²/чел., а не 5: прежняя норма была придумана и на
+    # умолчаниях давала 1 251 ₽/м² ГНС там, где прямой замер комфорта
+    # (core-xp-moscow-comfort-2024-09, 4 500 ₽/м² продаваемой) даёт 2 718.
+    assert profile == {"comfort": (11, 15), "business": (15, 35), "elite": (20, 50)}
+    # Лестница монотонна по ОБЕИМ величинам. Свод «Статистики» для комфорта
+    # (5 782,6 ₽/м² ГНС) её ломает: чтобы его воспроизвести, комфортный двор
+    # должен стать 23,1 м²/чел. — больше элитных 20. Потому и взят не он.
+    ladder = [profile[key] for key in ("comfort", "business", "elite")]
+    assert [item[0] for item in ladder] == sorted(item[0] for item in ladder)
+    assert [item[1] for item in ladder] == sorted(item[1] for item in ladder)
     for key, (per_person, rate) in profile.items():
         preset = {k: v for k, v in core.PROJECT_CLASS_PRESETS[key].items() if k != "label"}
         money = _single(project_class=key, **preset)["capex"]["landscaping"]
@@ -79,7 +90,7 @@ def test_the_class_sets_both_the_yard_and_its_rate():
     # Умолчания движка и есть комфорт: иначе расчёт на них покажет отклонение
     # от базы класса на ровном месте.
     assert (core.DEFAULT_INPUTS["landscaping_area_per_person_sqm"],
-            core.DEFAULT_INPUTS["landscaping_th_per_sqm"]) == (5.0, 15)
+            core.DEFAULT_INPUTS["landscaping_th_per_sqm"]) == profile["comfort"]
 
 
 def test_the_base_is_not_the_construction_volume():
@@ -91,7 +102,14 @@ def test_the_base_is_not_the_construction_volume():
     result = _single()
     volume = result["summary"]["construction_volume_sqm"]
     assert volume > 100_000, volume
-    assert result["summary"]["landscaping_area_sqm"] < volume / 10, (
+    # Порогом «меньше десятой доли объёма» это держать нельзя: он был верен
+    # ровно при норме 5 м²/чел. и упал на её законной правке до 11, ничего не
+    # сказав о том, что сломалось (ничего). Утверждение здесь — площадь равна
+    # населению × норму и объёмом НЕ является; так оно и проверяется.
+    norm = core.DEFAULT_INPUTS["landscaping_area_per_person_sqm"]
+    area = result["summary"]["landscaping_area_sqm"]
+    assert area == pytest.approx(2425 * norm)
+    assert abs(area - volume) > volume * 0.5, (
         "база благоустройства подозрительно похожа на строительный объём")
 
 
@@ -138,8 +156,21 @@ def test_the_fields_name_their_base():
     объёма», и человек вписал бы ставку на метр двора."""
     hints = {field[0]: field[2] for group in core.FIELD_GROUPS for field in group[1]
              if str(field[0]).startswith("landscaping")}
-    assert set(hints) == {"landscaping_th_per_sqm", "landscaping_area_sqm",
-                          "landscaping_area_per_person_sqm"}
+    # Равенством целиком тут утверждать нечего: проверка падала бы, когда рядом
+    # что-то ДОБАВИЛИ, а не когда что-то сломали, — так она и упала на второй
+    # мере статьи. Утверждение у неё другое: у КАЖДОГО поля благоустройства
+    # подпись называет свою базу, и двух полей под одной базой нет.
+    assert {"landscaping_th_per_sqm", "landscaping_area_sqm",
+            "landscaping_area_per_person_sqm"} <= set(hints)
+    bases = {"landscaping_th_per_sqm": "благоустроенной территории",
+             "landscaping_area_sqm": "нормативу класса",
+             "landscaping_area_per_person_sqm": "м²/чел.",
+             "landscaping_gns_th_per_sqm": "наземной части"}
+    assert set(hints) <= set(bases), (
+        "у поля благоустройства нет названной базы: " + str(set(hints) - set(bases)))
+    for field, base in bases.items():
+        if field in hints:
+            assert base in hints[field], (field, hints[field])
     # Утверждение здесь — «подпись называет базой двор», а не «в подписи есть
     # такое-то слово»: заглавные буквы переехали с «БЛАГОУСТРОЕННОЙ» на «ДВОР»,
     # когда первая часть подсказки стала единицей в таблице классов, — и
@@ -169,7 +200,13 @@ def test_the_workbook_reads_the_same_base():
     # База — население очереди, а не сумма трёх ГНС.
     queue_flats = v4_entry_sheet.rename_in_formula("'Вводные'!$L$88")
     assert "ROUNDUP" in formula and queue_flats in formula, formula
-    assert v4_entry_sheet.rename_in_formula("'Вводные'!$I$88") not in formula, formula
+    # Сумма ГНС в формуле СНОВА есть — у статьи вторая мера, ставка на метр
+    # наземной части (просьба владельца, 14.09.2026), — но базой двора она не
+    # стала: стоит она только внутри `IF` по заданной ставке. Доказывает это не
+    # текст, а счёт ниже: при пустой ставке книга обязана дать двор.
+    above = v4_entry_sheet.rename_in_formula("'Вводные'!$I$88")
+    assert "IF(" in formula, formula
+    assert above not in formula[:formula.index("IF(")], formula
 
     sys.setrecursionlimit(400_000)
     from xlsx_eval import Evaluator
@@ -182,7 +219,7 @@ def test_the_workbook_reads_the_same_base():
 def test_an_unrecognised_template_formula_is_named():
     """Не опознали формулу — это `missing`, а не тихий счёт по прежней базе."""
     missing: list[str] = []
-    core._v4_apply_landscaping_base("<x:sheetData/>", "$B$1", "$B$2", missing)
+    core._v4_apply_landscaping_base("<x:sheetData/>", "$B$1", "$B$2", "$B$3", missing)
     assert len(missing) == core._V4_CAPEX_PHASES, missing
     assert all("благоустрой" in one.lower() for one in missing), missing
 
@@ -191,8 +228,8 @@ def test_the_norm_lives_in_the_class_profile():
 
     Список полей окна — сам пресет, поэтому достаточно, чтобы норматив стоял в
     профиле каждого класса: он появится в таблице и станет перекрываемым
-    личным значением, которое переживёт выпуск. База одна на все классы — 5
-    м²/чел., как назвал владелец; заданная руками ПЛОЩАДЬ в профиль не идёт —
+    личным значением, которое переживёт выпуск. База у каждого класса своя;
+    заданная руками ПЛОЩАДЬ в профиль не идёт —
     она сильнее норматива и принадлежит участку, а не классу.
     """
     # Площадь двора на человека — своя у каждого класса (владелец, 12.09.2026):
@@ -209,11 +246,12 @@ def test_the_norm_lives_in_the_class_profile():
         core.PROJECT_CLASS_PRESETS["comfort"]["landscaping_area_per_person_sqm"])
     # Сверка отклонений читает пресет, значит норматив попал и в неё — а с ним
     # обязана приехать единица: «5 → 8» без неё читается ставкой.
+    base = core.PROJECT_CLASS_PRESETS["comfort"]["landscaping_area_per_person_sqm"]
     changed = {**core.DEFAULT_INPUTS, "project_class": "comfort",
-               "landscaping_area_per_person_sqm": 8.0}  # 8 ≠ комфортных 5
+               "landscaping_area_per_person_sqm": base + 3}
     rows = core.project_class_deviations(changed)["rows"]
     assert [one["field"] for one in rows] == ["landscaping_area_per_person_sqm"]
-    assert rows[0]["unit"] == "м²/чел." and rows[0]["base"] == pytest.approx(5.0)
+    assert rows[0]["unit"] == "м²/чел." and rows[0]["base"] == pytest.approx(base)
 
 
 def test_the_units_are_declared_once_and_reach_the_page():
@@ -314,3 +352,126 @@ def test_the_class_window_shows_the_norm_with_its_unit():
     assert applied == pytest.approx(
         core.PROJECT_CLASS_PRESETS["elite"]["landscaping_area_per_person_sqm"]), applied
     assert owned == pytest.approx(8.0), owned
+
+
+def test_the_summary_of_statistics_is_not_pasted_into_a_field_of_another_base():
+    """Свод меряет метр ГНС, а поле — метр двора: подставлять его нельзя.
+
+    Кнопка «Вставить данные из статистики» писала его во все классы, и на
+    экране 5,9 тыс ₽/м² выглядели ровно так же, как годная ставка (владелец,
+    13.09.2026: «Почему тут 5.9? Мы же вроде не такие устанавливали»). Цена на
+    умолчаниях бизнеса — 214,6 млн ₽ вместо 1 273,1, в шесть раз мимо.
+
+    Отказ обязан НАЗЫВАТЬ причину: «нельзя» без «почему» чинят обходом, а
+    обход выглядит правкой. И само число остаётся в ответе — оно ориентир
+    порядка, просто в другой базе.
+    """
+    import developaid_cost_aggregation as agg
+
+    for housing_class in ("comfort", "business", "elite"):
+        answer = agg.build_cost_recommendation("Москва", housing_class)
+        row = next(one for one in answer["recommendations"]
+                   if one["key"] == "landscaping")
+        assert row["recommended_rub_m2"] is not None, housing_class
+        assert row["applyable"] is False, housing_class
+        reason = row["not_applyable_reason"] or ""
+        assert "двор" in reason and "ГНС" in reason, reason
+        # В параметры модели статья не уезжает вовсе: там имена полей, и
+        # попавшее туда число подставляется без единого вопроса.
+        assert "landscaping_th_per_sqm" not in answer["model_parameters_th_rub_m2"]
+
+    # Сторож обязан падать на подделке: совпади базы — статья снова
+    # подставляема, и проверка выше значила бы ровно ничего.
+    saved = dict(agg.MODEL_KEY_BASES)
+    try:
+        agg.MODEL_KEY_BASES.pop("landscaping_th_per_sqm", None)
+        answer = agg.build_cost_recommendation("Москва", "comfort")
+        row = next(one for one in answer["recommendations"]
+                   if one["key"] == "landscaping")
+        assert row["applyable"] is True
+    finally:
+        agg.MODEL_KEY_BASES.clear()
+        agg.MODEL_KEY_BASES.update(saved)
+
+
+def test_the_comfort_norm_reproduces_the_measured_comfort_source():
+    """Комфортная норма сверена с прямым замером комфорта, а не со сводом.
+
+    Свод по этой статье собран из ОДНОГО источника — Гродненская, класс
+    business, 7 806,51 ₽/м² ГНС, — а комфортное его число это тот же источник,
+    делённый на 1,35 из class_adjustments.json, где прямо написано «не
+    статистическая оценка и не норматив». Воспроизвести его нормой нельзя, не
+    сломав лестницу: комфортный двор пришлось бы поднять до 23,1 м²/чел., выше
+    элитных 20.
+
+    Прямой замер комфорта в источниках есть и в свод не попадает, потому что
+    знаменатель у него другой: core-xp-moscow-comfort-2024-09, 4 000–5 000
+    ₽/м² ПРОДАВАЕМОЙ. Норма сверяется с ним в его же мере.
+    """
+    source = json.loads((ROOT / "reference_data" / "statistics"
+                         / "developaid_cost_structure.json").read_text(encoding="utf-8"))
+    comfort = next(one for one in source["sources"]
+                   if one.get("source_id") == "core-xp-moscow-comfort-2024-09")
+    measured = comfort["components"]["landscaping"]
+    assert measured["unit"] == "sellable", measured
+    low = float(measured["value_low_rub_m2"]) / 1000.0
+    high = float(measured["value_high_rub_m2"]) / 1000.0
+
+    result = _single(project_class="comfort",
+                     **{k: v for k, v in core.PROJECT_CLASS_PRESETS["comfort"].items()
+                        if k != "label"})
+    ours = float(result["summary"]["landscaping_per_saleable_th"])
+    assert low <= ours <= high, (
+        f"комфортная норма даёт {ours:.3f} тыс ₽/м² продаваемой при замере "
+        f"{low:.1f}–{high:.1f}")
+
+    # Сторож падает на прежней норме: 5 м²/чел. давали 2,07 — вдвое ниже
+    # нижней границы замера, и это ровно та дыра, ради которой он написан.
+    was = _single(project_class="comfort",
+                  **{**{k: v for k, v in core.PROJECT_CLASS_PRESETS["comfort"].items()
+                        if k != "label"},
+                     "landscaping_area_per_person_sqm": 5})
+    assert float(was["summary"]["landscaping_per_saleable_th"]) < low
+
+
+def test_the_rate_per_metre_travels_as_a_pair():
+    """Производную считает движок, и «на метр» живёт парой.
+
+    Статья стоит на своей физической базе, а сравнивают её со сметой и со
+    сводом на метр ГНС. Посчитанная на экране, производная была бы вторым
+    счётом той же величины; одинокое «на метр» читается как другой показатель.
+    """
+    summary = _single()["summary"]
+    gns = float(summary["landscaping_per_gns_th"])
+    saleable = float(summary["landscaping_per_saleable_th"])
+    money = float(_single()["capex"]["landscaping"])
+    assert gns == pytest.approx(money / float(summary["project_gns_sqm"]) / 1000.0)
+    assert saleable > gns > 0, (gns, saleable)
+
+
+def test_the_page_skips_the_summary_it_may_not_paste():
+    """Кнопка пропускает статью с чужой базой и называет это вслух.
+
+    Молча пропущенная читается как «свода по ней нет», а подставленная молча
+    уводит статью в шесть раз. Гоняется НАСТОЯЩАЯ функция страницы: строка
+    пропуска есть в исходнике и у сломанного кода.
+    """
+    stand = """
+    const PROJECT_CLASS_PRESETS={comfort:{label:'Комфорт',landscaping_th_per_sqm:15,main_above_th_per_sqm:110}};
+    let CLASS_OVERRIDES={},CLASS_OVERRIDES_NOTE='',CLASS_STATS_BY={comfort:{recommendations:[
+      {model_key:'landscaping_th_per_sqm',recommended_rub_m2:5782.6,applyable:false,
+       not_applyable_reason:'свод меряет ₽/м² общей ГНС, а поле модели — м² двора'},
+      {model_key:'main_above_th_per_sqm',recommended_rub_m2:120000,applyable:true}]}};
+    const classBase=(c,k)=>PROJECT_CLASS_PRESETS[c][k];
+    const classFieldLabel=k=>k;
+    const renderProjectClassPreview=()=>{},renderClassDialog=()=>{};
+    const activeSession=()=>false;let projectsAdminKey='';
+    """
+    tail = """
+    fillClassesFromStats().then(()=>console.log(JSON.stringify(
+      {overrides:CLASS_OVERRIDES,note:CLASS_OVERRIDES_NOTE})));
+    """
+    answer = page_blocks.run_json(stand, tail)
+    assert "landscaping_th_per_sqm" not in (answer["overrides"].get("comfort") or {}), answer
+    assert answer["overrides"]["comfort"]["main_above_th_per_sqm"] == 120, answer
+    assert "landscaping_th_per_sqm" in answer["note"] and "двор" in answer["note"], answer

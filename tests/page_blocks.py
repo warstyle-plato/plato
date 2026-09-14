@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -52,6 +53,45 @@ def function(name: str, page: str | None = None) -> str:
     raise AssertionError(f"тело функции {name} не закрыто скобкой")
 
 
+def constant(name: str, page: str | None = None) -> str:
+    """Объявление константы страницы целиком — до `;` вне скобок.
+
+    Функция страницы часто читает объявленную рядом константу (`PARKING_2118`
+    подставляется движком плейсхолдером), и стенд, который берёт только
+    функции, падает на «X is not defined» — то есть на своей неполноте, а не на
+    том, что проверяет.
+    """
+    page = core.PAGE if page is None else page
+    for keyword in ("const ", "let ", "var "):
+        start = page.find(f"{keyword}{name}=")
+        if start >= 0:
+            break
+    else:
+        raise AssertionError(f"на странице нет константы {name}")
+    depth = 0
+    for position in range(start, len(page)):
+        symbol = page[position]
+        if symbol in "([{":
+            depth += 1
+        elif symbol in ")]}":
+            depth -= 1
+        elif symbol == ";" and depth == 0:
+            return page[start:position + 1]
+    raise AssertionError(f"объявление {name} не закрыто точкой с запятой")
+
+
+def piece(name: str, page: str | None = None) -> str:
+    """Кусок страницы по имени: функция, а нет такой — объявление константы.
+
+    Ответ на «где живёт этот кусок» один: стенд, разрешающий зависимости сам,
+    не перечисляет их списком, который отстаёт от страницы.
+    """
+    try:
+        return function(name, page)
+    except AssertionError:
+        return constant(name, page)
+
+
 def krt_lock() -> str:
     """Замок «Требования КРТ» со списком запертых полей и общим писателем.
 
@@ -86,7 +126,6 @@ def tep_cell_stand() -> str:
         page_const("TRANSFER_RECIPIENT_NOTE"),
         "const inputs={};",
         "let tep={};",
-        "let tepRefillNote={};",
         "const landNum=(v,d)=>Number(v||0).toFixed(d===undefined?1:d);",
         "let recalcs=0;",
         "function tepRowToInputs(){}",
@@ -120,6 +159,80 @@ def tep_cell_stand() -> str:
         function("tepRatioReset"),
     ]
     return "\n".join(pieces) + "\n"
+
+
+def run(prelude: str, tail: str, limit: int = 60) -> tuple[str, list[str]]:
+    """Гоняет стенд на node, добирая недостающие куски страницы по именам.
+
+    Тот же приём был выписан копиями в трёх проверках, а общий стенд
+    перечислял зависимости руками — и падал на своей неполноте, когда рядом
+    заводили функцию: «setTepNote is not defined» вместо утверждения о строке.
+    Имя берётся из самой ошибки, кусок — у страницы; имени на странице нет —
+    падаем с ним, а не подсовываем заглушку: заглушка ответила бы за страницу.
+    """
+    import shutil  # noqa: PLC0415 — нужны только здесь
+    import subprocess  # noqa: PLC0415
+
+    node = shutil.which("node")
+    if not node:
+        import pytest  # noqa: PLC0415
+
+        pytest.skip("node недоступен")
+    taken: list[str] = []
+    bodies: list[str] = []
+    moved: set[str] = set()
+    for _ in range(limit):
+        script = prelude + "\n" + "\n".join(bodies) + "\n" + tail
+        done = subprocess.run([node, "-e", script], capture_output=True,
+                              text=True, timeout=60)
+        if done.returncode == 0:
+            return done.stdout, taken
+        error = done.stderr
+        # У «имени нет» две формы, и вторую стенд не узнавал. `const`,
+        # объявленный НИЖЕ своего читателя, node зовёт не «is not defined», а
+        # «Cannot access 'X' before initialization»: имя в скрипте есть, просто
+        # стоит не там. Отказ по такой форме выходил про стенд — «не
+        # разрешается» с чужой трассировкой, — а лечится она тем же переносом
+        # вперёд, что и первая (PROJECT_PARKING_KEY, читаемый картой полей
+        # паркинга, 14.09.2026).
+        name = ""
+        if "ReferenceError" in error and " is not defined" in error:
+            name = error.split("ReferenceError: ")[1].split(" is not defined")[0].strip()
+        elif "Cannot access '" in error and "' before initialization" in error:
+            name = error.split("Cannot access '")[1].split("'")[0].strip()
+        if not name:
+            raise AssertionError(error[-2500:])
+        if name in taken:
+            # Имя уже добрано, а node его всё равно не видит — значит порядок:
+            # кусок стоит ПОСЛЕ того, кто его читает. Один перенос вперёд, и
+            # только потом отказ: иначе настоящий цикл крутился бы до предела.
+            if name in moved:
+                raise AssertionError(f"{name} не разрешается\n{error[-1500:]}")
+            moved.add(name)
+            at = taken.index(name)
+            bodies.insert(0, bodies.pop(at))
+            taken.insert(0, taken.pop(at))
+            continue
+        # Добранный кусок встаёт перед СВОИМ читателем, а не в конец и не в
+        # начало. В конец нельзя: `const`, объявленный ниже того, кто его
+        # читает, падает временной мёртвой зоной, и падение выглядит как
+        # «имени нет», хотя оно есть строкой ниже. В начало — тоже: у
+        # `TRANSFER_LABELS` два читателя, и добранный последним
+        # `TRANSFER_RECIPIENT_NOTE` уезжал впереди них обоих (13.09.2026).
+        body = piece(name)
+        reader = next((i for i, text in enumerate(bodies)
+                       if re.search(rf"\b{re.escape(name)}\b", text)), 0)
+        bodies.insert(reader, body)
+        taken.insert(reader, name)
+    raise AssertionError(f"зависимостей больше {limit} — стенд не сходится")
+
+
+def run_json(prelude: str, tail: str, limit: int = 60):
+    """То же, но ответ разбирается как JSON — стенды печатают им."""
+    import json  # noqa: PLC0415
+
+    out, _taken = run(prelude, tail, limit)
+    return json.loads(out)
 
 
 def page_const(name: str, page: str | None = None) -> str:

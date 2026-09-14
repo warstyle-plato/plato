@@ -29,6 +29,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import page_blocks  # noqa: E402
 import main as wrapper  # noqa: E402
 
 core = wrapper.core
@@ -108,8 +109,16 @@ def test_the_fields_are_filled_from_the_tep():
     page = core.PAGE
     assert "function fillUndergroundFromTep()" in page
     assert "fillUndergroundFromTep();" in page
-    # Новый участок — новый паркинг: пара перезаполняется его расчётом.
-    assert re.search(r"inputs\.underground_manual_spaces=0;\s*\n\s*inputs\.underground_manual_gns_sqm=0;\s*\n\s*fillUndergroundFromTep\(\);", page)
+    # Новый участок — новый паркинг: пара обнуляется и перезаполняется его
+    # расчётом. Держится ПОРЯДОК внутри `applyGlavapu`, а не соседство строк:
+    # между ними законно встаёт снятие замка (`markParkingByNorm`), и проверка
+    # на три подряд идущие строки упала бы на верной правке.
+    apply = page_blocks.function("applyGlavapu")
+    zeroed = apply.index("inputs.underground_manual_spaces=0;")
+    assert "inputs.underground_manual_gns_sqm=0;" in apply, "площадь пары не обнуляется"
+    assert apply.index("fillUndergroundFromTep();") > zeroed, (
+        "пара перезаполняется расчётом участка ДО обнуления — число прошлого "
+        "участка осталось бы в поле")
 
 
 def test_the_edit_handler_syncs_the_pair():
