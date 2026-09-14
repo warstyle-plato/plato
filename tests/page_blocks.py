@@ -101,6 +101,11 @@ def tep_cell_stand() -> str:
         function("tepRatio"),
         function("tepFillByRatios"),
         function("tepApplyTransfer"),
+        # Пара «штуки ↔ метры» кладовых: правка ячейки зовёт её, и без
+        # неё стенд падал бы на неопределённом имени — то есть про себя,
+        # а не про то, что проверяет.
+        function("storageAreaPerUnit"),
+        function("syncStoragePair"),
         function("tepCellChanged"),
         # Пересборка строки по долям — тот же путь, что правка ячейки:
         # «наши» и правка доли обязаны считать переданное так же.
