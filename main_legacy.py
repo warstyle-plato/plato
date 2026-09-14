@@ -77,7 +77,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.23.50"
+VERSION = "0.23.54"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -17521,6 +17521,9 @@ def _v4_apply_debt_carry(xml: str, phase: int, queues: int, missing: list[str]) 
 # Числа книга считает сама, своими формулами: площадные продукты — с листа
 # «Продажи» (блок очереди через 23 строки), отдельно стоящие объекты — с листа
 # «ОБЪЕКТЫ», и там же лежит номер очереди, в которой объект финансируется.
+_V4_TEP_PHASE_STRIDE = 6                  # шаг блока очереди на листе ТЭП
+_V4_TEP_STORAGE_ROW = 7                   # строка «Кладовые» первой очереди
+_V4_REPORT_STORAGE_ROW = 49               # строка «Кладовые» структуры продукта
 _V4_CONSOLIDATOR_ROWS = (4, 5, 6, 7)      # очереди 1–4
 _V4_CONSOLIDATOR_TOTAL_ROW = 8
 _V4_CONSOLIDATOR_FIRST_COL = 17           # Q — первая свободная
@@ -20163,6 +20166,95 @@ def _v4_apply_landscaping_base(xml: str, per_person: str, population_norm: str,
     return xml
 
 
+def _v4_storage_area_cells(tep_xml: str, report_xml: str, missing: list[str]
+                           ) -> tuple[str, str]:
+    """Строки «Кладовые» листов ТЭП и ОТЧЕТ получают свою площадь.
+
+    Обе строки в шаблоне владельца ЕСТЬ, и обе стоят пустыми: итоги над ними
+    (`ТЭП!C8` = SUM(C4:C7), `ОТЧЕТ!B53` = SUM(B46:B52)) их складывают, то есть
+    книга теряла метры кладовых в собственной таблице площадей. Ячейка без
+    писателя выглядит как «у продукта нет площади», а не как наш пробел.
+
+    Площадь берётся из колонки очереди (AR), а не пересчитывается вторым
+    правилом: второй ответ на «сколько метров у кладовых» разошёлся бы с
+    первым, и обе строки выглядели бы верными.
+    """
+    stride, first = _V4_TEP_PHASE_STRIDE, _V4_TEP_STORAGE_ROW
+    for index in range(_V4_CAPEX_PHASES):
+        row = first + stride * index
+        queue_row = _V4_CF_QUEUE_ENABLED_ROW + index
+        tep_xml, done = _v4_set_cells(tep_xml, row, {f"C{row}": dict(
+            formula=f"'Вводные'!$AR${queue_row}")})
+        if not done:
+            missing.append(f"ТЭП · площадь кладовых очереди {index + 1}")
+    report_xml, done = _v4_set_cells(report_xml, _V4_REPORT_STORAGE_ROW, {
+        f"B{_V4_REPORT_STORAGE_ROW}": dict(
+            formula="SUM('Вводные'!AR88:AR91)")})
+    if not done:
+        missing.append("ОТЧЕТ · площадь кладовых")
+    return tep_xml, report_xml
+
+
+def _v4_apply_storage_area_rows(xml: str, missing: list[str]) -> str:
+    """Статьи CAPEX, чья база — подземная часть или строительный объём, видят
+    площадь кладовых.
+
+    Кладовые прибавляют подземную площадь, а не вычитаются из гаража (решение
+    владельца, 13.09.2026), и движок считает базу как «паркинг плюс кладовые»
+    (`core_under_gns`). Книга кладовых не знала вовсе: колонка K несёт только
+    площадь паркинга, а строки «Кладовые» листов ТЭП и ОТЧЕТ стоят в шаблоне
+    пустыми — при том что итоги НАД ними их складывают. На 400 кладовых по 4 м²
+    это 1 600 м² подземной части и 140,8 млн ₽ СМР, потерянных молча.
+
+    Правятся три формы базы, и каждая своя:
+      · строительный объём проекта `SUM($I$88:$K$91)` — ИРД, П, РД, подготовка,
+        сети (их движок делит кассовыми долями);
+      · строительный объём очереди `($I$r+$J$r+$K$r)` — сдача и содержание;
+      · подземная часть очереди `$K$r` — основное строительство под землёй.
+    Благоустройство сюда не входит: его база — двор, а не объём, и к этому
+    моменту `_v4_apply_landscaping_base` уже сняла у него сумму трёх ГНС.
+    Формула шаблона не опознана — `missing`, а не тихий счёт по прежней базе.
+    """
+    area = "'Вводные'!$AR$%d"
+    volume_was = "SUM('Вводные'!$I$88:$K$91)"
+    volume_now = f"({volume_was}+SUM('Вводные'!$AR$88:$AR$91))"
+    xml, count = xml.replace(volume_was, volume_now), xml.count(volume_was)
+    expect = len(_V4_SHARED_CASH_ARTICLES) * _V4_CAPEX_PHASES
+    if count != expect:
+        missing.append("CAPEX · строительный объём: формула общепроектных статей "
+                       f"не опознана ({count} из {expect})")
+    for phase in range(_V4_CAPEX_PHASES):
+        base = _V4_CAPEX_BLOCK_STRIDE * phase
+        queue_row = _V4_CF_QUEUE_ENABLED_ROW + phase
+        # Подземная часть очереди: K → (K + площадь кладовых).
+        row = _V4_CAPEX_ARTICLE_ROW["main_under"] + base
+        was = f"'Вводные'!$K${queue_row}"
+        found = _re_search_cell_formula(xml, f"B{row}")
+        if found is None or was not in found:
+            missing.append(f"CAPEX · СМР подземной части: формула строки {row} не опознана")
+        else:
+            now = f"({was}+{area % queue_row})"
+            xml, done = _v4_set_cells(xml, row, {f"B{row}": dict(
+                formula=found.replace(was, now, 1))})
+            if not done:
+                missing.append(f"CAPEX · СМР подземной части: строка {row} не записана")
+        # Строительный объём очереди: (I+J+K) → (I+J+K+площадь кладовых).
+        for key in ("commissioning", "site_maintenance"):
+            row = _V4_CAPEX_ARTICLE_ROW[key] + base
+            was = (f"('Вводные'!$I${queue_row}+'Вводные'!$J${queue_row}"
+                   f"+'Вводные'!$K${queue_row})")
+            found = _re_search_cell_formula(xml, f"B{row}")
+            if found is None or was not in found:
+                missing.append(f"CAPEX · объём очереди: формула строки {row} не опознана")
+                continue
+            now = was[:-1] + f"+{area % queue_row})"
+            xml, done = _v4_set_cells(xml, row, {f"B{row}": dict(
+                formula=found.replace(was, now, 1))})
+            if not done:
+                missing.append(f"CAPEX · объём очереди: строка {row} не записана")
+    return xml
+
+
 def _re_search_cell_formula(xml: str, coord: str) -> str | None:
     """Формула ячейки как она стоит в XML — или None, если её там нет."""
     found = re.search(r'<x:c r="%s"[^>]*><x:f>(.*?)</x:f>' % re.escape(coord), xml, re.S)
@@ -20998,6 +21090,7 @@ def build_project_workbook(
     tep_xml = _v4_sports_tep_row(
         source.read(tep_sheet_path).decode("utf-8"), missing)
     tep_xml = _v4_rename_labels(tep_xml, "ТЭП", missing)
+    tep_xml, report_xml = _v4_storage_area_cells(tep_xml, report_xml, missing)
 
     # Соцстройка — готовыми числами в строку 31 блока каждой очереди CAPEX:
     # объект платится в своей очереди её календарём, как в движке. Итог
@@ -21010,6 +21103,7 @@ def build_project_workbook(
     capex_xml = _v4_apply_demolition_rows(capex_xml, missing)
     capex_xml = _v4_apply_landscaping_base(
         capex_xml, _landscaping_per_person, _landscaping_norm, missing)
+    capex_xml = _v4_apply_storage_area_rows(capex_xml, missing)
     capex_xml = _v4_apply_bridge_limit_before_permit(capex_xml, missing)
     capex_xml = _v4_apply_vri_interest_row(capex_xml, missing)
     vri_sheet_path = _v4_sheet_path(source, "ВРИ")
@@ -21685,6 +21779,32 @@ def build_project_workbook(
             for _col, _title in (("AN", "Из них гостевых, шт."),
                                  ("AO", "Из них передано, шт."),
                                  ("AP", "Кладовых передано, шт.")):
+                xml, _done = _v4_set_or_insert_cell(xml, f"{_col}87", text=_title)
+                if not _done:
+                    missing.append(f"подпись колонки {_col} блока очередей")
+        # Площадь кладовых — своя колонка, а не слагаемое к паркингу. У книги
+        # ЕСТЬ строки под неё (ТЭП «Кладовые» и ОТЧЕТ «Кладовые»), и обе стояли
+        # пустыми: их метры не доезжали в книгу ВООБЩЕ, при том что итоги над
+        # ними их складывают. На 400 кладовых по 4 м² это 1 600 м² подземной
+        # части и 140,8 млн ₽ СМР, потерянных молча. Прибавлять их к колонке K
+        # нельзя: её читают ТЭП и ОТЧЕТ под именем «Подземный паркинг», и
+        # 43 565 м² под этим именем — то же самое, что «по ДДС» над числом из
+        # РСС (владелец, 13.09.2026: кладовые ПРИБАВЛЯЮТ подземную площадь).
+        # Плотность двигает их тем же признаком, что и штуки кладовых (K81),
+        # а не признаком паркинга: у продукта один ответ на «следует ли он за
+        # плотностью».
+        xml, _done = _v4_set_or_insert_cell(
+            xml, f"AQ{row}", number=num_row(crow.get("storage"), "gns"))
+        if not _done:
+            missing.append(f"база площади кладовых очереди {index + 1}")
+        xml, _done = _v4_set_or_insert_cell(
+            xml, f"AR{row}",
+            formula=f'ROUND(AQ{row}*IF($K$81="Да",$K$15,1),0)')
+        if not _done:
+            missing.append(f"площадь кладовых очереди {index + 1}")
+        if index == 0:
+            for _col, _title in (("AQ", "База площади кладовых"),
+                                 ("AR", "Площадь кладовых, м²")):
                 xml, _done = _v4_set_or_insert_cell(xml, f"{_col}87", text=_title)
                 if not _done:
                     missing.append(f"подпись колонки {_col} блока очередей")
