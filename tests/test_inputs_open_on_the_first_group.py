@@ -118,6 +118,15 @@ def render(inputs: dict, tail: str = "console.log(JSON.stringify(groups()));",
         pytest.skip("node недоступен")
     script = "\n".join([
         page_const("FIELD_GROUPS"),
+        # Поля, которые правят в «Настройках класса», форма пропускает.
+        # Список приходит из движка вместе с самими полями: без него
+        # `renderInputs` падает на «CLASS_ONLY_INPUTS is not defined», то
+        # есть на неполноте стенда, а не на том, что он проверяет. Шестой
+        # раз в этом же месте — стенд перечисляет зависимости руками;
+        # перевод его на общий разрешитель (`page_blocks.run`) заведён
+        # отдельной задачей: заглушки стенда разрешитель добрал бы со
+        # страницы и подменил бы ими поведение соседних проверок.
+        page_const("CLASS_ONLY_INPUTS"),
         page_const("INPUT_DEFAULT"),
         page_const("num"),
         page_const("VRI_GROUP_NAME"),
