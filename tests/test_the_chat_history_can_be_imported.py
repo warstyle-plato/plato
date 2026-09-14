@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -143,3 +144,23 @@ def test_the_import_goes_through_the_same_store(monkeypatch, daily) -> None:
     daily.store_telegram_export("Кутузов Сити",
                                 export(message("25.07.2026 10:00:00 UTC+03:00", REPORT)))
     assert calls == [("Кутузов Сити", "2026-07-25")]
+
+
+def test_a_hostile_file_does_not_hang_the_reader(daily) -> None:
+    """Выгрузку приносит человек — значит вход неконтролируемый.
+
+    Первая версия читателя искала поля образцами, и CodeQL назвал три из них
+    опасными: `<div class="text">(.*?)</div>` и `<[^>]+>` по строке из одних
+    «<» уходят в перебор. Та же болезнь уже ловилась в `_section_of` на строке
+    «поставка» с полусотней тысяч пробелов.
+
+    Это не замер скорости, а ловушка зависания: разбор идёт по документу один
+    раз, и двухсот тысяч знаков ему хватает на доли секунды. Срок взят с
+    запасом в десятки раз — он ловит возврат перебора, а не медленную машину.
+    """
+    for hostile in ("<" * 200_000,
+                    '<div class="text">' + "a" * 200_000,
+                    'class="pull_right date details"' * 20_000):
+        started = time.monotonic()
+        assert daily.read_telegram_export(hostile) == []
+        assert time.monotonic() - started < 5.0, hostile[:40]
