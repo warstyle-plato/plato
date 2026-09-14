@@ -174,15 +174,31 @@ def test_the_budget_is_stronger_than_the_list_and_says_so(tmp_path):
 
 
 def test_a_lot_that_is_not_krt_does_not_poison_the_pass(tmp_path, monkeypatch):
-    """Один лот не роняет проход: так уже падал весь сбор из-за одной карточки."""
+    """Один лот не роняет проход: так уже падал весь сбор из-за одной карточки.
+
+    И это НЕ перебой площадки: вторым заходом через полчаса «читателя нет» не
+    лечится, а карточку лота спрашивали бы 48 раз в сутки за один и тот же
+    ответ. Поэтому свой ответ, свой срок и своя причина на экране.
+    """
     from auction_search.models import LotKind
 
     monkeypatch.setattr(krt_pipeline, "download_document", _platform())
     got = krt_pipeline.read_notices(
-        BY_SITE, fetch_lot=lambda url: _lot(kind=LotKind.LAND_PLOT),
+        BY_SITE, fetch_lot=lambda url: _lot(kind=LotKind.LAND_SALE),
         store_dir=tmp_path)
-    assert got["refused"] == 1, got
+    assert (got["unsupported"], got["refused"]) == (1, 0), got
     assert krt_territory.stored_notice(KEY, root=tmp_path)["lands"] == []
+    assert krt_territory.stored_attempt(KEY, root=tmp_path)["outcome"] == "unsupported"
+    # Срок у него длинный — как у ответа документов, а не как у перебоя.
+    assert not krt_territory.notice_due(
+        KEY, root=tmp_path,
+        now=time.time() + krt_territory.REFUSED_TTL_SECONDS + 60)
+    assert krt_territory.notice_due(
+        KEY, root=tmp_path,
+        now=time.time() + krt_territory.NO_TABLE_TTL_SECONDS + 60)
+    why = krt_territory.stored_notice(KEY, root=tmp_path)["problem"]
+    assert "нашим разбором не читается" in why, why
+    assert "площадка не отдала" not in why, why
 
 
 def test_the_empty_reason_names_whose_gap_it_is(tmp_path):

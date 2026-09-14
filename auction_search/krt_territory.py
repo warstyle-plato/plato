@@ -150,7 +150,8 @@ def notice_due(key: str, *, root: Path | None = None,
     attempt = stored_attempt(key, root=root)
     if not attempt:
         return True
-    ttl = (NO_TABLE_TTL_SECONDS if attempt.get("outcome") == "no_table"
+    ttl = (NO_TABLE_TTL_SECONDS
+           if attempt.get("outcome") in {"no_table", "unsupported"}
            else REFUSED_TTL_SECONDS)
     return float(now if now is not None else time.time()) - float(
         attempt.get("at") or 0) >= ttl
@@ -180,6 +181,12 @@ def _attempt_problem(attempt: dict[str, Any]) -> str:
                 + (f", их {count}" if count else "")
                 + " — таблицы состава территории в них нет")
     why = str(attempt.get("why") or "").strip()
+    if attempt.get("outcome") == "unsupported":
+        # Отказ, который вторым заходом не лечится: у площадки нет читателя
+        # или лот прочитан не как КРТ. Спрашивать её об этом каждые полчаса
+        # значит платить за один и тот же ответ.
+        return ("лот этой площадки нашим разбором не читается"
+                + (f": {why}" if why else ""))
     return ("площадка не отдала вложения лота"
             + (f": {why}" if why else "") + seen + ". Спросим снова")
 

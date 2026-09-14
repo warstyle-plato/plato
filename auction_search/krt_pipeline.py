@@ -365,6 +365,7 @@ def read_notices(by_site: dict[str, Any], *,
     out: dict[str, Any] = {
         "at": int(now()), "lots": 0, "asked": 0, "read": 0,
         "already": 0, "waiting": 0, "no_table": 0, "refused": 0,
+        "unsupported": 0,
         "out_of_time": 0, "sites": [],
     }
     seen: set[str] = set()
@@ -405,9 +406,19 @@ def read_notices(by_site: dict[str, Any], *,
             try:
                 lot = fetch_lot(url)
                 if lot.lot_kind != LotKind.KRT:
-                    raise ValueError("лот не про КРТ")
+                    raise ValueError("лот прочитан не как КРТ")
                 lot = enrich_krt_from_official_documents(
                     lot, store_dir=store, deadline=until)
+            except ValueError as exc:
+                # Не перебой площадки, а отсутствие читателя: вторым заходом
+                # через полчаса это не лечится, поэтому свой ответ и свой срок.
+                territory.remember_attempt(
+                    key, outcome="unsupported", why=str(exc), root=store)
+                out["unsupported"] = int(out.get("unsupported") or 0) + 1
+                row["state"] = "unsupported"
+                row["why"] = str(exc)[:200]
+                out["sites"].append(row)
+                continue
             except Exception as exc:  # noqa: BLE001 — один лот не роняет проход
                 # Та же беда, что уже была у сбора каталога: одна недоступная
                 # карточка РАД снимала всю выдачу.
