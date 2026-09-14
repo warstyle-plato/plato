@@ -387,16 +387,14 @@ def test_the_transfer_matches_the_engine_page(tmp_path):
         "async function calculate(){}\nasync function sendTelegramResult(){}\n"
         f"let inputs={json.dumps(core.DEFAULT_INPUTS)};\n"
         f"let tep={json.dumps(core.TEP_DEFAULT)};\nlet glavapuImport=null;\n")
-    script = (f"const payload={json.dumps(parsed, ensure_ascii=False, default=str)};\n"
-              # Замок «Требования КРТ» — по границам, а не именем: через него
-              # теперь пишет и выгрузка ГлавАПУ.
-              + stubs + page_blocks.krt_lock() + "\n"
-              + keys.group(1) + "\n" + body.group(1)
-              + "\n(async()=>{glavapuImport=payload;await applyGlavapu();"
-                "console.log(JSON.stringify({inputs,tep}));})()")
-    done = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=120)
-    assert done.returncode == 0, done.stderr[:600]
-    page = json.loads(done.stdout)
+    # Замок «Требования КРТ» — по границам, а не именем: через него теперь
+    # пишет и выгрузка ГлавАПУ. Остальное недостающее стенд добирает сам.
+    prelude = (f"const payload={json.dumps(parsed, ensure_ascii=False, default=str)};\n"
+               + stubs + page_blocks.krt_lock() + "\n"
+               + keys.group(1) + "\n" + body.group(1))
+    tail = ("\n(async()=>{glavapuImport=payload;await applyGlavapu();"
+            "console.log(JSON.stringify({inputs,tep}));})()")
+    page = page_blocks.run_json(prelude, tail)
 
     for key in sorted(set(page["inputs"]) | set(mine["inputs"])):
         if key.startswith("_"):

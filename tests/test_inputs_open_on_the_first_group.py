@@ -118,6 +118,15 @@ def render(inputs: dict, tail: str = "console.log(JSON.stringify(groups()));",
         pytest.skip("node недоступен")
     script = "\n".join([
         page_const("FIELD_GROUPS"),
+        # Поля, которые правят в «Настройках класса», форма пропускает.
+        # Список приходит из движка вместе с самими полями: без него
+        # `renderInputs` падает на «CLASS_ONLY_INPUTS is not defined», то
+        # есть на неполноте стенда, а не на том, что он проверяет. Шестой
+        # раз в этом же месте — стенд перечисляет зависимости руками;
+        # перевод его на общий разрешитель (`page_blocks.run`) заведён
+        # отдельной задачей: заглушки стенда разрешитель добрал бы со
+        # страницы и подменил бы ими поведение соседних проверок.
+        page_const("CLASS_ONLY_INPUTS"),
         page_const("INPUT_DEFAULT"),
         page_const("num"),
         page_const("VRI_GROUP_NAME"),
@@ -149,6 +158,13 @@ def render(inputs: dict, tail: str = "console.log(JSON.stringify(groups()));",
              PAGE.index(";", PAGE.index("const OBJECT_PARKING_PREFIXES=")) + 1],
         page_function("renderObjectParkingFieldNotes"),
         page_function("objectParkingFieldNote"),
+        # Та же история у подписи под ставкой благоустройства: ячейку создаёт
+        # форма, поэтому и заполняет её форма. Состояние страницы подделкой не
+        # заменяется — `lastResult` объявлен на странице тем же `let`, и без
+        # расчёта подпись честно говорит, что двор ещё не посчитан.
+        "let lastResult=null;",
+        page_function("landscapingRateNote"),
+        page_function("renderLandscapingRateNote"),
         DOM.replace("__PHASING__", json.dumps(phasing or {"enabled": False})),
         f"const inputs=Object.assign(structuredClone(INPUT_DEFAULT),{json.dumps(inputs)});",
         "renderInputs();",

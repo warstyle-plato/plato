@@ -611,7 +611,17 @@ def _card(entry: dict[str, Any], admin: bool = False) -> str:
         )
 
     notes = html.escape(str(entry.get("notes") or ""))
-    source_url = html.escape(str(entry.get("source_url") or "#"), quote=True)
+    # Ссылка на несуществующее — такая же ложь, как подпись под чужим числом:
+    # `href="#"` выглядит источником и никуда не ведёт. Источник бывает и не
+    # адресом (первичный текст акта на руках, PDF в docs/normative), и тогда
+    # подпись говорит это словами, а ссылки нет вовсе.
+    source_raw = str(entry.get("source_url") or "").strip()
+    source_label = html.escape(str(entry.get("source_label") or "Источник"))
+    if source_raw:
+        source_link = (f'<a href="{html.escape(source_raw, quote=True)}" '
+                       f'target="_blank" rel="noopener">{source_label} ↗</a>')
+    else:
+        source_link = f'<span class="nomuted">{source_label}</span>'
     # Тринадцать развёрнутых карточек — стена, которую не читают (владелец,
     # 07.09.2026: «вся информация должна быть свернута и при необходимости
     # только открыта из списка»). Свёрнутая строка отвечает на «что это и на
@@ -642,8 +652,7 @@ def _card(entry: dict[str, Any], admin: bool = False) -> str:
     <section><h3>Где используется в движке</h3><ul class="usage">{usage}</ul></section>
   </div>
   <div class="source-row">
-    <a href="{source_url}" target="_blank" rel="noopener">
-      {html.escape(str(entry.get('source_label') or 'Источник'))} ↗</a>
+    {source_link}
     {check_html}
   </div>
   {f'<p class="notes">{notes}</p>' if notes else ''}

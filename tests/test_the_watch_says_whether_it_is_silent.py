@@ -194,12 +194,12 @@ def test_the_delivery_says_what_it_did(monkeypatch) -> None:
     monkeypatch.setattr(wrapper.core, "_telegram_send_message",
                         lambda chat_id, text, **kw: sent.append((chat_id, text)))
 
-    monkeypatch.setattr(wrapper, "_krt_take_announcements", lambda: ([], []))
+    monkeypatch.setattr(wrapper, "_krt_take_announcements", lambda: ([], [], {}))
     wrapper._deliver_krt_announcements()
     assert wrapper.krt_delivery_state()["stopped_by"] == "очередь пуста"
 
     records = [{"slug": "a", "kind": "site", "seen_at": 1, "name": "Площадка"}]
-    monkeypatch.setattr(wrapper, "_krt_take_announcements", lambda: (records, []))
+    monkeypatch.setattr(wrapper, "_krt_take_announcements", lambda: (records, [], {}))
     wrapper._deliver_krt_announcements()
     state = wrapper.krt_delivery_state()
     assert (state["taken"], state["targets"], state["sent"]) == (1, 1, 1), state

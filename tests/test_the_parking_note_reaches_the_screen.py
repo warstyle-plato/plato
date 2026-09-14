@@ -25,6 +25,7 @@ from pathlib import Path
 
 import pytest
 
+import page_blocks  # noqa: E402
 from browser import chromium_or_skip
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -48,35 +49,33 @@ def _piece(name: str) -> str:
         i += 1
 
 
-HARNESS = """
+PRELUDE = """
 const box = {innerHTML: ""};
 global.document = {getElementById: id => (id === 'objectParkingNote' ? box : null)};
 function escapeHtml(s){return String(s).replace(/[&<>"]/g, c =>
   ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
 const num = v => String(v);
-%(prefixes)s
 let lastResult = %(result)s;
 // Сверка старого проекта читает вводные: без них стенд падает на «inputs is
 // not defined», и падение выходит про стенд, а не про подпись.
 let inputs = {_parking_by_norm: []};
-%(note)s
-%(fn)s
+"""
+
+TAIL = """
 renderObjectParkingNote();
 console.log(JSON.stringify({html: box.innerHTML}));
 """
 
 
 def _render(result) -> str:
-    script = HARNESS % {"result": json.dumps(result, ensure_ascii=False),
-                        "prefixes": _const("OBJECT_PARKING_PREFIXES"),
-                        "note": _piece("objectParkingGap") + "\n" + _piece("objectParkingFieldNote") + "\n"
-                        + _piece("markParkingByNorm") + "\n"
-                        + _piece("reconcileLegacyParking"),
-                        "fn": _piece("renderObjectParkingFieldNotes") + "\n"
-                        + _piece("renderObjectParkingNote")}
-    out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=60)
-    assert out.returncode == 0, out.stderr[-2000:]
-    return json.loads(out.stdout)["html"]
+    """Куски страницы добираются сами — перечислять их руками значит падать на
+    своей неполноте, когда рядом заведут функцию. Ровно это и случилось
+    13.09.2026: паркинг проекта получил пометку нормы, и стенд упал на
+    `PARKING_OWNER_FIELDS is not defined`, ничего не сказав о подписи.
+    """
+    out = page_blocks.run_json(
+        PRELUDE % {"result": json.dumps(result, ensure_ascii=False)}, TAIL)
+    return out["html"]
 
 
 def _executable(body: str) -> str:
@@ -388,23 +387,16 @@ def test_a_project_saved_before_this_keeps_its_hand_written_numbers() -> None:
     ПОСЛЕ, список несёт — и пересев затёр бы его: заполненное нормой поле
     стало бы «тронутым руками» и замерло бы навсегда.
     """
-    script = """
-%(seed)s
-let inputs = %(legacy)s;
+    prelude = "let inputs = %s;" % json.dumps(
+        {"offices_parking_under_spaces": 40, "retail_parking_under_spaces": 0})
+    tail = """
 seedParkingByHand();
 const legacy = inputs._parking_by_hand;
-inputs = %(fresh)s;
+inputs = %s;
 seedParkingByHand();
 console.log(JSON.stringify({legacy, fresh: inputs._parking_by_hand}));
-""" % {"seed": _piece("seedParkingByHand"),
-       "legacy": json.dumps({"offices_parking_under_spaces": 40,
-                             "retail_parking_under_spaces": 0}),
-       "fresh": json.dumps({"offices_parking_under_spaces": 2778,
-                            "_parking_by_hand": []})}
-    script = "const OBJECT_PARKING_PREFIXES=['offices','retail','sports'];\n" + script
-    out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=60)
-    assert out.returncode == 0, out.stderr[-2000:]
-    seen = json.loads(out.stdout)
+""" % json.dumps({"offices_parking_under_spaces": 2778, "_parking_by_hand": []})
+    seen = page_blocks.run_json(prelude, tail)
     assert seen["legacy"] == ["offices"], seen
     assert seen["fresh"] == [], "пересев затёр список проекта"
 
@@ -579,10 +571,7 @@ def test_a_number_the_norm_wrote_does_not_freeze_after_reload() -> None:
       вписанное руками хуже, чем оставить, — но подпись обязана назвать путь
       назад, и это держит соседняя проверка.
     """
-    script = """
-%(seed)s
-%(mark)s
-%(hand)s
+    tail = """
 const out = {};
 let inputs = {offices_parking_under_spaces: 2956, _parking_by_norm: ['offices']};
 seedParkingByHand();
@@ -595,14 +584,8 @@ inputs = {offices_parking_under_spaces: 2956};
 seedParkingByHand();
 out.legacy = inputs._parking_by_hand;
 console.log(JSON.stringify(out));
-""" % {"seed": _piece("seedParkingByHand"),
-       "mark": _piece("markParkingByNorm") + "\n"
-                 + _piece("reconcileLegacyParking"),
-       "hand": _piece("markParkingByHand")}
-    script = "const OBJECT_PARKING_PREFIXES=['offices','retail','sports'];\n" + script
-    out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=60)
-    assert out.returncode == 0, out.stderr[-2000:]
-    got = json.loads(out.stdout)
+"""
+    got = page_blocks.run_json("", tail)
     assert got["norm_written"] == [], (
         "число нормы посев записал в «тронутые руками» — оно замрёт навсегда")
     assert got["after_hand_hand"] == ["offices"], got
