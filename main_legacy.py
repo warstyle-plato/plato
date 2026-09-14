@@ -32173,6 +32173,20 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
     vri_summary["totals"]["gross"] = round(base_amounts.get("land_rights_gross", 0.0), 2)
     vri_summary["totals"]["relief"] = round(base_amounts.get("land_rights_relief", 0.0), 2)
     consolidated["vri"] = vri_summary
+    # Норматив приобъектной парковки — обязательство ОБЪЕКТА, то есть проекта:
+    # офисник, разрезанный надвое, не становится двумя офисниками со своими
+    # нормами (то же правило, что у ступени площади соцобъекта). У свода блока
+    # не было вовсе, и подпись под полем уходила в холодное «Расчёт не
+    # выполнен — норматив появится после пересчёта» ПРИ посчитанной модели,
+    # да ещё и советовала проверить вход (экран владельца, 14.09.2026: «куда
+    # пропала сверка с нормативом парковок???»). Ложная тревога такого рода
+    # хуже молчания: человек ищет поломку там, где всё цело.
+    #
+    # Считается на КОПИЯХ: `apply_object_parking` не идемпотентна — метры
+    # первых этажей вычитаются из продаваемой при каждом вызове, — и второй
+    # проход по мастер-строке увёл бы продаваемую объекта вниз.
+    consolidated["parking"] = apply_object_parking(
+        copy.deepcopy(x_master), copy.deepcopy(t_master))
     for item, row in zip(phase_items, comparison):
         row["vri_cash"] = item["result"].get("vri", {}).get("totals", {}).get("cash", 0.0)
     # Применённые кассовые доли — один ответ на движок и книгу: статья «по
@@ -44951,8 +44965,23 @@ function renderTepUndergroundNote(aboveGns,underGns){
   +`Строительный объём ${num(aboveGns+underGns)} м².`;
 }
 
+function projectParking(){
+ // Норматив и собственный паркинг объекта — величины ПРОЕКТА, и вид на экране
+ // их не меняет. Читать их из `lastResult` было нельзя: он идёт за выбранной
+ // вкладкой отчёта (`selectReportView`), и у свода очередей блока паркинга не
+ // было вовсе — подпись под полем уходила в «Расчёт не выполнен» при
+ // посчитанной модели и советовала проверить вход (владелец, 14.09.2026).
+ // Хуже второе: `renderObjectParkingNote` не только объясняет, но и ПИШЕТ
+ // норму в поля проекта. На вкладке одной очереди там лежит её собственный
+ // паркинг — у очереди без объекта это ноль, — и переключение вида молча
+ // обнуляло бы гараж проекта.
+ if(phaseBundle&&phaseBundle.mode==='phased'&&phaseBundle.consolidated)
+  return (phaseBundle.consolidated.parking)||{};
+ return ((lastResult||{}).parking)||{};
+}
+
 function objectParkingNote(key){
- const own=((lastResult||{}).parking||{}).own||[];
+ const own=(projectParking().own)||[];
  const item=own.find(o=>o&&o.tep_key===key&&o.enabled);
  if(!item||!item.units)return '';
  const where=`${num(item.under_spaces)} в подземном, ${num(item.over_spaces)} на первых этажах`;
@@ -45038,7 +45067,7 @@ function reconcileLegacyParking(){
  // правка руками возвращает замок. Обратная ошибка дороже: замершее поле на
  // экране выглядит посчитанным, а расходится на два порядка.
  if(Array.isArray(inputs._parking_by_norm))return;
- (((lastResult||{}).parking||{}).own||[]).forEach(item=>{
+ ((projectParking().own)||[]).forEach(item=>{
   if(!item||!item.prefix)return;
   const req=Number(item.required_spaces||0);
   if(req<=0)return;
@@ -45078,7 +45107,7 @@ function objectParkingGap(item){
 }
 
 function objectParkingFieldNote(prefix){
- const own=((lastResult||{}).parking||{}).own||[];
+ const own=(projectParking().own)||[];
  const item=own.find(o=>o&&o.prefix===prefix);
  // Расчёта не было — норме взяться неоткуда, и молчать об этом нельзя.
  // Число мы намеренно не показываем (прежнее под новыми вводными читалось бы
@@ -45087,7 +45116,7 @@ function objectParkingFieldNote(prefix){
  // (экран владельца, 08.09.2026, объект уже включён). Расчёт закрыт входом
  // (`calc_requires_login`), и на телефоне вход бывает не тот, что на ноутбуке:
  // хранилище у каждого браузера своё.
- if(!lastResult||!lastResult.parking)
+ if(!projectParking().own)
   return 'Расчёт не выполнен — норматив появится после пересчёта. '
    +'Если модель не считается, проверьте вход: расчёт закрыт входом через бота.';
  // Расчёт есть, а объекта в его ответе нет — так бывает, когда галочку
@@ -47639,7 +47668,7 @@ function renderObjectParkingFieldNotes(){
   // Разрыв берётся у `objectParkingGap` — у того же счёта, что и текст:
   // два ответа на одну разницу однажды разошлись бы, и подпись говорила бы
   // «дефицит» спокойным серым.
-  const own=((lastResult||{}).parking||{}).own||[];
+  const own=(projectParking().own)||[];
   const item=own.find(o=>o&&o.prefix===prefix);
   const gap=item?objectParkingGap(item):null;
   const short=!!(gap&&gap.required>0&&gap.diff<0);
@@ -47652,7 +47681,7 @@ function renderObjectParkingNote(){
  // вводные, и в само поле: перерисовывать форму целиком нельзя — она
  // перерисовывается ПОСРЕДИ ввода, и человек терял бы набранное.
  reconcileLegacyParking();
- (((lastResult||{}).parking||{}).own||[]).forEach(item=>{
+ ((projectParking().own)||[]).forEach(item=>{
   if(!item||!item.prefix||!item.by_norm)return;
   // Число поставила норма — помечаем его, иначе при следующей загрузке
   // проекта оно неотличимо от вписанного руками и замрёт навсегда.
@@ -47675,7 +47704,7 @@ function renderObjectParkingNote(){
  renderObjectParkingFieldNotes();
  const box=document.getElementById('objectParkingNote');
  if(!box)return;
- const note=((lastResult||{}).parking||{}).note;
+ const note=projectParking().note;
  if(!note){box.innerHTML='';return;}
  // Тон у плашки на странице ровно один — `warning`. Придуманные `ok` и `bad`
  // отрисовались бы обычной плашкой: выглядит стилизованным, а стиля нет.
