@@ -52,6 +52,7 @@ from auction_search.developaid_mapper import build_developaid_seed
 from auction_search.documents import DocumentExtractionError
 from auction_search.export_areas import export_areas
 from auction_search import archives, egrn_archive, egrn_store
+from auction_search import krt_pipeline
 from auction_search.krt_pipeline import (
     documents_summary,
     egrn_summary,
@@ -783,7 +784,59 @@ def install(app: FastAPI) -> None:
         """
         service = AuctionSearchService(_discovery_adapters("all"))
         lots = service.discover_moscow(budget_seconds=DISCOVERY_BUDGET_SECONDS)
-        return _remember_tender_links([_public_lot_dict(lot) for lot in lots])
+        by_site = _remember_tender_links([_public_lot_dict(lot) for lot in lots])
+        _read_krt_notices(by_site)
+        return by_site
+
+    # Сколько секунд проход за извещениями держит поток сторожа. Первый заход по
+    # лоту — это его вложения (на живом лоте их 26), то есть минуты внешних
+    # запросов; дальше площадка спрашивается только о неотданном, а разобранный
+    # состав не спрашивается вовсе. Недочитанное дочитает следующий заход, и
+    # это названо в своде, а не молчит.
+    NOTICES_BUDGET_SECONDS = float(os.getenv("AUCTION_KRT_NOTICES_BUDGET", "240") or 240)
+
+    def _read_krt_notices(by_site: dict[str, Any]) -> dict[str, Any]:
+        """Извещения берутся сами — по связке «площадка ↔ лот».
+
+        «Почему ты не берешь извещения тогда? они же есть у всех кто на
+        торгах! и лежит в росэлторге» (владелец, 14.09.2026). Состав территории
+        появлялся только по нажатию «Разобрать лот»: разбор вложений зовётся из
+        маршрута одного лота и из CLI, а прогон каталога не звал его вовсе.
+
+        Стоит это в пути СТОРОЖА, а не маршрута: минуты внешних запросов в
+        ответе маршрута — это шлюз, отдающий свою страницу на 504 вместо
+        каталога. Отказ прохода лотов не роняет: связка уже записана.
+        """
+        if os.getenv("AUCTION_KRT_NOTICES", "1").strip() in {"0", "false", "no"}:
+            return {}
+        try:
+            summary = krt_pipeline.read_notices(
+                by_site,
+                fetch_lot=lambda url: _adapter_for(url).fetch_lot(url),
+                store_dir=_market_dir(),
+                budget_seconds=NOTICES_BUDGET_SECONDS)
+        except Exception:  # noqa: BLE001 — проход молчит, а не роняет сторожа
+            logger.exception("KRT: проход за извещениями не прошёл")
+            return {}
+        try:
+            krt_territory.remember_run(summary, root=_market_dir())
+        except Exception:  # noqa: BLE001
+            logger.exception("KRT: свод прохода за извещениями не записан")
+        logger.info(
+            "KRT извещения: лотов %s, прочитано %s, уже было %s, ждут %s, "
+            "таблицы нет %s, отказ %s, не успели %s",
+            summary.get("lots"), summary.get("read"), summary.get("already"),
+            summary.get("waiting"), summary.get("no_table"),
+            summary.get("refused"), summary.get("out_of_time"))
+        return summary
+
+    # Сбор лотов объявлен крючком: его берёт сторож (`collect_lots`), и на нём
+    # же стоит проход за извещениями. Двух дорог к составу территории не
+    # заводим — разойдясь, они дали бы два достоверных на вид ответа об одной
+    # площадке; а проверить, что состав приезжает БЕЗ нажатия, можно только
+    # позвав тот путь, которым он приезжает.
+    app.state.krt_tender_links_collect = _collect_tender_links
+    app.state.krt_notices_read = _read_krt_notices
 
     # Сторож каталога: свой срок у каждого источника, работу берёт один воркер
     # из двух. Выключается `AUCTION_KRT_WATCH=0`.
@@ -2504,6 +2557,21 @@ def install(app: FastAPI) -> None:
             },
             "delivery": ("бот забирает очередь каждые 15 минут и шлёт "
                          "подписчикам /krt и владельцу"),
+            # Проход за извещениями идёт тем же сроком, что сбор лотов. У
+            # молчащего прохода обязан быть счётчик молчания: «состава ни у
+            # кого нет», «проход выключен» и «проход сломан» снаружи выглядят
+            # одинаково. Пустой свод — «здесь он ещё не заходил», а не ноль
+            # прочитанных.
+            "notices": {
+                "enabled": os.getenv("AUCTION_KRT_NOTICES", "1").strip()
+                not in {"0", "false", "no"},
+                "budget_seconds": NOTICES_BUDGET_SECONDS,
+                "last_run": await run_in_threadpool(
+                    krt_territory.stored_run, root=_market_dir()),
+                "note": ("состав территории читается из извещения лота: "
+                         "разобранный не спрашивается больше никогда, "
+                         "«таблицы нет» — сутки, отказ площадки — полчаса"),
+            },
         }
 
     @app.get("/auctions/krt/ranking")
