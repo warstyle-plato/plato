@@ -77,7 +77,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.23.53"
+VERSION = "0.23.56"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -214,6 +214,7 @@ TELEGRAM_EXTRA_COMMANDS = [
     {"command": "comment", "description": "Платон о текущем ТЭП"},
     {"command": "cancel", "description": "Прервать диалог и начать заново"},
     {"command": "status", "description": "Статус и версия"},
+    {"command": "notify", "description": "Что бот пишет сам — и как выключить"},
 ]
 # Куда расширения вставляют свои пункты. Прежде они дописывали в конец, и
 # расчёт льготы МПТ оказывался последним — ниже помощи. Якорем задано место:
@@ -36703,7 +36704,8 @@ def profile_announcements(req: WebLoginConfirmRequest) -> dict[str, Any]:
     if not hmac.compare_digest(str(req.sign or "").encode("utf-8"),
                                expected.encode("utf-8")):
         raise HTTPException(status_code=403, detail="Подпись не сошлась.")
-    return {"announcements": _profile_take_announcements()}
+    return {"announcements": _profile_take_announcements(),
+            "notifications": chat_notification_overrides()}
 
 
 # --- новые площадки КРТ: с ядра в бот ---------------------------------------
@@ -36859,6 +36861,147 @@ def _krt_subscribe(chat_id: int, wanted: bool) -> bool:
         raise HTTPException(status_code=503, detail=f"Подписка не сохранена: {exc}")
     return chat_id in current
 
+# --- рассылки бота -----------------------------------------------------------
+# Бот пишет в чат сам, без вопроса, по четырём поводам. Выключателя у них не
+# было ни одного: «/krt выкл» отвечало «подписка выключена» и владельца при
+# этом не трогало вовсе — рассылка шла ему по признаку владельца, мимо
+# подписки, — а нормативы, регистрации и ежедневная сводка выключателя не имели
+# в принципе. Молчать по просьбе человека обязана КАЖДАЯ рассылка, иначе
+# «как сделать, чтобы не писал» отвечается «никак».
+#
+# Список объявлен один раз: копий у него нет ровно потому же, почему нет копии
+# VERSION — их негде обновлять. Отсюда его берут и бот, и его команда, и свод.
+NOTIFICATION_CHANNELS = [
+    # ключ, имя в чате, кому идёт, пока человек не сказал иначе
+    ("krt", "Новые площадки КРТ", "subscribers"),
+    ("normatives", "Изменения в нормативной базе", "owner"),
+    ("profiles", "Новые регистрации", "owner"),
+    ("digest", "Ежедневная сводка обращений", "owner"),
+]
+NOTIFICATION_CHANNEL_KEYS = [key for key, _title, _who in NOTIFICATION_CHANNELS]
+
+
+def notification_channel_title(channel: str) -> str:
+    for key, title, _who in NOTIFICATION_CHANNELS:
+        if key == channel:
+            return title
+    return channel
+
+
+def _notifications_path() -> Path:
+    return _PROJECTS_DIR.parent / "chat_notifications.json"
+
+
+def chat_notification_overrides() -> dict[str, dict[str, bool]]:
+    """Что человек сказал про рассылки. Ключа нет — он не говорил ничего.
+
+    Три состояния, а не два: «не задано», «включено» и «выключено». Отсутствие
+    ключа читать как «выключено» нельзя — тогда первая же выкатка обнулила бы
+    подписки; читать как «включено» нельзя тем более — выключенное вернулось бы
+    само.
+    """
+    try:
+        raw = json.loads(_notifications_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    chats = raw.get("chats") if isinstance(raw, dict) else None
+    if not isinstance(chats, dict):
+        return {}
+    found: dict[str, dict[str, bool]] = {}
+    for chat, value in chats.items():
+        if not isinstance(value, dict):
+            continue
+        state = {key: bool(flag) for key, flag in value.items()
+                 if key in NOTIFICATION_CHANNEL_KEYS and isinstance(flag, bool)}
+        if state:
+            found[str(chat)] = state
+    return found
+
+
+def notification_enabled(channel: str, *, owner: bool = False,
+                         subscribed: bool = False,
+                         override: dict[str, bool] | None = None) -> bool:
+    # `override` — состояние ЭТОГО чата целиком, а не один флаг. Поданный сюда
+    # булев флаг читался бы как «человек ничего не говорил»: правило молчало
+    # бы верно, а список состояний рядом показывал бы обратное.
+    """Получает ли этот чат эту рассылку. Один ответ на оба хоста.
+
+    Решает ядро, а рассылает бот, и файла с решением у бота нет — поэтому
+    правило принимает уже прочитанные признаки: ядро подаёт свои файлы, бот —
+    карту, полученную вместе с очередью. Две реализации этого правила однажды
+    разошлись бы, и обе выглядели бы верными.
+    """
+    if override is not None and not isinstance(override, dict):
+        raise TypeError("override — состояние чата целиком, а не один флаг")
+    said = (override or {}).get(channel)
+    if said is not None:
+        return bool(said)
+    who = next((w for key, _title, w in NOTIFICATION_CHANNELS if key == channel), "owner")
+    if who == "subscribers":
+        # Владелец получает каталог и без подписки: он и есть тот, ради кого
+        # тот читается. Но это УМОЛЧАНИЕ, а не признак владельца — сказанное
+        # им «выключить» сильнее.
+        return bool(subscribed or owner)
+    return bool(owner)
+
+
+def chat_notification_set(chat_id: int, channel: str, wanted: bool) -> bool:
+    """Записывает сказанное человеком. Возвращает состояние ПОСЛЕ правки.
+
+    Возвращаем состояние, а не «сделано»: повторное «выключить» и настоящая
+    отписка на экране обязаны выглядеть одинаково.
+    """
+    chat_id = int(chat_id or 0)
+    if not chat_id:
+        return False
+    if channel not in NOTIFICATION_CHANNEL_KEYS:
+        raise HTTPException(status_code=400, detail=f"Нет такой рассылки: {channel}")
+    chats = chat_notification_overrides()
+    state = dict(chats.get(str(chat_id)) or {})
+    state[channel] = bool(wanted)
+    chats[str(chat_id)] = state
+    path = _notifications_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"chats": chats}, ensure_ascii=False, indent=1),
+                        encoding="utf-8")
+    except OSError as exc:
+        raise HTTPException(status_code=503, detail=f"Настройка не сохранена: {exc}")
+    return bool(wanted)
+
+
+def krt_recipients() -> list[int]:
+    """Кому идут новинки каталога, кроме владельцев.
+
+    Подписка живёт двумя файлами по историческим причинам: прежний список
+    подписчиков и сказанное человеком. Второй сильнее — иначе выключивший
+    рассылку продолжал бы её получать, пока лежит в первом.
+    """
+    overrides = chat_notification_overrides()
+    found = {int(chat) for chat in _krt_subscribers()}
+    for chat, state in overrides.items():
+        said = state.get("krt")
+        if said is None:
+            continue
+        try:
+            number = int(chat)
+        except (TypeError, ValueError):
+            continue
+        if said:
+            found.add(number)
+        else:
+            found.discard(number)
+    return sorted(number for number in found if number)
+
+
+class ChatNotificationRequest(BaseModel):
+    chat_id: int = 0
+    sign: str = ""
+    channel: str = ""
+    # None — «просто скажи, как сейчас». Узнавать состояние записью нельзя:
+    # не дошедший второй запрос оставил бы человека с чужой настройкой.
+    on: bool | None = None
+
 
 class KrtSubscribeRequest(BaseModel):
     chat_id: int = 0
@@ -36890,7 +37033,8 @@ def krt_announcements(req: WebLoginConfirmRequest) -> dict[str, Any]:
         # читался бы как «новых площадок нет».
         raise HTTPException(status_code=503,
                             detail="Каталог КРТ на этом хосте не установлен.")
-    return {"announcements": take(), "subscribers": _krt_subscribers()}
+    return {"announcements": take(), "subscribers": krt_recipients(),
+            "notifications": chat_notification_overrides()}
 
 
 @app.post("/internal/normatives/announcements")
@@ -36911,7 +37055,7 @@ def normatives_announcements(req: WebLoginConfirmRequest) -> dict[str, Any]:
         # читался бы как «в нормативной базе ничего не менялось».
         raise HTTPException(status_code=503,
                             detail="Нормативный реестр на этом хосте не установлен.")
-    return {"announcements": take()}
+    return {"announcements": take(), "notifications": chat_notification_overrides()}
 
 
 # Скрыт из схемы, как и все маршруты монитора: это дорога хост-хост под общей
@@ -36955,13 +37099,49 @@ def krt_subscribe(req: KrtSubscribeRequest) -> dict[str, Any]:
         raise HTTPException(status_code=403, detail="Подпись не сошлась.")
     chat_id = int(req.chat_id or 0)
     if req.on is None:
-        return {"subscribed": chat_id in _krt_subscribers()}
-    return {"subscribed": _krt_subscribe(chat_id, bool(req.on))}
+        return {"subscribed": notification_enabled(
+            "krt", subscribed=chat_id in _krt_subscribers(),
+            override=chat_notification_overrides().get(str(chat_id)))}
+    # Пишем в общее хранилище настроек, а не в прежний список: два ответа на
+    # «получает ли этот чат каталог» однажды разошлись бы, и оба выглядели бы
+    # верными. Прежний список остаётся читаемым — подписавшиеся до этой правки
+    # не теряют подписку.
+    return {"subscribed": chat_notification_set(chat_id, "krt", bool(req.on))}
+
+
+@app.post("/internal/notifications")
+def chat_notifications(req: ChatNotificationRequest) -> dict[str, Any]:
+    """Что бот шлёт этому чату сам, без вопроса. Подпись — общим токеном.
+
+    `chat_id=0` — отдать всю карту: бот забирает её раз в круг и решает по ней
+    про владельцев, у которых своего файла нет.
+    """
+    expected = _web_login_sign("chat-notifications", int(req.chat_id or 0))
+    if not hmac.compare_digest(str(req.sign or "").encode("utf-8"),
+                               expected.encode("utf-8")):
+        raise HTTPException(status_code=403, detail="Подпись не сошлась.")
+    chat_id = int(req.chat_id or 0)
+    if not chat_id:
+        return {"chats": chat_notification_overrides()}
+    if req.on is not None and req.channel:
+        chat_notification_set(chat_id, str(req.channel), bool(req.on))
+    return {"chat": chat_notification_overrides().get(str(chat_id)) or {},
+            "subscribed": chat_id in _krt_subscribers()}
 
 
 def _profile_announce(record: dict[str, Any]) -> None:
     """Новое знакомство — в чат владельцу. Молча, если сообщить нечем."""
-    admins = usage_admin_ids()
+    # Сказанное человеком сильнее признака владельца и на этом пути тоже:
+    # выключатель, действующий только на одной из двух дорог, не выключатель.
+    overrides = chat_notification_overrides()
+    everyone = usage_admin_ids()
+    admins = {chat for chat in everyone
+              if notification_enabled("profiles", owner=True,
+                                      override=overrides.get(str(chat)))}
+    if everyone and not admins:
+        # Выключено всеми, кому это шлют. Очередь НЕ копим: отложенное
+        # молчание — это та же рассылка, только позже.
+        return
     if not admins or not _telegram_token() or not _telegram_webhook_enabled():
         # Telegram здесь недоступен — знакомство ждёт того, у кого он есть.
         _profile_remember_announcement(record)
