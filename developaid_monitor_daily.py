@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import datetime
+import html
 import json
 import re
 from typing import Any
@@ -252,6 +253,85 @@ def store_daily_report(project: str, text: str, taken_at: Any) -> dict[str, Any]
         "workers_total": parsed["workers_total"],
         "works": len(parsed["works"]),
         "unparsed": parsed["unparsed"],
+    }
+
+
+# Выгрузка Telegram — HTML, и разбирается он образцами, а не библиотекой:
+# ставить ради трёх полей парсер разметки дороже, чем описать эти три поля.
+# Границей сообщения служит начало блока, а не его конец: Telegram склеивает
+# подряд идущие сообщения одного автора в «joined», и закрывающего тега у
+# каждого не найти.
+_EXPORT_MESSAGE = re.compile(r'(?=<div class="message )')
+_EXPORT_SERVICE = re.compile(r'^<div class="message service')
+_EXPORT_DATE = re.compile(
+    r'class="pull_right date details"[^>]*title="(\d{2})\.(\d{2})\.(\d{4})')
+_EXPORT_TEXT = re.compile(r'<div class="text">(.*?)</div>', re.S)
+_EXPORT_BR = re.compile(r"<br\s*/?>")
+_EXPORT_TAG = re.compile(r"<[^>]+>")
+
+
+def read_telegram_export(raw: str) -> list[tuple[str, str]]:
+    """Пары «день, текст» из выгрузки Telegram, в порядке чата.
+
+    Дату берём из самого сообщения (`title` с точностью до секунды), а не из
+    разделителя дней: разделитель стоит один на день, и сообщение, приехавшее
+    после полуночи, получило бы вчерашний день.
+
+    Служебные сообщения и медиа пропускаются молча — их в стройчате
+    большинство (на живой выгрузке 1441 из 1636), и называть каждое значило бы
+    утопить в них находку. А вот сколько сообщений прочитано и сколько из них
+    оказалось сводками, зовущий обязан сказать вслух: «внесено 44» без «из
+    1636 прочитано 139 текстовых» не отвечает, потерялось ли что-нибудь.
+    """
+    rows: list[tuple[str, str]] = []
+    for block in _EXPORT_MESSAGE.split(str(raw or "")):
+        if not block.startswith('<div class="message'):
+            continue
+        if _EXPORT_SERVICE.match(block):
+            continue
+        stamp = _EXPORT_DATE.search(block)
+        body = _EXPORT_TEXT.search(block)
+        if not stamp or not body:
+            continue
+        text = _EXPORT_BR.sub("\n", body.group(1))
+        text = _EXPORT_TAG.sub("", text)
+        text = html.unescape(text).strip()
+        if not text:
+            continue
+        rows.append((f"{stamp.group(3)}-{stamp.group(2)}-{stamp.group(1)}", text))
+    return rows
+
+
+def store_telegram_export(project: str, raw: str) -> dict[str, Any]:
+    """Внести в проект все сводки выгрузки. Разбор и хранение — те же.
+
+    Второго пути к диску не заводим: `store_daily_report` — то же, чем кладёт
+    сводку бот, и разойдись они, один и тот же день лёг бы по-разному в
+    зависимости от того, пришёл он из чата или из файла.
+
+    День в проекте один, и повторная сводка того же дня его ЗАМЕЩАЕТ — так же,
+    как замещает присланная в чат. На живой выгрузке таких дней один из 44;
+    молча это выглядело бы потерей, поэтому число замещённых стоит в ответе.
+    """
+    rows = read_telegram_export(raw)
+    stored: list[dict[str, Any]] = []
+    skipped = 0
+    for day, text in rows:
+        try:
+            stored.append(store_daily_report(project, text, day))
+        except ValueError:
+            # Не сводка — обычная переписка. Это норма, а не отказ.
+            skipped += 1
+    days = sorted({row["date"] for row in stored})
+    return {
+        "messages": len(rows),
+        "stored": len(stored),
+        "skipped": skipped,
+        "days": len(days),
+        "replaced": sum(1 for row in stored if row.get("replaced")),
+        "first": days[0] if days else "",
+        "last": days[-1] if days else "",
+        "reports": stored,
     }
 
 
