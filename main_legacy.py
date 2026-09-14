@@ -77,7 +77,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.23.70"
+VERSION = "0.23.71"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -18116,6 +18116,16 @@ def _v4_sports_tep_row(xml: str, missing: list[str]) -> str:
         xml, done = _v4_set_cell(xml, f"{letter}35", formula=f"SUM({letter}31:{letter}34)")
         if not done:
             missing.append(f"ТЭП · итог объектов {letter}35")
+    # Кладовые лежат на подземном этаже гаража: своей наземной ГНС у них нет,
+    # а подземная уже посчитана строкой паркинга. Прежде этих формул не было
+    # ВОВСЕ, и пустая клетка рвала кэш итога колонки: «Итого очередь», «ИТОГО
+    # ЖИЛЫЕ ОЧЕРЕДИ» и «ИТОГО ПРОЕКТ» приходили пустыми в любой просмотрщик,
+    # который не пересчитывает книгу.
+    for storage_row in (7, 13, 19, 25):
+        for letter in ("C", "D"):
+            xml, done = _v4_set_or_insert_cell(xml, f"{letter}{storage_row}", formula="0")
+            if not done:
+                missing.append(f"ТЭП · кладовые {letter}{storage_row}")
     for coord, text in (("A35", "ИТОГО ОБЪЕКТЫ"), ("B35", "")):
         xml, done = _v4_set_or_insert_cell(xml, coord, text=text)
         if not done:
@@ -18124,6 +18134,20 @@ def _v4_sports_tep_row(xml: str, missing: list[str]) -> str:
         xml, done = _v4_set_cell(xml, f"{letter}36", formula=f"SUM({letter}28,{letter}35)")
         if not done:
             missing.append(f"ТЭП · итог проекта {letter}36")
+    # Подземные гаражи объектов строятся и стоят денег, а в метрах их не было
+    # нигде: строки объектов несут наземную ГБА, и «строительный объём» без
+    # них не равен объёму движка. Добавляются здесь же, где собирается итог.
+    garages = "+".join(
+        f"IF('Вводные'!${enabled[0]}${enabled[1:]}=\"Да\",'Вводные'!${cell[0]}${cell[1:]},0)"
+        for enabled, cell in (("K20", "K161"), ("K40", "K163"), ("K123", "K165")))
+    xml, done = _v4_set_cell(
+        xml, "C36",
+        formula=f"SUM(C28,C35,F40:F43)+'Вводные'!$K$158*({garages})")
+    if not done:
+        missing.append("ТЭП · гаражи объектов в строительном объёме")
+    xml, _ = _v4_set_or_insert_cell(
+        xml, "H36",
+        text="Включая соцобъекты и подземные гаражи отдельно стоящих объектов")
     # Прежний итог становится строкой объекта. Продаваемая площадь и выручка
     # берутся из блока ФОКа; при передаче городу обе равны нулю сами — гейт
     # стоит в формуле продаваемой площади «Вводных», а не здесь.
@@ -18131,8 +18155,12 @@ def _v4_sports_tep_row(xml: str, missing: list[str]) -> str:
             ("A34", "text", "Проект"),
             ("B34", "text", "ФОК / спортивный объект"),
             ("C34", "formula", "'Вводные'!$K$128"),
-            ("D34", "text", ""),
-            ("E34", "formula", "'Вводные'!$K$129"),
+            # Колонка D — «Продаваемая площадь», E — «Единицы». Прежде
+            # продаваемая ФОКа стояла в «Единицах»: на выключенном объекте это
+            # ноль и не видно, а у проданного ФОКа его метры читались бы как
+            # штуки.
+            ("D34", "formula", "'Вводные'!$K$129"),
+            ("E34", "text", ""),
             ("F34", "formula", ("'Вводные'!$K$134*1000*'Вводные'!$H$5"
                                 "*INDEX('Вводные'!$S$88:$S$91,'Вводные'!$K$124)"
                                 "*INDEX('Вводные'!$AG$88:$AG$91,'Вводные'!$K$124)")),
@@ -18146,6 +18174,109 @@ def _v4_sports_tep_row(xml: str, missing: list[str]) -> str:
         if not done:
             missing.append(f"ТЭП · строка ФОКа {coord}")
     return xml
+
+
+# Блок «СТРУКТУРА ПРОДУКТА» листа ОТЧЁТ: (строка, подпись, ячейка наземной
+# площади, ячейка продаваемой, строка выручки объекта на листе ОБЪЕКТЫ, строка
+# продаваемых мест его гаража, строка выручки гаража, ячейка мест гаража под
+# землёй, продаются ли места). Пусто — величины у этого объекта нет.
+_V4_PRODUCT_STRUCTURE_OBJECTS = (
+    (50, "МФОЦ / офисный центр", "K25", "K26", 24, 32, 33, "K161", True),
+    (51, "Торговый центр / ОСЗ", "K45", "K46", 52, 60, 61, "K163", False),
+    (52, "Наземный паркинг", "K66", "", 80, 0, 0, "", False),
+    (53, "ФОК / спортивный объект", "K128", "K129", 142, 150, 151, "K165", False),
+)
+_V4_PRODUCT_STRUCTURE_TOTAL_ROW = 54
+_V4_PRODUCT_STRUCTURE_FIRST_ROW = 46
+_V4_UNDER_COLUMN = "G"
+
+
+def _v4_product_structure_block(xml: str, missing: list[str]) -> str:
+    """Блок «СТРУКТУРА ПРОДУКТА»: наземное и подземное — разными колонками.
+
+    «В книге в сумму ГНС считается площадь подземного паркинга, на движке это
+    правил, а тут нет» (владелец, 14.09.2026). Итог блока складывал под шапкой
+    «ГНС, м²» наземные метры квартир и подземные метры паркинга — 475 870,
+    число, не равное ни наземной ГНС проекта (443 701), ни строительному
+    объёму (601 621). В движке это разведено с 04.09: три величины и три поля.
+
+    Здесь же чинятся три соседние потери того же корня. **ФОК не имел строки
+    вовсе** — список продуктов стоял перечислением, и четвёртый объект в него
+    не вошёл; итог переезжает на свободную строку 54, а его прежнее место
+    занимает ФОК (тот же приём, что на листе ТЭП). **Гараж объекта не входил
+    ни в выручку блока, ни в его единицы**: выручка 213 605,2 против 235 123,1
+    у движка и 2 160 мест вместо 4 660 — правку 0.23.69 этот блок не увидел,
+    потому что читает объект своей ссылкой мимо ТЭП и КОНСОЛИДАТОРа.
+    **У кладовых не было формул вовсе**: пустая клетка читается как «не
+    посчитали», а своей наземной площади у них и нет — она внутри подземной.
+
+    Соцобъекты в блок не идут: они не продукт, их метры видны на листе ТЭП.
+    Итог поэтому зовётся «ИТОГО ПРОДУКТЫ», а не «ИТОГО ПРОЕКТ»: имя, которое
+    обещает весь проект, обязано его и складывать.
+    """
+    under = _V4_UNDER_COLUMN
+    first = _V4_PRODUCT_STRUCTURE_FIRST_ROW
+    total = _V4_PRODUCT_STRUCTURE_TOTAL_ROW
+    param = "'Параметры модели'!"
+
+    def put(coord: str, *, formula: str = "", text: str | None = None) -> None:
+        if text is not None:
+            _xml, done = _v4_set_or_insert_cell(xml_holder[0], coord, text=text)
+        else:
+            _xml, done = _v4_set_or_insert_cell(xml_holder[0], coord, formula=formula)
+        xml_holder[0] = _xml
+        if not done:
+            missing.append(f"ОТЧЁТ · структура продукта: ячейка {coord} не поставлена")
+
+    xml_holder = [_v4_ensure_row(xml, total)]
+    # Шапка: колонка называет то, что в ней лежит.
+    put("B45", text="ГНС наземная, м²")
+    put(f"{under}45", text="Подземная, м²")
+
+    # Площадные продукты очередей: наземное в B, подземное в G.
+    put("B48", formula="0")
+    put(f"{under}48", formula=f"SUM({param}K88:K91)")
+    # У кладовых своей наземной площади нет, а подземная уже посчитана строкой
+    # паркинга: ноль здесь — ответ, а пустая клетка была отсутствием формулы.
+    put("B49", formula="0")
+    put("C49", formula="0")
+    for row in (46, 47, 49):
+        put(f"{under}{row}", formula="0")
+
+    garages = []
+    for (row, label, gba_cell, saleable_cell, revenue_row,
+         places_row, garage_revenue_row, under_cell, sellable) in _V4_PRODUCT_STRUCTURE_OBJECTS:
+        put(f"A{row}", text=label)
+        put(f"B{row}", formula=f"{param}${gba_cell[0]}${gba_cell[1:]}")
+        if saleable_cell:
+            put(f"C{row}", formula=f"{param}${saleable_cell[0]}${saleable_cell[1:]}")
+        revenue = f"'ОБЪЕКТЫ'!B{revenue_row}"
+        if garage_revenue_row:
+            revenue += f"+'ОБЪЕКТЫ'!B{garage_revenue_row}"
+        put(f"E{row}", formula=revenue)
+        put(f"F{row}", text="Отдельный объект")
+        if under_cell:
+            area = f"{param}${under_cell[0]}${under_cell[1:]}*{param}$K$158"
+            put(f"{under}{row}", formula=area)
+            garages.append(area)
+        else:
+            put(f"{under}{row}", formula="0")
+        # Места гаража продаются только у офисника — у ТЦ и ФОКа это
+        # обеспеченность посетителей, и «единиц к продаже» у них нет. Ноль
+        # ставится явно: на строке ФОКа прежде стоял итог блока, и не стерев
+        # его, мы оставили бы сумму блока в графе «Единицы» одного объекта.
+        put(f"D{row}", formula=(f"'ОБЪЕКТЫ'!B{places_row}"
+                                if sellable and places_row else "0"))
+        if not saleable_cell:
+            put(f"C{row}", formula="0")
+
+    put(f"A{total}", text="ИТОГО ПРОДУКТЫ")
+    for column in ("B", "C", "D", "E", under):
+        put(f"{column}{total}", formula=f"SUM({column}{first}:{column}{total - 1})")
+    put(f"H{total}", text=("Строительный объём = наземная + подземная. "
+                           "Соцобъекты сюда не входят — они не продукт; "
+                           "их метры на листе ТЭП."))
+    return xml_holder[0]
 
 
 def _v4_sports_checks(xml: str, missing: list[str]) -> str:
@@ -20390,7 +20521,7 @@ V4_REWRITTEN_FORMULA_ROWS: dict[str, tuple[tuple[int, ...], str]] = {
     ),
     "ОТЧЕТ": (
         (
-        2, 12, 58, 61,
+        2, 12, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 58, 61,
         ),
         "Наземная ГНС, строительный объём, непогашенный долг при "
         "переносе между очередями и чистая прибыль из строк того же "
@@ -20984,6 +21115,7 @@ def build_project_workbook(
     report_xml = source.read(report_sheet_path).decode("utf-8")
     report_xml = _v4_add_report_default_row(report_xml, missing)
     report_xml = _v4_report_net_profit_from_its_own_rows(report_xml, missing)
+    report_xml = _v4_product_structure_block(report_xml, missing)
     report_xml = _v4_rename_labels(report_xml, "ОТЧЕТ", missing)
     tep_xml = _v4_sports_tep_row(
         source.read(tep_sheet_path).decode("utf-8"), missing)
@@ -21217,6 +21349,21 @@ def build_project_workbook(
         tep_xml = _put_extra(tep_xml, f"C{tep_row}", number=round(float(x.get(gba_key) or 0)))
         tep_xml = _put_extra(tep_xml, f"D{tep_row}", text=queue_label)
         tep_xml = _put_extra(tep_xml, f"E{tep_row}", number=cost)
+        # ГНС соцобъекта — своей колонкой: в блоке стояла только общая площадь
+        # (GBA), а строительный объём книги считается по ГНС, и без этой
+        # колонки соцобъекты в него не входили вовсе — 28 520 м² на проекте
+        # владельца. Колонка E у блока занята стоимостью, поэтому F.
+        # Колонки F у блока в шаблоне нет вовсе — ячейку надо завести, а не
+        # переписать: `_v4_set_cell` правит существующую и молчит о пустом
+        # месте только в `missing`.
+        tep_xml, _done = _v4_set_or_insert_cell(
+            tep_xml, f"F{tep_row}",
+            number=round(float((tep.get(typ) or {}).get("gns") or 0.0)))
+        if not _done:
+            missing.append(f"расшифровка соцнагрузки: ГНС F{tep_row}")
+    tep_xml, _done = _v4_set_or_insert_cell(tep_xml, "F39", text="ГНС, м²")
+    if not _done:
+        missing.append("расшифровка соцнагрузки: подпись F39")
     report_xml = _put_extra(report_xml, "H36", number=round(social_compensation_amount, 3))
     tep_xml = _put_extra(tep_xml, "E43", number=round(social_compensation_amount, 3))
 
