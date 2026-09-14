@@ -44147,19 +44147,31 @@ function applyProjectClassPreset(selectedKey){
  // кладовой. Поля писались напрямую, мимо всех пересчётов, и производные за
  // ними не шли: класс менял норматив 35 → 37,5, а площадь паркинга стояла
  // прежней («ничего не меняется в блоке машиномест», владелец, 14.09.2026).
- // Пересчитывается то, что из норматива и ПОЛУЧЕНО: признак измеримый —
- // площадь равна «места × прежний норматив». Вписанное руками пятно
- // застройки смену класса переживает, потому что нормативу оно не равно.
+ //
+ // `parkingByHand` на этот вопрос не отвечает и отвечать не должен: он про
+ // пару целиком — «норма её не трогает», — а здесь спрашивают, КОТОРУЮ из
+ // двух половин задал человек. Вписал места, а метры посчитала пара — метры
+ // производные, и за новым нормативом идти обязаны; вписал пятно застройки —
+ // оно смену класса переживает. Различает их сама пара: производная равна
+ // «места × ПРЕЖНИЙ норматив», у вписанной равенства нет.
  const wasPer=undergroundAreaPerSpace();
  const wasStoragePer=storageAreaPerUnit();
  Object.keys(p).filter(k=>k!=='label').forEach(k=>inputs[k]=classValue(key,k));
  (function(){
-  const spaces=Number(inputs.underground_manual_spaces||0);
-  const area=Number(inputs.underground_manual_gns_sqm||0);
-  if(spaces>0&&Math.abs(area-spaces*wasPer)<1)syncUndergroundPair('underground_manual_spaces');
-  const storage=tep.storage||{};
-  const units=Number(storage.units||0);
-  if(units>0&&Math.abs(Number(storage.gns||0)-units*wasStoragePer)<1)syncStoragePair('units');
+  // Норматив не двинулся — двигать нечего, и лишний пересчёт только затёр бы
+  // пару там, где класс к ней отношения не имеет.
+  if(undergroundAreaPerSpace()!==wasPer){
+   const spaces=Number(inputs.underground_manual_spaces||0);
+   const area=Number(inputs.underground_manual_gns_sqm||0);
+   if(spaces>0&&Math.abs(area-spaces*wasPer)<1)syncUndergroundPair('underground_manual_spaces');
+  }
+  // Кладовые признака «руками» не имеют вовсе: штуки и метры там связаны
+  // всегда — правка любой считает вторую, — значит после смены норматива
+  // метры идут за штуками так же, как при правке ячейки.
+  if(storageAreaPerUnit()!==wasStoragePer){
+   const units=Number((tep.storage||{}).units||0);
+   if(units>0)syncStoragePair('units');
+  }
  })();
  syncTep(false);
  renderInputs();
