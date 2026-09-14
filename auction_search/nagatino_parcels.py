@@ -350,14 +350,25 @@ def decision_outline_picture() -> bytes:
     Настоящий контур площадки при этом собирается из ПЕРЕЧНЯ того же решения:
     приложение 2 называет участки поимённо, а их границы отдаёт ЕГРН.
     """
+    return outline_picture_from(DECISION_PATH.read_bytes(), what="проект решения")
+
+
+def outline_picture_from(raw: bytes, *, what: str = "документ") -> bytes:
+    """Крупная картинка границ из ЛЮБОГО документа города, как она напечатана.
+
+    Извлечение здесь одно на все площадки: у Нагатино рисунок берётся из
+    приложения 1 к проекту решения, у площадки с торгов — из «Схемы границ»
+    лотовой документации. Второй извлекатель разошёлся бы с первым, а порог
+    «крупная картинка» пришлось бы держать в двух местах.
+    """
     try:
         import pymupdf
     except Exception as exc:  # noqa: BLE001
         raise OutlinePictureProblem(f"нечем прочитать PDF: {exc}") from exc
     try:
-        document = pymupdf.open(DECISION_PATH)
+        document = pymupdf.open(stream=raw, filetype="pdf")
     except Exception as exc:  # noqa: BLE001
-        raise OutlinePictureProblem(f"проект решения не открылся: {exc}") from exc
+        raise OutlinePictureProblem(f"{what} не открылся: {exc}") from exc
     for page in document:
         for info in page.get_images(full=True):
             pix = pymupdf.Pixmap(document, info[0])
@@ -368,7 +379,7 @@ def decision_outline_picture() -> bytes:
             # снимком города почти на всю страницу.
             if pix.width >= 500 and pix.height >= 500:
                 return pix.tobytes("png")
-    raise OutlinePictureProblem("в проекте решения не нашлось крупной картинки границ")
+    raise OutlinePictureProblem("крупной картинки границ в документе не нашлось")
 
 _DOCS: dict[str, Any] = {}
 

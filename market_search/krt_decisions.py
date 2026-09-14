@@ -120,6 +120,26 @@ def search_url(page: int = 1, per_page: int = 25, query: str = MOS_KRT_QUERY) ->
 _ORDER_NUMBER = re.compile(r"(?iu)№\s*([А-ЯЁA-Z-]*\d+[/-]?\d*)")
 
 
+def order_action(title: str) -> str:
+    """Что ДЕЛАЕТ распоряжение: назначает торги или отменяет их.
+
+    Слово источника прочиталось наоборот: распоряжение № 56209 от 09.08.2023
+    «Об ОТМЕНЕ проведения торгов… Волгоградский проспект, вл. 32» стояло в
+    фильтре площадок как «Торги», а его начальная цена годилась бы модели за
+    цену входа. Вид документа читается тем же способом, каким читается всё
+    остальное в его заголовке.
+
+    Неопознанное остаётся пустым: «не поняли, что это за документ» — не
+    «назначены торги», и подставлять одно вместо другого нельзя.
+    """
+    low = _clean(title).casefold()
+    if "отмен" in low:
+        return "cancel"
+    if "о проведении" in low or "проведени" in low:
+        return "hold"
+    return ""
+
+
 def parse_tender_order(row: dict[str, Any]) -> dict[str, Any] | None:
     """Распоряжение о торгах: номер, дата, ссылка. Адреса в нём нет."""
     title = _clean(row.get("title"))
@@ -135,6 +155,7 @@ def parse_tender_order(row: dict[str, Any]) -> dict[str, Any] | None:
         "url": _clean(row.get("url")),
         "published_at": int(row.get("date") or 0),
         "kind": kind,
+        "action": order_action(title),
     }
 
 
