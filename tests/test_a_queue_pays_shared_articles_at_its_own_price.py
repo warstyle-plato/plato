@@ -89,13 +89,34 @@ def test_the_volume_share_follows_the_mkd_base_not_the_offices(by_volume: dict) 
     applied = by_volume["shared_cash_applied"]["design"]
     assert sum(applied) == pytest.approx(100.0, abs=1e-6)
     bases = [row["shared_rate_base_sqm"] for row in by_volume["comparison"]]
-    assert applied[0] == pytest.approx(bases[0] / sum(bases) * 100, rel=1e-6)
+    # Допуск — половина последнего знака, который движок объявляет:
+    # `shared_cash_applied` округляет процент до четырёх знаков, и сравнивать
+    # его с неокруглённым точнее этого значит проверять не то. Прежний rel=1e-6
+    # проходил только потому, что на умолчаниях база МКД давала долю, которая
+    # округлялась в ноль: строка ТЭП подземного паркинга стала считаться (1199
+    # мест и 41 965 м² вместо присланных 1 107,51 и 38 763), доля сместилась на
+    # 30,00575829 — и фикстура, подобранная под порог, устарела вместе с
+    # методикой, не сказав ни слова о том, что сломалось (а не сломалось ничто).
+    assert applied[0] == pytest.approx(bases[0] / sum(bases) * 100, abs=5e-5)
     # Предохранитель: у второй очереди действительно есть метры сверх базы МКД,
     # иначе проверка пустая. Сравнивается строительный объём, а не ГНС: с
     # 04.09.2026 ГНС — наземная площадь, и подземный паркинг, входящий в базу
     # МКД, из неё вычтен — «наземная против базы МКД» сравнивало бы разное.
     volume = [row["construction_volume_sqm"] for row in by_volume["comparison"]]
     assert volume[1] > bases[1], "у второй очереди офисы сверх базы МКД — иначе проверка пустая"
+
+    # А вот это и есть утверждение из имени проверки, и до 14.09.2026 его тут не
+    # было: обе стороны сравнения выше берутся из ОДНОГО поля, поэтому сдвинь
+    # базу — доля сдвинется вместе с ней, и проверка останется зелёной. База
+    # называется своими продуктами и сверяется с их строками ТЭП поштучно;
+    # строки лежат у фазы, а не в строке сравнения.
+    for index, row in enumerate(by_volume["comparison"]):
+        rows = by_volume["phases"][index]["tep"]
+        mkd = sum(float((rows.get(key) or {}).get("gns") or 0.0)
+                  for key in core.MKD_PRODUCTS)
+        assert row["shared_rate_base_sqm"] == pytest.approx(mkd, rel=1e-9), (
+            f"база доли очереди {index + 1} — {row['shared_rate_base_sqm']}, "
+            f"а сумма продуктов МКД {mkd}")
 
 
 def test_a_hand_set_share_shows_its_real_rate(by_hand: dict) -> None:
