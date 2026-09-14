@@ -34,9 +34,17 @@ SOURCES = {
     "rules": _ROOT / "CLAUDE.md",
     "backlog": _ROOT / "docs" / "questions_backlog.md",
 }
+# Нормативная база: выжимки актов, сделанные нами по первичным документам, с
+# оговорками и ссылкой на источник у каждого числа. Сырое распознавание
+# (`*.ocr.txt`, 638 000 знаков) сюда НЕ идёт намеренно: в нём «№ 593-ПП»
+# читается как «593-11», а число, взятое из скана и названное нормой, выглядит
+# на экране ровно так же уверенно, как выверенное. Редакцию акта и ссылку на
+# первоисточник отдаёт реестр (`check_normatives`), и второй копии у него нет.
+NORMATIVE_DIR = _ROOT / "docs" / "normative"
 SOURCE_LABELS = {
     "rules": "CLAUDE.md — правила, выведенные из поломок",
     "backlog": "docs/questions_backlog.md — задачи и открытые вопросы",
+    "normative": "docs/normative — выжимки нормативных актов (текст города, не наше правило)",
 }
 
 # Бюджет выдачи: ответ уходит в диалог, где у вопроса свой предел, и пересланная
@@ -114,18 +122,28 @@ def entries(source: str | None = None) -> list[dict[str, str]]:
     его отсутствия — она выглядит целой.
     """
     found: list[dict[str, str]] = []
-    for key, path in SOURCES.items():
-        if source and source != key:
-            continue
+    paths: list[tuple[str, Path]] = [
+        (key, path) for key, path in SOURCES.items()
+        if not source or source == key
+    ]
+    if not source or source == "normative":
+        paths += [("normative", path) for path in sorted(NORMATIVE_DIR.glob("*.md"))]
+    for key, path in paths:
         try:
             text = path.read_text(encoding="utf-8")
         except OSError:
             continue
-        for chunk in re.split(r"\n(?=- \*\*|#{1,2} )", text):
+        # Нормативная выжимка написана разделами, а не пунктами списка: режется
+        # по заголовкам, иначе таблица норм уедет от строки, которая её вводит.
+        cuts = r"\n(?=#{1,3} )" if key == "normative" else r"\n(?=- \*\*|#{1,2} )"
+        for chunk in re.split(cuts, text):
             body = chunk.strip()
             if len(body) < 80:
                 continue
-            found.append({"source": key, "title": _title_of(body), "text": body})
+            title = _title_of(body)
+            if key == "normative":
+                title = f"{path.stem}: {title}"
+            found.append({"source": key, "title": title, "text": body})
     return found
 
 
@@ -192,8 +210,11 @@ def search(query: str, limit: int = 4, source: str | None = None) -> dict[str, A
         "found": len(scored),
         "shown": len(shown),
         "entries": shown,
-        "note": ("Это наши внутренние записи: методика, решения владельца с датами и "
-                 "разборы поломок. Пользуйся ими, чтобы ответить верно, но не "
+        "note": ("Записи трёх видов, и путать их нельзя: CLAUDE.md — НАШИ правила и "
+                 "решения владельца, бэклог — открытые вопросы, docs/normative — "
+                 "выжимка НОРМАТИВНОГО акта города. Норму называй нормой и со "
+                 "ссылкой на акт (редакцию спрашивай у check_normatives), наше "
+                 "решение — нашим. Пользуйся записями, чтобы ответить верно, но не "
                  "пересказывай их как документ и не называй чужие проекты, "
                  "договоры и адреса."),
     }

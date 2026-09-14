@@ -151,3 +151,54 @@ def test_the_methodology_points_at_the_notes_for_the_rest():
     assert "PROJECT_NOTES" in rules
     assert "search_project_knowledge" in rules["PROJECT_NOTES"]
     assert "MYTISHCHI_MFC" not in rules
+
+
+def test_the_normative_notes_are_reachable():
+    """Нормативная база — третий вид записей, и он у агента есть.
+
+    Прежде агент знал только СПИСОК актов и их редакции (`check_normatives`), а
+    содержания норм не видел вовсе: «какой норматив стоянок у ФОК» отвечать было
+    нечем, кроме памяти модели — то есть наугад.
+    """
+    answer = knowledge.search("норма стоянок оздоровительный комплекс",
+                              source="normative")
+    assert answer["available"] is True
+    assert all("нормативных актов" in item["source"] for item in answer["entries"])
+    # Ответ — в таблице норм, а не в шапке файла: она идёт своей записью,
+    # и выдача обязана дойти до неё, а не остановиться на введении.
+    printed = " ".join(item["text"] for item in answer["entries"])
+    assert "ФОК" in printed
+    assert "25–40" in printed, "таблица норм до выдачи не доехала"
+
+
+def test_the_raw_ocr_is_not_a_source():
+    """Сырое распознавание источником не становится, и это измеримо.
+
+    В скане «№ 593-ПП» читается как «593-11», а число из скана, названное
+    нормой, выглядит так же уверенно, как выверенное. В записи идут только
+    выжимки, сделанные по первичным документам.
+    """
+    from pathlib import Path as _Path
+
+    raw = sorted(knowledge.NORMATIVE_DIR.glob("*.ocr.txt"))
+    assert raw, "предохранитель: сырых распознаваний в каталоге нет, проверять нечего"
+    files = {entry["title"].split(":")[0] for entry in knowledge.entries("normative")}
+    for path in raw:
+        assert _Path(path).stem not in files, f"сырое распознавание попало в записи: {path.name}"
+
+
+def test_a_source_is_labelled_by_whose_it_is():
+    """Норма города и наше правило под одной подписью читаются как одно."""
+    labels = {entry["source"] for entry in knowledge.entries()}
+    assert labels == {"rules", "backlog", "normative"}
+    said = knowledge.search("озеленение компенсация")["note"]
+    assert "НОРМАТИВНОГО акта города" in said
+    assert "наше решение — нашим" in said
+
+
+def test_the_instructions_keep_the_city_and_us_apart():
+    text = core._AGENT_INSTRUCTIONS
+    assert "source=normative" in text
+    assert "check_normatives" in text
+    # Главное: чужое основание нельзя называть своим и наоборот.
+    assert "назвать чужое число своим" in text
