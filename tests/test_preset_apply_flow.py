@@ -87,14 +87,15 @@ def run_flow(scenario_js: str) -> dict:
         "underground_parking:{gns:0,total_area:0,useful:0,saleable:0,transfer:0,units:0}};\n"
         "let glavapuImport=null;\n"
     )
-    script = (
+    # Недостающие куски страницы стенд добирает сам: перечисленные руками
+    # зависимости отстают от неё — `applyGlavapu` стала снимать замок паркинга
+    # (`markParkingByNorm`), и стенд упал на своей неполноте, ничего не сказав
+    # о предустановке. Заглушки выше остаются: они здесь намеренные.
+    prelude = (
         f"const payload={json.dumps(preset_payload(), ensure_ascii=False)};\n"
         + stubs + apply_harness() + "\n"
-        + scenario_js + "\n"
     )
-    done = subprocess.run([NODE, "-e", script], capture_output=True, text=True, timeout=60)
-    assert done.returncode == 0, done.stderr
-    return json.loads(done.stdout)
+    return page_blocks.run_json(prelude, scenario_js + "\n")
 
 
 def test_the_preset_lands_in_the_inputs():

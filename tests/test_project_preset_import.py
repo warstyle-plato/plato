@@ -191,10 +191,21 @@ def test_a_large_garage_leaves_no_underground_need():
 
 
 def test_the_education_object_splits_into_school_and_preschool():
+    """Единый объект делится на школу и садик, и его метры не теряются.
+
+    Метры документа — НАЗЕМНЫЕ: `gfa_m2` ППТ это площадь в габаритах наружных
+    стен, то есть ГНС, а общая считается от неё той же пропорцией, что и у
+    остального ТЭП. Прежде число документа писалось в «общую», и объект в
+    книге выходил на десятую часть крупнее самого себя — на КРТ Нагатино
+    сумма ГНС сходилась с 443 700 м² ППТ города только с числом документа в
+    колонке ГНС.
+    """
     tep = preview()["tep"]
     assert tep["school"]["units"] == 350
     assert tep["kindergarten"]["units"] == 180
-    assert tep["school"]["total_area"] + tep["kindergarten"]["total_area"] == pytest.approx(14030.0)
+    assert tep["school"]["gns"] + tep["kindergarten"]["gns"] == pytest.approx(14030.0)
+    assert (tep["school"]["total_area"] + tep["kindergarten"]["total_area"]
+            == pytest.approx(14030.0 * project_preset.TOTAL_OF_GNS))
 
 
 # --- что не должно стать стройкой -----------------------------------------------
@@ -465,8 +476,15 @@ def test_the_social_capacity_lives_inside_the_object():
     tep, _ = project_preset.map_tep(data)
     assert tep["school"]["units"] == 1000
     assert tep["kindergarten"]["units"] == 350
-    assert tep["school"]["total_area"] == 22220
-    assert tep["kindergarten"]["total_area"] == 6300
+    # Площадь требования КРТ — наземная: 22 220 м² решения это ГНС школы, а
+    # общая считается от неё пропорцией. С числом в «общей» объект был бы на
+    # десятую часть крупнее того, что стоит в документе города.
+    assert tep["school"]["gns"] == 22220
+    assert tep["school"]["total_area"] == pytest.approx(
+        22220 * project_preset.TOTAL_OF_GNS)
+    assert tep["kindergarten"]["gns"] == 6300
+    assert tep["kindergarten"]["total_area"] == pytest.approx(
+        6300 * project_preset.TOTAL_OF_GNS)
 
 
 def test_the_nagatino_preset_declares_its_own_numbers():
