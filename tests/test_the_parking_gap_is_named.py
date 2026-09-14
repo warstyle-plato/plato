@@ -61,7 +61,7 @@ def _render(result, inputs=None):
     Ячейка несёт `style`: тон подписи — то, что видно, и стенд без него падал
     бы на нашей же правке, а падение выходило бы про стенд.
     """
-    script = """
+    prelude = """
 const cells = {parkNorm_offices:{textContent:"",style:{}},
                parkNorm_retail:{textContent:"",style:{}},
                parkNorm_sports:{textContent:"",style:{}}};
@@ -70,21 +70,20 @@ const num = v => String(v);
 %(prefixes)s
 let inputs = %(inputs)s;
 let lastResult = %(result)s;
-%(gap)s
-%(note)s
-%(render)s
+// Очерёдности здесь нет: одиночный расчёт оставляет связку пустой, и
+// `projectParking` берёт паркинг из результата.
+let phaseBundle = null;
+""" % {"result": json.dumps(result, ensure_ascii=False),
+       "inputs": json.dumps(inputs or {"offices_enabled": True}, ensure_ascii=False),
+       "prefixes": page_blocks.object_roster()}
+    # Куски добирает общий разрешитель: перечисленные руками, они отставали от
+    # страницы — `projectParking` завели рядом, и стенд упал на своей неполноте.
+    tail = """
 renderObjectParkingFieldNotes();
 console.log(JSON.stringify({text: cells.parkNorm_offices.textContent,
                             color: cells.parkNorm_offices.style.color}));
-""" % {"result": json.dumps(result, ensure_ascii=False),
-       "inputs": json.dumps(inputs or {"offices_enabled": True}, ensure_ascii=False),
-       "prefixes": page_blocks.object_roster(),
-       "gap": _piece("objectParkingGap"),
-       "note": _piece("objectParkingFieldNote"),
-       "render": _piece("renderObjectParkingFieldNotes")}
-    out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=60)
-    assert out.returncode == 0, out.stderr[-2000:]
-    return json.loads(out.stdout)
+"""
+    return page_blocks.run_json(prelude, tail)
 
 
 def test_an_overshoot_is_named_with_its_number() -> None:
