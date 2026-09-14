@@ -87,12 +87,138 @@ def remember_notice(key: str, notice: dict[str, Any], *,
     }, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
+def attempt_path(key: str, *, root: Path | None = None) -> Path:
+    return ((root or data_dir()) / "krt" / "notice"
+            / f"{egrn_store.slug(key)}.attempt.json")
+
+
+# Своя длительность у каждого ответа. Успех вечен — состав лежит разобранным и
+# второй раз не спрашивается вовсе; «таблицы в вложениях нет» — ответ
+# ДОКУМЕНТОВ, и он живёт сутки: лотовую документацию площадка дополняет, но не
+# каждый час; отказ площадки — полчаса, потому что Росэлторг отдаёт файл через
+# раз и его «нет» свойством лота не является. Правило то же, что у отказа
+# карточки города: запасной ответ не живёт в кэше наравне со штатным.
+NO_TABLE_TTL_SECONDS = 86400
+REFUSED_TTL_SECONDS = 1800
+
+
+def remember_attempt(key: str, *, outcome: str, why: str = "",
+                     documents: int = 0, root: Path | None = None) -> None:
+    """Записать, чем кончилась попытка прочитать извещение лота.
+
+    Незаписанный отказ нельзя посчитать, а непосчитанный отказ выглядит как
+    отсутствие состава у площадки: ровно так «прогон до лота ещё не дошёл» и
+    «вложения прочитаны, таблицы в них нет» сливались в одну немую строку.
+    Отметка нужна и прогону — чтобы не платить минутами внешних запросов за
+    один и тот же ответ каждые три часа.
+    """
+    place = attempt_path(key, root=root)
+    place.parent.mkdir(parents=True, exist_ok=True)
+    place.write_text(json.dumps({
+        "schema_version": SCHEMA_VERSION,
+        "key": str(key),
+        "outcome": str(outcome),
+        "why": str(why or "")[:400],
+        "documents": int(documents or 0),
+        "at": int(time.time()),
+    }, ensure_ascii=False, indent=1), encoding="utf-8")
+
+
+def stored_attempt(key: str, *, root: Path | None = None) -> dict[str, Any]:
+    """Отметка попытки. Нет отметки — «не спрашивали», а не «спросили и пусто»."""
+    place = attempt_path(key, root=root)
+    if not place.exists():
+        return {}
+    try:
+        got = json.loads(place.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 — негодная отметка равна отсутствию
+        return {}
+    if not isinstance(got, dict) or got.get("schema_version") != SCHEMA_VERSION:
+        return {}
+    return got
+
+
+def notice_due(key: str, *, root: Path | None = None,
+               now: float | None = None) -> bool:
+    """Надо ли спрашивать площадку об извещении этого лота.
+
+    Состав уже разобран — не надо вовсе: он не устаревает, торги идут по одному
+    извещению. Иначе решает срок ответа, которым кончилась прошлая попытка.
+    """
+    if stored_notice(key, root=root).get("lands"):
+        return False
+    attempt = stored_attempt(key, root=root)
+    if not attempt:
+        return True
+    ttl = (NO_TABLE_TTL_SECONDS if attempt.get("outcome") == "no_table"
+           else REFUSED_TTL_SECONDS)
+    return float(now if now is not None else time.time()) - float(
+        attempt.get("at") or 0) >= ttl
+
+
+def _attempt_problem(attempt: dict[str, Any]) -> str:
+    """Чей это пробел — наш, документов или площадки. Три разных ответа.
+
+    «Извещение лота ещё не разбиралось» было верно и немо: оно не различало
+    «прогон до него ещё не дошёл» (наш пробел, придёт само), «вложения
+    прочитаны, таблицы состава в них нет» (ответ документов) и «площадка не
+    отдала вложения» (ответ площадки, спросим снова).
+    """
+    if not attempt:
+        return ("состав территории ещё не читали: прогон до извещения этого "
+                "лота не дошёл — это наш пробел, а не ответ документов")
+    when = ""
+    try:
+        when = time.strftime("%d.%m.%Y %H:%M",
+                             time.localtime(float(attempt.get("at") or 0)))
+    except Exception:  # noqa: BLE001
+        when = ""
+    seen = f" (прочитано {when})" if when else ""
+    count = int(attempt.get("documents") or 0)
+    if attempt.get("outcome") == "no_table":
+        return (f"вложения лота прочитаны{seen}"
+                + (f", их {count}" if count else "")
+                + " — таблицы состава территории в них нет")
+    why = str(attempt.get("why") or "").strip()
+    return ("площадка не отдала вложения лота"
+            + (f": {why}" if why else "") + seen + ". Спросим снова")
+
+
+def run_path(*, root: Path | None = None) -> Path:
+    return (root or data_dir()) / "krt" / "notice" / "run.json"
+
+
+def remember_run(summary: dict[str, Any], *, root: Path | None = None) -> None:
+    """Свод последнего прохода за извещениями. У молчащего прогона обязан быть
+    счётчик молчания: снаружи «состава ни у кого нет», «прогон выключен» и
+    «прогон сломан» — одно и то же молчание."""
+    place = run_path(root=root)
+    place.parent.mkdir(parents=True, exist_ok=True)
+    place.write_text(json.dumps({"schema_version": SCHEMA_VERSION,
+                                 **dict(summary or {})},
+                                ensure_ascii=False, indent=1), encoding="utf-8")
+
+
+def stored_run(*, root: Path | None = None) -> dict[str, Any]:
+    """Свод прохода. Нет файла — «проход здесь ещё не заходил»."""
+    place = run_path(root=root)
+    if not place.exists():
+        return {}
+    try:
+        got = json.loads(place.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return {}
+    return got if isinstance(got, dict) else {}
+
+
 def stored_notice(key: str, *, root: Path | None = None) -> dict[str, Any]:
     """Состав территории со склада. Нечитаемый файл — пустой состав с причиной."""
     place = notice_path(key, root=root)
     if not place.exists():
+        # Причина называет, ЧЬЁ это молчание: без отметки попытки — наше,
+        # с отметкой — документов или площадки.
         return {"lands": [], "objects": [], "rows": 0,
-                "problem": "извещение лота ещё не разбиралось"}
+                "problem": _attempt_problem(stored_attempt(key, root=root))}
     try:
         got = json.loads(place.read_text(encoding="utf-8"))
     except Exception as exc:  # noqa: BLE001 — негодный файл называется
