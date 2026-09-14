@@ -90,3 +90,18 @@ def test_the_lock_holds_when_the_slug_is_taken_away(base, monkeypatch) -> None:
     with pytest.raises(ValueError):
         monitor._project_dir("../../etc/passwd")
     assert not (base.parent.parent / "etc").exists()
+
+
+def test_a_sibling_with_the_same_prefix_is_outside(base, monkeypatch) -> None:
+    """Разделитель в конце базы — часть замка, а не украшение.
+
+    База зовётся «…/monitor»; каталог «…/monitorX» начинается с неё буква в
+    букву и лежит СНАРУЖИ. Без `os.sep` в конце `startswith` пускает его как
+    «внутри» — классическая ошибка префикса, и ловится она только этим
+    примером: под `_slug` он недостижим, поэтому диверсант снят и здесь.
+    """
+    monkeypatch.setattr(monitor, "_slug", lambda name: str(name))
+    outside = base.parent / (base.name + "X")
+    with pytest.raises(ValueError):
+        monitor._project_dir(f"../{outside.name}")
+    assert not outside.exists()

@@ -55,11 +55,20 @@ def _project_dir(project: str) -> Path:
     # `_slug`: у всякого замка спрашивают, сколько путей ведёт мимо него, —
     # здесь мимо не ведёт ни один, `_project_dir` единственная дверь на
     # десять читателей в пяти модулях.
-    base = _SNAPSHOT_DIR.resolve()
-    path = (base / _slug(project)).resolve()
-    if path.parent != base:
+    #
+    # Форма замка выбрана не на вкус. Первая редакция сравнивала
+    # `Path.resolve().parent` с базой — утверждение то же и даже строже, но
+    # CodeQL этой формы не знает: находок стало ПЯТЬ вместо четырёх, замок
+    # разделил одну надвое. Ниже ровно та форма, которую называет справка
+    # самого запроса, — `normpath` и `startswith`, — плюс наше более узкое
+    # утверждение «ровно один сегмент» (`dirname`). Разделитель в конце базы
+    # обязателен: без него `/data/monitor-чужое` проходит как «внутри».
+    base = os.path.normpath(_SNAPSHOT_DIR)
+    target = os.path.normpath(os.path.join(base, _slug(project)))
+    if not target.startswith(base + os.sep) or os.path.dirname(target) != base:
         raise ValueError(
             f"Имя проекта не годится для каталога на диске: {project!r}")
+    path = Path(target)
     path.mkdir(parents=True, exist_ok=True)
     return path
 
