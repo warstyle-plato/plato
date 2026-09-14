@@ -154,4 +154,9 @@ def test_the_instructions_name_the_lawful_levers():
     text = core._AGENT_INSTRUCTIONS
     assert "обнулить социалку нельзя" in text
     assert "места приложения труда" in text
-    assert "vri_relief_pct" in text and "vri_installment_years" in text
+    # Рычаг назван ПОДПИСЬЮ поля, а не ключом: ключ — язык инструментов, и
+    # пересказанный человеку он отправляет его искать несуществующее (экран
+    # владельца, 14.09.2026). Подписи берутся из движка, а не переписаны сюда.
+    for key in ("vri_relief_pct", "vri_installment_years"):
+        assert core.input_field_place(key)["label"] in text, key
+    assert "vri_relief_pct" not in text
