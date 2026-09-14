@@ -44287,7 +44287,15 @@ function renderClassDialog(){
   // Свод «Статистики» стоит строкой под той ставкой, к которой относится:
   // связь числа со ставкой видна на месте, а не выводится из соседней таблицы.
   if(hasStats){
-   html+='<tr><td style="padding:2px 8px 6px;border-bottom:1px solid #f0f0f0;font-size:11px;color:#3b6db4">свод „Статистики“, тыс ₽/м²</td>'
+   // База свода стоит в самой подписи, а не только в подсказке: у
+   // благоустройства ставка класса меряет метр ДВОРА, а свод — метр ГНС, и
+   // строчка «15» над строчкой «5,9» без имён баз читается как спор двух
+   // чисел об одном («это существует одновременно!!?», владелец, 14.09.2026).
+   // Подсказка тут не ответ — на телефоне её нет вовсе. Имя базы даёт сервер
+   // (`unit_label`), второй список «что в чём меряется» разошёлся бы молча.
+   const statsUnit=(rowStats.find(Boolean)||{}).unit_label;
+   html+='<tr><td style="padding:2px 8px 6px;border-bottom:1px solid #f0f0f0;font-size:11px;color:#3b6db4">свод „Статистики“, '
+    +escapeHtml(statsUnit?String(statsUnit).replace('₽/м²','тыс ₽/м²'):'тыс ₽/м²')+'</td>'
     +classes.map((c,i)=>{
      const r=rowStats[i];
      if(!r)return '<td style="text-align:right;padding:2px 8px 6px;border-bottom:1px solid #f0f0f0;font-size:11px;color:#999">—</td>';
