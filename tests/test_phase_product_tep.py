@@ -42,20 +42,35 @@ def test_absolute_queue_tep_overrides_initial_percentages():
 
 
 def test_non_revenue_product_cannot_create_saleable_area():
+    """Признак «не продаётся» гасит продаваемую, что бы ни стояло в клетке.
+
+    Пример здесь ФОК, а не школа, и это не мелочь. Прежде утверждение стояло
+    на школе, и вместе с ним проверка держала «вписанная в очередь ГНС школы
+    доезжает до расчёта» — ответ, верный до 0.22.84. Соцстрока очереди
+    меряется МЕСТАМИ: сколько объекта в этой очереди, говорит таблица
+    соцобъектов, а метры считает норматив проекта, — и то, что редактор
+    очереди её не накладывает, держит
+    `test_the_queue_editor_does_not_overlay_a_social_row`. Сам признак при
+    этом никуда не делся, и ФОК для него честный пример: он передаётся городу
+    целиком, строится за те же деньги и продаваемой не имеет.
+    """
     inputs, tep = project()
+    inputs.update(sports_enabled=True, sports_disposition="transfer",
+                  sports_gba_sqm=5000)
+    tep["sports"].update(gns=5000, total_area=4500, transfer=4500)
     phasing = {"enabled": True, "phase_count": 2, "phases": [
-        {"name": "О1", "products": {"school": {
-            "gns": 22220, "total_area": 22220, "saleable": 999,
-            "units": 1000, "generates_revenue": False,
+        {"name": "О1", "products": {"sports": {
+            "gns": 22220, "total_area": 19998, "saleable": 999,
+            "generates_revenue": False,
             "assumption_source": "условия КРТ"}}},
         {"name": "О2"},
     ]}
     bundle = core.calculate_phased(core.PhasedCalcRequest(
         inputs=inputs, tep=tep, rates=[], phasing=phasing))
-    school = next(row for row in bundle["phases"][0]["result"]["tep"]["rows"]
-                  if row["key"] == "school")
-    assert school["saleable"] == 0
-    assert school["gns"] == pytest.approx(22220)
+    sports = next(row for row in bundle["phases"][0]["result"]["tep"]["rows"]
+                  if row["key"] == "sports")
+    assert sports["saleable"] == 0
+    assert sports["gns"] == pytest.approx(22220)
 
 
 def test_office_absolute_tep_reaches_atomic_inputs_and_revenue():

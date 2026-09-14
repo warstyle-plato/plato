@@ -101,13 +101,14 @@ def live_import(preset_name: str) -> dict:
         "normativeUnderground", "parkingRequirement",
         "repairParkingFromGlavapu", "fillUndergroundFromTep"))
 
-    script = (f"const payload={json.dumps(parsed, ensure_ascii=False, default=str)};\n"
-              + stubs + real + "\n" + keys.group(1) + "\n" + body.group(1)
-              + "\n(async()=>{glavapuImport=payload;await applyGlavapu();"
-                "console.log(JSON.stringify({inputs,tep}));})()")
-    done = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=120)
-    assert done.returncode == 0, done.stderr[:600]
-    return json.loads(done.stdout)
+    # Недостающее стенд добирает сам: перечисленный руками список отстаёт от
+    # страницы, и `markParkingByNorm`, появившийся в `applyGlavapu`, уронил бы
+    # его на «X is not defined» — то есть на своей неполноте.
+    prelude = (f"const payload={json.dumps(parsed, ensure_ascii=False, default=str)};\n"
+               + stubs + real + "\n" + keys.group(1) + "\n" + body.group(1))
+    tail = ("\n(async()=>{glavapuImport=payload;await applyGlavapu();"
+            "console.log(JSON.stringify({inputs,tep}));})()")
+    return page_blocks.run_json(prelude, tail)
 
 
 def phasing(count: int) -> dict:

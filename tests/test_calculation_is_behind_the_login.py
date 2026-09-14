@@ -118,5 +118,13 @@ def test_the_gate_is_off_on_the_page_when_the_server_says_so():
 
 
 def test_a_successful_calculation_removes_the_plate():
+    # Утверждение — «плашка снимается РАНО, до тяжёлого тела»: бросит что-то
+    # ниже, и она останется висеть над посчитанной моделью. Меряется это
+    # порядком ВЫПОЛНЯЕМЫХ строк, а не первыми 300 знаками: комментарий,
+    # дописанный рядом, сдвигал границу и ронял проверку на верном коде —
+    # она падала, когда рядом что-то ДОБАВИЛИ, а не когда что-то сломали.
     body = core.PAGE[core.PAGE.index("function renderResult(){"):]
-    assert "hideCalcLocked();" in body[:300]
+    lines = [line.strip() for line in body.splitlines()]
+    code = [line for line in lines
+            if line and not line.startswith("//") and line != "}"]
+    assert "hideCalcLocked();" in code[:6], code[:6]
