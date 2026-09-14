@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -505,3 +506,126 @@ def test_the_public_auctions_page_does_not_offer_the_service_page():
     page = ui.auctions_page(None)
     assert "/krt/nagatino" not in page
     assert "/krt/site/" not in page
+
+
+def _seed_outline(root: Path, site, answers: dict) -> None:
+    """Ответы ЕГРН по контурам — у каждой площадки свои, в её файле."""
+    place = nagatino_parcels.cache_path(site)
+    place.parent.mkdir(parents=True, exist_ok=True)
+    place.write_text(
+        json.dumps({"schema_version": 1, "answers": answers, "problem": ""}),
+        encoding="utf-8")
+
+
+SQUARE = [[[4187000, 7495000], [4187400, 7495000], [4187400, 7495400],
+           [4187000, 7495400]]]
+
+
+def test_in_a_real_browser_the_map_is_drawn_when_only_the_land_has_an_outline(
+        tmp_path, monkeypatch):
+    """Карта рисуется по участкам, даже когда объектов нет вовсе.
+
+    Гейт карты читал СТРОЕНИЯ выгрузки, а у площадки с торгов выгрузки не
+    бывает и в запасном перечне решения объектов нет: карта отвечала «ни одного
+    контура пока нет», ИМЕЯ 55 контуров участков из 60 (замер прода 14.09.2026,
+    Варшавское ш., вл. 37 — «картинка карты не грузится вообще и пишет что нет
+    ЕГРН»). Причина была неверна дважды: ЕГРН как раз спросили, и он ответил.
+
+    Меряется браузером: в исходнике сломанный и починенный гейт выглядят
+    одинаково, а «нарисовано ли» — это узлы на экране.
+    """
+    from browser import chromium_or_skip, serve
+
+    chrome = chromium_or_skip()
+    from playwright.sync_api import sync_playwright
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("NAGATINO_EGRN_READ", "0")
+    root = tmp_path / "market"
+    root.mkdir(parents=True, exist_ok=True)
+    # Выписка на участок есть, на строения — нет: ровно состояние площадки с
+    # торгов, где приложение 2 называет участки, а привязки объектов в нём нет.
+    _store(root, LAND)
+    krt_territory.remember_notice(
+        LOT["store_key"],
+        {"lands": [{"cadastral_number": LAND["cadastral_number"], "part": False,
+                    "area_raw": "5 000", "area_sqm": 5_000.0, "objects": []}],
+         "objects": [], "rows": 1, "problem": ""},
+        document="Лотовая документация.pdf", root=root)
+    _seed_outline(root, krt_territory.site_for(
+        SITE["slug"], SITE["name"], key=LOT["store_key"], root=root),
+        {LAND["cadastral_number"]: {"asked_at": time.time(), "rings": SQUARE,
+                                    "reason": ""}})
+
+    with serve(_app(tmp_path), 18798) as base:
+        with sync_playwright() as play:
+            browser = play.chromium.launch(executable_path=str(chrome))
+            page = browser.new_page()
+            errors: list[str] = []
+            page.on("pageerror", lambda exc: errors.append(str(exc)))
+            page.goto(f"{base}/krt/site/{SITE['slug']}", wait_until="networkidle")
+            seen = page.evaluate("""() => ({
+              lands: document.querySelectorAll('#mapFrame path.land').length,
+              objects: document.querySelectorAll('#mapFrame path.parcel').length,
+              box: (document.getElementById('mapBox').textContent || '').trim(),
+              kinds: (document.getElementById('kinds').textContent || '').trim(),
+              tiles: [...document.querySelectorAll('#stats .stat')]
+                       .map(n => n.textContent.trim()),
+              coverage: (document.getElementById('coverage').textContent || '').trim(),
+            })""")
+            browser.close()
+
+    assert not errors, errors
+    assert seen["objects"] == 0, "объектов у этой площадки нет — рисовать нечего"
+    assert seen["lands"] == 1, f"участок с контуром не нарисован: {seen['box']!r}"
+    assert "контура пока нет" not in seen["box"], seen["box"]
+    # Плитка называет, ЧЕГО контуры: «0 из 0» читалось как «пула не знаем».
+    assert any("контуров участков получено из ЕГРН" in tile
+               and tile.startswith("1 из 1") for tile in seen["tiles"]), seen["tiles"]
+    # Блок «что стоит в присланном файле» отвечает на вопрос о файле, которого
+    # у этой площадки нет вовсе.
+    assert "ещё не спрашивали" not in seen["kinds"], seen["kinds"]
+    # И строка охвата не утверждает о строениях выгрузки.
+    assert "строений выгрузки" not in seen["coverage"], seen["coverage"]
+    assert "Земельные участки нарисованы все 1" in seen["coverage"], seen["coverage"]
+
+
+def test_the_composition_is_found_in_the_attachment_the_platform_actually_sends(
+        tmp_path, monkeypatch):
+    """Состав ищет разбор, а не имя вида — его площадка не ставит.
+
+    Гейт стоял на видах «извещение» и «приложение», а тип Росэлторг выводит из
+    ИМЕНИ файла по словам «извещ»/«прилож»: у него документ зовётся «Территория.
+    Лотовая документация.pdf». Живой счёт по лоту 21000005000000033023
+    (14.09.2026): 14 «прочее», 13 «договор», 3 «ЕГРН», ни одного «извещения» —
+    гейт не срабатывал ни разу, и состав приезжал запасным перечнем проекта
+    решения при прочитанном извещении под рукой.
+    """
+    from auction_search import krt_pipeline
+    from auction_search.models import (
+        AuctionDocument, AuctionLot, AuctionSource, LotKind, SourceKind,
+    )
+
+    lot = AuctionLot(
+        source=AuctionSource(platform=SourceKind.ROSELTORG,
+                             lot_url="https://www.roseltorg.ru/procedure/33023/1",
+                             external_lot_id="21000005000000033023/1",
+                             fetched_at="2026-09-14T06:00:00Z"),
+        lot_kind=LotKind.KRT,
+        title="КРТ: право на заключение договора",
+        # Имя и вид — те, что площадка прислала на самом деле.
+        documents=[AuctionDocument(title="Территория.Лотовая документация.pdf",
+                                   url=NOTICE_URL, document_type="other")],
+    )
+
+    def platform(url, **_kwargs):
+        assert url == NOTICE_URL, url
+        return NOTICE_PDF.read_bytes(), "application/pdf", False
+
+    monkeypatch.setattr(krt_pipeline, "download_document", platform)
+    read = krt_pipeline.enrich_krt_from_official_documents(lot, store_dir=tmp_path)
+    stored = krt_territory.stored_notice(krt_pipeline.store_key(read),
+                                         root=tmp_path)
+    assert stored["lands"], (
+        "состав территории не прочитан из вложения, которое площадка присылает")
+    assert stored["document"] == "Территория.Лотовая документация.pdf", stored

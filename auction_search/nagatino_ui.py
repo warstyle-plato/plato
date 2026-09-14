@@ -176,6 +176,11 @@ const S={data:null,timer:null,started:0,pick:null,show:null,share:''};
 // «ничего не выбрано», и путать его с «выбрано всё» нельзя.
 const filtering=()=>S.show!==null;
 const shown=key=>!filtering()||S.show.has(String(key||'none'));
+// Выгрузка владельца есть только у Нагатино: у площадки с торгов строений
+// в присланном файле не бывает по построению, и всё, что считается «по
+// строкам файла», у неё отвечает нулём. Ответ на это один — два разошлись бы,
+// и одна надпись объявляла бы пустым то, что другая рисует.
+const hasUpload=()=>(((S.data||{}).parcels)||[]).length>0;
 // Скрытое считается и называется под таблицей: молча снятая строка читается
 // как отсутствие объекта в территории.
 //
@@ -397,14 +402,31 @@ function drawnLands(){
      || (l.objects||[]).some(o=>shown((o.owner||{}).group)));
 }
 
+// Почему карта пуста — ответ данных, а не умолчание. Прежде гейт читал
+// СТРОЕНИЯ выгрузки и печатал «ЕГРН по ним ещё не спрашивали»: у площадки с
+// торгов выгрузки нет вовсе, объектов в запасном перечне решения не бывает, —
+// и карта отказывалась рисовать, ИМЕЯ 55 контуров участков из 60 (замер прода
+// 14.09.2026, Варшавское ш., вл. 37). Причина при этом была неверна дважды:
+// ЕГРН как раз спросили и ответил.
+function emptyMapReason(){
+ const d=S.data||{},o=d.outlines||{},src=((d.territory||{}).source)||{};
+ if(o.problem)return 'ЕГРН отвечал с ошибкой: '+o.problem;
+ if(src.notice_problem&&!(((d.territory||{}).lands)||[]).length)
+  return 'состав территории не прочитан: '+src.notice_problem;
+ if(o.reading)return 'ЕГРН ещё отвечает — контуры дочитываются';
+ return 'ЕГРН по ним ещё не спрашивали';
+}
+
 function mapMarkup(){
  const d=S.data;
  const drawn=drawnObjects();
- const site=(d.krt_site&&d.krt_site.rings_merc)||[];
- if(!drawn.length)
-  return '<div class="notice warn">Ни одного контура пока нет — рисовать нечего. '
-   +'Это не значит, что объектов нет: '+escapeHtml(String((d.outlines||{}).problem||'ЕГРН по ним ещё не спрашивали'))+'.</div>';
  const lands=drawnLands();
+ const site=(d.krt_site&&d.krt_site.rings_merc)||[];
+ // Рисуем, если есть хоть одна фигура: у площадки без выгрузки на карте одна
+ // земля, и она — ответ на вопрос «что за территория», а не полкартинки.
+ if(!drawn.length&&!lands.length)
+  return '<div class="notice warn">Ни одного контура пока нет — рисовать нечего. '
+   +'Это не значит, что объектов нет: '+escapeHtml(emptyMapReason())+'.</div>';
  const mostlyInside=l=>!l.part||l.notice_area_sqm==null||!l.area_sqm
    ||l.notice_area_sqm/l.area_sqm>=0.5;
  // Кадр строится по ПЛОЩАДКЕ, а не по всему нарисованному: дорога
@@ -741,7 +763,12 @@ function statsMarkup(){
               'не городское — к выкупу или соглашению'],
              [mln((others.land_value_rub||0)+(others.objects_value_rub||0)),
               'их кадастровая стоимость — не цена выкупа']);
- tiles.push([landNum(o.drawn,0)+' из '+landNum(o.parcels,0),'контуров получено из ЕГРН']);
+ // Плитка называет, ЧЕГО контуры: у Нагатино считаются строения выгрузки, у
+ // площадки с торгов их нет вовсе — и «0 из 0» читалось как «пула не знаем»
+ // при 55 полученных контурах участков.
+ tiles.push(hasUpload()
+   ? [landNum(o.drawn,0)+' из '+landNum(o.parcels,0),'контуров строений получено из ЕГРН']
+   : [landNum(o.lands_drawn,0)+' из '+landNum(o.lands,0),'контуров участков получено из ЕГРН']);
  return tiles.map(s=>`<div class="stat"><b>${s[0]}</b><span>${s[1]}</span></div>`).join('');
 }
 
@@ -1019,6 +1046,10 @@ function fileGapMarkup(){
 
 function kindsMarkup(){
  const k=S.data.kinds||{},total=S.data.totals.parcels;
+ // Блок отвечает на «что стоит в присланном файле». Файла нет — вопроса нет:
+ // у площадки с торгов он утверждал «вид объектов ещё не спрашивали» про
+ // выгрузку, которой не бывает.
+ if(!hasUpload())return '';
  if(!k.asked)return '<div class="notice">Вид объектов в ЕГРН ещё не спрашивали — '
   +'что именно стоит в выгрузке, земля или здания, пока не проверено.</div>';
  const named=Object.entries(k.counts||{}).filter(([name])=>name!=='не спрашивали')
@@ -1139,15 +1170,20 @@ function coverageMarkup(){
  if(o.unread)bits.push(`${o.unread} строений ещё не спрашивали в ЕГРН — это наш пробел, а не их отсутствие`);
  if(o.empty)bits.push(`${o.empty} есть в ЕГРН, но контура у них нет`);
  if(o.problem)bits.push('ЕГРН отвечал с ошибкой: '+escapeHtml(o.problem));
- const head=bits.length
-  ? `Строений нарисовано ${o.drawn} из ${o.parcels}. Остальные: ${bits.join('; ')}.`
-  : `Нарисованы все ${o.drawn} строений выгрузки.`;
+ // Строки про строения выгрузки — только там, где выгрузка есть: «нарисованы
+ // все 0 строений выгрузки» у площадки с торгов утверждает о файле, которого
+ // нет, и читается как потерянные строки.
+ const head=!hasUpload() ? ''
+  : (bits.length
+     ? `Строений нарисовано ${o.drawn} из ${o.parcels}. Остальные: ${bits.join('; ')}.`
+     : `Нарисованы все ${o.drawn} строений выгрузки.`);
  // Участки считаются отдельно: счётчик выше — по строкам файла, а это здания.
  // Ненарисованный участок иначе нигде не назван, и его отсутствие читается как
  // отсутствие цвета у владельца: «почему зелёной подложки Москвы нет под
  // строениями Москвы?» — участок под ними покрашен городским зелёным, просто
  // контур его ещё не спрашивали.
  if(o.lands==null)return head;
+ const join=(a,b)=>[a,b].filter(Boolean).join(' ');
  const T=S.data.territory||{},tot=T.totals||{};
  const outside=(T.lands||[]).filter(l=>l.inside_site_share!=null&&l.inside_site_share<0.5);
  const check=tot.lands_outline_measured
@@ -1161,11 +1197,11 @@ function coverageMarkup(){
       : 'все внутри.')
   : ' С полигоном площадки не сверено: его ещё не получили.';
  const left=o.lands-o.lands_drawn;
- return head+' '+(left
+ return join(head,(left
   ? `Земельных участков нарисовано ${o.lands_drawn} из ${o.lands}: у ${left} контур ЕГРН ещё `
     +'не получен, поэтому под их строениями подложки нет — цвет владельца у них при этом уже '
     +'посчитан и стоит в таблице. Нажмите «Дочитать контуры».'
-  : `Земельные участки нарисованы все ${o.lands}.`)+check;
+  : `Земельные участки нарисованы все ${o.lands}.`)+check);
 }
 
 function tableMarkup(){
