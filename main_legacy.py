@@ -77,7 +77,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.23.64"
+VERSION = "0.23.69"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -17924,6 +17924,112 @@ def _v4_object_parking_allocation(xml: str, missing: list[str]) -> str:
     return xml
 
 
+# Строка объекта на листе ТЭП — по строке его объёма продаж: второй список
+# «какой объект в какой строке» разошёлся бы с первым молча.
+_V4_OBJECT_TEP_ROW = {22: 31, 50: 32, 140: 34}
+
+
+def _v4_object_parking_in_tep(xml: str, missing: list[str]) -> str:
+    """Выручка мест объекта доезжает до строки ТЭП, а не только до CF.
+
+    Лист CF её уже знает (аллокация по очередям расширена), а строка ТЭП
+    считала объект одной продажей здания — и собственная проверка книги
+    «ТЭП: выручка = CF» кричала FAIL на верном расчёте: на живом проекте это
+    21,5 млрд ₽ из 235,1. Кричащая зря проверка хуже отсутствующей, её
+    перестают читать.
+
+    Правится ТОЛЬКО колонка выручки. Площадь, единицы и стартовая цена
+    остаются про здание: место продаётся штукой, и метры гаража в
+    продаваемой площади объекта не лежат. Чтобы «Выручка» не читалась как
+    «продаваемая × цена», у строки стоит своя оговорка в колонке
+    комментария — правило о показателе, у которого база не одна.
+    """
+    for (_label, enabled_row, _spaces_row, revenue_row, *rest) in _V4_OBJECT_PARKING:
+        volume_row, sellable = rest[3], rest[8]
+        if not sellable:
+            # Места ТЦ и ФОКа строятся, стоят денег и выручки не дают
+            # (решение владельца, 06.09.2026): складывать нечего.
+            continue
+        tep_row = _V4_OBJECT_TEP_ROW.get(volume_row)
+        if not tep_row:
+            missing.append(f"ТЭП: строка объекта для строки объёма {volume_row} не известна")
+            continue
+        was = _v4_cell_formula(xml, f"G{tep_row}")
+        want = f"'ОБЪЕКТЫ'!B{volume_row + 2}+'ОБЪЕКТЫ'!B{revenue_row}"
+        if was is None or was.replace(" ", "") not in (
+                f"'ОБЪЕКТЫ'!B{volume_row + 2}", want):
+            missing.append(f"ТЭП: формула выручки G{tep_row} не опознана")
+            continue
+        xml, done = _v4_set_cell(xml, f"G{tep_row}", formula=want)
+        if not done:
+            missing.append(f"ТЭП: выручка паркинга не встала в G{tep_row}")
+            continue
+        xml, _ = _v4_set_or_insert_cell(
+            xml, f"H{tep_row}",
+            text="Выручка включает продажу мест в паркинге объекта; "
+                 "площадь и цена в строке — про здание")
+    return xml
+
+
+# Строка проверки CAPEX объекта и его ячейки на листе вводных: (строка
+# проверки, «объект включён», «очередь объекта»). У ФОКа своей строки в шаблоне
+# нет — его CAPEX сверяет «Аллокация CAPEX объектов».
+_V4_OBJECT_CAPEX_CHECK = {
+    7: (40, "K20", "K21"),
+    35: (43, "K40", "K41"),
+}
+
+
+def _v4_object_parking_checks(xml: str, missing: list[str]) -> str:
+    """Самопроверки книги учатся видеть паркинг объектов.
+
+    Три из них сравнивали выручку и CAPEX объектов с ожиданием, в котором
+    гаража нет вовсе, — и на проекте с гаражом давали FAIL при исправном
+    расчёте: 21,5 млрд ₽ выручки и 15,9 млрд ₽ CAPEX. Проверка, не знающая о
+    новой величине, кричит на верной работе, и её перестают читать — это уже
+    было с проверкой лимита при переносе долга.
+    """
+    tail = "'ОБЪЕКТЫ'!B24,'ОБЪЕКТЫ'!B52,'ОБЪЕКТЫ'!B80,'ОБЪЕКТЫ'!B142)"
+    garages = ",".join(f"'ОБЪЕКТЫ'!B{item[3]}" for item in _V4_OBJECT_PARKING)
+    encoded = xml_escape(tail)
+    seen = xml.count(encoded)
+    if seen == 2:
+        # Один и тот же хвост стоит в «Выручка продуктов = CF» и в
+        # «Аллокация выручки объектов» — обе сверяют один список объектов.
+        xml = xml.replace(encoded, xml_escape(tail[:-1] + "," + garages + ")"))
+    else:
+        missing.append(
+            f"ПРОВЕРКИ: хвост выручки объектов найден {seen} раз, ожидалось 2")
+
+    # Ожидание CAPEX — тем же вторым слагаемым, каким его считает сам объект
+    # (строка 28 листа ОБЪЕКТЫ): у одной величины не бывает двух счётов.
+    for (label, enabled_row, _spaces_row, _revenue_row, *rest) in _V4_OBJECT_PARKING:
+        under_cell = rest[1]
+        target = _V4_OBJECT_CAPEX_CHECK.get(enabled_row)
+        if not target:
+            continue
+        row, enabled_cell, queue_cell = target
+        enabled = f"'Параметры модели'!${enabled_cell[0]}${enabled_cell[1:]}"
+        queue = f"'Параметры модели'!${queue_cell[0]}${queue_cell[1:]}"
+        under = f"'Параметры модели'!${under_cell[0]}${under_cell[1:]}"
+        garage = (
+            f'+IF({enabled}="Да",{under}'
+            f"*'Параметры модели'!$K$158*'Параметры модели'!$B$45/1000"
+            f"*'Параметры модели'!$H$6"
+            f"*INDEX('Параметры модели'!$T$88:$T$91,{queue})"
+            f"*INDEX('Параметры модели'!$AH$88:$AH$91,{queue}),0)")
+        was = _v4_cell_formula(xml, f"C{row}")
+        if was is None:
+            missing.append(f"ПРОВЕРКИ: ожидание CAPEX C{row} не найдено ({label})")
+            continue
+        if was.endswith(garage):
+            continue
+        xml, done = _v4_set_cell(xml, f"C{row}", formula=was + garage)
+        if not done:
+            missing.append(f"ПРОВЕРКИ: гараж не встал в ожидание CAPEX C{row} ({label})")
+    return xml
+
+
 def _v4_sports_object_block(xml: str, missing: list[str]) -> str:
     """Четвёртый блок листа ОБЪЕКТЫ и его доля в аллокации по очередям."""
     if re.search(r'<x:row r="124"[ />]', xml):
@@ -18242,6 +18348,16 @@ def _v4_revenue_by_product(xml: str, products: list[dict[str, Any]],
             per_queue = [f"IF('ОБЪЕКТЫ'!$B${phase_cell}={index + 1},"
                          f"'ОБЪЕКТЫ'!$B${revenue_cell},0)"
                          for index in range(len(_V4_CONSOLIDATOR_ROWS))]
+        elif key == "object_parking":
+            # Паркинг объектов — не четвёртый объект, а продукт, собранный со
+            # ВСЕХ объектов: у каждого своя очередь, и место приписывается к
+            # ней условием своего объекта.
+            per_queue = [
+                "+".join(
+                    f"IF('ОБЪЕКТЫ'!$B${item[1] + 1}={index + 1},"
+                    f"'ОБЪЕКТЫ'!$B${item[3]},0)"
+                    for item in _V4_OBJECT_PARKING)
+                for index in range(len(_V4_CONSOLIDATOR_ROWS))]
         else:
             missing.append(f"КОНСОЛИДАТОР: книга не умеет считать выручку «{labels[key]}»")
             continue
@@ -20253,11 +20369,12 @@ V4_REWRITTEN_FORMULA_ROWS: dict[str, tuple[tuple[int, ...], str]] = {
     ),
     "ПРОВЕРКИ": (
         (
-        3, 29, 39, 40, 42, 43, 45, 46, 50, 51, 52, 53, 54, 55, 57, 58,
-        59, 71, 72,
+        3, 29, 39, 40, 42, 43, 45, 46, 48, 50, 51, 52, 53, 54, 55, 57,
+        58, 59, 71, 72,
         ),
         "Строки паритета и самопроверки под четвёртый объект, перенос "
-        "долга и кэш-свип "
+        "долга, кэш-свип и паркинг объектов в выручке и в ожидании "
+        "CAPEX "
     ),
     "Продажи": (
         (
@@ -20841,6 +20958,7 @@ def build_project_workbook(
     report_xml = _v4_rename_labels(report_xml, "ОТЧЕТ", missing)
     tep_xml = _v4_sports_tep_row(
         source.read(tep_sheet_path).decode("utf-8"), missing)
+    tep_xml = _v4_object_parking_in_tep(tep_xml, missing)
     tep_xml = _v4_rename_labels(tep_xml, "ТЭП", missing)
 
     # Соцстройка — готовыми числами в строку 31 блока каждой очереди CAPEX:
@@ -20986,7 +21104,10 @@ def build_project_workbook(
 
     checks_sheet_path = _v4_sheet_path(source, "ПРОВЕРКИ")
     checks_xml = _v4_relax_limit_check_for_carried_debt(
-        _v4_sports_checks(source.read(checks_sheet_path).decode("utf-8"), missing),
+        _v4_object_parking_checks(
+            _v4_sports_checks(
+                source.read(checks_sheet_path).decode("utf-8"), missing),
+            missing),
         missing)
     _parity = (finance_hints or {}).get("parity") or {}
     if _parity:
