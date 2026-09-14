@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -66,8 +67,12 @@ def test_the_watchdog_collects_with_its_own_budget(tmp_path, monkeypatch):
     collect()
     assert asked, "сбор не звался вовсе"
     # Срок маршрута — про шлюз; сравнение идёт с ним, а не с числом здесь:
-    # литерал в проверке разошёлся бы с кодом молча.
-    route_budget = 40.0
+    # литерал в проверке разошёлся бы с кодом молча. Имя берётся целым словом,
+    # иначе поиск подстроки находит объявление сторожа.
+    source = (ROOT / "auction_search" / "api.py").read_text(encoding="utf-8")
+    found = re.search(r"(?<![A-Z_])DISCOVERY_BUDGET_SECONDS = ([\d.]+)", source)
+    assert found, "у маршрута нет срока сбора"
+    route_budget = float(found.group(1))
     assert asked[0] and asked[0] > route_budget, (
         f"сторож собирает маршрутным сроком {asked[0]}")
 
