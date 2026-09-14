@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
+from typing import Any, Callable
 
 from auction_search import (
-    egrn_archive, egrn_extracts, egrn_store, krt_notice, lot_documents,
+    deadline as budget, egrn_archive, egrn_extracts, egrn_store, krt_notice,
+    lot_documents,
 )
 from auction_search.documents import (
     DocumentAuthorizationRequired,
@@ -323,6 +326,136 @@ def enrich_krt_from_official_documents(
     lot.raw["krt_auth_required"] = any(w.get("kind") == "auth_required" for w in warnings)
     lot.raw["krt_extraction_complete"] = bool(lot.documents) and not warnings
     return lot
+
+
+def read_notices(by_site: dict[str, Any], *,
+                 fetch_lot: Callable[[str], AuctionLot],
+                 store_dir: Path | str,
+                 budget_seconds: float | None = None,
+                 now: Callable[[], float] = time.time) -> dict[str, Any]:
+    """Взять извещения у всех лотов связки — прогоном, а не рукой.
+
+    «Почему ты не берешь извещения тогда? они же есть у всех кто на торгах! и
+    лежит в росэлторге» (владелец, 14.09.2026). Он прав: состав территории
+    появлялся ТОЛЬКО когда человек нажимал «Разобрать лот» —
+    `enrich_krt_from_official_documents` зовётся из маршрута сбора одного лота
+    и из CLI, а прогон каталога его не зовёт вовсе. Замер прода 14.09.2026: из
+    одиннадцати площадок с живым лотом состав из извещения был у ОДНОЙ — той,
+    которую я разобрал рукой; у пяти стоял запасной перечень проекта решения
+    (без привязки «объект → участок», то есть ноль строений), у пяти не было
+    ничего. На экране это выглядело как ответ документов, а было нашим
+    пробелом.
+
+    Цена названа, а не спрятана. Первый заход по лоту — это его вложения
+    (на лоте 21000005000000033023 их 26), то есть минуты внешних запросов.
+    Второй заход ему не нужен вовсе: разобранный состав не устаревает — торги
+    идут по одному извещению, — а байты вложений лежат на складе
+    (`lot_documents`), поэтому площадка спрашивается только о том, чего не
+    отдала. Отсюда `budget_seconds`: недособранное называется вслух и
+    дочитывается следующим заходом сторожа, а не держит его поток.
+
+    Три ответа, и слить их нельзя: состав прочитан; вложения прочитаны, а
+    таблицы состава в них нет (ответ ДОКУМЕНТОВ, живёт сутки); площадка
+    вложения не отдала (её ответ, спрашивается снова через полчаса). Отметку
+    держит `krt_territory`, рядом с самим составом.
+    """
+    territory = krt_territory()
+    store = Path(store_dir)
+    until = budget.start(budget_seconds)
+    out: dict[str, Any] = {
+        "at": int(now()), "lots": 0, "asked": 0, "read": 0,
+        "already": 0, "waiting": 0, "no_table": 0, "refused": 0,
+        "unsupported": 0,
+        "out_of_time": 0, "sites": [],
+    }
+    seen: set[str] = set()
+    for slug, lots in sorted((by_site or {}).items()):
+        for lot_row in lots or []:
+            if not isinstance(lot_row, dict):
+                continue
+            url = str(lot_row.get("url") or "").strip()
+            key = str(lot_row.get("store_key") or "") or store_key(lot_row)
+            if not url or not key or key in seen:
+                continue
+            seen.add(key)
+            out["lots"] = int(out["lots"]) + 1
+            row: dict[str, Any] = {"slug": str(slug), "key": key,
+                                   "lot": str(lot_row.get("title") or "")[:200]}
+            if territory.stored_notice(key, root=store).get("lands"):
+                out["already"] = int(out["already"]) + 1
+                row["state"] = "already"
+                out["sites"].append(row)
+                continue
+            if not territory.notice_due(key, root=store, now=now()):
+                # Ответ прошлой попытки ещё свеж. Это не молчание: он назван
+                # у самой площадки, а здесь считается числом.
+                out["waiting"] = int(out["waiting"]) + 1
+                row["state"] = "waiting"
+                row["why"] = str(territory.stored_attempt(
+                    key, root=store).get("outcome") or "")
+                out["sites"].append(row)
+                continue
+            if budget.expired(until):
+                # Срок сильнее списка: недочитанное дочитает следующий заход.
+                # Молча брошенный лот читался бы как «состава у него нет».
+                out["out_of_time"] = int(out["out_of_time"]) + 1
+                row["state"] = "out_of_time"
+                out["sites"].append(row)
+                continue
+            out["asked"] = int(out["asked"]) + 1
+            try:
+                lot = fetch_lot(url)
+                if lot.lot_kind != LotKind.KRT:
+                    raise ValueError("лот прочитан не как КРТ")
+                lot = enrich_krt_from_official_documents(
+                    lot, store_dir=store, deadline=until)
+            except ValueError as exc:
+                # Не перебой площадки, а отсутствие читателя: вторым заходом
+                # через полчаса это не лечится, поэтому свой ответ и свой срок.
+                territory.remember_attempt(
+                    key, outcome="unsupported", why=str(exc), root=store)
+                out["unsupported"] = int(out.get("unsupported") or 0) + 1
+                row["state"] = "unsupported"
+                row["why"] = str(exc)[:200]
+                out["sites"].append(row)
+                continue
+            except Exception as exc:  # noqa: BLE001 — один лот не роняет проход
+                # Та же беда, что уже была у сбора каталога: одна недоступная
+                # карточка РАД снимала всю выдачу.
+                territory.remember_attempt(
+                    key, outcome="refused",
+                    why=f"{type(exc).__name__}: {exc}", root=store)
+                out["refused"] = int(out["refused"]) + 1
+                row["state"] = "refused"
+                row["why"] = f"{type(exc).__name__}: {exc}"[:200]
+                out["sites"].append(row)
+                continue
+            ledger = lot.raw.get("krt_documents") or {}
+            documents = int(ledger.get("read") or 0)
+            if territory.stored_notice(key, root=store).get("lands"):
+                territory.remember_attempt(key, outcome="read",
+                                           documents=documents, root=store)
+                out["read"] = int(out["read"]) + 1
+                row["state"] = "read"
+            elif ledger.get("refused"):
+                # Вложения отданы не все: «таблицы нет» тут утверждать нельзя —
+                # она могла стоять как раз в неотданном.
+                why = "; ".join(str(item.get("document") or "")
+                                for item in (ledger.get("refused") or [])[:5])
+                territory.remember_attempt(
+                    key, outcome="refused",
+                    why=f"не отдано вложений: {len(ledger['refused'])} ({why})",
+                    documents=documents, root=store)
+                out["refused"] = int(out["refused"]) + 1
+                row["state"] = "refused"
+            else:
+                territory.remember_attempt(key, outcome="no_table",
+                                           documents=documents, root=store)
+                out["no_table"] = int(out["no_table"]) + 1
+                row["state"] = "no_table"
+            row["documents"] = documents
+            out["sites"].append(row)
+    return out
 
 
 def documents_summary(lot: AuctionLot) -> dict | None:

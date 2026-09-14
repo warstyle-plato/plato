@@ -766,3 +766,56 @@ def test_in_a_real_browser_the_progress_counts_the_numbers_it_asks(
     assert "Строений состава нарисовано 1 из 2" in seen["coverage"], seen["coverage"]
     assert "контура у них нет" in seen["coverage"], seen["coverage"]
     assert "строений выгрузки" not in seen["coverage"], seen["coverage"]
+
+
+def test_in_a_real_browser_a_site_without_a_composition_says_so(tmp_path, monkeypatch):
+    """«0 из 0 контуров» там, где состава нет вовсе, — та же ложь, что в ходе.
+
+    Делить не на что, и «получено 0 из 0» читается как ответ ЕГРН: «пула не
+    знаем» (экран владельца, 14.09.2026, все плитки в нулях). Честный ответ —
+    «состава нет», а чей это пробел, называет причина у карты: наш, пока проход
+    за извещением до лота не дошёл, и документов, когда вложения прочитаны и
+    таблицы в них нет.
+    """
+    from browser import chromium_or_skip, serve
+
+    chrome = chromium_or_skip()
+    from playwright.sync_api import sync_playwright
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("NAGATINO_EGRN_READ", "0")
+    root = tmp_path / "market"
+    root.mkdir(parents=True, exist_ok=True)
+
+    def _read(page):
+        return page.evaluate("""() => ({
+          stats: (document.getElementById('stats').textContent || '').trim(),
+          map: (document.getElementById('mapBox').textContent || '').trim(),
+        })""")
+
+    with serve(_app(tmp_path), 18801) as base:
+        with sync_playwright() as play:
+            browser = play.chromium.launch(executable_path=str(chrome))
+            page = browser.new_page()
+            errors: list[str] = []
+            page.on("pageerror", lambda exc: errors.append(str(exc)))
+            page.goto(f"{base}/krt/site/{SITE['slug']}", wait_until="domcontentloaded")
+            page.wait_for_function(
+                "() => (document.getElementById('stats').textContent||'').trim()")
+            ours = _read(page)
+            # Тот же экран, когда вложения прочитаны и таблицы в них нет: ответ
+            # ДОКУМЕНТОВ, а не наш пробел.
+            krt_territory.remember_attempt(LOT["store_key"], outcome="no_table",
+                                           documents=26, root=root)
+            page.reload(wait_until="domcontentloaded")
+            page.wait_for_function(
+                "() => (document.getElementById('stats').textContent||'').trim()")
+            theirs = _read(page)
+            browser.close()
+
+    assert not errors, errors
+    assert "0 из 0" not in ours["stats"], ours["stats"]
+    assert "состава территории" in ours["stats"], ours["stats"]
+    assert "наш пробел" in ours["map"], ours["map"]
+    assert "таблицы состава" in theirs["map"], theirs["map"]
+    assert "наш пробел" not in theirs["map"], theirs["map"]
