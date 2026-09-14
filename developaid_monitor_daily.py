@@ -22,6 +22,7 @@ from __future__ import annotations
 import datetime
 import json
 import re
+from html.parser import HTMLParser
 from typing import Any
 
 import developaid_monitor as monitor
@@ -252,6 +253,142 @@ def store_daily_report(project: str, text: str, taken_at: Any) -> dict[str, Any]
         "workers_total": parsed["workers_total"],
         "works": len(parsed["works"]),
         "unparsed": parsed["unparsed"],
+    }
+
+
+# Выгрузка Telegram — HTML, и читается она РАЗБОРОМ, а не образцами.
+# Первая версия искала три поля регулярками, и CodeQL был прав, назвав их
+# опасными: `<div class="text">(.*?)</div>` и `<[^>]+>` по файлу, который
+# приносит человек, уходят в перебор на строке из одних «<». Та же болезнь уже
+# ловилась в `_section_of` на строке «поставка» с полусотней тысяч пробелов.
+# Разбор при этом не дороже: `html.parser` лежит в стандартной библиотеке,
+# идёт по документу один раз и сам разворачивает сущности.
+class _TelegramExport(HTMLParser):
+    """Пары «день, текст» из выгрузки Telegram.
+
+    Опознаём по разметке экспорта: сообщение — `div.message`, дата — `title`
+    у `div.pull_right.date.details`, текст — `div.text`. Служебные сообщения
+    (`message service`) пропускаем: это «вошёл в группу», а не сводка.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.rows: list[tuple[str, str]] = []
+        self._depth = 0
+        self._message_at = -1
+        self._service = False
+        self._day = ""
+        self._text_at = -1
+        self._parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "br" and self._text_at >= 0:
+            self._parts.append("\n")
+        if tag != "div":
+            return
+        self._depth += 1
+        classes = ""
+        title = ""
+        for name, value in attrs:
+            if name == "class":
+                classes = str(value or "")
+            elif name == "title":
+                title = str(value or "")
+        words = classes.split()
+        if "message" in words:
+            # Новое сообщение закрывает прежнее: Telegram склеивает подряд
+            # идущие сообщения одного автора, и закрывающего тега у каждого
+            # не найти — границей служит начало следующего.
+            self._flush()
+            self._message_at = self._depth
+            self._service = "service" in words
+            self._day = ""
+        elif "date" in words and "details" in words and self._message_at >= 0:
+            # Дата берётся из САМОГО сообщения, а не из разделителя дней:
+            # разделитель стоит один на день, и сообщение, приехавшее после
+            # полуночи, получило бы вчерашний день.
+            head = title[:10]
+            if len(head) == 10 and head[2] == "." and head[5] == ".":
+                day, month, year = head[:2], head[3:5], head[6:]
+                if day.isdigit() and month.isdigit() and year.isdigit():
+                    self._day = f"{year}-{month}-{day}"
+        elif "text" in words and self._message_at >= 0 and self._text_at < 0:
+            self._text_at = self._depth
+            self._parts = []
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag != "div":
+            return
+        if self._text_at == self._depth:
+            self._text_at = -1
+        if self._message_at == self._depth:
+            self._flush()
+        self._depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        if self._text_at >= 0:
+            self._parts.append(data)
+
+    def _flush(self) -> None:
+        text = "".join(self._parts).strip()
+        if text and self._day and not self._service:
+            self.rows.append((self._day, text))
+        self._message_at = -1
+        self._text_at = -1
+        self._service = False
+        self._day = ""
+        self._parts = []
+
+    def close(self) -> None:  # noqa: D102 - хвост документа тоже сообщение
+        super().close()
+        self._flush()
+
+
+def read_telegram_export(raw: str) -> list[tuple[str, str]]:
+    """Пары «день, текст» из выгрузки Telegram, в порядке чата.
+
+    Служебные сообщения и медиа пропускаются молча — их в стройчате
+    большинство (на живой выгрузке 1441 из 1636), и называть каждое значило бы
+    утопить в них находку. А вот сколько сообщений прочитано и сколько из них
+    оказалось сводками, зовущий обязан сказать вслух: «внесено 44» без «из
+    1636 прочитано 139 текстовых» не отвечает, потерялось ли что-нибудь.
+    """
+    reader = _TelegramExport()
+    reader.feed(str(raw or ""))
+    reader.close()
+    return reader.rows
+
+
+def store_telegram_export(project: str, raw: str) -> dict[str, Any]:
+    """Внести в проект все сводки выгрузки. Разбор и хранение — те же.
+
+    Второго пути к диску не заводим: `store_daily_report` — то же, чем кладёт
+    сводку бот, и разойдись они, один и тот же день лёг бы по-разному в
+    зависимости от того, пришёл он из чата или из файла.
+
+    День в проекте один, и повторная сводка того же дня его ЗАМЕЩАЕТ — так же,
+    как замещает присланная в чат. На живой выгрузке таких дней один из 44;
+    молча это выглядело бы потерей, поэтому число замещённых стоит в ответе.
+    """
+    rows = read_telegram_export(raw)
+    stored: list[dict[str, Any]] = []
+    skipped = 0
+    for day, text in rows:
+        try:
+            stored.append(store_daily_report(project, text, day))
+        except ValueError:
+            # Не сводка — обычная переписка. Это норма, а не отказ.
+            skipped += 1
+    days = sorted({row["date"] for row in stored})
+    return {
+        "messages": len(rows),
+        "stored": len(stored),
+        "skipped": skipped,
+        "days": len(days),
+        "replaced": sum(1 for row in stored if row.get("replaced")),
+        "first": days[0] if days else "",
+        "last": days[-1] if days else "",
+        "reports": stored,
     }
 
 
