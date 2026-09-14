@@ -18,10 +18,18 @@ from auction_search.models import AuctionLot, LotKind
 
 _PROGRAM_DOC_TYPES = {"krt_decision", "agreement", "notice", "annex", "other"}
 _OBLIGATION_DOC_TYPES = {"agreement", "notice", "annex", "krt_decision", "other"}
-# Где искать таблицу состава территории. Приложение приходит и отдельным
-# вложением, и внутри самого извещения, поэтому смотрим оба вида; у остальных
-# видов этой таблицы не бывает, и разбор их страниц был бы платой впустую.
-_NOTICE_DOC_TYPES = {"notice", "annex"}
+# Где искать таблицу состава территории. Раньше здесь стояли «извещение» и
+# «приложение» — виды, которых Росэлторг не ставит: тип он выводит из ИМЕНИ
+# файла по словам «извещ»/«прилож», а площадка зовёт документ «Территория.
+# Лотовая документация.pdf» и «Территория.Сведения о земельных участках.pdf».
+# Живой счёт по лоту 21000005000000033023 (14.09.2026): 14 «прочее», 13
+# «договор», 3 «ЕГРН» и ни одного «извещения» — гейт не срабатывал ни разу, а
+# состав приезжал запасным перечнем проекта решения.
+#
+# Поэтому таблицу ищет сам разбор, в тех же вложениях, что программу и
+# обязательства: их байты уже в руках, а `krt_notice` отвечает «таблицы здесь
+# нет» даром и пустым разбором прочитанного не вытесняет.
+_NOTICE_DOC_TYPES = _PROGRAM_DOC_TYPES
 
 
 def krt_territory():
@@ -251,10 +259,12 @@ def enrich_krt_from_official_documents(
             try:
                 notice = krt_notice.read_bytes(data)
             except Exception as exc:  # noqa: BLE001 — отказ разбора назван, а не молчит
-                if str(document.document_type) == "notice":
-                    ledger["skipped"].append({
-                        "document": document.title, "url": document.url,
-                        "why": f"состав территории не разобран: {exc}"[:200]})
+                # Отказ пишется у того вложения, где таблицу искали и не
+                # разобрали. Прежде он писался только у вида «извещение» —
+                # то есть у вида, которого площадка не ставит.
+                ledger["skipped"].append({
+                    "document": document.title, "url": document.url,
+                    "why": f"состав территории не разобран: {exc}"[:200]})
             else:
                 krt_territory().remember_notice(
                     key, notice, document=document.title or document.url,
