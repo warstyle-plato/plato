@@ -187,23 +187,31 @@ def test_an_unfinished_walk_never_pretends_to_be_the_whole_list() -> None:
     def fetch(url: str) -> bytes:
         return json.dumps(pages[page_of(url)]).encode("utf-8")
 
-    found, complete = collect(fetch, max_pages=5)
-    assert complete is True and len(found) == 5
+    walk = collect(fetch, max_pages=5)
+    assert walk.complete is True and len(walk.items) == 5
 
     def broken(url: str) -> bytes:
         raise OSError("поиск не ответил")
 
-    found, complete = collect(broken, max_pages=5)
-    assert found == [] and complete is False
+    walk = collect(broken, max_pages=5)
+    assert walk.items == [] and walk.complete is False
+    assert walk.shortfall(), "у недособранного обхода обязана быть причина"
 
 
-def test_the_same_page_twice_is_the_end_not_a_loop() -> None:
-    """Поиск повторяет последнюю страницу вместо отказа — это конец выдачи."""
+def test_the_same_page_twice_is_the_end_only_when_the_source_is_silent() -> None:
+    """Повтор страницы — конец выдачи ровно там, где источник своих чисел не назвал.
+
+    Примета «страница не принесла новых записей» верна на последней странице
+    (поиск повторяет её вместо отказа) и неверна в середине ранжированной
+    выдачи. Пока источник молчит о своём объёме, другой приметы нет; как только
+    он называет `pageCount`, решает она — см. соседний файл проверок.
+    """
     def fetch(url: str) -> bytes:
         return json.dumps({"results": LIVE}).encode("utf-8")
 
-    found, complete = collect(fetch, max_pages=6)
-    assert complete is True and len(found) == 5
+    walk = collect(fetch, max_pages=6)
+    assert walk.complete is True and len(walk.items) == 5
+    assert walk.pages_announced == 0 and walk.announced == 0
 
 
 def test_the_query_is_the_one_that_answered() -> None:

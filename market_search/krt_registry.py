@@ -1183,7 +1183,7 @@ class KrtRegistry:
         save_json(cache_path, result)
         return result
 
-    def decisions(self, *, refresh: bool = False, max_pages: int = 60,
+    def decisions(self, *, refresh: bool = False, max_pages: int = 0,
                   catalogue: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         """Решения о КРТ и разложение их на «карточка есть» и «карточки нет».
 
@@ -1217,20 +1217,74 @@ class KrtRegistry:
                 and fresh(self.decisions_path, self.ttl_seconds)):
             payload = dict(cached)
         if payload is None:
-            found, complete = krt_decisions.collect(self.fetch, max_pages=max_pages)
-            if not found and isinstance(cached, dict) and cached.get("all"):
-                # Источник не ответил — прежний ответ честнее пустого списка, и
-                # он назван прежним.
+            # Потолок страниц объявлен один раз — у обхода: источник отдаёт
+            # по десять записей на страницу, сколько бы мы ни просили, и
+            # второй потолок здесь отставал бы от него молча.
+            walk = krt_decisions.collect(
+                self.fetch, **({"max_pages": max_pages} if max_pages else {}))
+            kept = [one for one in ((cached.get("all") if isinstance(cached, dict)
+                                     else None) or []) if isinstance(one, dict)]
+            # Три ответа, и слить их нельзя — каждый измерен на живом источнике
+            # 15.09.2026, когда бот весь день объявлял новыми одни и те же
+            # четыре площадки.
+            #
+            # **Обход оборвался** (страниц прочитано меньше объявленных, или
+            # источник не ответил) — прежний снимок не трогаем вовсе. Прежде
+            # защита стояла только на ПУСТОМ ответе, и усечённый список
+            # заменял полный: площадка выпадала из снимка, а вернувшись
+            # следующим заходом, объявлялась новой.
+            #
+            # **Страницы дочитаны, а документов меньше объявленного** — это
+            # выдача повторила страницу: 580 строк при 579 различных, и один
+            # документ не показан ни на одной странице (страница 3 отдала
+            # запись, уже прочитанную на первых двух). Какой именно — мы не
+            # знаем, поэтому обход ДОПОЛНЯЕТ снимок, а не заменяет его: то же
+            # правило, что у склада выписок.
+            #
+            # **Документов прочитано не меньше объявленного** — это ответ
+            # источника целиком, и он вправе забыть: документ, которого в
+            # выдаче больше нет, из снимка уходит.
+            # Пустой ответ снимок не заменяет НИКОГДА, сколько бы страниц
+            # источник ни объявил: 580 записей, стёртые одной пустой выдачей,
+            # — это не ответ города. Прежняя защита стояла ровно на этом, и
+            # она остаётся рядом с новой, а не вместо неё.
+            short_pages = (not walk.items) \
+                or (walk.pages_announced and walk.pages < walk.pages_announced)
+            if short_pages and kept:
                 payload = dict(cached)
                 payload["stale"] = True
+                payload["stale_reason"] = (
+                    f"обход недособран ({walk.shortfall() or 'источник не ответил'}): "
+                    f"принесено записей {len(walk.items)}, прежний снимок держит "
+                    f"{len(kept)} — снимок оставлен прежним")
             else:
+                brought = [one.to_dict() for one in walk.items]
+                merged = brought
+                if walk.announced and walk.seen < walk.announced and kept:
+                    by_id = {str(one.get("id") or ""): one for one in kept}
+                    by_id.update({str(one.get("id") or ""): one for one in brought})
+                    merged = sorted(by_id.values(),
+                                    key=lambda one: -int(one.get("published_at") or 0))
+                # Полнота — свойство СНИМКА, а не обхода: у нас столько
+                # документов, сколько объявил источник, даже если один из них
+                # достался прошлому обходу. Иначе снимок замирал бы навсегда
+                # на источнике, теряющем запись почти в каждом обходе.
+                complete = (len(merged) >= walk.announced if walk.announced
+                            else walk.complete)
                 payload = {
                     "schema_version": DECISIONS_CACHE_SCHEMA_VERSION,
                     "retrieved_at": int(time.time()),
-                    "complete": complete,
+                    "complete": bool(complete),
                     "stale": False,
-                    "all": [one.to_dict() for one in found],
+                    "all": merged,
                     "query": krt_decisions.MOS_KRT_QUERY,
+                    # Чем посчитана полнота — часть ответа: страниц прочитано
+                    # из объявленных, документов выдачи из объявленных и
+                    # сколько записей снимку досталось от прежнего обхода.
+                    "walk": {"pages": walk.pages,
+                             "pages_announced": walk.pages_announced,
+                             "seen": walk.seen, "announced": walk.announced,
+                             "brought": len(brought), "kept": len(merged) - len(brought)},
                 }
                 save_json(self.decisions_path, payload)
         rows = [krt_decisions.KrtDecision(**{key: value for key, value in one.items()
@@ -1708,12 +1762,30 @@ class KrtRegistry:
                 and cached.get("schema_version") == TENDERS_CACHE_SCHEMA_VERSION
                 and fresh(self.tenders_path, self.ttl_seconds)):
             return self._with_order_actions(cached)
-        found, complete = krt_decisions.collect_tender_orders(
-            self.fetch, max_pages=max_pages)
-        if not found and isinstance(cached, dict) and cached.get("orders"):
+        walk = krt_decisions.collect_tender_orders(self.fetch, max_pages=max_pages)
+        found = list(walk.items)
+        kept = [one for one in ((cached.get("orders") if isinstance(cached, dict)
+                                 else None) or []) if isinstance(one, dict)]
+        # Недособранный обход прежний снимок не трогает — то же правило, что у
+        # проектов решений: защита стояла только на ПУСТОМ ответе, а усечённая
+        # выдача заменяла полную и распоряжение выпадало из оси «Торги» вместе
+        # со своей ценой входа.
+        short_pages = (not found) \
+            or (walk.pages_announced and walk.pages < walk.pages_announced)
+        if short_pages and kept:
             stale = dict(cached)
             stale["stale"] = True
+            stale["stale_reason"] = (
+                f"обход недособран ({walk.shortfall() or 'источник не ответил'}): "
+                f"принесено {len(found)}, прежний снимок держит {len(kept)}")
             return self._with_order_actions(stale)
+        if walk.announced and walk.seen < walk.announced and kept:
+            # Страницы дочитаны, а документов меньше объявленного — выдача
+            # повторила страницу. Какое распоряжение потеряно, мы не знаем,
+            # поэтому обход ДОПОЛНЯЕТ снимок, а не заменяет его.
+            by_id = {str(one.get("id") or ""): one for one in kept}
+            by_id.update({str(one.get("id") or ""): one for one in found})
+            found = list(by_id.values())
         found.sort(key=lambda one: one.get("published_at") or 0, reverse=True)
         # Адрес площадки лежит в СКАНЕ распоряжения, и другого места у него нет.
         # Распознаётся один раз и кладётся рядом с записью: без этого привязку
@@ -1731,7 +1803,11 @@ class KrtRegistry:
         payload = {
             "schema_version": TENDERS_CACHE_SCHEMA_VERSION,
             "retrieved_at": int(time.time()),
-            "complete": complete,
+            # Полнота — свойство СНИМКА, а не обхода: у нас столько
+            # документов, сколько объявил источник, пусть один и достался
+            # прошлому обходу.
+            "complete": bool(len(found) >= walk.announced if walk.announced
+                             else walk.complete),
             "stale": False,
             "orders": found,
             "query": krt_decisions.MOS_TENDER_QUERY,
