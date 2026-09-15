@@ -1325,6 +1325,13 @@ def install(app: FastAPI) -> None:
             # Сколько строк убрано схлопыванием второй публикации одного и того
             # же документа: у города он лежит и в разделе ДГИ, и в разделе ДИПП.
             "second_publications": second_publications,
+            # Чем посчитана полнота снимка решений — часть ответа, а не
+            # подробность. Снимок её хранит с 0.23.87, а наружу не отдавал:
+            # «дочитан: True» проверить было нечем, и когда после выкатки
+            # строк стало 246 вместо 248, объяснить это со стороны не мог
+            # никто — счётчик молчания есть, а прочитать его нельзя.
+            "decisions_walk": found.get("walk") or {},
+            "decisions_stale_reason": found.get("stale_reason") or "",
             "new_count": sum(1 for row in projects if row.get("is_new")),
             "new_for_days": NEW_FOR_SECONDS // 86400,
             # Охват карточек города: прочитано, не ответило и по какой причине.
@@ -1401,6 +1408,13 @@ def install(app: FastAPI) -> None:
             "decisions_whole": bool(decisions_whole),
             "whole": bool(catalogue_whole and decisions_whole),
         }
+        # Числа обхода — рядом с признаком, которым он посчитан: страниц из
+        # объявленных, документов из объявленных и сколько документов снимок
+        # объясняет вместе с неразобранными. Без них «решения дочитаны не все»
+        # снаружи неотличимо от «в источнике столько и есть».
+        walk = state.get("decisions_walk")
+        if isinstance(walk, dict) and walk:
+            why["decisions_walk"] = walk
         return catalogue + decisions, catalogue_whole and decisions_whole, why
 
     def _krt_screen_list() -> tuple[list[dict[str, Any]], bool]:
