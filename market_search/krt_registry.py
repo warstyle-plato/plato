@@ -1260,16 +1260,37 @@ class KrtRegistry:
             else:
                 brought = [one.to_dict() for one in walk.items]
                 merged = brought
+                skipped = list(walk.unparsed)
                 if walk.announced and walk.seen < walk.announced and kept:
                     by_id = {str(one.get("id") or ""): one for one in kept}
                     by_id.update({str(one.get("id") or ""): one for one in brought})
                     merged = sorted(by_id.values(),
                                     key=lambda one: -int(one.get("published_at") or 0))
+                    # Неразобранные помнятся тем же слиянием: иначе снимок
+                    # объяснит меньше документов, чем объяснял до обхода.
+                    was = (cached.get("skipped") if isinstance(cached, dict) else None)
+                    skipped = sorted({str(one) for one in (was or []) if one}
+                                     | set(walk.unparsed))
                 # Полнота — свойство СНИМКА, а не обхода: у нас столько
                 # документов, сколько объявил источник, даже если один из них
                 # достался прошлому обходу. Иначе снимок замирал бы навсегда
                 # на источнике, теряющем запись почти в каждом обходе.
-                complete = (len(merged) >= walk.announced if walk.announced
+                #
+                # **Сравнивается однородное — документы с документами.** Прежде
+                # здесь стояло `len(merged) >= walk.announced`, где `merged` —
+                # разобранные РЕШЕНИЯ, а `announced` — объявленные ДОКУМЕНТЫ, и
+                # это разные величины: живой обход 15.09.2026 дал 578 различных
+                # документов из 580 объявленных и 576 решений из них. Плохи обе
+                # стороны: union решений может не дорасти до числа документов
+                # НИКОГДА — и тогда снимок «недочитан» навсегда, а сторож
+                # новостей на неполном списке состав не пишет, то есть новости
+                # встают совсем; либо union через несколько обходов число
+                # документов перевалит — и снимок объявит себя полным при
+                # коротком обходе, а замена уронит строки. Снимок объясняет
+                # столько документов, сколько у него записей ПЛЮС названных
+                # неразобранных.
+                accounted = len(merged) + len(skipped)
+                complete = (accounted >= walk.announced if walk.announced
                             else walk.complete)
                 payload = {
                     "schema_version": DECISIONS_CACHE_SCHEMA_VERSION,
@@ -1277,14 +1298,17 @@ class KrtRegistry:
                     "complete": bool(complete),
                     "stale": False,
                     "all": merged,
+                    "skipped": skipped,
                     "query": krt_decisions.MOS_KRT_QUERY,
                     # Чем посчитана полнота — часть ответа: страниц прочитано
-                    # из объявленных, документов выдачи из объявленных и
-                    # сколько записей снимку досталось от прежнего обхода.
+                    # из объявленных, документов выдачи из объявленных, сколько
+                    # записей снимку досталось от прежнего обхода и сколько
+                    # документов он объясняет вместе с неразобранными.
                     "walk": {"pages": walk.pages,
                              "pages_announced": walk.pages_announced,
                              "seen": walk.seen, "announced": walk.announced,
-                             "brought": len(brought), "kept": len(merged) - len(brought)},
+                             "brought": len(brought), "kept": len(merged) - len(brought),
+                             "unparsed": len(skipped), "accounted": accounted},
                 }
                 save_json(self.decisions_path, payload)
         rows = [krt_decisions.KrtDecision(**{key: value for key, value in one.items()
@@ -1779,6 +1803,7 @@ class KrtRegistry:
                 f"обход недособран ({walk.shortfall() or 'источник не ответил'}): "
                 f"принесено {len(found)}, прежний снимок держит {len(kept)}")
             return self._with_order_actions(stale)
+        skipped = list(walk.unparsed)
         if walk.announced and walk.seen < walk.announced and kept:
             # Страницы дочитаны, а документов меньше объявленного — выдача
             # повторила страницу. Какое распоряжение потеряно, мы не знаем,
@@ -1786,6 +1811,9 @@ class KrtRegistry:
             by_id = {str(one.get("id") or ""): one for one in kept}
             by_id.update({str(one.get("id") or ""): one for one in found})
             found = list(by_id.values())
+            was = (cached.get("skipped") if isinstance(cached, dict) else None)
+            skipped = sorted({str(one) for one in (was or []) if one}
+                             | set(walk.unparsed))
         found.sort(key=lambda one: one.get("published_at") or 0, reverse=True)
         # Адрес площадки лежит в СКАНЕ распоряжения, и другого места у него нет.
         # Распознаётся один раз и кладётся рядом с записью: без этого привязку
@@ -1805,11 +1833,18 @@ class KrtRegistry:
             "retrieved_at": int(time.time()),
             # Полнота — свойство СНИМКА, а не обхода: у нас столько
             # документов, сколько объявил источник, пусть один и достался
-            # прошлому обходу.
-            "complete": bool(len(found) >= walk.announced if walk.announced
-                             else walk.complete),
+            # прошлому обходу. И сравнивается однородное: документы с
+            # документами — записи снимка ПЛЮС названные неразобранные, а не
+            # разобранные распоряжения против всех попаданий поиска.
+            "complete": bool(len(found) + len(skipped) >= walk.announced
+                             if walk.announced else walk.complete),
             "stale": False,
             "orders": found,
+            "skipped": skipped,
+            "walk": {"pages": walk.pages, "pages_announced": walk.pages_announced,
+                     "seen": walk.seen, "announced": walk.announced,
+                     "brought": len(walk.items), "unparsed": len(skipped),
+                     "accounted": len(found) + len(skipped)},
             "query": krt_decisions.MOS_TENDER_QUERY,
             # Сказать это обязан сам свод: молча непривязанные распоряжения
             # читаются как «торгов по нашим площадкам нет».
@@ -1886,6 +1921,14 @@ class KrtRegistry:
             stamp = int(self.path.stat().st_mtime)
         except OSError:
             stamp = 0
+        # Числа обхода решений — рядом с признаком, которым посчитана их
+        # полнота: сторож новостей на неполном списке состав не пишет, и
+        # «решения дочитаны не все» без этих чисел снаружи неотличимо от «в
+        # источнике столько и есть». Читается то, что уже на диске.
+        walk: dict[str, Any] = {}
+        decisions = load_json(self.decisions_path)
+        if isinstance(decisions, dict) and isinstance(decisions.get("walk"), dict):
+            walk = dict(decisions["walk"])
         return {
             "complete": bool(
                 self._cache_current(cached) and cached.get("complete", True)
@@ -1894,6 +1937,7 @@ class KrtRegistry:
             "decisions_refreshing": self._decisions_refreshing,
             "retrieved_at": stamp,
             "ttl_seconds": int(self.ttl_seconds),
+            "decisions_walk": walk,
         }
 
     def refresh_in_background(self) -> bool:

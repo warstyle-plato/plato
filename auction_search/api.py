@@ -1245,6 +1245,12 @@ def install(app: FastAPI) -> None:
         decision_rows: list[dict[str, Any]] = []
         second_publications = 0
         tep_state: dict[str, Any] | None = None
+        # Числа обхода и причина устаревания объявляются ЗДЕСЬ, а не читаются
+        # из `found`: он существует только внутри ветки, и безусловное чтение
+        # роняло маршрут `UnboundLocalError` там, где читателя решений нет
+        # вовсе (поймано прогоном затронутого до открытия PR).
+        decisions_walk: dict[str, Any] = {}
+        decisions_stale_reason = ""
         reader = getattr(krt_registry, "decisions", None)
         if callable(reader):
             try:
@@ -1264,6 +1270,8 @@ def install(app: FastAPI) -> None:
             # единственные цифры; у площадки с карточкой — самопроверка пары
             # «решение ↔ карточка», и расхождение называется, а не заменяет
             # собой каталог.
+            decisions_walk = dict(found.get("walk") or {})
+            decisions_stale_reason = str(found.get("stale_reason") or "")
             tep_by_document = found.get("tep") or {}
             tep_state = found.get("tep_coverage")
             # Недостающие решения дочитываются фоном и порциями — как карточки
@@ -1325,6 +1333,13 @@ def install(app: FastAPI) -> None:
             # Сколько строк убрано схлопыванием второй публикации одного и того
             # же документа: у города он лежит и в разделе ДГИ, и в разделе ДИПП.
             "second_publications": second_publications,
+            # Чем посчитана полнота снимка решений — часть ответа, а не
+            # подробность. Снимок её хранит с 0.23.87, а наружу не отдавал:
+            # «дочитан: True» проверить было нечем, и когда после выкатки
+            # строк стало 246 вместо 248, объяснить это со стороны не мог
+            # никто — счётчик молчания есть, а прочитать его нельзя.
+            "decisions_walk": decisions_walk,
+            "decisions_stale_reason": decisions_stale_reason,
             "new_count": sum(1 for row in projects if row.get("is_new")),
             "new_for_days": NEW_FOR_SECONDS // 86400,
             # Охват карточек города: прочитано, не ответило и по какой причине.
@@ -1401,6 +1416,13 @@ def install(app: FastAPI) -> None:
             "decisions_whole": bool(decisions_whole),
             "whole": bool(catalogue_whole and decisions_whole),
         }
+        # Числа обхода — рядом с признаком, которым он посчитан: страниц из
+        # объявленных, документов из объявленных и сколько документов снимок
+        # объясняет вместе с неразобранными. Без них «решения дочитаны не все»
+        # снаружи неотличимо от «в источнике столько и есть».
+        walk = state.get("decisions_walk")
+        if isinstance(walk, dict) and walk:
+            why["decisions_walk"] = walk
         return catalogue + decisions, catalogue_whole and decisions_whole, why
 
     def _krt_screen_list() -> tuple[list[dict[str, Any]], bool]:
