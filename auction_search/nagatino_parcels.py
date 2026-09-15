@@ -182,8 +182,13 @@ def empty_registry() -> dict[str, Any]:
         "schema_version": 1,
         "parcels": [],
         "owners": [],
+        # Группы, не зависящие от чужой выгрузки: город как публичный
+        # собственник и два ответа выписки без имени. «Имя не раскрыто» живёт
+        # ровно у таких площадок — все 34 такие строения (замер 15.09.2026)
+        # стоят на площадках БЕЗ выгрузки, — и без группы у них не было бы ни
+        # галочки отбора, ни подписи в легенде.
         "groups": [group for group in (nagatino.get("groups") or [])
-                   if str(group.get("key")) in ("moscow", "none")],
+                   if str(group.get("key")) in ("moscow", "withheld", "none")],
         "owner_groups": {key: value
                          for key, value in (nagatino.get("owner_groups") or {}).items()
                          if str(value) == "moscow"},
@@ -479,6 +484,17 @@ def _owner_view(record: dict[str, Any], groups_by_inn: dict[str, str],
 
     Пусто — ответ документа, а не наш пробел: у 14 участков из 20 право
     собственности не зарегистрировано вовсе. Так и написано.
+
+    **Ответов без имени ДВА, и слить их нельзя.** Право не зарегистрировано —
+    ответ реестра. Право зарегистрировано, а имени в этом виде выписки нет —
+    свойство печатной формы «об объекте недвижимости», и лечится оно своим
+    запросом в ЕГРН, а не перечитыванием того же файла. `owner_state` их
+    различает с 0.23.х, а свод территории читал только `owner_of` и показывал
+    второе как первое: замер 15.09.2026 по одиннадцати площадкам с живым лотом
+    — из 67 строений, названных «право собственности не зарегистрировано», 34
+    на деле withheld, и все 34 из печатных форм (из машинных выписок таких нет
+    ни одного). «Право не зарегистрировано» там, где оно зарегистрировано, — не
+    приближение, а неправда о документе.
     """
     from auction_search import egrn_extracts
 
@@ -488,14 +504,24 @@ def _owner_view(record: dict[str, Any], groups_by_inn: dict[str, str],
     # собственником значит показать не то лицо.
     others = egrn_extracts.other_rights(record) if record else []
     if not owner:
+        withheld = record and egrn_extracts.owner_state(record) == "withheld"
+        group = "withheld" if withheld else "none"
+        if withheld:
+            note = "право зарегистрировано, имени в этом виде выписки нет"
+        elif record:
+            note = "право собственности не зарегистрировано"
+        else:
+            note = "выписки на объект нет"
         return {"name": "", "inn": "", "ogrn": "", "kind": "", "others": others,
-                "note": ("право собственности не зарегистрировано"
-                         if record else "выписки на объект нет"),
-                "group": "none", "colour": str((groups.get("none") or {}).get("colour") or "#8a8a8a"),
-                "group_title": str((groups.get("none") or {}).get("title") or "")}
+                "note": note, "state": ("withheld" if withheld
+                                        else "unregistered" if record else "no_extract"),
+                "group": group,
+                "colour": str((groups.get(group) or {}).get("colour") or "#8a8a8a"),
+                "group_title": str((groups.get(group) or {}).get("title") or "")}
     group = group_of(owner, site)
     palette = _palette(site) if colours is None else colours
     return {"name": owner.get("name") or "", "inn": owner.get("inn") or "",
+            "state": "named",
             "ogrn": owner.get("ogrn") or "", "kind": owner.get("kind") or "",
             "code": owner.get("code") or "", "key": owner.get("key") or "",
             "since": owner.get("since") or "", "note": "", "others": others,
@@ -794,9 +820,17 @@ def disposal_note(land: dict[str, Any]) -> dict[str, str]:
     это документ: арендодателем выступает город. Без такого договора остаётся
     общее правило (в Москве неразграниченная госсобственность в распоряжении
     города), и это сказано именно как правило, а не как факт об участке.
+
+    Общее правило применимо там, где права НЕТ. У участка, чьё право
+    зарегистрировано, а имени выписка не раскрывает, распоряжается собственник,
+    и вывод «вероятно город» был бы приписан поверх записи реестра — четыре
+    участка одиннадцати площадок с живым лотом именно такие (замер 15.09.2026).
     """
-    if land["owner"].get("name"):
-        return {"who": "", "ground": "распоряжается собственник"}
+    state = str((land.get("owner") or {}).get("state") or "")
+    if land["owner"].get("name") or state == "withheld":
+        return {"who": "", "ground": ("распоряжается собственник"
+                                      + ("; имени выписка не раскрывает"
+                                         if state == "withheld" else ""))}
     for item in land.get("leases") or []:
         number = str(item.get("document_number") or "")
         if number and _CITY_CONTRACT.match(number):
@@ -954,7 +988,12 @@ def territory(site: Site | None = None) -> dict[str, Any]:
     owner_of_land = {item["cadastral_number"]: item["owner"] for item in lands
                      if item["owner"].get("name")}
     for item in objects_by_cad.values():
-        if item["owner"].get("name"):
+        # Имени нет по двум разным причинам, и соседство годится только для
+        # одной. Право не зарегистрировано — строение и правда, скорее всего,
+        # хозяйское. Право ЗАРЕГИСТРИРОВАНО, а имени эта форма не раскрывает —
+        # оно чьё-то, и красить его владельцем участка значит приписать право
+        # поверх записи реестра.
+        if item["owner"].get("name") or item["owner"].get("state") == "withheld":
             continue
         near = {owner_of_land[cad]["key"]: owner_of_land[cad]
                 for cad in item.get("lands") or [] if cad in owner_of_land}
@@ -980,7 +1019,8 @@ def territory(site: Site | None = None) -> dict[str, Any]:
     # собственность» — вывод, а не запись ЕГРН, и так и написано.
     for item in objects_by_cad.values():
         owner = item.get("owner") or {}
-        if owner.get("name") or not item.get("colour_from", "").startswith("владелец участка"):
+        if (owner.get("name") or owner.get("state") == "withheld"
+                or not item.get("colour_from", "").startswith("владелец участка")):
             continue
         near = [cad for cad in item.get("lands") or [] if cad in owner_of_land]
         holder = owner_of_land.get(near[0]) if near else None
@@ -1059,8 +1099,21 @@ def territory(site: Site | None = None) -> dict[str, Any]:
                 if item.get("title")),
             # Участков С номером, но БЕЗ записи о праве — второе состояние, и
             # оно называется рядом, чтобы два разных ответа не сливались.
-            "lands_without_right": len([land for land in lands
-                                        if not (land.get("owner") or {}).get("name")]),
+            # Участок, чьё право ЗАРЕГИСТРИРОВАНО, а имени выписка не
+            # раскрывает, сюда не идёт: запись о праве у него есть.
+            "lands_without_right": len([
+                land for land in lands
+                if not (land.get("owner") or {}).get("name")
+                and (land.get("owner") or {}).get("state") != "withheld"]),
+            # Третий ответ, и он про НАШ следующий шаг: имя даст свой запрос в
+            # ЕГРН, а не перечитывание того же файла. Числа стоят порознь —
+            # у земли и у строений разные меры и разные владельцы.
+            "lands_right_withheld": len([
+                land for land in lands
+                if (land.get("owner") or {}).get("state") == "withheld"]),
+            "objects_right_withheld": len([
+                item for item in objects
+                if (item.get("owner") or {}).get("state") == "withheld"]),
             "site_area_sqm": round(
                 _sum([item.get("notice_area_sqm") for item in lands])
                 + _sum([item.get("area_sqm") for item in notice.get("unformed") or []]), 1),
