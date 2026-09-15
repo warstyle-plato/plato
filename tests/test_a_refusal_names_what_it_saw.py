@@ -78,8 +78,12 @@ def test_the_refusal_shows_the_shape_and_not_the_value() -> None:
     said = str(caught.value)
     assert "77-05-0012007-2054" not in said, said
     assert "99-99-9999999-9999" in said, said
-    # И ни одной цифры самого номера: форма цифр не сохраняет.
-    assert not re.search(r"[1-8]", said.split("форма «")[1]), said
+    # И ни одной цифры самого номера ВНУТРИ формы: форма цифр не сохраняет.
+    # Границу формы задают её же кавычки, а не конец сообщения: за формой стоит
+    # «знаков NNNN», и своя первая версия этой проверки падала на его цифрах,
+    # то есть держала порядок слов вместо утверждения.
+    shape = said.split("форма «")[1].split("»")[0]
+    assert not re.search(r"[1-8]", shape), shape
 
 
 def test_the_shape_hides_letters_of_both_alphabets() -> None:

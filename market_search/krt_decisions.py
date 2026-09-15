@@ -166,31 +166,130 @@ def parse_tender_order(row: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
-def collect_tender_orders(fetch: Callable[[str], bytes], *, max_pages: int = 12,
-                          per_page: int = 25) -> tuple[list[dict[str, Any]], bool]:
-    """Обойти распоряжения о торгах тем же путём, что и проекты решений."""
+def _walk(fetch: Callable[[str], bytes], query: str, *, max_pages: int,
+          per_page: int) -> tuple[list[dict[str, Any]], int, int, int, int, bool]:
+    """Обойти выдачу поиска по объявленным страницам. Один обход на два запроса.
+
+    **Сколько у источника есть — спрашивают у источника.** Прежде каждый обход
+    считал себя полным, как только страница не приносила новых записей, — верно
+    на последней странице (поиск повторяет её вместо отказа) и неверно в
+    середине: выдача ранжированная, порядок между запросами плывёт, и
+    повторившаяся страница обрывала обход посреди списка. Обрыв объявлялся
+    полным обходом, усечённый список заменял снимок, а выпавшая из него
+    площадка возвращалась следующим заходом уже НОВОЙ — бот писал в чат «в
+    каталоге КРТ новая площадка» об одном и том же весь день (экран владельца,
+    15.09.2026).
+
+    Замер того часа развёл источник и нас: у проектов решений mos.ru объявляет
+    `totalCount` 580 и `pageCount` 58, два полных обхода подряд дали 580
+    документов из 580 без единого расхождения, и все четыре «новые» площадки в
+    выдаче есть; у распоряжений о торгах те же поля — 55 и 6. То есть шатался
+    обход, а не город.
+
+    Отсюда правило: конец выдачи — это ПРОЧИТАННЫЕ ВСЕ объявленные страницы, а
+    бесплодная страница в середине обход не кончает. Источник не объявил своих
+    чисел — остаётся прежняя примета (страница без новых записей), и она
+    названа нулями: «не объявил» и «объявил ноль» — разные ответы.
+
+    Возвращает строки выдачи, страниц прочитано, страниц объявлено, различных
+    документов, объявленное число документов и дошёл ли обход до конца.
+    """
     import json
 
     seen: set[str] = set()
-    out: list[dict[str, Any]] = []
+    rows: list[dict[str, Any]] = []
+    announced = pages_announced = pages = 0
+    ended = False
     for page in range(1, max_pages + 1):
         try:
             payload = json.loads(
-                fetch(search_url(page, per_page, MOS_TENDER_QUERY)).decode("utf-8"))
+                fetch(search_url(page, per_page, query)).decode("utf-8"))
         except Exception:
-            return out, False
-        rows = (payload or {}).get("results") or []
-        fresh = []
-        for row in rows:
-            one = parse_tender_order(row) if isinstance(row, dict) else None
-            if one and one["id"] and one["id"] not in seen:
-                seen.add(one["id"])
-                fresh.append(one)
-        out.extend(fresh)
-        if not fresh:
-            return out, True
-    return out, False
+            break
+        pages = page
+        meta = payload.get("_meta") if isinstance(payload, dict) else None
+        if isinstance(meta, dict):
+            try:
+                announced = max(announced, int(meta.get("totalCount") or 0))
+                pages_announced = max(pages_announced,
+                                      int(meta.get("pageCount") or 0))
+            except (TypeError, ValueError):
+                pass
+        got = payload.get("results") if isinstance(payload, dict) else payload
+        got = [row for row in (got or []) if isinstance(row, dict)]
+        fresh = [row for row in got if str(row.get("id") or "") not in seen]
+        for row in fresh:
+            seen.add(str(row.get("id") or ""))
+        rows.extend(fresh)
+        if pages_announced:
+            # Объявленные страницы читаются все. Бесплодная страница в середине
+            # — это повтор выдачи, а не её конец.
+            if page >= pages_announced:
+                ended = True
+                break
+            continue
+        if not got or not fresh:
+            ended = True
+            break
+    return rows, pages, pages_announced, len(seen), announced, ended
 
+
+@dataclass(frozen=True)
+class Walk:
+    """Один обход выдачи: что принесено и насколько это полно.
+
+    Полнота здесь не украшение и не догадка: по ней решают, вправе ли обход
+    ЗАМЕНИТЬ прежний снимок. Поэтому рядом с признаком лежат числа, которыми он
+    посчитан, — сколько страниц прочитано из объявленных источником и сколько
+    различных документов увидено из объявленных. «Обход недособран» без этих
+    чисел неотличимо от «в источнике столько и есть».
+    """
+
+    items: list[Any]
+    complete: bool
+    seen: int = 0
+    announced: int = 0
+    pages: int = 0
+    pages_announced: int = 0
+
+    def shortfall(self) -> str:
+        """Чего не хватило обходу. Пусто — значит дочитан."""
+        if self.complete:
+            return ""
+        if self.pages_announced and self.pages < self.pages_announced:
+            return f"прочитано страниц {self.pages} из {self.pages_announced}"
+        if self.announced and self.seen < self.announced:
+            return f"документов выдачи {self.seen} из {self.announced}"
+        return "обход оборвался"
+
+
+def _walked(rows: list[Any], pages: int, pages_announced: int, seen: int,
+            announced: int, ended: bool) -> Walk:
+    """Собрать ответ обхода. Полнота — все объявленные страницы и все документы.
+
+    Считаются документы ВЫДАЧИ, а не наши: `totalCount` — это все попадания
+    поиска, включая те, чей заголовок не про КРТ, и сравнивать его с числом
+    наших записей значило бы не дочитать никогда.
+    """
+    return Walk(items=rows,
+                complete=ended and (seen >= announced if announced else True),
+                seen=seen, announced=announced, pages=pages,
+                pages_announced=pages_announced)
+
+
+def collect_tender_orders(fetch: Callable[[str], bytes], *, max_pages: int = 12,
+                          per_page: int = 25) -> Walk:
+    """Обойти распоряжения о торгах тем же обходом, что и проекты решений."""
+    rows, pages, pages_announced, seen, announced, ended = _walk(
+        fetch, MOS_TENDER_QUERY, max_pages=max_pages, per_page=per_page)
+    out: list[Any] = []
+    known: set[str] = set()
+    for row in rows:
+        one = parse_tender_order(row)
+        if one and one["id"] and one["id"] not in known:
+            known.add(one["id"])
+            out.append(one)
+    return _walked(out, pages, pages_announced, seen, announced, ended)
 
 def _clean(text: str) -> str:
     return _SPACE.sub(" ", str(text or "").replace("­", "")).strip()
@@ -234,37 +333,53 @@ def parse_decisions(payload: Any) -> list[KrtDecision]:
     return out
 
 
-def collect(fetch: Callable[[str], bytes], *, max_pages: int = 60,
-            per_page: int = 25) -> tuple[list[KrtDecision], bool]:
-    """Обойти выдачу постранично. Возвращает решения и признак «дошли до конца».
+@dataclass(frozen=True)
+class Walk:
+    """Один обход выдачи: что принесено и насколько это полно.
 
-    Оборвались на середине — так и сказано: недособранный список, выданный за
-    полный, читается как «таких решений больше нет».
+    Полнота здесь не украшение и не догадка: по ней решают, вправе ли обход
+    ЗАМЕНИТЬ прежний снимок. Поэтому рядом с признаком лежат числа, которыми он
+    посчитан, — сколько страниц прочитано из объявленных источником и сколько
+    различных документов увидено из объявленных. «Обход недособран» без этих
+    чисел неотличимо от «в источнике столько и есть».
     """
-    import json
 
-    seen: set[str] = set()
-    out: list[KrtDecision] = []
-    complete = False
-    for page in range(1, max_pages + 1):
-        try:
-            payload = json.loads(fetch(search_url(page, per_page)).decode("utf-8"))
-        except Exception:
-            return out, False
-        got = parse_decisions(payload)
-        fresh = [one for one in got if one.id not in seen]
-        for one in fresh:
-            seen.add(one.id)
-        out.extend(fresh)
-        # Пустая страница и страница без новых записей — обе значат конец:
-        # поиск повторяет последнюю страницу вместо отказа.
-        if not fresh:
-            complete = True
-            break
-    else:
-        complete = False
-    return out, complete
+    items: list[KrtDecision]
+    complete: bool
+    seen: int = 0
+    announced: int = 0
+    pages: int = 0
+    pages_announced: int = 0
 
+    def shortfall(self) -> str:
+        """Чего не хватило обходу. Пусто — значит дочитан."""
+        if self.complete:
+            return ""
+        if self.pages_announced and self.pages < self.pages_announced:
+            return (f"прочитано страниц {self.pages} из {self.pages_announced}")
+        if self.announced and self.seen < self.announced:
+            return f"документов выдачи {self.seen} из {self.announced}"
+        return "обход оборвался"
+
+
+def collect(fetch: Callable[[str], bytes], *, max_pages: int = 120,
+            per_page: int = 25) -> Walk:
+    """Обойти выдачу проектов решений. Возвращает принесённое и его полноту.
+
+    Сам обход и правило «дочитано» живут в `_walk` — один ответ на два запроса:
+    вторая копия приметы разошлась бы с первой молча, и половина снимков
+    шаталась бы и дальше.
+    """
+    rows, pages, pages_announced, seen, announced, ended = _walk(
+        fetch, MOS_KRT_QUERY, max_pages=max_pages, per_page=per_page)
+    out: list[Any] = []
+    known: set[str] = set()
+    for row in rows:
+        one = parse_decision(row)
+        if one and one.id and one.id not in known:
+            known.add(one.id)
+            out.append(one)
+    return _walked(out, pages, pages_announced, seen, announced, ended)
 
 def address_tokens(text: str) -> tuple[frozenset[str], frozenset[str]]:
     """Значащие слова адреса и номера владений — раздельно. Запасной путь."""
