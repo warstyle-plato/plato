@@ -78,7 +78,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.23.89"
+VERSION = "0.23.90"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -39401,7 +39401,7 @@ details.cadastral-box>summary::marker{color:#888}
           <h3>Участок</h3>
           <p>Кадастровый номер, адрес или координаты «широта, долгота». Несколько номеров — через запятую, точку с запятой или с новой строки; повторы удаляются, за один запрос до 30 участков.</p>
           <div class="cadastral-entry">
-            <textarea id="cadastralNumbers" oninput="dropStaleLandPreview()" placeholder="77:02:0016009:1934, 77:02:0016009:1935&#10;или: 50:12:0100131:497&#10;или: Московская область, г. Мытищи, ул. Мира, 1"></textarea>
+            <textarea id="cadastralNumbers" oninput="rememberCadastralQuery(this.value);dropStaleLandPreview()" placeholder="77:02:0016009:1934, 77:02:0016009:1935&#10;или: 50:12:0100131:497&#10;или: Московская область, г. Мытищи, ул. Мира, 1"></textarea>
             <button id="cadastralAnalyzeButton" class="btn dark" onclick="obtainTep()">Получить ТЭП</button>
           </div>
           <div class="import-actions" style="margin-top:8px">
@@ -41616,8 +41616,7 @@ async function obtainTep(){
  // адрес, а ответ приходил «участок не найден, введите кадастровый номер»
  // (экран владельца, 26.08.2026). Человек их ввёл; неверна была одна строка,
  // и сказать об этом обязаны мы, а не он должен догадаться.
- const cadastral=/^\d{2}:\d{2}:\d{6,8}:\d+$/;
- const numbers=entered.filter(x=>cadastral.test(x));
+ const numbers=entered.filter(x=>CADASTRAL_NUMBER_RE.test(x));
  const looksCadastral=numbers.length>0;
  // Правило «несколько номеров через запятую» действует только там, где хоть
  // один номер УЗНАН: тогда остальные строки — действительно пропущенные записи
@@ -41627,7 +41626,7 @@ async function obtainTep(){
  // номер» куска — при том что поле само предлагает вводить адрес, и адрес
  // целиком уходил в поиск. Совет исправить то, что исправлять не нужно, уводит
  // человека искать ошибку там, где её нет (экран владельца, 06.09.2026).
- const rejected=looksCadastral?entered.filter(x=>!cadastral.test(x)):[];
+ const rejected=looksCadastral?entered.filter(x=>!CADASTRAL_NUMBER_RE.test(x)):[];
  // Молча отброшенная строка читается как отсутствующая. Называем её и
  // говорим, чем именно она не похожа на кадастровый номер.
  // Текст пришёл от человека и уходит в innerHTML — экранируем. Своего `esc`
@@ -41904,7 +41903,7 @@ let LAND_MAP=null;
 async function drawLandPreviewQuiet(query){
  try{
   const raw=String(query!=null?query:((document.getElementById('cadastralNumbers')||{}).value||'')).trim();
-  if(!/\d{2}:\d{2}:\d{6,8}:\d+/.test(raw))return;
+  if(!cadastralNumbersIn(raw).length)return;
   const response=await fetch('/land/lookup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:raw,limit:30,session:activeSession()})});
   // Ограничения не зависят от картинки: карточка — украшение, а скрининг —
   // ответ на вопрос «можно ли тут строить». Раньше он запускался только после
@@ -41929,7 +41928,7 @@ async function loadLandScreening(query){
  const box=document.getElementById('landScreening');
  if(!box)return;
  const raw=String(query!=null?query:((document.getElementById('cadastralNumbers')||{}).value||'')).trim();
- const numbers=(raw.match(/\d{2}:\d{2}:\d{6,8}:\d+/g)||[]).slice(0,10);
+ const numbers=cadastralNumbersIn(raw).slice(0,10);
  if(!numbers.length){box.style.display='none';return}
  const run=++landScreeningRun;
  const started=Date.now();
@@ -42221,6 +42220,49 @@ function hideLandPreview(){
 }
 function dropStaleLandPreview(){
  if(!landSnapshotFits())hideLandPreview();
+}
+
+// Что человек вписал в поле участка — это данные ПРОЕКТА, а не побочный след
+// удачного ответа внешнего источника. Прежде номер оседал только там, где
+// кто-то ответил: `_cadastral_analysis` пишет расчёт ГлавАПУ, `_land_lookup` —
+// ЕГРН, и то лишь при `found_count>0`. Не ответил никто — и номер жил только в
+// DOM: замер 15.09.2026 на живой странице дал после сохранения и открытия
+// метку записи `[]`, ни одного ключа с «cad» во вводных и пустое поле. То есть
+// проект открывался без участка ровно в тот день, когда НСПД лежал.
+// «Что похоже на кадастровый номер» страница отвечала ЧЕТЫРЬМЯ литералами —
+// проверкой строки целиком, проверкой вхождения и двумя выборками всех номеров
+// подряд. Пятой копией стала бы метка записи проекта, и разошлись бы они молча:
+// копию негде обновлять, потому что копии нет. Формы две, источник один.
+const CADASTRAL_NUMBER_SOURCE='\\d{2}:\\d{2}:\\d{6,8}:\\d+';
+const CADASTRAL_NUMBER_RE=new RegExp('^'+CADASTRAL_NUMBER_SOURCE+'$');
+function cadastralNumbersIn(text){
+ return String(text==null?'':text).match(new RegExp(CADASTRAL_NUMBER_SOURCE,'g'))||[];
+}
+
+function rememberCadastralQuery(value){
+ const text=String(value==null?'':value).trim().slice(0, 600);
+ if(text)inputs._cadastral_query=text; else delete inputs._cadastral_query;
+}
+
+// Единственный писатель поля: он же и запоминает. Две двери — набранное руками
+// и поставленное кодом — разошлись бы молча, и половина проектов сохраняла бы
+// участок, а половина нет.
+function writeCadastralField(value){
+ const field=document.getElementById('cadastralNumbers');
+ if(field)field.value=String(value==null?'':value);
+ rememberCadastralQuery(value);
+}
+
+// Запасное восстановление участка: номер без контура и без карточки. Стоит
+// ПЕРВЫМ в цепочке `renderStored*` — у кого есть ответ источника, тот перепишет
+// поле своим; у кого нет, останется хотя бы то, что человек вписал. Статуса
+// «показана территория из проекта» здесь нет намеренно: мы ничего не
+// показываем, мы только вернули строку поиска.
+function renderStoredCadastralQuery(){
+ const stored=inputs._cadastral_query;
+ if(!stored)return;
+ const field=document.getElementById('cadastralNumbers');
+ if(field)field.value=String(stored);
 }
 
 async function lookupLand(options){
@@ -42728,8 +42770,9 @@ function useLandForTep(){
   .filter(x=>x.found&&x.kind==='land'&&x.cadastral_number)
   .map(x=>x.cadastral_number);
  if(!numbers.length){status.innerHTML='<span class="import-error">Нет найденных земельных участков для переноса.</span>';return}
+ writeCadastralField(numbers.join(', '));
  const field=document.getElementById('cadastralNumbers');
- if(field){field.value=numbers.join(', ');field.scrollIntoView({behavior:'smooth',block:'center'})}
+ if(field)field.scrollIntoView({behavior:'smooth',block:'center'});
  status.innerHTML='<span class="import-ok">Номера перенесены в блок ТЭП ГлавАПУ ('+numbers.length+').</span> Нормативный ТЭП считается только по Москве.';
 }
 
@@ -42737,8 +42780,7 @@ function renderStoredLand(){
  const stored=inputs._land_lookup;
  if(!stored)return;
  landLookup=cloneValue(stored);
- const field=document.getElementById('cadastralNumbers');
- if(field)field.value=stored.query||'';
+ writeCadastralField(stored.query||'');
  renderLandLookup(landLookup);
  loadLandScreening(stored.query||'');
  const status=document.getElementById('cadastralStatus');
@@ -42951,7 +42993,7 @@ async function calculateMo(queryText){
   syncMoParams(data);
   if(moStatus)moStatus.style.display='none';
   const parcels=((data.vri||{}).parcels||[]).length;
-  const asked=(query.match(/\d{2}:\d{2}:\d{6,8}:\d+/g)||[]).length;
+  const asked=cadastralNumbersIn(query).length;
   const parcelNote=asked?' · участков в расчёте: '+parcels+' из '+asked:(parcels?' · участков: '+parcels:'');
   status.innerHTML='<span class="import-ok">Московская область · расчёт готов: '+landNum(data.territory.site_area_ha,4)+' га, '+
    landNum(data.social.apartments_sqm,0)+' м² квартир'+parcelNote+'.</span> Проверьте значения и примените к модели.';
@@ -43121,8 +43163,7 @@ function renderStoredCadastral(){
  const stored=inputs._cadastral_analysis;
  if(!stored)return;
  cadastralAnalysis=cloneValue(stored);
- const field=document.getElementById('cadastralNumbers');
- if(field)field.value=(stored.requested||[]).join(', ');
+ writeCadastralField((stored.requested||[]).join(', '));
  renderCadastralPreview(cadastralAnalysis);
  cadastralStatus.innerHTML='<span class="import-ok">Показана территория, сохранённая в проекте.</span>';
 }
@@ -43472,7 +43513,7 @@ const TERRITORY_INPUT_KEYS=[
  'offices_gba_sqm','offices_saleable_sqm','retail_gba_sqm','retail_saleable_sqm',
  'above_parking_spaces','sports_gba_sqm','sports_saleable_sqm'
 ];
-const TERRITORY_MARKERS=['_glavapu_import','_manual_tep_import','_mo_calc','_cadastral_analysis',
+const TERRITORY_MARKERS=['_glavapu_import','_manual_tep_import','_mo_calc','_cadastral_analysis','_cadastral_query',
  '_site_area_user_set','_site_density_user_set'];
 
 // Предпосылки аналитика — цены, себестоимость, ставки, сроки, налоги — это не
@@ -48725,11 +48766,8 @@ async function applyPreset(){
  // он пришёл из пресета, и штатный расчёт ГлавАПУ его бы перебил.
  const cadastres=data.cadastral_numbers||[];
  if(cadastres.length){
-  const field=document.getElementById('cadastralNumbers');
-  if(field){
-   field.value=cadastres.join(', ');
-   drawLandPreviewQuiet(field.value);
-  }
+  writeCadastralField(cadastres.join(', '));
+  drawLandPreviewQuiet(cadastres.join(', '));
  }
  calculateAndOpen('report');
 }
@@ -48807,7 +48845,12 @@ function projectSummaryForStore(){
 
 function projectCadastral(){
  const source=(cadastralAnalysis&&cadastralAnalysis.cadastral_numbers)
-  ||(moResult&&moResult.cadastral_numbers)||[];
+  ||(moResult&&moResult.cadastral_numbers)
+  // Ответ источника сильнее: он знает, какие из спрошенных номеров настоящие.
+  // Но его молчание — не отсутствие участка у проекта, а отсутствие ответа, и
+  // тогда меткой идёт то, что человек вписал. Адрес и координаты меткой не
+  // становятся: в поле их вводить можно, а `cadastral` записи — это номера.
+  ||cadastralNumbersIn(inputs._cadastral_query)||[];
  return Array.isArray(source)?source.slice(0,20):[];
 }
 
@@ -49117,6 +49160,12 @@ function forgetTerritoryState(){
  // ответ, иначе он дорисует чужие зоны поверх нового проекта.
  ++landScreeningRun;
  ['cadastralNumbers','landQuery','moQuery'].forEach(id=>{const field=document.getElementById(id);if(field)field.value=''});
+ // Память о вписанном номере (`inputs._cadastral_query`) здесь НЕ трогаем:
+ // обе двери этой функции пересобирают `inputs` заново — `applyProjectSnapshot`
+ // следом, `resetAll` заранее из `INPUT_DEFAULT`, где ключа нет вовсе. А
+ // правка отсюда опаснее, чем кажется: снимок иногда и есть текущий `inputs`
+ // (`applyProjectSnapshot(projectStorePayload().payload)`), и удаление стирало
+ // бы участок из того самого снимка, который восстанавливают.
  ['landPreview','cadastralPreview','landScreening'].forEach(id=>{const el=document.getElementById(id);if(el)el.style.display='none'});
  const screening=document.getElementById('landScreening');
  if(screening){screening.innerHTML='';screening.className='land-screening'}
@@ -49144,6 +49193,7 @@ function applyProjectSnapshot(data){
  if(typeof scenarioSelect!=='undefined'&&scenarioSelect)scenarioSelect.value=data.scenario||'base';
  renderInputs();renderTep();renderPhasing();
  // Территория снимка — из его же вводных, тем же путём, что при загрузке страницы.
+ renderStoredCadastralQuery();
  renderStoredGlavapu();renderStoredCadastral();renderStoredLand();renderStoredMo();
  if(typeof renderSitePanel==='function')renderSitePanel();
  persistLocalSilently();
@@ -49598,8 +49648,7 @@ async function applyTelegramManualTep(manual,options){
  // Участки пришедшего проекта показываем сразу: иначе поле остаётся пустым или,
  // хуже, с номерами прошлого расчёта, и непонятно, что именно посчитано.
  const numbers=((manual.source||{}).cadastral_numbers)||[];
- const field=document.getElementById('cadastralNumbers');
- if(field)field.value=numbers.join(', ');
+ writeCadastralField(numbers.join(', '));
  const preview=document.getElementById('cadastralPreview');
  if(preview){preview.innerHTML='';preview.style.display='none';}
  if(typeof cadastralStatus!=='undefined'&&cadastralStatus){
@@ -49769,7 +49818,7 @@ async function runTelegramLaunch(){
   // ними, расходясь с сайтом на одинаковых вводных. Правки после расчёта
   // живут в режиме редактирования — он открывает проект своей карточки.
   resetAll();
-  field.value=telegramCad;
+  writeCadastralField(telegramCad);
   openTab('inputs');
   const status=document.getElementById('cadastralStatus');
   if(status)status.textContent='Получаю ТЭП ГлавАПУ и рассчитываю проект…';
