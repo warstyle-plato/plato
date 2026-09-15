@@ -209,7 +209,9 @@ def remember_reread(data_dir: Path, key: str, *, version: int, ok: bool,
         "version": int(version),
         "at": float(now if now is not None else time.time()),
         "ok": bool(ok),
-        "why": str(why or "")[:200],
+        # Предел тот же, что у отказа разбора: он объявлен один раз рядом с
+        # версией читателя, и обрезка называется вслух.
+        "why": egrn_archive.cut_reason(why),
     }
     place = _path(data_dir, key)
     place.parent.mkdir(parents=True, exist_ok=True)
