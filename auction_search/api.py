@@ -21,6 +21,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
 
+from request_body import json_object
 from auction_search.adapters import (
     NistpAdapter,
     ETPGPBAdapter,
@@ -1714,7 +1715,7 @@ def install(app: FastAPI) -> None:
         setter = getattr(krt_registry, "mark_tender", None)
         if not callable(setter):
             raise HTTPException(status_code=503, detail="Отметки недоступны")
-        payload = await request.json()
+        payload = await json_object(request)
         order = (payload or {}).get("order") or {}
         if order and not str(order.get("url") or "").startswith("https://www.mos.ru/"):
             raise HTTPException(status_code=422,
@@ -2310,7 +2311,7 @@ def install(app: FastAPI) -> None:
         """
         from . import krt_tenders
 
-        payload = await request.json()
+        payload = await json_object(request)
         lots = (payload or {}).get("lots") or []
         if not isinstance(lots, list) or len(lots) > 5000:
             raise HTTPException(status_code=422, detail="Список лотов не разобран")
