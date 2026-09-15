@@ -251,6 +251,14 @@ class Walk:
     announced: int = 0
     pages: int = 0
     pages_announced: int = 0
+    # Документы выдачи, не ставшие нашей записью: заголовок не про КРТ либо
+    # идентификатора нет вовсе. Это НЕ ошибка — поиск отдаёт и чужие бумаги, —
+    # но и не пустяк: пока они выбрасывались молча, снимок не мог объяснить
+    # объявленное источником число документов ПО ПОСТРОЕНИЮ, а «молча
+    # выброшенное читается как его отсутствие». Едут идентификаторами, а не
+    # числом: снимок обязан помнить, КАКИЕ именно, иначе на следующем обходе
+    # они посчитаются заново и дважды.
+    unparsed: tuple[str, ...] = ()
 
     def shortfall(self) -> str:
         """Чего не хватило обходу. Пусто — значит дочитан."""
@@ -264,7 +272,8 @@ class Walk:
 
 
 def _walked(rows: list[Any], pages: int, pages_announced: int, seen: int,
-            announced: int, ended: bool) -> Walk:
+            announced: int, ended: bool,
+            unparsed: tuple[str, ...] = ()) -> Walk:
     """Собрать ответ обхода. Полнота — все объявленные страницы и все документы.
 
     Считаются документы ВЫДАЧИ, а не наши: `totalCount` — это все попадания
@@ -274,7 +283,35 @@ def _walked(rows: list[Any], pages: int, pages_announced: int, seen: int,
     return Walk(items=rows,
                 complete=ended and (seen >= announced if announced else True),
                 seen=seen, announced=announced, pages=pages,
-                pages_announced=pages_announced)
+                pages_announced=pages_announced, unparsed=unparsed)
+
+
+def _kept_and_skipped(rows: list[dict[str, Any]], parse: Callable[[dict[str, Any]], Any],
+                      key: Callable[[Any], str]) -> tuple[list[Any], tuple[str, ...]]:
+    """Разобрать строки выдачи и НАЗВАТЬ те, что записью не стали.
+
+    Счёт один на оба запроса: вторая копия разошлась бы с первой молча, а от
+    этого числа зависит, вправе ли снимок объявить себя полным. Документ,
+    выброшенный без счёта, делает объявленное источником число недостижимым —
+    и снимок либо не дочитается никогда, либо объявит себя полным по union'у,
+    накопленному за несколько обходов.
+    """
+    out: list[Any] = []
+    known: set[str] = set()
+    skipped: list[str] = []
+    for row in rows:
+        one = parse(row)
+        name = key(one) if one else ""
+        if one and name and name not in known:
+            known.add(name)
+            out.append(one)
+            continue
+        # Идентификатор берётся у СТРОКИ ВЫДАЧИ: у неразобранной записи нашего
+        # имени нет вовсе, а документ у источника есть, и объяснить его надо.
+        found = str(row.get("id") or "")
+        if found and found not in known:
+            skipped.append(found)
+    return out, tuple(skipped)
 
 
 def collect_tender_orders(fetch: Callable[[str], bytes], *, max_pages: int = 12,
@@ -282,14 +319,9 @@ def collect_tender_orders(fetch: Callable[[str], bytes], *, max_pages: int = 12,
     """Обойти распоряжения о торгах тем же обходом, что и проекты решений."""
     rows, pages, pages_announced, seen, announced, ended = _walk(
         fetch, MOS_TENDER_QUERY, max_pages=max_pages, per_page=per_page)
-    out: list[Any] = []
-    known: set[str] = set()
-    for row in rows:
-        one = parse_tender_order(row)
-        if one and one["id"] and one["id"] not in known:
-            known.add(one["id"])
-            out.append(one)
-    return _walked(out, pages, pages_announced, seen, announced, ended)
+    out, skipped = _kept_and_skipped(rows, parse_tender_order,
+                                     lambda one: str(one.get("id") or ""))
+    return _walked(out, pages, pages_announced, seen, announced, ended, skipped)
 
 def _clean(text: str) -> str:
     return _SPACE.sub(" ", str(text or "").replace("­", "")).strip()
@@ -333,35 +365,6 @@ def parse_decisions(payload: Any) -> list[KrtDecision]:
     return out
 
 
-@dataclass(frozen=True)
-class Walk:
-    """Один обход выдачи: что принесено и насколько это полно.
-
-    Полнота здесь не украшение и не догадка: по ней решают, вправе ли обход
-    ЗАМЕНИТЬ прежний снимок. Поэтому рядом с признаком лежат числа, которыми он
-    посчитан, — сколько страниц прочитано из объявленных источником и сколько
-    различных документов увидено из объявленных. «Обход недособран» без этих
-    чисел неотличимо от «в источнике столько и есть».
-    """
-
-    items: list[KrtDecision]
-    complete: bool
-    seen: int = 0
-    announced: int = 0
-    pages: int = 0
-    pages_announced: int = 0
-
-    def shortfall(self) -> str:
-        """Чего не хватило обходу. Пусто — значит дочитан."""
-        if self.complete:
-            return ""
-        if self.pages_announced and self.pages < self.pages_announced:
-            return (f"прочитано страниц {self.pages} из {self.pages_announced}")
-        if self.announced and self.seen < self.announced:
-            return f"документов выдачи {self.seen} из {self.announced}"
-        return "обход оборвался"
-
-
 def collect(fetch: Callable[[str], bytes], *, max_pages: int = 120,
             per_page: int = 25) -> Walk:
     """Обойти выдачу проектов решений. Возвращает принесённое и его полноту.
@@ -372,14 +375,8 @@ def collect(fetch: Callable[[str], bytes], *, max_pages: int = 120,
     """
     rows, pages, pages_announced, seen, announced, ended = _walk(
         fetch, MOS_KRT_QUERY, max_pages=max_pages, per_page=per_page)
-    out: list[Any] = []
-    known: set[str] = set()
-    for row in rows:
-        one = parse_decision(row)
-        if one and one.id and one.id not in known:
-            known.add(one.id)
-            out.append(one)
-    return _walked(out, pages, pages_announced, seen, announced, ended)
+    out, skipped = _kept_and_skipped(rows, parse_decision, lambda one: one.id)
+    return _walked(out, pages, pages_announced, seen, announced, ended, skipped)
 
 def address_tokens(text: str) -> tuple[frozenset[str], frozenset[str]]:
     """Значащие слова адреса и номера владений — раздельно. Запасной путь."""
