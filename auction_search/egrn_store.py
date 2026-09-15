@@ -114,34 +114,80 @@ def save(data_dir: Path, key: str, parsed: dict[str, Any],
     return kept
 
 
+def _version_of(item: dict[str, Any]) -> int:
+    """Какими правилами это разобрано. Без поля — первая версия, а не «не знаем».
+
+    Байты на складе есть всегда, перечитать их можно всегда — третьего ответа
+    тут не бывает.
+    """
+    try:
+        return int(item.get("reader_version"))
+    except (TypeError, ValueError):
+        return egrn_archive.READER_VERSION_BEFORE
+
+
+def _last_refusals(kept: dict[str, Any]) -> list[dict[str, Any]]:
+    """Отказы ПОСЛЕДНЕГО захода по каждому файлу.
+
+    Журнал заходов хранит до двадцати записей, и один и тот же файл лежит в нём
+    столько раз, сколько его разбирали: сложенные подряд, отказы дают число
+    втрое больше настоящего — на этом я уже ошибся в замере 15.09.2026 (216
+    вместо 58). Считается последний ответ по файлу, а не все ответы.
+    """
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for upload in kept.get("uploads") or []:
+        if not isinstance(upload, dict):
+            continue
+        name = str(upload.get("file") or "")
+        if name in seen:
+            continue
+        seen.add(name)
+        out.extend(item for item in (upload.get("unread") or [])
+                   if isinstance(item, dict))
+    return out
+
+
 def stale(kept: dict[str, Any]) -> dict[str, Any]:
-    """Сколько записей склада разобрано ПРЕЖНИМИ правилами читателя.
+    """Сколько разобранного на складе — ПРЕЖНИМИ правилами читателя.
 
     Свод территории считается из разобранного, а не из байтов: значит починка
     читателя до уже прочитанного лота сама не доезжает, и на экране наш пробел
-    выглядит молчанием документа. Ответ здесь — число и разбивка по версиям, а
-    решает по нему тот, кто умеет перечитать (`krt_pipeline.reread_egrn`).
+    выглядит молчанием документа. Ответ здесь — числа и разбивка по версиям, а
+    решает по ним тот, кто умеет перечитать (`krt_pipeline.reread_egrn`).
 
-    Запись без поля разобрана до того, как версию завели: это первая версия, а
-    не «неизвестно». Третьего ответа тут не бывает — байты на складе есть,
-    перечитать их можно всегда.
+    **Отказ считается наравне с записью.** Пока считались только записи, склад,
+    где отказали ВСЕ документы, не устаревал НИКОГДА: записей ноль, значит
+    отставать нечему, — и починка читателя до него не доезжала по построению.
+    Замер прода 15.09.2026: так стояли оба Прожектора (печатная форма) и
+    Шипиловский (архив RAR) — 154 позиции состава без собственника при живых
+    байтах на складе. Записи и отказы названы порознь: «прочитано прежним
+    читателем» и «отказано прежним читателем» — разные вещи, и одно число их бы
+    скрыло.
     """
     versions: dict[int, int] = {}
     for record in kept.get("records") or []:
-        got = record.get("reader_version")
-        try:
-            number = int(got)
-        except (TypeError, ValueError):
-            number = egrn_archive.READER_VERSION_BEFORE
+        number = _version_of(record)
         versions[number] = versions.get(number, 0) + 1
-    behind = sum(count for version, count in versions.items()
-                 if version < egrn_archive.READER_VERSION)
+    refused: dict[int, int] = {}
+    for item in _last_refusals(kept):
+        number = _version_of(item)
+        refused[number] = refused.get(number, 0) + 1
+    ours = egrn_archive.READER_VERSION
+    behind = sum(count for version, count in versions.items() if version < ours)
+    refusals_behind = sum(count for version, count in refused.items()
+                          if version < ours)
     return {
         "records": sum(versions.values()),
-        "behind": behind,
-        "reader_version": egrn_archive.READER_VERSION,
+        "records_behind": behind,
+        "refusals": sum(refused.values()),
+        "refusals_behind": refusals_behind,
+        "behind": behind + refusals_behind,
+        "reader_version": ours,
         "versions": {str(version): count
                      for version, count in sorted(versions.items())},
+        "refusal_versions": {str(version): count
+                             for version, count in sorted(refused.items())},
     }
 
 

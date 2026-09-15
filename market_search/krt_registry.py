@@ -1754,13 +1754,18 @@ class KrtRegistry:
 
     @staticmethod
     def _with_order_actions(payload: dict[str, Any]) -> dict[str, Any]:
-        """Вид распоряжения — производная заголовка, и считается она при ЧТЕНИИ.
+        """Вид и номер распоряжения — производные ЗАГОЛОВКА, и считаются при чтении.
 
-        Хранить её незачем: правило может измениться, а снимок живёт сутками —
+        Хранить их незачем: правило может измениться, а снимок живёт сутками —
         и тогда «объявлены торги» осталось бы стоять по прежнему правилу (так
         уже было с диагнозом съехавшей карточки каталога). Заодно снимок,
-        снятый до этой правки, получает вид документа без единого запроса к
-        городу.
+        снятый до правки, получает новое чтение без единого запроса к городу.
+
+        Вид закрыли 14.09.2026, а номер оставили в хранимом — и 0.23.76 научил
+        читать «№ ДГП-Р 58/26» через пробел, а на проде у обоих распоряжений
+        номер остался пустым при том же заголовке в той же записи. Правило,
+        закрытое у одного поля, соседнее не защищает: у каждой производной
+        спрашивают, где она считается.
         """
         from . import krt_decisions  # модуль грузится и отдельно от движка
 
@@ -1769,12 +1774,25 @@ class KrtRegistry:
         orders = payload.get("orders")
         if not isinstance(orders, list):
             return payload
+
+        def _reread(one: dict[str, Any]) -> dict[str, Any]:
+            title = str(one.get("title") or "")
+            # Заголовка нет — пересчитывать не из чего, и стирать прочитанное
+            # когда-то было бы потерей, а не свежестью.
+            if not title.strip():
+                return one
+            # Разбор один — тот же, что у обхода: второе правило чтения номера
+            # разошлось бы с первым молча.
+            parsed = krt_decisions.parse_tender_order(
+                {"id": one.get("id"), "title": title,
+                 "url": one.get("url"), "date": one.get("published_at")})
+            number = (parsed or {}).get("number") or ""
+            return {**one, "action": krt_decisions.order_action(title),
+                    "number": number}
+
         out = dict(payload)
-        out["orders"] = [
-            {**one, "action": krt_decisions.order_action(str(one.get("title") or ""))}
-            if isinstance(one, dict) else one
-            for one in orders
-        ]
+        out["orders"] = [_reread(one) if isinstance(one, dict) else one
+                         for one in orders]
         return out
 
     def status(self) -> dict[str, Any]:
