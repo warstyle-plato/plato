@@ -27,36 +27,22 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+import page_blocks  # noqa: E402
 from auction_search import ui  # noqa: E402
 
 PAGE = ui.AUCTIONS_PAGE
 
 
-def _function(name: str) -> str:
-    start = PAGE.index(f"function {name}(")
-    depth, index, seen = 0, PAGE.index("{", start), False
-    while index < len(PAGE):
-        if PAGE[index] == "{":
-            depth, seen = depth + 1, True
-        elif PAGE[index] == "}":
-            depth -= 1
-            if seen and depth == 0:
-                return PAGE[start:index + 1]
-        index += 1
-    raise AssertionError(f"не нашёл конец функции {name}")
-
-
-def _stages_const() -> str:
-    start = PAGE.index("const KRT_STAGES=")
-    return PAGE[start:PAGE.index("];", start) + 2]
-
-
 def stage(site: dict, *, lots=None, press=None, intent=None, mark=None, order=None) -> dict:
-    node = shutil.which("node")
-    if not node:
-        pytest.skip("node недоступен")
+    """Шаг воронки настоящей функцией страницы.
+
+    Зависимости добирает общий разрешитель (`page_blocks.run_json`): список,
+    перечисленный здесь руками, отставал от страницы — 14.09.2026 рядом
+    завёлся `krtCityOrder`, и шесть проверок упали с «is not defined», ничего
+    не сказав о шаге воронки.
+    """
     slug = site.get("slug", "x")
-    program = (
+    prelude = (
         f"const state={{krtTenders:{json.dumps({slug: lots or []})},"
         f"krtPress:{json.dumps({slug: press} if press else {})},"
         f"krtRank:{{}},krtTenderLinks:{json.dumps(mark or {})},"
@@ -68,16 +54,9 @@ def stage(site: dict, *, lots=None, press=None, intent=None, mark=None, order=No
         # собственные мгновения — часами зрителя (`krtWhen`).
         "function krtWhen(t){return t?'дата':''}\n"
         "function krtCityDay(t){return t?'дата':''}\n"
-        # Лоты площадки — один ответ на всю страницу (`krtLots`): связку
-        # считает сервер и он же её помнит, а не память вкладки.
-        + _stages_const() + "\n" + _function("krtIntent") + "\n"
-        + _function("krtLots") + "\n" + _function("krtLiveLot") + "\n"
-        + _function("krtStage") + "\n"
-        + f"console.log(JSON.stringify(krtStage({json.dumps(site)})));"
     )
-    done = subprocess.run([node, "-e", program], capture_output=True, text=True, timeout=60)
-    assert done.returncode == 0, done.stderr[:800]
-    return json.loads(done.stdout)
+    tail = f"console.log(JSON.stringify(krtStage({json.dumps(site)})));"
+    return page_blocks.run_json(prelude, tail, page=PAGE)
 
 
 def test_a_published_decision_is_already_a_step() -> None:
@@ -159,7 +138,7 @@ def test_nothing_read_is_not_nothing_happening() -> None:
 
 
 def test_the_stage_sorts_by_time_not_by_alphabet() -> None:
-    body = _function("krtValue")
+    body = page_blocks.function("krtValue", PAGE)
     assert "case 'stage'" in body and "KRT_STAGES.findIndex" in body
     assert "'unknown'?null" in body.replace(" ", ""), "«не знаем» не сортируется как шаг"
 

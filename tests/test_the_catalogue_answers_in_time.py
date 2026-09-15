@@ -127,10 +127,17 @@ def test_a_broken_card_does_not_drop_the_whole_catalogue():
 
 
 def test_the_route_has_a_budget():
-    assert "DISCOVERY_BUDGET_SECONDS" in API
-    line = API[API.index("DISCOVERY_BUDGET_SECONDS = "):]
-    value = float(line[len("DISCOVERY_BUDGET_SECONDS = "):line.index("\n")])
-    assert 10 <= value <= 55, "срок должен быть меньше шлюзовых шестидесяти секунд"
+    """Срок сбора у МАРШРУТА меньше шлюзовых шестидесяти секунд.
+
+    Имя ищется целым словом: рядом живёт срок сторожа
+    (`WATCH_DISCOVERY_BUDGET_SECONDS`), у которого окна запроса нет вовсе, — и
+    поиск подстроки находил его объявление первым, то есть проверял не тот
+    срок и падал на `float('float(')`.
+    """
+    found = re.search(r"(?<![A-Z_])DISCOVERY_BUDGET_SECONDS = ([\d.]+)", API)
+    assert found, "у маршрута нет срока сбора"
+    assert 10 <= float(found.group(1)) <= 55, (
+        "срок должен быть меньше шлюзовых шестидесяти секунд")
     assert "budget_seconds=DISCOVERY_BUDGET_SECONDS" in API
 
 

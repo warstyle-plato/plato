@@ -156,7 +156,95 @@ def tep_cell_stand() -> str:
     return "\n".join(pieces) + "\n"
 
 
-def run(prelude: str, tail: str, limit: int = 60) -> tuple[str, list[str]]:
+def _declared_in(text: str, name: str) -> bool:
+    """Занято ли имя в уже собранном скрипте — включая заглушки стенда.
+
+    Проверяется связывание в любой форме, а не только `const имя=`: стенды
+    объявляют заглушки через запятую (`const renderProjectClassPreview=()=>{},
+    renderClassDialog=()=>{};`), и страж, знавший одну форму, добирал поверх
+    заглушки настоящий кусок — «Identifier has already been declared», то есть
+    SyntaxError на весь скрипт.
+
+    Перекос намеренно в сторону «занято»: лишний отказ добора только вернёт
+    имя ленивому пути, где оно всплывёт своей же ошибкой, а лишний добор
+    роняет стенд целиком. Отсечка точкой — чтобы `x.имя=` не считалось
+    объявлением, `(?![=>])` — чтобы им не считались `==` и `=>`.
+    """
+    word = re.escape(name)
+    return bool(re.search(rf"(?:^|[^\w$.])(?:async\s+)?function\s+{word}\s*\(", text)
+                or re.search(rf"(?<![\w$.]){word}\s*=(?![=>])", text))
+
+
+def _page_declares(name: str, page: str) -> bool:
+    """Объявлена ли у страницы ФУНКЦИЯ с таким именем.
+
+    Только функция, и это не половинчатость, а граница измеренного. Объявление
+    значения `constant` ищет подстрокой `const имя=`, а такая строка бывает и
+    в СЕРЕДИНЕ чужой функции: добранный по ней кусок уезжает наверх и объявляет
+    там имена, которых в этом месте быть не должно («Identifier 'area' has
+    already been declared» на первом же прогоне). Значения по-прежнему
+    добираются лениво, по своей ошибке, — а слепота разрешителя, ради которой
+    правка и написана, померена на функции (`moscowFormat`).
+    """
+    return f"function {name}(" in page
+
+
+# Обращение к свойству (`Math.max`, `x.slice`) именем страницы не является:
+# без отсечки точкой разрешитель тянул бы куски по именам чужих методов.
+_NAME = re.compile(r"(?<![\w$.])([A-Za-z_$][\w$]*)")
+
+
+def _needs(body: str, page: str) -> list[str]:
+    """Имена страницы, которые читает этот кусок, в порядке первого чтения."""
+    out: list[str] = []
+    for found in _NAME.findall(body):
+        if found not in out and not _declared_in(body, found) \
+                and _page_declares(found, page):
+            out.append(found)
+    return out
+
+
+def _piece_with_deps(name: str, page: str | None, have: str,
+                     depth: int = 0) -> list[tuple[str, str]]:
+    """Кусок вместе с ЕГО зависимостями, зависимости впереди.
+
+    Разрешитель добирал куски по имени из `ReferenceError`, и потому был слеп
+    к падению, проглоченному чужим `try/catch`. `krtCityDay` зовёт
+    `moscowFormat`, ловит его отсутствие своим же `catch` и возвращает пустую
+    строку: карточка печатала «Согласно распоряжению № ДГП-Р-54/26 от » без
+    дня, node выходил нулём, добирать было нечего, и стенд молча отвечал
+    неверным текстом (замер 15.09.2026 на живых записях прода). На живой
+    странице весь скрипт одним блоком, то есть врал стенд, а не прод.
+
+    Правило то же, что уже записано про `loadLocal`: падение внутри
+    `try/catch` разрешителю невидимо — значит зависимости берутся РАЗБОРОМ
+    куска, а не ожиданием его ошибки. Уже объявленное (в том числе заглушку
+    стенда) не трогаем: заглушка ответила бы за страницу только если её ставили
+    нарочно, и перебивать её настоящим куском — это менять стенд под собой.
+    """
+    if depth > 40:
+        raise AssertionError(f"зависимости {name} не сходятся — цепочка глубже 40")
+    # Чья это страница, решается здесь же, а не у вызывающего: `piece` умеет
+    # умолчание, а разбор зависимостей получал сырой `None` и падал «argument
+    # of type NoneType is not iterable» — то есть на стенде, а не на том, что
+    # стенд проверяет.
+    page = core.PAGE if page is None else page
+    body = piece(name, page)
+    out: list[tuple[str, str]] = []
+    seen = have + "\n" + body
+    for dependency in _needs(body, page):
+        if _declared_in(seen, dependency):
+            continue
+        for got_name, got_body in _piece_with_deps(dependency, page, seen, depth + 1):
+            if not _declared_in(seen, got_name):
+                out.append((got_name, got_body))
+                seen += "\n" + got_body
+    out.append((name, body))
+    return out
+
+
+def run(prelude: str, tail: str, limit: int = 60,
+        page: str | None = None) -> tuple[str, list[str]]:
     """Гоняет стенд на node, добирая недостающие куски страницы по именам.
 
     Тот же приём был выписан копиями в трёх проверках, а общий стенд
@@ -164,9 +252,15 @@ def run(prelude: str, tail: str, limit: int = 60) -> tuple[str, list[str]]:
     заводили функцию: «setTepNote is not defined» вместо утверждения о строке.
     Имя берётся из самой ошибки, кусок — у страницы; имени на странице нет —
     падаем с ним, а не подсовываем заглушку: заглушка ответила бы за страницу.
+
+    `page` — чья это страница. По умолчанию основная (`PAGE`); у торгов своя, и
+    без этого разрешитель искал бы имена её функций на чужой странице, то есть
+    падал бы на своей неполноте ровно там, ради чего написан.
     """
-    import shutil  # noqa: PLC0415 — нужны только здесь
+    import os  # noqa: PLC0415 — нужны только здесь
+    import shutil  # noqa: PLC0415
     import subprocess  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
 
     node = shutil.which("node")
     if not node:
@@ -178,8 +272,19 @@ def run(prelude: str, tail: str, limit: int = 60) -> tuple[str, list[str]]:
     moved: set[str] = set()
     for _ in range(limit):
         script = prelude + "\n" + "\n".join(bodies) + "\n" + tail
-        done = subprocess.run([node, "-e", script], capture_output=True,
-                              text=True, timeout=60)
+        # Скрипт уезжает ФАЙЛОМ, а не аргументом: разрешитель добирает куски
+        # вместе с их зависимостями, и `node -e` упирался в предел длины
+        # команды — «Argument list too long», то есть падение стенда, а не
+        # того, что стенд проверяет.
+        with tempfile.NamedTemporaryFile("w", suffix=".js", encoding="utf-8",
+                                         delete=False) as handle:
+            handle.write(script)
+            where = handle.name
+        try:
+            done = subprocess.run([node, where], capture_output=True,
+                                  text=True, timeout=120)
+        finally:
+            os.unlink(where)
         if done.returncode == 0:
             return done.stdout, taken
         error = done.stderr
@@ -203,19 +308,28 @@ def run(prelude: str, tail: str, limit: int = 60) -> tuple[str, list[str]]:
         # «имени нет», хотя оно есть строкой ниже. В начало — тоже: у
         # `TRANSFER_LABELS` два читателя, и добранный последним
         # `TRANSFER_RECIPIENT_NOTE` уезжал впереди них обоих (13.09.2026).
-        body = piece(name)
         reader = next((i for i, text in enumerate(bodies)
                        if re.search(rf"\b{re.escape(name)}\b", text)), 0)
-        bodies.insert(reader, body)
-        taken.insert(reader, name)
+        have = prelude + "\n" + "\n".join(bodies) + "\n" + tail
+        # Дважды объявленное имя — SyntaxError на весь скрипт, и решает это
+        # МЕСТО вставки: оно одно видит собранный скрипт целиком, а страж
+        # внутри рекурсии видит только свою ветку.
+        offset = 0
+        for got_name, got_body in _piece_with_deps(name, page, have):
+            if _declared_in(have, got_name):
+                continue
+            bodies.insert(reader + offset, got_body)
+            taken.insert(reader + offset, got_name)
+            have += "\n" + got_body
+            offset += 1
     raise AssertionError(f"зависимостей больше {limit} — стенд не сходится")
 
 
-def run_json(prelude: str, tail: str, limit: int = 60):
+def run_json(prelude: str, tail: str, limit: int = 60, page: str | None = None):
     """То же, но ответ разбирается как JSON — стенды печатают им."""
     import json  # noqa: PLC0415
 
-    out, _taken = run(prelude, tail, limit)
+    out, _taken = run(prelude, tail, limit, page)
     return json.loads(out)
 
 

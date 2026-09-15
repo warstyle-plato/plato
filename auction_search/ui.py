@@ -1117,17 +1117,17 @@ function krtStage(x){
     :'лот на торгах опубликован, срок подачи не назван');
   return {key:'auction',why};
  }
- const auto=state.krtOrderBySite[x.slug];
- if(auto&&auto.number){
-  why.push('распоряжение '+auto.number+(auto.published_at?' от '+krtCityDay(auto.published_at):'')
+ const auto=krtCityOrder(x);
+ if(auto){
+  why.push('распоряжение '+krtOrderName(auto)+(auto.published_at?' от '+krtCityDay(auto.published_at):'')
     +' — адрес распознан в самом документе');
   return {key:'upcoming',why};
  }
  const mark=state.krtTenderLinks[x.slug];
- if(mark&&mark.number){
+ if(krtMarked(mark)){
   // Отметка человека, открывшего распоряжение. Машине привязать нечем: адреса
   // в распоряжении нет, PDF — скан.
-  why.push('отмечено вручную: распоряжение '+mark.number+(mark.published_at?' от '+krtCityDay(mark.published_at):''));
+  why.push('отмечено вручную: распоряжение '+krtOrderName(mark)+(mark.published_at?' от '+krtCityDay(mark.published_at):''));
   return {key:'upcoming',why};
  }
  if(status.includes('торг')){why.push('статус каталога «'+esc(x.status)+'»');return {key:'upcoming',why}}
@@ -1597,12 +1597,19 @@ const KRT_FILTERS=[
  {key:'stage', box:'krtStage', empty:'Любая стадия', options:[
   {value:'draft',    name:'Проект решения',       test:x=>!!x.no_card},
   {value:'planned',  name:'Планируемая',          test:x=>krtStatusKind(x)==='planned'},
-  {value:'tender',   name:'Торги',                test:x=>krtOnTender(x),
+  // «Идёт аукцион» и «торги объявлялись» — РАЗНЫЕ ответы, и одним словом их
+  // складывать нельзя. Одним складывалось: 14.09.2026 фильтр показывал 28
+  // площадок при одиннадцати живых аукционах, а владелец читал это как вкладку
+  // «Торги», где лотов семь. Из 28 семнадцать стояли по распоряжению города
+  // 2022–2025 годов, то есть по аукционам, которые давно прошли: у восьми из
+  // них площадка уже «В реализации».
+  {value:'tender',   name:'Идёт аукцион',         test:x=>!!krtLiveLot(x),
    // Ноль здесь бывает двух видов, и путать их нельзя: «аукционов нет»
    // и «лоты ни разу не собирали». Второй — наш пробел, а выглядит как
    // ответ о рынке: на проде склад связок был пуст при восьми живых
    // аукционах на право договора о КРТ (владелец, 05.09.2026).
    blank:()=>krtTendersKnown()?'':'не собирали'},
+  {value:'announced',name:'Торги объявлялись',    test:x=>krtTenderAnnounced(x)},
   {value:'running',  name:'В реализации',         test:x=>krtStatusKind(x)==='running'},
   {value:'unparsed', name:'Карточка не разобрана',test:x=>krtBroken(x)},
  ]},
@@ -1627,8 +1634,44 @@ const KRT_FILTERS=[
 // лоты собирает соседняя вкладка. Шаг остался КОЛОНКОЙ — он объясняет, почему
 // площадка там, где она есть, — но осью отбора быть перестал.
 function krtOnTender(x){
+ return krtLots(x).length>0||!!krtCityOrder(x);
+}
+// Распоряжение, которое ДЕЙСТВУЕТ: город назначил торги и не отменял их.
+// Ответ один на всех читателей — шаг воронки, ось отбора и цена входа: у
+// распоряжения № 56209 «Об отмене проведения торгов… Волгоградский проспект,
+// вл. 32» начальная цена стояла бы ценой входа модели, а шаг говорил бы
+// «объявлено о торгах». Слово источника прочитано наоборот — и трижды.
+function krtCityOrder(x){
  const order=(state.krtOrderBySite||{})[x.slug];
- return krtLots(x).length>0||!!(order&&order.number);
+ if(!order)return null;
+ // Решает ДЕЙСТВИЕ, а не подпись. Гейт стоял по номеру, и распоряжение с
+ // непрочитанным номером выпадало молча вместе со своей начальной ценой: на
+ // проде 15.09.2026 это были две площадки из 25 привязанных — Рубцовская наб.
+ // (23,8 млн ₽) и Задонский пр-д / Ясеневая ул. (1 574,8 млн ₽), обе «о
+ // проведении торгов». Номер у них в заголовке ЕСТЬ, просто написан через
+ // пробел, и образец его не брал; но это чинит разбор, а гейту номер не нужен
+ // вовсе — непрочитанная подпись это НАШ пробел, а не отсутствие документа.
+ return order.action==='cancel'?null:order;
+}
+// Как назвать распоряжение читателю. Ответ один на всех — строку воронки,
+// цену входа, список выбора и карточку: пять копий «номер или id» разошлись бы,
+// а внутренний id mos.ru читателю немой, как «dipp» в адресе публикации.
+function krtOrderName(o){
+ const number=String((o&&o.number)||'').trim();
+ return number?('№ '+number):'без прочитанного номера';
+}
+// Отметка человека существует, когда он выбрал документ, а не когда у того
+// прочитан номер: гейт по номеру прятал ручную поправку ровно там, где её и
+// ставят — на распоряжении, которое машина не разобрала.
+function krtMarked(mark){
+ return !!(mark&&(mark.order_id||mark.number));
+}
+// Торги объявлялись когда-то: действующее распоряжение города или лот, у
+// которого срок подачи уже прошёл. Это не «идёт аукцион» — войти уже нельзя,
+// а знать полезно: по той же площадке город объявляет торги повторно.
+function krtTenderAnnounced(x){
+ if(krtLiveLot(x))return false;
+ return (krtLots(x)||[]).length>0||!!krtCityOrder(x);
 }
 // Можно ли войти. Три ответа, и третий наш: «не знаем» со «свободна» не
 // складывается (владелец, 04.09.2026: «Занято, реновация, свободный участок»).
@@ -2359,9 +2402,9 @@ function krtAskingPrice(x){
  const live=krtLiveLot(x)||((krtLots(x)||[])[0]||null);
  if(live&&Number(live.price_rub)>0)
   return {mln:Number(live.price_rub)/1e6, from:'лот на торгах'+(live.source?' · '+live.source:'')};
- const order=(state.krtOrderBySite||{})[x.slug];
+ const order=krtCityOrder(x);
  if(order&&Number(order.start_price_rub)>0)
-  return {mln:Number(order.start_price_rub)/1e6, from:'распоряжение города '+(order.number||'')};
+  return {mln:Number(order.start_price_rub)/1e6, from:'распоряжение города '+krtOrderName(order)};
  return null;
 }
 // Потолок посчитан при НУЛЕВОЙ цене входа: модель скрининга ставит
@@ -3074,7 +3117,9 @@ function renderKrtTenderNote(d){
  if(!box)return;
  const sites=Object.keys(state.krtTenders).length, orphans=(d.unmatched||[]).length;
  const orders=(d.orders||[]).length;
- if(!sites&&!orphans&&!orders)return;
+ // Связки в счёт молчания входят тоже: помним одиннадцать, собрали ноль — и
+ // подпись молчала бы ровно там, где расхождение и надо назвать.
+ if(!sites&&!orphans&&!orders&&!(d.known_links||0))return;
  const last=(d.orders||[])[0];
  box.style.display='';
  // У числа обязано быть окно и предмет. «Город объявил 55» без них читается
@@ -3083,14 +3128,33 @@ function renderKrtTenderNote(d){
  // сервер: второй счёт тех же строк на экране однажды разошёлся бы с первым.
  const recent=d.orders_recent_12m, addressed=d.orders_with_address||0,
    bound=Object.keys(d.orders_by_site||{}).length;
+ // Живой аукцион и «когда-то объявляли» — разные числа, и оба называются:
+ // 14.09.2026 фильтр говорил «Торги 28» при одиннадцати живых аукционах, а на
+ // вкладке «Торги» их было семь. Меньшее число тут НАШЕ — сбор ограничен
+ // сроком, и Росэлторг в нём последний, — а большее считало распоряжения
+ // 2022–2025 годов. Считается это по строкам, которые уже на экране: второй
+ // счёт тех же площадок разошёлся бы с фильтром.
+ const live=(state.krt||[]).filter(x=>krtLiveLot(x)).length;
+ const announced=(state.krt||[]).filter(x=>krtTenderAnnounced(x)).length;
+ const cancelled=(d.orders||[]).filter(o=>o&&o.action==='cancel').length;
  box.innerHTML+=`<div class="source" style="margin-top:8px"><b>Торги по КРТ.</b> `
-  +`Распоряжений города о проведении аукциона — ${orders} за всё время`
+  +`Идёт аукцион у ${live} площадок`
+  +(announced?`, торги объявлялись когда-то — ещё у ${announced}`:'')
+  +`. Распоряжений города об аукционе — ${orders} за всё время`
   +(Number.isFinite(recent)?`, из них за последние 12 месяцев ${recent}`:'')
+  +(cancelled?`; об ОТМЕНЕ торгов — ${cancelled}, и они за торги не считаются`:'')
   +(last?`; свежайшее ${esc(last.number||'—')} от ${esc(krtCityDay(last.published_at))}`:'')
   +`. Адрес прочитан у ${addressed}, к площадкам привязано ${bound}. `
   +esc(d.orders_note||'')
   +` Собранных сейчас лотов про КРТ — ${d.krt_lots||0}; привязано к площадкам ${sites}`
-  +(orphans?`, ещё ${orphans} про КРТ, но площадка не опознана`:'')+'.</div>';
+  +(orphans?`, ещё ${orphans} про КРТ, но площадка не опознана`:'')
+  +(Number.isFinite(d.known_links)
+    ? `. Связок с площадками помним ${d.known_links}`
+      +((d.known_links>(d.krt_lots||0))
+        ? ` — больше, чем собрано сейчас: раздел читается не целиком, и это наш `
+          +`сбор, а не рынок (непрочитанное названо в строке охвата)`
+        : '')
+    :'')+'.</div>';
 }
 // Распоряжение о торгах на карточке площадки. Ставится РУКАМИ: адреса в
 // распоряжении нет ни в заголовке, ни в карточке документа, а PDF — скан
@@ -3102,11 +3166,19 @@ function krtOrderBlock(x){
  const mark=state.krtTenderLinks[x.slug]||null, orders=state.krtOrders||[];
  const chosen=mark&&mark.order_id?mark.order_id:'';
  const options=orders.map(o=>`<option value="${esc(o.id)}"${o.id===chosen?' selected':''}>`
-   +`${esc(o.number||o.id)}${o.published_at?' · '+esc(krtCityDay(o.published_at)):''}`
+   +`${esc(krtOrderName(o))}${o.published_at?' · '+esc(krtCityDay(o.published_at)):''}`
    +`${o.kind?' · '+esc(o.kind):''}</option>`).join('');
- const auto=state.krtOrderBySite[x.slug]||null;
+ const auto=krtCityOrder(x);
+ // Отменённое распоряжение не выбрасывается молча: молча снятое читается как
+ // «город об этой площадке ничего не публиковал».
+ const cancelled=(state.krtOrderBySite||{})[x.slug]||null;
+ const cancelNote=(cancelled&&cancelled.action==='cancel')
+   ?`<div class="source">Распоряжение ${esc(krtOrderName(cancelled))}`
+     +`${cancelled.published_at?' от '+esc(krtCityDay(cancelled.published_at)):''}`
+     +` — об ОТМЕНЕ проведения торгов. За объявленные торги оно не считается, `
+     +`и его начальная цена в модель не идёт.</div>`:'';
  const money=v=>v?new Intl.NumberFormat('ru-RU').format(v)+' ₽':'';
- const found=auto?`<div class="item"><b>Объявлены торги</b>Согласно распоряжению ${esc(auto.number||auto.id)}`
+ const found=auto?`<div class="item"><b>Объявлены торги</b>Согласно распоряжению ${esc(krtOrderName(auto))}`
    +`${auto.published_at?' от '+esc(krtCityDay(auto.published_at)):''} `
    +`${auto.url?`<a href="${esc(auto.url)}" target="_blank" rel="noopener">открыть документ</a>`:''}`
    +`${auto.start_price_rub?`<div>Начальная цена ${esc(money(auto.start_price_rub))}`
@@ -3115,8 +3187,16 @@ function krtOrderBlock(x){
    +`<div class="source">Адрес и суммы распознаны в самом распоряжении: «${esc(String(auto.address||auto.krt_name||'').slice(0,110))}». `
    +'Цифры подтверждены прописью — не сошлись бы, величина не показывалась бы вовсе.'
    +`${(auto.ocr_notes||[]).length?' '+esc(auto.ocr_notes.join('; ')):''}</div></div>`:'';
- const said=found||mark&&mark.number
-  ? `<div class="item"><b>Объявлены торги</b>Согласно распоряжению ${esc(mark.number)}`
+ // Три ответа, и первый — найденное машиной. Условие было собрано как
+ // `found||krtMarked(mark) ? <ветка про mark> : <не нашлось>`, то есть
+ // `(found||mark) ? …`: текст `found` не печатался НИКОГДА, а при найденном
+ // распоряжении без ручной отметки ветка читала `mark.number` у null и роняла
+ // `selectKrt` — карточка не открывалась вовсе. На проде 15.09.2026 это 22
+ // площадки из 25 привязанных, в том числе Варшавское ш., вл. 37.
+ const said=found
+  ? found
+  : krtMarked(mark)
+  ? `<div class="item"><b>Объявлены торги</b>Согласно распоряжению ${esc(krtOrderName(mark))}`
     +`${mark.published_at?' от '+esc(krtCityDay(mark.published_at)):''} `
     +`${mark.url?`<a href="${esc(mark.url)}" target="_blank" rel="noopener">открыть документ</a>`:''}`
     +`<div class="source">Отмечено вручную${mark.marked_at?' '+esc(krtWhen(mark.marked_at)):''}: `
@@ -3124,12 +3204,13 @@ function krtOrderBlock(x){
   : '<div class="source">Распоряжения по этой площадке не нашлось. '
     +'Распоряжения ДГП читаются распознаванием скана: адрес берётся из самого документа. '
     +'Если распознать не удалось, привязку можно поставить руками — это поправка, а не основной путь.</div>';
- if(!orders.length&&!mark&&!auto)return '';
+ if(!orders.length&&!mark&&!auto&&!cancelNote)return '';
  return `<div class="section"><h3>Торги по распоряжению города</h3><div class="items">${said}</div>`
+  +cancelNote
   +(orders.length?`<div class="row" style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">`
     +`<select id="krtOrderPick" style="flex:1 1 260px"><option value="">— выбрать распоряжение —</option>${options}</select>`
     +'<button type="button" id="krtOrderSave">Отметить</button>'
-    +(mark&&mark.number?'<button type="button" id="krtOrderDrop">Снять отметку</button>':'')
+    +(krtMarked(mark)?'<button type="button" id="krtOrderDrop">Снять отметку</button>':'')
     +'</div>':'')
   +'</div>';
 }

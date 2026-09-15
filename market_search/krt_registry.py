@@ -1707,13 +1707,13 @@ class KrtRegistry:
         if (not refresh and isinstance(cached, dict)
                 and cached.get("schema_version") == TENDERS_CACHE_SCHEMA_VERSION
                 and fresh(self.tenders_path, self.ttl_seconds)):
-            return cached
+            return self._with_order_actions(cached)
         found, complete = krt_decisions.collect_tender_orders(
             self.fetch, max_pages=max_pages)
         if not found and isinstance(cached, dict) and cached.get("orders"):
             stale = dict(cached)
             stale["stale"] = True
-            return stale
+            return self._with_order_actions(stale)
         found.sort(key=lambda one: one.get("published_at") or 0, reverse=True)
         # Адрес площадки лежит в СКАНЕ распоряжения, и другого места у него нет.
         # Распознаётся один раз и кладётся рядом с записью: без этого привязку
@@ -1750,7 +1750,50 @@ class KrtRegistry:
                      "отдельно, по торгам."),
         }
         save_json(self.tenders_path, payload)
-        return payload
+        return self._with_order_actions(payload)
+
+    @staticmethod
+    def _with_order_actions(payload: dict[str, Any]) -> dict[str, Any]:
+        """Вид и номер распоряжения — производные ЗАГОЛОВКА, и считаются при чтении.
+
+        Хранить их незачем: правило может измениться, а снимок живёт сутками —
+        и тогда «объявлены торги» осталось бы стоять по прежнему правилу (так
+        уже было с диагнозом съехавшей карточки каталога). Заодно снимок,
+        снятый до правки, получает новое чтение без единого запроса к городу.
+
+        Вид закрыли 14.09.2026, а номер оставили в хранимом — и 0.23.76 научил
+        читать «№ ДГП-Р 58/26» через пробел, а на проде у обоих распоряжений
+        номер остался пустым при том же заголовке в той же записи. Правило,
+        закрытое у одного поля, соседнее не защищает: у каждой производной
+        спрашивают, где она считается.
+        """
+        from . import krt_decisions  # модуль грузится и отдельно от движка
+
+        if not isinstance(payload, dict):
+            return payload
+        orders = payload.get("orders")
+        if not isinstance(orders, list):
+            return payload
+
+        def _reread(one: dict[str, Any]) -> dict[str, Any]:
+            title = str(one.get("title") or "")
+            # Заголовка нет — пересчитывать не из чего, и стирать прочитанное
+            # когда-то было бы потерей, а не свежестью.
+            if not title.strip():
+                return one
+            # Разбор один — тот же, что у обхода: второе правило чтения номера
+            # разошлось бы с первым молча.
+            parsed = krt_decisions.parse_tender_order(
+                {"id": one.get("id"), "title": title,
+                 "url": one.get("url"), "date": one.get("published_at")})
+            number = (parsed or {}).get("number") or ""
+            return {**one, "action": krt_decisions.order_action(title),
+                    "number": number}
+
+        out = dict(payload)
+        out["orders"] = [_reread(one) if isinstance(one, dict) else one
+                         for one in orders]
+        return out
 
     def status(self) -> dict[str, Any]:
         """Полнота снимка, ход обхода и КОГДА снимок снят.

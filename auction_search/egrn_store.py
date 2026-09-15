@@ -30,8 +30,11 @@ from __future__ import annotations
 import datetime
 import json
 import re
+import time
 from pathlib import Path
 from typing import Any
+
+from auction_search import egrn_archive
 
 # Каталог склада объявлен один раз: его же спрашивает у git проверка, что склад
 # не пишется в рабочее дерево репозитория. Строки в `.gitignore` не было, и
@@ -109,6 +112,134 @@ def save(data_dir: Path, key: str, parsed: dict[str, Any],
     place.parent.mkdir(parents=True, exist_ok=True)
     place.write_text(json.dumps(kept, ensure_ascii=False, indent=1), encoding="utf-8")
     return kept
+
+
+def _version_of(item: dict[str, Any]) -> int:
+    """Какими правилами это разобрано. Без поля — первая версия, а не «не знаем».
+
+    Байты на складе есть всегда, перечитать их можно всегда — третьего ответа
+    тут не бывает.
+    """
+    try:
+        return int(item.get("reader_version"))
+    except (TypeError, ValueError):
+        return egrn_archive.READER_VERSION_BEFORE
+
+
+def _last_refusals(kept: dict[str, Any]) -> list[dict[str, Any]]:
+    """Отказы ПОСЛЕДНЕГО захода по каждому файлу.
+
+    Журнал заходов хранит до двадцати записей, и один и тот же файл лежит в нём
+    столько раз, сколько его разбирали: сложенные подряд, отказы дают число
+    втрое больше настоящего — на этом я уже ошибся в замере 15.09.2026 (216
+    вместо 58). Считается последний ответ по файлу, а не все ответы.
+    """
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for upload in kept.get("uploads") or []:
+        if not isinstance(upload, dict):
+            continue
+        name = str(upload.get("file") or "")
+        if name in seen:
+            continue
+        seen.add(name)
+        out.extend(item for item in (upload.get("unread") or [])
+                   if isinstance(item, dict))
+    return out
+
+
+def stale(kept: dict[str, Any]) -> dict[str, Any]:
+    """Сколько разобранного на складе — ПРЕЖНИМИ правилами читателя.
+
+    Свод территории считается из разобранного, а не из байтов: значит починка
+    читателя до уже прочитанного лота сама не доезжает, и на экране наш пробел
+    выглядит молчанием документа. Ответ здесь — числа и разбивка по версиям, а
+    решает по ним тот, кто умеет перечитать (`krt_pipeline.reread_egrn`).
+
+    **Отказ считается наравне с записью.** Пока считались только записи, склад,
+    где отказали ВСЕ документы, не устаревал НИКОГДА: записей ноль, значит
+    отставать нечему, — и починка читателя до него не доезжала по построению.
+    Замер прода 15.09.2026: так стояли оба Прожектора (печатная форма) и
+    Шипиловский (архив RAR) — 154 позиции состава без собственника при живых
+    байтах на складе. Записи и отказы названы порознь: «прочитано прежним
+    читателем» и «отказано прежним читателем» — разные вещи, и одно число их бы
+    скрыло.
+    """
+    versions: dict[int, int] = {}
+    for record in kept.get("records") or []:
+        number = _version_of(record)
+        versions[number] = versions.get(number, 0) + 1
+    refused: dict[int, int] = {}
+    for item in _last_refusals(kept):
+        number = _version_of(item)
+        refused[number] = refused.get(number, 0) + 1
+    ours = egrn_archive.READER_VERSION
+    behind = sum(count for version, count in versions.items() if version < ours)
+    refusals_behind = sum(count for version, count in refused.items()
+                          if version < ours)
+    return {
+        "records": sum(versions.values()),
+        "records_behind": behind,
+        "refusals": sum(refused.values()),
+        "refusals_behind": refusals_behind,
+        "behind": behind + refusals_behind,
+        "reader_version": ours,
+        "versions": {str(version): count
+                     for version, count in sorted(versions.items())},
+        "refusal_versions": {str(version): count
+                             for version, count in sorted(refused.items())},
+    }
+
+
+def remember_reread(data_dir: Path, key: str, *, version: int, ok: bool,
+                    why: str = "", now: float | None = None) -> dict[str, Any]:
+    """Отметить: этот лот перечитан под такими-то правилами читателя.
+
+    Отметка живёт рядом с разобранным, а не в сроке ответа площадки: тот
+    молчит навсегда, как только состав прочитан (`krt_territory.notice_due`), и
+    без своей отметки устаревший разбор спрашивался бы КАЖДЫЙ круг сторожа —
+    по карточке лота на круг за ответ, который не изменится.
+
+    Неудача отмечается так же, как удача, и это не мелочь: Росэлторг отдаёт
+    карточку через раз, и «перечитали и остались прежние записи» и «перечитать
+    не дали» — разные ответы, у второго свой короткий срок.
+    """
+    kept = load(data_dir, key)
+    kept["reread"] = {
+        "version": int(version),
+        "at": float(now if now is not None else time.time()),
+        "ok": bool(ok),
+        "why": str(why or "")[:200],
+    }
+    place = _path(data_dir, key)
+    place.parent.mkdir(parents=True, exist_ok=True)
+    place.write_text(json.dumps(kept, ensure_ascii=False, indent=1), encoding="utf-8")
+    return kept
+
+
+def reread_due(kept: dict[str, Any], *, now: float | None = None,
+               retry_after: float = 1800.0) -> bool:
+    """Спрашивать ли лот заново из-за устаревшего разбора.
+
+    Три ответа, и слить их нельзя. Записей прежних правил нет — не надо вовсе.
+    Перечитали под нынешними правилами и что-то осталось прежним — тоже не
+    надо: это ответ ДОКУМЕНТОВ (машинной выписки на объект в лоте нет вовсе), и
+    вторым заходом он не лечится. Перечитать не дали — надо, но не раньше чем
+    через `retry_after`: площадка отвечает через раз.
+    """
+    if not stale(kept)["behind"]:
+        return False
+    mark = kept.get("reread") or {}
+    try:
+        version = int(mark.get("version") or 0)
+    except (TypeError, ValueError):
+        version = 0
+    if version < egrn_archive.READER_VERSION:
+        return True
+    if mark.get("ok"):
+        return False
+    when = float(mark.get("at") or 0)
+    return float(now if now is not None else time.time()) - when >= retry_after
 
 
 def block(kept: dict[str, Any]) -> dict[str, Any]:

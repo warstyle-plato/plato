@@ -21,6 +21,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
 
+from request_body import json_object
 from auction_search.adapters import (
     NistpAdapter,
     ETPGPBAdapter,
@@ -53,6 +54,7 @@ from auction_search.documents import DocumentExtractionError
 from auction_search.export_areas import export_areas
 from auction_search import archives, egrn_archive, egrn_store
 from auction_search import krt_pipeline
+from auction_search import lot_documents
 from auction_search.krt_pipeline import (
     documents_summary,
     egrn_summary,
@@ -783,7 +785,7 @@ def install(app: FastAPI) -> None:
         торги» не было новостью вовсе.
         """
         service = AuctionSearchService(_discovery_adapters("all"))
-        lots = service.discover_moscow(budget_seconds=DISCOVERY_BUDGET_SECONDS)
+        lots = service.discover_moscow(budget_seconds=WATCH_DISCOVERY_BUDGET_SECONDS)
         by_site = _remember_tender_links([_public_lot_dict(lot) for lot in lots])
         _read_krt_notices(by_site)
         return by_site
@@ -794,6 +796,16 @@ def install(app: FastAPI) -> None:
     # состав не спрашивается вовсе. Недочитанное дочитает следующий заход, и
     # это названо в своде, а не молчит.
     NOTICES_BUDGET_SECONDS = float(os.getenv("AUCTION_KRT_NOTICES_BUDGET", "240") or 240)
+
+    # Сколько секунд сторож собирает лоты. У маршрута это сорок секунд, и они
+    # про ШЛЮЗ: он рвёт соединение на шестидесяти. У сторожа окна запроса нет
+    # вовсе, а раздел Росэлторга обещает пятьдесят одну карточку и за каждой
+    # идёт свой запрос: на проде 14.09.2026 прочитано было 12, и непрочитанные
+    # 39 — наш пробел, который на экране читался как «столько лотов на рынке»
+    # (владелец: «так всего реально на торгах сколько сейчас крт?» — одиннадцать
+    # при семи на вкладке). Своим сроком сбор дочитывает раздел целиком.
+    WATCH_DISCOVERY_BUDGET_SECONDS = float(
+        os.getenv("AUCTION_WATCH_DISCOVERY_BUDGET", "300") or 300)
 
     def _read_krt_notices(by_site: dict[str, Any]) -> dict[str, Any]:
         """Извещения берутся сами — по связке «площадка ↔ лот».
@@ -1355,12 +1367,18 @@ def install(app: FastAPI) -> None:
         """Площадки-решения строками — тем же сборщиком, что и на экране."""
         return _decision_rows_state()[0]
 
-    def _krt_screen_list() -> tuple[list[dict[str, Any]], bool]:
-        """Список экрана и ответ на «виден ли он целиком».
+    def _krt_screen_state() -> tuple[list[dict[str, Any]], bool, dict[str, Any]]:
+        """Список экрана, ответ «виден ли он целиком» и ПОЧЕМУ именно такой.
 
         Целиком — значит каталог прочитан и не обновляется прямо сейчас, а
         решения дочитаны. Только такой список вправе отметить состав: неполный
         забыл бы чужую половину, и следующий заход объявил бы её новой.
+
+        Причина считается ЗДЕСЬ ЖЕ, а не вторым ответом: сторож молчал, а
+        снаружи «состав не отмечен» и «решения дочитаны не все» выглядели
+        одинаково — `/auctions/krt/watch` отдавал `site: known 0` и ни слова о
+        том, чей это пробел. У молчащего цикла обязан быть счётчик молчания, и
+        считает его тот же вызов, которым сторож и решает.
         """
         try:
             catalogue = list(krt_registry.catalogue())
@@ -1374,7 +1392,21 @@ def install(app: FastAPI) -> None:
             state = {}
         catalogue_whole = bool(catalogue) and bool(state.get("complete")) \
             and not state.get("refreshing") and not state.get("decisions_refreshing")
-        return catalogue + decisions, catalogue_whole and decisions_whole
+        why = {
+            "catalogue_rows": len(catalogue),
+            "catalogue_complete": bool(state.get("complete")),
+            "catalogue_refreshing": bool(state.get("refreshing")),
+            "decisions_refreshing": bool(state.get("decisions_refreshing")),
+            "decision_rows": len(decisions),
+            "decisions_whole": bool(decisions_whole),
+            "whole": bool(catalogue_whole and decisions_whole),
+        }
+        return catalogue + decisions, catalogue_whole and decisions_whole, why
+
+    def _krt_screen_list() -> tuple[list[dict[str, Any]], bool]:
+        """Список экрана и полнота — тем же счётом, что и причина."""
+        rows, whole, _why = _krt_screen_state()
+        return rows, whole
 
     def _krt_all_sites() -> list[dict[str, Any]]:
         """Все площадки списка: каталог плюс решения без карточки.
@@ -1703,7 +1735,7 @@ def install(app: FastAPI) -> None:
         setter = getattr(krt_registry, "mark_tender", None)
         if not callable(setter):
             raise HTTPException(status_code=503, detail="Отметки недоступны")
-        payload = await request.json()
+        payload = await json_object(request)
         order = (payload or {}).get("order") or {}
         if order and not str(order.get("url") or "").startswith("https://www.mos.ru/"):
             raise HTTPException(status_code=422,
@@ -1972,6 +2004,84 @@ def install(app: FastAPI) -> None:
             decision_numbers=numbers, root=_market_dir())
         return dict(project), site
 
+    # Рисунок границ, как его напечатал город. Раскрытие «Контур площадки, как
+    # его напечатал город» стоит в разметке страницы у ВСЕХ площадок, а
+    # картинку отдавал маршрут, который был только у Нагатино: у остальных 580
+    # человек открывал блок и видел пустоту (экран владельца, 14.09.2026).
+    # Пустого раскрытия не бывает — либо картинка, либо названная причина.
+    _OUTLINE_MARKS = ("схема границ", "границ территории", "схема территории")
+
+    def _site_outline_picture(slug: str) -> tuple[bytes, str]:
+        """Картинка и чем она найдена — или отказ с причиной.
+
+        Сеть здесь не трогается: берутся УЖЕ скачанные вложения лота
+        (`lot_documents`) и приложение к решению Нагатино, лежащее файлом.
+        Иначе один открытый блок уводил бы страницу на минуты в Росэлторг, а
+        шлюз отвечал бы своей страницей вместо картинки.
+        """
+        key = ""
+        reader = getattr(krt_registry, "tender_lots_known", None)
+        if callable(reader):
+            try:
+                lots = ((reader() or {}).get(slug) or {}).get("lots") or []
+            except Exception:  # noqa: BLE001
+                logger.exception("КРТ: связка с лотами не прочитана slug=%s", slug)
+                lots = []
+            key = next((str(lot.get("store_key") or "") for lot in lots
+                        if lot.get("store_key")), "")
+        if not key:
+            raise nagatino_parcels.OutlinePictureProblem(
+                "рисунок города берётся из документации лота, а лота у этой "
+                "площадки мы не знаем")
+        kept = lot_documents.manifest(_market_dir(), key)
+        # Подпись вложения лежит под тем же ключом, каким её пишет склад
+        # (`title`); её же читает счёт вложений. Имя файла — запасной путь:
+        # площадка кладёт его в адрес.
+        names = [(url, str((entry or {}).get("title")
+                           or (entry or {}).get("file") or url))
+                 for url, entry in (kept.get("files") or {}).items()]
+        found = [(url, name) for url, name in names
+                 if any(mark in name.casefold() for mark in _OUTLINE_MARKS)]
+        if not found:
+            raise nagatino_parcels.OutlinePictureProblem(
+                "в скачанных вложениях лота схемы границ нет"
+                + (f" (вложений на складе {len(names)})" if names else
+                   ": склад по этому лоту пуст"))
+        said = ""
+        for url, name in found:
+            got = lot_documents.load(_market_dir(), key, url)
+            if not got:
+                said = said or f"«{name}» на складе числится, а байтов нет"
+                continue
+            try:
+                return nagatino_parcels.outline_picture_from(
+                    got[0], what=f"«{name}»"), name
+            except nagatino_parcels.OutlinePictureProblem as exc:
+                said = said or str(exc)
+        raise nagatino_parcels.OutlinePictureProblem(
+            said or "схема границ не прочиталась")
+
+    @app.get("/krt/site/{slug}/decision-outline.png", include_in_schema=False)
+    async def krt_site_outline(slug: str, request: Request, session: str = "",
+                               key: str = "", share: str = "") -> Response:
+        """Рисунок границ площадки — как есть, без наложения на нашу карту.
+
+        Растр без координат: совместить его с картой можно только на глаз, а
+        нарисованная так граница выглядела бы ровно так же уверенно, как
+        настоящая. Поэтому он стоит рядом с картой и подписан источником.
+        """
+        _nagatino_gate(request, session, key, share)
+        try:
+            raw, name = await run_in_threadpool(_site_outline_picture, slug)
+        except nagatino_parcels.OutlinePictureProblem as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return Response(raw, media_type="image/png", headers={
+            "Cache-Control": "public, max-age=86400",
+            # Чем найдено — часть ответа: подпись под картинкой называет
+            # документ, из которого она вынута.
+            "X-Outline-Source": urllib.parse.quote(name),
+        })
+
     def _krt_sites_with_lots() -> list[dict[str, Any]]:
         """Площадки, у которых есть лот торгов — список для служебной страницы.
 
@@ -2221,7 +2331,7 @@ def install(app: FastAPI) -> None:
         """
         from . import krt_tenders
 
-        payload = await request.json()
+        payload = await json_object(request)
         lots = (payload or {}).get("lots") or []
         if not isinstance(lots, list) or len(lots) > 5000:
             raise HTTPException(status_code=422, detail="Список лотов не разобран")
@@ -2270,7 +2380,20 @@ def install(app: FastAPI) -> None:
         recent = sum(1 for one in rows
                      if float(one.get("published_at") or 0) > year_ago)
         addressed = sum(1 for one in rows if one.get("address"))
+        # Связок помним больше, чем собрали сейчас, и оба числа обязаны стоять
+        # рядом: меньшее — наш сбор (раздел читается не целиком), а не рынок.
+        # «Живым» здесь никто не объявляется: правило живости живёт у каталога
+        # (`krtLiveLot`), и второе такое правило ответило бы про один лот иначе.
+        known = 0
+        known_reader = getattr(krt_registry, "tender_lots_known", None)
+        if callable(known_reader):
+            try:
+                known = sum(len((row or {}).get("lots") or [])
+                            for row in (known_reader() or {}).values())
+            except Exception:  # noqa: BLE001 — связка необязательна для свода
+                logger.exception("КРТ: связка с лотами не прочитана")
         return {**matched, "orders": rows,
+                "known_links": known,
                 "orders_by_site": order_by_site,
                 "orders_unbound": unbound[:40],
                 "orders_total": len(rows),
@@ -2545,8 +2668,14 @@ def install(app: FastAPI) -> None:
         уведомление ради ответа на вопрос, дошло ли уведомление.
         """
         state = await run_in_threadpool(krt_ranking.watch_state)
+        # Почему состав ПЛОЩАДОК не отмечен — ответ, а не подробность: вид
+        # `site` стоял `known 0, bootstrapped false` при заведённых `decision`
+        # и `tender` (замер прода 15.09.2026), и различить «список дочитан не
+        # весь» от «сторож сломан» снаружи было нечем. Считает это тот же
+        # вызов, которым сторож и решает: второй ответ разошёлся бы с первым.
         return {
             **state,
+            "site_source": await run_in_threadpool(lambda: _krt_screen_state()[2]),
             # Сроки и выключатель называются здесь же: «сторож молчит» при
             # выключенном стороже — ответ, а не поломка.
             "enabled": os.getenv("AUCTION_KRT_WATCH", "1").strip() not in {"0", "false", "no"},

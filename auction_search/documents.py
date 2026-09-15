@@ -21,11 +21,13 @@ MAX_DOCUMENT_BYTES = 35 * 1024 * 1024
 # четыре ответили HTTP 503 — «Сведения о земельных участках», «График КРТ»,
 # «Схема границ», «Материалы градостроительного потенциала», — а лот 33452 за
 # один заход отдал 0 документов, за следующий 26.
-RETRIABLE_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
-DOWNLOAD_ATTEMPTS = 3
-# Отступ растёт: перебой длится секунды, и три запроса подряд без паузы — это
-# один запрос, посланный трижды.
-RETRY_BACKOFF_SECONDS = (2.0, 5.0)
+#
+# Политика объявлена ОДИН раз — в `reading`, ниже уровнем: её же берёт чтение
+# карточки лота, где та же болезнь стоила пяти отказов подряд у прохода за
+# извещениями (14.09.2026). Здесь у неё только свои имена.
+RETRIABLE_STATUS = reading.RETRIABLE_STATUS
+DOWNLOAD_ATTEMPTS = reading.ATTEMPTS
+RETRY_BACKOFF_SECONDS = reading.BACKOFF_SECONDS
 _ALLOWED_ETP_HOST_SUFFIXES = ("roseltorg.ru", "lot-online.ru")
 _USER_AGENT = "DevelopAid-AuctionCollector/0.1 (+https://developaid.ru)"
 
