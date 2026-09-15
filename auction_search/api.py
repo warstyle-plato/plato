@@ -1367,12 +1367,18 @@ def install(app: FastAPI) -> None:
         """Площадки-решения строками — тем же сборщиком, что и на экране."""
         return _decision_rows_state()[0]
 
-    def _krt_screen_list() -> tuple[list[dict[str, Any]], bool]:
-        """Список экрана и ответ на «виден ли он целиком».
+    def _krt_screen_state() -> tuple[list[dict[str, Any]], bool, dict[str, Any]]:
+        """Список экрана, ответ «виден ли он целиком» и ПОЧЕМУ именно такой.
 
         Целиком — значит каталог прочитан и не обновляется прямо сейчас, а
         решения дочитаны. Только такой список вправе отметить состав: неполный
         забыл бы чужую половину, и следующий заход объявил бы её новой.
+
+        Причина считается ЗДЕСЬ ЖЕ, а не вторым ответом: сторож молчал, а
+        снаружи «состав не отмечен» и «решения дочитаны не все» выглядели
+        одинаково — `/auctions/krt/watch` отдавал `site: known 0` и ни слова о
+        том, чей это пробел. У молчащего цикла обязан быть счётчик молчания, и
+        считает его тот же вызов, которым сторож и решает.
         """
         try:
             catalogue = list(krt_registry.catalogue())
@@ -1386,7 +1392,21 @@ def install(app: FastAPI) -> None:
             state = {}
         catalogue_whole = bool(catalogue) and bool(state.get("complete")) \
             and not state.get("refreshing") and not state.get("decisions_refreshing")
-        return catalogue + decisions, catalogue_whole and decisions_whole
+        why = {
+            "catalogue_rows": len(catalogue),
+            "catalogue_complete": bool(state.get("complete")),
+            "catalogue_refreshing": bool(state.get("refreshing")),
+            "decisions_refreshing": bool(state.get("decisions_refreshing")),
+            "decision_rows": len(decisions),
+            "decisions_whole": bool(decisions_whole),
+            "whole": bool(catalogue_whole and decisions_whole),
+        }
+        return catalogue + decisions, catalogue_whole and decisions_whole, why
+
+    def _krt_screen_list() -> tuple[list[dict[str, Any]], bool]:
+        """Список экрана и полнота — тем же счётом, что и причина."""
+        rows, whole, _why = _krt_screen_state()
+        return rows, whole
 
     def _krt_all_sites() -> list[dict[str, Any]]:
         """Все площадки списка: каталог плюс решения без карточки.
@@ -2648,8 +2668,14 @@ def install(app: FastAPI) -> None:
         уведомление ради ответа на вопрос, дошло ли уведомление.
         """
         state = await run_in_threadpool(krt_ranking.watch_state)
+        # Почему состав ПЛОЩАДОК не отмечен — ответ, а не подробность: вид
+        # `site` стоял `known 0, bootstrapped false` при заведённых `decision`
+        # и `tender` (замер прода 15.09.2026), и различить «список дочитан не
+        # весь» от «сторож сломан» снаружи было нечем. Считает это тот же
+        # вызов, которым сторож и решает: второй ответ разошёлся бы с первым.
         return {
             **state,
+            "site_source": await run_in_threadpool(lambda: _krt_screen_state()[2]),
             # Сроки и выключатель называются здесь же: «сторож молчит» при
             # выключенном стороже — ответ, а не поломка.
             "enabled": os.getenv("AUCTION_KRT_WATCH", "1").strip() not in {"0", "false", "no"},

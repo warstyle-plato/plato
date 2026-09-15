@@ -171,26 +171,49 @@ class KrtWatch:
         заходом — то есть с отставанием в один срок, а не в неделю.
         """
         try:
-            # Список экрана уже включает обе половины; обход каталога просим
-            # отдельно — снимок живёт сутки и сам себя не обновляет.
-            try:
-                self.registry.catalogue(refresh=True)
-            except Exception:  # noqa: BLE001
-                logger.exception("KRT watch: обход каталога не начат")
             rows, whole = self.screen_list()
         except Exception:  # noqa: BLE001
             logger.exception("KRT watch: каталог не прочитан")
+            self._ask_for_a_walk()
             return []
         if not whole:
             # Недочитанный список состав не отмечает: забытая половина
             # объявилась бы новой следующим заходом, и так по кругу. Это
             # «ещё не видели», а не «этого нет».
             logger.info("KRT watch: список экрана дочитан не весь — состав не отмечаем")
+            self._ask_for_a_walk()
             return []
         before = set(self.ranking.first_seen())
         self.ranking.mark_seen([str(row.get("slug") or "") for row in rows], complete=True)
         after = self.ranking.first_seen()
-        return sorted(slug for slug in after if slug not in before) if before else []
+        fresh = sorted(slug for slug in after if slug not in before) if before else []
+        self._ask_for_a_walk()
+        return fresh
+
+    def _ask_for_a_walk(self) -> None:
+        """Обход каталога — ПОСЛЕ отметки состава, а не перед ней.
+
+        Стоял он первой строкой, и `refresh_in_background` ставит
+        `_refreshing = True` СИНХРОННО, до запуска нити. Следующая же строка
+        спрашивала полноту, а та считается как «прочитан и НЕ обновляется
+        прямо сейчас», — то есть полнота отрицалась ровно тем вызовом, что
+        стоял выше. `if not whole: return []`, и так каждый час: на проде
+        15.09.2026 вид «площадка» имел `known 0, bootstrapped false` при
+        заведённых `decision` (293) и `tender` (9), а каталог при этом был
+        целым (`complete: true`, `refreshing: false`, 529 строк).
+
+        Docstring `_catalogue` объяснял это наоборот — «увиденное новым
+        приезжает следующим заходом, с отставанием в один срок»: следующий
+        заход начинался с того же обхода, и гейт взводился заново. Отставание
+        выходило не в один срок, а навсегда.
+
+        Признак, по которому это ловится заранее: у гейта спрашивают, не
+        взводит ли его сам вызывающий строкой выше.
+        """
+        try:
+            self.registry.catalogue(refresh=True)
+        except Exception:  # noqa: BLE001
+            logger.exception("KRT watch: обход каталога не начат")
 
     def _decisions(self) -> list[str]:
         try:
