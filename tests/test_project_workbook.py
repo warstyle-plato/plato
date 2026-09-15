@@ -956,13 +956,11 @@ def test_the_social_construction_cash_follows_the_objects_queues():
             f"доля соцнагрузки очереди {i + 1} разошлась с движком"
 
 
-def test_the_social_breakdown_is_visible_in_the_report_and_tep():
-    """«Где в Excel расходы на садик и школы?» — раньше нигде: B17 приезжал
-    одной цифрой. Теперь ОТЧЕТ (E31:H37) и ТЭП (38–44) несут расшифровку по
-    типам с очередями, и сумма строк обязана сходиться с B17."""
+def _social_case(area_source):
+    """Вводные расшифровки: те же места, та же площадь, разный ЕЁ источник."""
     inputs = dict(core.DEFAULT_INPUTS)
     inputs.update({
-        "social_mode": "Строительство",
+        "social_mode": "Строительство", "social_area_source": area_source,
         "kindergarten_places": 465, "school_places": 675, "clinic_capacity": 127,
         "social_dou_gba_sqm": 12231, "social_school_gba_sqm": 25650,
         "social_clinic_gba_sqm": 1860,
@@ -980,28 +978,88 @@ def test_the_social_breakdown_is_visible_in_the_report_and_tep():
             {"id": "d", "name": "Поликлиника", "type": "clinic", "capacity": 127, "phase": 2},
         ],
     }
+    return inputs, tep, phasing
+
+
+def test_the_social_breakdown_is_visible_in_the_report_and_tep():
+    """«Где в Excel расходы на садик и школы?» — раньше нигде: B17 приезжал
+    одной цифрой. Теперь ОТЧЕТ (E31:H37) и ТЭП (38–44) несут расшифровку по
+    типам с очередями, и сумма строк обязана сходиться с B17.
+
+    Числа спрашиваются у вычислителя, а не читаются из ячейки: расшифровка —
+    формулы от блока «Вводных». Прежняя проверка держала ФОРМУ записи и
+    заодно закрепляла расхождение: площадь книга брала полем
+    `social_*_gba_sqm`, а движок — своим `social_tep_row`, который при
+    источнике «норматив» это поле не читает вовсе. 25 650 м² в книге против
+    10 125 у модели — два ответа об одной школе в одном файле.
+    """
+    inputs, tep, phasing = _social_case("norm")
     content, _, meta = core.build_project_workbook(
         inputs, tep, [], phasing, project_name="Расшифровка")
     assert not [m for m in meta["missing"] if "расшифровка" in str(m)]
+    sys.setrecursionlimit(400000)
+    from xlsx_eval import Evaluator
+
     book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
-    report = book["ОТЧЕТ"]
-    assert report["F33"].value == 465
-    assert report["G33"].value == "О1+О3"
-    assert report["F34"].value == 675 and report["G34"].value == "О2"
-    assert report["F35"].value == 127
-    parts = sum(float(report[c].value or 0) for c in ("H33", "H34", "H35", "H36"))
+    ev = Evaluator(book)
+    assert ev.cell("ОТЧЕТ", "F33") == pytest.approx(465)
+    assert ev.cell("ОТЧЕТ", "G33") == "О1+О3"
+    assert ev.cell("ОТЧЕТ", "F34") == pytest.approx(675)
+    assert ev.cell("ОТЧЕТ", "G34") == "О2"
+    assert ev.cell("ОТЧЕТ", "F35") == pytest.approx(127)
+    parts = sum(float(ev.cell("ОТЧЕТ", c) or 0)
+                for c in ("H33", "H34", "H35", "H36"))
     b17 = float(v4_inputs.inputs(book)["B17"].value or 0)
     assert parts == pytest.approx(b17, abs=0.01), \
         "расшифровка обязана сходиться с суммой соцнагрузки B17"
-    tep_sheet = book["ТЭП"]
-    assert tep_sheet["B40"].value == 465
-    assert tep_sheet["C41"].value == 25650
-    assert str(tep_sheet["E44"].value).startswith("=SUM")
+    assert ev.cell("ТЭП", "B40") == pytest.approx(465)
+    # Итог расшифровки — не число на дату сборки, а сумма своих же строк.
+    assert ev.cell("ТЭП", "E44") == pytest.approx(
+        sum(float(ev.cell("ТЭП", f"E{r}") or 0) for r in range(40, 44)), abs=0.01)
+
+
+@pytest.mark.parametrize("area_source", ["norm", "manual"])
+def test_the_book_shows_the_same_social_area_as_the_engine(area_source):
+    """Площадь соцобъекта в книге — та же, что в строке ТЭП движка.
+
+    Источник площади решает `social_tep_row`: вписанная руками (требование
+    договора КРТ) сильнее норматива, норматив сильнее пустого поля. Проверка
+    идёт по ОБОИМ источникам не для полноты — при «нормативе» книга берёт
+    места на норматив, при «руках» читает саму площадь, и это разные ветки
+    формулы `IF(SUM(площадь)>0;…)`. На одном источнике вторая молчит.
+    """
+    inputs, tep, phasing = _social_case(area_source)
+    content, _, _ = core.build_project_workbook(
+        inputs, tep, [], phasing, project_name="Площадь соцобъекта")
+    sys.setrecursionlimit(400000)
+    from xlsx_eval import Evaluator
+
+    ev = Evaluator(openpyxl.load_workbook(io.BytesIO(content), data_only=False))
+    expected = {typ: core.social_tep_row(inputs, typ)
+                for typ in ("kindergarten", "school", "clinic")}
+    # Предохранитель: на одинаковых площадях проверять было бы нечего.
+    assert expected["school"]["total_area"] == pytest.approx(
+        25650 if area_source == "manual" else 10125)
+    for row, typ in ((40, "kindergarten"), (41, "school"), (42, "clinic")):
+        assert ev.cell("ТЭП", f"C{row}") == pytest.approx(
+            expected[typ]["total_area"], rel=1e-6), \
+            f"площадь {typ} в книге разошлась со строкой ТЭП движка"
+        assert ev.cell("ТЭП", f"F{row}") == pytest.approx(
+            expected[typ]["gns"], rel=1e-6), \
+            f"ГНС {typ} в книге разошлась со строкой ТЭП движка"
 
 
 def test_the_compensation_mode_shows_places_and_the_payment():
-    """При денежной компенсации расшифровка не выдумывает стройку: места
-    справочно, деньги — одной строкой компенсации."""
+    """При денежной компенсации расшифровка не выдумывает стройку: объекта
+    нет, значит нет ни мест, ни метров, а деньги стоят одной строкой
+    компенсации.
+
+    Прежде книга печатала здесь заказанные городом места (19/38/9) — третье
+    число: движок в этом режиме строит ноль объектов, и «19 мест» рядом с
+    нулевой стоимостью читалось как построенный бесплатно садик. Правило
+    владельца (09.09.2026) про метры, и места идут за ними: не строится —
+    значит в ТЭП его нет.
+    """
     inputs = dict(core.DEFAULT_INPUTS)
     inputs.update({
         "social_mode": "Денежная компенсация",
@@ -1011,9 +1069,19 @@ def test_the_compensation_mode_shows_places_and_the_payment():
     tep = {key: dict(value) for key, value in core.TEP_DEFAULT.items()}
     content, _, meta = core.build_project_workbook(
         inputs, tep, [], {}, project_name="Компенсация")
+    sys.setrecursionlimit(400000)
+    from xlsx_eval import Evaluator
+
     book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
-    report = book["ОТЧЕТ"]
-    assert report["H36"].value == pytest.approx(580.668)
-    assert float(report["H33"].value or 0) == 0
-    assert report["F33"].value == 19
-    assert book["ТЭП"]["E43"].value == pytest.approx(580.668)
+    ev = Evaluator(book)
+    assert ev.cell("ОТЧЕТ", "H36") == pytest.approx(580.668)
+    assert ev.cell("ТЭП", "E43") == pytest.approx(580.668)
+    for report_row, tep_row, typ in ((33, 40, "kindergarten"),
+                                     (34, 41, "school"), (35, 42, "clinic")):
+        engine = core.social_tep_row(inputs, typ)
+        assert engine["units"] == 0 and engine["total_area"] == 0, \
+            "движок перестал обнулять соцобъект — проверке больше нечего держать"
+        assert float(ev.cell("ОТЧЕТ", f"F{report_row}") or 0) == 0
+        assert float(ev.cell("ОТЧЕТ", f"H{report_row}") or 0) == 0
+        assert float(ev.cell("ТЭП", f"B{tep_row}") or 0) == 0
+        assert float(ev.cell("ТЭП", f"C{tep_row}") or 0) == 0

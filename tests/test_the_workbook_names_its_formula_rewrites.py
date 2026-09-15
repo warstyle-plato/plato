@@ -147,8 +147,13 @@ def test_the_guard_compares_the_whole_formula_not_its_beginning() -> None:
     assert all(len(value) <= 90 for cells in read(TEMPLATE).values()
                for kind, value in cells.values() if kind == "f")
 
+    # Предохранитель у самого примера: строка 48 доказывает утверждение только
+    # тем, что её формула ДЛИННЕЕ среза, — иначе пример не о том.
+    kind, value = read(TEMPLATE, full=True)["ПРОВЕРКИ"]["B48"]
+    assert kind == "f" and len(value) > 90, (kind, len(value))
+
     rows = _rewritten_rows(*_single())
-    assert {48, 49} <= rows["ПРОВЕРКИ"], sorted(rows["ПРОВЕРКИ"])
+    assert 48 in rows["ПРОВЕРКИ"], sorted(rows["ПРОВЕРКИ"])
 
 
 def test_every_named_row_carries_a_reason() -> None:

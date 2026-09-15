@@ -28,6 +28,7 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+import page_blocks  # noqa: E402
 from auction_search.ui import auctions_page  # noqa: E402
 
 
@@ -42,46 +43,20 @@ SITE = {"slug": "site", "name": "Площадка", "okrug": "ЮАО", "district
 
 
 def page_functions() -> str:
-    """Настоящие функции балла со страницы, а не их копия здесь."""
+    """Константы балла со страницы. Функции добирает общий разрешитель.
+
+    Перечисление функций руками отставало от страницы: 14.09.2026 рядом
+    завёлся `krtCityOrder`, и пятнадцать проверок балла упали с
+    «is not defined», ничего не сказав о самом балле. Константы остаются
+    здесь — их разрешитель добирает только по имени в ошибке, а `KRT_PENALTIES`
+    и `KRT_SCALE` нужны балла ради, и читаются они целиком.
+    """
     script = auctions_page()
     script = script[script.rindex("<script>") + len("<script>"):script.rindex("</script>")]
-    out = []
-    # `krtIntent` появилась вместе со снижениями за оператора и городские
-    # нужды: балл теперь читает и то, что сказано в источнике о самой площадке.
-    # `krtVolumeShare` — шкала объёма: балл больше не складывается из
-    # постоянных прибавок, и без неё `krtFit` не считается вовсе.
-    # `krtTaskProfile` читает выбранное назначение: отдельного списка задач
-    # больше нет, он дублировал «Статус» и «Назначение», и мера балла следует
-    # тому же полю, что и отбор.
-    # `krtRenovation` — измеренная доля городских нужд: снижение за них больше
-    # не плоская четверть, и без неё балл не считается вовсе. `krtRuleValue`
-    # называет число правила в его единицах, `krtInt`/`krtPct` — оформление
-    # подписи, а не арифметика балла.
-    # `krtBroken`/`krtNumber` — один ответ на «известна ли величина строки»:
-    # у карточки, разбор которой съехал на поле, её значений нет ни в ячейке,
-    # ни в сортировке, ни в балле.
-    for name in ("krtVolumeShare", "krtTaskProfile", "krtBroken", "krtNumber",
-                 "krtFit", "krtIntent",
-                 "krtInt", "krtPct", "krtRenovation", "krtLots", "krtLiveLot", "krtAskingPrice", "krtPriceVerdict", "krtRuleValue",
-                 "krtPenalty", "krtScoreSource", "krtScore", "krtScoreNote"):
-        start = script.index(f"function {name}(")
-        depth = 0
-        for position in range(script.index("{", start), len(script)):
-            if script[position] == "{":
-                depth += 1
-            elif script[position] == "}":
-                depth -= 1
-                if depth == 0:
-                    out.append(script[start:position + 1])
-                    break
-        else:
-            raise AssertionError(f"не найдена функция {name}")
     rules = script[script.index("const KRT_PENALTIES="):]
-    out.insert(0, rules[:rules.index("];") + 2])
-    # Якоря шкалы сняты с самого каталога и объявлены рядом с функцией.
     scale = script[script.index("const KRT_SCALE="):]
-    out.insert(0, scale[:scale.index("};") + 2])
-    return "\n".join(out)
+    return (scale[:scale.index("};") + 2] + "\n"
+            + rules[:rules.index("];") + 2])
 
 
 def score(model: dict | None, rank: dict | None = None, site: dict | None = None,
@@ -104,11 +79,8 @@ def score(model: dict | None, rank: dict | None = None, site: dict | None = None
         "const $=()=>({value:'housing_ready'});\n"
         "function fmtArea(v){return String(v)}\n"
     )
-    body = (stub + page_functions()
-            + f"\nconsole.log(JSON.stringify(krtScore({json.dumps(site or SITE)})));")
-    done = subprocess.run([node, "-e", body], capture_output=True, text=True, timeout=60)
-    assert done.returncode == 0, done.stderr[:600]
-    return json.loads(done.stdout)
+    tail = f"console.log(JSON.stringify(krtScore({json.dumps(site or SITE)})));"
+    return page_blocks.run_json(stub + page_functions(), tail, page=auctions_page())
 
 
 def model_with(llcr: float, margin: float, weakest: float) -> dict:

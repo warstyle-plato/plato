@@ -28,30 +28,34 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+import page_blocks  # noqa: E402
+from auction_search.ui import auctions_page  # noqa: E402
 from tests.test_krt_score_is_lowered_not_replaced import SITE, page_functions  # noqa: E402
 
 
 def scores(rows: dict[str, dict]) -> dict[str, dict]:
-    """Посчитать балл каждой площадки в присутствии всего каталога."""
-    node = shutil.which("node")
-    if not node:
-        pytest.skip("node недоступен")
+    """Посчитать балл каждой площадки в присутствии всего каталога.
+
+    Функции добирает общий разрешитель: `page_functions` отдаёт только
+    константы шкалы и правил, а перечисленные руками зависимости отставали от
+    страницы — новый `krtCityOrder` уронил эти проверки с «is not defined», то
+    есть падение выходило про стенд, а не про балл.
+    """
     sites = {slug: dict(SITE, slug=slug, name=slug) for slug in rows}
-    body = (
+    prelude = (
         "const state={krtModels:{},krtRank:" + json.dumps(rows)
-        + ",krtRequirements:{},krtPress:{}};\n"
+        + ",krtRequirements:{},krtPress:{},krtCards:{},krtTenders:{},"
+        "krtOrderBySite:{},krtTenderLinks:{}};\n"
         "const document={getElementById:()=>({value:'housing_ready'})};\n"
         "const $=()=>({value:'housing_ready'});\n"
         "function fmtArea(v){return String(v)}\n"
         + page_functions()
-        + "\nconst out={};"
-        + f"const sites={json.dumps(sites)};"
-        + "Object.keys(sites).forEach(s=>{out[s]=krtScore(sites[s])});"
-        "console.log(JSON.stringify(out));"
     )
-    done = subprocess.run([node, "-e", body], capture_output=True, text=True, timeout=60)
-    assert done.returncode == 0, done.stderr[:800]
-    return json.loads(done.stdout)
+    tail = ("const out={};"
+            + f"const sites={json.dumps(sites)};"
+            + "Object.keys(sites).forEach(s=>{out[s]=krtScore(sites[s])});"
+            "console.log(JSON.stringify(out));")
+    return page_blocks.run_json(prelude, tail, page=auctions_page())
 
 
 def catalogue(count: int = 20) -> dict[str, dict]:

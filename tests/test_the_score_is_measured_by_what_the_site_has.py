@@ -31,6 +31,7 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+import page_blocks  # noqa: E402
 from auction_search import ui  # noqa: E402
 
 PAGE = ui.AUCTIONS_PAGE
@@ -78,10 +79,14 @@ SILENT = {"slug": "s", "name": "Молчит", "area_ha": 3.1}
 
 
 def _score(row: dict) -> dict:
-    node = shutil.which("node")
-    if not node:
-        pytest.skip("node недоступен")
-    program = "\n".join([
+    """Балл настоящей функцией страницы; зависимости добирает разрешитель.
+
+    Перечисленные руками, они отставали от страницы: 14.09.2026 рядом завёлся
+    `krtCityOrder`, и проверки меры балла упали с «is not defined» — падение
+    про стенд, а не про меру. Константы шкалы и правил остаются здесь: они
+    нужны балла ради и читаются целиком.
+    """
+    prelude = "\n".join([
         "function esc(s){return String(s==null?'':s)}",
         "const state={krtRank:{},krtModels:{},krtCards:{},krtPress:{},krtTenders:{},"
         "krtOrderBySite:{},krtOrders:{},krtTenderLinks:{},krtRequirements:{},"
@@ -89,24 +94,14 @@ def _score(row: dict) -> dict:
         "const KRT_TENDER_LIVE_DAYS=0;",
         _piece("const KRT_SCALE="), _piece("const KRT_PENALTIES="),
         _line("const fmtArea="),
-        _piece("function krtBroken("), _piece("function krtNumber("),
-        _piece("function krtVolumeShare("), _piece("function krtTaskProfile("),
-        _piece("function krtFit("), _piece("function krtAskingPrice("), _piece("function krtPriceVerdict("),
-        _piece("function krtRenovation("),
-        _piece("function krtRuleValue("), _piece("function krtPenalty("),
-        _piece("function krtScoreSource("), _piece("function krtIntent("),
-        _piece("function krtStage("), _piece("function krtLots("),
-        _piece("function krtLiveLot("), _piece("function krtStatusKind("),
-        _piece("function krtOnTender("), _piece("function krtScore("),
-        _piece("function krtInt("), _piece("function krtPct("),
+    ])
+    tail = "\n".join([
         f"const x={json.dumps(row)};",
         "const sc=krtScore(x);",
         "console.log(JSON.stringify({known:sc.known,score:sc.score,"
         "label:sc.label,measure:sc.fit.measure,checks:sc.fit.checks}));",
     ])
-    done = subprocess.run([node, "-e", program], capture_output=True, text=True, timeout=60)
-    assert done.returncode == 0, done.stderr[:800]
-    return json.loads(done.stdout)
+    return page_blocks.run_json(prelude, tail, page=PAGE)
 
 
 def test_a_housing_site_is_measured_by_housing() -> None:
