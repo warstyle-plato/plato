@@ -74,6 +74,7 @@ class NoTextLayer(ValueError):
 
 
 _CAD = re.compile(r"\d+:\d+:\d+:\d+")
+_CYRILLIC = set("абвгдеёжзийклмнопрстуфхцчшщъыьэюя")
 _ABSENT = re.compile(r"^\s*(данные отсутствуют|не зарегистрировано|отсутствуют?)\s*$", re.I)
 # «Не зарегистрировано» в клетке вида права — ответ полный, и за ним в этой
 # клетке ничего законного не стоит. Поэтому здесь совпадение по НАЧАЛУ, а не по
@@ -222,6 +223,60 @@ def _numbers(text: str) -> list[str]:
     return list(dict.fromkeys(_CAD.findall(text or "")))
 
 
+def _shape(value: str, *, limit: int = 60) -> str:
+    """Форма значения без самого значения: цифра → 9, буква → «б» и «a».
+
+    Отказ уезжает в свод площадки и в чат, а в выписке стоят имена
+    правообладателей — поэтому наружу идёт форма, а не содержимое: по
+    «99:99:9999999:9999 99.99.9999» видно, что в клетке не один номер, и не
+    видно, чей он. То же правило, что у `shape` в отказе машинного разбора.
+    """
+    out = []
+    for char in (value or "")[:limit]:
+        if char.isdigit():
+            out.append("9")
+        elif char.isalpha():
+            out.append("б" if char.lower() in _CYRILLIC else "a")
+        else:
+            out.append(char)
+    return "".join(out) + ("…" if len(value or "") > limit else "")
+
+
+def _why_no_number(found: dict[str, list[str]], text: str, kind: str,
+                   text_source: str) -> str:
+    """Почему кадастровый номер не прочитан — названо тем, что видел читатель.
+
+    «В форме не прочитан кадастровый номер объекта» было верным и немым: по
+    нему нельзя отличить скан с плохим распознаванием от чужого шаблона и от
+    подписи, под которой стоит не номер. Замер прода 15.09.2026: так молчали
+    ОБА Прожектора (132 позиции состава без собственника) — и починить это,
+    не увидев документа, нельзя, а из песочницы Росэлторг закрыт.
+
+    Ответ здесь тот же, что у машинного разбора: что спросили и что пришло —
+    имена подписей и ФОРМА клетки, без значений.
+    """
+    keys = sorted(key for key, values in found.items()
+                  if any(value for value in values))
+    shown = ", ".join(keys[:8]) + ("…" if len(keys) > 8 else "")
+    label_seen = bool(re.search(r"Кадастровый\s+номер", text, re.I))
+    cell = next((value for value in (found.get("cadastral_number") or [])
+                 if value), "")
+    if not label_seen:
+        about = "подписи «Кадастровый номер» в тексте нет вовсе"
+    elif not cell:
+        about = "подпись «Кадастровый номер» в тексте есть, а под ней пусто"
+    elif _ABSENT.match(cell):
+        about = "клетка отвечает «данные отсутствуют»"
+    else:
+        about = f"под подписью форма «{_shape(cell)}»"
+    return ("в форме не прочитан кадастровый номер объекта: "
+            f"вид {kind or 'не назван'}, прочитано "
+            f"{'слоем' if text_source == 'layer' else text_source}, "
+            f"знаков {len(text)}, подписей со значением {len(keys)} "
+            f"из {len(_FIELDS)}"
+            + (f" ({shown})" if shown else "") + f"; {about}")
+
+
 def _kind(lines: list[str]) -> str:
     for index, line in enumerate(lines):
         if line.strip().casefold() == "вид объекта недвижимости" and index:
@@ -333,7 +388,7 @@ def read_text(text: str, *, text_source: str = "layer") -> dict[str, Any]:
     found = _values(lines)
     number = _first(found, "cadastral_number")
     if not _CAD.fullmatch(number):
-        raise ValueError("в форме не прочитан кадастровый номер объекта")
+        raise ValueError(_why_no_number(found, text, kind, text_source))
 
     notes = _first(found, "special_notes")
     # Раздел прав объявлен отсутствующим В САМОЙ форме — это ответ реестра.
