@@ -77,7 +77,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.23.73"
+VERSION = "0.23.74"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -18951,6 +18951,102 @@ def _v4_relax_limit_check_for_carried_debt(xml: str, missing: list[str]) -> str:
     return xml[:found.start(1)] + changed + xml[found.end(1):]
 
 
+# Строка-гейт паритета: правил ли человек вводные после сборки книги.
+_V4_PARITY_GATE_ROW = 75
+# Ссылка на ЛИСТ ВВОДА из чужого листа едет меткой. При записи в архив каждый
+# лист проходит переименование «Вводные» → «Параметры модели», и написанная
+# прямо ссылка уехала бы на расчётный лист — туда, где формулы читают CAPEX и
+# CF, то есть отпечаток вводных двигался бы от расхождения, которое он обязан
+# показывать.
+_V4_ENTRY_SHEET_TOKEN = "'__ЛИСТ-ВВОДА__'!"
+
+
+def _v4_parity_verdict(row: int) -> str:
+    """Вердикт строки паритета — объявлен один раз на все строки блока.
+
+    Ответов три, и третий появился не для красоты. Цель в колонке C — это
+    значение движка на дату сборки, а книга считает сама, и правка вводной в
+    ней законна: «эксель должен работать почти как движок, если что-то
+    меняешь где-то, всё должно меняться так же» (владелец, 03.09.2026).
+    Измерено: подними цену квартир на 10% прямо в книге — она пересчитается
+    верно, а ВОСЕМЬ строк паритета из одиннадцати покраснеют, потому что цель
+    осталась прежней. Кричащая зря проверка хуже отсутствующей: её перестают
+    читать, — а читать её надо, именно эти строки нашли и забытую статью
+    сноса, и базу НДС, и паркинг офисника.
+
+    Гейт снимает вердикт только явным «WARN»: не собрался лист ввода, не
+    записался отпечаток — и строка ведёт себя как прежде. Отказ гейта обязан
+    возвращать проверку, а не выключать её.
+    """
+    gate = _V4_PARITY_GATE_ROW
+    return (f'IF(C{row}="","",IF($F${gate}="WARN",'
+            f'"вводные правлены — сверять не с чем",'
+            f'IF(ABS(D{row})<=E{row},"OK","FAIL")))')
+
+
+def _v4_entry_fingerprint(entry_xml: str) -> float:
+    """Отпечаток листа ввода: сумма всех его чисел.
+
+    Считается ровно то, что считает `SUM` по всему листу в самой книге:
+    числовые ячейки, без подписей и без формул — формул на листе ввода нет
+    ни одной, он чистый ввод человека. Поэтому отпечаток не зависит от
+    расчёта книги и не может замолчать расхождение, ради показа которого
+    строки паритета и стоят.
+
+    Отбрасывается ТЕКСТ, а не всякий объявленный тип: у числа тип бывает
+    написан явно (`t="n"`), и запрет по одному наличию `t=` выкидывал
+    четырнадцать живых чисел, а даты (они без типа) при этом считал только
+    отпечаток — три разных суммы на одну книгу, и гейт кричал на
+    свежесобранной. Текст, логическое и ошибку Excel в диапазоне
+    пропускает — их и пропускаем.
+    """
+    total = 0.0
+    for match in re.finditer(
+            r"<x:c(?P<attrs>\s[^>]*?)?>(?P<body>(?:(?!</x:c>).)*)</x:c>",
+            entry_xml, re.S):
+        attrs = match.group("attrs") or ""
+        body = match.group("body") or ""
+        kind = re.search(r'\st="([^"]*)"', attrs)
+        if "<x:f" in body or (kind and kind.group(1) != "n"):
+            continue
+        value = re.search(r"<x:v>([^<]*)</x:v>", body)
+        if not value:
+            continue
+        try:
+            total += float(value.group(1))
+        except ValueError:
+            continue
+    return total
+
+
+def _v4_add_parity_gate_row(xml: str, missing: list[str]) -> str:
+    """Строка «вводные не менялись с даты сборки» над блоком паритета.
+
+    Отпечаток дописывается позже — когда лист ввода собран, — поэтому цель
+    здесь пустая: пустая цель гасит и саму строку, и гейт, то есть паритет
+    остаётся таким, каким был до этой правки.
+    """
+    row = _V4_PARITY_GATE_ROW
+    body = (
+        f'<x:c r="A{row}" t="inlineStr"><x:is><x:t>'
+        + xml_escape("Лист ввода не менялся с даты сборки")
+        + "</x:t></x:is></x:c>"
+        + f'<x:c r="B{row}"><x:f>'
+        + xml_escape(f"ROUND(SUM({_V4_ENTRY_SHEET_TOKEN}$A$1:$BZ$1000),6)")
+        + "</x:f></x:c>"
+        + f'<x:c r="C{row}"/>'
+        + f'<x:c r="D{row}"><x:f>IF(C{row}="","",B{row}-C{row})</x:f></x:c>'
+        + f'<x:c r="E{row}"><x:v>0.001</x:v></x:c>'
+        + f'<x:c r="F{row}"><x:f>'
+        + xml_escape(f'IF(C{row}="","",IF(ABS(D{row})<=E{row},"OK","WARN"))')
+        + "</x:f></x:c>")
+    updated, done = _v4_insert_row(xml, row, body, row + 1)
+    if not done:
+        missing.append(f"гейт паритета: строка {row} ПРОВЕРОК занята")
+        return xml
+    return updated
+
+
 def _v4_add_parity_row(xml: str, row: int, label: str, total: str,
                        target_mln: float, missing: list[str], what: str) -> str:
     """Ещё одна строка паритета в свободный низ листа ПРОВЕРКИ.
@@ -18968,8 +19064,8 @@ def _v4_add_parity_row(xml: str, row: int, label: str, total: str,
         f'<x:c r="C{row}"><x:v>{_v4_number(round(target_mln, 4))}</x:v></x:c>'
         f'<x:c r="D{row}"><x:f>IF(C{row}="","",B{row}-C{row})</x:f></x:c>'
         f'<x:c r="E{row}"><x:v>{_v4_number(round(tolerance, 4))}</x:v></x:c>'
-        f'<x:c r="F{row}"><x:f>IF(C{row}="","",IF(ABS(D{row})&lt;=E{row},'
-        f'"OK","FAIL"))</x:f></x:c>')
+        f'<x:c r="F{row}"><x:f>{xml_escape(_v4_parity_verdict(row))}</x:f>'
+        f'</x:c>')
     updated, done = _v4_insert_row(xml, row, body, None)
     if not done:
         missing.append(f"{what}: строка {row} ПРОВЕРОК занята")
@@ -20551,11 +20647,12 @@ V4_REWRITTEN_FORMULA_ROWS: dict[str, tuple[tuple[int, ...], str]] = {
     "ПРОВЕРКИ": (
         (
         3, 29, 39, 40, 42, 43, 45, 46, 48, 50, 51, 52, 53, 54, 55, 57,
-        58, 59, 71, 72,
+        58, 59, 71, 72, 76, 77, 78, 79, 80, 81, 82, 83, 84,
         ),
         "Строки паритета и самопроверки под четвёртый объект, перенос "
         "долга, кэш-свип и паркинг объектов в выручке и в ожидании "
-        "CAPEX "
+        "CAPEX; вердикт строк паритета (76–84) — общий с дописанными "
+        "ниже и с гейтом правленых вводных: _v4_parity_verdict "
     ),
     "Продажи": (
         (
@@ -21334,9 +21431,16 @@ def build_project_workbook(
             checks_xml, done = _v4_set_cell(checks_xml, f"C{_row}", number=round(_target, 4))
             if done:
                 checks_xml, done = _v4_set_cell(checks_xml, f"E{_row}", number=round(_tol, 4))
+            if done:
+                # Вердикт переписывается на общий: строки блока и строки,
+                # дописанные ниже, обязаны отвечать одним правилом.
+                checks_xml, done = _v4_set_cell(
+                    checks_xml, f"F{_row}", formula=_v4_parity_verdict(_row))
             if not done:
                 missing.append(f"паритет ПРОВЕРКИ: строка {_row}")
                 break
+    if _parity:
+        checks_xml = _v4_add_parity_gate_row(checks_xml, missing)
     checks_xml = _v4_add_carry_parity_row(
         checks_xml, float((finance_hints or {}).get("carried_debt_mln") or 0.0), missing)
     if _parity:
@@ -22075,6 +22179,15 @@ def build_project_workbook(
         missing.append("Вводные · лист ввода не собран: " + _error_location(exc))
     if entry_xml and not entry_report.get("moved"):
         missing.append("Вводные · на лист ввода не переехало ни одной ячейки")
+    # Отпечаток вводных — только теперь: лист ввода собирается последним, а
+    # цель гейта считается по нему. Не собрался — цель остаётся пустой, и
+    # паритет ведёт себя ровно так, как до появления гейта.
+    if entry_xml and _parity:
+        checks_xml, _stamped = _v4_set_cell(
+            checks_xml, f"C{_V4_PARITY_GATE_ROW}",
+            number=round(_v4_entry_fingerprint(entry_xml), 6))
+        if not _stamped:
+            missing.append("гейт паритета: отпечаток листа ввода не записан")
     # Инструкция собирается ПОСЛЕ всего: она читает готовый лист ввода и
     # `missing` целиком. Написанная раньше, она обещала бы книгу, которой ещё
     # нет, — и разошлась бы с ней ровно тем, что добавили следом.
@@ -22127,6 +22240,10 @@ def build_project_workbook(
                 # новый лист, и второй проход увёл бы их обратно.
                 if item.filename != sheet_path:
                     text = v4_entry_sheet.rename_sheet_refs(text)
+                # Метка ставится уже после переименования: написанная прямо,
+                # ссылка на лист ввода уехала бы вместе со всеми на расчётный.
+                text = text.replace(_V4_ENTRY_SHEET_TOKEN,
+                                    f"'{v4_entry_sheet.ENTRY_SHEET}'!")
                 payload = text.encode("utf-8")
             elif item.filename == "xl/workbook.xml":
                 payload = _v4_workbook_with_entry(

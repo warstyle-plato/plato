@@ -97,7 +97,17 @@ def _flatten(values: Any) -> list[Any]:
 
 
 def _numbers(values: Any) -> list[float]:
-    return [_as_number(v) for v in _flatten(values) if v is not None and v != ""]
+    """Числа набора — так же, как их отбирает Excel.
+
+    SUM, AVERAGE, MAX и MIN текст внутри диапазона не складывают и не
+    бракуют, а ПРОПУСКАЮТ. Вычислитель бракует: `SUM('Вводные'!A1:BZ1000)`
+    по листу, где рядом с числами стоят подписи строк, отвечал у нас
+    ошибкой там, где книга отвечает числом, — то есть проверка расходилась с
+    тем, что она проверяет. Логические значения оставлены как были: их в
+    диапазонах книги нет, а менять две вещи разом — значит не знать, какая
+    из них подействовала."""
+    return [_as_number(v) for v in _flatten(values)
+            if v is not None and v != "" and not isinstance(v, str)]
 
 
 class RangeValue(list):
