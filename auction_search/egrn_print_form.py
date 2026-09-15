@@ -75,6 +75,18 @@ class NoTextLayer(ValueError):
 
 _CAD = re.compile(r"\d+:\d+:\d+:\d+")
 _ABSENT = re.compile(r"^\s*(данные отсутствуют|не зарегистрировано|отсутствуют?)\s*$", re.I)
+# «Не зарегистрировано» в клетке вида права — ответ полный, и за ним в этой
+# клетке ничего законного не стоит. Поэтому здесь совпадение по НАЧАЛУ, а не по
+# всей строке, как у `_ABSENT`: сбор значения кончается на строке с двоеточием,
+# а заголовок следующего раздела переносится по словам и первой строкой на
+# двоеточие не кончается — значение утаскивает его целиком. Замер прода
+# 15.09.2026: 23 записи права из 149 несли типом «не зарегистрировано Сведения
+# об осуществлении государственной регистрации сделки, права без необходимого в
+# силу закона согласия третьего лица, органа». Общий `_ABSENT` префиксом делать
+# нельзя: его читают адрес, статус и особые отметки, где продолжение строки —
+# законное значение.
+_UNREGISTERED = re.compile(r"^\s*не\s+зарегистрировано\b", re.I)
+_DATE = re.compile(r"\b(\d{2}\.\d{2}\.\d{4})\b")
 # Служебные строки листа: шапка, подвал, отметка об электронной подписи. Они
 # стоят между подписью и значением на разрыве страницы, и без них значение
 # собирает в себя чужой лист.
@@ -219,27 +231,68 @@ def _kind(lines: list[str]) -> str:
     return ""
 
 
-def _rights(found: dict[str, list[str]], section_present: bool) -> list[dict[str, Any]]:
-    """Права из раздела 2. Пустая клетка держателя — свойство вида выписки."""
-    out: list[dict[str, Any]] = []
-    for raw in found.get("right_text") or []:
-        if not raw or _ABSENT.match(raw):
-            continue
-        date = re.search(r"\b(\d{2}\.\d{2}\.\d{4})\b", raw)
-        number = re.search(r"\b(\d[\d\-/]{6,})\b", raw)
-        kind = raw.split(number.group(1))[0].strip() if number else raw.strip()
-        out.append({
-            "type": kind.strip(" ,;"),
-            "number": number.group(1) if number else "",
-            "date": date.group(1) if date else "",
-            "share": "",
-            "holders": [],
-            # Имя не раскрыто ВИДОМ выписки, а не отсутствием права.
-            "holder_withheld": True,
-        })
-    if not out and section_present:
-        return []
-    return out
+def _right(raw: str) -> dict[str, Any] | None:
+    """Клетка вида права → запись. «<вид> <номер> от <дата>», по структуре.
+
+    Номер регистрации берётся ЦЕЛИКОМ, и границу ему задаёт не длина, а форма
+    строки. Прежний образец искал «прогон цифр, дефисов и косых не короче
+    семи» — двоеточие в класс не входило, поэтому в «Собственность
+    77:01:0003027:1049-77/051/2021-1 от 18.06.2021» он брал «0003027», а вид
+    забирал «Собственность 77:01:». Замер прода 15.09.2026: 33 записи права
+    из 149 несли обрывок кадастрового номера вместо номера регистрации, и все
+    33 — из печатной формы (обе XML-формы целы). Цена не в подписи: номер и
+    дату берут в СВОЙ запрос в ЕГРН за именем, которого эта форма не
+    раскрывает, — а обрывок, похожий на номер, хуже пустого поля.
+
+    Отрезать «кадастровый префикс» нельзя: номер САМ бывает с него начинается.
+    Три формы, снятые с живых XML-выписок: «77-77-14/003/2011-295»,
+    «77-01/06-218/2001-3829», «77:06:0012015:1312-77/051/2022-2».
+    """
+    text = " ".join((raw or "").split())
+    if not text or _ABSENT.match(text) or _UNREGISTERED.match(text):
+        return None
+    head, marker, tail = text.partition(" от ")
+    date = _DATE.search(tail if marker else head)
+    if not marker and date:
+        # Дата стоит без «от» — номер кончается перед ней.
+        head = head[:date.start(1)]
+    digit = re.search(r"\d", head)
+    kind = (head[:digit.start()] if digit else head).strip(" ,;.")
+    number = (head[digit.start():] if digit else "").strip(" ,;.")
+    if not kind and not number:
+        return None
+    return {
+        "type": kind,
+        "number": number,
+        "date": date.group(1) if date else "",
+        "share": "",
+        "holders": [],
+        # Имя не раскрыто ВИДОМ выписки, а не отсутствием права.
+        "holder_withheld": True,
+    }
+
+
+def _rights(found: dict[str, list[str]],
+            section_present: bool) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Права раздела 2 и то, что разобрано ВНЕ него.
+
+    Пустая клетка держателя — свойство вида выписки, а не молчание реестра.
+
+    А объявленное формой отсутствие раздела 2 сильнее нашего разбора: что бы
+    мы ни выловили из документа, права здесь нет — так сказал реестр. Замер
+    прода 15.09.2026: у 77:05:0012007:17 раздел объявлен отсутствующим, а прав
+    разобрано пять, и из-за первого свод говорил «право зарегистрировано, имени
+    в этом виде выписки нет» — прямая инверсия того, что чинилось в свод
+    территории: там зарегистрированное показывалось незарегистрированным, здесь
+    наоборот. Случай пока один из 343 позиций состава.
+
+    Молча выбросить выловленное нельзя — молча выброшенное читается как его
+    отсутствие, — поэтому оно уходит вторым списком под своим именем.
+    """
+    parsed = [right for right in
+              (_right(raw) for raw in (found.get("right_text") or []))
+              if right]
+    return (parsed, []) if section_present else ([], parsed)
 
 
 def read(data: bytes, *, ocr: bool = True) -> dict[str, Any]:
@@ -308,7 +361,8 @@ def read_text(text: str, *, text_source: str = "layer") -> dict[str, Any]:
         "rights_section": "absent" if section_absent else "present",
         "restrictions": [],
     }
-    record["rights"] = _rights(found, not section_absent)
+    record["rights"], record["rights_outside_section"] = _rights(
+        found, not section_absent)
     if kind == "land":
         record.update({
             "area_kind": "",
