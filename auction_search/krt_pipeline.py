@@ -366,6 +366,10 @@ def read_notices(by_site: dict[str, Any], *,
         "at": int(now()), "lots": 0, "asked": 0, "read": 0,
         "already": 0, "waiting": 0, "no_table": 0, "refused": 0,
         "unsupported": 0,
+        # Сколько лотов спрошено заново из-за того, что их выписки разобраны
+        # прежними правилами читателя. Молча перечитанный лот неотличим от
+        # непрочитанного: число называется, как называется всё прочее.
+        "stale": 0, "reader_version": egrn_archive.READER_VERSION,
         "out_of_time": 0, "sites": [],
     }
     seen: set[str] = set()
@@ -381,14 +385,35 @@ def read_notices(by_site: dict[str, Any], *,
             out["lots"] = int(out["lots"]) + 1
             row: dict[str, Any] = {"slug": str(slug), "key": key,
                                    "lot": str(lot_row.get("title") or "")[:200]}
-            if territory.stored_notice(key, root=store).get("lands"):
+            kept = egrn_store.load(store, key)
+            behind = egrn_store.stale(kept)
+            reread = egrn_store.reread_due(kept, now=now())
+            if (territory.stored_notice(key, root=store).get("lands")
+                    and not reread):
                 out["already"] = int(out["already"]) + 1
                 row["state"] = "already"
                 out["sites"].append(row)
                 continue
-            if not territory.notice_due(key, root=store, now=now()):
+            if reread:
+                # Состав прочитан, а выписки разобраны ПРЕЖНИМИ правилами
+                # читателя: свод территории считается из разобранного, и
+                # починка читателя сама до прочитанного лота не доезжает. На
+                # 1-й Горловской это стоило видимого результата выпуска —
+                # краткая форма уже читалась, а на экране стояло «выписки на
+                # объект нет» у всех 19 участков (14.09.2026).
+                #
+                # Перечитывание идёт тем же путём, что первый разбор: своего
+                # «что тут выписка» не заводим — второй классификатор однажды
+                # разошёлся бы с первым. Байты вложений лежат на складе,
+                # поэтому цена захода — одна карточка лота, и она названа.
+                out["stale"] = int(out.get("stale") or 0) + 1
+                row["stale"] = behind["behind"]
+            if not reread and not territory.notice_due(
+                    key, root=store, now=now()):
                 # Ответ прошлой попытки ещё свеж. Это не молчание: он назван
-                # у самой площадки, а здесь считается числом.
+                # у самой площадки, а здесь считается числом. Устаревший разбор
+                # этот срок не держит: он про ответ ПЛОЩАДКИ, а перечитать надо
+                # из-за того, что изменились НАШИ правила чтения.
                 out["waiting"] = int(out["waiting"]) + 1
                 row["state"] = "waiting"
                 row["why"] = str(territory.stored_attempt(
@@ -414,6 +439,10 @@ def read_notices(by_site: dict[str, Any], *,
                 # через полчаса это не лечится, поэтому свой ответ и свой срок.
                 territory.remember_attempt(
                     key, outcome="unsupported", why=str(exc), root=store)
+                if reread:
+                    egrn_store.remember_reread(
+                        store, key, version=egrn_archive.READER_VERSION,
+                        ok=False, why=str(exc), now=now())
                 out["unsupported"] = int(out.get("unsupported") or 0) + 1
                 row["state"] = "unsupported"
                 row["why"] = str(exc)[:200]
@@ -425,6 +454,10 @@ def read_notices(by_site: dict[str, Any], *,
                 territory.remember_attempt(
                     key, outcome="refused",
                     why=f"{type(exc).__name__}: {exc}", root=store)
+                if reread:
+                    egrn_store.remember_reread(
+                        store, key, version=egrn_archive.READER_VERSION,
+                        ok=False, why=f"{type(exc).__name__}: {exc}", now=now())
                 out["refused"] = int(out["refused"]) + 1
                 row["state"] = "refused"
                 row["why"] = f"{type(exc).__name__}: {exc}"[:200]
@@ -432,6 +465,15 @@ def read_notices(by_site: dict[str, Any], *,
                 continue
             ledger = lot.raw.get("krt_documents") or {}
             documents = int(ledger.get("read") or 0)
+            if reread:
+                # Разбор состоялся — значит под нынешними правилами лот
+                # прочитан, и оставшееся прежним это ответ ДОКУМЕНТОВ, а не наш
+                # пробел. Без отметки он спрашивался бы каждый круг за ответ,
+                # который не изменится.
+                egrn_store.remember_reread(
+                    store, key, version=egrn_archive.READER_VERSION,
+                    ok=True, now=now())
+                row["reread"] = behind["behind"]
             if territory.stored_notice(key, root=store).get("lands"):
                 territory.remember_attempt(key, outcome="read",
                                            documents=documents, root=store)

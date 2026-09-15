@@ -30,8 +30,11 @@ from __future__ import annotations
 import datetime
 import json
 import re
+import time
 from pathlib import Path
 from typing import Any
+
+from auction_search import egrn_archive
 
 # Каталог склада объявлен один раз: его же спрашивает у git проверка, что склад
 # не пишется в рабочее дерево репозитория. Строки в `.gitignore` не было, и
@@ -109,6 +112,88 @@ def save(data_dir: Path, key: str, parsed: dict[str, Any],
     place.parent.mkdir(parents=True, exist_ok=True)
     place.write_text(json.dumps(kept, ensure_ascii=False, indent=1), encoding="utf-8")
     return kept
+
+
+def stale(kept: dict[str, Any]) -> dict[str, Any]:
+    """Сколько записей склада разобрано ПРЕЖНИМИ правилами читателя.
+
+    Свод территории считается из разобранного, а не из байтов: значит починка
+    читателя до уже прочитанного лота сама не доезжает, и на экране наш пробел
+    выглядит молчанием документа. Ответ здесь — число и разбивка по версиям, а
+    решает по нему тот, кто умеет перечитать (`krt_pipeline.reread_egrn`).
+
+    Запись без поля разобрана до того, как версию завели: это первая версия, а
+    не «неизвестно». Третьего ответа тут не бывает — байты на складе есть,
+    перечитать их можно всегда.
+    """
+    versions: dict[int, int] = {}
+    for record in kept.get("records") or []:
+        got = record.get("reader_version")
+        try:
+            number = int(got)
+        except (TypeError, ValueError):
+            number = egrn_archive.READER_VERSION_BEFORE
+        versions[number] = versions.get(number, 0) + 1
+    behind = sum(count for version, count in versions.items()
+                 if version < egrn_archive.READER_VERSION)
+    return {
+        "records": sum(versions.values()),
+        "behind": behind,
+        "reader_version": egrn_archive.READER_VERSION,
+        "versions": {str(version): count
+                     for version, count in sorted(versions.items())},
+    }
+
+
+def remember_reread(data_dir: Path, key: str, *, version: int, ok: bool,
+                    why: str = "", now: float | None = None) -> dict[str, Any]:
+    """Отметить: этот лот перечитан под такими-то правилами читателя.
+
+    Отметка живёт рядом с разобранным, а не в сроке ответа площадки: тот
+    молчит навсегда, как только состав прочитан (`krt_territory.notice_due`), и
+    без своей отметки устаревший разбор спрашивался бы КАЖДЫЙ круг сторожа —
+    по карточке лота на круг за ответ, который не изменится.
+
+    Неудача отмечается так же, как удача, и это не мелочь: Росэлторг отдаёт
+    карточку через раз, и «перечитали и остались прежние записи» и «перечитать
+    не дали» — разные ответы, у второго свой короткий срок.
+    """
+    kept = load(data_dir, key)
+    kept["reread"] = {
+        "version": int(version),
+        "at": float(now if now is not None else time.time()),
+        "ok": bool(ok),
+        "why": str(why or "")[:200],
+    }
+    place = _path(data_dir, key)
+    place.parent.mkdir(parents=True, exist_ok=True)
+    place.write_text(json.dumps(kept, ensure_ascii=False, indent=1), encoding="utf-8")
+    return kept
+
+
+def reread_due(kept: dict[str, Any], *, now: float | None = None,
+               retry_after: float = 1800.0) -> bool:
+    """Спрашивать ли лот заново из-за устаревшего разбора.
+
+    Три ответа, и слить их нельзя. Записей прежних правил нет — не надо вовсе.
+    Перечитали под нынешними правилами и что-то осталось прежним — тоже не
+    надо: это ответ ДОКУМЕНТОВ (машинной выписки на объект в лоте нет вовсе), и
+    вторым заходом он не лечится. Перечитать не дали — надо, но не раньше чем
+    через `retry_after`: площадка отвечает через раз.
+    """
+    if not stale(kept)["behind"]:
+        return False
+    mark = kept.get("reread") or {}
+    try:
+        version = int(mark.get("version") or 0)
+    except (TypeError, ValueError):
+        version = 0
+    if version < egrn_archive.READER_VERSION:
+        return True
+    if mark.get("ok"):
+        return False
+    when = float(mark.get("at") or 0)
+    return float(now if now is not None else time.time()) - when >= retry_after
 
 
 def block(kept: dict[str, Any]) -> dict[str, Any]:
