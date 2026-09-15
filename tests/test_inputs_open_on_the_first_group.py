@@ -128,6 +128,11 @@ def render(inputs: dict, tail: str = "console.log(JSON.stringify(groups()));",
         # отдельной задачей: заглушки стенда разрешитель добрал бы со
         # страницы и подменил бы ими поведение соседних проверок.
         page_const("CLASS_ONLY_INPUTS"),
+        # Пометка «ставит класс проекта» у единицы поля: список полей — сам
+        # профиль класса, а не перечисление рядом с ним, поэтому стенду нужен
+        # и профиль, и тот, кто по нему спрашивает.
+        page_const("PROJECT_CLASS_PRESETS"),
+        page_function("classSetsField"),
         page_const("INPUT_DEFAULT"),
         page_const("num"),
         page_const("VRI_GROUP_NAME"),
@@ -166,6 +171,10 @@ def render(inputs: dict, tail: str = "console.log(JSON.stringify(groups()));",
         # расчёта подпись честно говорит, что двор ещё не посчитан.
         "let lastResult=null;",
         page_function("landscapingRateNote"),
+        # Счётный показатель ₽ на метр дома форма печатает В САМО ПОЛЕ, и
+        # печатает его тот же вызов, что и подписи, — значит стенду нужны оба.
+        page_function("landscapingHouseRateNote"),
+        page_function("renderLandscapingHouseRateValue"),
         page_function("renderLandscapingRateNote"),
         DOM.replace("__PHASING__", json.dumps(phasing or {"enabled": False})),
         f"const inputs=Object.assign(structuredClone(INPUT_DEFAULT),{json.dumps(inputs)});",
