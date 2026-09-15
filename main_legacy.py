@@ -77,7 +77,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.23.73"
+VERSION = "0.23.75"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -2080,6 +2080,35 @@ def tep_row_inputs(row_key: str) -> dict[str, str]:
         # площадь по норме выводится из мест, а вписанная руками сильнее нормы.
         return {"units": places_key, "total_area": area_key}
     return dict(_PHASE_PRODUCT_INPUT_ALIASES.get(row_key) or {})
+
+
+def above_parking_tep_row(inputs: dict[str, Any]) -> dict[str, float]:
+    """Строка ТЭП наземного паркинга по вводным: места, метры, общая площадь.
+
+    Считала её только страница (`syncTep`), и правило «строка, которую чинит
+    только страница, чинится не везде» здесь стоило метров: проект, пришедший
+    файлом, ссылкой, мостом КРТ, ботом или скринингом, строил наземный гараж
+    (CAPEX и выручка идут от числа мест) и не показывал ни одного его метра —
+    ни в строке ТЭП, ни в ГНС проекта, ни в строительном объёме. А на этом
+    объёме считаются общие статьи и все удельные показатели.
+    """
+    enabled = bool(inputs.get("above_parking_enabled"))
+    spaces = max(0.0, float(inputs.get("above_parking_spaces") or 0.0)) if enabled else 0.0
+    per_space = float(inputs.get("above_parking_area_per_space_sqm") or 0.0) or 25.0
+    area = spaces * per_space
+    return {"units": spaces, "gns": area, "total_area": area}
+
+
+def apply_above_parking_tep_row(inputs: dict[str, Any],
+                                tep: dict[str, dict[str, Any]]) -> None:
+    """Привести строку наземного паркинга к вводным. Правится на месте.
+
+    Объявленную очередью строку не трогаем — у неё свой источник, как у
+    соцобъекта.
+    """
+    row = tep.get("above_parking")
+    if isinstance(row, dict) and not row.get(TEP_ROW_DECLARED):
+        row.update(above_parking_tep_row(inputs))
 
 
 def apply_social_tep_rows(inputs: dict[str, Any],
@@ -17960,6 +17989,112 @@ def _v4_object_parking_allocation(xml: str, missing: list[str]) -> str:
     return xml
 
 
+# Строка объекта на листе ТЭП — по строке его объёма продаж: второй список
+# «какой объект в какой строке» разошёлся бы с первым молча.
+_V4_OBJECT_TEP_ROW = {22: 31, 50: 32, 140: 34}
+
+
+def _v4_object_parking_in_tep(xml: str, missing: list[str]) -> str:
+    """Выручка мест объекта доезжает до строки ТЭП, а не только до CF.
+
+    Лист CF её уже знает (аллокация по очередям расширена), а строка ТЭП
+    считала объект одной продажей здания — и собственная проверка книги
+    «ТЭП: выручка = CF» кричала FAIL на верном расчёте: на живом проекте это
+    21,5 млрд ₽ из 235,1. Кричащая зря проверка хуже отсутствующей, её
+    перестают читать.
+
+    Правится ТОЛЬКО колонка выручки. Площадь, единицы и стартовая цена
+    остаются про здание: место продаётся штукой, и метры гаража в
+    продаваемой площади объекта не лежат. Чтобы «Выручка» не читалась как
+    «продаваемая × цена», у строки стоит своя оговорка в колонке
+    комментария — правило о показателе, у которого база не одна.
+    """
+    for (_label, enabled_row, _spaces_row, revenue_row, *rest) in _V4_OBJECT_PARKING:
+        volume_row, sellable = rest[3], rest[8]
+        if not sellable:
+            # Места ТЦ и ФОКа строятся, стоят денег и выручки не дают
+            # (решение владельца, 06.09.2026): складывать нечего.
+            continue
+        tep_row = _V4_OBJECT_TEP_ROW.get(volume_row)
+        if not tep_row:
+            missing.append(f"ТЭП: строка объекта для строки объёма {volume_row} не известна")
+            continue
+        was = _v4_cell_formula(xml, f"G{tep_row}")
+        want = f"'ОБЪЕКТЫ'!B{volume_row + 2}+'ОБЪЕКТЫ'!B{revenue_row}"
+        if was is None or was.replace(" ", "") not in (
+                f"'ОБЪЕКТЫ'!B{volume_row + 2}", want):
+            missing.append(f"ТЭП: формула выручки G{tep_row} не опознана")
+            continue
+        xml, done = _v4_set_cell(xml, f"G{tep_row}", formula=want)
+        if not done:
+            missing.append(f"ТЭП: выручка паркинга не встала в G{tep_row}")
+            continue
+        xml, _ = _v4_set_or_insert_cell(
+            xml, f"H{tep_row}",
+            text="Выручка включает продажу мест в паркинге объекта; "
+                 "площадь и цена в строке — про здание")
+    return xml
+
+
+# Строка проверки CAPEX объекта и его ячейки на листе вводных: (строка
+# проверки, «объект включён», «очередь объекта»). У ФОКа своей строки в шаблоне
+# нет — его CAPEX сверяет «Аллокация CAPEX объектов».
+_V4_OBJECT_CAPEX_CHECK = {
+    7: (40, "K20", "K21"),
+    35: (43, "K40", "K41"),
+}
+
+
+def _v4_object_parking_checks(xml: str, missing: list[str]) -> str:
+    """Самопроверки книги учатся видеть паркинг объектов.
+
+    Три из них сравнивали выручку и CAPEX объектов с ожиданием, в котором
+    гаража нет вовсе, — и на проекте с гаражом давали FAIL при исправном
+    расчёте: 21,5 млрд ₽ выручки и 15,9 млрд ₽ CAPEX. Проверка, не знающая о
+    новой величине, кричит на верной работе, и её перестают читать — это уже
+    было с проверкой лимита при переносе долга.
+    """
+    tail = "'ОБЪЕКТЫ'!B24,'ОБЪЕКТЫ'!B52,'ОБЪЕКТЫ'!B80,'ОБЪЕКТЫ'!B142)"
+    garages = ",".join(f"'ОБЪЕКТЫ'!B{item[3]}" for item in _V4_OBJECT_PARKING)
+    encoded = xml_escape(tail)
+    seen = xml.count(encoded)
+    if seen == 2:
+        # Один и тот же хвост стоит в «Выручка продуктов = CF» и в
+        # «Аллокация выручки объектов» — обе сверяют один список объектов.
+        xml = xml.replace(encoded, xml_escape(tail[:-1] + "," + garages + ")"))
+    else:
+        missing.append(
+            f"ПРОВЕРКИ: хвост выручки объектов найден {seen} раз, ожидалось 2")
+
+    # Ожидание CAPEX — тем же вторым слагаемым, каким его считает сам объект
+    # (строка 28 листа ОБЪЕКТЫ): у одной величины не бывает двух счётов.
+    for (label, enabled_row, _spaces_row, _revenue_row, *rest) in _V4_OBJECT_PARKING:
+        under_cell = rest[1]
+        target = _V4_OBJECT_CAPEX_CHECK.get(enabled_row)
+        if not target:
+            continue
+        row, enabled_cell, queue_cell = target
+        enabled = f"'Параметры модели'!${enabled_cell[0]}${enabled_cell[1:]}"
+        queue = f"'Параметры модели'!${queue_cell[0]}${queue_cell[1:]}"
+        under = f"'Параметры модели'!${under_cell[0]}${under_cell[1:]}"
+        garage = (
+            f'+IF({enabled}="Да",{under}'
+            f"*'Параметры модели'!$K$158*'Параметры модели'!$B$45/1000"
+            f"*'Параметры модели'!$H$6"
+            f"*INDEX('Параметры модели'!$T$88:$T$91,{queue})"
+            f"*INDEX('Параметры модели'!$AH$88:$AH$91,{queue}),0)")
+        was = _v4_cell_formula(xml, f"C{row}")
+        if was is None:
+            missing.append(f"ПРОВЕРКИ: ожидание CAPEX C{row} не найдено ({label})")
+            continue
+        if was.endswith(garage):
+            continue
+        xml, done = _v4_set_cell(xml, f"C{row}", formula=was + garage)
+        if not done:
+            missing.append(f"ПРОВЕРКИ: гараж не встал в ожидание CAPEX C{row} ({label})")
+    return xml
+
+
 def _v4_sports_object_block(xml: str, missing: list[str]) -> str:
     """Четвёртый блок листа ОБЪЕКТЫ и его доля в аллокации по очередям."""
     if re.search(r'<x:row r="124"[ />]', xml):
@@ -18017,6 +18152,16 @@ def _v4_sports_tep_row(xml: str, missing: list[str]) -> str:
         xml, done = _v4_set_cell(xml, f"{letter}35", formula=f"SUM({letter}31:{letter}34)")
         if not done:
             missing.append(f"ТЭП · итог объектов {letter}35")
+    # Кладовые лежат на подземном этаже гаража: своей наземной ГНС у них нет,
+    # а подземная уже посчитана строкой паркинга. Прежде этих формул не было
+    # ВОВСЕ, и пустая клетка рвала кэш итога колонки: «Итого очередь», «ИТОГО
+    # ЖИЛЫЕ ОЧЕРЕДИ» и «ИТОГО ПРОЕКТ» приходили пустыми в любой просмотрщик,
+    # который не пересчитывает книгу.
+    for storage_row in (7, 13, 19, 25):
+        for letter in ("C", "D"):
+            xml, done = _v4_set_or_insert_cell(xml, f"{letter}{storage_row}", formula="0")
+            if not done:
+                missing.append(f"ТЭП · кладовые {letter}{storage_row}")
     for coord, text in (("A35", "ИТОГО ОБЪЕКТЫ"), ("B35", "")):
         xml, done = _v4_set_or_insert_cell(xml, coord, text=text)
         if not done:
@@ -18025,6 +18170,20 @@ def _v4_sports_tep_row(xml: str, missing: list[str]) -> str:
         xml, done = _v4_set_cell(xml, f"{letter}36", formula=f"SUM({letter}28,{letter}35)")
         if not done:
             missing.append(f"ТЭП · итог проекта {letter}36")
+    # Подземные гаражи объектов строятся и стоят денег, а в метрах их не было
+    # нигде: строки объектов несут наземную ГБА, и «строительный объём» без
+    # них не равен объёму движка. Добавляются здесь же, где собирается итог.
+    garages = "+".join(
+        f"IF('Вводные'!${enabled[0]}${enabled[1:]}=\"Да\",'Вводные'!${cell[0]}${cell[1:]},0)"
+        for enabled, cell in (("K20", "K161"), ("K40", "K163"), ("K123", "K165")))
+    xml, done = _v4_set_cell(
+        xml, "C36",
+        formula=f"SUM(C28,C35,F40:F43)+'Вводные'!$K$158*({garages})")
+    if not done:
+        missing.append("ТЭП · гаражи объектов в строительном объёме")
+    xml, _ = _v4_set_or_insert_cell(
+        xml, "H36",
+        text="Включая соцобъекты и подземные гаражи отдельно стоящих объектов")
     # Прежний итог становится строкой объекта. Продаваемая площадь и выручка
     # берутся из блока ФОКа; при передаче городу обе равны нулю сами — гейт
     # стоит в формуле продаваемой площади «Вводных», а не здесь.
@@ -18032,8 +18191,12 @@ def _v4_sports_tep_row(xml: str, missing: list[str]) -> str:
             ("A34", "text", "Проект"),
             ("B34", "text", "ФОК / спортивный объект"),
             ("C34", "formula", "'Вводные'!$K$128"),
-            ("D34", "text", ""),
-            ("E34", "formula", "'Вводные'!$K$129"),
+            # Колонка D — «Продаваемая площадь», E — «Единицы». Прежде
+            # продаваемая ФОКа стояла в «Единицах»: на выключенном объекте это
+            # ноль и не видно, а у проданного ФОКа его метры читались бы как
+            # штуки.
+            ("D34", "formula", "'Вводные'!$K$129"),
+            ("E34", "text", ""),
             ("F34", "formula", ("'Вводные'!$K$134*1000*'Вводные'!$H$5"
                                 "*INDEX('Вводные'!$S$88:$S$91,'Вводные'!$K$124)"
                                 "*INDEX('Вводные'!$AG$88:$AG$91,'Вводные'!$K$124)")),
@@ -18047,6 +18210,109 @@ def _v4_sports_tep_row(xml: str, missing: list[str]) -> str:
         if not done:
             missing.append(f"ТЭП · строка ФОКа {coord}")
     return xml
+
+
+# Блок «СТРУКТУРА ПРОДУКТА» листа ОТЧЁТ: (строка, подпись, ячейка наземной
+# площади, ячейка продаваемой, строка выручки объекта на листе ОБЪЕКТЫ, строка
+# продаваемых мест его гаража, строка выручки гаража, ячейка мест гаража под
+# землёй, продаются ли места). Пусто — величины у этого объекта нет.
+_V4_PRODUCT_STRUCTURE_OBJECTS = (
+    (50, "МФОЦ / офисный центр", "K25", "K26", 24, 32, 33, "K161", True),
+    (51, "Торговый центр / ОСЗ", "K45", "K46", 52, 60, 61, "K163", False),
+    (52, "Наземный паркинг", "K66", "", 80, 0, 0, "", False),
+    (53, "ФОК / спортивный объект", "K128", "K129", 142, 150, 151, "K165", False),
+)
+_V4_PRODUCT_STRUCTURE_TOTAL_ROW = 54
+_V4_PRODUCT_STRUCTURE_FIRST_ROW = 46
+_V4_UNDER_COLUMN = "G"
+
+
+def _v4_product_structure_block(xml: str, missing: list[str]) -> str:
+    """Блок «СТРУКТУРА ПРОДУКТА»: наземное и подземное — разными колонками.
+
+    «В книге в сумму ГНС считается площадь подземного паркинга, на движке это
+    правил, а тут нет» (владелец, 14.09.2026). Итог блока складывал под шапкой
+    «ГНС, м²» наземные метры квартир и подземные метры паркинга — 475 870,
+    число, не равное ни наземной ГНС проекта (443 701), ни строительному
+    объёму (601 621). В движке это разведено с 04.09: три величины и три поля.
+
+    Здесь же чинятся три соседние потери того же корня. **ФОК не имел строки
+    вовсе** — список продуктов стоял перечислением, и четвёртый объект в него
+    не вошёл; итог переезжает на свободную строку 54, а его прежнее место
+    занимает ФОК (тот же приём, что на листе ТЭП). **Гараж объекта не входил
+    ни в выручку блока, ни в его единицы**: выручка 213 605,2 против 235 123,1
+    у движка и 2 160 мест вместо 4 660 — правку 0.23.69 этот блок не увидел,
+    потому что читает объект своей ссылкой мимо ТЭП и КОНСОЛИДАТОРа.
+    **У кладовых не было формул вовсе**: пустая клетка читается как «не
+    посчитали», а своей наземной площади у них и нет — она внутри подземной.
+
+    Соцобъекты в блок не идут: они не продукт, их метры видны на листе ТЭП.
+    Итог поэтому зовётся «ИТОГО ПРОДУКТЫ», а не «ИТОГО ПРОЕКТ»: имя, которое
+    обещает весь проект, обязано его и складывать.
+    """
+    under = _V4_UNDER_COLUMN
+    first = _V4_PRODUCT_STRUCTURE_FIRST_ROW
+    total = _V4_PRODUCT_STRUCTURE_TOTAL_ROW
+    param = "'Параметры модели'!"
+
+    def put(coord: str, *, formula: str = "", text: str | None = None) -> None:
+        if text is not None:
+            _xml, done = _v4_set_or_insert_cell(xml_holder[0], coord, text=text)
+        else:
+            _xml, done = _v4_set_or_insert_cell(xml_holder[0], coord, formula=formula)
+        xml_holder[0] = _xml
+        if not done:
+            missing.append(f"ОТЧЁТ · структура продукта: ячейка {coord} не поставлена")
+
+    xml_holder = [_v4_ensure_row(xml, total)]
+    # Шапка: колонка называет то, что в ней лежит.
+    put("B45", text="ГНС наземная, м²")
+    put(f"{under}45", text="Подземная, м²")
+
+    # Площадные продукты очередей: наземное в B, подземное в G.
+    put("B48", formula="0")
+    put(f"{under}48", formula=f"SUM({param}K88:K91)")
+    # У кладовых своей наземной площади нет, а подземная уже посчитана строкой
+    # паркинга: ноль здесь — ответ, а пустая клетка была отсутствием формулы.
+    put("B49", formula="0")
+    put("C49", formula="0")
+    for row in (46, 47, 49):
+        put(f"{under}{row}", formula="0")
+
+    garages = []
+    for (row, label, gba_cell, saleable_cell, revenue_row,
+         places_row, garage_revenue_row, under_cell, sellable) in _V4_PRODUCT_STRUCTURE_OBJECTS:
+        put(f"A{row}", text=label)
+        put(f"B{row}", formula=f"{param}${gba_cell[0]}${gba_cell[1:]}")
+        if saleable_cell:
+            put(f"C{row}", formula=f"{param}${saleable_cell[0]}${saleable_cell[1:]}")
+        revenue = f"'ОБЪЕКТЫ'!B{revenue_row}"
+        if garage_revenue_row:
+            revenue += f"+'ОБЪЕКТЫ'!B{garage_revenue_row}"
+        put(f"E{row}", formula=revenue)
+        put(f"F{row}", text="Отдельный объект")
+        if under_cell:
+            area = f"{param}${under_cell[0]}${under_cell[1:]}*{param}$K$158"
+            put(f"{under}{row}", formula=area)
+            garages.append(area)
+        else:
+            put(f"{under}{row}", formula="0")
+        # Места гаража продаются только у офисника — у ТЦ и ФОКа это
+        # обеспеченность посетителей, и «единиц к продаже» у них нет. Ноль
+        # ставится явно: на строке ФОКа прежде стоял итог блока, и не стерев
+        # его, мы оставили бы сумму блока в графе «Единицы» одного объекта.
+        put(f"D{row}", formula=(f"'ОБЪЕКТЫ'!B{places_row}"
+                                if sellable and places_row else "0"))
+        if not saleable_cell:
+            put(f"C{row}", formula="0")
+
+    put(f"A{total}", text="ИТОГО ПРОДУКТЫ")
+    for column in ("B", "C", "D", "E", under):
+        put(f"{column}{total}", formula=f"SUM({column}{first}:{column}{total - 1})")
+    put(f"H{total}", text=("Строительный объём = наземная + подземная. "
+                           "Соцобъекты сюда не входят — они не продукт; "
+                           "их метры на листе ТЭП."))
+    return xml_holder[0]
 
 
 def _v4_sports_checks(xml: str, missing: list[str]) -> str:
@@ -18278,6 +18544,16 @@ def _v4_revenue_by_product(xml: str, products: list[dict[str, Any]],
             per_queue = [f"IF('ОБЪЕКТЫ'!$B${phase_cell}={index + 1},"
                          f"'ОБЪЕКТЫ'!$B${revenue_cell},0)"
                          for index in range(len(_V4_CONSOLIDATOR_ROWS))]
+        elif key == "object_parking":
+            # Паркинг объектов — не четвёртый объект, а продукт, собранный со
+            # ВСЕХ объектов: у каждого своя очередь, и место приписывается к
+            # ней условием своего объекта.
+            per_queue = [
+                "+".join(
+                    f"IF('ОБЪЕКТЫ'!$B${item[1] + 1}={index + 1},"
+                    f"'ОБЪЕКТЫ'!$B${item[3]},0)"
+                    for item in _V4_OBJECT_PARKING)
+                for index in range(len(_V4_CONSOLIDATOR_ROWS))]
         else:
             missing.append(f"КОНСОЛИДАТОР: книга не умеет считать выручку «{labels[key]}»")
             continue
@@ -18711,6 +18987,102 @@ def _v4_relax_limit_check_for_carried_debt(xml: str, missing: list[str]) -> str:
     return xml[:found.start(1)] + changed + xml[found.end(1):]
 
 
+# Строка-гейт паритета: правил ли человек вводные после сборки книги.
+_V4_PARITY_GATE_ROW = 75
+# Ссылка на ЛИСТ ВВОДА из чужого листа едет меткой. При записи в архив каждый
+# лист проходит переименование «Вводные» → «Параметры модели», и написанная
+# прямо ссылка уехала бы на расчётный лист — туда, где формулы читают CAPEX и
+# CF, то есть отпечаток вводных двигался бы от расхождения, которое он обязан
+# показывать.
+_V4_ENTRY_SHEET_TOKEN = "'__ЛИСТ-ВВОДА__'!"
+
+
+def _v4_parity_verdict(row: int) -> str:
+    """Вердикт строки паритета — объявлен один раз на все строки блока.
+
+    Ответов три, и третий появился не для красоты. Цель в колонке C — это
+    значение движка на дату сборки, а книга считает сама, и правка вводной в
+    ней законна: «эксель должен работать почти как движок, если что-то
+    меняешь где-то, всё должно меняться так же» (владелец, 03.09.2026).
+    Измерено: подними цену квартир на 10% прямо в книге — она пересчитается
+    верно, а ВОСЕМЬ строк паритета из одиннадцати покраснеют, потому что цель
+    осталась прежней. Кричащая зря проверка хуже отсутствующей: её перестают
+    читать, — а читать её надо, именно эти строки нашли и забытую статью
+    сноса, и базу НДС, и паркинг офисника.
+
+    Гейт снимает вердикт только явным «WARN»: не собрался лист ввода, не
+    записался отпечаток — и строка ведёт себя как прежде. Отказ гейта обязан
+    возвращать проверку, а не выключать её.
+    """
+    gate = _V4_PARITY_GATE_ROW
+    return (f'IF(C{row}="","",IF($F${gate}="WARN",'
+            f'"вводные правлены — сверять не с чем",'
+            f'IF(ABS(D{row})<=E{row},"OK","FAIL")))')
+
+
+def _v4_entry_fingerprint(entry_xml: str) -> float:
+    """Отпечаток листа ввода: сумма всех его чисел.
+
+    Считается ровно то, что считает `SUM` по всему листу в самой книге:
+    числовые ячейки, без подписей и без формул — формул на листе ввода нет
+    ни одной, он чистый ввод человека. Поэтому отпечаток не зависит от
+    расчёта книги и не может замолчать расхождение, ради показа которого
+    строки паритета и стоят.
+
+    Отбрасывается ТЕКСТ, а не всякий объявленный тип: у числа тип бывает
+    написан явно (`t="n"`), и запрет по одному наличию `t=` выкидывал
+    четырнадцать живых чисел, а даты (они без типа) при этом считал только
+    отпечаток — три разных суммы на одну книгу, и гейт кричал на
+    свежесобранной. Текст, логическое и ошибку Excel в диапазоне
+    пропускает — их и пропускаем.
+    """
+    total = 0.0
+    for match in re.finditer(
+            r"<x:c(?P<attrs>\s[^>]*?)?>(?P<body>(?:(?!</x:c>).)*)</x:c>",
+            entry_xml, re.S):
+        attrs = match.group("attrs") or ""
+        body = match.group("body") or ""
+        kind = re.search(r'\st="([^"]*)"', attrs)
+        if "<x:f" in body or (kind and kind.group(1) != "n"):
+            continue
+        value = re.search(r"<x:v>([^<]*)</x:v>", body)
+        if not value:
+            continue
+        try:
+            total += float(value.group(1))
+        except ValueError:
+            continue
+    return total
+
+
+def _v4_add_parity_gate_row(xml: str, missing: list[str]) -> str:
+    """Строка «вводные не менялись с даты сборки» над блоком паритета.
+
+    Отпечаток дописывается позже — когда лист ввода собран, — поэтому цель
+    здесь пустая: пустая цель гасит и саму строку, и гейт, то есть паритет
+    остаётся таким, каким был до этой правки.
+    """
+    row = _V4_PARITY_GATE_ROW
+    body = (
+        f'<x:c r="A{row}" t="inlineStr"><x:is><x:t>'
+        + xml_escape("Лист ввода не менялся с даты сборки")
+        + "</x:t></x:is></x:c>"
+        + f'<x:c r="B{row}"><x:f>'
+        + xml_escape(f"ROUND(SUM({_V4_ENTRY_SHEET_TOKEN}$A$1:$BZ$1000),6)")
+        + "</x:f></x:c>"
+        + f'<x:c r="C{row}"/>'
+        + f'<x:c r="D{row}"><x:f>IF(C{row}="","",B{row}-C{row})</x:f></x:c>'
+        + f'<x:c r="E{row}"><x:v>0.001</x:v></x:c>'
+        + f'<x:c r="F{row}"><x:f>'
+        + xml_escape(f'IF(C{row}="","",IF(ABS(D{row})<=E{row},"OK","WARN"))')
+        + "</x:f></x:c>")
+    updated, done = _v4_insert_row(xml, row, body, row + 1)
+    if not done:
+        missing.append(f"гейт паритета: строка {row} ПРОВЕРОК занята")
+        return xml
+    return updated
+
+
 def _v4_add_parity_row(xml: str, row: int, label: str, total: str,
                        target_mln: float, missing: list[str], what: str) -> str:
     """Ещё одна строка паритета в свободный низ листа ПРОВЕРКИ.
@@ -18728,8 +19100,8 @@ def _v4_add_parity_row(xml: str, row: int, label: str, total: str,
         f'<x:c r="C{row}"><x:v>{_v4_number(round(target_mln, 4))}</x:v></x:c>'
         f'<x:c r="D{row}"><x:f>IF(C{row}="","",B{row}-C{row})</x:f></x:c>'
         f'<x:c r="E{row}"><x:v>{_v4_number(round(tolerance, 4))}</x:v></x:c>'
-        f'<x:c r="F{row}"><x:f>IF(C{row}="","",IF(ABS(D{row})&lt;=E{row},'
-        f'"OK","FAIL"))</x:f></x:c>')
+        f'<x:c r="F{row}"><x:f>{xml_escape(_v4_parity_verdict(row))}</x:f>'
+        f'</x:c>')
     updated, done = _v4_insert_row(xml, row, body, None)
     if not done:
         missing.append(f"{what}: строка {row} ПРОВЕРОК занята")
@@ -19912,6 +20284,16 @@ _V4_SOCIAL_TYPES: tuple[tuple[str, str], ...] = (
     ("kindergarten", "ДОО"), ("school", "СОШ"), ("clinic", "Поликлиника"))
 
 
+def _v4_social_total_of_gns() -> float:
+    """Доля общей площади соцобъекта к его ГНС — та же, что у жилья.
+
+    Движок считает ГНС соцобъекта как `общая / total_of_gns` (0,9). В книге
+    этого числа не было вовсе, поэтому ГНС приезжала готовой — а значит после
+    правки мест или площади прямо в книге оставалась прежней.
+    """
+    return float((TEP_RATIOS.get("apartments") or {}).get("total_of_gns") or 0.9)
+
+
 def _v4_social_row(base_row: int, type_index: int, phase_index: int) -> int:
     """Строка пары «тип объекта × очередь» в блоке соцобъектов «Вводных»."""
     return base_row + 2 + type_index * 4 + phase_index
@@ -20092,6 +20474,7 @@ def _v4_social_rows_xml(xml: str, rows: dict[tuple[int, str], dict[str, Any]],
         + _v4_head_cell(f"M{header}", "Норматив, м²/место")
         + _v4_head_cell(f"N{header}", "Ключ API: площадь")
         + _v4_head_cell(f"O{header}", "Ключ API: норматив")
+        + _v4_head_cell(f"P{header}", "Доля общей площади к ГНС")
         + "</x:row>")
     for type_index, (typ, label) in enumerate(_V4_SOCIAL_TYPES):
         # Ключ движка ставится только там, где строка несёт ВСЮ вводную: тип
@@ -20121,15 +20504,25 @@ def _v4_social_rows_xml(xml: str, rows: dict[tuple[int, str], dict[str, Any]],
                 + number_cell(f"G{row}", float(slot.get("factor") or 1.0))
                 + ("".join(text_cell(f"{letter}{row}", key)
                            for letter, key in zip("HIJK", keys) if key))
-                # Площадь и норматив — свойство ТИПА, а не очереди: их место
-                # у той же строки, что несёт ключи, иначе одна вводная стояла
-                # бы четырьмя копиями с разными значениями.
+                # Площадь и норматив — свойство ТИПА, а не очереди: они стоят
+                # ОДИН раз, на первой строке типа, иначе одна вводная жила бы
+                # четырьмя копиями с разными значениями. Первой строке, а не
+                # той, что несёт ключ мест: ключ мест ходит за единственной
+                # очередью объекта и исчезает, когда очередей две, — а площадь
+                # у типа есть всегда. Цена привязки к ключу измерена: садик на
+                # 465 мест в двух очередях получал в книге площадь 0 м² при
+                # 7 440 у движка, и ГНС соцобъекта вместе с ней.
                 + ("".join((
                     number_cell(f"L{row}", float((areas or {}).get(typ, (0.0, 0.0))[0])),
                     number_cell(f"M{row}", float((areas or {}).get(typ, (0.0, 0.0))[1]),),
                     text_cell(f"N{row}", _V4_SOCIAL_AREA_KEYS[typ][0]),
                     text_cell(f"O{row}", _V4_SOCIAL_AREA_KEYS[typ][1]),
-                )) if phase_index == sole else "")
+                )) if phase_index == 0 else "")
+                # Доля общей площади к ГНС — одна на все три объекта, и стоит
+                # она один раз: три копии одного числа разошлись бы. Без неё
+                # ГНС соцобъекта в книге считать нечем, и она приезжала числом.
+                + (number_cell(f"P{row}", _v4_social_total_of_gns())
+                   if (type_index, phase_index) == (0, 0) else "")
                 + "</x:row>")
     cash_row = _v4_social_cash_row(base_row)
     # Дата платежа — методикой движка: min(заданная B18, РнС − 1 мес.).
@@ -20281,7 +20674,7 @@ V4_REWRITTEN_FORMULA_ROWS: dict[str, tuple[tuple[int, ...], str]] = {
     ),
     "ОТЧЕТ": (
         (
-        2, 12, 58, 61,
+        2, 12, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 58, 61,
         ),
         "Наземная ГНС, строительный объём, непогашенный долг при "
         "переносе между очередями и чистая прибыль из строк того же "
@@ -20289,11 +20682,13 @@ V4_REWRITTEN_FORMULA_ROWS: dict[str, tuple[tuple[int, ...], str]] = {
     ),
     "ПРОВЕРКИ": (
         (
-        3, 29, 39, 40, 42, 43, 45, 46, 50, 51, 52, 53, 54, 55, 57, 58,
-        59, 71, 72,
+        3, 29, 39, 40, 42, 43, 45, 46, 48, 50, 51, 52, 53, 54, 55, 57,
+        58, 59, 71, 72, 76, 77, 78, 79, 80, 81, 82, 83, 84,
         ),
         "Строки паритета и самопроверки под четвёртый объект, перенос "
-        "долга и кэш-свип "
+        "долга, кэш-свип и паркинг объектов в выручке и в ожидании "
+        "CAPEX; вердикт строк паритета (76–84) — общий с дописанными "
+        "ниже и с гейтом правленых вводных: _v4_parity_verdict "
     ),
     "Продажи": (
         (
@@ -20323,12 +20718,13 @@ V4_REWRITTEN_FORMULA_ROWS: dict[str, tuple[tuple[int, ...], str]] = {
 }
 
 V4_ENGINE_WRITTEN_CELLS: dict[tuple[str, str], str] = {
-    ("ТЭП", "D34"): (
+    ("ТЭП", "E34"): (
         "Строка 34 была итогом блока объектов, а стала строкой ФОКа: итог "
         "переехал на пустую строку 35, ссылок на 31–35 нет ни на одном другом "
-        "листе. Колонка «Очередь» у строк объектов пуста — у офисов, ТЦ и "
-        "наземного паркинга тоже, — и формула суммы здесь была бы суммой "
-        "пустых клеток"),
+        "листе. Колонка «Единицы» у строк объектов пуста — у офисов, ТЦ и "
+        "наземного паркинга тоже: они меряются метрами, — и формула суммы "
+        "здесь была бы суммой пустых клеток. Продаваемая площадь ФОКа стоит "
+        "в своей колонке D, а не здесь"),
     ("Вводные", "B18"): (
         "Заданная дата денежной компенсации — это ВВОДНАЯ (ключ social_comp_date), "
         "а не результат: формула шаблона стояла здесь потому, что места под "
@@ -20867,16 +21263,19 @@ def build_project_workbook(
 
     # --- расшифровка соцнагрузки: ОТЧЕТ (E31:H37) и ТЭП (38–44) -----------
     # «Где в Excel расходы на садик и школы?» — раньше нигде: B17 приезжал
-    # одной цифрой. Значения пишутся числами на дату сборки; контрольные
-    # итоги в книге — формулами (H37, E44), чтобы сумма сходилась с B17.
+    # одной цифрой. Расшифровка — формулы от блока «Вводных», а не числа на
+    # дату сборки: правка мест прямо в книге обязана двигать и строку. Итоги
+    # (H37, E44) — тоже формулы, чтобы сумма сходилась с B17.
     report_sheet_path = _v4_sheet_path(source, "ОТЧЕТ")
     tep_sheet_path = _v4_sheet_path(source, "ТЭП")
     report_xml = source.read(report_sheet_path).decode("utf-8")
     report_xml = _v4_add_report_default_row(report_xml, missing)
     report_xml = _v4_report_net_profit_from_its_own_rows(report_xml, missing)
+    report_xml = _v4_product_structure_block(report_xml, missing)
     report_xml = _v4_rename_labels(report_xml, "ОТЧЕТ", missing)
     tep_xml = _v4_sports_tep_row(
         source.read(tep_sheet_path).decode("utf-8"), missing)
+    tep_xml = _v4_object_parking_in_tep(tep_xml, missing)
     tep_xml = _v4_rename_labels(tep_xml, "ТЭП", missing)
 
     # Соцстройка — готовыми числами в строку 31 блока каждой очереди CAPEX:
@@ -21022,7 +21421,10 @@ def build_project_workbook(
 
     checks_sheet_path = _v4_sheet_path(source, "ПРОВЕРКИ")
     checks_xml = _v4_relax_limit_check_for_carried_debt(
-        _v4_sports_checks(source.read(checks_sheet_path).decode("utf-8"), missing),
+        _v4_object_parking_checks(
+            _v4_sports_checks(
+                source.read(checks_sheet_path).decode("utf-8"), missing),
+            missing),
         missing)
     _parity = (finance_hints or {}).get("parity") or {}
     if _parity:
@@ -21065,9 +21467,16 @@ def build_project_workbook(
             checks_xml, done = _v4_set_cell(checks_xml, f"C{_row}", number=round(_target, 4))
             if done:
                 checks_xml, done = _v4_set_cell(checks_xml, f"E{_row}", number=round(_tol, 4))
+            if done:
+                # Вердикт переписывается на общий: строки блока и строки,
+                # дописанные ниже, обязаны отвечать одним правилом.
+                checks_xml, done = _v4_set_cell(
+                    checks_xml, f"F{_row}", formula=_v4_parity_verdict(_row))
             if not done:
                 missing.append(f"паритет ПРОВЕРКИ: строка {_row}")
                 break
+    if _parity:
+        checks_xml = _v4_add_parity_gate_row(checks_xml, missing)
     checks_xml = _v4_add_carry_parity_row(
         checks_xml, float((finance_hints or {}).get("carried_debt_mln") or 0.0), missing)
     if _parity:
@@ -21090,21 +21499,88 @@ def build_project_workbook(
         ("school", 34, 41, "school_places", "social_school_gba_sqm"),
         ("clinic", 35, 42, "clinic_capacity", "social_clinic_gba_sqm"),
     )
-    for typ, report_row, tep_row, places_key, gba_key in _social_rows:
+    # Детализация соцнагрузки — ФОРМУЛАМИ от блока «Вводных», а не числами на
+    # дату сборки. Цена измерена: удвоив места школы прямо в книге, человек
+    # получал CAPEX 147 193 вместо 144 578 — денежная цепочка пересчитывается
+    # сама, — и рядом замершие 373 места за 2 349 млн. Два разных ответа об
+    # одном объекте в одном файле. Ссылки идут на «Вводные» напрямую, как
+    # формула соцстройки на листе CAPEX: у этого блока такой путь уже принят.
+    def _social_span(type_index: int, letter: str) -> str:
+        first = _v4_social_row(social_base_row, type_index, 0)
+        last = _v4_social_row(social_base_row, type_index, 3)
+        return f"'Вводные'!${letter}${first}:${letter}${last}"
+
+    for type_index, (typ, report_row, tep_row, places_key, gba_key) in enumerate(_social_rows):
         slot = social_breakdown[typ]
         places = slot["places"] if social_is_construction else float(x.get(places_key) or 0)
         cost = round(slot["cost"], 3)
         queue_label = ("+".join(f"О{n}" for n in sorted(slot["phases"]))
                        if slot["phases"] else "—")
-        report_xml = _put_extra(report_xml, f"F{report_row}", number=round(places))
-        report_xml = _put_extra(report_xml, f"G{report_row}", text=queue_label)
-        report_xml = _put_extra(report_xml, f"H{report_row}", number=cost)
-        tep_xml = _put_extra(tep_xml, f"B{tep_row}", number=round(places))
-        tep_xml = _put_extra(tep_xml, f"C{tep_row}", number=round(float(x.get(gba_key) or 0)))
-        tep_xml = _put_extra(tep_xml, f"D{tep_row}", text=queue_label)
-        tep_xml = _put_extra(tep_xml, f"E{tep_row}", number=cost)
-    report_xml = _put_extra(report_xml, "H36", number=round(social_compensation_amount, 3))
-    tep_xml = _put_extra(tep_xml, "E43", number=round(social_compensation_amount, 3))
+        if social_base_row is None:
+            # Блока в книге нет — тогда честнее число, чем ссылка в никуда.
+            report_xml = _put_extra(report_xml, f"F{report_row}", number=round(places))
+            report_xml = _put_extra(report_xml, f"G{report_row}", text=queue_label)
+            report_xml = _put_extra(report_xml, f"H{report_row}", number=cost)
+            tep_xml = _put_extra(tep_xml, f"B{tep_row}", number=round(places))
+            tep_xml = _put_extra(tep_xml, f"C{tep_row}",
+                                 number=round(float(x.get(gba_key) or 0)))
+            tep_xml = _put_extra(tep_xml, f"D{tep_row}", text=queue_label)
+            tep_xml = _put_extra(tep_xml, f"E{tep_row}", number=cost)
+            continue
+        capacity = _social_span(type_index, "B")
+        money = _social_span(type_index, "F")
+        area = _social_span(type_index, "L")
+        norm = _social_span(type_index, "M")
+        ratio = f"'Вводные'!$P${_v4_social_row(social_base_row, 0, 0)}"
+        # Метка очередей — тоже производная: объект переставили в книге, и
+        # подпись обязана переехать за ним, иначе она говорит о прошлом.
+        parts = "&".join(
+            f"IF('Вводные'!$B${_v4_social_row(social_base_row, type_index, phase)}>0,"
+            f'"О{phase + 1}+","")' for phase in range(4))
+        label = f'IF(SUM({capacity})>0,LEFT({parts},LEN({parts})-1),"—")'
+        for where, coord, formula in (
+                ("tep", f"B{tep_row}", f"SUM({capacity})"),
+                ("tep", f"C{tep_row}", f"IF(SUM({area})>0,SUM({area}),"
+                                       f"SUM({capacity})*SUM({norm}))"),
+                ("tep", f"D{tep_row}", label),
+                ("tep", f"E{tep_row}", f"SUM({money})"),
+                # ГНС соцобъекта — своей колонкой: в блоке стояла только общая
+                # площадь, а строительный объём считается по ГНС, и соцобъекты
+                # в него не входили вовсе — 28 520 м² на проекте владельца.
+                ("tep", f"F{tep_row}", f"IFERROR(C{tep_row}/{ratio},0)"),
+                ("report", f"F{report_row}", f"'ТЭП'!B{tep_row}"),
+                ("report", f"G{report_row}", f"'ТЭП'!D{tep_row}"),
+                ("report", f"H{report_row}", f"'ТЭП'!E{tep_row}"),
+        ):
+            target = tep_xml if where == "tep" else report_xml
+            target, done = _v4_set_or_insert_cell(target, coord, formula=formula)
+            if not done:
+                missing.append(f"детализация соцнагрузки формулой: {coord}")
+            if where == "tep":
+                tep_xml = target
+            else:
+                report_xml = target
+    tep_xml, _done = _v4_set_or_insert_cell(tep_xml, "F39", text="ГНС, м²")
+    if not _done:
+        missing.append("расшифровка соцнагрузки: подпись F39")
+    # Денежная компенсация — та же вводная, что кормит CAPEX: ссылкой, а не
+    # числом на дату сборки. Правка суммы в книге обязана двигать и строку.
+    if social_base_row is not None:
+        cash_cell = f"'Вводные'!$F${_v4_social_cash_row(social_base_row)}"
+        for target_name, coord in (("tep", "E43"), ("report", "H36")):
+            target = tep_xml if target_name == "tep" else report_xml
+            target, done = _v4_set_or_insert_cell(target, coord, formula=cash_cell)
+            if not done:
+                missing.append(f"денежная компенсация формулой: {coord}")
+            if target_name == "tep":
+                tep_xml = target
+            else:
+                report_xml = target
+    else:
+        report_xml = _put_extra(report_xml, "H36",
+                                number=round(social_compensation_amount, 3))
+        tep_xml = _put_extra(tep_xml, "E43",
+                             number=round(social_compensation_amount, 3))
 
     # Лимит БРИДЖ в книге режет выборку (CF r34). Логика вводных DevelopAid —
     # «всё финансирует банк», поэтому лимит расчётный: сделка, ВРИ, социалка
@@ -21739,6 +22215,15 @@ def build_project_workbook(
         missing.append("Вводные · лист ввода не собран: " + _error_location(exc))
     if entry_xml and not entry_report.get("moved"):
         missing.append("Вводные · на лист ввода не переехало ни одной ячейки")
+    # Отпечаток вводных — только теперь: лист ввода собирается последним, а
+    # цель гейта считается по нему. Не собрался — цель остаётся пустой, и
+    # паритет ведёт себя ровно так, как до появления гейта.
+    if entry_xml and _parity:
+        checks_xml, _stamped = _v4_set_cell(
+            checks_xml, f"C{_V4_PARITY_GATE_ROW}",
+            number=round(_v4_entry_fingerprint(entry_xml), 6))
+        if not _stamped:
+            missing.append("гейт паритета: отпечаток листа ввода не записан")
     # Инструкция собирается ПОСЛЕ всего: она читает готовый лист ввода и
     # `missing` целиком. Написанная раньше, она обещала бы книгу, которой ещё
     # нет, — и разошлась бы с ней ровно тем, что добавили следом.
@@ -21791,6 +22276,10 @@ def build_project_workbook(
                 # новый лист, и второй проход увёл бы их обратно.
                 if item.filename != sheet_path:
                     text = v4_entry_sheet.rename_sheet_refs(text)
+                # Метка ставится уже после переименования: написанная прямо,
+                # ссылка на лист ввода уехала бы вместе со всеми на расчётный.
+                text = text.replace(_V4_ENTRY_SHEET_TOKEN,
+                                    f"'{v4_entry_sheet.ENTRY_SHEET}'!")
                 payload = text.encode("utf-8")
             elif item.filename == "xl/workbook.xml":
                 payload = _v4_workbook_with_entry(
@@ -27810,6 +28299,9 @@ def calculate(req: CalcRequest) -> dict:
     # двигала ни строку, ни строительный объём, а тот же садик в своде
     # очередей выходил другим.
     apply_social_tep_rows(x, t)
+    # Наземный паркинг — той же природы: места задаёт человек, метры из них
+    # выводятся, и без этого объект строится, а его площади нет нигде.
+    apply_above_parking_tep_row(x, t)
 
     # Паркинг объектов раскладывается ДО построения модели: он
     # трогает продаваемую объекта, а значит выручку, и после счёта денег
@@ -28093,9 +28585,17 @@ def calculate(req: CalcRequest) -> dict:
         return f"{value:,.0f}".replace(",", "\u00a0")
 
     standalone_items = []
-    for key, label in (("offices", "Офисы / МФОЦ"),
-                       ("standalone_retail", "ТЦ / коммерция ОСЗ"),
-                       ("above_parking", "Наземный паркинг")):
+    # Список объектов — тот, что объявлен в движке, а не перечисление руками:
+    # ФОК завели четвёртым 05.09.2026, в это перечисление он не вошёл, и его
+    # 3 616 млн ₽ (19% строки) стояли в итоге и не были названы ни одной
+    # подстрокой. То же правило, что у корзин находок: корзина, заведённая
+    # позже, в перечисление не попадает. Имя берётся у `product_labels` —
+    # второго ответа на «как зовётся продукт» не бывает.
+    _labels = product_labels()
+    _object_names = {"offices": "Офисы / МФОЦ", "standalone_retail": "ТЦ / коммерция ОСЗ"}
+    for _obj in STANDALONE_OBJECTS:
+        key = _obj.key
+        label = _object_names.get(key) or _labels.get(key) or key
         amount = op["capex_amounts"].get(key, 0.0)
         if amount <= 0:
             continue
@@ -28115,11 +28615,12 @@ def calculate(req: CalcRequest) -> dict:
         # паркинга считается как `above_parking_spaces × себестоимость места`,
         # и строка ТЭП тут вторым источником быть не может — при вызове мимо
         # страницы она приходит нулём, и «за место» вышло бы делением на ноль.
-        own_units = n(x, "above_parking_spaces") if key == "above_parking" else n(row, "units")
+        own_units = (n(x, f"{_obj.prefix}_spaces") if _obj.measure == "spaces"
+                     else n(row, "units"))
         item = {"key": key, "label": label, "value": amount,
                 "gns_sqm": own_gns, "saleable_sqm": own_saleable,
                 "units": own_units}
-        if key == "above_parking":
+        if _obj.measure == "spaces":
             # Мера продукта — место, и делить его деньги на метры значит
             # отвечать не на тот вопрос.
             item["basis"] = "units"
