@@ -1245,6 +1245,12 @@ def install(app: FastAPI) -> None:
         decision_rows: list[dict[str, Any]] = []
         second_publications = 0
         tep_state: dict[str, Any] | None = None
+        # Числа обхода и причина устаревания объявляются ЗДЕСЬ, а не читаются
+        # из `found`: он существует только внутри ветки, и безусловное чтение
+        # роняло маршрут `UnboundLocalError` там, где читателя решений нет
+        # вовсе (поймано прогоном затронутого до открытия PR).
+        decisions_walk: dict[str, Any] = {}
+        decisions_stale_reason = ""
         reader = getattr(krt_registry, "decisions", None)
         if callable(reader):
             try:
@@ -1264,6 +1270,8 @@ def install(app: FastAPI) -> None:
             # единственные цифры; у площадки с карточкой — самопроверка пары
             # «решение ↔ карточка», и расхождение называется, а не заменяет
             # собой каталог.
+            decisions_walk = dict(found.get("walk") or {})
+            decisions_stale_reason = str(found.get("stale_reason") or "")
             tep_by_document = found.get("tep") or {}
             tep_state = found.get("tep_coverage")
             # Недостающие решения дочитываются фоном и порциями — как карточки
@@ -1330,8 +1338,8 @@ def install(app: FastAPI) -> None:
             # «дочитан: True» проверить было нечем, и когда после выкатки
             # строк стало 246 вместо 248, объяснить это со стороны не мог
             # никто — счётчик молчания есть, а прочитать его нельзя.
-            "decisions_walk": found.get("walk") or {},
-            "decisions_stale_reason": found.get("stale_reason") or "",
+            "decisions_walk": decisions_walk,
+            "decisions_stale_reason": decisions_stale_reason,
             "new_count": sum(1 for row in projects if row.get("is_new")),
             "new_for_days": NEW_FOR_SECONDS // 86400,
             # Охват карточек города: прочитано, не ответило и по какой причине.
