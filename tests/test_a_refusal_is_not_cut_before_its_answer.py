@@ -130,3 +130,38 @@ def test_the_store_cuts_the_reread_reason_by_the_same_limit(tmp_path):
     assert said.startswith("HTTP 503 после трёх попыток")
     assert said.endswith(f"… (обрезано с {len(long)} знаков)"), said[-60:]
     assert len(said) <= egrn_archive.REASON_LIMIT + 40
+
+
+def test_the_limit_and_the_reader_version_are_bumped_together():
+    """Меняя предел отказа, поднимают версию читателя — иначе починка не доедет.
+
+    Текст отказа — такой же ответ читателя, как запись, и `stale()` сравнивает
+    ВЕРСИЮ, а не длину. Значит предел, поднятый без версии, оставляет уже
+    записанные обрезанными отказы «свежими» навсегда: на проде их было 56
+    (замер 15.09.2026), и починка не доехала бы ровно до того, ради чего
+    написана.
+
+    Здесь равенство пары целиком — и это само утверждение: проверка обязана
+    падать при правке ЛЮБОЙ половины, чтобы вторая была решена, а не забыта.
+    Поднимаете предел — поднимите версию и поправьте эту пару.
+    """
+    assert (egrn_archive.REASON_LIMIT, egrn_archive.READER_VERSION) == (400, 5), (
+        "предел отказа и версия читателя связаны: изменив одно, решите про другое")
+
+
+def test_a_refusal_written_by_the_previous_reader_is_behind(tmp_path):
+    """Отказ прежнего читателя отстаёт — на том пределе, что был до правки.
+
+    Механизм проверяется в `test_a_refused_document_is_read_again_too`, здесь
+    же — сам случай, из-за которого версию и поднимали: отказ, обрезанный
+    прежним пределом в 200 знаков, обязан считаться отстающим, иначе его
+    никогда не перечитают.
+    """
+    cut = "в форме не прочитан кадастровый номер объекта: вид «зда" + "х" * 150
+    kept = {"records": [], "uploads": [{"file": "ЕГРН 1021.pdf", "unread": [
+        {"file": "ЕГРН 1021.pdf", "reason": cut[:200],
+         "reader_version": egrn_archive.READER_VERSION - 1}]}]}
+
+    behind = egrn_store.stale(kept)
+    assert behind["refusals"] == 1 and behind["refusals_behind"] == 1, behind
+    assert egrn_store.reread_due(kept) is True, behind
