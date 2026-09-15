@@ -1707,13 +1707,13 @@ class KrtRegistry:
         if (not refresh and isinstance(cached, dict)
                 and cached.get("schema_version") == TENDERS_CACHE_SCHEMA_VERSION
                 and fresh(self.tenders_path, self.ttl_seconds)):
-            return cached
+            return self._with_order_actions(cached)
         found, complete = krt_decisions.collect_tender_orders(
             self.fetch, max_pages=max_pages)
         if not found and isinstance(cached, dict) and cached.get("orders"):
             stale = dict(cached)
             stale["stale"] = True
-            return stale
+            return self._with_order_actions(stale)
         found.sort(key=lambda one: one.get("published_at") or 0, reverse=True)
         # Адрес площадки лежит в СКАНЕ распоряжения, и другого места у него нет.
         # Распознаётся один раз и кладётся рядом с записью: без этого привязку
@@ -1750,7 +1750,32 @@ class KrtRegistry:
                      "отдельно, по торгам."),
         }
         save_json(self.tenders_path, payload)
-        return payload
+        return self._with_order_actions(payload)
+
+    @staticmethod
+    def _with_order_actions(payload: dict[str, Any]) -> dict[str, Any]:
+        """Вид распоряжения — производная заголовка, и считается она при ЧТЕНИИ.
+
+        Хранить её незачем: правило может измениться, а снимок живёт сутками —
+        и тогда «объявлены торги» осталось бы стоять по прежнему правилу (так
+        уже было с диагнозом съехавшей карточки каталога). Заодно снимок,
+        снятый до этой правки, получает вид документа без единого запроса к
+        городу.
+        """
+        from . import krt_decisions  # модуль грузится и отдельно от движка
+
+        if not isinstance(payload, dict):
+            return payload
+        orders = payload.get("orders")
+        if not isinstance(orders, list):
+            return payload
+        out = dict(payload)
+        out["orders"] = [
+            {**one, "action": krt_decisions.order_action(str(one.get("title") or ""))}
+            if isinstance(one, dict) else one
+            for one in orders
+        ]
+        return out
 
     def status(self) -> dict[str, Any]:
         """Полнота снимка, ход обхода и КОГДА снимок снят.

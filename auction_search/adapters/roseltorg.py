@@ -104,7 +104,8 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
     # раздел не добавит ни одного лота и скажет это строкой охвата; выдуманный
     # разбор чужой разметки однажды уже приехал на прод гаражами.
     @classmethod
-    def _read(cls, url: str, timeout: float) -> str:
+    def _read(cls, url: str, timeout: float, *, attempts: int = 1,
+              deadline: float | None = None) -> str:
         """Страница площадки нашими корнями — и отказ, названный отказом.
 
         Своего `urlopen` здесь больше нет: корни у сервиса объявлены один раз
@@ -115,8 +116,13 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
         Страница отказа («Web Page Blocked», «403 Forbidden») — это отказ, а не
         пустой раздел: разобранная как обычная, она даёт ноль ссылок, и на
         экране это неотличимо от «лотов нет».
+
+        `attempts` берётся у общей политики повтора (`reading.ATTEMPTS`) и
+        только там, где перебой стоит потери целого лота: площадка отвечает
+        через раз, и второго вопроса у страницы прежде не было вовсе.
         """
-        answer = reading.fetch(url, timeout=timeout,
+        answer = reading.fetch(url, timeout=timeout, attempts=attempts,
+                               deadline=deadline,
                                headers={"User-Agent": cls.USER_AGENT})
         html = answer.text()
         title = ""
@@ -525,7 +531,14 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
         if "/procedure/" not in urlparse(lot_url).path:
             raise ValueError("Roseltorg URL must point to a public /procedure/ card")
 
-        html = self._read(lot_url, clock.timeout(deadline, 20))
+        # Карточка спрашивается ПОВТОРНО при перебое: Росэлторг отвечает через
+        # раз, и один таймаут стоил целого лота. Измерено с прода 14.09.2026 —
+        # 502/502/200/200/502/502 при паузах по сорок секунд; проход за
+        # извещениями в тот день получил пять таймаутов подряд и записал пять
+        # отказов площадки там, где надо было спросить второй раз. Срок
+        # сильнее повтора: пауза, не укладывающаяся в остаток, его прекращает.
+        html = self._read(lot_url, clock.timeout(deadline, 20),
+                          attempts=reading.ATTEMPTS, deadline=deadline)
         parser = _RoseltorgHTML()
         parser.feed(html)
         text = parser.text

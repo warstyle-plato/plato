@@ -77,7 +77,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.23.74"
+VERSION = "0.23.75"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -2813,6 +2813,42 @@ def monitor_store_daily(req: MonitorDailyRequest) -> dict[str, Any]:
     try:
         return developaid_monitor_daily.store_daily_report(
             req.project, req.text, req.taken_at)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+class MonitorImportRequest(BaseModel):
+    project: str
+    html: str
+    session: str = ""
+    key: str = ""
+
+
+@app.post("/monitor/daily/import", include_in_schema=False)
+def monitor_import_daily(req: MonitorImportRequest) -> dict[str, Any]:
+    """Внести сводки из выгрузки Telegram — задним числом.
+
+    Бота в группе Telegram историей не кормит: он получает только новые
+    сообщения, и всё, что написано до его подключения, для него не
+    существует. На живой выгрузке это 44 дня численности — потерять их
+    значило бы начать монитор с чистого листа там, где стройка идёт с июля.
+
+    Разбор и хранение те же, что у сводки из чата (`store_telegram_export`
+    зовёт `store_daily_report`): второй путь к диску однажды положил бы один и
+    тот же день по-разному в зависимости от того, пришёл он из чата или из
+    файла.
+
+    Ответ говорит ЧИСЛАМИ, что вышло: сколько сообщений прочитано, сколько
+    оказалось сводками, сколько дней занято и сколько замещено. «Внесено 44»
+    без «из 139 прочитанных» не отвечает, потерялось ли что-нибудь.
+    """
+    _require_web_access(req.session, req.key, "Монитор проекта")
+    project = _site_project_name(req.project)
+    if not project:
+        raise HTTPException(400, "Имя проекта не годится для каталога на диске: "
+                                 "уберите косые черты и точки подряд.")
+    try:
+        return developaid_monitor_daily.store_telegram_export(project, req.html)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
 
