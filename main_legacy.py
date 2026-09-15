@@ -65,6 +65,7 @@ from developaid_monitor_page import MONITOR_PAGE as _MONITOR_PAGE_RAW
 # техприсоединению) в продукты и деньги модели живёт отдельным модулем: он о
 # документах, движок — об экономике, и смешивать их незачем.
 import document_intake
+from request_body import json_object
 import v4_entry_sheet
 import v4_value_cache
 import management_contour
@@ -77,7 +78,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.23.76"
+VERSION = "0.23.77"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -14095,7 +14096,12 @@ async def telegram_webhook(request: Request) -> dict[str, bool]:
     supplied = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
     if not token or not hmac.compare_digest(supplied, _telegram_webhook_secret()):
         raise HTTPException(status_code=403, detail="Invalid Telegram webhook secret")
-    update = await request.json()
+    # Секрет проверен выше, то есть сюда доходит только тот, у кого он есть.
+    # Разбор всё равно идёт через общий сторож: тело, которое не разобралось
+    # или пришло не объектом, — это не Telegram, а `_telegram_process_update`
+    # на списке падал бы в ПОТОКЕ, то есть молча (ошибка, ушедшая только в
+    # лог, — это ошибка, которой нет).
+    update = await json_object(request)
     threading.Thread(target=_telegram_process_update, args=(update,), daemon=True).start()
     return {"ok": True}
 
@@ -24943,9 +24949,9 @@ def audit_plato_workbook(
 
 @app.post("/report/pdf")
 async def report_pdf(request: Request) -> Response:
-    payload=await request.json()
-    if not isinstance(payload,dict) or not isinstance(payload.get("result"),dict):
-        raise HTTPException(status_code=400,detail="Нет данных расчёта для PDF")
+    payload = await json_object(request)
+    if not isinstance(payload.get("result"), dict):
+        raise HTTPException(status_code=400, detail="Нет данных расчёта для PDF")
     # PDF пересчитывает модель на сервере — это не бесплатно, и отчёт уносят
     # с собой: с сайта он доступен после входа через Telegram (мягкий гейт).
     _require_web_access(str(payload.get("session") or ""),
