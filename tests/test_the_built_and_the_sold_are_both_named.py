@@ -34,6 +34,18 @@ openpyxl = pytest.importorskip("openpyxl")
 PAGE = core.PAGE
 
 
+def _inputs() -> dict:
+    """Вводные фикстуры: гараж на 400 мест — решение проекта.
+
+    Движок строку ТЭП подземного паркинга ВЫВОДИТ (отказ → руками → выгрузка
+    → норматив), и гараж, положенный прямо в строку, он перебьёт нормой:
+    1 199 мест на умолчаниях. Решение человека выражается ручными полями — тем
+    же, чем оно выражается на экране.
+    """
+    return {**core.DEFAULT_INPUTS, "underground_manual_spaces": 400,
+            "underground_manual_gns_sqm": 14000}
+
+
 def _tep() -> dict[str, dict[str, float]]:
     tep = {key: dict(value) for key, value in core.TEP_DEFAULT.items()}
     tep["underground_parking"].update({"units": 400, "guest_units": 40,
@@ -45,7 +57,7 @@ def _tep() -> dict[str, dict[str, float]]:
 def test_the_row_of_the_result_carries_both_numbers() -> None:
     """Строка ТЭП несёт построенные, гостевые, переданные и продаваемые."""
     got = core.calculate(core.CalcRequest(
-        inputs=dict(core.DEFAULT_INPUTS), tep=_tep(), rates=[]))
+        inputs=_inputs(), tep=_tep(), rates=[]))
     row = next(r for r in got["tep"]["rows"] if r["key"] == "underground_parking")
     assert row["units"] == 400
     assert row["guest_units"] == 40
@@ -67,7 +79,7 @@ def test_the_screen_shows_the_sold_column_and_says_why() -> None:
 def test_the_book_names_the_guest_and_the_given_places() -> None:
     """В книге рядом с продаваемыми местами стоят гостевые и переданные."""
     content, _, missing = core.build_project_workbook(
-        dict(core.DEFAULT_INPUTS), _tep(), [], {}, project_name="П")
+        _inputs(), _tep(), [], {}, project_name="П")
     assert not [m for m in missing if "гостев" in m.lower()], missing
     # Блок очередей остался на расчётном листе: там формулы, а «Вводные»
     # теперь тот лист, на котором печатают.

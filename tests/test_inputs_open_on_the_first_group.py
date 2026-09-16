@@ -31,6 +31,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import page_blocks  # noqa: E402
 import main as wrapper  # noqa: E402
 
 core = wrapper.core
@@ -127,6 +128,11 @@ def render(inputs: dict, tail: str = "console.log(JSON.stringify(groups()));",
         # отдельной задачей: заглушки стенда разрешитель добрал бы со
         # страницы и подменил бы ими поведение соседних проверок.
         page_const("CLASS_ONLY_INPUTS"),
+        # Пометка «ставит класс проекта» у единицы поля: список полей — сам
+        # профиль класса, а не перечисление рядом с ним, поэтому стенду нужен
+        # и профиль, и тот, кто по нему спрашивает.
+        page_const("PROJECT_CLASS_PRESETS"),
+        page_function("classSetsField"),
         page_const("INPUT_DEFAULT"),
         page_const("num"),
         page_const("VRI_GROUP_NAME"),
@@ -154,8 +160,9 @@ def render(inputs: dict, tail: str = "console.log(JSON.stringify(groups()));",
         page_function("renderInputs"),
         # Форма пишет подпись под полями паркинга объектов сама: ячейки она же
         # и создаёт, а пустая ячейка под нулём читается как «гаража нет».
-        PAGE[PAGE.index("const OBJECT_PARKING_PREFIXES="):
-             PAGE.index(";", PAGE.index("const OBJECT_PARKING_PREFIXES=")) + 1],
+        # Приставки объектов с гаражом считаются из реестра, а он приезжает
+        # на страницу подстановкой: одной строки мало, нужен её источник.
+        page_blocks.object_roster(),
         page_function("renderObjectParkingFieldNotes"),
         page_function("objectParkingFieldNote"),
         # Та же история у подписи под ставкой благоустройства: ячейку создаёт
@@ -164,6 +171,10 @@ def render(inputs: dict, tail: str = "console.log(JSON.stringify(groups()));",
         # расчёта подпись честно говорит, что двор ещё не посчитан.
         "let lastResult=null;",
         page_function("landscapingRateNote"),
+        # Счётный показатель ₽ на метр дома форма печатает В САМО ПОЛЕ, и
+        # печатает его тот же вызов, что и подписи, — значит стенду нужны оба.
+        page_function("landscapingHouseRateNote"),
+        page_function("renderLandscapingHouseRateValue"),
         page_function("renderLandscapingRateNote"),
         DOM.replace("__PHASING__", json.dumps(phasing or {"enabled": False})),
         f"const inputs=Object.assign(structuredClone(INPUT_DEFAULT),{json.dumps(inputs)});",

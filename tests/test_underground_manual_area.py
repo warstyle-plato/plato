@@ -35,6 +35,13 @@ _IMPORT = {"normalized": {"parking_permanent": 25, "parking_guest": 3}}
 def _calc(inputs_extra: dict):
     inputs = {**core.DEFAULT_INPUTS, **inputs_extra}
     tep = {key: dict(value) for key, value in core.TEP_DEFAULT.items()}
+    # Площадь квартир согласована с числом мест выгрузки: 2 165 м² это ровно
+    # те 25 постоянных мест по 2118-ПП, которые город и назвал. На умолчании
+    # 80 000 м² пара невозможна — норма даёт 924, — и движок, который теперь
+    # строку ТЭП ВЫВОДИТ, честно пересчитывал город по его же правилу
+    # («метры правили после выгрузки»). Фикстура, у которой вводные и ТЭП
+    # говорят об объекте разное, проектом не является.
+    tep["apartments"] = dict(tep["apartments"], saleable=2165.0)
     result = core.calculate(core.CalcRequest(inputs=inputs, tep=tep, rates=[]))
     row = next(r for r in result["tep"]["rows"] if r["key"] == "underground_parking")
     return row

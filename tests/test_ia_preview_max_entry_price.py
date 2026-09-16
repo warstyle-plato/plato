@@ -64,12 +64,37 @@ def viable() -> dict:
 
 
 def test_the_ceiling_holds_the_target_llcr(client: TestClient):
-    """Найденная цена — та, при которой LLCR ровно на пороге."""
+    """Найденная цена — ПОСЛЕДНЯЯ, при которой порог ещё держится.
+
+    Прежде здесь стояло «LLCR ровно на пороге, ±0,001», и это утверждение
+    неверно по построению: LLCR у цены входа РАЗРЫВЕН. Лимит ПФ округляется
+    вверх до десяти миллионов, ставка идёт ступенями лестницы — и на границе
+    полмиллиона рублей цены роняют метрику скачком. Замер 14.09.2026:
+    12 050,1 млн даёт 1,201072, а 12 050,6 — уже 1,199823, то есть ступенька
+    0,00125 ШИРЕ допуска, который проверка требовала. Экономика сдвинулась
+    (кладовые, благоустройство), решение переехало на другую ступень — и тест
+    покраснел на верном подборе, ничего не сказав о поломке.
+
+    Проверяется то, ради чего подбор и написан: за порогом решение держится, а
+    на шаг дороже — уже нет. Это верно при любой ступеньке.
+    """
     data = client.post("/ia/goal-seek", json=viable()).json()
     assert data["available"], data.get("reason")
-    assert data["solution"]["variable"] > 0
-    assert data["solution"]["metric"] == pytest.approx(TARGET, abs=1e-3)
+    ceiling = data["solution"]["variable"]
+    assert ceiling > 0
+    assert data["solution"]["metric"] >= TARGET, data["solution"]
     assert data["current"]["metric"] > TARGET, "порог должен быть достижим на этих вводных"
+
+    # Шаг вверх по цене: порог обязан сорваться. Полмиллиона — это меньше
+    # 0,005% найденной цены, то есть найдена именно граница, а не «где-то там».
+    beyond = viable()
+    beyond["inputs"]["purchase_price_mln"] = ceiling + 0.5
+    b = core._run_authoritative_model(beyond["inputs"], beyond["tep"],
+                                      beyond["rates"], beyond["phasing"])
+    _label, metric, _res = core._metric_value(b, "llcr", "consolidated", None)
+    assert metric is not None and metric < TARGET, (
+        "цена на полмиллиона выше найденной всё ещё держит порог — "
+        "значит подбор остановился не на границе", ceiling, metric)
 
 
 def test_the_answer_carries_where_it_came_from(client: TestClient):

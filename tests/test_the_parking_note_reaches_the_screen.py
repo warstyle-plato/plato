@@ -59,6 +59,11 @@ let lastResult = %(result)s;
 // Сверка старого проекта читает вводные: без них стенд падает на «inputs is
 // not defined», и падение выходит про стенд, а не про подпись.
 let inputs = {_parking_by_norm: []};
+// Связка очередей — состояние страницы, а не кусок её кода: без неё стенд
+// падает на «phaseBundle is not defined», а разрешитель ищет на странице
+// функцию с таким именем и честно отвечает, что её там нет. Одиночный расчёт
+// оставляет связку пустой.
+let phaseBundle = null;
 """
 
 TAIL = """
@@ -126,8 +131,14 @@ def _const(name: str) -> str:
 
 
 def _render_fields(result, inputs=None):
-    """Отрисовать подписи и поля так, как их рисует страница."""
-    script = """
+    """Отрисовать подписи и поля так, как их рисует страница.
+
+    Куски страницы добирает общий разрешитель: перечисленные руками, они
+    отставали от страницы — рядом завели `projectParking` (один ответ на «чей
+    это паркинг»), и пятнадцать проверок упали на «projectParking is not
+    defined», то есть на своей неполноте, ничего не сказав о подписи.
+    """
+    prelude = """
 // `style` у заглушки обязателен: подпись несёт не только текст, но и тон —
 // дефицит красный, — и у настоящего элемента страницы `style` есть всегда.
 // Без него стенд падает на нашей же правке, и падение выходит про стенд.
@@ -143,31 +154,24 @@ const num = v => String(v);
 %(prefixes)s
 let inputs = %(inputs)s;
 let lastResult = %(result)s;
-%(a)s
-%(mark)s
-%(b)s
+// Очерёдности здесь нет — страница в одиночном расчёте оставляет связку
+// пустой, и `projectParking` берёт паркинг из результата.
+let phaseBundle = null;
+""" % {"result": json.dumps(result, ensure_ascii=False),
+       "inputs": json.dumps(inputs or {}, ensure_ascii=False),
+       "prefixes": page_blocks.object_roster()}
+    # Действие — в хвосте: добранные куски встают МЕЖДУ прелюдией и хвостом,
+    # и вызов из прелюдии читал бы их до объявления.
+    tail = """
 renderObjectParkingNote();
 console.log(JSON.stringify({
   note_offices: cells.parkNorm_offices.textContent,
   note_retail: cells.parkNorm_retail.textContent,
   field_offices: cells.f_offices_parking_under_spaces.value,
   field_retail: (cells.f_retail_parking_under_spaces||{value:null}).value,
-  note_retail: cells.parkNorm_retail.textContent,
   inputs}));
-""" % {"result": json.dumps(result, ensure_ascii=False),
-       "inputs": json.dumps(inputs or {}, ensure_ascii=False),
-       "prefixes": _const("OBJECT_PARKING_PREFIXES"),
-       "a": _piece("objectParkingGap") + "\n" + _piece("objectParkingFieldNote"),
-       # Норма помечает своё число — без этой функции стенд падает на
-       # неопределённом имени, и падение выходит про стенд, а не про подпись.
-       "mark": _piece("markParkingByNorm") + "\n"
-                 + _piece("reconcileLegacyParking"),
-       # Писатель подписей — своя функция: её зовёт и форма, и результат.
-       "b": _piece("renderObjectParkingFieldNotes") + "\n"
-              + _piece("renderObjectParkingNote")}
-    out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=60)
-    assert out.returncode == 0, out.stderr[-2000:]
-    return json.loads(out.stdout)
+"""
+    return page_blocks.run_json(prelude, tail)
 
 def _result(by_norm: bool, under: int, over: int):
     """Ответ расчёта об офисах — чтобы состояния подписи читались рядом."""
@@ -307,7 +311,7 @@ def test_a_field_shows_no_stale_number_but_names_the_reason() -> None:
     Случай не редкий: `lastResult` обнуляет и `renderCalcLocked` — расчёт закрыт
     входом, а вход у каждого браузера свой.
     """
-    script = """
+    prelude = """
 const cell = {textContent:"дырка",style:{}};
 global.document = {getElementById: id => (id === 'parkNorm_offices' ? cell : null)};
 function escapeHtml(s){return String(s)}
@@ -315,21 +319,13 @@ const num = v => String(v);
 %(prefixes)s
 let inputs = {};
 let lastResult = null;
-%(a)s
-%(mark)s
-%(b)s
+let phaseBundle = null;
+""" % {"prefixes": page_blocks.object_roster()}
+    tail = """
 renderObjectParkingNote();
 console.log(JSON.stringify({left: cell.textContent}));
-""" % {"prefixes": _const("OBJECT_PARKING_PREFIXES"),
-       "a": _piece("objectParkingGap") + "\n" + _piece("objectParkingFieldNote"),
-       "mark": _piece("markParkingByNorm") + "\n"
-                 + _piece("reconcileLegacyParking"),
-       # Писатель подписей — своя функция: её зовёт и форма, и результат.
-       "b": _piece("renderObjectParkingFieldNotes") + "\n"
-              + _piece("renderObjectParkingNote")}
-    out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=60)
-    assert out.returncode == 0, out.stderr[-2000:]
-    left = json.loads(out.stdout)["left"]
+"""
+    left = page_blocks.run_json(prelude, tail)["left"]
     assert "дырка" not in left, "прежнее число осталось стоять — читается как посчитанное"
     assert "Расчёт не выполнен" in left, left
 

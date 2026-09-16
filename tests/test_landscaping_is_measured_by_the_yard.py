@@ -156,8 +156,21 @@ def test_the_fields_name_their_base():
     объёма», и человек вписал бы ставку на метр двора."""
     hints = {field[0]: field[2] for group in core.FIELD_GROUPS for field in group[1]
              if str(field[0]).startswith("landscaping")}
-    assert set(hints) == {"landscaping_th_per_sqm", "landscaping_area_sqm",
-                          "landscaping_area_per_person_sqm"}
+    # Равенством целиком тут утверждать нечего: проверка падала бы, когда рядом
+    # что-то ДОБАВИЛИ, а не когда что-то сломали, — так она и упала на второй
+    # мере статьи. Утверждение у неё другое: у КАЖДОГО поля благоустройства
+    # подпись называет свою базу, и двух полей под одной базой нет.
+    assert {"landscaping_th_per_sqm", "landscaping_area_sqm",
+            "landscaping_area_per_person_sqm"} <= set(hints)
+    bases = {"landscaping_th_per_sqm": "благоустроенной территории",
+             "landscaping_area_sqm": "нормативу класса",
+             "landscaping_area_per_person_sqm": "м²/чел.",
+             "landscaping_gns_th_per_sqm": "наземной части"}
+    assert set(hints) <= set(bases), (
+        "у поля благоустройства нет названной базы: " + str(set(hints) - set(bases)))
+    for field, base in bases.items():
+        if field in hints:
+            assert base in hints[field], (field, hints[field])
     # Утверждение здесь — «подпись называет базой двор», а не «в подписи есть
     # такое-то слово»: заглавные буквы переехали с «БЛАГОУСТРОЕННОЙ» на «ДВОР»,
     # когда первая часть подсказки стала единицей в таблице классов, — и
@@ -187,7 +200,13 @@ def test_the_workbook_reads_the_same_base():
     # База — население очереди, а не сумма трёх ГНС.
     queue_flats = v4_entry_sheet.rename_in_formula("'Вводные'!$L$88")
     assert "ROUNDUP" in formula and queue_flats in formula, formula
-    assert v4_entry_sheet.rename_in_formula("'Вводные'!$I$88") not in formula, formula
+    # Сумма ГНС в формуле СНОВА есть — у статьи вторая мера, ставка на метр
+    # наземной части (просьба владельца, 14.09.2026), — но базой двора она не
+    # стала: стоит она только внутри `IF` по заданной ставке. Доказывает это не
+    # текст, а счёт ниже: при пустой ставке книга обязана дать двор.
+    above = v4_entry_sheet.rename_in_formula("'Вводные'!$I$88")
+    assert "IF(" in formula, formula
+    assert above not in formula[:formula.index("IF(")], formula
 
     sys.setrecursionlimit(400_000)
     from xlsx_eval import Evaluator
@@ -200,7 +219,7 @@ def test_the_workbook_reads_the_same_base():
 def test_an_unrecognised_template_formula_is_named():
     """Не опознали формулу — это `missing`, а не тихий счёт по прежней базе."""
     missing: list[str] = []
-    core._v4_apply_landscaping_base("<x:sheetData/>", "$B$1", "$B$2", missing)
+    core._v4_apply_landscaping_base("<x:sheetData/>", "$B$1", "$B$2", "$B$3", missing)
     assert len(missing) == core._V4_CAPEX_PHASES, missing
     assert all("благоустрой" in one.lower() for one in missing), missing
 

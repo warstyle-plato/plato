@@ -352,6 +352,5 @@ def test_any_area_you_change_drives_the_row():
     assert abs(got["saleable"]["gns"] - 76923.1) < 0.1, got["saleable"]
     assert abs(got["saleable"]["total_area"] - 69230.8) < 0.1, got["saleable"]
     # Памяти о правленых ячейках нет — это запрет МЕСТА, и он остаётся строкой.
-    body = core.PAGE[core.PAGE.index("function tepCellChanged"):]
-    body = body[:body.index("let storageInsideParking")]
+    body = page_blocks.function("tepCellChanged")
     assert "tepTouched" not in body, "памяти о правленых ячейках больше нет"

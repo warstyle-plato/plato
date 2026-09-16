@@ -34,7 +34,11 @@ sys.path.insert(0, str(ROOT))
 import main_legacy as core  # noqa: E402
 
 
-UNDERGROUND_SQM = 38763.0
+# Подземная площадь умолчания — не литерал: с 0.23.x строка ТЭП считается
+# движком (места × норматив класса), и зашитое число устарело молча, а тест
+# показал бы это как поломку отчёта. Копию негде обновлять, потому что копии
+# нет — берём у движка.
+UNDERGROUND_SQM = float(core.TEP_DEFAULT["underground_parking"]["gns"])
 
 
 @pytest.fixture(scope="module")
