@@ -203,9 +203,25 @@ def test_the_vri_group_keeps_its_own_tab_open():
     assert vri and vri[0]["open"] is True
 
 
-def test_every_group_is_still_rendered():
-    """Свернули, а не спрятали: поля на месте, их просто не видно сразу."""
-    assert len(render({})) == len(core.FIELD_GROUPS)
+def test_every_group_with_its_own_fields_is_rendered():
+    """Свернули, а не спрятали: поля на месте, их просто не видно сразу.
+
+    Исключение одно, и оно названо: группа, у которой ВСЕ поля уехали в
+    «Настройки класса», не рисуется вовсе — пустая складка читается как
+    продукт, у которого вводных нет, а не как поле, переехавшее в соседнее
+    окно. Считается это составом группы, а не её именем: следующая такая
+    исчезнет тем же правилом, а перечисление имён отстало бы на ней.
+    """
+    drawn = {item["name"] for item in render({})}
+    expected = {name for name, fields in core.FIELD_GROUPS
+                if any(one[0] not in core.CLASS_ONLY_INPUTS for one in fields)}
+    hidden = {name for name, fields in core.FIELD_GROUPS
+              if fields and not any(one[0] not in core.CLASS_ONLY_INPUTS
+                                    for one in fields)}
+    # Предохранитель: без такой группы утверждение про исключение не проверено.
+    assert hidden, "ни одной группы, целиком уехавшей в класс"
+    assert drawn == expected, {"не нарисованы": sorted(expected - drawn),
+                               "лишние": sorted(drawn - expected)}
 
 
 # --- заголовок говорит, что внутри ----------------------------------------------
