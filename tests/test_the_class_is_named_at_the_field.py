@@ -186,6 +186,9 @@ def test_the_field_shows_the_figure_the_settings_produce(page_state):
     # его больше не двигала бы, и поле замерло бы, как замирал паркинг.
     assert page_state["kept"] == 0, page_state["kept"]
     assert "методикой класса" in page_state["house_note"], page_state["house_note"]
+    # Само число подпись не повторяет: оно стоит в поле строкой выше.
+    shown_text = str(page_state["shown"]).replace(".", ",")
+    assert shown_text not in page_state["house_note"], page_state["house_note"]
 
 
 def test_a_hand_written_rate_wins_and_an_empty_field_gives_it_back(page_state):
@@ -196,14 +199,24 @@ def test_a_hand_written_rate_wins_and_an_empty_field_gives_it_back(page_state):
     assert abs(back - round(page_state["computed"], 2)) < 0.005, page_state
 
 
-def test_the_hint_calls_the_figure_what_it_is():
-    """Подсказка называет показатель счётным и говорит, где правят методику."""
+def test_the_hint_names_the_base_and_the_note_names_the_state(page_state):
+    """Подсказка говорит БАЗУ, подпись — чьё это число: каждое сказано один раз.
+
+    Прежде обе говорили и то и другое — 333 знака подсказки и 218 подписи, — и
+    одно и то же дважды подряд перестают читать оба раза («текста
+    пояснительного слишком много», владелец, 16.09.2026).
+    """
     hints = {field[0]: field[2] for group in core.FIELD_GROUPS for field in group[1]}
     hint = hints["landscaping_gns_th_per_sqm"]
-    assert "счётный показатель" in hint, hint
-    assert "Настройках класса" in hint, hint
+    assert "наземной части дома" in hint, hint
+    # Инструкции в подсказке больше нет — она у подписи, у которой есть состояние.
+    assert "перебьёт" not in hint, hint
+    assert "очистите" not in hint.lower(), hint
     # Прежняя подсказка обещала пустое поле — а в поле теперь стоит число.
     assert "Пусто — считается методикой" not in hint, hint
+    note = page_state["house_note"]
+    assert "перебьёт" in note and "Настройках класса" in note, note
+    assert "наземной части дома" not in note, note
 
 
 def test_the_figure_follows_the_class_and_does_not_freeze(page_state):

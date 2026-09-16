@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import sys
 from pathlib import Path
 
@@ -77,17 +78,27 @@ def test_the_house_ratio_travels_with_its_base() -> None:
         money / summary["landscaping_house_gns_sqm"] / 1000, rel=1e-9)
 
 
+
+def _house_hint() -> str:
+    """Подсказка поля ставки на метр дома — оттуда, где она объявлена."""
+    for group in core.FIELD_GROUPS:
+        for field in group[1]:
+            if field[0] == "landscaping_gns_th_per_sqm":
+                return str(field[2])
+    raise AssertionError("поля ставки на метр дома нет в FIELD_GROUPS")
+
 def test_the_note_names_all_three_states() -> None:
     """У подписи нет состояния, в котором она молчит.
 
     Пустое место под полем читается как ответ, а ответов здесь три: расчёта
     ещё нет, считает методика класса, ставка задана руками.
     """
-    prelude = """
-const cells={};
-global.document={getElementById:id=>cells[id]||null};
+    prelude = f"""
+const FIELD_HINT={json.dumps(_house_hint())};
+const cells={{}};
+global.document={{getElementById:id=>cells[id]||null}};
 const num=v=>String(v);
-let inputs={};
+let inputs={{}};
 let lastResult=null;
 """
     tail = """
@@ -98,6 +109,7 @@ inputs={};lastResult={summary:{landscaping_house_rate_th:2.85,
 out.method=landscapingHouseRateNote();
 inputs={landscaping_gns_th_per_sqm:4};
 out.hand=landscapingHouseRateNote();
+out.hint=FIELD_HINT;
 console.log(JSON.stringify(out));
 """
     said = page_blocks.run_json(prelude, tail)
@@ -105,10 +117,19 @@ console.log(JSON.stringify(out));
     assert "Пересчитать модель" in said["cold"], said["cold"]
     # Утверждение — «сказано, откуда число и как его перебить», а не «стоит
     # такое-то слово»: проверка на оборот речи упала бы на правке текста.
-    assert "методикой класса" in said["method"] and "2,85" in said["method"], said["method"]
+    assert "методикой класса" in said["method"], said["method"]
     assert "140" in said["method"], "база не названа — «на метр» без неё другой показатель"
-    assert "руками" in said["hand"] and "Настройках класса" not in said["hand"], said["hand"]
+    # Само ЧИСЛО подпись больше не повторяет: оно стоит в поле строкой выше, и
+    # сказанное дважды подряд перестают читать оба раза («текста
+    # пояснительного слишком много», владелец, 16.09.2026). А в состоянии
+    # «руками» число методики — не повтор, а единственное место, где его видно:
+    # в поле лежит вписанное человеком.
+    assert "2,85" not in said["method"], said["method"]
+    assert "руками" in said["hand"] and "2,85" in said["hand"], said["hand"]
+    assert "Настройках класса" not in said["hand"], said["hand"]
     assert said["hand"] != said["method"]
+    # База названа ОДИН раз и рядом — в подсказке поля, над самим числом.
+    assert "наземной части дома" in said["hint"], said["hint"]
 
 
 def test_in_a_real_browser_the_note_stands_under_its_own_field() -> None:
@@ -148,7 +169,7 @@ def test_in_a_real_browser_the_note_stands_under_its_own_field() -> None:
               if(!note||!field)return null;
               const n=note.getBoundingClientRect(), f=field.getBoundingClientRect();
               const box=note.parentElement;
-              return {text: note.textContent,
+              return {text: note.textContent, box: (box||{}).textContent||'',
                       below: n.top >= f.bottom - 1,
                       ownBox: box === field.parentElement,
                       inputs: box ? box.querySelectorAll('input,select,textarea').length : -1};
@@ -162,4 +183,8 @@ def test_in_a_real_browser_the_note_stands_under_its_own_field() -> None:
     assert seen["inputs"] == 1, (
         "в блоке подписи не одно поле — значит она говорит сразу о нескольких",
         seen["inputs"])
-    assert "наземной части дома" in seen["text"], seen["text"]
+    # База названа в БЛОКЕ поля — над числом, в подсказке, — а не в подписи
+    # вторым разом: «на метр» без базы читается как другой показатель, а две
+    # базы подряд читаются как две разные.
+    assert "наземной части дома" in seen["box"], seen["box"]
+    assert seen["box"].count("наземной части дома") == 1, seen["box"]
