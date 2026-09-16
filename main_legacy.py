@@ -641,12 +641,14 @@ def landscaping_area_per_person(inputs: dict[str, Any],
     if given > 0:
         if population <= 0:
             return 0.0, "площадь задана, а квартир в проекте нет — на человека не делится"
+        shown_given = f"{given:g}".replace(".", ",")
         return given / population, (
-            f"задана площадь {given:g} м² на {population} чел. ({basis})")
+            f"задана площадь {shown_given} м² на {population} чел. ({basis})")
     per_person = float(inputs.get("landscaping_area_per_person_sqm") or 0.0)
     if per_person <= 0:
         return 0.0, "норматив на человека не задан — площадь не посчитана"
-    return per_person, f"норматив {per_person:g} м² на человека ({basis})"
+    shown_norm = f"{per_person:g}".replace(".", ",")
+    return per_person, f"норматив {shown_norm} м² на человека ({basis})"
 
 
 def landscaping_cost(inputs: dict[str, Any], tep: dict[str, Any],
@@ -690,7 +692,8 @@ def landscaping_area(inputs: dict[str, Any], tep: dict[str, Any]) -> tuple[float
     # норматив сказала бы о ней неправду.
     if float(inputs.get("landscaping_area_sqm") or 0.0) > 0:
         return per_person * population, basis
-    return per_person * population, f"{per_person:g} м²/чел. × {population} чел."
+    shown = f"{per_person:g}".replace(".", ",")
+    return per_person * population, f"{shown} м²/чел. × {population} чел."
 
 
 def saleable_after_transfer(useful_sqm: Any, transfer_sqm: Any) -> tuple[float, float]:

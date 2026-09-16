@@ -474,3 +474,25 @@ def test_the_page_skips_the_summary_it_may_not_paste():
     assert "landscaping_th_per_sqm" not in (answer["overrides"].get("comfort") or {}), answer
     assert answer["overrides"]["comfort"]["main_above_th_per_sqm"] == 120, answer
     assert "landscaping_th_per_sqm" in answer["note"] and "двор" in answer["note"], answer
+
+
+def test_a_fraction_is_written_with_a_russian_comma():
+    """Дробное основание пишется запятой, а точка после «чел.» остаётся точкой.
+
+    На экране владельца (16.09.2026) стояло «7.109 м² × 422 чел.» — чужая точка
+    среди запятых читается как опечатка. Первая же сплошная замена по строке
+    съела точку у сокращения — «на 2425 чел,», — поэтому запятая ставится В
+    ЧИСЛЕ, и проверка держит обе половины сразу.
+    """
+    inputs = dict(core.DEFAULT_INPUTS)
+    inputs["landscaping_area_per_person_sqm"] = 7.109
+    _, basis = core.landscaping_area(inputs, core.TEP_DEFAULT)
+    assert "7,109" in basis, basis
+    assert "7.109" not in basis, basis
+    assert "чел." in basis, basis
+
+    given = dict(core.DEFAULT_INPUTS)
+    given["landscaping_area_sqm"] = 3000.5
+    _, basis_given = core.landscaping_area(given, core.TEP_DEFAULT)
+    assert "3000,5" in basis_given, basis_given
+    assert "чел. (" in basis_given, basis_given
