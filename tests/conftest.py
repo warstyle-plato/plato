@@ -116,3 +116,50 @@ def isolated_platon_state(tmp_path, monkeypatch):
                  "_PLATON_PENDING", "_PLATON_LAST_URL"):
         monkeypatch.setattr(_wrapper, name, {})
     yield
+
+
+def live_threads() -> list[str]:
+    """Недемонические нити, кроме главной. Демоны процесс не держат."""
+    import threading
+
+    return sorted(one.name for one in threading.enumerate()
+                  if one is not threading.main_thread() and not one.daemon
+                  and one.is_alive())
+
+
+def hanging_report(names: list[str]) -> str:
+    """Что сказать про оставшиеся нити. Пусто — значит говорить нечего.
+
+    Молчание здесь ответ: пока непрозрачных нитей нет, в конце доли не
+    печатается ничего, иначе там стояла бы приписка, которую перестают читать.
+    """
+    if not names:
+        return ""
+    return (f"После итога живы недемонические нити ({len(names)}): "
+            + ", ".join(names)
+            + "\nОни держат процесс: pytest ждёт их, а в логе это выглядит как "
+              "медленная доля. Стеки ниже — чтобы не гадать, чего мы ждём.")
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Кто остался жив после итога — говорится вслух, а не молча ждётся.
+
+    Пять прогонов подряд Доля 3 кончала работу через десять–тринадцать минут
+    ПОСЛЕ того, как pytest напечатал итог (замер 15.09.2026: итог 11:08, конец
+    24:44, у остальных долей разрыв 34–46 секунд). Снаружи это неотличимо от
+    медленной доли, а цена — треть потолка, который считается от худшей доли.
+
+    Замер в песочнице причину НЕ показал: и подозреваемый файл в одиночку
+    (12,54 с при реальных 13,76), и вся третья доля целиком (592,54 с при
+    реальных 594,76) выходят с разрывом в секунду-две. Значит ждать надо там,
+    где это происходит, — и единственный способ узнать, чего мы ждём, назвать
+    оставшиеся нити прямо в логе доли.
+    """
+    said = hanging_report(live_threads())
+    if not said:
+        return
+    import faulthandler
+    import sys
+
+    print("\n" + said)
+    faulthandler.dump_traceback(file=sys.stdout, all_threads=True)
