@@ -23,8 +23,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import main as wrapper  # noqa: E402
+import page_blocks  # noqa: E402
 
 core = wrapper.core
 
@@ -531,8 +533,7 @@ def test_editing_the_tep_recalculates_by_itself():
     """
     page = core.PAGE
     assert "function scheduleTepAutoRecalc()" in page
-    body = page[page.index("function tepCellChanged("):]
-    body = body[:body.index("\n// Сколько кладовых")]
+    body = page_blocks.function("tepCellChanged", page)
     assert "scheduleTepAutoRecalc()" in body, (
         "правка ячейки ТЭП обязана заводить пересчёт — иначе он снова только кнопка")
     refill = page[page.index("function refillTepRow("):]

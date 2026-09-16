@@ -140,6 +140,11 @@ def tep_cell_stand() -> str:
         function("tepRatio"),
         function("tepFillByRatios"),
         function("tepApplyTransfer"),
+        # Пара «штуки ↔ метры» кладовых: правка ячейки зовёт её, и без
+        # неё стенд падал бы на неопределённом имени — то есть про себя,
+        # а не про то, что проверяет.
+        function("storageAreaPerUnit"),
+        function("syncStoragePair"),
         function("tepCellChanged"),
         # Пересборка строки по долям — тот же путь, что правка ячейки:
         # «наши» и правка доли обязаны считать переданное так же.
@@ -288,9 +293,20 @@ def run(prelude: str, tail: str, limit: int = 60,
         if done.returncode == 0:
             return done.stdout, taken
         error = done.stderr
-        if "ReferenceError" not in error or " is not defined" not in error:
+        # У «имени нет» две формы, и вторую стенд не узнавал. `const`,
+        # объявленный НИЖЕ своего читателя, node зовёт не «is not defined», а
+        # «Cannot access 'X' before initialization»: имя в скрипте есть, просто
+        # стоит не там. Отказ по такой форме выходил про стенд — «не
+        # разрешается» с чужой трассировкой, — а лечится она тем же переносом
+        # вперёд, что и первая (PROJECT_PARKING_KEY, читаемый картой полей
+        # паркинга, 14.09.2026).
+        name = ""
+        if "ReferenceError" in error and " is not defined" in error:
+            name = error.split("ReferenceError: ")[1].split(" is not defined")[0].strip()
+        elif "Cannot access '" in error and "' before initialization" in error:
+            name = error.split("Cannot access '")[1].split("'")[0].strip()
+        if not name:
             raise AssertionError(error[-2500:])
-        name = error.split("ReferenceError: ")[1].split(" is not defined")[0].strip()
         if name in taken:
             # Имя уже добрано, а node его всё равно не видит — значит порядок:
             # кусок стоит ПОСЛЕ того, кто его читает. Один перенос вперёд, и
@@ -354,6 +370,25 @@ def page_const(name: str, page: str | None = None) -> str:
     if not line.endswith(";"):
         raise AssertionError(f"объявление {name} не в одну строку — стенд возьмёт половину")
     return line
+
+
+def object_roster() -> str:
+    """Реестр объектов и всё, что из него на странице считается.
+
+    Стенды несли ЧЕТЫРЕ копии состава литералом (`['offices','retail',
+    'sports']`) — вторая жизнь у списка, который объявлен один раз в движке.
+    Копия не расходится, пока объектов четыре, и заговорит ровно в тот день,
+    ради которого реестр и заводился: пятый объект в стенде выглядит
+    несуществующим, а на странице он есть.
+
+    Берётся со СОБРАННОЙ страницы: `STANDALONE_OBJECTS` приезжает туда
+    подстановкой, а `discreteDefaults` и `OBJECT_PARKING_PREFIXES` из него
+    считаются — порознь они в стенде падают на неопределённом имени, и
+    падение выходит про стенд, а не про то, что он проверяет.
+    """
+    return "\n".join((page_const("STANDALONE_OBJECTS"),
+                       function("discreteDefaults"),
+                       page_const("OBJECT_PARKING_PREFIXES")))
 
 
 def auctions_function(*names: str) -> str:
