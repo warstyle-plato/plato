@@ -145,7 +145,7 @@ def test_the_limit_and_the_reader_version_are_bumped_together():
     падать при правке ЛЮБОЙ половины, чтобы вторая была решена, а не забыта.
     Поднимаете предел — поднимите версию и поправьте эту пару.
     """
-    assert (egrn_archive.REASON_LIMIT, egrn_archive.READER_VERSION) == (400, 5), (
+    assert (egrn_archive.REASON_LIMIT, egrn_archive.READER_VERSION) == (400, 6), (
         "предел отказа и версия читателя связаны: изменив одно, решите про другое")
 
 
