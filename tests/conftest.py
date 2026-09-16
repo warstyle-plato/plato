@@ -127,18 +127,66 @@ def live_threads() -> list[str]:
                   and one.is_alive())
 
 
-def hanging_report(names: list[str]) -> str:
-    """Что сказать про оставшиеся нити. Пусто — значит говорить нечего.
+def live_children() -> list[str]:
+    """Живые дочерние процессы — «pid команда». Без зависимостей, через /proc.
 
-    Молчание здесь ответ: пока непрозрачных нитей нет, в конце доли не
-    печатается ничего, иначе там стояла бы приписка, которую перестают читать.
+    Нитей сторож не нашёл (прогон 16.09.2026 промолчал во всех четырёх долях),
+    а доля всё равно молчала одиннадцать с половиной минут после итога. Значит
+    держит не нить: незакрытый ребёнок наследует стандартный вывод шага, раннер
+    ждёт закрытия трубы и в самом конце сам пишет «Cleaning up orphan
+    processes». Нить такого не покажет — у неё нет своего процесса.
     """
-    if not names:
+    import os
+
+    mine = os.getpid()
+    out: list[str] = []
+    try:
+        names = sorted(int(one) for one in os.listdir("/proc") if one.isdigit())
+    except OSError:
+        return out
+    for pid in names:
+        if pid == mine:
+            continue
+        try:
+            with open(f"/proc/{pid}/stat", encoding="utf-8", errors="replace") as fh:
+                stat = fh.read()
+            # Имя процесса в скобках и может содержать сами скобки и пробелы,
+            # поэтому родителя берут ПОСЛЕ закрывающей скобки, а не по индексу
+            # в разбитой пробелами строке.
+            tail = stat[stat.rindex(")") + 1:].split()
+            if int(tail[1]) != mine:
+                continue
+            with open(f"/proc/{pid}/cmdline", "rb") as fh:
+                cmd = fh.read().replace(b"\x00", b" ").decode("utf-8", "replace")
+        except (OSError, ValueError, IndexError):
+            continue
+        out.append(f"{pid} {(cmd.strip() or '?')[:120]}")
+    return out
+
+
+def hanging_report(names: list[str], children: list[str] | None = None) -> str:
+    """Что сказать про оставшееся живым. Пусто — значит говорить нечего.
+
+    Молчание здесь ответ: пока непрозрачных нитей и детей нет, в конце доли не
+    печатается ничего, иначе там стояла бы приписка, которую перестают читать.
+
+    Нити и дети названы ПОРОЗНЬ: «нить не закрыли» и «ребёнок держит трубу
+    шага» — разные поломки и чинятся по-разному, а одно число их бы скрыло.
+    """
+    kids = list(children or [])
+    if not names and not kids:
         return ""
-    return (f"После итога живы недемонические нити ({len(names)}): "
-            + ", ".join(names)
-            + "\nОни держат процесс: pytest ждёт их, а в логе это выглядит как "
-              "медленная доля. Стеки ниже — чтобы не гадать, чего мы ждём.")
+    said = []
+    if names:
+        said.append(f"После итога живы недемонические нити ({len(names)}): "
+                    + ", ".join(names))
+    if kids:
+        said.append(f"После итога живы дочерние процессы ({len(kids)}): "
+                    + "; ".join(kids))
+    said.append("Это держит шаг: раннер ждёт закрытия его вывода, а в логе "
+                "выглядит как медленная доля. Стеки ниже — чтобы не гадать, "
+                "чего мы ждём.")
+    return "\n".join(said)
 
 
 def pytest_sessionfinish(session, exitstatus):
@@ -155,7 +203,7 @@ def pytest_sessionfinish(session, exitstatus):
     где это происходит, — и единственный способ узнать, чего мы ждём, назвать
     оставшиеся нити прямо в логе доли.
     """
-    said = hanging_report(live_threads())
+    said = hanging_report(live_threads(), live_children())
     if not said:
         return
     import faulthandler

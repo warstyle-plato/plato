@@ -26,7 +26,8 @@ from tests import conftest  # noqa: E402
 
 
 def test_a_clean_finish_says_nothing():
-    """Нитей нет — не печатается ничего: приписку в каждой доле перестают читать."""
+    """Ничего живого — не печатается ничего: приписку в доле перестают читать."""
+    assert conftest.hanging_report([], []) == ""
     assert conftest.hanging_report([]) == ""
 
 
@@ -69,3 +70,42 @@ def test_a_daemon_thread_is_not_named():
     finally:
         stop.set()
         thread.join(timeout=5)
+
+
+def test_a_child_is_named_apart_from_a_thread():
+    """Нить и ребёнок названы порознь: это разные поломки.
+
+    Сторож нитей на прогоне 16.09.2026 промолчал во всех четырёх долях, а Доля
+    3 всё равно молчала одиннадцать с половиной минут после итога (итог
+    00:32:55, следующая строка лога 00:44:37 «Post job cleanup»). Значит держит
+    не нить: незакрытый ребёнок наследует вывод шага, и раннер ждёт закрытия
+    трубы. Одно число их бы скрыло, а чинятся они по-разному.
+    """
+    said = conftest.hanging_report(["нить-а"], ["999 chromium --headless"])
+
+    assert "недемонические нити (1)" in said, said
+    assert "дочерние процессы (1)" in said, said
+    assert said.index("нити (1)") < said.index("процессы (1)"), said
+
+
+def test_the_child_counter_sees_a_real_subprocess():
+    """Счёт мерит НАСТОЯЩИХ детей, а не пересказ.
+
+    Предохранитель: до запуска ребёнка его в ответе нет — иначе проверка зелена
+    при любом счёте.
+    """
+    import subprocess
+    import sys as _sys
+
+    before = conftest.live_children()
+    assert not any("уснувший-ребёнок" in one for one in before), before
+
+    child = subprocess.Popen(
+        [_sys.executable, "-c", "import sys, time; sys.stderr.write('уснувший-ребёнок'); time.sleep(30)"])
+    try:
+        found = conftest.live_children()
+        assert any(one.startswith(f"{child.pid} ") for one in found), (child.pid, found)
+    finally:
+        child.kill()
+        child.wait(timeout=10)
+    assert not any(one.startswith(f"{child.pid} ") for one in conftest.live_children())
