@@ -162,10 +162,10 @@ def test_the_fields_name_their_base():
     # подпись называет свою базу, и двух полей под одной базой нет.
     assert {"landscaping_th_per_sqm", "landscaping_area_sqm",
             "landscaping_area_per_person_sqm"} <= set(hints)
-    bases = {"landscaping_th_per_sqm": "благоустроенной территории",
-             "landscaping_area_sqm": "нормативу класса",
+    bases = {"landscaping_th_per_sqm": "двора",
+             "landscaping_area_sqm": "методика класса",
              "landscaping_area_per_person_sqm": "м²/чел.",
-             "landscaping_gns_th_per_sqm": "наземной части"}
+             "landscaping_gns_th_per_sqm": "ГНС"}
     assert set(hints) <= set(bases), (
         "у поля благоустройства нет названной базы: " + str(set(hints) - set(bases)))
     for field, base in bases.items():
@@ -175,15 +175,14 @@ def test_the_fields_name_their_base():
     # такое-то слово»: заглавные буквы переехали с «БЛАГОУСТРОЕННОЙ» на «ДВОР»,
     # когда первая часть подсказки стала единицей в таблице классов, — и
     # проверка на форму записи упала бы на верном поведении.
-    assert "благоустроенной территории" in hints["landscaping_th_per_sqm"].lower()
+    assert "двора" in hints["landscaping_th_per_sqm"].lower()
     # Запрещается МЕСТО, а не слово: прежняя подпись ОБЪЯВЛЯЛА базой
     # строительный объём, а нынешняя называет его, чтобы сказать «не он».
     assert "м² строительного объёма" not in hints["landscaping_th_per_sqm"]
     # Единица — первая часть подсказки, и она обязана быть единицей, а не
     # объяснением: её показывает таблица классов рядом с числом.
     assert core.class_field_unit("landscaping_area_per_person_sqm") == "м²/чел."
-    assert core.class_field_unit("landscaping_th_per_sqm") == (
-        "тыс. ₽/м² благоустроенной территории")
+    assert core.class_field_unit("landscaping_th_per_sqm") == "тыс. ₽/м² двора"
 
 
 def test_the_workbook_reads_the_same_base():
