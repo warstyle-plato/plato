@@ -46,7 +46,7 @@ jobs:
         env:
           DEVELOPAID_DESKTOP_DATA: ${{ runner.temp }}/developaid-mac-preview
         run: |
-          lipo -verify_arch arm64 dist/DevelopAid.app/Contents/MacOS/DevelopAid
+          lipo dist/DevelopAid.app/Contents/MacOS/DevelopAid -verify_arch arm64
           codesign --verify --deep --strict dist/DevelopAid.app
           dist/DevelopAid.app/Contents/MacOS/DevelopAid --smoke
           python -c 'import json,os,pathlib; p=pathlib.Path(os.environ["DEVELOPAID_DESKTOP_DATA"])/"smoke.json"; s=json.loads(p.read_text()); assert s["ok"] and set(s["exports"]) == {"pdf", "xlsx"}'
