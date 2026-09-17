@@ -1,0 +1,66 @@
+name: DevelopAid desktop builds
+
+on:
+  pull_request:
+    paths:
+      - 'desktop/**'
+      - 'desktop.spec'
+      - 'desktop_entry.py'
+      - 'desktop_reference_pack.py'
+      - 'requirements-desktop.txt'
+      - '.github/workflows/desktop-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: DevelopAid-Windows
+          - os: macos-14
+            artifact: DevelopAid-macOS-AppleSilicon
+          - os: macos-15-intel
+            artifact: DevelopAid-macOS-Intel
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-desktop.txt
+      - name: Install
+        run: python -m pip install -r requirements-desktop.txt
+      - name: Build application
+        run: python -m PyInstaller --noconfirm --clean desktop.spec
+      - name: Smoke-test packaged engine, PDF and Excel
+        shell: bash
+        env:
+          DEVELOPAID_DESKTOP_DATA: ${{ runner.temp }}/developaid-smoke
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            dist/DevelopAid/DevelopAid.exe --smoke
+          else
+            dist/DevelopAid.app/Contents/MacOS/DevelopAid --smoke
+          fi
+          python -c 'import json,os,pathlib; p=pathlib.Path(os.environ["DEVELOPAID_DESKTOP_DATA"])/"smoke.json"; assert json.loads(p.read_text())["ok"]'
+      - name: Archive macOS bundle preserving permissions
+        if: runner.os == 'macOS'
+        run: ditto -c -k --sequesterRsrc --keepParent dist/DevelopAid.app dist/DevelopAid-macOS.zip
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'macOS'
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/DevelopAid-macOS.zip
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Windows'
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/DevelopAid/

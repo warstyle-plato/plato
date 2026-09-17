@@ -44,3 +44,11 @@ scratchpad/
 # сам склад и объявляет.
 data/market/egrn/
 data/market/lot_documents/
+
+# Desktop packaging output and local user databases are never source assets.
+/build/
+/dist/
+*.sqlite3
+*.sqlite3-journal
+*.sqlite3-wal
+*.sqlite3-shm

@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="desktop-token" content="__DESKTOP_TOKEN__">
+  <title>DevelopAid · Рабочее пространство</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="/">DevelopAid<span class="edition">DESKTOP</span></a>
+    <div class="workspace-label">РАБОЧЕЕ ПРОСТРАНСТВО</div>
+    <button id="newProject" class="new-project">+ Новый проект</button>
+    <button id="importProject" class="import-project">Открыть файл проекта</button>
+    <input id="importFile" type="file" accept=".json,application/json" hidden>
+    <div class="side-caption">МОИ ПРОЕКТЫ <span id="projectCount">0</span></div>
+    <div id="projectList" class="project-list"></div>
+    <div class="side-bottom">
+      <span class="local-indicator">●</span> Расчёты на этом компьютере
+      <p id="engineVersion">Загрузка движка…</p>
+      <p>Проекты сохраняются локально.</p>
+    </div>
+  </aside>
+  <main>
+    <header class="topbar">
+      <div class="breadcrumb">Инвестиционная модель <span>/</span> Рабочий проект</div>
+      <span class="local-badge">Работает без интернета</span>
+    </header>
+    <div class="project-header">
+      <div class="project-title"><label for="projectName">ПРОЕКТ</label><input id="projectName" value="Новый проект" maxlength="200" aria-label="Название проекта"><p id="saveState">Новый проект · исходные значения движка</p></div>
+      <div class="actions"><button id="saveProject">Сохранить</button><button id="saveCopy">Копия</button><button id="calculate" class="primary">Рассчитать <span>⌘ ↵</span></button></div>
+    </div>
+    <div id="notice" class="notice" role="status" hidden></div>
+    <section class="metrics" aria-label="Ключевые показатели" id="metrics"></section>
+    <nav class="tabs" aria-label="Разделы модели">
+      <button data-stage="project" class="active"><span>01</span> Проект</button>
+      <button data-stage="economics"><span>02</span> Экономика</button>
+      <button data-stage="result"><span>03</span> Результат</button>
+      <span class="tabs-spacer"></span>
+      <button data-tab="references">База данных</button>
+      <button data-tab="history">История расчётов</button>
+    </nav>
+    <nav id="resultTabs" class="result-tabs" aria-label="Разделы результата" hidden><button data-tab="result">Отчёт</button><button data-tab="cashflow">Денежный поток</button></nav>
+    <section id="inputs" class="view">
+      <div class="input-layout">
+        <nav id="blockList" class="block-list" aria-label="Группы параметров"></nav>
+        <div class="panel input-panel"><div class="panel-heading"><div><span class="eyebrow">ИСХОДНЫЕ ДАННЫЕ</span><h2 id="blockTitle">Загрузка…</h2></div><input id="fieldSearch" type="search" placeholder="Найти параметр…" aria-label="Поиск параметра"></div>
+          <p id="blockHint" class="muted"></p><div id="fields"></div>
+          <div class="step-actions"><button id="previousStep">Назад</button><button id="nextStep">Далее →</button></div>
+        </div>
+      </div>
+    </section>
+    <section id="result" class="view" hidden>
+      <div class="panel"><div class="panel-heading"><div><span class="eyebrow">ЭКОНОМИКА ПРОЕКТА</span><h2>Результат расчёта</h2></div><div class="actions"><button data-export="pdf">PDF</button><button data-export="xlsx">Excel</button><button data-export="json">Файл проекта</button></div></div><div id="resultBody" class="empty">Заполните параметры и нажмите «Рассчитать».</div></div>
+    </section>
+    <section id="cashflow" class="view" hidden><div class="panel"><div class="panel-heading"><div><span class="eyebrow">ПОМЕСЯЧНАЯ МОДЕЛЬ</span><h2>Денежный поток</h2></div><span class="muted">Все суммы — млн ₽</span></div><div id="cashflowBody" class="table-scroll empty">Данные появятся после расчёта.</div></div></section>
+    <section id="references" class="view" hidden><div class="panel"><div class="panel-heading"><div><span class="eyebrow">ЛОКАЛЬНАЯ КОПИЯ</span><h2>База данных</h2></div><button id="updateReferences">Проверить обновления</button></div><p id="referenceStatus" class="muted"></p><p>Обновления сохраняются на компьютере. Параметры открытого проекта меняются только после применения выбранного профиля. Нормативная методика обновляется вместе с движком.</p><div class="profile-controls"><label>Профиль проекта <select id="classSelect"></select></label><button id="previewProfile">Посмотреть изменения</button></div><div id="profileDiff"></div><h3>Источники нормативов</h3><div id="normatives" class="table-scroll"></div></div></section>
+    <section id="history" class="view" hidden><div class="panel"><div class="panel-heading"><div><span class="eyebrow">СОХРАНЁННЫЕ ВЕРСИИ</span><h2>История проекта</h2></div></div><p class="muted">Открытие версии показывает сохранённые цифры. Новый расчёт выполняется только по кнопке «Рассчитать».</p><div id="historyBody" class="empty">Сначала сохраните проект.</div></div></section>
+    <footer><span id="calculationMeta">Расчёт ещё не выполнен</span><span>DevelopAid · Инструмент девелопера</span></footer>
+  </main>
+  <dialog id="confirmDialog"><h2 id="dialogTitle"></h2><p id="dialogText"></p><div class="actions"><button id="dialogCancel">Отмена</button><button id="dialogAccept" class="primary">Продолжить</button></div></dialog>
+</body>
+</html>

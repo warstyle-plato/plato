@@ -15,12 +15,14 @@ from market_search.ui_v6 import install as install_market_ui, install_price_hint
 from mpt_bot_menu import install as install_mpt_bot_menu
 from mpt_extension import install as install_mpt
 from normatives_registry import install as install_normatives
+from desktop_reference_pack import install as install_desktop_references
 from pdf_first_page_v2 import install as install_pdf_first_page
 from telegram_user_registry import install
 from tep_progress_ui import install as install_tep_progress_ui
 
 app = _base.app
 core = _base.core
+install_desktop_references(app, core)
 install_pdf_first_page(core)
 install_tep_progress_ui(core)
 install_mpt(_base)
