@@ -45,6 +45,7 @@ sys.path.insert(0, str(ROOT))
 
 import main_legacy as core  # noqa: E402
 
+import page_blocks  # noqa: E402
 from test_inputs_open_on_the_first_group import page_const, page_function, render  # noqa: E402
 
 
@@ -94,6 +95,10 @@ def _seeded(entered) -> list:
         page_const("INPUT_DEFAULT"),
         "function phaseWeightPreset(n){return Array.from({length:n},()=>100/n)}",
         "function frontLoadedPreset(n,k){return Array.from({length:n},()=>100/n)}",
+        # Умолчание очереди объекта считает реестр, и `makeDefaultPhasing`
+        # зовёт его: перечисление функций поимённо ломается от каждой новой,
+        # и ломается молча — падение выходит про стенд, а не про срок.
+        page_blocks.object_roster(),
         page_function("defaultConstructionMonths"),
         page_function("makeDefaultPhasing"),
         f"const inputs=Object.assign(structuredClone(INPUT_DEFAULT),{json.dumps(inputs)});",

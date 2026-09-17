@@ -24,6 +24,7 @@ from __future__ import annotations
 import re
 from typing import Any, Iterable
 
+from auction_search import krt_pipeline
 from auction_search.parsing import deadline_iso
 from market_search.krt_decisions import same_place
 
@@ -146,6 +147,11 @@ def match(lots: Iterable[dict[str, Any]], sites: Iterable[dict[str, Any]]) -> di
             "auction_date": lot.get("auction_date"),
             "source": str((lot.get("source") or {}).get("catalogue")
                           or (lot.get("source") or {}).get("name") or ""),
+            # Чей это склад скачанного и разобранного. Ключ объявлен один раз —
+            # в пайплайне (`store_key`), — и хранится рядом со связкой: без
+            # него свод территории площадки не знает, в каком складе лежат её
+            # выписки, и «выписок нет» читалось бы как ответ документов.
+            "store_key": krt_pipeline.store_key(dict(lot)),
         }
         if hit:
             by_site.setdefault(hit["slug"], []).append(summary)

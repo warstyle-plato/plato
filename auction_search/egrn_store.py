@@ -1,0 +1,271 @@
+"""Разобранные выписки лежат на ядре, а не в браузере. Файла архива здесь нет.
+
+Зип с выписками приходит руками: у Росэлторга загрузчик получает 503 через раз,
+и присланный человеком архив бывает ЕДИНСТВЕННЫМ источником сведений об
+объектах площадки (владелец, 13.09.2026: «надо сделать там возможность
+загружать зип с ЕГРН и распознавать его»).
+
+Хранится РАЗОБРАННОЕ, а не сам файл — то же правило, что у склада кабинета: на
+присланном архиве это 21,2 МБ против 60 КБ записей, а диск у нас уже кончался
+молча.
+
+Три правила, каждое выведено на уже оплаченной поломке.
+
+**Второй архив ДОПОЛНЯЕТ, а не заменяет.** Выписки приходят порознь — «для
+здания» отдельным зипом, «для участка» отдельным, — и запись файла целиком
+теряет то, что принесли прежним. Записи сводятся по кадастровому номеру.
+
+**Машинная выписка сильнее печатной формы.** У одного объекта бывают оба
+документа, и выбор между ними делает не порядок загрузки: КУВИ отвечает на то,
+чего печатная форма не раскрывает вовсе (имя правообладателя). Вытесненная
+запись не исчезает молча — она названа числом.
+
+**У записи есть происхождение и дата.** Чем прочитано, из какого файла и когда
+— часть ответа: «правообладатель не назван» из печатной формы и из машинной
+выписки значат разное.
+"""
+
+from __future__ import annotations
+
+import datetime
+import json
+import re
+import time
+from pathlib import Path
+from typing import Any
+
+from auction_search import egrn_archive
+
+# Каталог склада объявлен один раз: его же спрашивает у git проверка, что склад
+# не пишется в рабочее дерево репозитория. Строки в `.gitignore` не было, и
+# набор тестов писал в НАСТОЯЩИЙ каталог данных — ровно так три файла с тестовым
+# слагом уехали коммитом 83c4139.
+DIRNAME = "egrn"
+
+_SLUG = re.compile(r"[^a-zа-яё0-9]+", re.I)
+# Порядок предпочтения источника записи: машинная выписка сильнее печатной формы.
+_RANK = {"xml": 2, "print_form": 1}
+
+
+def slug(key: str) -> str:
+    """Имя файла склада. Пустой ключ — тоже ключ: у ручной загрузки его нет."""
+    out = _SLUG.sub("-", str(key or "").strip().lower()).strip("-")
+    return out or "без-имени"
+
+
+def _path(data_dir: Path, key: str) -> Path:
+    return Path(data_dir) / DIRNAME / f"{slug(key)}.json"
+
+
+def load(data_dir: Path, key: str) -> dict[str, Any]:
+    """Что лежит на складе. Нечитаемый файл — пустой склад с названной причиной."""
+    place = _path(data_dir, key)
+    if not place.exists():
+        return {"key": key, "records": [], "uploads": []}
+    try:
+        got = json.loads(place.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        return {"key": key, "records": [], "uploads": [],
+                "broken": f"склад не прочитан: {type(exc).__name__}: {exc}"}
+    got.setdefault("key", key)
+    got.setdefault("records", [])
+    got.setdefault("uploads", [])
+    return got
+
+
+def save(data_dir: Path, key: str, parsed: dict[str, Any],
+         filename: str) -> dict[str, Any]:
+    """Разбор архива → склад. Прежние записи остаются, если их не заменили."""
+    kept = load(data_dir, key)
+    when = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+    by_number: dict[str, dict[str, Any]] = {}
+    for record in kept.get("records") or []:
+        by_number[str(record.get("cadastral_number") or "")] = record
+    added = replaced = superseded = 0
+    for record in parsed.get("records") or []:
+        number = str(record.get("cadastral_number") or "")
+        fresh = {**record, "uploaded_at": when, "uploaded_from": filename}
+        old = by_number.get(number)
+        if old is None:
+            by_number[number] = fresh
+            added += 1
+            continue
+        if _RANK.get(str(record.get("source") or ""), 0) < _RANK.get(
+                str(old.get("source") or ""), 0):
+            # Печатная форма не вытесняет машинную выписку: она отвечает не на
+            # все её вопросы. Вытесненное названо числом, а не выброшено молча.
+            superseded += 1
+            continue
+        by_number[number] = fresh
+        replaced += 1
+    kept["records"] = sorted(by_number.values(),
+                             key=lambda row: str(row.get("cadastral_number") or ""))
+    kept["uploads"] = ([{
+        "file": filename, "at": when,
+        "entries": int(parsed.get("entries") or 0),
+        "read": int(parsed.get("read") or 0),
+        "unread": list(parsed.get("unread") or []),
+        "companions": list(parsed.get("companions") or []),
+        "added": added, "replaced": replaced, "superseded": superseded,
+    }] + list(kept.get("uploads") or []))[:20]
+    place = _path(data_dir, key)
+    place.parent.mkdir(parents=True, exist_ok=True)
+    place.write_text(json.dumps(kept, ensure_ascii=False, indent=1), encoding="utf-8")
+    return kept
+
+
+def _version_of(item: dict[str, Any]) -> int:
+    """Какими правилами это разобрано. Без поля — первая версия, а не «не знаем».
+
+    Байты на складе есть всегда, перечитать их можно всегда — третьего ответа
+    тут не бывает.
+    """
+    try:
+        return int(item.get("reader_version"))
+    except (TypeError, ValueError):
+        return egrn_archive.READER_VERSION_BEFORE
+
+
+def _last_refusals(kept: dict[str, Any]) -> list[dict[str, Any]]:
+    """Отказы ПОСЛЕДНЕГО захода по каждому файлу.
+
+    Журнал заходов хранит до двадцати записей, и один и тот же файл лежит в нём
+    столько раз, сколько его разбирали: сложенные подряд, отказы дают число
+    втрое больше настоящего — на этом я уже ошибся в замере 15.09.2026 (216
+    вместо 58). Считается последний ответ по файлу, а не все ответы.
+    """
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for upload in kept.get("uploads") or []:
+        if not isinstance(upload, dict):
+            continue
+        name = str(upload.get("file") or "")
+        if name in seen:
+            continue
+        seen.add(name)
+        out.extend(item for item in (upload.get("unread") or [])
+                   if isinstance(item, dict))
+    return out
+
+
+def stale(kept: dict[str, Any]) -> dict[str, Any]:
+    """Сколько разобранного на складе — ПРЕЖНИМИ правилами читателя.
+
+    Свод территории считается из разобранного, а не из байтов: значит починка
+    читателя до уже прочитанного лота сама не доезжает, и на экране наш пробел
+    выглядит молчанием документа. Ответ здесь — числа и разбивка по версиям, а
+    решает по ним тот, кто умеет перечитать (`krt_pipeline.reread_egrn`).
+
+    **Отказ считается наравне с записью.** Пока считались только записи, склад,
+    где отказали ВСЕ документы, не устаревал НИКОГДА: записей ноль, значит
+    отставать нечему, — и починка читателя до него не доезжала по построению.
+    Замер прода 15.09.2026: так стояли оба Прожектора (печатная форма) и
+    Шипиловский (архив RAR) — 154 позиции состава без собственника при живых
+    байтах на складе. Записи и отказы названы порознь: «прочитано прежним
+    читателем» и «отказано прежним читателем» — разные вещи, и одно число их бы
+    скрыло.
+    """
+    versions: dict[int, int] = {}
+    for record in kept.get("records") or []:
+        number = _version_of(record)
+        versions[number] = versions.get(number, 0) + 1
+    refused: dict[int, int] = {}
+    for item in _last_refusals(kept):
+        number = _version_of(item)
+        refused[number] = refused.get(number, 0) + 1
+    ours = egrn_archive.READER_VERSION
+    behind = sum(count for version, count in versions.items() if version < ours)
+    refusals_behind = sum(count for version, count in refused.items()
+                          if version < ours)
+    return {
+        "records": sum(versions.values()),
+        "records_behind": behind,
+        "refusals": sum(refused.values()),
+        "refusals_behind": refusals_behind,
+        "behind": behind + refusals_behind,
+        "reader_version": ours,
+        "versions": {str(version): count
+                     for version, count in sorted(versions.items())},
+        "refusal_versions": {str(version): count
+                             for version, count in sorted(refused.items())},
+    }
+
+
+def remember_reread(data_dir: Path, key: str, *, version: int, ok: bool,
+                    why: str = "", now: float | None = None) -> dict[str, Any]:
+    """Отметить: этот лот перечитан под такими-то правилами читателя.
+
+    Отметка живёт рядом с разобранным, а не в сроке ответа площадки: тот
+    молчит навсегда, как только состав прочитан (`krt_territory.notice_due`), и
+    без своей отметки устаревший разбор спрашивался бы КАЖДЫЙ круг сторожа —
+    по карточке лота на круг за ответ, который не изменится.
+
+    Неудача отмечается так же, как удача, и это не мелочь: Росэлторг отдаёт
+    карточку через раз, и «перечитали и остались прежние записи» и «перечитать
+    не дали» — разные ответы, у второго свой короткий срок.
+    """
+    kept = load(data_dir, key)
+    kept["reread"] = {
+        "version": int(version),
+        "at": float(now if now is not None else time.time()),
+        "ok": bool(ok),
+        # Предел тот же, что у отказа разбора: он объявлен один раз рядом с
+        # версией читателя, и обрезка называется вслух.
+        "why": egrn_archive.cut_reason(why),
+    }
+    place = _path(data_dir, key)
+    place.parent.mkdir(parents=True, exist_ok=True)
+    place.write_text(json.dumps(kept, ensure_ascii=False, indent=1), encoding="utf-8")
+    return kept
+
+
+def reread_due(kept: dict[str, Any], *, now: float | None = None,
+               retry_after: float = 1800.0) -> bool:
+    """Спрашивать ли лот заново из-за устаревшего разбора.
+
+    Три ответа, и слить их нельзя. Записей прежних правил нет — не надо вовсе.
+    Перечитали под нынешними правилами и что-то осталось прежним — тоже не
+    надо: это ответ ДОКУМЕНТОВ (машинной выписки на объект в лоте нет вовсе), и
+    вторым заходом он не лечится. Перечитать не дали — надо, но не раньше чем
+    через `retry_after`: площадка отвечает через раз.
+    """
+    if not stale(kept)["behind"]:
+        return False
+    mark = kept.get("reread") or {}
+    try:
+        version = int(mark.get("version") or 0)
+    except (TypeError, ValueError):
+        version = 0
+    if version < egrn_archive.READER_VERSION:
+        return True
+    if mark.get("ok"):
+        return False
+    when = float(mark.get("at") or 0)
+    return float(now if now is not None else time.time()) - when >= retry_after
+
+
+def block(kept: dict[str, Any]) -> dict[str, Any]:
+    """Склад → блок в той форме, которую сводит `krt_pipeline.egrn_view`.
+
+    Форма блока объявлена один раз и здесь только собирается: у присланного
+    рукой архива и у вложения лота один свод, иначе «владельцев нет» на двух
+    экранах будет значить разное.
+
+    Загрузка стоит на месте документа: у неё те же вопросы — сколько записей в
+    архиве, сколько прочитано, что осталось непрочитанным и что лежало рядом.
+    """
+    records = list(kept.get("records") or [])
+    return {
+        "records": records,
+        "lands": sum(1 for record in records if record.get("kind") == "land"),
+        "builds": sum(1 for record in records if record.get("kind") == "build"),
+        "documents": [{
+            "document": upload.get("file") or "архив",
+            "url": "",
+            "entries": upload.get("entries") or 0,
+            "read": upload.get("read") or 0,
+            "unread": upload.get("unread") or [],
+            "companions": upload.get("companions") or [],
+            "duplicates": [],
+        } for upload in (kept.get("uploads") or [])],
+    }

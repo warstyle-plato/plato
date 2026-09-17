@@ -96,13 +96,37 @@ def test_the_purchase_is_paid_by_the_schedule_and_the_total_is_kept() -> None:
 
 
 def test_a_deferred_purchase_needs_less_bridge_at_the_start() -> None:
+    """Платёж, отложенный ЗА РнС, снимает с БРИДЖа ровно свою сумму.
+
+    Прежде отсрочка была «80%@12» при ИРД в 18 месяцев, то есть платёж падал
+    ВНУТРЬ окна БРИДЖа: к пику (последний месяц до РнС) обе рассрочки платили
+    все сто процентов, и пики совпадали до тринадцатого знака. Проверка стояла
+    зелёной не потому, что утверждение верно, а потому что два разных счёта
+    дали побитово равные числа и `<=` на равенстве проходит. Стоило одному из
+    них сдвинуться в последнем разряде — и она упала, ничего не сказав о том,
+    что сломалось (а не сломалось ничто). Отсрочка теперь в дату РнС, и
+    предохранитель держит оба конца: платёж обязан выйти за окно БРИДЖа, и
+    пики обязаны РАЗОЙТИСЬ.
+    """
     upfront = core._run_authoritative_model(_inputs(), _tep(), [], {})["consolidated"]
+    deferred_month = int(_inputs()["ird_months"])
     deferred = core._run_authoritative_model(
-        _inputs(purchase_schedule="20%@0; 80%@12"), _tep(), [], {})["consolidated"]
-    # Лимит — формула банка от всей цены: не меняется. Пик выборки — меняется.
-    assert deferred["report"]["financing"]["calculated_bridge"] == pytest.approx(
-        upfront["report"]["financing"]["calculated_bridge"])
-    assert deferred["finance"]["peak_bridge"] <= upfront["finance"]["peak_bridge"]
+        _inputs(purchase_schedule=f"20%@0; 80%@{deferred_month}"), _tep(), [],
+        {})["consolidated"]
+    # Лимит считается ОКНОМ до РнС, а не формулой банка от всей цены: прежняя
+    # строка здесь утверждала обратное («не меняется») и держалась ровно
+    # потому, что платёж не выходил за окно. Решение владельца 04.09.2026
+    # («банк конечно считаем бриджем то что существует до рнс») её отменило, и
+    # отменённое правило пережило отмену в комментарии проверки.
+    deferred_off = (upfront["report"]["financing"]["calculated_bridge"]
+                    - deferred["report"]["financing"]["calculated_bridge"])
+    saved = upfront["finance"]["peak_bridge"] - deferred["finance"]["peak_bridge"]
+    assert deferred_off == pytest.approx(saved, rel=1e-6), (
+        "из лимита ушло не то же, что снялось с пика")
+    assert saved > 0, "отсрочка пика не сняла — платёж остался внутри окна БРИДЖа"
+    # Снято ровно отложенное: 80% цены покупки, а не «что-нибудь».
+    assert saved == pytest.approx(
+        float(_inputs()["purchase_price_mln"]) * 1e6 * 0.8, rel=1e-6)
     assert deferred["report"]["purchase"]["custom"] is True
 
 

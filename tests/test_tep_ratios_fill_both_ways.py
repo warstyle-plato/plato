@@ -27,6 +27,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import page_blocks  # noqa: E402
+
 import main as wrapper  # noqa: E402
 
 core = wrapper.core
@@ -101,8 +105,14 @@ def test_housing_follows_the_calculator_chain():
     assert filled["saleable"] == pytest.approx(65000.0, rel=1e-6)
     assert filled["saleable"] / filled["total_area"] == pytest.approx(0.7222, rel=1e-3)
 
+    # Деление СПП на жильё и встроенное нежилое объявлено один раз и берётся
+    # оттуда: раньше здесь стоял литерал `spp * 0.94`, и проверка держала форму
+    # записи, а не утверждение — «в `vri_tep_quick` та же методика».
+    assert core.MKD_SPP_SPLIT["apartments"] == pytest.approx(0.94)
+    assert core.MKD_SPP_SPLIT["ground_commercial"] == pytest.approx(0.06)
     quick = __import__("inspect").getsource(core.vri_tep_quick)
-    assert "apartments_gns = spp * 0.94" in quick
+    assert 'MKD_SPP_SPLIT["apartments"]' in quick, (
+        "быстрый ТЭП делит СПП своим числом — это вторая методика")
     assert "apartments = apartments_gns * 0.65" in quick, (
         "доля квартир разошлась с калькулятором — таблица пропорций врёт")
 
@@ -151,11 +161,17 @@ def test_the_ratios_stand_under_their_own_numbers():
     Прежде доли лежали под раскрытием над таблицей — свёрнутым по умолчанию, и
     это читалось как «их нет вовсе» (владелец, 21.08.2026). Колонкой слева было
     бы непонятно: доля без своего числа рядом не читается.
+
+    Утверждение держится за ЧИСЛО, а не за имя колонки: «% общей» строит ВАЛ,
+    и с тех пор как переданное городу вычитается из продаваемой, вал лежит в
+    полезной. Прежняя проверка держала литерал `col==='saleable'` — то есть
+    спорила с собственной подписью и упала бы на верной правке.
     """
     body = core.PAGE[core.PAGE.index("const ratioField=col=>{"):]
     body = body[:body.index("['gns','total_area'")]
     assert "col==='total_area'?'total'" in body, "«% ГНС» — под общей площадью"
-    assert "col==='saleable'?'saleable'" in body, "«% общей» — под продаваемой"
+    assert "col==='useful'?'saleable'" in body, "«% общей» — под полезной: доля строит вал"
+    assert "col==='saleable'?" not in body, "под продаваемой доли быть не должно: там вал минус переданное"
     assert "% ГНС" in body and "% общей" in body
     assert "tepRatioSet(" in body, "поле правит долю, а не только показывает её"
     assert 'id="tepRatioNote"' in core.PAGE
@@ -264,9 +280,13 @@ def test_the_button_says_why_it_did_nothing():
     switches = switches[:switches.index("}")]
     assert "offices_enabled" in switches and "retail_enabled" in switches
 
+    # Утверждение здесь одно: строка показывает и свою заметку, и посчитанную
+    # жалобу. Держать его формой записи выражения нельзя — у заметки появился
+    # тон, выражение переписалось, и проверка упала на верном поведении.
     table = core.PAGE[core.PAGE.index("function renderTep(){"):]
     table = table[:table.index("function updateTepTotals")]
-    assert "tepRefillNote[key]||tepRowComplaint(key,row)" in table
+    assert "tepNoteText(key)" in table, "своя заметка строки не показывается"
+    assert "tepRowComplaint(key,row)" in table, "посчитанная жалоба не показывается"
 
 
 def test_a_changed_ratio_is_visible_without_asking():
@@ -314,9 +334,23 @@ def test_any_area_you_change_drives_the_row():
     ГНС 25 000 → 22 500 и 16 250; общая 40 000 → ГНС 44 444,4 и продаваемая
     28 888,9; продаваемая 50 000 → ГНС 76 923,1 и общая 69 230,8.
     """
-    body = core.PAGE[core.PAGE.index("function tepCellChanged"):]
-    body = body[:body.index("let storageInsideParking")]
-    assert "base[col]=Number(value||0)" in body, "тройка считается от введённого числа"
-    assert "tepFillByRatios(key,base)" in body
+    tail = (
+        "const out={};\n"
+        "for(const [col,value] of [['gns',25000],['total_area',40000],['saleable',50000]]){\n"
+        " tep={apartments:{label:'Квартиры',gns:0,total_area:0,useful:0,"
+        "saleable:0,transfer:0,units:0}};\n"
+        " tepCellChanged('apartments',col,value);\n"
+        " out[col]=tep.apartments;\n"
+        "}\n"
+        "process.stdout.write(JSON.stringify(out));"
+    )
+    got = page_blocks.run_json(page_blocks.tep_cell_stand(), tail)
+    # Числа из docstring — те самые, что сняты с живой страницы.
+    assert (got["gns"]["total_area"], got["gns"]["saleable"]) == (22500, 16250), got["gns"]
+    assert abs(got["total_area"]["gns"] - 44444.4) < 0.1, got["total_area"]
+    assert abs(got["total_area"]["saleable"] - 28888.9) < 0.1, got["total_area"]
+    assert abs(got["saleable"]["gns"] - 76923.1) < 0.1, got["saleable"]
+    assert abs(got["saleable"]["total_area"] - 69230.8) < 0.1, got["saleable"]
+    # Памяти о правленых ячейках нет — это запрет МЕСТА, и он остаётся строкой.
+    body = page_blocks.function("tepCellChanged")
     assert "tepTouched" not in body, "памяти о правленых ячейках больше нет"
-    assert "['gns','total_area','saleable'].forEach(field=>{tep[key][field]=filled[field]})" in body

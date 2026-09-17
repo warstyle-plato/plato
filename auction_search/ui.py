@@ -128,7 +128,7 @@ __DEVELOPAID_PLATO_DRAWER__
 __DEVELOPAID_LAND_MAP_DIALOG__
 <script>
 __DEVELOPAID_LAND_MAP_KIT__
-const state={lots:[],filtered:[],families:[],openFamilies:new Set(),coverage:[],quality:{},selected:null,ingested:null,krt:[],krtFiltered:[],krtOkrugs:new Set(),krtModels:{},krtScreening:{},krtReports:{},krtRequirements:{},krtNew:0,krtNewDays:30,krtPolls:0,krtTimer:null,krtRank:{},krtRankProgress:null,krtRankTimer:null,krtPress:{},krtCards:{},krtTenderLinks:{},krtOrderBySite:{},krtTenders:{},krtOrders:[],krtOrphanLots:[],krtSort:{key:'score',dir:-1},krtHidden:{small:0,unknown:0},krtPick:{stage:new Set(),entry:new Set(),renovation:new Set(),purpose:new Set()}};
+const state={lots:[],filtered:[],families:[],openFamilies:new Set(),coverage:[],quality:{},selected:null,ingested:null,krt:[],krtFiltered:[],krtOkrugs:new Set(),krtModels:{},krtScreening:{},krtReports:{},krtRequirements:{},krtNew:0,krtNewDays:30,krtPolls:0,krtTimer:null,krtRank:{},krtRankProgress:null,krtRankTimer:null,krtPress:{},krtCards:{},krtTenderLinks:{},krtOrderBySite:{},krtTenders:{},krtOrders:[],krtOrphanLots:[],krtSort:{key:'score',dir:-1},krtHidden:{small:0,unknown:0},krtPick:{stage:new Set(),entry:new Set(),renovation:new Set(),purpose:new Set()},egrnStore:null};
 const KRT_OKRUGS=['ЦАО','САО','СВАО','ВАО','ЮВАО','ЮАО','ЮЗАО','ЗАО','СЗАО','НАО','ТАО','ЗелАО'];
 const $=id=>document.getElementById(id);
 // Ноль и «цены нет» — разные вещи. Number(null) равен нулю, и лот без
@@ -620,13 +620,112 @@ async function loadLotCadastre(l,force=false){
 function selectLot(l){
  state.selected=l;state.ingested=null;
  const sc=lotScore(l),side=$('side');
- side.innerHTML=`<h2>${esc(l.title||'Лот')}</h2><div class="sub">${esc(l.source?.source_name||l.source?.platform||'ЭТП')} · ${esc(l.source?.external_lot_id||'')}</div><div class="notice"><div class="fit ${sc.tone}"><span class="light"></span>Балл лота: ${sc.score}/100 · ${esc(sc.label)}</div><div class="source">Потенциал лота — ${sc.base}. ${sc.cut?`Снято ${sc.cut}%: `+esc(sc.cuts.map(c=>c.label+' −'+c.points+'%').join(', ')):'Снижать нечего.'}</div></div>${sc.cuts.length?`<div class="items">${sc.cuts.map(c=>`<div class="item"><b>Балл снижен на ${c.points}%</b>${esc(c.label)}</div>`).join('')}</div>`:''}<div class="kv"><div>Юр. конструкция</div><div>${esc(kindLabel(l.lot_kind))} · ${esc(ORIGIN_LABEL[l.origin||'other']||'—')}</div><div>Кадастр</div><div class="cad">${esc((l.cadastral_numbers||[]).join(', ')||'—')}</div><div>Площадь по ЭТП</div><div>${areaLine(l)}</div><div>Цена сейчас</div><div class="money">${fmtMoney(l.current_price_rub??l.start_price_rub)}</div><div>Минимальная цена</div><div>${fmtMoney(l.min_price_rub)}</div><div>Заявка до</div><div>${esc(lotDeadline(l))}</div><div>ВРИ площадки</div><div>${esc(l.permitted_use||'—')}</div></div>${lotCaveats(l)}<div id="lotCadastre"></div><div class="actions"><button class="primary" id="ingestBtn"${lotAnalysis(l).available?'':' disabled'}>Разобрать лот</button><button id="sourceBtn">Открыть ЭТП</button></div><div id="detailStatus" class="notice${lotAnalysis(l).available?'':' warn'}">${esc(lotAnalysis(l).available?'Документы пока только перечислены. Полный разбор запускается по выбранному лоту, чтобы не нагружать ЭТП массовыми скачиваниями.':'Разобрать этот лот нечем: '+lotAnalysis(l).reason+' Карточку можно открыть на самой площадке — кнопка «Открыть ЭТП».')}</div><div id="analysis"></div>`;
+ side.innerHTML=`<h2>${esc(l.title||'Лот')}</h2><div class="sub">${esc(l.source?.source_name||l.source?.platform||'ЭТП')} · ${esc(l.source?.external_lot_id||'')}</div><div class="notice"><div class="fit ${sc.tone}"><span class="light"></span>Балл лота: ${sc.score}/100 · ${esc(sc.label)}</div><div class="source">Потенциал лота — ${sc.base}. ${sc.cut?`Снято ${sc.cut}%: `+esc(sc.cuts.map(c=>c.label+' −'+c.points+'%').join(', ')):'Снижать нечего.'}</div></div>${sc.cuts.length?`<div class="items">${sc.cuts.map(c=>`<div class="item"><b>Балл снижен на ${c.points}%</b>${esc(c.label)}</div>`).join('')}</div>`:''}<div class="kv"><div>Юр. конструкция</div><div>${esc(kindLabel(l.lot_kind))} · ${esc(ORIGIN_LABEL[l.origin||'other']||'—')}</div><div>Кадастр</div><div class="cad">${esc((l.cadastral_numbers||[]).join(', ')||'—')}</div><div>Площадь по ЭТП</div><div>${areaLine(l)}</div><div>Цена сейчас</div><div class="money">${fmtMoney(l.current_price_rub??l.start_price_rub)}</div><div>Минимальная цена</div><div>${fmtMoney(l.min_price_rub)}</div><div>Заявка до</div><div>${esc(lotDeadline(l))}</div><div>ВРИ площадки</div><div>${esc(l.permitted_use||'—')}</div></div>${lotCaveats(l)}<div id="lotCadastre"></div><div id="egrnBox"></div><div class="actions"><button class="primary" id="ingestBtn"${lotAnalysis(l).available?'':' disabled'}>Разобрать лот</button><button id="sourceBtn">Открыть ЭТП</button></div><div id="detailStatus" class="notice${lotAnalysis(l).available?'':' warn'}">${esc(lotAnalysis(l).available?'Документы пока только перечислены. Полный разбор запускается по выбранному лоту, чтобы не нагружать ЭТП массовыми скачиваниями.':'Разобрать этот лот нечем: '+lotAnalysis(l).reason+' Карточку можно открыть на самой площадке — кнопка «Открыть ЭТП».')}</div><div id="analysis"></div>`;
  $('ingestBtn').onclick=ingest;
+ renderEgrn();loadEgrnStore();
  $('sourceBtn').onclick=()=>window.open(l.source?.lot_url,'_blank','noopener');
  const osm=document.createElement('button');osm.textContent='Открыть карту OSM';osm.onclick=()=>window.open('https://www.openstreetmap.org/search?query='+encodeURIComponent(l.address||((l.cadastral_numbers||[]).join(' '))||l.title||''),'_blank','noopener');$('side').querySelector('.actions').appendChild(osm);
  const mapBtn=document.createElement('button');mapBtn.textContent='Показать интерактивную карту';mapBtn.onclick=()=>loadLotInteractiveMap(l);$('side').querySelector('.actions').appendChild(mapBtn);
  const mapBox=document.createElement('div');mapBox.id='lotInteractiveMap';$('side').appendChild(mapBox);
  renderLotCadastre(l);loadLotCadastre(l);renderAskContext();
+}
+// Выписки ЕГРН: один рисовальщик на оба источника.
+//
+// Источников у объектов площадки два, и они разные: вложения лота, которые
+// скачал загрузчик, и архив, присланный рукой. Свести их в одно число нельзя —
+// смешать две выборки значит выдумать третью, — поэтому каждый назван своим
+// именем, а рисует их ОДНА функция: две копии однажды показали бы про один
+// объект разное, и обе выглядели бы верными.
+function egrnKey(l){const s=(l||{}).source||{};return String(s.external_lot_id||s.lot_url||'').trim()}
+function egrnOwnerLine(o){
+ const bits=[];
+ if(o.inn)bits.push('ИНН '+o.inn);
+ if(o.ogrn)bits.push('ОГРН '+o.ogrn);
+ return `<div class="item"><b>${esc(o.name||'—')}</b>${esc(bits.join(' · '))}<div class="source">объектов ${o.objects||0}${o.area_sqm?' · '+Math.round(o.area_sqm).toLocaleString('ru-RU')+' м²':''}</div></div>`;
+}
+function egrnBlock(view,title,note){
+ if(!view)return `<div class="section"><h3>${esc(title)}</h3><div class="notice">${esc(note||'Выписок по этой площадке ещё не читали.')}</div></div>`;
+ const owners=view.owners||[],refused=view.refused||[];
+ const counts=[`объектов ${view.records||0}`];
+ if(view.lands)counts.push(`участков ${view.lands}`);
+ if(view.builds)counts.push(`строений ${view.builds}`);
+ // Чем прочитана запись — часть ответа: печатная форма не раскрывает имени
+ // правообладателя вовсе, и «владельцев нет» значит при ней другое.
+ if(view.from_print_form)counts.push(`из печатной формы ${view.from_print_form}`);
+ if(view.recognised)counts.push(`распознано со скана ${view.recognised}`);
+ return `<div class="section"><h3>${esc(title)}</h3>`
+  +`<div class="source">${esc(counts.join(' · '))}</div>`
+  +(owners.length?`<div class="items">${owners.map(egrnOwnerLine).join('')}</div>`
+    :`<div class="notice${view.reason?' warn':''}">${esc(view.reason||'Правообладатели по выпискам не названы.')}</div>`)
+  +(view.holders_withheld?`<div class="source">Право зарегистрировано, а имени форма не раскрывает: ${view.holders_withheld}. Это свойство вида выписки, а не молчание реестра — лечится своим запросом в ЕГРН.</div>`:'')
+  +(view.without_registered_owner?`<div class="source">Право собственности не зарегистрировано: ${view.without_registered_owner}. Так сказано в выписках.</div>`:'')
+  +(refused.length?`<div class="items">${refused.map(r=>`<div class="item"><b>Площадка не отдала вложение</b>${esc(r.document||'')}<div class="source">${esc(r.reason||'')}</div></div>`).join('')}</div>`:'')
+  +(view.unread?`<div class="notice warn">Не прочитано записей: ${view.unread}. Молча выброшенная выписка читается как отсутствие собственника, поэтому она названа.</div>`:'')
+  +(view.companions?`<div class="source">Рядом с выписками лежало ${view.companions} файл(ов) — подписи, таблицы стилей, картинки планов. Это не наш пробел.</div>`:'')
+  +(note?`<div class="source">${esc(note)}</div>`:'')
+  +`</div>`;
+}
+function renderEgrn(){
+ const box=$('egrnBox'),l=state.selected;
+ if(!box||!l)return;
+ const lot=(state.ingested||{}).screening||{};
+ const store=state.egrnStore||null;
+ const parts=[];
+ if(lot.egrn)parts.push(egrnBlock(lot.egrn,'Объекты по вложениям лота',''));
+ parts.push(egrnBlock(store&&store.view,'Объекты по присланному архиву',
+  store&&store.note||'Зип с выписками можно загрузить руками: у Росэлторга загрузчик получает 503 через раз.'));
+ // Кнопка отказа, о котором сказано заранее, не обещает того, чего не будет:
+ // без ключа площадки грузить некуда, и это видно до нажатия.
+ const key=egrnKey(l);
+ parts.push(`<div class="actions"><input type="file" id="egrnFile" accept=".zip,.xml,.pdf" style="max-width:260px"><button id="egrnUpload"${key?'':' disabled'}>Загрузить зип с выписками</button></div>`
+  +`<div id="egrnStatus" class="notice${key?'':' warn'}">${esc(key?'Разбирается тем же кодом, что и вложения лота: машинная выписка XML и печатная форма PDF. Разобранное остаётся на ядре — второй раз грузить не нужно.':'У этого лота нет ни номера, ни адреса карточки — привязать архив к площадке нечем.')}</div>`);
+ box.innerHTML=parts.join('');
+ const btn=$('egrnUpload');
+ if(btn)btn.onclick=uploadEgrn;
+}
+async function loadEgrnStore(){
+ const l=state.selected,key=egrnKey(l);
+ state.egrnStore=null;
+ if(!key)return;
+ try{
+  const d=await askJson('/auctions/egrn/archive?key='+encodeURIComponent(key),{cache:'no-store'});
+  const up=(d.uploads||[])[0];
+  state.egrnStore={view:d.egrn||null,note:up?`Последний архив: ${up.file||'—'} · ${krtWhenExact(Date.parse(up.at)/1000)}`:'',records:d.records||[]};
+ }catch(e){
+  // «Не проверили» и «не заполнено» — разные ответы: отказ называет причину,
+  // а не выдаёт себя за пустой склад.
+  state.egrnStore={view:null,note:'Склад не прочитан: '+String(e.message||e)};
+ }
+ renderEgrn();
+}
+async function uploadEgrn(){
+ const l=state.selected,key=egrnKey(l);
+ const input=$('egrnFile'),btn=$('egrnUpload'),status=$('egrnStatus');
+ if(!key||!input)return;
+ const file=(input.files||[])[0];
+ // Раннему возврату без слов верить нельзя: молчание неотличимо от сломанной
+ // кнопки.
+ if(!file){status.className='notice warn';status.textContent='Файл не выбран: нажмите «Обзор» и укажите зип с выписками.';return}
+ btn.disabled=true;btn.innerHTML='<span class="spinner"></span>Читаю выписки';
+ status.className='notice';status.textContent='Разбираю архив: машинные выписки XML и печатные формы PDF.';
+ try{
+  const d=await askJson('/auctions/egrn/archive?key='+encodeURIComponent(key)
+   +'&file='+encodeURIComponent(file.name),
+   {method:'POST',body:file}).catch(needLogin);
+  const u=d.upload||{};
+  state.egrnStore={view:d.egrn||null,
+   note:`Файл ${d.file||file.name}: записей в архиве ${u.entries||0}, прочитано ${u.read||0}`
+    +(u.added?`, новых ${u.added}`:'')+(u.replaced?`, обновлено ${u.replaced}`:'')
+    +(u.superseded?`, печатных форм рядом с машинной выпиской ${u.superseded}`:''),
+   records:d.records||[]};
+  renderEgrn();
+  const after=$('egrnStatus');
+  if(after){after.className='notice';after.textContent=`Архив прочитан: ${u.read||0} из ${u.entries||0} записей. Разобранное лежит на ядре.`}
+ }catch(e){
+  status.className='notice warn';status.textContent=String(e.message||e);
+ }finally{
+  const b=$('egrnUpload');if(b){b.disabled=false;b.textContent='Загрузить зип с выписками'}
+ }
 }
 async function loadLotInteractiveMap(l){const box=$('lotInteractiveMap');if(!box)return;box.innerHTML='<div class="notice"><span class="spinner"></span>Определяю точку…</div>';const query=l.address||((l.cadastral_numbers||[]).join(' '))||l.title||'';try{const d=await askJson('/auctions/lot-point',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query})});const lat=Number(d.latitude),lon=Number(d.longitude);if(!Number.isFinite(lat)||!Number.isFinite(lon))throw new Error('Координаты не найдены');const delta=.006,bbox=[lon-delta,lat-delta,lon+delta,lat+delta].join(',');const src='https://www.openstreetmap.org/export/embed.html?'+new URLSearchParams({bbox,layer:'mapnik',marker:lat+','+lon});box.innerHTML='<details open><summary style="cursor:pointer;font-weight:700;padding:8px 0">Карта участка · можно двигать и масштабировать</summary><iframe src="'+src+'" title="Интерактивная карта лота" style="width:100%;height:330px;border:1px solid #e3e3e0" loading="lazy"></iframe><div class="source">Точка определена по адресу: '+esc(d.address||query)+'</div></details>'}catch(e){box.innerHTML='<div class="notice warn">Карту не удалось построить: '+esc(e.message||e)+'</div>'}}
 // Отказ по входу объясняется одинаково во всех шести местах, где он бывает:
@@ -696,10 +795,50 @@ async function ingest(){const l=state.selected;if(!l)return;const b=$('ingestBtn
  // их сносят, и они перечислены поимённо. Передача их «участками» заставляет
  // калькулятор принять площадь дома за площадь территории.
  if(cads.length){try{const ctx=await askJson('/land/lot-context',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cadastral_numbers:cads})});const land=(ctx.land_parcels||[]).map(x=>x.cadastral_number).filter(Boolean);if(land.length){d.project_preset.project.cadastral_numbers=land;d.project_preset.project.cadastral_numbers_input=land.join(', ');d.project_preset.land.cadastral_numbers=land;d.project_preset.land.cadastral_numbers_csv=land.join(', ');d.project_preset.project.cadastral_import.mode=land.length>1?'bulk':'single';d.project_preset.project.cadastral_import.note+=' В КН для расчёта включены только земельные участки; здания/ОКС исключены.';d.developaid_seed.site.cadastral_numbers=land;l._landCadastralNumbers=land}}catch(_){/* карточка остаётся доступной; ручная проверка НСПД не блокирует разбор */}}
- state.ingested=d;renderAnalysis(d)}catch(e){status.className='notice warn';status.textContent=String(e.message||e)}finally{b.disabled=false;b.textContent='Разобрать заново'}}
+ state.ingested=d;renderAnalysis(d);renderEgrn()}catch(e){status.className='notice warn';status.textContent=String(e.message||e)}finally{b.disabled=false;b.textContent='Разобрать заново'}}
+// Три ответа о вложении, и слить их нельзя: прочитано, площадка не отдала (с
+// причиной), не спрашивали намеренно. Считает их сервер рядом с самими
+// вложениями (`documents_summary`), страница печатает — второй счёт тех же
+// вложений однажды разошёлся бы с первым, и оба выглядели бы верными.
+//
+// «Документов 26» отвечало не на тот вопрос: четыре из них площадка не
+// отдала, и на экране это было неотличимо от разобранных (лот 33444,
+// 13.09.2026).
+function docsRead(v,total){
+ if(!v)return String(total||0);
+ const bits=[`прочитано ${v.read} из ${v.total}`];
+ const refused=(v.refused||[]).length;
+ if(refused)bits.push(`площадка не отдала ${refused}`);
+ const skipped=(v.skipped||[]).length;
+ if(skipped)bits.push(`не спрашивали ${skipped}`);
+ if(v.from_store)bits.push(`со склада ${v.from_store}`);
+ return bits.join(' · ');
+}
+function docsRefusalKind(k){
+ return k==='auth_required'?'нужен вход на ЭТП'
+  :k==='temporary'?'площадка отказала временно'
+  :'не разобралось';
+}
+// Причина стоит у самого числа, а не в журнале: отказ, ушедший только в raw,
+// это отказ, которого на экране нет. И «спросим снова» говорится вслух —
+// иначе неотданное вложение читается как окончательный ответ площадки, хотя
+// прочитанное уже лежит на складе и заново поедет только оно.
+function docsRefusalNote(v){
+ if(!v)return '';
+ const rows=v.refused||[],skipped=v.skipped||[],again=(v.ask_again||[]).length;
+ if(!rows.length&&!skipped.length)return '';
+ const parts=[];
+ if(rows.length)parts.push(`<div><b>Площадка не отдала ${rows.length}:</b> `
+  +rows.slice(0,8).map(r=>`${esc(r.document||r.url||'вложение')} — ${esc(docsRefusalKind(r.kind))}`).join('; ')
+  +(rows.length>8?` и ещё ${rows.length-8}`:'')+'</div>');
+ if(again)parts.push(`<div>Спросим снова при следующем разборе: ${again}. Прочитанное лежит на складе — заново поедет только неотданное.</div>`);
+ if(skipped.length)parts.push(`<div>Не спрашивали намеренно: `
+  +skipped.slice(0,4).map(r=>`${esc(r.document||'вложение')} — ${esc(r.why||'')}`).join('; ')+'</div>');
+ return `<div class="notice warn">${parts.join('')}</div>`;
+}
 function renderAnalysis(d){const s=d.screening||{},l=d.lot||{},a=$('analysis'),status=$('detailStatus');if(s.krt_auth_required){status.className='notice warn';status.textContent='Часть документации требует входа на ЭТП. Лот сохранён, но DevelopAid не считает закрытые документы отсутствующими.'}else if(s.krt_documents_complete===true){status.className='notice';status.textContent='Официальные документы КРТ разобраны без пропусков, обнаруженных загрузчиком.'}else{status.className='notice';status.textContent='Карточка ЭТП сверена. Для обычной земли следующий слой — кадастр/градпроверка DevelopAid.'}
  const program=l.krt_program||[],obs=l.obligations||[],docs=l.documents||[],px=s.platon_explanation||{};
- a.innerHTML=`<div class="section"><h3>Оценка Платона: ${esc(px.rating||s.rating||'—')}</h3><div class="notice"><b>Почему здесь:</b> ${esc(px.why_here||s.why_here||'—')}</div><div class="items">${(px.concerns||[]).map(x=>`<div class="item"><b>Что настораживает</b>${esc(x)}</div>`).join('')}${(px.verify_before_calculation||[]).map(x=>`<div class="item"><b>Что проверить до расчёта</b>${esc(x)}</div>`).join('')}</div></div><div class="section"><h3>Готовность к DevelopAid</h3><div class="kv"><div>Структура сделки</div><div>${esc(kindLabel(s.legal_structure))}</div><div>Требует условий КРТ</div><div>${s.requires_krt_terms?'да':'нет'}</div><div>Документов</div><div>${docs.length}</div><div>Программа КРТ</div><div>${program.length}</div><div>Обязательств</div><div>${obs.length}</div></div></div>${program.length?`<div class="section"><h3>Программа застройки из документов</h3><div class="items">${program.slice(0,12).map(x=>`<div class="item"><b>${esc(x.category)} · ${esc(x.area_sqm?fmtArea(x.area_sqm):x.quantity?x.quantity+' '+(x.unit||''):'')}</b>${esc(x.title)}<div class="source">${esc(x.provenance?.source_document||'')}</div></div>`).join('')}</div></div>`:''}${obs.length?`<div class="section"><h3>Обязательства инвестора</h3><div class="items">${obs.slice(0,12).map(x=>`<div class="item"><b>${esc(x.category)}${x.quantity?' · '+x.quantity+' '+(x.unit||''):''}</b>${esc(x.title)}<div class="source">${esc(x.provenance?.source_document||'')}</div></div>`).join('')}</div></div>`:''}<div class="actions"><button id="copySeed">Скопировать seed</button><button id="modelBtn" ${s.ready_for_financial_model?'':'disabled'}>Подготовить в DevelopAid</button></div><div id="modelNote" class="notice">Handoff использует штатный project-preset import; отдельный расчётный движок для торгов не создаётся.</div>`;
+ a.innerHTML=`<div class="section"><h3>Оценка Платона: ${esc(px.rating||s.rating||'—')}</h3><div class="notice"><b>Почему здесь:</b> ${esc(px.why_here||s.why_here||'—')}</div><div class="items">${(px.concerns||[]).map(x=>`<div class="item"><b>Что настораживает</b>${esc(x)}</div>`).join('')}${(px.verify_before_calculation||[]).map(x=>`<div class="item"><b>Что проверить до расчёта</b>${esc(x)}</div>`).join('')}</div></div><div class="section"><h3>Готовность к DevelopAid</h3><div class="kv"><div>Структура сделки</div><div>${esc(kindLabel(s.legal_structure))}</div><div>Требует условий КРТ</div><div>${s.requires_krt_terms?'да':'нет'}</div><div>Вложений</div><div>${docsRead(s.documents,docs.length)}</div><div>Программа КРТ</div><div>${program.length}</div><div>Обязательств</div><div>${obs.length}</div></div>${docsRefusalNote(s.documents)}</div>${program.length?`<div class="section"><h3>Программа застройки из документов</h3><div class="items">${program.slice(0,12).map(x=>`<div class="item"><b>${esc(x.category)} · ${esc(x.area_sqm?fmtArea(x.area_sqm):x.quantity?x.quantity+' '+(x.unit||''):'')}</b>${esc(x.title)}<div class="source">${esc(x.provenance?.source_document||'')}</div></div>`).join('')}</div></div>`:''}${obs.length?`<div class="section"><h3>Обязательства инвестора</h3><div class="items">${obs.slice(0,12).map(x=>`<div class="item"><b>${esc(x.category)}${x.quantity?' · '+x.quantity+' '+(x.unit||''):''}</b>${esc(x.title)}<div class="source">${esc(x.provenance?.source_document||'')}</div></div>`).join('')}</div></div>`:''}<div class="actions"><button id="copySeed">Скопировать seed</button><button id="modelBtn" ${s.ready_for_financial_model?'':'disabled'}>Подготовить в DevelopAid</button></div><div id="modelNote" class="notice">Handoff использует штатный project-preset import; отдельный расчётный движок для торгов не создаётся.</div>`;
  $('copySeed').onclick=async()=>{await navigator.clipboard.writeText(JSON.stringify(d.developaid_seed,null,2));$('copySeed').textContent='Скопировано'};$('modelBtn').onclick=()=>{const note=$('modelNote');note.textContent='Project-preset handoff подключается следующим слоем: цена лота → цена входа, КРТ-ТЭП → planning, обязательства → отдельные cost/constraint lines.'}
 }
 function switchTab(showKrt){['auctionFilters','auctionStats','auctionLayout','coverage'].forEach(id=>$(id).classList.toggle('hidden',showKrt));$('krtPanel').classList.toggle('hidden',!showKrt);$('tabAuctions').classList.toggle('active',!showKrt);$('tabKrt').classList.toggle('active',showKrt);renderAskContext();if(showKrt&&!state.krt.length)loadKrt()}
@@ -978,17 +1117,17 @@ function krtStage(x){
     :'лот на торгах опубликован, срок подачи не назван');
   return {key:'auction',why};
  }
- const auto=state.krtOrderBySite[x.slug];
- if(auto&&auto.number){
-  why.push('распоряжение '+auto.number+(auto.published_at?' от '+krtCityDay(auto.published_at):'')
+ const auto=krtCityOrder(x);
+ if(auto){
+  why.push('распоряжение '+krtOrderName(auto)+(auto.published_at?' от '+krtCityDay(auto.published_at):'')
     +' — адрес распознан в самом документе');
   return {key:'upcoming',why};
  }
  const mark=state.krtTenderLinks[x.slug];
- if(mark&&mark.number){
+ if(krtMarked(mark)){
   // Отметка человека, открывшего распоряжение. Машине привязать нечем: адреса
   // в распоряжении нет, PDF — скан.
-  why.push('отмечено вручную: распоряжение '+mark.number+(mark.published_at?' от '+krtCityDay(mark.published_at):''));
+  why.push('отмечено вручную: распоряжение '+krtOrderName(mark)+(mark.published_at?' от '+krtCityDay(mark.published_at):''));
   return {key:'upcoming',why};
  }
  if(status.includes('торг')){why.push('статус каталога «'+esc(x.status)+'»');return {key:'upcoming',why}}
@@ -1458,12 +1597,19 @@ const KRT_FILTERS=[
  {key:'stage', box:'krtStage', empty:'Любая стадия', options:[
   {value:'draft',    name:'Проект решения',       test:x=>!!x.no_card},
   {value:'planned',  name:'Планируемая',          test:x=>krtStatusKind(x)==='planned'},
-  {value:'tender',   name:'Торги',                test:x=>krtOnTender(x),
+  // «Идёт аукцион» и «торги объявлялись» — РАЗНЫЕ ответы, и одним словом их
+  // складывать нельзя. Одним складывалось: 14.09.2026 фильтр показывал 28
+  // площадок при одиннадцати живых аукционах, а владелец читал это как вкладку
+  // «Торги», где лотов семь. Из 28 семнадцать стояли по распоряжению города
+  // 2022–2025 годов, то есть по аукционам, которые давно прошли: у восьми из
+  // них площадка уже «В реализации».
+  {value:'tender',   name:'Идёт аукцион',         test:x=>!!krtLiveLot(x),
    // Ноль здесь бывает двух видов, и путать их нельзя: «аукционов нет»
    // и «лоты ни разу не собирали». Второй — наш пробел, а выглядит как
    // ответ о рынке: на проде склад связок был пуст при восьми живых
    // аукционах на право договора о КРТ (владелец, 05.09.2026).
    blank:()=>krtTendersKnown()?'':'не собирали'},
+  {value:'announced',name:'Торги объявлялись',    test:x=>krtTenderAnnounced(x)},
   {value:'running',  name:'В реализации',         test:x=>krtStatusKind(x)==='running'},
   {value:'unparsed', name:'Карточка не разобрана',test:x=>krtBroken(x)},
  ]},
@@ -1488,8 +1634,44 @@ const KRT_FILTERS=[
 // лоты собирает соседняя вкладка. Шаг остался КОЛОНКОЙ — он объясняет, почему
 // площадка там, где она есть, — но осью отбора быть перестал.
 function krtOnTender(x){
+ return krtLots(x).length>0||!!krtCityOrder(x);
+}
+// Распоряжение, которое ДЕЙСТВУЕТ: город назначил торги и не отменял их.
+// Ответ один на всех читателей — шаг воронки, ось отбора и цена входа: у
+// распоряжения № 56209 «Об отмене проведения торгов… Волгоградский проспект,
+// вл. 32» начальная цена стояла бы ценой входа модели, а шаг говорил бы
+// «объявлено о торгах». Слово источника прочитано наоборот — и трижды.
+function krtCityOrder(x){
  const order=(state.krtOrderBySite||{})[x.slug];
- return krtLots(x).length>0||!!(order&&order.number);
+ if(!order)return null;
+ // Решает ДЕЙСТВИЕ, а не подпись. Гейт стоял по номеру, и распоряжение с
+ // непрочитанным номером выпадало молча вместе со своей начальной ценой: на
+ // проде 15.09.2026 это были две площадки из 25 привязанных — Рубцовская наб.
+ // (23,8 млн ₽) и Задонский пр-д / Ясеневая ул. (1 574,8 млн ₽), обе «о
+ // проведении торгов». Номер у них в заголовке ЕСТЬ, просто написан через
+ // пробел, и образец его не брал; но это чинит разбор, а гейту номер не нужен
+ // вовсе — непрочитанная подпись это НАШ пробел, а не отсутствие документа.
+ return order.action==='cancel'?null:order;
+}
+// Как назвать распоряжение читателю. Ответ один на всех — строку воронки,
+// цену входа, список выбора и карточку: пять копий «номер или id» разошлись бы,
+// а внутренний id mos.ru читателю немой, как «dipp» в адресе публикации.
+function krtOrderName(o){
+ const number=String((o&&o.number)||'').trim();
+ return number?('№ '+number):'без прочитанного номера';
+}
+// Отметка человека существует, когда он выбрал документ, а не когда у того
+// прочитан номер: гейт по номеру прятал ручную поправку ровно там, где её и
+// ставят — на распоряжении, которое машина не разобрала.
+function krtMarked(mark){
+ return !!(mark&&(mark.order_id||mark.number));
+}
+// Торги объявлялись когда-то: действующее распоряжение города или лот, у
+// которого срок подачи уже прошёл. Это не «идёт аукцион» — войти уже нельзя,
+// а знать полезно: по той же площадке город объявляет торги повторно.
+function krtTenderAnnounced(x){
+ if(krtLiveLot(x))return false;
+ return (krtLots(x)||[]).length>0||!!krtCityOrder(x);
 }
 // Можно ли войти. Три ответа, и третий наш: «не знаем» со «свободна» не
 // складывается (владелец, 04.09.2026: «Занято, реновация, свободный участок»).
@@ -2220,9 +2402,9 @@ function krtAskingPrice(x){
  const live=krtLiveLot(x)||((krtLots(x)||[])[0]||null);
  if(live&&Number(live.price_rub)>0)
   return {mln:Number(live.price_rub)/1e6, from:'лот на торгах'+(live.source?' · '+live.source:'')};
- const order=(state.krtOrderBySite||{})[x.slug];
+ const order=krtCityOrder(x);
  if(order&&Number(order.start_price_rub)>0)
-  return {mln:Number(order.start_price_rub)/1e6, from:'распоряжение города '+(order.number||'')};
+  return {mln:Number(order.start_price_rub)/1e6, from:'распоряжение города '+krtOrderName(order)};
  return null;
 }
 // Потолок посчитан при НУЛЕВОЙ цене входа: модель скрининга ставит
@@ -2935,7 +3117,9 @@ function renderKrtTenderNote(d){
  if(!box)return;
  const sites=Object.keys(state.krtTenders).length, orphans=(d.unmatched||[]).length;
  const orders=(d.orders||[]).length;
- if(!sites&&!orphans&&!orders)return;
+ // Связки в счёт молчания входят тоже: помним одиннадцать, собрали ноль — и
+ // подпись молчала бы ровно там, где расхождение и надо назвать.
+ if(!sites&&!orphans&&!orders&&!(d.known_links||0))return;
  const last=(d.orders||[])[0];
  box.style.display='';
  // У числа обязано быть окно и предмет. «Город объявил 55» без них читается
@@ -2944,14 +3128,33 @@ function renderKrtTenderNote(d){
  // сервер: второй счёт тех же строк на экране однажды разошёлся бы с первым.
  const recent=d.orders_recent_12m, addressed=d.orders_with_address||0,
    bound=Object.keys(d.orders_by_site||{}).length;
+ // Живой аукцион и «когда-то объявляли» — разные числа, и оба называются:
+ // 14.09.2026 фильтр говорил «Торги 28» при одиннадцати живых аукционах, а на
+ // вкладке «Торги» их было семь. Меньшее число тут НАШЕ — сбор ограничен
+ // сроком, и Росэлторг в нём последний, — а большее считало распоряжения
+ // 2022–2025 годов. Считается это по строкам, которые уже на экране: второй
+ // счёт тех же площадок разошёлся бы с фильтром.
+ const live=(state.krt||[]).filter(x=>krtLiveLot(x)).length;
+ const announced=(state.krt||[]).filter(x=>krtTenderAnnounced(x)).length;
+ const cancelled=(d.orders||[]).filter(o=>o&&o.action==='cancel').length;
  box.innerHTML+=`<div class="source" style="margin-top:8px"><b>Торги по КРТ.</b> `
-  +`Распоряжений города о проведении аукциона — ${orders} за всё время`
+  +`Идёт аукцион у ${live} площадок`
+  +(announced?`, торги объявлялись когда-то — ещё у ${announced}`:'')
+  +`. Распоряжений города об аукционе — ${orders} за всё время`
   +(Number.isFinite(recent)?`, из них за последние 12 месяцев ${recent}`:'')
+  +(cancelled?`; об ОТМЕНЕ торгов — ${cancelled}, и они за торги не считаются`:'')
   +(last?`; свежайшее ${esc(last.number||'—')} от ${esc(krtCityDay(last.published_at))}`:'')
   +`. Адрес прочитан у ${addressed}, к площадкам привязано ${bound}. `
   +esc(d.orders_note||'')
   +` Собранных сейчас лотов про КРТ — ${d.krt_lots||0}; привязано к площадкам ${sites}`
-  +(orphans?`, ещё ${orphans} про КРТ, но площадка не опознана`:'')+'.</div>';
+  +(orphans?`, ещё ${orphans} про КРТ, но площадка не опознана`:'')
+  +(Number.isFinite(d.known_links)
+    ? `. Связок с площадками помним ${d.known_links}`
+      +((d.known_links>(d.krt_lots||0))
+        ? ` — больше, чем собрано сейчас: раздел читается не целиком, и это наш `
+          +`сбор, а не рынок (непрочитанное названо в строке охвата)`
+        : '')
+    :'')+'.</div>';
 }
 // Распоряжение о торгах на карточке площадки. Ставится РУКАМИ: адреса в
 // распоряжении нет ни в заголовке, ни в карточке документа, а PDF — скан
@@ -2963,11 +3166,19 @@ function krtOrderBlock(x){
  const mark=state.krtTenderLinks[x.slug]||null, orders=state.krtOrders||[];
  const chosen=mark&&mark.order_id?mark.order_id:'';
  const options=orders.map(o=>`<option value="${esc(o.id)}"${o.id===chosen?' selected':''}>`
-   +`${esc(o.number||o.id)}${o.published_at?' · '+esc(krtCityDay(o.published_at)):''}`
+   +`${esc(krtOrderName(o))}${o.published_at?' · '+esc(krtCityDay(o.published_at)):''}`
    +`${o.kind?' · '+esc(o.kind):''}</option>`).join('');
- const auto=state.krtOrderBySite[x.slug]||null;
+ const auto=krtCityOrder(x);
+ // Отменённое распоряжение не выбрасывается молча: молча снятое читается как
+ // «город об этой площадке ничего не публиковал».
+ const cancelled=(state.krtOrderBySite||{})[x.slug]||null;
+ const cancelNote=(cancelled&&cancelled.action==='cancel')
+   ?`<div class="source">Распоряжение ${esc(krtOrderName(cancelled))}`
+     +`${cancelled.published_at?' от '+esc(krtCityDay(cancelled.published_at)):''}`
+     +` — об ОТМЕНЕ проведения торгов. За объявленные торги оно не считается, `
+     +`и его начальная цена в модель не идёт.</div>`:'';
  const money=v=>v?new Intl.NumberFormat('ru-RU').format(v)+' ₽':'';
- const found=auto?`<div class="item"><b>Объявлены торги</b>Согласно распоряжению ${esc(auto.number||auto.id)}`
+ const found=auto?`<div class="item"><b>Объявлены торги</b>Согласно распоряжению ${esc(krtOrderName(auto))}`
    +`${auto.published_at?' от '+esc(krtCityDay(auto.published_at)):''} `
    +`${auto.url?`<a href="${esc(auto.url)}" target="_blank" rel="noopener">открыть документ</a>`:''}`
    +`${auto.start_price_rub?`<div>Начальная цена ${esc(money(auto.start_price_rub))}`
@@ -2976,8 +3187,16 @@ function krtOrderBlock(x){
    +`<div class="source">Адрес и суммы распознаны в самом распоряжении: «${esc(String(auto.address||auto.krt_name||'').slice(0,110))}». `
    +'Цифры подтверждены прописью — не сошлись бы, величина не показывалась бы вовсе.'
    +`${(auto.ocr_notes||[]).length?' '+esc(auto.ocr_notes.join('; ')):''}</div></div>`:'';
- const said=found||mark&&mark.number
-  ? `<div class="item"><b>Объявлены торги</b>Согласно распоряжению ${esc(mark.number)}`
+ // Три ответа, и первый — найденное машиной. Условие было собрано как
+ // `found||krtMarked(mark) ? <ветка про mark> : <не нашлось>`, то есть
+ // `(found||mark) ? …`: текст `found` не печатался НИКОГДА, а при найденном
+ // распоряжении без ручной отметки ветка читала `mark.number` у null и роняла
+ // `selectKrt` — карточка не открывалась вовсе. На проде 15.09.2026 это 22
+ // площадки из 25 привязанных, в том числе Варшавское ш., вл. 37.
+ const said=found
+  ? found
+  : krtMarked(mark)
+  ? `<div class="item"><b>Объявлены торги</b>Согласно распоряжению ${esc(krtOrderName(mark))}`
     +`${mark.published_at?' от '+esc(krtCityDay(mark.published_at)):''} `
     +`${mark.url?`<a href="${esc(mark.url)}" target="_blank" rel="noopener">открыть документ</a>`:''}`
     +`<div class="source">Отмечено вручную${mark.marked_at?' '+esc(krtWhen(mark.marked_at)):''}: `
@@ -2985,12 +3204,13 @@ function krtOrderBlock(x){
   : '<div class="source">Распоряжения по этой площадке не нашлось. '
     +'Распоряжения ДГП читаются распознаванием скана: адрес берётся из самого документа. '
     +'Если распознать не удалось, привязку можно поставить руками — это поправка, а не основной путь.</div>';
- if(!orders.length&&!mark&&!auto)return '';
+ if(!orders.length&&!mark&&!auto&&!cancelNote)return '';
  return `<div class="section"><h3>Торги по распоряжению города</h3><div class="items">${said}</div>`
+  +cancelNote
   +(orders.length?`<div class="row" style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">`
     +`<select id="krtOrderPick" style="flex:1 1 260px"><option value="">— выбрать распоряжение —</option>${options}</select>`
     +'<button type="button" id="krtOrderSave">Отметить</button>'
-    +(mark&&mark.number?'<button type="button" id="krtOrderDrop">Снять отметку</button>':'')
+    +(krtMarked(mark)?'<button type="button" id="krtOrderDrop">Снять отметку</button>':'')
     +'</div>':'')
   +'</div>';
 }

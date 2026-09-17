@@ -25,6 +25,9 @@ from pathlib import Path
 
 import pytest
 
+import page_blocks  # noqa: E402
+from browser import chromium_or_skip
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
@@ -46,35 +49,38 @@ def _piece(name: str) -> str:
         i += 1
 
 
-HARNESS = """
+PRELUDE = """
 const box = {innerHTML: ""};
 global.document = {getElementById: id => (id === 'objectParkingNote' ? box : null)};
 function escapeHtml(s){return String(s).replace(/[&<>"]/g, c =>
   ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
 const num = v => String(v);
-%(prefixes)s
 let lastResult = %(result)s;
 // Сверка старого проекта читает вводные: без них стенд падает на «inputs is
 // not defined», и падение выходит про стенд, а не про подпись.
 let inputs = {_parking_by_norm: []};
-%(note)s
-%(fn)s
+// Связка очередей — состояние страницы, а не кусок её кода: без неё стенд
+// падает на «phaseBundle is not defined», а разрешитель ищет на странице
+// функцию с таким именем и честно отвечает, что её там нет. Одиночный расчёт
+// оставляет связку пустой.
+let phaseBundle = null;
+"""
+
+TAIL = """
 renderObjectParkingNote();
 console.log(JSON.stringify({html: box.innerHTML}));
 """
 
 
 def _render(result) -> str:
-    script = HARNESS % {"result": json.dumps(result, ensure_ascii=False),
-                        "prefixes": _const("OBJECT_PARKING_PREFIXES"),
-                        "note": _piece("objectParkingFieldNote") + "\n"
-                        + _piece("markParkingByNorm") + "\n"
-                        + _piece("reconcileLegacyParking"),
-                        "fn": _piece("renderObjectParkingFieldNotes") + "\n"
-                        + _piece("renderObjectParkingNote")}
-    out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=60)
-    assert out.returncode == 0, out.stderr[-2000:]
-    return json.loads(out.stdout)["html"]
+    """Куски страницы добираются сами — перечислять их руками значит падать на
+    своей неполноте, когда рядом заведут функцию. Ровно это и случилось
+    13.09.2026: паркинг проекта получил пометку нормы, и стенд упал на
+    `PARKING_OWNER_FIELDS is not defined`, ничего не сказав о подписи.
+    """
+    out = page_blocks.run_json(
+        PRELUDE % {"result": json.dumps(result, ensure_ascii=False)}, TAIL)
+    return out["html"]
 
 
 def _executable(body: str) -> str:
@@ -125,9 +131,20 @@ def _const(name: str) -> str:
 
 
 def _render_fields(result, inputs=None):
-    """Отрисовать подписи и поля так, как их рисует страница."""
-    script = """
-const cells = {parkNorm_offices:{textContent:""}, parkNorm_retail:{textContent:""},
+    """Отрисовать подписи и поля так, как их рисует страница.
+
+    Куски страницы добирает общий разрешитель: перечисленные руками, они
+    отставали от страницы — рядом завели `projectParking` (один ответ на «чей
+    это паркинг»), и пятнадцать проверок упали на «projectParking is not
+    defined», то есть на своей неполноте, ничего не сказав о подписи.
+    """
+    prelude = """
+// `style` у заглушки обязателен: подпись несёт не только текст, но и тон —
+// дефицит красный, — и у настоящего элемента страницы `style` есть всегда.
+// Без него стенд падает на нашей же правке, и падение выходит про стенд.
+const cells = {parkNorm_offices:{textContent:"",style:{}},
+               parkNorm_retail:{textContent:"",style:{}},
+               parkNorm_sports:{textContent:"",style:{}},
                objectParkingNote:{innerHTML:""},
                f_offices_parking_under_spaces:{value:null},
                f_offices_parking_over_spaces:{value:null}};
@@ -137,31 +154,24 @@ const num = v => String(v);
 %(prefixes)s
 let inputs = %(inputs)s;
 let lastResult = %(result)s;
-%(a)s
-%(mark)s
-%(b)s
+// Очерёдности здесь нет — страница в одиночном расчёте оставляет связку
+// пустой, и `projectParking` берёт паркинг из результата.
+let phaseBundle = null;
+""" % {"result": json.dumps(result, ensure_ascii=False),
+       "inputs": json.dumps(inputs or {}, ensure_ascii=False),
+       "prefixes": page_blocks.object_roster()}
+    # Действие — в хвосте: добранные куски встают МЕЖДУ прелюдией и хвостом,
+    # и вызов из прелюдии читал бы их до объявления.
+    tail = """
 renderObjectParkingNote();
 console.log(JSON.stringify({
   note_offices: cells.parkNorm_offices.textContent,
   note_retail: cells.parkNorm_retail.textContent,
   field_offices: cells.f_offices_parking_under_spaces.value,
   field_retail: (cells.f_retail_parking_under_spaces||{value:null}).value,
-  note_retail: cells.parkNorm_retail.textContent,
   inputs}));
-""" % {"result": json.dumps(result, ensure_ascii=False),
-       "inputs": json.dumps(inputs or {}, ensure_ascii=False),
-       "prefixes": _const("OBJECT_PARKING_PREFIXES"),
-       "a": _piece("objectParkingFieldNote"),
-       # Норма помечает своё число — без этой функции стенд падает на
-       # неопределённом имени, и падение выходит про стенд, а не про подпись.
-       "mark": _piece("markParkingByNorm") + "\n"
-                 + _piece("reconcileLegacyParking"),
-       # Писатель подписей — своя функция: её зовёт и форма, и результат.
-       "b": _piece("renderObjectParkingFieldNotes") + "\n"
-              + _piece("renderObjectParkingNote")}
-    out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=60)
-    assert out.returncode == 0, out.stderr[-2000:]
-    return json.loads(out.stdout)
+"""
+    return page_blocks.run_json(prelude, tail)
 
 def _result(by_norm: bool, under: int, over: int):
     """Ответ расчёта об офисах — чтобы состояния подписи читались рядом."""
@@ -301,29 +311,21 @@ def test_a_field_shows_no_stale_number_but_names_the_reason() -> None:
     Случай не редкий: `lastResult` обнуляет и `renderCalcLocked` — расчёт закрыт
     входом, а вход у каждого браузера свой.
     """
-    script = """
-const cell = {textContent:"дырка"};
+    prelude = """
+const cell = {textContent:"дырка",style:{}};
 global.document = {getElementById: id => (id === 'parkNorm_offices' ? cell : null)};
 function escapeHtml(s){return String(s)}
 const num = v => String(v);
 %(prefixes)s
 let inputs = {};
 let lastResult = null;
-%(a)s
-%(mark)s
-%(b)s
+let phaseBundle = null;
+""" % {"prefixes": page_blocks.object_roster()}
+    tail = """
 renderObjectParkingNote();
 console.log(JSON.stringify({left: cell.textContent}));
-""" % {"prefixes": _const("OBJECT_PARKING_PREFIXES"),
-       "a": _piece("objectParkingFieldNote"),
-       "mark": _piece("markParkingByNorm") + "\n"
-                 + _piece("reconcileLegacyParking"),
-       # Писатель подписей — своя функция: её зовёт и форма, и результат.
-       "b": _piece("renderObjectParkingFieldNotes") + "\n"
-              + _piece("renderObjectParkingNote")}
-    out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=60)
-    assert out.returncode == 0, out.stderr[-2000:]
-    left = json.loads(out.stdout)["left"]
+"""
+    left = page_blocks.run_json(prelude, tail)["left"]
     assert "дырка" not in left, "прежнее число осталось стоять — читается как посчитанное"
     assert "Расчёт не выполнен" in left, left
 
@@ -381,23 +383,16 @@ def test_a_project_saved_before_this_keeps_its_hand_written_numbers() -> None:
     ПОСЛЕ, список несёт — и пересев затёр бы его: заполненное нормой поле
     стало бы «тронутым руками» и замерло бы навсегда.
     """
-    script = """
-%(seed)s
-let inputs = %(legacy)s;
+    prelude = "let inputs = %s;" % json.dumps(
+        {"offices_parking_under_spaces": 40, "retail_parking_under_spaces": 0})
+    tail = """
 seedParkingByHand();
 const legacy = inputs._parking_by_hand;
-inputs = %(fresh)s;
+inputs = %s;
 seedParkingByHand();
 console.log(JSON.stringify({legacy, fresh: inputs._parking_by_hand}));
-""" % {"seed": _piece("seedParkingByHand"),
-       "legacy": json.dumps({"offices_parking_under_spaces": 40,
-                             "retail_parking_under_spaces": 0}),
-       "fresh": json.dumps({"offices_parking_under_spaces": 2778,
-                            "_parking_by_hand": []})}
-    script = "const OBJECT_PARKING_PREFIXES=['offices','retail','sports'];\n" + script
-    out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=60)
-    assert out.returncode == 0, out.stderr[-2000:]
-    seen = json.loads(out.stdout)
+""" % json.dumps({"offices_parking_under_spaces": 2778, "_parking_by_hand": []})
+    seen = page_blocks.run_json(prelude, tail)
     assert seen["legacy"] == ["offices"], seen
     assert seen["fresh"] == [], "пересев затёр список проекта"
 
@@ -480,7 +475,7 @@ def test_the_note_stands_under_both_parking_fields() -> None:
 
     Между ними она объясняла бы только верхнее, а число нормы приходит в оба.
     """
-    place = PAGE.index("parkNorm_${id.split('_')[0]}")
+    place = PAGE.index("normCell.id='parkNorm_'")
     head = PAGE.rindex("if(/^(offices|retail|sports)_parking_", 0, place)
     assert "_parking_over_spaces$/" in PAGE[head:place], PAGE[head:place]
 
@@ -572,10 +567,7 @@ def test_a_number_the_norm_wrote_does_not_freeze_after_reload() -> None:
       вписанное руками хуже, чем оставить, — но подпись обязана назвать путь
       назад, и это держит соседняя проверка.
     """
-    script = """
-%(seed)s
-%(mark)s
-%(hand)s
+    tail = """
 const out = {};
 let inputs = {offices_parking_under_spaces: 2956, _parking_by_norm: ['offices']};
 seedParkingByHand();
@@ -588,14 +580,8 @@ inputs = {offices_parking_under_spaces: 2956};
 seedParkingByHand();
 out.legacy = inputs._parking_by_hand;
 console.log(JSON.stringify(out));
-""" % {"seed": _piece("seedParkingByHand"),
-       "mark": _piece("markParkingByNorm") + "\n"
-                 + _piece("reconcileLegacyParking"),
-       "hand": _piece("markParkingByHand")}
-    script = "const OBJECT_PARKING_PREFIXES=['offices','retail','sports'];\n" + script
-    out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=60)
-    assert out.returncode == 0, out.stderr[-2000:]
-    got = json.loads(out.stdout)
+"""
+    got = page_blocks.run_json("", tail)
     assert got["norm_written"] == [], (
         "число нормы посев записал в «тронутые руками» — оно замрёт навсегда")
     assert got["after_hand_hand"] == ["offices"], got
@@ -661,13 +647,11 @@ def test_in_a_real_browser_the_note_is_written_by_the_form() -> None:
     вызов функции руками тут же даёт текст. Стенд такого не видит по
     построению: он зовёт то, что проверяет.
     """
-    try:
-        from playwright.sync_api import sync_playwright
-    except Exception:
-        pytest.skip("playwright недоступен")
-    chrome = Path("/opt/pw-browsers/chromium-1194/chrome-linux/chrome")
-    if not chrome.exists():
-        pytest.skip("chromium в образе не найден")
+    # Где браузер — один ответ на весь набор (`tests/browser.py`): он ищет, а
+    # не помнит номер сборки, и на машине, где браузер ОБЯЗАН быть, его
+    # отсутствие красит проверку красным, а не пропускает её молча.
+    chrome = chromium_or_skip()
+    from playwright.sync_api import sync_playwright
     import threading
     import time as _time
 

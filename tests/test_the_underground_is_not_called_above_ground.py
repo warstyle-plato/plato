@@ -35,6 +35,8 @@ from pathlib import Path
 
 import pytest
 
+from browser import chromium_or_skip
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
@@ -142,13 +144,11 @@ def test_an_unrecognised_label_is_named_out_loud() -> None:
 # --- живая страница ----------------------------------------------------------
 
 def test_in_a_real_browser_the_table_names_both_bases() -> None:
-    try:
-        from playwright.sync_api import sync_playwright
-    except Exception:
-        pytest.skip("playwright недоступен")
-    chrome = next(iter(sorted(Path("/opt/pw-browsers").glob("chromium-*/chrome-linux/chrome"))), None)
-    if chrome is None or not chrome.exists():
-        pytest.skip("chromium в образе не найден")
+    # Где браузер — один ответ на весь набор (`tests/browser.py`): он ищет, а
+    # не помнит номер сборки, и на машине, где браузер ОБЯЗАН быть, его
+    # отсутствие красит проверку красным, а не пропускает её молча.
+    chrome = chromium_or_skip()
+    from playwright.sync_api import sync_playwright
     import uvicorn
     import main as wrapper
 

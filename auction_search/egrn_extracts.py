@@ -145,18 +145,82 @@ def _float(text: str) -> float | None:
         return None
 
 
+# Виды выписки, которые читаются. Форм у ЕГРН две, и до 14.09.2026 читалась
+# ОДНА: на лоте 21000005000000032801/1 (1-я Горловская ул., вл. 4) два зипа
+# несли 104 записи, прочиталась одна, а на экране площадки стояло 19 участков
+# с «выписки на объект нет» — то есть НАШ пробел был выдан за молчание
+# документа. Вторая форма — «об основных характеристиках и зарегистрированных
+# правах» (`extract_base_params_*`), и внутри она устроена так же: имена
+# элементов сверены с официальными схемами Росреестра (пакеты
+# `extract_base_params_land_v01` и `extract_base_params_build_v01`, версия 01)
+# поле в поле — `land_record`/`build_record`, `params`, `cost`,
+# `right_records/right_record/right_holder`, `restrict_records`,
+# `readable_address`, `status`, `special_notes`, `cad_links`. Поэтому здесь
+# добавлен ВИД документа, а не второй разбор: две реализации одной выписки
+# однажды ответили бы про один объект разное.
+#
+# Чем прочитана запись — часть записи (`form`): полная выписка отвечает на то,
+# чего краткая не публикует, и поверхность обязана знать это, не спрашивая
+# документ второй раз.
+_FORMS: dict[str, tuple[str, str, str]] = {
+    "extract_about_property_land": ("land", ".//land_record", "about_property"),
+    "extract_about_property_build": ("build", ".//build_record", "about_property"),
+    "extract_base_params_land": ("land", ".//land_record", "base_params"),
+    "extract_base_params_build": ("build", ".//build_record", "base_params"),
+}
+
+
+def shape(root: ET.Element, *, limit: int = 30) -> list[str]:
+    """Пути элементов документа БЕЗ значений — чтобы чужой вид объяснил себя сам.
+
+    Отказ «не выписка ЕГРН об объекте: <корень>» называл только корень, и
+    узнать, что за документ пришёл, можно было единственным способом — достать
+    файл с прода руками. Форм у ЕГРН больше двух (помещение, машино-место,
+    сооружение), и каждая следующая стоила бы того же захода.
+
+    Значения не печатаются намеренно: в выписке стоят имена правообладателей,
+    и отказ уезжает в свод, в отчёт и в чат. Путь без значения — это контракт
+    документа, а не его содержание.
+    """
+    paths: list[str] = []
+    seen: set[str] = set()
+
+    def walk(node: ET.Element, prefix: str) -> None:
+        for child in node:
+            tag = str(child.tag)
+            path = f"{prefix}/{tag}" if prefix else tag
+            if path not in seen:
+                seen.add(path)
+                paths.append(path)
+                if len(paths) >= limit:
+                    return
+            walk(child, path)
+            if len(paths) >= limit:
+                return
+
+    walk(root, "")
+    return paths
+
+
 def read(raw: bytes) -> dict[str, Any]:
     """Одна выписка → запись. Чужой вид документа — отказ, а не пустая запись."""
     root = ET.fromstring(raw)
-    if root.tag == "extract_about_property_land":
-        kind, base = "land", ".//land_record"
-    elif root.tag == "extract_about_property_build":
-        kind, base = "build", ".//build_record"
-    else:
-        raise ValueError(f"не выписка ЕГРН об объекте: <{root.tag}>")
+    known = _FORMS.get(str(root.tag))
+    if known is None:
+        digest = ", ".join(shape(root)) or "внутри нет ни одного элемента"
+        raise ValueError(
+            f"не выписка ЕГРН об объекте: <{root.tag}>; что внутри: {digest}")
+    kind, base, form = known
     text = lambda path: (root.findtext(path) or "").strip()  # noqa: E731
     record: dict[str, Any] = {
         "kind": kind,
+        # Чем прочитана запись — часть записи: печатная форма отвечает не на
+        # все вопросы машинной, и поверхность обязана это знать, не спрашивая
+        # второй раз (`egrn_print_form` ставит здесь "print_form").
+        "source": "xml",
+        # Вид выписки: полная («об объекте недвижимости») или краткая («об
+        # основных характеристиках»). Читаются обе, и путать их нельзя.
+        "form": form,
         "cadastral_number": text(base + "/object/common_data/cad_number"),
         "quarter": text(base + "/object/common_data/quarter_cad_number"),
         "address": text(".//readable_address"),
@@ -208,6 +272,37 @@ def owner_of(record: dict[str, Any]) -> dict[str, Any] | None:
                 return {**holder, "key": holder_key(holder),
                         "right_type": right.get("type"), "since": right.get("date")}
     return None
+
+
+def owner_state(record: dict[str, Any]) -> str:
+    """Что документ говорит о собственнике: назван, не раскрыт или права нет.
+
+    Ответов три, и слить их в «владельца нет» нельзя.
+
+    `named` — собственность зарегистрирована и держатель назван.
+
+    `withheld` — собственность ЗАРЕГИСТРИРОВАНА (вид, номер и дата стоят), а
+    имени в документе нет. Так устроена печатная форма выписки «об объекте
+    недвижимости»: у 77:05:0012007:2054 стоит «Собственность
+    77-77/005-77/009/277/2016-603/2 от 23.12.2016», а клетка «Правообладатель»
+    пуста — проверено отрисовкой страницы, там нет ни текста, ни картинки. Это
+    свойство ВИДА выписки, а не молчание реестра, и лечится оно своим запросом
+    в ЕГРН, а не перечитыванием того же файла.
+
+    `unregistered` — права собственности нет вовсе. Это ответ реестра: у 14
+    участков квартала 77:05:0004001 из 20 собственность не зарегистрирована.
+
+    Выдать второе за третье значит сказать «право не зарегистрировано» там, где
+    оно зарегистрировано, — и на экране эти два ответа неразличимы.
+    """
+    if (owner_of(record) or {}).get("name"):
+        return "named"
+    for right in record.get("rights") or []:
+        if "обственност" not in (right.get("type") or ""):
+            continue
+        if not any((holder or {}).get("name") for holder in right.get("holders") or []):
+            return "withheld"
+    return "unregistered"
 
 
 def other_rights(record: dict[str, Any]) -> list[dict[str, Any]]:

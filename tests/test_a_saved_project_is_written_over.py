@@ -34,6 +34,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import main_legacy as core  # noqa: E402
+import page_blocks  # noqa: E402
 
 PAGE = core.PAGE
 
@@ -52,10 +53,14 @@ def _piece(name: str, kind: str = "function") -> str:
         i += 1
 
 
-def _run(script: str) -> dict:
-    out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=60)
-    assert out.returncode == 0, out.stderr[-2000:]
-    return json.loads(out.stdout)
+def _run(body: str) -> dict:
+    """Стенд добирает недостающие куски страницы сам.
+
+    Перечисление имён руками было слабым местом: функция, заведённая рядом,
+    роняла его `ReferenceError` на верном коде — так и вышло, когда паркинг
+    проекта получил пометку нормы (`PARKING_OWNER_FIELDS`).
+    """
+    return page_blocks.run_json(STUBS + CODE, "\n" + body)
 
 
 # Заглушки ровно те, без которых код не исполнится: всё, что не про наш вопрос.
@@ -94,10 +99,7 @@ CODE = "\n".join([
     PAGE[PAGE.index("let openedProject=null;"):PAGE.index("function rememberOpenedProject(")],
     _piece("rememberOpenedProject"),
     # Список тронутых полей паркинга сеется в `applyProjectSnapshot` — стенд
-    # берёт его вместе с ней. Перечисление имён здесь и есть слабое место
-    # стенда: функция, добавленная рядом, роняет его `ReferenceError` на
-    # верном коде, и выглядит это как поломка правки.
-    "const OBJECT_PARKING_PREFIXES=['offices','retail','sports'];",
+    # берёт его вместе с ней; всё, что она читает рядом, добирает `_run`.
     _piece("seedParkingByHand"),
     _piece("applyProjectSnapshot"),
     _piece("loadProject", kind="async function"),
@@ -113,13 +115,9 @@ CODE = "\n".join([
 ])
 
 
-def _script(body: str) -> str:
-    return STUBS + CODE + "\n" + body
-
-
 def _sent(press: str, record: dict | None) -> dict:
     """Открыть проект (или нет) и нажать названную кнопку кабинета."""
-    return _run(_script("""
+    return _run("""
 const sent=[];
 function projectsCall(path,payload){
   sent.push({path,payload});
@@ -136,7 +134,7 @@ function prompt(text,suggested){asked.push(String(text));return 'Новое им
 })();
 """ % {"record": json.dumps(record or {}, ensure_ascii=False),
        "press": press,
-       "open": "true" if record else "false"}))
+       "open": "true" if record else "false"})
 
 
 RECORD = {"id": "abc123", "name": "Румянцево", "share_code": "s3cr3t",
@@ -201,32 +199,32 @@ def test_the_saved_project_becomes_the_opened_one() -> None:
 def test_a_replaced_snapshot_forgets_the_opened_project() -> None:
     """Присланная ссылка, файл настроек и площадка КРТ идут одной функцией —
     и после неё «Сохранить поверх» записало бы чужие числа в чужую запись."""
-    got = _run(_script("""
+    got = _run("""
 function projectsCall(){return Promise.resolve({})}
 function confirm(){return true}
 function prompt(){return 'x'}
 openedProject={id:'abc123',name:'Румянцево',shareCode:''};
 applyProjectSnapshot({inputs:{},tep:{}});
 console.log(JSON.stringify({opened:openedProject}));
-"""))
+""")
     assert got["opened"] is None
 
 
 def test_a_reset_forgets_the_opened_project() -> None:
-    got = _run(_script("""
+    got = _run("""
 function projectsCall(){return Promise.resolve({})}
 function confirm(){return true}
 function prompt(){return 'x'}
 openedProject={id:'abc123',name:'Румянцево',shareCode:''};
 resetProjectState();
 console.log(JSON.stringify({opened:openedProject}));
-"""))
+""")
     assert got["opened"] is None
 
 
 def test_a_deleted_project_stops_being_the_opened_one() -> None:
     """Иначе «Сохранить поверх» завело бы его заново под тем же id."""
-    got = _run(_script("""
+    got = _run("""
 function projectsCall(){return Promise.resolve({})}
 function confirm(){return true}
 function prompt(){return 'x'}
@@ -235,5 +233,5 @@ openedProject={id:'abc123',name:'Румянцево',shareCode:''};
   await deleteProject('abc123');
   console.log(JSON.stringify({opened:openedProject}));
 })();
-"""))
+""")
     assert got["opened"] is None

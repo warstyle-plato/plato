@@ -22,6 +22,7 @@ from __future__ import annotations
 import datetime
 import json
 import re
+from html.parser import HTMLParser
 from typing import Any
 
 import developaid_monitor as monitor
@@ -29,9 +30,30 @@ import developaid_monitor as monitor
 _ITR = re.compile(r"итр\D{0,12}?(\d+)", re.IGNORECASE)
 _WORKERS = re.compile(r"рабоч\w*\D{0,12}?(\d+)", re.IGNORECASE)
 _LEAD_NUM = re.compile(r"^\s*\d+\s*[.)\-—–]*\s*")
-_SECTION_WORKS = re.compile(r"^\s*по\s+работам\b", re.IGNORECASE)
-_SECTION_SUPPLY = re.compile(r"^\s*поставк\w*\s*:?\s*$", re.IGNORECASE)
-_SECTION_REMOVAL = re.compile(r"^\s*вывоз\s*:?\s*$", re.IGNORECASE)
+# Секции опознаются РАЗБОРОМ, а не регуляркой. Регулярки здесь стояли вида
+# `^\s*слово\s*:?\s*$` — два звёздочных пробельных куска подряд у якоря конца
+# строки, и на строке «поставка» с полусотней тысяч пробелов такой шаблон
+# уходит в перебор. Пока текст приходил загрузкой из кабинета, это было
+# теоретическим; с 13.09.2026 его пишет кто угодно в групповом чате, и CodeQL
+# честно назвал три таких места высокой важностью. Разбор по словам линеен и
+# заодно понятнее шаблона.
+_SECTION_SUPPLY_WORDS = ("поставк", "завоз")
+
+
+def _section_of(line: str) -> str:
+    """Какую секцию открывает строка: works / supply / removal или пусто."""
+    norm = " ".join(str(line or "").split()).lower()
+    if norm.startswith("по работам"):
+        return "works"
+    bare = norm.rstrip(":").strip()
+    if not bare or " " in bare:
+        return ""
+    if bare == "вывоз":
+        return "removal"
+    for word in _SECTION_SUPPLY_WORDS:
+        if bare.startswith(word) and bare[len(word):].isalpha() or bare == word:
+            return "supply"
+    return ""
 _GREETING = re.compile(r"^\s*(добрый|доброе|здравствуй|привет)", re.IGNORECASE)
 # Слово короче четырёх букв («на», «эт», «и») совпадает со всем подряд и
 # превращает сверку по словам в шум.
@@ -54,7 +76,20 @@ def _day(value: Any) -> datetime.date:
 # Разделители, которыми в отчёте отбивают имя подрядчика от его работы:
 # «Сталко -сборка лесов», «Бизнес Инжиниринг : устройство плитки»,
 # «Моэк ( теплосети)- монтаж ограждения».
-_INLINE_SPLIT = re.compile(r"\s*[:\-—–]\s*")
+# Разделитель ищется перебором, а не шаблоном `\s*[:\-—–]\s*`: звёздочка по обе
+# стороны от одного знака даёт перебор на строке из одних пробелов — та же
+# болезнь, что была у секций, и CodeQL назвал её тем же правилом. Поиск первого
+# разделителя линеен и делает ровно то же: приставка без хвостовых пробелов,
+# остаток без ведущих.
+_INLINE_SEPARATORS = ":-—–"
+
+
+def _split_inline(line: str) -> list[str]:
+    """Приставка и остаток по первому разделителю. Нет разделителя — один кусок."""
+    for index, char in enumerate(str(line or "")):
+        if char in _INLINE_SEPARATORS:
+            return [line[:index].rstrip(), line[index + 1:].lstrip()]
+    return [str(line or "")]
 
 
 def _known_party(prefix: str, known: list[str]) -> str:
@@ -87,13 +122,37 @@ def attribute_works(works: list[dict[str, Any]], known: list[str]) -> list[dict[
     с известным именем — из численности того же отчёта, из реестров РСС или из
     реестра ГУ. Иначе «Бетонирование ПП - 68,5 м3» стало бы подрядчиком
     «Бетонирование ПП».
+
+    Имя, названное в строке, ведёт и СЛЕДУЮЩИЕ строки — до нового имени или
+    нового заголовка. Прежде оно правило только собственную строку, и на живом
+    отчёте с Гродненской «Монтаж кранштейнов и стоек…» — продолжение Сталко —
+    возвращалось к последнему нумерованному заголовку «4. Клодо( кладка)»: у
+    Клодо выходило шесть строк вместо четырёх, и две из них чужие. Заголовок
+    при этом сильнее задержавшегося имени: сменился он — рассказ начался
+    заново.
     """
     out: list[dict[str, Any]] = []
+    running = ""
+    last_header = None
     for item in works or []:
+        header = item.get("contractor", "")
+        if header != last_header:
+            last_header, running = header, ""
         line = str(item.get("line") or "")
-        parts = _INLINE_SPLIT.split(line, maxsplit=1)
+        parts = _split_inline(line)
         name = _known_party(parts[0], known) if len(parts) == 2 else ""
-        out.append({**item, "contractor": name or item.get("contractor", ""),
+        if name:
+            running = name
+        elif len(parts) == 2:
+            # Приставка с разделителем похожа на имя, а доказать его нечем:
+            # «Моэк ( теплосети)- монтаж ограждения» (он вывел работы и не
+            # выводил людей, значит в численности его нет) и «Корпус 3 -
+            # 3,4,5,7 эт.» выглядят одинаково. Такая строка возвращается
+            # заголовку И ОБРЫВАЕТ задержавшееся имя: увести за собой
+            # следующие строки значило бы подписать их именем, которое мы
+            # только что не смогли подтвердить.
+            running = ""
+        out.append({**item, "contractor": running or header,
                     **({"named_inline": True} if name else {})})
     return out
 
@@ -110,13 +169,14 @@ def parse_daily_report(text: str) -> dict[str, Any]:
         line = raw.strip()
         if not line:
             continue
-        if _SECTION_WORKS.match(line):
+        section = _section_of(line)
+        if section == "works":
             mode, current = "works", ""
             continue
-        if _SECTION_SUPPLY.match(line):
+        if section == "supply":
             mode = "supply"
             continue
-        if _SECTION_REMOVAL.match(line):
+        if section == "removal":
             mode = "removal"
             continue
         if mode == "head":
@@ -193,6 +253,142 @@ def store_daily_report(project: str, text: str, taken_at: Any) -> dict[str, Any]
         "workers_total": parsed["workers_total"],
         "works": len(parsed["works"]),
         "unparsed": parsed["unparsed"],
+    }
+
+
+# Выгрузка Telegram — HTML, и читается она РАЗБОРОМ, а не образцами.
+# Первая версия искала три поля регулярками, и CodeQL был прав, назвав их
+# опасными: `<div class="text">(.*?)</div>` и `<[^>]+>` по файлу, который
+# приносит человек, уходят в перебор на строке из одних «<». Та же болезнь уже
+# ловилась в `_section_of` на строке «поставка» с полусотней тысяч пробелов.
+# Разбор при этом не дороже: `html.parser` лежит в стандартной библиотеке,
+# идёт по документу один раз и сам разворачивает сущности.
+class _TelegramExport(HTMLParser):
+    """Пары «день, текст» из выгрузки Telegram.
+
+    Опознаём по разметке экспорта: сообщение — `div.message`, дата — `title`
+    у `div.pull_right.date.details`, текст — `div.text`. Служебные сообщения
+    (`message service`) пропускаем: это «вошёл в группу», а не сводка.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.rows: list[tuple[str, str]] = []
+        self._depth = 0
+        self._message_at = -1
+        self._service = False
+        self._day = ""
+        self._text_at = -1
+        self._parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "br" and self._text_at >= 0:
+            self._parts.append("\n")
+        if tag != "div":
+            return
+        self._depth += 1
+        classes = ""
+        title = ""
+        for name, value in attrs:
+            if name == "class":
+                classes = str(value or "")
+            elif name == "title":
+                title = str(value or "")
+        words = classes.split()
+        if "message" in words:
+            # Новое сообщение закрывает прежнее: Telegram склеивает подряд
+            # идущие сообщения одного автора, и закрывающего тега у каждого
+            # не найти — границей служит начало следующего.
+            self._flush()
+            self._message_at = self._depth
+            self._service = "service" in words
+            self._day = ""
+        elif "date" in words and "details" in words and self._message_at >= 0:
+            # Дата берётся из САМОГО сообщения, а не из разделителя дней:
+            # разделитель стоит один на день, и сообщение, приехавшее после
+            # полуночи, получило бы вчерашний день.
+            head = title[:10]
+            if len(head) == 10 and head[2] == "." and head[5] == ".":
+                day, month, year = head[:2], head[3:5], head[6:]
+                if day.isdigit() and month.isdigit() and year.isdigit():
+                    self._day = f"{year}-{month}-{day}"
+        elif "text" in words and self._message_at >= 0 and self._text_at < 0:
+            self._text_at = self._depth
+            self._parts = []
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag != "div":
+            return
+        if self._text_at == self._depth:
+            self._text_at = -1
+        if self._message_at == self._depth:
+            self._flush()
+        self._depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        if self._text_at >= 0:
+            self._parts.append(data)
+
+    def _flush(self) -> None:
+        text = "".join(self._parts).strip()
+        if text and self._day and not self._service:
+            self.rows.append((self._day, text))
+        self._message_at = -1
+        self._text_at = -1
+        self._service = False
+        self._day = ""
+        self._parts = []
+
+    def close(self) -> None:  # noqa: D102 - хвост документа тоже сообщение
+        super().close()
+        self._flush()
+
+
+def read_telegram_export(raw: str) -> list[tuple[str, str]]:
+    """Пары «день, текст» из выгрузки Telegram, в порядке чата.
+
+    Служебные сообщения и медиа пропускаются молча — их в стройчате
+    большинство (на живой выгрузке 1441 из 1636), и называть каждое значило бы
+    утопить в них находку. А вот сколько сообщений прочитано и сколько из них
+    оказалось сводками, зовущий обязан сказать вслух: «внесено 44» без «из
+    1636 прочитано 139 текстовых» не отвечает, потерялось ли что-нибудь.
+    """
+    reader = _TelegramExport()
+    reader.feed(str(raw or ""))
+    reader.close()
+    return reader.rows
+
+
+def store_telegram_export(project: str, raw: str) -> dict[str, Any]:
+    """Внести в проект все сводки выгрузки. Разбор и хранение — те же.
+
+    Второго пути к диску не заводим: `store_daily_report` — то же, чем кладёт
+    сводку бот, и разойдись они, один и тот же день лёг бы по-разному в
+    зависимости от того, пришёл он из чата или из файла.
+
+    День в проекте один, и повторная сводка того же дня его ЗАМЕЩАЕТ — так же,
+    как замещает присланная в чат. На живой выгрузке таких дней один из 44;
+    молча это выглядело бы потерей, поэтому число замещённых стоит в ответе.
+    """
+    rows = read_telegram_export(raw)
+    stored: list[dict[str, Any]] = []
+    skipped = 0
+    for day, text in rows:
+        try:
+            stored.append(store_daily_report(project, text, day))
+        except ValueError:
+            # Не сводка — обычная переписка. Это норма, а не отказ.
+            skipped += 1
+    days = sorted({row["date"] for row in stored})
+    return {
+        "messages": len(rows),
+        "stored": len(stored),
+        "skipped": skipped,
+        "days": len(days),
+        "replaced": sum(1 for row in stored if row.get("replaced")),
+        "first": days[0] if days else "",
+        "last": days[-1] if days else "",
+        "reports": stored,
     }
 
 

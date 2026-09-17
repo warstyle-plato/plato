@@ -13,6 +13,8 @@ from fastapi import Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field, model_validator
 
+from request_body import json_object
+
 from . import bnmap
 from . import bnmap_ui
 from . import salesroom
@@ -497,7 +499,7 @@ def install(app: FastAPI) -> MarketDiscoveryService:
                 status_code=503,
                 detail="Платон недоступен: модуль рынка запущен без движка DevelopAid",
             )
-        payload = await request.json()
+        payload = await json_object(request)
         message = str((payload or {}).get("message") or "").strip()
         if not message:
             raise HTTPException(status_code=422, detail="Пустой вопрос")
@@ -535,7 +537,7 @@ def install(app: FastAPI) -> MarketDiscoveryService:
         оба выглядят достоверно.
         """
         cabinet_module.require_cabinet(request)
-        payload = await request.json()
+        payload = await json_object(request)
         body = str((payload or {}).get("html") or "")
         if not body.strip():
             raise HTTPException(status_code=422, detail="Печатать нечего: отчёт пуст")
@@ -587,7 +589,7 @@ def install(app: FastAPI) -> MarketDiscoveryService:
         и обе выглядели бы верными.
         """
         cabinet_module.require_cabinet(request)
-        payload = await request.json()
+        payload = await json_object(request)
         body = str((payload or {}).get("html") or "")
         if not body.strip():
             raise HTTPException(status_code=422, detail="Показывать нечего: свод пуст")
@@ -700,6 +702,13 @@ def install(app: FastAPI) -> MarketDiscoveryService:
         if room:
             got["salesroom"] = salesroom.summarise(
                 room, (got.get("pool") or {}).get("bands") or [])
+        # Условия рынка: наша рассрочка и рассрочка соседей по району. Свод
+        # продаж отвечает на «почему не покупают» нашими числами, а витрину
+        # двигает не только наш прайс — без второй половины предложение по
+        # акции строится на одной. Считает это свод рассрочек, экран только
+        # печатает; охват и правило отбора соседей едут вместе с числами.
+        got["market_terms"] = service.installments.district_terms(
+            got.get("project") or "", service.registry)
         got["conclusions"] = contracting.conclusions(got)
         # План продаж и отчёт правлению едут отсюда же: у них была своя кнопка
         # загрузки, то есть свой файл и своя дата рядом с общим складом.

@@ -34,6 +34,7 @@ BLOCK_ABSORPTION = "absorption"
 BLOCK_ROOMS = "rooms"
 BLOCK_PAYMENT = "payment"
 BLOCK_CHANNEL = "channel"
+BLOCK_INSTALLMENT = "installment"
 
 BLOCK_TITLES = {
     BLOCK_PRICE: "Цена метра",
@@ -44,6 +45,7 @@ BLOCK_TITLES = {
     BLOCK_ROOMS: "Комнатность и вымывание",
     BLOCK_PAYMENT: "Способы оплаты",
     BLOCK_CHANNEL: "Кто покупает",
+    BLOCK_INSTALLMENT: "Рассрочка у соседей",
 }
 
 
@@ -158,23 +160,87 @@ def _add_same_class(
     )
 
 
+def _add_same_kind(
+    block: MetricBlock,
+    subject: dict[str, Any],
+    peers: list[dict[str, Any]],
+    price: float,
+) -> None:
+    """Медиана своего вида жилья — рядом с общей, когда выборка смешанная.
+
+    Апартаменты и квартиры продаются разным покупателям и по разной цене, а в
+    выборку попадают вместе: класс у них общий. Разница измерена на выгрузке за
+    2026-08 — в 25 парах «тот же район, тот же класс» апартаменты дешевле в 21,
+    медиана разницы −21,0 %. Но поправки здесь нет и быть не может: в премиуме
+    апартаменты дороже (Хамовники +12,8 %, Басманный +31,1 %), то есть ответ у
+    каждого проекта свой — его и считаем по своей выборке.
+
+    Правило то же, что у соседнего класса: выборку не сужаем, а называем, из
+    чего сложилась общая медиана. Своего вида нет ни у кого — строки нет вовсе:
+    сравнивать не с чем, и пустая строка читалась бы как сравнение.
+    """
+    own = subject.get("housing_kind")
+    if not own:
+        return
+    same = [row for row in peers if row.get("housing_kind") == own]
+    known = [row for row in peers if row.get("housing_kind")]
+    if not same or len(same) == len(known):
+        return
+    exact = _peer_stats(same, "price_per_sqm")
+    if not exact["count"]:
+        return
+    block.peers["same_kind"] = {
+        **exact,
+        "kind": own,
+        "vs_median_pct": _ratio(price, exact["median"]),
+        "known": len(known),
+    }
+    median = f"{exact['median']:,.0f}".replace(",", " ")
+    block.notes.append(
+        f"В выборке смешаны разные виды жилья; у проекта это «{own}» — "
+        f"таких соседей {exact['count']} из {len(known)} с названным видом, "
+        f"их медиана {median} ₽/м²"
+    )
+
+
 def price_block(subject: dict[str, Any], peers: list[dict[str, Any]], city: MoscowMarket) -> MetricBlock:
     block = MetricBlock(BLOCK_PRICE, BLOCK_TITLES[BLOCK_PRICE])
     price = subject.get("price_per_sqm")
     if not price:
         block.notes.append("У проекта нет действующего прайса, сравнивать нечего")
+        # «Цены нет» и «цены нет с ноября» — разные ответы, и второй у нас
+        # есть: помесячный ряд источника помнит последнюю точку. Без неё
+        # раздел читается как «проекта нет вовсе».
+        month = subject.get("last_known_price_month")
+        if month:
+            known = f"{int(subject['last_known_price_per_sqm']):,}".replace(",", " ")
+            block.notes.append(
+                f"Последний раз цену источник показывал в {month} — {known} ₽/м²; "
+                "это старше порога действующего прайса"
+            )
         return block
+    # Основание цены — часть самого числа. Прайс-лист источник отдаёт по
+    # квартирам, и у проекта апартаментов он пуст по построению; помесячный ряд
+    # у того же источника по тому же проекту есть. Подписать ряд прайс-листом
+    # значит назвать одно другим.
+    basis = subject.get("price_basis")
     block.subject = {
         "price_per_sqm": price,
         "price_min": subject.get("price_per_sqm_min"),
         "price_max": subject.get("price_per_sqm_max"),
         "observed_at": subject.get("observed_at"),
-        "basis": "прайс-лист, не сделка",
+        "basis": f"{basis}, не сделка" if basis else "прайс-лист, не сделка",
     }
+    if basis:
+        block.notes.append(
+            f"Прайс-листа квартир у проекта нет; цена метра — {basis} "
+            f"за {subject.get('observed_at') or '—'}"
+        )
     stats = _peer_stats(peers, "price_per_sqm")
     if stats["count"]:
         block.peers = {**stats, "vs_median_pct": _ratio(price, stats["median"])}
         _add_same_class(block, subject, peers, price)
+        _add_same_kind(block, subject, peers, price)
     else:
         block.notes.append("Ни у одного сопоставимого соседа нет действующего прайса")
 
@@ -383,8 +449,6 @@ def _room_window(row: dict[str, Any], span: int = ROOM_WINDOW_MONTHS) -> dict[st
 # девяностом процентиле в 60. Квартал даёт 36 сделок в точке медианно и скачок
 # 17,7 п.п.: разброс падает вдвое, и остаток от него — не шум выборки, а
 # настоящая смена того, что вывели в продажу.
-ROOM_TREND_STEP = 3
-
 # Ниже этого точку рисуем, но называем малой: доля на пяти сделках выглядит на
 # картинке ровно так же, как доля на пятидесяти.
 ROOM_TREND_MIN_DEALS = 10
@@ -393,17 +457,24 @@ ROOM_TREND_MIN_DEALS = 10
 def _room_trend(
     row: dict[str, Any],
     span: int = ROOM_WINDOW_MONTHS,
-    step: int = ROOM_TREND_STEP,
 ) -> list[dict[str, Any]]:
-    """Как менялся состав спроса — по кварталам окна.
+    """Как менялся состав спроса — по КАЛЕНДАРНЫМ кварталам окна.
 
     Квартал, а не месяц: помесячно у одного ЖК десяток сделок, и доля пляшет
-    сильнее, чем меняется спрос (замер выше). Пустой квартал выбрасывается, а
-    не рисуется нулями: пропуск в ряду — не ноль, и колонка нулевой высоты
-    показала бы состав спроса там, где спроса не было вовсе.
+    сильнее, чем меняется спрос (замер выше). Календарный, а не «три месяца от
+    конца окна»: «1 кв. 2025» читается однозначно, а «09.25–11.25» и как три
+    месяца, и как два (вычитанием краёв) — и второе прочтение оспорить нечем
+    (владелец, 07.09.2026). Нарезка от конца окна кварталом НЕ является, и
+    подписать её кварталом значило бы соврать: менять надо саму нарезку.
 
-    Сколько сделок в точке — часть ответа: доля на пяти сделках и доля на
-    пятидесяти на картинке неразличимы.
+    Цена честного имени — неполные края: окно в двенадцать месяцев кончается
+    месяцем отчёта, поэтому первый и последний кварталы бывают короче. Сколько
+    месяцев в точке, она говорит сама, а не выдаёт часть за целое.
+
+    Пустой квартал выбрасывается, а не рисуется нулями: пропуск в ряду — не
+    ноль, и колонка нулевой высоты показала бы состав спроса там, где спроса не
+    было вовсе. Сколько сделок в точке — тоже часть ответа: доля на пяти
+    сделках и доля на пятидесяти на картинке неразличимы.
     """
     line = row.get("rooms_sold") or {}
     months = row.get("rooms_months") or []
@@ -411,15 +482,20 @@ def _room_trend(
         return []
     span = min(span, len(months))
     start = len(months) - span
+
+    buckets: dict[tuple[int, int], list[int]] = {}
+    for index in range(start, len(months)):
+        year, month = (int(part) for part in str(months[index]).split("-")[:2])
+        buckets.setdefault((year, (month - 1) // 3 + 1), []).append(index)
+
     out: list[dict[str, Any]] = []
-    for left in range(start, len(months), step):
-        right = min(left + step, len(months))
+    for (year, quarter), indexes in sorted(buckets.items()):
         point: dict[str, float] = {}
         for name, values in line.items():
             total = sum(
                 float(values[index])
-                for index in range(left, min(right, len(values)))
-                if values[index]
+                for index in indexes
+                if index < len(values) and values[index]
             )
             if total:
                 point[name] = total
@@ -427,8 +503,13 @@ def _room_trend(
         if not deals:
             continue
         out.append({
-            "from": months[left],
-            "to": months[right - 1],
+            "year": year,
+            "quarter": quarter,
+            "from": months[indexes[0]],
+            "to": months[indexes[-1]],
+            # Длина точки — ответ сервера, а не экрана: неполный край окна
+            # обязан назвать себя, а не выглядеть целым кварталом.
+            "months": len(indexes),
             "deals": round(deals, 1),
             "shares": {
                 name: round(value / deals * 100, 1)
@@ -656,7 +737,6 @@ def rooms_block(
             trend = _room_trend(subject)
             if len(trend) > 1:
                 block.subject["rooms_trend"] = trend
-                block.subject["rooms_trend_step"] = ROOM_TREND_STEP
                 shift = _room_shift(trend)
                 if shift:
                     block.subject["rooms_shift"] = shift
@@ -879,6 +959,73 @@ def channel_block(
     return block
 
 
+def installment_block(
+    subject: dict[str, Any], peers: list[dict[str, Any]], city: MoscowMarket
+) -> MetricBlock:
+    """Чем сосед торгует помимо цены.
+
+    Сравнение цен у нас витрина против витрины — так и подписано. Но витрину
+    двигает рассрочка: сосед с тем же прайсом, взносом 10 % и годом рассрочки
+    продаёт мягче, чем выглядит в таблице цен, а сосед, берущий за рассрочку
+    удорожание, — жёстче. Свод TrendAgent отвечает на это по 175 проектам из
+    685, поэтому охват стоит рядом с числами.
+
+    Три ответа здесь разные, и слить их нельзя: «рассрочка есть» (условия
+    названы), «рассрочки нет» (так сказал свод) и «условий не знаем» (проекта в
+    своде нет). Третий — наш пробел, а не отказ застройщика.
+    """
+    block = MetricBlock(BLOCK_INSTALLMENT, BLOCK_TITLES[BLOCK_INSTALLMENT])
+    known = [row for row in peers if row.get("installment") is not None]
+    offering = [row for row in known if row.get("installment")]
+    if subject.get("installment") is None:
+        block.notes.append("Условий рассрочки по проекту в своде нет — это «не знаем», а не «рассрочки нет»")
+    else:
+        block.subject = {
+            "installment": bool(subject.get("installment")),
+            "programs": subject.get("installment_programs"),
+        }
+        for key in ("down_payment_pct", "term_months", "keys_before_payment"):
+            if subject.get("installment_" + key) is not None:
+                block.subject[key] = subject["installment_" + key]
+        terms = subject.get("installment_price_terms") or {}
+        if terms:
+            block.subject["price_terms"] = terms
+
+    if not known:
+        block.notes.append("Ни одного соседа в своде рассрочек нет: сравнивать не с чем")
+        return block
+
+    down = _peer_stats(offering, "installment_down_payment_pct")
+    term = _peer_stats(offering, "installment_term_months")
+    block.peers = {
+        "known": len(known),
+        "total": len(peers),
+        "offering": len(offering),
+        "keys_before_payment": sum(1 for row in offering if row.get("installment_keys_before_payment")),
+    }
+    if down["count"]:
+        block.peers["down_payment"] = down
+        block.peers["vs_down_payment_pct"] = _ratio(
+            subject.get("installment_down_payment_pct"), down["median"]
+        )
+    if term["count"]:
+        block.peers["term"] = term
+        block.peers["vs_term_pct"] = _ratio(
+            subject.get("installment_term_months"), term["median"]
+        )
+    counts: dict[str, int] = {}
+    for row in offering:
+        for name, count in (row.get("installment_price_terms") or {}).items():
+            counts[name] = counts.get(name, 0) + int(count or 0)
+    if counts:
+        block.peers["price_terms"] = dict(sorted(counts.items(), key=lambda pair: -pair[1]))
+    if len(known) < len(peers):
+        block.notes.append(
+            f"Условия известны у {len(known)} соседей из {len(peers)}: остальных в своде нет"
+        )
+    return block
+
+
 BUILDERS: dict[str, Callable[..., MetricBlock]] = {
     BLOCK_PRICE: price_block,
     BLOCK_PACE: pace_block,
@@ -888,6 +1035,7 @@ BUILDERS: dict[str, Callable[..., MetricBlock]] = {
     BLOCK_ROOMS: rooms_block,
     BLOCK_PAYMENT: payment_block,
     BLOCK_CHANNEL: channel_block,
+    BLOCK_INSTALLMENT: installment_block,
 }
 
 

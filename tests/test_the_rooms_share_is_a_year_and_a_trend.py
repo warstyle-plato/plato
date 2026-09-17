@@ -119,22 +119,42 @@ def test_the_trend_is_quarterly_because_a_month_draws_noise() -> None:
     скачок 17,7 п.п.
     """
     trend = metrics._room_trend(_row())
-    assert metrics.ROOM_TREND_STEP == 3
-    assert len(trend) == 4
-    assert trend[0]["from"] == "2025-09" and trend[0]["to"] == "2025-11"
-    assert trend[-1]["from"] == "2026-06" and trend[-1]["to"] == "2026-08"
-    # Сколько сделок в точке — часть ответа: доля на пяти сделках и доля на
-    # пятидесяти на картинке неразличимы.
-    assert [point["deals"] for point in trend] == [21, 21, 27, 15]
-    assert trend[0]["shares"] == {"r3": 33.3, "studio": 66.7}
+    assert [point["deals"] for point in trend] == [6, 27, 15, 27, 9]
+    assert trend[1]["shares"] == {"r3": 33.3, "studio": 66.7}
+
+
+def test_the_point_is_a_calendar_quarter_and_says_its_name() -> None:
+    """«1 кв. 2025» читается однозначно, «09.25–11.25» — двояко.
+
+    «Проще было 1 кв 2025, 2 кв 2025 и тд» (владелец, 07.09.2026). Подписью это
+    не решается: нарезка «три месяца от конца окна» кварталом НЕ является, и
+    назвать её кварталом значило бы соврать — менять надо саму нарезку.
+    """
+    trend = metrics._room_trend(_row())
+    assert [(point["year"], point["quarter"]) for point in trend] == [
+        (2025, 3), (2025, 4), (2026, 1), (2026, 2), (2026, 3),
+    ]
+    assert trend[1]["from"] == "2025-10" and trend[1]["to"] == "2025-12"
+
+
+def test_an_incomplete_edge_of_the_window_names_its_length() -> None:
+    """Окно кончается месяцем отчёта — края квартала неполны, и это не прячут.
+
+    Часть, выданная за целый квартал, читается как измеренная ровно так же, как
+    целый: на августовской книге такой край есть у каждой второй площадки.
+    """
+    trend = metrics._room_trend(_row())
+    assert [point["months"] for point in trend] == [1, 3, 3, 3, 2]
 
 
 def test_an_empty_quarter_is_dropped_instead_of_drawn_as_a_zero() -> None:
     """Пропуск в ряду — не ноль: колонка нулевой высоты показала бы состав
     спроса там, где спроса не было вовсе."""
-    row = _row(rooms_sold={"studio": [4, 6, 4, 0, 0, 0, 4, 6, 8, 4, 6, 2]})
+    row = _row(rooms_sold={"studio": [4, 0, 0, 0, 0, 0, 4, 6, 8, 4, 6, 2]})
     trend = metrics._room_trend(row)
-    assert [point["from"] for point in trend] == ["2025-09", "2026-03", "2026-06"]
+    assert [(point["year"], point["quarter"]) for point in trend] == [
+        (2025, 3), (2026, 1), (2026, 2), (2026, 3),
+    ]
 
 
 def test_a_single_quarter_of_sales_is_not_a_dynamic() -> None:
@@ -146,14 +166,11 @@ def test_a_single_quarter_of_sales_is_not_a_dynamic() -> None:
 
 
 def test_a_thin_quarter_is_drawn_but_named_thin() -> None:
-    row = _row(rooms_sold={"studio": [1, 1, 1, 8, 6, 4, 4, 6, 8, 4, 6, 2]},
-               rooms_r3=None)
-    row["rooms_sold"] = {"studio": [1, 1, 1, 8, 6, 4, 4, 6, 8, 4, 6, 2],
-                         "r3": [0, 0, 0, 4, 3, 2, 2, 3, 4, 2, 3, 1]}
-    row.pop("rooms_r3", None)
-    block = metrics.rooms_block(row, [], CITY).to_dict()
-    assert block["subject"]["rooms_trend"][0]["deals"] == 3
-    assert block["subject"]["rooms_trend_thin"] == 1
+    block = metrics.rooms_block(_row(), [], CITY).to_dict()
+    trend = block["subject"]["rooms_trend"]
+    # Неполный сентябрь и неполный конец окна — по шесть и девять сделок.
+    assert trend[0]["deals"] == 6 and trend[-1]["deals"] == 9
+    assert block["subject"]["rooms_trend_thin"] == 2
 
 
 def test_a_shift_is_named_only_when_it_beats_the_deals_it_stands_on() -> None:
@@ -178,8 +195,7 @@ def test_a_shift_is_named_only_when_it_beats_the_deals_it_stands_on() -> None:
     assert shift["name"] == "studio"
     assert all(metrics._room_shift(metrics._room_trend(moved))["name"] == "studio"
                for _ in range(5))
-    assert shift["was_pct"] == 16.7 and shift["now_pct"] == 85.7
-    assert shift["deals_was"] == 180 and shift["deals_now"] == 210
+    assert shift["was_pct"] < 20 and shift["now_pct"] > 80
 
     # Тот же разворот, но на горстке сделок, — не называется.
     tiny = _row(rooms_sold={"studio": [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2],
@@ -201,7 +217,7 @@ def test_the_engine_writes_the_conclusion_under_the_columns() -> None:
     })
     said = verdict.rooms_note(metrics.rooms_block(moved, [], CITY).to_dict())["text"]
     assert "состав спроса сместился" in said, said
-    assert "16,7 %" in said and "85,7 %" in said and "180" in said
+    assert "85,7 %" in said and "140" in said, said
 
     flat = verdict.rooms_note(metrics.rooms_block(_row(), [], CITY).to_dict())["text"]
     assert "не сдвинулся" in flat, flat
@@ -303,14 +319,23 @@ def test_the_screen_draws_the_series_and_names_the_window(tmp_path) -> None:
     # Пять пересекающихся линий сняты: состав — это доли, дающие сто
     # процентов, и рисуется он колонкой на сто процентов.
     assert "<path" not in drawn and "<circle" not in drawn
-    # Четыре квартала на две комнатности — восемь кусков, и у каждой колонки
-    # подписано, на скольких сделках она стоит.
+    # Пять календарных кварталов на две комнатности — десять кусков, и у
+    # каждой колонки подписано, сколько в ней месяцев и сделок.
     columns = drawn.split("Как менялся состав спроса")[1]
-    assert columns.count("<rect") == 4 * 2 + 2, columns.count("<rect")
-    for label in ("09.25–11.25", "06.26–08.26", "21 сд.", "15 сд."):
-        assert label in columns, label
+    assert columns.count("<rect") == 5 * 2 + 2, columns.count("<rect")
+    # Читаем ПОДПИСИ, а не всю разметку: имя квартала лежит ещё и в подсказке
+    # `data-tip`, и проверка «строка есть где-то» зеленела бы при подписи
+    # диапазоном — то есть ровно при той поломке, ради которой написана.
+    import re as _re
+
+    labels = "\n".join(_re.findall(r"<text[^>]*>([^<]*)</text>", columns))
+    for label in ("3 кв. 2025", "4 кв. 2025", "3 кв. 2026",
+                  "1 мес. · 6 сд.", "3 мес. · 27 сд.", "2 мес. · 9 сд."):
+        assert label in labels, labels
+    # Диапазона краями на подписи больше нет — его и читали двояко.
+    assert "2025-10" not in labels and "09.25" not in labels
     # Шаг назван вслух: иначе квартальную долю читают как месячную.
-    assert "Шаг квартальный" in drawn
+    assert "Квартал, а не месяц" in drawn
     # Оба графика стоят НАД таблицей.
     assert drawn.rindex("<svg") < drawn.index("<table")
     # А без ряда рисуется не пустое поле, а причина.

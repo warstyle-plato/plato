@@ -118,13 +118,14 @@ table.territory tr.obj td:first-child{border-left:14px solid var(--soft)}
 <div class="shell">
   <div class="brandbar"><a class="brand" href="/" title="DevelopAid"><img src="/guide/assets/logo.webp" alt="ПЛАТО"></a><div class="brandline"></div></div>
   <div class="head">
-    <div><h1>КРТ Нагатино · объекты и правообладатели</h1>
+    <div><h1 id="pageTitle">КРТ Нагатино · объекты и правообладатели</h1>
       <p id="siteLine">Квартал 77:05:0004001 · выгрузка владельца, контуры — ЕГРН</p></div>
     <div class="badge">служебная страница</div>
   </div>
   <div class="content">
     <div id="gate" class="notice warn" style="display:none"></div>
     <div id="share" class="source"></div>
+    <div id="siblings" class="source"></div>
     <div id="progress" class="notice" style="display:none"></div>
     <div id="stats" class="stats"></div>
     <div id="reconcile"></div>
@@ -151,7 +152,7 @@ table.territory tr.obj td:first-child{border-left:14px solid var(--soft)}
     <div class="fold"><details><summary>На чём посчитано — источники</summary>
       <div id="sourceNote" class="source"></div></details></div>
 
-    <div class="source" style="margin-top:18px"><a id="exportLink" href="/krt/nagatino/export.xlsx">
+    <div class="source" style="margin-top:18px"><a id="exportLink" href="#">
       Скачать свод в Excel</a> — те же числа, что здесь: книга собирается из того же расчёта,
       второй сборки нет. Выгрузка идёт по всем владельцам, а не по отбору на экране.</div>
   </div>
@@ -175,6 +176,11 @@ const S={data:null,timer:null,started:0,pick:null,show:null,share:''};
 // «ничего не выбрано», и путать его с «выбрано всё» нельзя.
 const filtering=()=>S.show!==null;
 const shown=key=>!filtering()||S.show.has(String(key||'none'));
+// Выгрузка владельца есть только у Нагатино: у площадки с торгов строений
+// в присланном файле не бывает по построению, и всё, что считается «по
+// строкам файла», у неё отвечает нулём. Ответ на это один — два разошлись бы,
+// и одна надпись объявляла бы пустым то, что другая рисует.
+const hasUpload=()=>(((S.data||{}).parcels)||[]).length>0;
 // Скрытое считается и называется под таблицей: молча снятая строка читается
 // как отсутствие объекта в территории.
 //
@@ -208,6 +214,20 @@ function auth(){
          key:get('plato_projects_key','key','developaid_key'),
          share:share};
 }
+// Чья это территория, решает АДРЕС страницы, а не второй экран. Форка у
+// страницы нет: копию негде обновлять, а два экрана об одной территории
+// однажды показали бы разное. Маршруты данных живут рядом со страницей —
+// `/krt/nagatino/parcels` у Нагатино, `/krt/site/<слаг>/parcels` у прочих, —
+// поэтому база берётся из `location`, а не пишется строкой.
+const BASE=(function(){
+ try{return location.pathname.replace(/\/+$/,'')||'/krt/nagatino'}
+ catch(e){return '/krt/nagatino'}
+})();
+// Выгрузка владельца есть только у Нагатино: у неё свои группы и своя картинка
+// границ. Спрашивать их у площадки с торгов нечего, и молчание об этом
+// читалось бы как поломка.
+const IS_NAGATINO=BASE.indexOf('/krt/site/')<0;
+
 // Ответ разбирают, зная, что он может быть не ответом: у шлюза своя страница
 // ошибки, и `r.json()` на ней даёт «не тот формат» вместо причины отказа.
 async function askJson(url){
@@ -224,7 +244,7 @@ async function load(refresh){
  const params=new URLSearchParams({session:a.session,key:a.key,share:a.share});
  if(refresh)params.set('refresh','1');
  try{
-  S.data=await askJson('/krt/nagatino/parcels?'+params.toString());
+  S.data=await askJson(BASE+'/parcels?'+params.toString());
   $('gate').style.display='none';
  }catch(e){
   // Отказ доступа и поломка — разные ответы, и на экране они разные.
@@ -260,17 +280,25 @@ async function load(refresh){
 // Ход показывается тем, что есть: сколько прочитано, сколько осталось и
 // сколько прошло секунд. Ожидание без признака работы читается как
 // внезапность — так уже было со скринингом ограничений.
+// Счётчик считает то, что читают. Читатель идёт по объединению номеров —
+// строки присланного файла ПЛЮС состав извещения, — а прогресс брал строки
+// файла: у площадки с торгов их нет вовсе, и на экране стояло «контуров
+// получено 0 из 0, осталось спросить 0» ровно в те секунды, когда ЕГРН
+// спрашивали о тридцати девяти номерах (замер прода 14.09.2026, Варшавское
+// ш., вл. 37). Это третья копия одной болезни: у молчащего читателя обязан
+// быть счётчик молчания, и считать он обязан свою величину.
 function poll(){
  const o=(S.data&&S.data.outlines)||{};
+ const left=o.asked_unread||0,asked=o.asked||0,got=o.asked_drawn||0;
  clearTimeout(S.timer);
- if(!o.reading&&!o.unread){$('progress').style.display='none';S.started=0;return}
+ if(!o.reading&&!left){$('progress').style.display='none';S.started=0;return}
  if(!S.started)S.started=Date.now();
  $('progress').style.display='';
  $('progress').textContent=o.reading
-  ? 'Читаю ЕГРН: контуров получено '+(o.drawn||0)+' из '+(o.parcels||0)
-    +', осталось спросить '+(o.unread||0)+'. Прошло '+Math.round((Date.now()-S.started)/1000)
+  ? 'Читаю ЕГРН: контуров получено '+got+' из '+asked
+    +', осталось спросить '+left+'. Прошло '+Math.round((Date.now()-S.started)/1000)
     +' с — по номеру отдельный запрос, страница дорисовывается сама.'
-  : 'Контуры ' + (o.unread||0) + ' объектов ещё не спрашивали. Нажмите «Дочитать контуры».';
+  : 'Контуры ' + left + ' объектов ещё не спрашивали. Нажмите «Дочитать контуры».';
  if(o.reading)S.timer=setTimeout(()=>load(false),4000);
 }
 
@@ -382,14 +410,31 @@ function drawnLands(){
      || (l.objects||[]).some(o=>shown((o.owner||{}).group)));
 }
 
+// Почему карта пуста — ответ данных, а не умолчание. Прежде гейт читал
+// СТРОЕНИЯ выгрузки и печатал «ЕГРН по ним ещё не спрашивали»: у площадки с
+// торгов выгрузки нет вовсе, объектов в запасном перечне решения не бывает, —
+// и карта отказывалась рисовать, ИМЕЯ 55 контуров участков из 60 (замер прода
+// 14.09.2026, Варшавское ш., вл. 37). Причина при этом была неверна дважды:
+// ЕГРН как раз спросили и ответил.
+function emptyMapReason(){
+ const d=S.data||{},o=d.outlines||{},src=((d.territory||{}).source)||{};
+ if(o.problem)return 'ЕГРН отвечал с ошибкой: '+o.problem;
+ if(src.notice_problem&&!(((d.territory||{}).lands)||[]).length)
+  return 'состав территории не прочитан: '+src.notice_problem;
+ if(o.reading)return 'ЕГРН ещё отвечает — контуры дочитываются';
+ return 'ЕГРН по ним ещё не спрашивали';
+}
+
 function mapMarkup(){
  const d=S.data;
  const drawn=drawnObjects();
- const site=(d.krt_site&&d.krt_site.rings_merc)||[];
- if(!drawn.length)
-  return '<div class="notice warn">Ни одного контура пока нет — рисовать нечего. '
-   +'Это не значит, что объектов нет: '+escapeHtml(String((d.outlines||{}).problem||'ЕГРН по ним ещё не спрашивали'))+'.</div>';
  const lands=drawnLands();
+ const site=(d.krt_site&&d.krt_site.rings_merc)||[];
+ // Рисуем, если есть хоть одна фигура: у площадки без выгрузки на карте одна
+ // земля, и она — ответ на вопрос «что за территория», а не полкартинки.
+ if(!drawn.length&&!lands.length)
+  return '<div class="notice warn">Ни одного контура пока нет — рисовать нечего. '
+   +'Это не значит, что объектов нет: '+escapeHtml(emptyMapReason())+'.</div>';
  const mostlyInside=l=>!l.part||l.notice_area_sqm==null||!l.area_sqm
    ||l.notice_area_sqm/l.area_sqm>=0.5;
  // Кадр строится по ПЛОЩАДКЕ, а не по всему нарисованному: дорога
@@ -726,7 +771,17 @@ function statsMarkup(){
               'не городское — к выкупу или соглашению'],
              [mln((others.land_value_rub||0)+(others.objects_value_rub||0)),
               'их кадастровая стоимость — не цена выкупа']);
- tiles.push([landNum(o.drawn,0)+' из '+landNum(o.parcels,0),'контуров получено из ЕГРН']);
+ // Плитка называет, ЧЕГО контуры: у Нагатино считаются строения выгрузки, у
+ // площадки с торгов их нет вовсе — и «0 из 0» читалось как «пула не знаем»
+ // при 55 полученных контурах участков.
+ // А «0 из 0» там, где состава нет вовсе, — та же ложь, которую мы убрали из
+ // строки хода: делить не на что, и «получено 0 из 0» читается как ответ ЕГРН.
+ // Честный ответ — «состава нет», а чей это пробел, сказано причиной у карты.
+ tiles.push(hasUpload()
+   ? [landNum(o.drawn,0)+' из '+landNum(o.parcels,0),'контуров строений получено из ЕГРН']
+   : (o.lands
+      ? [landNum(o.lands_drawn,0)+' из '+landNum(o.lands,0),'контуров участков получено из ЕГРН']
+      : ['нет','состава территории — контуры рисовать не по чему']));
  return tiles.map(s=>`<div class="stat"><b>${s[0]}</b><span>${s[1]}</span></div>`).join('');
 }
 
@@ -837,6 +892,20 @@ function territoryMarkup(){
       +`${m2(t.site_area_sqm)}, это и есть площадка извещения.`:''):'')
   +(outside?` Выписка есть, а в извещении объекта нет: ${outside} — это ответ документа о составе территории.`:'')
   +(t.objects_without_extract?` Объектов без выписки: ${t.objects_without_extract}.`:'')
+  // Полная фраза — ОДИН раз, под таблицей, а не в каждой из тридцати четырёх
+  // строк: в клетке стоит короткий ответ выписки, а что с этим делать —
+  // здесь. «Права нет» и «право есть, а имени эта форма не раскрывает» —
+  // разные ответы, и второе лечится своим запросом в ЕГРН, а не
+  // перечитыванием того же файла.
+  +((t.objects_right_withheld||t.lands_right_withheld)
+    ? ' Право зарегистрировано, а имени правообладателя выписка не раскрывает: '
+      +[t.lands_right_withheld?t.lands_right_withheld+' участков':'',
+        t.objects_right_withheld?t.objects_right_withheld+' строений':'']
+       .filter(Boolean).join(' и ')
+      +'. Так устроена печатная форма «об объекте недвижимости» — это не молчание '
+      +'реестра и не отсутствие права: имя даст свой запрос в ЕГРН, а не перечитывание '
+      +'того же файла. Владельцем участка под ними мы их не приписываем.'
+    : '')
   +'</div>';
 }
 
@@ -1004,6 +1073,10 @@ function fileGapMarkup(){
 
 function kindsMarkup(){
  const k=S.data.kinds||{},total=S.data.totals.parcels;
+ // Блок отвечает на «что стоит в присланном файле». Файла нет — вопроса нет:
+ // у площадки с торгов он утверждал «вид объектов ещё не спрашивали» про
+ // выгрузку, которой не бывает.
+ if(!hasUpload())return '';
  if(!k.asked)return '<div class="notice">Вид объектов в ЕГРН ещё не спрашивали — '
   +'что именно стоит в выгрузке, земля или здания, пока не проверено.</div>';
  const named=Object.entries(k.counts||{}).filter(([name])=>name!=='не спрашивали')
@@ -1094,9 +1167,27 @@ function legendMarkup(){
 // координат, и совмещение на глаз рисовало бы геометрию, которой у нас нет.
 // «Убираем дорогу и выходим примерно на 14 га?» (владелец, 07.09.2026) — да, и
 // разложение стоит тут же, потому что вопрос задают, глядя на этот контур.
+// Отказ маршрута — словами маршрута. У <img> текста отказа нет, и прежнее
+// «Картинка приложения 1 не отдалась» одинаково отвечало и на «лота не
+// знаем», и на «в вложениях схемы нет», и на «документ не открылся».
+function outlinePictureFailed(img){
+ const box=Object.assign(document.createElement('div'),
+   {className:'notice warn',textContent:'Рисунок города не прочитан.'});
+ img.replaceWith(box);
+ fetch(img.src).then(r=>r.ok?null:r.json().catch(()=>null)).then(d=>{
+  const why=d&&d.detail?String(d.detail):'';
+  if(why)box.textContent='Рисунок города не прочитан: '+why+'.';
+ }).catch(()=>{});
+}
 function decisionOutlineMarkup(){
  const a=auth(),t=(S.data.territory||{}).totals||{};
- const src='/krt/nagatino/decision-outline.png?'
+ // Раскрытие «Контур площадки, как его напечатал город» стоит в разметке у
+ // ВСЕХ площадок, а картинку отдавал маршрут, который был только у Нагатино:
+ // у остальных человек открывал блок и видел пустоту (экран владельца,
+ // 14.09.2026). Пустого раскрытия не бывает — либо картинка, либо названная
+ // причина, и её называет сам маршрут (у площадки с торгов рисунок лежит в
+ // «Схеме границ» лотовой документации).
+ const src=(IS_NAGATINO?'/krt/nagatino/decision-outline.png?':BASE+'/decision-outline.png?')
    +new URLSearchParams({session:a.session,key:a.key,share:a.share});
  const road=null;
  const steps=road?`<div class="source">Почему 18,69 га участков и 14,62 га площадки: `
@@ -1106,11 +1197,14 @@ function decisionOutlineMarkup(){
    +`вне площадки остаётся ${m2(t.land_area_sqm-t.land_area_in_notice_sqm-(road.area_sqm-road.notice_area_sqm))}, `
    +`вместе участки дают ${m2(t.land_area_in_notice_sqm)}, плюс ${m2(t.land_unformed_sqm)} земли без `
    +`кадастрового номера — ${m2(t.site_area_sqm)}, ровно шапка извещения.</div>`:'';
- return `<img src="${src}" alt="Границы КРТ по приложению 1 к проекту решения"`
+ // Причину печатает САМ маршрут, и потому картинка забирается запросом:
+ // `onerror` у <img> текста отказа не видит, и «не отдалась» одинаково
+ // отвечало бы и на «лота не знаем», и на «в вложениях схемы нет».
+ return `<img src="${src}" alt="Рисунок границ, как его напечатал город"`
   +` style="display:block;width:100%;height:auto;border:1px solid var(--line)"`
-  +` onerror="this.replaceWith(Object.assign(document.createElement('div'),`
-  +`{className:'notice warn',textContent:'Картинка приложения 1 не отдалась.'}))">`
-  +'<div class="source">Приложение 1 к проекту решения о КРТ (mos.ru) — рисунок города. '
+  +` onerror="outlinePictureFailed(this)">`
+  +'<div class="source">Приложение 1 к проекту решения о КРТ (mos.ru) или схема границ '
+  +'из документации лота — рисунок города. '
   +'На нашу карту он НЕ накладывается: это растр без координат, и совместить его можно только '
   +'на глаз, а нарисованная так граница выглядела бы ровно так же уверенно, как настоящая. '
   +'Контур, который мы рисуем пунктиром на карте, собран из ПЕРЕЧНЯ того же решения: '
@@ -1119,19 +1213,35 @@ function decisionOutlineMarkup(){
 }
 
 function coverageMarkup(){
- const o=S.data.outlines,bits=[];
- if(o.unread)bits.push(`${o.unread} строений ещё не спрашивали в ЕГРН — это наш пробел, а не их отсутствие`);
- if(o.empty)bits.push(`${o.empty} есть в ЕГРН, но контура у них нет`);
+ const o=S.data.outlines;
+ // Строки про строения выгрузки — только там, где выгрузка есть: «нарисованы
+ // все 0 строений выгрузки» у площадки с торгов утверждает о файле, которого
+ // нет, и читается как потерянные строки.
+ //
+ // Но молчать о строениях СОСТАВА нельзя: у Варшавского ш., вл. 37 контур
+ // есть у 36 из 39, и после первой правки о трёх не говорил никто — молчание
+ // читается как «всё нарисовано». Считаются они своей парой, а не парой
+ // выгрузки, и подписаны своим источником.
+ const from=hasUpload()
+  ? {drawn:o.drawn,all:o.parcels,unread:o.unread,empty:o.empty,
+     whole:`Нарисованы все ${o.drawn} строений выгрузки.`,
+     part:`Строений нарисовано ${o.drawn} из ${o.parcels}.`}
+  : {drawn:o.objects_drawn,all:o.objects,unread:o.objects_unread,empty:o.objects_empty,
+     whole:`Нарисованы все ${o.objects_drawn} строений состава территории.`,
+     part:`Строений состава нарисовано ${o.objects_drawn} из ${o.objects}.`};
+ const bits=[];
+ if(from.unread)bits.push(`${from.unread} строений ещё не спрашивали в ЕГРН — это наш пробел, а не их отсутствие`);
+ if(from.empty)bits.push(`${from.empty} есть в ЕГРН, но контура у них нет`);
  if(o.problem)bits.push('ЕГРН отвечал с ошибкой: '+escapeHtml(o.problem));
- const head=bits.length
-  ? `Строений нарисовано ${o.drawn} из ${o.parcels}. Остальные: ${bits.join('; ')}.`
-  : `Нарисованы все ${o.drawn} строений выгрузки.`;
+ const head=!from.all ? ''
+  : (bits.length ? `${from.part} Остальные: ${bits.join('; ')}.` : from.whole);
  // Участки считаются отдельно: счётчик выше — по строкам файла, а это здания.
  // Ненарисованный участок иначе нигде не назван, и его отсутствие читается как
  // отсутствие цвета у владельца: «почему зелёной подложки Москвы нет под
  // строениями Москвы?» — участок под ними покрашен городским зелёным, просто
  // контур его ещё не спрашивали.
  if(o.lands==null)return head;
+ const join=(a,b)=>[a,b].filter(Boolean).join(' ');
  const T=S.data.territory||{},tot=T.totals||{};
  const outside=(T.lands||[]).filter(l=>l.inside_site_share!=null&&l.inside_site_share<0.5);
  const check=tot.lands_outline_measured
@@ -1145,11 +1255,11 @@ function coverageMarkup(){
       : 'все внутри.')
   : ' С полигоном площадки не сверено: его ещё не получили.';
  const left=o.lands-o.lands_drawn;
- return head+' '+(left
+ return join(head,(left
   ? `Земельных участков нарисовано ${o.lands_drawn} из ${o.lands}: у ${left} контур ЕГРН ещё `
     +'не получен, поэтому под их строениями подложки нет — цвет владельца у них при этом уже '
     +'посчитан и стоит в таблице. Нажмите «Дочитать контуры».'
-  : `Земельные участки нарисованы все ${o.lands}.`)+check;
+  : `Земельные участки нарисованы все ${o.lands}.`)+check);
 }
 
 function tableMarkup(){
@@ -1197,15 +1307,49 @@ function ownersMarkup(){
   +'о владельце объекта, а не наша догадка. Скажите, куда её отнести, — это одна строка в реестре.</div>';
 }
 
+// Куда ещё пойти. Ссылки на эту страницу в публичной части нет — решение
+// владельца, — и перейти между территориями можно только отсюда: без списка
+// страница отвечала бы «а где остальные» молчанием. «Торги идут» здесь не
+// утверждается: печатается срок, как его объявила площадка, и читатель видит
+// сам — второе правило живости разошлось бы с каталогом.
+function siblingsMarkup(){
+ const rows=S.data.siblings||[];
+ if(!rows.length)return 'Площадок с лотом торгов в связке пока нет — '
+   +'связку собирает обход каталога, и «не собрали» это не «лотов нет».';
+ const here=BASE;
+ return 'Площадки с лотом торгов ('+rows.length+'): '
+  +rows.map(r=>{
+    const name=escapeHtml(r.name||r.slug)
+      +(r.deadline?' <span style="color:var(--muted)">до '+escapeHtml(r.deadline)+'</span>':'');
+    return (r.url===here)?('<b>'+name+'</b>')
+      :('<a href="'+escapeHtml(r.url)+'">'+name+'</a>');
+   }).join(' · ');
+}
+
 function render(){
  const d=S.data; if(!d)return;
  const site=d.krt_site||{};
- $('siteLine').textContent='Квартал '+((d.site||{}).quarter||'')+' · '
-  +((d.site||{}).okrug||'')+' · '+((d.site||{}).district||'')
-  +(site.name?' · площадка реестра: '+site.name:'');
+ const own=d.site||{};
+ // Имя площадки берётся из ОТВЕТА, а не из заголовка страницы: страница одна
+ // на все территории, и зашитое имя называло бы чужую.
+ const title=IS_NAGATINO
+   ? 'КРТ Нагатино · объекты и правообладатели'
+   : 'КРТ '+(own.name||own.slug||'площадка')+' · объекты и правообладатели';
+ const heading=$('pageTitle');
+ if(heading)heading.textContent=title;
+ try{document.title='DevelopAid · '+title}catch(e){}
+ $('siteLine').textContent=IS_NAGATINO
+  ? ('Квартал '+(own.quarter||'')+' · '+(own.okrug||'')+' · '+(own.district||'')
+     +(site.name?' · площадка реестра: '+site.name:''))
+  : ([own.okrug||'',own.district||'',own.status||'',
+      own.area_ha?(own.area_ha+' га по каталогу'):'' ].filter(Boolean).join(' · ')
+     +' · состав территории — документы лота, контуры — ЕГРН');
  $('stats').innerHTML=statsMarkup();
- $('share').innerHTML=shareMarkup();
- bindShare();
+ $('siblings').innerHTML=siblingsMarkup();
+ // «Поделиться» есть только у Нагатино: код ссылки один на страницу, и кнопка
+ // на площадке с торгов выдала бы адрес чужой территории.
+ if(IS_NAGATINO){$('share').innerHTML=shareMarkup(); bindShare();}
+ else{$('share').innerHTML='';}
  $('reconcile').innerHTML=siteReconcileNote();
  $('findings').innerHTML=findingsMarkup();
  $('filter').innerHTML=filterMarkup();
@@ -1217,7 +1361,7 @@ function render(){
  $('coverage').innerHTML=coverageMarkup();
  $('decisionOutline').innerHTML=decisionOutlineMarkup();
  const a=auth(),link=$('exportLink');
- if(link)link.href='/krt/nagatino/export.xlsx?'
+ if(link)link.href=BASE+'/export.xlsx?'
    +new URLSearchParams({session:a.session,key:a.key,share:a.share});
  $('territoryBox').innerHTML=territoryMarkup();
  $('territoryBox').querySelectorAll('tr[id^="t-"]').forEach(row=>{
@@ -1232,10 +1376,15 @@ function render(){
  $('ownersBox').innerHTML=ownersMarkup();
  // Число в заголовке складки обязательно: закрытый список без него читается
  // как отсутствующий.
+ const all=(S.data.parcels||[]).length;
  const shownRows=(S.data.parcels||[]).filter(p=>shown(p.group)).length;
- const summary=$('rawSummary');
+ const summary=$('rawSummary'),fold=$('rawFold');
+ // Выгрузки владельца у площадки с торгов нет вовсе, и пустая складка
+ // читалась бы как потерянные строки. Её не рисуем, а почему — сказано в
+ // источниках свода.
+ if(fold)fold.style.display=all?'':'none';
  if(summary)summary.textContent='Строения из присланного файла — '+shownRows
-   +(shownRows===(S.data.parcels||[]).length?'':' из '+(S.data.parcels||[]).length)
+   +(shownRows===all?'':' из '+all)
    +' строк, сырьё под нашими таблицами';
  bindMap();
 }

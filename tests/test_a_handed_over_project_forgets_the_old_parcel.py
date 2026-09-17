@@ -26,6 +26,8 @@ from pathlib import Path
 
 import pytest
 
+from browser import chromium_or_skip
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
@@ -128,13 +130,11 @@ READ_STATE = """() => ({
 
 
 def test_in_a_real_browser_the_krt_site_arrives_without_the_old_parcel() -> None:
-    try:
-        from playwright.sync_api import sync_playwright
-    except Exception:
-        pytest.skip("playwright недоступен")
-    chrome = Path("/opt/pw-browsers/chromium-1194/chrome-linux/chrome")
-    if not chrome.exists():
-        pytest.skip("chromium в образе не найден")
+    # Где браузер — один ответ на весь набор (`tests/browser.py`): он ищет, а
+    # не помнит номер сборки, и на машине, где браузер ОБЯЗАН быть, его
+    # отсутствие красит проверку красным, а не пропускает её молча.
+    chrome = chromium_or_skip()
+    from playwright.sync_api import sync_playwright
     import uvicorn
 
     # Мост стоит в PAGE только у сборки с модулем торгов (main_registry);

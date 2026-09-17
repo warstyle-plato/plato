@@ -115,14 +115,48 @@ REFUSAL_TTL_SECONDS = 30 * 60
 CHUNK = 6
 
 _LOCK = threading.Lock()
-_READING = False
+# Кто сейчас читает ЕГРН — по площадке, а не одним признаком на модуль. Общий
+# признак запирал бы чтение второй площадки на всё время чтения первой, и на
+# экране это выглядело бы как «контуров нет».
+_READING: set[str] = set()
 
 
 class RegistryProblem(RuntimeError):
     """Реестра нет или он не читается. Это поломка, а не пустая карта."""
 
 
-def registry() -> dict[str, Any]:
+class Site:
+    """Чья это территория: откуда её документы и где лежат ответы ЕГРН.
+
+    Нагатино — один экземпляр, а не единственный. У площадки с торгов те же
+    вопросы («кто владелец», «сколько метров», «что на каком участке») и другие
+    источники: извещение и выписки её лота вместо присланной владельцем
+    выгрузки. Второй сборки свода для неё не заводим — разойдясь, две сборки
+    дали бы два достоверных на вид ответа об одной территории; ровно так уже
+    расходились бот с сайтом, отчёт с книгой и книга с движком.
+
+    `key` — имя кэша и часть адреса страницы; `registry` и `documents` —
+    источники, спрашиваемые при обращении, а не на импорте.
+    """
+
+    def __init__(self, key: str, title: str,
+                 registry: Callable[[], dict[str, Any]],
+                 documents: Callable[[], dict[str, Any]],
+                 *, slug: str = "") -> None:
+        self.key = str(key)
+        self.title = str(title)
+        self.slug = str(slug or key)
+        self._registry = registry
+        self._documents = documents
+
+    def registry(self) -> dict[str, Any]:
+        return self._registry()
+
+    def documents(self) -> dict[str, Any]:
+        return self._documents()
+
+
+def _nagatino_registry() -> dict[str, Any]:
     """Разобранная выгрузка владельца. Копии её чисел на странице нет."""
     try:
         with REGISTRY_PATH.open("r", encoding="utf-8") as fh:
@@ -134,31 +168,67 @@ def registry() -> dict[str, Any]:
     return data
 
 
-def numbers() -> list[str]:
+def empty_registry() -> dict[str, Any]:
+    """Реестр площадки, по которой выгрузки владельца нет вовсе.
+
+    Это ответ, а не пустая заготовка: групп, названных владельцем, у такой
+    площадки нет, и приписанная группа на экране выглядит ровно так же
+    уверенно, как названная. Оттенки владельцам всё равно нужны — карта без
+    них одноцветна, — поэтому жёлтая гамма остаётся, а красный и зелёный
+    (Брынцалов и Москва) держатся за своими группами.
+    """
+    nagatino = _nagatino_registry()
+    return {
+        "schema_version": 1,
+        "parcels": [],
+        "owners": [],
+        # Группы, не зависящие от чужой выгрузки: город как публичный
+        # собственник и два ответа выписки без имени. «Имя не раскрыто» живёт
+        # ровно у таких площадок — все 34 такие строения (замер 15.09.2026)
+        # стоят на площадках БЕЗ выгрузки, — и без группы у них не было бы ни
+        # галочки отбора, ни подписи в легенде.
+        "groups": [group for group in (nagatino.get("groups") or [])
+                   if str(group.get("key")) in ("moscow", "withheld", "none")],
+        "owner_groups": {key: value
+                         for key, value in (nagatino.get("owner_groups") or {}).items()
+                         if str(value) == "moscow"},
+        "other_shades": list(nagatino.get("other_shades") or []),
+        "source": {},
+    }
+
+
+def registry(site: Site | None = None) -> dict[str, Any]:
+    """Выгрузка площадки. У Нагатино — присланный файл, у прочих её нет."""
+    return (site or NAGATINO).registry()
+
+
+def numbers(site: Site | None = None) -> list[str]:
     """Номера, по которым спрашивается контур: строения И участки территории.
 
     Состав берётся из извещения о торгах — это официальный состав территории;
     строки присланного владельцем файла добавляются к нему, а не заменяют его:
     один объект есть в файле и нет в извещении.
     """
+    site = site or NAGATINO
     out = [str(row.get("cadastral_number") or "")
-           for row in registry().get("parcels") or []
+           for row in site.registry().get("parcels") or []
            if row.get("cadastral_number")]
-    notice = documents()["notice"]
+    notice = site.documents()["notice"]
     out += [str(item["cadastral_number"]) for item in notice.get("objects") or []]
     out += [str(item["cadastral_number"]) for item in notice.get("lands") or []]
     return list(dict.fromkeys(number for number in out if number))
 
 
-def cache_path() -> Path:
+def cache_path(site: Site | None = None) -> Path:
     """Где лежат ответы ЕГРН. `DATA_DIR` спрашивается на вызове, а не на
     импорте: в прогоне он подменяется временным каталогом, и запомненный путь
     увёл бы тесты писать в рабочее дерево репозитория."""
-    return Path(os.getenv("DATA_DIR", "data")) / "market" / "krt" / "parcels" / "nagatino.json"
+    return (Path(os.getenv("DATA_DIR", "data")) / "market" / "krt" / "parcels"
+            / f"{(site or NAGATINO).key}.json")
 
 
-def _answers() -> dict[str, Any]:
-    cached = load_json(cache_path())
+def _answers(site: Site | None = None) -> dict[str, Any]:
+    cached = load_json(cache_path(site))
     if isinstance(cached, dict) and cached.get("schema_version") == 1:
         answers = cached.get("answers")
         return dict(answers) if isinstance(answers, dict) else {}
@@ -174,10 +244,11 @@ def _stale(answer: Any) -> bool:
     return not isinstance(asked, (int, float)) or time.time() - float(asked) > ttl
 
 
-def unread(answers: dict[str, Any] | None = None) -> list[str]:
+def unread(answers: dict[str, Any] | None = None,
+           site: Site | None = None) -> list[str]:
     """Номера, по которым ответа ЕГРН нет или он протух."""
-    known = _answers() if answers is None else answers
-    return [number for number in numbers() if _stale(known.get(number))]
+    known = _answers(site) if answers is None else answers
+    return [number for number in numbers(site) if _stale(known.get(number))]
 
 
 def _record(item: Any) -> dict[str, Any]:
@@ -219,31 +290,31 @@ def _record(item: Any) -> dict[str, Any]:
 
 
 def read_chunk(lookup: Callable[[list[str]], list[dict[str, Any]]],
-               *, limit: int = CHUNK) -> dict[str, Any]:
+               *, limit: int = CHUNK, site: Site | None = None) -> dict[str, Any]:
     """Спросить ЕГРН по очередной порции номеров и положить ответы на диск.
 
     Возвращает состояние кэша. Отказ ЕГРН на одном номере не отменяет
     остальные: он ложится своей строкой с причиной.
     """
-    known = _answers()
-    ask = unread(known)[:max(1, int(limit))]
+    known = _answers(site)
+    ask = unread(known, site)[:max(1, int(limit))]
     state: dict[str, Any] = {"schema_version": 1, "answers": known,
                              "problem": "", "updated_at": int(time.time())}
     if not ask:
-        save_json(cache_path(), state)
+        save_json(cache_path(site), state)
         return state
     try:
         found = list(lookup(ask) or [])
     except Exception as exc:  # noqa: BLE001 — неответ ЕГРН называется, а не молчит
         state["problem"] = f"ЕГРН не ответил: {type(exc).__name__}: {exc}"[:300]
-        save_json(cache_path(), state)
+        save_json(cache_path(site), state)
         return state
     by_number = {str(item.get("cadastral_number") or ""): item
                  for item in found if isinstance(item, dict)}
     for number in ask:
         known[number] = _record(by_number.get(number))
     state["answers"] = known
-    save_json(cache_path(), state)
+    save_json(cache_path(site), state)
     return state
 
 
@@ -284,14 +355,25 @@ def decision_outline_picture() -> bytes:
     Настоящий контур площадки при этом собирается из ПЕРЕЧНЯ того же решения:
     приложение 2 называет участки поимённо, а их границы отдаёт ЕГРН.
     """
+    return outline_picture_from(DECISION_PATH.read_bytes(), what="проект решения")
+
+
+def outline_picture_from(raw: bytes, *, what: str = "документ") -> bytes:
+    """Крупная картинка границ из ЛЮБОГО документа города, как она напечатана.
+
+    Извлечение здесь одно на все площадки: у Нагатино рисунок берётся из
+    приложения 1 к проекту решения, у площадки с торгов — из «Схемы границ»
+    лотовой документации. Второй извлекатель разошёлся бы с первым, а порог
+    «крупная картинка» пришлось бы держать в двух местах.
+    """
     try:
         import pymupdf
     except Exception as exc:  # noqa: BLE001
         raise OutlinePictureProblem(f"нечем прочитать PDF: {exc}") from exc
     try:
-        document = pymupdf.open(DECISION_PATH)
+        document = pymupdf.open(stream=raw, filetype="pdf")
     except Exception as exc:  # noqa: BLE001
-        raise OutlinePictureProblem(f"проект решения не открылся: {exc}") from exc
+        raise OutlinePictureProblem(f"{what} не открылся: {exc}") from exc
     for page in document:
         for info in page.get_images(full=True):
             pix = pymupdf.Pixmap(document, info[0])
@@ -302,13 +384,18 @@ def decision_outline_picture() -> bytes:
             # снимком города почти на всю страницу.
             if pix.width >= 500 and pix.height >= 500:
                 return pix.tobytes("png")
-    raise OutlinePictureProblem("в проекте решения не нашлось крупной картинки границ")
+    raise OutlinePictureProblem("крупной картинки границ в документе не нашлось")
 
 _DOCS: dict[str, Any] = {}
 
 
-def documents() -> dict[str, Any]:
-    """Разобранные первоисточники. Читаются один раз на процесс.
+def documents(site: Site | None = None) -> dict[str, Any]:
+    """Разобранные первоисточники площадки: выписки ЕГРН и извещение."""
+    return (site or NAGATINO).documents()
+
+
+def _nagatino_documents() -> dict[str, Any]:
+    """Первоисточники Нагатино. Читаются один раз на процесс.
 
     Разобранной копии на диске не заводим: копию негде обновлять, а разбор
     59 файлов стоит десятки миллисекунд. Извещение — PDF на 46 страниц, и его
@@ -337,7 +424,13 @@ def documents() -> dict[str, Any]:
     return _DOCS
 
 
-def _palette() -> dict[str, str]:
+# Площадка по умолчанию. Объявлена после своих источников: имя, которого ещё
+# нет, разрешилось бы только на вызове, а `Site` держит их ссылками.
+NAGATINO = Site("nagatino", "КРТ Нагатино",
+                _nagatino_registry, _nagatino_documents, slug="nagatino")
+
+
+def _palette(site: Site | None = None) -> dict[str, str]:
     """Оттенок каждому владельцу. Считается один раз и не зависит от порядка чтения.
 
     Брынцалов красный, Москва зелёная, остальные — жёлтая гамма по своему
@@ -347,11 +440,12 @@ def _palette() -> dict[str, str]:
     """
     from auction_search import egrn_extracts
 
-    data = registry()
+    site = site or NAGATINO
+    data = site.registry()
     groups = {str(g.get("key")): g for g in data.get("groups") or []}
     by_key = {str(k): str(v) for k, v in (data.get("owner_groups") or {}).items()}
     shades = list(data.get("other_shades") or []) or ["#C9922A"]
-    docs = documents()
+    docs = site.documents()
     weight: dict[str, float] = {}
     named: dict[str, dict[str, Any]] = {}
     for record in list(docs["builds"].values()) + list(docs["lands"].values()):
@@ -374,20 +468,33 @@ def _palette() -> dict[str, str]:
     return colours
 
 
-def group_of(owner: dict[str, Any]) -> str:
+def group_of(owner: dict[str, Any], site: Site | None = None) -> str:
     """Группа владельца: по ИНН, а у публичного лица — по его ключу."""
-    data = registry()
+    data = (site or NAGATINO).registry()
     by_key = {str(k): str(v) for k, v in (data.get("owner_groups") or {}).items()}
     return (by_key.get(str(owner.get("inn") or ""))
             or by_key.get(str(owner.get("key") or "")) or "other")
 
 
 def _owner_view(record: dict[str, Any], groups_by_inn: dict[str, str],
-                groups: dict[str, Any]) -> dict[str, Any]:
+                groups: dict[str, Any],
+                colours: dict[str, str] | None = None,
+                site: Site | None = None) -> dict[str, Any]:
     """Собственник объекта в том виде, в каком его показывают.
 
     Пусто — ответ документа, а не наш пробел: у 14 участков из 20 право
     собственности не зарегистрировано вовсе. Так и написано.
+
+    **Ответов без имени ДВА, и слить их нельзя.** Право не зарегистрировано —
+    ответ реестра. Право зарегистрировано, а имени в этом виде выписки нет —
+    свойство печатной формы «об объекте недвижимости», и лечится оно своим
+    запросом в ЕГРН, а не перечитыванием того же файла. `owner_state` их
+    различает с 0.23.х, а свод территории читал только `owner_of` и показывал
+    второе как первое: замер 15.09.2026 по одиннадцати площадкам с живым лотом
+    — из 67 строений, названных «право собственности не зарегистрировано», 34
+    на деле withheld, и все 34 из печатных форм (из машинных выписок таких нет
+    ни одного). «Право не зарегистрировано» там, где оно зарегистрировано, — не
+    приближение, а неправда о документе.
     """
     from auction_search import egrn_extracts
 
@@ -397,20 +504,31 @@ def _owner_view(record: dict[str, Any], groups_by_inn: dict[str, str],
     # собственником значит показать не то лицо.
     others = egrn_extracts.other_rights(record) if record else []
     if not owner:
+        withheld = record and egrn_extracts.owner_state(record) == "withheld"
+        group = "withheld" if withheld else "none"
+        if withheld:
+            note = "право зарегистрировано, имени в этом виде выписки нет"
+        elif record:
+            note = "право собственности не зарегистрировано"
+        else:
+            note = "выписки на объект нет"
         return {"name": "", "inn": "", "ogrn": "", "kind": "", "others": others,
-                "note": ("право собственности не зарегистрировано"
-                         if record else "выписки на объект нет"),
-                "group": "none", "colour": str((groups.get("none") or {}).get("colour") or "#8a8a8a"),
-                "group_title": str((groups.get("none") or {}).get("title") or "")}
-    group = group_of(owner)
+                "note": note, "state": ("withheld" if withheld
+                                        else "unregistered" if record else "no_extract"),
+                "group": group,
+                "colour": str((groups.get(group) or {}).get("colour") or "#8a8a8a"),
+                "group_title": str((groups.get(group) or {}).get("title") or "")}
+    group = group_of(owner, site)
+    palette = _palette(site) if colours is None else colours
     return {"name": owner.get("name") or "", "inn": owner.get("inn") or "",
+            "state": "named",
             "ogrn": owner.get("ogrn") or "", "kind": owner.get("kind") or "",
             "code": owner.get("code") or "", "key": owner.get("key") or "",
             "since": owner.get("since") or "", "note": "", "others": others,
             "group": group,
             # Оттенок — свойство ВЛАДЕЛЬЦА, а не группы: у «прочих» их семеро, и
             # одним цветом они на карте неразличимы.
-            "colour": _palette().get(owner.get("key") or "")
+            "colour": palette.get(owner.get("key") or "")
                       or str((groups.get(group) or {}).get("colour") or "#8a8a8a"),
             "group_title": str((groups.get(group) or {}).get("title") or "")}
 
@@ -450,7 +568,8 @@ def _owner_conflict(file_owner: dict[str, Any], egrn_owner: dict[str, Any],
 
 
 def fill_in_background(lookup: Callable[[list[str]], list[dict[str, Any]]],
-                       *, find_site: Callable[[], dict[str, Any]] | None = None) -> bool:
+                       *, find_site: Callable[[], dict[str, Any]] | None = None,
+                       site: Site | None = None) -> bool:
     """Дочитать недостающие контуры фоном. Работу берёт один.
 
     Воркеров два, память у них раздельная: без замка оба пошли бы спрашивать
@@ -461,37 +580,38 @@ def fill_in_background(lookup: Callable[[list[str]], list[dict[str, Any]]],
     не прочитан ни один контур, а файл карты города — ещё один поход наружу,
     и в запросе страницы ему не место.
     """
-    global _READING
+    site = site or NAGATINO
     # Выключатель — не осторожность, а правило: поход в ЕГРН начинается сам,
     # при открытии страницы, и в прогоне тестов ему делать нечего ровно по той
     # же причине, по которой там не должно быть недельного обхода каталога.
     if os.getenv("NAGATINO_EGRN_READ", "1").strip().lower() in ("0", "no", "off", "false"):
         return False
-    if not unread() and (find_site is None or cached_site().get("rings_merc")):
+    if not unread(site=site) and (find_site is None
+                                  or cached_site(site).get("rings_merc")):
         return False
     with _LOCK:
-        if _READING:
+        if site.key in _READING:
             return False
-        _READING = True
+        _READING.add(site.key)
 
     def run() -> None:
-        global _READING
         try:
-            while unread():
-                before = len(unread())
-                state = read_chunk(lookup)
-                if state.get("problem") or len(unread()) >= before:
+            while unread(site=site):
+                before = len(unread(site=site))
+                state = read_chunk(lookup, site=site)
+                if state.get("problem") or len(unread(site=site)) >= before:
                     break  # портал молчит — не долбимся, следующее открытие повторит
-            if find_site is not None and not cached_site().get("rings_merc"):
+            if find_site is not None and not cached_site(site).get("rings_merc"):
                 try:
-                    store_site(find_site())
+                    store_site(find_site(), site)
                 except Exception as exc:  # noqa: BLE001 — отказ называется, а не молчит
-                    store_site({"problem": f"площадка не опознана: {type(exc).__name__}: {exc}"[:200]})
+                    store_site({"problem": f"площадка не опознана: {type(exc).__name__}: {exc}"[:200]}, site)
         finally:
             with _LOCK:
-                _READING = False
+                _READING.discard(site.key)
 
-    threading.Thread(target=run, name="nagatino-parcel-outlines", daemon=True).start()
+    threading.Thread(target=run, name=f"krt-parcel-outlines-{site.key}",
+                     daemon=True).start()
     return True
 
 
@@ -510,7 +630,8 @@ def _centre(answers: dict[str, Any]) -> list[float] | None:
 
 
 def resolve_site(sites: list[dict[str, Any]],
-                 crossings: Callable[[list[Any], float], list[float]]) -> dict[str, Any]:
+                 crossings: Callable[[list[Any], float], list[float]],
+                 site: Site | None = None) -> dict[str, Any]:
     """Запись реестра КРТ, в чей полигон попадает середина участков.
 
     Опознаём геометрией, а не именем: у площадки в реестре имя записано иначе,
@@ -519,7 +640,7 @@ def resolve_site(sites: list[dict[str, Any]],
     и правило пересечения — чужие: реестра и движка (`_row_crossings`), своей
     геометрии здесь нет.
     """
-    centre = _centre(_answers())
+    centre = _centre(_answers(site))
     if not centre:
         return {"problem": "участки ещё не прочитаны — искать площадку не по чему"}
     x, y = float(centre[0]), float(centre[1])
@@ -623,24 +744,45 @@ def revoke_share_code() -> None:
     save_json(share_path(), {"code": "", "revoked_at": int(time.time())})
 
 
-def store_site(site: dict[str, Any]) -> None:
+def store_site(found: dict[str, Any], site: Site | None = None) -> None:
     """Положить опознанную площадку рядом с ответами ЕГРН, в тот же кэш."""
-    state = load_json(cache_path())
+    state = load_json(cache_path(site))
     state = dict(state) if isinstance(state, dict) and state.get("schema_version") == 1 else {
         "schema_version": 1, "answers": {}, "problem": ""}
-    state["site"] = dict(site)
+    state["site"] = dict(found)
     state["updated_at"] = int(time.time())
-    save_json(cache_path(), state)
+    save_json(cache_path(site), state)
 
 
-def cached_site() -> dict[str, Any]:
-    state = load_json(cache_path())
-    site = (state or {}).get("site") if isinstance(state, dict) else None
-    return dict(site) if isinstance(site, dict) else {"problem": "площадку ещё не искали"}
+def cached_site(site: Site | None = None) -> dict[str, Any]:
+    state = load_json(cache_path(site))
+    found = (state or {}).get("site") if isinstance(state, dict) else None
+    return dict(found) if isinstance(found, dict) else {"problem": "площадку ещё не искали"}
 
 
-def reading() -> bool:
-    return _READING
+def reading(site: Site | None = None) -> bool:
+    return (site or NAGATINO).key in _READING
+
+
+def _outline_state(answer: dict[str, Any] | None) -> str:
+    """Три состояния контура, и они разные.
+
+    Нарисован; спросили, а контура ЕГРН не дал; ещё не спрашивали. Слитые в
+    «не нарисован», они читаются как отсутствие объекта в территории — то же,
+    что пустой ответ НСПД, принятый за отсутствие ограничений.
+
+    Правило объявлено один раз: его читают и строки присланного файла, и
+    состав территории из извещения. Две копии разошлись бы молча, и один и
+    тот же объект был бы «не спрашивали» в одном счётчике и «контура нет» в
+    другом.
+    """
+    if (answer or {}).get("rings"):
+        return "drawn"
+    return "empty" if answer else "unread"
+
+
+def _state_count(rows: list[dict[str, Any]], state: str) -> int:
+    return len([row for row in rows if row.get("outline_state") == state])
 
 
 def _kinds(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -678,9 +820,17 @@ def disposal_note(land: dict[str, Any]) -> dict[str, str]:
     это документ: арендодателем выступает город. Без такого договора остаётся
     общее правило (в Москве неразграниченная госсобственность в распоряжении
     города), и это сказано именно как правило, а не как факт об участке.
+
+    Общее правило применимо там, где права НЕТ. У участка, чьё право
+    зарегистрировано, а имени выписка не раскрывает, распоряжается собственник,
+    и вывод «вероятно город» был бы приписан поверх записи реестра — четыре
+    участка одиннадцати площадок с живым лотом именно такие (замер 15.09.2026).
     """
-    if land["owner"].get("name"):
-        return {"who": "", "ground": "распоряжается собственник"}
+    state = str((land.get("owner") or {}).get("state") or "")
+    if land["owner"].get("name") or state == "withheld":
+        return {"who": "", "ground": ("распоряжается собственник"
+                                      + ("; имени выписка не раскрывает"
+                                         if state == "withheld" else ""))}
     for item in land.get("leases") or []:
         number = str(item.get("document_number") or "")
         if number and _CITY_CONTRACT.match(number):
@@ -696,7 +846,7 @@ def disposal_note(land: dict[str, Any]) -> dict[str, str]:
                        "По этому участку подтверждения в документах нет")}
 
 
-def territory() -> dict[str, Any]:
+def territory(site: Site | None = None) -> dict[str, Any]:
     """Свод «земельный участок → объекты на нём» по официальным документам.
 
     Состав территории берётся из ИЗВЕЩЕНИЯ (оно свежее проекта решения и оно
@@ -708,12 +858,16 @@ def territory() -> dict[str, Any]:
     объект, стоящий на нескольких участках, повторяется у каждого, и его метры
     в итог территории входят ОДИН раз.
     """
-    data = registry()
-    docs = documents()
+    site = site or NAGATINO
+    data = site.registry()
+    docs = site.documents()
     groups = {str(g.get("key")): g for g in data.get("groups") or []}
     by_inn = {str(k): str(v) for k, v in (data.get("owner_groups") or {}).items()}
     notice = docs["notice"]
-    answers = _answers()
+    answers = _answers(site)
+    # Краски считаются ОДИН раз на свод: внутри `_owner_view` они стоили
+    # полного обхода выписок на каждую строку, а ответ у них один.
+    colours = _palette(site)
 
     from auction_search import egrn_extracts
 
@@ -737,16 +891,17 @@ def territory() -> dict[str, Any]:
             "year_built": (extract or {}).get("year_built") or "",
             "address": (extract or {}).get("address") or "",
             "cadastral_value_rub": (extract or {}).get("cadastral_value_rub"),
-            "owner": _owner_view(extract, by_inn, groups),
+            "owner": _owner_view(extract, by_inn, groups, colours, site),
             "leases": egrn_extracts.leases(extract) if extract else [],
             "encumbrances": (egrn_extracts.encumbrances(extract, lease=False)
                              if extract else []),
-            "colour": _owner_view(extract, by_inn, groups)["colour"],
+            "colour": _owner_view(extract, by_inn, groups, colours, site)["colour"],
             "colour_from": ("свой собственник"
-                            if _owner_view(extract, by_inn, groups).get("name")
+                            if _owner_view(extract, by_inn, groups, colours, site).get("name")
                             else "владелец не назван"),
             "extract": bool(extract),
             "rings_merc": list(((answers.get(cad) or {}).get("rings")) or []),
+            "outline_state": _outline_state(answers.get(cad)),
         }
     # Объект, на который выписка есть, а в извещении его нет, — это ответ
     # документа о составе территории, и он называется отдельно.
@@ -773,7 +928,7 @@ def territory() -> dict[str, Any]:
         # такого же оттенка», владелец 07.09.2026). Строения разных владельцев
         # на одном участке одним цветом не красим: это было бы утверждением о
         # владельце земли, которого никто не делал.
-        own = _owner_view(extract, by_inn, groups)
+        own = _owner_view(extract, by_inn, groups, colours, site)
         keys = {item["owner"].get("key") for item in here if item["owner"].get("name")}
         borrowed = ""
         colour = own["colour"]
@@ -813,13 +968,14 @@ def territory() -> dict[str, Any]:
             "address": (extract or {}).get("address") or "",
             "cadastral_value_rub": (extract or {}).get("cadastral_value_rub"),
             "special_notes": (extract or {}).get("special_notes") or "",
-            "owner": _owner_view(extract, by_inn, groups),
+            "owner": _owner_view(extract, by_inn, groups, colours, site),
             "leases": egrn_extracts.leases(extract) if extract else [],
             "encumbrances": (egrn_extracts.encumbrances(extract, lease=False)
                              if extract else []),
             "objects": here,
             "objects_area_sqm": _sum([item.get("area_sqm") for item in here]),
             "rings_merc": list(((answers.get(cad) or {}).get("rings")) or []),
+            "outline_state": _outline_state(answers.get(cad)),
             "extract": bool(extract),
         })
     # Строение без зарегистрированного права красится по СВОЕМУ участку, когда
@@ -832,7 +988,12 @@ def territory() -> dict[str, Any]:
     owner_of_land = {item["cadastral_number"]: item["owner"] for item in lands
                      if item["owner"].get("name")}
     for item in objects_by_cad.values():
-        if item["owner"].get("name"):
+        # Имени нет по двум разным причинам, и соседство годится только для
+        # одной. Право не зарегистрировано — строение и правда, скорее всего,
+        # хозяйское. Право ЗАРЕГИСТРИРОВАНО, а имени эта форма не раскрывает —
+        # оно чьё-то, и красить его владельцем участка значит приписать право
+        # поверх записи реестра.
+        if item["owner"].get("name") or item["owner"].get("state") == "withheld":
             continue
         near = {owner_of_land[cad]["key"]: owner_of_land[cad]
                 for cad in item.get("lands") or [] if cad in owner_of_land}
@@ -858,7 +1019,8 @@ def territory() -> dict[str, Any]:
     # собственность» — вывод, а не запись ЕГРН, и так и написано.
     for item in objects_by_cad.values():
         owner = item.get("owner") or {}
-        if owner.get("name") or not item.get("colour_from", "").startswith("владелец участка"):
+        if (owner.get("name") or owner.get("state") == "withheld"
+                or not item.get("colour_from", "").startswith("владелец участка")):
             continue
         near = [cad for cad in item.get("lands") or [] if cad in owner_of_land]
         holder = owner_of_land.get(near[0]) if near else None
@@ -905,7 +1067,7 @@ def territory() -> dict[str, Any]:
         "objects_outside_notice": [
             {"cadastral_number": cad,
              "area_sqm": docs["builds"][cad].get("area_sqm"),
-             "owner": _owner_view(docs["builds"][cad], by_inn, groups),
+             "owner": _owner_view(docs["builds"][cad], by_inn, groups, colours, site),
              "lands": list(docs["builds"][cad].get("lands") or []),
              # Участок под таким объектом может не входить в территорию вовсе —
              # тогда он назван, а не пропущен.
@@ -937,8 +1099,21 @@ def territory() -> dict[str, Any]:
                 if item.get("title")),
             # Участков С номером, но БЕЗ записи о праве — второе состояние, и
             # оно называется рядом, чтобы два разных ответа не сливались.
-            "lands_without_right": len([land for land in lands
-                                        if not (land.get("owner") or {}).get("name")]),
+            # Участок, чьё право ЗАРЕГИСТРИРОВАНО, а имени выписка не
+            # раскрывает, сюда не идёт: запись о праве у него есть.
+            "lands_without_right": len([
+                land for land in lands
+                if not (land.get("owner") or {}).get("name")
+                and (land.get("owner") or {}).get("state") != "withheld"]),
+            # Третий ответ, и он про НАШ следующий шаг: имя даст свой запрос в
+            # ЕГРН, а не перечитывание того же файла. Числа стоят порознь —
+            # у земли и у строений разные меры и разные владельцы.
+            "lands_right_withheld": len([
+                land for land in lands
+                if (land.get("owner") or {}).get("state") == "withheld"]),
+            "objects_right_withheld": len([
+                item for item in objects
+                if (item.get("owner") or {}).get("state") == "withheld"]),
             "site_area_sqm": round(
                 _sum([item.get("notice_area_sqm") for item in lands])
                 + _sum([item.get("area_sqm") for item in notice.get("unformed") or []]), 1),
@@ -958,9 +1133,10 @@ def territory() -> dict[str, Any]:
     }
 
 
-def owners_summary(view: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+def owners_summary(view: dict[str, Any] | None = None,
+                   site: Site | None = None) -> list[dict[str, Any]]:
     """Кто чем владеет — по ИНН, а не по написанию имени."""
-    view = territory() if view is None else view
+    view = territory(site) if view is None else view
     seen: dict[str, dict[str, Any]] = {}
 
     from auction_search import egrn_extracts
@@ -993,7 +1169,7 @@ def owners_summary(view: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         add("lands", land["owner"], land.get("area_sqm"), land.get("cadastral_value_rub"))
     for item in view["objects"]:
         add("objects", item["owner"], item.get("area_sqm"), item.get("cadastral_value_rub"))
-    under = land_under_buildings(view)["by_owner"]
+    under = land_under_buildings(view, site)["by_owner"]
     rows = list(seen.values())
     for key, row in seen.items():
         # Справочно: земля ПОД строениями этого владельца. Своей она ему не
@@ -1028,7 +1204,8 @@ def _land_area_in_site(land: dict[str, Any]) -> float:
     return float(land.get("area_sqm") or 0)
 
 
-def land_under_buildings(view: dict[str, Any] | None = None) -> dict[str, Any]:
+def land_under_buildings(view: dict[str, Any] | None = None,
+                         site: Site | None = None) -> dict[str, Any]:
     """Справочно: на какой земле стоят строения владельца и всей группы.
 
     «Надо наверное на сводной второй вкладке справочно указывать какая площадь
@@ -1046,7 +1223,7 @@ def land_under_buildings(view: dict[str, Any] | None = None) -> dict[str, Any]:
     """
     from auction_search import egrn_extracts
 
-    view = territory() if view is None else view
+    view = territory(site) if view is None else view
     lands = {land["cadastral_number"]: land for land in view["lands"]}
     by_owner: dict[str, set[str]] = {}
     by_group: dict[str, set[str]] = {}
@@ -1075,7 +1252,8 @@ def land_under_buildings(view: dict[str, Any] | None = None) -> dict[str, Any]:
             "total": measure(everything)}
 
 
-def land_holdings(view: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+def land_holdings(view: dict[str, Any] | None = None,
+                  site: Site | None = None) -> list[dict[str, Any]]:
     """Второй взгляд: чьё это, если считать по участку.
 
     Правило владельца (07.09.2026) узкое, и шире его брать нельзя: «разница
@@ -1102,8 +1280,8 @@ def land_holdings(view: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """
     from auction_search import egrn_extracts
 
-    view = territory() if view is None else view
-    groups = {str(g.get("key")): g for g in registry().get("groups") or []}
+    view = territory(site) if view is None else view
+    groups = {str(g.get("key")): g for g in registry(site).get("groups") or []}
     lands = {land["cadastral_number"]: land for land in view["lands"]}
 
     def key_of(owner: dict[str, Any]) -> str:
@@ -1208,7 +1386,8 @@ def land_holdings(view: dict[str, Any] | None = None) -> list[dict[str, Any]]:
 
 
 def buyout(rows: list[dict[str, Any]] | None = None,
-           view: dict[str, Any] | None = None) -> dict[str, Any]:
+           view: dict[str, Any] | None = None,
+           site: Site | None = None) -> dict[str, Any]:
     """Что у города, а что придётся выкупать. По взгляду «по участку».
 
     «Очевидно, что у Москвы ничего выкупать не надо» (владелец, 07.09.2026).
@@ -1221,8 +1400,8 @@ def buyout(rows: list[dict[str, Any]] | None = None,
     берётся из ЕГРН, а выкуп идёт по соглашению или по оценке; называть её
     ценой значит выдать справочное число за коммерческое.
     """
-    view = territory() if view is None else view
-    rows = land_holdings(view) if rows is None else rows
+    view = territory(site) if view is None else view
+    rows = land_holdings(view, site) if rows is None else rows
     city = [row for row in rows if str(row.get("group") or "") == "moscow"]
     rest = [row for row in rows if str(row.get("group") or "") != "moscow"]
 
@@ -1246,15 +1425,16 @@ def buyout(rows: list[dict[str, Any]] | None = None,
 
 
 def holdings_under(view: dict[str, Any] | None = None,
-                   rows: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+                   rows: list[dict[str, Any]] | None = None,
+                   site: Site | None = None) -> dict[str, Any]:
     """Справочная земля под строениями для взгляда «по участку».
 
     Считается из тех же строк, что показаны, — второй проход по объектам дал бы
     вторую приписку и разошёлся бы с таблицей. Итог группы, как и в верхней
     таблице, объединение участков, а не сумма строк.
     """
-    view = territory() if view is None else view
-    rows = land_holdings(view) if rows is None else rows
+    view = territory(site) if view is None else view
+    rows = land_holdings(view, site) if rows is None else rows
     lands = {land["cadastral_number"]: land for land in view["lands"]}
     by_group: dict[str, set[str]] = {}
     everything: set[str] = set()
@@ -1279,18 +1459,19 @@ def _sum(values: list[Any]) -> float:
     return round(sum(float(v) for v in values if isinstance(v, (int, float))), 1)
 
 
-def payload() -> dict[str, Any]:
+def payload(site: Site | None = None) -> dict[str, Any]:
     """Всё, что нужно странице: участки, группы, контуры и чего не хватает.
 
     Сеть здесь не трогается: страница показывает прочитанное, дочитывает фон.
     """
-    data = registry()
+    site = site or NAGATINO
+    data = site.registry()
     owners = {str(o.get("key")): o for o in data.get("owners") or []}
     groups = {str(g.get("key")): g for g in data.get("groups") or []}
-    answers = _answers()
+    answers = _answers(site)
     # Свод по документам считается ОДИН раз: он же даёт участок под зданием и
     # он же отвечает, кто собственник. Второй вызов — второй счёт того же.
-    lands_and_objects = territory()
+    lands_and_objects = territory(site)
     by_number = {item["cadastral_number"]: item
                  for item in lands_and_objects["objects"]}
     parcels = []
@@ -1325,7 +1506,7 @@ def payload() -> dict[str, Any]:
             # Выписки на объект нет или право не зарегистрировано — тогда
             # отвечает выгрузка. «Не спрашивали» и «нет права» — разные ответы,
             # и первый не отменяет того, что назвал человек.
-            group = (group_of(owner) if owner_key else "none")
+            group = (group_of(owner, site) if owner_key else "none")
             colour = str((groups.get(group) or {}).get("colour") or "#8a8a8a")
             owner_source = "выгрузка владельца" if owner_key else ""
             colour_from = "владелец из выгрузки" if owner_key else "владелец не назван"
@@ -1349,11 +1530,7 @@ def payload() -> dict[str, Any]:
             "inn": owner.get("inn"),
             "ogrn": owner.get("ogrn"),
             "rings_merc": list((answer or {}).get("rings") or []),
-            # Три состояния разные: нарисован, спросили и контура нет, ещё не
-            # спрашивали. Слитые в «не нарисован», они читаются как отсутствие
-            # участка в территории.
-            "outline_state": ("drawn" if (answer or {}).get("rings")
-                              else "empty" if answer else "unread"),
+            "outline_state": _outline_state(answer),
             "outline_reason": str((answer or {}).get("reason") or ""),
             "egrn": (answer or {}).get("egrn") or None,
             # Участок под зданием называет ВЫПИСКА, а не наша геометрия:
@@ -1376,15 +1553,15 @@ def payload() -> dict[str, Any]:
                        for key in dict.fromkeys(p["owner"] for p in rows if p["owner"])
                        if key in owners],
         })
-    holdings = land_holdings(lands_and_objects)
+    holdings = land_holdings(lands_and_objects, site)
     # Сколько каждого участка лежит внутри полигона площадки из реестра города.
     # «У11 ты уверен, что он в контуре КРТ?» (владелец, 07.09.2026) — «уверен»
     # тут плохой ответ: контур участка у нас из ЕГРН, полигон площадки из
     # реестра, и вопрос решается измерением. Два источника, а не один: если
     # участок из перечня извещения лежит вне полигона реестра, это расхождение
     # ДОКУМЕНТОВ, и его надо назвать, а не выбрать любимый молча.
-    site = cached_site()
-    outline = [ring for ring in (site.get("rings_merc") or [])
+    found = cached_site(site)
+    outline = [ring for ring in (found.get("rings_merc") or [])
                if isinstance(ring, list) and len(ring) >= 3]
     for land in lands_and_objects["lands"]:
         land["inside_site_share"] = (share_inside(land.get("rings_merc") or [], outline)
@@ -1397,6 +1574,10 @@ def payload() -> dict[str, Any]:
         [land for land in lands_and_objects["lands"]
          if land.get("inside_site_share") is not None])
     source = dict(data.get("source") or {})
+    # Номера, по которым спрашивается контур, — тот же список, по которому
+    # ходит фоновый читатель. Второй список «что спрашиваем» разошёлся бы с
+    # первым молча, и прогресс считал бы не то, что читают.
+    ask = numbers(site)
     area_by_rows = _sum([p.get("area_sqm") for p in parcels])
     value_by_rows = _sum([p.get("cadastral_value_rub") for p in parcels])
     own_area = source.get("own_total_area_sqm")
@@ -1409,22 +1590,22 @@ def payload() -> dict[str, Any]:
         # Контур площадки КРТ — подложка под участками: он отвечает на «что из
         # квартала входит в территорию», а сами участки на этот вопрос не
         # отвечают. Берётся у реестра, второго пути к нему нет.
-        "krt_site": site,
+        "krt_site": found,
         "kinds": _kinds(parcels),
         # Свод по официальным документам: состав территории из извещения о
         # торгах, свойства и права — из выписок ЕГРН.
         "territory": lands_and_objects,
-        "owners": owners_summary(lands_and_objects),
+        "owners": owners_summary(lands_and_objects, site),
         # Второй взгляд на тех же владельцев — по участку. Считается один раз
         # и здесь: экран и книга показывают посчитанное, а не считают порознь.
         "holdings": holdings,
         # Справочная земля под строениями — объединениями, а не суммами: строки
         # перекрываются, и сложение назвало бы метры, которых нет.
-        "under": land_under_buildings(lands_and_objects),
-        "holdings_under": holdings_under(lands_and_objects, holdings),
+        "under": land_under_buildings(lands_and_objects, site),
+        "holdings_under": holdings_under(lands_and_objects, holdings, site),
         # «Очевидно, что у Москвы ничего выкупать не надо» (владелец,
         # 07.09.2026): что городское, а что нет, — по взгляду «по участку».
-        "buyout": buyout(holdings, lands_and_objects),
+        "buyout": buyout(holdings, lands_and_objects, site),
         "outlines": {
             "parcels": len(parcels),
             "drawn": len([p for p in parcels if p["rings_merc"]]),
@@ -1439,8 +1620,31 @@ def payload() -> dict[str, Any]:
             "lands": len(lands_and_objects["lands"]),
             "lands_drawn": len([land for land in lands_and_objects["lands"]
                                 if land.get("rings_merc")]),
-            "reading": reading(),
-            "problem": str((load_json(cache_path()) or {}).get("problem") or ""),
+            "lands_empty": _state_count(lands_and_objects["lands"], "empty"),
+            "lands_unread": _state_count(lands_and_objects["lands"], "unread"),
+            # Строения СОСТАВА, а не присланного файла. Счётчики выше идут по
+            # строкам выгрузки, которой у площадки с торгов не бывает вовсе: у
+            # Варшавского ш., вл. 37 их ноль при 36 полученных контурах
+            # строений из 39 (замер прода 14.09.2026), и «0 из 0» на экране
+            # читалось как «пула не знаем», а о трёх строениях без контура не
+            # говорил никто. У молчащего читателя обязан быть счётчик молчания.
+            "objects": len(lands_and_objects["objects"]),
+            "objects_drawn": len([item for item in lands_and_objects["objects"]
+                                  if item.get("rings_merc")]),
+            "objects_empty": _state_count(lands_and_objects["objects"], "empty"),
+            "objects_unread": _state_count(lands_and_objects["objects"], "unread"),
+            # Сколько спрашивает сам читатель. Он идёт по ОБЪЕДИНЕНИЮ
+            # (`numbers`): строки файла плюс состав извещения, номера без
+            # повторов, — и ни один счётчик выше на этот вопрос не отвечает.
+            # Прогресс «читаю ЕГРН» обязан считать то, что читают: он брал
+            # строки файла и на площадке с торгов писал «0 из 0» при живом
+            # чтении тридцати девяти номеров.
+            "asked": len(ask),
+            "asked_drawn": len([number for number in ask
+                                if (answers.get(number) or {}).get("rings")]),
+            "asked_unread": len(unread(answers, site=site)),
+            "reading": reading(site),
+            "problem": str((load_json(cache_path(site)) or {}).get("problem") or ""),
         },
         "totals": {
             "parcels": len(parcels),

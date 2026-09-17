@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import os
 import re
+import time
 import zipfile
 from html.parser import HTMLParser
 from urllib.error import HTTPError
@@ -10,10 +11,23 @@ from urllib.parse import quote, urlparse, urlunparse
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree as ET
 
+from auction_search import archives, deadline as budget, reading
 from auction_search.models import AuctionDocument
 
 
 MAX_DOCUMENT_BYTES = 35 * 1024 * 1024
+# Повтор загрузки: площадка отвечает через раз, и один запрос выдаёт её перебой
+# за отсутствие документа. Измерено на лоте 33444 (13.09.2026): из 26 вложений
+# четыре ответили HTTP 503 — «Сведения о земельных участках», «График КРТ»,
+# «Схема границ», «Материалы градостроительного потенциала», — а лот 33452 за
+# один заход отдал 0 документов, за следующий 26.
+#
+# Политика объявлена ОДИН раз — в `reading`, ниже уровнем: её же берёт чтение
+# карточки лота, где та же болезнь стоила пяти отказов подряд у прохода за
+# извещениями (14.09.2026). Здесь у неё только свои имена.
+RETRIABLE_STATUS = reading.RETRIABLE_STATUS
+DOWNLOAD_ATTEMPTS = reading.ATTEMPTS
+RETRY_BACKOFF_SECONDS = reading.BACKOFF_SECONDS
 _ALLOWED_ETP_HOST_SUFFIXES = ("roseltorg.ru", "lot-online.ru")
 _USER_AGENT = "DevelopAid-AuctionCollector/0.1 (+https://developaid.ru)"
 
@@ -32,6 +46,17 @@ class DocumentExtractionError(RuntimeError):
 
 class DocumentAuthorizationRequired(DocumentExtractionError):
     """The official ETP requires an authenticated participant/session."""
+
+
+class DocumentTemporaryRefusal(DocumentExtractionError):
+    """Площадка отказала временно: 503, таймаут, обрыв соединения.
+
+    Вид отказа отдельный затем, что ответы разные. «Формат не поддержан» второй
+    попытки не заслуживает — он не изменится; 503 заслуживает, и при следующем
+    разборе лота такое вложение спрашивается снова, тогда как прочитанное
+    берётся со склада. Без этого различия перебой площадки и её ответ «такого
+    документа нет» на экране выглядят одинаково.
+    """
 
 
 class _HTMLText(HTMLParser):
@@ -99,17 +124,57 @@ def safe_url(url: str) -> str:
     ))
 
 
-def download_document(url: str, *, timeout: int = 25) -> tuple[bytes, str, bool]:
-    """Download an official ETP attachment, public-first.
+def download_document(url: str, *, timeout: int = 25,
+                      attempts: int = DOWNLOAD_ATTEMPTS,
+                      deadline: float | None = None) -> tuple[bytes, str, bool]:
+    """Вложение официальной ЭТП: сперва публично, при временном отказе — снова.
 
-    Returns (bytes, content_type, authenticated_session_used). If the platform
-    requires login and no valid service-account session is available, raises
-    DocumentAuthorizationRequired rather than treating the document as missing.
+    Возвращает (байты, тип, шёл ли запрос под сессией). Требует площадка входа —
+    это `DocumentAuthorizationRequired`, а не «документа нет».
+
+    Повтор стоит здесь, а не у вызывающего, и он ОДИН: два механизма на одно
+    явление в этом проекте всегда расходились. Повторяется только то, что имеет
+    смысл повторять, — 503 и обрыв соединения; 401, 403 и 404 не повторяются
+    вовсе, потому что второй такой же запрос получит тот же ответ.
+
+    Число попыток называется в отказе: «HTTP 503» и «HTTP 503 после трёх
+    попыток» — разные утверждения о площадке, и по первому нельзя понять,
+    спрашивали ли мы её всерьёз.
+
+    Срок сбора сильнее повтора: пауза, которая не укладывается в остаток,
+    съедает время остальных вложений — тогда недобранным окажется весь лот, а
+    не одно вложение.
     """
+    total = max(1, int(attempts))
+    tried = 0
+    last = ""
+    while tried < total:
+        tried += 1
+        try:
+            return _download_once(url, timeout=budget.timeout(deadline, timeout))
+        except DocumentTemporaryRefusal as exc:
+            last = str(exc)
+            if tried >= total:
+                break
+            pause = RETRY_BACKOFF_SECONDS[min(tried - 1, len(RETRY_BACKOFF_SECONDS) - 1)]
+            remaining = budget.left(deadline)
+            if remaining is not None and remaining <= pause:
+                break
+            time.sleep(pause)
+    raise DocumentTemporaryRefusal(
+        f"{last}; попыток: {tried} из {total}")
+
+
+def _download_once(url: str, *, timeout: float) -> tuple[bytes, str, bool]:
+    """Один запрос к площадке. Временный отказ отличён от окончательного."""
     headers, authenticated = _request_headers(url)
     req = Request(safe_url(url), headers=headers)
     try:
-        with urlopen(req, timeout=timeout) as response:
+        # Корни объявлены один раз (`trusted_roots`) и здесь берутся оттуда же,
+        # чем ходят проба площадки и модуль рынка. Без них загрузка вложения
+        # падала с `CERTIFICATE_VERIFY_FAILED` там, где проба того же хоста в
+        # ту же минуту получала 200, — и документ выглядел недоступным.
+        with urlopen(req, timeout=timeout, context=reading.trust()) as response:
             content_type = (response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
             length = response.headers.get("Content-Length")
             if length and int(length) > MAX_DOCUMENT_BYTES:
@@ -121,10 +186,28 @@ def download_document(url: str, *, timeout: int = 25) -> tuple[bytes, str, bool]
     except HTTPError as exc:
         if exc.code in (401, 403):
             raise DocumentAuthorizationRequired("official ETP requires authentication for this document") from exc
+        if exc.code in RETRIABLE_STATUS:
+            raise DocumentTemporaryRefusal(f"площадка ответила HTTP {exc.code}") from exc
         raise DocumentExtractionError(f"document download failed: HTTP {exc.code}") from exc
+    except OSError as exc:
+        # Таймаут и обрыв соединения прежде уходили наружу СЫРЫМИ: `urllib`
+        # бросает не наш класс, вызывающий его не ловит, и одно повисшее
+        # вложение роняло разбор ЛОТА целиком — маршрут отвечал 502 «не удалось
+        # прочитать официальный лот». Та же беда уже была у сбора: одна
+        # недоступная карточка РАД снимала весь каталог.
+        raise DocumentTemporaryRefusal(
+            f"соединение не состоялось: {type(exc).__name__}: {exc}") from exc
 
     if _looks_like_login_page(final_url, content_type, data):
         raise DocumentAuthorizationRequired("official ETP redirected the document request to authentication")
+    # Страница отказа приходит с кодом 200 и телом HTML — по содержимому это не
+    # документ, и разбирать её как документ значит показать «формат не
+    # поддержан» там, где нас просто не пустили.
+    if "html" in content_type:
+        refusal = reading.refusal_reason("", data[:4_000].decode("utf-8", errors="ignore"))
+        if refusal:
+            raise DocumentExtractionError(
+                f"площадка ответила страницей отказа (примета: {refusal}), а не документом")
     return data, content_type, authenticated
 
 
@@ -175,22 +258,66 @@ def _pdf_text(data: bytes) -> list[str]:
         raise DocumentExtractionError(f"cannot read PDF: {exc}") from exc
 
 
+def _by_format(low_name: str, low_type: str, data: bytes, title: str) -> list[str]:
+    """Текст по виду файла. Вид решают расширение, тип и первые байты."""
+    if low_name.endswith(".docx") or "wordprocessingml.document" in low_type:
+        return _docx_text(data)
+    if low_name.endswith(".pdf") or low_type == "application/pdf" or data[:4] == b"%PDF":
+        return _pdf_text(data)
+    if low_name.endswith((".html", ".htm")) or "text/html" in low_type:
+        parser = _HTMLText()
+        parser.feed(data.decode("utf-8", errors="replace"))
+        return parser.parts
+    if low_name.endswith((".txt", ".csv")) or low_type.startswith("text/"):
+        return _paragraphs(data.decode("utf-8", errors="replace"))
+    if low_name.endswith(".xml"):
+        # Выписку ЕГРН читает `egrn_archive`, а не текстовый разбор: у неё не
+        # абзацы, а записи. Назвать это «формат не поддержан» значило бы выдать
+        # чужой формат за наш пробел ровно там, где он прочитан другим путём.
+        raise DocumentExtractionError("XML — не текстовый документ (выписки читает разбор ЕГРН)")
+    raise DocumentExtractionError(f"unsupported document format: {title}")
+
+
+def _zip_paragraphs(title: str, data: bytes) -> list[str]:
+    """Текст архива: абзацы читаемых записей, а непрочитанные — названы.
+
+    Каждый абзац подписан именем своей записи: архив лотовой документации
+    несёт по десятку файлов, и «в каком из них это сказано» — часть ответа.
+    Ни одной читаемой записи — это отказ с перечнем того, что внутри: пустой
+    список абзацев читался бы как пустой документ.
+    """
+    try:
+        opened = archives.open_zip(data)
+    except archives.ArchiveProblem as exc:
+        raise DocumentExtractionError(f"{title}: {exc}") from exc
+    out: list[str] = []
+    unread: list[str] = [f"{item['name']} — {item['reason']}" for item in opened.refused]
+    for entry in opened.entries:
+        try:
+            part = _by_format(entry.name.lower(), "", entry.data, entry.name)
+        except DocumentExtractionError as exc:
+            unread.append(f"{entry.name} — {exc}")
+            continue
+        out.extend(f"[{entry.name}] {item}" for item in part)
+    if not out:
+        if unread:
+            raise DocumentExtractionError(
+                f"в архиве «{title}» нет читаемого текста: " + "; ".join(unread[:20]))
+        raise DocumentExtractionError(f"архив «{title}» пуст")
+    if unread:
+        out.append("[архив] не прочитано: " + "; ".join(unread[:20]))
+    return out
+
+
 def extract_document_paragraphs(document: AuctionDocument, data: bytes | None = None, content_type: str = "") -> list[str]:
     """Extract text without OCR; scanned PDFs fail explicitly instead of inventing content."""
     if data is None:
         data, content_type, authenticated = download_document(document.url)
         document.access_status = "authenticated" if authenticated else "public"
         document.auth_required = False
-    low_url = document.url.lower()
-    low_type = (content_type or "").lower()
-    if low_url.endswith(".docx") or "wordprocessingml.document" in low_type:
-        return _docx_text(data)
-    if low_url.endswith(".pdf") or low_type == "application/pdf" or data[:4] == b"%PDF":
-        return _pdf_text(data)
-    if low_url.endswith((".html", ".htm")) or "text/html" in low_type:
-        parser = _HTMLText()
-        parser.feed(data.decode("utf-8", errors="replace"))
-        return parser.parts
-    if low_url.endswith((".txt", ".csv")) or low_type.startswith("text/"):
-        return _paragraphs(data.decode("utf-8", errors="replace"))
-    raise DocumentExtractionError(f"unsupported document format: {document.title}")
+    # Архив вложений читается по записям, а DOCX и ODT устроены архивом, но
+    # документами и остаются: их разбирает свой читатель.
+    if archives.looks_like_zip(data) and not archives.is_office_package(data):
+        return _zip_paragraphs(document.title or document.url, data)
+    return _by_format(document.url.lower(), (content_type or "").lower(), data,
+                      document.title)

@@ -410,6 +410,59 @@ def channel_note(block: dict[str, Any]) -> dict[str, Any]:
     return {"tone": tone, "text": " ".join(lines)}
 
 
+def installment_note(block: dict[str, Any]) -> dict[str, Any]:
+    """Условия рассрочки словами: мягче мы соседей или жёстче.
+
+    Отвечает на «чем сосед торгует помимо цены». Про сам проект источник может
+    молчать — тогда говорится про соседей, а не рисуется прочерк: у соседей
+    условия названы, и это уже ответ о рынке.
+    """
+    subject, peers = block.get("subject") or {}, block.get("peers") or {}
+    if not peers.get("known"):
+        return {"tone": TONE_FLAT, "text": "Ни одного соседа в своде рассрочек нет — сравнивать не с чем."}
+    down = peers.get("down_payment") or {}
+    term = peers.get("term") or {}
+    lines = [
+        f"Рассрочку дают {_num(peers.get('offering'))} соседей из "
+        f"{_num(peers.get('known'))}, о которых свод знает."
+    ]
+    if down.get("median") is not None and term.get("median") is not None:
+        lines.append(
+            f"У них медиана первого взноса {_num(down['median'], 1)} % и срок "
+            f"{_num(term['median'])} мес."
+        )
+    terms = peers.get("price_terms") or {}
+    if terms.get("скидка") or terms.get("удорожание"):
+        lines.append(
+            f"Скидку за рассрочку дают в {_num(terms.get('скидка', 0))} программах, "
+            f"удорожание берут в {_num(terms.get('удорожание', 0))} — прайс у соседей "
+            f"не равен цене сделки."
+        )
+    if peers.get("keys_before_payment"):
+        lines.append(
+            f"Ключи до полной оплаты отдают {_num(peers['keys_before_payment'])} соседей."
+        )
+    tone = TONE_FLAT
+    if subject.get("installment") is None:
+        lines.append("Условий по самому проекту в своде нет — это «не знаем», а не «рассрочки нет».")
+        return {"tone": tone, "text": " ".join(lines)}
+    if not subject.get("installment"):
+        lines.append("У проекта рассрочки нет: сосед с рассрочкой продаёт тот же прайс мягче.")
+        return {"tone": TONE_WATCH, "text": " ".join(lines)}
+    ours_down, ours_term = subject.get("down_payment_pct"), subject.get("term_months")
+    if ours_down is not None and ours_term is not None:
+        lines.append(
+            f"У нас взнос {_num(ours_down, 1)} % и срок {_num(ours_term)} мес."
+        )
+    if down.get("median") is not None and ours_down is not None and ours_down > down["median"] + 5:
+        lines.append("Взнос выше рыночного — вход в проект дороже, чем у соседей.")
+        tone = TONE_WATCH
+    elif term.get("median") is not None and ours_term is not None and ours_term < term["median"] - 3:
+        lines.append("Срок короче рыночного — платить надо быстрее, чем у соседей.")
+        tone = TONE_WATCH
+    return {"tone": tone, "text": " ".join(lines)}
+
+
 NOTE_BUILDERS = {
     "price": price_note,
     "pace": pace_note,
@@ -419,6 +472,7 @@ NOTE_BUILDERS = {
     "rooms": rooms_note,
     "payment": payment_note,
     "channel": channel_note,
+    "installment": installment_note,
 }
 
 
