@@ -27,4 +27,5 @@ exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name='DevelopAid',
 collection = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name='DevelopAid')
 if sys.platform == 'darwin':
     app = BUNDLE(collection, name='DevelopAid.app', bundle_identifier='ru.developaid.desktop',
-                 info_plist={'NSHighResolutionCapable': True})
+                 info_plist={'NSHighResolutionCapable': True,
+                             'CFBundleShortVersionString': '0.2.0', 'CFBundleVersion': '2'})

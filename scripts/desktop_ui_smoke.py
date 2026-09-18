@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import socket
 import sys
 import threading
@@ -29,9 +30,29 @@ try:
     page=browser.new_page(viewport={'width':1512,'height':982},device_scale_factor=1)
     errors=[];page.on('pageerror',lambda error: errors.append(str(error)))
     page.goto(origin)
-    page.locator('#blockTitle').filter(has_text='ТЭП проекта').wait_for()
+    page.locator('#blockTitle').filter(has_text='Участок').wait_for()
     assert page.locator('[data-stage]').all_text_contents()==['01 Проект','02 Экономика','03 Результат']
-    assert page.locator('#blockList button').all_text_contents()==['ТЭП проекта','Очерёдность']
+    assert page.locator('#blockList button').all_text_contents()==['Участок','ТЭП проекта','Очерёдность']
+    # Exercise the online boundary with deterministic responses; the engine remains real.
+    page.route('**/api/site/lookup',lambda route:route.fulfill(json={'items':[
+      {'cadastral_number':'77:09:0004014:13','address':'Москва, Мишина, 46','area_sqm':6509},
+      {'cadastral_number':'77:09:0004014:120','address':'Москва, Мишина, 1Д','area_sqm':4904}], 'warnings':[]}))
+    defaults=page.evaluate('state.boot.form.defaults')
+    preview={'inputs_patch':{'site_area_ha':.6509,'purchase_price_mln':0,'_desktop_site':{'query':'Москва, Мишина, 46','cadastral_numbers':['77:09:0004014:13'],'source_label':'Контрольный ответ','received_at':'2026-09-18T00:00:00Z'}},
+      'clear_keys':[], 'tep':defaults['tep'],'cadastral_numbers':['77:09:0004014:13'],'region':'msk','source_label':'Контрольный ответ', 'warnings':[], 'site_area_ha':.6509}
+    page.route('**/api/site/preview',lambda route:route.fulfill(json=preview))
+    page.locator('#siteQuery').fill('Москва, Мишина, 46')
+    page.get_by_role('button',name='Найти участок',exact=True).click()
+    page.locator('.site-choice').first.wait_for()
+    assert not page.locator('.site-choice input').first.is_checked()
+    page.locator('.site-choice input').first.check()
+    page.locator('#siteGetTep').click()
+    page.locator('#siteApply').wait_for()
+    page.screenshot(path=str(ROOT/'docs/desktop-site-preview.png'),full_page=True)
+    page.locator('#siteApply').click()
+    page.locator('#dialogAccept').click()
+    page.locator('#blockTitle').filter(has_text='ТЭП проекта').wait_for()
+    assert page.evaluate('state.request.cadastral_numbers')==['77:09:0004014:13']
     page.locator('#nextStep').click()
     page.locator('#blockTitle').filter(has_text='Очереди').wait_for()
     page.locator('#previousStep').click()
@@ -64,7 +85,14 @@ try:
     page.locator('[data-stage="result"]').click()
     page.locator('[data-tab="cashflow"]').click()
     page.locator('#cashflowBody table').wait_for()
+    assert page.locator('#cashflowBody table tr').count()>25
     page.locator('[data-tab="result"]').click()
+    assert page.locator('.report-section').count()>=10
+    page.get_by_text('Продукты и выручка',exact=True).click()
+    assert page.locator('.report-section').filter(has_text='Продукты и выручка').locator('table').is_visible()
+    page.get_by_text('Финансирование: БРИДЖ, ПФ и эскроу',exact=True).click()
+    page.evaluate('window.scrollTo(0,0)')
+    page.screenshot(path=str(ROOT/'docs/desktop-report-preview.png'),full_page=True)
     with page.expect_download() as download:
       page.locator('[data-export="json"]').click()
     assert download.value.suggested_filename.endswith('.json')

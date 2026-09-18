@@ -13,6 +13,8 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 
+from desktop import site
+
 import developaid_v2_form
 import developaid_v2_result
 from developaid_v2 import CalculateRequest
@@ -126,14 +128,18 @@ def create_app(core: Any, store: Store, token: str, origin: str) -> FastAPI:
 
     @app.get("/static/{name}")
     def asset(name: str):
-        if name not in {"app.js", "styles.css"}:
+        if name not in {"app.js", "site.js", "report.js", "styles.css"}:
             raise HTTPException(404)
         return FileResponse(_STATIC / name)
 
     @app.get("/api/bootstrap")
     def bootstrap():
         return {"engine_version": core.VERSION,
-                "form": developaid_v2_form.form_description(core),
+                "desktop_version": "0.2",
+                "form": {**developaid_v2_form.form_description(core),
+                         "blocks": [{"key": "site", "kind": "site", "title": "Участок",
+                                     "hint": "Найдите участок по кадастровому номеру или адресу. Для поиска нужен интернет."},
+                                    *developaid_v2_form.form_description(core)["blocks"]]},
                 "references": store.pack(), "projects": store.projects()}
 
     @app.get("/api/references")
@@ -149,6 +155,14 @@ def create_app(core: Any, store: Store, token: str, origin: str) -> FastAPI:
             raise HTTPException(503, "Обновление не получено; прежняя база сохранена. "
                                 + str(exc)[:240]) from exc
         return store.pack()
+
+    @app.post("/api/site/lookup")
+    def site_lookup(req: site.LookupRequest):
+        return site.lookup(req)
+
+    @app.post("/api/site/preview")
+    def site_preview(req: site.SiteRequest):
+        return site.preview(core, req)
 
     @app.post("/api/tep-sync")
     def tep_sync(req: TepSyncRequest):

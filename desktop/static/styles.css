@@ -137,3 +137,19 @@ a{color:inherit;text-underline-offset:3px}
 .step-actions #nextStep{margin-left:auto}
 .result-tabs{display:flex;gap:8px;margin-bottom:20px}
 .result-tabs button.active{background:#080808;color:#fff;border-color:#080808}
+.site-form label,.site-controls label{display:flex;flex-direction:column;gap:10px;font-size:12px}
+.site-form textarea{margin:0 0 14px;min-height:75px;font-size:14px}
+.site-choice{display:flex;gap:12px;padding:16px 0;border-bottom:1px solid var(--line);cursor:pointer}
+.site-choice input{flex-shrink:0;margin-top:2px}
+.site-choice span span,.site-choice small{display:block;margin-top:5px;font-size:12px;line-height:1.5}
+.site-controls{display:flex;align-items:end;gap:16px;margin:20px 0}
+.site-saved{background:var(--light);padding:16px;margin:20px 0;font-size:12px}
+.site-saved p{margin:7px 0}
+.site-preview{border-top:1px solid var(--line);padding-bottom:12px}
+.site-status{white-space:pre-wrap;font-size:12px}
+.report-section{border-top:1px solid var(--line)}
+.report-section>summary{padding:18px 0;font-size:14px;font-weight:600;cursor:pointer}
+.report-section>summary:focus-visible{outline:2px solid #111}
+.report-section-body{padding-bottom:24px}
+.report-table td{font-size:12px;min-width:95px}
+.report-table td:first-child{min-width:175px;line-height:1.5}

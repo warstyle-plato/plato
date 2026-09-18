@@ -144,3 +144,67 @@ def test_reference_pack_contains_public_allowlisted_data_only(desktop):
     broken['version'] = hashlib.sha256(canonical({k:v for k,v in broken.items() if k!='version'}).encode()).hexdigest()
     with pytest.raises(ValueError, match='версия приложения'):
         validate_pack(broken, core)
+
+
+def test_site_lookup_filters_parcels_and_rejects_partial_numbers(desktop, monkeypatch):
+    from desktop import site
+    _, _, client = desktop
+    calls=[]
+    def fake(path, payload):
+        calls.append((path,payload))
+        return {'results': [
+            {'found':True,'kind':'land','cadastral_number':'77:09:0004014:13','address':'Москва'},
+            {'found':True,'kind':'building','cadastral_number':'77:09:0004014:14'},
+            {'found':False,'kind':'land','cadastral_number':'77:09:0004014:15'}],
+            'warnings':['Проверьте состав территории']}
+    monkeypatch.setattr(site,'remote',fake)
+    result=client.post('/api/site/lookup',json={'query':'Москва, Мишина, 46'})
+    assert result.status_code==200
+    assert [x['cadastral_number'] for x in result.json()['items']]==['77:09:0004014:13']
+    assert result.json()['warnings']==['Проверьте состав территории']
+    assert client.post('/api/site/lookup',json={'query':'77:09:0004014:13, 77:09:ошибка'}).status_code==400
+    assert len(calls)==1
+
+
+def test_site_preview_is_explicit_and_does_not_mutate_saved_projects(desktop, monkeypatch):
+    from desktop import site
+    core,store,client=desktop
+    before=client.get('/api/bootstrap').json()
+    number='77:09:0004014:13'
+    def fake(path,payload):
+        if path=='/cadastral/analyze':
+            return {'recognized':[number],'territory':{'inside_moscow':True,'area_ha':.6509}}
+        assert path=='/cadastral/tep-server'
+        assert payload['cadastral_analysis']['recognized']==[number]
+        return {'normalized':{'site_area_ha':.6509},'source':{'format':'Штатный калькулятор ГлавАПУ'},
+                'mappings':{'inputs':{'land_rights_cost_mln':12},
+                            'tep':{'apartments':{'saleable':5000,'gns':8000}}},'warnings':[]}
+    monkeypatch.setattr(site,'remote',fake)
+    response=client.post('/api/site/preview',json={'cadastral_numbers':[number]})
+    assert response.status_code==200,response.text
+    p=response.json();assert p['inputs_patch']['purchase_price_mln']==0
+    assert p['inputs_patch']['land_rights_cost_mln']==12
+    assert 'apartment_price_th' not in p['inputs_patch']
+    assert p['tep']['apartments']['saleable']==5000
+    assert p['tep']['offices']['gns']==0
+    assert p['inputs_patch']['_desktop_site']['cadastral_numbers']==[number]
+    assert client.get('/api/bootstrap').json()==before
+    monkeypatch.setattr(site,'remote',lambda *_:{'recognized':[],'territory':{}})
+    assert client.post('/api/site/preview',json={'cadastral_numbers':[number]}).status_code==400
+    assert client.get('/api/bootstrap').json()==before
+
+
+def test_site_mo_retains_server_provenance_and_requires_all_parcels(desktop, monkeypatch):
+    from desktop import site
+    _,_,client=desktop
+    number='50:01:0000001:1'
+    data={'territory':{'cadastral_numbers':[number],'site_area_ha':2},
+          'inputs':{'land_rights_cost_mln':7},'tep':{'apartments':{'gns':100,'saleable':70}},
+          'density_sqm_per_ha':30000,'warnings':['Предварительный расчёт']}
+    monkeypatch.setattr(site,'remote',lambda path,payload:data)
+    p=client.post('/api/site/preview',json={'cadastral_numbers':[number],'region':'mo'}).json()
+    assert p['inputs_patch']['vri_region']=='mo'
+    assert p['inputs_patch']['_mo_calc']['territory']['site_area_ha']==2
+    assert p['warnings']==data['warnings']
+    data['territory']['cadastral_numbers']=[]
+    assert client.post('/api/site/preview',json={'cadastral_numbers':[number],'region':'mo'}).status_code==400
