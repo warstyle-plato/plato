@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import hmac
 import json
+import ssl
 import threading
 import urllib.request
 from pathlib import Path
@@ -12,6 +13,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
+import certifi
 
 from desktop import site
 
@@ -54,7 +56,8 @@ class CaptureCore:
 def fetch_pack() -> dict:
     req = urllib.request.Request(REFERENCE_URL, headers={
         "Accept": "application/json", "User-Agent": "DevelopAid-Desktop/1"})
-    with urllib.request.urlopen(req, timeout=15) as response:
+    with urllib.request.urlopen(req, timeout=15,
+                                context=ssl.create_default_context(cafile=certifi.where())) as response:
         if response.geturl() != REFERENCE_URL:
             raise ValueError("Сервер обновлений перенаправил запрос на другой адрес")
         raw = response.read(2_000_001)

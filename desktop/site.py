@@ -3,11 +3,13 @@ from __future__ import annotations
 import copy
 import json
 import re
+import ssl
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from typing import Literal
 from pydantic import BaseModel, Field
+import certifi
 import developaid_v2_form as form
 
 HOST = 'https://developaid.ru'
@@ -33,7 +35,8 @@ def remote(path: str, payload: dict) -> dict:
         'Content-Type': 'application/json', 'Accept': 'application/json',
         'User-Agent': 'DevelopAid-Desktop/0.2'})
     try:
-        with urllib.request.urlopen(request, timeout=180) as response:
+        with urllib.request.urlopen(request, timeout=180,
+                                    context=ssl.create_default_context(cafile=certifi.where())) as response:
             if response.geturl() != url:
                 raise ValueError('Сервис участка перенаправил запрос. Данные проекта не изменены.')
             raw = response.read(4_000_001)

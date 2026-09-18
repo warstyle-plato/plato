@@ -3,3 +3,4 @@ pywebview>=6.0,<7
 pyinstaller>=6.20,<7
 # The packaged --smoke gate exercises the real API without a GUI.
 httpx>=0.28,<1
+certifi>=2025.1.31

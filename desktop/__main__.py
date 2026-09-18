@@ -31,6 +31,10 @@ def main():
     origin = f"http://127.0.0.1:{listener.getsockname()[1]}"
     app = create_app(core, store, token, origin)
     if args.smoke:
+        import ssl
+        import certifi
+        # Online search must trust HTTPS without a separately installed Python.
+        assert ssl.create_default_context(cafile=certifi.where()).get_ca_certs()
         from fastapi.testclient import TestClient
         with TestClient(app, base_url=origin, headers={"X-DevelopAid-Token": token}) as client:
             boot = client.get("/api/bootstrap").json()
