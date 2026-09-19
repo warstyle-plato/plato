@@ -451,12 +451,12 @@ def _sentences(text: str) -> list[str]:
 
 def find_repeal_signals(entry: dict[str, Any], docs: list[dict[str, Any]],
                         ) -> list[dict[str, Any]]:
-    """Находки о судьбе акта — только там, где рядом стоит ЕГО номер.
+    """Находки о судьбе акта — с цифровым якорем именно нашего документа.
 
-    Иначе сниппет про соседний акт заберёт находку себе: ровно этим у нас уже
-    отдавались чужие адреса и чужие застройщики в модуле рынка. Номер акта —
-    жёсткий якорь, и он обязан стоять в ТОМ ЖЕ предложении, что и слова об
-    отмене: «отменено» через абзац от нашего номера не значит ничего.
+    Официальный акт об изменениях часто называет изменение только в заголовке,
+    а номер базового постановления — в сниппете. Поэтому заголовку разрешён
+    doc-wide якорь. Для обычного текста правило строже: номер и маркер должны
+    оставаться в одном предложении, чтобы соседний отменённый акт не стал нашим.
     """
     anchors = [str(term).strip().lower() for term in (entry.get("watch_terms") or [])
                if str(term).strip()]
@@ -465,26 +465,39 @@ def find_repeal_signals(entry: dict[str, Any], docs: list[dict[str, Any]],
         return []
     found: list[dict[str, Any]] = []
     for doc in docs or []:
-        text = " ".join(str(doc.get(key) or "") for key in ("title", "snippet", "text"))
-        for sentence in _sentences(text):
-            low = sentence.lower()
-            if not any(anchor in low for anchor in anchors):
-                continue
-            kind = ""
-            if any(marker in low for marker in _REPEAL_MARKERS):
-                kind = "repealed"
-            elif any(marker in low for marker in _AMEND_MARKERS):
-                kind = "amended"
-            if not kind:
-                continue
-            found.append({
-                "kind": kind,
-                "quote": sentence[:400],
-                "url": str(doc.get("url") or ""),
-                "source": str(doc.get("title") or "")[:200],
-            })
-            break                  # одна находка на документ: цитат хватает одной
-    # Отмена важнее правки: если сказано и то и другое, показываем худшее первым.
+        title = str(doc.get("title") or "")
+        snippet = " ".join(str(doc.get(key) or "") for key in ("snippet", "text"))
+        whole = (title + " " + snippet).lower()
+        if not any(anchor in whole for anchor in anchors):
+            continue
+
+        kind = ""
+        quote = ""
+        low_title = title.lower()
+        if any(marker in low_title for marker in _REPEAL_MARKERS):
+            kind, quote = "repealed", title
+        elif any(marker in low_title for marker in _AMEND_MARKERS):
+            kind, quote = "amended", title
+        else:
+            for sentence in _sentences(snippet):
+                low = sentence.lower()
+                if not any(anchor in low for anchor in anchors):
+                    continue
+                if any(marker in low for marker in _REPEAL_MARKERS):
+                    kind = "repealed"
+                elif any(marker in low for marker in _AMEND_MARKERS):
+                    kind = "amended"
+                if kind:
+                    quote = sentence
+                    break
+        if not kind:
+            continue
+        found.append({
+            "kind": kind,
+            "quote": quote[:400],
+            "url": str(doc.get("url") or ""),
+            "source": title[:200],
+        })
     found.sort(key=lambda item: 0 if item["kind"] == "repealed" else 1)
     return found[:5]
 
