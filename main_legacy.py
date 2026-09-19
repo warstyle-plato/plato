@@ -19298,6 +19298,14 @@ def _v4_revenue_by_product(xml: str, products: list[dict[str, Any]],
 # долга, который теперь несёт следующая. Строка 26 листов CF в шаблоне пуста —
 # ряд встаёт, не сдвигая ссылок; доля лежит на «Вводных» рядом с признаком
 # переноса.
+# Ячейка одобренного лимита ПФ на «Вводных» и строка непокрытой потребности,
+# дописываемая в конец листа CF: свободных строк внутри блока ПФ (38–47) в
+# шаблоне не осталось — 26, 29, 64 и 65 уже заняты свипом, нехваткой в РВЭ и
+# переносом долга. Вставить строку в занятое место нельзя: поедут все ссылки.
+_V4_PF_APPROVED_CELL = "F26"
+_V4_PF_UNCOVERED_ROW = 87
+_V4_PF_UNCOVERED_PARITY_ROW = 87
+
 _V4_SWEEP_ROW = 26
 _V4_SWEEP_SHARE_CELL = "F92"
 
@@ -19515,6 +19523,94 @@ def _v4_apply_interest_accrual(xml: str, phase: int, missing: list[str]) -> str:
         missing.append(
             f"{sheet}: база налога не отдала выплату процентов начислению "
             f"({changed} из {len(columns)}, узнано {seen})")
+    return xml
+
+
+def _v4_mark_as_entry(xml: str, coord: str, missing: list[str]) -> str:
+    """Ставит ячейке стиль ввода, не трогая её содержимого.
+
+    Стиль здесь — утверждение о ячейке: «это правят руками». Лист ввода
+    отбирает по нему строки, поэтому вводная без стиля остаётся на расчётном
+    листе — то есть там, где её никто не ищет.
+    """
+    found = re.search(r'<x:c r="%s"(?P<attrs>[^>]*?)(/>|>)' % coord, xml)
+    if not found:
+        missing.append(f"стиль ввода: ячейки {coord} нет")
+        return xml
+    attrs = found.group("attrs")
+    updated = (re.sub(r'\ss="\d+"', "", attrs) + ' s="12"').strip()
+    return (xml[:found.start()] + f'<x:c r="{coord}" {updated}'
+            + found.group(2) + xml[found.end():])
+
+
+def _v4_apply_pf_ceiling(xml: str, phase: int, missing: list[str]) -> str:
+    """Одобренный лимит ПФ становится потолком выборки — как у движка.
+
+    Поле `pf_limit_approved_mln` работало только в движке: там заданный лимит
+    становится настоящим потолком, выборка режется по свободному остатку, а
+    непокрытая потребность уходит в `pf_shortfall` с месяцем первой нехватки.
+    Книга же считала лимит СВОЙ (B26 — округление выборки вверх до 10 млн) и
+    потолком его не ограничивала: поле стояло на «Вводных» справочно, и это
+    было прямо записано в причине `V4_INPUTS_SHOWN_ONLY`.
+
+    Цена: «требуется 30 млрд, банк одобрил 20» — движок обрежет выборку и
+    покажет дыру, а книга посчитает так, будто все 30 доступны. Это не допуск
+    в полпроцента, а разные проекты в двух файлах одного расчёта.
+
+    Лимит применяется К КАЖДОЙ ОЧЕРЕДИ целиком — ровно так, как делает движок
+    (`run(approved, cap=approved)` на каждую очередь). Своей доли книга здесь
+    не считает: разойдись она с движком, расхождение было бы нашим, а не
+    методики. Что «одобренный лимит» у проекта с очередями значит — их общий
+    потолок или потолок каждой — вопрос владельца, и он назван в отчёте.
+
+    Ноль в поле — прежнее поведение до последней формулы: `MIN` и `MAX` из
+    формулы исчезают вовсе, и книга без одобренного лимита считает ровно как
+    раньше.
+    """
+    columns = _v4_cf_columns()
+    sheet = f"CF_{phase}"
+    approved = f"'Вводные'!${_V4_PF_APPROVED_CELL[0]}${_V4_PF_APPROVED_CELL[1:]}"
+    cells: dict[str, dict[str, Any]] = {}
+    for index, column in enumerate(columns):
+        # Своё тело на НАЧАЛО месяца: потолок держит только его. Принятый долг
+        # лимита не выбирает, поэтому из остатка вычитается всё, что принято и
+        # ещё не сметено свипом, — по ПРЕДЫДУЩИЕ месяцы: долг этого месяца
+        # ложится на баланс ниже по циклу, уже после проверки потолка.
+        if index == 0:
+            own = f"MAX(0,{column}38)"
+        else:
+            previous = columns[index - 1]
+            own = (f"MAX(0,{column}38-MAX(0,"
+                   f"SUM($D${_V4_CARRY_ACCEPTED_ROW}:{previous}{_V4_CARRY_ACCEPTED_ROW})"
+                   f"-SUM($D${_V4_SWEEP_ROW}:{previous}{_V4_SWEEP_ROW})))")
+        # Формула идёт в `_v4_set_cells` СЫРОЙ: экранирует она сама, и «&gt;»
+        # здесь превратилось бы в «&amp;gt;» — Excel открыл бы книгу, а
+        # вычислитель не понял 18 592 формулы разом.
+        cells[f"{column}45"] = dict(formula=(
+            f"IF({approved}>0,"
+            f"MIN({column}44,MAX(0,{approved}-{own})),{column}44)"))
+    xml, done = _v4_set_cells(xml, 45, cells)
+    if not done:
+        missing.append(f"{sheet}: строка 45 (выборка ПФ) не найдена")
+        return xml
+
+    # Непокрытая потребность отдельной величиной: без неё дыра видна только
+    # как разбухший «вклад собственного капитала» (строка 49) — там она
+    # неотличима от денег, которые инвестор действительно собирался внести.
+    body = (
+        f'<x:c r="A{_V4_PF_UNCOVERED_ROW}" s="113" t="str"><x:v>'
+        f"ПФ — непокрытая потребность (одобренного лимита не хватило)"
+        f'</x:v></x:c>'
+        f'<x:c r="B{_V4_PF_UNCOVERED_ROW}" s="113" t="n"><x:f>'
+        f"IF($B$5=1,SUM(D44:{_V4_LAST_COLUMN}44)"
+        f"-SUM(D45:{_V4_LAST_COLUMN}45),0)"
+        f'</x:f></x:c>'
+        f'<x:c r="C{_V4_PF_UNCOVERED_ROW}" s="113" t="str"><x:v>млн ₽</x:v></x:c>')
+    xml, done = _v4_insert_row(xml, _V4_PF_UNCOVERED_ROW, body, None)
+    if not done:
+        missing.append(
+            f"{sheet}: строка {_V4_PF_UNCOVERED_ROW} занята — "
+            "непокрытую потребность писать некуда")
     return xml
 
 
@@ -19890,6 +19986,79 @@ def _v4_add_vat_parity_row(xml: str, target_mln: float, missing: list[str]) -> s
         target_mln, missing, "паритет НДС")
 
 
+def _v4_teach_funding_check_about_the_limit(
+    xml: str, missing: list[str]) -> str:
+    """Строка 32 ПРОВЕРОК: «потребность профинансирована банком полностью».
+
+    Проверка была написана тогда, когда выборка равнялась потребности ВСЕГДА
+    — потолка у книги не существовало, — и «не сошлось» могло означать ровно
+    одно: сломалась арифметика. Отсюда FAIL и «СБОЙ» на весь лист.
+
+    С одобренным лимитом разрыв стал законным: банк дал меньше, чем нужно, и
+    это факт о ПРОЕКТЕ, а не о книге. FAIL здесь — та самая кричащая зря
+    проверка, которую перестают читать: она загоралась бы у каждого, кто
+    впишет настоящий лимит из term sheet. Разрыв без заданного лимита
+    по-прежнему FAIL: объяснить его нечем.
+
+    Заодно факт берётся из строк, которые эту дыру и считают
+    (`_V4_PF_UNCOVERED_ROW` листов CF), а не вторым таким же вычитанием:
+    двух ответов на «сколько не покрыто» в одной книге быть не должно.
+    """
+    row = 32
+    facts = ",".join(f"'CF_{phase}'!$B${_V4_PF_UNCOVERED_ROW}"
+                     for phase in range(1, 5))
+    edits = (
+        ("B", "SUM('CF_1'!D44:", f"SUM({facts})"),
+        ("F", 'IF(B32&lt;=C32+E32,"OK","FAIL")',
+         'IF(B32&lt;=C32+E32,"OK",'
+         f"IF('Вводные'!${_V4_PF_APPROVED_CELL[0]}${_V4_PF_APPROVED_CELL[1:]}&gt;0,"
+         '"WARN","FAIL"))'),
+    )
+    for column, mark, replacement in edits:
+        found = re.search(r'<x:c r="%s%d"[^>]*>\s*<x:f>(.*?)</x:f>' % (column, row),
+                          xml, re.S)
+        if not found:
+            missing.append(f"ПРОВЕРКИ: формулы {column}{row} нет")
+            return xml
+        if mark not in found.group(1):
+            missing.append(f"ПРОВЕРКИ: формула {column}{row} не опознана")
+            return xml
+        xml = xml[:found.start(1)] + replacement + xml[found.end(1):]
+    # Подпись обязана объяснить WARN: «не профинансирована полностью» без
+    # причины читается как поломка книги. Ячейка подписи живёт ОБЩЕЙ СТРОКОЙ
+    # (t="s" с номером в таблице строк), поэтому правится не её тело, а она
+    # сама — на inlineStr, как у дописанных строк паритета. Стиль остаётся
+    # свой: чужая краска в середине блока читалась бы как чужая вставка.
+    label = re.search(r'<x:c r="A%d"(?P<attrs>[^>]*?)(?:/>|>.*?</x:c>)' % row,
+                      xml, re.S)
+    if not label:
+        missing.append(f"ПРОВЕРКИ: подписи A{row} нет")
+        return xml
+    style = re.search(r'\ss="\d+"', label.group("attrs"))
+    text = xml_escape(
+        "Потребность в долге профинансирована банком полностью "
+        "(WARN — не хватило ОДОБРЕННОГО лимита ПФ, см. строку "
+        f"{_V4_PF_UNCOVERED_ROW} листов CF)")
+    cell = (f'<x:c r="A{row}"{style.group(0) if style else ""} t="inlineStr">'
+            f"<x:is><x:t>{text}</x:t></x:is></x:c>")
+    return xml[:label.start()] + cell + xml[label.end():]
+
+
+def _v4_add_pf_uncovered_parity_row(
+    xml: str, target_mln: float, missing: list[str]) -> str:
+    """Строка паритета: непокрытая потребность в ПФ.
+
+    Пока книга не знала об одобренном лимите, сверять было нечего — у неё
+    дыры не бывало по построению. Теперь бывает, и она обязана совпасть с
+    движковой: иначе «потолок в книге есть» значит только, что он есть.
+    """
+    return _v4_add_parity_row(
+        xml, _V4_PF_UNCOVERED_PARITY_ROW,
+        "Паритет: непокрытая потребность в ПФ, млн",
+        "+".join(f"'CF_{phase}'!$B${_V4_PF_UNCOVERED_ROW}" for phase in range(1, 5)),
+        target_mln, missing, "паритет непокрытой потребности")
+
+
 def _v4_parity_targets(consolidated: dict[str, Any]) -> dict[str, float]:
     """Контрольные числа движка для parity-блока листа ПРОВЕРКИ."""
     summary = consolidated.get("summary") or {}
@@ -19905,6 +20074,7 @@ def _v4_parity_targets(consolidated: dict[str, Any]) -> dict[str, float]:
         "llcr": float(summary.get("llcr") or 0),
         "peak_bridge_mln": float(finance.get("peak_bridge") or 0) / 1e6,
         "peak_pf_mln": float(finance.get("peak_pf") or 0) / 1e6,
+        "pf_shortfall_mln": float(finance.get("pf_shortfall") or 0) / 1e6,
     }
 
 
@@ -20931,12 +21101,6 @@ V4_INPUTS_COMPUTED_IN_THE_CELL: dict[str, str] = {
         "движок берёт в расчётный лимит БРИДЖа только денежную часть"),
 }
 V4_INPUTS_SHOWN_ONLY: dict[str, dict[str, str]] = {
-    "pf_limit_approved_mln": {
-        "cell": "F26",
-        "reason": ("одобренный лимит — потолок банка; книга считает лимит сама "
-                   "(B26 = округление выборки вверх до 10 млн) и потолком его не "
-                   "ограничивает — потребность и одобренное расходятся в отчёте"),
-    },
     "vri_pf_open_date": {
         "cell": "F77",
         "reason": ("дата открытия ПФ для досрочного погашения остатка ВРИ; график "
@@ -21586,9 +21750,12 @@ V4_REWRITTEN_FORMULA_ROWS: dict[str, tuple[tuple[int, ...], str]] = {
     ),
     "ПРОВЕРКИ": (
         (
-        3, 29, 39, 40, 42, 43, 45, 46, 48, 50, 51, 52, 53, 54, 55, 57,
+        3, 29, 32, 39, 40, 42, 43, 45, 46, 48, 50, 51, 52, 53, 54, 55, 57,
         58, 59, 71, 72, 76, 77, 78, 79, 80, 81, 82, 83, 84,
         ),
+        "Строка 32 знает про одобренный лимит: разрыв, им объяснённый, — "
+        "WARN, а не FAIL, и факт берётся из строк непокрытой потребности "
+        "листов CF, а не вторым таким же вычитанием. "
         "Строки паритета и самопроверки под четвёртый объект, перенос "
         "долга, кэш-свип и гараж отдельно стоящего объекта: его метры уходят "
         "из продаваемой, его CAPEX входит в расход объекта, а его выручка — "
@@ -22315,9 +22482,11 @@ def build_project_workbook(
                 _v4_apply_sports_tax_row(
                     _v4_use_bridge_base_row(
                         _v4_apply_cash_sweep(
-                            _v4_apply_debt_carry(
-                                source.read(_path).decode("utf-8"),
-                                _phase, _queue_count, missing),
+                            _v4_apply_pf_ceiling(
+                                _v4_apply_debt_carry(
+                                    source.read(_path).decode("utf-8"),
+                                    _phase, _queue_count, missing),
+                                _phase, missing),
                             _phase, missing),
                         _phase, missing),
                     _phase, missing),
@@ -22397,6 +22566,9 @@ def build_project_workbook(
         # краснела бы на любом проекте с НДС.
         checks_xml = _v4_add_vat_parity_row(
             checks_xml, float(_parity.get("vat_mln") or 0.0), missing)
+        checks_xml = _v4_add_pf_uncovered_parity_row(
+            checks_xml, float(_parity.get("pf_shortfall_mln") or 0.0), missing)
+    checks_xml = _v4_teach_funding_check_about_the_limit(checks_xml, missing)
 
     def _put_extra(sheet_xml: str, coord: str, *, number=None, text=None) -> str:
         updated, done = _v4_set_cell(sheet_xml, coord, number=number, text=text)
@@ -22545,6 +22717,17 @@ def build_project_workbook(
             put_new(f"F{_extra_row}", number=n(x, _extra_key, 0.0), label=_extra_key)
         put_new(f"G{_extra_row}", text=_extra_unit)
         put_new(f"H{_extra_row}", text=_extra_key)
+        # Ячейка добавки — ВВОД, и сказать об этом обязан её стиль: лист ввода
+        # отбирает строки не по нашему списку, а по краске шаблона (синий шрифт
+        # на жёлтой заливке). Пока добавка шла без стиля, её строка ехала на
+        # лист ввода только за компанию — когда в той же строке уже стоял
+        # штатный ввод. У одобренного лимита ПФ соседом по строке стоит
+        # ФОРМУЛА (B26 — лимит по методике движка), и строка 26 не ехала
+        # никуда: поле, которое просят заполнить, оставалось на расчётном
+        # листе. Красится только оно: чужие строки и так переезжают, а лишняя
+        # краска сказала бы о них то, чего шаблон не говорит.
+        if _extra_key == "pf_limit_approved_mln":
+            xml = _v4_mark_as_entry(xml, f"F{_extra_row}", missing)
 
     # --- ВРИ: остальные вводные в свой блок --------------------------------
     # Лист «ВРИ» — живой график на 1932 формулы, он уже читает периодичность,
