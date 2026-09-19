@@ -172,13 +172,16 @@ def test_not_all_spaces_belong_to_the_plot():
     assert ref.PARKING_SHARE_IN_DISTRICT["value"] == 0.60
 
 
-def test_the_reductions_do_not_claim_to_be_cumulative():
-    """Складывать послабления текст не разрешает — и справочник этого не решает
-    за него: пока не выяснено, стоит UNKNOWN."""
+def test_station_reductions_are_explicitly_not_cumulative_after_1080_pp():
+    """1080-ПП: 15% ИЛИ 10%, процент снижения не суммируется."""
     for rule in (ref.PARKING_REDUCTION_STATION_WALK,
-                 ref.PARKING_REDUCTION_TRANSIT_TO_STATION,
-                 ref.PARKING_REDUCTION_COOPERATIVE):
-        assert rule["cumulative_with_others"] == "UNKNOWN", rule["rule_id"]
+                 ref.PARKING_REDUCTION_TRANSIT_TO_STATION):
+        assert rule["cumulative_with_others"] == "NOT_CUMULATIVE_15_OR_10", rule["rule_id"]
+        assert "1080-ПП" in rule["document"]
+
+    # Кооперированная стоянка — отдельное послабление до 15%; 1080-ПП не
+    # говорит в этой строке, складывается ли оно со станционным снижением.
+    assert ref.PARKING_REDUCTION_COOPERATIVE["cumulative_with_others"] == "UNKNOWN"
 
 
 def test_the_flat_norm_declares_its_narrow_scope():
@@ -195,8 +198,8 @@ def test_the_flat_norm_declares_its_narrow_scope():
 
 def test_the_status_names_the_revision_and_the_check_date():
     state = ref.reference_status()
-    assert state["effective_from"] == "02.07.2026"
-    assert state["in_force_since"] == "2026-07-03"
+    assert state["effective_from"] == "01.09.2026"
+    assert state["in_force_since"] == "2026-09-02"
     assert state["official_source"].startswith("http")
     date.fromisoformat(state["verified_at"])
     assert state["rules_unresolved"] == len(ref.UNRESOLVED)
@@ -209,7 +212,7 @@ def test_the_reference_registers_in_the_freshness_list():
     rows = {item["key"]: item for item in core.reference_freshness()}
     assert "mo_rngp" in rows
     entry = rows["mo_rngp"]
-    assert "02.07.2026" in entry["current"]
+    assert "01.09.2026" in entry["current"]
     assert entry["source"].startswith("Постановление Правительства Московской области")
 
 
@@ -248,3 +251,10 @@ def test_the_machine_rules_agree_with_the_written_source_pack():
     assert "800" in text and "1200" in text
     assert str(int(ref.PARKING_SHARE_IN_QUARTER["value"] * 100)) + "%" in text
     assert str(ref.PARKING_TEMPORARY_RATE["value"]).rstrip("0").rstrip(".") in text
+
+    latest = ROOT / "data" / "normatives" / "mo" / "pp_1080_2026.md"
+    assert latest.exists()
+    latest_text = latest.read_text(encoding="utf-8")
+    assert "процент снижения не суммируется" in latest_text
+    assert "1 место на 50 м²" in latest_text
+    assert "1200 м" in latest_text
