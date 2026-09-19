@@ -348,6 +348,7 @@ def watch_state() -> dict[str, Any]:
             results[key] = results.get(key, 0) + 1
     hours = max(1.0, float(os.getenv("NORMATIVES_WATCH_HOURS", "24") or 24))
     search_hours = max(hours, float(os.getenv("NORMATIVES_SEARCH_HOURS", "168") or 168))
+    search_available = _search_client() is not None
     return {
         "enabled": os.getenv("NORMATIVES_WATCH", "1").strip() not in {"0", "false", "no"},
         "entries": len(_load_registry()),
@@ -361,7 +362,17 @@ def watch_state() -> dict[str, Any]:
         "search_due": _watch_due(search_hours, key="last_search_at"),
         # Платный поиск отвечает на «отменён ли акт»: без ключа он не идёт
         # вовсе, и тогда отмена до нас не доедет никаким путём.
-        "search_available": _search_client() is not None,
+        "search_available": search_available,
+        # Если предметный поиск не настроен, сторож видит только изменение уже
+        # известного URL. Новый акт с новым номером/URL (как 1080-ПП к 713/30)
+        # таким способом не обнаружить. Это деградация наблюдения, а не «всё
+        # актуально»: состояние должно быть видно /status и мониторингу.
+        "discovery_degraded": not search_available,
+        "discovery_message": (
+            "Поиск новых актов не настроен: сторож проверяет только известные URL "
+            "и не может обнаружить новую поправку с новым номером/ссылкой."
+            if not search_available else ""
+        ),
         "queued": queued_count(),
     }
 
