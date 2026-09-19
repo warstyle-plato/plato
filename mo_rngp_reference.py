@@ -39,8 +39,8 @@ UNRESOLVED         — есть только вторичный источник
 Нормативы градостроительного проектирования Московской области утверждены
 постановлением Правительства Московской области от 17.08.2015 № 713/30.
 Последняя учтённая поправка — постановление Правительства Московской области
-от 02.07.2026 № 774-ПП, вступило в силу 03.07.2026. Официальное опубликование:
-http://publication.pravo.gov.ru/document/5000202607030006
+от 01.09.2026 № 1080-ПП. Первичный скан и постраничный разбор:
+data/normatives/mo/pp_1080_2026.md
 """
 
 from __future__ import annotations
@@ -55,6 +55,14 @@ PP_774 = {
     "effective_from": "02.07.2026",
     "in_force_since": "2026-07-03",
     "official_source": "http://publication.pravo.gov.ru/document/5000202607030006",
+}
+
+PP_1080 = {
+    "document": "Постановление Правительства Московской области от 01.09.2026 № 1080-ПП",
+    "changes": PP_774["changes"],
+    "effective_from": "01.09.2026",
+    "in_force_since": "2026-09-02",
+    "official_source": "https://mosreg.ru/dokumenty/normotvorchestvo/prinyato-pravitelstvom/postanovleniya-pmo/postanovlenie-pravitelstva-moskovskoi-oblasti-ot-01-09-2026-1080-pp-o-vnesenii-izmenenii-v-normativy-gradostroitelnogo-proektirovaniya-moskovskoi-oblasti",
 }
 
 # Единицы, которые здесь встречаются. Заведены явно, потому что путаница между
@@ -242,8 +250,8 @@ DEPENDENT_SPACES_NOT_ALLOWED = _rule(
 #
 # Оба снижения обусловлены близостью к станции железной дороги, метро или
 # скоростного трамвая: 15% — если до станции можно дойти пешком, 10% — если до
-# неё довозит наземный транспорт. Суммируются ли они, из текста не следует;
-# до выяснения складывать нельзя.
+# неё довозит наземный транспорт. 1080-ПП прямо установило: 15% ИЛИ 10%,
+# процент снижения не суммируется.
 
 PARKING_REDUCTION_STATION_WALK = _rule(
     rule_id="parking_reduction_station_walk",
@@ -254,14 +262,14 @@ PARKING_REDUCTION_STATION_WALK = _rule(
     area_basis=BASIS_NONE,
     conditions="пешеходные коммуникации до входа на станцию ж/д, метро или "
                "скоростного трамвая не более 800 м (реконструкция — 1200 м)",
-    document=PP_774["document"],
+    document=PP_1080["document"],
     point_table="п. 5.12 Нормативов",
-    effective_from=PP_774["effective_from"],
-    official_source=PP_774["official_source"],
+    effective_from=PP_1080["effective_from"],
+    official_source=PP_1080["official_source"],
     quote="на 15% при наличии/обустройстве пешеходных коммуникаций … при "
           "пешеходной доступности от жилого дома до ближайшего входа на станцию – "
           "не более 800 м, а в районах (территориях) реконструкции – не более 1200 м",
-    cumulative_with_others="UNKNOWN",
+    cumulative_with_others="NOT_CUMULATIVE_15_OR_10",
     status="CONFIRMED_PRIMARY",
 )
 
@@ -275,16 +283,16 @@ PARKING_REDUCTION_TRANSIT_TO_STATION = _rule(
     conditions="остановка наземного пассажирского транспорта не более 500 м от "
                "дома; время в пути до станции не более 10 минут, расстояние не "
                "более 5 км",
-    document=PP_774["document"],
+    document=PP_1080["document"],
     point_table="п. 5.12 Нормативов",
-    effective_from=PP_774["effective_from"],
-    official_source=PP_774["official_source"],
+    effective_from=PP_1080["effective_from"],
+    official_source=PP_1080["official_source"],
     quote="на 10 % - при наличии остановок наземного пассажирского транспорта в "
           "пешеходной доступности не более 500 метров от жилого дома, при этом "
           "время в пути от остановки до указанных станций на наземном "
           "пассажирском транспорте составляет не более 10 минут, расстояние – "
           "не более 5 км",
-    cumulative_with_others="UNKNOWN",
+    cumulative_with_others="NOT_CUMULATIVE_15_OR_10",
     status="CONFIRMED_PRIMARY",
 )
 
@@ -297,10 +305,10 @@ PARKING_REDUCTION_COOPERATIVE = _rule(
     area_basis=BASIS_NONE,
     conditions="кооперированная стоянка, обслуживающая группы объектов разного "
                "назначения; снижение за счёт сдвига часов пик",
-    document=PP_774["document"],
+    document=PP_1080["document"],
     point_table="п. 5.12 Нормативов",
-    effective_from=PP_774["effective_from"],
-    official_source=PP_774["official_source"],
+    effective_from=PP_1080["effective_from"],
+    official_source=PP_1080["official_source"],
     quote="допускается снижать суммарное требуемое количество машино-мест без "
           "снижения обеспеченности ими за счет сдвига часов пик при "
           "функционировании обслуживаемых парковками объектов не более чем на 15%",
@@ -401,19 +409,20 @@ PARKING_NONRESIDENTIAL_GROUND_FLOOR = _rule(
     unit="м² общей площади на 1 машино-место",
     rule_type="MANDATORY_CALCULATION_RULE",
     area_basis=BASIS_NONE,
-    conditions="встроенно-пристроенные нежилые помещения первых этажей жилой "
-               "застройки и многоуровневых паркингов в уровне первого этажа, "
-               "независимо от функции; кроме ДОО и поликлиник. Помещения с "
-               "определённой функцией — по приложению № 10",
-    document=PP_774["document"],
+    conditions="помещения без конкретного функционального назначения, а также "
+               "встроенно-пристроенные нежилые помещения первых этажей жилой "
+               "застройки и многоуровневых паркингов независимо от функции; "
+               "кроме ДОО, поликлиник и школ. Помещения с конкретной функцией — "
+               "по приложению № 10, кроме торговых и ТРК",
+    document=PP_1080["document"],
     point_table="п. 5.12 Нормативов",
-    effective_from=PP_774["effective_from"],
-    official_source=PP_774["official_source"],
-    quote="для встроенно-пристроенных нежилых помещений на первых этажах жилой "
-          "застройки и многоуровневых паркингов в уровне первого этажа "
-          "независимо от функции (за исключением дошкольных образовательных "
-          "организаций, поликлиник) - из расчета 1 место на 50 кв. м общей "
-          "площади таких помещений",
+    effective_from=PP_1080["effective_from"],
+    official_source=PP_1080["official_source"],
+    quote="для помещений без конкретного функционального назначения, а также "
+          "для встроенно-пристроенных нежилых помещений на первых этажах жилой "
+          "застройки и многоуровневых паркингов независимо от функции - из "
+          "расчета 1 место на 50 кв. м общей площади таких помещений "
+          "(за исключением дошкольных образовательных организаций, поликлиник, школ)",
     status="CONFIRMED_PRIMARY",
 )
 
@@ -726,11 +735,11 @@ def reference_status() -> dict[str, Any]:
     """
     unresolved = sorted(UNRESOLVED)
     return {
-        "document": PP_774["changes"],
-        "effective_from": PP_774["effective_from"],
-        "in_force_since": PP_774["in_force_since"],
-        "amended_by": PP_774["document"],
-        "official_source": PP_774["official_source"],
+        "document": PP_1080["changes"],
+        "effective_from": PP_1080["effective_from"],
+        "in_force_since": PP_1080["in_force_since"],
+        "amended_by": PP_1080["document"],
+        "official_source": PP_1080["official_source"],
         "verified_at": VERIFIED_AT,
         "verified_from": VERIFIED_FROM,
         "rules_confirmed": sum(1 for rule in ALL_RULES
@@ -752,8 +761,8 @@ def status_line() -> str:
 # Дата и способ последней сверки. Меняются только вместе с содержимым: если
 # норматив перечитан и ничего не изменилось, дата всё равно двигается — иначе
 # по ней не отличить «сверяли и совпало» от «не открывали полгода».
-VERIFIED_AT = "2026-08-16"
-VERIFIED_FROM = "тексту постановления 774-ПП (PDF официальной публикации)"
+VERIFIED_AT = "2026-09-19"
+VERIFIED_FROM = "первичному скану 1080-ПП от 01.09.2026 (4 страницы)"
 
 # Московская методика, которую нельзя переносить в область. Держим списком, чтобы
 # при подключении справочника к движку было видно, что именно замещается.

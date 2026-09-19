@@ -155,3 +155,41 @@ def test_the_click_id_guard_fails_on_a_forged_link(monkeypatch):
     import pytest
     with pytest.raises(AssertionError, match="метка перехода"):
         test_a_source_link_carries_no_click_id()
+
+
+def test_mo_registry_tracks_1080_pp():
+    rows = {row["id"]: row for row in registry._load_registry()}
+    item = rows["mo-713-30"]
+    assert "1080-ПП" in item["latest_amendment"]
+    assert item["current_as_of"] == "2026-09-19"
+    assert "ysclid" not in item["source_url"]
+
+
+def test_watch_query_keeps_the_subject_not_only_the_base_act_number():
+    item = {
+        "short_name": "713/30 — РНГП Московской области",
+        "watch_terms": [
+            "713/30",
+            "нормативов градостроительного проектирования Московской области",
+        ],
+    }
+    query = registry.watch_query(item)
+    assert "713/30" in query
+    assert "нормативов градостроительного проектирования Московской области" in query
+
+
+def test_watch_finds_amendment_when_title_and_base_number_are_in_adjacent_snippets():
+    item = {
+        "watch_terms": [
+            "713/30",
+            "нормативов градостроительного проектирования Московской области",
+        ]
+    }
+    docs = [{
+        "title": "Постановление № 1080-ПП о внесении изменений в нормативы градостроительного проектирования Московской области",
+        "snippet": "Изменяются нормативы, утвержденные постановлением Правительства Московской области № 713/30.",
+        "url": "https://mosreg.ru/example",
+    }]
+    signals = registry.find_repeal_signals(item, docs)
+    assert signals
+    assert signals[0]["kind"] == "amended"

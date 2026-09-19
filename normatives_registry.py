@@ -442,7 +442,15 @@ def watch_query(entry: dict[str, Any]) -> str:
     name = str(entry.get("short_name") or "").split("—")[0].strip()
     if not name:
         name = str(entry.get("title") or "")[:60]
-    return f"{name} утратил силу или внесены изменения"
+    # Одного номера акта недостаточно. Для 713/30 запрос был буквально
+    # «713/30 утратил силу или внесены изменения» и не поднял 1080-ПП:
+    # новая карточка названа по ПРЕДМЕТУ («нормативы градостроительного
+    # проектирования Московской области»), а номер базового акта находится
+    # только внутри текста. Добавляем самый длинный смысловой маркер реестра.
+    subjects = [str(term).strip() for term in (entry.get("watch_terms") or [])
+                if str(term).strip() and not any(ch.isdigit() for ch in str(term))]
+    subject = max(subjects, key=len) if subjects else ""
+    return f"{name} {subject} утратил силу внесены изменения новая редакция".strip()
 
 
 def _sentences(text: str) -> list[str]:
@@ -458,17 +466,26 @@ def find_repeal_signals(entry: dict[str, Any], docs: list[dict[str, Any]],
     жёсткий якорь, и он обязан стоять в ТОМ ЖЕ предложении, что и слова об
     отмене: «отменено» через абзац от нашего номера не значит ничего.
     """
-    anchors = [str(term).strip().lower() for term in (entry.get("watch_terms") or [])
-               if str(term).strip()]
-    anchors = [a for a in anchors if any(ch.isdigit() for ch in a)]
+    terms = [str(term).strip().lower() for term in (entry.get("watch_terms") or [])
+             if str(term).strip()]
+    anchors = [a for a in terms if any(ch.isdigit() for ch in a)]
+    subjects = [a for a in terms if not any(ch.isdigit() for ch in a) and len(a) >= 12]
     if not anchors:
         return []
     found: list[dict[str, Any]] = []
     for doc in docs or []:
         text = " ".join(str(doc.get(key) or "") for key in ("title", "snippet", "text"))
+        whole = text.lower()
+        # Поисковый сниппет часто режет заголовок и реквизиты на разные
+        # предложения. Для 1080-ПП заголовок говорит «внесение изменений в
+        # нормативы...», а 713/30 попадает в соседний фрагмент. Старое правило
+        # требовало номер И маркер в одном предложении и выбрасывало находку.
+        has_anchor = any(anchor in whole for anchor in anchors)
         for sentence in _sentences(text):
             low = sentence.lower()
-            if not any(anchor in low for anchor in anchors):
+            same_sentence_anchor = any(anchor in low for anchor in anchors)
+            subject_match = any(subject in low for subject in subjects)
+            if not same_sentence_anchor and not (has_anchor and subject_match):
                 continue
             kind = ""
             if any(marker in low for marker in _REPEAL_MARKERS):
