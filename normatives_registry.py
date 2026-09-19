@@ -347,14 +347,16 @@ def watch_state() -> dict[str, Any]:
             key = str(item.get("result") or "unknown")
             results[key] = results.get(key, 0) + 1
     hours = max(1.0, float(os.getenv("NORMATIVES_WATCH_HOURS", "24") or 24))
-    search_hours = max(hours, float(os.getenv("NORMATIVES_SEARCH_HOURS", "168") or 168))
+    search_hours = max(hours, float(os.getenv("NORMATIVES_SEARCH_HOURS", "24") or 24))
     return {
         "enabled": os.getenv("NORMATIVES_WATCH", "1").strip() not in {"0", "false", "no"},
         "entries": len(_load_registry()),
         "checked": len(checks),
         "results": results,
         "last_run_at": state.get("last_run_at") or "",
+        "last_attempt_at": state.get("last_attempt_at") or "",
         "last_search_at": state.get("last_search_at") or "",
+        "last_error": state.get("last_error") or "",
         "link_period_hours": hours,
         "search_period_hours": search_hours,
         "link_check_due": _watch_due(hours),
@@ -381,8 +383,12 @@ def _changes_between(before: dict[str, Any], after: dict[str, Any],
         # жива и не переписана: акт отменяют, не трогая наш PDF.
         signals = ((check or {}).get("sources") or {}).get("signals") or []
         was_signals = ((before.get(entry_id) or {}).get("sources") or {}).get("signals") or []
-        if signals and len(signals) != len(was_signals):
-            first = signals[0]
+        def signal_key(item: dict[str, Any]) -> tuple[str, str, str]:
+            return (str(item.get("kind") or ""), str(item.get("url") or "").strip().lower(), re.sub(r"\\s+", " ", str(item.get("quote") or "").strip().lower()))
+        was_keys = {signal_key(item) for item in was_signals if isinstance(item, dict)}
+        new_signals = [item for item in signals if isinstance(item, dict) and signal_key(item) not in was_keys]
+        if new_signals:
+            first = new_signals[0]
             changes.append({
                 "id": entry_id,
                 "scope": str(entry.get("scope") or ""),
@@ -533,8 +539,8 @@ def _search_client() -> Any:
 def _search_signals(entry: dict[str, Any], client: Any) -> dict[str, Any]:
     """Что об акте пишут в открытых источниках.
 
-    Поиск платный, поэтому запрос один на акт и ходит он раз в неделю, а не
-    вместе с каждой проверкой ссылки. Пустой ответ — это «не нашли», а не
+    Поиск платный, поэтому запрос один на акт. По умолчанию он идёт раз в сутки
+    вместе с плановой проверкой; интервал можно увеличить через NORMATIVES_SEARCH_HOURS. Пустой ответ — это «не нашли», а не
     «действует»: разницу называем вслух, иначе молчание читается как
     подтверждение актуальности.
     """
@@ -569,7 +575,13 @@ def _run_check(search: bool = False) -> dict[str, Any]:
             # переписана» и «что об акте пишут». Свести их в один результат
             # значит потерять тот, который важнее.
             checks[entry_id]["sources"] = _search_signals(entry, client)
-    state = {"last_run_at": _now_iso(), "checks": checks}
+    if not search:
+        for entry_id, check in checks.items():
+            previous_sources = (old.get(entry_id) or {}).get("sources")
+            if isinstance(previous_sources, dict):
+                check["sources"] = previous_sources
+
+    state = {"last_run_at": _now_iso(), "checks": checks, "last_error": ""}
     if search:
         # Отметка платного захода своя: иначе ежедневная проверка ссылки
         # сдвигала бы срок недельного поиска и он не наступал бы никогда.
@@ -989,18 +1001,21 @@ def _watch_due(hours: float, key: str = "last_run_at") -> bool:
 
 
 def _watch_loop() -> None:
-    """Ссылку смотрим сутками, открытые источники — раз в неделю.
+    """Ссылку и открытые источники по умолчанию смотрим раз в сутки.
 
     Поиск платный, и вопросы у них разные: отпечаток отвечает «страницу
     переписали?», поиск — «что с актом стало». Второе меняется медленно, а
     стоит денег, поэтому и спрашивается реже.
     """
     hours = max(1.0, float(os.getenv("NORMATIVES_WATCH_HOURS", "24") or 24))
-    search_hours = max(hours, float(os.getenv("NORMATIVES_SEARCH_HOURS", "168") or 168))
+    search_hours = max(hours, float(os.getenv("NORMATIVES_SEARCH_HOURS", "24") or 24))
     while True:
         try:
             if _watch_due(hours):
                 _run_check(search=_watch_due(search_hours, key="last_search_at"))
-        except Exception:
-            pass          # сторож — удобство: молчание лучше падения фонового потока
+        except Exception as exc:                         # noqa: BLE001
+            state = _load_state()
+            state["last_attempt_at"] = _now_iso()
+            state["last_error"] = f"{type(exc).__name__}: {exc}"[:500]
+            _save_state(state)
         time.sleep(1800)
