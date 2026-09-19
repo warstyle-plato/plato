@@ -384,7 +384,7 @@ def _changes_between(before: dict[str, Any], after: dict[str, Any],
         signals = ((check or {}).get("sources") or {}).get("signals") or []
         was_signals = ((before.get(entry_id) or {}).get("sources") or {}).get("signals") or []
         def signal_key(item: dict[str, Any]) -> tuple[str, str, str]:
-            return (str(item.get("kind") or ""), str(item.get("url") or "").strip().lower(), re.sub(r"\\s+", " ", str(item.get("quote") or "").strip().lower()))
+            return (str(item.get("kind") or ""), str(item.get("url") or "").strip().lower(), re.sub(r"\s+", " ", str(item.get("quote") or "").strip().lower()))
         was_keys = {signal_key(item) for item in was_signals if isinstance(item, dict)}
         new_signals = [item for item in signals if isinstance(item, dict) and signal_key(item) not in was_keys]
         if new_signals:
