@@ -262,10 +262,10 @@ PARKING_REDUCTION_STATION_WALK = _rule(
     area_basis=BASIS_NONE,
     conditions="пешеходные коммуникации до входа на станцию ж/д, метро или "
                "скоростного трамвая не более 800 м (реконструкция — 1200 м)",
-    document=PP_774["document"],
+    document=PP_1080["document"],
     point_table="п. 5.12 Нормативов",
-    effective_from=PP_774["effective_from"],
-    official_source=PP_774["official_source"],
+    effective_from=PP_1080["effective_from"],
+    official_source=PP_1080["official_source"],
     quote="на 15% при наличии/обустройстве пешеходных коммуникаций … при "
           "пешеходной доступности от жилого дома до ближайшего входа на станцию – "
           "не более 800 м, а в районах (территориях) реконструкции – не более 1200 м",
@@ -283,10 +283,10 @@ PARKING_REDUCTION_TRANSIT_TO_STATION = _rule(
     conditions="остановка наземного пассажирского транспорта не более 500 м от "
                "дома; время в пути до станции не более 10 минут, расстояние не "
                "более 5 км",
-    document=PP_774["document"],
+    document=PP_1080["document"],
     point_table="п. 5.12 Нормативов",
-    effective_from=PP_774["effective_from"],
-    official_source=PP_774["official_source"],
+    effective_from=PP_1080["effective_from"],
+    official_source=PP_1080["official_source"],
     quote="на 10 % - при наличии остановок наземного пассажирского транспорта в "
           "пешеходной доступности не более 500 метров от жилого дома, при этом "
           "время в пути от остановки до указанных станций на наземном "
@@ -305,14 +305,14 @@ PARKING_REDUCTION_COOPERATIVE = _rule(
     area_basis=BASIS_NONE,
     conditions="кооперированная стоянка, обслуживающая группы объектов разного "
                "назначения; снижение за счёт сдвига часов пик",
-    document=PP_774["document"],
+    document=PP_1080["document"],
     point_table="п. 5.12 Нормативов",
-    effective_from=PP_774["effective_from"],
-    official_source=PP_774["official_source"],
+    effective_from=PP_1080["effective_from"],
+    official_source=PP_1080["official_source"],
     quote="допускается снижать суммарное требуемое количество машино-мест без "
           "снижения обеспеченности ими за счет сдвига часов пик при "
           "функционировании обслуживаемых парковками объектов не более чем на 15%",
-    cumulative_with_others="NOT_CUMULATIVE_15_OR_10",
+    cumulative_with_others="UNKNOWN",
     status="CONFIRMED_PRIMARY",
 )
 
