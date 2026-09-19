@@ -451,12 +451,14 @@ def _sentences(text: str) -> list[str]:
 
 def find_repeal_signals(entry: dict[str, Any], docs: list[dict[str, Any]],
                         ) -> list[dict[str, Any]]:
-    """Находки о судьбе акта — только там, где рядом стоит ЕГО номер.
+    """Находки об изменении/отмене акта с привязкой к его номеру.
 
-    Иначе сниппет про соседний акт заберёт находку себе: ровно этим у нас уже
-    отдавались чужие адреса и чужие застройщики в модуле рынка. Номер акта —
-    жёсткий якорь, и он обязан стоять в ТОМ ЖЕ предложении, что и слова об
-    отмене: «отменено» через абзац от нашего номера не значит ничего.
+    Раньше маркер («внесены изменения») и номер базового акта требовались в
+    ОДНОМ предложении. Для официальных карточек поправок это неверно по форме:
+    заголовок говорит «О внесении изменений...», а номер базового акта 713/30
+    стоит уже в первом пункте. Так 1080-ПП от 01.09.2026 был найден поиском,
+    но отброшен парсером. Теперь принимаем и этот строгий двухчастный случай:
+    маркер в заголовке + номер базового акта в тексте того же результата.
     """
     anchors = [str(term).strip().lower() for term in (entry.get("watch_terms") or [])
                if str(term).strip()]
@@ -464,27 +466,49 @@ def find_repeal_signals(entry: dict[str, Any], docs: list[dict[str, Any]],
     if not anchors:
         return []
     found: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
     for doc in docs or []:
-        text = " ".join(str(doc.get(key) or "") for key in ("title", "snippet", "text"))
-        for sentence in _sentences(text):
+        title = str(doc.get("title") or "")
+        body = " ".join(str(doc.get(key) or "") for key in ("snippet", "text"))
+        whole = f"{title} {body}".lower()
+        if not any(anchor in whole for anchor in anchors):
+            continue
+
+        hit: tuple[str, str] | None = None
+        for sentence in _sentences(f"{title}\n{body}"):
             low = sentence.lower()
             if not any(anchor in low for anchor in anchors):
                 continue
-            kind = ""
             if any(marker in low for marker in _REPEAL_MARKERS):
-                kind = "repealed"
-            elif any(marker in low for marker in _AMEND_MARKERS):
-                kind = "amended"
-            if not kind:
-                continue
-            found.append({
-                "kind": kind,
-                "quote": sentence[:400],
-                "url": str(doc.get("url") or ""),
-                "source": str(doc.get("title") or "")[:200],
-            })
-            break                  # одна находка на документ: цитат хватает одной
-    # Отмена важнее правки: если сказано и то и другое, показываем худшее первым.
+                hit = ("repealed", sentence)
+                break
+            if any(marker in low for marker in _AMEND_MARKERS):
+                hit = ("amended", sentence)
+                break
+
+        # Типичная карточка изменяющего акта: действие — в заголовке, номер
+        # базового акта — в описании. Оба должны быть в ОДНОМ search result.
+        if hit is None:
+            title_low = title.lower()
+            if any(marker in title_low for marker in _REPEAL_MARKERS):
+                hit = ("repealed", title)
+            elif any(marker in title_low for marker in _AMEND_MARKERS):
+                hit = ("amended", title)
+
+        if hit is None:
+            continue
+        url = str(doc.get("url") or "")
+        if url and url in seen_urls:
+            continue
+        if url:
+            seen_urls.add(url)
+        kind, quote = hit
+        found.append({
+            "kind": kind,
+            "quote": quote[:400],
+            "url": url,
+            "source": title[:200],
+        })
     found.sort(key=lambda item: 0 if item["kind"] == "repealed" else 1)
     return found[:5]
 
