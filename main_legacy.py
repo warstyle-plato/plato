@@ -14821,6 +14821,8 @@ def _purchase_feasibility(
     debt_amount: Any = 0.0,
     ending_debt_mln: Any = 0.0,
     default_date: Any = None,
+    pf_shortfall_mln: Any = 0.0,
+    pf_shortfall_month: Any = None,
 ) -> dict[str, str]:
     """Вердикт по вводным плюс оговорка о дефолте, если он в модели был.
 
@@ -14834,6 +14836,8 @@ def _purchase_feasibility(
     """
     verdict = _purchase_feasibility_base(
         purchase_price_mln, net_profit_mln, llcr, debt_amount, ending_debt_mln)
+    verdict = _financing_not_closed_clause(
+        verdict, pf_shortfall_mln, pf_shortfall_month)
     when = str(default_date or "").strip()
     # У ветки «Дефолтный» оговорка уже своя, и повторять её нечем.
     if not when or verdict.get("status") in ("default", "not_available"):
@@ -14847,6 +14851,57 @@ def _purchase_feasibility(
         "периодов, — но только если банк на это согласится: пени и досрочное "
         "требование модель не считает. Значит показанная чистая прибыль — при "
         "этом допущении, а не результат.")
+    return verdict
+
+
+def _financing_not_closed_clause(
+    verdict: dict[str, str], shortfall_mln: Any, shortfall_month: Any,
+) -> dict[str, str]:
+    """Одобренного лимита ПФ не хватило — экономика показана при допущении.
+
+    Движок это умел с самого начала: доходит выборка до потолка — остаток
+    уходит в `pf_shortfall` с месяцем первой нехватки. А до вердикта величина
+    не доезжала вовсе — её не было ни в своде, ни в отчёте, только в
+    `finance`, — и проект, которому банк не дал трети нужных денег, получал
+    «Предварительно целесообразна» ровно тем же текстом, что и полностью
+    профинансированный.
+
+    Ветка здесь не заводится, и это не упущение: приписка того же рода, что у
+    дефолта в РВЭ (решение владельца, 30.08.2026), — она верна и при LLCR
+    0,99, и при 1,38, и спорить с ними за очередь ей незачем. Чего модель НЕ
+    делает: не выдумывает, откуда возьмутся недостающие деньги, и не считает
+    их стоимость. Она называет сумму, месяц и то, что дальше посчитано так,
+    будто их кто-то дал.
+    """
+    try:
+        gap = float(shortfall_mln or 0.0)
+    except (TypeError, ValueError):
+        gap = 0.0
+    # Полмиллиона — тот же порог, по которому отчёт печатает остаток ПФ:
+    # копейки округления новостью не являются.
+    if gap <= 0.5:
+        return verdict
+    verdict = dict(verdict)
+    # Заголовок положительной ветки — единственный, который правится. «Предварительно
+    # целесообразна» это утверждение без условий, а условие как раз есть, и в
+    # PDF с чатом видно прежде всего заголовок: текст под ним читают не все.
+    # У прочих веток («нецелесообразна», «требует пересмотра», «дефолтный»)
+    # заголовок зелёным светом и не был — там хватает приписки.
+    if verdict.get("status") == "positive":
+        verdict["status"] = "review"
+        verdict["title"] = "Целесообразность не подтверждена: финансирование не закрыто"
+    verdict["conditional"] = True
+    verdict["financing_gap"] = True
+    verdict["pf_shortfall_mln"] = gap
+    when = str(shortfall_month or "").strip()
+    verdict["pf_shortfall_month"] = when
+    since = f" — впервые {_month_in_words(when)}" if len(when) >= 7 else ""
+    verdict["text"] = verdict["text"].rstrip() + (
+        f" Финансирование не закрыто: одобренного лимита ПФ не хватает на "
+        f"{_telegram_number(gap, 1)} млн ₽{since}. Дальше посчитано так, будто "
+        "эти деньги проект получил: источника у них в модели нет, и их "
+        "стоимость не учтена. Пока лимит не подтверждён, показанные прибыль, "
+        "маржинальность и LLCR — при этом допущении, а не результат.")
     return verdict
 
 
@@ -15550,6 +15605,15 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     if _rve_pf_shortfall>500_000:
         kpis.append(["Остаток ПФ после раскрытия эскроу в РВЭ",
                      _pdf_money(_rve_pf_shortfall)])
+    # Непокрытая потребность — у числа, а не только в плашке вердикта: плашку
+    # пролистывают, таблицу показателей нет. Требуемый лимит печатается рядом
+    # с одобренным — «не хватает 16 млрд» без обеих баз не проверить.
+    _pf_gap=float(financing.get('pf_shortfall') or 0)
+    if _pf_gap>500_000:
+        kpis.append(["Требуемый лимит ПФ",_pdf_money(financing.get('pf_limit_required'))])
+        kpis.append(["Одобренный лимит ПФ",_pdf_money(financing.get('pf_limit_approved'))])
+        kpis.append(["Непокрытая потребность в ПФ (финансирование не закрыто)",
+                     _pdf_money(_pf_gap)])
     if _ending_pf>500_000:
         kpis.append(["Непогашенный долг ПФ на конец проекта",_pdf_money(_ending_pf)])
     elif _carried_out>500_000:
@@ -15650,6 +15714,8 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         ),
         float(financing.get("ending_pf") or 0) / 1_000_000,
         financing.get("default_date"),
+        float(financing.get("pf_shortfall") or 0) / 1_000_000,
+        financing.get("pf_shortfall_month"),
     )
     story.append(KeepTogether([
         P("Оценка целесообразности покупки", h2),
@@ -17980,14 +18046,39 @@ def _v4_apply_debt_carry(xml: str, phase: int, queues: int, missing: list[str]) 
                           f"MAX(0,{column}38+{column}45+{column}{a}-{column}46-{column}{b})"))
         edits[61].append((f"{column}47-({column}38+{column}45-{column}46)",
                           f"{column}47-({column}38+{column}45+{column}{a}-{column}46-{column}{b})"))
-        # Проценты, плата за лимит и покрытие эскроу — принятый долг входит в
-        # базу: он несёт проценты как тело и покрывать его тоже надо.
+        # Проценты и покрытие эскроу — принятый долг входит в базу: он несёт
+        # проценты как тело, и покрывать его тоже надо.
         edits[42].append((f"({column}38+{column}45)&gt;0",
                           f"({column}38+{column}45+{column}{a})&gt;0"))
         edits[42].append((f"({column}38+{column}45)*{column}41/12",
                           f"({column}38+{column}45+{column}{a})*{column}41/12"))
+        # А плата за невыбранный лимит — НЕТ, и это разные правила под одной
+        # строкой комментария. Принятый долг лимита не выбирает (решение
+        # владельца, 27.08.2026), значит и свободного лимита не уменьшает.
+        # Прежде он входил и сюда: долг приезжает в строку 38 из остатка 47,
+        # поэтому база вычитается своей — остаток за вычетом накопленного
+        # принятого. Движок делает то же самое (`own_pf_principal`), и обе
+        # поверхности ошибались ОДИНАКОВО — паритет на это молчал.
+        # Накопленное принятое берётся по ПРЕДЫДУЩИЕ месяцы: долг этого месяца
+        # в остаток на начало (38) ещё не вошёл — он попадает туда через
+        # остаток на конец (47) только со следующей колонки. Сложенный с ним
+        # здесь, он вычитался бы из базы, которой в ней нет, и в месяц приёма
+        # плата выходила на свой же размер больше — 4,1 млн ₽ на проверочном
+        # проекте, ровно один месяц из двадцати четырёх. В первой колонке
+        # предыдущей нет, и накопленного тоже.
+        # И не просто накопленное, а ОСТАТОК принятого: кэш-свип (строка 26)
+        # гасит именно его — он ради него и заведён. Не вычти сметённое, и
+        # база уменьшится на уже погашенное, а свободный лимит с платой за
+        # него вырастут на ту же величину.
+        if index == 0:
+            seen_accepted = ""
+        else:
+            previous_column = columns[index - 1]
+            seen_accepted = (
+                f"-MAX(0,SUM($D${a}:{previous_column}{a})"
+                f"-SUM($D${_V4_SWEEP_ROW}:{previous_column}{_V4_SWEEP_ROW}))")
         edits[43].append((f"-({column}38+{column}45))",
-                          f"-({column}38+{column}45+{column}{a}))"))
+                          f"-MAX(0,{column}38+{column}45{seen_accepted}))"))
         edits[40].append((f"MAX(1,{column}38+{column}45)",
                           f"MAX(1,{column}38+{column}45+{column}{a})"))
         edits[46].append((f"MIN({column}38+{column}45,",
@@ -25894,6 +25985,8 @@ def telegram_result(req: TelegramResultRequest,
         ),
         summary.get("ending_pf_mln"),
         summary.get("default_date"),
+        summary.get("pf_shortfall_mln"),
+        summary.get("pf_shortfall_month"),
     )
     # Продукт с ГНС и без продаваемой площади делает вердикт бессмысленным:
     # расходы полные, выручки нет, и «нецелесообразна» относится к дырке
@@ -25950,6 +26043,21 @@ def telegram_result(req: TelegramResultRequest,
         )
     else:
         debt_warning = ""
+    # Нехватка одобренного лимита — своя плашка, а не строка в общем списке:
+    # у неё другой адресат. Дефолт говорит «долг не вернуть», а это — «денег
+    # на стройку не дали», и дальше посчитано так, будто дали.
+    pf_gap_mln = float(summary.get("pf_shortfall_mln") or 0)
+    if pf_gap_mln > 0.5:
+        _gap_month = str(summary.get("pf_shortfall_month") or "")
+        _gap_since = (f" (впервые {_month_in_words(_gap_month)})"
+                      if len(_gap_month) >= 7 else "")
+        debt_warning = (
+            "⚠️ <b>Финансирование не закрыто</b>\n"
+            f"• одобренного лимита ПФ не хватает на "
+            f"{_telegram_money_mln(pf_gap_mln)}{_gap_since}\n"
+            "• дальше посчитано так, будто эти деньги проект получил: "
+            "источника у них в модели нет, стоимость не учтена.\n\n"
+        ) + debt_warning
     text = (
         "<b>Расчёт DevelopAid готов</b>\n"
         + scope_line +
@@ -28298,6 +28406,26 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
         # бы в ЧИСЛИТЕЛЬ LLCR, ничем не уравновешенный (выборка уравновешена
         # CAPEX, который на неё куплен, а перенос не покупает ничего).
         carried_debt_in = 0.0
+        # Остаток принятого долга на балансе. Нужен затем, что `pf_balance`
+        # несёт ОБЕ величины — своё тело и принятое, — а лимит и плата за
+        # невыбранный считаются только по своему: принятый долг лимита не
+        # выбирает (решение владельца, 27.08.2026). Сложенные в один остаток,
+        # они занижали свободный лимит ровно на принятое, и книга повторяла
+        # это той же формулой — паритет молчал, потому что обе поверхности
+        # ошибались одинаково.
+        carried_balance = 0.0
+
+        def own_pf_principal() -> float:
+            """Тело ПФ, выбранное САМОЙ очередью, — база лимита и платы за него.
+
+            Погашения уменьшают общий остаток, а какую его часть они гасят,
+            договор не разделяет: обязательство одно. Здесь принято, что
+            гасится сперва своё, — на плату это не влияет вовсе (её берут
+            только до РВЭ, а до РВЭ эта линия не гасится), а потолок от такого
+            допущения только смягчается, и смягчается он в ту сторону, ради
+            которой правило и написано.
+            """
+            return max(pf_balance - carried_balance, 0.0)
         carried_debt = max(n(x, "_phase_carried_debt_mln") * 1_000_000, 0.0)
         # Месяц приёма долга. Владелец (29.08.2026): обязательство переходит
         # тогда, когда эскроу предыдущей очереди раскрылось и его не хватило,
@@ -28457,8 +28585,11 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
                     # в этом месяце идут ниже по циклу и свободного лимита
                     # сейчас ещё не дают. Капитализированные проценты лимит не
                     # выбирают (решение владельца 04.08.2026) — потолок держит
-                    # только тело долга.
-                    room = max(cap - pf_balance, 0.0)
+                    # только тело долга, и только СВОЁ: принятый долг лимита не
+                    # выбирает. В месяц приёма это выходило само собой (он
+                    # ложится на баланс ниже по циклу), а в следующие месяцы
+                    # уже нет — и потолок съедался чужим обязательством.
+                    room = max(cap - own_pf_principal(), 0.0)
                     if pf_draw > room:
                         pf_shortfall_total += pf_draw - room
                         if pf_shortfall_month is None:
@@ -28473,6 +28604,7 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
                 # покрытие эскроу он разбавляет: покрывать приходится больше.
                 if month == carried_debt_month and carried_debt > 0:
                     pf_balance += carried_debt
+                    carried_balance += carried_debt
                     carried_debt_in += carried_debt
 
                 coverage = escrow / pf_balance if pf_balance > 0 else 0.0
@@ -28505,7 +28637,12 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
                     # плата тикала, пока жив долг, и на Мытищах давала +465 млн
                     # комиссий к книге.
                     if pf_limit and month < rve:
-                        limit_fee = max(pf_limit - pf_balance, 0.0) * n(x, "limit_fee_pct") / 100 / 12
+                        # База — СВОЁ тело: принятый долг лимита не выбирает,
+                        # значит и свободного лимита не уменьшает. Прежде он
+                        # входил сюда вместе со своим, и на проверочном проекте
+                        # с переносом 6,95 млрд плата выходила больше должной.
+                        limit_fee = (max(pf_limit - own_pf_principal(), 0.0)
+                                     * n(x, "limit_fee_pct") / 100 / 12)
                         pf_interest_payable += limit_fee
                         pf_limit_fee_total += limit_fee
 
@@ -28547,6 +28684,14 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
                         project_cash_sweep += swept
                         sweep_draw = swept
                         pf_balance -= swept
+                        # Свип гасит ПРИНЯТЫЙ долг: он и заведён ради него —
+                        # очередь передала обязательство и продавать не
+                        # перестала, банк забирает долю её поступлений в
+                        # погашение того, что переехало. Отнеси его на своё
+                        # тело — и свободный лимит вырос бы на уже погашенное,
+                        # а с ним и плата за невыбранный: 14,6 млн ₽ на
+                        # проверочном проекте, при неизменной своей выборке.
+                        carried_balance = max(carried_balance - swept, 0.0)
                         pf_repayment_total += swept
                         pf_repayment += swept
                         sweep_month = month
@@ -29784,6 +29929,12 @@ def calculate(req: CalcRequest) -> dict:
             "llcr": fin["llcr"],
             "ending_pf": fin.get("ending_pf", 0.0),
             "rve_pf_shortfall": fin.get("rve_pf_shortfall", 0.0),
+            # Непокрытая потребность в ПФ: одобренного лимита не хватило.
+            # Движок считал её с самого начала и никуда не отдавал — она жила
+            # в `finance`, а свод и отчёт читают отсюда, и вердикт вместе с
+            # ними. Проект с дырой в треть нужных денег выглядел целым.
+            "pf_shortfall": fin.get("pf_shortfall", 0.0),
+            "pf_shortfall_month": fin.get("pf_shortfall_month", ""),
             "scenario_revenue_multiplier": n(x, "scenario_revenue_multiplier", 1.0),
             "scenario_cost_multiplier": n(x, "scenario_cost_multiplier", 1.0),
             "npv": project_npv,
@@ -29911,6 +30062,15 @@ def calculate(req: CalcRequest) -> dict:
                 # погашение ПФ» показывала ноль на любом проекте.
                 "rve_pf_repayment": fin.get("rve_pf_repayment", 0.0),
                 "rve_pf_shortfall": fin.get("rve_pf_shortfall", 0.0),
+                "pf_limit_required": fin.get("pf_limit_required", 0.0),
+                "pf_limit_approved": fin.get("pf_limit_approved", 0.0),
+                "pf_shortfall": fin.get("pf_shortfall", 0.0),
+                # Та же величина в миллионах: адаптер `/v2` считать не вправе
+                # (в нём запрещена всякая арифметика, и это проверяется), а
+                # оговорка вердикта величину ПЕЧАТАЕТ — значит единица часть
+                # числа, и делить её должен тот, кто её посчитал.
+                "pf_shortfall_mln": float(fin.get("pf_shortfall", 0.0) or 0.0) / 1_000_000,
+                "pf_shortfall_month": fin.get("pf_shortfall_month", ""),
                 # Чем эскроу перекрывает обязательство — считается один раз в
                 # движке. Ключ, добавленный только в `finance`, до поверхностей
                 # не доезжает: у отчёта свой экземпляр.
@@ -31195,6 +31355,15 @@ def _aggregate_finance(results: list[dict[str, Any]],
             f.get("rve_pf_before_repayment", 0.0) for f in fs),
         "rve_escrow_release": sum(f.get("rve_escrow_release", 0.0) for f in fs),
         "rve_pf_shortfall": sum(f.get("rve_pf_shortfall", 0.0) for f in fs),
+        # Нехватка лимита складывается: у каждой очереди свой договор и свой
+        # потолок. А месяц — САМЫЙ РАННИЙ из названных: «когда открылась
+        # дыра» у свода один ответ, и сумма дат его не даёт.
+        "pf_limit_required": sum(f.get("pf_limit_required", 0.0) for f in fs),
+        "pf_limit_approved": sum(f.get("pf_limit_approved", 0.0) for f in fs),
+        "pf_shortfall": sum(f.get("pf_shortfall", 0.0) for f in fs),
+        "pf_shortfall_month": min(
+            (str(f.get("pf_shortfall_month") or "") for f in fs
+             if str(f.get("pf_shortfall_month") or "")), default=""),
         "rve_pf_repayment": sum(f.get("rve_pf_repayment", 0.0) for f in fs),
         # Дефолт хотя бы одной очереди — свойство всего свода: прибыль после
         # него посчитана на допущении, что банк дал проекту продолжиться.
@@ -31777,6 +31946,8 @@ def _consolidate_phase_results(
             "llcr": finance["llcr"],
             "ending_pf": finance.get("ending_pf", 0.0),
             "rve_pf_shortfall": finance.get("rve_pf_shortfall", 0.0),
+            "pf_shortfall": finance.get("pf_shortfall", 0.0),
+            "pf_shortfall_month": finance.get("pf_shortfall_month", ""),
             "min_phase_llcr": min((r["summary"]["llcr"] for r in results), default=0.0),
             "scenario_revenue_multiplier": n(master_inputs, "scenario_revenue_multiplier", 1.0),
             "scenario_cost_multiplier": n(master_inputs, "scenario_cost_multiplier", 1.0),
@@ -31851,6 +32022,11 @@ def _consolidate_phase_results(
                 "rve_escrow_release": finance.get("rve_escrow_release", 0.0),
                 "rve_pf_repayment": finance.get("rve_pf_repayment", 0.0),
                 "rve_pf_shortfall": finance.get("rve_pf_shortfall", 0.0),
+                "pf_limit_required": finance.get("pf_limit_required", 0.0),
+                "pf_limit_approved": finance.get("pf_limit_approved", 0.0),
+                "pf_shortfall": finance.get("pf_shortfall", 0.0),
+                "pf_shortfall_mln": float(finance.get("pf_shortfall", 0.0) or 0.0) / 1_000_000,
+                "pf_shortfall_month": finance.get("pf_shortfall_month", ""),
                 # На своде дата раскрытия у каждой очереди своя, поэтому здесь
                 # свод разрыва по месяцам, а поимённые ответы — рядом списком.
                 # Одна сумма на весь проект не отвечает, какой очереди не
@@ -32636,6 +32812,8 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
             "rve_escrow_release": result["finance"].get("rve_escrow_release", 0.0),
             "rve_pf_repayment": result["finance"].get("rve_pf_repayment", 0.0),
             "rve_pf_shortfall": result["finance"].get("rve_pf_shortfall", 0.0),
+            "pf_shortfall": result["finance"].get("pf_shortfall", 0.0),
+            "pf_shortfall_month": result["finance"].get("pf_shortfall_month", ""),
             # Непогашенный долг очереди в таблице сравнения не выводился вовсе:
             # очередь, не рассчитавшаяся с банком, выглядела в ней так же, как
             # закрывшая долг, — разница пряталась в отдельной карточке отчёта
@@ -44231,6 +44409,11 @@ async function sendTelegramResult(){
    pf_uncovered_peak_mln:Number(f.pf_uncovered_peak||0)/1e6,
    rve_pf_shortfall_mln:Number(f.rve_pf_shortfall||0)/1e6,
    ending_pf_mln:Number(f.ending_pf||0)/1e6,
+   // Непокрытая потребность в ПФ: одобренного лимита не хватило. Без неё
+   // вердикт в чате говорил «целесообразна» проекту, которому банк денег
+   // не дал, — тем же текстом, что и полностью профинансированному.
+   pf_shortfall_mln:Number(f.pf_shortfall||0)/1e6,
+   pf_shortfall_month:f.pf_shortfall_month||'',
    // Дефолт в дату раскрытия эскроу карточка бота не знала вовсе, и вердикт
    // в чате печатал прибыль голым числом там, где остаточные продажи долг
    // закрыли, а банк своего погашения в РВЭ не получил.
