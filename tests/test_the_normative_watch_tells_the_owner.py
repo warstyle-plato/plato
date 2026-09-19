@@ -326,6 +326,13 @@ def test_daily_link_check_preserves_last_search_signals(monkeypatch, tmp_path) -
     assert saved["checks"]["a"]["sources"]["signals"][0]["url"] == "u"
 
 
+
+def test_signal_dedupe_normalizes_whitespace() -> None:
+    entries = {"a": {"short_name": "713/30"}}
+    before = {"a": {"result": "ok", "sources": {"signals": [{"kind": "amended", "quote": "713/30  внесены   изменения", "url": "U"}]}}}
+    after = {"a": {"result": "ok", "sources": {"signals": [{"kind": "amended", "quote": "713/30 внесены изменения", "url": "u"}]}}}
+    assert registry._changes_between(before, after, entries) == []
+
 def test_signal_replacement_with_same_count_is_news() -> None:
     entries = {"a": {"short_name": "713/30"}}
     before = {"a": {"result": "ok", "sources": {"signals": [
