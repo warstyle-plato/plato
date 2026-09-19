@@ -232,6 +232,21 @@ def test_a_signal_needs_the_number_of_this_act() -> None:
     assert registry.find_repeal_signals(entry, docs) == []
 
 
+def test_an_official_amendment_title_can_name_the_change_and_snippet_the_base_act() -> None:
+    """1080-ПП было пропущено: «внесении изменений» стоит в заголовке,
+    а 713/30 — только в тексте карточки официального акта."""
+    entry = {"short_name": "713/30 — РНГП Московской области",
+             "watch_terms": ["713/30", "774-ПП"]}
+    docs = [{"title": "Постановление Правительства Московской области от 01.09.2026 № 1080-ПП "
+                      "«О внесении изменений в нормативы градостроительного проектирования Московской области»",
+             "snippet": "Изменения вносятся в нормативы, утвержденные постановлением "
+                        "Правительства Московской области от 17.08.2015 № 713/30.",
+             "url": "https://mosreg.ru/document/1080"}]
+    got = registry.find_repeal_signals(entry, docs)
+    assert [x["kind"] for x in got] == ["amended"]
+    assert "1080-ПП" in got[0]["quote"]
+
+
 def test_the_repeal_is_found_with_its_quote_and_link() -> None:
     entry = {"short_name": "945-ПП", "watch_terms": ["945-ПП"]}
     docs = [{"title": "Гарант", "url": "u1",
