@@ -958,6 +958,17 @@ def _card(entry: dict[str, Any], admin: bool = False) -> str:
                        f'target="_blank" rel="noopener">{source_label} ↗</a>')
     else:
         source_link = f'<span class="nomuted">{source_label}</span>'
+    # Публикация РЕДАКЦИИ и страница САМОГО акта — разные адреса, и второй
+    # спросили прямо: «сам 713/30 лежит вообще у нас где-то?» (владелец,
+    # 19.09.2026). Публикация поправки заморожена днём выхода и
+    # консолидированного текста не содержит; страница акта на портале региона
+    # ведёт к нему и к приложениям. Пока ссылка была одна, ответить на «где
+    # взять сам акт» карточка не могла.
+    act_page = str(entry.get("act_page_url") or "").strip()
+    if act_page.startswith("http"):
+        act_label = html.escape(str(entry.get("act_page_label") or "Страница акта"))
+        source_link += (f' <a href="{html.escape(act_page, quote=True)}" '
+                        f'target="_blank" rel="noopener">{act_label} ↗</a>')
     # Тринадцать развёрнутых карточек — стена, которую не читают (владелец,
     # 07.09.2026: «вся информация должна быть свернута и при необходимости
     # только открыта из списка»). Свёрнутая строка отвечает на «что это и на

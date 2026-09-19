@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 from starlette.requests import Request
 
 import normatives_registry as registry
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _request(query: str = "") -> Request:
@@ -155,3 +158,42 @@ def test_the_click_id_guard_fails_on_a_forged_link(monkeypatch):
     import pytest
     with pytest.raises(AssertionError, match="метка перехода"):
         test_a_source_link_carries_no_click_id()
+
+
+def test_the_card_leads_to_the_act_itself() -> None:
+    """Публикация редакции и страница самого акта — разные адреса.
+
+    «Сам 713/30 лежит вообще у нас где-то?» (владелец, 19.09.2026). Публикация
+    поправки заморожена днём выхода: консолидированного текста в ней нет, и
+    карточка, у которой ссылка одна, на этот вопрос ответить не могла.
+    """
+    entry = {"id": "mo-713-30", "scope": "Московская область",
+             "short_name": "713/30", "title": "Постановление № 713/30 «Об утверждении»",
+             "source_url": "http://publication.pravo.gov.ru/document/5000202609020006",
+             "source_label": "Официальное опубликование — 1080-ПП",
+             "act_page_url": "https://mosreg.ru/dokumenty/act",
+             "act_page_label": "Страница самого акта"}
+    card = registry._card(entry)
+    assert "5000202609020006" in card, "ссылки на публикацию редакции нет"
+    assert "https://mosreg.ru/dokumenty/act" in card, "ссылки на сам акт нет"
+    assert "Страница самого акта" in card
+    # Ссылка на несуществующее — такая же ложь, как подпись под чужим числом.
+    assert "Страница самого акта" not in registry._card(
+        dict(entry, act_page_url="", act_page_label=""))
+
+
+def test_the_registry_says_the_base_act_is_not_in_the_library() -> None:
+    """Чего в библиотеке НЕТ, сказано в самой карточке.
+
+    У 713/30 лежат только поправки и приложение № 10: пробел этот стоит
+    восьми открытых дыр справочника, и молча он читается как «всё есть».
+    """
+    import json
+
+    rows = {row["id"]: row for row in json.loads(
+        (ROOT / "data" / "normatives" / "registry.json").read_text(encoding="utf-8"))}
+    row = rows["mo-713-30"]
+    assert "Консолидированного текста 713/30 у нас нет" in row["notes"]
+    assert row["act_page_url"].startswith("https://mosreg.ru/")
+    # Сами поправки при этом лежат файлами — и это проверяется, а не обещается.
+    assert (ROOT / "docs" / "normative" / "mo_rngp_1080pp_20260901.pdf").exists()
