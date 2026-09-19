@@ -2766,8 +2766,33 @@ def install(app: FastAPI) -> None:
             "stale_model_count": sum(
                 1 for row in rows
                 if row.get("available") and not krt_ranking_rules.model_is_current(row)),
+            # Чем посчитаны устаревшие — часть ответа. «Строк прежней методики:
+            # 183» не говорит, насколько прежней: 16.09.2026 каталог судил
+            # выпуском 0.23.22 при работающем 0.23.96, и семьдесят четыре
+            # выпуска экономики прошли молча.
+            "stale_model_engines": _stale_engines(rows),
             "rules_version": krt_ranking_rules._screening_rules_version(),
+            # Выпуск объявлен один раз — `VERSION`; страница берёт его отсюда,
+            # своей копии у неё нет по той же причине, что и у остальных.
+            "engine_version": krt_ranking_rules._engine_version(),
         }
+
+    def _stale_engines(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Каким выпуском посчитана каждая устаревшая строка, по убыванию числа.
+
+        Считает сервер, рядом с самим признаком: страница решить, какая строка
+        устарела, не может — отпечаток методики снимает движок.
+        """
+        tally: dict[str, int] = {}
+        for row in rows:
+            if not row.get("available") or krt_ranking_rules.model_is_current(row):
+                continue
+            # Строка без выпуска посчитана до того, как его завели: это ответ,
+            # а не пропуск, и прочерк читался бы как «неизвестный выпуск».
+            name = str(row.get("engine_version") or "").strip() or "до 0.21.х"
+            tally[name] = tally.get(name, 0) + 1
+        return [{"engine": name, "rows": count}
+                for name, count in sorted(tally.items(), key=lambda kv: (-kv[1], kv[0]))]
 
     @app.post("/auctions/krt/ranking/refresh")
     async def auction_krt_ranking_refresh(

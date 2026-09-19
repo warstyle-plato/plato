@@ -1982,8 +1982,10 @@ function renderKrtStaleModelNote(){
  if(!box||!n)return;
  box.style.display='';
  if(box.innerHTML.includes('прежней методикой'))return;
+ const by=(state.krtStaleEngines||[]).map(e=>`${esc(e.engine)} — ${e.rows}`).join(', ');
  box.innerHTML+=`<div class="source">Посчитано прежней методикой: ${n} площадок`
-  +` — у них цена, очереди и балл остались от прошлого правила счёта.`
+  +` — у них цена, очереди, экономика и балл остались от прошлого правила счёта.`
+  +(by?` Посчитаны выпусками: ${by}`+(state.krtEngine?`; сейчас ${esc(state.krtEngine)}`:'')+`.`:'')
   +` <button type="button" id="krtStaleRun" class="linkish">Пересчитать только их</button></div>`;
  const run=$('krtStaleRun');
  if(run)run.onclick=()=>startKrtRanking(true);
@@ -2521,7 +2523,7 @@ async function loadKrtRanking(){
   state.krtRank={};(d.rows||[]).forEach(row=>{state.krtRank[row.slug]=row;
    if(row.available&&row.traffic_light)state.krtModels[row.slug]={traffic_light:row.traffic_light}});
   state.krtRankProgress=d.progress||null;
-  state.krtStaleRules=Number(d.stale_rules_count||0);state.krtStaleModel=Number(d.stale_model_count||0);
+  state.krtStaleRules=Number(d.stale_rules_count||0);state.krtStaleModel=Number(d.stale_model_count||0);state.krtStaleEngines=Array.isArray(d.stale_model_engines)?d.stale_model_engines:[];state.krtEngine=String(d.engine_version||'');
   // Порядок важен: `renderKrtRankStatus` пишет в узел целиком, то есть
   // сносит всё, что дописали до него. Строка о карточках города
   // добавляется в загрузке каталога — она приходит РАНЬШЕ рейтинга и
