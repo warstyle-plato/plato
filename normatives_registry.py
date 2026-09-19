@@ -451,12 +451,15 @@ def _sentences(text: str) -> list[str]:
 
 def find_repeal_signals(entry: dict[str, Any], docs: list[dict[str, Any]],
                         ) -> list[dict[str, Any]]:
-    """Находки о судьбе акта — только там, где рядом стоит ЕГО номер.
+    """Находки о судьбе акта — только в документе, который называет наш акт.
 
-    Иначе сниппет про соседний акт заберёт находку себе: ровно этим у нас уже
-    отдавались чужие адреса и чужие застройщики в модуле рынка. Номер акта —
-    жёсткий якорь, и он обязан стоять в ТОМ ЖЕ предложении, что и слова об
-    отмене: «отменено» через абзац от нашего номера не значит ничего.
+    У официальных актов об изменениях номер базового постановления часто стоит
+    в тексте/сниппете, а слова «О внесении изменений...» — только в заголовке.
+    Старый разбор требовал номер и маркер В ОДНОМ предложении и поэтому молча
+    пропускал именно такие первичные источники (1080-ПП → 713/30).
+
+    Защита от чужих актов остаётся: цифровой якорь нашего документа обязан
+    присутствовать где-нибудь в том же результате поиска.
     """
     anchors = [str(term).strip().lower() for term in (entry.get("watch_terms") or [])
                if str(term).strip()]
@@ -466,10 +469,11 @@ def find_repeal_signals(entry: dict[str, Any], docs: list[dict[str, Any]],
     found: list[dict[str, Any]] = []
     for doc in docs or []:
         text = " ".join(str(doc.get(key) or "") for key in ("title", "snippet", "text"))
+        low_text = text.lower()
+        if not any(anchor in low_text for anchor in anchors):
+            continue
         for sentence in _sentences(text):
             low = sentence.lower()
-            if not any(anchor in low for anchor in anchors):
-                continue
             kind = ""
             if any(marker in low for marker in _REPEAL_MARKERS):
                 kind = "repealed"
@@ -483,8 +487,7 @@ def find_repeal_signals(entry: dict[str, Any], docs: list[dict[str, Any]],
                 "url": str(doc.get("url") or ""),
                 "source": str(doc.get("title") or "")[:200],
             })
-            break                  # одна находка на документ: цитат хватает одной
-    # Отмена важнее правки: если сказано и то и другое, показываем худшее первым.
+            break
     found.sort(key=lambda item: 0 if item["kind"] == "repealed" else 1)
     return found[:5]
 
