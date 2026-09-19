@@ -263,11 +263,18 @@ def test_moscow_oblast_has_no_moscow_coefficients() -> None:
 
 
 def test_moscow_oblast_built_in_uses_the_confirmed_rule() -> None:
-    """774-ПП называет встроенно-пристроенные помещения первых этажей прямо."""
+    """Норматив называет встроенно-пристроенные помещения первых этажей прямо.
+
+    Абзац двадцать седьмой п. 5.12 переиздан 1080-ПП от 01.09.2026: число то же
+    (1 место на 50 кв. м общей площади), состав помещений расширен
+    многоуровневыми паркингами. Редакцию называет сама строка источника, и
+    проверка держит её там, а не в этом тексте.
+    """
     got = core.parking_demand(_inputs(vri_region="mo"), TEP)
     row = next(r for r in got["rows"] if r["tep_key"] == "ground_commercial")
     assert row["required_spaces"] == 180        # 9 000 общей / 50
     assert row["source_confirmed"] is True
+    assert "1080-ПП" in row["normative_source"]
 
 
 def test_missing_coefficients_are_the_upper_edge_not_a_silent_zero() -> None:

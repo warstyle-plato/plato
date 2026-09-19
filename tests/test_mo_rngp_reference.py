@@ -173,12 +173,63 @@ def test_not_all_spaces_belong_to_the_plot():
 
 
 def test_the_reductions_do_not_claim_to_be_cumulative():
-    """Складывать послабления текст не разрешает — и справочник этого не решает
-    за него: пока не выяснено, стоит UNKNOWN."""
+    """Складывать послабления нельзя — и у 15%/10% это теперь сказал документ.
+
+    По 774-ПП из текста это не следовало, и справочник честно держал UNKNOWN.
+    1080-ПП переиздал абзац восьмой п. 5.12 словами «на 15% или на 10%
+    (процент снижения не суммируется)» — значит у этих двух ответ NO, и он
+    принадлежит акту, а не нашей осторожности.
+    """
     for rule in (ref.PARKING_REDUCTION_STATION_WALK,
-                 ref.PARKING_REDUCTION_TRANSIT_TO_STATION,
-                 ref.PARKING_REDUCTION_COOPERATIVE):
-        assert rule["cumulative_with_others"] == "UNKNOWN", rule["rule_id"]
+                 ref.PARKING_REDUCTION_TRANSIT_TO_STATION):
+        assert rule["cumulative_with_others"] == "NO", rule["rule_id"]
+        assert "не суммируется" in rule["quote"], rule["rule_id"]
+        assert "1080-ПП" in rule["document"], rule["rule_id"]
+        # Условия снижений 1080-ПП не переиздавал: они остались в 774-ПП, и
+        # документ условий назван отдельно — иначе редакция абзаца восьмого
+        # подписала бы собой текст, которого не трогала.
+        assert "774-ПП" in rule["conditions_document"], rule["rule_id"]
+
+
+def test_the_cooperative_reduction_still_does_not_know_about_summing():
+    """О сложении с ним документ не сказал ничего — значит UNKNOWN.
+
+    «Не суммируется» стоит внутри абзаца о 15%/10% для постоянного хранения
+    жителей. Перенести этот ответ на кооперированную стоянку значит выдать
+    нашу догадку за текст: у неё свой абзац и своё условие.
+    """
+    rule = ref.PARKING_REDUCTION_COOPERATIVE
+    assert rule["cumulative_with_others"] == "UNKNOWN"
+    assert "не суммируется" not in rule["quote"]
+    assert "отдельных земельных участках" in rule["quote"]
+
+
+def test_the_cooperative_parking_has_its_definition():
+    """Снижение 15% доступно не всякой общей парковке, а кооперированной.
+
+    Без определения «кооперированная стоянка» читается как любое совместное
+    использование мест, и послабление выглядело бы доступным почти всегда.
+    """
+    rule = ref.PARKING_COOPERATIVE_DEFINITION
+    assert rule["rule_type"] == "DEFINITION"
+    assert "отдельных земельных участках" in rule["quote"]
+    assert "Общие положения" in rule["point_table"]
+
+
+def test_the_krt_temporary_rate_is_its_own_rule():
+    """П. 10.4 — своя норма: то же число, другое условие размещения.
+
+    Число совпадает с п. 5.12 (30 автомобилей на 1000 человек), поэтому
+    соблазн держать одну запись велик. Условия у них разные: в КРТ дальность
+    пешеходной доступности одна — 1200 м, без развилки «800 м / реконструкция
+    1200 м», — и слитые в одну строку они выглядели бы одинаково.
+    """
+    krt = ref.PARKING_TEMPORARY_RATE_KRT
+    assert krt["value"] == ref.PARKING_TEMPORARY_RATE["value"] == 30.0
+    assert krt["value_walk_distance"] == 1200.0
+    assert krt["point_table"].startswith("п. 10.4")
+    assert "КРТ" in krt["conditions"]
+    assert ref.PARKING_TEMPORARY_RATE["point_table"].startswith("п. 5.12")
 
 
 def test_the_flat_norm_declares_its_narrow_scope():
@@ -194,9 +245,19 @@ def test_the_flat_norm_declares_its_narrow_scope():
 # --- актуальность видно снаружи ----------------------------------------------------
 
 def test_the_status_names_the_revision_and_the_check_date():
+    """Редакция — та, что в силе; прежняя названа рядом, а не заменена.
+
+    1080-ПП переиздал отдельные абзацы п. 5.12 и п. 10.4, а не пункты целиком:
+    большинство норм здесь по-прежнему прочитано из 774-ПП. Поэтому состояние
+    называет обе поправки — иначе редакция подписала бы собой текст, которого
+    не трогала.
+    """
     state = ref.reference_status()
-    assert state["effective_from"] == "02.07.2026"
-    assert state["in_force_since"] == "2026-07-03"
+    assert state["effective_from"] == "01.09.2026"
+    assert state["in_force_since"] == "2026-09-03"
+    assert "1080-ПП" in state["amended_by"]
+    assert "774-ПП" in state["previous_amendment"]
+    assert state["previous_in_force_since"] == "2026-07-03"
     assert state["official_source"].startswith("http")
     date.fromisoformat(state["verified_at"])
     assert state["rules_unresolved"] == len(ref.UNRESOLVED)
@@ -209,7 +270,7 @@ def test_the_reference_registers_in_the_freshness_list():
     rows = {item["key"]: item for item in core.reference_freshness()}
     assert "mo_rngp" in rows
     entry = rows["mo_rngp"]
-    assert "02.07.2026" in entry["current"]
+    assert "01.09.2026" in entry["current"]
     assert entry["source"].startswith("Постановление Правительства Московской области")
 
 
@@ -248,3 +309,47 @@ def test_the_machine_rules_agree_with_the_written_source_pack():
     assert "800" in text and "1200" in text
     assert str(int(ref.PARKING_SHARE_IN_QUARTER["value"] * 100)) + "%" in text
     assert str(ref.PARKING_TEMPORARY_RATE["value"]).rstrip("0").rstrip(".") in text
+
+
+def test_the_machine_rules_agree_with_the_1080_source_pack():
+    """Тот же сторож, что у 774-ПП, — для поправки 01.09.2026.
+
+    Пакет и справочник читают разные (человек и движок), и разойтись они
+    могут молча: у 774-ПП это уже заведено, а новая поправка без своего
+    сторожа отстала бы от кода при первой же правке.
+    """
+    pack = (ROOT / "data" / "normatives" / "mo" / "pp_1080_2026-09-01.md")
+    assert pack.exists(), "source pack 1080-ПП не найден"
+    text = pack.read_text(encoding="utf-8")
+    assert ref.PP_1080["official_source"].split("/")[-1] in text
+    assert "03.09.2026" in text                      # в силе с
+    assert "не суммируется" in text
+    assert "1 место на 50 кв. м" in text
+    assert "многоуровневых паркингов" in text
+    assert str(int(ref.PARKING_TEMPORARY_RATE_KRT["value"])) in text
+    assert str(int(ref.PARKING_TEMPORARY_RATE_KRT["value_walk_distance"])) in text
+    # Скан и его распознанный текст лежат рядом и названы в пакете.
+    for name in ("mo_rngp_1080pp_20260901.pdf", "mo_rngp_1080pp_20260901.ocr.txt"):
+        assert name in text, name
+        assert (ROOT / "docs" / "normative" / name).exists(), name
+
+
+def test_the_registry_row_names_the_new_redaction():
+    """Реестр /normatives и справочник движка говорят об одной редакции.
+
+    Реестр читает человек, справочник — расчёт. Разойдись они, карточка
+    обещала бы редакцию, которой в расчёте нет.
+    """
+    import json
+
+    rows = {row["id"]: row for row in json.loads(
+        (ROOT / "data" / "normatives" / "registry.json").read_text(encoding="utf-8"))}
+    row = rows["mo-713-30"]
+    assert "1080-ПП" in row["latest_amendment"]
+    assert "1080-ПП" in row["watch_terms"]
+    assert row["source_url"].endswith("5000202609020006")
+    assert any("1080-ПП" in line for line in row["amendment_history"])
+    # Обрывок имени в падеже реестра на странице публикатора не находится
+    # никогда: акт называет «нормативы», реестр — «нормативов». Маркер обязан
+    # быть неизменяемой частью имени.
+    assert "нормативов градостроительного проектирования" not in " ".join(row["watch_terms"])
