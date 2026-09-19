@@ -63,6 +63,11 @@ def page_state():
             state = {
                 "errors": errors,
                 "units": page.evaluate(read_units),
+                # Имена нарисованных групп: складка без единого своего поля
+                # видна только здесь — в исходнике она объявлена как все.
+                "groups": page.evaluate(
+                    "[...document.querySelectorAll('details[data-group]')]"
+                    ".map(one => one.dataset.group)"),
                 "rate_note": page.evaluate(
                     "(document.getElementById('landscapingRateNote')||{}).textContent||''"),
                 "house_note": page.evaluate(
@@ -186,6 +191,9 @@ def test_the_field_shows_the_figure_the_settings_produce(page_state):
     # его больше не двигала бы, и поле замерло бы, как замирал паркинг.
     assert page_state["kept"] == 0, page_state["kept"]
     assert "методикой класса" in page_state["house_note"], page_state["house_note"]
+    # Само число подпись не повторяет: оно стоит в поле строкой выше.
+    shown_text = str(page_state["shown"]).replace(".", ",")
+    assert shown_text not in page_state["house_note"], page_state["house_note"]
 
 
 def test_a_hand_written_rate_wins_and_an_empty_field_gives_it_back(page_state):
@@ -196,14 +204,24 @@ def test_a_hand_written_rate_wins_and_an_empty_field_gives_it_back(page_state):
     assert abs(back - round(page_state["computed"], 2)) < 0.005, page_state
 
 
-def test_the_hint_calls_the_figure_what_it_is():
-    """Подсказка называет показатель счётным и говорит, где правят методику."""
+def test_the_hint_names_the_base_and_the_note_names_the_state(page_state):
+    """Подсказка говорит БАЗУ, подпись — чьё это число: каждое сказано один раз.
+
+    Прежде обе говорили и то и другое — 333 знака подсказки и 218 подписи, — и
+    одно и то же дважды подряд перестают читать оба раза («текста
+    пояснительного слишком много», владелец, 16.09.2026).
+    """
     hints = {field[0]: field[2] for group in core.FIELD_GROUPS for field in group[1]}
     hint = hints["landscaping_gns_th_per_sqm"]
-    assert "счётный показатель" in hint, hint
-    assert "Настройках класса" in hint, hint
+    assert "наземной части дома" in hint, hint
+    # Инструкции в подсказке больше нет — она у подписи, у которой есть состояние.
+    assert "перебьёт" not in hint, hint
+    assert "очистите" not in hint.lower(), hint
     # Прежняя подсказка обещала пустое поле — а в поле теперь стоит число.
     assert "Пусто — считается методикой" not in hint, hint
+    note = page_state["house_note"]
+    assert "перебьёт" in note and "Настройках класса" in note, note
+    assert "наземной части дома" not in note, note
 
 
 def test_the_figure_follows_the_class_and_does_not_freeze(page_state):
@@ -219,3 +237,41 @@ def test_the_figure_follows_the_class_and_does_not_freeze(page_state):
     assert elite > comfort * 2, {"комфорт": comfort, "элит": elite}
     assert abs(elite - round(page_state["elite_computed"], 2)) < 0.005, page_state
     assert page_state["elite_kept"] == 0, page_state["elite_kept"]
+
+
+def test_the_storage_area_lives_only_in_the_class(page_state):
+    """Площадь кладовой правится в «Настройках класса», и во «Вводных» её нет.
+
+    Владелец, 16.09.2026: «этот блок тут не нужен, если он есть в настройках
+    класса». Поле было единственным в группе «Кладовые» и повторяло строку
+    окна классов слово в слово.
+    """
+    assert "storage_area_per_unit_sqm" in core.CLASS_ONLY_INPUTS
+    drawn = {one["id"][2:] for one in page_state["units"]}
+    assert drawn, "форма не отрисовалась"
+    assert "storage_area_per_unit_sqm" not in drawn
+    # Второй дом у поля есть — иначе это вводная, которую негде править.
+    assert "storage_area_per_unit_sqm" in core.PROJECT_CLASS_PRESETS["comfort"]
+    assert core.class_field_unit("storage_area_per_unit_sqm")
+
+
+def test_a_group_without_its_own_fields_is_not_drawn(page_state):
+    """Складка, у которой все поля уехали в класс, не рисуется вовсе.
+
+    Пустая «Кладовые» читается как продукт, у которого вводных нет, а не как
+    поле, переехавшее в соседнее окно. Утверждение мерится составом: на экране
+    ровно те группы, у которых осталось хоть одно своё поле, — перечисление
+    имён отстало бы на следующей такой группе.
+    """
+    drawn = set(page_state["groups"])
+    assert drawn, "групп на экране нет — мерить нечего"
+    expected = {title for title, fields in core.FIELD_GROUPS
+                if any(one[0] not in core.CLASS_ONLY_INPUTS for one in fields)}
+    hidden = {title for title, fields in core.FIELD_GROUPS
+              if fields and not any(one[0] not in core.CLASS_ONLY_INPUTS
+                                    for one in fields)}
+    # Предохранитель: без такой группы проверка не значит ничего.
+    assert hidden, "ни одной группы, целиком уехавшей в класс"
+    assert drawn == expected, {"не нарисованы": sorted(expected - drawn),
+                               "лишние": sorted(drawn - expected)}
+    assert not (drawn & hidden), sorted(drawn & hidden)
