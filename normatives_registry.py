@@ -474,7 +474,7 @@ def find_repeal_signals(entry: dict[str, Any], docs: list[dict[str, Any]],
 
     # Legal databases spell the same number as 713/30, № 713/30 or N 713/30.
     # Match the stable numeric token, not the typography of the number prefix.
-    anchor_numbers = [re.sub(r"^(?:№|n|no)\\s*", "", a, flags=re.IGNORECASE).strip() for a in anchors]
+    anchor_numbers = [re.sub(r"^(?:№|n|no)\s*", "", a, flags=re.IGNORECASE).strip() for a in anchors]
     anchor_numbers = [a for a in anchor_numbers if a]
 
     def has_anchor(text: str) -> bool:
@@ -507,7 +507,7 @@ def find_repeal_signals(entry: dict[str, Any], docs: list[dict[str, Any]],
             title_low = title.lower()
             if any(marker in title_low for marker in _REPEAL_MARKERS):
                 hit = ("repealed", title)
-            elif any(marker in title_low for marker in _AMEND_MARKERS):
+            elif (any(marker in title_low for marker in _AMEND_MARKERS) or ("внесени" in title_low and "изменени" in title_low)):
                 hit = ("amended", title)
 
         if hit is None:
