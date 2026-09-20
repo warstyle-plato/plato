@@ -136,9 +136,36 @@ def accounted_numbers(entry: dict[str, Any]) -> set[str]:
     новая редакция» на карточке 713/30 стояло бы всегда, а постоянная приписка
     перестаёт читаться — и настоящую следующую поправку под ней уже не увидеть.
     """
-    text = " ".join([str(entry.get("latest_amendment") or "")]
-                    + [str(x) for x in (entry.get("amendment_history") or [])])
-    return {match.group(0).lower() for match in _ACT_NUMBER_RE.finditer(text)}
+    parts = [str(entry.get("latest_amendment") or "")]
+    parts += [str(x) for x in (entry.get("amendment_history") or [])]
+    # Цепочка — это «какие поправки существуют», и учтённой делает не наличие
+    # акта в ряду, а разбор его содержания: пока он не разобран, находка о нём
+    # остаётся новостью. Читать надо сам ряд, а не второй список рядом с ним.
+    for step in chain_steps(entry):
+        if str(step.get("status") or "").startswith("разобран"):
+            parts.append(str(step.get("number") or ""))
+    return {match.group(0).lower() for match in _ACT_NUMBER_RE.finditer(" ".join(parts))}
+
+
+def chain_steps(entry: dict[str, Any]) -> list[dict[str, Any]]:
+    """Ряд поправок к акту — так, как его объявил сам акт."""
+    steps = entry.get("amendment_chain")
+    return [s for s in steps if isinstance(s, dict)] if isinstance(steps, list) else []
+
+
+def chain_counts(entry: dict[str, Any]) -> dict[str, int]:
+    """Сколько поправок в ряду, сколько у нас файлом и сколько не получено.
+
+    Число молчания здесь такое же обязательное, как у сторожа: «29 поправок»
+    без «8 не получено» читается как полная библиотека.
+    """
+    steps = chain_steps(entry)
+    return {
+        "all": len(steps),
+        "in_library": sum(1 for s in steps if s.get("file")),
+        "studied": sum(1 for s in steps if str(s.get("status") or "").startswith("разобран")),
+        "missing": sum(1 for s in steps if str(s.get("status") or "") == "не получен"),
+    }
 
 
 def own_number(entry: dict[str, Any]) -> str:
@@ -878,6 +905,31 @@ def _card(entry: dict[str, Any], admin: bool = False) -> str:
         for row in entry.get("engine_usage", [])
         if isinstance(row, dict)
     )
+    counts = chain_counts(entry)
+    chain_html = ""
+    if counts["all"]:
+        rows = []
+        for step in chain_steps(entry):
+            where = (
+                "файл в библиотеке" if step.get("file")
+                else html.escape(str(step.get("reason") or "файла нет"))
+            )
+            rows.append(
+                "%s № %s — %s · %s"
+                % (
+                    html.escape(str(step.get("act_date") or "—")),
+                    html.escape(str(step.get("number") or "—")),
+                    html.escape(str(step.get("status") or "—")),
+                    where,
+                )
+            )
+        chain_html = (
+            "<details class='history'><summary>Ряд поправок — %d, из них файлом %d,"
+            " разобрано %d, не получено %d</summary><ul>%s</ul></details>"
+            % (counts["all"], counts["in_library"], counts["studied"],
+               counts["missing"], "".join("<li>%s</li>" % r for r in rows))
+        )
+
     history = entry.get("amendment_history") or []
     history_html = ""
     if history:
@@ -995,6 +1047,7 @@ def _card(entry: dict[str, Any], admin: bool = False) -> str:
     <span>{html.escape(str(entry.get('latest_amendment') or '—'))}</span></div>
   {news_html}
   {history_html}
+  {chain_html}
   <div class="twocol">
     <section><h3>На что влияет</h3><ul>{_li(entry.get('affects'))}</ul></section>
     <section><h3>Где используется в движке</h3><ul class="usage">{usage}</ul></section>

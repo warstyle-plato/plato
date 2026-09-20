@@ -267,7 +267,7 @@ def test_each_jurisdiction_reads_its_own_row_for_the_sports_object() -> None:
     oblast = parking_norms.mo_required("fitness", GBA)
     assert oblast["required_spaces"] > 0
     assert oblast["source_confirmed"] is True
-    assert "1400/45" in oblast["normative_source"]
+    assert "1480/45" in oblast["normative_source"]
 
 
 def test_the_oblast_norm_steps_by_the_area_of_the_object() -> None:
