@@ -67,8 +67,8 @@ from auction_search.krt_ranking import (
 # методики — функция модуля: `krt_ranking.model_is_current` там разрешилось бы
 # на экземпляре и упало бы при первом же чтении рейтинга.
 from auction_search import krt_ranking as krt_ranking_rules
-from auction_search.krt_screening import _number as _screening_number
 from auction_search.krt_screening import build_krt_model_screening
+from auction_search.krt_screening import housing_measure_named
 from auction_search.models import LotKind
 from auction_search.preset_mapper import build_project_preset
 from auction_search.profile_fit import profile_fit
@@ -2939,6 +2939,12 @@ def install(app: FastAPI) -> None:
         продаж, свой покупатель), и считать его пресетом жилья значило бы
         показать посчитанным то, что посчитано не тем. Это ответ методики, а
         не наш пробел, и балл площадки от него не снижается.
+
+        А вот «нежилая» решает не эта копия вопроса, а `housing_measure_named`
+        — та же функция, которой отказывает сам скрининг. Своя копия читала
+        только жилую СПП, и 27 площадок-решений прода с НАЗВАННОЙ площадью
+        квартир отказывались «жилья в проекте решения нет»: наш пробел был
+        выдан за ответ документа.
         """
         shift = str(project.get("parse_problem") or "").strip()
         if shift:
@@ -2950,7 +2956,7 @@ def install(app: FastAPI) -> None:
             return _screen_one(project)
         if not project.get("address_known"):
             return _press_only(project)
-        if _screening_number(project.get("housing_gfa_sqm")) <= 0:
+        if not housing_measure_named(project):
             answer = _press_only(project)
             answer["reason"] = (
                 "Жилья в проекте решения нет — нежилую площадку модель пока не считает: "
