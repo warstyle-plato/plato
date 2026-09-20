@@ -1815,7 +1815,7 @@ function filterKrt(){
   if(minPrice!==null&&Number.isFinite(minPrice)){
    const price=krtValue(x,'market_price');
    if(price===null||price===undefined){priceUnknown++;return false}
-   // Требование владельца — именно «выше 600»: равное 600 не проходит.
+   // Порог цены строгий: равное порогу не проходит.
    if(Number(price)<=minPrice){priceBelow++;return false}
   }
   if(minHousing>0){
@@ -2090,8 +2090,8 @@ function renderKrtFilterNote(){
  // «Назначение», и обе причины видны в самих списках.
  if(small)bits.push(`${small} ниже порога по объёму жилья`);
  if(unknown)bits.push(`${unknown} без указанного объёма жилья — это «не знаем», а не «мало»`);
- if(priceBelow)bits.push(`${priceBelow} с оценкой текущих продаж окружения не выше порога`);
- if(priceUnknown)bits.push(`${priceUnknown} без оценки текущих продаж окружения — это «не знаем», а не ноль`);
+ if(priceBelow)bits.push(`${priceBelow} с оценкой цены за м² окружения не выше порога`);
+ if(priceUnknown)bits.push(`${priceUnknown} без оценки цены за м² окружения — это «не знаем», а не ноль`);
  const sorted=state.krtSort.key!=='score'||state.krtSort.dir!==-1
   ? `Сортировка: ${esc(KRT_SORT_NAMES[state.krtSort.key]||state.krtSort.key)}`
     +(state.krtSort.dir>0?' по возрастанию':' по убыванию')+'. ' : '';
@@ -2099,7 +2099,7 @@ function renderKrtFilterNote(){
  box.innerHTML=sorted+(bits.length?'Скрыто фильтром: '+bits.join('; ')+'.':'');
 }
 const KRT_SORT_NAMES={stage:'по шагу воронки',name:'по названию',score:'по баллу',ceiling:'по потолку входа',
- llcr:'по LLCR',margin:'по марже',sales:'по продажам окружения',status:'по статусу',area:'по площади',
+ llcr:'по LLCR',margin:'по марже',market_price:'по цене окружения',status:'по статусу',area:'по площади',
  total:'по общему объёму',housing:'по объёму жилья',jobs:'по рабочим местам',
  decided:'по дате проекта решения'};
 // Плашка торгов. Пока право на договор о КРТ на торгах, у площадки нет ни
@@ -2238,7 +2238,7 @@ function renderKrt(){const a=state.krtFiltered,body=$('krtRows');body.innerHTML=
   +(x.draft_decision_at?' '+krtCityDay(x.draft_decision_at):'')
   +'. Решение ещё не принято — город собирает мнения правообладателей. Карточки в каталоге krt.mos.ru нет; '
   +krtTepSourceNote(x))+'">только проект решения</span>':'';
- tr.innerHTML=`<td><div class="lotname">${esc(x.name)}${fresh}${tender}${nocard}${marks}</div><div class="source">${esc(krtBroken(x)?'разбор карточки съехал на поле — округ и ТЭП не показаны':[x.okrug,x.district].filter(Boolean).join(' · '))}</div></td><td><span class="fit ${sc.tone}" title="${esc(title)}"><span class="light"></span>${krtScoreNumber(sc)} · ${esc(sc.label)}</span><div class="source">${esc(krtScoreNote(sc))}</div></td><td class="money">${krtRankCell(x.slug)}</td><td class="money">${krtModelCell(x.slug,'llcr')}</td><td class="money">${krtModelCell(x.slug,'margin')}</td><td class="money">${krtSalesCell(x.slug)}</td><td>${krtStageCell(x)}</td><td>${x.draft_decision_at?(x.draft_decision_url?`<a href="${esc(x.draft_decision_url)}" target="_blank" rel="noopener" title="Проект решения о КРТ на mos.ru">${esc(krtCityDay(x.draft_decision_at))}</a>`:esc(krtCityDay(x.draft_decision_at))):'<span class="source">—</span>'}</td><td>${krtStatusCell(x)}</td><td>${krtBroken(x)?krtUnparsedCell(x):(x.area_ha?esc(x.area_ha+' га'):'—')}</td><td>${krtBroken(x)?krtUnparsedCell(x):fmtArea(x.total_gfa_sqm)}</td><td>${krtBroken(x)?krtUnparsedCell(x):fmtArea(x.housing_gfa_sqm)}</td><td>${krtBroken(x)?krtUnparsedCell(x):esc(x.jobs??'—')}</td>`;tr.onclick=()=>selectKrt(x);body.appendChild(tr)});renderAskContext();syncTopScroll()}
+ tr.innerHTML=`<td><div class="lotname">${esc(x.name)}${fresh}${tender}${nocard}${marks}</div><div class="source">${esc(krtBroken(x)?'разбор карточки съехал на поле — округ и ТЭП не показаны':[x.okrug,x.district].filter(Boolean).join(' · '))}</div></td><td><span class="fit ${sc.tone}" title="${esc(title)}"><span class="light"></span>${krtScoreNumber(sc)} · ${esc(sc.label)}</span><div class="source">${esc(krtScoreNote(sc))}</div></td><td class="money">${krtRankCell(x.slug)}</td><td class="money">${krtModelCell(x.slug,'llcr')}</td><td class="money">${krtModelCell(x.slug,'margin')}</td><td class="money">${krtMarketPriceCell(x.slug)}</td><td>${krtStageCell(x)}</td><td>${x.draft_decision_at?(x.draft_decision_url?`<a href="${esc(x.draft_decision_url)}" target="_blank" rel="noopener" title="Проект решения о КРТ на mos.ru">${esc(krtCityDay(x.draft_decision_at))}</a>`:esc(krtCityDay(x.draft_decision_at))):'<span class="source">—</span>'}</td><td>${krtStatusCell(x)}</td><td>${krtBroken(x)?krtUnparsedCell(x):(x.area_ha?esc(x.area_ha+' га'):'—')}</td><td>${krtBroken(x)?krtUnparsedCell(x):fmtArea(x.total_gfa_sqm)}</td><td>${krtBroken(x)?krtUnparsedCell(x):fmtArea(x.housing_gfa_sqm)}</td><td>${krtBroken(x)?krtUnparsedCell(x):esc(x.jobs??'—')}</td>`;tr.onclick=()=>selectKrt(x);body.appendChild(tr)});renderAskContext();syncTopScroll()}
 // Балл — потолок цены входа на метр продаваемой (решение владельца,
 // 23.08.2026). На метр, а не в абсолюте: потолок в рублях выгоден крупным
 // площадкам просто по размеру. Пустая ячейка значит «не посчитали», и это не
@@ -2479,12 +2479,12 @@ function krtModelCell(slug,key){
  }
  return `<b>${Number(value).toFixed(1)}%</b>`;
 }
-function krtSalesCell(slug){
+function krtMarketPriceCell(slug){
  const row=state.krtRank[slug];
  if(!row||!row.available)return '<span class="source">—</span>';
- const value=row.surrounding_sales;
- if(value===null||value===undefined)return '<span class="source" title="Рыночный отчёт не определил текущий темп окружения">н/д</span>';
- return `<b>${new Intl.NumberFormat('ru-RU',{maximumFractionDigits:1}).format(Number(value))}</b><div class="source">ДДУ/мес.</div>`;
+ const value=row.surrounding_price_rub_sqm;
+ if(value===null||value===undefined)return '<span class="source" title="Рыночный отчёт не определил текущую цену окружения">н/д</span>';
+ return `<b>${new Intl.NumberFormat('ru-RU',{maximumFractionDigits:0}).format(Number(value))}</b><div class="source">₽/м²</div>`;
 }
 function krtRankCell(slug){
  const row=state.krtRank[slug];
