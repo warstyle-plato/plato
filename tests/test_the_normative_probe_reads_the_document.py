@@ -232,3 +232,23 @@ def test_our_own_link_change_is_not_the_source_changing(
     # Та же ссылка с другим телом — по-прежнему смена содержимого.
     again = registry._probe(entry, {"sha256": "другой", "url": "https://example.test/new"})
     assert again["result"] == "changed" and again["changed"] is True
+
+
+def test_a_source_that_does_not_exist_says_so_by_name() -> None:
+    """«Адрес забыт» и «адреса нет вовсе» — разные ответы.
+
+    У выдержки, чей утверждающий акт не назван ни одним отвечающим нам
+    источником, ссылки не существует по построению. Пока проба на такую строку
+    отвечала «Источник не задан», пробел источника читался как наш недосмотр —
+    и наоборот: настоящая забытая ссылка ничем от него не отличалась.
+    """
+    named = registry._probe({
+        "id": "проверочная",
+        "source_absent": "утверждающий акт не назван ни одним источником — адреса нет",
+    }, {})
+    assert named["result"] == "no_source"
+    assert "утверждающий акт не назван" in named["message"]
+
+    forgotten = registry._probe({"id": "проверочная"}, {})
+    assert forgotten["result"] == "no_source"
+    assert forgotten["message"] == "Источник не задан"

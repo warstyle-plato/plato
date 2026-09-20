@@ -197,3 +197,47 @@ def test_the_registry_says_the_base_act_is_not_in_the_library() -> None:
     assert row["act_page_url"].startswith("https://mosreg.ru/")
     # Сами поправки при этом лежат файлами — и это проверяется, а не обещается.
     assert (ROOT / "docs" / "normative" / "mo_rngp_1080pp_20260901.pdf").exists()
+
+
+def test_the_page_takes_its_scopes_from_the_rows(monkeypatch) -> None:
+    """Плитки и кнопки отбора считаются по данным, а не перечислены в разметке.
+
+    Перечисленный список отстаёт от реестра: строка с новой областью — а
+    «Правовая рамка продукта» появилась именно так — не получила бы ни плитки,
+    ни кнопки и читалась бы как отсутствующая.
+    """
+    rows = registry._load_registry() + [{
+        "id": "test-scope",
+        "scope": "Проверочная область",
+        "title": "Акт проверочной области",
+        "cited_as": ["000-ПП"],
+        "engine_usage": [{"module": "\u2014", "usage": "проверочная строка, в расчёте не участвует"}],
+    }]
+    monkeypatch.setattr(registry, "_merged_registry", lambda: rows)
+    core = SimpleNamespace(_is_admin_request=_checker(answer=False))
+
+    page = registry._page(_request(), core)
+
+    assert "<div><b>1</b><span>Проверочная область</span></div>" in page
+    assert 'data-filter="Проверочная область"' in page
+
+
+def test_the_page_says_how_much_of_the_contour_is_covered(monkeypatch) -> None:
+    """Строка охвата называет числа, а не обещает полноту.
+
+    «Подтверждено» без «требует сверки» читается как проверенный целиком
+    реестр, а объявленная цепочка без числа файлов — как полная библиотека.
+    """
+    rows = registry._load_registry()
+    cover = registry.coverage(rows)
+    assert cover["acts"] == len(rows)
+    assert cover["steps"] >= cover["steps_with_file"] > 0
+    assert 0 < cover["chained"] <= cover["acts"]
+
+    monkeypatch.setattr(registry, "_merged_registry", lambda: rows)
+    core = SimpleNamespace(_is_admin_request=_checker(answer=False))
+    page = registry._page(_request(), core)
+    line = page.split('<p class="coverline">', 1)[1].split("</p>", 1)[0]
+    for number in (cover["acts"], cover["verified"], cover["review"],
+                   cover["chained"], cover["steps"], cover["steps_with_file"]):
+        assert str(number) in line, f"строка охвата не называет {number}: {line}"

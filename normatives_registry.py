@@ -153,6 +153,62 @@ def chain_steps(entry: dict[str, Any]) -> list[dict[str, Any]]:
     return [s for s in steps if isinstance(s, dict)] if isinstance(steps, list) else []
 
 
+def cited_numbers(rows: list[dict[str, Any]]) -> set[str]:
+    """Номера актов, на которые реестр отвечает, — строчными.
+
+    Ответ на «этот номер закрыт контуром» один: номер самого акта, все его
+    печатные написания (`cited_as`) и номера поправок его ряда. Второй такой
+    список — у сторожа контура или на странице — разошёлся бы с этим молча, и
+    акт, заведённый в реестр, продолжал бы числиться неопознанным.
+    """
+    numbers: set[str] = set()
+    for row in rows:
+        for name in row.get("cited_as") or []:
+            numbers.add(str(name).strip().lower())
+        own = own_number(row)
+        if own:
+            numbers.add(own.strip().lower())
+        for step in chain_steps(row):
+            number = str(step.get("number") or "").strip().lower()
+            if number:
+                numbers.add(number)
+    return {number for number in numbers if number}
+
+
+def registry_scopes(rows: list[dict[str, Any]]) -> list[str]:
+    """Области реестра — из самих строк, а не списком рядом.
+
+    Список, перечисленный в разметке, отстаёт от данных: строка с новой
+    областью не получила бы ни плитки, ни кнопки отбора и читалась бы как
+    отсутствующая. Порядок задан для тех областей, что были всегда; всё
+    остальное идёт за ними по алфавиту.
+    """
+    order = ["Москва", "Московская область", "Общие для РФ"]
+    seen = [str(row.get("scope") or "").strip() or "Прочее" for row in rows]
+    head = [scope for scope in order if scope in seen]
+    tail = sorted({scope for scope in seen if scope not in order})
+    return head + tail
+
+
+def coverage(rows: list[dict[str, Any]]) -> dict[str, int]:
+    """Чем закрыт контур: акты, сверка и поправки — числом, а не на глаз.
+
+    «Подтверждено» и «требует сверки» — это разные ответы, и один без
+    другого читается как полнота. Поправки считаются по цепочкам: сколько их
+    объявлено и у скольких в библиотеке лежит файл.
+    """
+    steps = [step for row in rows for step in chain_steps(row)]
+    return {
+        "acts": len(rows),
+        "verified": sum(1 for row in rows
+                        if str(row.get("status") or "").startswith(("verified", "current"))),
+        "review": sum(1 for row in rows if str(row.get("status") or "") == "review_required"),
+        "chained": sum(1 for row in rows if chain_steps(row)),
+        "steps": len(steps),
+        "steps_with_file": sum(1 for step in steps if step.get("file")),
+    }
+
+
 def chain_counts(entry: dict[str, Any]) -> dict[str, int]:
     """Сколько поправок в ряду, сколько у нас файлом и сколько не получено.
 
@@ -374,7 +430,13 @@ def _probe(entry: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any]:
     url = str(entry.get("source_url") or "").strip()
     checked_at = _now_iso()
     if not url:
-        return {"checked_at": checked_at, "result": "no_source", "message": "Источник не задан"}
+        # «Адрес забыт» и «адреса нет вовсе» — разные ответы, и второй
+        # называется причиной: у выдержки без реквизитов утверждающего акта
+        # ссылки не существует по построению, и «источник не задан» валило бы
+        # этот пробел на нас. Молча одинаковые, они сливаются в наш недосмотр.
+        absent = str(entry.get("source_absent") or "").strip()
+        return {"checked_at": checked_at, "result": "no_source",
+                "message": absent or "Источник не задан"}
 
     req = urllib.request.Request(
         url,
@@ -1165,8 +1227,25 @@ def _legal_footer() -> str:
 def _page(request: Request, core: Any) -> str:
     admin = _is_admin(request, core)
     rows = _merged_registry()
-    scopes = ("Москва", "Московская область", "Общие для РФ")
-    counts = {scope: sum(1 for row in rows if row.get("scope") == scope) for scope in scopes}
+    scopes = registry_scopes(rows)
+    counts = {scope: sum(1 for row in rows
+                         if (str(row.get("scope") or "").strip() or "Прочее") == scope)
+              for scope in scopes}
+    cover = coverage(rows)
+    tiles = "".join("<div><b>%d</b><span>%s</span></div>" % (counts[scope], html.escape(scope))
+                    for scope in scopes)
+    filters = "".join('<button data-filter="%s">%s</button>' % (html.escape(scope), html.escape(scope))
+                      for scope in scopes)
+    # Существительное стоит ПЕРЕД числом: «поправок в ней 54» верно при любом
+    # числе, а «54 поправок» ломается на 1, 2 и 21 — русское склонение здесь
+    # обошлось бы своей функцией, а её негде объявить один раз.
+    cover_line = (
+        "Актов в реестре %d: подтверждено %d, требует сверки %d. "
+        "Актов с объявленной цепочкой поправок %d; поправок в ней %d, "
+        "из них файлом в библиотеке %d."
+        % (cover["acts"], cover["verified"], cover["review"],
+           cover["chained"], cover["steps"], cover["steps_with_file"])
+    )
     cards = "".join(_card(row, admin=admin) for row in rows)
 
     footer = _legal_footer()
@@ -1212,7 +1291,8 @@ font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}}a{{color:i
 .brand{{font-weight:800}}.top a{{text-decoration:none;border:1px solid var(--line);
 padding:9px 14px;border-radius:10px;background:#fff}}h1{{font-size:34px;line-height:1.1;margin:0 0 8px}}
 .lead{{color:var(--muted);max-width:900px;margin:0 0 22px}}
-.summary{{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:18px 0 24px}}
+.summary{{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin:18px 0 10px}}
+.coverline{{color:var(--muted);font-size:13px;margin:0 0 20px}}
 .summary div{{background:#fff;border:1px solid var(--line);border-radius:14px;padding:16px}}
 .summary b{{font-size:28px;display:block}}.summary span{{color:var(--muted)}}
 .filters{{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px}}
@@ -1262,13 +1342,10 @@ box-shadow:0 8px 30px rgba(0,0,0,.12)}}.adminbar button{{border:0;border-radius:
 <p class="lead">Рабочая карта нормативных зависимостей: какая редакция учтена,
 на какое правило или число она влияет и в каком модуле DevelopAid применяется.</p>
 {adminbar}
-<div class="summary"><div><b>{counts['Москва']}</b><span>Москва</span></div>
-<div><b>{counts['Московская область']}</b><span>Московская область</span></div>
-<div><b>{counts['Общие для РФ']}</b><span>Общие для РФ</span></div></div>
+<div class="summary">{tiles}</div>
+<p class="coverline">{cover_line}</p>
 <div class="filters"><button class="active" data-filter="all">Все</button>
-<button data-filter="Москва">Москва</button>
-<button data-filter="Московская область">Московская область</button>
-<button data-filter="Общие для РФ">Общие для РФ</button></div>
+{filters}</div>
 <div id="cards">{cards}</div>
 <p class="foot">«Реестр актуален на» — дата содержательной сверки карточки.
 Кнопка администратора проверяет доступность и изменение источника, но не подменяет
