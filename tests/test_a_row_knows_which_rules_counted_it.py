@@ -46,10 +46,22 @@ def test_the_row_carries_the_rules_that_counted_it():
 
 
 def test_a_row_of_the_previous_rules_is_not_current():
-    """Строка без версии посчитана до того, как её завели, — значит прежней."""
+    """Строка без версии посчитана до того, как её завели, — значит прежней.
+
+    Методик здесь две, и совпасть обязаны обе: скрининг отвечает «как собраны
+    вводные», движок — «как посчитана экономика». Прежде утверждение было
+    «версии скрининга довольно», и оно перестало быть верным 19.09.2026:
+    семьдесят четыре выпуска экономики прошли мимо `rules_version` молча.
+    """
+    current = {"rules_version": krt_screening.SCREENING_RULES_VERSION,
+               "model_fingerprint": krt_ranking.model_fingerprint()}
+    assert krt_ranking.model_is_current(current) is True
+    assert krt_ranking.model_is_current({**current, "rules_version": 0}) is False
+    # Прежний пример остаётся — на своём утверждении: версии скрининга ОДНОЙ
+    # мало, строка без отпечатка посчитана до того, как его завели.
     assert krt_ranking.model_is_current({"rules_version":
-                                         krt_screening.SCREENING_RULES_VERSION}) is True
-    assert krt_ranking.model_is_current({"rules_version": 0}) is False
+                                         krt_screening.SCREENING_RULES_VERSION}) is False
+    assert krt_ranking.model_is_current({**current, "model_fingerprint": "чужой"}) is False
     assert krt_ranking.model_is_current({}) is False
     # Свежая дата методику не подтверждает: прогон публикаций трогает
     # `computed_at`, не трогая модель.
@@ -90,9 +102,11 @@ def test_the_screen_says_how_many_rows_judge_by_the_old_rules(monkeypatch):
     from fastapi.testclient import TestClient
 
     rows = [
-        {"slug": "site", "available": True, "rules_version": 0, "computed_at": 1},
+        {"slug": "site", "available": True, "rules_version": 0, "computed_at": 1,
+         "engine_version": "0.23.22"},
         {"slug": "fresh", "available": True,
-         "rules_version": krt_screening.SCREENING_RULES_VERSION, "computed_at": 2},
+         "rules_version": krt_screening.SCREENING_RULES_VERSION, "computed_at": 2,
+         "model_fingerprint": krt_ranking.model_fingerprint()},
     ]
     # Кабинет без ключа закрыт — это не сбой, а решение владельца.
     monkeypatch.setenv("MARKET_CABINET_KEY", "test-key")
@@ -104,6 +118,10 @@ def test_the_screen_says_how_many_rows_judge_by_the_old_rules(monkeypatch):
         body = answer.json()
         assert body["stale_model_count"] == 1, "устаревшее по методике не посчитано"
         assert body["rules_version"] == krt_screening.SCREENING_RULES_VERSION
+        # Чем посчитано — часть ответа: «строк прежней методики: 183» не
+        # говорит, насколько прежней.
+        assert body["stale_model_engines"] == [{"engine": "0.23.22", "rows": 1}]
+        assert body["engine_version"] == krt_ranking._engine_version()
 
         # Прогон по устаревшему берёт ровно его и называет пропущенное:
         # молча пропущенное читается как несостоявшийся прогон.

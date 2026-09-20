@@ -481,19 +481,28 @@ def find_repeal_signals(entry: dict[str, Any], docs: list[dict[str, Any]],
     anchors = [a for a in anchors if any(ch.isdigit() for ch in a)]
     if not anchors:
         return []
+
+    # Legal databases spell the same number as 713/30, № 713/30 or N 713/30.
+    # Match the stable numeric token, not the typography of the number prefix.
+    anchor_numbers = [re.sub(r"^(?:№|n|no)\s*", "", a, flags=re.IGNORECASE).strip() for a in anchors]
+    anchor_numbers = [a for a in anchor_numbers if a]
+
+    def has_anchor(text: str) -> bool:
+        return any(anchor in text for anchor in anchor_numbers)
+
     found: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
     for doc in docs or []:
         title = str(doc.get("title") or "")
         body = " ".join(str(doc.get(key) or "") for key in ("snippet", "text"))
         whole = f"{title} {body}".lower()
-        if not any(anchor in whole for anchor in anchors):
+        if not has_anchor(whole):
             continue
 
         hit: tuple[str, str] | None = None
         for sentence in _sentences(f"{title}\n{body}"):
             low = sentence.lower()
-            if not any(anchor in low for anchor in anchors):
+            if not has_anchor(low):
                 continue
             if any(marker in low for marker in _REPEAL_MARKERS):
                 hit = ("repealed", sentence)
@@ -508,7 +517,7 @@ def find_repeal_signals(entry: dict[str, Any], docs: list[dict[str, Any]],
             title_low = title.lower()
             if any(marker in title_low for marker in _REPEAL_MARKERS):
                 hit = ("repealed", title)
-            elif any(marker in title_low for marker in _AMEND_MARKERS):
+            elif (any(marker in title_low for marker in _AMEND_MARKERS) or ("внесени" in title_low and "изменени" in title_low)):
                 hit = ("amended", title)
 
         if hit is None:
