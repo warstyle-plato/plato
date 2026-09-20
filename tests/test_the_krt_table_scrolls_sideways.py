@@ -1,4 +1,4 @@
-"""Двенадцать колонок КРТ либо помещаются, либо прокручиваются — третьего нет.
+"""Колонки КРТ либо помещаются, либо прокручиваются — третьего нет.
 
 Владелец (01.09.2026): «скроллинга таблицы КРТ в бок нет, на компе невозможно
 почти правые столбцы увидеть».
@@ -32,6 +32,15 @@ sys.path.insert(0, str(ROOT))
 from auction_search import ui  # noqa: E402
 
 DESKTOPS = (1280, 1440, 1680)
+
+# Нижняя граница ширины колонки — НАШЕ суждение, а не измерение: при ней
+# содержимое на рабочем столе ещё не обрезается. Прежде здесь стоял литерал
+# «колонок ровно двенадцать», и он падал, когда колонку ДОБАВЛЯЛИ, — то есть
+# ровно тогда, когда ничего не ломалось. Запас держит `table.wide{min-width}`;
+# он не растёт сам, поэтому граница и нужна: на 13 колонках запас 1360 px даёт
+# 105 px на колонку и ничего не обрезает (замерено), а на 14 он упрётся в неё
+# и потребует поднять min-width, вместо того чтобы молча сжать колонки.
+READABLE_COLUMN_PX = 100
 
 ROWS = [
     {
@@ -100,7 +109,11 @@ def _measure(tmp_path, width: int) -> dict:
 @pytest.mark.parametrize("width", DESKTOPS)
 def test_every_column_is_reachable_on_a_desktop(tmp_path, width):
     got = _measure(tmp_path, width)
-    assert got["columns"] == 12, "колонок стало другое число — пересчитать запас ширины"
+    per_column = got["content"] / got["columns"]
+    assert per_column >= READABLE_COLUMN_PX, (
+        f'запас ширины {got["content"]} px на {got["columns"]} колонок — это '
+        f'{per_column:.0f} px на колонку при нижней границе {READABLE_COLUMN_PX}; '
+        "колонку добавили, а `table.wide{min-width}` не подняли")
     assert got["overflow"] in ("auto", "scroll"), \
         f"обёртка таблицы не прокручивается вбок: overflow-x={got['overflow']}"
     assert got["doc"] <= got["win"] + 1, \
@@ -109,7 +122,7 @@ def test_every_column_is_reachable_on_a_desktop(tmp_path, width):
         "последняя колонка не доезжает до края даже в конце прокрутки"
     assert got["content"] > got["wrap"], (
         f"на {width} px таблица {got['content']} px влезла в {got['wrap']} px — прокрутки не "
-        "возникает, потому что двенадцать колонок сжаты по месту")
+        "возникает, потому что колонки сжаты по месту")
     assert got["clipped"] == 0, \
         f"на {width} px обрезано содержимое {got['clipped']} ячеек"
 
