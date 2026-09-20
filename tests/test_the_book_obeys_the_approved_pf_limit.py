@@ -125,14 +125,20 @@ def test_the_approved_limit_is_a_working_input_now(starved):
     """
     assert "pf_limit_approved_mln" not in core.V4_INPUTS_SHOWN_ONLY
     _, _, book = starved
-    # Читатель — строка выборки ПФ листа CF, а не сам лист ввода: «Вводные»
-    # при записи в архив переименовываются в «Параметры модели», и ссылка в
-    # формуле едет вместе с именем.
-    formula = str(book["CF_1"]["D45"].value or "")
+    # Читатель — цепочка из двух формул, а не сам лист ввода: потолок очереди
+    # стоит в её клетке блока очередей (AT), у одиночного проекта она читает
+    # одобренный лимит F26, а строка выборки ПФ листа CF читает клетку.
+    # «Вводные» при записи в архив переименовываются в «Параметры модели»,
+    # и ссылки едут вместе с именем.
+    cap_cell = f"{core._V4_PF_QUEUE_CAP_COL}{core._V4_CF_QUEUE_ENABLED_ROW}"
+    cap_formula = str(book["Параметры модели"][cap_cell].value or "")
     cell = core._V4_PF_APPROVED_CELL
     reference = f"${cell[0]}${cell[1:]}"
-    assert reference in formula, (
-        f"выборка ПФ не читает одобренный лимит: {formula}")
+    assert reference in cap_formula, (
+        f"потолок очереди не читает одобренный лимит: {cap_formula}")
+    formula = str(book["CF_1"]["D45"].value or "")
+    assert f"${core._V4_PF_QUEUE_CAP_COL}${core._V4_CF_QUEUE_ENABLED_ROW}" in formula, (
+        f"выборка ПФ не читает потолок очереди: {formula}")
     assert "Параметры модели" in formula, (
         f"ссылка не переименована вместе с листом: {formula}")
 

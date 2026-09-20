@@ -1,24 +1,34 @@
-"""Одобренный лимит у очередей — два поля, и оба настоящие.
+"""Общий лимит ПФ у очередей — ожидание, а потолок очереди — только её НКЛ.
 
 Решение владельца (19.09.2026): «как правило дают общий лимит на всё в рамках
 генеральных условий, а разбивку на очереди — когда одобряют индивидуальные
-условия НКЛ». Значит:
+условия НКЛ». Уточнено 20.09.2026: «общий лимит — это сумма всех очередей, но
+реальным он становится только для первой очереди, когда подписывается
+соответствующая НКЛ. Когда доходит до второй очереди, лимит считается заново
+на реальных цифрах, а не ожиданиях двухлетней давности. И так с каждой
+очередью. Невыбранных лимитов почти никогда не бывает, но и они автоматом в
+следующую очередь не идут: лимит считался бы отдельно, и заключалась бы новая
+НКЛ». Пул «общий на четыре очереди, и не важно, какая что расходует» —
+маргинальное исключение, и его не моделируем.
+
+Значит:
 
 - лимит НКЛ очереди задан (`phases[i].pf_limit_approved_mln`) — он и потолок;
-- не задан, а общий (`pf_limit_approved_mln` проекта) задан — очереди
-  достаётся ОСТАТОК общего после своей выборки предыдущих очередей: лимит
-  раздаётся по порядку открытия ПФ, как банк выделяет НКЛ из генерального
-  соглашения;
-- не задано ничего — потолка нет, как и было.
+- не задан — потолка нет: НКЛ считается по потребности очереди, как без
+  лимита вовсе, и общий лимит проекта (`pf_limit_approved_mln`) её не режет;
+- общий лимит свод печатает РЯДОМ с суммой НКЛ очередей как ожидание, а не
+  вместо неё.
 
-Прежде заданное число доставалось КАЖДОЙ очереди целиком — ни то ни другое:
-при 31 818 на проект и двух очередях свод печатал «Лимит ПФ» 63 636.
+Прежде заданное число доставалось КАЖДОЙ очереди целиком (при 31 818 на проект
+и двух очередях свод печатал «Лимит ПФ» 63 636), а первая версия раздавала его
+остатком по порядку — тот самый пул, который владелец назвал исключением.
 
 Книга считает то же теми же строками: потолок очереди стоит в её клетке блока
-очередей (колонка AT «Вводных»), и остаток берётся из строк выборки предыдущих
-листов CF. Своя выборка предыдущих от этой очереди не зависит — круга нет.
+очередей (колонка AT «Вводных») — свой лимит НКЛ, иначе ноль, и строка 45
+листа CF читает ноль как «потолка нет». У одиночного проекта очередь одна, и
+её потолок — одобренный лимит F26, как в движке.
 
-Запуск: python3 -m pytest tests/test_the_general_pf_limit_is_handed_out_in_queue_order.py -q
+Запуск: python3 -m pytest tests/test_the_general_pf_limit_is_the_first_queue_ncl.py -q
 """
 
 from __future__ import annotations
@@ -104,43 +114,62 @@ def mixed():
 
 
 def test_the_fixture_needs_more_than_the_general_limit(free):
-    """Предохранитель: общий лимит обязан быть меньше потребности первой
-    очереди — иначе остатка второй хватает, и порядок раздачи не проверяется."""
+    """Предохранитель: потребность первой очереди обязана быть БОЛЬШЕ общего
+    лимита — иначе «потолка нет» неотличимо от «потолок не давит»."""
     need_first = float(_finance(free, 0)["pf_limit_required"]) / 1e6
     assert need_first > GENERAL, (need_first, GENERAL)
 
 
-def test_the_general_limit_is_a_remainder_not_a_copy(general_only):
-    """Первой очереди — весь общий лимит, второй — что осталось (здесь ноль)."""
-    first, second = _finance(general_only, 0), _finance(general_only, 1)
-    assert first["pf_limit_cap_source"] == "general_remainder"
-    assert float(first["pf_limit_approved"]) == pytest.approx(GENERAL * 1e6)
-    assert float(first["peak_pf"]) <= GENERAL * 1e6 + 1.0
-    assert second["pf_limit_cap_source"] == "general_remainder"
-    assert float(second["pf_limit_approved"]) == 0.0
-    # Ноль потолка — ноль выборки, а не «потолка нет».
-    assert float(second["pf_draw_total"]) == 0.0
-    assert float(second["pf_shortfall"]) > 0
+def test_the_general_limit_caps_no_queue(general_only, free):
+    """Общий лимит — ожидание: ни одна очередь им не режется, и обе считают
+    ровно то, что считали бы без лимита вовсе. Невыбранное не перетекает,
+    потому что перетекать нечему — потолка нет ни у первой, ни у второй."""
+    for index in range(2):
+        capped, uncapped = _finance(general_only, index), _finance(free, index)
+        assert capped["pf_limit_cap_source"] == "", index
+        assert float(capped["pf_limit_approved"]) == 0.0, index
+        assert float(capped["pf_shortfall"]) == 0.0, index
+        assert float(capped["pf_limit"]) == pytest.approx(float(uncapped["pf_limit"])), index
+        assert float(capped["pf_draw_total"]) == pytest.approx(float(uncapped["pf_draw_total"])), index
+        assert float(capped["peak_pf"]) == pytest.approx(float(uncapped["peak_pf"])), index
 
 
-def test_the_summary_prints_the_general_limit_once(general_only):
-    """Свод не складывает остатки: у первой очереди остаток равен всему лимиту,
-    и сумма вышла бы больше одобренного."""
+def test_the_summary_prints_the_general_limit_next_to_the_sum(general_only):
+    """Лимит свода — сумма НКЛ очередей по методике; общий лимит стоит рядом
+    своим полем и в сумму не подменяется. Одобрено проекту — ноль: реального
+    НКЛ ни одна очередь не назвала."""
     finance = general_only["consolidated"]["finance"]
+    per_queue = [float(_finance(general_only, i)["pf_limit"]) for i in range(2)]
     assert float(finance["pf_limit_general"]) == pytest.approx(GENERAL * 1e6)
-    assert float(finance["pf_limit_approved"]) == pytest.approx(GENERAL * 1e6)
-    assert float(finance["pf_limit"]) == pytest.approx(GENERAL * 1e6)
+    assert float(finance["pf_limit"]) == pytest.approx(sum(per_queue))
+    assert float(finance["pf_limit"]) > GENERAL * 1e6
+    assert float(finance["pf_limit_approved"]) == 0.0
+    assert float(finance["pf_shortfall"]) == 0.0
 
 
-def test_an_individual_limit_wins_over_the_remainder(mixed, general_only):
-    """Лимит НКЛ очереди задан — он и потолок, остаток общего не при чём."""
+def test_the_surfaces_call_the_general_limit_an_expectation():
+    """Страница и PDF печатают общий лимит рядом с суммой по очередям и
+    называют его ожиданием — иначе число читается как потолок."""
+    page = core.PAGE
+    assert "'Общий лимит ПФ по генеральным условиям'" in page
+    assert "потолком очередей не служит" in page
+    source = Path(core.__file__).read_text(encoding="utf-8")
+    assert "Общий лимит ПФ по генеральным условиям — ожидание, потолком очередей не служит" in source
+
+
+def test_an_individual_limit_is_the_only_ceiling(mixed, general_only):
+    """Лимит НКЛ очереди задан — он и потолок; соседняя очередь без своего
+    считает по потребности, общий лимит её по-прежнему не трогает."""
     second = _finance(mixed, 1)
     assert second["pf_limit_cap_source"] == "individual"
     assert float(second["pf_limit_approved"]) == pytest.approx(INDIVIDUAL * 1e6)
     assert float(second["pf_draw_total"]) == pytest.approx(INDIVIDUAL * 1e6, abs=1.0)
-    # Первая очередь свой лимит не назвала — ей по-прежнему остаток общего.
-    assert float(_finance(mixed, 0)["pf_limit_approved"]) == pytest.approx(
-        float(_finance(general_only, 0)["pf_limit_approved"]))
+    assert float(second["pf_shortfall"]) > 0
+    assert _finance(mixed, 0)["pf_limit_cap_source"] == ""
+    assert float(_finance(mixed, 0)["pf_limit"]) == pytest.approx(
+        float(_finance(general_only, 0)["pf_limit"]))
+    finance = mixed["consolidated"]["finance"]
+    assert float(finance["pf_limit_approved"]) == pytest.approx(INDIVIDUAL * 1e6)
 
 
 def test_without_a_general_limit_the_other_queue_is_free():
