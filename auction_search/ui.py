@@ -2757,6 +2757,7 @@ function selectKrt(x){state.selectedKrt=x;const sc=krtScore(x),fit=sc.fit,cached
  // говорится дважды — светофор модели и вывод по рынку стоят в первой группе,
  // а таблицы, допущения и соседи — в третьей.
  const speaks=krtDataCheckSpeaks(x);
+ const cardSpeaks=krtCardCheckSpeaks(x);
  $('krtSide').innerHTML=`<h2>${esc(x.name)}${x.is_new?'<span class="tag new">новое</span>':''}</h2>`
  +`<div class="sub">${esc(krtSource(x).short)}${[x.okrug,x.district].filter(Boolean).length?' · '+esc([x.okrug,x.district].filter(Boolean).join(' · ')):''}</div>`
  // Карта — не вывод и не данные города, а ответ на «где это вообще»
@@ -2774,6 +2775,10 @@ function selectKrt(x){state.selectedKrt=x;const sc=krtScore(x),fit=sc.fit,cached
    // она ВЫШЕ вердикта: молчащая («сверять не с чем») живёт во второй группе,
    // в «чего не хватает».
    +(speaks?krtDataCheck(x):'')
+   // Расхождение двух поверхностей города — громкое: оно про числа, по которым
+   // считана модель. Молчащее живёт во второй группе, в «чего не хватает», —
+   // постоянная приписка перестаёт читаться.
+   +(cardSpeaks?krtCardCheck(x):'')
    +`<div id="krtOutcomeBox">${krtBroken(x)?krtBrokenModelNote(x):(cached?krtOutcomeHtml({model:cached,market:null,plato:null,when:Number(cached.computed_at||0)}):krtOutcomeWaiting())}</div>`
    +`<div class="section"><h3>Насколько этому верить</h3><div class="notice" id="krtScoreBox">${krtScoreBoxHtml(sc)}</div>`
    +`<details class="fold"><summary>Почему такой балл — ${fit.reasons.length+fit.checks.length+sc.cuts.length} пункт(ов)</summary><div class="foldbody"><div class="items">${fit.reasons.map(one=>`<div class="item"><b>Соответствует запросу</b>${esc(one)}</div>`).join('')}${fit.checks.map(one=>`<div class="item"><b>Нужно проверить</b>${esc(one)}</div>`).join('')}${sc.cuts.map(c=>`<div class="item"><b>Балл снижен на ${c.points}%</b>${esc(c.label)}</div>`).join('')}</div></div></details></div>`
@@ -2784,6 +2789,7 @@ function selectKrt(x){state.selectedKrt=x;const sc=krtScore(x),fit=sc.fit,cached
    +`${planned?'<div id="krtRequirementsBox"><div class="notice">Ищу проект решения и читаю требования…</div></div>':''}`
    +`<details class="fold"><summary>Что про площадку известно и чего не хватает</summary><div class="foldbody">`
    +(speaks?'':krtDataCheck(x))
+   +(cardSpeaks?'':krtCardCheck(x))
    +krtIntentBlock(x)
    +`<div id="krtPressBox"></div>`
    +`<div class="actions"><button id="krtPress">Что пишут об этой площадке</button></div>`
@@ -3333,6 +3339,41 @@ function krtEntryHead(x){
 // четвёртой позиции карточки она стояла постоянной припиской, которую
 // перестают читать. Громкое («сошлось», «расходится») остаётся выше вердикта —
 // ради этого правка и делалась; тихое уезжает в «чего не хватает».
+// Город отвечает о площадке ДВАЖДЫ: плиткой списка, по которой собран наш
+// каталог, и карточкой проекта. На «Дербеневской ул. тер. 2» плитка даёт общий
+// объём 153 320 и ОДН 14 400, карточка — 358 100 без ОДН вовсе (замер прода
+// 20.09.2026, владелец: «и тут другие цифры»). Числа наши верны — расходятся
+// две поверхности источника, и выбирать между ними мы не вправе: считаем
+// плиткой и называем расхождение. Молчит проверка ровно в двух случаях, и они
+// разные: карточку ещё не читали и карточка прочитана, а сличать нечего.
+function krtCardCheckSpeaks(x){
+ const check=x&&x.card_tep_check;
+ return !!(check&&Array.isArray(check.problems)&&check.problems.length);
+}
+function krtCardCheck(x){
+ if(!x||x.no_card)return '';
+ const check=x.card_tep_check;
+ if(!check||!Array.isArray(check.compared))
+  return '<div class="notice"><b>Карточка и список города: не сверялись</b>'
+   +'<div class="source">Карточку площадки ещё не читали — сверять список не с чем. '
+   +'Это «не знаем», а не «сошлось».</div></div>';
+ const problems=check.problems||[];
+ if(!check.compared.length)
+  return '<div class="notice"><b>Карточка и список города: сверять не с чем</b>'
+   +'<div class="source">'+(check.read
+     ? 'Карточка прочитана, но ни одна величина не встретилась в обоих местах сразу.'
+     : 'ТЭП на карточке площадки не назван.')
+   +'</div></div>';
+ if(!problems.length)
+  return '<div class="notice ok"><b>Карточка и список города: сошлись</b>'
+   +`<div class="source">Обе поверхности krt.mos.ru совпали по ${esc(check.compared.join(', '))} `
+   +'(допуск 2%).</div></div>';
+ return '<div class="notice warn"><b>Карточка и список города говорят разное</b>'
+  +'<div class="items">'+problems.map(one=>`<div class="item">${esc(one)}</div>`).join('')+'</div>'
+  +`<div class="source">Сверено: ${esc(check.compared.join(', '))}. Это расхождение САМОГО города: `
+  +'наши числа взяты из плитки списка и ей равны. Какое из двух — методика, решает не модель, '
+  +'поэтому считаем по списку и называем второе число, а не подменяем им первое.</div></div>';
+}
 function krtDataCheckSpeaks(x){
  if(!x||x.no_card)return false;
  const check=x.decision_tep_check;

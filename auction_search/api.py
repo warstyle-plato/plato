@@ -78,6 +78,7 @@ from auction_search.nagatino_ui import nagatino_page
 from auction_search.ui import auctions_page
 from market_search.krt_registry import CATALOGUE_URL, KrtRegistry
 from market_search import krt_decision_tep
+from market_search import tep_check
 from market_search import cabinet as market_cabinet
 from market_search.geocoder import GeocodingError
 from market_search.http import RemoteServiceError
@@ -1162,11 +1163,34 @@ def install(app: FastAPI) -> None:
                 logger.exception("KRT card facts cache failed")
                 facts = {}
             if facts:
-                projects = [
-                    {**row, "card_facts": facts.get(str(row.get("slug") or ""))}
-                    if facts.get(str(row.get("slug") or "")) else row
-                    for row in projects
-                ]
+                def _with_card(row: dict[str, Any]) -> dict[str, Any]:
+                    card = facts.get(str(row.get("slug") or ""))
+                    if not card:
+                        return row
+                    # Город отвечает о площадке дважды: плиткой списка, по
+                    # которой собран каталог, и карточкой проекта. Совпадают
+                    # они не всегда — у «Дербеневской ул. тер. 2» плитка даёт
+                    # общий объём 153 320 и ОДН 14 400, карточка 358 100 без
+                    # ОДН (замер прода 20.09.2026; из 282 карточек расходится
+                    # немного, но расхождение есть). Выбирать между двумя
+                    # числами источника мы не вправе: считаем по-прежнему
+                    # плиткой и НАЗЫВАЕМ расхождение — молча выбранное число
+                    # выглядит на экране ровно так же, как сверенное. Ответ
+                    # несёт и то, было ли ЧТО сверять: «сверять не с чем» —
+                    # не «сошлось».
+                    card_tep = card.get("tep") if isinstance(card, dict) else None
+                    return {
+                        **row, "card_facts": card,
+                        "card_tep_check": {
+                            **tep_check.compare(
+                                card_tep or {}, row,
+                                ours_label="в карточке", theirs_label="в списке"),
+                            "read": bool(card_tep and any(
+                                value is not None for value in card_tep.values())),
+                        },
+                    }
+
+                projects = [_with_card(row) for row in projects]
             # Сколько карточек прочитано и на чём споткнулись остальные. Без
             # этого «реновации нет» и «карточку не спросили» выглядят на экране
             # одинаково, а общий отказ источника не виден вовсе.
