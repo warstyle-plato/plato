@@ -436,11 +436,17 @@ _REPEAL_MARKERS = (
     "признано утратившим силу", "недействующая редакция", "не действует",
     "отменено", "отменён", "прекратил действие",
 )
-# «О внесении изменений …» — форма ЗАГОЛОВКА изменяющего акта, ради которой
-# find_repeal_signals принимает двухчастный случай; без неё заголовок 1080-ПП
-# маркером не считался, и двухчастная ветка не срабатывала никогда.
-_AMEND_MARKERS = ("внесены изменения", "внесено изменение", "внесении изменени",
-                  "изменения вносятся", "в редакции от",
+# Формы, которыми поправку называет САМ документ, а не пересказ о ней.
+# Официальная карточка изменяющего акта озаглавлена отглагольным именем —
+# «О внесении изменений в…», — а в описании стоит «Изменения вносятся в…».
+# Список знал только личные формы («внесены изменения»), и 1080-ПП от
+# 01.09.2026 находился поиском, опознавался якорем 713/30 и отбрасывался
+# здесь: ни один из пяти маркеров в заголовок не попадал. Докстринг
+# `find_repeal_signals` при этом обещал ровно этот случай — обещание
+# расходилось со списком, по которому оно исполняется.
+_AMEND_MARKERS = ("о внесении изменений", "внесении изменений",
+                  "изменения вносятся", "вносятся изменения",
+                  "внесены изменения", "внесено изменение", "в редакции от",
                   "изложен в новой редакции", "новая редакция")
 
 
@@ -475,19 +481,28 @@ def find_repeal_signals(entry: dict[str, Any], docs: list[dict[str, Any]],
     anchors = [a for a in anchors if any(ch.isdigit() for ch in a)]
     if not anchors:
         return []
+
+    # Legal databases spell the same number as 713/30, № 713/30 or N 713/30.
+    # Match the stable numeric token, not the typography of the number prefix.
+    anchor_numbers = [re.sub(r"^(?:№|n|no)\s*", "", a, flags=re.IGNORECASE).strip() for a in anchors]
+    anchor_numbers = [a for a in anchor_numbers if a]
+
+    def has_anchor(text: str) -> bool:
+        return any(anchor in text for anchor in anchor_numbers)
+
     found: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
     for doc in docs or []:
         title = str(doc.get("title") or "")
         body = " ".join(str(doc.get(key) or "") for key in ("snippet", "text"))
         whole = f"{title} {body}".lower()
-        if not any(anchor in whole for anchor in anchors):
+        if not has_anchor(whole):
             continue
 
         hit: tuple[str, str] | None = None
         for sentence in _sentences(f"{title}\n{body}"):
             low = sentence.lower()
-            if not any(anchor in low for anchor in anchors):
+            if not has_anchor(low):
                 continue
             if any(marker in low for marker in _REPEAL_MARKERS):
                 hit = ("repealed", sentence)
@@ -502,7 +517,7 @@ def find_repeal_signals(entry: dict[str, Any], docs: list[dict[str, Any]],
             title_low = title.lower()
             if any(marker in title_low for marker in _REPEAL_MARKERS):
                 hit = ("repealed", title)
-            elif any(marker in title_low for marker in _AMEND_MARKERS):
+            elif (any(marker in title_low for marker in _AMEND_MARKERS) or ("внесени" in title_low and "изменени" in title_low)):
                 hit = ("amended", title)
 
         if hit is None:
