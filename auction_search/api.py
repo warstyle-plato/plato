@@ -140,7 +140,7 @@ def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
             ("project_llcr_x", "LLCR проекта, x", 17),
             ("weakest_phase_llcr_x", "LLCR слабейшей очереди, x", 22),
             ("margin_pct", "Маржа до неизвестных обязательств, %", 25),
-            ("surrounding_sales", "Продажи окружения, ДДУ/мес.", 23),
+            ("surrounding_price_rub_sqm", "Цена окружения, ₽/м²", 23),
             # Чьё это КРТ и не занято ли оно. Ячейка несёт цитату источника или
             # словами говорит, чего не хватает: пустая клетка читалась бы как
             # «нет», а это «не нашли» или «не читали».
@@ -169,7 +169,7 @@ def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
             "krt_area_ha", "total_gfa_sqm", "housing_gfa_sqm",
             "nonresidential_gfa_sqm", "business_gfa_sqm", "jobs", "score",
             "saleable_sqm", "entry_capacity_rub_per_sqm", "entry_capacity_mln",
-            "project_llcr_x", "weakest_phase_llcr_x", "margin_pct", "surrounding_sales",
+            "project_llcr_x", "weakest_phase_llcr_x", "margin_pct", "surrounding_price_rub_sqm",
             "demolition_objects", "demolition_area_sqm", "conditional_objects",
             "conditional_area_sqm", "reconstruction_objects", "reconstruction_area_sqm",
             "preservation_objects", "preservation_area_sqm", "resettlement_mentions",
@@ -2799,11 +2799,11 @@ def install(app: FastAPI) -> None:
                     1 for row in rows
                     if row.get("available") and krt_ranking_rules.model_is_current(row)
                 ),
-                "market_sales_available": sum(
-                    1 for row in rows if row.get("surrounding_sales") is not None
+                "market_price_available": sum(
+                    1 for row in rows if row.get("surrounding_price_rub_sqm") is not None
                 ),
-                "market_sales_missing": sum(
-                    1 for row in rows if row.get("surrounding_sales") is None
+                "market_price_missing": sum(
+                    1 for row in rows if row.get("surrounding_price_rub_sqm") is None
                 ),
                 "market_price_available": sum(
                     1 for row in rows if _plato_number(row.get("start_price_rub_sqm")) != "—"
