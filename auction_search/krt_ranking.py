@@ -391,6 +391,14 @@ def score_row(project: dict[str, Any], screening: dict[str, Any]) -> dict[str, A
         "margin_pct": metrics.get("margin_pct"),
         "net_profit_mln": metrics.get("net_profit_mln"),
         "phase_count": phasing.get("count"),
+        # Цена окружения — та же текущая цена за м², которую уже определил
+        # рыночный отчёт для площадки. Не путать с темпом ДДУ: фильтр КРТ
+        # отвечает на вопрос о цене окружающих текущих продаж.
+        "surrounding_price_rub_sqm": (
+            round(_number((screening.get("market") or {}).get("market_price_rub_sqm")))
+            if _number((screening.get("market") or {}).get("market_price_rub_sqm")) > 0
+            else None
+        ),
         # Модель по объявленной цене торгов. Посчитанное на сервере, но не
         # доехавшее до строки, неотличимо от непосчитанного: экран читает
         # строку, а не скрининг.

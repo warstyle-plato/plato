@@ -67,8 +67,8 @@ from auction_search.krt_ranking import (
 # методики — функция модуля: `krt_ranking.model_is_current` там разрешилось бы
 # на экземпляре и упало бы при первом же чтении рейтинга.
 from auction_search import krt_ranking as krt_ranking_rules
-from auction_search.krt_screening import _number as _screening_number
 from auction_search.krt_screening import build_krt_model_screening
+from auction_search.krt_screening import housing_measure_named
 from auction_search.models import LotKind
 from auction_search.preset_mapper import build_project_preset
 from auction_search.profile_fit import profile_fit
@@ -140,6 +140,7 @@ def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
             ("project_llcr_x", "LLCR проекта, x", 17),
             ("weakest_phase_llcr_x", "LLCR слабейшей очереди, x", 22),
             ("margin_pct", "Маржа до неизвестных обязательств, %", 25),
+            ("surrounding_price_rub_sqm", "Цена окружения, ₽/м²", 23),
             # Чьё это КРТ и не занято ли оно. Ячейка несёт цитату источника или
             # словами говорит, чего не хватает: пустая клетка читалась бы как
             # «нет», а это «не нашли» или «не читали».
@@ -168,7 +169,7 @@ def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
             "krt_area_ha", "total_gfa_sqm", "housing_gfa_sqm",
             "nonresidential_gfa_sqm", "business_gfa_sqm", "jobs", "score",
             "saleable_sqm", "entry_capacity_rub_per_sqm", "entry_capacity_mln",
-            "project_llcr_x", "weakest_phase_llcr_x", "margin_pct",
+            "project_llcr_x", "weakest_phase_llcr_x", "margin_pct", "surrounding_price_rub_sqm",
             "demolition_objects", "demolition_area_sqm", "conditional_objects",
             "conditional_area_sqm", "reconstruction_objects", "reconstruction_area_sqm",
             "preservation_objects", "preservation_area_sqm", "resettlement_mentions",
@@ -1619,10 +1620,26 @@ def install(app: FastAPI) -> None:
         """
         if core is None or market is None:
             return {"available": False, "reason": "Финансовый движок DevelopAid не подключён"}
-        report = market.build_report(
-            f"krt:{project.get('slug')}", radius_km=3.0, peers_limit=12,
-            city_reference=False, include_project_totals=True,
-        )
+        # Рынок должен получить реальную площадку, а не служебный ключ рейтинга.
+        # Для обычной карточки market.resolve_subject умеет krt:<slug>; для площадки-
+        # решения — krt:decision:<id>. Если снимок каталога на конкретном воркере
+        # отстал, используем имя/адрес самой строки: иначе весь финансовый прогон
+        # падает до модели и колонка продаж окружения остаётся н/д.
+        market_query = f"krt:{project.get('slug')}"
+        try:
+            report = market.build_report(
+                market_query, radius_km=3.0, peers_limit=12,
+                city_reference=False, include_project_totals=True,
+            )
+        except SubjectNotFound:
+            fallback = " ".join(str(project.get(key) or "").strip()
+                                for key in ("name", "district") if project.get(key))
+            if not fallback:
+                raise
+            report = market.build_report(
+                fallback, radius_km=3.0, peers_limit=12,
+                city_reference=False, include_project_totals=True,
+            )
         slug = str(project.get("slug") or "")
         document_id = slug[len("decision:"):] if slug.startswith("decision:") else ""
         try:
@@ -2771,6 +2788,28 @@ def install(app: FastAPI) -> None:
             # выпуском 0.23.22 при работающем 0.23.96, и семьдесят четыре
             # выпуска экономики прошли молча.
             "stale_model_engines": _stale_engines(rows),
+            # Диагностика отвечает на вопрос «каталог вообще посчитан?» без
+            # гадания по пустым ячейкам. Модель и рынок считаются отдельно:
+            # строка может иметь экономику, но не иметь темпа/цены окружения.
+            "model_audit": {
+                "rows_total": len(rows),
+                "model_available": sum(1 for row in rows if row.get("available")),
+                "model_missing": sum(1 for row in rows if not row.get("available")),
+                "model_current": sum(
+                    1 for row in rows
+                    if row.get("available") and krt_ranking_rules.model_is_current(row)
+                ),
+                "market_price_available": sum(
+                    1 for row in rows if row.get("surrounding_price_rub_sqm") is not None
+                ),
+                "market_price_missing": sum(
+                    1 for row in rows if row.get("surrounding_price_rub_sqm") is None
+                ),
+                "market_price_available": sum(
+                    1 for row in rows if _plato_number(row.get("start_price_rub_sqm")) != "—"
+                    and float(row.get("start_price_rub_sqm") or 0) > 0
+                ),
+            },
             "rules_version": krt_ranking_rules._screening_rules_version(),
             # Выпуск объявлен один раз — `VERSION`; страница берёт его отсюда,
             # своей копии у неё нет по той же причине, что и у остальных.
@@ -2938,6 +2977,12 @@ def install(app: FastAPI) -> None:
         продаж, свой покупатель), и считать его пресетом жилья значило бы
         показать посчитанным то, что посчитано не тем. Это ответ методики, а
         не наш пробел, и балл площадки от него не снижается.
+
+        А вот «нежилая» решает не эта копия вопроса, а `housing_measure_named`
+        — та же функция, которой отказывает сам скрининг. Своя копия читала
+        только жилую СПП, и 27 площадок-решений прода с НАЗВАННОЙ площадью
+        квартир отказывались «жилья в проекте решения нет»: наш пробел был
+        выдан за ответ документа.
         """
         shift = str(project.get("parse_problem") or "").strip()
         if shift:
@@ -2949,7 +2994,7 @@ def install(app: FastAPI) -> None:
             return _screen_one(project)
         if not project.get("address_known"):
             return _press_only(project)
-        if _screening_number(project.get("housing_gfa_sqm")) <= 0:
+        if not housing_measure_named(project):
             answer = _press_only(project)
             answer["reason"] = (
                 "Жилья в проекте решения нет — нежилую площадку модель пока не считает: "
