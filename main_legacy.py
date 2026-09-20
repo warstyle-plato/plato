@@ -706,6 +706,42 @@ def landscaping_area(inputs: dict[str, Any], tep: dict[str, Any]) -> tuple[float
     return per_person * population, f"{shown} м²/чел. × {population} чел."
 
 
+def landscaping_gap(amount: float, basis: str, built_sqm: float) -> str:
+    """Названная пустота статьи благоустройства — одной фразой на все поверхности.
+
+    Ноль расходов там, где что-то строится, — это «не посчитано», а не «не
+    нужно». Молчит оно при этом громко: строка «Благоустройство» просто
+    исчезает из структуры расходов (нулевые строки в неё не попадают), и её
+    отсутствие читается как ответ методики. Нежилой проект в это упирается
+    по построению — двор у него мерить населением нечем, — но правило шире
+    режима: убрали квартиры из ТЭП, стёрли норматив в профиле класса — та же
+    тишина.
+
+    Фраза собирается здесь и читается verbatim экраном и отчётом: два текста
+    об одной пустоте разошлись бы молча.
+    """
+    if amount > 0 or built_sqm <= 0:
+        return ""
+    return "Благоустройства в расчёте нет" + (f": {basis}." if basis else ".")
+
+
+def _phase_landscaping_gap(results: list[dict[str, Any]]) -> str:
+    """Та же пустота на своде очередей — счётом, а не чужим текстом.
+
+    Основание у каждой очереди своё (у одной нет норматива, у другой нет
+    населения), и взятое у первой говорило бы за остальные. Свод называет,
+    у скольких очередей статья пуста; почему — отвечает карточка очереди.
+    """
+    gaps = [bool(str((r.get("summary") or {}).get("landscaping_gap") or ""))
+            for r in results]
+    if not gaps or not any(gaps):
+        return ""
+    if all(gaps):
+        return "Благоустройства в расчёте нет ни в одной очереди."
+    return (f"Благоустройства в расчёте нет в {sum(gaps)} очередях "
+            f"из {len(gaps)} — основание у каждой своё.")
+
+
 def saleable_after_transfer(useful_sqm: Any, transfer_sqm: Any) -> tuple[float, float]:
     """→ (продаваемая, переданное сверх построенного).
 
@@ -16059,6 +16095,14 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
                     if i.get('items') and i.get('items_note')),'')
     if _exp_note:
         story.append(P(_exp_note,small))
+    # Пустая статья называется и на бумаге: нулевая строка в таблицу не
+    # попадает, а отчёт носят в банк — отсутствие благоустройства там читается
+    # как «его не будет», а не как «мы его не посчитали». Фраза берётся из
+    # свода целиком: второй текст об одной пустоте разошёлся бы с экраном.
+    _land_gap=str(summary.get('landscaping_gap') or '')
+    if _land_gap:
+        story.append(P(_land_gap,ParagraphStyle("land_gap",parent=small,fontSize=8.0,
+                                                textColor=colors.HexColor("#a02418"))))
     story.append(_PdfSection("income"));story.append(P("Продажи и продукты",h2))
     product_rows=[["Продукт","Объём","Темп до РВЭ","Стартовая цена","Средняя цена","Выручка"]]
     for item in products:
@@ -29985,6 +30029,12 @@ def calculate(req: CalcRequest) -> dict:
             # основание едет рядом.
             "landscaping_area_sqm": op.get("landscaping_area_sqm", 0.0),
             "landscaping_basis": op.get("landscaping_basis", ""),
+            # Пустая статья называется вслух: нулевая строка в структуру
+            # расходов не попадает, и её отсутствие неотличимо от ответа
+            # методики «благоустройства здесь не нужно».
+            "landscaping_gap": landscaping_gap(
+                op["capex_amounts"].get("landscaping", 0.0),
+                op.get("landscaping_basis", ""), project_gns_sqm),
             "landscaping_by_class_th": per_sqm_th(
                 op.get("landscaping_by_class", 0.0), project_gns_sqm),
             "landscaping_by_rate": bool(op.get("landscaping_by_rate")),
@@ -31977,6 +32027,10 @@ def _consolidate_phase_results(
             "landscaping_area_sqm": sum(
                 float(r["summary"].get("landscaping_area_sqm") or 0.0) for r in results),
             "landscaping_basis": "сумма площадей очередей — у каждой своё население",
+            # Пустоту свод не выбирает у первой очереди: текстов у неё
+            # столько же, сколько очередей, и любой выбранный говорил бы за
+            # остальные. Свод называет счёт.
+            "landscaping_gap": _phase_landscaping_gap(results),
             "social_payment": sum(r["summary"]["social_payment"] for r in results),
             "social_payment_mode": str(master_inputs.get("social_mode", "")),
             "social_in_capex_check": all(r["summary"].get("social_in_capex_check", True) for r in results),
@@ -48531,9 +48585,20 @@ function landscapingHouseRateNote(){
  const rate=Number(s.landscaping_per_gns_th);
  // У подписи нет состояния, в котором она молчит: пустое место под полем
  // читается как ответ, а ответов тут три и они разные.
+ // «Расчёта ещё нет» и «расчёт дал ноль» — разные ответы, и второй здесь
+ // обычен: у нежилого проекта двор мерить населением нечем, методика честно
+ // отвечает нулём, а подпись говорила «расчёта ещё нет» — то есть винила
+ // кнопку за ответ методики. Был расчёт или нет, говорит основание: движок
+ // кладёт его в свод всегда, и пустым оно бывает только до первого счёта.
  if(!isFinite(rate)||rate<=0){
-  return own>0?'Задано руками. Расчёта ещё нет.'
-              :'Считает методика класса. Расчёта ещё нет.';
+  const counted=!!String(s.landscaping_basis||'');
+  if(!counted){
+   return own>0?'Задано руками. Расчёта ещё нет.'
+               :'Считает методика класса. Расчёта ещё нет.';
+  }
+  if(own>0)return 'Задано руками, но метров, на которые ставка множится, в расчёте нет.';
+  return 'Методика класса дала ноль: '+String(s.landscaping_basis)
+   +'. Пока ставка здесь не задана, благоустройства в расчёте нет.';
  }
  if(own>0){
   // Число здесь — показатель МЕТОДИКИ, а не применённый: применённый равен
@@ -48569,6 +48634,17 @@ function renderLandscapingHouseRateValue(){
  el.value=isFinite(rate)&&rate>0?String(Math.round(rate*100)/100):'';
  // Пометка «здесь показатель, а не ввод» — её читает сбор формы в `calculate`.
  el.dataset.derived='1';
+}
+
+// Статья, посчитанная нулём, из структуры расходов исчезает целиком —
+// нулевые строки в неё не попадают, — и её отсутствие читается как ответ
+// методики «благоустройства здесь не нужно». Фразу собирает движок
+// (`landscaping_gap`), экран её только печатает: второй текст об одной
+// пустоте разошёлся бы с отчётом молча.
+function landscapingGapRow(){
+ const gap=String((((lastResult||{}).summary)||{}).landscaping_gap||'');
+ if(!gap)return '';
+ return '<tr class="sub"><td colspan="5" style="color:#a33">'+escapeHtml(gap)+'</td></tr>';
 }
 
 function renderLandscapingRateNote(){
@@ -49125,7 +49201,7 @@ function renderResult(){
    const note=(x.items&&x.items.length&&x.items_note)
      ?`<tr class="sub"><td colspan="5" class="muted" style="padding-left:18px">${x.items_note}</td></tr>`:'';
    return head+parts+note;
- }).join('');
+ }).join('')+landscapingGapRow();
  {
   const expenseSum=Number(r.summary.total_expenses||0)||expenseRows.reduce((s,x)=>s+Number(x.value||0),0);
   const eGns=Number(r.summary.project_gns_sqm||0),eSaleable=Number(r.summary.monetizable_saleable_sqm||0);
