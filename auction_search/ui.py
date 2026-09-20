@@ -74,6 +74,8 @@ __DEVELOPAID_CONTOUR__
       </div>
       <input id="krtMinHousing" type="number" min="0" step="10000" placeholder="Жильё от, м²"
              title="Мелкие площадки отсекаются по объёму жилья. Площадка, у которой объём жилья не указан, при непустом пороге прячется — она не «маленькая», она неизвестная, и сколько таких скрыто, написано под таблицей.">
+      <input id="krtMinSales" type="number" min="0" step="50" value="600" placeholder="Продажи окружения от"
+             title="Текущая оценка продаж окружения из того же рыночного отчёта / Пульса продаж, которым считается скрининг КРТ. По умолчанию показываются площадки строго выше 600. Нет данных — отдельный ответ, такие строки при пороге скрыты.">
       <div class="filter-actions"><button id="krtRefresh" class="primary">Обновить каталог</button><button id="krtRankBtn">Оценить отобранные моделью</button><button id="krtPressBtn" title="Читает публикации и каналы по ВСЕМ планируемым площадкам и по площадкам с проектом решения: до пяти поисковых запросов на площадку, по каждому её адресу. Уже спрошенные пропускаются — занятая площадка свободной не станет. У площадок в реализации застройщика называет сама карточка города, поиска они не требуют. У проекта решения без адреса в заголовке спрашивать нечего: такие названы числом, а не пропущены молча.">Прочитать публикации по планируемым</button><button id="krtExport">Выгрузить Excel</button></div>
     </div>
     <div class="stats"><div class="stat"><b id="krtCount">—</b><span id="krtCountNote">проектов</span></div><div class="stat"><b id="krtArea">—</b><span>га территории</span></div><div class="stat"><b id="krtHousing">—</b><span>м² жилья</span></div><div class="stat"><b id="krtGfa">—</b><span>м² всего</span></div></div>
@@ -84,7 +86,7 @@ __DEVELOPAID_CONTOUR__
     <div id="krtSnapshot" class="source" style="margin:6px 2px"></div>
     <div id="krtRankStatus" class="notice" style="display:none"></div>
     <div id="krtDecisions" class="notice" style="display:none"></div>
-    <div class="layout"><div class="tablecol"><div class="scrolltop" id="krtScrollTop"><div></div></div><div class="tablewrap" id="krtTableWrap"><table class="wide"><thead><tr><th data-sort="name">Проект КРТ</th><th data-sort="score" title="Балл площадки: потенциал по официальным ТЭП, из которого вычитают названные снижения. Считается арифметикой DevelopAid, Платон в нём не участвует — его мнение спрашивается отдельно, кнопкой в карточке">Балл площадки</th><th data-sort="ceiling" title="Предельная цена входа при LLCR 1,20x: на метр продаваемой площади и всего по проекту">Потолок цены входа</th><th data-sort="llcr" title="LLCR проекта из посчитанной модели. Прочерк — модель не считалась: это «не знаем», а не ноль, и при сортировке такие строки уходят вниз при любом направлении">LLCR</th><th data-sort="margin" title="Маржинальность до неизвестных обязательств">Маржа</th><th data-sort="stage" title="Шаг воронки: проект решения о КРТ на mos.ru (самый ранний сигнал — решения ещё нет) → объявлено о торгах → лот опубликован (ИнвестМосква, ГИС Торги) → идёт аукцион (Росэлторг) → инвестор определён. ГИС Торги — самый поздний источник из всех. «Занята» — площадку уже кто-то взял: назван застройщик, назван оператор или заключён договор о КРТ; де-юре статус города при этом может оставаться «Планируемым»">Шаг</th><th data-sort="status" title="Слово источника: у каталожной площадки — статус krt.mos.ru, де-юре («начата ли стройка», а не «свободна ли»); у площадки без карточки — стадия по документу, «Проект решения». Занятость — в колонке «Шаг»">Статус</th><th data-sort="decided" title="Дата ПРОЕКТА решения о КРТ на mos.ru: город опубликовал его для сбора мнений правообладателей, решения ещё нет. У площадки без карточки это единственная её дата">Проект решения</th><th data-sort="area">Площадь</th><th data-sort="total">Общий объём</th><th data-sort="housing">Жильё</th><th data-sort="jobs">Рабочие места</th></tr></thead><tbody id="krtRows"></tbody></table><div id="krtEmpty" class="empty">Открываю официальный каталог krt.mos.ru…</div></div></div><aside class="side" id="krtSide"><div class="empty">Выберите проект КРТ.<br>ТЭП берутся из каталога krt.mos.ru и проектов решений на mos.ru, рынок считает существующий движок DevelopAid.</div></aside></div>
+    <div class="layout"><div class="tablecol"><div class="scrolltop" id="krtScrollTop"><div></div></div><div class="tablewrap" id="krtTableWrap"><table class="wide"><thead><tr><th data-sort="name">Проект КРТ</th><th data-sort="score" title="Балл площадки: потенциал по официальным ТЭП, из которого вычитают названные снижения. Считается арифметикой DevelopAid, Платон в нём не участвует — его мнение спрашивается отдельно, кнопкой в карточке">Балл площадки</th><th data-sort="ceiling" title="Предельная цена входа при LLCR 1,20x: на метр продаваемой площади и всего по проекту">Потолок цены входа</th><th data-sort="llcr" title="LLCR проекта из посчитанной модели. Прочерк — модель не считалась: это «не знаем», а не ноль, и при сортировке такие строки уходят вниз при любом направлении">LLCR</th><th data-sort="margin" title="Маржинальность до неизвестных обязательств">Маржа</th><th data-sort="sales" title="Текущая оценка продаж окружения из рыночного отчёта / Пульса продаж. Фильтр по умолчанию: строго выше 600.">Продажи окружения</th><th data-sort="stage" title="Шаг воронки: проект решения о КРТ на mos.ru (самый ранний сигнал — решения ещё нет) → объявлено о торгах → лот опубликован (ИнвестМосква, ГИС Торги) → идёт аукцион (Росэлторг) → инвестор определён. ГИС Торги — самый поздний источник из всех. «Занята» — площадку уже кто-то взял: назван застройщик, назван оператор или заключён договор о КРТ; де-юре статус города при этом может оставаться «Планируемым»">Шаг</th><th data-sort="status" title="Слово источника: у каталожной площадки — статус krt.mos.ru, де-юре («начата ли стройка», а не «свободна ли»); у площадки без карточки — стадия по документу, «Проект решения». Занятость — в колонке «Шаг»">Статус</th><th data-sort="decided" title="Дата ПРОЕКТА решения о КРТ на mos.ru: город опубликовал его для сбора мнений правообладателей, решения ещё нет. У площадки без карточки это единственная её дата">Проект решения</th><th data-sort="area">Площадь</th><th data-sort="total">Общий объём</th><th data-sort="housing">Жильё</th><th data-sort="jobs">Рабочие места</th></tr></thead><tbody id="krtRows"></tbody></table><div id="krtEmpty" class="empty">Открываю официальный каталог krt.mos.ru…</div></div></div><aside class="side" id="krtSide"><div class="empty">Выберите проект КРТ.<br>ТЭП берутся из каталога krt.mos.ru и проектов решений на mos.ru, рынок считает существующий движок DevelopAid.</div></aside></div>
   </div>
   <div class="filters" id="auctionFilters">
     <select id="source"><option value="all">Все официальные источники</option><option value="investmoscow">Торги Москвы → ЭТП</option><option value="lot_online">РАД / Lot-online</option><option value="roseltorg">Росэлторг</option><option value="torgi_gov">ГИС Торги</option><option value="etp_gpb">ЭТП ГПБ</option><option value="etp_rf">ЭТП РФ</option><option value="sberbank_ast">Сбербанк-АСТ</option><option value="nistp">НИС</option></select>
@@ -1740,6 +1742,7 @@ function krtValue(x,key){
   case 'ceiling': return rank.entry_capacity_rub_per_sqm ?? null;
   case 'llcr': return rank.project_llcr_x ?? null;
   case 'margin': return rank.margin_pct ?? null;
+  case 'sales': return rank.surrounding_sales ?? null;
   case 'area': return krtNumber(x,'area_ha');
   case 'total': return krtNumber(x,'total_gfa_sqm');
   case 'housing': return krtNumber(x,'housing_gfa_sqm');
@@ -1801,12 +1804,20 @@ function krtSortBy(key){
 }
 function filterKrt(){
  const q=$('krtSearch').value.trim().toLowerCase(),
-       minHousing=Number($('krtMinHousing').value)||0;
- let small=0, unknown=0;
+       minHousing=Number($('krtMinHousing').value)||0,
+       minSalesRaw=$('krtMinSales').value.trim(),
+       minSales=minSalesRaw===''?null:Number(minSalesRaw);
+ let small=0, unknown=0, salesBelow=0, salesUnknown=0;
  state.krtFiltered=state.krt.filter(x=>{
   if(q&&![x.name,x.district,x.okrug].join(' ').toLowerCase().includes(q))return false;
   if(state.krtOkrugs.size&&!state.krtOkrugs.has(x.okrug))return false;
   if(!krtFilterPass(x))return false;
+  if(minSales!==null&&Number.isFinite(minSales)){
+   const sales=krtValue(x,'sales');
+   if(sales===null||sales===undefined){salesUnknown++;return false}
+   // Требование владельца — именно «выше 600»: равное 600 не проходит.
+   if(Number(sales)<=minSales){salesBelow++;return false}
+  }
   if(minHousing>0){
    // Объём жилья не указан — это «не знаем», а не «мало». Такую площадку порог
    // прячет, но она считается отдельно и названа под таблицей: молча
@@ -1817,7 +1828,7 @@ function filterKrt(){
   }
   return true;
  }).sort(krtCompare);
- state.krtHidden={small,unknown};
+ state.krtHidden={small,unknown,salesBelow,salesUnknown};
  markKrtSort();
  renderKrtFilterCounts();
  renderKrt();
@@ -2072,13 +2083,15 @@ function renderKrtNewNote(){
 function renderKrtFilterNote(){
  const box=$('krtFilterNote');
  if(!box)return;
- const {small,unknown}=state.krtHidden||{};
+ const {small,unknown,salesBelow,salesUnknown}=state.krtHidden||{};
  const bits=[];
  // Скрытое считается и называется: молча выброшенная площадка читается как её
  // отсутствие. Отбора по задаче здесь больше нет — его делают «Статус» и
  // «Назначение», и обе причины видны в самих списках.
  if(small)bits.push(`${small} ниже порога по объёму жилья`);
  if(unknown)bits.push(`${unknown} без указанного объёма жилья — это «не знаем», а не «мало»`);
+ if(salesBelow)bits.push(`${salesBelow} с оценкой текущих продаж окружения не выше порога`);
+ if(salesUnknown)bits.push(`${salesUnknown} без оценки текущих продаж окружения — это «не знаем», а не ноль`);
  const sorted=state.krtSort.key!=='score'||state.krtSort.dir!==-1
   ? `Сортировка: ${esc(KRT_SORT_NAMES[state.krtSort.key]||state.krtSort.key)}`
     +(state.krtSort.dir>0?' по возрастанию':' по убыванию')+'. ' : '';
@@ -2086,7 +2099,7 @@ function renderKrtFilterNote(){
  box.innerHTML=sorted+(bits.length?'Скрыто фильтром: '+bits.join('; ')+'.':'');
 }
 const KRT_SORT_NAMES={stage:'по шагу воронки',name:'по названию',score:'по баллу',ceiling:'по потолку входа',
- llcr:'по LLCR',margin:'по марже',status:'по статусу',area:'по площади',
+ llcr:'по LLCR',margin:'по марже',sales:'по продажам окружения',status:'по статусу',area:'по площади',
  total:'по общему объёму',housing:'по объёму жилья',jobs:'по рабочим местам',
  decided:'по дате проекта решения'};
 // Плашка торгов. Пока право на договор о КРТ на торгах, у площадки нет ни
@@ -2225,7 +2238,7 @@ function renderKrt(){const a=state.krtFiltered,body=$('krtRows');body.innerHTML=
   +(x.draft_decision_at?' '+krtCityDay(x.draft_decision_at):'')
   +'. Решение ещё не принято — город собирает мнения правообладателей. Карточки в каталоге krt.mos.ru нет; '
   +krtTepSourceNote(x))+'">только проект решения</span>':'';
- tr.innerHTML=`<td><div class="lotname">${esc(x.name)}${fresh}${tender}${nocard}${marks}</div><div class="source">${esc(krtBroken(x)?'разбор карточки съехал на поле — округ и ТЭП не показаны':[x.okrug,x.district].filter(Boolean).join(' · '))}</div></td><td><span class="fit ${sc.tone}" title="${esc(title)}"><span class="light"></span>${krtScoreNumber(sc)} · ${esc(sc.label)}</span><div class="source">${esc(krtScoreNote(sc))}</div></td><td class="money">${krtRankCell(x.slug)}</td><td class="money">${krtModelCell(x.slug,'llcr')}</td><td class="money">${krtModelCell(x.slug,'margin')}</td><td>${krtStageCell(x)}</td><td>${x.draft_decision_at?(x.draft_decision_url?`<a href="${esc(x.draft_decision_url)}" target="_blank" rel="noopener" title="Проект решения о КРТ на mos.ru">${esc(krtCityDay(x.draft_decision_at))}</a>`:esc(krtCityDay(x.draft_decision_at))):'<span class="source">—</span>'}</td><td>${krtStatusCell(x)}</td><td>${krtBroken(x)?krtUnparsedCell(x):(x.area_ha?esc(x.area_ha+' га'):'—')}</td><td>${krtBroken(x)?krtUnparsedCell(x):fmtArea(x.total_gfa_sqm)}</td><td>${krtBroken(x)?krtUnparsedCell(x):fmtArea(x.housing_gfa_sqm)}</td><td>${krtBroken(x)?krtUnparsedCell(x):esc(x.jobs??'—')}</td>`;tr.onclick=()=>selectKrt(x);body.appendChild(tr)});renderAskContext();syncTopScroll()}
+ tr.innerHTML=`<td><div class="lotname">${esc(x.name)}${fresh}${tender}${nocard}${marks}</div><div class="source">${esc(krtBroken(x)?'разбор карточки съехал на поле — округ и ТЭП не показаны':[x.okrug,x.district].filter(Boolean).join(' · '))}</div></td><td><span class="fit ${sc.tone}" title="${esc(title)}"><span class="light"></span>${krtScoreNumber(sc)} · ${esc(sc.label)}</span><div class="source">${esc(krtScoreNote(sc))}</div></td><td class="money">${krtRankCell(x.slug)}</td><td class="money">${krtModelCell(x.slug,'llcr')}</td><td class="money">${krtModelCell(x.slug,'margin')}</td><td class="money">${krtSalesCell(x.slug)}</td><td>${krtStageCell(x)}</td><td>${x.draft_decision_at?(x.draft_decision_url?`<a href="${esc(x.draft_decision_url)}" target="_blank" rel="noopener" title="Проект решения о КРТ на mos.ru">${esc(krtCityDay(x.draft_decision_at))}</a>`:esc(krtCityDay(x.draft_decision_at))):'<span class="source">—</span>'}</td><td>${krtStatusCell(x)}</td><td>${krtBroken(x)?krtUnparsedCell(x):(x.area_ha?esc(x.area_ha+' га'):'—')}</td><td>${krtBroken(x)?krtUnparsedCell(x):fmtArea(x.total_gfa_sqm)}</td><td>${krtBroken(x)?krtUnparsedCell(x):fmtArea(x.housing_gfa_sqm)}</td><td>${krtBroken(x)?krtUnparsedCell(x):esc(x.jobs??'—')}</td>`;tr.onclick=()=>selectKrt(x);body.appendChild(tr)});renderAskContext();syncTopScroll()}
 // Балл — потолок цены входа на метр продаваемой (решение владельца,
 // 23.08.2026). На метр, а не в абсолюте: потолок в рублях выгоден крупным
 // площадкам просто по размеру. Пустая ячейка значит «не посчитали», и это не
@@ -2465,6 +2478,13 @@ function krtModelCell(slug,key){
    +'<div class="source">при цене входа 0</div>';
  }
  return `<b>${Number(value).toFixed(1)}%</b>`;
+}
+function krtSalesCell(slug){
+ const row=state.krtRank[slug];
+ if(!row||!row.available)return '<span class="source">—</span>';
+ const value=row.surrounding_sales;
+ if(value===null||value===undefined)return '<span class="source" title="Рыночный отчёт не определил текущий темп окружения">н/д</span>';
+ return `<b>${new Intl.NumberFormat('ru-RU',{maximumFractionDigits:1}).format(Number(value))}</b><div class="source">ДДУ/мес.</div>`;
 }
 function krtRankCell(slug){
  const row=state.krtRank[slug];
@@ -3939,7 +3959,7 @@ platoBlock('#auctionLayout', AUCTION_SURFACE, 'о лотах');
 platoBlock('#krtPanel', AUCTION_SURFACE, 'о площадках КРТ');
 
 
-$('tabAuctions').onclick=()=>switchTab(false);$('tabKrt').onclick=()=>switchTab(true);$('krtRefresh').onclick=()=>loadKrt(true);$('krtRankBtn').onclick=startKrtRanking;$('krtPressBtn').onclick=readKrtPress;$('krtSearch').oninput=filterKrt;bindKrtFilters();document.getElementById('krtMapFold')?.addEventListener('toggle',ev=>{if(ev.target.open)loadKrtMap()});$('krtMinHousing').oninput=filterKrt;document.querySelectorAll('th[data-sort]').forEach(th=>{th.style.cursor='pointer';th.title=(th.title?th.title+'. ':'')+'Нажмите, чтобы отсортировать';th.onclick=()=>krtSortBy(th.dataset.sort)});
+$('tabAuctions').onclick=()=>switchTab(false);$('tabKrt').onclick=()=>switchTab(true);$('krtRefresh').onclick=()=>loadKrt(true);$('krtRankBtn').onclick=startKrtRanking;$('krtPressBtn').onclick=readKrtPress;$('krtSearch').oninput=filterKrt;bindKrtFilters();document.getElementById('krtMapFold')?.addEventListener('toggle',ev=>{if(ev.target.open)loadKrtMap()});$('krtMinHousing').oninput=filterKrt;$('krtMinSales').oninput=filterKrt;document.querySelectorAll('th[data-sort]').forEach(th=>{th.style.cursor='pointer';th.title=(th.title?th.title+'. ':'')+'Нажмите, чтобы отсортировать';th.onclick=()=>krtSortBy(th.dataset.sort)});
 $('krtOkrugToggle').onclick=e=>{e.stopPropagation();const menu=$('krtOkrugMenu'),open=menu.classList.contains('hidden');closeKrtMenus();menu.classList.toggle('hidden',!open);$('krtOkrugToggle').setAttribute('aria-expanded',String(open))};$('krtOkrugMenu').onclick=e=>e.stopPropagation();$('krtOkrugClear').onclick=()=>{state.krtOkrugs.clear();$('krtOkrugOptions').querySelectorAll('input').forEach(x=>x.checked=false);updateKrtOkrugLabel();filterKrt()};document.addEventListener('click',closeKrtMenus);document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeKrtMenus();$('krtOkrugToggle').focus()}});
 loadKrtRanking();
 // Ссылка из «Поделиться» открывает ту же территорию: получатель попадает на
