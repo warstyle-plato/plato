@@ -143,7 +143,10 @@ def test_the_screen_names_which_release_counted_the_stale_rows():
     assert "Посчитано прежней методикой: 2 площадок" in said
     assert "0.23.22 — 2" in said, said
     assert "сейчас 0.23.97" in said, said
-    assert "Пересчитать только их" in said
+    # Слова кнопки сменились в 0.24.7: она называет, сколько возьмёт.
+    # Утверждение здесь прежнее — кнопка есть и просит устаревшее.
+    assert "Пересчитать эти 2" in said, said
+    assert "krtStaleRun" in said, said
 
     # Выпусков не назвали — строка остаётся без них, а не пишет «сейчас».
     silent = page_blocks.run_json(

@@ -1988,16 +1988,33 @@ function renderKrtStaleNote(){
 // уехавшей на прод 04.09 (владелец: «почему в Нагатино до сих пор цена для
 // расчёта 477»). Число называется вслух, и рядом стоит кнопка, которая
 // пересчитывает ровно их — не весь каталог: поход к рынку платный.
+//
+// Чисел здесь ДВА, и это не педантизм. Кнопка планирует всё, что «не посчитано
+// нынешней методикой», то есть и строки БЕЗ модели: на проде 20.09.2026 это
+// 5 устаревших против 388 запланированных. Поведение верное — у строки без
+// модели пересчитывать тоже есть что, — врала подпись, называвшая одно число
+// и обещавшая «только их». Считает оба одно правило на сервере
+// (`model_needs_recount`), поэтому подпись не может разойтись с кнопкой.
 function renderKrtStaleModelNote(){
- const box=$('krtRankStatus'), n=state.krtStaleModel||0;
- if(!box||!n)return;
+ // Сервер не назвал, сколько возьмёт кнопка, — берём хотя бы устаревшие:
+ // «не знаем» не повод убрать кнопку, под которой стоит число.
+ const box=$('krtRankStatus'), n=state.krtStaleModel||0,
+       plan=Math.max(Number(state.krtRecountPlanned||0), n);
+ if(!box||(!n&&!plan))return;
  box.style.display='';
- if(box.innerHTML.includes('прежней методикой'))return;
+ if(box.innerHTML.includes('прежней методикой')||box.innerHTML.includes('Модель не считалась'))return;
  const by=(state.krtStaleEngines||[]).map(e=>`${esc(e.engine)} — ${e.rows}`).join(', ');
- box.innerHTML+=`<div class="source">Посчитано прежней методикой: ${n} площадок`
-  +` — у них цена, очереди, экономика и балл остались от прошлого правила счёта.`
-  +(by?` Посчитаны выпусками: ${by}`+(state.krtEngine?`; сейчас ${esc(state.krtEngine)}`:'')+`.`:'')
-  +` <button type="button" id="krtStaleRun" class="linkish">Пересчитать только их</button></div>`;
+ const missing=Math.max(plan-n,0);
+ const head=n
+  ?`Посчитано прежней методикой: ${n} площадок`
+   +` — у них цена, очереди, экономика и балл остались от прошлого правила счёта.`
+   +(by?` Посчитаны выпусками: ${by}`+(state.krtEngine?`; сейчас ${esc(state.krtEngine)}`:'')+`.`:'')
+  :`Модель не считалась ни разу: ${missing} площадок.`;
+ const also=(n&&missing)?` Ещё у ${missing} модели нет вовсе.`:'';
+ const btn=plan
+  ?` <button type="button" id="krtStaleRun" class="linkish">Пересчитать эти ${plan}</button>`
+  :'';
+ box.innerHTML+=`<div class="source">${head}${also}${btn}</div>`;
  const run=$('krtStaleRun');
  if(run)run.onclick=()=>startKrtRanking(true);
 }
@@ -2543,7 +2560,7 @@ async function loadKrtRanking(){
   state.krtRank={};(d.rows||[]).forEach(row=>{state.krtRank[row.slug]=row;
    if(row.available&&row.traffic_light)state.krtModels[row.slug]={traffic_light:row.traffic_light}});
   state.krtRankProgress=d.progress||null;
-  state.krtStaleRules=Number(d.stale_rules_count||0);state.krtStaleModel=Number(d.stale_model_count||0);state.krtStaleEngines=Array.isArray(d.stale_model_engines)?d.stale_model_engines:[];state.krtEngine=String(d.engine_version||'');
+  state.krtStaleRules=Number(d.stale_rules_count||0);state.krtStaleModel=Number(d.stale_model_count||0);state.krtRecountPlanned=Number(d.recount_planned_count||0);state.krtStaleEngines=Array.isArray(d.stale_model_engines)?d.stale_model_engines:[];state.krtEngine=String(d.engine_version||'');
   // Порядок важен: `renderKrtRankStatus` пишет в узел целиком, то есть
   // сносит всё, что дописали до него. Строка о карточках города
   // добавляется в загрузке каталога — она приходит РАНЬШЕ рейтинга и

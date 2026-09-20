@@ -2812,6 +2812,13 @@ def install(app: FastAPI) -> None:
             # выпуском 0.23.22 при работающем 0.23.96, и семьдесят четыре
             # выпуска экономики прошли молча.
             "stale_model_engines": _stale_engines(rows),
+            # Сколько строк ПЕРЕСЧИТАЕТ кнопка «Пересчитать только их». Это не
+            # то же число, что `stale_model_count`: у той величины строка
+            # посчитана прежней методикой, а здесь к ней прибавлены строки, у
+            # которых модели нет вовсе — им тоже есть что считать. Пока число
+            # было одно, подпись называла 5, а кнопка планировала 388.
+            "recount_planned_count": sum(
+                1 for row in rows if krt_ranking_rules.model_needs_recount(row)),
             # Диагностика отвечает на вопрос «каталог вообще посчитан?» без
             # гадания по пустым ячейкам. Модель и рынок считаются отдельно:
             # строка может иметь экономику, но не иметь темпа/цены окружения.
@@ -2907,7 +2914,9 @@ def install(app: FastAPI) -> None:
             keep = []
             for row in projects:
                 stored = fresh_rows.get(str(row.get("slug") or "")) or {}
-                if stored.get("available") and krt_ranking_rules.model_is_current(stored):
+                # Тот же предикат, что считает число у кнопки: два счёта одного
+                # вопроса однажды разошлись бы, и подпись обещала бы не то.
+                if not krt_ranking_rules.model_needs_recount(stored):
                     skipped += 1
                     continue
                 keep.append(row)
