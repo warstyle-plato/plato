@@ -1620,10 +1620,26 @@ def install(app: FastAPI) -> None:
         """
         if core is None or market is None:
             return {"available": False, "reason": "Финансовый движок DevelopAid не подключён"}
-        report = market.build_report(
-            f"krt:{project.get('slug')}", radius_km=3.0, peers_limit=12,
-            city_reference=False, include_project_totals=True,
-        )
+        # Рынок должен получить реальную площадку, а не служебный ключ рейтинга.
+        # Для обычной карточки market.resolve_subject умеет krt:<slug>; для площадки-
+        # решения — krt:decision:<id>. Если снимок каталога на конкретном воркере
+        # отстал, используем имя/адрес самой строки: иначе весь финансовый прогон
+        # падает до модели и колонка продаж окружения остаётся н/д.
+        market_query = f"krt:{project.get('slug')}"
+        try:
+            report = market.build_report(
+                market_query, radius_km=3.0, peers_limit=12,
+                city_reference=False, include_project_totals=True,
+            )
+        except SubjectNotFound:
+            fallback = " ".join(str(project.get(key) or "").strip()
+                                for key in ("name", "district") if project.get(key))
+            if not fallback:
+                raise
+            report = market.build_report(
+                fallback, radius_km=3.0, peers_limit=12,
+                city_reference=False, include_project_totals=True,
+            )
         slug = str(project.get("slug") or "")
         document_id = slug[len("decision:"):] if slug.startswith("decision:") else ""
         try:
