@@ -289,8 +289,8 @@ def test_the_same_signal_is_not_announced_twice() -> None:
         {"a": {"result": "ok", "sources": same}}, entries) == []
 
 
-def test_the_paid_search_has_its_own_slower_clock() -> None:
-    """Поиск платный: ссылку смотрим сутками, источники — раз в неделю.
+def test_the_paid_search_has_its_own_clock() -> None:
+    """Поиск платный, но по умолчанию идёт ежедневно вместе со ссылками.
 
     И отметка у него своя: иначе ежедневная проверка ссылки сдвигала бы срок
     поиска, и он не наступал бы никогда.
@@ -299,6 +299,7 @@ def test_the_paid_search_has_its_own_slower_clock() -> None:
 
     body = inspect.getsource(registry._watch_loop)
     assert "NORMATIVES_SEARCH_HOURS" in body
+    assert '"24"' in body
     assert 'key="last_search_at"' in body
     saved = inspect.getsource(registry._run_check)
     assert '"last_search_at"' in saved
@@ -311,6 +312,42 @@ def test_the_search_client_is_the_engines_own() -> None:
     body = inspect.getsource(registry._search_client)
     assert "market_search.yandex_search" in body
     assert "configured" in body
+
+
+def test_daily_link_check_preserves_last_search_signals(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(registry, "_STATE_PATH", tmp_path / "state.json")
+    registry._save_state({"last_search_at": "2026-09-19T00:00:00+00:00", "checks": {
+        "a": {"result": "ok", "sources": {"asked": True, "signals": [
+            {"kind": "amended", "quote": "q", "url": "u"}]}}}})
+    monkeypatch.setattr(registry, "_load_registry", lambda: [{"id": "a"}])
+    monkeypatch.setattr(registry, "_probe", lambda entry, previous: {"result": "ok"})
+    registry._run_check(search=False)
+    saved = registry._load_state()
+    assert saved["checks"]["a"]["sources"]["signals"][0]["url"] == "u"
+
+
+
+def test_signal_dedupe_normalizes_whitespace() -> None:
+    entries = {"a": {"short_name": "713/30"}}
+    before = {"a": {"result": "ok", "sources": {"signals": [{"kind": "amended", "quote": "713/30  внесены   изменения", "url": "U"}]}}}
+    after = {"a": {"result": "ok", "sources": {"signals": [{"kind": "amended", "quote": "713/30 внесены изменения", "url": "u"}]}}}
+    assert registry._changes_between(before, after, entries) == []
+
+def test_signal_replacement_with_same_count_is_news() -> None:
+    entries = {"a": {"short_name": "713/30"}}
+    before = {"a": {"result": "ok", "sources": {"signals": [
+        {"kind": "amended", "quote": "old", "url": "u1"}]}}}
+    after = {"a": {"result": "ok", "sources": {"signals": [
+        {"kind": "amended", "quote": "1080-ПП", "url": "u2"}]}}}
+    got = registry._changes_between(before, after, entries)
+    assert len(got) == 1 and got[0]["message"] == "1080-ПП"
+
+
+def test_watch_error_is_visible_in_state(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(registry, "_STATE_PATH", tmp_path / "state.json")
+    registry._save_state({"last_error": "RuntimeError: search failed", "checks": {}})
+    state = registry.watch_state()
+    assert "search failed" in state["last_error"]
 
 
 # --- счётчик молчания ---------------------------------------------------------
