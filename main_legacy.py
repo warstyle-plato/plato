@@ -1210,8 +1210,8 @@ def sports_is_sold(inputs: dict[str, Any] | None) -> bool:
 PROJECT_KIND_MIXED = "mixed"
 PROJECT_KIND_NONRESIDENTIAL = "nonresidential"
 PROJECT_KINDS: tuple[tuple[str, str], ...] = (
-    (PROJECT_KIND_MIXED, "Жилой / смешанный"),
-    (PROJECT_KIND_NONRESIDENTIAL, "Нежилой"),
+    (PROJECT_KIND_MIXED, "Жильё"),
+    (PROJECT_KIND_NONRESIDENTIAL, "Нежилое"),
 )
 
 # Что принадлежит ЖИЛЬЮ и в нежилом проекте не живёт. Список объявлен один
@@ -15994,7 +15994,8 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     # бы верными.
     if str(summary.get("project_kind") or "") == PROJECT_KIND_NONRESIDENTIAL:
         premise_rows.append(["Тип проекта",
-                             "Нежилой — жилья, соцнагрузки и платы за смену ВРИ в расчёте нет"])
+                             dict(PROJECT_KINDS)[PROJECT_KIND_NONRESIDENTIAL]
+                             + " — жилья, соцнагрузки и платы за смену ВРИ в расчёте нет"])
         _left = [str(item) for item in (summary.get("project_kind_leftovers") or [])]
         if _left:
             premise_rows.append(["Осталось от жилья во вводных",
@@ -44924,6 +44925,13 @@ function projectKind(){
  return PROJECT_KINDS.some(p=>p[0]===v)?v:'mixed';
 }
 function isNonResidential(){return projectKind()==='nonresidential'}
+// Подпись типа берётся из того же списка, что и селектор: вторая копия
+// слова разошлась бы с ним молча, и кнопка звала бы режим не тем именем,
+// каким он назван в шапке.
+function projectKindLabel(kind){
+ const row=PROJECT_KINDS.find(p=>p[0]===kind);
+ return row?row[1]:'';
+}
 
 // Обнуляет жильё и ВОЗВРАЩАЕТ список убранного. Молчаливое обнуление врёт не
 // меньше молчаливого сохранения: правило выведено на плате за ВРИ в режиме
@@ -44989,7 +44997,7 @@ function projectKindNote(){
  }
  if(projectKindHasSaved()){
   return '<div class="note" style="margin:0 0 12px;padding:11px 12px">'
-   +'Режим «Нежилой» убирал жилые вводные'+(cleared.length?': '+escapeHtml(cleared.join(', ')):'')+'. '
+   +'Режим «'+escapeHtml(projectKindLabel('nonresidential'))+'» убирал жилые вводные'+(cleared.length?': '+escapeHtml(cleared.join(', ')):'')+'. '
    +'<button class="btn" type="button" style="margin-top:8px" onclick="restoreResidentialInputs()">Вернуть убранное</button>'
    +'</div>';
  }

@@ -407,6 +407,7 @@ def project_kind() -> str:
                        page_const("NONRESIDENTIAL_CLEARED"),
                        function("projectKind"),
                        function("isNonResidential"),
+                       function("projectKindLabel"),
                        function("projectKindHasSaved"),
                        function("projectKindNote")))
 

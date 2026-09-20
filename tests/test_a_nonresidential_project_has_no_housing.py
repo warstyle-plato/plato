@@ -75,7 +75,8 @@ def test_the_kinds_are_declared_once() -> None:
     for key in keys:
         assert f'<option value="{key}"' not in page, "состав типов переписан на странице"
     # А сам список на страницу доехал — иначе селектор пуст.
-    assert '"nonresidential"' in page and '"Нежилой"' in page
+    assert '"nonresidential"' in page
+    assert f'"{dict(core.PROJECT_KINDS)[core.PROJECT_KIND_NONRESIDENTIAL]}"' in page
 
 
 def test_the_engine_names_what_is_left_of_housing() -> None:
@@ -184,7 +185,7 @@ def test_the_mode_does_not_touch_the_financing() -> None:
 
 
 def test_the_pdf_names_the_kind_only_when_it_differs() -> None:
-    """«Жилой / смешанный» в каждом отчёте — постоянная приписка."""
+    """Тип обычного проекта в каждом отчёте — постоянная приписка."""
     pytest.importorskip("reportlab")
     pymupdf = pytest.importorskip("pymupdf")
 
