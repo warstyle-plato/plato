@@ -391,13 +391,12 @@ def score_row(project: dict[str, Any], screening: dict[str, Any]) -> dict[str, A
         "margin_pct": metrics.get("margin_pct"),
         "net_profit_mln": metrics.get("net_profit_mln"),
         "phase_count": phasing.get("count"),
-        # Текущие продажи окружения уже считает рыночный отчёт: скрининг
-        # принимает его site-verdict как observed_pace. Строка рейтинга должна
-        # нести то же число, иначе КРТ пришлось бы считать рынок второй раз
-        # только ради фильтра. None — «рынок не определён», а не нулевые продажи.
-        "surrounding_sales": (
-            round(_number((screening.get("absorption") or {}).get("market_units_per_month")), 1)
-            if (screening.get("absorption") or {}).get("available")
+        # Цена окружения — та же текущая цена за м², которую уже определил
+        # рыночный отчёт для площадки. Не путать с темпом ДДУ: фильтр КРТ
+        # отвечает на вопрос о цене окружающих текущих продаж.
+        "surrounding_price_rub_sqm": (
+            round(_number((screening.get("market") or {}).get("market_price_rub_sqm")))
+            if _number((screening.get("market") or {}).get("market_price_rub_sqm")) > 0
             else None
         ),
         # Модель по объявленной цене торгов. Посчитанное на сервере, но не
