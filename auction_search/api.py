@@ -1620,10 +1620,26 @@ def install(app: FastAPI) -> None:
         """
         if core is None or market is None:
             return {"available": False, "reason": "Финансовый движок DevelopAid не подключён"}
-        report = market.build_report(
-            f"krt:{project.get('slug')}", radius_km=3.0, peers_limit=12,
-            city_reference=False, include_project_totals=True,
-        )
+        # Рынок должен получить реальную площадку, а не служебный ключ рейтинга.
+        # Для обычной карточки market.resolve_subject умеет krt:<slug>; для площадки-
+        # решения — krt:decision:<id>. Если снимок каталога на конкретном воркере
+        # отстал, используем имя/адрес самой строки: иначе весь финансовый прогон
+        # падает до модели и колонка продаж окружения остаётся н/д.
+        market_query = f"krt:{project.get('slug')}"
+        try:
+            report = market.build_report(
+                market_query, radius_km=3.0, peers_limit=12,
+                city_reference=False, include_project_totals=True,
+            )
+        except SubjectNotFound:
+            fallback = " ".join(str(project.get(key) or "").strip()
+                                for key in ("name", "district") if project.get(key))
+            if not fallback:
+                raise
+            report = market.build_report(
+                fallback, radius_km=3.0, peers_limit=12,
+                city_reference=False, include_project_totals=True,
+            )
         slug = str(project.get("slug") or "")
         document_id = slug[len("decision:"):] if slug.startswith("decision:") else ""
         try:
@@ -2772,6 +2788,28 @@ def install(app: FastAPI) -> None:
             # выпуском 0.23.22 при работающем 0.23.96, и семьдесят четыре
             # выпуска экономики прошли молча.
             "stale_model_engines": _stale_engines(rows),
+            # Диагностика отвечает на вопрос «каталог вообще посчитан?» без
+            # гадания по пустым ячейкам. Модель и рынок считаются отдельно:
+            # строка может иметь экономику, но не иметь темпа/цены окружения.
+            "model_audit": {
+                "rows_total": len(rows),
+                "model_available": sum(1 for row in rows if row.get("available")),
+                "model_missing": sum(1 for row in rows if not row.get("available")),
+                "model_current": sum(
+                    1 for row in rows
+                    if row.get("available") and krt_ranking_rules.model_is_current(row)
+                ),
+                "market_sales_available": sum(
+                    1 for row in rows if row.get("surrounding_sales") is not None
+                ),
+                "market_sales_missing": sum(
+                    1 for row in rows if row.get("surrounding_sales") is None
+                ),
+                "market_price_available": sum(
+                    1 for row in rows if _plato_number(row.get("start_price_rub_sqm")) != "—"
+                    and float(row.get("start_price_rub_sqm") or 0) > 0
+                ),
+            },
             "rules_version": krt_ranking_rules._screening_rules_version(),
             # Выпуск объявлен один раз — `VERSION`; страница берёт его отсюда,
             # своей копии у неё нет по той же причине, что и у остальных.
