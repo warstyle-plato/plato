@@ -142,6 +142,9 @@ def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
             ("weakest_phase_llcr_x", "LLCR слабейшей очереди, x", 22),
             ("margin_pct", "Маржа до неизвестных обязательств, %", 25),
             ("surrounding_price_rub_sqm", "Цена окружения, ₽/м²", 23),
+            # Темп рядом с ценой, а не вместо неё: «почём продают» и
+            # «сколько продают» — разные вопросы об одном окружении.
+            ("surrounding_sales_units_per_month", "Продажи окружения, ДДУ/мес.", 27),
             # Чьё это КРТ и не занято ли оно. Ячейка несёт цитату источника или
             # словами говорит, чего не хватает: пустая клетка читалась бы как
             # «нет», а это «не нашли» или «не читали».
@@ -171,6 +174,7 @@ def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
             "nonresidential_gfa_sqm", "business_gfa_sqm", "jobs", "score",
             "saleable_sqm", "entry_capacity_rub_per_sqm", "entry_capacity_mln",
             "project_llcr_x", "weakest_phase_llcr_x", "margin_pct", "surrounding_price_rub_sqm",
+            "surrounding_sales_units_per_month",
             "demolition_objects", "demolition_area_sqm", "conditional_objects",
             "conditional_area_sqm", "reconstruction_objects", "reconstruction_area_sqm",
             "preservation_objects", "preservation_area_sqm", "resettlement_mentions",

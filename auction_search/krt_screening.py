@@ -118,7 +118,7 @@ def _empty_tep(core: Any) -> dict[str, dict[str, Any]]:
 # прогоном ПУБЛИКАЦИЙ: он обновил находки и не тронул ни модель, ни цену.
 # Отличить такую строку от свежей было нечем: `computed_at` отвечает «когда», а
 # не «чем».
-SCREENING_RULES_VERSION = 1
+SCREENING_RULES_VERSION = 2
 
 
 def _market_inputs(report: dict[str, Any]) -> tuple[str | None, float, float, str]:
