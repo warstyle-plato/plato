@@ -38,6 +38,7 @@ from xlsx_eval import Evaluator  # noqa: E402
 
 import main as _wrapper  # noqa: E402
 import presentation  # noqa: E402
+import teaser_pdf  # noqa: E402
 import v4_dashboard  # noqa: E402
 
 core = _wrapper.core
@@ -108,9 +109,11 @@ def defaulted():
 
 
 def _pdf_text(pdf: bytes) -> str:
+    """Текст тизера. Страниц ровно две — тизер и «Итог» (образец владельца):
+    третья значит, что блок не влез, а не что тизер стал подробнее."""
     from pypdf import PdfReader
     reader = PdfReader(io.BytesIO(pdf))
-    assert len(reader.pages) == 1, f"тизер — одна страница, а вышло {len(reader.pages)}"
+    assert len(reader.pages) == 2, f"тизер — две страницы, а вышло {len(reader.pages)}"
     return " ".join(page.extract_text() for page in reader.pages)
 
 
@@ -240,9 +243,11 @@ def test_the_page_offers_the_teaser_next_to_the_pdf():
     assert "fetch('/report/teaser'" in page
 
 
-def test_the_teaser_route_answers_with_one_page(monkeypatch):
+def test_the_teaser_route_answers_with_two_pages(monkeypatch):
     from fastapi.testclient import TestClient
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    # Наружу маршрут не ходит: без участка ни карты, ни скрининга не бывает.
+    monkeypatch.setattr(core, "land_screening", lambda **kw: (_ for _ in ()).throw(AssertionError("наружу")))
     inputs, tep, _ = _starved()
     client = TestClient(core.app)
     response = client.post("/report/teaser", json={"inputs": inputs, "tep": tep, "rates": [],
@@ -251,5 +256,154 @@ def test_the_teaser_route_answers_with_one_page(monkeypatch):
     assert response.headers["content-type"].startswith("application/pdf")
     text = _pdf_text(response.content)
     assert "Маршрут" in text
+    assert teaser_pdf.NO_MAP_TEXT in text and teaser_pdf.NOT_SCREENED_TEXT in text
     bad = client.post("/report/teaser", json={"tep": tep})
     assert bad.status_code == 400
+
+
+# --- тизер по образцам владельца: две страницы, участок, карта --------------
+
+def _map_png() -> bytes:
+    from PIL import Image
+    buffer = io.BytesIO()
+    Image.new("RGB", (320, 240), (220, 225, 215)).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+SITE = {
+    "cadastral_numbers": ["77:01:0004023:15"],
+    "address": "Москва, ул. Россолимо, вл. 17",
+    "land_area_sqm": 7500.0, "land_area_ha": 0.75, "density_sqm_per_ha": 193841.0,
+    "permitted_use": "эксплуатация зданий", "category": "земли населённых пунктов",
+    "screened": True,
+    "verdict": {"status": "OK", "headline": "Критических ограничений не обнаружено",
+                "free_pct": 92.0, "disclaimer": "", "probed": True},
+    "findings": [{"name": "Ориентировочная СЗЗ", "flag_class": "economic", "impact": "",
+                  "coverage_pct": 100.0}],
+    "parcels": [{"cadastral_number": "77:01:0004023:15", "address": "ул. Россолимо, вл. 17",
+                 "area_sqm": 7500.0}],
+}
+
+
+def test_the_teaser_is_a_portrait_page_and_a_landscape_summary(starved):
+    """Образец владельца: тизер книжный, «Итог» альбомный — ровно две страницы."""
+    from pypdf import PdfReader
+    bundle, _, _, _, _, _ = starved
+    inputs, tep, phasing = _starved()
+    pdf = core.build_teaser_pdf(bundle, inputs, tep, phasing, SITE, _map_png())
+    reader = PdfReader(io.BytesIO(pdf))
+    assert len(reader.pages) == 2
+    first, second = reader.pages
+    assert float(first.mediabox.height) > float(first.mediabox.width)
+    assert float(second.mediabox.width) > float(second.mediabox.height)
+    assert teaser_pdf.PAGE1_TITLE in first.extract_text()
+    assert teaser_pdf.PAGE2_TITLE in second.extract_text()
+
+
+def test_the_teaser_shows_the_site_and_its_map(starved):
+    """Адрес или КН, площадь участка, ограничения и карта — обязательные блоки."""
+    from pypdf import PdfReader
+    bundle, _, _, _, _, _ = starved
+    inputs, tep, phasing = _starved()
+    pdf = core.build_teaser_pdf(bundle, inputs, tep, phasing, SITE, _map_png())
+    reader = PdfReader(io.BytesIO(pdf))
+    first = reader.pages[0].extract_text()
+    assert "77:01:0004023:15" in first and "Россолимо" in first
+    assert "0,75" in first and "Плотность" in first
+    assert "Ориентировочная СЗЗ" in first and "Критических ограничений не обнаружено" in first
+    assert len(reader.pages[0].images) >= 1, "карта участка не встала на первую страницу"
+    assert teaser_pdf.NO_MAP_TEXT not in first
+
+
+def test_a_missing_map_is_named_not_left_blank(starved):
+    """Нет карты — сказано почему; нет скрининга — «не проверялись», а не «чисто»."""
+    from pypdf import PdfReader
+    bundle, _, _, _, _, _ = starved
+    inputs, tep, phasing = _starved()
+    bare = {"cadastral_numbers": [], "address": ""}
+    pdf = core.build_teaser_pdf(bundle, inputs, tep, phasing, bare, None)
+    reader = PdfReader(io.BytesIO(pdf))
+    first = reader.pages[0].extract_text()
+    assert teaser_pdf.NO_MAP_TEXT in first and "кадастровый номер не задан" in first
+    assert teaser_pdf.NOT_SCREENED_TEXT in first
+    assert len(reader.pages[0].images) == 0
+
+
+def test_the_teaser_prints_unit_economics_social_and_vri(starved):
+    """Удельная экономика, соцнагрузка и ВРИ — из тех же чисел, что у движка."""
+    bundle, numbers, model, _, _, _ = starved
+    inputs, tep, phasing = _starved()
+    text = _pdf_text(core.build_teaser_pdf(bundle, inputs, tep, phasing, SITE, _map_png()))
+    for item in numbers["unit_economics"]:
+        assert core._pdf_num(item["per_gns_th"], 1) in text, item["label"]
+        assert core._pdf_num(item["per_saleable_th"], 1) in text, item["label"]
+    land = model["land"]
+    assert core._pdf_num(land["social_payment_mln"], 1) in text
+    assert core._pdf_num(land["vri_amount_mln"], 1) in text
+    for row in numbers["construction_costs"]:
+        assert core._pdf_num(row["total_mln"], 1) in text, row["label"]
+    assert teaser_pdf.CHART_TITLE in text and teaser_pdf.GANTT_TITLE in text
+
+
+def test_site_facts_come_from_the_same_screening_as_the_full_pdf(monkeypatch):
+    """Паспорт участка и ограничения — одним вызовом `land_screening`;
+    отказ источника — «не проверяли», а не «ограничений нет»."""
+    calls: list[str] = []
+
+    def fake_screening(cad: str = "", min_area_sqm=None):
+        calls.append(cad)
+        return {"parcels": [
+            {"cadastral_number": "77:01:0004023:15", "found": True, "address": "ул. Россолимо, вл. 17",
+             "area_sqm": 5000.0, "category": "земли населённых пунктов", "permitted_use": "офисы",
+             "findings": [{"name": "СЗЗ", "flag_class": "economic", "impact": "", "coverage_pct": 40.0}]},
+            {"cadastral_number": "77:01:0004023:16", "found": True, "address": "", "area_sqm": 2500.0,
+             "category": "", "permitted_use": "", "findings": []},
+            {"cadastral_number": "77:01:0004023:99", "found": False},
+        ], "verdict": {"status": "OK", "headline": "Критических ограничений нет", "free_pct": 60.0,
+                       "disclaimer": "", "probed": True}}
+
+    monkeypatch.setattr(core, "land_screening", fake_screening)
+    site = {"cadastral_numbers": ["77:01:0004023:15", "77:01:0004023:16", "77:01:0004023:99"], "address": ""}
+    facts = core._teaser_site_facts(site, gns_sqm=15000.0)
+    assert calls == ["77:01:0004023:15,77:01:0004023:16,77:01:0004023:99"]
+    assert facts["land_area_sqm"] == 7500.0 and facts["land_area_ha"] == 0.75
+    assert facts["density_sqm_per_ha"] == pytest.approx(20000.0)
+    assert facts["address"] == "ул. Россолимо, вл. 17" and facts["permitted_use"] == "офисы"
+    assert facts["screened"] is True and [f["name"] for f in facts["findings"]] == ["СЗЗ"]
+    assert len(facts["parcels"]) == 2
+
+    def broken(cad: str = "", min_area_sqm=None):
+        raise RuntimeError("НСПД молчит")
+
+    monkeypatch.setattr(core, "land_screening", broken)
+    silent = core._teaser_site_facts(site, gns_sqm=15000.0)
+    assert silent["screened"] is False and silent["findings"] == [] and silent["land_area_sqm"] is None
+
+
+def test_the_teaser_map_is_the_bot_picture(monkeypatch):
+    """Карта тизера и фото в боте — одна функция; отказ источника — нет карты."""
+    monkeypatch.setattr(core, "_territory_image_png", lambda numbers: (b"\x89PNGfake", "подпись"))
+    assert core._teaser_map_png({"cadastral_numbers": ["77:01:0004023:15"]}) == b"\x89PNGfake"
+    assert core._teaser_map_png({"cadastral_numbers": []}) is None
+    monkeypatch.setattr(core, "_territory_image_png", lambda numbers: None)
+    assert core._teaser_map_png({"cadastral_numbers": ["77:01:0004023:15"]}) is None
+
+    def boom(numbers):
+        raise RuntimeError("НСПД молчит")
+
+    monkeypatch.setattr(core, "_territory_image_png", boom)
+    assert core._teaser_map_png({"cadastral_numbers": ["77:01:0004023:15"]}) is None
+    source = Path(core.__file__).read_text(encoding="utf-8")
+    bot = source[source.index("def _telegram_territory_photo("):]
+    bot = bot[:bot.index("\ndef ")]
+    assert "_territory_image_png(numbers)" in bot, "бот обязан брать ту же картинку, что тизер"
+
+
+def test_the_site_numbers_come_from_the_same_place_as_the_full_pdf():
+    """Номера участка тизер берёт там же, где полный PDF (`_pdf_screening_numbers`),
+    а без них — из груза страницы."""
+    inputs = {"_land_lookup": {"query": "77:01:0004023:15, 77:01:0004023:16"}}
+    site = core._teaser_site({"cadastral_numbers": ["50:21:0120316:1221"]}, inputs)
+    assert site["cadastral_numbers"] == ["77:01:0004023:15", "77:01:0004023:16"]
+    site = core._teaser_site({"cadastral_numbers": ["50:21:0120316:1221"], "address": "Коммунарка"}, {})
+    assert site["cadastral_numbers"] == ["50:21:0120316:1221"] and site["address"] == "Коммунарка"
