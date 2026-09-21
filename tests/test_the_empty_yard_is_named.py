@@ -6,7 +6,7 @@
 в структуру расходов не попадает («строка появляется вместе с числом»). Статья
 исчезала с экрана, из PDF и из разговора целиком, и её отсутствие читалось как
 ответ методики «благоустройства здесь не нужно» — при том что ответ другой:
-мерить нечем, задайте ставку на метр ГНС.
+мерить нечем, а двор входит в себестоимость объекта.
 
 Рядом подпись под самой ставкой говорила «Расчёта ещё нет» на честно
 посчитанном нуле — то есть винила кнопку за ответ методики. Правило записано
@@ -77,7 +77,10 @@ def test_the_empty_article_is_named() -> None:
     assert float(result["capex"].get("landscaping") or 0.0) == 0.0
     gap = str(result["summary"]["landscaping_gap"])
     assert "Благоустройства в расчёте нет" in gap, gap
-    assert "ставку на метр ГНС" in gap, gap
+    # Чем мерить, больше не спрашивают: двор нежилого проекта входит в
+    # себестоимость объекта и отдельной статьёй не считается (владелец,
+    # 21.09.2026). Пустота при этом по-прежнему названа.
+    assert "себестоимость объекта" in gap, gap
     # Нулевой строки в структуре расходов не бывает — ради этого и фраза.
     assert not [item for item in result["report"]["expense_structure"]
                 if "лагоустр" in str(item.get("label"))]
@@ -169,8 +172,9 @@ def test_the_caption_tells_a_computed_zero_from_no_calculation(screen) -> None:
     assert screen["errors"] == 0, "страница не доработала"
     assert "Расчёта ещё нет" in screen["before"], screen["before"]
     assert "Расчёта ещё нет" not in screen["rate"], screen["rate"]
-    assert "дала ноль" in screen["rate"], screen["rate"]
-    assert "двор от населения не считается" in screen["rate"], screen["rate"]
+    assert "себестоимость объекта" in screen["rate"], screen["rate"]
+    # И ставку здесь по-прежнему можно задать — методика её не запрещает.
+    assert "перебьёт" in screen["rate"], screen["rate"]
 
 
 def test_the_expense_table_names_the_empty_article(screen) -> None:
