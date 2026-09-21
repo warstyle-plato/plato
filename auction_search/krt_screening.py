@@ -139,7 +139,13 @@ def _empty_tep(core: Any) -> dict[str, dict[str, Any]]:
 # прогоном ПУБЛИКАЦИЙ: он обновил находки и не тронул ни модель, ни цену.
 # Отличить такую строку от свежей было нечем: `computed_at` отвечает «когда», а
 # не «чем».
-SCREENING_RULES_VERSION = 2
+#
+# 3 — 21.09.2026: нежилой объём решения входит в модель (СПП восстанавливается
+# из наземной площади отношением самого города 0,9), а цена нежилого идёт за
+# ценой жилья этой площадки вместо фиксированных 500 тыс ₽/м². Числа
+# посчитанных строк от этого меняются у всех, где нежилое названо: на
+# Рубцовской наб., влд. 3 чистая 257,5 → 429,4 млн ₽, LLCR 1,092 → 1,043.
+SCREENING_RULES_VERSION = 3
 
 
 def _market_inputs(report: dict[str, Any]) -> tuple[str | None, float, float, str]:
@@ -444,6 +450,23 @@ def _programme(
     """
     housing = _number(project.get("housing_gfa_sqm"))
     nonresidential = _number(project.get("nonresidential_gfa_sqm"))
+    # Нежилой объём город называет ДВУМЯ полями, и решение — своим: карточка
+    # даёт нежилую СПП, а проект решения «нежилую наземную площадь». Пока
+    # читалось одно поле, у 86 площадок-решений из 240 нежилое не входило в
+    # модель ВООБЩЕ — 3,59 млн м², которые обязаны построить: ни метров, ни
+    # CAPEX, ни выручки. Молчание при этом оптимистично, а не консервативно:
+    # на Рубцовской наб., влд. 3 экономика стояла на жилой пятой части, и
+    # площадка выглядела прибыльной именно поэтому.
+    #
+    # Доля не выбрана нами — её назвал сам город: на всех трёх площадках, где
+    # решение называет и нежилую СПП, и нежилую наземную, отношение РОВНО
+    # 0,900 (Алтуфьевское ш. пз № 50 — 53 300 и 47 970; Котляково пз № 32 —
+    # 113 490 и 102 140; ТПУ «Кленовый Бульвар» — 68 000 и 61 200). Это та же
+    # «НП = 90% СПП» методики ГлавАПУ, которая у нас уже объявлена.
+    ground = _number(project.get("nonresidential_ground_sqm"))
+    nonresidential_from_ground = nonresidential <= 0 and ground > 0
+    if nonresidential_from_ground:
+        nonresidential = ground / core.CITY_GROUND_OF_SPP
     business = _number(project.get("business_gfa_sqm"))
     total = _number(project.get("total_gfa_sqm"))
     # Карточка каталога сама с собой не сходится: на Варшавском ш., вл. 37 её
@@ -611,6 +634,9 @@ def _programme(
             "total_gfa_sqm": total,
             "housing_gfa_sqm": housing,
             "nonresidential_gfa_sqm": nonresidential,
+            # Наземная площадь остаётся рядом числом города: наш пересчёт без
+            # неё проверить нечем.
+            "nonresidential_ground_sqm": ground,
             "business_gfa_sqm": business,
             # Строка разложения, а не примечание: этот объём город требует
             # построить, и без него сумма не сходится с его же итогом.
@@ -625,6 +651,7 @@ def _programme(
         "social_from_decision": any(row["source"] == "decision" for row in social_rows),
         "commercial_gba_sqm": round(commercial, 1),
         "commercial_negative": commercial < 0,
+        "nonresidential_from_ground": nonresidential_from_ground,
         "offices_gba_sqm": round(business, 1),
         # Чем посчитан объём — карточкой или документом — часть ответа: два
         # источника дают на Варшавском ш., вл. 37 разницу вчетверо, и на
@@ -718,6 +745,14 @@ def build_krt_model_screening(
     inputs.update({
         "project_class": model_class,
         "apartment_price_th": start_price / 1000.0,
+        # Цена нежилого идёт за ценой жилья ЭТОЙ площадки, а не за ценой
+        # пресета: жильё здесь ставит рынок (на Рубцовской 608,2 тыс ₽/м²
+        # против 650 у профиля бизнеса), и оставленное число пресета было бы
+        # ценой другого проекта. Правило одно — движковое.
+        "retail_price_th_per_sqm": core.nonresidential_price_th(
+            start_price / 1000.0),
+        "offices_price_th_per_sqm": core.nonresidential_price_th(
+            start_price / 1000.0),
         "purchase_price_mln": 0.0,
         "land_rights_cost_mln": 0.0,
         "vri_required": False,
@@ -1115,6 +1150,18 @@ def build_krt_model_screening(
             f"{_ru_number(abs(programme['commercial_gba_sqm']))} м²: остатка на ОСЗ и ТЦ нет, "
             "и обнулять его молча нельзя — либо соцобъекты у города учтены вне нежилого "
             "назначения, либо норматив к этой площадке не применяется целиком."
+        )
+    if programme.get("nonresidential_from_ground"):
+        # Восстановленное называется восстановленным: число города рядом с
+        # нашим пересчётом читается как его собственное.
+        exclusions.append(
+            "Нежилой объём решение называет наземной площадью "
+            f"{_ru_number(programme['city']['nonresidential_ground_sqm'])} м², а "
+            "суммарной поэтажной — нет: СПП восстановлена делением на "
+            f"{core.CITY_GROUND_OF_SPP} (отношение самого города, сверено на трёх "
+            "его решениях) и дала "
+            f"{_ru_number(programme['city']['nonresidential_gfa_sqm'])} м². "
+            "Это НАШ пересчёт, а не число города."
         )
     if not programme["balance"]["total_published"]:
         exclusions.append(
