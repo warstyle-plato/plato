@@ -67,8 +67,8 @@ from auction_search.krt_ranking import (
 # методики — функция модуля: `krt_ranking.model_is_current` там разрешилось бы
 # на экземпляре и упало бы при первом же чтении рейтинга.
 from auction_search import krt_ranking as krt_ranking_rules
-from auction_search.krt_screening import _number as _screening_number
 from auction_search.krt_screening import build_krt_model_screening
+from auction_search.krt_screening import housing_measure_named
 from auction_search.models import LotKind
 from auction_search.preset_mapper import build_project_preset
 from auction_search.profile_fit import profile_fit
@@ -78,6 +78,7 @@ from auction_search.nagatino_ui import nagatino_page
 from auction_search.ui import auctions_page
 from market_search.krt_registry import CATALOGUE_URL, KrtRegistry
 from market_search import krt_decision_tep
+from market_search import tep_check
 from market_search import cabinet as market_cabinet
 from market_search.geocoder import GeocodingError
 from market_search.http import RemoteServiceError
@@ -140,6 +141,10 @@ def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
             ("project_llcr_x", "LLCR проекта, x", 17),
             ("weakest_phase_llcr_x", "LLCR слабейшей очереди, x", 22),
             ("margin_pct", "Маржа до неизвестных обязательств, %", 25),
+            ("surrounding_price_rub_sqm", "Цена окружения, ₽/м²", 23),
+            # Темп рядом с ценой, а не вместо неё: «почём продают» и
+            # «сколько продают» — разные вопросы об одном окружении.
+            ("surrounding_sales_units_per_month", "Продажи окружения, ДДУ/мес.", 27),
             # Чьё это КРТ и не занято ли оно. Ячейка несёт цитату источника или
             # словами говорит, чего не хватает: пустая клетка читалась бы как
             # «нет», а это «не нашли» или «не читали».
@@ -168,7 +173,8 @@ def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
             "krt_area_ha", "total_gfa_sqm", "housing_gfa_sqm",
             "nonresidential_gfa_sqm", "business_gfa_sqm", "jobs", "score",
             "saleable_sqm", "entry_capacity_rub_per_sqm", "entry_capacity_mln",
-            "project_llcr_x", "weakest_phase_llcr_x", "margin_pct",
+            "project_llcr_x", "weakest_phase_llcr_x", "margin_pct", "surrounding_price_rub_sqm",
+            "surrounding_sales_units_per_month",
             "demolition_objects", "demolition_area_sqm", "conditional_objects",
             "conditional_area_sqm", "reconstruction_objects", "reconstruction_area_sqm",
             "preservation_objects", "preservation_area_sqm", "resettlement_mentions",
@@ -1161,11 +1167,34 @@ def install(app: FastAPI) -> None:
                 logger.exception("KRT card facts cache failed")
                 facts = {}
             if facts:
-                projects = [
-                    {**row, "card_facts": facts.get(str(row.get("slug") or ""))}
-                    if facts.get(str(row.get("slug") or "")) else row
-                    for row in projects
-                ]
+                def _with_card(row: dict[str, Any]) -> dict[str, Any]:
+                    card = facts.get(str(row.get("slug") or ""))
+                    if not card:
+                        return row
+                    # Город отвечает о площадке дважды: плиткой списка, по
+                    # которой собран каталог, и карточкой проекта. Совпадают
+                    # они не всегда — у «Дербеневской ул. тер. 2» плитка даёт
+                    # общий объём 153 320 и ОДН 14 400, карточка 358 100 без
+                    # ОДН (замер прода 20.09.2026; из 282 карточек расходится
+                    # немного, но расхождение есть). Выбирать между двумя
+                    # числами источника мы не вправе: считаем по-прежнему
+                    # плиткой и НАЗЫВАЕМ расхождение — молча выбранное число
+                    # выглядит на экране ровно так же, как сверенное. Ответ
+                    # несёт и то, было ли ЧТО сверять: «сверять не с чем» —
+                    # не «сошлось».
+                    card_tep = card.get("tep") if isinstance(card, dict) else None
+                    return {
+                        **row, "card_facts": card,
+                        "card_tep_check": {
+                            **tep_check.compare(
+                                card_tep or {}, row,
+                                ours_label="в карточке", theirs_label="в списке"),
+                            "read": bool(card_tep and any(
+                                value is not None for value in card_tep.values())),
+                        },
+                    }
+
+                projects = [_with_card(row) for row in projects]
             # Сколько карточек прочитано и на чём споткнулись остальные. Без
             # этого «реновации нет» и «карточку не спросили» выглядят на экране
             # одинаково, а общий отказ источника не виден вовсе.
@@ -1245,6 +1274,12 @@ def install(app: FastAPI) -> None:
         decision_rows: list[dict[str, Any]] = []
         second_publications = 0
         tep_state: dict[str, Any] | None = None
+        # Числа обхода и причина устаревания объявляются ЗДЕСЬ, а не читаются
+        # из `found`: он существует только внутри ветки, и безусловное чтение
+        # роняло маршрут `UnboundLocalError` там, где читателя решений нет
+        # вовсе (поймано прогоном затронутого до открытия PR).
+        decisions_walk: dict[str, Any] = {}
+        decisions_stale_reason = ""
         reader = getattr(krt_registry, "decisions", None)
         if callable(reader):
             try:
@@ -1264,6 +1299,8 @@ def install(app: FastAPI) -> None:
             # единственные цифры; у площадки с карточкой — самопроверка пары
             # «решение ↔ карточка», и расхождение называется, а не заменяет
             # собой каталог.
+            decisions_walk = dict(found.get("walk") or {})
+            decisions_stale_reason = str(found.get("stale_reason") or "")
             tep_by_document = found.get("tep") or {}
             tep_state = found.get("tep_coverage")
             # Недостающие решения дочитываются фоном и порциями — как карточки
@@ -1325,6 +1362,13 @@ def install(app: FastAPI) -> None:
             # Сколько строк убрано схлопыванием второй публикации одного и того
             # же документа: у города он лежит и в разделе ДГИ, и в разделе ДИПП.
             "second_publications": second_publications,
+            # Чем посчитана полнота снимка решений — часть ответа, а не
+            # подробность. Снимок её хранит с 0.23.87, а наружу не отдавал:
+            # «дочитан: True» проверить было нечем, и когда после выкатки
+            # строк стало 246 вместо 248, объяснить это со стороны не мог
+            # никто — счётчик молчания есть, а прочитать его нельзя.
+            "decisions_walk": decisions_walk,
+            "decisions_stale_reason": decisions_stale_reason,
             "new_count": sum(1 for row in projects if row.get("is_new")),
             "new_for_days": NEW_FOR_SECONDS // 86400,
             # Охват карточек города: прочитано, не ответило и по какой причине.
@@ -1401,6 +1445,13 @@ def install(app: FastAPI) -> None:
             "decisions_whole": bool(decisions_whole),
             "whole": bool(catalogue_whole and decisions_whole),
         }
+        # Числа обхода — рядом с признаком, которым он посчитан: страниц из
+        # объявленных, документов из объявленных и сколько документов снимок
+        # объясняет вместе с неразобранными. Без них «решения дочитаны не все»
+        # снаружи неотличимо от «в источнике столько и есть».
+        walk = state.get("decisions_walk")
+        if isinstance(walk, dict) and walk:
+            why["decisions_walk"] = walk
         return catalogue + decisions, catalogue_whole and decisions_whole, why
 
     def _krt_screen_list() -> tuple[list[dict[str, Any]], bool]:
@@ -1597,10 +1648,26 @@ def install(app: FastAPI) -> None:
         """
         if core is None or market is None:
             return {"available": False, "reason": "Финансовый движок DevelopAid не подключён"}
-        report = market.build_report(
-            f"krt:{project.get('slug')}", radius_km=3.0, peers_limit=12,
-            city_reference=False, include_project_totals=True,
-        )
+        # Рынок должен получить реальную площадку, а не служебный ключ рейтинга.
+        # Для обычной карточки market.resolve_subject умеет krt:<slug>; для площадки-
+        # решения — krt:decision:<id>. Если снимок каталога на конкретном воркере
+        # отстал, используем имя/адрес самой строки: иначе весь финансовый прогон
+        # падает до модели и колонка продаж окружения остаётся н/д.
+        market_query = f"krt:{project.get('slug')}"
+        try:
+            report = market.build_report(
+                market_query, radius_km=3.0, peers_limit=12,
+                city_reference=False, include_project_totals=True,
+            )
+        except SubjectNotFound:
+            fallback = " ".join(str(project.get(key) or "").strip()
+                                for key in ("name", "district") if project.get(key))
+            if not fallback:
+                raise
+            report = market.build_report(
+                fallback, radius_km=3.0, peers_limit=12,
+                city_reference=False, include_project_totals=True,
+            )
         slug = str(project.get("slug") or "")
         document_id = slug[len("decision:"):] if slug.startswith("decision:") else ""
         try:
@@ -2744,8 +2811,71 @@ def install(app: FastAPI) -> None:
             "stale_model_count": sum(
                 1 for row in rows
                 if row.get("available") and not krt_ranking_rules.model_is_current(row)),
+            # Чем посчитаны устаревшие — часть ответа. «Строк прежней методики:
+            # 183» не говорит, насколько прежней: 16.09.2026 каталог судил
+            # выпуском 0.23.22 при работающем 0.23.96, и семьдесят четыре
+            # выпуска экономики прошли молча.
+            "stale_model_engines": _stale_engines(rows),
+            # Сколько строк ПЕРЕСЧИТАЕТ кнопка «Пересчитать только их». Это не
+            # то же число, что `stale_model_count`: у той величины строка
+            # посчитана прежней методикой, а здесь к ней прибавлены строки, у
+            # которых модели нет вовсе — им тоже есть что считать. Пока число
+            # было одно, подпись называла 5, а кнопка планировала 388.
+            "recount_planned_count": sum(
+                1 for row in rows if krt_ranking_rules.model_needs_recount(row)),
+            # Диагностика отвечает на вопрос «каталог вообще посчитан?» без
+            # гадания по пустым ячейкам. Модель и рынок считаются отдельно:
+            # строка может иметь экономику, но не иметь темпа/цены окружения.
+            "model_audit": {
+                "rows_total": len(rows),
+                "model_available": sum(1 for row in rows if row.get("available")),
+                "model_missing": sum(1 for row in rows if not row.get("available")),
+                "model_current": sum(
+                    1 for row in rows
+                    if row.get("available") and krt_ranking_rules.model_is_current(row)
+                ),
+                # Два РАЗНЫХ вопроса, и под одним именем они жили до
+                # 21.09.2026: ключ `market_price_available` стоял в этом
+                # словаре дважды, Python оставлял последний, и пара «есть /
+                # нет» считала разное — 202 против 584 при 585 строках.
+                # Первый: доехало ли поле до строки (его завели позже самих
+                # строк, и без подъёма версии правил оно пусто у прежних).
+                "market_price_in_row": sum(
+                    1 for row in rows if row.get("surrounding_price_rub_sqm") is not None
+                ),
+                "market_price_missing_in_row": sum(
+                    1 for row in rows if row.get("surrounding_price_rub_sqm") is None
+                ),
+                # Второй: ответил ли рынок ценой, когда строку считали. Это
+                # та же величина `_market_inputs`, что уходит в цену модели,
+                # поэтому она есть и у строк, записанных до появления поля.
+                "market_answered_price": sum(
+                    1 for row in rows
+                    if krt_ranking_rules._number(row.get("start_price_rub_sqm")) > 0
+                ),
+            },
             "rules_version": krt_ranking_rules._screening_rules_version(),
+            # Выпуск объявлен один раз — `VERSION`; страница берёт его отсюда,
+            # своей копии у неё нет по той же причине, что и у остальных.
+            "engine_version": krt_ranking_rules._engine_version(),
         }
+
+    def _stale_engines(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Каким выпуском посчитана каждая устаревшая строка, по убыванию числа.
+
+        Считает сервер, рядом с самим признаком: страница решить, какая строка
+        устарела, не может — отпечаток методики снимает движок.
+        """
+        tally: dict[str, int] = {}
+        for row in rows:
+            if not row.get("available") or krt_ranking_rules.model_is_current(row):
+                continue
+            # Строка без выпуска посчитана до того, как его завели: это ответ,
+            # а не пропуск, и прочерк читался бы как «неизвестный выпуск».
+            name = str(row.get("engine_version") or "").strip() or "до 0.21.х"
+            tally[name] = tally.get(name, 0) + 1
+        return [{"engine": name, "rows": count}
+                for name, count in sorted(tally.items(), key=lambda kv: (-kv[1], kv[0]))]
 
     @app.post("/auctions/krt/ranking/refresh")
     async def auction_krt_ranking_refresh(
@@ -2797,7 +2927,9 @@ def install(app: FastAPI) -> None:
             keep = []
             for row in projects:
                 stored = fresh_rows.get(str(row.get("slug") or "")) or {}
-                if stored.get("available") and krt_ranking_rules.model_is_current(stored):
+                # Тот же предикат, что считает число у кнопки: два счёта одного
+                # вопроса однажды разошлись бы, и подпись обещала бы не то.
+                if not krt_ranking_rules.model_needs_recount(stored):
                     skipped += 1
                     continue
                 keep.append(row)
@@ -2891,6 +3023,12 @@ def install(app: FastAPI) -> None:
         продаж, свой покупатель), и считать его пресетом жилья значило бы
         показать посчитанным то, что посчитано не тем. Это ответ методики, а
         не наш пробел, и балл площадки от него не снижается.
+
+        А вот «нежилая» решает не эта копия вопроса, а `housing_measure_named`
+        — та же функция, которой отказывает сам скрининг. Своя копия читала
+        только жилую СПП, и 27 площадок-решений прода с НАЗВАННОЙ площадью
+        квартир отказывались «жилья в проекте решения нет»: наш пробел был
+        выдан за ответ документа.
         """
         shift = str(project.get("parse_problem") or "").strip()
         if shift:
@@ -2902,7 +3040,7 @@ def install(app: FastAPI) -> None:
             return _screen_one(project)
         if not project.get("address_known"):
             return _press_only(project)
-        if _screening_number(project.get("housing_gfa_sqm")) <= 0:
+        if not housing_measure_named(project):
             answer = _press_only(project)
             answer["reason"] = (
                 "Жилья в проекте решения нет — нежилую площадку модель пока не считает: "

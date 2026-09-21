@@ -250,3 +250,59 @@ def test_the_dialog_explains_each_article_on_click():
     assert "разброс p25–p75" in page
     # Позиция значения проекта относительно рынка называется словами.
     assert "выше p75 рынка" in page and "ниже p25 рынка" in page
+
+
+def test_the_summary_row_names_its_own_base() -> None:
+    """Свод «Статистики» называет базу в САМОЙ строке, а не в подсказке.
+
+    У благоустройства ставка класса меряет метр двора, а свод — метр ГНС: «15»
+    над «5,9» без имён баз читается как спор двух чисел об одном («это
+    существует одновременно!!?», владелец, 14.09.2026). Подсказка ответом тут
+    не является — на телефоне её нет вовсе.
+
+    Имя базы приходит с сервера (`unit_label`) и подставляется, а не пишется
+    страницей: второй список «что в чём меряется» разошёлся бы с первым молча.
+    Проверяется это отрисовкой в настоящем Chromium — в исходнике строка с
+    подстановкой и строка с литералом выглядят одинаково.
+    """
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    _sys.path.insert(0, str(_Path(__file__).resolve().parent))
+    import browser as _browser  # noqa: PLC0415
+    from playwright.sync_api import sync_playwright  # noqa: PLC0415
+
+    chromium = _browser.chromium_or_skip()
+    # Свод приходит маршрутом `/api/statistics/*`, а он живёт не в движке, а в
+    # приложении-сборке: подняв `core.app`, проверка мерила бы окно, которому
+    # сервер отвечает 404, — то есть наш пробел выдавала бы за пустой свод.
+    import main_registry  # noqa: PLC0415
+
+    with _browser.serve(main_registry.app, 8419) as base:
+        with sync_playwright() as play:
+            engine = play.chromium.launch(executable_path=str(chromium))
+            page = engine.new_page()
+            errors: list[str] = []
+            page.on("pageerror", lambda exc: errors.append(str(exc)))
+            page.goto(base, wait_until="load")
+            page.wait_for_function("typeof renderClassDialog==='function'")
+            # Свод приезжает с сервера отдельным запросом: спросив разметку
+            # сразу после открытия, проверка мерила бы окно до ответа.
+            page.evaluate("() => openClassDialog()")
+            page.wait_for_function(
+                "() => {const box=document.getElementById('classDialogBody');"
+                "return box && /свод/.test(box.innerText)}", timeout=60_000)
+            seen = page.evaluate("""() => {
+              const box=document.getElementById('classDialogBody');
+              return [...box.querySelectorAll('tr')].map(tr=>tr.innerText)
+                .filter(t=>/свод/.test(t));
+            }""")
+            engine.close()
+
+    assert not errors, errors
+    assert seen, "строки свода в окне классов нет — проверять нечего"
+    # Утверждение — «база названа», а не «стоит такое-то слово»: у разных
+    # статей базы разные, и проверка на одно имя упала бы на соседней.
+    named = [row for row in seen if "м²" in row and row.split("\n")[0].count("₽/м²")]
+    assert named, seen
+    assert any("ГНС" in row or "площади" in row or "двора" in row for row in seen), seen

@@ -39,7 +39,11 @@ JINA_PREFIX = "https://r.jina.ai/"
 CACHE_SCHEMA_VERSION = 3
 REQUIREMENTS_CACHE_SCHEMA_VERSION = 3
 # Разбор карточки версионируется отдельно: он меняется чаще требований.
-CARD_FACTS_SCHEMA_VERSION = 1
+# Версия разбора карточки. Поднимается тогда и только тогда, когда меняется
+# ОТВЕТ читателя на те же байты: прочитанное лежит на диске сутками, и без
+# подъёма починка до прочитанных карточек не доезжает вовсе. 2 — карточка
+# понесла свой ТЭП.
+CARD_FACTS_SCHEMA_VERSION = 2
 # ТЭП, вынутый из PDF проекта решения. Своя версия: разбор правится
 # отдельно от разбора карточки, и общая версия обесценивала бы чужое.
 DECISION_TEP_SCHEMA_VERSION = 1
@@ -320,6 +324,27 @@ def _checked(row: KrtTerritory) -> KrtTerritory:
     return replace(row, parse_problem=parse_problem(row))
 
 
+def tep_from_fields(fields: dict[str, str]) -> dict[str, float | None]:
+    """Какая подпись города какая величина — один ответ на все поверхности.
+
+    Подписи у плитки списка и у карточки проекта одни и те же, кроме единицы
+    в имени площади («Площадь» против «Площадь, га»), поэтому имя режется по
+    запятой. Второй такой карты не заводим: разойдись она, одна поверхность
+    читала бы «общественно-деловое назначение», а соседняя молчала бы о нём,
+    и обе выглядели бы прочитанными.
+    """
+    flat = {str(key).split(",", 1)[0].strip().lower(): value
+            for key, value in (fields or {}).items()}
+    return {
+        "area_ha": _number(flat.get("площадь", "")),
+        "total_gfa_sqm": _number(flat.get("общий объем застройки", "")),
+        "housing_gfa_sqm": _number(flat.get("жилое назначение", "")),
+        "nonresidential_gfa_sqm": _number(flat.get("нежилое назначение", "")),
+        "business_gfa_sqm": _number(flat.get("общественно-деловое назначение", "")),
+        "jobs": _number(flat.get("прирост рабочих мест", "")),
+    }
+
+
 def parse_catalogue(html: str) -> tuple[list[KrtTerritory], str | None]:
     parser = _CatalogueParser()
     parser.feed(html)
@@ -329,13 +354,8 @@ def parse_catalogue(html: str) -> tuple[list[KrtTerritory], str | None]:
         fields = {p.split(":", 1)[0].strip().lower(): p.split(":", 1)[1].strip() for p in parts}
         rows.append(_checked(KrtTerritory(
             slug=slug, name=name, url=f"{BASE_URL}/projects/{slug}",
-            area_ha=_number(fields.get("площадь", "")),
             okrug=fields.get("округ"), district=fields.get("район"), status=fields.get("статус"),
-            total_gfa_sqm=_number(fields.get("общий объем застройки", "")),
-            housing_gfa_sqm=_number(fields.get("жилое назначение", "")),
-            nonresidential_gfa_sqm=_number(fields.get("нежилое назначение", "")),
-            business_gfa_sqm=_number(fields.get("общественно-деловое назначение", "")),
-            jobs=_number(fields.get("прирост рабочих мест", "")),
+            **tep_from_fields(fields),
         )))
     return rows, parser.next_url
 
@@ -361,13 +381,8 @@ def parse_catalogue_markdown(markdown: str) -> list[KrtTerritory]:
         slug, name = match.group(2), match.group(1).strip()
         rows.append(_checked(KrtTerritory(
             slug=slug, name=name, url=f"{BASE_URL}/projects/{slug}",
-            area_ha=_number(fields.get("площадь", "")),
             okrug=fields.get("округ"), district=fields.get("район"), status=fields.get("статус"),
-            total_gfa_sqm=_number(fields.get("общий объем застройки", "")),
-            housing_gfa_sqm=_number(fields.get("жилое назначение", "")),
-            nonresidential_gfa_sqm=_number(fields.get("нежилое назначение", "")),
-            business_gfa_sqm=_number(fields.get("общественно-деловое назначение", "")),
-            jobs=_number(fields.get("прирост рабочих мест", "")),
+            **tep_from_fields(fields),
         )))
     return rows
 
@@ -692,6 +707,13 @@ class KrtRegistry:
             save_json(path, failure)
             return failure
         out = krt_card_facts.parse(page)
+        # ТЭП карточки — второй ответ города о той же площадке, и он часто НЕ
+        # равен плитке списка, по которой собран каталог: у «Дербеневской ул.
+        # тер. 2» плитка даёт 153 320 м² и ОДН 14 400, карточка — 358 100 без
+        # ОДН (замер 20.09.2026). Величины из подписей собирает общая карта, а
+        # выбирать между двумя числами города мы не вправе — их сверяет и
+        # называет вызывающий.
+        out["tep"] = tep_from_fields(out.pop("tep_fields", {}) or {})
         out.update({"schema_version": CARD_FACTS_SCHEMA_VERSION, "available": True,
                     "slug": clean, "source_url": url})
         save_json(path, out)
@@ -755,6 +777,23 @@ class KrtRegistry:
             "reasons": dict(sorted(reasons.items(), key=lambda pair: -pair[1])),
         }
 
+    def _card_facts_stale(self, slug: str) -> bool:
+        """Дочитать надо и то, что прочитано ПРЕЖНИМ читателем.
+
+        Свежесть файла на этот вопрос не отвечает: разбор карточки меняется
+        чаще, чем сутки срока, и запись вчерашней версии остаётся «свежей»
+        навсегда — починка до прочитанного не доезжает вовсе. Ровно это уже
+        стоило дня на выписках ЕГРН, где версия правил лежит рядом с ответом.
+        """
+        path = self.card_facts_dir / f"{slug}.json"
+        cached = load_json(path)
+        if (not isinstance(cached, dict)
+                or cached.get("schema_version") != CARD_FACTS_SCHEMA_VERSION):
+            return True
+        ttl = (self.ttl_seconds if cached.get("available")
+               else self.card_facts_failure_ttl_seconds)
+        return not fresh(path, ttl)
+
     def fill_card_facts_in_background(self, slugs: list[str] | tuple[str, ...],
                                       *, limit: int = 40) -> bool:
         """Дочитать карточки, которых ещё нет, — фоном и порциями.
@@ -770,7 +809,7 @@ class KrtRegistry:
         clean = [str(slug or "").strip() for slug in slugs]
         missing = [slug for slug in clean
                    if re.fullmatch(r"[a-zA-Z0-9_-]{2,180}", slug or "")
-                   and not fresh(self.card_facts_dir / f"{slug}.json", self.ttl_seconds)]
+                   and self._card_facts_stale(slug)]
         if not missing:
             return False
         with self._cards_lock:
@@ -1183,7 +1222,7 @@ class KrtRegistry:
         save_json(cache_path, result)
         return result
 
-    def decisions(self, *, refresh: bool = False, max_pages: int = 60,
+    def decisions(self, *, refresh: bool = False, max_pages: int = 0,
                   catalogue: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         """Решения о КРТ и разложение их на «карточка есть» и «карточки нет».
 
@@ -1217,20 +1256,98 @@ class KrtRegistry:
                 and fresh(self.decisions_path, self.ttl_seconds)):
             payload = dict(cached)
         if payload is None:
-            found, complete = krt_decisions.collect(self.fetch, max_pages=max_pages)
-            if not found and isinstance(cached, dict) and cached.get("all"):
-                # Источник не ответил — прежний ответ честнее пустого списка, и
-                # он назван прежним.
+            # Потолок страниц объявлен один раз — у обхода: источник отдаёт
+            # по десять записей на страницу, сколько бы мы ни просили, и
+            # второй потолок здесь отставал бы от него молча.
+            walk = krt_decisions.collect(
+                self.fetch, **({"max_pages": max_pages} if max_pages else {}))
+            kept = [one for one in ((cached.get("all") if isinstance(cached, dict)
+                                     else None) or []) if isinstance(one, dict)]
+            # Три ответа, и слить их нельзя — каждый измерен на живом источнике
+            # 15.09.2026, когда бот весь день объявлял новыми одни и те же
+            # четыре площадки.
+            #
+            # **Обход оборвался** (страниц прочитано меньше объявленных, или
+            # источник не ответил) — прежний снимок не трогаем вовсе. Прежде
+            # защита стояла только на ПУСТОМ ответе, и усечённый список
+            # заменял полный: площадка выпадала из снимка, а вернувшись
+            # следующим заходом, объявлялась новой.
+            #
+            # **Страницы дочитаны, а документов меньше объявленного** — это
+            # выдача повторила страницу: 580 строк при 579 различных, и один
+            # документ не показан ни на одной странице (страница 3 отдала
+            # запись, уже прочитанную на первых двух). Какой именно — мы не
+            # знаем, поэтому обход ДОПОЛНЯЕТ снимок, а не заменяет его: то же
+            # правило, что у склада выписок.
+            #
+            # **Документов прочитано не меньше объявленного** — это ответ
+            # источника целиком, и он вправе забыть: документ, которого в
+            # выдаче больше нет, из снимка уходит.
+            # Пустой ответ снимок не заменяет НИКОГДА, сколько бы страниц
+            # источник ни объявил: 580 записей, стёртые одной пустой выдачей,
+            # — это не ответ города. Прежняя защита стояла ровно на этом, и
+            # она остаётся рядом с новой, а не вместо неё.
+            short_pages = (not walk.items) \
+                or (walk.pages_announced and walk.pages < walk.pages_announced)
+            if short_pages and kept:
                 payload = dict(cached)
                 payload["stale"] = True
+                payload["stale_reason"] = (
+                    f"обход недособран ({walk.shortfall() or 'источник не ответил'}): "
+                    f"принесено записей {len(walk.items)}, прежний снимок держит "
+                    f"{len(kept)} — снимок оставлен прежним")
             else:
+                brought = [one.to_dict() for one in walk.items]
+                merged = brought
+                skipped = list(walk.unparsed)
+                if walk.announced and walk.seen < walk.announced and kept:
+                    by_id = {str(one.get("id") or ""): one for one in kept}
+                    by_id.update({str(one.get("id") or ""): one for one in brought})
+                    merged = sorted(by_id.values(),
+                                    key=lambda one: -int(one.get("published_at") or 0))
+                    # Неразобранные помнятся тем же слиянием: иначе снимок
+                    # объяснит меньше документов, чем объяснял до обхода.
+                    was = (cached.get("skipped") if isinstance(cached, dict) else None)
+                    skipped = sorted({str(one) for one in (was or []) if one}
+                                     | set(walk.unparsed))
+                # Полнота — свойство СНИМКА, а не обхода: у нас столько
+                # документов, сколько объявил источник, даже если один из них
+                # достался прошлому обходу. Иначе снимок замирал бы навсегда
+                # на источнике, теряющем запись почти в каждом обходе.
+                #
+                # **Сравнивается однородное — документы с документами.** Прежде
+                # здесь стояло `len(merged) >= walk.announced`, где `merged` —
+                # разобранные РЕШЕНИЯ, а `announced` — объявленные ДОКУМЕНТЫ, и
+                # это разные величины: живой обход 15.09.2026 дал 578 различных
+                # документов из 580 объявленных и 576 решений из них. Плохи обе
+                # стороны: union решений может не дорасти до числа документов
+                # НИКОГДА — и тогда снимок «недочитан» навсегда, а сторож
+                # новостей на неполном списке состав не пишет, то есть новости
+                # встают совсем; либо union через несколько обходов число
+                # документов перевалит — и снимок объявит себя полным при
+                # коротком обходе, а замена уронит строки. Снимок объясняет
+                # столько документов, сколько у него записей ПЛЮС названных
+                # неразобранных.
+                accounted = len(merged) + len(skipped)
+                complete = (accounted >= walk.announced if walk.announced
+                            else walk.complete)
                 payload = {
                     "schema_version": DECISIONS_CACHE_SCHEMA_VERSION,
                     "retrieved_at": int(time.time()),
-                    "complete": complete,
+                    "complete": bool(complete),
                     "stale": False,
-                    "all": [one.to_dict() for one in found],
+                    "all": merged,
+                    "skipped": skipped,
                     "query": krt_decisions.MOS_KRT_QUERY,
+                    # Чем посчитана полнота — часть ответа: страниц прочитано
+                    # из объявленных, документов выдачи из объявленных, сколько
+                    # записей снимку досталось от прежнего обхода и сколько
+                    # документов он объясняет вместе с неразобранными.
+                    "walk": {"pages": walk.pages,
+                             "pages_announced": walk.pages_announced,
+                             "seen": walk.seen, "announced": walk.announced,
+                             "brought": len(brought), "kept": len(merged) - len(brought),
+                             "unparsed": len(skipped), "accounted": accounted},
                 }
                 save_json(self.decisions_path, payload)
         rows = [krt_decisions.KrtDecision(**{key: value for key, value in one.items()
@@ -1708,12 +1825,34 @@ class KrtRegistry:
                 and cached.get("schema_version") == TENDERS_CACHE_SCHEMA_VERSION
                 and fresh(self.tenders_path, self.ttl_seconds)):
             return self._with_order_actions(cached)
-        found, complete = krt_decisions.collect_tender_orders(
-            self.fetch, max_pages=max_pages)
-        if not found and isinstance(cached, dict) and cached.get("orders"):
+        walk = krt_decisions.collect_tender_orders(self.fetch, max_pages=max_pages)
+        found = list(walk.items)
+        kept = [one for one in ((cached.get("orders") if isinstance(cached, dict)
+                                 else None) or []) if isinstance(one, dict)]
+        # Недособранный обход прежний снимок не трогает — то же правило, что у
+        # проектов решений: защита стояла только на ПУСТОМ ответе, а усечённая
+        # выдача заменяла полную и распоряжение выпадало из оси «Торги» вместе
+        # со своей ценой входа.
+        short_pages = (not found) \
+            or (walk.pages_announced and walk.pages < walk.pages_announced)
+        if short_pages and kept:
             stale = dict(cached)
             stale["stale"] = True
+            stale["stale_reason"] = (
+                f"обход недособран ({walk.shortfall() or 'источник не ответил'}): "
+                f"принесено {len(found)}, прежний снимок держит {len(kept)}")
             return self._with_order_actions(stale)
+        skipped = list(walk.unparsed)
+        if walk.announced and walk.seen < walk.announced and kept:
+            # Страницы дочитаны, а документов меньше объявленного — выдача
+            # повторила страницу. Какое распоряжение потеряно, мы не знаем,
+            # поэтому обход ДОПОЛНЯЕТ снимок, а не заменяет его.
+            by_id = {str(one.get("id") or ""): one for one in kept}
+            by_id.update({str(one.get("id") or ""): one for one in found})
+            found = list(by_id.values())
+            was = (cached.get("skipped") if isinstance(cached, dict) else None)
+            skipped = sorted({str(one) for one in (was or []) if one}
+                             | set(walk.unparsed))
         found.sort(key=lambda one: one.get("published_at") or 0, reverse=True)
         # Адрес площадки лежит в СКАНЕ распоряжения, и другого места у него нет.
         # Распознаётся один раз и кладётся рядом с записью: без этого привязку
@@ -1731,9 +1870,20 @@ class KrtRegistry:
         payload = {
             "schema_version": TENDERS_CACHE_SCHEMA_VERSION,
             "retrieved_at": int(time.time()),
-            "complete": complete,
+            # Полнота — свойство СНИМКА, а не обхода: у нас столько
+            # документов, сколько объявил источник, пусть один и достался
+            # прошлому обходу. И сравнивается однородное: документы с
+            # документами — записи снимка ПЛЮС названные неразобранные, а не
+            # разобранные распоряжения против всех попаданий поиска.
+            "complete": bool(len(found) + len(skipped) >= walk.announced
+                             if walk.announced else walk.complete),
             "stale": False,
             "orders": found,
+            "skipped": skipped,
+            "walk": {"pages": walk.pages, "pages_announced": walk.pages_announced,
+                     "seen": walk.seen, "announced": walk.announced,
+                     "brought": len(walk.items), "unparsed": len(skipped),
+                     "accounted": len(found) + len(skipped)},
             "query": krt_decisions.MOS_TENDER_QUERY,
             # Сказать это обязан сам свод: молча непривязанные распоряжения
             # читаются как «торгов по нашим площадкам нет».
@@ -1810,6 +1960,14 @@ class KrtRegistry:
             stamp = int(self.path.stat().st_mtime)
         except OSError:
             stamp = 0
+        # Числа обхода решений — рядом с признаком, которым посчитана их
+        # полнота: сторож новостей на неполном списке состав не пишет, и
+        # «решения дочитаны не все» без этих чисел снаружи неотличимо от «в
+        # источнике столько и есть». Читается то, что уже на диске.
+        walk: dict[str, Any] = {}
+        decisions = load_json(self.decisions_path)
+        if isinstance(decisions, dict) and isinstance(decisions.get("walk"), dict):
+            walk = dict(decisions["walk"])
         return {
             "complete": bool(
                 self._cache_current(cached) and cached.get("complete", True)
@@ -1818,6 +1976,7 @@ class KrtRegistry:
             "decisions_refreshing": self._decisions_refreshing,
             "retrieved_at": stamp,
             "ttl_seconds": int(self.ttl_seconds),
+            "decisions_walk": walk,
         }
 
     def refresh_in_background(self) -> bool:

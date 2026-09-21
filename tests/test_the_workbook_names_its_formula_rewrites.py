@@ -57,7 +57,13 @@ def _rewritten_rows(inputs: dict, tep: dict, phasing: dict | None) -> dict[str, 
         inputs, tep, [], phasing, project_name="Ревизия",
         finance_hints=core._v4_finance_hints(bundle))
     assert not meta.get("missing"), meta["missing"]
-    template, book = read(TEMPLATE), read(io.BytesIO(content))
+    # Формулы читаются ЦЕЛИКОМ: общий читатель режет их на 90 знаках — для
+    # ревизии хардов этого хватает («число на месте формулы» видно по виду
+    # ячейки), а здесь сравнивается содержимое, и обрезка делает сторожа слепым
+    # ко всему, что за срезом. В шаблоне таких формул 26 913 из 108 624 — каждая
+    # четвёртая, — и правка строки 48 листа ПРОВЕРКИ прошла им как «переезд
+    # листа», то есть незамеченной.
+    template, book = read(TEMPLATE, full=True), read(io.BytesIO(content), full=True)
 
     # Сторож отказывается судить о пустоте: не разобралась книга — это не
     # «нарушений нет», а «мы не прочитали». То же правило, что у ревизии хардов.
@@ -123,6 +129,33 @@ def test_every_rewritten_row_is_named(shape: str) -> None:
     assert not unnamed, f"формулы переписаны без названной причины: {unnamed}"
 
 
+def test_the_guard_compares_the_whole_formula_not_its_beginning() -> None:
+    """Обрезанная формула делает сторожа слепым ко всему, что за срезом.
+
+    Общий читатель книги режет формулы на 90 знаках. Ревизии хардов этого
+    хватает — «число на месте формулы» видно по виду ячейки, — а здесь
+    сравнивается СОДЕРЖИМОЕ, и в шаблоне каждая четвёртая формула длиннее
+    среза (26 913 из 108 624). Строка 48 листа ПРОВЕРКИ — как раз такая: её
+    правка приходится на хвост, и под обрезкой она проходила как «переезд
+    листа», то есть незамеченной.
+    """
+    long = [value for cells in read(TEMPLATE, full=True).values()
+            for kind, value in cells.values()
+            if kind == "f" and len(value) > 90]
+    # Предохранитель: без длинных формул в шаблоне проверка не значит ничего.
+    assert len(long) > 1000, len(long)
+    assert all(len(value) <= 90 for cells in read(TEMPLATE).values()
+               for kind, value in cells.values() if kind == "f")
+
+    # Предохранитель у самого примера: строка 48 доказывает утверждение только
+    # тем, что её формула ДЛИННЕЕ среза, — иначе пример не о том.
+    kind, value = read(TEMPLATE, full=True)["ПРОВЕРКИ"]["B48"]
+    assert kind == "f" and len(value) > 90, (kind, len(value))
+
+    rows = _rewritten_rows(*_single())
+    assert 48 in rows["ПРОВЕРКИ"], sorted(rows["ПРОВЕРКИ"])
+
+
 def test_every_named_row_carries_a_reason() -> None:
     """Список — это не перечень номеров: у каждого листа названа причина."""
     for sheet, (rows, reason) in core.V4_REWRITTEN_FORMULA_ROWS.items():
@@ -133,7 +166,13 @@ def test_every_named_row_carries_a_reason() -> None:
 def test_the_guard_falls_on_an_unnamed_rewrite() -> None:
     """Проверка, которая не падает на поломке, — не проверка."""
     named = _named()
-    planted = dict(named)
-    planted["CAPEX"] = named["CAPEX"] - {min(named["CAPEX"])}
     rows = _rewritten_rows(*_single())
+    # Снимать надо строку, которую сторож НА ЭТОЙ форме и правда видит
+    # переписанной: в списке есть строки, которые правятся только на очередях
+    # и с объектами, и снятая из них не всплыла бы — диверсант не кусал бы, а
+    # выглядел бы применённым.
+    both = named["CAPEX"] & rows["CAPEX"]
+    assert both, "нечего снимать: ни одна названная строка CAPEX не переписана"
+    planted = dict(named)
+    planted["CAPEX"] = named["CAPEX"] - {min(both)}
     assert rows["CAPEX"] - planted["CAPEX"], "снятая строка обязана всплыть как безымянная"

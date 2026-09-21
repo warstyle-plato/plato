@@ -29,7 +29,7 @@ sys.path.insert(0, str(ROOT))
 
 from market_search.krt_decisions import (  # noqa: E402
     collect, match_catalogue, parse_decision, parse_decisions, places,
-    qualifier, same_place, search_url, zone_number,
+    part_numbers, qualifier, same_place, search_url, zone_number,
 )
 
 # Живые записи выдачи www.mos.ru/aisearch (31.08.2026), обрезанные до полей,
@@ -146,11 +146,23 @@ def test_the_ordinal_and_the_side_belong_to_the_street_name() -> None:
 
 
 def test_a_production_zone_is_told_apart_by_its_qualifier() -> None:
-    """«Огородный проезд (юг)» и «(проект 2)» по словам совпадают целиком."""
+    """«Огородный проезд (юг)» и «(проект 2)» по словам совпадают целиком.
+
+    Утверждение прежнее — «проект» и «территория» различают части площадки,
+    выбрасывать их нельзя, — а мерится оно там, где теперь живёт: номер части
+    считает `part_numbers` и считает отовсюду, а не только из скобок (20.09.2026,
+    «А где проект решения?» о «Дербеневской ул. тер. 2»). В остатке скобок его
+    больше нет, и это видно здесь же.
+    """
     assert zone_number("в производственной зоне № 11 «Огородный проезд»") == "11"
-    assert qualifier("Огородный проезд (проект 2)") == frozenset({"проект", "2"}), \
-        "«проект» и «территория» различают части площадки — выбрасывать их нельзя"
-    assert qualifier("Огородный проезд (территория 2)") != qualifier("Огородный проезд (проект 2)")
+    assert part_numbers("Огородный проезд (проект 2)", "проект") == frozenset({"2"})
+    assert part_numbers("Огородный проезд (территория 2)", "проект") == frozenset(), \
+        "«проект» и «территория» различают части площадки — путать их нельзя"
+    assert not same_place("Огородный проезд (территория 2)",
+                          "Огородный проезд (проект 2)"), \
+        "часть под номером 2 — не всякая часть под номером 2"
+    assert qualifier("Огородный проезд (проект 2)") == frozenset(), \
+        "номер части в остаток скобок не входит: его считают своей величиной"
     assert same_place("в производственной зоне № 11 «Огородный проезд» (проект 2)",
                       "Огородный проезд (проект 2)")
     assert not same_place("в производственной зоне № 11 «Огородный проезд» (проект 2)",
@@ -187,23 +199,31 @@ def test_an_unfinished_walk_never_pretends_to_be_the_whole_list() -> None:
     def fetch(url: str) -> bytes:
         return json.dumps(pages[page_of(url)]).encode("utf-8")
 
-    found, complete = collect(fetch, max_pages=5)
-    assert complete is True and len(found) == 5
+    walk = collect(fetch, max_pages=5)
+    assert walk.complete is True and len(walk.items) == 5
 
     def broken(url: str) -> bytes:
         raise OSError("поиск не ответил")
 
-    found, complete = collect(broken, max_pages=5)
-    assert found == [] and complete is False
+    walk = collect(broken, max_pages=5)
+    assert walk.items == [] and walk.complete is False
+    assert walk.shortfall(), "у недособранного обхода обязана быть причина"
 
 
-def test_the_same_page_twice_is_the_end_not_a_loop() -> None:
-    """Поиск повторяет последнюю страницу вместо отказа — это конец выдачи."""
+def test_the_same_page_twice_is_the_end_only_when_the_source_is_silent() -> None:
+    """Повтор страницы — конец выдачи ровно там, где источник своих чисел не назвал.
+
+    Примета «страница не принесла новых записей» верна на последней странице
+    (поиск повторяет её вместо отказа) и неверна в середине ранжированной
+    выдачи. Пока источник молчит о своём объёме, другой приметы нет; как только
+    он называет `pageCount`, решает она — см. соседний файл проверок.
+    """
     def fetch(url: str) -> bytes:
         return json.dumps({"results": LIVE}).encode("utf-8")
 
-    found, complete = collect(fetch, max_pages=6)
-    assert complete is True and len(found) == 5
+    walk = collect(fetch, max_pages=6)
+    assert walk.complete is True and len(walk.items) == 5
+    assert walk.pages_announced == 0 and walk.announced == 0
 
 
 def test_the_query_is_the_one_that_answered() -> None:

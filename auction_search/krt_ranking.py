@@ -31,6 +31,7 @@ from __future__ import annotations
 import contextlib
 import datetime
 import fcntl
+import hashlib
 import json
 import logging
 import os
@@ -43,6 +44,10 @@ from typing import Any, Callable
 from market_search.http import load_json, save_json
 
 logger = logging.getLogger(__name__)
+
+# Отпечаток методики снимается один раз на процесс: движок считает один и тот
+# же маленький проект, и ответ его в пределах процесса не меняется.
+_MODEL_FINGERPRINT: str | None = None
 
 CACHE_SCHEMA_VERSION = 1
 # Отчёт площадки версионируется отдельно от рейтинга: его состав меняется чаще
@@ -177,17 +182,126 @@ def _screening_rules_version() -> int:
 
 def _engine_version() -> str:
     """Выпуск, которым посчитана строка. Объявлен один раз — `VERSION`."""
+    core = _engine()
+    return str(getattr(core, "VERSION", "")) if core is not None else ""
+
+
+# Вводные отпечатка. Проект нарочно маленький и БЕЗ дат «от сегодня»: отпечаток
+# обязан отвечать одинаково в любом процессе и в любой день, иначе он объявит
+# устаревшим весь каталог на ровном месте. Очереди в нём есть намеренно — правка
+# инфляции объектов, раздачи налога по годам и кассовых долей живёт только в
+# фазированном счёте, и без второй половины отпечаток её не увидит.
+_FINGERPRINT_PHASING: dict[str, Any] = {
+    "enabled": True,
+    "automatic": True,
+    "phase_count": 2,
+    "phase_gap_months": 12,
+    "cost_inflation_pct": 8.0,
+    "sales_price_inflation_pct": 8.0,
+    "target_size_sqm": 70_000.0,
+    "shared_cash": {"design": "volume", "preparation": "volume", "utilities": "volume"},
+    "phases": [
+        {"name": "О1", "start_offset_months": 0, "construction_months": 24, "products": {}},
+        {"name": "О2", "start_offset_months": 12, "construction_months": 24, "products": {}},
+    ],
+}
+
+# Что берётся в отпечаток. Список назван поимённо, а не «весь свод»: в своде
+# живут и наши служебные поля, и они менялись бы от правок, к экономике
+# отношения не имеющих. Здесь выручка, расходы, налог, прибыль, объёмы и всё
+# финансирование — то, из чего собираются и LLCR, и потолок цены входа.
+_FINGERPRINT_SUMMARY = (
+    "revenue", "capex", "total_expenses", "commercial_costs", "social_payment",
+    "ebitda", "profit_tax", "net_profit", "npv", "llcr", "margin",
+    "financing_cost", "full_project_cost", "construction_volume_sqm",
+    "project_gns_sqm", "underground_gns_sqm", "landscaping_area_sqm",
+)
+_FINGERPRINT_FINANCE = (
+    "peak_bridge", "peak_pf", "peak_escrow", "peak_coverage", "calculated_bridge_limit",
+    "bridge_interest", "pf_interest", "financing_cost", "ending_pf", "avg_pf_rate",
+    "debt_left_at_rve", "bank_sweep_out",
+)
+
+
+def model_fingerprint() -> str:
+    """Отпечаток методики счёта: ЧЕМ посчитана строка, а не когда и не каким выпуском.
+
+    Семьдесят четыре выпуска экономики прошли молча. `computed_at` отвечает
+    «когда», `rules_version` — «какой методикой скрининга», а вся экономика
+    живёт в движке, и `engine_version` писался рядом со строкой и не читался
+    НИКЕМ. На проде 16.09.2026 каталог судил выпуском 0.23.22 при работающем
+    0.23.96: у Варшавского ш., вл. 37 потолка цены входа не было вовсе
+    («LLCR даже при нулевой цене 1,18x» при цели 1,20x), а тот же набор вводных
+    нынешним движком давал 1,228x и потолок 2 142 млн ₽ («потолок нигде не
+    определён… раньше был нормальный расчет», владелец, 16.09.2026).
+
+    Сравнивать выпуски нельзя — их бывает пять в день, а экономику они трогают
+    редко: каталог пришлось бы пересчитывать на каждый (это уже записано у
+    `rules_version`). И объявлять номер методики отдельным числом мало: правка
+    экономики делается в движке, а поднимать пришлось бы число в скрининге —
+    ровно так семьдесят четыре выпуска и прошли.
+
+    Поэтому здесь не объявление, а ИЗМЕРЕНИЕ: движок считает один и тот же
+    маленький проект, и отпечаток его чисел меняется тогда и только тогда,
+    когда меняются числа. Забыть такое нельзя — забывать нечего.
+    """
+    global _MODEL_FINGERPRINT
+    if _MODEL_FINGERPRINT is not None:
+        return _MODEL_FINGERPRINT
+    _MODEL_FINGERPRINT = _measure_model_fingerprint()
+    return _MODEL_FINGERPRINT
+
+
+def _measure_model_fingerprint() -> str:
+    core = _engine()
+    if core is None:
+        return ""
+    try:
+        parts: list[str] = []
+        for phasing in ({}, _FINGERPRINT_PHASING):
+            bundle = core._run_authoritative_model(
+                dict(core.DEFAULT_INPUTS), core.TEP_DEFAULT, [], dict(phasing))
+            got = (bundle or {}).get("consolidated") or {}
+            summary = got.get("summary") or {}
+            finance = got.get("finance") or {}
+            for key in _FINGERPRINT_SUMMARY:
+                parts.append(f"s.{key}={_fingerprint_number(summary.get(key))}")
+            for key in _FINGERPRINT_FINANCE:
+                parts.append(f"f.{key}={_fingerprint_number(finance.get(key))}")
+    except Exception:  # noqa: BLE001
+        # Отпечаток снять не удалось — это «не знаем», а не «всё устарело»:
+        # объявить устаревшим весь каталог из-за своего сбоя хуже молчания.
+        logger.exception("Model fingerprint failed")
+        return ""
+    digest = hashlib.sha1("\n".join(parts).encode("utf-8")).hexdigest()
+    return digest[:12]
+
+
+def _fingerprint_number(value: Any) -> str:
+    """Число в отпечаток — девятью значащими цифрами.
+
+    Последние биты float'а от перестановки слагаемых шевелятся, и отпечаток по
+    ним объявлял бы методику новой без единой правки. Девять цифр — это
+    заведомо больше, чем видит человек, и заведомо меньше, чем шум.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return "—"
+    return f"{float(value):.9g}"
+
+
+def _engine() -> Any:
+    """Движок. Объявлен один раз: обёртка грузит его как `developaid_core`."""
     try:
         import developaid_core as core  # type: ignore
 
-        return str(getattr(core, "VERSION", ""))
+        return core
     except Exception:  # noqa: BLE001
         try:
             import main_legacy as core  # type: ignore
 
-            return str(getattr(core, "VERSION", ""))
+            return core
         except Exception:  # noqa: BLE001
-            return ""
+            return None
 
 
 def model_is_current(row: dict[str, Any]) -> bool:
@@ -196,8 +310,33 @@ def model_is_current(row: dict[str, Any]) -> bool:
     Правило то же, что у привязки публикаций (`ANCHOR_RULES_VERSION`): ответ
     прежней версии — не ответ. Строка без версии посчитана до того, как её
     завели, то есть заведомо прежней.
+
+    Методик здесь две, и обе обязаны совпасть: скрининг отвечает «как собраны
+    вводные», движок — «как посчитана экономика». Строка без отпечатка
+    посчитана до того, как его завели.
     """
+    current = model_fingerprint()
+    if current:
+        if str((row or {}).get("model_fingerprint") or "") != current:
+            return False
     return int((row or {}).get("rules_version") or 0) >= _screening_rules_version()
+
+
+def model_needs_recount(row: dict[str, Any]) -> bool:
+    """Пересчитывать ли строку — ОДИН ответ на счётчик и на планировщик.
+
+    Кнопка «Пересчитать только их» стояла под числом `stale_model_count`, а
+    планировала по своему условию: `only_stale` оставляет всё, что не
+    «посчитано И нынешней методикой», то есть ещё и строки БЕЗ модели. На проде
+    20.09.2026 это 5 против 388 — подпись называла одно число, а кнопка делала
+    другое, и узнать об этом можно было только нажав.
+
+    Поведение кнопки при этом верное: у строки без модели пересчитывать тоже
+    есть что. Врала подпись, и лечится это тем, что оба числа считает одно
+    правило, а не тем, что фильтр сужают.
+    """
+    row = row or {}
+    return not (row.get("available") and model_is_current(row))
 
 
 def score_row(project: dict[str, Any], screening: dict[str, Any]) -> dict[str, Any]:
@@ -227,6 +366,9 @@ def score_row(project: dict[str, Any], screening: dict[str, Any]) -> dict[str, A
         # обновляет находки и не трогает модель, и строка выглядит свежей.
         "rules_version": _screening_rules_version(),
         "engine_version": _engine_version(),
+        # Чем посчитана экономика. Выпуск рядом стоит для человека — сравнивать
+        # по нему нельзя, выпусков бывает пять в день; сравнивают отпечаток.
+        "model_fingerprint": model_fingerprint(),
     }
     if not screening.get("available"):
         row["available"] = False
@@ -266,6 +408,32 @@ def score_row(project: dict[str, Any], screening: dict[str, Any]) -> dict[str, A
         "margin_pct": metrics.get("margin_pct"),
         "net_profit_mln": metrics.get("net_profit_mln"),
         "phase_count": phasing.get("count"),
+        # Цена окружения — та же текущая цена за м², которую уже определил
+        # рыночный отчёт для площадки. Не путать с темпом ДДУ: фильтр КРТ
+        # отвечает на вопрос о цене окружающих текущих продаж.
+        "surrounding_price_rub_sqm": (
+            round(_number((screening.get("market") or {}).get("market_price_rub_sqm")))
+            if _number((screening.get("market") or {}).get("market_price_rub_sqm")) > 0
+            else None
+        ),
+        # Темп окружения, ДДУ/мес. Считается скриннингом (`absorption`) и до
+        # строки не доезжал вовсе: на Варшавском ш., вл. 37 отчёт называет
+        # 16,6 ДДУ/мес., а в строке рейтинга этого числа не было — то есть
+        # посчитанное на сервере было неотличимо от непосчитанного.
+        #
+        # Это НЕ цена окружения и не её замена: `surrounding_price_rub_sqm`
+        # отвечает «почём здесь продают», темп — «сколько продают в месяц».
+        # Фильтр каталога стоит на цене (решение 20.09.2026), и два числа под
+        # одним именем читались бы как одно.
+        #
+        # Нет данных и ноль — разные ответы: источник может честно сказать,
+        # что сделок в округе нет, и такой ноль не то же самое, что «темп не
+        # определён». Поэтому величина берётся только у признавшего себя
+        # `absorption`, а иначе остаётся None.
+        "surrounding_sales_units_per_month": (
+            _number((screening.get("absorption") or {}).get("market_units_per_month"))
+            if (screening.get("absorption") or {}).get("available") else None
+        ),
         # Модель по объявленной цене торгов. Посчитанное на сервере, но не
         # доехавшее до строки, неотличимо от непосчитанного: экран читает
         # строку, а не скрининг.

@@ -1,4 +1,4 @@
-"""Смягчение озеленения — справка у числа, а не множитель в расчёте.
+"""Нормы озеленения города — справка в «Настройках класса», а не в расчёте.
 
 2260-ПП от 18.08.2026 разрешает не добирать норму озеленения метрами, а
 платить деньгами в бюджет — по решению ГЗК через инфраструктурный договор:
@@ -10,20 +10,14 @@
 
 Отсюда две половины, и одна без другой врёт. Расчёт платит полную ставку —
 это проверяется числом, а не обещанием. А возможность названа справкой, и
-стоит она у ПЛОЩАДИ двора: норматив м²/чел. с 14.09.2026 правится в
-«Настройках класса» (решение владельца), и площадь осталась единственным
-полем «Вводных», куда согласованное снижение вносят. Переехать справка была
-обязана вместе с ним: оставшись у скрытого поля, она не нарисовалась бы
-вовсе — молча, потому что в исходнике она при этом на месте. Первой строкой
-справка говорит, ЧЬЁ число считает двор: наши 11/15/20 м²/чел. — стоимость
-двора по классу (решение владельца, 12.09.2026), а не норма города, и одно
-под другим читалось бы как ссылка на акт там, где стоит экспертная ставка.
+живёт она РЯДОМ С НОРМАТИВОМ, который объясняет, то есть в окне «Настройки
+класса» (владелец, 16.09.2026: «нормы логично вставить в настройки класса»).
+Во «Вводных» её больше нет вовсе: там считают деньги, и справка о норме
+города читалась там как часть расчёта.
 
-Проверяется отрисовкой на настоящем адресе: искомый текст присутствует в
-исходнике и у страницы, которая его не показывает. Рядом стоят предохранители
-— справка обязана исчезать в Подмосковье (2152-ПП другим регионам не писан) и
-обязана стоять НИЖЕ поля: подпись над вводом приклеивается к подписи поля, и
-это уже стоило захода 13.09.2026 на нормативе паркинга.
+Проверяется отрисовкой: искомый текст присутствует в исходнике и у страницы,
+которая его не показывает. Рядом предохранитель — справка обязана исчезать в
+Подмосковье: 2152-ПП другим регионам не писан, и там она была бы неправдой.
 
 Запуск: python3 -m pytest tests/test_the_greenery_relief_is_a_reference_note.py -q
 """
@@ -42,24 +36,25 @@ sys.path.insert(0, str(ROOT / "tests"))
 import browser  # noqa: E402
 import main_legacy as core  # noqa: E402
 
-FIELD = "f_landscaping_area_sqm"
+PORT = 18957
 
-PROBE = """(field)=>{
+PROBE = """()=>{
   const read=(region)=>{
     inputs.vri_region=region;
     renderInputs();
-    const el=document.getElementById(field);
-    if(!el)return {field:false};
-    const wrap=el.closest('.field');
-    const note=wrap?wrap.querySelector('.note'):null;
-    if(!note)return {field:true, note:false};
-    const a=el.getBoundingClientRect(), b=note.getBoundingClientRect();
-    return {field:true, note:true, text:note.textContent,
-            fieldBottom:a.bottom, noteTop:b.top};
+    renderClassDialog();
+    const body=document.getElementById('classDialogBody');
+    const folds=body?[...body.querySelectorAll('details')]:[];
+    const form=document.getElementById('inputs');
+    return {
+      inClass: folds.map(one=>one.textContent).join(' '),
+      folds: folds.length,
+      summary: folds.length?folds[0].querySelector('summary').textContent:'',
+      inForm: (form?form.textContent:'').includes('2152-ПП'),
+    };
   };
   openTab('inputs');
-  const msk=read('msk');
-  const mo=read('mo');
+  const msk=read('msk'), mo=read('mo');
   read('msk');
   return {msk, mo};
 }"""
@@ -67,77 +62,64 @@ PROBE = """(field)=>{
 
 @pytest.fixture(scope="module")
 def seen():
-    pytest.importorskip("playwright.sync_api")
+    chrome = browser.chromium_or_skip()
     from playwright.sync_api import sync_playwright
 
-    path = browser.chromium_or_skip()
-    with browser.serve(core.app, 18102) as base, sync_playwright() as pw:
-        with pw.chromium.launch(executable_path=str(path)) as engine:
-            page = engine.new_page(viewport={"width": 1440, "height": 900})
-            page.goto(base, wait_until="domcontentloaded")
-            page.wait_for_timeout(1200)
-            got = page.evaluate(PROBE, FIELD)
-            page.close()
-    return got
+    import main as wrapper
+
+    with browser.serve(wrapper.app, PORT) as root:
+        with sync_playwright() as pw:
+            chromium = pw.chromium.launch(executable_path=str(chrome))
+            page = chromium.new_page()
+            errors: list[str] = []
+            page.on("pageerror", lambda exc: errors.append(str(exc)))
+            page.goto(root, wait_until="networkidle")
+            out = page.evaluate(PROBE)
+            out["errors"] = errors
+            chromium.close()
+    return out
 
 
-def test_the_note_reaches_the_screen(seen):
-    assert seen["msk"]["field"], "поля площади двора на странице нет"
-    assert seen["msk"]["note"], "справки о смягчении у поля нет — она есть только в исходнике"
+def test_the_page_draws_without_errors(seen):
+    assert not seen["errors"], seen["errors"]
 
 
-def test_the_note_says_whose_number_stands_in_the_field(seen):
-    """Наша ставка — не норма города, и это первое, что должна сказать справка."""
-    text = seen["msk"]["text"]
-    assert "не норма города" in text, \
-        f"справка не отделяет нашу ставку от городской нормы: {text[:200]}"
-    assert "2152-ПП" in text and "2260-ПП" in text, \
-        "справка не называет акты, на которые ссылается"
+def test_the_note_lives_in_the_class_settings(seen):
+    """Справка стоит там, где правят норматив, который она объясняет."""
+    assert seen["msk"]["folds"] >= 1, "в окне классов нет ни одной складки"
+    assert "Нормы озеленения города" in seen["msk"]["summary"], seen["msk"]["summary"]
+    assert "2152-ПП" in seen["msk"]["inClass"]
 
 
-def test_the_note_says_where_the_norm_is_edited(seen):
-    """Норматив уехал в настройки класса — справка обязана сказать куда.
-
-    Утверждение «поле выше — наша ставка» после переезда указывало бы на
-    пустое место: поля норматива во «Вводных» больше нет. Отказ, не
-    сказавший «а где», отвечает половину — это уже стоило захода на сроке
-    строительства при очередности (владелец, 07.09.2026).
-    """
-    text = seen["msk"]["text"]
-    assert "Настройках класса" in text, \
-        f"справка не говорит, где правится норматив двора: {text[:200]}"
+def test_the_note_left_the_inputs(seen):
+    """Во «Вводных» её нет: там считают деньги, а не читают нормы города."""
+    assert seen["msk"]["inForm"] is False
 
 
 def test_the_note_names_the_relief_and_says_the_model_ignores_it(seen):
-    text = seen["msk"]["text"]
-    for word in ("−15%", "Садового кольца", "ГЗК"):
-        assert word in text, f"справка не называет «{word}»: {text[:300]}"
-    assert "полную ставку" in text, \
-        "справка не говорит, что модель платит полную ставку, — читается как учтённое"
+    """Названа и возможность, и то, что модель её не считает."""
+    text = seen["msk"]["inClass"]
+    assert "2260-ПП" in text
+    assert "ГЗК" in text
+    assert "полную ставку" in text and "не считает" in text
 
 
-def test_the_note_stands_under_the_field(seen):
-    """Подпись над вводом читается как утверждение о подписи поля."""
-    got = seen["msk"]
-    assert got["noteTop"] >= got["fieldBottom"] - 1, (
-        f"справка стоит выше поля: верх справки {got['noteTop']:.0f}, "
-        f"низ поля {got['fieldBottom']:.0f}")
+def test_the_note_says_whose_number_the_norm_is(seen):
+    """Первой строкой — чьё число: наша ставка площади, а не норма города."""
+    assert "НАША ставка площади" in seen["msk"]["inClass"], seen["msk"]["inClass"][:200]
 
 
 def test_the_note_is_gone_outside_moscow(seen):
-    """Предохранитель: 2152-ПП Подмосковью не писан, и справка там неверна."""
-    assert seen["mo"]["field"], "в Подмосковье поля площади двора нет вовсе — меряем не то"
-    assert not seen["mo"]["note"], \
-        "справка о московском акте показана в Подмосковье"
+    """Предохранитель: 2152-ПП Подмосковью не писан."""
+    assert seen["mo"]["folds"] == 0, seen["mo"]["summary"]
 
 
 def test_the_model_still_pays_the_full_rate():
-    """Справка справкой, а расчёт смягчения не применяет — это меряется числом."""
-    tep = {"apartments": {"saleable": 30_000.0}}
-    inputs = {"vri_region": "msk", "landscaping_area_per_person_sqm": 5}
-    population, _ = core.project_population(tep, "msk")
-    assert population > 0, "населения нет — смягчать нечего, проверка пуста"
-    area, basis = core.landscaping_area(inputs, tep)
-    assert area == pytest.approx(5 * population), (
-        f"площадь двора {area:g} м² не равна полной норме {5 * population:g} — "
-        f"где-то применено смягчение: {basis}")
+    """Вторая половина: расчёт платит полную ставку — это число, а не обещание."""
+    inputs = dict(core.DEFAULT_INPUTS)
+    inputs["landscaping_gns_th_per_sqm"] = 0
+    money, basis = core.landscaping_cost(inputs, core.TEP_DEFAULT,
+                                         core.project_above_gns(core.TEP_DEFAULT))
+    area, _ = core.landscaping_area(inputs, core.TEP_DEFAULT)
+    rate = float(inputs["landscaping_th_per_sqm"])
+    assert money == pytest.approx(area * rate * 1000, rel=1e-9), basis

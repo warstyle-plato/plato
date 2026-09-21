@@ -50,7 +50,11 @@ def test_a_transferred_place_is_built_but_not_sold() -> None:
 def test_the_revenue_drops_by_the_transferred_places() -> None:
     """Выручка меньше ровно на переданные места, CAPEX — тот же."""
     tep = _tep()
-    inputs = {**core.DEFAULT_INPUTS, "parking_price_th": 3000, "storage_price_th": 1000}
+    # Гараж фикстуры — решение проекта, и выражается оно ручными полями: иначе
+    # движок выведет строку нормативом (1 199 мест на умолчаниях), и доля
+    # 335/360 будет считаться от чужого знаменателя.
+    inputs = {**core.DEFAULT_INPUTS, "parking_price_th": 3000, "storage_price_th": 1000,
+              "underground_manual_spaces": 400, "underground_manual_gns_sqm": 14000}
     before = core.calculate(core.CalcRequest(inputs=dict(inputs), tep=copy.deepcopy(tep), rates=[]))
     given = copy.deepcopy(tep)
     given["underground_parking"]["transfer_units"] = 25

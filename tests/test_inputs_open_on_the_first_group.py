@@ -31,6 +31,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import page_blocks  # noqa: E402
 import main as wrapper  # noqa: E402
 
 core = wrapper.core
@@ -127,6 +128,11 @@ def render(inputs: dict, tail: str = "console.log(JSON.stringify(groups()));",
         # отдельной задачей: заглушки стенда разрешитель добрал бы со
         # страницы и подменил бы ими поведение соседних проверок.
         page_const("CLASS_ONLY_INPUTS"),
+        # Пометка «ставит класс проекта» у единицы поля: список полей — сам
+        # профиль класса, а не перечисление рядом с ним, поэтому стенду нужен
+        # и профиль, и тот, кто по нему спрашивает.
+        page_const("PROJECT_CLASS_PRESETS"),
+        page_function("classSetsField"),
         page_const("INPUT_DEFAULT"),
         page_const("num"),
         page_const("VRI_GROUP_NAME"),
@@ -151,11 +157,16 @@ def render(inputs: dict, tail: str = "console.log(JSON.stringify(groups()));",
         # молча: стенд падает на неопределённом имени, а выглядит это как
         # ошибка правки страницы.
         PAGE[PAGE.index("const SCHEDULE_FIELDS={"):PAGE.index("function renderPfStepsEditor(")],
+        # Тип проекта форма читает дважды: надписью над полями и развилкой
+        # «жилое поле в нежилом проекте». Берётся одним куском — перечислять
+        # его части поимённо значит завести седьмое падение на стенде.
+        page_blocks.project_kind(),
         page_function("renderInputs"),
         # Форма пишет подпись под полями паркинга объектов сама: ячейки она же
         # и создаёт, а пустая ячейка под нулём читается как «гаража нет».
-        PAGE[PAGE.index("const OBJECT_PARKING_PREFIXES="):
-             PAGE.index(";", PAGE.index("const OBJECT_PARKING_PREFIXES=")) + 1],
+        # Приставки объектов с гаражом считаются из реестра, а он приезжает
+        # на страницу подстановкой: одной строки мало, нужен её источник.
+        page_blocks.object_roster(),
         page_function("renderObjectParkingFieldNotes"),
         page_function("objectParkingFieldNote"),
         # Та же история у подписи под ставкой благоустройства: ячейку создаёт
@@ -164,6 +175,10 @@ def render(inputs: dict, tail: str = "console.log(JSON.stringify(groups()));",
         # расчёта подпись честно говорит, что двор ещё не посчитан.
         "let lastResult=null;",
         page_function("landscapingRateNote"),
+        # Счётный показатель ₽ на метр дома форма печатает В САМО ПОЛЕ, и
+        # печатает его тот же вызов, что и подписи, — значит стенду нужны оба.
+        page_function("landscapingHouseRateNote"),
+        page_function("renderLandscapingHouseRateValue"),
         page_function("renderLandscapingRateNote"),
         DOM.replace("__PHASING__", json.dumps(phasing or {"enabled": False})),
         f"const inputs=Object.assign(structuredClone(INPUT_DEFAULT),{json.dumps(inputs)});",
@@ -192,9 +207,25 @@ def test_the_vri_group_keeps_its_own_tab_open():
     assert vri and vri[0]["open"] is True
 
 
-def test_every_group_is_still_rendered():
-    """Свернули, а не спрятали: поля на месте, их просто не видно сразу."""
-    assert len(render({})) == len(core.FIELD_GROUPS)
+def test_every_group_with_its_own_fields_is_rendered():
+    """Свернули, а не спрятали: поля на месте, их просто не видно сразу.
+
+    Исключение одно, и оно названо: группа, у которой ВСЕ поля уехали в
+    «Настройки класса», не рисуется вовсе — пустая складка читается как
+    продукт, у которого вводных нет, а не как поле, переехавшее в соседнее
+    окно. Считается это составом группы, а не её именем: следующая такая
+    исчезнет тем же правилом, а перечисление имён отстало бы на ней.
+    """
+    drawn = {item["name"] for item in render({})}
+    expected = {name for name, fields in core.FIELD_GROUPS
+                if any(one[0] not in core.CLASS_ONLY_INPUTS for one in fields)}
+    hidden = {name for name, fields in core.FIELD_GROUPS
+              if fields and not any(one[0] not in core.CLASS_ONLY_INPUTS
+                                    for one in fields)}
+    # Предохранитель: без такой группы утверждение про исключение не проверено.
+    assert hidden, "ни одной группы, целиком уехавшей в класс"
+    assert drawn == expected, {"не нарисованы": sorted(expected - drawn),
+                               "лишние": sorted(drawn - expected)}
 
 
 # --- заголовок говорит, что внутри ----------------------------------------------

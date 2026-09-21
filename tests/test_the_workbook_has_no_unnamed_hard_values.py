@@ -42,7 +42,7 @@ openpyxl = pytest.importorskip("openpyxl")
 TEMPLATE = ROOT / "templates" / "DevelopAid_model_v4.xlsx"
 
 
-def read(source) -> dict[str, dict[str, tuple[str, str]]]:
+def read(source, full: bool = False) -> dict[str, dict[str, tuple[str, str]]]:
     """{лист: {клетка: ('f'|'v', содержимое)}} — формула или значение.
 
     Ввод переехал на свой лист, и на прежней координате стоит ссылка на него.
@@ -71,7 +71,7 @@ def read(source) -> dict[str, dict[str, tuple[str, str]]]:
                 if value is None:
                     continue
                 if isinstance(value, str) and value.startswith("="):
-                    cells[cell.coordinate] = ("f", value[:90])
+                    cells[cell.coordinate] = ("f", value if full else value[:90])
                 else:
                     cells[cell.coordinate] = ("v", str(value)[:40])
         out["Вводные" if view is not None else sheet.title] = cells
@@ -96,7 +96,10 @@ def test_the_revision_actually_read_the_book(revision):
     formulas = sum(1 for cells in was.values() for kind, _ in cells.values() if kind == "f")
     assert len(was) >= 15, was.keys()
     assert formulas > 50_000, formulas
-    assert set(now) == set(was), "в собранной книге не те листы"
+    # Свой лист данных дашборда (Dashboard_Data) — наша добавка, а не лист
+    # шаблона: ревизия хардов сверяет листы владельца, и его она не судит.
+    import v4_dashboard
+    assert set(now) - {v4_dashboard.DATA_SHEET} == set(was), "в собранной книге не те листы"
 
 
 def _replacements(was, now):

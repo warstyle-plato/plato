@@ -281,6 +281,10 @@ def _verdict(core: Any, inputs: dict[str, Any], result: dict[str, Any],
                 "показывает убыток по этой причине, а не из-за экономики проекта."
             ),
         }
+    # Нехватка одобренного лимита ПФ приезжает в миллионах, и это не прихоть:
+    # оговорка вердикта её ПЕЧАТАЕТ, а рубли движка, поданные под именем
+    # миллионов, дали бы «не хватает 16 351 500 000,0 млн ₽». Делит её тот,
+    # кто посчитал; здесь арифметики нет и быть не может.
     return core._purchase_feasibility(
         inputs.get("purchase_price_mln"),
         summary.get("net_profit"),
@@ -289,6 +293,8 @@ def _verdict(core: Any, inputs: dict[str, Any], result: dict[str, Any],
             float(financing.get("calculated_bridge") or 0.0),
             float(financing.get("pf_uncovered_peak") or 0.0),
         ),
+        pf_shortfall_mln=financing.get("pf_shortfall_mln"),
+        pf_shortfall_month=financing.get("pf_shortfall_month"),
     )
 
 
