@@ -21,7 +21,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
 from pathlib import Path
 
@@ -34,7 +33,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import page_blocks  # noqa: E402
-from auction_search import krt_pipeline  # noqa: E402
+from auction_search import krt_pipeline, ui  # noqa: E402
 from auction_search.documents import (  # noqa: E402
     DocumentAuthorizationRequired,
     DocumentExtractionError,
@@ -133,25 +132,23 @@ def test_the_ledger_does_not_exist_where_it_was_not_counted():
         krt_pipeline.enrich_krt_from_official_documents(plain)) is None
 
 
-def stand() -> str:
-    return (page_blocks.auctions_const("esc") + "\n"
-            + page_blocks.auctions_function(
-                "docsRead", "docsRefusalKind", "docsRefusalNote"))
-
-
 def run_page(view: dict | None, total: int) -> dict:
-    """Настоящие функции страницы на том, что отдаёт маршрут."""
-    script = stand() + f"""
-const view={json.dumps(view, ensure_ascii=False)};
+    """Настоящие функции страницы на том, что отдаёт маршрут.
+
+    Куски берёт общий разрешитель, а не перечисление руками: правило «стенд
+    разрешает зависимости сам» записано трижды, и этот стенд его не исполнял —
+    у `docsRead` появился помощник `docsRefusalSides`, и падение вышло про
+    стенд, а не про то, что он проверяет.
+    """
+    prelude = f"const view={json.dumps(view, ensure_ascii=False)};\n"
+    tail = f"""
 console.log(JSON.stringify({{
   line: docsRead(view, {total}),
   note: docsRefusalNote(view),
 }}));
 """
-    done = subprocess.run(["node", "-e", script],
-                          capture_output=True, text=True)
-    assert done.returncode == 0, done.stderr
-    return json.loads(done.stdout)
+    out, _ = page_blocks.run(prelude, tail, page=ui.auctions_page())
+    return json.loads(out)
 
 
 def test_the_card_says_how_many_were_read_not_how_many_exist(counted):
