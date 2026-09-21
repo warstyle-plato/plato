@@ -81,7 +81,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.24.18"
+VERSION = "0.24.19"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -542,7 +542,7 @@ def project_class_deviations(inputs: dict[str, Any]) -> dict[str, Any]:
 
 # Лестница ставки ПФ по покрытию эскроу — умолчание, решение владельца
 # (20.08.2026: «ставим базово по умолчанию то, что у Сбера, а человек может
-# вручную вбить или оставить»). Числа из НКЛ 400F00BVX003, сверенного 04.08.2026:
+# вручную вбить или оставить»). Числа из НКЛ Сбербанка, сверенного 04.08.2026:
 # 3,47% при покрытии 100–110%, 1,75% при 110–120%, 0,03% при 120–130%, дальше
 # 0,01%. Прежде поле было пустым, потому что таблица у каждого НКЛ своя, — но
 # пустое поле заставляет переписывать договор руками, а лестница у большинства
@@ -555,7 +555,7 @@ def project_class_deviations(inputs: dict[str, Any]) -> dict[str, Any]:
 _DOCUMENT_INTAKE_MAX_BYTES = 20 * 1024 * 1024
 
 PF_SPECIAL_STEPS_DEFAULT = "100:3,47; 110:1,75; 120:0,03; 130:0,01"
-PF_SPECIAL_STEPS_SOURCE = "НКЛ Сбербанка 400F00BVX003 от 04.08.2026"
+PF_SPECIAL_STEPS_SOURCE = "НКЛ Сбербанка от 04.08.2026"
 
 RATE_CURVE = []
 # Пропорции продукта: чем связаны ГНС, общая и продаваемая площади. Нужны
@@ -956,6 +956,12 @@ class StandaloneObject(NamedTuple):
     # объектом дальше» — он уходит целиком одним путём (решение владельца,
     # 05.09.2026), — и строится он в любом случае.
     sale_gate: str = ""
+    # Назначения объекта, если их у него больше одного: пары «значение — имя».
+    # У ФОКа их два, спорт и здравоохранение, и норматив приобъектной парковки
+    # у них РАЗНЫЙ. Пустой кортеж значит «назначение одно», и поля не будет:
+    # второго такого объекта в проекте не бывает (владелец, 15.09.2026),
+    # поэтому это признак объекта, а не пятая строка реестра.
+    purposes: tuple[tuple[str, str], ...] = ()
     # Собственные числа объекта: метры или места, ставки себестоимости и цены.
     # Общая форма вводных к ним прибавляется генератором.
     defaults: dict[str, Any] = {}
@@ -973,6 +979,11 @@ class StandaloneObject(NamedTuple):
     @property
     def enabled_key(self) -> str:
         return f"{self.prefix}_enabled"
+
+    @property
+    def purpose_key(self) -> str:
+        """Поле назначения объекта. Пусто, если назначение у него одно."""
+        return f"{self.prefix}_purpose" if self.purposes else ""
 
     @property
     def aliases(self) -> dict[str, str]:
@@ -1013,16 +1024,22 @@ STANDALONE_OBJECTS: tuple[StandaloneObject, ...] = (
                      defaults={"spaces": 550, "cost_mln_per_space": 1,
                                "price_mln_per_space": 2, "area_per_space_sqm": 25},
                      tep_label="Наземный паркинг", group_label="Наземный паркинг"),
-    StandaloneObject("sports", "sports", "ФОК", 2, True, False, "sqm",
+    StandaloneObject("sports", "sports", "ФОК / медцентр", 2, True, False, "sqm",
                      "sports_cost_th_per_sqm", "sports_price_th_per_sqm",
                      sale_gate="sports_disposition",
+                     purposes=(("sport", "ФОК — спорт"),
+                               ("healthcare", "Медцентр — здравоохранение")),
                      defaults={"gba_sqm": 5000, "saleable_sqm": 3500,
                                "cost_th_per_sqm": 150, "price_th_per_sqm": 300},
-                     tep_label="ФОК", group_label="ФОК / спортивный объект",
+                     tep_label="ФОК / медцентр", group_label="ФОК / медцентр",
                      hints={"saleable_sqm": "м²; читается только при продаже — при"
                                             " передаче метры строятся, но не продаются",
                             "cost_th_per_sqm": "тыс. ₽/м² GBA; умолчание — стартовая"
-                                               " величина, а не ставка справочника"}),
+                                               " величина, а не ставка справочника",
+                            "purpose": "спорт или здравоохранение; решает норматив"
+                                       " приобъектной парковки — у Москвы спорт 5.1"
+                                       " (200 м² ННП на место), здравоохранение 3.4"
+                                       " (300 м²)"}),
 )
 
 
@@ -1064,6 +1081,10 @@ def standalone_object_defaults(obj: StandaloneObject) -> dict[str, Any]:
             out["parking_guest_pct"] = 10
     if obj.sale_gate:
         out["disposition"] = "transfer"
+    # Умолчание назначения — ПЕРВОЕ объявленное, а не литерал здесь: иначе
+    # реестр и форма отвечали бы на «чем объект является по умолчанию» порознь.
+    if obj.purposes:
+        out["purpose"] = obj.purposes[0][0]
     return {f"{obj.prefix}_{key}": value for key, value in out.items()}
 
 
@@ -1118,6 +1139,10 @@ def standalone_object_group(obj: StandaloneObject) -> list[Any]:
                 for key, title, unit, kind in fields]
 
     out: list[list[Any]] = [[obj.enabled_key, "Объект включен", "Да / Нет", "checkbox"]]
+    if obj.purposes:
+        out.append([obj.purpose_key, "Назначение объекта",
+                    obj.hints.get("purpose", "назначение объекта"), "select",
+                    [[value, title] for value, title in obj.purposes]])
     if obj.sale_gate:
         out.append([obj.sale_gate, "Что с объектом дальше",
                     "режим; объект целиком уходит одним путём — долей метров он "
@@ -10764,6 +10789,38 @@ _PARKING_DEMAND_PRODUCTS = (
     ("sports", "sport", "fitness", False),
 )
 
+# Назначение отдельно стоящего объекта «ФОК / медцентр» решает его норматив.
+#
+# Объект один: двух таких в проекте разом не бывает (владелец, 15.09.2026),
+# поэтому вместо пятого объекта у ФОКа появилось назначение. Норматив у них
+# РАЗНЫЙ, и это не оттенок: у Москвы спорт — код ВРИ 5.1 (200 м² ННП на место),
+# здравоохранение — 3.4 (300 м²), то есть в полтора раза меньше мест. Оставь
+# медцентр на спортивном нормативе — и лишние места выглядели бы посчитанными.
+#
+# У области строки здравоохранения НЕТ ВОВСЕ: приложение № 10 знает только
+# оздоровительные комплексы, а п. 5.12 в редакции 774-ПП даёт правило «1 место
+# на 50 м² общей площади» для нежилого здания без конкретной функции — оно и
+# применяется. Поликлиники это правило исключает прямым текстом, но поликлиника
+# города и коммерческий медцентр — разные вещи: первая приходит нормативом
+# соцнагрузки, второй строится на продажу. Отнести медцентр к исключению значит
+# оставить объект вовсе без норматива; отнести к фитнесу — посчитать по чужой
+# строке. Взято правило без функции, и основание это называет.
+_SPORTS_PURPOSE_FUNCTIONS = {
+    "sport": ("sport", "fitness"),
+    "healthcare": ("healthcare", "healthcare"),
+}
+
+
+def sports_parking_functions(inputs: dict[str, Any] | None) -> tuple[str, str]:
+    """Функции норматива для объекта «ФОК / медцентр»: (Москва, область).
+
+    У области строки здравоохранения в таблице нет, и `mo_required` отвечает на
+    неё правилом п. 5.12 «1 место на 50 м²», называя это допущением, — своего
+    костыля здесь не нужно.
+    """
+    purpose = str(((inputs or {}).get("sports_purpose") or "sport")).strip().lower()
+    return _SPORTS_PURPOSE_FUNCTIONS.get(purpose, _SPORTS_PURPOSE_FUNCTIONS["sport"])
+
 
 
 OBJECT_PARKING_AREA_DEFAULT = 35.0
@@ -11017,7 +11074,12 @@ def parking_demand(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any
     k1_applied = k2_applied = 0.0
     k_assumed = False
     k_origin = {"k1": "", "k2": ""}
+    sports_msk, sports_mo = sports_parking_functions(inputs)
     for tep_key, msk_function, mo_function, built_in in _PARKING_DEMAND_PRODUCTS:
+        # Единственный продукт, у которого функция норматива зависит от вводных:
+        # «ФОК / медцентр» — один объект с двумя назначениями.
+        if tep_key == "sports":
+            msk_function, mo_function = sports_msk, sports_mo
         row = (tep or {}).get(tep_key) or {}
         # База у юрисдикций РАЗНАЯ, и это часть норматива, а не подробность.
         # Москва считает от нежилой наземной площади (сноска 2 приложения 1 в
@@ -16840,7 +16902,7 @@ CAPEX_SHORT_NAMES: dict[str, str] = {
     "utilities": "Наружные сети",
     "offices": "Офисы",
     "standalone_retail": "Коммерция ОСЗ",
-    "sports": "ФОК",
+    "sports": "ФОК / медцентр",
     "social": "Социальный платеж / соцобъекты",
     "gc_fee": "Генподрядчик",
     "main_above": "Основное строительство — наземная часть",
@@ -16869,7 +16931,7 @@ _MODEL_CAPEX_LABELS: list[tuple[str, str]] = [
     ("offices", "МФОЦ / офисы"),
     ("standalone_retail", "ТЦ / коммерция ОСЗ"),
     ("above_parking", "Наземный паркинг"),
-    ("sports", "ФОК / спортивный объект"),
+    ("sports", "ФОК / медцентр"),
     ("social", "Социальная нагрузка"),
     ("project_management", "Управление проектом"),
     ("gc_fee", "Вознаграждение генподрядчика"),
@@ -18499,7 +18561,7 @@ _V4_SPORTS_TRANSFER_WORD = "Передаётся городу"
 # торговый центр. Ключ API меняется тем же проходом — по нему книга и движок
 # сверяются, и «retail_*» в блоке ФОКа сделал бы сверку бессмысленной.
 _V4_SPORTS_INPUT_LABELS = {
-    121: ("ФОК / СПОРТИВНЫЙ ОБЪЕКТ", None, None),
+    121: ("ФОК / МЕДЦЕНТР", None, None),
     123: ("Объект включён", "Да / Нет", "sports_enabled"),
     124: ("Очередь финансирования", "1–4", "sports_queue"),
     125: ("Пересчитывать по плотности", "Да / Нет", "sports_density_linked"),
@@ -18615,7 +18677,7 @@ def _v4_sports_inputs_block(xml: str, missing: list[str]) -> str:
             xml, _ = _v4_set_cell(xml, f"M{row}", text=key)
     # Заголовок блока написан во всех четырёх ячейках — так его пишет шаблон.
     for column in ("K", "L", "M"):
-        xml, _ = _v4_set_cell(xml, f"{column}121", text="ФОК / СПОРТИВНЫЙ ОБЪЕКТ")
+        xml, _ = _v4_set_cell(xml, f"{column}121", text="ФОК / МЕДЦЕНТР")
     # Признак «что с объектом дальше» и остаточные продажи — две строки сверх
     # блока ТЦ, и берутся они КОПИЕЙ его строк, а не пустыми ячейками. Лист
     # ввода узнаёт вводную ПО ЦВЕТУ, и голая ячейка осталась бы на расчётном
@@ -18672,7 +18734,7 @@ _V4_OBJECT_PARKING = (
     ("ТЦ / ОСЗ", 35, 60, 61, "B56", "K163", "K164", 50, 51, "K51", "K45", 41,
      False, ""),
     # ФОК дописан копией блока ТЦ ниже аллокации, и зазор у него свой.
-    ("ФОК", 125, 150, 151, "B146", "K165", "K166", 140, 141, "K134", "K128", 131,
+    ("ФОК / медцентр", 125, 150, 151, "B146", "K165", "K166", 140, 141, "K134", "K128", 131,
      False, ""),
 )
 _V4_OBJECT_PARKING_INPUT_ROWS = (
@@ -19008,7 +19070,7 @@ def _v4_sports_object_block(xml: str, missing: list[str]) -> str:
     # заливки во всю ширину). Оставить там подпись ТЦ значило бы завести в
     # книге второй торговый центр, который на самом деле ФОК.
     for _column in ("A", "B", "C", "D"):
-        xml, done = _v4_set_cell(xml, f"{_column}124", text="ФОК / СПОРТИВНЫЙ ОБЪЕКТ")
+        xml, done = _v4_set_cell(xml, f"{_column}124", text="ФОК / МЕДЦЕНТР")
         if not done and _column == "A":
             missing.append("ФОК: заголовок блока объекта")
     # Аллокация — единственная дверь, через которую объекты попадают в CF
@@ -19087,7 +19149,7 @@ def _v4_sports_tep_row(xml: str, missing: list[str]) -> str:
     # стоит в формуле продаваемой площади «Вводных», а не здесь.
     for coord, kind, value in (
             ("A34", "text", "Проект"),
-            ("B34", "text", "ФОК / спортивный объект"),
+            ("B34", "text", "ФОК / медцентр"),
             ("C34", "formula", "'Вводные'!$K$128"),
             # Колонка D — «Продаваемая площадь», E — «Единицы». Прежде
             # продаваемая ФОКа стояла в «Единицах»: на выключенном объекте это
@@ -19118,7 +19180,7 @@ _V4_PRODUCT_STRUCTURE_OBJECTS = (
     (50, "МФОЦ / офисный центр", "K25", "K26", 24, 32, 33, "K161", True),
     (51, "Торговый центр / ОСЗ", "K45", "K46", 52, 60, 61, "K163", False),
     (52, "Наземный паркинг", "K66", "", 80, 0, 0, "", False),
-    (53, "ФОК / спортивный объект", "K128", "K129", 142, 150, 151, "K165", False),
+    (53, "ФОК / медцентр", "K128", "K129", 142, 150, 151, "K165", False),
 )
 _V4_PRODUCT_STRUCTURE_TOTAL_ROW = 54
 _V4_PRODUCT_STRUCTURE_FIRST_ROW = 46
@@ -21629,6 +21691,11 @@ V4_INPUTS_NOT_IN_BOOK: dict[str, str] = {
     "parking_design_mode": (
         "край норматива Московской области — выбор внутри нормативного расчёта; "
         "в книгу приходит его результат"),
+    "sports_purpose": (
+        "назначение объекта «ФОК / медцентр» решает, по какой строке считать "
+        "приобъектную парковку: у Москвы спорт — 5.1, здравоохранение — 3.4, у "
+        "области своей строки здравоохранения нет вовсе. Это вводная НОРМАТИВА, "
+        "а не арифметики: книге приходит число мест, а имя объекта — подписью"),
 }
 # Ячейки, в которых значение ПОКАЗАНО, но книгой не читается ни одной
 # формулой. Это не ввод: правка здесь не изменит ничего, а выглядит рабочей —
@@ -21670,6 +21737,9 @@ _V4_ENGINE_ONLY_ROWS: tuple[tuple[str, str, str], ...] = (
      "Вводная норматива: из неё считается К1, а книга считает по числу мест"),
     ("parking_k2", "К2 — деловая активность района", "Приобъектная норма — справка: асфальт в благоустройстве"),
     ("parking_design_mode", "Край норматива (Московская область)", "Приобъектная норма — справка: асфальт в благоустройстве"),
+    ("sports_purpose", "Назначение объекта «ФОК / медцентр»",
+     "Строка норматива: Москва 5.1 спорт / 3.4 здравоохранение; у области "
+     "строки здравоохранения нет — правило п. 5.12"),
 )
 
 
@@ -23889,7 +23959,7 @@ def build_project_workbook(
         except Exception as exc:
             missing.append("Вводные · лестница цены квартир: " + _error_location(exc))
     for _prefix, _label in (("offices", "офисы"), ("retail", "ТЦ"),
-                            ("above_parking", "наземный паркинг"), ("sports", "ФОК")):
+                            ("above_parking", "наземный паркинг"), ("sports", "ФОК / медцентр")):
         _profile_items, _profile_percent, _ = parse_month_schedule(x.get(f"{_prefix}_sales_profile"))
         _growth = [n(x, f"{_prefix}_growth_stage{k}_pct", 0.0) / 100.0 for k in (1, 2, 3, 4)]
         _profile_refs = _stage_refs = None
@@ -25325,7 +25395,7 @@ _M2_COST_ARTICLES: list[tuple[str, str, bool]] = [
     ("offices", "МФОЦ / офисы", False),
     ("standalone_retail", "ТЦ / коммерция ОСЗ", False),
     ("above_parking", "Наземный паркинг", False),
-    ("sports", "ФОК / спортивный объект", False),
+    ("sports", "ФОК / медцентр", False),
     ("vri_interest", "Проценты по рассрочке ВРИ", False),
     ("vri_security", "Обеспечение по рассрочке ВРИ", False),
     ("gc_fee", "Вознаграждение генподрядчика", True),
@@ -30719,7 +30789,7 @@ def calculate(req: CalcRequest) -> dict:
         "sports": {
             # Переданный городу ФОК продаваемой площади не имеет: метры
             # строятся, но не продаются — как у соцобъекта.
-            "label": "ФОК / спортивный объект",
+            "label": "ФОК / медцентр",
             "quantity": (n(x, "sports_saleable_sqm")
                          if b(x, "sports_enabled") and sports_is_sold(x) else 0),
             "unit": "м²", "start_price": n(x, "sports_price_th_per_sqm"),
@@ -31176,7 +31246,7 @@ _MONTHLY_CAPEX_LABELS: dict[str, str] = {
     "offices": "МФОЦ / офисы",
     "standalone_retail": "ТЦ / коммерция ОСЗ",
     "above_parking": "Наземный паркинг",
-    "sports": "ФОК / спортивный объект",
+    "sports": "ФОК / медцентр",
     "gc_fee": "Вознаграждение генподрядчика",
     "reserve": "Резерв",
 }
@@ -41438,7 +41508,7 @@ details.cadastral-box>summary::marker{color:#888}
           <h3>Участок</h3>
           <p>Кадастровый номер, адрес или координаты «широта, долгота». Несколько номеров — через запятую, точку с запятой или с новой строки; повторы удаляются, за один запрос до 30 участков.</p>
           <div class="cadastral-entry">
-            <textarea id="cadastralNumbers" oninput="dropStaleLandPreview()" placeholder="77:02:0016009:1934, 77:02:0016009:1935&#10;или: 50:12:0100131:497&#10;или: Московская область, г. Мытищи, ул. Мира, 1"></textarea>
+            <textarea id="cadastralNumbers" oninput="rememberCadastralQuery(this.value);dropStaleLandPreview()" placeholder="77:02:0016009:1934, 77:02:0016009:1935&#10;или: 50:12:0100131:497&#10;или: Московская область, г. Мытищи, ул. Мира, 1"></textarea>
             <button id="cadastralAnalyzeButton" class="btn dark" onclick="obtainTep()">Получить ТЭП</button>
           </div>
           <div class="import-actions" style="margin-top:8px">
@@ -43672,8 +43742,7 @@ async function obtainTep(){
  // адрес, а ответ приходил «участок не найден, введите кадастровый номер»
  // (экран владельца, 26.08.2026). Человек их ввёл; неверна была одна строка,
  // и сказать об этом обязаны мы, а не он должен догадаться.
- const cadastral=/^\d{2}:\d{2}:\d{6,8}:\d+$/;
- const numbers=entered.filter(x=>cadastral.test(x));
+ const numbers=entered.filter(x=>CADASTRAL_NUMBER_RE.test(x));
  const looksCadastral=numbers.length>0;
  // Правило «несколько номеров через запятую» действует только там, где хоть
  // один номер УЗНАН: тогда остальные строки — действительно пропущенные записи
@@ -43683,7 +43752,7 @@ async function obtainTep(){
  // номер» куска — при том что поле само предлагает вводить адрес, и адрес
  // целиком уходил в поиск. Совет исправить то, что исправлять не нужно, уводит
  // человека искать ошибку там, где её нет (экран владельца, 06.09.2026).
- const rejected=looksCadastral?entered.filter(x=>!cadastral.test(x)):[];
+ const rejected=looksCadastral?entered.filter(x=>!CADASTRAL_NUMBER_RE.test(x)):[];
  // Молча отброшенная строка читается как отсутствующая. Называем её и
  // говорим, чем именно она не похожа на кадастровый номер.
  // Текст пришёл от человека и уходит в innerHTML — экранируем. Своего `esc`
@@ -43960,7 +44029,7 @@ let LAND_MAP=null;
 async function drawLandPreviewQuiet(query){
  try{
   const raw=String(query!=null?query:((document.getElementById('cadastralNumbers')||{}).value||'')).trim();
-  if(!/\d{2}:\d{2}:\d{6,8}:\d+/.test(raw))return;
+  if(!cadastralNumbersIn(raw).length)return;
   const response=await fetch('/land/lookup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:raw,limit:30,session:activeSession()})});
   // Ограничения не зависят от картинки: карточка — украшение, а скрининг —
   // ответ на вопрос «можно ли тут строить». Раньше он запускался только после
@@ -43985,7 +44054,7 @@ async function loadLandScreening(query){
  const box=document.getElementById('landScreening');
  if(!box)return;
  const raw=String(query!=null?query:((document.getElementById('cadastralNumbers')||{}).value||'')).trim();
- const numbers=(raw.match(/\d{2}:\d{2}:\d{6,8}:\d+/g)||[]).slice(0,10);
+ const numbers=cadastralNumbersIn(raw).slice(0,10);
  if(!numbers.length){box.style.display='none';return}
  const run=++landScreeningRun;
  const started=Date.now();
@@ -44277,6 +44346,49 @@ function hideLandPreview(){
 }
 function dropStaleLandPreview(){
  if(!landSnapshotFits())hideLandPreview();
+}
+
+// Что человек вписал в поле участка — это данные ПРОЕКТА, а не побочный след
+// удачного ответа внешнего источника. Прежде номер оседал только там, где
+// кто-то ответил: `_cadastral_analysis` пишет расчёт ГлавАПУ, `_land_lookup` —
+// ЕГРН, и то лишь при `found_count>0`. Не ответил никто — и номер жил только в
+// DOM: замер 15.09.2026 на живой странице дал после сохранения и открытия
+// метку записи `[]`, ни одного ключа с «cad» во вводных и пустое поле. То есть
+// проект открывался без участка ровно в тот день, когда НСПД лежал.
+// «Что похоже на кадастровый номер» страница отвечала ЧЕТЫРЬМЯ литералами —
+// проверкой строки целиком, проверкой вхождения и двумя выборками всех номеров
+// подряд. Пятой копией стала бы метка записи проекта, и разошлись бы они молча:
+// копию негде обновлять, потому что копии нет. Формы две, источник один.
+const CADASTRAL_NUMBER_SOURCE='\\d{2}:\\d{2}:\\d{6,8}:\\d+';
+const CADASTRAL_NUMBER_RE=new RegExp('^'+CADASTRAL_NUMBER_SOURCE+'$');
+function cadastralNumbersIn(text){
+ return String(text==null?'':text).match(new RegExp(CADASTRAL_NUMBER_SOURCE,'g'))||[];
+}
+
+function rememberCadastralQuery(value){
+ const text=String(value==null?'':value).trim().slice(0, 600);
+ if(text)inputs._cadastral_query=text; else delete inputs._cadastral_query;
+}
+
+// Единственный писатель поля: он же и запоминает. Две двери — набранное руками
+// и поставленное кодом — разошлись бы молча, и половина проектов сохраняла бы
+// участок, а половина нет.
+function writeCadastralField(value){
+ const field=document.getElementById('cadastralNumbers');
+ if(field)field.value=String(value==null?'':value);
+ rememberCadastralQuery(value);
+}
+
+// Запасное восстановление участка: номер без контура и без карточки. Стоит
+// ПЕРВЫМ в цепочке `renderStored*` — у кого есть ответ источника, тот перепишет
+// поле своим; у кого нет, останется хотя бы то, что человек вписал. Статуса
+// «показана территория из проекта» здесь нет намеренно: мы ничего не
+// показываем, мы только вернули строку поиска.
+function renderStoredCadastralQuery(){
+ const stored=inputs._cadastral_query;
+ if(!stored)return;
+ const field=document.getElementById('cadastralNumbers');
+ if(field)field.value=String(stored);
 }
 
 async function lookupLand(options){
@@ -44784,8 +44896,9 @@ function useLandForTep(){
   .filter(x=>x.found&&x.kind==='land'&&x.cadastral_number)
   .map(x=>x.cadastral_number);
  if(!numbers.length){status.innerHTML='<span class="import-error">Нет найденных земельных участков для переноса.</span>';return}
+ writeCadastralField(numbers.join(', '));
  const field=document.getElementById('cadastralNumbers');
- if(field){field.value=numbers.join(', ');field.scrollIntoView({behavior:'smooth',block:'center'})}
+ if(field)field.scrollIntoView({behavior:'smooth',block:'center'});
  status.innerHTML='<span class="import-ok">Номера перенесены в блок ТЭП ГлавАПУ ('+numbers.length+').</span> Нормативный ТЭП считается только по Москве.';
 }
 
@@ -44793,8 +44906,7 @@ function renderStoredLand(){
  const stored=inputs._land_lookup;
  if(!stored)return;
  landLookup=cloneValue(stored);
- const field=document.getElementById('cadastralNumbers');
- if(field)field.value=stored.query||'';
+ writeCadastralField(stored.query||'');
  renderLandLookup(landLookup);
  loadLandScreening(stored.query||'');
  const status=document.getElementById('cadastralStatus');
@@ -45007,7 +45119,7 @@ async function calculateMo(queryText){
   syncMoParams(data);
   if(moStatus)moStatus.style.display='none';
   const parcels=((data.vri||{}).parcels||[]).length;
-  const asked=(query.match(/\d{2}:\d{2}:\d{6,8}:\d+/g)||[]).length;
+  const asked=cadastralNumbersIn(query).length;
   const parcelNote=asked?' · участков в расчёте: '+parcels+' из '+asked:(parcels?' · участков: '+parcels:'');
   status.innerHTML='<span class="import-ok">Московская область · расчёт готов: '+landNum(data.territory.site_area_ha,4)+' га, '+
    landNum(data.social.apartments_sqm,0)+' м² квартир'+parcelNote+'.</span> Проверьте значения и примените к модели.';
@@ -45177,8 +45289,7 @@ function renderStoredCadastral(){
  const stored=inputs._cadastral_analysis;
  if(!stored)return;
  cadastralAnalysis=cloneValue(stored);
- const field=document.getElementById('cadastralNumbers');
- if(field)field.value=(stored.requested||[]).join(', ');
+ writeCadastralField((stored.requested||[]).join(', '));
  renderCadastralPreview(cadastralAnalysis);
  cadastralStatus.innerHTML='<span class="import-ok">Показана территория, сохранённая в проекте.</span>';
 }
@@ -45551,7 +45662,7 @@ const TERRITORY_INPUT_KEYS=[
  // теряет выбор человека.
  'parking_k1','parking_k2','parking_rail_distance_m'
 ];
-const TERRITORY_MARKERS=['_glavapu_import','_manual_tep_import','_mo_calc','_cadastral_analysis',
+const TERRITORY_MARKERS=['_glavapu_import','_manual_tep_import','_mo_calc','_cadastral_analysis','_cadastral_query',
  '_site_area_user_set','_site_density_user_set'];
 
 // Предпосылки аналитика — цены, себестоимость, ставки, сроки, налоги — это не
@@ -46500,7 +46611,7 @@ const GROUP_PEEK={
  'ТЦ / коммерция ОСЗ':['retail_enabled','retail_gba_sqm'],
  'Подземный паркинг':['underground_manual_spaces'],
  'Наземный паркинг':['above_parking_enabled','above_parking_spaces'],
- 'ФОК / спортивный объект':['sports_enabled','sports_disposition','sports_gba_sqm']
+ 'ФОК / медцентр':['sports_enabled','sports_purpose','sports_gba_sqm']
 };
 
 function groupPeek(name,fields){
@@ -47473,7 +47584,7 @@ function tepRowComplaint(key,row){
 // жмёт кнопку и видит нули.
 const TEP_ROW_SWITCH={offices:['offices_enabled','МФОЦ / офисы'],
  standalone_retail:['retail_enabled','ТЦ / коммерция ОСЗ'],
- sports:['sports_enabled','ФОК / спортивный объект']};
+ sports:['sports_enabled','ФОК / медцентр']};
 
 // Включать объект за человека нельзя — это меняет экономику проекта. Но и
 // отправлять его за галочкой на другую вкладку незачем: решение остаётся за
@@ -51198,11 +51309,8 @@ async function applyPreset(){
  // он пришёл из пресета, и штатный расчёт ГлавАПУ его бы перебил.
  const cadastres=data.cadastral_numbers||[];
  if(cadastres.length){
-  const field=document.getElementById('cadastralNumbers');
-  if(field){
-   field.value=cadastres.join(', ');
-   drawLandPreviewQuiet(field.value);
-  }
+  writeCadastralField(cadastres.join(', '));
+  drawLandPreviewQuiet(cadastres.join(', '));
  }
  calculateAndOpen('report');
 }
@@ -51280,7 +51388,12 @@ function projectSummaryForStore(){
 
 function projectCadastral(){
  const source=(cadastralAnalysis&&cadastralAnalysis.cadastral_numbers)
-  ||(moResult&&moResult.cadastral_numbers)||[];
+  ||(moResult&&moResult.cadastral_numbers)
+  // Ответ источника сильнее: он знает, какие из спрошенных номеров настоящие.
+  // Но его молчание — не отсутствие участка у проекта, а отсутствие ответа, и
+  // тогда меткой идёт то, что человек вписал. Адрес и координаты меткой не
+  // становятся: в поле их вводить можно, а `cadastral` записи — это номера.
+  ||cadastralNumbersIn(inputs._cadastral_query)||[];
  return Array.isArray(source)?source.slice(0,20):[];
 }
 
@@ -51590,6 +51703,12 @@ function forgetTerritoryState(){
  // ответ, иначе он дорисует чужие зоны поверх нового проекта.
  ++landScreeningRun;
  ['cadastralNumbers','landQuery','moQuery'].forEach(id=>{const field=document.getElementById(id);if(field)field.value=''});
+ // Память о вписанном номере (`inputs._cadastral_query`) здесь НЕ трогаем:
+ // обе двери этой функции пересобирают `inputs` заново — `applyProjectSnapshot`
+ // следом, `resetAll` заранее из `INPUT_DEFAULT`, где ключа нет вовсе. А
+ // правка отсюда опаснее, чем кажется: снимок иногда и есть текущий `inputs`
+ // (`applyProjectSnapshot(projectStorePayload().payload)`), и удаление стирало
+ // бы участок из того самого снимка, который восстанавливают.
  ['landPreview','cadastralPreview','landScreening'].forEach(id=>{const el=document.getElementById(id);if(el)el.style.display='none'});
  const screening=document.getElementById('landScreening');
  if(screening){screening.innerHTML='';screening.className='land-screening'}
@@ -51617,6 +51736,7 @@ function applyProjectSnapshot(data){
  if(typeof scenarioSelect!=='undefined'&&scenarioSelect)scenarioSelect.value=data.scenario||'base';
  renderInputs();renderTep();renderPhasing();
  // Территория снимка — из его же вводных, тем же путём, что при загрузке страницы.
+ renderStoredCadastralQuery();
  renderStoredGlavapu();renderStoredCadastral();renderStoredLand();renderStoredMo();
  if(typeof renderSitePanel==='function')renderSitePanel();
  persistLocalSilently();
@@ -52071,8 +52191,7 @@ async function applyTelegramManualTep(manual,options){
  // Участки пришедшего проекта показываем сразу: иначе поле остаётся пустым или,
  // хуже, с номерами прошлого расчёта, и непонятно, что именно посчитано.
  const numbers=((manual.source||{}).cadastral_numbers)||[];
- const field=document.getElementById('cadastralNumbers');
- if(field)field.value=numbers.join(', ');
+ writeCadastralField(numbers.join(', '));
  const preview=document.getElementById('cadastralPreview');
  if(preview){preview.innerHTML='';preview.style.display='none';}
  if(typeof cadastralStatus!=='undefined'&&cadastralStatus){
@@ -52242,7 +52361,7 @@ async function runTelegramLaunch(){
   // ними, расходясь с сайтом на одинаковых вводных. Правки после расчёта
   // живут в режиме редактирования — он открывает проект своей карточки.
   resetAll();
-  field.value=telegramCad;
+  writeCadastralField(telegramCad);
   openTab('inputs');
   const status=document.getElementById('cadastralStatus');
   if(status)status.textContent='Получаю ТЭП ГлавАПУ и рассчитываю проект…';

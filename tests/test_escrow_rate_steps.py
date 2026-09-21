@@ -106,7 +106,7 @@ def test_the_default_is_the_sber_ladder_and_it_is_named():
     assert core.DEFAULT_INPUTS["pf_special_steps"] == core.PF_SPECIAL_STEPS_DEFAULT
     assert core.pf_special_steps(core.PF_SPECIAL_STEPS_DEFAULT) == [
         (1.0, 0.0347), (1.1, 0.0175), (1.2, 0.0003), (1.3, 0.0001)]
-    assert "400F00BVX003" in core.PF_SPECIAL_STEPS_SOURCE
+    assert core.PF_SPECIAL_STEPS_SOURCE == "НКЛ Сбербанка от 04.08.2026"
 
 
 def test_the_default_changes_nothing_where_the_coverage_never_gets_there():
