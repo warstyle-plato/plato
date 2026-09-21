@@ -994,11 +994,10 @@ def install(app: FastAPI) -> None:
 
     @app.get("/auctions/krt-lab", response_class=HTMLResponse, include_in_schema=False)
     async def auction_krt_score_lab() -> HTMLResponse:
-        """Служебная лаборатория: ранжирует только КРТ до стадии реализации.
+        """Служебная лаборатория инвестиционного рейтинга КРТ.
 
-        Страница ничего не пересчитывает на сервере: она читает уже существующие
-        каталог и рейтинг, полностью исключает status_kind=running и позволяет
-        менять веса экспериментальной методики в браузере.
+        Все стадии остаются в каталоге. «В реализации» можно фильтровать, но
+        методика намеренно не присваивает им инвестиционный балл.
         """
         return HTMLResponse(
             krt_score_lab_page(),
@@ -1040,10 +1039,18 @@ def install(app: FastAPI) -> None:
                 status_code=502,
                 detail=f"Рабочий DevelopAid не отдал снимок КРТ: {type(exc).__name__}: {exc}",
             ) from exc
+        live = None
+        if core is not None:
+            try:
+                live = await run_in_threadpool(nagatino_live_example, core)
+            except Exception as exc:  # noqa: BLE001
+                live = {"available": False, "reason": f"{type(exc).__name__}: {exc}"}
         return {
             "source": base,
             "catalogue": catalogue,
             "ranking": ranking,
+            "methodology": krt_score_methodology(),
+            "examples": {"nagatino": live} if live is not None else {},
         }
 
     @app.get("/auctions/sources")
