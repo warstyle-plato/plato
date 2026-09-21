@@ -2834,15 +2834,24 @@ def install(app: FastAPI) -> None:
                     1 for row in rows
                     if row.get("available") and krt_ranking_rules.model_is_current(row)
                 ),
-                "market_price_available": sum(
+                # Два РАЗНЫХ вопроса, и под одним именем они жили до
+                # 21.09.2026: ключ `market_price_available` стоял в этом
+                # словаре дважды, Python оставлял последний, и пара «есть /
+                # нет» считала разное — 202 против 584 при 585 строках.
+                # Первый: доехало ли поле до строки (его завели позже самих
+                # строк, и без подъёма версии правил оно пусто у прежних).
+                "market_price_in_row": sum(
                     1 for row in rows if row.get("surrounding_price_rub_sqm") is not None
                 ),
-                "market_price_missing": sum(
+                "market_price_missing_in_row": sum(
                     1 for row in rows if row.get("surrounding_price_rub_sqm") is None
                 ),
-                "market_price_available": sum(
-                    1 for row in rows if _plato_number(row.get("start_price_rub_sqm")) != "—"
-                    and float(row.get("start_price_rub_sqm") or 0) > 0
+                # Второй: ответил ли рынок ценой, когда строку считали. Это
+                # та же величина `_market_inputs`, что уходит в цену модели,
+                # поэтому она есть и у строк, записанных до появления поля.
+                "market_answered_price": sum(
+                    1 for row in rows
+                    if krt_ranking_rules._number(row.get("start_price_rub_sqm")) > 0
                 ),
             },
             "rules_version": krt_ranking_rules._screening_rules_version(),
