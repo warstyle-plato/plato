@@ -83,7 +83,49 @@ def _number(text: str) -> float | None:
         return None
 
 
-def _lines(source: Path | bytes) -> list[dict[str, str]]:
+def _why_no_table(seen: dict[str, Any]) -> str:
+    """Почему строк не набралось — тремя РАЗНЫМИ ответами, а не одним.
+
+    «Таблицы состава нет» одинаково звучало у документа без таблицы, у скана без
+    текста и у таблицы, чьи колонки стоят не там, где их ищут по координатам.
+    Первое — ответ документа, второе и третье — наш пробел, и на экране они были
+    неразличимы (МКАД, 41 км: прочитаны все свои вложения, участков ноль).
+
+    Координаты номеров называются числом: без них «колонки не те» — догадка, а
+    с ними видно, куда двигать окно.
+    """
+    words = int(seen.get("words") or 0)
+    if not words:
+        return ("в документе нет извлекаемого текста — это скан: таблицы в нём "
+                "не искали, а не не нашли")
+    found = [int(x) for x in (seen.get("cadastral_x") or [])]
+    if not found:
+        return (f"в документе {words} слов и ни одного кадастрового номера — "
+                "таблицы состава территории в нём нет")
+    left, right = COLUMNS["land"]
+    return (f"кадастровые номера в документе есть ({len(found)} шт.), но ни один "
+            f"не попал в окно колонки участка ({left}–{right} пт): они стоят на "
+            f"{_positions(found)}. Это наш пробел: колонки ищутся по координатам, "
+            "а у этого документа другая вёрстка")
+
+
+def _positions(found: list[int]) -> str:
+    """Где именно стоят номера. Двух-трёх мест довольно, чтобы понять вёрстку."""
+    places = sorted({round(x / 10) * 10 for x in found})
+    shown = ", ".join(f"{one} пт" for one in places[:6])
+    return shown + (" и др." if len(places) > 6 else "")
+
+
+def _lines(source: Path | bytes,
+           seen: dict[str, Any] | None = None) -> list[dict[str, str]]:
+    """Строки таблицы по координатам слов.
+
+    `seen` — необязательный протокол того, ЧТО в документе вообще было: сколько
+    слов и где стояли кадастровые номера. Он нужен отказу: «таблицы нет» без
+    него одинаково звучит у документа без таблицы, у скана без текста и у
+    таблицы, чьи колонки стоят не там, где их ищут. Это три разных ответа, и
+    два из них — наш пробел.
+    """
     try:
         import pymupdf
     except Exception as exc:  # noqa: BLE001 — отсутствие растеризатора называется
@@ -101,6 +143,10 @@ def _lines(source: Path | bytes) -> list[dict[str, str]]:
         by_line: dict[float, list[tuple[float, str]]] = {}
         for x0, y0, _x1, _y1, word, *_rest in page.get_text("words"):
             by_line.setdefault(round(y0 / 3) * 3, []).append((x0, word))
+            if seen is not None:
+                seen["words"] = int(seen.get("words") or 0) + 1
+                if CAD.match(word):
+                    seen.setdefault("cadastral_x", []).append(round(float(x0)))
         for key in sorted(by_line):
             tokens = sorted(by_line[key])
             row = {name: " ".join(word for x, word in tokens if left <= x < right)
@@ -124,7 +170,8 @@ def read_bytes(source: bytes | Path) -> dict[str, Any]:
     lands: list[dict[str, Any]] = []
     current: dict[str, Any] | None = None
     current_object: dict[str, Any] | None = None
-    for line in _lines(source):
+    seen: dict[str, Any] = {"words": 0, "cadastral_x": []}
+    for line in _lines(source, seen):
         head = line["land"].split()[0] if line["land"] else ""
         if CAD.match(head):
             current = {"cadastral_number": head, "part": "часть" in line["land"],
@@ -181,7 +228,7 @@ def read_bytes(source: bytes | Path) -> dict[str, Any]:
         elif title:
             land["title"] = title[:120]
     if not lands:
-        raise NoticeProblem("в документе не нашлось таблицы состава территории")
+        raise NoticeProblem(_why_no_table(seen))
     objects: dict[str, dict[str, Any]] = {}
     for land in lands:
         land["area_sqm"] = _number(land["area_raw"])
