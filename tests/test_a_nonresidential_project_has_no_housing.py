@@ -297,13 +297,17 @@ def test_the_switch_clears_the_housing(seen) -> None:
     assert after["parking"] == 0, "паркинг МКД пережил обнуление квартир"
 
 
-def test_the_switch_names_what_it_removed(seen) -> None:
+def test_the_switch_names_the_mode_and_leads_to_the_rest(seen) -> None:
+    """Плашка называет режим и ведёт в окно, где сказано остальное.
+
+    Перечислять убранное она перестала: тот же список стоит в окне, которое
+    открывается при переключении, и два одинаковых текста подряд перестают
+    читать. Сам список проверяется там, где он теперь живёт, —
+    `test_the_window_names_what_was_turned_off`.
+    """
     note = seen["after"]["note"]
     assert "Нежилой проект" in note
-    assert "Убрано" in note, "обнулено молча"
-    assert "места ДОО" in note and "плата за смену ВРИ" in note
-    # Финансирование режим не трогает — и сказано это там же.
-    assert "214-ФЗ" in note
+    assert "что отключено" in note, "плашка не ведёт туда, где сказано остальное"
 
 
 def test_the_housing_rows_are_locked_and_told_why(seen) -> None:
@@ -380,18 +384,19 @@ def test_the_money_says_what_it_was_counted_from() -> None:
     assert summary["landscaping_gap"] == "", "деньги есть, а статья названа пустой"
 
 
-def test_the_switch_sets_the_yard_rate_and_names_it(seen) -> None:
-    """Режим ставит ставку двора — и называет поставленное.
+def test_the_switch_sets_the_yard_rate(seen) -> None:
+    """Режим ставит ставку двора — это методика, а не оформление.
 
-    Молчаливая подстановка врёт не меньше молчаливого обнуления: число в поле
-    неотличимо от вписанного человеком.
+    Называет её подпись у самого поля, а не окно и не плашка: «это никому
+    неинтересно и никакой роли не играет — у нас себестоимость всего объекта
+    целиком прописана» (владелец, 21.09.2026). Молчаливой подстановка от
+    этого не становится — число объяснено там, где стоит, и это держит
+    `test_the_yard_rate_is_explained_where_it_stands`.
     """
     before, after = seen["before"], seen["after"]
     # Предохранитель: до переключения ставки не было, иначе ставить нечего.
     assert before["yardRate"] == 0
     assert after["yardRate"] == core.NONRESIDENTIAL_LANDSCAPING_TH_PER_SQM
-    assert "Поставлено" in after["note"], "ставка подставлена молча"
-    assert "м² ГНС" in after["note"]
 
 
 def test_the_returned_project_loses_the_mode_rate(seen) -> None:
@@ -716,11 +721,16 @@ PROBE_DIALOG = """() => {
   if (button) button.click();
   const reopened = shown();
   closeProjectKindDialog();
-  applyProjectKind('nonresidential');
-  cancelNonResidential();
   return {before: before, opened: opened, closed: closed, reopened: reopened,
-          text: text, note: note,
-          kindAfterCancel: String(inputs.project_kind || ''),
+          text: text, note: note};
+}"""
+
+
+# Отмена — отдельным шагом: между ними надо дождаться расчёта, иначе подпись
+# у поля ставки показывает ещё жилой двор.
+PROBE_CANCEL = """() => {
+  cancelNonResidential();
+  return {kindAfterCancel: String(inputs.project_kind || ''),
           flatsAfterCancel: Number(tep.apartments.gns || 0)};
 }"""
 
@@ -741,6 +751,14 @@ def dialog():
             page.goto(base, wait_until="domcontentloaded")
             page.wait_for_timeout(1800)
             got = page.evaluate(PROBE_DIALOG)
+            # Подпись у поля ставки пишется по итогу расчёта, а он идёт своим
+            # чередом: снятая раньше, она показывает ещё жилой двор.
+            page.wait_for_function(
+                "() => ((lastResult||{}).summary||{}).landscaping_by_rate === true",
+                timeout=20000)
+            got["rateNote"] = page.evaluate(
+                "() => (document.getElementById('landscapingRateNote')||{}).textContent || ''")
+            got.update(page.evaluate(PROBE_CANCEL))
             page.wait_for_timeout(300)
             page.close()
     got["errors"] = errors
@@ -760,7 +778,28 @@ def test_the_window_names_what_was_turned_off(dialog) -> None:
     text = dialog["text"].replace(" ", " ")
     assert "Убрано:" in text, text
     assert "плата за смену ВРИ" in text and "места ДОО" in text, text
-    assert "Поставлено:" in text and "м² ГНС" in text, text
+
+
+def test_the_window_keeps_quiet_about_the_yard_rate(dialog) -> None:
+    """Про ставку двора окно не говорит — по просьбе владельца.
+
+    «Это никому неинтересно и никакой роли не играет вообще! У нас
+    себестоимость вообще всего объекта же целиком прописана» (21.09.2026).
+    """
+    text = dialog["text"]
+    assert "Поставлено" not in text, text
+    assert "ставка благоустройства" not in text, text
+    # Финансирование режим не трогает — это в окне остаётся: раньше стояло в
+    # плашке, а она сократилась.
+    assert "214-ФЗ" in text, text
+
+
+def test_the_yard_rate_is_explained_where_it_stands(dialog) -> None:
+    """Подпись у самого поля называет ставку и то, что она делает."""
+    note = dialog["rateNote"].replace("\u00a0", " ")
+    assert note, "подпись у поля ставки пуста"
+    assert "ставк" in note.lower(), note
+    assert "м² ГНС" in note, note
 
 
 def test_the_window_says_where_the_metres_go(dialog) -> None:
