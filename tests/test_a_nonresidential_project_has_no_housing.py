@@ -580,10 +580,17 @@ console.log(JSON.stringify({note:BOX.textContent}));
     assert "Кв/комм" in housing and "м/м" in housing
 
     nonres = note("nonresidential")
-    assert "Кв/комм" not in nonres and "м/м " not in nonres, \
-        "подпись называет квартиры и места МКД в нежилом проекте"
+    assert "Кв/комм" not in nonres, "подпись называет квартиры в нежилом проекте"
     assert "Офисы/ТЦ" in nonres, nonres
-    assert "себес." in nonres, "подпись молчит о СМР, которую класс двигает"
+    # Машино-место и подземная ставка класс двигает и здесь: место гаража
+    # объекта продаётся по его цене, а сам гараж по ней же и строится.
+    assert "м/м" in nonres and "подземные" in nonres, nonres
+    # А наземной ставки тут нет: себестоимость здания — своя вводная объекта,
+    # и 190/152 к ней не применяются («у нас же там нет 190/152 в принципе»,
+    # владелец 21.09.2026).
+    assert "себес." not in nonres, nonres
+    above = core.PROJECT_CLASS_PRESETS["business"]["main_above_th_per_sqm"]
+    assert f"{above:g}" not in nonres, nonres
 
 
 # Писатели ТЭП о режиме не знали, и вернувшееся жильё убрать было нечем:
