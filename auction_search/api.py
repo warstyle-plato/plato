@@ -842,10 +842,12 @@ def install(app: FastAPI) -> None:
             logger.exception("KRT: свод прохода за извещениями не записан")
         logger.info(
             "KRT извещения: лотов %s, прочитано %s, уже было %s, ждут %s, "
-            "таблицы нет %s, отказ %s, не успели %s",
+            "таблицы нет %s, площадка не отдала %s, мы не прочитали %s, "
+            "не успели %s",
             summary.get("lots"), summary.get("read"), summary.get("already"),
             summary.get("waiting"), summary.get("no_table"),
-            summary.get("refused"), summary.get("out_of_time"))
+            summary.get("refused"), summary.get("unread"),
+            summary.get("out_of_time"))
         return summary
 
     # Сбор лотов объявлен крючком: его берёт сторож (`collect_lots`), и на нём
