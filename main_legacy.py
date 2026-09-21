@@ -268,6 +268,51 @@ SCENARIOS = {
     'optimistic': {'scenario_revenue_multiplier': 1.10, 'scenario_cost_multiplier': 0.90},
 }
 
+# Цена нежилого — от цены жилья класса, но не ниже московского пола
+# (решение владельца, 21.09.2026: «в Москве дешевле 450 не может быть в
+# принципе»; цель — «чтобы минус хотя бы не давали эти метры, а небольшую
+# маржу», то есть плюс-минус ноль).
+#
+# Прежде `retail_price_th_per_sqm` и `offices_price_th_per_sqm` стояли одним
+# числом 500 ВНЕ профиля класса: смена класса их не двигала вовсе — та же
+# болезнь, что была у цены кладовой до 14.09.2026. У комфорта 500 завышено, у
+# элитки (жильё 1500) — занижено втрое, а встроенная коммерция в профиле уже
+# равна цене жилья (350/650/1500), то есть у нас жили два нежилых метра с
+# разной логикой.
+#
+# Множитель 1,0 — не вкус, а замер на Рубцовской наб., влд. 3 (жильё
+# 608,2 тыс ₽/м²): полная себестоимость ОСЗ/ТЦ 344 тыс ₽ на метр ГНС, а
+# продаётся 56,4% ГНС (у встроенной коммерции 90% — потому при одной цене она
+# зарабатывает, а ТЦ нет), и с коммерческими расходами и финансированием порог
+# окупаемости выходит 590 тыс ₽/м² на входе. При 0,9 метры дают −5,6% на себе
+# (−385 млн ₽ в чистой), при 1,0 — +2,3% (+172 млн ₽): это и есть «плюс-минус
+# ноль». Цифры в комментарии — замер, а не методика: порог зависит от базы
+# себестоимости проекта и на другой площадке сдвинется.
+#
+# Пол — МОСКОВСКИЙ. Для Подмосковья такого числа у нас нет, и правило там
+# работает без пола: 0,9 × 350 = 315 тыс ₽/м² пол поднял бы до московских 450
+# без основания. Поэтому пол берётся по региону, а не безусловно.
+# Отношение наземной площади к суммарной поэтажной у самого города: на всех
+# трёх решениях, где названы обе, оно РОВНО 0,900 — и это та же «НП = 90% СПП»
+# методики ГлавАПУ. Долю не выбираем мы, её назвал источник.
+CITY_GROUND_OF_SPP = 0.9
+
+NONRES_PRICE_OF_HOUSING = 1.0
+MOSCOW_NONRES_PRICE_FLOOR_TH = 450.0
+
+
+def nonresidential_price_th(housing_price_th: Any, *, region: str = "msk") -> float:
+    """Цена метра нежилого: доля цены жилья, не ниже пола своего региона."""
+    try:
+        housing = float(housing_price_th or 0.0)
+    except (TypeError, ValueError):
+        housing = 0.0
+    price = housing * NONRES_PRICE_OF_HOUSING
+    if str(region or "msk").strip().lower() in ("msk", "moscow", "москва"):
+        price = max(price, MOSCOW_NONRES_PRICE_FLOOR_TH)
+    return round(price, 3)
+
+
 PROJECT_CLASS_PRESETS = {
     # Класс задаёт полный профиль себестоимости, а не только СМР (решение
     # владельца, 26.08.2026): иначе свод модуля «Статистика» обосновывал две
@@ -393,6 +438,14 @@ PROJECT_CLASS_PRESETS = {
         "underground_area_per_space_sqm": 40,
     },
 }
+
+# Цена нежилого в профиле считается тем же правилом, а не выписана числом:
+# второй ответ на «сколько стоит метр нежилого» разошёлся бы с движком молча.
+for _preset in PROJECT_CLASS_PRESETS.values():
+    _preset["retail_price_th_per_sqm"] = nonresidential_price_th(
+        _preset["apartment_price_th"])
+    _preset["offices_price_th_per_sqm"] = _preset["retail_price_th_per_sqm"]
+del _preset
 
 # Источники базовых ставок классов на страницу не зашиваются: адрес или имя
 # собственного проекта в подписи — раскрытие коммерческой информации, и один
@@ -935,13 +988,23 @@ class StandaloneObject(NamedTuple):
 STANDALONE_OBJECTS: tuple[StandaloneObject, ...] = (
     StandaloneObject("standalone_retail", "retail", "ТЦ", 2, True, False, "sqm",
                      "retail_cost_th_per_sqm", "retail_price_th_per_sqm",
+                     # Умолчания и есть комфорт: цена нежилого берётся из его
+                     # профиля, а не стоит своим числом — 500 тыс ₽/м² здесь и
+                     # были тем единственным числом вне класса, из-за которого
+                     # смена класса цену не двигала.
                      defaults={"gba_sqm": 10000, "saleable_sqm": 6000,
-                               "cost_th_per_sqm": 200, "price_th_per_sqm": 500},
+                               "cost_th_per_sqm": 200,
+                               "price_th_per_sqm": nonresidential_price_th(
+                                   PROJECT_CLASS_PRESETS["comfort"][
+                                       "apartment_price_th"])},
                      tep_label="Коммерция ОСЗ", group_label="ТЦ / коммерция ОСЗ"),
     StandaloneObject("offices", "offices", "офисы", 3, True, True, "sqm",
                      "offices_cost_th_per_sqm", "offices_price_th_per_sqm",
                      defaults={"gba_sqm": 10000, "saleable_sqm": 6000,
-                               "cost_th_per_sqm": 200, "price_th_per_sqm": 500},
+                               "cost_th_per_sqm": 200,
+                               "price_th_per_sqm": nonresidential_price_th(
+                                   PROJECT_CLASS_PRESETS["comfort"][
+                                       "apartment_price_th"])},
                      tep_label="Офисы", group_label="МФОЦ / офисы"),
     StandaloneObject("above_parking", "above_parking", "наземный паркинг", 2, False,
                      False, "spaces", "above_parking_cost_mln_per_space",
