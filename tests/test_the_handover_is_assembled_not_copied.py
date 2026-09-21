@@ -28,7 +28,12 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import handover  # noqa: E402
 
-KNOWLEDGE = (ROOT / "CLAUDE.md").read_text(encoding="utf-8")
+# Источник знания — архив: 20.09.2026 корневой `CLAUDE.md` сократили до
+# постоянно нужного, а разборы унесли сюда. Утверждения проверки прежние
+# (сборка ничего не помнит сама и ничего не теряет) — переехал только файл,
+# и берётся он у самого сборщика, чтобы проверка не завела второй ответ на
+# вопрос «где лежит знание».
+KNOWLEDGE = handover.KNOWLEDGE.read_text(encoding="utf-8")
 SOURCE = (ROOT / "scripts" / "handover.py").read_text(encoding="utf-8")
 
 
@@ -81,7 +86,8 @@ def test_the_assembly_names_its_source_and_its_moment() -> None:
     """Сборка говорит, чем собрана и когда, и кто прав при расхождении."""
     text = handover.build(count_tests=False)
     assert "scripts/handover.py" in text, "не сказано, чем собрано"
-    assert "верен `CLAUDE.md`" in text, "не сказано, кто прав при расхождении"
+    assert f"`{handover._knowledge_name()}` — верен он" in text, \
+        "не сказано, кто прав при расхождении"
     assert re.search(r"Собрано \d{4}-\d{2}-\d{2}T", text), "нет отметки времени"
     assert "выпуск" in text and handover._version() in text, "нет выпуска"
 
