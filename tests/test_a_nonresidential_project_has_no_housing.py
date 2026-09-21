@@ -223,6 +223,7 @@ PROBE = """()=>{
     dou: Number(inputs.kindergarten_places||0),
     fee: Number(inputs.land_rights_cost_mln||0),
     parking: Number(tep.underground_parking.units||0),
+    yardRate: Number(inputs.landscaping_gns_th_per_sqm||0),
     field: !!document.getElementById('f_kindergarten_places')
   };
   applyProjectKind('nonresidential');
@@ -240,6 +241,7 @@ PROBE = """()=>{
     dou: Number(inputs.kindergarten_places||0),
     fee: Number(inputs.land_rights_cost_mln||0),
     parking: Number(tep.underground_parking.units||0),
+    yardRate: Number(inputs.landscaping_gns_th_per_sqm||0),
     field: !!document.getElementById('f_kindergarten_places'),
     note: note,
     rows: rows,
@@ -252,6 +254,7 @@ PROBE = """()=>{
     flats: Number(tep.apartments.saleable||0),
     dou: Number(inputs.kindergarten_places||0),
     fee: Number(inputs.land_rights_cost_mln||0),
+    yardRate: Number(inputs.landscaping_gns_th_per_sqm||0),
     field: !!document.getElementById('f_kindergarten_places')
   };
   return {before: before, after: after, backNote: backNote, restored: restored};
@@ -321,3 +324,77 @@ def test_the_removed_can_be_returned(seen) -> None:
     assert restored["dou"] == before["dou"]
     assert restored["fee"] == before["fee"]
     assert restored["field"] is True
+
+
+def test_the_default_yard_rate_lives_in_the_mode_only() -> None:
+    """Ставка двора нежилого проекта — свойство РЕЖИМА, а не умолчание.
+
+    Поле `landscaping_gns_th_per_sqm` глобальное и сильнее методики класса:
+    поставленное в `DEFAULT_INPUTS`, оно двинуло бы КАЖДЫЙ жилой проект — на
+    умолчаниях благоустройство 400,1 → 1 453,8 млн ₽ и LLCR 0,9595 → 0,9313.
+    Решение владельца 21.09.2026: «неважно какая цифра по умолчанию, главное
+    считать на гнс… НО нельзя чтобы это сломало логику расчёта от населения
+    для жилья».
+    """
+    assert core.NONRESIDENTIAL_LANDSCAPING_TH_PER_SQM > 0
+    assert float(core.DEFAULT_INPUTS.get("landscaping_gns_th_per_sqm") or 0.0) == 0.0, (
+        "ставка нежилого режима уехала в умолчания — она сильнее методики класса")
+    # И на страницу она едет из движка, а не написана там числом.
+    assert "__DEVELOPAID_NONRES_LANDSCAPING_RATE__" not in core.PAGE
+    assert f"const NONRES_LANDSCAPING_RATE={core.NONRESIDENTIAL_LANDSCAPING_TH_PER_SQM:g}" in core.PAGE
+
+
+def test_the_residential_methodology_does_not_move() -> None:
+    """Жилой проект считает двор населением — ровно как считал.
+
+    Предохранитель обязателен: если бы ставка стояла умолчанием, методика
+    молчала бы, и проверка «методика жива» зеленела бы на пустом основании.
+    """
+    x = copy.deepcopy(core.DEFAULT_INPUTS)
+    t = copy.deepcopy(core.TEP_DEFAULT)
+    summary = core.calculate(core.CalcRequest(inputs=x, tep=t))["summary"]
+    assert summary["landscaping_by_rate"] is False, "жилой проект посчитан ставкой"
+    assert summary["landscaping_area_sqm"] > 0
+    assert "чел." in summary["landscaping_basis"]
+    assert "м² двора" in summary["landscaping_money_basis"]
+
+
+def test_the_money_says_what_it_was_counted_from() -> None:
+    """У двора и у денег основания разные, и второе никто не читал.
+
+    При ЗАДАННОЙ ставке основание площади печатало «задайте ставку на метр
+    ГНС» — то есть советовало сделать то, что уже сделано: свод брал
+    основание у площади, а деньги своё возвращали, и его не читал никто.
+    """
+    x, t = _objects_only()
+    x["project_kind"] = core.PROJECT_KIND_NONRESIDENTIAL
+    x["landscaping_gns_th_per_sqm"] = core.NONRESIDENTIAL_LANDSCAPING_TH_PER_SQM
+    summary = core.calculate(core.CalcRequest(inputs=copy.deepcopy(x),
+                                              tep=copy.deepcopy(t)))["summary"]
+    # Предохранитель: площадь двора тут ноль, значит её основание и есть тот
+    # самый совет — иначе проверять нечего.
+    assert summary["landscaping_area_sqm"] == 0
+    assert "задайте ставку" in summary["landscaping_basis"]
+    money = summary["landscaping_money_basis"]
+    assert "м² ГНС" in money and "задайте ставку" not in money
+    assert summary["landscaping_gap"] == "", "деньги есть, а статья названа пустой"
+
+
+def test_the_switch_sets_the_yard_rate_and_names_it(seen) -> None:
+    """Режим ставит ставку двора — и называет поставленное.
+
+    Молчаливая подстановка врёт не меньше молчаливого обнуления: число в поле
+    неотличимо от вписанного человеком.
+    """
+    before, after = seen["before"], seen["after"]
+    # Предохранитель: до переключения ставки не было, иначе ставить нечего.
+    assert before["yardRate"] == 0
+    assert after["yardRate"] == core.NONRESIDENTIAL_LANDSCAPING_TH_PER_SQM
+    assert "Поставлено" in after["note"], "ставка подставлена молча"
+    assert "м² ГНС" in after["note"]
+
+
+def test_the_returned_project_loses_the_mode_rate(seen) -> None:
+    """«Вернуть убранное» снимает и поставленное: иначе жилой проект уходит
+    считаться ставкой, которую человек не задавал."""
+    assert seen["restored"]["yardRate"] == 0

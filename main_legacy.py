@@ -78,7 +78,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.24.10"
+VERSION = "0.24.11"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -1270,6 +1270,26 @@ NONRESIDENTIAL_CLEARED_INPUTS: dict[str, str] = {
     "underground_manual_spaces": "подземный паркинг проекта — места",
     "underground_manual_gns_sqm": "подземный паркинг проекта — площадь",
 }
+
+# Ставка благоустройства нежилого проекта — тыс ₽ на метр НАЗЕМНОЙ ГНС.
+#
+# Считать двор нежилого проекта населением нечем — квартир у него нет, а
+# норматив города (2152-ПП в редакции 2260-ПП) писан для объектов ЖИЛОГО
+# назначения и меряется метрами на человека. Иного способа, кроме метра ГНС,
+# у нас нет (решение владельца, 21.09.2026: «неважно какая цифра по
+# умолчанию, главное считать на гнс… НО нельзя чтобы это сломало логику
+# расчёта от населения для жилья»).
+#
+# Число — методика владельца, а не замер: единственный наш замер этой статьи
+# (`developaid_cost_structure.json`) снят с ЖИЛОГО проекта и стоит на одном
+# источнике.
+#
+# И живёт оно ТОЛЬКО в режиме: поле `landscaping_gns_th_per_sqm` глобальное и
+# сильнее методики класса, поэтому поставленное умолчанием оно двинуло бы
+# каждый жилой проект — на умолчаниях 400,1 → 1 453,8 млн ₽ и LLCR
+# 0,9595 → 0,9313. Ставит его переключатель типа проекта, там же, где он
+# обнуляет жильё, и так же называет поставленное.
+NONRESIDENTIAL_LANDSCAPING_TH_PER_SQM = 10.0
 
 
 def project_kind(inputs: dict[str, Any] | None) -> str:
@@ -27982,6 +28002,13 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     # строительный объём не входит вовсе. Ответ объявлен один раз и назван
     # основанием — «столько-то на человека × столько-то человек».
     landscaping_sqm, landscaping_basis = landscaping_area(x, t)
+    # Деньги считаются ЗДЕСЬ и один раз, вместе со своим основанием. Прежде
+    # читался только рубль (`landscaping_cost(...)[0]`), а основание брали у
+    # ПЛОЩАДИ — и при заданной ставке подпись советовала «задайте ставку на
+    # метр ГНС», то есть сделать то, что уже сделано. Двор и деньги отвечают
+    # на разные вопросы, значит и оснований у них два.
+    landscaping_amount, landscaping_money_basis = landscaping_cost(
+        x, t, project_above_gns(t))
 
     revenue: dict[date, float] = defaultdict(float)
     revenue_by_product: dict[str, float] = {}
@@ -28258,7 +28285,7 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         # люди»). Прежняя база — метры дома без соцобъектов и ОСЗ — давала на
         # умолчаниях 140 381 м² против 145 381, то есть тот же показатель на
         # 3,5% выше при тех же деньгах.
-        "landscaping": landscaping_cost(x, t, project_above_gns(t))[0],
+        "landscaping": landscaping_amount,
         "commissioning": core_total_gns * n(x, "commissioning_th_per_sqm") * 1000,
         "site_maintenance": core_total_gns * n(x, "site_maintenance_th_per_sqm") * 1000,
         # Статьи объектов — по реестру, а не перечислением: снятый оттуда
@@ -28575,6 +28602,10 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         # едет наружу вместе с основанием, чтобы читатель видел, чем посчитано.
         "landscaping_area_sqm": landscaping_sqm,
         "landscaping_basis": landscaping_basis,
+        # Чем посчитаны ДЕНЬГИ. У двора и у рубля основания разные: заданная
+        # ставка двор не читает вовсе, и его основание рядом с суммой читается
+        # как её причина.
+        "landscaping_money_basis": landscaping_money_basis,
         # Показатель МЕТОДИКИ, а не применённый. Пока он считался из денег, а
         # деньги — из заданной руками ставки, подпись «очистите поле —
         # вернётся методика (30)» повторяла введённое число: на умолчаниях
@@ -30474,6 +30505,7 @@ def calculate(req: CalcRequest) -> dict:
             # основание едет рядом.
             "landscaping_area_sqm": op.get("landscaping_area_sqm", 0.0),
             "landscaping_basis": op.get("landscaping_basis", ""),
+            "landscaping_money_basis": op.get("landscaping_money_basis", ""),
             # Пустая статья называется вслух: нулевая строка в структуру
             # расходов не попадает, и её отсутствие неотличимо от ответа
             # методики «благоустройства здесь не нужно».
@@ -32502,6 +32534,9 @@ def _consolidate_phase_results(
             "landscaping_area_sqm": sum(
                 float(r["summary"].get("landscaping_area_sqm") or 0.0) for r in results),
             "landscaping_basis": "сумма площадей очередей — у каждой своё население",
+            # Деньги у очередей считаются своими основаниями — у одной ставка,
+            # у другой методика, — и взятое у первой говорило бы за остальные.
+            "landscaping_money_basis": "сумма очередей — у каждой своё основание",
             # Пустоту свод не выбирает у первой очереди: текстов у неё
             # столько же, сколько очередей, и любой выбранный говорил бы за
             # остальные. Свод называет счёт.
@@ -45498,6 +45533,10 @@ const PROJECT_KINDS=__DEVELOPAID_PROJECT_KINDS__;
 // движок, когда ищет оставшееся: два перечисления разошлись бы, и «режим
 // включён» значило бы на экране одно, а в расчёте другое.
 const NONRESIDENTIAL_CLEARED=__DEVELOPAID_NONRESIDENTIAL_INPUTS__;
+// Ставка двора нежилого проекта — тоже из движка. Ставит её РЕЖИМ, а не
+// умолчания: поле глобальное и сильнее методики класса, и поставленное в
+// DEFAULT_INPUTS оно двигало бы каждый ЖИЛОЙ проект.
+const NONRES_LANDSCAPING_RATE=__DEVELOPAID_NONRES_LANDSCAPING_RATE__;
 
 function projectKind(){
  const v=String(inputs.project_kind||'mixed');
@@ -45517,7 +45556,7 @@ function projectKindLabel(kind){
 // КРТ и здесь то же. Убранное запоминается — переключение по ошибке иначе
 // уничтожает набранное безвозвратно.
 function clearResidentialInputs(){
- const removed=[],saved={inputs:{},tep:{}};
+ const removed=[],placed=[],saved={inputs:{},tep:{}};
  const cols=['gns','total_area','useful','saleable','transfer','units'];
  MKD_PRODUCTS.forEach(key=>{
   const row=tep[key];if(!row)return;
@@ -45535,8 +45574,18 @@ function clearResidentialInputs(){
  // а норма без квартир — ноль. Оставленный признак «задано руками» запер бы
  // ноль как решение человека, которого он не принимал.
  markParkingByNorm(PROJECT_PARKING_KEY);
+ // Двор режим не убирает, а ПЕРЕВОДИТ на другую базу: мерить его населением
+ // нечем, а иного способа, кроме метра ГНС, у нас нет. Поставленное
+ // называется так же, как убранное: молчаливая подстановка врёт не меньше
+ // молчаливого обнуления. Заданное руками не трогаем — оно сильнее режима.
+ if(!(Number(inputs.landscaping_gns_th_per_sqm||0)>0)&&NONRES_LANDSCAPING_RATE>0){
+  inputs.landscaping_gns_th_per_sqm=NONRES_LANDSCAPING_RATE;
+  saved.landscaping_rate=NONRES_LANDSCAPING_RATE;
+  placed.push('ставка благоустройства '+num(NONRES_LANDSCAPING_RATE)+' тыс ₽/м² ГНС');
+ }
  inputs._nonres_saved=saved;
  inputs._nonres_cleared=removed;
+ inputs._nonres_placed=placed;
  return removed;
 }
 
@@ -45551,32 +45600,40 @@ function restoreResidentialInputs(){
  });
  Object.keys(saved.inputs||{}).forEach(k=>{inputs[k]=saved.inputs[k]});
  if(Object.keys(saved.inputs||{}).length)markParkingByHand(PROJECT_PARKING_KEY);
- delete inputs._nonres_saved;delete inputs._nonres_cleared;
+ // Снимаем ТОЛЬКО своё: перебитая руками ставка принадлежит человеку, и
+ // возврат к жилому типу не вправе стереть его число.
+ if(saved.landscaping_rate&&Number(inputs.landscaping_gns_th_per_sqm||0)===saved.landscaping_rate){
+  inputs.landscaping_gns_th_per_sqm=0;
+ }
+ delete inputs._nonres_saved;delete inputs._nonres_cleared;delete inputs._nonres_placed;
  syncTep(false);renderInputs();renderTep();refreshGroupPeeks();calculate();
 }
 
 function projectKindHasSaved(){
  const saved=inputs._nonres_saved||{};
- return Object.keys(saved.inputs||{}).length>0||Object.keys(saved.tep||{}).length>0;
+ return Object.keys(saved.inputs||{}).length>0||Object.keys(saved.tep||{}).length>0
+  ||!!saved.landscaping_rate;
 }
 
 // Надпись отвечает на три разных вопроса, и слить их нельзя: что считает
 // режим сейчас, что он убрал и что лежит убранным у жилого проекта.
 function projectKindNote(){
- const cleared=inputs._nonres_cleared||[];
+ const cleared=inputs._nonres_cleared||[],placed=inputs._nonres_placed||[];
  if(isNonResidential()){
   return '<div class="note" style="margin:0 0 12px;padding:11px 12px">'
    +'<b>Нежилой проект.</b> Квартиры, встроенная коммерция, кладовые и подземный паркинг МКД '
    +'обнулены и заперты; соцнагрузка и плата за смену ВРИ не считаются — первая идёт от населения, '
    +'вторая от СПП жилых зданий. Отдельно стоящие объекты, их гаражи и наземный паркинг считаются как обычно.'
    +(cleared.length?' Убрано: '+escapeHtml(cleared.join(', '))+'.':'')
-   +' Благоустройство от населения здесь не считается — задайте ставку на метр ГНС. '
-   +'Финансирование режим не трогает: 214-ФЗ нежильё не исключает, эскроу и лестница ставки ПФ те же.'
+   +(placed.length?' Поставлено: '+escapeHtml(placed.join(', '))+' — двор от населения здесь не считается, иного способа, кроме метра ГНС, нет.'
+                 :' Благоустройство от населения здесь не считается — задайте ставку на метр ГНС.')
+   +' Финансирование режим не трогает: 214-ФЗ нежильё не исключает, эскроу и лестница ставки ПФ те же.'
    +'</div>';
  }
  if(projectKindHasSaved()){
   return '<div class="note" style="margin:0 0 12px;padding:11px 12px">'
-   +'Режим «'+escapeHtml(projectKindLabel('nonresidential'))+'» убирал жилые вводные'+(cleared.length?': '+escapeHtml(cleared.join(', ')):'')+'. '
+   +'Режим «'+escapeHtml(projectKindLabel('nonresidential'))+'» убирал жилые вводные'+(cleared.length?': '+escapeHtml(cleared.join(', ')):'')+'.'
+   +(placed.length?' И ставил: '+escapeHtml(placed.join(', '))+'.':'')+' '
    +'<button class="btn" type="button" style="margin-top:8px" onclick="restoreResidentialInputs()">Вернуть убранное</button>'
    +'</div>';
  }
@@ -49068,6 +49125,12 @@ function landscapingRateNote(){
  // основание: у нежилого проекта населения нет вовсе. Пока обе половины
  // отвечали одной фразой, посчитанный ноль читался как «нажмите пересчитать».
  if(!isFinite(area)||area<=0){
+  // При ЗАДАННОЙ ставке основание двора советовало «задайте ставку на метр
+  // ГНС» — то есть сделать то, что уже сделано. У двора и у денег основания
+  // разные, и отвечать надо тем, которым посчитаны деньги.
+  if(s.landscaping_by_rate&&s.landscaping_money_basis){
+   return 'Двор от населения не считается — деньги идут ставкой: '+String(s.landscaping_money_basis)+'.';
+  }
   return s.landscaping_basis?String(s.landscaping_basis)
                             :'Двор ещё не посчитан — нажмите «Пересчитать модель».';
  }
@@ -51819,6 +51882,8 @@ PAGE = PAGE.replace(CAPEX_NAMES_PLACEHOLDER, json.dumps(
     ensure_ascii=False))
 # Тип проекта и состав жилых вводных — из движка: два перечисления разошлись
 # бы, и «режим включён» значило бы на экране одно, а в расчёте другое.
+PAGE = PAGE.replace("__DEVELOPAID_NONRES_LANDSCAPING_RATE__",
+                    json.dumps(NONRESIDENTIAL_LANDSCAPING_TH_PER_SQM))
 PAGE = PAGE.replace("__DEVELOPAID_PROJECT_KINDS__",
                     json.dumps([list(pair) for pair in PROJECT_KINDS], ensure_ascii=False))
 PAGE = PAGE.replace("__DEVELOPAID_NONRESIDENTIAL_INPUTS__",
