@@ -81,7 +81,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.24.16"
+VERSION = "0.24.17"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -42308,6 +42308,26 @@ window.addEventListener('error', function(event){
   }
   var message=event.message||(event.error&&event.error.message)||'ошибка без описания';
   var where=(event.filename||'страница')+':'+(event.lineno||0)+':'+(event.colno||0);
+  // «Script error.» без файла и строки — ошибка из скрипта ДРУГОГО источника:
+  // браузер её содержимое не раскрывает. Наших внешних скриптов на странице
+  // нет ни одного (это держит отдельная проверка), значит пришла она от
+  // расширения браузера или обвязки просмотрщика — на iPhone/Safari это
+  // обычное дело. Прежняя плашка звала это «страница не доработала до конца»
+  // и печатала «страница:0:0»: человек искал поломку в нашем коде по адресу,
+  // которого не существует (экран владельца, 21.09.2026). Сказать, что
+  // страница цела, мы при этом не вправе — но ответить, докуда она дошла,
+  // можем, и это измерение, а не догадка.
+  if(!event.filename&&!event.lineno&&/^script error/i.test(String(message))){
+   pageFailureBox().textContent='Сообщение об ошибке пришло из скрипта другого источника.\n'
+    +message+'\n'
+    +'Браузер не раскрывает ни файла, ни строки, а внешних скриптов на этой странице нет ни одного '
+    +'— значит это расширение браузера или встроенный просмотрщик.\n'
+    +(window.__developaidBooted
+      ? 'Наша страница к этому моменту загрузилась целиком.'
+      : 'Наша страница в этот момент ещё загружалась.')+'\n'
+    +'Если что-то не работает — напишите, что именно не нажимается.';
+   return;
+  }
   pageFailureBox().textContent='Страница не доработала до конца.\n'
    +message+'\n'+where+'\n'
    +'Пришлите этот текст — по нему видно точное место.';
@@ -47909,6 +47929,51 @@ async function applyNormativeTep(densityOverride){
  await calculate();
  return data;
 }
+// Куда класть потенциал участка в нежилом проекте — выбирает человек
+// (решение владельца, 21.09.2026: «надо предлагать выбирать куда хочет
+// вставить. В офисники или в тц»). Сами не делим: доля между офисами и
+// торговлей была бы нашей догадкой, а на экране она выглядит как норматив
+// города. Список объявлен один раз — кнопки и писатель читают его.
+const NONRES_DENSITY_TARGETS=[
+ ['offices','МФОЦ / офисы'],
+ ['standalone_retail','ТЦ / коммерция ОСЗ']
+];
+// Вводные объекта, которыми задаются его метры. Строка ТЭП производная: её
+// считает `syncTep` по долям, и писать в неё напрямую значило бы завести
+// второй ответ на «сколько у объекта метров».
+const NONRES_TARGET_INPUTS={
+ offices:{flag:'offices_enabled',gba:'offices_gba_sqm',sale:'offices_saleable_sqm'},
+ standalone_retail:{flag:'retail_enabled',gba:'retail_gba_sqm',sale:'retail_saleable_sqm'}
+};
+
+function applyDensityToObject(target){
+ const status=document.getElementById('siteApplyStatus');
+ const field=NONRES_TARGET_INPUTS[target];
+ const name=(NONRES_DENSITY_TARGETS.find(t=>t[0]===target)||[])[1]||target;
+ const area=Number(inputs.site_area_ha||0),density=effectiveSiteDensity();
+ if(!field||!(area>0)||!(density>0)){
+  if(status){status.style.display='';
+   status.innerHTML='<span class="import-error">Нужны площадь участка и плотность.</span>'}
+  return;
+ }
+ const spp=area*density;
+ const wasGba=Number(inputs[field.gba]||0),wasSale=Number(inputs[field.sale]||0);
+ inputs[field.flag]=true;
+ inputs[field.gba]=spp;
+ // Продаваемая пересчитывается долями объекта: оставленное прежнее число
+ // описывало бы другой объём, а расходилось бы с ГНС молча.
+ inputs[field.sale]=0;
+ syncTep(false);renderInputs();renderTep();refreshGroupPeeks();calculate();
+ if(status){
+  status.style.display='';
+  status.innerHTML='<span class="import-ok">Потенциал участка положен в «'+escapeHtml(name)+'»: '
+   +num(spp)+' м² ГНС, продаваемая '+num(Number(inputs[field.sale]||0))+' м² (по долям объекта).</span>'
+   +(wasGba>0||wasSale>0?'<div style="margin-top:4px">Заменено: было '+num(wasGba)+' м² ГНС'
+     +(wasSale>0?' и '+num(wasSale)+' м² продаваемой':'')+'.</div>':'')
+   +'<div style="margin-top:4px">Правится там же — вводные объекта на вкладке «Экономика».</div>';
+ }
+}
+
 function applyDensityToTep(){
  const status=document.getElementById('siteApplyStatus');
  const area=Number(inputs.site_area_ha||0);
@@ -47925,9 +47990,13 @@ function applyDensityToTep(){
   status.innerHTML='<span class="import-error">Нежилой проект: нормативный ТЭП калькулятора — жильё '
    +'(94% СПП квартиры, 6% встроенная коммерция), и класть его в запертые строки нельзя.</span>'
    +(area>0&&density>0?'<div style="margin-top:4px">Потенциал участка: <b>'+num(area*density)
-     +' м²</b> СПП ('+landNum(area,3)+' га × '+num(density)+' м²/га).</div>':'')
-   +'<div style="margin-top:4px">Метры нежилого проекта задаются вводными объектов — '
-   +'«МФОЦ / офисы», «ТЦ / коммерция ОСЗ», «ФОК», «Наземный паркинг» на вкладке «Экономика»; '
+     +' м²</b> СПП ('+landNum(area,3)+' га × '+num(density)+' м²/га). Куда его положить?</div>'
+     +'<div style="margin-top:6px">'
+     +NONRES_DENSITY_TARGETS.map(t=>'<button type="button" class="btn" style="margin:0 6px 6px 0" '
+       +'onclick="applyDensityToObject(\''+t[0]+'\')">'+escapeHtml(t[1])+'</button>').join('')
+     +'</div>'
+    :'<div style="margin-top:4px">Сначала задайте площадь участка и плотность.</div>')
+   +'<div style="margin-top:4px">Эти же метры правятся вводными объектов на вкладке «Экономика»; '
    +'строки ТЭП у них производные.</div>';
   return;
  }
@@ -52368,6 +52437,10 @@ async function initializeApp(){
  await loadPresetCatalog();
  await loadMoReference();
  await initializeTelegramLaunch();
+ // Докуда дошла загрузка — это ответ ловушке ошибок, а не украшение: у
+ // сообщения из чужого скрипта места в нашем коде нет, и единственное, что
+ // мы можем сказать честно, — загрузились мы к тому моменту или нет.
+ window.__developaidBooted=true;
 }
 initializeApp();
 </script>

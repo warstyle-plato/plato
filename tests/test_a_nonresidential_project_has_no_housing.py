@@ -474,7 +474,8 @@ let tep={
  ground_commercial:{label:'Коммерция 1 этажа',gns:0,total_area:0,useful:0,saleable:0,transfer:0,units:0},
  underground_parking:{label:'Подземный паркинг',gns:0,total_area:0,useful:0,saleable:0,transfer:0,units:0}
 };
-const num=v=>String(Math.round(Number(v||0)));
+// `num` НЕ заглушка: разрядку числа ставит она, и подменённая она заставила бы
+// проверку держать форму стенда, а не то, что увидит человек.
 let STATUS={style:{},innerHTML:''};
 const document={getElementById:()=>STATUS};
 function renderTep(){}
@@ -544,3 +545,151 @@ console.log(JSON.stringify({note:BOX.textContent}));
         "подпись называет квартиры и места МКД в нежилом проекте"
     assert "Офисы/ТЦ" in nonres, nonres
     assert "себес." in nonres, "подпись молчит о СМР, которую класс двигает"
+
+
+# Писатели ТЭП о режиме не знали, и вернувшееся жильё убрать было нечем:
+# строки заперты, полей на экране нет. Проверяется живым браузером — в
+# исходнике страница со сломанным признаком выглядит так же, как с
+# работающим, а `syncTep` тянет полстраницы и стендом на node не гоняется.
+PROBE_RETURNED = """() => {
+  applyProjectKind('nonresidential');
+  // Так кладут метры импорт ГлавАПУ, мост КРТ и загрузка проекта — мимо
+  // переключателя, который один и обнулял.
+  tep.apartments.gns=15397; tep.apartments.saleable=10008; tep.apartments.total_area=13857;
+  tep.ground_commercial.gns=983; tep.ground_commercial.saleable=885;
+  tep.underground_parking.units=149; tep.underground_parking.gns=5215;
+  inputs.land_rights_cost_mln=1186.7; inputs.kindergarten_places=104;
+  syncTep(false); renderTep();
+  return {flats: Number(tep.apartments.gns||0),
+          commercial: Number(tep.ground_commercial.gns||0),
+          parking: Number(tep.underground_parking.units||0),
+          fee: Number(inputs.land_rights_cost_mln||0),
+          dou: Number(inputs.kindergarten_places||0),
+          cleared: (inputs._nonres_cleared||[]).join(' | ')};
+}"""
+
+
+@pytest.fixture(scope="module")
+def returned():
+    pytest.importorskip("playwright.sync_api")
+    from playwright.sync_api import sync_playwright
+
+    path = browser.chromium_or_skip()
+    errors: list[str] = []
+    with browser.serve(core.app, PORT + 1) as base, sync_playwright() as pw:
+        with pw.chromium.launch(executable_path=str(path)) as engine:
+            page = engine.new_page(viewport={"width": 1440, "height": 900})
+            page.on("pageerror", lambda exc: errors.append(str(exc)))
+            page.goto(base, wait_until="domcontentloaded")
+            page.wait_for_timeout(1800)
+            got = page.evaluate(PROBE_RETURNED)
+            page.wait_for_timeout(400)
+            page.close()
+    got["errors"] = errors
+    return got
+
+
+def test_the_mode_takes_back_what_a_writer_returned(returned) -> None:
+    assert returned["errors"] == [], "страница не доработала до конца"
+    assert returned["flats"] == 0, "квартиры вернулись писателем и остались"
+    assert returned["commercial"] == 0
+    assert returned["parking"] == 0, "паркинг МКД вернулся и остался"
+    assert returned["fee"] == 0, "плата за смену ВРИ вернулась и осталась"
+    assert returned["dou"] == 0
+
+
+def test_the_mode_names_what_it_took_back(returned) -> None:
+    """Убранное называется поимённо — и то, что вернул писатель, тоже.
+
+    Молчаливое обнуление врёт не меньше молчаливого сохранения, а поля на
+    экране нет: не сказав, человек и не узнает, что его метры не считаются.
+    """
+    # Разряды на странице разделяет неразрывный пробел — держать его форму в
+    # проверке значит держать оформление, а утверждение здесь о другом.
+    cleared = returned["cleared"].replace("\u00a0", " ")
+    assert "плата за смену ВРИ 1 186,7" in cleared, cleared
+    assert "места ДОО 104" in cleared, cleared
+
+
+# Куда положить потенциал участка — выбирает человек (решение владельца,
+# 21.09.2026: «надо предлагать выбирать куда хочет вставить. В офисники или
+# в тц»). Делить его самим нельзя: доля между офисами и торговлей была бы
+# нашей догадкой, а на экране выглядела бы как норматив города.
+PROBE_TARGET = """() => {
+  applyProjectKind('nonresidential');
+  inputs.site_area_ha=0.546; inputs.site_density_manual=35000;
+  applyDensityToTep();
+  const box=document.getElementById('siteApplyStatus');
+  const ask=box.innerText.replace(/\\s+/g,' ');
+  const buttons=[...box.querySelectorAll('button')].map(b => b.textContent.trim());
+  const wasGba=Number(inputs.offices_gba_sqm||0);
+  applyDensityToObject('offices');
+  return {ask: ask, buttons: buttons, wasGba: wasGba,
+          done: box.innerText.replace(/\\s+/g,' '),
+          gba: Number(inputs.offices_gba_sqm||0),
+          sale: Number(inputs.offices_saleable_sqm||0),
+          rowGns: Number(tep.offices.gns||0),
+          flats: Number(tep.apartments.gns||0),
+          enabled: !!inputs.offices_enabled};
+}"""
+
+
+@pytest.fixture(scope="module")
+def chosen():
+    pytest.importorskip("playwright.sync_api")
+    from playwright.sync_api import sync_playwright
+
+    path = browser.chromium_or_skip()
+    errors: list[str] = []
+    with browser.serve(core.app, PORT + 2) as base, sync_playwright() as pw:
+        with pw.chromium.launch(executable_path=str(path)) as engine:
+            page = engine.new_page(viewport={"width": 1440, "height": 900})
+            page.on("pageerror", lambda exc: errors.append(str(exc)))
+            page.goto(base, wait_until="domcontentloaded")
+            page.wait_for_timeout(1800)
+            got = page.evaluate(PROBE_TARGET)
+            page.wait_for_timeout(400)
+            page.close()
+    got["errors"] = errors
+    return got
+
+
+def test_the_density_button_asks_where_to_put_it(chosen) -> None:
+    """Отказ заменён вопросом: потенциал назван числом, цели — кнопками."""
+    assert chosen["errors"] == [], "страница не доработала до конца"
+    ask = chosen["ask"].replace(" ", " ")
+    assert "16 380" in ask, ask
+    # Цели берутся из объявленного списка, а не пишутся на экране руками.
+    assert chosen["buttons"] == [name for _, name in _density_targets()], chosen["buttons"]
+
+
+def test_the_chosen_object_gets_the_metres(chosen) -> None:
+    """Выбранный объект получает метры, а жильё остаётся нулём."""
+    assert chosen["enabled"] is True, "объект не включился"
+    assert round(chosen["gba"]) == 16380, chosen["gba"]
+    assert round(chosen["rowGns"]) == 16380, "строка ТЭП объекта не пошла за вводной"
+    # Продаваемая — производная долей объекта, а не оставшееся прежнее число.
+    assert 0 < chosen["sale"] < chosen["gba"]
+    assert chosen["flats"] == 0, "жильё вернулось вместе с потенциалом"
+
+
+def test_the_replaced_metres_are_named(chosen) -> None:
+    """Заменённое называется числом: молча переписанная вводная неотличима
+    от невнимательности."""
+    # Предохранитель: в умолчаниях у объекта метры были, иначе заменять нечего.
+    assert chosen["wasGba"] > 0
+    done = chosen["done"].replace(" ", " ")
+    assert "Заменено" in done, done
+    assert str(round(chosen["wasGba"])) in done.replace(" ", ""), done
+
+
+def _density_targets() -> list[tuple[str, str]]:
+    """Список целей — со страницы, а не пересказом: пересказанный, он
+    разошёлся бы с кнопками молча."""
+    import json
+
+    import page_blocks
+
+    raw = page_blocks.constant("NONRES_DENSITY_TARGETS")
+    body = raw[raw.index("["):raw.rindex("]") + 1].replace("'", '"')
+    return [tuple(pair) for pair in json.loads(body)]
