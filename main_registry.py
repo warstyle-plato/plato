@@ -10,6 +10,7 @@ from developaid_v2_account_projects import install as install_v2_account_project
 from developaid_v2_upgrade import install as install_v2_upgrade
 from guide import install as install_guide
 from ia_preview import install as install_ia_preview
+from krt_index_preview import install as install_krt_index_preview
 from market_search import install as install_market_search
 from market_search.ui_v6 import install as install_market_ui, install_price_hint
 from mpt_bot_menu import install as install_mpt_bot_menu
@@ -28,6 +29,7 @@ install_mpt_bot_menu(_base)
 registry = install(_base)
 market_search = install_market_search(app)
 install_auction_search(app)
+install_krt_index_preview(app)
 # Свод источников себестоимости — страница `/statistics` и её API. Модуль
 # перенесён из ветки «Сводного чата» один в один: у числа не бывает двух жизней.
 install_statistics(app, core)
