@@ -365,8 +365,14 @@ TEP_HEADER_ROW = 14
 TABLE_FIRST_ROW = 16
 FIN_HEADER_ROW = 24
 FIN_FIRST_ROW = 25
-CHART_TOP_ROW = 32
-CHART_BOTTOM_ROW = 50
+# Блок финансирования и рисков идёт строками по числу своих позиций, и
+# заголовок диаграмм стоит СЛЕДУЮЩЕЙ строкой за ним — а не числом: при
+# семи позициях блок кончался на 31-й, и на неё же ложился заголовок; две
+# строки с одним номером Excel считает повреждением листа.
+FIN_LINE_COUNT = max(len(KPI_CATALOGUE) - CARD_COUNT + 2, len(RISK_CATALOGUE) + 1)
+CHART_SECTION_ROW = FIN_FIRST_ROW + FIN_LINE_COUNT
+CHART_TOP_ROW = CHART_SECTION_ROW + 1
+CHART_BOTTOM_ROW = CHART_TOP_ROW + 18
 CHART_SLOTS = ((0, 6), (6, 11), (11, 16))            # колонки (от, до) трёх диаграмм
 
 
@@ -485,6 +491,7 @@ def build_dashboard_sheet(styles: Styles, drawing_rel_id: str, phased: bool) -> 
     fin_labels.update({"project_start": ("Старт проекта", "дата"), "rve": ("РВЭ последней очереди", "дата")})
     risk_items = list(RISK_CATALOGUE)
     line_count = max(len(fin_items), len(risk_items) + 1)
+    assert line_count == FIN_LINE_COUNT, "блок финансирования разошёлся со своей раскладкой"
     for index in range(line_count):
         r = FIN_FIRST_ROW + index
         merges.extend([f"A{r}:E{r}", f"F{r}:H{r}", f"I{r}:M{r}", f"O{r}:P{r}"])
@@ -521,7 +528,7 @@ def build_dashboard_sheet(styles: Styles, drawing_rel_id: str, phased: bool) -> 
         rows.append(_row(r, cells))
     del risk_off  # цвет «нет» — обычный текст; красное только у сработавшего
 
-    r = CHART_TOP_ROW - 1
+    r = CHART_SECTION_ROW
     section_row(r, "МОСТ ОТ ВЫРУЧКИ К ПРИБЫЛИ · СТРУКТУРА РАСХОДОВ", "ДОЛГ И ЭСКРОУ ПО МЕСЯЦАМ")
     r = CHART_BOTTOM_ROW + 1
     origin_style = styles.xf(0, font=2, fill=0, border=0, halign="left")
