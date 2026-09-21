@@ -96,7 +96,10 @@ def test_the_revision_actually_read_the_book(revision):
     formulas = sum(1 for cells in was.values() for kind, _ in cells.values() if kind == "f")
     assert len(was) >= 15, was.keys()
     assert formulas > 50_000, formulas
-    assert set(now) == set(was), "в собранной книге не те листы"
+    # Свой лист данных дашборда (Dashboard_Data) — наша добавка, а не лист
+    # шаблона: ревизия хардов сверяет листы владельца, и его она не судит.
+    import v4_dashboard
+    assert set(now) - {v4_dashboard.DATA_SHEET} == set(was), "в собранной книге не те листы"
 
 
 def _replacements(was, now):

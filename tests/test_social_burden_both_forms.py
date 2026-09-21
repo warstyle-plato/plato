@@ -182,8 +182,30 @@ def test_the_book_opens_on_the_result():
 
 
 def test_no_sheet_was_lost_in_the_reorder():
+    """Листы книги — это листы шаблона плюс наши, названные поимённо.
+
+    Число листов держалось литералом (21) и упало на верной правке, когда
+    дашборд принёс свой лист данных: проверка падала, когда рядом что-то
+    ДОБАВИЛИ, а не когда что-то сломали. Состав берётся у самого шаблона
+    (`workbook.xml`), наши добавки — у модулей, которые их дописывают;
+    расчётный лист при этом переименован, и это тоже часть утверждения.
+    """
+    import re
+    import zipfile
+
+    import v4_dashboard
+    import v4_entry_sheet
+
+    with zipfile.ZipFile(core._V4_TEMPLATE_PATH) as source:
+        template = re.findall(r'<x:sheet name="([^"]+)"',
+                              source.read("xl/workbook.xml").decode("utf-8"))
+    assert len(template) >= 15, template
+    expected = {v4_entry_sheet.PARAMS_SHEET if name == v4_entry_sheet.ENTRY_SHEET else name
+                for name in template}
+    expected |= {v4_entry_sheet.ENTRY_SHEET, v4_entry_sheet.GUIDE_SHEET, v4_dashboard.DATA_SHEET}
     names = workbook("Строительство").sheetnames
-    assert len(names) == len(set(names)) == 21
+    assert len(names) == len(set(names)), "лист задвоился"
+    assert set(names) == expected, (set(names) ^ expected)
     for required in ("ПРОВЕРКИ", "CF_1", "CF_4", "КРЕДИТЫ", "ОБЪЕКТЫ"):
         assert required in names
 
