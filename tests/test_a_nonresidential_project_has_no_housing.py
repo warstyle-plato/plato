@@ -154,7 +154,10 @@ def test_the_yard_says_why_it_has_no_area() -> None:
     area, basis = core.landscaping_area(x, t)
     assert area == 0.0
     assert "благоустраивать нечего" not in basis, "у нежилого проекта двор есть"
-    assert "ставку на метр ГНС" in basis, "не сказано, чем его мерить"
+    # Чем мерить, больше не спрашивают: двор нежилого проекта входит в
+    # себестоимость объекта и отдельной статьёй не считается (владелец,
+    # 21.09.2026). Молчания при этом нет — основание говорит, ПОЧЕМУ ноль.
+    assert "себестоимость объекта" in basis, basis
 
     # У жилого проекта двор по-прежнему считается населением.
     home_x = copy.deepcopy(core.DEFAULT_INPUTS)
@@ -330,22 +333,57 @@ def test_the_removed_can_be_returned(seen) -> None:
     assert restored["field"] is True
 
 
-def test_the_default_yard_rate_lives_in_the_mode_only() -> None:
-    """Ставка двора нежилого проекта — свойство РЕЖИМА, а не умолчание.
+def test_the_nonresidential_yard_is_inside_the_object_cost() -> None:
+    """Отдельной статьи двора у нежилого проекта нет — решение владельца.
 
-    Поле `landscaping_gns_th_per_sqm` глобальное и сильнее методики класса:
-    поставленное в `DEFAULT_INPUTS`, оно двинуло бы КАЖДЫЙ жилой проект — на
-    умолчаниях благоустройство 400,1 → 1 453,8 млн ₽ и LLCR 0,9595 → 0,9313.
-    Решение владельца 21.09.2026: «неважно какая цифра по умолчанию, главное
-    считать на гнс… НО нельзя чтобы это сломало логику расчёта от населения
-    для жилья».
+    21.09.2026: «у нас себестоимость вообще всего объекта же целиком
+    прописана» и следом «не считать». Двор внутри ставки СМР объекта, и
+    вторая статья была бы двойным счётом. Цена прежней ставки измерена: на
+    офиснике 19 110 м² это 210,7 млн ₽ CAPEX и LLCR 0,5427 против 0,5629.
     """
-    assert core.NONRESIDENTIAL_LANDSCAPING_TH_PER_SQM > 0
-    assert float(core.DEFAULT_INPUTS.get("landscaping_gns_th_per_sqm") or 0.0) == 0.0, (
-        "ставка нежилого режима уехала в умолчания — она сильнее методики класса")
-    # И на страницу она едет из движка, а не написана там числом.
-    assert "__DEVELOPAID_NONRES_LANDSCAPING_RATE__" not in core.PAGE
-    assert f"const NONRES_LANDSCAPING_RATE={core.NONRESIDENTIAL_LANDSCAPING_TH_PER_SQM:g}" in core.PAGE
+    x, t = _objects_only()
+    x["project_kind"] = core.PROJECT_KIND_NONRESIDENTIAL
+    x["landscaping_gns_th_per_sqm"] = 0.0
+    # Строку ТЭП объекта заполняет страница, а здесь движок зовут напрямую:
+    # без метров в ней ГНС проекта ноль, и пустая статья ничего не значит —
+    # `landscaping_gap` молчит по построению, когда строить нечего.
+    gba = float(x["offices_gba_sqm"])
+    t["offices"].update(gns=gba, total_area=gba * 0.94,
+                        useful=gba * 0.94, saleable=gba * 0.94)
+    summary = core.calculate(core.CalcRequest(inputs=copy.deepcopy(x),
+                                              tep=copy.deepcopy(t)))["summary"]
+    # Предохранитель: строить в проекте есть что.
+    assert summary["project_gns_sqm"] > 0 and summary["capex"] > 0
+    assert summary["landscaping_money_basis"].startswith("нежилой проект"), \
+        summary["landscaping_money_basis"]
+    money = summary["landscaping_money_basis"]
+    assert "себестоимость объекта" in money, money
+    assert "задайте ставку" not in money, money
+    # И ставки двора класса в основании нет: она про жильё, а тут её вообще не
+    # применяют. Без этого проверка зеленеет и на прежнем пути, где деньги
+    # выходили нулём просто потому, что площадь двора ноль, — основание тогда
+    # начиналось с «35 тыс ₽/м² двора», то есть называло чужой множитель.
+    assert "тыс ₽/м² двора" not in money, money
+    assert summary["landscaping_gap"], "нулевая статья промолчала"
+    # Своей ставки у режима больше нет ни в движке, ни на странице.
+    assert not hasattr(core, "NONRESIDENTIAL_LANDSCAPING_TH_PER_SQM")
+    assert "NONRES_LANDSCAPING_RATE" not in core.PAGE
+
+
+def test_a_hand_given_rate_still_counts_the_yard() -> None:
+    """Вписанная руками ставка сильнее методики — и в нежилом тоже.
+
+    «Не считать» — это про методику, а не запрет: посчитать двор отдельно
+    остаётся решением человека.
+    """
+    x, t = _objects_only()
+    x["project_kind"] = core.PROJECT_KIND_NONRESIDENTIAL
+    x["landscaping_gns_th_per_sqm"] = 10.0
+    summary = core.calculate(core.CalcRequest(inputs=copy.deepcopy(x),
+                                              tep=copy.deepcopy(t)))["summary"]
+    assert summary["landscaping_by_rate"] is True
+    assert "м² ГНС" in summary["landscaping_money_basis"]
+    assert summary["landscaping_gap"] == "", "деньги есть, а статья названа пустой"
 
 
 def test_the_residential_methodology_does_not_move() -> None:
@@ -366,42 +404,38 @@ def test_the_residential_methodology_does_not_move() -> None:
 def test_the_money_says_what_it_was_counted_from() -> None:
     """У двора и у денег основания разные, и второе никто не читал.
 
-    При ЗАДАННОЙ ставке основание площади печатало «задайте ставку на метр
-    ГНС» — то есть советовало сделать то, что уже сделано: свод брал
-    основание у площади, а деньги своё возвращали, и его не читал никто.
+    Свод брал основание у ПЛОЩАДИ, а деньги своё возвращали — и его не читал
+    никто: при заданной ставке подпись советовала сделать то, что уже
+    сделано.
     """
     x, t = _objects_only()
     x["project_kind"] = core.PROJECT_KIND_NONRESIDENTIAL
-    x["landscaping_gns_th_per_sqm"] = core.NONRESIDENTIAL_LANDSCAPING_TH_PER_SQM
+    x["landscaping_gns_th_per_sqm"] = 10.0
     summary = core.calculate(core.CalcRequest(inputs=copy.deepcopy(x),
                                               tep=copy.deepcopy(t)))["summary"]
-    # Предохранитель: площадь двора тут ноль, значит её основание и есть тот
-    # самый совет — иначе проверять нечего.
+    # Предохранитель: площадь двора тут ноль, а деньги есть — значит основания
+    # у них расходятся, иначе проверять нечего.
     assert summary["landscaping_area_sqm"] == 0
-    assert "задайте ставку" in summary["landscaping_basis"]
+    assert summary["landscaping_by_rate"] is True
     money = summary["landscaping_money_basis"]
-    assert "м² ГНС" in money and "задайте ставку" not in money
-    assert summary["landscaping_gap"] == "", "деньги есть, а статья названа пустой"
+    assert "м² ГНС" in money
+    assert money != summary["landscaping_basis"]
 
 
-def test_the_switch_sets_the_yard_rate(seen) -> None:
-    """Режим ставит ставку двора — это методика, а не оформление.
+def test_the_switch_sets_no_yard_rate(seen) -> None:
+    """Режим ставку двора не ставит вовсе — двор внутри себестоимости объекта.
 
-    Называет её подпись у самого поля, а не окно и не плашка: «это никому
-    неинтересно и никакой роли не играет — у нас себестоимость всего объекта
-    целиком прописана» (владелец, 21.09.2026). Молчаливой подстановка от
-    этого не становится — число объяснено там, где стоит, и это держит
-    `test_the_yard_rate_is_explained_where_it_stands`.
+    Прежде ставил 10 тыс ₽/м² ГНС, и это был отдельный расход: «не считать»
+    (владелец, 21.09.2026).
     """
     before, after = seen["before"], seen["after"]
-    # Предохранитель: до переключения ставки не было, иначе ставить нечего.
+    # Предохранитель: до переключения поле пусто, иначе проверять нечего.
     assert before["yardRate"] == 0
-    assert after["yardRate"] == core.NONRESIDENTIAL_LANDSCAPING_TH_PER_SQM
+    assert after["yardRate"] == 0, "режим поставил ставку двора"
 
 
-def test_the_returned_project_loses_the_mode_rate(seen) -> None:
-    """«Вернуть убранное» снимает и поставленное: иначе жилой проект уходит
-    считаться ставкой, которую человек не задавал."""
+def test_the_returned_project_has_no_mode_rate(seen) -> None:
+    """И после возврата к жилью поле по-прежнему пусто."""
     assert seen["restored"]["yardRate"] == 0
 
 
@@ -754,7 +788,8 @@ def dialog():
             # Подпись у поля ставки пишется по итогу расчёта, а он идёт своим
             # чередом: снятая раньше, она показывает ещё жилой двор.
             page.wait_for_function(
-                "() => ((lastResult||{}).summary||{}).landscaping_by_rate === true",
+                "() => /себестоимость объекта/.test("
+                "  (((lastResult||{}).summary||{}).landscaping_money_basis) || '')",
                 timeout=20000)
             got["rateNote"] = page.evaluate(
                 "() => (document.getElementById('landscapingRateNote')||{}).textContent || ''")
@@ -794,12 +829,16 @@ def test_the_window_keeps_quiet_about_the_yard_rate(dialog) -> None:
     assert "214-ФЗ" in text, text
 
 
-def test_the_yard_rate_is_explained_where_it_stands(dialog) -> None:
-    """Подпись у самого поля называет ставку и то, что она делает."""
+def test_the_yard_is_explained_where_the_rate_stands(dialog) -> None:
+    """Подпись у поля ставки говорит, почему статьи нет.
+
+    Ноль расходов там, где что-то строится, — это «не посчитано», а не «не
+    нужно»; здесь ответ методики, и он назван: двор внутри себестоимости
+    объекта.
+    """
     note = dialog["rateNote"].replace("\u00a0", " ")
     assert note, "подпись у поля ставки пуста"
-    assert "ставк" in note.lower(), note
-    assert "м² ГНС" in note, note
+    assert "себестоимость объекта" in note, note
 
 
 def test_the_window_says_where_the_metres_go(dialog) -> None:

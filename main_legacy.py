@@ -698,7 +698,8 @@ def landscaping_area_per_person(inputs: dict[str, Any],
         if population <= 0:
             if is_nonresidential(inputs):
                 return 0.0, ("нежилой проект: площадь задана, а делить её на "
-                             "человека не на кого — задайте ставку на метр ГНС")
+                             "человека не на кого — двор здесь входит в "
+                             "себестоимость объекта")
             return 0.0, "площадь задана, а квартир в проекте нет — на человека не делится"
         shown_given = f"{given:g}".replace(".", ",")
         return given / population, (
@@ -732,6 +733,16 @@ def landscaping_cost(inputs: dict[str, Any], tep: dict[str, Any],
         return (max(0.0, above_gns) * rate * 1000,
                 f"{rate:g} тыс ₽/м² ГНС × {above_gns:,.0f} м²"
                 .replace(",", " "))
+    # Нежилой проект отдельной статьи двора не имеет — решение владельца
+    # (21.09.2026): «у нас себестоимость вообще всего объекта же целиком
+    # прописана», то есть двор уже в ставке СМР объекта, и вторая статья была
+    # бы двойным счётом. Прежде режим ставил свою ставку 10 тыс ₽/м² ГНС, и
+    # на офиснике 19 110 м² это 210,7 млн ₽ CAPEX и LLCR 0,5427 против
+    # 0,5629. Заданная руками ставка по-прежнему сильнее: посчитать двор
+    # отдельно — решение человека, а не запрет методики.
+    if is_nonresidential(inputs):
+        return 0.0, ("нежилой проект: двор входит в себестоимость объекта — "
+                     "отдельной статьёй не считается")
     area, basis = landscaping_area(inputs, tep)
     yard_rate = float(inputs.get("landscaping_th_per_sqm") or 0.0)
     return area * yard_rate * 1000, f"{yard_rate:g} тыс ₽/м² двора · {basis}"
@@ -748,8 +759,8 @@ def landscaping_area(inputs: dict[str, Any], tep: dict[str, Any]) -> tuple[float
             # молчание методики читалось бы как отсутствие работ. База у этого
             # проекта своя и она уже есть — ставка на метр наземной ГНС.
             if is_nonresidential(inputs):
-                return 0.0, ("нежилой проект: двор от населения не считается — "
-                             "задайте ставку на метр ГНС")
+                return 0.0, ("нежилой проект: двор входит в себестоимость "
+                             "объекта — отдельной статьёй не считается")
             return 0.0, "квартир в проекте нет — благоустраивать нечего"
         return 0.0, basis
     # Основание называет драйвер и не повторяет само себя: «11 м² × 2425 чел.»
@@ -1337,25 +1348,18 @@ NONRESIDENTIAL_CLEARED_INPUTS: dict[str, str] = {
     "underground_manual_gns_sqm": "подземный паркинг проекта — площадь",
 }
 
-# Ставка благоустройства нежилого проекта — тыс ₽ на метр НАЗЕМНОЙ ГНС.
+# Своей ставки двора у нежилого проекта НЕТ — решение владельца 21.09.2026:
+# «не надо писать что ставка двора — это никому неинтересно и никакой роли не
+# играет вообще! У нас себестоимость вообще всего объекта же целиком
+# прописана» и следом «не считать». Двор входит в ставку СМР объекта, и
+# отдельная статья была бы двойным счётом.
 #
-# Считать двор нежилого проекта населением нечем — квартир у него нет, а
-# норматив города (2152-ПП в редакции 2260-ПП) писан для объектов ЖИЛОГО
-# назначения и меряется метрами на человека. Иного способа, кроме метра ГНС,
-# у нас нет (решение владельца, 21.09.2026: «неважно какая цифра по
-# умолчанию, главное считать на гнс… НО нельзя чтобы это сломало логику
-# расчёта от населения для жилья»).
+# Прежде режим ставил 10 тыс ₽/м² ГНС. Цена измерена на офиснике 19 110 м²:
+# 210,7 млн ₽ CAPEX и LLCR 0,5427 против 0,5629 без неё.
 #
-# Число — методика владельца, а не замер: единственный наш замер этой статьи
-# (`developaid_cost_structure.json`) снят с ЖИЛОГО проекта и стоит на одном
-# источнике.
-#
-# И живёт оно ТОЛЬКО в режиме: поле `landscaping_gns_th_per_sqm` глобальное и
-# сильнее методики класса, поэтому поставленное умолчанием оно двинуло бы
-# каждый жилой проект — на умолчаниях 400,1 → 1 453,8 млн ₽ и LLCR
-# 0,9595 → 0,9313. Ставит его переключатель типа проекта, там же, где он
-# обнуляет жильё, и так же называет поставленное.
-NONRESIDENTIAL_LANDSCAPING_TH_PER_SQM = 10.0
+# Поле `landscaping_gns_th_per_sqm` при этом остаётся и работает: заданная
+# руками ставка сильнее методики в любом режиме — посчитать двор отдельно
+# это решение человека, а не запрет методики.
 
 
 def project_kind(inputs: dict[str, Any] | None) -> str:
@@ -46059,10 +46063,6 @@ const PROJECT_KINDS=__DEVELOPAID_PROJECT_KINDS__;
 // движок, когда ищет оставшееся: два перечисления разошлись бы, и «режим
 // включён» значило бы на экране одно, а в расчёте другое.
 const NONRESIDENTIAL_CLEARED=__DEVELOPAID_NONRESIDENTIAL_INPUTS__;
-// Ставка двора нежилого проекта — тоже из движка. Ставит её РЕЖИМ, а не
-// умолчания: поле глобальное и сильнее методики класса, и поставленное в
-// DEFAULT_INPUTS оно двигало бы каждый ЖИЛОЙ проект.
-const NONRES_LANDSCAPING_RATE=__DEVELOPAID_NONRES_LANDSCAPING_RATE__;
 
 function projectKind(){
  const v=String(inputs.project_kind||'mixed');
@@ -46125,17 +46125,22 @@ function clearResidentialInputs(){
 // ПЕРЕКЛЮЧАТЕЛЬ, один раз. Зовись она из пересчёта, очищенное человеком поле
 // возвращалось бы к нашему числу на первой же правке ТЭП — то есть режим
 // перебивал бы его решение молча.
+// Ставку двора режим больше НЕ ставит: двор нежилого проекта входит в
+// себестоимость объекта («у нас себестоимость вообще всего объекта же целиком
+// прописана», владелец 21.09.2026). Прежде поставленное — снимаем: мы сами
+// его и поставили, и проект, переключённый до этой правки, иначе остался бы
+// считать статью, которой в методике больше нет. Вписанное человеком не
+// трогаем — оно сильнее методики в любом режиме.
 function placeNonResidentialDefaults(){
  const saved=inputs._nonres_saved||{inputs:{},tep:{}};
- const placed=(inputs._nonres_placed||[]).slice();
- if(!(Number(inputs.landscaping_gns_th_per_sqm||0)>0)&&NONRES_LANDSCAPING_RATE>0){
-  inputs.landscaping_gns_th_per_sqm=NONRES_LANDSCAPING_RATE;
-  saved.landscaping_rate=NONRES_LANDSCAPING_RATE;
-  placed.push('ставка благоустройства '+num(NONRES_LANDSCAPING_RATE)+' тыс ₽/м² ГНС');
+ if(saved.landscaping_rate
+    &&Number(inputs.landscaping_gns_th_per_sqm||0)===Number(saved.landscaping_rate)){
+  inputs.landscaping_gns_th_per_sqm=0;
  }
+ delete saved.landscaping_rate;
  inputs._nonres_saved=saved;
- inputs._nonres_placed=placed;
- return placed;
+ inputs._nonres_placed=[];
+ return [];
 }
 
 // Возвращает ровно то, что убрал режим. Восстановление — не автоматическое:
@@ -52582,8 +52587,6 @@ PAGE = PAGE.replace(CAPEX_NAMES_PLACEHOLDER, json.dumps(
     ensure_ascii=False))
 # Тип проекта и состав жилых вводных — из движка: два перечисления разошлись
 # бы, и «режим включён» значило бы на экране одно, а в расчёте другое.
-PAGE = PAGE.replace("__DEVELOPAID_NONRES_LANDSCAPING_RATE__",
-                    json.dumps(NONRESIDENTIAL_LANDSCAPING_TH_PER_SQM))
 PAGE = PAGE.replace("__DEVELOPAID_PROJECT_KINDS__",
                     json.dumps([list(pair) for pair in PROJECT_KINDS], ensure_ascii=False))
 PAGE = PAGE.replace("__DEVELOPAID_NONRESIDENTIAL_INPUTS__",
