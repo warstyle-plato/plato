@@ -398,3 +398,149 @@ def test_the_returned_project_loses_the_mode_rate(seen) -> None:
     """«Вернуть убранное» снимает и поставленное: иначе жилой проект уходит
     считаться ставкой, которую человек не задавал."""
     assert seen["restored"]["yardRate"] == 0
+
+
+# --- Режим — признак, а не разовое действие переключателя -------------------
+#
+# Экран владельца 21.09.2026: тип «Нежилое», квартиры и кладовые по нулям, а
+# подземный паркинг 149 м/м и 5 215 м² — под подписью «строка обнулена и
+# заперта». Обнулял его переключатель верно; возвращала выгрузка ГлавАПУ,
+# которая о режиме не знала: без квартир наша норма отвечает нулём, а
+# ВЫГРУЗКА отвечает своим числом, посчитанным по нормативному — то есть
+# ЖИЛОМУ — ТЭП участка (135 постоянных + 14 гостевых).
+#
+# Цена на проверочном нежилом проекте: CAPEX +762,6 млн ₽, выручка +74,2
+# (135 мест продаются), чистая прибыль −932,3 млн, LLCR 0,609 → 0,526.
+#
+# Там же вторая половина: кнопка «Рассчитать ТЭП от площади и плотности»
+# раскладывала СПП по МКД — 94% квартиры, 6% встроенная коммерция, — и на
+# участке 0,546 га при 35 000 м²/га клала 15 397 и 983 м² в ЗАПЕРТЫЕ строки.
+# Убрать их человек не мог: ячейки только для чтения, полей на экране нет.
+
+
+def _parking_stand(kind: str) -> dict:
+    """Строка подземного паркинга при живой выгрузке ГлавАПУ."""
+    import json
+
+    import page_blocks
+
+    prelude = """
+const inputs={project_kind:'%s', _glavapu_import:{normalized:{
+  parking_permanent:135, parking_guest:14, mfc_parking_spaces:0, office_gba_sqm:0}}};
+let tep={
+ apartments:{label:'Квартиры',gns:0,total_area:0,useful:0,saleable:0,transfer:0,units:0},
+ ground_commercial:{label:'Коммерция 1 этажа',gns:0,total_area:0,useful:0,saleable:0,transfer:0,units:0},
+ underground_parking:{label:'Подземный паркинг',gns:0,total_area:0,useful:0,saleable:0,transfer:0,units:0},
+ storage:{label:'Кладовые',gns:0,total_area:0,useful:0,saleable:0,transfer:0,units:0}
+};
+const num=v=>String(Math.round(Number(v||0)));
+""" % kind
+    tail = """
+repairParkingFromGlavapu();
+const p=parkingRequirement();
+console.log(JSON.stringify({units:tep.underground_parking.units,
+ gns:tep.underground_parking.gns, required:p?p.spaces:0}));
+"""
+    out, _ = page_blocks.run(prelude, tail)
+    return json.loads(out)
+
+
+def test_the_glavapu_parking_does_not_survive_the_mode() -> None:
+    """Паркинг МКД в нежилом проекте не ставит ни норма, ни выгрузка."""
+    housing = _parking_stand("mixed")
+    # Предохранитель: в ЖИЛОМ проекте та же выгрузка эту строку заполняет,
+    # иначе проверка зелена на коде, который не ставит паркинг вовсе.
+    assert housing["units"] == 149 and housing["required"] == 149
+    assert housing["gns"] > 0
+
+    nonres = _parking_stand("nonresidential")
+    assert nonres["units"] == 0, "паркинг МКД вернулся выгрузкой ГлавАПУ"
+    assert nonres["gns"] == 0
+    assert nonres["required"] == 0, "потребность жилья считается без жилья"
+
+
+def _density_stand(kind: str) -> dict:
+    """Что делает кнопка «Рассчитать ТЭП от площади и плотности»."""
+    import json
+
+    import page_blocks
+
+    prelude = """
+const inputs={project_kind:'%s', site_area_ha:0.546, site_density_manual:35000,
+  _glavapu_import:{normalized:{parking_permanent:135,parking_guest:14,
+   mfc_parking_spaces:0, office_gba_sqm:0}}};
+let tep={
+ apartments:{label:'Квартиры',gns:0,total_area:0,useful:0,saleable:0,transfer:0,units:0},
+ ground_commercial:{label:'Коммерция 1 этажа',gns:0,total_area:0,useful:0,saleable:0,transfer:0,units:0},
+ underground_parking:{label:'Подземный паркинг',gns:0,total_area:0,useful:0,saleable:0,transfer:0,units:0}
+};
+const num=v=>String(Math.round(Number(v||0)));
+let STATUS={style:{},innerHTML:''};
+const document={getElementById:()=>STATUS};
+function renderTep(){}
+function calculate(){}
+function applyNormativeTep(){return Promise.resolve({})}
+function escapeHtml(s){return String(s)}
+""" % kind
+    tail = """
+applyDensityToTep();
+console.log(JSON.stringify({flats:Math.round(tep.apartments.gns),
+ commercial:Math.round(tep.ground_commercial.gns),
+ status:STATUS.innerHTML.replace(/<[^>]+>/g,' ').replace(/\\s+/g,' ').trim()}));
+"""
+    out, _ = page_blocks.run(prelude, tail)
+    return json.loads(out)
+
+
+def test_the_density_button_does_not_bring_housing_back() -> None:
+    """В нежилом проекте кнопка отказывается — и говорит, где задать метры."""
+    housing = _density_stand("mixed")
+    # Предохранитель: в жилом проекте кнопка работает как работала.
+    assert housing["flats"] > 0 and housing["commercial"] > 0
+
+    nonres = _density_stand("nonresidential")
+    assert nonres["flats"] == 0 and nonres["commercial"] == 0, \
+        "кнопка положила жильё в запертые строки нежилого проекта"
+    status = nonres["status"]
+    assert "Нежилой проект" in status, "отказ не назвал причину"
+    # Отказ, о котором не сказано, где тогда задавать метры, отвечает половину.
+    assert "Экономика" in status and "офисы" in status
+    # Потенциал участка назван числом: иначе отказ выглядит как «считать
+    # нечем», хотя площадь и плотность у нас есть.
+    assert "16 380" in status.replace(" ", " "), status
+
+
+def test_the_class_note_names_what_the_class_moves() -> None:
+    """Подпись класса называет то, что класс двигает ЗДЕСЬ.
+
+    «Почему активен блок класса?» (владелец, 21.09.2026). Активен законно: на
+    проверочном офиснике класс двигает выручку с 3 794,8 до 17 390,4 млн ₽ и
+    LLCR с 0,543 до 1,609 — цена метра ОСЗ идёт за ценой жилья класса. Врала
+    подпись: «Кв/комм · м/м» называет то, чего в нежилом проекте нет.
+    """
+    import json
+
+    import page_blocks
+
+    def note(kind: str) -> str:
+        prelude = """
+const inputs={project_kind:'%s', project_class:'business'};
+let BOX={textContent:''};
+const document={getElementById:id=>id==='projectClassSelect'?null:BOX};
+""" % kind
+        tail = """
+renderProjectClassPreview();
+console.log(JSON.stringify({note:BOX.textContent}));
+"""
+        out, _ = page_blocks.run(prelude, tail)
+        return json.loads(out)["note"]
+
+    housing = note("mixed")
+    # Предохранитель: у жилого проекта подпись прежняя.
+    assert "Кв/комм" in housing and "м/м" in housing
+
+    nonres = note("nonresidential")
+    assert "Кв/комм" not in nonres and "м/м " not in nonres, \
+        "подпись называет квартиры и места МКД в нежилом проекте"
+    assert "Офисы/ТЦ" in nonres, nonres
+    assert "себес." in nonres, "подпись молчит о СМР, которую класс двигает"

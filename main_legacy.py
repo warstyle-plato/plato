@@ -45794,7 +45794,18 @@ function normativeUnderground(){
 
 // Потребность в местах — один ответ на весь экран. Выгрузка города знает
 // приобъектные места нежилья и потому идёт первой; её нет — считает норма.
+//
+// Нежилой проект: МКД в нём нет, значит нет и его подземного паркинга. Норма
+// без квартир и так отвечает нулём, а ВЫГРУЗКА отвечает своим числом,
+// посчитанным по нормативному — то есть ЖИЛОМУ — ТЭП участка: на экране
+// владельца это 135 постоянных + 14 гостевых = 149 м/м и 5 215 м² под
+// подписью «строка обнулена и заперта» (21.09.2026). Цена на проверочном
+// нежилом проекте: CAPEX +762,6 млн ₽, выручка +74,2 (135 мест продаются),
+// чистая прибыль −932,3 млн, LLCR 0,609 → 0,526. Гараж самого офисника к
+// этому отношения не имеет: он считается своей нормой (приложение 6 к
+// 945-ПП) и живёт своими полями объекта.
 function parkingRequirement(){
+ if(isNonResidential())return null;
  return getGlavapuUnderground()||normativeUnderground();
 }
 
@@ -45807,7 +45818,10 @@ function repairParkingFromGlavapu(){
  // Отказ от подземного паркинга: в области потребность закрывают наземным
  // гаражом. Ноль в поле мест значит «по нормативу», поэтому отказ — отдельный
  // признак, иначе импорт ГлавАПУ вернул бы паркинг при первом пересчёте.
- if(inputs.underground_parking_disabled){
+ // Нежилой проект здесь же: строку чистит ТОТ ЖЕ писатель, что её и
+ // наполняет, иначе обнуление переключателем отменяется первой же
+ // отрисовкой — `renderTep` зовёт эту функцию первой строкой.
+ if(inputs.underground_parking_disabled||isNonResidential()){
   ['units','gns','total_area','useful','saleable','transfer'].forEach(f=>{tep.underground_parking[f]=0});
   return true;
  }
@@ -45879,7 +45893,7 @@ function fillUndergroundFromTep(){
  //
  // Пометка — та же, что у паркинга объектов, и списки те же: тронутое руками
  // норма не трогает, своё число она обновляет вместе с ТЭП.
- if(inputs.underground_parking_disabled)return false;
+ if(inputs.underground_parking_disabled||isNonResidential())return false;
  if(parkingByHand(PROJECT_PARKING_KEY))return false;
  const spaces=Number(inputs.underground_manual_spaces||0);
  const area=Number(inputs.underground_manual_gns_sqm||0);
@@ -45933,7 +45947,17 @@ function renderProjectClassPreview(){
    box.textContent='Пользовательские значения';
    return;
  }
- box.textContent=`Кв/комм ${classValue(key,'apartment_price_th').toLocaleString('ru-RU')} · м/м ${classValue(key,'parking_price_th').toLocaleString('ru-RU')} · себес. ${classValue(key,'main_above_th_per_sqm').toLocaleString('ru-RU')}/${classValue(key,'main_under_th_per_sqm').toLocaleString('ru-RU')} тыс. ₽`;
+ // Подпись называет то, что класс двигает ЗДЕСЬ. В нежилом проекте квартир
+ // и машино-мест МКД нет, а «Кв/комм 650 · м/м 5 000» стояло по-прежнему —
+ // «почему активен блок класса?» (владелец, 21.09.2026). Активен он
+ // законно и сильнее всего прочего: на проверочном офиснике класс двигает
+ // выручку с 3 794,8 до 17 390,4 млн ₽, прибыль с −3 197,4 до +5 260,7 и
+ // LLCR с 0,543 до 1,609 — цена метра ОСЗ идёт за ценой жилья класса
+ // (450 / 650 / 1 500), СМР 110/88, 190/152, 300/240. Врала подпись, а не
+ // селектор: она называла то, чего в проекте нет, и молчала о том, что есть.
+ box.textContent=isNonResidential()
+  ? `Офисы/ТЦ ${classValue(key,'offices_price_th_per_sqm').toLocaleString('ru-RU')} · себес. ${classValue(key,'main_above_th_per_sqm').toLocaleString('ru-RU')}/${classValue(key,'main_under_th_per_sqm').toLocaleString('ru-RU')} тыс. ₽`
+  : `Кв/комм ${classValue(key,'apartment_price_th').toLocaleString('ru-RU')} · м/м ${classValue(key,'parking_price_th').toLocaleString('ru-RU')} · себес. ${classValue(key,'main_above_th_per_sqm').toLocaleString('ru-RU')}/${classValue(key,'main_under_th_per_sqm').toLocaleString('ru-RU')} тыс. ₽`;
 }
 
 function applyProjectClassPreset(selectedKey){
@@ -46015,38 +46039,61 @@ function projectKindLabel(kind){
 // меньше молчаливого сохранения: правило выведено на плате за ВРИ в режиме
 // КРТ и здесь то же. Убранное запоминается — переключение по ошибке иначе
 // уничтожает набранное безвозвратно.
+//
+// Зовётся она не только переключателем, а КАЖДЫМ пересчётом ТЭП, и потому
+// дополняет прежнее, а не переписывает его. Режим был разовым действием:
+// строки обнулялись в момент нажатия, а следующий писатель возвращал их
+// молча — выгрузка ГлавАПУ ставила подземный паркинг по жилому нормативу
+// участка, кнопка «Рассчитать ТЭП от площади и плотности» раскладывала СПП
+// по квартирам и встроенной коммерции (15 397 и 983 м² на участке 0,546 га),
+// и убрать это человек не мог: ячейки заперты, полей на экране нет.
 function clearResidentialInputs(){
- const removed=[],placed=[],saved={inputs:{},tep:{}};
+ const saved=inputs._nonres_saved||{};
+ saved.inputs=saved.inputs||{};saved.tep=saved.tep||{};
+ const removed=(inputs._nonres_cleared||[]).slice();
+ const say=text=>{if(removed.indexOf(text)<0)removed.push(text)};
  const cols=['gns','total_area','useful','saleable','transfer','units'];
  MKD_PRODUCTS.forEach(key=>{
   const row=tep[key];if(!row)return;
   if(!cols.some(c=>Number(row[c]||0)>0))return;
-  saved.tep[key]={};cols.forEach(c=>{saved.tep[key][c]=row[c];row[c]=0});
-  removed.push(productName(key));
+  // Убранное первым — решение человека, убранное потом — работа писателя,
+  // который о режиме не знал. Запоминаем первое: возврат к жилому типу
+  // обязан вернуть набранное, а не последнюю догадку калькулятора.
+  if(!saved.tep[key]){saved.tep[key]={};cols.forEach(c=>{saved.tep[key][c]=row[c]})}
+  cols.forEach(c=>{row[c]=0});
+  say(productName(key));
  });
  Object.keys(NONRESIDENTIAL_CLEARED).forEach(k=>{
   const was=Number(inputs[k]||0);
   if(!(was>0))return;
-  saved.inputs[k]=was;inputs[k]=0;
-  removed.push(NONRESIDENTIAL_CLEARED[k]+' '+num(was));
+  if(saved.inputs[k]===undefined)saved.inputs[k]=was;
+  inputs[k]=0;
+  say(NONRESIDENTIAL_CLEARED[k]+' '+num(was));
  });
  // Пара «места ↔ площадь» подземного паркинга после обнуления идёт за нормой,
  // а норма без квартир — ноль. Оставленный признак «задано руками» запер бы
  // ноль как решение человека, которого он не принимал.
  markParkingByNorm(PROJECT_PARKING_KEY);
- // Двор режим не убирает, а ПЕРЕВОДИТ на другую базу: мерить его населением
- // нечем, а иного способа, кроме метра ГНС, у нас нет. Поставленное
- // называется так же, как убранное: молчаливая подстановка врёт не меньше
- // молчаливого обнуления. Заданное руками не трогаем — оно сильнее режима.
+ inputs._nonres_saved=saved;
+ inputs._nonres_cleared=removed;
+ return removed;
+}
+
+// Ставка двора — не уборка, а подстановка, и потому стоит отдельно: её ставит
+// ПЕРЕКЛЮЧАТЕЛЬ, один раз. Зовись она из пересчёта, очищенное человеком поле
+// возвращалось бы к нашему числу на первой же правке ТЭП — то есть режим
+// перебивал бы его решение молча.
+function placeNonResidentialDefaults(){
+ const saved=inputs._nonres_saved||{inputs:{},tep:{}};
+ const placed=(inputs._nonres_placed||[]).slice();
  if(!(Number(inputs.landscaping_gns_th_per_sqm||0)>0)&&NONRES_LANDSCAPING_RATE>0){
   inputs.landscaping_gns_th_per_sqm=NONRES_LANDSCAPING_RATE;
   saved.landscaping_rate=NONRES_LANDSCAPING_RATE;
   placed.push('ставка благоустройства '+num(NONRES_LANDSCAPING_RATE)+' тыс ₽/м² ГНС');
  }
  inputs._nonres_saved=saved;
- inputs._nonres_cleared=removed;
  inputs._nonres_placed=placed;
- return removed;
+ return placed;
 }
 
 // Возвращает ровно то, что убрал режим. Восстановление — не автоматическое:
@@ -46116,7 +46163,7 @@ function syncProjectKindSelector(){
 function applyProjectKind(key){
  const kind=PROJECT_KINDS.some(p=>p[0]===key)?key:'mixed';
  inputs.project_kind=kind;
- if(kind==='nonresidential')clearResidentialInputs();
+ if(kind==='nonresidential'){clearResidentialInputs();placeNonResidentialDefaults()}
  syncTep(false);
  syncProjectKindSelector();
  renderInputs();
@@ -47865,6 +47912,25 @@ async function applyNormativeTep(densityOverride){
 function applyDensityToTep(){
  const status=document.getElementById('siteApplyStatus');
  const area=Number(inputs.site_area_ha||0);
+ // Нормативный ТЭП калькулятора — это ЖИЛЬЁ: 94% СПП квартиры, 6% встроенная
+ // коммерция. В нежилом проекте таких строк нет, и прежде кнопка их всё
+ // равно наполняла: на участке 0,546 га при 35 000 м²/га она клала 15 397 м²
+ // квартир и 983 м² коммерции в ЗАПЕРТЫЕ ячейки — убрать их человек не мог,
+ // а движок их продавал. Раскладывать потенциал по офисам и ТЦ самим нельзя:
+ // доля была бы нашей догадкой, а на экране она выглядит как норматив
+ // города. Поэтому отказ, и он называет, где эти метры задаются.
+ if(isNonResidential()){
+  const density=effectiveSiteDensity();
+  status.style.display='';
+  status.innerHTML='<span class="import-error">Нежилой проект: нормативный ТЭП калькулятора — жильё '
+   +'(94% СПП квартиры, 6% встроенная коммерция), и класть его в запертые строки нельзя.</span>'
+   +(area>0&&density>0?'<div style="margin-top:4px">Потенциал участка: <b>'+num(area*density)
+     +' м²</b> СПП ('+landNum(area,3)+' га × '+num(density)+' м²/га).</div>':'')
+   +'<div style="margin-top:4px">Метры нежилого проекта задаются вводными объектов — '
+   +'«МФОЦ / офисы», «ТЦ / коммерция ОСЗ», «ФОК», «Наземный паркинг» на вкладке «Экономика»; '
+   +'строки ТЭП у них производные.</div>';
+  return;
+ }
  if(!(area>0)){
   status.style.display='';
   status.innerHTML='<span class="import-error">Сначала укажите площадь участка — вручную или из калькулятора/кадастра.</span>';
@@ -48579,6 +48645,12 @@ async function recalcFromTep(options){
 }
 
 function syncTep(rerender=true){
+ // Тип проекта — признак, а не разовое действие переключателя: жильё убирает
+ // ТОТ ЖЕ пересчёт, через который проходит всякий писатель ТЭП — импорт
+ // ГлавАПУ, расчёт от плотности, мост КРТ, загрузка проекта. Прежде оно
+ // возвращалось молча, а на экране строки заперты и полей нет: убрать
+ // вернувшееся человек не мог.
+ if(isNonResidential())clearResidentialInputs();
  // Соцобъекты строятся и в совмещённом режиме — иначе ДОУ и школа исчезают
  // из ТЭП при выбранном «Строительство и компенсация», хотя они в проекте.
  const socialBuild=inputs.social_mode==='Строительство'
