@@ -217,16 +217,14 @@ function mergeRow(p,rank){
 }
 async function load(refresh=false){
   $('#state').textContent='Загрузка текущего каталога…';
-  const suffix=refresh?'?refresh=true':'';
-  const [cat,rank]=await Promise.all([
-    fetch('/auctions/krt'+suffix,{cache:'no-store'}).then(r=>{if(!r.ok)throw new Error('Каталог: '+r.status);return r.json()}),
-    fetch('/auctions/krt/ranking',{cache:'no-store'}).then(r=>{if(!r.ok)throw new Error('Рейтинг: '+r.status);return r.json()})
-  ]);
+  const payload=await fetch('/auctions/krt-lab/data?ts='+Date.now(),{cache:'no-store'})
+    .then(r=>{if(!r.ok)throw new Error('Данные: '+r.status);return r.json()});
+  const cat=payload.catalogue||{}, rank=payload.ranking||{};
   const rb=new Map((rank.rows||[]).map(x=>[String(x.slug||''),x]));
   const all=(cat.projects||[]).map(p=>mergeRow(p,rb.get(String(p.slug||''))));
   excludedRunning=all.filter(x=>x.status_kind==='running').length;
   merged=all.filter(x=>x.status_kind!=='running' && x.status_kind!=='unparsed');
-  $('#state').textContent=`Источник: текущий каталог КРТ · строк ${cat.count||all.length} · реализуемые исключены до расчёта: ${excludedRunning}. Баллы пересчитываются в браузере при каждом изменении весов.`;
+  $('#state').textContent=`Источник: ${payload.source||'рабочий DevelopAid'} · строк ${cat.count||all.length} · реализуемые исключены до расчёта: ${excludedRunning}. Баллы пересчитываются в браузере при каждом изменении весов.`;
   render();
 }
 function median(xs){
