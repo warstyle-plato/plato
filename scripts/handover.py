@@ -1,6 +1,7 @@
 """Передача знания о проекте — СБОРКОЙ из живых источников, а не копией.
 
-Зачем. Знание о PLATO лежит в `CLAUDE.md` (415 правил, 735 КБ), в бэклоге
+Зачем. Знание о PLATO лежит в архиве `docs/CLAUDE_HISTORY_2026-09-20.md`
+(сотни правил, больше мегабайта), в бэклоге
 вопросов и в нормативной библиотеке. Отдать это другому помощнику целиком
 нельзя — не влезет; а переписать выжимку руками значит завести вторую копию,
 и она разойдётся с оригиналом на первой же правке. Правило проекта здесь то
@@ -13,7 +14,7 @@
 
 Что собирается:
 
-* устройство и стенд — разделами из `CLAUDE.md` как есть;
+* устройство и стенд — разделами из архива как есть;
 * указатель правил — заголовок каждого правила с номером строки, чтобы
   читатель шёл в оригинал за подробностями, а не верил пересказу;
 * открытые вопросы — из `docs/questions_backlog.md`;
@@ -23,7 +24,7 @@
 Запуск:
     python3 scripts/handover.py                 — на экран
     python3 scripts/handover.py --out FILE.md   — в файл
-    python3 scripts/handover.py --full          — вместе с полным CLAUDE.md
+    python3 scripts/handover.py --full          — вместе с полным архивом
 """
 from __future__ import annotations
 
@@ -36,15 +37,25 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-KNOWLEDGE = ROOT / "CLAUDE.md"
+# Знание о проекте лежит в АРХИВЕ, а не в корневом `CLAUDE.md`: 20.09.2026
+# корень сократили до постоянно нужного, а разборы поломок унесли сюда. Имя
+# файла написано один раз — строки сборки берут его отсюда, иначе при
+# следующем переименовании текст соврёт о том, куда идти.
+KNOWLEDGE = ROOT / "docs" / "CLAUDE_HISTORY_2026-09-20.md"
+STARTUP = ROOT / "CLAUDE.md"
 BACKLOG = ROOT / "docs" / "questions_backlog.md"
 NORMATIVE = ROOT / "docs" / "normative" / "README.md"
 REGISTRY = ROOT / "data" / "normatives" / "registry.json"
 
-# Разделы `CLAUDE.md`, которые уходят В ЦЕЛОМ: они короткие и пересказу не
+# Разделы архива, которые уходят В ЦЕЛОМ: они короткие и пересказу не
 # подлежат — это устройство системы и описание стенда. Список имён, а не
 # содержимого: содержимое живёт в файле.
 WHOLE_SECTIONS = ("Устройство", "Проверки", "Стенд")
+
+
+def _knowledge_name() -> str:
+    """Имя файла знания — из константы, а не литералом в каждой строке."""
+    return str(KNOWLEDGE.relative_to(ROOT))
 
 
 def _sections(text: str) -> dict[str, str]:
@@ -142,12 +153,13 @@ def build(full: bool = False, count_tests: bool = True) -> str:
     add("**Это сборка, а не документ.** Каждое утверждение ниже вынуто из живого "
         "источника; правил своих у этого файла нет. Собирает "
         "`python3 scripts/handover.py`. Если что-то здесь расходится с "
-        "`CLAUDE.md` — верен `CLAUDE.md`, а сборщик сломан.")
+        f"`{_knowledge_name()}` — верен он, а сборщик сломан.")
     add("")
     add("## Что читать и в каком порядке")
     add("")
-    add(f"1. `CLAUDE.md` — знание о проекте: {len(rules)} правил, выведенных из "
-        "поломок. Это главный файл; он читается в начале каждой сессии.")
+    add(f"1. `{_knowledge_name()}` — знание о проекте: {len(rules)} правил, "
+        "выведенных из поломок. В начале сессии читается короткий "
+        f"`{STARTUP.name}`, а за разбором идут сюда.")
     add(f"2. `docs/questions_backlog.md` — что в работе и что не решено "
         f"({len(questions)} открытых вопросов).")
     add(f"3. `docs/normative/` — нормативная база файлами: акты не протухают, "
@@ -166,12 +178,13 @@ def build(full: bool = False, count_tests: bool = True) -> str:
 
     add("## Указатель правил")
     add("")
-    add("Заголовок каждого правила и строка в `CLAUDE.md`. Тело не переписано "
+    add(f"Заголовок каждого правила и строка в `{_knowledge_name()}`. "
+        "Тело не переписано "
         "намеренно: пересказ правила — это второе правило, и оно разойдётся с "
         "первым. За подробностями — в оригинал по номеру строки.")
     add("")
     for number, headline in rules:
-        add(f"- `CLAUDE.md:{number}` — {headline}")
+        add(f"- `{_knowledge_name()}:{number}` — {headline}")
     add("")
 
     if questions:
@@ -198,7 +211,7 @@ def build(full: bool = False, count_tests: bool = True) -> str:
         add("")
 
     if full:
-        add("## CLAUDE.md целиком")
+        add(f"## `{_knowledge_name()}` целиком")
         add("")
         add(knowledge)
         add("")
@@ -210,7 +223,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", help="куда записать; без него — на экран")
     parser.add_argument("--full", action="store_true",
-                        help="приложить CLAUDE.md целиком")
+                        help="приложить архив знания целиком")
     parser.add_argument("--no-tests", action="store_true",
                         help="не считать тесты (сбор pytest занимает минуту)")
     args = parser.parse_args()
