@@ -1,5 +1,7 @@
 """Experimental KRT index. Isolated route: /krt-preview."""
-from fastapi.responses import HTMLResponse
+import json
+import urllib.request
+from fastapi.responses import HTMLResponse, JSONResponse
 
 PAGE = r'''<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>КРТ — DevelopAid preview</title>
@@ -23,9 +25,22 @@ function fmt(v,suf=''){let n=num(v);return n?new Intl.NumberFormat('ru-RU',{maxi
 function card(r){let href='/krt/site/'+encodeURIComponent(r.slug||'');let dl=r.deadline||r.application_deadline||'';return '<article class="card" onclick="location.href=\''+href+'\'"><div class="scheme"></div><div><span class="badge '+r._st+'">'+label(r)+'</span><div class="title">'+esc(r._name)+'</div><div class="muted">'+esc([r._okrug,r._district].filter(Boolean).join(' · '))+'</div><div class="metrics"><div class="metric"><b>'+fmt(r.krt_area_ha,' га')+'</b><small>Площадь</small></div><div class="metric"><b>'+fmt((r.total_gfa_sqm||0)/1000,' тыс. м²')+'</b><small>Потенциал ГНС</small></div><div class="metric"><b>'+fmt(r.surrounding_price_rub_sqm,' ₽/м²')+'</b><small>Цена окружения</small></div><div class="metric"><b>'+fmt(r.score)+'</b><small>Балл</small></div></div></div><div>'+(dl?'<div class="muted">Заявки до</div><div class="deadline">'+esc(dl)+'</div>':'')+'<div class="arrow">→</div></div></article>'}
 function renderMap(view){map.innerHTML='<div></div>';for(let i=0;i<view.length&&i<40;i++){let d=document.createElement('i');d.className='dot';let h=[...String(view[i].slug||view[i]._name)].reduce((a,c)=>a+c.charCodeAt(0),0);d.style.left=(10+(h*17)%80)+'%';d.style.top=(12+(h*29)%76)+'%';d.title=view[i]._name;map.appendChild(d)}}
 function render(){renderStats();let query=q.value.toLowerCase(),o=okrug.value;let view=rows.filter(r=>(active==='all'||r._st===active)&&(!o||r._okrug===o)&&(!query||JSON.stringify([r._name,r._okrug,r._district,r.address]).toLowerCase().includes(query)));list.innerHTML=view.length?view.slice(0,80).map(card).join(''):'<div class="empty">По этим условиям площадок нет.</div>';renderMap(view)}
-async function boot(){try{let a=await fetch('/auctions/krt').then(r=>r.json());let raw=a.sites||a.rows||a.items||a.krt||[];rows=raw.map(normalize);let os=[...new Set(rows.map(r=>r._okrug).filter(Boolean))].sort();okrug.innerHTML+=[...os].map(x=>'<option>'+esc(x)+'</option>').join('');q.oninput=render;okrug.onchange=render;render()}catch(e){list.innerHTML='<div class="empty">Не удалось прочитать каталог: '+esc(e.message)+'</div>'}}</script><script>boot()</script></body></html>'''
+async function boot(){try{let a=await fetch('/krt-preview/data').then(r=>r.json());let raw=a.sites||a.rows||a.items||a.krt||[];rows=raw.map(normalize);let os=[...new Set(rows.map(r=>r._okrug).filter(Boolean))].sort();okrug.innerHTML+=[...os].map(x=>'<option>'+esc(x)+'</option>').join('');q.oninput=render;okrug.onchange=render;render()}catch(e){list.innerHTML='<div class="empty">Не удалось прочитать каталог: '+esc(e.message)+'</div>'}}</script><script>boot()</script></body></html>'''
 
 def install(app):
+    @app.get("/krt-preview/data", include_in_schema=False)
+    async def krt_preview_data():
+        # Preview has an isolated filesystem. Read the real catalogue from
+        # production so design testing uses the same KRT rows the user sees.
+        url = "https://plato-development-investment-model.onrender.com/auctions/krt"
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "DevelopAid-KRT-preview/1"})
+            with urllib.request.urlopen(req, timeout=55) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+        except Exception as exc:
+            return JSONResponse({"error": str(exc), "sites": []}, status_code=502)
+
     @app.get("/krt-preview", response_class=HTMLResponse, include_in_schema=False)
     async def krt_preview():
         return HTMLResponse(PAGE, headers={"Cache-Control":"no-store, must-revalidate"})
