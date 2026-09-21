@@ -1,13 +1,8 @@
-"""Experimental KRT ranking page.
+"""KRT investment-ranking laboratory.
 
-The production KRT catalogue answers many different questions at once. This
-page deliberately does one thing: ranks only opportunities that are NOT in
-implementation. It reuses the existing catalogue and ranking APIs and never
-starts another model run.
-
-The score is intentionally transparent and adjustable in the browser. It is a
-lab, not a replacement for the production score. Missing facts lower data
-coverage instead of silently becoming zero.
+The page uses the fixed v2 methodology returned by the server.  The only
+scenario control that changes points is the user's price target.  Running KRT
+projects remain in the catalogue and can be filtered, but receive no score.
 """
 
 from __future__ import annotations
@@ -19,261 +14,218 @@ def krt_score_lab_page() -> str:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>КРТ — лаборатория ранжирования</title>
+<title>КРТ — инвестиционный рейтинг</title>
 <style>
-:root{
-  --bg:#f5f6f8;--panel:#fff;--ink:#141414;--muted:#6b7280;--line:#dfe3e8;
-  --blue:#2563eb;--orange:#e67e22;--red:#b42318;--soft:#eef2f7;
-}
-*{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-main{max-width:1720px;margin:0 auto;padding:24px}
-h1{font-size:28px;margin:0 0 6px} h2{font-size:17px;margin:0}
-.sub{color:var(--muted);margin-bottom:18px}
-.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px}
-.kpis{display:grid;grid-template-columns:repeat(5,minmax(140px,1fr));gap:10px}
-.kpi{background:var(--soft);border-radius:10px;padding:12px}.kpi b{display:block;font-size:22px}.kpi span{color:var(--muted);font-size:12px}
-.controls{display:flex;gap:12px;align-items:end;flex-wrap:wrap}
-.ctrl{min-width:145px}.ctrl label{display:block;font-size:12px;color:var(--muted);margin-bottom:4px}
+:root{--bg:#f5f6f8;--panel:#fff;--ink:#171717;--muted:#69717d;--line:#dfe3e8;
+--blue:#2563eb;--orange:#d96d16;--red:#b42318;--soft:#f0f3f7}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);
+font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+main{max-width:1780px;margin:0 auto;padding:24px}h1{font-size:28px;margin:0 0 5px}
+.sub{color:var(--muted);margin:0 0 18px}.panel{background:#fff;border:1px solid var(--line);
+border-radius:14px;padding:16px;margin-bottom:14px}.kpis{display:grid;
+grid-template-columns:repeat(5,minmax(130px,1fr));gap:9px}.kpi{background:var(--soft);
+border-radius:10px;padding:11px}.kpi b{display:block;font-size:21px}.kpi span{font-size:12px;color:var(--muted)}
+.controls{display:flex;gap:12px;align-items:end;flex-wrap:wrap}.ctrl{min-width:155px}.ctrl.wide{min-width:250px}
+.ctrl label{display:block;font-size:12px;color:var(--muted);margin-bottom:4px}
 input,select{width:100%;padding:8px 9px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink)}
-input[type=checkbox]{width:auto}.toggle{display:flex;align-items:center;gap:7px;padding:8px 0}
-.weights{display:grid;grid-template-columns:repeat(4,minmax(150px,1fr));gap:10px;margin-top:12px}
-.weight{background:var(--soft);padding:10px;border-radius:10px}.weight strong{display:flex;justify-content:space-between}.weight input{margin-top:7px}
-.note{font-size:12px;color:var(--muted);margin-top:9px}
-.tablewrap{overflow:auto;border:1px solid var(--line);border-radius:12px;background:#fff}
-table{border-collapse:separate;border-spacing:0;width:100%;min-width:1540px}
-th,td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top;white-space:nowrap}
-th{position:sticky;top:0;background:#f8fafc;z-index:2;text-align:left;font-size:12px;color:#4b5563}
-tr:last-child td{border-bottom:0} tr:hover td{background:#fafafa}
-.rank{font-weight:700}.score{font-weight:800;font-size:17px}.muted{color:var(--muted)}
-.pill{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:2px 7px;font-size:11px;background:#fff}
-.warn{color:var(--orange)}.bad{color:var(--red)}.blue{color:var(--blue)}
-.bar{height:5px;background:#e9edf2;border-radius:999px;overflow:hidden;margin-top:5px}.bar i{display:block;height:100%;background:#4b5563}
-.name{white-space:normal;min-width:300px;max-width:430px}.small{font-size:12px}
+input[type=checkbox]{width:auto}.toggle{display:flex;gap:7px;align-items:center;padding:8px 0}
 button{border:0;border-radius:8px;background:#171717;color:#fff;padding:9px 13px;cursor:pointer}
-button.secondary{background:#fff;color:#171717;border:1px solid var(--line)}
-details summary{cursor:pointer;font-weight:600}.formula{display:grid;grid-template-columns:repeat(2,minmax(260px,1fr));gap:10px;margin-top:10px}
-.formula div{background:var(--soft);padding:10px;border-radius:9px}
-@media(max-width:900px){main{padding:12px}.kpis,.weights,.formula{grid-template-columns:1fr 1fr}}
+.note{font-size:12px;color:var(--muted);margin-top:8px}.formula{display:grid;
+grid-template-columns:repeat(4,minmax(190px,1fr));gap:9px;margin-top:11px}.formula div{background:var(--soft);
+padding:11px;border-radius:9px}.formula b{display:block;margin-bottom:4px}.formula strong{font-size:18px}
+.livegrid{display:grid;grid-template-columns:repeat(5,minmax(150px,1fr));gap:9px;margin-top:10px}
+.livecell{background:var(--soft);border-radius:9px;padding:10px}.livecell b{display:block;font-size:17px}
+.livecell span{font-size:11px;color:var(--muted)}.stack{display:flex;gap:14px;flex-wrap:wrap;
+font-size:12px;margin-top:10px;color:#3f4752}.stack b{color:var(--ink)}details summary{cursor:pointer;font-weight:650}
+.tablewrap{overflow:auto;border:1px solid var(--line);border-radius:12px;background:#fff}
+table{border-collapse:separate;border-spacing:0;width:100%;min-width:1570px}th,td{padding:9px 10px;
+border-bottom:1px solid var(--line);vertical-align:top;white-space:nowrap}th{position:sticky;top:0;
+background:#f8fafc;z-index:2;text-align:left;font-size:12px;color:#4b5563}tr:last-child td{border-bottom:0}
+tr:hover td{background:#fafafa}.name{white-space:normal;min-width:300px;max-width:440px}.rank{font-weight:700}
+.score{font-weight:800;font-size:17px}.muted{color:var(--muted)}.small{font-size:11.5px}.pill{display:inline-block;
+border:1px solid var(--line);border-radius:999px;padding:2px 7px;font-size:11px;background:#fff}.run{color:var(--muted)}
+.bad{color:var(--red)}.warn{color:var(--orange)}.blue{color:var(--blue)}.part{font-weight:700}.bar{height:5px;
+background:#e9edf2;border-radius:999px;overflow:hidden;margin-top:5px}.bar i{display:block;height:100%;background:#4b5563}
+.methodline{margin-top:8px;font-size:12px;color:var(--muted)}
+@media(max-width:900px){main{padding:12px}.kpis,.formula,.livegrid{grid-template-columns:1fr 1fr}}
 </style>
 </head>
-<body>
-<main>
-  <h1>КРТ — лаборатория ранжирования</h1>
-  <div class="sub">Только проекты решений и планируемые КРТ. Площадки со статусом «В реализации» исключаются до расчёта и балла не получают.</div>
+<body><main>
+<h1>КРТ — инвестиционный рейтинг</h1>
+<p class="sub">Фиксированная методика 40/20/20/20. Веса пользователь не меняет. «В реализации» остаются в каталоге, но балл им не присваивается.</p>
 
-  <section class="panel">
-    <div class="kpis">
-      <div class="kpi"><b id="kEligible">—</b><span>в рейтинге</span></div>
-      <div class="kpi"><b id="kRunning">—</b><span>реализуемых исключено</span></div>
-      <div class="kpi"><b id="kModel">—</b><span>есть модель</span></div>
-      <div class="kpi"><b id="kMedian">—</b><span>медиана балла</span></div>
-      <div class="kpi"><b id="kCoverage">—</b><span>медиана покрытия данных</span></div>
-    </div>
-  </section>
+<section class="panel"><div class="kpis">
+<div class="kpi"><b id="kAll">—</b><span>площадок показано</span></div>
+<div class="kpi"><b id="kScored">—</b><span>полный балл рассчитан</span></div>
+<div class="kpi"><b id="kRunning">—</b><span>в реализации · без балла</span></div>
+<div class="kpi"><b id="kMedian">—</b><span>медиана полного балла</span></div>
+<div class="kpi"><b id="kCoverage">—</b><span>медиана покрытия</span></div>
+</div></section>
 
-  <section class="panel">
-    <div class="controls">
-      <div class="ctrl"><label>Поиск</label><input id="q" placeholder="адрес, район, округ"></div>
-      <div class="ctrl"><label>Статус</label><select id="status"><option value="">Все допущенные</option><option value="draft">Проект решения</option><option value="planned">Планируемый</option></select></div>
-      <div class="ctrl"><label>Минимум покрытия</label><select id="coverage"><option value="0">любое</option><option value="40">40%</option><option value="60" selected>60%</option><option value="80">80%</option></select></div>
-      <label class="toggle"><input id="hideTaken" type="checkbox"> скрыть площадки с уже названным оператором/застройщиком</label>
-      <button id="reload">Обновить данные</button>
-      <button id="reset" class="secondary">Вес по умолчанию</button>
-    </div>
-    <div class="weights">
-      <div class="weight"><strong><span>Экономика</span><span id="wEcoV">45</span></strong><input id="wEco" type="range" min="0" max="100" value="45"></div>
-      <div class="weight"><strong><span>Рынок</span><span id="wMktV">20</span></strong><input id="wMkt" type="range" min="0" max="100" value="20"></div>
-      <div class="weight"><strong><span>Нагрузка КРТ</span><span id="wBurV">25</span></strong><input id="wBur" type="range" min="0" max="100" value="25"></div>
-      <div class="weight"><strong><span>Доступность входа</span><span id="wAccV">10</span></strong><input id="wAcc" type="range" min="0" max="100" value="10"></div>
-    </div>
-    <div class="note">Итог автоматически нормируется к 100. Неполные данные не превращаются в нули: отдельно считается покрытие, а итоговый балл умеренно понижается за неполноту.</div>
-  </section>
+<section class="panel">
+<div class="controls">
+<div class="ctrl wide"><label>Поиск</label><input id="q" placeholder="адрес, район, округ"></div>
+<div class="ctrl"><label>Статус</label><select id="status">
+<option value="">Все</option><option value="draft">Проект решения</option><option value="planned">Планируемый</option>
+<option value="running">В реализации</option><option value="unparsed">Не разобрано</option></select></div>
+<div class="ctrl"><label>Ценовой ориентир, ₽/м²</label><input id="target" type="number" min="100000" step="10000" value="600000"></div>
+<div class="ctrl"><label>Минимум покрытия</label><select id="coverage"><option value="0">любое</option>
+<option value="40">40%</option><option value="60">60%</option><option value="80">80%</option><option value="100">100%</option></select></div>
+<label class="toggle"><input id="hideTaken" type="checkbox"> скрыть уже занятого оператора</label>
+<button id="reload">Обновить данные</button>
+</div>
+<div class="note">Ценовой ориентир меняет только 20-балльный ценовой компонент. LLCR, нагрузка КРТ и расчёт предельной цены входа от него не меняются.</div>
+</section>
 
-  <section class="panel">
-    <details>
-      <summary>Как считается экспериментальный балл v1</summary>
-      <div class="formula">
-        <div><b>Экономика</b><br>потолок цены входа на м² продаваемой площади, LLCR проекта, маржа. Это использует существующий расчёт DevelopAid, но не принимает старый «балл Платона».</div>
-        <div><b>Рынок</b><br>текущий ценовой ориентир окружения и темп ДДУ/мес. Высокая цена без темпа не получает полный рыночный балл.</div>
-        <div><b>Нагрузка КРТ</b><br>снос на гектар, доля реновации, расселение/изъятие, объекты со сценарием «снос/реконструкция». Чем больше обязательств, тем ниже компонент.</div>
-        <div><b>Доступность входа</b><br>не назван оператор/застройщик и есть ли активный лот торгов. Проект решения получает меньше за готовность, но не штрафуется как плохая экономика.</div>
-      </div>
-    </details>
-  </section>
+<section class="panel">
+<details open><summary>Как считается рейтинг</summary>
+<div class="formula">
+<div><strong>40</strong><b>LLCR</b><span>1,00 = 0; 1,10 = 10; 1,20 = 30; 1,30+ = 40. LLCR считается движком при нулевой цене самого права КРТ, но с известной нагрузкой проекта.</span></div>
+<div><strong>20</strong><b>Цена окружения</b><span>Сравнивается с введённым выше ориентиром. 70% = 0; 80% = 5; 90% = 12; 100%+ = 20.</span></div>
+<div><strong>20</strong><b>Поглощение</b><span>Только м²/мес. Локальная медиана сопоставимых проектов делится на эталонную медиану класса: 0,5× = 0; 1,0× = 10; 1,5×+ = 20.</span></div>
+<div><strong>20</strong><b>Нагрузка КРТ</b><span>Известные обязательства КРТ / обычный CAPEX сопоставимого проекта: 0% = 20; 5% = 18; 10% = 14; 20% = 5; 30%+ = 0.</span></div>
+</div>
+<div class="methodline"><b>Выкуп:</b> для рейтинга берётся кадастровая стоимость земли и ОКС, не принадлежащих Москве. Собственность Москвы = 0 ₽. Неизвестная кадастровая стоимость = «нет данных», а не ноль. Полный балл 0–100 появляется только при наличии всех четырёх компонентов.</div>
+</details>
+</section>
 
-  <div id="state" class="panel">Загрузка текущего каталога…</div>
-  <div class="tablewrap">
-    <table>
-      <thead><tr>
-        <th>#</th><th>Итог</th><th>Покрытие</th><th>Проект</th><th>Стадия</th>
-        <th>Экономика</th><th>Рынок</th><th>Нагрузка</th><th>Вход</th>
-        <th>LLCR</th><th>Маржа</th><th>Потолок входа ₽/м²</th><th>Цена рынка ₽/м²</th>
-        <th>ДДУ/мес.</th><th>Снос, м²</th><th>Реновация</th><th>Расселение</th><th>Оператор / торги</th>
-      </tr></thead>
-      <tbody id="rows"></tbody>
-    </table>
-  </div>
-</main>
+<section id="live" class="panel"><b>Живой пример · КРТ Нагатино</b><div id="liveBody" class="note">Считаю по реальным выпискам ЕГРН и тому же финансовому движку…</div></section>
+
+<div id="state" class="panel">Загрузка текущего каталога…</div>
+<div class="tablewrap"><table>
+<thead><tr><th>#</th><th>Балл</th><th>Покрытие</th><th>Проект</th><th>Статус</th>
+<th>LLCR · /40</th><th>Цена · /20</th><th>Поглощение · /20</th><th>Нагрузка · /20</th>
+<th>Цена окружения ₽/м²</th><th>м²/мес локально</th><th>м²/мес эталон</th><th>Нагрузка КРТ</th>
+<th>Потолок входа, млн ₽</th><th>Оператор / торги</th></tr></thead><tbody id="rows"></tbody>
+</table></div>
+
 <script>
 const $=s=>document.querySelector(s);
-const clamp=(x,a=0,b=1)=>Math.max(a,Math.min(b,x));
-const num=x=>{const n=Number(x);return Number.isFinite(n)?n:null};
-const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
-const fmt=(x,d=0)=>num(x)==null?'—':Number(x).toLocaleString('ru-RU',{maximumFractionDigits:d,minimumFractionDigits:d});
-const pct=x=>num(x)==null?'—':fmt(100*Number(x),0)+'%';
+const num=v=>{const n=Number(v);return Number.isFinite(n)?n:null};
+const fmt=(v,d=0)=>num(v)==null?'—':Number(v).toLocaleString('ru-RU',{minimumFractionDigits:d,maximumFractionDigits:d});
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+let rowsAll=[],method={},live=null;
 
-let merged=[], excludedRunning=0;
+function piece(v,stops){
+  let x=num(v); if(x==null||!Array.isArray(stops)||!stops.length)return null;
+  if(x<=stops[0][0])return Number(stops[0][1]);
+  for(let i=1;i<stops.length;i++){let a=stops[i-1],b=stops[i];
+    if(x<=b[0])return Number(a[1])+(Number(b[1])-Number(a[1]))*(x-Number(a[0]))/(Number(b[0])-Number(a[0])||1)}
+  return Number(stops[stops.length-1][1]);
+}
+function opInfo(r){
+  const c=r.card_facts||{},p=r.press_facts||{},dev=(c.developers||[]).filter(Boolean);
+  return {taken:!!(p.taken||p.operator_name||dev.length),label:dev.join(', ')||p.operator_name||''};
+}
+function tender(r){return (r.tender_lots||[]).some(x=>['future','active','open','now'].includes(String(x.moment||x.status||'').toLowerCase())||(!x.moment&&!x.ended))}
+function absorb(r){
+  const local=num(r.surrounding_sales_area_per_month)!=null?num(r.surrounding_sales_area_per_month):
+    num((r.absorption||{}).local_median_sqm_month)!=null?num((r.absorption||{}).local_median_sqm_month):null;
+  const benchmark=num(r.absorption_benchmark_sqm_month)!=null?num(r.absorption_benchmark_sqm_month):
+    num((r.absorption||{}).benchmark_sqm_month)!=null?num((r.absorption||{}).benchmark_sqm_month):null;
+  return {local,benchmark};
+}
+function burden(r){
+  if(num((r.krt_burden||{}).burden_pct)!=null)return num(r.krt_burden.burden_pct);
+  if(num(r.krt_burden_pct)!=null)return num(r.krt_burden_pct);
+  return null;
+}
+function calc(r){
+  const target=num($('#target').value),a=absorb(r),b=burden(r),running=r.status_kind==='running';
+  const ll=piece(num(r.project_llcr_x),method.llcr_stops);
+  const ratio=(num(r.surrounding_price_rub_sqm)!=null&&target>0)?num(r.surrounding_price_rub_sqm)/target:null;
+  const pp=piece(ratio,method.price_ratio_stops);
+  const ar=(a.local!=null&&a.benchmark>0)?a.local/a.benchmark:null;
+  const ap=piece(ar,method.absorption_ratio_stops);
+  const bp=piece(b,method.burden_pct_stops);
+  const parts=[['llcr',ll,40],['price',pp,20],['absorption',ap,20],['burden',bp,20]];
+  const known=parts.filter(x=>x[1]!=null).reduce((s,x)=>s+x[2],0);
+  const partial=parts.filter(x=>x[1]!=null).reduce((s,x)=>s+Number(x[1]),0);
+  const full=!running&&known===100?Math.round(partial*10)/10:null;
+  return {ll,pp,ap,bp,a,b,coverage:known,partial,score:full,running};
+}
+function statusName(r){
+  if(r.status_kind==='draft')return 'Проект решения';
+  if(r.status_kind==='planned')return 'Планируемый';
+  if(r.status_kind==='running')return 'В реализации';
+  if(r.status_kind==='unparsed')return 'Не разобрано';
+  return r.status||'—';
+}
+function bar(v,max){return v==null?'—':fmt(v,1)+'/'+max+'<div class="bar"><i style="width:'+Math.max(0,Math.min(100,100*v/max))+'%"></i></div>'}
+function merge(p,r){r=r||{};return Object.assign({},p,r,{status:p.status,status_kind:p.status_kind,area_ha:p.area_ha,
+tender_lots:p.tender_lots||r.tender_lots||[],card_facts:Object.assign({},r.card_facts||{},p.card_facts||{}),
+press_facts:Object.assign({},r.press_facts||{},p.press_facts||{})})}
+function median(xs){xs=xs.filter(x=>num(x)!=null).map(Number).sort((a,b)=>a-b);if(!xs.length)return null;
+let i=Math.floor(xs.length/2);return xs.length%2?xs[i]:(xs[i-1]+xs[i])/2}
 
-function piece(x, stops){
-  if(num(x)==null)return null;
-  x=Number(x);
-  if(x<=stops[0][0])return stops[0][1];
-  for(let i=1;i<stops.length;i++){
-    const [x1,y1]=stops[i-1],[x2,y2]=stops[i];
-    if(x<=x2){const t=(x-x1)/(x2-x1||1);return y1+(y2-y1)*t}
-  }
-  return stops[stops.length-1][1];
-}
-function metric(value, weight, score){return {known:value!==null&&value!==undefined&&Number.isFinite(Number(value)),weight,score}}
-function requirementsKnown(r){return !!((r.requirements||{}).available || (r.requirements||{}).decision_available)}
-function activeTender(r){return (r.tender_lots||[]).some(x=>['future','active','open','now'].includes(String(x.moment||x.status||'').toLowerCase()) || (!x.moment && !x.ended))}
-function operatorInfo(r){
-  const c=r.card_facts||{}, p=r.press_facts||{};
-  const dev=(c.developers||[]).filter(Boolean);
-  const taken=!!(p.taken || p.operator_name || dev.length);
-  const label=dev.join(', ') || p.operator_name || (p.taken?'оператор найден':'');
-  return {known:!!(c.roles||c.developers||p.probed||p.taken||p.operator_name),taken,label,city:!!c.city_operator};
-}
-function modelMetrics(r){
-  const req=r.requirements||{}, ren=r.renovation||{};
-  const areaHa=num(r.area_ha)||num(r.krt_area_ha);
-  const demo=num(req.demolition_area_sqm);
-  const cond=num(req.conditional_area_sqm);
-  const res=Array.isArray(req.resettlement)?req.resettlement.length:num(req.resettlement_mentions);
-  const renShare=num(ren.share);
-  const reqKnown=requirementsKnown(r);
-
-  const eco=[
-    metric(num(r.entry_capacity_rub_per_sqm),20,piece(num(r.entry_capacity_rub_per_sqm),[[0,0],[100000,.18],[200000,.38],[350000,.65],[550000,.88],[750000,1]])),
-    metric(num(r.project_llcr_x),15,piece(num(r.project_llcr_x),[[.9,0],[1,.12],[1.1,.42],[1.2,.72],[1.3,.9],[1.45,1]])),
-    metric(num(r.margin_pct),10,piece(num(r.margin_pct),[[-5,0],[0,.08],[7,.32],[12,.58],[18,.82],[25,1]])),
-  ];
-  const mkt=[
-    metric(num(r.surrounding_price_rub_sqm),8,piece(num(r.surrounding_price_rub_sqm),[[200000,0],[300000,.18],[450000,.45],[600000,.7],[800000,.9],[1000000,1]])),
-    metric(num(r.surrounding_sales_units_per_month),12,piece(num(r.surrounding_sales_units_per_month),[[0,0],[3,.15],[7,.35],[12,.58],[20,.82],[30,1]])),
-  ];
-  const demoDensity=(demo!=null&&areaHa)?demo/areaHa:null;
-  const condDensity=(cond!=null&&areaHa)?cond/areaHa:null;
-  const bur=[
-    metric(reqKnown&&demo!=null?demoDensity:null,8,demoDensity==null?null:1-piece(demoDensity,[[0,0],[500,.08],[1500,.25],[3000,.55],[5000,.82],[7000,1]])),
-    metric(reqKnown&&renShare!=null?renShare:null,7,renShare==null?null:1-piece(renShare,[[0,0],[.05,.08],[.15,.3],[.3,.62],[.5,.9],[.7,1]])),
-    metric(reqKnown&&res!=null?res:null,5,res==null?null:(res<=0?1:res===1?.48:res<=3?.25:0)),
-    metric(reqKnown&&cond!=null?condDensity:null,5,condDensity==null?null:1-piece(condDensity,[[0,0],[300,.1],[1000,.35],[2500,.7],[4500,1]])),
-  ];
-  const op=operatorInfo(r);
-  const status=String(r.status_kind||'');
-  const tender=activeTender(r);
-  const acc=[
-    metric(op.known?Number(op.taken):null,7,op.known?(op.taken?(op.city?0:.15):1):null),
-    metric(1,3,tender?1:(status==='planned'?.58:status==='draft'?.32:.2)),
-  ];
-  return {eco,mkt,bur,acc,op,tender};
-}
-function component(items){
-  const known=items.filter(x=>x.known && x.score!=null);
-  const max=known.reduce((s,x)=>s+x.weight,0);
-  if(!max)return {score:null,known:0,total:items.reduce((s,x)=>s+x.weight,0)};
-  const got=known.reduce((s,x)=>s+x.weight*clamp(x.score),0);
-  return {score:100*got/max,known:max,total:items.reduce((s,x)=>s+x.weight,0)};
-}
-function weighted(r){
-  const m=modelMetrics(r);
-  const comps={eco:component(m.eco),mkt:component(m.mkt),bur:component(m.bur),acc:component(m.acc)};
-  const weights={eco:+$('#wEco').value,mkt:+$('#wMkt').value,bur:+$('#wBur').value,acc:+$('#wAcc').value};
-  let got=0,used=0,knownWeight=0,totalWeight=0;
-  for(const k of Object.keys(weights)){
-    const w=weights[k]; totalWeight+=w;
-    const c=comps[k];
-    const localCoverage=c.total?c.known/c.total:0;
-    knownWeight+=w*localCoverage;
-    if(c.score!=null && w>0){got+=w*c.score;used+=w}
-  }
-  const raw=used?got/used:null;
-  const coverage=totalWeight?100*knownWeight/totalWeight:0;
-  const score=raw==null?null:raw*(.65+.35*coverage/100);
-  return {...comps,score,raw,coverage,op:m.op,tender:m.tender};
-}
-function badgeStatus(r){return r.status_kind==='draft'?'Проект решения':r.status_kind==='planned'?'Планируемый':String(r.status||'—')}
-function bar(x){return x==null?'—':`<span>${fmt(x,0)}</span><div class="bar"><i style="width:${clamp(x/100)*100}%"></i></div>`}
-function mergeRow(p,rank){
-  const r=rank||{};
-  return {...p,...r,
-    status:p.status, status_kind:p.status_kind, area_ha:p.area_ha,
-    tender_lots:p.tender_lots||r.tender_lots||[],
-    card_facts:{...(r.card_facts||{}),...(p.card_facts||{})},
-    press_facts:{...(r.press_facts||{}),...(p.press_facts||{})}
-  }
-}
-async function load(refresh=false){
-  $('#state').textContent='Загрузка текущего каталога…';
-  const payload=await fetch('/auctions/krt-lab/data?ts='+Date.now(),{cache:'no-store'})
-    .then(r=>{if(!r.ok)throw new Error('Данные: '+r.status);return r.json()});
-  const cat=payload.catalogue||{}, rank=payload.ranking||{};
-  const rb=new Map((rank.rows||[]).map(x=>[String(x.slug||''),x]));
-  const all=(cat.projects||[]).map(p=>mergeRow(p,rb.get(String(p.slug||''))));
-  excludedRunning=all.filter(x=>x.status_kind==='running').length;
-  merged=all.filter(x=>x.status_kind!=='running' && x.status_kind!=='unparsed');
-  $('#state').textContent=`Источник: ${payload.source||'рабочий DevelopAid'} · строк ${cat.count||all.length} · реализуемые исключены до расчёта: ${excludedRunning}. Баллы пересчитываются в браузере при каждом изменении весов.`;
-  render();
-}
-function median(xs){
-  xs=xs.filter(x=>num(x)!=null).map(Number).sort((a,b)=>a-b);
-  if(!xs.length)return null; const i=Math.floor(xs.length/2); return xs.length%2?xs[i]:(xs[i-1]+xs[i])/2
+function liveRender(){
+  if(!live){$('#liveBody').textContent='Живой пример не пришёл.';return}
+  const c=live.cost_stack||{},base=live.baseline||{},entry=live.entry_capacity||{},au=live.auction||{};
+  let html='<div class="livegrid">'
+    +'<div class="livecell"><b>'+fmt(c.cadastral_buyout_mln,1)+' млн ₽</b><span>кадастровый выкуп не-Москвы</span></div>'
+    +'<div class="livecell"><b>'+fmt(base.project_llcr_x,3)+'×</b><span>LLCR при цене права КРТ = 0</span></div>'
+    +'<div class="livecell"><b>'+fmt(entry.max_krt_right_price_mln,1)+' млн ₽</b><span>макс. цена права при LLCR 1,20</span></div>'
+    +'<div class="livecell"><b>'+fmt(au.start_price_mln,1)+' млн ₽</b><span>цена права в лотовых данных</span></div>'
+    +'<div class="livecell"><b>'+fmt(au.llcr_at_start_x,3)+'×</b><span>LLCR при цене из торгов + кадастровый выкуп</span></div>'
+    +'</div><div class="stack">'
+    +'<span>Москва исключена: <b>'+fmt(c.moscow_cadastral_excluded_mln,1)+' млн ₽</b></span>'
+    +'<span>снос: <b>'+fmt(c.demolition_mln,1)+' млн ₽</b></span>'
+    +'<span>соцобъекты: <b>'+fmt(c.social_mln,1)+' млн ₽</b></span>'
+    +'<span>известная нагрузка: <b>'+fmt(c.total_known_mln,1)+' млн ₽</b></span>'
+    +'<span>на жилой метр: <b>'+fmt(c.rub_per_housing_sqm,0)+' ₽/м²</b></span>'
+    +'<span>доля от обычного CAPEX: <b>'+fmt(live.burden_pct,1)+'%</b> · '+fmt(live.burden_points,1)+'/20</span>'
+    +'<span>резерв к цене торгов: <b>'+fmt(au.reserve_to_limit_mln,1)+' млн ₽</b></span>'
+    +'</div>';
+  if(c.cadastral_unknown_count)html+='<div class="note warn">Не хватает кадастровой стоимости по '+fmt(c.cadastral_unknown_count)+' объектам: выкуп и LLCR пока являются нижней оценкой нагрузки.</div>';
+  if(!live.available)html+='<div class="note bad">Финансовый прогон примера не выполнен: '+esc(live.reason||'неизвестная ошибка')+'</div>';
+  $('#liveBody').innerHTML=html;
 }
 function render(){
-  ['Eco','Mkt','Bur','Acc'].forEach(k=>$('#w'+k+'V').textContent=$('#w'+k).value);
-  const q=$('#q').value.trim().toLowerCase(), st=$('#status').value, minCov=+$('select#coverage').value;
-  const hideTaken=$('#hideTaken').checked;
-  let rows=merged.map(r=>({r,s:weighted(r)})).filter(x=>{
-    const r=x.r,s=x.s;
-    if(st && r.status_kind!==st)return false;
-    if(q && ![r.name,r.district,r.okrug].join(' ').toLowerCase().includes(q))return false;
-    if(s.coverage<minCov)return false;
-    if(hideTaken && s.op.taken)return false;
+  const q=$('#q').value.trim().toLowerCase(),st=$('#status').value,minCov=Number($('#coverage').value||0),hide=$('#hideTaken').checked;
+  let list=rowsAll.map(r=>({r,s:calc(r),op:opInfo(r)})).filter(x=>{
+    if(st&&x.r.status_kind!==st)return false;
+    if(q&&![x.r.name,x.r.district,x.r.okrug].join(' ').toLowerCase().includes(q))return false;
+    if(x.s.coverage<minCov)return false;
+    if(hide&&x.op.taken)return false;
     return true;
-  }).sort((a,b)=>(b.s.score??-1)-(a.s.score??-1) || b.s.coverage-a.s.coverage || String(a.r.name||'').localeCompare(String(b.r.name||''),'ru'));
-  $('#kEligible').textContent=rows.length.toLocaleString('ru-RU');
-  $('#kRunning').textContent=excludedRunning.toLocaleString('ru-RU');
-  $('#kModel').textContent=rows.filter(x=>x.r.available).length.toLocaleString('ru-RU');
-  $('#kMedian').textContent=median(rows.map(x=>x.s.score))==null?'—':fmt(median(rows.map(x=>x.s.score)),0);
-  $('#kCoverage').textContent=median(rows.map(x=>x.s.coverage))==null?'—':fmt(median(rows.map(x=>x.s.coverage)),0)+'%';
-
-  $('#rows').innerHTML=rows.map((x,i)=>{
-    const r=x.r,s=x.s,req=r.requirements||{},ren=r.renovation||{};
-    const res=Array.isArray(req.resettlement)?req.resettlement.length:num(req.resettlement_mentions);
-    const access=[s.op.label||'',s.op.city?'городской оператор':'',s.tender?'активные торги':''].filter(Boolean).join(' · ')||'—';
-    const score=s.score==null?'—':fmt(s.score,0);
-    return `<tr>
-      <td class="rank">${i+1}</td>
-      <td><span class="score">${score}</span><div class="small muted">сырой ${s.raw==null?'—':fmt(s.raw,0)}</div></td>
-      <td>${fmt(s.coverage,0)}%</td>
-      <td class="name"><b>${esc(r.name||r.slug)}</b><div class="small muted">${esc([r.okrug,r.district].filter(Boolean).join(' · '))}</div></td>
-      <td><span class="pill">${esc(badgeStatus(r))}</span></td>
-      <td>${bar(s.eco.score)}</td><td>${bar(s.mkt.score)}</td><td>${bar(s.bur.score)}</td><td>${bar(s.acc.score)}</td>
-      <td>${fmt(r.project_llcr_x,2)}</td><td>${num(r.margin_pct)==null?'—':fmt(r.margin_pct,1)+'%'}</td>
-      <td>${fmt(r.entry_capacity_rub_per_sqm,0)}</td><td>${fmt(r.surrounding_price_rub_sqm,0)}</td>
-      <td>${fmt(r.surrounding_sales_units_per_month,1)}</td><td>${fmt(req.demolition_area_sqm,0)}</td>
-      <td>${num(ren.share)==null?'—':pct(ren.share)}</td><td>${res==null?'—':fmt(res,0)}</td>
-      <td class="name small">${esc(access)}</td>
-    </tr>`
+  });
+  list.sort((a,b)=>(b.s.score??-1)-(a.s.score??-1)||b.s.coverage-a.s.coverage||b.s.partial-a.s.partial||
+    String(a.r.name||'').localeCompare(String(b.r.name||''),'ru'));
+  $('#kAll').textContent=fmt(list.length);
+  $('#kScored').textContent=fmt(list.filter(x=>x.s.score!=null).length);
+  $('#kRunning').textContent=fmt(list.filter(x=>x.r.status_kind==='running').length);
+  $('#kMedian').textContent=fmt(median(list.map(x=>x.s.score)),0);
+  $('#kCoverage').textContent=(median(list.map(x=>x.s.coverage))==null?'—':fmt(median(list.map(x=>x.s.coverage)),0)+'%');
+  let place=0;
+  $('#rows').innerHTML=list.map(x=>{
+    const r=x.r,s=x.s,op=x.op; if(s.score!=null)place++;
+    const score=s.running?'<span class="run">—</span><div class="small muted">В реализации · без балла</div>':
+      s.score!=null?'<span class="score">'+fmt(s.score,1)+'</span>':
+      '<span class="part">'+fmt(s.partial,1)+'/100*</span><div class="small muted">неполный · итог не присвоен</div>';
+    const access=[op.label,tender(r)?'торги':''].filter(Boolean).join(' · ')||'—';
+    return '<tr><td class="rank">'+(s.score!=null?place:'—')+'</td><td>'+score+'</td><td>'+fmt(s.coverage,0)+'%</td>'
+      +'<td class="name"><b>'+esc(r.name||r.slug)+'</b><div class="small muted">'+esc([r.okrug,r.district].filter(Boolean).join(' · '))+'</div></td>'
+      +'<td><span class="pill">'+esc(statusName(r))+'</span></td><td>'+bar(s.ll,40)+'</td><td>'+bar(s.pp,20)+'</td>'
+      +'<td>'+bar(s.ap,20)+'</td><td>'+bar(s.bp,20)+'</td><td>'+fmt(r.surrounding_price_rub_sqm,0)+'</td>'
+      +'<td>'+fmt(s.a.local,0)+'</td><td>'+fmt(s.a.benchmark,0)+'</td><td>'+(s.b==null?'—':fmt(s.b,1)+'%')+'</td>'
+      +'<td>'+fmt(r.entry_capacity_mln,1)+'</td><td class="name small">'+esc(access)+'</td></tr>';
   }).join('');
 }
-for(const id of ['q','status','coverage','hideTaken','wEco','wMkt','wBur','wAcc'])$('#'+id).addEventListener('input',render);
-$('#reload').onclick=()=>load(true).catch(showError);
-$('#reset').onclick=()=>{[['wEco',45],['wMkt',20],['wBur',25],['wAcc',10]].forEach(([id,v])=>$('#'+id).value=v);render()};
+async function load(){
+  $('#state').textContent='Загрузка текущего каталога…';
+  const response=await fetch('/auctions/krt-lab/data?ts='+Date.now(),{cache:'no-store'});
+  if(!response.ok)throw new Error('Данные: '+response.status);
+  const payload=await response.json(),cat=payload.catalogue||{},rank=payload.ranking||{};
+  method=payload.methodology||{};live=(payload.examples||{}).nagatino||null;
+  const by=new Map((rank.rows||[]).map(x=>[String(x.slug||''),x]));
+  rowsAll=(cat.projects||[]).map(p=>merge(p,by.get(String(p.slug||''))));
+  $('#state').textContent='Источник: '+(payload.source||'рабочий DevelopAid')+' · строк '+fmt(cat.count||rowsAll.length)
+    +' · реализуемые КРТ сохранены в таблице и не получают балл. Полный итог появляется только при 100% данных.';
+  liveRender();render();
+}
+for(const id of ['q','status','coverage','hideTaken','target'])$('#'+id).addEventListener('input',render);
+$('#reload').onclick=()=>load().catch(showError);
 function showError(e){$('#state').innerHTML='<span class="bad">Не удалось загрузить: '+esc(e.message||e)+'</span>'}
-load(false).catch(showError);
+load().catch(showError);
 </script>
-</body>
-</html>"""
+</main></body></html>"""
