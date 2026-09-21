@@ -229,9 +229,15 @@ def test_the_shared_rates_say_they_are_on_the_construction_volume() -> None:
              for name, _title, hint, *_rest in fields}
     for key in ("ird_th_per_sqm", "design_p_th_per_sqm", "design_rd_th_per_sqm",
                 "preparation_th_per_sqm", "utilities_th_per_sqm",
-                "landscaping_th_per_sqm", "commissioning_th_per_sqm",
-                "site_maintenance_th_per_sqm"):
+                "commissioning_th_per_sqm", "site_maintenance_th_per_sqm"):
         assert "строительного объёма" in hints[key], (key, hints[key])
+    # Благоустройство в этом списке стояло и проходило проверку НА ОТРИЦАНИИ:
+    # подсказка говорила «тыс. ₽/м² благоустроенной территории, а НЕ
+    # строительного объёма», и подстрока не отличила утверждение от его
+    # отрицания. База у статьи двор (правило 10.09.2026), и теперь это
+    # проверяется прямо — вместе с предохранителем от возврата в список.
+    assert "двора" in hints["landscaping_th_per_sqm"], hints["landscaping_th_per_sqm"]
+    assert "строительного объёма" not in hints["landscaping_th_per_sqm"]
     # У СМР базы свои, и они названы своими именами.
     assert "наземной части" in hints["main_above_th_per_sqm"]
     assert "подземной части" in hints["main_under_th_per_sqm"]
