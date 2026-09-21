@@ -1615,6 +1615,11 @@ def install(app: FastAPI) -> None:
         по-разному, и оба ответа выглядели бы верными.
         """
         clean = str(slug or "")
+        # Выбор двери живёт в реестре (`requirements_for`): его же читает сбор
+        # контура по перечню решения, и разойтись им теперь негде.
+        reader = getattr(krt_registry, "requirements_for", None)
+        if callable(reader):
+            return reader(clean)
         if clean.startswith("decision:"):
             reader = getattr(krt_registry, "decision_requirements", None)
             if not callable(reader):
@@ -2527,11 +2532,13 @@ def install(app: FastAPI) -> None:
         the UI shows "not published", never "no resettlement".  The signed KRT
         agreement remains the final source of the developer's duties.
         """
-        reader = getattr(krt_registry, "requirements", None)
-        if not callable(reader):
+        if not callable(getattr(krt_registry, "requirements", None)):
             raise HTTPException(
                 status_code=503, detail="Чтение требований КРТ не подключено")
-        result = await run_in_threadpool(reader, slug)
+        # Дверь выбирает `_requirements_for`, а не этот маршрут: у
+        # площадки-решения слага в реестре нет, и прямое чтение по слагу
+        # отвечало ей «территория не найдена» при прочитанном решении.
+        result = await run_in_threadpool(_requirements_for, slug)
         if result is None:
             raise HTTPException(status_code=404, detail="Территория КРТ не найдена")
         return result
