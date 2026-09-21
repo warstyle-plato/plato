@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import json
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 
@@ -35,31 +34,27 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "tests"))
 
 import main_legacy as core  # noqa: E402
+import page_blocks  # noqa: E402
 
 NODE = shutil.which("node")
 pytestmark = pytest.mark.skipif(not NODE, reason="node недоступен")
 
 
-def _function(name: str) -> str:
-    """Кусок страницы по границам самой функции, а не по соседней строке."""
-    page = core.PAGE
-    start = page.index(f"async function {name}(")
-    depth, at = 0, page.index("{", start)
-    for index in range(at, len(page)):
-        if page[index] == "{":
-            depth += 1
-        elif page[index] == "}":
-            depth -= 1
-            if depth == 0:
-                return page[start:index + 1]
-    raise AssertionError(f"функция {name} не закрыта")
-
-
 def run(field_value: str, *, reason: str = "", found: list | None = None) -> str:
-    """Гоняет настоящий obtainTep и возвращает то, что он написал человеку."""
-    harness = """
+    """Гоняет настоящий obtainTep и возвращает то, что он написал человеку.
+
+    Зависимости добирает общий разрешитель (`page_blocks.run`), а не список
+    руками: перечисленный список отстаёт от страницы, и стенд падает на своей
+    неполноте — «X is not defined» вместо утверждения о том, что он проверяет.
+    Ровно это и вышло 15.09.2026, когда образец кадастрового номера объявили
+    один раз константой: стенд её не знал и краснел про неё, а не про разбор.
+    Заглушками остаётся только то, что за пределами страницы, — DOM, сеть и
+    соседние сценарии.
+    """
+    prelude = """
 const box = {value: %(value)s};
 // Сказанное человеку копится целиком: строка состояния переписывается по ходу,
 // и последнее значение прячет то, что стояло до него.
@@ -79,17 +74,16 @@ async function lookupLand(){ return %(found)s; }
 async function fetch(){ return {ok: false, json: async () => ({detail: 'территория не сформирована'})}; }
 async function calculateMo(){ return null; }
 async function obtainCadastralTep(){ return null; }
-%(fn)s
-obtainTep().then(() => { console.log(JSON.stringify(said)); });
 """ % {
         "value": json.dumps(field_value),
         "reason": json.dumps(reason),
         "found": json.dumps(found or []),
-        "fn": _function("obtainTep"),
     }
-    done = subprocess.run([NODE, "-e", harness], capture_output=True, text=True, timeout=120)
-    assert done.returncode == 0, done.stderr[:800]
-    return "\n".join(json.loads(done.stdout.strip().splitlines()[-1]))
+    # Действие — в хвосте: добранные куски встают между прелюдией и им, и
+    # объявленная в куске константа иначе читалась бы до объявления.
+    tail = "obtainTep().then(() => { console.log(JSON.stringify(said)); });"
+    out, _taken = page_blocks.run(prelude, tail)
+    return "\n".join(json.loads(out.strip().splitlines()[-1]))
 
 
 def test_an_address_is_never_called_a_bad_cadastral_number() -> None:
