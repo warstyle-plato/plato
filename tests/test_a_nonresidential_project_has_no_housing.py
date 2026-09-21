@@ -693,3 +693,111 @@ def _density_targets() -> list[tuple[str, str]]:
     raw = page_blocks.constant("NONRES_DENSITY_TARGETS")
     body = raw[raw.index("["):raw.rindex("]") + 1].replace("'", '"')
     return [tuple(pair) for pair in json.loads(body)]
+
+
+# Переключение — разовое действие с большими последствиями, и ответ на «что
+# теперь» стоял плашкой ниже по странице: её надо было заметить. Владелец,
+# 21.09.2026: «самое разумное при выборе нежилого всплывающее окно, что
+# такие-то параметры отключены, можете выбрать ТЭП в разделе экономика».
+PROBE_DIALOG = """() => {
+  const box = () => document.getElementById('projectKindDialog');
+  const shown = () => getComputedStyle(box()).display;
+  const before = shown();
+  applyProjectKind('nonresidential');
+  const opened = shown();
+  const text = document.getElementById('projectKindDialogBody').innerText.replace(/\\s+/g,' ');
+  closeProjectKindDialog();
+  const closed = shown();
+  const note = [...document.querySelectorAll('.note')]
+    .map(e => e.innerText.replace(/\\s+/g,' '))
+    .find(t => /Нежилой проект/.test(t)) || '';
+  const button = [...document.querySelectorAll('button')]
+    .find(b => /что отключено/.test(b.textContent));
+  if (button) button.click();
+  const reopened = shown();
+  closeProjectKindDialog();
+  applyProjectKind('nonresidential');
+  cancelNonResidential();
+  return {before: before, opened: opened, closed: closed, reopened: reopened,
+          text: text, note: note,
+          kindAfterCancel: String(inputs.project_kind || ''),
+          flatsAfterCancel: Number(tep.apartments.gns || 0)};
+}"""
+
+
+@pytest.fixture(scope="module")
+def dialog():
+    pytest.importorskip("playwright.sync_api")
+    from playwright.sync_api import sync_playwright
+
+    path = browser.chromium_or_skip()
+    errors: list[str] = []
+    with browser.serve(core.app, PORT + 3) as base, sync_playwright() as pw:
+        with pw.chromium.launch(executable_path=str(path)) as engine:
+            # Телефонная ширина: экран владельца снят с iPhone, и окно,
+            # которое там не помещается, отвечает не ему.
+            page = engine.new_page(viewport={"width": 390, "height": 760})
+            page.on("pageerror", lambda exc: errors.append(str(exc)))
+            page.goto(base, wait_until="domcontentloaded")
+            page.wait_for_timeout(1800)
+            got = page.evaluate(PROBE_DIALOG)
+            page.wait_for_timeout(300)
+            page.close()
+    got["errors"] = errors
+    return got
+
+
+def test_the_switch_opens_the_window(dialog) -> None:
+    assert dialog["errors"] == [], "страница не доработала до конца"
+    assert dialog["before"] == "none", "окно висело открытым до переключения"
+    assert dialog["opened"] == "flex", "переключение не показало окно"
+    assert dialog["closed"] == "none"
+    assert dialog["reopened"] == "flex", "плашка не открывает то же окно"
+
+
+def test_the_window_names_what_was_turned_off(dialog) -> None:
+    """Окно называет убранное и поставленное — числами, а не общими словами."""
+    text = dialog["text"].replace(" ", " ")
+    assert "Убрано:" in text, text
+    assert "плата за смену ВРИ" in text and "места ДОО" in text, text
+    assert "Поставлено:" in text and "м² ГНС" in text, text
+
+
+def test_the_window_says_where_the_metres_go(dialog) -> None:
+    """Куда вписывать метры — блоками вводных, а не пересказом их имён.
+
+    Имена групп написанные руками разошлись бы с экраном молча: так уже
+    уезжали подписи статей расходов и имена продуктов.
+    """
+    text = dialog["text"]
+    assert "Экономика" in text, text
+    for title in _object_group_titles():
+        assert f"«{title}»" in text, (title, text)
+    # И вторая дверь — кнопка выбора на шаге ТЭП — названа там же.
+    for _, name in _density_targets():
+        assert name in text, (name, text)
+
+
+def test_the_note_does_not_repeat_the_window(dialog) -> None:
+    """Плашка — одна строка и кнопка: одно и то же дважды подряд не читают."""
+    note = dialog["note"]
+    assert "что отключено" in note, note
+    assert "Убрано:" not in note, "плашка повторяет окно"
+    assert len(note) < 250, note
+
+
+def test_the_switch_can_be_cancelled(dialog) -> None:
+    """«Вернуть жильё» отменяет переключение целиком."""
+    assert dialog["kindAfterCancel"] == "mixed"
+    assert dialog["flatsAfterCancel"] > 0, "жильё не вернулось"
+
+
+def _object_group_titles() -> list[str]:
+    """Заголовки групп, где задаются метры объектов, — из самого движка."""
+    keys = {"offices_gba_sqm", "retail_gba_sqm", "sports_gba_sqm",
+            "above_parking_spaces"}
+    out = []
+    for title, fields in core.FIELD_GROUPS:
+        if any(field[0] in keys for field in fields):
+            out.append(title)
+    return out

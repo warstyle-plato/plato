@@ -42203,6 +42203,28 @@ details.cadastral-box>summary::marker{color:#888}
     <div id="classSourcesBody" style="margin-top:16px"></div>
   </div>
 </div>
+<!-- Что случилось при смене типа проекта. Переключение — разовое действие с
+     большими последствиями: обнуляется жильё, соцнагрузка и плата за ВРИ, а
+     метры объектов задаются уже в другом месте. Ответ на «что теперь» стоял
+     плашкой ниже по странице — её надо было заметить (владелец, 21.09.2026:
+     «самое разумное при выборе нежилого всплывающее окно, что такие-то
+     параметры отключены, можете выбрать ТЭП в разделе экономика»). Текст
+     живёт ЗДЕСЬ и только здесь: плашка под селектором зовёт это же окно,
+     иначе одно и то же сказано дважды подряд и его перестают читать. -->
+<div id="projectKindDialog" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);
+     z-index:91;align-items:center;justify-content:center;padding:20px" onclick="if(event.target===this)closeProjectKindDialog()">
+  <div style="background:#fff;max-width:660px;width:100%;max-height:86vh;overflow:auto;padding:22px 24px;border-radius:10px">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">
+      <h2 id="projectKindDialogTitle" style="margin:0;font-size:17px">Нежилой проект</h2>
+      <button onclick="closeProjectKindDialog()" style="margin-left:auto;border:1px solid #ddd;background:#fff;border-radius:6px;padding:3px 10px;cursor:pointer">✕</button>
+    </div>
+    <div id="projectKindDialogBody" style="font-size:13px;line-height:1.55"></div>
+    <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn" type="button" onclick="closeProjectKindDialog()">Понятно</button>
+      <button type="button" onclick="cancelNonResidential()" style="border:1px solid #c98a1b;background:#fff;color:#8a5a00;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px">Вернуть жильё</button>
+    </div>
+  </div>
+</div>
 <!-- Карта, которую крутят. Миниатюра остаётся на месте и остаётся тем, что
      уходит в бота и в печать: развёрнутая карта живёт только на экране, и
      подменять ею печатную картинку нельзя — иначе про один участок будет два
@@ -46142,19 +46164,73 @@ function projectKindHasSaved(){
   ||!!saved.landscaping_rate;
 }
 
+// Имена блоков, где задаются метры объектов, берутся из САМИХ групп вводных:
+// написанные здесь руками, они разошлись бы с экраном молча — так уже уезжали
+// имена статей расходов и подписи продуктов.
+function objectGroupTitles(){
+ const keys=['offices_gba_sqm','retail_gba_sqm','sports_gba_sqm','above_parking_spaces'];
+ const out=[];
+ (FIELD_GROUPS||[]).forEach(group=>{
+  const title=group[0],fields=group[1]||[];
+  if(fields.some(f=>keys.indexOf(f[0])>=0))out.push(title);
+ });
+ return out;
+}
+
+// Что случилось при переключении — одним окном. Собирается из тех же
+// `_nonres_cleared` и `_nonres_placed`, что читает плашка: два текста об одном
+// событии разошлись бы, и оба выглядели бы верными.
+function projectKindDialogHtml(){
+ const cleared=inputs._nonres_cleared||[],placed=inputs._nonres_placed||[];
+ const groups=objectGroupTitles();
+ let html='<p style="margin:0 0 10px">Квартиры, встроенная коммерция, кладовые и подземный '
+  +'паркинг МКД обнулены и заперты. Соцнагрузка и плата за смену ВРИ не считаются: первая идёт '
+  +'от населения, вторая от СПП жилых зданий.</p>';
+ if(cleared.length)html+='<p style="margin:0 0 10px"><b>Убрано:</b> '+escapeHtml(cleared.join(', '))+'.</p>';
+ if(placed.length)html+='<p style="margin:0 0 10px"><b>Поставлено:</b> '+escapeHtml(placed.join(', '))
+  +' — двор от населения здесь не считается, иного способа, кроме метра ГНС, нет.</p>';
+ html+='<p style="margin:0 0 10px"><b>Где теперь задавать метры:</b> вкладка «Экономика», блоки '
+  +escapeHtml(groups.map(t=>'«'+t+'»').join(', '))+'. Строки ТЭП у них производные — считаются '
+  +'по долям объекта.</p>'
+  +'<p style="margin:0 0 10px">Нормативный потенциал участка можно положить в '
+  +escapeHtml(NONRES_DENSITY_TARGETS.map(t=>'«'+t[1]+'»').join(' или '))
+  +' кнопкой «Рассчитать ТЭП от площади и плотности» на шаге «ТЭП»: она спросит, куда.</p>'
+  +'<p style="margin:0">Финансирование режим не трогает: 214-ФЗ нежильё не исключает, эскроу '
+  +'и лестница ставки ПФ те же.</p>';
+ return html;
+}
+
+function openProjectKindDialog(){
+ const box=document.getElementById('projectKindDialogBody');
+ const dialog=document.getElementById('projectKindDialog');
+ if(!box||!dialog)return;
+ box.innerHTML=projectKindDialogHtml();
+ dialog.style.display='flex';
+}
+
+function closeProjectKindDialog(){
+ const dialog=document.getElementById('projectKindDialog');
+ if(dialog)dialog.style.display='none';
+}
+
+// Отмена переключения целиком: тип возвращается ПЕРВЫМ, иначе пересчёт ТЭП,
+// который зовёт `restoreResidentialInputs`, уберёт возвращённое сразу же —
+// в нежилом режиме он на то и стоит.
+function cancelNonResidential(){
+ closeProjectKindDialog();
+ applyProjectKind('mixed');
+ restoreResidentialInputs();
+}
+
 // Надпись отвечает на три разных вопроса, и слить их нельзя: что считает
 // режим сейчас, что он убрал и что лежит убранным у жилого проекта.
 function projectKindNote(){
  const cleared=inputs._nonres_cleared||[],placed=inputs._nonres_placed||[];
  if(isNonResidential()){
   return '<div class="note" style="margin:0 0 12px;padding:11px 12px">'
-   +'<b>Нежилой проект.</b> Квартиры, встроенная коммерция, кладовые и подземный паркинг МКД '
-   +'обнулены и заперты; соцнагрузка и плата за смену ВРИ не считаются — первая идёт от населения, '
-   +'вторая от СПП жилых зданий. Отдельно стоящие объекты, их гаражи и наземный паркинг считаются как обычно.'
-   +(cleared.length?' Убрано: '+escapeHtml(cleared.join(', '))+'.':'')
-   +(placed.length?' Поставлено: '+escapeHtml(placed.join(', '))+' — двор от населения здесь не считается, иного способа, кроме метра ГНС, нет.'
-                 :' Благоустройство от населения здесь не считается — задайте ставку на метр ГНС.')
-   +' Финансирование режим не трогает: 214-ФЗ нежильё не исключает, эскроу и лестница ставки ПФ те же.'
+   +'<b>Нежилой проект.</b> Жильё, соцнагрузка и плата за смену ВРИ не считаются; метры '
+   +'объектов задаются на вкладке «Экономика». '
+   +'<button type="button" class="tep-refill" onclick="openProjectKindDialog()">что отключено</button>'
    +'</div>';
  }
  if(projectKindHasSaved()){
@@ -46190,6 +46266,10 @@ function applyProjectKind(key){
  renderTep();
  refreshGroupPeeks();
  calculate();
+ // Окно после пересчёта: до него списки убранного и поставленного ещё не
+ // полны — пересчёт ТЭП убирает и то, что вернули писатели.
+ if(kind==='nonresidential')openProjectKindDialog();
+ else closeProjectKindDialog();
 }
 
 function syncProjectClassSelector(){
