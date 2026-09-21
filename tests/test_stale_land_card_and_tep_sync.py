@@ -97,8 +97,18 @@ def test_a_missing_snapshot_never_fits():
 
 def test_typing_another_number_drops_the_card():
     """Карточка уходит по вводу, а не по нажатию кнопки: до кнопки человек
-    успевает прочитать чужой адрес как свой."""
-    assert 'id="cadastralNumbers" oninput="dropStaleLandPreview()"' in core.PAGE
+    успевает прочитать чужой адрес как свой.
+
+    Утверждение здесь одно — гашение зовётся у поля по вводу. Держать ФОРМУ
+    записи атрибута нельзя: рядом с гашением у того же `oninput` законно встаёт
+    соседнее дело (с 15.09.2026 — запоминание вписанного номера как данных
+    проекта), и проверка падает на ДОБАВЛЕННОМ, ничего не сказав о том, что
+    сломалось.
+    """
+    match = re.search(r'id="cadastralNumbers"[^>]*\soninput="([^"]*)"', core.PAGE)
+    assert match, "у поля участка нет обработчика ввода"
+    assert "dropStaleLandPreview()" in match.group(1), (
+        f"по вводу карточка не гасится: oninput={match.group(1)!r}")
 
 
 def test_obtaining_the_tep_drops_a_foreign_card():

@@ -12,14 +12,24 @@
 против базы (`--base origin/main`), а номер не выбирается на глаз: `--next`
 печатает первый свободный над базой, с переходом через сотню (x.y.99 → x.(y+1).1).
 
+Третий случай (21.09.2026) вылечил сам подход. Номер брали В ВЕТКЕ заранее, а
+сверяли с main — и две сессии взяли 0.24.16 одновременно, каждая законно:
+до слияния первой расхождения не видно ниоткуда. Номер отвечает на «что
+выпущено», а выпуск случается на main, поэтому и выдаёт его слияние
+(`.github/workflows/release-merge.yml`), а не ветка. Отсюда `--on-branch`:
+равный базе номер — это «ещё не выдан», а не нарушение; ниже базы — регресс;
+выше базы и занят соседом — то самое столкновение, названное ДО слияния.
+
 Запуск:
     python3 scripts/check_version_grows.py [предыдущий_коммит]
     python3 scripts/check_version_grows.py --base origin/main
     python3 scripts/check_version_grows.py --next --base origin/main
+    python3 scripts/check_version_grows.py --on-branch --base origin/main
 """
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -99,10 +109,73 @@ def _next_version(base: tuple[int, ...]) -> str:
     return ".".join(str(part) for part in parts)
 
 
+def _on_branch(base_ref: str) -> int:
+    """Сторож на ветке: номер не ниже базы и не занят соседом.
+
+    Роста здесь НЕ требуется. Пока требовался, ветка обязана была взять номер
+    заранее — то есть угадать его за час-два до слияния, — и угадывали двое
+    разом. Равенство базе значит «номер ещё не выдан»: его выдаст слияние.
+    """
+    try:
+        base = _version(_show(base_ref))
+    except subprocess.CalledProcessError:
+        print(f"Базы нет ({base_ref}) — сравнение пропущено.")
+        return 0
+    head = _version(_show("HEAD"))
+    shown_base, shown_head = ".".join(map(str, base)), ".".join(map(str, head))
+    if head < base:
+        print(f"Номер ниже базы: в ветке {shown_head}, в {base_ref} {shown_base}.",
+              file=sys.stderr)
+        print("Выпуск назад — это откат прода на прошлый образ. Влейте базу: "
+              "номер выдаёт слияние, и трогать его в ветке не нужно.",
+              file=sys.stderr)
+        return 1
+    if head == base:
+        print(f"Номер не выдан ({shown_head} — как в {base_ref}); выдаст слияние.")
+        return 0
+    # Номер в ветке всё-таки взят. Это больше не нужно, но и не запрещено —
+    # запрещено взять ЗАНЯТЫЙ, и вот это здесь и проверяется. Своя ветка из
+    # сверки исключена: сравнивать номер с самим собой нечего.
+    taken, unread = _remote_versions()
+    mine = _current_branch()
+    holders = sorted(branch for branch, version in taken.items()
+                     if version == head and branch != mine)
+    if holders:
+        print(f"Номер {shown_head} уже держат: {', '.join(holders)}.", file=sys.stderr)
+        print("Двое под одним номером — разные правки одного выпуска. Не "
+              "поднимайте номер в ветке: его выдаёт слияние, и до него ветка "
+              "стоит на номере базы.", file=sys.stderr)
+        return 1
+    print(f"Номер {shown_head} выше базы {shown_base} и свободен.")
+    if unread:
+        shown = ", ".join(sorted(unread)[:3])
+        print(f"Не прочитано веток: {len(unread)} — ссылок нет локально "
+              f"({shown}{' и другие' if len(unread) > 3 else ''}). "
+              "В сверку они не вошли.", file=sys.stderr)
+    return 0
+
+
+def _current_branch() -> str:
+    """Имя своей ветки — чтобы не счесть собственный номер занятым."""
+    for command in (["git", "symbolic-ref", "--quiet", "--short", "HEAD"],
+                    ["git", "rev-parse", "--abbrev-ref", "HEAD"]):
+        try:
+            name = subprocess.run(command, capture_output=True, text=True,
+                                  check=True).stdout.strip()
+        except (subprocess.CalledProcessError, OSError):
+            continue
+        if name and name != "HEAD":
+            return name
+    # В CI ветка приезжает отцепленной головой, и своего имени у неё нет.
+    # Имя есть у события: без него сторож счёл бы своим номером чужой.
+    return os.environ.get("GITHUB_HEAD_REF", "") or os.environ.get("GITHUB_REF_NAME", "")
+
+
 def main() -> int:
     argv = [arg for arg in sys.argv[1:]]
     show_next = "--next" in argv
-    argv = [arg for arg in argv if arg != "--next"]
+    on_branch = "--on-branch" in argv
+    argv = [arg for arg in argv if arg not in ("--next", "--on-branch")]
     base_ref = ""
     if "--base" in argv:
         index = argv.index("--base")
@@ -111,6 +184,8 @@ def main() -> int:
         except IndexError:
             raise SystemExit("--base без ссылки: укажите ветку или коммит.")
         argv = argv[:index] + argv[index + 2:]
+    if on_branch:
+        return _on_branch(base_ref or "origin/main")
     if show_next:
         reference = base_ref or "origin/main"
         try:

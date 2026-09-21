@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from html import escape
 
 
@@ -661,7 +662,7 @@ function egrnBlock(view,title,note){
     :`<div class="notice${view.reason?' warn':''}">${esc(view.reason||'Правообладатели по выпискам не названы.')}</div>`)
   +(view.holders_withheld?`<div class="source">Право зарегистрировано, а имени форма не раскрывает: ${view.holders_withheld}. Это свойство вида выписки, а не молчание реестра — лечится своим запросом в ЕГРН.</div>`:'')
   +(view.without_registered_owner?`<div class="source">Право собственности не зарегистрировано: ${view.without_registered_owner}. Так сказано в выписках.</div>`:'')
-  +(refused.length?`<div class="items">${refused.map(r=>`<div class="item"><b>Площадка не отдала вложение</b>${esc(r.document||'')}<div class="source">${esc(r.reason||'')}</div></div>`).join('')}</div>`:'')
+  +(refused.length?`<div class="items">${refused.map(r=>`<div class="item"><b>${r.kind==='extraction_error'?'Вложение отдано, а мы его не прочитали':'Площадка не отдала вложение'}</b>${esc(r.document||'')}<div class="source">${esc(r.reason||'')}</div></div>`).join('')}</div>`:'')
   +(view.unread?`<div class="notice warn">Не прочитано записей: ${view.unread}. Молча выброшенная выписка читается как отсутствие собственника, поэтому она названа.</div>`:'')
   +(view.companions?`<div class="source">Рядом с выписками лежало ${view.companions} файл(ов) — подписи, таблицы стилей, картинки планов. Это не наш пробел.</div>`:'')
   +(note?`<div class="source">${esc(note)}</div>`:'')
@@ -809,8 +810,9 @@ async function ingest(){const l=state.selected;if(!l)return;const b=$('ingestBtn
 function docsRead(v,total){
  if(!v)return String(total||0);
  const bits=[`прочитано ${v.read} из ${v.total}`];
- const refused=(v.refused||[]).length;
- if(refused)bits.push(`площадка не отдала ${refused}`);
+ const sides=docsRefusalSides(v.refused);
+ if(sides.theirs.length)bits.push(`площадка не отдала ${sides.theirs.length}`);
+ if(sides.ours.length)bits.push(`мы не прочитали ${sides.ours.length}`);
  const skipped=(v.skipped||[]).length;
  if(skipped)bits.push(`не спрашивали ${skipped}`);
  if(v.from_store)bits.push(`со склада ${v.from_store}`);
@@ -819,7 +821,18 @@ function docsRead(v,total){
 function docsRefusalKind(k){
  return k==='auth_required'?'нужен вход на ЭТП'
   :k==='temporary'?'площадка отказала временно'
-  :'не разобралось';
+  :'мы не прочитали: скан или картинки';
+}
+// Чей это пробел — считается ОДИН раз, и читают этот ответ все, кто про
+// отказы говорит. Виды разведены давно, а заголовок над ними утверждал
+// «Площадка не отдала N» про все три разом: на МКАД, 41 км площадка отдала
+// все 27 вложений, а три не прочитали мы — два скана PDF и архив со
+// скриншотами. Наш пробел, приписанный источнику, выглядит на экране ровно
+// так же уверенно, как его настоящий отказ.
+function docsRefusalSides(rows){
+ const theirs=[],ours=[];
+ (rows||[]).forEach(r=>{(r&&r.kind==='extraction_error'?ours:theirs).push(r);});
+ return {theirs:theirs,ours:ours};
 }
 // Причина стоит у самого числа, а не в журнале: отказ, ушедший только в raw,
 // это отказ, которого на экране нет. И «спросим снова» говорится вслух —
@@ -830,9 +843,14 @@ function docsRefusalNote(v){
  const rows=v.refused||[],skipped=v.skipped||[],again=(v.ask_again||[]).length;
  if(!rows.length&&!skipped.length)return '';
  const parts=[];
- if(rows.length)parts.push(`<div><b>Площадка не отдала ${rows.length}:</b> `
-  +rows.slice(0,8).map(r=>`${esc(r.document||r.url||'вложение')} — ${esc(docsRefusalKind(r.kind))}`).join('; ')
-  +(rows.length>8?` и ещё ${rows.length-8}`:'')+'</div>');
+ const sides=docsRefusalSides(rows);
+ const list=(items)=>items.slice(0,8).map(r=>`${esc(r.document||r.url||'вложение')} — ${esc(docsRefusalKind(r.kind))}`).join('; ')
+  +(items.length>8?` и ещё ${items.length-8}`:'');
+ if(sides.theirs.length)parts.push(`<div><b>Площадка не отдала ${sides.theirs.length}:</b> `+list(sides.theirs)+'</div>');
+ // Заново качать нечего: байты уже на складе, и до починки читателя ответ
+ // будет тот же — поэтому здесь не обещается «спросим снова».
+ if(sides.ours.length)parts.push(`<div><b>Мы не прочитали ${sides.ours.length}:</b> `+list(sides.ours)
+  +'. Это наш пробел: вложения отданы, заново качать нечего — нужен читатель.</div>');
  if(again)parts.push(`<div>Спросим снова при следующем разборе: ${again}. Прочитанное лежит на складе — заново поедет только неотданное.</div>`);
  if(skipped.length)parts.push(`<div>Не спрашивали намеренно: `
   +skipped.slice(0,4).map(r=>`${esc(r.document||'вложение')} — ${esc(r.why||'')}`).join('; ')+'</div>');
@@ -1595,6 +1613,20 @@ function krtScoreNote(sc){
 // «Не знаем» — свой вариант в каждой оси, а не молчаливая часть «свободна». У
 // 298 площадок каталога карточки города нет по построению, и сложить их с
 // проверенно свободными значило бы выдать наш пробел за ответ источника.
+// Каким полем источник называет объём — список приезжает из движка
+// (`krt_screening.MEASURE_FIELDS`), как `VERSION` и доли ТЭП: у одной величины
+// полей больше одного (карточка каталога называет жилую СПП, решение — площадь
+// квартир), и вторая копия этого списка разошлась бы с гейтом расчёта молча.
+const KRT_MEASURE_FIELDS=__DEVELOPAID_KRT_MEASURE_FIELDS__;
+function krtMeasureNamed(x,kind){
+ return (KRT_MEASURE_FIELDS[kind]||[]).some(key=>krtNumber(x,key)>0);
+}
+// Назначение названо хоть каким-нибудь объёмом. Ноль здесь бывает двух видов:
+// «город назначения не назвал» и «строка не разобрана» — и второй уже отвечает
+// своей осью, поэтому здесь они вместе: обе значат «мерить нечем».
+function krtPurposeNamed(x){
+ return Object.keys(KRT_MEASURE_FIELDS).some(kind=>krtMeasureNamed(x,kind));
+}
 const KRT_FILTERS=[
  {key:'stage', box:'krtStage', empty:'Любая стадия', options:[
   {value:'draft',    name:'Проект решения',       test:x=>!!x.no_card},
@@ -1626,9 +1658,13 @@ const KRT_FILTERS=[
   {value:'unknown', name:'Не знаем',       test:x=>krtRenovationKind(x)==='unknown'},
  ]},
  {key:'purpose', box:'krtPurpose', empty:'Любое назначение', options:[
-  {value:'housing',  name:'Жильё',               test:x=>krtNumber(x,'housing_gfa_sqm')>0},
-  {value:'business', name:'Общественно-деловое', test:x=>krtNumber(x,'business_gfa_sqm')>0},
-  {value:'nonres',   name:'Нежилое',             test:x=>krtNumber(x,'nonresidential_gfa_sqm')>0},
+  {value:'housing',  name:'Жильё',               test:x=>krtMeasureNamed(x,'housing')},
+  {value:'business', name:'Общественно-деловое', test:x=>krtMeasureNamed(x,'business')},
+  {value:'nonres',   name:'Нежилое',             test:x=>krtMeasureNamed(x,'nonres')},
+  // «Не знаем» — свой вариант в каждой оси: у 162 строк из 522 назначение не
+  // названо НИ ОДНИМ полем, и без этого варианта они молча исчезали при любом
+  // выборе, а «таких площадок в каталоге нет» неотличимо от нашего пробела.
+  {value:'unknown',  name:'Не названо',          test:x=>!krtPurposeNamed(x)},
  ]},
 ];
 // Торги — это лот на площадке или объявленное распоряжением намерение. Прежде
@@ -3440,30 +3476,41 @@ function krtSource(x){return x&&x.no_card?KRT_SOURCE.decision:KRT_SOURCE.card}
 // без карточки жилую СПП решение называет у 29 из 298, а площадь квартир — у 44,
 // и две пустые строки подряд стояли прямо над двумя заполненными. Прочерк
 // остаётся ответом, но называет причину: «не знаем» и «нет» — разные вещи.
-function krtPassportValue(x,key){
+function krtPassportValue(x,key,hint){
  const known=krtNumber(x,key);
  if(known!==null&&known!==undefined)return fmtArea(known);
- return x&&x.no_card
-  ? '<span class="muted">решение не называет</span>'
-  : '<span class="muted">каталог не называет</span>';
+ const said=x&&x.no_card?'решение не называет':'каталог не называет';
+ // Прочерк над названным ниже числом читается как «этого нет в системе»
+ // («Почему тут нет жилья якобы в системе?», владелец, 21.09.2026, ул.
+ // Архитектора Власова, влд. 59: жилой СПП документ не называет, а площадь
+ // квартир 15 681 м² печатается двумя строками ниже, и модель считает именно
+ // по ней). Подсказка говорит, куда смотреть, — числа она не считает.
+ return '<span class="muted">'+esc(said)+(hint?' · '+esc(hint):'')+'</span>';
 }
 function krtPassport(x){
+ // Проект решения называет СВОИ величины, и они не те же: площадь квартир —
+ // не жилая СПП (30 304 против 50 400 м² в одном документе), нежилая наземная
+ // — не «нежилое назначение». Стоять они обязаны РЯДОМ со своим прочерком, а
+ // не двумя строками ниже: прочерк и названное число отвечают на один вопрос,
+ // и пока между ними стояла чужая строка, паспорт читался как «жилья нет».
+ const flats=krtNumber(x,'flats_sqm'), ground=krtNumber(x,'nonresidential_ground_sqm');
  const rows=[['Статус',krtStatusCell(x)],
   ['Площадь',x.area_ha?esc(x.area_ha+' га'):'—'],
   ['Всего построить',fmtArea(x.total_gfa_sqm)],
-  ['Жильё',krtPassportValue(x,'housing_gfa_sqm')],
-  // «Нежилое» у каталога — СВОЁ поле, а не дополнение жилья: на Варшавском
-  // ш., вл. 37 это 52 510 м² при 443 700 всего и 229 490 жилья, то есть
-  // 161 700 м² не объяснены источником вовсе. Печатаем обе величины и
-  // говорим, что разрыв не наш.
-  [x.no_card?'Нежилое по решению':'Нежилое по каталогу',krtPassportValue(x,'nonresidential_gfa_sqm')]];
- // Проект решения называет СВОИ величины, и они не те же: площадь квартир —
- // не жилая СПП (30 304 против 50 400 м² в одном документе), нежилая наземная
- // — не «нежилое назначение». Пока их не было в паспорте, карточка стояла с
- // прочерками при названных в документе числах: квартиры известны у 44
- // площадок-решений, нежилая наземная у 91 из 298.
- if(x.flats_sqm)rows.push(['Квартиры по решению',fmtArea(x.flats_sqm)]);
- if(x.nonresidential_ground_sqm)rows.push(['Нежилая наземная',fmtArea(x.nonresidential_ground_sqm)]);
+  // Модель при этом считает: жилой объём восстанавливается из площади квартир
+  // той же долей, которой она считает продаваемую. Прежде об этом говорили
+  // только предпосылки модели, десятью блоками ниже.
+  ['Жильё',krtPassportValue(x,'housing_gfa_sqm',
+    flats?'модель считает по площади квартир — строкой ниже':'')]];
+ if(flats)rows.push(['Квартиры по решению',fmtArea(flats)]);
+ // «Нежилое» у каталога — СВОЁ поле, а не дополнение жилья: на Варшавском
+ // ш., вл. 37 это 52 510 м² при 443 700 всего и 229 490 жилья, то есть
+ // 161 700 м² не объяснены источником вовсе. Печатаем обе величины и
+ // говорим, что разрыв не наш.
+ rows.push([x.no_card?'Нежилое по решению':'Нежилое по каталогу',
+  krtPassportValue(x,'nonresidential_gfa_sqm',
+   ground?'решение называет свою величину — строкой ниже':'')]);
+ if(ground)rows.push(['Нежилая наземная',fmtArea(ground)]);
  const total=krtNumber(x,'total_gfa_sqm')||0, housing=krtNumber(x,'housing_gfa_sqm')||0;
  const nonres=krtNumber(x,'nonresidential_gfa_sqm')||0;
  const gap=total-housing-nonres;
@@ -4053,7 +4100,7 @@ def auctions_page(core=None) -> str:
     import management_contour
     import plato_question
 
-    from auction_search import land_map
+    from auction_search import krt_screening, land_map
 
     footer = legal_footer_html(core) if core is not None else ""
     # Ящик Платона: стили и поведение — из `PAGE`, груз — свой. Без движка
@@ -4066,6 +4113,10 @@ def auctions_page(core=None) -> str:
         css = plato_question.drawer_css(core) + "\n" + plato_question.launcher_css()
         drawer = plato_question.drawer_markup(plato_question.DRAWER_IDS)
     return (AUCTIONS_PAGE
+            .replace("__DEVELOPAID_KRT_MEASURE_FIELDS__",
+                     json.dumps({kind: list(fields) for kind, fields
+                                 in krt_screening.MEASURE_FIELDS.items()},
+                                ensure_ascii=False))
             .replace(plato_question.PLACEHOLDER, plato_question.script())
             .replace(plato_question.DRAWER_CSS_PLACEHOLDER, css)
             .replace(plato_question.DRAWER_PLACEHOLDER, drawer)
