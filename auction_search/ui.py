@@ -662,7 +662,7 @@ function egrnBlock(view,title,note){
     :`<div class="notice${view.reason?' warn':''}">${esc(view.reason||'Правообладатели по выпискам не названы.')}</div>`)
   +(view.holders_withheld?`<div class="source">Право зарегистрировано, а имени форма не раскрывает: ${view.holders_withheld}. Это свойство вида выписки, а не молчание реестра — лечится своим запросом в ЕГРН.</div>`:'')
   +(view.without_registered_owner?`<div class="source">Право собственности не зарегистрировано: ${view.without_registered_owner}. Так сказано в выписках.</div>`:'')
-  +(refused.length?`<div class="items">${refused.map(r=>`<div class="item"><b>Площадка не отдала вложение</b>${esc(r.document||'')}<div class="source">${esc(r.reason||'')}</div></div>`).join('')}</div>`:'')
+  +(refused.length?`<div class="items">${refused.map(r=>`<div class="item"><b>${r.kind==='extraction_error'?'Вложение отдано, а мы его не прочитали':'Площадка не отдала вложение'}</b>${esc(r.document||'')}<div class="source">${esc(r.reason||'')}</div></div>`).join('')}</div>`:'')
   +(view.unread?`<div class="notice warn">Не прочитано записей: ${view.unread}. Молча выброшенная выписка читается как отсутствие собственника, поэтому она названа.</div>`:'')
   +(view.companions?`<div class="source">Рядом с выписками лежало ${view.companions} файл(ов) — подписи, таблицы стилей, картинки планов. Это не наш пробел.</div>`:'')
   +(note?`<div class="source">${esc(note)}</div>`:'')
@@ -810,8 +810,9 @@ async function ingest(){const l=state.selected;if(!l)return;const b=$('ingestBtn
 function docsRead(v,total){
  if(!v)return String(total||0);
  const bits=[`прочитано ${v.read} из ${v.total}`];
- const refused=(v.refused||[]).length;
- if(refused)bits.push(`площадка не отдала ${refused}`);
+ const sides=docsRefusalSides(v.refused);
+ if(sides.theirs.length)bits.push(`площадка не отдала ${sides.theirs.length}`);
+ if(sides.ours.length)bits.push(`мы не прочитали ${sides.ours.length}`);
  const skipped=(v.skipped||[]).length;
  if(skipped)bits.push(`не спрашивали ${skipped}`);
  if(v.from_store)bits.push(`со склада ${v.from_store}`);
@@ -820,7 +821,18 @@ function docsRead(v,total){
 function docsRefusalKind(k){
  return k==='auth_required'?'нужен вход на ЭТП'
   :k==='temporary'?'площадка отказала временно'
-  :'не разобралось';
+  :'мы не прочитали: скан или картинки';
+}
+// Чей это пробел — считается ОДИН раз, и читают этот ответ все, кто про
+// отказы говорит. Виды разведены давно, а заголовок над ними утверждал
+// «Площадка не отдала N» про все три разом: на МКАД, 41 км площадка отдала
+// все 27 вложений, а три не прочитали мы — два скана PDF и архив со
+// скриншотами. Наш пробел, приписанный источнику, выглядит на экране ровно
+// так же уверенно, как его настоящий отказ.
+function docsRefusalSides(rows){
+ const theirs=[],ours=[];
+ (rows||[]).forEach(r=>{(r&&r.kind==='extraction_error'?ours:theirs).push(r);});
+ return {theirs:theirs,ours:ours};
 }
 // Причина стоит у самого числа, а не в журнале: отказ, ушедший только в raw,
 // это отказ, которого на экране нет. И «спросим снова» говорится вслух —
@@ -831,9 +843,14 @@ function docsRefusalNote(v){
  const rows=v.refused||[],skipped=v.skipped||[],again=(v.ask_again||[]).length;
  if(!rows.length&&!skipped.length)return '';
  const parts=[];
- if(rows.length)parts.push(`<div><b>Площадка не отдала ${rows.length}:</b> `
-  +rows.slice(0,8).map(r=>`${esc(r.document||r.url||'вложение')} — ${esc(docsRefusalKind(r.kind))}`).join('; ')
-  +(rows.length>8?` и ещё ${rows.length-8}`:'')+'</div>');
+ const sides=docsRefusalSides(rows);
+ const list=(items)=>items.slice(0,8).map(r=>`${esc(r.document||r.url||'вложение')} — ${esc(docsRefusalKind(r.kind))}`).join('; ')
+  +(items.length>8?` и ещё ${items.length-8}`:'');
+ if(sides.theirs.length)parts.push(`<div><b>Площадка не отдала ${sides.theirs.length}:</b> `+list(sides.theirs)+'</div>');
+ // Заново качать нечего: байты уже на складе, и до починки читателя ответ
+ // будет тот же — поэтому здесь не обещается «спросим снова».
+ if(sides.ours.length)parts.push(`<div><b>Мы не прочитали ${sides.ours.length}:</b> `+list(sides.ours)
+  +'. Это наш пробел: вложения отданы, заново качать нечего — нужен читатель.</div>');
  if(again)parts.push(`<div>Спросим снова при следующем разборе: ${again}. Прочитанное лежит на складе — заново поедет только неотданное.</div>`);
  if(skipped.length)parts.push(`<div>Не спрашивали намеренно: `
   +skipped.slice(0,4).map(r=>`${esc(r.document||'вложение')} — ${esc(r.why||'')}`).join('; ')+'</div>');

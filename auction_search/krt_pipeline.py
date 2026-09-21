@@ -365,7 +365,9 @@ def read_notices(by_site: dict[str, Any], *,
     out: dict[str, Any] = {
         "at": int(now()), "lots": 0, "asked": 0, "read": 0,
         "already": 0, "waiting": 0, "no_table": 0, "refused": 0,
-        "unsupported": 0,
+        # «Площадка не отдала» и «мы не прочитали» — разные ответы, и счётчик у
+        # каждого свой: сложенные в один, они приписывают площадке наши сканы.
+        "unread": 0, "unsupported": 0,
         # Сколько лотов спрошено заново из-за того, что их выписки разобраны
         # прежними правилами читателя. Молча перечитанный лот неотличим от
         # непрочитанного: число называется, как называется всё прочее.
@@ -480,16 +482,32 @@ def read_notices(by_site: dict[str, Any], *,
                 out["read"] = int(out["read"]) + 1
                 row["state"] = "read"
             elif ledger.get("refused"):
-                # Вложения отданы не все: «таблицы нет» тут утверждать нельзя —
-                # она могла стоять как раз в неотданном.
+                # Вложения прочитаны не все: «таблицы нет» тут утверждать
+                # нельзя — она могла стоять как раз в непрочитанном.
+                #
+                # Но ЧЕЙ это пробел, решает ВИД отказа, а не его наличие.
+                # Виды разведены `_refusal_kind` давно, а причина выбиралась по
+                # `if refused`, и на МКАД, 41 км выходило «площадка не отдала
+                # вложения лота: не отдано вложений: 3» при
+                # `asked 27, fetched 27` — Росэлторг отдал ВСЁ, а три вложения
+                # не прочитали мы: два скана PDF и архив со скриншотами.
+                # Надпись врала дважды: приписывала площадке нашу неудачу и
+                # обещала «спросим снова» там, где второй заход не меняет
+                # ничего — байты уже на складе, лечит распознавание.
+                refused = list(ledger.get("refused") or [])
+                kinds = {str(item.get("kind") or "") for item in refused}
                 why = "; ".join(str(item.get("document") or "")
-                                for item in (ledger.get("refused") or [])[:5])
+                                for item in refused[:5])
+                if kinds <= {"extraction_error"}:
+                    outcome, head = "unread", "не прочитано вложений"
+                else:
+                    outcome, head = "refused", "не отдано вложений"
                 territory.remember_attempt(
-                    key, outcome="refused",
-                    why=f"не отдано вложений: {len(ledger['refused'])} ({why})",
+                    key, outcome=outcome,
+                    why=f"{head}: {len(refused)} ({why})",
                     documents=documents, root=store)
-                out["refused"] = int(out["refused"]) + 1
-                row["state"] = "refused"
+                out[outcome] = int(out.get(outcome) or 0) + 1
+                row["state"] = outcome
             else:
                 territory.remember_attempt(key, outcome="no_table",
                                            documents=documents, root=store)
