@@ -114,3 +114,17 @@ def test_lab_reuses_current_catalogue_and_ranking_without_refresh() -> None:
     assert "fetch('/auctions/krt-lab/data?ts='" in page
     assert "/ranking/refresh" not in page
     assert "?refresh=true" not in page
+
+
+def test_nagatino_live_case_uses_authoritative_model_and_goal_seek() -> None:
+    import main_legacy as core
+
+    live = nagatino_live_example(core)
+    assert live["available"], live.get("reason")
+    assert live["baseline"]["project_llcr_x"] is not None
+    assert live["entry_capacity"]["target_llcr_x"] == pytest.approx(1.20)
+    assert live["entry_capacity"]["total_acquisition_capacity_mln"] is not None
+    assert live["entry_capacity"]["max_krt_right_price_mln"] is not None
+    assert live["cost_stack"]["cadastral_buyout_mln"] > 0
+    assert live["ordinary_capex_mln"] > 0
+    assert live["burden_pct"] is not None
