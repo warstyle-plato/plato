@@ -22,6 +22,8 @@ WebView телеграма однажды сохранил проект со с�
 
 from __future__ import annotations
 
+import re
+
 import sys
 from pathlib import Path
 
@@ -43,8 +45,14 @@ def test_the_cadastral_launch_resets_before_fetching_tep():
     reset = cad.index("resetAll()")
     assert reset != -1, "запуск по кадастру не сбрасывает состояние WebView"
     assert reset < cad.index("obtainCadastralTep()"), "сброс должен идти до получения ТЭП"
-    # Кадастровые номера вписываются после сброса — resetAll чистит это поле.
-    assert reset < cad.index("field.value=telegramCad")
+    # Кадастровые номера встают в поле ПОСЛЕ сброса: `resetAll` его чистит, и
+    # порядок наоборот оставил бы окно без участка. Утверждение здесь про
+    # порядок, а не про запись: с 15.09.2026 поле пишет `writeCadastralField`
+    # (один писатель на руку и на код), и проверка на форму присваивания упала
+    # бы на ДОБАВЛЕННОМ, ничего не сказав о самом порядке.
+    written = re.search(r"\b(?:writeCadastralField\(|field\.value=)telegramCad", cad)
+    assert written, "номер из чата в поле не попадает вовсе"
+    assert reset < written.start()
 
 
 def test_the_manual_tep_launch_resets_too():
