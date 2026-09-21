@@ -1005,6 +1005,47 @@ def install(app: FastAPI) -> None:
             headers={"Cache-Control": "no-store, must-revalidate"},
         )
 
+    @app.get("/auctions/krt-lab/data", include_in_schema=False)
+    async def auction_krt_score_lab_data() -> dict[str, Any]:
+        """Текущий рабочий снимок КРТ для изолированной лаборатории.
+
+        Preview живёт на отдельном Render-сервисе и своего production-кэша
+        рейтинга не имеет. Поэтому он читает два публичных JSON рабочего
+        DevelopAid сервер-сервер: браузеру CORS и production-секреты не нужны.
+        Никаких refresh/POST этот маршрут не вызывает.
+        """
+        import json
+        import urllib.request
+
+        base = os.getenv("KRT_LAB_SOURCE_BASE", "https://developaid.ru").rstrip("/")
+
+        def read(path: str) -> dict[str, Any]:
+            request = urllib.request.Request(
+                base + path,
+                headers={"User-Agent": "DevelopAid-KRT-Lab/1.0"},
+            )
+            with urllib.request.urlopen(request, timeout=60) as response:
+                raw = response.read()
+            value = json.loads(raw.decode("utf-8"))
+            if not isinstance(value, dict):
+                raise RuntimeError(f"{path}: ожидался JSON-объект")
+            return value
+
+        try:
+            catalogue, ranking = await run_in_threadpool(
+                lambda: (read("/auctions/krt"), read("/auctions/krt/ranking"))
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status_code=502,
+                detail=f"Рабочий DevelopAid не отдал снимок КРТ: {type(exc).__name__}: {exc}",
+            ) from exc
+        return {
+            "source": base,
+            "catalogue": catalogue,
+            "ranking": ranking,
+        }
+
     @app.get("/auctions/sources")
     async def auction_sources() -> dict[str, Any]:
         return {
