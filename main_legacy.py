@@ -81,7 +81,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.24.14"
+VERSION = "0.24.16"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -268,6 +268,51 @@ SCENARIOS = {
     'optimistic': {'scenario_revenue_multiplier': 1.10, 'scenario_cost_multiplier': 0.90},
 }
 
+# Цена нежилого — от цены жилья класса, но не ниже московского пола
+# (решение владельца, 21.09.2026: «в Москве дешевле 450 не может быть в
+# принципе»; цель — «чтобы минус хотя бы не давали эти метры, а небольшую
+# маржу», то есть плюс-минус ноль).
+#
+# Прежде `retail_price_th_per_sqm` и `offices_price_th_per_sqm` стояли одним
+# числом 500 ВНЕ профиля класса: смена класса их не двигала вовсе — та же
+# болезнь, что была у цены кладовой до 14.09.2026. У комфорта 500 завышено, у
+# элитки (жильё 1500) — занижено втрое, а встроенная коммерция в профиле уже
+# равна цене жилья (350/650/1500), то есть у нас жили два нежилых метра с
+# разной логикой.
+#
+# Множитель 1,0 — не вкус, а замер на Рубцовской наб., влд. 3 (жильё
+# 608,2 тыс ₽/м²): полная себестоимость ОСЗ/ТЦ 344 тыс ₽ на метр ГНС, а
+# продаётся 56,4% ГНС (у встроенной коммерции 90% — потому при одной цене она
+# зарабатывает, а ТЦ нет), и с коммерческими расходами и финансированием порог
+# окупаемости выходит 590 тыс ₽/м² на входе. При 0,9 метры дают −5,6% на себе
+# (−385 млн ₽ в чистой), при 1,0 — +2,3% (+172 млн ₽): это и есть «плюс-минус
+# ноль». Цифры в комментарии — замер, а не методика: порог зависит от базы
+# себестоимости проекта и на другой площадке сдвинется.
+#
+# Пол — МОСКОВСКИЙ. Для Подмосковья такого числа у нас нет, и правило там
+# работает без пола: 0,9 × 350 = 315 тыс ₽/м² пол поднял бы до московских 450
+# без основания. Поэтому пол берётся по региону, а не безусловно.
+# Отношение наземной площади к суммарной поэтажной у самого города: на всех
+# трёх решениях, где названы обе, оно РОВНО 0,900 — и это та же «НП = 90% СПП»
+# методики ГлавАПУ. Долю не выбираем мы, её назвал источник.
+CITY_GROUND_OF_SPP = 0.9
+
+NONRES_PRICE_OF_HOUSING = 1.0
+MOSCOW_NONRES_PRICE_FLOOR_TH = 450.0
+
+
+def nonresidential_price_th(housing_price_th: Any, *, region: str = "msk") -> float:
+    """Цена метра нежилого: доля цены жилья, не ниже пола своего региона."""
+    try:
+        housing = float(housing_price_th or 0.0)
+    except (TypeError, ValueError):
+        housing = 0.0
+    price = housing * NONRES_PRICE_OF_HOUSING
+    if str(region or "msk").strip().lower() in ("msk", "moscow", "москва"):
+        price = max(price, MOSCOW_NONRES_PRICE_FLOOR_TH)
+    return round(price, 3)
+
+
 PROJECT_CLASS_PRESETS = {
     # Класс задаёт полный профиль себестоимости, а не только СМР (решение
     # владельца, 26.08.2026): иначе свод модуля «Статистика» обосновывал две
@@ -393,6 +438,14 @@ PROJECT_CLASS_PRESETS = {
         "underground_area_per_space_sqm": 40,
     },
 }
+
+# Цена нежилого в профиле считается тем же правилом, а не выписана числом:
+# второй ответ на «сколько стоит метр нежилого» разошёлся бы с движком молча.
+for _preset in PROJECT_CLASS_PRESETS.values():
+    _preset["retail_price_th_per_sqm"] = nonresidential_price_th(
+        _preset["apartment_price_th"])
+    _preset["offices_price_th_per_sqm"] = _preset["retail_price_th_per_sqm"]
+del _preset
 
 # Источники базовых ставок классов на страницу не зашиваются: адрес или имя
 # собственного проекта в подписи — раскрытие коммерческой информации, и один
@@ -935,13 +988,23 @@ class StandaloneObject(NamedTuple):
 STANDALONE_OBJECTS: tuple[StandaloneObject, ...] = (
     StandaloneObject("standalone_retail", "retail", "ТЦ", 2, True, False, "sqm",
                      "retail_cost_th_per_sqm", "retail_price_th_per_sqm",
+                     # Умолчания и есть комфорт: цена нежилого берётся из его
+                     # профиля, а не стоит своим числом — 500 тыс ₽/м² здесь и
+                     # были тем единственным числом вне класса, из-за которого
+                     # смена класса цену не двигала.
                      defaults={"gba_sqm": 10000, "saleable_sqm": 6000,
-                               "cost_th_per_sqm": 200, "price_th_per_sqm": 500},
+                               "cost_th_per_sqm": 200,
+                               "price_th_per_sqm": nonresidential_price_th(
+                                   PROJECT_CLASS_PRESETS["comfort"][
+                                       "apartment_price_th"])},
                      tep_label="Коммерция ОСЗ", group_label="ТЦ / коммерция ОСЗ"),
     StandaloneObject("offices", "offices", "офисы", 3, True, True, "sqm",
                      "offices_cost_th_per_sqm", "offices_price_th_per_sqm",
                      defaults={"gba_sqm": 10000, "saleable_sqm": 6000,
-                               "cost_th_per_sqm": 200, "price_th_per_sqm": 500},
+                               "cost_th_per_sqm": 200,
+                               "price_th_per_sqm": nonresidential_price_th(
+                                   PROJECT_CLASS_PRESETS["comfort"][
+                                       "apartment_price_th"])},
                      tep_label="Офисы", group_label="МФОЦ / офисы"),
     StandaloneObject("above_parking", "above_parking", "наземный паркинг", 2, False,
                      False, "spaces", "above_parking_cost_mln_per_space",
@@ -12857,79 +12920,88 @@ def _telegram_send_photo_bytes(
     return result.get("result")
 
 
-def _telegram_territory_photo(chat_id: int, numbers: list[str]) -> bool:
-    """Картинка территории в чат: контуры ЕГРН поверх подложки НСПД.
+def _territory_image_png(numbers: list[str]) -> tuple[bytes, str] | None:
+    """Картинка территории: контуры ЕГРН поверх подложки НСПД — с подписью.
 
-    Та же картинка, что на сайте в карточке участка, — в боте её не было вовсе
-    (замечание владельца, 16.08.2026). Контуры приходят из /land/lookup
-    (`contour_merc`), подложка — из /land/map-image; оба маршрута на Render
-    пересылают на ядро сами. Любой сбой — просто нет фото: картинка украшение,
-    расчёт от неё не зависит, поэтому наружу не роняется ничего.
+    Одна на бота и на тизер: та же картинка, что на сайте в карточке участка.
+    Контуры приходят из /land/lookup (`contour_merc`), подложка — из
+    /land/map-image; оба маршрута на Render пересылают на ядро сами. Нет
+    контура или подложки — `None`: голый контур на белом фоне — шум, а не
+    информация (владелец, 16.08.2026), и расчёт от картинки не зависит.
+    """
+    data = land_lookup(LandLookupRequest(
+        query=", ".join(numbers), limit=max(10, len(numbers))))
+    found = [item for item in (data.get("results") or [])
+             if item.get("found") and item.get("contour_merc")]
+    rings = [ring for item in found for ring in item["contour_merc"]
+             if isinstance(ring, list) and len(ring) >= 3]
+    points = [p for ring in rings for p in ring
+              if isinstance(p, (list, tuple)) and len(p) >= 2]
+    if not points:
+        return None
+    min_x = min(p[0] for p in points); max_x = max(p[0] for p in points)
+    min_y = min(p[1] for p in points); max_y = max(p[1] for p in points)
+    span = max(max_x - min_x, max_y - min_y, 1.0)
+    pad = max(span * 0.08, 25.0)
+    b_min_x, b_min_y = min_x - pad, min_y - pad
+    b_max_x, b_max_y = max_x + pad, max_y + pad
+    from PIL import Image, ImageDraw
+    try:
+        response = land_map_image(
+            bbox=f"{b_min_x:.1f},{b_min_y:.1f},{b_max_x:.1f},{b_max_y:.1f}")
+        backdrop = Image.open(io.BytesIO(bytes(response.body))).convert("RGBA")
+    except Exception:
+        return None
+    w, h = backdrop.size
+    overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    overlay_draw = ImageDraw.Draw(overlay)
+    pixel_rings = []
+    for ring in rings:
+        px = [((p[0] - b_min_x) / (b_max_x - b_min_x) * w,
+               (b_max_y - p[1]) / (b_max_y - b_min_y) * h)
+              for p in ring if isinstance(p, (list, tuple)) and len(p) >= 2]
+        if len(px) < 3:
+            continue
+        pixel_rings.append(px)
+        # Полупрозрачная заливка — как на сайте: участок видно пятном, а
+        # карта под ним остаётся читаемой.
+        overlay_draw.polygon(px, fill=(245, 245, 243, 90))
+    if not pixel_rings:
+        return None
+    image = Image.alpha_composite(backdrop, overlay).convert("RGB")
+    draw = ImageDraw.Draw(image)
+    for px in pixel_rings:
+        closed = px + [px[0]]
+        # Белая подкладка под тёмной линией: граница читается на пёстрой карте.
+        draw.line(closed, fill=(255, 255, 255), width=7, joint="curve")
+        draw.line(closed, fill=(180, 35, 24), width=3, joint="curve")
+    out = io.BytesIO()
+    image.save(out, format="PNG")
+    listed = ", ".join(str(item.get("cadastral_number") or "") for item in found[:5])
+    count = len(found)
+    caption = (
+        f"Контур участка {listed} · границы ЕГРН" if count == 1
+        else f"Территория из {count} участков: {listed} · границы ЕГРН")
+    caption += " · подложка — публичная карта НСПД"
+    return out.getvalue(), caption
+
+
+def _telegram_territory_photo(chat_id: int, numbers: list[str]) -> bool:
+    """Картинка территории в чат — та же, что уходит в тизер (`_territory_image_png`).
+
+    В боте её не было вовсе (замечание владельца, 16.08.2026). Любой сбой —
+    просто нет фото: картинка украшение, расчёт от неё не зависит, поэтому
+    наружу не роняется ничего.
     """
     try:
-        data = land_lookup(LandLookupRequest(
-            query=", ".join(numbers), limit=max(10, len(numbers))))
-        found = [item for item in (data.get("results") or [])
-                 if item.get("found") and item.get("contour_merc")]
-        rings = [ring for item in found for ring in item["contour_merc"]
-                 if isinstance(ring, list) and len(ring) >= 3]
-        points = [p for ring in rings for p in ring
-                  if isinstance(p, (list, tuple)) and len(p) >= 2]
-        if not points:
+        made = _territory_image_png(numbers)
+        if not made:
             return False
-        min_x = min(p[0] for p in points); max_x = max(p[0] for p in points)
-        min_y = min(p[1] for p in points); max_y = max(p[1] for p in points)
-        span = max(max_x - min_x, max_y - min_y, 1.0)
-        pad = max(span * 0.08, 25.0)
-        b_min_x, b_min_y = min_x - pad, min_y - pad
-        b_max_x, b_max_y = max_x + pad, max_y + pad
-        from PIL import Image, ImageDraw
-        try:
-            response = land_map_image(
-                bbox=f"{b_min_x:.1f},{b_min_y:.1f},{b_max_x:.1f},{b_max_y:.1f}")
-            backdrop = Image.open(io.BytesIO(bytes(response.body))).convert("RGBA")
-        except Exception:
-            # Голый контур на белом фоне в чате — шум, а не информация
-            # (владелец, 16.08.2026). Нет карты — нет фото; расчёту это не
-            # мешает, а на сайте карточка участка и без карты в контексте.
-            return False
-        w, h = backdrop.size
-        overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-        overlay_draw = ImageDraw.Draw(overlay)
-        pixel_rings = []
-        for ring in rings:
-            px = [((p[0] - b_min_x) / (b_max_x - b_min_x) * w,
-                   (b_max_y - p[1]) / (b_max_y - b_min_y) * h)
-                  for p in ring if isinstance(p, (list, tuple)) and len(p) >= 2]
-            if len(px) < 3:
-                continue
-            pixel_rings.append(px)
-            # Полупрозрачная заливка — как на сайте: участок видно пятном, а
-            # карта под ним остаётся читаемой.
-            overlay_draw.polygon(px, fill=(245, 245, 243, 90))
-        if not pixel_rings:
-            return False
-        image = Image.alpha_composite(backdrop, overlay).convert("RGB")
-        draw = ImageDraw.Draw(image)
-        for px in pixel_rings:
-            closed = px + [px[0]]
-            # Белая подкладка под тёмной линией: граница читается на пёстрой карте.
-            draw.line(closed, fill=(255, 255, 255), width=7, joint="curve")
-            draw.line(closed, fill=(180, 35, 24), width=3, joint="curve")
-        out = io.BytesIO()
-        image.save(out, format="PNG")
-        listed = ", ".join(str(item.get("cadastral_number") or "") for item in found[:5])
-        count = len(found)
-        caption = (
-            f"Контур участка {listed} · границы ЕГРН" if count == 1
-            else f"Территория из {count} участков: {listed} · границы ЕГРН")
-        caption += " · подложка — публичная карта НСПД"
-        _telegram_send_photo_bytes(chat_id, out.getvalue(), "territory.png", caption)
+        _telegram_send_photo_bytes(chat_id, made[0], "territory.png", made[1])
         return True
     except Exception as exc:
         logging.info("Фото территории пропущено: %s", exc)
         return False
-
 
 def _telegram_territory_photo_async(chat_id: int, numbers: list[str]) -> None:
     """Фото уходит фоном: сбор контуров и подложки ходит в НСПД и не должен
@@ -20403,6 +20475,11 @@ def presentation_numbers(consolidated: dict[str, Any]) -> dict[str, Any]:
     summary = consolidated.get("summary") or {}
     finance = consolidated.get("finance") or {}
     report = consolidated.get("report") or {}
+    vri_totals = (consolidated.get("vri") or {}).get("totals") or {}
+    tep_total = (consolidated.get("tep") or {}).get("total") or {}
+    apartment_sales = report.get("apartment_sales") or {}
+    apartments = next((p for p in (report.get("products") or [])
+                       if str(p.get("key")) == "apartments"), {})
     numbers.update({
         "margin": float(summary.get("margin") or 0.0),
         "npv_mln": float(summary.get("npv") or 0.0) / 1e6,
@@ -20413,11 +20490,124 @@ def presentation_numbers(consolidated: dict[str, Any]) -> dict[str, Any]:
             str((consolidated.get("dates") or {}).get("project_start") or ""),
             str((consolidated.get("dates") or {}).get("rve") or "")),
         "products": {
-            str(item.get("key")): {"revenue_mln": float(item.get("revenue") or 0.0) / 1e6}
+            str(item.get("key")): _presentation_product_numbers(item)
             for item in (report.get("products") or [])
         },
+        # Строки удельной экономики и себестоимости — те же, что в полном PDF
+        # и книге, только итог приведён к миллионам; ставки на метр приходят
+        # готовыми парами (`per_gns_th` / `per_saleable_th`), как всюду.
+        "unit_economics": _presentation_rows_mln(report.get("unit_economics"), "total"),
+        "construction_costs": _presentation_rows_mln(report.get("construction_costs"), "value"),
+        "expense_structure": _presentation_rows_mln(report.get("expense_structure"), "value"),
+        "financing": {
+            "bridge_interest_mln": float(finance.get("bridge_interest") or 0.0) / 1e6,
+            "bridge_fee_mln": float(finance.get("bridge_fee") or 0.0) / 1e6,
+            "pf_interest_mln": float(finance.get("pf_interest") or 0.0) / 1e6,
+            "pf_limit_fee_mln": float(finance.get("pf_limit_fee") or 0.0) / 1e6,
+            "pf_reservation_fee_mln": float(finance.get("pf_reservation_fee") or 0.0) / 1e6,
+            "pf_limit_required_mln": float(finance.get("pf_limit_required") or 0.0) / 1e6,
+            "pf_limit_mln": float(finance.get("pf_limit") or 0.0) / 1e6,
+            "pf_limit_approved_mln": float(finance.get("pf_limit_approved") or 0.0) / 1e6,
+            "own_funds_mln": float(finance.get("own_funds_used") or 0.0) / 1e6,
+            "peak_uncovered_pf_mln": float(finance.get("peak_uncovered_pf") or 0.0) / 1e6,
+            "peak_escrow_mln": float(finance.get("peak_escrow") or 0.0) / 1e6,
+            "rve_escrow_release_mln": float(finance.get("rve_escrow_release") or 0.0) / 1e6,
+            "interest_and_fees_mln": float(finance.get("reported_interest_and_fees")
+                                           or finance.get("financing_cost") or 0.0) / 1e6,
+            "avg_pf_effective_rate": float(finance.get("avg_pf_effective_rate") or 0.0),
+            "avg_bridge_rate": float(finance.get("avg_bridge_rate") or 0.0),
+            "current_key_rate": float(finance.get("current_key_rate") or 0.0),
+            "bridge_spread": float(finance.get("bridge_spread") or 0.0),
+            "pf_special_rate": float(finance.get("pf_special_rate") or 0.0),
+        },
+        "taxes": {
+            "profit_before_tax_mln": float(summary.get("profit_before_tax") or 0.0) / 1e6,
+            "profit_tax_rate": float(summary.get("profit_tax_rate") or 0.0),
+        },
+        "efficiency": {
+            "irr_equity": (None if summary.get("irr_equity") is None
+                           else float(summary.get("irr_equity"))),
+            "full_project_cost_mln": float(summary.get("full_project_cost") or 0.0) / 1e6,
+            "commercial_mln": float(summary.get("commercial_costs") or 0.0) / 1e6,
+        },
+        "parking": {
+            "required_total": float((consolidated.get("parking") or {}).get("required_total") or 0.0),
+            "built_units": float(tep_total.get("units") or 0.0),
+            "provision": ((float(tep_total.get("units") or 0.0)
+                           / float((consolidated.get("parking") or {}).get("required_total") or 0.0))
+                          if float((consolidated.get("parking") or {}).get("required_total") or 0.0) > 0
+                          else None),
+        },
+        "land": {
+            "purchase_per_saleable_th": (
+                float((report.get("purchase") or {}).get("total_mln") or 0.0) * 1e3
+                / float(tep_total.get("saleable") or 0.0)
+                if float(tep_total.get("saleable") or 0.0) > 0 else None),
+            "social_payment_mln": float(summary.get("social_payment") or 0.0) / 1e6,
+            "social_payment_mode": str(summary.get("social_payment_mode") or ""),
+            "land_rights_mln": float((consolidated.get("capex") or {}).get("land_rights") or 0.0) / 1e6,
+            "vri_amount_mln": float(vri_totals.get("amount") or 0.0) / 1e6,
+            "vri_relief_mln": float(vri_totals.get("relief") or 0.0) / 1e6,
+            "vri_interest_mln": float(vri_totals.get("interest") or 0.0) / 1e6,
+            "purchase_mln": float((report.get("purchase") or {}).get("total_mln") or 0.0),
+        },
+        "sales": {
+            "apartment_pace_sqm_month": float(apartments.get("pace_pre") or 0.0),
+            "apartment_pace_sqm_year": float(apartments.get("pace_pre") or 0.0) * 12.0,
+            "apartment_share_before_rve": float(apartments.get("share_before_rve") or 0.0),
+            "avg_unit_sqm": float(apartment_sales.get("avg_unit_sqm") or 0.0),
+            "avg_unit_price_mln": float(apartment_sales.get("avg_unit_price_mln") or 0.0),
+            "units_total": float(apartment_sales.get("units_total") or 0.0),
+        },
+        # Ряд для графика «кредит и эскроу»: месяц, тела долга и счёт эскроу
+        # в миллионах — рисуют его тизер и дашборд, а считает движок.
+        "chart_rows": [
+            {"month": str(row.get("month") or ""),
+             "bridge_mln": float(row.get("bridge_balance") or 0.0) / 1e6,
+             "pf_mln": float(row.get("pf_balance") or 0.0) / 1e6,
+             "escrow_mln": float(row.get("escrow") or 0.0) / 1e6}
+            for row in (finance.get("rows") or [])
+        ],
     })
     return numbers
+
+
+def _presentation_product_numbers(item: dict[str, Any]) -> dict[str, Any]:
+    """Продукт в миллионах и ставках на метр — считается здесь, не в слое представления.
+
+    Метровый продукт меряется ГНС и продаваемой (руб./м² GBA и GSA у образца
+    владельца), штучный — единицами: у машино-места деление на его метры
+    дало бы число, не сравнимое ни с чем.
+    """
+    revenue = float(item.get("revenue") or 0.0)
+    cost = float(item.get("cost") or 0.0)
+    gns = float(item.get("gns") or 0.0)
+    saleable = float(item.get("saleable") or 0.0)
+    quantity = float(item.get("quantity") or 0.0)
+    by_units = str(item.get("unit") or "") == "шт."
+    return {
+        "revenue_mln": revenue / 1e6,
+        "cost_mln": cost / 1e6,
+        "per_gns_th": (revenue / gns / 1e3) if (gns > 0 and not by_units) else None,
+        "per_saleable_th": (revenue / saleable / 1e3) if (saleable > 0 and not by_units) else None,
+        "per_unit_th": (revenue / quantity / 1e3) if (quantity > 0 and by_units) else None,
+        "pace_year": float(item.get("pace_pre") or 0.0) * 12.0,
+    }
+
+
+def _presentation_rows_mln(rows: Any, total_key: str) -> list[dict[str, Any]]:
+    """Строки отчёта с итогом в миллионах; ставки на метр — как пришли."""
+    out: list[dict[str, Any]] = []
+    for item in rows or []:
+        out.append({
+            "label": str(item.get("label") or ""),
+            "total_mln": float(item.get(total_key) or 0.0) / 1e6,
+            "per_gns_th": (None if item.get("per_gns_th") is None else float(item.get("per_gns_th"))),
+            "per_saleable_th": (None if item.get("per_saleable_th") is None
+                                else float(item.get("per_saleable_th"))),
+            "share": (None if item.get("share") is None else float(item.get("share"))),
+        })
+    return out
 
 
 def _months_between(start: str, end: str) -> float | None:
@@ -20430,14 +20620,27 @@ def _months_between(start: str, end: str) -> float | None:
 
 
 def project_presentation(bundle: dict[str, Any], inputs: dict[str, Any],
-                         tep: dict[str, Any], phasing: dict[str, Any] | None) -> dict[str, Any]:
+                         tep: dict[str, Any], phasing: dict[str, Any] | None,
+                         site: dict[str, Any] | None = None) -> dict[str, Any]:
     """Модель представления одного расчёта — для тизера и любой поверхности,
-    которой нужны те же шесть карточек, что у дашборда книги."""
+    которой нужны те же шесть карточек, что у дашборда книги.
+
+    `site` — участок, о котором посчитано: кадастровые номера и адрес, как их
+    прислала страница. Движок их не знает — они не вводные расчёта."""
     consolidated = bundle.get("consolidated") or {}
     origin = presentation_origin(inputs, tep, phasing)
+    numbers = presentation_numbers(consolidated)
+    # Цена входа — вводная проекта: у свода очередей блока покупки в отчёте
+    # нет, а цена одна на проект и делится по очередям кассовыми долями.
+    land = numbers.setdefault("land", {})
+    price_mln = float((inputs or {}).get("purchase_price_mln") or 0.0)
+    if not land.get("purchase_mln") and price_mln > 0:
+        land["purchase_mln"] = price_mln
+        saleable = float((((consolidated.get("tep") or {}).get("total") or {}).get("saleable")) or 0.0)
+        land["purchase_per_saleable_th"] = (price_mln * 1e3 / saleable) if saleable > 0 else None
     return _presentation.build_project_presentation(
-        presentation_numbers(consolidated), consolidated, list(bundle.get("phases") or []),
-        inputs or {}, origin, _AGENT_BANK_LLCR_TARGET)
+        numbers, consolidated, list(bundle.get("phases") or []),
+        inputs or {}, origin, _AGENT_BANK_LLCR_TARGET, site=site or {})
 
 
 def presentation_origin(inputs: dict[str, Any], tep: dict[str, Any],
@@ -26555,7 +26758,7 @@ async def report_pdf(request: Request) -> Response:
 
 @app.post("/report/teaser")
 async def report_teaser(request: Request) -> Response:
-    """Тизер проекта — одна страница A4 из модели представления.
+    """Тизер проекта — две страницы из модели представления: тизер и «Итог».
 
     Считает движок один раз (`_run_authoritative_model`), как у PDF и книги;
     из результата собирается модель представления, из неё — страница. Полный
@@ -26579,8 +26782,16 @@ async def report_teaser(request: Request) -> Response:
         bundle = await run_in_threadpool(
             _run_authoritative_model, inputs, payload.get("tep") or {},
             payload.get("rates") or [], payload.get("phasing") or {})
-        content = build_teaser_pdf(bundle, inputs, payload.get("tep") or {},
-                                   payload.get("phasing") or {})
+        site = _teaser_site(payload, inputs)
+        # Карта и скрининг ходят в НСПД (с Render — через ядро): в потоке,
+        # не на цикле; их отказ тизер называет сам и не падает.
+        gns = float(((bundle.get("consolidated") or {}).get("summary") or {})
+                    .get("project_gns_sqm") or 0.0)
+        facts = await run_in_threadpool(_teaser_site_facts, site, gns)
+        map_png = await run_in_threadpool(_teaser_map_png, site)
+        content = await run_in_threadpool(
+            build_teaser_pdf, bundle, inputs, payload.get("tep") or {},
+            payload.get("phasing") or {}, facts, map_png)
     except HTTPException:
         raise
     except Exception as exc:
@@ -26595,10 +26806,99 @@ async def report_teaser(request: Request) -> Response:
 
 
 def build_teaser_pdf(bundle: dict[str, Any], inputs: dict[str, Any],
-                     tep: dict[str, Any], phasing: dict[str, Any] | None) -> bytes:
-    """Тизер из уже посчитанного: модель представления → одна страница."""
-    presentation = project_presentation(bundle, inputs, tep, phasing)
-    return _teaser_pdf.build_teaser_pdf(presentation, _pdf_font_names(), _pdf_num)
+                     tep: dict[str, Any], phasing: dict[str, Any] | None,
+                     site: dict[str, Any] | None = None,
+                     map_png: bytes | None = None) -> bytes:
+    """Тизер из уже посчитанного: модель представления → две страницы.
+
+    `map_png` — картинка участка с контурами ЕГРН (`_territory_image_png`);
+    нет картинки — тизер говорит об этом на её месте, а не молчит."""
+    presentation = project_presentation(bundle, inputs, tep, phasing, site=site)
+    return _teaser_pdf.build_teaser_pdf(presentation, _pdf_font_names(), _pdf_num,
+                                        map_png=map_png)
+
+
+def _teaser_site(payload: dict[str, Any], inputs: dict[str, Any]) -> dict[str, Any]:
+    """Участок для тизера — оттуда же, откуда полный PDF берёт номера для
+    раздела реализуемости (`_pdf_screening_numbers`: снимок поиска участка во
+    вводных), а нет их там — из груза страницы (`cadastral_numbers` / `cads`)."""
+    numbers = _pdf_screening_numbers(inputs)
+    if not numbers:
+        raw = payload.get("cadastral_numbers") or payload.get("cads") or []
+        if isinstance(raw, str):
+            raw = [raw]
+        numbers = _parse_cadastral_numbers([str(x) for x in raw if x]) if raw else []
+    address = str(payload.get("address") or inputs.get("address")
+                  or inputs.get("project_address") or "").strip()
+    return {"cadastral_numbers": numbers, "address": address}
+
+
+def _teaser_site_facts(site: dict[str, Any], gns_sqm: float) -> dict[str, Any]:
+    """Факты об участке для тизера — тем же скринингом, что у полного PDF.
+
+    Одним вызовом `land_screening` приходят и паспорт участков (адрес,
+    площадь, категория, ВРИ), и ограничения с вердиктом. Плотность считается
+    здесь, в движке: слой представления не делит. Отказ источника — не
+    «ограничений нет», а «не проверяли», и это едет полем `screened`."""
+    numbers = list(site.get("cadastral_numbers") or [])
+    facts: dict[str, Any] = dict(site)
+    facts.update({"parcels": [], "land_area_sqm": None, "land_area_ha": None,
+                  "density_sqm_per_ha": None, "verdict": {}, "findings": [],
+                  "screened": False, "permitted_use": "", "category": ""})
+    if not numbers:
+        return facts
+    try:
+        screening = land_screening(cad=",".join(numbers))
+    except Exception as exc:
+        logging.info("Скрининг для тизера пропущен: %s", exc)
+        return facts
+    parcels = []
+    for parcel in screening.get("parcels") or []:
+        if not parcel.get("found"):
+            continue
+        parcels.append({
+            "cadastral_number": str(parcel.get("cadastral_number") or ""),
+            "address": str(parcel.get("address") or ""),
+            "area_sqm": _land_float(parcel.get("area_sqm")),
+            "category": str(parcel.get("category") or ""),
+            "permitted_use": str(parcel.get("permitted_use") or ""),
+        })
+        for finding in parcel.get("findings") or []:
+            facts["findings"].append({
+                "name": str(finding.get("name") or ""),
+                "flag_class": str(finding.get("flag_class") or ""),
+                "impact": str(finding.get("impact") or ""),
+                "coverage_pct": _land_float(finding.get("coverage_pct")),
+            })
+    verdict = screening.get("verdict") or {}
+    facts["parcels"] = parcels
+    facts["verdict"] = {k: verdict.get(k) for k in
+                        ("status", "headline", "free_pct", "disclaimer", "probed")}
+    facts["screened"] = bool(verdict.get("probed"))
+    area = sum(p["area_sqm"] or 0.0 for p in parcels)
+    if area > 0:
+        facts["land_area_sqm"] = area
+        facts["land_area_ha"] = area / 10000.0
+        facts["density_sqm_per_ha"] = float(gns_sqm or 0.0) / (area / 10000.0)
+    if not facts.get("address"):
+        facts["address"] = next((p["address"] for p in parcels if p["address"]), "")
+    facts["permitted_use"] = next((p["permitted_use"] for p in parcels if p["permitted_use"]), "")
+    facts["category"] = next((p["category"] for p in parcels if p["category"]), "")
+    return facts
+
+
+def _teaser_map_png(site: dict[str, Any]) -> bytes | None:
+    """Карта участка для тизера; любой отказ источника — `None`, тизер
+    называет отсутствие карты сам."""
+    numbers = list(site.get("cadastral_numbers") or [])
+    if not numbers:
+        return None
+    try:
+        made = _territory_image_png(numbers)
+    except Exception as exc:
+        logging.info("Карта для тизера пропущена: %s", exc)
+        return None
+    return made[0] if made else None
 
 
 @app.post("/telegram/result")
