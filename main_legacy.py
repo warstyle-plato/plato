@@ -66,8 +66,11 @@ from developaid_monitor_page import MONITOR_PAGE as _MONITOR_PAGE_RAW
 # документах, движок — об экономике, и смешивать их незачем.
 import document_intake
 from request_body import json_object
+import v4_dashboard
 import v4_entry_sheet
 import v4_value_cache
+import presentation as _presentation
+import teaser_pdf as _teaser_pdf
 import management_contour
 import parking_norms
 import plato_question
@@ -78,7 +81,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.24.11"
+VERSION = "0.24.14"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -20388,6 +20391,69 @@ def _calculation_fingerprint(
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
 
 
+def presentation_numbers(consolidated: dict[str, Any]) -> dict[str, Any]:
+    """Величины модели представления в миллионах и долях — считает движок.
+
+    Слой представления (`presentation.py`) сам не делит и не складывает:
+    единицы приводятся здесь, там же, где считаются цели паритета книги
+    (`_v4_parity_targets`) — иначе тизер и паритет приводили бы одну величину
+    к миллионам двумя копиями.
+    """
+    numbers = dict(_v4_parity_targets(consolidated))
+    summary = consolidated.get("summary") or {}
+    finance = consolidated.get("finance") or {}
+    report = consolidated.get("report") or {}
+    numbers.update({
+        "margin": float(summary.get("margin") or 0.0),
+        "npv_mln": float(summary.get("npv") or 0.0) / 1e6,
+        "commercial_mln": float(summary.get("commercial_costs") or 0.0) / 1e6,
+        "rve_unpaid_mln": float(finance.get("rve_unpaid") or 0.0) / 1e6,
+        "ending_pf_mln": float(summary.get("ending_pf") or 0.0) / 1e6,
+        "term_months": _months_between(
+            str((consolidated.get("dates") or {}).get("project_start") or ""),
+            str((consolidated.get("dates") or {}).get("rve") or "")),
+        "products": {
+            str(item.get("key")): {"revenue_mln": float(item.get("revenue") or 0.0) / 1e6}
+            for item in (report.get("products") or [])
+        },
+    })
+    return numbers
+
+
+def _months_between(start: str, end: str) -> float | None:
+    """Месяцы между двумя датами ISO — как их считает книга: по годам и месяцам."""
+    try:
+        a, b = date.fromisoformat(start[:10]), date.fromisoformat(end[:10])
+    except (TypeError, ValueError):
+        return None
+    return float((b.year - a.year) * 12 + (b.month - a.month))
+
+
+def project_presentation(bundle: dict[str, Any], inputs: dict[str, Any],
+                         tep: dict[str, Any], phasing: dict[str, Any] | None) -> dict[str, Any]:
+    """Модель представления одного расчёта — для тизера и любой поверхности,
+    которой нужны те же шесть карточек, что у дашборда книги."""
+    consolidated = bundle.get("consolidated") or {}
+    origin = presentation_origin(inputs, tep, phasing)
+    return _presentation.build_project_presentation(
+        presentation_numbers(consolidated), consolidated, list(bundle.get("phases") or []),
+        inputs or {}, origin, _AGENT_BANK_LLCR_TARGET)
+
+
+def presentation_origin(inputs: dict[str, Any], tep: dict[str, Any],
+                        phasing: dict[str, Any] | None) -> dict[str, str]:
+    """Происхождение расчёта — одно на книгу и тизер: отпечаток вводных,
+    версия движка, время сборки."""
+    calculation_id = _calculation_fingerprint(inputs, tep, phasing)
+    return {
+        "calculation_id": calculation_id,
+        "inputs_fingerprint": calculation_id,
+        "engine_version": VERSION,
+        "generated_at": datetime.now().strftime("%d.%m.%Y %H:%M"),
+        "template": "DevelopAid_model_v4",
+    }
+
+
 def _v4_fold_tep_rows(
     rows: list[dict[str, dict[str, Any]]], book: int
 ) -> list[dict[str, dict[str, Any]]]:
@@ -21922,6 +21988,13 @@ def _v4_social_capex_formula(base_row: int, phase_index: int, column: str) -> st
 # Замена «'Вводные'!» → «'Параметры модели'!» правкой не считается: это переезд
 # ввода на свой лист, методики он не трогает.
 V4_REWRITTEN_FORMULA_ROWS: dict[str, tuple[tuple[int, ...], str]] = {
+    "Дашборд": (
+        (2, 5, 10) + tuple(range(15, 44)),
+        "Лист собирается заново по ТЗ владельца (19.09.2026): формулы на "
+        "скрытый источник Dashboard_Data, шесть карточек KPI, ТЭП, продажи, "
+        "авто-риски и три диаграммы; прежние карточки ОТЧЕТ и квартальные ряды "
+        "CF переехали в источник (v4_dashboard.build)",
+    ),
     "CAPEX": (
         (
         9, 12, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 25, 26, 28, 30,
@@ -23681,12 +23754,30 @@ def build_project_workbook(
         except Exception as exc:  # noqa: BLE001 — молчащая инструкция хуже отсутствующей
             missing.append("Вводные · лист инструкции не собран: " + _error_location(exc))
 
+    # «Дашборд» и его скрытый источник `Dashboard_Data`: формулы на листы книги,
+    # три диаграммы на диапазоны источника. Не собрался — книга выходит с
+    # прежним листом шаблона, и это названо в `missing`, а не спрятано.
+    _dashboard: dict[str, Any] | None = None
+    try:
+        _dashboard = v4_dashboard.build(
+            source, _v4_sheet_path(source, v4_dashboard.DASHBOARD_SHEET), styles_xml,
+            presentation_origin(inputs, calculation_source_tep, phasing),
+            _AGENT_BANK_LLCR_TARGET, _v4_cf_columns(), enabled_phases > 1)
+    except Exception as exc:  # noqa: BLE001 — дашборд без книги не выпускается молча
+        missing.append("Дашборд · не собран: " + _error_location(exc))
+
     out = io.BytesIO()
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
         for item in source.infolist():
+            if _dashboard and item.filename in _dashboard["dropped"]:
+                continue
             payload = source.read(item.filename)
             if item.filename == sheet_path:
                 payload = xml.encode("utf-8")
+            elif _dashboard and item.filename in _dashboard["parts"]:
+                payload = _dashboard["parts"][item.filename]
+            elif _dashboard and item.filename == "xl/styles.xml":
+                payload = _dashboard["styles_xml"].encode("utf-8")
             elif item.filename == report_sheet_path:
                 payload = report_xml.encode("utf-8")
             elif item.filename == tep_sheet_path:
@@ -23728,16 +23819,36 @@ def build_project_workbook(
                                     f"'{v4_entry_sheet.ENTRY_SHEET}'!")
                 payload = text.encode("utf-8")
             elif item.filename == "xl/workbook.xml":
-                payload = _v4_workbook_with_entry(
-                    payload.decode("utf-8"), bool(entry_xml)).encode("utf-8")
-            elif item.filename == "xl/_rels/workbook.xml.rels" and entry_xml:
-                payload = _v4_rels_with_entry(payload.decode("utf-8")).encode("utf-8")
-            elif item.filename == "[Content_Types].xml" and entry_xml:
-                payload = _v4_types_with_entry(payload.decode("utf-8")).encode("utf-8")
+                text = _v4_workbook_with_entry(payload.decode("utf-8"), bool(entry_xml))
+                if _dashboard:
+                    text = v4_dashboard.workbook_with_data_sheet(text)
+                payload = text.encode("utf-8")
+            elif item.filename == "xl/_rels/workbook.xml.rels":
+                text = payload.decode("utf-8")
+                if entry_xml:
+                    text = _v4_rels_with_entry(text)
+                if _dashboard:
+                    text = v4_dashboard.rels_with_data_sheet(text)
+                payload = text.encode("utf-8")
+            elif item.filename == "[Content_Types].xml":
+                text = payload.decode("utf-8")
+                if entry_xml:
+                    text = _v4_types_with_entry(text)
+                if _dashboard:
+                    text = v4_dashboard.types_with_data_sheet(text, _dashboard["dropped"])
+                payload = text.encode("utf-8")
             archive.writestr(item, payload)
         if entry_xml:
             archive.writestr(_V4_ENTRY_SHEET_PATH, entry_xml.encode("utf-8"))
             archive.writestr(_V4_GUIDE_SHEET_PATH, guide_xml.encode("utf-8"))
+        if _dashboard:
+            # Источник дашборда — новая часть, мимо цикла: ссылки на лист ввода
+            # переименовываются здесь же, как у остальных листов.
+            data_xml = _dashboard["parts"][v4_dashboard.DATA_SHEET_PATH].decode("utf-8")
+            archive.writestr(v4_dashboard.DATA_SHEET_PATH,
+                             v4_entry_sheet.rename_sheet_refs(data_xml).encode("utf-8"))
+            for path in _dashboard["added_charts"]:
+                archive.writestr(path, _dashboard["parts"][path])
     source.close()
     if _ladder_steps and not _ladder_swapped:
         # Ступени заданы, а формулы не тронуты — книга посчитает по одной
@@ -26440,6 +26551,54 @@ async def report_pdf(request: Request) -> Response:
     except Exception as exc: raise HTTPException(status_code=500,detail=f"Не удалось сформировать PDF: {exc}") from exc
     project_name=str(payload.get("project_name") or "DevelopAid").strip();safe=re.sub(r"[^0-9A-Za-zА-Яа-я_-]+","_",project_name).strip("_")[:60] or "DevelopAid";filename=f"DevelopAid_Отчет_{safe}_{date.today().isoformat()}.pdf";encoded_name=urllib.parse.quote(filename)
     return Response(content=content,media_type="application/pdf",headers={"Content-Disposition":f"attachment; filename=DevelopAid_report.pdf; filename*=UTF-8''{encoded_name}"})
+
+
+@app.post("/report/teaser")
+async def report_teaser(request: Request) -> Response:
+    """Тизер проекта — одна страница A4 из модели представления.
+
+    Считает движок один раз (`_run_authoritative_model`), как у PDF и книги;
+    из результата собирается модель представления, из неё — страница. Полный
+    отчёт остаётся как есть: тизер не его обрезка и не снимок экрана.
+    """
+    payload = await json_object(request)
+    if not isinstance(payload.get("inputs"), dict) or not payload.get("tep"):
+        raise HTTPException(status_code=400, detail="Нет вводных для тизера")
+    _require_web_access(str(payload.get("session") or ""),
+                        str(payload.get("access_key") or ""), "тизер проекта")
+    usage_track("teaser", surface="site",
+                chat_id=_web_identity_chat_id(str(payload.get("session") or "")))
+    from starlette.concurrency import run_in_threadpool
+    inputs = dict(payload.get("inputs") or {})
+    # Имя проекта в запросе сильнее имени во вводных — как у `/report/pdf`:
+    # страница шлёт заголовок проекта отдельным полем, а вводные могут
+    # нести имя, под которым проект когда-то сохранили.
+    if payload.get("project_name"):
+        inputs["project_name"] = str(payload.get("project_name"))
+    try:
+        bundle = await run_in_threadpool(
+            _run_authoritative_model, inputs, payload.get("tep") or {},
+            payload.get("rates") or [], payload.get("phasing") or {})
+        content = build_teaser_pdf(bundle, inputs, payload.get("tep") or {},
+                                   payload.get("phasing") or {})
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500,
+                            detail=f"Не удалось сформировать тизер: {exc}") from exc
+    project_name = str(inputs.get("project_name") or "DevelopAid").strip()
+    safe = re.sub(r"[^0-9A-Za-zА-Яа-я_-]+", "_", project_name).strip("_")[:60] or "DevelopAid"
+    encoded_name = urllib.parse.quote(f"DevelopAid_Тизер_{safe}.pdf")
+    return Response(content=content, media_type="application/pdf",
+                    headers={"Content-Disposition":
+                             f"attachment; filename=DevelopAid_teaser.pdf; filename*=UTF-8''{encoded_name}"})
+
+
+def build_teaser_pdf(bundle: dict[str, Any], inputs: dict[str, Any],
+                     tep: dict[str, Any], phasing: dict[str, Any] | None) -> bytes:
+    """Тизер из уже посчитанного: модель представления → одна страница."""
+    presentation = project_presentation(bundle, inputs, tep, phasing)
+    return _teaser_pdf.build_teaser_pdf(presentation, _pdf_font_names(), _pdf_num)
 
 
 @app.post("/telegram/result")
@@ -41399,6 +41558,7 @@ details.cadastral-box>summary::marker{color:#888}
           <div class="report-actions">
             <small>Агрегированный отчёт · значения пересчитываются из текущих вводных</small>
             <button class="btn dark no-print" onclick="exportReportPdf()">Экспорт PDF</button>
+            <button class="btn no-print" onclick="exportTeaserPdf()" title="Одна страница A4: шесть KPI, ТЭП, продажи, риски и происхождение расчёта — из той же модели, что дашборд книги">Скачать тизер</button>
             <button id="exportModelButton" class="btn no-print" onclick="exportModelArchive()">Скачать модель (Excel)</button>
           </div>
         </div>
@@ -50471,6 +50631,17 @@ async function exportReportPdf(){
   body:JSON.stringify(Object.assign({session:activeSession(),access_key:projectsAdminKey||''},currentPdfReportPayload()))});
  if(!response.ok){let detail='Не удалось сформировать PDF';try{const x=await response.json();detail=x.detail||detail}catch(e){}alert(detail);return;}
  const blob=await response.blob();const disposition=response.headers.get('Content-Disposition')||'';const utf=disposition.match(/filename\*=UTF-8''([^;]+)/i);const filename=utf?decodeURIComponent(utf[1]):`DevelopAid_Отчет_${new Date().toISOString().slice(0,10)}.pdf`;const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1500);
+}
+
+async function exportTeaserPdf(){
+ // Тизер считает сервер тем же расчётом, что PDF и книгу: страница только
+ // шлёт вводные. Ответ разбирается с оглядкой на то, что он может быть не PDF.
+ await calculate();
+ const response=await fetch('/report/teaser',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify(Object.assign({session:activeSession(),access_key:projectsAdminKey||''},currentPdfReportPayload()))});
+ if(!response.ok){let detail='Не удалось сформировать тизер';try{const x=await response.json();detail=x.detail||detail}catch(e){}alert(detail);return;}
+ const blob=await response.blob();
+ downloadBlobResponse(blob,response.headers.get('Content-Disposition')||'','DevelopAid_Тизер.pdf');
 }
 
 function downloadBlobResponse(blob,disposition,fallback){
