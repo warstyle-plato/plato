@@ -1,0 +1,54 @@
+name: Слияние с выдачей номера
+
+# Номер выпуска отвечает на «что выпущено», а выпуск случается на main —
+# значит номер принадлежит main, а не ветке. Пока его брали в ветке заранее,
+# брали вслепую: соседняя сессия держит свой номер у себя, и до её слияния
+# расхождения не видно ниоткуда. 21.09.2026 так столкнулись #464 и #465 на
+# 0.24.16, и второму номер пришлось поднимать трижды — по кругу приёмки на
+# подъём, за который main уезжал снова.
+#
+# Здесь номер выдаётся ВНУТРИ слияния и живёт до него секунду, а не сутки.
+# Кнопка «Merge» на GitHub этого шага не делает: слитый ею PR придёт на main
+# с номером базы, и сборка там станет красной — сливать нужно отсюда.
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Номер PR
+        required: true
+      method:
+        description: "Как сливать: squash или merge"
+        required: false
+        default: squash
+
+concurrency:
+  # Два прогона разом прочитали бы одну и ту же базу и выдали ОДИН номер —
+  # ровно та болезнь, от которой это написано. Поэтому ждать, а не отменять:
+  # отменённое слияние здесь означает невыпущенную работу.
+  group: release-merge
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Нужны обе стороны: база, по которой считается номер, и ветка, в
+          # которую он пишется.
+          fetch-depth: 0
+      - name: Имя коммиту выдачи
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      - name: Выдать номер и слить
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ inputs.pr }}
+          METHOD: ${{ inputs.method }}
+        run: python3 scripts/release_merge.py --pr "$PR" --method "$METHOD"

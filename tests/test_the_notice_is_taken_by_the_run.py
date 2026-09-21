@@ -303,3 +303,96 @@ def test_the_pass_can_be_turned_off_and_says_so(tmp_path, monkeypatch):
     assert state["budget_seconds"] > 0, state
     # «Здесь он ещё не заходил» и «прочитал ноль» — разные ответы.
     assert state["last_run"] == {}, state
+
+
+def _textless_pdf() -> bytes:
+    """Скан: PDF есть, текста в нём нет. Ровно два таких вложения лежат у лота
+    МКАД, 41 км — «Постановление» и «Схема границ», и площадка отдала оба."""
+    from io import BytesIO
+
+    from reportlab.pdfgen import canvas
+
+    buf = BytesIO()
+    page = canvas.Canvas(buf)
+    page.rect(10, 10, 50, 50, fill=1)
+    page.showPage()
+    page.save()
+    return buf.getvalue()
+
+
+def test_an_unreadable_attachment_is_our_gap_not_a_platform_refusal(
+        tmp_path, monkeypatch):
+    """Площадка отдала, а прочитать не смогли МЫ — и так это и называется.
+
+    Замер лота 21000005000000031293/1 с прода 21.09.2026:
+    `asked 27, fetched 27, read 24, from_store 27` — Росэлторг отдал ВСЁ, ни
+    одного отказа площадки. Три «неотданных» несут `kind: extraction_error`:
+    два скана PDF и архив со скриншотами. А на экране стояло «площадка не
+    отдала вложения лота: не отдано вложений: 3 … Спросим снова» — наш пробел,
+    приписанный источнику, и обещание второго захода, который ничего не
+    изменит: байты уже на складе.
+
+    Виды отказа разведены `_refusal_kind` давно; причина выбиралась по НАЛИЧИЮ
+    отказа, а не по его виду.
+    """
+    monkeypatch.setattr(krt_pipeline, "download_document",
+                        _platform(_textless_pdf()))
+
+    got = krt_pipeline.read_notices(BY_SITE, fetch_lot=_fetcher([]),
+                                    store_dir=tmp_path)
+
+    assert (got["unread"], got["refused"]) == (1, 0), got
+    attempt = krt_territory.stored_attempt(KEY, root=tmp_path)
+    assert attempt["outcome"] == "unread", attempt
+
+    problem = krt_territory._attempt_problem(attempt)
+    assert "площадка не отдала" not in problem.lower(), problem
+    assert "наш пробел" in problem, problem
+    assert "Спросим снова" not in problem, (
+        "второй заход ничего не изменит — байты уже на складе")
+
+    # Срок — как у ответа документов, а не как у перебоя площадки: заново
+    # качать нечего, до починки читателя ответ будет тот же.
+    assert not krt_territory.notice_due(
+        KEY, root=tmp_path,
+        now=time.time() + krt_territory.REFUSED_TTL_SECONDS + 60)
+    assert krt_territory.notice_due(
+        KEY, root=tmp_path,
+        now=time.time() + krt_territory.NO_TABLE_TTL_SECONDS + 60)
+
+
+def test_a_platform_refusal_among_ours_still_blames_the_platform(
+        tmp_path, monkeypatch):
+    """Перебой площадки рядом с нашим сканом решает за обоих — и это верно.
+
+    «Таблицы нет» тут утверждать нельзя: она могла стоять как раз в
+    неотданном, и спрашивать надо снова через полчаса, а не через сутки.
+    Предохранитель здесь обязателен — на чистом скане ответ ДРУГОЙ (`unread`),
+    и без разных вложений проверка была бы зелена при любом правиле.
+    """
+    from auction_search.documents import DocumentTemporaryRefusal
+    from auction_search.models import AuctionDocument
+
+    lot = _lot()
+    held = "https://www.roseltorg.ru/file/held.pdf"
+    lot.documents.append(AuctionDocument(
+        title="Территория.Сведения о земельных участках.pdf", url=held,
+        document_type="other"))
+
+    def download(url, **_kwargs):
+        if url == held:
+            raise DocumentTemporaryRefusal("HTTP 503 после трёх попыток")
+        return _textless_pdf(), "application/pdf", False
+
+    monkeypatch.setattr(krt_pipeline, "download_document", download)
+
+    got = krt_pipeline.read_notices(
+        BY_SITE, fetch_lot=_fetcher([], lot=lot), store_dir=tmp_path)
+
+    assert (got["refused"], got["unread"]) == (1, 0), got
+    attempt = krt_territory.stored_attempt(KEY, root=tmp_path)
+    assert attempt["outcome"] == "refused", attempt
+    assert "не отдано вложений" in attempt["why"], attempt
+    assert krt_territory.notice_due(
+        KEY, root=tmp_path,
+        now=time.time() + krt_territory.REFUSED_TTL_SECONDS + 60)

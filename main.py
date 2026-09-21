@@ -1889,7 +1889,22 @@ def _deliver_krt_announcements() -> None:
     if not records:
         _KRT_DELIVERY["stopped_by"] = "очередь пуста"
         return
-    targets = _notification_targets("krt", subscribers=subscribers, overrides=overrides)
+    # Новости КРТ включены по умолчанию для зарегистрированных пользователей
+    # бота. Отдельный legacy-список subscribers оставляем как дополнительный
+    # источник, но он больше не должен означать, что остальные 20+ пользователей
+    # никогда не узнают о существовании рассылки. Явный /крт выкл по-прежнему
+    # имеет приоритет через notification override.
+    registered: list[int] = []
+    try:
+        registered = [int(row.get("chat_id") or 0)
+                      for row in registry.list(limit=100000)
+                      if int(row.get("chat_id") or 0)]
+    except Exception as exc:  # noqa: BLE001
+        # Реестр — расширение адресатов. Если он временно недоступен, не ломаем
+        # уже существующую доставку владельцам/legacy-подписчикам.
+        _KRT_DELIVERY["last_error"] = f"реестр пользователей: {exc}"[:300]
+    audience = sorted(set(subscribers) | set(registered))
+    targets = _notification_targets("krt", subscribers=audience, overrides=overrides)
     _KRT_DELIVERY["targets"] = len(targets)
     if not targets:
         # Забранное уже не вернуть: очередь изымается перед этой проверкой, и
