@@ -78,6 +78,7 @@ from auction_search.nagatino_ui import nagatino_page
 from auction_search.ui import auctions_page
 from market_search.krt_registry import CATALOGUE_URL, KrtRegistry
 from market_search import krt_decision_tep
+from market_search import tep_check
 from market_search import cabinet as market_cabinet
 from market_search.geocoder import GeocodingError
 from market_search.http import RemoteServiceError
@@ -141,6 +142,9 @@ def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
             ("weakest_phase_llcr_x", "LLCR слабейшей очереди, x", 22),
             ("margin_pct", "Маржа до неизвестных обязательств, %", 25),
             ("surrounding_price_rub_sqm", "Цена окружения, ₽/м²", 23),
+            # Темп рядом с ценой, а не вместо неё: «почём продают» и
+            # «сколько продают» — разные вопросы об одном окружении.
+            ("surrounding_sales_units_per_month", "Продажи окружения, ДДУ/мес.", 27),
             # Чьё это КРТ и не занято ли оно. Ячейка несёт цитату источника или
             # словами говорит, чего не хватает: пустая клетка читалась бы как
             # «нет», а это «не нашли» или «не читали».
@@ -170,6 +174,7 @@ def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
             "nonresidential_gfa_sqm", "business_gfa_sqm", "jobs", "score",
             "saleable_sqm", "entry_capacity_rub_per_sqm", "entry_capacity_mln",
             "project_llcr_x", "weakest_phase_llcr_x", "margin_pct", "surrounding_price_rub_sqm",
+            "surrounding_sales_units_per_month",
             "demolition_objects", "demolition_area_sqm", "conditional_objects",
             "conditional_area_sqm", "reconstruction_objects", "reconstruction_area_sqm",
             "preservation_objects", "preservation_area_sqm", "resettlement_mentions",
@@ -1162,11 +1167,34 @@ def install(app: FastAPI) -> None:
                 logger.exception("KRT card facts cache failed")
                 facts = {}
             if facts:
-                projects = [
-                    {**row, "card_facts": facts.get(str(row.get("slug") or ""))}
-                    if facts.get(str(row.get("slug") or "")) else row
-                    for row in projects
-                ]
+                def _with_card(row: dict[str, Any]) -> dict[str, Any]:
+                    card = facts.get(str(row.get("slug") or ""))
+                    if not card:
+                        return row
+                    # Город отвечает о площадке дважды: плиткой списка, по
+                    # которой собран каталог, и карточкой проекта. Совпадают
+                    # они не всегда — у «Дербеневской ул. тер. 2» плитка даёт
+                    # общий объём 153 320 и ОДН 14 400, карточка 358 100 без
+                    # ОДН (замер прода 20.09.2026; из 282 карточек расходится
+                    # немного, но расхождение есть). Выбирать между двумя
+                    # числами источника мы не вправе: считаем по-прежнему
+                    # плиткой и НАЗЫВАЕМ расхождение — молча выбранное число
+                    # выглядит на экране ровно так же, как сверенное. Ответ
+                    # несёт и то, было ли ЧТО сверять: «сверять не с чем» —
+                    # не «сошлось».
+                    card_tep = card.get("tep") if isinstance(card, dict) else None
+                    return {
+                        **row, "card_facts": card,
+                        "card_tep_check": {
+                            **tep_check.compare(
+                                card_tep or {}, row,
+                                ours_label="в карточке", theirs_label="в списке"),
+                            "read": bool(card_tep and any(
+                                value is not None for value in card_tep.values())),
+                        },
+                    }
+
+                projects = [_with_card(row) for row in projects]
             # Сколько карточек прочитано и на чём споткнулись остальные. Без
             # этого «реновации нет» и «карточку не спросили» выглядят на экране
             # одинаково, а общий отказ источника не виден вовсе.
@@ -2788,6 +2816,13 @@ def install(app: FastAPI) -> None:
             # выпуском 0.23.22 при работающем 0.23.96, и семьдесят четыре
             # выпуска экономики прошли молча.
             "stale_model_engines": _stale_engines(rows),
+            # Сколько строк ПЕРЕСЧИТАЕТ кнопка «Пересчитать только их». Это не
+            # то же число, что `stale_model_count`: у той величины строка
+            # посчитана прежней методикой, а здесь к ней прибавлены строки, у
+            # которых модели нет вовсе — им тоже есть что считать. Пока число
+            # было одно, подпись называла 5, а кнопка планировала 388.
+            "recount_planned_count": sum(
+                1 for row in rows if krt_ranking_rules.model_needs_recount(row)),
             # Диагностика отвечает на вопрос «каталог вообще посчитан?» без
             # гадания по пустым ячейкам. Модель и рынок считаются отдельно:
             # строка может иметь экономику, но не иметь темпа/цены окружения.
@@ -2799,15 +2834,24 @@ def install(app: FastAPI) -> None:
                     1 for row in rows
                     if row.get("available") and krt_ranking_rules.model_is_current(row)
                 ),
-                "market_price_available": sum(
+                # Два РАЗНЫХ вопроса, и под одним именем они жили до
+                # 21.09.2026: ключ `market_price_available` стоял в этом
+                # словаре дважды, Python оставлял последний, и пара «есть /
+                # нет» считала разное — 202 против 584 при 585 строках.
+                # Первый: доехало ли поле до строки (его завели позже самих
+                # строк, и без подъёма версии правил оно пусто у прежних).
+                "market_price_in_row": sum(
                     1 for row in rows if row.get("surrounding_price_rub_sqm") is not None
                 ),
-                "market_price_missing": sum(
+                "market_price_missing_in_row": sum(
                     1 for row in rows if row.get("surrounding_price_rub_sqm") is None
                 ),
-                "market_price_available": sum(
-                    1 for row in rows if _plato_number(row.get("start_price_rub_sqm")) != "—"
-                    and float(row.get("start_price_rub_sqm") or 0) > 0
+                # Второй: ответил ли рынок ценой, когда строку считали. Это
+                # та же величина `_market_inputs`, что уходит в цену модели,
+                # поэтому она есть и у строк, записанных до появления поля.
+                "market_answered_price": sum(
+                    1 for row in rows
+                    if krt_ranking_rules._number(row.get("start_price_rub_sqm")) > 0
                 ),
             },
             "rules_version": krt_ranking_rules._screening_rules_version(),
@@ -2883,7 +2927,9 @@ def install(app: FastAPI) -> None:
             keep = []
             for row in projects:
                 stored = fresh_rows.get(str(row.get("slug") or "")) or {}
-                if stored.get("available") and krt_ranking_rules.model_is_current(stored):
+                # Тот же предикат, что считает число у кнопки: два счёта одного
+                # вопроса однажды разошлись бы, и подпись обещала бы не то.
+                if not krt_ranking_rules.model_needs_recount(stored):
                     skipped += 1
                     continue
                 keep.append(row)

@@ -39,7 +39,11 @@ JINA_PREFIX = "https://r.jina.ai/"
 CACHE_SCHEMA_VERSION = 3
 REQUIREMENTS_CACHE_SCHEMA_VERSION = 3
 # Разбор карточки версионируется отдельно: он меняется чаще требований.
-CARD_FACTS_SCHEMA_VERSION = 1
+# Версия разбора карточки. Поднимается тогда и только тогда, когда меняется
+# ОТВЕТ читателя на те же байты: прочитанное лежит на диске сутками, и без
+# подъёма починка до прочитанных карточек не доезжает вовсе. 2 — карточка
+# понесла свой ТЭП.
+CARD_FACTS_SCHEMA_VERSION = 2
 # ТЭП, вынутый из PDF проекта решения. Своя версия: разбор правится
 # отдельно от разбора карточки, и общая версия обесценивала бы чужое.
 DECISION_TEP_SCHEMA_VERSION = 1
@@ -320,6 +324,27 @@ def _checked(row: KrtTerritory) -> KrtTerritory:
     return replace(row, parse_problem=parse_problem(row))
 
 
+def tep_from_fields(fields: dict[str, str]) -> dict[str, float | None]:
+    """Какая подпись города какая величина — один ответ на все поверхности.
+
+    Подписи у плитки списка и у карточки проекта одни и те же, кроме единицы
+    в имени площади («Площадь» против «Площадь, га»), поэтому имя режется по
+    запятой. Второй такой карты не заводим: разойдись она, одна поверхность
+    читала бы «общественно-деловое назначение», а соседняя молчала бы о нём,
+    и обе выглядели бы прочитанными.
+    """
+    flat = {str(key).split(",", 1)[0].strip().lower(): value
+            for key, value in (fields or {}).items()}
+    return {
+        "area_ha": _number(flat.get("площадь", "")),
+        "total_gfa_sqm": _number(flat.get("общий объем застройки", "")),
+        "housing_gfa_sqm": _number(flat.get("жилое назначение", "")),
+        "nonresidential_gfa_sqm": _number(flat.get("нежилое назначение", "")),
+        "business_gfa_sqm": _number(flat.get("общественно-деловое назначение", "")),
+        "jobs": _number(flat.get("прирост рабочих мест", "")),
+    }
+
+
 def parse_catalogue(html: str) -> tuple[list[KrtTerritory], str | None]:
     parser = _CatalogueParser()
     parser.feed(html)
@@ -329,13 +354,8 @@ def parse_catalogue(html: str) -> tuple[list[KrtTerritory], str | None]:
         fields = {p.split(":", 1)[0].strip().lower(): p.split(":", 1)[1].strip() for p in parts}
         rows.append(_checked(KrtTerritory(
             slug=slug, name=name, url=f"{BASE_URL}/projects/{slug}",
-            area_ha=_number(fields.get("площадь", "")),
             okrug=fields.get("округ"), district=fields.get("район"), status=fields.get("статус"),
-            total_gfa_sqm=_number(fields.get("общий объем застройки", "")),
-            housing_gfa_sqm=_number(fields.get("жилое назначение", "")),
-            nonresidential_gfa_sqm=_number(fields.get("нежилое назначение", "")),
-            business_gfa_sqm=_number(fields.get("общественно-деловое назначение", "")),
-            jobs=_number(fields.get("прирост рабочих мест", "")),
+            **tep_from_fields(fields),
         )))
     return rows, parser.next_url
 
@@ -361,13 +381,8 @@ def parse_catalogue_markdown(markdown: str) -> list[KrtTerritory]:
         slug, name = match.group(2), match.group(1).strip()
         rows.append(_checked(KrtTerritory(
             slug=slug, name=name, url=f"{BASE_URL}/projects/{slug}",
-            area_ha=_number(fields.get("площадь", "")),
             okrug=fields.get("округ"), district=fields.get("район"), status=fields.get("статус"),
-            total_gfa_sqm=_number(fields.get("общий объем застройки", "")),
-            housing_gfa_sqm=_number(fields.get("жилое назначение", "")),
-            nonresidential_gfa_sqm=_number(fields.get("нежилое назначение", "")),
-            business_gfa_sqm=_number(fields.get("общественно-деловое назначение", "")),
-            jobs=_number(fields.get("прирост рабочих мест", "")),
+            **tep_from_fields(fields),
         )))
     return rows
 
@@ -692,6 +707,13 @@ class KrtRegistry:
             save_json(path, failure)
             return failure
         out = krt_card_facts.parse(page)
+        # ТЭП карточки — второй ответ города о той же площадке, и он часто НЕ
+        # равен плитке списка, по которой собран каталог: у «Дербеневской ул.
+        # тер. 2» плитка даёт 153 320 м² и ОДН 14 400, карточка — 358 100 без
+        # ОДН (замер 20.09.2026). Величины из подписей собирает общая карта, а
+        # выбирать между двумя числами города мы не вправе — их сверяет и
+        # называет вызывающий.
+        out["tep"] = tep_from_fields(out.pop("tep_fields", {}) or {})
         out.update({"schema_version": CARD_FACTS_SCHEMA_VERSION, "available": True,
                     "slug": clean, "source_url": url})
         save_json(path, out)
@@ -755,6 +777,23 @@ class KrtRegistry:
             "reasons": dict(sorted(reasons.items(), key=lambda pair: -pair[1])),
         }
 
+    def _card_facts_stale(self, slug: str) -> bool:
+        """Дочитать надо и то, что прочитано ПРЕЖНИМ читателем.
+
+        Свежесть файла на этот вопрос не отвечает: разбор карточки меняется
+        чаще, чем сутки срока, и запись вчерашней версии остаётся «свежей»
+        навсегда — починка до прочитанного не доезжает вовсе. Ровно это уже
+        стоило дня на выписках ЕГРН, где версия правил лежит рядом с ответом.
+        """
+        path = self.card_facts_dir / f"{slug}.json"
+        cached = load_json(path)
+        if (not isinstance(cached, dict)
+                or cached.get("schema_version") != CARD_FACTS_SCHEMA_VERSION):
+            return True
+        ttl = (self.ttl_seconds if cached.get("available")
+               else self.card_facts_failure_ttl_seconds)
+        return not fresh(path, ttl)
+
     def fill_card_facts_in_background(self, slugs: list[str] | tuple[str, ...],
                                       *, limit: int = 40) -> bool:
         """Дочитать карточки, которых ещё нет, — фоном и порциями.
@@ -770,7 +809,7 @@ class KrtRegistry:
         clean = [str(slug or "").strip() for slug in slugs]
         missing = [slug for slug in clean
                    if re.fullmatch(r"[a-zA-Z0-9_-]{2,180}", slug or "")
-                   and not fresh(self.card_facts_dir / f"{slug}.json", self.ttl_seconds)]
+                   and self._card_facts_stale(slug)]
         if not missing:
             return False
         with self._cards_lock:

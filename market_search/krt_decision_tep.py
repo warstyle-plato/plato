@@ -179,28 +179,15 @@ def parse(text: str) -> dict[str, Any]:
 def catalogue_check(tep: dict[str, Any], project: dict[str, Any]) -> dict[str, Any]:
     """Сверка «решение ↔ карточка»: что сверено и чем не сошлось.
 
-    Ответа ТРИ, и свести их к двум нельзя: сверено и сошлось; сверено и
-    расходится; **сверять не с чем** — величины нет у решения или у карточки.
-    Прежняя `catalogue_mismatch` отдавала пустой список во всех трёх случаях,
-    и «сошлось» на пустой базе читалось как пройденная проверка — та же
-    ловушка, что у сверки графика платежей за покупку с ценой сделки.
+    Сама арифметика живёт в `tep_check.compare` и общая с парой «карточка ↔
+    плитка списка»: два счёта одного расхождения однажды разошлись бы, и обе
+    сверки выглядели бы верными. Здесь — только имена сторон, потому что
+    читатель обязан видеть, чьё число где.
 
     Гектары здесь главная улика: расходится площадь территории — значит пара
     собрана неверно, и метрам такой пары верить нельзя. Сверка не чинит
     расхождение, она не даёт выдать одно за другое.
     """
-    compared: list[str] = []
-    problems: list[str] = []
-    for key, name, tolerance in (
-        ("area_ha", "площадь территории", 0.02),
-        ("total_gfa_sqm", "общий объём", 0.02),
-        ("housing_gfa_sqm", "жильё", 0.02),
-    ):
-        ours, theirs = tep.get(key), project.get(key)
-        if ours is None or theirs is None:
-            continue
-        compared.append(name)
-        base = max(abs(float(theirs)), 1.0)
-        if abs(float(ours) - float(theirs)) / base > tolerance:
-            problems.append(f"{name}: в решении {ours:g}, в каталоге {float(theirs):g}")
-    return {"compared": compared, "problems": problems}
+    from . import tep_check
+
+    return tep_check.compare(tep, project, ours_label="в решении", theirs_label="в каталоге")
