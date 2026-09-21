@@ -122,7 +122,12 @@ def test_the_rules_version_rises_with_the_answer():
 # Равенство здесь и есть утверждение: правка ЛЮБОЙ половины обязана уронить
 # проверку, чтобы вторая была решена, а не забыта. Добавили поле — поднимите
 # версию; поле переименовали или убрали — тем более.
-ROW_KEYS_AT_RULES_VERSION = (2, (
+#
+# 3 — 21.09.2026: состав строки НЕ изменился, поднята только версия методики
+# (нежилое решения входит в модель, цена нежилого идёт за ценой жилья). Пара
+# обновлена именно затем, чтобы состав был пересмотрен, а не забыт: полей
+# по-прежнему 32.
+ROW_KEYS_AT_RULES_VERSION = (3, (
     "area_ha", "at_asking_price", "available", "card_facts", "computed_at",
     "district", "engine_version", "entry_capacity_mln", "entry_capacity_reason",
     "entry_capacity_rub_per_sqm", "housing_gfa_sqm", "margin_pct",

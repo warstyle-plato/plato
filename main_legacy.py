@@ -930,13 +930,23 @@ class StandaloneObject(NamedTuple):
 STANDALONE_OBJECTS: tuple[StandaloneObject, ...] = (
     StandaloneObject("standalone_retail", "retail", "ТЦ", 2, True, False, "sqm",
                      "retail_cost_th_per_sqm", "retail_price_th_per_sqm",
+                     # Умолчания и есть комфорт: цена нежилого берётся из его
+                     # профиля, а не стоит своим числом — 500 тыс ₽/м² здесь и
+                     # были тем единственным числом вне класса, из-за которого
+                     # смена класса цену не двигала.
                      defaults={"gba_sqm": 10000, "saleable_sqm": 6000,
-                               "cost_th_per_sqm": 200, "price_th_per_sqm": 500},
+                               "cost_th_per_sqm": 200,
+                               "price_th_per_sqm": nonresidential_price_th(
+                                   PROJECT_CLASS_PRESETS["comfort"][
+                                       "apartment_price_th"])},
                      tep_label="Коммерция ОСЗ", group_label="ТЦ / коммерция ОСЗ"),
     StandaloneObject("offices", "offices", "офисы", 3, True, True, "sqm",
                      "offices_cost_th_per_sqm", "offices_price_th_per_sqm",
                      defaults={"gba_sqm": 10000, "saleable_sqm": 6000,
-                               "cost_th_per_sqm": 200, "price_th_per_sqm": 500},
+                               "cost_th_per_sqm": 200,
+                               "price_th_per_sqm": nonresidential_price_th(
+                                   PROJECT_CLASS_PRESETS["comfort"][
+                                       "apartment_price_th"])},
                      tep_label="Офисы", group_label="МФОЦ / офисы"),
     StandaloneObject("above_parking", "above_parking", "наземный паркинг", 2, False,
                      False, "spaces", "above_parking_cost_mln_per_space",
