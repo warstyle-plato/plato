@@ -121,7 +121,13 @@ def test_a_branch_below_its_base_is_caught_before_the_merge(tmp_path: Path):
 
 
 def test_the_guard_runs_on_pull_requests():
-    """Проверка на ветке должна быть заведена в CI, иначе она никогда не идёт."""
+    """Проверка на ветке должна быть заведена в CI, иначе она никогда не идёт.
+
+    Вызов с 21.09.2026 — `--on-branch`: роста в ветке больше не требуется,
+    номер выдаёт слияние. Старый вызов вернул бы требование взять номер
+    заранее и вслепую, то есть само столкновение.
+    """
     guard = (ROOT / ".github" / "workflows" / "version-guard.yml").read_text(encoding="utf-8")
     assert "pull_request" in guard
-    assert "check_version_grows.py --base" in guard
+    assert "check_version_grows.py --on-branch" in guard
+    assert "--base" in guard
