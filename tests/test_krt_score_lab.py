@@ -11,9 +11,9 @@ def test_lab_never_scores_running_krt() -> None:
 
 def test_lab_reuses_current_catalogue_and_ranking() -> None:
     page = krt_score_lab_page()
-    assert "fetch('/auctions/krt'+suffix" in page
-    assert "fetch('/auctions/krt/ranking'" in page
+    assert "fetch('/auctions/krt-lab/data?ts='" in page
     assert "/ranking/refresh" not in page
+    assert "?refresh=true" not in page
 
 
 def test_lab_exposes_score_components_and_coverage() -> None:
