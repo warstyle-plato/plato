@@ -16,6 +16,12 @@ from pathlib import Path
 from typing import Any
 
 TARGET_LLCR = 1.20
+LLCR_STOPS = [(1.00, 0.0), (1.10, 10.0), (1.20, 30.0), (1.30, 40.0)]
+PRICE_RATIO_STOPS = [(0.70, 0.0), (0.80, 5.0), (0.90, 12.0), (1.00, 20.0)]
+ABSORPTION_RATIO_STOPS = [(0.50, 0.0), (0.75, 5.0), (1.00, 10.0),
+                          (1.25, 15.0), (1.50, 20.0)]
+BURDEN_PCT_STOPS = [(0.0, 20.0), (5.0, 18.0), (10.0, 14.0),
+                    (15.0, 9.0), (20.0, 5.0), (25.0, 2.0), (30.0, 0.0)]
 ROOT = Path(__file__).resolve().parent.parent
 NAGATINO_PRESET = ROOT / "presets" / "КРТ_Нагатино.json"
 
@@ -64,8 +70,7 @@ def absorption_points(local_sqm_month: Any, benchmark_sqm_month: Any) -> float |
     if local is None or benchmark is None or benchmark <= 0:
         return None
     ratio = local / benchmark
-    return _piece(ratio, [(0.50, 0.0), (0.75, 5.0), (1.00, 10.0),
-                          (1.25, 15.0), (1.50, 20.0)])
+    return _piece(ratio, ABSORPTION_RATIO_STOPS)
 
 
 def burden_points(burden_pct: Any) -> float | None:
@@ -73,9 +78,28 @@ def burden_points(burden_pct: Any) -> float | None:
     value = _number(burden_pct)
     if value is None:
         return None
-    return _piece(value, [(0.0, 20.0), (5.0, 18.0), (10.0, 14.0),
-                          (15.0, 9.0), (20.0, 5.0), (25.0, 2.0), (30.0, 0.0)])
+    return _piece(value, BURDEN_PCT_STOPS)
 
+
+
+def methodology() -> dict[str, Any]:
+    """Machine-readable methodology used by the page and tests."""
+    return {
+        "version": "krt-investment-score-v2",
+        "target_llcr_x": TARGET_LLCR,
+        "weights": {"llcr": 40, "price": 20, "absorption": 20, "burden": 20},
+        "llcr_stops": LLCR_STOPS,
+        "price_ratio_stops": PRICE_RATIO_STOPS,
+        "absorption_ratio_stops": ABSORPTION_RATIO_STOPS,
+        "burden_pct_stops": BURDEN_PCT_STOPS,
+        "rules": {
+            "running": "visible_unscored",
+            "missing": "no_total_score",
+            "buyout": "non_moscow_cadastral_value",
+            "moscow_property": "zero_buyout",
+            "absorption_unit": "sqm_per_month",
+        },
+    }
 
 def score(
     *,
