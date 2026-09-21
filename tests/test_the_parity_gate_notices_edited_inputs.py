@@ -54,6 +54,14 @@ def _opened(content):
     return book, Evaluator
 
 
+def _input_cell(book, key):
+    sheet = book["Вводные"]
+    for row in range(1, sheet.max_row + 1):
+        if sheet.cell(row, 4).value == key:
+            return sheet.cell(row, 2)
+    raise AssertionError(f"вводной {key} нет на листе ввода")
+
+
 def _verdicts(evaluator):
     return [evaluator.cell("ПРОВЕРКИ", f"F{row}") for row in PARITY_ROWS]
 
@@ -84,7 +92,9 @@ def test_an_edited_input_says_there_is_nothing_to_compare_with():
     before = Evaluator(book)
     was_revenue = float(before.cell("ОТЧЕТ", "B5") or 0)
 
-    price = book["Вводные"]["B57"]
+    # Строку читают по ключу, а не по номеру: лист ввода растёт вместе с
+    # вводными, и B57 однажды уже стал подписью колонки.
+    price = _input_cell(book, "apartment_price_th")
     assert float(price.value or 0) > 0, "цена квартир не на месте — правка мимо"
     price.value = float(price.value) * 1.1
     after = Evaluator(book)
