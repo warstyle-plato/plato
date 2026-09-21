@@ -43,6 +43,30 @@ def _number(value: Any) -> float:
         return 0.0
 
 
+# Каким полем источник называет объём — объявлено ОДИН раз на всех читателей.
+# Полей у одной величины больше одного: карточка каталога называет жилую СПП,
+# а проект решения — площадь квартир, и это «данные, а не их отсутствие».
+# Гейт расчёта это уже знал (`housing_measure_named`), а отбор каталога на
+# странице держал свою копию вопроса и читал по одному полю: замер прода
+# 21.09.2026 — выбор «Жильё» давал 203 строки из 522 вместо 230, и все 27
+# потерянных это площадки-решения с названной площадью квартир, среди них
+# Рубцовская наб., влд. 3 («фильтр отбрасывал рубцовскую, как будто жилья в
+# ней нет вовсе», владелец). У «Нежилого» то же и шире: 61 против 147.
+MEASURE_FIELDS: dict[str, tuple[str, ...]] = {
+    "housing": ("housing_gfa_sqm", "flats_sqm"),
+    "business": ("business_gfa_sqm",),
+    "nonres": ("nonresidential_gfa_sqm", "nonresidential_ground_sqm"),
+}
+
+
+def measure_named(project: dict[str, Any] | None, kind: str) -> bool:
+    """Назвал ли источник объём этого назначения — любым своим полем."""
+    if not project:
+        return False
+    return any(_number(project.get(key)) > 0
+               for key in MEASURE_FIELDS.get(kind, ()))
+
+
 def housing_measure_named(project: dict[str, Any] | None) -> bool:
     """Назван ли городом объём жилья, по которому считается модель.
 
@@ -62,10 +86,7 @@ def housing_measure_named(project: dict[str, Any] | None) -> bool:
     считают читателей. Здесь гейт спрашивает ту же функцию, а не пересказывает
     её условие.
     """
-    if not project:
-        return False
-    return (_number(project.get("housing_gfa_sqm")) > 0
-            or _number(project.get("flats_sqm")) > 0)
+    return measure_named(project, "housing")
 
 
 def _ru_number(value: Any, digits: int = 0) -> str:

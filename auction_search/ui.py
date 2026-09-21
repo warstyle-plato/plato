@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from html import escape
 
 
@@ -1595,6 +1596,20 @@ function krtScoreNote(sc){
 // «Не знаем» — свой вариант в каждой оси, а не молчаливая часть «свободна». У
 // 298 площадок каталога карточки города нет по построению, и сложить их с
 // проверенно свободными значило бы выдать наш пробел за ответ источника.
+// Каким полем источник называет объём — список приезжает из движка
+// (`krt_screening.MEASURE_FIELDS`), как `VERSION` и доли ТЭП: у одной величины
+// полей больше одного (карточка каталога называет жилую СПП, решение — площадь
+// квартир), и вторая копия этого списка разошлась бы с гейтом расчёта молча.
+const KRT_MEASURE_FIELDS=__DEVELOPAID_KRT_MEASURE_FIELDS__;
+function krtMeasureNamed(x,kind){
+ return (KRT_MEASURE_FIELDS[kind]||[]).some(key=>krtNumber(x,key)>0);
+}
+// Назначение названо хоть каким-нибудь объёмом. Ноль здесь бывает двух видов:
+// «город назначения не назвал» и «строка не разобрана» — и второй уже отвечает
+// своей осью, поэтому здесь они вместе: обе значат «мерить нечем».
+function krtPurposeNamed(x){
+ return Object.keys(KRT_MEASURE_FIELDS).some(kind=>krtMeasureNamed(x,kind));
+}
 const KRT_FILTERS=[
  {key:'stage', box:'krtStage', empty:'Любая стадия', options:[
   {value:'draft',    name:'Проект решения',       test:x=>!!x.no_card},
@@ -1626,9 +1641,13 @@ const KRT_FILTERS=[
   {value:'unknown', name:'Не знаем',       test:x=>krtRenovationKind(x)==='unknown'},
  ]},
  {key:'purpose', box:'krtPurpose', empty:'Любое назначение', options:[
-  {value:'housing',  name:'Жильё',               test:x=>krtNumber(x,'housing_gfa_sqm')>0},
-  {value:'business', name:'Общественно-деловое', test:x=>krtNumber(x,'business_gfa_sqm')>0},
-  {value:'nonres',   name:'Нежилое',             test:x=>krtNumber(x,'nonresidential_gfa_sqm')>0},
+  {value:'housing',  name:'Жильё',               test:x=>krtMeasureNamed(x,'housing')},
+  {value:'business', name:'Общественно-деловое', test:x=>krtMeasureNamed(x,'business')},
+  {value:'nonres',   name:'Нежилое',             test:x=>krtMeasureNamed(x,'nonres')},
+  // «Не знаем» — свой вариант в каждой оси: у 162 строк из 522 назначение не
+  // названо НИ ОДНИМ полем, и без этого варианта они молча исчезали при любом
+  // выборе, а «таких площадок в каталоге нет» неотличимо от нашего пробела.
+  {value:'unknown',  name:'Не названо',          test:x=>!krtPurposeNamed(x)},
  ]},
 ];
 // Торги — это лот на площадке или объявленное распоряжением намерение. Прежде
@@ -4064,7 +4083,7 @@ def auctions_page(core=None) -> str:
     import management_contour
     import plato_question
 
-    from auction_search import land_map
+    from auction_search import krt_screening, land_map
 
     footer = legal_footer_html(core) if core is not None else ""
     # Ящик Платона: стили и поведение — из `PAGE`, груз — свой. Без движка
@@ -4077,6 +4096,10 @@ def auctions_page(core=None) -> str:
         css = plato_question.drawer_css(core) + "\n" + plato_question.launcher_css()
         drawer = plato_question.drawer_markup(plato_question.DRAWER_IDS)
     return (AUCTIONS_PAGE
+            .replace("__DEVELOPAID_KRT_MEASURE_FIELDS__",
+                     json.dumps({kind: list(fields) for kind, fields
+                                 in krt_screening.MEASURE_FIELDS.items()},
+                                ensure_ascii=False))
             .replace(plato_question.PLACEHOLDER, plato_question.script())
             .replace(plato_question.DRAWER_CSS_PLACEHOLDER, css)
             .replace(plato_question.DRAWER_PLACEHOLDER, drawer)
