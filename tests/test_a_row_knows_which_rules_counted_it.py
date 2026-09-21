@@ -149,5 +149,10 @@ def test_the_page_names_the_number_and_offers_to_recount_it():
     page = auctions_page(None)
     assert "stale_model_count" in page, "счёт устаревшего до экрана не доезжает"
     assert "Посчитано прежней методикой:" in page
-    assert "Пересчитать только их" in page, "число названо, а пересчитать нечем"
+    # Слова у кнопки сменились в 0.24.7: «только их» обещало, что пересчитают
+    # ровно названных, а планирует она и строки БЕЗ модели. Утверждение здесь
+    # прежнее — «число названо, и есть чем пересчитать», — и держится оно
+    # кнопкой, а не её прежней подписью; сколько она возьмёт, проверяет
+    # tests/test_the_button_names_what_it_will_recount.py.
+    assert "krtStaleRun" in page, "число названо, а пересчитать нечем"
     assert "startKrtRanking(true)" in page, "кнопка не просит только устаревшее"
