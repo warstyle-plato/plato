@@ -44,7 +44,7 @@ def _piece(value: Any, stops: list[tuple[float, float]]) -> float | None:
 
 def llcr_points(value: Any) -> float | None:
     """0..40. Below 1.00 the project has no LLCR points."""
-    return _piece(value, [(1.00, 0.0), (1.10, 10.0), (1.20, 30.0), (1.30, 40.0)])
+    return _piece(value, LLCR_STOPS)
 
 
 def price_points(market_rub_sqm: Any, target_rub_sqm: Any) -> float | None:
@@ -54,7 +54,7 @@ def price_points(market_rub_sqm: Any, target_rub_sqm: Any) -> float | None:
     if market is None or target is None or target <= 0:
         return None
     ratio = market / target
-    return _piece(ratio, [(0.70, 0.0), (0.80, 5.0), (0.90, 12.0), (1.00, 20.0)])
+    return _piece(ratio, PRICE_RATIO_STOPS)
 
 
 def absorption_points(local_sqm_month: Any, benchmark_sqm_month: Any) -> float | None:
