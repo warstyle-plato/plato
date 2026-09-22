@@ -20035,43 +20035,63 @@ def _v4_use_bridge_base_row(xml: str, phase: int, missing: list[str]) -> str:
 
 
 def _v4_apply_sports_tax_row(xml: str, phase: int, missing: list[str]) -> str:
-    """Признание стоимости ФОКа в налоговой базе очереди — как в движке.
+    """Признание CAPEX всех дописанных объектов в налоговой базе очереди.
 
-    Проданный объект признаёт СВОЙ CAPEX по своему проданному объёму: он и в
-    движке стоит отдельным пулом (`krt_products`). Переданный городу не
-    признаёт ничего — выручки у него нет, — и его стоимость возвращается в
-    общий пул очереди, откуда её вычитала строка аллокации объектов. Забыть
-    вторую половину значит оставить стоимость ФОКа непризнанной до конца
-    проекта: налог вырос бы на четверть её, и обе книги выглядели бы верными.
+    Шаблон знает три штатных объекта. Всё, что дописано ниже, признаёт свой
+    CAPEX по своему проданному объёму. Передаваемый ФОК дополнительно возвращает
+    стоимость в общий пул, если продажи нет.
     """
     queue = phase
     alloc_row = 96 + 8 * (phase - 1)
-    sold = f"'Вводные'!$K${_V4_SPORTS_DISPOSITION_ROW}=\"{_V4_SPORTS_SALE_WORD}\""
-    mine = f"'ОБЪЕКТЫ'!$B$126={queue}"
     pool_old = f"(SUM({_v4_month_span(20)})-'ОБЪЕКТЫ'!$B${alloc_row})"
-    pool_new = (f"(SUM({_v4_month_span(20)})-'ОБЪЕКТЫ'!$B${alloc_row}"
-                f"+IF({sold},0,IF({mine},'ОБЪЕКТЫ'!$B$146,0)))")
+    added = [
+        (key, queue_row, revenue_row)
+        for key, (queue_row, revenue_row) in _V4_OBJECT_PRODUCT_CELLS.items()
+        if revenue_row not in _V4_TEMPLATE_OBJECT_REVENUE_ROWS
+    ]
+
+    corrections: list[str] = []
+    own_terms: list[tuple[str, str, int, int]] = []
+    for key, queue_row, revenue_row in added:
+        obj = _BY_KEY.get(key)
+        mine = f"'ОБЪЕКТЫ'!$B${queue_row}={queue}"
+        sold = "TRUE"
+        if obj is not None and obj.sale_gate:
+            if key == "sports":
+                sold = (
+                    f"'Вводные'!$K${_V4_SPORTS_DISPOSITION_ROW}="
+                    f"\"{_V4_SPORTS_SALE_WORD}\"")
+            else:
+                missing.append(
+                    f"CF_{phase}: у объекта {key} есть sale_gate без правила книги")
+                continue
+            corrections.append(
+                f"IF({sold},0,IF({mine},'ОБЪЕКТЫ'!$B${revenue_row + 4},0))")
+        own_terms.append((sold, mine, revenue_row + 4, revenue_row - 2))
+
+    pool_inside = f"SUM({_v4_month_span(20)})-'ОБЪЕКТЫ'!$B${alloc_row}"
+    if corrections:
+        pool_inside += "+" + "+".join(corrections)
+    pool_new = f"({pool_inside})"
 
     def build(column: str, body: str) -> str:
-        # Хвост формулы — колонко-зависимый: «-D53-D57-D21» в колонке D и
-        # «-E53-E57-E21» в соседней. Искать его строкой одной колонки значит
-        # не найти его ни в одной, кроме первой.
         tail = f"-{column}53-{column}57-{column}21"
         if pool_old not in body or tail not in body:
             return body
         body = body.replace(pool_old, pool_new)
-        own = (f"-IF({sold},IF({mine},IFERROR('ОБЪЕКТЫ'!$B$146*'ОБЪЕКТЫ'!{column}140"
-               f"/'ОБЪЕКТЫ'!$B$140,0),0),0)")
-        # Слагаемое встаёт ПЕРЕД процентами и НДС — там же, где стоят три
-        # других объекта: порядок слагаемых читается как порядок признания.
+        terms = "".join(
+            f"-IF({sold},IF({mine},IFERROR('ОБЪЕКТЫ'!$B${capex_row}"
+            f"*'ОБЪЕКТЫ'!{column}{volume_row}/'ОБЪЕКТЫ'!$B${volume_row},0),0),0)"
+            for sold, mine, capex_row, volume_row in own_terms)
         at = body.rindex(tail)
-        return body[:at] + own + body[at:]
+        return body[:at] + terms + body[at:]
 
-    xml, count = _v4_rewrite_row_formulas(xml, 22, "'ОБЪЕКТЫ'!$B$64=", build)
+    xml, count = _v4_rewrite_row_formulas(
+        xml, 22, "'ОБЪЕКТЫ'!$B$64=", build)
     if count < 100:
-        missing.append(f"CF_{phase}: строка налоговой базы не знает о ФОКе ({count})")
+        missing.append(
+            f"CF_{phase}: налоговая база не знает все дополнительные объекты ({count})")
     return xml
-
 
 _V4_ACCRUAL_ROW = 58                 # Финансовые расходы месяца (начисление)
 
@@ -21838,6 +21858,19 @@ _V4_OBJECT_ROWS = {
     "retail": (50, 51, "$B$39", "$B$41", "$B$37", "'Вводные'!$K$48", 61),
     "above_parking": (78, 79, "$B$67", "$B$69", "$B$65", "'Вводные'!$K$69", None),
     "sports": (140, 141, "$B$129", "$B$131", "$B$127", "'Вводные'!$K$131", 151),
+    "offices2": (170, 171, "$B$159", "$B$161", "$B$157", "'Вводные'!$K$180", 181),
+    "retail2": (198, 199, "$B$187", "$B$189", "$B$185", "'Вводные'!$K$200", 209),
+    "above_parking2": (226, 227, "$B$215", "$B$217", "$B$213", "'Вводные'!$K$221", None),
+}
+
+_V4_OBJECT_RESIDUAL_BOOK = {
+    "offices": (36, "$K$28", "K33"),
+    "retail": (56, "$K$48", "K53"),
+    "above_parking": (76, "$K$69", "K73"),
+    "sports": (_V4_SPORTS_RESIDUAL_ROW, "$K$131", "K136"),
+    "offices2": (188, "$K$180", "K185"),
+    "retail2": (208, "$K$200", "K205"),
+    "above_parking2": (228, "$K$221", "K225"),
 }
 
 
@@ -22867,6 +22900,7 @@ def build_project_workbook(
     # `put` умеет только заменять существующую ячейку, а строк 121–140 в
     # шаблоне нет вовсе.
     xml = _v4_sports_inputs_block(xml, missing)
+    xml = _v4_cloned_inputs_blocks(xml, missing)
     xml = _v4_object_parking_input_labels(xml, missing)
 
     def num_row(row: dict[str, Any] | None, field: str) -> float:
@@ -23280,6 +23314,7 @@ def build_project_workbook(
     report_xml = _v4_rename_labels(report_xml, "ОТЧЕТ", missing)
     tep_xml = _v4_sports_tep_row(
         source.read(tep_sheet_path).decode("utf-8"), missing)
+    tep_xml = _v4_cloned_tep_rows(tep_xml, missing)
     tep_xml = _v4_object_parking_in_tep(tep_xml, missing)
     tep_xml = _v4_rename_labels(tep_xml, "ТЭП", missing)
     tep_xml, report_xml = _v4_storage_area_cells(tep_xml, report_xml, missing)
@@ -23306,6 +23341,7 @@ def build_project_workbook(
     objects_sheet_path = _v4_sheet_path(source, "ОБЪЕКТЫ")
     objects_xml = _v4_sports_object_block(
         source.read(objects_sheet_path).decode("utf-8"), missing)
+    objects_xml = _v4_cloned_object_blocks(objects_xml, missing)
     objects_xml = _v4_object_parking_block(objects_xml, missing)
     objects_xml = _v4_object_parking_allocation(objects_xml, missing)
     sales_sheet_path = _v4_sheet_path(source, "Продажи")
@@ -23720,11 +23756,7 @@ def build_project_workbook(
     # свободную строку СВОЕГО блока — править объект, листая от одной его
     # половины к другой, нельзя (решение владельца, 03.09.2026), — а срок
     # становится формулой: сдвинул стройку или хвост, и он поехал.
-    for _obj_prefix, _obj_row, _obj_months, _obj_term in (
-            ("offices", 36, "$K$28", "K33"),
-            ("retail", 56, "$K$48", "K53"),
-            ("above_parking", 76, "$K$69", "K73"),
-            ("sports", _V4_SPORTS_RESIDUAL_ROW, "$K$131", "K136")):
+    for _obj_prefix, (_obj_row, _obj_months, _obj_term) in _V4_OBJECT_RESIDUAL_BOOK.items():
         put_new(f"J{_obj_row}", text="Остаточные продажи после РВЭ")
         put_new(f"K{_obj_row}", number=n(x, f"{_obj_prefix}_residual_months", 6.0),
                 label=f"{_obj_prefix}_residual_months")
@@ -23820,14 +23852,17 @@ def build_project_workbook(
                            if (phasing or {}).get("enabled") else 1))
     phase_offsets = [float(item.get("start_offset_months") or 0)
                      for item in ((phasing or {}).get("phases") or [])]
-    for field, coord, default, date_cells, date_keys in (
-        ("offices", "K21", 3, ("K27", "K30"), ("offices_start", "offices_sales_start")),
-        ("standalone_retail", "K41", 2, ("K47", "K50"), ("retail_start", "retail_sales_start")),
-        ("above_parking", "K61", 2, ("K68", "K70"),
-         ("above_parking_start", "above_parking_sales_start")),
-        ("sports", "K124", 2, ("K130", "K133"),
-         ("sports_start", "sports_sales_start")),
-    ):
+    for _object in standalone_objects():
+        field = _object.key
+        coord = _V4_OBJECT_QUEUE_CELLS.get(field)
+        if not coord:
+            continue
+        default = _object.default_queue
+        date_keys = (f"{_object.prefix}_start", f"{_object.prefix}_sales_start")
+        date_cells = tuple(_V4_INPUT_CELLS.get(key, "") for key in date_keys)
+        if not all(date_cells):
+            missing.append(f"очередь объекта «{field}»: книга не знает ячейки дат")
+            continue
         # Применённое движком размещение сильнее нашего вывода: объект,
         # объявленный продуктами очереди, до `discrete` не доходит вовсе, и
         # книга ставила его по умолчанию — ТЦ во вторую вместо четвёртой.
@@ -24261,8 +24296,10 @@ def build_project_workbook(
             sales_xml = _v4_apply_core_ladder(sales_xml, _core_refs, missing)
         except Exception as exc:
             missing.append("Вводные · лестница цены квартир: " + _error_location(exc))
-    for _prefix, _label in (("offices", "офисы"), ("retail", "ТЦ"),
-                            ("above_parking", "наземный паркинг"), ("sports", "ФОК / медцентр")):
+    for _object in standalone_objects():
+        _prefix, _label = _object.prefix, _object.group_label
+        if _prefix not in _V4_OBJECT_ROWS:
+            continue
         _profile_items, _profile_percent, _ = parse_month_schedule(x.get(f"{_prefix}_sales_profile"))
         _growth = [n(x, f"{_prefix}_growth_stage{k}_pct", 0.0) / 100.0 for k in (1, 2, 3, 4)]
         _profile_refs = _stage_refs = None
