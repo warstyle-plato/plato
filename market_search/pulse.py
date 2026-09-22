@@ -229,14 +229,68 @@ def _date_key_score(path: str, kind: str) -> int:
 def _dates_from_payload(payload: Any) -> dict[str, str]:
     """Найти даты в JSON-ответе без привязки к текущему имени поля.
 
-    Пульс меняет состав ответов; смысл ключа устойчивее конкретного spelling.
-    Значение берётся только если и ключ похож на нужное поле, и само значение
-    разбирается как дата. Поэтому случайная дата цены в ответ не станет вводом.
+    Ключ обязан семантически совпасть с датой. Если у проекта несколько
+    корпусов, старт берём самый ранний, а плановый ввод — самый поздний:
+    стадия всего ЖК иначе закончится на первом сданном корпусе.
     """
     found: dict[str, tuple[int, str]] = {}
 
+    def remember(kind: str, score: int, date: str) -> None:
+        if score <= 0:
+            return
+        current = found.get(kind)
+        if current is None or score > current[0]:
+            found[kind] = (score, date)
+            return
+        if score == current[0]:
+            if kind == "sales_start" and date < current[1]:
+                found[kind] = (score, date)
+            elif kind == "commissioning" and date > current[1]:
+                found[kind] = (score, date)
+
+    def scalar_date(value: Any, kind: str, score: int) -> str | None:
+        date = _pulse_date(value)
+        if date:
+            return date
+        # Некоторые API раскладывают срок на год без дня/месяца. Год можно
+        # трактовать только после того, как КЛЮЧ уже доказал смысл поля.
+        text = str(value or "").strip()
+        if score > 0 and re.fullmatch(r"20\d{2}", text):
+            year = int(text)
+            month = 1 if kind == "sales_start" else 12
+            return datetime.date(year, month, 1).isoformat()
+        return None
+
     def walk(value: Any, path: str = "") -> None:
         if isinstance(value, dict):
+            # Частая форма API: commissioning_year + commissioning_quarter.
+            scalars = {str(k): v for k, v in value.items() if not isinstance(v, (dict, list))}
+            for kind in ("sales_start", "commissioning"):
+                year_items = []
+                quarter_items = []
+                for key, child in scalars.items():
+                    child_path = f"{path}.{key}" if path else key
+                    score = _date_key_score(child_path, kind)
+                    low = key.lower()
+                    if score > 0 and ("year" in low or "год" in low):
+                        try:
+                            year = int(float(str(child).replace(",", ".")))
+                        except (TypeError, ValueError):
+                            year = 0
+                        if 2000 <= year <= 2100:
+                            year_items.append((score, year))
+                    if score > 0 and any(word in low for word in ("quarter", "кварт", "_q", " q")):
+                        raw = str(child).strip().lower().replace("iv", "4").replace("iii", "3").replace("ii", "2").replace("i", "1")
+                        found_q = re.search(r"[1-4]", raw)
+                        if found_q:
+                            quarter_items.append((score, int(found_q.group(0))))
+                if year_items and quarter_items:
+                    score_y, year = max(year_items)
+                    score_q, quarter = max(quarter_items)
+                    month = 1 if kind == "sales_start" else quarter * 3
+                    if kind == "sales_start":
+                        month = (quarter - 1) * 3 + 1
+                    remember(kind, max(score_y, score_q) + 1, datetime.date(year, month, 1).isoformat())
             for key, child in value.items():
                 walk(child, f"{path}.{key}" if path else str(key))
             return
@@ -244,17 +298,14 @@ def _dates_from_payload(payload: Any) -> dict[str, str]:
             for index, child in enumerate(value):
                 walk(child, f"{path}[{index}]")
             return
-        date = _pulse_date(value)
-        if not date:
-            return
         for kind in ("sales_start", "commissioning"):
             score = _date_key_score(path, kind)
-            if score > 0 and (kind not in found or score > found[kind][0]):
-                found[kind] = (score, date)
+            date = scalar_date(value, kind, score)
+            if date:
+                remember(kind, score, date)
 
     walk(payload)
     return {kind: pair[1] for kind, pair in found.items()}
-
 
 def _dates_from_project_html(page: str) -> dict[str, str]:
     """Даты из самой карточки ЖК, если отдельный JSON их не отдал."""
