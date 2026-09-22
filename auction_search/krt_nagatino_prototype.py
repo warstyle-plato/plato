@@ -220,16 +220,40 @@ function renderEntry(p,rank){
   +(op.developers.length?'<div class="metric"><span>Названный застройщик</span><b>'+esc(op.developers.join(', '))+'</b></div>':'');
 }
 function renderEconomics(rank,report){
- $('marketPrice').textContent=fmt(rank.surrounding_price_rub_sqm);
- $('marketPace').textContent=fmt(rank.surrounding_sales_units_per_month,1);
- const s=report&&report.screening||{},m=s.metrics||{},cap=s.entry_capacity||{},market=report&&report.market||{};
- const price=rank.surrounding_price_rub_sqm||((market.analysis||{}).site||{}).price_per_sqm||((market.price_hint||{}).price_per_sqm);
- $('economics').innerHTML='<div class="decision-grid">'
-  +'<div class="decision"><b>'+fmt(m.project_llcr_x,2)+'x</b><span>LLCR проекта</span></div>'
-  +'<div class="decision"><b>'+fmt(m.margin_pct,1)+'%</b><span>маржа</span></div>'
+ const storedMarket=report&&report.market||{}, peers=storedMarket.peers||[],
+       analysis=storedMarket.analysis||{}, hint=storedMarket.price_hint||{},
+       siteVerdict=analysis.site||analysis.overall||{};
+ const price=num(rank.surrounding_price_rub_sqm)??num(siteVerdict.price_per_sqm)??num(hint.price_per_sqm);
+ const pace=num(rank.surrounding_sales_units_per_month);
+ $('marketPrice').textContent=fmt(price);
+ $('marketPace').textContent=fmt(pace,1);
+
+ const s=report&&report.screening||{},m=s.metrics||{};
+ let html='<div class="section-title">Окружение продаж · радиус 3 км</div>'
+  +'<div class="decision-grid">'
+  +'<div class="decision"><b>'+fmt(price,0)+(price!==null?' ₽/м²':'')+'</b><span>цена текущих продаж окружения</span></div>'
+  +'<div class="decision"><b>'+fmt(pace,1)+(pace!==null?' ДДУ/мес.':'')+'</b><span>темп продаж окружения</span></div>'
+  +'<div class="decision"><b>'+fmt((storedMarket.comparison||{}).found??(peers.length||null),0)+'</b><span>найдено проектов</span></div>'
+  +'<div class="decision"><b>'+fmt((storedMarket.comparison||{}).used??(peers.length||null),0)+'</b><span>использовано в оценке</span></div>'
+  +'</div>';
+ if(peers.length){
+  html+='<details><summary>Сопоставимые проекты — '+peers.length+'</summary><div style="overflow:auto;margin-top:8px"><table><thead><tr><th>Проект</th><th>Расстояние</th><th>Цена</th><th>Продажи</th><th>Остаток</th></tr></thead><tbody>'
+   +peers.slice(0,12).map(p=>'<tr><td><b>'+esc(p.name||p.address||'—')+'</b><div class="source">'+esc(p.developer||'')+'</div></td><td>'+fmt(p.distance_km,1)+' км</td><td class="num">'+(num(p.price_per_sqm)!==null?fmt(p.price_per_sqm)+' ₽/м²':'—')+'</td><td class="num">'+(num(p.units_per_month)!==null?fmt(p.units_per_month,1)+' ДДУ/мес.':'—')+'</td><td class="num">'+fmt(p.remaining_units,0)+'</td></tr>').join('')
+   +'</tbody></table></div></details>';
+ }else{
+  html+='<div class="source">Агрегаты цены и темпа берутся из последнего сохранённого рейтинга. Список конкретных ЖК появится, когда доступен сохранённый рыночный отчёт.</div>';
+ }
+
+ html+='<div class="section-title">Экономика DevelopAid</div>'
+  +'<div class="decision-grid">'
+  +'<div class="decision"><b>'+fmt(m.project_llcr_x??rank.project_llcr_x,2)+'x</b><span>LLCR проекта</span></div>'
+  +'<div class="decision"><b>'+fmt(m.margin_pct??rank.margin_pct,1)+'%</b><span>маржа</span></div>'
   +'<div class="decision"><b>'+fmt(rank.entry_capacity_mln,0)+' млн ₽</b><span>потолок входа</span></div>'
-  +'<div class="decision"><b>'+fmt(price,0)+' ₽/м²</b><span>рыночный ориентир</span></div></div>'
-  +'<div class="notice">'+(s.available?esc(s.text||s.headline||'Модель посчитана'):'Сохранённый расчёт модели отсутствует или недоступен.')+'</div>';
+  +'<div class="decision"><b>'+fmt(price,0)+(price!==null?' ₽/м²':'')+'</b><span>рыночный ориентир</span></div>'
+  +'</div>';
+ if(s.available)html+='<div class="notice">'+esc(s.text||s.headline||'Модель посчитана')+'</div>';
+ else if(!report)html+='<div class="source">Полный отчёт модели на тестовом сервисе сейчас недоступен; сохранённые показатели рейтинга выше остаются рабочими.</div>';
+ $('economics').innerHTML=html;
 }
 function renderPublic(rank){
  const op=operatorInfo(rank),p=rank.press_facts||{},rows=[];
@@ -258,21 +282,37 @@ function renderTerritory(req,parcels){
 let MAP={point:null,parcels:null,market:false,lands:false,objects:false};
 const MERC=20037508.342789244, mx=lon=>Number(lon)*MERC/180, my=lat=>Math.log(Math.tan((90+Number(lat))*Math.PI/360))*MERC/Math.PI;
 function drawMap(){
- const box=$('map'),p=MAP.point;if(!p||!Number.isFinite(Number(p.latitude))){box.innerHTML='<div class="notice">Координаты КРТ не получены.</div>';return}
- const site=(p.rings_merc||[]).filter(r=>Array.isArray(r)&&r.length>=3),parcel=MAP.parcels&&MAP.parcels.territory||{},lands=MAP.lands?(parcel.lands||[]):[],objects=MAP.objects?(parcel.objects||[]):[];
- const center=Array.isArray(p.centre_merc)?p.centre_merc:[mx(p.longitude),my(p.latitude)],lat=Number(p.latitude),k=1/Math.cos(lat*Math.PI/180);
+ const point=MAP.point||{}, parcelPayload=MAP.parcels||{},
+       parcel=parcelPayload.territory||{}, krt=parcelPayload.krt_site||{};
+ const pointRings=(point.rings_merc||[]).filter(r=>Array.isArray(r)&&r.length>=3);
+ const krtRings=(krt.rings_merc||[]).filter(r=>Array.isArray(r)&&r.length>=3);
+ const site=pointRings.length?pointRings:krtRings;
+ let center=(Array.isArray(point.centre_merc)&&point.centre_merc.length>=2)?point.centre_merc:
+            ((Array.isArray(krt.centre_merc)&&krt.centre_merc.length>=2)?krt.centre_merc:null);
+ if(!center&&site.length){
+  const q=site.flat();center=[q.reduce((z,p)=>z+Number(p[0]),0)/q.length,q.reduce((z,p)=>z+Number(p[1]),0)/q.length];
+ }
+ if(!center){$('map').innerHTML='<div class="notice">Контур КРТ пока не получен.</div>';return}
+
+ const invLat=y=>(180/Math.PI)*(2*Math.atan(Math.exp(Number(y)*Math.PI/MERC))-Math.PI/2);
+ const lat=Number.isFinite(Number(point.latitude))?Number(point.latitude):invLat(center[1]);
+ const lands=MAP.lands?(parcel.lands||[]):[],objects=MAP.objects?(parcel.objects||[]):[];
  let pts=site.flat().concat(lands.flatMap(x=>x.rings_merc||[]).flat()).concat(objects.flatMap(x=>x.rings_merc||[]).flat());
  if(!pts.length)pts=[center];
- let xs=pts.map(x=>x[0]),ys=pts.map(x=>x[1]),ax=Math.min(...xs),bx=Math.max(...xs),ay=Math.min(...ys),by=Math.max(...ys);
- if(MAP.market){const r=3000*k;ax=center[0]-r;bx=center[0]+r;ay=center[1]-r;by=center[1]+r}else{const w=Math.max(700*k,(bx-ax)*1.55),h=Math.max(700*k,(by-ay)*1.55),side=Math.max(w,h);ax=center[0]-side/2;bx=center[0]+side/2;ay=center[1]-side/2;by=center[1]+side/2}
- const W=1100,H=620,px=x=>(x-ax)/(bx-ax)*W,py=y=>(by-y)/(by-ay)*H,path=rings=>rings.map(r=>'M'+r.map(q=>px(q[0]).toFixed(1)+' '+py(q[1]).toFixed(1)).join('L')+'Z').join(' ');
+ let xs=pts.map(x=>Number(x[0])),ys=pts.map(x=>Number(x[1])),ax=Math.min(...xs),bx=Math.max(...xs),ay=Math.min(...ys),by=Math.max(...ys);
+ const k=1/Math.cos(lat*Math.PI/180);
+ if(MAP.market){const r=3000*k;ax=center[0]-r;bx=center[0]+r;ay=center[1]-r;by=center[1]+r}
+ else{const w=Math.max(700*k,(bx-ax)*1.55),h=Math.max(700*k,(by-ay)*1.55),side=Math.max(w,h);ax=center[0]-side/2;bx=center[0]+side/2;ay=center[1]-side/2;by=center[1]+side/2}
+ const W=1100,H=620,px=x=>(x-ax)/(bx-ax)*W,py=y=>(by-y)/(by-ay)*H,
+       path=rings=>rings.map(r=>'M'+r.map(q=>px(Number(q[0])).toFixed(1)+' '+py(Number(q[1])).toFixed(1)).join('L')+'Z').join(' ');
  const base='/land/basemap?'+new URLSearchParams({bbox:[ax,ay,bx,by].join(','),width:'1100'});
  const sitePath=site.length?'<path d="'+path(site)+'" fill="#c03b32" fill-opacity=".16" stroke="#c03b32" stroke-width="4" vector-effect="non-scaling-stroke"/>':'';
  const landPaths=lands.map(x=>'<path d="'+path(x.rings_merc||[])+'" fill="#d7a23c" fill-opacity=".18" stroke="#b88218" stroke-width="1.5" vector-effect="non-scaling-stroke"/>').join('');
  const objPaths=objects.map(x=>'<path d="'+path(x.rings_merc||[])+'" fill="#777" fill-opacity=".35" stroke="#555" stroke-width="1" vector-effect="non-scaling-stroke"/>').join('');
  const mr=3000*k,market='<ellipse cx="'+px(center[0]).toFixed(1)+'" cy="'+py(center[1]).toFixed(1)+'" rx="'+((mr/(bx-ax))*W).toFixed(1)+'" ry="'+((mr/(by-ay))*H).toFixed(1)+'" fill="none" stroke="#245b8a" stroke-width="4" stroke-dasharray="12 8" vector-effect="non-scaling-stroke"/>';
- box.innerHTML='<img src="'+base+'" alt="OSM"><svg viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none">'+landPaths+objPaths+sitePath+market+'</svg>';
- $('mapNote').textContent=(p.geometry_status==='official_polygon'?'Контур — официальный полигон реестра КРТ. ':'Контур — '+(p.geometry_status||'рабочий источник')+'. ')+(MAP.parcels?'Доступен слой кадастровых участков и объектов.':'Детальный слой территории потребует авторизации в модуле Нагатино.');
+ $('map').innerHTML='<img src="'+base+'" alt="OSM"><svg viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none">'+landPaths+objPaths+sitePath+market+'</svg>';
+ $('mapNote').textContent=(pointRings.length?'Контур КРТ — маршрут /point. ':'Контур КРТ — рабочий пакет Нагатино. ')
+  +'Слои участков и объектов — тот же payload территории. Рыночный контур — 3 км от центра КРТ.';
 }
 function bindMap(){
  $('viewSite').onclick=()=>{MAP.market=false;$('viewSite').classList.add('active');$('viewMarket').classList.remove('active');drawMap()};
@@ -292,7 +332,8 @@ async function boot(){
   j('/auctions/krt/'+encodeURIComponent(p.slug)+'/report'),
   j('/krt/nagatino/parcels')
  ]);
- const req=reqRes.status==='fulfilled'?reqRes.value:{};
+ const req0=reqRes.status==='fulfilled'?reqRes.value:{};
+ const req={...req0,renovation:(req0.renovation&&Object.keys(req0.renovation).length?req0.renovation:(rank.renovation||{}))};
  const point=pointRes.status==='fulfilled'?pointRes.value:null;
  const report=reportRes.status==='fulfilled'?reportRes.value:null;
  const parcels=parcelsRes.status==='fulfilled'?parcelsRes.value:null;
