@@ -53,7 +53,6 @@ function siteMap(site,row,full,marketPoint,rank){
  const box=$('topMap');
  const siteR=(full&&full.site&&full.site.rings_merc)||((site&&site.rings_merc)||[]);
  const lands=(full&&full.lands)||[], objects=(full&&full.objects)||[];
- const rings=[...siteR.flatMap?siteR:[], ...lands.flatMap(x=>x.rings_merc||[]), ...objects.flatMap(x=>x.rings_merc||[])];
  const all=[...siteR,...lands.flatMap(x=>x.rings_merc||[]),...objects.flatMap(x=>x.rings_merc||[])].filter(r=>Array.isArray(r)&&r.length>=3);
  const pts=all.flat().filter(p=>Array.isArray(p)&&p.length>=2&&Number.isFinite(Number(p[0]))&&Number.isFinite(Number(p[1])));
  const MERC=20037508.342789244, mx=lon=>Number(lon)*MERC/180, my=lat=>Math.log(Math.tan((90+Number(lat))*Math.PI/360))*MERC/Math.PI;
@@ -74,7 +73,7 @@ function siteMap(site,row,full,marketPoint,rank){
  const landPaths=lands.filter(x=>(x.rings_merc||[]).length).map(x=>'<path d="'+pathOf(x.rings_merc)+'" fill="'+esc(x.colour||'#777')+'" fill-opacity=".15" stroke="'+esc(x.colour||'#777')+'" stroke-width="2"'+(x.part?' stroke-dasharray="7 5"':'')+'></path>').join('');
  const objPaths=objects.filter(x=>(x.rings_merc||[]).length).map(x=>'<path d="'+pathOf(x.rings_merc)+'" fill="'+esc(x.colour||'#777')+'" fill-opacity=".45" stroke="'+esc(x.colour||'#777')+'" stroke-width="1.5"></path>').join('');
  const sitePath=siteR.length?'<path d="'+pathOf(siteR)+'" fill="none" stroke="#111" stroke-width="4" stroke-dasharray="9 6"></path>':'';
- const marketCircle=(mc&&mr)?'<circle cx="'+px(mc[0]).toFixed(1)+'" cy="'+py(mc[1]).toFixed(1)+'" r="'+((mr/(bx-ax))*w).toFixed(1)+'" fill="none" stroke="#1769aa" stroke-width="4" stroke-dasharray="12 8" vector-effect="non-scaling-stroke"></circle>':'';
+ const marketCircle=(mc&&mr)?'<ellipse cx="'+px(mc[0]).toFixed(1)+'" cy="'+py(mc[1]).toFixed(1)+'" rx="'+((mr/(bx-ax))*w).toFixed(1)+'" ry="'+((mr/(by-ay))*h).toFixed(1)+'" fill="none" stroke="#1769aa" stroke-width="4" stroke-dasharray="12 8" vector-effect="non-scaling-stroke"></ellipse>':'';
  const marketDot=mc?'<circle cx="'+px(mc[0]).toFixed(1)+'" cy="'+py(mc[1]).toFixed(1)+'" r="8" fill="#1769aa" stroke="#fff" stroke-width="3" vector-effect="non-scaling-stroke"></circle>':'';
  let marketNote='';
  if(mc&&mr){
