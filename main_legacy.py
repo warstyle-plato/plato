@@ -81,7 +81,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.24.23"
+VERSION = "0.24.25"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -46322,11 +46322,24 @@ function projectKindDialogHtml(){
  // тогда, когда смотрит на ставку, а не когда переключает тип.
  html+='<p style="margin:0 0 10px"><b>Где теперь задавать метры:</b> вкладка «Экономика», блоки '
   +escapeHtml(groups.map(t=>'«'+t+'»').join(', '))+'. Строки ТЭП у них производные — считаются '
-  +'по долям объекта.</p>'
-  +'<p style="margin:0 0 10px">Нормативный потенциал участка можно положить в '
-  +escapeHtml(NONRES_DENSITY_TARGETS.map(t=>'«'+t[1]+'»').join(' или '))
-  +' кнопкой «Рассчитать ТЭП от площади и плотности» на шаге «ТЭП»: она спросит, куда.</p>'
-  +'<p style="margin:0">Финансирование режим не трогает: 214-ФЗ нежильё не исключает, эскроу '
+  +'по долям объекта.</p>';
+ const area=Number(inputs.site_area_ha||0),density=effectiveSiteDensity();
+ if(area>0&&density>0){
+  const spp=area*density;
+  html+='<div style="margin:12px 0;padding:11px 12px;border:1px solid #d7e1ee;border-radius:8px;background:#f7f9fc">'
+   +'<div><b>Потенциал участка: '+num(spp)+' м².</b> Куда положить ТЭП нежилого проекта?</div>'
+   +'<div style="margin-top:8px">'
+   +NONRES_DENSITY_TARGETS.map(t=>'<button type="button" class="btn" style="margin:0 6px 6px 0" '
+     +'onclick="applyDensityToObjectFromDialog(\''+t[0]+'\')">'+escapeHtml(t[1])+'</button>').join('')
+   +'</div>'
+   +'<div style="font-size:11px;color:#667085">Выбор сразу запишет рассчитанный потенциал в объект. '
+   +'Если метры хотите задать вручную — нажмите «Понятно» и заполните объект на вкладке «Экономика».</div>'
+   +'</div>';
+ }else{
+  html+='<p style="margin:0 0 10px">Площадь участка или плотность пока не заданы, поэтому распределять '
+   +'потенциал нечего. Их можно задать на шаге «ТЭП», а метры объекта — вручную на вкладке «Экономика».</p>';
+ }
+ html+='<p style="margin:0">Финансирование режим не трогает: 214-ФЗ нежильё не исключает, эскроу '
   +'и лестница ставки ПФ те же.</p>';
  return html;
 }
@@ -46342,6 +46355,14 @@ function openProjectKindDialog(){
 function closeProjectKindDialog(){
  const dialog=document.getElementById('projectKindDialog');
  if(dialog)dialog.style.display='none';
+}
+
+function applyDensityToObjectFromDialog(target){
+ // Если человек выбирает нежилой тип на «Экономике», не отправляем его на
+ // другую вкладку ради второго клика: выбор назначения ТЭП делается в том же
+ // окне, которое сообщает последствия переключения.
+ applyDensityToObject(target);
+ closeProjectKindDialog();
 }
 
 // Отмена переключения целиком: тип возвращается ПЕРВЫМ, иначе пересчёт ТЭП,
