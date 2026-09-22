@@ -1031,83 +1031,123 @@ def install(app: FastAPI) -> None:
             raise ValueError("production endpoint returned a non-object JSON value")
         return value
 
+    def _prototype_nagatino_project() -> dict[str, Any] | None:
+        """The Nagatino site from the SAME KRT catalogue used by /auctions.
+
+        Matching stays backend-side so the preview, map, market and model all
+        receive one canonical slug instead of each UI request guessing it.
+        """
+        rows = [row for row in _krt_all_sites() if isinstance(row, dict)]
+        for row in rows:
+            text = " ".join(str(row.get(k) or "") for k in ("name", "address", "district"))
+            try:
+                area = float(row.get("area_ha") or 0)
+            except (TypeError, ValueError):
+                area = 0.0
+            if abs(area - 14.62) < 0.08 and re.search(r"(нагатин|варшавск)", text, re.I):
+                return dict(row)
+        for row in rows:
+            text = " ".join(str(row.get(k) or "") for k in ("name", "address", "district"))
+            if re.search(r"варшавск.{0,80}37", text, re.I):
+                return dict(row)
+        return None
+
     @app.get("/auctions/krt-prototype/nagatino/live-data", include_in_schema=False)
     async def auction_krt_nagatino_live_data() -> dict[str, Any]:
-        """Production model/market aggregates for the Nagatino prototype.
+        """Live Nagatino market + authoritative DevelopAid screening.
 
-        The public ranking already contains the authoritative stored model
-        result (LLCR, margin, entry ceiling) and 3 km market aggregates.  The
-        preview consumes those numbers instead of pretending that its empty
-        preview cache is a fresh calculation.
+        No production HTTP proxy and no ranking-cache surrogate are used here.
+        The preview calls the same MarketDiscoveryService and the same
+        build_krt_model_screening/core that the KRT cabinet uses.
         """
+        if market is None:
+            raise HTTPException(status_code=503, detail="Маркетинговый движок не подключён")
+        if core is None:
+            raise HTTPException(status_code=503, detail="Финансовый движок DevelopAid не подключён")
+
+        project = await run_in_threadpool(_prototype_nagatino_project)
+        if not project:
+            raise HTTPException(status_code=404, detail="Нагатино не найдено в текущем каталоге КРТ")
+        slug = str(project.get("slug") or "")
+        if not slug:
+            raise HTTPException(status_code=422, detail="У площадки Нагатино нет slug")
+
+        def build_live() -> dict[str, Any]:
+            try:
+                report = market.build_report(
+                    f"krt:{slug}",
+                    radius_km=3.0,
+                    peers_limit=12,
+                    # #485 needs the Moscow class benchmark as well as local peers.
+                    city_reference=True,
+                    include_project_totals=True,
+                )
+            except SubjectNotFound:
+                fallback = " ".join(
+                    str(project.get(key) or "").strip()
+                    for key in ("name", "district")
+                    if project.get(key)
+                )
+                if not fallback:
+                    raise
+                report = market.build_report(
+                    fallback,
+                    radius_km=3.0,
+                    peers_limit=12,
+                    city_reference=True,
+                    include_project_totals=True,
+                )
+
+            requirements = _requirements_for(slug)
+            screening = build_krt_model_screening(
+                project,
+                report,
+                core,
+                requirements=requirements,
+                asking_price_mln=_asking_price_mln(slug),
+            )
+            screening["market_report"] = _market_digest(report)
+            row = score_row(project, screening)
+
+            # Old catalogue score is deliberately not an input to the new
+            # investment rating.  The row is only a transport for already
+            # calculated economics/market fields.
+            row.pop("score", None)
+            row.pop("score_v2", None)
+            row.pop("investment_score", None)
+
+            return {
+                "project": project,
+                "row": row,
+                "screening": screening,
+                "market_report": {
+                    **_market_digest(report),
+                    # #485 and the UI need the already calculated metric blocks.
+                    "blocks": report.get("blocks") or [],
+                    "city": report.get("city") or {},
+                    "retrieved_at": report.get("retrieved_at"),
+                },
+                "source": {
+                    "market": "local MarketDiscoveryService / Pulse",
+                    "model": "local DevelopAid core / build_krt_model_screening",
+                    "radius_km": 3.0,
+                },
+            }
+
         try:
-            ranking = await run_in_threadpool(
-                _prototype_prod_json, "/auctions/krt/ranking")
+            return await run_in_threadpool(build_live)
+        except (SubjectNotFound, GeocodingError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except RemoteServiceError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except HTTPException:
+            raise
         except Exception as exc:  # noqa: BLE001
-            logger.exception("KRT prototype: production ranking unavailable")
+            logger.exception("Nagatino live preview failed")
             raise HTTPException(
                 status_code=502,
-                detail=f"Не удалось прочитать production-рейтинг КРТ: {type(exc).__name__}: {exc}",
+                detail=f"Живой расчёт Нагатино не собран: {type(exc).__name__}: {exc}",
             ) from exc
-
-        rows = [row for row in (ranking.get("rows") or []) if isinstance(row, dict)]
-        exact_slug = "varshavskoe-shosse-vl-37-nagatinskaya-ul-vld-3a-6"
-        row = next((item for item in rows if str(item.get("slug") or "") == exact_slug), None)
-        if row is None:
-            # Production cache can preserve an older catalogue slug after the
-            # city changes punctuation/address spelling.  Match the immutable
-            # investment passport next: 14.62 ha and 229,490 m² of housing.
-            def _n(value: Any) -> float:
-                try:
-                    return float(str(value or "0").replace(",", ".").replace(" ", ""))
-                except (TypeError, ValueError):
-                    return 0.0
-
-            row = next(
-                (
-                    item for item in rows
-                    if abs(_n(item.get("area_ha")) - 14.62) < 0.20
-                    and abs(_n(item.get("housing_gfa_sqm")) - 229490) < 15000
-                ),
-                None,
-            )
-        if row is None:
-            row = next(
-                (
-                    item for item in rows
-                    if re.search(
-                        r"(варшавск|нагатин)",
-                        " ".join(str(item.get(k) or "") for k in ("name", "district", "slug")),
-                        re.I,
-                    )
-                    and abs(_n(item.get("area_ha")) - 14.62) < 0.50
-                ),
-                None,
-            )
-        if row is None:
-            # Last safe fallback: exact area.  If more than one project has the
-            # same area we refuse instead of attaching somebody else's model.
-            same_area = [
-                item for item in rows
-                if abs(_n(item.get("area_ha")) - 14.62) < 0.03
-            ]
-            if len(same_area) == 1:
-                row = same_area[0]
-        if row is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Нагатино не найдено среди {len(rows)} строк production-рейтинга КРТ",
-            )
-        return {
-            "row": row,
-            "ranking": {
-                "engine_version": ranking.get("engine_version"),
-                "rules_version": ranking.get("rules_version"),
-                "measure": ranking.get("measure"),
-                "measure_label": ranking.get("measure_label"),
-            },
-            "source": "production /auctions/krt/ranking",
-        }
 
     @app.get("/auctions/krt-prototype/nagatino/investment-score", include_in_schema=False)
     async def auction_krt_nagatino_investment_score(
