@@ -17352,6 +17352,39 @@ _V4_BOOL_CELLS = {  # ключ -> ячейка «Да/Нет»
     "offices_enabled": "K20", "retail_enabled": "K40", "above_parking_enabled": "K60",
     "sports_enabled": "K123",
 }
+_V4_OBJECT_QUEUE_CELLS: dict[str, str] = {
+    "offices": "K21", "standalone_retail": "K41",
+    "above_parking": "K61", "sports": "K124",
+}
+
+_v4_dates = set(_V4_DATE_KEYS)
+for _slot in _V4_CLONED_OBJECTS:
+    _source = _BY_KEY[_slot.source_key]
+    _target = _BY_KEY[_slot.key]
+    for _key, _coord in list(_V4_INPUT_CELLS.items()):
+        if not _key.startswith(_slot.source_prefix + "_"):
+            continue
+        if not _coord.startswith("K") or int(_coord[1:]) not in _slot.input_rows:
+            continue
+        _new_key = _target.prefix + _key[len(_slot.source_prefix):]
+        _new_coord = _v4_shift_coord(_coord, _slot.input_offset)
+        _V4_INPUT_CELLS[_new_key] = _new_coord
+        if _key in _V4_DATE_KEYS:
+            _v4_dates.add(_new_key)
+    if _source.enabled_key in _V4_BOOL_CELLS:
+        _V4_BOOL_CELLS[_target.enabled_key] = _v4_shift_coord(
+            _V4_BOOL_CELLS[_source.enabled_key], _slot.input_offset)
+    _V4_OBJECT_QUEUE_CELLS[_slot.key] = _v4_shift_coord(
+        _V4_OBJECT_QUEUE_CELLS[_slot.source_key], _slot.input_offset)
+_V4_DATE_KEYS = frozenset(_v4_dates)
+
+_V4_INPUT_CELLS.update({
+    "offices2_parking_under_spaces": "K230",
+    "offices2_parking_over_spaces": "K231",
+    "offices2_parking_guest_pct": "K232",
+    "retail2_parking_under_spaces": "K233",
+    "retail2_parking_over_spaces": "K234",
+})
 # Проценты в этих ячейках движок хранит пунктами, но сами ключи без суффикса.
 _V4_NO_PCT_KEYS = frozenset({"vri_relief_mln", "vri_security_cost_mln"})
 
@@ -18578,6 +18611,45 @@ _V4_OBJECT_PRODUCT_CELLS = {              # (очередь объекта, ег
     # Четвёртый блок — копия блока ТЦ со сдвигом на 90 строк.
     "sports": (126, 142),
 }
+
+
+class _V4CloneSlot(NamedTuple):
+    """Геометрия дополнительного объекта в книге v4."""
+    key: str
+    source_key: str
+    source_prefix: str
+    input_rows: range
+    object_rows: range
+    input_offset: int
+    object_offset: int
+    tep_row: int
+    report_row: int
+
+
+_V4_CLONED_OBJECTS: tuple[_V4CloneSlot, ...] = (
+    _V4CloneSlot("offices2", "offices", "offices",
+                 range(18, 36), range(6, 32), 152, 148, 45, 70),
+    _V4CloneSlot("retail2", "standalone_retail", "retail",
+                 range(38, 56), range(34, 60), 152, 148, 46, 71),
+    _V4CloneSlot("above_parking2", "above_parking", "above_parking",
+                 range(58, 76), range(62, 88), 152, 148, 47, 72),
+)
+
+for _slot in _V4_CLONED_OBJECTS:
+    _queue_row, _revenue_row = _V4_OBJECT_PRODUCT_CELLS[_slot.source_key]
+    _V4_OBJECT_PRODUCT_CELLS[_slot.key] = (
+        _queue_row + _slot.object_offset,
+        _revenue_row + _slot.object_offset,
+    )
+
+
+def _v4_shift_coord(coord: str, offset: int) -> str:
+    found = re.match(r"([A-Z]+)(\d+)$", coord)
+    if not found:
+        return coord
+    return f"{found.group(1)}{int(found.group(2)) + offset}"
+
+
 # Шаблон несёт ТРИ блока объектов; всё, что ниже, дописано копированием — и
 # лист ПРОВЕРКИ о дописанном узнаёт отсюда, а не из выписанных формул.
 _V4_TEMPLATE_OBJECT_REVENUE_ROWS = (24, 52, 80)
@@ -18770,6 +18842,40 @@ def _v4_sports_inputs_block(xml: str, missing: list[str]) -> str:
     return xml
 
 
+def _v4_cloned_inputs_blocks(xml: str, missing: list[str]) -> str:
+    """Копирует вводные второго объекта из штатного блока того же типа."""
+    for slot in _V4_CLONED_OBJECTS:
+        first = slot.input_rows.start + slot.input_offset
+        if re.search(rf'<x:row r="{first}"[ />]', xml):
+            missing.append(f"{slot.key}: строка {first} «Вводных» занята")
+            continue
+        xml, written = _v4_copy_block(xml, slot.input_rows, slot.input_offset)
+        if len(written) != len(slot.input_rows):
+            missing.append(
+                f"{slot.key}: блок вводных скопирован не целиком "
+                f"({len(written)} из {len(slot.input_rows)})")
+            continue
+        source = _BY_KEY[slot.source_key]
+        target = _BY_KEY[slot.key]
+        for row in written:
+            found = re.search(
+                rf'(<x:row r="{row}"(?:[ ][^>]*)?>)(.*?)(</x:row>)',
+                xml, re.S)
+            if not found:
+                continue
+            body = found.group(2)
+            body = body.replace(
+                f"{slot.source_prefix}_", f"{target.prefix}_")
+            for old, new in (
+                    (source.group_label, target.group_label),
+                    (source.group_label.upper(), target.group_label.upper()),
+                    (source.tep_label, target.tep_label),
+                    (source.tep_label.upper(), target.tep_label.upper())):
+                body = body.replace(old, new)
+            xml = xml[:found.start(2)] + body + xml[found.end(2):]
+    return xml
+
+
 # Паркинг отдельно стоящих объектов в книге. Три места, и все три обязательны:
 # подпись блока вводных, деньги объекта и дверь в CF.
 #
@@ -18794,6 +18900,10 @@ _V4_OBJECT_PARKING = (
     # ФОК дописан копией блока ТЦ ниже аллокации, и зазор у него свой.
     ("ФОК / медцентр", 125, 150, 151, "B146", "K165", "K166", 140, 141, "K134", "K128", 131,
      False, ""),
+    ("МФОЦ / офисы 2", 155, 180, 181, "B176", "K230", "K231",
+     170, 171, "K183", "K177", 161, True, "K232"),
+    ("ТЦ / ОСЗ 2", 183, 208, 209, "B204", "K233", "K234",
+     198, 199, "K203", "K197", 189, False, ""),
 )
 _V4_OBJECT_PARKING_INPUT_ROWS = (
     # (строка, подпись, ячейка значения, единица) — номер строки задан явно, а
@@ -18810,6 +18920,11 @@ _V4_OBJECT_PARKING_INPUT_ROWS = (
     (165, "ФОК — мест в своём подземном", "K165", "шт."),
     (166, "ФОК — мест на первых этажах", "K166", "шт."),
     (167, "Офисы — гостевых (не продаются)", "K167", "доля мест"),
+    (230, "Офисы 2 — мест в своём подземном", "K230", "шт."),
+    (231, "Офисы 2 — мест на первых этажах", "K231", "шт."),
+    (232, "Офисы 2 — гостевых (не продаются)", "K232", "доля мест"),
+    (233, "ТЦ / ОСЗ 2 — мест в своём подземном", "K233", "шт."),
+    (234, "ТЦ / ОСЗ 2 — мест на первых этажах", "K234", "шт."),
 )
 
 
@@ -19059,7 +19174,7 @@ def _v4_object_parking_allocation(xml: str, missing: list[str]) -> str:
 
 # Строка объекта на листе ТЭП — по строке его объёма продаж: второй список
 # «какой объект в какой строке» разошёлся бы с первым молча.
-_V4_OBJECT_TEP_ROW = {22: 31, 50: 32, 140: 34}
+_V4_OBJECT_TEP_ROW = {22: 31, 50: 32, 140: 34, 170: 45}
 
 
 def _v4_object_parking_in_tep(xml: str, missing: list[str]) -> str:
@@ -19157,6 +19272,64 @@ def _v4_sports_object_block(xml: str, missing: list[str]) -> str:
     return xml
 
 
+def _v4_cloned_object_blocks(xml: str, missing: list[str]) -> str:
+    """Дописывает вторые объекты и проводит каждый в аллокацию CF."""
+    previous_queue = 126
+    for slot in _V4_CLONED_OBJECTS:
+        first = slot.object_rows.start + slot.object_offset
+        if re.search(rf'<x:row r="{first}"[ />]', xml):
+            missing.append(f"{slot.key}: строка {first} листа ОБЪЕКТЫ занята")
+            continue
+        xml, written = _v4_copy_block(
+            xml, slot.object_rows, slot.object_offset,
+            input_rows=slot.input_rows, input_offset=slot.input_offset)
+        if len(written) != len(slot.object_rows):
+            missing.append(
+                f"{slot.key}: блок ОБЪЕКТЫ скопирован не целиком "
+                f"({len(written)} из {len(slot.object_rows)})")
+            continue
+        target = _BY_KEY[slot.key]
+        for column in ("A", "B", "C", "D"):
+            xml, done = _v4_set_cell(
+                xml, f"{column}{first}", text=target.group_label.upper())
+            if not done and column == "A":
+                missing.append(f"{slot.key}: заголовок блока ОБЪЕКТЫ")
+
+        target_queue = _V4_OBJECT_PRODUCT_CELLS[slot.key][0]
+        delta = target_queue - previous_queue
+        added = 0
+        for row in range(92, 123):
+            found = re.search(
+                rf'<x:row r="{row}"(?:[ ][^>]*)?>(.*?)</x:row>', xml, re.S)
+            if not found:
+                continue
+            body = found.group(1)
+
+            def extend(match: "re.Match[str]") -> str:
+                formula = html.unescape(match.group(1))
+                last = re.search(
+                    rf"IF\(\$B\${previous_queue}=(\d+),([A-Z]{{1,3}})(\d+),0\)\)$",
+                    formula)
+                if not last:
+                    return match.group(0)
+                queue, column, target_row = (
+                    last.group(1), last.group(2), int(last.group(3)))
+                extended = (
+                    formula[:-1]
+                    + f",IF($B${target_queue}={queue},{column}{target_row + delta},0))")
+                return "<x:f>" + xml_escape(extended) + "</x:f>"
+
+            new_body, count = re.subn(
+                r"<x:f>(.*?)</x:f>", extend, body, flags=re.S)
+            added += count
+            xml = xml[:found.start(1)] + new_body + xml[found.end(1):]
+        if added < 28 * 100:
+            missing.append(
+                f"{slot.key}: аллокация по очередям расширена лишь в {added} ячейках")
+        previous_queue = target_queue
+    return xml
+
+
 def _v4_sports_tep_row(xml: str, missing: list[str]) -> str:
     """Строка ФОКа в блоке отдельно стоящих объектов листа ТЭП.
 
@@ -19191,9 +19364,17 @@ def _v4_sports_tep_row(xml: str, missing: list[str]) -> str:
     # Подземные гаражи объектов строятся и стоят денег, а в метрах их не было
     # нигде: строки объектов несут наземную ГБА, и «строительный объём» без
     # них не равен объёму движка. Добавляются здесь же, где собирается итог.
+    _garage_refs = []
+    for obj in standalone_objects():
+        if not obj.garage:
+            continue
+        enabled = _V4_BOOL_CELLS.get(obj.enabled_key)
+        cell = _V4_INPUT_CELLS.get(f"{obj.prefix}_parking_under_spaces")
+        if enabled and cell:
+            _garage_refs.append((enabled, cell))
     garages = "+".join(
         f"IF('Вводные'!${enabled[0]}${enabled[1:]}=\"Да\",'Вводные'!${cell[0]}${cell[1:]},0)"
-        for enabled, cell in (("K20", "K161"), ("K40", "K163"), ("K123", "K165")))
+        for enabled, cell in _garage_refs) or "0"
     xml, done = _v4_set_cell(
         xml, "C36",
         formula=f"SUM(C28,C35,F40:F43)+'Вводные'!$K$158*({garages})")
@@ -19230,6 +19411,59 @@ def _v4_sports_tep_row(xml: str, missing: list[str]) -> str:
     return xml
 
 
+
+_V4_CLONE_TEP_SOURCE = {
+    "offices": ("K25", "K26", "", "K31", 1000),
+    "standalone_retail": ("K45", "K46", "", "K51", 1000),
+    "above_parking": ("K66", "", "K63", "K71", 1000000),
+}
+
+
+def _v4_cloned_tep_rows(xml: str, missing: list[str]) -> str:
+    """Строки ТЭП вторых объектов; итог объектов остаётся один."""
+    for slot in _V4_CLONED_OBJECTS:
+        xml = _v4_ensure_row(xml, slot.tep_row)
+        gba, saleable, units, price, scale = _V4_CLONE_TEP_SOURCE[slot.source_key]
+        gba = _v4_shift_coord(gba, slot.input_offset)
+        saleable = _v4_shift_coord(saleable, slot.input_offset) if saleable else ""
+        units = _v4_shift_coord(units, slot.input_offset) if units else ""
+        price = _v4_shift_coord(price, slot.input_offset)
+        queue_cell = _V4_OBJECT_QUEUE_CELLS[slot.key]
+        revenue_row = _V4_OBJECT_PRODUCT_CELLS[slot.key][1]
+        obj = _BY_KEY[slot.key]
+        cells = (
+            ("A", "text", "Проект"),
+            ("B", "text", obj.tep_label),
+            ("C", "formula", f"'Вводные'!${gba[0]}${gba[1:]}"),
+            ("D", "formula", (f"'Вводные'!${saleable[0]}${saleable[1:]}"
+                              if saleable else "0")),
+            ("E", "formula", (f"'Вводные'!${units[0]}${units[1:]}"
+                              if units else "0")),
+            ("F", "formula",
+             f"'Вводные'!${price[0]}${price[1:]}*{scale}*'Вводные'!$H$5"
+             f"*INDEX('Вводные'!$S$88:$S$91,'Вводные'!${queue_cell[0]}${queue_cell[1:]})"
+             f"*INDEX('Вводные'!$AG$88:$AG$91,'Вводные'!${queue_cell[0]}${queue_cell[1:]})"),
+            ("G", "formula", f"'ОБЪЕКТЫ'!B{revenue_row}"),
+            ("H", "text", "Дополнительный объект; очередь задаётся отдельно"),
+        )
+        for column, kind, value in cells:
+            coord = f"{column}{slot.tep_row}"
+            if kind == "text":
+                xml, done = _v4_set_or_insert_cell(xml, coord, text=value)
+            else:
+                xml, done = _v4_set_or_insert_cell(xml, coord, formula=value)
+            if not done:
+                missing.append(f"ТЭП · {slot.key}: {coord}")
+    extra_rows = [slot.tep_row for slot in _V4_CLONED_OBJECTS]
+    for letter in ("C", "D", "E", "G"):
+        formula = f"SUM({letter}31:{letter}34," + ",".join(
+            f"{letter}{row}" for row in extra_rows) + ")"
+        xml, done = _v4_set_cell(xml, f"{letter}35", formula=formula)
+        if not done:
+            missing.append(f"ТЭП · итог дополнительных объектов {letter}35")
+    return xml
+
+
 # Блок «СТРУКТУРА ПРОДУКТА» листа ОТЧЁТ: (строка, подпись, ячейка наземной
 # площади, ячейка продаваемой, строка выручки объекта на листе ОБЪЕКТЫ, строка
 # продаваемых мест его гаража, строка выручки гаража, ячейка мест гаража под
@@ -19239,6 +19473,9 @@ _V4_PRODUCT_STRUCTURE_OBJECTS = (
     (51, "Торговый центр / ОСЗ", "K45", "K46", 52, 60, 61, "K163", False),
     (52, "Наземный паркинг", "K66", "", 80, 0, 0, "", False),
     (53, "ФОК / медцентр", "K128", "K129", 142, 150, 151, "K165", False),
+    (70, "МФОЦ / офисный центр 2", "K177", "K178", 172, 180, 181, "K230", True),
+    (71, "Торговый центр / ОСЗ 2", "K197", "K198", 200, 208, 209, "K233", False),
+    (72, "Наземный паркинг 2", "K218", "", 228, 0, 0, "", False),
 )
 _V4_PRODUCT_STRUCTURE_TOTAL_ROW = 54
 _V4_PRODUCT_STRUCTURE_FIRST_ROW = 46
@@ -19300,6 +19537,7 @@ def _v4_product_structure_block(xml: str, missing: list[str]) -> str:
     garages = []
     for (row, label, gba_cell, saleable_cell, revenue_row,
          places_row, garage_revenue_row, under_cell, sellable) in _V4_PRODUCT_STRUCTURE_OBJECTS:
+        xml_holder[0] = _v4_ensure_row(xml_holder[0], row)
         put(f"A{row}", text=label)
         put(f"B{row}", formula=f"{param}${gba_cell[0]}${gba_cell[1:]}")
         if saleable_cell:
@@ -19325,8 +19563,13 @@ def _v4_product_structure_block(xml: str, missing: list[str]) -> str:
             put(f"C{row}", formula="0")
 
     put(f"A{total}", text="ИТОГО ПРОДУКТЫ")
+    _extra_product_rows = [
+        row for row, *_ in _V4_PRODUCT_STRUCTURE_OBJECTS if row > total
+    ]
     for column in ("B", "C", "D", "E", under):
-        put(f"{column}{total}", formula=f"SUM({column}{first}:{column}{total - 1})")
+        parts = [f"{column}{first}:{column}{total - 1}"]
+        parts.extend(f"{column}{row}" for row in _extra_product_rows)
+        put(f"{column}{total}", formula="SUM(" + ",".join(parts) + ")")
     put(f"H{total}", text=("Строительный объём = наземная + подземная. "
                            "Соцобъекты сюда не входят — они не продукт; "
                            "их метры на листе ТЭП."))
