@@ -72,7 +72,15 @@ _AREA_HEAD = re.compile(r"(?iu)" + _loose("комплексному") + r"\s*"
                         + _loose("развитию") + r"\s*" + _loose("подлеж"))
 _AREA = re.compile(r"(?iu)" + _loose("площадью") + r"\s*" + _NUMBER + r"\s*"
                    + _loose("га") + r"\b")
-_INCLUDING = re.compile(r"(?iu)" + _loose("втомчисле"))
+# Перечень частей город открывает ДВУМЯ словами: «в том числе» и «включая».
+# Пока знали одно, у Власова, влд. 59 части не читались вовсе: документ пишет
+# «– 27 915 кв. м, включая: - объекты жилого назначения – 26 260 кв. м;
+# - объекты общественно-делового и иного назначения – 1 655 кв. м», и жилой
+# объём выходил `None` при названных 26 260. Замер 22.09.2026: таких строк
+# 20 из 240 — 2,42 млн м² общего объёма, из них 0,98 млн м² квартир прочитаны,
+# а жильё пусто.
+_INCLUDING = re.compile(r"(?iu)" + "|".join(
+    _loose(word) for word in ("втомчисле", "включая")))
 
 
 def _number(raw: str | None) -> float | None:
@@ -90,6 +98,40 @@ def _clause(text: str, start: int, limit: int = 420) -> str:
     tail = text[start:start + limit]
     stop = re.search(r"(?<!кв)\.\s+[А-ЯЁA-Z]|;\s", tail)
     return tail[:stop.start()] if stop else tail
+
+
+def _list_tail(text: str, start: int, limit: int = 460) -> str:
+    """Хвост перечня до конца ПРЕДЛОЖЕНИЯ: `;` внутри него — разделитель.
+
+    `_clause` кончает фразу и на точке с запятой — верно для отдельной
+    формулы. Внутри перечня «включая:» она РАЗДЕЛЯЕТ части, и обрыв по ней
+    оставлял читаться только первую: у Власова вторая часть
+    («общественно-делового и иного назначения – 1 655 кв. м») не попадала в
+    разбор даже словом, которое разбор знает.
+    """
+    tail = text[start:start + limit]
+    stop = re.search(r"(?<!кв)\.\s+[А-ЯЁA-Z]", tail)
+    return tail[:stop.start()] if stop else tail
+
+
+def _inner_parts(tail: str) -> list[tuple[str, float]]:
+    """Части перечня — ВСЕ, у которых названы и назначение, и число.
+
+    Безымянная часть пропускается молча намеренно: целое уже посчитано, и
+    приписать ей назначение нам нечем. Пропуск виден по `parts`: сумма частей
+    меньше целого — расхождение, которое считает и показывает свод.
+    """
+    out: list[tuple[str, float]] = []
+    for piece in re.split(r";\s*", tail):
+        found = _VALUE.search(piece)
+        if found is None:
+            continue
+        purpose = _purpose(piece[:found.start()])
+        value = _number(found.group(1))
+        if purpose == "unnamed" or value is None:
+            continue
+        out.append((purpose, value))
+    return out
 
 
 def _purpose(window: str) -> str:
@@ -133,13 +175,11 @@ def parse(text: str) -> dict[str, Any]:
                 # Части «в том числе»: своё назначение и своё число, но целое
                 # они не увеличивают — их сумма и есть уже посчитанное целое.
                 for inner in _INCLUDING.finditer(clause, found.end()):
-                    tail = _clause(clause, inner.end(), 200)
-                    side = _VALUE.search(tail)
-                    purpose = _purpose(tail[:side.start()] if side else tail)
-                    if side is None or purpose == "unnamed":
-                        continue
-                    inner_value = _number(side.group(1))
-                    if inner_value is not None:
+                    # Перечень читается из ЦЕЛОГО текста, а не из обрезанной
+                    # оговорки: `clause` кончается на первой `;`, то есть на
+                    # первой же части перечня.
+                    tail = _list_tail(flat, head.end() + hit.end() + inner.end())
+                    for purpose, inner_value in _inner_parts(tail):
                         parts["inner_" + purpose].append(inner_value)
             else:
                 key = kind
