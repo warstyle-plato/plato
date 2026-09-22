@@ -155,3 +155,14 @@ def test_stale_production_builds_are_cancelled():
     concurrency = workflow["concurrency"]
     assert concurrency["group"] == "build-yandex"
     assert concurrency["cancel-in-progress"] is True
+
+
+def test_stale_main_build_is_cancelled():
+    """Старый main не должен позже переписать prod поверх более нового."""
+    import yaml as _yaml
+    workflow = _yaml.safe_load(
+        (ROOT / ".github" / "workflows" / "build-yandex.yml").read_text(encoding="utf-8")
+    )
+    concurrency = workflow["concurrency"]
+    assert concurrency["group"] == "build-yandex"
+    assert concurrency["cancel-in-progress"] is True
