@@ -1053,6 +1053,24 @@ def install(app: FastAPI) -> None:
         exact_slug = "varshavskoe-shosse-vl-37-nagatinskaya-ul-vld-3a-6"
         row = next((item for item in rows if str(item.get("slug") or "") == exact_slug), None)
         if row is None:
+            # Production cache can preserve an older catalogue slug after the
+            # city changes punctuation/address spelling.  Match the immutable
+            # investment passport next: 14.62 ha and 229,490 m² of housing.
+            def _n(value: Any) -> float:
+                try:
+                    return float(str(value or "0").replace(",", ".").replace(" ", ""))
+                except (TypeError, ValueError):
+                    return 0.0
+
+            row = next(
+                (
+                    item for item in rows
+                    if abs(_n(item.get("area_ha")) - 14.62) < 0.20
+                    and abs(_n(item.get("housing_gfa_sqm")) - 229490) < 15000
+                ),
+                None,
+            )
+        if row is None:
             row = next(
                 (
                     item for item in rows
@@ -1061,13 +1079,19 @@ def install(app: FastAPI) -> None:
                         " ".join(str(item.get(k) or "") for k in ("name", "district", "slug")),
                         re.I,
                     )
-                    and (
-                        re.search(r"(^|[^0-9])37([^0-9]|$)", str(item.get("name") or ""))
-                        or abs(float(item.get("area_ha") or 0) - 14.62) < 0.15
-                    )
+                    and abs(_n(item.get("area_ha")) - 14.62) < 0.50
                 ),
                 None,
             )
+        if row is None:
+            # Last safe fallback: exact area.  If more than one project has the
+            # same area we refuse instead of attaching somebody else's model.
+            same_area = [
+                item for item in rows
+                if abs(_n(item.get("area_ha")) - 14.62) < 0.03
+            ]
+            if len(same_area) == 1:
+                row = same_area[0]
         if row is None:
             raise HTTPException(
                 status_code=404,
