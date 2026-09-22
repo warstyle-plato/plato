@@ -56,13 +56,22 @@ function siteMap(site,row,full,marketPoint,rank){
  const all=[...siteR,...lands.flatMap(x=>x.rings_merc||[]),...objects.flatMap(x=>x.rings_merc||[])].filter(r=>Array.isArray(r)&&r.length>=3);
  const pts=all.flat().filter(p=>Array.isArray(p)&&p.length>=2&&Number.isFinite(Number(p[0]))&&Number.isFinite(Number(p[1])));
  const MERC=20037508.342789244, mx=lon=>Number(lon)*MERC/180, my=lat=>Math.log(Math.tan((90+Number(lat))*Math.PI/360))*MERC/Math.PI;
- let mc=null,mr=0;
+ let mc=null,mr=0, marketLat=null;
  if(marketPoint&&Number.isFinite(Number(marketPoint.latitude))&&Number.isFinite(Number(marketPoint.longitude))){
+   marketLat=Number(marketPoint.latitude);
    mc=(Array.isArray(marketPoint.centre_merc)&&marketPoint.centre_merc.length>=2)
      ?[Number(marketPoint.centre_merc[0]),Number(marketPoint.centre_merc[1])]
      :[mx(marketPoint.longitude),my(marketPoint.latitude)];
+ }
+ const marketCalculated=Number(rank&&rank.surrounding_price_rub_sqm)>0 || rank&&rank.surrounding_sales_units_per_month!=null;
+ if(!mc&&marketCalculated&&siteR.length){
+   const sp=siteR.flat().filter(p=>Array.isArray(p)&&p.length>=2);
+   if(sp.length)mc=[sp.reduce((z,p)=>z+Number(p[0]),0)/sp.length,sp.reduce((z,p)=>z+Number(p[1]),0)/sp.length];
+   marketLat=Number(row&&row.latitude)||55.75;
+ }
+ if(mc&&marketCalculated){
    // Weekly KRT market screening uses a 3.0 km radius.
-   mr=3000/Math.cos(Number(marketPoint.latitude)*Math.PI/180);
+   mr=3000/Math.cos((marketLat||55.75)*Math.PI/180);
    pts.push([mc[0]-mr,mc[1]-mr],[mc[0]+mr,mc[1]+mr]);
  }
  if(!pts.length){box.innerHTML='<div class="box">Контур территории пока не получен.</div>';return}
@@ -101,9 +110,9 @@ async function askPlato(){
  }catch(e){out.textContent='Платон недоступен на тестовом стенде: '+e.message}
  finally{$('platoAsk').disabled=false}
 }
-$('platoAsk').onclick=askPlato;async function boot(){let [cat,rr,dd,mapd]=await Promise.all([j('/krt-preview/data'),j('/krt-preview/ranking'),j('/krt-preview/decisions').catch(()=>({matched_rows:[],tep:{}})),j('/krt-preview/map').catch(()=>({sites:[]}))]),rows=cat.projects||[],r=rows.find(x=>String(x.slug||'')===slug);if(!r)throw Error('Площадка '+slug+' не найдена в рабочем каталоге');let rank=(rr.rows||[]).find(x=>x.slug===slug)||{}, marketPoint=await j('/krt-preview/proxy/'+encodeURIComponent(slug)+'/point').catch(()=>null), dm=(dd.matched_rows||[]).find(x=>x.slug===slug)||{}, dtep=(dd.tep||{})[String(dm.id||'')]||null, place=[r.name,r.address,r.district].filter(Boolean).join(' '), isNagatino=/варшавск[^0-9]{0,40}37|нагатинск[^0-9]{0,40}3\s*[аa]/i.test(place), nag=null;if(isNagatino){try{nag=await j('/krt-preview/nagatino/source')}catch(e){nag=null}};
+$('platoAsk').onclick=askPlato;async function boot(){let [cat,rr,dd]=await Promise.all([j('/krt-preview/data'),j('/krt-preview/ranking'),j('/krt-preview/decisions').catch(()=>({matched_rows:[],tep:{}}))]),rows=cat.projects||[],r=rows.find(x=>String(x.slug||'')===slug);if(!r)throw Error('Площадка '+slug+' не найдена в рабочем каталоге');let rank=(rr.rows||[]).find(x=>x.slug===slug)||{}, marketPoint=null, dm=(dd.matched_rows||[]).find(x=>x.slug===slug)||{}, dtep=(dd.tep||{})[String(dm.id||'')]||null, place=[r.name,r.address,r.district,dm.title,dm.address].filter(Boolean).join(' '), isNagatino=/варшавск[^0-9]{0,40}37|нагатинск[^0-9]{0,40}3\s*[аa]/i.test(place), nag=null;if(isNagatino){try{nag=await j('/krt-preview/nagatino/source')}catch(e){nag=null}};
 $('title').textContent=r.name||r.address||slug;$('platoContext').textContent=(r.name||slug)+' · '+[r.okrug,r.district].filter(Boolean).join(' · ');$('status').textContent=r.status|| (r.no_card?'Проект решения':'КРТ');$('where').textContent=[r.okrug,r.district,r.address].filter(Boolean).join(' · ');
-let mapped=(mapd.sites||[]).find(x=>String(x.slug||'')===String(r.slug||''))||((nag&&nag.krt_site)||null);siteMap(mapped,r,nag&&nag.map,marketPoint,rank);let tep=(nag&&nag.tep)||dtep||r;window.KRT_CONTEXT={project:{slug:r.slug,name:r.name,address:r.address,okrug:r.okrug,district:r.district,status:r.status},decision_tep:tep,ranking:rank,nagatino:nag};let ms=[['Площадь',fmt(tep.area_ha??r.area_ha??r.krt_area_ha,1)+' га'],['Общий объём',fmt(tep.total_gfa_sqm??r.total_gfa_sqm)+' м²'],['Жильё',fmt(tep.housing_gfa_sqm??r.housing_gfa_sqm)+' м²'],['Балл',fmt(rank.score??r.score)],['LLCR',rank.project_llcr_x?fmt(rank.project_llcr_x,2)+'x':'—'],['Цена окружения',rank.surrounding_price_rub_sqm?fmt(rank.surrounding_price_rub_sqm)+' ₽/м²':'—']];$('metrics').innerHTML=ms.map(x=>'<div class="metric"><b>'+esc(x[1])+'</b><small>'+esc(x[0])+'</small></div>').join('');
+let mapped=(nag&&nag.krt_site)||null;siteMap(mapped,r,nag&&nag.map,marketPoint,rank);if(!isNagatino){j('/krt-preview/proxy/'+encodeURIComponent(slug)+'/point').then(p=>{marketPoint=p;siteMap((p&&p.rings_merc)?{rings_merc:p.rings_merc}:mapped,r,null,p,rank)}).catch(()=>{})}let tep=(nag&&nag.tep)||dtep||r;window.KRT_CONTEXT={project:{slug:r.slug,name:r.name,address:r.address,okrug:r.okrug,district:r.district,status:r.status},decision_tep:tep,ranking:rank,nagatino:nag};let ms=[['Площадь',fmt(tep.area_ha??r.area_ha??r.krt_area_ha,1)+' га'],['Общий объём',fmt(tep.total_gfa_sqm??r.total_gfa_sqm)+' м²'],['Жильё',fmt(tep.housing_gfa_sqm??r.housing_gfa_sqm)+' м²'],['Балл',fmt(rank.score??r.score)],['LLCR',rank.project_llcr_x?fmt(rank.project_llcr_x,2)+'x':'—'],['Цена окружения',rank.surrounding_price_rub_sqm?fmt(rank.surrounding_price_rub_sqm)+' ₽/м²':'—']];$('metrics').innerHTML=ms.map(x=>'<div class="metric"><b>'+esc(x[1])+'</b><small>'+esc(x[0])+'</small></div>').join('');
 $('old').href=isNagatino?'/krt/nagatino':'/krt/site/'+encodeURIComponent(slug);$('territoryLink').href=isNagatino?'/krt/nagatino':'/krt/site/'+encodeURIComponent(slug);$('outlineLink').href=isNagatino?'/krt-preview/nagatino/decision-outline.png':'/krt/site/'+encodeURIComponent(slug)+'/decision-outline.png';$('export').href=isNagatino?'/krt/nagatino/export.xlsx':'/krt/site/'+encodeURIComponent(slug)+'/export.xlsx';$('handoff').href='/auctions/krt/'+encodeURIComponent(slug)+'/handoff';
 let links=[];if(r.url)links.push('<a target="_blank" href="'+esc(r.url)+'">Карточка КРТ на krt.mos.ru ↗</a>');if(dm.url)links.push('<a target="_blank" href="'+esc(dm.url)+'">Проект решения на mos.ru ↗</a>');else if(r.decision_url)links.push('<a target="_blank" href="'+esc(r.decision_url)+'">Проект решения mos.ru ↗</a>');if(r.source&&r.source.url)links.push('<a target="_blank" href="'+esc(r.source.url)+'">Источник ↗</a>');$('sourceLinks').innerHTML=links.join('');
 {
