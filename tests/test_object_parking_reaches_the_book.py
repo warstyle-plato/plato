@@ -85,34 +85,51 @@ def test_the_places_reach_the_tep_row_of_their_own_object() -> None:
     assert offices_norm["required_spaces"] != 100
 
 
-def test_first_floor_places_stay_inside_fixed_gba_and_do_not_rewrite_saleable() -> None:
-    """Наземный гараж занимает ГНС, но не создаёт её и не режет конечную saleable."""
+def test_first_floor_places_use_fixed_gba_before_the_area_ratios() -> None:
+    """Паркинг вычитается из GBA, а не напрямую из продаваемой площади."""
     t = _tep()
     demand = core.apply_object_parking(
         _inputs(offices_parking_over_spaces=40,
                 offices_parking_under_spaces=40), t)
     office = next(item for item in demand["own"] if item["tep_key"] == "offices")
+    # 40 × 25 = 1 000 м² внутри тех же 10 000 GBA. Значит остаётся 90% прежней
+    # офисной части: и общая, и saleable сохраняют свои прежние доли.
     assert t["offices"]["gns"] == 10000, "ГНС объекта фиксирована"
-    assert t["offices"]["saleable"] == pytest.approx(6000), "saleable уже конечная"
+    assert t["offices"]["total_area"] == pytest.approx(9400 * 0.9)
+    assert t["offices"]["saleable"] == pytest.approx(6000 * 0.9)
     assert office["over_gns"] == pytest.approx(40 * 25)
+    assert office["saleable_taken_sqm"] == pytest.approx(600)
     assert demand["over_area_per_space_sqm"] == pytest.approx(25)
     assert office["fits_gba"] is True
 
 
+def test_the_187k_example_is_72900_saleable_with_1000_first_floor_spaces() -> None:
+    """Контроль формулы владельца: GBA → общая → 50% saleable, паркинг первым."""
+    t = _tep()
+    t["offices"].update(gns=187000, total_area=168300,
+                        saleable=84150, useful=84150)
+    core.apply_object_parking(
+        _inputs(offices_parking_under_spaces=0,
+                offices_parking_over_spaces=1000), t)
+    assert t["offices"]["gns"] == 187000
+    assert t["offices"]["total_area"] == pytest.approx(145800)
+    assert t["offices"]["saleable"] == pytest.approx(72900)
+
+
 def test_the_office_fit_guard_warns_without_growing_gba() -> None:
-    """Сторож не чинит невозможный ТЭП ростом ГНС или урезанием saleable."""
+    """Сторож не лечит парковку, которая одна больше всей GBA, ростом здания."""
     t = _tep()
     demand = core.apply_object_parking(
         _inputs(offices_parking_under_spaces=0,
-                offices_parking_over_spaces=100), t)
+                offices_parking_over_spaces=500), t)
     office = next(item for item in demand["own"] if item["tep_key"] == "offices")
-    assert office["over_gns"] == pytest.approx(100 * 25)
-    assert office["fit_required_gns"] == pytest.approx(6000 * 1.40 + 100 * 25)
+    assert office["over_gns"] == pytest.approx(500 * 25)
+    assert office["fit_required_gns"] == pytest.approx(500 * 25)
     assert office["fits_gba"] is False
     assert demand["fit_warnings"]
-    assert "не помещаются в заданную ГНС" in demand["note"]
+    assert "ГНС автоматически не увеличивается" in demand["note"]
     assert t["offices"]["gns"] == 10000
-    assert t["offices"]["saleable"] == pytest.approx(6000)
+    assert t["offices"]["saleable"] == 0
 
 
 def test_the_book_counts_the_same_parking_as_the_engine() -> None:
@@ -138,9 +155,9 @@ def test_the_book_counts_the_same_parking_as_the_engine() -> None:
         problems.append(f"{name}: {evaluator.cell('ПРОВЕРКИ', f'B{row}')} "
                         f"против {evaluator.cell('ПРОВЕРКИ', f'C{row}')}")
     assert not problems, problems
-    # Книга не имеет права второй раз вычитать наземный паркинг из введённой
-    # продаваемой площади офисов.
-    assert evaluator.cell("ОБЪЕКТЫ", "B13") == pytest.approx(6000)
+    # В книге та же последовательность: сначала 20 × 25 м² из GBA, затем
+    # сохраняется исходная доля saleable 6 000 / 10 000.
+    assert evaluator.cell("ОБЪЕКТЫ", "B13") == pytest.approx(5700)
     assert report["summary"]["revenue"] > 0
 
 
