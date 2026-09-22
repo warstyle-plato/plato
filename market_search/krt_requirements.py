@@ -579,6 +579,96 @@ def social_objects_from_decision(sentences: Any) -> list[dict[str, Any]]:
     return found
 
 
+_CLAUSE_NO = re.compile(
+    r"(?s)(?<!\d)(4\.1\.\d+|4\.[2-9]|[5-9])\.\s*(.*?)(?=(?<!\d)(?:4\.1\.\d+|4\.[2-9]|[5-9])\.\s|$)"
+)
+_LAND_HA_RE = re.compile(
+    r"(?iu)земельн\w*\s+участк\w*\s+площадью\s+(?:не\s+менее\s+)?"
+    r"(\d[\d ]*(?:[,.]\d+)?)\s*га"
+)
+_YEARS_RE = re.compile(r"(?iu)составля\w*\s+(\d+(?:[,.]\d+)?)\s+лет")
+_MONTHS_RE = re.compile(r"(?iu)составля\w*\s+(\d+(?:[,.]\d+)?)\s+месяц")
+_BUILDING_AREA_RE = re.compile(
+    r"(?iu)(?:общей\s+)?площадью\s+(?:не\s+менее\s+)?"
+    r"(\d[\d ]*(?:[,.]\d+)?)\s*(?:кв\.?\s*м|м2|м²)"
+)
+
+
+def structured_city_requirements(text: str) -> dict[str, Any]:
+    """Структурировать обязательства города из нумерованных пунктов решения.
+
+    Это НЕ ТЭП из приложения и не нормативный расчёт DevelopAid. Здесь только
+    то, что город прямо возложил на реализующего КРТ в теле решения:
+    общественно-деловые объекты, СОШ/ДОО, коммунальные объекты, передача городу,
+    инфраструктурное соглашение и сроки. Поэтому 22 220 м² школы не смешиваются
+    с 185 460 м² общественно-деловой застройки и не превращаются в «нежилое»
+    без расшифровки.
+    """
+    flat = _SPACE.sub(" ", str(text or "")).strip()
+    clauses = {number: body.strip() for number, body in _CLAUSE_NO.findall(flat)}
+    objects: list[dict[str, Any]] = []
+
+    def num(match: re.Match[str] | None) -> float | None:
+        return _social_number(match.group(1)) if match else None
+
+    for number in sorted((key for key in clauses if key.startswith("4.1.")),
+                         key=lambda value: [int(x) for x in value.split(".")]):
+        body = clauses[number]
+        low = body.casefold()
+        kind = label = ""
+        if "общественно-делов" in low:
+            kind, label = "business", "Общественно-деловое"
+        elif re.search(r"общеобразоват|школ", low):
+            kind, label = "school", "СОШ"
+        elif re.search(r"дошкольн|детск\w*\s+сад|\bдо[оу]\b", low):
+            kind, label = "kindergarten", "ДОО"
+        elif "коммунальн" in low:
+            kind, label = "utility", "Коммунальный объект"
+        if not kind:
+            continue
+        area = num(_BUILDING_AREA_RE.search(body))
+        places = None
+        if kind in ("school", "kindergarten"):
+            places = num(_PLACES_RE.search(_MACHINE_PLACES.sub(" ", body)))
+        objects.append({
+            "clause": number,
+            "kind": kind,
+            "label": label,
+            "area_sqm": area,
+            "places": places,
+            "land_area_ha": num(_LAND_HA_RE.search(body)),
+            "quote": body[:700],
+        })
+
+    transfer = clauses.get("4.1.5", "")
+    transferred_refs = re.findall(r"\b4\.1\.[1-9]\b", transfer)
+    for item in objects:
+        item["transfer_to_city"] = item["clause"] in transferred_refs
+
+    infra = clauses.get("4.3", "")
+    adjust = clauses.get("5", "")
+    exception = clauses.get("6", "")
+    deadline = clauses.get("7", "")
+    planning = clauses.get("8", "")
+    nonhousing = sum(float(item.get("area_sqm") or 0) for item in objects) or None
+
+    return {
+        "objects": objects,
+        "nonhousing_obligations_sqm": nonhousing,
+        "transfer_to_city": {
+            "clauses": transferred_refs,
+            "quote": transfer[:700],
+        } if transfer else None,
+        "infrastructure_agreement": infra[:900],
+        "parameters_adjustable": adjust[:900],
+        "operator_exception": exception[:900],
+        "implementation_years": num(_YEARS_RE.search(deadline)),
+        "implementation_quote": deadline[:900],
+        "planning_months": num(_MONTHS_RE.search(planning)),
+        "planning_quote": planning[:900],
+    }
+
+
 # Метры, уходящие городу по Программе реновации. Признак «в документе сказано о
 # городских нуждах» отвечал только «да», а решение обычно называет и объём:
 # на Задонском проезде это 15 100 м² из 150 940 предельной жилой СПП — десятая
