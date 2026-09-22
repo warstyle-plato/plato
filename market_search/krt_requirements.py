@@ -605,7 +605,11 @@ def structured_city_requirements(text: str) -> dict[str, Any]:
     без расшифровки.
     """
     flat = _SPACE.sub(" ", str(text or "")).strip()
-    clauses = {number: body.strip() for number, body in _CLAUSE_NO.findall(flat)}
+    clauses: dict[str, str] = {}
+    for number, body in _CLAUSE_NO.findall(flat):
+        # Later paragraphs (4.1.5, 5, etc.) cite 4.1.2/4.1.3 again.
+        # Those references must not overwrite the actual numbered clauses.
+        clauses.setdefault(number, body.strip())
     objects: list[dict[str, Any]] = []
 
     def num(match: re.Match[str] | None) -> float | None:
