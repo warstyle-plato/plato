@@ -84,58 +84,34 @@ let mapped=(mapd.sites||[]).find(x=>String(x.slug||'')===String(r.slug||''))||((
 $('old').href=isNagatino?'/krt/nagatino':'/krt/site/'+encodeURIComponent(slug);$('territoryLink').href=isNagatino?'/krt/nagatino':'/krt/site/'+encodeURIComponent(slug);$('outlineLink').href=isNagatino?'/krt-preview/nagatino/decision-outline.png':'/krt/site/'+encodeURIComponent(slug)+'/decision-outline.png';$('export').href=isNagatino?'/krt/nagatino/export.xlsx':'/krt/site/'+encodeURIComponent(slug)+'/export.xlsx';$('handoff').href='/auctions/krt/'+encodeURIComponent(slug)+'/handoff';
 let links=[];if(r.url)links.push('<a target="_blank" href="'+esc(r.url)+'">Карточка КРТ на krt.mos.ru ↗</a>');if(dm.url)links.push('<a target="_blank" href="'+esc(dm.url)+'">Проект решения на mos.ru ↗</a>');else if(r.decision_url)links.push('<a target="_blank" href="'+esc(r.decision_url)+'">Проект решения mos.ru ↗</a>');if(r.source&&r.source.url)links.push('<a target="_blank" href="'+esc(r.source.url)+'">Источник ↗</a>');$('sourceLinks').innerHTML=links.join('');
 {
- let cr=nag&&nag.city_requirements;
- let summary=[
-   ['Территория',fmt(tep.area_ha,2)+' га'],
-   ['Предельная СПП',fmt(tep.total_gfa_sqm)+' м²'],
-   ['Жильё',fmt(tep.housing_gfa_sqm)+' м²'],
-   ['Нежилая часть',fmt(tep.nonresidential_gfa_sqm)+' м²']
+ let cr=nag&&nag.city_requirements, objs=(cr&&cr.objects)||[];
+ let business=objs.find(o=>o.kind==='business')||null;
+ let social=objs.filter(o=>['school','kindergarten','utility'].includes(o.kind));
+ let socialArea=social.reduce((z,o)=>z+Number(o.area_sqm||0),0);
+ let commercial=tep.nonresidential_ground_sqm;
+ let commercialSource='из решения';
+ if(commercial==null && r.nonresidential_gfa_sqm!=null){commercial=r.nonresidential_gfa_sqm;commercialSource='из карточки krt.mos.ru'}
+ let lines=[
+   {name:'Жильё',value:tep.housing_gfa_sqm!=null?fmt(tep.housing_gfa_sqm)+' м²':'—',note:'жилое назначение по решению'},
+   {name:'Нежилое',value:commercial!=null?fmt(commercial)+' м²':'—',note:'первые этажи / коммерция · '+commercialSource},
+   {name:'Общественно-деловые',value:business&&business.area_sqm?fmt(business.area_sqm)+' м²':'—',note:'отдельная часть программы строительства'},
+   {name:'Социальная нагрузка',value:socialArea?fmt(socialArea)+' м²':'—',note:'СОШ, ДОО'+(social.some(o=>o.kind==='utility')?' и коммунальный объект':'')}
  ];
- let programme=[], burden=[];
- if(cr&&cr.objects&&cr.objects.length){
-   cr.objects.forEach(o=>{
-     let bits=[];
-     if(o.places)bits.push(fmt(o.places)+' мест');
-     if(o.area_sqm)bits.push((o.kind==='business'?'площадь ':'не менее ')+fmt(o.area_sqm)+' м²');
-     if(o.land_area_ha)bits.push('участок не менее '+fmt(o.land_area_ha,2)+' га');
-     programme.push('<li><strong>'+esc(o.label)+'</strong>'+esc(bits.join(' · '))+'</li>');
-     // Нагрузка города — только то, что решение требует передать Москве.
-     // Общественно-деловая площадь сюда НЕ относится.
-     if(o.transfer_to_city){
-       burden.push('<li><strong>'+esc(o.label)+'</strong>построить и безвозмездно передать в собственность Москвы'
-         +(o.places?' · '+fmt(o.places)+' мест':'')+'</li>');
-     }
-   });
-   if(cr.infrastructure_agreement){
-     burden.push('<li><strong>Инфраструктурное соглашение</strong>заключить с городом соглашение по обеспечению жилой застройки объектами образования и здравоохранения</li>');
-   }
- }
+ let socialList=social.map(o=>{
+   let bits=[];
+   if(o.places)bits.push(fmt(o.places)+' мест');
+   if(o.area_sqm)bits.push(fmt(o.area_sqm)+' м²');
+   if(o.land_area_ha)bits.push('участок '+fmt(o.land_area_ha,2)+' га');
+   return '<li><strong>'+esc(o.label)+'</strong>'+esc(bits.join(' · '))+'</li>'
+ }).join('');
  let meta=[];
  if(cr&&cr.implementation_years)meta.push('<span><b>'+fmt(cr.implementation_years)+' лет</b> срок реализации</span>');
  if(cr&&cr.planning_months)meta.push('<span><b>'+fmt(cr.planning_months)+' мес.</b> подготовка ДПТ</span>');
- let check='';
- if(cr&&cr.nonhousing_obligations_sqm){
-   let c=Number(cr.nonhousing_obligations_sqm),d=Number(tep.nonresidential_gfa_sqm);
-   check='<div class="source-details">Разложение нежилой СПП по программе решения: '+fmt(c)+' м²'
-     +(Number.isFinite(d)?' из '+fmt(d)+' м²'+(Math.abs(c-d)<=1?' · сходится':' · есть расхождение'):'')+'.</div>';
- }
- let sourceDetail='';
- if(cr&&(cr.parameters_adjustable||cr.operator_exception)){
-   sourceDetail='<details class="source-details"><summary>Оговорки решения</summary>'
-     +(cr.parameters_adjustable?'<div class="box">'+esc(cr.parameters_adjustable)+'</div>':'')
-     +(cr.operator_exception?'<div class="box">'+esc(cr.operator_exception)+'</div>':'')
-     +'</details>';
- }
  $('cityBody').innerHTML=
-   '<div class="decision-summary">'+summary.map(x=>'<div><b>'+esc(x[1])+'</b><small>'+esc(x[0])+'</small></div>').join('')+'</div>'
-   +'<h3 style="margin:14px 0 6px">Программа строительства</h3>'
-   +(programme.length?'<ul class="decision-list">'+programme.join('')+'</ul>':'<div class="box">Объекты программы не выделены.</div>')
-   +check
-   +'<h3 style="margin:14px 0 6px">Нагрузка / передача городу</h3>'
-   +(burden.length?'<ul class="decision-list">'+burden.join('')+'</ul>':'<div class="box">Отдельная передача объектов городу в прочитанном решении не найдена.</div>')
+   '<div class="decision-summary" style="grid-template-columns:repeat(2,1fr)">'+lines.map(x=>'<div><b>'+esc(x.value)+'</b><small>'+esc(x.name)+'</small><small>'+esc(x.note)+'</small></div>').join('')+'</div>'
+   +(socialList?'<details open class="source-details"><summary><b>Состав социальной нагрузки</b></summary><ul class="decision-list">'+socialList+'</ul></details>':'')
    +(meta.length?'<div class="decision-meta">'+meta.join('')+'</div>':'')
-   +sourceDetail
-   +'<details class="source-details"><summary>Сверка с карточкой krt.mos.ru</summary><div class="box">Каталог: СПП '+fmt(r.total_gfa_sqm)+' м² · жильё '+fmt(r.housing_gfa_sqm)+' м² · нежилое '+fmt(r.nonresidential_gfa_sqm)+' м² · статус '+esc(r.status||'—')+'. Основной источник для обязательств и разложения — проект решения.</div></details>';
+   +'<details class="source-details"><summary>Источник и сверка</summary><div class="box">Проект решения: территория '+fmt(tep.area_ha,2)+' га · предельная СПП '+fmt(tep.total_gfa_sqm)+' м². Карточка krt.mos.ru: СПП '+fmt(r.total_gfa_sqm)+' м² · жильё '+fmt(r.housing_gfa_sqm)+' м² · нежилое '+fmt(r.nonresidential_gfa_sqm)+' м².</div></details>';
 }try{let req=await j('/krt-preview/proxy/'+encodeURIComponent(slug)+'/requirements'), groups=[['Снос',req.demolition||[]],['Снос или реконструкция',req.demolition_or_reconstruction||[]],['Реконструкция',req.reconstruction||[]],['Сохранение',req.preservation||[]]], total=groups.reduce((n,x)=>n+x[1].length,0);$('loadBody').innerHTML='<div class="cols"><div class="box"><b>Городские нужды / реновация</b><br>'+esc(req.renovation&&req.renovation.mentioned?(req.renovation.area_sqm?fmt(req.renovation.area_sqm)+' м²':req.renovation.quote||'Упомянуты, объём не назван'):'В проекте решения не подтверждены')+'</div><div class="box"><b>Что требует документ</b><br>'+esc((req.warning||'Требования прочитаны из официального документа'))+'</div></div>';$('demoSummary').textContent='Объекты: снос / реконструкция / сохранение — '+total;$('demoBody').innerHTML='<div class="object-groups">'+(groups.filter(x=>x[1].length).map(x=>'<details class="object-group"><summary>'+esc(x[0])+' — '+x[1].length+'</summary><ul class="object-list">'+x[1].map(v=>'<li><span class="desc">'+esc(v)+'</span></li>').join('')+'</ul></details>').join('')||'<div class="box">В опубликованном проекте решения перечень действий по объектам не найден.</div>')+'</div>';if(nag&&nag.objects){let ng=[['Снос',nag.objects.demolition||[],nag.totals.demolition],['Снос или реконструкция',nag.objects.conditional||[],nag.totals.conditional],['Реконструкция',nag.objects.reconstruction||[],nag.totals.reconstruction],['Сохранение',nag.objects.preservation||[],nag.totals.preservation]];let nn=ng.reduce((z,x)=>z+x[1].length,0);$('demoSummary').textContent='Извещение торгов: судьба объектов — '+nn+' из '+(nag.objects_total||nn);$('demoBody').innerHTML='<div class="object-groups">'+ng.filter(x=>x[1].length).map(x=>'<details class="object-group"><summary>'+esc(x[0])+' — '+x[1].length+' · '+fmt((x[2]||{}).area_sqm,1)+' м²</summary><ul class="object-list">'+x[1].map(o=>'<li><span class="cad">'+esc(o.cadastral_number||'без КН')+'</span><span class="desc">'+esc([o.address||o.name,o.fate].filter(Boolean).join(' · '))+'</span><span class="area">'+(o.area_sqm?fmt(o.area_sqm,1)+' м²':'—')+'</span></li>').join('')+'</ul></details>').join('')+'</div>'} }catch(e){$('loadBody').textContent='Требования пока не прочитаны: '+e.message}
 $('pressBody').innerHTML='<div class="box">'+esc(listFacts(rank.press_facts))+'</div>';$('pressBtn').onclick=async()=>{let b=$('pressResult');b.style.display='';b.textContent='Ищу…';try{b.textContent=listFacts(await j('/krt-preview/proxy/'+encodeURIComponent(slug)+'/open-sources'))}catch(e){b.textContent=e.message}};
 try{let a=await j('/krt-preview/proxy/report/'+encodeURIComponent(slug)),sc=a.screening||{},mr=sc.market_report||a.market||{},rec=a.plato||a.recommendation||sc.plato||sc.recommendation||'';$('platoAnswer').textContent=typeof rec==='string'&&rec?rec:'Готовой текстовой рекомендации в отчёте нет — откройте Платона для анализа текущей площадки.';$('marketBody').innerHTML='<div class="cols"><div class="box"><b>Модель</b><br>LLCR '+esc(fmt(rank.project_llcr_x??sc.project_llcr_x,2))+'x<br>Маржа '+esc(fmt(rank.margin_pct??sc.margin_pct,1))+'%<br>Потолок входа '+esc(fmt(rank.entry_capacity_rub_per_sqm))+' ₽/м²</div><div class="box"><b>Окружение</b><br>Цена '+esc(fmt(rank.surrounding_price_rub_sqm))+' ₽/м²<br>'+esc(JSON.stringify(mr,null,2))+'</div></div>'}catch(e){$('marketBody').textContent='Готовый отчёт: '+e.message}
