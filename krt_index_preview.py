@@ -96,6 +96,7 @@ let links=[];if(r.url)links.push('<a target="_blank" href="'+esc(r.url)+'">Ка�
  let social=objs.filter(o=>['school','kindergarten','utility'].includes(o.kind));
  let school=social.find(o=>o.kind==='school')||null, kinder=social.find(o=>o.kind==='kindergarten')||null;
  let socialArea=social.reduce((z,o)=>z+Number(o.area_sqm||0),0);
+ let schoolPlaces=Number((school&&school.places)||0), kinderPlaces=Number((kinder&&kinder.places)||0), socialPlaces=schoolPlaces+kinderPlaces;
  let businessArea=Number((business&&business.area_sqm)||0);
  let total=Number(tep.total_gfa_sqm||0);
  let grossResidential=(total&&businessArea||socialArea)?Math.max(0,total-businessArea-socialArea):Number(tep.housing_gfa_sqm||r.housing_gfa_sqm||0);
@@ -109,11 +110,11 @@ let links=[];if(r.url)links.push('<a target="_blank" href="'+esc(r.url)+'">Ка�
    {name:'Жильё',value:housingLabel,note:housingNote},
    {name:'Нежилое',value:commercialLabel,note:commercialNote},
    {name:'Общественно-деловые',value:businessArea?fmt(businessArea)+' м²':'—',note:'деловая часть'},
-   {name:'Социальная нагрузка',value:socialArea?fmt(socialArea)+' м²':'—',note:'СОШ + ДОО + прочее'}
+   {name:'Социальная нагрузка',value:socialPlaces?fmt(socialPlaces)+' мест':'—',note:[schoolPlaces?'СОШ '+fmt(schoolPlaces):'',kinderPlaces?'ДОО '+fmt(kinderPlaces):'',social.some(o=>o.kind==='utility')?'+ прочее':''].filter(Boolean).join(' · ')}
  ];
  let socialList=[];
- if(school){let b=[];if(school.places)b.push(fmt(school.places)+' мест');if(school.area_sqm)b.push(fmt(school.area_sqm)+' м²');if(school.land_area_ha)b.push('участок '+fmt(school.land_area_ha,2)+' га');socialList.push('<li><strong>СОШ</strong>'+esc(b.join(' · '))+'</li>')}
- if(kinder){let b=[];if(kinder.places)b.push(fmt(kinder.places)+' мест');if(kinder.area_sqm)b.push(fmt(kinder.area_sqm)+' м²');if(kinder.land_area_ha)b.push('участок '+fmt(kinder.land_area_ha,2)+' га');socialList.push('<li><strong>ДОО</strong>'+esc(b.join(' · '))+'</li>')}
+ if(school){let b=[];if(school.places)b.push('<b>'+fmt(school.places)+' мест</b>');if(school.area_sqm)b.push('<span class="muted">'+fmt(school.area_sqm)+' м²</span>');if(school.land_area_ha)b.push('<span class="muted">участок '+fmt(school.land_area_ha,2)+' га</span>');socialList.push('<li><strong>СОШ</strong>'+b.join(' · ')+'</li>')}
+ if(kinder){let b=[];if(kinder.places)b.push('<b>'+fmt(kinder.places)+' мест</b>');if(kinder.area_sqm)b.push('<span class="muted">'+fmt(kinder.area_sqm)+' м²</span>');if(kinder.land_area_ha)b.push('<span class="muted">участок '+fmt(kinder.land_area_ha,2)+' га</span>');socialList.push('<li><strong>ДОО</strong>'+b.join(' · ')+'</li>')}
  social.filter(o=>!['school','kindergarten'].includes(o.kind)).forEach(o=>{let b=[];if(o.area_sqm)b.push(fmt(o.area_sqm)+' м²');if(o.land_area_ha)b.push('участок '+fmt(o.land_area_ha,2)+' га');socialList.push('<li><strong>'+esc(o.label||'Прочее')+'</strong>'+esc(b.join(' · '))+'</li>')});
  let meta=[];
  if(cr&&cr.implementation_years)meta.push('<span><b>'+fmt(cr.implementation_years)+' лет</b> срок реализации</span>');
