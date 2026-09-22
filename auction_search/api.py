@@ -1165,6 +1165,8 @@ def install(app: FastAPI) -> None:
         """
         live = await auction_krt_nagatino_live_data()
         rank = dict(live.get("row") or {})
+        screening = dict(live.get("screening") or {})
+        market_report = dict(live.get("market_report") or {})
 
         control: dict[str, Any] = {}
         if core is not None:
@@ -1176,7 +1178,7 @@ def install(app: FastAPI) -> None:
         ordinary_capex_mln = None
         entry_capacity_mln = None
         housing_gfa_sqm = rank.get("housing_gfa_sqm")
-        llcr_source = "production KRT ranking / authoritative DevelopAid screening"
+        llcr_source = "local DevelopAid screening / authoritative core"
         burden_source = "Nagatino live control case"
 
         if control.get("available"):
@@ -1192,8 +1194,13 @@ def install(app: FastAPI) -> None:
             llcr_source = "Nagatino live case: authoritative DevelopAid engine"
             burden_source = "ЕГРН + обязательства КРТ + authoritative DevelopAid ordinary CAPEX"
         else:
-            llcr = rank.get("project_llcr_x")
-            entry_capacity_mln = rank.get("entry_capacity_mln")
+            metrics = screening.get("metrics") or {}
+            capacity = screening.get("entry_capacity") or {}
+            llcr = metrics.get("project_llcr_x") or rank.get("project_llcr_x")
+            entry_capacity_mln = (
+                capacity.get("amount_mln")
+                if capacity.get("available") else rank.get("entry_capacity_mln")
+            )
             burden_pct = rank.get("burden_pct")
             burden_mln = rank.get("burden_mln")
             ordinary_capex_mln = rank.get("ordinary_capex_mln")
@@ -1208,11 +1215,23 @@ def install(app: FastAPI) -> None:
                     continue
             return None
 
-        local_absorption = first_number(
-            "local_absorption_sqm_month",
-            "surrounding_sales_sqm_per_month",
-            "market_absorption_sqm_month",
+        # Local absorption comes from the SAME peer rows displayed in the
+        # market block.  It is measured in m²/month; DDU/month is ignored.
+        peer_absorption: list[float] = []
+        for peer in market_report.get("peers") or []:
+            try:
+                value = float(peer.get("area_per_month"))
+            except (TypeError, ValueError):
+                continue
+            if value >= 0:
+                peer_absorption.append(value)
+        local_absorption = (
+            float(__import__("statistics").median(peer_absorption))
+            if peer_absorption else None
         )
+
+        # The bundled Moscow snapshot currently exposes price/DDU summaries
+        # but not m²/month.  Do not manufacture a city benchmark from DDU.
         moscow_absorption = first_number(
             "moscow_absorption_sqm_month",
             "moscow_median_sqm_per_month",
@@ -1244,7 +1263,10 @@ def install(app: FastAPI) -> None:
         rating = krt_investment_score.score(
             status_kind=status_kind,
             llcr=llcr,
-            market_rub_sqm=rank.get("surrounding_price_rub_sqm"),
+            market_rub_sqm=(
+                (screening.get("market") or {}).get("market_price_rub_sqm")
+                or rank.get("surrounding_price_rub_sqm")
+            ),
             target_rub_sqm=price_target_rub_sqm,
             local_sqm_month=local_absorption,
             benchmark_sqm_month=moscow_absorption,
@@ -1255,8 +1277,8 @@ def install(app: FastAPI) -> None:
             entry_capacity_mln=entry_capacity_mln,
             sources={
                 "llcr": llcr_source,
-                "price": "production market environment",
-                "absorption": "market report: comparable projects + Moscow class median",
+                "price": "local MarketDiscoveryService / Pulse, radius 3 km",
+                "absorption": "local market peer rows in m²/month + Moscow class benchmark when available",
                 "burden": burden_source,
             },
             missing_reasons=missing_reasons,
