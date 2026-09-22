@@ -81,7 +81,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.24.21"
+VERSION = "0.24.22"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -15955,7 +15955,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     # сравнивают с ценой продажи, и подмена одной другой ошибается вдвое.
     unit_economics = report.get("unit_economics") or []
     if unit_economics:
-        ue_rows = [["Показатель", "Всего", "тыс ₽/м² строительного объёма",
+        ue_rows = [["Показатель", "Всего", "тыс ₽/м² наземной ГНС",
                     "тыс ₽/м² продаваемой"]]
         for item in unit_economics:
             ue_rows.append([
@@ -15992,7 +15992,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     if construction_costs:
         # Вторая база в заголовке обязательна: без неё 23 тыс ₽/м² подземной
         # части читались как ставка на подземный метр (она — 190, во вводных).
-        cc_rows = [["Статья", "млн ₽", "тыс ₽/м² строительного объёма",
+        cc_rows = [["Статья", "млн ₽", "тыс ₽/м² наземной ГНС",
                     "тыс ₽/м² продаваемой"]]
         for item in construction_costs:
             cc_rows.append([
@@ -16196,7 +16196,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             value=sum(float(i.get("apartment_price_th") or 0)
                       *float(i.get("apartment_saleable_sqm") or 0) for i in comparison)
             return _pdf_num(value/area,1) if area else "—"
-        units=[["Очередь","Выручка на м² прод.","в т.ч. квартиры","Выручка на м² строит. объёма","Расходы на м² прод.","Расходы на м² строит. объёма","Прибыль на м² прод.","Прибыль на м² строит. объёма"]]
+        units=[["Очередь","Выручка на м² прод.","в т.ч. квартиры","Выручка на м² наземной ГНС","Расходы на м² прод.","Расходы на м² наземной ГНС","Прибыль на м² прод.","Прибыль на м² наземной ГНС"]]
         for item in comparison:
             units.append([
                 str(item.get("name") or "—"),
@@ -16291,7 +16291,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     # Рубль на метр — в обеих базах, как во всех удельных отчёта: именно по
     # этим статьям спорят с подрядчиком и с банком, а в долях процента спор
     # не ведут.
-    expense_rows=[["Статья","Сумма","Доля","тыс ₽/м² строит. объёма","тыс ₽/м² продаваемой"]]
+    expense_rows=[["Статья","Сумма","Доля","тыс ₽/м² наземной ГНС","тыс ₽/м² продаваемой"]]
     total_expense=sum(float(item.get('value') or 0) for item in expense_structure) or float(summary.get('total_expenses') or 0)
     _exp_gns=float(summary.get('project_gns_sqm') or 0)
     _exp_saleable=float(summary.get('monetizable_saleable_sqm') or 0)
@@ -16967,7 +16967,7 @@ _MODEL_SUMMARY_ROWS: list[tuple[str, str, str]] = [
     ("project_gns_sqm", "ГНС проекта (наземная), м²", "int"),
     ("monetizable_saleable_sqm", "Продаваемая площадь, м²", "int"),
     ("full_cost_per_saleable_th", "Полная себестоимость, тыс. ₽/м² продаж", "num"),
-    ("construction_cost_per_gns_th", "Строительство, тыс. ₽/м² строительного объёма", "num"),
+    ("construction_cost_per_gns_th", "Строительство, тыс. ₽/м² строит. объёма МКД", "num"),
 ]
 
 _MODEL_FINANCE_SUMMARY_ROWS: list[tuple[str, str, str]] = [
@@ -42129,7 +42129,7 @@ details.cadastral-box>summary::marker{color:#888}
           <div id="expenseStructureChart" class="expense-bars"></div>
           <div class="scroll" style="max-height:none">
             <table class="metric-table metric-compact">
-              <thead><tr><th>Категория</th><th>Сумма</th><th>Доля</th><th>тыс ₽/м² строит. объёма</th><th>тыс ₽/м² прод.</th></tr></thead>
+              <thead><tr><th>Категория</th><th>Сумма</th><th>Доля</th><th>тыс ₽/м² наземной ГНС</th><th>тыс ₽/м² прод.</th></tr></thead>
               <tbody id="expenseStructureTable"></tbody>
               <tfoot><tr><th>Итого расходов</th><th id="expenseTotal"></th><th>100%</th><th id="expenseTotalGns"></th><th id="expenseTotalSaleable"></th></tr></tfoot>
             </table>
@@ -42138,7 +42138,7 @@ details.cadastral-box>summary::marker{color:#888}
       </div>
       <div class="card">
         <div class="section-title">Структура затрат по статьям</div>
-        <table><thead><tr><th>Статья</th><th>Сумма</th><th>тыс ₽/м² строит. объёма</th><th>тыс ₽/м² прод.</th></tr></thead>
+        <table><thead><tr><th>Статья</th><th>Сумма</th><th>тыс ₽/м² наземной ГНС</th><th>тыс ₽/м² прод.</th></tr></thead>
         <tbody id="capexTable"></tbody></table>
       </div>
       </div>
@@ -42147,7 +42147,7 @@ details.cadastral-box>summary::marker{color:#888}
         <div class="report-section-title">Доходы</div>
       <div class="card">
         <div class="section-title">Структура выручки</div>
-        <table><thead><tr><th>Продукт</th><th>Выручка</th><th>тыс ₽/м² строит. объёма</th><th>тыс ₽/м² прод.</th></tr></thead>
+        <table><thead><tr><th>Продукт</th><th>Выручка</th><th>тыс ₽/м² наземной ГНС</th><th>тыс ₽/м² прод.</th></tr></thead>
         <tbody id="revenueTable"></tbody></table>
       </div>
       <div class="card">
@@ -50164,7 +50164,7 @@ function renderResult(){
   row('Средняя цена квартир',th(r.summary.average_apartment_price_th))+
   // Каждый удельный — в обеих базах: одна без второй читается как другая.
   row('Полная себестоимость',th(r.summary.full_cost_per_saleable_th)+'/м² прод. · '+th(r.summary.full_cost_per_gns_th)+'/м² ГНС')+
-  row('Строительная себестоимость',th(r.summary.construction_cost_per_saleable_th)+'/м² прод. · '+th(r.summary.construction_cost_per_gns_th)+'/м² ГНС')+
+  row('Строительная себестоимость',th(r.summary.construction_cost_per_saleable_th)+'/м² прод. · '+th(r.summary.construction_cost_per_gns_th)+'/м² строит. объёма МКД')+
   row('EBITDA на метр',th(r.summary.ebitda_per_saleable_th)+'/м² прод. · '+th(r.summary.ebitda_per_gns_th)+'/м² ГНС')+
   row('Чистая прибыль на метр',th(r.summary.net_profit_per_saleable_th)+'/м² прод. · '+th(r.summary.net_profit_per_gns_th)+'/м² ГНС');
 

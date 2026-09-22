@@ -37,6 +37,7 @@ from .verdict import (
     site_verdict,
 )
 from .page_price import PageFetcher
+from . import stage
 from .price_hint import price_hint
 from .pulse import PulseClient
 from .price_evidence import VerifiedPriceEnricher
@@ -1122,21 +1123,15 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         segment: str | None = None,
         radius_km: float = 2.5,
         budget: int = 20,
+        include_projects: bool = False,
     ) -> dict[str, Any]:
-        """Ориентир цены для поля модели: одно число, без списка проектов.
+        """Ориентир цены для поля модели и, по запросу, его расшифровка.
 
-        Это не отчёт. Отчёт объясняет и показывает, на чём построен; здесь
-        нужно подставить цифру в «Цена квартир», когда своей ещё нет. Наружу
-        уходит значение, дата и число наблюдений — перечень проектов остаётся
-        в аналитике, где его можно проверить.
+        Обычная кнопка по-прежнему получает только агрегированное число.
+        include_projects используется внутренней страницей «Как посчитано»:
+        туда уходят конкретные аналоги, их цены и календарная стадия. Точный
+        список лицензионного источника наружу публичным маршрутом не отдаётся.
         """
-        # Ввод разбирается тем же правилом, что и объект отчёта. Здесь стоял
-        # свой разбор — только адресный, — и кадастровый номер уходил в
-        # геокодер строкой. С поля «Участок» приходит не один номер, а весь
-        # список через запятую, и Nominatim отвечал на него 400 Bad Request:
-        # кнопка ломалась ровно на том вводе, ради которого её сделали.
-        # Одно правило на приложение — иначе один ввод даёт в двух местах
-        # разные точки, и это уже было с версией и со списком полей.
         if latitude is not None and longitude is not None:
             point = self._subject_point(address, latitude, longitude)
             where = point.display_name or (address or "")
@@ -1148,40 +1143,108 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         okrug_match = self._OKRUG_RE.search(where or "")
         okrug = okrug_match.group(1) if okrug_match else None
 
+        today = self.verified_prices.today.isoformat()
+        fresh_since = _fresh_price_since(self.verified_prices.today)
         peers: list[dict[str, Any]] = []
+        near: list[tuple[float, Any]] = []
+        classes: dict[int, str] = {}
         if self.pulse.available:
             classes = self.pulse.segments()
             near = self.pulse.near(subject_latitude, subject_longitude, radius_km)
-            for _, project in near[:budget]:
+            for distance, project in near[:budget]:
                 price = self.pulse.price(project.complex_id)
                 if not price:
                     continue
-                peers.append(
-                    {
-                        "price_per_sqm": price["price_per_sqm"],
-                        "observed_at": price.get("observed_at"),
-                        "segment": classes.get(project.complex_id),
+                card = self.cards.card(project.complex_id)
+                sales_start = card.get("sales_start")
+                commissioning = card.get("commissioning")
+                progress = stage.calendar_progress(sales_start, commissioning, today)
+                coefficient = stage.factor(progress) if progress is not None else None
+                row: dict[str, Any] = {
+                    "complex_id": project.complex_id,
+                    "name": project.name,
+                    "developer": getattr(project, "developer", None) or card.get("developer"),
+                    "builder": getattr(project, "builder", None) or card.get("builder"),
+                    "address": getattr(project, "address", None) or card.get("address"),
+                    "distance_km": distance,
+                    "price_per_sqm": price["price_per_sqm"],
+                    "price_per_sqm_min": price.get("price_per_sqm_min"),
+                    "price_per_sqm_max": price.get("price_per_sqm_max"),
+                    "lot_count": price.get("lot_count"),
+                    "observed_at": price.get("observed_at"),
+                    "segment": classes.get(project.complex_id) or card.get("segment"),
+                    "sales_start": sales_start,
+                    "commissioning": commissioning,
+                    "calendar_progress": progress,
+                    "calendar_progress_pct": (
+                        round(progress * 100, 1) if progress is not None else None
+                    ),
+                    "stage_label": stage.calendar_stage_label(progress),
+                    "stage_factor": round(coefficient, 4) if coefficient is not None else None,
+                    "ready_equivalent_price": (
+                        int(round(stage.to_ready(price["price_per_sqm"], progress)))
+                        if progress is not None
+                        else None
+                    ),
+                    "project_url": (
+                        project.to_dict().get("url") if hasattr(project, "to_dict") else None
+                    ),
+                }
+                if include_projects:
+                    row["sales"] = self.dynamics.latest(
+                        project.complex_id,
+                        ("sold", "rem", "price", "ddu", "disc", "mortgage", "legal"),
+                    )
+                    row["history"] = self.dynamics.series(
+                        project.complex_id, ("sold", "rem", "price", "ddu")
+                    )
+                    row["facts"] = {
+                        key: card.get(key)
+                        for key in (
+                            "living_units",
+                            "flats",
+                            "apartments",
+                            "parking",
+                            "storage",
+                            "buildings",
+                            "living_area",
+                        )
+                        if card.get(key) is not None
                     }
-                )
+                peers.append(row)
+
             if segment is None:
                 votes: dict[str, int] = {}
                 for _, project in near[:budget]:
-                    found = classes.get(project.complex_id)
-                    if found:
-                        votes[found] = votes.get(found, 0) + 1
+                    found_segment = classes.get(project.complex_id)
+                    if found_segment:
+                        votes[found_segment] = votes.get(found_segment, 0) + 1
                 segment = max(votes, key=lambda key: votes[key]) if votes else None
 
-        # Городская база подставляется только внутри своего покрытия. Иначе
-        # для Мытищ кнопка отвечала «по классу в Москве» и выдавала московскую
-        # медиану за ориентир подмосковного участка — число выглядело ответом,
-        # а было ответом про другой город.
+        # Та же фильтрация, что использует price_hint._fresh_prices, но теперь
+        # видимая в расшифровке: пользователь должен понимать, почему сосед
+        # найден, но не вошёл в агрегат.
+        for row in peers:
+            reason = None
+            observed = str(row.get("observed_at") or "")
+            if not observed or observed < fresh_since:
+                reason = "цена старше допустимого периода"
+            elif (
+                segment
+                and row.get("segment")
+                and not segments_comparable(segment, row["segment"])
+            ):
+                reason = f"класс {row['segment']} не сопоставим с {segment}"
+            row["eligible"] = reason is None
+            row["excluded_reason"] = reason
+
         scope = self.city.scope(where)
         hint = price_hint(
             peers=peers,
             segment=segment,
             okrug=okrug,
             city=self.city if scope["covered"] else MoscowMarket({}),
-            fresh_since=_fresh_price_since(self.verified_prices.today),
+            fresh_since=fresh_since,
         )
         if not scope["covered"] and not hint.get("available"):
             hint["reason"] = (
@@ -1190,10 +1253,58 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
             )
         hint["location"] = {
             "display_name": where,
+            "latitude": subject_latitude,
+            "longitude": subject_longitude,
             "okrug": okrug,
             "radius_km": radius_km,
             "city_reference": scope["covered"],
         }
+
+        if include_projects:
+            hint["projects"] = peers
+            hint["fresh_since"] = fresh_since
+            hint["stage_model"] = {
+                "available": False,
+                "basis": "calendar_sales_to_commissioning_proxy",
+                "start_factor": stage.START_FACTOR,
+                "target_readiness_pct": 0.0,
+                "note": (
+                    "Стадия — календарное положение между стартом продаж и плановым вводом, "
+                    "а не подтверждённый процент физической готовности. Поправка показана "
+                    "отдельно и не подменяет исходный рыночный ориентир."
+                ),
+            }
+            stage_peers = [
+                {
+                    "price_per_sqm": row["price_per_sqm"],
+                    "readiness": row["calendar_progress"],
+                }
+                for row in peers
+                if row.get("eligible") and row.get("calendar_progress") is not None
+            ]
+            if len(stage_peers) >= 2 and hint.get("basis") == "peers":
+                adjusted = stage.adjust(stage_peers, target_readiness=0.0)
+                if adjusted:
+                    hint["stage_model"] = {
+                        **hint["stage_model"],
+                        **adjusted,
+                        "available": True,
+                        "adjustment_pct": round(
+                            (adjusted["price_per_sqm"] / max(adjusted["plain_median"], 1) - 1)
+                            * 100,
+                            1,
+                        ),
+                    }
+            elif hint.get("basis") != "peers":
+                hint["stage_model"]["reason"] = (
+                    "Основной ориентир получен не из соседей, поэтому стадийную поправку "
+                    "к нему не применяем."
+                )
+            else:
+                hint["stage_model"]["reason"] = (
+                    "Недостаточно аналогов, у которых одновременно известны старт продаж "
+                    "и плановый ввод."
+                )
         return hint
 
     @staticmethod
