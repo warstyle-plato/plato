@@ -10825,7 +10825,6 @@ def sports_parking_functions(inputs: dict[str, Any] | None) -> tuple[str, str]:
 
 OBJECT_PARKING_AREA_DEFAULT = 35.0
 OBJECT_PARKING_OVER_AREA_DEFAULT = 25.0
-OFFICE_GBA_PER_SALEABLE_DEFAULT = 1.40
 
 
 def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
@@ -10846,11 +10845,11 @@ def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[st
       наземную ГНС не входит и считается вместе с гаражом и кладовыми.
     - `parking_units` — мест, построенных и продаваемых.
 
-    Места на первых этажах занимают часть УЖЕ заданной ГНС объекта. Они не
-    добавляют ГНС сверху и не уменьшают повторно вручную заданную продаваемую
-    площадь: saleable — конечный ТЭП пользователя. Для офисов площадь таких
-    мест считается по 25 м²/место и участвует только в проверке, помещаются ли
-    офисная часть и паркинг внутри фиксированной ГНС.
+    Места на первых этажах занимают часть УЖЕ заданной ГНС объекта. Для
+    офисов сначала из фиксированной ГНС вычитается 25 м² на каждое такое место,
+    а общая и продаваемая площади уменьшаются В ТОЙ ЖЕ ПРОПОРЦИИ, что была у
+    офисной строки до паркинга. ГНС объекта при этом не растёт: паркинг делит
+    существующий объём с офисами, а не добавляет новый.
 
     Возвращается норматив приобъектной парковки — справка, которую читает
     отчёт, — с разделом `own` о собственном паркинге рядом. Два разных ответа
@@ -10933,23 +10932,33 @@ def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[st
         fit_available_gns = n(row, "gns")
         fits_gba = True
         if tep_key == "offices":
-            # У офисника saleable — уже конечный ТЭП. Наземный паркинг занимает
-            # часть той же GBA, поэтому второй раз saleable не режем.
-            row["parking_saleable_taken"] = 0.0
-            if enabled:
-                office_program_gns = n(row, "saleable") * OFFICE_GBA_PER_SALEABLE_DEFAULT
-                fit_required_gns = office_program_gns + row["over_gns"]
-                fits_gba = fit_required_gns <= fit_available_gns + 1e-6
-                if not fits_gba:
-                    fit_warnings.append(
-                        f"{row.get('label') or 'Офисы'}: офисная часть "
-                        f"{office_program_gns:,.0f} м² и наземный паркинг "
-                        f"{row['over_gns']:,.0f} м² не помещаются в заданную ГНС "
-                        f"{fit_available_gns:,.0f} м²".replace(",", " ")
-                    )
+            # Наземный паркинг офисника находится ВНУТРИ заданной GBA:
+            # сначала 25 м²/место вычитаются из GBA, затем прежние доли общей
+            # и продаваемой площади применяются к оставшейся офисной части.
+            # Пример: (187 000 - 1 000 × 25) × 90% × 50% = 72 900 м² saleable.
+            base_gns = fit_available_gns
+            parking_gns = row["over_gns"] if enabled else 0.0
+            fits_gba = parking_gns <= base_gns + 1e-6
+            office_gns = max(0.0, base_gns - parking_gns)
+            factor = (office_gns / base_gns if base_gns > 0
+                      else (1.0 if parking_gns <= 0 else 0.0))
+            base_total = n(row, "total_area")
+            base_saleable = n(row, "saleable")
+            base_useful = n(row, "useful")
+            row["office_gns_ex_parking"] = office_gns
+            row["total_area"] = base_total * factor
+            row["saleable"] = base_saleable * factor
+            row["useful"] = (base_useful if base_useful > 0 else base_saleable) * factor
+            row["parking_saleable_taken"] = max(0.0, base_saleable - row["saleable"])
+            fit_required_gns = parking_gns
+            if not fits_gba:
+                fit_warnings.append(
+                    f"{row.get('label') or 'Офисы'}: наземный паркинг требует "
+                    f"{parking_gns:,.0f} м² при заданной ГНС "
+                    f"{base_gns:,.0f} м² — ГНС автоматически не увеличивается".replace(",", " ")
+                )
         else:
-            # ТЦ и ФОК пока сохраняют прежнюю семантику: места на первых этажах
-            # уменьшают их saleable/useful. Эта правка касается только офисника.
+            # ТЦ и ФОК пока сохраняют прежнюю семантику.
             taken = over * under_per_space
             if taken > 0:
                 row["saleable"] = max(0.0, n(row, "saleable") - taken)
@@ -10976,7 +10985,7 @@ def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[st
             "fit_required_gns": fit_required_gns,
             "fit_available_gns": fit_available_gns,
             "fits_gba": fits_gba,
-            "saleable_taken_sqm": 0.0,
+            "saleable_taken_sqm": n(row, "parking_saleable_taken"),
         })
     demand["own"] = own
     demand["own_units"] = sum(item["units"] for item in own if item["enabled"])
@@ -18859,9 +18868,15 @@ def _v4_object_parking_block(xml: str, missing: list[str]) -> str:
         if pool is None:
             missing.append(f"паркинг объектов: продаваемая B{saleable_row} не найдена")
         elif label == "МФОЦ / офисы":
-            # У офисника saleable — уже конечная вводная. Места на первых
-            # этажах находятся внутри фиксированной GBA и второй раз её не режут.
-            pass
+            # Наземный паркинг офисника сидит внутри фиксированной GBA.
+            # Вычитаем 25 м²/место из GBA и сохраняем исходную долю saleable.
+            gba = f"{params}!${gba_cell[0]}${gba_cell[1:]}"
+            parking_gba = f"{params}!${over[0]}${over[1:]}*25"
+            factor = f"IF({gba}=0,0,MAX(0,{gba}-{parking_gba})/{gba})"
+            xml, done = _v4_set_or_insert_cell(
+                xml, f"B{saleable_row}", formula=f"MAX(0,({pool})*{factor})")
+            if not done:
+                missing.append(f"паркинг объектов: продаваемая B{saleable_row}")
         else:
             # У остальных объектов сохраняем прежнюю формулу до отдельного
             # решения: метры первых этажей уходят из их saleable.
@@ -28650,16 +28665,16 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     # Паркинг объектов разложен по строкам ТЭП раньше (apply_object_parking),
     # и деньги его оттуда ЧИТАЮТ, а не считают второй раз: два счёта одной
     # величины однажды разошлись бы, и обе цифры выглядели бы верными.
-    # У офисника продаваемая — конечная вводная человека: наземный паркинг
-    # размещается ВНУТРИ заданной ГНС и не уменьшает её второй раз. Для ТЦ и
-    # ФОКа сохраняется прежняя семантика до отдельного решения владельца.
+    # После apply_object_parking строка ТЭП уже несёт фактическую продаваемую
+    # площадь. Для офисов это доля от GBA, оставшейся после наземного паркинга.
     def object_parking_row(tep_key: str) -> dict[str, Any]:
         return (t or {}).get(tep_key) or {}
 
     def object_saleable(tep_key: str, field: str) -> float:
-        taken = 0.0 if tep_key == "offices" else n(
-            object_parking_row(tep_key), "parking_saleable_taken")
-        return max(0.0, n(x, field) - taken)
+        row = object_parking_row(tep_key)
+        if row:
+            return max(0.0, n(row, "saleable"))
+        return max(0.0, n(x, field))
 
     def object_parking_capex(tep_key: str) -> float:
         """Свой подземный паркинг объекта стоит подземного метра.
