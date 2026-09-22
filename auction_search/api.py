@@ -1023,8 +1023,8 @@ def install(app: FastAPI) -> None:
                 "User-Agent": "DevelopAid-KRT-Prototype/1.0",
             },
         )
-        with urllib.request.urlopen(req, timeout=15) as response:  # noqa: S310
-            raw = response.read(8 * 1024 * 1024)
+        with urllib.request.urlopen(req, timeout=20) as response:  # noqa: S310
+            raw = response.read(24 * 1024 * 1024)
         value = json.loads(raw.decode("utf-8"))
         if not isinstance(value, dict):
             raise ValueError("production endpoint returned a non-object JSON value")
@@ -1050,26 +1050,20 @@ def install(app: FastAPI) -> None:
             ) from exc
 
         rows = [row for row in (ranking.get("rows") or []) if isinstance(row, dict)]
-        row = next(
-            (
-                item for item in rows
-                if abs(float(item.get("area_ha") or 0) - 14.62) < 0.08
-                and re.search(
-                    r"(нагатин|варшавск)",
-                    " ".join(str(item.get(k) or "") for k in ("name", "district")),
-                    re.I,
-                )
-            ),
-            None,
-        )
+        exact_slug = "varshavskoe-shosse-vl-37-nagatinskaya-ul-vld-3a-6"
+        row = next((item for item in rows if str(item.get("slug") or "") == exact_slug), None)
         if row is None:
             row = next(
                 (
                     item for item in rows
                     if re.search(
-                        r"варшавск.{0,80}37",
-                        str(item.get("name") or ""),
+                        r"(варшавск|нагатин)",
+                        " ".join(str(item.get(k) or "") for k in ("name", "district", "slug")),
                         re.I,
+                    )
+                    and (
+                        re.search(r"(^|[^0-9])37([^0-9]|$)", str(item.get("name") or ""))
+                        or abs(float(item.get("area_ha") or 0) - 14.62) < 0.15
                     )
                 ),
                 None,
@@ -1077,7 +1071,7 @@ def install(app: FastAPI) -> None:
         if row is None:
             raise HTTPException(
                 status_code=404,
-                detail="Нагатино не найдено в production-рейтинге КРТ",
+                detail=f"Нагатино не найдено среди {len(rows)} строк production-рейтинга КРТ",
             )
         return {
             "row": row,
@@ -1089,6 +1083,25 @@ def install(app: FastAPI) -> None:
             },
             "source": "production /auctions/krt/ranking",
         }
+
+    @app.get("/auctions/krt-prototype/nagatino/prod-parcels", include_in_schema=False)
+    async def auction_krt_nagatino_prod_parcels() -> dict[str, Any]:
+        """Reuse the production Nagatino geometry/cache in the isolated preview.
+
+        The preview service has an empty DATA_DIR, so its local parcels endpoint
+        can name objects but cannot draw cached EGRN contours.  The production
+        endpoint already owns those contours; proxy that payload instead of
+        starting a second EGRN reader.
+        """
+        try:
+            return await run_in_threadpool(
+                _prototype_prod_json, "/krt/nagatino/parcels")
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("KRT prototype: production Nagatino geometry unavailable")
+            raise HTTPException(
+                status_code=502,
+                detail=f"Не удалось прочитать production-геометрию Нагатино: {type(exc).__name__}: {exc}",
+            ) from exc
 
     @app.get("/auctions/krt-lab", response_class=HTMLResponse, include_in_schema=False)
     async def auction_krt_score_lab() -> HTMLResponse:
