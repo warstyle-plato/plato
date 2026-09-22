@@ -49,13 +49,23 @@ PREVIEW_CARD = r'''<!doctype html><html lang="ru"><head><meta charset="utf-8"><m
 const slug=decodeURIComponent(location.pathname.split('/').pop()),$=id=>document.getElementById(id),esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),fmt=(v,d=0)=>v===null||v===undefined||v===''?'—':new Intl.NumberFormat('ru-RU',{maximumFractionDigits:d}).format(Number(v));
 async function j(u){let r=await fetch(u),t=await r.text(),d;try{d=JSON.parse(t)}catch(e){}if(!r.ok)throw Error((d&&d.detail)||t.slice(0,150)||r.status);return d}
 function listFacts(p){if(!p)return 'Поиск ещё не выполнялся.';let bits=[];if(p.operator_name)bits.push('Оператор: '+p.operator_name);for(let k of ['operator_named','operator_appointed','agreement','selling_now','city_needs'])for(let x of (p[k]||[]))bits.push((x.name?x.name+' — ':'')+(x.quote||x.title||JSON.stringify(x)));return bits.length?bits.join('\n\n'):'Прочитанных признаков оператора / договора / реализации пока нет.'}
-function siteMap(site,row,full){
+function siteMap(site,row,full,marketPoint,rank){
  const box=$('topMap');
  const siteR=(full&&full.site&&full.site.rings_merc)||((site&&site.rings_merc)||[]);
  const lands=(full&&full.lands)||[], objects=(full&&full.objects)||[];
  const rings=[...siteR.flatMap?siteR:[], ...lands.flatMap(x=>x.rings_merc||[]), ...objects.flatMap(x=>x.rings_merc||[])];
  const all=[...siteR,...lands.flatMap(x=>x.rings_merc||[]),...objects.flatMap(x=>x.rings_merc||[])].filter(r=>Array.isArray(r)&&r.length>=3);
  const pts=all.flat().filter(p=>Array.isArray(p)&&p.length>=2&&Number.isFinite(Number(p[0]))&&Number.isFinite(Number(p[1])));
+ const MERC=20037508.342789244, mx=lon=>Number(lon)*MERC/180, my=lat=>Math.log(Math.tan((90+Number(lat))*Math.PI/360))*MERC/Math.PI;
+ let mc=null,mr=0;
+ if(marketPoint&&Number.isFinite(Number(marketPoint.latitude))&&Number.isFinite(Number(marketPoint.longitude))){
+   mc=(Array.isArray(marketPoint.centre_merc)&&marketPoint.centre_merc.length>=2)
+     ?[Number(marketPoint.centre_merc[0]),Number(marketPoint.centre_merc[1])]
+     :[mx(marketPoint.longitude),my(marketPoint.latitude)];
+   // Weekly KRT market screening uses a 3.0 km radius.
+   mr=3000/Math.cos(Number(marketPoint.latitude)*Math.PI/180);
+   pts.push([mc[0]-mr,mc[1]-mr],[mc[0]+mr,mc[1]+mr]);
+ }
  if(!pts.length){box.innerHTML='<div class="box">Контур территории пока не получен.</div>';return}
  const xs=pts.map(p=>Number(p[0])),ys=pts.map(p=>Number(p[1])),minx=Math.min(...xs),maxx=Math.max(...xs),miny=Math.min(...ys),maxy=Math.max(...ys);
  const dx=Math.max(300,maxx-minx),dy=Math.max(300,maxy-miny),pad=Math.max(dx,dy)*.12,ax=minx-pad,bx=maxx+pad,ay=miny-pad,by=maxy+pad,w=1100,h=620;
@@ -64,7 +74,14 @@ function siteMap(site,row,full){
  const landPaths=lands.filter(x=>(x.rings_merc||[]).length).map(x=>'<path d="'+pathOf(x.rings_merc)+'" fill="'+esc(x.colour||'#777')+'" fill-opacity=".15" stroke="'+esc(x.colour||'#777')+'" stroke-width="2"'+(x.part?' stroke-dasharray="7 5"':'')+'></path>').join('');
  const objPaths=objects.filter(x=>(x.rings_merc||[]).length).map(x=>'<path d="'+pathOf(x.rings_merc)+'" fill="'+esc(x.colour||'#777')+'" fill-opacity=".45" stroke="'+esc(x.colour||'#777')+'" stroke-width="1.5"></path>').join('');
  const sitePath=siteR.length?'<path d="'+pathOf(siteR)+'" fill="none" stroke="#111" stroke-width="4" stroke-dasharray="9 6"></path>':'';
- box.innerHTML='<div class="mapstage"><img src="'+src+'" alt="Подложка улиц OSM" onerror="this.style.visibility=\'hidden\'"><svg viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none">'+landPaths+objPaths+sitePath+'</svg><div class="mapnote">'+esc(row.name||'КРТ')+' · подложка улиц + контур КРТ'+(lands.length?' · участков '+lands.length:'')+(objects.length?' · объектов '+objects.length:'')+'</div></div>';
+ const marketCircle=(mc&&mr)?'<circle cx="'+px(mc[0]).toFixed(1)+'" cy="'+py(mc[1]).toFixed(1)+'" r="'+((mr/(bx-ax))*w).toFixed(1)+'" fill="none" stroke="#1769aa" stroke-width="4" stroke-dasharray="12 8" vector-effect="non-scaling-stroke"></circle>':'';
+ const marketDot=mc?'<circle cx="'+px(mc[0]).toFixed(1)+'" cy="'+py(mc[1]).toFixed(1)+'" r="8" fill="#1769aa" stroke="#fff" stroke-width="3" vector-effect="non-scaling-stroke"></circle>':'';
+ let marketNote='';
+ if(mc&&mr){
+   const p=Number(rank&&rank.surrounding_price_rub_sqm),v=rank&&rank.surrounding_sales_units_per_month;
+   marketNote=' · рынок: радиус 3 км'+(Number.isFinite(p)&&p>0?' · '+fmt(p)+' ₽/м²':'')+(v!=null?' · '+fmt(v,1)+' ДДУ/мес.':'');
+ }
+ box.innerHTML='<div class="mapstage"><img src="'+src+'" alt="Подложка улиц OSM" onerror="this.style.visibility=\'hidden\'"><svg viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none">'+landPaths+objPaths+sitePath+marketCircle+marketDot+'</svg><div class="mapnote">'+esc(row.name||'КРТ')+' · подложка улиц + контур КРТ'+(lands.length?' · участков '+lands.length:'')+(objects.length?' · объектов '+objects.length:'')+marketNote+'</div></div>';
 }
 function openPlato(){ $('platoModal').classList.add('open') }
 $('platoTop').onclick=openPlato;$('platoFab').onclick=openPlato;$('platoRecommendation').onclick=()=>{openPlato();$('platoQuestion').value='Дай рекомендацию по этой площадке КРТ: стоит ли продолжать анализ, что является главным ограничением и что проверить первым?';askPlato()};$('platoClose').onclick=()=>$('platoModal').classList.remove('open');
@@ -85,9 +102,9 @@ async function askPlato(){
  }catch(e){out.textContent='Платон недоступен на тестовом стенде: '+e.message}
  finally{$('platoAsk').disabled=false}
 }
-$('platoAsk').onclick=askPlato;async function boot(){let [cat,rr,dd,mapd]=await Promise.all([j('/krt-preview/data'),j('/krt-preview/ranking'),j('/krt-preview/decisions').catch(()=>({matched_rows:[],tep:{}})),j('/krt-preview/map').catch(()=>({sites:[]}))]),rows=cat.projects||[],r=rows.find(x=>String(x.slug||'')===slug);if(!r)throw Error('Площадка '+slug+' не найдена в рабочем каталоге');let rank=(rr.rows||[]).find(x=>x.slug===slug)||{}, dm=(dd.matched_rows||[]).find(x=>x.slug===slug)||{}, dtep=(dd.tep||{})[String(dm.id||'')]||null, place=[r.name,r.address,r.district].filter(Boolean).join(' '), isNagatino=/варшавск[^0-9]{0,40}37|нагатинск[^0-9]{0,40}3\s*[аa]/i.test(place), nag=null;if(isNagatino){try{nag=await j('/krt-preview/nagatino/source')}catch(e){nag=null}};
+$('platoAsk').onclick=askPlato;async function boot(){let [cat,rr,dd,mapd]=await Promise.all([j('/krt-preview/data'),j('/krt-preview/ranking'),j('/krt-preview/decisions').catch(()=>({matched_rows:[],tep:{}})),j('/krt-preview/map').catch(()=>({sites:[]}))]),rows=cat.projects||[],r=rows.find(x=>String(x.slug||'')===slug);if(!r)throw Error('Площадка '+slug+' не найдена в рабочем каталоге');let rank=(rr.rows||[]).find(x=>x.slug===slug)||{}, marketPoint=await j('/krt-preview/proxy/'+encodeURIComponent(slug)+'/point').catch(()=>null), dm=(dd.matched_rows||[]).find(x=>x.slug===slug)||{}, dtep=(dd.tep||{})[String(dm.id||'')]||null, place=[r.name,r.address,r.district].filter(Boolean).join(' '), isNagatino=/варшавск[^0-9]{0,40}37|нагатинск[^0-9]{0,40}3\s*[аa]/i.test(place), nag=null;if(isNagatino){try{nag=await j('/krt-preview/nagatino/source')}catch(e){nag=null}};
 $('title').textContent=r.name||r.address||slug;$('platoContext').textContent=(r.name||slug)+' · '+[r.okrug,r.district].filter(Boolean).join(' · ');$('status').textContent=r.status|| (r.no_card?'Проект решения':'КРТ');$('where').textContent=[r.okrug,r.district,r.address].filter(Boolean).join(' · ');
-let mapped=(mapd.sites||[]).find(x=>String(x.slug||'')===String(r.slug||''))||((nag&&nag.krt_site)||null);siteMap(mapped,r,nag&&nag.map);let tep=(nag&&nag.tep)||dtep||r;window.KRT_CONTEXT={project:{slug:r.slug,name:r.name,address:r.address,okrug:r.okrug,district:r.district,status:r.status},decision_tep:tep,ranking:rank,nagatino:nag};let ms=[['Площадь',fmt(tep.area_ha??r.area_ha??r.krt_area_ha,1)+' га'],['Общий объём',fmt(tep.total_gfa_sqm??r.total_gfa_sqm)+' м²'],['Жильё',fmt(tep.housing_gfa_sqm??r.housing_gfa_sqm)+' м²'],['Балл',fmt(rank.score??r.score)],['LLCR',rank.project_llcr_x?fmt(rank.project_llcr_x,2)+'x':'—'],['Цена окружения',rank.surrounding_price_rub_sqm?fmt(rank.surrounding_price_rub_sqm)+' ₽/м²':'—']];$('metrics').innerHTML=ms.map(x=>'<div class="metric"><b>'+esc(x[1])+'</b><small>'+esc(x[0])+'</small></div>').join('');
+let mapped=(mapd.sites||[]).find(x=>String(x.slug||'')===String(r.slug||''))||((nag&&nag.krt_site)||null);siteMap(mapped,r,nag&&nag.map,marketPoint,rank);let tep=(nag&&nag.tep)||dtep||r;window.KRT_CONTEXT={project:{slug:r.slug,name:r.name,address:r.address,okrug:r.okrug,district:r.district,status:r.status},decision_tep:tep,ranking:rank,nagatino:nag};let ms=[['Площадь',fmt(tep.area_ha??r.area_ha??r.krt_area_ha,1)+' га'],['Общий объём',fmt(tep.total_gfa_sqm??r.total_gfa_sqm)+' м²'],['Жильё',fmt(tep.housing_gfa_sqm??r.housing_gfa_sqm)+' м²'],['Балл',fmt(rank.score??r.score)],['LLCR',rank.project_llcr_x?fmt(rank.project_llcr_x,2)+'x':'—'],['Цена окружения',rank.surrounding_price_rub_sqm?fmt(rank.surrounding_price_rub_sqm)+' ₽/м²':'—']];$('metrics').innerHTML=ms.map(x=>'<div class="metric"><b>'+esc(x[1])+'</b><small>'+esc(x[0])+'</small></div>').join('');
 $('old').href=isNagatino?'/krt/nagatino':'/krt/site/'+encodeURIComponent(slug);$('territoryLink').href=isNagatino?'/krt/nagatino':'/krt/site/'+encodeURIComponent(slug);$('outlineLink').href=isNagatino?'/krt-preview/nagatino/decision-outline.png':'/krt/site/'+encodeURIComponent(slug)+'/decision-outline.png';$('export').href=isNagatino?'/krt/nagatino/export.xlsx':'/krt/site/'+encodeURIComponent(slug)+'/export.xlsx';$('handoff').href='/auctions/krt/'+encodeURIComponent(slug)+'/handoff';
 let links=[];if(r.url)links.push('<a target="_blank" href="'+esc(r.url)+'">Карточка КРТ на krt.mos.ru ↗</a>');if(dm.url)links.push('<a target="_blank" href="'+esc(dm.url)+'">Проект решения на mos.ru ↗</a>');else if(r.decision_url)links.push('<a target="_blank" href="'+esc(r.decision_url)+'">Проект решения mos.ru ↗</a>');if(r.source&&r.source.url)links.push('<a target="_blank" href="'+esc(r.source.url)+'">Источник ↗</a>');$('sourceLinks').innerHTML=links.join('');
 {
@@ -140,6 +157,17 @@ def install(app):
             req = urllib.request.Request(url, headers={"User-Agent":"DevelopAid-KRT-preview/1"})
             with urllib.request.urlopen(req, timeout=55) as response:
                 return JSONResponse(json.loads(response.read().decode("utf-8")), headers={"Cache-Control":"no-store"})
+        except Exception as exc:
+            return JSONResponse({"error":str(exc)}, status_code=502)
+
+    @app.get("/krt-preview/proxy/{slug}/point", include_in_schema=False)
+    async def krt_preview_point(slug: str):
+        url = "https://plato-development-investment-model.onrender.com/auctions/krt/" + urllib.parse.quote(slug) + "/point"
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent":"DevelopAid-KRT-preview/1"})
+            with urllib.request.urlopen(req, timeout=55) as response:
+                return JSONResponse(json.loads(response.read().decode("utf-8")),
+                                    headers={"Cache-Control":"no-store"})
         except Exception as exc:
             return JSONResponse({"error":str(exc)}, status_code=502)
 
