@@ -22263,10 +22263,12 @@ def _v4_social_capex_formula(base_row: int, phase_index: int, column: str) -> st
 V4_REWRITTEN_FORMULA_ROWS: dict[str, tuple[tuple[int, ...], str]] = {
     "Дашборд": (
         (2, 5, 10) + tuple(range(15, 44)),
-        "Лист собирается заново по ТЗ владельца (19.09.2026): формулы на "
-        "скрытый источник Dashboard_Data, шесть карточек KPI, ТЭП, продажи, "
-        "авто-риски и три диаграммы; прежние карточки ОТЧЕТ и квартальные ряды "
-        "CF переехали в источник (v4_dashboard.build)",
+        "Лист собирается заново по ТЗ владельца (19.09.2026, состав страницы "
+        "«Итог» 21.09.2026): формулы на скрытый источник Dashboard_Data, "
+        "шесть карточек KPI, эффективность, ТЭП, доходы, цены и темп, "
+        "себестоимость, структура расходов, финансовая деятельность, риски, "
+        "сроки очередей и три диаграммы; прежние карточки ОТЧЕТ и квартальные "
+        "ряды CF переехали в источник (v4_dashboard.build)",
     ),
     "CAPEX": (
         (
@@ -24035,7 +24037,8 @@ def build_project_workbook(
         _dashboard = v4_dashboard.build(
             source, _v4_sheet_path(source, v4_dashboard.DASHBOARD_SHEET), styles_xml,
             presentation_origin(inputs, calculation_source_tep, phasing),
-            _AGENT_BANK_LLCR_TARGET, _v4_cf_columns(), enabled_phases > 1)
+            _AGENT_BANK_LLCR_TARGET, _v4_cf_columns(), enabled_phases > 1,
+            _V4_CAPEX_ARTICLE_ROW, _V4_CAPEX_BLOCK_STRIDE)
     except Exception as exc:  # noqa: BLE001 — дашборд без книги не выпускается молча
         missing.append("Дашборд · не собран: " + _error_location(exc))
 

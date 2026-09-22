@@ -186,11 +186,15 @@ def _attempt_problem(attempt: dict[str, Any]) -> str:
         when = ""
     seen = f" (прочитано {when})" if when else ""
     count = int(attempt.get("documents") or 0)
+    why = str(attempt.get("why") or "").strip()
     if attempt.get("outcome") == "no_table":
+        # Причина по вложениям — часть ответа: без неё «таблицы нет» одинаково
+        # звучит у документа без таблицы, у скана и у таблицы, чьи колонки
+        # стоят не там, где их ищут. Два случая из трёх — наш пробел.
         return (f"вложения лота прочитаны{seen}"
                 + (f", их {count}" if count else "")
-                + " — таблицы состава территории в них нет")
-    why = str(attempt.get("why") or "").strip()
+                + " — таблицы состава территории в них нет"
+                + (f". Читатель состава сказал: {why}" if why else ""))
     if attempt.get("outcome") == "unread":
         # Площадка отдала всё, а текст из части вложений не извлёк НАШ
         # читатель: сканы PDF и архивы картинок. Это наш пробел, и «спросим

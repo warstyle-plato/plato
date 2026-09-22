@@ -64,6 +64,17 @@ _DECISION_FIELDS = ("id", "title", "url", "address", "okrug", "kind",
                     "published_at", "department")
 _SPACE = re.compile(r"\s+")
 _NUMBER = re.compile(r"[-+]?\d+(?:[.,]\d+)?")
+# Слаг площадки бывает двух видов: каталожный («varshavskoe-shosse-37») и ключ
+# площадки-решения («decision:349135220»). Двоеточие в нём законно: у площадки
+# без карточки слага в реестре нет вовсе, и ключом ей служит номер документа.
+# Образец стоит один на всех, потому что копии, знавшие только каталожный вид,
+# отвечали «слаг площадки не задан» ровно там, где слаг задан.
+_SITE_SLUG = re.compile(r"[a-zA-Z0-9_-]{2,180}|decision:\d{4,20}")
+
+
+def is_site_slug(value: Any) -> bool:
+    """Годится ли строка идентификатором площадки — каталожным или решением."""
+    return bool(_SITE_SLUG.fullmatch(str(value or "").strip()))
 
 
 def _map_name_key(value: Any) -> str:
@@ -1222,6 +1233,41 @@ class KrtRegistry:
         save_json(cache_path, result)
         return result
 
+    def requirements_for(self, slug: str, *,
+                         refresh: bool = False) -> dict[str, Any] | None:
+        """Обязательства площадки — одной дверью, каким бы ни был её слаг.
+
+        Документ один и тот же, проект решения о КРТ, а дорога до него разная:
+        у площадки каталога через её слаг, у площадки-решения через номер
+        документа, потому что слага в реестре у неё нет вовсе. Пока выбор двери
+        стоял у каждого вызывающего, часть из них знала только каталожную — и
+        площадка-решение получала «не найдено» там, где документ прочитан.
+        """
+        clean = str(slug or "").strip()
+        if clean.startswith("decision:"):
+            return self.decision_requirements(clean[len("decision:"):], refresh=refresh)
+        return self.requirements(clean, refresh=refresh)
+
+    def decision_meta(self, slug: str,
+                      requirements: dict[str, Any] | None) -> dict[str, Any]:
+        """Подпись документа, из которого собран перечень, — одной формы у обеих дорог.
+
+        У площадки каталога она лежит готовой в `requirements["decision"]`, у
+        площадки-решения под этим ключом стоят сами разобранные факты, а адрес
+        страницы документа знает снимок решений. Без приведения к одной форме
+        контур площадки-решения был бы подписан пустым заголовком — то есть
+        выглядел бы собранным неизвестно откуда.
+        """
+        clean = str(slug or "").strip()
+        if not clean.startswith("decision:"):
+            return dict((requirements or {}).get("decision") or {})
+        if not (requirements or {}).get("available"):
+            return {}
+        row = self.find_decision(clean[len("decision:"):]) or {}
+        return {"title": str(row.get("name") or ""),
+                "page_url": str(row.get("url") or ""),
+                "pdf_url": str((requirements or {}).get("pdf_url") or "")}
+
     def decisions(self, *, refresh: bool = False, max_pages: int = 0,
                   catalogue: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         """Решения о КРТ и разложение их на «карточка есть» и «карточки нет».
@@ -1473,8 +1519,15 @@ class KrtRegistry:
         участок читается как «его нет в территории».
         """
         clean = str(slug or "").strip()
-        if not re.fullmatch(r"[a-zA-Z0-9_-]{2,180}", clean):
-            return {"rings_merc": [], "centre_merc": None, "problem": "слаг площадки не задан"}
+        if not is_site_slug(clean):
+            # Отказ называет, ЧТО с ним не так. Прежний образец не знал ключа
+            # площадки-решения, и 240 строк каталога из 522 получали «слаг не
+            # задан» при заданном слаге — ровно те, у которых контур собирается
+            # только по решению: карточки в реестре у них нет по построению, и в
+            # файле карты города их тоже нет.
+            problem = ("слаг площадки не задан" if not clean
+                       else f"слаг площадки не похож на слаг: {clean[:60]}")
+            return {"rings_merc": [], "centre_merc": None, "problem": problem}
         cache_path = self.outline_dir / f"{clean}.json"
         cached = load_json(cache_path)
         if not refresh and isinstance(cached, dict) and cached.get("schema_version") == 1:
@@ -1482,13 +1535,16 @@ class KrtRegistry:
                    else self.card_facts_failure_ttl_seconds)
             if fresh(cache_path, ttl):
                 return dict(cached)
-        requirements = self.requirements(clean)
+        requirements = self.requirements_for(clean)
         numbers = list((requirements or {}).get("cadastral_numbers") or [])
-        decision = dict((requirements or {}).get("decision") or {})
+        decision = self.decision_meta(clean, requirements)
         if requirements and requirements.get("skipped"):
             problem = "перечень участков читается из проекта решения, а он есть только у планируемых площадок"
         elif not requirements or not requirements.get("available"):
-            problem = "требования по площадке не читаются"
+            # Причина чтения едет наружу: «не читаются» без неё одинаково
+            # выглядит и когда документа нет, и когда мы не дошли до него.
+            why = str((requirements or {}).get("reason") or "").strip()
+            problem = "требования по площадке не читаются" + (f": {why}" if why else "")
         elif not decision:
             problem = "проект решения о КРТ на mos.ru не найден — перечня участков нет"
         elif not numbers:
@@ -1571,7 +1627,7 @@ class KrtRegistry:
         отсутствующую в реестре.
         """
         clean = str(slug or "").strip()
-        if not re.fullmatch(r"[a-zA-Z0-9_-]{2,180}", clean):
+        if not is_site_slug(clean):
             return None
         cached = load_json(self.outline_dir / f"{clean}.json")
         if isinstance(cached, dict) and cached.get("schema_version") == 1:
@@ -1676,8 +1732,7 @@ class KrtRegistry:
         """
         clean = [str(slug or "").strip() for slug in slugs]
         missing = [slug for slug in clean
-                   if re.fullmatch(r"[a-zA-Z0-9_-]{2,180}", slug or "")
-                   and self.outline_cached(slug) is None]
+                   if is_site_slug(slug) and self.outline_cached(slug) is None]
         if not missing:
             return False
         with self._outlines_lock:
