@@ -112,6 +112,42 @@ def _months(value: str | None) -> int | None:
     return int(year) * 12 + int(month)
 
 
+
+def calendar_progress(
+    start: str | None, finish: str | None, today: str | None = None
+) -> float | None:
+    """Положение даты внутри календарного окна 0…1.
+
+    Это НЕ физическая готовность стройки. Для рынка сейчас надёжно известны
+    старт продаж и плановый ввод, поэтому эта величина годится только как
+    прозрачный прокси стадии реализации: 0 — старт окна, 1 — плановый ввод.
+    Когда появится подтверждённая строительная готовность, её нужно передавать
+    в factor напрямую, не смешивая два понятия.
+    """
+    first, last, now = _months(start), _months(finish), _months(today)
+    if first is None or last is None or now is None or last <= first:
+        return None
+    return _clamp((now - first) / (last - first))
+
+
+def calendar_stage_label(progress: float | None) -> str | None:
+    """Человеческая подпись календарной стадии без притворства о % стройки."""
+    if progress is None:
+        return None
+    value = _clamp(float(progress))
+    if value <= 0.10:
+        return "старт продаж"
+    if value < 0.40:
+        return "ранняя стадия"
+    if value < 0.70:
+        return "середина цикла"
+    if value < 0.90:
+        return "поздняя стадия"
+    if value < 1.0:
+        return "около ввода"
+    return "плановый срок ввода наступил"
+
+
 def median(values: list[float]) -> float | None:
     ordered = sorted(value for value in values if value)
     if not ordered:
