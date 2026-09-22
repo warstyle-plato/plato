@@ -81,7 +81,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.24.22"
+VERSION = "0.24.23"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -698,7 +698,8 @@ def landscaping_area_per_person(inputs: dict[str, Any],
         if population <= 0:
             if is_nonresidential(inputs):
                 return 0.0, ("нежилой проект: площадь задана, а делить её на "
-                             "человека не на кого — задайте ставку на метр ГНС")
+                             "человека не на кого — двор здесь входит в "
+                             "себестоимость объекта")
             return 0.0, "площадь задана, а квартир в проекте нет — на человека не делится"
         shown_given = f"{given:g}".replace(".", ",")
         return given / population, (
@@ -732,6 +733,16 @@ def landscaping_cost(inputs: dict[str, Any], tep: dict[str, Any],
         return (max(0.0, above_gns) * rate * 1000,
                 f"{rate:g} тыс ₽/м² ГНС × {above_gns:,.0f} м²"
                 .replace(",", " "))
+    # Нежилой проект отдельной статьи двора не имеет — решение владельца
+    # (21.09.2026): «у нас себестоимость вообще всего объекта же целиком
+    # прописана», то есть двор уже в ставке СМР объекта, и вторая статья была
+    # бы двойным счётом. Прежде режим ставил свою ставку 10 тыс ₽/м² ГНС, и
+    # на офиснике 19 110 м² это 210,7 млн ₽ CAPEX и LLCR 0,5427 против
+    # 0,5629. Заданная руками ставка по-прежнему сильнее: посчитать двор
+    # отдельно — решение человека, а не запрет методики.
+    if is_nonresidential(inputs):
+        return 0.0, ("нежилой проект: двор входит в себестоимость объекта — "
+                     "отдельной статьёй не считается")
     area, basis = landscaping_area(inputs, tep)
     yard_rate = float(inputs.get("landscaping_th_per_sqm") or 0.0)
     return area * yard_rate * 1000, f"{yard_rate:g} тыс ₽/м² двора · {basis}"
@@ -748,8 +759,8 @@ def landscaping_area(inputs: dict[str, Any], tep: dict[str, Any]) -> tuple[float
             # молчание методики читалось бы как отсутствие работ. База у этого
             # проекта своя и она уже есть — ставка на метр наземной ГНС.
             if is_nonresidential(inputs):
-                return 0.0, ("нежилой проект: двор от населения не считается — "
-                             "задайте ставку на метр ГНС")
+                return 0.0, ("нежилой проект: двор входит в себестоимость "
+                             "объекта — отдельной статьёй не считается")
             return 0.0, "квартир в проекте нет — благоустраивать нечего"
         return 0.0, basis
     # Основание называет драйвер и не повторяет само себя: «11 м² × 2425 чел.»
@@ -1375,25 +1386,18 @@ NONRESIDENTIAL_CLEARED_INPUTS: dict[str, str] = {
     "underground_manual_gns_sqm": "подземный паркинг проекта — площадь",
 }
 
-# Ставка благоустройства нежилого проекта — тыс ₽ на метр НАЗЕМНОЙ ГНС.
+# Своей ставки двора у нежилого проекта НЕТ — решение владельца 21.09.2026:
+# «не надо писать что ставка двора — это никому неинтересно и никакой роли не
+# играет вообще! У нас себестоимость вообще всего объекта же целиком
+# прописана» и следом «не считать». Двор входит в ставку СМР объекта, и
+# отдельная статья была бы двойным счётом.
 #
-# Считать двор нежилого проекта населением нечем — квартир у него нет, а
-# норматив города (2152-ПП в редакции 2260-ПП) писан для объектов ЖИЛОГО
-# назначения и меряется метрами на человека. Иного способа, кроме метра ГНС,
-# у нас нет (решение владельца, 21.09.2026: «неважно какая цифра по
-# умолчанию, главное считать на гнс… НО нельзя чтобы это сломало логику
-# расчёта от населения для жилья»).
+# Прежде режим ставил 10 тыс ₽/м² ГНС. Цена измерена на офиснике 19 110 м²:
+# 210,7 млн ₽ CAPEX и LLCR 0,5427 против 0,5629 без неё.
 #
-# Число — методика владельца, а не замер: единственный наш замер этой статьи
-# (`developaid_cost_structure.json`) снят с ЖИЛОГО проекта и стоит на одном
-# источнике.
-#
-# И живёт оно ТОЛЬКО в режиме: поле `landscaping_gns_th_per_sqm` глобальное и
-# сильнее методики класса, поэтому поставленное умолчанием оно двинуло бы
-# каждый жилой проект — на умолчаниях 400,1 → 1 453,8 млн ₽ и LLCR
-# 0,9595 → 0,9313. Ставит его переключатель типа проекта, там же, где он
-# обнуляет жильё, и так же называет поставленное.
-NONRESIDENTIAL_LANDSCAPING_TH_PER_SQM = 10.0
+# Поле `landscaping_gns_th_per_sqm` при этом остаётся и работает: заданная
+# руками ставка сильнее методики в любом режиме — посчитать двор отдельно
+# это решение человека, а не запрет методики.
 
 
 def project_kind(inputs: dict[str, Any] | None) -> str:
@@ -42374,6 +42378,28 @@ details.cadastral-box>summary::marker{color:#888}
     <div id="classSourcesBody" style="margin-top:16px"></div>
   </div>
 </div>
+<!-- Что случилось при смене типа проекта. Переключение — разовое действие с
+     большими последствиями: обнуляется жильё, соцнагрузка и плата за ВРИ, а
+     метры объектов задаются уже в другом месте. Ответ на «что теперь» стоял
+     плашкой ниже по странице — её надо было заметить (владелец, 21.09.2026:
+     «самое разумное при выборе нежилого всплывающее окно, что такие-то
+     параметры отключены, можете выбрать ТЭП в разделе экономика»). Текст
+     живёт ЗДЕСЬ и только здесь: плашка под селектором зовёт это же окно,
+     иначе одно и то же сказано дважды подряд и его перестают читать. -->
+<div id="projectKindDialog" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);
+     z-index:91;align-items:center;justify-content:center;padding:20px" onclick="if(event.target===this)closeProjectKindDialog()">
+  <div style="background:#fff;max-width:660px;width:100%;max-height:86vh;overflow:auto;padding:22px 24px;border-radius:10px">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">
+      <h2 id="projectKindDialogTitle" style="margin:0;font-size:17px">Нежилой проект</h2>
+      <button onclick="closeProjectKindDialog()" style="margin-left:auto;border:1px solid #ddd;background:#fff;border-radius:6px;padding:3px 10px;cursor:pointer">✕</button>
+    </div>
+    <div id="projectKindDialogBody" style="font-size:13px;line-height:1.55"></div>
+    <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn" type="button" onclick="closeProjectKindDialog()">Понятно</button>
+      <button type="button" onclick="cancelNonResidential()" style="border:1px solid #c98a1b;background:#fff;color:#8a5a00;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px">Вернуть жильё</button>
+    </div>
+  </div>
+</div>
 <!-- Карта, которую крутят. Миниатюра остаётся на месте и остаётся тем, что
      уходит в бота и в печать: развёрнутая карта живёт только на экране, и
      подменять ею печатную картинку нельзя — иначе про один участок будет два
@@ -42479,6 +42505,26 @@ window.addEventListener('error', function(event){
   }
   var message=event.message||(event.error&&event.error.message)||'ошибка без описания';
   var where=(event.filename||'страница')+':'+(event.lineno||0)+':'+(event.colno||0);
+  // «Script error.» без файла и строки — ошибка из скрипта ДРУГОГО источника:
+  // браузер её содержимое не раскрывает. Наших внешних скриптов на странице
+  // нет ни одного (это держит отдельная проверка), значит пришла она от
+  // расширения браузера или обвязки просмотрщика — на iPhone/Safari это
+  // обычное дело. Прежняя плашка звала это «страница не доработала до конца»
+  // и печатала «страница:0:0»: человек искал поломку в нашем коде по адресу,
+  // которого не существует (экран владельца, 21.09.2026). Сказать, что
+  // страница цела, мы при этом не вправе — но ответить, докуда она дошла,
+  // можем, и это измерение, а не догадка.
+  if(!event.filename&&!event.lineno&&/^script error/i.test(String(message))){
+   pageFailureBox().textContent='Сообщение об ошибке пришло из скрипта другого источника.\n'
+    +message+'\n'
+    +'Браузер не раскрывает ни файла, ни строки, а внешних скриптов на этой странице нет ни одного '
+    +'— значит это расширение браузера или встроенный просмотрщик.\n'
+    +(window.__developaidBooted
+      ? 'Наша страница к этому моменту загрузилась целиком.'
+      : 'Наша страница в этот момент ещё загружалась.')+'\n'
+    +'Если что-то не работает — напишите, что именно не нажимается.';
+   return;
+  }
   pageFailureBox().textContent='Страница не доработала до конца.\n'
    +message+'\n'+where+'\n'
    +'Пришлите этот текст — по нему видно точное место.';
@@ -46006,7 +46052,18 @@ function normativeUnderground(){
 
 // Потребность в местах — один ответ на весь экран. Выгрузка города знает
 // приобъектные места нежилья и потому идёт первой; её нет — считает норма.
+//
+// Нежилой проект: МКД в нём нет, значит нет и его подземного паркинга. Норма
+// без квартир и так отвечает нулём, а ВЫГРУЗКА отвечает своим числом,
+// посчитанным по нормативному — то есть ЖИЛОМУ — ТЭП участка: на экране
+// владельца это 135 постоянных + 14 гостевых = 149 м/м и 5 215 м² под
+// подписью «строка обнулена и заперта» (21.09.2026). Цена на проверочном
+// нежилом проекте: CAPEX +762,6 млн ₽, выручка +74,2 (135 мест продаются),
+// чистая прибыль −932,3 млн, LLCR 0,609 → 0,526. Гараж самого офисника к
+// этому отношения не имеет: он считается своей нормой (приложение 6 к
+// 945-ПП) и живёт своими полями объекта.
 function parkingRequirement(){
+ if(isNonResidential())return null;
  return getGlavapuUnderground()||normativeUnderground();
 }
 
@@ -46019,7 +46076,10 @@ function repairParkingFromGlavapu(){
  // Отказ от подземного паркинга: в области потребность закрывают наземным
  // гаражом. Ноль в поле мест значит «по нормативу», поэтому отказ — отдельный
  // признак, иначе импорт ГлавАПУ вернул бы паркинг при первом пересчёте.
- if(inputs.underground_parking_disabled){
+ // Нежилой проект здесь же: строку чистит ТОТ ЖЕ писатель, что её и
+ // наполняет, иначе обнуление переключателем отменяется первой же
+ // отрисовкой — `renderTep` зовёт эту функцию первой строкой.
+ if(inputs.underground_parking_disabled||isNonResidential()){
   ['units','gns','total_area','useful','saleable','transfer'].forEach(f=>{tep.underground_parking[f]=0});
   return true;
  }
@@ -46091,7 +46151,7 @@ function fillUndergroundFromTep(){
  //
  // Пометка — та же, что у паркинга объектов, и списки те же: тронутое руками
  // норма не трогает, своё число она обновляет вместе с ТЭП.
- if(inputs.underground_parking_disabled)return false;
+ if(inputs.underground_parking_disabled||isNonResidential())return false;
  if(parkingByHand(PROJECT_PARKING_KEY))return false;
  const spaces=Number(inputs.underground_manual_spaces||0);
  const area=Number(inputs.underground_manual_gns_sqm||0);
@@ -46145,7 +46205,25 @@ function renderProjectClassPreview(){
    box.textContent='Пользовательские значения';
    return;
  }
- box.textContent=`Кв/комм ${classValue(key,'apartment_price_th').toLocaleString('ru-RU')} · м/м ${classValue(key,'parking_price_th').toLocaleString('ru-RU')} · себес. ${classValue(key,'main_above_th_per_sqm').toLocaleString('ru-RU')}/${classValue(key,'main_under_th_per_sqm').toLocaleString('ru-RU')} тыс. ₽`;
+ // Подпись называет то, что класс двигает ЗДЕСЬ. В нежилом проекте квартир и
+ // машино-мест МКД нет, а «Кв/комм 650 · м/м 5 000» стояло по-прежнему —
+ // «почему активен блок класса?» (владелец, 21.09.2026). Селектор активен
+ // законно, врала подпись.
+ //
+ // Двигает класс ровно три числа, и они измерены: цену метра ОСЗ
+ // (450 / 650 / 1 500), цену машино-места гаража объекта (1 500 / 5 000 /
+ // 20 000) и подземную ставку СМР (88 / 152 / 240), по которой этот гараж
+ // строится. При цене офисов, зафиксированной на 450 у всех трёх классов,
+ // выручка всё равно идёт 3 794,8 → 4 901,0 → 9 642,2 млн ₽, и вся разница
+ // в гараже: 474,1 против 6 321,6 млн.
+ //
+ // НАЗЕМНУЮ ставку класса подпись не называет: себестоимость самого здания —
+ // своя вводная объекта (`offices_cost_th_per_sqm`, 200 тыс ₽/м²), и 190/152
+ // к ней не применяются вовсе («у нас же там нет 190/152 в принципе»,
+ // владелец 21.09.2026).
+ box.textContent=isNonResidential()
+  ? `Офисы/ТЦ ${classValue(key,'offices_price_th_per_sqm').toLocaleString('ru-RU')} · м/м ${classValue(key,'parking_price_th').toLocaleString('ru-RU')} · подземные ${classValue(key,'main_under_th_per_sqm').toLocaleString('ru-RU')} тыс. ₽`
+  : `Кв/комм ${classValue(key,'apartment_price_th').toLocaleString('ru-RU')} · м/м ${classValue(key,'parking_price_th').toLocaleString('ru-RU')} · себес. ${classValue(key,'main_above_th_per_sqm').toLocaleString('ru-RU')}/${classValue(key,'main_under_th_per_sqm').toLocaleString('ru-RU')} тыс. ₽`;
 }
 
 function applyProjectClassPreset(selectedKey){
@@ -46205,10 +46283,6 @@ const PROJECT_KINDS=__DEVELOPAID_PROJECT_KINDS__;
 // движок, когда ищет оставшееся: два перечисления разошлись бы, и «режим
 // включён» значило бы на экране одно, а в расчёте другое.
 const NONRESIDENTIAL_CLEARED=__DEVELOPAID_NONRESIDENTIAL_INPUTS__;
-// Ставка двора нежилого проекта — тоже из движка. Ставит её РЕЖИМ, а не
-// умолчания: поле глобальное и сильнее методики класса, и поставленное в
-// DEFAULT_INPUTS оно двигало бы каждый ЖИЛОЙ проект.
-const NONRES_LANDSCAPING_RATE=__DEVELOPAID_NONRES_LANDSCAPING_RATE__;
 
 function projectKind(){
  const v=String(inputs.project_kind||'mixed');
@@ -46227,38 +46301,66 @@ function projectKindLabel(kind){
 // меньше молчаливого сохранения: правило выведено на плате за ВРИ в режиме
 // КРТ и здесь то же. Убранное запоминается — переключение по ошибке иначе
 // уничтожает набранное безвозвратно.
+//
+// Зовётся она не только переключателем, а КАЖДЫМ пересчётом ТЭП, и потому
+// дополняет прежнее, а не переписывает его. Режим был разовым действием:
+// строки обнулялись в момент нажатия, а следующий писатель возвращал их
+// молча — выгрузка ГлавАПУ ставила подземный паркинг по жилому нормативу
+// участка, кнопка «Рассчитать ТЭП от площади и плотности» раскладывала СПП
+// по квартирам и встроенной коммерции (15 397 и 983 м² на участке 0,546 га),
+// и убрать это человек не мог: ячейки заперты, полей на экране нет.
 function clearResidentialInputs(){
- const removed=[],placed=[],saved={inputs:{},tep:{}};
+ const saved=inputs._nonres_saved||{};
+ saved.inputs=saved.inputs||{};saved.tep=saved.tep||{};
+ const removed=(inputs._nonres_cleared||[]).slice();
+ const say=text=>{if(removed.indexOf(text)<0)removed.push(text)};
  const cols=['gns','total_area','useful','saleable','transfer','units'];
  MKD_PRODUCTS.forEach(key=>{
   const row=tep[key];if(!row)return;
   if(!cols.some(c=>Number(row[c]||0)>0))return;
-  saved.tep[key]={};cols.forEach(c=>{saved.tep[key][c]=row[c];row[c]=0});
-  removed.push(productName(key));
+  // Убранное первым — решение человека, убранное потом — работа писателя,
+  // который о режиме не знал. Запоминаем первое: возврат к жилому типу
+  // обязан вернуть набранное, а не последнюю догадку калькулятора.
+  if(!saved.tep[key]){saved.tep[key]={};cols.forEach(c=>{saved.tep[key][c]=row[c]})}
+  cols.forEach(c=>{row[c]=0});
+  say(productName(key));
  });
  Object.keys(NONRESIDENTIAL_CLEARED).forEach(k=>{
   const was=Number(inputs[k]||0);
   if(!(was>0))return;
-  saved.inputs[k]=was;inputs[k]=0;
-  removed.push(NONRESIDENTIAL_CLEARED[k]+' '+num(was));
+  if(saved.inputs[k]===undefined)saved.inputs[k]=was;
+  inputs[k]=0;
+  say(NONRESIDENTIAL_CLEARED[k]+' '+num(was));
  });
  // Пара «места ↔ площадь» подземного паркинга после обнуления идёт за нормой,
  // а норма без квартир — ноль. Оставленный признак «задано руками» запер бы
  // ноль как решение человека, которого он не принимал.
  markParkingByNorm(PROJECT_PARKING_KEY);
- // Двор режим не убирает, а ПЕРЕВОДИТ на другую базу: мерить его населением
- // нечем, а иного способа, кроме метра ГНС, у нас нет. Поставленное
- // называется так же, как убранное: молчаливая подстановка врёт не меньше
- // молчаливого обнуления. Заданное руками не трогаем — оно сильнее режима.
- if(!(Number(inputs.landscaping_gns_th_per_sqm||0)>0)&&NONRES_LANDSCAPING_RATE>0){
-  inputs.landscaping_gns_th_per_sqm=NONRES_LANDSCAPING_RATE;
-  saved.landscaping_rate=NONRES_LANDSCAPING_RATE;
-  placed.push('ставка благоустройства '+num(NONRES_LANDSCAPING_RATE)+' тыс ₽/м² ГНС');
- }
  inputs._nonres_saved=saved;
  inputs._nonres_cleared=removed;
- inputs._nonres_placed=placed;
  return removed;
+}
+
+// Ставка двора — не уборка, а подстановка, и потому стоит отдельно: её ставит
+// ПЕРЕКЛЮЧАТЕЛЬ, один раз. Зовись она из пересчёта, очищенное человеком поле
+// возвращалось бы к нашему числу на первой же правке ТЭП — то есть режим
+// перебивал бы его решение молча.
+// Ставку двора режим больше НЕ ставит: двор нежилого проекта входит в
+// себестоимость объекта («у нас себестоимость вообще всего объекта же целиком
+// прописана», владелец 21.09.2026). Прежде поставленное — снимаем: мы сами
+// его и поставили, и проект, переключённый до этой правки, иначе остался бы
+// считать статью, которой в методике больше нет. Вписанное человеком не
+// трогаем — оно сильнее методики в любом режиме.
+function placeNonResidentialDefaults(){
+ const saved=inputs._nonres_saved||{inputs:{},tep:{}};
+ if(saved.landscaping_rate
+    &&Number(inputs.landscaping_gns_th_per_sqm||0)===Number(saved.landscaping_rate)){
+  inputs.landscaping_gns_th_per_sqm=0;
+ }
+ delete saved.landscaping_rate;
+ inputs._nonres_saved=saved;
+ inputs._nonres_placed=[];
+ return [];
 }
 
 // Возвращает ровно то, что убрал режим. Восстановление — не автоматическое:
@@ -46287,19 +46389,77 @@ function projectKindHasSaved(){
   ||!!saved.landscaping_rate;
 }
 
+// Имена блоков, где задаются метры объектов, берутся из САМИХ групп вводных:
+// написанные здесь руками, они разошлись бы с экраном молча — так уже уезжали
+// имена статей расходов и подписи продуктов.
+function objectGroupTitles(){
+ const keys=['offices_gba_sqm','retail_gba_sqm','sports_gba_sqm','above_parking_spaces'];
+ const out=[];
+ (FIELD_GROUPS||[]).forEach(group=>{
+  const title=group[0],fields=group[1]||[];
+  if(fields.some(f=>keys.indexOf(f[0])>=0))out.push(title);
+ });
+ return out;
+}
+
+// Что случилось при переключении — одним окном. Собирается из тех же
+// `_nonres_cleared` и `_nonres_placed`, что читает плашка: два текста об одном
+// событии разошлись бы, и оба выглядели бы верными.
+function projectKindDialogHtml(){
+ const cleared=inputs._nonres_cleared||[],placed=inputs._nonres_placed||[];
+ const groups=objectGroupTitles();
+ let html='<p style="margin:0 0 10px">Квартиры, встроенная коммерция, кладовые и подземный '
+  +'паркинг МКД обнулены и заперты. Соцнагрузка и плата за смену ВРИ не считаются: первая идёт '
+  +'от населения, вторая от СПП жилых зданий.</p>';
+ if(cleared.length)html+='<p style="margin:0 0 10px"><b>Убрано:</b> '+escapeHtml(cleared.join(', '))+'.</p>';
+ // Поставленную ставку двора окно НЕ называет: «это никому неинтересно и
+ // никакой роли не играет — у нас себестоимость всего объекта целиком
+ // прописана» (владелец, 21.09.2026). Молчаливой подстановка от этого не
+ // становится: число объяснено там, где стоит, — подписью у самого поля
+ // («деньги идут ставкой: 10 тыс ₽/м² ГНС × 19 110 м²»), и человек читает её
+ // тогда, когда смотрит на ставку, а не когда переключает тип.
+ html+='<p style="margin:0 0 10px"><b>Где теперь задавать метры:</b> вкладка «Экономика», блоки '
+  +escapeHtml(groups.map(t=>'«'+t+'»').join(', '))+'. Строки ТЭП у них производные — считаются '
+  +'по долям объекта.</p>'
+  +'<p style="margin:0 0 10px">Нормативный потенциал участка можно положить в '
+  +escapeHtml(NONRES_DENSITY_TARGETS.map(t=>'«'+t[1]+'»').join(' или '))
+  +' кнопкой «Рассчитать ТЭП от площади и плотности» на шаге «ТЭП»: она спросит, куда.</p>'
+  +'<p style="margin:0">Финансирование режим не трогает: 214-ФЗ нежильё не исключает, эскроу '
+  +'и лестница ставки ПФ те же.</p>';
+ return html;
+}
+
+function openProjectKindDialog(){
+ const box=document.getElementById('projectKindDialogBody');
+ const dialog=document.getElementById('projectKindDialog');
+ if(!box||!dialog)return;
+ box.innerHTML=projectKindDialogHtml();
+ dialog.style.display='flex';
+}
+
+function closeProjectKindDialog(){
+ const dialog=document.getElementById('projectKindDialog');
+ if(dialog)dialog.style.display='none';
+}
+
+// Отмена переключения целиком: тип возвращается ПЕРВЫМ, иначе пересчёт ТЭП,
+// который зовёт `restoreResidentialInputs`, уберёт возвращённое сразу же —
+// в нежилом режиме он на то и стоит.
+function cancelNonResidential(){
+ closeProjectKindDialog();
+ applyProjectKind('mixed');
+ restoreResidentialInputs();
+}
+
 // Надпись отвечает на три разных вопроса, и слить их нельзя: что считает
 // режим сейчас, что он убрал и что лежит убранным у жилого проекта.
 function projectKindNote(){
  const cleared=inputs._nonres_cleared||[],placed=inputs._nonres_placed||[];
  if(isNonResidential()){
   return '<div class="note" style="margin:0 0 12px;padding:11px 12px">'
-   +'<b>Нежилой проект.</b> Квартиры, встроенная коммерция, кладовые и подземный паркинг МКД '
-   +'обнулены и заперты; соцнагрузка и плата за смену ВРИ не считаются — первая идёт от населения, '
-   +'вторая от СПП жилых зданий. Отдельно стоящие объекты, их гаражи и наземный паркинг считаются как обычно.'
-   +(cleared.length?' Убрано: '+escapeHtml(cleared.join(', '))+'.':'')
-   +(placed.length?' Поставлено: '+escapeHtml(placed.join(', '))+' — двор от населения здесь не считается, иного способа, кроме метра ГНС, нет.'
-                 :' Благоустройство от населения здесь не считается — задайте ставку на метр ГНС.')
-   +' Финансирование режим не трогает: 214-ФЗ нежильё не исключает, эскроу и лестница ставки ПФ те же.'
+   +'<b>Нежилой проект.</b> Жильё, соцнагрузка и плата за смену ВРИ не считаются; метры '
+   +'объектов задаются на вкладке «Экономика». '
+   +'<button type="button" class="tep-refill" onclick="openProjectKindDialog()">что отключено</button>'
    +'</div>';
  }
  if(projectKindHasSaved()){
@@ -46328,13 +46488,17 @@ function syncProjectKindSelector(){
 function applyProjectKind(key){
  const kind=PROJECT_KINDS.some(p=>p[0]===key)?key:'mixed';
  inputs.project_kind=kind;
- if(kind==='nonresidential')clearResidentialInputs();
+ if(kind==='nonresidential'){clearResidentialInputs();placeNonResidentialDefaults()}
  syncTep(false);
  syncProjectKindSelector();
  renderInputs();
  renderTep();
  refreshGroupPeeks();
  calculate();
+ // Окно после пересчёта: до него списки убранного и поставленного ещё не
+ // полны — пересчёт ТЭП убирает и то, что вернули писатели.
+ if(kind==='nonresidential')openProjectKindDialog();
+ else closeProjectKindDialog();
 }
 
 function syncProjectClassSelector(){
@@ -48074,9 +48238,77 @@ async function applyNormativeTep(densityOverride){
  await calculate();
  return data;
 }
+// Куда класть потенциал участка в нежилом проекте — выбирает человек
+// (решение владельца, 21.09.2026: «надо предлагать выбирать куда хочет
+// вставить. В офисники или в тц»). Сами не делим: доля между офисами и
+// торговлей была бы нашей догадкой, а на экране она выглядит как норматив
+// города. Список объявлен один раз — кнопки и писатель читают его.
+const NONRES_DENSITY_TARGETS=[
+ ['offices','МФОЦ / офисы'],
+ ['standalone_retail','ТЦ / коммерция ОСЗ']
+];
+// Вводные объекта, которыми задаются его метры. Строка ТЭП производная: её
+// считает `syncTep` по долям, и писать в неё напрямую значило бы завести
+// второй ответ на «сколько у объекта метров».
+const NONRES_TARGET_INPUTS={
+ offices:{flag:'offices_enabled',gba:'offices_gba_sqm',sale:'offices_saleable_sqm'},
+ standalone_retail:{flag:'retail_enabled',gba:'retail_gba_sqm',sale:'retail_saleable_sqm'}
+};
+
+function applyDensityToObject(target){
+ const status=document.getElementById('siteApplyStatus');
+ const field=NONRES_TARGET_INPUTS[target];
+ const name=(NONRES_DENSITY_TARGETS.find(t=>t[0]===target)||[])[1]||target;
+ const area=Number(inputs.site_area_ha||0),density=effectiveSiteDensity();
+ if(!field||!(area>0)||!(density>0)){
+  if(status){status.style.display='';
+   status.innerHTML='<span class="import-error">Нужны площадь участка и плотность.</span>'}
+  return;
+ }
+ const spp=area*density;
+ const wasGba=Number(inputs[field.gba]||0),wasSale=Number(inputs[field.sale]||0);
+ inputs[field.flag]=true;
+ inputs[field.gba]=spp;
+ // Продаваемая пересчитывается долями объекта: оставленное прежнее число
+ // описывало бы другой объём, а расходилось бы с ГНС молча.
+ inputs[field.sale]=0;
+ syncTep(false);renderInputs();renderTep();refreshGroupPeeks();calculate();
+ if(status){
+  status.style.display='';
+  status.innerHTML='<span class="import-ok">Потенциал участка положен в «'+escapeHtml(name)+'»: '
+   +num(spp)+' м² ГНС, продаваемая '+num(Number(inputs[field.sale]||0))+' м² (по долям объекта).</span>'
+   +(wasGba>0||wasSale>0?'<div style="margin-top:4px">Заменено: было '+num(wasGba)+' м² ГНС'
+     +(wasSale>0?' и '+num(wasSale)+' м² продаваемой':'')+'.</div>':'')
+   +'<div style="margin-top:4px">Правится там же — вводные объекта на вкладке «Экономика».</div>';
+ }
+}
+
 function applyDensityToTep(){
  const status=document.getElementById('siteApplyStatus');
  const area=Number(inputs.site_area_ha||0);
+ // Нормативный ТЭП калькулятора — это ЖИЛЬЁ: 94% СПП квартиры, 6% встроенная
+ // коммерция. В нежилом проекте таких строк нет, и прежде кнопка их всё
+ // равно наполняла: на участке 0,546 га при 35 000 м²/га она клала 15 397 м²
+ // квартир и 983 м² коммерции в ЗАПЕРТЫЕ ячейки — убрать их человек не мог,
+ // а движок их продавал. Раскладывать потенциал по офисам и ТЦ самим нельзя:
+ // доля была бы нашей догадкой, а на экране она выглядит как норматив
+ // города. Поэтому отказ, и он называет, где эти метры задаются.
+ if(isNonResidential()){
+  const density=effectiveSiteDensity();
+  status.style.display='';
+  status.innerHTML='<span class="import-error">Нежилой проект: нормативный ТЭП калькулятора — жильё '
+   +'(94% СПП квартиры, 6% встроенная коммерция), и класть его в запертые строки нельзя.</span>'
+   +(area>0&&density>0?'<div style="margin-top:4px">Потенциал участка: <b>'+num(area*density)
+     +' м²</b> СПП ('+landNum(area,3)+' га × '+num(density)+' м²/га). Куда его положить?</div>'
+     +'<div style="margin-top:6px">'
+     +NONRES_DENSITY_TARGETS.map(t=>'<button type="button" class="btn" style="margin:0 6px 6px 0" '
+       +'onclick="applyDensityToObject(\''+t[0]+'\')">'+escapeHtml(t[1])+'</button>').join('')
+     +'</div>'
+    :'<div style="margin-top:4px">Сначала задайте площадь участка и плотность.</div>')
+   +'<div style="margin-top:4px">Эти же метры правятся вводными объектов на вкладке «Экономика»; '
+   +'строки ТЭП у них производные.</div>';
+  return;
+ }
  if(!(area>0)){
   status.style.display='';
   status.innerHTML='<span class="import-error">Сначала укажите площадь участка — вручную или из калькулятора/кадастра.</span>';
@@ -48791,6 +49023,12 @@ async function recalcFromTep(options){
 }
 
 function syncTep(rerender=true){
+ // Тип проекта — признак, а не разовое действие переключателя: жильё убирает
+ // ТОТ ЖЕ пересчёт, через который проходит всякий писатель ТЭП — импорт
+ // ГлавАПУ, расчёт от плотности, мост КРТ, загрузка проекта. Прежде оно
+ // возвращалось молча, а на экране строки заперты и полей нет: убрать
+ // вернувшееся человек не мог.
+ if(isNonResidential())clearResidentialInputs();
  // Соцобъекты строятся и в совмещённом режиме — иначе ДОУ и школа исчезают
  // из ТЭП при выбранном «Строительство и компенсация», хотя они в проекте.
  const socialBuild=inputs.social_mode==='Строительство'
@@ -49844,6 +50082,14 @@ function landscapingHouseRateNote(){
                :'Считает методика класса. Расчёта ещё нет.';
   }
   if(own>0)return 'Задано руками, но метров, на которые ставка множится, в расчёте нет.';
+  // У нежилого проекта ноль — не «методика дала ноль», а её ответ: двор
+  // входит в себестоимость объекта и отдельной статьёй не считается
+  // (владелец, 21.09.2026). Хвост «пока ставка здесь не задана» звал бы
+  // задать её, то есть посчитать двор второй раз.
+  if(/себестоимость объекта/.test(String(s.landscaping_money_basis||''))){
+   return 'Двор входит в себестоимость объекта — отдельной статьёй не считается. '
+    +'Вписанная здесь ставка её перебьёт.';
+  }
   return 'Методика класса дала ноль: '+String(s.landscaping_basis)
    +'. Пока ставка здесь не задана, благоустройства в расчёте нет.';
  }
@@ -52516,6 +52762,10 @@ async function initializeApp(){
  await loadPresetCatalog();
  await loadMoReference();
  await initializeTelegramLaunch();
+ // Докуда дошла загрузка — это ответ ловушке ошибок, а не украшение: у
+ // сообщения из чужого скрипта места в нашем коде нет, и единственное, что
+ // мы можем сказать честно, — загрузились мы к тому моменту или нет.
+ window.__developaidBooted=true;
 }
 initializeApp();
 </script>
@@ -52573,8 +52823,6 @@ PAGE = PAGE.replace(CAPEX_NAMES_PLACEHOLDER, json.dumps(
     ensure_ascii=False))
 # Тип проекта и состав жилых вводных — из движка: два перечисления разошлись
 # бы, и «режим включён» значило бы на экране одно, а в расчёте другое.
-PAGE = PAGE.replace("__DEVELOPAID_NONRES_LANDSCAPING_RATE__",
-                    json.dumps(NONRESIDENTIAL_LANDSCAPING_TH_PER_SQM))
 PAGE = PAGE.replace("__DEVELOPAID_PROJECT_KINDS__",
                     json.dumps([list(pair) for pair in PROJECT_KINDS], ensure_ascii=False))
 PAGE = PAGE.replace("__DEVELOPAID_NONRESIDENTIAL_INPUTS__",

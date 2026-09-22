@@ -74,7 +74,9 @@ from auction_search.preset_mapper import build_project_preset
 from auction_search.profile_fit import profile_fit
 from auction_search.service import AuctionSearchService
 from auction_search import krt_territory, nagatino_parcels
+from auction_search import krt_investment_score
 from auction_search.nagatino_ui import nagatino_page
+from auction_search.krt_nagatino_prototype import nagatino_investment_card_page
 from auction_search.ui import auctions_page
 from market_search.krt_registry import CATALOGUE_URL, KrtRegistry
 from market_search import krt_decision_tep
@@ -990,6 +992,231 @@ def install(app: FastAPI) -> None:
             auction_page_with_handoff(auctions_page(core)),
             headers={"Cache-Control": "no-store, must-revalidate"},
         )
+
+    @app.get("/auctions/krt-prototype/nagatino", response_class=HTMLResponse, include_in_schema=False)
+    async def auction_krt_nagatino_prototype() -> HTMLResponse:
+        """Большая карточка Нагатино внутри того же runtime, что рынок и модель."""
+        return HTMLResponse(
+            nagatino_investment_card_page(),
+            headers={"Cache-Control": "no-store, must-revalidate"},
+        )
+
+    def _nagatino_project_now() -> dict[str, Any]:
+        """Нагатино из текущего каталога, без жёсткой привязки к одному slug."""
+        rows = list(_krt_all_sites() or [])
+        for row in rows:
+            text = " ".join(str(row.get(k) or "") for k in ("name", "address", "district"))
+            try:
+                area = float(row.get("area_ha") or 0)
+            except (TypeError, ValueError):
+                area = 0.0
+            if abs(area - 14.62) < 0.08 and re.search(r"(нагатин|варшавск)", text, re.I):
+                return dict(row)
+        for row in rows:
+            text = " ".join(str(row.get(k) or "") for k in ("name", "address", "district"))
+            if re.search(r"варшавск.{0,80}37", text, re.I):
+                return dict(row)
+        raise HTTPException(status_code=404, detail="Нагатино не найдено в текущем каталоге КРТ")
+
+    def _nagatino_live_now(*, refresh: bool = False) -> dict[str, Any]:
+        """Рынок + DevelopAid из этого же процесса, без HTTP-прокси в другой Render."""
+        if market is None or core is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Рынок или финансовый движок DevelopAid не подключён к этому процессу",
+            )
+        project = _nagatino_project_now()
+        slug = str(project.get("slug") or "")
+        cached_report = krt_ranking.report(slug)
+        cached_row = krt_ranking.stored_row(slug)
+
+        if not refresh and isinstance(cached_report, dict):
+            screening = dict(cached_report.get("screening") or {})
+            market_digest = dict(cached_report.get("market") or {})
+            if screening:
+                screening.setdefault("market_report", market_digest)
+                row = dict(cached_row or score_row(project, screening))
+                return {
+                    "project": project,
+                    "row": row,
+                    "screening": screening,
+                    "market_report": {
+                        "project": project,
+                        "market": market_digest,
+                        "screening": screening,
+                        "computed_at": cached_report.get("computed_at"),
+                    },
+                    "source": "main runtime · saved KRT report",
+                }
+
+        query = f"krt:{slug}"
+        try:
+            report = market.build_report(
+                query,
+                radius_km=3.0,
+                peers_limit=12,
+                city_reference=False,
+                include_project_totals=True,
+            )
+        except SubjectNotFound:
+            fallback = " ".join(
+                str(project.get(key) or "").strip()
+                for key in ("name", "district")
+                if project.get(key)
+            )
+            if not fallback:
+                raise
+            report = market.build_report(
+                fallback,
+                radius_km=3.0,
+                peers_limit=12,
+                city_reference=False,
+                include_project_totals=True,
+            )
+
+        requirements = _requirements_for(slug)
+        screening = build_krt_model_screening(
+            project,
+            report,
+            core,
+            requirements=requirements,
+            asking_price_mln=_asking_price_mln(slug),
+        )
+        try:
+            screening["card_facts"] = krt_registry.card_facts(slug)
+        except Exception:  # noqa: BLE001
+            logger.exception("Nagatino card facts failed slug=%s", slug)
+            screening["card_facts"] = {}
+        screening["press_facts"] = (cached_row or {}).get("press_facts") or {}
+        market_digest = _market_digest(report)
+        screening["market_report"] = market_digest
+
+        stored_screening = {
+            key: value for key, value in screening.items() if key != "market_report"
+        }
+        report_payload = {
+            "project": project,
+            "market": market_digest,
+            "screening": stored_screening,
+        }
+        krt_ranking.save_failure_or_report(slug, screening, report_payload)
+        row = score_row(project, screening)
+        krt_ranking.upsert_row(row)
+        return {
+            "project": project,
+            "row": row,
+            "screening": screening,
+            "market_report": {
+                "project": project,
+                "market": market_digest,
+                "screening": stored_screening,
+                "computed_at": row.get("computed_at"),
+            },
+            "source": "main runtime · live market + DevelopAid",
+        }
+
+    @app.get("/auctions/krt-prototype/nagatino/live-data", include_in_schema=False)
+    async def auction_krt_nagatino_live_data(
+        refresh: bool = Query(default=False),
+    ) -> dict[str, Any]:
+        try:
+            return await run_in_threadpool(_nagatino_live_now, refresh=bool(refresh))
+        except HTTPException:
+            raise
+        except (SubjectNotFound, GeocodingError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except RemoteServiceError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Nagatino live card failed")
+            raise HTTPException(
+                status_code=502,
+                detail=f"Живой рынок/модель Нагатино не собраны: {type(exc).__name__}: {exc}",
+            ) from exc
+
+    @app.get("/auctions/krt-prototype/nagatino/investment-score", include_in_schema=False)
+    async def auction_krt_nagatino_investment_score(
+        price_target_rub_sqm: float = Query(
+            krt_investment_score.DEFAULT_PRICE_TARGET_RUB_SQM,
+            ge=1,
+            le=10_000_000,
+        )
+    ) -> dict[str, Any]:
+        """Рейтинг #485 поверх тех же рынка и финансовой модели."""
+        live = await run_in_threadpool(_nagatino_live_now, refresh=False)
+        rank = dict(live.get("row") or {})
+        report = dict(live.get("market_report") or {})
+        market_block = dict(report.get("market") or {})
+
+        control = await run_in_threadpool(
+            krt_investment_score.nagatino_live_example, core)
+        llcr = rank.get("project_llcr_x")
+        burden_pct = rank.get("burden_pct")
+        burden_mln = rank.get("burden_mln")
+        ordinary_capex_mln = rank.get("ordinary_capex_mln")
+        entry_capacity_mln = rank.get("entry_capacity_mln")
+        housing_gfa_sqm = rank.get("housing_gfa_sqm")
+
+        if control.get("available"):
+            baseline = control.get("baseline") or {}
+            stack = control.get("cost_stack") or {}
+            entry = control.get("entry_capacity") or {}
+            llcr = baseline.get("project_llcr_x")
+            burden_pct = control.get("burden_pct")
+            burden_mln = stack.get("total_known_mln")
+            ordinary_capex_mln = control.get("ordinary_capex_mln")
+            entry_capacity_mln = entry.get("max_krt_right_price_mln")
+            housing_gfa_sqm = stack.get("housing_gfa_sqm") or housing_gfa_sqm
+
+        local_absorption = rank.get("local_absorption_sqm_month")
+        moscow_absorption = rank.get("moscow_absorption_sqm_month")
+        missing_reasons: dict[str, str] = {}
+        if local_absorption is None or moscow_absorption is None:
+            missing_reasons["absorption"] = (
+                "В текущем рыночном отчёте нет пары: локальная медиана м²/мес. "
+                "и медиана Москвы по соответствующему классу. ДДУ/мес. не подменяют эту меру."
+            )
+        if burden_pct is None:
+            missing_reasons["burden"] = (
+                str(control.get("reason") or "")
+                or "Не собрана полная денежная нагрузка КРТ и ordinary CAPEX."
+            )
+
+        status_text = str(rank.get("status") or "").casefold()
+        rating = krt_investment_score.score(
+            status_kind=("running" if "реализац" in status_text else "planned"),
+            llcr=llcr,
+            market_rub_sqm=rank.get("surrounding_price_rub_sqm"),
+            target_rub_sqm=price_target_rub_sqm,
+            local_sqm_month=local_absorption,
+            benchmark_sqm_month=moscow_absorption,
+            burden_pct=burden_pct,
+            burden_mln=burden_mln,
+            ordinary_capex_mln=ordinary_capex_mln,
+            housing_gfa_sqm=housing_gfa_sqm,
+            entry_capacity_mln=entry_capacity_mln,
+            sources={
+                "llcr": "тот же DevelopAid financial engine",
+                "price": "рынок 3 км · тот же market.build_report",
+                "absorption": "рыночный отчёт; мера должна быть м²/мес.",
+                "burden": "ЕГРН + обязательства КРТ + DevelopAid ordinary CAPEX",
+            },
+            missing_reasons=missing_reasons,
+        )
+        return {
+            "rating": rating,
+            "rank_source": {
+                "slug": rank.get("slug"),
+                "computed_at": rank.get("computed_at"),
+                "old_rank_score_ignored": True,
+                "legacy_ddu_month_ignored": rank.get("surrounding_sales_units_per_month"),
+            },
+            "market": {
+                "peers": len(market_block.get("peers") or []),
+                "radius_km": (market_block.get("comparison") or {}).get("radius_km"),
+            },
+            "control_case": control,
+        }
 
     @app.get("/auctions/sources")
     async def auction_sources() -> dict[str, Any]:

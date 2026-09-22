@@ -24,10 +24,13 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import main as wrapper  # noqa: E402
 
 core = wrapper.core
+
+import page_blocks  # noqa: E402
 
 NODE = shutil.which("node")
 
@@ -181,34 +184,32 @@ def test_glavapu_import_feeds_the_density(monkeypatch):
 # расчёт делает сам калькулятор ГлавАПУ.
 
 def run_apply(inputs: dict, tep: dict, extra_js: str = "") -> dict:
-    """Настоящая applyDensityToTep из PAGE — с заглушками окружения."""
-    if not NODE:
-        pytest.skip("node недоступен")
-    match = re.search(r"(function applyDensityToTep\(\).*?)\nfunction setSiteArea",
-                      core.PAGE, re.S)
-    assert match, "applyDensityToTep не найдена на странице"
-    script = (
+    """Настоящая applyDensityToTep из PAGE — с заглушками окружения.
+
+    Куски страницы стенд добирает САМ: перечисленные вырезкой «от функции до
+    соседней функции», они отстают от неё, и падение выходит про стенд, а не
+    про то, что он проверяет. Так и случилось — в `applyDensityToTep`
+    появился признак типа проекта, и пять проверок упали на
+    «isNonResidential is not defined».
+    """
+    prelude = (
         f"const inputs={json.dumps(inputs)};\n"
-        f"const tep={json.dumps(tep)};\n"
-        # Доля СПП объявлена в движке и подставлена на страницу: стенд берёт её
-        # оттуда же, а не вписывает своим числом.
-        f"const MKD_SPP_SPLIT={json.dumps(core.MKD_SPP_SPLIT)};\n"
+        f"let tep={json.dumps(tep)};\n"
         "const cadastralAnalysis=null;\n"
         "const shown=[];\n"
         "const document={getElementById:()=>({style:{},set innerHTML(v){shown.push(v)}})};\n"
         "const num=v=>String(Math.round(v));\n"
         "function renderTep(){}\n"
+        "function renderInputs(){}\n"
+        "function refreshGroupPeeks(){}\n"
+        "function syncTep(){}\n"
         "function calculate(){}\n"
         + extra_js
-        + re.search(r"(function glavapuDensitySqmHa\(\).*?)\nfunction siteAreaSourceLabel",
-                    core.PAGE, re.S).group(1) + "\n"
-        + match.group(1) + "\n"
-        "applyDensityToTep();\n"
-        "console.log(JSON.stringify({tep, shown}));\n"
     )
-    done = subprocess.run([NODE, "-e", script], capture_output=True, text=True, timeout=30)
-    assert done.returncode == 0, done.stderr
-    return json.loads(done.stdout)
+    tail = ("applyDensityToTep();\n"
+            "console.log(JSON.stringify({tep, shown}));\n")
+    out, _ = page_blocks.run(prelude, tail)
+    return json.loads(out)
 
 
 def blank_tep() -> dict:
