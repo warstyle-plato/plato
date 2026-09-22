@@ -22388,10 +22388,12 @@ V4_REWRITTEN_FORMULA_ROWS: dict[str, tuple[tuple[int, ...], str]] = {
     ),
     "Вводные": (
         (
-        8, 26,
+        8, 26, 46,
         ),
         "Читалки живых ячеек вместо мёртвых (лаг старта продаж и тренд "
-        "темпа берут значение из колонок очередей) "
+        "темпа берут значение из колонок очередей); строка 46 — продаваемая "
+        "площадь ТЦ после размещения паркинга первых этажей считается от "
+        "остаточной GBA (_v4_object_parking_input_labels) "
     ),
     "КОНСОЛИДАТОР": (
         (
@@ -28670,9 +28672,31 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
 
     def object_saleable(tep_key: str, field: str) -> float:
         row = object_parking_row(tep_key)
-        if "saleable" in row:
+        # Явная строка ТЭП сильнее вводной: если в ней есть собственная база
+        # площади, apply_object_parking уже пересчитал saleable от остаточной
+        # GBA и здесь остаётся только прочитать результат.
+        if n(row, "gns") > 0 or n(row, "_object_parking_base_saleable") > 0:
             return max(0.0, n(row, "saleable"))
-        return max(0.0, n(x, field))
+
+        # Строки отдельно стоящих объектов в TEP_DEFAULT — нулевые заглушки:
+        # их реальные GBA и продаваемая живут во вводных объекта. До этой
+        # правки атомарный движок именно их и читал. После перехода на
+        # остаточную GBA слепое чтение нулевой строки обнулило все офисные
+        # продажи в обычном проекте и во всех очередях без явного ТЭП.
+        obj = next((item for item in standalone_objects() if item.key == tep_key), None)
+        base_saleable = max(0.0, n(x, field))
+        if obj is None:
+            return base_saleable
+        base_gba = max(0.0, n(x, f"{obj.prefix}_gba_sqm"))
+        if base_gba <= 0:
+            return base_saleable
+        over_gba = (
+            max(0.0, n(row, "parking_over_units"))
+            * (n(x, "object_parking_over_area_per_space_sqm",
+                 OBJECT_PARKING_OVER_AREA_DEFAULT)
+               or OBJECT_PARKING_OVER_AREA_DEFAULT)
+        )
+        return base_saleable * max(0.0, base_gba - over_gba) / base_gba
 
     def object_parking_capex(tep_key: str) -> float:
         """Свой подземный паркинг объекта стоит подземного метра.
