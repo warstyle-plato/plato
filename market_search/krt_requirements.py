@@ -580,7 +580,7 @@ def social_objects_from_decision(sentences: Any) -> list[dict[str, Any]]:
 
 
 _CLAUSE_NO = re.compile(
-    r"(?s)(?<!\d)(4\.1\.\d+|4\.[2-9]|[5-9])\.\s*(.*?)(?=(?<!\d)(?:4\.1\.\d+|4\.[2-9]|[5-9])\.\s|$)"
+    r"(?s)(?<![\d.])(4\.1\.\d+|4\.[2-9]|[5-9])\.\s*(.*?)(?=(?<![\d.])(?:4\.1\.\d+|4\.[2-9]|[5-9])\.\s|$)"
 )
 _LAND_HA_RE = re.compile(
     r"(?iu)земельн\w*\s+участк\w*\s+площадью\s+(?:не\s+менее\s+)?"
@@ -618,10 +618,11 @@ def structured_city_requirements(text: str) -> dict[str, Any]:
         kind = label = ""
         if "общественно-делов" in low:
             kind, label = "business", "Общественно-деловое"
-        elif re.search(r"общеобразоват|школ", low):
-            kind, label = "school", "СОШ"
+        # ДОО проверяется раньше школы: "дошкольной" содержит "школьной".
         elif re.search(r"дошкольн|детск\w*\s+сад|\bдо[оу]\b", low):
             kind, label = "kindergarten", "ДОО"
+        elif re.search(r"общеобразоват|(?<!до)школ", low):
+            kind, label = "school", "СОШ"
         elif "коммунальн" in low:
             kind, label = "utility", "Коммунальный объект"
         if not kind:
