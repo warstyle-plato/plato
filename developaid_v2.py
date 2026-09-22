@@ -78,6 +78,47 @@ def _fail(core: Any, exc: Exception) -> HTTPException:
     return HTTPException(status_code=500, detail=core._error_location(exc)[:300])
 
 
+def _project_cadastral_numbers(core: Any, parsed: dict[str, Any], query: str) -> list[str]:
+    """Донести кадастровый номер из поиска участка до ProjectResult.
+
+    Выгрузка ГлавАПУ хранит ТЭП, но при поиске по адресу не обязана хранить
+    кадастровый номер в source. Из-за этого v2 успешно считал участок, а
+    затем карта видела пустой project.cadastral_numbers и честно писала
+    «кадастрового номера нет».
+
+    Сначала берём номер из уже разобранного файла. Только если его там нет,
+    используем существующий федеральный поиск /land/lookup через его
+    серверную функцию: он умеет разрешать адрес в земельный участок ЕГРН.
+    Ошибка геопоиска не должна ломать сам расчёт ТЭП.
+    """
+    source = parsed.get("source") or {}
+    existing = [
+        str(item).strip()
+        for item in (source.get("cadastral_numbers") or [])
+        if str(item).strip()
+    ]
+    if existing:
+        return list(dict.fromkeys(existing))
+
+    query = str(query or "").strip()
+    if not query:
+        return []
+
+    try:
+        lookup = core.land_lookup(core.LandLookupRequest(query=query, limit=30))
+    except Exception:
+        return []
+
+    numbers: list[str] = []
+    for item in lookup.get("results") or []:
+        if not item or not item.get("found") or item.get("kind") != "land":
+            continue
+        number = str(item.get("cadastral_number") or "").strip()
+        if number and number not in numbers:
+            numbers.append(number)
+    return numbers
+
+
 class TepSearchRequest(BaseModel):
     """Запрос «Поиска ТЭП»: модуль-левел, иначе отложенные аннотации
     (from __future__ import annotations) не дают FastAPI распознать тело."""
@@ -309,8 +350,9 @@ def install(app: FastAPI) -> None:
             payload["project"] = form.inputs_from_glavapu(
                 core, parsed,
                 {"vri_region": region} if region in {"msk", "mo"} else None)
-            payload["project"]["cadastral_numbers"] = list(
-                (parsed.get("source") or {}).get("cadastral_numbers") or [])
+            payload["project"]["cadastral_numbers"] = _project_cadastral_numbers(
+                core, parsed, req.query
+            )
         except Exception as exc:
             # Карточка и файлы всё равно нужны: без переноса они остаются.
             payload["project_error"] = core._error_location(exc)[:300]
