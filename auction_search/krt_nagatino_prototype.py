@@ -98,7 +98,12 @@ a{color:inherit}button{font:inherit}.shell{max-width:1480px;margin:0 auto;paddin
    </section>
 
    <section class="card">
-    <header><h2>Публичный контекст</h2><span>оператор, застройщик, связь с большим проектом</span></header>
+    <header>
+     <h2>Публичный контекст</h2>
+     <div class="actionbar">
+      <button type="button" id="refreshPublic">Обновить поиск в публичном пространстве</button>
+     </div>
+    </header>
     <div class="body" id="publicContext"><div class="notice">Читаю сохранённые факты…</div></div>
    </section>
   </main>
@@ -262,13 +267,48 @@ function renderEconomics(rank,report){
  else if(s.available)html+='<div class="notice">'+esc(s.text||s.headline||'Модель посчитана')+'</div>';
  $('economics').innerHTML=html;
 }
-function renderPublic(rank){
- const op=operatorInfo(rank),p=rank.press_facts||{},rows=[];
- if(op.operator)rows.push(['Оператор',op.operator,'подтверждён сохранённым источником']);
+function publicFacts(press,rank){
+ const p=press||{},op=operatorInfo({...rank,press_facts:p}),rows=[];
+ if(op.operator)rows.push(['Оператор',op.operator,'подтверждён найденным источником']);
  if(op.developers.length)rows.push(['Застройщик',op.developers.join(', '),'само по себе не означает оператора КРТ']);
- if(op.selling.length)rows.push(['Связь с действующим проектом','Есть сигнал продажи ЖК рядом / по адресу','не объявляем частью КРТ без отдельного подтверждения']);
- if((p.agreement||[]).length)rows.push(['Договор КРТ','найдено упоминание','сильный признак занятости']);
- $('publicContext').innerHTML=rows.length?'<div class="list">'+rows.map(r=>'<div class="item"><b>'+esc(r[0])+' · '+esc(r[1])+'</b><div class="muted">'+esc(r[2])+'</div></div>').join('')+'</div>':'<div class="notice">Сохранённых подтверждённых признаков оператора или связи с крупным реализуемым проектом сейчас нет. Это не доказательство отсутствия связи.</div>';
+ if(op.selling.length)rows.push(['Связь с действующим проектом','Есть признак текущих продаж','требует проверки привязки к территории КРТ']);
+ if((p.agreement||[]).length)rows.push(['Договор КРТ','Найдено упоминание','сильный признак фактической занятости']);
+ if((p.operator_named||[]).length&&!op.operator){
+  const x=p.operator_named[0]||{};rows.push(['Оператор в публикации',x.name||x.quote||'найдено упоминание','сверить с официальным договором/распоряжением']);
+ }
+ if((p.developer_named||[]).length&&!op.developers.length){
+  const x=p.developer_named[0]||{};rows.push(['Застройщик в публикации',x.name||x.quote||'найдено упоминание','не приравнивается к оператору КРТ']);
+ }
+ if((p.city_needs||[]).length){
+  const x=p.city_needs[0]||{};rows.push(['Городские обязательства',x.quote||'найдено упоминание','проверить против проекта решения']);
+ }
+ return rows.slice(0,5);
+}
+function renderPublic(rank,press){
+ const p=press||rank.press_facts||{},rows=publicFacts(p,rank);
+ let html=rows.length?'<div class="list">'+rows.map(r=>'<div class="item"><b>'+esc(r[0])+' · '+esc(r[1])+'</b><div class="muted">'+esc(r[2])+'</div></div>').join('')+'</div>'
+  :'<div class="notice">Сохранённых подтверждённых признаков оператора или связи с крупным реализуемым проектом сейчас нет. Это не доказательство отсутствия связи.</div>';
+ const docs=(p.documents||[]).filter(x=>x&&x.url);
+ if(docs.length){
+  html+='<details><summary>Источники поиска — '+docs.length+'</summary><div class="list" style="margin-top:8px">'
+   +docs.slice(0,12).map(x=>'<div class="item"><b>'+esc(x.domain||'источник')+'</b><a target="_blank" rel="noopener" href="'+esc(x.url)+'">'+esc(x.title||x.url)+'</a></div>').join('')
+   +'</div></details>';
+ }
+ if(p.checked_at)html+='<div class="source">Публичное пространство проверено: '+new Date(Number(p.checked_at)*1000).toLocaleString('ru-RU')+'.</div>';
+ $('publicContext').innerHTML=html;
+}
+async function refreshPublic(p,rank){
+ const b=$('refreshPublic');if(!b)return;
+ b.disabled=true;b.innerHTML='<span class="spinner"></span>Ищу…';
+ $('publicContext').innerHTML='<div class="notice">Обновляю поиск по публикациям, официальным материалам и открытым источникам…</div>';
+ try{
+  const d=await j('/auctions/krt/'+encodeURIComponent(p.slug)+'/open-sources');
+  renderPublic(rank,d);
+ }catch(e){
+  $('publicContext').innerHTML='<div class="notice bad">Поиск не обновлён: '+esc(e.message||e)+'</div>';
+ }finally{
+  b.disabled=false;b.textContent='Обновить поиск в публичном пространстве';
+ }
 }
 function renderTerritory(req,parcels){
  const objects=(parcels&&parcels.territory&&parcels.territory.objects)||[];
@@ -361,7 +401,7 @@ async function boot(){
  const parcels=parcelsRes.status==='fulfilled'?parcelsRes.value:null;
  MAP.point=point;MAP.parcels=parcels;
  const sc=scoreV2(row,req);
- renderFlags(p,rank,req);renderEntry(p,rank);renderScore(sc);renderEconomics(rank,report);renderPublic(rank);renderTerritory(req,parcels);drawMap();
+ renderFlags(p,rank,req);renderEntry(p,rank);renderScore(sc);renderEconomics(rank,report);renderPublic(rank);renderTerritory(req,parcels);drawMap();if($('refreshPublic'))$('refreshPublic').onclick=()=>refreshPublic(p,rank);
  if(liveRes.status!=='fulfilled'){
   $('economics').insertAdjacentHTML('afterbegin','<div class="notice warn">Production-рейтинг сейчас не прочитан: '+esc(liveRes.reason&&liveRes.reason.message||liveRes.reason||'ошибка')+'. Показаны только локальные сохранённые данные.</div>');
  }
