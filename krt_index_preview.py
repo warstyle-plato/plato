@@ -91,17 +91,24 @@ let links=[];if(r.url)links.push('<a target="_blank" href="'+esc(r.url)+'">Ка�
    ['Жильё',fmt(tep.housing_gfa_sqm)+' м²'],
    ['Нежилая часть',fmt(tep.nonresidential_gfa_sqm)+' м²']
  ];
- let items=[];
+ let programme=[], burden=[];
  if(cr&&cr.objects&&cr.objects.length){
    cr.objects.forEach(o=>{
      let bits=[];
      if(o.places)bits.push(fmt(o.places)+' мест');
      if(o.area_sqm)bits.push((o.kind==='business'?'площадь ':'не менее ')+fmt(o.area_sqm)+' м²');
      if(o.land_area_ha)bits.push('участок не менее '+fmt(o.land_area_ha,2)+' га');
-     if(o.transfer_to_city)bits.push('передать Москве');
-     items.push('<li><strong>'+esc(o.label)+'</strong>'+esc(bits.join(' · '))+'</li>');
+     programme.push('<li><strong>'+esc(o.label)+'</strong>'+esc(bits.join(' · '))+'</li>');
+     // Нагрузка города — только то, что решение требует передать Москве.
+     // Общественно-деловая площадь сюда НЕ относится.
+     if(o.transfer_to_city){
+       burden.push('<li><strong>'+esc(o.label)+'</strong>построить и безвозмездно передать в собственность Москвы'
+         +(o.places?' · '+fmt(o.places)+' мест':'')+'</li>');
+     }
    });
-   if(cr.infrastructure_agreement)items.push('<li><strong>Социальная инфраструктура</strong>Заключить с городом инфраструктурное соглашение по обеспечению жилой застройки объектами образования и здравоохранения.</li>');
+   if(cr.infrastructure_agreement){
+     burden.push('<li><strong>Инфраструктурное соглашение</strong>заключить с городом соглашение по обеспечению жилой застройки объектами образования и здравоохранения</li>');
+   }
  }
  let meta=[];
  if(cr&&cr.implementation_years)meta.push('<span><b>'+fmt(cr.implementation_years)+' лет</b> срок реализации</span>');
@@ -109,7 +116,8 @@ let links=[];if(r.url)links.push('<a target="_blank" href="'+esc(r.url)+'">Ка�
  let check='';
  if(cr&&cr.nonhousing_obligations_sqm){
    let c=Number(cr.nonhousing_obligations_sqm),d=Number(tep.nonresidential_gfa_sqm);
-   check='<div class="source-details">Обязательные нежилые объекты: '+fmt(c)+' м²'+(Number.isFinite(d)?' · нежилая СПП решения '+fmt(d)+' м²'+(Math.abs(c-d)<=1?' · сходится':' · есть расхождение'):'')+'.</div>';
+   check='<div class="source-details">Разложение нежилой СПП по программе решения: '+fmt(c)+' м²'
+     +(Number.isFinite(d)?' из '+fmt(d)+' м²'+(Math.abs(c-d)<=1?' · сходится':' · есть расхождение'):'')+'.</div>';
  }
  let sourceDetail='';
  if(cr&&(cr.parameters_adjustable||cr.operator_exception)){
@@ -120,9 +128,13 @@ let links=[];if(r.url)links.push('<a target="_blank" href="'+esc(r.url)+'">Ка�
  }
  $('cityBody').innerHTML=
    '<div class="decision-summary">'+summary.map(x=>'<div><b>'+esc(x[1])+'</b><small>'+esc(x[0])+'</small></div>').join('')+'</div>'
-   +(items.length?'<ul class="decision-list">'+items.join('')+'</ul>':'<div class="box">Отдельные обязательные объекты в прочитанном решении не выделены.</div>')
+   +'<h3 style="margin:14px 0 6px">Программа строительства</h3>'
+   +(programme.length?'<ul class="decision-list">'+programme.join('')+'</ul>':'<div class="box">Объекты программы не выделены.</div>')
+   +check
+   +'<h3 style="margin:14px 0 6px">Нагрузка / передача городу</h3>'
+   +(burden.length?'<ul class="decision-list">'+burden.join('')+'</ul>':'<div class="box">Отдельная передача объектов городу в прочитанном решении не найдена.</div>')
    +(meta.length?'<div class="decision-meta">'+meta.join('')+'</div>':'')
-   +check+sourceDetail
+   +sourceDetail
    +'<details class="source-details"><summary>Сверка с карточкой krt.mos.ru</summary><div class="box">Каталог: СПП '+fmt(r.total_gfa_sqm)+' м² · жильё '+fmt(r.housing_gfa_sqm)+' м² · нежилое '+fmt(r.nonresidential_gfa_sqm)+' м² · статус '+esc(r.status||'—')+'. Основной источник для обязательств и разложения — проект решения.</div></details>';
 }try{let req=await j('/krt-preview/proxy/'+encodeURIComponent(slug)+'/requirements'), groups=[['Снос',req.demolition||[]],['Снос или реконструкция',req.demolition_or_reconstruction||[]],['Реконструкция',req.reconstruction||[]],['Сохранение',req.preservation||[]]], total=groups.reduce((n,x)=>n+x[1].length,0);$('loadBody').innerHTML='<div class="cols"><div class="box"><b>Городские нужды / реновация</b><br>'+esc(req.renovation&&req.renovation.mentioned?(req.renovation.area_sqm?fmt(req.renovation.area_sqm)+' м²':req.renovation.quote||'Упомянуты, объём не назван'):'В проекте решения не подтверждены')+'</div><div class="box"><b>Что требует документ</b><br>'+esc((req.warning||'Требования прочитаны из официального документа'))+'</div></div>';$('demoSummary').textContent='Объекты: снос / реконструкция / сохранение — '+total;$('demoBody').innerHTML='<div class="object-groups">'+(groups.filter(x=>x[1].length).map(x=>'<details class="object-group"><summary>'+esc(x[0])+' — '+x[1].length+'</summary><ul class="object-list">'+x[1].map(v=>'<li><span class="desc">'+esc(v)+'</span></li>').join('')+'</ul></details>').join('')||'<div class="box">В опубликованном проекте решения перечень действий по объектам не найден.</div>')+'</div>';if(nag&&nag.objects){let ng=[['Снос',nag.objects.demolition||[],nag.totals.demolition],['Снос или реконструкция',nag.objects.conditional||[],nag.totals.conditional],['Реконструкция',nag.objects.reconstruction||[],nag.totals.reconstruction],['Сохранение',nag.objects.preservation||[],nag.totals.preservation]];let nn=ng.reduce((z,x)=>z+x[1].length,0);$('demoSummary').textContent='Извещение торгов: судьба объектов — '+nn+' из '+(nag.objects_total||nn);$('demoBody').innerHTML='<div class="object-groups">'+ng.filter(x=>x[1].length).map(x=>'<details class="object-group"><summary>'+esc(x[0])+' — '+x[1].length+' · '+fmt((x[2]||{}).area_sqm,1)+' м²</summary><ul class="object-list">'+x[1].map(o=>'<li><span class="cad">'+esc(o.cadastral_number||'без КН')+'</span><span class="desc">'+esc([o.address||o.name,o.fate].filter(Boolean).join(' · '))+'</span><span class="area">'+(o.area_sqm?fmt(o.area_sqm,1)+' м²':'—')+'</span></li>').join('')+'</ul></details>').join('')+'</div>'} }catch(e){$('loadBody').textContent='Требования пока не прочитаны: '+e.message}
 $('pressBody').innerHTML='<div class="box">'+esc(listFacts(rank.press_facts))+'</div>';$('pressBtn').onclick=async()=>{let b=$('pressResult');b.style.display='';b.textContent='Ищу…';try{b.textContent=listFacts(await j('/krt-preview/proxy/'+encodeURIComponent(slug)+'/open-sources'))}catch(e){b.textContent=e.message}};
