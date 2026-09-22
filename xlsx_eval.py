@@ -260,6 +260,7 @@ FUNCTIONS: dict[str, Callable[[list[Any]], Any]] = {
     # Строковые: подпись очередей соцобъекта собирается формулой, чтобы не
     # устаревать после правки мест прямо в книге.
     "LEN": lambda args: float(len(_text(args[0]))),
+    "REPT": lambda args: _text(args[0]) * max(0, int(_as_number(args[1]))),
     "LEFT": lambda args: _text(args[0])[:int(_as_number(args[1]))
                                         if len(args) > 1 else 1],
     "NPV": _npv,
