@@ -81,7 +81,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.24.21"
+VERSION = "0.24.22"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -10824,6 +10824,8 @@ def sports_parking_functions(inputs: dict[str, Any] | None) -> tuple[str, str]:
 
 
 OBJECT_PARKING_AREA_DEFAULT = 35.0
+OBJECT_PARKING_OVER_AREA_DEFAULT = 25.0
+OFFICE_GBA_PER_SALEABLE_DEFAULT = 1.40
 
 
 def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
@@ -10844,18 +10846,21 @@ def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[st
       наземную ГНС не входит и считается вместе с гаражом и кладовыми.
     - `parking_units` — мест, построенных и продаваемых.
 
-    Продаваемая объекта уменьшается на метры мест ПЕРВЫХ ЭТАЖЕЙ: тот же этаж
-    нельзя продать дважды — офисом и машино-местами. ГНС при этом не меняется:
-    этажи и так его, здание того же размера (владелец, 05.09.2026: «стоп
-    надземные не вычитается, я ошибся, вычитается наземный»).
+    Места на первых этажах занимают часть УЖЕ заданной ГНС объекта. Они не
+    добавляют ГНС сверху и не уменьшают повторно вручную заданную продаваемую
+    площадь: saleable — конечный ТЭП пользователя. Для офисов площадь таких
+    мест считается по 25 м²/место и участвует только в проверке, помещаются ли
+    офисная часть и паркинг внутри фиксированной ГНС.
 
     Возвращается норматив приобъектной парковки — справка, которую читает
     отчёт, — с разделом `own` о собственном паркинге рядом. Два разных ответа
     под одним именем читались бы как один.
     """
     demand = parking_demand(inputs, tep)
-    per_space = n(inputs, "object_parking_area_per_space_sqm",
-                  OBJECT_PARKING_AREA_DEFAULT) or OBJECT_PARKING_AREA_DEFAULT
+    under_per_space = n(inputs, "object_parking_area_per_space_sqm",
+                        OBJECT_PARKING_AREA_DEFAULT) or OBJECT_PARKING_AREA_DEFAULT
+    over_per_space = OBJECT_PARKING_OVER_AREA_DEFAULT
+    fit_warnings: list[str] = []
     required_by_key = {row.get("tep_key"): row.get("required_spaces")
                        for row in (demand.get("rows") or [])
                        if row.get("required_spaces")}
@@ -10912,21 +10917,32 @@ def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[st
             # у нормы своей строки про это нет.
             guests = int(round((under + over) * n(inputs, f"{prefix}_parking_guest_pct") / 100.0))
             guests = max(0, min(guests, under + over))
-        row["under_gns"] = under * per_space
+        row["under_gns"] = under * under_per_space
+        row["over_gns"] = over * over_per_space
         row["parking_units"] = float(under + over)
         # Построено — не то же, что продано. У ТЦ и ФОКа места обеспечивают
         # посетителей: «ты видел ТЦ, где покупатели купили бы места? или ФОК с
         # купленным машино-местом?» (владелец, 06.09.2026). У офисника
         # продаются все, кроме гостевых.
         row["parking_saleable_units"] = float(max(0, under + over - guests)) if sellable else 0.0
-        # Метры первых этажей уходят из продаваемой, но не ниже нуля: заданное
-        # число мест больше самого объекта — это расхождение человека с его же
-        # зданием, и оно называется в предупреждениях, а не обрезает в минус.
-        taken = over * per_space
-        if taken > 0:
-            row["saleable"] = max(0.0, n(row, "saleable") - taken)
-            row["useful"] = max(0.0, n(row, "useful") - taken)
-        row["parking_saleable_taken"] = taken
+        # Наземный гараж уже сидит внутри ГНС объекта. Ручная saleable —
+        # конечный ТЭП и второй раз не уменьшается. Старое поле оставлено
+        # нулевым для обратной совместимости со старыми потребителями.
+        row["parking_saleable_taken"] = 0.0
+        fit_required_gns = 0.0
+        fit_available_gns = n(row, "gns")
+        fits_gba = True
+        if tep_key == "offices" and enabled:
+            office_program_gns = n(row, "saleable") * OFFICE_GBA_PER_SALEABLE_DEFAULT
+            fit_required_gns = office_program_gns + row["over_gns"]
+            fits_gba = fit_required_gns <= fit_available_gns + 1e-6
+            if not fits_gba:
+                fit_warnings.append(
+                    f"{row.get('label') or 'Офисы'}: офисная часть "
+                    f"{office_program_gns:,.0f} м² и наземный паркинг "
+                    f"{row['over_gns']:,.0f} м² не помещаются в заданную ГНС "
+                    f"{fit_available_gns:,.0f} м²".replace(",", " ")
+                )
         own.append({
             "tep_key": tep_key,
             # Приставка полей едет вместе с объектом: страница ставит норму под
@@ -10944,7 +10960,11 @@ def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[st
             "sellable": sellable,
             "saleable_units": int(row["parking_saleable_units"]),
             "under_gns": row["under_gns"],
-            "saleable_taken_sqm": taken,
+            "over_gns": row["over_gns"],
+            "fit_required_gns": fit_required_gns,
+            "fit_available_gns": fit_available_gns,
+            "fits_gba": fits_gba,
+            "saleable_taken_sqm": 0.0,
         })
     demand["own"] = own
     demand["own_units"] = sum(item["units"] for item in own if item["enabled"])
@@ -10953,7 +10973,10 @@ def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[st
     # второй счёт однажды сказал бы про них другое.
     demand["own_saleable_units"] = sum(item["saleable_units"] for item in own if item["enabled"])
     demand["own_under_gns"] = sum(item["under_gns"] for item in own if item["enabled"])
-    demand["area_per_space_sqm"] = per_space
+    demand["own_over_gns"] = sum(item["over_gns"] for item in own if item["enabled"])
+    demand["area_per_space_sqm"] = under_per_space
+    demand["over_area_per_space_sqm"] = over_per_space
+    demand["fit_warnings"] = fit_warnings
     demand["note"] = _object_parking_note(demand, own)
     return demand
 
@@ -18742,7 +18765,7 @@ _V4_OBJECT_PARKING_INPUT_ROWS = (
     # не выведен из порядка: снятая строка сдвинула бы все ячейки под собой, и
     # значения уехали бы в чужие клетки.
     (157, "ПАРКИНГ ОТДЕЛЬНО СТОЯЩИХ ОБЪЕКТОВ · МЕСТА", None, None),
-    (158, "Площадь на 1 место", "K158", "м²/место"),
+    (158, "Площадь на 1 место подземного паркинга объекта", "K158", "м²/место"),
     (159, "Приобъектная стоянка нормируется отдельно: она вдоль проезда, "
           "в благоустройстве, и здесь её нет", None, None),
     (161, "Офисы — мест в своём подземном", "K161", "шт."),
@@ -18818,23 +18841,11 @@ def _v4_object_parking_block(xml: str, missing: list[str]) -> str:
                       f"{params}!${guest_cell[0]}${guest_cell[1:]},0))")
         else:
             spaces = built
-        # Метры мест ПЕРВЫХ ЭТАЖЕЙ уходят из продаваемой объекта: тот же этаж
-        # нельзя продать дважды — офисом и машино-местами. Считает это формула,
-        # а не движок записью в ячейку: продаваемая — вводная человека, и
-        # молча уменьшенная она перестала бы быть тем, что он вписал. Обрезка
-        # снизу — та же, что у движка: мест больше самого здания это
-        # расхождение, а не отрицательная площадь.
-        pool = _v4_cell_formula(xml, f"B{saleable_row}")
-        taken = f"{params}!${over[0]}${over[1:]}*{params}!$K$158"
-        if pool is None:
+        # Продаваемая площадь объекта — конечная вводная. Места на первых
+        # этажах находятся внутри фиксированной ГНС и не уменьшают её второй
+        # раз в книге. Проверка вместимости остаётся обязанностью движка.
+        if _v4_cell_formula(xml, f"B{saleable_row}") is None:
             missing.append(f"паркинг объектов: продаваемая B{saleable_row} не найдена")
-        elif "$K$158" in pool:
-            pass                      # уже вычтено: формула не удваивается
-        else:
-            xml, done = _v4_set_or_insert_cell(
-                xml, f"B{saleable_row}", formula=f"MAX(0,({pool})-{taken})")
-            if not done:
-                missing.append(f"паркинг объектов: продаваемая B{saleable_row}")
         xml, done = _v4_set_or_insert_cell(
             xml, f"A{units_row}", text="Паркинг объекта — мест")
         if not done:
@@ -28611,17 +28622,17 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     standalone_garage_capex: dict[str, float] = {}
     object_schedule_notes: dict[str, dict[str, Any]] = {"core": core_schedule_note}
 
-    # Паркинг объектов разложен по строкам ТЭП раньше (`apply_object_parking`),
+    # Паркинг объектов разложен по строкам ТЭП раньше (apply_object_parking),
     # и деньги его оттуда ЧИТАЮТ, а не считают второй раз: два счёта одной
     # величины однажды разошлись бы, и обе цифры выглядели бы верными.
-    # Продаваемая объекта приходит вводной, а не строкой ТЭП, поэтому метры
-    # первых этажей вычитаются здесь явно — у встроенной коммерции они уже
-    # ушли, там `core_product` читает саму строку.
+    # Продаваемая отдельно стоящего объекта — конечная вводная человека.
+    # Наземный паркинг размещается ВНУТРИ заданной ГНС и не уменьшает её второй
+    # раз: совместимость площадей проверяет apply_object_parking.
     def object_parking_row(tep_key: str) -> dict[str, Any]:
         return (t or {}).get(tep_key) or {}
 
     def object_saleable(tep_key: str, field: str) -> float:
-        return max(0.0, n(x, field) - n(object_parking_row(tep_key), "parking_saleable_taken"))
+        return max(0.0, n(x, field))
 
     def object_parking_capex(tep_key: str) -> float:
         """Свой подземный паркинг объекта стоит подземного метра.
