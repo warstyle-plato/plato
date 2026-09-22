@@ -121,12 +121,15 @@ a{color:inherit}button{font:inherit}.shell{max-width:1480px;margin:0 auto;paddin
     </section>
 
     <section class="card">
-     <header><h2>Действия</h2><span>рабочие переходы</span></header>
+     <header><h2>Действия</h2><span>по этой площадке</span></header>
      <div class="body actionbar">
-      <a class="primary" href="/auctions">Открыть список КРТ</a>
+      <button class="primary" type="button" id="handoffDevelopAid">Передать в DevelopAid</button>
+      <button type="button" id="askPlato">Спросить Платона</button>
+      <button type="button" id="shareCard">Поделиться карточкой</button>
       <a href="/krt/nagatino">Разбор территории</a>
       <a href="/auctions/krt-lab">Лаборатория балла</a>
       <a target="_blank" rel="noopener" href="https://www.mos.ru/dgp/documents/view/336313220/">Решение mos.ru</a>
+      <div id="actionStatus" class="source" style="flex-basis:100%"></div>
      </div>
     </section>
    </div>
@@ -373,6 +376,34 @@ function bindMap(){
  $('toggleLands').onclick=()=>{MAP.lands=!MAP.lands;$('toggleLands').classList.toggle('active',MAP.lands);drawMap()};
  $('toggleObjects').onclick=()=>{MAP.objects=!MAP.objects;$('toggleObjects').classList.toggle('active',MAP.objects);drawMap()};
 }
+function parentAction(action,p){
+ const payload={type:'developaid-krt-prototype-action',action,slug:String((p&&p.slug)||''),name:String((p&&p.name)||'')};
+ if(window.parent&&window.parent!==window){window.parent.postMessage(payload,location.origin);return true}
+ return false;
+}
+async function shareStandalone(){
+ const url=location.origin+'/auctions/krt-prototype/nagatino';
+ const data={title:'КРТ Нагатино · DevelopAid',text:'Инвестиционный разбор КРТ Нагатино',url};
+ try{
+  if(navigator.share){await navigator.share(data);return 'Ссылка передана'}
+  await navigator.clipboard.writeText(url);return 'Ссылка скопирована'
+ }catch(e){
+  try{await navigator.clipboard.writeText(url);return 'Ссылка скопирована'}catch(_){return url}
+ }
+}
+function bindActions(p){
+ const status=$('actionStatus'),say=t=>{if(status)status.textContent=t||''};
+ const handoff=$('handoffDevelopAid'),plato=$('askPlato'),share=$('shareCard');
+ if(handoff)handoff.onclick=()=>{
+  if(parentAction('handoff',p))say('Передаю площадку в DevelopAid…');
+  else say('Передача запускается из карточки, открытой поверх списка КРТ.');
+ };
+ if(plato)plato.onclick=()=>{
+  if(parentAction('plato',p))say('Передаю контекст Платону…');
+  else say('Платон запускается из карточки, открытой поверх списка КРТ.');
+ };
+ if(share)share.onclick=async()=>say(await shareStandalone());
+}
 async function boot(){
  bindMap();
  const [catRes,localRankingRes,liveRes]=await Promise.allSettled([
@@ -401,6 +432,7 @@ async function boot(){
  const parcels=parcelsRes.status==='fulfilled'?parcelsRes.value:null;
  MAP.point=point;MAP.parcels=parcels;
  const sc=scoreV2(row,req);
+ bindActions(p);
  renderFlags(p,rank,req);renderEntry(p,rank);renderScore(sc);renderEconomics(rank,report);renderPublic(rank);renderTerritory(req,parcels);drawMap();if($('refreshPublic'))$('refreshPublic').onclick=()=>refreshPublic(p,rank);
  if(liveRes.status!=='fulfilled'){
   $('economics').insertAdjacentHTML('afterbegin','<div class="notice warn">Production-рейтинг сейчас не прочитан: '+esc(liveRes.reason&&liveRes.reason.message||liveRes.reason||'ошибка')+'. Показаны только локальные сохранённые данные.</div>');
