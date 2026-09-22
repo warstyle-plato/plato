@@ -99,6 +99,22 @@ def test_first_floor_places_stay_inside_fixed_gba_and_do_not_rewrite_saleable() 
     assert office["fits_gba"] is True
 
 
+def test_the_office_fit_guard_warns_without_growing_gba() -> None:
+    """Сторож не чинит невозможный ТЭП ростом ГНС или урезанием saleable."""
+    t = _tep()
+    demand = core.apply_object_parking(
+        _inputs(offices_parking_under_spaces=0,
+                offices_parking_over_spaces=100), t)
+    office = next(item for item in demand["own"] if item["tep_key"] == "offices")
+    assert office["over_gns"] == pytest.approx(100 * 25)
+    assert office["fit_required_gns"] == pytest.approx(6000 * 1.40 + 100 * 25)
+    assert office["fits_gba"] is False
+    assert demand["fit_warnings"]
+    assert "не помещаются в заданную ГНС" in demand["note"]
+    assert t["offices"]["gns"] == 10000
+    assert t["offices"]["saleable"] == pytest.approx(6000)
+
+
 def test_the_book_counts_the_same_parking_as_the_engine() -> None:
     """Книга и отчёт на одном расчёте — одни числа, а не два достоверных вида."""
     openpyxl = pytest.importorskip("openpyxl")
