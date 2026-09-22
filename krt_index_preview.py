@@ -2,8 +2,48 @@
 import json
 import urllib.request
 import urllib.parse
+import time
 from fastapi import Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, JSONResponse, Response
+
+
+_PROD_BASE = "https://plato-development-investment-model.onrender.com"
+_PROD_CACHE: dict[str, dict] = {}
+
+def _read_prod_json(path: str, timeout: float = 18.0) -> dict:
+    """Blocking HTTP reader; always call through run_in_threadpool."""
+    url = _PROD_BASE + path
+    req = urllib.request.Request(url, headers={"User-Agent":"DevelopAid-KRT-preview/2"})
+    with urllib.request.urlopen(req, timeout=timeout) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("production returned non-object JSON")
+    return payload
+
+async def _prod_json(path: str, *, timeout: float = 18.0, cache: bool = True) -> tuple[dict, bool]:
+    """Read production without blocking the only Uvicorn worker.
+
+    A successful answer is remembered. If production briefly times out, the
+    preview serves the last successful snapshot instead of taking the whole
+    design stand down.
+    """
+    last = None
+    for _ in range(2):
+        try:
+            payload = await run_in_threadpool(_read_prod_json, path, timeout)
+            if cache:
+                _PROD_CACHE[path] = {"at": time.time(), "payload": payload}
+            return payload, False
+        except Exception as exc:
+            last = exc
+    saved = _PROD_CACHE.get(path)
+    if saved:
+        payload = dict(saved["payload"])
+        payload["_preview_stale"] = True
+        payload["_preview_stale_at"] = saved["at"]
+        return payload, True
+    raise last or RuntimeError("production proxy failed")
 
 PAGE = r'''<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>КРТ — DevelopAid preview</title><style>
@@ -160,80 +200,61 @@ if(lots.length){$('tenderBody').innerHTML='<span class="badge" style="border-col
 def install(app):
     @app.get("/krt-preview/proxy/nagatino/parcels", include_in_schema=False)
     async def krt_preview_nagatino_parcels():
-        url = "https://plato-development-investment-model.onrender.com/krt/nagatino/parcels"
         try:
-            req = urllib.request.Request(url, headers={"User-Agent":"DevelopAid-KRT-preview/1"})
-            with urllib.request.urlopen(req, timeout=55) as response:
-                return JSONResponse(json.loads(response.read().decode("utf-8")), headers={"Cache-Control":"no-store"})
+            payload, stale = await _prod_json("/krt/nagatino/parcels")
+            return JSONResponse(payload, headers={"Cache-Control":"no-store", "X-Preview-Stale":str(stale).lower()})
         except Exception as exc:
             return JSONResponse({"error":str(exc)}, status_code=502)
 
     @app.get("/krt-preview/proxy/{slug}/point", include_in_schema=False)
     async def krt_preview_point(slug: str):
-        url = "https://plato-development-investment-model.onrender.com/auctions/krt/" + urllib.parse.quote(slug) + "/point"
         try:
-            req = urllib.request.Request(url, headers={"User-Agent":"DevelopAid-KRT-preview/1"})
-            with urllib.request.urlopen(req, timeout=55) as response:
-                return JSONResponse(json.loads(response.read().decode("utf-8")),
-                                    headers={"Cache-Control":"no-store"})
+            payload, stale = await _prod_json("/auctions/krt/" + urllib.parse.quote(slug) + "/point", timeout=14)
+            return JSONResponse(payload, headers={"Cache-Control":"no-store", "X-Preview-Stale":str(stale).lower()})
         except Exception as exc:
             return JSONResponse({"error":str(exc)}, status_code=502)
 
     @app.get("/krt-preview/proxy/{slug}/requirements", include_in_schema=False)
     async def krt_preview_requirements(slug: str):
-        url = "https://plato-development-investment-model.onrender.com/auctions/krt/" + urllib.parse.quote(slug) + "/requirements"
         try:
-            req = urllib.request.Request(url, headers={"User-Agent":"DevelopAid-KRT-preview/1"})
-            with urllib.request.urlopen(req, timeout=55) as response:
-                return JSONResponse(json.loads(response.read().decode("utf-8")), headers={"Cache-Control":"no-store"})
+            payload, stale = await _prod_json("/auctions/krt/" + urllib.parse.quote(slug) + "/requirements", timeout=18)
+            return JSONResponse(payload, headers={"Cache-Control":"no-store", "X-Preview-Stale":str(stale).lower()})
         except Exception as exc:
             return JSONResponse({"available":False,"reason":str(exc)}, status_code=502)
 
     @app.get("/krt-preview/proxy/{slug}/open-sources", include_in_schema=False)
     async def krt_preview_open_sources(slug: str):
-        url = "https://plato-development-investment-model.onrender.com/auctions/krt/" + urllib.parse.quote(slug) + "/open-sources"
         try:
-            req = urllib.request.Request(url, headers={"User-Agent":"DevelopAid-KRT-preview/1"})
-            with urllib.request.urlopen(req, timeout=90) as response:
-                return JSONResponse(json.loads(response.read().decode("utf-8")), headers={"Cache-Control":"no-store"})
+            payload, stale = await _prod_json("/auctions/krt/" + urllib.parse.quote(slug) + "/open-sources", timeout=30)
+            return JSONResponse(payload, headers={"Cache-Control":"no-store", "X-Preview-Stale":str(stale).lower()})
         except Exception as exc:
             return JSONResponse({"available":False,"reason":str(exc)}, status_code=502)
 
     @app.get("/krt-preview/map", include_in_schema=False)
     async def krt_preview_map():
-        url = "https://plato-development-investment-model.onrender.com/auctions/krt/map"
         try:
-            req = urllib.request.Request(url, headers={"User-Agent":"DevelopAid-KRT-preview/1"})
-            with urllib.request.urlopen(req, timeout=55) as response:
-                return JSONResponse(json.loads(response.read().decode("utf-8")),
-                                    headers={"Cache-Control":"no-store"})
+            payload, stale = await _prod_json("/auctions/krt/map", timeout=18)
+            return JSONResponse(payload, headers={"Cache-Control":"no-store", "X-Preview-Stale":str(stale).lower()})
         except Exception as exc:
             return JSONResponse({"error":str(exc),"sites":[]}, status_code=502)
 
     @app.get("/krt-preview/proxy/{slug}/social", include_in_schema=False)
     async def krt_preview_social(slug: str):
-        url = "https://plato-development-investment-model.onrender.com/auctions/krt/" + urllib.parse.quote(slug) + "/requirements"
         try:
-            req = urllib.request.Request(url, headers={"User-Agent":"DevelopAid-KRT-preview/1"})
-            with urllib.request.urlopen(req, timeout=55) as response:
-                payload = json.loads(response.read().decode("utf-8"))
+            payload, stale = await _prod_json("/auctions/krt/" + urllib.parse.quote(slug) + "/requirements", timeout=18)
             from market_search.krt_requirements import social_objects_from_decision
             objects = social_objects_from_decision(payload.get("construction") or [])
-            return JSONResponse({"objects":objects}, headers={"Cache-Control":"no-store"})
+            return JSONResponse({"objects":objects}, headers={"Cache-Control":"no-store", "X-Preview-Stale":str(stale).lower()})
         except Exception as exc:
             return JSONResponse({"error":str(exc),"objects":[]}, status_code=502)
 
     @app.get("/krt-preview/decisions", include_in_schema=False)
     async def krt_preview_decisions():
-        url = "https://plato-development-investment-model.onrender.com/auctions/krt/decisions"
         try:
-            req = urllib.request.Request(url, headers={"User-Agent":"DevelopAid-KRT-preview/1"})
-            with urllib.request.urlopen(req, timeout=55) as response:
-                return JSONResponse(json.loads(response.read().decode("utf-8")),
-                                    headers={"Cache-Control":"no-store"})
+            payload, stale = await _prod_json("/auctions/krt/decisions", timeout=18)
+            return JSONResponse(payload, headers={"Cache-Control":"no-store", "X-Preview-Stale":str(stale).lower()})
         except Exception as exc:
-            return JSONResponse({"error":str(exc),"matched_rows":[],"tep":{}},
-                                status_code=502)
+            return JSONResponse({"error":str(exc),"matched_rows":[],"tep":{}}, status_code=502)
 
     @app.get("/krt-preview/nagatino/source", include_in_schema=False)
     async def krt_preview_nagatino_source():
@@ -326,25 +347,19 @@ def install(app):
 
     @app.get("/krt-preview/ranking", include_in_schema=False)
     async def krt_preview_ranking():
-        url = "https://plato-development-investment-model.onrender.com/auctions/krt/ranking"
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "DevelopAid-KRT-preview/1"})
-            with urllib.request.urlopen(req, timeout=55) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-            return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+            payload, stale = await _prod_json("/auctions/krt/ranking", timeout=18)
+            return JSONResponse(payload, headers={"Cache-Control":"no-store", "X-Preview-Stale":str(stale).lower()})
         except Exception as exc:
-            return JSONResponse({"error": str(exc), "rows": []}, status_code=502)
+            return JSONResponse({"error":str(exc),"rows":[]}, status_code=502)
 
     @app.get("/krt-preview/proxy/report/{slug}", include_in_schema=False)
     async def krt_preview_report(slug: str):
-        url = "https://plato-development-investment-model.onrender.com/auctions/krt/" + urllib.parse.quote(slug) + "/report"
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "DevelopAid-KRT-preview/1"})
-            with urllib.request.urlopen(req, timeout=55) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-            return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+            payload, stale = await _prod_json("/auctions/krt/" + urllib.parse.quote(slug) + "/report", timeout=18)
+            return JSONResponse(payload, headers={"Cache-Control":"no-store", "X-Preview-Stale":str(stale).lower()})
         except Exception as exc:
-            return JSONResponse({"error": str(exc)}, status_code=502)
+            return JSONResponse({"error":str(exc)}, status_code=502)
 
     @app.post("/krt-preview/plato/ask", include_in_schema=False)
     async def krt_preview_plato_ask(request: Request):
@@ -375,16 +390,11 @@ def install(app):
 
     @app.get("/krt-preview/data", include_in_schema=False)
     async def krt_preview_data():
-        # Preview has an isolated filesystem. Read the real catalogue from
-        # production so design testing uses the same KRT rows the user sees.
-        url = "https://plato-development-investment-model.onrender.com/auctions/krt"
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "DevelopAid-KRT-preview/1"})
-            with urllib.request.urlopen(req, timeout=55) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-            return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+            payload, stale = await _prod_json("/auctions/krt", timeout=18)
+            return JSONResponse(payload, headers={"Cache-Control":"no-store", "X-Preview-Stale":str(stale).lower()})
         except Exception as exc:
-            return JSONResponse({"error": str(exc), "sites": []}, status_code=502)
+            return JSONResponse({"error":str(exc),"projects":[]}, status_code=502)
 
     @app.get("/krt-preview", response_class=HTMLResponse, include_in_schema=False)
     async def krt_preview():
