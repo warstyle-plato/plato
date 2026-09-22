@@ -77,6 +77,7 @@ from auction_search import krt_territory, nagatino_parcels
 from auction_search.nagatino_ui import nagatino_page
 from auction_search.ui import auctions_page
 from auction_search.krt_score_lab import krt_score_lab_page
+from auction_search.krt_nagatino_prototype import nagatino_investment_card_page
 from market_search.krt_registry import CATALOGUE_URL, KrtRegistry
 from market_search import krt_decision_tep
 from market_search import tep_check
@@ -989,6 +990,13 @@ def install(app: FastAPI) -> None:
     async def auctions_home() -> HTMLResponse:
         return HTMLResponse(
             auction_page_with_handoff(auctions_page(core)),
+            headers={"Cache-Control": "no-store, must-revalidate"},
+        )
+
+    @app.get("/auctions/krt-prototype/nagatino", response_class=HTMLResponse, include_in_schema=False)
+    async def auction_krt_nagatino_prototype() -> HTMLResponse:
+        return HTMLResponse(
+            nagatino_investment_card_page(),
             headers={"Cache-Control": "no-store, must-revalidate"},
         )
 
