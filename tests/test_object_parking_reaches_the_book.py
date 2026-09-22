@@ -86,12 +86,16 @@ def test_the_places_reach_the_tep_row_of_their_own_object() -> None:
 
 
 def test_first_floor_places_take_metres_out_of_the_saleable_not_the_gns() -> None:
-    """Тот же этаж нельзя продать дважды — офисом и машино-местами."""
+    """Первые этажи занимают GBA, а продаваемая следует своей доле от остатка."""
     t = _tep()
-    core.apply_object_parking(_inputs(offices_parking_over_spaces=40,
-                                      offices_parking_under_spaces=40), t)  # noqa: E501
-    assert t["offices"]["gns"] == 10000, "ГНС не меняется: этажи и так его"
-    assert t["offices"]["saleable"] == pytest.approx(6000 - 40 * 35)
+    got = core.apply_object_parking(
+        _inputs(offices_parking_over_spaces=40,
+                offices_parking_under_spaces=40), t)
+    assert t["offices"]["gns"] == 10000, "ГНС не меняется: этажи уже внутри неё"
+    assert got["over_area_per_space_sqm"] == 25
+    assert t["offices"]["parking_over_gba_sqm"] == 40 * 25
+    assert t["offices"]["total_area"] == pytest.approx((10000 - 40 * 25) * 0.94)
+    assert t["offices"]["saleable"] == pytest.approx((10000 - 40 * 25) * 0.60)
 
 
 def test_the_book_counts_the_same_parking_as_the_engine() -> None:
