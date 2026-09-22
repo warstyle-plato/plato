@@ -64,3 +64,15 @@ def test_surroundings_map_is_interactive_not_a_static_export():
     assert "pointerup" in source
     assert "addEventListener('wheel'" in source
     assert "© OpenStreetMap" in source
+
+
+def test_scenarios_are_visibly_linked_to_inputs_in_both_directions():
+    source = _source()
+
+    assert 'data-scenario-go="inputs"' in source
+    assert 'data-scenario-go="scenarios"' in source
+    assert "Сценарии считаются поверх текущих «Вводных»" in source
+    assert "Вводные — база сценариев" in source
+    assert "ensureInputsScenarioBridge" in source
+    assert "renderInputsScenarioBridge" in source
+    assert "openV2View('scenarios')" in source
