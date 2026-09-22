@@ -23,6 +23,8 @@
 
 from __future__ import annotations
 
+import datetime
+import html
 import http.cookiejar
 import json
 import math
@@ -72,6 +74,8 @@ class PulseProject:
     developer: str | None = None
     builder: str | None = None
     address: str | None = None
+    sales_start: str | None = None
+    commissioning: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -82,6 +86,8 @@ class PulseProject:
             "developer": self.developer,
             "builder": self.builder,
             "address": self.address,
+            "sales_start": self.sales_start,
+            "commissioning": self.commissioning,
             "url": f"{PULSE_BASE}/complex/{self.complex_id}/",
         }
 
@@ -127,6 +133,163 @@ def _balanced_json(text: str, start: int) -> str:
                 return text[start : index + 1]
     raise ValueError("незакрытый JSON в странице карты")
 
+
+def _pulse_date(value: Any) -> str | None:
+    """Нормализовать дату, которую ЛК Пульса показывает человеку.
+
+    API и HTML Пульса используют несколько форм: ISO, российскую дату,
+    месяц/год и квартал. Для стадийной модели достаточно месяца; если
+    источник даёт только квартал, берём его последний месяц.
+    """
+    if value in (None, ""):
+        return None
+    text = html.unescape(str(value)).replace("\u00a0", " ")
+    text = " ".join(text.split()).strip().lower().replace("ё", "е")
+    # ISO в JSON нередко приходит со временем.
+    found = re.search(r"\b(20\d{2})-(\d{1,2})-(\d{1,2})(?:[tT ][^\s<]*)?", text)
+    if found:
+        try:
+            return datetime.date(*map(int, found.groups()[:3])).isoformat()
+        except ValueError:
+            return None
+    found = re.search(r"\b(\d{1,2})[./-](\d{1,2})[./-](20\d{2})\b", text)
+    if found:
+        day, month, year = map(int, found.groups())
+        try:
+            return datetime.date(year, month, day).isoformat()
+        except ValueError:
+            return None
+    found = re.search(r"\b(20\d{2})[./-](\d{1,2})\b", text)
+    if found:
+        year, month = map(int, found.groups())
+        try:
+            return datetime.date(year, month, 1).isoformat()
+        except ValueError:
+            return None
+    found = re.search(r"\b(\d{1,2})[./-](20\d{2})\b", text)
+    if found:
+        month, year = map(int, found.groups())
+        try:
+            return datetime.date(year, month, 1).isoformat()
+        except ValueError:
+            return None
+    romans = {"i": 1, "ii": 2, "iii": 3, "iv": 4}
+    quarter = None
+    year = None
+    found = re.search(r"\b(i{1,3}|iv|[1-4])\s*(?:кв(?:артал)?\.?|q)\s*(?:г(?:ода)?\.?)?\s*(20\d{2})\b", text)
+    if found:
+        raw, raw_year = found.groups()
+        quarter = romans.get(raw, int(raw) if raw.isdigit() else None)
+        year = int(raw_year)
+    else:
+        found = re.search(r"\b(20\d{2})\s*(?:г(?:ода)?\.?)?\s*(?:q|кв(?:артал)?\.?)\s*(i{1,3}|iv|[1-4])\b", text)
+        if found:
+            raw_year, raw = found.groups()
+            quarter = romans.get(raw, int(raw) if raw.isdigit() else None)
+            year = int(raw_year)
+    if quarter and year:
+        return datetime.date(year, quarter * 3, 1).isoformat()
+    return None
+
+
+def _date_key_score(path: str, kind: str) -> int:
+    key = re.sub(r"[^a-zа-я0-9]+", " ", str(path).lower().replace("ё", "е"))
+    if kind == "sales_start":
+        if not any(word in key for word in ("sale", "sales", "продаж")):
+            return -100
+        score = 0
+        if any(word in key for word in ("start", "begin", "launch", "старт", "начал")):
+            score += 12
+        if "date" in key or "дата" in key:
+            score += 3
+        if any(word in key for word in ("end", "finish", "predict", "оконч", "конец")):
+            score -= 15
+        return score
+    if not any(word in key for word in (
+        "commission", "completion", "delivery", "handover", "deadline",
+        "finish", "construction end", "ввод", "эксплуатац", "сдач", "заверш"
+    )):
+        return -100
+    score = 0
+    if any(word in key for word in ("planned", "plan", "план", "срок", "deadline")):
+        score += 10
+    if any(word in key for word in ("commission", "ввод", "эксплуатац")):
+        score += 8
+    if any(word in key for word in ("delivery", "handover", "сдач", "заверш", "completion")):
+        score += 5
+    if "date" in key or "дата" in key:
+        score += 2
+    if any(word in key for word in ("actual", "fact", "факт")):
+        score -= 8
+    if any(word in key for word in ("sale", "sales", "продаж")):
+        score -= 15
+    return score
+
+
+def _dates_from_payload(payload: Any) -> dict[str, str]:
+    """Найти даты в JSON-ответе без привязки к текущему имени поля.
+
+    Пульс меняет состав ответов; смысл ключа устойчивее конкретного spelling.
+    Значение берётся только если и ключ похож на нужное поле, и само значение
+    разбирается как дата. Поэтому случайная дата цены в ответ не станет вводом.
+    """
+    found: dict[str, tuple[int, str]] = {}
+
+    def walk(value: Any, path: str = "") -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                walk(child, f"{path}.{key}" if path else str(key))
+            return
+        if isinstance(value, list):
+            for index, child in enumerate(value):
+                walk(child, f"{path}[{index}]")
+            return
+        date = _pulse_date(value)
+        if not date:
+            return
+        for kind in ("sales_start", "commissioning"):
+            score = _date_key_score(path, kind)
+            if score > 0 and (kind not in found or score > found[kind][0]):
+                found[kind] = (score, date)
+
+    walk(payload)
+    return {kind: pair[1] for kind, pair in found.items()}
+
+
+def _dates_from_project_html(page: str) -> dict[str, str]:
+    """Даты из самой карточки ЖК, если отдельный JSON их не отдал."""
+    if not page:
+        return {}
+    text = html.unescape(page).replace("\u00a0", " ")
+    # Сначала embedded JSON/JS: ключ рядом со значением надёжнее видимой верстки.
+    out: dict[str, str] = {}
+    key_patterns = {
+        "sales_start": r"(?:sales?_?start|start_?sales?|sale_?start|date_?start_?sales?)",
+        "commissioning": r"(?:commission(?:ing)?_?date|planned_?commission(?:ing)?|completion_?date|planned_?completion|delivery_?date|handover_?date|deadline)",
+    }
+    token = r"(20\d{2}-\d{1,2}-\d{1,2}(?:[T ][^\"<,}]*)?|\d{1,2}[./-]\d{1,2}[./-]20\d{2}|(?:I{1,3}|IV|[1-4])\s*(?:кв(?:артал)?\.?|Q)\s*20\d{2})"
+    for kind, key in key_patterns.items():
+        found = re.search(key + r".{0,100}?" + token, text, flags=re.I | re.S)
+        if found:
+            date = _pulse_date(found.group(1))
+            if date:
+                out[kind] = date
+    # Затем человекочитаемые подписи карточки.
+    plain = re.sub(r"<[^>]+>", " ", text)
+    plain = " ".join(plain.split())
+    labels = {
+        "sales_start": r"(?:старт|начало)\s+продаж",
+        "commissioning": r"(?:планов(?:ый|ая)\s+)?(?:срок|дата)?\s*(?:ввода(?:\s+в\s+эксплуатацию)?|сдачи|завершения\s+строительства)",
+    }
+    for kind, label in labels.items():
+        if kind in out:
+            continue
+        found = re.search(label + r".{0,100}?" + token, plain, flags=re.I)
+        if found:
+            date = _pulse_date(found.group(1))
+            if date:
+                out[kind] = date
+    return out
 
 def lz_decompress_base64(text: str) -> str | None:
     """Разжать ответ карты: он приходит сжатым LZ-string в base64.
@@ -405,6 +568,8 @@ class PulseClient:
                 developer=(row.get("developer") or None),
                 builder=(row.get("builder") or None),
                 address=(row.get("address") or None),
+                sales_start=(row.get("sales_start") or None),
+                commissioning=(row.get("commissioning") or None),
             )
             for row in cached
             if row.get("complex_id") and row.get("latitude") is not None
@@ -456,6 +621,7 @@ class PulseClient:
             props = feature.get("properties") or {}
             if len(coords) != 2 or feature.get("id") is None:
                 continue
+            project_dates = _dates_from_payload(props)
             out.append(
                 {
                     "complex_id": feature["id"],
@@ -465,6 +631,8 @@ class PulseClient:
                     "developer": (props.get("developer") or "").strip() or None,
                     "builder": (props.get("zastroychik") or "").strip() or None,
                     "address": (props.get("construction_address") or "").strip() or None,
+                    "sales_start": project_dates.get("sales_start"),
+                    "commissioning": project_dates.get("commissioning"),
                 }
             )
         return out
@@ -755,6 +923,62 @@ class PulseClient:
                 else None
             ),
         }
+
+    def project_dates(self, complex_id: int) -> dict[str, Any]:
+        """Старт продаж и плановый ввод прямо из ЛК Пульса.
+
+        Источник тот же, что у текущей цены: сначала JSON карточки проекта,
+        затем сама HTML-карточка. Месячный XLSX сюда не нужен; он остаётся
+        только fallback выше по конвейеру. Ответ кэшируется на тот же срок,
+        что цена, чтобы двадцать аналогов не открывали карточки по кругу.
+        """
+        cid = int(complex_id)
+
+        def build() -> dict[str, Any]:
+            out: dict[str, Any] = {}
+            sources: dict[str, str] = {}
+            # Этот ответ уже используется для ТЭП проекта; делим тот же cache key.
+            table = self._cached(
+                "table", cid,
+                lambda: self._post_json("/api/app/complex/table/", {"complex_id": cid}),
+            )
+            if isinstance(table, dict):
+                got = _dates_from_payload(table)
+                for key, value in got.items():
+                    out[key] = value
+                    sources[key] = "pulse_api_table"
+
+            # Карта иногда уже несёт паспортные поля одним общим ответом.
+            known = self.project(cid)
+            if known is not None:
+                if not out.get("sales_start") and known.sales_start:
+                    out["sales_start"] = known.sales_start
+                    sources["sales_start"] = "pulse_map"
+                if not out.get("commissioning") and known.commissioning:
+                    out["commissioning"] = known.commissioning
+                    sources["commissioning"] = "pulse_map"
+
+            # Если JSON молчит — читаем ровно ту страницу, которую человек
+            # видит в ЛК. Это резерв, а не основной механизм.
+            if not out.get("sales_start") or not out.get("commissioning"):
+                page = ""
+                if self._cookie("sessionid") or self.sign_in():
+                    try:
+                        page = self._open(f"/complex/{cid}/").decode("utf-8", errors="ignore")
+                    except (urllib.error.URLError, OSError) as exc:
+                        self.errors.append(f"карточка проекта {cid}: {exc}")
+                got = _dates_from_project_html(page)
+                for key, value in got.items():
+                    if not out.get(key):
+                        out[key] = value
+                        sources[key] = "pulse_project_page"
+
+            if sources:
+                out["sources"] = sources
+                out["source"] = "Пульс Продаж Новостроек · онлайн"
+            return out
+
+        return self._cached("dates", cid, build) or {}
 
     def remaining(self, complex_id: int) -> dict[str, Any]:
         """Непроданный остаток по корпусам, сложенный в проект."""
