@@ -406,10 +406,11 @@ function bindActions(p){
 }
 async function boot(){
  bindMap();
- const [catRes,localRankingRes,liveRes]=await Promise.allSettled([
+ const [catRes,localRankingRes,liveRes,parcelsRes]=await Promise.allSettled([
   j('/auctions/krt'),
   j('/auctions/krt/ranking'),
-  j('/auctions/krt-prototype/nagatino/live-data')
+  j('/auctions/krt-prototype/nagatino/live-data'),
+  j('/auctions/krt-prototype/nagatino/prod-parcels')
  ]);
  if(catRes.status!=='fulfilled')throw catRes.reason;
  const cat=catRes.value;
@@ -419,21 +420,16 @@ async function boot(){
  const prodRank=liveRes.status==='fulfilled'?(liveRes.value.row||{}):{};
  const rank={...localRank,...prodRank};
  const row={...p,...rank,status:p.status,status_kind:p.status_kind,area_ha:p.area_ha,housing_gfa_sqm:p.housing_gfa_sqm||rank.housing_gfa_sqm||229490};
- const [reqRes,pointRes,reportRes,parcelsRes]=await Promise.allSettled([
-  j('/auctions/krt/'+encodeURIComponent(p.slug)+'/requirements'),
-  j('/auctions/krt/'+encodeURIComponent(p.slug)+'/point'),
-  j('/auctions/krt/'+encodeURIComponent(p.slug)+'/report'),
-  j('/krt/nagatino/parcels')
- ]);
+ const reqRes=await Promise.resolve(
+  j('/auctions/krt/'+encodeURIComponent(p.slug)+'/requirements')
+ ).then(value=>({status:'fulfilled',value}),reason=>({status:'rejected',reason}));
  const req0=reqRes.status==='fulfilled'?reqRes.value:(rank.requirements||{});
  const req={...req0,renovation:(req0.renovation&&Object.keys(req0.renovation).length?req0.renovation:(rank.renovation||{}))};
- const point=pointRes.status==='fulfilled'?pointRes.value:null;
- const report=reportRes.status==='fulfilled'?reportRes.value:null;
  const parcels=parcelsRes.status==='fulfilled'?parcelsRes.value:null;
- MAP.point=point;MAP.parcels=parcels;
+ MAP.point=null;MAP.parcels=parcels;
  const sc=scoreV2(row,req);
  bindActions(p);
- renderFlags(p,rank,req);renderEntry(p,rank);renderScore(sc);renderEconomics(rank,report);renderPublic(rank);renderTerritory(req,parcels);drawMap();if($('refreshPublic'))$('refreshPublic').onclick=()=>refreshPublic(p,rank);
+ renderFlags(p,rank,req);renderEntry(p,rank);renderScore(sc);renderEconomics(rank,null);renderPublic(rank);renderTerritory(req,parcels);drawMap();if($('refreshPublic'))$('refreshPublic').onclick=()=>refreshPublic(p,rank);
  if(liveRes.status!=='fulfilled'){
   $('economics').insertAdjacentHTML('afterbegin','<div class="notice warn">Production-рейтинг сейчас не прочитан: '+esc(liveRes.reason&&liveRes.reason.message||liveRes.reason||'ошибка')+'. Показаны только локальные сохранённые данные.</div>');
  }
