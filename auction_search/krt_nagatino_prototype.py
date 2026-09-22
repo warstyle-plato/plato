@@ -229,30 +229,37 @@ function renderEconomics(rank,report){
  $('marketPace').textContent=fmt(pace,1);
 
  const s=report&&report.screening||{},m=s.metrics||{};
+ const computed=num(rank.computed_at);
+ const date=computed?new Date(computed*1000).toLocaleString('ru-RU'):'—';
+ const peerCount=(storedMarket.comparison||{}).used??(peers.length||null);
  let html='<div class="section-title">Окружение продаж · радиус 3 км</div>'
   +'<div class="decision-grid">'
-  +'<div class="decision"><b>'+fmt(price,0)+(price!==null?' ₽/м²':'')+'</b><span>цена текущих продаж окружения</span></div>'
+  +'<div class="decision"><b>'+fmt(price,0)+(price!==null?' ₽/м²':'')+'</b><span>цена окружения</span></div>'
   +'<div class="decision"><b>'+fmt(pace,1)+(pace!==null?' ДДУ/мес.':'')+'</b><span>темп продаж окружения</span></div>'
-  +'<div class="decision"><b>'+fmt((storedMarket.comparison||{}).found??(peers.length||null),0)+'</b><span>найдено проектов</span></div>'
-  +'<div class="decision"><b>'+fmt((storedMarket.comparison||{}).used??(peers.length||null),0)+'</b><span>использовано в оценке</span></div>'
+  +'<div class="decision"><b>'+esc(rank.segment||'—')+'</b><span>рыночный сегмент</span></div>'
+  +'<div class="decision"><b>'+fmt(peerCount,0)+'</b><span>аналогов в сохранённом отчёте</span></div>'
   +'</div>';
  if(peers.length){
   html+='<details><summary>Сопоставимые проекты — '+peers.length+'</summary><div style="overflow:auto;margin-top:8px"><table><thead><tr><th>Проект</th><th>Расстояние</th><th>Цена</th><th>Продажи</th><th>Остаток</th></tr></thead><tbody>'
    +peers.slice(0,12).map(p=>'<tr><td><b>'+esc(p.name||p.address||'—')+'</b><div class="source">'+esc(p.developer||'')+'</div></td><td>'+fmt(p.distance_km,1)+' км</td><td class="num">'+(num(p.price_per_sqm)!==null?fmt(p.price_per_sqm)+' ₽/м²':'—')+'</td><td class="num">'+(num(p.units_per_month)!==null?fmt(p.units_per_month,1)+' ДДУ/мес.':'—')+'</td><td class="num">'+fmt(p.remaining_units,0)+'</td></tr>').join('')
    +'</tbody></table></div></details>';
  }else{
-  html+='<div class="source">Агрегаты цены и темпа берутся из последнего сохранённого рейтинга. Список конкретных ЖК появится, когда доступен сохранённый рыночный отчёт.</div>';
+  html+='<div class="source">Цена и темп взяты из production-рейтинга КРТ, то есть из уже рассчитанного рыночного окружения 3 км. Детальный список ЖК не публикуется через открытый ranking endpoint и здесь не подменяется догадками.</div>';
  }
 
  html+='<div class="section-title">Экономика DevelopAid</div>'
   +'<div class="decision-grid">'
-  +'<div class="decision"><b>'+fmt(m.project_llcr_x??rank.project_llcr_x,2)+'x</b><span>LLCR проекта</span></div>'
+  +'<div class="decision"><b>'+fmt(m.project_llcr_x??rank.project_llcr_x,3)+'x</b><span>LLCR проекта</span></div>'
   +'<div class="decision"><b>'+fmt(m.margin_pct??rank.margin_pct,1)+'%</b><span>маржа</span></div>'
   +'<div class="decision"><b>'+fmt(rank.entry_capacity_mln,0)+' млн ₽</b><span>потолок входа</span></div>'
-  +'<div class="decision"><b>'+fmt(price,0)+(price!==null?' ₽/м²':'')+'</b><span>рыночный ориентир</span></div>'
+  +'<div class="decision"><b>'+fmt(rank.entry_capacity_rub_per_sqm,0)+' ₽/м²</b><span>потолок на продаваемый м²</span></div>'
+  +'<div class="decision"><b>'+fmt(rank.saleable_sqm,0)+' м²</b><span>продаваемая площадь модели</span></div>'
+  +'<div class="decision"><b>'+fmt(rank.net_profit_mln,0)+' млн ₽</b><span>чистая прибыль модели</span></div>'
+  +'<div class="decision"><b>'+fmt(rank.start_price_rub_sqm,0)+' ₽/м²</b><span>цена в расчёте</span></div>'
+  +'<div class="decision"><b>'+date+'</b><span>когда считалась production-модель</span></div>'
   +'</div>';
- if(s.available)html+='<div class="notice">'+esc(s.text||s.headline||'Модель посчитана')+'</div>';
- else if(!report)html+='<div class="source">Полный отчёт модели на тестовом сервисе сейчас недоступен; сохранённые показатели рейтинга выше остаются рабочими.</div>';
+ if(rank.available===false)html+='<div class="notice bad">'+esc(rank.reason||'Production-модель не собрана')+'</div>';
+ else if(s.available)html+='<div class="notice">'+esc(s.text||s.headline||'Модель посчитана')+'</div>';
  $('economics').innerHTML=html;
 }
 function renderPublic(rank){
@@ -279,25 +286,29 @@ function renderTerritory(req,parcels){
  $('demoBurden').textContent=(counts['Снос']||0)+' снос · '+(counts['Снос / реконструкция']||0)+' снос/реконструкция';
  $('objectsTable').innerHTML=source.length?'<details><summary>Снос / реконструкция / сохранение — '+source.length+' объектов</summary><div style="overflow:auto;margin-top:8px"><table><thead><tr><th>КН / адрес</th><th>Объект</th><th>Площадь</th><th>Действие</th></tr></thead><tbody>'+source.slice(0,40).map(o=>'<tr><td>'+esc(o.cadastral_number||o.address||'—')+'</td><td>'+esc(o.name||o.purpose||o.address||'—')+'</td><td class="num">'+fmt(o.area_sqm)+' м²</td><td>'+esc(kind(o.fate))+'</td></tr>').join('')+'</tbody></table></div></details>':'<div class="notice">Перечень существующих объектов в текущем ответе не получен.</div>';
 }
-let MAP={point:null,parcels:null,market:false,lands:false,objects:false};
+let MAP={point:null,parcels:null,market:false,lands:true,objects:true};
 const MERC=20037508.342789244, mx=lon=>Number(lon)*MERC/180, my=lat=>Math.log(Math.tan((90+Number(lat))*Math.PI/360))*MERC/Math.PI;
 function drawMap(){
  const point=MAP.point||{}, parcelPayload=MAP.parcels||{},
        parcel=parcelPayload.territory||{}, krt=parcelPayload.krt_site||{};
  const pointRings=(point.rings_merc||[]).filter(r=>Array.isArray(r)&&r.length>=3);
  const krtRings=(krt.rings_merc||[]).filter(r=>Array.isArray(r)&&r.length>=3);
+ const landRows=(parcel.lands||[]), objectRows=(parcel.objects||[]);
+ const landAll=landRows.flatMap(x=>(x.rings_merc||[]).filter(r=>Array.isArray(r)&&r.length>=3));
+ const objectAll=objectRows.flatMap(x=>(x.rings_merc||[]).filter(r=>Array.isArray(r)&&r.length>=3));
  const site=pointRings.length?pointRings:krtRings;
+ const geometry=site.length?site:(landAll.length?landAll:objectAll);
  let center=(Array.isArray(point.centre_merc)&&point.centre_merc.length>=2)?point.centre_merc:
             ((Array.isArray(krt.centre_merc)&&krt.centre_merc.length>=2)?krt.centre_merc:null);
- if(!center&&site.length){
-  const q=site.flat();center=[q.reduce((z,p)=>z+Number(p[0]),0)/q.length,q.reduce((z,p)=>z+Number(p[1]),0)/q.length];
+ if(!center&&geometry.length){
+  const q=geometry.flat();center=[q.reduce((z,p)=>z+Number(p[0]),0)/q.length,q.reduce((z,p)=>z+Number(p[1]),0)/q.length];
  }
- if(!center){$('map').innerHTML='<div class="notice">Контур КРТ пока не получен.</div>';return}
+ if(!center){$('map').innerHTML='<div class="notice">Геометрия территории пока не получена.</div>';return}
 
  const invLat=y=>(180/Math.PI)*(2*Math.atan(Math.exp(Number(y)*Math.PI/MERC))-Math.PI/2);
  const lat=Number.isFinite(Number(point.latitude))?Number(point.latitude):invLat(center[1]);
- const lands=MAP.lands?(parcel.lands||[]):[],objects=MAP.objects?(parcel.objects||[]):[];
- let pts=site.flat().concat(lands.flatMap(x=>x.rings_merc||[]).flat()).concat(objects.flatMap(x=>x.rings_merc||[]).flat());
+ const lands=MAP.lands?landRows:[],objects=MAP.objects?objectRows:[];
+ let pts=(site.length?site:geometry).flat().concat(lands.flatMap(x=>x.rings_merc||[]).flat()).concat(objects.flatMap(x=>x.rings_merc||[]).flat());
  if(!pts.length)pts=[center];
  let xs=pts.map(x=>Number(x[0])),ys=pts.map(x=>Number(x[1])),ax=Math.min(...xs),bx=Math.max(...xs),ay=Math.min(...ys),by=Math.max(...ys);
  const k=1/Math.cos(lat*Math.PI/180);
@@ -309,12 +320,14 @@ function drawMap(){
  const sitePath=site.length?'<path d="'+path(site)+'" fill="#c03b32" fill-opacity=".16" stroke="#c03b32" stroke-width="4" vector-effect="non-scaling-stroke"/>':'';
  const landPaths=lands.map(x=>'<path d="'+path(x.rings_merc||[])+'" fill="#d7a23c" fill-opacity=".18" stroke="#b88218" stroke-width="1.5" vector-effect="non-scaling-stroke"/>').join('');
  const objPaths=objects.map(x=>'<path d="'+path(x.rings_merc||[])+'" fill="#777" fill-opacity=".35" stroke="#555" stroke-width="1" vector-effect="non-scaling-stroke"/>').join('');
- const mr=3000*k,market='<ellipse cx="'+px(center[0]).toFixed(1)+'" cy="'+py(center[1]).toFixed(1)+'" rx="'+((mr/(bx-ax))*W).toFixed(1)+'" ry="'+((mr/(by-ay))*H).toFixed(1)+'" fill="none" stroke="#245b8a" stroke-width="4" stroke-dasharray="12 8" vector-effect="non-scaling-stroke"/>';
+ const mr=3000*k,market=MAP.market?'<ellipse cx="'+px(center[0]).toFixed(1)+'" cy="'+py(center[1]).toFixed(1)+'" rx="'+((mr/(bx-ax))*W).toFixed(1)+'" ry="'+((mr/(by-ay))*H).toFixed(1)+'" fill="none" stroke="#245b8a" stroke-width="4" stroke-dasharray="12 8" vector-effect="non-scaling-stroke"/>':'';
  $('map').innerHTML='<img src="'+base+'" alt="OSM"><svg viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none">'+landPaths+objPaths+sitePath+market+'</svg>';
- $('mapNote').textContent=(pointRings.length?'Контур КРТ — маршрут /point. ':'Контур КРТ — рабочий пакет Нагатино. ')
-  +'Слои участков и объектов — тот же payload территории. Рыночный контур — 3 км от центра КРТ.';
+ $('mapNote').textContent=(site.length?(pointRings.length?'Контур КРТ — /point. ':'Контур КРТ — сохранённый пакет территории. '):'Отдельный полигон КРТ не получен: карта центрирована по реально прочитанным участкам/объектам территории. ')
+  +'Участки и объекты взяты из /krt/nagatino/parcels. Режим «Рынок 3 км» показывает радиус от центра фактической геометрии.';
 }
 function bindMap(){
+ $('toggleLands').classList.toggle('active',MAP.lands);
+ $('toggleObjects').classList.toggle('active',MAP.objects);
  $('viewSite').onclick=()=>{MAP.market=false;$('viewSite').classList.add('active');$('viewMarket').classList.remove('active');drawMap()};
  $('viewMarket').onclick=()=>{MAP.market=true;$('viewMarket').classList.add('active');$('viewSite').classList.remove('active');drawMap()};
  $('toggleLands').onclick=()=>{MAP.lands=!MAP.lands;$('toggleLands').classList.toggle('active',MAP.lands);drawMap()};
@@ -322,17 +335,26 @@ function bindMap(){
 }
 async function boot(){
  bindMap();
- const [cat,ranking]=await Promise.all([j('/auctions/krt'),j('/auctions/krt/ranking')]);
+ const [catRes,localRankingRes,liveRes]=await Promise.allSettled([
+  j('/auctions/krt'),
+  j('/auctions/krt/ranking'),
+  j('/auctions/krt-prototype/nagatino/live-data')
+ ]);
+ if(catRes.status!=='fulfilled')throw catRes.reason;
+ const cat=catRes.value;
  const p=findNagatino(cat.projects||[]);if(!p)throw new Error('Нагатино не найдено в текущем каталоге КРТ');
- const rank=(ranking.rows||[]).find(x=>String(x.slug||'')===String(p.slug||''))||{};
- const row={...p,...rank,status:p.status,status_kind:p.status_kind,area_ha:p.area_ha,housing_gfa_sqm:p.housing_gfa_sqm||229490};
+ const localRanking=localRankingRes.status==='fulfilled'?localRankingRes.value:{};
+ const localRank=(localRanking.rows||[]).find(x=>String(x.slug||'')===String(p.slug||''))||{};
+ const prodRank=liveRes.status==='fulfilled'?(liveRes.value.row||{}):{};
+ const rank={...localRank,...prodRank};
+ const row={...p,...rank,status:p.status,status_kind:p.status_kind,area_ha:p.area_ha,housing_gfa_sqm:p.housing_gfa_sqm||rank.housing_gfa_sqm||229490};
  const [reqRes,pointRes,reportRes,parcelsRes]=await Promise.allSettled([
   j('/auctions/krt/'+encodeURIComponent(p.slug)+'/requirements'),
   j('/auctions/krt/'+encodeURIComponent(p.slug)+'/point'),
   j('/auctions/krt/'+encodeURIComponent(p.slug)+'/report'),
   j('/krt/nagatino/parcels')
  ]);
- const req0=reqRes.status==='fulfilled'?reqRes.value:{};
+ const req0=reqRes.status==='fulfilled'?reqRes.value:(rank.requirements||{});
  const req={...req0,renovation:(req0.renovation&&Object.keys(req0.renovation).length?req0.renovation:(rank.renovation||{}))};
  const point=pointRes.status==='fulfilled'?pointRes.value:null;
  const report=reportRes.status==='fulfilled'?reportRes.value:null;
@@ -340,6 +362,12 @@ async function boot(){
  MAP.point=point;MAP.parcels=parcels;
  const sc=scoreV2(row,req);
  renderFlags(p,rank,req);renderEntry(p,rank);renderScore(sc);renderEconomics(rank,report);renderPublic(rank);renderTerritory(req,parcels);drawMap();
+ if(liveRes.status!=='fulfilled'){
+  $('economics').insertAdjacentHTML('afterbegin','<div class="notice warn">Production-рейтинг сейчас не прочитан: '+esc(liveRes.reason&&liveRes.reason.message||liveRes.reason||'ошибка')+'. Показаны только локальные сохранённые данные.</div>');
+ }
+ if(parcelsRes.status!=='fulfilled'){
+  $('map').innerHTML='<div class="notice bad">Не удалось загрузить территорию: '+esc(parcelsRes.reason&&parcelsRes.reason.message||parcelsRes.reason||'ошибка')+'</div>';
+ }
 }
 boot().catch(e=>{document.querySelector('.shell').insertAdjacentHTML('afterbegin','<div class="notice bad"><b>Не удалось собрать живую карточку:</b> '+esc(e.message||e)+'</div>')});
 </script>
