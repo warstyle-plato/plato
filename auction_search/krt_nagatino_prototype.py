@@ -60,42 +60,32 @@ a{color:inherit}button{font:inherit}.shell{max-width:1480px;margin:0 auto;paddin
    </section>
 
    <section class="card">
-    <header><h2>Что разрешил построить город</h2><span>проект решения mos.ru</span></header>
-    <div class="body">
-     <div class="decision-grid">
-      <div class="decision"><b>229 490 м²</b><span>жильё</span></div>
-      <div class="decision"><b>185 460 м²</b><span>общественно-деловое</span></div>
-      <div class="decision"><b>1 000 мест</b><span>СОШ · площадь вторична</span></div>
-      <div class="decision"><b>350 мест</b><span>ДОО · площадь вторична</span></div>
-     </div>
-     <div class="notice">Коммунальный объект — не менее 230 м². СОШ и ДОО подлежат передаче Москве. Параметры проекта решения могут уточняться при утверждении документации по планировке.</div>
-     <div class="source">Источник программы: <a target="_blank" rel="noopener" href="https://www.mos.ru/dgp/documents/view/336313220/">проект решения на mos.ru</a>. Здесь не используется карточочное «нежилое 52 510 м²» как замена структуре решения.</div>
-    </div>
-   </section>
-
-   <section class="card">
-    <header><h2>Что получает инвестор / что принимает на себя</h2><span>экономический смысл решения</span></header>
+    <header><h2>Программа проекта и городская нагрузка</h2><span>что можно построить и что нужно отдать / выполнить</span></header>
     <div class="body two">
      <div class="bucket">
-      <h3>Получает</h3>
+      <h3>Потенциал проекта</h3>
       <div class="metric"><span>Общий объём</span><b>443 700 м²</b></div>
       <div class="metric"><span>Жильё</span><b>229 490 м²</b></div>
       <div class="metric"><span>Общественно-деловое</span><b>185 460 м²</b></div>
-      <div class="metric"><span>Предельный срок реализации</span><b>9 лет</b></div>
+      <div class="metric"><span>Срок реализации</span><b>9 лет</b></div>
      </div>
      <div class="bucket">
       <h3>Городская нагрузка</h3>
       <div class="metric"><span>Жильё для реновации</span><b id="renoBurden">читаю решение…</b></div>
       <div class="metric"><span>СОШ</span><b>1 000 мест</b></div>
       <div class="metric"><span>ДОО</span><b>350 мест</b></div>
-      <div class="metric"><span>Коммунальный объект</span><b>≥ 230 м²</b></div>
+      <div class="metric"><span>Коммунальная инфраструктура</span><b>≥ 230 м²</b></div>
       <div class="metric"><span>Снос / реконструкция</span><b id="demoBurden">читаю…</b></div>
+      <div class="source">СОШ и ДОО передаются Москве.</div>
      </div>
+    </div>
+    <div class="body" style="padding-top:0">
+     <div class="source">Источник: <a target="_blank" rel="noopener" href="https://www.mos.ru/dgp/documents/view/336313220/">проект решения на mos.ru</a></div>
     </div>
    </section>
 
    <section class="card">
-    <header><h2>Территория сейчас</h2><span>участки, здания, судьба объектов</span></header>
+    <header><h2>Территория сейчас</h2><span>сводка сверху · детализация по раскрытию</span></header>
     <div class="body">
      <div id="territoryStats" class="kpis" style="grid-template-columns:repeat(4,1fr);border-top:1px solid var(--line)"></div>
      <div id="objectsTable" style="margin-top:12px"><div class="notice">Загружаю перечень объектов…</div></div>
@@ -263,7 +253,7 @@ function renderTerritory(req,parcels){
   [(counts['Реконструкция']||0)+(counts['Сохранение']||0),'реконструкция / сохранение']
  ].map(x=>'<div class="kpi"><b>'+x[0]+'</b><span>'+x[1]+'</span></div>').join('');
  $('demoBurden').textContent=(counts['Снос']||0)+' снос · '+(counts['Снос / реконструкция']||0)+' снос/реконструкция';
- $('objectsTable').innerHTML=source.length?'<table><thead><tr><th>КН / адрес</th><th>Объект</th><th>Площадь</th><th>Действие</th></tr></thead><tbody>'+source.slice(0,40).map(o=>'<tr><td>'+esc(o.cadastral_number||o.address||'—')+'</td><td>'+esc(o.name||o.purpose||o.address||'—')+'</td><td class="num">'+fmt(o.area_sqm)+' м²</td><td>'+esc(kind(o.fate))+'</td></tr>').join('')+'</tbody></table>':'<div class="notice">Перечень существующих объектов в текущем ответе не получен.</div>';
+ $('objectsTable').innerHTML=source.length?'<details><summary>Снос / реконструкция / сохранение — '+source.length+' объектов</summary><div style="overflow:auto;margin-top:8px"><table><thead><tr><th>КН / адрес</th><th>Объект</th><th>Площадь</th><th>Действие</th></tr></thead><tbody>'+source.slice(0,40).map(o=>'<tr><td>'+esc(o.cadastral_number||o.address||'—')+'</td><td>'+esc(o.name||o.purpose||o.address||'—')+'</td><td class="num">'+fmt(o.area_sqm)+' м²</td><td>'+esc(kind(o.fate))+'</td></tr>').join('')+'</tbody></table></div></details>':'<div class="notice">Перечень существующих объектов в текущем ответе не получен.</div>';
 }
 let MAP={point:null,parcels:null,market:false,lands:false,objects:false};
 const MERC=20037508.342789244, mx=lon=>Number(lon)*MERC/180, my=lat=>Math.log(Math.tan((90+Number(lat))*Math.PI/360))*MERC/Math.PI;
