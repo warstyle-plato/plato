@@ -1158,7 +1158,12 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 card = self.cards.card(project.complex_id)
                 # Те же онлайн-данные Пульса, что дают текущую цену. Месячная
                 # карточка остаётся fallback на случай временного отказа ЛК.
-                live_dates = self.pulse.project_dates(project.complex_id)
+                live_dates_reader = getattr(self.pulse, "project_dates", None)
+                live_dates = (
+                    live_dates_reader(project.complex_id)
+                    if callable(live_dates_reader)
+                    else {}
+                )
                 sales_start = live_dates.get("sales_start") or card.get("sales_start")
                 commissioning = live_dates.get("commissioning") or card.get("commissioning")
                 date_source = (
