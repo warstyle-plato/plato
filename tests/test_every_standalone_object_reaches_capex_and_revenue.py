@@ -79,12 +79,21 @@ def _standalone_line(result: dict) -> dict:
     return lines[0]
 
 
-def test_the_project_actually_has_all_four_objects() -> None:
-    """Предохранитель: не стало объектов — остальное в файле ничего не значит."""
+def test_every_enabled_object_in_the_fixture_has_capex() -> None:
+    """Предохранитель: проверяем объекты, которые фикстура действительно включила.
+
+    Вторые экземпляры реестра по умолчанию выключены и проверяются отдельным
+    сценарием: требовать CAPEX от выключенного объекта означало бы сделать сам
+    реестр несовместимым с опциональными объектами.
+    """
+    inputs = _inputs()
     capex = _result().get("capex") or {}
-    for obj in core.STANDALONE_OBJECTS:
+    enabled = [obj for obj in core.STANDALONE_OBJECTS
+               if bool(inputs.get(obj.enabled_key))]
+    assert enabled, "фикстура не включает ни одного отдельно стоящего объекта"
+    for obj in enabled:
         assert float(capex.get(obj.key) or 0) > 0, (
-            f"у объекта {obj.key} нет CAPEX — проверки этого файла "
+            f"у включённого объекта {obj.key} нет CAPEX — проверки этого файла "
             "перестали что-либо значить")
 
 
