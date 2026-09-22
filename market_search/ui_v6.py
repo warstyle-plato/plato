@@ -330,11 +330,31 @@ PRICE_HINT_SCRIPT = """<script id="market-v6-price-hint">
     btn.type='button'; btn.id='daHintBtn'; btn.className='btn';
     btn.textContent='Рекомендация DevelopAid';
     btn.style.cssText='font-size:12px;padding:4px 10px';
+    const explain=document.createElement('a');
+    explain.id='daHintExplain'; explain.href='#'; explain.target='_blank';
+    explain.rel='noopener'; explain.textContent='Как посчитано →';
+    explain.style.cssText='font-size:12px;color:#1367AE;text-decoration:none';
     const note=document.createElement('span');
     note.id='daHintNote';
     note.style.cssText='font-size:12px;color:#667;line-height:1.35';
-    wrap.appendChild(btn); wrap.appendChild(note);
+    wrap.appendChild(btn); wrap.appendChild(explain); wrap.appendChild(note);
     input.insertAdjacentElement('afterend',wrap);
+    explain.addEventListener('click',function(event){
+      const where=locationHint();
+      if(!where){
+        event.preventDefault();
+        note.textContent='Укажите участок — кадастровый номер или адрес.';
+        return;
+      }
+      const query=new URLSearchParams();
+      if(where.address)query.set('address',where.address);
+      if(where.latitude!==undefined&&where.longitude!==undefined){
+        query.set('latitude',String(where.latitude));
+        query.set('longitude',String(where.longitude));
+      }
+      query.set('radius_km','2.5');
+      explain.href='/cabinet/price-hint?'+query.toString();
+    });
     btn.addEventListener('click',async function(){
       const where=locationHint();
       if(!where){note.textContent='Укажите участок — кадастровый номер или адрес.';return}
