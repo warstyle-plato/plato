@@ -458,36 +458,37 @@ async function boot(){
   j('/auctions/krt'),
   j('/auctions/krt/ranking'),
   j('/auctions/krt-prototype/nagatino/live-data'),
-  // Local territory payload is enough for the object table.  Geometry itself
-  // comes from /point below; the production parcels route is owner-gated.
   j('/krt/nagatino/parcels')
  ]);
- if(catRes.status!=='fulfilled')throw catRes.reason;
- const cat=catRes.value;
- const p=findNagatino(cat.projects||[]);if(!p)throw new Error('Нагатино не найдено в текущем каталоге КРТ');
+ if(catRes.status!=='fulfilled'&&liveRes.status!=='fulfilled')throw (liveRes.reason||catRes.reason);
+ const cat=catRes.status==='fulfilled'?catRes.value:{projects:[]};
+ const live=liveRes.status==='fulfilled'?liveRes.value:{};
+ const p=(live.project&&live.project.slug)?live.project:findNagatino(cat.projects||[]);
+ if(!p)throw new Error('Нагатино не найдено в текущем каталоге КРТ');
  const localRanking=localRankingRes.status==='fulfilled'?localRankingRes.value:{};
  const localRank=(localRanking.rows||[]).find(x=>String(x.slug||'')===String(p.slug||''))||{};
- const prodRank=liveRes.status==='fulfilled'?(liveRes.value.row||{}):{};
- const rank={...localRank,...prodRank};
+ const liveRank=live.row||{};
+ const rank={...localRank,...liveRank};
  const row={...p,...rank,status:p.status,status_kind:p.status_kind,area_ha:p.area_ha,housing_gfa_sqm:p.housing_gfa_sqm||rank.housing_gfa_sqm||229490};
  const [reqRes,pointRes]=await Promise.allSettled([
   j('/auctions/krt/'+encodeURIComponent(p.slug)+'/requirements'),
   j('/auctions/krt/'+encodeURIComponent(p.slug)+'/point')
  ]);
- const req0=reqRes.status==='fulfilled'?reqRes.value:(rank.requirements||{});
+ const req0=reqRes.status==='fulfilled'?reqRes.value:(rank.requirements||((live.screening||{}).requirements)||{});
  const req={...req0,renovation:(req0.renovation&&Object.keys(req0.renovation).length?req0.renovation:(rank.renovation||{}))};
  const parcels=parcelsRes.status==='fulfilled'?parcelsRes.value:null;
  const point=pointRes.status==='fulfilled'?pointRes.value:null;
+ const report=live.market_report||((live.screening||{}).market_report)||null;
  MAP.point=point;MAP.parcels=parcels;
  bindActions(p);bindScore();
- renderFlags(p,rank,req);renderEntry(p,rank);renderEconomics(rank,null);renderPublic(rank);renderTerritory(req,parcels);drawMap();loadInvestmentScore();if($('refreshPublic'))$('refreshPublic').onclick=()=>refreshPublic(p,rank);
+ renderFlags(p,rank,req);renderEntry(p,rank);renderEconomics(rank,report);renderPublic(rank);renderTerritory(req,parcels);drawMap();loadInvestmentScore();if($('refreshPublic'))$('refreshPublic').onclick=()=>refreshPublic(p,rank);
  if(liveRes.status!=='fulfilled'){
-  $('economics').insertAdjacentHTML('afterbegin','<div class="notice warn">Production-рейтинг сейчас не прочитан: '+esc(liveRes.reason&&liveRes.reason.message||liveRes.reason||'ошибка')+'. Показаны только локальные сохранённые данные.</div>');
+  $('economics').insertAdjacentHTML('afterbegin','<div class="notice bad">Живой рынок и модель не собраны: '+esc(liveRes.reason&&liveRes.reason.message||liveRes.reason||'ошибка')+'.</div>');
  }
  if(pointRes.status!=='fulfilled'){
   $('map').innerHTML='<div class="notice bad">Не удалось получить контур/точку КРТ: '+esc(pointRes.reason&&pointRes.reason.message||pointRes.reason||'ошибка')+'</div>';
  }else if(parcelsRes.status!=='fulfilled'){
-  $('mapNote').textContent+=' Слои участков/объектов не загрузились, но официальный контур КРТ показан.';
+  $('mapNote').textContent+=' Слои участков/объектов не загрузились, но контур/точка КРТ показаны.';
  }
 }
 boot().catch(e=>{document.querySelector('.shell').insertAdjacentHTML('afterbegin','<div class="notice bad"><b>Не удалось собрать живую карточку:</b> '+esc(e.message||e)+'</div>')});
