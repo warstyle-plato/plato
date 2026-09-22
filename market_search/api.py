@@ -28,6 +28,7 @@ from .plan import PlanNotFound, parse_plan
 from . import contracting
 from . import demand as demand_module
 from . import report_pdf
+from . import price_hint_ui
 from . import sales_deck
 from .subject import SubjectNotFound
 
@@ -190,6 +191,34 @@ def install(app: FastAPI) -> MarketDiscoveryService:
                 status_code=502,
                 detail=f"Ориентир не посчитан: {type(exc).__name__}: {exc}") from exc
 
+
+    @app.post("/market/price-hint/details")
+    def market_price_hint_details(request: Request, req: PriceHintRequest) -> dict[str, Any]:
+        """Расшифровка ориентира: конкретные проекты доступны только кабинету."""
+        cabinet_module.require_cabinet(request)
+        try:
+            return service.price_hint(
+                address=req.address,
+                latitude=req.latitude,
+                longitude=req.longitude,
+                segment=req.segment,
+                radius_km=req.radius_km,
+                include_projects=True,
+            )
+        except SubjectNotFound as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except GeocodingError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except RemoteServiceError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except HTTPException:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status_code=502,
+                detail=f"Расшифровка цены не собрана: {type(exc).__name__}: {exc}",
+            ) from exc
+
     @app.get("/cabinet", response_class=HTMLResponse)
     async def cabinet_home(request: Request) -> HTMLResponse:
         """Кабинет. Без ключа — форма входа, а не отказ: сюда приходит человек."""
@@ -238,6 +267,27 @@ def install(app: FastAPI) -> MarketDiscoveryService:
     async def cabinet_market_page(request: Request) -> HTMLResponse:
         """Конструктор отчёта о рынке своей страницей."""
         return _cabinet_view(request, "market")
+
+
+    @app.get("/cabinet/price-hint", response_class=HTMLResponse)
+    async def cabinet_price_hint_page(request: Request) -> HTMLResponse:
+        """Отдельная расшифровка рекомендации цены с ручным составом аналогов."""
+        problem = cabinet_module.key_problem()
+        if problem:
+            return HTMLResponse(cabinet_module.login_page(problem), status_code=503)
+        if not cabinet_module.cabinet_key():
+            return HTMLResponse(
+                cabinet_module.login_page(
+                    f"Кабинет выключен: не задан {cabinet_module.ENV_NAME}."
+                ),
+                status_code=503,
+            )
+        if not cabinet_module.authorised(request):
+            return HTMLResponse(cabinet_module.login_page(), status_code=401)
+        return HTMLResponse(
+            price_hint_ui.page(),
+            headers={"Cache-Control": "no-store, must-revalidate"},
+        )
 
     @app.get("/cabinet/assets/{name}.webp")
     async def cabinet_face(name: str) -> Any:
