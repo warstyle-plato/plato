@@ -1079,6 +1079,11 @@ def standalone_object_defaults(obj: StandaloneObject) -> dict[str, Any]:
         out["parking_over_spaces"] = 0
         if obj.garage_sellable:
             out["parking_guest_pct"] = 10
+            # Ноль означает «унаследовать общую цену подземного машино-места».
+            # Поля раздельные: место на первом этаже не обязано стоить как
+            # подземное. ТЦ и ФОК этих полей не получают — их места не продаются.
+            out["parking_under_price_mln_per_space"] = 0
+            out["parking_over_price_mln_per_space"] = 0
     if obj.sale_gate:
         out["disposition"] = "transfer"
     # Умолчание назначения — ПЕРВОЕ объявленное, а не литерал здесь: иначе
@@ -1159,6 +1164,14 @@ def standalone_object_group(obj: StandaloneObject) -> list[Any]:
                         "Паркинг объекта — гостевых, %",
                         "% от мест объекта; гостевые строятся и не продаются, "
                         "остальные продаются машино-местами", "number"])
+            out.append([f"{obj.prefix}_parking_under_price_mln_per_space",
+                        "Паркинг объекта — цена подземного места",
+                        "млн ₽/место; 0 — использовать общую цену подземного "
+                        "машино-места из блока «Продажи»", "number"])
+            out.append([f"{obj.prefix}_parking_over_price_mln_per_space",
+                        "Паркинг объекта — цена места на первом этаже",
+                        "млн ₽/место; 0 — использовать общую цену подземного "
+                        "машино-места из блока «Продажи»", "number"])
     out.append([f"{obj.prefix}_start", "Начало строительства", "дата", "date"])
     out.append([f"{obj.prefix}_months", "Срок строительства", "мес.", "number"])
     out += add(measure["cost"])
@@ -10894,6 +10907,8 @@ def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[st
             guests = max(0, min(guests, under + over))
 
         row["under_gns"] = under * under_per_space
+        row["parking_under_units"] = float(under)
+        row["parking_over_units"] = float(over)
         row["parking_units"] = float(under + over)
         row["parking_saleable_units"] = (
             float(max(0, under + over - guests)) if sellable else 0.0
@@ -17266,6 +17281,8 @@ _V4_INPUT_CELLS: dict[str, str] = {
     "sports_parking_under_spaces": "K165",
     "sports_parking_over_spaces": "K166",
     "offices_parking_guest_pct": "K167",
+    "offices_parking_under_price_mln_per_space": "K169",
+    "offices_parking_over_price_mln_per_space": "K170",
     "above_parking_spaces": "K63", "above_parking_area_per_space_sqm": "K64",
     "above_parking_cost_mln_per_space": "K67", "above_parking_start": "K68",
     "above_parking_months": "K69", "above_parking_sales_start": "K70",
@@ -18749,6 +18766,8 @@ _V4_OBJECT_PARKING_INPUT_ROWS = (
     (165, "ФОК — мест в своём подземном", "K165", "шт."),
     (166, "ФОК — мест на первых этажах", "K166", "шт."),
     (167, "Офисы — гостевых (не продаются)", "K167", "доля мест"),
+    (169, "Офисы — цена подземного места (0 = общая цена)", "K169", "млн ₽/место"),
+    (170, "Офисы — цена места на первом этаже (0 = общая цена)", "K170", "млн ₽/место"),
 )
 
 
@@ -18882,8 +18901,29 @@ def _v4_object_parking_block(xml: str, missing: list[str]) -> str:
             price = prices.get(f"{column}{price_row}")
             if price is None:
                 break
-            own, swapped = re.subn(
-                r"\$%s\$%s\b" % (price_cell[0], price_cell[1:]), "$B$61", price)
+            if sellable:
+                # Только офисный гараж продаётся. Его подземные места и места
+                # первых этажей имеют разные цены; 0 в новой вводной означает
+                # обратную совместимость с общей ценой подземного м/м (B61).
+                under_price = (
+                    f"IF({params}!$K$169>0,{params}!$K$169*1000,{params}!$B$61)")
+                over_price = (
+                    f"IF({params}!$K$170>0,{params}!$K$170*1000,{params}!$B$61)")
+                under_ref = f"{params}!$" + under[0] + "$" + under[1:]
+                over_ref = f"{params}!$" + over[0] + "$" + over[1:]
+                weighted_price = (
+                    f"IF({built}=0,{params}!$B$61,"
+                    f"({under_ref}*({under_price})+"
+                    f"{over_ref}*({over_price}))/{built})")
+                # Убираем и имя листа исходной ставки: подстановка уже содержит
+                # полные ссылки и не должна получить «'Вводные'!IF(...)».
+                pattern = (
+                    rf"(?:{re.escape(params)}!)?\$%s\$%s\b"
+                    % (price_cell[0], price_cell[1:]))
+                own, swapped = re.subn(pattern, f"({weighted_price})", price)
+            else:
+                own, swapped = re.subn(
+                    r"\$%s\$%s\b" % (price_cell[0], price_cell[1:]), "$B$61", price)
             if not swapped:
                 missing.append(f"паркинг объектов: цена {column}{price_row} не опознана")
                 break
@@ -28729,9 +28769,31 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     # офиса третьей очереди вместе с квартирами первой.
     object_parking_value: dict[date, float] = defaultdict(float)
     object_parking_units: dict[date, float] = defaultdict(float)
-    parking_price = n(x, "parking_price_th") * 1000
+    default_parking_price = n(x, "parking_price_th") * 1000
 
-    def sell_object_parking(tep_key: str, sales_start: date, end_ref: date,
+    def object_parking_price(tep_key: str, prefix: str) -> float:
+        """Средняя стартовая цена продаваемых мест по фактическому размещению.
+
+        Для продаваемого гаража (сейчас это только офисник) подземные места и
+        места на первых этажах имеют разные вводные. Ноль сохраняет обратную
+        совместимость: берётся общая цена подземного машино-места проекта.
+        Гостевая доля применяется ко всему гаражу, поэтому одна и та же доля
+        непродаваемых мест не меняет вес under/over в средней цене.
+        """
+        row = object_parking_row(tep_key)
+        under = max(0.0, n(row, "parking_under_units"))
+        over = max(0.0, n(row, "parking_over_units"))
+        total = under + over
+        if total <= 0:
+            return default_parking_price
+        under_mln = n(x, f"{prefix}_parking_under_price_mln_per_space")
+        over_mln = n(x, f"{prefix}_parking_over_price_mln_per_space")
+        under_price = under_mln * 1_000_000 if under_mln > 0 else default_parking_price
+        over_price = over_mln * 1_000_000 if over_mln > 0 else default_parking_price
+        return (under * under_price + over * over_price) / total
+
+    def sell_object_parking(tep_key: str, prefix: str,
+                            sales_start: date, end_ref: date,
                             share_value: float, residual_months: int,
                             growth_pre: float, growth_post: float,
                             weights: dict[date, float] | None = None,
@@ -28741,6 +28803,7 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         spaces = n((t or {}).get(tep_key) or {}, "parking_saleable_units")
         if spaces <= 0:
             return
+        parking_price = object_parking_price(tep_key, prefix)
         extra = {} if seasonal_value is None else {"seasonal": seasonal_value, "pace": pace_value}
         value = sales_schedule(spaces, parking_price, sales_start, end_ref,
                                share_value, residual_months, growth_pre, growth_post,
@@ -28764,7 +28827,7 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         plan = sold.get(obj.key)
         if not obj.garage or plan is None:
             continue
-        sell_object_parking(obj.key, plan["sales_start"], plan["end_ref"],
+        sell_object_parking(obj.key, obj.prefix, plan["sales_start"], plan["end_ref"],
                             plan["share"], plan["residual"],
                             plan["growth_pre"], plan["growth_post"],
                             plan["weights"], plan["factor"])

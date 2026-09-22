@@ -145,3 +145,65 @@ def test_v4_book_uses_25sqm_footprint_before_saleable_ratio() -> None:
     evaluator = Evaluator(book)
     assert evaluator.cell("ОБЪЕКТЫ", "B13") == pytest.approx(75_754.6)
     assert evaluator.cell("Параметры модели", "K168") == "OK"
+
+
+def test_office_under_and_first_floor_places_can_have_different_sale_prices() -> None:
+    same = _inputs(UNDER, OVER)
+    same.update(
+        parking_price_th=6_000,
+        offices_parking_under_price_mln_per_space=6,
+        offices_parking_over_price_mln_per_space=6,
+    )
+    split = _inputs(UNDER, OVER)
+    split.update(
+        parking_price_th=6_000,
+        offices_parking_under_price_mln_per_space=6,
+        offices_parking_over_price_mln_per_space=4,
+    )
+
+    same_result = core.calculate(core.CalcRequest(inputs=same, tep=_tep(), rates=[]))
+    split_result = core.calculate(core.CalcRequest(inputs=split, tep=_tep(), rates=[]))
+
+    same_revenue = _product_revenue(same_result, "object_parking")
+    split_revenue = _product_revenue(split_result, "object_parking")
+    weighted_mln = (UNDER * 6 + OVER * 4) / SPACES
+    assert split_revenue / same_revenue == pytest.approx(weighted_mln / 6, rel=1e-12)
+
+
+def test_parking_sale_price_fields_exist_only_for_sellable_office_garage() -> None:
+    assert "offices_parking_under_price_mln_per_space" in core.DEFAULT_INPUTS
+    assert "offices_parking_over_price_mln_per_space" in core.DEFAULT_INPUTS
+    assert "retail_parking_under_price_mln_per_space" not in core.DEFAULT_INPUTS
+    assert "retail_parking_over_price_mln_per_space" not in core.DEFAULT_INPUTS
+    assert "sports_parking_under_price_mln_per_space" not in core.DEFAULT_INPUTS
+    assert "sports_parking_over_price_mln_per_space" not in core.DEFAULT_INPUTS
+
+
+def test_v4_book_uses_separate_office_parking_prices() -> None:
+    openpyxl = pytest.importorskip("openpyxl")
+    from xlsx_eval import Evaluator
+
+    x = _inputs(UNDER, OVER)
+    x.update(
+        parking_price_th=6_000,
+        offices_parking_under_price_mln_per_space=6,
+        offices_parking_over_price_mln_per_space=4,
+    )
+    report = core.calculate(core.CalcRequest(inputs=dict(x), tep=_tep(), rates=[]))
+    content, _, meta = core.build_project_workbook(
+        dict(x), _tep(), [], None, project_name="Проект")
+    assert not [m for m in meta["missing"] if "паркинг объектов" in m], meta["missing"]
+
+    book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
+    params = book["Параметры модели"]
+    objects = book["ОБЪЕКТЫ"]
+
+    assert params["K169"].value == 6
+    assert params["K170"].value == 4
+    formula = str(objects["D33"].value)
+    assert "$K$169" in formula and "$K$170" in formula
+
+    sys.setrecursionlimit(400000)
+    evaluator = Evaluator(book)
+    assert evaluator.cell("ОБЪЕКТЫ", "B33") == pytest.approx(
+        _product_revenue(report, "object_parking") / 1_000_000, rel=1e-9)
