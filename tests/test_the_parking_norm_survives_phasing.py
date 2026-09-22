@@ -105,12 +105,13 @@ def test_the_project_saleable_does_not_slide() -> None:
     assert saleable(consolidated) == pytest.approx(SALEABLE)
 
 
-def test_saved_project_parking_reallocation_keeps_gba_and_revenue() -> None:
-    """Контрольный проект «Проект»: 186 180 ГНС и 87 504,6 saleable.
+def test_saved_project_parking_reallocation_uses_fixed_gba_before_ratios() -> None:
+    """Контрольный проект «Проект»: 186 180 GBA и 87 504,6 базовой saleable.
 
-    Перенос 1 778 мест из подземного гаража на первые этажи не создаёт ГНС и
-    не режет офисную выручку. Наземный паркинг занимает 25 м²/место ВНУТРИ
-    фиксированной ГНС; офисная часть для сторожа — saleable + 40%.
+    1 778 мест на первых этажах занимают 44 450 м² ВНУТРИ той же GBA.
+    Поэтому GBA остаётся 186 180, а офисные общая и saleable уменьшаются
+    пропорционально оставшейся офисной части. Прямого вычитания 35 м² из
+    saleable больше нет.
     """
     def variant(under: int, over: int) -> tuple[dict, dict, dict]:
         inputs, tep = _case()
@@ -130,15 +131,15 @@ def test_saved_project_parking_reallocation_keeps_gba_and_revenue() -> None:
 
     assert old_row["gns"] == new_row["gns"] == OFFICES_GBA
     assert old_row["saleable"] == pytest.approx(SALEABLE)
-    assert new_row["saleable"] == pytest.approx(SALEABLE)
     assert new_parking["over_gns"] == pytest.approx(1778 * 25)
-    assert new_parking["fit_required_gns"] == pytest.approx(
-        SALEABLE * 1.40 + 1778 * 25)
+    assert new_row["total_area"] == pytest.approx(133226.2)
+    assert new_row["saleable"] == pytest.approx(66613.1)
+    assert new_parking["saleable_taken_sqm"] == pytest.approx(20891.5)
     assert new_parking["fits_gba"] is True
-    # Общее число продаваемых мест то же, офисные метры те же: перенос места
-    # под/над землёй сам по себе не имеет права уничтожать выручку.
-    assert new_result["summary"]["revenue"] == pytest.approx(
-        old_result["summary"]["revenue"], rel=1e-9)
+    # Выручка падает только из-за реально занятой внутри GBA офисной части.
+    # Она не имеет права падать как при прямом вычитании 1 778 × 35 из saleable.
+    assert new_result["summary"]["revenue"] < old_result["summary"]["revenue"]
+    assert new_row["saleable"] > SALEABLE - 1778 * 35
 
 
 def _trim(consolidated: dict) -> dict:
