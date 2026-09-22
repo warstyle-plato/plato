@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import logging
 import os
 import re
@@ -8,6 +9,7 @@ import sys
 import threading
 import time
 import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
@@ -999,6 +1001,94 @@ def install(app: FastAPI) -> None:
             nagatino_investment_card_page(),
             headers={"Cache-Control": "no-store, must-revalidate"},
         )
+
+    def _prototype_prod_json(path: str) -> dict[str, Any]:
+        """Read only public production KRT data for the isolated UI branch.
+
+        The prototype service deliberately has its own empty DATA_DIR and does
+        not carry production market credentials.  Re-running the model here
+        would create a second source of truth.  For fields already published by
+        the production ranking endpoint, reuse that endpoint server-to-server.
+        No cabinet key or licensed peer-level report is proxied.
+        """
+        base = str(os.getenv(
+            "KRT_PROD_BASE_URL",
+            "https://plato-development-investment-model.onrender.com",
+        )).rstrip("/")
+        url = base + "/" + str(path or "").lstrip("/")
+        req = urllib.request.Request(
+            url,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "DevelopAid-KRT-Prototype/1.0",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=15) as response:  # noqa: S310
+            raw = response.read(8 * 1024 * 1024)
+        value = json.loads(raw.decode("utf-8"))
+        if not isinstance(value, dict):
+            raise ValueError("production endpoint returned a non-object JSON value")
+        return value
+
+    @app.get("/auctions/krt-prototype/nagatino/live-data", include_in_schema=False)
+    async def auction_krt_nagatino_live_data() -> dict[str, Any]:
+        """Production model/market aggregates for the Nagatino prototype.
+
+        The public ranking already contains the authoritative stored model
+        result (LLCR, margin, entry ceiling) and 3 km market aggregates.  The
+        preview consumes those numbers instead of pretending that its empty
+        preview cache is a fresh calculation.
+        """
+        try:
+            ranking = await run_in_threadpool(
+                _prototype_prod_json, "/auctions/krt/ranking")
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("KRT prototype: production ranking unavailable")
+            raise HTTPException(
+                status_code=502,
+                detail=f"Не удалось прочитать production-рейтинг КРТ: {type(exc).__name__}: {exc}",
+            ) from exc
+
+        rows = [row for row in (ranking.get("rows") or []) if isinstance(row, dict)]
+        row = next(
+            (
+                item for item in rows
+                if abs(float(item.get("area_ha") or 0) - 14.62) < 0.08
+                and re.search(
+                    r"(нагатин|варшавск)",
+                    " ".join(str(item.get(k) or "") for k in ("name", "district")),
+                    re.I,
+                )
+            ),
+            None,
+        )
+        if row is None:
+            row = next(
+                (
+                    item for item in rows
+                    if re.search(
+                        r"варшавск.{0,80}37",
+                        str(item.get("name") or ""),
+                        re.I,
+                    )
+                ),
+                None,
+            )
+        if row is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Нагатино не найдено в production-рейтинге КРТ",
+            )
+        return {
+            "row": row,
+            "ranking": {
+                "engine_version": ranking.get("engine_version"),
+                "rules_version": ranking.get("rules_version"),
+                "measure": ranking.get("measure"),
+                "measure_label": ranking.get("measure_label"),
+            },
+            "source": "production /auctions/krt/ranking",
+        }
 
     @app.get("/auctions/krt-lab", response_class=HTMLResponse, include_in_schema=False)
     async def auction_krt_score_lab() -> HTMLResponse:
