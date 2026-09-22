@@ -3,7 +3,7 @@ import json
 import urllib.request
 import urllib.parse
 from fastapi import Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 PAGE = r'''<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>КРТ — DevelopAid preview</title><style>
@@ -49,18 +49,17 @@ PREVIEW_CARD = r'''<!doctype html><html lang="ru"><head><meta charset="utf-8"><m
 const slug=decodeURIComponent(location.pathname.split('/').pop()),$=id=>document.getElementById(id),esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),fmt=(v,d=0)=>v===null||v===undefined||v===''?'—':new Intl.NumberFormat('ru-RU',{maximumFractionDigits:d}).format(Number(v));
 async function j(u){let r=await fetch(u),t=await r.text(),d;try{d=JSON.parse(t)}catch(e){}if(!r.ok)throw Error((d&&d.detail)||t.slice(0,150)||r.status);return d}
 function listFacts(p){if(!p)return 'Поиск ещё не выполнялся.';let bits=[];if(p.operator_name)bits.push('Оператор: '+p.operator_name);for(let k of ['operator_named','operator_appointed','agreement','selling_now','city_needs'])for(let x of (p[k]||[]))bits.push((x.name?x.name+' — ':'')+(x.quote||x.title||JSON.stringify(x)));return bits.length?bits.join('\n\n'):'Прочитанных признаков оператора / договора / реализации пока нет.'}
-function openPlato(){ $('platoModal').classList.add('open') } $('platoTop').onclick=openPlato;$('platoClose').onclick=()=>$('platoModal').classList.remove('open');async function boot(){let [cat,rr]=await Promise.all([j('/krt-preview/data'),j('/krt-preview/ranking')]),rows=cat.projects||[],r=rows.find(x=>String(x.slug||'')===slug);if(!r)throw Error('Площадка '+slug+' не найдена в рабочем каталоге');let rank=(rr.rows||[]).find(x=>x.slug===slug)||{};
+function openPlato(){ $('platoModal').classList.add('open') } $('platoTop').onclick=openPlato;$('platoClose').onclick=()=>$('platoModal').classList.remove('open');async function boot(){let [cat,rr,dd]=await Promise.all([j('/krt-preview/data'),j('/krt-preview/ranking'),j('/krt-preview/decisions').catch(()=>({matched_rows:[],tep:{}}))]),rows=cat.projects||[],r=rows.find(x=>String(x.slug||'')===slug);if(!r)throw Error('Площадка '+slug+' не найдена в рабочем каталоге');let rank=(rr.rows||[]).find(x=>x.slug===slug)||{}, dm=(dd.matched_rows||[]).find(x=>x.slug===slug)||{}, dtep=(dd.tep||{})[String(dm.id||'')]||null, place=[r.name,r.address,r.district].filter(Boolean).join(' '), isNagatino=/варшавск[^0-9]{0,40}37|нагатинск[^0-9]{0,40}3\s*[аa]/i.test(place), nag=null;if(isNagatino){try{nag=await j('/krt-preview/nagatino/source')}catch(e){nag=null}};
 $('title').textContent=r.name||r.address||slug;$('platoContext').textContent=(r.name||slug)+' · '+[r.okrug,r.district].filter(Boolean).join(' · ');$('status').textContent=r.status|| (r.no_card?'Проект решения':'КРТ');$('where').textContent=[r.okrug,r.district,r.address].filter(Boolean).join(' · ');
-let ms=[['Площадь',fmt(r.area_ha??r.krt_area_ha,1)+' га'],['Общий объём',fmt(r.total_gfa_sqm)+' м²'],['Жильё',fmt(r.housing_gfa_sqm)+' м²'],['Балл',fmt(rank.score??r.score)],['LLCR',rank.project_llcr_x?fmt(rank.project_llcr_x,2)+'x':'—'],['Цена окружения',rank.surrounding_price_rub_sqm?fmt(rank.surrounding_price_rub_sqm)+' ₽/м²':'—']];$('metrics').innerHTML=ms.map(x=>'<div class="metric"><b>'+esc(x[1])+'</b><small>'+esc(x[0])+'</small></div>').join('');
-$('old').href='/krt/site/'+encodeURIComponent(slug);$('territoryLink').href='/krt/site/'+encodeURIComponent(slug);$('outlineLink').href='/krt/site/'+encodeURIComponent(slug)+'/decision-outline.png';$('export').href='/krt/site/'+encodeURIComponent(slug)+'/export.xlsx';$('handoff').href='/auctions/krt/'+encodeURIComponent(slug)+'/handoff';
-let links=[];if(r.url)links.push('<a target="_blank" href="'+esc(r.url)+'">Карточка / решение КРТ ↗</a>');if(r.decision_url)links.push('<a target="_blank" href="'+esc(r.decision_url)+'">Проект решения mos.ru ↗</a>');if(r.source&&r.source.url)links.push('<a target="_blank" href="'+esc(r.source.url)+'">Источник ↗</a>');$('sourceLinks').innerHTML=links.join('');
-$('cityBody').innerHTML='<div class="cols"><div class="box"><b>ТЭП города</b><br>СПП '+fmt(r.total_gfa_sqm)+' м²<br>Жильё '+fmt(r.housing_gfa_sqm)+' м²<br>Нежилое '+fmt(r.nonresidential_gfa_sqm)+' м²<br>Общественно-деловое '+fmt(r.business_gfa_sqm)+' м²<br>Рабочие места '+fmt(r.jobs)+'</div><div class="box"><b>Стадия</b><br>'+esc(r.no_card?'Опубликован проект решения':r.status||'—')+'</div></div>';
-try{let req=await j('/krt-preview/proxy/'+encodeURIComponent(slug)+'/requirements'),dem=req.demolition||req.demolitions||{},items=dem.items||req.demolition_objects||[];$('loadBody').innerHTML='<div class="cols"><div class="box"><b>Реновация / городские нужды</b><br>'+esc(JSON.stringify(req.renovation||{},null,2))+'</div><div class="box"><b>Иные обязательства</b><br>'+esc((req.summary||req.warning||'См. раскрытие ниже'))+'</div></div>';$('demoSummary').textContent='Объекты под снос — '+(items.length||dem.count||0)+' · '+fmt(dem.area_sqm||dem.total_area_sqm)+' м²';$('demoBody').innerHTML='<div class="box">'+esc(items.length?items.map(x=>(x.address||x.name||x.cadastral_number||JSON.stringify(x))).join('\n'):JSON.stringify(dem,null,2))+'</div>'}catch(e){$('loadBody').textContent='Требования пока не прочитаны: '+e.message}
+let tep=(nag&&nag.tep)||dtep||r, ms=[['Площадь',fmt(tep.area_ha??r.area_ha??r.krt_area_ha,1)+' га'],['Общий объём',fmt(tep.total_gfa_sqm??r.total_gfa_sqm)+' м²'],['Жильё',fmt(tep.housing_gfa_sqm??r.housing_gfa_sqm)+' м²'],['Балл',fmt(rank.score??r.score)],['LLCR',rank.project_llcr_x?fmt(rank.project_llcr_x,2)+'x':'—'],['Цена окружения',rank.surrounding_price_rub_sqm?fmt(rank.surrounding_price_rub_sqm)+' ₽/м²':'—']];$('metrics').innerHTML=ms.map(x=>'<div class="metric"><b>'+esc(x[1])+'</b><small>'+esc(x[0])+'</small></div>').join('');
+$('old').href=isNagatino?'/krt/nagatino':'/krt/site/'+encodeURIComponent(slug);$('territoryLink').href=isNagatino?'/krt/nagatino':'/krt/site/'+encodeURIComponent(slug);$('outlineLink').href=isNagatino?'/krt-preview/nagatino/decision-outline.png':'/krt/site/'+encodeURIComponent(slug)+'/decision-outline.png';$('export').href=isNagatino?'/krt/nagatino/export.xlsx':'/krt/site/'+encodeURIComponent(slug)+'/export.xlsx';$('handoff').href='/auctions/krt/'+encodeURIComponent(slug)+'/handoff';
+let links=[];if(r.url)links.push('<a target="_blank" href="'+esc(r.url)+'">Карточка КРТ на krt.mos.ru ↗</a>');if(dm.url)links.push('<a target="_blank" href="'+esc(dm.url)+'">Проект решения на mos.ru ↗</a>');else if(r.decision_url)links.push('<a target="_blank" href="'+esc(r.decision_url)+'">Проект решения mos.ru ↗</a>');if(r.source&&r.source.url)links.push('<a target="_blank" href="'+esc(r.source.url)+'">Источник ↗</a>');$('sourceLinks').innerHTML=links.join('');
+$('cityBody').innerHTML='<div class="cols"><div class="box"><b>ТЭП из проекта решения'+(dm.id?' №'+esc(dm.id):'')+'</b><br>Площадь территории '+fmt(tep.area_ha,2)+' га<br>Предельная СПП '+fmt(tep.total_gfa_sqm)+' м²<br>Жилое назначение '+fmt(tep.housing_gfa_sqm)+' м²<br>Нежилое назначение '+fmt(tep.nonresidential_gfa_sqm)+' м²'+(tep.flats_sqm!=null?'<br>Площадь квартир '+fmt(tep.flats_sqm)+' м²':'')+'</div><div class="box"><b>Карточка каталога — для сверки</b><br>СПП '+fmt(r.total_gfa_sqm)+' м²<br>Жильё '+fmt(r.housing_gfa_sqm)+' м²<br>Нежилое '+fmt(r.nonresidential_gfa_sqm)+' м²<br>Статус '+esc(r.status||'—')+'</div></div>';
+try{let req=await j('/krt-preview/proxy/'+encodeURIComponent(slug)+'/requirements'), groups=[['Снос',req.demolition||[]],['Снос или реконструкция',req.demolition_or_reconstruction||[]],['Реконструкция',req.reconstruction||[]],['Сохранение',req.preservation||[]]], total=groups.reduce((n,x)=>n+x[1].length,0);$('loadBody').innerHTML='<div class="cols"><div class="box"><b>Городские нужды / реновация</b><br>'+esc(req.renovation&&req.renovation.mentioned?(req.renovation.area_sqm?fmt(req.renovation.area_sqm)+' м²':req.renovation.quote||'Упомянуты, объём не назван'):'В проекте решения не подтверждены')+'</div><div class="box"><b>Что требует документ</b><br>'+esc((req.warning||'Требования прочитаны из официального документа'))+'</div></div>';$('demoSummary').textContent='Объекты: снос / реконструкция / сохранение — '+total;$('demoBody').innerHTML=groups.filter(x=>x[1].length).map(x=>'<div class="box"><b>'+esc(x[0])+' — '+x[1].length+'</b><br>'+esc(x[1].join('\n'))+'</div>').join('')||'<div class="box">В опубликованном проекте решения перечень действий по объектам не найден.</div>';if(nag&&nag.objects){let ng=[['Снос',nag.objects.demolition||[],nag.totals.demolition],['Снос или реконструкция',nag.objects.conditional||[],nag.totals.conditional],['Реконструкция',nag.objects.reconstruction||[],nag.totals.reconstruction],['Сохранение',nag.objects.preservation||[],nag.totals.preservation]];let nn=ng.reduce((z,x)=>z+x[1].length,0);$('demoSummary').textContent='Извещение торгов: судьба объектов — '+nn+' из '+(nag.objects_total||nn);$('demoBody').innerHTML=ng.filter(x=>x[1].length).map(x=>'<div class="box"><b>'+esc(x[0])+' — '+x[1].length+' · '+fmt((x[2]||{}).area_sqm,1)+' м²</b><br>'+x[1].map(o=>esc((o.cadastral_number||'')+(o.address?' · '+o.address:'')+(o.fate?' · '+o.fate:'')+(o.area_sqm?' · '+fmt(o.area_sqm,1)+' м²':''))).join('<br>')+'</div>').join('')}</div>'} }catch(e){$('loadBody').textContent='Требования пока не прочитаны: '+e.message}
 $('pressBody').innerHTML='<div class="box">'+esc(listFacts(rank.press_facts))+'</div>';$('pressBtn').onclick=async()=>{let b=$('pressResult');b.style.display='';b.textContent='Ищу…';try{b.textContent=listFacts(await j('/krt-preview/proxy/'+encodeURIComponent(slug)+'/open-sources'))}catch(e){b.textContent=e.message}};
 try{let a=await j('/krt-preview/proxy/report/'+encodeURIComponent(slug)),sc=a.screening||{},mr=sc.market_report||a.market||{},rec=a.plato||a.recommendation||sc.plato||sc.recommendation||'';$('platoAnswer').textContent=typeof rec==='string'&&rec?rec:'Готовой текстовой рекомендации в отчёте нет — откройте Платона для анализа текущей площадки.';$('marketBody').innerHTML='<div class="cols"><div class="box"><b>Модель</b><br>LLCR '+esc(fmt(rank.project_llcr_x??sc.project_llcr_x,2))+'x<br>Маржа '+esc(fmt(rank.margin_pct??sc.margin_pct,1))+'%<br>Потолок входа '+esc(fmt(rank.entry_capacity_rub_per_sqm))+' ₽/м²</div><div class="box"><b>Окружение</b><br>Цена '+esc(fmt(rank.surrounding_price_rub_sqm))+' ₽/м²<br>'+esc(JSON.stringify(mr,null,2))+'</div></div>'}catch(e){$('marketBody').textContent='Готовый отчёт: '+e.message}
 let lots=r.tender_lots||[];
-if(slug==='nagatino'){try{let nd=await j('/krt-preview/proxy/nagatino/parcels');if(nd.siblings){let sib=nd.siblings.find(x=>x.slug==='nagatino');if(sib&&sib.lots&&!lots.length)lots=[{title:'Торги по КРТ Нагатино',deadline:sib.deadline,url:'/krt/nagatino'}]}let buildings=nd.parcels||[], demo=buildings.filter(x=>{let t=JSON.stringify(x).toLowerCase();return /снос|демонт/.test(t)});if(buildings.length){$('demoSummary').textContent='Объекты территории — '+buildings.length+(demo.length?' · под снос '+demo.length:'');$('demoBody').innerHTML='<div class="box">'+esc((demo.length?demo:buildings).map(x=>x.address||x.name||x.cadastral_number||JSON.stringify(x)).join('\n'))+'</div>'}}catch(e){}}
-if(lots.length){$('tenderBody').innerHTML='<b>Связанные торги: '+lots.length+'</b>'+lots.map(l=>'<div class="box">'+esc(l.title||l.name||'Лот')+'<br>'+esc(l.application_deadline||l.application_deadline_iso||'')+(l.url||l.lot_url?'<br><a target="_blank" href="'+esc(l.url||l.lot_url)+'">Открыть лот ↗</a>':'')+'</div>').join('')+'<a href="/krt/site/'+encodeURIComponent(slug)+'"><b>Открыть существующий разбор территории и лота →</b></a>'}else $('tenderBody').innerHTML='<div class="box">Торги по площадке сейчас не объявлены. Здесь будет появляться лот и ссылка на его разбор, как только связка площадка ↔ торги появится в рабочем каталоге.</div>';
+if(lots.length){$('tenderBody').innerHTML='<span class="badge" style="border-color:#922;color:#922"><b>Идут / опубликованы торги</b></span><b style="display:block;margin-top:9px">Связанные лоты: '+lots.length+'</b>'+lots.map(l=>'<div class="box">'+esc(l.title||l.name||'Лот')+'<br>'+esc(l.application_deadline||l.deadline||l.application_deadline_iso||'')+(l.url||l.lot_url?'<br><a target="_blank" href="'+esc(l.url||l.lot_url)+'">Открыть лот ↗</a>':'')+'</div>').join('')+'<a href="'+(isNagatino?'/krt/nagatino':'/krt/site/'+encodeURIComponent(slug))+'"><b>Открыть существующий разбор территории и лота →</b></a>'}else if(nag&&nag.auction&&nag.auction.announced){$('tenderBody').innerHTML='<span class="badge" style="border-color:#922;color:#922"><b>Торги объявлены</b></span><div class="box">По этой территории в эталонном пакете есть официальное извещение о торгах. Связанный live-лот в строке каталога сейчас не приехал, поэтому срок не выдумываем.</div><a href="'+esc(nag.auction.analysis_url||'/krt/nagatino')+'"><b>Открыть разбор лота Нагатино →</b></a>'}else $('tenderBody').innerHTML='<div class="box">Связанный лот в рабочем каталоге сейчас не найден. Это «связку не получили», а не утверждение, что торгов нет.</div>';
 }boot().catch(e=>{$('title').textContent='Карточка не открылась';$('where').textContent=e.message});
 </script></body></html>'''
 
@@ -94,6 +93,86 @@ def install(app):
                 return JSONResponse(json.loads(response.read().decode("utf-8")), headers={"Cache-Control":"no-store"})
         except Exception as exc:
             return JSONResponse({"available":False,"reason":str(exc)}, status_code=502)
+
+    @app.get("/krt-preview/decisions", include_in_schema=False)
+    async def krt_preview_decisions():
+        url = "https://plato-development-investment-model.onrender.com/auctions/krt/decisions"
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent":"DevelopAid-KRT-preview/1"})
+            with urllib.request.urlopen(req, timeout=55) as response:
+                return JSONResponse(json.loads(response.read().decode("utf-8")),
+                                    headers={"Cache-Control":"no-store"})
+        except Exception as exc:
+            return JSONResponse({"error":str(exc),"matched_rows":[],"tep":{}},
+                                status_code=502)
+
+    @app.get("/krt-preview/nagatino/source", include_in_schema=False)
+    async def krt_preview_nagatino_source():
+        """Bundled official source package: auction notice, EGRN extracts and draft decision."""
+        try:
+            from auction_search import nagatino_parcels
+            from market_search.krt_requirements import pdf_text
+            from market_search import krt_decision_tep
+
+            territory = nagatino_parcels.territory()
+            text = pdf_text(nagatino_parcels.DECISION_PATH.read_bytes())
+            tep = krt_decision_tep.parse(text)
+            groups = {"demolition": [], "conditional": [], "reconstruction": [],
+                      "preservation": [], "other": []}
+            for item in territory.get("objects") or []:
+                fate = str(item.get("fate") or "").strip()
+                low = fate.casefold()
+                if "снос" in low and "рекон" in low:
+                    kind = "conditional"
+                elif "снос" in low or "демонт" in low:
+                    kind = "demolition"
+                elif "рекон" in low:
+                    kind = "reconstruction"
+                elif "сохран" in low:
+                    kind = "preservation"
+                else:
+                    kind = "other"
+                area = item.get("area_sqm")
+                if area in (None, ""):
+                    area = item.get("notice_area_sqm")
+                groups[kind].append({
+                    "cadastral_number": item.get("cadastral_number") or "",
+                    "address": item.get("address") or "",
+                    "name": item.get("name") or "",
+                    "fate": fate,
+                    "area_sqm": area,
+                })
+            totals = {}
+            for key, items in groups.items():
+                totals[key] = {
+                    "count": len(items),
+                    "area_sqm": round(sum(float(x.get("area_sqm") or 0) for x in items), 1),
+                }
+            return JSONResponse({
+                "tep": tep,
+                "objects": groups,
+                "totals": totals,
+                "territory_totals": territory.get("totals") or {},
+                "lands": len(territory.get("lands") or []),
+                "objects_total": len(territory.get("objects") or []),
+                "auction": {
+                    "announced": True,
+                    "source": "Приложение № 2 к извещению о торгах",
+                    "analysis_url": "/krt/nagatino",
+                },
+            }, headers={"Cache-Control":"no-store"})
+        except Exception as exc:
+            return JSONResponse({"error":f"{type(exc).__name__}: {exc}"}, status_code=502)
+
+    @app.get("/krt-preview/nagatino/decision-outline.png", include_in_schema=False)
+    async def krt_preview_nagatino_outline():
+        try:
+            from auction_search import nagatino_parcels
+            raw = nagatino_parcels.decision_outline_picture()
+            return Response(raw, media_type="image/png",
+                            headers={"Cache-Control":"public,max-age=86400"})
+        except Exception as exc:
+            return JSONResponse({"detail":str(exc)}, status_code=502)
 
     @app.get("/krt-preview/ranking", include_in_schema=False)
     async def krt_preview_ranking():
