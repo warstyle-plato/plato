@@ -1164,9 +1164,9 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 row: dict[str, Any] = {
                     "complex_id": project.complex_id,
                     "name": project.name,
-                    "developer": project.developer or card.get("developer"),
-                    "builder": project.builder or card.get("builder"),
-                    "address": project.address or card.get("address"),
+                    "developer": getattr(project, "developer", None) or card.get("developer"),
+                    "builder": getattr(project, "builder", None) or card.get("builder"),
+                    "address": getattr(project, "address", None) or card.get("address"),
                     "distance_km": distance,
                     "price_per_sqm": price["price_per_sqm"],
                     "price_per_sqm_min": price.get("price_per_sqm_min"),
@@ -1187,7 +1187,9 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                         if progress is not None
                         else None
                     ),
-                    "project_url": project.to_dict().get("url"),
+                    "project_url": (
+                        project.to_dict().get("url") if hasattr(project, "to_dict") else None
+                    ),
                 }
                 if include_projects:
                     row["sales"] = self.dynamics.latest(
