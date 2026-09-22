@@ -17267,6 +17267,39 @@ def _safe_file_stem(value: str, fallback: str = "DevelopAid") -> str:
 
 _V4_TEMPLATE_PATH = Path(__file__).resolve().parent / "templates" / "DevelopAid_model_v4.xlsx"
 
+
+class _V4CloneSlot(NamedTuple):
+    """Геометрия дополнительного объекта в книге v4."""
+    key: str
+    source_key: str
+    source_prefix: str
+    input_rows: range
+    object_rows: range
+    input_offset: int
+    object_offset: int
+    tep_row: int
+    report_row: int
+
+
+# Штатные три блока остаются на своих местах. Дополнительные объекты копируют
+# блок того же типа в свободный низ книги, не вставляя строки внутрь шаблона.
+_V4_CLONED_OBJECTS: tuple[_V4CloneSlot, ...] = (
+    _V4CloneSlot("offices2", "offices", "offices",
+                 range(18, 36), range(6, 32), 152, 148, 45, 70),
+    _V4CloneSlot("retail2", "standalone_retail", "retail",
+                 range(38, 56), range(34, 60), 152, 148, 46, 71),
+    _V4CloneSlot("above_parking2", "above_parking", "above_parking",
+                 range(58, 76), range(62, 88), 152, 148, 47, 72),
+)
+
+
+def _v4_shift_coord(coord: str, offset: int) -> str:
+    found = re.match(r"([A-Z]+)(\d+)$", coord)
+    if not found:
+        return coord
+    return f"{found.group(1)}{int(found.group(2)) + offset}"
+
+
 # Ключ движка -> ячейка листа «Вводные». Проценты движок хранит в пунктах
 # (25 = 25%), книга — в долях, пересчёт по суффиксу _pct/_pp.
 _V4_INPUT_CELLS: dict[str, str] = {
@@ -18613,41 +18646,12 @@ _V4_OBJECT_PRODUCT_CELLS = {              # (очередь объекта, ег
 }
 
 
-class _V4CloneSlot(NamedTuple):
-    """Геометрия дополнительного объекта в книге v4."""
-    key: str
-    source_key: str
-    source_prefix: str
-    input_rows: range
-    object_rows: range
-    input_offset: int
-    object_offset: int
-    tep_row: int
-    report_row: int
-
-
-_V4_CLONED_OBJECTS: tuple[_V4CloneSlot, ...] = (
-    _V4CloneSlot("offices2", "offices", "offices",
-                 range(18, 36), range(6, 32), 152, 148, 45, 70),
-    _V4CloneSlot("retail2", "standalone_retail", "retail",
-                 range(38, 56), range(34, 60), 152, 148, 46, 71),
-    _V4CloneSlot("above_parking2", "above_parking", "above_parking",
-                 range(58, 76), range(62, 88), 152, 148, 47, 72),
-)
-
 for _slot in _V4_CLONED_OBJECTS:
     _queue_row, _revenue_row = _V4_OBJECT_PRODUCT_CELLS[_slot.source_key]
     _V4_OBJECT_PRODUCT_CELLS[_slot.key] = (
         _queue_row + _slot.object_offset,
         _revenue_row + _slot.object_offset,
     )
-
-
-def _v4_shift_coord(coord: str, offset: int) -> str:
-    found = re.match(r"([A-Z]+)(\d+)$", coord)
-    if not found:
-        return coord
-    return f"{found.group(1)}{int(found.group(2)) + offset}"
 
 
 # Шаблон несёт ТРИ блока объектов; всё, что ниже, дописано копированием — и
