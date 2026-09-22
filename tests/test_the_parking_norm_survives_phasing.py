@@ -26,6 +26,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -41,6 +43,7 @@ def _case() -> tuple[dict, dict]:
     inputs = dict(core.DEFAULT_INPUTS)
     inputs["offices_enabled"] = True
     inputs["offices_gba_sqm"] = OFFICES_GBA
+    inputs["offices_saleable_sqm"] = SALEABLE
     tep = copy.deepcopy(core.TEP_DEFAULT)
     tep["offices"].update({"gns": OFFICES_GBA,
                            "total_area": round(OFFICES_GBA * 0.94, 1),
@@ -83,11 +86,10 @@ def test_the_consolidated_answer_carries_the_norm() -> None:
 
 
 def test_the_project_saleable_does_not_slide() -> None:
-    """Блок свода считается на копиях: `apply_object_parking` не идемпотентна.
+    """Паркинг на первых этажах не переписывает конечную saleable проекта.
 
-    Метры первых этажей вычитаются из продаваемой при КАЖДОМ вызове, и второй
-    проход по мастер-строке увёл бы продаваемую объекта вниз — молча, потому
-    что число осталось бы правдоподобным.
+    В сохранённом проекте 87 504,6 м² — уже конечная продаваемая площадь.
+    Повторный расчёт и свод очередей обязаны сохранить именно её.
     """
     inputs, tep = _case()
     single = core.calculate(core.CalcRequest(inputs=copy.deepcopy(inputs),
@@ -99,7 +101,44 @@ def test_the_project_saleable_does_not_slide() -> None:
         assert rows, result["tep"]["rows"]
         return float(rows[0]["saleable"])
 
-    assert saleable(consolidated) == saleable(single)
+    assert saleable(single) == pytest.approx(SALEABLE)
+    assert saleable(consolidated) == pytest.approx(SALEABLE)
+
+
+def test_saved_project_parking_reallocation_keeps_gba_and_revenue() -> None:
+    """Контрольный проект «Проект»: 186 180 ГНС и 87 504,6 saleable.
+
+    Перенос 1 778 мест из подземного гаража на первые этажи не создаёт ГНС и
+    не режет офисную выручку. Наземный паркинг занимает 25 м²/место ВНУТРИ
+    фиксированной ГНС; офисная часть для сторожа — saleable + 40%.
+    """
+    def variant(under: int, over: int) -> tuple[dict, dict, dict]:
+        inputs, tep = _case()
+        inputs.update(
+            offices_parking_under_spaces=under,
+            offices_parking_over_spaces=over,
+            offices_parking_guest_pct=10,
+        )
+        demand = core.apply_object_parking(copy.deepcopy(inputs), tep)
+        office = _offices(demand)
+        result = core.calculate(core.CalcRequest(
+            inputs=copy.deepcopy(inputs), tep=copy.deepcopy(_case()[1])))
+        return tep["offices"], office, result
+
+    old_row, old_parking, old_result = variant(2778, 0)
+    new_row, new_parking, new_result = variant(1000, 1778)
+
+    assert old_row["gns"] == new_row["gns"] == OFFICES_GBA
+    assert old_row["saleable"] == pytest.approx(SALEABLE)
+    assert new_row["saleable"] == pytest.approx(SALEABLE)
+    assert new_parking["over_gns"] == pytest.approx(1778 * 25)
+    assert new_parking["fit_required_gns"] == pytest.approx(
+        SALEABLE * 1.40 + 1778 * 25)
+    assert new_parking["fits_gba"] is True
+    # Общее число продаваемых мест то же, офисные метры те же: перенос места
+    # под/над землёй сам по себе не имеет права уничтожать выручку.
+    assert new_result["summary"]["revenue"] == pytest.approx(
+        old_result["summary"]["revenue"], rel=1e-9)
 
 
 def _trim(consolidated: dict) -> dict:
