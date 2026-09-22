@@ -149,10 +149,138 @@ def month_of(value: Any) -> str | None:
 
 
 def date_of(value: Any) -> str | None:
-    try:
-        return (EPOCH + datetime.timedelta(days=int(float(value)))).isoformat()
-    except (TypeError, ValueError):
+    """Дата из Excel или человекочитаемого срока.
+
+    В «Справочнике по ЖК» даты не обязаны храниться одним типом: часть книг
+    отдаёт serial Excel, часть — строку/месяц/квартал. Прежний разбор принимал
+    только serial и превращал целую колонку срока ввода в None молча.
+    Для стадийной поправки важен месяц; у квартала берём его последний месяц.
+    """
+    if value in (None, ""):
         return None
+    text = " ".join(str(value).replace("\u00a0", " ").split()).strip()
+    # Excel serial. Голый год 2027 serial-числом не является: иначе это 1905 год.
+    try:
+        serial = float(text.replace(",", "."))
+    except (TypeError, ValueError):
+        serial = None
+    if serial is not None and 20_000 <= serial <= 100_000:
+        try:
+            return (EPOCH + datetime.timedelta(days=int(serial))).isoformat()
+        except (OverflowError, ValueError):
+            pass
+
+    low = text.lower().replace("ё", "е")
+    found = re.fullmatch(r"(20\d{2})[-/.](\d{1,2})(?:[-/.](\d{1,2}))?", low)
+    if found:
+        year, month, day = int(found.group(1)), int(found.group(2)), int(found.group(3) or 1)
+        try:
+            return datetime.date(year, month, day).isoformat()
+        except ValueError:
+            return None
+    found = re.fullmatch(r"(\d{1,2})[./-](\d{1,2})[./-](20\d{2})", low)
+    if found:
+        day, month, year = map(int, found.groups())
+        try:
+            return datetime.date(year, month, day).isoformat()
+        except ValueError:
+            return None
+    found = re.fullmatch(r"(\d{1,2})[./-](20\d{2})", low)
+    if found:
+        month, year = map(int, found.groups())
+        try:
+            return datetime.date(year, month, 1).isoformat()
+        except ValueError:
+            return None
+
+    romans = {"i": 1, "ii": 2, "iii": 3, "iv": 4}
+    quarter = None
+    year = None
+    found = re.search(r"\b(i{1,3}|iv|[1-4])\s*(?:кв(?:артал)?\.?|q)\s*(?:г(?:ода)?\.?)?\s*(20\d{2})\b", low)
+    if found:
+        raw, raw_year = found.groups()
+        quarter = romans.get(raw, int(raw) if raw.isdigit() else None)
+        year = int(raw_year)
+    else:
+        found = re.search(r"\b(20\d{2})\s*(?:г(?:ода)?\.?)?\s*(?:q|кв(?:артал)?\.?)\s*(i{1,3}|iv|[1-4])\b", low)
+        if found:
+            raw_year, raw = found.groups()
+            quarter = romans.get(raw, int(raw) if raw.isdigit() else None)
+            year = int(raw_year)
+    if quarter and year:
+        return datetime.date(year, quarter * 3, 1).isoformat()
+
+    found = re.fullmatch(r"(20\d{2})(?:\s*г(?:од(?:а)?)?\.?)?", low)
+    if found:
+        return datetime.date(int(found.group(1)), 12, 1).isoformat()
+    return None
+
+
+def _project_date_columns(header: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """Колонки старта продаж и ввода по заголовкам, а не по буквам Excel."""
+    normalized = {
+        letter: " ".join(str(value or "").replace("\n", " ").split()).lower().replace("ё", "е")
+        for letter, value in header.items()
+    }
+
+    def start_score(text: str) -> int:
+        if "продаж" not in text:
+            return -100
+        score = 0
+        if "старт" in text:
+            score += 8
+        if "начал" in text:
+            score += 7
+        if "дата" in text:
+            score += 3
+        if "перв" in text:
+            score += 1
+        if "оконч" in text or "конец" in text:
+            score -= 8
+        return score
+
+    def commissioning_score(text: str) -> int:
+        if not any(word in text for word in ("ввод", "эксплуатац", "сдач")):
+            return -100
+        score = 0
+        if "ввод" in text:
+            score += 8
+        if "эксплуатац" in text:
+            score += 5
+        if "сдач" in text:
+            score += 4
+        if "план" in text:
+            score += 7
+        if "срок" in text:
+            score += 4
+        if "дата" in text:
+            score += 2
+        if "факт" in text:
+            score -= 10
+        if "продаж" in text:
+            score -= 10
+        return score
+
+    def ranked(score) -> list[str]:
+        pairs = [(score(text), letter) for letter, text in normalized.items()]
+        return [letter for points, letter in sorted(pairs, key=lambda pair: (-pair[0], pair[1])) if points > 0]
+
+    def unique(values: list[str]) -> list[str]:
+        out: list[str] = []
+        for value in values:
+            if value not in out:
+                out.append(value)
+        return out
+
+    return unique(ranked(start_score) + ["P"]), unique(ranked(commissioning_score) + ["R", "Q"])
+
+
+def _first_date(row: dict[str, Any], columns: list[str]) -> str | None:
+    for column in columns:
+        found = date_of(row.get(column))
+        if found:
+            return found
+    return None
 
 
 def number(value: Any) -> float | None:
@@ -345,12 +473,23 @@ def read_projects(path: Path) -> dict[str, dict[str, Any]]:
     штуками — простое среднее по корпусам дало бы среднее средних.
     """
     out: dict[str, dict[str, Any]] = {}
-    for index, row in enumerate(rows(path, SHEET_PROJECTS)):
-        if index < 1:
-            continue
+    header: dict[str, Any] = {}
+    start_columns: list[str] = ["P"]
+    commissioning_columns: list[str] = ["R", "Q"]
+    for row in rows(path, SHEET_PROJECTS):
         key = str(row.get("A") or "").strip()
-        if not key:
+        # До первой числовой ID-строки собираем шапку. Это выдерживает одну
+        # или несколько строк заголовков: тексты одной колонки склеиваются.
+        if not re.fullmatch(r"\d+", key):
+            for letter, value in row.items():
+                text = " ".join(str(value or "").split())
+                if not text:
+                    continue
+                header[letter] = (str(header.get(letter) or "") + " " + text).strip()
             continue
+        if header:
+            start_columns, commissioning_columns = _project_date_columns(header)
+            header = {}
         item = out.setdefault(
             key,
             {
@@ -407,10 +546,10 @@ def read_projects(path: Path) -> dict[str, dict[str, Any]]:
             area = number(row.get(area_letter))
             if area and count:
                 block["_area"] += area * count
-        planned = date_of(row.get("R")) or date_of(row.get("Q"))
+        planned = _first_date(row, commissioning_columns)
         if planned and (item["commissioning"] is None or planned > item["commissioning"]):
             item["commissioning"] = planned
-        started = date_of(row.get("P"))
+        started = _first_date(row, start_columns)
         if started and (item["sales_start"] is None or started < item["sales_start"]):
             item["sales_start"] = started
     for item in out.values():
@@ -727,6 +866,18 @@ def main(argv: list[str] | None = None) -> int:
         ),
     ]
     cards = read_projects(args.book)
+    commissioning_known = sum(1 for item in cards.values() if item.get("commissioning"))
+    sales_start_known = sum(1 for item in cards.values() if item.get("sales_start"))
+    print(
+        f"карточки: старт продаж {sales_start_known}/{len(cards)}, "
+        f"плановый ввод {commissioning_known}/{len(cards)}"
+    )
+    if cards and commissioning_known == 0:
+        print(
+            "в «Справочнике по ЖК» не разобрана ни одна дата планового ввода — "
+            "останавливаю импорт, чтобы не выпустить пустую стадийную модель"
+        )
+        return 1
     written.append(
         (
             args.out / f"moscow-cards-{last}.json",
