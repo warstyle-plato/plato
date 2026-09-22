@@ -116,8 +116,17 @@ a{color:inherit}button{font:inherit}.shell{max-width:1480px;margin:0 auto;paddin
     </section>
 
     <section class="card">
-     <header><h2>Балл возможности</h2><span>почему именно столько</span></header>
-     <div class="body" id="score"><div class="notice">Собираю компоненты…</div></div>
+     <header><h2>Рейтинг КРТ</h2><span>4 независимых оценки · 0–100</span></header>
+     <div class="body">
+      <div class="metric" style="align-items:center">
+       <span>Ценовой ориентир, ₽/м²</span>
+       <div style="display:flex;gap:6px;align-items:center">
+        <input id="priceTarget" inputmode="numeric" type="number" min="1" step="10000" value="600000" style="width:120px;padding:7px 8px;border:1px solid var(--line);font:inherit">
+        <button id="recalcScore" type="button">Пересчитать</button>
+       </div>
+      </div>
+      <div id="score"><div class="notice">Читаю backend breakdown по #485…</div></div>
+     </div>
     </section>
 
     <section class="card">
@@ -141,8 +150,6 @@ const $=id=>document.getElementById(id);
 const fmt=(v,d=0)=>v===null||v===undefined||v===''||!Number.isFinite(Number(v))?'—':Number(v).toLocaleString('ru-RU',{maximumFractionDigits:d});
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const num=v=>v===null||v===undefined||v===''||!Number.isFinite(Number(v))?null:Number(v);
-const clamp=(x,a=0,b=1)=>Math.max(a,Math.min(b,x));
-const piece=(x,stops)=>{x=num(x);if(x===null)return null;if(x<=stops[0][0])return stops[0][1];for(let i=1;i<stops.length;i++){const [a,b]=stops[i-1],[c,d]=stops[i];if(x<=c){const t=(x-a)/(c-a||1);return b+(d-b)*t}}return stops[stops.length-1][1]};
 async function j(url){const r=await fetch(url,{cache:'no-store'});if(!r.ok){const e=new Error(url+' → '+r.status);e.status=r.status;throw e}return r.json()}
 function findNagatino(projects){
  const rows=projects||[];
@@ -155,46 +162,87 @@ function operatorInfo(row){
  const taken=!!(p.taken||p.operator_name||((p.agreement||[]).length));
  return {taken,confirmed:!!(p.operator_name||(p.agreement||[]).length),operator:p.operator_name||'',developers:dev,selling:(p.selling_now||[]),probed:!!p.probed};
 }
-function comp(items){const known=items.filter(x=>x.s!==null),sum=known.reduce((z,x)=>z+x.w,0);return {score:sum?100*known.reduce((z,x)=>z+x.w*clamp(x.s),0)/sum:null,known:sum,total:items.reduce((z,x)=>z+x.w,0),items}}
-function scoreV2(row,req){
- const ren=req.renovation||{},area=num(row.area_ha),demo=num(req.demolition_area_sqm),cond=num(req.conditional_area_sqm);
- const t=(name,fallback=[])=>Array.isArray(req[name])?req[name]:fallback;
- const res=t('resettlement').length||num(req.resettlement_mentions);
- const renShare=num(ren.area_sqm)!==null?num(ren.area_sqm)/(num(row.housing_gfa_sqm)||num(ren.housing_sqm)||1):null;
- const op=operatorInfo(row),tender=activeTender(row),status=String(row.status_kind||'');
- const eco=[
-  {l:'Потолок цены входа',v:num(row.entry_capacity_rub_per_sqm),u:'₽/м²',w:20,s:piece(row.entry_capacity_rub_per_sqm,[[0,0],[100000,.18],[200000,.38],[350000,.65],[550000,.88],[750000,1]])},
-  {l:'LLCR проекта',v:num(row.project_llcr_x),u:'x',w:15,s:piece(row.project_llcr_x,[[.9,0],[1,.12],[1.1,.42],[1.2,.72],[1.3,.9],[1.45,1]])},
-  {l:'Маржа',v:num(row.margin_pct),u:'%',w:10,s:piece(row.margin_pct,[[-5,0],[0,.08],[7,.32],[12,.58],[18,.82],[25,1]])}
- ];
- const mkt=[
-  {l:'Цена окружения',v:num(row.surrounding_price_rub_sqm),u:'₽/м²',w:8,s:piece(row.surrounding_price_rub_sqm,[[200000,0],[300000,.18],[450000,.45],[600000,.7],[800000,.9],[1000000,1]])},
-  {l:'Продажи окружения',v:num(row.surrounding_sales_units_per_month),u:'ДДУ/мес.',w:12,s:piece(row.surrounding_sales_units_per_month,[[0,0],[3,.15],[7,.35],[12,.58],[20,.82],[30,1]])}
- ];
- const dd=demo!==null&&area?demo/area:null,cd=cond!==null&&area?cond/area:null;
- const bur=[
-  {l:'Снос на гектар',v:dd,u:'м²/га',w:8,s:dd===null?null:1-piece(dd,[[0,0],[500,.08],[1500,.25],[3000,.55],[5000,.82],[7000,1]])},
-  {l:'Доля реновации',v:renShare===null?null:renShare*100,u:'%',w:7,s:renShare===null?null:1-piece(renShare,[[0,0],[.05,.08],[.15,.3],[.3,.62],[.5,.9],[.7,1]])},
-  {l:'Расселение / изъятие',v:res||0,u:'упомин.',w:5,s:res==null?null:(res<=0?1:res===1?.48:res<=3?.25:0)},
-  {l:'Снос или реконструкция / га',v:cd,u:'м²/га',w:5,s:cd===null?null:1-piece(cd,[[0,0],[300,.1],[1000,.35],[2500,.7],[4500,1]])}
- ];
- const acc=[
-  {l:'Оператор / занятость',v:op.confirmed?(op.taken?'занята':'свободна'):(op.probed?'не найден':'не проверено'),u:'',w:7,s:op.probed?(op.taken?.15:1):null},
-  {l:'Стадия входа / торги',v:tender?'активные торги':status,u:'',w:3,s:tender?1:(status==='planned'?.58:status==='draft'?.32:.2)}
- ];
- const C={eco:comp(eco),mkt:comp(mkt),bur:comp(bur),acc:comp(acc)},W={eco:45,mkt:20,bur:25,acc:10};
- let got=0,used=0,known=0,total=0;Object.keys(W).forEach(k=>{const w=W[k],c=C[k];total+=w;known+=w*(c.total?c.known/c.total:0);if(c.score!==null){got+=w*c.score;used+=w}});
- const raw=used?got/used:null,coverage=total?100*known/total:0,score=raw===null?null:raw*(.65+.35*coverage/100);
- return {...C,raw,coverage,score,detail:{eco,mkt,bur,acc}};
+function scaleText(stops,ratioMode=false){
+ return (stops||[]).map(x=>{
+  const v=ratioMode?fmt(Number(x[0])*100,0)+'%':fmt(x[0],2);
+  return v+' → '+fmt(x[1],0);
+ }).join(' · ');
 }
-function renderScore(sc){
- $('scoreKpi').textContent=sc.score===null?'—':Math.round(sc.score);
- const groups=[['Экономика',45,'eco'],['Рынок',20,'mkt'],['Нагрузка КРТ',25,'bur'],['Доступность входа',10,'acc']];
- const val=r=>r.v===null||r.v===undefined?'нет данных':(typeof r.v==='string'?r.v:fmt(r.v,r.u==='x'?2:(r.u==='%'||r.u==='ДДУ/мес.')?1:0)+(r.u?' '+r.u:''));
- const factor=.65+.35*sc.coverage/100;
- $('score').innerHTML='<div class="scoretop"><div class="scorebig">'+(sc.score===null?'—':Math.round(sc.score))+'/100<small>итоговый балл</small></div><div class="components">'+groups.map(g=>'<div class="component"><b>'+fmt(sc[g[2]].score,0)+'</b><span>'+g[0]+' · '+g[1]+'%</span></div>').join('')+'</div></div>'
-  +'<div class="source">Сырой '+fmt(sc.raw,0)+' · покрытие '+fmt(sc.coverage,0)+'% · коэффициент полноты '+factor.toFixed(2)+' · итог '+fmt(sc.score,0)+'.</div>'
-  +groups.map(g=>'<div class="why"><div class="section-title">'+g[0]+' · '+g[1]+'%</div>'+sc.detail[g[2]].map(r=>'<div class="whyrow"><div><b>'+esc(r.l)+'</b><div class="value">'+esc(val(r))+(r.v===null||r.v===undefined?' · неизвестное не стало нулём':'')+'</div></div><div class="weight">вес '+r.w+'</div><div class="pts">'+fmt(r.s===null?null:r.s*100,0)+'</div></div>').join('')+'</div>').join('');
+function componentLine(key,x){
+ const score=x&&x.score;
+ const value=x&&x.value,bench=x&&x.benchmark,ratio=x&&x.ratio;
+ const parts=[];
+ if(key==='llcr'){
+  parts.push('LLCR '+fmt(value,3)+'x');
+  if(x.entry_capacity_mln!==null&&x.entry_capacity_mln!==undefined)parts.push('предельная цена права '+fmt(x.entry_capacity_mln,1)+' млн ₽');
+ }else if(key==='price'){
+  parts.push('окружение '+fmt(value,0)+' ₽/м²');
+  parts.push('ориентир '+fmt(bench,0)+' ₽/м²');
+  parts.push('отношение '+(ratio===null||ratio===undefined?'—':fmt(Number(ratio)*100,1)+'%'));
+ }else if(key==='absorption'){
+  parts.push('локальная медиана '+fmt(value,0)+' м²/мес.');
+  parts.push('Москва по классу '+fmt(bench,0)+' м²/мес.');
+  parts.push('отношение '+(ratio===null||ratio===undefined?'—':fmt(Number(ratio)*100,1)+'%'));
+ }else if(key==='burden'){
+  parts.push('нагрузка '+fmt(value,1)+' млн ₽');
+  parts.push('ordinary CAPEX '+fmt(bench,1)+' млн ₽');
+  parts.push('доля '+fmt(x.burden_pct,2)+'%');
+  if(x.rub_per_housing_sqm!==null&&x.rub_per_housing_sqm!==undefined)parts.push(fmt(x.rub_per_housing_sqm,0)+' ₽/м² жилья');
+ }
+ return '<div class="why"><div class="whyrow"><div><b>'+esc(x.name||key)+'</b><div class="value">'+esc(parts.join(' · '))+'</div>'
+  +(score===null||score===undefined?'<div class="source">'+esc(x.missing_reason||'нет данных')+'</div>':'<div class="source">'+esc(x.formula||'')+'</div>')
+  +(x.source?'<div class="source">Источник: '+esc(x.source)+'</div>':'')
+  +'</div><div class="pts">'+(score===null||score===undefined?'—':fmt(score,1))+'/100</div></div></div>';
+}
+function renderMethodology(m){
+ if(!m)return '';
+ const ex=m.examples||{},rules=m.rules||{},explain=m.explanations||{};
+ return '<details style="margin-top:12px"><summary><b>Методика оценки</b></summary>'
+  +'<div class="source" style="margin-top:10px">Источник методики: GitHub issue #'+esc(m.issue||485)+'. Формула: '+esc(m.formula||'')+'</div>'
+  +'<div class="section-title">LLCR</div><div class="value">'+esc(scaleText(m.llcr_stops,false))+'</div><div class="source">'+esc(ex.llcr||'')+'</div>'
+  +'<div class="section-title">Цена рынка</div><div class="value">'+esc(scaleText(m.price_ratio_stops,true))+'</div><div class="source">'+esc(ex.price||'')+'</div>'
+  +'<div class="section-title">Поглощение · только м²/мес.</div><div class="value">'+esc(scaleText(m.absorption_ratio_stops,true))+'</div><div class="source">'+esc(ex.absorption||'')+'</div>'
+  +'<div class="section-title">Нагрузка КРТ</div><div class="value">'+esc(scaleText(m.burden_pct_stops,false))+'% шкалы нагрузки</div><div class="source">'+esc(ex.burden||'')+'</div>'
+  +'<div class="section-title">Линейная интерполяция</div><div class="source">'+esc(m.linear_interpolation||'')+'</div>'
+  +'<div class="section-title">Правила полноты</div><div class="source">'+esc(explain.coverage||rules.missing||'')+'</div>'
+  +'<div class="source">'+esc(explain.running||rules.running||'')+'</div>'
+  +'<div class="source">'+esc(explain.entry_capacity||rules.entry_capacity||'')+'</div>'
+  +'</details>';
+}
+function renderScore(payload){
+ const sc=payload&&payload.rating?payload.rating:payload;
+ if(!sc){$('score').innerHTML='<div class="notice bad">Backend breakdown рейтинга не получен.</div>';return}
+ $('scoreKpi').textContent=sc.display_score===null||sc.display_score===undefined?'—':fmt(sc.display_score,0);
+ const C=sc.components||{},order=['llcr','price','absorption','burden'];
+ let html='<div class="scoretop"><div class="scorebig">'
+  +(sc.display_score===null||sc.display_score===undefined?'—':fmt(sc.display_score,0))
+  +'/100<small>инвестиционный рейтинг</small></div><div class="components">'
+  +order.map(k=>'<div class="component"><b>'+((C[k]&&C[k].score)!==null&&(C[k]&&C[k].score)!==undefined?fmt(C[k].score,0):'—')+'</b><span>'+esc((C[k]&&C[k].name)||k)+' · 0–100</span></div>').join('')
+  +'</div></div>'
+  +'<div class="source">Покрытие '+fmt(sc.coverage_pct,0)+'%. '+esc(sc.reason||'')+'</div>';
+ if(sc.arithmetic)html+='<div class="notice"><b>Как рассчитано:</b> '+esc(sc.arithmetic)+'</div>';
+ html+=order.map(k=>componentLine(k,C[k]||{})).join('');
+ html+=renderMethodology(sc.methodology);
+ $('score').innerHTML=html;
+}
+async function loadInvestmentScore(){
+ const input=$('priceTarget'),button=$('recalcScore');
+ const target=Math.max(1,Number(input&&input.value||600000));
+ if(button){button.disabled=true;button.innerHTML='<span class="spinner"></span>Считаю'}
+ try{
+  const data=await j('/auctions/krt-prototype/nagatino/investment-score?price_target_rub_sqm='+encodeURIComponent(target));
+  renderScore(data);
+ }catch(e){
+  $('scoreKpi').textContent='—';
+  $('score').innerHTML='<div class="notice bad">Рейтинг #485 не получен: '+esc(e.message||e)+'</div>';
+ }finally{
+  if(button){button.disabled=false;button.textContent='Пересчитать'}
+ }
+}
+function bindScore(){
+ const b=$('recalcScore'),i=$('priceTarget');
+ if(b)b.onclick=loadInvestmentScore;
+ if(i)i.onkeydown=e=>{if(e.key==='Enter')loadInvestmentScore()};
 }
 function renderFlags(p,rank,req){
  const ren=req.renovation||{},op=operatorInfo({...p,...rank}),t=activeTender({...p,...rank});
@@ -431,9 +479,8 @@ async function boot(){
  const parcels=parcelsRes.status==='fulfilled'?parcelsRes.value:null;
  const point=pointRes.status==='fulfilled'?pointRes.value:null;
  MAP.point=point;MAP.parcels=parcels;
- const sc=scoreV2(row,req);
- bindActions(p);
- renderFlags(p,rank,req);renderEntry(p,rank);renderScore(sc);renderEconomics(rank,null);renderPublic(rank);renderTerritory(req,parcels);drawMap();if($('refreshPublic'))$('refreshPublic').onclick=()=>refreshPublic(p,rank);
+ bindActions(p);bindScore();
+ renderFlags(p,rank,req);renderEntry(p,rank);renderEconomics(rank,null);renderPublic(rank);renderTerritory(req,parcels);drawMap();loadInvestmentScore();if($('refreshPublic'))$('refreshPublic').onclick=()=>refreshPublic(p,rank);
  if(liveRes.status!=='fulfilled'){
   $('economics').insertAdjacentHTML('afterbegin','<div class="notice warn">Production-рейтинг сейчас не прочитан: '+esc(liveRes.reason&&liveRes.reason.message||liveRes.reason||'ошибка')+'. Показаны только локальные сохранённые данные.</div>');
  }
