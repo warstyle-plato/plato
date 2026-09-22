@@ -76,6 +76,7 @@ from auction_search.preset_mapper import build_project_preset
 from auction_search.profile_fit import profile_fit
 from auction_search.service import AuctionSearchService
 from auction_search import krt_territory, nagatino_parcels
+from auction_search import krt_investment_score
 from auction_search.nagatino_ui import nagatino_page
 from auction_search.ui import auctions_page
 from auction_search.krt_score_lab import krt_score_lab_page
@@ -1106,6 +1107,146 @@ def install(app: FastAPI) -> None:
                 "measure_label": ranking.get("measure_label"),
             },
             "source": "production /auctions/krt/ranking",
+        }
+
+    @app.get("/auctions/krt-prototype/nagatino/investment-score", include_in_schema=False)
+    async def auction_krt_nagatino_investment_score(
+        price_target_rub_sqm: float = Query(
+            krt_investment_score.DEFAULT_PRICE_TARGET_RUB_SQM,
+            ge=1,
+            le=10_000_000,
+        )
+    ) -> dict[str, Any]:
+        """Issue #485 rating for the Nagatino preview.
+
+        The endpoint returns the final backend breakdown. The preview UI does
+        not calculate rating formulas itself. The old ranking score and the
+        old DDU/month absorption field are deliberately ignored.
+        """
+        live = await auction_krt_nagatino_live_data()
+        rank = dict(live.get("row") or {})
+
+        control: dict[str, Any] = {}
+        if core is not None:
+            control = await run_in_threadpool(
+                krt_investment_score.nagatino_live_example, core)
+        llcr = None
+        burden_pct = None
+        burden_mln = None
+        ordinary_capex_mln = None
+        entry_capacity_mln = None
+        housing_gfa_sqm = rank.get("housing_gfa_sqm")
+        llcr_source = "production KRT ranking / authoritative DevelopAid screening"
+        burden_source = "Nagatino live control case"
+
+        if control.get("available"):
+            baseline = control.get("baseline") or {}
+            stack = control.get("cost_stack") or {}
+            entry = control.get("entry_capacity") or {}
+            llcr = baseline.get("project_llcr_x")
+            burden_pct = control.get("burden_pct")
+            burden_mln = stack.get("total_known_mln")
+            ordinary_capex_mln = control.get("ordinary_capex_mln")
+            entry_capacity_mln = entry.get("max_krt_right_price_mln")
+            housing_gfa_sqm = stack.get("housing_gfa_sqm") or housing_gfa_sqm
+            llcr_source = "Nagatino live case: authoritative DevelopAid engine"
+            burden_source = "ЕГРН + обязательства КРТ + authoritative DevelopAid ordinary CAPEX"
+        else:
+            llcr = rank.get("project_llcr_x")
+            entry_capacity_mln = rank.get("entry_capacity_mln")
+            burden_pct = rank.get("burden_pct")
+            burden_mln = rank.get("burden_mln")
+            ordinary_capex_mln = rank.get("ordinary_capex_mln")
+
+        def first_number(*names: str) -> float | None:
+            for name in names:
+                value = rank.get(name)
+                try:
+                    if value not in (None, ""):
+                        return float(value)
+                except (TypeError, ValueError):
+                    continue
+            return None
+
+        local_absorption = first_number(
+            "local_absorption_sqm_month",
+            "surrounding_sales_sqm_per_month",
+            "market_absorption_sqm_month",
+        )
+        moscow_absorption = first_number(
+            "moscow_absorption_sqm_month",
+            "moscow_median_sqm_per_month",
+            "class_moscow_median_sqm_month",
+        )
+        status_text = str(rank.get("status") or "").casefold()
+        status_kind = (
+            "running" if ("реализац" in status_text or status_text == "running")
+            else "planned"
+        )
+
+        missing_reasons: dict[str, str] = {}
+        if local_absorption is None or moscow_absorption is None:
+            if rank.get("surrounding_sales_units_per_month") is not None:
+                missing_reasons["absorption"] = (
+                    "Есть только ДДУ/мес.; issue #485 запрещает подменять ими м²/мес. "
+                    "Нужны локальная медиана м²/мес. и медиана Москвы по классу."
+                )
+            else:
+                missing_reasons["absorption"] = (
+                    "Нет локальной медианы и медианы Москвы по классу в м²/мес."
+                )
+        if burden_pct is None:
+            missing_reasons["burden"] = (
+                str(control.get("reason") or "")
+                or "Не собрана полная денежная нагрузка КРТ и ordinary CAPEX."
+            )
+
+        rating = krt_investment_score.score(
+            status_kind=status_kind,
+            llcr=llcr,
+            market_rub_sqm=rank.get("surrounding_price_rub_sqm"),
+            target_rub_sqm=price_target_rub_sqm,
+            local_sqm_month=local_absorption,
+            benchmark_sqm_month=moscow_absorption,
+            burden_pct=burden_pct,
+            burden_mln=burden_mln,
+            ordinary_capex_mln=ordinary_capex_mln,
+            housing_gfa_sqm=housing_gfa_sqm,
+            entry_capacity_mln=entry_capacity_mln,
+            sources={
+                "llcr": llcr_source,
+                "price": "production market environment",
+                "absorption": "market report: comparable projects + Moscow class median",
+                "burden": burden_source,
+            },
+            missing_reasons=missing_reasons,
+        )
+        return {
+            "rating": rating,
+            "rank_source": {
+                "slug": rank.get("slug"),
+                "computed_at": rank.get("computed_at"),
+                "engine_version": rank.get("engine_version"),
+                "old_rank_score_ignored": True,
+                "legacy_ddu_month_ignored": rank.get("surrounding_sales_units_per_month"),
+            },
+            "control_case": {
+                "available": bool(control.get("available")),
+                "reason": str(control.get("reason") or ""),
+                "baseline": control.get("baseline") or {},
+                "entry_capacity": control.get("entry_capacity") or {},
+                "ordinary_capex_mln": control.get("ordinary_capex_mln"),
+                "burden_pct": control.get("burden_pct"),
+                "cost_stack": {
+                    key: (control.get("cost_stack") or {}).get(key)
+                    for key in (
+                        "cadastral_buyout_mln", "cadastral_complete",
+                        "cadastral_unknown_count", "moscow_cadastral_excluded_mln",
+                        "demolition_mln", "social_mln", "resettlement_mln",
+                        "total_known_mln", "housing_gfa_sqm", "rub_per_housing_sqm",
+                    )
+                },
+            },
         }
 
     @app.get("/auctions/krt-prototype/nagatino/prod-parcels", include_in_schema=False)
