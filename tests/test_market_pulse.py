@@ -456,3 +456,22 @@ def test_project_dates_fall_back_to_the_live_project_page(tmp_path: Path) -> Non
     assert got["sales_start"] == "2026-08-01"
     assert got["commissioning"] == "2028-12-01"
     assert got["sources"]["commissioning"] == "pulse_project_page"
+
+
+def test_project_dates_aggregate_all_buildings_and_split_quarter(tmp_path: Path) -> None:
+    client = PulseClient(tmp_path, login="l", password="p")
+    client._projects = [PulseProject(7, "Дом", 55.7, 37.5)]
+    client._post_json = lambda path, payload: {  # type: ignore[assignment]
+        "buildings": [
+            {"sales_start_date": "2026-08-01", "planned_commissioning": "2027-12-31"},
+            {"sales_start_date": "2026-06-15",
+             "commissioning_year": 2028, "commissioning_quarter": 2},
+        ]
+    }
+    client._cookie = lambda name: "cookie"  # type: ignore[assignment]
+    client._open = lambda *args, **kwargs: (_ for _ in ()).throw(  # type: ignore[assignment]
+        AssertionError("API already returned both project dates")
+    )
+    got = client.project_dates(7)
+    assert got["sales_start"] == "2026-06-15"
+    assert got["commissioning"] == "2028-06-01"
