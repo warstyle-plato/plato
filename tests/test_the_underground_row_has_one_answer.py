@@ -37,6 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import main_legacy as core  # noqa: E402
 
+import page_blocks  # noqa: E402
 from page_blocks import function, page_const  # noqa: E402
 
 STORAGE_SQM = 6000.0
@@ -68,39 +69,27 @@ BRANCHES = {
 }
 
 
-def _page_stand(tmp_path: Path) -> Path:
-    """Настоящие функции страницы, а не их пересказ."""
-    stand = tmp_path / "underground.js"
-    stand.write_text("\n".join((
-        page_const("PARKING_2118"),
-        "const num=v=>String(v);",
-        "const inputs=JSON.parse(process.argv[2]);",
-        "let tep=JSON.parse(process.argv[3]);",
-        function("getGlavapuUnderground"),
-        function("normativeUnderground"),
-        function("parkingRequirement"),
-        function("undergroundAreaPerSpace"),
-        function("repairParkingFromGlavapu"),
-        "repairParkingFromGlavapu();",
-        "console.log(JSON.stringify(tep.underground_parking));",
-    )), encoding="utf-8")
-    return stand
-
-
 @pytest.mark.parametrize("case", sorted(BRANCHES))
-def test_the_page_and_the_engine_say_the_same(case: str, tmp_path: Path) -> None:
-    """Один пример — один ответ, на каждой ветке порядка."""
-    if not shutil_which("node"):
-        pytest.skip("node недоступен — страницу не погонять")
+def test_the_page_and_the_engine_say_the_same(case: str) -> None:
+    """Один пример — один ответ, на каждой ветке порядка.
+
+    Куски страницы стенд добирает САМ: перечисленные руками, они отстают от
+    неё — в `repairParkingFromGlavapu` появился признак типа проекта, и все
+    пять примеров упали на «isNonResidential is not defined», то есть на
+    неполноте стенда, а не на том, что он проверяет.
+    """
     inputs = copy.deepcopy(core.DEFAULT_INPUTS)
     inputs.update(BRANCHES[case])
     tep = _tep(STORAGE_SQM)
-    stand = _page_stand(tmp_path)
-    done = subprocess.run(
-        ["node", str(stand), json.dumps(inputs, default=str), json.dumps(tep, default=str)],
-        capture_output=True, text=True, check=False)
-    assert done.returncode == 0, done.stderr[:800]
-    page = json.loads(done.stdout)
+    prelude = (
+        "const num=v=>String(v);\n"
+        f"const inputs={json.dumps(inputs, default=str)};\n"
+        f"let tep={json.dumps(tep, default=str)};\n"
+    )
+    tail = ("repairParkingFromGlavapu();\n"
+            "console.log(JSON.stringify(tep.underground_parking));\n")
+    out, _ = page_blocks.run(prelude, tail)
+    page = json.loads(out)
     engine = _row(inputs, tep)
     assert round(float(page["units"]), 1) == round(engine["units"], 1), case
     assert abs(float(page["gns"]) - engine["gns"]) < 0.2, (case, page["gns"], engine["gns"])
