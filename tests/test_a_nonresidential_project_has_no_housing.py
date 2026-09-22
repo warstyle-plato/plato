@@ -749,9 +749,13 @@ PROBE_DIALOG = """() => {
   const box = () => document.getElementById('projectKindDialog');
   const shown = () => getComputedStyle(box()).display;
   const before = shown();
+  inputs.site_area_ha=0.546;
+  inputs.site_density_sqm_per_ha=35000;
   applyProjectKind('nonresidential');
   const opened = shown();
-  const text = document.getElementById('projectKindDialogBody').innerText.replace(/\\s+/g,' ');
+  const body = document.getElementById('projectKindDialogBody');
+  const text = body.innerText.replace(/\\s+/g,' ');
+  const targetButtons=[...body.querySelectorAll('button')].map(b => b.textContent.trim());
   closeProjectKindDialog();
   const closed = shown();
   const note = [...document.querySelectorAll('.note')]
@@ -763,7 +767,7 @@ PROBE_DIALOG = """() => {
   const reopened = shown();
   closeProjectKindDialog();
   return {before: before, opened: opened, closed: closed, reopened: reopened,
-          text: text, note: note};
+          text: text, note: note, targetButtons: targetButtons};
 }"""
 
 
@@ -813,6 +817,18 @@ def test_the_switch_opens_the_window(dialog) -> None:
     assert dialog["opened"] == "flex", "переключение не показало окно"
     assert dialog["closed"] == "none"
     assert dialog["reopened"] == "flex", "плашка не открывает то же окно"
+
+
+def test_the_switch_window_asks_where_to_put_the_tep(dialog) -> None:
+    """Назначение нежилого потенциала выбирается сразу при переключении типа.
+
+    Человека не отправляют на вкладку ТЭП ради второй кнопки после того, как
+    он уже выбрал нежилой проект на «Экономике».
+    """
+    text = dialog["text"].replace("\u00a0", " ")
+    assert "Куда положить ТЭП нежилого проекта?" in text, text
+    assert dialog["targetButtons"] == [name for _, name in _density_targets()]
+    assert "кнопкой «Рассчитать ТЭП" not in text
 
 
 def test_the_window_names_what_was_turned_off(dialog) -> None:
