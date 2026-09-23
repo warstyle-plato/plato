@@ -1092,14 +1092,17 @@ def install(app: FastAPI) -> None:
             control = await run_in_threadpool(
                 krt_investment_score.nagatino_live_example, core)
             if control.get("available"):
-                base = control.get("baseline") or {}
+                # nagatino_live_example is a CONTROL CASE from #485, not a
+                # second production project. It may fill the burden
+                # numerator/denominator while the generic burden pipeline is
+                # being completed, but it must never replace the LLCR or entry
+                # capacity of the actual project already calculated by
+                # DevelopAid. Replacing it produced 0.984x while the same
+                # project/report showed 1.231x.
                 stack = control.get("cost_stack") or {}
-                entry = control.get("entry_capacity") or {}
-                llcr = base.get("project_llcr_x", llcr)
                 burden_pct = control.get("burden_pct")
                 burden_mln = stack.get("total_known_mln")
                 ordinary_capex_mln = control.get("ordinary_capex_mln")
-                entry_capacity_mln = entry.get("max_krt_right_price_mln", entry_capacity_mln)
 
         status_kind = str(project.get("status_kind") or "").strip().lower()
         if not status_kind:
@@ -1348,14 +1351,12 @@ def install(app: FastAPI) -> None:
         housing_gfa_sqm = rank.get("housing_gfa_sqm")
 
         if control.get("available"):
-            baseline = control.get("baseline") or {}
             stack = control.get("cost_stack") or {}
-            entry = control.get("entry_capacity") or {}
-            llcr = baseline.get("project_llcr_x")
+            # The #485 control case must not replace LLCR/entry capacity of
+            # the real project already returned by production screening.
             burden_pct = control.get("burden_pct")
             burden_mln = stack.get("total_known_mln")
             ordinary_capex_mln = control.get("ordinary_capex_mln")
-            entry_capacity_mln = entry.get("max_krt_right_price_mln")
             housing_gfa_sqm = stack.get("housing_gfa_sqm") or housing_gfa_sqm
 
         local_absorption = rank.get("local_absorption_sqm_month")

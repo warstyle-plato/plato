@@ -164,6 +164,7 @@ function renderEntry(p,rank){
  else if(op.taken){title='Вход закрыт / площадка занята';if(op.operator)facts.push('Оператор: '+op.operator);if(op.agreement)facts.push('Есть упоминание заключённого договора КРТ');if(op.selling.length)facts.push('Есть текущие продажи на связанной площадке');}
  else facts.push('Живой лот и подтверждённый оператор не найдены в сохранённых данных.');
  $('entry').innerHTML='<div class="statusline">'+esc(title)+'</div><div class="notice '+(op.taken?'bad':live?'':'warn')+'">'+esc(facts.join(' · '))+'</div>'
+  +(live&&live.url?'<div class="actionbar"><a class="primary" target="_blank" rel="noopener" href="'+esc(live.url)+'">Открыть лот торгов</a></div>':'')
   +(op.developers.length?'<div class="metric"><span>Названный застройщик</span><b>'+esc(op.developers.join(', '))+'</b></div>':'');
 }
 function deadlineText(req){return (req.deadlines||[]).slice(0,2).map(x=>x.quote||x.label||x.text||String(x)).filter(Boolean).join(' · ')}
@@ -199,12 +200,10 @@ function renderEconomics(rank,report,rating){
  $('marketPrice').textContent=fmt(price);$('marketPace').textContent=fmt(pace,1);
  const screening=(report&&report.screening)||rank.screening||{},m=screening.metrics||{};
  const modelLlcr=num(m.project_llcr_x??rank.project_llcr_x),ratedLlcr=num((((rating||{}).components||{}).llcr||{}).value);
- const llcrLabel=(ratedLlcr!==null&&modelLlcr!==null&&Math.abs(ratedLlcr-modelLlcr)>.005)
-  ?'<div class="metric"><span>LLCR модели до полной нагрузки #485</span><b>'+fmt(modelLlcr,3)+'x</b></div><div class="metric"><span>LLCR рейтинга #485 · с учтённой нагрузкой</span><b>'+fmt(ratedLlcr,3)+'x</b></div>'
-  :'<div class="metric"><span>LLCR</span><b>'+fmt(ratedLlcr??modelLlcr,3)+'x</b></div>';
+ const llcrLabel='<div class="metric"><span>LLCR проекта</span><b>'+fmt(modelLlcr??ratedLlcr,3)+'x</b></div>';
  let html='<div class="two"><div class="bucket"><h3>Рынок 3 км</h3><div class="metric"><span>Цена окружения</span><b>'+fmt(price)+' ₽/м²</b></div><div class="metric"><span>Темп</span><b>'+fmt(pace,1)+' ДДУ/мес.</b></div><div class="metric"><span>Сегмент</span><b>'+esc(rank.segment||market.recommended_segment||'—')+'</b></div><div class="metric"><span>Аналоги</span><b>'+fmt(peers.length)+'</b></div></div>'
   +'<div class="bucket"><h3>Экономика DevelopAid</h3>'+llcrLabel+'<div class="metric"><span>Маржа</span><b>'+fmt(m.margin_pct??rank.margin_pct,1)+'%</b></div><div class="metric"><span>Потолок входа</span><b>'+fmt(rank.entry_capacity_mln,1)+' млн ₽</b></div><div class="metric"><span>Потолок / продаваемый м²</span><b>'+fmt(rank.entry_capacity_rub_per_sqm)+' ₽/м²</b></div></div></div>';
- if(peers.length)html+='<details><summary>Сопоставимые проекты — '+peers.length+'</summary><div class="detailsbody" style="overflow:auto"><table><thead><tr><th>Проект</th><th>Расстояние</th><th>Цена</th><th>Продажи</th><th>Остаток</th></tr></thead><tbody>'+peers.slice(0,12).map(x=>'<tr><td>'+esc(x.name||x.address||'—')+'</td><td>'+fmt(x.distance_km,1)+' км</td><td class="num">'+fmt(x.price_per_sqm)+' ₽/м²</td><td class="num">'+fmt(x.units_per_month,1)+'</td><td class="num">'+fmt(x.remaining_units)+'</td></tr>').join('')+'</tbody></table></div></details>';
+ if(peers.length)html+='<div style="margin-top:12px"><div class="statusline" style="font-size:14px">ЖК окружения из Пульса продаж</div><div class="source">Проекты, на которых основаны цена и поглощение рынка в радиусе 3 км.</div><div style="overflow:auto;margin-top:7px"><table><thead><tr><th>ЖК</th><th>Расстояние</th><th>Цена</th><th>м²/мес.</th><th>ДДУ/мес.</th><th>Остаток</th></tr></thead><tbody>'+peers.slice(0,12).map(x=>'<tr><td><b>'+esc(x.name||x.address||'—')+'</b><div class="source">'+esc(x.developer||x.builder||'')+'</div></td><td>'+fmt(x.distance_km,1)+' км</td><td class="num">'+fmt(x.price_per_sqm)+' ₽/м²</td><td class="num">'+fmt(x.area_per_month,1)+'</td><td class="num">'+fmt(x.units_per_month,1)+'</td><td class="num">'+fmt(x.remaining_units)+'</td></tr>').join('')+'</tbody></table></div></div>';
  if(screening&&screening.available===false)html+='<div class="notice warn">'+esc(screening.reason||'Модель не собрана')+'</div>';
  $('economics').innerHTML=html;
 }
@@ -228,7 +227,18 @@ function renderScore(sc){
  if(!sc){$('scoreKpi').textContent='—';$('score').innerHTML='<div class="notice">Breakdown #485 пока не рассчитан.</div>';return}
  $('scoreKpi').textContent=sc.display_score===null||sc.display_score===undefined?'—':fmt(sc.display_score);
  const C=sc.components||{},order=['llcr','price','absorption','burden'];
- $('score').innerHTML='<div class="scorebig">'+(sc.display_score===null||sc.display_score===undefined?'—':fmt(sc.display_score))+'/100<small>'+esc(sc.reason||'инвестиционный рейтинг')+'</small></div><div class="source">Покрытие '+fmt(sc.coverage_pct)+'%</div><div class="components">'+order.map(k=>{const x=C[k]||{};return '<div class="component"><b>'+(x.score===null||x.score===undefined?'—':fmt(x.score,1))+'</b><span>'+esc(x.name||k)+'</span><div class="source">'+esc(ratingInput(k,x))+'</div><div class="source">'+esc(x.score===null||x.score===undefined?(x.missing_reason||'нет данных'):(x.formula||''))+'</div></div>'}).join('')+'</div>';
+ const m=sc.methodology||{};
+ $('score').innerHTML='<div class="scorebig">'+(sc.display_score===null||sc.display_score===undefined?'—':fmt(sc.display_score))+'/100<small>'+esc(sc.reason||'инвестиционный рейтинг')+'</small></div><div class="source">Покрытие '+fmt(sc.coverage_pct)+'%</div><div class="components">'+order.map(k=>{const x=C[k]||{};return '<div class="component"><b>'+(x.score===null||x.score===undefined?'—':fmt(x.score,1))+'</b><span>'+esc(x.name||k)+'</span><div class="source">'+esc(ratingInput(k,x))+'</div><div class="source">'+esc(x.score===null||x.score===undefined?(x.missing_reason||'нет данных'):(x.formula||''))+'</div></div>'}).join('')+'</div>'
+  +'<div class="actionbar" style="margin-top:10px"><a target="_blank" rel="noopener" href="https://github.com/warstyle-plato/plato/issues/485">Методика рейтинга #485</a></div>'
+  +'<details><summary>Границы и алгоритм расчёта</summary><div class="detailsbody">'
+  +'<div class="metric"><span>Итог</span><b>(LLCR + цена + поглощение + нагрузка) / 4</b></div>'
+  +'<div class="metric"><span>LLCR</span><b>1,00→0 · 1,10→25 · 1,20→75 · 1,30+→100</b></div>'
+  +'<div class="metric"><span>Цена / ориентир</span><b>70%→0 · 85%→50 · 100%+→100</b></div>'
+  +'<div class="metric"><span>Поглощение / Москва</span><b>50%→0 · 70%→25 · 85%→50 · 100%→75 · 110%→90 · 120%+→100</b></div>'
+  +'<div class="metric"><span>Нагрузка / ordinary CAPEX</span><b>0%→100 · 5%→90 · 10%→70 · 15%→45 · 20%→25 · 30%+→0</b></div>'
+  +'<div class="source">Между точками — линейная интерполяция. Missing-компонент не считается нулём: итоговый рейтинг отсутствует, coverage показывает полноту.</div>'
+  +(sc.arithmetic?'<div class="notice"><b>Этот объект:</b> '+esc(sc.arithmetic)+'</div>':'')
+  +'</div></details>';
  if(window.parent&&window.parent!==window){
   window.parent.postMessage({
    type:'developaid-krt-rating',slug:SLUG,
