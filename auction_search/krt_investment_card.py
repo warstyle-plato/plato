@@ -218,6 +218,12 @@ function renderScore(sc){
  $('scoreKpi').textContent=sc.display_score===null||sc.display_score===undefined?'—':fmt(sc.display_score);
  const C=sc.components||{},order=['llcr','price','absorption','burden'];
  $('score').innerHTML='<div class="scorebig">'+(sc.display_score===null||sc.display_score===undefined?'—':fmt(sc.display_score))+'/100<small>'+esc(sc.reason||'инвестиционный рейтинг')+'</small></div><div class="source">Покрытие '+fmt(sc.coverage_pct)+'%</div><div class="components">'+order.map(k=>{const x=C[k]||{};return '<div class="component"><b>'+(x.score===null||x.score===undefined?'—':fmt(x.score,1))+'</b><span>'+esc(x.name||k)+'</span><div class="source">'+esc(x.score===null||x.score===undefined?(x.missing_reason||'нет данных'):(x.formula||''))+'</div></div>'}).join('')+'</div>';
+ if(window.parent&&window.parent!==window){
+  window.parent.postMessage({
+   type:'developaid-krt-rating',slug:SLUG,
+   rating:{score:sc.score,display_score:sc.display_score,coverage_pct:sc.coverage_pct,rankable:sc.rankable,reason:sc.reason,missing:sc.missing||[],components:sc.components||{}}
+  },location.origin);
+ }
 }
 let MAP={point:null,parcels:null,market:false,lands:true,objects:true};const MERC=20037508.342789244;
 function drawMap(){
