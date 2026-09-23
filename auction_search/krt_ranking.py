@@ -520,6 +520,15 @@ _REMEMBERED_FACTS = (
     "burden_pct",
     "burden_mln",
     "ordinary_capex_mln",
+    "burden_pipeline_version",
+    "burden_checked_at",
+    "burden_pending",
+    "burden_retry_after_seconds",
+    "burden_complete",
+    "burden_reason",
+    "burden_components",
+    "burden_llcr_x",
+    "burden_entry_capacity_mln",
 )
 
 

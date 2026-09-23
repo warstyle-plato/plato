@@ -1132,6 +1132,15 @@ def install(app: FastAPI) -> None:
         burden_mln = row.get("burden_mln")
         ordinary_capex_mln = row.get("ordinary_capex_mln")
         entry_capacity_mln = row.get("entry_capacity_mln")
+        # Фоновый generic burden уже пересчитал baseline LLCR с известной
+        # нагрузкой. Карточка не должна возвращаться к старому LLCR «до
+        # обязательств», иначе один и тот же рейтинг показывает два исходных
+        # числа в таблице и в расшифровке.
+        if row.get("burden_complete"):
+            if row.get("burden_llcr_x") is not None:
+                llcr = row.get("burden_llcr_x")
+            if row.get("burden_entry_capacity_mln") is not None:
+                entry_capacity_mln = row.get("burden_entry_capacity_mln")
 
         # У раннего сигнала известна отдельная оценка изъятия, но это НЕ весь
         # денежный стек КРТ. Не превращаем частичное число в 100% coverage:
@@ -2436,6 +2445,34 @@ def install(app: FastAPI) -> None:
                     burden_mln = early_burden
                     burden_pct = 100.0 * early_burden / float(ordinary_capex_mln)
 
+        burden_state: dict[str, Any] = {}
+        if not project.get("early_unpublished"):
+            try:
+                burden_state = krt_investment_score.generic_project_burden(
+                    core, project, screening)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Generic KRT burden failed slug=%s", slug)
+                burden_state = {
+                    "available": False,
+                    "pending": False,
+                    "checked_at": int(time.time()),
+                    "retry_after_seconds": 24 * 60 * 60,
+                    "reason": f"{type(exc).__name__}: {exc}",
+                }
+            # Частичный ЕГРН/неоценённая обязанность не превращаются в старый
+            # сохранённый burden: новая попытка либо собрала всё, либо компонент
+            # снова unknown.
+            burden_pct = None
+            burden_mln = None
+            if burden_state.get("available"):
+                burden_pct = burden_state.get("burden_pct")
+                burden_mln = burden_state.get("burden_mln")
+                ordinary_capex_mln = burden_state.get("ordinary_capex_mln")
+                if burden_state.get("project_llcr_x") is not None:
+                    llcr = burden_state.get("project_llcr_x")
+                if burden_state.get("entry_capacity_mln") is not None:
+                    entry_capacity_mln = burden_state.get("entry_capacity_mln")
+
         # Нагатино остаётся контрольным кейсом только для денежной нагрузки.
         # LLCR и потолок здесь не подменяются контрольной моделью.
         text = " ".join(str(project.get(k) or "") for k in ("name", "address", "district"))
@@ -2454,6 +2491,17 @@ def install(app: FastAPI) -> None:
                 burden_pct = control.get("burden_pct")
                 burden_mln = stack.get("total_known_mln")
                 ordinary_capex_mln = control.get("ordinary_capex_mln")
+                burden_state = {
+                    "available": True,
+                    "pending": False,
+                    "checked_at": int(time.time()),
+                    "retry_after_seconds": 24 * 60 * 60,
+                    "burden_mln": burden_mln,
+                    "burden_pct": burden_pct,
+                    "ordinary_capex_mln": ordinary_capex_mln,
+                    "components": stack,
+                    "reason": "",
+                }
 
         missing_reasons: dict[str, str] = {}
         if local_absorption is None or benchmark_absorption is None:
@@ -2468,7 +2516,8 @@ def install(app: FastAPI) -> None:
                 )
             else:
                 missing_reasons["burden"] = (
-                    "Полная денежная нагрузка КРТ пока не собрана; неизвестное не равно нулю."
+                    str((burden_state or {}).get("reason") or "")
+                    or "Полная денежная нагрузка КРТ пока не собрана; неизвестное не равно нулю."
                 )
 
         rating = krt_investment_score.score(
@@ -2523,6 +2572,26 @@ def install(app: FastAPI) -> None:
             "burden_pct": burden_pct,
             "burden_mln": burden_mln,
             "ordinary_capex_mln": ordinary_capex_mln,
+            "burden_pipeline_version": krt_investment_score.BURDEN_PIPELINE_VERSION,
+            "burden_checked_at": int(
+                (burden_state or {}).get("checked_at") or time.time()),
+            "burden_pending": bool((burden_state or {}).get("pending")),
+            "burden_retry_after_seconds": int(
+                (burden_state or {}).get("retry_after_seconds") or 24 * 60 * 60),
+            "burden_complete": bool(
+                (burden_state or {}).get("available") or burden_pct is not None),
+            "burden_reason": str((burden_state or {}).get("reason") or ""),
+            "burden_components": (burden_state or {}).get("components") or {},
+            "burden_llcr_x": (
+                llcr if ((burden_state or {}).get("available") and llcr is not None)
+                else None
+            ),
+            "burden_entry_capacity_mln": (
+                entry_capacity_mln
+                if ((burden_state or {}).get("available")
+                    and entry_capacity_mln is not None)
+                else None
+            ),
         }
 
     def _rating_needs_recount(project: dict[str, Any], row: dict[str, Any]) -> bool:
@@ -2531,6 +2600,17 @@ def install(app: FastAPI) -> None:
         target = krt_ranking.rating_target(
             krt_investment_score.DEFAULT_PRICE_TARGET_RUB_SQM)
         version = str(krt_investment_score.methodology().get("version") or "")
+        if int((row or {}).get("burden_pipeline_version") or 0) < int(
+                krt_investment_score.BURDEN_PIPELINE_VERSION):
+            return True
+        checked = float((row or {}).get("burden_checked_at") or 0)
+        retry_after = float(
+            (row or {}).get("burden_retry_after_seconds") or 24 * 60 * 60)
+        if (
+            ((row or {}).get("burden_pending") or (row or {}).get("burden_complete") is False)
+            and time.time() - checked >= max(60.0, retry_after)
+        ):
+            return True
         rating = (row or {}).get("investment_rating") or {}
         if not rating:
             return True
@@ -2556,9 +2636,15 @@ def install(app: FastAPI) -> None:
             answer["market_report"] = _market_digest(report)
         return answer
 
-    def _fill_cached_investment_ratings() -> int:
-        """Положить готовые рейтинги в общий серверный каталог."""
+    def _fill_cached_investment_ratings(*, limit: int = 8) -> int:
+        """Положить готовые рейтинги в общий серверный каталог.
+
+        Generic burden может дочитывать ЕГРН. Поэтому за один минутный такт
+        берём ограниченную пачку: каталог прогрессирует фоном, а не устраивает
+        сотни сетевых запросов одним залпом.
+        """
         changed = 0
+        processed = 0
         for project in _krt_all_sites():
             if _krt_status_kind(project.get("status")) == "running":
                 continue
@@ -2573,6 +2659,9 @@ def install(app: FastAPI) -> None:
                 continue
             krt_ranking.remember(slug, fields)
             changed += 1
+            processed += 1
+            if processed >= max(1, int(limit)):
+                break
         return changed
 
     def _rating_background_loop() -> None:
