@@ -88,8 +88,8 @@ def load(lot: int, *, root: Path | None = None) -> dict[str, Any]:
     age = time.time() - float((data or {}).get("saved_at") or 0)
     with _LOCK:
         working = int(lot) in _WORKING
-    return {**(data if isinstance(data, dict) else {}), "working": working,
-            "stale": bool(data) and age > ANALYSIS_TTL}
+    return {**(data if isinstance(data, dict) else {}), "cached": bool(data),
+            "working": working, "stale": bool(data) and age > ANALYSIS_TTL}
 
 
 def _save(lot: int, data: dict[str, Any], *, root: Path | None = None) -> None:
@@ -471,7 +471,7 @@ def summaries(core: Any, *, root: Path | None = None, force: bool = False) -> li
     rows=[]
     for defn in LOT_DEFS:
         cached=load(defn["lot"],root=root)
-        if force or not cached or cached.get("stale"):
+        if force or not cached.get("cached") or cached.get("stale"):
             refresh(defn,core,root=root,force=force)
             cached=load(defn["lot"],root=root)
         rating=cached.get("rating") or {}
