@@ -1,11 +1,11 @@
-"""Investment score v2 for the KRT laboratory.
+"""KRT investment rating defined by GitHub issue #485.
 
-The lab score has one fixed methodology.  A user may change only the price
-target; changing it changes the price component, not the financial model.
+This module is the single backend source of truth for the preview rating.
+There are four independent 0..100 components with equal weight.  The UI must
+render the returned breakdown and must not duplicate these formulas in JS.
 
-The module also contains one auditable live case (Nagatino) assembled from the
-committed auction notice + EGRN extracts + the existing DevelopAid engine.
-It deliberately does not create a second financial model.
+The live Nagatino case reuses the existing authoritative DevelopAid financial
+engine / goal-seek; this module does not implement a second financial model.
 """
 
 from __future__ import annotations
@@ -16,12 +16,19 @@ from pathlib import Path
 from typing import Any
 
 TARGET_LLCR = 1.20
-LLCR_STOPS = [(1.00, 0.0), (1.10, 10.0), (1.20, 30.0), (1.30, 40.0)]
-PRICE_RATIO_STOPS = [(0.70, 0.0), (0.80, 5.0), (0.90, 12.0), (1.00, 20.0)]
-ABSORPTION_RATIO_STOPS = [(0.50, 0.0), (0.75, 5.0), (1.00, 10.0),
-                          (1.25, 15.0), (1.50, 20.0)]
-BURDEN_PCT_STOPS = [(0.0, 20.0), (5.0, 18.0), (10.0, 14.0),
-                    (15.0, 9.0), (20.0, 5.0), (25.0, 2.0), (30.0, 0.0)]
+DEFAULT_PRICE_TARGET_RUB_SQM = 600_000.0
+
+LLCR_STOPS = [(1.00, 0.0), (1.10, 25.0), (1.20, 75.0), (1.30, 100.0)]
+PRICE_RATIO_STOPS = [(0.70, 0.0), (0.85, 50.0), (1.00, 100.0)]
+ABSORPTION_RATIO_STOPS = [
+    (0.50, 0.0), (0.70, 25.0), (0.85, 50.0),
+    (1.00, 75.0), (1.10, 90.0), (1.20, 100.0),
+]
+BURDEN_PCT_STOPS = [
+    (0.0, 100.0), (5.0, 90.0), (10.0, 70.0),
+    (15.0, 45.0), (20.0, 25.0), (30.0, 0.0),
+]
+
 ROOT = Path(__file__).resolve().parent.parent
 NAGATINO_PRESET = ROOT / "presets" / "КРТ_Нагатино.json"
 
@@ -36,6 +43,7 @@ def _number(value: Any) -> float | None:
 
 
 def _piece(value: Any, stops: list[tuple[float, float]]) -> float | None:
+    """Linear interpolation with endpoint clamping."""
     x = _number(value)
     if x is None:
         return None
@@ -48,100 +56,229 @@ def _piece(value: Any, stops: list[tuple[float, float]]) -> float | None:
     return float(stops[-1][1])
 
 
-def llcr_points(value: Any) -> float | None:
-    """0..40. Below 1.00 the project has no LLCR points."""
+def llcr_score(value: Any) -> float | None:
     return _piece(value, LLCR_STOPS)
 
 
-def price_points(market_rub_sqm: Any, target_rub_sqm: Any) -> float | None:
-    """0..20 relative to the user's current price target."""
+def price_score(market_rub_sqm: Any, target_rub_sqm: Any) -> float | None:
     market = _number(market_rub_sqm)
     target = _number(target_rub_sqm)
     if market is None or target is None or target <= 0:
         return None
-    ratio = market / target
-    return _piece(ratio, PRICE_RATIO_STOPS)
+    return _piece(market / target, PRICE_RATIO_STOPS)
 
 
-def absorption_points(local_sqm_month: Any, benchmark_sqm_month: Any) -> float | None:
-    """0..20. Both measures are square metres/month, never DDU/month."""
+def absorption_score(local_sqm_month: Any, benchmark_sqm_month: Any) -> float | None:
     local = _number(local_sqm_month)
     benchmark = _number(benchmark_sqm_month)
     if local is None or benchmark is None or benchmark <= 0:
         return None
-    ratio = local / benchmark
-    return _piece(ratio, ABSORPTION_RATIO_STOPS)
+    return _piece(local / benchmark, ABSORPTION_RATIO_STOPS)
 
 
-def burden_points(burden_pct: Any) -> float | None:
-    """0..20. KRT burden as a share of ordinary project CAPEX."""
-    value = _number(burden_pct)
-    if value is None:
-        return None
-    return _piece(value, BURDEN_PCT_STOPS)
+def burden_score(burden_pct: Any) -> float | None:
+    return _piece(burden_pct, BURDEN_PCT_STOPS)
 
+
+def _component(
+    *,
+    name: str,
+    value: Any,
+    benchmark: Any,
+    ratio: Any,
+    score_value: Any,
+    unit: str,
+    scale: list[tuple[float, float]],
+    formula: str,
+    missing_reason: str = "",
+    source: str = "",
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    score_num = _number(score_value)
+    result = {
+        "name": name,
+        "value": _number(value),
+        "benchmark": _number(benchmark),
+        "ratio": _number(ratio),
+        "score": None if score_num is None else round(score_num, 2),
+        "unit": unit,
+        "scale": [[x, y] for x, y in scale],
+        "formula": formula,
+        "missing_reason": "" if score_num is not None else (missing_reason or "нет исходных данных"),
+        "source": source,
+    }
+    if extra:
+        result.update(extra)
+    return result
 
 
 def methodology() -> dict[str, Any]:
-    """Machine-readable methodology used by the page and tests."""
+    """Machine-readable methodology from issue #485."""
     return {
-        "version": "krt-investment-score-v2",
+        "version": "issue-485-krt-rating-4x100-v1",
+        "issue": 485,
+        "price_target_default_rub_sqm": DEFAULT_PRICE_TARGET_RUB_SQM,
         "target_llcr_x": TARGET_LLCR,
-        "weights": {"llcr": 40, "price": 20, "absorption": 20, "burden": 20},
+        "weights": None,
+        "components_equal": True,
+        "formula": "rating = (llcr_score + price_score + absorption_score + burden_score) / 4",
+        "linear_interpolation": "y = y1 + (x-x1)/(x2-x1) * (y2-y1)",
         "llcr_stops": LLCR_STOPS,
         "price_ratio_stops": PRICE_RATIO_STOPS,
         "absorption_ratio_stops": ABSORPTION_RATIO_STOPS,
         "burden_pct_stops": BURDEN_PCT_STOPS,
         "rules": {
             "running": "visible_unscored",
-            "missing": "no_total_score",
-            "buyout": "non_moscow_cadastral_value",
+            "missing": "no_total_score_no_renormalisation",
+            "coverage_step_pct": 25,
+            "buyout": "non_moscow_cadastral_value_land_and_buildings_no_duplicates",
             "moscow_property": "zero_buyout",
+            "missing_cadastral_value": "unknown_not_zero",
             "absorption_unit": "sqm_per_month",
+            "entry_capacity": "shown_separately_not_in_rating",
+            "only_user_scenario_parameter": "price_target_rub_sqm",
+        },
+        "explanations": {
+            "coverage": (
+                "Каждый известный блок даёт 25 п.п. coverage. При 25/50/75% "
+                "известные оценки показываются, но итоговый рейтинг остаётся «—»: "
+                "три известных блока нельзя перенормировать в 100."
+            ),
+            "running": (
+                "Площадка со статусом «В реализации» остаётся в каталоге и фильтрах, "
+                "но инвестиционный рейтинг ей не присваивается: «— · В реализации · без балла»."
+            ),
+            "entry_capacity": (
+                "Предельная цена права при LLCR=1.20 — отдельный денежный показатель. "
+                "Она показывается рядом с LLCR, но не входит ни в один из четырёх score."
+            ),
+            "burden": (
+                "Нагрузка включает кадастровый выкуп частных ЗУ и ОКС без дублей, "
+                "снос, оценённое расселение, обязательные соцобъекты, сети и иные "
+                "денежно оценённые обязательства. Собственность Москвы = 0 ₽; "
+                "неизвестная кадастровая стоимость остаётся unknown, а не нулём."
+            ),
+        },
+        "examples": {
+            "llcr": "LLCR 1.24: 75 + (1.24-1.20)/(1.30-1.20)×(100-75) = 85",
+            "price": "570000 / 600000 = 95%; 50 + (0.95-0.85)/(1.00-0.85)×50 = 83.3",
+            "absorption": "8300 / 6640 = 125% медианы → 100",
+            "burden": "4300 / 43000 = 10% → 70",
         },
     }
+
 
 def score(
     *,
     status_kind: str,
     llcr: Any,
     market_rub_sqm: Any,
-    target_rub_sqm: Any,
+    target_rub_sqm: Any = DEFAULT_PRICE_TARGET_RUB_SQM,
     local_sqm_month: Any = None,
     benchmark_sqm_month: Any = None,
     burden_pct: Any = None,
+    burden_mln: Any = None,
+    ordinary_capex_mln: Any = None,
+    housing_gfa_sqm: Any = None,
+    entry_capacity_mln: Any = None,
+    sources: dict[str, str] | None = None,
+    missing_reasons: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Return fixed 40/20/20/20 score.
+    """Four equal 0..100 components; any missing component makes total null."""
+    sources = sources or {}
+    missing_reasons = missing_reasons or {}
 
-    Running KRT stays visible but is never scored.  Missing facts are not
-    renormalised: a 0..100 score exists only when all four components exist.
-    """
+    llcr_n = _number(llcr)
+    market = _number(market_rub_sqm)
+    target = _number(target_rub_sqm)
+    local = _number(local_sqm_month)
+    benchmark = _number(benchmark_sqm_month)
+    burden = _number(burden_pct)
+    burden_m = _number(burden_mln)
+    ordinary = _number(ordinary_capex_mln)
+    housing = _number(housing_gfa_sqm)
+
+    llcr_s = llcr_score(llcr_n)
+    price_ratio = market / target if market is not None and target and target > 0 else None
+    price_s = price_score(market, target)
+    abs_ratio = local / benchmark if local is not None and benchmark and benchmark > 0 else None
+    abs_s = absorption_score(local, benchmark)
+    burden_s = burden_score(burden)
+    burden_per_housing = (
+        burden_m * 1_000_000.0 / housing
+        if burden_m is not None and housing and housing > 0 else None
+    )
+
     components = {
-        "llcr": {"points": llcr_points(llcr), "max": 40.0},
-        "price": {"points": price_points(market_rub_sqm, target_rub_sqm), "max": 20.0},
-        "absorption": {
-            "points": absorption_points(local_sqm_month, benchmark_sqm_month), "max": 20.0
-        },
-        "burden": {"points": burden_points(burden_pct), "max": 20.0},
+        "llcr": _component(
+            name="LLCR", value=llcr_n, benchmark=TARGET_LLCR, ratio=None,
+            score_value=llcr_s, unit="x", scale=LLCR_STOPS,
+            formula="LLCR authoritative DevelopAid engine, цена права КРТ = 0; линейная интерполяция по шкале",
+            missing_reason=missing_reasons.get("llcr", "authoritative LLCR не получен"),
+            source=sources.get("llcr", "authoritative DevelopAid engine"),
+            extra={"entry_capacity_mln": _number(entry_capacity_mln),
+                   "entry_capacity_note": "Предельная цена права при LLCR=1.20; в рейтинг не входит."},
+        ),
+        "price": _component(
+            name="Цена рынка", value=market, benchmark=target, ratio=price_ratio,
+            score_value=price_s, unit="₽/м²", scale=PRICE_RATIO_STOPS,
+            formula="цена окружения / ценовой ориентир; линейная интерполяция по доле",
+            missing_reason=missing_reasons.get("price", "цена окружения не получена"),
+            source=sources.get("price", "рыночное окружение"),
+        ),
+        "absorption": _component(
+            name="Поглощение", value=local, benchmark=benchmark, ratio=abs_ratio,
+            score_value=abs_s, unit="м²/мес.", scale=ABSORPTION_RATIO_STOPS,
+            formula="локальная медиана м²/мес. / медиана Москвы по соответствующему классу",
+            missing_reason=missing_reasons.get(
+                "absorption", "нет пары локальная медиана и медиана Москвы в м²/мес."),
+            source=sources.get("absorption", "рыночный отчёт"),
+        ),
+        "burden": _component(
+            name="Нагрузка КРТ", value=burden_m, benchmark=ordinary,
+            ratio=(burden / 100.0 if burden is not None else None),
+            score_value=burden_s, unit="млн ₽", scale=BURDEN_PCT_STOPS,
+            formula="дополнительная нагрузка КРТ / ordinary CAPEX аналогичного проекта",
+            missing_reason=missing_reasons.get(
+                "burden", "денежная нагрузка КРТ или ordinary CAPEX не определены полностью"),
+            source=sources.get("burden", "ЕГРН + обязательства КРТ + authoritative model"),
+            extra={
+                "burden_pct": burden,
+                "rub_per_housing_sqm": None if burden_per_housing is None else round(burden_per_housing),
+            },
+        ),
     }
-    known = sum(v["max"] for v in components.values() if v["points"] is not None)
-    coverage = known
-    missing = [k for k, v in components.items() if v["points"] is None]
-    rankable = str(status_kind or "") != "running"
+
+    known = [item for item in components.values() if item["score"] is not None]
+    coverage = len(known) * 25
+    missing = [key for key, item in components.items() if item["score"] is None]
+    rankable = str(status_kind or "").strip().lower() != "running"
     total = None
     reason = ""
+    arithmetic = ""
     if not rankable:
-        reason = "В реализации — балл не присваивается"
+        reason = "В реализации · без балла"
     elif missing:
         reason = "Не хватает данных: " + ", ".join(missing)
     else:
-        total = round(sum(float(v["points"]) for v in components.values()), 1)
+        values = [float(components[k]["score"]) for k in ("llcr", "price", "absorption", "burden")]
+        total = sum(values) / 4.0
+        arithmetic = (
+            f"({values[0]:.1f} + {values[1]:.1f} + {values[2]:.1f} + {values[3]:.1f}) "
+            f"/ 4 = {total:.1f} → {round(total):.0f}"
+        )
+
     return {
-        "score": total,
-        "coverage_pct": round(coverage, 1),
+        "score": None if total is None else round(total, 2),
+        "display_score": None if total is None else round(total),
+        "coverage_pct": coverage,
         "rankable": rankable,
         "reason": reason,
+        "missing": missing,
         "components": components,
+        "arithmetic": arithmetic,
+        "price_target_rub_sqm": target,
+        "methodology": methodology(),
     }
 
 
@@ -322,13 +459,13 @@ def nagatino_live_example(core: Any) -> dict[str, Any]:
             "available": True,
             "baseline": {
                 "project_llcr_x": _number(metrics.get("llcr_x")),
-                "llcr_points": llcr_points(metrics.get("llcr_x")),
+                "llcr_score": llcr_score(metrics.get("llcr_x")),
                 "purchase_right_mln": 0.0,
                 "cadastral_buyout_mln": cadastral_mln,
             },
             "ordinary_capex_mln": None if ordinary_capex is None else round(ordinary_capex, 1),
             "burden_pct": None if burden_pct is None else round(burden_pct, 2),
-            "burden_points": burden_points(burden_pct),
+            "burden_score": burden_score(burden_pct),
             "entry_capacity": {
                 "total_acquisition_capacity_mln": None if total_capacity is None else round(total_capacity, 1),
                 "max_krt_right_price_mln": None if right_capacity is None else round(max(0.0, right_capacity), 1),
