@@ -2713,7 +2713,8 @@ async function startKrtInvestmentRating(){
  const target=600000;
  // Массово считаем все площадки, куда теоретически ещё можно входить.
  // Статус «В реализации» остаётся справочно и в рейтинг-прогон не входит.
- const projects=(state.krt||[]).filter(x=>krtStatusKind(x)!=='running'&&x.slug);
+ const source=KRT_EARLY_ONLY?(state.krtFiltered||[]):(state.krt||[]);
+ const projects=source.filter(x=>krtStatusKind(x)!=='running'&&x.slug);
  const total=projects.length;
  if(!total){
   if(box){box.style.display='';box.className='notice';box.textContent='Нет площадок вне реализации для расчёта рейтинга.'}
@@ -2747,12 +2748,15 @@ async function startKrtInvestmentRating(){
    }
   }
  };
- await Promise.all(Array.from({length:Math.min(4,total)},()=>worker()));
+ // Ранние проекты на первом рейтинге сами запускают рынок + модель.
+ // Их считаем последовательно: четыре параллельных геокодирования упирались
+ // в лимит OSM и оставляли всю пачку с прочерками.
+ await Promise.all(Array.from({length:KRT_EARLY_ONLY?1:Math.min(4,total)},()=>worker()));
  renderKrt();
  await loadKrtRanking();
  if(box){
   box.style.display='';box.className=failed?'notice warn':'notice';
-  box.textContent='Рейтинг для площадок вне реализации: '+finals+' итоговых, '+partial+' неполных'+(failed?', '+failed+' ошибок':'')+'. Ориентир '+new Intl.NumberFormat('ru-RU').format(target)+' ₽/м².';
+  box.textContent=(KRT_EARLY_ONLY?'Ранние проекты: ':'Рейтинг для площадок вне реализации: ')+finals+' итоговых, '+partial+' неполных'+(failed?', '+failed+' ошибок':'')+'. Ориентир '+new Intl.NumberFormat('ru-RU').format(target)+' ₽/м².';
  }
  b.disabled=false;b.textContent='Обновить рейтинги';
 }
