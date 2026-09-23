@@ -16,7 +16,14 @@ AUCTIONS_PAGE = r'''<!doctype html>
    кнопка, системный шрифт (замечание владельца, 23.08.2026). */
 :root{--bg:#f2f2ef;--panel:#fff;--text:#171717;--muted:#6b6b6b;--line:#dedede;--soft:#f7f7f5;--accent:#111;--ok:#1f6b3b;--warn:#8a5a00;--bad:#a33}
 
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}.shell{max-width:1540px;margin:0 auto;background:var(--panel);min-height:100vh}.brandbar{padding:22px 34px 0;background:var(--panel)}.brandbar img{display:block;width:min(360px,58vw);height:auto;mix-blend-mode:multiply}.brandline{height:8px;background:#050505;margin-top:12px}.head{display:flex;justify-content:space-between;gap:18px;align-items:flex-end;flex-wrap:wrap;padding:18px 34px 12px;border-bottom:1px solid var(--line)}.head h1{font-size:22px;font-weight:620;letter-spacing:.01em;line-height:1.1;margin:0}.head p{margin:5px 0 0;color:var(--muted);font-size:13px}.content{padding:24px 34px 40px}.badge{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:0;padding:6px 10px;font-size:12px;background:var(--panel)}.filters{display:grid;grid-template-columns:repeat(3,minmax(0,1fr)) minmax(0,1.5fr) auto;gap:9px;margin-bottom:14px}.filters.wide{grid-template-columns:minmax(0,2fr) repeat(4,minmax(0,1fr))}select,input,button{min-width:0;max-width:100%;text-overflow:ellipsis;min-height:42px;border:1px solid var(--line);border-radius:0;background:var(--panel);color:var(--text);padding:0 11px;font:inherit}button{cursor:pointer;font-weight:700;border-color:#111}button.primary{background:var(--accent);color:#fff}button:disabled{opacity:.45;cursor:not-allowed}.filter-actions{grid-column:1/-1;display:flex;gap:9px;justify-content:flex-end;flex-wrap:wrap}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin-bottom:14px}.stat{border:1px solid var(--line);border-radius:0;background:var(--panel);padding:12px}.stat b{font-size:22px;display:block}.stat span{font-size:12px;color:var(--muted)}.coverage{display:none}.layout{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(360px,.8fr);gap:12px}.tablewrap,.side{border:1px solid var(--line);background:var(--panel);border-radius:0;overflow:hidden}.tablecol{min-width:0;display:flex;flex-direction:column}.scrolltop{overflow-x:auto;overflow-y:hidden;height:14px;margin-bottom:-1px;border:1px solid var(--line);border-bottom:0;background:var(--panel)}.scrolltop>div{height:1px}.scrolltop[hidden]{display:none}.tablewrap{overflow:auto;min-height:420px}table{border-collapse:collapse;width:100%;min-width:900px}table.wide{min-width:980px;table-layout:fixed}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}.shell{max-width:1540px;margin:0 auto;background:var(--panel);min-height:100vh}.brandbar{padding:22px 34px 0;background:var(--panel)}.brandbar img{display:block;width:min(360px,58vw);height:auto;mix-blend-mode:multiply}.brandline{height:8px;background:#050505;margin-top:12px}.head{display:flex;justify-content:space-between;gap:18px;align-items:flex-end;flex-wrap:wrap;padding:18px 34px 12px;border-bottom:1px solid var(--line)}.head h1{font-size:22px;font-weight:620;letter-spacing:.01em;line-height:1.1;margin:0}.head p{margin:5px 0 0;color:var(--muted);font-size:13px}.content{padding:24px 34px 40px}.badge{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:0;padding:6px 10px;font-size:12px;background:var(--panel)}.filters{display:grid;grid-template-columns:repeat(3,minmax(0,1fr)) minmax(0,1.5fr) auto;gap:9px;margin-bottom:14px}.filters.wide{grid-template-columns:minmax(0,2fr) repeat(4,minmax(0,1fr))}select,input,button{min-width:0;max-width:100%;text-overflow:ellipsis;min-height:42px;border:1px solid var(--line);border-radius:0;background:var(--panel);color:var(--text);padding:0 11px;font:inherit}button{cursor:pointer;font-weight:700;border-color:#111}button.primary{background:var(--accent);color:#fff}button:disabled{opacity:.45;cursor:not-allowed}.filter-actions{grid-column:1/-1;display:flex;gap:9px;justify-content:flex-end;flex-wrap:wrap}
+.krt-actions{align-items:center;justify-content:space-between;border-top:1px solid var(--line);padding-top:10px}
+.krt-actions-left,.krt-actions-right{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.krt-actions button{min-height:42px;padding:0 14px}
+#krtRatingBtn{background:#111;color:#fff;border-color:#111}
+.krt-action-note{font-size:11px;color:var(--muted);max-width:290px;line-height:1.3}
+@media(max-width:950px){.krt-actions{justify-content:flex-start}.krt-actions-left,.krt-actions-right{width:100%}}
+@media(max-width:640px){.krt-actions-left,.krt-actions-right{display:grid;grid-template-columns:1fr;width:100%}.krt-actions button{width:100%}.krt-action-note{max-width:none}}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin-bottom:14px}.stat{border:1px solid var(--line);border-radius:0;background:var(--panel);padding:12px}.stat b{font-size:22px;display:block}.stat span{font-size:12px;color:var(--muted)}.coverage{display:none}.layout{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(360px,.8fr);gap:12px}.tablewrap,.side{border:1px solid var(--line);background:var(--panel);border-radius:0;overflow:hidden}.tablecol{min-width:0;display:flex;flex-direction:column}.scrolltop{overflow-x:auto;overflow-y:hidden;height:14px;margin-bottom:-1px;border:1px solid var(--line);border-bottom:0;background:var(--panel)}.scrolltop>div{height:1px}.scrolltop[hidden]{display:none}.tablewrap{overflow:auto;min-height:420px}table{border-collapse:collapse;width:100%;min-width:900px}table.wide{min-width:980px;table-layout:fixed}
 #krtTableWrap th,#krtTableWrap td{padding:8px 7px}
 #krtTableWrap th{font-size:10px;letter-spacing:.025em}
 #krtTableWrap .lotname{max-width:none;line-height:1.25;margin:0}
@@ -99,7 +106,18 @@ __DEVELOPAID_CONTOUR__
              title="Мелкие площадки отсекаются по объёму жилья. Площадка, у которой объём жилья не указан, при непустом пороге прячется — она не «маленькая», она неизвестная, и сколько таких скрыто, написано под таблицей.">
       <input id="krtMinPrice" type="number" min="0" step="10000" placeholder="Цена окружения от, ₽/м²"
              title="Текущая оценка цены за м² окружения из того же рыночного отчёта / Пульса продаж. Введите порог, например 600000, чтобы оставить площадки с оценкой строго выше него. Нет данных — отдельный ответ, такие строки скрываются только при включённом пороге.">
-      <div class="filter-actions"><button id="krtRefresh" class="primary">Обновить каталог</button><button id="krtRankBtn">Оценить отобранные моделью</button><input id="krtRatingTarget" type="number" min="1" step="10000" value="600000" title="Ценовой ориентир для массового расчёта рейтинга, ₽/м²" style="width:138px"><button id="krtRatingBtn" title="Считает рейтинг всем площадкам каталога, кроме статуса «В реализации». Использует уже сохранённые рынок и модель; неполные площадки останутся с неполным покрытием.">Посчитать рейтинг планируемым</button><button id="krtPressBtn" title="Читает публикации и каналы по ВСЕМ планируемым площадкам и по площадкам с проектом решения: до пяти поисковых запросов на площадку, по каждому её адресу. Уже спрошенные пропускаются — занятая площадка свободной не станет. У площадок в реализации застройщика называет сама карточка города, поиска они не требуют. У проекта решения без адреса в заголовке спрашивать нечего: такие названы числом, а не пропущены молча.">Прочитать публикации по планируемым</button><button id="krtExport">Выгрузить Excel</button></div>
+      <div class="filter-actions krt-actions">
+        <div class="krt-actions-left">
+          <button id="krtRefresh" class="primary">Обновить каталог</button>
+          <button id="krtRankBtn">Оценить моделью</button>
+          <button id="krtPressBtn" title="Читает публикации и каналы по всем планируемым площадкам и площадкам с проектом решения.">Прочитать публикации</button>
+          <button id="krtExport">Выгрузить Excel</button>
+        </div>
+        <div class="krt-actions-right">
+          <div class="krt-action-note">Общий рейтинг каталога считается по базовому ориентиру 600 000 ₽/м² и виден всем пользователям.</div>
+          <button id="krtRatingBtn" title="Пересчитывает общий рейтинг всем площадкам вне статуса «В реализации». Результат сохраняется на сервере и виден всем пользователям.">Обновить рейтинги</button>
+        </div>
+      </div>
     </div>
     <div class="stats"><div class="stat"><b id="krtCount">—</b><span id="krtCountNote">проектов</span></div><div class="stat"><b id="krtArea">—</b><span>га территории</span></div><div class="stat"><b id="krtHousing">—</b><span>м² жилья</span></div><div class="stat"><b id="krtGfa">—</b><span>м² всего</span></div></div>
     <details class="fold" id="krtMapFold"><summary id="krtMapSummary">Карта КРТ Москвы — официальные границы площадок</summary>
@@ -2686,7 +2704,7 @@ async function loadKrtRanking(){
 }
 async function startKrtInvestmentRating(){
  const b=$('krtRatingBtn'),box=$('krtRankStatus');
- const target=Math.max(1,Number(($('krtRatingTarget')||{}).value||600000));
+ const target=600000;
  // Массово считаем все площадки, куда теоретически ещё можно входить.
  // Статус «В реализации» остаётся справочно и в рейтинг-прогон не входит.
  const projects=(state.krt||[]).filter(x=>krtStatusKind(x)!=='running'&&x.slug);
@@ -2730,7 +2748,7 @@ async function startKrtInvestmentRating(){
   box.style.display='';box.className=failed?'notice warn':'notice';
   box.textContent='Рейтинг для площадок вне реализации: '+finals+' итоговых, '+partial+' неполных'+(failed?', '+failed+' ошибок':'')+'. Ориентир '+new Intl.NumberFormat('ru-RU').format(target)+' ₽/м².';
  }
- b.disabled=false;b.textContent='Посчитать рейтинг планируемым';
+ b.disabled=false;b.textContent='Обновить рейтинги';
 }
 async function startKrtRanking(onlyStale){
  const b=$('krtRankBtn');b.disabled=true;b.innerHTML='<span class="spinner"></span>Запускаю';
