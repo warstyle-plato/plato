@@ -2178,17 +2178,32 @@ def install(app: FastAPI) -> None:
         if core is None or market is None:
             return ({"available": False,
                      "reason": "Финансовый движок DevelopAid не подключён"}, {})
-        market_query = f"krt:{project.get('slug')}"
+        # Ранней площадки ещё НЕТ в krt_registry. Отдавать рынку
+        # служебный slug вида "krt:early:2" нельзя: resolve_subject не знает
+        # его как КРТ и отправляет буквальную строку в геокодер. Так весь ранний
+        # список получал "место не найдено"/429 и рейтинг оставался прочерком.
+        if project.get("early_unpublished"):
+            address = str(project.get("address") or project.get("name") or "").strip()
+            market_query = (
+                address if address.casefold().startswith("москва")
+                else "Москва, " + address
+            )
+        else:
+            market_query = f"krt:{project.get('slug')}"
         try:
             report = market.build_report(
                 market_query, radius_km=3.0, peers_limit=12,
                 city_reference=False, include_project_totals=True,
             )
-        except SubjectNotFound:
-            fallback = " ".join(str(project.get(key) or "").strip()
-                                for key in ("name", "district") if project.get(key))
+        except (SubjectNotFound, GeocodingError):
+            # Для официальной площадки это запасной путь, если конкретный
+            # воркер ещё не знает slug. Для ранней — повторяем очищенное имя
+            # без служебного идентификатора.
+            fallback = str(project.get("address") or project.get("name") or "").strip()
             if not fallback:
                 raise
+            if not fallback.casefold().startswith("москва"):
+                fallback = "Москва, " + fallback
             time.sleep(1.1)
             try:
                 report = market.build_report(
