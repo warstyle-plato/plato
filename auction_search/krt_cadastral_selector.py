@@ -391,6 +391,25 @@ def _geojson_rings_merc(geometry: Any) -> list[list[list[float]]]:
     return rings
 
 
+def _owner_from_options(opt: dict[str, Any]) -> dict[str, str]:
+    """Classify only ownership explicitly exposed by the cadastral feature."""
+    parts=[]
+    for key,value in (opt or {}).items():
+        low=str(key).lower()
+        if any(token in low for token in ("owner","right","ownership","собствен","право")):
+            parts.append(str(value or ""))
+    text=" ".join(parts).lower().replace("ё","е")
+    if ("город москва" in text or "москвы" in text) and ("собствен" in text or "прав" in text):
+        return {"group":"moscow","name":"город Москва","basis":"НСПД: тип/право собственности"}
+    if "российск" in text and "федера" in text:
+        return {"group":"federal","name":"Российская Федерация","basis":"НСПД: тип/право собственности"}
+    if "частн" in text:
+        return {"group":"private","name":"","basis":"НСПД: частная собственность"}
+    if "муницип" in text:
+        return {"group":"other_public","name":"муниципальная собственность","basis":"НСПД: тип собственности"}
+    return {}
+
+
 def _feature_row(feature: Any, *, kind: str, layer: str) -> dict[str, Any]:
     props = getattr(feature, "properties", None)
     options = getattr(props, "options", None)
@@ -428,7 +447,7 @@ def _feature_row(feature: Any, *, kind: str, layer: str) -> dict[str, Any]:
         "address": address,
         "area_sqm": _num(area),
         "cadastral_value_rub": _num(value),
-        "owner": {},
+        "owner": _owner_from_options(opt),
         "rings_merc": _geojson_rings_merc(getattr(feature, "geometry", None)),
         "source": "НСПД · пространственный поиск по контуру КРТ",
     }
@@ -476,9 +495,15 @@ def discover_nspd(*, krt_rings, max_features: int = 2500) -> dict[str, Any]:
     except TypeError:
         client = Nspd()
     try:
+        layer_kinds = {
+            "Здания": "building",
+            "Сооружения": "structure",
+            "Объекты незавершенного строительства": "unfinished",
+            "Единые недвижимые комплексы": "complex",
+        }
         for title, kind, bucket in [
             *[(title, "land", lands) for title in NSPD_LAND_LAYERS],
-            *[(title, "building", objects) for title in NSPD_OCS_LAYERS],
+            *[(title, layer_kinds.get(title, "building"), objects) for title in NSPD_OCS_LAYERS],
         ]:
             count = 0
             problem = ""
