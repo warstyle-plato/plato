@@ -592,3 +592,113 @@ def refresh_spatial_in_background(
         daemon=True,
     ).start()
     return True
+
+
+
+def merge_official(spatial: dict[str, Any], territory: dict[str, Any]) -> dict[str, Any]:
+    """Merge NSPD spatial candidates with official/EGRN territory rows by KN.
+
+    NSPD is the completeness layer (what intersects the contour). Official KRT
+    documents and EGRN records are the evidence layer for fate, ownership and
+    verified cadastral attributes. Neither source silently deletes the other.
+    """
+    def merge_rows(spatial_rows, official_rows):
+        by_cn: dict[str, dict[str, Any]] = {}
+        anonymous: list[dict[str, Any]] = []
+
+        for row in spatial_rows or []:
+            item = dict(row or {})
+            cn = str(item.get("cadastral_number") or "").strip()
+            if cn:
+                by_cn[cn] = item
+            else:
+                anonymous.append(item)
+
+        for row in official_rows or []:
+            official = dict(row or {})
+            cn = str(official.get("cadastral_number") or "").strip()
+            if not cn:
+                anonymous.append(official)
+                continue
+            base = dict(by_cn.get(cn) or {})
+            # Geometry from spatial discovery is useful when the official row
+            # has not yet received a contour. Evidence fields from the official
+            # row otherwise win.
+            discovered_rings = list(base.get("rings_merc") or [])
+            merged = {**base, **official}
+            if not merged.get("rings_merc") and discovered_rings:
+                merged["rings_merc"] = discovered_rings
+            merged["spatially_discovered"] = cn in by_cn
+            merged["officially_listed"] = True
+            by_cn[cn] = merged
+
+        for cn, row in by_cn.items():
+            row.setdefault("spatially_discovered", True)
+            row.setdefault("officially_listed", False)
+
+        return list(by_cn.values()) + anonymous
+
+    return {
+        **dict(spatial or {}),
+        "lands": merge_rows(
+            (spatial or {}).get("lands") or [],
+            (territory or {}).get("lands") or [],
+        ),
+        "objects": merge_rows(
+            (spatial or {}).get("objects") or [],
+            (territory or {}).get("objects") or [],
+        ),
+    }
+
+
+def spatial_selection(
+    slug: str,
+    *,
+    krt_rings,
+    territory: dict[str, Any] | None = None,
+    root: Path | None = None,
+    refresh: bool = True,
+) -> dict[str, Any]:
+    """Return current KRT cadastral selection and trigger refresh if needed."""
+    cached = load_spatial(slug, root=root)
+    started = False
+    if refresh and krt_rings:
+        started = refresh_spatial_in_background(
+            slug, krt_rings=krt_rings, root=root, force=False
+        )
+        if started:
+            cached["reading"] = True
+
+    if not cached.get("cached"):
+        return {
+            "available": False,
+            "cached": False,
+            "reading": bool(cached.get("reading") or started),
+            "problem": cached.get("problem") or (
+                "пространственный обход НСПД ещё не завершён"
+                if (cached.get("reading") or started)
+                else "пространственный обход НСПД ещё не запускался"
+            ),
+            "counts": {"lands": 0, "objects": 0},
+            "selection": None,
+        }
+
+    merged = merge_official(cached, territory or {})
+    chosen = select(
+        krt_rings=krt_rings,
+        lands=merged.get("lands") or [],
+        objects=merged.get("objects") or [],
+    )
+    return {
+        "available": True,
+        "cached": True,
+        "stale": bool(cached.get("stale")),
+        "reading": bool(cached.get("reading") or started),
+        "complete_scan": bool(cached.get("complete")),
+        "partial_scan": bool(cached.get("partial")),
+        "problem": str(cached.get("problem") or ""),
+        "source": cached.get("source") or "",
+        "layers": cached.get("layers") or {},
+        "counts": cached.get("counts") or {},
+        "selection": chosen,
+    }
