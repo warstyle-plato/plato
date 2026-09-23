@@ -2339,6 +2339,16 @@ function krtNameFlags(x){
  const stage=krtStage(x), status=krtStatusWord(x), bits=[];
  if(x&&x.early_unpublished)bits.push('<span class="tag new" title="'+esc(x.source_label||'Предварительный источник')+'">не опубликован</span>');
  if(status)bits.push('<span class="tag" title="Статус города">'+esc(status)+'</span>');
+ // Дата проекта решения нужна прямо в списке: одинаково «Планируемыми»
+ // выглядят и свежий документ 2026 года, и площадка с решением нескольких
+ // летней давности. Поле уже приходит из сопоставления mos.ru и для строк
+ // без карточки, и для карточек, к которым решение привязано.
+ if(x&&x.draft_decision_at){
+  bits.push('<span class="tag" title="'+esc(
+    'Проект решения опубликован '+krtCityDay(x.draft_decision_at)
+    +(x.draft_decision_url?' · источник mos.ru':'')
+  )+'">решение '+esc(krtCityDay(x.draft_decision_at))+'</span>');
+ }
  if(stage.key==='taken'){
   bits.push('<span class="tag warn" title="'+esc((stage.why||[]).join('; '))+'">площадка занята</span>');
  }
