@@ -1166,6 +1166,8 @@ def install(app: FastAPI) -> None:
                 "investment_rating": stored_rating,
                 "investment_rating_version": str(
                     (rating.get("methodology") or {}).get("version") or ""),
+                "investment_rating_target_rub_sqm": price_target_rub_sqm,
+                "investment_rating_computed_at": int(time.time()),
                 "local_absorption_sqm_month": local_absorption,
                 "moscow_absorption_sqm_month": benchmark_absorption,
                 "investment_rating_segment": segment,
