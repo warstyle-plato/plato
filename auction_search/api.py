@@ -2932,6 +2932,16 @@ def install(app: FastAPI) -> None:
         # Отдельный ключ торгов действует только здесь: generic-кабинет его
         # не знает, поэтому /cabinet и финансовая модель им не открываются.
         if auction_view.authorised(request):
+            # Тот же принцип, что у middleware /auctions: ограниченный ключ
+            # читает готовое, но не превращает GET-параметр в команду
+            # обновления служебных данных.
+            for name in ("refresh", "force", "rebuild", "revoke"):
+                value = str(request.query_params.get(name) or "").strip().lower()
+                if value in ("1", "true", "yes", "on"):
+                    raise HTTPException(
+                        status_code=403,
+                        detail="Ограниченный ключ даёт только просмотр торгов и КРТ",
+                    )
             return
         if core is not None and hasattr(core, "_require_admin"):
             # Выгрузка называет живые компании с ИНН и кадастровой стоимостью:
