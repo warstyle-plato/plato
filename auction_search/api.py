@@ -2607,7 +2607,10 @@ def install(app: FastAPI) -> None:
         retry_after = float(
             (row or {}).get("burden_retry_after_seconds") or 24 * 60 * 60)
         if (
-            ((row or {}).get("burden_pending") or (row or {}).get("burden_complete") is False)
+            # False может не пережить очередную сборку model-row: исторический
+            # merge сохраняет только truthy remembered facts. Поэтому отсутствие
+            # True здесь тоже означает «полный burden ещё не подтверждён».
+            (row or {}).get("burden_complete") is not True
             and time.time() - checked >= max(60.0, retry_after)
         ):
             return True
