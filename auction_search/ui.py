@@ -189,6 +189,7 @@ __DEVELOPAID_LAND_MAP_KIT__
 const state={lots:[],filtered:[],families:[],openFamilies:new Set(),coverage:[],quality:{},selected:null,ingested:null,krt:[],krtFiltered:[],krtOkrugs:new Set(),krtModels:{},krtScreening:{},krtReports:{},krtRequirements:{},krtNew:0,krtNewDays:30,krtPolls:0,krtTimer:null,krtRank:{},krtRankProgress:null,krtRankTimer:null,krtPress:{},krtCards:{},krtTenderLinks:{},krtOrderBySite:{},krtTenders:{},krtOrders:[],krtOrphanLots:[],krtSort:{key:'name',dir:1},krtHidden:{small:0,unknown:0},krtPick:{stage:new Set(),entry:new Set(),renovation:new Set(),purpose:new Set()},egrnStore:null};
 const KRT_OKRUGS=['ЦАО','САО','СВАО','ВАО','ЮВАО','ЮАО','ЮЗАО','ЗАО','СЗАО','НАО','ТАО','ЗелАО'];
 const $=id=>document.getElementById(id);
+const KRT_EARLY_ONLY=new URLSearchParams(location.search).get('early')==='1';
 // Ноль и «цены нет» — разные вещи. Number(null) равен нулю, и лот без
 // опубликованной цены показывался бесплатным: у ГИС Торгов ценового поля
 // может не быть вовсе (9 карточек из 10 на живой выдаче 24.08.2026).
@@ -935,6 +936,7 @@ function renderKrtSnapshotNote(){
  if(!box)return;
  if(!st){box.textContent='';return}
  const bits=[];
+ if(KRT_EARLY_ONLY)bits.push('Ранние проекты: ещё не опубликованы городом; оцениваются тем же рынком, моделью и рейтингом, что планируемые КРТ');
  bits.push(st.at?`Снимок каталога: ${krtWhenExact(st.at)}`:'Снимок каталога ещё не снят');
  if(st.at&&st.ttl)bits.push(`обход раз в ${Math.round(st.ttl/3600)} ч`);
  if(!st.complete)bits.push('выдача дочитана не до конца');
@@ -1330,9 +1332,11 @@ function krtStatusCell(x){
  const label=esc(krtStatusWord(x)||'—');
  // Подсказка называет ТОТ источник, откуда взято слово: у площадки без
  // карточки статуса krt.mos.ru не существует, у неё есть только документ.
- const why=x&&x.no_card
-  ?'Стадия по документу: город опубликовал проект решения о КРТ для сбора мнений правообладателей — решения ещё нет. Карточки на krt.mos.ru у этой площадки нет. Занятость — в колонке «Шаг»'
-  :'Статус krt.mos.ru, де-юре: отвечает на «начата ли стройка», а не на «свободна ли площадка». Занятость — в колонке «Шаг»';
+ const why=x&&x.early_unpublished
+  ?'Ранний проект из предварительного списка владельца: город ещё не опубликовал его в каталоге КРТ. Для инвестиционной оценки обрабатывается как планируемая площадка.'
+  :(x&&x.no_card
+    ?'Стадия по документу: город опубликовал проект решения о КРТ для сбора мнений правообладателей — решения ещё нет. Карточки на krt.mos.ru у этой площадки нет. Занятость — в колонке «Шаг»'
+    :'Статус krt.mos.ru, де-юре: отвечает на «начата ли стройка», а не на «свободна ли площадка». Занятость — в колонке «Шаг»');
  return `<span class="tag" title="${esc(why)}">${label}</span>`;
 }
 function krtStageCell(x){
@@ -1816,6 +1820,7 @@ function krtRenovationKind(x){
 // Внутри оси — «или», между осями — «и». Одно правило на весь отбор: пока
 // условий было пять, каждое проверялось своей строкой, и спорить им было где.
 function krtFilterPass(x){
+ if(KRT_EARLY_ONLY&&!x.early_unpublished)return false;
  return KRT_FILTERS.every(axis=>{
   const chosen=state.krtPick[axis.key];
   if(!chosen||!chosen.size)return true;
@@ -2325,6 +2330,7 @@ function krtMarks(x){
 
 function krtNameFlags(x){
  const stage=krtStage(x), status=krtStatusWord(x), bits=[];
+ if(x&&x.early_unpublished)bits.push('<span class="tag new" title="'+esc(x.source_label||'Предварительный источник')+'">не опубликован</span>');
  if(status)bits.push('<span class="tag" title="Статус города">'+esc(status)+'</span>');
  if(stage.key==='taken'){
   bits.push('<span class="tag warn" title="'+esc((stage.why||[]).join('; '))+'">площадка занята</span>');
@@ -4250,6 +4256,7 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('krtPrototypeMod
 $('tabAuctions').onclick=()=>switchTab(false);$('tabKrt').onclick=()=>switchTab(true);$('krtRefresh').onclick=()=>loadKrt(true);$('krtRankBtn').onclick=startKrtRanking;$('krtRatingBtn').onclick=startKrtInvestmentRating;$('krtPressBtn').onclick=readKrtPress;$('krtSearch').oninput=filterKrt;bindKrtFilters();document.getElementById('krtMapFold')?.addEventListener('toggle',ev=>{if(ev.target.open)loadKrtMap()});$('krtMinHousing').oninput=filterKrt;$('krtMinPrice').oninput=filterKrt;document.querySelectorAll('th[data-sort]').forEach(th=>{th.style.cursor='pointer';th.title=(th.title?th.title+'. ':'')+'Нажмите, чтобы отсортировать';th.onclick=()=>krtSortBy(th.dataset.sort)});
 $('krtOkrugToggle').onclick=e=>{e.stopPropagation();const menu=$('krtOkrugMenu'),open=menu.classList.contains('hidden');closeKrtMenus();menu.classList.toggle('hidden',!open);$('krtOkrugToggle').setAttribute('aria-expanded',String(open))};$('krtOkrugMenu').onclick=e=>e.stopPropagation();$('krtOkrugClear').onclick=()=>{state.krtOkrugs.clear();$('krtOkrugOptions').querySelectorAll('input').forEach(x=>x.checked=false);updateKrtOkrugLabel();filterKrt()};document.addEventListener('click',closeKrtMenus);document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeKrtMenus();$('krtOkrugToggle').focus()}});
 loadKrtRanking();
+if(KRT_EARLY_ONLY) switchTab(true);
 // Ссылка из «Поделиться» открывает ту же территорию: получатель попадает на
 // разбор, а не на общий список, где ещё надо искать.
 (function openSharedKrt(){
