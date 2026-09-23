@@ -1017,11 +1017,13 @@ def install(app: FastAPI) -> None:
     @app.get("/auctions/krt/{slug}/investment-score", include_in_schema=False)
     async def auction_krt_investment_score(
         slug: str,
+        request: Request,
         price_target_rub_sqm: float | None = Query(
             default=None,
             ge=1,
             le=10_000_000,
         ),
+        ensure_model: bool = Query(default=False),
     ) -> dict[str, Any]:
         """Рейтинг #485 для любой площадки из уже сохранённых production-данных.
 
@@ -1043,15 +1045,22 @@ def install(app: FastAPI) -> None:
         stored = krt_ranking.report(slug) or {}
         screening = dict(stored.get("screening") or {})
 
-        # У ранних, ещё не опубликованных проектов нет ночного production-
-        # прогона по определению. Первая версия кнопки рейтинга лишь читала
-        # пустой кэш и поэтому гарантированно возвращала прочерк. Для этого
-        # источника рейтинг сам запускает тот же market + DevelopAid screening,
-        # что у планируемой площадки, а затем сохраняет общий результат.
-        if project.get("early_unpublished") and not screening:
-            fresh = await run_in_threadpool(_screen_one, project)
+        # При массовом расчёте рейтинг обязан достроить отсутствующие рынок
+        # и финансовую модель, а не просто прочитать пустой кэш. Тяжёлый путь
+        # защищён кабинетом; сохранённый результат после этого виден всем.
+        need_model = not screening.get("available")
+        if need_model and (ensure_model or project.get("early_unpublished")):
+            market_cabinet.require_cabinet(request)
+            try:
+                fresh, live_report = await run_in_threadpool(
+                    _market_model_only, project)
+            except (SubjectNotFound, GeocodingError, RemoteServiceError, ValueError) as exc:
+                fresh, live_report = {"available": False, "reason": str(exc)}, {}
             fresh_for_store = dict(fresh or {})
-            market_digest = fresh_for_store.pop("market_report", None)
+            market_digest = (
+                _market_digest(live_report) if live_report
+                else dict(fresh_for_store.pop("market_report", None) or {})
+            )
             await run_in_threadpool(
                 krt_ranking.save_failure_or_report,
                 slug,
