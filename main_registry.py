@@ -31,7 +31,7 @@ registry = install(_base)
 market_search = install_market_search(app)
 install_auction_search(app)
 install_krt_index_preview(app)
-install_krt_12_preview(app)
+install_krt_12_preview(app, core)
 # Свод источников себестоимости — страница `/statistics` и её API. Модуль
 # перенесён из ветки «Сводного чата» один в один: у числа не бывает двух жизней.
 install_statistics(app, core)
