@@ -357,7 +357,12 @@ def analyse(defn: dict[str, Any], core: Any, *, root: Path | None = None,
     # monetised incremental CAPEX; cadastral acquisition is added separately.
     modeled_incremental = None
     if finance.get("available") and ordinary is not None:
-        capex = _num((finance.get("metrics") or {}).get("capex_mln"))
+        # Screening CAPEX is the authoritative KRT programme at zero entry
+        # price.  Using the rerun with cadastral purchase here could count
+        # acquisition twice if the engine ever includes land in CAPEX.
+        capex = _num((screening.get("metrics") or {}).get("capex_mln"))
+        if capex is None:
+            capex = _num((finance.get("metrics") or {}).get("capex_mln"))
         if capex is not None:
             modeled_incremental = max(0.0, capex - ordinary)
     burden_mln = None
