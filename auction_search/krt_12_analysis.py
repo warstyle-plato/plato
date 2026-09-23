@@ -264,7 +264,7 @@ def _ordinary_capex(core: Any, finance: dict[str, Any]) -> float | None:
 
 
 def _fate_groups(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
-    groups = {"demolition":[],"demolition_or_reconstruction":[],"reconstruction":[],"preservation":[],"buyout":[],"other":[]}
+    groups = {"demolition":[],"demolition_or_reconstruction":[],"reconstruction":[],"preservation":[],"buyout":[],"unknown_owner":[],"other":[]}
     for row in rows:
         fate = str(row.get("fate") or row.get("action_label") or "").lower()
         if "demolition_or_reconstruction" in fate or ("снос" in fate and "рекон" in fate):
@@ -279,8 +279,17 @@ def _fate_groups(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
             key = "other"
         groups[key].append(row)
         owner = row.get("owner") or {}
-        if row.get("krt_state") == "inside" and str(owner.get("group") or "").lower() != "moscow":
-            groups["buyout"].append(row)
+        group = str(owner.get("group") or row.get("owner_group") or "").lower()
+        owner_name = str(owner.get("name") or row.get("owner_name") or "").strip()
+        if row.get("krt_state") == "inside":
+            if group == "moscow":
+                pass
+            elif group in ("federal","public","other_public"):
+                groups["other"].append(row)
+            elif owner_name or group in ("private","other","non_moscow","bryntsalov"):
+                groups["buyout"].append(row)
+            else:
+                groups["unknown_owner"].append(row)
     return groups
 
 
