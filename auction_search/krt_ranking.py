@@ -498,7 +498,21 @@ def keep_computed(
 # «Пересчитать сейчас» площадку приходилось читать заново — «так и не хранятся
 # данные о уже просчитанных проектах, что реновация, что занято» (владелец,
 # 03.09.2026). Пустота не затирает прочитанное; новые непустые факты — да.
-_REMEMBERED_FACTS = ("card_facts", "press_facts")
+_REMEMBERED_FACTS = (
+    "card_facts",
+    "press_facts",
+    # Инвестиционный рейтинг — общая серверная характеристика площадки, а не
+    # состояние конкретной вкладки. Массовый/ручной расчёт пишет его в общий
+    # ranking.json; последующий пересчёт рынка/модели не должен молча стирать
+    # его до тех пор, пока новый рейтинг не будет посчитан на свежих данных.
+    "investment_rating",
+    "investment_rating_version",
+    "investment_rating_target_rub_sqm",
+    "investment_rating_computed_at",
+    "local_absorption_sqm_month",
+    "moscow_absorption_sqm_month",
+    "investment_rating_segment",
+)
 
 
 def _with_remembered_facts(previous: dict[str, Any] | None,
