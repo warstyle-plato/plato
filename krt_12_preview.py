@@ -1,226 +1,91 @@
-"""Isolated 12-lot KRT comparison page from the user-supplied KRT.pdf.
-
-Route: /krt-12-preview
-This page is intentionally separate from the production KRT catalogue.  It is
-an audit/comparison surface for the twelve lots from the supplied comparison
-sheet.  Missing rating components stay missing: the page never manufactures a
-full 0..100 investment rating from partial source data.
-"""
+"""Isolated investment board for the twelve KRT auction lots."""
 from __future__ import annotations
 
+from fastapi import Query
 from fastapi.responses import HTMLResponse, JSONResponse
 
-DEFAULT_PRICE_TARGET_RUB_SQM = 600_000.0
-
-
-def price_score(market_rub_sqm, target_rub_sqm=DEFAULT_PRICE_TARGET_RUB_SQM):
-    try:
-        market = float(market_rub_sqm)
-        target = float(target_rub_sqm)
-    except (TypeError, ValueError):
-        return None
-    if target <= 0:
-        return None
-    ratio = market / target
-    stops = [(0.70, 0.0), (0.85, 50.0), (1.00, 100.0)]
-    if ratio <= stops[0][0]:
-        return 0.0
-    for (x1, y1), (x2, y2) in zip(stops, stops[1:]):
-        if ratio <= x2:
-            return y1 + (ratio - x1) / (x2 - x1) * (y2 - y1)
-    return 100.0
-
-
-LOTS = [
-    {
-        "lot": 2, "okrug": "САО", "name": "Дмитровское ш., влд. 60",
-        "area_ha": 4.10, "start_price_mln": 178.36, "seizure_mln": 3680.0,
-        "total_gfa_sqm": 94400, "housing_gfa_sqm": 94400, "nonres_gfa_sqm": 0,
-        "load_housing_rub_sqm": 40872.46, "load_total_rub_sqm": 40872.46,
-        "market_rub_sqm": 376832,
-        "note": "ЛОС + инфраструктурный договор. Ближайшие ориентиры около 375–377 тыс. ₽/м²; в записке проект имеет смысл только при ожидании 475–500 тыс. ₽/м².",
-    },
-    {
-        "lot": 6, "okrug": "СВАО", "name": "Алтуфьевское шоссе, проект 2, территория 1",
-        "area_ha": 11.19, "start_price_mln": 170.0, "seizure_mln": 4830.0,
-        "total_gfa_sqm": 219300, "housing_gfa_sqm": 146720, "nonres_gfa_sqm": 72580,
-        "load_housing_rub_sqm": 34078.52, "load_total_rub_sqm": 22799.82,
-        "market_rub_sqm": 486000,
-        "note": "Инфраструктурный договор, школа/ДОО на 825 мест, 5 000 м² помещений для городских нужд. В записке реальная нагрузка с учётом школы оценивается около 60–65 тыс. ₽/м² жилья или выше.",
-    },
-    {
-        "lot": 10, "okrug": "ЮАО", "name": "Шипиловский пр-д, влд. 55",
-        "area_ha": 6.61, "start_price_mln": 410.0, "seizure_mln": 1000.0,
-        "total_gfa_sqm": 55760, "housing_gfa_sqm": 0, "nonres_gfa_sqm": 55760,
-        "load_housing_rub_sqm": None, "load_total_rub_sqm": 25286.94,
-        "market_rub_sqm": None, "live_tender_start_mln": 4.11334042,
-        "note": "50 090 м² спортивный кластер + 5 670 м² ФОК с бассейном. В сравнительном файле отдельно отмечен текущий повторный аукцион со стартом около 4,11 млн ₽.",
-    },
-    {
-        "lot": 11, "okrug": "ВАО", "name": "ул. Рубцовско-Дворцовая, влд. 1/3",
-        "area_ha": 6.93, "start_price_mln": 114.29, "seizure_mln": 2040.0,
-        "total_gfa_sqm": 58020, "housing_gfa_sqm": 28350, "nonres_gfa_sqm": 29670,
-        "load_housing_rub_sqm": 75989.07, "load_total_rub_sqm": 37130.13,
-        "market_rub_sqm": 533154,
-        "note": "Инфраструктурный договор + реставрация 5 ОКН площадью 6 550 м². Ориентир Stone Сокольники — 533 154 ₽/м².",
-    },
-    {
-        "lot": 12, "okrug": "ЮАО", "name": "ул. Красного Маяка, влд. 16",
-        "area_ha": 13.56, "start_price_mln": 730.0, "seizure_mln": 4020.0,
-        "total_gfa_sqm": 241670, "housing_gfa_sqm": 194340, "nonres_gfa_sqm": 47330,
-        "load_housing_rub_sqm": 24441.70, "load_total_rub_sqm": 19654.90,
-        "market_rub_sqm": 380000,
-        "note": "7 территориально разрозненных зон. ОДЦ/ФОК, помещения для ВОИ и молочно-раздаточного пункта, перебазирование ГБУ. Рыночный ориентир около 380 тыс. ₽/м².",
-    },
-    {
-        "lot": 14, "okrug": "ЮАО", "name": "Харьковский пр-д, влд. 1–9",
-        "area_ha": 22.79, "start_price_mln": 2190.0, "seizure_mln": 2060.0,
-        "total_gfa_sqm": 441570, "housing_gfa_sqm": 201850, "nonres_gfa_sqm": 239720,
-        "load_housing_rub_sqm": 35843.81, "load_total_rub_sqm": 9624.75,
-        "market_rub_sqm": None,
-        "note": "Из 239 720 м² нежилой застройки 193 680 м² — административно-деловая функция. Инфраструктурный договор + перенос ВЛ в кабель.",
-    },
-    {
-        "lot": 16, "okrug": "ЮАО", "name": "МКАД, 26 км; ул. Липецкая, влд. 27",
-        "area_ha": 11.15, "start_price_mln": 4800.0, "seizure_mln": 100.0,
-        "total_gfa_sqm": 255270, "housing_gfa_sqm": 181560, "nonres_gfa_sqm": 73710,
-        "load_housing_rub_sqm": 20514.11, "load_total_rub_sqm": 19195.36,
-        "market_rub_sqm": None,
-        "note": "Эконом-класс; 16 410 м² реновации, перехватывающий паркинг на 300 м/м и подстанция медпомощи. В записке отдельно отмечена фактическая удалённость от м. Тютчевская.",
-    },
-    {
-        "lot": 18, "okrug": "ЮАО", "name": "Производственная зона Ленино",
-        "area_ha": 31.32, "start_price_mln": 5200.0, "seizure_mln": 6600.0,
-        "total_gfa_sqm": 504670, "housing_gfa_sqm": 381150, "nonres_gfa_sqm": 123520,
-        "load_housing_rub_sqm": 34106.02, "load_total_rub_sqm": 23381.62,
-        "market_rub_sqm": 390046,
-        "note": "35 170 м² реновации, 3 ДОУ, очистные, каток, тяговая подстанция метро, перебазирование ГБУ, ЦОД и инфраструктурный договор. Срок КРТ 8 лет.",
-    },
-    {
-        "lot": 21, "okrug": "ЮЗАО", "name": "ул. Архитектора Власова, влд. 59",
-        "area_ha": 3.66, "start_price_mln": 810.11, "seizure_mln": 83.22,
-        "total_gfa_sqm": 27915, "housing_gfa_sqm": 26260, "nonres_gfa_sqm": 1655,
-        "load_housing_rub_sqm": 34018.66, "load_total_rub_sqm": 32001.79,
-        "market_rub_sqm": 594548,
-        "note": "Инфраструктурный договор, 800 м² для ГБУ Жилищника, парк не менее 1,57 га, сокращение СЗЗ. Ориентир Secret Garden — 594 548 ₽/м².",
-    },
-    {
-        "lot": 28, "okrug": "ТиНАО", "name": "п. Знамя Октября, мкр. Родники, территория 1",
-        "area_ha": 14.49, "start_price_mln": 1120.0, "seizure_mln": 1360.0,
-        "total_gfa_sqm": 233430, "housing_gfa_sqm": 166880, "nonres_gfa_sqm": 66550,
-        "load_housing_rub_sqm": 14860.98, "load_total_rub_sqm": 10624.17,
-        "market_rub_sqm": None,
-        "note": "В сравнительном файле дана краткая оценка «нецелесообразно» без дополнительной детализации.",
-    },
-    {
-        "lot": 31, "okrug": "ЮАО", "name": "ул. Каспийская, влд. 22",
-        "area_ha": 1.10, "start_price_mln": 24.09, "seizure_mln": 676.16,
-        "total_gfa_sqm": 22890, "housing_gfa_sqm": 6890, "nonres_gfa_sqm": 16000,
-        "load_housing_rub_sqm": 101632.80, "load_total_rub_sqm": 30591.96,
-        "market_rub_sqm": 390046,
-        "note": "Всего около 6,9 тыс. м² жилья и 16 тыс. м² общественной функции. Метро Царицыно около 750 м, береговая линия; ориентир Кавказский бульвар 51 — 390 046 ₽/м².",
-    },
-    {
-        "lot": 42, "okrug": "ЮЗАО", "name": "Новоясеневский пр-кт, влд. 42, стр. 9",
-        "area_ha": 0.69, "start_price_mln": 4.36, "seizure_mln": 606.16,
-        "total_gfa_sqm": 10380, "housing_gfa_sqm": 0, "nonres_gfa_sqm": 10380,
-        "load_housing_rub_sqm": None, "load_total_rub_sqm": 58816.96,
-        "market_rub_sqm": None,
-        "note": "5 860 м² МФК со спортивным объектом + 4 060 м² торгово-бытовой комплекс. В записке рассматривается только как арендный бизнес.",
-    },
-]
-
-
-def _row(row: dict, target: float = DEFAULT_PRICE_TARGET_RUB_SQM) -> dict:
-    item = dict(row)
-    item["acquisition_mln"] = round(float(row["start_price_mln"]) + float(row["seizure_mln"]), 3)
-    item["price_target_rub_sqm"] = target
-    item["price_score"] = price_score(row.get("market_rub_sqm"), target)
-    item["coverage_pct"] = 25 if item["price_score"] is not None else 0
-    item["rating"] = None
-    item["rating_reason"] = (
-        "Экспресс-источник даёт цену рынка, но не authoritative LLCR, поглощение м²/мес. "
-        "и burden/ordinary CAPEX. Итоговый рейтинг не присваивается."
-        if item["price_score"] is not None else
-        "Нет полного набора из четырёх компонентов рейтинга."
-    )
-    return item
+from auction_search import krt_12_analysis
 
 
 PAGE = r'''<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>12 КРТ · DevelopAid</title><style>
-:root{--bg:#f2f2ef;--line:#dedede;--muted:#6c6c6c;--soft:#f7f7f4}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:#171717;font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Arial}
-.shell{max-width:1480px;margin:auto;background:#fff;min-height:100vh}.head{padding:22px 28px 16px;border-bottom:7px solid #111}.head h1{margin:0;font-size:29px}.sub{color:var(--muted);margin-top:5px}
-.content{padding:18px 28px 40px}.filters{display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:8px;margin-bottom:12px}.filters input,.filters select{height:42px;border:1px solid var(--line);background:#fff;padding:0 10px;font:inherit}
-.summary{display:flex;justify-content:space-between;gap:10px;margin:10px 0 14px;color:var(--muted)}.cards{display:grid;gap:10px}
-.card{border:1px solid var(--line);background:#fff}.top{display:grid;grid-template-columns:86px minmax(250px,1.3fr) minmax(560px,2.6fr);align-items:stretch}
-.lot{display:flex;align-items:center;justify-content:center;border-right:1px solid var(--line);font-size:26px;font-weight:800;background:var(--soft)}
-.id{padding:14px}.id b{font-size:17px}.tag{display:inline-block;border:1px solid var(--line);padding:3px 6px;font-size:10px;margin-bottom:7px}.muted{color:var(--muted)}
-.metrics{display:grid;grid-template-columns:repeat(5,1fr);border-left:1px solid var(--line)}.m{padding:11px;border-right:1px solid var(--line)}.m b{display:block;font-size:15px}.m small{display:block;color:var(--muted);font-size:10px;margin-top:4px}
-details{border-top:1px solid var(--line)}summary{cursor:pointer;padding:10px 14px;font-weight:650}.detail{padding:0 14px 14px;display:grid;grid-template-columns:1fr 1fr;gap:12px}.box{background:var(--soft);border:1px solid var(--line);padding:10px}.score{font-size:22px;font-weight:800}
-@media(max-width:900px){.content{padding:14px}.filters{grid-template-columns:1fr 1fr}.top{grid-template-columns:64px 1fr}.metrics{grid-column:1/-1;grid-template-columns:repeat(2,1fr);border-left:0;border-top:1px solid var(--line)}.detail{grid-template-columns:1fr}}
-</style></head><body><div class="shell"><header class="head"><h1>12 тестовых площадок КРТ</h1><div class="sub">Отдельный сравнительный экран по объектам из КРТ.pdf · не production-каталог</div></header><main class="content">
-<div class="filters"><input id="q" placeholder="Лот, адрес, округ"><select id="okrug"><option value="">Все округа</option></select><select id="kind"><option value="">Жильё и нежильё</option><option value="housing">Есть жильё</option><option value="nonhousing">Только нежилое</option></select><select id="sort"><option value="lot">По номеру лота</option><option value="price_score">По баллу цены</option><option value="load_housing">По нагрузке на жильё</option><option value="acquisition">По сумме входа</option></select></div>
-<div class="summary"><b id="found">Загружаю…</b><span>Итоговый рейтинг намеренно не рассчитывается по неполным данным</span></div><section class="cards" id="list"></section>
+:root{--bg:#f1f1ee;--panel:#fff;--text:#171717;--muted:#707070;--line:#deded9;--soft:#f7f7f4;--dark:#111;--red:#9c2929;--amber:#8a5d11;--blue:#315d86}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}
+.shell{max-width:1540px;margin:auto;background:#fff;min-height:100vh}.brand{padding:18px 28px 0;font-size:23px;font-weight:800}.bar{height:7px;background:#111;margin-top:12px}
+.head{padding:18px 28px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:20px;align-items:end}.head h1{margin:0;font-size:29px}.muted{color:var(--muted)}
+.content{padding:18px 28px 44px}.tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:14px}.tools input,.tools select,.tools button{height:40px;border:1px solid var(--line);background:#fff;padding:0 11px;font:inherit}.tools input{min-width:270px}.tools button{border-color:#111;font-weight:650}.tools .primary{background:#111;color:#fff}
+.note{border:1px solid var(--line);background:var(--soft);padding:10px 12px;margin-bottom:14px}.cards{display:grid;gap:12px}
+.card{border:1px solid var(--line);background:#fff}.cardtop{display:grid;grid-template-columns:72px 230px minmax(230px,1.15fr) minmax(620px,2.6fr);min-height:190px}
+.rank{display:flex;flex-direction:column;align-items:center;justify-content:center;border-right:1px solid var(--line);background:var(--soft)}.rank b{font-size:28px}.rank span{font-size:10px;color:var(--muted);text-transform:uppercase}
+.map{position:relative;overflow:hidden;background:#ecece8;border-right:1px solid var(--line)}.map img,.map svg{position:absolute;inset:0;width:100%;height:100%}.map .mapmsg{position:absolute;left:8px;bottom:8px;right:8px;background:rgba(255,255,255,.9);padding:5px 7px;font-size:10px}
+.identity{padding:14px;border-right:1px solid var(--line)}.lotbadge{display:inline-block;border:1px solid var(--line);padding:3px 6px;font-size:10px;margin-bottom:8px}.identity h2{font-size:17px;line-height:1.25;margin:0 0 5px}.identity .slug{font-size:11px;color:var(--muted);margin-top:8px}
+.metrics{display:grid;grid-template-columns:repeat(4,1fr)}.metric{padding:12px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);min-height:82px}.metric:nth-child(4n){border-right:0}.metric:nth-last-child(-n+4){border-bottom:0}.metric b{display:block;font-size:16px}.metric small{display:block;color:var(--muted);font-size:10px;margin-top:4px}
+.score100{font-size:22px!important}.status{font-size:11px;margin-top:5px}.working{color:var(--amber)}
+details.main{border-top:1px solid var(--line)}details.main>summary{cursor:pointer;padding:11px 14px;font-weight:700}.detail{padding:0 14px 16px}
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:10px}.box{border:1px solid var(--line);background:var(--soft);padding:11px}.box h3{margin:0 0 8px;font-size:15px}.kpis{display:grid;grid-template-columns:repeat(4,1fr);border:1px solid var(--line);margin-bottom:10px}.kpi{padding:9px;border-right:1px solid var(--line)}.kpi:last-child{border:0}.kpi b{display:block;font-size:17px}.kpi small{color:var(--muted)}
+.comp{display:grid;grid-template-columns:repeat(4,1fr);gap:7px}.comp>div{border:1px solid var(--line);background:#fff;padding:9px}.comp b{font-size:20px;display:block}.comp small{display:block;color:var(--muted)}
+.req{margin:0;padding-left:18px}.req li{margin:4px 0}.objects{margin-top:10px}.group{border:1px solid var(--line);margin:7px 0;background:#fff}.group summary{cursor:pointer;padding:8px 10px;font-weight:650}.tablewrap{overflow:auto;border-top:1px solid var(--line)}table{border-collapse:collapse;width:100%;font-size:12px}th,td{padding:7px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{background:var(--soft);position:sticky;top:0}.num{text-align:right;white-space:nowrap}
+.warn{border-left:4px solid var(--amber)}.bad{border-left:4px solid var(--red)}.ok{border-left:4px solid #555}
+.method{margin-top:12px;border:1px solid var(--line);padding:10px;background:#fff}.method summary{cursor:pointer;font-weight:650}
+@media(max-width:1100px){.cardtop{grid-template-columns:64px 180px 1fr}.metrics{grid-column:1/-1;border-top:1px solid var(--line)}.identity{border-right:0}.cols{grid-template-columns:1fr}.comp{grid-template-columns:1fr 1fr}}
+@media(max-width:680px){.content,.head{padding:12px}.brand{padding:14px 12px 0}.cardtop{grid-template-columns:58px 1fr}.map{grid-row:2;grid-column:1/-1;height:190px;border-top:1px solid var(--line);border-right:0}.identity{grid-column:2}.metrics{grid-template-columns:1fr 1fr}.metric:nth-child(4n){border-right:1px solid var(--line)}.metric:nth-child(2n){border-right:0}.comp{grid-template-columns:1fr}.kpis{grid-template-columns:1fr 1fr}.tools input{min-width:100%}}
+</style></head><body><div class="shell"><div class="brand">DevelopAid<div class="bar"></div></div><header class="head"><div><h1>12 площадок КРТ · инвестиционный отбор</h1><div class="muted">Карта, обязательства, кадастровый состав и рейтинг 4×100</div></div><div class="muted">TEST · main не изменён</div></header><main class="content">
+<div class="note"><b>Баллы не берутся из PDF.</b> PDF задаёт только список 12 лотов. Цена, поглощение, LLCR и нагрузка считаются DevelopAid; кадастровый состав проверяется пространственно по контуру КРТ.</div>
+<div class="tools"><input id="q" placeholder="Лот или адрес"><select id="filter"><option value="">Все</option><option value="scored">Есть полный рейтинг</option><option value="building">Расчёт собирается</option></select><select id="sort"><option value="interest">По инвестиционному рейтингу</option><option value="llcr">По LLCR</option><option value="price">По цене рынка</option><option value="lot">По номеру лота</option></select><button class="primary" id="refresh">Пересчитать 12 площадок</button><span id="state" class="muted"></span></div>
+<section id="cards" class="cards"><div class="note">Загружаю расчёты…</div></section>
 </main></div><script>
-const $=id=>document.getElementById(id),n=v=>v===null||v===undefined||v===''?null:Number(v),fmt=(v,d=0)=>n(v)===null?'—':Number(v).toLocaleString('ru-RU',{maximumFractionDigits:d}),esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let rows=[];
-function card(x){return '<article class="card"><div class="top"><div class="lot">'+x.lot+'</div><div class="id"><span class="tag">'+esc(x.okrug)+'</span><br><b>'+esc(x.name)+'</b><div class="muted">'+fmt(x.area_ha,2)+' га · ГНС '+fmt(x.total_gfa_sqm)+' м²</div></div><div class="metrics">'+
-[['Старт',fmt(x.start_price_mln,2)+' млн ₽'],['Изъятие',fmt(x.seizure_mln,2)+' млн ₽'],['Старт + изъятие',fmt(x.acquisition_mln,2)+' млн ₽'],['Нагрузка / м² жилья',x.load_housing_rub_sqm==null?'—':fmt(x.load_housing_rub_sqm)+' ₽'],['Цена рынка',x.market_rub_sqm==null?'—':fmt(x.market_rub_sqm)+' ₽/м²']].map(a=>'<div class="m"><b>'+esc(a[1])+'</b><small>'+esc(a[0])+'</small></div>').join('')+
-'</div></div><details><summary>Расшифровка и наш текущий балл</summary><div class="detail"><div class="box"><b>Исходные ТЭП</b><p>Жильё: '+fmt(x.housing_gfa_sqm)+' м²<br>Нежильё: '+fmt(x.nonres_gfa_sqm)+' м²<br>Нагрузка на весь ГНС: '+fmt(x.load_total_rub_sqm)+' ₽/м²</p><p>'+esc(x.note)+'</p></div><div class="box"><b>Наша система 4×100</b><p class="score">Цена: '+(x.price_score==null?'—':fmt(x.price_score,1)+'/100')+'</p><p>Ценовой ориентир: '+fmt(x.price_target_rub_sqm)+' ₽/м²<br>Покрытие рейтинга: '+fmt(x.coverage_pct)+'%</p><p>LLCR: —<br>Поглощение: —<br>Нагрузка КРТ / ordinary CAPEX: —</p><p class="muted">'+esc(x.rating_reason)+'</p></div></div></details></article>'}
-function render(){let q=$('q').value.trim().toLowerCase(),o=$('okrug').value,k=$('kind').value,s=$('sort').value;let v=rows.filter(x=>(!q||[x.lot,x.name,x.okrug].join(' ').toLowerCase().includes(q))&&(!o||x.okrug===o)&&(!k||(k==='housing'?x.housing_gfa_sqm>0:x.housing_gfa_sqm===0)));v.sort((a,b)=>{if(s==='price_score')return (b.price_score??-1)-(a.price_score??-1);if(s==='load_housing')return (a.load_housing_rub_sqm??Infinity)-(b.load_housing_rub_sqm??Infinity);if(s==='acquisition')return a.acquisition_mln-b.acquisition_mln;return a.lot-b.lot});$('found').textContent='Площадок: '+v.length+' из '+rows.length;$('list').innerHTML=v.map(card).join('')}
-fetch('/krt-12-preview/data').then(r=>r.json()).then(d=>{rows=d.rows||[];$('okrug').innerHTML+=[...new Set(rows.map(x=>x.okrug))].sort().map(x=>'<option>'+esc(x)+'</option>').join('');render()});
-['q','okrug','kind','sort'].forEach(id=>$(id).addEventListener(id==='q'?'input':'change',render));
+const $=id=>document.getElementById(id),num=v=>v===null||v===undefined||v===''?null:Number(v),fmt=(v,d=0)=>num(v)===null?'—':Number(v).toLocaleString('ru-RU',{maximumFractionDigits:d}),esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let rows=[],detailCache={},poll=null;
+function scoreText(x){return x.score==null?'—':fmt(x.score)+'/100'}
+function component(x,k){let c=(x.components||{})[k]||{};return c.score==null?'—':fmt(c.score,1)}
+function card(x,i){let work=x.working?'<div class="status working">расчёт выполняется…</div>':'<div class="status">'+(x.score==null?'покрытие '+fmt(x.coverage_pct)+'%':'полный расчёт')+'</div>';
+return '<article class="card" data-lot="'+x.lot+'"><div class="cardtop"><div class="rank"><span>место</span><b>'+(i+1)+'</b><span>лот '+x.lot+'</span></div><div class="map" id="map-'+x.lot+'"><div class="mapmsg">Карта загружается…</div></div><div class="identity"><span class="lotbadge">'+esc(x.okrug||'КРТ')+'</span><h2>'+esc(x.name)+'</h2><div class="muted">Лот '+x.lot+'</div><div class="slug">'+esc(x.slug||x.reason||'сопоставление с каталогом…')+'</div>'+work+'</div><div class="metrics">'+
+ [['Инвест. рейтинг',scoreText(x),'score100'],['LLCR',x.llcr==null?'—':fmt(x.llcr,3)+'x',''],['Цена рынка',x.price_rub_sqm==null?'—':fmt(x.price_rub_sqm)+' ₽/м²',''],['Поглощение',x.local_area_per_month==null?'—':fmt(x.local_area_per_month,1)+' м²/мес.',''],['LLCR /100',component(x,'llcr'),''],['Цена /100',component(x,'price'),''],['Поглощение /100',component(x,'absorption'),''],['Нагрузка /100',component(x,'burden'),''],['Кадастровый выкуп',x.cadastral_buyout_mln==null?'—':fmt(x.cadastral_buyout_mln,1)+' млн ₽',''],['Нагрузка / CAPEX',x.burden_pct==null?'—':fmt(x.burden_pct,1)+'%',''],['ОКС в контуре',fmt((x.spatial_counts||{}).objects),''],['Покрытие',fmt(x.coverage_pct)+'%','']].map(a=>'<div class="metric"><b class="'+a[2]+'">'+a[1]+'</b><small>'+a[0]+'</small></div>').join('')+'</div></div><details class="main" ontoggle="if(this.open)loadDetail('+x.lot+')"><summary>Открыть карточку: что дают / что требуют / объекты / расчёт</summary><div class="detail" id="detail-'+x.lot+'"><div class="note">Загружаю карточку…</div></div></details></article>'}
+function sorted(v){let s=$('sort').value;return [...v].sort((a,b)=>{if(s==='lot')return a.lot-b.lot;if(s==='llcr')return (b.llcr??-1)-(a.llcr??-1);if(s==='price')return (b.price_rub_sqm??-1)-(a.price_rub_sqm??-1);return (b.score!=null)-(a.score!=null)||(b.score??-1)-(a.score??-1)||(b.coverage_pct??0)-(a.coverage_pct??0)||(b.llcr??-1)-(a.llcr??-1)})}
+function render(){let q=$('q').value.trim().toLowerCase(),f=$('filter').value,v=rows.filter(x=>(!q||[x.lot,x.name,x.okrug,x.slug].join(' ').toLowerCase().includes(q))&&(!f||(f==='scored'?x.score!=null:x.working||x.score==null)));v=sorted(v);$('cards').innerHTML=v.map(card).join('')||'<div class="note">Ничего не найдено.</div>';v.forEach(x=>{if(detailCache[x.lot])drawDetail(x.lot,detailCache[x.lot]);else quickDetail(x.lot)});$('state').textContent='Полный рейтинг: '+v.filter(x=>x.score!=null).length+' · расчёт идёт: '+v.filter(x=>x.working).length}
+async function load(force=false){let u='/krt-12-preview/data'+(force?'?refresh=true':'');let d=await fetch(u).then(r=>r.json());rows=d.rows||[];render();if(rows.some(x=>x.working)){clearTimeout(poll);poll=setTimeout(()=>load(false),7000)}}
+async function quickDetail(lot){try{let d=await fetch('/krt-12-preview/lot/'+lot).then(r=>r.json());if(d&&Object.keys(d).length){detailCache[lot]=d;drawMap(lot,d.map||{});let el=$('detail-'+lot);if(el&&el.closest('details').open)drawDetail(lot,d)}}catch(e){}}
+async function loadDetail(lot){let el=$('detail-'+lot);if(detailCache[lot]){drawDetail(lot,detailCache[lot]);return}try{let d=await fetch('/krt-12-preview/lot/'+lot).then(r=>r.json());detailCache[lot]=d;drawDetail(lot,d);drawMap(lot,d.map||{})}catch(e){el.innerHTML='<div class="note bad">'+esc(e.message)+'</div>'}}
+function drawMap(lot,m){let box=$('map-'+lot),rings=m.rings_merc||[],objs=m.objects||[],pts=rings.flat().filter(p=>Array.isArray(p)&&p.length>1);if(!pts.length){box.innerHTML='<div class="mapmsg">Контур КРТ ещё не получен</div>';return}let xs=pts.map(p=>+p[0]),ys=pts.map(p=>+p[1]),minx=Math.min(...xs),maxx=Math.max(...xs),miny=Math.min(...ys),maxy=Math.max(...ys),pad=Math.max(maxx-minx,maxy-miny)*.12||100,ax=minx-pad,bx=maxx+pad,ay=miny-pad,by=maxy+pad,w=700,h=430,px=x=>(x-ax)/(bx-ax)*w,py=y=>h-(y-ay)/(by-ay)*h,path=rr=>rr.map(r=>'M'+r.map(p=>px(+p[0]).toFixed(1)+' '+py(+p[1]).toFixed(1)).join('L')+'Z').join(' ');let src='/land/basemap?'+new URLSearchParams({bbox:[ax,ay,bx,by].join(','),width:String(w)}),op=objs.filter(o=>(o.rings_merc||[]).length).slice(0,180).map(o=>{let f=String(o.fate||'').toLowerCase(),stroke=f.includes('demolition')||f.includes('снос')?'#9c2929':f.includes('recon')||f.includes('рекон')?'#8a5d11':'#555';return '<path d="'+path(o.rings_merc)+'" fill="none" stroke="'+stroke+'" stroke-width="1.4"></path>'}).join('');box.innerHTML='<img src="'+src+'" alt=""><svg viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none">'+op+'<path d="'+path(rings)+'" fill="rgba(0,0,0,.04)" stroke="#111" stroke-width="4" stroke-dasharray="10 6"></path></svg><div class="mapmsg">контур КРТ · найдено ОКС '+fmt(objs.length)+'</div>'}
+function val(v,unit=''){return v==null?'—':fmt(v)+(unit||'')}
+function rowsTable(items){if(!items||!items.length)return '<div class="muted">Нет объектов в текущем наборе.</div>';return '<div class="tablewrap"><table><thead><tr><th>КН</th><th>Объект / адрес</th><th>Площадь</th><th>Кадастровая стоимость</th><th>Собственник</th></tr></thead><tbody>'+items.slice(0,120).map(o=>'<tr><td>'+esc(o.cadastral_number||'—')+'</td><td>'+esc(o.name||o.purpose||o.address||o.action_label||'—')+'</td><td class="num">'+(o.area_sqm==null?'—':fmt(o.area_sqm)+' м²')+'</td><td class="num">'+(o.cadastral_value_rub==null?'—':fmt(o.cadastral_value_rub)+' ₽')+'</td><td>'+esc(((o.owner||{}).name)||((o.owner||{}).group)||'не определён')+'</td></tr>').join('')+'</tbody></table></div>'}
+function group(title,key,o,open=false){let a=(o||{})[key]||[];return '<details class="group" '+(open?'open':'')+'><summary>'+title+' — '+a.length+'</summary>'+rowsTable(a)+'</details>'}
+function drawDetail(lot,d){let el=$('detail-'+lot);if(!el)return;if(!d||!d.available){el.innerHTML='<div class="note bad">'+esc((d||{}).reason||'Расчёт пока не готов')+'</div>';return}let p=d.programme||{},r=d.rating||{},C=r.components||{},cad=d.cadastre||{},b=d.burden||{},fin=d.finance||{},req=p.construction||[],social=p.social||[],unpriced=b.unpriced||[];let comps=['llcr','price','absorption','burden'].map(k=>{let x=C[k]||{};return '<div><b>'+(x.score==null?'—':fmt(x.score,1))+'</b><small>'+esc(x.name||k)+'</small><small>'+esc(x.score==null?(x.missing_reason||'нет данных'):(x.formula||''))+'</small></div>'}).join('');
+let requirements=(req.length?'<ul class="req">'+req.map(x=>'<li>'+esc(typeof x==='string'?x:(x.label||x.name||JSON.stringify(x)))+'</li>').join('')+'</ul>':'<div class="muted">Текст обязательств из решения не получен.</div>')+(social.length?'<p><b>Социальные объекты:</b></p><ul class="req">'+social.map(x=>'<li>'+esc((x.label||x.kind||'объект')+(x.places?' · '+x.places+' мест':'')+(x.gba_sqm?' · '+fmt(x.gba_sqm)+' м²':''))+'</li>').join('')+'</ul>':'');
+el.innerHTML='<div class="kpis">'+[['ГНС',val(p.total_gfa_sqm,' м²')],['Жильё',val(p.housing_gfa_sqm,' м²')],['Нежилое',val(p.nonresidential_gfa_sqm,' м²')],['Площадь КРТ',p.area_ha==null?'—':fmt(p.area_ha,2)+' га']].map(x=>'<div class="kpi"><b>'+x[1]+'</b><small>'+x[0]+'</small></div>').join('')+'</div>'+
+'<div class="cols"><div class="box"><h3>Что даёт площадка</h3><p>Жильё: <b>'+val(p.housing_gfa_sqm,' м²')+'</b><br>Общественно-деловое: <b>'+val(p.business_gfa_sqm,' м²')+'</b><br>Прочее нежилое: <b>'+val(p.nonresidential_gfa_sqm,' м²')+'</b></p></div><div class="box"><h3>Что требует город</h3>'+requirements+(unpriced.length?'<div class="note warn"><b>Пока не монетизировано:</b><br>'+unpriced.map(esc).join('<br>')+'</div>':'')+'</div></div>'+
+'<div class="box" style="margin-top:10px"><h3>Наш рейтинг 4×100</h3><div class="comp">'+comps+'</div><p><b>Итог:</b> '+(r.display_score==null?'—':fmt(r.display_score)+'/100')+' · покрытие '+fmt(r.coverage_pct)+'%</p>'+(r.arithmetic?'<p>'+esc(r.arithmetic)+'</p>':'')+'<p class="muted">'+esc(r.reason||'')+'</p></div>'+
+'<div class="cols" style="margin-top:10px"><div class="box"><h3>Кадастровый контур</h3><p>Частный/не-Москва выкуп: <b>'+fmt((cad.private_buyout_rub||0)/1e6,1)+' млн ₽</b><br>из них земля: '+fmt((cad.private_land_rub||0)/1e6,1)+' млн ₽ · ОКС: '+fmt((cad.private_ocs_rub||0)/1e6,1)+' млн ₽<br>Москва исключена: '+fmt((cad.moscow_excluded_rub||0)/1e6,1)+' млн ₽<br>Иная публичная: '+fmt((cad.other_public_rub||0)/1e6,1)+' млн ₽<br>Неизвестна стоимость: '+fmt(cad.unknown_value_count)+' · неизвестен собственник: '+fmt(cad.unknown_owner_count)+'</p><p class="muted">Пространственный поиск: '+(cad.spatial_complete?'полный':'неполный')+(cad.spatial_problem?' · '+esc(cad.spatial_problem):'')+'</p></div><div class="box"><h3>Финансовая модель</h3><p>LLCR по известной нагрузке: <b>'+(fin.project_llcr_x==null?'—':fmt(fin.project_llcr_x,3)+'x')+'</b><br>Ordinary CAPEX: <b>'+(d.ordinary_capex_mln==null?'—':fmt(d.ordinary_capex_mln,1)+' млн ₽')+'</b><br>Нагрузка / CAPEX: <b>'+(b.burden_pct==null?'—':fmt(b.burden_pct,2)+'%')+'</b><br>Макс. цена права КРТ при LLCR 1,20: <b>'+(fin.max_krt_right_price_mln==null?'—':fmt(fin.max_krt_right_price_mln,1)+' млн ₽')+'</b></p></div></div>'+
+'<div class="objects"><h3>Объекты внутри контура</h3>'+group('Под снос','demolition',d.objects,true)+group('Снос или реконструкция','demolition_or_reconstruction',d.objects)+group('Реконструкция','reconstruction',d.objects)+group('Сохранение','preservation',d.objects)+group('Кадастровый выкуп','buyout',d.objects,true)+group('Собственник не определён','unknown_owner',d.objects)+'</div>'+
+'<details class="method"><summary>Методика</summary><p>Итог = (LLCR + цена рынка + поглощение + нагрузка КРТ) / 4. Каждый блок 0–100. Если один блок не подтверждён, общий балл не выводится и известные блоки не перенормируются. Поглощение — только м²/мес. Кадастровый выкуп: частные ЗУ и ОКС по кадастровой стоимости; Москва = 0; иная публичная собственность отдельно; неизвестное не превращается в ноль.</p></details>';drawMap(lot,d.map||{})}
+$('q').addEventListener('input',render);$('filter').addEventListener('change',render);$('sort').addEventListener('change',render);$('refresh').onclick=()=>{detailCache={};load(true)};load(false);
 </script></body></html>'''
 
 
 def install(app, core=None):
-    if core is not None:
-        import inspect, logging
-        caps=[]
-        for _name in dir(core):
-            _low=_name.lower()
-            if not any(_token in _low for _token in ("nspd","cadastr","cadast","land","feature","spatial","geometry","polygon","map")):
-                continue
-            _value=getattr(core,_name,None)
-            if not callable(_value):
-                continue
-            try:
-                _sig=str(inspect.signature(_value))
-            except Exception:
-                _sig=""
-            caps.append((_name,_sig))
-        logging.getLogger(__name__).info("KRT_CORE_CAPABILITIES %s", caps[:300])
-    @app.get("/krt-12-preview/core-capabilities", include_in_schema=False)
-    async def krt_12_core_capabilities():
-        import inspect
-        if core is None:
-            return JSONResponse({"available": False, "reason": "core not passed"}, status_code=503)
-        names=[]
-        for name in dir(core):
-            low=name.lower()
-            if not any(token in low for token in ("nspd","cadastr","cadast","land","feature","spatial","geometry","polygon","map")):
-                continue
-            value=getattr(core,name,None)
-            if not callable(value):
-                continue
-            try:
-                sig=str(inspect.signature(value))
-            except Exception:
-                sig=""
-            names.append({"name":name,"signature":sig})
-        return JSONResponse({"available":True,"callables":names[:300]}, headers={"Cache-Control":"no-store"})
-
     @app.get("/krt-12-preview/data", include_in_schema=False)
-    async def krt_12_preview_data(price_target: float = DEFAULT_PRICE_TARGET_RUB_SQM):
-        target = float(price_target or DEFAULT_PRICE_TARGET_RUB_SQM)
-        return JSONResponse({
-            "source": "user-supplied KRT.pdf, 2026-09-23",
-            "method": "partial issue-485 rating; missing components remain missing",
-            "rows": [_row(row, target) for row in LOTS],
-        }, headers={"Cache-Control": "no-store"})
+    async def krt_12_preview_data(refresh: bool = Query(default=False)):
+        if core is None:
+            return JSONResponse({"rows":[],"error":"authoritative core unavailable"}, status_code=503)
+        rows = krt_12_analysis.summaries(core, force=bool(refresh))
+        return JSONResponse({"rows":rows,"method":"issue #485 · own calculations, PDF only selects lots"},
+                            headers={"Cache-Control":"no-store"})
+
+    @app.get("/krt-12-preview/lot/{lot}", include_in_schema=False)
+    async def krt_12_preview_lot(lot: int, refresh: bool = Query(default=False)):
+        if core is None:
+            return JSONResponse({"error":"authoritative core unavailable"}, status_code=503)
+        definition = next((x for x in krt_12_analysis.LOT_DEFS if int(x["lot"]) == int(lot)), None)
+        if not definition:
+            return JSONResponse({"error":"unknown lot"}, status_code=404)
+        if refresh:
+            krt_12_analysis.refresh(definition, core, force=True)
+        cached = krt_12_analysis.load(lot)
+        if not cached or (cached.get("stale") and not cached.get("working")):
+            krt_12_analysis.refresh(definition, core)
+            cached = krt_12_analysis.load(lot)
+        return JSONResponse(cached, headers={"Cache-Control":"no-store"})
 
     @app.get("/krt-12-preview", response_class=HTMLResponse, include_in_schema=False)
     async def krt_12_preview():
-        return HTMLResponse(PAGE, headers={"Cache-Control": "no-store, must-revalidate"})
+        return HTMLResponse(PAGE, headers={"Cache-Control":"no-store, must-revalidate"})
