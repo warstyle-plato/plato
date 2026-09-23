@@ -311,7 +311,15 @@ def analyse(defn: dict[str, Any], core: Any, *, root: Path | None = None,
     ranking = _prod("/auctions/krt/ranking", timeout=30)
     rank = next((dict(x) for x in ranking.get("rows") or [] if str(x.get("slug") or "") == slug), {})
     safe = urllib.parse.quote(slug)
-    report = _prod(f"/auctions/krt/{safe}/report", timeout=35)
+    report_problem = ""
+    try:
+        report = _prod(f"/auctions/krt/{safe}/report", timeout=35)
+    except Exception as exc:
+        # Финансовый/рыночный отчёт не должен блокировать кадастровый сбор.
+        # Контур, КН и объекты собираются независимо и сохраняются даже если
+        # production-report временно недоступен.
+        report = {}
+        report_problem = f"{type(exc).__name__}: {exc}"
     try:
         req = _prod(f"/auctions/krt/{safe}/requirements", timeout=30)
     except Exception as exc:
@@ -426,7 +434,8 @@ def analyse(defn: dict[str, Any], core: Any, *, root: Path | None = None,
                "objects":[{"cadastral_number":x.get("cadastral_number"),"rings_merc":x.get("rings_merc") or [],
                            "fate":x.get("fate") or "","owner":x.get("owner") or {}}
                           for x in (selected.get("inside") or [])[:250]]},
-        "source_note":"PDF используется только для списка 12 лотов; баллы и кадастровая нагрузка рассчитаны DevelopAid.",
+        "report_problem": report_problem,
+        "source_note":"PDF используется только для списка 12 лотов; кадастровый состав собирается независимо, баллы считаются DevelopAid только при наличии всех четырёх компонентов.",
     }
 
 
