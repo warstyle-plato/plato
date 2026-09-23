@@ -2344,9 +2344,8 @@ def install(app: FastAPI) -> None:
                  if isinstance(ring, list) and len(ring) >= 3]
         if not rings:
             try:
-                local_found = await run_in_threadpool(
-                    _krt_site_finder(slug, str(project.get("name") or slug)))
-                local_found = await run_in_threadpool(local_found)
+                finder = _krt_site_finder(slug, str(project.get("name") or slug))
+                local_found = await run_in_threadpool(finder)
             except Exception as exc:  # noqa: BLE001
                 local_found = {"problem": f"{type(exc).__name__}: {exc}"}
             rings = [ring for ring in (local_found.get("rings_merc") or [])
