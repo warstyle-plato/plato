@@ -175,7 +175,27 @@ fetch('/krt-12-preview/data').then(r=>r.json()).then(d=>{rows=d.rows||[];$('okru
 </script></body></html>'''
 
 
-def install(app):
+def install(app, core=None):
+    @app.get("/krt-12-preview/core-capabilities", include_in_schema=False)
+    async def krt_12_core_capabilities():
+        import inspect
+        if core is None:
+            return JSONResponse({"available": False, "reason": "core not passed"}, status_code=503)
+        names=[]
+        for name in dir(core):
+            low=name.lower()
+            if not any(token in low for token in ("nspd","cadastr","cadast","land","feature","spatial","geometry","polygon","map")):
+                continue
+            value=getattr(core,name,None)
+            if not callable(value):
+                continue
+            try:
+                sig=str(inspect.signature(value))
+            except Exception:
+                sig=""
+            names.append({"name":name,"signature":sig})
+        return JSONResponse({"available":True,"callables":names[:300]}, headers={"Cache-Control":"no-store"})
+
     @app.get("/krt-12-preview/data", include_in_schema=False)
     async def krt_12_preview_data(price_target: float = DEFAULT_PRICE_TARGET_RUB_SQM):
         target = float(price_target or DEFAULT_PRICE_TARGET_RUB_SQM)
