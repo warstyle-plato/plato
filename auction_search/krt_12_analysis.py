@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import os
 import re
 import statistics
@@ -25,6 +26,7 @@ from auction_search.krt_screening import _goal_seek_entry_capacity, _snapshot
 from market_search.market_reference import MoscowMarket
 
 PROD = "https://plato-development-investment-model.onrender.com"
+LOGGER = logging.getLogger(__name__)
 ANALYSIS_TTL = 24 * 3600
 _WORKING: set[int] = set()
 _LOCK = threading.Lock()
@@ -431,13 +433,22 @@ def refresh(defn: dict[str, Any], core: Any, *, root: Path | None = None, force:
 
     def run() -> None:
         with _SLOTS:
+            LOGGER.info("KRT12 lot=%s analysis started", lot)
             try:
                 result = analyse(defn, core, root=root)
             except Exception as exc:
+                LOGGER.exception("KRT12 lot=%s analysis failed", lot)
                 result = {"lot":lot,"name":defn["name"],"available":False,
                           "reason":f"{type(exc).__name__}: {exc}"}
             try:
                 _save(lot, result, root=root)
+                rating=result.get("rating") or {}
+                cad=result.get("cadastre") or {}
+                LOGGER.info(
+                    "KRT12 lot=%s done slug=%s score=%s coverage=%s spatial=%s cad_complete=%s problem=%s",
+                    lot, result.get("slug"), rating.get("display_score"), rating.get("coverage_pct"),
+                    cad.get("spatial_counts"), cad.get("complete"), cad.get("spatial_problem") or result.get("reason") or "",
+                )
             finally:
                 with _LOCK:
                     _WORKING.discard(lot)
