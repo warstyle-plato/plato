@@ -1042,6 +1042,31 @@ def install(app: FastAPI) -> None:
         row = krt_ranking.stored_row(slug)
         stored = krt_ranking.report(slug) or {}
         screening = dict(stored.get("screening") or {})
+
+        # У ранних, ещё не опубликованных проектов нет ночного production-
+        # прогона по определению. Первая версия кнопки рейтинга лишь читала
+        # пустой кэш и поэтому гарантированно возвращала прочерк. Для этого
+        # источника рейтинг сам запускает тот же market + DevelopAid screening,
+        # что у планируемой площадки, а затем сохраняет общий результат.
+        if project.get("early_unpublished") and not screening:
+            fresh = await run_in_threadpool(_screen_one, project)
+            fresh_for_store = dict(fresh or {})
+            market_digest = fresh_for_store.pop("market_report", None)
+            await run_in_threadpool(
+                krt_ranking.save_failure_or_report,
+                slug,
+                fresh_for_store,
+                {
+                    "project": project,
+                    "market": market_digest,
+                    "screening": fresh_for_store,
+                },
+            )
+            fresh_row = score_row(project, fresh_for_store)
+            await run_in_threadpool(krt_ranking.upsert_row, fresh_row)
+            row = krt_ranking.stored_row(slug)
+            stored = krt_ranking.report(slug) or {}
+            screening = dict(stored.get("screening") or fresh_for_store)
         metrics = dict(screening.get("metrics") or {})
         market_block = dict(stored.get("market") or {})
         analysis = dict(market_block.get("analysis") or {})
@@ -1090,6 +1115,31 @@ def install(app: FastAPI) -> None:
         burden_mln = row.get("burden_mln")
         ordinary_capex_mln = row.get("ordinary_capex_mln")
         entry_capacity_mln = row.get("entry_capacity_mln")
+
+        # Для раннего списка владелец уже дал денежную оценку изъятия отдельной
+        # колонкой. Это не стартовая цена права КРТ и не ноль: используем её
+        # как известную дополнительную нагрузку. Знаменатель — ordinary CAPEX
+        # того же проекта из authoritative DevelopAid, без KRT-нагрузки.
+        if project.get("early_unpublished"):
+            try:
+                early_burden = float(project.get("seizure_mln"))
+            except (TypeError, ValueError):
+                early_burden = 0.0
+            model_inputs = dict(screening.get("model_inputs") or {})
+            if ordinary_capex_mln is None and model_inputs:
+                try:
+                    ordinary_capex_mln = await run_in_threadpool(
+                        krt_investment_score._ordinary_capex,
+                        core,
+                        dict(model_inputs.get("inputs") or {}),
+                        dict(model_inputs.get("tep") or {}),
+                        dict(model_inputs.get("phasing") or {}),
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception("Early KRT ordinary CAPEX failed slug=%s", slug)
+            if early_burden > 0 and ordinary_capex_mln and float(ordinary_capex_mln) > 0:
+                burden_mln = early_burden
+                burden_pct = 100.0 * early_burden / float(ordinary_capex_mln)
 
         # Пока полный денежный стек собран только для контрольного кейса
         # Нагатино. Узнаём его по самому паспорту, а не по нестабильному slug.
@@ -1150,7 +1200,11 @@ def install(app: FastAPI) -> None:
                     f"Pulse: медиана {len([p for p in peers if isinstance(p, dict) and p.get('area_per_month') is not None])} "
                     f"аналогов 3 км / Москва, класс {segment or 'не определён'}, м²/мес."
                 ),
-                "burden": "ЕГРН + обязательства КРТ + DevelopAid ordinary CAPEX",
+                "burden": (
+                    "предварительная таблица владельца: изъятие / DevelopAid ordinary CAPEX"
+                    if project.get("early_unpublished")
+                    else "ЕГРН + обязательства КРТ + DevelopAid ordinary CAPEX"
+                ),
             },
             missing_reasons=missing_reasons,
         )
@@ -1188,6 +1242,9 @@ def install(app: FastAPI) -> None:
                     "local_absorption_sqm_month": local_absorption,
                     "moscow_absorption_sqm_month": benchmark_absorption,
                     "investment_rating_segment": segment,
+                    "burden_pct": burden_pct,
+                    "burden_mln": burden_mln,
+                    "ordinary_capex_mln": ordinary_capex_mln,
                 },
             )
         return {
@@ -2159,9 +2216,15 @@ def install(app: FastAPI) -> None:
             except Exception as exc:  # noqa: BLE001
                 logger.exception("KRT card facts failed slug=%s", slug)
                 card = {"available": False, "reason": f"{type(exc).__name__}: {exc}"}
+        asking_price = _asking_price_mln(slug)
+        if asking_price is None and project.get("early_unpublished"):
+            try:
+                asking_price = float(project.get("start_price_mln"))
+            except (TypeError, ValueError):
+                asking_price = None
         screening = build_krt_model_screening(
             project, report, core, requirements=requirements,
-            asking_price_mln=_asking_price_mln(slug))
+            asking_price_mln=asking_price)
         screening["card_facts"] = card
         # Занятость площадки — в прогон, а не по нажатию: пока она приходила
         # только кнопкой, каталог показывал «Планируемая» там, где договор
