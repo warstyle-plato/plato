@@ -28,7 +28,7 @@ from market_search.market_reference import MoscowMarket
 PROD = "https://plato-development-investment-model.onrender.com"
 LOGGER = logging.getLogger(__name__)
 ANALYSIS_TTL = 24 * 3600
-ANALYSIS_VERSION = 2
+ANALYSIS_VERSION = 3
 _WORKING: set[int] = set()
 _LOCK = threading.Lock()
 _SLOTS = threading.Semaphore(2)
@@ -447,6 +447,56 @@ def analyse(defn: dict[str, Any], core: Any, *, root: Path | None = None,
         req = _prod(f"/auctions/krt/{safe}/requirements", timeout=30)
     except Exception as exc:
         req = {"available":False,"reason":str(exc)}
+
+    # Persist a useful partial card BEFORE the slower contour/NSPD walk.
+    # The page must not remain an empty skeleton for minutes while cadastre is
+    # being enumerated. Only our own 4x100 components are shown; LLCR/burden
+    # remain missing until the cadastral stack is actually complete.
+    early_market = _market_metrics({}, rank, investment)
+    early_rating = krt_investment_score.score(
+        status_kind="running" if "реализац" in str(project.get("status") or "").lower() else "planned",
+        llcr=None,
+        market_rub_sqm=early_market.get("price_rub_sqm"),
+        target_rub_sqm=price_target,
+        local_sqm_month=early_market.get("local_area_per_month"),
+        benchmark_sqm_month=early_market.get("moscow_area_per_month"),
+        burden_pct=None,
+        burden_mln=None,
+        ordinary_capex_mln=None,
+        housing_gfa_sqm=project.get("housing_gfa_sqm"),
+        entry_capacity_mln=None,
+        missing_reasons={
+            "llcr":"идёт кадастровый сбор и финансовый пересчёт",
+            "burden":"идёт кадастровый сбор и монетизация обязательств КРТ",
+        },
+        sources={
+            "price":"сохранённое рыночное окружение DevelopAid production",
+            "absorption":"сохранённый Pulse area_per_month production / Москва того же класса",
+        },
+    )
+    _save(int(defn["lot"]), {
+        "lot":defn["lot"], "name":defn["name"],
+        "okrug":project.get("okrug") or defn.get("okrug"),
+        "available":True, "slug":slug, "project":project,
+        "rating":early_rating, "market":early_market,
+        "finance":{"available":False,"reason":"идёт финансовый пересчёт"},
+        "burden":{"complete":False,"known_mln":None,"burden_pct":None,"unpriced":[]},
+        "cadastre":{"complete":False,"spatial_complete":False,
+                    "spatial_problem":"идёт пространственный сбор КН",
+                    "spatial_counts":{"lands":0,"objects":0}},
+        "programme":{
+            "area_ha":project.get("area_ha") or project.get("krt_area_ha"),
+            "total_gfa_sqm":project.get("total_gfa_sqm"),
+            "housing_gfa_sqm":project.get("housing_gfa_sqm"),
+            "business_gfa_sqm":project.get("business_gfa_sqm"),
+            "nonresidential_gfa_sqm":project.get("nonresidential_gfa_sqm"),
+            "construction":list(req.get("construction") or [])[:30],
+            "social":[], "renovation":{},
+        },
+        "requirements":req, "objects":{},
+        "map":{"rings_merc":[],"objects":[]},
+        "source_note":"Промежуточная карточка: рынок/ТЭП уже заполнены; кадастр и финмодель считаются.",
+    }, root=root)
     try:
         point = _prod(f"/auctions/krt/{safe}/point", timeout=25)
     except Exception:
