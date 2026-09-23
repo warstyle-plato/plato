@@ -448,6 +448,11 @@ def score_row(project: dict[str, Any], screening: dict[str, Any]) -> dict[str, A
     else:
         row["entry_capacity_mln"] = None
         row["entry_capacity_rub_per_sqm"] = None
+        upper = _number(capacity.get("upper_bound_mln"))
+        row["entry_capacity_upper_bound_mln"] = round(upper, 1) if upper > 0 else None
+        row["entry_capacity_upper_bound_rub_per_sqm"] = (
+            round(upper * 1e6 / saleable) if upper > 0 and saleable > 0 else None
+        )
         row["entry_capacity_reason"] = str(
             capacity.get("reason") or "Потолок цены входа не подобран")
     return row

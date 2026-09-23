@@ -163,6 +163,7 @@ function renderHero(p,rank,req){
  const ren=renovationInfo(p,rank,req),live=activeTender({...p,...rank}),op=operatorInfo({...p,...rank});
  $('commercialHousing').textContent=ren.area!==null&&ren.housing!==null?fmt(Math.max(0,ren.housing-ren.area)):fmt(p.housing_gfa_sqm);
  const bits=['<span class="flag">'+esc(p.status||'КРТ')+'</span>'];
+ if(p.early_unpublished)bits.push('<span class="flag info">Ранний сигнал'+(p.signal_date?' · '+esc(p.signal_date):'')+'</span>');
  if(ren.share!==null){
   bits.push('<span class="flag critical">'+(ren.share>=.99?'100% РЕНОВАЦИЯ':'Реновация '+fmt(ren.share*100,0)+'% жилья')+'</span>');
  }else if(ren.mentioned)bits.push('<span class="flag critical">Реновация · объём не определён</span>');
@@ -178,7 +179,11 @@ function renderEntry(p,rank){
  let title='Вход не подтверждён';
  if(live){title='Идёт аукцион — вход открыт';if(live.deadline)facts.push('Заявки до '+live.deadline);if(live.price_rub)facts.push('Цена права '+fmt(live.price_rub/1e6,1)+' млн ₽');}
  else if(op.taken){title='Вход закрыт / площадка занята';if(op.operator)facts.push('Оператор: '+op.operator);if(op.agreement)facts.push('Есть упоминание заключённого договора КРТ');if(op.selling.length)facts.push('Есть текущие продажи на связанной площадке');}
- else facts.push('Живой лот и подтверждённый оператор не найдены в сохранённых данных.');
+ else if(p.early_unpublished){
+  title='Ранний сигнал — официальный вход ещё не опубликован';
+  facts.push(p.source_label||'Предварительный источник');
+  if(num(p.start_price_mln)!==null)facts.push('Предварительный ориентир входа '+fmt(p.start_price_mln,1)+' млн ₽');
+ }else facts.push('Живой лот и подтверждённый оператор не найдены в сохранённых данных.');
  $('entry').innerHTML='<div class="statusline">'+esc(title)+'</div><div class="notice '+(op.taken?'bad':live?'':'warn')+'">'+esc(facts.join(' · '))+'</div>'
   +(live&&live.url?'<div class="actionbar"><a class="primary" target="_blank" rel="noopener" href="'+esc(live.url)+'">Открыть лот торгов</a></div>':'')
   +(op.developers.length?'<div class="metric"><span>Названный застройщик</span><b>'+esc(op.developers.join(', '))+'</b></div>':'');
@@ -196,11 +201,18 @@ function renderProgramme(p,req){
  const dl=deadlineText(req);if(dl)left+='<div class="metric"><span>Срок</span><b>'+esc(dl)+'</b></div>';
  $('programme').innerHTML=left;
  const c=actionCounts(req);let right='';
- right+='<div class="metric"><span>Жильё реновации</span><b>'+(ren.area!==null?fmt(ren.area)+' м²':(ren.mentioned?'объём не назван':'не найдено в решении'))+'</b></div>';
+ right+='<div class="metric"><span>Жильё реновации</span><b>'+(ren.area!==null?fmt(ren.area)+' м²':(ren.mentioned?'объём не назван':(p.early_unpublished?'не подтверждено источником':'не найдено в решении')))+'</b></div>';
+ if(p.early_unpublished&&num(p.seizure_mln)!==null)right+='<div class="metric"><span>Изъятие · предварительно</span><b>'+fmt(p.seizure_mln,1)+' млн ₽</b></div>';
  right+='<div class="metric"><span>Снос</span><b>'+c.demo+'</b></div><div class="metric"><span>Снос / реконструкция</span><b>'+c.conditional+'</b></div><div class="metric"><span>Реконструкция</span><b>'+c.recon+'</b></div><div class="metric"><span>Сохранение</span><b>'+c.preserve+'</b></div><div class="metric"><span>Расселение / изъятие</span><b>'+c.res+'</b></div>';
  $('burden').innerHTML=right;
  const d=req.decision||{};
- $('programmeSource').innerHTML=d.page_url?'Источник: <a target="_blank" rel="noopener" href="'+esc(d.page_url)+'">материалы решения на mos.ru</a>':'Источник: карточка КРТ / проект решения, если опубликован.';
+ if(p.early_unpublished){
+  $('programmeSource').innerHTML='Источник: '+esc(p.source_label||'ранний сигнал')
+   +(p.note?' · '+esc(p.note):'')
+   +'. Изъятие показано отдельно и не считается полным денежным стеком КРТ.';
+ }else{
+  $('programmeSource').innerHTML=d.page_url?'Источник: <a target="_blank" rel="noopener" href="'+esc(d.page_url)+'">материалы решения на mos.ru</a>':'Источник: карточка КРТ / проект решения, если опубликован.';
+ }
 }
 function fate(x){const f=String(x.fate||x.category||'').toLowerCase();if(f.includes('demolition_or_reconstruction'))return 'Снос / реконструкция';if(f.includes('demolition')||f.includes('снос'))return 'Снос';if(f.includes('reconstruction')||f.includes('рекон'))return 'Реконструкция';if(f.includes('preservation')||f.includes('сохран'))return 'Сохранение';return 'Не определено'}
 function renderTerritory(req,parcels){
@@ -217,8 +229,15 @@ function renderEconomics(rank,report,rating){
  const screening=(report&&report.screening)||rank.screening||{},m=screening.metrics||{};
  const modelLlcr=num(m.project_llcr_x??rank.project_llcr_x),ratedLlcr=num((((rating||{}).components||{}).llcr||{}).value);
  const llcrLabel='<div class="metric"><span>LLCR проекта</span><b>'+fmt(modelLlcr??ratedLlcr,3)+'x</b></div>';
+ const cap=num(rank.entry_capacity_mln),capPer=num(rank.entry_capacity_rub_per_sqm);
+ const capUpper=num(rank.entry_capacity_upper_bound_mln),capUpperPer=num(rank.entry_capacity_upper_bound_rub_per_sqm);
+ const capBlock=cap!==null
+  ?'<div class="metric"><span>Потолок входа</span><b>'+fmt(cap,1)+' млн ₽</b></div><div class="metric"><span>Потолок / продаваемый м²</span><b>'+fmt(capPer)+' ₽/м²</b></div>'
+  :(capUpper!==null
+    ?'<div class="metric"><span>Верхняя граница входа</span><b>≤ '+fmt(capUpper,1)+' млн ₽</b></div><div class="metric"><span>Граница / продаваемый м²</span><b>≤ '+fmt(capUpperPer)+' ₽/м²</b></div><div class="source">'+esc(rank.entry_capacity_reason||'Есть неоценённые обязательства')+'</div>'
+    :'<div class="metric"><span>Потолок входа</span><b>—</b></div><div class="source">'+esc(rank.entry_capacity_reason||'Не определён')+'</div>');
  let html='<div class="two"><div class="bucket"><h3>Рынок 3 км</h3><div class="metric"><span>Цена окружения</span><b>'+fmt(price)+' ₽/м²</b></div><div class="metric"><span>Темп</span><b>'+fmt(pace,1)+' ДДУ/мес.</b></div><div class="metric"><span>Сегмент</span><b>'+esc(rank.segment||market.recommended_segment||'—')+'</b></div><div class="metric"><span>Аналоги</span><b>'+fmt(peers.length)+'</b></div></div>'
-  +'<div class="bucket"><h3>Экономика DevelopAid</h3>'+llcrLabel+'<div class="metric"><span>Маржа</span><b>'+fmt(m.margin_pct??rank.margin_pct,1)+'%</b></div><div class="metric"><span>Потолок входа</span><b>'+fmt(rank.entry_capacity_mln,1)+' млн ₽</b></div><div class="metric"><span>Потолок / продаваемый м²</span><b>'+fmt(rank.entry_capacity_rub_per_sqm)+' ₽/м²</b></div></div></div>';
+  +'<div class="bucket"><h3>Экономика DevelopAid</h3>'+llcrLabel+'<div class="metric"><span>Маржа</span><b>'+fmt(m.margin_pct??rank.margin_pct,1)+'%</b></div>'+capBlock+'</div></div>';
  if(peers.length)html+='<div style="margin-top:12px"><div class="statusline" style="font-size:14px">ЖК окружения из Пульса продаж</div><div class="source">Проекты, на которых основаны цена и поглощение рынка в радиусе 3 км.</div><div style="overflow:auto;margin-top:7px"><table><thead><tr><th>ЖК</th><th>Расстояние</th><th>Цена</th><th>м²/мес.</th><th>ДДУ/мес.</th><th>Остаток</th></tr></thead><tbody>'+peers.slice(0,12).map(x=>'<tr><td><b>'+esc(x.name||x.address||'—')+'</b><div class="source">'+esc(x.developer||x.builder||'')+'</div></td><td>'+fmt(x.distance_km,1)+' км</td><td class="num">'+fmt(x.price_per_sqm)+' ₽/м²</td><td class="num">'+fmt(x.area_per_month,1)+'</td><td class="num">'+fmt(x.units_per_month,1)+'</td><td class="num">'+fmt(x.remaining_units)+'</td></tr>').join('')+'</tbody></table></div></div>';
  if(screening&&screening.available===false)html+='<div class="notice warn">'+esc(screening.reason||'Модель не собрана')+'</div>';
  $('economics').innerHTML=html;
@@ -354,6 +373,7 @@ async function boot(){
   get('/auctions/krt'),get('/auctions/krt/ranking'),get('/auctions/krt/'+encodeURIComponent(SLUG)+'/requirements'),get('/auctions/krt/'+encodeURIComponent(SLUG)+'/point'),get('/krt/site/'+encodeURIComponent(SLUG)+'/parcels'),get('/auctions/krt/'+encodeURIComponent(SLUG)+'/report'),get(ratingUrl())
  ]);
  const cat=catR.status==='fulfilled'?catR.value:{projects:[]},p=findProject(cat);if(!p)throw new Error('Площадка не найдена в текущем каталоге КРТ');
+ if(p.early_unpublished){$('territoryLink').style.display='none'}
  const rankData=rankR.status==='fulfilled'?rankR.value:{rows:[]},rank=(rankData.rows||[]).find(x=>String(x.slug||'')===SLUG)||{},req=reqR.status==='fulfilled'?reqR.value:(rank.requirements||{}),parcels=parcelR.status==='fulfilled'?parcelR.value:null,report=reportR.status==='fulfilled'?reportR.value:null;
  MAP.point=pointR.status==='fulfilled'?pointR.value:null;MAP.parcels=parcels;MAP.peers=marketPeers(report);
  const initialRating=scoreR.status==='fulfilled'?(scoreR.value.rating||scoreR.value):null;

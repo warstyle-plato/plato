@@ -115,7 +115,7 @@ def _component(
 def methodology() -> dict[str, Any]:
     """Machine-readable methodology from issue #485."""
     return {
-        "version": "issue-485-krt-rating-4x100-v1",
+        "version": "issue-485-krt-rating-4x100-v2",
         "issue": 485,
         "price_target_default_rub_sqm": DEFAULT_PRICE_TARGET_RUB_SQM,
         "target_llcr_x": TARGET_LLCR,
@@ -134,6 +134,7 @@ def methodology() -> dict[str, Any]:
             "buyout": "non_moscow_cadastral_value_land_and_buildings_no_duplicates",
             "moscow_property": "zero_buyout",
             "missing_cadastral_value": "unknown_not_zero",
+            "early_partial_burden": "known_seizure_does_not_equal_full_burden",
             "absorption_unit": "sqm_per_month",
             "entry_capacity": "shown_separately_not_in_rating",
             "only_user_scenario_parameter": "price_target_rub_sqm",
