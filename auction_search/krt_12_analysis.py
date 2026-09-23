@@ -101,7 +101,11 @@ def _save(lot: int, data: dict[str, Any], *, root: Path | None = None) -> None:
 
 
 def _catalog_text(row: dict[str, Any]) -> str:
-    return _text(" ".join(str(row.get(k) or "") for k in ("name","address","district","okrug","slug")))
+    parts=[str(row.get(k) or "") for k in ("name","address","district","okrug","slug")]
+    for lot in row.get("tender_lots") or []:
+        if isinstance(lot, dict):
+            parts.extend(str(lot.get(k) or "") for k in ("title","name","address","lot_number"))
+    return _text(" ".join(parts))
 
 
 def _match(defn: dict[str, Any], projects: list[dict[str, Any]]) -> dict[str, Any] | None:
