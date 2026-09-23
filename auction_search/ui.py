@@ -99,7 +99,7 @@ __DEVELOPAID_CONTOUR__
              title="Мелкие площадки отсекаются по объёму жилья. Площадка, у которой объём жилья не указан, при непустом пороге прячется — она не «маленькая», она неизвестная, и сколько таких скрыто, написано под таблицей.">
       <input id="krtMinPrice" type="number" min="0" step="10000" placeholder="Цена окружения от, ₽/м²"
              title="Текущая оценка цены за м² окружения из того же рыночного отчёта / Пульса продаж. Введите порог, например 600000, чтобы оставить площадки с оценкой строго выше него. Нет данных — отдельный ответ, такие строки скрываются только при включённом пороге.">
-      <div class="filter-actions"><button id="krtRefresh" class="primary">Обновить каталог</button><button id="krtRankBtn">Оценить отобранные моделью</button><button id="krtPressBtn" title="Читает публикации и каналы по ВСЕМ планируемым площадкам и по площадкам с проектом решения: до пяти поисковых запросов на площадку, по каждому её адресу. Уже спрошенные пропускаются — занятая площадка свободной не станет. У площадок в реализации застройщика называет сама карточка города, поиска они не требуют. У проекта решения без адреса в заголовке спрашивать нечего: такие названы числом, а не пропущены молча.">Прочитать публикации по планируемым</button><button id="krtExport">Выгрузить Excel</button></div>
+      <div class="filter-actions"><button id="krtRefresh" class="primary">Обновить каталог</button><button id="krtRankBtn">Оценить отобранные моделью</button><input id="krtRatingTarget" type="number" min="1" step="10000" value="600000" title="Ценовой ориентир для массового расчёта рейтинга, ₽/м²" style="width:138px"><button id="krtRatingBtn" title="Считает рейтинг всем площадкам каталога, кроме статуса «В реализации». Использует уже сохранённые рынок и модель; неполные площадки останутся с неполным покрытием.">Посчитать рейтинг планируемым</button><button id="krtPressBtn" title="Читает публикации и каналы по ВСЕМ планируемым площадкам и по площадкам с проектом решения: до пяти поисковых запросов на площадку, по каждому её адресу. Уже спрошенные пропускаются — занятая площадка свободной не станет. У площадок в реализации застройщика называет сама карточка города, поиска они не требуют. У проекта решения без адреса в заголовке спрашивать нечего: такие названы числом, а не пропущены молча.">Прочитать публикации по планируемым</button><button id="krtExport">Выгрузить Excel</button></div>
     </div>
     <div class="stats"><div class="stat"><b id="krtCount">—</b><span id="krtCountNote">проектов</span></div><div class="stat"><b id="krtArea">—</b><span>га территории</span></div><div class="stat"><b id="krtHousing">—</b><span>м² жилья</span></div><div class="stat"><b id="krtGfa">—</b><span>м² всего</span></div></div>
     <details class="fold" id="krtMapFold"><summary id="krtMapSummary">Карта КРТ Москвы — официальные границы площадок</summary>
@@ -2684,6 +2684,54 @@ async function loadKrtRanking(){
   if(d.progress&&(d.progress.running||d.progress.running_elsewhere))state.krtRankTimer=setTimeout(loadKrtRanking,3000);
  }catch(e){const box=$('krtRankStatus');if(box){box.style.display='';box.className='notice warn';box.textContent=String(e.message||e)}}
 }
+async function startKrtInvestmentRating(){
+ const b=$('krtRatingBtn'),box=$('krtRankStatus');
+ const target=Math.max(1,Number(($('krtRatingTarget')||{}).value||600000));
+ // Массово считаем все площадки, куда теоретически ещё можно входить.
+ // Статус «В реализации» остаётся справочно и в рейтинг-прогон не входит.
+ const projects=(state.krt||[]).filter(x=>krtStatusKind(x)!=='running'&&x.slug);
+ const total=projects.length;
+ if(!total){
+  if(box){box.style.display='';box.className='notice';box.textContent='Нет площадок вне реализации для расчёта рейтинга.'}
+  return;
+ }
+ b.disabled=true;b.innerHTML='<span class="spinner"></span>Считаю 0/'+total;
+ if(box){box.style.display='';box.className='notice';box.textContent='Считаю рейтинг: 0 из '+total+' · ориентир '+new Intl.NumberFormat('ru-RU').format(target)+' ₽/м²'}
+ let done=0,finals=0,partial=0,failed=0,next=0;
+ const worker=async()=>{
+  while(true){
+   const index=next++;if(index>=projects.length)return;
+   const x=projects[index];
+   try{
+    const d=await askJson('/auctions/krt/'+encodeURIComponent(x.slug)+'/investment-score?price_target_rub_sqm='+encodeURIComponent(target),{cache:'no-store'});
+    const rating=d.rating||d,row=state.krtRank[x.slug]||{slug:x.slug};
+    row.investment_rating=rating;
+    if(d.absorption){
+     row.local_absorption_sqm_month=d.absorption.local_median_sqm_month;
+     row.moscow_absorption_sqm_month=d.absorption.moscow_median_sqm_month;
+     row.investment_rating_segment=d.absorption.segment;
+    }
+    state.krtRank[x.slug]=row;
+    if(rating&&rating.display_score!==null&&rating.display_score!==undefined)finals++;
+    else partial++;
+   }catch(e){failed++}
+   done++;
+   if(done===total||done%4===0){
+    b.innerHTML='<span class="spinner"></span>Считаю '+done+'/'+total;
+    if(box)box.textContent='Считаю рейтинг: '+done+' из '+total+' · готово '+finals+' · неполных '+partial+(failed?' · ошибок '+failed:'');
+    renderKrt();
+   }
+  }
+ };
+ await Promise.all(Array.from({length:Math.min(4,total)},()=>worker()));
+ renderKrt();
+ await loadKrtRanking();
+ if(box){
+  box.style.display='';box.className=failed?'notice warn':'notice';
+  box.textContent='Рейтинг для площадок вне реализации: '+finals+' итоговых, '+partial+' неполных'+(failed?', '+failed+' ошибок':'')+'. Ориентир '+new Intl.NumberFormat('ru-RU').format(target)+' ₽/м².';
+ }
+ b.disabled=false;b.textContent='Посчитать рейтинг планируемым';
+}
 async function startKrtRanking(onlyStale){
  const b=$('krtRankBtn');b.disabled=true;b.innerHTML='<span class="spinner"></span>Запускаю';
  try{
@@ -4181,7 +4229,7 @@ window.addEventListener('message',e=>{
  if(d.action==='plato'){renderAskContext();platoOpen(AUCTION_SURFACE);return}
 });
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('krtPrototypeModal').classList.contains('hidden'))closeKrtPrototype()});
-$('tabAuctions').onclick=()=>switchTab(false);$('tabKrt').onclick=()=>switchTab(true);$('krtRefresh').onclick=()=>loadKrt(true);$('krtRankBtn').onclick=startKrtRanking;$('krtPressBtn').onclick=readKrtPress;$('krtSearch').oninput=filterKrt;bindKrtFilters();document.getElementById('krtMapFold')?.addEventListener('toggle',ev=>{if(ev.target.open)loadKrtMap()});$('krtMinHousing').oninput=filterKrt;$('krtMinPrice').oninput=filterKrt;document.querySelectorAll('th[data-sort]').forEach(th=>{th.style.cursor='pointer';th.title=(th.title?th.title+'. ':'')+'Нажмите, чтобы отсортировать';th.onclick=()=>krtSortBy(th.dataset.sort)});
+$('tabAuctions').onclick=()=>switchTab(false);$('tabKrt').onclick=()=>switchTab(true);$('krtRefresh').onclick=()=>loadKrt(true);$('krtRankBtn').onclick=startKrtRanking;$('krtRatingBtn').onclick=startKrtInvestmentRating;$('krtPressBtn').onclick=readKrtPress;$('krtSearch').oninput=filterKrt;bindKrtFilters();document.getElementById('krtMapFold')?.addEventListener('toggle',ev=>{if(ev.target.open)loadKrtMap()});$('krtMinHousing').oninput=filterKrt;$('krtMinPrice').oninput=filterKrt;document.querySelectorAll('th[data-sort]').forEach(th=>{th.style.cursor='pointer';th.title=(th.title?th.title+'. ':'')+'Нажмите, чтобы отсортировать';th.onclick=()=>krtSortBy(th.dataset.sort)});
 $('krtOkrugToggle').onclick=e=>{e.stopPropagation();const menu=$('krtOkrugMenu'),open=menu.classList.contains('hidden');closeKrtMenus();menu.classList.toggle('hidden',!open);$('krtOkrugToggle').setAttribute('aria-expanded',String(open))};$('krtOkrugMenu').onclick=e=>e.stopPropagation();$('krtOkrugClear').onclick=()=>{state.krtOkrugs.clear();$('krtOkrugOptions').querySelectorAll('input').forEach(x=>x.checked=false);updateKrtOkrugLabel();filterKrt()};document.addEventListener('click',closeKrtMenus);document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeKrtMenus();$('krtOkrugToggle').focus()}});
 loadKrtRanking();
 // Ссылка из «Поделиться» открывает ту же территорию: получатель попадает на
