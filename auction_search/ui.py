@@ -2244,21 +2244,27 @@ function krtMarks(x){
  // что у `krtIntent`: нажатая кнопка свежее и потому сильнее, но своего
  // второго ответа не заводит.
  const press=(state.krtPress||{})[x.slug]||(state.krtRank[x.slug]||{}).press_facts||null;
- const renov=card.renovation||((press&&press.city_needs||[]).length>0);
+ const share=krtRenovation(x,state.krtRank[x.slug]||{});
+ // city_needs — более широкая корзина: туда входят нужды города, переселение
+ // и расселение. Раньше любое такое упоминание превращалось в плашку
+ // «реновация», поэтому Варшавское ш., вл. 37 получало реновацию, которой в
+ // решении нет. Для реновации нужен именно официальный признак карточки/
+ // решения либо цитата, где прямо сказано о реновации.
+ const cityRenov=(press&&press.city_needs||[]).find(v=>
+   /реновац|фонд\s+реновации/i.test(String((v||{}).quote||'')+' '+String((v||{}).title||'')))||null;
+ const renov=!!(card.renovation||share.share!==null||(share.read&&/реновац/i.test(String(share.quote||'')))||cityRenov);
  const builder=krtBuilderName(x);
  // На площадке уже продаётся ЖК — вход закрыт, и говорит об этом не канцелярия,
  // а страница продаж. Метка несёт свою цитату по тому же правилу, что реновация.
  const selling=((press&&press.selling_now)||[])[0]||null;
- // Метка несёт свою цитату: «почему реновация?» (владелец, 02.09.2026) — на
- // общий ответ «в публикации сказано» ответить нечем, на цитату — есть чем.
  const renovQuote=card.renovation_quote
-   ||(((press&&press.city_needs||[])[0]||{}).quote)
-   ||'В публикации сказано о городских нуждах';
+   ||share.quote
+   ||((cityRenov||{}).quote)
+   ||'Прямое упоминание реновации';
  // Доля из решения сильнее упоминания: «реновация» и «реновация — всё жильё»
  // это разные площадки. Сто процентов значит, что девелоперского продукта
  // здесь нет вовсе: Фонд реновации КРТ не торгует, он оператор КРТ и заказывает
  // подрядные работы (владелец, 03.09.2026), — войти можно подрядчиком.
- const share=krtRenovation(x,state.krtRank[x.slug]||{});
  const whole=share.share!==null&&share.share>=0.99;
  const renovLabel=whole?'100% реновация'
   :(share.share!==null?'реновация '+krtPct(share.share):'реновация');
