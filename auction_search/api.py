@@ -2188,10 +2188,25 @@ def install(app: FastAPI) -> None:
                                 for key in ("name", "district") if project.get(key))
             if not fallback:
                 raise
-            report = market.build_report(
-                fallback, radius_km=3.0, peers_limit=12,
-                city_reference=False, include_project_totals=True,
-            )
+            # Fallback уходит во внешний геокодер. Массовый прогон раньше
+            # стрелял по нему десятками адресов подряд и получал 429, после
+            # чего ранние/неопубликованные площадки не доходили ни до модели,
+            # ни до рейтинга. Один поток уже есть; добавляем честный интервал
+            # и один retry именно на rate limit.
+            time.sleep(1.1)
+            try:
+                report = market.build_report(
+                    fallback, radius_km=3.0, peers_limit=12,
+                    city_reference=False, include_project_totals=True,
+                )
+            except GeocodingError as exc:
+                if "too many requests" not in str(exc).casefold():
+                    raise
+                time.sleep(2.2)
+                report = market.build_report(
+                    fallback, radius_km=3.0, peers_limit=12,
+                    city_reference=False, include_project_totals=True,
+                )
         slug = str(project.get("slug") or "")
         document_id = slug[len("decision:"):] if slug.startswith("decision:") else ""
         try:
