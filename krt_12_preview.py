@@ -88,4 +88,13 @@ def install(app, core=None):
 
     @app.get("/krt-12-preview", response_class=HTMLResponse, include_in_schema=False)
     async def krt_12_preview():
-        return HTMLResponse(PAGE, headers={"Cache-Control":"no-store, must-revalidate"})
+        # Отдельная витрина больше не живёт своей методикой. Ранние площадки
+        # оцениваются в production-каталоге КРТ тем же рынком, движком и
+        # рейтингом, что планируемые.
+        target = "https://plato-development-investment-model.onrender.com/auctions?early=1"
+        return HTMLResponse(
+            '<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url='
+            + target + '"><title>Ранние КРТ</title><p><a href="' + target
+            + '">Открыть ранние проекты в каталоге КРТ</a></p>',
+            headers={"Cache-Control":"no-store, must-revalidate"},
+        )
