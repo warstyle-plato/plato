@@ -179,26 +179,54 @@ def select(*, krt_rings, lands=None, objects=None) -> dict[str, Any]:
     outside_rows = [r for r in object_rows if r["krt_state"] == "outside"]
     unresolved_rows = [r for r in object_rows if r["krt_state"] == "unresolved"]
 
-    valued = [
+    inside_lands = [r for r in land_rows if r["krt_state"] == "inside"]
+    valued_objects = [
         r for r in inside_rows
         if str(r.get("kind") or "").strip().lower() not in ("premise", "room", "помещение")
     ]
-    private_rub = city_rub = other_public_rub = 0.0
+    # Земля и ОКС входят в кадастровый выкуп раздельно. КН дедуплицируется
+    # глобально: один объект не должен попасть в сумму дважды из разных источников.
+    valued_by_cn: dict[str, dict[str, Any]] = {}
+    anonymous_valued: list[dict[str, Any]] = []
+    for row in [*inside_lands, *valued_objects]:
+        number = str(row.get("cadastral_number") or "").strip()
+        if number:
+            valued_by_cn.setdefault(number, row)
+        else:
+            anonymous_valued.append(row)
+    valued = list(valued_by_cn.values()) + anonymous_valued
+
+    private_rub = city_rub = other_public_rub = gross_known_rub = 0.0
+    private_land_rub = private_ocs_rub = 0.0
     unknown_value: list[str] = []
+    unknown_owner: list[str] = []
     for row in valued:
         value = _num(row.get("cadastral_value_rub"))
         number = str(row.get("cadastral_number") or "")
         owner = row.get("owner") or {}
         group = str(owner.get("group") or row.get("owner_group") or "").strip().lower()
+        owner_name = str(owner.get("name") or row.get("owner_name") or "").strip()
+        owner_state = str(owner.get("state") or row.get("owner_state") or "").strip().lower()
         if value is None:
             unknown_value.append(number)
             continue
+        gross_known_rub += value
         if group == "moscow":
             city_rub += value
         elif group in ("federal", "public", "other_public"):
             other_public_rub += value
-        else:
+        elif owner_name or group in ("private", "other", "non_moscow", "bryntsalov"):
             private_rub += value
+            kind = str(row.get("kind") or "").strip().lower()
+            if kind == "land" or row in inside_lands:
+                private_land_rub += value
+            else:
+                private_ocs_rub += value
+        else:
+            # Пустой собственник и «имя не раскрыто» — не частная собственность
+            # по умолчанию. Методика требует unknown, а не превращение пробела в выкуп.
+            unknown_owner.append(number)
+
 
     return {
         "lands": land_rows,
@@ -217,10 +245,15 @@ def select(*, krt_rings, lands=None, objects=None) -> dict[str, Any]:
             "private_buyout_rub": round(private_rub, 2),
             "moscow_excluded_rub": round(city_rub, 2),
             "other_public_rub": round(other_public_rub, 2),
+            "gross_known_rub": round(gross_known_rub, 2),
+            "private_land_rub": round(private_land_rub, 2),
+            "private_ocs_rub": round(private_ocs_rub, 2),
             "unknown_value_count": len(unknown_value),
             "unknown_value_numbers": unknown_value,
-            "complete": not unknown_value and not unresolved_rows,
-            "rule": "private/non-Moscow OCS=cadastral value; Moscow=0; other public separate; no premise/building double count",
+            "unknown_owner_count": len(unknown_owner),
+            "unknown_owner_numbers": unknown_owner,
+            "complete": not unknown_value and not unknown_owner and not unresolved_rows,
+            "rule": "private/non-Moscow land+OCS=cadastral value; Moscow=0; other public separate; unknown owner/value stays unknown; no premise/building double count",
         },
     }
 
