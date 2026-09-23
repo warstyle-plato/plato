@@ -512,6 +512,9 @@ _REMEMBERED_FACTS = (
     "local_absorption_sqm_month",
     "moscow_absorption_sqm_month",
     "investment_rating_segment",
+    "burden_pct",
+    "burden_mln",
+    "ordinary_capex_mln",
 )
 
 
