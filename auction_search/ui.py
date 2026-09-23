@@ -2379,7 +2379,7 @@ function krtDecisionDateCell(x){
  if(!at)return '<span class="source" style="margin:0">—</span>';
  const label=krtCityDay(at);
  const url=String(x.draft_decision_url||'').trim();
- const date='<b style="white-space:nowrap">'+esc(label)+'</b>';
+ const date='<span style="white-space:nowrap;font-weight:500">'+esc(label)+'</span>';
  return url
   ? '<a href="'+esc(url)+'" target="_blank" rel="noopener" onclick="event.stopPropagation()" title="Открыть проект решения на mos.ru">'+date+'</a>'
   : date;
