@@ -111,7 +111,7 @@ __DEVELOPAID_CONTOUR__
     <div id="krtDecisions" class="notice" style="display:none"></div>
     <div class="layout"><div class="tablecol"><div class="scrolltop" id="krtScrollTop"><div></div></div><div class="tablewrap" id="krtTableWrap"><table class="wide"><thead><tr>
 <th data-sort="name">Проект КРТ</th>
-<th data-sort="investment_rating" title="Новый инвестиционный рейтинг КРТ по методике GitHub issue #485. Не используется старый rank.score.">Рейтинг</th>
+<th data-sort="investment_rating" title="Инвестиционный рейтинг КРТ по действующей методике. Старый rank.score не используется.">Рейтинг</th>
 <th data-sort="ceiling" title="Предельная цена входа при LLCR 1,20x">Потолок входа</th>
 <th data-sort="llcr">LLCR</th>
 <th data-sort="margin">Маржа</th>
@@ -2191,7 +2191,7 @@ function renderKrtFilterNote(){
  box.textContent='';
  box.innerHTML=sorted+(bits.length?'Скрыто фильтром: '+bits.join('; ')+'.':'');
 }
-const KRT_SORT_NAMES={stage:'по шагу воронки',name:'по названию',investment_rating:'по рейтингу #485',ceiling:'по потолку входа',
+const KRT_SORT_NAMES={stage:'по шагу воронки',name:'по названию',investment_rating:'по рейтингу',ceiling:'по потолку входа',
  llcr:'по LLCR',margin:'по марже',market_price:'по цене окружения',status:'по статусу',area:'по площади',
  total:'по общему объёму',housing:'по объёму жилья',jobs:'по рабочим местам',
  decided:'по дате проекта решения'};
@@ -2317,7 +2317,7 @@ function krtInvestmentRatingCell(slug){
   const missing=(r.missing||[]).map(x=>names[x]||x).join(', ');
   return '<b>—</b><div class="source">'+coverage+'%'+(missing?' · нет: '+esc(missing):'')+'</div>';
  }
- return '<b>—</b><div class="source">ещё не рассчитан #485</div>';
+ return '<b>—</b><div class="source">ещё не рассчитан</div>';
 }
 function renderKrt(){const a=state.krtFiltered,body=$('krtRows');body.innerHTML='';renderKrtFilterNote();$('krtEmpty').style.display=a.length?'none':'grid';$('krtCount').textContent=a.length;
  // Плитка показывает ОТОБРАННОЕ, а подписана была просто «проектов»: на экране

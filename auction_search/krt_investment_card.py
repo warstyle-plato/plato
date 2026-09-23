@@ -52,7 +52,7 @@ details{border:1px solid var(--line);margin-top:10px}summary{cursor:pointer;padd
    <div class="kpi"><b id="commercialHousing">—</b><span>м² коммерческое жильё</span></div>
    <div class="kpi"><b id="marketPrice">—</b><span>₽/м² окружение</span></div>
    <div class="kpi"><b id="marketPace">—</b><span>ДДУ/мес. окружение</span></div>
-   <div class="kpi"><b id="scoreKpi">—</b><span>рейтинг #485</span></div>
+   <div class="kpi"><b id="scoreKpi">—</b><span>рейтинг</span></div>
   </div>
  </section>
 
@@ -108,7 +108,18 @@ details{border:1px solid var(--line);margin-top:10px}summary{cursor:pointer;padd
   <aside>
    <div class="sticky">
     <section class="card"><header><h2>Вход в проект</h2><span>отдельно от статуса города</span></header><div class="body" id="entry"></div></section>
-    <section class="card"><header><h2>Рейтинг КРТ #485</h2><span>неизвестное ≠ ноль</span></header><div class="body" id="score"><div class="notice">Читаю breakdown…</div></div></section>
+    <section class="card"><header><h2>Рейтинг КРТ</h2><span>неизвестное ≠ ноль</span></header><div class="body">
+      <div class="metric" style="align-items:center">
+       <span>Ценовой ориентир</span>
+       <div style="display:flex;gap:6px;align-items:center">
+        <input id="priceTarget" inputmode="numeric" type="number" min="1" step="10000" value="600000" style="width:118px;padding:7px 8px;border:1px solid var(--line);font:inherit">
+        <span style="color:var(--muted)">₽/м²</span>
+        <button id="recalcRating" type="button">Пересчитать</button>
+       </div>
+      </div>
+      <div class="source" style="margin-bottom:8px">600 000 ₽/м² — значение по умолчанию. Можно ввести любой другой ориентир и пересчитать только рейтинг, не пересчитывая рынок.</div>
+      <div id="score"><div class="notice">Читаю расчёт рейтинга…</div></div>
+     </div></section>
     <section class="card"><header><h2>Действия</h2><span>по этой площадке</span></header><div class="body actionbar">
       <button id="handoffDevelopAid" class="primary">Передать в DevelopAid</button><button id="askPlato">Спросить Платона</button><button id="shareCard">Поделиться</button><a id="territoryLink" target="_blank" rel="noopener">Территория и ЕГРН</a>
       <div id="actionStatus" class="source" style="flex-basis:100%"></div>
@@ -224,12 +235,12 @@ function ratingInput(k,x){
  return '';
 }
 function renderScore(sc){
- if(!sc){$('scoreKpi').textContent='—';$('score').innerHTML='<div class="notice">Breakdown #485 пока не рассчитан.</div>';return}
+ if(!sc){$('scoreKpi').textContent='—';$('score').innerHTML='<div class="notice">Расчёт рейтинга пока не получен.</div>';return}
  $('scoreKpi').textContent=sc.display_score===null||sc.display_score===undefined?'—':fmt(sc.display_score);
  const C=sc.components||{},order=['llcr','price','absorption','burden'];
  const m=sc.methodology||{};
  $('score').innerHTML='<div class="scorebig">'+(sc.display_score===null||sc.display_score===undefined?'—':fmt(sc.display_score))+'/100<small>'+esc(sc.reason||'инвестиционный рейтинг')+'</small></div><div class="source">Покрытие '+fmt(sc.coverage_pct)+'%</div><div class="components">'+order.map(k=>{const x=C[k]||{};return '<div class="component"><b>'+(x.score===null||x.score===undefined?'—':fmt(x.score,1))+'</b><span>'+esc(x.name||k)+'</span><div class="source">'+esc(ratingInput(k,x))+'</div><div class="source">'+esc(x.score===null||x.score===undefined?(x.missing_reason||'нет данных'):(x.formula||''))+'</div></div>'}).join('')+'</div>'
-  +'<div class="actionbar" style="margin-top:10px"><a target="_blank" rel="noopener" href="https://github.com/warstyle-plato/plato/issues/485">Методика рейтинга #485</a></div>'
+  +'<div class="actionbar" style="margin-top:10px"><a target="_blank" rel="noopener" href="https://github.com/warstyle-plato/plato/issues/485">Методика рейтинга</a></div>'
   +'<details><summary>Границы и алгоритм расчёта</summary><div class="detailsbody">'
   +'<div class="metric"><span>Итог</span><b>(LLCR + цена + поглощение + нагрузка) / 4</b></div>'
   +'<div class="metric"><span>LLCR</span><b>1,00→0 · 1,10→25 · 1,20→75 · 1,30+→100</b></div>'
@@ -272,17 +283,37 @@ function bindMap(){
  $('toggleLands').onclick=()=>{MAP.lands=!MAP.lands;$('toggleLands').classList.toggle('active',MAP.lands);drawMap()};$('toggleObjects').onclick=()=>{MAP.objects=!MAP.objects;$('toggleObjects').classList.toggle('active',MAP.objects);drawMap()};
 }
 function parentAction(action,p){if(window.parent&&window.parent!==window){window.parent.postMessage({type:'developaid-krt-card-action',action,slug:String(p.slug||''),name:String(p.name||'')},location.origin);return true}return false}
+function ratingUrl(){
+ const input=$('priceTarget'),target=Math.max(1,Number(input&&input.value||600000));
+ return '/auctions/krt/'+encodeURIComponent(SLUG)+'/investment-score?price_target_rub_sqm='+encodeURIComponent(target);
+}
+async function recalcRating(rank,report){
+ const b=$('recalcRating');if(b){b.disabled=true;b.innerHTML='<span class="spinner"></span>Считаю'}
+ try{
+  const s=await get(ratingUrl()),rating=s.rating||s;
+  renderScore(rating);
+  if(rank)renderEconomics(rank,report,rating);
+  return rating;
+ }catch(e){
+  $('score').insertAdjacentHTML('afterbegin','<div class="notice bad">'+esc(e.message||e)+'</div>');
+  return null;
+ }finally{
+  if(b){b.disabled=false;b.textContent='Пересчитать'}
+ }
+}
 async function boot(){
  bindMap();$('territoryLink').href='/krt/site/'+encodeURIComponent(SLUG);
  const [catR,rankR,reqR,pointR,parcelR,reportR,scoreR]=await Promise.allSettled([
-  get('/auctions/krt'),get('/auctions/krt/ranking'),get('/auctions/krt/'+encodeURIComponent(SLUG)+'/requirements'),get('/auctions/krt/'+encodeURIComponent(SLUG)+'/point'),get('/krt/site/'+encodeURIComponent(SLUG)+'/parcels'),get('/auctions/krt/'+encodeURIComponent(SLUG)+'/report'),get('/auctions/krt/'+encodeURIComponent(SLUG)+'/investment-score')
+  get('/auctions/krt'),get('/auctions/krt/ranking'),get('/auctions/krt/'+encodeURIComponent(SLUG)+'/requirements'),get('/auctions/krt/'+encodeURIComponent(SLUG)+'/point'),get('/krt/site/'+encodeURIComponent(SLUG)+'/parcels'),get('/auctions/krt/'+encodeURIComponent(SLUG)+'/report'),get(ratingUrl())
  ]);
  const cat=catR.status==='fulfilled'?catR.value:{projects:[]},p=findProject(cat);if(!p)throw new Error('Площадка не найдена в текущем каталоге КРТ');
  const rankData=rankR.status==='fulfilled'?rankR.value:{rows:[]},rank=(rankData.rows||[]).find(x=>String(x.slug||'')===SLUG)||{},req=reqR.status==='fulfilled'?reqR.value:(rank.requirements||{}),parcels=parcelR.status==='fulfilled'?parcelR.value:null,report=reportR.status==='fulfilled'?reportR.value:null;
  MAP.point=pointR.status==='fulfilled'?pointR.value:null;MAP.parcels=parcels;
  const initialRating=scoreR.status==='fulfilled'?(scoreR.value.rating||scoreR.value):null;
  renderHero(p,rank,req);renderEntry(p,rank);renderProgramme(p,req);renderTerritory(req,parcels);renderEconomics(rank,report,initialRating);renderPublic(rank);renderScore(initialRating);drawMap();
- $('refreshMarket').onclick=async()=>{const b=$('refreshMarket');b.disabled=true;b.innerHTML='<span class="spinner"></span>Считаю';try{const d=await get('/auctions/krt/'+encodeURIComponent(SLUG)+'/market');const r2=await get('/auctions/krt/ranking');const rr=(r2.rows||[]).find(x=>String(x.slug||'')===SLUG)||rank;renderHero(p,rr,req);try{const s=await get('/auctions/krt/'+encodeURIComponent(SLUG)+'/investment-score');const rating=s.rating||s;renderScore(rating);renderEconomics(rr,d,rating)}catch(_){renderEconomics(rr,d,null)}}catch(e){$('economics').insertAdjacentHTML('afterbegin','<div class="notice bad">'+esc(e.message||e)+'</div>')}finally{b.disabled=false;b.textContent='Обновить рынок и модель'}};
+ $('recalcRating').onclick=()=>recalcRating(rank,report);
+ $('priceTarget').onkeydown=e=>{if(e.key==='Enter')recalcRating(rank,report)};
+ $('refreshMarket').onclick=async()=>{const b=$('refreshMarket');b.disabled=true;b.innerHTML='<span class="spinner"></span>Считаю';try{const d=await get('/auctions/krt/'+encodeURIComponent(SLUG)+'/market');const r2=await get('/auctions/krt/ranking');const rr=(r2.rows||[]).find(x=>String(x.slug||'')===SLUG)||rank;renderHero(p,rr,req);try{const s=await get(ratingUrl());const rating=s.rating||s;renderScore(rating);renderEconomics(rr,d,rating)}catch(_){renderEconomics(rr,d,null)}}catch(e){$('economics').insertAdjacentHTML('afterbegin','<div class="notice bad">'+esc(e.message||e)+'</div>')}finally{b.disabled=false;b.textContent='Обновить рынок и модель'}};
  $('refreshPublic').onclick=async()=>{const b=$('refreshPublic');b.disabled=true;b.innerHTML='<span class="spinner"></span>Ищу';try{const d=await get('/auctions/krt/'+encodeURIComponent(SLUG)+'/open-sources');renderPublic(rank,d)}catch(e){$('publicContext').innerHTML='<div class="notice bad">'+esc(e.message||e)+'</div>'}finally{b.disabled=false;b.textContent='Обновить публичный поиск'}};
  $('handoffDevelopAid').onclick=()=>{const s=$('actionStatus');if(parentAction('handoff',p))s.textContent='Передаю в DevelopAid…';else location.href='/auctions#krt='+encodeURIComponent(SLUG)};
  $('askPlato').onclick=()=>{const s=$('actionStatus');if(parentAction('plato',p))s.textContent='Передаю контекст Платону…';else s.textContent='Платон открывается из каталога КРТ.'};
