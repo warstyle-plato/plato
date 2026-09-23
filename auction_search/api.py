@@ -2278,6 +2278,272 @@ def install(app: FastAPI) -> None:
         screening["market_report"] = _market_digest(report)
         return screening
 
+    def _cached_investment_rating_fields(
+        project: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Посчитать общий рейтинг из УЖЕ сохранённых рынка и модели.
+
+        Это дешёвый фоновый слой над существующим ranking/report. Он не ходит
+        к Pulse и не запускает второй финансовый движок: если рынок/модель ещё
+        не посчитаны, отдельный фоновый прогон ниже сначала заполняет их.
+        """
+        slug = str(project.get("slug") or "").strip()
+        if not slug or _krt_status_kind(project.get("status")) == "running":
+            return None
+        row = krt_ranking.stored_row(slug)
+        stored = krt_ranking.report(slug) or {}
+        screening = dict(stored.get("screening") or {})
+        # Даже отказ модели — полезная строка, но рейтинг без единого
+        # инвестиционного исходного числа в каталог писать бессмысленно.
+        if not row and not screening:
+            return None
+
+        metrics = dict(screening.get("metrics") or {})
+        market_block = dict(stored.get("market") or screening.get("market_report") or {})
+        analysis = dict(market_block.get("analysis") or {})
+        site = dict(analysis.get("site") or analysis.get("overall") or {})
+        hint = dict(market_block.get("price_hint") or {})
+        target = krt_ranking.rating_target(
+            krt_investment_score.DEFAULT_PRICE_TARGET_RUB_SQM)
+
+        llcr = metrics.get("project_llcr_x", row.get("project_llcr_x"))
+        market_price = row.get("surrounding_price_rub_sqm")
+        if market_price is None:
+            market_price = site.get("price_per_sqm", hint.get("price_per_sqm"))
+        if market_price is None:
+            market_price = project.get("source_market_rub_sqm")
+
+        peers = [p for p in (market_block.get("peers") or []) if isinstance(p, dict)]
+        local_absorption = row.get("local_absorption_sqm_month")
+        if local_absorption is None:
+            areas = []
+            for peer in peers:
+                try:
+                    value = peer.get("area_per_month")
+                    if value is not None:
+                        areas.append(float(value))
+                except (TypeError, ValueError):
+                    continue
+            if areas:
+                local_absorption = round(float(statistics.median(areas)), 1)
+
+        comparison = dict(market_block.get("comparison") or {})
+        subject = dict(market_block.get("subject") or {})
+        segment = (
+            comparison.get("segment")
+            or subject.get("segment")
+            or row.get("investment_rating_segment")
+            or row.get("segment")
+            or (screening.get("market") or {}).get("recommended_segment")
+        )
+        benchmark_absorption = row.get("moscow_absorption_sqm_month")
+        if benchmark_absorption is None and market is not None:
+            city = getattr(market, "city", None)
+            reader = getattr(city, "area_median", None)
+            if callable(reader):
+                benchmark_absorption = reader(segment)
+
+        burden_pct = row.get("burden_pct")
+        burden_mln = row.get("burden_mln")
+        ordinary_capex_mln = row.get("ordinary_capex_mln")
+        entry_capacity_mln = row.get("entry_capacity_mln")
+
+        if project.get("early_unpublished"):
+            try:
+                early_burden = float(project.get("seizure_mln"))
+            except (TypeError, ValueError):
+                early_burden = 0.0
+            model_inputs = dict(screening.get("model_inputs") or {})
+            if ordinary_capex_mln is None and model_inputs:
+                try:
+                    ordinary_capex_mln = krt_investment_score._ordinary_capex(
+                        core,
+                        dict(model_inputs.get("inputs") or {}),
+                        dict(model_inputs.get("tep") or {}),
+                        dict(model_inputs.get("phasing") or {}),
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception("Early KRT background CAPEX failed slug=%s", slug)
+            if early_burden > 0 and ordinary_capex_mln and float(ordinary_capex_mln) > 0:
+                burden_mln = early_burden
+                burden_pct = 100.0 * early_burden / float(ordinary_capex_mln)
+
+        # Нагатино остаётся контрольным кейсом только для денежной нагрузки.
+        # LLCR и потолок здесь не подменяются контрольной моделью.
+        text = " ".join(str(project.get(k) or "") for k in ("name", "address", "district"))
+        try:
+            area = float(project.get("area_ha") or 0)
+        except (TypeError, ValueError):
+            area = 0.0
+        if abs(area - 14.62) < 0.08 and re.search(r"(нагатин|варшавск)", text, re.I):
+            try:
+                control = krt_investment_score.nagatino_live_example(core)
+            except Exception:  # noqa: BLE001
+                logger.exception("Nagatino background burden failed")
+                control = {}
+            if control.get("available"):
+                stack = control.get("cost_stack") or {}
+                burden_pct = control.get("burden_pct")
+                burden_mln = stack.get("total_known_mln")
+                ordinary_capex_mln = control.get("ordinary_capex_mln")
+
+        missing_reasons: dict[str, str] = {}
+        if local_absorption is None or benchmark_absorption is None:
+            missing_reasons["absorption"] = (
+                "Нет пары поглощения в м²/мес. для локального рынка и Москвы."
+            )
+        if burden_pct is None:
+            missing_reasons["burden"] = (
+                "Полная денежная нагрузка КРТ пока не собрана; неизвестное не равно нулю."
+            )
+
+        rating = krt_investment_score.score(
+            status_kind="planned",
+            llcr=llcr,
+            market_rub_sqm=market_price,
+            target_rub_sqm=target,
+            local_sqm_month=local_absorption,
+            benchmark_sqm_month=benchmark_absorption,
+            burden_pct=burden_pct,
+            burden_mln=burden_mln,
+            ordinary_capex_mln=ordinary_capex_mln,
+            housing_gfa_sqm=project.get("housing_gfa_sqm") or row.get("housing_gfa_sqm"),
+            entry_capacity_mln=entry_capacity_mln,
+            sources={
+                "llcr": "DevelopAid financial engine",
+                "price": "рынок 3 км",
+                "absorption": "Pulse, м²/мес.",
+                "burden": (
+                    "предварительная оценка изъятия / ordinary CAPEX"
+                    if project.get("early_unpublished")
+                    else "обязательства КРТ / ordinary CAPEX"
+                ),
+            },
+            missing_reasons=missing_reasons,
+        )
+        stored_rating = {
+            key: rating.get(key) for key in
+            ("score", "display_score", "coverage_pct", "rankable", "reason", "missing")
+        }
+        stored_rating["components"] = {
+            key: {
+                "name": value.get("name"),
+                "score": value.get("score"),
+                "value": value.get("value"),
+                "benchmark": value.get("benchmark"),
+                "ratio": value.get("ratio"),
+            }
+            for key, value in (rating.get("components") or {}).items()
+        }
+        return {
+            "investment_rating": stored_rating,
+            "investment_rating_version": str(
+                (rating.get("methodology") or {}).get("version") or ""),
+            "investment_rating_target_rub_sqm": target,
+            "investment_rating_computed_at": int(time.time()),
+            "local_absorption_sqm_month": local_absorption,
+            "moscow_absorption_sqm_month": benchmark_absorption,
+            "investment_rating_segment": segment,
+        }
+
+    def _rating_needs_recount(project: dict[str, Any], row: dict[str, Any]) -> bool:
+        if _krt_status_kind(project.get("status")) == "running":
+            return False
+        target = krt_ranking.rating_target(
+            krt_investment_score.DEFAULT_PRICE_TARGET_RUB_SQM)
+        version = str(krt_investment_score.methodology().get("version") or "")
+        rating = (row or {}).get("investment_rating") or {}
+        if not rating:
+            return True
+        if str((row or {}).get("investment_rating_version") or "") != version:
+            return True
+        try:
+            if abs(float((row or {}).get("investment_rating_target_rub_sqm")) - target) > 0.5:
+                return True
+        except (TypeError, ValueError):
+            return True
+        try:
+            model_at = int((row or {}).get("computed_at") or 0)
+            rating_at = int((row or {}).get("investment_rating_computed_at") or 0)
+        except (TypeError, ValueError):
+            return True
+        return model_at > rating_at
+
+    def _rating_screen_only(project: dict[str, Any]) -> dict[str, Any]:
+        """Достроить только рынок + модель, без платного поиска публикаций."""
+        screening, report = _market_model_only(project)
+        answer = dict(screening or {})
+        if report:
+            answer["market_report"] = _market_digest(report)
+        return answer
+
+    def _fill_cached_investment_ratings() -> int:
+        """Положить готовые рейтинги в общий серверный каталог."""
+        changed = 0
+        for project in _krt_all_sites():
+            if _krt_status_kind(project.get("status")) == "running":
+                continue
+            slug = str(project.get("slug") or "").strip()
+            if not slug:
+                continue
+            row = krt_ranking.stored_row(slug)
+            if not _rating_needs_recount(project, row):
+                continue
+            fields = _cached_investment_rating_fields(project)
+            if not fields:
+                continue
+            krt_ranking.remember(slug, fields)
+            changed += 1
+        return changed
+
+    def _rating_background_loop() -> None:
+        """Фоново поддерживать рейтинг каталога без участия пользователя.
+
+        Сначала дешёвая арифметика по уже сохранённым отчётам. Если у новой
+        площадки ещё нет нынешней модели, запускается существующий background
+        runner рынка+DevelopAid небольшими порциями; после его записи следующий
+        такт автоматически положит рейтинг в ranking.json.
+        """
+        time.sleep(12)
+        while True:
+            try:
+                changed = _fill_cached_investment_ratings()
+                if changed:
+                    logger.info("KRT background rating: stored %d ratings", changed)
+
+                off = _market_source_off()
+                if not off and core is not None and market is not None and not krt_ranking.claimed():
+                    now = time.time()
+                    missing: list[dict[str, Any]] = []
+                    for project in _krt_all_sites():
+                        if _krt_status_kind(project.get("status")) == "running":
+                            continue
+                        slug = str(project.get("slug") or "").strip()
+                        if not slug:
+                            continue
+                        row = krt_ranking.stored_row(slug)
+                        # Неудачный нынешний расчёт не гоняем каждую минуту.
+                        # Повтор — не раньше суток; свежая успешная строка
+                        # проверяется обычным version/fingerprint правилом.
+                        try:
+                            age = now - float(row.get("computed_at") or 0)
+                        except (TypeError, ValueError):
+                            age = 10**9
+                        needs_model = (
+                            (not row)
+                            or (row.get("available") and krt_ranking_rules.model_needs_recount(row))
+                            or (not row.get("available") and age >= 24 * 60 * 60)
+                        )
+                        if needs_model:
+                            missing.append(project)
+                        if len(missing) >= 20:
+                            break
+                    if missing:
+                        krt_ranking.start(missing, _rating_screen_only)
+            except Exception:  # noqa: BLE001
+                logger.exception("KRT background rating loop")
+            time.sleep(60)
+
     @app.get("/auctions/krt/decisions")
     async def auction_krt_decisions(refresh: bool = False) -> dict[str, Any]:
         """Решения о КРТ, у которых нет карточки в каталоге.
@@ -4393,3 +4659,7 @@ def install(app: FastAPI) -> None:
         threading.Thread(target=_weekly_ranking, name="krt-weekly", daemon=True).start()
     if os.getenv("AUCTION_KRT_WATCH", "1").strip() not in {"0", "false", "no"}:
         threading.Thread(target=_krt_watch_loop, name="krt-watch", daemon=True).start()
+    if os.getenv("AUCTION_KRT_RATING_BACKGROUND", "1").strip() not in {"0", "false", "no"}:
+        threading.Thread(
+            target=_rating_background_loop, name="krt-rating-background", daemon=True
+        ).start()
