@@ -433,7 +433,7 @@ def refresh(defn: dict[str, Any], core: Any, *, root: Path | None = None, force:
 
     def run() -> None:
         with _SLOTS:
-            LOGGER.info("KRT12 lot=%s analysis started", lot)
+            print(f"KRT12 lot={lot} analysis started", flush=True)
             try:
                 result = analyse(defn, core, root=root)
             except Exception as exc:
@@ -444,10 +444,11 @@ def refresh(defn: dict[str, Any], core: Any, *, root: Path | None = None, force:
                 _save(lot, result, root=root)
                 rating=result.get("rating") or {}
                 cad=result.get("cadastre") or {}
-                LOGGER.info(
-                    "KRT12 lot=%s done slug=%s score=%s coverage=%s spatial=%s cad_complete=%s problem=%s",
-                    lot, result.get("slug"), rating.get("display_score"), rating.get("coverage_pct"),
-                    cad.get("spatial_counts"), cad.get("complete"), cad.get("spatial_problem") or result.get("reason") or "",
+                print(
+                    f"KRT12 lot={lot} done slug={result.get('slug')} score={rating.get('display_score')} "
+                    f"coverage={rating.get('coverage_pct')} spatial={cad.get('spatial_counts')} "
+                    f"cad_complete={cad.get('complete')} problem={cad.get('spatial_problem') or result.get('reason') or ''}",
+                    flush=True,
                 )
             finally:
                 with _LOCK:
