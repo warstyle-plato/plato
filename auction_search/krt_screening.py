@@ -145,7 +145,7 @@ def _empty_tep(core: Any) -> dict[str, dict[str, Any]]:
 # ценой жилья этой площадки вместо фиксированных 500 тыс ₽/м². Числа
 # посчитанных строк от этого меняются у всех, где нежилое названо: на
 # Рубцовской наб., влд. 3 чистая 257,5 → 429,4 млн ₽, LLCR 1,092 → 1,043.
-SCREENING_RULES_VERSION = 3
+SCREENING_RULES_VERSION = 4
 
 
 def _market_inputs(report: dict[str, Any]) -> tuple[str | None, float, float, str]:
@@ -740,6 +740,14 @@ def build_krt_model_screening(
 
     model_class, class_label, class_note = _CLASS_MAP[segment]
     inputs = copy.deepcopy(core.DEFAULT_INPUTS)
+    # Для раннего сигнала известная оценка изъятия — уже не unknown. Она не
+    # является ценой права КРТ, но это обязательный денежный вход в площадку.
+    # Базовая модель должна нести её, иначе LLCR, маржа и резерв входа выглядят
+    # лучше проекта на миллиарды рублей. Графика платежей в источнике нет —
+    # кладём её в ту же переменную приобретения как консервативный платёж входа.
+    early_fixed_burden_mln = (
+        _number(project.get("seizure_mln")) if project.get("early_unpublished") else 0.0
+    )
     preset = copy.deepcopy(core.PROJECT_CLASS_PRESETS[model_class])
     inputs.update({key: value for key, value in preset.items() if key != "label"})
     inputs.update({
@@ -753,7 +761,7 @@ def build_krt_model_screening(
             start_price / 1000.0),
         "offices_price_th_per_sqm": core.nonresidential_price_th(
             start_price / 1000.0),
-        "purchase_price_mln": 0.0,
+        "purchase_price_mln": early_fixed_burden_mln,
         "land_rights_cost_mln": 0.0,
         "vri_required": False,
         "vri_security_cost_mln": 0.0,
@@ -950,20 +958,57 @@ def build_krt_model_screening(
         or duties["unmodelled_construction"]
         or duties["nonhousing_gfa_sqm"] > 0
     )
-    if known_unpriced and traffic["tone"] == "ok":
+    burden_incomplete = bool(
+        known_unpriced
+        or not duties["available"]
+        or (project.get("early_unpublished") and project.get("burden_complete") is not True)
+    )
+    if burden_incomplete and traffic["tone"] == "ok":
         traffic = {
             "tone": "warn",
             "label": "Проходит до неоценённых обязательств",
             "score": 55,
         }
-    entry_capacity = _goal_seek_entry_capacity(core, inputs, tep, phasing, bundle)
+    raw_entry_capacity = _goal_seek_entry_capacity(core, inputs, tep, phasing, bundle)
+    entry_capacity = raw_entry_capacity
+    # Goal-seek знает только посчитанные денежные строки. Когда обязательства
+    # ещё не оценены, его число — НЕ «потолок входа», а лишь верхняя граница до
+    # неизвестных нагрузок. Для ранней площадки из этой границы дополнительно
+    # вычитаем уже известное изъятие: цена права КРТ и изъятие — разные деньги.
+    if raw_entry_capacity and raw_entry_capacity.get("available") and burden_incomplete:
+        gross = _number(raw_entry_capacity.get("amount_mln"))
+        upper_for_right = max(0.0, gross - early_fixed_burden_mln)
+        reasons = []
+        if project.get("early_unpublished") and project.get("burden_complete") is not True:
+            reasons.append("ранний источник не даёт полного денежного стека обязательств")
+        if not duties["available"]:
+            reasons.append("проект решения с обязательствами не прочитан")
+        if known_unpriced:
+            reasons.append("есть опубликованные, но неоценённые обязательства")
+        entry_capacity = {
+            "available": False,
+            "reason": (
+                "Точный потолок входа не публикуется: " + "; ".join(reasons)
+                + ". Показана только верхняя граница до неизвестных нагрузок."
+            ),
+            "upper_bound_mln": round(upper_for_right, 1),
+            "gross_capacity_mln": round(gross, 1),
+            "known_fixed_burden_mln": round(early_fixed_burden_mln, 1),
+            "target_llcr_x": TARGET_LLCR,
+        }
     # Цена названа — считаем по ней. Потолок отвечает «проходит или нет», а
     # человек перед подачей заявки спрашивает, ЧТО выходит по этой цене.
     at_asking: dict[str, Any] | None = None
     asking = _number(asking_price_mln)
     if asking > 0:
         try:
-            at_asking = model_at_asking_price(core, inputs, tep, phasing, asking)
+            model_entry = asking + early_fixed_burden_mln
+            at_asking = model_at_asking_price(core, inputs, tep, phasing, model_entry)
+            if early_fixed_burden_mln > 0:
+                at_asking["auction_price_mln"] = round(asking, 1)
+                at_asking["known_fixed_burden_mln"] = round(early_fixed_burden_mln, 1)
+                at_asking["model_entry_mln"] = round(model_entry, 1)
+                at_asking["price_mln"] = round(asking, 1)
         except Exception as exc:  # noqa: BLE001
             # Отказ называется: молча пропущенный второй прогон неотличим от
             # «цены нет», а цена есть и стоит рядом на экране.
@@ -1117,9 +1162,20 @@ def build_krt_model_screening(
             "скрининг упёрся в штатный предел модели, поэтому средняя очередь крупнее цели."
         )
     exclusions = [
-        "Цена приобретения / входа принята равной нулю.",
+        (
+            f"В базовый прогон включена известная оценка изъятия "
+            f"{_ru_number(early_fixed_burden_mln)} млн ₽; цена права КРТ принята нулевой."
+            if early_fixed_burden_mln > 0
+            else "Цена приобретения / входа принята равной нулю."
+        ),
         "Плата за ВРИ и оформление земельных правоотношений не включены.",
     ]
+    if project.get("early_unpublished") and project.get("burden_complete") is not True:
+        exclusions.append(
+            "Ранний источник не даёт полного денежного стека обязательств. "
+            "Поэтому точный потолок цены права не публикуется: доступна только "
+            "верхняя граница до неизвестных нагрузок."
+        )
     if _volumes.get("taken") and _number(_volumes.get("utility_sqm")) > 0:
         exclusions.append(
             f"Решение обязывает построить не менее {_ru_number(_volumes.get('utility_sqm'))} м² "

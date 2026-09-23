@@ -2690,8 +2690,15 @@ function krtRankCell(slug){
  if(!row)return '<span class="source">не оценён</span>';
  if(!row.available)return `<span class="source" title="${esc(row.reason||'')}">не посчитан</span>`;
  const per=row.entry_capacity_rub_per_sqm;
- if(per===null||per===undefined)
-  return `<span class="source" title="${esc(row.entry_capacity_reason||'')}">потолок не подобран</span>`;
+ if(per===null||per===undefined){
+  const upper=row.entry_capacity_upper_bound_rub_per_sqm;
+  if(upper!==null&&upper!==undefined){
+   const total=row.entry_capacity_upper_bound_mln!=null
+    ?`<span class="source">не более ${esc(fmtMln(row.entry_capacity_upper_bound_mln))} до прочих обязательств</span>`:'';
+   return `<b title="${esc(row.entry_capacity_reason||'')}">≤ ${new Intl.NumberFormat('ru-RU').format(Number(upper))} ₽/м²</b>${total}`;
+  }
+  return `<span class="source" title="${esc(row.entry_capacity_reason||'')}">потолок не определён</span>`;
+ }
  const total=row.entry_capacity_mln!=null?`<span class="source">всего ${esc(fmtMln(row.entry_capacity_mln))}</span>`:'';
  const site=(state.krt||[]).find(one=>one.slug===slug);
  const verdict=site?krtPriceVerdict(site):null;

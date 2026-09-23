@@ -229,8 +229,15 @@ function renderEconomics(rank,report,rating){
  const screening=(report&&report.screening)||rank.screening||{},m=screening.metrics||{};
  const modelLlcr=num(m.project_llcr_x??rank.project_llcr_x),ratedLlcr=num((((rating||{}).components||{}).llcr||{}).value);
  const llcrLabel='<div class="metric"><span>LLCR проекта</span><b>'+fmt(modelLlcr??ratedLlcr,3)+'x</b></div>';
+ const cap=num(rank.entry_capacity_mln),capPer=num(rank.entry_capacity_rub_per_sqm);
+ const capUpper=num(rank.entry_capacity_upper_bound_mln),capUpperPer=num(rank.entry_capacity_upper_bound_rub_per_sqm);
+ const capBlock=cap!==null
+  ?'<div class="metric"><span>Потолок входа</span><b>'+fmt(cap,1)+' млн ₽</b></div><div class="metric"><span>Потолок / продаваемый м²</span><b>'+fmt(capPer)+' ₽/м²</b></div>'
+  :(capUpper!==null
+    ?'<div class="metric"><span>Верхняя граница входа</span><b>≤ '+fmt(capUpper,1)+' млн ₽</b></div><div class="metric"><span>Граница / продаваемый м²</span><b>≤ '+fmt(capUpperPer)+' ₽/м²</b></div><div class="source">'+esc(rank.entry_capacity_reason||'Есть неоценённые обязательства')+'</div>'
+    :'<div class="metric"><span>Потолок входа</span><b>—</b></div><div class="source">'+esc(rank.entry_capacity_reason||'Не определён')+'</div>');
  let html='<div class="two"><div class="bucket"><h3>Рынок 3 км</h3><div class="metric"><span>Цена окружения</span><b>'+fmt(price)+' ₽/м²</b></div><div class="metric"><span>Темп</span><b>'+fmt(pace,1)+' ДДУ/мес.</b></div><div class="metric"><span>Сегмент</span><b>'+esc(rank.segment||market.recommended_segment||'—')+'</b></div><div class="metric"><span>Аналоги</span><b>'+fmt(peers.length)+'</b></div></div>'
-  +'<div class="bucket"><h3>Экономика DevelopAid</h3>'+llcrLabel+'<div class="metric"><span>Маржа</span><b>'+fmt(m.margin_pct??rank.margin_pct,1)+'%</b></div><div class="metric"><span>Потолок входа</span><b>'+fmt(rank.entry_capacity_mln,1)+' млн ₽</b></div><div class="metric"><span>Потолок / продаваемый м²</span><b>'+fmt(rank.entry_capacity_rub_per_sqm)+' ₽/м²</b></div></div></div>';
+  +'<div class="bucket"><h3>Экономика DevelopAid</h3>'+llcrLabel+'<div class="metric"><span>Маржа</span><b>'+fmt(m.margin_pct??rank.margin_pct,1)+'%</b></div>'+capBlock+'</div></div>';
  if(peers.length)html+='<div style="margin-top:12px"><div class="statusline" style="font-size:14px">ЖК окружения из Пульса продаж</div><div class="source">Проекты, на которых основаны цена и поглощение рынка в радиусе 3 км.</div><div style="overflow:auto;margin-top:7px"><table><thead><tr><th>ЖК</th><th>Расстояние</th><th>Цена</th><th>м²/мес.</th><th>ДДУ/мес.</th><th>Остаток</th></tr></thead><tbody>'+peers.slice(0,12).map(x=>'<tr><td><b>'+esc(x.name||x.address||'—')+'</b><div class="source">'+esc(x.developer||x.builder||'')+'</div></td><td>'+fmt(x.distance_km,1)+' км</td><td class="num">'+fmt(x.price_per_sqm)+' ₽/м²</td><td class="num">'+fmt(x.area_per_month,1)+'</td><td class="num">'+fmt(x.units_per_month,1)+'</td><td class="num">'+fmt(x.remaining_units)+'</td></tr>').join('')+'</tbody></table></div></div>';
  if(screening&&screening.available===false)html+='<div class="notice warn">'+esc(screening.reason||'Модель не собрана')+'</div>';
  $('economics').innerHTML=html;
