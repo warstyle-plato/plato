@@ -4,6 +4,7 @@ import io
 import logging
 import os
 import re
+import statistics
 import sys
 import threading
 import time
@@ -1041,8 +1042,39 @@ def install(app: FastAPI) -> None:
         if market_price is None:
             market_price = site.get("price_per_sqm", hint.get("price_per_sqm"))
 
+        # #485: поглощение считается в м²/мес. Нужные числа УЖЕ есть
+        # в production market report: каждый peer несёт Pulse area_per_month.
+        # Прежняя связка смотрела только в строку ranking, куда эти поля никогда
+        # не записывались, поэтому карточка показывала coverage 75% при полностью
+        # посчитанном рынке.
         local_absorption = row.get("local_absorption_sqm_month")
         benchmark_absorption = row.get("moscow_absorption_sqm_month")
+        peers = list(market_block.get("peers") or [])
+        if local_absorption is None:
+            areas = []
+            for peer in peers:
+                try:
+                    value = peer.get("area_per_month")
+                    if value is not None:
+                        areas.append(float(value))
+                except (TypeError, ValueError, AttributeError):
+                    continue
+            if areas:
+                local_absorption = round(float(statistics.median(areas)), 1)
+        comparison = dict(market_block.get("comparison") or {})
+        subject = dict(market_block.get("subject") or {})
+        segment = (
+            comparison.get("segment")
+            or subject.get("segment")
+            or row.get("segment")
+            or (screening.get("market") or {}).get("recommended_segment")
+        )
+        if benchmark_absorption is None and market is not None:
+            city = getattr(market, "city", None)
+            reader = getattr(city, "area_median", None)
+            if callable(reader):
+                benchmark_absorption = reader(segment)
+
         burden_pct = row.get("burden_pct")
         burden_mln = row.get("burden_mln")
         ordinary_capex_mln = row.get("ordinary_capex_mln")
@@ -1100,12 +1132,56 @@ def install(app: FastAPI) -> None:
             sources={
                 "llcr": "DevelopAid financial engine",
                 "price": "рынок 3 км",
-                "absorption": "рыночный отчёт, м²/мес.",
+                "absorption": (
+                    f"Pulse: медиана {len([p for p in peers if isinstance(p, dict) and p.get('area_per_month') is not None])} "
+                    f"аналогов 3 км / Москва, класс {segment or 'не определён'}, м²/мес."
+                ),
                 "burden": "ЕГРН + обязательства КРТ + DevelopAid ordinary CAPEX",
             },
             missing_reasons=missing_reasons,
         )
-        return {"slug": slug, "rating": rating, "control_case": control}
+        # Карточка и таблица читают один и тот же результат. Храним только
+        # компактный summary, а не всю методику #485 на каждой строке.
+        stored_rating = {
+            key: rating.get(key) for key in
+            ("score", "display_score", "coverage_pct", "rankable", "reason", "missing")
+        }
+        stored_rating["components"] = {
+            key: {
+                "name": value.get("name"),
+                "score": value.get("score"),
+                "value": value.get("value"),
+                "benchmark": value.get("benchmark"),
+                "ratio": value.get("ratio"),
+            }
+            for key, value in (rating.get("components") or {}).items()
+        }
+        await run_in_threadpool(
+            krt_ranking.remember,
+            slug,
+            {
+                "investment_rating": stored_rating,
+                "investment_rating_version": str(
+                    (rating.get("methodology") or {}).get("version") or ""),
+                "local_absorption_sqm_month": local_absorption,
+                "moscow_absorption_sqm_month": benchmark_absorption,
+                "investment_rating_segment": segment,
+            },
+        )
+        return {
+            "slug": slug,
+            "rating": rating,
+            "control_case": control,
+            "absorption": {
+                "local_median_sqm_month": local_absorption,
+                "moscow_median_sqm_month": benchmark_absorption,
+                "segment": segment,
+                "peer_count": len([
+                    p for p in peers
+                    if isinstance(p, dict) and p.get("area_per_month") is not None
+                ]),
+            },
+        }
 
     @app.get("/auctions/krt-prototype/nagatino", response_class=HTMLResponse, include_in_schema=False)
     async def auction_krt_nagatino_prototype() -> HTMLResponse:
