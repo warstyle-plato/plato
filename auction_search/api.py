@@ -1017,8 +1017,8 @@ def install(app: FastAPI) -> None:
     @app.get("/auctions/krt/{slug}/investment-score", include_in_schema=False)
     async def auction_krt_investment_score(
         slug: str,
-        price_target_rub_sqm: float = Query(
-            krt_investment_score.DEFAULT_PRICE_TARGET_RUB_SQM,
+        price_target_rub_sqm: float | None = Query(
+            default=None,
             ge=1,
             le=10_000_000,
         ),
@@ -1073,10 +1073,20 @@ def install(app: FastAPI) -> None:
         site = dict(analysis.get("site") or analysis.get("overall") or {})
         hint = dict(market_block.get("price_hint") or {})
 
+        shared_target = krt_ranking.rating_target(
+            krt_investment_score.DEFAULT_PRICE_TARGET_RUB_SQM)
+        price_target_rub_sqm = float(
+            price_target_rub_sqm if price_target_rub_sqm is not None else shared_target)
+
         llcr = metrics.get("project_llcr_x", row.get("project_llcr_x"))
         market_price = row.get("surrounding_price_rub_sqm")
         if market_price is None:
             market_price = site.get("price_per_sqm", hint.get("price_per_sqm"))
+        if market_price is None:
+            # Ранний неопубликованный список может не иметь живого отчёта Pulse
+            # ещё до геокодирования. Его сохранённый рыночный ориентир лучше
+            # честного partial-rating, чем ложный ноль или исчезнувшая строка.
+            market_price = project.get("source_market_rub_sqm")
 
         # #485: поглощение считается в м²/мес. Нужные числа УЖЕ есть
         # в production market report: каждый peer несёт Pulse area_per_month.
@@ -1224,7 +1234,7 @@ def install(app: FastAPI) -> None:
             }
             for key, value in (rating.get("components") or {}).items()
         }
-        canonical_target = krt_investment_score.DEFAULT_PRICE_TARGET_RUB_SQM
+        canonical_target = shared_target
         canonical = abs(float(price_target_rub_sqm) - float(canonical_target)) < 0.5
         # В общий каталог записывается только канонический рейтинг. Сценарий,
         # который пользователь крутит в карточке другим ориентиром, не должен
@@ -3304,6 +3314,8 @@ def install(app: FastAPI) -> None:
         """
         rows = [_row_without_stale_facts(row) for row in krt_ranking.rows()]
         return {
+            "investment_rating_target_rub_sqm": krt_ranking.rating_target(
+                krt_investment_score.DEFAULT_PRICE_TARGET_RUB_SQM),
             "measure": "entry_capacity_rub_per_sqm",
             "measure_label": "Потолок цены входа, ₽/м² продаваемой",
             "target_llcr": 1.20,
@@ -3401,6 +3413,22 @@ def install(app: FastAPI) -> None:
             tally[name] = tally.get(name, 0) + 1
         return [{"engine": name, "rows": count}
                 for name, count in sorted(tally.items(), key=lambda kv: (-kv[1], kv[0]))]
+
+    @app.post("/auctions/krt/investment-rating/target", include_in_schema=False)
+    async def auction_krt_rating_target(request: Request) -> dict[str, Any]:
+        """Сменить общий ценовой ориентир рейтинга каталога.
+
+        Настройка серверная и видна всем. Индивидуальный сценарий в карточке
+        может считать другой ориентир, не меняя это значение.
+        """
+        market_cabinet.require_cabinet(request)
+        payload = await json_object(request)
+        try:
+            target = float((payload or {}).get("price_target_rub_sqm"))
+            target = await run_in_threadpool(krt_ranking.set_rating_target, target)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"price_target_rub_sqm": target}
 
     @app.post("/auctions/krt/ranking/refresh")
     async def auction_krt_ranking_refresh(
