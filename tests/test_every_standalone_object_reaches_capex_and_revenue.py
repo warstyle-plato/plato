@@ -102,8 +102,11 @@ def test_not_a_single_object_is_left_out_of_the_breakdown() -> None:
     line = _standalone_line(_result())
     items = line.get("items") or []
     named = {str(item["key"]) for item in items}
-    assert named == {obj.key for obj in core.STANDALONE_OBJECTS}, (
-        f"в разбивке названы не все объекты: {sorted(named)}")
+    inputs = _inputs()
+    expected = {obj.key for obj in core.STANDALONE_OBJECTS
+                if bool(inputs.get(obj.enabled_key))}
+    assert named == expected, (
+        f"в разбивке названы не все включённые объекты: {sorted(named)}")
     assert sum(float(item["value"]) for item in items) == pytest.approx(
         float(line["value"]), rel=1e-9), "подстроки не складываются в свою строку"
 
@@ -138,8 +141,9 @@ def test_the_page_and_the_engine_agree_on_the_ground_parking() -> None:
 def test_only_the_office_garage_is_sold() -> None:
     """Места ТЦ и ФОКа строятся и не продаются, у офисника — за вычетом гостевых."""
     rows = {row["key"]: row for row in _result()["tep"]["rows"]}
+    inputs = _inputs()
     for obj in core.STANDALONE_OBJECTS:
-        if not obj.garage:
+        if not obj.garage or not bool(inputs.get(obj.enabled_key)):
             continue
         row = rows[obj.key]
         assert row["parking_units"] == SPACES, f"{obj.key}: гараж не построен"
