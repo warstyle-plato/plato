@@ -512,6 +512,9 @@ _REMEMBERED_FACTS = (
     "local_absorption_sqm_month",
     "moscow_absorption_sqm_month",
     "investment_rating_segment",
+    "burden_pct",
+    "burden_mln",
+    "ordinary_capex_mln",
 )
 
 
@@ -574,6 +577,7 @@ class KrtRanking:
         # снимка — сбой записи снимка объявил бы новость, которую мы не
         # запомнили, и она пришла бы снова.
         self.watch_seen_path = Path(data_dir) / "krt" / "watch_seen.json"
+        self.rating_settings_path = Path(data_dir) / "krt" / "rating_settings.json"
         self.ttl_seconds = ttl_seconds
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
@@ -665,6 +669,30 @@ class KrtRanking:
             return []
         rows = cached.get("rows")
         return list(rows) if isinstance(rows, list) else []
+
+    def rating_target(self, default: float = 600_000.0) -> float:
+        """Общий ценовой ориентир рейтинга каталога.
+
+        Это серверная настройка, общая для всех пользователей. Сценарный
+        ориентир внутри карточки может отличаться, но не меняет каталог.
+        """
+        payload = load_json(self.rating_settings_path) or {}
+        try:
+            value = float(payload.get("price_target_rub_sqm"))
+        except (TypeError, ValueError):
+            value = float(default)
+        return value if value > 0 else float(default)
+
+    def set_rating_target(self, value: float) -> float:
+        target = float(value)
+        if not (1 <= target <= 10_000_000):
+            raise ValueError("Ценовой ориентир должен быть от 1 до 10 000 000 ₽/м²")
+        save_json(self.rating_settings_path, {
+            "schema_version": 1,
+            "price_target_rub_sqm": target,
+            "updated_at": int(time.time()),
+        })
+        return target
 
     # --- что каталог видел раньше ---------------------------------------
 

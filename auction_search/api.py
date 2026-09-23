@@ -75,6 +75,7 @@ from auction_search.preset_mapper import build_project_preset
 from auction_search.profile_fit import profile_fit
 from auction_search.service import AuctionSearchService
 from auction_search import krt_territory, nagatino_parcels
+from auction_search import krt_early_projects
 from auction_search import krt_investment_score
 from auction_search.nagatino_ui import nagatino_page
 from auction_search.krt_nagatino_prototype import nagatino_investment_card_page
@@ -988,6 +989,16 @@ def install(app: FastAPI) -> None:
     if core is not None:
         install_page_bridge(core)
 
+    @app.get("/krt-12-preview", response_class=HTMLResponse, include_in_schema=False)
+    async def krt_12_preview_redirect() -> HTMLResponse:
+        """Старая тестовая страница 12 площадок теперь ведёт в общий формат КРТ."""
+        return HTMLResponse(
+            '<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" '
+            'content="0;url=/auctions?early=1"><title>Ранние КРТ</title>'
+            '<p><a href="/auctions?early=1">Открыть ранние проекты КРТ</a></p>',
+            headers={"Cache-Control": "no-store, must-revalidate"},
+        )
+
     @app.get("/auctions", response_class=HTMLResponse)
     async def auctions_home() -> HTMLResponse:
         return HTMLResponse(
@@ -1006,11 +1017,13 @@ def install(app: FastAPI) -> None:
     @app.get("/auctions/krt/{slug}/investment-score", include_in_schema=False)
     async def auction_krt_investment_score(
         slug: str,
-        price_target_rub_sqm: float = Query(
-            krt_investment_score.DEFAULT_PRICE_TARGET_RUB_SQM,
+        request: Request,
+        price_target_rub_sqm: float | None = Query(
+            default=None,
             ge=1,
             le=10_000_000,
         ),
+        ensure_model: bool = Query(default=False),
     ) -> dict[str, Any]:
         """Рейтинг #485 для любой площадки из уже сохранённых production-данных.
 
@@ -1031,16 +1044,58 @@ def install(app: FastAPI) -> None:
         row = krt_ranking.stored_row(slug)
         stored = krt_ranking.report(slug) or {}
         screening = dict(stored.get("screening") or {})
+
+        # При массовом расчёте рейтинг обязан достроить отсутствующие рынок
+        # и финансовую модель, а не просто прочитать пустой кэш. Тяжёлый путь
+        # защищён кабинетом; сохранённый результат после этого виден всем.
+        need_model = not screening.get("available")
+        if need_model and (ensure_model or project.get("early_unpublished")):
+            market_cabinet.require_cabinet(request)
+            try:
+                fresh, live_report = await run_in_threadpool(
+                    _market_model_only, project)
+            except (SubjectNotFound, GeocodingError, RemoteServiceError, ValueError) as exc:
+                fresh, live_report = {"available": False, "reason": str(exc)}, {}
+            fresh_for_store = dict(fresh or {})
+            market_digest = (
+                _market_digest(live_report) if live_report
+                else dict(fresh_for_store.pop("market_report", None) or {})
+            )
+            await run_in_threadpool(
+                krt_ranking.save_failure_or_report,
+                slug,
+                fresh_for_store,
+                {
+                    "project": project,
+                    "market": market_digest,
+                    "screening": fresh_for_store,
+                },
+            )
+            fresh_row = score_row(project, fresh_for_store)
+            await run_in_threadpool(krt_ranking.upsert_row, fresh_row)
+            row = krt_ranking.stored_row(slug)
+            stored = krt_ranking.report(slug) or {}
+            screening = dict(stored.get("screening") or fresh_for_store)
         metrics = dict(screening.get("metrics") or {})
         market_block = dict(stored.get("market") or {})
         analysis = dict(market_block.get("analysis") or {})
         site = dict(analysis.get("site") or analysis.get("overall") or {})
         hint = dict(market_block.get("price_hint") or {})
 
+        shared_target = krt_ranking.rating_target(
+            krt_investment_score.DEFAULT_PRICE_TARGET_RUB_SQM)
+        price_target_rub_sqm = float(
+            price_target_rub_sqm if price_target_rub_sqm is not None else shared_target)
+
         llcr = metrics.get("project_llcr_x", row.get("project_llcr_x"))
         market_price = row.get("surrounding_price_rub_sqm")
         if market_price is None:
             market_price = site.get("price_per_sqm", hint.get("price_per_sqm"))
+        if market_price is None:
+            # Ранний неопубликованный список может не иметь живого отчёта Pulse
+            # ещё до геокодирования. Его сохранённый рыночный ориентир лучше
+            # честного partial-rating, чем ложный ноль или исчезнувшая строка.
+            market_price = project.get("source_market_rub_sqm")
 
         # #485: поглощение считается в м²/мес. Нужные числа УЖЕ есть
         # в production market report: каждый peer несёт Pulse area_per_month.
@@ -1079,6 +1134,31 @@ def install(app: FastAPI) -> None:
         burden_mln = row.get("burden_mln")
         ordinary_capex_mln = row.get("ordinary_capex_mln")
         entry_capacity_mln = row.get("entry_capacity_mln")
+
+        # Для раннего списка владелец уже дал денежную оценку изъятия отдельной
+        # колонкой. Это не стартовая цена права КРТ и не ноль: используем её
+        # как известную дополнительную нагрузку. Знаменатель — ordinary CAPEX
+        # того же проекта из authoritative DevelopAid, без KRT-нагрузки.
+        if project.get("early_unpublished"):
+            try:
+                early_burden = float(project.get("seizure_mln"))
+            except (TypeError, ValueError):
+                early_burden = 0.0
+            model_inputs = dict(screening.get("model_inputs") or {})
+            if ordinary_capex_mln is None and model_inputs:
+                try:
+                    ordinary_capex_mln = await run_in_threadpool(
+                        krt_investment_score._ordinary_capex,
+                        core,
+                        dict(model_inputs.get("inputs") or {}),
+                        dict(model_inputs.get("tep") or {}),
+                        dict(model_inputs.get("phasing") or {}),
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception("Early KRT ordinary CAPEX failed slug=%s", slug)
+            if early_burden > 0 and ordinary_capex_mln and float(ordinary_capex_mln) > 0:
+                burden_mln = early_burden
+                burden_pct = 100.0 * early_burden / float(ordinary_capex_mln)
 
         # Пока полный денежный стек собран только для контрольного кейса
         # Нагатино. Узнаём его по самому паспорту, а не по нестабильному slug.
@@ -1139,7 +1219,11 @@ def install(app: FastAPI) -> None:
                     f"Pulse: медиана {len([p for p in peers if isinstance(p, dict) and p.get('area_per_month') is not None])} "
                     f"аналогов 3 км / Москва, класс {segment or 'не определён'}, м²/мес."
                 ),
-                "burden": "ЕГРН + обязательства КРТ + DevelopAid ordinary CAPEX",
+                "burden": (
+                    "предварительная таблица владельца: изъятие / DevelopAid ordinary CAPEX"
+                    if project.get("early_unpublished")
+                    else "ЕГРН + обязательства КРТ + DevelopAid ordinary CAPEX"
+                ),
             },
             missing_reasons=missing_reasons,
         )
@@ -1159,7 +1243,7 @@ def install(app: FastAPI) -> None:
             }
             for key, value in (rating.get("components") or {}).items()
         }
-        canonical_target = krt_investment_score.DEFAULT_PRICE_TARGET_RUB_SQM
+        canonical_target = shared_target
         canonical = abs(float(price_target_rub_sqm) - float(canonical_target)) < 0.5
         # В общий каталог записывается только канонический рейтинг. Сценарий,
         # который пользователь крутит в карточке другим ориентиром, не должен
@@ -1177,6 +1261,9 @@ def install(app: FastAPI) -> None:
                     "local_absorption_sqm_month": local_absorption,
                     "moscow_absorption_sqm_month": benchmark_absorption,
                     "investment_rating_segment": segment,
+                    "burden_pct": burden_pct,
+                    "burden_mln": burden_mln,
+                    "ordinary_capex_mln": ordinary_capex_mln,
                 },
             )
         return {
@@ -1776,6 +1863,13 @@ def install(app: FastAPI) -> None:
             # пропавшая площадка, а их 38 из 298 на снимке прода 05.09.2026.
             second_publications = len(built) - len(decision_rows)
             projects = projects + decision_rows
+        # Ранние площадки владельца ещё не опубликованы городом, но для
+        # инвестиционного отбора это тот же класс возможностей, что
+        # «Планируемый». Они живут в общем списке и проходят тот же рынок,
+        # финансовую модель и рейтинг. Когда город публикует совпавшую площадку,
+        # ранняя строка автоматически уступает официальной.
+        early_rows = krt_early_projects.projects(projects)
+        projects = projects + early_rows
         projects = _with_tender_lots(projects)
         return {
             "source": CATALOGUE_URL,
@@ -1789,6 +1883,7 @@ def install(app: FastAPI) -> None:
                 for row in unparsed[:20]
             ],
             "no_card_count": len(decision_rows),
+            "early_unpublished_count": len(early_rows),
             # Сколько строк убрано схлопыванием второй публикации одного и того
             # же документа: у города он лежит и в разделе ДГИ, и в разделе ДИПП.
             "second_publications": second_publications,
@@ -1860,6 +1955,8 @@ def install(app: FastAPI) -> None:
             logger.exception("KRT catalogue for siblings failed")
             catalogue = []
         decisions, decisions_whole = _decision_rows_state(catalogue)
+        official_rows = catalogue + decisions
+        early = krt_early_projects.projects(official_rows)
         try:
             state = krt_registry.status()
         except Exception:  # noqa: BLE001
@@ -1872,6 +1969,7 @@ def install(app: FastAPI) -> None:
             "catalogue_refreshing": bool(state.get("refreshing")),
             "decisions_refreshing": bool(state.get("decisions_refreshing")),
             "decision_rows": len(decisions),
+            "early_unpublished_rows": len(early),
             "decisions_whole": bool(decisions_whole),
             "whole": bool(catalogue_whole and decisions_whole),
         }
@@ -1882,7 +1980,7 @@ def install(app: FastAPI) -> None:
         walk = state.get("decisions_walk")
         if isinstance(walk, dict) and walk:
             why["decisions_walk"] = walk
-        return catalogue + decisions, catalogue_whole and decisions_whole, why
+        return catalogue + decisions + early, catalogue_whole and decisions_whole, why
 
     def _krt_screen_list() -> tuple[list[dict[str, Any]], bool]:
         """Список экрана и полнота — тем же счётом, что и причина."""
@@ -2075,43 +2173,53 @@ def install(app: FastAPI) -> None:
             return None
         return krt_tenders.asking_price_mln((known.get(slug) or {}).get("lots") or [])
 
-    def _screen_one(project: dict[str, Any]) -> dict[str, Any]:
-        """Один прогон для рейтинга — тем же путём, что и открытая карточка.
-
-        Второго скрининга не заводим: разойдись они, список и карточка
-        показали бы про одну площадку разное, и оба достоверно.
-        """
+    def _market_model_only(project: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Рынок + финансовая модель без платного поиска публикаций."""
         if core is None or market is None:
-            return {"available": False, "reason": "Финансовый движок DevelopAid не подключён"}
-        # Рынок должен получить реальную площадку, а не служебный ключ рейтинга.
-        # Для обычной карточки market.resolve_subject умеет krt:<slug>; для площадки-
-        # решения — krt:decision:<id>. Если снимок каталога на конкретном воркере
-        # отстал, используем имя/адрес самой строки: иначе весь финансовый прогон
-        # падает до модели и колонка продаж окружения остаётся н/д.
-        market_query = f"krt:{project.get('slug')}"
+            return ({"available": False,
+                     "reason": "Финансовый движок DevelopAid не подключён"}, {})
+        # Ранней площадки ещё НЕТ в krt_registry. Отдавать рынку
+        # служебный slug вида "krt:early:2" нельзя: resolve_subject не знает
+        # его как КРТ и отправляет буквальную строку в геокодер. Так весь ранний
+        # список получал "место не найдено"/429 и рейтинг оставался прочерком.
+        if project.get("early_unpublished"):
+            address = str(project.get("address") or project.get("name") or "").strip()
+            market_query = (
+                address if address.casefold().startswith("москва")
+                else "Москва, " + address
+            )
+        else:
+            market_query = f"krt:{project.get('slug')}"
         try:
             report = market.build_report(
                 market_query, radius_km=3.0, peers_limit=12,
                 city_reference=False, include_project_totals=True,
             )
-        except SubjectNotFound:
-            fallback = " ".join(str(project.get(key) or "").strip()
-                                for key in ("name", "district") if project.get(key))
+        except (SubjectNotFound, GeocodingError):
+            # Для официальной площадки это запасной путь, если конкретный
+            # воркер ещё не знает slug. Для ранней — повторяем очищенное имя
+            # без служебного идентификатора.
+            fallback = str(project.get("address") or project.get("name") or "").strip()
             if not fallback:
                 raise
-            report = market.build_report(
-                fallback, radius_km=3.0, peers_limit=12,
-                city_reference=False, include_project_totals=True,
-            )
+            if not fallback.casefold().startswith("москва"):
+                fallback = "Москва, " + fallback
+            time.sleep(1.1)
+            try:
+                report = market.build_report(
+                    fallback, radius_km=3.0, peers_limit=12,
+                    city_reference=False, include_project_totals=True,
+                )
+            except GeocodingError as exc:
+                if "too many requests" not in str(exc).casefold():
+                    raise
+                time.sleep(2.2)
+                report = market.build_report(
+                    fallback, radius_km=3.0, peers_limit=12,
+                    city_reference=False, include_project_totals=True,
+                )
         slug = str(project.get("slug") or "")
-        document_id = slug[len("decision:"):] if slug.startswith("decision:") else ""
         try:
-            # Обязательства площадки лежат в проекте решения. У площадки
-            # каталога до него ведёт её слаг, у площадки-решения слага нет
-            # вовсе — а документ тот же самый, и читать его надо так же:
-            # снос и расселение это CAPEX, а метры Программы реновации
-            # строятся и не продаются. Без них модель продаёт всё жильё по
-            # рынку — ошибка, уже пойманная на Задонском проезде.
             requirements = _requirements_for(slug)
         except Exception as exc:  # noqa: BLE001
             logger.exception("KRT requirements failed slug=%s", slug)
@@ -2119,24 +2227,42 @@ def install(app: FastAPI) -> None:
                 "available": False,
                 "warning": f"Документы обязательств временно не прочитаны: {type(exc).__name__}",
             }
+        asking_price = _asking_price_mln(slug)
+        if asking_price is None and project.get("early_unpublished"):
+            try:
+                asking_price = float(project.get("start_price_mln"))
+            except (TypeError, ValueError):
+                asking_price = None
+        screening = build_krt_model_screening(
+            project, report, core, requirements=requirements,
+            asking_price_mln=asking_price)
+        return screening, report
+
+    def _screen_one(project: dict[str, Any]) -> dict[str, Any]:
+        """Полный прогон: рынок + модель + карточка города + публичный контекст."""
+        screening, report = _market_model_only(project)
+        if not report:
+            return screening
+        slug = str(project.get("slug") or "")
+        document_id = slug[len("decision:"):] if slug.startswith("decision:") else ""
         # Карточка каталога — официальный и бесплатный источник застройщика и
         # реновации. Читается в прогоне, а не по нажатию: иначе фильтр по
         # оператору и городским нуждам работает только по открытым руками.
-        if document_id:
-            # У площадки-решения карточки нет по построению, и это ответ
-            # источника, а не наш пробел: спрашивать её незачем, а молчать
-            # нельзя — пустая карточка читалась бы как неотвеченная.
-            card = {"available": False, "no_card": True,
-                    "reason": "Карточки в каталоге krt.mos.ru у этой площадки нет"}
+        if document_id or project.get("no_card"):
+            # Площадка-решение и ранний неопубликованный проект по построению
+            # не имеют карточки krt.mos.ru. Это свойство источника, не ошибка.
+            reason = (
+                "Проект ещё не опубликован в каталоге krt.mos.ru"
+                if project.get("early_unpublished")
+                else "Карточки в каталоге krt.mos.ru у этой площадки нет"
+            )
+            card = {"available": False, "no_card": True, "reason": reason}
         else:
             try:
                 card = krt_registry.card_facts(slug)
             except Exception as exc:  # noqa: BLE001
                 logger.exception("KRT card facts failed slug=%s", slug)
                 card = {"available": False, "reason": f"{type(exc).__name__}: {exc}"}
-        screening = build_krt_model_screening(
-            project, report, core, requirements=requirements,
-            asking_price_mln=_asking_price_mln(slug))
         screening["card_facts"] = card
         # Занятость площадки — в прогон, а не по нажатию: пока она приходила
         # только кнопкой, каталог показывал «Планируемая» там, где договор
@@ -3216,6 +3342,8 @@ def install(app: FastAPI) -> None:
         """
         rows = [_row_without_stale_facts(row) for row in krt_ranking.rows()]
         return {
+            "investment_rating_target_rub_sqm": krt_ranking.rating_target(
+                krt_investment_score.DEFAULT_PRICE_TARGET_RUB_SQM),
             "measure": "entry_capacity_rub_per_sqm",
             "measure_label": "Потолок цены входа, ₽/м² продаваемой",
             "target_llcr": 1.20,
@@ -3313,6 +3441,22 @@ def install(app: FastAPI) -> None:
             tally[name] = tally.get(name, 0) + 1
         return [{"engine": name, "rows": count}
                 for name, count in sorted(tally.items(), key=lambda kv: (-kv[1], kv[0]))]
+
+    @app.post("/auctions/krt/investment-rating/target", include_in_schema=False)
+    async def auction_krt_rating_target(request: Request) -> dict[str, Any]:
+        """Сменить общий ценовой ориентир рейтинга каталога.
+
+        Настройка серверная и видна всем. Индивидуальный сценарий в карточке
+        может считать другой ориентир, не меняя это значение.
+        """
+        market_cabinet.require_cabinet(request)
+        payload = await json_object(request)
+        try:
+            target = float((payload or {}).get("price_target_rub_sqm"))
+            target = await run_in_threadpool(krt_ranking.set_rating_target, target)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"price_target_rub_sqm": target}
 
     @app.post("/auctions/krt/ranking/refresh")
     async def auction_krt_ranking_refresh(
@@ -3733,16 +3877,28 @@ def install(app: FastAPI) -> None:
             raise HTTPException(status_code=503, detail="Маркетинговый движок не подключён")
         try:
             def build_report_with_model() -> dict[str, Any]:
-                report = market.build_report(
-                    f"krt:{slug}", radius_km=radius_km, peers_limit=peers_limit,
-                    city_reference=False, include_project_totals=True,
-                )
-                # Площадка берётся из того же списка, что на экране: у
-                # площадки-решения цифры живут в её строке (они прочитаны из
-                # PDF), а `find` отвечает только адресом — этого хватает
-                # геокодеру и не хватает модели.
                 project = next(
                     (item for item in _krt_all_sites() if item.get("slug") == slug), None)
+                try:
+                    report = market.build_report(
+                        f"krt:{slug}", radius_km=radius_km, peers_limit=peers_limit,
+                        city_reference=False, include_project_totals=True,
+                    )
+                except SubjectNotFound:
+                    fallback = " ".join(
+                        str((project or {}).get(key) or "").strip()
+                        for key in ("name", "district")
+                        if (project or {}).get(key)
+                    )
+                    if not fallback:
+                        raise
+                    report = market.build_report(
+                        fallback, radius_km=radius_km, peers_limit=peers_limit,
+                        city_reference=False, include_project_totals=True,
+                    )
+                # Площадка берётся из того же списка, что на экране: у
+                # площадки-решения и раннего проекта цифры живут в строке,
+                # а реестр krt.mos.ru их может ещё не знать.
                 if project is None:
                     finder = getattr(krt_registry, "find", None)
                     project = finder(f"krt:{slug}") if callable(finder) else None

@@ -21,7 +21,10 @@ AUCTIONS_PAGE = r'''<!doctype html>
 .krt-actions-left,.krt-actions-right{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .krt-actions button{min-height:42px;padding:0 14px}
 #krtRatingBtn{background:#111;color:#fff;border-color:#111}
-.krt-action-note{font-size:11px;color:var(--muted);max-width:290px;line-height:1.3}
+.krt-rating-target{display:flex;flex-direction:column;gap:3px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.035em;color:var(--muted)}
+.krt-rating-input{display:flex;align-items:center;gap:6px;text-transform:none;letter-spacing:0;font-size:12px;font-weight:500}
+.krt-rating-input input{width:126px;min-height:36px;height:36px;padding:0 8px;font-weight:700;color:var(--text)}
+.krt-action-note{font-size:11px;color:var(--muted);max-width:265px;line-height:1.3}
 @media(max-width:950px){.krt-actions{justify-content:flex-start}.krt-actions-left,.krt-actions-right{width:100%}}
 @media(max-width:640px){.krt-actions-left,.krt-actions-right{display:grid;grid-template-columns:1fr;width:100%}.krt-actions button{width:100%}.krt-action-note{max-width:none}}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin-bottom:14px}.stat{border:1px solid var(--line);border-radius:0;background:var(--panel);padding:12px}.stat b{font-size:22px;display:block}.stat span{font-size:12px;color:var(--muted)}.coverage{display:none}.layout{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(360px,.8fr);gap:12px}.tablewrap,.side{border:1px solid var(--line);background:var(--panel);border-radius:0;overflow:hidden}.tablecol{min-width:0;display:flex;flex-direction:column}.scrolltop{overflow-x:auto;overflow-y:hidden;height:14px;margin-bottom:-1px;border:1px solid var(--line);border-bottom:0;background:var(--panel)}.scrolltop>div{height:1px}.scrolltop[hidden]{display:none}.tablewrap{overflow:auto;min-height:420px}table{border-collapse:collapse;width:100%;min-width:900px}table.wide{min-width:980px;table-layout:fixed}
 #krtTableWrap th,#krtTableWrap td{padding:8px 7px}
@@ -114,8 +117,12 @@ __DEVELOPAID_CONTOUR__
           <button id="krtExport">Выгрузить Excel</button>
         </div>
         <div class="krt-actions-right">
-          <div class="krt-action-note">Общий рейтинг каталога считается по базовому ориентиру 600 000 ₽/м² и виден всем пользователям.</div>
-          <button id="krtRatingBtn" title="Пересчитывает общий рейтинг всем площадкам вне статуса «В реализации». Результат сохраняется на сервере и виден всем пользователям.">Обновить рейтинги</button>
+          <label class="krt-rating-target" for="krtRatingTarget">
+            <span>Ориентир рейтинга</span>
+            <span class="krt-rating-input"><input id="krtRatingTarget" type="number" min="1" max="10000000" step="10000" value="600000"><span>₽/м²</span></span>
+          </label>
+          <div class="krt-action-note">Общий ориентир каталога. При пересчёте сохраняется на сервере и становится одинаковым для всех пользователей.</div>
+          <button id="krtRatingBtn" title="Сохраняет указанный ориентир как общий и пересчитывает рейтинг всем площадкам вне статуса «В реализации».">Пересчитать рейтинги</button>
         </div>
       </div>
     </div>
@@ -189,6 +196,7 @@ __DEVELOPAID_LAND_MAP_KIT__
 const state={lots:[],filtered:[],families:[],openFamilies:new Set(),coverage:[],quality:{},selected:null,ingested:null,krt:[],krtFiltered:[],krtOkrugs:new Set(),krtModels:{},krtScreening:{},krtReports:{},krtRequirements:{},krtNew:0,krtNewDays:30,krtPolls:0,krtTimer:null,krtRank:{},krtRankProgress:null,krtRankTimer:null,krtPress:{},krtCards:{},krtTenderLinks:{},krtOrderBySite:{},krtTenders:{},krtOrders:[],krtOrphanLots:[],krtSort:{key:'name',dir:1},krtHidden:{small:0,unknown:0},krtPick:{stage:new Set(),entry:new Set(),renovation:new Set(),purpose:new Set()},egrnStore:null};
 const KRT_OKRUGS=['ЦАО','САО','СВАО','ВАО','ЮВАО','ЮАО','ЮЗАО','ЗАО','СЗАО','НАО','ТАО','ЗелАО'];
 const $=id=>document.getElementById(id);
+const KRT_EARLY_ONLY=new URLSearchParams(location.search).get('early')==='1';
 // Ноль и «цены нет» — разные вещи. Number(null) равен нулю, и лот без
 // опубликованной цены показывался бесплатным: у ГИС Торгов ценового поля
 // может не быть вовсе (9 карточек из 10 на живой выдаче 24.08.2026).
@@ -935,6 +943,7 @@ function renderKrtSnapshotNote(){
  if(!box)return;
  if(!st){box.textContent='';return}
  const bits=[];
+ if(KRT_EARLY_ONLY)bits.push('Ранние проекты: ещё не опубликованы городом; оцениваются тем же рынком, моделью и рейтингом, что планируемые КРТ');
  bits.push(st.at?`Снимок каталога: ${krtWhenExact(st.at)}`:'Снимок каталога ещё не снят');
  if(st.at&&st.ttl)bits.push(`обход раз в ${Math.round(st.ttl/3600)} ч`);
  if(!st.complete)bits.push('выдача дочитана не до конца');
@@ -1330,9 +1339,11 @@ function krtStatusCell(x){
  const label=esc(krtStatusWord(x)||'—');
  // Подсказка называет ТОТ источник, откуда взято слово: у площадки без
  // карточки статуса krt.mos.ru не существует, у неё есть только документ.
- const why=x&&x.no_card
-  ?'Стадия по документу: город опубликовал проект решения о КРТ для сбора мнений правообладателей — решения ещё нет. Карточки на krt.mos.ru у этой площадки нет. Занятость — в колонке «Шаг»'
-  :'Статус krt.mos.ru, де-юре: отвечает на «начата ли стройка», а не на «свободна ли площадка». Занятость — в колонке «Шаг»';
+ const why=x&&x.early_unpublished
+  ?'Ранний проект из предварительного списка владельца: город ещё не опубликовал его в каталоге КРТ. Для инвестиционной оценки обрабатывается как планируемая площадка.'
+  :(x&&x.no_card
+    ?'Стадия по документу: город опубликовал проект решения о КРТ для сбора мнений правообладателей — решения ещё нет. Карточки на krt.mos.ru у этой площадки нет. Занятость — в колонке «Шаг»'
+    :'Статус krt.mos.ru, де-юре: отвечает на «начата ли стройка», а не на «свободна ли площадка». Занятость — в колонке «Шаг»');
  return `<span class="tag" title="${esc(why)}">${label}</span>`;
 }
 function krtStageCell(x){
@@ -1816,6 +1827,7 @@ function krtRenovationKind(x){
 // Внутри оси — «или», между осями — «и». Одно правило на весь отбор: пока
 // условий было пять, каждое проверялось своей строкой, и спорить им было где.
 function krtFilterPass(x){
+ if(KRT_EARLY_ONLY&&!x.early_unpublished)return false;
  return KRT_FILTERS.every(axis=>{
   const chosen=state.krtPick[axis.key];
   if(!chosen||!chosen.size)return true;
@@ -2325,7 +2337,18 @@ function krtMarks(x){
 
 function krtNameFlags(x){
  const stage=krtStage(x), status=krtStatusWord(x), bits=[];
+ if(x&&x.early_unpublished)bits.push('<span class="tag new" title="'+esc(x.source_label||'Предварительный источник')+'">не опубликован</span>');
  if(status)bits.push('<span class="tag" title="Статус города">'+esc(status)+'</span>');
+ // Дата проекта решения нужна прямо в списке: одинаково «Планируемыми»
+ // выглядят и свежий документ 2026 года, и площадка с решением нескольких
+ // летней давности. Поле уже приходит из сопоставления mos.ru и для строк
+ // без карточки, и для карточек, к которым решение привязано.
+ if(x&&x.draft_decision_at){
+  bits.push('<span class="tag" title="'+esc(
+    'Проект решения опубликован '+krtCityDay(x.draft_decision_at)
+    +(x.draft_decision_url?' · источник mos.ru':'')
+  )+'">решение '+esc(krtCityDay(x.draft_decision_at))+'</span>');
+ }
  if(stage.key==='taken'){
   bits.push('<span class="tag warn" title="'+esc((stage.why||[]).join('; '))+'">площадка занята</span>');
  }
@@ -2692,6 +2715,10 @@ async function loadKrtRanking(){
   state.krtRank={};(d.rows||[]).forEach(row=>{state.krtRank[row.slug]=row;
    if(row.available&&row.traffic_light)state.krtModels[row.slug]={traffic_light:row.traffic_light}});
   state.krtRankProgress=d.progress||null;
+  const targetInput=$('krtRatingTarget');
+  if(targetInput&&document.activeElement!==targetInput&&d.investment_rating_target_rub_sqm){
+   targetInput.value=String(Math.round(Number(d.investment_rating_target_rub_sqm)));
+  }
   state.krtStaleRules=Number(d.stale_rules_count||0);state.krtStaleModel=Number(d.stale_model_count||0);state.krtRecountPlanned=Number(d.recount_planned_count||0);state.krtStaleEngines=Array.isArray(d.stale_model_engines)?d.stale_model_engines:[];state.krtEngine=String(d.engine_version||'');
   // Порядок важен: `renderKrtRankStatus` пишет в узел целиком, то есть
   // сносит всё, что дописали до него. Строка о карточках города
@@ -2703,11 +2730,25 @@ async function loadKrtRanking(){
  }catch(e){const box=$('krtRankStatus');if(box){box.style.display='';box.className='notice warn';box.textContent=String(e.message||e)}}
 }
 async function startKrtInvestmentRating(){
- const b=$('krtRatingBtn'),box=$('krtRankStatus');
- const target=600000;
+ const b=$('krtRatingBtn'),box=$('krtRankStatus'),input=$('krtRatingTarget');
+ const target=Math.max(1,Number(input&&input.value||600000));
+ if(!Number.isFinite(target)||target>10000000){
+  if(box){box.style.display='';box.className='notice warn';box.textContent='Укажите ценовой ориентир от 1 до 10 000 000 ₽/м².'}
+  return;
+ }
+ try{
+  await askJson('/auctions/krt/investment-rating/target',{
+   method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({price_target_rub_sqm:target})
+  }).catch(needLogin);
+ }catch(e){
+  if(box){box.style.display='';box.className='notice warn';box.textContent=String(e.message||e)}
+  return;
+ }
  // Массово считаем все площадки, куда теоретически ещё можно входить.
  // Статус «В реализации» остаётся справочно и в рейтинг-прогон не входит.
- const projects=(state.krt||[]).filter(x=>krtStatusKind(x)!=='running'&&x.slug);
+ const source=KRT_EARLY_ONLY?(state.krtFiltered||[]):(state.krt||[]);
+ const projects=source.filter(x=>krtStatusKind(x)!=='running'&&x.slug);
  const total=projects.length;
  if(!total){
   if(box){box.style.display='';box.className='notice';box.textContent='Нет площадок вне реализации для расчёта рейтинга.'}
@@ -2721,7 +2762,7 @@ async function startKrtInvestmentRating(){
    const index=next++;if(index>=projects.length)return;
    const x=projects[index];
    try{
-    const d=await askJson('/auctions/krt/'+encodeURIComponent(x.slug)+'/investment-score?price_target_rub_sqm='+encodeURIComponent(target),{cache:'no-store'});
+    const d=await askJson('/auctions/krt/'+encodeURIComponent(x.slug)+'/investment-score?ensure_model=true&price_target_rub_sqm='+encodeURIComponent(target),{cache:'no-store'}).catch(needLogin);
     const rating=d.rating||d,row=state.krtRank[x.slug]||{slug:x.slug};
     row.investment_rating=rating;
     if(d.absorption){
@@ -2741,14 +2782,17 @@ async function startKrtInvestmentRating(){
    }
   }
  };
- await Promise.all(Array.from({length:Math.min(4,total)},()=>worker()));
+ // Ранние проекты на первом рейтинге сами запускают рынок + модель.
+ // Их считаем последовательно: четыре параллельных геокодирования упирались
+ // в лимит OSM и оставляли всю пачку с прочерками.
+ await Promise.all(Array.from({length:1},()=>worker()));
  renderKrt();
  await loadKrtRanking();
  if(box){
   box.style.display='';box.className=failed?'notice warn':'notice';
-  box.textContent='Рейтинг для площадок вне реализации: '+finals+' итоговых, '+partial+' неполных'+(failed?', '+failed+' ошибок':'')+'. Ориентир '+new Intl.NumberFormat('ru-RU').format(target)+' ₽/м².';
+  box.textContent=(KRT_EARLY_ONLY?'Ранние проекты: ':'Рейтинг для площадок вне реализации: ')+finals+' итоговых, '+partial+' неполных'+(failed?', '+failed+' ошибок':'')+'. Ориентир '+new Intl.NumberFormat('ru-RU').format(target)+' ₽/м².';
  }
- b.disabled=false;b.textContent='Обновить рейтинги';
+ b.disabled=false;b.textContent='Пересчитать рейтинги';
 }
 async function startKrtRanking(onlyStale){
  const b=$('krtRankBtn');b.disabled=true;b.innerHTML='<span class="spinner"></span>Запускаю';
@@ -4250,6 +4294,7 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('krtPrototypeMod
 $('tabAuctions').onclick=()=>switchTab(false);$('tabKrt').onclick=()=>switchTab(true);$('krtRefresh').onclick=()=>loadKrt(true);$('krtRankBtn').onclick=startKrtRanking;$('krtRatingBtn').onclick=startKrtInvestmentRating;$('krtPressBtn').onclick=readKrtPress;$('krtSearch').oninput=filterKrt;bindKrtFilters();document.getElementById('krtMapFold')?.addEventListener('toggle',ev=>{if(ev.target.open)loadKrtMap()});$('krtMinHousing').oninput=filterKrt;$('krtMinPrice').oninput=filterKrt;document.querySelectorAll('th[data-sort]').forEach(th=>{th.style.cursor='pointer';th.title=(th.title?th.title+'. ':'')+'Нажмите, чтобы отсортировать';th.onclick=()=>krtSortBy(th.dataset.sort)});
 $('krtOkrugToggle').onclick=e=>{e.stopPropagation();const menu=$('krtOkrugMenu'),open=menu.classList.contains('hidden');closeKrtMenus();menu.classList.toggle('hidden',!open);$('krtOkrugToggle').setAttribute('aria-expanded',String(open))};$('krtOkrugMenu').onclick=e=>e.stopPropagation();$('krtOkrugClear').onclick=()=>{state.krtOkrugs.clear();$('krtOkrugOptions').querySelectorAll('input').forEach(x=>x.checked=false);updateKrtOkrugLabel();filterKrt()};document.addEventListener('click',closeKrtMenus);document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeKrtMenus();$('krtOkrugToggle').focus()}});
 loadKrtRanking();
+if(KRT_EARLY_ONLY) switchTab(true);
 // Ссылка из «Поделиться» открывает ту же территорию: получатель попадает на
 // разбор, а не на общий список, где ещё надо искать.
 (function openSharedKrt(){
