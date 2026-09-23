@@ -75,6 +75,7 @@ from auction_search.preset_mapper import build_project_preset
 from auction_search.profile_fit import profile_fit
 from auction_search.service import AuctionSearchService
 from auction_search import krt_territory, nagatino_parcels
+from auction_search import krt_early_projects
 from auction_search import krt_investment_score
 from auction_search.nagatino_ui import nagatino_page
 from auction_search.krt_nagatino_prototype import nagatino_investment_card_page
@@ -1860,6 +1861,8 @@ def install(app: FastAPI) -> None:
             logger.exception("KRT catalogue for siblings failed")
             catalogue = []
         decisions, decisions_whole = _decision_rows_state(catalogue)
+        official_rows = catalogue + decisions
+        early = krt_early_projects.projects(official_rows)
         try:
             state = krt_registry.status()
         except Exception:  # noqa: BLE001
@@ -1872,6 +1875,7 @@ def install(app: FastAPI) -> None:
             "catalogue_refreshing": bool(state.get("refreshing")),
             "decisions_refreshing": bool(state.get("decisions_refreshing")),
             "decision_rows": len(decisions),
+            "early_unpublished_rows": len(early),
             "decisions_whole": bool(decisions_whole),
             "whole": bool(catalogue_whole and decisions_whole),
         }
@@ -1882,7 +1886,7 @@ def install(app: FastAPI) -> None:
         walk = state.get("decisions_walk")
         if isinstance(walk, dict) and walk:
             why["decisions_walk"] = walk
-        return catalogue + decisions, catalogue_whole and decisions_whole, why
+        return catalogue + decisions + early, catalogue_whole and decisions_whole, why
 
     def _krt_screen_list() -> tuple[list[dict[str, Any]], bool]:
         """Список экрана и полнота — тем же счётом, что и причина."""
@@ -2122,12 +2126,15 @@ def install(app: FastAPI) -> None:
         # Карточка каталога — официальный и бесплатный источник застройщика и
         # реновации. Читается в прогоне, а не по нажатию: иначе фильтр по
         # оператору и городским нуждам работает только по открытым руками.
-        if document_id:
-            # У площадки-решения карточки нет по построению, и это ответ
-            # источника, а не наш пробел: спрашивать её незачем, а молчать
-            # нельзя — пустая карточка читалась бы как неотвеченная.
-            card = {"available": False, "no_card": True,
-                    "reason": "Карточки в каталоге krt.mos.ru у этой площадки нет"}
+        if document_id or project.get("no_card"):
+            # Площадка-решение и ранний неопубликованный проект по построению
+            # не имеют карточки krt.mos.ru. Это свойство источника, не ошибка.
+            reason = (
+                "Проект ещё не опубликован в каталоге krt.mos.ru"
+                if project.get("early_unpublished")
+                else "Карточки в каталоге krt.mos.ru у этой площадки нет"
+            )
+            card = {"available": False, "no_card": True, "reason": reason}
         else:
             try:
                 card = krt_registry.card_facts(slug)
@@ -3733,16 +3740,28 @@ def install(app: FastAPI) -> None:
             raise HTTPException(status_code=503, detail="Маркетинговый движок не подключён")
         try:
             def build_report_with_model() -> dict[str, Any]:
-                report = market.build_report(
-                    f"krt:{slug}", radius_km=radius_km, peers_limit=peers_limit,
-                    city_reference=False, include_project_totals=True,
-                )
-                # Площадка берётся из того же списка, что на экране: у
-                # площадки-решения цифры живут в её строке (они прочитаны из
-                # PDF), а `find` отвечает только адресом — этого хватает
-                # геокодеру и не хватает модели.
                 project = next(
                     (item for item in _krt_all_sites() if item.get("slug") == slug), None)
+                try:
+                    report = market.build_report(
+                        f"krt:{slug}", radius_km=radius_km, peers_limit=peers_limit,
+                        city_reference=False, include_project_totals=True,
+                    )
+                except SubjectNotFound:
+                    fallback = " ".join(
+                        str((project or {}).get(key) or "").strip()
+                        for key in ("name", "district")
+                        if (project or {}).get(key)
+                    )
+                    if not fallback:
+                        raise
+                    report = market.build_report(
+                        fallback, radius_km=radius_km, peers_limit=peers_limit,
+                        city_reference=False, include_project_totals=True,
+                    )
+                # Площадка берётся из того же списка, что на экране: у
+                # площадки-решения и раннего проекта цифры живут в строке,
+                # а реестр krt.mos.ru их может ещё не знать.
                 if project is None:
                     finder = getattr(krt_registry, "find", None)
                     project = finder(f"krt:{slug}") if callable(finder) else None
