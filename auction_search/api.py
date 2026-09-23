@@ -989,6 +989,16 @@ def install(app: FastAPI) -> None:
     if core is not None:
         install_page_bridge(core)
 
+    @app.get("/krt-12-preview", response_class=HTMLResponse, include_in_schema=False)
+    async def krt_12_preview_redirect() -> HTMLResponse:
+        """Старая тестовая страница 12 площадок теперь ведёт в общий формат КРТ."""
+        return HTMLResponse(
+            '<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" '
+            'content="0;url=/auctions?early=1"><title>Ранние КРТ</title>'
+            '<p><a href="/auctions?early=1">Открыть ранние проекты КРТ</a></p>',
+            headers={"Cache-Control": "no-store, must-revalidate"},
+        )
+
     @app.get("/auctions", response_class=HTMLResponse)
     async def auctions_home() -> HTMLResponse:
         return HTMLResponse(
@@ -1777,6 +1787,13 @@ def install(app: FastAPI) -> None:
             # пропавшая площадка, а их 38 из 298 на снимке прода 05.09.2026.
             second_publications = len(built) - len(decision_rows)
             projects = projects + decision_rows
+        # Ранние площадки владельца ещё не опубликованы городом, но для
+        # инвестиционного отбора это тот же класс возможностей, что
+        # «Планируемый». Они живут в общем списке и проходят тот же рынок,
+        # финансовую модель и рейтинг. Когда город публикует совпавшую площадку,
+        # ранняя строка автоматически уступает официальной.
+        early_rows = krt_early_projects.projects(projects)
+        projects = projects + early_rows
         projects = _with_tender_lots(projects)
         return {
             "source": CATALOGUE_URL,
@@ -1790,6 +1807,7 @@ def install(app: FastAPI) -> None:
                 for row in unparsed[:20]
             ],
             "no_card_count": len(decision_rows),
+            "early_unpublished_count": len(early_rows),
             # Сколько строк убрано схлопыванием второй публикации одного и того
             # же документа: у города он лежит и в разделе ДГИ, и в разделе ДИПП.
             "second_publications": second_publications,
