@@ -117,6 +117,12 @@ def test_view_key_opens_krt_site_data_but_not_share_or_cabinet_role(monkeypatch)
     # после чего уже обычный поиск честно сказал, что такого slug нет.
     assert client.get("/krt/site/no-such-site/parcels").status_code == 404
 
+    # Явный refresh на карточке — уже команда, а не просмотр.
+    assert client.get(
+        "/krt/nagatino/parcels",
+        params={"refresh": "true"},
+    ).status_code == 403
+
     # Выдавать публичную ссылку может только владелец. Read-only ключ этого
     # маршрута не открывает.
     assert client.get("/krt/nagatino/share").status_code == 401
