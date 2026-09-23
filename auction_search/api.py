@@ -73,7 +73,7 @@ from auction_search.models import LotKind
 from auction_search.preset_mapper import build_project_preset
 from auction_search.profile_fit import profile_fit
 from auction_search.service import AuctionSearchService
-from auction_search import krt_territory, nagatino_parcels
+from auction_search import krt_territory, nagatino_parcels, krt_cadastral_selector
 from auction_search.nagatino_ui import nagatino_page
 from auction_search.ui import auctions_page
 from auction_search.krt_score_lab import krt_score_lab_page
@@ -2335,6 +2335,40 @@ def install(app: FastAPI) -> None:
         else:
             data["outlines"]["problem"] = (data["outlines"]["problem"]
                                            or "движок ЕГРН не подключён — контуры не спрашивались")
+
+        # Второй слой полноты: не только КН, перечисленные в документах КРТ,
+        # а все ЗУ/ОКС, которые НСПД пространственно находит в контуре.
+        # Поход наружу всегда фоновый; запрос страницы читает только кэш.
+        found = dict(data.get("krt_site") or {})
+        rings = [ring for ring in (found.get("rings_merc") or [])
+                 if isinstance(ring, list) and len(ring) >= 3]
+        if not rings:
+            try:
+                local_found = await run_in_threadpool(
+                    _krt_site_finder(slug, str(project.get("name") or slug)))
+                local_found = await run_in_threadpool(local_found)
+            except Exception as exc:  # noqa: BLE001
+                local_found = {"problem": f"{type(exc).__name__}: {exc}"}
+            rings = [ring for ring in (local_found.get("rings_merc") or [])
+                     if isinstance(ring, list) and len(ring) >= 3]
+        if rings:
+            data["spatial_cadastre"] = await run_in_threadpool(
+                lambda: krt_cadastral_selector.spatial_selection(
+                    slug,
+                    krt_rings=rings,
+                    territory=data.get("territory") or {},
+                    root=_market_dir(),
+                    refresh=True,
+                )
+            )
+        else:
+            data["spatial_cadastre"] = {
+                "available": False,
+                "cached": False,
+                "reading": False,
+                "problem": "контур КРТ не собран — пространственный отбор КН невозможен",
+                "selection": None,
+            }
         return data
 
     @app.get("/krt/site/{slug}/export.xlsx", include_in_schema=False)
