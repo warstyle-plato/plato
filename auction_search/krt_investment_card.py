@@ -66,7 +66,7 @@ details{border:1px solid var(--line);margin-top:10px}summary{cursor:pointer;padd
       <button id="toggleLands">Участки</button><button id="toggleObjects">Объекты</button>
      </div>
      <div id="map" class="mapstage"><div class="notice">Загружаю геометрию…</div></div>
-     <div class="legend"><span><i class="dot" style="background:#c03b32"></i>КРТ</span><span><i class="dot" style="background:#d7a23c"></i>участки</span><span><i class="dot" style="background:#777"></i>объекты</span><span><i class="dot" style="background:#245b8a"></i>радиус 3 км</span></div>
+     <div class="legend"><span><i class="dot" style="background:#c03b32"></i>КРТ</span><span><i class="dot" style="background:#d7a23c"></i>участки</span><span><i class="dot" style="background:#777"></i>объекты</span><span><i class="dot" style="background:#245b8a"></i>радиус 3 км</span><span><i class="dot" style="background:#111"></i>ЖК из Пульса продаж</span></div>
      <div class="source" id="mapNote"></div>
     </div>
    </section>
@@ -259,7 +259,13 @@ function renderScore(sc){
   },location.origin);
  }
 }
-let MAP={point:null,parcels:null,market:false,lands:true,objects:true};const MERC=20037508.342789244;
+let MAP={point:null,parcels:null,peers:[],market:false,lands:true,objects:true};const MERC=20037508.342789244;
+const mercX=lon=>Number(lon)*MERC/180;
+const mercY=lat=>Math.log(Math.tan((90+Number(lat))*Math.PI/360))*MERC/Math.PI;
+function marketPeers(report){
+ const market=(report&&report.market)||report||{};
+ return (market.peers||[]).filter(x=>num(x.latitude)!==null&&num(x.longitude)!==null).slice(0,12);
+}
 function drawMap(){
  const point=MAP.point||{},pp=MAP.parcels||{},terr=pp.territory||{},krt=pp.krt_site||{};
  const pointR=(point.rings_merc||[]).filter(r=>Array.isArray(r)&&r.length>=3),krtR=(krt.rings_merc||[]).filter(r=>Array.isArray(r)&&r.length>=3);
@@ -267,7 +273,7 @@ function drawMap(){
  const site=pointR.length?pointR:krtR,geometry=site.length?site:(landAll.length?landAll:objectAll);
  let center=(Array.isArray(point.centre_merc)&&point.centre_merc.length>=2)?point.centre_merc:((Array.isArray(krt.centre_merc)&&krt.centre_merc.length>=2)?krt.centre_merc:null);
  if(!center&&geometry.length){const q=geometry.flat();center=[q.reduce((z,p)=>z+Number(p[0]),0)/q.length,q.reduce((z,p)=>z+Number(p[1]),0)/q.length]}
- if(!center&&num(point.longitude)!==null&&num(point.latitude)!==null){const lon=Number(point.longitude),lat=Number(point.latitude);center=[lon*MERC/180,Math.log(Math.tan((90+lat)*Math.PI/360))*MERC/Math.PI]}
+ if(!center&&num(point.longitude)!==null&&num(point.latitude)!==null){const lon=Number(point.longitude),lat=Number(point.latitude);center=[mercX(lon),mercY(lat)]}
  if(!center){$('map').innerHTML='<div class="notice">Геометрия территории пока не получена.</div>';return}
  const invLat=y=>(180/Math.PI)*(2*Math.atan(Math.exp(Number(y)*Math.PI/MERC))-Math.PI/2),lat=num(point.latitude)??invLat(center[1]),lands=MAP.lands?landRows:[],objects=MAP.objects?objectRows:[];
  let pts=(site.length?site:geometry).flat().concat(lands.flatMap(x=>x.rings_merc||[]).flat()).concat(objects.flatMap(x=>x.rings_merc||[]).flat());if(!pts.length)pts=[center];
@@ -277,8 +283,16 @@ function drawMap(){
  const base='/land/basemap?'+new URLSearchParams({bbox:[ax,ay,bx,by].join(','),width:'1100'}),sitePath=site.length?'<path d="'+path(site)+'" fill="#c03b32" fill-opacity=".16" stroke="#c03b32" stroke-width="4" vector-effect="non-scaling-stroke"/>':'';
  const landPaths=lands.map(x=>'<path d="'+path(x.rings_merc||[])+'" fill="#d7a23c" fill-opacity=".18" stroke="#b88218" stroke-width="1.5" vector-effect="non-scaling-stroke"/>').join(''),objPaths=objects.map(x=>'<path d="'+path(x.rings_merc||[])+'" fill="#777" fill-opacity=".35" stroke="#555" stroke-width="1" vector-effect="non-scaling-stroke"/>').join('');
  const mr=3000*k,market=MAP.market?'<ellipse cx="'+px(center[0]).toFixed(1)+'" cy="'+py(center[1]).toFixed(1)+'" rx="'+((mr/(bx-ax))*W).toFixed(1)+'" ry="'+((mr/(by-ay))*H).toFixed(1)+'" fill="none" stroke="#245b8a" stroke-width="4" stroke-dasharray="12 8" vector-effect="non-scaling-stroke"/>':'';
- $('map').innerHTML='<img src="'+base+'" alt="Карта"><svg viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none">'+landPaths+objPaths+sitePath+market+'</svg>';
- $('mapNote').textContent=(site.length?'Контур КРТ получен. ':'Карта центрирована по доступной геометрии территории. ')+(MAP.parcels?'Участки и объекты — из рабочего свода территории. ':'Слой участков/объектов пока недоступен. ')+'Рынок — радиус 3 км.';
+ const peerPins=MAP.market?(MAP.peers||[]).map((x,i)=>{
+  const xx=px(mercX(x.longitude)),yy=py(mercY(x.latitude)),name=String(x.name||x.address||'ЖК').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const price=num(x.price_per_sqm)!==null?fmt(x.price_per_sqm)+' ₽/м²':'цена —';
+  const pace=num(x.area_per_month)!==null?fmt(x.area_per_month,0)+' м²/мес.':(num(x.units_per_month)!==null?fmt(x.units_per_month,1)+' ДДУ/мес.':'темп —');
+  const label=(i+1)+'. '+name;
+  return '<g class="market-peer"><title>'+name+' · '+price+' · '+pace+'</title><circle cx="'+xx.toFixed(1)+'" cy="'+yy.toFixed(1)+'" r="7" fill="#111" stroke="#fff" stroke-width="2" vector-effect="non-scaling-stroke"/><text x="'+(xx+10).toFixed(1)+'" y="'+(yy+4).toFixed(1)+'" font-size="13" font-weight="700" fill="#111" stroke="#fff" stroke-width="4" paint-order="stroke" vector-effect="non-scaling-stroke">'+label+'</text></g>';
+ }).join(''):'';
+ $('map').innerHTML='<img src="'+base+'" alt="Карта"><svg viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none">'+landPaths+objPaths+sitePath+market+peerPins+'</svg>';
+ const peerNote=MAP.peers&&MAP.peers.length?' На карте отмечено ЖК из Пульса: '+MAP.peers.length+'.':' ЖК из Пульса с координатами в текущем отчёте не получены.';
+ $('mapNote').textContent=(site.length?'Контур КРТ получен. ':'Карта центрирована по доступной геометрии территории. ')+(MAP.parcels?'Участки и объекты — из рабочего свода территории. ':'Слой участков/объектов пока недоступен. ')+'Рынок — радиус 3 км.'+peerNote;
 }
 function bindMap(){
  $('viewSite').onclick=()=>{MAP.market=false;$('viewSite').classList.add('active');$('viewMarket').classList.remove('active');drawMap()};$('viewMarket').onclick=()=>{MAP.market=true;$('viewMarket').classList.add('active');$('viewSite').classList.remove('active');drawMap()};
@@ -310,12 +324,12 @@ async function boot(){
  ]);
  const cat=catR.status==='fulfilled'?catR.value:{projects:[]},p=findProject(cat);if(!p)throw new Error('Площадка не найдена в текущем каталоге КРТ');
  const rankData=rankR.status==='fulfilled'?rankR.value:{rows:[]},rank=(rankData.rows||[]).find(x=>String(x.slug||'')===SLUG)||{},req=reqR.status==='fulfilled'?reqR.value:(rank.requirements||{}),parcels=parcelR.status==='fulfilled'?parcelR.value:null,report=reportR.status==='fulfilled'?reportR.value:null;
- MAP.point=pointR.status==='fulfilled'?pointR.value:null;MAP.parcels=parcels;
+ MAP.point=pointR.status==='fulfilled'?pointR.value:null;MAP.parcels=parcels;MAP.peers=marketPeers(report);
  const initialRating=scoreR.status==='fulfilled'?(scoreR.value.rating||scoreR.value):null;
  renderHero(p,rank,req);renderEntry(p,rank);renderProgramme(p,req);renderTerritory(req,parcels);renderEconomics(rank,report,initialRating);renderPublic(rank);renderScore(initialRating);drawMap();
  $('recalcRating').onclick=()=>recalcRating(rank,report);
  $('priceTarget').onkeydown=e=>{if(e.key==='Enter')recalcRating(rank,report)};
- $('refreshMarket').onclick=async()=>{const b=$('refreshMarket');b.disabled=true;b.innerHTML='<span class="spinner"></span>Считаю';try{const d=await get('/auctions/krt/'+encodeURIComponent(SLUG)+'/market');const r2=await get('/auctions/krt/ranking');const rr=(r2.rows||[]).find(x=>String(x.slug||'')===SLUG)||rank;renderHero(p,rr,req);try{const s=await get(ratingUrl());const rating=s.rating||s;renderScore(rating);renderEconomics(rr,d,rating)}catch(_){renderEconomics(rr,d,null)}}catch(e){$('economics').insertAdjacentHTML('afterbegin','<div class="notice bad">'+esc(e.message||e)+'</div>')}finally{b.disabled=false;b.textContent='Обновить рынок и модель'}};
+ $('refreshMarket').onclick=async()=>{const b=$('refreshMarket');b.disabled=true;b.innerHTML='<span class="spinner"></span>Считаю';try{const d=await get('/auctions/krt/'+encodeURIComponent(SLUG)+'/market');const r2=await get('/auctions/krt/ranking');const rr=(r2.rows||[]).find(x=>String(x.slug||'')===SLUG)||rank;MAP.peers=marketPeers(d);renderHero(p,rr,req);drawMap();try{const s=await get(ratingUrl());const rating=s.rating||s;renderScore(rating);renderEconomics(rr,d,rating)}catch(_){renderEconomics(rr,d,null)}}catch(e){$('economics').insertAdjacentHTML('afterbegin','<div class="notice bad">'+esc(e.message||e)+'</div>')}finally{b.disabled=false;b.textContent='Обновить рынок и модель'}};
  $('refreshPublic').onclick=async()=>{const b=$('refreshPublic');b.disabled=true;b.innerHTML='<span class="spinner"></span>Ищу';try{const d=await get('/auctions/krt/'+encodeURIComponent(SLUG)+'/open-sources');renderPublic(rank,d)}catch(e){$('publicContext').innerHTML='<div class="notice bad">'+esc(e.message||e)+'</div>'}finally{b.disabled=false;b.textContent='Обновить публичный поиск'}};
  $('handoffDevelopAid').onclick=()=>{const s=$('actionStatus');if(parentAction('handoff',p))s.textContent='Передаю в DevelopAid…';else location.href='/auctions#krt='+encodeURIComponent(SLUG)};
  $('askPlato').onclick=()=>{const s=$('actionStatus');if(parentAction('plato',p))s.textContent='Передаю контекст Платону…';else s.textContent='Платон открывается из каталога КРТ.'};
