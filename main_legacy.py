@@ -18786,21 +18786,82 @@ def _v4_copy_block(xml: str, rows: range, offset: int, *,
     return xml.replace(tail, "".join(parts) + tail, 1), written
 
 
-def _v4_sports_inputs_block(xml: str, missing: list[str]) -> str:
-    """Блок вводных ФОКа внизу «Вводных»: копия блока ТЦ с своими подписями."""
-    if re.search(r'<x:row r="121"[ />]', xml):
-        missing.append("ФОК: строка 121 «Вводных» занята")
-        return xml
-    xml, written = _v4_copy_block(xml, _V4_RETAIL_INPUT_ROWS,
-                                  _V4_SPORTS_INPUT_OFFSET)
-    if len(written) != len(_V4_RETAIL_INPUT_ROWS):
-        missing.append("ФОК: блок вводных не скопирован целиком")
-        return xml
-    # Колонки A–D блока ТЦ уехали бы вместе с ним: там живут статьи
-    # себестоимости, и вторая их копия читалась бы как второй набор ставок.
+
+def _v4_clone_input_object_block(
+    xml: str,
+    rows: range,
+    offset: int,
+    *,
+    title: str,
+    owner: str,
+    missing: list[str],
+) -> tuple[str, list[int]]:
+    """Копирует блок вводных объекта в свободный низ листа.
+
+    Это общий механический слой для дополнительных ОСЗ. Он ничего не знает о
+    назначении объекта и его деньгах: снимает готовый блок шаблона, переносит
+    строки вместе со стилями/формулами и освобождает A–D, где у исходного ТЦ
+    живут чужие статьи себестоимости. ФОК был первым потребителем; вторые
+    офисы/ТЦ используют тот же путь, а не ещё одну поимённую копию.
+    """
+    target = rows.start + offset
+    if re.search(rf'<x:row r="{target}"[ />]', xml):
+        missing.append(f"{owner}: строка {target} «Вводных» занята")
+        return xml, []
+    xml, written = _v4_copy_block(xml, rows, offset)
+    if len(written) != len(rows):
+        missing.append(f"{owner}: блок вводных не скопирован целиком")
+        return xml, written
     for row in written:
         xml = re.sub(r'<x:c r="[A-D]%d"[^>]*?(?:/>|>.*?</x:c>)' % row, "", xml,
                      flags=re.S)
+    for column in ("J", "K", "L", "M"):
+        xml, done = _v4_set_cell(xml, f"{column}{target}", text=title)
+        if not done and column == "J":
+            missing.append(f"{owner}: заголовок блока вводных")
+    return xml, written
+
+
+def _v4_clone_calculation_object_block(
+    xml: str,
+    rows: range,
+    offset: int,
+    *,
+    input_rows: range,
+    input_offset: int,
+    title: str,
+    owner: str,
+    missing: list[str],
+) -> tuple[str, list[int]]:
+    """Копирует расчётный блок объекта на листе «ОБЪЕКТЫ».
+
+    Ссылки на собственные строки сдвигаются вместе с блоком, ссылки на
+    «Вводные» — на соответствующий скопированный блок. Поэтому добавочный
+    объект получает ровно ту же методику, что исходный, без второй реализации
+    формул в Python.
+    """
+    target = rows.start + offset
+    if re.search(rf'<x:row r="{target}"[ />]', xml):
+        missing.append(f"{owner}: строка {target} листа ОБЪЕКТЫ занята")
+        return xml, []
+    xml, written = _v4_copy_block(
+        xml, rows, offset, input_rows=input_rows, input_offset=input_offset)
+    if len(written) != len(rows):
+        missing.append(f"{owner}: расчётный блок не скопирован целиком")
+        return xml, written
+    for column in ("A", "B", "C", "D"):
+        xml, done = _v4_set_cell(xml, f"{column}{target}", text=title)
+        if not done and column == "A":
+            missing.append(f"{owner}: заголовок расчётного блока")
+    return xml, written
+
+def _v4_sports_inputs_block(xml: str, missing: list[str]) -> str:
+    """Блок вводных ФОКа внизу «Вводных»: копия блока ТЦ с своими подписями."""
+    xml, written = _v4_clone_input_object_block(
+        xml, _V4_RETAIL_INPUT_ROWS, _V4_SPORTS_INPUT_OFFSET,
+        title="ФОК / МЕДЦЕНТР", owner="ФОК", missing=missing)
+    if len(written) != len(_V4_RETAIL_INPUT_ROWS):
+        return xml
     for row, (label, unit, key) in _V4_SPORTS_INPUT_LABELS.items():
         xml, done = _v4_set_cell(xml, f"J{row}", text=label)
         if not done:
@@ -19234,22 +19295,12 @@ _V4_OBJECT_CAPEX_CHECK = {
 
 def _v4_sports_object_block(xml: str, missing: list[str]) -> str:
     """Четвёртый блок листа ОБЪЕКТЫ и его доля в аллокации по очередям."""
-    if re.search(r'<x:row r="124"[ />]', xml):
-        missing.append("ФОК: строка 124 листа ОБЪЕКТЫ занята")
-        return xml
-    xml, written = _v4_copy_block(
+    xml, written = _v4_clone_calculation_object_block(
         xml, _V4_RETAIL_OBJECT_ROWS, _V4_SPORTS_OBJECT_OFFSET,
-        input_rows=range(40, 56), input_offset=_V4_SPORTS_INPUT_OFFSET)
+        input_rows=range(40, 56), input_offset=_V4_SPORTS_INPUT_OFFSET,
+        title="ФОК / МЕДЦЕНТР", owner="ФОК", missing=missing)
     if len(written) != len(_V4_RETAIL_OBJECT_ROWS):
-        missing.append("ФОК: блок объекта не скопирован целиком")
         return xml
-    # Заголовок стоит во всех ячейках строки — так его пишет шаблон (полоса
-    # заливки во всю ширину). Оставить там подпись ТЦ значило бы завести в
-    # книге второй торговый центр, который на самом деле ФОК.
-    for _column in ("A", "B", "C", "D"):
-        xml, done = _v4_set_cell(xml, f"{_column}124", text="ФОК / МЕДЦЕНТР")
-        if not done and _column == "A":
-            missing.append("ФОК: заголовок блока объекта")
     # Аллокация — единственная дверь, через которую объекты попадают в CF
     # очередей. Не расширить её значит построить ФОК и не показать его нигде.
     added = 0
