@@ -20,6 +20,8 @@ AUCTIONS_PAGE = r'''<!doctype html>
 #krtTableWrap th,#krtTableWrap td{padding:8px 7px}
 #krtTableWrap th{font-size:10px;letter-spacing:.025em}
 #krtTableWrap .lotname{max-width:none;line-height:1.25;margin:0}
+#krtPanel .layout{grid-template-columns:minmax(0,1fr)}
+#krtSide{display:none!important}
 #krtTableWrap .krt-tags{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px}
 #krtTableWrap .krt-tags .tag{margin:0;padding:3px 5px;font-size:10px}
 #krtTableWrap table.wide th:nth-child(1),#krtTableWrap table.wide td:nth-child(1){width:34%}
@@ -2837,10 +2839,8 @@ function krtOutcomeWaiting(){
 }
 
 function krtPrototypeUrl(x){
- const label=[x&&x.name,x&&x.address,x&&x.district].filter(Boolean).join(' ');
- const area=Math.abs(Number((x||{}).area_ha||0)-14.62)<.08;
- return area&&(/нагатин/i.test(label)||/варшавск[^0-9]{0,60}37/i.test(label))
-  ?'/auctions/krt-prototype/nagatino':'';
+ const slug=String((x||{}).slug||'').trim();
+ return slug?'/auctions/krt-card/'+encodeURIComponent(slug):'';
 }
 function openKrtPrototype(x){
  const url=krtPrototypeUrl(x),modal=$('krtPrototypeModal'),frame=$('krtPrototypeFrame');
@@ -4132,7 +4132,7 @@ $('krtPrototypeModal').onclick=e=>{if(e.target===$('krtPrototypeModal'))closeKrt
 window.addEventListener('message',e=>{
  if(e.origin!==location.origin)return;
  const d=e.data||{};
- if(d.type!=='developaid-krt-prototype-action')return;
+ if(d.type!=='developaid-krt-card-action'&&d.type!=='developaid-krt-prototype-action')return;
  const x=state.selectedKrt;
  if(!x||String(x.slug||'')!==String(d.slug||''))return;
  if(d.action==='handoff'){handoffKrt(x);return}
