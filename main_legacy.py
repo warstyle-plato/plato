@@ -2294,6 +2294,11 @@ def parse_manual_tep_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
         raise ValueError("В шаблоне не найдена таблица продуктов ТЭП")
 
     known_keys = set(TEP_DEFAULT)
+    # Дополнительные экземпляры ОСЗ — опциональные строки нового движка, а
+    # не обязательная геометрия старого ручного шаблона ТЭП. Файл, скачанный
+    # до появления offices2/retail2/above_parking2, обязан по-прежнему
+    # приниматься; отсутствующий клон означает выключенный объект с нулевым ТЭП.
+    optional_clone_keys = {obj.key for obj in STANDALONE_OBJECTS if obj.clone_of}
     tep_mapping: dict[str, dict[str, float]] = {}
     transfer_conflicts: list[str] = []
     for row in rows[header_index + 1:]:
@@ -2357,7 +2362,7 @@ def parse_manual_tep_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
     # нет. Требовать её значило бы отвергать тот самый шаблон, который сервис
     # до сих пор раздаёт, — и человек читал бы «в шаблоне нет строки sports»
     # про файл, скачанный у нас же.
-    for key in {"other_mandatory", "sports"}:
+    for key in {"other_mandatory", "sports"} | optional_clone_keys:
         tep_mapping.setdefault(key, {
             "gns": 0.0,
             "total_area": 0.0,
@@ -18908,20 +18913,21 @@ def _v4_sports_inputs_block(xml: str, missing: list[str]) -> str:
 
 
 def _v4_cloned_inputs_blocks(xml: str, missing: list[str]) -> str:
-    """Копирует вводные второго объекта из штатного блока того же типа."""
+    """Копирует вводные второго объекта из штатного блока того же типа.
+
+    Механическое копирование делает общий helper: он сохраняет стили и формулы,
+    но выбрасывает A–D исходного блока. Эти колонки принадлежат общим статьям
+    проекта; если увезти их вместе с объектом, лист ввода получает повторные
+    секции «Стоимость строительства»/«ВРИ» и выглядит как два места ввода.
+    """
     for slot in _V4_CLONED_OBJECTS:
-        first = slot.input_rows.start + slot.input_offset
-        if re.search(rf'<x:row r="{first}"[ />]', xml):
-            missing.append(f"{slot.key}: строка {first} «Вводных» занята")
-            continue
-        xml, written = _v4_copy_block(xml, slot.input_rows, slot.input_offset)
+        target = _BY_KEY[slot.key]
+        xml, written = _v4_clone_input_object_block(
+            xml, slot.input_rows, slot.input_offset,
+            title=target.group_label.upper(), owner=slot.key, missing=missing)
         if len(written) != len(slot.input_rows):
-            missing.append(
-                f"{slot.key}: блок вводных скопирован не целиком "
-                f"({len(written)} из {len(slot.input_rows)})")
             continue
         source = _BY_KEY[slot.source_key]
-        target = _BY_KEY[slot.key]
         for row in written:
             found = re.search(
                 rf'(<x:row r="{row}"(?:[ ][^>]*)?>)(.*?)(</x:row>)',
