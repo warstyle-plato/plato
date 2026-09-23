@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+import statistics
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -83,7 +84,46 @@ class MoscowMarket:
                 newest = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 continue
-        return cls(newest)
+        payload = dict(newest or {})
+        # #485 требует медиану поглощения Москвы в м²/мес., а не ДДУ/мес.
+        # Исходный импорт уже хранит помесячную площадь продаж каждого проекта
+        # в moscow-dynamics-*.json; прежний маленький свод просто не переносил
+        # эту медиану. Считаем её один раз при загрузке reference — без сети.
+        wanted_month = str(payload.get("last_month") or "")
+        dynamics = None
+        for path in sorted(folder.glob("moscow-dynamics-*.json")):
+            try:
+                candidate = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not wanted_month or str(candidate.get("last_month") or "") == wanted_month:
+                dynamics = candidate
+        area_by_segment: dict[str, list[float]] = {}
+        if isinstance(dynamics, dict):
+            months = list(dynamics.get("months") or [])
+            index = months.index(wanted_month) if wanted_month in months else len(months) - 1
+            for project in (dynamics.get("projects") or {}).values():
+                if not isinstance(project, dict):
+                    continue
+                segment = str(project.get("segment") or "").strip()
+                series = project.get("area") or []
+                if not segment or index < 0 or index >= len(series):
+                    continue
+                value = series[index]
+                if value is None:
+                    continue
+                try:
+                    area_by_segment.setdefault(segment, []).append(float(value))
+                except (TypeError, ValueError):
+                    continue
+        payload["_area_median_by_segment"] = {
+            segment: round(float(statistics.median(values)), 1)
+            for segment, values in area_by_segment.items() if values
+        }
+        payload["_area_median_source"] = str(
+            (dynamics or {}).get("source") or payload.get("source") or ""
+        )
+        return cls(payload)
 
     @property
     def available(self) -> bool:
@@ -136,6 +176,14 @@ class MoscowMarket:
 
     def segments(self) -> list[str]:
         return sorted(self.payload.get("current") or {})
+
+    def area_median(self, segment: str | None) -> float | None:
+        """Медиана продаж площади в м²/мес. по Москве для класса."""
+        value = (self.payload.get("_area_median_by_segment") or {}).get(str(segment or ""))
+        try:
+            return None if value is None else float(value)
+        except (TypeError, ValueError):
+            return None
 
     def snapshot(self, segment: str | None) -> ClassSnapshot | None:
         row = (self.payload.get("current") or {}).get(str(segment or ""))
