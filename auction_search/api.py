@@ -11,11 +11,11 @@ import time
 import urllib.parse
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -75,6 +75,7 @@ from auction_search.preset_mapper import build_project_preset
 from auction_search.profile_fit import profile_fit
 from auction_search.service import AuctionSearchService
 from auction_search import krt_territory, nagatino_parcels
+from auction_search import view_access as auction_view
 from auction_search import krt_early_projects
 from auction_search import krt_investment_score
 from auction_search.nagatino_ui import nagatino_page
@@ -988,6 +989,79 @@ def install(app: FastAPI) -> None:
     core = sys.modules.get("developaid_core")
     if core is not None:
         install_page_bridge(core)
+
+    # Ограниченный ключ включается только когда AUCTIONS_VIEW_KEY реально
+    # задан. До настройки переменной поведение /auctions остаётся прежним:
+    # выкатить код раньше секрета безопаснее, чем случайно закрыть раздел.
+    def _auctions_gate_enabled() -> bool:
+        return bool(auction_view.view_key())
+
+    @app.middleware("http")
+    async def _auctions_view_gate(request: Request, call_next):
+        path = request.url.path.rstrip("/") or "/"
+        if path == "/auctions/login" or not _auctions_gate_enabled():
+            return await call_next(request)
+        if path != "/auctions" and not path.startswith("/auctions/"):
+            return await call_next(request)
+
+        full_access = market_cabinet.authorised(request)
+        view_access = auction_view.authorised(request)
+        if not full_access and not view_access:
+            if request.method in ("GET", "HEAD") and path == "/auctions":
+                problem = auction_view.key_problem()
+                status = 503 if problem else 401
+                return HTMLResponse(
+                    auction_view.login_page(problem),
+                    status_code=status,
+                    headers={"Cache-Control": "no-store, must-revalidate"},
+                )
+            return JSONResponse(
+                {"detail": "Нужен ключ доступа к разделу «Торги»"},
+                status_code=401,
+                headers={"Cache-Control": "no-store"},
+            )
+
+        # Новый ключ — именно право СМОТРЕТЬ. Полный MARKET_CABINET_KEY
+        # продолжает работать как раньше и не попадает под эти ограничения.
+        if view_access and not full_access:
+            if request.method not in ("GET", "HEAD", "OPTIONS"):
+                return JSONResponse(
+                    {"detail": "Ограниченный ключ даёт только просмотр торгов и КРТ"},
+                    status_code=403,
+                    headers={"Cache-Control": "no-store"},
+                )
+            # Некоторые GET-маршруты умеют запускать обновление каталога.
+            # Для read-only пользователя флаг обновления не превращаем в запись
+            # только потому, что HTTP-метод формально GET.
+            for name in ("refresh", "force", "rebuild", "revoke"):
+                value = str(request.query_params.get(name) or "").strip().lower()
+                if value in ("1", "true", "yes", "on"):
+                    return JSONResponse(
+                        {"detail": "Ограниченный ключ не запускает обновление данных"},
+                        status_code=403,
+                        headers={"Cache-Control": "no-store"},
+                    )
+        return await call_next(request)
+
+    @app.post("/auctions/login", include_in_schema=False)
+    async def auctions_login(request: Request):
+        """Один вход для полного ключа рынка и отдельного read-only ключа."""
+        raw = (await request.body()).decode("utf-8", errors="replace")
+        key = (parse_qs(raw).get("key") or [""])[0]
+
+        response = RedirectResponse("/auctions", status_code=303)
+        if market_cabinet.key_accepted(key):
+            market_cabinet.set_cookie(response, key)
+            return response
+        if auction_view.key_accepted(key):
+            auction_view.set_cookie(response, key)
+            return response
+
+        return HTMLResponse(
+            auction_view.login_page("Ключ не подошёл."),
+            status_code=401,
+            headers={"Cache-Control": "no-store, must-revalidate"},
+        )
 
     @app.get("/krt-12-preview", response_class=HTMLResponse, include_in_schema=False)
     async def krt_12_preview_redirect() -> HTMLResponse:
@@ -2854,6 +2928,10 @@ def install(app: FastAPI) -> None:
         if code and share and hmac.compare_digest(str(share), code):
             return
         if market_cabinet.authorised(request):
+            return
+        # Отдельный ключ торгов действует только здесь: generic-кабинет его
+        # не знает, поэтому /cabinet и финансовая модель им не открываются.
+        if auction_view.authorised(request):
             return
         if core is not None and hasattr(core, "_require_admin"):
             # Выгрузка называет живые компании с ИНН и кадастровой стоимостью:
