@@ -34,3 +34,17 @@ def test_premise_does_not_double_count_building_value():
     ]
     got=select(krt_rings=KRT,objects=rows)
     assert got["cadastral"]["private_buyout_rub"] == 1000
+
+
+def test_land_value_is_in_private_buyout():
+    land={"cadastral_number":"77:1:1:40","rings_merc":box(5,5,40,40),"kind":"land","cadastral_value_rub":700,"owner":{"group":"other","name":"ООО Собственник"}}
+    got=select(krt_rings=KRT,lands=[land],objects=[])
+    assert got["cadastral"]["private_buyout_rub"] == 700
+    assert got["cadastral"]["private_land_rub"] == 700
+
+def test_unknown_owner_is_not_silently_private():
+    obj={"cadastral_number":"77:1:1:50","rings_merc":box(10,10,20,20),"kind":"building","cadastral_value_rub":900,"owner":{}}
+    got=select(krt_rings=KRT,objects=[obj])
+    assert got["cadastral"]["private_buyout_rub"] == 0
+    assert got["cadastral"]["unknown_owner_count"] == 1
+    assert got["cadastral"]["complete"] is False
