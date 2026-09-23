@@ -67,9 +67,13 @@ def install(app, core=None):
         # Warm the twelve calculations in the background after each preview
         # deploy. summaries() itself only schedules workers and returns fast.
         try:
-            krt_12_analysis.summaries(core)
-        except Exception:
-            pass
+            _warm_rows = krt_12_analysis.summaries(core)
+            print("KRT12 warm " + str([
+                (r.get("lot"), r.get("score"), r.get("coverage_pct"), r.get("working"), r.get("slug"), r.get("reason"))
+                for r in _warm_rows
+            ]), flush=True)
+        except Exception as _exc:
+            print("KRT12 warm failed: " + repr(_exc), flush=True)
     @app.get("/krt-12-preview/data", include_in_schema=False)
     async def krt_12_preview_data(refresh: bool = Query(default=False)):
         if core is None:
