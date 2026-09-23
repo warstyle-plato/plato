@@ -10,7 +10,25 @@ from __future__ import annotations
 
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from auction_search.krt_investment_score import DEFAULT_PRICE_TARGET_RUB_SQM, price_score
+DEFAULT_PRICE_TARGET_RUB_SQM = 600_000.0
+
+
+def price_score(market_rub_sqm, target_rub_sqm=DEFAULT_PRICE_TARGET_RUB_SQM):
+    try:
+        market = float(market_rub_sqm)
+        target = float(target_rub_sqm)
+    except (TypeError, ValueError):
+        return None
+    if target <= 0:
+        return None
+    ratio = market / target
+    stops = [(0.70, 0.0), (0.85, 50.0), (1.00, 100.0)]
+    if ratio <= stops[0][0]:
+        return 0.0
+    for (x1, y1), (x2, y2) in zip(stops, stops[1:]):
+        if ratio <= x2:
+            return y1 + (ratio - x1) / (x2 - x1) * (y2 - y1)
+    return 100.0
 
 
 LOTS = [
