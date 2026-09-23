@@ -49,11 +49,13 @@ def _published_match(early: dict[str, Any], official: dict[str, Any]) -> bool:
 
 
 def projects(official_rows: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
-    official = list(official_rows or [])
+    # Источник владельца — отдельный ранний набор. Не скрываем его по
+    # приблизительному совпадению с каталогом: именно так шесть ранних строк
+    # исчезли из общей таблицы ещё до того, как город их опубликовал. Пока нет
+    # подтверждённого идентификатора города, совпадение адреса не равно одной
+    # и той же площадке.
     out: list[dict[str, Any]] = []
     for raw in _ROWS:
-        if any(_published_match(raw, row) for row in official):
-            continue
         row = dict(raw)
         lot = int(row.pop("lot"))
         name = str(row.get("name") or "")
