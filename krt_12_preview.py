@@ -176,6 +176,22 @@ fetch('/krt-12-preview/data').then(r=>r.json()).then(d=>{rows=d.rows||[];$('okru
 
 
 def install(app, core=None):
+    if core is not None:
+        import inspect, logging
+        caps=[]
+        for _name in dir(core):
+            _low=_name.lower()
+            if not any(_token in _low for _token in ("nspd","cadastr","cadast","land","feature","spatial","geometry","polygon","map")):
+                continue
+            _value=getattr(core,_name,None)
+            if not callable(_value):
+                continue
+            try:
+                _sig=str(inspect.signature(_value))
+            except Exception:
+                _sig=""
+            caps.append((_name,_sig))
+        logging.getLogger(__name__).info("KRT_CORE_CAPABILITIES %s", caps[:300])
     @app.get("/krt-12-preview/core-capabilities", include_in_schema=False)
     async def krt_12_core_capabilities():
         import inspect
