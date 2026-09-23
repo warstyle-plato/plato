@@ -2164,19 +2164,11 @@ def install(app: FastAPI) -> None:
             return None
         return krt_tenders.asking_price_mln((known.get(slug) or {}).get("lots") or [])
 
-    def _screen_one(project: dict[str, Any]) -> dict[str, Any]:
-        """Один прогон для рейтинга — тем же путём, что и открытая карточка.
-
-        Второго скрининга не заводим: разойдись они, список и карточка
-        показали бы про одну площадку разное, и оба достоверно.
-        """
+    def _market_model_only(project: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Рынок + финансовая модель без платного поиска публикаций."""
         if core is None or market is None:
-            return {"available": False, "reason": "Финансовый движок DevelopAid не подключён"}
-        # Рынок должен получить реальную площадку, а не служебный ключ рейтинга.
-        # Для обычной карточки market.resolve_subject умеет krt:<slug>; для площадки-
-        # решения — krt:decision:<id>. Если снимок каталога на конкретном воркере
-        # отстал, используем имя/адрес самой строки: иначе весь финансовый прогон
-        # падает до модели и колонка продаж окружения остаётся н/д.
+            return ({"available": False,
+                     "reason": "Финансовый движок DevelopAid не подключён"}, {})
         market_query = f"krt:{project.get('slug')}"
         try:
             report = market.build_report(
@@ -2188,11 +2180,6 @@ def install(app: FastAPI) -> None:
                                 for key in ("name", "district") if project.get(key))
             if not fallback:
                 raise
-            # Fallback уходит во внешний геокодер. Массовый прогон раньше
-            # стрелял по нему десятками адресов подряд и получал 429, после
-            # чего ранние/неопубликованные площадки не доходили ни до модели,
-            # ни до рейтинга. Один поток уже есть; добавляем честный интервал
-            # и один retry именно на rate limit.
             time.sleep(1.1)
             try:
                 report = market.build_report(
@@ -2208,14 +2195,7 @@ def install(app: FastAPI) -> None:
                     city_reference=False, include_project_totals=True,
                 )
         slug = str(project.get("slug") or "")
-        document_id = slug[len("decision:"):] if slug.startswith("decision:") else ""
         try:
-            # Обязательства площадки лежат в проекте решения. У площадки
-            # каталога до него ведёт её слаг, у площадки-решения слага нет
-            # вовсе — а документ тот же самый, и читать его надо так же:
-            # снос и расселение это CAPEX, а метры Программы реновации
-            # строятся и не продаются. Без них модель продаёт всё жильё по
-            # рынку — ошибка, уже пойманная на Задонском проезде.
             requirements = _requirements_for(slug)
         except Exception as exc:  # noqa: BLE001
             logger.exception("KRT requirements failed slug=%s", slug)
@@ -2223,6 +2203,24 @@ def install(app: FastAPI) -> None:
                 "available": False,
                 "warning": f"Документы обязательств временно не прочитаны: {type(exc).__name__}",
             }
+        asking_price = _asking_price_mln(slug)
+        if asking_price is None and project.get("early_unpublished"):
+            try:
+                asking_price = float(project.get("start_price_mln"))
+            except (TypeError, ValueError):
+                asking_price = None
+        screening = build_krt_model_screening(
+            project, report, core, requirements=requirements,
+            asking_price_mln=asking_price)
+        return screening, report
+
+    def _screen_one(project: dict[str, Any]) -> dict[str, Any]:
+        """Полный прогон: рынок + модель + карточка города + публичный контекст."""
+        screening, report = _market_model_only(project)
+        if not report:
+            return screening
+        slug = str(project.get("slug") or "")
+        document_id = slug[len("decision:"):] if slug.startswith("decision:") else ""
         # Карточка каталога — официальный и бесплатный источник застройщика и
         # реновации. Читается в прогоне, а не по нажатию: иначе фильтр по
         # оператору и городским нуждам работает только по открытым руками.
@@ -2241,15 +2239,6 @@ def install(app: FastAPI) -> None:
             except Exception as exc:  # noqa: BLE001
                 logger.exception("KRT card facts failed slug=%s", slug)
                 card = {"available": False, "reason": f"{type(exc).__name__}: {exc}"}
-        asking_price = _asking_price_mln(slug)
-        if asking_price is None and project.get("early_unpublished"):
-            try:
-                asking_price = float(project.get("start_price_mln"))
-            except (TypeError, ValueError):
-                asking_price = None
-        screening = build_krt_model_screening(
-            project, report, core, requirements=requirements,
-            asking_price_mln=asking_price)
         screening["card_facts"] = card
         # Занятость площадки — в прогон, а не по нажатию: пока она приходила
         # только кнопкой, каталог показывал «Планируемая» там, где договор
