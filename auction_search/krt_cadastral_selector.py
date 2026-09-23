@@ -6,7 +6,12 @@ missing geometry, ownership, or value into zero.
 """
 from __future__ import annotations
 
+import json
 import math
+import os
+import threading
+import time
+from pathlib import Path
 from typing import Any
 
 MERCATOR_HALF = 20037508.342789244
@@ -281,3 +286,309 @@ def candidate_numbers(requirements: dict[str, Any], territory: dict[str, Any]) -
             add(objects, row.get("cadastral_number"))
 
     return {"lands": lands, "objects": objects}
+
+
+# Spatial discovery cache.  A catalogue page must never wait for dozens of
+# NSPD requests; it reads the last snapshot and starts a background refresh.
+_SPATIAL_LOCK = threading.Lock()
+_SPATIAL_READING: set[str] = set()
+SPATIAL_TTL_SECONDS = 7 * 24 * 3600
+NSPD_LAND_LAYERS = ("Земельные участки из ЕГРН",)
+NSPD_OCS_LAYERS = (
+    "Здания",
+    "Сооружения",
+    "Объекты незавершенного строительства",
+    "Единые недвижимые комплексы",
+)
+
+
+def inverse_mercator(x: float, y: float) -> tuple[float, float]:
+    """EPSG:3857 -> (lon, lat) EPSG:4326."""
+    lon = float(x) * 180.0 / MERCATOR_HALF
+    lat = (180.0 / math.pi) * (
+        2.0 * math.atan(math.exp(float(y) * math.pi / MERCATOR_HALF)) - math.pi / 2.0
+    )
+    return lon, lat
+
+
+def _contour_shape(krt_rings):
+    """Build one shapely geometry from KRT mercator rings."""
+    from shapely.geometry import Polygon
+    from shapely.ops import unary_union
+
+    polygons = []
+    for ring in krt_rings or []:
+        if not isinstance(ring, list) or len(ring) < 3:
+            continue
+        coords = []
+        for point in ring:
+            if not isinstance(point, (list, tuple)) or len(point) < 2:
+                continue
+            x, y = _num(point[0]), _num(point[1])
+            if x is None or y is None:
+                continue
+            coords.append(inverse_mercator(x, y))
+        if len(coords) < 3:
+            continue
+        if coords[0] != coords[-1]:
+            coords.append(coords[0])
+        try:
+            poly = Polygon(coords)
+            if not poly.is_valid:
+                poly = poly.buffer(0)
+            if not poly.is_empty:
+                polygons.append(poly)
+        except Exception:
+            continue
+    if not polygons:
+        raise ValueError("контур КРТ не содержит валидных колец")
+    return unary_union(polygons)
+
+
+def _model_dump(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return dict(value)
+    dump = getattr(value, "model_dump", None)
+    if callable(dump):
+        try:
+            got = dump()
+            return dict(got) if isinstance(got, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _geojson_rings_merc(geometry: Any) -> list[list[list[float]]]:
+    raw = _model_dump(geometry)
+    if not raw and isinstance(geometry, dict):
+        raw = geometry
+    kind = str(raw.get("type") or "")
+    coords = raw.get("coordinates") or []
+    rings: list[list[list[float]]] = []
+
+    def add_ring(ring) -> None:
+        converted = []
+        for point in ring or []:
+            if not isinstance(point, (list, tuple)) or len(point) < 2:
+                continue
+            lng, lat = _num(point[0]), _num(point[1])
+            if lng is None or lat is None:
+                continue
+            x, y = mercator(lng, lat)
+            converted.append([x, y])
+        if len(converted) >= 3:
+            rings.append(converted)
+
+    if kind == "Polygon":
+        for ring in coords:
+            add_ring(ring)
+    elif kind == "MultiPolygon":
+        for polygon in coords:
+            for ring in polygon:
+                add_ring(ring)
+    return rings
+
+
+def _feature_row(feature: Any, *, kind: str, layer: str) -> dict[str, Any]:
+    props = getattr(feature, "properties", None)
+    options = getattr(props, "options", None)
+    opt = _model_dump(options)
+    if not opt:
+        opt = _model_dump(props).get("options") or {}
+    cad = str(
+        opt.get("cad_num")
+        or opt.get("cadastral_number")
+        or opt.get("cn")
+        or ""
+    ).strip()
+    value = (
+        opt.get("cost_value")
+        if opt.get("cost_value") is not None
+        else opt.get("cadastral_cost")
+    )
+    area = (
+        opt.get("specified_area")
+        if opt.get("specified_area") is not None
+        else opt.get("declared_area")
+    )
+    if area is None:
+        area = opt.get("area")
+    address = str(
+        opt.get("readable_address")
+        or opt.get("address")
+        or opt.get("object_address")
+        or ""
+    ).strip()
+    return {
+        "cadastral_number": cad,
+        "kind": kind,
+        "layer": layer,
+        "address": address,
+        "area_sqm": _num(area),
+        "cadastral_value_rub": _num(value),
+        "owner": {},
+        "rings_merc": _geojson_rings_merc(getattr(feature, "geometry", None)),
+        "source": "НСПД · пространственный поиск по контуру КРТ",
+    }
+
+
+def discover_nspd(*, krt_rings, max_features: int = 2500) -> dict[str, Any]:
+    """Enumerate cadastral land and OCS intersecting a KRT contour.
+
+    The search is independent from the KRT decision/auction object list, so it
+    works as a completeness control.  Ownership is intentionally not invented:
+    NSPD exposes cadastre/geometry, while owner classification is merged later
+    from EGRN records when available.
+    """
+    try:
+        from pynspd import Nspd, NspdFeature
+    except Exception as exc:
+        return {
+            "available": False,
+            "complete": False,
+            "problem": f"pynspd недоступен: {type(exc).__name__}: {exc}",
+            "lands": [],
+            "objects": [],
+            "layers": {},
+        }
+
+    try:
+        contour = _contour_shape(krt_rings)
+    except Exception as exc:
+        return {
+            "available": False,
+            "complete": False,
+            "problem": f"контур КРТ не собран: {type(exc).__name__}: {exc}",
+            "lands": [],
+            "objects": [],
+            "layers": {},
+        }
+
+    lands: dict[str, dict[str, Any]] = {}
+    objects: dict[str, dict[str, Any]] = {}
+    layers: dict[str, dict[str, Any]] = {}
+    truncated = False
+
+    try:
+        client = Nspd(client_timeout=25, client_retries=2)
+    except TypeError:
+        client = Nspd()
+    try:
+        for title, kind, bucket in [
+            *[(title, "land", lands) for title in NSPD_LAND_LAYERS],
+            *[(title, "building", objects) for title in NSPD_OCS_LAYERS],
+        ]:
+            count = 0
+            problem = ""
+            try:
+                layer_def = NspdFeature.by_title(title)
+                iterator = client.search_in_contour_iter(
+                    contour, layer_def, only_intersects=True
+                )
+                for feature in iterator:
+                    row = _feature_row(feature, kind=kind, layer=title)
+                    number = row.get("cadastral_number")
+                    if not number:
+                        continue
+                    bucket.setdefault(number, row)
+                    count += 1
+                    if len(lands) + len(objects) >= max_features:
+                        truncated = True
+                        break
+            except Exception as exc:
+                problem = f"{type(exc).__name__}: {exc}"[:300]
+            layers[title] = {"count": count, "problem": problem}
+            if truncated:
+                break
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
+
+    layer_errors = [name for name, row in layers.items() if row.get("problem")]
+    return {
+        "available": True,
+        "complete": not truncated and not layer_errors,
+        "partial": bool(truncated or layer_errors),
+        "problem": (
+            ("лимит объектов достигнут; " if truncated else "")
+            + (("ошибки слоёв: " + ", ".join(layer_errors)) if layer_errors else "")
+        ).strip("; "),
+        "lands": list(lands.values()),
+        "objects": list(objects.values()),
+        "layers": layers,
+        "counts": {"lands": len(lands), "objects": len(objects)},
+        "source": "НСПД search_in_contour_iter · only_intersects=True",
+    }
+
+
+def _cache_path(slug: str, root: Path | None = None) -> Path:
+    base = root or Path(os.getenv("DATA_DIR", "data"))
+    safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in str(slug))
+    return base / "market" / "krt" / "spatial" / f"{safe}.json"
+
+
+def load_spatial(slug: str, *, root: Path | None = None) -> dict[str, Any]:
+    path = _cache_path(slug, root)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"available": False, "cached": False, "reading": reading(slug)}
+    if not isinstance(payload, dict):
+        return {"available": False, "cached": False, "reading": reading(slug)}
+    age = time.time() - float(payload.get("saved_at") or 0)
+    return {
+        **payload,
+        "cached": True,
+        "stale": age > SPATIAL_TTL_SECONDS,
+        "reading": reading(slug),
+    }
+
+
+def save_spatial(slug: str, payload: dict[str, Any], *, root: Path | None = None) -> None:
+    path = _cache_path(slug, root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    body = {**payload, "saved_at": time.time(), "slug": slug}
+    tmp.write_text(json.dumps(body, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(path)
+
+
+def reading(slug: str) -> bool:
+    with _SPATIAL_LOCK:
+        return str(slug) in _SPATIAL_READING
+
+
+def refresh_spatial_in_background(
+    slug: str,
+    *,
+    krt_rings,
+    root: Path | None = None,
+    force: bool = False,
+) -> bool:
+    """Start one background NSPD polygon scan per KRT slug."""
+    slug = str(slug)
+    current = load_spatial(slug, root=root)
+    if not force and current.get("cached") and not current.get("stale"):
+        return False
+    with _SPATIAL_LOCK:
+        if slug in _SPATIAL_READING:
+            return False
+        _SPATIAL_READING.add(slug)
+
+    def run() -> None:
+        try:
+            save_spatial(slug, discover_nspd(krt_rings=krt_rings), root=root)
+        finally:
+            with _SPATIAL_LOCK:
+                _SPATIAL_READING.discard(slug)
+
+    threading.Thread(
+        target=run,
+        name=f"krt-spatial-{slug[:30]}",
+        daemon=True,
+    ).start()
+    return True
