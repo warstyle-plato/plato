@@ -1159,23 +1159,31 @@ def install(app: FastAPI) -> None:
             }
             for key, value in (rating.get("components") or {}).items()
         }
-        await run_in_threadpool(
-            krt_ranking.remember,
-            slug,
-            {
-                "investment_rating": stored_rating,
-                "investment_rating_version": str(
-                    (rating.get("methodology") or {}).get("version") or ""),
-                "investment_rating_target_rub_sqm": price_target_rub_sqm,
-                "investment_rating_computed_at": int(time.time()),
-                "local_absorption_sqm_month": local_absorption,
-                "moscow_absorption_sqm_month": benchmark_absorption,
-                "investment_rating_segment": segment,
-            },
-        )
+        canonical_target = krt_investment_score.DEFAULT_PRICE_TARGET_RUB_SQM
+        canonical = abs(float(price_target_rub_sqm) - float(canonical_target)) < 0.5
+        # В общий каталог записывается только канонический рейтинг. Сценарий,
+        # который пользователь крутит в карточке другим ориентиром, не должен
+        # менять цифру у всех остальных пользователей.
+        if canonical:
+            await run_in_threadpool(
+                krt_ranking.remember,
+                slug,
+                {
+                    "investment_rating": stored_rating,
+                    "investment_rating_version": str(
+                        (rating.get("methodology") or {}).get("version") or ""),
+                    "investment_rating_target_rub_sqm": price_target_rub_sqm,
+                    "investment_rating_computed_at": int(time.time()),
+                    "local_absorption_sqm_month": local_absorption,
+                    "moscow_absorption_sqm_month": benchmark_absorption,
+                    "investment_rating_segment": segment,
+                },
+            )
         return {
             "slug": slug,
             "rating": rating,
+            "canonical": canonical,
+            "canonical_target_rub_sqm": canonical_target,
             "control_case": control,
             "absorption": {
                 "local_median_sqm_month": local_absorption,
