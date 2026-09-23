@@ -77,6 +77,7 @@ from auction_search import krt_territory, nagatino_parcels
 from auction_search import krt_investment_score
 from auction_search.nagatino_ui import nagatino_page
 from auction_search.krt_nagatino_prototype import nagatino_investment_card_page
+from auction_search.krt_investment_card import krt_investment_card_page
 from auction_search.ui import auctions_page
 from market_search.krt_registry import CATALOGUE_URL, KrtRegistry
 from market_search import krt_decision_tep
@@ -992,6 +993,119 @@ def install(app: FastAPI) -> None:
             auction_page_with_handoff(auctions_page(core)),
             headers={"Cache-Control": "no-store, must-revalidate"},
         )
+
+    @app.get("/auctions/krt-card/{slug}", response_class=HTMLResponse, include_in_schema=False)
+    async def auction_krt_investment_card(slug: str) -> HTMLResponse:
+        """Универсальная полноэкранная карточка КРТ поверх production-источников."""
+        return HTMLResponse(
+            krt_investment_card_page(slug),
+            headers={"Cache-Control": "no-store, must-revalidate"},
+        )
+
+    @app.get("/auctions/krt/{slug}/investment-score", include_in_schema=False)
+    async def auction_krt_investment_score(
+        slug: str,
+        price_target_rub_sqm: float = Query(
+            krt_investment_score.DEFAULT_PRICE_TARGET_RUB_SQM,
+            ge=1,
+            le=10_000_000,
+        ),
+    ) -> dict[str, Any]:
+        """Рейтинг #485 для любой площадки из уже сохранённых production-данных.
+
+        Неизвестные поглощение в м²/мес. и денежная нагрузка не заменяются
+        ДДУ/мес. или нулём. Поэтому до появления этих двух измерений общий балл
+        может оставаться пустым при видимых LLCR и цене рынка.
+        """
+        project = next(
+            (item for item in _krt_all_sites() if str(item.get("slug") or "") == slug),
+            None,
+        )
+        if project is None:
+            finder = getattr(krt_registry, "find", None)
+            project = finder(f"krt:{slug}") if callable(finder) else None
+        if not project:
+            raise HTTPException(status_code=404, detail="Территория КРТ не найдена")
+
+        row = krt_ranking.stored_row(slug)
+        stored = krt_ranking.report(slug) or {}
+        screening = dict(stored.get("screening") or {})
+        metrics = dict(screening.get("metrics") or {})
+        market_block = dict(stored.get("market") or {})
+        analysis = dict(market_block.get("analysis") or {})
+        site = dict(analysis.get("site") or analysis.get("overall") or {})
+        hint = dict(market_block.get("price_hint") or {})
+
+        llcr = metrics.get("project_llcr_x", row.get("project_llcr_x"))
+        market_price = row.get("surrounding_price_rub_sqm")
+        if market_price is None:
+            market_price = site.get("price_per_sqm", hint.get("price_per_sqm"))
+
+        local_absorption = row.get("local_absorption_sqm_month")
+        benchmark_absorption = row.get("moscow_absorption_sqm_month")
+        burden_pct = row.get("burden_pct")
+        burden_mln = row.get("burden_mln")
+        ordinary_capex_mln = row.get("ordinary_capex_mln")
+        entry_capacity_mln = row.get("entry_capacity_mln")
+
+        # Пока полный денежный стек собран только для контрольного кейса
+        # Нагатино. Узнаём его по самому паспорту, а не по нестабильному slug.
+        text = " ".join(str(project.get(k) or "") for k in ("name", "address", "district"))
+        try:
+            area = float(project.get("area_ha") or 0)
+        except (TypeError, ValueError):
+            area = 0.0
+        control = {}
+        if abs(area - 14.62) < 0.08 and re.search(r"(нагатин|варшавск)", text, re.I):
+            control = await run_in_threadpool(
+                krt_investment_score.nagatino_live_example, core)
+            if control.get("available"):
+                base = control.get("baseline") or {}
+                stack = control.get("cost_stack") or {}
+                entry = control.get("entry_capacity") or {}
+                llcr = base.get("project_llcr_x", llcr)
+                burden_pct = control.get("burden_pct")
+                burden_mln = stack.get("total_known_mln")
+                ordinary_capex_mln = control.get("ordinary_capex_mln")
+                entry_capacity_mln = entry.get("max_krt_right_price_mln", entry_capacity_mln)
+
+        status_kind = str(project.get("status_kind") or "").strip().lower()
+        if not status_kind:
+            status_kind = "running" if "реализац" in str(project.get("status") or "").casefold() else "planned"
+
+        missing_reasons: dict[str, str] = {}
+        if local_absorption is None or benchmark_absorption is None:
+            missing_reasons["absorption"] = (
+                "Нужна пара м²/мес.: локальная медиана и медиана Москвы по классу. "
+                "Сохранённые ДДУ/мес. не подменяют эту меру."
+            )
+        if burden_pct is None:
+            missing_reasons["burden"] = (
+                "Полная денежная нагрузка КРТ пока не собрана для этой площадки; "
+                "неизвестное не считается нулём."
+            )
+
+        rating = krt_investment_score.score(
+            status_kind=status_kind,
+            llcr=llcr,
+            market_rub_sqm=market_price,
+            target_rub_sqm=price_target_rub_sqm,
+            local_sqm_month=local_absorption,
+            benchmark_sqm_month=benchmark_absorption,
+            burden_pct=burden_pct,
+            burden_mln=burden_mln,
+            ordinary_capex_mln=ordinary_capex_mln,
+            housing_gfa_sqm=project.get("housing_gfa_sqm") or row.get("housing_gfa_sqm"),
+            entry_capacity_mln=entry_capacity_mln,
+            sources={
+                "llcr": "DevelopAid financial engine",
+                "price": "рынок 3 км",
+                "absorption": "рыночный отчёт, м²/мес.",
+                "burden": "ЕГРН + обязательства КРТ + DevelopAid ordinary CAPEX",
+            },
+            missing_reasons=missing_reasons,
+        )
+        return {"slug": slug, "rating": rating, "control_case": control}
 
     @app.get("/auctions/krt-prototype/nagatino", response_class=HTMLResponse, include_in_schema=False)
     async def auction_krt_nagatino_prototype() -> HTMLResponse:
