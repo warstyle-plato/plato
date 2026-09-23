@@ -487,6 +487,7 @@ def discover_nspd(*, krt_rings, max_features: int = 2500) -> dict[str, Any]:
 
     lands: dict[str, dict[str, Any]] = {}
     objects: dict[str, dict[str, Any]] = {}
+    land_features: list[tuple[str, Any]] = []
     layers: dict[str, dict[str, Any]] = {}
     truncated = False
 
@@ -518,6 +519,8 @@ def discover_nspd(*, krt_rings, max_features: int = 2500) -> dict[str, Any]:
                     if not number:
                         continue
                     bucket.setdefault(number, row)
+                    if kind == "land":
+                        land_features.append((str(number), feature))
                     count += 1
                     if len(lands) + len(objects) >= max_features:
                         truncated = True
@@ -527,6 +530,61 @@ def discover_nspd(*, krt_rings, max_features: int = 2500) -> dict[str, Any]:
             layers[title] = {"count": count, "problem": problem}
             if truncated:
                 break
+        # Completeness control for OCS without usable geometry: NSPD exposes
+        # the "objects on parcel" tab for a cadastral land feature.  Those KNs
+        # are fetched individually and linked back to the already-inside land,
+        # so select() can include them even when the OCS itself has no contour.
+        linked_seen = 0
+        linked_added = 0
+        linked_problem = ""
+        cad_re = __import__("re").compile(r"\\b\\d{2}:\\d{2}:\\d{6,7}:\\d+\\b")
+        try:
+            for land_cn, land_feature in land_features[:500]:
+                if len(lands) + len(objects) >= max_features:
+                    truncated = True
+                    break
+                try:
+                    tab = client.tab_objects_list(land_feature)
+                except Exception:
+                    continue
+                raw = json.dumps(_model_dump(tab) if not isinstance(tab, dict) else tab,
+                                 ensure_ascii=False, default=str)
+                for object_cn in dict.fromkeys(cad_re.findall(raw)):
+                    if object_cn == land_cn:
+                        continue
+                    linked_seen += 1
+                    if object_cn in objects:
+                        rel = objects[object_cn].setdefault("related_lands", [])
+                        if land_cn not in rel:
+                            rel.append(land_cn)
+                        continue
+                    try:
+                        feature = client.find(object_cn)
+                    except Exception:
+                        continue
+                    if feature is None:
+                        continue
+                    props = getattr(feature, "properties", None)
+                    category = str(getattr(props, "category_name", "") or
+                                   _model_dump(props).get("category_name") or "")
+                    low = category.lower()
+                    if "помещ" in low or "земель" in low:
+                        continue
+                    kind = ("unfinished" if "незаверш" in low else
+                            "structure" if "сооруж" in low else
+                            "complex" if "комплекс" in low else "building")
+                    row = _feature_row(feature, kind=kind, layer=category or "Связанный ОКС")
+                    row["related_lands"] = [land_cn]
+                    if row.get("cadastral_number"):
+                        objects[str(row["cadastral_number"])] = row
+                        linked_added += 1
+        except Exception as exc:
+            linked_problem = f"{type(exc).__name__}: {exc}"[:300]
+        layers["Связанные ОКС по ЗУ"] = {
+            "count": linked_added,
+            "found_numbers": linked_seen,
+            "problem": linked_problem,
+        }
     finally:
         try:
             client.close()
