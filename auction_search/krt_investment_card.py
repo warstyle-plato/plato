@@ -32,6 +32,10 @@ a{color:inherit}.shell{max-width:1480px;margin:0 auto;padding:20px}.crumbs{font-
 .notice{padding:9px 10px;background:var(--soft);font-size:12px;margin:8px 0}.notice.warn{color:var(--warn)}.notice.bad{color:var(--bad)}.source{font-size:11px;color:var(--muted);margin-top:6px}.statusline{font-size:17px;font-weight:780;margin-bottom:8px}
 .maptools,.actionbar{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:9px}.maptools button,.actionbar button,.actionbar a{border:1px solid var(--line);background:#fff;color:var(--ink);padding:7px 9px;text-decoration:none;font:inherit;cursor:pointer}.maptools button.active,.actionbar .primary{background:#111;color:#fff;border-color:#111}
 .mapstage{height:500px;position:relative;border:1px solid var(--line);overflow:hidden;background:#e9ebe8}.mapstage img,.mapstage svg{position:absolute;inset:0;width:100%;height:100%}.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:var(--muted);margin-top:7px}.dot{width:9px;height:9px;display:inline-block;margin-right:4px}
+#tip{position:fixed;z-index:200;display:none;pointer-events:none;max-width:300px;background:rgba(22,32,43,.95);color:#fff;border-radius:8px;padding:8px 11px;font-size:12.5px;line-height:1.45;white-space:pre-line;box-shadow:0 6px 20px rgba(20,35,60,.28)}
+g.bub text.hov{opacity:0;pointer-events:none}
+g.bub:hover text.hov,g.bub.on text.hov{opacity:1}
+g.bub:hover circle,g.bub.on circle{fill-opacity:.9}
 table{border-collapse:collapse;width:100%;font-size:12px}th,td{padding:7px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.03em}.num{text-align:right;white-space:nowrap}
 details{border:1px solid var(--line);margin-top:10px}summary{cursor:pointer;padding:9px 10px;font-weight:700}.detailsbody{padding:0 10px 10px}
 .scorebig{font-size:38px;font-weight:800;line-height:1}.scorebig small{font-size:11px;color:var(--muted);font-weight:500;display:block;margin-top:5px}.components{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:10px}.component{border:1px solid var(--line);padding:8px}.component b{font-size:18px}.component span{display:block;font-size:10px;color:var(--muted)}
@@ -128,6 +132,7 @@ details{border:1px solid var(--line);margin-top:10px}summary{cursor:pointer;padd
   </aside>
  </div>
 </div>
+<div id="tip" role="status"></div>
 <script>
 const SLUG=__SLUG__;
 const $=id=>document.getElementById(id);
@@ -260,8 +265,12 @@ function renderScore(sc){
  }
 }
 let MAP={point:null,parcels:null,peers:[],market:false,lands:true,objects:true};const MERC=20037508.342789244;
+const CLASS_COLOR={'Стандарт/Эконом':'#8fb8d8','Комфорт':'#7fb3a6','Бизнес':'#4E9BDE','Премиум':'#8a6fc4','Элит/De Luxe':'#c46f9b'};
+const COMPASS=['на север','на северо-восток','на восток','на юго-восток','на юг','на юго-запад','на запад','на северо-запад'];
 const mercX=lon=>Number(lon)*MERC/180;
 const mercY=lat=>Math.log(Math.tan((90+Number(lat))*Math.PI/360))*MERC/Math.PI;
+const invLon=x=>Number(x)*180/MERC;
+const invLatMerc=y=>(180/Math.PI)*(2*Math.atan(Math.exp(Number(y)*Math.PI/MERC))-Math.PI/2);
 function marketPeers(report){
  const market=(report&&report.market)||report||{};
  return (market.peers||[]).filter(x=>num(x.latitude)!==null&&num(x.longitude)!==null).slice(0,12);
@@ -283,12 +292,16 @@ function drawMap(){
  const base='/land/basemap?'+new URLSearchParams({bbox:[ax,ay,bx,by].join(','),width:'1100'}),sitePath=site.length?'<path d="'+path(site)+'" fill="#c03b32" fill-opacity=".16" stroke="#c03b32" stroke-width="4" vector-effect="non-scaling-stroke"/>':'';
  const landPaths=lands.map(x=>'<path d="'+path(x.rings_merc||[])+'" fill="#d7a23c" fill-opacity=".18" stroke="#b88218" stroke-width="1.5" vector-effect="non-scaling-stroke"/>').join(''),objPaths=objects.map(x=>'<path d="'+path(x.rings_merc||[])+'" fill="#777" fill-opacity=".35" stroke="#555" stroke-width="1" vector-effect="non-scaling-stroke"/>').join('');
  const mr=3000*k,market=MAP.market?'<ellipse cx="'+px(center[0]).toFixed(1)+'" cy="'+py(center[1]).toFixed(1)+'" rx="'+((mr/(bx-ax))*W).toFixed(1)+'" ry="'+((mr/(by-ay))*H).toFixed(1)+'" fill="none" stroke="#245b8a" stroke-width="4" stroke-dasharray="12 8" vector-effect="non-scaling-stroke"/>':'';
- const peerPins=MAP.market?(MAP.peers||[]).map((x,i)=>{
-  const xx=px(mercX(x.longitude)),yy=py(mercY(x.latitude)),name=String(x.name||x.address||'ЖК').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  const price=num(x.price_per_sqm)!==null?fmt(x.price_per_sqm)+' ₽/м²':'цена —';
-  const pace=num(x.area_per_month)!==null?fmt(x.area_per_month,0)+' м²/мес.':(num(x.units_per_month)!==null?fmt(x.units_per_month,1)+' ДДУ/мес.':'темп —');
-  const label=(i+1)+'. '+name;
-  return '<g class="market-peer"><title>'+name+' · '+price+' · '+pace+'</title><circle cx="'+xx.toFixed(1)+'" cy="'+yy.toFixed(1)+'" r="7" fill="#111" stroke="#fff" stroke-width="2" vector-effect="non-scaling-stroke"/><text x="'+(xx+10).toFixed(1)+'" y="'+(yy+4).toFixed(1)+'" font-size="13" font-weight="700" fill="#111" stroke="#fff" stroke-width="4" paint-order="stroke" vector-effect="non-scaling-stroke">'+label+'</text></g>';
+ const lat0=num(point.latitude)??invLatMerc(center[1]),lon0=num(point.longitude)??invLon(center[0]);
+ const east=x=>(Number(x.longitude)-lon0)*111.32*Math.cos(lat0*Math.PI/180),north=x=>(Number(x.latitude)-lat0)*110.57;
+ const away=x=>Math.hypot(east(x),north(x));
+ const dir=x=>COMPASS[Math.round(((Math.atan2(east(x),north(x))*180/Math.PI+360)%360)/45)%8];
+ const peerPins=MAP.market?(MAP.peers||[]).map(x=>{
+  const xx=px(mercX(x.longitude)),yy=py(mercY(x.latitude)),raw=String(x.name||x.address||'ЖК'),name=esc(raw);
+  const colour=CLASS_COLOR[String(x.segment||'')]||'#9dc2e6';
+  const tip=[raw,fmt(away(x),2)+' км '+dir(x),num(x.price_per_sqm)!==null?fmt(x.price_per_sqm)+' ₽/м²':'действующей цены нет',String(x.segment||'класс не указан'),String(x.address||'')].filter(Boolean).join('\n');
+  const left=xx>W*.72;
+  return '<g class="bub market-peer"><circle cx="'+xx.toFixed(1)+'" cy="'+yy.toFixed(1)+'" r="7" fill="'+colour+'" fill-opacity=".72" stroke="'+colour+'" stroke-width="2" vector-effect="non-scaling-stroke" data-tip="'+esc(tip)+'"></circle><text class="hov" x="'+(xx+(left?-10:10)).toFixed(1)+'" y="'+(yy+4).toFixed(1)+'" text-anchor="'+(left?'end':'start')+'" font-size="12" font-weight="700" fill="#16202b" stroke="#fff" stroke-width="4" paint-order="stroke" vector-effect="non-scaling-stroke">'+name+'</text></g>';
  }).join(''):'';
  $('map').innerHTML='<img src="'+base+'" alt="Карта"><svg viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none">'+landPaths+objPaths+sitePath+market+peerPins+'</svg>';
  const peerNote=MAP.peers&&MAP.peers.length?' На карте отмечено ЖК из Пульса: '+MAP.peers.length+'.':' ЖК из Пульса с координатами в текущем отчёте не получены.';
@@ -297,6 +310,24 @@ function drawMap(){
 function bindMap(){
  $('viewSite').onclick=()=>{MAP.market=false;$('viewSite').classList.add('active');$('viewMarket').classList.remove('active');drawMap()};$('viewMarket').onclick=()=>{MAP.market=true;$('viewMarket').classList.add('active');$('viewSite').classList.remove('active');drawMap()};
  $('toggleLands').onclick=()=>{MAP.lands=!MAP.lands;$('toggleLands').classList.toggle('active',MAP.lands);drawMap()};$('toggleObjects').onclick=()=>{MAP.objects=!MAP.objects;$('toggleObjects').classList.toggle('active',MAP.objects);drawMap()};
+ const tip=$('tip');
+ const hide=()=>{if(tip)tip.style.display='none'};
+ const show=(node,e)=>{
+  if(!tip||!node)return;
+  tip.textContent=node.getAttribute('data-tip')||'';
+  tip.style.display='block';
+  const box=tip.getBoundingClientRect();
+  const x=Math.min(Math.max(8,e.clientX+14),window.innerWidth-box.width-8);
+  const y=Math.min(Math.max(8,e.clientY-box.height-12),window.innerHeight-box.height-8);
+  tip.style.left=x+'px';tip.style.top=y+'px';
+ };
+ ['pointermove','pointerdown'].forEach(kind=>document.addEventListener(kind,e=>{
+  const node=e.target&&typeof e.target.closest==='function'?e.target.closest('[data-tip]'):null;
+  document.querySelectorAll('g.bub.on').forEach(g=>g.classList.remove('on'));
+  if(node){const g=node.closest('g.bub');if(kind==='pointerdown'&&g)g.classList.add('on');show(node,e)}else hide();
+ },{passive:true}));
+ document.addEventListener('pointerleave',hide);
+ window.addEventListener('scroll',hide,{passive:true});
 }
 function parentAction(action,p){if(window.parent&&window.parent!==window){window.parent.postMessage({type:'developaid-krt-card-action',action,slug:String(p.slug||''),name:String(p.name||'')},location.origin);return true}return false}
 function ratingUrl(){
