@@ -63,6 +63,13 @@ $('q').addEventListener('input',render);$('filter').addEventListener('change',re
 
 
 def install(app, core=None):
+    if core is not None:
+        # Warm the twelve calculations in the background after each preview
+        # deploy. summaries() itself only schedules workers and returns fast.
+        try:
+            krt_12_analysis.summaries(core)
+        except Exception:
+            pass
     @app.get("/krt-12-preview/data", include_in_schema=False)
     async def krt_12_preview_data(refresh: bool = Query(default=False)):
         if core is None:
