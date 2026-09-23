@@ -22,12 +22,13 @@ from typing import Any
 
 from auction_search import krt_cadastral_selector
 from auction_search import krt_investment_score
-from auction_search.krt_screening import _goal_seek_entry_capacity, _snapshot
+from auction_search.krt_screening import (_goal_seek_entry_capacity, _snapshot, build_krt_model_screening)
 from market_search.market_reference import MoscowMarket
 
 PROD = "https://plato-development-investment-model.onrender.com"
 LOGGER = logging.getLogger(__name__)
 ANALYSIS_TTL = 24 * 3600
+ANALYSIS_VERSION = 2
 _WORKING: set[int] = set()
 _LOCK = threading.Lock()
 _SLOTS = threading.Semaphore(2)
@@ -86,17 +87,19 @@ def load(lot: int, *, root: Path | None = None) -> dict[str, Any]:
     except Exception:
         data = {}
     age = time.time() - float((data or {}).get("saved_at") or 0)
+    version_ok = int((data or {}).get("analysis_version") or 0) >= ANALYSIS_VERSION
     with _LOCK:
         working = int(lot) in _WORKING
     return {**(data if isinstance(data, dict) else {}), "cached": bool(data),
-            "working": working, "stale": bool(data) and age > ANALYSIS_TTL}
+            "working": working,
+            "stale": bool(data) and (age > ANALYSIS_TTL or not version_ok)}
 
 
 def _save(lot: int, data: dict[str, Any], *, root: Path | None = None) -> None:
     path = _cache_path(lot, root)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps({**data,"saved_at":time.time()}, ensure_ascii=False), encoding="utf-8")
+    tmp.write_text(json.dumps({**data,"analysis_version":ANALYSIS_VERSION,"saved_at":time.time()}, ensure_ascii=False), encoding="utf-8")
     tmp.replace(path)
 
 
@@ -209,6 +212,106 @@ def _merge_spatial(spatial: dict[str, Any], official: dict[str, list[dict[str, A
         return list(found.values())
 
     return {"lands": merge("lands"), "objects": merge("objects")}
+
+
+
+def _core_lookup_rows(core: Any, numbers: list[str], *, chunk: int = 18) -> dict[str, list[dict[str, Any]]]:
+    """Read cadastral rows through the same EGRN/NSPD hook as the main app."""
+    lookup = getattr(core, "_land_lookup_by_numbers", None)
+    if not callable(lookup):
+        return {"lands": [], "objects": [], "problems": ["движок ЕГРН не подключён"]}
+    clean = list(dict.fromkeys(str(x or "").strip() for x in numbers if str(x or "").strip()))
+    lands: list[dict[str, Any]] = []
+    objects: list[dict[str, Any]] = []
+    problems: list[str] = []
+    for start in range(0, len(clean), max(1, int(chunk))):
+        ask = clean[start:start + max(1, int(chunk))]
+        try:
+            found = list(lookup(ask) or [])
+        except Exception as exc:
+            problems.append(f"{type(exc).__name__}: {exc}"[:240])
+            continue
+        by_cn = {str(x.get("cadastral_number") or ""): x for x in found if isinstance(x, dict)}
+        for cn in ask:
+            item = dict(by_cn.get(cn) or {})
+            if not item or not item.get("found"):
+                continue
+            kind = str(item.get("kind") or "").strip().lower()
+            kind_label = str(item.get("kind_label") or "").strip().lower()
+            is_land = kind == "land" or "земель" in kind_label
+            row = {
+                "cadastral_number": cn,
+                "kind": "land" if is_land else (kind or "building"),
+                "kind_label": item.get("kind_label") or "",
+                "address": item.get("address") or "",
+                "area_sqm": item.get("area_sqm"),
+                "cadastral_value_rub": item.get("cadastral_value_rub"),
+                "center": item.get("center") if isinstance(item.get("center"), dict) else None,
+                "purpose": item.get("purpose") or "",
+                "land_parcel": item.get("land_parcel") or "",
+                "owner": item.get("owner") if isinstance(item.get("owner"), dict) else {},
+                "owner_group": item.get("owner_group") or "",
+                "rings_merc": [ring for ring in (item.get("contour_merc") or [])
+                               if isinstance(ring, list) and len(ring) >= 3],
+                "source": "DevelopAid EGRN/NSPD lookup by cadastral number",
+            }
+            (lands if is_land else objects).append(row)
+    return {"lands": lands, "objects": objects, "problems": problems}
+
+
+def _requirements_contour(core: Any, requirements: dict[str, Any]) -> dict[str, Any]:
+    """Fallback KRT outline from land KN explicitly listed by the decision."""
+    numbers = [str(x) for x in (requirements.get("cadastral_numbers") or []) if x]
+    if not numbers:
+        return {"rings_merc": [], "official": {"lands": [], "objects": []},
+                "problem": "в требованиях КРТ кадастровые номера не получены"}
+    looked = _core_lookup_rows(core, numbers)
+    rings = [ring for row in looked["lands"] for ring in (row.get("rings_merc") or [])]
+    problem = ""
+    if not rings:
+        problem = "по перечню КН проекта решения не найдено контуров земельных участков"
+        if looked.get("problems"):
+            problem += ": " + "; ".join(looked["problems"][:2])
+    return {
+        "rings_merc": rings,
+        "official": {"lands": looked["lands"], "objects": looked["objects"]},
+        "problem": problem,
+        "source": "состав территории по КН проекта решения + ЕГРН/НСПД",
+    }
+
+
+def _screening_from_rank(project: dict[str, Any], rank: dict[str, Any],
+                         requirements: dict[str, Any], core: Any) -> dict[str, Any]:
+    """Rebuild model inputs locally when the protected stored report is unavailable.
+
+    This does not manufacture market data: it only reuses price/segment already
+    stored in the public KRT ranking.  The 4x100 absorption component remains
+    missing until true area_per_month peers are available.
+    """
+    price = _num(rank.get("surrounding_price_rub_sqm"))
+    if price is None or price <= 0:
+        price = _num(rank.get("start_price_rub_sqm"))
+    segment = str(rank.get("segment") or "").strip()
+    if not segment or price is None or price <= 0:
+        return {"available": False,
+                "reason": "для локальной модели нет сохранённых класса/цены рынка"}
+    units = _num(rank.get("surrounding_sales_units_per_month"))
+    site = {"segment": segment, "price_per_sqm": price}
+    if units is not None:
+        site["units_per_month"] = units
+    market_report = {
+        "analysis": {"site": site},
+        "price_hint": {
+            "price_per_sqm": price,
+            "entry_per_sqm": _num(rank.get("start_price_rub_sqm")) or price,
+        },
+    }
+    try:
+        return build_krt_model_screening(
+            project, market_report, core, requirements=requirements
+        )
+    except Exception as exc:
+        return {"available": False, "reason": f"{type(exc).__name__}: {exc}"}
 
 
 def _known_unpriced(screening: dict[str, Any]) -> list[str]:
@@ -335,8 +438,20 @@ def analyse(defn: dict[str, Any], core: Any, *, root: Path | None = None,
 
     rings = [r for r in (point.get("rings_merc") or (parcels.get("krt_site") or {}).get("rings_merc") or [])
              if isinstance(r,list) and len(r)>=3]
+    contour_source = "официальный контур КРТ" if rings else ""
+    contour_problem = ""
+    seed_official = {"lands": [], "objects": []}
+    if not rings:
+        fallback = _requirements_contour(core, req)
+        rings = list(fallback.get("rings_merc") or [])
+        seed_official = dict(fallback.get("official") or seed_official)
+        contour_source = str(fallback.get("source") or "")
+        contour_problem = str(fallback.get("problem") or "")
+
     spatial = krt_cadastral_selector.discover_nspd(krt_rings=rings) if rings else {
-        "available":False,"complete":False,"problem":"контур КРТ не получен","lands":[],"objects":[]
+        "available":False,"complete":False,
+        "problem":contour_problem or "контур КРТ не получен",
+        "lands":[],"objects":[],"counts":{"lands":0,"objects":0}
     }
     if rings:
         try:
@@ -345,6 +460,10 @@ def analyse(defn: dict[str, Any], core: Any, *, root: Path | None = None,
             pass
 
     official = _official_territory(parcels)
+    official = {
+        "lands": list(official.get("lands") or []) + list(seed_official.get("lands") or []),
+        "objects": list(official.get("objects") or []) + list(seed_official.get("objects") or []),
+    }
     merged = _merge_spatial(spatial, official, req)
     selected = krt_cadastral_selector.select(krt_rings=rings, lands=merged["lands"], objects=merged["objects"]) if rings else {
         "lands":[],"objects":[],"inside":[],"outside":[],"unresolved":[],
@@ -355,6 +474,8 @@ def analyse(defn: dict[str, Any], core: Any, *, root: Path | None = None,
     cadastral_mln = float(cad.get("private_buyout_rub") or 0) / 1_000_000.0
 
     screening = report.get("screening") or {}
+    if not screening.get("available"):
+        screening = _screening_from_rank(project, rank, req, core)
     unpriced = _known_unpriced(screening)
     finance_complete = cad_complete and not unpriced
     finance = _run_finance(core, screening, cadastral_mln, finance_complete)
@@ -430,7 +551,7 @@ def analyse(defn: dict[str, Any], core: Any, *, root: Path | None = None,
         "programme":programme,
         "requirements":req,
         "objects":_fate_groups(selected.get("inside") or []),
-        "map":{"rings_merc":rings,
+        "map":{"rings_merc":rings,"contour_source":contour_source,
                "objects":[{"cadastral_number":x.get("cadastral_number"),"rings_merc":x.get("rings_merc") or [],
                            "fate":x.get("fate") or "","owner":x.get("owner") or {}}
                           for x in (selected.get("inside") or [])[:250]]},
