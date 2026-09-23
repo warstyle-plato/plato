@@ -140,7 +140,8 @@ def _market_block(report: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
-def _market_metrics(report: dict[str, Any], rank: dict[str, Any]) -> dict[str, Any]:
+def _market_metrics(report: dict[str, Any], rank: dict[str, Any],
+                    investment: dict[str, Any] | None = None) -> dict[str, Any]:
     market = _market_block(report)
     analysis = market.get("analysis") or {}
     site = analysis.get("site") or analysis.get("overall") or {}
@@ -148,18 +149,29 @@ def _market_metrics(report: dict[str, Any], rank: dict[str, Any]) -> dict[str, A
     price = _num(rank.get("surrounding_price_rub_sqm"))
     if price is None:
         price = _num(site.get("price_per_sqm")) or _num(hint.get("price_per_sqm"))
+    inv = investment if isinstance(investment, dict) else {}
+    inv_rating = inv.get("rating") if isinstance(inv.get("rating"), dict) else {}
+    inv_components = inv_rating.get("components") if isinstance(inv_rating.get("components"), dict) else {}
+    if price is None:
+        price_component = inv_components.get("price") if isinstance(inv_components.get("price"), dict) else {}
+        price = _num(price_component.get("value"))
     peers = list(market.get("peers") or [])
     area = sorted(
         float(x["area_per_month"]) for x in peers
         if isinstance(x, dict) and _num(x.get("area_per_month")) is not None and float(x["area_per_month"]) >= 0
     )
     local = statistics.median(area) if area else None
-    segment = str(rank.get("segment") or market.get("recommended_segment") or site.get("segment") or "").strip()
-    benchmark = None
-    try:
-        benchmark = MoscowMarket.bundled().area_median(segment)
-    except Exception:
-        benchmark = None
+    inv_abs = inv.get("absorption") if isinstance(inv.get("absorption"), dict) else {}
+    if local is None:
+        local = _num(inv_abs.get("local_median_sqm_month"))
+    segment = str(rank.get("segment") or market.get("recommended_segment") or site.get("segment")
+                  or inv_abs.get("segment") or "").strip()
+    benchmark = _num(inv_abs.get("moscow_median_sqm_month"))
+    if benchmark is None:
+        try:
+            benchmark = MoscowMarket.bundled().area_median(segment)
+        except Exception:
+            benchmark = None
     return {
         "price_rub_sqm": price,
         "segment": segment,
@@ -414,6 +426,14 @@ def analyse(defn: dict[str, Any], core: Any, *, root: Path | None = None,
     ranking = _prod("/auctions/krt/ranking", timeout=30)
     rank = next((dict(x) for x in ranking.get("rows") or [] if str(x.get("slug") or "") == slug), {})
     safe = urllib.parse.quote(slug)
+    # Production exposes the already-saved #485 market measurements without
+    # cabinet auth. We use ONLY its market price / sqm absorption here. LLCR
+    # and burden are recalculated below with our own cadastral stack; the early
+    # list's PDF seizure estimate is never imported as our score.
+    try:
+        investment = _prod(f"/auctions/krt/{safe}/investment-score", timeout=30)
+    except Exception:
+        investment = {}
     report_problem = ""
     try:
         report = _prod(f"/auctions/krt/{safe}/report", timeout=35)
@@ -500,7 +520,7 @@ def analyse(defn: dict[str, Any], core: Any, *, root: Path | None = None,
         burden_mln = cadastral_mln + modeled_incremental
         burden_pct = 100.0 * burden_mln / ordinary
 
-    market = _market_metrics(report, rank)
+    market = _market_metrics(report, rank, investment)
     llcr_for_score = finance.get("project_llcr_x") if finance.get("complete") else None
     rating = krt_investment_score.score(
         status_kind="running" if "реализац" in str(project.get("status") or "").lower() else "planned",
