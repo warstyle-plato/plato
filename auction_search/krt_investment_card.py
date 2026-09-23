@@ -163,6 +163,7 @@ function renderHero(p,rank,req){
  const ren=renovationInfo(p,rank,req),live=activeTender({...p,...rank}),op=operatorInfo({...p,...rank});
  $('commercialHousing').textContent=ren.area!==null&&ren.housing!==null?fmt(Math.max(0,ren.housing-ren.area)):fmt(p.housing_gfa_sqm);
  const bits=['<span class="flag">'+esc(p.status||'КРТ')+'</span>'];
+ if(p.early_unpublished)bits.push('<span class="flag info">Ранний сигнал'+(p.signal_date?' · '+esc(p.signal_date):'')+'</span>');
  if(ren.share!==null){
   bits.push('<span class="flag critical">'+(ren.share>=.99?'100% РЕНОВАЦИЯ':'Реновация '+fmt(ren.share*100,0)+'% жилья')+'</span>');
  }else if(ren.mentioned)bits.push('<span class="flag critical">Реновация · объём не определён</span>');
@@ -178,7 +179,11 @@ function renderEntry(p,rank){
  let title='Вход не подтверждён';
  if(live){title='Идёт аукцион — вход открыт';if(live.deadline)facts.push('Заявки до '+live.deadline);if(live.price_rub)facts.push('Цена права '+fmt(live.price_rub/1e6,1)+' млн ₽');}
  else if(op.taken){title='Вход закрыт / площадка занята';if(op.operator)facts.push('Оператор: '+op.operator);if(op.agreement)facts.push('Есть упоминание заключённого договора КРТ');if(op.selling.length)facts.push('Есть текущие продажи на связанной площадке');}
- else facts.push('Живой лот и подтверждённый оператор не найдены в сохранённых данных.');
+ else if(p.early_unpublished){
+  title='Ранний сигнал — официальный вход ещё не опубликован';
+  facts.push(p.source_label||'Предварительный источник');
+  if(num(p.start_price_mln)!==null)facts.push('Предварительный ориентир входа '+fmt(p.start_price_mln,1)+' млн ₽');
+ }else facts.push('Живой лот и подтверждённый оператор не найдены в сохранённых данных.');
  $('entry').innerHTML='<div class="statusline">'+esc(title)+'</div><div class="notice '+(op.taken?'bad':live?'':'warn')+'">'+esc(facts.join(' · '))+'</div>'
   +(live&&live.url?'<div class="actionbar"><a class="primary" target="_blank" rel="noopener" href="'+esc(live.url)+'">Открыть лот торгов</a></div>':'')
   +(op.developers.length?'<div class="metric"><span>Названный застройщик</span><b>'+esc(op.developers.join(', '))+'</b></div>':'');
@@ -196,11 +201,18 @@ function renderProgramme(p,req){
  const dl=deadlineText(req);if(dl)left+='<div class="metric"><span>Срок</span><b>'+esc(dl)+'</b></div>';
  $('programme').innerHTML=left;
  const c=actionCounts(req);let right='';
- right+='<div class="metric"><span>Жильё реновации</span><b>'+(ren.area!==null?fmt(ren.area)+' м²':(ren.mentioned?'объём не назван':'не найдено в решении'))+'</b></div>';
+ right+='<div class="metric"><span>Жильё реновации</span><b>'+(ren.area!==null?fmt(ren.area)+' м²':(ren.mentioned?'объём не назван':(p.early_unpublished?'не подтверждено источником':'не найдено в решении')))+'</b></div>';
+ if(p.early_unpublished&&num(p.seizure_mln)!==null)right+='<div class="metric"><span>Изъятие · предварительно</span><b>'+fmt(p.seizure_mln,1)+' млн ₽</b></div>';
  right+='<div class="metric"><span>Снос</span><b>'+c.demo+'</b></div><div class="metric"><span>Снос / реконструкция</span><b>'+c.conditional+'</b></div><div class="metric"><span>Реконструкция</span><b>'+c.recon+'</b></div><div class="metric"><span>Сохранение</span><b>'+c.preserve+'</b></div><div class="metric"><span>Расселение / изъятие</span><b>'+c.res+'</b></div>';
  $('burden').innerHTML=right;
  const d=req.decision||{};
- $('programmeSource').innerHTML=d.page_url?'Источник: <a target="_blank" rel="noopener" href="'+esc(d.page_url)+'">материалы решения на mos.ru</a>':'Источник: карточка КРТ / проект решения, если опубликован.';
+ if(p.early_unpublished){
+  $('programmeSource').innerHTML='Источник: '+esc(p.source_label||'ранний сигнал')
+   +(p.note?' · '+esc(p.note):'')
+   +'. Изъятие показано отдельно и не считается полным денежным стеком КРТ.';
+ }else{
+  $('programmeSource').innerHTML=d.page_url?'Источник: <a target="_blank" rel="noopener" href="'+esc(d.page_url)+'">материалы решения на mos.ru</a>':'Источник: карточка КРТ / проект решения, если опубликован.';
+ }
 }
 function fate(x){const f=String(x.fate||x.category||'').toLowerCase();if(f.includes('demolition_or_reconstruction'))return 'Снос / реконструкция';if(f.includes('demolition')||f.includes('снос'))return 'Снос';if(f.includes('reconstruction')||f.includes('рекон'))return 'Реконструкция';if(f.includes('preservation')||f.includes('сохран'))return 'Сохранение';return 'Не определено'}
 function renderTerritory(req,parcels){
@@ -354,6 +366,7 @@ async function boot(){
   get('/auctions/krt'),get('/auctions/krt/ranking'),get('/auctions/krt/'+encodeURIComponent(SLUG)+'/requirements'),get('/auctions/krt/'+encodeURIComponent(SLUG)+'/point'),get('/krt/site/'+encodeURIComponent(SLUG)+'/parcels'),get('/auctions/krt/'+encodeURIComponent(SLUG)+'/report'),get(ratingUrl())
  ]);
  const cat=catR.status==='fulfilled'?catR.value:{projects:[]},p=findProject(cat);if(!p)throw new Error('Площадка не найдена в текущем каталоге КРТ');
+ if(p.early_unpublished){$('territoryLink').style.display='none'}
  const rankData=rankR.status==='fulfilled'?rankR.value:{rows:[]},rank=(rankData.rows||[]).find(x=>String(x.slug||'')===SLUG)||{},req=reqR.status==='fulfilled'?reqR.value:(rank.requirements||{}),parcels=parcelR.status==='fulfilled'?parcelR.value:null,report=reportR.status==='fulfilled'?reportR.value:null;
  MAP.point=pointR.status==='fulfilled'?pointR.value:null;MAP.parcels=parcels;MAP.peers=marketPeers(report);
  const initialRating=scoreR.status==='fulfilled'?(scoreR.value.rating||scoreR.value):null;

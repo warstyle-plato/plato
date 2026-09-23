@@ -11,7 +11,10 @@ from __future__ import annotations
 import re
 from typing import Any
 
-SOURCE = "KRT.pdf · 23.09.2026"
+SOURCE_NAME = "KRT.pdf"
+SOURCE_DATE = "23.09.2026"
+SOURCE_AT = 1790121600
+SOURCE = f"{SOURCE_NAME} · {SOURCE_DATE}"
 
 _ROWS: list[dict[str, Any]] = [
     {"lot":2,"okrug":"САО","name":"Дмитровское ш., влд. 60","area_ha":4.10,"start_price_mln":178.36,"seizure_mln":3680.0,"total_gfa_sqm":94400,"housing_gfa_sqm":94400,"nonresidential_gfa_sqm":0,"load_housing_rub_sqm":40872.46,"load_total_rub_sqm":40872.46,"source_market_rub_sqm":376832,"note":"ЛОС + инфраструктурный договор. Ближайшие ориентиры около 375–377 тыс. ₽/м²; в записке проект имеет смысл только при ожидании 475–500 тыс. ₽/м²."},
@@ -48,6 +51,22 @@ def _published_match(early: dict[str, Any], official: dict[str, Any]) -> bool:
     return exact or (area_close and (a in b or b in a))
 
 
+def published_aliases(
+    official_rows: list[dict[str, Any]] | None = None,
+) -> dict[str, str]:
+    """Strong early→official matches used to carry reusable market facts forward."""
+    official = [row for row in (official_rows or []) if isinstance(row, dict)]
+    aliases: dict[str, str] = {}
+    for raw in _ROWS:
+        early_slug = f"early:{int(raw['lot'])}"
+        for one in official:
+            official_slug = str(one.get("slug") or "").strip()
+            if official_slug and _published_match(raw, one):
+                aliases[early_slug] = official_slug
+                break
+    return aliases
+
+
 def projects(official_rows: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     # Ранний список живёт только ДО появления той же площадки в официальном
     # каталоге/проектах решений. Раньше аргумент official_rows вообще не
@@ -74,6 +93,13 @@ def projects(official_rows: list[dict[str, Any]] | None = None) -> list[dict[str
             "no_card": True,
             "source_kind": "early_unpublished",
             "source_label": SOURCE,
+            "signal_source": SOURCE_NAME,
+            "signal_date": SOURCE_DATE,
+            "signal_at": SOURCE_AT,
+            # В исходной таблице отдельно известна оценка изъятия. Это только
+            # часть нагрузки: инфраструктура, соцобъекты, сети и прочие
+            # обязательства в заметках не сведены в полный денежный стек.
+            "burden_complete": False,
             "name_source": "предварительный список владельца",
             "draft_decision_at": 0,
         })
