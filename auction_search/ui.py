@@ -16,7 +16,14 @@ AUCTIONS_PAGE = r'''<!doctype html>
    кнопка, системный шрифт (замечание владельца, 23.08.2026). */
 :root{--bg:#f2f2ef;--panel:#fff;--text:#171717;--muted:#6b6b6b;--line:#dedede;--soft:#f7f7f5;--accent:#111;--ok:#1f6b3b;--warn:#8a5a00;--bad:#a33}
 
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}.shell{max-width:1540px;margin:0 auto;background:var(--panel);min-height:100vh}.brandbar{padding:22px 34px 0;background:var(--panel)}.brandbar img{display:block;width:min(360px,58vw);height:auto;mix-blend-mode:multiply}.brandline{height:8px;background:#050505;margin-top:12px}.head{display:flex;justify-content:space-between;gap:18px;align-items:flex-end;flex-wrap:wrap;padding:18px 34px 12px;border-bottom:1px solid var(--line)}.head h1{font-size:22px;font-weight:620;letter-spacing:.01em;line-height:1.1;margin:0}.head p{margin:5px 0 0;color:var(--muted);font-size:13px}.content{padding:24px 34px 40px}.badge{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:0;padding:6px 10px;font-size:12px;background:var(--panel)}.filters{display:grid;grid-template-columns:repeat(3,minmax(0,1fr)) minmax(0,1.5fr) auto;gap:9px;margin-bottom:14px}.filters.wide{grid-template-columns:minmax(0,2fr) repeat(4,minmax(0,1fr))}select,input,button{min-width:0;max-width:100%;text-overflow:ellipsis;min-height:42px;border:1px solid var(--line);border-radius:0;background:var(--panel);color:var(--text);padding:0 11px;font:inherit}button{cursor:pointer;font-weight:700;border-color:#111}button.primary{background:var(--accent);color:#fff}button:disabled{opacity:.45;cursor:not-allowed}.filter-actions{grid-column:1/-1;display:flex;gap:9px;justify-content:flex-end;flex-wrap:wrap}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin-bottom:14px}.stat{border:1px solid var(--line);border-radius:0;background:var(--panel);padding:12px}.stat b{font-size:22px;display:block}.stat span{font-size:12px;color:var(--muted)}.coverage{display:none}.layout{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(360px,.8fr);gap:12px}.tablewrap,.side{border:1px solid var(--line);background:var(--panel);border-radius:0;overflow:hidden}.tablecol{min-width:0;display:flex;flex-direction:column}.scrolltop{overflow-x:auto;overflow-y:hidden;height:14px;margin-bottom:-1px;border:1px solid var(--line);border-bottom:0;background:var(--panel)}.scrolltop>div{height:1px}.scrolltop[hidden]{display:none}.tablewrap{overflow:auto;min-height:420px}table{border-collapse:collapse;width:100%;min-width:900px}table.wide{min-width:980px;table-layout:fixed}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}.shell{max-width:1540px;margin:0 auto;background:var(--panel);min-height:100vh}.brandbar{padding:22px 34px 0;background:var(--panel)}.brandbar img{display:block;width:min(360px,58vw);height:auto;mix-blend-mode:multiply}.brandline{height:8px;background:#050505;margin-top:12px}.head{display:flex;justify-content:space-between;gap:18px;align-items:flex-end;flex-wrap:wrap;padding:18px 34px 12px;border-bottom:1px solid var(--line)}.head h1{font-size:22px;font-weight:620;letter-spacing:.01em;line-height:1.1;margin:0}.head p{margin:5px 0 0;color:var(--muted);font-size:13px}.content{padding:24px 34px 40px}.badge{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:0;padding:6px 10px;font-size:12px;background:var(--panel)}.filters{display:grid;grid-template-columns:repeat(3,minmax(0,1fr)) minmax(0,1.5fr) auto;gap:9px;margin-bottom:14px}.filters.wide{grid-template-columns:minmax(0,2fr) repeat(4,minmax(0,1fr))}select,input,button{min-width:0;max-width:100%;text-overflow:ellipsis;min-height:42px;border:1px solid var(--line);border-radius:0;background:var(--panel);color:var(--text);padding:0 11px;font:inherit}button{cursor:pointer;font-weight:700;border-color:#111}button.primary{background:var(--accent);color:#fff}button:disabled{opacity:.45;cursor:not-allowed}.filter-actions{grid-column:1/-1;display:flex;gap:9px;justify-content:flex-end;flex-wrap:wrap}
+.krt-actions{align-items:center;justify-content:space-between;border-top:1px solid var(--line);padding-top:10px}
+.krt-actions-left,.krt-actions-right{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.krt-actions button{min-height:42px;padding:0 14px}
+#krtRatingBtn{background:#111;color:#fff;border-color:#111}
+.krt-action-note{font-size:11px;color:var(--muted);max-width:290px;line-height:1.3}
+@media(max-width:950px){.krt-actions{justify-content:flex-start}.krt-actions-left,.krt-actions-right{width:100%}}
+@media(max-width:640px){.krt-actions-left,.krt-actions-right{display:grid;grid-template-columns:1fr;width:100%}.krt-actions button{width:100%}.krt-action-note{max-width:none}}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin-bottom:14px}.stat{border:1px solid var(--line);border-radius:0;background:var(--panel);padding:12px}.stat b{font-size:22px;display:block}.stat span{font-size:12px;color:var(--muted)}.coverage{display:none}.layout{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(360px,.8fr);gap:12px}.tablewrap,.side{border:1px solid var(--line);background:var(--panel);border-radius:0;overflow:hidden}.tablecol{min-width:0;display:flex;flex-direction:column}.scrolltop{overflow-x:auto;overflow-y:hidden;height:14px;margin-bottom:-1px;border:1px solid var(--line);border-bottom:0;background:var(--panel)}.scrolltop>div{height:1px}.scrolltop[hidden]{display:none}.tablewrap{overflow:auto;min-height:420px}table{border-collapse:collapse;width:100%;min-width:900px}table.wide{min-width:980px;table-layout:fixed}
 #krtTableWrap th,#krtTableWrap td{padding:8px 7px}
 #krtTableWrap th{font-size:10px;letter-spacing:.025em}
 #krtTableWrap .lotname{max-width:none;line-height:1.25;margin:0}
@@ -34,7 +41,7 @@ AUCTIONS_PAGE = r'''<!doctype html>
 #krtTableWrap table.wide th:nth-child(8),#krtTableWrap table.wide td:nth-child(8){width:8%}
 #krtTableWrap table.wide th:nth-child(9),#krtTableWrap table.wide td:nth-child(9){width:8%}th{position:sticky;top:0;background:var(--panel);z-index:1;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.045em;text-align:left;padding:11px 12px;border-bottom:1px solid var(--line)}td{padding:13px 12px;border-bottom:1px solid var(--line);vertical-align:top}tbody tr{cursor:pointer}tbody tr:hover{background:var(--soft)}.lotname{font-weight:700;margin-bottom:4px;max-width:360px}.cad{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted)}.tag{display:inline-flex;padding:4px 7px;border-radius:0;background:var(--soft);font-size:11px;font-weight:700}.tag.ok{color:var(--ok)}.tag.warn{color:var(--warn)}.tag.new{background:var(--accent);color:#fff;margin-left:7px;vertical-align:2px}
 __DEVELOPAID_PLATO_DRAWER_CSS__
-.askcard h2{font-size:16px;margin:0 0 6px}.askhint{color:var(--muted);font-size:12px;margin-bottom:10px}.chips{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:10px}.chips button{min-height:34px;font-weight:500;font-size:12px;padding:0 10px;border-color:var(--line)}#askText{width:100%;min-height:74px;padding:9px 11px;resize:vertical;font:inherit}#askOut{margin-top:10px}.plato-answer{border-left:3px solid var(--accent);background:var(--soft);padding:11px 13px;font-size:13px;line-height:1.55;white-space:pre-wrap}details.fold{border:1px solid var(--line);margin-top:10px}details.fold>summary{cursor:pointer;padding:9px 11px;font-size:12px;font-weight:750;color:var(--muted);list-style:none;display:flex;justify-content:space-between;gap:10px}details.fold>summary::-webkit-details-marker{display:none}details.fold>summary:after{content:'развернуть';font-weight:500}details.fold[open]>summary:after{content:'свернуть'}details.fold>summary:hover{background:var(--soft)}.foldbody{padding:0 11px 11px}.ratio-row{display:grid;grid-template-columns:1fr auto;gap:7px;margin-bottom:7px}.brand{display:block;line-height:0}.legal-footer{display:flex;gap:18px;flex-wrap:wrap;margin:0 34px;padding:14px 0 22px;font-size:11px;color:var(--muted);border-top:1px solid var(--line)}.legal-footer a{color:var(--muted)}.plato-footer{margin:0;padding:0 34px;line-height:0}.plato-footer img{width:100%;height:auto;display:block}tr.family>td:first-child{border-left:3px solid var(--accent)}tr.family>td{background:var(--panel)}tr.sub>td:first-child{padding-left:30px}tr.sub>td{background:var(--soft)}.famcount{display:inline-flex;padding:3px 6px;margin-left:7px;background:var(--accent);color:#fff;font-size:11px;font-weight:700;vertical-align:2px}.money{font-weight:750;white-space:nowrap}.pbatt{position:relative;display:block;height:14px;margin-top:4px;border:1px solid var(--line);border-radius:0;background:var(--soft);overflow:hidden}.pbatt-fill{position:absolute;left:0;top:0;height:100%}.pbatt-pct{position:absolute;left:5px;top:0;font-size:10px;font-weight:750;color:#18202a;text-shadow:0 0 3px #fff,0 0 3px #fff}.side{padding:16px;min-height:420px;position:sticky;top:12px;align-self:start;max-height:calc(100vh - 24px);overflow:auto;scrollbar-gutter:stable;scrollbar-width:thin;scrollbar-color:#b4b8be var(--soft)}.side::-webkit-scrollbar{width:11px}.side::-webkit-scrollbar-track{background:var(--soft)}.side::-webkit-scrollbar-thumb{background:#b4b8be;border:2px solid var(--soft)}.side h2{font-size:18px;margin:0 0 4px}.side .sub{color:var(--muted);font-size:12px;margin-bottom:14px}.empty{display:grid;place-items:center;color:var(--muted);min-height:360px;text-align:center;padding:25px}.kv{display:grid;grid-template-columns:145px 1fr;gap:7px 10px;padding:10px 0;border-bottom:1px solid var(--line)}.kv div:nth-child(odd){color:var(--muted)}.actions{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0}.actions.minor{margin-top:-6px}.actions.minor button{min-height:34px;font-weight:500;font-size:12px;padding:0 10px;border-color:var(--line)}.notice{border-radius:0;padding:10px 11px;background:var(--soft);font-size:12px;margin:10px 0}.notice.warn{color:var(--warn)}.section{margin-top:16px}.section h3{font-size:13px;margin:0 0 7px}.askcard h2{font-size:16px;margin:0 0 6px}.askhint{color:var(--muted);font-size:12px;margin-bottom:10px}.chips{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:10px}.chips button{min-height:34px;font-weight:500;font-size:12px;padding:0 10px;border-color:var(--line)}#askText{width:100%;min-height:74px;padding:9px 11px;resize:vertical;font:inherit}#askOut{margin-top:10px}.plato-answer{border-left:3px solid var(--accent);background:var(--soft);padding:11px 13px;font-size:13px;line-height:1.55;white-space:pre-wrap}details.fold{border:1px solid var(--line);margin-top:10px}details.fold>summary{cursor:pointer;padding:9px 11px;font-size:12px;font-weight:750;color:var(--muted);list-style:none;display:flex;justify-content:space-between;gap:10px}details.fold>summary::-webkit-details-marker{display:none}details.fold>summary:after{content:'развернуть';font-weight:500}details.fold[open]>summary:after{content:'свернуть'}details.fold>summary:hover{background:var(--soft)}.foldbody{padding:0 11px 11px}.ratio-row{display:grid;grid-template-columns:1fr auto;gap:7px;margin-bottom:7px}.brand{display:block;line-height:0}.legal-footer{display:flex;gap:18px;flex-wrap:wrap;margin:0 34px;padding:14px 0 22px;font-size:11px;color:var(--muted);border-top:1px solid var(--line)}.legal-footer a{color:var(--muted)}.plato-footer{margin:0;padding:0 34px;line-height:0}.plato-footer img{width:100%;height:auto;display:block}tr.family>td:first-child{border-left:3px solid var(--accent)}tr.family>td{background:var(--panel)}tr.sub>td:first-child{padding-left:30px}tr.sub>td{background:var(--soft)}.famcount{display:inline-flex;padding:3px 6px;margin-left:7px;background:var(--accent);color:#fff;font-size:11px;font-weight:700;vertical-align:2px}.money{font-weight:750;white-space:nowrap}.pbatt{position:relative;display:block;height:14px;margin-top:4px;border:1px solid var(--line);border-radius:0;background:var(--soft);overflow:hidden}.pbatt-fill{position:absolute;left:0;top:0;height:100%}.pbatt-pct{position:absolute;left:5px;top:0;font-size:10px;font-weight:750;color:#18202a;text-shadow:0 0 3px #fff,0 0 3px #fff}.side{padding:16px;min-height:420px;position:sticky;top:12px;align-self:start;max-height:calc(100vh - 24px);overflow:auto;scrollbar-gutter:stable;scrollbar-width:thin;scrollbar-color:#b4b8be var(--soft)}.side::-webkit-scrollbar{width:11px}.side::-webkit-scrollbar-track{background:var(--soft)}.side::-webkit-scrollbar-thumb{background:#b4b8be;border:2px solid var(--soft)}.side h2{font-size:18px;margin:0 0 4px}.side .sub{color:var(--muted);font-size:12px;margin-bottom:14px}.empty{display:grid;place-items:center;color:var(--muted);min-height:360px;text-align:center;padding:25px}.kv{display:grid;grid-template-columns:145px 1fr;gap:7px 10px;padding:10px 0;border-bottom:1px solid var(--line)}.kv div:nth-child(odd){color:var(--muted)}.actions{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0}.actions.minor{margin-top:-6px}.actions.minor button{min-height:34px;font-weight:500;font-size:12px;padding:0 10px;border-color:var(--line)}.notice{border-radius:0;padding:10px 11px;background:var(--soft);font-size:12px;margin:10px 0}.notice.warn{color:var(--warn)}.section{margin-top:16px}.section h3{font-size:13px;margin:0 0 7px}.krtgroup{margin:18px -16px 0;border-top:1px solid var(--line)}.krtgroup-head{display:flex;align-items:baseline;gap:9px;padding:9px 16px;background:#e6e6e0;border-bottom:1px solid var(--line)}.krtgroup-head b{font-size:13px}.krtgroup-step{display:inline-flex;flex:0 0 auto;width:19px;height:19px;align-items:center;justify-content:center;background:var(--accent);color:#fff;font-size:11px;font-weight:750}.krtgroup-note{font-size:11px;color:var(--muted);margin-left:auto;text-align:right}.krtgroup-body{padding:2px 16px 16px}.krtgroup.g2 .krtgroup-head{background:#e2e9ee}.krtgroup.g3 .krtgroup-head{background:#ece7dd}.krtgroup-body>.section:first-child{margin-top:12px}.items{display:grid;gap:6px}.item{border:1px solid var(--line);border-radius:0;padding:8px 9px;font-size:12px}.item b{display:block;margin-bottom:2px}.source{font-size:11px;color:var(--muted);margin-top:4px}.source.warn{color:var(--warn)}.status{font-size:12px;color:var(--muted);margin-left:auto}.spinner{display:inline-block;width:13px;height:13px;border:2px solid var(--line);border-top-color:var(--text);border-radius:50%;animation:spin .7s linear infinite;vertical-align:-2px;margin-right:5px}@keyframes spin{to{transform:rotate(360deg)}}@media(max-width:950px){.filters,.filters.wide{grid-template-columns:repeat(2,minmax(0,1fr))}.stats{grid-template-columns:1fr 1fr}.layout{grid-template-columns:1fr}.side{min-height:0;position:static;max-height:none;overflow:visible}.brandbar{padding:14px 16px 0}.head{padding:14px 16px 10px}.tabs{padding:0 16px;gap:18px}.content{padding:16px 16px 28px}.plato-footer{padding:0 16px}.legal-footer{margin:0 16px}}
+.askcard h2{font-size:16px;margin:0 0 6px}.askhint{color:var(--muted);font-size:12px;margin-bottom:10px}.chips{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:10px}.chips button{min-height:34px;font-weight:500;font-size:12px;padding:0 10px;border-color:var(--line)}#askText{width:100%;min-height:74px;padding:9px 11px;resize:vertical;font:inherit}#askOut{margin-top:10px}.plato-answer{border-left:3px solid var(--accent);background:var(--soft);padding:11px 13px;font-size:13px;line-height:1.55;white-space:pre-wrap}details.fold{border:1px solid var(--line);margin-top:10px}details.fold>summary{cursor:pointer;padding:9px 11px;font-size:12px;font-weight:750;color:var(--muted);list-style:none;display:flex;justify-content:space-between;gap:10px}details.fold>summary::-webkit-details-marker{display:none}details.fold>summary:after{content:'развернуть';font-weight:500}details.fold[open]>summary:after{content:'свернуть'}details.fold>summary:hover{background:var(--soft)}.foldbody{padding:0 11px 11px}.ratio-row{display:grid;grid-template-columns:1fr auto;gap:7px;margin-bottom:7px}.brand{display:block;line-height:0}.legal-footer{display:flex;gap:18px;flex-wrap:wrap;margin:0 34px;padding:14px 0 22px;font-size:11px;color:var(--muted);border-top:1px solid var(--line)}.legal-footer a{color:var(--muted)}.plato-footer{margin:0;padding:0 34px;line-height:0}.plato-footer img{width:100%;height:auto;display:block}tr.family>td:first-child{border-left:3px solid var(--accent)}tr.family>td{background:var(--panel)}tr.sub>td:first-child{padding-left:30px}tr.sub>td{background:var(--soft)}.famcount{display:inline-flex;padding:3px 6px;margin-left:7px;background:var(--accent);color:#fff;font-size:11px;font-weight:700;vertical-align:2px}.money{font-weight:750;white-space:normal;overflow:hidden}.money>b,.money>.fit{white-space:nowrap;display:block}.money .source{white-space:normal;overflow-wrap:anywhere;line-height:1.25}.pbatt{position:relative;display:block;height:14px;margin-top:4px;border:1px solid var(--line);border-radius:0;background:var(--soft);overflow:hidden}.pbatt-fill{position:absolute;left:0;top:0;height:100%}.pbatt-pct{position:absolute;left:5px;top:0;font-size:10px;font-weight:750;color:#18202a;text-shadow:0 0 3px #fff,0 0 3px #fff}.side{padding:16px;min-height:420px;position:sticky;top:12px;align-self:start;max-height:calc(100vh - 24px);overflow:auto;scrollbar-gutter:stable;scrollbar-width:thin;scrollbar-color:#b4b8be var(--soft)}.side::-webkit-scrollbar{width:11px}.side::-webkit-scrollbar-track{background:var(--soft)}.side::-webkit-scrollbar-thumb{background:#b4b8be;border:2px solid var(--soft)}.side h2{font-size:18px;margin:0 0 4px}.side .sub{color:var(--muted);font-size:12px;margin-bottom:14px}.empty{display:grid;place-items:center;color:var(--muted);min-height:360px;text-align:center;padding:25px}.kv{display:grid;grid-template-columns:145px 1fr;gap:7px 10px;padding:10px 0;border-bottom:1px solid var(--line)}.kv div:nth-child(odd){color:var(--muted)}.actions{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0}.actions.minor{margin-top:-6px}.actions.minor button{min-height:34px;font-weight:500;font-size:12px;padding:0 10px;border-color:var(--line)}.notice{border-radius:0;padding:10px 11px;background:var(--soft);font-size:12px;margin:10px 0}.notice.warn{color:var(--warn)}.section{margin-top:16px}.section h3{font-size:13px;margin:0 0 7px}.askcard h2{font-size:16px;margin:0 0 6px}.askhint{color:var(--muted);font-size:12px;margin-bottom:10px}.chips{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:10px}.chips button{min-height:34px;font-weight:500;font-size:12px;padding:0 10px;border-color:var(--line)}#askText{width:100%;min-height:74px;padding:9px 11px;resize:vertical;font:inherit}#askOut{margin-top:10px}.plato-answer{border-left:3px solid var(--accent);background:var(--soft);padding:11px 13px;font-size:13px;line-height:1.55;white-space:pre-wrap}details.fold{border:1px solid var(--line);margin-top:10px}details.fold>summary{cursor:pointer;padding:9px 11px;font-size:12px;font-weight:750;color:var(--muted);list-style:none;display:flex;justify-content:space-between;gap:10px}details.fold>summary::-webkit-details-marker{display:none}details.fold>summary:after{content:'развернуть';font-weight:500}details.fold[open]>summary:after{content:'свернуть'}details.fold>summary:hover{background:var(--soft)}.foldbody{padding:0 11px 11px}.ratio-row{display:grid;grid-template-columns:1fr auto;gap:7px;margin-bottom:7px}.brand{display:block;line-height:0}.legal-footer{display:flex;gap:18px;flex-wrap:wrap;margin:0 34px;padding:14px 0 22px;font-size:11px;color:var(--muted);border-top:1px solid var(--line)}.legal-footer a{color:var(--muted)}.plato-footer{margin:0;padding:0 34px;line-height:0}.plato-footer img{width:100%;height:auto;display:block}tr.family>td:first-child{border-left:3px solid var(--accent)}tr.family>td{background:var(--panel)}tr.sub>td:first-child{padding-left:30px}tr.sub>td{background:var(--soft)}.famcount{display:inline-flex;padding:3px 6px;margin-left:7px;background:var(--accent);color:#fff;font-size:11px;font-weight:700;vertical-align:2px}.money{font-weight:750;white-space:nowrap}.pbatt{position:relative;display:block;height:14px;margin-top:4px;border:1px solid var(--line);border-radius:0;background:var(--soft);overflow:hidden}.pbatt-fill{position:absolute;left:0;top:0;height:100%}.pbatt-pct{position:absolute;left:5px;top:0;font-size:10px;font-weight:750;color:#18202a;text-shadow:0 0 3px #fff,0 0 3px #fff}.side{padding:16px;min-height:420px;position:sticky;top:12px;align-self:start;max-height:calc(100vh - 24px);overflow:auto;scrollbar-gutter:stable;scrollbar-width:thin;scrollbar-color:#b4b8be var(--soft)}.side::-webkit-scrollbar{width:11px}.side::-webkit-scrollbar-track{background:var(--soft)}.side::-webkit-scrollbar-thumb{background:#b4b8be;border:2px solid var(--soft)}.side h2{font-size:18px;margin:0 0 4px}.side .sub{color:var(--muted);font-size:12px;margin-bottom:14px}.empty{display:grid;place-items:center;color:var(--muted);min-height:360px;text-align:center;padding:25px}.kv{display:grid;grid-template-columns:145px 1fr;gap:7px 10px;padding:10px 0;border-bottom:1px solid var(--line)}.kv div:nth-child(odd){color:var(--muted)}.actions{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0}.actions.minor{margin-top:-6px}.actions.minor button{min-height:34px;font-weight:500;font-size:12px;padding:0 10px;border-color:var(--line)}.notice{border-radius:0;padding:10px 11px;background:var(--soft);font-size:12px;margin:10px 0}.notice.warn{color:var(--warn)}.section{margin-top:16px}.section h3{font-size:13px;margin:0 0 7px}.krtgroup{margin:18px -16px 0;border-top:1px solid var(--line)}.krtgroup-head{display:flex;align-items:baseline;gap:9px;padding:9px 16px;background:#e6e6e0;border-bottom:1px solid var(--line)}.krtgroup-head b{font-size:13px}.krtgroup-step{display:inline-flex;flex:0 0 auto;width:19px;height:19px;align-items:center;justify-content:center;background:var(--accent);color:#fff;font-size:11px;font-weight:750}.krtgroup-note{font-size:11px;color:var(--muted);margin-left:auto;text-align:right}.krtgroup-body{padding:2px 16px 16px}.krtgroup.g2 .krtgroup-head{background:#e2e9ee}.krtgroup.g3 .krtgroup-head{background:#ece7dd}.krtgroup-body>.section:first-child{margin-top:12px}.items{display:grid;gap:6px}.item{border:1px solid var(--line);border-radius:0;padding:8px 9px;font-size:12px}.item b{display:block;margin-bottom:2px}.source{font-size:11px;color:var(--muted);margin-top:4px}.source.warn{color:var(--warn)}.status{font-size:12px;color:var(--muted);margin-left:auto}.spinner{display:inline-block;width:13px;height:13px;border:2px solid var(--line);border-top-color:var(--text);border-radius:50%;animation:spin .7s linear infinite;vertical-align:-2px;margin-right:5px}@keyframes spin{to{transform:rotate(360deg)}}@media(max-width:950px){.filters,.filters.wide{grid-template-columns:repeat(2,minmax(0,1fr))}.stats{grid-template-columns:1fr 1fr}.layout{grid-template-columns:1fr}.side{min-height:0;position:static;max-height:none;overflow:visible}.brandbar{padding:14px 16px 0}.head{padding:14px 16px 10px}.tabs{padding:0 16px;gap:18px}.content{padding:16px 16px 28px}.plato-footer{padding:0 16px}.legal-footer{margin:0 16px}}
 @media(max-width:640px){.filters,.filters.wide{grid-template-columns:minmax(0,1fr)}.stats{grid-template-columns:minmax(0,1fr)}.filter-actions{justify-content:stretch}.filter-actions button{flex:1 1 100%}.kv{grid-template-columns:minmax(0,1fr)}.kv div:nth-child(odd){padding-top:4px}}
 .tabs{display:flex;gap:28px;padding:0 34px;border-bottom:1px solid var(--line);overflow:auto;background:var(--panel)}.tabs .tab{border:0;background:none;min-height:0;padding:15px 0 12px;font-size:14px;font-weight:620;color:#777;white-space:nowrap;border-bottom:3px solid transparent}.tabs .tab.active{color:#000;border-color:#000}.hidden{display:none!important}.fit{display:inline-flex;align-items:center;gap:6px;font-weight:750;white-space:nowrap}.fit .light{width:10px;height:10px;border-radius:50%;background:var(--muted);}.fit.ok{color:var(--ok)}.fit.ok .light{background:var(--ok)}.fit.warn{color:var(--warn)}.fit.warn .light{background:var(--warn)}.fit.bad{color:var(--bad)}.fit.bad .light{background:var(--bad)}
 .multi{position:relative;min-width:0}.multi-toggle{width:100%;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-right:30px;position:relative}.multi-toggle:after{content:'⌄';position:absolute;right:11px;font-size:16px;line-height:1}.multi-toggle[aria-expanded="true"]:after{content:'⌃'}.multi-menu{position:absolute;z-index:20;top:calc(100% + 6px);left:0;width:max-content;min-width:100%;max-width:min(320px,80vw);padding:8px;border:1px solid var(--line);border-radius:0;background:var(--panel);}.multi-head{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:2px 4px 7px;font-size:12px;font-weight:750;color:var(--muted)}.multi-clear{min-height:28px;padding:0 7px;border:0;background:transparent;color:var(--muted);font-size:12px}.multi-options{display:grid;gap:2px;max-height:310px;overflow:auto}.multi-option{display:flex;align-items:center;gap:9px;min-height:36px;padding:5px 7px;border-radius:0;cursor:pointer}.multi-option:hover{background:var(--soft)}.multi-option input{flex:0 0 auto;width:17px;height:17px;min-height:0;margin:0;padding:0;accent-color:var(--accent)}
@@ -99,7 +106,18 @@ __DEVELOPAID_CONTOUR__
              title="Мелкие площадки отсекаются по объёму жилья. Площадка, у которой объём жилья не указан, при непустом пороге прячется — она не «маленькая», она неизвестная, и сколько таких скрыто, написано под таблицей.">
       <input id="krtMinPrice" type="number" min="0" step="10000" placeholder="Цена окружения от, ₽/м²"
              title="Текущая оценка цены за м² окружения из того же рыночного отчёта / Пульса продаж. Введите порог, например 600000, чтобы оставить площадки с оценкой строго выше него. Нет данных — отдельный ответ, такие строки скрываются только при включённом пороге.">
-      <div class="filter-actions"><button id="krtRefresh" class="primary">Обновить каталог</button><button id="krtRankBtn">Оценить отобранные моделью</button><button id="krtPressBtn" title="Читает публикации и каналы по ВСЕМ планируемым площадкам и по площадкам с проектом решения: до пяти поисковых запросов на площадку, по каждому её адресу. Уже спрошенные пропускаются — занятая площадка свободной не станет. У площадок в реализации застройщика называет сама карточка города, поиска они не требуют. У проекта решения без адреса в заголовке спрашивать нечего: такие названы числом, а не пропущены молча.">Прочитать публикации по планируемым</button><button id="krtExport">Выгрузить Excel</button></div>
+      <div class="filter-actions krt-actions">
+        <div class="krt-actions-left">
+          <button id="krtRefresh" class="primary">Обновить каталог</button>
+          <button id="krtRankBtn">Оценить моделью</button>
+          <button id="krtPressBtn" title="Читает публикации и каналы по всем планируемым площадкам и площадкам с проектом решения.">Прочитать публикации</button>
+          <button id="krtExport">Выгрузить Excel</button>
+        </div>
+        <div class="krt-actions-right">
+          <div class="krt-action-note">Общий рейтинг каталога считается по базовому ориентиру 600 000 ₽/м² и виден всем пользователям.</div>
+          <button id="krtRatingBtn" title="Пересчитывает общий рейтинг всем площадкам вне статуса «В реализации». Результат сохраняется на сервере и виден всем пользователям.">Обновить рейтинги</button>
+        </div>
+      </div>
     </div>
     <div class="stats"><div class="stat"><b id="krtCount">—</b><span id="krtCountNote">проектов</span></div><div class="stat"><b id="krtArea">—</b><span>га территории</span></div><div class="stat"><b id="krtHousing">—</b><span>м² жилья</span></div><div class="stat"><b id="krtGfa">—</b><span>м² всего</span></div></div>
     <details class="fold" id="krtMapFold"><summary id="krtMapSummary">Карта КРТ Москвы — официальные границы площадок</summary>
@@ -1766,15 +1784,34 @@ function krtEntryKind(x){
 }
 // Забирает ли город метры. Тот же счёт, что у балла (`krtRenovation`), плюс
 // признак из карточки и публикаций: второго ответа на этот вопрос не заводим.
-function krtRenovationKind(x){
+function krtRenovationEvidence(x){
  const rank=(state.krtRank||{})[x.slug]||{};
- const it=krtIntent(x);
+ const req=(state.krtRequirements||{})[x.slug]||rank.requirements||{};
+ const said=req.renovation||{};
  const reno=krtRenovation(x,rank);
- if((it&&(it.city_needs||[]).length)||reno.area>0)return 'yes';
- const card=(state.krtCards||{})[x.slug]||x.card_facts||rank.card_facts||null;
+ const decisionRead=!!(said.basis&&said.basis!=='not_read');
+ // Решение сильнее карточки и публикаций. Именно здесь была ошибка по
+ // Варшавскому ш., вл. 37: решение реновацию не содержит, но старый кэш
+ // карточки/публикации с ключевым словом продолжал красить строку.
+ if(decisionRead){
+  return {yes:said.mentioned===true||reno.area>0,read:true,source:'decision',
+   quote:said.quote||'',reno:reno};
+ }
+ const card=(state.krtCards||{})[x.slug]||x.card_facts||rank.card_facts||{};
  const press=(state.krtPress||{})[x.slug]||rank.press_facts||null;
- const read=reno.read||!!(card&&card.available)||!!(press&&press.available);
- return read?'no':'unknown';
+ const pressHit=(press&&press.city_needs||[]).find(v=>
+   /программ\w*\s+реновац|фонд\s+реновации/i.test(String((v||{}).quote||'')+' '+String((v||{}).title||'')))||null;
+ // Карточочный признак оставляем только для уже реализуемых площадок:
+ // сам parser карточек был построен на этой семантике. На планируемой
+ // площадке одиночное слово в старом кэше не является основанием плашки.
+ const cardYes=x.status==='В реализации'&&card.renovation===true;
+ return {yes:!!(reno.area>0||cardYes||pressHit),read:reno.read||!!card.available||!!(press&&press.available),
+  source:reno.area>0?'requirements':(cardYes?'card':(pressHit?'press':'none')),
+  quote:reno.quote||card.renovation_quote||((pressHit||{}).quote)||'',reno:reno};
+}
+function krtRenovationKind(x){
+ const e=krtRenovationEvidence(x);
+ return e.yes?'yes':(e.read?'no':'unknown');
 }
 // Внутри оси — «или», между осями — «и». Одно правило на весь отбор: пока
 // условий было пять, каждое проверялось своей строкой, и спорить им было где.
@@ -2244,23 +2281,13 @@ function krtMarks(x){
  // что у `krtIntent`: нажатая кнопка свежее и потому сильнее, но своего
  // второго ответа не заводит.
  const press=(state.krtPress||{})[x.slug]||(state.krtRank[x.slug]||{}).press_facts||null;
- const share=krtRenovation(x,state.krtRank[x.slug]||{});
- // city_needs — более широкая корзина: туда входят нужды города, переселение
- // и расселение. Раньше любое такое упоминание превращалось в плашку
- // «реновация», поэтому Варшавское ш., вл. 37 получало реновацию, которой в
- // решении нет. Для реновации нужен именно официальный признак карточки/
- // решения либо цитата, где прямо сказано о реновации.
- const cityRenov=(press&&press.city_needs||[]).find(v=>
-   /реновац|фонд\s+реновации/i.test(String((v||{}).quote||'')+' '+String((v||{}).title||'')))||null;
- const renov=!!(card.renovation||share.share!==null||(share.read&&/реновац/i.test(String(share.quote||'')))||cityRenov);
+ const evidence=krtRenovationEvidence(x),share=evidence.reno;
+ const renov=evidence.yes;
  const builder=krtBuilderName(x);
  // На площадке уже продаётся ЖК — вход закрыт, и говорит об этом не канцелярия,
  // а страница продаж. Метка несёт свою цитату по тому же правилу, что реновация.
  const selling=((press&&press.selling_now)||[])[0]||null;
- const renovQuote=card.renovation_quote
-   ||share.quote
-   ||((cityRenov||{}).quote)
-   ||'Прямое упоминание реновации';
+ const renovQuote=evidence.quote||'Прямое упоминание Программы реновации';
  // Доля из решения сильнее упоминания: «реновация» и «реновация — всё жильё»
  // это разные площадки. Сто процентов значит, что девелоперского продукта
  // здесь нет вовсе: Фонд реновации КРТ не торгует, он оператор КРТ и заказывает
@@ -2310,7 +2337,7 @@ function krtInvestmentRatingCell(slug){
  const coverage=Number(r.coverage_pct);
  const score=r.display_score;
  if(score!==null&&score!==undefined&&Number.isFinite(Number(score))){
-  return '<b>'+esc(Math.round(Number(score)))+'</b><div class="source">/100 · #485'+(Number.isFinite(coverage)?' · '+coverage+'% данных':'')+'</div>';
+  return '<b>'+esc(Math.round(Number(score)))+'</b><div class="source">/100'+(Number.isFinite(coverage)?' · '+coverage+'% данных':'')+'</div>';
  }
  if(Number.isFinite(coverage)&&coverage>0){
   const names={llcr:'LLCR',price:'цена',absorption:'поглощение',burden:'нагрузка'};
@@ -2621,7 +2648,7 @@ function krtRankCell(slug){
  const site=(state.krt||[]).find(one=>one.slug===slug);
  const verdict=site?krtPriceVerdict(site):null;
  const said=verdict&&verdict.asking
-  ? `<div class="source${verdict.over?' warn':''}">${esc(verdict.text)}</div>` : '';
+  ? `<div class="source${verdict.over?' warn':''}" title="${esc(verdict.text)}">${verdict.over?'торги выше потолка':'торги в пределах потолка'}</div>` : '';
  return `<b>${new Intl.NumberFormat('ru-RU').format(per)} ₽/м²</b>${total}${said}`;
 }
 // Ход показывается тем, что есть: сколько посчитано из скольких, что считается
@@ -2674,6 +2701,54 @@ async function loadKrtRanking(){
   clearTimeout(state.krtRankTimer);
   if(d.progress&&(d.progress.running||d.progress.running_elsewhere))state.krtRankTimer=setTimeout(loadKrtRanking,3000);
  }catch(e){const box=$('krtRankStatus');if(box){box.style.display='';box.className='notice warn';box.textContent=String(e.message||e)}}
+}
+async function startKrtInvestmentRating(){
+ const b=$('krtRatingBtn'),box=$('krtRankStatus');
+ const target=600000;
+ // Массово считаем все площадки, куда теоретически ещё можно входить.
+ // Статус «В реализации» остаётся справочно и в рейтинг-прогон не входит.
+ const projects=(state.krt||[]).filter(x=>krtStatusKind(x)!=='running'&&x.slug);
+ const total=projects.length;
+ if(!total){
+  if(box){box.style.display='';box.className='notice';box.textContent='Нет площадок вне реализации для расчёта рейтинга.'}
+  return;
+ }
+ b.disabled=true;b.innerHTML='<span class="spinner"></span>Считаю 0/'+total;
+ if(box){box.style.display='';box.className='notice';box.textContent='Считаю рейтинг: 0 из '+total+' · ориентир '+new Intl.NumberFormat('ru-RU').format(target)+' ₽/м²'}
+ let done=0,finals=0,partial=0,failed=0,next=0;
+ const worker=async()=>{
+  while(true){
+   const index=next++;if(index>=projects.length)return;
+   const x=projects[index];
+   try{
+    const d=await askJson('/auctions/krt/'+encodeURIComponent(x.slug)+'/investment-score?price_target_rub_sqm='+encodeURIComponent(target),{cache:'no-store'});
+    const rating=d.rating||d,row=state.krtRank[x.slug]||{slug:x.slug};
+    row.investment_rating=rating;
+    if(d.absorption){
+     row.local_absorption_sqm_month=d.absorption.local_median_sqm_month;
+     row.moscow_absorption_sqm_month=d.absorption.moscow_median_sqm_month;
+     row.investment_rating_segment=d.absorption.segment;
+    }
+    state.krtRank[x.slug]=row;
+    if(rating&&rating.display_score!==null&&rating.display_score!==undefined)finals++;
+    else partial++;
+   }catch(e){failed++}
+   done++;
+   if(done===total||done%4===0){
+    b.innerHTML='<span class="spinner"></span>Считаю '+done+'/'+total;
+    if(box)box.textContent='Считаю рейтинг: '+done+' из '+total+' · готово '+finals+' · неполных '+partial+(failed?' · ошибок '+failed:'');
+    renderKrt();
+   }
+  }
+ };
+ await Promise.all(Array.from({length:Math.min(4,total)},()=>worker()));
+ renderKrt();
+ await loadKrtRanking();
+ if(box){
+  box.style.display='';box.className=failed?'notice warn':'notice';
+  box.textContent='Рейтинг для площадок вне реализации: '+finals+' итоговых, '+partial+' неполных'+(failed?', '+failed+' ошибок':'')+'. Ориентир '+new Intl.NumberFormat('ru-RU').format(target)+' ₽/м².';
+ }
+ b.disabled=false;b.textContent='Обновить рейтинги';
 }
 async function startKrtRanking(onlyStale){
  const b=$('krtRankBtn');b.disabled=true;b.innerHTML='<span class="spinner"></span>Запускаю';
@@ -4172,7 +4247,7 @@ window.addEventListener('message',e=>{
  if(d.action==='plato'){renderAskContext();platoOpen(AUCTION_SURFACE);return}
 });
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('krtPrototypeModal').classList.contains('hidden'))closeKrtPrototype()});
-$('tabAuctions').onclick=()=>switchTab(false);$('tabKrt').onclick=()=>switchTab(true);$('krtRefresh').onclick=()=>loadKrt(true);$('krtRankBtn').onclick=startKrtRanking;$('krtPressBtn').onclick=readKrtPress;$('krtSearch').oninput=filterKrt;bindKrtFilters();document.getElementById('krtMapFold')?.addEventListener('toggle',ev=>{if(ev.target.open)loadKrtMap()});$('krtMinHousing').oninput=filterKrt;$('krtMinPrice').oninput=filterKrt;document.querySelectorAll('th[data-sort]').forEach(th=>{th.style.cursor='pointer';th.title=(th.title?th.title+'. ':'')+'Нажмите, чтобы отсортировать';th.onclick=()=>krtSortBy(th.dataset.sort)});
+$('tabAuctions').onclick=()=>switchTab(false);$('tabKrt').onclick=()=>switchTab(true);$('krtRefresh').onclick=()=>loadKrt(true);$('krtRankBtn').onclick=startKrtRanking;$('krtRatingBtn').onclick=startKrtInvestmentRating;$('krtPressBtn').onclick=readKrtPress;$('krtSearch').oninput=filterKrt;bindKrtFilters();document.getElementById('krtMapFold')?.addEventListener('toggle',ev=>{if(ev.target.open)loadKrtMap()});$('krtMinHousing').oninput=filterKrt;$('krtMinPrice').oninput=filterKrt;document.querySelectorAll('th[data-sort]').forEach(th=>{th.style.cursor='pointer';th.title=(th.title?th.title+'. ':'')+'Нажмите, чтобы отсортировать';th.onclick=()=>krtSortBy(th.dataset.sort)});
 $('krtOkrugToggle').onclick=e=>{e.stopPropagation();const menu=$('krtOkrugMenu'),open=menu.classList.contains('hidden');closeKrtMenus();menu.classList.toggle('hidden',!open);$('krtOkrugToggle').setAttribute('aria-expanded',String(open))};$('krtOkrugMenu').onclick=e=>e.stopPropagation();$('krtOkrugClear').onclick=()=>{state.krtOkrugs.clear();$('krtOkrugOptions').querySelectorAll('input').forEach(x=>x.checked=false);updateKrtOkrugLabel();filterKrt()};document.addEventListener('click',closeKrtMenus);document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeKrtMenus();$('krtOkrugToggle').focus()}});
 loadKrtRanking();
 // Ссылка из «Поделиться» открывает ту же территорию: получатель попадает на
