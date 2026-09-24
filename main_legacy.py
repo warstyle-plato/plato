@@ -47917,7 +47917,7 @@ function enableTepRow(key){
  inputs[sw[0]]=true;
  setTepNote(key,'');
  syncTep(false);renderInputs();renderTep();
- scheduleTepAutoRecalc();
+ scheduleTepAutoRecalc(key);
  calculate();
 }
 
@@ -47958,7 +47958,7 @@ function refillTepRow(key){
  // Посчитанное возвращается во вводные — иначе `syncTep` вернёт прежнее.
  if(tepRowToInputs(key))renderInputs();
  renderTep();
- scheduleTepAutoRecalc();
+ scheduleTepAutoRecalc(key);
  calculate();
 }
 
@@ -48140,14 +48140,14 @@ function tepCellChanged(key,col,value){
   inputs[TEP_SOCIAL_INPUTS[key]]=tep[key].total_area;
   renderInputs();
   renderTep();
-  scheduleTepAutoRecalc();
+  scheduleTepAutoRecalc(key);
   calculate();
   return;
  }
  if(key==='storage'&&['gns','units'].includes(col)){
   syncStoragePair(col);
   renderTep();
-  scheduleTepAutoRecalc();
+  scheduleTepAutoRecalc(key);
   calculate();
   return;
  }
@@ -48167,7 +48167,7 @@ function tepCellChanged(key,col,value){
   renderInputs();
   renderTep();
  }else{tepRowToInputs(key);updateTepTotals()}
- scheduleTepAutoRecalc();
+ scheduleTepAutoRecalc(key);
  calculate();
 }
 
@@ -48826,7 +48826,13 @@ let moAutoBusy=false;
 function moNormativeApartments(){
  return Number((inputs._mo_calc||{}).apartments_saleable||0);
 }
-function scheduleTepAutoRecalc(){
+function scheduleTepAutoRecalc(changedKey){
+ // Автопересчёт нормативов запускает только изменение ЖИЛОЙ базы. Офис,
+ // коммерция, кладовые и их доли не создают население. Раньше любая правка
+ // ТЭП по проекту с ГлавАПУ запускала общий recalc: смена 50→60% офисника
+ // показывала новое население, соцкомпенсацию и ВРИ, хотя квартира не
+ // изменилась ни на метр.
+ if(changedKey!=='apartments')return;
  const baseline=((inputs._glavapu_import||{}).normalized)||null;
  if(baseline&&Number(baseline.change_vri_mln||0)){
   clearTimeout(tepAutoTimer);
@@ -49043,15 +49049,23 @@ async function recalcFromTep(options){
  }
  const b=d.baseline||{};
  const cmp=(name,was,now)=>name+': было '+num(was)+' → стало '+num(now);
- const lines=[
-  cmp('Плата за ВРИ, млн ₽',b.vri_mln,d.vri_total_mln)
-   +(d.land_right_factor&&d.land_right_factor!==1?' (аренда: делитель 1,001)':''),
-  cmp('Соцкомпенсация, млн ₽',b.compensation_mln,d.compensation_mln),
-  cmp('Машино-места',b.parking_total,d.parking.total)
-   +' ('+d.parking.permanent+' постоянных + '+d.parking.guest+' гостевых + '
-   +d.parking.attached+' приобъектных)',
-  cmp('Население, чел.',b.population,d.population)
-   +' · ДОО '+d.places.kindergarten+' · школа '+d.places.school+' · поликлиника '+d.places.clinic];
+ const lockedKrt=krtRequirementEntered();
+ const lines=[];
+ // В режиме требования КРТ эти поля не являются результатом нашего
+ // нормативного пересчёта: они заданы договором, а плата за ВРИ обычно
+ // обнулена самим режимом. Показывать рядом «было 18 млрд → стало 10 млрд»,
+ // а ниже «не тронуто КРТ» — два взаимоисключающих ответа на одно поле.
+ if(!lockedKrt){
+  lines.push(cmp('Плата за ВРИ, млн ₽',b.vri_mln,d.vri_total_mln)
+   +(d.land_right_factor&&d.land_right_factor!==1?' (аренда: делитель 1,001)':''));
+  lines.push(cmp('Соцкомпенсация, млн ₽',b.compensation_mln,d.compensation_mln));
+ }
+ lines.push(cmp('Машино-места',b.parking_total,d.parking.total)
+  +' ('+d.parking.permanent+' постоянных + '+d.parking.guest+' гостевых + '
+  +d.parking.attached+' приобъектных)');
+ lines.push(cmp('Население, чел.',b.population,d.population)
+  +(lockedKrt?'':' · ДОО '+d.places.kindergarten+' · школа '+d.places.school
+    +' · поликлиника '+d.places.clinic));
  (d.warnings||[]).forEach(w=>lines.push('⚠ '+w));
  // Спрашивать на каждой правке ТЭП нечего: человек уже сказал, чего хочет,
  // изменив метры. Подтверждение осталось у явного нажатия кнопки.
