@@ -17347,6 +17347,180 @@ def _v4_set_cell(
     return xml[:found.start()] + replacement + xml[found.end():], True
 
 
+
+# Режимы на листе «Вводные» должны быть настоящими элементами выбора, а не
+# строками, которые человек обязан помнить. В список попадают только те
+# переключатели, которые книга уже умеет читать СВОИМИ формулами. Режим,
+# разрешив который здесь, но не протянув его в расчёт, был бы хуже свободного
+# текста: стрелка обещала бы пересчёт, которого нет.
+_V4_LIVE_MODE_KEYS = frozenset({
+    "bridge_interest_mode",
+    "social_mode",
+    "vri_payment_mode",
+    "vri_periodicity_months",
+    "vri_interest_enabled",
+    "vri_early_repay_after_pf",
+    "offices_enabled",
+    "retail_enabled",
+    "above_parking_enabled",
+    "sports_enabled",
+    "underground_parking_disabled",
+    "sports_disposition",
+    "rate_scenario",
+})
+
+
+def _v4_live_mode_options() -> dict[str, list[str]]:
+    """Человекочитаемые варианты для живых Excel-переключателей.
+
+    Источник — FIELD_GROUPS/реестр объектов. Отдельно названы только режимы,
+    у которых веб-форма исторически хранит список не в пятом элементе поля.
+    Excel хранит ВИДИМОЕ слово, потому что именно его читают его формулы.
+    """
+    out: dict[str, list[str]] = {}
+    for _group, fields in FIELD_GROUPS:
+        for field in fields:
+            if len(field) < 4:
+                continue
+            key, _label, _unit, kind = field[:4]
+            if key not in _V4_LIVE_MODE_KEYS:
+                continue
+            if kind == "checkbox":
+                out[key] = ["Да", "Нет"]
+            elif kind == "select" and len(field) > 4 and isinstance(field[4], list):
+                out[key] = [str(pair[1]) for pair in field[4]]
+    out["bridge_interest_mode"] = [
+        "Капитализация в ПФ", "Выплата при рефинансировании"]
+    out["social_mode"] = [
+        "Строительство", "Денежная компенсация", SOCIAL_MODE_BOTH]
+    # B75 больше не совмещает два поля «режим + срок»: срок живёт в B77.
+    out["vri_payment_mode"] = ["Единовременно", "Рассрочка"]
+    # В книге это числовая ячейка, а не текстовое название периодичности.
+    out["vri_periodicity_months"] = ["1", "3", "6", "12"]
+    # Пустое «по региону» пока остаётся движковым решением; книга хранит уже
+    # применённый Да/Нет и действительно умеет переключать его формулами.
+    out["vri_interest_enabled"] = ["Да", "Нет"]
+    out["sports_disposition"] = [
+        _V4_SPORTS_TRANSFER_WORD, _V4_SPORTS_SALE_WORD]
+    # Сценарий ставки в книге называется именем колонки, а не API-ключом.
+    out["rate_scenario"] = ["Base", "Upside", "Downside"]
+    return out
+
+
+def _v4_cell_text(xml: str, coord: str) -> str | None:
+    found = re.search(r'<x:c r="%s"[^>]*>(.*?)</x:c>' % re.escape(coord), xml, re.S)
+    if not found:
+        return None
+    inline = re.search(r"<x:t>(.*?)</x:t>", found.group(1), re.S)
+    if inline:
+        return html.unescape(inline.group(1))
+    value = re.search(r"<x:v>(.*?)</x:v>", found.group(1), re.S)
+    return html.unescape(value.group(1)) if value else None
+
+
+def _v4_mirror_secondary_input_styles(xml: str) -> str:
+    """E:H — такая же форма ввода, как A:D, а не неоформленный довесок.
+
+    В этих строках слева и справа стоят одинаковые типы колонок:
+    подпись / значение / единица / API-ключ. Поэтому стиль копируется
+    ПО КОЛОНКЕ той же строки и не вводит второй дизайн листа.
+    """
+    for row in range(1, 160):
+        for source, target in zip("ABCD", "EFGH"):
+            source_cell = re.search(
+                r'<x:c r="%s%d"([^>]*)' % (source, row), xml)
+            target_cell = re.search(
+                r'<x:c r="%s%d"([^>]*)' % (target, row), xml)
+            if not source_cell or not target_cell:
+                continue
+            style = re.search(r'\ss="(\d+)"', source_cell.group(1))
+            if not style:
+                continue
+            coord = f"{target}{row}"
+            pattern = re.compile(r'(<x:c r="%s")([^>]*)' % re.escape(coord))
+            def apply(match: "re.Match[str]") -> str:
+                attrs = re.sub(r'\s+s="\d+"', "", match.group(2))
+                return f'{match.group(1)}{attrs} s="{style.group(1)}"'
+            xml = pattern.sub(apply, xml, count=1)
+    return xml
+
+
+def _v4_add_mode_dropdowns(xml: str, missing: list[str]) -> str:
+    """Data Validation для режимов, которые реально пересчитывает Excel.
+
+    Ключ ищется в D/H/M; значение находится соответственно в B/F/K.
+    Это позволяет не держать ещё одну карту координат и автоматически
+    подхватывает переезд строк внутри существующей формы.
+    """
+    options = _v4_live_mode_options()
+    validations: list[tuple[str, list[str]]] = []
+    key_columns = {"D": "B", "H": "F", "M": "K"}
+    for key, values in options.items():
+        target: str | None = None
+        for key_col, value_col in key_columns.items():
+            found = re.search(
+                r'<x:c r="%s(\d+)"[^>]*>.*?<x:t>%s</x:t>.*?</x:c>'
+                % (key_col, re.escape(key)), xml, re.S)
+            if found:
+                target = f"{value_col}{found.group(1)}"
+                break
+        # B75 исторически подписан сразу двумя ключами. После разделения
+        # значения и срока координата режима однозначна, но старый составной
+        # текст ключа может ещё жить в шаблоне до того, как builder его заменил.
+        if key == "vri_payment_mode" and target is None and _v4_cell_text(xml, "B75") is not None:
+            target = "B75"
+        if target is None:
+            # Ставка добавляется динамическим блоком; если ключа нет, это уже
+            # потерянная вводная, и сборка должна сказать об этом.
+            missing.append(f"Вводные · dropdown {key}: ячейка не найдена")
+            continue
+        if _v4_cell_text(xml, target) is None and _v4_cell_formula(xml, target) is None:
+            missing.append(f"Вводные · dropdown {key}: значение {target} не найдено")
+            continue
+        validations.append((target, values))
+
+    if not validations:
+        return xml
+
+    rendered: list[str] = []
+    for coord, values in validations:
+        formula = '"' + ",".join(str(value).replace('"', '""') for value in values) + '"'
+        rendered.append(
+            f'<x:dataValidation type="list" allowBlank="0" showDropDown="0" '
+            f'showErrorMessage="1" errorStyle="stop" '
+            f'errorTitle="Недопустимое значение" '
+            f'error="Выберите значение из выпадающего списка." sqref="{coord}">'
+            f'<x:formula1>{xml_escape(formula)}</x:formula1></x:dataValidation>')
+
+    existing = re.search(
+        r'<x:dataValidations([^>]*)>(.*?)</x:dataValidations>', xml, re.S)
+    if existing:
+        attrs = re.sub(r'\s+count="\d+"', "", existing.group(1))
+        old_count = len(re.findall(r"<x:dataValidation\b", existing.group(2)))
+        block = (f'<x:dataValidations{attrs} count="{old_count + len(rendered)}">'
+                 + existing.group(2) + "".join(rendered) + "</x:dataValidations>")
+        return xml[:existing.start()] + block + xml[existing.end():]
+
+    block = (f'<x:dataValidations count="{len(rendered)}">'
+             + "".join(rendered) + "</x:dataValidations>")
+    # По схеме worksheet dataValidations идут после conditionalFormatting и
+    # до hyperlinks/printOptions/pageMargins. У шаблона эти хвосты есть; если
+    # конкретная версия их лишилась, перед закрытием worksheet Excel тоже
+    # принимает блок.
+    candidates = [
+        xml.find("<x:hyperlinks"), xml.find("<x:printOptions"),
+        xml.find("<x:pageMargins"), xml.find("<x:pageSetup"),
+        xml.find("<x:headerFooter"), xml.find("<x:drawing"),
+        xml.rfind("</x:worksheet>"),
+    ]
+    candidates = [index for index in candidates if index >= 0]
+    if not candidates:
+        missing.append("Вводные · dropdown: не найдено место для dataValidations")
+        return xml
+    at = min(candidates)
+    return xml[:at] + block + xml[at:]
+
+
 def _v4_column_letter(number: int) -> str:
     letters = ""
     while number > 0:
@@ -22974,6 +23148,13 @@ def build_project_workbook(
     # одной цифрой. Расшифровка — формулы от блока «Вводных», а не числа на
     # дату сборки: правка мест прямо в книге обязана двигать и строку. Итоги
     # (H37, E44) — тоже формулы, чтобы сумма сходилась с B17.
+    # Правый блок E:H — та же пользовательская форма, что A:D.
+    xml = _v4_mirror_secondary_input_styles(xml)
+    # Стрелка выбора появляется только там, где изменение ячейки действительно
+    # читается формулами книги. Engine-only режимы сюда попадут после переноса
+    # их методики в Excel, а не раньше.
+    xml = _v4_add_mode_dropdowns(xml, missing)
+
     report_sheet_path = _v4_sheet_path(source, "ОТЧЕТ")
     tep_sheet_path = _v4_sheet_path(source, "ТЭП")
     report_xml = source.read(report_sheet_path).decode("utf-8")
@@ -23472,19 +23653,18 @@ def build_project_workbook(
     # --- ВРИ ---------------------------------------------------------------
     land_cost = float(x.get("land_rights_cost_mln") or 0)
     put("B74", text="Да" if land_cost > 0 else "Нет", label="vri_required")
-    if str(x.get("vri_payment_mode") or "lump") == "installment":
-        years = int(float(x.get("vri_installment_years") or 3))
-        word = "год" if years == 1 else ("года" if years in (2, 3, 4) else "лет")
-        put("B75", text=f"{years} {word}", label="vri_payment_mode")
-    else:
-        put("B75", text="Единовременно", label="vri_payment_mode")
-    # Ячейка одна, а вводных в ней две: «3 года» несёт и порядок оплаты, и срок
-    # рассрочки. Ключ срока стоял в шаблоне на строке 77, где его РАЗБИРАЕТ
-    # формула, — то же самое, что было с лагом продаж и трендом темпа: правка
-    # живой ячейки и правка мёртвой выглядели одинаково. Обе вводные названы
-    # там, где их печатают, а строка 77 говорит, откуда берёт своё число.
-    put_new("D75", text="vri_payment_mode · vri_installment_years")
-    put_new("C77", text="лет — из строки 75")
+    _vri_installment = str(x.get("vri_payment_mode") or "lump") == "installment"
+    put("B75", text="Рассрочка" if _vri_installment else "Единовременно",
+        label="vri_payment_mode")
+    # Режим и срок — две разные вводные и должны оставаться двумя ячейками.
+    # Прежнее «3 года» в B75 заставляло человека помнить синтаксис строки и
+    # мешало сделать нормальный dropdown. Все формулы графика уже читают B77
+    # как число лет, поэтому пишем срок прямо туда.
+    _vri_years = int(float(x.get("vri_installment_years") or 3))
+    put("B77", number=float(_vri_years), label="vri_installment_years")
+    put_new("D75", text="vri_payment_mode")
+    put_new("D77", text="vri_installment_years")
+    put_new("C77", text="лет")
     lead = {"before_rns_1m": 1, "before_rns_3m": 3, "at_rns": 0}.get(
         str(x.get("vri_obligation_date_mode") or "before_rns_1m"), 1)
     put("B76", number=float(lead), label="vri_obligation_lead_months")
