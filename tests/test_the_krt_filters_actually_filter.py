@@ -208,5 +208,6 @@ def test_every_status_choice_gives_its_rows_and_none_vanish() -> None:
     unread = [one for one in cells if "Власова" in one][0]
     # Неразрывный пробел разделителя тысяч — часть форматирования, не числа.
     assert "9\u00a0800" in read and "0.28 га" in read, read
-    assert "— · ТЭП не указан" in unread, unread
-    assert "0 · " not in unread, "балл без ТЭП снова печатается нулём"
+    assert "ещё не рассчитан" in unread, unread
+    assert "0 · " not in unread and "\n0\n" not in unread, \
+        "отсутствующий рейтинг снова печатается нулём"

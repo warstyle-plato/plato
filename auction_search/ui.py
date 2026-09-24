@@ -26,7 +26,7 @@ AUCTIONS_PAGE = r'''<!doctype html>
 .krt-rating-input input{width:126px;min-height:36px;height:36px;padding:0 8px;font-weight:700;color:var(--text)}
 .krt-action-note{font-size:11px;color:var(--muted);max-width:265px;line-height:1.3}
 @media(max-width:950px){.krt-actions{justify-content:flex-start}.krt-actions-left,.krt-actions-right{width:100%}}
-@media(max-width:640px){.krt-actions-left,.krt-actions-right{display:grid;grid-template-columns:1fr;width:100%}.krt-actions button{width:100%}.krt-action-note{max-width:none}}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin-bottom:14px}.stat{border:1px solid var(--line);border-radius:0;background:var(--panel);padding:12px}.stat b{font-size:22px;display:block}.stat span{font-size:12px;color:var(--muted)}.coverage{display:none}.layout{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(360px,.8fr);gap:12px}.tablewrap,.side{border:1px solid var(--line);background:var(--panel);border-radius:0;overflow:hidden}.tablecol{min-width:0;display:flex;flex-direction:column}.scrolltop{overflow-x:auto;overflow-y:hidden;height:14px;margin-bottom:-1px;border:1px solid var(--line);border-bottom:0;background:var(--panel)}.scrolltop>div{height:1px}.scrolltop[hidden]{display:none}.tablewrap{overflow:auto;min-height:420px}table{border-collapse:collapse;width:100%;min-width:900px}table.wide{min-width:980px;table-layout:fixed}
+@media(max-width:640px){.krt-actions-left,.krt-actions-right{display:grid;grid-template-columns:1fr;width:100%}.krt-actions button{width:100%}.krt-action-note{max-width:none}}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin-bottom:14px}.stat{border:1px solid var(--line);border-radius:0;background:var(--panel);padding:12px}.stat b{font-size:22px;display:block}.stat span{font-size:12px;color:var(--muted)}.coverage{display:none}.layout{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(360px,.8fr);gap:12px}.tablewrap,.side{border:1px solid var(--line);background:var(--panel);border-radius:0;overflow:hidden}.tablecol{min-width:0;display:flex;flex-direction:column}.scrolltop{overflow-x:auto;overflow-y:hidden;height:14px;margin-bottom:-1px;border:1px solid var(--line);border-bottom:0;background:var(--panel)}.scrolltop>div{height:1px}.scrolltop[hidden]{display:none}.tablewrap{overflow:auto;min-height:420px}table{border-collapse:collapse;width:100%;min-width:900px}table.wide{min-width:1600px;table-layout:fixed}
 #krtTableWrap th,#krtTableWrap td{padding:8px 7px}
 #krtTableWrap th{font-size:10px;letter-spacing:.025em}
 #krtTableWrap .lotname{max-width:none;line-height:1.25;margin:0}
@@ -50,9 +50,9 @@ __DEVELOPAID_PLATO_DRAWER_CSS__
 .tabs{display:flex;gap:28px;padding:0 34px;border-bottom:1px solid var(--line);overflow:auto;background:var(--panel)}.tabs .tab{border:0;background:none;min-height:0;padding:15px 0 12px;font-size:14px;font-weight:620;color:#777;white-space:nowrap;border-bottom:3px solid transparent}.tabs .tab.active{color:#000;border-color:#000}.hidden{display:none!important}.fit{display:inline-flex;align-items:center;gap:6px;font-weight:750;white-space:nowrap}.fit .light{width:10px;height:10px;border-radius:50%;background:var(--muted);}.fit.ok{color:var(--ok)}.fit.ok .light{background:var(--ok)}.fit.warn{color:var(--warn)}.fit.warn .light{background:var(--warn)}.fit.bad{color:var(--bad)}.fit.bad .light{background:var(--bad)}
 .multi{position:relative;min-width:0}.multi-toggle{width:100%;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-right:30px;position:relative}.multi-toggle:after{content:'⌄';position:absolute;right:11px;font-size:16px;line-height:1}.multi-toggle[aria-expanded="true"]:after{content:'⌃'}.multi-menu{position:absolute;z-index:20;top:calc(100% + 6px);left:0;width:max-content;min-width:100%;max-width:min(320px,80vw);padding:8px;border:1px solid var(--line);border-radius:0;background:var(--panel);}.multi-head{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:2px 4px 7px;font-size:12px;font-weight:750;color:var(--muted)}.multi-clear{min-height:28px;padding:0 7px;border:0;background:transparent;color:var(--muted);font-size:12px}.multi-options{display:grid;gap:2px;max-height:310px;overflow:auto}.multi-option{display:flex;align-items:center;gap:9px;min-height:36px;padding:5px 7px;border-radius:0;cursor:pointer}.multi-option:hover{background:var(--soft)}.multi-option input{flex:0 0 auto;width:17px;height:17px;min-height:0;margin:0;padding:0;accent-color:var(--accent)}
 .krt-proto-modal{position:fixed;inset:0;z-index:120;background:rgba(18,24,30,.48);padding:22px;display:grid;place-items:center}
-.krt-proto-shell{position:relative;width:min(1540px,calc(100vw - 44px));height:calc(100vh - 44px);background:#fff;border:1px solid var(--line);box-shadow:0 20px 60px rgba(0,0,0,.22)}
+.krt-proto-shell{position:relative;width:min(1540px,calc(100vw - 44px));height:calc(100vh - 44px);background:#fff;border:1px solid var(--line)}
 .krt-proto-shell iframe{width:100%;height:100%;border:0;background:#f4f5f6}
-.krt-proto-close{position:absolute;z-index:3;right:12px;top:12px;width:38px;height:38px;min-height:38px;padding:0;border-radius:50%;background:#fff;border:1px solid #c9ced3;font-size:24px;line-height:1;box-shadow:0 2px 10px rgba(0,0,0,.12)}
+.krt-proto-close{position:absolute;z-index:3;right:12px;top:12px;width:38px;height:38px;min-height:38px;padding:0;border-radius:50%;background:#fff;border:1px solid #c9ced3;font-size:24px;line-height:1}
 body.krt-modal-open{overflow:hidden}
 @media(max-width:700px){.krt-proto-modal{padding:0}.krt-proto-shell{width:100vw;height:100vh;border:0}.krt-proto-close{right:8px;top:8px}}
 __DEVELOPAID_CONTOUR_STYLE__
@@ -113,7 +113,7 @@ __DEVELOPAID_CONTOUR__
       <div class="filter-actions krt-actions">
         <div class="krt-actions-left">
           <button id="krtRefresh" class="primary">Обновить каталог</button>
-          <button id="krtRankBtn">Оценить моделью</button>
+          <button id="krtRankBtn">Оценить отобранные моделью</button>
           <button id="krtPressBtn" title="Читает публикации и каналы по всем планируемым площадкам и площадкам с проектом решения.">Прочитать публикации</button>
           <button id="krtExport">Выгрузить Excel</button>
         </div>
@@ -1820,7 +1820,7 @@ function krtRenovationEvidence(x){
  const card=(state.krtCards||{})[x.slug]||x.card_facts||rank.card_facts||{};
  const press=(state.krtPress||{})[x.slug]||rank.press_facts||null;
  const pressHit=(press&&press.city_needs||[]).find(v=>
-   /программ\w*\s+реновац|фонд\s+реновации/i.test(String((v||{}).quote||'')+' '+String((v||{}).title||'')))||null;
+   /программ[а-яё]*\s+реновац|фонд\s+реновации/i.test(String((v||{}).quote||'')+' '+String((v||{}).title||'')))||null;
  // Карточочный признак оставляем только для уже реализуемых площадок:
  // сам parser карточек был построен на этой семантике. На планируемой
  // площадке одиночное слово в старом кэше не является основанием плашки.
@@ -3035,7 +3035,7 @@ function closeKrtPrototype(){
  if(frame)frame.src='about:blank';
  document.body.classList.remove('krt-modal-open');
 }
-function selectKrt(x){state.selectedKrt=x;if(openKrtPrototype(x))return;const sc=krtScore(x),fit=sc.fit,cached=state.krtModels[x.slug],planned=String(x.status||'').toLowerCase().includes('планируем');
+function selectKrt(x){state.selectedKrt=x;const prototypeOpened=openKrtPrototype(x);const sc=krtScore(x),fit=sc.fit,cached=state.krtModels[x.slug],planned=String(x.status||'').toLowerCase().includes('планируем');
  // Карточка идёт тремя группами, и порядок назвал владелец (06.09.2026):
  // «сначала выводы общие предварительные, потом данные города что дают, что
  // требуют, потом уже наверное детали предварительного прогона модели и
@@ -3121,6 +3121,10 @@ function selectKrt(x){state.selectedKrt=x;if(openKrtPrototype(x))return;const sc
   try{$('krtSide').scrollIntoView({behavior:'smooth',block:'start'})}catch(e){$('krtSide').scrollIntoView()}
  }
  renderAskContext();
+ // Полноэкранная карточка — основной интерфейс. Старую боковую карточку всё
+ // равно собираем синхронно как запасной/тестируемый слой, но не запускаем
+ // второй комплект сетевых запросов за модальным окном.
+ if(prototypeOpened)return;
  if(planned)loadKrtRequirements(x);
  loadKrtPoint(x);
  // Отчёт уже посчитан — его показывают, а не считают заново. Прогон по

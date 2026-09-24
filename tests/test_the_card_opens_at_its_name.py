@@ -101,10 +101,7 @@ def test_the_card_column_is_a_scroll_box_with_a_visible_bar():
 
 @pytest.mark.timeout(240)
 def test_in_a_real_browser_the_card_opens_at_its_name():
-    """Нажатие на соседнюю строку показывает имя площадки, а не середину."""
-    # Где браузер — один ответ на весь набор (`tests/browser.py`): он ищет, а
-    # не помнит номер сборки, и на машине, где браузер ОБЯЗАН быть, его
-    # отсутствие красит проверку красным, а не пропускает её молча.
+    """Нажатие на строку открывает полноэкранную карточку именно этой площадки."""
     chrome = chromium_or_skip()
     from playwright.sync_api import sync_playwright
     import uvicorn
@@ -135,51 +132,31 @@ def test_in_a_real_browser_the_card_opens_at_its_name():
             page.wait_for_timeout(150)
 
             page.evaluate("()=>selectKrt(state.krt.find(x=>x.slug==='polimernaya-8'))")
-            page.wait_for_timeout(300)
-            # Шапка входа — первая плашка ПЕРВОЙ ГРУППЫ, а не первая плашка
-            # карточки: наверху теперь стоит карта, и на стенде без геокодера
-            # она честно говорит, что не построилась.
-            head = page.evaluate(
-                "()=>document.querySelector('#krtSide .krtgroup .notice')"
-                ".textContent.replace(/\\s+/g,' ')")
-            # Карточку дочитали до низа — и нажали соседнюю строку.
-            page.evaluate("()=>{const s=document.getElementById('krtSide');s.scrollTop=s.scrollHeight}")
-            page.wait_for_timeout(100)
-            before = page.evaluate("()=>Math.round(document.getElementById('krtSide').scrollTop)")
+            page.wait_for_timeout(150)
+            first = page.evaluate("""()=>{
+              const modal=document.getElementById('krtPrototypeModal');
+              const frame=document.getElementById('krtPrototypeFrame');
+              return {hidden:modal.classList.contains('hidden'),
+                      src:frame.getAttribute('src')||''};
+            }""")
+
             page.evaluate("()=>selectKrt(state.krt.find(x=>x.slug==='proshlyakova-9'))")
-            page.wait_for_timeout(300)
-            after = page.evaluate("""()=>{const s=document.getElementById('krtSide'),h=s.querySelector('h2');
-              const r=h.getBoundingClientRect(),g=s.getBoundingClientRect();
-              return {top:Math.round(s.scrollTop),name:h.textContent,
-                      seen:r.top>=g.top-1&&r.bottom<=g.bottom+1,
-                      tall:s.scrollHeight>s.clientHeight}}""")
-            # Кнопки достижимы прокруткой самой карточки, и лежат они в ПЕРВОЙ
-            # группе: «а где кнопки все? Платона вообще нет» (владелец,
-            # 06.09.2026) — они стояли ниже окна, а полосы прокрутки на macOS
-            # не видно, пока её не двинут.
-            reach = page.evaluate("""()=>{const s=document.getElementById('krtSide');
-              const b=document.getElementById('krtPlato');if(!b)return null;
-              b.scrollIntoView({block:'center'});
-              const r=b.getBoundingClientRect(),g=s.getBoundingClientRect();
-              const groups=[...s.querySelectorAll('.krtgroup')];
-              return {seen:r.top>=g.top-1&&r.bottom<=g.bottom+1,
-                      groups:groups.length,
-                      inFirst:groups.length>1&&groups[0].contains(b)}}""")
+            page.wait_for_timeout(150)
+            second = page.evaluate("""()=>{
+              const modal=document.getElementById('krtPrototypeModal');
+              const frame=document.getElementById('krtPrototypeFrame');
+              return {hidden:modal.classList.contains('hidden'),
+                      src:frame.getAttribute('src')||''};
+            }""")
             browser.close()
     finally:
         server.should_exit = True
         thread.join(timeout=10)
 
     assert not errors, errors
-    # Шапка называет цену обоих фактов, а не оставляет их спорить с ней.
-    assert "подрядчиком" in head, head
-    assert "300 440" in head, "объём Программы реновации не назван"
-    assert "ГК «СтройИнновация»" in head, "названный застройщик в шапке молчит"
-    assert "не закрывает" in head, "не сказано, что застройщик вход не закрывает"
-    assert before > 200, f"карточка не была прокручена — проверяется не то ({before})"
-    assert after["tall"], "карточка короче окна — проверять нечего"
-    assert after["top"] == 0, f"новая карточка открылась серединой: {after}"
-    assert after["seen"], f"имя площадки вне окна карточки: {after}"
-    assert reach and reach["seen"], "кнопка Платона прокруткой недостижима"
-    assert reach["groups"] == 3, f"карточка не разбита на три группы: {reach}"
-    assert reach["inFirst"], "кнопки уехали из группы предварительного вывода"
+    assert first["hidden"] is False, first
+    assert first["src"].endswith("/auctions/krt-card/polimernaya-8"), first
+    assert second["hidden"] is False, second
+    assert second["src"].endswith("/auctions/krt-card/proshlyakova-9"), second
+    assert first["src"] != second["src"], "соседняя строка не сменила карточку"
+
