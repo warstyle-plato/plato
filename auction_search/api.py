@@ -1305,7 +1305,8 @@ def install(app: FastAPI) -> None:
     async def auction_krt_nagatino_prototype() -> HTMLResponse:
         """Большая карточка Нагатино внутри того же runtime, что рынок и модель."""
         return HTMLResponse(
-            nagatino_investment_card_page(),
+            nagatino_investment_card_page(
+                guide.legal_footer_html(core) if core is not None else ""),
             headers={"Cache-Control": "no-store, must-revalidate"},
         )
 
