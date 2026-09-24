@@ -454,6 +454,67 @@ def test_the_book_passes_its_own_checks_and_matches_the_engine():
         "LLCR книги разошёлся с движком больше чем на 5%"
 
 
+def test_bridge_interest_mode_mutates_the_downloaded_book_without_rebuild():
+    """B31 — настоящий переключатель: один XLSX, mutation, затем parity с engine.
+
+    Builder вызывается ровно один раз. После этого меняем dropdown прямо в
+    открытой книге и пересчитываем формулы тем же evaluator, которым проверяем
+    остальные цепочки Excel.
+    """
+    from xlsx_eval import Evaluator
+
+    inputs = {
+        **core.DEFAULT_INPUTS,
+        "purchase_price_mln": 2400.0,
+        "apartment_price_th": 500.0,
+        "commercial_price_th": 500.0,
+        "bridge_interest_mode": "Капитализация в ПФ",
+    }
+    tep = {key: dict(value) for key, value in core.TEP_DEFAULT.items()}
+
+    content, _, meta = core.build_project_workbook(
+        inputs, tep, [], {}, project_name="Mutation bridge mode")
+    assert meta["missing"] == []
+
+    book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
+    entry = book["Вводные"]
+    mode_cell = _entry_value_cell_for_key(entry, "bridge_interest_mode")
+    assert entry[mode_cell].value == "Капитализация в ПФ"
+
+    # Никакой второй сборки XLSX: меняется только уже скачанная книга.
+    entry[mode_cell] = "Выплата при рефинансировании"
+    evaluator = Evaluator(book)
+
+    changed_inputs = dict(inputs)
+    changed_inputs["bridge_interest_mode"] = "Выплата при рефинансировании"
+    engine = core.calculate_phased(core.PhasedCalcRequest(
+        inputs=changed_inputs, tep=tep, rates=[], phasing={}))
+    summary = engine["consolidated"]["summary"]
+    finance = engine["consolidated"]["finance"]
+
+    def x(sheet, cell):
+        return float(evaluator.cell(sheet, cell))
+
+    assert x("CF_1", "B32") == pytest.approx(
+        float(finance["bridge_interest"]) / 1e6, rel=0.02), "проценты БРИДЖ"
+    assert x("CF_1", "B42") == pytest.approx(
+        float(finance["pf_interest"]) / 1e6, rel=0.03), "проценты ПФ"
+    assert x("CF_1", "B82") == pytest.approx(
+        (float(finance["peak_bridge"]) + float(finance.get("transferred_bridge_interest") or 0.0))
+        / 1e6, rel=0.02), "пик БРИДЖ с капитализацией"
+    assert x("CF_1", "B83") == pytest.approx(
+        float(finance["peak_pf"]) / 1e6, rel=0.02), "пик ПФ"
+
+    assert x("ОТЧЕТ", "B9") == pytest.approx(
+        float(summary["financing_cost"]) / 1e6, rel=0.03), "стоимость финансирования"
+    assert x("ОТЧЕТ", "B11") == pytest.approx(
+        float(summary["profit_tax"]) / 1e6, rel=0.05), "налог"
+    assert x("ОТЧЕТ", "B12") == pytest.approx(
+        float(summary["net_profit"]) / 1e6, rel=0.03), "чистая прибыль"
+    assert x("ОТЧЕТ", "B19") == pytest.approx(
+        float(summary["llcr"]), rel=0.05), "LLCR"
+
+
 def test_the_tep_sheet_does_not_double_count_the_objects():
     """«ИТОГО ЖИЛЫЕ ОЧЕРЕДИ» ссылался на CF!B6, который уже включает офисы,
     ТЦ и наземный паркинг, — и лист ТЭП считал объекты дважды."""
