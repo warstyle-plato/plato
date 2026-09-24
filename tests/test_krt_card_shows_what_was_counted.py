@@ -98,11 +98,11 @@ def test_the_list_always_shows_a_number(script_free: None = None) -> None:
     script = page_script(auctions_page())
     body = script[script.index("function renderKrt("):]
     body = body[:body.index("\nfunction krtSiteMap(")]
-    assert "${krtScoreNumber(sc)} · ${esc(sc.label)}" in body
-    assert "function krtScoreNumber(sc){return sc.known?sc.score:'—'}" in script, \
-        "число балла снова считается на месте, а не одним ответом"
-    assert "Модель · ${esc(light.label)}" not in body, "вердикт больше не заменяет балл"
-    assert "krtScoreNote(sc)" in body, "рядом сказано, что балл снизило"
+    assert "${krtInvestmentRatingCell(x.slug)}" in body
+    rating = _fn(script, "krtInvestmentRatingCell")
+    assert "display_score" in rating and "coverage_pct" in rating
+    assert "ещё не рассчитан" in rating, "отсутствие рейтинга не должно выглядеть как ноль"
+    assert "/100" in rating, "итоговый балл подписан шкалой"
     assert "x.is_new" in body, "новая площадка помечается"
 
 
