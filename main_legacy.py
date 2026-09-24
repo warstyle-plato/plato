@@ -48854,7 +48854,7 @@ function enableTepRow(key){
  inputs[sw[0]]=true;
  setTepNote(key,'');
  syncTep(false);renderInputs();renderTep();
- scheduleTepAutoRecalc();
+ scheduleTepAutoRecalc(key);
  calculate();
 }
 
@@ -48895,7 +48895,7 @@ function refillTepRow(key){
  // Посчитанное возвращается во вводные — иначе `syncTep` вернёт прежнее.
  if(tepRowToInputs(key))renderInputs();
  renderTep();
- scheduleTepAutoRecalc();
+ scheduleTepAutoRecalc(key);
  calculate();
 }
 
@@ -49077,14 +49077,14 @@ function tepCellChanged(key,col,value){
   inputs[TEP_SOCIAL_INPUTS[key]]=tep[key].total_area;
   renderInputs();
   renderTep();
-  scheduleTepAutoRecalc();
+  scheduleTepAutoRecalc(key);
   calculate();
   return;
  }
  if(key==='storage'&&['gns','units'].includes(col)){
   syncStoragePair(col);
   renderTep();
-  scheduleTepAutoRecalc();
+  scheduleTepAutoRecalc(key);
   calculate();
   return;
  }
@@ -49104,7 +49104,7 @@ function tepCellChanged(key,col,value){
   renderInputs();
   renderTep();
  }else{tepRowToInputs(key);updateTepTotals()}
- scheduleTepAutoRecalc();
+ scheduleTepAutoRecalc(key);
  calculate();
 }
 
@@ -49791,7 +49791,13 @@ let moAutoBusy=false;
 function moNormativeApartments(){
  return Number((inputs._mo_calc||{}).apartments_saleable||0);
 }
-function scheduleTepAutoRecalc(){
+function scheduleTepAutoRecalc(changedKey){
+ // Автопересчёт нормативов запускает только изменение ЖИЛОЙ базы. Офис,
+ // коммерция, кладовые и их доли не создают население. Раньше любая правка
+ // ТЭП по проекту с ГлавАПУ запускала общий recalc: смена 50→60% офисника
+ // показывала новое население, соцкомпенсацию и ВРИ, хотя квартира не
+ // изменилась ни на метр.
+ if(changedKey!=='apartments')return;
  const baseline=((inputs._glavapu_import||{}).normalized)||null;
  if(baseline&&Number(baseline.change_vri_mln||0)){
   clearTimeout(tepAutoTimer);
