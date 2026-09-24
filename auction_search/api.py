@@ -1888,7 +1888,8 @@ def install(app: FastAPI) -> None:
         # финансовую модель и рейтинг. Когда город публикует совпавшую площадку,
         # ранняя строка автоматически уступает официальной.
         _inherit_early_market(projects)
-        early_rows = krt_early_projects.projects(projects)
+        early_rows = (krt_early_projects.projects(projects)
+                      if callable(getattr(krt_registry, "projects", None)) else [])
         projects = projects + early_rows
         projects = _with_tender_lots(projects)
         return {
@@ -2028,7 +2029,8 @@ def install(app: FastAPI) -> None:
         decisions, decisions_whole = _decision_rows_state(catalogue)
         official_rows = catalogue + decisions
         _inherit_early_market(official_rows)
-        early = krt_early_projects.projects(official_rows)
+        early = (krt_early_projects.projects(official_rows)
+                 if callable(getattr(krt_registry, "projects", None)) else [])
         try:
             state = krt_registry.status()
         except Exception:  # noqa: BLE001
