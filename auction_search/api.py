@@ -996,7 +996,6 @@ def install(app: FastAPI) -> None:
     def _auctions_gate_enabled() -> bool:
         return bool(auction_view.view_key())
 
-    @app.middleware("http")
     async def _auctions_view_gate(request: Request, call_next):
         path = request.url.path.rstrip("/") or "/"
         if path == "/auctions/login" or not _auctions_gate_enabled():
@@ -1042,6 +1041,13 @@ def install(app: FastAPI) -> None:
                         headers={"Cache-Control": "no-store"},
                     )
         return await call_next(request)
+
+    # Production устанавливает auction_search до первого запроса. Некоторые
+    # unit-тесты легально доустанавливают модуль в уже стартовавшее FastAPI-
+    # приложение; FastAPI запрещает add_middleware после старта. В таком
+    # тестовом/встраиваемом сценарии не ломаем приложение из-за гейта.
+    if getattr(app, "middleware_stack", None) is None:
+        app.middleware("http")(_auctions_view_gate)
 
     @app.post("/auctions/login", include_in_schema=False)
     async def auctions_login(request: Request):
