@@ -16,7 +16,7 @@ from urllib.parse import unquote, urlparse
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -991,12 +991,11 @@ def install(app: FastAPI) -> None:
         install_page_bridge(core)
 
     @app.get("/krt-12-preview", response_class=HTMLResponse, include_in_schema=False)
-    async def krt_12_preview_redirect() -> HTMLResponse:
-        """Старая тестовая страница 12 площадок теперь ведёт в общий формат КРТ."""
-        return HTMLResponse(
-            '<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" '
-            'content="0;url=/auctions?early=1"><title>Ранние КРТ</title>'
-            '<p><a href="/auctions?early=1">Открыть ранние проекты КРТ</a></p>',
+    async def krt_12_preview_redirect() -> Response:
+        """Старая тестовая страница 12 площадок ведёт в общий формат КРТ."""
+        return RedirectResponse(
+            "/auctions?early=1",
+            status_code=307,
             headers={"Cache-Control": "no-store, must-revalidate"},
         )
 
