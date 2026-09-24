@@ -159,30 +159,96 @@ def _entry_value_cell_for_key(entry, key):
     raise AssertionError(f"{key}: ключ не найден на пользовательском листе")
 
 
-def test_live_mode_inputs_have_excel_dropdowns():
-    content, _, _, _ = _book({"vri_payment_mode": "installment"})
-    book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
-    entry = book["Вводные"]
+def _dropdowns_by_cell(entry):
     by_cell = {}
     for validation in entry.data_validations.dataValidation:
         for ref in str(validation.sqref).split():
             by_cell[ref] = validation.formula1
+    return by_cell
 
-    expected = (
-        "bridge_interest_mode", "social_mode", "vri_payment_mode",
-        "vri_periodicity_months", "vri_interest_enabled",
-        "vri_early_repay_after_pf", "offices_enabled", "retail_enabled",
-        "above_parking_enabled", "underground_parking_disabled",
-        "sports_enabled", "sports_disposition", "rate_scenario",
-    )
+
+def _dropdown_values(formula):
+    text = str(formula or "")
+    if text.startswith('"') and text.endswith('"'):
+        text = text[1:-1]
+    return [value.replace('""', '"') for value in text.split(",") if value != ""]
+
+
+def test_every_canonical_mode_is_live_or_explicitly_engine_only():
+    """У mode-input нет третьего состояния: dropdown или engine-only с причиной."""
+    declared = set(core._v4_declared_mode_fields())
+    live = set(core._v4_live_mode_options())
+    engine_only = declared & set(core.V4_INPUTS_NOT_IN_BOOK)
+
+    assert not (live & engine_only)
+    assert declared == live | engine_only
+    assert all(str(core.V4_INPUTS_NOT_IN_BOOK[key]).strip() for key in engine_only)
+
+
+def test_live_mode_inputs_have_excel_dropdowns_and_canonical_values():
+    """Dropdown-ы строятся из canonical declaration, а не из Excel-списка."""
+    content, _, meta, _ = _book({"vri_payment_mode": "installment"})
+    assert meta["missing"] == []
+    book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
+    entry = book["Вводные"]
+    by_cell = _dropdowns_by_cell(entry)
+
+    expected = core._v4_live_mode_options()
     targets = {key: _entry_value_cell_for_key(entry, key) for key in expected}
     for key, coord in targets.items():
         assert coord in by_cell, f"{key} ({coord}) — режим без выпадающего списка"
+        assert _dropdown_values(by_cell[coord]) == list(expected[key]), (
+            f"{key}: Excel options разошлись с canonical declaration")
 
     assert "Капитализация в ПФ" in by_cell[targets["bridge_interest_mode"]]
     assert "Рассрочка" in by_cell[targets["vri_payment_mode"]]
     assert "Продаётся" in by_cell[targets["sports_disposition"]]
     assert "Base" in by_cell[targets["rate_scenario"]]
+
+
+def _source_cell_for_entry(params, entry_coord):
+    wanted = f"='Вводные'!{entry_coord}"
+    for row in params.iter_rows():
+        for cell in row:
+            if str(cell.value or "") == wanted:
+                return cell.coordinate
+    raise AssertionError(f"{entry_coord}: зеркало на «Параметры модели» не найдено")
+
+
+def _formula_reads_parameter(book, coord):
+    import re as _re
+    column = _re.match(r"[A-Z]+", coord).group(0)
+    row = _re.search(r"\d+$", coord).group(0)
+    pattern = _re.compile(
+        rf"(?:'Параметры модели'|Параметры модели)!\$?{column}\$?{row}(?!\d)")
+    readers = []
+    for sheet in book.worksheets:
+        if sheet.title in ("Вводные", "Параметры модели"):
+            continue
+        for cells in sheet.iter_rows():
+            for cell in cells:
+                if isinstance(cell.value, str) and cell.value.startswith("="):
+                    if pattern.search(cell.value):
+                        readers.append(f"{sheet.title}!{cell.coordinate}")
+    return readers
+
+
+def test_every_editable_mode_has_a_real_formula_reader():
+    """Стрелка без экономического читателя запрещена: зеркало ввода не считается."""
+    content, _, meta, _ = _book({"vri_payment_mode": "installment"})
+    assert meta["missing"] == []
+    book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
+    entry = book["Вводные"]
+    params = book["Параметры модели"]
+
+    for key in core._v4_live_mode_options():
+        entry_coord = _entry_value_cell_for_key(entry, key)
+        source_coord = _source_cell_for_entry(params, entry_coord)
+        readers = _formula_reads_parameter(book, source_coord)
+        assert readers, (
+            f"{key}: dropdown есть, но {source_coord} не читает ни одна "
+            "экономическая формула книги")
+
 
 
 def test_secondary_input_block_e_to_h_is_formatted_by_field_type():
