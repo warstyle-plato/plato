@@ -139,3 +139,20 @@ def test_auctions_gate_is_dormant_until_the_new_env_is_configured(monkeypatch):
     # Код можно выкатить раньше секрета: до настройки AUCTIONS_VIEW_KEY
     # существующий /auctions не закрывается внезапно.
     assert client.get("/auctions").status_code == 200
+
+
+def test_install_does_not_break_an_already_started_fastapi_app(monkeypatch):
+    """Некоторые тестовые/встраиваемые приложения доустанавливают модуль позже."""
+    monkeypatch.setenv(view_access.ENV_NAME, VIEW_KEY)
+    app = FastAPI()
+
+    @app.get("/ping")
+    async def ping():
+        return {"ok": True}
+
+    client = TestClient(app)
+    assert client.get("/ping").status_code == 200
+    # FastAPI уже собрал middleware_stack. install не должен пытаться вызвать
+    # add_middleware после этого — именно это ломало независимые тесты ядра.
+    install(app)
+    assert client.get("/ping").status_code == 200
