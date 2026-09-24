@@ -17370,16 +17370,32 @@ def _v4_declared_mode_fields() -> dict[str, Any]:
     return out
 
 
-def _v4_live_mode_options() -> dict[str, list[str]]:
-    """Варианты всех режимов, которые Excel действительно разрешено менять.
+def _v4_mode_pairs(key: str) -> list[list[str]]:
+    """Canonical internal/display pairs of one mode, from the page declaration."""
+    field = _v4_declared_mode_fields().get(key)
+    if field and len(field) > 4 and isinstance(field[4], list):
+        return [[str(pair[0]), str(pair[1])] for pair in field[4]]
+    if key == "rate_scenario":
+        return [[str(pair[0]), str(pair[1])]
+                for pair in globals().get("_M2_RATE_SCENARIOS", ())]
+    return [[str(pair[0]), str(pair[1])]
+            for pair in globals().get("_M2_EXTRA_OPTIONS", {}).get(key, ())]
 
-    Варианты берутся из объявления поля. Для старых полей без options в
-    FIELD_GROUPS используется тот же _M2_EXTRA_OPTIONS, что и web-форма.
-    Если canonical value числовой (периодичность 1/3/6/12), книга хранит именно
-    его — это первая колонка тех же canonical pairs, а не второй справочник.
-    """
+
+def _v4_mode_display(key: str, internal: Any) -> str:
+    """Показываем пользователю display value, а не технический API value."""
+    value = "" if internal is None else str(internal)
+    if isinstance(internal, bool):
+        value = "1" if internal else "0"
+    for raw, shown in _v4_mode_pairs(key):
+        if value == raw:
+            return shown
+    return value
+
+
+def _v4_live_mode_options() -> dict[str, list[str]]:
+    """Русские display values всех режимов, которые Excel умеет менять live."""
     out: dict[str, list[str]] = {}
-    extra = globals().get("_M2_EXTRA_OPTIONS", {})
     for key, field in _v4_declared_mode_fields().items():
         if key in V4_INPUTS_NOT_IN_BOOK:
             continue
@@ -17387,21 +17403,91 @@ def _v4_live_mode_options() -> dict[str, list[str]]:
         if kind == "checkbox":
             out[key] = ["Да", "Нет"]
             continue
-        pairs = field[4] if len(field) > 4 and isinstance(field[4], list) else extra.get(key)
+        pairs = _v4_mode_pairs(key)
         if pairs:
-            internals = [str(pair[0]) for pair in pairs]
-            displays = [str(pair[1]) for pair in pairs]
-            numeric_internal = all(re.fullmatch(r"-?\d+(?:\.\d+)?", value)
-                                   for value in internals)
-            out[key] = internals if numeric_internal else displays
-
-    # Сценарий ставки — канонический блок страницы, но книга называет колонки
-    # Base/Upside/Downside. Имена выводятся из единственной карты engine→book.
-    if "rate_scenario" in _v4_declared_mode_fields():
-        out["rate_scenario"] = [
-            _V4_RATE_SCENARIO_NAMES[name] for name in ("base", "low", "high")
-        ]
+            out[key] = [shown for _raw, shown in pairs]
     return out
+
+
+def _v4_formula_literal(value: str) -> str:
+    return '"' + str(value).replace('"', '""') + '"'
+
+
+def _v4_mode_decode_formula(key: str, entry_coord: str,
+                            output_by_internal: dict[str, str] | None = None,
+                            *, fallback: str = '""') -> str:
+    """Display value пользовательского листа -> значение, которое ждут формулы."""
+    ref = f"'Вводные'!{entry_coord}"
+    pairs = _v4_mode_pairs(key)
+    expression = fallback
+    for internal, shown in reversed(pairs):
+        output = (output_by_internal or {}).get(internal, internal)
+        if re.fullmatch(r"-?\d+(?:\.\d+)?", str(output)):
+            result = str(output)
+        else:
+            result = _v4_formula_literal(str(output))
+        expression = (
+            f"IF({ref}={_v4_formula_literal(shown)},{result},{expression})")
+    return expression
+
+
+def _v4_apply_mode_decoders(xml: str, entry_report: dict[str, Any],
+                            rate_scenario_ref: str | None,
+                            missing: list[str]) -> str:
+    """Декодеры между русским dropdown и историческими формулами шаблона.
+
+    Пользователь всегда видит canonical display. Параметры модели получают
+    ровно тот тип/слово, которое ожидали до появления dropdown — поэтому
+    downstream формулы не приходится переписывать по всей книге.
+    """
+    moved = entry_report.get("map") or {}
+
+    def source_coord(ref: str | None) -> str | None:
+        if not ref:
+            return None
+        return str(ref).replace("$", "").split("!")[-1]
+
+    def rewrite(source: str, formula: str, key: str) -> None:
+        nonlocal xml
+        if source not in moved:
+            missing.append(f"Вводные · decoder {key}: пользовательская ячейка не найдена")
+            return
+        xml, done = _v4_set_cell(xml, source, formula=formula)
+        if not done:
+            missing.append(f"Параметры модели · decoder {key}: {source} не найден")
+
+    # Периодичность хранится числом в формулах графика, но человек выбирает
+    # «Ежемесячно / Ежеквартально / ...».
+    periodic_entry = moved.get("B78")
+    if periodic_entry:
+        rewrite("B78", _v4_mode_decode_formula(
+            "vri_periodicity_months", periodic_entry, fallback="3"),
+            "vri_periodicity_months")
+
+    # Трёхсостояние «По региону» раньше схлопывалось в Да/Нет ещё builder-ом.
+    # Теперь оно живое: Москва разрешает default в «Да», МО — в «Нет».
+    interest_entry = moved.get("B80")
+    if interest_entry:
+        interest_ref = f"'Вводные'!{interest_entry}"
+        interest_formula = (
+            f"IF({interest_ref}={_v4_formula_literal('По региону')},"
+            f'IF($K$6="Москва","Да","Нет"),'
+            f"IF({interest_ref}={_v4_formula_literal('Начисляются')},"
+            f'"Да","Нет"))')
+        rewrite("B80", interest_formula, "vri_interest_enabled")
+
+    # На странице сценарии называются по-русски; лист «Ставки» исторически
+    # ждёт имена колонок Base/Upside/Downside.
+    rate_source = source_coord(rate_scenario_ref)
+    if rate_source and rate_source in moved:
+        outputs = {
+            internal: _V4_RATE_SCENARIO_NAMES.get(internal, internal)
+            for internal, _shown in _v4_mode_pairs("rate_scenario")
+        }
+        rewrite(rate_source, _v4_mode_decode_formula(
+            "rate_scenario", moved[rate_source], outputs, fallback='"Base"'),
+            "rate_scenario")
+    return xml
 
 
 def _v4_cell_text(xml: str, coord: str) -> str | None:
@@ -21400,7 +21486,7 @@ def _v4_rate_curve_rows_xml(xml: str, scenario: str, start_date: Any,
     parts.append(f'<x:row r="{row_at}">'
                  + _v4_head_cell(f"A{row_at}",
                                  "Правьте значения — лист «Ставки» и ячейка B34 читают их отсюда. "
-                                 "Сценарий пишется именем колонки: Base / Upside / Downside.")
+                                 "Сценарий выбирается как на странице DevelopAid: Консервативный / Базовый / Оптимистичный.")
                  + "</x:row>")
     row_at += 1
 
@@ -21962,10 +22048,6 @@ V4_INPUTS_NOT_IN_BOOK: dict[str, str] = {
     "vri_schedule_mode": (
         "ручной/автоматический график ВРИ разрешается движком до выгрузки; "
         "книга получает уже параметры применённого графика"),
-    "vri_interest_enabled": (
-        "canonical режим трёхсостояний: «По региону / Начисляются / Не начисляются». "
-        "Текущая книга хранит только уже разрешённое Да/Нет, поэтому выдавать "
-        "его за полный offline-переключатель нельзя"),
     "vri_pf_open_date": (
         "дата открытия ПФ для досрочного погашения остатка ВРИ разрешается "
         "движком до книги; менять её без пересборки применённого графика нельзя"),
@@ -23770,7 +23852,15 @@ def build_project_workbook(
     lead = {"before_rns_1m": 1, "before_rns_3m": 3, "at_rns": 0}.get(
         str(x.get("vri_obligation_date_mode") or "before_rns_1m"), 1)
     put("B76", number=float(lead), label="vri_obligation_lead_months")
-    put("B80", text="Нет" if x.get("vri_interest_enabled") is False else "Да",
+    _vri_periodicity = str(int(float(x.get("vri_periodicity_months") or 3)))
+    put("B78", text=_v4_mode_display("vri_periodicity_months", _vri_periodicity),
+        label="vri_periodicity_months")
+    _interest_raw = x.get("vri_interest_enabled")
+    if _interest_raw in (None, ""):
+        _interest_internal = ""
+    else:
+        _interest_internal = "1" if _vri_flag(_interest_raw, False) else "0"
+    put("B80", text=_v4_mode_display("vri_interest_enabled", _interest_internal),
         label="vri_interest_enabled")
     put("B84", text="Да" if x.get("vri_early_repay_after_pf") else "Нет",
         label="vri_early_repay_after_pf")
@@ -24149,8 +24239,8 @@ def build_project_workbook(
         _rc_shape = max(0.05, float(x.get("rate_curve_shape") or 2.0))
     except Exception:
         _rc_date, _rc_offset, _rc_shape = None, 0, 2.0
-    _rc_scenario = _V4_RATE_SCENARIO_NAMES.get(
-        str(x.get("rate_scenario") or "base").strip().lower(), "Base")
+    _rc_scenario = _v4_mode_display(
+        "rate_scenario", str(x.get("rate_scenario") or "base").strip().lower())
     _rc_refs: dict[str, str] = {}
     try:
         xml, _rc_refs = _v4_rate_curve_rows_xml(
@@ -24291,6 +24381,8 @@ def build_project_workbook(
     xml = v4_entry_sheet.rename_sheet_refs(xml)
     try:
         xml, entry_xml, entry_report = v4_entry_sheet.build(xml, styles_xml)
+        xml = _v4_apply_mode_decoders(
+            xml, entry_report, _rc_refs.get("rate_scenario"), missing)
         # Dropdown принадлежит именно пользовательскому листу. До разделения
         # листов validation на старом XML остался бы на «Параметры модели»,
         # где человек ничего не вводит.
