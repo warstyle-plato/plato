@@ -105,7 +105,13 @@ def test_the_axis_answers_with_three_answers_not_two() -> None:
 
 def test_the_renovation_axis_keeps_its_own_unknown() -> None:
     read = {"available": True, "developers": [], "renovation": False}
-    assert _run(_axis_harness(CITY, "krtRenovationKind"))["kind"] == "yes"
+    # Само по себе «для государственных нужд» не означает реновацию:
+    # положительный признак должен назвать именно программу реновации.
+    generic = _run(_axis_harness(CITY, "krtRenovationKind"))["kind"]
+    assert generic == "unknown"
+    reno_press = {"available": True, "city_needs": [
+        {"quote": "Передача жилья по Программе реновации"}]}
+    assert _run(_axis_harness(None, "krtRenovationKind", press=reno_press))["kind"] == "yes"
     assert _run(_axis_harness(CLEAN, "krtRenovationKind", card=read))["kind"] == "no"
     assert _run(_axis_harness(None, "krtRenovationKind"))["kind"] == "unknown", \
         "непрочитанное сложено с «реновации не найдено»"
