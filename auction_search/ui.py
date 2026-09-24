@@ -3035,7 +3035,7 @@ function closeKrtPrototype(){
  if(frame)frame.src='about:blank';
  document.body.classList.remove('krt-modal-open');
 }
-function selectKrt(x){state.selectedKrt=x;if(openKrtPrototype(x))return;const sc=krtScore(x),fit=sc.fit,cached=state.krtModels[x.slug],planned=String(x.status||'').toLowerCase().includes('планируем');
+function selectKrt(x){state.selectedKrt=x;const prototypeOpened=openKrtPrototype(x);const sc=krtScore(x),fit=sc.fit,cached=state.krtModels[x.slug],planned=String(x.status||'').toLowerCase().includes('планируем');
  // Карточка идёт тремя группами, и порядок назвал владелец (06.09.2026):
  // «сначала выводы общие предварительные, потом данные города что дают, что
  // требуют, потом уже наверное детали предварительного прогона модели и
@@ -3121,6 +3121,10 @@ function selectKrt(x){state.selectedKrt=x;if(openKrtPrototype(x))return;const sc
   try{$('krtSide').scrollIntoView({behavior:'smooth',block:'start'})}catch(e){$('krtSide').scrollIntoView()}
  }
  renderAskContext();
+ // Полноэкранная карточка — основной интерфейс. Старую боковую карточку всё
+ // равно собираем синхронно как запасной/тестируемый слой, но не запускаем
+ // второй комплект сетевых запросов за модальным окном.
+ if(prototypeOpened)return;
  if(planned)loadKrtRequirements(x);
  loadKrtPoint(x);
  // Отчёт уже посчитан — его показывают, а не считают заново. Прогон по
