@@ -260,12 +260,14 @@ async function load(refresh){
   // отдельно от первого; кука он ставит на весь домен, поэтому одного входа
   // хватает и этой странице.
   $('gate').innerHTML='<b>Данные не показаны.</b> '+escapeHtml(e.message)
-   +'<div style="margin:10px 0"><a href="/cabinet" style="display:inline-block;'
+   +'<div style="margin:10px 0"><a href="/auctions" style="display:inline-block;'
    +'border:1px solid #111;padding:8px 14px;font-weight:700;text-decoration:none;'
-   +'color:inherit">Войти ключом кабинета рынка</a></div>'
-   +'<div>Введите там ключ один раз и вернитесь сюда: он запоминается на всём '
-   +'сайте на 30 дней. Это ключ <code>MARKET_CABINET_KEY</code> — тот же, что '
-   +'открывает «Кабинет рынка», и в «Личном кабинете» он не задаётся.</div>'
+   +'color:inherit">Войти для просмотра торгов и КРТ</a></div>'
+   +'<div>Если вам дали ограниченный ключ торгов, откройте «Торги», введите его '
+   +'один раз и вернитесь сюда: доступ действует и для всех карточек <code>/krt/site/*</code>.</div>'
+   +'<div style="margin:8px 0"><a href="/cabinet">Войти ключом кабинета рынка</a></div>'
+   +'<div>Полный ключ <code>MARKET_CABINET_KEY</code> по-прежнему открывает '
+   +'«Кабинет рынка» и эту страницу; ограниченный ключ торгов кабинет не открывает.</div>'
    +'<div class="source" style="margin-top:8px">Ещё два пути: вход через Telegram '
    +'в «Личном кабинете», если ваш аккаунт в списке владельцев; и ссылка '
    +'«Поделиться» от владельца — она открывает страницу без ключей вовсе. '
