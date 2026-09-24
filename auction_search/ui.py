@@ -1820,7 +1820,7 @@ function krtRenovationEvidence(x){
  const card=(state.krtCards||{})[x.slug]||x.card_facts||rank.card_facts||{};
  const press=(state.krtPress||{})[x.slug]||rank.press_facts||null;
  const pressHit=(press&&press.city_needs||[]).find(v=>
-   /программ\w*\s+реновац|фонд\s+реновации/i.test(String((v||{}).quote||'')+' '+String((v||{}).title||'')))||null;
+   /программ[а-яё]*\s+реновац|фонд\s+реновации/i.test(String((v||{}).quote||'')+' '+String((v||{}).title||'')))||null;
  // Карточочный признак оставляем только для уже реализуемых площадок:
  // сам parser карточек был построен на этой семантике. На планируемой
  // площадке одиночное слово в старом кэше не является основанием плашки.
