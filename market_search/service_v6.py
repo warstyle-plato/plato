@@ -109,6 +109,16 @@ def _price_from_series(
     }
 
 
+def _may_adopt_zero_distance_project(subject: Subject) -> bool:
+    """Можно ли считать точку самим ЖК, попавшим ровно в неё.
+
+    Для обычных координат это полезная эвристика. Для КРТ — ошибка: территория
+    может включать действующий ЖК, но его собственный прайс не становится
+    «ценой окружения» всей площадки.
+    """
+    return subject.project_id is None and subject.subject_type != "krt"
+
+
 def _count_by_status(rows: list[dict[str, Any]]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for row in rows:
@@ -702,7 +712,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         # тогда берётся адрес совпавшего проекта. Без этого отчёт по Кутузов
         # Сити, вызванный координатами, молча терял сравнение с городом.
         subject_address = subject.address
-        if subject.project_id is None and subject.subject_type != "krt":
+        if _may_adopt_zero_distance_project(subject):
             # Обычная точка может совпасть с известным проектом — тогда отчёт
             # о нём, а не о безымянной точке. Но КРТ остаётся ТЕРРИТОРИЕЙ:
             # существующий ЖК внутри её контура — всего лишь сосед. Прежняя
