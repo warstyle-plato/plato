@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 import urllib.parse
+import guide
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
@@ -1010,7 +1011,8 @@ def install(app: FastAPI) -> None:
     async def auction_krt_investment_card(slug: str) -> HTMLResponse:
         """Универсальная полноэкранная карточка КРТ поверх production-источников."""
         return HTMLResponse(
-            krt_investment_card_page(slug),
+            krt_investment_card_page(
+                slug, guide.legal_footer_html(core) if core is not None else ""),
             headers={"Cache-Control": "no-store, must-revalidate"},
         )
 
