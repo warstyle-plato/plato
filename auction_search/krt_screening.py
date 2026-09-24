@@ -145,6 +145,11 @@ def _empty_tep(core: Any) -> dict[str, dict[str, Any]]:
 # ценой жилья этой площадки вместо фиксированных 500 тыс ₽/м². Числа
 # посчитанных строк от этого меняются у всех, где нежилое названо: на
 # Рубцовской наб., влд. 3 чистая 257,5 → 429,4 млн ₽, LLCR 1,092 → 1,043.
+#
+# 5 — 24.09.2026: цена окружения берётся только из price_hint — специального
+# числового ориентира, которому нужны минимум три свежих сопоставимых прайса.
+# site_verdict остаётся ответом «что здесь строить», а entry_per_sqm — справкой
+# о входных ценах соседей. Ни одно из них не подменяет отсутствующую цену рынка.
 SCREENING_RULES_VERSION = 5
 
 
@@ -169,19 +174,18 @@ def _market_inputs(report: dict[str, Any]) -> tuple[str | None, float, float, st
     # нельзя: именно так единичный premium/elite-кластер давал каталогу КРТ
     # 2,6–3,2 млн ₽/м² как «цену окружения».
     hint_price = _number(hint.get("price_per_sqm"))
-    verdict_price = _number(verdict.get("price_per_sqm"))
-    market_price = hint_price if hint_price > 0 else verdict_price
     entry_price = _number(hint.get("entry_per_sqm"))
-    if market_price > 0:
-        basis = (
-            "price_hint отчёта — медиана свежих сопоставимых проектов"
-            if hint_price > 0
-            else "site_verdict отчёта — уровень доминирующего класса (price_hint недоступен)"
+    if hint_price > 0:
+        return (
+            segment,
+            hint_price,
+            hint_price,
+            "price_hint отчёта — медиана свежих сопоставимых проектов",
         )
-        return segment, market_price, market_price, basis
-    if entry_price > 0:
-        return segment, entry_price, entry_price, "медиана входных цен соседних проектов (уровень рынка отчёт не определил)"
-    return segment, 0.0, 0.0, "цена не определена"
+    # Нет трёх свежих сопоставимых прайсов — цены окружения нет. Не подменяем
+    # её ни site_verdict (он может стоять на одном дорогом проекте выбранного
+    # класса), ни entry_per_sqm (это цена самого дешёвого лота, другой смысл).
+    return segment, 0.0, 0.0, "price_hint не дал достаточной выборки свежих сопоставимых цен"
 
 
 def _phase_configuration(saleable_sqm: float, construction_months: int) -> dict[str, Any]:
