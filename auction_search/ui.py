@@ -1359,7 +1359,7 @@ function krtStageCell(x){
  return `<span class="tag ${meta.tone}" title="${esc(stage.why.join('; '))}">${esc(meta.name)}</span>`;
 }
 function krtIntent(x){
- const rank=krtFreshRank(x.slug);
+ const rank=state.krtRank[x.slug]||{};
  const req=state.krtRequirements[x.slug]||rank.requirements||{};
  // У площадки без карточки требований нет вовсе — у неё есть только само
  // решение, и оно прочитано вместе с ТЭП тем же документом.
