@@ -151,36 +151,54 @@ def test_an_installment_keeps_mode_and_term_as_separate_inputs():
     assert sheet["D77"].value == "vri_installment_years"
 
 
+def _entry_value_cell_for_key(entry, key):
+    for key_col, value_col in (("D", "B"), ("H", "F"), ("M", "K")):
+        for row in range(1, entry.max_row + 1):
+            if entry[f"{key_col}{row}"].value == key:
+                return f"{value_col}{row}"
+    raise AssertionError(f"{key}: ключ не найден на пользовательском листе")
+
+
 def test_live_mode_inputs_have_excel_dropdowns():
     content, _, _, _ = _book({"vri_payment_mode": "installment"})
     book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
-    sheet = v4_inputs.inputs(book)
-    covered = set()
-    formulas = {}
-    for validation in sheet.data_validations.dataValidation:
+    entry = book["Вводные"]
+    by_cell = {}
+    for validation in entry.data_validations.dataValidation:
         for ref in str(validation.sqref).split():
-            covered.add(ref)
-            formulas[ref] = validation.formula1
-    for coord in ("B31", "B37", "B75", "B78", "B80", "B84",
-                  "K20", "K40", "K60", "K83", "K123", "K139"):
-        assert coord in covered, f"{coord} — режим без выпадающего списка"
-    assert "Капитализация в ПФ" in formulas["B31"]
-    assert "Рассрочка" in formulas["B75"]
-    assert "Продаётся" in formulas["K139"]
+            by_cell[ref] = validation.formula1
+
+    expected = (
+        "bridge_interest_mode", "social_mode", "vri_payment_mode",
+        "vri_periodicity_months", "vri_interest_enabled",
+        "vri_early_repay_after_pf", "offices_enabled", "retail_enabled",
+        "above_parking_enabled", "underground_parking_disabled",
+        "sports_enabled", "sports_disposition", "rate_scenario",
+    )
+    targets = {key: _entry_value_cell_for_key(entry, key) for key in expected}
+    for key, coord in targets.items():
+        assert coord in by_cell, f"{key} ({coord}) — режим без выпадающего списка"
+
+    assert "Капитализация в ПФ" in by_cell[targets["bridge_interest_mode"]]
+    assert "Рассрочка" in by_cell[targets["vri_payment_mode"]]
+    assert "Продаётся" in by_cell[targets["sports_disposition"]]
+    assert "Base" in by_cell[targets["rate_scenario"]]
 
 
 def test_secondary_input_block_e_to_h_is_formatted_by_field_type():
-    _, _, _, sheet = _book()
-    # Подпись / единица / API-ключ — те же роли, что слева.
-    assert sheet["E15"].style_id == sheet["A15"].style_id
-    assert sheet["G15"].style_id == sheet["C15"].style_id
-    assert sheet["H15"].style_id == sheet["D15"].style_id
-    # Число, процент и текстовый режим не должны получить один случайный
-    # формат только потому, что слева в той же строке другое поле.
-    assert sheet["F15"].style_id == sheet["B15"].style_id
-    assert sheet["F25"].style_id == sheet["B19"].style_id
-    assert sheet["F59"].style_id == sheet["B19"].style_id
-    assert sheet["F43"].style_id == sheet["B31"].style_id
+    content, _, _, _ = _book()
+    entry = openpyxl.load_workbook(io.BytesIO(content), data_only=False)["Вводные"]
+
+    left_number = _entry_value_cell_for_key(entry, "purchase_price_mln")
+    left_pct = _entry_value_cell_for_key(entry, "marketing_pct")
+    left_text = _entry_value_cell_for_key(entry, "bridge_interest_mode")
+    right_number = _entry_value_cell_for_key(entry, "bridge_repay_lag_months")
+    right_pct = _entry_value_cell_for_key(entry, "bridge_cap_spread_pp")
+    right_text = _entry_value_cell_for_key(entry, "social_area_source")
+
+    assert entry[right_number].style_id == entry[left_number].style_id
+    assert entry[right_pct].style_id == entry[left_pct].style_id
+    assert entry[right_text].style_id == entry[left_text].style_id
 
 
 def test_the_office_block_carries_dates_and_terms():
