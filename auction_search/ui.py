@@ -113,7 +113,7 @@ __DEVELOPAID_CONTOUR__
       <div class="filter-actions krt-actions">
         <div class="krt-actions-left">
           <button id="krtRefresh" class="primary">Обновить каталог</button>
-          <button id="krtRankBtn">Оценить моделью</button>
+          <button id="krtRankBtn">Оценить отобранные моделью</button>
           <button id="krtPressBtn" title="Читает публикации и каналы по всем планируемым площадкам и площадкам с проектом решения.">Прочитать публикации</button>
           <button id="krtExport">Выгрузить Excel</button>
         </div>
