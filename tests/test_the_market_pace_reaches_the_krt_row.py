@@ -129,8 +129,8 @@ def test_the_rules_version_rises_with_the_answer():
 ROW_KEYS_AT_RULES_VERSION = (4, (
     "area_ha", "at_asking_price", "available", "card_facts", "computed_at",
     "district", "engine_version", "entry_capacity_mln", "entry_capacity_reason",
-    "entry_capacity_rub_per_sqm", "housing_gfa_sqm", "margin_pct",
-    "entry_capacity_upper_bound_mln", "entry_capacity_upper_bound_rub_per_sqm",
+    "entry_capacity_rub_per_sqm", "entry_capacity_upper_bound_mln",
+    "entry_capacity_upper_bound_rub_per_sqm", "housing_gfa_sqm", "margin_pct",
     "model_fingerprint", "name", "net_profit_mln", "okrug", "parse_problem",
     "phase_count", "press_facts", "project_llcr_x", "renovation", "requirements",
     "rules_version", "saleable_sqm", "segment", "slug", "start_price_rub_sqm",
