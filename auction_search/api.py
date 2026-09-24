@@ -2297,6 +2297,17 @@ def install(app: FastAPI) -> None:
             except Exception:  # noqa: BLE001
                 logger.exception("KRT decision market point failed slug=%s", slug)
 
+        # У площадки только из проекта решения официального полигона часто ещё
+        # нет. Служебный ключ krt:decision заставляет общий resolver перебрать
+        # несколько вариантов адреса через OSM подряд; на массовом прогоне это
+        # и дало 429. Сам адрес уже разобран из заголовка решения — отдаём его
+        # обычным адресом, чтобы геокодер спросился один раз, а не серией
+        # кандидатов. Это запасной путь только когда официальной геометрии нет.
+        if project.get("no_card") and project.get("address_known"):
+            address = str(project.get("address") or project.get("name") or "").strip()
+            if address:
+                return address if address.casefold().startswith("москва") else "Москва, " + address
+
         return f"krt:{slug}"
 
     def _krt_market_report(
