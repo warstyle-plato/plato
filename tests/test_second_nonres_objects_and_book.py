@@ -164,9 +164,9 @@ def test_excel_v4_contains_second_objects_and_their_queue_cells():
     assert tep_sheet["B45"].value == "Офисы 2"
     assert tep_sheet["B46"].value == "Коммерция ОСЗ 2"
     assert tep_sheet["B47"].value == "Наземный паркинг 2"
-    assert report["A70"].value == "МФОЦ / офисный центр 2"
-    assert report["A71"].value == "Торговый центр / ОСЗ 2"
-    assert report["A72"].value == "Наземный паркинг 2"
+    assert report["A200"].value == "МФОЦ / офисный центр 2"
+    assert report["A201"].value == "Торговый центр / ОСЗ 2"
+    assert report["A202"].value == "Наземный паркинг 2"
 
     bad = [
         str(item) for item in (meta.get("missing") or [])
