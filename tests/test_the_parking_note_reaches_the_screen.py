@@ -439,7 +439,8 @@ def test_the_field_hint_does_not_repeat_the_note() -> None:
     hints = [(field[0], field[2]) for _title, fields in core.FIELD_GROUPS
              for field in fields
              if str(field[0]).endswith(("_parking_under_spaces", "_parking_over_spaces"))]
-    assert len(hints) == 6, f"полей паркинга объектов найдено {len(hints)}"
+    expected = 2 * sum(1 for obj in core.STANDALONE_OBJECTS if obj.garage)
+    assert len(hints) == expected, f"полей паркинга объектов найдено {len(hints)}"
     for key, hint in hints:
         assert "приложения 6" not in hint, (
             f"{key}: подсказка повторяет подпись под полем — {hint}")

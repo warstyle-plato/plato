@@ -223,7 +223,7 @@ def test_the_workbook_names_the_object_and_not_the_shopping_centre() -> None:
     assert all(str(key or "").startswith("sports_") for key in keys), keys
     assert book["ТЭП"]["B34"].value == core.TEP_DEFAULT["sports"]["label"]
     assert book["ТЭП"]["A35"].value == "ИТОГО ОБЪЕКТЫ"
-    assert book["ТЭП"]["G35"].value == "=SUM(G31:G34)"
+    assert book["ТЭП"]["G35"].value == "=SUM(G31:G34,G45,G46,G47)"
     assert book["ТЭП"]["G36"].value == "=SUM(G28,G35)"
 
 

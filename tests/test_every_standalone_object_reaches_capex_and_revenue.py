@@ -79,12 +79,21 @@ def _standalone_line(result: dict) -> dict:
     return lines[0]
 
 
-def test_the_project_actually_has_all_four_objects() -> None:
-    """Предохранитель: не стало объектов — остальное в файле ничего не значит."""
+def test_every_enabled_object_in_the_fixture_has_capex() -> None:
+    """Предохранитель: проверяем объекты, которые фикстура действительно включила.
+
+    Вторые экземпляры реестра по умолчанию выключены и проверяются отдельным
+    сценарием: требовать CAPEX от выключенного объекта означало бы сделать сам
+    реестр несовместимым с опциональными объектами.
+    """
+    inputs = _inputs()
     capex = _result().get("capex") or {}
-    for obj in core.STANDALONE_OBJECTS:
+    enabled = [obj for obj in core.STANDALONE_OBJECTS
+               if bool(inputs.get(obj.enabled_key))]
+    assert enabled, "фикстура не включает ни одного отдельно стоящего объекта"
+    for obj in enabled:
         assert float(capex.get(obj.key) or 0) > 0, (
-            f"у объекта {obj.key} нет CAPEX — проверки этого файла "
+            f"у включённого объекта {obj.key} нет CAPEX — проверки этого файла "
             "перестали что-либо значить")
 
 
@@ -93,8 +102,11 @@ def test_not_a_single_object_is_left_out_of_the_breakdown() -> None:
     line = _standalone_line(_result())
     items = line.get("items") or []
     named = {str(item["key"]) for item in items}
-    assert named == {obj.key for obj in core.STANDALONE_OBJECTS}, (
-        f"в разбивке названы не все объекты: {sorted(named)}")
+    inputs = _inputs()
+    expected = {obj.key for obj in core.STANDALONE_OBJECTS
+                if bool(inputs.get(obj.enabled_key))}
+    assert named == expected, (
+        f"в разбивке названы не все включённые объекты: {sorted(named)}")
     assert sum(float(item["value"]) for item in items) == pytest.approx(
         float(line["value"]), rel=1e-9), "подстроки не складываются в свою строку"
 
@@ -129,8 +141,9 @@ def test_the_page_and_the_engine_agree_on_the_ground_parking() -> None:
 def test_only_the_office_garage_is_sold() -> None:
     """Места ТЦ и ФОКа строятся и не продаются, у офисника — за вычетом гостевых."""
     rows = {row["key"]: row for row in _result()["tep"]["rows"]}
+    inputs = _inputs()
     for obj in core.STANDALONE_OBJECTS:
-        if not obj.garage:
+        if not obj.garage or not bool(inputs.get(obj.enabled_key)):
             continue
         row = rows[obj.key]
         assert row["parking_units"] == SPACES, f"{obj.key}: гараж не построен"
