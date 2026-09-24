@@ -265,7 +265,7 @@ def test_the_run_models_the_residential_decision(monkeypatch, core) -> None:
     rows = {row["slug"]: row for row in client.get("/auctions/krt/ranking").json()["rows"]}
 
     # Жилая посчитана моделью — отчёт рынка для неё спрошен.
-    assert "krt:decision:347614220" in asked, asked
+    assert "Москва, ул. Архитектора Власова, влд. 59" in asked, asked
     housing = rows.get("decision:347614220") or {}
     assert housing.get("available") is True, housing
     # Метры Программы реновации из решения доехали до модели: они строятся и
@@ -281,10 +281,10 @@ def test_the_run_models_the_residential_decision(monkeypatch, core) -> None:
     other = rows.get("decision:700000001") or {}
     assert other.get("available") is False, other
     assert "нежилую площадку модель пока не считает" in str(other.get("reason")), other
-    assert "krt:decision:700000001" not in asked, "нежилая всё-таки сходила к рынку"
+    assert not any("Нежилая ул." in value for value in asked), "нежилая всё-таки сходила к рынку"
 
     # Без адреса — прежний ответ: искать не по чему.
-    assert "krt:decision:336775220" not in asked
+    assert not any("336775220" in value for value in asked)
 
 
 def test_the_run_covers_both_halves_of_the_list() -> None:

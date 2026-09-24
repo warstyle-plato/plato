@@ -110,8 +110,9 @@ def test_the_status_column_orders_the_same_rows_by_date() -> None:
                     break
             everything = page.evaluate("state.krt.length")
 
-            # Нажимаем сам заголовок, как человек.
-            page.click("#krtTableWrap th[data-sort='status']")
+            # В текущей таблице статус площадки живёт внутри первой ячейки,
+            # а отдельная сортируемая колонка — дата сигнала/решения.
+            page.click("#krtTableWrap th[data-sort='decided']")
             page.wait_for_timeout(150)
             first = page.evaluate(
                 "[...document.querySelectorAll('#krtRows tr')]"
