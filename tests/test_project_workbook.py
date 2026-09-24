@@ -260,11 +260,22 @@ def test_secondary_input_block_e_to_h_is_formatted_by_field_type():
     left_text = _entry_value_cell_for_key(entry, "bridge_interest_mode")
     right_number = _entry_value_cell_for_key(entry, "bridge_repay_lag_months")
     right_pct = _entry_value_cell_for_key(entry, "bridge_cap_spread_pp")
-    right_text = _entry_value_cell_for_key(entry, "social_area_source")
 
     assert entry[right_number].style_id == entry[left_number].style_id
     assert entry[right_pct].style_id == entry[left_pct].style_id
-    assert entry[right_text].style_id == entry[left_text].style_id
+
+    # Engine-only значения справа могут остаться видимыми как основание
+    # расчёта, если в той же строке есть другая настоящая вводная. Но они не
+    # должны выглядеть как редактируемый select и не должны иметь dropdown.
+    dropdowns = _dropdowns_by_cell(entry)
+    for key in ("social_area_source", "vri_in_bank_budget", "vri_financing_mode"):
+        try:
+            coord = _entry_value_cell_for_key(entry, key)
+        except AssertionError:
+            continue
+        assert coord not in dropdowns, f"{key}: engine-only поле получило dropdown"
+        assert entry[coord].style_id != entry[left_text].style_id, (
+            f"{key}: engine-only поле выглядит как пользовательская вводная")
 
 
 def test_the_office_block_carries_dates_and_terms():
