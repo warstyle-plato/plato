@@ -34,3 +34,23 @@ def test_no_weekly_thread_is_alive_in_the_test_process() -> None:
     names = [thread.name for thread in threading.enumerate()]
     assert "krt-weekly" not in names, f"нить недельного прогона живёт в тестах: {names}"
     assert "krt-watch" not in names, f"нить сторожа каталога живёт в тестах: {names}"
+
+
+def test_automatic_krt_runs_do_not_queue_addresses_at_a_public_geocoder() -> None:
+    """Autonomous passes use only already-known KRT geometry."""
+    source = (ROOT / "auction_search" / "api.py").read_text(encoding="utf-8")
+
+    weekly = source[source.index("    def _weekly_ranking("):
+                    source.index("\n\n    # main.py loads", source.index("    def _weekly_ranking("))]
+    assert "_screen_for_background" in weekly
+    assert "rows, _screen_for, scheduled=True" not in weekly
+
+    rating = source[source.index("    def _rating_screen_only("):
+                    source.index("\n\n    def _rating_background_loop(", source.index("    def _rating_screen_only("))]
+    assert "_market_model_only(project, allow_remote_geocode=False)" in rating
+
+    background = source[source.index("    def _screen_for_background("):
+                        source.index("\n    @app.post(\"/auctions/krt/press/run\")",
+                                     source.index("    def _screen_for_background("))]
+    assert "allow_remote_geocode=False" in background
+

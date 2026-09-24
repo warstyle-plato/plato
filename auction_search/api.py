@@ -84,6 +84,7 @@ from auction_search.krt_nagatino_prototype import nagatino_investment_card_page
 from auction_search.krt_investment_card import krt_investment_card_page
 from auction_search.ui import auctions_page
 from market_search.krt_registry import CATALOGUE_URL, KrtRegistry
+from market_search.krt_map_data import wgs84 as krt_wgs84
 from market_search import krt_decision_tep
 from market_search import tep_check
 from market_search import cabinet as market_cabinet
@@ -975,7 +976,7 @@ def install(app: FastAPI) -> None:
                             # прочитаны из её PDF.
                             rows = rows + _decision_rows_for_run()
                             if rows and not krt_ranking.start(
-                                    rows, _screen_for, scheduled=True, claimed=True):
+                                    rows, _screen_for_background, scheduled=True, claimed=True):
                                 krt_ranking.release()
                         except Exception:
                             logger.exception("weekly KRT ranking failed")
@@ -1445,6 +1446,7 @@ def install(app: FastAPI) -> None:
                 peers_limit=12,
                 city_reference=False,
                 include_project_totals=True,
+                match_nearby_project=False,
             )
         except SubjectNotFound:
             fallback = " ".join(
@@ -1460,6 +1462,7 @@ def install(app: FastAPI) -> None:
                 peers_limit=12,
                 city_reference=False,
                 include_project_totals=True,
+                match_nearby_project=False,
             )
 
         requirements = _requirements_for(slug)
@@ -2326,9 +2329,21 @@ def install(app: FastAPI) -> None:
             return None
         return krt_tenders.asking_price_mln((known.get(slug) or {}).get("lots") or [])
 
-    def _krt_market_subject(project: dict[str, Any]) -> str:
-        """Один subject для рынка без массового повторного геокодирования КРТ."""
+    def _krt_market_subject(
+        project: dict[str, Any], *, allow_remote_geocode: bool = True,
+    ) -> str:
+        """Subject рынка: официальный контур прежде любого геокодера.
+
+        Фоновый пересчёт работает только по уже известной геометрии. Адресный
+        геокодинг оставлен ручному пересчёту: массовый background не должен
+        превращать Nominatim в очередь из сотен одинаковых запросов.
+        """
         if project.get("early_unpublished"):
+            if not allow_remote_geocode:
+                raise SubjectNotFound(
+                    "У ранней площадки пока нет официальной геометрии; "
+                    "фоновый расчёт не геокодирует адрес удалённо"
+                )
             address = str(project.get("address") or project.get("name") or "").strip()
             if not address:
                 raise ValueError("У ранней площадки нет адреса для рынка")
@@ -2351,7 +2366,7 @@ def install(app: FastAPI) -> None:
                             sum(float(point[1]) for point in points) / len(points),
                         ]
                 if centre:
-                    lat, lng = core._mercator_to_wgs84(
+                    lat, lng = krt_wgs84(
                         float(centre[0]), float(centre[1]))
                     return f"{lat:.7f}, {lng:.7f}"
             except Exception:  # noqa: BLE001
@@ -2362,11 +2377,17 @@ def install(app: FastAPI) -> None:
                 outline = cached_outline(slug) if callable(cached_outline) else None
                 centre = (outline or {}).get("centre_merc")
                 if centre:
-                    lat, lng = core._mercator_to_wgs84(
+                    lat, lng = krt_wgs84(
                         float(centre[0]), float(centre[1]))
                     return f"{lat:.7f}, {lng:.7f}"
             except Exception:  # noqa: BLE001
                 logger.exception("KRT decision market point failed slug=%s", slug)
+
+        if not allow_remote_geocode:
+            raise SubjectNotFound(
+                "У площадки пока нет официального или сохранённого контура; "
+                "фоновый расчёт не геокодирует адрес удалённо"
+            )
 
         if project.get("no_card") and project.get("address_known"):
             address = str(project.get("address") or project.get("name") or "").strip()
@@ -2377,17 +2398,21 @@ def install(app: FastAPI) -> None:
 
     def _krt_market_report(
         project: dict[str, Any], *, radius_km: float = 3.0, peers_limit: int = 12,
+        allow_remote_geocode: bool = True,
     ) -> dict[str, Any]:
         """Тот же production market engine для всех стадий КРТ."""
         if market is None:
             raise ValueError("Маркетинговый движок не подключён")
-        query = _krt_market_subject(project)
+        query = _krt_market_subject(project, allow_remote_geocode=allow_remote_geocode)
         try:
             return market.build_report(
                 query, radius_km=radius_km, peers_limit=peers_limit,
                 city_reference=False, include_project_totals=True,
+                match_nearby_project=False,
             )
         except (SubjectNotFound, GeocodingError):
+            if not allow_remote_geocode:
+                raise
             fallback = str(project.get("address") or project.get("name") or "").strip()
             if not fallback:
                 raise
@@ -2398,6 +2423,7 @@ def install(app: FastAPI) -> None:
                 return market.build_report(
                     fallback, radius_km=radius_km, peers_limit=peers_limit,
                     city_reference=False, include_project_totals=True,
+                    match_nearby_project=False,
                 )
             except GeocodingError as exc:
                 if "too many requests" not in str(exc).casefold():
@@ -2406,14 +2432,20 @@ def install(app: FastAPI) -> None:
                 return market.build_report(
                     fallback, radius_km=radius_km, peers_limit=peers_limit,
                     city_reference=False, include_project_totals=True,
+                    match_nearby_project=False,
                 )
 
-    def _market_model_only(project: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    def _market_model_only(
+        project: dict[str, Any], *, allow_remote_geocode: bool = True,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Рынок + финансовая модель без платного поиска публикаций."""
         if core is None or market is None:
             return ({"available": False,
                      "reason": "Финансовый движок DevelopAid не подключён"}, {})
-        report = _krt_market_report(project, radius_km=3.0, peers_limit=12)
+        report = _krt_market_report(
+            project, radius_km=3.0, peers_limit=12,
+            allow_remote_geocode=allow_remote_geocode,
+        )
         slug = str(project.get("slug") or "")
         try:
             requirements = _requirements_for(slug)
@@ -2434,9 +2466,12 @@ def install(app: FastAPI) -> None:
             asking_price_mln=asking_price)
         return screening, report
 
-    def _screen_one(project: dict[str, Any]) -> dict[str, Any]:
+    def _screen_one(
+        project: dict[str, Any], *, allow_remote_geocode: bool = True,
+    ) -> dict[str, Any]:
         """Полный прогон: рынок + модель + карточка города + публичный контекст."""
-        screening, report = _market_model_only(project)
+        screening, report = _market_model_only(
+            project, allow_remote_geocode=allow_remote_geocode)
         if not report:
             return screening
         slug = str(project.get("slug") or "")
@@ -2757,7 +2792,7 @@ def install(app: FastAPI) -> None:
 
     def _rating_screen_only(project: dict[str, Any]) -> dict[str, Any]:
         """Достроить только рынок + модель, без платного поиска публикаций."""
-        screening, report = _market_model_only(project)
+        screening, report = _market_model_only(project, allow_remote_geocode=False)
         answer = dict(screening or {})
         if report:
             answer["market_report"] = _market_digest(report)
@@ -2811,30 +2846,49 @@ def install(app: FastAPI) -> None:
                     now = time.time()
                     missing: list[dict[str, Any]] = []
                     for project in _krt_all_sites():
-                        if _krt_status_kind(project.get("status")) == "running":
-                            continue
+                        # «В реализации» не получает инвестиционный рейтинг,
+                        # но рынок у строки должен оставаться свежим: цена
+                        # окружения видна в общем каталоге независимо от стадии.
                         slug = str(project.get("slug") or "").strip()
                         if not slug:
                             continue
                         row = krt_ranking.stored_row(slug)
-                        # Неудачный нынешний расчёт не гоняем каждую минуту.
-                        # Повтор — не раньше суток; свежая успешная строка
-                        # проверяется обычным version/fingerprint правилом.
+                        # Неудачный пересчёт не должен превращать stale-строку
+                        # в бесконечную очередь повторных запросов. keep_computed
+                        # оставляет последнюю удачную строку, а recompute_failed_at
+                        # задаёт отдельный возраст именно неудачной попытки.
                         try:
                             age = now - float(row.get("computed_at") or 0)
                         except (TypeError, ValueError):
                             age = 10**9
-                        reason = str(row.get("reason") or "").casefold()
+                        try:
+                            failed_age = now - float(row.get("recompute_failed_at") or 0)
+                        except (TypeError, ValueError):
+                            failed_age = 10**9
+                        reason = str(
+                            row.get("recompute_reason") or row.get("reason") or ""
+                        ).casefold()
                         transient_geocode = (
                             "too many requests" in reason
                             or "geocod" in reason
                             or "геокод" in reason
                         )
                         retry_failed_after = 10 * 60 if transient_geocode else 24 * 60 * 60
+                        stale_available = (
+                            row.get("available")
+                            and krt_ranking_rules.model_needs_recount(row)
+                        )
+                        stale_retry_ready = (
+                            not row.get("recompute_failed_at")
+                            or failed_age >= retry_failed_after
+                        )
                         needs_model = (
                             (not row)
-                            or (row.get("available") and krt_ranking_rules.model_needs_recount(row))
-                            or (not row.get("available") and age >= retry_failed_after)
+                            or (stale_available and stale_retry_ready)
+                            or (
+                                not row.get("available")
+                                and age >= retry_failed_after
+                            )
                         )
                         if needs_model:
                             missing.append(project)
@@ -3746,7 +3800,7 @@ def install(app: FastAPI) -> None:
                 points = [point for ring in rings for point in ring]
                 centre = [sum(p[0] for p in points) / len(points),
                           sum(p[1] for p in points) / len(points)]
-            lat, lng = core._mercator_to_wgs84(float(centre[0]), float(centre[1]))
+            lat, lng = krt_wgs84(float(centre[0]), float(centre[1]))
             data = {
                 "query": f"krt:{slug}", "latitude": lat, "longitude": lng,
                 "precision": "official_centre", "address": project.get("name"),
@@ -3769,7 +3823,7 @@ def install(app: FastAPI) -> None:
             # это говорит.
             rings = list(outline["rings_merc"])
             centre = outline.get("centre_merc")
-            lat, lng = core._mercator_to_wgs84(float(centre[0]), float(centre[1]))
+            lat, lng = krt_wgs84(float(centre[0]), float(centre[1]))
             counts = dict(outline.get("counts") or {})
             title = str((outline.get("decision") or {}).get("title") or "проект решения о КРТ")
             extras = []
@@ -4111,6 +4165,9 @@ def install(app: FastAPI) -> None:
         # Чем считать строку, решает один и тот же выбор, что и в недельном
         # прогоне: у площадки-решения свой путь к обязательствам, а у нежилой
         # модели нет вовсе.
+        # Явный запуск владельцем — не массовый фоновый прогон: здесь допустим
+        # обычный resolver с адресным fallback. Scheduled/background пути выше
+        # по-прежнему используют _screen_for_background и публичный геокодер не грузят.
         started = krt_ranking.start(projects, _screen_for)
         progress = krt_ranking.progress()
         if started:
@@ -4159,7 +4216,9 @@ def install(app: FastAPI) -> None:
             "press_facts": _open_sources_for_run(project),
         }
 
-    def _screen_for(project: dict[str, Any]) -> dict[str, Any]:
+    def _screen_for(
+        project: dict[str, Any], *, allow_remote_geocode: bool = True,
+    ) -> dict[str, Any]:
         """Чем считать эту строку. Один ответ на весь модуль.
 
         Выбор живёт здесь, а не у каждого вызывающего: разойдись они,
@@ -4200,7 +4259,7 @@ def install(app: FastAPI) -> None:
                 "reason": f"Карточка каталога разобрана со сдвигом ({shift}) — считать нечем",
             }
         if not project.get("no_card"):
-            return _screen_one(project)
+            return _screen_one(project, allow_remote_geocode=allow_remote_geocode)
         if not project.get("address_known"):
             return _press_only(project)
         if not housing_measure_named(project):
@@ -4211,7 +4270,12 @@ def install(app: FastAPI) -> None:
                 "Балл площадки при этом остаётся: это ответ методики, а не пробел."
             )
             return answer
-        return _screen_one(project)
+        return _screen_one(project, allow_remote_geocode=allow_remote_geocode)
+
+
+    def _screen_for_background(project: dict[str, Any]) -> dict[str, Any]:
+        """Scheduled pass never sends a bulk address queue to a public geocoder."""
+        return _screen_for(project, allow_remote_geocode=False)
 
     @app.post("/auctions/krt/press/run")
     async def auction_krt_press_run(request: Request) -> dict[str, Any]:

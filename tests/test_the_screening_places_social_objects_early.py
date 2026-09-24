@@ -29,7 +29,8 @@ PROJECT = {"slug": "v37", "name": "Варшавское шоссе, вл. 37", "
            "district": "Нагатино-Садовники"}
 REPORT = {"subject": {"project_name": PROJECT["name"]},
           "analysis": {"site": {"segment": "комфорт", "price_per_sqm": 400_000, "sold_lot_avg": 45.0}},
-          "price_hint": {"entry_per_sqm": 400_000}, "peers": []}
+          "price_hint": {"entry_per_sqm": 400_000, "price_per_sqm": 400_000,
+                         "basis": "peers", "sample": 3, "segment": "комфорт"}, "peers": []}
 REQUIREMENTS = {"available": True, "decision_available": True, "source_level": "decision",
                 "object_actions": [],
                 "construction": ["Дошкольная образовательная организация на 350 мест",

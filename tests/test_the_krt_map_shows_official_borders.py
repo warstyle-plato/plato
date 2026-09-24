@@ -90,6 +90,16 @@ def test_the_border_comes_in_the_same_metres_as_the_basemap() -> None:
     assert math.hypot(centre[0] - x, centre[1] - y) < 5_000
 
 
+def test_the_official_market_point_round_trips_without_a_geocoder() -> None:
+    """PR495's background path needs an inverse for the official map centre."""
+    lon, lat = LIVE[krt.POINT]
+    x, y = krt.merc(lon, lat)
+    got_lat, got_lon = krt.wgs84(x, y)
+
+    assert math.isclose(got_lat, lat, abs_tol=1e-7)
+    assert math.isclose(got_lon, lon, abs_tol=1e-7)
+
+
 def test_a_row_without_a_link_is_not_a_site() -> None:
     broken = list(LIVE)
     broken[krt.LINK] = ""
