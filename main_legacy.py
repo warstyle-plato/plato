@@ -47717,14 +47717,15 @@ function renderTep(){
    // Собственный гараж ОСЗ — самостоятельный продаваемый продукт. Раньше
    // места были только длинной подписью под офисником: в ТЭП их невозможно
    // было увидеть как отдельный объём и легко принять за отсутствующие.
-   const parkUnits=Number(row.parking_units||0);
+   const parkOwn=((projectParking().own)||[]).find(o=>o&&o.tep_key===key&&o.enabled)||null;
+   const parkUnits=Number(parkOwn?parkOwn.units:(row.parking_units||0));
    if(parkUnits>0){
     const park=document.createElement('tr');
     park.className='tep-sub';
-    const underUnits=Number(row.parking_under_units||0);
-    const overUnits=Number(row.parking_over_units||0);
-    const sold=Number(row.parking_saleable_units||0);
-    const underArea=Number(row.under_gns||0);
+    const underUnits=Number(parkOwn?parkOwn.under_spaces:(row.parking_under_units||0));
+    const overUnits=Number(parkOwn?parkOwn.over_spaces:(row.parking_over_units||0));
+    const sold=Number(parkOwn?parkOwn.saleable_units:(row.parking_saleable_units||0));
+    const underArea=Number(parkOwn?parkOwn.under_gns:(row.under_gns||0));
     park.innerHTML=`<td>↳ Паркинг · ${escapeHtml(String(row.label||key))}</td>`
      +`<td colspan="6">построено ${num(parkUnits)} м/м · подземных ${num(underUnits)}`
      +(underArea>0?` (${num(underArea)} м²)`:'')
