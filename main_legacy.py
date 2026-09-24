@@ -17501,7 +17501,7 @@ def _v4_add_mode_dropdowns(xml: str, missing: list[str]) -> str:
     # inlineStr (<x:t>), но и строковыми <x:v>. Regex по одному виду строки
     # находил часть полей случайно: на реальной книге восемь живых режимов,
     # включая bridge_interest_mode, оставались без dropdown.
-    row_numbers = [int(number) for number in re.findall(r'<x:row r="(\\d+)"', xml)]
+    row_numbers = [int(number) for number in re.findall(r'<x:row r="(\d+)"', xml)]
     max_row = max(row_numbers, default=0)
     for key, values in options.items():
         target: str | None = None
