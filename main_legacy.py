@@ -19535,97 +19535,65 @@ _V4_UNDER_COLUMN = "G"
 
 
 def _v4_product_structure_block(xml: str, missing: list[str]) -> str:
-    """Блок «СТРУКТУРА ПРОДУКТА»: наземное и подземное — разными колонками.
+    """Блок структуры продукта: вторые объекты живут в свободных строках.
 
-    «В книге в сумму ГНС считается площадь подземного паркинга, на движке это
-    правил, а тут нет» (владелец, 14.09.2026). Итог блока складывал под шапкой
-    «ГНС, м²» наземные метры квартир и подземные метры паркинга — 475 870,
-    число, не равное ни наземной ГНС проекта (443 701), ни строительному
-    объёму (601 621). В движке это разведено с 04.09: три величины и три поля.
-
-    Здесь же чинятся три соседние потери того же корня. **ФОК не имел строки
-    вовсе** — список продуктов стоял перечислением, и четвёртый объект в него
-    не вошёл; итог переезжает на свободную строку 54, а его прежнее место
-    занимает ФОК (тот же приём, что на листе ТЭП). **Гараж объекта не входил
-    ни в выручку блока, ни в его единицы**: выручка 213 605,2 против 235 123,1
-    у движка и 2 160 мест вместо 4 660 — правку 0.23.69 этот блок не увидел,
-    потому что читает объект своей ссылкой мимо ТЭП и КОНСОЛИДАТОРа.
-    **У кладовых не было формул вовсе**: пустая клетка читается как «не
-    посчитали», а своей наземной площади у них и нет — она внутри подземной.
-
-    Соцобъекты в блок не идут: они не продукт, их метры видны на листе ТЭП.
-    Итог поэтому зовётся «ИТОГО ПРОДУКТЫ», а не «ИТОГО ПРОЕКТ»: имя, которое
-    обещает весь проект, обязано его и складывать.
+    Строки пишутся пачкой, чтобы добавление трёх объектов не превращало
+    сборку книги в десятки полных проходов по XML листа ОТЧЁТ.
     """
     under = _V4_UNDER_COLUMN
     first = _V4_PRODUCT_STRUCTURE_FIRST_ROW
     total = _V4_PRODUCT_STRUCTURE_TOTAL_ROW
-    param = "'Параметры модели'!"
+    param = "\'Параметры модели\'!"
 
-    def put(coord: str, *, formula: str = "", text: str | None = None) -> None:
-        if text is not None:
-            _xml, done = _v4_set_or_insert_cell(xml_holder[0], coord, text=text)
-        else:
-            _xml, done = _v4_set_or_insert_cell(xml_holder[0], coord, formula=formula)
-        xml_holder[0] = _xml
+    def row_put(row: int, cells: dict[str, dict[str, Any]]) -> None:
+        nonlocal xml
+        xml = _v4_ensure_row(xml, row)
+        xml, done = _v4_set_cells(xml, row, cells)
         if not done:
-            missing.append(f"ОТЧЁТ · структура продукта: ячейка {coord} не поставлена")
+            missing.append(f"ОТЧЁТ · структура продукта: строка {row} не поставлена")
 
-    xml_holder = [_v4_ensure_row(xml, total)]
-    # Шапка: колонка называет то, что в ней лежит.
-    put("B45", text="ГНС наземная, м²")
-    put(f"{under}45", text="Подземная, м²")
+    row_put(45, {"B45": {"text": "ГНС наземная, м²"},
+                 f"{under}45": {"text": "Подземная, м²"}})
+    row_put(48, {"B48": {"formula": "0"},
+                 f"{under}48": {"formula": f"SUM({param}K88:K91)"}})
+    row_put(49, {"B49": {"formula": "0"}, "C49": {"formula": "0"},
+                 f"{under}49": {"formula": "0"}})
+    for row in (46, 47):
+        row_put(row, {f"{under}{row}": {"formula": "0"}})
 
-    # Площадные продукты очередей: наземное в B, подземное в G.
-    put("B48", formula="0")
-    put(f"{under}48", formula=f"SUM({param}K88:K91)")
-    # У кладовых своей наземной площади нет, а подземная уже посчитана строкой
-    # паркинга: ноль здесь — ответ, а пустая клетка была отсутствием формулы.
-    put("B49", formula="0")
-    put("C49", formula="0")
-    for row in (46, 47, 49):
-        put(f"{under}{row}", formula="0")
-
-    garages = []
     for (row, label, gba_cell, saleable_cell, revenue_row,
          places_row, garage_revenue_row, under_cell, sellable) in _V4_PRODUCT_STRUCTURE_OBJECTS:
-        xml_holder[0] = _v4_ensure_row(xml_holder[0], row)
-        put(f"A{row}", text=label)
-        put(f"B{row}", formula=f"{param}${gba_cell[0]}${gba_cell[1:]}")
-        if saleable_cell:
-            put(f"C{row}", formula=f"{param}${saleable_cell[0]}${saleable_cell[1:]}")
-        revenue = f"'ОБЪЕКТЫ'!B{revenue_row}"
+        revenue = f"\'ОБЪЕКТЫ\'!B{revenue_row}"
         if garage_revenue_row:
-            revenue += f"+'ОБЪЕКТЫ'!B{garage_revenue_row}"
-        put(f"E{row}", formula=revenue)
-        put(f"F{row}", text="Отдельный объект")
-        if under_cell:
-            area = f"{param}${under_cell[0]}${under_cell[1:]}*{param}$K$158"
-            put(f"{under}{row}", formula=area)
-            garages.append(area)
-        else:
-            put(f"{under}{row}", formula="0")
-        # Места гаража продаются только у офисника — у ТЦ и ФОКа это
-        # обеспеченность посетителей, и «единиц к продаже» у них нет. Ноль
-        # ставится явно: на строке ФОКа прежде стоял итог блока, и не стерев
-        # его, мы оставили бы сумму блока в графе «Единицы» одного объекта.
-        put(f"D{row}", formula=(f"'ОБЪЕКТЫ'!B{places_row}"
-                                if sellable and places_row else "0"))
-        if not saleable_cell:
-            put(f"C{row}", formula="0")
+            revenue += f"+\'ОБЪЕКТЫ\'!B{garage_revenue_row}"
+        cells: dict[str, dict[str, Any]] = {
+            f"A{row}": {"text": label},
+            f"B{row}": {"formula": f"{param}${gba_cell[0]}${gba_cell[1:]}"},
+            f"C{row}": {"formula": (
+                f"{param}${saleable_cell[0]}${saleable_cell[1:]}" if saleable_cell else "0")},
+            f"D{row}": {"formula": (
+                f"\'ОБЪЕКТЫ\'!B{places_row}" if sellable and places_row else "0")},
+            f"E{row}": {"formula": revenue},
+            f"F{row}": {"text": "Отдельный объект"},
+            f"{under}{row}": {"formula": (
+                f"{param}${under_cell[0]}${under_cell[1:]}*{param}$K$158"
+                if under_cell else "0")},
+        }
+        row_put(row, cells)
 
-    put(f"A{total}", text="ИТОГО ПРОДУКТЫ")
-    _extra_product_rows = [
-        row for row, *_ in _V4_PRODUCT_STRUCTURE_OBJECTS if row > total
-    ]
+    extra_rows = [row for row, *_ in _V4_PRODUCT_STRUCTURE_OBJECTS if row > total]
+    total_cells: dict[str, dict[str, Any]] = {
+        f"A{total}": {"text": "ИТОГО ПРОДУКТЫ"},
+        f"H{total}": {"text": (
+            "Строительный объём = наземная + подземная. Соцобъекты сюда не входят — "
+            "они не продукт; их метры на листе ТЭП.")},
+    }
     for column in ("B", "C", "D", "E", under):
         parts = [f"{column}{first}:{column}{total - 1}"]
-        parts.extend(f"{column}{row}" for row in _extra_product_rows)
-        put(f"{column}{total}", formula="SUM(" + ",".join(parts) + ")")
-    put(f"H{total}", text=("Строительный объём = наземная + подземная. "
-                           "Соцобъекты сюда не входят — они не продукт; "
-                           "их метры на листе ТЭП."))
-    return xml_holder[0]
+        parts.extend(f"{column}{row}" for row in extra_rows)
+        total_cells[f"{column}{total}"] = {"formula": "SUM(" + ",".join(parts) + ")"}
+    row_put(total, total_cells)
+    return xml
 
 
 def _v4_object_checks(xml: str, missing: list[str]) -> str:
