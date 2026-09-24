@@ -39,7 +39,8 @@ PROJECT = {"slug": "t", "name": "КРТ Тест", "housing_gfa_sqm": 161680,
 REPORT = {"subject": {"project_name": "КРТ Тест"},
           "analysis": {"site": {"segment": "бизнес", "price_per_sqm": 708000,
                                 "sold_lot_avg": 50.0}},
-          "price_hint": {"entry_per_sqm": 650000}, "peers": []}
+          "price_hint": {"entry_per_sqm": 650000, "price_per_sqm": 708000,
+                         "basis": "peers", "sample": 3, "segment": "бизнес"}, "peers": []}
 
 
 def _screen(ratios: str = ""):

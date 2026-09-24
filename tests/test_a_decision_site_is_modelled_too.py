@@ -178,7 +178,7 @@ def core():
 _REPORT = {
     "analysis": {"site": {"segment": "Бизнес", "price_per_sqm": 450_000,
                           "sold_lot_avg": 58, "units_per_month": 25}},
-    "price_hint": {},
+    "price_hint": {"price_per_sqm": 450_000, "basis": "test fresh comparable median"},
     "subject": {"query": "krt:decision:347614220"},
 }
 
