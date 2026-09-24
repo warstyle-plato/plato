@@ -237,12 +237,15 @@ def test_translated_modes_show_russian_but_feed_legacy_formula_values():
     assert "Base" in str(params[rate_source].value)
 
 def _source_cell_for_entry(params, entry_coord):
-    wanted = f"='Вводные'!{entry_coord}"
+    # Простые поля — прямая ссылка, переведённые select — IF-декодер. В обоих
+    # случаях источник на «Параметры модели» обязан читать ту же user-cell.
+    wanted = f"'Вводные'!{entry_coord}"
     for row in params.iter_rows():
         for cell in row:
-            if str(cell.value or "") == wanted:
+            value = str(cell.value or "")
+            if value.startswith("=") and wanted in value:
                 return cell.coordinate
-    raise AssertionError(f"{entry_coord}: зеркало на «Параметры модели» не найдено")
+    raise AssertionError(f"{entry_coord}: зеркало/декодер на «Параметры модели» не найден")
 
 
 def _formula_reads_parameter(book, coord):
