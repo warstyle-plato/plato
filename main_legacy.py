@@ -47757,6 +47757,10 @@ function tepSubtotalRow(group){
  const cols=['gns','total_area','useful','saleable','transfer','units'];
  const sums={};cols.forEach(c=>sums[c]=group.keys.reduce((a,k)=>a+Number((tep[k]||{})[c]||0),0));
  const under=group.keys.reduce((a,k)=>a+tepRowUnderGns(k,tep[k]),0);
+ const parkingUnits=group.keys.reduce((sum,k)=>{
+  const item=((projectParking().own)||[]).find(o=>o&&o.tep_key===k&&o.enabled);
+  return sum+Number((item&&item.units)||0);
+ },0);
  const tr=document.createElement('tr');
  tr.className='tep-sub';
  // В колонке ГНС стоит НАЗЕМНАЯ площадь — то, что колонка и обещает; подземная
@@ -47766,7 +47770,7 @@ function tepSubtotalRow(group){
   +cols.map(c=>{
     const value=c==='gns'
       ?group.keys.reduce((a,k)=>a+(UNDERGROUND_PRODUCTS.includes(k)?0:Number((tep[k]||{}).gns||0)),0)
-      :sums[c];
+      :(c==='units'?sums[c]+parkingUnits:sums[c]);
     return `<td>${num(value)}`
      +(c==='gns'&&under>0?`<div class="tep-note">подземная ${num(under)}</div>`:'')
      +`</td>`;
@@ -48175,6 +48179,11 @@ function tepCellChanged(key,col,value){
 function updateTepTotals(){
  repairParkingFromGlavapu();
  const sums={gns:0,total_area:0,useful:0,saleable:0,transfer:0,units:0};
+ // Свой паркинг ОСЗ показан отдельной строкой в штуках, поэтому итог колонки
+ // «единицы» тоже обязан его включать. В `tep` эти места лежат отдельными
+ // полями своей строки и обычный сумматор их не видит.
+ const objectParkingUnits=((projectParking().own)||[]).reduce(
+  (sum,item)=>sum+(item&&item.enabled?Number(item.units||0):0),0);
  // ГНС — НАЗЕМНАЯ площадь здания: под землёй наружных стен не бывает. В движке
  // это разведено 04.09.2026 (`project_gns_sqm` против `underground_gns_sqm`), а
  // итог таблицы всё это время складывал их в одну клетку под одним именем — то
@@ -48189,7 +48198,7 @@ function updateTepTotals(){
    underGns+=tepRowUnderGns(k,r);
  });
  renderTepUndergroundNote(sums.gns,underGns);
- tg.textContent=num(sums.gns);ta.textContent=num(sums.total_area);tu.textContent=num(sums.useful);ts.textContent=num(sums.saleable);tt.textContent=num(sums.transfer);tn.textContent=num(sums.units);
+ tg.textContent=num(sums.gns);ta.textContent=num(sums.total_area);tu.textContent=num(sums.useful);ts.textContent=num(sums.saleable);tt.textContent=num(sums.transfer);tn.textContent=num(sums.units+objectParkingUnits);
  renderSitePanel();
 }
 // Участок и плотность. Площадь приходит из ГлавАПУ, из кадастра (ЕГРН) или
@@ -50734,9 +50743,9 @@ function renderResult(){
    <div class="expense-value">${money(x.value)}</div>
  </div>`).join('');
  // Отдельно стоящий объект меряется СВОЕЙ площадью, а наземный паркинг —
- // своими местами: подстроки «в т.ч.» стоят под своей статьёй и несут числа,
- // посчитанные движком на их базы. Колонки самой статьи остаются проектными —
- // они складываются в итог таблицы, — и об этом сказано подписью под ней.
+ // своими местами. У общей корзины «Отдельные объекты» единой физической
+ // базы нет, поэтому в её удельных колонках стоит прочерк; осмысленные
+ // показатели стоят только у подстрок конкретных объектов.
  expenseStructureTable.innerHTML=expenseRows.map(x=>{
    const head=`<tr>
    <td>${x.label}</td>
@@ -50887,7 +50896,9 @@ function renderResult(){
    ? `<span style="display:block;font-size:10px;color:#777">из них ${parts.join(' · ')}</span>`
    : '';
  };
- const soldTotal=r.tep.rows.reduce((sum,x)=>sum+soldUnits(x),0);
+ const soldTotal=r.tep.rows.reduce((sum,x)=>
+ sum+soldUnits(x)+Number(x.parking_saleable_units||0),0);
+ const builtTotal=Number(r.tep.total.units||0)+Number(r.tep.total.parking_units||0);
  // ГНС — наземная площадь здания, и у гаража с кладовыми её нет: под землёй
  // наружных стен не бывает, а экономика у подземной части своя — свой метр
  // стройки и продукт, продаваемый местами. Пока обе величины стояли в одной
@@ -50954,7 +50965,7 @@ function renderResult(){
   `</tbody><tfoot><tr><th>Итого</th><th>${num(aboveGns)}</th><th>${num(underTotal)}</th>`
   +`<th>${num(r.tep.total.saleable)}`
   +(transferTotal>0?`<span style="display:block;font-size:10px;color:#777">${TRANSFER_NOTE_WORD} ${num(transferTotal)} м²</span>`:'')
-  +`</th><th>${num(r.tep.total.units)}</th><th>${num(soldTotal)}</th></tr></tfoot>`;
+  +`</th><th>${num(builtTotal)}</th><th>${num(soldTotal)}</th></tr></tfoot>`;
  const tepNote=document.getElementById('reportTepNote');
  if(tepNote)tepNote.innerHTML=underTotal>0
   ? `Строительный объём — ${num(Number(r.summary.construction_volume_sqm!==undefined?r.summary.construction_volume_sqm:r.tep.total.gns))} м², наземная плюс подземная: на нём считаются общие статьи (ИРД, проектирование, подготовка, сети, благоустройство, сдача, содержание). Удельные «на метр» считаются на наземной ГНС: подземная в неё не входит — у неё своя себестоимость метра и свой продукт, продаваемый местами. ГНС — внутренний термин DevelopAid; город нагрузки считает от суммарной поэтажной площади.`
