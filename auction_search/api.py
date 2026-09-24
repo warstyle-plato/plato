@@ -84,6 +84,7 @@ from auction_search.krt_nagatino_prototype import nagatino_investment_card_page
 from auction_search.krt_investment_card import krt_investment_card_page
 from auction_search.ui import auctions_page
 from market_search.krt_registry import CATALOGUE_URL, KrtRegistry
+from market_search.krt_map_data import wgs84 as krt_wgs84
 from market_search import krt_decision_tep
 from market_search import tep_check
 from market_search import cabinet as market_cabinet
@@ -2326,9 +2327,21 @@ def install(app: FastAPI) -> None:
             return None
         return krt_tenders.asking_price_mln((known.get(slug) or {}).get("lots") or [])
 
-    def _krt_market_subject(project: dict[str, Any]) -> str:
-        """Один subject для рынка без массового повторного геокодирования КРТ."""
+    def _krt_market_subject(
+        project: dict[str, Any], *, allow_remote_geocode: bool = True,
+    ) -> str:
+        """Subject рынка: официальный контур прежде любого геокодера.
+
+        Фоновый пересчёт работает только по уже известной геометрии. Адресный
+        геокодинг оставлен ручному пересчёту: массовый background не должен
+        превращать Nominatim в очередь из сотен одинаковых запросов.
+        """
         if project.get("early_unpublished"):
+            if not allow_remote_geocode:
+                raise SubjectNotFound(
+                    "У ранней площадки пока нет официальной геометрии; "
+                    "фоновый расчёт не геокодирует адрес удалённо"
+                )
             address = str(project.get("address") or project.get("name") or "").strip()
             if not address:
                 raise ValueError("У ранней площадки нет адреса для рынка")
@@ -2351,7 +2364,7 @@ def install(app: FastAPI) -> None:
                             sum(float(point[1]) for point in points) / len(points),
                         ]
                 if centre:
-                    lat, lng = core._mercator_to_wgs84(
+                    lat, lng = krt_wgs84(
                         float(centre[0]), float(centre[1]))
                     return f"{lat:.7f}, {lng:.7f}"
             except Exception:  # noqa: BLE001
@@ -2362,11 +2375,17 @@ def install(app: FastAPI) -> None:
                 outline = cached_outline(slug) if callable(cached_outline) else None
                 centre = (outline or {}).get("centre_merc")
                 if centre:
-                    lat, lng = core._mercator_to_wgs84(
+                    lat, lng = krt_wgs84(
                         float(centre[0]), float(centre[1]))
                     return f"{lat:.7f}, {lng:.7f}"
             except Exception:  # noqa: BLE001
                 logger.exception("KRT decision market point failed slug=%s", slug)
+
+        if not allow_remote_geocode:
+            raise SubjectNotFound(
+                "У площадки пока нет официального или сохранённого контура; "
+                "фоновый расчёт не геокодирует адрес удалённо"
+            )
 
         if project.get("no_card") and project.get("address_known"):
             address = str(project.get("address") or project.get("name") or "").strip()
@@ -2377,17 +2396,21 @@ def install(app: FastAPI) -> None:
 
     def _krt_market_report(
         project: dict[str, Any], *, radius_km: float = 3.0, peers_limit: int = 12,
+        allow_remote_geocode: bool = True,
     ) -> dict[str, Any]:
         """Тот же production market engine для всех стадий КРТ."""
         if market is None:
             raise ValueError("Маркетинговый движок не подключён")
-        query = _krt_market_subject(project)
+        query = _krt_market_subject(project, allow_remote_geocode=allow_remote_geocode)
         try:
             return market.build_report(
                 query, radius_km=radius_km, peers_limit=peers_limit,
                 city_reference=False, include_project_totals=True,
+                match_nearby_project=False,
             )
         except (SubjectNotFound, GeocodingError):
+            if not allow_remote_geocode:
+                raise
             fallback = str(project.get("address") or project.get("name") or "").strip()
             if not fallback:
                 raise
@@ -2408,12 +2431,17 @@ def install(app: FastAPI) -> None:
                     city_reference=False, include_project_totals=True,
                 )
 
-    def _market_model_only(project: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    def _market_model_only(
+        project: dict[str, Any], *, allow_remote_geocode: bool = True,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Рынок + финансовая модель без платного поиска публикаций."""
         if core is None or market is None:
             return ({"available": False,
                      "reason": "Финансовый движок DevelopAid не подключён"}, {})
-        report = _krt_market_report(project, radius_km=3.0, peers_limit=12)
+        report = _krt_market_report(
+            project, radius_km=3.0, peers_limit=12,
+            allow_remote_geocode=allow_remote_geocode,
+        )
         slug = str(project.get("slug") or "")
         try:
             requirements = _requirements_for(slug)
@@ -2757,7 +2785,7 @@ def install(app: FastAPI) -> None:
 
     def _rating_screen_only(project: dict[str, Any]) -> dict[str, Any]:
         """Достроить только рынок + модель, без платного поиска публикаций."""
-        screening, report = _market_model_only(project)
+        screening, report = _market_model_only(project, allow_remote_geocode=False)
         answer = dict(screening or {})
         if report:
             answer["market_report"] = _market_digest(report)
@@ -3746,7 +3774,7 @@ def install(app: FastAPI) -> None:
                 points = [point for ring in rings for point in ring]
                 centre = [sum(p[0] for p in points) / len(points),
                           sum(p[1] for p in points) / len(points)]
-            lat, lng = core._mercator_to_wgs84(float(centre[0]), float(centre[1]))
+            lat, lng = krt_wgs84(float(centre[0]), float(centre[1]))
             data = {
                 "query": f"krt:{slug}", "latitude": lat, "longitude": lng,
                 "precision": "official_centre", "address": project.get("name"),
@@ -3769,7 +3797,7 @@ def install(app: FastAPI) -> None:
             # это говорит.
             rings = list(outline["rings_merc"])
             centre = outline.get("centre_merc")
-            lat, lng = core._mercator_to_wgs84(float(centre[0]), float(centre[1]))
+            lat, lng = krt_wgs84(float(centre[0]), float(centre[1]))
             counts = dict(outline.get("counts") or {})
             title = str((outline.get("decision") or {}).get("title") or "проект решения о КРТ")
             extras = []
