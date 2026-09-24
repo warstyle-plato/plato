@@ -67,6 +67,7 @@ def _axis_harness(intent, axis: str, *, card=None, press=None) -> str:
         + _function("krtAskingPrice") + "\n" + _function("krtPriceVerdict") + "\n"
         + _function("krtRenovation") + "\n"
         + _function("krtEntryKind") + "\n"
+        + _function("krtRenovationEvidence") + "\n"
         + _function("krtRenovationKind") + "\n"
         + f"console.log(JSON.stringify({{kind:{axis}({{slug:'s'}})}}));"
     )
@@ -187,7 +188,8 @@ def test_a_live_lot_lifts_the_operator_cut_and_the_renovation_tag_carries_its_qu
                 break
         index += 1
     tag = page[start:index + 1]
-    assert "press&&press.city_needs||[])[0]||{}).quote" in tag
+    assert "krtRenovationEvidence(x)" in tag
+    assert "evidence.quote" in tag
     assert "публикация: " in tag and "карточка krt.mos.ru: " in tag
     # Доля из решения сильнее упоминания: сто процентов — это другая площадка.
     assert "всё жильё" in tag, "метка не отличает часть жилья от всего"
