@@ -564,6 +564,51 @@ class KrtRegistry:
             and payload.get("schema_version") == CACHE_SCHEMA_VERSION
         )
 
+    def _with_known_point(self, row: dict[str, Any]) -> dict[str, Any]:
+        """Добавить уже известный центр КРТ, не обращаясь к геокодеру.
+
+        Сначала читается локальный снимок официальной карты krt.mos.ru, затем
+        уже собранный контур из проекта решения. Здесь намеренно нет сети:
+        resolve_subject вызывается внутри массового рыночного прогона, и один
+        lookup не должен превращаться в сотни скрытых HTTP-запросов.
+        """
+        out = dict(row or {})
+        slug = str(out.get("slug") or "").strip()
+        if not slug:
+            return out
+        try:
+            from . import krt_map_data
+            payload = load_json(self.map_path)
+            sites = list((payload or {}).get("sites") or []) if isinstance(payload, dict) else []
+            matched = _map_match(sites, slug, str(out.get("name") or ""), out) if sites else {}
+            site = (matched or {}).get("site") or {}
+            lat = site.get("latitude")
+            lon = site.get("longitude")
+            centre = site.get("centre_merc")
+            if (lat is None or lon is None) and centre:
+                lon, lat = krt_map_data.unmerc(float(centre[0]), float(centre[1]))
+            if lat is not None and lon is not None:
+                out["latitude"] = float(lat)
+                out["longitude"] = float(lon)
+                out["geometry_status"] = (
+                    "official_polygon" if site.get("rings_merc") else "official_centre")
+                out["geometry_source"] = "krt.mos.ru map"
+                return out
+
+            outline = self.outline_cached(slug)
+            centre = (outline or {}).get("centre_merc")
+            if centre:
+                lon, lat = krt_map_data.unmerc(float(centre[0]), float(centre[1]))
+                out["latitude"] = float(lat)
+                out["longitude"] = float(lon)
+                out["geometry_status"] = "decision_parcels"
+                out["geometry_source"] = "mos.ru decision + EGRN"
+        except Exception:
+            # Координаты — усиление ответа, а не условие существования записи.
+            # Если локальный снимок повреждён, прежний адресный путь остаётся.
+            return out
+        return out
+
     def find(self, query: str) -> dict[str, Any] | None:
         text = _SPACE.sub(" ", str(query or "")).strip()
         slug = text[4:] if text.lower().startswith("krt:") else None
@@ -582,7 +627,7 @@ class KrtRegistry:
             self.refresh_in_background()
         for item in rows:
             if (slug and item.slug == slug) or (not slug and item.name.casefold() == low):
-                return item.to_dict()
+                return self._with_known_point(item.to_dict())
         return None
 
     def find_decision(self, document_id: str) -> dict[str, Any] | None:
@@ -611,7 +656,7 @@ class KrtRegistry:
             if not address:
                 return None
             okrug = str(one.get("okrug") or "").strip()
-            return {
+            return self._with_known_point({
                 "slug": "decision:" + clean,
                 "name": address,
                 "url": one.get("url") or "",
@@ -640,7 +685,7 @@ class KrtRegistry:
                 "address_known": True,
                 "draft_decision_at": one.get("published_at") or 0,
                 "draft_decision_url": one.get("url") or "",
-            }
+            })
         return None
 
     def suggest(self, query: str, limit: int = 8) -> list[dict[str, Any]]:
