@@ -986,6 +986,9 @@ class StandaloneObject(NamedTuple):
     # при продаже, а себестоимость — стартовая величина, а не ставка
     # справочника. Это свойство объекта, а не формы, поэтому живёт здесь.
     hints: dict[str, str] = {}
+    # Второй экземпляр того же типа: движок остаётся реестровым, а книга
+    # знает, какой штатный блок шаблона копировать. Пусто у исходных объектов.
+    clone_of: str = ""
 
     @property
     def enabled_key(self) -> str:
@@ -1051,6 +1054,36 @@ STANDALONE_OBJECTS: tuple[StandaloneObject, ...] = (
                                        " приобъектной парковки — у Москвы спорт 5.1"
                                        " (200 м² ННП на место), здравоохранение 3.4"
                                        " (300 м²)"}),
+    # Вторые экземпляры нужны именно когда одинаковые ОСЗ живут в РАЗНЫХ
+    # очередях. Они не доли первого объекта: у каждого свой календарь, цена,
+    # CAPEX, продажи и собственная очередь финансирования.
+    StandaloneObject("offices2", "offices2", "офисы 2", 4, True, True, "sqm",
+                     "offices2_cost_th_per_sqm", "offices2_price_th_per_sqm",
+                     defaults={"gba_sqm": 10000, "saleable_sqm": 6000,
+                               "cost_th_per_sqm": 200,
+                               "price_th_per_sqm": nonresidential_price_th(
+                                   PROJECT_CLASS_PRESETS["comfort"]["apartment_price_th"])},
+                     tep_label="Офисы 2", group_label="МФОЦ / офисы 2",
+                     clone_of="offices"),
+    StandaloneObject("retail2", "retail2", "ТЦ 2", 3, True, False, "sqm",
+                     "retail2_cost_th_per_sqm", "retail2_price_th_per_sqm",
+                     defaults={"gba_sqm": 10000, "saleable_sqm": 6000,
+                               "cost_th_per_sqm": 200,
+                               "price_th_per_sqm": nonresidential_price_th(
+                                   PROJECT_CLASS_PRESETS["comfort"]["apartment_price_th"])},
+                     tep_label="Коммерция ОСЗ 2", group_label="ТЦ / коммерция ОСЗ 2",
+                     clone_of="standalone_retail"),
+    StandaloneObject("above_parking2", "above_parking2", "наземный паркинг 2", 3,
+                     False, False, "spaces",
+                     "above_parking2_cost_mln_per_space",
+                     "above_parking2_price_mln_per_space",
+                     default_months=18, growth_pre_default=0.75,
+                     growth_post_default=0.2,
+                     defaults={"spaces": 550, "cost_mln_per_space": 1,
+                               "price_mln_per_space": 2, "area_per_space_sqm": 25},
+                     tep_label="Наземный паркинг 2",
+                     group_label="Наземный паркинг 2",
+                     clone_of="above_parking"),
 )
 
 
@@ -1246,6 +1279,31 @@ OBJECT_PARKING_FIELDS = tuple(
 
 _TEP_DEFAULT_LITERAL = {'apartments': {'label': 'Квартиры', 'gns': 130716.66012842482, 'total_area': 117647.0588235294, 'useful': 80000, 'saleable': 80000, 'transfer': 0, 'units': 1361.815754339119}, 'ground_commercial': {'label': 'Коммерция 1 этажа', 'gns': 9664.049734985854, 'total_area': 8695.652173913044, 'useful': 7826.08695652174, 'saleable': 7826.08695652174, 'transfer': 0, 'units': 0}, 'standalone_retail': '__object__:standalone_retail', 'offices': '__object__:offices', 'above_parking': '__object__:above_parking', 'underground_parking': {'label': 'Подземный паркинг', 'gns': 38763, 'total_area': 38763, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 1107.5142857142857}, 'storage': {'label': 'Кладовые', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'kindergarten': {'label': 'ДОО', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'school': {'label': 'СОШ', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'clinic': {'label': 'Поликлиника', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'sports': '__object__:sports', 'other_mandatory': {'label': 'Прочие обязательные объекты', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}}
 _FIELD_GROUPS_LITERAL = [['Сделка и сроки', [['purchase_price_mln', 'Стоимость покупки / цена входа', 'млн ₽', 'number'], ['purchase_schedule', 'График платежей за покупку', 'доли или суммы по месяцам от начала проекта: «30%@0; 40%@6; 30%@12» или «500@0; 300@12» (млн ₽). Пусто — вся цена в дату сделки', 'schedule', {'value': 'money_or_share', 'anchor': 'project_start', 'value_label': 'Сумма или доля', 'when_label': 'Дата платежа', 'total_field': 'purchase_price_mln', 'total_label': 'стоимость покупки'}], ['land_rights_cost_mln', 'Оформление земельных правоотношений / смена ВРИ', 'млн ₽', 'number'], ['project_start', 'Начало проекта', 'дата', 'date'], ['ird_months', 'Срок ИРД до РнС', 'мес.; минимум 1 — ноль модель не считает', 'number'], ['construction_months', 'Срок строительства', 'мес.', 'number'], ['sales_lag_months', 'Лаг старта продаж после РнС', 'мес.', 'number'], ['bridge_repay_lag_months', 'Лаг погашения БРИДЖ после РнС', 'мес.', 'number'], ['residual_sales_months', 'Остаточные продажи после РВЭ', 'мес.', 'number']]], ['Смена ВРИ и земельные права', [['vri_required', 'Требуется изменение ВРИ', 'Да / Нет', 'checkbox'], ['vri_region', 'Регион', 'регион', 'select', [['msk', 'Москва'], ['mo', 'Московская область']]], ['land_right', 'Право на участок', 'право', 'select', [['ownership', 'Собственность'], ['lease', 'Аренда']]], ['vri_obligation_date_mode', 'Дата обязательства', 'режим', 'select', [['before_rns_1m', 'За месяц до РнС — экспертная оценка'], ['at_rns', 'В дату РнС'], ['before_rns_3m', 'За три месяца до РнС'], ['after_purchase', 'Через N мес. после покупки'], ['manual', 'Задана вручную']]], ['vri_months_after_purchase', 'Месяцев после покупки', 'мес.', 'number'], ['vri_obligation_date', 'Дата возникновения обязательства', 'точная дата по документу; пусто — экспертная оценка', 'date'], ['vri_payment_mode', 'Порядок оплаты', 'режим', 'select', [['lump', 'Единовременно'], ['installment', 'Рассрочка']]], ['vri_installment_years', 'Срок рассрочки', 'лет (Москва: 1, 3, 6)', 'number'], ['vri_periodicity_months', 'Периодичность платежей', 'мес.; в Москве всегда квартал', 'select', [['1', 'Ежемесячно'], ['3', 'Ежеквартально'], ['6', 'Раз в полгода'], ['12', 'Раз в год']]], ['vri_initial_pct', 'Первый взнос по рассрочке', '% от суммы', 'number'], ['vri_schedule_mode', 'График платежей', 'режим', 'select', [['auto', 'Автоматический'], ['manual', 'Ручной']]], ['vri_interest_enabled', 'Проценты на остаток', 'режим', 'select', [['', 'По региону'], ['1', 'Начисляются'], ['0', 'Не начисляются']]], ['vri_interest_spread_pp', 'Спред к ключевой ставке по рассрочке', 'п.п.', 'number'], ['vri_early_repay_after_pf', 'Досрочное погашение остатка после открытия ПФ', 'Да / Нет', 'checkbox'], ['vri_pf_open_date', 'Дата открытия ПФ', 'дата (пусто — РнС)', 'date'], ['vri_in_bank_budget', 'ВРИ включена в банковский бюджет', 'Да / Нет', 'checkbox'], ['vri_financing_mode', 'Источники оплаты', 'режим', 'select', [['auto', 'Как весь проект'], ['shares', 'Заданные доли']]], ['vri_share_bridge_pct', 'Доля БРИДЖ', '%', 'number'], ['vri_share_pf_pct', 'Доля ПФ', '%', 'number'], ['vri_share_equity_pct', 'Доля собственного капитала', '%', 'number'], ['vri_relief_mode', 'Льгота по плате', 'режим', 'select', [['none', 'Нет'], ['percent', 'Доля от суммы'], ['amount', 'Фиксированная сумма']]], ['vri_relief_pct', 'Льгота — доля от суммы', '%', 'number'], ['vri_relief_mln', 'Льгота — сумма', 'млн ₽', 'number'], ['vri_transfer_offset_mln', 'Зачёт переданных муниципалитету площадей', 'млн ₽; по соглашению — уменьшает плату за ВРИ', 'number'], ['vri_security_cost_mln', 'Расходы на обеспечение обязательства', 'млн ₽', 'number']]], ['Продажи', [['apartment_price_th', 'Стартовая цена квартир', 'тыс. ₽/м²', 'number'], ['commercial_price_th', 'Стартовая цена коммерции 1 этажа', 'тыс. ₽/м²', 'number'], ['parking_price_th', 'Цена подземного машино-места', 'тыс. ₽/шт.', 'number'], ['storage_price_th', 'Цена кладовой', 'тыс. ₽/шт.', 'number'], ['share_before_rve_pct', 'Доля продаж до РВЭ', '%', 'number'], ['pace_adjustment_pct', 'Корректировка темпа', '%', 'number'], ['inflation_after_rve_pct', 'Инфляция после РВЭ', '% год', 'number'], ['seasonal_reduction_pct', 'Сезонное снижение темпа', '%', 'number'], ['growth_stage1_pct', 'Рост цены — этап 1', '%; скачок цены при строительной готовности 25%. Этапы — лестница цены квартир, коммерции 1 этажа, паркинга и кладовых; задан хоть один — ежемесячный рост до РВЭ не применяется', 'number'], ['growth_stage2_pct', 'Рост цены — этап 2', '%; при готовности 50%', 'number'], ['growth_stage3_pct', 'Рост цены — этап 3', '%; при готовности 75%', 'number'], ['growth_stage4_pct', 'Рост цены — этап 4', '%; при готовности 100% — ввод; дальше ежемесячный рост после РВЭ', 'number'], ['monthly_growth_pre_pct', 'Ежемесячный рост цены до РВЭ', '%/мес.', 'number'], ['monthly_growth_post_pct', 'Ежемесячный рост цены после РВЭ', '%/мес.', 'number']]], ['Строительство', [['demolition_area_sqm', 'Снос — площадь сносимого', 'м²; по обязательствам КРТ, а не по новой ГНС', 'number'], ['demolition_cost_th_per_sqm', 'Снос — стоимость', 'тыс. ₽/м² сносимого; пусто при непустой площади — статья не посчитана', 'number'], ['resettlement_cost_mln', 'Расселение', 'млн ₽; отдельное обязательство КРТ, не соцнагрузка', 'number'], ['ird_th_per_sqm', 'ИРД и согласования', 'тыс. ₽/м² строительного объёма — наземная плюс подземная', 'number'], ['design_p_th_per_sqm', 'Проектирование стадии П', 'тыс. ₽/м² строительного объёма — наземная плюс подземная', 'number'], ['design_rd_th_per_sqm', 'Проектирование стадии РД', 'тыс. ₽/м² строительного объёма — наземная плюс подземная', 'number'], ['preparation_th_per_sqm', 'Подготовительные работы', 'тыс. ₽/м² строительного объёма — наземная плюс подземная', 'number'], ['main_above_th_per_sqm', 'Основное строительство — наземная часть', 'тыс. ₽/м² наземной части', 'number'], ['main_under_th_per_sqm', 'Основное строительство — подземная часть', 'тыс. ₽/м² подземной части', 'number'], ['utilities_th_per_sqm', 'Наружные инженерные сети, в т.ч. плата за техприсоединение', 'тыс. ₽/м² строительного объёма — наземная плюс подземная; ТП зависит от мощности, а не от метров — на длинном проекте проверяйте отдельно', 'number'], ['landscaping_area_per_person_sqm', 'Благоустройство — норматив площади двора', 'м²/чел.; двор считается от населения, население — от площади квартир нормой региона', 'number'], ['landscaping_area_sqm', 'Благоустройство — площадь двора', 'м²; пусто — считает методика класса, заданная руками её перебьёт', 'number'], ['landscaping_th_per_sqm', 'Благоустройство — ставка за метр двора', 'тыс. ₽/м² двора', 'number'], ['landscaping_gns_th_per_sqm', 'Благоустройство', 'тыс. ₽/м² ГНС', 'number'], ['commissioning_th_per_sqm', 'Сдача и ввод', 'тыс. ₽/м² строительного объёма — наземная плюс подземная', 'number'], ['site_maintenance_th_per_sqm', 'Содержание стройплощадки', 'тыс. ₽/м² строительного объёма — наземная плюс подземная', 'number'], ['gc_fee_pct', 'Вознаграждение генподрядчика', '% СМР', 'number'], ['author_supervision_pct', 'Авторский надзор', '% от П + РД', 'number'], ['project_management_pct', 'Управление проектом — зарплаты и накладные', '% прямых затрат', 'number'], ['technical_supervision_pct', 'Технический заказчик / стройконтроль (технадзор)', '% СМР', 'number'], ['reserve_pct', 'Резерв', '%', 'number']]], ['Коммерческие расходы и налоги', [['marketing_pct', 'Маркетинг', '% выручки', 'number'], ['selling_pct', 'Расходы на продажи', '% выручки', 'number'], ['profit_tax_pct', 'Налог на прибыль', '%', 'number'], ['vat_pct', 'НДС', '%', 'number']]], ['Финансирование', [['pre_pf_own_funds_mln', 'Собственные средства до открытия ПФ', 'млн ₽; тратятся раньше БРИДЖа и процентов не несут', 'number'], ['bridge_spread_pp', 'Спред БРИДЖ', 'п.п.', 'number'], ['bridge_cap_spread_pp', 'Спред капитализации БРИДЖ', 'п.п.', 'number'], ['pf_spread_pp', 'Спред ПФ', 'п.п.', 'number'], ['pf_special_pct', 'Ставка ПФ при покрытии эскроу 1×', '%', 'number'], ['pf_limit_approved_mln', 'Одобренный лимит ПФ', 'млн ₽; 0 — лимит выводится из потребности. Задан — потолок, а нехватка показывается отдельно. При очередях это общий лимит по генеральным условиям — ожидание на все очереди, потолком не служит: НКЛ каждой очереди заключается при её открытии и считается заново; реальный лимит НКЛ очереди задаётся в «Очерёдности»', 'number'], ['pf_special_steps', 'Ступени ставки по покрытию эскроу', 'лестница как в НКЛ: диапазон покрытия — своя ставка; по умолчанию лестница Сбера, впишите свою из договора. Пусто — одна ставка выше', 'pf_steps'], ['limit_fee_pct', 'Плата за лимит', '%', 'number'], ['reservation_fee_pct', 'Плата за резервирование', '%', 'number'], ['discount_rate_pct', 'Ставка дисконтирования', '%', 'number'], ['bridge_interest_mode', 'Проценты БРИДЖ при рефинансировании', 'режим', 'finance_select']]], ['Социальная нагрузка', [['social_mode', 'Форма исполнения', 'режим', 'select'], ['social_area_source', 'Соцобъекты и плата за ВРИ', 'источник; «требование КРТ» запирает места, площади, нормативы, соцкомпенсацию и плату за ВРИ — пересчёт ТЭП их не трогает', 'select', [['norm', 'Норматив РНГП — считать от числа мест'], ['manual', 'Требование КРТ — вписываю руками']]], ['social_comp_date', 'Дата денежной компенсации', 'дата', 'date'], ['social_compensation_mln', 'Социальный платеж / компенсация по ГлавАПУ', 'млн ₽', 'number'], ['kindergarten_places', 'ДОО — количество мест', 'мест', 'number'], ['kindergarten_cost_mln_per_place', 'ДОО — себестоимость места', 'млн ₽/место', 'number'], ['kindergarten_start', 'ДОО — начало строительства', 'дата', 'date'], ['kindergarten_months', 'ДОО — срок строительства', 'мес.', 'number'], ['school_places', 'СОШ — количество мест', 'мест', 'number'], ['school_cost_mln_per_place', 'СОШ — себестоимость места', 'млн ₽/место', 'number'], ['school_start', 'СОШ — начало строительства', 'дата', 'date'], ['school_months', 'СОШ — срок строительства', 'мес.', 'number'], ['clinic_capacity', 'Поликлиника — мощность', 'пос./смену', 'number'], ['clinic_cost_mln_per_unit', 'Поликлиника — себестоимость мощности', 'млн ₽/(пос./смену)', 'number'], ['clinic_start', 'Поликлиника — начало строительства', 'дата', 'date'], ['clinic_months', 'Поликлиника — срок строительства', 'мес.', 'number'], ['social_dou_gba_sqm', 'ДОО — общая площадь', 'м²', 'number'], ['social_dou_norm_sqm', 'ДОО — норматив площади на место', 'м²/место; РНГП: 27 до 125 мест, 18 до 250, дальше 16. В режиме «Требование КРТ» показывает фактический — площадь ÷ места', 'number'], ['social_school_gba_sqm', 'СОШ — общая площадь', 'м²', 'number'], ['social_school_norm_sqm', 'СОШ — норматив площади на место', 'м²/место; РНГП: 18 до 550 мест, 15 до 1000, дальше 13. В режиме «Требование КРТ» показывает фактический — площадь ÷ места', 'number'], ['social_clinic_gba_sqm', 'Поликлиника — общая площадь', 'м²', 'number'], ['social_clinic_norm_sqm', 'Поликлиника — норматив площади', 'м²/(пос./смену); норматива города для поликлиники нет — это наша экспертная величина. В режиме «Требование КРТ» показывает фактический', 'number']]], ['__object__:offices', []], ['__object__:standalone_retail', []], ['__object__:sports', []], ['Нормативы парковки нежилья (общие на объекты)', [['parking_k1', 'К1 — доступность рельсового каркаса', '0,75 до 1200 м · 0,9 до 2200 м · 1,0 дальше. Пусто — считается по расстоянию ниже, а без него берётся 1,0 (верхний край, максимум мест)', 'number'], ['parking_rail_distance_m', 'Расстояние до станции', 'м до ближайшего входа на станцию; норматив меряет по пешеходным путям, подсказка адреса даёт по прямой — пеший путь длиннее', 'number'], ['parking_k2', 'К2 — деловая активность района', 'приложение 3 к 945-ПП. Пусто — берётся по району участка из разбора кадастра, а без района 1,0 (верхний край)', 'number'], ['object_parking_area_per_space_sqm', 'Площадь на 1 место приобъектного паркинга', 'м²/место; гросс — рампы, проезды и техпомещения внутри', 'number'], ['parking_design_mode', 'Край норматива (Московская область)', 'режим', 'select', [['maximum', 'Верхний — больше мест'], ['minimum', 'Нижний — меньше мест']]]]], ['Подземный паркинг', [['underground_parking_disabled', 'Отказ от подземного паркинга', 'Да / Нет; места переносятся в наземный', 'checkbox'], ['underground_manual_spaces', 'Машино-места — решение проекта', 'шт.; из расчёта ТЭП — меняйте, площадь пересчитается', 'number'], ['underground_manual_gns_sqm', 'Площадь подземной парковки', 'м²; пересчитывается из мест и обратно', 'number'], ['underground_area_per_space_sqm', 'Норматив площади на машино-место', 'м²/место, гросс: рампы, проезды и техпомещения включены', 'number']]], ['Кладовые', [['storage_area_per_unit_sqm', 'Площадь одной кладовой', 'м²/шт.; штуки и метры строки ТЭП — одна величина в двух видах: правка любой считает вторую. Замер рынка: средняя кладовая 4,3 м² (ПИК, 2026) и 4,6 (НДВ, 2024), потолок по СП 4.13130.2013 — 10', 'number']]], ['__object__:above_parking', []]]
+
+# Второй объект встаёт СРАЗУ после своего первого экземпляра. Литералы старого
+# шаблона сохраняют геометрию экрана, но не обязаны заранее знать имена клонов:
+# строка реестра с clone_of сама создаёт себе место.
+_clones_by_base: dict[str, list[StandaloneObject]] = {}
+for _obj in STANDALONE_OBJECTS:
+    if _obj.clone_of:
+        _clones_by_base.setdefault(_obj.clone_of, []).append(_obj)
+
+_expanded_tep_literal: dict[str, Any] = {}
+for _key, _row in _TEP_DEFAULT_LITERAL.items():
+    _expanded_tep_literal[_key] = _row
+    for _clone in _clones_by_base.get(_key, []):
+        _expanded_tep_literal[_clone.key] = _OBJECT_PLACEHOLDER + _clone.key
+_TEP_DEFAULT_LITERAL = _expanded_tep_literal
+
+_expanded_field_groups: list[Any] = []
+for _group in _FIELD_GROUPS_LITERAL:
+    _expanded_field_groups.append(_group)
+    _name = str(_group[0])
+    if _name.startswith(_OBJECT_PLACEHOLDER):
+        _base = _name[len(_OBJECT_PLACEHOLDER):]
+        for _clone in _clones_by_base.get(_base, []):
+            _expanded_field_groups.append([_OBJECT_PLACEHOLDER + _clone.key, []])
+_FIELD_GROUPS_LITERAL = _expanded_field_groups
 
 # Строки ТЭП объектов и их группы вводных приносит реестр: литерал держит
 # только МЕСТО — порядок строк и порядок групп на экране, — а содержимое
@@ -2236,6 +2294,11 @@ def parse_manual_tep_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
         raise ValueError("В шаблоне не найдена таблица продуктов ТЭП")
 
     known_keys = set(TEP_DEFAULT)
+    # Дополнительные экземпляры ОСЗ — опциональные строки нового движка, а
+    # не обязательная геометрия старого ручного шаблона ТЭП. Файл, скачанный
+    # до появления offices2/retail2/above_parking2, обязан по-прежнему
+    # приниматься; отсутствующий клон означает выключенный объект с нулевым ТЭП.
+    optional_clone_keys = {obj.key for obj in STANDALONE_OBJECTS if obj.clone_of}
     tep_mapping: dict[str, dict[str, float]] = {}
     transfer_conflicts: list[str] = []
     for row in rows[header_index + 1:]:
@@ -2299,7 +2362,7 @@ def parse_manual_tep_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
     # нет. Требовать её значило бы отвергать тот самый шаблон, который сервис
     # до сих пор раздаёт, — и человек читал бы «в шаблоне нет строки sports»
     # про файл, скачанный у нас же.
-    for key in {"other_mandatory", "sports"}:
+    for key in {"other_mandatory", "sports"} | optional_clone_keys:
         tep_mapping.setdefault(key, {
             "gns": 0.0,
             "total_area": 0.0,
@@ -2746,33 +2809,29 @@ def tep_row_inputs(row_key: str) -> dict[str, str]:
     return dict(_PHASE_PRODUCT_INPUT_ALIASES.get(row_key) or {})
 
 
-def above_parking_tep_row(inputs: dict[str, Any]) -> dict[str, float]:
-    """Строка ТЭП наземного паркинга по вводным: места, метры, общая площадь.
-
-    Считала её только страница (`syncTep`), и правило «строка, которую чинит
-    только страница, чинится не везде» здесь стоило метров: проект, пришедший
-    файлом, ссылкой, мостом КРТ, ботом или скринингом, строил наземный гараж
-    (CAPEX и выручка идут от числа мест) и не показывал ни одного его метра —
-    ни в строке ТЭП, ни в ГНС проекта, ни в строительном объёме. А на этом
-    объёме считаются общие статьи и все удельные показатели.
-    """
-    enabled = bool(inputs.get("above_parking_enabled"))
-    spaces = max(0.0, float(inputs.get("above_parking_spaces") or 0.0)) if enabled else 0.0
-    per_space = float(inputs.get("above_parking_area_per_space_sqm") or 0.0) or 25.0
+def above_parking_tep_row(inputs: dict[str, Any],
+                          prefix: str = "above_parking") -> dict[str, float]:
+    """Строка ТЭП местового отдельно стоящего объекта по его вводным."""
+    enabled = bool(inputs.get(f"{prefix}_enabled"))
+    spaces = max(0.0, float(inputs.get(f"{prefix}_spaces") or 0.0)) if enabled else 0.0
+    per_space = float(inputs.get(f"{prefix}_area_per_space_sqm") or 0.0) or 25.0
     area = spaces * per_space
     return {"units": spaces, "gns": area, "total_area": area}
 
 
 def apply_above_parking_tep_row(inputs: dict[str, Any],
                                 tep: dict[str, dict[str, Any]]) -> None:
-    """Привести строку наземного паркинга к вводным. Правится на месте.
+    """Привести все местовые объекты реестра к вводным.
 
-    Объявленную очередью строку не трогаем — у неё свой источник, как у
-    соцобъекта.
+    Второй наземный паркинг не должен зависеть от того, открывали ли страницу:
+    правило у первого и второго экземпляра одно.
     """
-    row = tep.get("above_parking")
-    if isinstance(row, dict) and not row.get(TEP_ROW_DECLARED):
-        row.update(above_parking_tep_row(inputs))
+    for obj in standalone_objects():
+        if obj.measure != "spaces":
+            continue
+        row = tep.get(obj.key)
+        if isinstance(row, dict) and not row.get(TEP_ROW_DECLARED):
+            row.update(above_parking_tep_row(inputs, obj.prefix))
 
 
 def apply_social_tep_rows(inputs: dict[str, Any],
@@ -17213,6 +17272,39 @@ def _safe_file_stem(value: str, fallback: str = "DevelopAid") -> str:
 
 _V4_TEMPLATE_PATH = Path(__file__).resolve().parent / "templates" / "DevelopAid_model_v4.xlsx"
 
+
+class _V4CloneSlot(NamedTuple):
+    """Геометрия дополнительного объекта в книге v4."""
+    key: str
+    source_key: str
+    source_prefix: str
+    input_rows: range
+    object_rows: range
+    input_offset: int
+    object_offset: int
+    tep_row: int
+    report_row: int
+
+
+# Штатные три блока остаются на своих местах. Дополнительные объекты копируют
+# блок того же типа в свободный низ книги, не вставляя строки внутрь шаблона.
+_V4_CLONED_OBJECTS: tuple[_V4CloneSlot, ...] = (
+    _V4CloneSlot("offices2", "offices", "offices",
+                 range(18, 36), range(6, 32), 152, 148, 45, 70),
+    _V4CloneSlot("retail2", "standalone_retail", "retail",
+                 range(38, 56), range(34, 60), 152, 148, 46, 71),
+    _V4CloneSlot("above_parking2", "above_parking", "above_parking",
+                 range(58, 76), range(62, 88), 152, 148, 47, 72),
+)
+
+
+def _v4_shift_coord(coord: str, offset: int) -> str:
+    found = re.match(r"([A-Z]+)(\d+)$", coord)
+    if not found:
+        return coord
+    return f"{found.group(1)}{int(found.group(2)) + offset}"
+
+
 # Ключ движка -> ячейка листа «Вводные». Проценты движок хранит в пунктах
 # (25 = 25%), книга — в долях, пересчёт по суффиксу _pct/_pp.
 _V4_INPUT_CELLS: dict[str, str] = {
@@ -17298,6 +17390,39 @@ _V4_BOOL_CELLS = {  # ключ -> ячейка «Да/Нет»
     "offices_enabled": "K20", "retail_enabled": "K40", "above_parking_enabled": "K60",
     "sports_enabled": "K123",
 }
+_V4_OBJECT_QUEUE_CELLS: dict[str, str] = {
+    "offices": "K21", "standalone_retail": "K41",
+    "above_parking": "K61", "sports": "K124",
+}
+
+_v4_dates = set(_V4_DATE_KEYS)
+for _slot in _V4_CLONED_OBJECTS:
+    _source = _BY_KEY[_slot.source_key]
+    _target = _BY_KEY[_slot.key]
+    for _key, _coord in list(_V4_INPUT_CELLS.items()):
+        if not _key.startswith(_slot.source_prefix + "_"):
+            continue
+        if not _coord.startswith("K") or int(_coord[1:]) not in _slot.input_rows:
+            continue
+        _new_key = _target.prefix + _key[len(_slot.source_prefix):]
+        _new_coord = _v4_shift_coord(_coord, _slot.input_offset)
+        _V4_INPUT_CELLS[_new_key] = _new_coord
+        if _key in _V4_DATE_KEYS:
+            _v4_dates.add(_new_key)
+    if _source.enabled_key in _V4_BOOL_CELLS:
+        _V4_BOOL_CELLS[_target.enabled_key] = _v4_shift_coord(
+            _V4_BOOL_CELLS[_source.enabled_key], _slot.input_offset)
+    _V4_OBJECT_QUEUE_CELLS[_slot.key] = _v4_shift_coord(
+        _V4_OBJECT_QUEUE_CELLS[_slot.source_key], _slot.input_offset)
+_V4_DATE_KEYS = frozenset(_v4_dates)
+
+_V4_INPUT_CELLS.update({
+    "offices2_parking_under_spaces": "K230",
+    "offices2_parking_over_spaces": "K231",
+    "offices2_parking_guest_pct": "K232",
+    "retail2_parking_under_spaces": "K233",
+    "retail2_parking_over_spaces": "K234",
+})
 # Проценты в этих ячейках движок хранит пунктами, но сами ключи без суффикса.
 _V4_NO_PCT_KEYS = frozenset({"vri_relief_mln", "vri_security_cost_mln"})
 
@@ -18524,6 +18649,16 @@ _V4_OBJECT_PRODUCT_CELLS = {              # (очередь объекта, ег
     # Четвёртый блок — копия блока ТЦ со сдвигом на 90 строк.
     "sports": (126, 142),
 }
+
+
+for _slot in _V4_CLONED_OBJECTS:
+    _queue_row, _revenue_row = _V4_OBJECT_PRODUCT_CELLS[_slot.source_key]
+    _V4_OBJECT_PRODUCT_CELLS[_slot.key] = (
+        _queue_row + _slot.object_offset,
+        _revenue_row + _slot.object_offset,
+    )
+
+
 # Шаблон несёт ТРИ блока объектов; всё, что ниже, дописано копированием — и
 # лист ПРОВЕРКИ о дописанном узнаёт отсюда, а не из выписанных формул.
 _V4_TEMPLATE_OBJECT_REVENUE_ROWS = (24, 52, 80)
@@ -18656,21 +18791,82 @@ def _v4_copy_block(xml: str, rows: range, offset: int, *,
     return xml.replace(tail, "".join(parts) + tail, 1), written
 
 
-def _v4_sports_inputs_block(xml: str, missing: list[str]) -> str:
-    """Блок вводных ФОКа внизу «Вводных»: копия блока ТЦ с своими подписями."""
-    if re.search(r'<x:row r="121"[ />]', xml):
-        missing.append("ФОК: строка 121 «Вводных» занята")
-        return xml
-    xml, written = _v4_copy_block(xml, _V4_RETAIL_INPUT_ROWS,
-                                  _V4_SPORTS_INPUT_OFFSET)
-    if len(written) != len(_V4_RETAIL_INPUT_ROWS):
-        missing.append("ФОК: блок вводных не скопирован целиком")
-        return xml
-    # Колонки A–D блока ТЦ уехали бы вместе с ним: там живут статьи
-    # себестоимости, и вторая их копия читалась бы как второй набор ставок.
+
+def _v4_clone_input_object_block(
+    xml: str,
+    rows: range,
+    offset: int,
+    *,
+    title: str,
+    owner: str,
+    missing: list[str],
+) -> tuple[str, list[int]]:
+    """Копирует блок вводных объекта в свободный низ листа.
+
+    Это общий механический слой для дополнительных ОСЗ. Он ничего не знает о
+    назначении объекта и его деньгах: снимает готовый блок шаблона, переносит
+    строки вместе со стилями/формулами и освобождает A–D, где у исходного ТЦ
+    живут чужие статьи себестоимости. ФОК был первым потребителем; вторые
+    офисы/ТЦ используют тот же путь, а не ещё одну поимённую копию.
+    """
+    target = rows.start + offset
+    if re.search(rf'<x:row r="{target}"[ />]', xml):
+        missing.append(f"{owner}: строка {target} «Вводных» занята")
+        return xml, []
+    xml, written = _v4_copy_block(xml, rows, offset)
+    if len(written) != len(rows):
+        missing.append(f"{owner}: блок вводных не скопирован целиком")
+        return xml, written
     for row in written:
         xml = re.sub(r'<x:c r="[A-D]%d"[^>]*?(?:/>|>.*?</x:c>)' % row, "", xml,
                      flags=re.S)
+    for column in ("J", "K", "L", "M"):
+        xml, done = _v4_set_cell(xml, f"{column}{target}", text=title)
+        if not done and column == "J":
+            missing.append(f"{owner}: заголовок блока вводных")
+    return xml, written
+
+
+def _v4_clone_calculation_object_block(
+    xml: str,
+    rows: range,
+    offset: int,
+    *,
+    input_rows: range,
+    input_offset: int,
+    title: str,
+    owner: str,
+    missing: list[str],
+) -> tuple[str, list[int]]:
+    """Копирует расчётный блок объекта на листе «ОБЪЕКТЫ».
+
+    Ссылки на собственные строки сдвигаются вместе с блоком, ссылки на
+    «Вводные» — на соответствующий скопированный блок. Поэтому добавочный
+    объект получает ровно ту же методику, что исходный, без второй реализации
+    формул в Python.
+    """
+    target = rows.start + offset
+    if re.search(rf'<x:row r="{target}"[ />]', xml):
+        missing.append(f"{owner}: строка {target} листа ОБЪЕКТЫ занята")
+        return xml, []
+    xml, written = _v4_copy_block(
+        xml, rows, offset, input_rows=input_rows, input_offset=input_offset)
+    if len(written) != len(rows):
+        missing.append(f"{owner}: расчётный блок не скопирован целиком")
+        return xml, written
+    for column in ("A", "B", "C", "D"):
+        xml, done = _v4_set_cell(xml, f"{column}{target}", text=title)
+        if not done and column == "A":
+            missing.append(f"{owner}: заголовок расчётного блока")
+    return xml, written
+
+def _v4_sports_inputs_block(xml: str, missing: list[str]) -> str:
+    """Блок вводных ФОКа внизу «Вводных»: копия блока ТЦ с своими подписями."""
+    xml, written = _v4_clone_input_object_block(
+        xml, _V4_RETAIL_INPUT_ROWS, _V4_SPORTS_INPUT_OFFSET,
+        title="ФОК / МЕДЦЕНТР", owner="ФОК", missing=missing)
+    if len(written) != len(_V4_RETAIL_INPUT_ROWS):
+        return xml
     for row, (label, unit, key) in _V4_SPORTS_INPUT_LABELS.items():
         xml, done = _v4_set_cell(xml, f"J{row}", text=label)
         if not done:
@@ -18716,6 +18912,41 @@ def _v4_sports_inputs_block(xml: str, missing: list[str]) -> str:
     return xml
 
 
+def _v4_cloned_inputs_blocks(xml: str, missing: list[str]) -> str:
+    """Копирует вводные второго объекта из штатного блока того же типа.
+
+    Механическое копирование делает общий helper: он сохраняет стили и формулы,
+    но выбрасывает A–D исходного блока. Эти колонки принадлежат общим статьям
+    проекта; если увезти их вместе с объектом, лист ввода получает повторные
+    секции «Стоимость строительства»/«ВРИ» и выглядит как два места ввода.
+    """
+    for slot in _V4_CLONED_OBJECTS:
+        target = _BY_KEY[slot.key]
+        xml, written = _v4_clone_input_object_block(
+            xml, slot.input_rows, slot.input_offset,
+            title=target.group_label.upper(), owner=slot.key, missing=missing)
+        if len(written) != len(slot.input_rows):
+            continue
+        source = _BY_KEY[slot.source_key]
+        for row in written:
+            found = re.search(
+                rf'(<x:row r="{row}"(?:[ ][^>]*)?>)(.*?)(</x:row>)',
+                xml, re.S)
+            if not found:
+                continue
+            body = found.group(2)
+            body = body.replace(
+                f"{slot.source_prefix}_", f"{target.prefix}_")
+            for old, new in (
+                    (source.group_label, target.group_label),
+                    (source.group_label.upper(), target.group_label.upper()),
+                    (source.tep_label, target.tep_label),
+                    (source.tep_label.upper(), target.tep_label.upper())):
+                body = body.replace(old, new)
+            xml = xml[:found.start(2)] + body + xml[found.end(2):]
+    return xml
+
+
 # Паркинг отдельно стоящих объектов в книге. Три места, и все три обязательны:
 # подпись блока вводных, деньги объекта и дверь в CF.
 #
@@ -18740,6 +18971,10 @@ _V4_OBJECT_PARKING = (
     # ФОК дописан копией блока ТЦ ниже аллокации, и зазор у него свой.
     ("ФОК / медцентр", 125, 150, 151, "B146", "K165", "K166", 140, 141, "K134", "K128", 131,
      False, ""),
+    ("МФОЦ / офисы 2", 155, 180, 181, "B176", "K230", "K231",
+     170, 171, "K183", "K177", 161, True, "K232"),
+    ("ТЦ / ОСЗ 2", 183, 208, 209, "B204", "K233", "K234",
+     198, 199, "K203", "K197", 189, False, ""),
 )
 _V4_OBJECT_PARKING_INPUT_ROWS = (
     # (строка, подпись, ячейка значения, единица) — номер строки задан явно, а
@@ -18756,6 +18991,11 @@ _V4_OBJECT_PARKING_INPUT_ROWS = (
     (165, "ФОК — мест в своём подземном", "K165", "шт."),
     (166, "ФОК — мест на первых этажах", "K166", "шт."),
     (167, "Офисы — гостевых (не продаются)", "K167", "доля мест"),
+    (230, "Офисы 2 — мест в своём подземном", "K230", "шт."),
+    (231, "Офисы 2 — мест на первых этажах", "K231", "шт."),
+    (232, "Офисы 2 — гостевых (не продаются)", "K232", "доля мест"),
+    (233, "ТЦ / ОСЗ 2 — мест в своём подземном", "K233", "шт."),
+    (234, "ТЦ / ОСЗ 2 — мест на первых этажах", "K234", "шт."),
 )
 
 
@@ -19005,7 +19245,7 @@ def _v4_object_parking_allocation(xml: str, missing: list[str]) -> str:
 
 # Строка объекта на листе ТЭП — по строке его объёма продаж: второй список
 # «какой объект в какой строке» разошёлся бы с первым молча.
-_V4_OBJECT_TEP_ROW = {22: 31, 50: 32, 140: 34}
+_V4_OBJECT_TEP_ROW = {22: 31, 50: 32, 140: 34, 170: 45}
 
 
 def _v4_object_parking_in_tep(xml: str, missing: list[str]) -> str:
@@ -19061,22 +19301,12 @@ _V4_OBJECT_CAPEX_CHECK = {
 
 def _v4_sports_object_block(xml: str, missing: list[str]) -> str:
     """Четвёртый блок листа ОБЪЕКТЫ и его доля в аллокации по очередям."""
-    if re.search(r'<x:row r="124"[ />]', xml):
-        missing.append("ФОК: строка 124 листа ОБЪЕКТЫ занята")
-        return xml
-    xml, written = _v4_copy_block(
+    xml, written = _v4_clone_calculation_object_block(
         xml, _V4_RETAIL_OBJECT_ROWS, _V4_SPORTS_OBJECT_OFFSET,
-        input_rows=range(40, 56), input_offset=_V4_SPORTS_INPUT_OFFSET)
+        input_rows=range(40, 56), input_offset=_V4_SPORTS_INPUT_OFFSET,
+        title="ФОК / МЕДЦЕНТР", owner="ФОК", missing=missing)
     if len(written) != len(_V4_RETAIL_OBJECT_ROWS):
-        missing.append("ФОК: блок объекта не скопирован целиком")
         return xml
-    # Заголовок стоит во всех ячейках строки — так его пишет шаблон (полоса
-    # заливки во всю ширину). Оставить там подпись ТЦ значило бы завести в
-    # книге второй торговый центр, который на самом деле ФОК.
-    for _column in ("A", "B", "C", "D"):
-        xml, done = _v4_set_cell(xml, f"{_column}124", text="ФОК / МЕДЦЕНТР")
-        if not done and _column == "A":
-            missing.append("ФОК: заголовок блока объекта")
     # Аллокация — единственная дверь, через которую объекты попадают в CF
     # очередей. Не расширить её значит построить ФОК и не показать его нигде.
     added = 0
@@ -19100,6 +19330,64 @@ def _v4_sports_object_block(xml: str, missing: list[str]) -> str:
         xml = xml[:found.start(1)] + new_body + xml[found.end(1):]
     if added < 28 * 100:
         missing.append(f"ФОК: аллокация по очередям расширена лишь в {added} ячейках")
+    return xml
+
+
+def _v4_cloned_object_blocks(xml: str, missing: list[str]) -> str:
+    """Дописывает вторые объекты и проводит каждый в аллокацию CF."""
+    previous_queue = 126
+    for slot in _V4_CLONED_OBJECTS:
+        first = slot.object_rows.start + slot.object_offset
+        if re.search(rf'<x:row r="{first}"[ />]', xml):
+            missing.append(f"{slot.key}: строка {first} листа ОБЪЕКТЫ занята")
+            continue
+        xml, written = _v4_copy_block(
+            xml, slot.object_rows, slot.object_offset,
+            input_rows=slot.input_rows, input_offset=slot.input_offset)
+        if len(written) != len(slot.object_rows):
+            missing.append(
+                f"{slot.key}: блок ОБЪЕКТЫ скопирован не целиком "
+                f"({len(written)} из {len(slot.object_rows)})")
+            continue
+        target = _BY_KEY[slot.key]
+        for column in ("A", "B", "C", "D"):
+            xml, done = _v4_set_cell(
+                xml, f"{column}{first}", text=target.group_label.upper())
+            if not done and column == "A":
+                missing.append(f"{slot.key}: заголовок блока ОБЪЕКТЫ")
+
+        target_queue = _V4_OBJECT_PRODUCT_CELLS[slot.key][0]
+        delta = target_queue - previous_queue
+        added = 0
+        for row in range(92, 123):
+            found = re.search(
+                rf'<x:row r="{row}"(?:[ ][^>]*)?>(.*?)</x:row>', xml, re.S)
+            if not found:
+                continue
+            body = found.group(1)
+
+            def extend(match: "re.Match[str]") -> str:
+                formula = html.unescape(match.group(1))
+                last = re.search(
+                    rf"IF\(\$B\${previous_queue}=(\d+),([A-Z]{{1,3}})(\d+),0\)\)$",
+                    formula)
+                if not last:
+                    return match.group(0)
+                queue, column, target_row = (
+                    last.group(1), last.group(2), int(last.group(3)))
+                extended = (
+                    formula[:-1]
+                    + f",IF($B${target_queue}={queue},{column}{target_row + delta},0))")
+                return "<x:f>" + xml_escape(extended) + "</x:f>"
+
+            new_body, count = re.subn(
+                r"<x:f>(.*?)</x:f>", extend, body, flags=re.S)
+            added += count
+            xml = xml[:found.start(1)] + new_body + xml[found.end(1):]
+        if added < 28 * 100:
+            missing.append(
+                f"{slot.key}: аллокация по очередям расширена лишь в {added} ячейках")
+        previous_queue = target_queue
     return xml
 
 
@@ -19137,9 +19425,17 @@ def _v4_sports_tep_row(xml: str, missing: list[str]) -> str:
     # Подземные гаражи объектов строятся и стоят денег, а в метрах их не было
     # нигде: строки объектов несут наземную ГБА, и «строительный объём» без
     # них не равен объёму движка. Добавляются здесь же, где собирается итог.
+    _garage_refs = []
+    for obj in standalone_objects():
+        if not obj.garage:
+            continue
+        enabled = _V4_BOOL_CELLS.get(obj.enabled_key)
+        cell = _V4_INPUT_CELLS.get(f"{obj.prefix}_parking_under_spaces")
+        if enabled and cell:
+            _garage_refs.append((enabled, cell))
     garages = "+".join(
         f"IF('Вводные'!${enabled[0]}${enabled[1:]}=\"Да\",'Вводные'!${cell[0]}${cell[1:]},0)"
-        for enabled, cell in (("K20", "K161"), ("K40", "K163"), ("K123", "K165")))
+        for enabled, cell in _garage_refs) or "0"
     xml, done = _v4_set_cell(
         xml, "C36",
         formula=f"SUM(C28,C35,F40:F43)+'Вводные'!$K$158*({garages})")
@@ -19176,6 +19472,59 @@ def _v4_sports_tep_row(xml: str, missing: list[str]) -> str:
     return xml
 
 
+
+_V4_CLONE_TEP_SOURCE = {
+    "offices": ("K25", "K26", "", "K31", 1000),
+    "standalone_retail": ("K45", "K46", "", "K51", 1000),
+    "above_parking": ("K66", "", "K63", "K71", 1000000),
+}
+
+
+def _v4_cloned_tep_rows(xml: str, missing: list[str]) -> str:
+    """Строки ТЭП вторых объектов; итог объектов остаётся один."""
+    for slot in _V4_CLONED_OBJECTS:
+        xml = _v4_ensure_row(xml, slot.tep_row)
+        gba, saleable, units, price, scale = _V4_CLONE_TEP_SOURCE[slot.source_key]
+        gba = _v4_shift_coord(gba, slot.input_offset)
+        saleable = _v4_shift_coord(saleable, slot.input_offset) if saleable else ""
+        units = _v4_shift_coord(units, slot.input_offset) if units else ""
+        price = _v4_shift_coord(price, slot.input_offset)
+        queue_cell = _V4_OBJECT_QUEUE_CELLS[slot.key]
+        revenue_row = _V4_OBJECT_PRODUCT_CELLS[slot.key][1]
+        obj = _BY_KEY[slot.key]
+        cells = (
+            ("A", "text", "Проект"),
+            ("B", "text", obj.tep_label),
+            ("C", "formula", f"'Вводные'!${gba[0]}${gba[1:]}"),
+            ("D", "formula", (f"'Вводные'!${saleable[0]}${saleable[1:]}"
+                              if saleable else "0")),
+            ("E", "formula", (f"'Вводные'!${units[0]}${units[1:]}"
+                              if units else "0")),
+            ("F", "formula",
+             f"'Вводные'!${price[0]}${price[1:]}*{scale}*'Вводные'!$H$5"
+             f"*INDEX('Вводные'!$S$88:$S$91,'Вводные'!${queue_cell[0]}${queue_cell[1:]})"
+             f"*INDEX('Вводные'!$AG$88:$AG$91,'Вводные'!${queue_cell[0]}${queue_cell[1:]})"),
+            ("G", "formula", f"'ОБЪЕКТЫ'!B{revenue_row}"),
+            ("H", "text", "Дополнительный объект; очередь задаётся отдельно"),
+        )
+        for column, kind, value in cells:
+            coord = f"{column}{slot.tep_row}"
+            if kind == "text":
+                xml, done = _v4_set_or_insert_cell(xml, coord, text=value)
+            else:
+                xml, done = _v4_set_or_insert_cell(xml, coord, formula=value)
+            if not done:
+                missing.append(f"ТЭП · {slot.key}: {coord}")
+    extra_rows = [slot.tep_row for slot in _V4_CLONED_OBJECTS]
+    for letter in ("C", "D", "E", "G"):
+        formula = f"SUM({letter}31:{letter}34," + ",".join(
+            f"{letter}{row}" for row in extra_rows) + ")"
+        xml, done = _v4_set_cell(xml, f"{letter}35", formula=formula)
+        if not done:
+            missing.append(f"ТЭП · итог дополнительных объектов {letter}35")
+    return xml
+
+
 # Блок «СТРУКТУРА ПРОДУКТА» листа ОТЧЁТ: (строка, подпись, ячейка наземной
 # площади, ячейка продаваемой, строка выручки объекта на листе ОБЪЕКТЫ, строка
 # продаваемых мест его гаража, строка выручки гаража, ячейка мест гаража под
@@ -19185,6 +19534,9 @@ _V4_PRODUCT_STRUCTURE_OBJECTS = (
     (51, "Торговый центр / ОСЗ", "K45", "K46", 52, 60, 61, "K163", False),
     (52, "Наземный паркинг", "K66", "", 80, 0, 0, "", False),
     (53, "ФОК / медцентр", "K128", "K129", 142, 150, 151, "K165", False),
+    (70, "МФОЦ / офисный центр 2", "K177", "K178", 172, 180, 181, "K230", True),
+    (71, "Торговый центр / ОСЗ 2", "K197", "K198", 200, 208, 209, "K233", False),
+    (72, "Наземный паркинг 2", "K218", "", 228, 0, 0, "", False),
 )
 _V4_PRODUCT_STRUCTURE_TOTAL_ROW = 54
 _V4_PRODUCT_STRUCTURE_FIRST_ROW = 46
@@ -19246,6 +19598,7 @@ def _v4_product_structure_block(xml: str, missing: list[str]) -> str:
     garages = []
     for (row, label, gba_cell, saleable_cell, revenue_row,
          places_row, garage_revenue_row, under_cell, sellable) in _V4_PRODUCT_STRUCTURE_OBJECTS:
+        xml_holder[0] = _v4_ensure_row(xml_holder[0], row)
         put(f"A{row}", text=label)
         put(f"B{row}", formula=f"{param}${gba_cell[0]}${gba_cell[1:]}")
         if saleable_cell:
@@ -19271,8 +19624,13 @@ def _v4_product_structure_block(xml: str, missing: list[str]) -> str:
             put(f"C{row}", formula="0")
 
     put(f"A{total}", text="ИТОГО ПРОДУКТЫ")
+    _extra_product_rows = [
+        row for row, *_ in _V4_PRODUCT_STRUCTURE_OBJECTS if row > total
+    ]
     for column in ("B", "C", "D", "E", under):
-        put(f"{column}{total}", formula=f"SUM({column}{first}:{column}{total - 1})")
+        parts = [f"{column}{first}:{column}{total - 1}"]
+        parts.extend(f"{column}{row}" for row in _extra_product_rows)
+        put(f"{column}{total}", formula="SUM(" + ",".join(parts) + ")")
     put(f"H{total}", text=("Строительный объём = наземная + подземная. "
                            "Соцобъекты сюда не входят — они не продукт; "
                            "их метры на листе ТЭП."))
@@ -19738,43 +20096,63 @@ def _v4_use_bridge_base_row(xml: str, phase: int, missing: list[str]) -> str:
 
 
 def _v4_apply_sports_tax_row(xml: str, phase: int, missing: list[str]) -> str:
-    """Признание стоимости ФОКа в налоговой базе очереди — как в движке.
+    """Признание CAPEX всех дописанных объектов в налоговой базе очереди.
 
-    Проданный объект признаёт СВОЙ CAPEX по своему проданному объёму: он и в
-    движке стоит отдельным пулом (`krt_products`). Переданный городу не
-    признаёт ничего — выручки у него нет, — и его стоимость возвращается в
-    общий пул очереди, откуда её вычитала строка аллокации объектов. Забыть
-    вторую половину значит оставить стоимость ФОКа непризнанной до конца
-    проекта: налог вырос бы на четверть её, и обе книги выглядели бы верными.
+    Шаблон знает три штатных объекта. Всё, что дописано ниже, признаёт свой
+    CAPEX по своему проданному объёму. Передаваемый ФОК дополнительно возвращает
+    стоимость в общий пул, если продажи нет.
     """
     queue = phase
     alloc_row = 96 + 8 * (phase - 1)
-    sold = f"'Вводные'!$K${_V4_SPORTS_DISPOSITION_ROW}=\"{_V4_SPORTS_SALE_WORD}\""
-    mine = f"'ОБЪЕКТЫ'!$B$126={queue}"
     pool_old = f"(SUM({_v4_month_span(20)})-'ОБЪЕКТЫ'!$B${alloc_row})"
-    pool_new = (f"(SUM({_v4_month_span(20)})-'ОБЪЕКТЫ'!$B${alloc_row}"
-                f"+IF({sold},0,IF({mine},'ОБЪЕКТЫ'!$B$146,0)))")
+    added = [
+        (key, queue_row, revenue_row)
+        for key, (queue_row, revenue_row) in _V4_OBJECT_PRODUCT_CELLS.items()
+        if revenue_row not in _V4_TEMPLATE_OBJECT_REVENUE_ROWS
+    ]
+
+    corrections: list[str] = []
+    own_terms: list[tuple[str, str, int, int]] = []
+    for key, queue_row, revenue_row in added:
+        obj = _BY_KEY.get(key)
+        mine = f"'ОБЪЕКТЫ'!$B${queue_row}={queue}"
+        sold = "TRUE"
+        if obj is not None and obj.sale_gate:
+            if key == "sports":
+                sold = (
+                    f"'Вводные'!$K${_V4_SPORTS_DISPOSITION_ROW}="
+                    f"\"{_V4_SPORTS_SALE_WORD}\"")
+            else:
+                missing.append(
+                    f"CF_{phase}: у объекта {key} есть sale_gate без правила книги")
+                continue
+            corrections.append(
+                f"IF({sold},0,IF({mine},'ОБЪЕКТЫ'!$B${revenue_row + 4},0))")
+        own_terms.append((sold, mine, revenue_row + 4, revenue_row - 2))
+
+    pool_inside = f"SUM({_v4_month_span(20)})-'ОБЪЕКТЫ'!$B${alloc_row}"
+    if corrections:
+        pool_inside += "+" + "+".join(corrections)
+    pool_new = f"({pool_inside})"
 
     def build(column: str, body: str) -> str:
-        # Хвост формулы — колонко-зависимый: «-D53-D57-D21» в колонке D и
-        # «-E53-E57-E21» в соседней. Искать его строкой одной колонки значит
-        # не найти его ни в одной, кроме первой.
         tail = f"-{column}53-{column}57-{column}21"
         if pool_old not in body or tail not in body:
             return body
         body = body.replace(pool_old, pool_new)
-        own = (f"-IF({sold},IF({mine},IFERROR('ОБЪЕКТЫ'!$B$146*'ОБЪЕКТЫ'!{column}140"
-               f"/'ОБЪЕКТЫ'!$B$140,0),0),0)")
-        # Слагаемое встаёт ПЕРЕД процентами и НДС — там же, где стоят три
-        # других объекта: порядок слагаемых читается как порядок признания.
+        terms = "".join(
+            f"-IF({sold},IF({mine},IFERROR('ОБЪЕКТЫ'!$B${capex_row}"
+            f"*'ОБЪЕКТЫ'!{column}{volume_row}/'ОБЪЕКТЫ'!$B${volume_row},0),0),0)"
+            for sold, mine, capex_row, volume_row in own_terms)
         at = body.rindex(tail)
-        return body[:at] + own + body[at:]
+        return body[:at] + terms + body[at:]
 
-    xml, count = _v4_rewrite_row_formulas(xml, 22, "'ОБЪЕКТЫ'!$B$64=", build)
+    xml, count = _v4_rewrite_row_formulas(
+        xml, 22, "'ОБЪЕКТЫ'!$B$64=", build)
     if count < 100:
-        missing.append(f"CF_{phase}: строка налоговой базы не знает о ФОКе ({count})")
+        missing.append(
+            f"CF_{phase}: налоговая база не знает все дополнительные объекты ({count})")
     return xml
-
 
 _V4_ACCRUAL_ROW = 58                 # Финансовые расходы месяца (начисление)
 
@@ -21541,6 +21919,19 @@ _V4_OBJECT_ROWS = {
     "retail": (50, 51, "$B$39", "$B$41", "$B$37", "'Вводные'!$K$48", 61),
     "above_parking": (78, 79, "$B$67", "$B$69", "$B$65", "'Вводные'!$K$69", None),
     "sports": (140, 141, "$B$129", "$B$131", "$B$127", "'Вводные'!$K$131", 151),
+    "offices2": (170, 171, "$B$159", "$B$161", "$B$157", "'Вводные'!$K$180", 181),
+    "retail2": (198, 199, "$B$187", "$B$189", "$B$185", "'Вводные'!$K$200", 209),
+    "above_parking2": (226, 227, "$B$215", "$B$217", "$B$213", "'Вводные'!$K$221", None),
+}
+
+_V4_OBJECT_RESIDUAL_BOOK = {
+    "offices": (36, "$K$28", "K33"),
+    "retail": (56, "$K$48", "K53"),
+    "above_parking": (76, "$K$69", "K73"),
+    "sports": (_V4_SPORTS_RESIDUAL_ROW, "$K$131", "K136"),
+    "offices2": (188, "$K$180", "K185"),
+    "retail2": (208, "$K$200", "K205"),
+    "above_parking2": (228, "$K$221", "K225"),
 }
 
 
@@ -22570,6 +22961,7 @@ def build_project_workbook(
     # `put` умеет только заменять существующую ячейку, а строк 121–140 в
     # шаблоне нет вовсе.
     xml = _v4_sports_inputs_block(xml, missing)
+    xml = _v4_cloned_inputs_blocks(xml, missing)
     xml = _v4_object_parking_input_labels(xml, missing)
 
     def num_row(row: dict[str, Any] | None, field: str) -> float:
@@ -22983,6 +23375,7 @@ def build_project_workbook(
     report_xml = _v4_rename_labels(report_xml, "ОТЧЕТ", missing)
     tep_xml = _v4_sports_tep_row(
         source.read(tep_sheet_path).decode("utf-8"), missing)
+    tep_xml = _v4_cloned_tep_rows(tep_xml, missing)
     tep_xml = _v4_object_parking_in_tep(tep_xml, missing)
     tep_xml = _v4_rename_labels(tep_xml, "ТЭП", missing)
     tep_xml, report_xml = _v4_storage_area_cells(tep_xml, report_xml, missing)
@@ -23009,6 +23402,7 @@ def build_project_workbook(
     objects_sheet_path = _v4_sheet_path(source, "ОБЪЕКТЫ")
     objects_xml = _v4_sports_object_block(
         source.read(objects_sheet_path).decode("utf-8"), missing)
+    objects_xml = _v4_cloned_object_blocks(objects_xml, missing)
     objects_xml = _v4_object_parking_block(objects_xml, missing)
     objects_xml = _v4_object_parking_allocation(objects_xml, missing)
     sales_sheet_path = _v4_sheet_path(source, "Продажи")
@@ -23423,11 +23817,7 @@ def build_project_workbook(
     # свободную строку СВОЕГО блока — править объект, листая от одной его
     # половины к другой, нельзя (решение владельца, 03.09.2026), — а срок
     # становится формулой: сдвинул стройку или хвост, и он поехал.
-    for _obj_prefix, _obj_row, _obj_months, _obj_term in (
-            ("offices", 36, "$K$28", "K33"),
-            ("retail", 56, "$K$48", "K53"),
-            ("above_parking", 76, "$K$69", "K73"),
-            ("sports", _V4_SPORTS_RESIDUAL_ROW, "$K$131", "K136")):
+    for _obj_prefix, (_obj_row, _obj_months, _obj_term) in _V4_OBJECT_RESIDUAL_BOOK.items():
         put_new(f"J{_obj_row}", text="Остаточные продажи после РВЭ")
         put_new(f"K{_obj_row}", number=n(x, f"{_obj_prefix}_residual_months", 6.0),
                 label=f"{_obj_prefix}_residual_months")
@@ -23523,14 +23913,17 @@ def build_project_workbook(
                            if (phasing or {}).get("enabled") else 1))
     phase_offsets = [float(item.get("start_offset_months") or 0)
                      for item in ((phasing or {}).get("phases") or [])]
-    for field, coord, default, date_cells, date_keys in (
-        ("offices", "K21", 3, ("K27", "K30"), ("offices_start", "offices_sales_start")),
-        ("standalone_retail", "K41", 2, ("K47", "K50"), ("retail_start", "retail_sales_start")),
-        ("above_parking", "K61", 2, ("K68", "K70"),
-         ("above_parking_start", "above_parking_sales_start")),
-        ("sports", "K124", 2, ("K130", "K133"),
-         ("sports_start", "sports_sales_start")),
-    ):
+    for _object in standalone_objects():
+        field = _object.key
+        coord = _V4_OBJECT_QUEUE_CELLS.get(field)
+        if not coord:
+            continue
+        default = _object.default_queue
+        date_keys = (f"{_object.prefix}_start", f"{_object.prefix}_sales_start")
+        date_cells = tuple(_V4_INPUT_CELLS.get(key, "") for key in date_keys)
+        if not all(date_cells):
+            missing.append(f"очередь объекта «{field}»: книга не знает ячейки дат")
+            continue
         # Применённое движком размещение сильнее нашего вывода: объект,
         # объявленный продуктами очереди, до `discrete` не доходит вовсе, и
         # книга ставила его по умолчанию — ТЦ во вторую вместо четвёртой.
@@ -23964,8 +24357,10 @@ def build_project_workbook(
             sales_xml = _v4_apply_core_ladder(sales_xml, _core_refs, missing)
         except Exception as exc:
             missing.append("Вводные · лестница цены квартир: " + _error_location(exc))
-    for _prefix, _label in (("offices", "офисы"), ("retail", "ТЦ"),
-                            ("above_parking", "наземный паркинг"), ("sports", "ФОК / медцентр")):
+    for _object in standalone_objects():
+        _prefix, _label = _object.prefix, _object.group_label
+        if _prefix not in _V4_OBJECT_ROWS:
+            continue
         _profile_items, _profile_percent, _ = parse_month_schedule(x.get(f"{_prefix}_sales_profile"))
         _growth = [n(x, f"{_prefix}_growth_stage{k}_pct", 0.0) / 100.0 for k in (1, 2, 3, 4)]
         _profile_refs = _stage_refs = None
@@ -30385,9 +30780,12 @@ def calculate(req: CalcRequest) -> dict:
     net_profit = after_finance_pre_tax - fin["profit_tax"] - fin.get("vat", 0.0)
 
     # Report-level project metrics.
+    _monetizable_area_products = {"apartments", "ground_commercial"} | {
+        obj.key for obj in standalone_objects() if obj.measure == "sqm"
+    }
     monetizable_saleable_sqm = sum(
         n(row, "saleable") for key, row in t.items()
-        if key in ("apartments", "ground_commercial", "standalone_retail", "offices")
+        if key in _monetizable_area_products
     )
     apartment_saleable_sqm = n(t.get("apartments", {}), "saleable")
     core_gns = op["core_above_gns"] + op["core_under_gns"]
@@ -31257,6 +31655,10 @@ _MONTHLY_CAPEX_LABELS: dict[str, str] = {
     "gc_fee": "Вознаграждение генподрядчика",
     "reserve": "Резерв",
 }
+# Дополнительные объекты появляются в детализации тем же фактом, что в реестре.
+_MONTHLY_CAPEX_LABELS.update({
+    obj.key: obj.group_label for obj in standalone_objects()
+})
 
 
 def _monthly_series(schedule: dict[date, float], timeline: list[date]) -> list[float]:
@@ -31645,15 +32047,11 @@ def _apply_explicit_phase_products(
         p_tep[key] = row
         for field, input_key in _PHASE_PRODUCT_INPUT_ALIASES.get(key, {}).items():
             p_inputs[input_key] = float(row.get(field) or 0.0)
-        if key == "offices":
-            p_inputs["offices_enabled"] = bool(row.get("gns") or row.get("saleable"))
-        elif key == "standalone_retail":
-            p_inputs["retail_enabled"] = bool(row.get("gns") or row.get("saleable"))
-        elif key == "above_parking":
-            p_inputs["above_parking_enabled"] = bool(row.get("gns") or row.get("units"))
-        elif key == "sports":
-            p_inputs["sports_enabled"] = bool(row.get("gns") or row.get("saleable")
-                                              or row.get("transfer"))
+        obj = _BY_KEY.get(key)
+        if obj is not None:
+            p_inputs[obj.enabled_key] = bool(
+                row.get("gns") or row.get("saleable") or row.get("units")
+                or row.get("transfer"))
     return explicit
 
 
@@ -33647,15 +34045,10 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
         # Признак включения и удельные вводные объекта объявлены рядом с ним, а
         # не цепочкой «если офисы, иначе если ТЦ, иначе паркинг»: четвёртый
         # объект в такой цепочке молча получил бы вводные третьего.
-        for prefix, tep_key, default_queue, enabled_key, rate_keys in (
-                ("offices", "offices", 3, "offices_enabled",
-                 ("offices_cost_th_per_sqm", "offices_price_th_per_sqm")),
-                ("retail", "standalone_retail", 2, "retail_enabled",
-                 ("retail_cost_th_per_sqm", "retail_price_th_per_sqm")),
-                ("above_parking", "above_parking", 2, "above_parking_enabled",
-                 ("above_parking_cost_mln_per_space", "above_parking_price_mln_per_space")),
-                ("sports", "sports", 2, "sports_enabled",
-                 ("sports_cost_th_per_sqm", "sports_price_th_per_sqm"))):
+        for _obj in standalone_objects():
+            prefix, tep_key = _obj.prefix, _obj.key
+            default_queue, enabled_key = _obj.default_queue, _obj.enabled_key
+            rate_keys = (_obj.rate_cost, _obj.rate_price)
             if tep_key in explicitly_placed:
                 declared = _explicit_phase_products(cfg).get(tep_key) or {}
                 p_inputs[enabled_key] = bool(x_master.get(enabled_key)) and bool(
