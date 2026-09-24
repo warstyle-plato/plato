@@ -99,3 +99,18 @@ def test_a_street_only_point_says_so():
     subject = resolve_subject(
         "krt:test", geocode=geocode, find_krt=lambda text: dict(SITE))
     assert any("только улицу, а не дом" in note for note in subject.notes), subject.notes
+
+
+def test_official_krt_point_skips_the_geocoder_entirely():
+    asked: list[str] = []
+
+    def geocode(query: str) -> GeoPoint:
+        asked.append(query)
+        raise AssertionError("официальную точку КРТ нельзя повторно геокодировать")
+
+    site = {**SITE, "latitude": 55.735622, "longitude": 37.396443,
+            "geometry_source": "krt.mos.ru map"}
+    subject = resolve_subject("krt:test", geocode=geocode, find_krt=lambda text: site)
+    assert subject.subject_type == "krt"
+    assert (round(subject.latitude, 6), round(subject.longitude, 6)) == (55.735622, 37.396443)
+    assert asked == []
