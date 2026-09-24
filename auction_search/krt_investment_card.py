@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 
-def krt_investment_card_page(slug: str) -> str:
+def krt_investment_card_page(slug: str, footer_html: str = "") -> str:
     """Generic full-screen KRT investment card over the production endpoints.
 
     The card owns no parser and no financial model. It only composes the
@@ -20,7 +20,7 @@ def krt_investment_card_page(slug: str) -> str:
 <style>
 :root{--bg:#f4f4f2;--panel:#fff;--ink:#171717;--muted:#6f706c;--line:#deded9;--soft:#f0f0ed;--orange:#db6b2b;--warn:#8d5419;--bad:#9f2923;--blue:#245b8a}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}
-a{color:inherit}.shell{max-width:1480px;margin:0 auto;padding:20px}.crumbs{font-size:12px;color:var(--muted);margin-bottom:12px}
+a{color:inherit}.shell{max-width:1480px;margin:0 auto;padding:20px}.brandbar{height:48px;display:flex;align-items:center;margin-bottom:10px}.brandbar img{height:32px;width:auto;display:block}.crumbs{font-size:12px;color:var(--muted);margin-bottom:12px}
 .hero,.card{background:var(--panel);border:1px solid var(--line)}.hero{padding:20px}.hero h1{font-size:27px;line-height:1.12;margin:0 0 5px}.sub{color:var(--muted);font-size:13px}
 .flags{display:flex;gap:6px;flex-wrap:wrap;margin:13px 0 15px}.flag{border:1px solid var(--line);padding:6px 8px;font-size:11px;font-weight:750;background:#fff}
 .flag.critical{border-color:#d0a074;background:#fff4ea;color:#7d430f}.flag.bad{border-color:#d39b98;background:#fff0ef;color:#8b231e}.flag.info{border-color:#aab9c7;background:#f2f7fb;color:#244f73}
@@ -39,12 +39,13 @@ g.bub:hover circle,g.bub.on circle{fill-opacity:.9}
 table{border-collapse:collapse;width:100%;font-size:12px}th,td{padding:7px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.03em}.num{text-align:right;white-space:nowrap}
 details{border:1px solid var(--line);margin-top:10px}summary{cursor:pointer;padding:9px 10px;font-weight:700}.detailsbody{padding:0 10px 10px}
 .scorebig{font-size:38px;font-weight:800;line-height:1}.scorebig small{font-size:11px;color:var(--muted);font-weight:500;display:block;margin-top:5px}.components{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:10px}.component{border:1px solid var(--line);padding:8px}.component b{font-size:18px}.component span{display:block;font-size:10px;color:var(--muted)}
-.sticky{position:sticky;top:10px}.spinner{display:inline-block;width:12px;height:12px;border:2px solid #bbb;border-top-color:#222;border-radius:50%;animation:spin .7s linear infinite;vertical-align:-2px;margin-right:5px}@keyframes spin{to{transform:rotate(360deg)}}
+.sticky{position:sticky;top:10px}.legal-footer{max-width:1480px;margin:8px auto 18px;padding:14px 20px;border-top:1px solid var(--line);display:flex;gap:12px;flex-wrap:wrap;color:var(--muted);font-size:11px}.legal-footer a{text-decoration:none;border-bottom:1px solid var(--line)}.spinner{display:inline-block;width:12px;height:12px;border:2px solid #bbb;border-top-color:#222;border-radius:50%;animation:spin .7s linear infinite;vertical-align:-2px;margin-right:5px}@keyframes spin{to{transform:rotate(360deg)}}
 @media(max-width:980px){.grid{grid-template-columns:1fr}.sticky{position:static}.kpis{grid-template-columns:repeat(3,1fr)}}@media(max-width:650px){.shell{padding:8px}.hero{padding:14px}.hero h1{font-size:21px}.kpis{grid-template-columns:repeat(2,1fr)}.two,.components{grid-template-columns:1fr}.mapstage{height:360px}}
 </style>
 </head>
 <body>
 <div class="shell">
+ <header class="brandbar"><a href="/" aria-label="DevelopAid"><img src="/guide/assets/logo.webp" alt="DevelopAid"></a></header>
  <div class="crumbs">КРТ Москвы · инвестиционный разбор</div>
  <section class="hero">
   <h1 id="title">Загружаю площадку…</h1>
@@ -126,12 +127,14 @@ details{border:1px solid var(--line);margin-top:10px}summary{cursor:pointer;padd
      </div></section>
     <section class="card"><header><h2>Действия</h2><span>по этой площадке</span></header><div class="body actionbar">
       <button id="handoffDevelopAid" class="primary">Передать в DevelopAid</button><button id="askPlato">Спросить Платона</button><button id="shareCard">Поделиться</button><a id="territoryLink" target="_blank" rel="noopener">Территория и ЕГРН</a>
+      <div id="officialSources" class="actionbar" style="flex-basis:100%;margin:4px 0 0"></div>
       <div id="actionStatus" class="source" style="flex-basis:100%"></div>
     </div></section>
    </div>
   </aside>
  </div>
 </div>
+__FOOTER__
 <div id="tip" role="status"></div>
 <script>
 const SLUG=__SLUG__;
@@ -193,6 +196,25 @@ function actionCounts(req){
  const a=Array.isArray(req.object_actions)?req.object_actions:[],count=k=>a.filter(x=>x&&x.category===k).length;
  return {demo:count('demolition'),conditional:count('demolition_or_reconstruction'),recon:count('reconstruction'),preserve:count('preservation'),res:Number(req.resettlement_mentions??(req.resettlement||[]).length)||0};
 }
+function officialSourceLinks(p,req){
+ const d=(req&&req.decision)||{},out=[],seen=new Set();
+ const add=(url,label)=>{url=String(url||'').trim();if(!url||seen.has(url))return;seen.add(url);out.push({url,label})};
+ if(p&&p.early_unpublished){
+  add(p.source_url,p.source_label||'Источник раннего сигнала');
+ }else{
+  if(p&&p.url&&!p.no_card)add(p.url,'Карточка krt.mos.ru');
+  add((p&&p.draft_decision_url)||d.page_url||(p&&p.no_card?p.url:''),'Проект решения на mos.ru');
+  add((p&&p.tep_document_url)||(req&&req.pdf_url)||d.pdf_url,'PDF решения');
+  ((p&&p.also_published)||[]).forEach(x=>add(x&&x.url,'Та же публикация · '+String((x&&x.department)||'mos.ru')));
+ }
+ return out;
+}
+function renderOfficialSources(p,req){
+ const links=officialSourceLinks(p,req);
+ const html=links.map(x=>'<a target="_blank" rel="noopener" href="'+esc(x.url)+'">'+esc(x.label)+'</a>').join('');
+ const box=$('officialSources');if(box){box.innerHTML=html;box.style.display=html?'flex':'none'}
+ return links;
+}
 function renderProgramme(p,req){
  const ren=renovationInfo(p,{},req),prog=(req.programme||[]).filter(x=>x&&x.category!=='housing_gfa_sqm');
  let left='<div class="metric"><span>Общий объём</span><b>'+fmt(p.total_gfa_sqm)+' м²</b></div>'
@@ -205,13 +227,16 @@ function renderProgramme(p,req){
  if(p.early_unpublished&&num(p.seizure_mln)!==null)right+='<div class="metric"><span>Изъятие · предварительно</span><b>'+fmt(p.seizure_mln,1)+' млн ₽</b></div>';
  right+='<div class="metric"><span>Снос</span><b>'+c.demo+'</b></div><div class="metric"><span>Снос / реконструкция</span><b>'+c.conditional+'</b></div><div class="metric"><span>Реконструкция</span><b>'+c.recon+'</b></div><div class="metric"><span>Сохранение</span><b>'+c.preserve+'</b></div><div class="metric"><span>Расселение / изъятие</span><b>'+c.res+'</b></div>';
  $('burden').innerHTML=right;
- const d=req.decision||{};
+ const links=officialSourceLinks(p,req);
  if(p.early_unpublished){
   $('programmeSource').innerHTML='Источник: '+esc(p.source_label||'ранний сигнал')
    +(p.note?' · '+esc(p.note):'')
-   +'. Изъятие показано отдельно и не считается полным денежным стеком КРТ.';
+   +'. Изъятие показано отдельно и не считается полным денежным стеком КРТ.'
+   +(links.length?' · '+links.map(x=>'<a target="_blank" rel="noopener" href="'+esc(x.url)+'">'+esc(x.label)+'</a>').join(' · '):'');
  }else{
-  $('programmeSource').innerHTML=d.page_url?'Источник: <a target="_blank" rel="noopener" href="'+esc(d.page_url)+'">материалы решения на mos.ru</a>':'Источник: карточка КРТ / проект решения, если опубликован.';
+  $('programmeSource').innerHTML=links.length
+   ?'Официальные источники: '+links.map(x=>'<a target="_blank" rel="noopener" href="'+esc(x.url)+'">'+esc(x.label)+'</a>').join(' · ')
+   :'Официальные ссылки для этой площадки пока не получены.';
  }
 }
 function fate(x){const f=String(x.fate||x.category||'').toLowerCase();if(f.includes('demolition_or_reconstruction'))return 'Снос / реконструкция';if(f.includes('demolition')||f.includes('снос'))return 'Снос';if(f.includes('reconstruction')||f.includes('рекон'))return 'Реконструкция';if(f.includes('preservation')||f.includes('сохран'))return 'Сохранение';return 'Не определено'}
@@ -377,7 +402,7 @@ async function boot(){
  const rankData=rankR.status==='fulfilled'?rankR.value:{rows:[]},rank=(rankData.rows||[]).find(x=>String(x.slug||'')===SLUG)||{},req=reqR.status==='fulfilled'?reqR.value:(rank.requirements||{}),parcels=parcelR.status==='fulfilled'?parcelR.value:null,report=reportR.status==='fulfilled'?reportR.value:null;
  MAP.point=pointR.status==='fulfilled'?pointR.value:null;MAP.parcels=parcels;MAP.peers=marketPeers(report);
  const initialRating=scoreR.status==='fulfilled'?(scoreR.value.rating||scoreR.value):null;
- renderHero(p,rank,req);renderEntry(p,rank);renderProgramme(p,req);renderTerritory(req,parcels);renderEconomics(rank,report,initialRating);renderPublic(rank);renderScore(initialRating);drawMap();
+ renderHero(p,rank,req);renderEntry(p,rank);renderProgramme(p,req);renderOfficialSources(p,req);renderTerritory(req,parcels);renderEconomics(rank,report,initialRating);renderPublic(rank);renderScore(initialRating);drawMap();
  $('recalcRating').onclick=()=>recalcRating(rank,report);
  $('priceTarget').onkeydown=e=>{if(e.key==='Enter')recalcRating(rank,report)};
  $('refreshMarket').onclick=async()=>{const b=$('refreshMarket');b.disabled=true;b.innerHTML='<span class="spinner"></span>Считаю';try{const d=await get('/auctions/krt/'+encodeURIComponent(SLUG)+'/market');const r2=await get('/auctions/krt/ranking');const rr=(r2.rows||[]).find(x=>String(x.slug||'')===SLUG)||rank;MAP.peers=marketPeers(d);renderHero(p,rr,req);drawMap();try{const s=await get(ratingUrl());const rating=s.rating||s;renderScore(rating);renderEconomics(rr,d,rating)}catch(_){renderEconomics(rr,d,null)}}catch(e){$('economics').insertAdjacentHTML('afterbegin','<div class="notice bad">'+esc(e.message||e)+'</div>')}finally{b.disabled=false;b.textContent='Обновить рынок и модель'}};
@@ -388,4 +413,4 @@ async function boot(){
 }
 boot().catch(e=>{document.querySelector('.shell').insertAdjacentHTML('afterbegin','<div class="notice bad"><b>Карточка не собрана:</b> '+esc(e.message||e)+'</div>')});
 </script>
-</body></html>""".replace("__SLUG__", slug_js)
+</body></html>""".replace("__SLUG__", slug_js).replace("__FOOTER__", footer_html)
