@@ -17460,9 +17460,12 @@ def _v4_apply_mode_decoders(xml: str, entry_report: dict[str, Any],
     # «Ежемесячно / Ежеквартально / ...».
     periodic_entry = moved.get("B78")
     if periodic_entry:
-        rewrite("B78", _v4_mode_decode_formula(
-            "vri_periodicity_months", periodic_entry, fallback="3"),
-            "vri_periodicity_months")
+        periodic_formula = _v4_mode_decode_formula(
+            "vri_periodicity_months", periodic_entry, fallback="3")
+        # Движок принудительно ставит квартал для Москвы независимо от выбора;
+        # Excel обязан повторять это ограничение, а не считать иной график.
+        rewrite("B78", f'IF($K$6="Москва",3,{periodic_formula})',
+                "vri_periodicity_months")
 
     # Трёхсостояние «По региону» раньше схлопывалось в Да/Нет ещё builder-ом.
     # Теперь оно живое: Москва разрешает default в «Да», МО — в «Нет».
