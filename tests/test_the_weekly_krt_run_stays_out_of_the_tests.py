@@ -53,3 +53,8 @@ def test_background_krt_runs_do_not_queue_addresses_at_a_public_geocoder() -> No
                         source.index("\n    @app.post(\"/auctions/krt/press/run\")",
                                      source.index("    def _screen_for_background("))]
     assert "allow_remote_geocode=False" in background
+
+    refresh = source[source.index("    async def auction_krt_ranking_refresh("):
+                     source.index("\n    def _press_only(", source.index(
+                         "    async def auction_krt_ranking_refresh("))]
+    assert "krt_ranking.start(projects, _screen_for_background)" in refresh
