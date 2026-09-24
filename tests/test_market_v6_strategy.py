@@ -13,7 +13,11 @@ from pathlib import Path
 
 from market_search.candidates_v6 import extract_candidates
 from market_search.recommendation import market_recommendation
-from market_search.service_v6 import MarketDiscoveryService as ServiceV6
+from market_search.service_v6 import (
+    MarketDiscoveryService as ServiceV6,
+    _may_adopt_zero_distance_project,
+)
+from market_search.subject import Subject
 from market_search.ui_v6 import install
 from market_search.yandex_search import SearchDoc
 
@@ -186,3 +190,10 @@ def test_ui_no_longer_treats_domrf_as_hard_gate() -> None:
     assert "Не подтверждён — в расчёт цены не идёт" not in core.PAGE
     assert "на попадание в выборку не влияет" in core.PAGE
     assert "market-v6-style" in core.PAGE
+
+
+def test_a_krt_point_is_not_reidentified_as_the_project_under_its_centre() -> None:
+    krt = Subject(55.735622, 37.396443, "krt", "krt:no8-kuncevo", subject_type="krt")
+    ordinary = Subject(55.735622, 37.396443, "coordinates", "55.735622,37.396443")
+    assert _may_adopt_zero_distance_project(krt) is False
+    assert _may_adopt_zero_distance_project(ordinary) is True
