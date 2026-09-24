@@ -30905,6 +30905,20 @@ def calculate(req: CalcRequest) -> dict:
         }
     }
 
+    # Объём в таблице продуктов — не исходная вводная, а то же физическое
+    # расписание, по которому движок посчитал выручку. Это особенно важно для
+    # отдельно стоящих объектов: паркинг первых этажей уменьшает продаваемую
+    # площадь офиса после чтения исходной вводной. Пока отчёт печатал сырое
+    # offices_saleable_sqm, ТЭП уже показывал остаточные метры, а строка
+    # «Продажи и продукты» — старые; средняя цена тоже становилась ложной.
+    # Берём сумму quantity-сценария один раз у движка: тот же источник затем
+    # используют PDF, сравнение очередей и КОНСОЛИДАТОР книги.
+    _quantity_schedules = op.get("quantity_product_schedules", {}) or {}
+    for _key, _spec in product_specs.items():
+        _schedule = _quantity_schedules.get(_key) or {}
+        if _schedule:
+            _spec["quantity"] = sum(float(_value or 0.0) for _value in _schedule.values())
+
     products_report = []
     report_krt_costs = {
         "offices": float(op["capex_amounts"].get("offices", 0.0) or 0.0),
