@@ -17604,6 +17604,32 @@ def _v4_mark_engine_only_readonly(xml: str) -> str:
             xml = pattern.sub(apply, xml, count=1)
     return xml
 
+
+def _v4_strip_engine_only_from_entry(xml: str) -> str:
+    """Убирает engine-only блоки из пользовательского листа «Вводные».
+
+    Стиль уже не жёлтый, но одной заливки недостаточно: Excel позволяет
+    перепечатать любую незапароленную ячейку. Поэтому поле, которое не умеет
+    пересчитываться offline, на пользовательском листе отсутствует целиком.
+    Соседний блок той же строки (A:D, E:H или J:M) не затрагивается.
+    """
+    blocks = {"D": ("A", "B", "C", "D"),
+              "H": ("E", "F", "G", "H"),
+              "M": ("J", "K", "L", "M")}
+    rows = [int(number) for number in re.findall(r'<x:row r="(\d+)"', xml)]
+    max_row = max(rows, default=0)
+    for key_col, columns in blocks.items():
+        for row in range(1, max_row + 1):
+            if _v4_cell_text(xml, f"{key_col}{row}") not in V4_INPUTS_NOT_IN_BOOK:
+                continue
+            for column in columns:
+                coord = f"{column}{row}"
+                xml = re.sub(
+                    r'<x:c r="%s"[^>]*(?:/>|>.*?</x:c>)' % re.escape(coord),
+                    "", xml, count=1, flags=re.S)
+    return xml
+
+
 def _v4_add_mode_dropdowns(xml: str, missing: list[str]) -> str:
     """Data Validation для режимов, которые реально пересчитывает Excel.
 
@@ -24383,6 +24409,7 @@ def build_project_workbook(
         xml, entry_xml, entry_report = v4_entry_sheet.build(xml, styles_xml)
         xml = _v4_apply_mode_decoders(
             xml, entry_report, _rc_refs.get("rate_scenario"), missing)
+        entry_xml = _v4_strip_engine_only_from_entry(entry_xml)
         # Dropdown принадлежит именно пользовательскому листу. До разделения
         # листов validation на старом XML остался бы на «Параметры модели»,
         # где человек ничего не вводит.
