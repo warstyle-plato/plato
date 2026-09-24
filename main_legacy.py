@@ -17497,14 +17497,20 @@ def _v4_add_mode_dropdowns(xml: str, missing: list[str]) -> str:
     options = _v4_live_mode_options()
     validations: list[tuple[str, list[str]]] = []
     key_columns = {"D": "B", "H": "F", "M": "K"}
+    # Пользовательский лист собирается заново, и ключи в нём бывают не только
+    # inlineStr (<x:t>), но и строковыми <x:v>. Regex по одному виду строки
+    # находил часть полей случайно: на реальной книге восемь живых режимов,
+    # включая bridge_interest_mode, оставались без dropdown.
+    row_numbers = [int(number) for number in re.findall(r'<x:row r="(\\d+)"', xml)]
+    max_row = max(row_numbers, default=0)
     for key, values in options.items():
         target: str | None = None
         for key_col, value_col in key_columns.items():
-            found = re.search(
-                r'<x:c r="%s(\d+)"[^>]*>.*?<x:t>%s</x:t>.*?</x:c>'
-                % (key_col, re.escape(key)), xml, re.S)
-            if found:
-                target = f"{value_col}{found.group(1)}"
+            for row in range(1, max_row + 1):
+                if _v4_cell_text(xml, f"{key_col}{row}") == key:
+                    target = f"{value_col}{row}"
+                    break
+            if target is not None:
                 break
         # B75 исторически подписан сразу двумя ключами. После разделения
         # значения и срока координата режима однозначна, но старый составной
