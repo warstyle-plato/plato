@@ -17490,6 +17490,34 @@ def _v4_mirror_secondary_input_styles(xml: str) -> str:
     return xml
 
 
+
+def _v4_mark_engine_only_readonly(xml: str) -> str:
+    """Engine-only поля не должны выглядеть редактируемыми на «Вводных».
+
+    Координата выводится из API key в D/H/M, поэтому отдельной карты Excel для
+    этого не существует. Формульный стиль не попадает в набор entry styles —
+    v4_entry_sheet не переносит такую ячейку на пользовательский лист.
+    """
+    style = _v4_formula_style_id()
+    if style is None:
+        return xml
+    key_columns = {"D": "B", "H": "F", "M": "K"}
+    rows = [int(number) for number in re.findall(r'<x:row r="(\d+)"', xml)]
+    max_row = max(rows, default=0)
+
+    for key_col, value_col in key_columns.items():
+        for row in range(1, max_row + 1):
+            key = _v4_cell_text(xml, f"{key_col}{row}")
+            if key not in V4_INPUTS_NOT_IN_BOOK:
+                continue
+            coord = f"{value_col}{row}"
+            pattern = re.compile(r'(<x:c r="%s")([^>]*)' % re.escape(coord))
+            def apply(match: "re.Match[str]") -> str:
+                attrs = re.sub(r'\s+s="\d+"', "", match.group(2))
+                return f'{match.group(1)}{attrs} s="{style}"'
+            xml = pattern.sub(apply, xml, count=1)
+    return xml
+
 def _v4_add_mode_dropdowns(xml: str, missing: list[str]) -> str:
     """Data Validation для режимов, которые реально пересчитывает Excel.
 
@@ -21934,6 +21962,10 @@ V4_INPUTS_NOT_IN_BOOK: dict[str, str] = {
     "vri_schedule_mode": (
         "ручной/автоматический график ВРИ разрешается движком до выгрузки; "
         "книга получает уже параметры применённого графика"),
+    "vri_interest_enabled": (
+        "canonical режим трёхсостояний: «По региону / Начисляются / Не начисляются». "
+        "Текущая книга хранит только уже разрешённое Да/Нет, поэтому выдавать "
+        "его за полный offline-переключатель нельзя"),
     "vri_pf_open_date": (
         "дата открытия ПФ для досрочного погашения остатка ВРИ разрешается "
         "движком до книги; менять её без пересборки применённого графика нельзя"),
@@ -23221,6 +23253,7 @@ def build_project_workbook(
     # Стиль ставится ДО переноса: лист «Вводные» собирается из ячеек, которые
     # шаблон помечает как пользовательский ввод.
     xml = _v4_mirror_secondary_input_styles(xml)
+    xml = _v4_mark_engine_only_readonly(xml)
 
     report_sheet_path = _v4_sheet_path(source, "ОТЧЕТ")
     tep_sheet_path = _v4_sheet_path(source, "ТЭП")
@@ -23720,6 +23753,7 @@ def build_project_workbook(
     # --- ВРИ ---------------------------------------------------------------
     land_cost = float(x.get("land_rights_cost_mln") or 0)
     put("B74", text="Да" if land_cost > 0 else "Нет", label="vri_required")
+    put_new("D74", text="vri_required")
     _vri_installment = str(x.get("vri_payment_mode") or "lump") == "installment"
     put("B75", text="Рассрочка" if _vri_installment else "Единовременно",
         label="vri_payment_mode")
@@ -23744,6 +23778,7 @@ def build_project_workbook(
     # --- плотность: базовый потенциал равен применяемому, коэффициент 1 ----
     put("K6", text="Москва" if str(x.get("vri_region") or "msk") == "msk"
         else "Московская область", label="vri_region")
+    put_new("M6", text="vri_region")
     area = float(x.get("site_area_ha") or 0)
     density = float(x.get("site_density_sqm_per_ha") or 0) or 30000.0
     put("K7", number=area, label="site_area_ha")
