@@ -2327,7 +2327,7 @@ def install(app: FastAPI) -> None:
         return krt_tenders.asking_price_mln((known.get(slug) or {}).get("lots") or [])
 
     def _krt_market_subject(project: dict[str, Any]) -> str:
-        """Один subject для рынка без массового повторного геокодирования КРТ."""
+        """Один subject для рынка: известная геометрия раньше адресного OSM."""
         if project.get("early_unpublished"):
             address = str(project.get("address") or project.get("name") or "").strip()
             if not address:
@@ -2335,45 +2335,39 @@ def install(app: FastAPI) -> None:
             return address if address.casefold().startswith("москва") else "Москва, " + address
 
         slug = str(project.get("slug") or "").strip()
+        query = f"krt:{slug}"
+        # KrtRegistry.find теперь прикладывает центр из локального снимка
+        # официальной карты либо уже собранного контура решения. Важно оставить
+        # именно krt:-subject, а не превращать его в голые координаты: рынок
+        # тогда знает, что это ТЕРРИТОРИЯ, и не подменяет её ближайшим ЖК.
+        try:
+            finder = getattr(krt_registry, "find", None)
+            known = finder(query) if callable(finder) else None
+            if (known or {}).get("latitude") is not None and \
+                    (known or {}).get("longitude") is not None:
+                return query
+        except Exception:  # noqa: BLE001
+            logger.exception("KRT known market point failed slug=%s", slug)
+
+        # В официальном файле карты есть не весь каталог. Для пробела один раз
+        # собираем центр по кадастровым участкам проекта решения; registry
+        # сохраняет его на диск, и следующий resolve_subject читает без сети.
         if slug and core is not None:
             try:
-                reader = getattr(krt_registry, "map_lookup", None)
-                lookup = (reader(slug, str(project.get("name") or ""), dict(project))
-                          if callable(reader) else {})
-                site = (lookup or {}).get("site") or {}
-                centre = site.get("centre_merc")
-                rings = list(site.get("rings_merc") or [])
-                if not centre and rings:
-                    points = [point for ring in rings for point in ring]
-                    if points:
-                        centre = [
-                            sum(float(point[0]) for point in points) / len(points),
-                            sum(float(point[1]) for point in points) / len(points),
-                        ]
-                if centre:
-                    lat, lng = core._mercator_to_wgs84(
-                        float(centre[0]), float(centre[1]))
-                    return f"{lat:.7f}, {lng:.7f}"
-            except Exception:  # noqa: BLE001
-                logger.exception("KRT official market point failed slug=%s", slug)
-
-            try:
-                cached_outline = getattr(krt_registry, "outline_cached", None)
-                outline = cached_outline(slug) if callable(cached_outline) else None
-                centre = (outline or {}).get("centre_merc")
-                if centre:
-                    lat, lng = core._mercator_to_wgs84(
-                        float(centre[0]), float(centre[1]))
-                    return f"{lat:.7f}, {lng:.7f}"
+                outline = _decision_outline_now(slug)
+                if (outline or {}).get("centre_merc"):
+                    return query
             except Exception:  # noqa: BLE001
                 logger.exception("KRT decision market point failed slug=%s", slug)
 
+        # У decision-only строки может не быть кадастрового контура. Тогда
+        # остаётся один адресный запрос, а не серия кандидатов krt-resolver.
         if project.get("no_card") and project.get("address_known"):
             address = str(project.get("address") or project.get("name") or "").strip()
             if address:
                 return address if address.casefold().startswith("москва") else "Москва, " + address
 
-        return f"krt:{slug}"
+        return query
 
     def _krt_market_report(
         project: dict[str, Any], *, radius_km: float = 3.0, peers_limit: int = 12,
@@ -2387,12 +2381,14 @@ def install(app: FastAPI) -> None:
                 query, radius_km=radius_km, peers_limit=peers_limit,
                 city_reference=False, include_project_totals=True,
             )
-        except (SubjectNotFound, GeocodingError):
+        except (SubjectNotFound, GeocodingError) as first_error:
             fallback = str(project.get("address") or project.get("name") or "").strip()
             if not fallback:
                 raise
             if not fallback.casefold().startswith("москва"):
                 fallback = "Москва, " + fallback
+            if fallback.casefold() == str(query).strip().casefold():
+                raise first_error
             time.sleep(1.1)
             try:
                 return market.build_report(
@@ -2811,8 +2807,11 @@ def install(app: FastAPI) -> None:
                     now = time.time()
                     missing: list[dict[str, Any]] = []
                     for project in _krt_all_sites():
-                        if _krt_status_kind(project.get("status")) == "running":
-                            continue
+                        # «В реализации» не получает инвестиционный рейтинг,
+                        # но рынок и модель у строки всё равно должны быть
+                        # свежими: цена окружения нужна каталогу независимо от
+                        # стадии. Сам rating filler выше running по-прежнему
+                        # пропускает.
                         slug = str(project.get("slug") or "").strip()
                         if not slug:
                             continue
