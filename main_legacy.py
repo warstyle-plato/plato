@@ -19486,36 +19486,33 @@ def _v4_cloned_tep_rows(xml: str, missing: list[str]) -> str:
         queue_cell = _V4_OBJECT_QUEUE_CELLS[slot.key]
         revenue_row = _V4_OBJECT_PRODUCT_CELLS[slot.key][1]
         obj = _BY_KEY[slot.key]
-        cells = (
-            ("A", "text", "Проект"),
-            ("B", "text", obj.tep_label),
-            ("C", "formula", f"'Вводные'!${gba[0]}${gba[1:]}"),
-            ("D", "formula", (f"'Вводные'!${saleable[0]}${saleable[1:]}"
-                              if saleable else "0")),
-            ("E", "formula", (f"'Вводные'!${units[0]}${units[1:]}"
-                              if units else "0")),
-            ("F", "formula",
-             f"'Вводные'!${price[0]}${price[1:]}*{scale}*'Вводные'!$H$5"
-             f"*INDEX('Вводные'!$S$88:$S$91,'Вводные'!${queue_cell[0]}${queue_cell[1:]})"
-             f"*INDEX('Вводные'!$AG$88:$AG$91,'Вводные'!${queue_cell[0]}${queue_cell[1:]})"),
-            ("G", "formula", f"'ОБЪЕКТЫ'!B{revenue_row}"),
-            ("H", "text", "Дополнительный объект; очередь задаётся отдельно"),
-        )
-        for column, kind, value in cells:
-            coord = f"{column}{slot.tep_row}"
-            if kind == "text":
-                xml, done = _v4_set_or_insert_cell(xml, coord, text=value)
-            else:
-                xml, done = _v4_set_or_insert_cell(xml, coord, formula=value)
-            if not done:
-                missing.append(f"ТЭП · {slot.key}: {coord}")
+        payload = {
+            f"A{slot.tep_row}": {"text": "Проект"},
+            f"B{slot.tep_row}": {"text": obj.tep_label},
+            f"C{slot.tep_row}": {"formula": f"\'Вводные\'!${gba[0]}${gba[1:]}"},
+            f"D{slot.tep_row}": {"formula": (
+                f"\'Вводные\'!${saleable[0]}${saleable[1:]}" if saleable else "0")},
+            f"E{slot.tep_row}": {"formula": (
+                f"\'Вводные\'!${units[0]}${units[1:]}" if units else "0")},
+            f"F{slot.tep_row}": {"formula": (
+                f"\'Вводные\'!${price[0]}${price[1:]}*{scale}*\'Вводные\'!$H$5"
+                f"*INDEX(\'Вводные\'!$S$88:$S$91,\'Вводные\'!${queue_cell[0]}${queue_cell[1:]})"
+                f"*INDEX(\'Вводные\'!$AG$88:$AG$91,\'Вводные\'!${queue_cell[0]}${queue_cell[1:]})")},
+            f"G{slot.tep_row}": {"formula": f"\'ОБЪЕКТЫ\'!B{revenue_row}"},
+            f"H{slot.tep_row}": {"text": "Дополнительный объект; очередь задаётся отдельно"},
+        }
+        xml, done = _v4_set_cells(xml, slot.tep_row, payload)
+        if not done:
+            missing.append(f"ТЭП · {slot.key}: строка {slot.tep_row}")
     extra_rows = [slot.tep_row for slot in _V4_CLONED_OBJECTS]
+    total_payload: dict[str, dict[str, Any]] = {}
     for letter in ("C", "D", "E", "G"):
         formula = f"SUM({letter}31:{letter}34," + ",".join(
             f"{letter}{row}" for row in extra_rows) + ")"
-        xml, done = _v4_set_cell(xml, f"{letter}35", formula=formula)
-        if not done:
-            missing.append(f"ТЭП · итог дополнительных объектов {letter}35")
+        total_payload[f"{letter}35"] = {"formula": formula}
+    xml, done = _v4_set_cells(xml, 35, total_payload)
+    if not done:
+        missing.append("ТЭП · итог дополнительных объектов")
     return xml
 
 
