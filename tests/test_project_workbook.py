@@ -169,14 +169,18 @@ def test_live_mode_inputs_have_excel_dropdowns():
     assert "Продаётся" in formulas["K139"]
 
 
-def test_secondary_input_block_e_to_h_uses_the_same_styles_as_a_to_d():
+def test_secondary_input_block_e_to_h_is_formatted_by_field_type():
     _, _, _, sheet = _book()
-    for row in (13, 43, 72, 78):
-        for left, right in zip("ABCD", "EFGH"):
-            if sheet[f"{right}{row}"].value is None:
-                continue
-            assert sheet[f"{right}{row}"].style_id == sheet[f"{left}{row}"].style_id, (
-                f"{right}{row} оформлена не как {left}{row}")
+    # Подпись / единица / API-ключ — те же роли, что слева.
+    assert sheet["E15"].style_id == sheet["A15"].style_id
+    assert sheet["G15"].style_id == sheet["C15"].style_id
+    assert sheet["H15"].style_id == sheet["D15"].style_id
+    # Число, процент и текстовый режим не должны получить один случайный
+    # формат только потому, что слева в той же строке другое поле.
+    assert sheet["F15"].style_id == sheet["B15"].style_id
+    assert sheet["F25"].style_id == sheet["B19"].style_id
+    assert sheet["F59"].style_id == sheet["B19"].style_id
+    assert sheet["F43"].style_id == sheet["B31"].style_id
 
 
 def test_the_office_block_carries_dates_and_terms():
