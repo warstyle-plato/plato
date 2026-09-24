@@ -284,6 +284,20 @@ def test_every_editable_mode_has_a_real_formula_reader():
 
 
 
+def test_engine_only_fields_are_absent_from_user_input_sheet():
+    content, _, meta, _ = _book()
+    assert meta["missing"] == []
+    entry = openpyxl.load_workbook(io.BytesIO(content), data_only=False)["Вводные"]
+    visible_keys = {
+        str(entry[f"{column}{row}"].value)
+        for column in ("D", "H", "M")
+        for row in range(1, entry.max_row + 1)
+        if entry[f"{column}{row}"].value not in (None, "")
+    }
+    leaked = visible_keys & set(core.V4_INPUTS_NOT_IN_BOOK)
+    assert leaked == set(), f"engine-only поля остались редактируемыми: {sorted(leaked)}"
+
+
 def test_secondary_input_block_e_to_h_is_formatted_by_field_type():
     content, _, _, _ = _book()
     entry = openpyxl.load_workbook(io.BytesIO(content), data_only=False)["Вводные"]
@@ -297,18 +311,11 @@ def test_secondary_input_block_e_to_h_is_formatted_by_field_type():
     assert entry[right_number].style_id == entry[left_number].style_id
     assert entry[right_pct].style_id == entry[left_pct].style_id
 
-    # Engine-only значения справа могут остаться видимыми как основание
-    # расчёта, если в той же строке есть другая настоящая вводная. Но они не
-    # должны выглядеть как редактируемый select и не должны иметь dropdown.
-    dropdowns = _dropdowns_by_cell(entry)
+    # Engine-only режимы из соседнего E:H блока на пользовательский лист
+    # вообще не попадают: серое поле всё равно можно перепечатать в Excel.
     for key in ("social_area_source", "vri_in_bank_budget", "vri_financing_mode"):
-        try:
-            coord = _entry_value_cell_for_key(entry, key)
-        except AssertionError:
-            continue
-        assert coord not in dropdowns, f"{key}: engine-only поле получило dropdown"
-        assert entry[coord].style_id != entry[left_text].style_id, (
-            f"{key}: engine-only поле выглядит как пользовательская вводная")
+        with pytest.raises(AssertionError):
+            _entry_value_cell_for_key(entry, key)
 
 
 def test_the_office_block_carries_dates_and_terms():
