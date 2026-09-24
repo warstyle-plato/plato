@@ -2243,13 +2243,56 @@ def install(app: FastAPI) -> None:
         return krt_tenders.asking_price_mln((known.get(slug) or {}).get("lots") or [])
 
     def _krt_market_subject(project: dict[str, Any]) -> str:
-        """Один address/subject для рынка у каталога, карточки и background."""
+        """Один subject для рынка без массового повторного геокодирования КРТ.
+
+        У реестра уже есть официальный центр/полигон площадки. Фоновый рейтинг
+        раньше всё равно отправлял каждую строку в OSM, быстро получал 429 и
+        останавливал прогон каталога. Сначала используем уже известную
+        геометрию: координаты распознаются общим resolve_subject раньше
+        адресного геокодера. К геокодеру падаем только когда ни карта реестра,
+        ни уже собранный по решению контур точки не дали.
+        """
         if project.get("early_unpublished"):
             address = str(project.get("address") or project.get("name") or "").strip()
             if not address:
                 raise ValueError("У ранней площадки нет адреса для рынка")
             return address if address.casefold().startswith("москва") else "Москва, " + address
-        return f"krt:{project.get('slug')}"
+
+        slug = str(project.get("slug") or "").strip()
+        if slug and core is not None:
+            try:
+                reader = getattr(krt_registry, "map_lookup", None)
+                lookup = (reader(slug, str(project.get("name") or ""), dict(project))
+                          if callable(reader) else {})
+                site = (lookup or {}).get("site") or {}
+                centre = site.get("centre_merc")
+                rings = list(site.get("rings_merc") or [])
+                if not centre and rings:
+                    points = [point for ring in rings for point in ring]
+                    if points:
+                        centre = [
+                            sum(float(point[0]) for point in points) / len(points),
+                            sum(float(point[1]) for point in points) / len(points),
+                        ]
+                if centre:
+                    lat, lng = core._mercator_to_wgs84(
+                        float(centre[0]), float(centre[1]))
+                    return f"{lat:.7f}, {lng:.7f}"
+            except Exception:  # noqa: BLE001 — отсутствие карты не роняет рынок
+                logger.exception("KRT official market point failed slug=%s", slug)
+
+            try:
+                cached_outline = getattr(krt_registry, "outline_cached", None)
+                outline = cached_outline(slug) if callable(cached_outline) else None
+                centre = (outline or {}).get("centre_merc")
+                if centre:
+                    lat, lng = core._mercator_to_wgs84(
+                        float(centre[0]), float(centre[1]))
+                    return f"{lat:.7f}, {lng:.7f}"
+            except Exception:  # noqa: BLE001
+                logger.exception("KRT decision market point failed slug=%s", slug)
+
+        return f"krt:{slug}"
 
     def _krt_market_report(
         project: dict[str, Any], *, radius_km: float = 3.0, peers_limit: int = 12,
