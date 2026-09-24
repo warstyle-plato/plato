@@ -105,7 +105,19 @@ def test_krt_screening_can_reject_operating_case_before_land_price() -> None:
 def test_krt_screening_does_not_invent_market_class_or_price() -> None:
     no_class = build_krt_model_screening(PROJECT, {"analysis": {}}, core)
     no_price = build_krt_model_screening(
-        PROJECT, {"analysis": {"site": {"segment": "бизнес"}}}, core
+        PROJECT,
+        {
+            "analysis": {
+                "site": {
+                    "segment": "бизнес",
+                    # Реальная цена одного/двух проектов ещё не означает, что
+                    # получился устойчивый ценовой ориентир площадки.
+                    "price_per_sqm": 2_948_528,
+                }
+            },
+            "price_hint": {"available": False, "entry_per_sqm": 2_558_316},
+        },
+        core,
     )
 
     assert no_class == {"available": False, "reason": "Маркетинг пока не определил класс продукта"}
