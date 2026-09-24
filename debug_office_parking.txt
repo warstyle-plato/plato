@@ -1850,7 +1850,7 @@ def build_project_workbook(
     return content, filename, {"missing": missing, "phased": count > 1,
                                       "class_deviations": class_deviations}
 
-### calculate 30387-31307
+### calculate 30387-31321
 def calculate(req: CalcRequest) -> dict:
     x = req.inputs
     t = req.tep
@@ -2372,6 +2372,20 @@ def calculate(req: CalcRequest) -> dict:
         }
     }
 
+    # Объём в таблице продуктов — не исходная вводная, а то же физическое
+    # расписание, по которому движок посчитал выручку. Это особенно важно для
+    # отдельно стоящих объектов: паркинг первых этажей уменьшает продаваемую
+    # площадь офиса после чтения исходной вводной. Пока отчёт печатал сырое
+    # offices_saleable_sqm, ТЭП уже показывал остаточные метры, а строка
+    # «Продажи и продукты» — старые; средняя цена тоже становилась ложной.
+    # Берём сумму quantity-сценария один раз у движка: тот же источник затем
+    # используют PDF, сравнение очередей и КОНСОЛИДАТОР книги.
+    _quantity_schedules = op.get("quantity_product_schedules", {}) or {}
+    for _key, _spec in product_specs.items():
+        _schedule = _quantity_schedules.get(_key) or {}
+        if _schedule:
+            _spec["quantity"] = sum(float(_value or 0.0) for _value in _schedule.values())
+
     products_report = []
     report_krt_costs = {
         "offices": float(op["capex_amounts"].get("offices", 0.0) or 0.0),
@@ -2773,7 +2787,7 @@ def calculate(req: CalcRequest) -> dict:
         },
     }
 
-### _calculate_phased_once 33395-34118
+### _calculate_phased_once 33409-34132
 def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
     x_master = copy.deepcopy(req.inputs)
     t_master = copy.deepcopy(req.tep)
@@ -4286,7 +4300,39 @@ _PLATO_OVERRIDE_TEMPLATE_FORMULA = frozenset({
             "unit": "м²", "start_price": n(x, "retail_price_th_per_sqm"), "share": n(x, "retail_share_before_rve_pct", 85)/100,
             "start": d(x["retail_sales_start"]), "end_ref": add_months(d(x["retail_start"]), int(n(x, "retail_months", 24))),
 
---- 30921-30934 around 30926 ---
+--- 30907-30920 around 30912 ---
+
+    # Объём в таблице продуктов — не исходная вводная, а то же физическое
+    # расписание, по которому движок посчитал выручку. Это особенно важно для
+    # отдельно стоящих объектов: паркинг первых этажей уменьшает продаваемую
+    # площадь офиса после чтения исходной вводной. Пока отчёт печатал сырое
+    # offices_saleable_sqm, ТЭП уже показывал остаточные метры, а строка
+    # «Продажи и продукты» — старые; средняя цена тоже становилась ложной.
+    # Берём сумму quantity-сценария один раз у движка: тот же источник затем
+    # используют PDF, сравнение очередей и КОНСОЛИДАТОР книги.
+    _quantity_schedules = op.get("quantity_product_schedules", {}) or {}
+    for _key, _spec in product_specs.items():
+        _schedule = _quantity_schedules.get(_key) or {}
+        if _schedule:
+            _spec["quantity"] = sum(float(_value or 0.0) for _value in _schedule.values())
+
+--- 30910-30923 around 30915 ---
+    # отдельно стоящих объектов: паркинг первых этажей уменьшает продаваемую
+    # площадь офиса после чтения исходной вводной. Пока отчёт печатал сырое
+    # offices_saleable_sqm, ТЭП уже показывал остаточные метры, а строка
+    # «Продажи и продукты» — старые; средняя цена тоже становилась ложной.
+    # Берём сумму quantity-сценария один раз у движка: тот же источник затем
+    # используют PDF, сравнение очередей и КОНСОЛИДАТОР книги.
+    _quantity_schedules = op.get("quantity_product_schedules", {}) or {}
+    for _key, _spec in product_specs.items():
+        _schedule = _quantity_schedules.get(_key) or {}
+        if _schedule:
+            _spec["quantity"] = sum(float(_value or 0.0) for _value in _schedule.values())
+
+    products_report = []
+    report_krt_costs = {
+
+--- 30935-30948 around 30940 ---
     report_core_quantity = sum(float(product_specs[key]["quantity"] or 0.0)
                                for key in report_core_keys)
     report_core_cost = max(total_capex - sum(report_krt_costs.values()), 0.0)
@@ -4302,7 +4348,7 @@ _PLATO_OVERRIDE_TEMPLATE_FORMULA = frozenset({
         schedule = op["revenue_product_schedules"].get(key, {})
         months_pre = max(1, months_between(spec["start"], spec["end_ref"]))
 
---- 31052-31065 around 31057 ---
+--- 31066-31079 around 31071 ---
             "rows": tep_rows,
             "total": tep_total,
             "core_above_gns": op["core_above_gns"],
@@ -4318,7 +4364,7 @@ _PLATO_OVERRIDE_TEMPLATE_FORMULA = frozenset({
                      if key not in ("land_rights_gross", "land_rights_relief")}},
         "vri": op["vri"],
 
---- 34009-34022 around 34014 ---
+--- 34023-34036 around 34028 ---
             "revenue":result["summary"]["revenue"],"capex":result["summary"]["capex"],
             # Выручка очереди по продуктам. Одной строкой она не отвечает на
             # вопрос, чем очередь живёт: у одной весь объём в квартирах, у
@@ -4334,7 +4380,7 @@ _PLATO_OVERRIDE_TEMPLATE_FORMULA = frozenset({
             "peak_bridge":result["finance"]["peak_bridge"],"peak_pf":result["finance"]["peak_pf"],
             # Раскрытие эскроу — событие очереди, а не проекта: у каждой своя
 
---- 35890-35903 around 35895 ---
+--- 35904-35917 around 35909 ---
     row = req.tep.get(product, {}) if product in ("apartments", "ground_commercial") else {}
     if product == "offices":
         areas = {
@@ -4350,7 +4396,7 @@ _PLATO_OVERRIDE_TEMPLATE_FORMULA = frozenset({
             "total_area": float(n(row, "total_area")),
             "saleable": float(n(row, "saleable")),
 
---- 36179-36192 around 36184 ---
+--- 36193-36206 around 36198 ---
             {"share_pct": round(purchase / total_exp * 100, 2)})
 
     # Себестоимость строительства считается от ГНС. Продукт с количеством, но
@@ -4366,7 +4412,7 @@ _PLATO_OVERRIDE_TEMPLATE_FORMULA = frozenset({
             continue
         share = product_revenue / float(s.get("revenue", 0) or 1)
 
---- 36182-36195 around 36187 ---
+--- 36196-36209 around 36201 ---
     # без площади приносит выручку бесплатно и завышает и прибыль, и LLCR —
     # именно так 833 кладовые без площади дали 1,03 млрд ₽ и +0,07 к LLCR.
     revenue_by_product = result.get("revenue") or {}
@@ -4382,7 +4428,7 @@ _PLATO_OVERRIDE_TEMPLATE_FORMULA = frozenset({
             f"{row.get('label') or key}: {_pdf_num(row.get('units'), 0)} ед. без площади. "
             f"Выручка {_pdf_num(product_revenue / 1e6, 0)} млн ₽ учтена, а себестоимость "
 
---- 36208-36221 around 36213 ---
+--- 36222-36235 around 36227 ---
     by_key = {str(row.get("key") or ""): row for row in rows}
     for label in _tep_cost_without_revenue(by_key):
         row = next((r for r in rows if str(r.get("label") or "") == label), None)
@@ -4398,7 +4444,7 @@ _PLATO_OVERRIDE_TEMPLATE_FORMULA = frozenset({
             f"Обычно это непрочитанный ТЭП, а не проект без продаж: проверьте продаваемую площадь.",
             {"product": key, "gns_sqm": round(gns, 1),
 
---- 43365-43378 around 43370 ---
+--- 43379-43392 around 43384 ---
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&document.getElementById('aiDrawer')?.classList.contains('open'))toggleAgent(false);if((e.ctrlKey||e.metaKey)&&e.key==='Enter'&&document.getElementById('aiDrawer')?.classList.contains('open'))sendAgentMessage()});
 
 
@@ -4414,7 +4460,7 @@ function phaseStartDate(phaseNo){
  const p=phasing.phases[i]||{start_offset_months:0};
  return addMonthsJS(inputs.project_start,Number(p.start_offset_months||0));
 
---- 45615-45628 around 45620 ---
+--- 45629-45642 around 45634 ---
    // расчёт берёт среднее по области и плата занижается на четверть.
    inputs.mo_district='Городской округ Мытищи';
    inputs.technical_supervision_pct=5;
@@ -4430,7 +4476,7 @@ function phaseStartDate(phaseNo){
    phasing.cost_inflation_pct=8;
    phasing.sales_price_inflation_pct=8;
 
---- 45645-45658 around 45650 ---
+--- 45659-45672 around 45664 ---
      normative_kindergarten_need:Number((inputs._glavapu_import&&inputs._glavapu_import.normalized&&inputs._glavapu_import.normalized.required_kindergarten_places)||465),
      expert_kindergarten_places:465,
      expert_school_places:675,
@@ -4446,7 +4492,7 @@ function phaseStartDate(phaseNo){
      ]
    };
 
---- 45675-45688 around 45680 ---
+--- 45689-45702 around 45694 ---
    // A small project preset is intentionally single-phase.
    // Clear discrete products so Mytishchi/localStorage values cannot leak into Mishina.
    inputs.technical_supervision_pct=5;
@@ -4462,7 +4508,7 @@ function phaseStartDate(phaseNo){
    phasing.enabled=false;
    delete inputs._preset_expert_overrides;
 
---- 45786-45799 around 45791 ---
+--- 45800-45813 around 45805 ---
  // по цене предыдущего проекта, и это не бросалось в глаза.
  'purchase_price_mln',
  'site_area_ha','site_density_sqm_per_ha','land_rights_cost_mln','social_compensation_mln',
@@ -4478,7 +4524,7 @@ function phaseStartDate(phaseNo){
  // есть не назвавшая их площадка оставалась с чужими.
  // Цена измерена на офиснике 100 000 м² ГНС (вводные и строка ТЭП об объекте
 
---- 45821-45834 around 45826 ---
+--- 45835-45848 around 45840 ---
  social_compensation_mln:'социальная компенсация', site_area_ha:'площадь участка',
  site_density_sqm_per_ha:'плотность', kindergarten_places:'места в ДОО',
  school_places:'места в школе', clinic_capacity:'мощность поликлиники',
@@ -4494,7 +4540,7 @@ function territoryClearedNote(){
  if(!territoryCleared.length)return '';
  const names=territoryCleared.map(k=>TERRITORY_CLEARED_LABELS[k]||k);
 
---- 48249-48262 around 48254 ---
+--- 48263-48276 around 48268 ---
 ];
 // Вводные объекта, которыми задаются его метры. Строка ТЭП производная: её
 // считает `syncTep` по долям, и писать в неё напрямую значило бы завести
@@ -4510,7 +4556,7 @@ function applyDensityToObject(target){
  const name=(NONRES_DENSITY_TARGETS.find(t=>t[0]===target)||[])[1]||target;
  const area=Number(inputs.site_area_ha||0),density=effectiveSiteDensity();
 
---- 48600-48613 around 48605 ---
+--- 48614-48627 around 48619 ---
 
 const UNDERGROUND_PAIR_INPUTS=['underground_manual_spaces','underground_manual_gns_sqm',
  'underground_area_per_space_sqm'];
@@ -4526,7 +4572,7 @@ const TEP_DERIVED_INPUTS=UNDERGROUND_PAIR_INPUTS.concat([
 
 // Пересчёт производных под фактический ТЭП. Калькулятор ГлавАПУ считает по
 
---- 49040-49053 around 49045 ---
+--- 49054-49067 around 49059 ---
  // квартир меняет норму, и число в поле обязано меняться вместе с ней.
  // Раньше пересчёт звался только при импорте ГлавАПУ и при загрузке проекта,
  // то есть ровно один раз, — и дальше поле замирало.
@@ -4542,7 +4588,7 @@ const TEP_DERIVED_INPUTS=UNDERGROUND_PAIR_INPUTS.concat([
   // Известна только продаваемая — ГНС считается и возвращается во вводные:
   // себестоимость объекта берётся оттуда, и с нулём она была бы нулевой при
 
---- 49666-49679 around 49671 ---
+--- 49680-49693 around 49685 ---
  // квартирах, у другой треть в паркинге и ОСЗ, а маржа и риск у них разные.
  // Строки строятся по продуктам, у которых выручка есть хоть в одной очереди:
  // семь нулевых строк — это шум, а не полнота.
@@ -4558,7 +4604,7 @@ const TEP_DERIVED_INPUTS=UNDERGROUND_PAIR_INPUTS.concat([
   const rows=mine.map(k=>[' · '+(prodLabel[k]||k),
                           c.map(x=>money((x.revenue_by_product||{})[k]||0)),
 
---- 49667-49680 around 49672 ---
+--- 49681-49694 around 49686 ---
  // Строки строятся по продуктам, у которых выручка есть хоть в одной очереди:
  // семь нулевых строк — это шум, а не полнота.
  const prodOrder=(cons.report&&cons.report.products||[]).map(p=>p.key);
@@ -4574,7 +4620,7 @@ const TEP_DERIVED_INPUTS=UNDERGROUND_PAIR_INPUTS.concat([
                           c.map(x=>money((x.revenue_by_product||{})[k]||0)),
                           money((cons.report.products.find(p=>p.key===k)||{}).revenue||0)]);
 
---- 49674-49687 around 49679 ---
+--- 49688-49701 around 49693 ---
  // Промежуточный итог заводится, только когда в группе больше одного продукта:
  // «Итого МКД» под единственной строкой квартир — это та же строка дважды.
  const group=(keys,label)=>{
