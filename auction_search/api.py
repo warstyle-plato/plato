@@ -2824,17 +2824,38 @@ def install(app: FastAPI) -> None:
                             age = now - float(row.get("computed_at") or 0)
                         except (TypeError, ValueError):
                             age = 10**9
-                        reason = str(row.get("reason") or "").casefold()
+                        try:
+                            failed_age = now - float(row.get("recompute_failed_at") or 0)
+                        except (TypeError, ValueError):
+                            failed_age = 10**9
+                        reason = str(
+                            row.get("recompute_reason") or row.get("reason") or ""
+                        ).casefold()
                         transient_geocode = (
                             "too many requests" in reason
                             or "geocod" in reason
                             or "геокод" in reason
                         )
                         retry_failed_after = 10 * 60 if transient_geocode else 24 * 60 * 60
+                        stale_available = (
+                            row.get("available")
+                            and krt_ranking_rules.model_needs_recount(row)
+                        )
+                        # keep_computed сохраняет прежнюю удачную строку, если
+                        # свежий пересчёт упал. Без этого гейта такая строка
+                        # остаётся stale и немедленно идёт в новый пересчёт,
+                        # превращая один 429 геокодера в бесконечный цикл.
+                        stale_retry_ready = (
+                            not row.get("recompute_failed_at")
+                            or failed_age >= retry_failed_after
+                        )
                         needs_model = (
                             (not row)
-                            or (row.get("available") and krt_ranking_rules.model_needs_recount(row))
-                            or (not row.get("available") and age >= retry_failed_after)
+                            or (stale_available and stale_retry_ready)
+                            or (
+                                not row.get("available")
+                                and age >= retry_failed_after
+                            )
                         )
                         if needs_model:
                             missing.append(project)
