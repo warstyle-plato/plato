@@ -16307,10 +16307,12 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         # печать досчитывала их сама и выглядела безупречно, а страница
         # показывала нули во всех строках. Одна поверхность прикрывала ошибку
         # другой, и найти её удалось только глазами.
+        _unit=lambda key: ('—' if item.get(key) is None
+                            else _pdf_num(item.get(key),1))
         expense_rows.append([item.get('label') or '—',_pdf_money(value),
                              (_pdf_num(value/total_expense*100,1)+'%') if total_expense else '—',
-                             _pdf_num(item.get('per_gns_th') or 0,1),
-                             _pdf_num(item.get('per_saleable_th') or 0,1)])
+                             _unit('per_gns_th'),
+                             _unit('per_saleable_th')])
         # Отдельно стоящий объект меряется своей площадью, наземный паркинг —
         # своими местами. Числа считает движок; отчёт носят в банк, и
         # расходиться с экраном ему нельзя — подстроки те же.
@@ -30388,6 +30390,28 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     return result
 
 
+def _standalone_group_unit_metrics(
+    value: float, parts: list[dict[str, Any]]
+) -> tuple[float | None, float | None]:
+    """Удельные строки «Отдельные объекты» считаются только на её объекты.
+
+    Общая площадь проекта здесь не является физической базой статьи. Если в
+    группе смешаны площади ОСЗ и штучный наземный паркинг, единого ₽/м² нет:
+    вместо ложного знаменателя возвращаем пустое значение, а подстроки несут
+    свои корректные базы.
+    """
+    area_parts = [part for part in parts if part.get("basis") == "area"]
+    unit_parts = [part for part in parts if part.get("basis") == "units"]
+    if not area_parts or unit_parts:
+        return None, None
+    gns = sum(float(part.get("gns_sqm") or 0.0) for part in area_parts)
+    saleable = sum(float(part.get("saleable_sqm") or 0.0) for part in area_parts)
+    return (
+        value / gns / 1000 if gns else None,
+        value / saleable / 1000 if saleable else None,
+    )
+
+
 def calculate(req: CalcRequest) -> dict:
     x = req.inputs
     t = req.tep
@@ -30700,14 +30724,12 @@ def calculate(req: CalcRequest) -> dict:
     # Отдельно стоящий объект меряется СВОЕЙ площадью, а наземный паркинг —
     # своими местами (владелец, 04.09.2026: «по сути это разные объекты и
     # должны на свои площади равняться»; «в случае с парковыми на ед м-м»).
-    # Колонки строки остаются проектными — они складываются в итог таблицы, —
-    # а под ней стоят подстроки «в т.ч.» со своей базой у каждого объекта.
-    # Прежде этого не было вовсе: расходы объектов делились на метры ВСЕГО
-    # проекта, и при вводной себестоимости 200 тыс ₽/м² GBA в таблице стояло
-    # 20,1 — в десять раз ниже, и сравнить это ни со сметой, ни со своей же
-    # вводной было нельзя. Рядом жила вторая беда: в числителе строки стоит и
-    # наземный паркинг, у которого метров в знаменателе нет вовсе — он
-    # продаётся местами.
+    # И строка группы, и подстроки «в т.ч.» обязаны жить на базах САМИХ
+    # объектов. Деление категории на ГНС всего проекта давало 132,7 тыс ₽/м²
+    # над офисником с 316,2 тыс ₽/м² — два ответа об одной статье. Если в
+    # группе есть штучный наземный паркинг, общей рублёвой ставки на м² у неё
+    # вообще нет: его мера — машино-место, и выдумывать общий знаменатель
+    # нельзя.
     def _amount_label(value: float) -> str:
         return f"{value:,.0f}".replace(",", "\u00a0")
 
@@ -30788,11 +30810,14 @@ def calculate(req: CalcRequest) -> dict:
         }
         if label == "Отдельные объекты" and standalone_items:
             entry["items"] = standalone_items
+            own_gns, own_saleable = _standalone_group_unit_metrics(value, standalone_items)
+            entry["per_gns_th"] = own_gns
+            entry["per_saleable_th"] = own_saleable
             entry["items_note"] = (
-                "Удельные по каждому объекту — на ЕГО площадь, у наземного "
-                "паркинга — на машино-место. Колонки самой строки, как и у "
-                "остальных статей, считаны на весь проект: они складываются "
-                "в итог таблицы, а числа объектов — нет."
+                "Строка «Отдельные объекты» считается на суммарную площадь "
+                "самих ОСЗ, а не всего проекта. Если внутри есть объект, "
+                "который меряется штуками (например наземный паркинг), общего "
+                "₽/м² у группы нет — смотрите удельные в подстроках."
             )
         expense_structure.append(entry)
     expense_structure.sort(key=lambda item: item["value"], reverse=True)
@@ -33022,6 +33047,11 @@ def _consolidate_phase_results(
                 part["per_own_saleable_th"] = (part["value"] / part["saleable_sqm"] / 1000
                                                if part["saleable_sqm"] else 0.0)
         entry["items"] = sorted(parts, key=lambda one: one["value"], reverse=True)
+        if entry["label"] == "Отдельные объекты":
+            own_gns, own_saleable = _standalone_group_unit_metrics(
+                float(entry["value"] or 0.0), parts)
+            entry["per_gns_th"] = own_gns
+            entry["per_saleable_th"] = own_saleable
         if item_note.get(entry["label"]):
             entry["items_note"] = item_note[entry["label"]]
     expense_structure.sort(key=lambda x: x["value"], reverse=True)
@@ -50703,16 +50733,17 @@ function renderResult(){
    <div class="expense-value">${money(x.value)}</div>
  </div>`).join('');
  // Отдельно стоящий объект меряется СВОЕЙ площадью, а наземный паркинг —
- // своими местами: подстроки «в т.ч.» стоят под своей статьёй и несут числа,
- // посчитанные движком на их базы. Колонки самой статьи остаются проектными —
- // они складываются в итог таблицы, — и об этом сказано подписью под ней.
+ // своими местами. Строка группы тоже не делится на весь проект: если все
+ // части площадные, база — сумма площадей ОСЗ; при смешении с местами единого
+ // ₽/м² нет и ячейка честно остаётся пустой.
+ const expenseMetric=v=>(v===null||v===undefined)?'—':num2(v);
  expenseStructureTable.innerHTML=expenseRows.map(x=>{
    const head=`<tr>
    <td>${x.label}</td>
    <td>${money(x.value)}</td>
    <td>${(Number(x.share||0)*100).toLocaleString('ru-RU',{minimumFractionDigits:1,maximumFractionDigits:1})}%</td>
-   <td>${num2(x.per_gns_th)}</td>
-   <td>${num2(x.per_saleable_th)}</td>
+   <td>${expenseMetric(x.per_gns_th)}</td>
+   <td>${expenseMetric(x.per_saleable_th)}</td>
  </tr>`;
    const parts=(x.items||[]).map(o=>`<tr class="sub">
    <td style="padding-left:18px">в т.ч. ${o.label} · ${o.basis_label||''}</td>
