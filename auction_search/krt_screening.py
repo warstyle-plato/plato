@@ -145,7 +145,7 @@ def _empty_tep(core: Any) -> dict[str, dict[str, Any]]:
 # ценой жилья этой площадки вместо фиксированных 500 тыс ₽/м². Числа
 # посчитанных строк от этого меняются у всех, где нежилое названо: на
 # Рубцовской наб., влд. 3 чистая 257,5 → 429,4 млн ₽, LLCR 1,092 → 1,043.
-SCREENING_RULES_VERSION = 4
+SCREENING_RULES_VERSION = 5
 
 
 def _market_inputs(report: dict[str, Any]) -> tuple[str | None, float, float, str]:
@@ -161,11 +161,24 @@ def _market_inputs(report: dict[str, Any]) -> tuple[str | None, float, float, st
     """
     verdict = _verdict(report)
     hint = report.get("price_hint") or {}
-    segment = normalize_segment(verdict.get("segment"))
-    market_price = _number(verdict.get("price_per_sqm") or hint.get("price_per_sqm"))
+    segment = normalize_segment(verdict.get("segment") or hint.get("segment"))
+    # price_hint — специально выделенный числовой ориентир для поля модели:
+    # он требует минимум три свежих сопоставимых прайса. site_verdict отвечает
+    # ещё и на качественный вопрос «что здесь строить» и может получить цену
+    # одного доминирующего класса. Подменять им более устойчивый price_hint
+    # нельзя: именно так единичный premium/elite-кластер давал каталогу КРТ
+    # 2,6–3,2 млн ₽/м² как «цену окружения».
+    hint_price = _number(hint.get("price_per_sqm"))
+    verdict_price = _number(verdict.get("price_per_sqm"))
+    market_price = hint_price if hint_price > 0 else verdict_price
     entry_price = _number(hint.get("entry_per_sqm"))
     if market_price > 0:
-        return segment, market_price, market_price, "рекомендация отчёта о рынке — уровень цен сопоставимых проектов"
+        basis = (
+            "price_hint отчёта — медиана свежих сопоставимых проектов"
+            if hint_price > 0
+            else "site_verdict отчёта — уровень доминирующего класса (price_hint недоступен)"
+        )
+        return segment, market_price, market_price, basis
     if entry_price > 0:
         return segment, entry_price, entry_price, "медиана входных цен соседних проектов (уровень рынка отчёт не определил)"
     return segment, 0.0, 0.0, "цена не определена"
