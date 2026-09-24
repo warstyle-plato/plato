@@ -220,6 +220,25 @@ def resolve_subject(
     if find_krt:
         territory = find_krt(text)
         if territory:
+            latitude = territory.get("latitude")
+            longitude = territory.get("longitude")
+            if latitude is not None and longitude is not None:
+                origin = " ".join(str(territory.get("source") or "krt.mos.ru").split())
+                geometry = str(territory.get("geometry_source") or "официальной геометрии КРТ")
+                return Subject(
+                    latitude=float(latitude),
+                    longitude=float(longitude),
+                    source=SOURCE_KRT,
+                    query=str(territory.get("query") or text),
+                    address=territory.get("name") or None,
+                    project_name=territory.get("name"),
+                    subject_type="krt",
+                    source_data=territory,
+                    notes=[
+                        f"КРТ взята из {origin}; центр площадки — из {geometry}. "
+                        "Геокодер адреса не использовался."
+                    ],
+                )
             if not geocode:
                 raise SubjectNotFound("КРТ найдена, но геокодер не подключён")
             # Берётся лучший ответ, а не первый: улица длиной в пятнадцать
