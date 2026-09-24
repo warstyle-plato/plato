@@ -61,6 +61,8 @@ def test_the_row_is_read_field_by_field() -> None:
     assert site["nonresidential_gfa_sqm"] == 0
     assert site["jobs"] == 1310
     assert site["url"].startswith("https://krt.mos.ru/projects/")
+    assert round(site["latitude"], 6) == round(LIVE[krt.POINT][1], 6)
+    assert round(site["longitude"], 6) == round(LIVE[krt.POINT][0], 6)
 
 
 def test_the_unnamed_column_keeps_its_number() -> None:
@@ -88,6 +90,9 @@ def test_the_border_comes_in_the_same_metres_as_the_basemap() -> None:
         "дробная часть метра не видна ни на одной нашей карте, а вес утраивает"
     centre = site["centre_merc"]
     assert math.hypot(centre[0] - x, centre[1] - y) < 5_000
+    lon, lat = krt.unmerc(centre[0], centre[1])
+    assert abs(lon - site["longitude"]) < 0.001
+    assert abs(lat - site["latitude"]) < 0.001
 
 
 def test_a_row_without_a_link_is_not_a_site() -> None:
