@@ -19,11 +19,20 @@ def _market(price: int, market: int = 708_000) -> dict:
             "site": {
                 "segment": "бизнес",
                 "price_per_sqm": market,
+                "priced": 3,
+                "projects": 3,
                 "sold_lot_avg": 50.0,
                 "units_per_month": 21.5,
             }
         },
-        "price_hint": {"entry_per_sqm": price, "price_per_sqm": market},
+        "price_hint": {
+            "entry_per_sqm": price,
+            "price_per_sqm": market,
+            "basis": "peers",
+            "basis_title": "по сопоставимым проектам рядом",
+            "sample": 3,
+            "segment": "бизнес",
+        },
     }
 
 
@@ -62,6 +71,40 @@ def test_krt_screening_uses_market_class_and_authoritative_phasing() -> None:
     assert "верхняя граница" in result["entry_capacity"]["reason"]
     assert any("Цена приобретения" in row for row in result["exclusions"])
     assert any("ВРИ" in row for row in result["exclusions"])
+
+
+def test_krt_surrounding_price_needs_three_live_peers() -> None:
+    report = {
+        "analysis": {
+            "site": {
+                "segment": "бизнес",
+                "price_per_sqm": 3_194_829,
+                "priced": 1,
+                "projects": 4,
+                "sold_lot_avg": 50.0,
+                "units_per_month": 8.0,
+            }
+        },
+        "price_hint": {
+            "available": True,
+            "price_per_sqm": 578_250,
+            "basis": "okrug",
+            "basis_title": "по округу и классу",
+            "sample": 18,
+            "segment": "бизнес",
+            "entry_per_sqm": 520_000,
+        },
+    }
+
+    result = build_krt_model_screening(PROJECT, report, core)
+
+    assert result["available"] is True
+    # Широкий ориентир годится как вводная модели, но один локальный проект
+    # не становится «ценой окружения» и не едет в рейтинг.
+    assert result["market"]["start_price_rub_sqm"] == 578_250
+    assert result["market"]["market_price_rub_sqm"] is None
+    assert result["market"]["entry_price_rub_sqm"] == 520_000
+    assert result["market"]["price_basis"] == "по округу и классу"
 
 
 def test_krt_screening_can_reject_operating_case_before_land_price() -> None:
