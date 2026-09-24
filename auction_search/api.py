@@ -2813,8 +2813,11 @@ def install(app: FastAPI) -> None:
                     now = time.time()
                     missing: list[dict[str, Any]] = []
                     for project in _krt_all_sites():
-                        if _krt_status_kind(project.get("status")) == "running":
-                            continue
+                        # Площадки «В реализации» не получают инвестиционный
+                        # рейтинг, но рынок у них всё равно должен быть свежим:
+                        # колонка «цена окружения» видна в общем каталоге.
+                        # Раньше они выпадали из background целиком и годами
+                        # держали старую/ошибочную цену даже после починки рынка.
                         slug = str(project.get("slug") or "").strip()
                         if not slug:
                             continue
