@@ -18820,10 +18820,11 @@ def _v4_clone_input_object_block(
     for row in written:
         xml = re.sub(r'<x:c r="[A-D]%d"[^>]*?(?:/>|>.*?</x:c>)' % row, "", xml,
                      flags=re.S)
-    for column in ("J", "K", "L", "M"):
-        xml, done = _v4_set_cell(xml, f"{column}{target}", text=title)
-        if not done and column == "J":
-            missing.append(f"{owner}: заголовок блока вводных")
+    xml, done = _v4_set_cells(
+        xml, target,
+        {f"{column}{target}": {"text": title} for column in ("J", "K", "L", "M")})
+    if not done:
+        missing.append(f"{owner}: заголовок блока вводных")
     return xml, written
 
 
@@ -18854,10 +18855,11 @@ def _v4_clone_calculation_object_block(
     if len(written) != len(rows):
         missing.append(f"{owner}: расчётный блок не скопирован целиком")
         return xml, written
-    for column in ("A", "B", "C", "D"):
-        xml, done = _v4_set_cell(xml, f"{column}{target}", text=title)
-        if not done and column == "A":
-            missing.append(f"{owner}: заголовок расчётного блока")
+    xml, done = _v4_set_cells(
+        xml, target,
+        {f"{column}{target}": {"text": title} for column in ("A", "B", "C", "D")})
+    if not done:
+        missing.append(f"{owner}: заголовок расчётного блока")
     return xml, written
 
 def _v4_sports_inputs_block(xml: str, missing: list[str]) -> str:
@@ -19344,11 +19346,12 @@ def _v4_cloned_object_blocks(xml: str, missing: list[str]) -> str:
                 f"({len(written)} из {len(slot.object_rows)})")
             continue
         target = _BY_KEY[slot.key]
-        for column in ("A", "B", "C", "D"):
-            xml, done = _v4_set_cell(
-                xml, f"{column}{first}", text=target.group_label.upper())
-            if not done and column == "A":
-                missing.append(f"{slot.key}: заголовок блока ОБЪЕКТЫ")
+        xml, done = _v4_set_cells(
+            xml, first,
+            {f"{column}{first}": {"text": target.group_label.upper()}
+             for column in ("A", "B", "C", "D")})
+        if not done:
+            missing.append(f"{slot.key}: заголовок блока ОБЪЕКТЫ")
 
         target_queue = _V4_OBJECT_PRODUCT_CELLS[slot.key][0]
         delta = target_queue - previous_queue
@@ -19547,7 +19550,8 @@ def _v4_product_structure_block(xml: str, missing: list[str]) -> str:
 
     def row_put(row: int, cells: dict[str, dict[str, Any]]) -> None:
         nonlocal xml
-        xml = _v4_ensure_row(xml, row)
+        if f'<x:row r="{row}"' not in xml:
+            xml = _v4_ensure_row(xml, row)
         xml, done = _v4_set_cells(xml, row, cells)
         if not done:
             missing.append(f"ОТЧЁТ · структура продукта: строка {row} не поставлена")
@@ -20075,7 +20079,10 @@ def _v4_apply_sports_tax_row(xml: str, phase: int, missing: list[str]) -> str:
     for key, queue_row, revenue_row in added:
         obj = _BY_KEY.get(key)
         mine = f"'ОБЪЕКТЫ'!$B${queue_row}={queue}"
-        sold = "TRUE"
+        # Числовая истина понимается и Excel, и нашим xlsx_eval. Голое TRUE
+        # вычислитель принимает за имя функции и ждёт «(», из-за чего валится
+        # IndexError далеко выше — уже на ПРОВЕРКАХ/ОТЧЁТЕ.
+        sold = "1"
         if obj is not None and obj.sale_gate:
             if key == "sports":
                 sold = (
@@ -21906,23 +21913,39 @@ def _v4_apply_object_schedule(objects_xml: str, prefix: str,
     (qty_row, price_row, start_ref, base_ref, build_start_ref, months_ref,
      garage_row) = _V4_OBJECT_ROWS[prefix]
     if profile_refs:
-        def build_qty(column: str, _body: str) -> str:
-            return (
+        # У дополнительного объекта эти строки присутствуют в Excel всегда.
+        # Нулевой профиль должен оставить штатный календарь, а не обнулить
+        # продажи; ненулевой — переключить строку на редактируемый профиль.
+        _profile_values = ",".join(value for _month, value in profile_refs)
+
+        def build_qty(column: str, body: str) -> str:
+            profiled = (
                 f"{base_ref}*"
                 f"{_v4_share_by_month(_v4_month_offset(column, start_ref), profile_refs)}"
             )
+            return f"IF(SUM({_profile_values})=0,{body},{profiled})"
 
         objects_xml, done = _v4_rewrite_row_formulas(
             objects_xml, qty_row, f"{base_ref}*", build_qty)
         if not done:
             missing.append(f"ОБЪЕКТЫ · профиль продаж {prefix}")
     if stage_refs:
+        _stage_sum = ",".join(stage_refs)
+
         def build_price(column: str, body: str) -> str:
-            return _v4_replace_pre_rve_growth(
-                body,
-                _v4_stage_factor(
-                    _v4_month_offset(column, build_start_ref), months_ref, stage_refs),
-            )
+            stage_factor = _v4_stage_factor(
+                _v4_month_offset(column, build_start_ref), months_ref, stage_refs)
+            # Четыре нуля означают «лестница не задана»: сохраняем исходный
+            # ежемесячный рост. Как только задан этап — включается лестница.
+            first = body.find("*(1+'Вводные'!")
+            if first < 0:
+                return body
+            second = body.find("*(1+'Вводные'!", first + 1)
+            if second < 0:
+                return body
+            original_factor = body[first + 1:second]
+            switched = f"IF(SUM({_stage_sum})=0,{original_factor},{stage_factor})"
+            return body[:first] + "*" + switched + body[second:]
 
         objects_xml, done = _v4_rewrite_row_formulas(
             objects_xml, price_row, "*(1+'Вводные'!", build_price)
@@ -24271,17 +24294,18 @@ def build_project_workbook(
     _rc_offset_ref = (f"'Вводные'!{_rc_refs['offset']}" if _rc_refs
                       else f"{_rc_offset:d}")
     from openpyxl.utils import get_column_letter as _rate_col
+    _rate_cells: dict[str, dict[str, Any]] = {}
     for _rate_index in range(_V4_MONTH_COLUMNS):
         _X = _rate_col(_V4_CF_FIRST_COL + _rate_index)
         _progress = (f"(1-EXP(-{_rc_shape_ref}*MIN(MAX(0,{_X}$4-1+{_rc_offset_ref}),"
                      f"'Вводные'!$B$35)/'Вводные'!$B$35))/(1-EXP(-{_rc_shape_ref}))")
-        rates_xml, done = _v4_set_cell(
-            rates_xml, f"{_X}5",
-            formula=(f"MAX(0,'Вводные'!$B$34,'Вводные'!$B$33"
-                     f"+('Вводные'!$B$34-'Вводные'!$B$33)*{_progress})"))
-        if not done:
-            missing.append(f"кривая ключевой ставки: колонка {_rate_index}")
-            break
+        _rate_cells[f"{_X}5"] = {
+            "formula": (f"MAX(0,'Вводные'!$B$34,'Вводные'!$B$33"
+                        f"+('Вводные'!$B$34-'Вводные'!$B$33)*{_progress})")
+        }
+    rates_xml, _rates_done = _v4_set_cells(rates_xml, 5, _rate_cells)
+    if not _rates_done:
+        missing.append("кривая ключевой ставки: строка 5")
 
     _ladder_steps = pf_special_steps(x.get("pf_special_steps"))
     _ladder_refs: list[tuple[str, str]] = []
@@ -24341,17 +24365,28 @@ def build_project_workbook(
         _growth = [n(x, f"{_prefix}_growth_stage{k}_pct", 0.0) / 100.0 for k in (1, 2, 3, 4)]
         _profile_refs = _stage_refs = None
         try:
-            if _profile_items and _profile_percent:
-                _total = sum(amount for amount, _ in _profile_items) or 1.0
+            # Второй экземпляр — полноценный объект книги, а не только строка
+            # движка. Поэтому его профиль и четыре этапа цены существуют даже
+            # при нулевых умолчаниях: иначе эти 15 вводных нельзя поправить
+            # непосредственно в Excel и сторож охвата справедливо считает их
+            # «без дома».
+            _is_clone = bool(_object.clone_of)
+            if (_profile_items and _profile_percent) or _is_clone:
+                if _profile_items and _profile_percent:
+                    _total = sum(amount for amount, _ in _profile_items) or 1.0
+                    _profile_rows = [
+                        (month, amount / _total) for amount, month in _profile_items
+                    ]
+                else:
+                    _profile_rows = [(month, 0.0) for month in range(8)]
                 xml, _profile_refs = _v4_schedule_rows_xml(
                     xml, f"ПРОФИЛЬ ПРОДАЖ · {_label.upper()}",
-                    "Месяц от старта продаж → доля объёма. Строка «Реализованный объём» листа ОБЪЕКТЫ читает отсюда.",
-                    [(month, amount / _total) for amount, month in _profile_items],
-                    "доля", key=f"{_prefix}_sales_profile")
-            if any(_growth):
+                    "Месяц от старта продаж → доля объёма. Сумма 0 — штатный календарь; ненулевая сумма включает этот профиль.",
+                    _profile_rows, "доля", key=f"{_prefix}_sales_profile")
+            if any(_growth) or _is_clone:
                 xml, _stage_refs = _v4_stage_rows_xml(
                     xml, f"ЛЕСТНИЦА ЦЕНЫ · {_label.upper()}",
-                    "Рост цены при строительной готовности 25/50/75/100% объекта. Строка «Цена реализации» листа ОБЪЕКТЫ читает отсюда.",
+                    "Рост цены при готовности 25/50/75/100%. Четыре нуля — ежемесячный рост до РВЭ.",
                     _growth,
                     keys=tuple(f"{_prefix}_growth_stage{k}_pct" for k in (1, 2, 3, 4)))
             if _profile_refs or _stage_refs:
