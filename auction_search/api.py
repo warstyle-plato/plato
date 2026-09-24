@@ -2759,10 +2759,17 @@ def install(app: FastAPI) -> None:
                             age = now - float(row.get("computed_at") or 0)
                         except (TypeError, ValueError):
                             age = 10**9
+                        reason = str(row.get("reason") or "").casefold()
+                        transient_geocode = (
+                            "too many requests" in reason
+                            or "geocod" in reason
+                            or "геокод" in reason
+                        )
+                        retry_failed_after = 10 * 60 if transient_geocode else 24 * 60 * 60
                         needs_model = (
                             (not row)
                             or (row.get("available") and krt_ranking_rules.model_needs_recount(row))
-                            or (not row.get("available") and age >= 24 * 60 * 60)
+                            or (not row.get("available") and age >= retry_failed_after)
                         )
                         if needs_model:
                             missing.append(project)
