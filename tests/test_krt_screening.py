@@ -1,6 +1,6 @@
 import main_legacy as core
 
-from auction_search.krt_screening import build_krt_model_screening
+from auction_search.krt_screening import _market_inputs, build_krt_model_screening
 
 
 PROJECT = {
@@ -25,6 +25,35 @@ def _market(price: int, market: int = 708_000) -> dict:
         },
         "price_hint": {"entry_per_sqm": price, "price_per_sqm": market},
     }
+
+
+def test_krt_surrounding_price_uses_the_dedicated_price_hint() -> None:
+    """Цена окружения берётся из числового ориентира, не из узкого site-verdict.
+
+    Site verdict отвечает ещё и на вопрос о продукте и может честно выбрать
+    дорогой доминирующий класс. Для поля модели price_hint строже: ему нужны
+    минимум три свежих сопоставимых прайса. Их нельзя менять местами.
+    """
+    report = {
+        "analysis": {
+            "site": {
+                "segment": "премиум",
+                "price_per_sqm": 2_948_528,
+            }
+        },
+        "price_hint": {
+            "segment": "премиум",
+            "price_per_sqm": 620_000,
+            "entry_per_sqm": 590_000,
+        },
+    }
+
+    segment, start_price, market_price, basis = _market_inputs(report)
+
+    assert segment == "премиум"
+    assert start_price == 620_000
+    assert market_price == 620_000
+    assert "price_hint" in basis
 
 
 def test_krt_screening_uses_market_class_and_authoritative_phasing() -> None:
