@@ -17348,62 +17348,59 @@ def _v4_set_cell(
 
 
 
-# Режимы на листе «Вводные» должны быть настоящими элементами выбора, а не
-# строками, которые человек обязан помнить. В список попадают только те
-# переключатели, которые книга уже умеет читать СВОИМИ формулами. Режим,
-# разрешив который здесь, но не протянув его в расчёт, был бы хуже свободного
-# текста: стрелка обещала бы пересчёт, которого нет.
-_V4_LIVE_MODE_KEYS = frozenset({
-    "bridge_interest_mode",
-    "social_mode",
-    "vri_payment_mode",
-    "vri_periodicity_months",
-    "vri_interest_enabled",
-    "vri_early_repay_after_pf",
-    "offices_enabled",
-    "retail_enabled",
-    "above_parking_enabled",
-    "sports_enabled",
-    "underground_parking_disabled",
-    "sports_disposition",
-    "rate_scenario",
-})
+# Режимы на листе «Вводные» берутся из канонического FIELD_GROUPS и
+# реестра объектов. Отдельного списка «что показать dropdown-ом» нет:
+# добавили select/checkbox/finance_select — он автоматически попадает сюда,
+# если не объявлен engine-only с причиной.
+_V4_MODE_KINDS = frozenset({"select", "checkbox", "finance_select"})
+
+
+def _v4_declared_mode_fields() -> dict[str, Any]:
+    """Все объявленные режимы DevelopAid, включая генерируемые поля объектов."""
+    out: dict[str, Any] = {}
+    for _group, fields in FIELD_GROUPS:
+        for field in fields:
+            if len(field) >= 4 and str(field[3]) in _V4_MODE_KINDS:
+                out[str(field[0])] = field
+    # Прогноз ставки исторически живёт отдельным каноническим блоком страницы,
+    # а не FIELD_GROUPS. Это не Excel-список: берём то же объявление формы.
+    for field in globals().get("_M2_RATE_INPUTS", ()):
+        if len(field) >= 4 and str(field[3]) in _V4_MODE_KINDS:
+            out[str(field[0])] = field
+    return out
 
 
 def _v4_live_mode_options() -> dict[str, list[str]]:
-    """Человекочитаемые варианты для живых Excel-переключателей.
+    """Варианты всех режимов, которые Excel действительно разрешено менять.
 
-    Источник — FIELD_GROUPS/реестр объектов. Отдельно названы только режимы,
-    у которых веб-форма исторически хранит список не в пятом элементе поля.
-    Excel хранит ВИДИМОЕ слово, потому что именно его читают его формулы.
+    Варианты берутся из объявления поля. Для старых полей без options в
+    FIELD_GROUPS используется тот же _M2_EXTRA_OPTIONS, что и web-форма.
+    Если canonical value числовой (периодичность 1/3/6/12), книга хранит именно
+    его — это первая колонка тех же canonical pairs, а не второй справочник.
     """
     out: dict[str, list[str]] = {}
-    for _group, fields in FIELD_GROUPS:
-        for field in fields:
-            if len(field) < 4:
-                continue
-            key, _label, _unit, kind = field[:4]
-            if key not in _V4_LIVE_MODE_KEYS:
-                continue
-            if kind == "checkbox":
-                out[key] = ["Да", "Нет"]
-            elif kind == "select" and len(field) > 4 and isinstance(field[4], list):
-                out[key] = [str(pair[1]) for pair in field[4]]
-    out["bridge_interest_mode"] = [
-        "Капитализация в ПФ", "Выплата при рефинансировании"]
-    out["social_mode"] = [
-        "Строительство", "Денежная компенсация", SOCIAL_MODE_BOTH]
-    # B75 больше не совмещает два поля «режим + срок»: срок живёт в B77.
-    out["vri_payment_mode"] = ["Единовременно", "Рассрочка"]
-    # В книге это числовая ячейка, а не текстовое название периодичности.
-    out["vri_periodicity_months"] = ["1", "3", "6", "12"]
-    # Пустое «по региону» пока остаётся движковым решением; книга хранит уже
-    # применённый Да/Нет и действительно умеет переключать его формулами.
-    out["vri_interest_enabled"] = ["Да", "Нет"]
-    out["sports_disposition"] = [
-        _V4_SPORTS_TRANSFER_WORD, _V4_SPORTS_SALE_WORD]
-    # Сценарий ставки в книге называется именем колонки, а не API-ключом.
-    out["rate_scenario"] = ["Base", "Upside", "Downside"]
+    extra = globals().get("_M2_EXTRA_OPTIONS", {})
+    for key, field in _v4_declared_mode_fields().items():
+        if key in V4_INPUTS_NOT_IN_BOOK:
+            continue
+        kind = str(field[3])
+        if kind == "checkbox":
+            out[key] = ["Да", "Нет"]
+            continue
+        pairs = field[4] if len(field) > 4 and isinstance(field[4], list) else extra.get(key)
+        if pairs:
+            internals = [str(pair[0]) for pair in pairs]
+            displays = [str(pair[1]) for pair in pairs]
+            numeric_internal = all(re.fullmatch(r"-?\d+(?:\.\d+)?", value)
+                                   for value in internals)
+            out[key] = internals if numeric_internal else displays
+
+    # Сценарий ставки — канонический блок страницы, но книга называет колонки
+    # Base/Upside/Downside. Имена выводятся из единственной карты engine→book.
+    if "rate_scenario" in _v4_declared_mode_fields():
+        out["rate_scenario"] = [
+            _V4_RATE_SCENARIO_NAMES[name] for name in ("base", "low", "high")
+        ]
     return out
 
 
@@ -17443,6 +17440,8 @@ def _v4_mirror_secondary_input_styles(xml: str) -> str:
         "pct": style_of("B19"),
         "date": style_of("B8"),
         "text": style_of("B31"),
+        "readonly": (str(_v4_formula_style_id())
+                     if _v4_formula_style_id() is not None else None),
         "unit": style_of("C15"),
         "key": style_of("D15"),
         "header": str(_v4_header_style_id()) if _v4_header_style_id() is not None else None,
@@ -17474,7 +17473,11 @@ def _v4_mirror_secondary_input_styles(xml: str) -> str:
         set_style(f"H{row}", exemplar["key"])
 
         kind, unit = field_meta.get(str(key), ("text", ""))
-        if kind == "date":
+        if str(key) in V4_INPUTS_NOT_IN_BOOK:
+            # Engine-only значение остаётся результатом/основанием и не
+            # получает стиль пользовательского ввода.
+            value_style = exemplar["readonly"]
+        elif kind == "date":
             value_style = exemplar["date"]
         elif kind == "number" and (unit.startswith("%") or unit == "п.п."
                                    or unit.startswith("п.п.")):
@@ -21922,6 +21925,30 @@ V4_INPUTS_NOT_IN_BOOK: dict[str, str] = {
         "приобъектную парковку: у Москвы спорт — 5.1, здравоохранение — 3.4, у "
         "области своей строки здравоохранения нет вовсе. Это вводная НОРМАТИВА, "
         "а не арифметики: книге приходит число мест, а имя объекта — подписью"),
+    "vri_required": (
+        "признак сам по себе не задаёт денежный поток книги: движок сначала "
+        "нормализует обязательство и сумму платы, а книга получает уже сумму ВРИ"),
+    "vri_obligation_date_mode": (
+        "режим даты до книги превращается в применённую дату/лаг; варианты "
+        "«через N месяцев» и «вручную» требуют движкового разрешения даты"),
+    "vri_schedule_mode": (
+        "ручной/автоматический график ВРИ разрешается движком до выгрузки; "
+        "книга получает уже параметры применённого графика"),
+    "vri_pf_open_date": (
+        "дата открытия ПФ для досрочного погашения остатка ВРИ разрешается "
+        "движком до книги; менять её без пересборки применённого графика нельзя"),
+    "vri_in_bank_budget": (
+        "признак банковского бюджета делит ВРИ между источниками до книги; "
+        "в книгу приходят уже применённые доли финансирования"),
+    "vri_financing_mode": (
+        "режим источников оплаты ВРИ разрешается до расчёта долей; книга "
+        "получает доли, а не сам алгоритм их определения"),
+    "vri_relief_mode": (
+        "форма льготы применяется при расчёте суммы ВРИ до книги; одна смена "
+        "режима без исходной базы и методики льготы не воспроизводит движок"),
+    "social_area_source": (
+        "источник площади соцобъектов определяет места/метры до финансового "
+        "расчёта; книга получает уже применённые физические параметры"),
 }
 # Ячейки, в которых значение ПОКАЗАНО, но книгой не читается ни одной
 # формулой. Это не ввод: правка здесь не изменит ничего, а выглядит рабочей —
@@ -21938,35 +21965,29 @@ V4_INPUTS_COMPUTED_IN_THE_CELL: dict[str, str] = {
         "стройки садов, школ и поликлиник: у книги ключ соцнагрузки один, а "
         "движок берёт в расчётный лимит БРИДЖа только денежную часть"),
 }
-V4_INPUTS_SHOWN_ONLY: dict[str, dict[str, str]] = {
-    "vri_pf_open_date": {
-        "cell": "F77",
-        "reason": ("дата открытия ПФ для досрочного погашения остатка ВРИ; график "
-                   "платежей приходит в книгу уже посчитанным блоком ВРИ"),
-    },
-    "vri_in_bank_budget": {
-        "cell": "F78",
-        "reason": ("признак «плата за ВРИ в банковском бюджете» делит её между "
-                   "источниками до книги: в неё приходят уже доли лимита"),
-    },
-    "vri_financing_mode": {
-        "cell": "F79",
-        "reason": ("режим источников оплаты ВРИ — тот же выбор до расчёта долей; "
-                   "книга получает доли, а не режим"),
-    },
-}
-_V4_ENGINE_ONLY_ROWS: tuple[tuple[str, str, str], ...] = (
-    ("vri_region", "Регион расчёта платы за ВРИ", "Плата приходит в B16"),
-    ("land_right", "Право на участок", "Плата приходит в B16"),
-    ("parking_k1", "К1 — доступность рельсового каркаса", "Приобъектная норма — справка: асфальт в благоустройстве"),
-    ("parking_rail_distance_m", "Расстояние до станции, м",
-     "Вводная норматива: из неё считается К1, а книга считает по числу мест"),
-    ("parking_k2", "К2 — деловая активность района", "Приобъектная норма — справка: асфальт в благоустройстве"),
-    ("parking_design_mode", "Край норматива (Московская область)", "Приобъектная норма — справка: асфальт в благоустройстве"),
-    ("sports_purpose", "Назначение объекта «ФОК / медцентр»",
-     "Строка норматива: Москва 5.1 спорт / 3.4 здравоохранение; у области "
-     "строки здравоохранения нет — правило п. 5.12"),
-)
+# DISPLAY-ONLY для пользовательских вводных больше не допускается: если книгу
+# нельзя пересчитать офлайн, поле относится к engine-only и не выглядит
+# редактируемым. Имя оставлено пустым ради обратной совместимости проверок.
+V4_INPUTS_SHOWN_ONLY: dict[str, dict[str, str]] = {}
+
+def _v4_field_label(key: str) -> str:
+    """Подпись поля из канонического реестра вводных, без второй карты Excel."""
+    for _group, fields in FIELD_GROUPS:
+        for field in fields:
+            if len(field) >= 2 and str(field[0]) == key:
+                return str(field[1])
+    for field in globals().get("_M2_RATE_INPUTS", ()):
+        if len(field) >= 2 and str(field[0]) == key:
+            return str(field[1])
+    return key
+
+
+def _v4_engine_only_rows() -> tuple[tuple[str, str, str], ...]:
+    """Engine-only блок строится из того же реестра классификации."""
+    return tuple(
+        (key, _v4_field_label(key), reason)
+        for key, reason in V4_INPUTS_NOT_IN_BOOK.items()
+    )
 
 
 def _v4_engine_only_rows_xml(xml: str, inputs: dict[str, Any]) -> tuple[str, int]:
@@ -21994,7 +22015,7 @@ def _v4_engine_only_rows_xml(xml: str, inputs: dict[str, Any]) -> tuple[str, int
                                          "а не арифметика: править их здесь нечем, "
                                          "видно основание применённого расчёта.")
                  + "</x:row>")
-    for index, (key, label, where) in enumerate(_V4_ENGINE_ONLY_ROWS):
+    for index, (key, label, where) in enumerate(_v4_engine_only_rows()):
         row = base_row + 2 + index
         value = inputs.get(key)
         if isinstance(value, bool):
