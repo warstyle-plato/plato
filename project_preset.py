@@ -122,8 +122,11 @@ MONEY_INPUTS_ANNOUNCED = {
 # сверяет этот список с `TEP_DEFAULT` движка и падает на любом новом продукте.
 # Копия, за которой следят, отличается от копии, которая расходится молча.
 PHASE_PRODUCT_KEYS = (
-    "apartments", "ground_commercial", "standalone_retail", "offices",
-    "above_parking", "underground_parking", "storage",
+    "apartments", "ground_commercial",
+    "standalone_retail", "retail2",
+    "offices", "offices2",
+    "above_parking", "above_parking2",
+    "underground_parking", "storage",
     "kindergarten", "school", "clinic", "sports", "other_mandatory",
 )
 
