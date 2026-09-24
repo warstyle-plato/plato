@@ -16328,8 +16328,10 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         # другой, и найти её удалось только глазами.
         expense_rows.append([item.get('label') or '—',_pdf_money(value),
                              (_pdf_num(value/total_expense*100,1)+'%') if total_expense else '—',
-                             _pdf_num(item.get('per_gns_th') or 0,1),
-                             _pdf_num(item.get('per_saleable_th') or 0,1)])
+                             ('—' if item.get('per_gns_th') is None
+                              else _pdf_num(item.get('per_gns_th') or 0,1)),
+                             ('—' if item.get('per_saleable_th') is None
+                              else _pdf_num(item.get('per_saleable_th') or 0,1))])
         # Отдельно стоящий объект меряется своей площадью, наземный паркинг —
         # своими местами. Числа считает движок; отчёт носят в банк, и
         # расходиться с экраном ему нельзя — подстроки те же.
@@ -30800,12 +30802,17 @@ def calculate(req: CalcRequest) -> dict:
             "per_saleable_th": per_sqm_th(value, monetizable_saleable_sqm),
         }
         if label == "Отдельные объекты" and standalone_items:
+            # Сумма и доля корзины осмысленны, а единый показатель «на м²» —
+            # нет: здесь смешаны офис, ТЦ, ФОК и паркинги с разными базами.
+            # Именно это давало рядом 132,7 / 244,1 по проекту и 316,2 /
+            # 672,7 по офису. Не показываем третий показатель под тем же видом.
+            entry["per_gns_th"] = None
+            entry["per_saleable_th"] = None
             entry["items"] = standalone_items
             entry["items_note"] = (
-                "Удельные по каждому объекту — на ЕГО площадь, у наземного "
-                "паркинга — на машино-место. Колонки самой строки, как и у "
-                "остальных статей, считаны на весь проект: они складываются "
-                "в итог таблицы, а числа объектов — нет."
+                "У строки «Отдельные объекты» удельные не показываются: "
+                "в ней смешаны разные физические базы. Ниже каждый объект "
+                "считается на ЕГО площадь, а парковка — на машино-место."
             )
         expense_structure.append(entry)
     expense_structure.sort(key=lambda item: item["value"], reverse=True)
@@ -33035,7 +33042,15 @@ def _consolidate_phase_results(
                 part["per_own_saleable_th"] = (part["value"] / part["saleable_sqm"] / 1000
                                                if part["saleable_sqm"] else 0.0)
         entry["items"] = sorted(parts, key=lambda one: one["value"], reverse=True)
-        if item_note.get(entry["label"]):
+        if entry["label"] == "Отдельные объекты":
+            entry["per_gns_th"] = None
+            entry["per_saleable_th"] = None
+            entry["items_note"] = (
+                "У строки «Отдельные объекты» удельные не показываются: "
+                "в ней смешаны разные физические базы. Ниже каждый объект "
+                "считается на ЕГО площадь, а парковка — на машино-место."
+            )
+        elif item_note.get(entry["label"]):
             entry["items_note"] = item_note[entry["label"]]
     expense_structure.sort(key=lambda x: x["value"], reverse=True)
 
@@ -50707,8 +50722,8 @@ function renderResult(){
    <td>${x.label}</td>
    <td>${money(x.value)}</td>
    <td>${(Number(x.share||0)*100).toLocaleString('ru-RU',{minimumFractionDigits:1,maximumFractionDigits:1})}%</td>
-   <td>${num2(x.per_gns_th)}</td>
-   <td>${num2(x.per_saleable_th)}</td>
+   <td>${x.per_gns_th==null?'—':num2(x.per_gns_th)}</td>
+   <td>${x.per_saleable_th==null?'—':num2(x.per_saleable_th)}</td>
  </tr>`;
    const parts=(x.items||[]).map(o=>`<tr class="sub">
    <td style="padding-left:18px">в т.ч. ${o.label} · ${o.basis_label||''}</td>
