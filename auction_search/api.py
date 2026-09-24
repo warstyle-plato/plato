@@ -4969,7 +4969,17 @@ def install(app: FastAPI) -> None:
         threading.Thread(target=_weekly_ranking, name="krt-weekly", daemon=True).start()
     if os.getenv("AUCTION_KRT_WATCH", "1").strip() not in {"0", "false", "no"}:
         threading.Thread(target=_krt_watch_loop, name="krt-watch", daemon=True).start()
-    if os.getenv("AUCTION_KRT_RATING_BACKGROUND", "1").strip() not in {"0", "false", "no"}:
+    # В pytest автономный фоновый поток не стартует: тесты сами вызывают
+    # нужные маршруты/раннеры. Иначе каждый временный FastAPI-app оставляет
+    # daemon-поток, который через 12 секунд начинает ходить в подменённые
+    # зависимости и на завершении Python может упасть с exit 134, хотя все
+    # проверки уже прошли. В production pytest не импортирован, поведение
+    # фонового пересчёта не меняется.
+    if (
+        "pytest" not in sys.modules
+        and os.getenv("AUCTION_KRT_RATING_BACKGROUND", "1").strip()
+        not in {"0", "false", "no"}
+    ):
         threading.Thread(
             target=_rating_background_loop, name="krt-rating-background", daemon=True
         ).start()
