@@ -42,7 +42,8 @@ SITE = {"slug": "yasenevaya-ul-vl-48", "name": "Задонский проезд,
         "nonresidential_gfa_sqm": 22260}
 
 MARKET = {"analysis": {"site": {"segment": "комфорт", "price_per_sqm": 423340,
-                                "units_per_month": 20, "sold_lot_avg": 36}}}
+                                "units_per_month": 20, "sold_lot_avg": 36}},
+          "price_hint": {"price_per_sqm": 423340, "basis": "test fresh comparable median"}}
 
 
 def screen(renovation_sqm: float | None, *, housing: float = 150940.0):
