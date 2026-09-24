@@ -93,7 +93,7 @@ def _marks(*, rank_row: dict, pressed: dict | None = None,
     return done.stdout
 
 
-CITY_NEEDS = {"quote": "Реновация — Черемушки, Котловка (ЮЗАО)",
+CITY_NEEDS = {"quote": "Программа реновации — Черемушки, Котловка (ЮЗАО)",
               "url": "https://example.org/a", "official": False}
 OPERATOR = {"quote": "оператором стал ФОНД", "name": "Фонд реновации",
             "url": "https://example.org/b", "official": True}
@@ -119,7 +119,7 @@ def test_the_quote_travels_with_the_mark() -> None:
 def test_the_city_card_says_it_is_the_city_card() -> None:
     """У официальной карточки своя подпись: источник — часть утверждения."""
     html = _marks(rank_row={},
-                  row={"slug": "s", "card_facts": {
+                  row={"slug": "s", "status": "В реализации", "card_facts": {
                       "renovation": True,
                       "renovation_quote": "Программа реновации",
                       "developers": ["АО «Мосинжпроект»"]}})
