@@ -49,6 +49,18 @@ def merc(lon: float, lat: float) -> tuple[float, float]:
     return x, y
 
 
+def unmerc(x: float, y: float) -> tuple[float, float]:
+    """Обратно в WGS84: сначала долгота, затем широта.
+
+    Рыночный отчёт должен использовать уже известный официальный центр КРТ,
+    а не повторно спрашивать OSM по её текстовому адресу. Второй конвертер
+    рядом с рынком не заводим: контур и точка иначе разойдутся.
+    """
+    lon = math.degrees(float(x) / _EARTH)
+    lat = math.degrees(2 * math.atan(math.exp(float(y) / _EARTH)) - math.pi / 2)
+    return lon, lat
+
+
 def _number(value: Any) -> float | None:
     try:
         text = str(value).replace(" ", "").replace(",", ".").strip()
@@ -137,6 +149,10 @@ def parse(payload: Any, step_m: float = 40.0) -> list[dict[str, Any]]:
             "unnamed_10": str(row[UNKNOWN_10] or "").strip(),
             "rings_merc": rings,
             "centre_merc": centre,
+            # Исходный POINT уже WGS84. Рыночному движку эти координаты
+            # нужны напрямую, без повторного геокодирования названия КРТ.
+            "longitude": float(point[0]) if point else None,
+            "latitude": float(point[1]) if point else None,
         })
     return out
 
