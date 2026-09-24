@@ -44,13 +44,29 @@ def _project() -> tuple[dict, dict]:
         "sports_cost_th_per_sqm": 170, "sports_price_th_per_sqm": 240,
         "sports_disposition": "sale",
         "sports_parking_under_spaces": 90, "sports_parking_over_spaces": 25,
+        # Вторые объекты теперь часть реестра и эта фикстура по своему
+        # контракту обязана включать КАЖДУЮ строку реестра.
+        "offices2_enabled": True, "offices2_gba_sqm": 16000,
+        "offices2_saleable_sqm": 13000,
+        "offices2_cost_th_per_sqm": 185, "offices2_price_th_per_sqm": 315,
+        "offices2_parking_under_spaces": 120, "offices2_parking_over_spaces": 30,
+        "retail2_enabled": True, "retail2_gba_sqm": 11000,
+        "retail2_saleable_sqm": 9000,
+        "retail2_cost_th_per_sqm": 145, "retail2_price_th_per_sqm": 250,
+        "retail2_parking_under_spaces": 80, "retail2_parking_over_spaces": 20,
+        "above_parking2_enabled": True, "above_parking2_spaces": 140,
+        "above_parking2_cost_mln_per_space": 1.15,
+        "above_parking2_price_mln_per_space": 2.0,
     })
     tep = copy.deepcopy(core.TEP_DEFAULT)
-    for key, gns, sale in (("offices", 40000, 34000), ("standalone_retail", 22000, 18000),
-                           ("sports", 9000, 7500)):
+    for key, gns, sale in (
+            ("offices", 40000, 34000), ("offices2", 16000, 13000),
+            ("standalone_retail", 22000, 18000), ("retail2", 11000, 9000),
+            ("sports", 9000, 7500)):
         tep[key].update({"gns": gns, "total_area": gns * 0.94,
                          "useful": sale, "saleable": sale})
     tep["above_parking"].update({"units": 300})
+    tep["above_parking2"].update({"units": 140})
     return x, tep
 
 
