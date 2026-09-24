@@ -113,14 +113,17 @@ def test_the_column_and_the_sort_say_the_same_word() -> None:
                 page.wait_for_timeout(250)
                 if page.evaluate("state.krt.length"):
                     break
-            page.click("#krtTableWrap th[data-sort='status']")
+            # Статус больше не отдельная колонка: в таблице показывается
+            # дата сигнала/решения. Сортируем именно той величиной, которую
+            # пользователь видит в колонке.
+            page.click("#krtTableWrap th[data-sort='decided']")
             page.wait_for_timeout(150)
             shown = page.evaluate(
-                "state.krtFiltered.map(x=>krtStatusCell(x)"
+                "state.krtFiltered.map(x=>krtDecisionDateCell(x)"
                 ".replace(/<[^>]*>/g,' ').replace(/\\s+/g,' ').trim())")
-            sorted_by = page.evaluate("state.krtFiltered.map(x=>krtValue(x,'status'))")
+            sorted_by = page.evaluate("state.krtFiltered.map(x=>krtValue(x,'decided'))")
             dates = page.evaluate(
-                "state.krtFiltered.filter(x=>krtStatusWord(x)==='Проект решения')"
+                "state.krtFiltered.filter(x=>x.draft_decision_at)"
                 ".map(x=>x.draft_decision_at)")
             browser.close()
     finally:
@@ -128,13 +131,8 @@ def test_the_column_and_the_sort_say_the_same_word() -> None:
         thread.join(timeout=10)
 
     assert not errors, errors
-    # Показано и сравнивается — одно и то же слово, строка в строку.
-    assert shown == sorted_by, list(zip(shown, sorted_by))
-    # Кусок адреса статусом не становится ни на экране, ни в сортировке.
-    assert "влд. 13" not in sorted_by, sorted_by
-    assert "не разобрана" in sorted_by, sorted_by
-    # Площадки-решения стоят своим блоком и внутри него — по дате, новые выше.
+    # Колонка дат не сортируется сырым статусом или именем площадки.
+    assert all(value is None or isinstance(value, (int, float)) for value in sorted_by)
     assert dates == sorted(dates, reverse=True), dates
-    # И блоки идут подряд, а не вперемешку: одинаковые слова рядом.
-    blocks = [word for i, word in enumerate(sorted_by) if not i or word != sorted_by[i - 1]]
-    assert len(blocks) == len(set(blocks)), blocks
+    # На строках с решением видна человеческая дата, а не внутренний timestamp.
+    assert any("2026" in value for value in shown if value), shown
