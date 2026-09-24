@@ -976,7 +976,7 @@ def install(app: FastAPI) -> None:
                             # прочитаны из её PDF.
                             rows = rows + _decision_rows_for_run()
                             if rows and not krt_ranking.start(
-                                    rows, _screen_for, scheduled=True, claimed=True):
+                                    rows, _screen_for_background, scheduled=True, claimed=True):
                                 krt_ranking.release()
                         except Exception:
                             logger.exception("weekly KRT ranking failed")
@@ -2421,6 +2421,7 @@ def install(app: FastAPI) -> None:
                 return market.build_report(
                     fallback, radius_km=radius_km, peers_limit=peers_limit,
                     city_reference=False, include_project_totals=True,
+                    match_nearby_project=False,
                 )
             except GeocodingError as exc:
                 if "too many requests" not in str(exc).casefold():
@@ -2429,6 +2430,7 @@ def install(app: FastAPI) -> None:
                 return market.build_report(
                     fallback, radius_km=radius_km, peers_limit=peers_limit,
                     city_reference=False, include_project_totals=True,
+                    match_nearby_project=False,
                 )
 
     def _market_model_only(
@@ -2462,9 +2464,12 @@ def install(app: FastAPI) -> None:
             asking_price_mln=asking_price)
         return screening, report
 
-    def _screen_one(project: dict[str, Any]) -> dict[str, Any]:
+    def _screen_one(
+        project: dict[str, Any], *, allow_remote_geocode: bool = True,
+    ) -> dict[str, Any]:
         """Полный прогон: рынок + модель + карточка города + публичный контекст."""
-        screening, report = _market_model_only(project)
+        screening, report = _market_model_only(
+            project, allow_remote_geocode=allow_remote_geocode)
         if not report:
             return screening
         slug = str(project.get("slug") or "")
@@ -4187,7 +4192,9 @@ def install(app: FastAPI) -> None:
             "press_facts": _open_sources_for_run(project),
         }
 
-    def _screen_for(project: dict[str, Any]) -> dict[str, Any]:
+    def _screen_for(
+        project: dict[str, Any], *, allow_remote_geocode: bool = True,
+    ) -> dict[str, Any]:
         """Чем считать эту строку. Один ответ на весь модуль.
 
         Выбор живёт здесь, а не у каждого вызывающего: разойдись они,
@@ -4228,7 +4235,7 @@ def install(app: FastAPI) -> None:
                 "reason": f"Карточка каталога разобрана со сдвигом ({shift}) — считать нечем",
             }
         if not project.get("no_card"):
-            return _screen_one(project)
+            return _screen_one(project, allow_remote_geocode=allow_remote_geocode)
         if not project.get("address_known"):
             return _press_only(project)
         if not housing_measure_named(project):
@@ -4239,7 +4246,12 @@ def install(app: FastAPI) -> None:
                 "Балл площадки при этом остаётся: это ответ методики, а не пробел."
             )
             return answer
-        return _screen_one(project)
+        return _screen_one(project, allow_remote_geocode=allow_remote_geocode)
+
+
+    def _screen_for_background(project: dict[str, Any]) -> dict[str, Any]:
+        """Scheduled pass never sends a bulk address queue to a public geocoder."""
+        return _screen_for(project, allow_remote_geocode=False)
 
     @app.post("/auctions/krt/press/run")
     async def auction_krt_press_run(request: Request) -> dict[str, Any]:
