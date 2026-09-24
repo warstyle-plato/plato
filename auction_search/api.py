@@ -1445,6 +1445,7 @@ def install(app: FastAPI) -> None:
                 peers_limit=12,
                 city_reference=False,
                 include_project_totals=True,
+                snap_subject_project=False,
             )
         except SubjectNotFound:
             fallback = " ".join(
@@ -1460,6 +1461,7 @@ def install(app: FastAPI) -> None:
                 peers_limit=12,
                 city_reference=False,
                 include_project_totals=True,
+                snap_subject_project=False,
             )
 
         requirements = _requirements_for(slug)
