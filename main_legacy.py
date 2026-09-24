@@ -17419,29 +17419,71 @@ def _v4_cell_text(xml: str, coord: str) -> str | None:
 
 
 def _v4_mirror_secondary_input_styles(xml: str) -> str:
-    """E:H — такая же форма ввода, как A:D, а не неоформленный довесок.
+    """E:H — такая же форма ввода, как A:D, с правильным типом значения.
 
-    В этих строках слева и справа стоят одинаковые типы колонок:
-    подпись / значение / единица / API-ключ. Поэтому стиль копируется
-    ПО КОЛОНКЕ той же строки и не вводит второй дизайн листа.
+    Копировать стиль той же СТРОКИ нельзя: справа может стоять процент, а
+    слева в этой строке — сумма или дата. Стиль Excel несёт number format,
+    поэтому визуально похожая правка превращала 3% в 0,03. Берём образец по
+    роли колонки и типу поля из единого FIELD_GROUPS.
     """
+    field_meta: dict[str, tuple[str, str]] = {}
+    for _group, fields in FIELD_GROUPS:
+        for field in fields:
+            if len(field) >= 4:
+                field_meta[str(field[0])] = (str(field[3]), str(field[2]))
+
+    def style_of(coord: str) -> str | None:
+        found = re.search(r'<x:c r="%s"[^>]*?\ss="(\d+)"' % re.escape(coord), xml)
+        return found.group(1) if found else None
+
+    # Штатные образцы шаблона: обычное число, процент, дата и текстовый режим.
+    exemplar = {
+        "label": style_of("A15"),
+        "number": style_of("B15"),
+        "pct": style_of("B19"),
+        "date": style_of("B8"),
+        "text": style_of("B31"),
+        "unit": style_of("C15"),
+        "key": style_of("D15"),
+        "header": str(_v4_header_style_id()) if _v4_header_style_id() is not None else None,
+    }
+
+    def set_style(coord: str, style: str | None) -> None:
+        nonlocal xml
+        if style is None:
+            return
+        pattern = re.compile(r'(<x:c r="%s")([^>]*)' % re.escape(coord))
+        def apply(match: "re.Match[str]") -> str:
+            attrs = re.sub(r'\s+s="\d+"', "", match.group(2))
+            return f'{match.group(1)}{attrs} s="{style}"'
+        xml = pattern.sub(apply, xml, count=1)
+
     for row in range(1, 160):
-        for source, target in zip("ABCD", "EFGH"):
-            source_cell = re.search(
-                r'<x:c r="%s%d"([^>]*)' % (source, row), xml)
-            target_cell = re.search(
-                r'<x:c r="%s%d"([^>]*)' % (target, row), xml)
-            if not source_cell or not target_cell:
-                continue
-            style = re.search(r'\ss="(\d+)"', source_cell.group(1))
-            if not style:
-                continue
-            coord = f"{target}{row}"
-            pattern = re.compile(r'(<x:c r="%s")([^>]*)' % re.escape(coord))
-            def apply(match: "re.Match[str]") -> str:
-                attrs = re.sub(r'\s+s="\d+"', "", match.group(2))
-                return f'{match.group(1)}{attrs} s="{style.group(1)}"'
-            xml = pattern.sub(apply, xml, count=1)
+        key = _v4_cell_text(xml, f"H{row}")
+        has_e = _v4_cell_text(xml, f"E{row}") is not None
+        has_f = (_v4_cell_text(xml, f"F{row}") is not None
+                 or _v4_cell_formula(xml, f"F{row}") is not None)
+        if not has_e:
+            continue
+        if not key and not has_f:
+            set_style(f"E{row}", exemplar["header"])
+            continue
+
+        set_style(f"E{row}", exemplar["label"])
+        set_style(f"G{row}", exemplar["unit"])
+        set_style(f"H{row}", exemplar["key"])
+
+        kind, unit = field_meta.get(str(key), ("text", ""))
+        if kind == "date":
+            value_style = exemplar["date"]
+        elif kind == "number" and (unit.startswith("%") or unit == "п.п."
+                                   or unit.startswith("п.п.")):
+            value_style = exemplar["pct"]
+        elif kind == "number":
+            value_style = exemplar["number"]
+        else:
+            value_style = exemplar["text"]
+        set_style(f"F{row}", value_style)
     return xml
 
 
