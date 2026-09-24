@@ -23702,6 +23702,7 @@ def build_project_workbook(
     # как число лет, поэтому пишем срок прямо туда.
     _vri_years = int(float(x.get("vri_installment_years") or 3))
     put("B77", number=float(_vri_years), label="vri_installment_years")
+    xml = _v4_mark_as_entry(xml, "B77", missing)
     put_new("D75", text="vri_payment_mode")
     put_new("D77", text="vri_installment_years")
     put_new("C77", text="лет")
