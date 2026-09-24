@@ -207,3 +207,25 @@ def test_v4_book_uses_separate_office_parking_prices() -> None:
     evaluator = Evaluator(book)
     assert evaluator.cell("ОБЪЕКТЫ", "B33") == pytest.approx(
         _product_revenue(report, "object_parking") / 1_000_000, rel=1e-9)
+
+
+def test_office_parking_reaches_tep_and_the_saleable_product_breakdown() -> None:
+    result = core.calculate(core.CalcRequest(
+        inputs=_inputs(UNDER, OVER), tep=_tep(), rates=[]))
+    office = next(row for row in result["tep"]["rows"] if row["key"] == "offices")
+    product = next(row for row in result["report"]["products"]
+                   if row["key"] == "object_parking")
+
+    assert office["parking_units"] == SPACES
+    assert office["parking_saleable_units"] > 0
+    assert office["under_gns"] == pytest.approx(UNDER * 35)
+    assert product["quantity"] == pytest.approx(office["parking_saleable_units"])
+    assert product["unit"] == "шт."
+    assert product["revenue"] > 0
+
+
+def test_page_prints_object_parking_as_a_separate_tep_child_row() -> None:
+    page = core.PAGE
+    assert "↳ Паркинг ·" in page
+    assert "objectParkingTepRow" in page
+    assert "parking_saleable_units" in page
