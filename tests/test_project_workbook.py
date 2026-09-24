@@ -203,8 +203,38 @@ def test_live_mode_inputs_have_excel_dropdowns_and_canonical_values():
     assert "Капитализация в ПФ" in by_cell[targets["bridge_interest_mode"]]
     assert "Рассрочка" in by_cell[targets["vri_payment_mode"]]
     assert "Продаётся" in by_cell[targets["sports_disposition"]]
-    assert "Base" in by_cell[targets["rate_scenario"]]
+    assert "Ежеквартально" in by_cell[targets["vri_periodicity_months"]]
+    assert "По региону" in by_cell[targets["vri_interest_enabled"]]
+    assert "Базовый" in by_cell[targets["rate_scenario"]]
 
+
+def test_translated_modes_show_russian_but_feed_legacy_formula_values():
+    content, _, meta, _ = _book({
+        "vri_periodicity_months": 3,
+        "vri_interest_enabled": "",
+        "rate_scenario": "base",
+    })
+    assert meta["missing"] == []
+    book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
+    entry = book["Вводные"]
+    params = book["Параметры модели"]
+
+    periodic_entry = _entry_value_cell_for_key(entry, "vri_periodicity_months")
+    interest_entry = _entry_value_cell_for_key(entry, "vri_interest_enabled")
+    rate_entry = _entry_value_cell_for_key(entry, "rate_scenario")
+    assert entry[periodic_entry].value == "Ежеквартально"
+    assert entry[interest_entry].value == "По региону"
+    assert entry[rate_entry].value == "Базовый"
+
+    periodic_source = _source_cell_for_entry(params, periodic_entry)
+    interest_source = _source_cell_for_entry(params, interest_entry)
+    rate_source = _source_cell_for_entry(params, rate_entry)
+    assert "Ежеквартально" in str(params[periodic_source].value)
+    assert "По региону" in str(params[interest_source].value)
+    assert "Начисляются" in str(params[interest_source].value)
+    assert "Москва" in str(params[interest_source].value)
+    assert "Базовый" in str(params[rate_source].value)
+    assert "Base" in str(params[rate_source].value)
 
 def _source_cell_for_entry(params, entry_coord):
     wanted = f"='Вводные'!{entry_coord}"
