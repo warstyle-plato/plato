@@ -21947,19 +21947,41 @@ def _v4_apply_object_schedule(objects_xml: str, prefix: str,
     (qty_row, price_row, start_ref, base_ref, build_start_ref, months_ref,
      garage_row) = _V4_OBJECT_ROWS[prefix]
     if profile_refs:
-        def build_qty(column: str, _body: str) -> str:
-            return f"{base_ref}*{_v4_share_by_month(_v4_month_offset(column, start_ref), profile_refs)}"
+        # Пустой профиль — не «продаж нет», а штатная схема
+        # «доля до РВЭ + остаток». Так строки второго объекта можно
+        # заранее держать живыми в Excel и заполнять уже в книге.
+        _profile_values = ",".join(value for _month, value in profile_refs)
 
-        objects_xml, done = _v4_rewrite_row_formulas(objects_xml, qty_row, f"{base_ref}*", build_qty)
+        def build_qty(column: str, body: str) -> str:
+            profiled = (
+                f"{base_ref}*"
+                f"{_v4_share_by_month(_v4_month_offset(column, start_ref), profile_refs)}"
+            )
+            return f"IF(SUM({_profile_values})=0,{body},{profiled})"
+
+        objects_xml, done = _v4_rewrite_row_formulas(
+            objects_xml, qty_row, f"{base_ref}*", build_qty)
         if not done:
             missing.append(f"ОБЪЕКТЫ · профиль продаж {prefix}")
     if stage_refs:
+        _stage_sum = ",".join(stage_refs)
+
         def build_price(column: str, body: str) -> str:
-            return _v4_replace_pre_rve_growth(body, _v4_stage_factor(
-                _v4_month_offset(column, build_start_ref), months_ref, stage_refs))
+            stage_factor = _v4_stage_factor(
+                _v4_month_offset(column, build_start_ref), months_ref, stage_refs)
+            # Нулевая лестница выключена: исходный ежемесячный рост остаётся.
+            first = body.find("*(1+\'Вводные\'!")
+            if first < 0:
+                return body
+            second = body.find("*(1+\'Вводные\'!", first + 1)
+            if second < 0:
+                return body
+            original_factor = body[first + 1:second]
+            switched = f"IF(SUM({_stage_sum})=0,{original_factor},{stage_factor})"
+            return body[:first] + "*" + switched + body[second:]
 
         objects_xml, done = _v4_rewrite_row_formulas(
-            objects_xml, price_row, "*(1+'Вводные'!", build_price)
+            objects_xml, price_row, "*(1+\'Вводные\'!", build_price)
         if not done:
             missing.append(f"ОБЪЕКТЫ · лестница цены {prefix}")
         # Места гаража объекта продаются ПО ТОЙ ЖЕ лестнице: движок передаёт
@@ -23818,12 +23840,22 @@ def build_project_workbook(
     # половины к другой, нельзя (решение владельца, 03.09.2026), — а срок
     # становится формулой: сдвинул стройку или хвост, и он поехал.
     for _obj_prefix, (_obj_row, _obj_months, _obj_term) in _V4_OBJECT_RESIDUAL_BOOK.items():
-        put_new(f"J{_obj_row}", text="Остаточные продажи после РВЭ")
-        put_new(f"K{_obj_row}", number=n(x, f"{_obj_prefix}_residual_months", 6.0),
-                label=f"{_obj_prefix}_residual_months")
-        put_new(f"L{_obj_row}", text="мес.")
-        put_new(f"M{_obj_row}", text=f"{_obj_prefix}_residual_months")
-        put(_obj_term, formula=f"{_obj_months}+$K${_obj_row}",
+        # У клонов эта строка находится за пределами скопированного блока.
+        # K обязана иметь стиль ввода, иначе она не переедет на лист «Вводные».
+        xml = _v4_ensure_row(xml, _obj_row)
+        xml, _done = _v4_set_cells(
+            xml, _obj_row,
+            {
+                f"J{_obj_row}": {"text": "Остаточные продажи после РВЭ"},
+                f"K{_obj_row}": {"number": n(x, f"{_obj_prefix}_residual_months", 6.0)},
+                f"L{_obj_row}": {"text": "мес."},
+                f"M{_obj_row}": {"text": f"{_obj_prefix}_residual_months"},
+            },
+            styles={f"K{_obj_row}": str(_v4_entry_style_id())},
+        )
+        if not _done:
+            missing.append(f"{_obj_prefix}_residual_months")
+        put(_obj_term, formula=f"{_obj_months}+$K$" + str(_obj_row),
             label=f"срок продаж {_obj_prefix}")
 
     # --- подземный паркинг -------------------------------------------------
@@ -24365,17 +24397,26 @@ def build_project_workbook(
         _growth = [n(x, f"{_prefix}_growth_stage{k}_pct", 0.0) / 100.0 for k in (1, 2, 3, 4)]
         _profile_refs = _stage_refs = None
         try:
-            if _profile_items and _profile_percent:
-                _total = sum(amount for amount, _ in _profile_items) or 1.0
+            # Клон — полноценная редактируемая сущность Excel. Даже пустые
+            # профиль и лестница получают живые строки. Нули не меняют расчёт.
+            _is_clone = bool(_object.clone_of)
+            if (_profile_items and _profile_percent) or _is_clone:
+                if _profile_items and _profile_percent:
+                    _total = sum(amount for amount, _ in _profile_items) or 1.0
+                    _profile_rows = [
+                        (month, amount / _total) for amount, month in _profile_items
+                    ]
+                else:
+                    # Восемь редактируемых шагов для графика второго объекта.
+                    _profile_rows = [(month, 0.0) for month in range(8)]
                 xml, _profile_refs = _v4_schedule_rows_xml(
                     xml, f"ПРОФИЛЬ ПРОДАЖ · {_label.upper()}",
-                    "Месяц от старта продаж → доля объёма. Строка «Реализованный объём» листа ОБЪЕКТЫ читает отсюда.",
-                    [(month, amount / _total) for amount, month in _profile_items], "доля",
-                    key=f"{_prefix}_sales_profile")
-            if any(_growth):
+                    "Месяц от старта продаж → доля объёма. Сумма 0 — штатный календарь; ненулевая сумма включает этот профиль.",
+                    _profile_rows, "доля", key=f"{_prefix}_sales_profile")
+            if any(_growth) or _is_clone:
                 xml, _stage_refs = _v4_stage_rows_xml(
                     xml, f"ЛЕСТНИЦА ЦЕНЫ · {_label.upper()}",
-                    "Рост цены при строительной готовности 25/50/75/100% объекта. Строка «Цена реализации» листа ОБЪЕКТЫ читает отсюда.",
+                    "Рост цены при готовности 25/50/75/100%. Четыре нуля — ежемесячный рост до РВЭ.",
                     _growth,
                     keys=tuple(f"{_prefix}_growth_stage{k}_pct" for k in (1, 2, 3, 4)))
             if _profile_refs or _stage_refs:
