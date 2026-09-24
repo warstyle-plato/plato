@@ -174,7 +174,6 @@ def _market_inputs(report: dict[str, Any]) -> tuple[str | None, float, float, st
     # нельзя: именно так единичный premium/elite-кластер давал каталогу КРТ
     # 2,6–3,2 млн ₽/м² как «цену окружения».
     hint_price = _number(hint.get("price_per_sqm"))
-    entry_price = _number(hint.get("entry_per_sqm"))
     if hint_price > 0:
         return (
             segment,
