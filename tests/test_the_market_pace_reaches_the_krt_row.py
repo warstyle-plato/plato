@@ -123,10 +123,10 @@ def test_the_rules_version_rises_with_the_answer():
 # проверку, чтобы вторая была решена, а не забыта. Добавили поле — поднимите
 # версию; поле переименовали или убрали — тем более.
 #
-# 4 — 23.09.2026: точный потолок входа больше не публикуется при неполной
-# нагрузке КРТ. Вместо него строка хранит верхнюю границу в млн ₽ и ₽/м²,
-# поэтому состав вырос на два поля и версия правил поднята вместе с ним.
-ROW_KEYS_AT_RULES_VERSION = (4, (
+# 5 — 24.09.2026: состав строки не изменился, но изменился сам ответ рынка:
+# КРТ больше не превращается в ближайший ЖК, поэтому прежние price/LLCR строки
+# должны стать stale и пересчитаться по официальной геометрии территории.
+ROW_KEYS_AT_RULES_VERSION = (5, (
     "area_ha", "at_asking_price", "available", "card_facts", "computed_at",
     "district", "engine_version", "entry_capacity_mln", "entry_capacity_reason",
     "entry_capacity_rub_per_sqm", "entry_capacity_upper_bound_mln",
