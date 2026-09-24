@@ -23191,11 +23191,9 @@ def build_project_workbook(
     # дату сборки: правка мест прямо в книге обязана двигать и строку. Итоги
     # (H37, E44) — тоже формулы, чтобы сумма сходилась с B17.
     # Правый блок E:H — та же пользовательская форма, что A:D.
+    # Стиль ставится ДО переноса: лист «Вводные» собирается из ячеек, которые
+    # шаблон помечает как пользовательский ввод.
     xml = _v4_mirror_secondary_input_styles(xml)
-    # Стрелка выбора появляется только там, где изменение ячейки действительно
-    # читается формулами книги. Engine-only режимы сюда попадут после переноса
-    # их методики в Excel, а не раньше.
-    xml = _v4_add_mode_dropdowns(xml, missing)
 
     report_sheet_path = _v4_sheet_path(source, "ОТЧЕТ")
     tep_sheet_path = _v4_sheet_path(source, "ТЭП")
@@ -24230,6 +24228,10 @@ def build_project_workbook(
     xml = v4_entry_sheet.rename_sheet_refs(xml)
     try:
         xml, entry_xml, entry_report = v4_entry_sheet.build(xml, styles_xml)
+        # Dropdown принадлежит именно пользовательскому листу. До разделения
+        # листов validation на старом XML остался бы на «Параметры модели»,
+        # где человек ничего не вводит.
+        entry_xml = _v4_add_mode_dropdowns(entry_xml, missing)
     except Exception as exc:  # noqa: BLE001 — книга без листа ввода не выпускается молча
         entry_xml, entry_report = "", {}
         missing.append("Вводные · лист ввода не собран: " + _error_location(exc))
