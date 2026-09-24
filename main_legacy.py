@@ -10853,19 +10853,36 @@ def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[st
     пересчитываются от остатка ГНС в тех же долях, которые были у объекта до
     размещения паркинга.
     """
-    # Книга может вызвать расчёт повторно на той же копии ТЭП. Исходные
-    # площади храним один раз и перед повторным проходом восстанавливаем:
-    # первые этажи не должны вычитаться дважды.
+    # Повторный проход на той же копии ТЭП не должен вычитать первые этажи
+    # второй раз. Но кэш не имеет права быть сильнее НОВОГО ТЭП: после
+    # пересчёта/ручной правки строка уже несёт другую базу, и возврат старых
+    # `_object_parking_base_*` молча отменял изменение человека.
+    #
+    # Различаем два случая по последнему значению, которое поставили сами.
+    # Если строка с тех пор не менялась — восстанавливаем исходную базу и
+    # считаем заново. Если текущее значение отличается от нашего последнего
+    # результата (или изменилась ГНС) — это новая база, её и запоминаем.
     for tep_key, _prefix, _enabled_key, _sellable in OBJECT_PARKING_OBJECTS:
         row = (tep or {}).get(tep_key) or None
         if row is None:
             continue
+        current_gns = n(row, "gns")
+        base_gns_key = "_object_parking_base_gns"
+        previous_gns = row.get(base_gns_key)
+        gns_changed = (
+            previous_gns is None
+            or abs(float(previous_gns or 0.0) - current_gns) > 1e-9
+        )
         for field in ("total_area", "useful", "saleable"):
             base_key = f"_object_parking_base_{field}"
-            if base_key not in row:
-                row[base_key] = n(row, field)
+            applied_key = f"_object_parking_applied_{field}"
+            current = n(row, field)
+            if (gns_changed or base_key not in row or applied_key not in row
+                    or abs(current - n(row, applied_key)) > 1e-9):
+                row[base_key] = current
             else:
                 row[field] = n(row, base_key)
+        row[base_gns_key] = current_gns
 
     demand = parking_demand(inputs, tep)
     under_per_space = (
@@ -10914,6 +10931,7 @@ def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[st
         row["parking_under_units"] = float(under)
         row["parking_over_units"] = float(over)
         row["parking_units"] = float(under + over)
+        row["parking_guest_units"] = float(guests)
         row["parking_saleable_units"] = (
             float(max(0, under + over - guests)) if sellable else 0.0
         )
@@ -10928,6 +10946,7 @@ def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[st
             base = n(row, f"_object_parking_base_{field}")
             adjusted = max(0.0, base * ratio)
             row[field] = adjusted
+            row[f"_object_parking_applied_{field}"] = adjusted
             losses[field] = max(0.0, base - adjusted)
 
         overflow = max(0.0, over_gba - base_gns)
@@ -30466,7 +30485,10 @@ def calculate(req: CalcRequest) -> dict:
             # строки отчётов — значит подземная площадь и места гаража на
             # своде выходили нулём при живом гараже в каждой очереди.
             "under_gns": n(row, "under_gns"),
+            "parking_under_units": n(row, "parking_under_units"),
+            "parking_over_units": n(row, "parking_over_units"),
             "parking_units": n(row, "parking_units"),
+            "parking_guest_units": n(row, "parking_guest_units"),
             "parking_saleable_units": n(row, "parking_saleable_units"),
         })
 
@@ -30474,7 +30496,8 @@ def calculate(req: CalcRequest) -> dict:
         key: sum(row[key] for row in tep_rows)
         for key in ("gns", "total_area", "useful", "saleable", "transfer", "units",
                     "guest_units", "transfer_units", "saleable_units",
-                    "under_gns", "parking_units", "parking_saleable_units")
+                    "under_gns", "parking_under_units", "parking_over_units",
+                    "parking_units", "parking_guest_units", "parking_saleable_units")
     }
 
     total_revenue = fin["total_revenue"]
@@ -30874,13 +30897,13 @@ def calculate(req: CalcRequest) -> dict:
             "residual": int(n(x, "residual_sales_months", 6))
         },
         "offices": {
-            "label": "Офисы / МФОЦ", "quantity": n(x, "offices_saleable_sqm") if b(x, "offices_enabled") else 0,
+            "label": "Офисы / МФОЦ", "quantity": n(t.get("offices", {}), "saleable") if b(x, "offices_enabled") else 0,
             "unit": "м²", "start_price": n(x, "offices_price_th_per_sqm"), "share": n(x, "offices_share_before_rve_pct", 85)/100,
             "start": d(x["offices_sales_start"]), "end_ref": add_months(d(x["offices_start"]), int(n(x, "offices_months", 24))),
             "residual": int(n(x, "offices_residual_months", 6))
         },
         "standalone_retail": {
-            "label": "Коммерция ОСЗ", "quantity": n(x, "retail_saleable_sqm") if b(x, "retail_enabled") else 0,
+            "label": "Коммерция ОСЗ", "quantity": n(t.get("standalone_retail", {}), "saleable") if b(x, "retail_enabled") else 0,
             "unit": "м²", "start_price": n(x, "retail_price_th_per_sqm"), "share": n(x, "retail_share_before_rve_pct", 85)/100,
             "start": d(x["retail_sales_start"]), "end_ref": add_months(d(x["retail_start"]), int(n(x, "retail_months", 24))),
             "residual": int(n(x, "retail_residual_months", 6))
@@ -30895,7 +30918,7 @@ def calculate(req: CalcRequest) -> dict:
             # Переданный городу ФОК продаваемой площади не имеет: метры
             # строятся, но не продаются — как у соцобъекта.
             "label": "ФОК / медцентр",
-            "quantity": (n(x, "sports_saleable_sqm")
+            "quantity": (n(t.get("sports", {}), "saleable")
                          if b(x, "sports_enabled") and sports_is_sold(x) else 0),
             "unit": "м²", "start_price": n(x, "sports_price_th_per_sqm"),
             "share": n(x, "sports_share_before_rve_pct", 85)/100,
