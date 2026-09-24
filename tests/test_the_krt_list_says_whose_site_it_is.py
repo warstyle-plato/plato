@@ -61,6 +61,7 @@ def _axis_harness(intent, axis: str, *, card=None, press=None) -> str:
         + f"state.krtRequirements['s']={json.dumps({'intent': intent} if intent else {})};\n"
         + (f"state.krtCards['s']={json.dumps(card)};\n" if card else "")
         + (f"state.krtPress['s']={json.dumps(press)};\n" if press else "")
+        + _function("krtFreshRank") + "\n"
         + _function("krtIntent") + "\n"
         + _function("krtStatusKind") + "\n"
         + _function("krtLots") + "\n" + _function("krtLiveLot") + "\n"
