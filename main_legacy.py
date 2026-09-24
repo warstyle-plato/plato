@@ -19000,31 +19000,25 @@ _V4_OBJECT_PARKING_INPUT_ROWS = (
 
 
 def _v4_object_parking_input_labels(xml: str, missing: list[str]) -> str:
-    """Подписи блока размещения мест на листе «Параметры модели».
+    """Подписи и живые ячейки размещения мест на листе вводных.
 
-    Значение и ключ пишет общая карта `_V4_INPUT_CELLS`; без подписи и единицы
-    рядом это столбик чисел, о котором человек не знает, что правит.
+    Каждая строка пишется одной пачкой. Дописанные K230+ получают тот же
+    стиль ввода, что штатные ячейки, иначе они не переедут на лист Вводные.
     """
+    entry_style = str(_v4_entry_style_id())
     for row, label, coord, unit in _V4_OBJECT_PARKING_INPUT_ROWS:
-        # Строки внизу листа не существует, пока её не завели: пустых строк в
-        # файле не бывает, и запись значения по карте ключей молча не нашла бы
-        # ячейку — так эти вводные и приезжали в книгу пустыми.
         xml = _v4_ensure_row(xml, row)
-        xml, done = _v4_set_or_insert_cell(xml, f"J{row}", text=label)
-        if not done:
-            missing.append(f"паркинг объектов: подпись J{row}")
+        cells: dict[str, dict[str, Any]] = {f"J{row}": {"text": label}}
+        styles: dict[str, str | None] = {}
         if unit:
-            xml, done = _v4_set_or_insert_cell(xml, f"L{row}", text=unit)
-            if not done:
-                missing.append(f"паркинг объектов: единица L{row}")
+            cells[f"L{row}"] = {"text": unit}
         if coord:
-            # Место под значение И под ключ: общая карта пишет и то и другое
-            # заменой, а в несуществующую ячейку замена не попадает. Ключ живёт
-            # в колонке M — без него книгу нечем сверить с движком по имени.
-            for cell in (coord, "M" + coord[1:]):
-                xml, done = _v4_set_or_insert_cell(xml, cell, number=0)
-                if not done:
-                    missing.append(f"паркинг объектов: место под {cell}")
+            cells[coord] = {"number": 0}
+            cells["M" + coord[1:]] = {"number": 0}
+            styles[coord] = entry_style
+        xml, done = _v4_set_cells(xml, row, cells, styles=styles)
+        if not done:
+            missing.append(f"паркинг объектов: строка {row}")
     return xml
 
 
