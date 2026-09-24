@@ -47622,12 +47622,9 @@ function renderTep(){
      const note=apartmentUnitsNote();
      if(note)label+=` <span class="tep-note">${escapeHtml(note)}</span>`;
    }
-   // Паркинг объекта строится, стоит денег и продаётся, а в строке его не было
-   // видно вовсе: посчитанное и не показанное неотличимо от непосчитанного.
-   // Своей колонки ему не заводим — таблица и так плотная, и лишние колонки
-   // владелец отклонял; подпись под строкой здесь уже штатный приём.
-   const parkNote=objectParkingNote(key);
-   if(parkNote)label+=` <span style="display:block;font-size:10px;color:#777;margin-top:3px">${escapeHtml(parkNote)}</span>`;
+   // Паркинг объекта строится, стоит денег и продаётся отдельным продуктом.
+   // Мелкой подписью внутри названия офиса он терялся; ниже после основной
+   // строки рисуется отдельная производная строка с местами и подземной частью.
    // Какое из двух чисел чьё — иначе вписанное «по решению КРТ» молча
    // становится не тем: решение задаёт площадь В ГАБАРИТАХ НАРУЖНЫХ СТЕН, то
    // есть наземную, а поле во вводных называется общей.
@@ -47712,6 +47709,29 @@ function renderTep(){
      // и запертая ячейка теряла бы серый фон. Стиль собирается один.
      html+=`<td style="vertical-align:top"><input type="number" step="0.1" value="${inputDisplay(row[col])}" style="margin:0${locked?';background:#f3f3f1;color:#555':''}" ${locked?'readonly':''} onchange="tepCellChanged('${key}','${col}',this.value)">${locked?'':ratioField(col)}</td>`;
    });tr.innerHTML=html;body.appendChild(tr);
+
+   // Свой гараж ОСЗ — отдельный продукт в штуках. Это НЕ вторая вводная
+   // строка: числа принадлежат экономике/нормативу, здесь показывается тот же
+   // результат движка. Так паркинг офиса виден в ТЭП рядом с самим офисом.
+   const ownParking=((projectParking().own)||[]).find(o=>
+    o&&o.tep_key===key&&o.enabled&&Number(o.units||0)>0);
+   if(ownParking){
+    const parkingTr=document.createElement('tr');
+    parkingTr.className='tep-parking-sub';
+    const details=[
+     Number(ownParking.under_spaces||0)>0?num(ownParking.under_spaces)+' подземных':'',
+     Number(ownParking.over_spaces||0)>0?num(ownParking.over_spaces)+' на первых этажах':'',
+     Number(ownParking.guest_spaces||0)>0?num(ownParking.guest_spaces)+' гостевых':''
+    ].filter(Boolean).join(' · ');
+    const origin=ownParking.by_norm?'по нормативу приложения 6':'задано руками';
+    parkingTr.innerHTML=
+     `<td style="padding-left:18px">↳ Паркинг ${escapeHtml(row.label)}
+       <span class="tep-note">${details} · продаётся ${num(ownParking.saleable_units||0)}
+       · подземная часть ${num(ownParking.under_gns||0)} м² · ${origin}</span></td>`
+     +'<td>—</td><td>—</td><td>—</td><td>—</td><td>—</td>'
+     +`<td>${num(ownParking.units||0)}</td>`;
+    body.appendChild(parkingTr);
+   }
   });
   // Подытог раздела — только когда продуктов в нём больше одного: под
   // единственной строкой это она же во второй раз (правило «Итого МКД»).
@@ -50896,14 +50916,41 @@ function renderResult(){
   ? `<span style="display:block;font-size:10px;color:#777">${TRANSFER_NOTE_WORD} ${num(x.transfer)} м²</span>`
   : '';
  const transferTotal=r.tep.rows.reduce((sum,x)=>sum+Number(x.transfer||0),0);
+ // Паркинг ОСЗ — самостоятельный штучный продукт. Основная строка офиса
+ // остаётся площадной; производная подстрока показывает места и подземную
+ // площадь, не добавляя их второй раз в итоги.
+ const parkingTepSubrow=x=>{
+  const built=Number(x.parking_units||0);
+  if(!(built>0))return '';
+  const under=Number(x.parking_under_units||0);
+  const over=Number(x.parking_over_units||0);
+  const guest=Number(x.parking_guest_units||0);
+  const details=[
+   under>0?num(under)+' подземных':'',
+   over>0?num(over)+' на первых этажах':'',
+   guest>0?num(guest)+' гостевых':''
+  ].filter(Boolean).join(' · ');
+  return `<tr class="sub tep-parking-sub">
+   <td style="padding-left:18px">↳ ${escapeHtml(x.label)} · паркинг объекта
+    ${details?`<div class="cell-sub">${details}</div>`:''}</td>
+   <td>${dash}</td>
+   <td>${Number(x.under_gns||0)>0?num(x.under_gns):dash}</td>
+   <td>${dash}</td>
+   <td>${num(built)}</td>
+   <td>${num(x.parking_saleable_units||0)}</td>
+  </tr>`;
+ };
  reportTep.innerHTML=
   `<thead><tr><th>Продукт</th><th>ГНС наземная, м²</th><th>Подземная, м²</th><th>Продаваемая площадь, м²</th><th>Построено, шт.</th><th>Продаётся, шт.</th></tr></thead>`+
   `<tbody>`+
-  r.tep.rows.map(x=>`<tr><td>${x.label}</td>`
-   +`<td>${isUnder(x)?dash:num(x.gns)}</td>`
-   +`<td>${isUnder(x)?num(x.gns):(objUnder(x)>0?num(objUnder(x)):dash)}</td>`
-   +`<td>${num(x.saleable)}${areaNote(x)}</td>`
-   +`<td>${num(x.units)}${unitNote(x)}</td><td>${num(soldUnits(x))}</td></tr>`).join('')+
+  r.tep.rows.map(x=>{
+   const main=`<tr><td>${x.label}</td>`
+    +`<td>${isUnder(x)?dash:num(x.gns)}</td>`
+    +`<td>${isUnder(x)?num(x.gns):(objUnder(x)>0?num(objUnder(x)):dash)}</td>`
+    +`<td>${num(x.saleable)}${areaNote(x)}</td>`
+    +`<td>${num(x.units)}${unitNote(x)}</td><td>${num(soldUnits(x))}</td></tr>`;
+   return main+parkingTepSubrow(x);
+  }).join('')+
   `</tbody><tfoot><tr><th>Итого</th><th>${num(aboveGns)}</th><th>${num(underTotal)}</th>`
   +`<th>${num(r.tep.total.saleable)}`
   +(transferTotal>0?`<span style="display:block;font-size:10px;color:#777">${TRANSFER_NOTE_WORD} ${num(transferTotal)} м²</span>`:'')
