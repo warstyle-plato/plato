@@ -143,9 +143,43 @@ def _book(inputs):
         io.BytesIO(content), data_only=False))
 
 
-def test_an_installment_is_written_in_the_words_of_the_book():
+def test_an_installment_keeps_mode_and_term_as_separate_inputs():
     _, _, _, sheet = _book({"vri_payment_mode": "installment", "vri_installment_years": 3})
-    assert sheet["B75"].value == "3 года"
+    assert sheet["B75"].value == "Рассрочка"
+    assert sheet["B77"].value == pytest.approx(3)
+    assert sheet["D75"].value == "vri_payment_mode"
+    assert sheet["D77"].value == "vri_installment_years"
+
+
+def test_live_mode_inputs_have_excel_dropdowns():
+    content, _, _, _ = _book({"vri_payment_mode": "installment"})
+    book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
+    sheet = v4_inputs.inputs(book)
+    covered = set()
+    formulas = {}
+    for validation in sheet.data_validations.dataValidation:
+        for cell_range in validation.sqref.ranges:
+            for row in sheet[str(cell_range)] if ":" in str(cell_range) else ():
+                pass
+        for ref in str(validation.sqref).split():
+            covered.add(ref)
+            formulas[ref] = validation.formula1
+    for coord in ("B31", "B37", "B75", "B78", "B80", "B84",
+                  "K20", "K40", "K60", "K83", "K123", "K139"):
+        assert coord in covered, f"{coord} — режим без выпадающего списка"
+    assert "Капитализация в ПФ" in formulas["B31"]
+    assert "Рассрочка" in formulas["B75"]
+    assert "Продаётся" in formulas["K139"]
+
+
+def test_secondary_input_block_e_to_h_uses_the_same_styles_as_a_to_d():
+    _, _, _, sheet = _book()
+    for row in (13, 43, 72, 78):
+        for left, right in zip("ABCD", "EFGH"):
+            if sheet[f"{right}{row}"].value is None:
+                continue
+            assert sheet[f"{right}{row}"].style_id == sheet[f"{left}{row}"].style_id, (
+                f"{right}{row} оформлена не как {left}{row}")
 
 
 def test_the_office_block_carries_dates_and_terms():
