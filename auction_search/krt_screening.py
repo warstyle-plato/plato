@@ -145,29 +145,59 @@ def _empty_tep(core: Any) -> dict[str, dict[str, Any]]:
 # ценой жилья этой площадки вместо фиксированных 500 тыс ₽/м². Числа
 # посчитанных строк от этого меняются у всех, где нежилое названо: на
 # Рубцовской наб., влд. 3 чистая 257,5 → 429,4 млн ₽, LLCR 1,092 → 1,043.
-SCREENING_RULES_VERSION = 4
+SCREENING_RULES_VERSION = 5
 
 
 def _market_inputs(report: dict[str, Any]) -> tuple[str | None, float, float, str]:
-    """Стартовая цена скрининга — та же, что рекомендует отчёт о рынке.
+    """Цена модели и цена окружения — не одно и то же при слабой выборке.
 
-    Прежде бралась медиана цен входа соседей (их самые дешёвые лоты): на
-    Варшавском ш., вл. 37 это 350 тыс. против 670 у рекомендации того же
-    отчёта, и каталог называл площадку «Низкой» там, где расчёт владельца по
-    рекомендации давал 1,21x (владелец, 04.09.2026: «почему у каталога 350,
-    если само обращение к Пульсу даёт рекомендацию 670 нашим же механизмом»).
-    Два ответа одного модуля на один вопрос — это второй ответ; цена входа
-    остаётся справкой рядом, а не ценой модели.
+    Для колонки «Цена окружения» нужны минимум три живых сопоставимых проекта.
+    site_verdict умеет дать медиану даже по одному-двум соседям; такое число
+    выглядит точным, но по сути является прайсом одного проекта. Именно так
+    в каталоге появлялись многомиллионные значения на обычных площадках.
+
+    Модель при нехватке локальной выборки может взять более широкий ориентир
+    из price_hint (округ/Москва), но этот ориентир НЕ называется ценой
+    окружения и НЕ идёт в ценовой компонент рейтинга.
     """
     verdict = _verdict(report)
     hint = report.get("price_hint") or {}
-    segment = normalize_segment(verdict.get("segment"))
-    market_price = _number(verdict.get("price_per_sqm") or hint.get("price_per_sqm"))
+    segment = normalize_segment(verdict.get("segment") or hint.get("segment"))
+
+    verdict_price = _number(verdict.get("price_per_sqm"))
+    try:
+        verdict_sample = int(verdict.get("priced") or 0)
+    except (TypeError, ValueError):
+        verdict_sample = 0
+
+    hint_price = _number(hint.get("price_per_sqm"))
+    hint_basis = str(hint.get("basis") or "")
+    try:
+        hint_sample = int(hint.get("sample") or 0)
+    except (TypeError, ValueError):
+        hint_sample = 0
+
+    local_price = 0.0
+    if verdict_price > 0 and verdict_sample >= 3:
+        local_price = verdict_price
+    elif hint_price > 0 and hint_basis == "peers" and hint_sample >= 3:
+        local_price = hint_price
+
+    # Экономика всё равно должна иметь ценовой ориентир. Если локальной
+    # выборки мало, берём явно подписанный более широкий ориентир, но не
+    # выдаём его за цену окружения.
+    start_price = local_price or hint_price
     entry_price = _number(hint.get("entry_per_sqm"))
-    if market_price > 0:
-        return segment, market_price, market_price, "рекомендация отчёта о рынке — уровень цен сопоставимых проектов"
+    if start_price > 0:
+        if local_price > 0:
+            basis = "медиана минимум трёх живых сопоставимых проектов рядом"
+        else:
+            basis = str(hint.get("basis_title") or "более широкий рыночный ориентир")
+        return segment, start_price, local_price, basis
     if entry_price > 0:
-        return segment, entry_price, entry_price, "медиана входных цен соседних проектов (уровень рынка отчёт не определил)"
+        return segment, entry_price, 0.0, (
+            "медиана входных цен соседних проектов; текущая цена окружения не определена"
+        )
     return segment, 0.0, 0.0, "цена не определена"
 
 
