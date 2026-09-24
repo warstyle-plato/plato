@@ -1446,6 +1446,7 @@ def install(app: FastAPI) -> None:
                 peers_limit=12,
                 city_reference=False,
                 include_project_totals=True,
+                match_nearby_project=False,
             )
         except SubjectNotFound:
             fallback = " ".join(
@@ -1461,6 +1462,7 @@ def install(app: FastAPI) -> None:
                 peers_limit=12,
                 city_reference=False,
                 include_project_totals=True,
+                match_nearby_project=False,
             )
 
         requirements = _requirements_for(slug)
@@ -2844,30 +2846,49 @@ def install(app: FastAPI) -> None:
                     now = time.time()
                     missing: list[dict[str, Any]] = []
                     for project in _krt_all_sites():
-                        if _krt_status_kind(project.get("status")) == "running":
-                            continue
+                        # «В реализации» не получает инвестиционный рейтинг,
+                        # но рынок у строки должен оставаться свежим: цена
+                        # окружения видна в общем каталоге независимо от стадии.
                         slug = str(project.get("slug") or "").strip()
                         if not slug:
                             continue
                         row = krt_ranking.stored_row(slug)
-                        # Неудачный нынешний расчёт не гоняем каждую минуту.
-                        # Повтор — не раньше суток; свежая успешная строка
-                        # проверяется обычным version/fingerprint правилом.
+                        # Неудачный пересчёт не должен превращать stale-строку
+                        # в бесконечную очередь повторных запросов. keep_computed
+                        # оставляет последнюю удачную строку, а recompute_failed_at
+                        # задаёт отдельный возраст именно неудачной попытки.
                         try:
                             age = now - float(row.get("computed_at") or 0)
                         except (TypeError, ValueError):
                             age = 10**9
-                        reason = str(row.get("reason") or "").casefold()
+                        try:
+                            failed_age = now - float(row.get("recompute_failed_at") or 0)
+                        except (TypeError, ValueError):
+                            failed_age = 10**9
+                        reason = str(
+                            row.get("recompute_reason") or row.get("reason") or ""
+                        ).casefold()
                         transient_geocode = (
                             "too many requests" in reason
                             or "geocod" in reason
                             or "геокод" in reason
                         )
                         retry_failed_after = 10 * 60 if transient_geocode else 24 * 60 * 60
+                        stale_available = (
+                            row.get("available")
+                            and krt_ranking_rules.model_needs_recount(row)
+                        )
+                        stale_retry_ready = (
+                            not row.get("recompute_failed_at")
+                            or failed_age >= retry_failed_after
+                        )
                         needs_model = (
                             (not row)
-                            or (row.get("available") and krt_ranking_rules.model_needs_recount(row))
-                            or (not row.get("available") and age >= retry_failed_after)
+                            or (stale_available and stale_retry_ready)
+                            or (
+                                not row.get("available")
+                                and age >= retry_failed_after
+                            )
                         )
                         if needs_model:
                             missing.append(project)
