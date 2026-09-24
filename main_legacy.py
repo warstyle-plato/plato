@@ -47684,6 +47684,23 @@ function renderTep(){
      // и запертая ячейка теряла бы серый фон. Стиль собирается один.
      html+=`<td style="vertical-align:top"><input type="number" step="0.1" value="${inputDisplay(row[col])}" style="margin:0${locked?';background:#f3f3f1;color:#555':''}" ${locked?'readonly':''} onchange="tepCellChanged('${key}','${col}',this.value)">${locked?'':ratioField(col)}</td>`;
    });tr.innerHTML=html;body.appendChild(tr);
+   // Собственный гараж ОСЗ — самостоятельный продаваемый продукт. Раньше
+   // места были только длинной подписью под офисником: в ТЭП их невозможно
+   // было увидеть как отдельный объём и легко принять за отсутствующие.
+   const parkUnits=Number(row.parking_units||0);
+   if(parkUnits>0){
+    const park=document.createElement('tr');
+    park.className='tep-sub';
+    const underUnits=Number(row.parking_under_units||0);
+    const overUnits=Number(row.parking_over_units||0);
+    const sold=Number(row.parking_saleable_units||0);
+    const underArea=Number(row.under_gns||0);
+    park.innerHTML=`<td>↳ Паркинг · ${escapeHtml(String(row.label||key))}</td>`
+     +`<td colspan="6">построено ${num(parkUnits)} м/м · подземных ${num(underUnits)}`
+     +(underArea>0?` (${num(underArea)} м²)`:'')
+     +` · на первых этажах ${num(overUnits)} · продаётся ${num(sold)} м/м</td>`;
+    body.appendChild(park);
+   }
   });
   // Подытог раздела — только когда продуктов в нём больше одного: под
   // единственной строкой это она же во второй раз (правило «Итого МКД»).
@@ -50856,11 +50873,19 @@ function renderResult(){
  // дома, и живёт он полем на строке объекта. В колонке его не было вовсе, при
  // том что в `summary.underground_gns_sqm` и в статье CAPEX он есть: две
  // величины под одним именем. Итог берётся у движка, экран его не собирает.
- const objUnder=x=>Number(x.under_gns||0);
  const underTotal=Number(r.summary.underground_gns_sqm!==undefined
   ?r.summary.underground_gns_sqm:underGns);
  const dash='<span style="color:#bbb">—</span>';
  const soldCell=x=>capacityUnits(x)?dash:num(soldUnits(x));
+ const objectParkingTepRow=x=>{
+  const built=Number(x.parking_units||0);
+  if(!(built>0))return '';
+  const sold=Number(x.parking_saleable_units||0);
+  const under=Number(x.under_gns||0);
+  return `<tr class="tep-sub"><td>↳ Паркинг · ${escapeHtml(String(x.label||'ОСЗ'))}</td>`
+   +`<td>${dash}</td><td>${under>0?num(under):dash}</td><td>${dash}</td>`
+   +`<td>${num(built)}</td><td>${num(sold)}</td></tr>`;
+ };
  // Переданные метры строятся и не продаются: в продаваемой их нет, и
  // без приписки отчёт читается так, будто продано всё построенное — «в отчёте
  // вообще нет указания на передаваемую! Чтобы не забыть, что вообще-то не всё
@@ -50875,9 +50900,10 @@ function renderResult(){
   `<tbody>`+
   r.tep.rows.map(x=>`<tr><td>${x.label}</td>`
    +`<td>${isUnder(x)?dash:num(x.gns)}</td>`
-   +`<td>${isUnder(x)?num(x.gns):(objUnder(x)>0?num(objUnder(x)):dash)}</td>`
+   +`<td>${isUnder(x)?num(x.gns):dash}</td>`
    +`<td>${num(x.saleable)}${areaNote(x)}</td>`
-   +`<td>${num(x.units)}${capacityUnits(x)?'<span style="display:block;font-size:10px;color:#777">мощность, мест</span>':unitNote(x)}</td><td>${soldCell(x)}</td></tr>`).join('')+
+   +`<td>${num(x.units)}${capacityUnits(x)?'<span style="display:block;font-size:10px;color:#777">мощность, мест</span>':unitNote(x)}</td><td>${soldCell(x)}</td></tr>`
+   +objectParkingTepRow(x)).join('')+
   `</tbody><tfoot><tr><th>Итого</th><th>${num(aboveGns)}</th><th>${num(underTotal)}</th>`
   +`<th>${num(r.tep.total.saleable)}`
   +(transferTotal>0?`<span style="display:block;font-size:10px;color:#777">${TRANSFER_NOTE_WORD} ${num(transferTotal)} м²</span>`:'')
