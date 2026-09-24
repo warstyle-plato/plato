@@ -158,9 +158,6 @@ def test_live_mode_inputs_have_excel_dropdowns():
     covered = set()
     formulas = {}
     for validation in sheet.data_validations.dataValidation:
-        for cell_range in validation.sqref.ranges:
-            for row in sheet[str(cell_range)] if ":" in str(cell_range) else ():
-                pass
         for ref in str(validation.sqref).split():
             covered.add(ref)
             formulas[ref] = validation.formula1
