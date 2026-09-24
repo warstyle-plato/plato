@@ -122,6 +122,9 @@ def test_scheme_housing_shares_cannot_exceed_all_escrow() -> None:
 def test_interest_deferral_pays_in_deadline_month_then_quarterly() -> None:
     """До дедлайна платёж нулевой; затем — декабрь и квартальные месяцы."""
     _inputs, result = _finance_result(
+        project_start="2027-01-01",
+        ird_months=12,
+        construction_months=36,
         pf_interest_deferral_until="2028-12-31",
         pf_interest_payment_mode="quarterly_28",
     )
