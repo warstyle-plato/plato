@@ -1855,7 +1855,7 @@ function krtFreshRank(slug){
  return row;
 }
 function krtValue(x,key){
- const rank=state.krtRank[x.slug]||{};
+ const rank=krtFreshRank(x.slug);
  switch(key){
   case 'name': return String(x.name||'');
   // По чему сортируется колонка — по тому, что в ней НАПИСАНО. Экран печатал
