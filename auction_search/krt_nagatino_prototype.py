@@ -145,6 +145,7 @@ a{color:inherit}button{font:inherit}.shell{max-width:1480px;margin:0 auto;paddin
   </aside>
  </div>
 </div>
+__FOOTER__
 <script>
 const $=id=>document.getElementById(id);
 const fmt=(v,d=0)=>v===null||v===undefined||v===''||!Number.isFinite(Number(v))?'—':Number(v).toLocaleString('ru-RU',{maximumFractionDigits:d});
