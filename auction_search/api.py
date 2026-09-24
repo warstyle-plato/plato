@@ -4144,7 +4144,7 @@ def install(app: FastAPI) -> None:
         # Чем считать строку, решает один и тот же выбор, что и в недельном
         # прогоне: у площадки-решения свой путь к обязательствам, а у нежилой
         # модели нет вовсе.
-        started = krt_ranking.start(projects, _screen_for)
+        started = krt_ranking.start(projects, _screen_for_background)
         progress = krt_ranking.progress()
         if started:
             reason = ""
