@@ -36,8 +36,8 @@ def test_no_weekly_thread_is_alive_in_the_test_process() -> None:
     assert "krt-watch" not in names, f"нить сторожа каталога живёт в тестах: {names}"
 
 
-def test_automatic_krt_runs_do_not_queue_addresses_at_a_public_geocoder() -> None:
-    """Autonomous passes use only already-known KRT geometry."""
+def test_automatic_krt_runs_throttle_address_fallback() -> None:
+    """Autonomous passes prefer geometry and rate-limit the last-resort address path."""
     source = (ROOT / "auction_search" / "api.py").read_text(encoding="utf-8")
 
     weekly = source[source.index("    def _weekly_ranking("):
@@ -45,12 +45,20 @@ def test_automatic_krt_runs_do_not_queue_addresses_at_a_public_geocoder() -> Non
     assert "_screen_for_background" in weekly
     assert "rows, _screen_for, scheduled=True" not in weekly
 
-    rating = source[source.index("    def _rating_screen_only("):
-                    source.index("\n\n    def _rating_background_loop(", source.index("    def _rating_screen_only("))]
-    assert "_market_model_only(project, allow_remote_geocode=False)" in rating
+    autonomous = source[source.index("    def _autonomous_market_model("):
+                        source.index("\n\n    def _rating_screen_only(",
+                                     source.index("    def _autonomous_market_model("))]
+    assert "_market_model_only(project, allow_remote_geocode=False)" in autonomous
+    assert "decision_outline" in autonomous
+    assert "time.sleep(1.2)" in autonomous
+    assert "_market_model_only(project, allow_remote_geocode=True)" in autonomous
+    assert autonomous.index("allow_remote_geocode=False") < autonomous.index(
+        "allow_remote_geocode=True"
+    )
 
     background = source[source.index("    def _screen_for_background("):
                         source.index("\n    @app.post(\"/auctions/krt/press/run\")",
                                      source.index("    def _screen_for_background("))]
     assert "allow_remote_geocode=False" in background
+    assert "_autonomous_market_model(project)" in background
 
