@@ -19065,7 +19065,7 @@ def _v4_object_parking_block(xml: str, missing: list[str]) -> str:
         # снизу — та же, что у движка: мест больше самого здания это
         # расхождение, а не отрицательная площадь.
         pool = _v4_cell_formula(xml, f"B{saleable_row}")
-        taken = f"{params}!${under[0]}${under[1:]}" if False else f"{params}!${over[0]}${over[1:]}*{params}!$K$158"
+        taken = f"{params}!${over[0]}${over[1:]}*{params}!$K$158"
         if pool is None:
             missing.append(f"паркинг объектов: продаваемая B{saleable_row} не найдена")
         elif "$K$158" not in pool:
@@ -19084,7 +19084,7 @@ def _v4_object_parking_block(xml: str, missing: list[str]) -> str:
             xml, units_row,
             {
                 f"A{units_row}": {"text": "Паркинг объекта — мест"},
-                f"B{units_row}": {"formula": f'IF($B$${enabled_row}="Да",{spaces},0)'},
+                f"B{units_row}": {"formula": f'IF($B${enabled_row}="Да",{spaces},0)'},
             })
         if not done:
             missing.append(f"паркинг объектов: строка мест {units_row}")
