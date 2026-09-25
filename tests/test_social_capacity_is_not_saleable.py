@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import copy
-import inspect
+import io
 
 import pytest
 
@@ -58,6 +58,25 @@ def test_the_web_report_marks_capacity_and_does_not_print_it_as_sales() -> None:
 
 
 def test_the_workbook_does_not_turn_capacity_into_sales() -> None:
-    source = inspect.getsource(core.build_project_workbook)
-    assert 'item.get("key") in SOCIAL_TEP_FIELDS' in source
-    assert 'sold_value = (0 if item.get("key") in SOCIAL_TEP_FIELDS' in source
+    """Проверяем саму книгу, а не конкретную запись условия в исходнике."""
+    openpyxl = pytest.importorskip("openpyxl")
+    inputs = copy.deepcopy(core.DEFAULT_INPUTS)
+    inputs.update(
+        social_mode="Строительство",
+        social_area_source="manual",
+        kindergarten_places=350,
+        school_places=1000,
+        clinic_capacity=0,
+        social_dou_gba_sqm=5670.3,
+        social_school_gba_sqm=19998.2,
+    )
+    content, _, _ = core.build_project_workbook(
+        inputs, copy.deepcopy(core.TEP_DEFAULT), [], {},
+        project_name="Социальная мощность")
+    sheet = openpyxl.load_workbook(io.BytesIO(content), data_only=False)["ТЭП"]
+    rows = {
+        str(sheet.cell(row=row, column=1).value): row
+        for row in range(5, sheet.max_row + 1)
+    }
+    assert sheet.cell(row=rows["ДОО"], column=9).value == 0
+    assert sheet.cell(row=rows["СОШ"], column=9).value == 0
