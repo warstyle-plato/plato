@@ -118,14 +118,13 @@ def _set_version(head_ref: str, number: str) -> str:
 
 
 def _engine_changed(guard, base_ref: str, head_ref: str) -> bool:
-    """Менялся ли движок. Не менялся — выпуска нет, и номер не тратится.
+    """Менялся ли production-код. Имя сохранено для совместимости тестов.
 
-    Это не поблажка, а то же правило, что стоит на main: «движок не менялся —
-    версия может остаться прежней». Выдать номер правке документации значит
-    объявить выпуск, которого не было, и следующий настоящий выпуск получит
-    номер на единицу дальше от того, что выкачено.
+    Источник правила один — check_version_grows._release_changed(). Поэтому
+    market_search/**, данные и остальные runtime-файлы получают новый номер
+    так же, как main_legacy.py; документация/тесты/CI номер не тратят.
     """
-    return guard._show(f"origin/{base_ref}") != guard._show(f"origin/{head_ref}")
+    return guard._release_changed(f"origin/{base_ref}", f"origin/{head_ref}")
 
 
 def main() -> int:
@@ -158,7 +157,7 @@ def main() -> int:
         issued = guard._next_version(before) if issuing else ".".join(map(str, before))
         print(f"Попытка {attempt}: база {'.'.join(map(str, before))}, "
               + (f"выдаётся {issued}." if issuing
-                 else "движок не менялся — выпуска нет, номер не выдаётся."))
+                 else "production-код не менялся — выпуска нет, номер не выдаётся."))
         if dry:
             return 0
         head_sha = (_set_version(head_ref, issued) if issuing
