@@ -19065,36 +19065,42 @@ def _v4_object_parking_block(xml: str, missing: list[str]) -> str:
         # снизу — та же, что у движка: мест больше самого здания это
         # расхождение, а не отрицательная площадь.
         pool = _v4_cell_formula(xml, f"B{saleable_row}")
-        taken = f"{params}!${over[0]}${over[1:]}*{params}!$K$158"
+        taken = f"{params}!${under[0]}${under[1:]}" if False else f"{params}!${over[0]}${over[1:]}*{params}!$K$158"
         if pool is None:
             missing.append(f"паркинг объектов: продаваемая B{saleable_row} не найдена")
-        elif "$K$158" in pool:
-            pass                      # уже вычтено: формула не удваивается
-        else:
-            xml, done = _v4_set_or_insert_cell(
-                xml, f"B{saleable_row}", formula=f"MAX(0,({pool})-{taken})")
+        elif "$K$158" not in pool:
+            # Одна строка — один проход по XML. Через set_or_insert здесь было
+            # два полных прохода (поиск ячейки и затем вставка/замена) на объект.
+            xml, done = _v4_set_cells(
+                xml, saleable_row,
+                {f"B{saleable_row}": {"formula": f"MAX(0,({pool})-{taken})"}})
             if not done:
                 missing.append(f"паркинг объектов: продаваемая B{saleable_row}")
-        xml, done = _v4_set_or_insert_cell(
-            xml, f"A{units_row}", text="Паркинг объекта — мест")
+
+        # A и B одной строки пишутся одной пачкой. На пяти объектах прежние
+        # четыре set_or_insert на объект давали десятки полных проходов по
+        # многомегабайтному листу ОБЪЕКТЫ. Формулы те же, меняется только запись.
+        xml, done = _v4_set_cells(
+            xml, units_row,
+            {
+                f"A{units_row}": {"text": "Паркинг объекта — мест"},
+                f"B{units_row}": {"formula": f'IF($B$${enabled_row}="Да",{spaces},0)'},
+            })
         if not done:
-            missing.append(f"паркинг объектов: подпись A{units_row}")
-        xml, done = _v4_set_or_insert_cell(
-            xml, f"B{units_row}",
-            formula=f'IF($B${enabled_row}="Да",{spaces},0)')
-        if not done:
-            missing.append(f"паркинг объектов: мест B{units_row}")
-        xml, done = _v4_set_or_insert_cell(
-            xml, f"A{revenue_row}", text="Паркинг объекта — выручка")
-        if not done:
-            missing.append(f"паркинг объектов: подпись A{revenue_row}")
+            missing.append(f"паркинг объектов: строка мест {units_row}")
+
         # Продаются места тем же профилем, что и сам объект: строки 19 и 21 —
         # нормированные веса до и после РВЭ, они уже посчитаны блоком.
-        xml, done = _v4_set_or_insert_cell(
-            xml, f"B{revenue_row}",
-            formula=f"SUM(D{revenue_row}:{_V4_LAST_COLUMN}{revenue_row})")
+        xml, done = _v4_set_cells(
+            xml, revenue_row,
+            {
+                f"A{revenue_row}": {"text": "Паркинг объекта — выручка"},
+                f"B{revenue_row}": {
+                    "formula": f"SUM(D{revenue_row}:{_V4_LAST_COLUMN}{revenue_row})"
+                },
+            })
         if not done:
-            missing.append(f"паркинг объектов: итог B{revenue_row}")
+            missing.append(f"паркинг объектов: строка выручки {revenue_row}")
         # Помесячно места продаются тем же профилем, что и метры объекта: доля
         # проданного за месяц берётся из его же строки объёма. Второй набор
         # весов однажды разошёлся бы с первым, и обе кривые выглядели бы верными.
