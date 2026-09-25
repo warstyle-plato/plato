@@ -323,3 +323,70 @@ def test_v4_book_uses_separate_office_parking_prices() -> None:
     evaluator = Evaluator(book)
     assert evaluator.cell("ОБЪЕКТЫ", "B33") == pytest.approx(
         _product_revenue(report, "object_parking") / 1_000_000, rel=1e-9)
+
+
+def test_user_case_1778_first_floor_spaces_reaches_report_and_phasing() -> None:
+    """1778 мест на первых этажах: в деньги и отчёт идут 66 613,1 м², не база 87 504,6."""
+    user_under = 1_000
+    user_over = 1_778
+    expected = (GBA - user_over * 25) * 0.94 * 0.50
+
+    x = _inputs(user_under, user_over)
+    result = core.calculate(core.CalcRequest(
+        inputs=copy.deepcopy(x), tep=_tep(), rates=[]))
+    office = next(row for row in result["report"]["products"]
+                  if row.get("key") == "offices")
+    tep_office = next(row for row in result["tep"]["rows"]
+                      if row.get("key") == "offices")
+
+    assert expected == pytest.approx(66_613.1)
+    assert tep_office["saleable"] == pytest.approx(expected)
+    assert office["quantity"] == pytest.approx(expected)
+    assert office["quantity"] != pytest.approx(SALEABLE)
+
+    phasing = {
+        "enabled": True,
+        "phase_count": 3,
+        "phase_gap_months": 12,
+        "phases": [
+            {"name": "О1", "start_offset_months": 0, "construction_months": 24},
+            {"name": "О2", "start_offset_months": 12, "construction_months": 24},
+            {"name": "О3", "start_offset_months": 24, "construction_months": 24},
+        ],
+        "social_objects": [],
+        "discrete": {"offices": 3},
+    }
+    bundle = core.calculate_phased(core.PhasedCalcRequest(
+        inputs=copy.deepcopy(x), tep=_tep(), rates=[], phasing=phasing))
+
+    phase_office = next(row for row in bundle["phases"][2]["result"]["report"]["products"]
+                        if row.get("key") == "offices")
+    consolidated_office = next(row for row in bundle["consolidated"]["report"]["products"]
+                               if row.get("key") == "offices")
+
+    assert phase_office["quantity"] == pytest.approx(expected)
+    assert bundle["comparison"][2]["saleable_by_product"]["offices"] == pytest.approx(expected)
+    assert consolidated_office["quantity"] == pytest.approx(expected)
+
+
+def test_user_case_excel_keeps_base_input_but_sells_only_residual_office_area() -> None:
+    """K24 — исходная база офиса; ОБЪЕКТЫ считает остаток после 1778 мест."""
+    openpyxl = pytest.importorskip("openpyxl")
+    from xlsx_eval import Evaluator
+
+    user_under = 1_000
+    user_over = 1_778
+    expected = (GBA - user_over * 25) * 0.94 * 0.50
+    x = _inputs(user_under, user_over)
+
+    content, _, meta = core.build_project_workbook(
+        copy.deepcopy(x), _tep(), [], None, project_name="Проект 1778/1000")
+    assert not [m for m in meta["missing"] if "паркинг объектов" in m], meta["missing"]
+
+    book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
+    params = book["Параметры модели"]
+    assert params["K24"].value == pytest.approx(SALEABLE)
+
+    sys.setrecursionlimit(400000)
+    evaluator = Evaluator(book)
+    assert evaluator.cell("ОБЪЕКТЫ", "B13") == pytest.approx(expected)
