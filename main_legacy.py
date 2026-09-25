@@ -29896,7 +29896,10 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
                         + rate_parts["iv2_principal"] * scheme2_rate
                     ) / pf_balance
                 else:
-                    pf_rate = 0.0
+                    # Сохраняем прежнюю семантику строки ставки после погашения:
+                    # при нулевом остатке книга показывает базовую ставку сценария.
+                    # Это справочная ставка, проценты на нулевой долг не начисляются.
+                    pf_rate = pf_base_rate
 
                 if pf_balance > 0 and not line_closed:
                     pf_interest = (
