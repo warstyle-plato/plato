@@ -37,6 +37,39 @@ import sys
 ENGINE = "main_legacy.py"
 _VERSION = re.compile(r'^VERSION = "([^"]+)"', re.M)
 
+# VERSION описывает весь production-образ, а не один исторический файл ядра.
+# Не требуют нового номера только поверхности, которые не меняют приложение
+# в контейнере. Guide сознательно живёт на версии движка: для него есть свой
+# revision/hotfix-контур.
+_NON_RELEASE_PREFIXES = (".github/", "docs/", "tests/", "scripts/", "guide/")
+_NON_RELEASE_SUFFIXES = (".md", ".sh")
+
+
+def _changed_paths(base_ref: str, head_ref: str = "HEAD") -> list[str]:
+    done = subprocess.run(
+        ["git", "diff", "--name-only", base_ref, head_ref],
+        capture_output=True, check=True, text=True,
+    )
+    return [line.strip() for line in done.stdout.splitlines() if line.strip()]
+
+
+def _is_release_path(path: str) -> bool:
+    if path.startswith(_NON_RELEASE_PREFIXES):
+        return False
+    if path.endswith(_NON_RELEASE_SUFFIXES):
+        return False
+    return True
+
+
+def _release_changed(base_ref: str, head_ref: str = "HEAD") -> bool:
+    """Изменилось ли то, что попадает пользователю в production-образ.
+
+    Раньше ответ сравнивал только main_legacy.py, поэтому market_search/** мог
+    уехать на прод под старым номером. Теперь источник истины — состав diff:
+    любой runtime/data/image change требует нового VERSION.
+    """
+    return any(_is_release_path(path) for path in _changed_paths(base_ref, head_ref))
+
 
 def _version(text: str) -> tuple[int, ...]:
     found = _VERSION.search(text)
@@ -234,8 +267,8 @@ def main() -> int:
         print(f"Предыдущей версии нет ({previous_ref}) — сравнение пропущено.")
         return 0
     after_text = _show("HEAD")
-    if before_text == after_text:
-        print("Движок не менялся — версия может остаться прежней.")
+    if not _release_changed(previous_ref, "HEAD"):
+        print("Production-код не менялся — версия может остаться прежней.")
         return 0
     if ("\x00" in before_text or "\ufffd" in before_text) and not (
         "\x00" in after_text or "\ufffd" in after_text
@@ -248,7 +281,7 @@ def main() -> int:
         return 0
     print(f"Версия не выросла: было {'.'.join(map(str, before))}, "
           f"стало {'.'.join(map(str, after))}.", file=sys.stderr)
-    print("Движок изменился, значит выпуск другой. Поднимите VERSION в "
+    print("Production-код изменился, значит выпуск другой. Поднимите VERSION в "
           f"{ENGINE} — она объявляется там один раз.", file=sys.stderr)
     taken, _unread = _remote_versions()
     highest = before

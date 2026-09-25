@@ -2790,30 +2790,41 @@ def install(app: FastAPI) -> None:
             return True
         return model_at > rating_at
 
-    def _rating_screen_only(project: dict[str, Any]) -> dict[str, Any]:
-        """Достроить рынок + модель без очереди адресов в публичный геокодер.
+    def _autonomous_market_model(
+        project: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Рынок + модель для фоновых прогонов без тупика на пустой геометрии.
 
-        Если официальный файл карты не содержит площадку, сначала достраиваем
-        контур из кадастровых участков проекта решения тем же путём, которым
-        пользуется карта КРТ. После этого рынок получает координату из
-        сохранённого контура. Адресный Nominatim здесь по-прежнему запрещён.
+        Порядок строгий: официальный/сохранённый контур; затем контур из
+        решения и ЕГРН; и только если координаты всё ещё не появились —
+        адресный fallback через общий геокодер движка. На production он
+        сериализован общей защёлкой и выдерживает паузу между запросами.
         """
         try:
-            screening, report = _market_model_only(project, allow_remote_geocode=False)
+            return _market_model_only(project, allow_remote_geocode=False)
         except SubjectNotFound:
             slug = str(project.get("slug") or "").strip()
-            outline = None
             builder = getattr(krt_registry, "decision_outline", None)
             lookup = getattr(core, "_land_lookup_by_numbers", None) if core is not None else None
+            outline = None
             if slug and callable(builder) and callable(lookup):
                 try:
                     outline = builder(slug, lookup=lookup)
                 except Exception:  # noqa: BLE001
-                    logger.exception(
-                        "KRT background outline failed slug=%s", slug)
-            if not (outline or {}).get("centre_merc"):
-                raise
-            screening, report = _market_model_only(project, allow_remote_geocode=False)
+                    logger.exception("KRT autonomous outline failed slug=%s", slug)
+            if (outline or {}).get("centre_merc"):
+                try:
+                    return _market_model_only(project, allow_remote_geocode=False)
+                except SubjectNotFound:
+                    pass
+            # Последний шанс: общий движковый геокодер уже rate-limited.
+            # Дополнительная пауза не даёт соседним строкам стартовать вплотную.
+            time.sleep(1.2)
+            return _market_model_only(project, allow_remote_geocode=True)
+
+    def _rating_screen_only(project: dict[str, Any]) -> dict[str, Any]:
+        """Достроить рынок + модель для фонового рейтинга."""
+        screening, report = _autonomous_market_model(project)
         answer = dict(screening or {})
         if report:
             answer["market_report"] = _market_digest(report)
@@ -4295,27 +4306,15 @@ def install(app: FastAPI) -> None:
 
 
     def _screen_for_background(project: dict[str, Any]) -> dict[str, Any]:
-        """Scheduled pass builds missing official geometry, never a geocoder queue."""
+        """Scheduled pass uses the same safe geometry/address fallback as ratings."""
         try:
             return _screen_for(project, allow_remote_geocode=False)
         except SubjectNotFound:
-            # Weekly/scheduled ranking used to fail immediately for every KRT
-            # missing from the city map dataset. Build the same decision/EGRN
-            # outline that the KRT map uses, then retry with remote geocoding
-            # still disabled.
-            slug = str(project.get("slug") or "").strip()
-            builder = getattr(krt_registry, "decision_outline", None)
-            lookup = getattr(core, "_land_lookup_by_numbers", None) if core is not None else None
-            outline = None
-            if slug and callable(builder) and callable(lookup):
-                try:
-                    outline = builder(slug, lookup=lookup)
-                except Exception:  # noqa: BLE001
-                    logger.exception(
-                        "KRT scheduled outline failed slug=%s", slug)
-            if not (outline or {}).get("centre_merc"):
-                raise
-            return _screen_for(project, allow_remote_geocode=False)
+            screening, report = _autonomous_market_model(project)
+            answer = dict(screening or {})
+            if report:
+                answer["market_report"] = _market_digest(report)
+            return answer
 
     @app.post("/auctions/krt/press/run")
     async def auction_krt_press_run(request: Request) -> dict[str, Any]:
