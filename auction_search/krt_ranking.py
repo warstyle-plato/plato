@@ -29,6 +29,7 @@ krt.mos.ru ценового поля нет вовсе (`KrtTerritory` несё�
 from __future__ import annotations
 
 import contextlib
+import gc
 import datetime
 import fcntl
 import hashlib
@@ -44,6 +45,28 @@ from typing import Any, Callable
 from market_search.http import load_json, save_json
 
 logger = logging.getLogger(__name__)
+
+def _trim_process_memory() -> None:
+    """Return freed arenas to Render after each heavy KRT calculation.
+
+    The Starter web process has a 512 MB cgroup limit. Pulse/market reports
+    create large short-lived JSON/list objects; CPython can keep their freed
+    arenas mapped, so RSS grows across otherwise sequential KRT rows until the
+    instance is killed and the ranking run never finishes. Collect Python
+    garbage and, on glibc, ask malloc to return free heap pages to the OS.
+    """
+    gc.collect()
+    if os.name != "posix":
+        return
+    try:
+        import ctypes
+
+        trim = getattr(ctypes.CDLL(None), "malloc_trim", None)
+        if trim is not None:
+            trim(0)
+    except (OSError, AttributeError):
+        pass
+
 
 # Отпечаток методики снимается один раз на процесс: движок считает один и тот
 # же маленький проект, и ответ его в пределах процесса не меняется.
@@ -1214,6 +1237,7 @@ class KrtRanking:
                     self._progress["done"] = index
                 self._persist(rows)
                 self.heartbeat()
+                _trim_process_memory()
         finally:
             self._persist(rows)
             # Замок отпускается ровно здесь: держать его до протухания значило
