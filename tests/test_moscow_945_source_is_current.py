@@ -14,7 +14,8 @@ def test_verified_945_card_points_at_the_2118_amendment_source() -> None:
     assert item["status"] == "verified"
     assert "2118-ПП" in item["latest_amendment"]
     assert "945-ppS1092025.pdf" not in item["source_url"]
-    assert "2118" in item["source_url"]
+    assert item["source_url"] == "https://base.garant.ru/414735575/"
+    assert "2118-ПП" in item["source_label"]
 
     pack = ROOT / item["source_pack"]
     assert pack.exists()
