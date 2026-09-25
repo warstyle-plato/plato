@@ -74,9 +74,16 @@ def test_the_workbook_does_not_turn_capacity_into_sales() -> None:
         inputs, copy.deepcopy(core.TEP_DEFAULT), [], {},
         project_name="Социальная мощность")
     sheet = openpyxl.load_workbook(io.BytesIO(content), data_only=False)["ТЭП"]
-    rows = {
-        str(sheet.cell(row=row, column=1).value): row
-        for row in range(5, sheet.max_row + 1)
-    }
+    # На листе ниже ТЭП есть другие строки с теми же подписями («ДОО»,
+    # «СОШ»). Берём именно первую таблицу ТЭП до её ИТОГО, иначе словарь
+    # перезапишет индекс поздней служебной строкой и проверит не ту ячейку.
+    rows = {}
+    for row in range(5, sheet.max_row + 1):
+        label = str(sheet.cell(row=row, column=1).value or "")
+        if label == "ИТОГО":
+            break
+        if label in {"ДОО", "СОШ"}:
+            rows.setdefault(label, row)
+    assert set(rows) == {"ДОО", "СОШ"}
     assert sheet.cell(row=rows["ДОО"], column=9).value == 0
     assert sheet.cell(row=rows["СОШ"], column=9).value == 0
