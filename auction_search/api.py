@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# Release repair after #513: VERSION is assigned only by the release-merge step.
+
 import io
 import logging
 import os
