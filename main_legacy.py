@@ -30874,15 +30874,7 @@ def calculate(req: CalcRequest) -> dict:
             "residual": int(n(x, "residual_sales_months", 6))
         },
         "offices": {
-            # Отчёт обязан печатать тот же физический объём, который реально
-            # ушёл в график продаж. После размещения парковки на первых этажах
-            # исходная offices_saleable_sqm остаётся БАЗОЙ расчёта, а продаётся
-            # уже остаточная площадь из TEP. Чтение исходной вводной здесь
-            # показывало 87 505 м² при 66 613 м² в ТЭП и денежном потоке.
-            "label": "Офисы / МФОЦ", "quantity": sum(
-                float(value or 0.0)
-                for value in (op.get("quantity_product_schedules", {}).get("offices") or {}).values()
-            ) if b(x, "offices_enabled") else 0,
+            "label": "Офисы / МФОЦ", "quantity": n(x, "offices_saleable_sqm") if b(x, "offices_enabled") else 0,
             "unit": "м²", "start_price": n(x, "offices_price_th_per_sqm"), "share": n(x, "offices_share_before_rve_pct", 85)/100,
             "start": d(x["offices_sales_start"]), "end_ref": add_months(d(x["offices_start"]), int(n(x, "offices_months", 24))),
             "residual": int(n(x, "offices_residual_months", 6))
