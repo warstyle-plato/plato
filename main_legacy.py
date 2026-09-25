@@ -50904,7 +50904,7 @@ function renderResult(){
    ? `<span style="display:block;font-size:10px;color:#777">из них ${parts.join(' · ')}</span>`
    : '';
  };
- const soldTotal=r.tep.rows.reduce((sum,x)=>sum+soldUnits(x),0);
+ const soldTotal=r.tep.rows.reduce((sum,x)=>sum+(capacityUnits(x)?0:soldUnits(x)),0);
  // ГНС — наземная площадь здания, и у гаража с кладовыми её нет: под землёй
  // наружных стен не бывает, а экономика у подземной части своя — свой метр
  // стройки и продукт, продаваемый местами. Пока обе величины стояли в одной
