@@ -4295,8 +4295,27 @@ def install(app: FastAPI) -> None:
 
 
     def _screen_for_background(project: dict[str, Any]) -> dict[str, Any]:
-        """Scheduled pass never sends a bulk address queue to a public geocoder."""
-        return _screen_for(project, allow_remote_geocode=False)
+        """Scheduled pass builds missing official geometry, never a geocoder queue."""
+        try:
+            return _screen_for(project, allow_remote_geocode=False)
+        except SubjectNotFound:
+            # Weekly/scheduled ranking used to fail immediately for every KRT
+            # missing from the city map dataset. Build the same decision/EGRN
+            # outline that the KRT map uses, then retry with remote geocoding
+            # still disabled.
+            slug = str(project.get("slug") or "").strip()
+            builder = getattr(krt_registry, "decision_outline", None)
+            lookup = getattr(core, "_land_lookup_by_numbers", None) if core is not None else None
+            outline = None
+            if slug and callable(builder) and callable(lookup):
+                try:
+                    outline = builder(slug, lookup=lookup)
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "KRT scheduled outline failed slug=%s", slug)
+            if not (outline or {}).get("centre_merc"):
+                raise
+            return _screen_for(project, allow_remote_geocode=False)
 
     @app.post("/auctions/krt/press/run")
     async def auction_krt_press_run(request: Request) -> dict[str, Any]:
