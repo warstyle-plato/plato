@@ -2791,8 +2791,22 @@ def install(app: FastAPI) -> None:
         return model_at > rating_at
 
     def _rating_screen_only(project: dict[str, Any]) -> dict[str, Any]:
-        """Достроить только рынок + модель, без платного поиска публикаций."""
-        screening, report = _market_model_only(project, allow_remote_geocode=False)
+        """Достроить рынок + модель для фонового рейтинга.
+
+        Официальная/сохранённая геометрия остаётся первым выбором. Но если её
+        нет, строку нельзя навсегда оставлять без рейтинга: runner идёт
+        последовательно, поэтому разрешаем адресный fallback с паузой перед
+        внешним геокодером. Это не burst из сотен параллельных запросов.
+        """
+        try:
+            screening, report = _market_model_only(
+                project, allow_remote_geocode=False)
+        except SubjectNotFound:
+            # Nominatim/public geocoder: не чаще примерно одного запроса/сек.
+            # Пауза стоит только на площадках без официальной геометрии.
+            time.sleep(1.2)
+            screening, report = _market_model_only(
+                project, allow_remote_geocode=True)
         answer = dict(screening or {})
         if report:
             answer["market_report"] = _market_digest(report)
