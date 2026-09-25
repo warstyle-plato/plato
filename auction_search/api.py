@@ -2799,8 +2799,7 @@ def install(app: FastAPI) -> None:
         сохранённого контура. Адресный Nominatim здесь по-прежнему запрещён.
         """
         try:
-            screening, report = _market_model_only(
-                project, allow_remote_geocode=False)
+            screening, report = _market_model_only(project, allow_remote_geocode=False)
         except SubjectNotFound:
             slug = str(project.get("slug") or "").strip()
             outline = None
@@ -2814,8 +2813,7 @@ def install(app: FastAPI) -> None:
                         "KRT background outline failed slug=%s", slug)
             if not (outline or {}).get("centre_merc"):
                 raise
-            screening, report = _market_model_only(
-                project, allow_remote_geocode=False)
+            screening, report = _market_model_only(project, allow_remote_geocode=False)
         answer = dict(screening or {})
         if report:
             answer["market_report"] = _market_digest(report)
