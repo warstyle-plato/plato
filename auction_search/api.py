@@ -2791,22 +2791,31 @@ def install(app: FastAPI) -> None:
         return model_at > rating_at
 
     def _rating_screen_only(project: dict[str, Any]) -> dict[str, Any]:
-        """Достроить рынок + модель для фонового рейтинга.
+        """Достроить рынок + модель без очереди адресов в публичный геокодер.
 
-        Официальная/сохранённая геометрия остаётся первым выбором. Но если её
-        нет, строку нельзя навсегда оставлять без рейтинга: runner идёт
-        последовательно, поэтому разрешаем адресный fallback с паузой перед
-        внешним геокодером. Это не burst из сотен параллельных запросов.
+        Если официальный файл карты не содержит площадку, сначала достраиваем
+        контур из кадастровых участков проекта решения тем же путём, которым
+        пользуется карта КРТ. После этого рынок получает координату из
+        сохранённого контура. Адресный Nominatim здесь по-прежнему запрещён.
         """
         try:
             screening, report = _market_model_only(
                 project, allow_remote_geocode=False)
         except SubjectNotFound:
-            # Nominatim/public geocoder: не чаще примерно одного запроса/сек.
-            # Пауза стоит только на площадках без официальной геометрии.
-            time.sleep(1.2)
+            slug = str(project.get("slug") or "").strip()
+            outline = None
+            builder = getattr(krt_registry, "decision_outline", None)
+            lookup = getattr(core, "_land_lookup_by_numbers", None) if core is not None else None
+            if slug and callable(builder) and callable(lookup):
+                try:
+                    outline = builder(slug, lookup=lookup)
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "KRT background outline failed slug=%s", slug)
+            if not (outline or {}).get("centre_merc"):
+                raise
             screening, report = _market_model_only(
-                project, allow_remote_geocode=True)
+                project, allow_remote_geocode=False)
         answer = dict(screening or {})
         if report:
             answer["market_report"] = _market_digest(report)
