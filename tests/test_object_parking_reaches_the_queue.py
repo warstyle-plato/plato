@@ -287,10 +287,13 @@ def test_the_garage_of_an_object_counts_as_underground() -> None:
         result["summary"]["project_gns_sqm"])
 
 
-def test_the_screen_shows_the_garage_in_the_underground_column() -> None:
-    """Колонка читает поле строки, а итог берётся у движка."""
+def test_the_screen_shows_the_garage_as_a_child_row_in_the_underground_column() -> None:
+    """Гараж вынесен дочерней строкой: площадь и места видны отдельно от ОСЗ."""
     start = core.PAGE.index(" const underGns=Number(r.tep.core_under_gns")
     piece = core.PAGE[start:core.PAGE.index("const REPORT_SECTIONS", start)]
-    assert "objUnder(x)" in piece, "гараж объекта в колонке не показан"
-    assert "r.summary.underground_gns_sqm" in piece, "итог собирается на экране"
+    assert "objectParkingTepRow" in piece, "дочерняя строка паркинга не строится"
+    assert "x.under_gns" in piece, "подземная площадь гаража в строку не доезжает"
+    assert "x.parking_units" in piece and "x.parking_saleable_units" in piece
+    assert "↳ Паркинг ·" in piece
+    assert "r.summary.underground_gns_sqm" in piece, "итог собирается не из движка"
     assert "num(underTotal)" in piece
