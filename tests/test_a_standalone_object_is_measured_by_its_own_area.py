@@ -12,9 +12,10 @@
 
 Решение владельца — не отдельный блок: «просто указывать в той же таблице
 какие включены объекты и пометка что удельные данные на их гнс, а в случае с
-парковыми на ед м-м». Поэтому колонки самой статьи остаются проектными (они
-складываются в итог таблицы — это держат соседние проверки), а под ней стоят
-подстроки «в т.ч.» со своей базой у каждого объекта.
+парковыми на ед м-м». Поэтому сама строка «Отдельные объекты» считается на
+площади этих объектов. Если в группе есть и штучный наземный паркинг, общего
+₽/м² у неё нет: смешивать метры и места одним знаменателем нельзя. Под ней
+остаются подстроки «в т.ч.» со своей базой у каждого объекта.
 
 Проверка держится на том, что ответ известен заранее: делённый на СВОЮ ГНС
 CAPEX объекта обязан воспроизвести вводную ставку до десятой.
@@ -87,10 +88,10 @@ def test_the_object_reproduces_its_own_input_rate() -> None:
         office["building_value"] / OFFICE_SALEABLE / 1000)
 
 
-    # Прежнее число никуда не делось — оно проектное и стоит в колонках статьи.
-    assert row["per_gns_th"] < OFFICE_RATE_TH / 5, (
-        "проектная база должна остаться сильно ниже собственной — иначе "
-        "проверка мерит одно и то же дважды")
+    # В этой фикстуре вместе с площадными ОСЗ включён штучный наземный
+    # паркинг. Общего ₽/м² для такой смешанной группы нет.
+    assert row["per_gns_th"] is None
+    assert row["per_saleable_th"] is None
 
 
 def test_the_garage_of_the_object_is_measured_by_its_own_metre() -> None:
@@ -123,14 +124,14 @@ def test_the_surface_parking_is_measured_by_places_not_metres() -> None:
     assert "per_own_gns_th" not in parking, "у мест нет метровой базы"
 
 
-def test_the_row_columns_stay_project_wide_and_say_so() -> None:
-    """Колонка складывается в итог — значит она проектная, и это сказано."""
-    rows = _structure()
-    row = _standalone(rows)
-    gns = sum(core._number_or_zero(one["value"]) for one in rows)
-    assert row["per_gns_th"] > 0 and gns > 0
+def test_the_mixed_row_has_no_fake_common_rate_and_says_so() -> None:
+    """Метры ОСЗ и места наземного паркинга не складываются в один знаменатель."""
+    row = _standalone(_structure())
+    assert row["per_gns_th"] is None
+    assert row["per_saleable_th"] is None
     assert row["items_note"], "база строки и база подстрок не разведены словами"
-    assert "на весь проект" in row["items_note"]
+    assert "а не всего проекта" in row["items_note"]
+    assert "общего ₽/м² у группы нет" in row["items_note"]
 
 
 def test_the_queues_sum_the_object_with_its_own_area() -> None:
@@ -187,6 +188,7 @@ def test_the_page_draws_the_sub_rows_with_the_engine_numbers() -> None:
         f"const expenseRows={json.dumps(rows, ensure_ascii=False)};\n"
         "const money=v=>String(Math.round(Number(v)/1e9*100)/100)+' млрд';\n"
         "const num2=v=>String(Math.round(Number(v)*10)/10).replace('.',',');\n"
+        "const expenseMetric=v=>(v===null||v===undefined)?'—':num2(v);\n"
         # Названная пустота благоустройства — соседнее слагаемое того же
         # оператора: её функция берётся со страницы, а не подменяется
         # заглушкой — заглушка отвечала бы за страницу.
@@ -220,4 +222,4 @@ def test_the_print_carries_the_same_sub_rows() -> None:
     assert "в т.ч. Офисы / МФОЦ" in text, "подстрока объекта не доехала до печати"
     assert "в т.ч. Наземный паркинг · 550 мест" in text, (
         "паркинг в печати мерится не местами")
-    assert "на весь проект" in text, "подпись о базах не напечатана"
+    assert "не всего проекта" in text, "подпись о собственной базе ОСЗ не напечатана"
