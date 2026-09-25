@@ -10853,17 +10853,28 @@ def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[st
     пересчитываются от остатка ГНС в тех же долях, которые были у объекта до
     размещения паркинга.
     """
-    # Книга может вызвать расчёт повторно на той же копии ТЭП. Исходные
-    # площади храним один раз и перед повторным проходом восстанавливаем:
-    # первые этажи не должны вычитаться дважды.
+    # Книга может вызвать расчёт повторно на той же копии ТЭП. Первый проход
+    # запоминает исходные площади, а следующий обязан быть идемпотентным.
+    # Но ТЭП может быть ПЕРЕСЧИТАН между проходами на той же структуре: прежняя
+    # реализация безусловно восстанавливала старый _object_parking_base_* и
+    # тем самым отменяла свежий ТЭП. Поэтому рядом с базой держим последнее
+    # значение, которое поставили МЫ. Если текущее значение уже отличается от
+    # него, это внешнее изменение — оно становится новой базой.
     for tep_key, _prefix, _enabled_key, _sellable in OBJECT_PARKING_OBJECTS:
         row = (tep or {}).get(tep_key) or None
         if row is None:
             continue
         for field in ("total_area", "useful", "saleable"):
             base_key = f"_object_parking_base_{field}"
+            applied_key = f"_object_parking_applied_{field}"
+            current = n(row, field)
             if base_key not in row:
-                row[base_key] = n(row, field)
+                row[base_key] = current
+                continue
+            applied = row.get(applied_key)
+            if applied is not None and not math.isclose(
+                    current, float(applied), rel_tol=1e-10, abs_tol=1e-6):
+                row[base_key] = current
             else:
                 row[field] = n(row, base_key)
 
@@ -10928,6 +10939,9 @@ def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[st
             base = n(row, f"_object_parking_base_{field}")
             adjusted = max(0.0, base * ratio)
             row[field] = adjusted
+            # Маркер именно НАШЕГО последнего значения отличает повторный
+            # проход от нового ТЭП, пришедшего между расчётами.
+            row[f"_object_parking_applied_{field}"] = adjusted
             losses[field] = max(0.0, base - adjusted)
 
         overflow = max(0.0, over_gba - base_gns)
