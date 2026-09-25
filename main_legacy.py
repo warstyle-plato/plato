@@ -51925,6 +51925,7 @@ function renderResult(){
  // строкой ТЭП — экран их только показывает, своей арифметики здесь нет.
  const soldUnits=x=>Number(x.saleable_units!==undefined?x.saleable_units:x.units||0);
  const capacityUnits=x=>['kindergarten','school','clinic'].includes(x.key);
+ const capacityNote=x=>x.key==='clinic'?'мощность, пос./смену':'мощность, мест';
  const unitNote=x=>{
   const parts=[];
   if(Number(x.guest_units||0)>0)parts.push('гостевых '+num(x.guest_units));
@@ -51973,7 +51974,7 @@ function renderResult(){
    +`<td>${isUnder(x)?dash:num(x.gns)}</td>`
    +`<td>${isUnder(x)?num(x.gns):(objUnder(x)>0?num(objUnder(x)):dash)}</td>`
    +`<td>${num(x.saleable)}</td><td>${num(x.transfer)}</td>`
-   +`<td>${num(x.units)}${capacityUnits(x)?'<span style="display:block;font-size:10px;color:#777">мощность, мест</span>':unitNote(x)}</td><td>${soldCell(x)}</td></tr>`).join('')+
+   +`<td>${num(x.units)}${capacityUnits(x)?'<span style="display:block;font-size:10px;color:#777">'+capacityNote(x)+'</span>':unitNote(x)}</td><td>${soldCell(x)}</td></tr>`).join('')+
   `</tbody><tfoot><tr><th>Итого</th><th>${num(aboveGns)}</th><th>${num(underTotal)}</th>`
   +`<th>${num(r.tep.total.saleable)}</th><th>${num(transferTotal)}</th>`
    +`<th>${num(r.tep.total.units)}</th><th>${num(soldTotal)}</th></tr></tfoot>`;
