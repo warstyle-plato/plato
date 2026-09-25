@@ -54,7 +54,9 @@ def test_the_web_report_marks_capacity_and_does_not_print_it_as_sales() -> None:
     page = core.PAGE
     assert "capacityUnits=x=>['kindergarten','school','clinic'].includes(x.key)" in page
     assert "soldCell=x=>capacityUnits(x)?dash:num(soldUnits(x))" in page
+    assert "soldTotal=r.tep.rows.reduce((sum,x)=>sum+(capacityUnits(x)?0:soldUnits(x)),0)" in page
     assert "мощность, мест" in page
+    assert "мощность, пос./смену" in page
 
 
 def test_the_workbook_does_not_turn_capacity_into_sales() -> None:
