@@ -2374,13 +2374,16 @@ function krtInvestmentRatingCell(slug){
  const rank=(state.krtRank||{})[slug]||{},r=rank.investment_rating||{};
  const coverage=Number(r.coverage_pct);
  const score=r.display_score;
+ const names={llcr:'LLCR',price:'цена',absorption:'поглощение',burden:'нагрузка'};
+ const imputed=(r.imputed||[]).map(x=>names[x.component]||x.component).filter(Boolean);
  if(score!==null&&score!==undefined&&Number.isFinite(Number(score))){
-  return '<b>'+esc(Math.round(Number(score)))+'</b><div class="source">/100'+(Number.isFinite(coverage)?' · '+coverage+'% данных':'')+'</div>';
+  const quality=Number.isFinite(coverage)?' · '+coverage+'% факта':'';
+  const estimate=imputed.length?' · медиана: '+esc(imputed.join(', ')):'';
+  return '<b>'+esc(Math.round(Number(score)))+'</b><div class="source">/100'+quality+estimate+'</div>';
  }
  if(Number.isFinite(coverage)&&coverage>0){
-  const names={llcr:'LLCR',price:'цена',absorption:'поглощение',burden:'нагрузка'};
   const missing=(r.missing||[]).map(x=>names[x]||x).join(', ');
-  return '<b>—</b><div class="source">'+coverage+'%'+(missing?' · нет: '+esc(missing):'')+'</div>';
+  return '<b>—</b><div class="source">'+coverage+'% факта'+(missing?' · нет даже медианы: '+esc(missing):'')+'</div>';
  }
  return '<b>—</b><div class="source">ещё не рассчитан</div>';
 }
@@ -2803,7 +2806,7 @@ async function startKrtInvestmentRating(){
  }
  b.disabled=true;b.innerHTML='<span class="spinner"></span>Считаю 0/'+total;
  if(box){box.style.display='';box.className='notice';box.textContent='Считаю рейтинг: 0 из '+total+' · ориентир '+new Intl.NumberFormat('ru-RU').format(target)+' ₽/м²'}
- let done=0,finals=0,partial=0,failed=0,next=0;
+ let done=0,finals=0,estimated=0,partial=0,failed=0,next=0;
  const worker=async()=>{
   while(true){
    const index=next++;if(index>=projects.length)return;
@@ -2818,13 +2821,15 @@ async function startKrtInvestmentRating(){
      row.investment_rating_segment=d.absorption.segment;
     }
     state.krtRank[x.slug]=row;
-    if(rating&&rating.display_score!==null&&rating.display_score!==undefined)finals++;
-    else partial++;
+    if(rating&&rating.display_score!==null&&rating.display_score!==undefined){
+     finals++;
+     if((rating.imputed||[]).length)estimated++;
+    }else partial++;
    }catch(e){failed++}
    done++;
    if(done===total||done%4===0){
     b.innerHTML='<span class="spinner"></span>Считаю '+done+'/'+total;
-    if(box)box.textContent='Считаю рейтинг: '+done+' из '+total+' · готово '+finals+' · неполных '+partial+(failed?' · ошибок '+failed:'');
+    if(box)box.textContent='Считаю рейтинг: '+done+' из '+total+' · оценок '+finals+' · с медианой '+estimated+' · без оценки '+partial+(failed?' · ошибок '+failed:'');
     renderKrt();
    }
   }
@@ -2837,7 +2842,7 @@ async function startKrtInvestmentRating(){
  await loadKrtRanking();
  if(box){
   box.style.display='';box.className=failed?'notice warn':'notice';
-  box.textContent=(KRT_EARLY_ONLY?'Ранние проекты: ':'Рейтинг для площадок вне реализации: ')+finals+' итоговых, '+partial+' неполных'+(failed?', '+failed+' ошибок':'')+'. Ориентир '+new Intl.NumberFormat('ru-RU').format(target)+' ₽/м².';
+  box.textContent=(KRT_EARLY_ONLY?'Ранние проекты: ':'Рейтинг для площадок вне реализации: ')+finals+' оценок, '+estimated+' с медианной подстановкой, '+partial+' без оценки'+(failed?', '+failed+' ошибок':'')+'. Ориентир '+new Intl.NumberFormat('ru-RU').format(target)+' ₽/м².';
  }
  b.disabled=false;b.textContent='Пересчитать рейтинги';
 }
