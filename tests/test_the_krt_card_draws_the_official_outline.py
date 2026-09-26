@@ -56,7 +56,7 @@ def test_the_point_route_asks_the_map_file_before_the_geocoder() -> None:
         "геокодер спрашивается раньше файла карты"
     assert '"rings_merc": rings' in body and '"geometry_status": geometry_status' in body
     assert "official_polygon" in body and "geocoded_point" in body
-    assert "_mercator_to_wgs84" in body, "центр из меркатора не переводится в широту и долготу"
+    assert "krt_wgs84" in body, "центр из меркатора не переводится в широту и долготу"
     # Откат на геокодер назван, а не молчит.
     assert "точка поставлена геокодером по адресу" in body
 

@@ -1397,3 +1397,36 @@ def test_the_share_button_shows_a_refusal_instead_of_going_quiet():
     # Пустой признак не шлётся вовсе: именно он давал 422.
     assert "revoke:''" not in block and "revoke:\"\"" not in block
     assert "if(revoke)params.revoke='1'" in block
+
+
+def test_unregistered_land_is_not_reported_as_moscow_owner(monkeypatch):
+    """Общее правило о неразграниченной земле не создаёт собственника «Москва».
+
+    Если ЕГРН не называет правообладателя и в выписке нет городского договора
+    аренды, DevelopAid может показать правовой режим как аналитический вывод,
+    но строка «Правообладатель» должна оставаться неизвестной.
+    """
+    view = {
+        "lands": [{
+            "cadastral_number": "77:00:0000000:1",
+            "owner": {"name": "", "state": "none"},
+            "leases": [],
+            "disposal": {
+                "who": "вероятно город Москва",
+                "ground": ("вывод DevelopAid по общему правилу: в Москве "
+                           "неразграниченная государственная собственность "
+                           "в распоряжении города. По этому участку "
+                           "подтверждения в документах нет"),
+            },
+            "area_sqm": 1000.0,
+            "cadastral_value_rub": 10_000_000.0,
+            "objects": [],
+        }],
+        "objects": [],
+    }
+    rows = parcels.land_holdings(view)
+    assert len(rows) == 1
+    assert rows[0]["name"] == "правообладатель не установлен по ЕГРН"
+    assert rows[0]["group"] != "moscow"
+    assert rows[0]["lands"] == 1
+    assert "неразграниченная" in rows[0]["by"]

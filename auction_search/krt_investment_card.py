@@ -122,7 +122,7 @@ details{border:1px solid var(--line);margin-top:10px}summary{cursor:pointer;padd
         <button id="recalcRating" type="button">Пересчитать</button>
        </div>
       </div>
-      <div class="source" style="margin-bottom:8px">600 000 ₽/м² — значение по умолчанию. Можно ввести любой другой ориентир и пересчитать только рейтинг, не пересчитывая рынок.</div>
+      <div class="source" style="margin-bottom:8px">По умолчанию используется общий ценовой ориентир каталога КРТ. Можно ввести другой ориентир и пересчитать только эту карточку, не меняя каталог.</div>
       <div id="score"><div class="notice">Читаю расчёт рейтинга…</div></div>
      </div></section>
     <section class="card"><header><h2>Действия</h2><span>по этой площадке</span></header><div class="body actionbar">
@@ -288,7 +288,7 @@ function renderScore(sc){
  $('scoreKpi').textContent=sc.display_score===null||sc.display_score===undefined?'—':fmt(sc.display_score);
  const C=sc.components||{},order=['llcr','price','absorption','burden'];
  const m=sc.methodology||{};
- $('score').innerHTML='<div class="scorebig">'+(sc.display_score===null||sc.display_score===undefined?'—':fmt(sc.display_score))+'/100<small>'+esc(sc.reason||'инвестиционный рейтинг')+'</small></div><div class="source">Покрытие '+fmt(sc.coverage_pct)+'%</div><div class="components">'+order.map(k=>{const x=C[k]||{};return '<div class="component"><b>'+(x.score===null||x.score===undefined?'—':fmt(x.score,1))+'</b><span>'+esc(x.name||k)+'</span><div class="source">'+esc(ratingInput(k,x))+'</div><div class="source">'+esc(x.score===null||x.score===undefined?(x.missing_reason||'нет данных'):(x.formula||''))+'</div></div>'}).join('')+'</div>'
+ $('score').innerHTML='<div class="scorebig">'+(sc.display_score===null||sc.display_score===undefined?'—':fmt(sc.display_score))+'/100<small>'+esc(sc.reason||'инвестиционный рейтинг')+'</small></div><div class="source">Покрытие фактическими данными '+fmt(sc.coverage_pct)+'%'+((sc.imputed||[]).length?' · подстановок медианой '+(sc.imputed||[]).length:'')+'</div><div class="components">'+order.map(k=>{const x=C[k]||{};const estimate=x.estimated?'<div class="source warn">оценка: '+esc(x.estimate_source||x.source||'медианная подстановка')+'</div>':'';return '<div class="component"><b>'+(x.score===null||x.score===undefined?'—':fmt(x.score,1))+'</b><span>'+esc(x.name||k)+'</span><div class="source">'+esc(ratingInput(k,x))+'</div>'+estimate+'<div class="source">'+esc(x.score===null||x.score===undefined?(x.missing_reason||'нет данных'):(x.formula||''))+'</div></div>'}).join('')+'</div>'
   +'<div class="actionbar" style="margin-top:10px"><button type="button" id="ratingMethodBtn">Методика рейтинга</button></div>'
   +'<details id="ratingMethod"><summary>Границы и алгоритм расчёта</summary><div class="detailsbody">'
   +'<div class="metric"><span>Итог</span><b>(LLCR + цена + поглощение + нагрузка) / 4</b></div>'
@@ -296,7 +296,7 @@ function renderScore(sc){
   +'<div class="metric"><span>Цена / ориентир</span><b>70%→0 · 85%→50 · 100%+→100</b></div>'
   +'<div class="metric"><span>Поглощение / Москва</span><b>50%→0 · 70%→25 · 85%→50 · 100%→75 · 110%→90 · 120%+→100</b></div>'
   +'<div class="metric"><span>Нагрузка / ordinary CAPEX</span><b>0%→100 · 5%→90 · 10%→70 · 15%→45 · 20%→25 · 30%+→0</b></div>'
-  +'<div class="source">Между точками — линейная интерполяция. Missing-компонент не считается нулём: итоговый рейтинг отсутствует, coverage показывает полноту.</div>'
+  +'<div class="source">Между точками — линейная интерполяция. Если входа площадки нет, рейтинг не исчезает: используется явно подписанная медиана Москвы/класса или каталога КРТ. Coverage показывает долю фактических данных и не маскируется под 100%.</div>'
   +(sc.arithmetic?'<div class="notice"><b>Этот объект:</b> '+esc(sc.arithmetic)+'</div>':'')
   +'</div></details>';
  const mb=$('ratingMethodBtn'),md=$('ratingMethod');
@@ -304,7 +304,7 @@ function renderScore(sc){
  if(window.parent&&window.parent!==window){
   window.parent.postMessage({
    type:'developaid-krt-rating',slug:SLUG,
-   rating:{score:sc.score,display_score:sc.display_score,coverage_pct:sc.coverage_pct,rankable:sc.rankable,reason:sc.reason,missing:sc.missing||[],components:sc.components||{}}
+   rating:{score:sc.score,display_score:sc.display_score,coverage_pct:sc.coverage_pct,rankable:sc.rankable,reason:sc.reason,missing:sc.missing||[],imputed:sc.imputed||[],components:sc.components||{}}
   },location.origin);
  }
 }
@@ -374,14 +374,20 @@ function bindMap(){
  window.addEventListener('scroll',hide,{passive:true});
 }
 function parentAction(action,p){if(window.parent&&window.parent!==window){window.parent.postMessage({type:'developaid-krt-card-action',action,slug:String(p.slug||''),name:String(p.name||'')},location.origin);return true}return false}
-function ratingUrl(){
+function ratingUrl(useInput=true){
+ const base='/auctions/krt/'+encodeURIComponent(SLUG)+'/investment-score';
+ if(!useInput)return base;
  const input=$('priceTarget'),target=Math.max(1,Number(input&&input.value||600000));
- return '/auctions/krt/'+encodeURIComponent(SLUG)+'/investment-score?price_target_rub_sqm='+encodeURIComponent(target);
+ return base+'?price_target_rub_sqm='+encodeURIComponent(target);
+}
+function syncCanonicalTarget(payload){
+ const input=$('priceTarget'),target=num(payload&&payload.canonical_target_rub_sqm);
+ if(input&&target!==null)input.value=String(Math.round(target));
 }
 async function recalcRating(rank,report){
  const b=$('recalcRating');if(b){b.disabled=true;b.innerHTML='<span class="spinner"></span>Считаю'}
  try{
-  const s=await get(ratingUrl()),rating=s.rating||s;
+  const s=await get(ratingUrl(true)),rating=s.rating||s;
   renderScore(rating);
   if(rank)renderEconomics(rank,report,rating);
   return rating;
@@ -395,13 +401,15 @@ async function recalcRating(rank,report){
 async function boot(){
  bindMap();$('territoryLink').href='/krt/site/'+encodeURIComponent(SLUG);
  const [catR,rankR,reqR,pointR,parcelR,reportR,scoreR]=await Promise.allSettled([
-  get('/auctions/krt'),get('/auctions/krt/ranking'),get('/auctions/krt/'+encodeURIComponent(SLUG)+'/requirements'),get('/auctions/krt/'+encodeURIComponent(SLUG)+'/point'),get('/krt/site/'+encodeURIComponent(SLUG)+'/parcels'),get('/auctions/krt/'+encodeURIComponent(SLUG)+'/report'),get(ratingUrl())
+  get('/auctions/krt'),get('/auctions/krt/ranking'),get('/auctions/krt/'+encodeURIComponent(SLUG)+'/requirements'),get('/auctions/krt/'+encodeURIComponent(SLUG)+'/point'),get('/krt/site/'+encodeURIComponent(SLUG)+'/parcels'),get('/auctions/krt/'+encodeURIComponent(SLUG)+'/report'),get(ratingUrl(false))
  ]);
  const cat=catR.status==='fulfilled'?catR.value:{projects:[]},p=findProject(cat);if(!p)throw new Error('Площадка не найдена в текущем каталоге КРТ');
  if(p.early_unpublished){$('territoryLink').style.display='none'}
  const rankData=rankR.status==='fulfilled'?rankR.value:{rows:[]},rank=(rankData.rows||[]).find(x=>String(x.slug||'')===SLUG)||{},req=reqR.status==='fulfilled'?reqR.value:(rank.requirements||{}),parcels=parcelR.status==='fulfilled'?parcelR.value:null,report=reportR.status==='fulfilled'?reportR.value:null;
  MAP.point=pointR.status==='fulfilled'?pointR.value:null;MAP.parcels=parcels;MAP.peers=marketPeers(report);
- const initialRating=scoreR.status==='fulfilled'?(scoreR.value.rating||scoreR.value):null;
+ const scorePayload=scoreR.status==='fulfilled'?scoreR.value:null;
+ if(scorePayload)syncCanonicalTarget(scorePayload);
+ const initialRating=scorePayload?(scorePayload.rating||scorePayload):null;
  renderHero(p,rank,req);renderEntry(p,rank);renderProgramme(p,req);renderOfficialSources(p,req);renderTerritory(req,parcels);renderEconomics(rank,report,initialRating);renderPublic(rank);renderScore(initialRating);drawMap();
  $('recalcRating').onclick=()=>recalcRating(rank,report);
  $('priceTarget').onkeydown=e=>{if(e.key==='Enter')recalcRating(rank,report)};

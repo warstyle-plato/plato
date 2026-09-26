@@ -113,9 +113,16 @@ class MoscowMarket:
                 if value is None:
                     continue
                 try:
-                    area_by_segment.setdefault(segment, []).append(float(value))
+                    area = float(value)
                 except (TypeError, ValueError):
                     continue
+                # В динамике 0 используется и как «продаж за месяц нет», и как
+                # пустой/неполный месячный срез. Для benchmark рейтинга ноль
+                # непригоден в любом случае: это знаменатель отношения
+                # поглощения, а score намеренно требует benchmark > 0.
+                if area <= 0:
+                    continue
+                area_by_segment.setdefault(segment, []).append(area)
         payload["_area_median_by_segment"] = {
             segment: round(float(statistics.median(values)), 1)
             for segment, values in area_by_segment.items() if values

@@ -123,10 +123,10 @@ def test_the_rules_version_rises_with_the_answer():
 # проверку, чтобы вторая была решена, а не забыта. Добавили поле — поднимите
 # версию; поле переименовали или убрали — тем более.
 #
-# 4 — 23.09.2026: точный потолок входа больше не публикуется при неполной
-# нагрузке КРТ. Вместо него строка хранит верхнюю границу в млн ₽ и ₽/м²,
-# поэтому состав вырос на два поля и версия правил поднята вместе с ним.
-ROW_KEYS_AT_RULES_VERSION = (4, (
+# 5 — 24.09.2026: цена окружения больше не наследуется от одного ЖК внутри
+# площадки и публикуется только из устойчивого price_hint. Состав строки не
+# изменился, но смысл и числа изменились — сохранённые строки надо пересчитать.
+ROW_KEYS_AT_RULES_VERSION = (5, (
     "area_ha", "at_asking_price", "available", "card_facts", "computed_at",
     "district", "engine_version", "entry_capacity_mln", "entry_capacity_reason",
     "entry_capacity_rub_per_sqm", "entry_capacity_upper_bound_mln",
@@ -146,3 +146,35 @@ def test_a_new_field_comes_with_a_new_rules_version():
         "состав строки и версия правил разошлись: поле, добавленное без подъёма "
         "версии, до уже посчитанных строк не доедет — их никто не перечитает. "
         f"сейчас {got[0]} и {len(got[1])} полей")
+
+
+
+def test_krt_market_does_not_turn_the_site_into_an_on_site_project():
+    """КРТ остаётся территорией, даже если её центр совпал с активным ЖК."""
+    import inspect
+    from auction_search import api
+    from market_search import service_v6
+
+    api_source = Path(api.__file__).read_text(encoding="utf-8")
+    start = api_source.index("    def _krt_market_report(")
+    body = api_source[start:api_source.index("\n    def _market_model_only(", start)]
+    assert "match_nearby_project=False" in body, (
+        "KRT снова может прилипнуть к активному ЖК и выдать его прайс за цену окружения")
+
+    signature = inspect.signature(service_v6.MarketDiscoveryService.build_report)
+    assert signature.parameters["match_nearby_project"].default is True
+    source = inspect.getsource(service_v6.MarketDiscoveryService.build_report)
+    assert "if subject.project_id is None and match_nearby_project:" in source
+
+
+def test_running_krt_still_refreshes_market_but_gets_no_investment_rating():
+    """«В реализации» не ранжируется, но её видимая цена окружения не стареет."""
+    from auction_search import api
+
+    source = Path(api.__file__).read_text(encoding="utf-8")
+    start = source.index("    def _rating_background_loop()")
+    body = source[start:source.index("\n    @app.get(\"/auctions/krt/decisions\")", start)]
+    assert '_krt_status_kind(project.get("status")) == "running"' not in body
+    rating_start = source.index("    def _fill_cached_investment_ratings(")
+    rating_body = source[rating_start:source.index("\n    def _rating_background_loop(", rating_start)]
+    assert '_krt_status_kind(project.get("status")) == "running"' in rating_body
