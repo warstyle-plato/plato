@@ -303,19 +303,33 @@ def test_secondary_input_block_e_to_h_is_formatted_by_field_type():
     entry = openpyxl.load_workbook(io.BytesIO(content), data_only=False)["Вводные"]
 
     left_number = _entry_value_cell_for_key(entry, "purchase_price_mln")
-    left_pct = _entry_value_cell_for_key(entry, "marketing_pct")
-    left_text = _entry_value_cell_for_key(entry, "bridge_interest_mode")
-    right_number = _entry_value_cell_for_key(entry, "bridge_repay_lag_months")
-    right_pct = _entry_value_cell_for_key(entry, "bridge_cap_spread_pp")
+    right_number = _entry_value_cell_for_key(entry, "pf_limit_approved_mln")
+    right_area = _entry_value_cell_for_key(entry, "demolition_area_sqm")
 
     assert entry[right_number].style_id == entry[left_number].style_id
-    assert entry[right_pct].style_id == entry[left_pct].style_id
+    assert entry[right_area].style_id == entry[left_number].style_id
 
-    # Engine-only режимы из соседнего E:H блока на пользовательский лист
+    # Engine-only поля из соседнего E:H блока на пользовательский лист
     # вообще не попадают: серое поле всё равно можно перепечатать в Excel.
-    for key in ("social_area_source", "vri_in_bank_budget", "vri_financing_mode"):
+    # Лаг погашения и спред капитализации БРИДЖа — среди них: ни одна формула
+    # книги их не читает, жёлтая ячейка без читателя — обещание.
+    for key in ("social_area_source", "vri_in_bank_budget", "vri_financing_mode",
+                "bridge_repay_lag_months", "bridge_cap_spread_pp",
+                "inflation_after_rve_pct", "underground_parking_disabled"):
         with pytest.raises(AssertionError):
             _entry_value_cell_for_key(entry, key)
+
+    # Заголовки шаблона, растянутые по E:H («ОЧЕРЕДИ ПРОЕКТА», «ПРОГНОЗ
+    # КЛЮЧЕВОЙ СТАВКИ»), стиля ввода не получают: их F-клетка не вводная.
+    params = openpyxl.load_workbook(io.BytesIO(content), data_only=False)["Параметры модели"]
+    entry_style = entry[left_number].style_id
+    for row in range(1, params.max_row + 1):
+        text = params[f"E{row}"].value
+        if isinstance(text, str) and text.isupper() and params[f"H{row}"].value == text:
+            assert params[f"F{row}"].style_id != entry_style, (
+                f"F{row}: заголовок «{text}» покрашен как ввод")
+            assert not str(params[f"F{row}"].value or "").startswith("="), (
+                f"F{row}: заголовок «{text}» уехал на лист ввода")
 
 
 def test_the_office_block_carries_dates_and_terms():
