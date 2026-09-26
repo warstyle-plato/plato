@@ -156,7 +156,7 @@ def test_a_price_below_the_floor_is_named_not_hidden():
 def test_the_page_shows_the_kind_and_counts_it_once():
     page = ui.auctions_page(None)
     assert "equity_stake:'Доля в юрлице'" in page, "вид лота на экране не назван"
-    assert '<option value="equity_stake">' in page, "по виду нельзя отобрать"
+    assert "['equity_stake','Доля в юрлице']" in page, "по виду нельзя отобрать"
     assert "function equityNote(" in page, "что стоит за долей, на экране не сказано"
     assert "карточка лота не прочитана" in page, \
         "непрочитанная карточка на экране неотличима от пустой"

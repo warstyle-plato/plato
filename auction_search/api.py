@@ -13,6 +13,7 @@ import threading
 import time
 import urllib.parse
 import guide
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
@@ -52,7 +53,9 @@ from auction_search.adapters.roseltorg_probe import (
 )
 from auction_search.bridge import auction_page_with_handoff, install_page_bridge
 from auction_search.catalogue_quality import catalogue_quality
-from auction_search.parsing import deadline_iso
+from auction_search.parsing import (
+    cadastral_numbers, deadline_iso, deadline_moment, parse_hectares_sqm,
+)
 from auction_search import equity_stake
 from auction_search.developaid_mapper import build_developaid_seed
 from auction_search.documents import DocumentExtractionError
@@ -140,6 +143,151 @@ class AuctionExportRequest(BaseModel):
 class AuctionLotPointRequest(BaseModel):
     query: str = Field(min_length=3, max_length=500)
 
+
+_CADASTRAL_OKRUG = {
+    "77:01": "ЦАО",
+    "77:02": "СВАО",
+    "77:03": "ВАО",
+    "77:04": "ЮВАО",
+    "77:05": "ЮАО",
+    "77:06": "ЮЗАО",
+    "77:07": "ЗАО",
+    "77:08": "СЗАО",
+    "77:09": "САО",
+    "77:10": "ЗелАО",
+}
+_DISTRICT_OKRUG = {
+    "арбат": "ЦАО", "басманный": "ЦАО", "хамовники": "ЦАО",
+    "лефортово": "ЮВАО", "покровское-стрешнево": "СЗАО",
+    "покровское стрешнево": "СЗАО", "ростокино": "СВАО",
+    "москворечье-сабурово": "ЮАО", "москворечье сабурово": "ЮАО",
+    "куркино": "СЗАО", "южное бутово": "ЮЗАО",
+    "орехово-борисово северное": "ЮАО", "орехово-борисово южное": "ЮАО",
+    "гольяново": "ВАО", "коптево": "САО", "перово": "ВАО",
+    "зеленоград": "ЗелАО",
+}
+_STREET_HINTS = (
+    "ул.", "улица", "ш.", "шоссе", "пр-д", "проезд", "просп", "пер.",
+    "переул", "наб.", "набереж", "б-р", "бульвар", "д.", "дом", "вл.",
+    "владен", "стр.", "строен",
+)
+_ADDRESS_CITY_MARKERS = (
+    "г. москва,", "г москва,", "город москва,",
+    "г. москве,", "г москве,", "город москве,",
+    "г. москвы,", "г москвы,", "город москвы,",
+)
+_ADDRESS_STOP_MARKERS = (
+    " одновременно с ", " площадью ", " общей площадью ",
+    " кадастровый номер", " кадастрового номера", " к/н ", " кн ", " кад. №",
+    " право аренды", " находящ", " вид права",
+)
+
+
+def _first_after(text: str, markers: tuple[str, ...]) -> tuple[str, str]:
+    """Return tail after the earliest literal marker, without regular expressions.
+
+    Auction titles are external input. Literal scans stay linear even on a title
+    containing tens of thousands of repeated spaces, unlike several permissive
+    regexes that CodeQL correctly flagged as polynomial.
+    """
+    low = text.lower()
+    found: tuple[int, str] | None = None
+    for marker in markers:
+        index = low.find(marker)
+        if index >= 0 and (found is None or index < found[0]):
+            found = (index, marker)
+    if found is None:
+        return "", ""
+    index, marker = found
+    return text[index + len(marker):], marker
+
+
+def _cut_at_first_literal(text: str, markers: tuple[str, ...]) -> str:
+    low = text.lower()
+    positions = [pos for marker in markers if (pos := low.find(marker)) >= 0]
+    return text[:min(positions)] if positions else text
+
+
+def _export_address(row: dict[str, Any]) -> str:
+    explicit = " ".join(str(row.get("address") or "").split()).strip(" ,;")
+    if explicit:
+        return explicit
+    title = " ".join(str(row.get("name") or row.get("title") or "").split())
+    if not title:
+        return ""
+
+    value, marker = _first_after(title, ("по адресу", "по адресам"))
+    if value:
+        value = value.lstrip(" :")
+    else:
+        value, marker = _first_after(title, _ADDRESS_CITY_MARKERS)
+        if value:
+            value = "г. Москва, " + value.lstrip()
+    if not value:
+        return ""
+
+    # После адреса в названии лота обычно снова начинается описание объекта.
+    value = _cut_at_first_literal(value, _ADDRESS_STOP_MARKERS)
+    return value.strip(" ,;.-")
+
+
+def _export_district(row: dict[str, Any], address: str) -> str:
+    existing = " ".join(str(row.get("district") or "").split()).strip()
+    if existing:
+        return existing
+
+    text = " ".join((address, str(row.get("name") or row.get("title") or "")))
+    low = text.lower()
+    for marker in ("муниципальный округ ", "район ", "р-н "):
+        index = low.find(marker)
+        if index < 0:
+            continue
+        tail = text[index + len(marker):]
+        stop = min([p for p in (tail.find(","), tail.find(";")) if p >= 0] or [len(tail)])
+        candidate = tail[:stop].strip(" .")
+        if candidate:
+            return candidate
+
+    # Формат «г. Москва, Лефортово, ул. ...» встречается в ГИС Торгах.
+    tail, _ = _first_after(address, _ADDRESS_CITY_MARKERS)
+    if tail:
+        stop = min([p for p in (tail.find(","), tail.find(";")) if p >= 0] or [len(tail)])
+        candidate = tail[:stop].strip()
+        candidate_low = candidate.lower()
+        if candidate and not any(hint in candidate_low for hint in _STREET_HINTS):
+            return candidate
+    return ""
+
+def _export_okrug(row: dict[str, Any], district: str, cadastre: str) -> str:
+    existing = " ".join(str(row.get("okrug") or "").split()).strip()
+    if existing:
+        return existing
+    for number in cadastral_numbers(cadastre):
+        okrug = _CADASTRAL_OKRUG.get(number[:5])
+        if okrug:
+            return okrug
+    return _DISTRICT_OKRUG.get(district.lower().replace("ё", "е"), "")
+
+
+def _days_to_application_deadline(row: dict[str, Any]) -> int | None:
+    raw = row.get("application_deadline_iso") or row.get("application_deadline")
+    moment = deadline_moment(str(raw or ""))
+    if moment is None:
+        return None
+    return (moment.date() - datetime.now(moment.tzinfo).date()).days
+
+
+def _nspd_href(cadastre: str) -> str:
+    # НСПД не даёт стабильной человекочитаемой deep-link только из КН без
+    # предварительного поиска/selectedCard. Ведём на официальную ПКК; сам КН
+    # остаётся текстом ячейки, его можно сразу вставить в поиск карты.
+    return "https://nspd.gov.ru/map?thematic=PKK" if cadastral_numbers(cadastre) else ""
+
+
+def _yandex_maps_href(address: str) -> str:
+    return ("https://yandex.ru/maps/?text=" + urllib.parse.quote_plus(address)) if address else ""
+
+
 def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
     if kind == "krt":
         columns = [
@@ -215,13 +363,17 @@ def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
             ("housing_gfa_sqm", "Жильё, м²", 16),
             ("price", "Цена, ₽", 18),
             ("score", "Балл лота", 17),
+            ("application_start", "Начало приёма заявок", 21),
+            ("application_deadline", "Окончание приёма заявок", 21),
+            ("days_to_deadline", "Дней до окончания заявок", 21),
+            ("auction_date", "Дата торгов", 18),
             ("status", "Статус", 22),
             ("url", "Источник", 42),
         ]
         obligation_columns = []
         numeric_keys = {
             "land_area_sqm", "building_area_sqm", "krt_area_ha", "total_gfa_sqm",
-            "housing_gfa_sqm", "price", "score",
+            "housing_gfa_sqm", "price", "score", "days_to_deadline",
         }
     def number(value: Any) -> float | int | None:
         if value in (None, ""):
@@ -237,6 +389,7 @@ def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
         "krt_area_ha": '0.00', "total_gfa_sqm": '#,##0', "housing_gfa_sqm": '#,##0',
         "nonresidential_gfa_sqm": '#,##0', "business_gfa_sqm": '#,##0',
         "jobs": '#,##0', "price": '#,##0" ₽"', "score": '0',
+        "days_to_deadline": '0',
         "saleable_sqm": '#,##0', "entry_capacity_rub_per_sqm": '#,##0" ₽/м²"',
         "entry_capacity_mln": '#,##0.0" млн ₽"', "project_llcr_x": '0.00"x"',
         "weakest_phase_llcr_x": '0.00"x"', "margin_pct": '0.0"%"',
@@ -258,6 +411,17 @@ def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
                 areas = export_areas(row)
                 row["land_area_sqm"] = areas.land_area_sqm
                 row["building_area_sqm"] = areas.building_area_sqm
+                if not row.get("cadastre"):
+                    row["cadastre"] = ", ".join(cadastral_numbers(str(row.get("name") or "")))
+                row["address"] = _export_address(row)
+                row["district"] = _export_district(row, row["address"])
+                row["okrug"] = _export_okrug(row, row["district"], str(row.get("cadastre") or ""))
+                if str(row.get("type") or "").strip().upper() == "КРТ" and not row.get("krt_area_ha"):
+                    area_sqm = number(row.get("land_area_sqm"))
+                    if area_sqm is None:
+                        area_sqm = parse_hectares_sqm(str(row.get("name") or ""))
+                    row["krt_area_ha"] = (area_sqm / 10_000) if area_sqm is not None else ""
+                row["days_to_deadline"] = _days_to_application_deadline(row)
             values = [
                 number(row.get(key)) if key in numeric_keys else (row.get(key) or "")
                 for key in keys
@@ -278,7 +442,8 @@ def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
             ws.column_dimensions[get_column_letter(index)].width = width
         wrap_columns = {
             index for index, (key, _, _) in enumerate(sheet_columns, start=1)
-            if key in {"name", "address", "cadastre", "status", "traffic_light", "url"}
+            if key in {"name", "address", "cadastre", "status", "traffic_light", "url",
+                       "application_start", "application_deadline", "auction_date"}
         }
         numeric_columns = {
             index for index, (key, _, _) in enumerate(sheet_columns, start=1)
@@ -295,11 +460,25 @@ def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
                     for item in cells:
                         item.number_format = formats[key]
         url_column = keys.index("url") + 1
+        address_column = keys.index("address") + 1 if "address" in keys else None
+        cadastre_column = keys.index("cadastre") + 1 if "cadastre" in keys else None
         for row_number in range(2, ws.max_row + 1):
             cell = ws.cell(row_number, url_column)
             if cell.value:
                 cell.hyperlink = str(cell.value)
                 cell.style = "Hyperlink"
+            if address_column:
+                address_cell = ws.cell(row_number, address_column)
+                href = _yandex_maps_href(str(address_cell.value or ""))
+                if href:
+                    address_cell.hyperlink = href
+                    address_cell.style = "Hyperlink"
+            if cadastre_column:
+                cadastre_cell = ws.cell(row_number, cadastre_column)
+                href = _nspd_href(str(cadastre_cell.value or ""))
+                if href:
+                    cadastre_cell.hyperlink = href
+                    cadastre_cell.style = "Hyperlink"
         if ws.max_row >= 2:
             table = Table(displayName=table_name, ref=f"A1:{last_column}{ws.max_row}")
             table.tableStyleInfo = TableStyleInfo(

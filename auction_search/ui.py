@@ -156,7 +156,13 @@ __DEVELOPAID_CONTOUR__
   <div class="filters" id="auctionFilters">
     <select id="source"><option value="all">Все официальные источники</option><option value="investmoscow">Торги Москвы → ЭТП</option><option value="lot_online">РАД / Lot-online</option><option value="roseltorg">Росэлторг</option><option value="torgi_gov">ГИС Торги</option><option value="etp_gpb">ЭТП ГПБ</option><option value="etp_rf">ЭТП РФ</option><option value="sberbank_ast">Сбербанк-АСТ</option><option value="nistp">НИС</option></select>
     <select id="origin" title="Городские торги и банкротные — разные рынки: у города цена не снижается, у банкротного лота она ползёт от начальной к минимальной по графику"><option value="all">Все торги</option><option value="city">Городские</option><option value="bankruptcy">Банкротные</option><option value="seized">Арест и ИП</option><option value="other">Прочие</option></select>
-    <select id="kind"><option value="all">Все типы</option><option value="land">— Земля</option><option value="building">— Объекты</option><option value="krt">КРТ</option><option value="land_sale">Продажа земли</option><option value="land_lease">Аренда земли</option><option value="property_complex">ЗИК</option><option value="equity_stake">Доля в юрлице</option><option value="unfinished">Незавершёнка</option></select>
+    <div class="multi" id="auctionKindBox">
+      <button type="button" class="multi-toggle" id="auctionKindToggle" aria-haspopup="true" aria-expanded="false" aria-controls="auctionKindMenu">Все типы</button>
+      <div class="multi-menu hidden" id="auctionKindMenu">
+        <div class="multi-head"><span>Выберите типы</span><button type="button" class="multi-clear" id="auctionKindClear">Сбросить</button></div>
+        <div class="multi-options" id="auctionKindOptions"></div>
+      </div>
+    </div>
     <select id="noise"><option value="0">Интересные · данные заполнены</option><option value="1">Показать неполные и шум</option></select>
     <input id="search" placeholder="Адрес / кадастр / лот">
     <button id="refresh" class="primary">Обновить</button><button id="auctionExport">Выгрузить Excel</button>
@@ -195,8 +201,13 @@ __DEVELOPAID_PLATO_DRAWER__
 __DEVELOPAID_LAND_MAP_DIALOG__
 <script>
 __DEVELOPAID_LAND_MAP_KIT__
-const state={lots:[],filtered:[],families:[],openFamilies:new Set(),coverage:[],quality:{},selected:null,ingested:null,krt:[],krtFiltered:[],krtOkrugs:new Set(),krtModels:{},krtScreening:{},krtReports:{},krtRequirements:{},krtNew:0,krtNewDays:30,krtPolls:0,krtTimer:null,krtRank:{},krtRules:0,krtRankProgress:null,krtRankTimer:null,krtPress:{},krtCards:{},krtTenderLinks:{},krtOrderBySite:{},krtTenders:{},krtOrders:[],krtOrphanLots:[],krtSort:{key:'name',dir:1},krtHidden:{small:0,unknown:0},krtPick:{stage:new Set(),entry:new Set(),renovation:new Set(),purpose:new Set()},egrnStore:null};
+const state={lots:[],filtered:[],families:[],openFamilies:new Set(),coverage:[],quality:{},selected:null,ingested:null,auctionKinds:new Set(),krt:[],krtFiltered:[],krtOkrugs:new Set(),krtModels:{},krtScreening:{},krtReports:{},krtRequirements:{},krtNew:0,krtNewDays:30,krtPolls:0,krtTimer:null,krtRank:{},krtRules:0,krtRankProgress:null,krtRankTimer:null,krtPress:{},krtCards:{},krtTenderLinks:{},krtOrderBySite:{},krtTenders:{},krtOrders:[],krtOrphanLots:[],krtSort:{key:'name',dir:1},krtHidden:{small:0,unknown:0},krtPick:{stage:new Set(),entry:new Set(),renovation:new Set(),purpose:new Set()},egrnStore:null};
 const KRT_OKRUGS=['ЦАО','САО','СВАО','ВАО','ЮВАО','ЮАО','ЮЗАО','ЗАО','СЗАО','НАО','ТАО','ЗелАО'];
+const AUCTION_KIND_OPTIONS=[
+ ['land','— Земля'],['building','— Объекты'],['krt','КРТ'],
+ ['land_sale','Продажа земли'],['land_lease','Аренда земли'],['property_complex','ЗИК'],
+ ['equity_stake','Доля в юрлице'],['unfinished','Незавершёнка']
+];
 const $=id=>document.getElementById(id);
 const KRT_EARLY_ONLY=new URLSearchParams(location.search).get('early')==='1';
 // Ноль и «цены нет» — разные вещи. Number(null) равен нулю, и лот без
@@ -244,8 +255,37 @@ function lotMatchesKind(lot,wanted){
  if(wanted==='land'||wanted==='building')return (lot.subject||'')===wanted;
  return lot.lot_kind===wanted;
 }
-function filter(){const q=$('search').value.trim().toLowerCase(),k=$('kind').value,o=$('origin').value;
- state.filtered=state.lots.filter(l=>lotMatchesKind(l,k)
+function updateAuctionKindLabel(){
+ const picked=AUCTION_KIND_OPTIONS.filter(([value])=>state.auctionKinds.has(value));
+ const button=$('auctionKindToggle'),labels=picked.map(([,label])=>label.replace(/^—\s*/,''));
+ button.textContent=!labels.length?'Все типы':labels.length<=3?labels.join(', '):`${labels.slice(0,2).join(', ')} +${labels.length-2}`;
+ button.title=labels.length?labels.join(', '):'Все типы';
+ $('auctionKindClear').disabled=!labels.length;
+}
+function populateAuctionKinds(){
+ const options=$('auctionKindOptions');options.innerHTML='';
+ AUCTION_KIND_OPTIONS.forEach(([value,name])=>{
+  const label=document.createElement('label'),input=document.createElement('input'),text=document.createElement('span');
+  label.className='multi-option';input.type='checkbox';input.value=value;input.checked=state.auctionKinds.has(value);text.textContent=name;
+  input.onchange=()=>{input.checked?state.auctionKinds.add(value):state.auctionKinds.delete(value);updateAuctionKindLabel();filter()};
+  label.append(input,text);options.appendChild(label);
+ });
+ updateAuctionKindLabel();
+}
+function closeAuctionMenus(){
+ document.querySelectorAll('#auctionFilters .multi-menu').forEach(menu=>menu.classList.add('hidden'));
+ document.querySelectorAll('#auctionFilters .multi-toggle').forEach(button=>button.setAttribute('aria-expanded','false'));
+}
+function bindAuctionKindFilter(){
+ const button=$('auctionKindToggle'),menu=$('auctionKindMenu'),clear=$('auctionKindClear');
+ button.onclick=event=>{event.stopPropagation();const open=menu.classList.contains('hidden');closeAuctionMenus();menu.classList.toggle('hidden',!open);button.setAttribute('aria-expanded',String(open))};
+ menu.onclick=event=>event.stopPropagation();
+ clear.onclick=()=>{state.auctionKinds.clear();$('auctionKindOptions').querySelectorAll('input').forEach(x=>x.checked=false);updateAuctionKindLabel();filter()};
+ document.addEventListener('click',closeAuctionMenus);
+ document.addEventListener('keydown',event=>{if(event.key==='Escape'){closeAuctionMenus();button.focus()}});
+}
+function filter(){const q=$('search').value.trim().toLowerCase(),kinds=[...state.auctionKinds],o=$('origin').value;
+ state.filtered=state.lots.filter(l=>(!kinds.length||kinds.some(k=>lotMatchesKind(l,k)))
   &&(o==='all'||(l.origin||'other')===o)
   &&(!q||JSON.stringify([l.title,l.address,l.cadastral_numbers,l.source?.external_lot_id]).toLowerCase().includes(q)));
  state.families=lotFamilies(state.filtered);
@@ -509,7 +549,7 @@ function renderRows(){
  renderFoldNote();renderAskContext();
 }
 function stats(){const a=state.filtered;$('sCount').textContent=a.length;$('sKrt').textContent=a.filter(x=>x.lot_kind==='krt').length;$('sLand').textContent=a.filter(x=>['land_sale','land_lease'].includes(x.lot_kind)).length;const ds=a.map(x=>new Date(x.application_deadline_iso||'')).filter(x=>!Number.isNaN(x.getTime())).sort((a,b)=>a-b);$('sDeadline').textContent=ds.length?moscowFormat({day:'2-digit',month:'2-digit'}).format(ds[0]):'—'}
-async function exportRows(rows,kind){if(!rows.length){alert('В текущей выборке нет строк для выгрузки.');return}const payload=rows.map(r=>{const rank=kind==='krt'?krtFreshRank(r.slug):{},intent=kind==='krt'?(krtIntent(r)||{}):{},score=kind==='krt'?krtScore(r):lotScore(r),duties=krtRequirementTotals(state.krtRequirements[r.slug]||rank.requirements||{});return{section:kind==='krt'?'КРТ':'Торги',name:r.name||r.title||'',okrug:r.okrug||'',district:r.district||'',address:r.address||'',cadastre:(r.cadastral_numbers||[]).join(', '),type:kind==='krt'?'КРТ':kindLabel(r.lot_kind),land_area_sqm:r.land_area_sqm??'',building_area_sqm:r.building_area_sqm??'',krt_area_ha:kind==='krt'?(r.area_ha??''):'',total_gfa_sqm:r.total_gfa_sqm??'',housing_gfa_sqm:r.housing_gfa_sqm??'',nonresidential_gfa_sqm:r.nonresidential_gfa_sqm??'',business_gfa_sqm:r.business_gfa_sqm??'',jobs:r.jobs??'',price:r.current_price_rub??r.start_price_rub??'',score:score.score,traffic_light:rank.traffic_light?.label||score.label||'',saleable_sqm:rank.saleable_sqm??'',entry_capacity_rub_per_sqm:rank.entry_capacity_rub_per_sqm??'',entry_capacity_mln:rank.entry_capacity_mln??'',project_llcr_x:rank.project_llcr_x??'',weakest_phase_llcr_x:rank.weakest_phase_llcr_x??'',margin_pct:rank.margin_pct??'',surrounding_price_rub_sqm:rank.surrounding_price_rub_sqm??'',surrounding_sales_units_per_month:rank.surrounding_sales_units_per_month??'',demolition_objects:duties.demolition.count||'',demolition_area_sqm:duties.demolition.area||'',conditional_objects:duties.conditional.count||'',conditional_area_sqm:duties.conditional.area||'',reconstruction_objects:duties.reconstruction.count||'',reconstruction_area_sqm:duties.reconstruction.area||'',preservation_objects:duties.preservation.count||'',preservation_area_sqm:duties.preservation.area||'',resettlement_mentions:duties.resettlement||'',status:r.status||'',krt_kind:kind==='krt'?(intent.kind||''):'',krt_city_needs:kind==='krt'?krtIntentCell(intent,'city_needs'):'',krt_operator:kind==='krt'?krtIntentCell(intent,'operator'):'',url:r.source?.lot_url||r.url||''}});const res=await fetch('/auctions/export.xlsx',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rows:payload,kind})});if(!res.ok)throw new Error('Не удалось подготовить Excel');const blob=await res.blob(),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=kind==='krt'?'developaid-krt.xlsx':'developaid-auctions.xlsx';a.click();URL.revokeObjectURL(a.href)}
+async function exportRows(rows,kind){if(!rows.length){alert('В текущей выборке нет строк для выгрузки.');return}const payload=rows.map(r=>{const rank=kind==='krt'?krtFreshRank(r.slug):{},intent=kind==='krt'?(krtIntent(r)||{}):{},score=kind==='krt'?krtScore(r):lotScore(r),duties=krtRequirementTotals(state.krtRequirements[r.slug]||rank.requirements||{});return{section:kind==='krt'?'КРТ':'Торги',name:r.name||r.title||'',okrug:r.okrug||'',district:r.district||'',address:r.address||'',cadastre:(r.cadastral_numbers||[]).join(', '),type:kind==='krt'?'КРТ':kindLabel(r.lot_kind),land_area_sqm:r.land_area_sqm??'',building_area_sqm:r.building_area_sqm??'',krt_area_ha:kind==='krt'?(r.area_ha??''):((r.lot_kind==='krt'&&Number.isFinite(Number(r.land_area_sqm)))?Number(r.land_area_sqm)/10000:(r.krt_area_ha??'')),total_gfa_sqm:r.total_gfa_sqm??'',housing_gfa_sqm:r.housing_gfa_sqm??'',nonresidential_gfa_sqm:r.nonresidential_gfa_sqm??'',business_gfa_sqm:r.business_gfa_sqm??'',jobs:r.jobs??'',price:r.current_price_rub??r.start_price_rub??'',score:score.score,traffic_light:rank.traffic_light?.label||score.label||'',saleable_sqm:rank.saleable_sqm??'',entry_capacity_rub_per_sqm:rank.entry_capacity_rub_per_sqm??'',entry_capacity_mln:rank.entry_capacity_mln??'',project_llcr_x:rank.project_llcr_x??'',weakest_phase_llcr_x:rank.weakest_phase_llcr_x??'',margin_pct:rank.margin_pct??'',surrounding_price_rub_sqm:rank.surrounding_price_rub_sqm??'',surrounding_sales_units_per_month:rank.surrounding_sales_units_per_month??'',demolition_objects:duties.demolition.count||'',demolition_area_sqm:duties.demolition.area||'',conditional_objects:duties.conditional.count||'',conditional_area_sqm:duties.conditional.area||'',reconstruction_objects:duties.reconstruction.count||'',reconstruction_area_sqm:duties.reconstruction.area||'',preservation_objects:duties.preservation.count||'',preservation_area_sqm:duties.preservation.area||'',resettlement_mentions:duties.resettlement||'',application_start:r.application_start||'',application_deadline:r.application_deadline||'',application_deadline_iso:r.application_deadline_iso||'',auction_date:r.auction_date||'',status:r.status||'',krt_kind:kind==='krt'?(intent.kind||''):'',krt_city_needs:kind==='krt'?krtIntentCell(intent,'city_needs'):'',krt_operator:kind==='krt'?krtIntentCell(intent,'operator'):'',url:r.source?.lot_url||r.url||''}});const res=await fetch('/auctions/export.xlsx',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rows:payload,kind})});if(!res.ok)throw new Error('Не удалось подготовить Excel');const blob=await res.blob(),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=kind==='krt'?'developaid-krt.xlsx':'developaid-auctions.xlsx';a.click();URL.revokeObjectURL(a.href)}
 function coverageLine(r){
  // Каждый источник говорит за себя. Числа у читателей разной формы: у
  // ИнвестМосквы карточки города и подтверждённые лоты, у остальных страницы,
@@ -4381,7 +4421,7 @@ if(KRT_EARLY_ONLY) switchTab(true);
   if(found){switchTab(true);selectKrt(found)}
  },delay));
 })();
-$('refresh').onclick=discover;$('search').oninput=filter;$('kind').onchange=filter;$('origin').onchange=filter;$('source').onchange=discover;$('noise').onchange=discover;
+populateAuctionKinds();bindAuctionKindFilter();$('refresh').onclick=discover;$('search').oninput=filter;$('origin').onchange=filter;$('source').onchange=discover;$('noise').onchange=discover;
 $('auctionExport').onclick=()=>exportRows(state.filtered||[],'auctions');$('krtExport').onclick=()=>exportRows(state.krtFiltered||[],'krt');
 </script>
 </body></html>'''
