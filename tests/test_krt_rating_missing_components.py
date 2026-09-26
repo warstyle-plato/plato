@@ -14,6 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from auction_search import api  # noqa: E402
+from auction_search import krt_investment_score  # noqa: E402
 from market_search.market_reference import MoscowMarket  # noqa: E402
 
 
@@ -56,3 +57,46 @@ def test_moscow_absorption_benchmark_ignores_zero_months(tmp_path: Path) -> None
 def test_card_exposes_the_real_burden_failure_reason() -> None:
     source = Path(api.__file__).read_text(encoding="utf-8")
     assert 'str(row.get("burden_reason") or "")' in source
+
+
+
+def test_imputed_component_keeps_numeric_rating_but_not_full_coverage() -> None:
+    got = krt_investment_score.score(
+        status_kind="planned",
+        llcr=1.25,
+        market_rub_sqm=650_000,
+        target_rub_sqm=600_000,
+        local_sqm_month=100,
+        benchmark_sqm_month=100,
+        burden_pct=10,
+        observed_components={"llcr", "price", "absorption"},
+        imputed_components={"burden": "медиана нагрузки КРТ"},
+    )
+
+    assert got["display_score"] is not None
+    assert got["coverage_pct"] == 75
+    assert got["missing"] == []
+    assert got["imputed"] == [
+        {"component": "burden", "source": "медиана нагрузки КРТ"}
+    ]
+    assert got["components"]["burden"]["estimated"] is True
+
+
+def test_running_site_stays_unscored_even_with_imputation() -> None:
+    got = krt_investment_score.score(
+        status_kind="running",
+        llcr=1.25,
+        market_rub_sqm=650_000,
+        target_rub_sqm=600_000,
+        local_sqm_month=100,
+        benchmark_sqm_month=100,
+        burden_pct=10,
+        observed_components={"llcr", "price"},
+        imputed_components={
+            "absorption": "медиана Москвы",
+            "burden": "медиана нагрузки КРТ",
+        },
+    )
+
+    assert got["display_score"] is None
+    assert got["coverage_pct"] == 50
