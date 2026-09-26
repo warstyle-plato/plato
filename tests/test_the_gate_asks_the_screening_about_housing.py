@@ -80,7 +80,7 @@ def core():
 _REPORT = {
     "analysis": {"site": {"segment": "Бизнес", "price_per_sqm": 450_000,
                           "sold_lot_avg": 58, "units_per_month": 25}},
-    "price_hint": {},
+    "price_hint": {"price_per_sqm": 450_000, "basis": "test fresh comparable median"},
     "subject": {"query": "krt:decision:1"},
 }
 
@@ -160,7 +160,7 @@ def test_a_site_with_named_flats_reaches_the_model(monkeypatch, core) -> None:
 
     flats = rows.get("decision:400000001") or {}
     assert flats.get("available") is True, flats
-    assert "krt:decision:400000001" in asked, asked
+    assert "Москва, Рубцовская наб., влд. 3" in asked, asked
     assert flats.get("project_llcr_x") is not None, flats
     # Есть что продавать: жилая СПП восстановлена из квартир, а строка
     # рейтинга несёт продаваемые метры — иначе «посчитано» было бы про ноль.
@@ -171,4 +171,4 @@ def test_a_site_with_named_flats_reaches_the_model(monkeypatch, core) -> None:
     other = rows.get("decision:400000002") or {}
     assert other.get("available") is False, other
     assert "нежилую площадку модель пока не считает" in str(other.get("reason")), other
-    assert "krt:decision:400000002" not in asked, "нежилая всё-таки сходила к рынку"
+    assert not any("Нежилая" in value for value in asked), "нежилая всё-таки сходила к рынку"

@@ -166,7 +166,9 @@ def test_the_run_puts_the_announced_price_into_the_row(monkeypatch) -> None:
             "total_gfa_sqm": 200_000.0, "housing_gfa_sqm": 150_000.0}
     report = {"analysis": {"site": {"segment": "Бизнес", "price_per_sqm": 450_000,
                                     "sold_lot_avg": 58, "units_per_month": 25}},
-              "price_hint": {}, "subject": {"query": "krt:varshavskoe"}}
+              "price_hint": {"price_per_sqm": 450_000, "basis": "peers",
+                             "sample": 3, "segment": "бизнес"},
+              "subject": {"query": "krt:varshavskoe"}}
 
     app = fastapi.FastAPI()
     app.state.market_discovery_service = SimpleNamespace(
