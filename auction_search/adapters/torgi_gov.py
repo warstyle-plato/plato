@@ -498,6 +498,7 @@ def to_lot(card: dict[str, Any], fetched_at: str) -> AuctionLot | None:
         permitted_use=attribute(card, ATTR_PERMITTED_USE),
         procedure_type=" · ".join(part for part in (bidd_name, form_name) if part) or None,
         current_price_rub=price,
+        application_start=_moment(card.get("biddStartTime")),
         application_deadline=_moment(card.get("biddEndTime")),
         status=_text(card.get("lotStatus")) or None,
         relevance_flags=flags,
