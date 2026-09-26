@@ -645,8 +645,13 @@ class KrtRanking:
 
     def due(self, now: float | None = None) -> bool:
         """Пора ли считать: кэша нет или он старше последнего срока."""
+        # Срок меряется ПОЛНЫМ прогоном по расписанию, а не последней записью
+        # файла. Файл пишут и карточка (`remember`), и фоновые пачки по четыре
+        # площадки — по `updated_at` одно открытие карточки в воскресенье после
+        # трёх часов отменяло недельный прогон, а фон каждую минуту отодвигал
+        # его навсегда.
         cached = load_json(self.path) or {}
-        at = cached.get("updated_at")
+        at = cached.get("catalogue_run_at")
         if not at:
             return True
         try:
@@ -1128,11 +1133,7 @@ class KrtRanking:
             row = dict(stored.get(clean) or {"slug": clean})
             row.update(facts)
             stored[clean] = row
-            save_json(self.path, {
-                "schema_version": CACHE_SCHEMA_VERSION,
-                "updated_at": int(time.time()),
-                "rows": sorted(stored.values(), key=_rank_key),
-            })
+            self._save(stored.values())
 
     def progress(self) -> dict[str, Any]:
         with self._lock:
@@ -1191,7 +1192,9 @@ class KrtRanking:
                 "stop_reason": "", "scheduled": bool(scheduled),
             }
         thread = threading.Thread(
-            target=self._run, args=(projects, screen), name="krt-ranking", daemon=True)
+            target=self._run, args=(projects, screen),
+            kwargs={"catalogue_run": bool(scheduled)},
+            name="krt-ranking", daemon=True)
         self._thread = thread
         thread.start()
         return True
@@ -1200,11 +1203,16 @@ class KrtRanking:
         self,
         projects: list[dict[str, Any]],
         screen: Callable[[dict[str, Any]], dict[str, Any]],
+        *,
+        catalogue_run: bool = False,
     ) -> None:
-        # Прежде посчитанное не выбрасывается до конца прогона: площадка,
-        # которую в этот раз не удалось посчитать, остаётся со своим прошлым
-        # баллом и датой, а не исчезает из списка.
-        rows = {str(row.get("slug") or ""): row for row in self.rows()}
+        # Прежде посчитанное не выбрасывается: площадка, которую в этот раз не
+        # удалось посчитать, остаётся со своим прошлым баллом и датой. Решает
+        # это `merge_row` под замком записи — по строке, которая лежит на диске
+        # В МОМЕНТ записи, а не по снимку начала прогона. Снимок прогон держал
+        # часами и писал целиком после каждой площадки: всё, что за это время
+        # записала карточка (`remember` — общий рейтинг, нагрузка), молча
+        # откатывалось к старому.
         try:
             for index, project in enumerate(projects, start=1):
                 name = str(project.get("name") or project.get("slug") or "")
@@ -1219,10 +1227,8 @@ class KrtRanking:
                     screening = {"available": False, "reason": f"Расчёт не выполнен: {exc}"}
                     with self._lock:
                         self._progress["failed"] += 1
-                row = keep_computed(rows.get(str(project.get("slug") or "")),
-                                    score_row(project, screening))
+                row = score_row(project, screening)
                 if row["slug"]:
-                    rows[row["slug"]] = row
                     # Отчёт кладётся целиком, даже когда посчитать не вышло:
                     # «не посчитали и вот почему» — тоже ответ, и карточка
                     # должна показывать его, а не пустоту с кнопкой. Но если
@@ -1233,13 +1239,16 @@ class KrtRanking:
                         "market": screening.pop("market_report", None),
                         "screening": screening,
                     })
+                    self._persist({row["slug"]: row})
                 with self._lock:
                     self._progress["done"] = index
-                self._persist(rows)
                 self.heartbeat()
                 _trim_process_memory()
         finally:
-            self._persist(rows)
+            # Полный прогон по расписанию отмечается своим полем: по нему
+            # `due()` решает, когда следующий. Пачка фона или пересчёт одной
+            # площадки срок не сдвигают.
+            self._persist({}, catalogue_run=catalogue_run)
             # Замок отпускается ровно здесь: держать его до протухания значило
             # бы, что после первого же прогона неделя превращается в шесть часов
             # ожидания следующего.
@@ -1316,7 +1325,8 @@ class KrtRanking:
                 merged[slug] = merge_row(merged.get(slug), row)
         return merged
 
-    def _persist(self, rows: dict[str, dict[str, Any]]) -> None:
+    def _persist(self, rows: dict[str, dict[str, Any]], *,
+                 catalogue_run: bool = False) -> None:
         """Записать свой взгляд, не потеряв чужого.
 
         Прежде здесь стоял снимок памяти целиком: всё, что появилось в файле
@@ -1324,11 +1334,30 @@ class KrtRanking:
         """
         with self._write_lock():
             merged = self._merged_with_stored(rows)
-            save_json(self.path, {
-                "schema_version": CACHE_SCHEMA_VERSION,
-                "updated_at": int(time.time()),
-                "rows": sorted(merged.values(), key=_rank_key),
-            })
+            self._save(merged.values(), catalogue_run=catalogue_run)
+
+    def _save(self, rows: Any, *, catalogue_run: bool = False) -> None:
+        """Одна запись файла рейтинга. Зовётся только под `_write_lock`.
+
+        Отметка полного прогона переносится из лежащего файла: её ставит
+        только сам полный прогон.
+        """
+        now = int(time.time())
+        stored = load_json(self.path) or {}
+        payload: dict[str, Any] = {
+            "schema_version": CACHE_SCHEMA_VERSION,
+            "updated_at": now,
+            "rows": sorted(rows, key=_rank_key),
+        }
+        previous_run = (
+            stored.get("catalogue_run_at")
+            if stored.get("schema_version") == CACHE_SCHEMA_VERSION else None
+        )
+        if catalogue_run:
+            payload["catalogue_run_at"] = now
+        elif previous_run:
+            payload["catalogue_run_at"] = previous_run
+        save_json(self.path, payload)
 
 
 def _rank_key(row: dict[str, Any]) -> tuple[int, float, str]:

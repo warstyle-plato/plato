@@ -4397,7 +4397,7 @@ window.addEventListener('message',e=>{
   renderKrt();
   return;
  }
- if(d.type!=='developaid-krt-card-action'&&d.type!=='developaid-krt-prototype-action')return;
+ if(d.type!=='developaid-krt-card-action')return;
  const x=state.selectedKrt;
  if(!x||String(x.slug||'')!==String(d.slug||''))return;
  if(d.action==='handoff'){handoffKrt(x);return}

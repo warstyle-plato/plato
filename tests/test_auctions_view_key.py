@@ -156,3 +156,54 @@ def test_install_does_not_break_an_already_started_fastapi_app(monkeypatch):
     # add_middleware после этого — именно это ломало независимые тесты ядра.
     install(app)
     assert client.get("/ping").status_code == 200
+
+
+def _viewer(monkeypatch):
+    _keys(monkeypatch)
+    client = _without_core(monkeypatch)
+    entered = client.post("/auctions/login", data={"key": VIEW_KEY},
+                          follow_redirects=False)
+    assert entered.status_code == 303
+    return client
+
+
+def test_a_command_flag_is_read_like_fastapi_reads_bool(monkeypatch):
+    """`?refresh=t` FastAPI читает как True; гейт обязан читать так же."""
+    client = _viewer(monkeypatch)
+    for name, value in (("refresh", "t"), ("refresh", "y"), ("refresh", "True"),
+                        ("force", "Y"), ("rebuild", "on"), ("ensure_model", "1")):
+        answer = client.get("/auctions/krt/map", params={name: value})
+        assert answer.status_code == 403, (name, value, answer.status_code)
+        assert name in answer.json()["detail"]
+    # Ложные значения — чистое чтение: гейт пропускает дальше маршрута.
+    for value in ("", "0", "false", "f", "n", "no", "off"):
+        assert view_access.command_flag({"refresh": value}) == ""
+
+
+def test_the_view_key_opens_only_listed_routes(monkeypatch):
+    """Новый маршрут закрыт для ключа просмотра, пока его не внесли в список."""
+    client = _viewer(monkeypatch)
+    for path in (
+        "/auctions/krt/some-site/open-sources",      # платный поиск и запись
+        "/auctions/krt/api-probe/browser",           # браузер по чужому url=
+        "/auctions/roseltorg/browser",
+        "/auctions/fedresurs/browser",
+        "/auctions/etp/probe/browser",
+        "/auctions/krt/some-site/report",
+        "/auctions/krt/some-site/market",
+        "/auctions/egrn/archive",
+    ):
+        answer = client.get(path, params={"url": "http://169.254.169.254/"})
+        assert answer.status_code == 403, (path, answer.status_code)
+        assert "ключом кабинета" in answer.json()["detail"]
+    for path in ("/auctions/krt/ranking/refresh", "/auctions/krt/press/run",
+                 "/auctions/ingest", "/auctions/krt/investment-rating/target"):
+        assert client.post(path).status_code == 403, path
+
+
+def test_the_view_key_may_export_what_it_sees(monkeypatch):
+    """Выгрузка xlsx ничего не пишет: это тот же просмотр, файлом."""
+    client = _viewer(monkeypatch)
+    answer = client.post("/auctions/export.xlsx", json={"rows": [], "kind": "krt"})
+    assert answer.status_code == 200, answer.text
+    assert answer.content[:2] == b"PK"
