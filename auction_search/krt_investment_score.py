@@ -134,7 +134,7 @@ def _component(
 def methodology() -> dict[str, Any]:
     """Machine-readable methodology from issue #485."""
     return {
-        "version": "issue-485-krt-rating-4x100-v2",
+        "version": "issue-485-krt-rating-4x100-v3",
         "issue": 485,
         "price_target_default_rub_sqm": DEFAULT_PRICE_TARGET_RUB_SQM,
         "target_llcr_x": TARGET_LLCR,
@@ -148,7 +148,9 @@ def methodology() -> dict[str, Any]:
         "burden_pct_stops": BURDEN_PCT_STOPS,
         "rules": {
             "running": "visible_unscored",
-            "missing": "no_total_score_no_renormalisation",
+            "missing": "median_imputation_when_available_else_no_total_score",
+            "coverage": "share_of_components_based_on_direct_project_or_local_market_facts",
+            "imputation": "missing inputs may use transparent Moscow/class or KRT-catalogue medians",
             "coverage_step_pct": 25,
             "buyout": "non_moscow_cadastral_value_land_and_buildings_no_duplicates",
             "moscow_property": "zero_buyout",
@@ -160,9 +162,10 @@ def methodology() -> dict[str, Any]:
         },
         "explanations": {
             "coverage": (
-                "Каждый известный блок даёт 25 п.п. coverage. При 25/50/75% "
-                "известные оценки показываются, но итоговый рейтинг остаётся «—»: "
-                "три известных блока нельзя перенормировать в 100."
+                "Каждый блок, посчитанный по данным самой площадки/локального рынка, "
+                "даёт 25 п.п. coverage. Если входа нет, каталог может подставить "
+                "прозрачно подписанную медиану Москвы/класса или каталога КРТ. "
+                "Рейтинг при этом остаётся числом, а coverage показывает долю факта."
             ),
             "running": (
                 "Площадка со статусом «В реализации» остаётся в каталоге и фильтрах, "
@@ -203,10 +206,18 @@ def score(
     entry_capacity_mln: Any = None,
     sources: dict[str, str] | None = None,
     missing_reasons: dict[str, str] | None = None,
+    observed_components: set[str] | list[str] | tuple[str, ...] | None = None,
+    imputed_components: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Four equal 0..100 components; any missing component makes total null."""
+    """Four equal 0..100 components.
+
+    The scorer remains strict when a value is genuinely unresolved. The
+    catalogue may pass median-imputed effective inputs plus metadata so the
+    UI shows a useful number without pretending an estimate is measured fact.
+    """
     sources = sources or {}
     missing_reasons = missing_reasons or {}
+    imputed_components = dict(imputed_components or {})
 
     llcr_n = _number(llcr)
     market = _number(market_rub_sqm)
@@ -269,9 +280,16 @@ def score(
         ),
     }
 
-    known = [item for item in components.values() if item["score"] is not None]
-    coverage = len(known) * 25
+    resolved = [key for key, item in components.items() if item["score"] is not None]
     missing = [key for key, item in components.items() if item["score"] is None]
+    if observed_components is None:
+        observed = set(resolved)
+    else:
+        observed = {
+            str(key) for key in observed_components
+            if str(key) in components and components[str(key)]["score"] is not None
+        }
+    coverage = len(observed) * 25
     rankable = str(status_kind or "").strip().lower() != "running"
     total = None
     reason = ""
@@ -279,7 +297,7 @@ def score(
     if not rankable:
         reason = "В реализации · без балла"
     elif missing:
-        reason = "Не хватает данных: " + ", ".join(missing)
+        reason = "Не хватает данных даже после подстановок: " + ", ".join(missing)
     else:
         values = [float(components[k]["score"]) for k in ("llcr", "price", "absorption", "burden")]
         total = sum(values) / 4.0
@@ -287,6 +305,18 @@ def score(
             f"({values[0]:.1f} + {values[1]:.1f} + {values[2]:.1f} + {values[3]:.1f}) "
             f"/ 4 = {total:.1f} → {round(total):.0f}"
         )
+        used = [key for key in ("llcr", "price", "absorption", "burden")
+                if key in imputed_components]
+        if used:
+            reason = "Оценка с медианной подстановкой: " + ", ".join(used)
+
+    for key, note in imputed_components.items():
+        if key in components:
+            components[key]["estimated"] = True
+            components[key]["estimate_source"] = str(note)
+            components[key]["source"] = str(note) or components[key].get("source", "")
+    for key in components:
+        components[key].setdefault("estimated", False)
 
     return {
         "score": None if total is None else round(total, 2),
@@ -295,6 +325,11 @@ def score(
         "rankable": rankable,
         "reason": reason,
         "missing": missing,
+        "imputed": [
+            {"component": key, "source": str(imputed_components[key])}
+            for key in ("llcr", "price", "absorption", "burden")
+            if key in imputed_components
+        ],
         "components": components,
         "arithmetic": arithmetic,
         "price_target_rub_sqm": target,
