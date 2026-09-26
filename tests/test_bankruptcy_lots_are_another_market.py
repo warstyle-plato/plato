@@ -265,7 +265,7 @@ def test_the_page_can_filter_by_origin_and_subject() -> None:
     page = auctions_page()
     assert 'id="origin"' in page
     assert 'value="bankruptcy"' in page
-    assert 'value="land"' in page and 'value="building"' in page
+    assert "['land','— Земля']" in page and "['building','— Объекты']" in page
     assert "lotMatchesKind" in page
 
 
