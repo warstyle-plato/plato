@@ -288,7 +288,7 @@ function renderScore(sc){
  $('scoreKpi').textContent=sc.display_score===null||sc.display_score===undefined?'—':fmt(sc.display_score);
  const C=sc.components||{},order=['llcr','price','absorption','burden'];
  const m=sc.methodology||{};
- $('score').innerHTML='<div class="scorebig">'+(sc.display_score===null||sc.display_score===undefined?'—':fmt(sc.display_score))+'/100<small>'+esc(sc.reason||'инвестиционный рейтинг')+'</small></div><div class="source">Покрытие '+fmt(sc.coverage_pct)+'%</div><div class="components">'+order.map(k=>{const x=C[k]||{};return '<div class="component"><b>'+(x.score===null||x.score===undefined?'—':fmt(x.score,1))+'</b><span>'+esc(x.name||k)+'</span><div class="source">'+esc(ratingInput(k,x))+'</div><div class="source">'+esc(x.score===null||x.score===undefined?(x.missing_reason||'нет данных'):(x.formula||''))+'</div></div>'}).join('')+'</div>'
+ $('score').innerHTML='<div class="scorebig">'+(sc.display_score===null||sc.display_score===undefined?'—':fmt(sc.display_score))+'/100<small>'+esc(sc.reason||'инвестиционный рейтинг')+'</small></div><div class="source">Покрытие фактическими данными '+fmt(sc.coverage_pct)+'%'+((sc.imputed||[]).length?' · подстановок медианой '+(sc.imputed||[]).length:'')+'</div><div class="components">'+order.map(k=>{const x=C[k]||{};const estimate=x.estimated?'<div class="source warn">оценка: '+esc(x.estimate_source||x.source||'медианная подстановка')+'</div>':'';return '<div class="component"><b>'+(x.score===null||x.score===undefined?'—':fmt(x.score,1))+'</b><span>'+esc(x.name||k)+'</span><div class="source">'+esc(ratingInput(k,x))+'</div>'+estimate+'<div class="source">'+esc(x.score===null||x.score===undefined?(x.missing_reason||'нет данных'):(x.formula||''))+'</div></div>'}).join('')+'</div>'
   +'<div class="actionbar" style="margin-top:10px"><button type="button" id="ratingMethodBtn">Методика рейтинга</button></div>'
   +'<details id="ratingMethod"><summary>Границы и алгоритм расчёта</summary><div class="detailsbody">'
   +'<div class="metric"><span>Итог</span><b>(LLCR + цена + поглощение + нагрузка) / 4</b></div>'
@@ -296,7 +296,7 @@ function renderScore(sc){
   +'<div class="metric"><span>Цена / ориентир</span><b>70%→0 · 85%→50 · 100%+→100</b></div>'
   +'<div class="metric"><span>Поглощение / Москва</span><b>50%→0 · 70%→25 · 85%→50 · 100%→75 · 110%→90 · 120%+→100</b></div>'
   +'<div class="metric"><span>Нагрузка / ordinary CAPEX</span><b>0%→100 · 5%→90 · 10%→70 · 15%→45 · 20%→25 · 30%+→0</b></div>'
-  +'<div class="source">Между точками — линейная интерполяция. Missing-компонент не считается нулём: итоговый рейтинг отсутствует, coverage показывает полноту.</div>'
+  +'<div class="source">Между точками — линейная интерполяция. Если входа площадки нет, рейтинг не исчезает: используется явно подписанная медиана Москвы/класса или каталога КРТ. Coverage показывает долю фактических данных и не маскируется под 100%.</div>'
   +(sc.arithmetic?'<div class="notice"><b>Этот объект:</b> '+esc(sc.arithmetic)+'</div>':'')
   +'</div></details>';
  const mb=$('ratingMethodBtn'),md=$('ratingMethod');
@@ -304,7 +304,7 @@ function renderScore(sc){
  if(window.parent&&window.parent!==window){
   window.parent.postMessage({
    type:'developaid-krt-rating',slug:SLUG,
-   rating:{score:sc.score,display_score:sc.display_score,coverage_pct:sc.coverage_pct,rankable:sc.rankable,reason:sc.reason,missing:sc.missing||[],components:sc.components||{}}
+   rating:{score:sc.score,display_score:sc.display_score,coverage_pct:sc.coverage_pct,rankable:sc.rankable,reason:sc.reason,missing:sc.missing||[],imputed:sc.imputed||[],components:sc.components||{}}
   },location.origin);
  }
 }
