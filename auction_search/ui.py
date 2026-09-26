@@ -3049,6 +3049,10 @@ function closeKrtPrototype(){
  if(modal)modal.classList.add('hidden');
  if(frame)frame.src='about:blank';
  document.body.classList.remove('krt-modal-open');
+ // Карточка могла записать канонический рейтинг на сервер. Перечитываем
+ // общий ranking.json при закрытии, чтобы таблица не оставалась на снимке,
+ // который был загружен до открытия карточки.
+ loadKrtRanking();
 }
 function selectKrt(x){state.selectedKrt=x;const prototypeOpened=openKrtPrototype(x);const sc=krtScore(x),fit=sc.fit,cached=state.krtModels[x.slug],planned=String(x.status||'').toLowerCase().includes('планируем');
  // Карточка идёт тремя группами, и порядок назвал владелец (06.09.2026):
