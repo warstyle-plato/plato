@@ -1134,6 +1134,78 @@ def install(app: FastAPI) -> None:
         return state
 
 
+    def _rating_catalogue_medians() -> dict[str, dict[str, Any]]:
+        """Observed medians used only when one rating input is absent.
+
+        Never write these values back as project facts: they are estimates and
+        must not recursively become part of the next median sample.
+        """
+        rows = list(krt_ranking.rows() or [])
+
+        def median_of(key: str, *, positive: bool = False, predicate: Any = None) -> dict[str, Any]:
+            values: list[float] = []
+            for item in rows:
+                if predicate is not None and not predicate(item):
+                    continue
+                try:
+                    value = float(item.get(key))
+                except (TypeError, ValueError):
+                    continue
+                if not math.isfinite(value):
+                    continue
+                if positive and value <= 0:
+                    continue
+                values.append(value)
+            return {
+                "value": None if not values else float(statistics.median(values)),
+                "count": len(values),
+            }
+
+        return {
+            "llcr": median_of("project_llcr_x", positive=True),
+            "price": median_of("surrounding_price_rub_sqm", positive=True),
+            "absorption": median_of("local_absorption_sqm_month", positive=True),
+            "burden": median_of(
+                "burden_pct",
+                predicate=lambda item: bool(item.get("burden_complete")),
+            ),
+        }
+
+
+    def _city_rating_reference(segment: Any) -> dict[str, Any]:
+        """Moscow class reference with all-class fallback when class is unknown."""
+        city = getattr(market, "city", None) if market is not None else None
+        if city is None:
+            return {"price": None, "absorption": None, "segment": str(segment or "")}
+        name = str(segment or "").strip()
+        price = None
+        absorption = None
+        if name:
+            snapshot = getattr(city, "snapshot", lambda _x: None)(name)
+            price = _positive_float(getattr(snapshot, "price_median", None)) if snapshot else None
+            reader = getattr(city, "area_median", None)
+            if callable(reader):
+                absorption = _positive_float(reader(name))
+        if price is None or absorption is None:
+            prices: list[float] = []
+            areas: list[float] = []
+            segments = getattr(city, "segments", None)
+            for item in (segments() if callable(segments) else []):
+                snapshot = getattr(city, "snapshot", lambda _x: None)(item)
+                p = _positive_float(getattr(snapshot, "price_median", None)) if snapshot else None
+                reader = getattr(city, "area_median", None)
+                a = _positive_float(reader(item)) if callable(reader) else None
+                if p is not None:
+                    prices.append(p)
+                if a is not None:
+                    areas.append(a)
+            if price is None and prices:
+                price = float(statistics.median(prices))
+            if absorption is None and areas:
+                absorption = float(statistics.median(areas))
+        return {"price": price, "absorption": absorption, "segment": name}
+
+
     @app.get("/auctions/krt/{slug}/investment-score", include_in_schema=False)
     async def auction_krt_investment_score(
         slug: str,
@@ -1145,11 +1217,12 @@ def install(app: FastAPI) -> None:
         ),
         ensure_model: bool = Query(default=False),
     ) -> dict[str, Any]:
-        """Рейтинг #485 для любой площадки из уже сохранённых production-данных.
+        """Рейтинг КРТ по четырём равным блокам.
 
-        Неизвестные поглощение в м²/мес. и денежная нагрузка не заменяются
-        ДДУ/мес. или нулём. Поэтому до появления этих двух измерений общий балл
-        может оставаться пустым при видимых LLCR и цене рынка.
+        Пропуск больше не убивает весь рейтинг. Сначала используем данные самой
+        площадки/локального рынка; если одного входа нет, берём прозрачную
+        медианную подстановку (Москва/класс либо уже рассчитанные КРТ). Coverage
+        при этом остаётся долей фактических данных, а не становится 100%.
         """
         project = next(
             (item for item in _krt_all_sites() if str(item.get("slug") or "") == slug),
@@ -1382,6 +1455,81 @@ def install(app: FastAPI) -> None:
         if not status_kind:
             status_kind = "running" if "реализац" in str(project.get("status") or "").casefold() else "planned"
 
+        # Рейтинг нужен как сравнительный индекс всего каталога, а не как
+        # бинарная проверка полноты. Факт и оценка разделены: coverage считает
+        # только реальные входы площадки, а отсутствующий вход получает
+        # прозрачную медианную подстановку.
+        observed_components: set[str] = set()
+        if llcr is not None:
+            observed_components.add("llcr")
+        if market_price is not None:
+            observed_components.add("price")
+        if local_absorption is not None and benchmark_absorption is not None:
+            observed_components.add("absorption")
+        if burden_pct is not None:
+            observed_components.add("burden")
+
+        catalogue_medians = _rating_catalogue_medians()
+        city_reference = _city_rating_reference(segment)
+        imputed_components: dict[str, str] = {}
+
+        score_llcr = llcr
+        if score_llcr is None:
+            item = catalogue_medians["llcr"]
+            score_llcr = item.get("value")
+            if score_llcr is not None:
+                imputed_components["llcr"] = (
+                    f"медиана LLCR рассчитанных КРТ, n={item.get('count') or 0}"
+                )
+
+        score_market_price = market_price
+        if score_market_price is None:
+            score_market_price = city_reference.get("price")
+            if score_market_price is not None:
+                label = segment or "все классы"
+                imputed_components["price"] = f"медиана цены Москвы, {label}"
+            else:
+                item = catalogue_medians["price"]
+                score_market_price = item.get("value")
+                if score_market_price is not None:
+                    imputed_components["price"] = (
+                        f"медиана цены рассчитанных КРТ, n={item.get('count') or 0}"
+                    )
+
+        score_benchmark_absorption = benchmark_absorption
+        if score_benchmark_absorption is None:
+            score_benchmark_absorption = city_reference.get("absorption")
+        score_local_absorption = local_absorption
+        if score_local_absorption is None and score_benchmark_absorption is not None:
+            score_local_absorption = score_benchmark_absorption
+            label = segment or "все классы"
+            imputed_components["absorption"] = (
+                f"локальных данных нет — медиана поглощения Москвы, {label}"
+            )
+        elif score_local_absorption is None:
+            item = catalogue_medians["absorption"]
+            score_local_absorption = item.get("value")
+            if score_local_absorption is not None:
+                score_benchmark_absorption = (
+                    score_benchmark_absorption or score_local_absorption
+                )
+                imputed_components["absorption"] = (
+                    f"медиана поглощения рассчитанных КРТ, n={item.get('count') or 0}"
+                )
+        elif benchmark_absorption is None and score_benchmark_absorption is not None:
+            imputed_components["absorption"] = (
+                f"эталон — медиана поглощения Москвы, {segment or 'все классы'}"
+            )
+
+        score_burden_pct = burden_pct
+        if score_burden_pct is None:
+            item = catalogue_medians["burden"]
+            score_burden_pct = item.get("value")
+            if score_burden_pct is not None:
+                imputed_components["burden"] = (
+                    f"медиана нагрузки полностью рассчитанных КРТ, n={item.get('count') or 0}"
+                )
+
         missing_reasons: dict[str, str] = {}
         if local_absorption is None or benchmark_absorption is None:
             missing_reasons["absorption"] = (
@@ -1404,12 +1552,12 @@ def install(app: FastAPI) -> None:
 
         rating = krt_investment_score.score(
             status_kind=status_kind,
-            llcr=llcr,
-            market_rub_sqm=market_price,
+            llcr=score_llcr,
+            market_rub_sqm=score_market_price,
             target_rub_sqm=price_target_rub_sqm,
-            local_sqm_month=local_absorption,
-            benchmark_sqm_month=benchmark_absorption,
-            burden_pct=burden_pct,
+            local_sqm_month=score_local_absorption,
+            benchmark_sqm_month=score_benchmark_absorption,
+            burden_pct=score_burden_pct,
             burden_mln=burden_mln,
             ordinary_capex_mln=ordinary_capex_mln,
             housing_gfa_sqm=project.get("housing_gfa_sqm") or row.get("housing_gfa_sqm"),
@@ -1428,12 +1576,14 @@ def install(app: FastAPI) -> None:
                 ),
             },
             missing_reasons=missing_reasons,
+            observed_components=observed_components,
+            imputed_components=imputed_components,
         )
         # Карточка и таблица читают один и тот же результат. Храним только
         # компактный summary, а не всю методику #485 на каждой строке.
         stored_rating = {
             key: rating.get(key) for key in
-            ("score", "display_score", "coverage_pct", "rankable", "reason", "missing")
+            ("score", "display_score", "coverage_pct", "rankable", "reason", "missing", "imputed")
         }
         stored_rating["components"] = {
             key: {
@@ -1442,6 +1592,8 @@ def install(app: FastAPI) -> None:
                 "value": value.get("value"),
                 "benchmark": value.get("benchmark"),
                 "ratio": value.get("ratio"),
+                "estimated": bool(value.get("estimated")),
+                "estimate_source": value.get("estimate_source"),
             }
             for key, value in (rating.get("components") or {}).items()
         }
@@ -1500,6 +1652,7 @@ def install(app: FastAPI) -> None:
             "canonical": canonical,
             "canonical_target_rub_sqm": canonical_target,
             "control_case": control,
+            "imputation": rating.get("imputed") or [],
             "absorption": {
                 "local_median_sqm_month": local_absorption,
                 "moscow_median_sqm_month": benchmark_absorption,
