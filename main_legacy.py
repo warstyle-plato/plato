@@ -23884,6 +23884,10 @@ def build_project_workbook(
     _vri_periodicity = str(int(float(x.get("vri_periodicity_months") or 3)))
     put("B78", text=_v4_mode_display("vri_periodicity_months", _vri_periodicity),
         label="vri_periodicity_months")
+    # В шаблоне B78 — число без стиля ввода: лист ввода отбирает строки по
+    # стилю, и без пометки периодичность оставалась на расчётном листе текстом
+    # «Ежеквартально» — без dropdown, а B79 делил количество платежей на слово.
+    xml = _v4_mark_as_entry(xml, "B78", missing)
     _interest_raw = x.get("vri_interest_enabled")
     if _interest_raw in (None, ""):
         _interest_internal = ""
