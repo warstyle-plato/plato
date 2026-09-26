@@ -28,6 +28,7 @@ from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
+import developaid_commercial as commercial
 import developaid_v2_demo as demo
 import developaid_v2_form as form
 import developaid_v2_result as project_result
@@ -114,6 +115,9 @@ class CalculateRequest(BaseModel):
 
 def install(app: FastAPI) -> None:
     """Mount the DevelopAid 2.0 routes."""
+    # Non-residential economics is an isolated beta contour: it deliberately
+    # does not reuse residential escrow/project-finance formulas.
+    commercial.install(app)
 
     @app.get("/v2", include_in_schema=False)
     @app.get("/v2/", include_in_schema=False)
