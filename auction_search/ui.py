@@ -549,7 +549,7 @@ function renderRows(){
  renderFoldNote();renderAskContext();
 }
 function stats(){const a=state.filtered;$('sCount').textContent=a.length;$('sKrt').textContent=a.filter(x=>x.lot_kind==='krt').length;$('sLand').textContent=a.filter(x=>['land_sale','land_lease'].includes(x.lot_kind)).length;const ds=a.map(x=>new Date(x.application_deadline_iso||'')).filter(x=>!Number.isNaN(x.getTime())).sort((a,b)=>a-b);$('sDeadline').textContent=ds.length?moscowFormat({day:'2-digit',month:'2-digit'}).format(ds[0]):'—'}
-async function exportRows(rows,kind){if(!rows.length){alert('В текущей выборке нет строк для выгрузки.');return}const payload=rows.map(r=>{const rank=kind==='krt'?krtFreshRank(r.slug):{},intent=kind==='krt'?(krtIntent(r)||{}):{},score=kind==='krt'?krtScore(r):lotScore(r),duties=krtRequirementTotals(state.krtRequirements[r.slug]||rank.requirements||{});return{section:kind==='krt'?'КРТ':'Торги',name:r.name||r.title||'',okrug:r.okrug||'',district:r.district||'',address:r.address||'',cadastre:(r.cadastral_numbers||[]).join(', '),type:kind==='krt'?'КРТ':kindLabel(r.lot_kind),land_area_sqm:r.land_area_sqm??'',building_area_sqm:r.building_area_sqm??'',krt_area_ha:kind==='krt'?(r.area_ha??''):((r.lot_kind==='krt'&&Number.isFinite(Number(r.land_area_sqm)))?Number(r.land_area_sqm)/10000:(r.krt_area_ha??'')),total_gfa_sqm:r.total_gfa_sqm??'',housing_gfa_sqm:r.housing_gfa_sqm??'',nonresidential_gfa_sqm:r.nonresidential_gfa_sqm??'',business_gfa_sqm:r.business_gfa_sqm??'',jobs:r.jobs??'',price:r.current_price_rub??r.start_price_rub??'',score:score.score,traffic_light:rank.traffic_light?.label||score.label||'',saleable_sqm:rank.saleable_sqm??'',entry_capacity_rub_per_sqm:rank.entry_capacity_rub_per_sqm??'',entry_capacity_mln:rank.entry_capacity_mln??'',project_llcr_x:rank.project_llcr_x??'',weakest_phase_llcr_x:rank.weakest_phase_llcr_x??'',margin_pct:rank.margin_pct??'',surrounding_price_rub_sqm:rank.surrounding_price_rub_sqm??'',surrounding_sales_units_per_month:rank.surrounding_sales_units_per_month??'',demolition_objects:duties.demolition.count||'',demolition_area_sqm:duties.demolition.area||'',conditional_objects:duties.conditional.count||'',conditional_area_sqm:duties.conditional.area||'',reconstruction_objects:duties.reconstruction.count||'',reconstruction_area_sqm:duties.reconstruction.area||'',preservation_objects:duties.preservation.count||'',preservation_area_sqm:duties.preservation.area||'',resettlement_mentions:duties.resettlement||'',application_start:r.application_start||'',application_deadline:r.application_deadline||'',application_deadline_iso:r.application_deadline_iso||'',auction_date:r.auction_date||'',status:r.status||'',krt_kind:kind==='krt'?(intent.kind||''):'',krt_city_needs:kind==='krt'?krtIntentCell(intent,'city_needs'):'',krt_operator:kind==='krt'?krtIntentCell(intent,'operator'):'',url:r.source?.lot_url||r.url||''}});const res=await fetch('/auctions/export.xlsx',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rows:payload,kind})});if(!res.ok)throw new Error('Не удалось подготовить Excel');const blob=await res.blob(),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=kind==='krt'?'developaid-krt.xlsx':'developaid-auctions.xlsx';a.click();URL.revokeObjectURL(a.href)}
+async function exportRows(rows,kind){if(!rows.length){alert('В текущей выборке нет строк для выгрузки.');return}const payload=rows.map(r=>{const rank=kind==='krt'?krtFreshRank(r.slug):{},intent=kind==='krt'?(krtIntent(r)||{}):{},score=kind==='krt'?krtScore(r):lotScore(r),duties=krtRequirementTotals(state.krtRequirements[r.slug]||rank.requirements||{});return{section:kind==='krt'?'КРТ':'Торги',name:r.name||r.title||'',okrug:r.okrug||'',district:r.district||'',address:r.address||'',cadastre:(r.cadastral_numbers||[]).join(', '),type:kind==='krt'?'КРТ':kindLabel(r.lot_kind),land_area_sqm:r.land_area_sqm??'',building_area_sqm:r.building_area_sqm??'',krt_area_ha:kind==='krt'?(r.area_ha??''):((r.lot_kind==='krt'&&Number.isFinite(Number(r.land_area_sqm)))?Number(r.land_area_sqm)/10000:(r.krt_area_ha??'')),total_gfa_sqm:r.total_gfa_sqm??'',housing_gfa_sqm:r.housing_gfa_sqm??'',nonresidential_gfa_sqm:r.nonresidential_gfa_sqm??'',business_gfa_sqm:r.business_gfa_sqm??'',jobs:r.jobs??'',price:r.current_price_rub??r.start_price_rub??'',score:score.score,traffic_light:rank.traffic_light?.label||score.label||'',saleable_sqm:rank.saleable_sqm??'',entry_capacity_rub_per_sqm:rank.entry_capacity_rub_per_sqm??'',entry_capacity_mln:rank.entry_capacity_mln??'',project_llcr_x:rank.project_llcr_x??'',weakest_phase_llcr_x:rank.weakest_phase_llcr_x??'',margin_pct:rank.margin_pct??'',surrounding_price_rub_sqm:rank.surrounding_price_rub_sqm??'',surrounding_sales_units_per_month:rank.surrounding_sales_units_per_month??'',demolition_objects:duties.demolition.count||'',demolition_area_sqm:duties.demolition.area||'',conditional_objects:duties.conditional.count||'',conditional_area_sqm:duties.conditional.area||'',reconstruction_objects:duties.reconstruction.count||'',reconstruction_area_sqm:duties.reconstruction.area||'',preservation_objects:duties.preservation.count||'',preservation_area_sqm:duties.preservation.area||'',resettlement_mentions:duties.resettlement||'',application_start:r.application_start||'',application_deadline:r.application_deadline||'',application_deadline_iso:r.application_deadline_iso||'',auction_date:r.auction_date||'',status:r.status||'',krt_kind:kind==='krt'?(intent.kind||''):'',krt_city_needs:kind==='krt'?krtIntentCell(intent,'city_needs'):'',krt_operator:kind==='krt'?krtIntentCell(intent,'operator'):'',url:r.source?.lot_url||r.url||''}});const res=await fetch('/auctions/export.xlsx',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rows:payload,kind})});if(!res.ok){let why='';try{why=(await res.json()).detail||''}catch(_){}throw new Error('Не удалось подготовить Excel ('+res.status+(why?': '+why:'')+')')}const blob=await res.blob(),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=kind==='krt'?'developaid-krt.xlsx':'developaid-auctions.xlsx';a.click();URL.revokeObjectURL(a.href)}
 function coverageLine(r){
  // Каждый источник говорит за себя. Числа у читателей разной формы: у
  // ИнвестМосквы карточки города и подтверждённые лоты, у остальных страницы,
@@ -1195,18 +1195,8 @@ function krtLots(x){
 // Живой лот — тот, у которого срок подачи ЕЩЁ НЕ ПРОШЁЛ. Пока лоты читались
 // заново при каждом открытии, хватало наличия срока; у запомненного лота срок
 // может быть вчерашним, и «идут торги» на нём — обещание вчерашнего дня.
-function krtLiveLot(x){
- const now=Date.now();
- return (krtLots(x)||[]).find(v=>{
-  if(!v||!v.deadline)return false;
-  // Момент считает сервер: строку площадки браузер читает не тем порядком, и
-  // живой лот от этого выглядит просроченным — с площадки пропадала плашка
-  // «идут торги». Не разобрали момент — лот считается живым, как и прежде:
-  // «срока не поняли» это не «срок прошёл».
-  const at=Date.parse(v.deadline_iso||'');
-  return !Number.isFinite(at)||at>=now;
- })||null;
-}
+/*__DEVELOPAID_LIVE_LOT__*/
+function krtLiveLot(x){return liveTenderLot(krtLots(x))}
 function krtStage(x){
  const lots=krtLots(x), press=state.krtPress[x.slug]||null;
  const intent=krtIntent(x), status=String(x.status||'').toLowerCase();
@@ -2419,7 +2409,12 @@ function krtInvestmentRatingCell(slug){
  if(score!==null&&score!==undefined&&Number.isFinite(Number(score))){
   const quality=Number.isFinite(coverage)?' · '+coverage+'% факта':'';
   const estimate=imputed.length?' · медиана: '+esc(imputed.join(', ')):'';
-  return '<b>'+esc(Math.round(Number(score)))+'</b><div class="source">/100'+quality+estimate+'</div>';
+  // Общий ориентир сменили, а строку ещё не пересчитали — её балл посчитан при
+  // другой цене и сравнивать его с соседними наравне нельзя.
+  const target=Number(rank.investment_rating_target_rub_sqm),now=Number(state.krtRatingTarget);
+  const stale=Number.isFinite(target)&&Number.isFinite(now)&&now>0&&Math.abs(target-now)>0.5
+   ?' · <span style="color:var(--warn)">при ориентире '+esc(Math.round(target).toLocaleString('ru-RU'))+' ₽/м², ждёт пересчёта</span>':'';
+  return '<b>'+esc(Math.round(Number(score)))+'</b><div class="source">/100'+quality+estimate+stale+'</div>';
  }
  if(Number.isFinite(coverage)&&coverage>0){
   const missing=(r.missing||[]).map(x=>names[x]||x).join(', ');
@@ -2802,6 +2797,7 @@ function renderKrtRankStatus(){
 async function loadKrtRanking(){
  try{
   const d=await askJson('/auctions/krt/ranking',{cache:'no-store'});
+  state.krtRatingTarget=Number(d.investment_rating_target_rub_sqm)||null;
   state.krtRank={};(d.rows||[]).forEach(row=>{state.krtRank[row.slug]=row;
    if(row.available&&row.traffic_light)state.krtModels[row.slug]={traffic_light:row.traffic_light}});
   state.krtRankProgress=d.progress||null;
@@ -4391,6 +4387,7 @@ window.addEventListener('message',e=>{
  if(e.origin!==location.origin)return;
  const d=e.data||{};
  if(d.type==='developaid-krt-rating'){
+  if(d.canonical!==true)return;
   const slug=String(d.slug||''),rank=(state.krtRank||{})[slug]||{slug};
   rank.investment_rating=d.rating||{};
   state.krtRank[slug]=rank;
@@ -4422,7 +4419,10 @@ if(KRT_EARLY_ONLY) switchTab(true);
  },delay));
 })();
 populateAuctionKinds();bindAuctionKindFilter();$('refresh').onclick=discover;$('search').oninput=filter;$('origin').onchange=filter;$('source').onchange=discover;$('noise').onchange=discover;
-$('auctionExport').onclick=()=>exportRows(state.filtered||[],'auctions');$('krtExport').onclick=()=>exportRows(state.krtFiltered||[],'krt');
+// Отказ выгрузки называется на экране: необработанное исключение видно только
+// в консоли, и кнопка выглядела бы просто не сработавшей.
+const exportFailed=e=>alert(String((e&&e.message)||e||'Не удалось подготовить Excel'));
+$('auctionExport').onclick=()=>exportRows(state.filtered||[],'auctions').catch(exportFailed);$('krtExport').onclick=()=>exportRows(state.krtFiltered||[],'krt').catch(exportFailed);
 </script>
 </body></html>'''
 
@@ -4441,7 +4441,7 @@ def auctions_page(core=None) -> str:
     import management_contour
     import plato_question
 
-    from auction_search import krt_screening, land_map
+    from auction_search import krt_screening, krt_tenders, land_map
 
     footer = legal_footer_html(core) if core is not None else ""
     # Ящик Платона: стили и поведение — из `PAGE`, груз — свой. Без движка
@@ -4469,6 +4469,7 @@ def auctions_page(core=None) -> str:
             # вслух: молча отсутствующая кнопка неотличима от сломанной.
             .replace(land_map.PLACEHOLDER, land_map.script(core))
             .replace(land_map.MARKUP_PLACEHOLDER, land_map.markup(core))
+            .replace(krt_tenders.LIVE_LOT_PLACEHOLDER, krt_tenders.LIVE_LOT_SCRIPT)
             .replace("__DEVELOPAID_CONTOUR_STYLE__", management_contour.STYLE)
             .replace(management_contour.PLACEHOLDER,
                      management_contour.markup("/auctions")))
