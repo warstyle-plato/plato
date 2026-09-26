@@ -2926,7 +2926,10 @@ def install(app: FastAPI) -> None:
                         )
                         if needs_model:
                             missing.append(project)
-                        if len(missing) >= 20:
+                        # Keep one autonomous run small. Market/Pulse reports allocate large
+                        # temporary objects; the ranking worker trims them between rows, and a
+                        # short batch gives the 512 MB web process a chance to stay below its cap.
+                        if len(missing) >= 4:
                             break
                     if missing:
                         krt_ranking.start(missing, _rating_screen_only)
