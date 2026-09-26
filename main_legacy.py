@@ -10847,6 +10847,32 @@ OBJECT_PARKING_AREA_DEFAULT = 35.0
 OBJECT_PARKING_OVER_AREA_DEFAULT = 25.0
 
 
+def standalone_object_saleable(inputs: dict[str, Any], tep: dict[str, Any] | None,
+                               key: str) -> float:
+    """Продаваемая площадь ОСЗ после пятна мест первых этажей. Ответ один.
+
+    Ровно формула книги v4 (K26/K46/K129 «Расчётная продаваемая площадь»):
+    (GBA вводных − места первых этажей × площадь места) × продаваемая / GBA
+    вводных. Себестоимость объекта движок и книга берут с той же GBA вводных;
+    выручка в движке после #481 читала строку ТЭП, и при ТЭП, пришедшем
+    отдельно от вводных (API, бот), продавала 16 575 м² против 5 840 в книге.
+    Её же читают строки отчёта: объём «Офисы / МФОЦ» стоял до паркинга, а
+    выручка — после, и средняя цена метра выходила ниже назначенной.
+    """
+    obj = next((item for item in standalone_objects() if item.key == key), None)
+    if obj is None or obj.measure == "spaces":
+        return 0.0
+    base_saleable = max(0.0, n(inputs, f"{obj.prefix}_saleable_sqm"))
+    base_gba = max(0.0, n(inputs, f"{obj.prefix}_gba_sqm"))
+    if base_gba <= 0:
+        return 0.0
+    row = (tep or {}).get(key) or {}
+    over_gba = max(0.0, n(row, "parking_over_units")) * (
+        n(inputs, "object_parking_over_area_per_space_sqm", OBJECT_PARKING_OVER_AREA_DEFAULT)
+        or OBJECT_PARKING_OVER_AREA_DEFAULT)
+    return max(0.0, base_gba - over_gba) * base_saleable / base_gba
+
+
 def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
     """Разместить СОБСТВЕННЫЙ паркинг объектов по строкам ТЭП.
 
@@ -21031,8 +21057,9 @@ def _v4_normative_sources_rows(xml: str, region: str, missing: list[str]) -> str
     parts.append(
         f'<x:row r="{row_at}">'
         + cell(f"A{row_at}",
-               f"Акты, на которых стоит методика ({scope_here} и федеральный уровень). "
-               f"Реестр движка, снят {date.today().isoformat()}; проверять нас нужно "
+               f"Акты реестра движка ({scope_here} и федеральный уровень), снят "
+               f"{date.today().isoformat()}. «Применение» называет, где акт входит в "
+               "расчёт; «справочно» — акт в формулы не входит. Проверять нас нужно "
                "по исходнику, ссылка в колонке рядом.", head_styles)
         + "</x:row>")
     row_at += 1
@@ -21065,6 +21092,16 @@ def _v4_normative_sources_rows(xml: str, region: str, missing: list[str]) -> str
         word = _V4_NORMATIVE_STATUS_WORDS.get(status) or (
             f"статус «{status}» реестру неизвестен" if status else "статус не задан")
         applies = "; ".join(str(item) for item in (row.get("affects") or []) if item)
+        # Справочный акт — не основание расчёта: движок его не читает. Подать
+        # его строкой «оснований» наравне с участвующими значило бы выдать
+        # справку за формулу.
+        used = "; ".join(
+            str(item.get("usage") or item.get("module") or "") if isinstance(item, dict)
+            else str(item)
+            for item in (row.get("engine_usage") or []) if item)
+        applies = (f"в расчёте: {used}" if used
+                   else "справочно, в формулы расчёта не входит"
+                   + (f" · {applies}" if applies else ""))
         serial = _v4_excel_serial(row.get("current_as_of") or row.get("effective_from"))
         values = {
             "A": f"NRM-{index:02d}",
@@ -28672,38 +28709,13 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     # Паркинг объектов разложен по строкам ТЭП раньше (`apply_object_parking`),
     # и деньги его оттуда ЧИТАЮТ, а не считают второй раз: два счёта одной
     # величины однажды разошлись бы, и обе цифры выглядели бы верными.
-    # Продаваемая объекта уже пересчитана в строке ТЭП от остаточной GBA.
-    # Продажи читают её оттуда, чтобы в движке был один счёт площади.
+    # Продаваемая объекта — `standalone_object_saleable`: та же формула, что
+    # в книге, на той же GBA вводных, что и себестоимость объекта.
     def object_parking_row(tep_key: str) -> dict[str, Any]:
         return (t or {}).get(tep_key) or {}
 
     def object_saleable(tep_key: str, field: str) -> float:
-        row = object_parking_row(tep_key)
-        # Явная строка ТЭП сильнее вводной: если в ней есть собственная база
-        # площади, apply_object_parking уже пересчитал saleable от остаточной
-        # GBA и здесь остаётся только прочитать результат.
-        if n(row, "gns") > 0 or n(row, "_object_parking_base_saleable") > 0:
-            return max(0.0, n(row, "saleable"))
-
-        # Строки отдельно стоящих объектов в TEP_DEFAULT — нулевые заглушки:
-        # их реальные GBA и продаваемая живут во вводных объекта. До этой
-        # правки атомарный движок именно их и читал. После перехода на
-        # остаточную GBA слепое чтение нулевой строки обнулило все офисные
-        # продажи в обычном проекте и во всех очередях без явного ТЭП.
-        obj = next((item for item in standalone_objects() if item.key == tep_key), None)
-        base_saleable = max(0.0, n(x, field))
-        if obj is None:
-            return base_saleable
-        base_gba = max(0.0, n(x, f"{obj.prefix}_gba_sqm"))
-        if base_gba <= 0:
-            return base_saleable
-        over_gba = (
-            max(0.0, n(row, "parking_over_units"))
-            * (n(x, "object_parking_over_area_per_space_sqm",
-                 OBJECT_PARKING_OVER_AREA_DEFAULT)
-               or OBJECT_PARKING_OVER_AREA_DEFAULT)
-        )
-        return base_saleable * max(0.0, base_gba - over_gba) / base_gba
+        return standalone_object_saleable(x, t, tep_key)
 
     def object_parking_capex(tep_key: str) -> float:
         """Свой подземный паркинг объекта стоит подземного метра.
@@ -30877,13 +30889,16 @@ def calculate(req: CalcRequest) -> dict:
             "residual": int(n(x, "residual_sales_months", 6))
         },
         "offices": {
-            "label": "Офисы / МФОЦ", "quantity": n(x, "offices_saleable_sqm") if b(x, "offices_enabled") else 0,
+            "label": "Офисы / МФОЦ",
+            "quantity": standalone_object_saleable(x, t, "offices") if b(x, "offices_enabled") else 0,
             "unit": "м²", "start_price": n(x, "offices_price_th_per_sqm"), "share": n(x, "offices_share_before_rve_pct", 85)/100,
             "start": d(x["offices_sales_start"]), "end_ref": add_months(d(x["offices_start"]), int(n(x, "offices_months", 24))),
             "residual": int(n(x, "offices_residual_months", 6))
         },
         "standalone_retail": {
-            "label": "Коммерция ОСЗ", "quantity": n(x, "retail_saleable_sqm") if b(x, "retail_enabled") else 0,
+            "label": "Коммерция ОСЗ",
+            "quantity": (standalone_object_saleable(x, t, "standalone_retail")
+                         if b(x, "retail_enabled") else 0),
             "unit": "м²", "start_price": n(x, "retail_price_th_per_sqm"), "share": n(x, "retail_share_before_rve_pct", 85)/100,
             "start": d(x["retail_sales_start"]), "end_ref": add_months(d(x["retail_start"]), int(n(x, "retail_months", 24))),
             "residual": int(n(x, "retail_residual_months", 6))
@@ -30898,7 +30913,7 @@ def calculate(req: CalcRequest) -> dict:
             # Переданный городу ФОК продаваемой площади не имеет: метры
             # строятся, но не продаются — как у соцобъекта.
             "label": "ФОК / медцентр",
-            "quantity": (n(x, "sports_saleable_sqm")
+            "quantity": (standalone_object_saleable(x, t, "sports")
                          if b(x, "sports_enabled") and sports_is_sold(x) else 0),
             "unit": "м²", "start_price": n(x, "sports_price_th_per_sqm"),
             "share": n(x, "sports_share_before_rve_pct", 85)/100,
