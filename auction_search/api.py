@@ -1107,6 +1107,33 @@ def install(app: FastAPI) -> None:
             headers={"Cache-Control": "no-store, must-revalidate"},
         )
 
+    def _explicit_rating_burden(
+        project: dict[str, Any], screening: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Достроить burden в ЯВНОМ массовом расчёте рейтинга.
+
+        Фоновый цикл читает ЕГРН маленькими порциями, чтобы не давить web-процесс.
+        Но кнопка «Пересчитать рейтинги» до сих пор вообще не звала generic burden:
+        она строила рынок/модель и почти гарантированно оставляла 75% coverage.
+        Здесь запрос явный и последовательный, поэтому дочитываем до 72 объектов
+        за один проект (3 прохода по 24) и сохраняем тот же strict #485 result.
+        Unknown не превращается в ноль: terminal missing остаётся missing.
+        """
+        if core is None or project.get("early_unpublished") or not screening.get("available"):
+            return {}
+        state: dict[str, Any] = {}
+        for _ in range(3):
+            state = krt_investment_score.generic_project_burden(
+                core,
+                project,
+                screening,
+                lookup_chunk=24,
+            )
+            if not state.get("pending"):
+                break
+        return state
+
+
     @app.get("/auctions/krt/{slug}/investment-score", include_in_schema=False)
     async def auction_krt_investment_score(
         slug: str,
@@ -1133,6 +1160,12 @@ def install(app: FastAPI) -> None:
             project = finder(f"krt:{slug}") if callable(finder) else None
         if not project:
             raise HTTPException(status_code=404, detail="Территория КРТ не найдена")
+
+        # ensure_model используется именно массовой кнопкой каталога. Тяжёлый
+        # burden lookup тоже относится к этому явному пересчёту и требует тот
+        # же кабинет, даже если рынок/модель уже лежат в кэше.
+        if ensure_model:
+            market_cabinet.require_cabinet(request)
 
         row = krt_ranking.stored_row(slug)
         stored = krt_ranking.report(slug) or {}
@@ -1262,6 +1295,65 @@ def install(app: FastAPI) -> None:
                     burden_mln = early_burden
                     burden_pct = 100.0 * early_burden / float(ordinary_capex_mln)
 
+        # Критическая часть массовой кнопки: построить не только рынок+модель,
+        # но и четвёртый компонент #485. До этой правки endpoint вообще не звал
+        # generic_project_burden; поэтому у всего каталога получались 50/75% и
+        # единственный полный рейтинг Нагатино из отдельного control-case.
+        burden_state: dict[str, Any] = {}
+        if ensure_model and not project.get("early_unpublished") and screening.get("available"):
+            try:
+                burden_state = await run_in_threadpool(
+                    _explicit_rating_burden, project, screening)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Explicit KRT burden failed slug=%s", slug)
+                burden_state = {
+                    "available": False,
+                    "pending": False,
+                    "checked_at": int(time.time()),
+                    "retry_after_seconds": 24 * 60 * 60,
+                    "reason": f"{type(exc).__name__}: {exc}",
+                }
+
+            burden_pct = None
+            burden_mln = None
+            if burden_state.get("available"):
+                burden_pct = burden_state.get("burden_pct")
+                burden_mln = burden_state.get("burden_mln")
+                ordinary_capex_mln = burden_state.get("ordinary_capex_mln")
+                if burden_state.get("project_llcr_x") is not None:
+                    llcr = burden_state.get("project_llcr_x")
+                if burden_state.get("entry_capacity_mln") is not None:
+                    entry_capacity_mln = burden_state.get("entry_capacity_mln")
+
+            await run_in_threadpool(
+                krt_ranking.remember,
+                slug,
+                {
+                    "burden_pct": burden_pct,
+                    "burden_mln": burden_mln,
+                    "ordinary_capex_mln": ordinary_capex_mln,
+                    "burden_pipeline_version": krt_investment_score.BURDEN_PIPELINE_VERSION,
+                    "burden_checked_at": int(
+                        burden_state.get("checked_at") or time.time()),
+                    "burden_pending": bool(burden_state.get("pending")),
+                    "burden_retry_after_seconds": int(
+                        burden_state.get("retry_after_seconds") or 24 * 60 * 60),
+                    "burden_complete": bool(
+                        burden_state.get("available") or burden_pct is not None),
+                    "burden_reason": str(burden_state.get("reason") or ""),
+                    "burden_components": burden_state.get("components") or {},
+                    "burden_llcr_x": (
+                        llcr if burden_state.get("available") and llcr is not None else None
+                    ),
+                    "burden_entry_capacity_mln": (
+                        entry_capacity_mln
+                        if burden_state.get("available") and entry_capacity_mln is not None
+                        else None
+                    ),
+                },
+            )
+            row = krt_ranking.stored_row(slug)
+
         # Пока полный денежный стек собран только для контрольного кейса
         # Нагатино. Узнаём его по самому паспорту, а не по нестабильному slug.
         text = " ".join(str(project.get(k) or "") for k in ("name", "address", "district"))
@@ -1305,7 +1397,7 @@ def install(app: FastAPI) -> None:
                 )
             else:
                 missing_reasons["burden"] = (
-                    str(row.get("burden_reason") or "")
+                    str((burden_state or {}).get("reason") or row.get("burden_reason") or "")
                     or "Полная денежная нагрузка КРТ пока не собрана для этой площадки; "
                        "неизвестное не считается нулём."
                 )
@@ -1374,6 +1466,32 @@ def install(app: FastAPI) -> None:
                     "burden_pct": burden_pct,
                     "burden_mln": burden_mln,
                     "ordinary_capex_mln": ordinary_capex_mln,
+                    "burden_pipeline_version": krt_investment_score.BURDEN_PIPELINE_VERSION,
+                    "burden_checked_at": int(
+                        (burden_state or {}).get("checked_at") or row.get("burden_checked_at") or time.time()),
+                    "burden_pending": bool(
+                        (burden_state or {}).get("pending") or row.get("burden_pending")),
+                    "burden_retry_after_seconds": int(
+                        (burden_state or {}).get("retry_after_seconds")
+                        or row.get("burden_retry_after_seconds") or 24 * 60 * 60),
+                    "burden_complete": bool(
+                        (burden_state or {}).get("available")
+                        or row.get("burden_complete")
+                        or burden_pct is not None),
+                    "burden_reason": str(
+                        (burden_state or {}).get("reason") or row.get("burden_reason") or ""),
+                    "burden_components": (
+                        (burden_state or {}).get("components")
+                        or row.get("burden_components") or {}),
+                    "burden_llcr_x": (
+                        llcr if burden_pct is not None and llcr is not None
+                        else row.get("burden_llcr_x")
+                    ),
+                    "burden_entry_capacity_mln": (
+                        entry_capacity_mln
+                        if burden_pct is not None and entry_capacity_mln is not None
+                        else row.get("burden_entry_capacity_mln")
+                    ),
                 },
             )
         return {
