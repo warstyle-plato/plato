@@ -17492,6 +17492,16 @@ def _v4_apply_mode_decoders(xml: str, entry_report: dict[str, Any],
             f'"Да","Нет"))')
         rewrite("B80", interest_formula, "vri_interest_enabled")
 
+    # Проценты БРИДЖа при РнС: display страницы → слово, которое ждут формулы
+    # CF (`_V4_BRIDGE_MODE_NAMES`). Без декодера «Выплата при
+    # рефинансировании» не попадала ни в одну ветку формул.
+    bridge_entry = moved.get("B31")
+    if bridge_entry:
+        rewrite("B31", _v4_mode_decode_formula(
+            "bridge_interest_mode", bridge_entry, _V4_BRIDGE_MODE_NAMES,
+            fallback=_v4_formula_literal("Капитализация в ПФ")),
+            "bridge_interest_mode")
+
     # На странице сценарии называются по-русски; лист «Ставки» исторически
     # ждёт имена колонок Base/Upside/Downside.
     rate_source = source_coord(rate_scenario_ref)
@@ -17621,29 +17631,66 @@ def _v4_mark_engine_only_readonly(xml: str) -> str:
     return xml
 
 
-def _v4_strip_engine_only_from_entry(xml: str) -> str:
-    """Убирает engine-only блоки из пользовательского листа «Вводные».
+def _v4_strip_engine_only_from_entry(xml: str, params: str, entry_report: dict[str, Any],
+                                     missing: list[str]) -> tuple[str, str]:
+    """Убирает engine-only блоки из пользовательского листа «Вводные» — и
+    возвращает их значения на расчётный лист.
 
     Стиль уже не жёлтый, но одной заливки недостаточно: Excel позволяет
     перепечатать любую незапароленную ячейку. Поэтому поле, которое не умеет
     пересчитываться offline, на пользовательском листе отсутствует целиком.
     Соседний блок той же строки (A:D, E:H или J:M) не затрагивается.
+
+    Снятая ячейка при этом УЖЕ отдана расчётному листу зеркалом
+    `='Вводные'!K6`: сборщик листа ввода перенёс её как вводную. Оставить
+    зеркало на снятую ячейку — значит читать пустоту: регион «Москва» в K6
+    становился пустым, все `$K$6="Москва"` — ложью, проценты по ВРИ «по
+    региону» — «Нет», а паритет книги на рассрочке — СБОЙ. Поэтому значение
+    возвращается на «Параметры модели» литералом, каким приехало из движка,
+    и из карты переезда вычёркивается: для декодеров и инструкции такой
+    вводной на листе ввода нет.
     """
     blocks = {"D": ("A", "B", "C", "D"),
               "H": ("E", "F", "G", "H"),
               "M": ("J", "K", "L", "M")}
+    value_column = {"D": "B", "H": "F", "M": "K"}
+    moved: dict[str, str] = entry_report.get("map") or {}
+    back = {target: source for source, target in moved.items()}
+    restored: list[str] = []
     rows = [int(number) for number in re.findall(r'<x:row r="(\d+)"', xml)]
     max_row = max(rows, default=0)
     for key_col, columns in blocks.items():
         for row in range(1, max_row + 1):
-            if _v4_cell_text(xml, f"{key_col}{row}") not in V4_INPUTS_NOT_IN_BOOK:
+            key = _v4_cell_text(xml, f"{key_col}{row}")
+            if key not in V4_INPUTS_NOT_IN_BOOK:
                 continue
+            value_coord = f"{value_column[key_col]}{row}"
+            source = back.get(value_coord)
+            if source:
+                cell = re.search(r'<x:c r="%s"([^>]*)(?:/>|>(.*?)</x:c>)' % re.escape(value_coord),
+                                 xml, re.S)
+                is_text = bool(cell and re.search(r'\st="(?:inlineStr|str|s)"', cell.group(1)))
+                value = _v4_cell_text(xml, value_coord)
+                if value is None:
+                    params, done = _v4_set_cell(params, source, text="")
+                elif is_text:
+                    params, done = _v4_set_cell(params, source, text=value)
+                else:
+                    try:
+                        params, done = _v4_set_cell(params, source, number=float(value))
+                    except ValueError:
+                        params, done = _v4_set_cell(params, source, text=value)
+                if not done:
+                    missing.append(f"Параметры модели · engine-only {key}: {source} не найден")
+                moved.pop(source, None)
+                restored.append(source)
             for column in columns:
                 coord = f"{column}{row}"
                 xml = re.sub(
                     r'<x:c r="%s"[^>]*(?:/>|>.*?</x:c>)' % re.escape(coord),
                     "", xml, count=1, flags=re.S)
-    return xml
+    entry_report["engine_only_restored"] = restored
+    return xml, params
 
 
 def _v4_add_mode_dropdowns(xml: str, missing: list[str]) -> str:
@@ -21520,6 +21567,13 @@ def _v4_ladder_rows_xml(xml: str, steps: list[tuple[float, float]]
 # у консервативного сценария, поэтому high идёт в Downside, а low в Upside:
 # у книги имя про исход проекта, у движка — про уровень ставки.
 _V4_RATE_SCENARIO_NAMES = {"base": "Base", "high": "Downside", "low": "Upside"}
+# Режим процентов БРИДЖа при РнС: страница и движок зовут второй вариант
+# «Выплата при рефинансировании», а формулы шаблона (CF_1–CF_4, по 181 на
+# лист) сравнивают B31 с «Оплата капиталом». Слово, которого не знает ни одна
+# формула, книга не отвергала: проценты не капитализировались и не платились —
+# исчезали, и стоимость финансирования расходилась с движком на всю их сумму.
+_V4_BRIDGE_MODE_NAMES = {"Капитализация в ПФ": "Капитализация в ПФ",
+                         "Выплата при рефинансировании": "Оплата капиталом"}
 
 
 def _v4_rate_curve_rows_xml(xml: str, scenario: str, start_date: Any,
@@ -22858,6 +22912,12 @@ V4_REWRITTEN_FORMULA_ROWS: dict[str, tuple[tuple[int, ...], str]] = {
 }
 
 V4_ENGINE_WRITTEN_CELLS: dict[tuple[str, str], str] = {
+    ("Вводные", "B77"): (
+        "Срок рассрочки ВРИ — ВВОДНАЯ (ключ vri_installment_years), а не вывод "
+        "из строки B75: формула шаблона разбирала слово «3 года» из ячейки "
+        "режима, то есть держала режим и срок одним текстом. С dropdown режим "
+        "стоит в B75 отдельно, а срок — числом здесь; формулы графика читают "
+        "B77 как число лет и не изменились"),
     ("ТЭП", "E34"): (
         "Строка 34 была итогом блока объектов, а стала строкой ФОКа: итог "
         "переехал на пустую строку 35, ссылок на 31–35 нет ни на одном другом "
@@ -23411,12 +23471,6 @@ def build_project_workbook(
     # одной цифрой. Расшифровка — формулы от блока «Вводных», а не числа на
     # дату сборки: правка мест прямо в книге обязана двигать и строку. Итоги
     # (H37, E44) — тоже формулы, чтобы сумма сходилась с B17.
-    # Правый блок E:H — та же пользовательская форма, что A:D.
-    # Стиль ставится ДО переноса: лист «Вводные» собирается из ячеек, которые
-    # шаблон помечает как пользовательский ввод.
-    xml = _v4_mirror_secondary_input_styles(xml)
-    xml = _v4_mark_engine_only_readonly(xml)
-
     report_sheet_path = _v4_sheet_path(source, "ОТЧЕТ")
     tep_sheet_path = _v4_sheet_path(source, "ТЭП")
     report_xml = source.read(report_sheet_path).decode("utf-8")
@@ -24462,12 +24516,21 @@ def build_project_workbook(
     # жёлтой на расчётном листе, то есть приглашала бы печатать там, где
     # печатать больше нельзя.
     styles_xml = source.read("xl/styles.xml").decode("utf-8")
+    # Правый блок E:H — та же пользовательская форма, что A:D. Стиль ставится
+    # ДО переноса и ПОСЛЕ того, как блок дописан: лист «Вводные» собирается
+    # из ячеек, которые помечены как пользовательский ввод, а строки E:H
+    # появляются в этой же сборке выше — зеркало, вызванное раньше них,
+    # красило пустое место, и блок уезжал на лист ввода без стилей.
+    xml = _v4_mirror_secondary_input_styles(xml)
+    xml = _v4_mark_engine_only_readonly(xml)
     xml = v4_entry_sheet.rename_sheet_refs(xml)
     try:
         xml, entry_xml, entry_report = v4_entry_sheet.build(xml, styles_xml)
+        # Engine-only поля снимаются ДО декодеров: декодер региона читает
+        # $K$6 расчётного листа, и туда значение должно вернуться раньше.
+        entry_xml, xml = _v4_strip_engine_only_from_entry(entry_xml, xml, entry_report, missing)
         xml = _v4_apply_mode_decoders(
             xml, entry_report, _rc_refs.get("rate_scenario"), missing)
-        entry_xml = _v4_strip_engine_only_from_entry(entry_xml)
         # Dropdown принадлежит именно пользовательскому листу. До разделения
         # листов validation на старом XML остался бы на «Параметры модели»,
         # где человек ничего не вводит.

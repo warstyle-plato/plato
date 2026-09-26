@@ -137,7 +137,7 @@ def test_the_vri_switch_follows_the_payment_not_the_flag():
     assert sheet["B74"].value == "Нет"
 
 
-def _book(inputs):
+def _book(inputs=None):
     content, filename, meta = build(inputs)
     return content, filename, meta, v4_inputs.inputs(openpyxl.load_workbook(
         io.BytesIO(content), data_only=False))
@@ -514,6 +514,9 @@ def test_bridge_interest_mode_mutates_the_downloaded_book_without_rebuild():
     """
     from xlsx_eval import Evaluator
 
+    # Вычислитель идёт по книге рекурсией; в одиночном прогоне лимит Python
+    # по умолчанию кончается раньше, чем считается CF.
+    sys.setrecursionlimit(400000)
     inputs = {
         **core.DEFAULT_INPUTS,
         "purchase_price_mln": 2400.0,
@@ -550,9 +553,12 @@ def test_bridge_interest_mode_mutates_the_downloaded_book_without_rebuild():
         float(finance["bridge_interest"]) / 1e6, rel=0.02), "проценты БРИДЖ"
     assert x("CF_1", "B42") == pytest.approx(
         float(finance["pf_interest"]) / 1e6, rel=0.03), "проценты ПФ"
+    # Пик БРИДЖа — тело долга в обоих режимах: накопленные проценты в РнС
+    # уходят с линии либо в обязательство ПФ, либо в расходы проекта, и в
+    # теле БРИДЖа их нет ни у движка (`peak_bridge`), ни у книги (B82 — «тело
+    # долга»); строка паритета 83 сравнивает то же самое.
     assert x("CF_1", "B82") == pytest.approx(
-        (float(finance["peak_bridge"]) + float(finance.get("transferred_bridge_interest") or 0.0))
-        / 1e6, rel=0.02), "пик БРИДЖ с капитализацией"
+        float(finance["peak_bridge"]) / 1e6, rel=0.02), "пик БРИДЖ (тело)"
     assert x("CF_1", "B83") == pytest.approx(
         float(finance["peak_pf"]) / 1e6, rel=0.02), "пик ПФ"
 
@@ -1316,3 +1322,37 @@ def test_the_compensation_mode_shows_places_and_the_payment():
         assert float(ev.cell("ОТЧЕТ", f"H{report_row}") or 0) == 0
         assert float(ev.cell("ТЭП", f"B{tep_row}") or 0) == 0
         assert float(ev.cell("ТЭП", f"C{tep_row}") or 0) == 0
+
+
+def test_engine_only_values_stay_on_the_parameters_sheet():
+    """Снятое с листа ввода engine-only поле не читается зеркалом в пустоту.
+
+    Регион (`vri_region`) для человека не вводная — методику платы за ВРИ
+    книга не знает. Но формулы книги читают его: `$K$6="Москва"` решает,
+    начисляются ли проценты по рассрочке «по региону» и принуждается ли
+    квартал. Пока K6 расчётного листа зеркалил снятую ячейку, всё это было
+    ложью, а паритет с движком на рассрочке — СБОЙ.
+    """
+    from xlsx_eval import Evaluator
+
+    sys.setrecursionlimit(400000)
+    content, _, meta, _ = _book({"vri_payment_mode": "installment", "vri_installment_years": 3,
+                                 "vri_interest_enabled": "", "vri_region": "msk"})
+    assert meta["missing"] == []
+    book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
+    params = book["Параметры модели"]
+    raw = params["K6"].value
+    assert not (isinstance(raw, str) and raw.startswith("=")), (
+        f"регион на расчётном листе — зеркало {raw!r}, а не значение")
+    assert raw == "Москва"
+    # Ни одно engine-only поле не читается с листа ввода: его там нет.
+    entry_keys = {cell.value for row in book["Вводные"].iter_rows() for cell in row if cell.value}
+    assert not (entry_keys & set(core.V4_INPUTS_NOT_IN_BOOK))
+    evaluator = Evaluator(book)
+    assert evaluator.cell("Параметры модели", "K6") == "Москва"
+    assert evaluator.cell("Параметры модели", "B80") == "Да", "«По региону» в Москве — проценты начисляются"
+    assert float(evaluator.cell("Параметры модели", "B78")) == 3.0, "Москва — всегда квартал"
+    # Со снятым регионом книга теряла проценты по рассрочке: CAPEX расходился
+    # с движком на сотни миллионов. Строка паритета CAPEX — та самая.
+    capex_row = next(r for r in range(70, 95) if "CAPEX" in str(evaluator.cell("ПРОВЕРКИ", f"A{r}") or ""))
+    assert abs(float(evaluator.cell("ПРОВЕРКИ", f"D{capex_row}") or 0)) < 1.0
