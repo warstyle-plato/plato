@@ -53,6 +53,15 @@ def test_price_hint_can_return_the_projects_behind_the_number(
         3: {"sales_start": "2025-05-01", "commissioning": "2027-05-01"},
     }
     monkeypatch.setattr(service.cards, "card", lambda complex_id: cards[complex_id])
+    monkeypatch.setattr(
+        service.pulse,
+        "project_dates",
+        lambda complex_id: {
+            **cards[complex_id],
+            "source": "Пульс Продаж Новостроек · онлайн",
+            "sources": {"sales_start": "pulse_api_table", "commissioning": "pulse_api_table"},
+        },
+    )
     monkeypatch.setattr(service.dynamics, "latest", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(service.dynamics, "series", lambda *_args, **_kwargs: [])
 
