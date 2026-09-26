@@ -17360,6 +17360,374 @@ def _v4_set_cell(
     return xml[:found.start()] + replacement + xml[found.end():], True
 
 
+
+# Режимы на листе «Вводные» берутся из канонического FIELD_GROUPS и
+# реестра объектов. Отдельного списка «что показать dropdown-ом» нет:
+# добавили select/checkbox/finance_select — он автоматически попадает сюда,
+# если не объявлен engine-only с причиной.
+_V4_MODE_KINDS = frozenset({"select", "checkbox", "finance_select"})
+
+
+def _v4_declared_mode_fields() -> dict[str, Any]:
+    """Все объявленные режимы DevelopAid, включая генерируемые поля объектов."""
+    out: dict[str, Any] = {}
+    for _group, fields in FIELD_GROUPS:
+        for field in fields:
+            if len(field) >= 4 and str(field[3]) in _V4_MODE_KINDS:
+                out[str(field[0])] = field
+    # Прогноз ставки исторически живёт отдельным каноническим блоком страницы,
+    # а не FIELD_GROUPS. Это не Excel-список: берём то же объявление формы.
+    for field in globals().get("_M2_RATE_INPUTS", ()):
+        if len(field) >= 4 and str(field[3]) in _V4_MODE_KINDS:
+            out[str(field[0])] = field
+    return out
+
+
+def _v4_mode_pairs(key: str) -> list[list[str]]:
+    """Canonical internal/display pairs of one mode, from the page declaration."""
+    field = _v4_declared_mode_fields().get(key)
+    if field and len(field) > 4 and isinstance(field[4], list):
+        return [[str(pair[0]), str(pair[1])] for pair in field[4]]
+    if key == "rate_scenario":
+        return [[str(pair[0]), str(pair[1])]
+                for pair in globals().get("_M2_RATE_SCENARIOS", ())]
+    return [[str(pair[0]), str(pair[1])]
+            for pair in globals().get("_M2_EXTRA_OPTIONS", {}).get(key, ())]
+
+
+def _v4_mode_display(key: str, internal: Any) -> str:
+    """Показываем пользователю display value, а не технический API value."""
+    value = "" if internal is None else str(internal)
+    if isinstance(internal, bool):
+        value = "1" if internal else "0"
+    for raw, shown in _v4_mode_pairs(key):
+        if value == raw:
+            return shown
+    return value
+
+
+def _v4_live_mode_options() -> dict[str, list[str]]:
+    """Русские display values всех режимов, которые Excel умеет менять live."""
+    out: dict[str, list[str]] = {}
+    for key, field in _v4_declared_mode_fields().items():
+        if key in V4_INPUTS_NOT_IN_BOOK:
+            continue
+        kind = str(field[3])
+        if kind == "checkbox":
+            out[key] = ["Да", "Нет"]
+            continue
+        pairs = _v4_mode_pairs(key)
+        if pairs:
+            out[key] = [shown for _raw, shown in pairs]
+    return out
+
+
+def _v4_formula_literal(value: str) -> str:
+    return '"' + str(value).replace('"', '""') + '"'
+
+
+def _v4_mode_decode_formula(key: str, entry_coord: str,
+                            output_by_internal: dict[str, str] | None = None,
+                            *, fallback: str = '""') -> str:
+    """Display value пользовательского листа -> значение, которое ждут формулы."""
+    ref = f"'Вводные'!{entry_coord}"
+    pairs = _v4_mode_pairs(key)
+    expression = fallback
+    for internal, shown in reversed(pairs):
+        output = (output_by_internal or {}).get(internal, internal)
+        if re.fullmatch(r"-?\d+(?:\.\d+)?", str(output)):
+            result = str(output)
+        else:
+            result = _v4_formula_literal(str(output))
+        expression = (
+            f"IF({ref}={_v4_formula_literal(shown)},{result},{expression})")
+    return expression
+
+
+def _v4_apply_mode_decoders(xml: str, entry_report: dict[str, Any],
+                            rate_scenario_ref: str | None,
+                            missing: list[str]) -> str:
+    """Декодеры между русским dropdown и историческими формулами шаблона.
+
+    Пользователь всегда видит canonical display. Параметры модели получают
+    ровно тот тип/слово, которое ожидали до появления dropdown — поэтому
+    downstream формулы не приходится переписывать по всей книге.
+    """
+    moved = entry_report.get("map") or {}
+
+    def source_coord(ref: str | None) -> str | None:
+        if not ref:
+            return None
+        return str(ref).replace("$", "").split("!")[-1]
+
+    def rewrite(source: str, formula: str, key: str) -> None:
+        nonlocal xml
+        if source not in moved:
+            missing.append(f"Вводные · decoder {key}: пользовательская ячейка не найдена")
+            return
+        xml, done = _v4_set_cell(xml, source, formula=formula)
+        if not done:
+            missing.append(f"Параметры модели · decoder {key}: {source} не найден")
+
+    # Периодичность хранится числом в формулах графика, но человек выбирает
+    # «Ежемесячно / Ежеквартально / ...».
+    periodic_entry = moved.get("B78")
+    if periodic_entry:
+        periodic_formula = _v4_mode_decode_formula(
+            "vri_periodicity_months", periodic_entry, fallback="3")
+        # Движок принудительно ставит квартал для Москвы независимо от выбора;
+        # Excel обязан повторять это ограничение, а не считать иной график.
+        rewrite("B78", f'IF($K$6="Москва",3,{periodic_formula})',
+                "vri_periodicity_months")
+
+    # Трёхсостояние «По региону» раньше схлопывалось в Да/Нет ещё builder-ом.
+    # Теперь оно живое: Москва разрешает default в «Да», МО — в «Нет».
+    interest_entry = moved.get("B80")
+    if interest_entry:
+        interest_ref = f"'Вводные'!{interest_entry}"
+        interest_formula = (
+            f"IF({interest_ref}={_v4_formula_literal('По региону')},"
+            f'IF($K$6="Москва","Да","Нет"),'
+            f"IF({interest_ref}={_v4_formula_literal('Начисляются')},"
+            f'"Да","Нет"))')
+        rewrite("B80", interest_formula, "vri_interest_enabled")
+
+    # На странице сценарии называются по-русски; лист «Ставки» исторически
+    # ждёт имена колонок Base/Upside/Downside.
+    rate_source = source_coord(rate_scenario_ref)
+    if rate_source and rate_source in moved:
+        outputs = {
+            internal: _V4_RATE_SCENARIO_NAMES.get(internal, internal)
+            for internal, _shown in _v4_mode_pairs("rate_scenario")
+        }
+        rewrite(rate_source, _v4_mode_decode_formula(
+            "rate_scenario", moved[rate_source], outputs, fallback='"Base"'),
+            "rate_scenario")
+    return xml
+
+
+def _v4_cell_text(xml: str, coord: str) -> str | None:
+    found = re.search(r'<x:c r="%s"[^>]*>(.*?)</x:c>' % re.escape(coord), xml, re.S)
+    if not found:
+        return None
+    inline = re.search(r"<x:t>(.*?)</x:t>", found.group(1), re.S)
+    if inline:
+        return html.unescape(inline.group(1))
+    value = re.search(r"<x:v>(.*?)</x:v>", found.group(1), re.S)
+    return html.unescape(value.group(1)) if value else None
+
+
+def _v4_mirror_secondary_input_styles(xml: str) -> str:
+    """E:H — такая же форма ввода, как A:D, с правильным типом значения.
+
+    Копировать стиль той же СТРОКИ нельзя: справа может стоять процент, а
+    слева в этой строке — сумма или дата. Стиль Excel несёт number format,
+    поэтому визуально похожая правка превращала 3% в 0,03. Берём образец по
+    роли колонки и типу поля из единого FIELD_GROUPS.
+    """
+    field_meta: dict[str, tuple[str, str]] = {}
+    for _group, fields in FIELD_GROUPS:
+        for field in fields:
+            if len(field) >= 4:
+                field_meta[str(field[0])] = (str(field[3]), str(field[2]))
+
+    def style_of(coord: str) -> str | None:
+        found = re.search(r'<x:c r="%s"[^>]*?\ss="(\d+)"' % re.escape(coord), xml)
+        return found.group(1) if found else None
+
+    # Штатные образцы шаблона: обычное число, процент, дата и текстовый режим.
+    exemplar = {
+        "label": style_of("A15"),
+        "number": style_of("B15"),
+        "pct": style_of("B19"),
+        "date": style_of("B8"),
+        "text": style_of("B31"),
+        "readonly": (str(_v4_formula_style_id())
+                     if _v4_formula_style_id() is not None else None),
+        "unit": style_of("C15"),
+        "key": style_of("D15"),
+        "header": str(_v4_header_style_id()) if _v4_header_style_id() is not None else None,
+    }
+
+    def set_style(coord: str, style: str | None) -> None:
+        nonlocal xml
+        if style is None:
+            return
+        pattern = re.compile(r'(<x:c r="%s")([^>]*)' % re.escape(coord))
+        def apply(match: "re.Match[str]") -> str:
+            attrs = re.sub(r'\s+s="\d+"', "", match.group(2))
+            return f'{match.group(1)}{attrs} s="{style}"'
+        xml = pattern.sub(apply, xml, count=1)
+
+    for row in range(1, 160):
+        key = _v4_cell_text(xml, f"H{row}")
+        has_e = _v4_cell_text(xml, f"E{row}") is not None
+        has_f = (_v4_cell_text(xml, f"F{row}") is not None
+                 or _v4_cell_formula(xml, f"F{row}") is not None)
+        if not has_e:
+            continue
+        if not key and not has_f:
+            set_style(f"E{row}", exemplar["header"])
+            continue
+
+        set_style(f"E{row}", exemplar["label"])
+        set_style(f"G{row}", exemplar["unit"])
+        set_style(f"H{row}", exemplar["key"])
+
+        kind, unit = field_meta.get(str(key), ("text", ""))
+        if str(key) in V4_INPUTS_NOT_IN_BOOK:
+            # Engine-only значение остаётся результатом/основанием и не
+            # получает стиль пользовательского ввода.
+            value_style = exemplar["readonly"]
+        elif kind == "date":
+            value_style = exemplar["date"]
+        elif kind == "number" and (unit.startswith("%") or unit == "п.п."
+                                   or unit.startswith("п.п.")):
+            value_style = exemplar["pct"]
+        elif kind == "number":
+            value_style = exemplar["number"]
+        else:
+            value_style = exemplar["text"]
+        set_style(f"F{row}", value_style)
+    return xml
+
+
+
+def _v4_mark_engine_only_readonly(xml: str) -> str:
+    """Engine-only поля не должны выглядеть редактируемыми на «Вводных».
+
+    Координата выводится из API key в D/H/M, поэтому отдельной карты Excel для
+    этого не существует. Формульный стиль не попадает в набор entry styles —
+    v4_entry_sheet не переносит такую ячейку на пользовательский лист.
+    """
+    style = _v4_formula_style_id()
+    if style is None:
+        return xml
+    key_columns = {"D": "B", "H": "F", "M": "K"}
+    rows = [int(number) for number in re.findall(r'<x:row r="(\d+)"', xml)]
+    max_row = max(rows, default=0)
+
+    for key_col, value_col in key_columns.items():
+        for row in range(1, max_row + 1):
+            key = _v4_cell_text(xml, f"{key_col}{row}")
+            if key not in V4_INPUTS_NOT_IN_BOOK:
+                continue
+            coord = f"{value_col}{row}"
+            pattern = re.compile(r'(<x:c r="%s")([^>]*)' % re.escape(coord))
+            def apply(match: "re.Match[str]") -> str:
+                attrs = re.sub(r'\s+s="\d+"', "", match.group(2))
+                return f'{match.group(1)}{attrs} s="{style}"'
+            xml = pattern.sub(apply, xml, count=1)
+    return xml
+
+
+def _v4_strip_engine_only_from_entry(xml: str) -> str:
+    """Убирает engine-only блоки из пользовательского листа «Вводные».
+
+    Стиль уже не жёлтый, но одной заливки недостаточно: Excel позволяет
+    перепечатать любую незапароленную ячейку. Поэтому поле, которое не умеет
+    пересчитываться offline, на пользовательском листе отсутствует целиком.
+    Соседний блок той же строки (A:D, E:H или J:M) не затрагивается.
+    """
+    blocks = {"D": ("A", "B", "C", "D"),
+              "H": ("E", "F", "G", "H"),
+              "M": ("J", "K", "L", "M")}
+    rows = [int(number) for number in re.findall(r'<x:row r="(\d+)"', xml)]
+    max_row = max(rows, default=0)
+    for key_col, columns in blocks.items():
+        for row in range(1, max_row + 1):
+            if _v4_cell_text(xml, f"{key_col}{row}") not in V4_INPUTS_NOT_IN_BOOK:
+                continue
+            for column in columns:
+                coord = f"{column}{row}"
+                xml = re.sub(
+                    r'<x:c r="%s"[^>]*(?:/>|>.*?</x:c>)' % re.escape(coord),
+                    "", xml, count=1, flags=re.S)
+    return xml
+
+
+def _v4_add_mode_dropdowns(xml: str, missing: list[str]) -> str:
+    """Data Validation для режимов, которые реально пересчитывает Excel.
+
+    Ключ ищется в D/H/M; значение находится соответственно в B/F/K.
+    Это позволяет не держать ещё одну карту координат и автоматически
+    подхватывает переезд строк внутри существующей формы.
+    """
+    options = _v4_live_mode_options()
+    validations: list[tuple[str, list[str]]] = []
+    key_columns = {"D": "B", "H": "F", "M": "K"}
+    # Пользовательский лист собирается заново, и ключи в нём бывают не только
+    # inlineStr (<x:t>), но и строковыми <x:v>. Regex по одному виду строки
+    # находил часть полей случайно: на реальной книге восемь живых режимов,
+    # включая bridge_interest_mode, оставались без dropdown.
+    row_numbers = [int(number) for number in re.findall(r'<x:row r="(\d+)"', xml)]
+    max_row = max(row_numbers, default=0)
+    for key, values in options.items():
+        target: str | None = None
+        for key_col, value_col in key_columns.items():
+            for row in range(1, max_row + 1):
+                if _v4_cell_text(xml, f"{key_col}{row}") == key:
+                    target = f"{value_col}{row}"
+                    break
+            if target is not None:
+                break
+        # B75 исторически подписан сразу двумя ключами. После разделения
+        # значения и срока координата режима однозначна, но старый составной
+        # текст ключа может ещё жить в шаблоне до того, как builder его заменил.
+        if key == "vri_payment_mode" and target is None and _v4_cell_text(xml, "B75") is not None:
+            target = "B75"
+        if target is None:
+            # Ставка добавляется динамическим блоком; если ключа нет, это уже
+            # потерянная вводная, и сборка должна сказать об этом.
+            missing.append(f"Вводные · dropdown {key}: ячейка не найдена")
+            continue
+        if _v4_cell_text(xml, target) is None and _v4_cell_formula(xml, target) is None:
+            missing.append(f"Вводные · dropdown {key}: значение {target} не найдено")
+            continue
+        validations.append((target, values))
+
+    if not validations:
+        return xml
+
+    rendered: list[str] = []
+    for coord, values in validations:
+        formula = '"' + ",".join(str(value).replace('"', '""') for value in values) + '"'
+        rendered.append(
+            f'<x:dataValidation type="list" allowBlank="0" showDropDown="0" '
+            f'showErrorMessage="1" errorStyle="stop" '
+            f'errorTitle="Недопустимое значение" '
+            f'error="Выберите значение из выпадающего списка." sqref="{coord}">'
+            f'<x:formula1>{xml_escape(formula)}</x:formula1></x:dataValidation>')
+
+    existing = re.search(
+        r'<x:dataValidations([^>]*)>(.*?)</x:dataValidations>', xml, re.S)
+    if existing:
+        attrs = re.sub(r'\s+count="\d+"', "", existing.group(1))
+        old_count = len(re.findall(r"<x:dataValidation\b", existing.group(2)))
+        block = (f'<x:dataValidations{attrs} count="{old_count + len(rendered)}">'
+                 + existing.group(2) + "".join(rendered) + "</x:dataValidations>")
+        return xml[:existing.start()] + block + xml[existing.end():]
+
+    block = (f'<x:dataValidations count="{len(rendered)}">'
+             + "".join(rendered) + "</x:dataValidations>")
+    # По схеме worksheet dataValidations идут после conditionalFormatting и
+    # до hyperlinks/printOptions/pageMargins. У шаблона эти хвосты есть; если
+    # конкретная версия их лишилась, перед закрытием worksheet Excel тоже
+    # принимает блок.
+    candidates = [
+        xml.find("<x:hyperlinks"), xml.find("<x:printOptions"),
+        xml.find("<x:pageMargins"), xml.find("<x:pageSetup"),
+        xml.find("<x:headerFooter"), xml.find("<x:drawing"),
+        xml.rfind("</x:worksheet>"),
+    ]
+    candidates = [index for index in candidates if index >= 0]
+    if not candidates:
+        missing.append("Вводные · dropdown: не найдено место для dataValidations")
+        return xml
+    at = min(candidates)
+    return xml[:at] + block + xml[at:]
+
+
 def _v4_column_letter(number: int) -> str:
     letters = ""
     while number > 0:
@@ -21196,7 +21564,7 @@ def _v4_rate_curve_rows_xml(xml: str, scenario: str, start_date: Any,
     parts.append(f'<x:row r="{row_at}">'
                  + _v4_head_cell(f"A{row_at}",
                                  "Правьте значения — лист «Ставки» и ячейка B34 читают их отсюда. "
-                                 "Сценарий пишется именем колонки: Base / Upside / Downside.")
+                                 "Сценарий выбирается как на странице DevelopAid: Консервативный / Базовый / Оптимистичный.")
                  + "</x:row>")
     row_at += 1
 
@@ -21749,6 +22117,30 @@ V4_INPUTS_NOT_IN_BOOK: dict[str, str] = {
         "приобъектную парковку: у Москвы спорт — 5.1, здравоохранение — 3.4, у "
         "области своей строки здравоохранения нет вовсе. Это вводная НОРМАТИВА, "
         "а не арифметики: книге приходит число мест, а имя объекта — подписью"),
+    "vri_required": (
+        "признак сам по себе не задаёт денежный поток книги: движок сначала "
+        "нормализует обязательство и сумму платы, а книга получает уже сумму ВРИ"),
+    "vri_obligation_date_mode": (
+        "режим даты до книги превращается в применённую дату/лаг; варианты "
+        "«через N месяцев» и «вручную» требуют движкового разрешения даты"),
+    "vri_schedule_mode": (
+        "ручной/автоматический график ВРИ разрешается движком до выгрузки; "
+        "книга получает уже параметры применённого графика"),
+    "vri_pf_open_date": (
+        "дата открытия ПФ для досрочного погашения остатка ВРИ разрешается "
+        "движком до книги; менять её без пересборки применённого графика нельзя"),
+    "vri_in_bank_budget": (
+        "признак банковского бюджета делит ВРИ между источниками до книги; "
+        "в книгу приходят уже применённые доли финансирования"),
+    "vri_financing_mode": (
+        "режим источников оплаты ВРИ разрешается до расчёта долей; книга "
+        "получает доли, а не сам алгоритм их определения"),
+    "vri_relief_mode": (
+        "форма льготы применяется при расчёте суммы ВРИ до книги; одна смена "
+        "режима без исходной базы и методики льготы не воспроизводит движок"),
+    "social_area_source": (
+        "источник площади соцобъектов определяет места/метры до финансового "
+        "расчёта; книга получает уже применённые физические параметры"),
 }
 # Ячейки, в которых значение ПОКАЗАНО, но книгой не читается ни одной
 # формулой. Это не ввод: правка здесь не изменит ничего, а выглядит рабочей —
@@ -21765,35 +22157,29 @@ V4_INPUTS_COMPUTED_IN_THE_CELL: dict[str, str] = {
         "стройки садов, школ и поликлиник: у книги ключ соцнагрузки один, а "
         "движок берёт в расчётный лимит БРИДЖа только денежную часть"),
 }
-V4_INPUTS_SHOWN_ONLY: dict[str, dict[str, str]] = {
-    "vri_pf_open_date": {
-        "cell": "F77",
-        "reason": ("дата открытия ПФ для досрочного погашения остатка ВРИ; график "
-                   "платежей приходит в книгу уже посчитанным блоком ВРИ"),
-    },
-    "vri_in_bank_budget": {
-        "cell": "F78",
-        "reason": ("признак «плата за ВРИ в банковском бюджете» делит её между "
-                   "источниками до книги: в неё приходят уже доли лимита"),
-    },
-    "vri_financing_mode": {
-        "cell": "F79",
-        "reason": ("режим источников оплаты ВРИ — тот же выбор до расчёта долей; "
-                   "книга получает доли, а не режим"),
-    },
-}
-_V4_ENGINE_ONLY_ROWS: tuple[tuple[str, str, str], ...] = (
-    ("vri_region", "Регион расчёта платы за ВРИ", "Плата приходит в B16"),
-    ("land_right", "Право на участок", "Плата приходит в B16"),
-    ("parking_k1", "К1 — доступность рельсового каркаса", "Приобъектная норма — справка: асфальт в благоустройстве"),
-    ("parking_rail_distance_m", "Расстояние до станции, м",
-     "Вводная норматива: из неё считается К1, а книга считает по числу мест"),
-    ("parking_k2", "К2 — деловая активность района", "Приобъектная норма — справка: асфальт в благоустройстве"),
-    ("parking_design_mode", "Край норматива (Московская область)", "Приобъектная норма — справка: асфальт в благоустройстве"),
-    ("sports_purpose", "Назначение объекта «ФОК / медцентр»",
-     "Строка норматива: Москва 5.1 спорт / 3.4 здравоохранение; у области "
-     "строки здравоохранения нет — правило п. 5.12"),
-)
+# DISPLAY-ONLY для пользовательских вводных больше не допускается: если книгу
+# нельзя пересчитать офлайн, поле относится к engine-only и не выглядит
+# редактируемым. Имя оставлено пустым ради обратной совместимости проверок.
+V4_INPUTS_SHOWN_ONLY: dict[str, dict[str, str]] = {}
+
+def _v4_field_label(key: str) -> str:
+    """Подпись поля из канонического реестра вводных, без второй карты Excel."""
+    for _group, fields in FIELD_GROUPS:
+        for field in fields:
+            if len(field) >= 2 and str(field[0]) == key:
+                return str(field[1])
+    for field in globals().get("_M2_RATE_INPUTS", ()):
+        if len(field) >= 2 and str(field[0]) == key:
+            return str(field[1])
+    return key
+
+
+def _v4_engine_only_rows() -> tuple[tuple[str, str, str], ...]:
+    """Engine-only блок строится из того же реестра классификации."""
+    return tuple(
+        (key, _v4_field_label(key), reason)
+        for key, reason in V4_INPUTS_NOT_IN_BOOK.items()
+    )
 
 
 def _v4_engine_only_rows_xml(xml: str, inputs: dict[str, Any]) -> tuple[str, int]:
@@ -21821,7 +22207,7 @@ def _v4_engine_only_rows_xml(xml: str, inputs: dict[str, Any]) -> tuple[str, int
                                          "а не арифметика: править их здесь нечем, "
                                          "видно основание применённого расчёта.")
                  + "</x:row>")
-    for index, (key, label, where) in enumerate(_V4_ENGINE_ONLY_ROWS):
+    for index, (key, label, where) in enumerate(_v4_engine_only_rows()):
         row = base_row + 2 + index
         value = inputs.get(key)
         if isinstance(value, bool):
@@ -23025,6 +23411,12 @@ def build_project_workbook(
     # одной цифрой. Расшифровка — формулы от блока «Вводных», а не числа на
     # дату сборки: правка мест прямо в книге обязана двигать и строку. Итоги
     # (H37, E44) — тоже формулы, чтобы сумма сходилась с B17.
+    # Правый блок E:H — та же пользовательская форма, что A:D.
+    # Стиль ставится ДО переноса: лист «Вводные» собирается из ячеек, которые
+    # шаблон помечает как пользовательский ввод.
+    xml = _v4_mirror_secondary_input_styles(xml)
+    xml = _v4_mark_engine_only_readonly(xml)
+
     report_sheet_path = _v4_sheet_path(source, "ОТЧЕТ")
     tep_sheet_path = _v4_sheet_path(source, "ТЭП")
     report_xml = source.read(report_sheet_path).decode("utf-8")
@@ -23523,23 +23915,32 @@ def build_project_workbook(
     # --- ВРИ ---------------------------------------------------------------
     land_cost = float(x.get("land_rights_cost_mln") or 0)
     put("B74", text="Да" if land_cost > 0 else "Нет", label="vri_required")
-    if str(x.get("vri_payment_mode") or "lump") == "installment":
-        years = int(float(x.get("vri_installment_years") or 3))
-        word = "год" if years == 1 else ("года" if years in (2, 3, 4) else "лет")
-        put("B75", text=f"{years} {word}", label="vri_payment_mode")
-    else:
-        put("B75", text="Единовременно", label="vri_payment_mode")
-    # Ячейка одна, а вводных в ней две: «3 года» несёт и порядок оплаты, и срок
-    # рассрочки. Ключ срока стоял в шаблоне на строке 77, где его РАЗБИРАЕТ
-    # формула, — то же самое, что было с лагом продаж и трендом темпа: правка
-    # живой ячейки и правка мёртвой выглядели одинаково. Обе вводные названы
-    # там, где их печатают, а строка 77 говорит, откуда берёт своё число.
-    put_new("D75", text="vri_payment_mode · vri_installment_years")
-    put_new("C77", text="лет — из строки 75")
+    put_new("D74", text="vri_required")
+    _vri_installment = str(x.get("vri_payment_mode") or "lump") == "installment"
+    put("B75", text="Рассрочка" if _vri_installment else "Единовременно",
+        label="vri_payment_mode")
+    # Режим и срок — две разные вводные и должны оставаться двумя ячейками.
+    # Прежнее «3 года» в B75 заставляло человека помнить синтаксис строки и
+    # мешало сделать нормальный dropdown. Все формулы графика уже читают B77
+    # как число лет, поэтому пишем срок прямо туда.
+    _vri_years = int(float(x.get("vri_installment_years") or 3))
+    put("B77", number=float(_vri_years), label="vri_installment_years")
+    xml = _v4_mark_as_entry(xml, "B77", missing)
+    put_new("D75", text="vri_payment_mode")
+    put_new("D77", text="vri_installment_years")
+    put_new("C77", text="лет")
     lead = {"before_rns_1m": 1, "before_rns_3m": 3, "at_rns": 0}.get(
         str(x.get("vri_obligation_date_mode") or "before_rns_1m"), 1)
     put("B76", number=float(lead), label="vri_obligation_lead_months")
-    put("B80", text="Нет" if x.get("vri_interest_enabled") is False else "Да",
+    _vri_periodicity = str(int(float(x.get("vri_periodicity_months") or 3)))
+    put("B78", text=_v4_mode_display("vri_periodicity_months", _vri_periodicity),
+        label="vri_periodicity_months")
+    _interest_raw = x.get("vri_interest_enabled")
+    if _interest_raw in (None, ""):
+        _interest_internal = ""
+    else:
+        _interest_internal = "1" if _vri_flag(_interest_raw, False) else "0"
+    put("B80", text=_v4_mode_display("vri_interest_enabled", _interest_internal),
         label="vri_interest_enabled")
     put("B84", text="Да" if x.get("vri_early_repay_after_pf") else "Нет",
         label="vri_early_repay_after_pf")
@@ -23547,6 +23948,7 @@ def build_project_workbook(
     # --- плотность: базовый потенциал равен применяемому, коэффициент 1 ----
     put("K6", text="Москва" if str(x.get("vri_region") or "msk") == "msk"
         else "Московская область", label="vri_region")
+    put_new("M6", text="vri_region")
     area = float(x.get("site_area_ha") or 0)
     density = float(x.get("site_density_sqm_per_ha") or 0) or 30000.0
     put("K7", number=area, label="site_area_ha")
@@ -23917,8 +24319,8 @@ def build_project_workbook(
         _rc_shape = max(0.05, float(x.get("rate_curve_shape") or 2.0))
     except Exception:
         _rc_date, _rc_offset, _rc_shape = None, 0, 2.0
-    _rc_scenario = _V4_RATE_SCENARIO_NAMES.get(
-        str(x.get("rate_scenario") or "base").strip().lower(), "Base")
+    _rc_scenario = _v4_mode_display(
+        "rate_scenario", str(x.get("rate_scenario") or "base").strip().lower())
     _rc_refs: dict[str, str] = {}
     try:
         xml, _rc_refs = _v4_rate_curve_rows_xml(
@@ -24059,6 +24461,13 @@ def build_project_workbook(
     xml = v4_entry_sheet.rename_sheet_refs(xml)
     try:
         xml, entry_xml, entry_report = v4_entry_sheet.build(xml, styles_xml)
+        xml = _v4_apply_mode_decoders(
+            xml, entry_report, _rc_refs.get("rate_scenario"), missing)
+        entry_xml = _v4_strip_engine_only_from_entry(entry_xml)
+        # Dropdown принадлежит именно пользовательскому листу. До разделения
+        # листов validation на старом XML остался бы на «Параметры модели»,
+        # где человек ничего не вводит.
+        entry_xml = _v4_add_mode_dropdowns(entry_xml, missing)
     except Exception as exc:  # noqa: BLE001 — книга без листа ввода не выпускается молча
         entry_xml, entry_report = "", {}
         missing.append("Вводные · лист ввода не собран: " + _error_location(exc))

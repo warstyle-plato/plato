@@ -143,9 +143,179 @@ def _book(inputs):
         io.BytesIO(content), data_only=False))
 
 
-def test_an_installment_is_written_in_the_words_of_the_book():
+def test_an_installment_keeps_mode_and_term_as_separate_inputs():
     _, _, _, sheet = _book({"vri_payment_mode": "installment", "vri_installment_years": 3})
-    assert sheet["B75"].value == "3 года"
+    assert sheet["B75"].value == "Рассрочка"
+    assert sheet["B77"].value == pytest.approx(3)
+    assert sheet["D75"].value == "vri_payment_mode"
+    assert sheet["D77"].value == "vri_installment_years"
+
+
+def _entry_value_cell_for_key(entry, key):
+    for key_col, value_col in (("D", "B"), ("H", "F"), ("M", "K")):
+        for row in range(1, entry.max_row + 1):
+            if entry[f"{key_col}{row}"].value == key:
+                return f"{value_col}{row}"
+    raise AssertionError(f"{key}: ключ не найден на пользовательском листе")
+
+
+def _dropdowns_by_cell(entry):
+    by_cell = {}
+    for validation in entry.data_validations.dataValidation:
+        for ref in str(validation.sqref).split():
+            by_cell[ref] = validation.formula1
+    return by_cell
+
+
+def _dropdown_values(formula):
+    text = str(formula or "")
+    if text.startswith('"') and text.endswith('"'):
+        text = text[1:-1]
+    return [value.replace('""', '"') for value in text.split(",") if value != ""]
+
+
+def test_every_canonical_mode_is_live_or_explicitly_engine_only():
+    """У mode-input нет третьего состояния: dropdown или engine-only с причиной."""
+    declared = set(core._v4_declared_mode_fields())
+    live = set(core._v4_live_mode_options())
+    engine_only = declared & set(core.V4_INPUTS_NOT_IN_BOOK)
+
+    assert not (live & engine_only)
+    assert declared == live | engine_only
+    assert all(str(core.V4_INPUTS_NOT_IN_BOOK[key]).strip() for key in engine_only)
+
+
+def test_live_mode_inputs_have_excel_dropdowns_and_canonical_values():
+    """Dropdown-ы строятся из canonical declaration, а не из Excel-списка."""
+    content, _, meta, _ = _book({"vri_payment_mode": "installment"})
+    assert meta["missing"] == []
+    book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
+    entry = book["Вводные"]
+    by_cell = _dropdowns_by_cell(entry)
+
+    expected = core._v4_live_mode_options()
+    targets = {key: _entry_value_cell_for_key(entry, key) for key in expected}
+    for key, coord in targets.items():
+        assert coord in by_cell, f"{key} ({coord}) — режим без выпадающего списка"
+        assert _dropdown_values(by_cell[coord]) == list(expected[key]), (
+            f"{key}: Excel options разошлись с canonical declaration")
+
+    assert "Капитализация в ПФ" in by_cell[targets["bridge_interest_mode"]]
+    assert "Рассрочка" in by_cell[targets["vri_payment_mode"]]
+    assert "Продаётся" in by_cell[targets["sports_disposition"]]
+    assert "Ежеквартально" in by_cell[targets["vri_periodicity_months"]]
+    assert "По региону" in by_cell[targets["vri_interest_enabled"]]
+    assert "Базовый" in by_cell[targets["rate_scenario"]]
+
+
+def test_translated_modes_show_russian_but_feed_legacy_formula_values():
+    content, _, meta, _ = _book({
+        "vri_periodicity_months": 3,
+        "vri_interest_enabled": "",
+        "rate_scenario": "base",
+    })
+    assert meta["missing"] == []
+    book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
+    entry = book["Вводные"]
+    params = book["Параметры модели"]
+
+    periodic_entry = _entry_value_cell_for_key(entry, "vri_periodicity_months")
+    interest_entry = _entry_value_cell_for_key(entry, "vri_interest_enabled")
+    rate_entry = _entry_value_cell_for_key(entry, "rate_scenario")
+    assert entry[periodic_entry].value == "Ежеквартально"
+    assert entry[interest_entry].value == "По региону"
+    assert entry[rate_entry].value == "Базовый"
+
+    periodic_source = _source_cell_for_entry(params, periodic_entry)
+    interest_source = _source_cell_for_entry(params, interest_entry)
+    rate_source = _source_cell_for_entry(params, rate_entry)
+    assert "Ежеквартально" in str(params[periodic_source].value)
+    assert "По региону" in str(params[interest_source].value)
+    assert "Начисляются" in str(params[interest_source].value)
+    assert "Москва" in str(params[interest_source].value)
+    assert "Базовый" in str(params[rate_source].value)
+    assert "Base" in str(params[rate_source].value)
+
+def _source_cell_for_entry(params, entry_coord):
+    # Простые поля — прямая ссылка, переведённые select — IF-декодер. В обоих
+    # случаях источник на «Параметры модели» обязан читать ту же user-cell.
+    wanted = f"'Вводные'!{entry_coord}"
+    for row in params.iter_rows():
+        for cell in row:
+            value = str(cell.value or "")
+            if value.startswith("=") and wanted in value:
+                return cell.coordinate
+    raise AssertionError(f"{entry_coord}: зеркало/декодер на «Параметры модели» не найден")
+
+
+def _formula_reads_parameter(book, coord):
+    import re as _re
+    column = _re.match(r"[A-Z]+", coord).group(0)
+    row = _re.search(r"\d+$", coord).group(0)
+    pattern = _re.compile(
+        rf"(?:'Параметры модели'|Параметры модели)!\$?{column}\$?{row}(?!\d)")
+    readers = []
+    for sheet in book.worksheets:
+        if sheet.title in ("Вводные", "Параметры модели"):
+            continue
+        for cells in sheet.iter_rows():
+            for cell in cells:
+                if isinstance(cell.value, str) and cell.value.startswith("="):
+                    if pattern.search(cell.value):
+                        readers.append(f"{sheet.title}!{cell.coordinate}")
+    return readers
+
+
+def test_every_editable_mode_has_a_real_formula_reader():
+    """Стрелка без экономического читателя запрещена: зеркало ввода не считается."""
+    content, _, meta, _ = _book({"vri_payment_mode": "installment"})
+    assert meta["missing"] == []
+    book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
+    entry = book["Вводные"]
+    params = book["Параметры модели"]
+
+    for key in core._v4_live_mode_options():
+        entry_coord = _entry_value_cell_for_key(entry, key)
+        source_coord = _source_cell_for_entry(params, entry_coord)
+        readers = _formula_reads_parameter(book, source_coord)
+        assert readers, (
+            f"{key}: dropdown есть, но {source_coord} не читает ни одна "
+            "экономическая формула книги")
+
+
+
+def test_engine_only_fields_are_absent_from_user_input_sheet():
+    content, _, meta, _ = _book()
+    assert meta["missing"] == []
+    entry = openpyxl.load_workbook(io.BytesIO(content), data_only=False)["Вводные"]
+    visible_keys = {
+        str(entry[f"{column}{row}"].value)
+        for column in ("D", "H", "M")
+        for row in range(1, entry.max_row + 1)
+        if entry[f"{column}{row}"].value not in (None, "")
+    }
+    leaked = visible_keys & set(core.V4_INPUTS_NOT_IN_BOOK)
+    assert leaked == set(), f"engine-only поля остались редактируемыми: {sorted(leaked)}"
+
+
+def test_secondary_input_block_e_to_h_is_formatted_by_field_type():
+    content, _, _, _ = _book()
+    entry = openpyxl.load_workbook(io.BytesIO(content), data_only=False)["Вводные"]
+
+    left_number = _entry_value_cell_for_key(entry, "purchase_price_mln")
+    left_pct = _entry_value_cell_for_key(entry, "marketing_pct")
+    left_text = _entry_value_cell_for_key(entry, "bridge_interest_mode")
+    right_number = _entry_value_cell_for_key(entry, "bridge_repay_lag_months")
+    right_pct = _entry_value_cell_for_key(entry, "bridge_cap_spread_pp")
+
+    assert entry[right_number].style_id == entry[left_number].style_id
+    assert entry[right_pct].style_id == entry[left_pct].style_id
+
+    # Engine-only режимы из соседнего E:H блока на пользовательский лист
+    # вообще не попадают: серое поле всё равно можно перепечатать в Excel.
+    for key in ("social_area_source", "vri_in_bank_budget", "vri_financing_mode"):
+        with pytest.raises(AssertionError):
+            _entry_value_cell_for_key(entry, key)
 
 
 def test_the_office_block_carries_dates_and_terms():
@@ -333,6 +503,67 @@ def test_the_book_passes_its_own_checks_and_matches_the_engine():
         "выручка книги разошлась с движком больше чем на 2%"
     assert book_llcr == pytest.approx(summary["llcr"], rel=0.05), \
         "LLCR книги разошёлся с движком больше чем на 5%"
+
+
+def test_bridge_interest_mode_mutates_the_downloaded_book_without_rebuild():
+    """B31 — настоящий переключатель: один XLSX, mutation, затем parity с engine.
+
+    Builder вызывается ровно один раз. После этого меняем dropdown прямо в
+    открытой книге и пересчитываем формулы тем же evaluator, которым проверяем
+    остальные цепочки Excel.
+    """
+    from xlsx_eval import Evaluator
+
+    inputs = {
+        **core.DEFAULT_INPUTS,
+        "purchase_price_mln": 2400.0,
+        "apartment_price_th": 500.0,
+        "commercial_price_th": 500.0,
+        "bridge_interest_mode": "Капитализация в ПФ",
+    }
+    tep = {key: dict(value) for key, value in core.TEP_DEFAULT.items()}
+
+    content, _, meta = core.build_project_workbook(
+        inputs, tep, [], {}, project_name="Mutation bridge mode")
+    assert meta["missing"] == []
+
+    book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
+    entry = book["Вводные"]
+    mode_cell = _entry_value_cell_for_key(entry, "bridge_interest_mode")
+    assert entry[mode_cell].value == "Капитализация в ПФ"
+
+    # Никакой второй сборки XLSX: меняется только уже скачанная книга.
+    entry[mode_cell] = "Выплата при рефинансировании"
+    evaluator = Evaluator(book)
+
+    changed_inputs = dict(inputs)
+    changed_inputs["bridge_interest_mode"] = "Выплата при рефинансировании"
+    engine = core.calculate_phased(core.PhasedCalcRequest(
+        inputs=changed_inputs, tep=tep, rates=[], phasing={}))
+    summary = engine["consolidated"]["summary"]
+    finance = engine["consolidated"]["finance"]
+
+    def x(sheet, cell):
+        return float(evaluator.cell(sheet, cell))
+
+    assert x("CF_1", "B32") == pytest.approx(
+        float(finance["bridge_interest"]) / 1e6, rel=0.02), "проценты БРИДЖ"
+    assert x("CF_1", "B42") == pytest.approx(
+        float(finance["pf_interest"]) / 1e6, rel=0.03), "проценты ПФ"
+    assert x("CF_1", "B82") == pytest.approx(
+        (float(finance["peak_bridge"]) + float(finance.get("transferred_bridge_interest") or 0.0))
+        / 1e6, rel=0.02), "пик БРИДЖ с капитализацией"
+    assert x("CF_1", "B83") == pytest.approx(
+        float(finance["peak_pf"]) / 1e6, rel=0.02), "пик ПФ"
+
+    assert x("ОТЧЕТ", "B9") == pytest.approx(
+        float(summary["financing_cost"]) / 1e6, rel=0.03), "стоимость финансирования"
+    assert x("ОТЧЕТ", "B11") == pytest.approx(
+        float(summary["profit_tax"]) / 1e6, rel=0.05), "налог"
+    assert x("ОТЧЕТ", "B12") == pytest.approx(
+        float(summary["net_profit"]) / 1e6, rel=0.03), "чистая прибыль"
+    assert x("ОТЧЕТ", "B19") == pytest.approx(
+        float(summary["llcr"]), rel=0.05), "LLCR"
 
 
 def test_the_tep_sheet_does_not_double_count_the_objects():
