@@ -1555,6 +1555,8 @@ def install(app: FastAPI) -> None:
                 control = {}
             # Контрольный кейс заполняет только нагрузку, и только полную:
             # LLCR и потолок остаются у настоящей модели проекта.
+            if control.get("available") and control.get("burden_pct") is None:
+                burden_reason = str(control.get("burden_reason") or burden_reason)
             if control.get("available") and control.get("burden_pct") is not None:
                 stack = control.get("cost_stack") or {}
                 burden_pct = control.get("burden_pct")
@@ -2927,13 +2929,16 @@ def install(app: FastAPI) -> None:
         """
         changed = 0
         processed = 0
+        # Файл рейтинга читается один раз за такт, а не на каждую площадку:
+        # сотни полных разборов ranking.json в минуту на воркер.
+        rows = {str(item.get("slug") or ""): item for item in krt_ranking.rows()}
         for project in _krt_all_sites():
             if _krt_status_kind(project.get("status")) == "running":
                 continue
             slug = str(project.get("slug") or "").strip()
             if not slug:
                 continue
-            row = krt_ranking.stored_row(slug)
+            row = dict(rows.get(slug) or {})
             if not _rating_needs_recount(project, row):
                 continue
             fields = _cached_investment_rating_fields(project)
@@ -2965,6 +2970,7 @@ def install(app: FastAPI) -> None:
                 if not off and core is not None and market is not None and not krt_ranking.claimed():
                     now = time.time()
                     missing: list[dict[str, Any]] = []
+                    rows = {str(item.get("slug") or ""): item for item in krt_ranking.rows()}
                     for project in _krt_all_sites():
                         # «В реализации» не получает инвестиционный рейтинг,
                         # но рынок у строки должен оставаться свежим: цена
@@ -2972,7 +2978,7 @@ def install(app: FastAPI) -> None:
                         slug = str(project.get("slug") or "").strip()
                         if not slug:
                             continue
-                        row = krt_ranking.stored_row(slug)
+                        row = dict(rows.get(slug) or {})
                         # Неудачный пересчёт не должен превращать stale-строку
                         # в бесконечную очередь повторных запросов. keep_computed
                         # оставляет последнюю удачную строку, а recompute_failed_at
