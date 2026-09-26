@@ -98,6 +98,15 @@ from market_search.subject import SubjectNotFound
 logger = logging.getLogger(__name__)
 
 
+def _positive_float(value: Any) -> float | None:
+    """A persisted zero/negative benchmark is missing, not a usable denominator."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
 class KrtRankingRequest(BaseModel):
     """Что считать: слаги отобранных площадок. Пусто — весь каталог.
 
@@ -1185,7 +1194,7 @@ def install(app: FastAPI) -> None:
         # не записывались, поэтому карточка показывала coverage 75% при полностью
         # посчитанном рынке.
         local_absorption = row.get("local_absorption_sqm_month")
-        benchmark_absorption = row.get("moscow_absorption_sqm_month")
+        benchmark_absorption = _positive_float(row.get("moscow_absorption_sqm_month"))
         peers = list(market_block.get("peers") or [])
         if local_absorption is None:
             areas = []
@@ -1210,7 +1219,7 @@ def install(app: FastAPI) -> None:
             city = getattr(market, "city", None)
             reader = getattr(city, "area_median", None)
             if callable(reader):
-                benchmark_absorption = reader(segment)
+                benchmark_absorption = _positive_float(reader(segment))
 
         burden_pct = row.get("burden_pct")
         burden_mln = row.get("burden_mln")
@@ -1296,8 +1305,9 @@ def install(app: FastAPI) -> None:
                 )
             else:
                 missing_reasons["burden"] = (
-                    "Полная денежная нагрузка КРТ пока не собрана для этой площадки; "
-                    "неизвестное не считается нулём."
+                    str(row.get("burden_reason") or "")
+                    or "Полная денежная нагрузка КРТ пока не собрана для этой площадки; "
+                       "неизвестное не считается нулём."
                 )
 
         rating = krt_investment_score.score(
@@ -2568,12 +2578,12 @@ def install(app: FastAPI) -> None:
             or row.get("segment")
             or (screening.get("market") or {}).get("recommended_segment")
         )
-        benchmark_absorption = row.get("moscow_absorption_sqm_month")
+        benchmark_absorption = _positive_float(row.get("moscow_absorption_sqm_month"))
         if benchmark_absorption is None and market is not None:
             city = getattr(market, "city", None)
             reader = getattr(city, "area_median", None)
             if callable(reader):
-                benchmark_absorption = reader(segment)
+                benchmark_absorption = _positive_float(reader(segment))
 
         burden_pct = row.get("burden_pct")
         burden_mln = row.get("burden_mln")
