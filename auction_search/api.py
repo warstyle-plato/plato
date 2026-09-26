@@ -165,10 +165,46 @@ _DISTRICT_OKRUG = {
     "гольяново": "ВАО", "коптево": "САО", "перово": "ВАО",
     "зеленоград": "ЗелАО",
 }
-_STREET_HINT_RE = re.compile(
-    r"(?iu)\b(?:ул\.?|улиц|ш\.?|шоссе|пр-?д|проезд|просп|пер\.?|переул|наб\.?|"
-    r"набереж|б-р|бульвар|д\.?|дом|вл\.?|владен|стр\.?|строен)\b"
+_STREET_HINTS = (
+    "ул.", "улица", "ш.", "шоссе", "пр-д", "проезд", "просп", "пер.",
+    "переул", "наб.", "набереж", "б-р", "бульвар", "д.", "дом", "вл.",
+    "владен", "стр.", "строен",
 )
+_ADDRESS_CITY_MARKERS = (
+    "г. москва,", "г москва,", "город москва,",
+    "г. москве,", "г москве,", "город москве,",
+    "г. москвы,", "г москвы,", "город москвы,",
+)
+_ADDRESS_STOP_MARKERS = (
+    " одновременно с ", " площадью ", " общей площадью ",
+    " кадастровый номер", " кадастрового номера", " к/н ", " кн ", " кад. №",
+    " право аренды", " находящ", " вид права",
+)
+
+
+def _first_after(text: str, markers: tuple[str, ...]) -> tuple[str, str]:
+    """Return tail after the earliest literal marker, without regular expressions.
+
+    Auction titles are external input. Literal scans stay linear even on a title
+    containing tens of thousands of repeated spaces, unlike several permissive
+    regexes that CodeQL correctly flagged as polynomial.
+    """
+    low = text.lower()
+    found: tuple[int, str] | None = None
+    for marker in markers:
+        index = low.find(marker)
+        if index >= 0 and (found is None or index < found[0]):
+            found = (index, marker)
+    if found is None:
+        return "", ""
+    index, marker = found
+    return text[index + len(marker):], marker
+
+
+def _cut_at_first_literal(text: str, markers: tuple[str, ...]) -> str:
+    low = text.lower()
+    positions = [pos for marker in markers if (pos := low.find(marker)) >= 0]
+    return text[:min(positions)] if positions else text
 
 
 def _export_address(row: dict[str, Any]) -> str:
@@ -178,29 +214,19 @@ def _export_address(row: dict[str, Any]) -> str:
     title = " ".join(str(row.get("name") or row.get("title") or "").split())
     if not title:
         return ""
-    patterns = (
-        r"(?iu)\bпо\s+адрес(?:у|ам)\s*:?\s*(.+)",
-        r"(?iu)\bрасположенн\w*\s+по\s+адрес(?:у|ам)\s*:?\s*(.+)",
-        r"(?iu)\b(?:г\.?\s*москв(?:а|е|ы)|город\s+москв(?:а|е|ы))\s*,\s*(.+)",
-    )
-    value = ""
-    for pattern in patterns:
-        match = re.search(pattern, title)
-        if match:
-            value = match.group(1)
-            if pattern == patterns[-1]:
-                value = "г. Москва, " + value
-            break
+
+    value, marker = _first_after(title, ("по адресу", "по адресам"))
+    if value:
+        value = value.lstrip(" :")
+    else:
+        value, marker = _first_after(title, _ADDRESS_CITY_MARKERS)
+        if value:
+            value = "г. Москва, " + value.lstrip()
     if not value:
         return ""
+
     # После адреса в названии лота обычно снова начинается описание объекта.
-    value = re.split(
-        r"(?iu)\s+(?:одновременно\s+с|площадью\s+\d|общей\s+площадью\s+\d|"
-        r"кадастров(?:ый|ого)\s+номер|к/?н\s*[:№]?|кад\.?\s*№|"
-        r"право\s+аренды|находящ\w*\s+в\s+(?:федеральной|собственности)|"
-        r"вид\s+права)",
-        value, maxsplit=1,
-    )[0]
+    value = _cut_at_first_literal(value, _ADDRESS_STOP_MARKERS)
     return value.strip(" ,;.-")
 
 
@@ -208,24 +234,28 @@ def _export_district(row: dict[str, Any], address: str) -> str:
     existing = " ".join(str(row.get("district") or "").split()).strip()
     if existing:
         return existing
-    text = " ".join((address, str(row.get("name") or row.get("title") or "")))
-    patterns = (
-        r"(?iu)\bвн\.?\s*тер\.?\s*г\.?\s*муниципальный\s+округ\s+([^,;]+)",
-        r"(?iu)\bмуниципальный\s+округ\s+([^,;]+)",
-        r"(?iu)\b(?:р-?н|район)\s+([^,;]+)",
-    )
-    for pattern in patterns:
-        match = re.search(pattern, text)
-        if match:
-            return match.group(1).strip(" .")
-    # Формат «г. Москва, Лефортово, ул. ...» встречается в ГИС Торгах.
-    match = re.search(r"(?iu)\bг\.?\s*москв(?:а|е|ы)\s*,\s*([^,;]+)", address)
-    if match:
-        candidate = match.group(1).strip()
-        if candidate and not _STREET_HINT_RE.search(candidate):
-            return re.sub(r"(?iu)^г\.?\s*", "", candidate).strip()
-    return ""
 
+    text = " ".join((address, str(row.get("name") or row.get("title") or "")))
+    low = text.lower()
+    for marker in ("муниципальный округ ", "район ", "р-н "):
+        index = low.find(marker)
+        if index < 0:
+            continue
+        tail = text[index + len(marker):]
+        stop = min([p for p in (tail.find(","), tail.find(";")) if p >= 0] or [len(tail)])
+        candidate = tail[:stop].strip(" .")
+        if candidate:
+            return candidate
+
+    # Формат «г. Москва, Лефортово, ул. ...» встречается в ГИС Торгах.
+    tail, _ = _first_after(address, _ADDRESS_CITY_MARKERS)
+    if tail:
+        stop = min([p for p in (tail.find(","), tail.find(";")) if p >= 0] or [len(tail)])
+        candidate = tail[:stop].strip()
+        candidate_low = candidate.lower()
+        if candidate and not any(hint in candidate_low for hint in _STREET_HINTS):
+            return candidate
+    return ""
 
 def _export_okrug(row: dict[str, Any], district: str, cadastre: str) -> str:
     existing = " ".join(str(row.get("okrug") or "").split()).strip()
