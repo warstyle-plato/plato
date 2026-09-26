@@ -11,6 +11,7 @@ const state = {
   slug: null,
   result: null,
   activeView: 'summary',
+  projectKind: 'residential',
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -22,6 +23,15 @@ const icons = {
 };
 
 const LLCR_TARGET = 1.2;
+
+const commercial = {
+  description: null,
+  asset: 'office',
+  strategy: 'income',
+  financing: 'equity_debt',
+  values: {},
+  result: null,
+};
 
 // --- форматирование ---------------------------------------------------------
 
@@ -984,8 +994,198 @@ function bindTepSearch() {
   $('#tepSearchButton').addEventListener('click', runTepSearch);
 }
 
+
+function setProjectKind(kind) {
+  state.projectKind = kind === 'nonresidential' ? 'nonresidential' : 'residential';
+  $('[data-project-kind]').forEach((button) => {
+    button.classList.toggle('is-active', button.dataset.projectKind === state.projectKind);
+  });
+  const isCommercial = state.projectKind === 'nonresidential';
+  if ($('#commercialNav')) $('#commercialNav').hidden = !isCommercial;
+  if ($('#commercialMobileNav')) $('#commercialMobileNav').hidden = !isCommercial;
+  if (isCommercial) setView('commercial');
+  else if (state.activeView === 'commercial') setView('summary');
+}
+
+function bindProjectKind() {
+  $('[data-project-kind]').forEach((button) => {
+    button.addEventListener('click', () => setProjectKind(button.dataset.projectKind));
+  });
+}
+
+function commercialFieldKeys() {
+  const keys = [
+    'land_cost_rub',
+    'gross_area_sqm',
+    'construction_cost_rub_sqm',
+    'soft_cost_pct',
+    'contingency_pct',
+    'construction_months',
+  ];
+
+  if (commercial.strategy === 'income') {
+    keys.push('stabilization_months', 'hold_years', 'exit_cap_rate_pct');
+    if (commercial.asset === 'hotel') {
+      keys.push('keys', 'adr_rub', 'occupancy_pct', 'other_revenue_pct', 'opex_pct', 'ffe_reserve_pct');
+    } else {
+      keys.push('income_area_sqm', 'rent_rub_sqm_month', 'occupancy_pct', 'opex_pct');
+      if (commercial.asset === 'retail') keys.push('sales_rub_sqm_month', 'turnover_rent_pct');
+    }
+  } else {
+    keys.push('sale_start_month', 'sale_months', 'selling_cost_pct');
+    if (commercial.asset === 'hotel') keys.push('saleable_keys', 'sale_price_rub_key');
+    else keys.push('saleable_area_sqm', 'sale_price_rub_sqm');
+  }
+
+  if (commercial.financing === 'equity_debt') {
+    keys.push('debt_share_pct', 'debt_rate_pct', 'loan_fee_pct');
+    if (commercial.strategy === 'sale') keys.push('sales_cash_sweep_pct');
+  }
+  return [...new Set(keys)];
+}
+
+function renderCommercialInputs() {
+  if (!commercial.description) return;
+  const metadata = Object.fromEntries(
+    (commercial.description.fields || []).map((item) => [item.key, item])
+  );
+  const assetLabel = {
+    office: 'Офис',
+    retail: 'Торговля',
+    hotel: 'Гостиница',
+  }[commercial.asset] || 'Нежилой объект';
+  $('#commercialInputsTitle').textContent = assetLabel;
+
+  $('#commercialInputs').innerHTML = commercialFieldKeys().map((key) => {
+    const meta = metadata[key] || { label: key, unit: '' };
+    const value = commercial.values[key] ?? '';
+    return `<label>
+      <span>${escapeHtml(meta.label)}<small>${escapeHtml(meta.unit || '')}</small></span>
+      <input type="number" step="any" data-commercial-key="${escapeHtml(key)}" value="${escapeHtml(value)}">
+    </label>`;
+  }).join('');
+
+  $('#commercialInputs [data-commercial-key]').forEach((input) => {
+    input.addEventListener('input', () => {
+      commercial.values[input.dataset.commercialKey] = Number(input.value || 0);
+    });
+  });
+}
+
+function formatCommercialMetric(label, value) {
+  const amount = num(value);
+  if (amount === null) return '—';
+  if (/RevPAR/.test(label)) return `${formatInt(amount)} ₽`;
+  if (/₽/.test(label)) return formatMoney(amount);
+  if (/ГНС|площад|Ключ|номер/i.test(label)) return formatInt(amount);
+  return amount.toLocaleString('ru-RU', { maximumFractionDigits: 2 });
+}
+
+function renderCommercialResult(result) {
+  commercial.result = result;
+  const kpi = result.kpi || {};
+  const income = result.strategy === 'income';
+  const cards = [
+    { icon: '◫', label: 'Девелоперские затраты', value: formatMoney(kpi.development_cost) },
+    { icon: '↗', label: income ? 'Совокупная стоимость/доход' : 'Выручка продаж', value: formatMoney(kpi.total_revenue) },
+    { icon: '₽', label: 'Прибыль до налога', value: formatMoney(kpi.profit_before_tax) },
+    { icon: '%', label: 'Маржа', value: formatPercent(kpi.margin) },
+    { icon: '◆', label: 'Собственный капитал', value: formatMoney(kpi.equity_required) },
+    { icon: '⌁', label: 'Пиковый долг', value: formatMoney(kpi.peak_debt), note: result.uses_escrow ? 'с эскроу' : 'без эскроу' },
+    { icon: '↗', label: 'IRR проекта', value: formatPercent(kpi.project_irr) },
+    { icon: '↗', label: 'IRR капитала', value: formatPercent(kpi.equity_irr) },
+  ];
+  if (income) {
+    cards.push({ icon: '₽', label: 'Стабилизированный NOI', value: formatMoney(kpi.stabilized_noi_annual), note: 'в год' });
+    cards.push({ icon: '%', label: 'Yield on cost', value: formatPercent(kpi.yield_on_cost) });
+  }
+  $('#commercialKpis').innerHTML = cards.map(kpiCard).join('');
+
+  const report = result.report || {};
+  $('#commercialSummary').innerHTML = `
+    <div class="commercial-summary-row"><span>Тип расчёта</span><strong>${escapeHtml(report.title || '')}</strong></div>
+    <div class="commercial-summary-row"><span>Реализация</span><strong>${escapeHtml(report.strategy || '')}</strong></div>
+    <div class="commercial-summary-row"><span>Капитал</span><strong>${escapeHtml(report.financing || '')}</strong></div>
+    <div class="commercial-summary-row"><span>Эскроу</span><strong>Не используется</strong></div>
+    <div class="commercial-warning-list">${(result.warnings || []).map((item) => `<p>${escapeHtml(item)}</p>`).join('')}</div>
+  `;
+
+  $('#commercialReport').innerHTML = (report.sections || []).map((section) => `
+    <div class="commercial-report-section">
+      <h3>${escapeHtml(section.name || '')}</h3>
+      ${Object.entries(section.metrics || {}).map(([label, value]) => `
+        <div><span>${escapeHtml(label)}</span><strong>${escapeHtml(formatCommercialMetric(label, value))}</strong></div>
+      `).join('')}
+    </div>
+  `).join('');
+}
+
+async function calculateCommercial() {
+  const status = $('#commercialStatus');
+  status.textContent = 'Считаю коммерческую экономику…';
+  try {
+    const response = await fetch('/api/v2/commercial/calculate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      cache: 'no-store',
+      body: JSON.stringify({
+        asset_type: commercial.asset,
+        strategy: commercial.strategy,
+        financing_mode: commercial.financing,
+        inputs: commercial.values,
+      }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.detail || 'Коммерческий расчёт не выполнен');
+    renderCommercialResult(result);
+    status.textContent = result.uses_escrow
+      ? 'Готово.'
+      : 'Готово. Денежный поток рассчитан без эскроу.';
+  } catch (error) {
+    status.textContent = String(error.message || error);
+  }
+}
+
+async function initCommercial() {
+  if (!$('#commercialAsset')) return;
+  const response = await fetch('/api/v2/commercial/form', { cache: 'no-store' });
+  if (!response.ok) throw new Error('Не удалось получить форму нежилой экономики');
+  commercial.description = await response.json();
+
+  const fill = (element, options) => {
+    element.innerHTML = (options || []).map((item) =>
+      `<option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}</option>`
+    ).join('');
+  };
+  fill($('#commercialAsset'), commercial.description.asset_types);
+  fill($('#commercialStrategy'), commercial.description.strategies);
+  fill($('#commercialFinancing'), commercial.description.financing_modes);
+
+  commercial.values = { ...(commercial.description.defaults[commercial.asset] || {}) };
+  $('#commercialNote').textContent = commercial.description.beta_note || '';
+
+  $('#commercialAsset').addEventListener('change', (event) => {
+    commercial.asset = event.target.value;
+    commercial.values = { ...(commercial.description.defaults[commercial.asset] || {}) };
+    renderCommercialInputs();
+  });
+  $('#commercialStrategy').addEventListener('change', (event) => {
+    commercial.strategy = event.target.value;
+    renderCommercialInputs();
+  });
+  $('#commercialFinancing').addEventListener('change', (event) => {
+    commercial.financing = event.target.value;
+    renderCommercialInputs();
+  });
+  $('#commercialCalc').addEventListener('click', calculateCommercial);
+
+  renderCommercialInputs();
+  await calculateCommercial();
+}
+
 async function init() {
   bindNavigation();
+  bindProjectKind();
   bindProjectMenu();
   bindTepSearch();
   const projectsResponse = await fetch('/api/v2/projects', { cache: 'no-store' });
@@ -997,6 +1197,7 @@ async function init() {
   const slug = state.projects.some((project) => project.slug === requested) ? requested : fallback;
   await loadProject(slug);
   await initForm();
+  await initCommercial();
   await initPlaton();
   $('#loading').classList.add('is-hidden');
 }
