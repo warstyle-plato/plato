@@ -16307,10 +16307,12 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         # печать досчитывала их сама и выглядела безупречно, а страница
         # показывала нули во всех строках. Одна поверхность прикрывала ошибку
         # другой, и найти её удалось только глазами.
+        _unit=lambda key: ('—' if item.get(key) is None
+                            else _pdf_num(item.get(key),1))
         expense_rows.append([item.get('label') or '—',_pdf_money(value),
                              (_pdf_num(value/total_expense*100,1)+'%') if total_expense else '—',
-                             _pdf_num(item.get('per_gns_th') or 0,1),
-                             _pdf_num(item.get('per_saleable_th') or 0,1)])
+                             _unit('per_gns_th'),
+                             _unit('per_saleable_th')])
         # Отдельно стоящий объект меряется своей площадью, наземный паркинг —
         # своими местами. Числа считает движок; отчёт носят в банк, и
         # расходиться с экраном ему нельзя — подстроки те же.
@@ -25811,8 +25813,12 @@ def build_plato_model_v2(
                         value=round(float(item.get(key) or 0.0), 6)).number_format = area
         # Продаётся — то, что остаётся за вычетом гостевых: правка мест на этой
         # же строке сразу двигает объём продаж, а не оставляет выгруженное число.
-        ws_tep.cell(row=line, column=9,
-                    value=f"=G{line}-H{line}").number_format = area
+        # У соцобъектов колонка G — мощность учреждения, не продаваемые
+        # единицы. Формула G-H для школы превращала 1 000 мест в 1 000
+        # «продаж» прямо в выгруженной книге.
+        sold_value = (0 if item.get("key") in SOCIAL_TEP_FIELDS
+                      else f"=G{line}-H{line}")
+        ws_tep.cell(row=line, column=9, value=sold_value).number_format = area
     total_line = 5 + len(tep_rows)
     ws_tep.cell(row=total_line, column=1, value="ИТОГО").font = styles["bold"]
     for column in range(2, 10):
@@ -30384,6 +30390,28 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     return result
 
 
+def _standalone_group_unit_metrics(
+    value: float, parts: list[dict[str, Any]]
+) -> tuple[float | None, float | None]:
+    """Удельные строки «Отдельные объекты» считаются только на её объекты.
+
+    Общая площадь проекта здесь не является физической базой статьи. Если в
+    группе смешаны площади ОСЗ и штучный наземный паркинг, единого ₽/м² нет:
+    вместо ложного знаменателя возвращаем пустое значение, а подстроки несут
+    свои корректные базы.
+    """
+    area_parts = [part for part in parts if part.get("basis") == "area"]
+    unit_parts = [part for part in parts if part.get("basis") == "units"]
+    if not area_parts or unit_parts:
+        return None, None
+    gns = sum(float(part.get("gns_sqm") or 0.0) for part in area_parts)
+    saleable = sum(float(part.get("saleable_sqm") or 0.0) for part in area_parts)
+    return (
+        value / gns / 1000 if gns else None,
+        value / saleable / 1000 if saleable else None,
+    )
+
+
 def calculate(req: CalcRequest) -> dict:
     x = req.inputs
     t = req.tep
@@ -30459,7 +30487,13 @@ def calculate(req: CalcRequest) -> dict:
             # гостевые места. Число едет строкой ТЭП, а не выводится каждой
             # поверхностью заново.
             "transfer_units": given,
-            "saleable_units": max(0.0, units - guest - given),
+            # У соцобъекта units — мощность (места ДОО/СОШ или посещения
+            # поликлиники), а не товарные единицы. Такие места строятся как
+            # обязательство, но не продаются участникам проекта.
+            "saleable_units": (
+                0.0 if key in SOCIAL_TEP_FIELDS
+                else max(0.0, units - guest - given)
+            ),
             # Гараж отдельно стоящего объекта живёт полем на его же строке, и
             # до отчёта эти поля не доезжали вовсе: строка собирается по
             # списку ключей, а их в списке не было. Свод очередей складывает
@@ -30690,14 +30724,12 @@ def calculate(req: CalcRequest) -> dict:
     # Отдельно стоящий объект меряется СВОЕЙ площадью, а наземный паркинг —
     # своими местами (владелец, 04.09.2026: «по сути это разные объекты и
     # должны на свои площади равняться»; «в случае с парковыми на ед м-м»).
-    # Колонки строки остаются проектными — они складываются в итог таблицы, —
-    # а под ней стоят подстроки «в т.ч.» со своей базой у каждого объекта.
-    # Прежде этого не было вовсе: расходы объектов делились на метры ВСЕГО
-    # проекта, и при вводной себестоимости 200 тыс ₽/м² GBA в таблице стояло
-    # 20,1 — в десять раз ниже, и сравнить это ни со сметой, ни со своей же
-    # вводной было нельзя. Рядом жила вторая беда: в числителе строки стоит и
-    # наземный паркинг, у которого метров в знаменателе нет вовсе — он
-    # продаётся местами.
+    # И строка группы, и подстроки «в т.ч.» обязаны жить на базах САМИХ
+    # объектов. Деление категории на ГНС всего проекта давало 132,7 тыс ₽/м²
+    # над офисником с 316,2 тыс ₽/м² — два ответа об одной статье. Если в
+    # группе есть штучный наземный паркинг, общей рублёвой ставки на м² у неё
+    # вообще нет: его мера — машино-место, и выдумывать общий знаменатель
+    # нельзя.
     def _amount_label(value: float) -> str:
         return f"{value:,.0f}".replace(",", "\u00a0")
 
@@ -30778,11 +30810,14 @@ def calculate(req: CalcRequest) -> dict:
         }
         if label == "Отдельные объекты" and standalone_items:
             entry["items"] = standalone_items
+            own_gns, own_saleable = _standalone_group_unit_metrics(value, standalone_items)
+            entry["per_gns_th"] = own_gns
+            entry["per_saleable_th"] = own_saleable
             entry["items_note"] = (
-                "Удельные по каждому объекту — на ЕГО площадь, у наземного "
-                "паркинга — на машино-место. Колонки самой строки, как и у "
-                "остальных статей, считаны на весь проект: они складываются "
-                "в итог таблицы, а числа объектов — нет."
+                "Строка «Отдельные объекты» считается на суммарную площадь "
+                "самих ОСЗ, а не всего проекта. Если внутри есть объект, "
+                "который меряется штуками (например наземный паркинг), общего "
+                "₽/м² у группы нет — смотрите удельные в подстроках."
             )
         expense_structure.append(entry)
     expense_structure.sort(key=lambda item: item["value"], reverse=True)
@@ -33012,6 +33047,11 @@ def _consolidate_phase_results(
                 part["per_own_saleable_th"] = (part["value"] / part["saleable_sqm"] / 1000
                                                if part["saleable_sqm"] else 0.0)
         entry["items"] = sorted(parts, key=lambda one: one["value"], reverse=True)
+        if entry["label"] == "Отдельные объекты":
+            own_gns, own_saleable = _standalone_group_unit_metrics(
+                float(entry["value"] or 0.0), parts)
+            entry["per_gns_th"] = own_gns
+            entry["per_saleable_th"] = own_saleable
         if item_note.get(entry["label"]):
             entry["items_note"] = item_note[entry["label"]]
     expense_structure.sort(key=lambda x: x["value"], reverse=True)
@@ -47674,6 +47714,24 @@ function renderTep(){
      // и запертая ячейка теряла бы серый фон. Стиль собирается один.
      html+=`<td style="vertical-align:top"><input type="number" step="0.1" value="${inputDisplay(row[col])}" style="margin:0${locked?';background:#f3f3f1;color:#555':''}" ${locked?'readonly':''} onchange="tepCellChanged('${key}','${col}',this.value)">${locked?'':ratioField(col)}</td>`;
    });tr.innerHTML=html;body.appendChild(tr);
+   // Собственный гараж ОСЗ — самостоятельный продаваемый продукт. Раньше
+   // места были только длинной подписью под офисником: в ТЭП их невозможно
+   // было увидеть как отдельный объём и легко принять за отсутствующие.
+   const parkOwn=((projectParking().own)||[]).find(o=>o&&o.tep_key===key&&o.enabled)||null;
+   const parkUnits=Number(parkOwn?parkOwn.units:(row.parking_units||0));
+   if(parkUnits>0){
+    const park=document.createElement('tr');
+    park.className='tep-sub';
+    const underUnits=Number(parkOwn?parkOwn.under_spaces:(row.parking_under_units||0));
+    const overUnits=Number(parkOwn?parkOwn.over_spaces:(row.parking_over_units||0));
+    const sold=Number(parkOwn?parkOwn.saleable_units:(row.parking_saleable_units||0));
+    const underArea=Number(parkOwn?parkOwn.under_gns:(row.under_gns||0));
+    park.innerHTML=`<td>↳ Паркинг · ${escapeHtml(String(row.label||key))}</td>`
+     +`<td colspan="6">построено ${num(parkUnits)} м/м · подземных ${num(underUnits)}`
+     +(underArea>0?` (${num(underArea)} м²)`:'')
+     +` · на первых этажах ${num(overUnits)} · продаётся ${num(sold)} м/м</td>`;
+    body.appendChild(park);
+   }
   });
   // Подытог раздела — только когда продуктов в нём больше одного: под
   // единственной строкой это она же во второй раз (правило «Итого МКД»).
@@ -47860,7 +47918,7 @@ function enableTepRow(key){
  inputs[sw[0]]=true;
  setTepNote(key,'');
  syncTep(false);renderInputs();renderTep();
- scheduleTepAutoRecalc();
+ scheduleTepAutoRecalc(key);
  calculate();
 }
 
@@ -47901,7 +47959,7 @@ function refillTepRow(key){
  // Посчитанное возвращается во вводные — иначе `syncTep` вернёт прежнее.
  if(tepRowToInputs(key))renderInputs();
  renderTep();
- scheduleTepAutoRecalc();
+ scheduleTepAutoRecalc(key);
  calculate();
 }
 
@@ -48083,14 +48141,14 @@ function tepCellChanged(key,col,value){
   inputs[TEP_SOCIAL_INPUTS[key]]=tep[key].total_area;
   renderInputs();
   renderTep();
-  scheduleTepAutoRecalc();
+  scheduleTepAutoRecalc(key);
   calculate();
   return;
  }
  if(key==='storage'&&['gns','units'].includes(col)){
   syncStoragePair(col);
   renderTep();
-  scheduleTepAutoRecalc();
+  scheduleTepAutoRecalc(key);
   calculate();
   return;
  }
@@ -48110,7 +48168,7 @@ function tepCellChanged(key,col,value){
   renderInputs();
   renderTep();
  }else{tepRowToInputs(key);updateTepTotals()}
- scheduleTepAutoRecalc();
+ scheduleTepAutoRecalc(key);
  calculate();
 }
 
@@ -48769,7 +48827,13 @@ let moAutoBusy=false;
 function moNormativeApartments(){
  return Number((inputs._mo_calc||{}).apartments_saleable||0);
 }
-function scheduleTepAutoRecalc(){
+function scheduleTepAutoRecalc(changedKey){
+ // Автопересчёт нормативов запускает только изменение ЖИЛОЙ базы. Офис,
+ // коммерция, кладовые и их доли не создают население. Раньше любая правка
+ // ТЭП по проекту с ГлавАПУ запускала общий recalc: смена 50→60% офисника
+ // показывала новое население, соцкомпенсацию и ВРИ, хотя квартира не
+ // изменилась ни на метр.
+ if(changedKey!=='apartments')return;
  const baseline=((inputs._glavapu_import||{}).normalized)||null;
  if(baseline&&Number(baseline.change_vri_mln||0)){
   clearTimeout(tepAutoTimer);
@@ -48986,15 +49050,23 @@ async function recalcFromTep(options){
  }
  const b=d.baseline||{};
  const cmp=(name,was,now)=>name+': было '+num(was)+' → стало '+num(now);
- const lines=[
-  cmp('Плата за ВРИ, млн ₽',b.vri_mln,d.vri_total_mln)
-   +(d.land_right_factor&&d.land_right_factor!==1?' (аренда: делитель 1,001)':''),
-  cmp('Соцкомпенсация, млн ₽',b.compensation_mln,d.compensation_mln),
-  cmp('Машино-места',b.parking_total,d.parking.total)
-   +' ('+d.parking.permanent+' постоянных + '+d.parking.guest+' гостевых + '
-   +d.parking.attached+' приобъектных)',
-  cmp('Население, чел.',b.population,d.population)
-   +' · ДОО '+d.places.kindergarten+' · школа '+d.places.school+' · поликлиника '+d.places.clinic];
+ const lockedKrt=krtRequirementEntered();
+ const lines=[];
+ // В режиме требования КРТ эти поля не являются результатом нашего
+ // нормативного пересчёта: они заданы договором, а плата за ВРИ обычно
+ // обнулена самим режимом. Показывать рядом «было 18 млрд → стало 10 млрд»,
+ // а ниже «не тронуто КРТ» — два взаимоисключающих ответа на одно поле.
+ if(!lockedKrt){
+  lines.push(cmp('Плата за ВРИ, млн ₽',b.vri_mln,d.vri_total_mln)
+   +(d.land_right_factor&&d.land_right_factor!==1?' (аренда: делитель 1,001)':''));
+  lines.push(cmp('Соцкомпенсация, млн ₽',b.compensation_mln,d.compensation_mln));
+ }
+ lines.push(cmp('Машино-места',b.parking_total,d.parking.total)
+  +' ('+d.parking.permanent+' постоянных + '+d.parking.guest+' гостевых + '
+  +d.parking.attached+' приобъектных)');
+ lines.push(cmp('Население, чел.',b.population,d.population)
+  +(lockedKrt?'':' · ДОО '+d.places.kindergarten+' · школа '+d.places.school
+    +' · поликлиника '+d.places.clinic));
  (d.warnings||[]).forEach(w=>lines.push('⚠ '+w));
  // Спрашивать на каждой правке ТЭП нечего: человек уже сказал, чего хочет,
  // изменив метры. Подтверждение осталось у явного нажатия кнопки.
@@ -50676,16 +50748,17 @@ function renderResult(){
    <div class="expense-value">${money(x.value)}</div>
  </div>`).join('');
  // Отдельно стоящий объект меряется СВОЕЙ площадью, а наземный паркинг —
- // своими местами: подстроки «в т.ч.» стоят под своей статьёй и несут числа,
- // посчитанные движком на их базы. Колонки самой статьи остаются проектными —
- // они складываются в итог таблицы, — и об этом сказано подписью под ней.
+ // своими местами. Строка группы тоже не делится на весь проект: если все
+ // части площадные, база — сумма площадей ОСЗ; при смешении с местами единого
+ // ₽/м² нет и ячейка честно остаётся пустой.
+ const expenseMetric=v=>(v===null||v===undefined)?'—':num2(v);
  expenseStructureTable.innerHTML=expenseRows.map(x=>{
    const head=`<tr>
    <td>${x.label}</td>
    <td>${money(x.value)}</td>
    <td>${(Number(x.share||0)*100).toLocaleString('ru-RU',{minimumFractionDigits:1,maximumFractionDigits:1})}%</td>
-   <td>${num2(x.per_gns_th)}</td>
-   <td>${num2(x.per_saleable_th)}</td>
+   <td>${expenseMetric(x.per_gns_th)}</td>
+   <td>${expenseMetric(x.per_saleable_th)}</td>
  </tr>`;
    const parts=(x.items||[]).map(o=>`<tr class="sub">
    <td style="padding-left:18px">в т.ч. ${o.label} · ${o.basis_label||''}</td>
@@ -50821,6 +50894,8 @@ function renderResult(){
  // переданные в натуре (строятся, но отданы). Обе считает движок и обе везёт
  // строкой ТЭП — экран их только показывает, своей арифметики здесь нет.
  const soldUnits=x=>Number(x.saleable_units!==undefined?x.saleable_units:x.units||0);
+ const capacityUnits=x=>['kindergarten','school','clinic'].includes(x.key);
+ const capacityNote=x=>x.key==='clinic'?'мощность, пос./смену':'мощность, мест';
  const unitNote=x=>{
   const parts=[];
   if(Number(x.guest_units||0)>0)parts.push('гостевых '+num(x.guest_units));
@@ -50829,7 +50904,7 @@ function renderResult(){
    ? `<span style="display:block;font-size:10px;color:#777">из них ${parts.join(' · ')}</span>`
    : '';
  };
- const soldTotal=r.tep.rows.reduce((sum,x)=>sum+soldUnits(x),0);
+ const soldTotal=r.tep.rows.reduce((sum,x)=>sum+(capacityUnits(x)?0:soldUnits(x)),0);
  // ГНС — наземная площадь здания, и у гаража с кладовыми её нет: под землёй
  // наружных стен не бывает, а экономика у подземной части своя — свой метр
  // стройки и продукт, продаваемый местами. Пока обе величины стояли в одной
@@ -50845,10 +50920,19 @@ function renderResult(){
  // дома, и живёт он полем на строке объекта. В колонке его не было вовсе, при
  // том что в `summary.underground_gns_sqm` и в статье CAPEX он есть: две
  // величины под одним именем. Итог берётся у движка, экран его не собирает.
- const objUnder=x=>Number(x.under_gns||0);
  const underTotal=Number(r.summary.underground_gns_sqm!==undefined
   ?r.summary.underground_gns_sqm:underGns);
  const dash='<span style="color:#bbb">—</span>';
+ const soldCell=x=>capacityUnits(x)?dash:num(soldUnits(x));
+ const objectParkingTepRow=x=>{
+  const built=Number(x.parking_units||0);
+  if(!(built>0))return '';
+  const sold=Number(x.parking_saleable_units||0);
+  const under=Number(x.under_gns||0);
+  return `<tr class="tep-sub"><td>↳ Паркинг · ${escapeHtml(String(x.label||'ОСЗ'))}</td>`
+   +`<td>${dash}</td><td>${under>0?num(under):dash}</td><td>${dash}</td>`
+   +`<td>${num(built)}</td><td>${num(sold)}</td></tr>`;
+ };
  // Переданные метры строятся и не продаются: в продаваемой их нет, и
  // без приписки отчёт читается так, будто продано всё построенное — «в отчёте
  // вообще нет указания на передаваемую! Чтобы не забыть, что вообще-то не всё
@@ -50863,9 +50947,10 @@ function renderResult(){
   `<tbody>`+
   r.tep.rows.map(x=>`<tr><td>${x.label}</td>`
    +`<td>${isUnder(x)?dash:num(x.gns)}</td>`
-   +`<td>${isUnder(x)?num(x.gns):(objUnder(x)>0?num(objUnder(x)):dash)}</td>`
+   +`<td>${isUnder(x)?num(x.gns):dash}</td>`
    +`<td>${num(x.saleable)}${areaNote(x)}</td>`
-   +`<td>${num(x.units)}${unitNote(x)}</td><td>${num(soldUnits(x))}</td></tr>`).join('')+
+   +`<td>${num(x.units)}${capacityUnits(x)?'<span style="display:block;font-size:10px;color:#777">'+capacityNote(x)+'</span>':unitNote(x)}</td><td>${soldCell(x)}</td></tr>`
+   +objectParkingTepRow(x)).join('')+
   `</tbody><tfoot><tr><th>Итого</th><th>${num(aboveGns)}</th><th>${num(underTotal)}</th>`
   +`<th>${num(r.tep.total.saleable)}`
   +(transferTotal>0?`<span style="display:block;font-size:10px;color:#777">${TRANSFER_NOTE_WORD} ${num(transferTotal)} м²</span>`:'')
