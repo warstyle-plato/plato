@@ -1166,10 +1166,8 @@ def install(app: FastAPI) -> None:
             "llcr": median_of("project_llcr_x", positive=True),
             "price": median_of("surrounding_price_rub_sqm", positive=True),
             "absorption": median_of("local_absorption_sqm_month", positive=True),
-            "burden": median_of(
-                "burden_pct",
-                predicate=lambda item: bool(item.get("burden_complete")),
-            ),
+            "burden": median_of("burden_pct", predicate=lambda item: bool(
+                item.get("burden_complete"))),
         }
 
 
@@ -1537,6 +1535,7 @@ def install(app: FastAPI) -> None:
                 "Нужна пара м²/мес.: локальная медиана и медиана Москвы по классу. "
                 "Сохранённые ДДУ/мес. не подменяют эту меру."
             )
+        stored_burden_reason = str(row.get("burden_reason") or "")
         if burden_pct is None:
             if project.get("early_unpublished") and project.get("seizure_mln") is not None:
                 missing_reasons["burden"] = (
@@ -1546,7 +1545,7 @@ def install(app: FastAPI) -> None:
                 )
             else:
                 missing_reasons["burden"] = (
-                    str((burden_state or {}).get("reason") or row.get("burden_reason") or "")
+                    str((burden_state or {}).get("reason") or stored_burden_reason)
                     or "Полная денежная нагрузка КРТ пока не собрана для этой площадки; "
                        "неизвестное не считается нулём."
                 )
