@@ -37,7 +37,7 @@ from auction_search.adapters import (
     RoseltorgAdapter,
     SberbankASTAdapter,
 )
-from auction_search.adapters.torgi_gov import TorgiGovAdapter, trust_report as torgi_trust_report
+from auction_search.adapters.torgi_gov import TorgiGovAdapter, lot_status_ru, trust_report as torgi_trust_report
 from auction_search.adapters.etp_probe import (
     SLUGS as etp_slugs,
     probe as etp_probe,
@@ -449,6 +449,8 @@ def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
                         area_sqm = parse_hectares_sqm(str(row.get("name") or ""))
                     row["krt_area_ha"] = (area_sqm / 10_000) if area_sqm is not None else ""
                 row["days_to_deadline"] = _days_to_application_deadline(row)
+            # Снимки, сохранённые до перевода, несут код ГИС Торгов как есть.
+            row["status"] = lot_status_ru(row.get("status"))
             values = []
             for key in keys:
                 if key in numeric_keys:

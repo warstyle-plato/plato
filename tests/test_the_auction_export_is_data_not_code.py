@@ -55,3 +55,14 @@ def test_only_http_links_become_hyperlinks_and_address_still_wraps():
     address = cell(2, "Адрес")
     assert address.hyperlink is not None
     assert address.alignment.wrap_text is True
+
+
+def test_a_portal_status_code_is_russian_in_the_book():
+    """ГИС Торгов отдаёт статус кодом (`APPLICATIONS_SUBMISSION`); в книге — словами."""
+    rows = [{"section": "Торги", "name": "Лот", "status": "APPLICATIONS_SUBMISSION"},
+            {"section": "Торги", "name": "Лот 2", "status": "SOME_NEW_CODE"},
+            {"section": "Торги", "name": "Лот 3", "status": "Приём заявок"}]
+    ws = openpyxl.load_workbook(io.BytesIO(_xlsx(rows, "auctions"))).active
+    column = [cell.value for cell in ws[1]].index("Статус")
+    assert [ws[r][column].value for r in (2, 3, 4)] == [
+        "Приём заявок", "статус площадки: SOME_NEW_CODE", "Приём заявок"]
