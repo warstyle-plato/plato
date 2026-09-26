@@ -12,11 +12,30 @@ from __future__ import annotations
 
 import copy
 import json
+import os
+import re
+import time
 from pathlib import Path
 from typing import Any
 
+from market_search.http import load_json, save_json
+
 TARGET_LLCR = 1.20
 DEFAULT_PRICE_TARGET_RUB_SQM = 600_000.0
+
+# Версия не шкал рейтинга, а конвейера, который превращает опубликованный
+# проект решения в денежную нагрузку. Меняется отдельно: четыре шкалы #485
+# остаются теми же, но старые строки обязаны понять, что теперь burden можно
+# достроить автоматически.
+BURDEN_PIPELINE_VERSION = 1
+BURDEN_CACHE_SCHEMA_VERSION = 1
+BURDEN_LOOKUP_CHUNK = 6
+BURDEN_RETRY_SECONDS = 24 * 60 * 60
+BURDEN_NETWORK_RETRY_SECONDS = 30 * 60
+# Единственная оценочная ставка в generic-конвейере: та же предпосылка
+# site-preparation, которая уже используется в КРТ Варшавское/Нагатино.
+# Это не факт документа и поэтому возвращается в components с basis=assumption.
+DEFAULT_KRT_DEMOLITION_TH_PER_SQM = 15.0
 
 LLCR_STOPS = [(1.00, 0.0), (1.10, 25.0), (1.20, 75.0), (1.30, 100.0)]
 PRICE_RATIO_STOPS = [(0.70, 0.0), (0.85, 50.0), (1.00, 100.0)]
@@ -115,7 +134,7 @@ def _component(
 def methodology() -> dict[str, Any]:
     """Machine-readable methodology from issue #485."""
     return {
-        "version": "issue-485-krt-rating-4x100-v1",
+        "version": "issue-485-krt-rating-4x100-v3",
         "issue": 485,
         "price_target_default_rub_sqm": DEFAULT_PRICE_TARGET_RUB_SQM,
         "target_llcr_x": TARGET_LLCR,
@@ -129,20 +148,24 @@ def methodology() -> dict[str, Any]:
         "burden_pct_stops": BURDEN_PCT_STOPS,
         "rules": {
             "running": "visible_unscored",
-            "missing": "no_total_score_no_renormalisation",
+            "missing": "median_imputation_when_available_else_no_total_score",
+            "coverage": "share_of_components_based_on_direct_project_or_local_market_facts",
+            "imputation": "missing inputs may use transparent Moscow/class or KRT-catalogue medians",
             "coverage_step_pct": 25,
             "buyout": "non_moscow_cadastral_value_land_and_buildings_no_duplicates",
             "moscow_property": "zero_buyout",
             "missing_cadastral_value": "unknown_not_zero",
+            "early_partial_burden": "known_seizure_does_not_equal_full_burden",
             "absorption_unit": "sqm_per_month",
             "entry_capacity": "shown_separately_not_in_rating",
             "only_user_scenario_parameter": "price_target_rub_sqm",
         },
         "explanations": {
             "coverage": (
-                "Каждый известный блок даёт 25 п.п. coverage. При 25/50/75% "
-                "известные оценки показываются, но итоговый рейтинг остаётся «—»: "
-                "три известных блока нельзя перенормировать в 100."
+                "Каждый блок, посчитанный по данным самой площадки/локального рынка, "
+                "даёт 25 п.п. coverage. Если входа нет, каталог может подставить "
+                "прозрачно подписанную медиану Москвы/класса или каталога КРТ. "
+                "Рейтинг при этом остаётся числом, а coverage показывает долю факта."
             ),
             "running": (
                 "Площадка со статусом «В реализации» остаётся в каталоге и фильтрах, "
@@ -183,10 +206,18 @@ def score(
     entry_capacity_mln: Any = None,
     sources: dict[str, str] | None = None,
     missing_reasons: dict[str, str] | None = None,
+    observed_components: set[str] | list[str] | tuple[str, ...] | None = None,
+    imputed_components: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Four equal 0..100 components; any missing component makes total null."""
+    """Four equal 0..100 components.
+
+    The scorer remains strict when a value is genuinely unresolved. The
+    catalogue may pass median-imputed effective inputs plus metadata so the
+    UI shows a useful number without pretending an estimate is measured fact.
+    """
     sources = sources or {}
     missing_reasons = missing_reasons or {}
+    imputed_components = dict(imputed_components or {})
 
     llcr_n = _number(llcr)
     market = _number(market_rub_sqm)
@@ -249,9 +280,16 @@ def score(
         ),
     }
 
-    known = [item for item in components.values() if item["score"] is not None]
-    coverage = len(known) * 25
+    resolved = [key for key, item in components.items() if item["score"] is not None]
     missing = [key for key, item in components.items() if item["score"] is None]
+    if observed_components is None:
+        observed = set(resolved)
+    else:
+        observed = {
+            str(key) for key in observed_components
+            if str(key) in components and components[str(key)]["score"] is not None
+        }
+    coverage = len(observed) * 25
     rankable = str(status_kind or "").strip().lower() != "running"
     total = None
     reason = ""
@@ -259,7 +297,7 @@ def score(
     if not rankable:
         reason = "В реализации · без балла"
     elif missing:
-        reason = "Не хватает данных: " + ", ".join(missing)
+        reason = "Не хватает данных даже после подстановок: " + ", ".join(missing)
     else:
         values = [float(components[k]["score"]) for k in ("llcr", "price", "absorption", "burden")]
         total = sum(values) / 4.0
@@ -267,6 +305,18 @@ def score(
             f"({values[0]:.1f} + {values[1]:.1f} + {values[2]:.1f} + {values[3]:.1f}) "
             f"/ 4 = {total:.1f} → {round(total):.0f}"
         )
+        used = [key for key in ("llcr", "price", "absorption", "burden")
+                if key in imputed_components]
+        if used:
+            reason = "Оценка с медианной подстановкой: " + ", ".join(used)
+
+    for key, note in imputed_components.items():
+        if key in components:
+            components[key]["estimated"] = True
+            components[key]["estimate_source"] = str(note)
+            components[key]["source"] = str(note) or components[key].get("source", "")
+    for key in components:
+        components[key].setdefault("estimated", False)
 
     return {
         "score": None if total is None else round(total, 2),
@@ -275,10 +325,457 @@ def score(
         "rankable": rankable,
         "reason": reason,
         "missing": missing,
+        "imputed": [
+            {"component": key, "source": str(imputed_components[key])}
+            for key in ("llcr", "price", "absorption", "burden")
+            if key in imputed_components
+        ],
         "components": components,
         "arithmetic": arithmetic,
         "price_target_rub_sqm": target,
         "methodology": methodology(),
+    }
+
+
+
+def _burden_cache_path(project: dict[str, Any], cache_root: str | Path | None = None) -> Path:
+    root = (
+        Path(cache_root)
+        if cache_root is not None
+        else Path(os.getenv("DATA_DIR", "data")) / "market" / "krt" / "burden"
+    )
+    raw = str(project.get("slug") or project.get("name") or "krt").strip().lower()
+    safe = re.sub(r"[^0-9a-zа-яё_-]+", "-", raw, flags=re.I).strip("-")[:140] or "krt"
+    return root / f"{safe}.json"
+
+
+def _burden_record(item: Any, number: str) -> dict[str, Any]:
+    now = int(time.time())
+    if not isinstance(item, dict) or not item.get("found"):
+        return {
+            "asked_at": now,
+            "cadastral_number": number,
+            "found": False,
+            "reason": str((item or {}).get("note") or "ЕГРН не вернул объект")[:300]
+            if isinstance(item, dict) else "ЕГРН не вернул объект",
+        }
+    value = _number(item.get("cadastral_value_rub"))
+    return {
+        "asked_at": now,
+        "cadastral_number": str(item.get("cadastral_number") or number),
+        "found": True,
+        "kind": str(item.get("kind") or ""),
+        "ownership": str(item.get("ownership") or ""),
+        "cadastral_value_rub": value,
+        "address": str(item.get("address") or "")[:300],
+    }
+
+
+def _ownership_bucket(value: Any) -> str:
+    """moscow / non_moscow / unknown без догадки по молчащему ЕГРН."""
+    text = re.sub(r"\s+", " ", str(value or "")).strip().casefold()
+    if not text:
+        return "unknown"
+    if re.search(r"\bгород(?:а)?\s+москв[аы]\b|\bг\.\s*москва\b", text):
+        return "moscow"
+    # Эти формулировки однозначно НЕ означают собственность города Москвы.
+    if any(mark in text for mark in (
+        "частн", "федерал", "муниципальн", "российской федерации",
+        "иностран", "долев", "совместн",
+    )):
+        return "non_moscow"
+    # В публичном НСПД часто стоит лишь «собственность публично-правовых
+    # образований». Это может быть и Москва, и РФ; выдумывать владельца нельзя.
+    if any(mark in text for mark in (
+        "публично-правов", "не разгранич", "государственн",
+    )):
+        return "unknown"
+    return "unknown"
+
+
+def _cached_cadastral_buyout(
+    project: dict[str, Any],
+    numbers: list[str],
+    lookup: Any,
+    *,
+    cache_root: str | Path | None = None,
+    chunk: int = BURDEN_LOOKUP_CHUNK,
+) -> dict[str, Any]:
+    """Дочитать ЕГРН порциями и посчитать только доказанный выкуп.
+
+    Кэш нужен не для скорости интерфейса, а чтобы 60 кадастровых номеров одного
+    решения не превращались в 60 сетевых запросов на каждом минутном такте.
+    """
+    clean = list(dict.fromkeys(str(n or "").strip() for n in numbers if str(n or "").strip()))
+    path = _burden_cache_path(project, cache_root)
+    cached = load_json(path)
+    answers: dict[str, Any] = {}
+    if (
+        isinstance(cached, dict)
+        and cached.get("schema_version") == BURDEN_CACHE_SCHEMA_VERSION
+        and list(cached.get("numbers") or []) == clean
+    ):
+        answers = dict(cached.get("answers") or {})
+
+    unasked = [number for number in clean if number not in answers]
+    problem = ""
+    if unasked and callable(lookup):
+        ask = unasked[:max(1, int(chunk))]
+        try:
+            found = list(lookup(ask) or [])
+        except Exception as exc:  # noqa: BLE001
+            problem = f"ЕГРН не ответил: {type(exc).__name__}: {exc}"[:300]
+        else:
+            by_number = {
+                str(item.get("cadastral_number") or ""): item
+                for item in found if isinstance(item, dict)
+            }
+            for number in ask:
+                candidate = by_number.get(number)
+                if candidate is None:
+                    # Некоторые реализации возвращают найденное в том же
+                    # порядке без номера у отказа; сохраняем отказ по запросу.
+                    candidate = {"found": False, "note": "ЕГРН не вернул объект"}
+                answers[number] = _burden_record(candidate, number)
+
+    state = {
+        "schema_version": BURDEN_CACHE_SCHEMA_VERSION,
+        "numbers": clean,
+        "answers": answers,
+        "updated_at": int(time.time()),
+        "problem": problem,
+    }
+    try:
+        save_json(path, state)
+    except OSError:
+        pass
+
+    remaining = [number for number in clean if number not in answers]
+    if remaining:
+        return {
+            "available": False,
+            "pending": True,
+            "retry_after_seconds": (
+                BURDEN_NETWORK_RETRY_SECONDS if problem else 60
+            ),
+            "reason": (
+                problem
+                or f"ЕГРН: дочитано {len(answers)} из {len(clean)} кадастровых объектов"
+            ),
+            "read": len(answers),
+            "total": len(clean),
+            "missing": remaining[:20],
+        }
+
+    missing: list[str] = []
+    city_numbers: list[str] = []
+    paid_numbers: list[str] = []
+    total_rub = 0.0
+    for number in clean:
+        item = dict(answers.get(number) or {})
+        if not item.get("found"):
+            missing.append(f"{number}: {item.get('reason') or 'объект не найден'}")
+            continue
+        kind = str(item.get("kind") or "")
+        if kind not in {"land", "building"}:
+            missing.append(f"{number}: тип ЕГРН «{kind or 'не определён'}» не является ЗУ/ОКС")
+            continue
+        bucket = _ownership_bucket(item.get("ownership"))
+        if bucket == "unknown":
+            missing.append(
+                f"{number}: ЕГРН не позволяет отличить собственность Москвы от иной"
+            )
+            continue
+        if bucket == "moscow":
+            city_numbers.append(number)
+            continue
+        value = _number(item.get("cadastral_value_rub"))
+        if value is None:
+            missing.append(f"{number}: кадастровая стоимость не опубликована")
+            continue
+        total_rub += value
+        paid_numbers.append(number)
+
+    if missing:
+        return {
+            "available": False,
+            "pending": False,
+            "retry_after_seconds": BURDEN_RETRY_SECONDS,
+            "reason": "Выкуп не собран полностью: " + "; ".join(missing[:4]),
+            "missing": missing[:30],
+            "read": len(answers),
+            "total": len(clean),
+            "moscow_zero_count": len(city_numbers),
+            "paid_count": len(paid_numbers),
+        }
+    return {
+        "available": True,
+        "pending": False,
+        "retry_after_seconds": BURDEN_RETRY_SECONDS,
+        "amount_mln": round(total_rub / 1_000_000.0, 3),
+        "read": len(answers),
+        "total": len(clean),
+        "moscow_zero_count": len(city_numbers),
+        "paid_count": len(paid_numbers),
+        "moscow_zero_numbers": city_numbers[:30],
+        "paid_numbers": paid_numbers[:30],
+    }
+
+
+def _social_burden_from_inputs(inputs: dict[str, Any]) -> tuple[float, list[str]]:
+    specs = (
+        ("kindergarten_places", "kindergarten_cost_mln_per_place", "ДОО"),
+        ("school_places", "school_cost_mln_per_place", "СОШ"),
+        ("clinic_capacity", "clinic_cost_mln_per_unit", "поликлиника"),
+    )
+    total = 0.0
+    missing: list[str] = []
+    for amount_key, cost_key, label in specs:
+        amount = _number(inputs.get(amount_key)) or 0.0
+        if amount <= 0:
+            continue
+        cost = _number(inputs.get(cost_key))
+        if cost is None or cost <= 0:
+            missing.append(f"{label}: нет стоимости мощности")
+            continue
+        total += amount * cost
+    return total, missing
+
+
+def _unpriced_infrastructure(duties: dict[str, Any], inputs: dict[str, Any]) -> list[str]:
+    """То, что решение требует, а существующая модель пока не монетизировала."""
+    missing: list[str] = []
+    for raw in list(duties.get("unmodelled_construction") or []):
+        text = str(raw or "")
+        low = text.casefold()
+        # Школы/сады/поликлиники уже попали в inputs через один и тот же
+        # parser -> programme; повторно считать их неизвестной нагрузкой нельзя.
+        if ("школ" in low or "образован" in low) and (_number(inputs.get("school_places")) or 0) > 0:
+            continue
+        if ("детск" in low or "дошколь" in low) and (_number(inputs.get("kindergarten_places")) or 0) > 0:
+            continue
+        if ("поликлиник" in low or "медицин" in low) and (_number(inputs.get("clinic_capacity")) or 0) > 0:
+            continue
+        # Офисы/торговля/производство — продукт программы, а не дополнительная
+        # денежная нагрузка КРТ; их CAPEX/выручка уже сидят в модели.
+        if any(mark in low for mark in (
+            "офис", "торгов", "рынок", "производствен", "общественно-делов",
+        )):
+            continue
+        if any(mark in low for mark in (
+            "инженер", "сет", "дорог", "паркинг", "гараж", "спорт", "фок",
+            "коммуналь",
+        )):
+            missing.append(text[:220])
+    return list(dict.fromkeys(missing))[:20]
+
+
+def generic_project_burden(
+    core: Any,
+    project: dict[str, Any],
+    screening: dict[str, Any],
+    *,
+    cache_root: str | Path | None = None,
+    lookup_chunk: int = BURDEN_LOOKUP_CHUNK,
+    compute_entry_capacity: bool = True,
+) -> dict[str, Any]:
+    """Полная денежная нагрузка обычного опубликованного КРТ.
+
+    Здесь нет новой шкалы и нет второго финансового движка. Проект решения
+    определяет состав территории и обязательства; ЕГРН — стоимость/форму
+    собственности; уже собранные model_inputs дают соцобъекты. После этого
+    тот же authoritative engine пересчитывает LLCR с известной нагрузкой.
+    """
+    now = int(time.time())
+    if not screening.get("available"):
+        return {
+            "available": False, "pending": False, "checked_at": now,
+            "retry_after_seconds": BURDEN_RETRY_SECONDS,
+            "reason": "Финансовая модель площадки не собрана",
+        }
+    if project.get("early_unpublished"):
+        return {
+            "available": False, "pending": False, "checked_at": now,
+            "retry_after_seconds": BURDEN_RETRY_SECONDS,
+            "reason": "Ранний сигнал не является опубликованным проектом решения",
+        }
+
+    duties = dict(screening.get("requirements") or {})
+    if not duties.get("decision_available"):
+        return {
+            "available": False, "pending": False, "checked_at": now,
+            "retry_after_seconds": BURDEN_RETRY_SECONDS,
+            "reason": "Опубликованный проект решения с обязательствами не прочитан",
+        }
+    numbers = list(dict.fromkeys(str(x or "").strip()
+                                 for x in (duties.get("cadastral_numbers") or [])
+                                 if str(x or "").strip()))
+    if str(duties.get("cadastral_numbers_source") or "") != "appendix" or not numbers:
+        return {
+            "available": False, "pending": False, "checked_at": now,
+            "retry_after_seconds": BURDEN_RETRY_SECONDS,
+            "reason": "В проекте решения не прочитан полный перечень ЗУ и ОКС",
+        }
+
+    model_inputs = dict(screening.get("model_inputs") or {})
+    inputs = copy.deepcopy(model_inputs.get("inputs") or {})
+    tep = copy.deepcopy(model_inputs.get("tep") or {})
+    phasing = copy.deepcopy(model_inputs.get("phasing") or {})
+    if not inputs or not tep:
+        return {
+            "available": False, "pending": False, "checked_at": now,
+            "retry_after_seconds": BURDEN_RETRY_SECONDS,
+            "reason": "Сохранённые вводные DevelopAid отсутствуют",
+        }
+
+    lookup = getattr(core, "_land_lookup_by_numbers", None)
+    if not callable(lookup):
+        return {
+            "available": False, "pending": False, "checked_at": now,
+            "retry_after_seconds": BURDEN_RETRY_SECONDS,
+            "reason": "ЕГРН lookup движка недоступен",
+        }
+    buyout = _cached_cadastral_buyout(
+        project, numbers, lookup, cache_root=cache_root, chunk=lookup_chunk)
+    if not buyout.get("available"):
+        return {
+            "available": False,
+            "pending": bool(buyout.get("pending")),
+            "checked_at": now,
+            "retry_after_seconds": int(
+                buyout.get("retry_after_seconds") or BURDEN_RETRY_SECONDS),
+            "reason": str(buyout.get("reason") or "Кадастровый выкуп не собран"),
+            "components": {"cadastral_buyout": buyout},
+        }
+
+    missing: list[str] = []
+    conditional = int(_number(duties.get("conditional_objects")) or 0)
+    if conditional:
+        missing.append(
+            f"{conditional} объектов имеют неопределённый выбор «снос/реконструкция»")
+
+    demolition_objects = int(_number(duties.get("demolition_objects")) or 0)
+    demolition_known = int(_number(duties.get("demolition_known_area_objects")) or 0)
+    demolition_area = _number(duties.get("demolition_area_sqm")) or 0.0
+    demolition_rate = _number(inputs.get("demolition_cost_th_per_sqm"))
+    demolition_rate = (
+        demolition_rate if demolition_rate is not None and demolition_rate > 0
+        else DEFAULT_KRT_DEMOLITION_TH_PER_SQM
+    )
+    if demolition_objects and (
+        demolition_known < demolition_objects or demolition_area <= 0
+    ):
+        missing.append(
+            f"площадь сноса известна не по всем объектам "
+            f"({demolition_known}/{demolition_objects})")
+    demolition_mln = (
+        demolition_area * demolition_rate / 1000.0
+        if demolition_objects and demolition_area > 0 else 0.0
+    )
+
+    resettlement = list(duties.get("resettlement") or [])
+    resettlement_mln = 0.0
+    if resettlement:
+        value = _number(inputs.get("resettlement_cost_mln"))
+        if value is None or value <= 0:
+            missing.append("решение содержит расселение/изъятие без денежной оценки")
+        else:
+            resettlement_mln = value
+
+    social_mln, social_missing = _social_burden_from_inputs(inputs)
+    missing.extend(social_missing)
+    missing.extend(
+        f"не оценено обязательство: {item}"
+        for item in _unpriced_infrastructure(duties, inputs)
+    )
+    if missing:
+        return {
+            "available": False, "pending": False, "checked_at": now,
+            "retry_after_seconds": BURDEN_RETRY_SECONDS,
+            "reason": "; ".join(missing[:5]),
+            "components": {
+                "cadastral_buyout": buyout,
+                "demolition_mln": round(demolition_mln, 3),
+                "demolition_rate_th_per_sqm": demolition_rate,
+                "social_mln": round(social_mln, 3),
+                "resettlement_mln": round(resettlement_mln, 3),
+            },
+        }
+
+    social_cash_mln = _number(inputs.get("social_compensation_mln")) or 0.0
+    land_rights_mln = _number(inputs.get("land_rights_cost_mln")) or 0.0
+    cadastral_mln = float(buyout.get("amount_mln") or 0.0)
+
+    rated_inputs = copy.deepcopy(inputs)
+    rated_inputs["purchase_price_mln"] = cadastral_mln
+    rated_inputs["demolition_area_sqm"] = demolition_area
+    rated_inputs["demolition_cost_th_per_sqm"] = demolition_rate
+    if resettlement_mln > 0:
+        rated_inputs["resettlement_cost_mln"] = resettlement_mln
+
+    try:
+        from auction_search.krt_screening import _goal_seek_entry_capacity, _snapshot
+
+        bundle = core._run_authoritative_model(rated_inputs, tep, [], phasing)
+        consolidated = bundle["consolidated"]
+        metrics = _snapshot(core, consolidated)
+        ordinary_capex = _ordinary_capex(core, rated_inputs, tep, phasing)
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "available": False, "pending": False, "checked_at": now,
+            "retry_after_seconds": BURDEN_RETRY_SECONDS,
+            "reason": f"DevelopAid не пересчитал нагрузку: {type(exc).__name__}: {exc}",
+        }
+
+    if ordinary_capex is None or ordinary_capex <= 0:
+        return {
+            "available": False, "pending": False, "checked_at": now,
+            "retry_after_seconds": BURDEN_RETRY_SECONDS,
+            "reason": "ordinary CAPEX аналогичного проекта не определён",
+        }
+
+    total_mln = (
+        cadastral_mln + demolition_mln + social_mln + resettlement_mln
+        + social_cash_mln + land_rights_mln
+    )
+    burden_pct_value = 100.0 * total_mln / ordinary_capex
+    right_capacity = None
+    if compute_entry_capacity:
+        try:
+            capacity = _goal_seek_entry_capacity(
+                core, rated_inputs, tep, phasing, bundle)
+            if isinstance(capacity, dict) and capacity.get("available"):
+                gross = _number(capacity.get("amount_mln"))
+                if gross is not None:
+                    right_capacity = max(0.0, gross - cadastral_mln)
+        except Exception:  # noqa: BLE001
+            right_capacity = None
+
+    return {
+        "available": True,
+        "pending": False,
+        "checked_at": now,
+        "retry_after_seconds": BURDEN_RETRY_SECONDS,
+        "burden_mln": round(total_mln, 3),
+        "burden_pct": round(burden_pct_value, 4),
+        "ordinary_capex_mln": round(float(ordinary_capex), 3),
+        "project_llcr_x": _number(metrics.get("llcr_x")),
+        "entry_capacity_mln": (
+            None if right_capacity is None else round(right_capacity, 1)
+        ),
+        "components": {
+            "cadastral_buyout": buyout,
+            "demolition_mln": round(demolition_mln, 3),
+            "demolition_rate_th_per_sqm": demolition_rate,
+            "demolition_basis": (
+                "model_input" if _number(inputs.get("demolition_cost_th_per_sqm"))
+                else "existing_krt_site_preparation_assumption"
+            ),
+            "social_mln": round(social_mln, 3),
+            "social_cash_mln": round(social_cash_mln, 3),
+            "resettlement_mln": round(resettlement_mln, 3),
+            "land_rights_mln": round(land_rights_mln, 3),
+        },
     }
 
 
@@ -379,8 +876,15 @@ def _ordinary_capex(core: Any, inputs: dict[str, Any], tep: dict[str, Any],
     base_inputs = copy.deepcopy(inputs)
     base_tep = copy.deepcopy(tep)
     base_phasing = copy.deepcopy(phasing)
-    base_inputs["purchase_price_mln"] = 0.0
-    base_inputs["social_compensation_mln"] = 0.0
+    for key in (
+        "purchase_price_mln", "land_rights_cost_mln", "social_compensation_mln",
+        "resettlement_cost_mln", "demolition_area_sqm", "demolition_cost_th_per_sqm",
+        "vri_security_cost_mln",
+    ):
+        if key in base_inputs:
+            base_inputs[key] = 0.0
+    if "vri_required" in base_inputs:
+        base_inputs["vri_required"] = False
     for key in ("school_places", "kindergarten_places", "clinic_capacity",
                 "social_school_gba_sqm", "social_dou_gba_sqm", "social_clinic_gba_sqm"):
         if key in base_inputs:

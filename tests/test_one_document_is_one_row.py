@@ -211,6 +211,7 @@ def test_the_count_is_printed_under_the_table() -> None:
     body = page[page.index("function renderKrtSnapshotNote("):]
     body = body[:body.index("\nfunction ")]
     script = (
+        "const KRT_EARLY_ONLY=false;\n"
         "const state={krtSnapshot:{at:0,ttl:0,refreshing:false,complete:true},"
         "krtSecondPublications:38};\n"
         "let written='';\n"

@@ -59,7 +59,8 @@ SILENT = {"slug": "decision:1", "name": "Без объёма", "no_card": True, 
 
 def passes(site: dict, *values: str) -> bool:
     """Настоящий `krtFilterPass` страницы при выбранной оси «Назначение»."""
-    prelude = f"const state={{krtPick:{{purpose:new Set({json.dumps(list(values))})}}}};\n"
+    prelude = ("const location={search:''};\n"
+               + f"const state={{krtPick:{{purpose:new Set({json.dumps(list(values))})}}}};\n")
     tail = f"console.log(JSON.stringify(krtFilterPass({json.dumps(site)})));"
     return page_blocks.run_json(prelude, tail, page=PAGE)
 

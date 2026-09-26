@@ -29,6 +29,7 @@ krt.mos.ru ценового поля нет вовсе (`KrtTerritory` несё�
 from __future__ import annotations
 
 import contextlib
+import gc
 import datetime
 import fcntl
 import hashlib
@@ -44,6 +45,28 @@ from typing import Any, Callable
 from market_search.http import load_json, save_json
 
 logger = logging.getLogger(__name__)
+
+def _trim_process_memory() -> None:
+    """Return freed arenas to Render after each heavy KRT calculation.
+
+    The Starter web process has a 512 MB cgroup limit. Pulse/market reports
+    create large short-lived JSON/list objects; CPython can keep their freed
+    arenas mapped, so RSS grows across otherwise sequential KRT rows until the
+    instance is killed and the ranking run never finishes. Collect Python
+    garbage and, on glibc, ask malloc to return free heap pages to the OS.
+    """
+    gc.collect()
+    if os.name != "posix":
+        return
+    try:
+        import ctypes
+
+        trim = getattr(ctypes.CDLL(None), "malloc_trim", None)
+        if trim is not None:
+            trim(0)
+    except (OSError, AttributeError):
+        pass
+
 
 # Отпечаток методики снимается один раз на процесс: движок считает один и тот
 # же маленький проект, и ответ его в пределах процесса не меняется.
@@ -448,6 +471,11 @@ def score_row(project: dict[str, Any], screening: dict[str, Any]) -> dict[str, A
     else:
         row["entry_capacity_mln"] = None
         row["entry_capacity_rub_per_sqm"] = None
+        upper = _number(capacity.get("upper_bound_mln"))
+        row["entry_capacity_upper_bound_mln"] = round(upper, 1) if upper > 0 else None
+        row["entry_capacity_upper_bound_rub_per_sqm"] = (
+            round(upper * 1e6 / saleable) if upper > 0 and saleable > 0 else None
+        )
         row["entry_capacity_reason"] = str(
             capacity.get("reason") or "Потолок цены входа не подобран")
     return row
@@ -498,7 +526,33 @@ def keep_computed(
 # «Пересчитать сейчас» площадку приходилось читать заново — «так и не хранятся
 # данные о уже просчитанных проектах, что реновация, что занято» (владелец,
 # 03.09.2026). Пустота не затирает прочитанное; новые непустые факты — да.
-_REMEMBERED_FACTS = ("card_facts", "press_facts")
+_REMEMBERED_FACTS = (
+    "card_facts",
+    "press_facts",
+    # Инвестиционный рейтинг — общая серверная характеристика площадки, а не
+    # состояние конкретной вкладки. Массовый/ручной расчёт пишет его в общий
+    # ranking.json; последующий пересчёт рынка/модели не должен молча стирать
+    # его до тех пор, пока новый рейтинг не будет посчитан на свежих данных.
+    "investment_rating",
+    "investment_rating_version",
+    "investment_rating_target_rub_sqm",
+    "investment_rating_computed_at",
+    "local_absorption_sqm_month",
+    "moscow_absorption_sqm_month",
+    "investment_rating_segment",
+    "burden_pct",
+    "burden_mln",
+    "ordinary_capex_mln",
+    "burden_pipeline_version",
+    "burden_checked_at",
+    "burden_pending",
+    "burden_retry_after_seconds",
+    "burden_complete",
+    "burden_reason",
+    "burden_components",
+    "burden_llcr_x",
+    "burden_entry_capacity_mln",
+)
 
 
 def _with_remembered_facts(previous: dict[str, Any] | None,
@@ -560,6 +614,7 @@ class KrtRanking:
         # снимка — сбой записи снимка объявил бы новость, которую мы не
         # запомнили, и она пришла бы снова.
         self.watch_seen_path = Path(data_dir) / "krt" / "watch_seen.json"
+        self.rating_settings_path = Path(data_dir) / "krt" / "rating_settings.json"
         self.ttl_seconds = ttl_seconds
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
@@ -651,6 +706,30 @@ class KrtRanking:
             return []
         rows = cached.get("rows")
         return list(rows) if isinstance(rows, list) else []
+
+    def rating_target(self, default: float = 600_000.0) -> float:
+        """Общий ценовой ориентир рейтинга каталога.
+
+        Это серверная настройка, общая для всех пользователей. Сценарный
+        ориентир внутри карточки может отличаться, но не меняет каталог.
+        """
+        payload = load_json(self.rating_settings_path) or {}
+        try:
+            value = float(payload.get("price_target_rub_sqm"))
+        except (TypeError, ValueError):
+            value = float(default)
+        return value if value > 0 else float(default)
+
+    def set_rating_target(self, value: float) -> float:
+        target = float(value)
+        if not (1 <= target <= 10_000_000):
+            raise ValueError("Ценовой ориентир должен быть от 1 до 10 000 000 ₽/м²")
+        save_json(self.rating_settings_path, {
+            "schema_version": 1,
+            "price_target_rub_sqm": target,
+            "updated_at": int(time.time()),
+        })
+        return target
 
     # --- что каталог видел раньше ---------------------------------------
 
@@ -1158,6 +1237,7 @@ class KrtRanking:
                     self._progress["done"] = index
                 self._persist(rows)
                 self.heartbeat()
+                _trim_process_memory()
         finally:
             self._persist(rows)
             # Замок отпускается ровно здесь: держать его до протухания значило

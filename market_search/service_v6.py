@@ -679,6 +679,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         extra_peers: list[dict[str, Any]] | None = None,
         city_reference: bool = True,
         include_project_totals: bool = False,
+        match_nearby_project: bool = True,
     ) -> dict[str, Any]:
         """Конструктор: объект, сопоставимые соседи и выбранные разделы.
 
@@ -702,9 +703,12 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         # тогда берётся адрес совпавшего проекта. Без этого отчёт по Кутузов
         # Сити, вызванный координатами, молча терял сравнение с городом.
         subject_address = subject.address
-        if subject.project_id is None:
-            # Площадка может совпасть с известным проектом — тогда отчёт о нём,
-            # а не о безымянной точке. Ноль километров это и означает.
+        if subject.project_id is None and match_nearby_project:
+            # Обычный ввод координатами может совпасть с известным проектом —
+            # тогда отчёт о нём, а не о безымянной точке. Для КРТ это правило
+            # выключается вызывающим кодом: центр территории в 50 м от ЖК не
+            # превращает саму площадку КРТ в этот ЖК и не должен наследовать
+            # его класс/прайс как свойства объекта.
             for distance, project in near:
                 if distance <= 0.05:
                     subject.project_id = project.complex_id
