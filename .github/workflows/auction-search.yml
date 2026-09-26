@@ -25,6 +25,6 @@ jobs:
       - name: Compile auction modules
         run: |
           python -m compileall -q auction_search
-          python -m py_compile tests/test_auction_search.py tests/test_auction_search_roseltorg.py main_registry.py
+          python -m py_compile tests/test_auction_search.py tests/test_auction_search_roseltorg.py tests/test_auctions_view_key.py main_registry.py
       - name: Run auction tests
-        run: python -m pytest tests/test_auction_search.py tests/test_auction_search_roseltorg.py -q
+        run: python -m pytest tests/test_auction_search.py tests/test_auction_search_roseltorg.py tests/test_auctions_view_key.py -q

@@ -27,59 +27,38 @@ from __future__ import annotations
 
 import copy
 import json
-import shutil
-import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "tests"))
 
 import main_legacy as core  # noqa: E402
+import page_blocks  # noqa: E402
 
 PAGE = core.PAGE
 SPACES, AREA = 666, 15540
 
 
-def _function(name: str) -> str:
-    """Границу функции считаем скобками: соседняя строка не контракт."""
-    start = PAGE.index(f"function {name}(")
-    depth, index, seen = 0, PAGE.index("{", start), False
-    while index < len(PAGE):
-        if PAGE[index] == "{":
-            depth, seen = depth + 1, True
-        elif PAGE[index] == "}":
-            depth -= 1
-            if seen and depth == 0:
-                return PAGE[start:index + 1]
-        index += 1
-    raise AssertionError(f"не нашёл конец функции {name}")
-
-
 def _page_row(inputs: dict) -> dict:
-    """Строка ТЭП подземного паркинга так, как её ставит сама страница."""
-    node = shutil.which("node")
-    if not node:
-        pytest.skip("node недоступен")
-    program = (
+    """Строка ТЭП подземного паркинга так, как её ставит сама страница.
+
+    Куски страницы стенд добирает САМ: перечисленные руками, они отстают от
+    неё, и падение выходит про стенд, а не про то, что он проверяет. Так и
+    случилось — рядом с `repairParkingFromGlavapu` появился признак типа
+    проекта, и три проверки разом упали на «isNonResidential is not defined».
+    """
+    prelude = (
         "const num=v=>String(v);const document={getElementById:()=>null};\n"
-        f"const PARKING_2118={json.dumps(core.PARKING_2118_PARAMS)};\n"
         "const tep={apartments:{saleable:32254,units:504},storage:{gns:0},"
         "underground_parking:{units:0,gns:0,total_area:0,useful:0,saleable:0,transfer:0}};\n"
         f"const inputs={json.dumps(inputs)};\n"
-        + _function("undergroundAreaPerSpace") + "\n"
-        + _function("normativeUnderground") + "\n"
-        + _function("getGlavapuUnderground") + "\n"
-        + _function("parkingRequirement") + "\n"
-        + _function("repairParkingFromGlavapu") + "\n"
-        "repairParkingFromGlavapu();"
-        "process.stdout.write(JSON.stringify(tep.underground_parking));"
     )
-    done = subprocess.run([node, "-e", program], capture_output=True, text=True, timeout=60)
-    assert done.returncode == 0, done.stderr[:800]
-    return json.loads(done.stdout)
+    tail = ("repairParkingFromGlavapu();"
+            "process.stdout.write(JSON.stringify(tep.underground_parking));")
+    out, _ = page_blocks.run(prelude, tail)
+    return json.loads(out)
 
 
 def _engine_row(inputs: dict) -> dict:

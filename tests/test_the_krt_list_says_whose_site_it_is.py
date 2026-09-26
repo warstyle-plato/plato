@@ -61,12 +61,14 @@ def _axis_harness(intent, axis: str, *, card=None, press=None) -> str:
         + f"state.krtRequirements['s']={json.dumps({'intent': intent} if intent else {})};\n"
         + (f"state.krtCards['s']={json.dumps(card)};\n" if card else "")
         + (f"state.krtPress['s']={json.dumps(press)};\n" if press else "")
+        + _function("krtFreshRank") + "\n"
         + _function("krtIntent") + "\n"
         + _function("krtStatusKind") + "\n"
         + _function("krtLots") + "\n" + _function("krtLiveLot") + "\n"
         + _function("krtAskingPrice") + "\n" + _function("krtPriceVerdict") + "\n"
         + _function("krtRenovation") + "\n"
         + _function("krtEntryKind") + "\n"
+        + _function("krtRenovationEvidence") + "\n"
         + _function("krtRenovationKind") + "\n"
         + f"console.log(JSON.stringify({{kind:{axis}({{slug:'s'}})}}));"
     )
@@ -104,7 +106,13 @@ def test_the_axis_answers_with_three_answers_not_two() -> None:
 
 def test_the_renovation_axis_keeps_its_own_unknown() -> None:
     read = {"available": True, "developers": [], "renovation": False}
-    assert _run(_axis_harness(CITY, "krtRenovationKind"))["kind"] == "yes"
+    # Само по себе «для государственных нужд» не означает реновацию:
+    # положительный признак должен назвать именно программу реновации.
+    generic = _run(_axis_harness(CITY, "krtRenovationKind"))["kind"]
+    assert generic == "unknown"
+    reno_press = {"available": True, "city_needs": [
+        {"quote": "Передача жилья по Программе реновации"}]}
+    assert _run(_axis_harness(None, "krtRenovationKind", press=reno_press))["kind"] == "yes"
     assert _run(_axis_harness(CLEAN, "krtRenovationKind", card=read))["kind"] == "no"
     assert _run(_axis_harness(None, "krtRenovationKind"))["kind"] == "unknown", \
         "непрочитанное сложено с «реновации не найдено»"
@@ -187,7 +195,8 @@ def test_a_live_lot_lifts_the_operator_cut_and_the_renovation_tag_carries_its_qu
                 break
         index += 1
     tag = page[start:index + 1]
-    assert "press&&press.city_needs||[])[0]||{}).quote" in tag
+    assert "krtRenovationEvidence(x)" in tag
+    assert "evidence.quote" in tag
     assert "публикация: " in tag and "карточка krt.mos.ru: " in tag
     # Доля из решения сильнее упоминания: сто процентов — это другая площадка.
     assert "всё жильё" in tag, "метка не отличает часть жилья от всего"

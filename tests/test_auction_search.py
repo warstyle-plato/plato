@@ -568,6 +568,47 @@ def test_excel_export_separates_land_and_building_as_numbers():
     assert sheet.freeze_panes == "A2"
 
 
+def test_auction_excel_enriches_location_krt_links_and_deadlines():
+    from openpyxl import load_workbook
+
+    raw = _xlsx([{
+        "section": "Торги",
+        "name": (
+            "Нежилое здание в г. Москве, Лефортово, ул. Красноказарменная, "
+            "д. 12/13, строение 7, к/н 77:04:0001006:1074"
+        ),
+        "cadastre": "77:04:0001006:1074",
+        "type": "КРТ",
+        "land_area_sqm": 53_200,
+        "application_start": "01.09.2026 10:00",
+        "application_deadline": "31.12.2099 15:00",
+        "url": "https://example.test/lot/2",
+    }])
+    sheet = load_workbook(io.BytesIO(raw)).active
+    headers = [cell.value for cell in sheet[1]]
+    get = lambda name: sheet.cell(2, headers.index(name) + 1)
+
+    assert get("Адрес").value.startswith("г. Москва, Лефортово")
+    assert get("Район").value == "Лефортово"
+    assert get("Округ").value == "ЮВАО"
+    assert get("Площадь КРТ, га").value == 5.32
+    assert get("Начало приёма заявок").value == "01.09.2026 10:00"
+    assert get("Окончание приёма заявок").value == "31.12.2099 15:00"
+    assert get("Дней до окончания заявок").value > 0
+    assert get("Адрес").hyperlink.target.startswith("https://yandex.ru/maps/?text=")
+    assert get("Кадастровые номера").hyperlink.target == "https://nspd.gov.ru/map?thematic=PKK"
+
+
+def test_auction_type_filter_allows_several_types_at_once():
+    from auction_search.ui import auctions_page
+
+    page = auctions_page()
+    assert 'id="auctionKindToggle"' in page
+    assert 'id="auctionKindOptions"' in page
+    assert "kinds.some(k=>lotMatchesKind(l,k))" in page
+    assert '<select id="kind">' not in page
+
+
 def test_torgi_excel_export_recovers_explicit_land_and_does_not_sum_it_into_building():
     from openpyxl import load_workbook
 

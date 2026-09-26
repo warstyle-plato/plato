@@ -186,6 +186,63 @@ def test_a_changed_engine_does_spend_a_number(repo):
         os.chdir(here)
 
 
+def test_market_search_change_spends_a_number(repo):
+    """Рыночный модуль входит в production-образ и обязан менять VERSION."""
+    guard = _module(GUARD, "check_version_grows_market_under_test")
+    repo.run("git", "checkout", "-q", "-B", "market-work", "main")
+    market = repo.path / "market_search"
+    market.mkdir(exist_ok=True)
+    (market / "price_hint.py").write_text("VALUE = 2\n", encoding="utf-8")
+    repo.run("git", "add", "market_search/price_hint.py")
+    repo.run("git", "commit", "-qm", "market runtime")
+    repo.run("git", "push", "-q", "origin", "market-work")
+    import os
+    here = os.getcwd()
+    os.chdir(repo.path)
+    try:
+        assert release_merge._engine_changed(guard, "main", "market-work")
+    finally:
+        os.chdir(here)
+
+
+def test_tests_change_spends_no_number(repo):
+    """Тесты проверяют выпуск, но сами выпуском не являются."""
+    guard = _module(GUARD, "check_version_grows_tests_under_test")
+    repo.run("git", "checkout", "-q", "-B", "tests-only", "main")
+    tests = repo.path / "tests"
+    tests.mkdir(exist_ok=True)
+    (tests / "test_dummy.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+    repo.run("git", "add", "tests/test_dummy.py")
+    repo.run("git", "commit", "-qm", "tests only")
+    repo.run("git", "push", "-q", "origin", "tests-only")
+    import os
+    here = os.getcwd()
+    os.chdir(repo.path)
+    try:
+        assert not release_merge._engine_changed(guard, "main", "tests-only")
+    finally:
+        os.chdir(here)
+
+
+def test_a_market_change_does_spend_a_number(repo):
+    """Рыночный модуль — production-код, даже если main_legacy.py не тронут."""
+    guard = _module(GUARD, "check_version_grows_market_under_test")
+    repo.run("git", "checkout", "-q", "-B", "market-work", "main")
+    market = repo.path / "market_search"
+    market.mkdir()
+    (market / "price_hint.py").write_text("VALUE = 2\n", encoding="utf-8")
+    repo.run("git", "add", "market_search/price_hint.py")
+    repo.run("git", "commit", "-qm", "market change")
+    repo.run("git", "push", "-q", "origin", "market-work")
+    import os
+    here = os.getcwd()
+    os.chdir(repo.path)
+    try:
+        assert release_merge._engine_changed(guard, "main", "market-work")
+    finally:
+        os.chdir(here)
+
+
 def test_the_base_is_read_again_right_before_the_merge():
     """Между счётом номера и слиянием сосед успевает слить своё.
 

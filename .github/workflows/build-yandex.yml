@@ -26,9 +26,11 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # Две сборки одного коммита разом переписали бы тег prod вразнобой.
+  # В prod должен уехать только самый свежий main. Раньше старые сборки
+  # выстраивались очередью и позднее могли переписать тег prod устаревшим
+  # коммитом уже после появления новой функции на сайте.
   group: build-yandex
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 permissions:
   contents: read
