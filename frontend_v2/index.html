@@ -31,12 +31,21 @@
         <div id="projectMenu" class="project-menu" hidden></div>
       </div>
 
+      <div class="project-kind-switcher">
+        <span class="eyebrow">Тип экономики</span>
+        <div class="kind-toggle" role="group" aria-label="Тип экономики проекта">
+          <button type="button" class="is-active" data-project-kind="residential">Жильё</button>
+          <button type="button" data-project-kind="nonresidential">Нежильё β</button>
+        </div>
+      </div>
+
       <nav class="main-nav" aria-label="Разделы проекта">
         <button class="nav-item is-active" data-view="summary"><span>◫</span>Обзор</button>
         <button class="nav-item" data-view="inputs"><span>✎</span>Вводные</button>
         <button class="nav-item" data-view="tepsearch"><span>⌕</span>Поиск ТЭП</button>
         <button class="nav-item" data-view="tep"><span>⌂</span>ТЭП и ВРИ</button>
         <button class="nav-item" data-view="finance"><span>⌁</span>Финансирование</button>
+        <button class="nav-item" id="commercialNav" data-view="commercial" hidden><span>▣</span>Экономика нежилья</button>
         <button class="nav-item" data-view="phases"><span>≋</span>Очереди</button>
         <button class="nav-item" data-view="sensitivity"><span>↔</span>Чувствительность</button>
         <button class="nav-item" data-view="platon"><span>✦</span>Платон</button>
@@ -70,6 +79,7 @@
         <button data-view="tepsearch">Поиск</button>
         <button data-view="tep">ТЭП</button>
         <button data-view="finance">Финансы</button>
+        <button id="commercialMobileNav" data-view="commercial" hidden>Нежильё</button>
         <button data-view="phases">Очереди</button>
         <button data-view="sensitivity">Tornado</button>
         <button data-view="platon">Платон</button>
@@ -186,6 +196,52 @@
           <div class="panel-heading"><div><span class="eyebrow">Капитал во времени</span><h2>Долг и наполнение эскроу</h2></div></div>
           <div id="financeChart" class="chart"></div>
           <div id="financeTimeline" class="chart-timeline"></div>
+        </article>
+      </section>
+
+
+      <section id="view-commercial" class="view">
+        <div class="section-heading">
+          <div><span class="eyebrow">Отдельный контур β</span><h2>Экономика нежилого проекта</h2></div>
+          <span class="source-label">без эскроу</span>
+        </div>
+
+        <article class="panel commercial-selector-panel">
+          <div class="commercial-control-grid">
+            <label>Тип объекта<select id="commercialAsset"></select></label>
+            <label>Модель реализации<select id="commercialStrategy"></select></label>
+            <label>Финансирование<select id="commercialFinancing"></select></label>
+          </div>
+          <p id="commercialNote" class="input-hint"></p>
+        </article>
+
+        <div class="content-grid one-one commercial-workspace">
+          <article class="panel">
+            <div class="panel-heading">
+              <div><span class="eyebrow">Допущения</span><h2 id="commercialInputsTitle">Параметры проекта</h2></div>
+            </div>
+            <div id="commercialInputs" class="commercial-fields"></div>
+            <div class="input-actions">
+              <button id="commercialCalc" class="search-button" type="button">Рассчитать β</button>
+            </div>
+            <div id="commercialStatus" class="tep-search-status">Коммерческий расчёт живёт отдельно от жилой экономики.</div>
+          </article>
+
+          <article class="panel">
+            <div class="panel-heading">
+              <div><span class="eyebrow">Логика модели</span><h2>Структура расчёта</h2></div>
+            </div>
+            <div id="commercialSummary" class="commercial-summary"></div>
+          </article>
+        </div>
+
+        <div id="commercialKpis" class="kpi-grid"></div>
+
+        <article class="panel queue-panel commercial-report-panel">
+          <div class="panel-heading">
+            <div><span class="eyebrow">Отчёт β</span><h2>Показатели по типу объекта</h2></div>
+          </div>
+          <div id="commercialReport" class="commercial-report"></div>
         </article>
       </section>
 
