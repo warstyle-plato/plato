@@ -362,6 +362,7 @@ class LotOnlineAdapter(AuctionPlatformAdapter):
             current_price_rub=current_period.price_rub if current_period else None,
             min_price_rub=min_price,
             deposit_rub=current_period.deposit_rub if current_period else None,
+            application_start=current_period.starts_at if current_period else None,
             application_deadline=current_period.application_deadline if current_period else None,
             status=status,
             price_schedule=schedule,
