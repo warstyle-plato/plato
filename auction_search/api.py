@@ -287,6 +287,34 @@ def _yandex_maps_href(address: str) -> str:
     return ("https://yandex.ru/maps/?text=" + urllib.parse.quote_plus(address)) if address else ""
 
 
+_XLSX_DATE_KEYS = ("application_start", "application_deadline", "auction_date")
+_XLSX_DATE_RE = re.compile(
+    r"^\s*(\d{1,2})\.(\d{1,2})\.(\d{4})(?:[ ,T]+(\d{1,2}):(\d{2}))?\s*$")
+
+
+def _xlsx_date(value: Any) -> datetime | None:
+    """Дата торгов из текста площадки — настоящей датой, чтобы Excel её сортировал.
+
+    Разбирается только однозначная форма «ДД.ММ.ГГГГ[ ЧЧ:ММ]»; всё прочее
+    («в течение месяца») остаётся текстом как есть — догадка о дате хуже текста.
+    """
+    match = _XLSX_DATE_RE.match(str(value or ""))
+    if not match:
+        return None
+    day, month, year, hour, minute = match.groups()
+    try:
+        return datetime(int(year), int(month), int(day),
+                        int(hour or 0), int(minute or 0))
+    except ValueError:
+        return None
+
+
+def _xlsx_safe_href(value: Any) -> str:
+    """В гиперссылку книги идёт только http(s): `javascript:` из данных — нет."""
+    text = str(value or "").strip()
+    return text if re.match(r"^https?://", text, re.I) else ""
+
+
 def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
     if kind == "krt":
         columns = [
@@ -421,11 +449,20 @@ def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
                         area_sqm = parse_hectares_sqm(str(row.get("name") or ""))
                     row["krt_area_ha"] = (area_sqm / 10_000) if area_sqm is not None else ""
                 row["days_to_deadline"] = _days_to_application_deadline(row)
-            values = [
-                number(row.get(key)) if key in numeric_keys else (row.get(key) or "")
-                for key in keys
-            ]
+            values = []
+            for key in keys:
+                if key in numeric_keys:
+                    values.append(number(row.get(key)))
+                elif key in _XLSX_DATE_KEYS and _xlsx_date(row.get(key)) is not None:
+                    values.append(_xlsx_date(row.get(key)))
+                else:
+                    values.append(row.get(key) or "")
             ws.append(values)
+            # Текст площадки, начинающийся с «=», openpyxl пишет формулой:
+            # название лота исполнялось бы в Excel. Такой текст — строка.
+            for cell in ws[ws.max_row]:
+                if cell.data_type == "f":
+                    cell.data_type = "s"
 
         ws.freeze_panes = "A2"
         last_column = get_column_letter(len(sheet_columns))
@@ -439,6 +476,30 @@ def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
         ws.row_dimensions[1].height = 38
         for index, (_, _, width) in enumerate(sheet_columns, start=1):
             ws.column_dimensions[get_column_letter(index)].width = width
+        url_column = keys.index("url") + 1
+        address_column = keys.index("address") + 1 if "address" in keys else None
+        cadastre_column = keys.index("cadastre") + 1 if "cadastre" in keys else None
+        for row_number in range(2, ws.max_row + 1):
+            cell = ws.cell(row_number, url_column)
+            href = _xlsx_safe_href(cell.value)
+            if href:
+                cell.hyperlink = href
+                cell.style = "Hyperlink"
+            if address_column:
+                address_cell = ws.cell(row_number, address_column)
+                href = _yandex_maps_href(str(address_cell.value or ""))
+                if href:
+                    address_cell.hyperlink = href
+                    address_cell.style = "Hyperlink"
+            if cadastre_column:
+                cadastre_cell = ws.cell(row_number, cadastre_column)
+                href = _nspd_href(str(cadastre_cell.value or ""))
+                if href:
+                    cadastre_cell.hyperlink = href
+                    cadastre_cell.style = "Hyperlink"
+        # Стиль «Hyperlink» сбрасывает выравнивание и формат ячейки — поэтому
+        # перенос строк и форматы ставятся ПОСЛЕ ссылок: «Адрес» со ссылкой на
+        # карту иначе вытягивался в одну строку.
         wrap_columns = {
             index for index, (key, _, _) in enumerate(sheet_columns, start=1)
             if key in {"name", "address", "cadastre", "status", "traffic_light", "url",
@@ -454,30 +515,17 @@ def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
                     horizontal="right" if cell.column in numeric_columns else "left",
                     vertical="top", wrap_text=cell.column in wrap_columns)
         for index, (key, _, _) in enumerate(sheet_columns, start=1):
+            if key in _XLSX_DATE_KEYS:
+                for cells in ws.iter_cols(min_col=index, max_col=index, min_row=2):
+                    for item in cells:
+                        if isinstance(item.value, datetime):
+                            item.number_format = (
+                                "DD.MM.YYYY HH:MM"
+                                if (item.value.hour or item.value.minute) else "DD.MM.YYYY")
             if key in formats:
                 for cells in ws.iter_cols(min_col=index, max_col=index, min_row=2):
                     for item in cells:
                         item.number_format = formats[key]
-        url_column = keys.index("url") + 1
-        address_column = keys.index("address") + 1 if "address" in keys else None
-        cadastre_column = keys.index("cadastre") + 1 if "cadastre" in keys else None
-        for row_number in range(2, ws.max_row + 1):
-            cell = ws.cell(row_number, url_column)
-            if cell.value:
-                cell.hyperlink = str(cell.value)
-                cell.style = "Hyperlink"
-            if address_column:
-                address_cell = ws.cell(row_number, address_column)
-                href = _yandex_maps_href(str(address_cell.value or ""))
-                if href:
-                    address_cell.hyperlink = href
-                    address_cell.style = "Hyperlink"
-            if cadastre_column:
-                cadastre_cell = ws.cell(row_number, cadastre_column)
-                href = _nspd_href(str(cadastre_cell.value or ""))
-                if href:
-                    cadastre_cell.hyperlink = href
-                    cadastre_cell.style = "Hyperlink"
         if ws.max_row >= 2:
             table = Table(displayName=table_name, ref=f"A1:{last_column}{ws.max_row}")
             table.tableStyleInfo = TableStyleInfo(
