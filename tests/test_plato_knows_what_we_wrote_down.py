@@ -1,0 +1,273 @@
+"""Платон знает то, что у нас записано, — и не пересказывает лишнего.
+
+Решение владельца: «инструкцию надо полностью пересмотреть, чтобы AI-агент
+знал всё, что есть у нас в логах» — в наших записях: CLAUDE.md и его архиве,
+бэклоге и выжимках нормативов.
+
+Замер, с которого всё началось: база методики агента знала два десятка правил
+и НЕ знала девяти крупных кусков последних недель (благоустройство на метр
+двора, ГНС только наземная, дефолт в РВЭ, налог с убытком по ст. 283,
+передаваемые метры, паркинг объектов, кэш-свип, график платежей, ступени
+ставки ПФ).
+
+Копией в промпт записи не влезают (больше миллиона знаков), а выжимка была бы
+второй копией — её негде обновлять. Поэтому источник один, читается лениво, а
+агент получает куски по запросу. Наружу они выходят обезличенными: Платон
+отвечает пользователям.
+
+Запуск: python3 -m pytest tests/test_plato_knows_what_we_wrote_down.py -q
+"""
+
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import project_knowledge as knowledge  # noqa: E402
+import main as wrapper  # noqa: E402
+
+core = wrapper.core
+
+
+def test_the_notes_are_cut_into_rules_not_lines():
+    """Запись — это правило целиком: половина правила выглядит целой."""
+    found = knowledge.entries()
+    assert len(found) > 300, "записей подозрительно мало — разбор не нашёл правила"
+    for entry in found[:50]:
+        assert entry["text"].startswith(("- **", "## ", "# ")), entry["title"][:60]
+
+
+def test_a_question_finds_the_rule_that_answers_it():
+    """Спрашивают словами вопроса, а правило написано словами автора.
+
+    «благоустройство» из вопроса и «благоустраивают» из правила — разные
+    строки, как «двора» и «двор»; без приведения к основе поиск отвечал мимо.
+    """
+    answer = knowledge.search("почему благоустройство считается от двора")
+    assert answer["available"] is True
+    assert "двор" in answer["entries"][0]["title"].lower()
+
+
+def test_an_abbreviation_is_a_word_too():
+    """ГНС, ВРИ, СПП — предмет вопроса, а не служебные слова."""
+    answer = knowledge.search("подземный паркинг входит в ГНС?")
+    assert "ГНС" in answer["entries"][0]["title"]
+
+
+def test_the_answer_is_redacted_for_the_person_asking():
+    """Номера договоров, кадастры и адреса собственных проектов наружу не идут.
+
+    Правило то же, что у свода «Статистики» (решение владельца 26.08.2026):
+    сырые файлы не трогаются, чистится точка выдачи.
+    """
+    answer = knowledge.search("методика финансирования сверена с НКЛ Сбера договоры")
+    printed = " ".join(item["text"] for item in answer["entries"])
+    assert not re.search(r"\b400[A-Z0-9]{6,}\b", printed), "номер договора вышел наружу"
+    assert not re.search(r"\b\d{2}:\d{2}:\d{6,7}:\d+", printed), "кадастр вышел наружу"
+    for name in ("Кутузов Сити", "Гродненская", "Саввинская"):
+        assert name not in printed, name
+
+
+def test_the_redaction_is_proven_on_a_note_that_has_something_to_hide():
+    """Предохранитель: чистить было что, иначе проверка выше ничего не значит."""
+    raw = " ".join(entry["text"] for entry in knowledge.entries())
+    assert re.search(r"\b\d{2}:\d{2}:\d{6,7}:\d+", raw), "в записях нет кадастров"
+    assert "‹кадастровый номер скрыт›" in knowledge.redact(
+        re.search(r"\b\d{2}:\d{2}:\d{6,7}:\d+", raw).group(0))
+    # Номеров договоров в записях сейчас нет (архив чистили), но маска обязана
+    # работать на следующем, который туда попадёт.
+    assert "‹номер договора скрыт›" in knowledge.redact("договор 400F00BVX003 подписан")
+    assert "‹проект DevelopAid›" in knowledge.redact("проект на Гродненской")
+
+
+def test_the_cut_is_named_not_silent():
+    """Показано меньше найденного — это говорится числом."""
+    answer = knowledge.search("очередь")
+    assert answer["found"] > answer["shown"]
+    assert answer["shown"] >= 1
+
+
+def test_nothing_found_is_an_answer_with_a_reason():
+    answer = knowledge.search("квантовая хромодинамика")
+    assert answer["available"] is False
+    assert "квантовая хромодинамика" in answer["reason"]
+
+
+def test_the_agent_reaches_the_notes_through_its_own_door():
+    """Проверять надо ту дверь, в которую ходит Платон."""
+    answer = core._execute_agent_tool(
+        "search_project_knowledge",
+        {"query": "гостевые машино-места продаются", "source": "all"}, None, {})
+    assert answer["available"] is True
+    assert "остев" in answer["entries"][0]["title"]
+    names = {tool.get("name") for tool in core._AGENT_TOOLS}
+    assert "search_project_knowledge" in names
+
+
+def test_the_instructions_send_the_agent_to_the_notes():
+    text = core._AGENT_INSTRUCTIONS
+    assert "search_project_knowledge" in text
+    # И называют границу: записи внутренние, пересказывать их наружу нельзя.
+    assert "не пересказывай" in text
+    assert "Записанное решение владельца сильнее твоего рассуждения" in text
+
+
+def test_every_tool_named_in_the_instructions_exists():
+    """Инструкция звала к рычагу, которого инструмент не принимал, — уже было.
+
+    Имя инструмента, написанное в инструкции и не заведённое в наборе, — это
+    приказ вызвать несуществующее: модель попробует и промолчит об этом.
+    """
+    names = {tool.get("name") for tool in core._AGENT_TOOLS}
+    text = core._AGENT_INSTRUCTIONS
+    # Инструмент назначают стрелкой: «вопрос → имя_инструмента». Имена
+    # параметров (target_metric, scope) в этой позиции не стоят, и ловить их
+    # по хвосту слова значило бы краснеть на верном тексте.
+    called = set()
+    for tail in re.findall(r"→\s*([a-z_]+(?:\s+(?:и|или|затем)\s+[a-z_]+)*)", text):
+        called.update(re.findall(r"[a-z_]{4,}", tail))
+    called -= {"и", "или", "затем"}
+    unknown = sorted(called - names)
+    assert unknown == [], f"инструкция зовёт несуществующие инструменты: {unknown}"
+
+
+def _preset_names() -> set[str]:
+    """Пресеты, которые есть в продукте: реестр ТЭП движка и файлы presets/."""
+    names = {str(item["name"]).lower() for item in core.SERVER_TEP_PRESETS.values()}
+    names |= {path.stem.lower() for path in (Path(__file__).resolve().parent.parent
+                                             / "presets").glob("*.json")}
+    return names
+
+
+def _named_presets(rules: str) -> list[str]:
+    return re.findall(r"preset[а-я]*\s+«?([A-ZА-ЯЁ][\w-]+)»?", rules)
+
+
+def test_the_methodology_does_not_describe_a_preset_that_is_gone():
+    """Правило методики, называющее пресет, обязано называть существующий.
+
+    Иначе агент считает мёртвые числа действующими: мёртвое знание опаснее
+    отсутствующего — оно выглядит проверенным. Пресет «Мытищи» существует
+    (`SERVER_TEP_PRESETS`), и правило про него остаётся.
+    """
+    presets = _preset_names()
+    rules = " ".join(rule["rule"] for rule in core._DevelopAid_METHODOLOGY)
+    named = _named_presets(rules)
+    assert named, "предохранитель: методика не называет ни одного пресета"
+    for name in named:
+        assert any(name.lower() in stem for stem in presets), (
+            f"методика описывает preset «{name}», которого нет в продукте")
+    # Сторож краснеет на подделке: пресета «Бирюлёво» в продукте нет.
+    fake = _named_presets("В preset Бирюлёво МФК — отдельный продукт.")
+    assert not any(fake[0].lower() in stem for stem in presets)
+
+
+def test_the_methodology_points_at_the_notes_for_the_rest():
+    """Список в промпте короткий, и он обязан сказать, где лежит остальное."""
+    rules = {rule["id"]: rule["rule"] for rule in core._DevelopAid_METHODOLOGY}
+    assert "PROJECT_NOTES" in rules
+    assert "search_project_knowledge" in rules["PROJECT_NOTES"]
+    # Указатель добавлен рядом, а не вместо: правило про существующий пресет
+    # «Мытищи» остаётся.
+    assert "MYTISHCHI_MFC" in rules
+
+
+def test_the_normative_notes_are_reachable():
+    """Нормативная база — третий вид записей, и он у агента есть.
+
+    Прежде агент знал только СПИСОК актов и их редакции (`check_normatives`), а
+    содержания норм не видел вовсе: «какой норматив стоянок у ФОК» отвечать было
+    нечем, кроме памяти модели — то есть наугад.
+    """
+    answer = knowledge.search("норма стоянок оздоровительный комплекс",
+                              source="normative")
+    assert answer["available"] is True
+    assert all("нормативных актов" in item["source"] for item in answer["entries"])
+    # Ответ — в таблице норм, а не в шапке файла: она идёт своей записью,
+    # и выдача обязана дойти до неё, а не остановиться на введении.
+    printed = " ".join(item["text"] for item in answer["entries"])
+    assert "ФОК" in printed
+    assert "25–40" in printed, "таблица норм до выдачи не доехала"
+
+
+def test_the_raw_ocr_is_not_a_source():
+    """Сырое распознавание источником не становится, и это измеримо.
+
+    В скане «№ 593-ПП» читается как «593-11», а число из скана, названное
+    нормой, выглядит так же уверенно, как выверенное. В записи идут только
+    выжимки, сделанные по первичным документам.
+    """
+    from pathlib import Path as _Path
+
+    raw = sorted(knowledge.NORMATIVE_DIR.glob("*.ocr.txt"))
+    assert raw, "предохранитель: сырых распознаваний в каталоге нет, проверять нечего"
+    files = {entry["title"].split(":")[0] for entry in knowledge.entries("normative")}
+    for path in raw:
+        assert _Path(path).stem not in files, f"сырое распознавание попало в записи: {path.name}"
+
+
+def test_a_source_is_labelled_by_whose_it_is():
+    """Норма города и наше правило под одной подписью читаются как одно."""
+    labels = {entry["source"] for entry in knowledge.entries()}
+    assert labels == {"rules", "backlog", "normative"}
+    said = knowledge.search("озеленение компенсация")["note"]
+    assert "НОРМАТИВНОГО акта города" in said
+    assert "наше решение — нашим" in said
+
+
+def test_the_instructions_keep_the_city_and_us_apart():
+    text = core._AGENT_INSTRUCTIONS
+    assert "source=normative" in text
+    assert "check_normatives" in text
+    # Главное: чужое основание нельзя называть своим и наоборот.
+    assert "назвать чужое число своим" in text
+
+
+def _docker_keeps(path: str, rules: list[str]) -> bool:
+    """Попадёт ли файл в образ: последнее совпавшее правило .dockerignore.
+
+    Правило-каталог («docs») исключает всё под ним, «!маска» возвращает файл.
+    """
+    import fnmatch
+
+    kept = True
+    for rule in rules:
+        negate = rule.startswith("!")
+        pattern = rule[1:] if negate else rule
+        parts = path.split("/")
+        prefixes = ["/".join(parts[:i]) for i in range(1, len(parts) + 1)]
+        if any(fnmatch.fnmatchcase(prefix, pattern) for prefix in prefixes):
+            kept = negate
+    return kept
+
+
+def test_the_notes_ship_with_the_image():
+    """Образ собирается без `docs` и `*.md` — записи обязаны вернуться явно.
+
+    Без этого на проде поиск отвечал бы «ничего не нашлось» на любой вопрос, а
+    локально и в CI всё было бы зелёным: файлы лежат рядом с кодом.
+    """
+    root = Path(__file__).resolve().parent.parent
+    rules = [line.strip() for line in (root / ".dockerignore").read_text(
+        encoding="utf-8").splitlines() if line.strip() and not line.startswith("#")]
+    files = [str(path.relative_to(root)) for pattern in knowledge._patterns()
+             for path in root.glob(pattern)]
+    assert files, "предохранитель: файлов записей нет"
+    lost = [name for name in files if not _docker_keeps(name, rules)]
+    assert lost == [], f"записи не попадут в образ: {lost}"
+    # Проверка краснеет на подделке: без исключений записи в образ не едут.
+    bare = [rule for rule in rules if not rule.startswith("!")]
+    assert not _docker_keeps("docs/questions_backlog.md", bare)
+
+
+def test_missing_notes_are_named_not_passed_off_as_nothing_found(monkeypatch, tmp_path):
+    """Нет файлов записей — причина в сборке, а не в вопросе."""
+    monkeypatch.setattr(knowledge, "_ROOT", tmp_path)
+    monkeypatch.setattr(knowledge, "NORMATIVE_DIR", tmp_path / "docs" / "normative")
+    answer = knowledge.search("благоустройство")
+    assert answer["available"] is False
+    assert "нет" in answer["reason"] and "не найдены" in answer["reason"]
+    assert "questions_backlog.md" in answer["reason"]
