@@ -109,6 +109,9 @@
       .scenario-choice .scenario-metric{display:block;margin-top:8px;color:#dbe9f7;font-size:12px}.scenario-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:8px 0 16px}
       .scenario-table{width:100%;border-collapse:collapse;font-size:12px}.scenario-table th,.scenario-table td{padding:10px 8px;border-bottom:1px solid rgba(255,255,255,.08);text-align:right}.scenario-table th:first-child,.scenario-table td:first-child{text-align:left}
       .scenario-status{color:#91a4ba;font-size:12px;line-height:1.45}.scenario-status.is-error{color:#ff9aaa}
+      .scenario-input-bridge{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:0 0 14px;padding:14px 16px;border:1px solid rgba(56,215,255,.18);border-radius:14px;background:rgba(56,215,255,.045)}
+      .scenario-input-bridge>div{min-width:0}.scenario-input-bridge strong{display:block;font-size:14px;color:#edf7ff;margin:2px 0 4px}.scenario-input-bridge small{display:block;color:#91a4ba;line-height:1.45}
+      .scenario-input-bridge .text-button{flex:0 0 auto}
       .land-v2-wrap{margin-top:18px}.land-v2-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.land-v2-card{overflow:hidden}.land-v2-card .panel-heading{margin-bottom:10px}
       .land-live-map{position:relative;aspect-ratio:16/9;border:1px solid rgba(255,255,255,.09);border-radius:13px;overflow:hidden;background:#0b1725;touch-action:none;user-select:none}
       .land-live-map img,.land-live-map svg{position:absolute;inset:0;width:100%;height:100%;display:block}.land-live-map img{object-fit:fill}.land-live-map svg{pointer-events:none}
@@ -117,7 +120,7 @@
       .land-restrictions{margin-top:12px;display:grid;gap:8px}.land-restriction{padding:10px 11px;border:1px solid rgba(255,255,255,.08);border-radius:11px;background:rgba(255,255,255,.025)}
       .land-restriction-head{display:flex;gap:7px;align-items:center;flex-wrap:wrap}.land-restriction-head strong{font-size:12px}.land-flag{font-size:9px;font-weight:800;letter-spacing:.04em;padding:2px 6px;border-radius:999px;text-transform:uppercase}.land-flag.killer{background:rgba(255,102,122,.14);color:#ff8fa0}.land-flag.economic{background:rgba(255,185,87,.14);color:#ffc979}.land-flag.info{background:rgba(56,215,255,.12);color:#8ddfff}
       .land-restriction p{margin:5px 0 0;color:#91a4ba;font-size:11px;line-height:1.45}.land-verdict{margin:0 0 10px;color:#c9d8e8;font-size:12px;line-height:1.45}
-      @media(max-width:900px){.scenario-class-grid,.scenario-grid,.land-v2-grid{grid-template-columns:1fr}.scenario-table{font-size:11px}.land-live-map{aspect-ratio:4/3}}
+      @media(max-width:900px){.scenario-class-grid,.scenario-grid,.land-v2-grid{grid-template-columns:1fr}.scenario-table{font-size:11px}.land-live-map{aspect-ratio:4/3}.scenario-input-bridge{align-items:flex-start;flex-direction:column}.scenario-input-bridge .text-button{width:100%;text-align:center}}
     `;
     document.head.appendChild(style);
   }
@@ -150,7 +153,11 @@
       section.id = 'view-scenarios';
       section.className = 'view';
       section.innerHTML = `
-        <div class="section-heading"><div><span class="eyebrow">Предпосылки и стресс</span><h2>Класс проекта и сценарии</h2></div><span class="source-label">один движок · три сценария</span></div>
+        <div class="section-heading"><div><span class="eyebrow">Вводные → сценарии</span><h2>Класс проекта и сценарии</h2></div><span class="source-label">одна база вводных · три сценария</span></div>
+        <div class="scenario-input-bridge">
+          <div><span class="eyebrow">Связь с вводными</span><strong>Сценарии считаются поверх текущих «Вводных»</strong><small>«Вводные» — база проекта. Класс подставляет в неё профиль цен и себестоимости; сценарий затем применяет свои коэффициенты к этой базе.</small></div>
+          <button type="button" class="text-button" data-scenario-go="inputs">← Открыть вводные</button>
+        </div>
         <article class="panel">
           <div class="panel-heading"><div><span class="eyebrow">База проекта</span><h2>Класс</h2></div></div>
           <p class="input-hint">Класс задаёт базовые цены реализации и полный профиль строительной себестоимости. После выбора можно править отдельные ставки во «Вводных».</p>
@@ -165,6 +172,57 @@
         </article>`;
       sensitivityView.before(section);
     }
+  }
+
+  function ensureInputsScenarioBridge() {
+    const view = document.getElementById('view-inputs');
+    const layout = view && view.querySelector('.input-layout');
+    if (!view || !layout || document.getElementById('v2InputsScenarioBridge')) return;
+    const bridge = document.createElement('div');
+    bridge.id = 'v2InputsScenarioBridge';
+    bridge.className = 'scenario-input-bridge';
+    bridge.innerHTML = `
+      <div><span class="eyebrow">Сценарная база</span><strong id="v2InputsScenarioSummary">Вводные — база сценариев</strong><small>Изменения здесь становятся базой следующего расчёта. Сравнение базового, консервативного и оптимистичного — во вкладке «Сценарии».</small></div>
+      <button type="button" class="text-button" data-scenario-go="scenarios">Открыть сценарии →</button>`;
+    layout.before(bridge);
+  }
+
+  function projectClassLabel(description, key) {
+    if (key === 'custom') return 'Пользовательский';
+    const item = (description.project_classes || []).find((row) => row && row.value === key);
+    return item ? item.label : key;
+  }
+
+  function renderInputsScenarioBridge() {
+    const host = document.getElementById('v2InputsScenarioSummary');
+    if (!host) return;
+    const draft = currentDraft();
+    const activeClass = String((draft.inputs || {}).project_class || 'custom');
+    const activeScenario = currentScenario();
+    loadFormDescription().then((description) => {
+      host.textContent = `Класс: ${projectClassLabel(description, activeClass)} · сценарий: ${scenarioLabel(activeScenario)}`;
+    }).catch(() => {
+      host.textContent = `Сценарий: ${scenarioLabel(activeScenario)}`;
+    });
+  }
+
+  function openV2View(view) {
+    try {
+      if (typeof setView === 'function') {
+        setView(view);
+        return;
+      }
+    } catch (error) { /* fallback below */ }
+    if (window.DevelopAidV2 && window.DevelopAidV2.state) {
+      window.DevelopAidV2.state.activeView = view;
+    }
+    document.querySelectorAll('.view').forEach((section) => {
+      section.classList.toggle('is-active', section.id === `view-${view}`);
+    });
+    document.querySelectorAll('.nav-item, .mobile-tabs button').forEach((button) => {
+      button.classList.toggle('is-active', button.dataset.view === view);
+    });
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
   function ensureLandPanels() {
@@ -307,6 +365,7 @@
       await window.DevelopAidV2.calculateProject(payloadFor(currentScenario(), true));
       status.textContent = 'Класс применён. Все показатели пересчитаны движком.';
       renderScenarioControls();
+      renderInputsScenarioBridge();
     } catch (error) {
       status.textContent = String(error.message || error);
       status.classList.add('is-error');
@@ -321,6 +380,7 @@
       await window.DevelopAidV2.calculateProject(payloadFor(key, true));
       status.textContent = `Активен сценарий «${scenarioLabel(key)}».`;
       renderScenarioControls();
+      renderInputsScenarioBridge();
     } catch (error) {
       status.textContent = String(error.message || error);
       status.classList.add('is-error');
@@ -547,13 +607,27 @@
 
   function bindScenarioLandActions() {
     document.addEventListener('click', (event) => {
+      const linkedView = event.target.closest('[data-scenario-go]');
+      if (linkedView) {
+        const target = linkedView.dataset.scenarioGo;
+        openV2View(target);
+        if (target === 'scenarios') setTimeout(renderScenarioControls, 0);
+        if (target === 'inputs') setTimeout(renderInputsScenarioBridge, 0);
+        return;
+      }
+      const dynamicScenarioNav = event.target.closest('[data-view="scenarios"]');
+      if (dynamicScenarioNav) {
+        openV2View('scenarios');
+        setTimeout(renderScenarioControls, 0);
+        return;
+      }
       const classButton = event.target.closest('[data-project-class]');
       if (classButton) { applyClass(classButton.dataset.projectClass); return; }
       const scenarioButton = event.target.closest('[data-project-scenario]');
       if (scenarioButton) { applyScenario(scenarioButton.dataset.projectScenario); return; }
       if (event.target.closest('#v2CompareScenarios')) { compareScenarios(); return; }
-      const nav = event.target.closest('[data-view="scenarios"], [data-view="tep"]');
-      if (nav && nav.dataset.view === 'scenarios') setTimeout(renderScenarioControls, 0);
+      const nav = event.target.closest('[data-view="inputs"], [data-view="tep"]');
+      if (nav && nav.dataset.view === 'inputs') setTimeout(renderInputsScenarioBridge, 0);
       if (nav && nav.dataset.view === 'tep') setTimeout(() => loadLandForCurrentProject(false), 0);
     });
   }
@@ -563,7 +637,9 @@
       setTimeout(waitForApp, 150);
       return;
     }
+    ensureInputsScenarioBridge();
     renderScenarioControls();
+    renderInputsScenarioBridge();
     const title = document.getElementById('projectName');
     if (title) {
       let queued = false;
@@ -573,6 +649,7 @@
         requestAnimationFrame(() => {
           queued = false;
           renderScenarioControls();
+          renderInputsScenarioBridge();
           scenarioState.landSignature = '';
           if (window.DevelopAidV2.state.activeView === 'tep') loadLandForCurrentProject(true);
         });
@@ -583,6 +660,7 @@
 
   injectScenarioLandStyles();
   ensureScenarioNavigation();
+  ensureInputsScenarioBridge();
   ensureLandPanels();
   bindScenarioLandActions();
   waitForApp();
