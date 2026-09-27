@@ -33,7 +33,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from auction_search import api, krt_investment_score  # noqa: E402
+from auction_search import api, krt_investment_score, ui  # noqa: E402
+
+from tests import page_blocks  # noqa: E402
+
+AUCTIONS_PAGE = ui.auctions_page(None)
 
 # Наблюдения каталога в том виде, в каком их отдаёт `_rating_catalogue_medians`.
 # Числа — с прода 27.09.2026: burden собран у одной строки, остальное — у многих.
@@ -204,3 +208,42 @@ def test_both_recounts_feed_the_score_from_the_same_policy() -> None:
     # Прежняя подстановка в маршруте не осталась второй копией.
     assert not re.search(r"\n\s+catalogue_medians = _rating_catalogue_medians\(\)\n",
                          source)
+
+
+def _cell(rating: dict) -> str:
+    """Клетка балла — настоящей функцией страницы, а не пересказом её логики."""
+    import json as _json
+
+    prelude = (page_blocks.page_const("state", AUCTIONS_PAGE)
+               + "\nstate.krtRank={'krt-row':{slug:'krt-row',investment_rating:"
+               + _json.dumps(rating, ensure_ascii=False) + "}};")
+    out, _taken = page_blocks.run(
+        prelude, "console.log(krtInvestmentRatingCell('krt-row'));",
+        page=AUCTIONS_PAGE)
+    return out
+
+
+def test_the_row_says_the_score_is_short_one_component() -> None:
+    """Балл по трём составляющим называет себя на ЭКРАНЕ, а не только в поле.
+
+    Не названный, он читается как полная оценка из четырёх блоков — та самая
+    подмена, из-за которой эта починка и делалась.
+    """
+    held = _rating(MEDIANS_AFTER_517, burden_pct=None)
+    said = _cell({key: held.get(key) for key in
+                  ("display_score", "coverage_pct", "missing", "deferred", "imputed")})
+
+    assert str(held["display_score"]) in said, said
+    assert "75% факта" in said
+    assert "без составляющей: нагрузка" in said, said
+    # Причина едет подсказкой того же места: экран говорит не только «нет», но и
+    # почему нет.
+    assert "не ответ" in said, said
+
+    # Предохранитель: полный балл такой пометки не несёт — иначе проверка
+    # проходила бы на любом рейтинге.
+    full = _rating(MEDIANS_AFTER_517, burden_pct=46.2)
+    plain = _cell({key: full.get(key) for key in
+                   ("display_score", "coverage_pct", "missing", "deferred", "imputed")})
+    assert "без составляющей" not in plain, plain
+    assert "100% факта" in plain

@@ -87,3 +87,8 @@ def test_catalogue_marks_median_based_ratings_as_estimated() -> None:
     assert "% факта" in page
     assert "медиана:" in page
     assert "с медианой" in page
+    # Балл по трём составляющим из четырёх называет себя: не показанный, он
+    # читался бы как полная оценка. Причина едет подсказкой того же места.
+    assert "без составляющей:" in page
+    assert "r.deferred" in page
+    assert "без составляющей '+incomplete" in page

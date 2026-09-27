@@ -2416,10 +2416,16 @@ function krtInvestmentRatingCell(slug){
  const score=r.display_score;
  const names={llcr:'LLCR',price:'цена',absorption:'поглощение',burden:'нагрузка'};
  const imputed=(r.imputed||[]).map(x=>names[x.component]||x.component).filter(Boolean);
+ // Отложенная составляющая — та, которой нет у всего каталога: подставить её
+ // нечем (медиана по одной точке не ответ), и балл посчитан по остальным.
+ // Не показанная, она читалась бы как полный балл из четырёх блоков.
+ const held=(r.deferred||[]).filter(x=>x&&x.component);
  if(score!==null&&score!==undefined&&Number.isFinite(Number(score))){
   const quality=Number.isFinite(coverage)?' · '+coverage+'% факта':'';
   const estimate=imputed.length?' · медиана: '+esc(imputed.join(', ')):'';
-  return '<b>'+esc(Math.round(Number(score)))+'</b><div class="source">/100'+quality+estimate+'</div>';
+  const waiting=held.length?' · <span title="'+esc(held.map(x=>String(x.reason||'')).join('; '))
+   +'">без составляющей: '+esc(held.map(x=>names[x.component]||x.component).join(', '))+'</span>':'';
+  return '<b>'+esc(Math.round(Number(score)))+'</b><div class="source">/100'+quality+estimate+waiting+'</div>';
  }
  if(Number.isFinite(coverage)&&coverage>0){
   const missing=(r.missing||[]).map(x=>names[x]||x).join(', ');
@@ -2846,7 +2852,7 @@ async function startKrtInvestmentRating(){
  }
  b.disabled=true;b.innerHTML='<span class="spinner"></span>Считаю 0/'+total;
  if(box){box.style.display='';box.className='notice';box.textContent='Считаю рейтинг: 0 из '+total+' · ориентир '+new Intl.NumberFormat('ru-RU').format(target)+' ₽/м²'}
- let done=0,finals=0,estimated=0,partial=0,failed=0,next=0;
+ let done=0,finals=0,estimated=0,incomplete=0,partial=0,failed=0,next=0;
  const worker=async()=>{
   while(true){
    const index=next++;if(index>=projects.length)return;
@@ -2864,12 +2870,15 @@ async function startKrtInvestmentRating(){
     if(rating&&rating.display_score!==null&&rating.display_score!==undefined){
      finals++;
      if((rating.imputed||[]).length)estimated++;
+     // Балл по трём составляющим из четырёх считается отдельно: сложенный с
+     // полными, он выдал бы неполную оценку за полную.
+     if((rating.deferred||[]).length)incomplete++;
     }else partial++;
    }catch(e){failed++}
    done++;
    if(done===total||done%4===0){
     b.innerHTML='<span class="spinner"></span>Считаю '+done+'/'+total;
-    if(box)box.textContent='Считаю рейтинг: '+done+' из '+total+' · оценок '+finals+' · с медианой '+estimated+' · без оценки '+partial+(failed?' · ошибок '+failed:'');
+    if(box)box.textContent='Считаю рейтинг: '+done+' из '+total+' · оценок '+finals+' · с медианой '+estimated+(incomplete?' · без составляющей '+incomplete:'')+' · без оценки '+partial+(failed?' · ошибок '+failed:'');
     renderKrt();
    }
   }
