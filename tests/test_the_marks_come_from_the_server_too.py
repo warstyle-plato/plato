@@ -20,9 +20,7 @@
 from __future__ import annotations
 
 import json
-import re
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 
@@ -32,46 +30,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from auction_search import ui  # noqa: E402
+import page_blocks  # noqa: E402
 
 PAGE = ui.AUCTIONS_PAGE
-
-
-def _function(name: str) -> str:
-    """Границу функции считаем скобками: соседний комментарий не контракт."""
-    start = PAGE.index(f"function {name}(")
-    depth, index, seen = 0, PAGE.index("{", start), False
-    while index < len(PAGE):
-        if PAGE[index] == "{":
-            depth, seen = depth + 1, True
-        elif PAGE[index] == "}":
-            depth -= 1
-            if seen and depth == 0:
-                return PAGE[start:index + 1]
-        index += 1
-    raise AssertionError(f"не нашёл конец функции {name}")
-
-
-def _function_with_helpers(name: str) -> str:
-    """Функция вместе с теми, кого она зовёт: стенд не перечисляет их руками.
-
-    `krtMarks` обзавелась соседями (`krtRenovation`, `krtInt`, `krtPct`), и
-    шесть проверок упали с `ReferenceError` — на верном поведении, просто
-    вырезали одну функцию из четырёх. Перечислять зависимости списком значит
-    повторить это при следующем соседе; они находятся разбором вызовов.
-    """
-    taken, order, queue = set(), [], [name]
-    while queue:
-        current = queue.pop(0)
-        if current in taken:
-            continue
-        if f"function {current}(" not in PAGE:
-            continue
-        taken.add(current)
-        body = _function(current)
-        order.append(body)
-        queue.extend(sorted(set(re.findall(r"\b(krt[A-Za-z]+)\s*\(", body))))
-    assert order, f"не нашёл функцию {name}"
-    return "\n".join(reversed(order))
 
 
 def _marks(*, rank_row: dict, pressed: dict | None = None,
@@ -79,18 +40,19 @@ def _marks(*, rank_row: dict, pressed: dict | None = None,
     node = shutil.which("node")
     if not node:
         pytest.skip("node недоступен")
-    program = (
+    prelude = (
         "const esc=s=>String(s).replace(/[&<>\"]/g,c=>"
         "({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c]));\n"
         f"const state={{krtCards:{{}},krtRank:{{s:{json.dumps(rank_row)}}},"
         f"krtPress:{json.dumps(pressed or {})}}};\n"
-        + _function_with_helpers("krtMarks") + "\n"
-        f"process.stdout.write(krtMarks({json.dumps(row or {'slug': 's'})}));"
     )
-    done = subprocess.run([node, "-e", program], capture_output=True,
-                          text=True, timeout=60)
-    assert done.returncode == 0, done.stderr[:800]
-    return done.stdout
+    # Соседей `krtMarks` добирает общий разрешитель: свой перечень по префиксу
+    # `krt` не видел общего правила «идут торги» (`liveTenderLot`).
+    out, _taken = page_blocks.run(
+        prelude,
+        f"process.stdout.write(krtMarks({json.dumps(row or {'slug': 's'})}));",
+        page=ui.auctions_page())
+    return out
 
 
 CITY_NEEDS = {"quote": "Программа реновации — Черемушки, Котловка (ЮЗАО)",

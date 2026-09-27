@@ -136,17 +136,18 @@ def test_the_verdict_reaches_the_screen_whole() -> None:
     """Причина едет до надписи целиком: решающее слово стоит в её конце."""
     from auction_search import krt_pipeline, krt_territory
 
-    long = krt_notice._why_no_table({"words": 520, "cadastral_x": [251, 383]})
+    kind, long = krt_notice._why_no_table({"words": 520, "cadastral_x": [251, 383]})
     assert len(long) > 200, "иначе проверка предела ничего не проверяет"
     ledger = {"skipped": [
         {"document": "Территория.Сведения о земельных участках.pdf",
-         "why": f"состав территории не разобран: {long}"[:400]},
+         "why": f"состав территории не разобран: {long}"[:400], "verdict": kind},
         # Вторая такая же причина не повторяется: у лота полтора десятка вложений.
         {"document": "Территория.Лотовая документация.pdf",
-         "why": f"состав территории не разобран: {long}"[:400]},
+         "why": f"состав территории не разобран: {long}"[:400], "verdict": kind},
         {"document": "Территория.График КРТ.pdf",
          "why": "состав территории не разобран: в документе нет извлекаемого "
-                "текста — это скан: таблицы в нём не искали, а не не нашли"},
+                "текста — это скан: таблицы в нём не искали, а не не нашли",
+         "verdict": "scan"},
         # Чужая запись склада сюда не попадает: у неё другое начало.
         {"document": "ГПЗУ", "why": "ГПЗУ: программы и обязательств в нём нет"},
     ]}
@@ -155,6 +156,9 @@ def test_the_verdict_reaches_the_screen_whole() -> None:
     assert "Лотовая документация" not in said, "повтор той же причины не нужен"
     assert "это скан" in said and "ГПЗУ" not in said
     assert "Это наш пробел" in said, "решающий конец обрезан"
+    # Схлопнутый повтор посчитан: одна строка на два вложения не должна читаться
+    # как одно вложение.
+    assert "и ещё 1 с тем же ответом" in said, said
 
     note = krt_territory._attempt_problem({
         "outcome": "no_table", "why": said, "documents": 12, "at": 0})

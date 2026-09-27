@@ -1304,15 +1304,26 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
             if len(stage_peers) >= 2 and hint.get("basis") == "peers":
                 adjusted = stage.adjust(stage_peers, target_readiness=0.0)
                 if adjusted:
+                    # Процент стоит на странице рядом с «Автоматическим
+                    # ориентиром» — от него он и считается. Чистый эффект стадии
+                    # (к медиане только датированных аналогов) — своим полем:
+                    # выборки разные, и −20% «от них» читалось как −20% «от
+                    # ориентира», хотя от ориентира было −38%.
+                    reference = float(hint.get("price_per_sqm") or 0.0)
                     hint["stage_model"] = {
                         **hint["stage_model"],
                         **adjusted,
                         "available": True,
-                        "adjustment_pct": round(
+                        "adjustment_pct": (
+                            round((adjusted["price_per_sqm"] / reference - 1) * 100, 1)
+                            if reference > 0 else None
+                        ),
+                        "stage_effect_pct": round(
                             (adjusted["price_per_sqm"] / max(adjusted["plain_median"], 1) - 1)
                             * 100,
                             1,
                         ),
+                        "dated_peers": len(stage_peers),
                     }
             elif hint.get("basis") != "peers":
                 hint["stage_model"]["reason"] = (

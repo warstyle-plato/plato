@@ -25,6 +25,7 @@
     python3 scripts/check_version_grows.py --base origin/main
     python3 scripts/check_version_grows.py --next --base origin/main
     python3 scripts/check_version_grows.py --on-branch --base origin/main
+    python3 scripts/check_version_grows.py --since-release
 """
 
 from __future__ import annotations
@@ -188,6 +189,51 @@ def _on_branch(base_ref: str) -> int:
     return 0
 
 
+def _since_release() -> int:
+    """Весь участок main после последнего выпуска, а не один последний коммит.
+
+    Сборки main отменяют друг друга (`cancel-in-progress`): push A меняет
+    production-код без номера, push B трогает только тесты и отменяет прогон A.
+    Проверка B сравнивала B с A, видела «production-код не менялся» — и образ
+    уезжал с кодом A под старым номером, а отменённый прогон A не краснел
+    (cancelled ≠ failure). Здесь сравнение идёт с последним коммитом, где
+    менялась строка VERSION: всё production-изменение после него обязано
+    прийти со своим номером.
+    """
+    try:
+        head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True,
+                              check=True, text=True).stdout.strip()
+        release = subprocess.run(
+            ["git", "log", "-1", "--format=%H", "-G", r'^VERSION = "', "--", ENGINE],
+            capture_output=True, check=True, text=True).stdout.strip()
+    except (subprocess.CalledProcessError, OSError) as exc:
+        print(f"История не прочитана ({exc}) — сверка с выпуском пропущена.",
+              file=sys.stderr)
+        return 1
+    if not release:
+        print("Ни одного выпуска в истории — сверять не с чем.")
+        return 0
+    if release == head:
+        print("Этот коммит сам выпуск: рост номера проверяет обычная сверка.")
+        return 0
+    changed = [path for path in _changed_paths(release, "HEAD") if _is_release_path(path)]
+    if not changed:
+        print(f"После выпуска {release[:8]} production-код не менялся.")
+        return 0
+    commits = subprocess.run(
+        ["git", "log", "--format=%h %s", f"{release}..HEAD", "--", *changed],
+        capture_output=True, check=True, text=True).stdout.strip().splitlines()
+    shown = ", ".join(changed[:5]) + (" и другие" if len(changed) > 5 else "")
+    print(f"После выпуска {release[:8]} production-код изменён без номера: {shown}.",
+          file=sys.stderr)
+    for line in commits[:10]:
+        print(f"  {line}", file=sys.stderr)
+    print("Номер выдаёт слияние (workflow «Слияние с выдачей номера»); код, "
+          "попавший в main мимо него, уезжает в образ под чужим номером.",
+          file=sys.stderr)
+    return 1
+
+
 def _current_branch() -> str:
     """Имя своей ветки — чтобы не счесть собственный номер занятым."""
     for command in (["git", "symbolic-ref", "--quiet", "--short", "HEAD"],
@@ -208,6 +254,8 @@ def main() -> int:
     argv = [arg for arg in sys.argv[1:]]
     show_next = "--next" in argv
     on_branch = "--on-branch" in argv
+    if "--since-release" in argv:
+        return _since_release()
     argv = [arg for arg in argv if arg not in ("--next", "--on-branch")]
     base_ref = ""
     if "--base" in argv:

@@ -102,6 +102,32 @@ NO_TABLE_TTL_SECONDS = 86400
 REFUSED_TTL_SECONDS = 1800
 
 
+# Предел длины причины. 400 знаков хватало на ОДИН ответ читателя состава, а
+# их у лота столько, сколько видов ответа дали его вложения: у МКАД (41 км)
+# перечень непрочитанных плюс два вердикта не поместились, и обрезка съела
+# решающий. Причина — диагноз, и её длина меряется тем, что в ней должно
+# поместиться, а не круглым числом.
+WHY_LIMIT = 1200
+
+
+def _short(why: str, limit: int = WHY_LIMIT) -> str:
+    """Обрезать причину по ГРАНИЦЕ и сказать, что обрезали.
+
+    Прежний срез по счёту знаков рвал слово посреди, и в готовой фразе выходило
+    «…и ни одного кадастрового номера — та — таблицы состава нет»: обрывок
+    читался как текст. Режется по последнему разделителю перечня или слову, а
+    сам срез называется — молча укороченный диагноз неотличим от полного.
+    """
+    text = " ".join(str(why or "").split())
+    if len(text) <= limit:
+        return text
+    head = text[:limit]
+    # Границы нет вовсе (одно слово длиной в предел) — режем по счёту: свой
+    # срез лучше молчаливого, а слова, которое можно не рвать, здесь нет.
+    cut = max(head.rfind("; "), head.rfind(" "), 0) or limit
+    return head[:cut].rstrip(" ,.;") + "… (дальше обрезано)"
+
+
 def remember_attempt(key: str, *, outcome: str, why: str = "",
                      documents: int = 0, root: Path | None = None) -> None:
     """Записать, чем кончилась попытка прочитать извещение лота.
@@ -118,7 +144,7 @@ def remember_attempt(key: str, *, outcome: str, why: str = "",
         "schema_version": SCHEMA_VERSION,
         "key": str(key),
         "outcome": str(outcome),
-        "why": str(why or "")[:400],
+        "why": _short(why),
         "documents": int(documents or 0),
         "at": int(time.time()),
     }, ensure_ascii=False, indent=1), encoding="utf-8")

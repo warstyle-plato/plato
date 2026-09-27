@@ -72,7 +72,12 @@ def test_krt_screening_uses_market_class_and_authoritative_phasing() -> None:
     assert result["market"]["start_price_rub_sqm"] == 708_000
     assert result["market"]["entry_price_rub_sqm"] == 680_000
     assert result["phasing"]["count"] == 2
-    assert result["phasing"]["saleable_sqm"] == round(161_680 * 0.65)
+    # Продаваемая считается от ГНС КВАРТИР, а не от всего жилого объёма:
+    # «объекты жилого назначения» — это МКД целиком, и 6% его СПП по методике
+    # ГлавАПУ — встроенная коммерция первого этажа. Своей строки она не имела
+    # вовсе, и эти метры продавались по цене квартир (владелец, 26.09.2026).
+    assert result["phasing"]["saleable_sqm"] == round(
+        161_680 * core.MKD_SPP_SPLIT["apartments"] * 0.65)
     assert len(result["phasing"]["phases"]) == 2
     assert result["absorption"]["available"] is True
     assert result["absorption"]["market_units_per_month"] == 21.5

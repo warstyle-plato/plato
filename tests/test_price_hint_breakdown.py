@@ -80,6 +80,14 @@ def test_price_hint_can_return_the_projects_behind_the_number(
     assert all(row["ready_equivalent_price"] for row in got["projects"])
     assert got["stage_model"]["available"] is True
     assert got["stage_model"]["price_per_sqm"] < got["stage_model"]["ready_price_per_sqm"]
+    # Процент на странице стоит рядом с «Автоматическим ориентиром» — от него
+    # и считается; чистый эффект стадии — своим полем.
+    stage_model = got["stage_model"]
+    assert stage_model["adjustment_pct"] == round(
+        (stage_model["price_per_sqm"] / got["price_per_sqm"] - 1) * 100, 1)
+    assert stage_model["stage_effect_pct"] == round(
+        (stage_model["price_per_sqm"] / stage_model["plain_median"] - 1) * 100, 1)
+    assert stage_model["dated_peers"] == 3
 
 
 def test_breakdown_page_has_manual_exclusions_and_project_summary() -> None:
