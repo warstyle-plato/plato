@@ -180,7 +180,12 @@ def test_the_product_rows_match_the_engine(starved):
             book_saleable = float(evaluator.cell(v4_dashboard.DATA_SHEET, f"D{row}") or 0)
             assert abs(book_saleable - float(product["saleable"])) <= 1.0, key
         if product.get("gns"):
-            book_gns = float(evaluator.cell(v4_dashboard.DATA_SHEET, f"C{row}") or 0)
+            # Площадь подземного продукта стоит в подземной колонке, а не в
+            # наземной: список подземных берётся у движка, а не переписывается
+            # сюда — вторая копия разошлась бы с ним молча.
+            column = ("L" if key in core.UNDERGROUND_PRODUCTS
+                      else v4_dashboard.PRODUCT_COLUMNS["gns"])
+            book_gns = float(evaluator.cell(v4_dashboard.DATA_SHEET, f"{column}{row}") or 0)
             assert abs(book_gns - float(product["gns"])) <= 1.0, key
         checked += 1
     assert checked >= 3, "продуктов с выручкой должно быть хотя бы три"
