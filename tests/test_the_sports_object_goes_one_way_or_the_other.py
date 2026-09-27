@@ -182,7 +182,7 @@ def test_the_workbook_zeroes_the_saleable_area_of_a_transferred_object() -> None
     book = openpyxl.load_workbook(io.BytesIO(content))
     params = book[v4_inputs.PARAMS]
     entered = v4_inputs.inputs(book)
-    assert entered[f"K{core._V4_SPORTS_DISPOSITION_ROW}"].value == "Передаётся городу"
+    assert entered[f"K{core._v4_layout("sports").disposition_row}"].value == "Передаётся городу"
     assert "Продаётся" in str(params["K129"].value), params["K129"].value
     # Площадь стройки признаком не гасится: объект строится в любом случае.
     assert str(params["K128"].value).startswith('=IF(K123="Да"')
@@ -219,7 +219,7 @@ def test_the_workbook_names_the_object_and_not_the_shopping_centre() -> None:
     assert book["ОБЪЕКТЫ"]["A124"].value == core.TEP_DEFAULT["sports"]["label"].upper()
     params = book[v4_inputs.PARAMS]
     keys = [params[f"M{row}"].value
-            for row in range(123, core._V4_SPORTS_RESIDUAL_ROW + 1)]
+            for row in range(123, core._v4_layout("sports").residual_row + 1)]
     assert all(str(key or "").startswith("sports_") for key in keys), keys
     assert book["ТЭП"]["B34"].value == core.TEP_DEFAULT["sports"]["label"]
     assert book["ТЭП"]["A35"].value == "ИТОГО ОБЪЕКТЫ"
