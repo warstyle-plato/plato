@@ -102,9 +102,17 @@ def test_unit_block_follows_finance_and_profit_per_metre_closes_the_table(rows) 
 
 
 def test_article_rates_sit_with_the_costs(rows) -> None:
-    rates = [r for r in rows if "цена м² МКД очереди" in r["label"]]
-    assert len(rates) == 4, [r["label"] for r in rates]
-    assert {r["block"] for r in rates} == {"costs"}
+    """Ставки — подгруппой в «Затратах»: заголовок с единицей, строки с отступом.
+
+    Голое «1,0» под колонкой «млрд ₽» читалось как продолжение денег.
+    """
+    at = next(i for i, r in enumerate(rows) if r["cls"] == "pc-caption")
+    caption = rows[at]
+    assert caption["block"] == "costs" and "тыс ₽/м²" in caption["label"], caption
+    rates = rows[at + 1:at + 5]
+    assert [r["label"].split(" (")[0] for r in rates] == [
+        "ИРД и согласования", "Проектирование П+РД", "Подготовительные работы", "Наружные сети"]
+    assert all(r["block"] == "costs" and r["cls"] == "pc-sub" for r in rates), rates
 
 
 def _block_of(rows, text: str) -> str:
@@ -199,7 +207,7 @@ def server():
 # телефоне. Меряется на отрисованной странице, а не по CSS в исходнике.
 _LAYOUT = """()=>{
   const wrap=document.querySelector('#phaseComparisonCard .scroll');
-  const rows=[...document.querySelectorAll('#phaseComparisonBody tr:not(.pc-block)')];
+  const rows=[...document.querySelectorAll('#phaseComparisonBody tr:not(.pc-block):not(.pc-caption)')];
   const lines=el=>{const r=document.createRange();r.selectNodeContents(el);
     return new Set([...r.getClientRects()].filter(x=>x.width>0).map(x=>Math.round(x.top))).size};
   const broken=[];
@@ -244,7 +252,7 @@ def test_totals_look_like_totals_on_the_rendered_page(bundle, server) -> None:
     with sync_playwright() as pw:
         browser, page, errors = _open(pw, chrome, bundle, 1300)
         got = page.evaluate("""()=>[...document.querySelectorAll('#phaseComparisonBody tr')]
-          .filter(t=>!t.classList.contains('pc-block')).map(t=>{
+          .filter(t=>!t.classList.contains('pc-block')&&!t.classList.contains('pc-caption')).map(t=>{
             const c=t.cells[0],s=getComputedStyle(c),n=getComputedStyle(t.cells[1]);
             return {label:c.innerText.trim(),cls:t.className,visible:t.offsetHeight>0,
               weight:+n.fontWeight,border:parseFloat(n.borderTopWidth),

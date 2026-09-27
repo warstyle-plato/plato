@@ -15416,21 +15416,33 @@ def _phase_comparison_pdf(table: dict[str, Any], regular: str, bold: str, colors
     strong_num = ParagraphStyle("pc_strong_num", parent=strong, alignment=2)
     head = ParagraphStyle("pc_head", parent=strong, fontSize=6.6)
     muted = ParagraphStyle("pc_muted", parent=cell, textColor=colors.HexColor("#666666"))
+    caption = ParagraphStyle("pc_caption", parent=cell, fontName=bold, fontSize=6.6,
+                             textColor=colors.HexColor("#555555"))
 
     def text(value: Any) -> str:
         return (str(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+
+    def one(value: Any) -> str:
+        # Одна цифра после запятой так, как округляет страница (половина —
+        # вверх по короткой записи числа): иначе «вводная 10,25» выходит
+        # 10,3 на экране и 10,2 в PDF.
+        from decimal import ROUND_HALF_UP, Decimal
+        return _pdf_num(float(Decimal(repr(float(value or 0))).quantize(
+            Decimal("0.1"), rounding=ROUND_HALF_UP)), 1)
 
     def fmt(row: dict[str, Any], value: Any) -> str:
         if value is None or value == "":
             return "—"
         kind = row.get("kind")
         if kind == "money":
-            return _pdf_money(value)
+            # Одна единица на таблицу, как на странице: «166,0 млн» под
+            # «3,15 млрд» читается как другой масштаб колонки.
+            return _pdf_num(float(value) / 1_000_000_000, 2) + " млрд ₽"
         if kind == "qty":
             unit = str(row.get("unit") or "")
             return (_pdf_num(value, 0 if unit == "шт." else 1) + " " + unit).strip()
         if kind == "th":
-            return _pdf_num(value, 1)
+            return one(value)
         if kind == "pct":
             return _pdf_pct(value)
         if kind == "mult":
@@ -15442,10 +15454,11 @@ def _phase_comparison_pdf(table: dict[str, Any], regular: str, bold: str, colors
 
     def label(row: dict[str, Any]) -> str:
         out = str(row.get("label") or "")
-        if row.get("kind") == "th":
+        # Единица — один раз: у ставки она уже в заголовке подгруппы.
+        if row.get("kind") == "th" and row.get("rate_input") is None:
             out += ", тыс ₽/м²"
         if row.get("rate_input") is not None:
-            out += f" (вводная {_pdf_num(row['rate_input'], 1)})"
+            out += f" (вводная {one(row['rate_input'])})"
         return out
 
     columns = list(table.get("columns") or [])
@@ -15467,6 +15480,10 @@ def _phase_comparison_pdf(table: dict[str, Any], regular: str, bold: str, colors
                   ("LINEBELOW", (0, i), (-1, i), 1.0, colors.HexColor("#111111"))]
         for row in block.get("rows") or []:
             i = len(data)
+            if row.get("kind") == "caption":
+                data.append([Paragraph(text(label(row)), caption)] + [""] * (span - 1))
+                style += [("SPAN", (0, i), (-1, i)), ("TOPPADDING", (0, i), (-1, i), 6)]
+                continue
             role = row.get("role") or ""
             lab_style = strong if role == "total" else (muted if role in ("part", "sub") else cell)
             num_style = strong_num if role == "total" else num
@@ -34957,12 +34974,17 @@ def phase_comparison_table(consolidated: dict[str, Any]) -> dict[str, Any]:
     sale, gns = f(summary.get("monetizable_saleable_sqm")), f(summary.get("project_gns_sqm"))
     rev_all = [f(x.get("revenue")) for x in c]
     inputs0 = (c[0].get("shared_rate_inputs_th") or {}) if c else {}
-    rates = [row(f"{label} — цена м² МКД очереди", "th",
-                 [(x.get("shared_rates_th") or {}).get(key) for x in c], None,
-                 rate_input=inputs0.get(key))
-             for key, label in (("ird", "ИРД и согласования"), ("design", "Проектирование П+РД"),
-                                ("preparation", "Подготовительные работы"),
-                                ("utilities", "Наружные сети"))]
+    # Ставки общепроектных статей — не деньги, а тыс ₽ за м² МКД очереди.
+    # Стоят они в «Затратах» рядом со своими статьями, но своей подгруппой с
+    # единицей в заголовке: голое «1,0» под колонкой «млрд ₽» читалось как
+    # продолжение денег (владелец, 27.09.2026: «почему в начале млрд, а
+    # дальше удельные»).
+    rates = [row("Цена м² МКД очереди по общепроектным статьям, тыс ₽/м²", "caption", [], None)]
+    rates += [row(label, "th", [(x.get("shared_rates_th") or {}).get(key) for x in c], None,
+                  rate_input=inputs0.get(key), role="sub")
+              for key, label in (("ird", "ИРД и согласования"), ("design", "Проектирование П+РД"),
+                                 ("preparation", "Подготовительные работы"),
+                                 ("utilities", "Наружные сети"))]
 
     def money(label: str, key: str, total: Any) -> dict[str, Any]:
         return row(label, "money", [f(x.get(key)) for x in c], total)
@@ -42570,6 +42592,8 @@ details.cadastral-box>summary::marker{color:#888}
 .phase-comparison-card td:not(:first-child),.phase-comparison-card th:not(:first-child){white-space:nowrap}
 .phase-comparison-card thead th:first-child,.phase-comparison-card tbody td:first-child{position:sticky;left:0;z-index:1;background:#fff}
 .phase-comparison-card tr.pc-block th span{position:sticky;left:0}
+.phase-comparison-card tr.pc-caption td{padding-top:10px;font-size:11px;color:#555;font-style:italic}
+.phase-comparison-card tr.pc-caption td span{position:sticky;left:0}
 @media(max-width:600px){.phase-comparison-card thead th:first-child,.phase-comparison-card tbody td:first-child{min-width:128px;max-width:150px;box-shadow:1px 0 0 #e5e5e5}}
 .phase-status{font-size:11px;color:#666;margin-top:8px}
 .object-actions{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
@@ -50947,8 +50971,9 @@ function renderPhaseComparison(){
  const span=table.columns.length+2;
  phaseComparisonBody.innerHTML=table.blocks.map(b=>
   `<tr class="pc-block" data-block="${b.key}"><th colspan="${span}"><span>${b.title}</span></th></tr>`+
-  b.rows.map(r=>
-   `<tr data-block="${b.key}"${r.role?` class="pc-${r.role}"`:''}${r.group?` data-group="${r.group}"`:''}><td>${label(r)}</td>`+
+  b.rows.map(r=>r.kind==='caption'
+   ?`<tr class="pc-caption" data-block="${b.key}"><td colspan="${span}"><span>${r.label}</span></td></tr>`
+   :`<tr data-block="${b.key}"${r.role?` class="pc-${r.role}"`:''}${r.group?` data-group="${r.group}"`:''}><td>${label(r)}</td>`+
    r.values.map(v=>td(r,v)).join('')+td(r,r.total)+'</tr>').join('')
  ).join('');
  renderPhaseEscrowCharts();
