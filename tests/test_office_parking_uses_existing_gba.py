@@ -27,6 +27,10 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 import main_legacy as core  # noqa: E402
 
+# Паркинг — продукт своего объекта; в этих проверках места продаёт офисник.
+OFFICE_PARKING = "object_parking_offices"
+
+
 GBA = 186_180.0
 TOTAL = GBA * 0.94
 SALEABLE = TOTAL * 0.50
@@ -104,8 +108,8 @@ def test_project_reallocation_keeps_parking_revenue_and_changes_only_office_quan
     over_result = core.calculate(core.CalcRequest(
         inputs=_inputs(UNDER, OVER), tep=_tep(), rates=[]))
 
-    assert _product_revenue(over_result, "object_parking") == pytest.approx(
-        _product_revenue(under_result, "object_parking"), rel=1e-12)
+    assert _product_revenue(over_result, OFFICE_PARKING) == pytest.approx(
+        _product_revenue(under_result, OFFICE_PARKING), rel=1e-12)
 
     office_under = _product_revenue(under_result, "offices")
     office_over = _product_revenue(over_result, "offices")
@@ -284,8 +288,8 @@ def test_office_under_and_first_floor_places_can_have_different_sale_prices() ->
     same_result = core.calculate(core.CalcRequest(inputs=same, tep=_tep(), rates=[]))
     split_result = core.calculate(core.CalcRequest(inputs=split, tep=_tep(), rates=[]))
 
-    same_revenue = _product_revenue(same_result, "object_parking")
-    split_revenue = _product_revenue(split_result, "object_parking")
+    same_revenue = _product_revenue(same_result, OFFICE_PARKING)
+    split_revenue = _product_revenue(split_result, OFFICE_PARKING)
     weighted_mln = (UNDER * 6 + OVER * 4) / SPACES
     assert split_revenue / same_revenue == pytest.approx(weighted_mln / 6, rel=1e-12)
 
@@ -326,7 +330,7 @@ def test_v4_book_uses_separate_office_parking_prices() -> None:
     sys.setrecursionlimit(400000)
     evaluator = Evaluator(book)
     assert evaluator.cell("ОБЪЕКТЫ", "B33") == pytest.approx(
-        _product_revenue(report, "object_parking") / 1_000_000, rel=1e-9)
+        _product_revenue(report, OFFICE_PARKING) / 1_000_000, rel=1e-9)
 
 
 def test_engine_and_book_sell_the_same_office_when_tep_arrives_apart() -> None:

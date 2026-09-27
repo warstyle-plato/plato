@@ -31,6 +31,10 @@ sys.path.insert(0, str(ROOT))
 import page_blocks  # noqa: E402
 import main_legacy as core  # noqa: E402
 
+# Паркинг — продукт своего объекта; в этих проверках места продаёт офисник.
+OFFICE_PARKING = "object_parking_offices"
+
+
 UNDER, OVER, GUEST_PCT = 1000, 1778, 10
 OFFICE_GBA, OFFICE_SALEABLE = 186_180.0, 87_504.6
 UNDER_PRICE_MLN, OVER_PRICE_MLN = 4.0, 2.0
@@ -88,7 +92,7 @@ def test_the_office_product_is_measured_by_what_is_sold() -> None:
 
 def test_the_parking_product_takes_the_price_and_calendar_of_its_object() -> None:
     result = _result()
-    parking = next(p for p in result["report"]["products"] if p["key"] == "object_parking")
+    parking = next(p for p in result["report"]["products"] if p["key"] == OFFICE_PARKING)
     weighted = (UNDER * UNDER_PRICE_MLN + OVER * OVER_PRICE_MLN) / (UNDER + OVER) * 1000
     assert parking["start_price_th"] == pytest.approx(weighted)
     assert parking["start_price_th"] != pytest.approx(core.DEFAULT_INPUTS["parking_price_th"])
@@ -171,20 +175,20 @@ def test_the_object_parking_never_touches_the_house_pool() -> None:
     assert tax_cost["offices"] == pytest.approx(
         without["finance"]["tax_cost_by_product"]["offices"] + garage, rel=1e-9)
     tax_with = tax_cost
-    assert tax_with["object_parking"] == 0.0
-    revenue = with_places["revenue"]["object_parking"]
-    assert with_places["finance"]["tax_margin_by_product"]["object_parking"] == pytest.approx(revenue)
+    assert tax_with[OFFICE_PARKING] == 0.0
+    revenue = with_places["revenue"][OFFICE_PARKING]
+    assert with_places["finance"]["tax_margin_by_product"][OFFICE_PARKING] == pytest.approx(revenue)
 
 
 def test_the_report_splits_the_object_money_between_its_metres_and_places() -> None:
     result = _result()
     products = {p["key"]: p for p in result["report"]["products"]}
     object_total = result["finance"]["tax_cost_by_product"]["offices"]
-    assert products["offices"]["cost"] + products["object_parking"]["cost"] == pytest.approx(object_total)
+    assert products["offices"]["cost"] + products[OFFICE_PARKING]["cost"] == pytest.approx(object_total)
     over_building = (OVER * core.OBJECT_PARKING_OVER_AREA_DEFAULT
                      * _inputs()["offices_cost_th_per_sqm"] * 1000)
     garage = 1000 * core.OBJECT_PARKING_AREA_DEFAULT * core.DEFAULT_INPUTS["main_under_th_per_sqm"] * 1000
-    assert products["object_parking"]["cost"] == pytest.approx(garage + over_building, rel=1e-9)
+    assert products[OFFICE_PARKING]["cost"] == pytest.approx(garage + over_building, rel=1e-9)
 
 
 def test_the_input_tep_puts_the_object_parking_on_its_own_row() -> None:
@@ -264,3 +268,48 @@ const document={querySelectorAll:()=>[],getElementById:el,querySelector:el};
     out, _ = page_blocks.run(prelude, "openTab('inputs');const a=drawn;openTab('tep');"
                              "process.stdout.write(JSON.stringify([a,drawn]));")
     assert json.loads(out) == [0, 1]
+
+
+def _two_garages() -> dict:
+    """Офис и ТЦ, у обоих свой гараж: места офиса продаются, ТЦ — нет."""
+    x = _inputs()
+    x.update({"retail_enabled": True, "retail_parking_under_spaces": 120,
+              "_parking_by_hand": ["offices", "retail"]})
+    t = _tep()
+    t["standalone_retail"].update({"gns": 10_000, "total_area": 9_000,
+                                   "useful": 6_000, "saleable": 6_000})
+    return core._run_authoritative_model(x, t, [], {})["consolidated"]
+
+
+def test_each_object_has_its_own_parking_product() -> None:
+    """Владелец, 27.09.2026: «Паркинг — МФОЦ / офисы», «Паркинг — ТЦ / коммерция
+    ОСЗ» — каждый со своими местами, ценой, календарём и выручкой."""
+    result = _two_garages()
+    keys = [p["key"] for p in result["report"]["products"]]
+    office, retail = (core.object_parking_product_key(k) for k in ("offices", "standalone_retail"))
+    # Строка паркинга стоит сразу за своим объектом.
+    assert keys[keys.index("offices") + 1] == office
+    assert keys[keys.index("standalone_retail") + 1] == retail
+    products = {p["key"]: p for p in result["report"]["products"]}
+    assert products[office]["revenue"] > 0 and products[retail]["revenue"] == 0
+    assert products[retail]["built_units"] == 120 and products[retail]["quantity"] == 0
+    assert result["revenue"][office] == pytest.approx(products[office]["revenue"])
+
+
+def test_the_results_page_draws_two_parking_rows() -> None:
+    """На отрисованной таблице «Темпы и цены продаж» — две строки паркинга.
+
+    Склей их в одну общую — проверка падает: она ищет строку КАЖДОГО объекта.
+    """
+    page = core.PAGE
+    start = page.index("   const ap=r.report.apartment_sales||{};\n   const inUnits=")
+    end = page.index("</tr>`).join('');", start) + len("</tr>`).join('');")
+    prelude = ("const salesReportTable={innerHTML:''};\n"
+               f"const r={json.dumps(_two_garages(), ensure_ascii=False, default=str)};\n")
+    out, _ = page_blocks.run(prelude, page[start:end]
+                             + "\nprocess.stdout.write(salesReportTable.innerHTML);")
+    rows = [row for row in out.split("<tr>") if "Паркинг — " in row]
+    labels = sorted(row.split("<td>")[1].split("<")[0].strip() for row in rows)
+    assert labels == ["Паркинг — МФОЦ / офисы", "Паркинг — ТЦ / коммерция ОСЗ"], labels
+    retail_row = next(row for row in rows if "ТЦ" in row)
+    assert "построено 120 мест" in retail_row.replace(" ", " ")

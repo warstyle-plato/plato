@@ -27,7 +27,11 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 import main_legacy as core  # noqa: E402
 
-PRODUCT = "object_parking"
+# Паркинг — продукт своего объекта; в этих проверках места продаёт офисник.
+OFFICE_PARKING = "object_parking_offices"
+
+
+PRODUCT = OFFICE_PARKING
 
 
 def _phasing() -> dict:

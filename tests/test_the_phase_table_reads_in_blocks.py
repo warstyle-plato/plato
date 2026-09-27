@@ -29,6 +29,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import main_legacy as core  # noqa: E402
+
+# Паркинг — продукт своего объекта; в этих проверках места продаёт офисник.
+OFFICE_PARKING = "object_parking_offices"
+
 import page_blocks  # noqa: E402
 from browser import chromium_or_skip  # noqa: E402
 from test_object_parking_reaches_the_queue import _phased  # noqa: E402
@@ -104,7 +108,7 @@ def test_object_parking_lives_in_the_object_block(rows) -> None:
         assert _block_of(rows, text) == "osz", text
     # Деньги того же паркинга — слагаемое «Итого ОСЗ», а не МКД.
     money = [r for r in rows if r["block"] == "revenue"
-             and r["label"] == core.NON_TEP_PRODUCT_LABELS["object_parking"]]
+             and r["label"] == core.NON_TEP_PRODUCT_LABELS[OFFICE_PARKING]]
     assert money and money[0]["group"] == "osz"
 
 

@@ -648,9 +648,8 @@ TEP_ROW_INPUTS_PLACEHOLDER = "__DEVELOPAID_TEP_ROW_INPUTS__"
 # `products` расчёта, а `productName` знала только строки ТЭП. Правило прежнее
 # и уже стоило латиницы в расходах: имя без единой русской буквы — это не имя,
 # а ключ.
-NON_TEP_PRODUCT_LABELS: dict[str, str] = {
-    "object_parking": "Паркинг отдельно стоящих объектов",
-}
+NON_TEP_PRODUCT_LABELS: dict[str, str] = {}
+
 PRODUCT_LABELS_PLACEHOLDER = "__DEVELOPAID_PRODUCT_LABELS__"
 
 
@@ -1339,6 +1338,24 @@ OBJECT_PARKING_OBJECTS = tuple(
     (o.key, o.prefix, o.enabled_key, o.garage_sellable)
     for o in STANDALONE_OBJECTS if o.garage
 )
+
+
+# Паркинг ОСЗ — продукт КАЖДОГО объекта, а не одна общая строка (владелец,
+# 27.09.2026: «Паркинг — МФОЦ / офисы», «Паркинг — ТЦ / коммерция ОСЗ» … каждый
+# со своими местами, ценой, календарём и выручкой). Ключ выводится из реестра:
+# объект, добавленный в `STANDALONE_OBJECTS` позже, получает свою строку сам.
+def object_parking_product_key(object_key: str) -> str:
+    """Ключ продукта «паркинг объекта» для объекта реестра."""
+    return f"object_parking_{object_key}"
+
+
+OBJECT_PARKING_PRODUCT_KEYS: dict[str, str] = {
+    o.key: object_parking_product_key(o.key) for o in STANDALONE_OBJECTS if o.garage
+}
+NON_TEP_PRODUCT_LABELS.update({
+    OBJECT_PARKING_PRODUCT_KEYS[o.key]: f"Паркинг — {o.group_label or o.label}"
+    for o in STANDALONE_OBJECTS if o.garage
+})
 
 # Поля объявлены один раз: по ним собирается и форма, и книга, и страница.
 # Второй список «какое поле у какого объекта» разошёлся бы с первым молча —
@@ -16742,10 +16759,16 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     product_rows=[["Продукт","Объём","Темп до РВЭ","Стартовая цена","Средняя цена","Выручка"]]
     for item in products:
         quantity=float(item.get('quantity') or 0);revenue=float(item.get('revenue') or 0)
-        if quantity<=0 and revenue<=0: continue
+        built=float(item.get('built_units') or 0)
+        # Паркинг объекта с местами, которые не продаются (ТЦ, ФОК), — тоже
+        # строка своего объекта: построено есть, продаётся ноль, как на экране.
+        if quantity<=0 and revenue<=0 and built<=0: continue
         unit=item.get('unit') or ''
         pace=item.get('pace_pre')
-        product_rows.append([item.get('label') or '—',_pdf_num(quantity,0)+(' '+unit if unit else ''),
+        volume=_pdf_num(quantity,0)+(' '+unit if unit else '')
+        if built>0:
+            volume+=f" из {_pdf_num(built,0)} построенных"
+        product_rows.append([item.get('label') or '—',volume,
                              (_pdf_num(pace,0)+' '+unit+'/мес') if pace else '—',
                              _pdf_num(item.get('start_price_th'),0)+" тыс. ₽",_pdf_num(item.get('avg_price_th'),0)+" тыс. ₽",_pdf_money(revenue)])
     story.append(table(product_rows,[45*mm,26*mm,28*mm,26*mm,26*mm,29*mm],font_size=7.4))
@@ -19085,7 +19108,9 @@ _V4_SALES_PRODUCT_ROW = {                 # строка выручки в бл�
 # Ключ продукта «паркинг объектов» объявлен в движке
 # (`NON_TEP_PRODUCT_LABELS`) — здесь только имя, по которому книга узнаёт свой
 # случай; строки его выручки стоят в `_V4_OBJECT_PARKING`.
-_V4_OBJECT_PARKING_PRODUCT = "object_parking"
+# Продукт «паркинг объекта» — у каждого объекта свой ключ; книга узнаёт его
+# здесь и находит строку выручки объекта в `_V4_OBJECT_PARKING_BY_KEY`.
+_V4_OBJECT_PARKING_KEYS = {pkey: okey for okey, pkey in OBJECT_PARKING_PRODUCT_KEYS.items()}
 
 _V4_OBJECT_PRODUCT_CELLS = {              # (очередь объекта, его выручка)
     "offices": (8, 24),
@@ -19383,6 +19408,13 @@ _V4_OBJECT_PARKING = _V4_OBJECT_PARKING + tuple(
     for lay in _V4_EXTRA_OBJECT_LAYOUTS if lay.parking_under
     for twin in [next(item for item in _V4_OBJECT_PARKING
                       if item[1] == _V4_TEMPLATE_OBJECT_LAYOUT[lay.twin][1] + 1)])
+# Строка паркинга книги у КАЖДОГО объекта — по явному признаку: ячейке «мест в
+# своём подземном» из раскладки объекта, а не по порядку перечисления. Её читает
+# колонка выручки «Паркинг — <объект>» в КОНСОЛИДАТОРЕ.
+_V4_OBJECT_PARKING_BY_KEY = {
+    lay.obj.key: next(item for item in _V4_OBJECT_PARKING if item[5] == lay.parking_under)
+    for lay in _V4_OBJECT_LAYOUTS if lay.parking_under
+}
 _V4_OBJECT_PARKING_INPUT_ROWS = (
     # (строка, подпись, ячейка значения, единица) — номер строки задан явно, а
     # не выведен из порядка: снятая строка сдвинула бы все ячейки под собой, и
@@ -20404,21 +20436,18 @@ def _v4_revenue_by_product(xml: str, products: list[dict[str, Any]],
             per_queue = [f"IF('ОБЪЕКТЫ'!$B${phase_cell}={index + 1},"
                          f"'ОБЪЕКТЫ'!$B${revenue_cell},0)"
                          for index in range(len(_V4_CONSOLIDATOR_ROWS))]
-        elif key == _V4_OBJECT_PARKING_PRODUCT:
-            # Паркинг отдельно стоящих объектов — не один блок, а строка
-            # выручки у КАЖДОГО объекта со своим гаражом, и очередь у неё та
-            # же, что у самого объекта: гараж строится и продаётся вместе с
-            # ним. Продукт завели позже обеих карт выше (06.09.2026), и
-            # колонка не строилась вовсе — свод очередей молчал о том, чем
-            # живёт очередь с офисником. Строки берутся оттуда же, где они уже
-            # объявлены: второй список разошёлся бы с первым молча.
-            per_queue = [
-                "SUM(" + ",".join(
-                    f"IF('ОБЪЕКТЫ'!$B${enabled_row + 1}={index + 1},"
-                    f"'ОБЪЕКТЫ'!$B${revenue_row},0)"
-                    for _, enabled_row, _, revenue_row, *_rest in _V4_OBJECT_PARKING
-                ) + ")"
-                for index in range(len(_V4_CONSOLIDATOR_ROWS))]
+        elif key in _V4_OBJECT_PARKING_KEYS:
+            # Паркинг — продукт СВОЕГО объекта: колонка на объект, строка его
+            # выручки на листе ОБЪЕКТЫ и очередь та же, что у самого объекта
+            # (владелец, 27.09.2026: «Паркинг — МФОЦ / офисы», «Паркинг — ТЦ»…).
+            parking = _V4_OBJECT_PARKING_BY_KEY.get(_V4_OBJECT_PARKING_KEYS[key])
+            if parking is None:
+                missing.append(f"КОНСОЛИДАТОР: у книги нет строки паркинга для «{labels[key]}»")
+                continue
+            enabled_row, revenue_row = parking[1], parking[3]
+            per_queue = [f"IF('ОБЪЕКТЫ'!$B${enabled_row + 1}={index + 1},"
+                         f"'ОБЪЕКТЫ'!$B${revenue_row},0)"
+                         for index in range(len(_V4_CONSOLIDATOR_ROWS))]
         else:
             missing.append(f"КОНСОЛИДАТОР: книга не умеет считать выручку «{labels[key]}»")
             continue
@@ -29624,8 +29653,6 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     # места офисника продаются по календарю офисника, места встроенной
     # коммерции — по календарю дома. Один общий календарь продал бы паркинг
     # офиса третьей очереди вместе с квартирами первой.
-    object_parking_value: dict[date, float] = defaultdict(float)
-    object_parking_units: dict[date, float] = defaultdict(float)
     default_parking_price = n(x, "parking_price_th") * 1000
 
     def object_parking_price(tep_key: str, prefix: str) -> float:
@@ -29656,10 +29683,11 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
                             weights: dict[date, float] | None = None,
                             factor: Callable[[date], float] | None = None,
                             seasonal_value: float | None = None,
-                            pace_value: float | None = None) -> None:
+                            pace_value: float | None = None,
+                            ) -> tuple[dict[date, float], dict[date, float]] | None:
         spaces = n((t or {}).get(tep_key) or {}, "parking_saleable_units")
         if spaces <= 0:
-            return
+            return None
         parking_price = object_parking_price(tep_key, prefix)
         extra = {} if seasonal_value is None else {"seasonal": seasonal_value, "pace": pace_value}
         value = sales_schedule(spaces, parking_price, sales_start, end_ref,
@@ -29669,10 +29697,7 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
                                   residual_months, weights_override=weights,
                                   **({} if seasonal_value is None
                                      else {"seasonal": seasonal_value, "pace": pace_value}))
-        for month, amount in value.items():
-            object_parking_value[month] += amount
-        for month, amount in units.items():
-            object_parking_units[month] += amount
+        return value, units
 
     # Встроенной коммерции МКД здесь нет: её машино-места лежат в общем
     # подземном паркинге проекта, у которого своя строка ТЭП и своя выручка.
@@ -29687,13 +29712,21 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     object_parking_plan: list[dict[str, Any]] = []
     object_parking_capex_share: dict[str, float] = {}
     for obj in standalone_objects():
-        plan = sold.get(obj.key)
-        if not obj.garage or plan is None:
+        if not obj.garage:
             continue
-        sell_object_parking(obj.key, obj.prefix, plan["sales_start"], plan["end_ref"],
-                            plan["share"], plan["residual"],
-                            plan["growth_pre"], plan["growth_post"],
-                            plan["weights"], plan["factor"])
+        # Паркинг — продукт СВОЕГО объекта: у каждого своя строка выручки
+        # (`object_parking_product_key`), а не одна общая на все ОСЗ.
+        product_key = object_parking_product_key(obj.key)
+        revenue_by_product[product_key] = 0.0
+        plan = sold.get(obj.key)
+        if plan is None:
+            continue
+        sale = sell_object_parking(obj.key, obj.prefix, plan["sales_start"], plan["end_ref"],
+                                   plan["share"], plan["residual"],
+                                   plan["growth_pre"], plan["growth_post"],
+                                   plan["weights"], plan["factor"])
+        if sale is not None:
+            add_product(product_key, dict(sale[0]), dict(sale[1]))
         spaces = n(object_parking_row(obj.key), "parking_saleable_units")
         if spaces > 0:
             # Во что места обошлись САМОМУ объекту: его подземный гараж и метры
@@ -29715,10 +29748,6 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
                 "price_th": object_parking_price(obj.key, obj.prefix) / 1000,
                 "sales_start": plan["sales_start"], "end_ref": plan["end_ref"],
                 "share": plan["share"], "residual": plan["residual"]})
-    if object_parking_value:
-        add_product("object_parking", dict(object_parking_value), dict(object_parking_units))
-    else:
-        revenue_by_product["object_parking"] = 0.0
 
     # Scenario model:
     # base = 100% revenue / 100% project costs
@@ -30999,9 +31028,10 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     # мест идёт в выручку очереди, а расход — в пул объекта (`'ОБЪЕКТЫ'!B28`
     # по проданным метрам строки 22), и к пулу дома они не относятся. Своего
     # расхода у продукта мест поэтому нет, но выручка его в базу входит.
-    if any((op.get("revenue_product_schedules") or {}).get("object_parking") or {}):
-        product_costs["object_parking"] = 0.0
-        krt_products = krt_products + ("object_parking",)
+    for parking_key in OBJECT_PARKING_PRODUCT_KEYS.values():
+        if any((op.get("revenue_product_schedules") or {}).get(parking_key) or {}):
+            product_costs[parking_key] = 0.0
+            krt_products = krt_products + (parking_key,)
     core_cost = max(
         total_capex + commercial_costs - sum(product_costs.values()), 0.0
     )
@@ -31851,23 +31881,6 @@ def calculate(req: CalcRequest) -> dict:
             "unit": "шт.", "start_price": n(x, "storage_price_th"), "share": n(x, "share_before_rve_pct", 85)/100,
             "start": op["sales_start"], "end_ref": op["rve"], "residual": int(n(x, "residual_sales_months", 6))
         },
-        "object_parking": {
-            # Собственный паркинг отдельно стоящих объектов: часть в своём
-            # подземном гараже, часть на первых этажах здания. Мера — место, а
-            # не метр: делить их деньги на площадь значит отвечать не на тот
-            # вопрос. Приобъектной стоянки здесь нет — её на кадастр не
-            # поставить, значит и продать нельзя.
-            "label": NON_TEP_PRODUCT_LABELS["object_parking"],
-            "quantity": sum(n(t.get(key, {}), "parking_saleable_units")
-                            for key, _prefix, enabled_key, _sellable in OBJECT_PARKING_OBJECTS
-                            if b(x, enabled_key)
-                            and (key != "sports" or sports_is_sold(x))),
-            "unit": "шт.", **_object_parking_spec(op.get("object_parking_plan") or [], {
-                "start_price": n(x, "parking_price_th"),
-                "share": n(x, "share_before_rve_pct", 85)/100,
-                "start": op["sales_start"], "end_ref": op["rve"],
-                "residual": int(n(x, "residual_sales_months", 6))}),
-        },
         "offices": {
             "label": "Офисы / МФОЦ",
             "quantity": standalone_object_saleable(x, t, "offices") if b(x, "offices_enabled") else 0,
@@ -31903,6 +31916,35 @@ def calculate(req: CalcRequest) -> dict:
         }
     }
 
+    # Паркинг каждого объекта — своя строка продукта сразу за своим объектом:
+    # места, цена и календарь СВОЕГО объекта (владелец, 27.09.2026). Состав —
+    # из реестра, поэтому новый объект получает строку сам. Строка заводится
+    # у включённого объекта с местами; у ТЦ и ФОКа места строятся и не
+    # продаются — продаётся 0, построено — их число.
+    _plans = {item["key"]: item for item in (op.get("object_parking_plan") or [])}
+    _specs: dict[str, dict[str, Any]] = {}
+    for _key, _spec in product_specs.items():
+        _specs[_key] = _spec
+        _obj = next((o for o in standalone_objects() if o.key == _key), None)
+        if _obj is None or not _obj.garage or not b(x, _obj.enabled_key):
+            continue
+        _row = t.get(_key) or {}
+        _built = n(_row, "parking_units")
+        if _built <= 0:
+            continue
+        _sold = (n(_row, "parking_saleable_units")
+                 if _key != "sports" or sports_is_sold(x) else 0.0)
+        _specs[OBJECT_PARKING_PRODUCT_KEYS[_key]] = {
+            "label": NON_TEP_PRODUCT_LABELS[OBJECT_PARKING_PRODUCT_KEYS[_key]],
+            "quantity": _sold, "built_units": _built,
+            "object": _key, "unit": "шт.",
+            **_object_parking_spec([_plans[_key]] if _key in _plans else [], {
+                "start_price": 0.0, "share": _spec["share"],
+                "start": _spec["start"], "end_ref": _spec["end_ref"],
+                "residual": _spec["residual"]}),
+        }
+    product_specs = _specs
+
     products_report = []
     report_krt_costs = {
         "offices": float(op["capex_amounts"].get("offices", 0.0) or 0.0),
@@ -31919,7 +31961,12 @@ def calculate(req: CalcRequest) -> dict:
                       if key in report_krt_costs}
     for _key, _value in _parking_costs.items():
         report_krt_costs[_key] -= _value
-    report_krt_costs["object_parking"] = sum(_parking_costs.values())
+        report_krt_costs[OBJECT_PARKING_PRODUCT_KEYS[_key]] = _value
+    # Паркинг объекта без своей доли (места не продаются) расхода не несёт:
+    # его гараж стоит в статье объекта. В пул дома он не идёт никогда.
+    for _key in product_specs:
+        if _key in OBJECT_PARKING_PRODUCT_KEYS.values():
+            report_krt_costs.setdefault(_key, 0.0)
     # Тот же пул, что у налоговой базы, и объявлен он там же: две копии одного
     # списка разошлись бы молча — доли расходов перестали бы давать единицу.
     report_core_keys = COST_POOL_PRODUCTS
@@ -31956,6 +32003,10 @@ def calculate(req: CalcRequest) -> dict:
             "avg_price_th": avg_price,
             "pace_pre": pace,
             "share_before_rve": spec["share"],
+            # Паркинг объекта: сколько мест построено и чей это объект —
+            # у ТЦ и ФОКа построено есть, а продаётся ноль.
+            **({"built_units": float(spec["built_units"]), "object": spec["object"]}
+               if "built_units" in spec else {}),
             "sales_start": start_date,
             "sales_end": end_date,
             # Профиль продаж и лестница цены объекта — с тем, что применилось и
@@ -34026,6 +34077,9 @@ def _consolidate_phase_results(
             p["saleable"] += float(item.get("saleable", 0.0) or 0.0)
             p["revenue"] += float(item["revenue"] or 0.0)
             p["cost"] += float(item.get("cost", 0.0) or 0.0)
+            if "built_units" in item:
+                p["built_units"] = p.get("built_units", 0.0) + float(item["built_units"] or 0.0)
+                p["object"] = item.get("object")
             if item.get("sales_start"):
                 p["sales_start"] = item["sales_start"] if p["sales_start"] is None else min(p["sales_start"], item["sales_start"])
             if item.get("sales_end"):
@@ -34034,6 +34088,18 @@ def _consolidate_phase_results(
         p["avg_price_th"] = p["revenue"] / p["quantity"] / 1000 if p["quantity"] else 0.0
         p["margin"] = ((p["revenue"] - p["cost"]) / p["revenue"]
                        if p["revenue"] else None)
+    # Паркинг объекта стоит сразу за своим объектом — как в очереди. Первая
+    # очередь без офиса иначе ставила его строку в конец списка.
+    _parking_of = {pkey: okey for okey, pkey in OBJECT_PARKING_PRODUCT_KEYS.items()}
+    _ordered: dict[str, dict[str, Any]] = {}
+    for _key, _item in product_map.items():
+        if _key in _parking_of and _parking_of[_key] in product_map:
+            continue
+        _ordered[_key] = _item
+        _pkey = OBJECT_PARKING_PRODUCT_KEYS.get(_key)
+        if _pkey in product_map:
+            _ordered[_pkey] = product_map[_pkey]
+    product_map = _ordered
 
     # Consolidated project has no single RVE. Keep phase-specific sales pace and dates.
     phase_sales = []
@@ -51079,9 +51145,12 @@ function renderPhaseComparison(){
  // объектов) идёт в ОСЗ следом за объектами, а не теряется: новый объект
  // реестра встаёт сюда сам.
  const objKeys=STANDALONE_OBJECTS.map(o=>o.key);
+ // Паркинг каждого объекта — своя строка сразу за объектом (владелец,
+ // 27.09.2026): ключ продукта приходит из реестра движка.
+ const objBlockKeys=STANDALONE_OBJECTS.flatMap(o=>[o.key,o.parking_product]).filter(k=>k&&prodOrder.includes(k));
  const MKD=MKD_PRODUCTS.filter(k=>prodOrder.includes(k));
- const OSZ=[...objKeys.filter(k=>prodOrder.includes(k)),
-            ...prodOrder.filter(k=>!MKD_PRODUCTS.includes(k)&&!objKeys.includes(k))];
+ const OSZ=[...objBlockKeys,
+            ...prodOrder.filter(k=>!MKD_PRODUCTS.includes(k)&&!objBlockKeys.includes(k))];
  // Объём к продаже по продуктам — то количество, на которое движок продаёт
  // (м² или места, единица у продукта своя). Строка заводится вместе с числом.
  // Паркинг объектов сюда не идёт: его места — своими строками ниже.
@@ -51154,7 +51223,7 @@ function renderPhaseComparison(){
  }
  const blocks=[
   ['mkd','Объём МКД — к продаже',volume(MKD)],
-  ['osz','Отдельно стоящие объекты',[...volume(objKeys.filter(k=>prodOrder.includes(k)),' — к продаже'),...objParkRows]],
+  ['osz','Отдельно стоящие объекты',[...volume(objBlockKeys,' — к продаже'),...objParkRows]],
   ['revenue','Выручка',revenueRows],
   ['costs','Затраты',[
    ['CAPEX',c.map(x=>money(x.capex)),money(cs.capex)],
@@ -52200,8 +52269,13 @@ function renderResult(){
    const schedSub=p=>(p.sales_profile?sub('профиль продаж: '+escapeHtml(p.sales_profile)):'')
     +(p.price_ladder?sub('лестница цены: '+escapeHtml(p.price_ladder)):'')
     +((p.schedule_warnings||[]).length?sub('<span style="color:#A35D00">'+p.schedule_warnings.map(escapeHtml).join('; ')+'</span>'):'');
+   // Паркинг объекта — строка своего объекта; построенное и продаваемое у него
+   // разные числа: у ТЦ и ФОКа места строятся, но не продаются, и «0 шт.»
+   // без подписи читалось бы как «мест нет».
+   const builtSub=p=>p.built_units==null?'':sub('построено '+num(p.built_units)+' мест'
+    +(Number(p.quantity||0)>0?'':' · не продаются — обеспечивают посетителей'));
    salesReportTable.innerHTML=(r.report.products||[]).map(p=>`<tr>
-    <td>${p.label}${schedSub(p)}</td>
+    <td>${p.label}${schedSub(p)}${builtSub(p)}</td>
     <td>${num(p.gns||0)}</td>
     <td>${num(p.saleable||0)}</td>
     <td>${num(p.quantity)} ${p.unit}${inUnits(p)?sub(num(Math.round(ap.units_total))+' шт. · '+num2(ap.pace_pre_rve_units)+' кв./мес.'):''}</td>
@@ -54323,7 +54397,9 @@ PAGE = PAGE.replace("__DEVELOPAID_MKD_PRODUCTS__",
 PAGE = PAGE.replace("__DEVELOPAID_STANDALONE_OBJECTS__", json.dumps(
     [{"key": o.key, "prefix": o.prefix, "default_queue": o.default_queue,
       "garage": o.garage, "garage_sellable": o.garage_sellable,
-      "measure": o.measure}
+      "measure": o.measure,
+      # Продукт «паркинг объекта» — ключ из движка, страница его не собирает.
+      "parking_product": OBJECT_PARKING_PRODUCT_KEYS.get(o.key, "")}
      for o in STANDALONE_OBJECTS], ensure_ascii=False))
 # Подпись переданных метров — из движка: получателя мы не знаем, и шесть копий
 # слова «городу» правились бы порознь.
