@@ -277,13 +277,6 @@ def _days_to_application_deadline(row: dict[str, Any]) -> int | None:
     return (moment.date() - datetime.now(moment.tzinfo).date()).days
 
 
-def _nspd_href(cadastre: str) -> str:
-    # НСПД не даёт стабильной человекочитаемой deep-link только из КН без
-    # предварительного поиска/selectedCard. Ведём на официальную ПКК; сам КН
-    # остаётся текстом ячейки, его можно сразу вставить в поиск карты.
-    return "https://nspd.gov.ru/map?thematic=PKK" if cadastral_numbers(cadastre) else ""
-
-
 def _yandex_maps_href(address: str) -> str:
     return ("https://yandex.ru/maps/?text=" + urllib.parse.quote_plus(address)) if address else ""
 
@@ -383,6 +376,10 @@ def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
             ("district", "Район", 18),
             ("address", "Адрес", 34),
             ("cadastre", "Кадастровые номера", 28),
+            # Ссылка на участок — по координатам, полученным фоном у НСПД
+            # (`lot_notes.points`); без точки клетка называет причину. Общая
+            # карта без точки ссылкой «на участок» не считается.
+            ("nspd_map", "Участок на карте НСПД", 30),
             ("type", "Тип", 18),
             ("land_area_sqm", "Площадь участка, м²", 20),
             ("building_area_sqm", "Площадь здания/ОКС, м²", 23),
@@ -436,6 +433,9 @@ def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
     queue_place = ({lot["url"]: index for index, lot in enumerate(store.queue(), start=1)}
                    if kind != "krt" else {})
     lot_note_interval = lot_notes_rules.interval_seconds()
+    points = store.points() if kind != "krt" else {}
+    points_waiting = store.points_queue() if kind != "krt" else []
+    nspd_links: dict[int, str] = {}
 
     def fill_sheet(ws, sheet_columns, title: str, table_name: str) -> None:
         ws.title = title
@@ -465,6 +465,10 @@ def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
                 row["plato_comment"] = lot_notes_rules.comment_for_book(
                     notes.get(key), place=queue_place.get(key),
                     interval_seconds=lot_note_interval)
+            if "nspd_map" in keys:
+                row["nspd_map"], nspd_links[ws.max_row + 1] = lot_notes_rules.nspd_cell(
+                    lot_notes_rules.row_numbers(row), points,
+                    waiting=points_waiting, interval_seconds=lot_note_interval)
             values = []
             for key in keys:
                 if key in numeric_keys:
@@ -495,6 +499,7 @@ def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
         url_column = keys.index("url") + 1
         address_column = keys.index("address") + 1 if "address" in keys else None
         cadastre_column = keys.index("cadastre") + 1 if "cadastre" in keys else None
+        nspd_column = keys.index("nspd_map") + 1 if "nspd_map" in keys else None
         for row_number in range(2, ws.max_row + 1):
             cell = ws.cell(row_number, url_column)
             href = _xlsx_safe_href(cell.value)
@@ -507,12 +512,12 @@ def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
                 if href:
                     address_cell.hyperlink = href
                     address_cell.style = "Hyperlink"
-            if cadastre_column:
-                cadastre_cell = ws.cell(row_number, cadastre_column)
-                href = _nspd_href(str(cadastre_cell.value or ""))
-                if href:
-                    cadastre_cell.hyperlink = href
-                    cadastre_cell.style = "Hyperlink"
+            href = nspd_links.get(row_number, "")
+            if href:
+                for column in (cadastre_column, nspd_column):
+                    if column:
+                        ws.cell(row_number, column).hyperlink = href
+                        ws.cell(row_number, column).style = "Hyperlink"
         # Стиль «Hyperlink» сбрасывает выравнивание и формат ячейки — поэтому
         # перенос строк и форматы ставятся ПОСЛЕ ссылок: «Адрес» со ссылкой на
         # карту иначе вытягивался в одну строку.
@@ -4993,12 +4998,76 @@ def install(app: FastAPI) -> None:
             return [], "; ".join(errors[:2])
         return found[:lot_notes_rules.MAX_SOURCES], ""
 
+    def _nspd_point(number: str) -> dict[str, Any]:
+        """Точка участка на карте НСПД. Адрес карты собирает движок (`_nspd_map_url`).
+
+        Где до НСПД не достучаться (Render), движок спрашивает ядро — та же
+        развилка, что у `/land/lookup`, без записи в счётчик посещений сайта.
+        """
+        now = int(time.time())
+        lookup = getattr(core, "_land_lookup_by_numbers", None)
+        if core is None or not callable(lookup):
+            return {"asked_at": now, "failed": True,
+                    "reason": "движок расчёта не загружен — НСПД спросить нечем"}
+        try:
+            url = core._core_api_url("/land/lookup") if hasattr(core, "_core_api_url") else ""
+            if url:
+                answer = core._core_post(url, {"query": number, "limit": 1},
+                                         getattr(core, "_MO_CALC_TIMEOUT_SECONDS", 60))
+                results = list((answer or {}).get("results") or [])
+            else:
+                results = list(lookup([number]) or [])
+        except Exception as exc:  # noqa: BLE001
+            detail = getattr(exc, "detail", None) or str(exc)
+            return {"asked_at": now, "failed": True,
+                    "reason": f"НСПД не ответил: {detail}"[:300]}
+        found = next((item for item in results if item.get("found")), None)
+        if found is None:
+            miss = results[0] if results else {}
+            if miss.get("lookup_failed"):
+                return {"asked_at": now, "failed": True,
+                        "reason": f"НСПД не ответил: {miss.get('note') or 'без причины'}"[:300]}
+            return {"asked_at": now, "failed": True, "not_found": True,
+                    "reason": "НСПД не нашёл участок по этому номеру"}
+        href = str(found.get("map_url") or "")
+        # Адрес без координат открывает общую карту — это не ссылка на участок.
+        if "coordinate_x=" not in href:
+            return {"asked_at": now, "failed": True, "not_found": True,
+                    "reason": "НСПД нашёл номер, но не отдал его границы — точки нет"}
+        return {"asked_at": now, "map_url": href,
+                "address": str(found.get("address") or "")[:300]}
+
+    def _nspd_points_once(limit: int = lot_notes_rules.NSPD_POINTS_PER_RUN) -> int:
+        """Получить точки для нескольких номеров из очереди. Возвращает, сколько спрошено."""
+        numbers = lot_notes.points_queue()[:limit]
+        found = 0
+        last_reason = ""
+        for number in numbers:
+            point = _nspd_point(number)
+            lot_notes.save_point(number, point)
+            if point.get("map_url"):
+                found += 1
+            else:
+                last_reason = str(point.get("reason") or "")
+        if numbers:
+            result = f"точки НСПД: спрошено {len(numbers)}, получено {found}"
+            if last_reason:
+                result += f"; последняя причина: {last_reason}"
+        else:
+            result = "точки НСПД: очередь пуста"
+        lot_notes.record_run("nspd_points", result)
+        return len(numbers)
+
+    app.state.auction_nspd_points_once = _nspd_points_once
+
     def _lot_note_once() -> bool:
         """Разобрать один лот из очереди. False — очередь пуста или спрашивать некого."""
         if core is None or not hasattr(core, "plato_answer"):
+            lot_notes.record_run("notes", "Платон недоступен: движок расчёта не загружен")
             return False
         queue = lot_notes.queue()
         if not queue:
+            lot_notes.record_run("notes", "очередь пуста")
             return False
         lot = queue[0]
         key = str(lot.get("url") or "")
@@ -5023,9 +5092,11 @@ def install(app: FastAPI) -> None:
             lot_notes.save_note(key, {"asked_at": now, "failed": True,
                                       "reason": f"{type(exc).__name__}: {detail}"[:300],
                                       "sources": docs, "search_problem": problem})
+            lot_notes.record_run("notes", f"разбор не удался {key}: {detail}")
             return True
         lot_notes.save_note(key, {"asked_at": now, "failed": False, "text": text[:2000],
                                   "sources": docs, "search_problem": problem})
+        lot_notes.record_run("notes", f"разобран {key}")
         return True
 
     def _lot_notes_loop() -> None:
@@ -5035,6 +5106,12 @@ def install(app: FastAPI) -> None:
             try:
                 if krt_ranking_rules.claim_file(claim, LOT_NOTE_CLAIM_TTL_SECONDS):
                     try:
+                        # Точки — отдельным шагом: отказ НСПД не должен
+                        # останавливать комментарий, и наоборот.
+                        try:
+                            _nspd_points_once()
+                        except Exception:  # noqa: BLE001
+                            logger.exception("Торги: точки участков НСПД")
                         _lot_note_once()
                     finally:
                         krt_ranking_rules.release_file(claim)

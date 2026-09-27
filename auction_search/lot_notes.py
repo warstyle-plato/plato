@@ -24,7 +24,7 @@ from typing import Any
 
 from market_search.http import load_json, save_json
 
-from .parsing import deadline_iso
+from .parsing import cadastral_numbers, deadline_iso
 
 NOTES_SCHEMA_VERSION = 1
 # Ответ о лоте стареет: публикации появляются, цена снижается по графику.
@@ -36,6 +36,12 @@ FAILED_RETRY_SECONDS = 6 * 60 * 60
 KEEP_AFTER_DEADLINE_SECONDS = 30 * 24 * 60 * 60
 # Сколько найденного отдавать Платону и печатать ссылками.
 MAX_SOURCES = 6
+# Точки участков на карте НСПД: сколько номеров спрашивать за проход фона и
+# когда переспрашивать. НСПД часто отвечает отказом — через час; «не нашёл
+# номер» — ответ по существу, его переспрашивают реже.
+NSPD_POINTS_PER_RUN = 10
+NSPD_FAILED_RETRY_SECONDS = 60 * 60
+NSPD_NOT_FOUND_RETRY_SECONDS = 7 * 24 * 60 * 60
 
 def interval_seconds() -> float:
     """Пауза между разборами лотов. Одна на фон и на подсказку «через N мин»."""
@@ -60,6 +66,56 @@ def lot_key(lot: dict[str, Any]) -> str:
     """Лот узнаётся по адресу своей карточки на площадке — тем же, что в «Источнике»."""
     source = lot.get("source") if isinstance(lot.get("source"), dict) else {}
     return str((source or {}).get("lot_url") or lot.get("url") or "").strip()
+
+
+def lot_numbers(lot: dict[str, Any]) -> list[str]:
+    """Кадастровые номера лота в порядке площадки, без пустых и повторов."""
+    out: list[str] = []
+    for item in lot.get("cadastral_numbers") or []:
+        number = str(item or "").strip()
+        if number and number not in out:
+            out.append(number)
+    return out
+
+
+def row_numbers(row: dict[str, Any]) -> list[str]:
+    """Номера из строки выгрузки («77:01:…, 77:01:…»). Один разбор на очередь и книгу.
+
+    Пустой столбец номеров книга добирает из названия лота — так же и здесь,
+    иначе в книге был бы номер, которого очередь точек не знает.
+    """
+    numbers = lot_numbers({"cadastral_numbers": re.split(r"[,;\s]+", str(row.get("cadastre") or ""))})
+    return numbers or cadastral_numbers(str(row.get("name") or ""))
+
+
+def nspd_cell(numbers: list[str], points: dict[str, dict[str, Any]], *,
+              waiting: list[str] | None = None, interval_seconds: float = 180.0) -> tuple[str, str]:
+    """Клетка «Участок на карте НСПД»: (текст, ссылка). Пустой клетки нет — у неё причина.
+
+    `waiting` — очередь номеров фона (`points_queue`); номер вне её и без
+    точки не запрашивался вовсе.
+    """
+    if not numbers:
+        return "Площадка не указала кадастровый номер — участок искать по адресу", ""
+    for number in numbers:
+        href = str((points.get(number) or {}).get("map_url") or "")
+        if href:
+            rest = len(numbers) - 1
+            tail = f" (первый из {len(numbers)} номеров)" if rest else ""
+            return f"{number} на карте НСПД{tail}", href
+    queue = list(waiting or [])
+    places = [queue.index(number) for number in numbers if number in queue]
+    if places:
+        runs = min(places) // NSPD_POINTS_PER_RUN + 1
+        minutes = max(1, int(round(runs * interval_seconds / 60.0)))
+        return (f"Точка у НСПД ещё не получена: появится примерно через {minutes} мин — "
+                "выгрузите таблицу ещё раз"), ""
+    reasons = [str((points.get(number) or {}).get("reason") or "") for number in numbers
+               if points.get(number)]
+    reasons = [reason for reason in reasons if reason]
+    if reasons:
+        return f"Точка не получена: {reasons[0]}", ""
+    return "Точка не запрашивалась: лот не поставлен в очередь разбора", ""
 
 
 def _compact(lot: dict[str, Any]) -> dict[str, Any]:
@@ -92,6 +148,8 @@ class LotNotes:
         self.lots_path = root / "lots_seen.json"
         self.notes_path = root / "lot_notes.json"
         self.claim_path = root / "lot_notes.claim"
+        self.points_path = root / "nspd_points.json"
+        self.run_path = root / "lot_notes_run.json"
 
     @contextlib.contextmanager
     def _locked(self):
@@ -162,8 +220,7 @@ class LotNotes:
                     continue
                 facts = dict(known.get(key) or {})
                 if not facts:
-                    numbers = [part.strip() for part in re.split(r"[,;\s]+",
-                               str(row.get("cadastre") or "")) if part.strip()]
+                    numbers = row_numbers(row)
                     facts = _compact({
                         "title": row.get("name") or row.get("title"),
                         "address": row.get("address"),
@@ -176,6 +233,9 @@ class LotNotes:
                         "status": row.get("status"),
                         "url": key,
                     })
+                # Номер, который сбор не знал, а строка несёт, — нужен точке НСПД.
+                if not facts.get("cadastral_numbers") and row_numbers(row):
+                    facts["cadastral_numbers"] = row_numbers(row)
                 if not facts.get("requested_at"):
                     added += 1
                 facts["requested_at"] = moment
@@ -246,18 +306,97 @@ class LotNotes:
         waiting.sort(key=lambda item: (item[0], item[1], item[2]))
         return [item[3] for item in waiting]
 
+    # --- точки участков на карте НСПД --------------------------------------
+    # Ссылка «на участок» в НСПД — это координаты точки: номер в адресе карта
+    # не читает (`?query=` открывает прежнее место с чужим участком, проверено
+    # владельцем 27.09.2026). Координаты отдаёт только НСПД, поэтому их берёт
+    # фон и кладёт на диск, а выгрузка лишь читает — как и комментарий.
+
+    def points(self) -> dict[str, dict[str, Any]]:
+        stored = load_json(self.points_path) or {}
+        rows = stored.get("points") if isinstance(stored, dict) else None
+        return dict(rows) if isinstance(rows, dict) else {}
+
+    def save_point(self, number: str, point: dict[str, Any]) -> None:
+        clean = str(number or "").strip()
+        if not clean:
+            return
+        with self._locked():
+            points = self.points()
+            points[clean] = point
+            save_json(self.points_path, {"schema_version": NOTES_SCHEMA_VERSION,
+                                         "updated_at": int(time.time()), "points": points})
+
+    def points_queue(self, now: float | None = None) -> list[str]:
+        """Номера лотов выгрузки, у которых точки ещё нет: ближе к сроку — раньше."""
+        moment = time.time() if now is None else now
+        points = self.points()
+        waiting: list[tuple[float, str]] = []
+        seen: set[str] = set()
+        for lot in self.lots().values():
+            if not lot.get("requested_at"):
+                continue
+            deadline = _deadline_ts(lot)
+            if deadline is not None and deadline < moment:
+                continue
+            for number in lot_numbers(lot):
+                if number in seen:
+                    continue
+                seen.add(number)
+                point = points.get(number) or {}
+                asked = float(point.get("asked_at") or 0)
+                # Точка не стареет: участок не переезжает.
+                if point.get("map_url"):
+                    continue
+                if point and moment - asked < (NSPD_NOT_FOUND_RETRY_SECONDS if point.get("not_found")
+                                               else NSPD_FAILED_RETRY_SECONDS):
+                    continue
+                waiting.append((deadline if deadline is not None else float("inf"), number))
+        waiting.sort()
+        return [number for _deadline, number in waiting]
+
+    # --- прогоны фона -------------------------------------------------------
+
+    def record_run(self, step: str, result: str, now: float | None = None) -> None:
+        """Что фон сделал в последний раз. Стоящая очередь без этого не отличается от пустой."""
+        moment = int(time.time() if now is None else now)
+        with self._locked():
+            stored = load_json(self.run_path) or {}
+            runs = dict(stored.get("runs") or {}) if isinstance(stored, dict) else {}
+            runs[step] = {"at": moment, "result": str(result or "")[:300]}
+            save_json(self.run_path, {"schema_version": NOTES_SCHEMA_VERSION, "runs": runs})
+
+    def runs(self) -> dict[str, dict[str, Any]]:
+        stored = load_json(self.run_path) or {}
+        runs = stored.get("runs") if isinstance(stored, dict) else None
+        return dict(runs) if isinstance(runs, dict) else {}
+
     def status(self, now: float | None = None) -> dict[str, Any]:
+        moment = time.time() if now is None else now
         notes = self.notes()
         lots = self.lots()
         done = sum(1 for key in lots if (notes.get(key) or {}).get("text")
                    and not (notes.get(key) or {}).get("failed"))
         failed = [key for key in lots if (notes.get(key) or {}).get("failed")]
+        points = self.points()
+        point_failures = [point for point in points.values() if not point.get("map_url")]
+        runs = self.runs()
+        last = max((run.get("at") or 0 for run in runs.values()), default=0)
         return {
             "lots": len(lots),
             "commented": done,
             "failed": len(failed),
-            "queue": len(self.queue(now)),
+            "queue": len(self.queue(moment)),
             "last_failure": (notes.get(failed[0]) or {}).get("reason", "") if failed else "",
+            "nspd_points": {
+                "found": len(points) - len(point_failures),
+                "failed": len(point_failures),
+                "queue": len(self.points_queue(moment)),
+                "last_failure": (point_failures[-1].get("reason") or "") if point_failures else "",
+            },
+            # Жив ли фон: без отметки прогона «queue 20» не отличить от стоящего цикла.
+            "last_run_ago_seconds": int(moment - last) if last else None,
+            "runs": runs,
         }
 
 
