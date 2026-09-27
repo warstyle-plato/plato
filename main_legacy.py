@@ -17779,7 +17779,14 @@ STANDALONE_PRODUCTS: tuple[str, ...] = tuple(o.key for o in STANDALONE_OBJECTS)
 # там больше нет вовсе. Здесь так нельзя — пул отвечает не на «кто продаётся»,
 # а на «чей расход признаётся из остатка», и у объекта со своей статьёй CAPEX
 # ответ обратный.
-COST_POOL_PRODUCTS: tuple[str, ...] = MKD_PRODUCTS + ("object_parking",)
+#
+# С 27.09.2026 паркинга объектов в этом пуле нет (владелец: «весь гараж и
+# подземный и наземный должен иметь отношение в затратах и выручке только
+# своего объекта, но никак не МКД. И это правило для всех объектов»). Его
+# расход — доля статьи его объекта (`object_parking_costs`): гараж и метры
+# здания под местами первых этажей. В пуле дома он забирал долю стройки МКД,
+# а его собственные деньги лежали в статье офиса и признавались метрами офиса.
+COST_POOL_PRODUCTS: tuple[str, ...] = MKD_PRODUCTS
 
 # Разделы таблицы ТЭП. Двенадцать строк одним списком читаются как двенадцать
 # равных продуктов, а это три разные вещи: дом, который мы строим и продаём;
@@ -28879,6 +28886,7 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     # дома и сроки дома, и темп мест офиса третьей очереди считался по
     # календарю квартир первой.
     object_parking_plan: list[dict[str, Any]] = []
+    object_parking_capex_share: dict[str, float] = {}
     for obj in standalone_objects():
         plan = sold.get(obj.key)
         if not obj.garage or plan is None:
@@ -28889,6 +28897,20 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
                             plan["weights"], plan["factor"])
         spaces = n(object_parking_row(obj.key), "parking_saleable_units")
         if spaces > 0:
+            # Во что места обошлись САМОМУ объекту: его подземный гараж и метры
+            # здания под местами первых этажей по ставке здания. Эта доля
+            # статьи объекта признаётся продажами мест, а не метров офиса, и
+            # к пулу дома не имеет никакого отношения (владелец, 27.09.2026:
+            # «весь гараж и подземный и наземный должен иметь отношение в
+            # затратах и выручке только своего объекта, но никак не МКД»).
+            row = object_parking_row(obj.key)
+            over_gba = min(n(row, "parking_over_gba_sqm"),
+                           max(0.0, n(x, f"{obj.prefix}_gba_sqm")))
+            parking_capex = (standalone_garage_capex.get(obj.key, 0.0)
+                             + over_gba * n(x, obj.rate_cost) * 1000)
+            object_capex = standalone_capex.get(obj.key, 0.0)
+            object_parking_capex_share[obj.key] = (
+                min(1.0, parking_capex / object_capex) if object_capex > 0 else 0.0)
             object_parking_plan.append({
                 "key": obj.key, "spaces": spaces,
                 "price_th": object_parking_price(obj.key, obj.prefix) / 1000,
@@ -29264,6 +29286,10 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         # молча смешивает два показателя.
         "standalone_garage_capex": dict(standalone_garage_capex),
         "object_parking_plan": list(object_parking_plan),
+        # Доля статьи объекта, которая приходится на его ПРОДАВАЕМЫЙ паркинг.
+        # Долей, а не суммой: статья объекта может быть перебита очередью
+        # (`_cost_override_mln`), и доля переносится на то, что осталось.
+        "object_parking_capex_share": dict(object_parking_capex_share),
         # Сколько объекта продано на самом деле: у метровых — продаваемая за
         # вычетом мест первых этажей. Отчёт о продукте брал вводную целиком, и
         # средняя цена офиса делилась на метры, которые заняты паркингом.
@@ -30172,6 +30198,19 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     # они, объект попал бы в выручку и не попал в расход, и обе строки
     # выглядели бы верными.
     product_costs = {key: op["capex_amounts"].get(key, 0.0) for key in krt_products}
+    # Продаваемый паркинг объекта — свой пул внутри денег объекта: доля его
+    # статьи уходит из пула метров объекта в пул мест. Сумма пулов объектов
+    # не меняется, значит пул дома тоже.
+    parking_costs = {key: value for key, value in object_parking_costs(op).items()
+                     if key in product_costs}
+    # Выручка мест без своего расхода всё равно входит в базу: вне пула дома
+    # и вне пула мест она прошла бы мимо налога вовсе.
+    if (sum(parking_costs.values()) > 0
+            or any((op.get("revenue_product_schedules") or {}).get("object_parking") or {})):
+        for key, value in parking_costs.items():
+            product_costs[key] -= value
+        product_costs["object_parking"] = sum(parking_costs.values())
+        krt_products = krt_products + ("object_parking",)
     core_cost = max(
         total_capex + commercial_costs - sum(product_costs.values()), 0.0
     )
@@ -30429,6 +30468,20 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
 _STANDALONE_ITEM_SUMS = ("value", "building_value", "garage_value", "gns_sqm",
                          "saleable_sqm", "units", "garage_gns_sqm", "garage_units",
                          "over_units")
+
+
+def object_parking_costs(op: dict[str, Any]) -> dict[str, float]:
+    """Затраты продаваемого паркинга каждого объекта — доля статьи объекта.
+
+    Паркинг объекта принадлежит объекту: его гараж и места первых этажей
+    построены в статье объекта и признаются продажами мест. К пулу дома
+    (`COST_POOL_PRODUCTS`) он отношения не имеет. Налоговая база и отчёт о
+    продуктах зовут эту функцию, а не считают долю каждый у себя.
+    """
+    amounts = op.get("capex_amounts") or {}
+    return {key: float(amounts.get(key, 0.0) or 0.0) * float(share or 0.0)
+            for key, share in (op.get("object_parking_capex_share") or {}).items()
+            if share}
 
 
 def _object_parking_spec(plan: list[dict[str, Any]], fallback: dict[str, Any]) -> dict[str, Any]:
@@ -31067,6 +31120,13 @@ def calculate(req: CalcRequest) -> dict:
         **({"sports": float(op["capex_amounts"].get("sports", 0.0) or 0.0)}
            if b(x, "sports_enabled") and sports_is_sold(x) else {}),
     }
+    # Паркинг объекта несёт долю статьи СВОЕГО объекта — тот же счёт, что у
+    # налоговой базы (`object_parking_costs`), а не долю стройки дома.
+    _parking_costs = {key: value for key, value in object_parking_costs(op).items()
+                      if key in report_krt_costs}
+    for _key, _value in _parking_costs.items():
+        report_krt_costs[_key] -= _value
+    report_krt_costs["object_parking"] = sum(_parking_costs.values())
     # Тот же пул, что у налоговой базы, и объявлен он там же: две копии одного
     # списка разошлись бы молча — доли расходов перестали бы давать единицу.
     report_core_keys = COST_POOL_PRODUCTS
