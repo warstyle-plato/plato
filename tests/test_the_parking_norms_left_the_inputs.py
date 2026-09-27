@@ -59,6 +59,7 @@ const box=mk('div');
 const document={activeElement:null,getElementById:id=>id==='siteParkingFields'?box:null,
  createElement:mk};
 let inputs={parking_k1:0.9,parking_rail_distance_m:'',parking_k2:'',parking_design_mode:'minimum'};
+let phaseBundle=null, lastResult=null;
 """
     tail = """
 renderSiteParkingFields();
@@ -73,3 +74,44 @@ process.stdout.write(JSON.stringify({ids,values,
     assert out["values"][0] == 0.9 and out["values"][1] == ""
     assert out["values"][3] == "minimum"
     assert "Нормативы парковки нежилья (общие на объекты)" in out["hidden"]
+
+
+def test_an_unset_coefficient_is_empty_not_zero() -> None:
+    """Прод 0.24.50: в К1, К2 и расстоянии стоял 0, а подсказка обещала пустоту.
+
+    Пустое поле — не ноль (CLAUDE.md). Умолчание — пустота; старый проект с
+    нулём считается так же, как пустой: цепочка «по расстоянию → по району →
+    1,0» работает в обоих случаях, а ноль норму мест не обнуляет.
+    """
+    for key in ("parking_k1", "parking_rail_distance_m", "parking_k2"):
+        assert core.DEFAULT_INPUTS[key] == "", key
+
+    def parking(**over):
+        x = copy.deepcopy(core.DEFAULT_INPUTS)
+        x.update({"offices_enabled": True}, **over)
+        t = copy.deepcopy(core.TEP_DEFAULT)
+        t["offices"].update({"gns": 10_000, "total_area": 9_000,
+                             "useful": 6_000, "saleable": 6_000})
+        return core.calculate(core.CalcRequest(inputs=x, tep=t, rates=[]))["parking"]
+    empty, zero = parking(), parking(parking_k1=0, parking_k2=0, parking_rail_distance_m=0)
+    assert empty["k1"] == zero["k1"] == 1.0 and empty["k_origin"] == zero["k_origin"]
+    assert empty["required_total"] == zero["required_total"] > 0
+
+
+def test_the_site_card_shows_what_the_calculation_took() -> None:
+    prelude = """
+function mk(tag){return {tag,children:[],style:{},innerHTML:'',textContent:'',value:'',placeholder:'',
+ appendChild(c){this.children.push(c);return c},contains(){return false}};}
+const box=mk('div');
+const document={activeElement:null,getElementById:id=>id==='siteParkingFields'?box:null,createElement:mk};
+let phaseBundle=null;
+let lastResult={parking:{k1:1,k2:1,k_origin:{k1:'upper_edge',k2:'upper_edge'}}};
+let inputs={parking_k1:0,parking_rail_distance_m:'',parking_k2:0,parking_design_mode:'maximum'};
+"""
+    tail = """
+renderSiteParkingFields();
+process.stdout.write(JSON.stringify(box.children.map(w=>[w.children[0].id,w.children[0].value,w.children[0].placeholder||''])));
+"""
+    got = {row[0]: row[1:] for row in page_blocks.run_json(prelude, tail)}
+    assert got["site_parking_k1"][0] == "", "старый ноль показан числом"
+    assert "авто: 1" in got["site_parking_k1"][1] and "верхний край" in got["site_parking_k1"][1]

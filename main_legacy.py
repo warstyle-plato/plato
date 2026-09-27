@@ -1566,7 +1566,7 @@ def find_input_fields(query: str, limit: int = 8) -> list[dict[str, Any]]:
 # задаёт ставку ПФ, и на 71% проект по умолчаниям перестаёт гасить долг.
 # Ставки классов (PROJECT_CLASS_PRESETS) проверку прошли и не менялись: старт
 # квартир 644,94 против пресета 650, машино-место 5 000 против 5 000.
-_DEFAULT_INPUTS_LITERAL = {'project_class': 'comfort', 'project_kind': 'mixed', 'purchase_price_mln': 0, 'purchase_schedule': '', 'construction_months': 24, 'apartment_price_th': 350, 'commercial_price_th': 350, 'parking_price_th': 1500, 'storage_price_th': 1500, 'share_before_rve_pct': 85, 'pace_adjustment_pct': 25, 'inflation_after_rve_pct': 3, 'seasonal_reduction_pct': -15, 'growth_stage1_pct': 0, 'growth_stage2_pct': 0, 'growth_stage3_pct': 0, 'growth_stage4_pct': 0, 'demolition_area_sqm': 0.0, 'demolition_cost_th_per_sqm': 0.0, 'resettlement_cost_mln': 0.0, 'ird_th_per_sqm': 1, 'design_p_th_per_sqm': 6.0, 'design_rd_th_per_sqm': 8.5, 'preparation_th_per_sqm': 2.75, 'main_above_th_per_sqm': 110, 'utilities_th_per_sqm': 10.25, 'landscaping_th_per_sqm': 15, 'landscaping_area_sqm': 0.0, 'landscaping_area_per_person_sqm': 11.0, 'landscaping_gns_th_per_sqm': 0.0, 'commissioning_th_per_sqm': 1, 'site_maintenance_th_per_sqm': 4.7, 'gc_fee_pct': 7, 'reserve_pct': 5, 'project_management_pct': 5, 'technical_supervision_pct': 5, 'author_supervision_pct': 3, 'marketing_pct': 4.5, 'selling_pct': 2.5, 'profit_tax_pct': 25, 'vat_pct': 22, 'pre_pf_own_funds_mln': 0.0, 'bridge_spread_pp': 6, 'bridge_cap_spread_pp': 6, 'pf_spread_pp': 4.5, 'pf_special_pct': 4.5, 'pf_limit_approved_mln': 0.0, 'pf_special_steps': PF_SPECIAL_STEPS_DEFAULT, 'limit_fee_pct': 0.7, 'reservation_fee_pct': 0.1, 'discount_rate_pct': 20, 'monthly_growth_pre_pct': 1.5, 'monthly_growth_post_pct': 0.25, 'ird_months': 18, 'sales_lag_months': 0, 'bridge_repay_lag_months': 0, 'residual_sales_months': 6, 'social_comp_date': '2028-06-01', 'social_compensation_mln': 0, 'kindergarten_places': 250, 'kindergarten_cost_mln_per_place': 2.75, 'kindergarten_start': '2028-06-01', 'kindergarten_months': 24, 'school_places': 0, 'school_cost_mln_per_place': 3, 'school_start': '2028-06-01', 'school_months': 30, 'clinic_capacity': 0, 'clinic_cost_mln_per_unit': 3, 'clinic_start': '2028-06-01', 'clinic_months': 24, 'social_dou_gba_sqm': 4500, 'social_school_gba_sqm': 0, 'social_clinic_gba_sqm': 0, 'project_start': '2027-01-01', 'main_under_th_per_sqm': 88, 'social_mode': 'Строительство', 'social_area_source': 'norm', 'social_dou_norm_sqm': 18, 'social_school_norm_sqm': 0, 'social_clinic_norm_sqm': 15, 'underground_area_per_space_sqm': 35, 'storage_area_per_unit_sqm': 4.3, 'parking_k1': 0.0, 'parking_rail_distance_m': 0.0, 'parking_k2': 0.0, 'parking_design_mode': 'maximum', 'object_parking_over_area_per_space_sqm': 25, 'underground_manual_gns_sqm': 0, 'underground_manual_spaces': 0, 'underground_parking_disabled': False, 'rate_scenario': 'base', 'land_rights_cost_mln': 2864.291514155844, 'bridge_interest_mode': 'Капитализация в ПФ', 'rate_start_pct': 14.0, 'rate_start_date': '2026-07-24', 'rate_target_high_pct': 11.0, 'rate_target_base_pct': 9.0, 'rate_target_low_pct': 7.0, 'rate_normalization_months': 24, 'rate_curve_shape': 2.0, 'vri_required': True, 'vri_region': 'msk', 'land_right': 'ownership', 'vri_obligation_date': '', 'vri_payment_mode': 'lump', 'vri_installment_years': 3, 'vri_periodicity_months': 3, 'vri_schedule_mode': 'auto', 'vri_interest_enabled': '', 'vri_interest_spread_pp': 3.0, 'vri_early_repay_after_pf': False, 'vri_pf_open_date': '', 'vri_in_bank_budget': True, 'vri_financing_mode': 'auto', 'vri_share_bridge_pct': 0.0, 'vri_share_pf_pct': 0.0, 'vri_share_equity_pct': 0.0, 'vri_security_cost_mln': 0.0, 'vri_relief_mode': 'none', 'vri_relief_pct': 0.0, 'vri_relief_mln': 0.0, 'vri_transfer_offset_mln': 0.0, 'vri_obligation_date_mode': 'before_rns_1m', 'vri_months_after_purchase': 12, 'vri_initial_pct': 0.0, 'tep_ratios_custom': ''}
+_DEFAULT_INPUTS_LITERAL = {'project_class': 'comfort', 'project_kind': 'mixed', 'purchase_price_mln': 0, 'purchase_schedule': '', 'construction_months': 24, 'apartment_price_th': 350, 'commercial_price_th': 350, 'parking_price_th': 1500, 'storage_price_th': 1500, 'share_before_rve_pct': 85, 'pace_adjustment_pct': 25, 'inflation_after_rve_pct': 3, 'seasonal_reduction_pct': -15, 'growth_stage1_pct': 0, 'growth_stage2_pct': 0, 'growth_stage3_pct': 0, 'growth_stage4_pct': 0, 'demolition_area_sqm': 0.0, 'demolition_cost_th_per_sqm': 0.0, 'resettlement_cost_mln': 0.0, 'ird_th_per_sqm': 1, 'design_p_th_per_sqm': 6.0, 'design_rd_th_per_sqm': 8.5, 'preparation_th_per_sqm': 2.75, 'main_above_th_per_sqm': 110, 'utilities_th_per_sqm': 10.25, 'landscaping_th_per_sqm': 15, 'landscaping_area_sqm': 0.0, 'landscaping_area_per_person_sqm': 11.0, 'landscaping_gns_th_per_sqm': 0.0, 'commissioning_th_per_sqm': 1, 'site_maintenance_th_per_sqm': 4.7, 'gc_fee_pct': 7, 'reserve_pct': 5, 'project_management_pct': 5, 'technical_supervision_pct': 5, 'author_supervision_pct': 3, 'marketing_pct': 4.5, 'selling_pct': 2.5, 'profit_tax_pct': 25, 'vat_pct': 22, 'pre_pf_own_funds_mln': 0.0, 'bridge_spread_pp': 6, 'bridge_cap_spread_pp': 6, 'pf_spread_pp': 4.5, 'pf_special_pct': 4.5, 'pf_limit_approved_mln': 0.0, 'pf_special_steps': PF_SPECIAL_STEPS_DEFAULT, 'limit_fee_pct': 0.7, 'reservation_fee_pct': 0.1, 'discount_rate_pct': 20, 'monthly_growth_pre_pct': 1.5, 'monthly_growth_post_pct': 0.25, 'ird_months': 18, 'sales_lag_months': 0, 'bridge_repay_lag_months': 0, 'residual_sales_months': 6, 'social_comp_date': '2028-06-01', 'social_compensation_mln': 0, 'kindergarten_places': 250, 'kindergarten_cost_mln_per_place': 2.75, 'kindergarten_start': '2028-06-01', 'kindergarten_months': 24, 'school_places': 0, 'school_cost_mln_per_place': 3, 'school_start': '2028-06-01', 'school_months': 30, 'clinic_capacity': 0, 'clinic_cost_mln_per_unit': 3, 'clinic_start': '2028-06-01', 'clinic_months': 24, 'social_dou_gba_sqm': 4500, 'social_school_gba_sqm': 0, 'social_clinic_gba_sqm': 0, 'project_start': '2027-01-01', 'main_under_th_per_sqm': 88, 'social_mode': 'Строительство', 'social_area_source': 'norm', 'social_dou_norm_sqm': 18, 'social_school_norm_sqm': 0, 'social_clinic_norm_sqm': 15, 'underground_area_per_space_sqm': 35, 'storage_area_per_unit_sqm': 4.3, 'parking_k1': '', 'parking_rail_distance_m': '', 'parking_k2': '', 'parking_design_mode': 'maximum', 'object_parking_over_area_per_space_sqm': 25, 'underground_manual_gns_sqm': 0, 'underground_manual_spaces': 0, 'underground_parking_disabled': False, 'rate_scenario': 'base', 'land_rights_cost_mln': 2864.291514155844, 'bridge_interest_mode': 'Капитализация в ПФ', 'rate_start_pct': 14.0, 'rate_start_date': '2026-07-24', 'rate_target_high_pct': 11.0, 'rate_target_base_pct': 9.0, 'rate_target_low_pct': 7.0, 'rate_normalization_months': 24, 'rate_curve_shape': 2.0, 'vri_required': True, 'vri_region': 'msk', 'land_right': 'ownership', 'vri_obligation_date': '', 'vri_payment_mode': 'lump', 'vri_installment_years': 3, 'vri_periodicity_months': 3, 'vri_schedule_mode': 'auto', 'vri_interest_enabled': '', 'vri_interest_spread_pp': 3.0, 'vri_early_repay_after_pf': False, 'vri_pf_open_date': '', 'vri_in_bank_budget': True, 'vri_financing_mode': 'auto', 'vri_share_bridge_pct': 0.0, 'vri_share_pf_pct': 0.0, 'vri_share_equity_pct': 0.0, 'vri_security_cost_mln': 0.0, 'vri_relief_mode': 'none', 'vri_relief_pct': 0.0, 'vri_relief_mln': 0.0, 'vri_transfer_offset_mln': 0.0, 'vri_obligation_date_mode': 'before_rns_1m', 'vri_months_after_purchase': 12, 'vri_initial_pct': 0.0, 'tep_ratios_custom': ''}
 # Поля объектов сюда не пишутся: их порождает реестр. Пока они стояли
 # литералом, новый объект означал ещё двадцать строк здесь — то есть список,
 # расходящийся с реестром молча.
@@ -47287,7 +47287,9 @@ function resetTerritoryData(options){
  TERRITORY_INPUT_KEYS.forEach(key=>{
   if(!(key in inputs))return;
   if(Number(inputs[key])>0)territoryCleared.push(key);
-  inputs[key]=0;
+  // К1, К2 и расстояние при пустом поле считаются сами (по расстоянию → по
+  // району → 1,0): пустое поле — не ноль, и сброс ставит пустоту.
+  inputs[key]=SITE_ONLY_INPUTS.includes(key)?'':0;
  });
  TERRITORY_MARKERS.forEach(key=>{delete inputs[key]});
  inputs.offices_enabled=false;
@@ -49926,7 +49928,11 @@ function renderSiteParkingFields(){
    el.value=String(inputs[id]??'');
   }else{
    el=document.createElement('input');el.type='number';el.step='any';
+   // Ноль в К1, К2 и расстоянии не бывает ответом — это «не задано» (старые
+   // проекты хранили умолчание нулём). Пустое поле показывает, что принял
+   // расчёт и откуда: число движка, а не вторая догадка страницы.
    const v=inputs[id];el.value=(v===undefined||v===null||v===''||Number(v)===0)?'':v;
+   el.placeholder=siteParkingPlaceholder(id);
   }
   el.id='site_'+id;
   el.onchange=()=>{inputs[id]=type==='select'?el.value:(String(el.value).trim()===''?'':Number(el.value));calculate()};
@@ -49935,6 +49941,19 @@ function renderSiteParkingFields(){
   wrap.appendChild(hint);
   box.appendChild(wrap);
  });
+}
+// Что принял расчёт при пустом поле — из ответа движка (`parking.k1`, `k_origin`).
+function siteParkingPlaceholder(id){
+ const p=projectParking()||{};
+ const origin={glavapu:'из выгрузки ГлавАПУ',table:'по таблице 945-ПП',upper_edge:'верхний край — мест больше всего'};
+ if(id==='parking_k1'||id==='parking_k2'){
+  const key=id==='parking_k1'?'k1':'k2';
+  const v=Number(p[key]||0);
+  if(!v)return 'пусто — посчитается автоматически';
+  return 'авто: '+String(v).replace('.',',')+' · '+(origin[(p.k_origin||{})[key]]||'посчитано расчётом');
+ }
+ if(id==='parking_rail_distance_m')return 'пусто — не задано (К1 тогда по выгрузке или 1,0)';
+ return '';
 }
 function renderSitePanel(){
  renderSiteParkingFields();
@@ -54023,7 +54042,7 @@ function resetInputsWanted(){
  const want=Object.assign(cloneValue(INPUT_DEFAULT),{
   project_class:'comfort', rate_scenario:'base',
   scenario_revenue_multiplier:1, scenario_cost_multiplier:1});
- TERRITORY_INPUT_KEYS.forEach(key=>{if(key in want)want[key]=0});
+ TERRITORY_INPUT_KEYS.forEach(key=>{if(key in want)want[key]=SITE_ONLY_INPUTS.includes(key)?'':0});
  return want;
 }
 // ТЭП после сброса — нули, а не пример. Строки и подписи остаются: таблица без
