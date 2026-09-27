@@ -25,6 +25,12 @@ data
 docs
 *.md
 !requirements.txt
+# Кроме записей, которые читает Платон (`project_knowledge.SOURCES`): без них
+# в образе поиск по записям отвечал бы «ничего не нашлось» на любой вопрос.
+!CLAUDE.md
+!docs/CLAUDE_HISTORY_*.md
+!docs/questions_backlog.md
+!docs/normative/*.md
 
 .pytest_cache
 .venv
