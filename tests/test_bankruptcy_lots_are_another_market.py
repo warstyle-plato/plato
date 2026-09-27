@@ -417,7 +417,7 @@ def test_the_real_card_parses() -> None:
     lot = parse(_real_card(), "now")
     assert lot is not None
     assert lot.title.startswith("Здание дома кордона")
-    assert lot.status == "PUBLISHED"
+    assert lot.status == "Опубликован"  # код ГИС Торгов переводится адаптером
     assert lot.application_deadline.startswith("2026-09-25")
 
 

@@ -167,10 +167,22 @@ def test_todays_registry_has_no_link_gaps() -> None:
     Число здесь не закрепляется — растёт реестр, растёт и оно; закреплено
     ровно то, ради чего заводился признак: непроверяемых позиций нет.
     """
+    # Пробел допустим только названный: позиция со статусом «нет ссылки»,
+    # внесённая сюда поимённо. Главная страница mos.ru или чужая новость на
+    # месте адреса — хуже пустоты: сторож отвечал по ним «ok», проверяя не тот
+    # документ. У 2150-ПП адрес текста пока не найден.
+    declared = {"moscow-2150-pp"}
     blind = [str(row.get("short_name") or row.get("title"))
              for row in registry._merged_registry()
-             if not str(row.get("source_url") or "").strip()]
+             if not str(row.get("source_url") or "").strip()
+             and not (row.get("id") in declared
+                      and row.get("status") == "source_link_missing")]
     assert not blind, "позиции реестра без ссылки на исходник: " + ", ".join(blind)
+    wrong = [str(row.get("short_name") or row.get("title"))
+             for row in registry._merged_registry()
+             if str(row.get("source_url") or "").strip().rstrip("/")
+             in ("https://www.mos.ru", "https://mos.ru")]
+    assert not wrong, "адрес исходника — главная страница, а не документ: " + ", ".join(wrong)
 
 
 def test_the_tool_is_declared_and_dispatched() -> None:
