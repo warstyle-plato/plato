@@ -11,7 +11,6 @@ is one commercial source of arithmetic for the beta.
 
 from __future__ import annotations
 
-from collections import defaultdict
 from typing import Any
 
 from developaid_commercial import (
@@ -119,7 +118,10 @@ def _growth_factor(annual_rate: float, months_open: int) -> float:
 
 def _retail_mix(values: dict[str, Any]) -> list[dict[str, Any]]:
     supplied = values.get("tenant_mix")
-    source = supplied if isinstance(supplied, list) and supplied else _RETAIL_MIX
+    # Aggregate retail inputs remain authoritative until a user explicitly
+    # supplies a tenant mix. This keeps the web form honest: changing its
+    # rent / turnover assumptions must change the result.
+    source = supplied if isinstance(supplied, list) and supplied else []
     rows: list[dict[str, Any]] = []
     for index, item in enumerate(source):
         if not isinstance(item, dict):
@@ -297,6 +299,27 @@ def _sale_total(asset: str, values: dict[str, Any]) -> float:
     )
 
 
+def _npv_monthly(cashflows: list[float], annual_rate: float) -> float:
+    """NPV on monthly cash flows using an effective annual hurdle rate."""
+    monthly_rate = (1.0 + max(-0.95, annual_rate)) ** (1.0 / 12.0) - 1.0
+    return sum(
+        value / ((1.0 + monthly_rate) ** index)
+        for index, value in enumerate(cashflows)
+    )
+
+
+def _payback_month(cashflows: list[float]) -> int | None:
+    cumulative = 0.0
+    has_investment = False
+    for index, value in enumerate(cashflows):
+        cumulative += value
+        if value < 0:
+            has_investment = True
+        if has_investment and cumulative >= 0:
+            return index
+    return None
+
+
 def _annual_summary(monthly: dict[str, list[float]], horizon: int) -> list[dict[str, Any]]:
     additive = [
         "development_spend",
@@ -304,6 +327,7 @@ def _annual_summary(monthly: dict[str, list[float]], horizon: int) -> list[dict[
         "operating_cost",
         "sale_revenue",
         "terminal_value",
+        "disposition_cost",
         "project_cashflow",
         "interest",
         "loan_fees",
@@ -403,6 +427,7 @@ def calculate_v2(req: CommercialRequest) -> dict[str, Any]:
     sale_revenue = [0.0] * horizon
     selling_cost = [0.0] * horizon
     terminal_value = [0.0] * horizon
+    disposition_cost = [0.0] * horizon
 
     stabilized = _operating_month(
         asset, values, max(stabilization_months, 1)
@@ -432,6 +457,9 @@ def calculate_v2(req: CommercialRequest) -> dict[str, Any]:
         exit_economics = _operating_month(asset, values, exit_months_open)
         cap_rate = max(0.0001, _pct(values, "exit_cap_rate_pct", 11.0))
         terminal_value[-1] = exit_economics["noi"] * 12.0 / cap_rate
+        disposition_cost[-1] = (
+            terminal_value[-1] * _pct(values, "exit_cost_pct", 1.0)
+        )
     else:
         gross_sales = _sale_total(asset, values)
         weights = _sales_weights(sale_months, str(values.get("sales_curve", "bell")))
@@ -457,6 +485,7 @@ def calculate_v2(req: CommercialRequest) -> dict[str, Any]:
         - development_spend[i]
         - operating_cost[i]
         - selling_cost[i]
+        - disposition_cost[i]
         for i in range(horizon)
     ]
 
@@ -484,6 +513,7 @@ def calculate_v2(req: CommercialRequest) -> dict[str, Any]:
     loan_fees = [0.0] * horizon
     debt_repayment = [0.0] * horizon
     debt_balance = [0.0] * horizon
+    debt_before_repayment = [0.0] * horizon
     equity_injection = [0.0] * horizon
     equity_distribution = [0.0] * horizon
     equity_cashflow = [0.0] * horizon
@@ -502,6 +532,7 @@ def calculate_v2(req: CommercialRequest) -> dict[str, Any]:
         # than charging a full month on money received at the end of the period.
         interest[month] = (opening_balance + 0.5 * draw) * monthly_rate
         balance += draw
+        debt_before_repayment[month] = balance
 
         if req.strategy == "sale" and balance > 0.0:
             net_sale_cash = max(0.0, sale_revenue[month] - selling_cost[month])
@@ -543,14 +574,16 @@ def calculate_v2(req: CommercialRequest) -> dict[str, Any]:
 
     financing_cost = sum(interest) + sum(loan_fees)
     total_revenue = sum(operating_revenue) + sum(sale_revenue) + sum(terminal_value)
-    total_operating_cost = sum(operating_cost) + sum(selling_cost)
+    total_operating_cost = (
+        sum(operating_cost) + sum(selling_cost) + sum(disposition_cost)
+    )
     total_cost = development_cost + total_operating_cost + financing_cost
     profit_before_tax = total_revenue - total_cost
     equity_required = sum(equity_injection)
     equity_distributed = sum(equity_distribution)
     project_irr = _annualize_monthly(_irr_monthly(project_cashflow))
     equity_irr = _annualize_monthly(_irr_monthly(equity_cashflow))
-    peak_debt = max(debt_balance + debt_draw + [0.0])
+    peak_debt = max(debt_before_repayment + [0.0])
     stabilized_noi_annual = (
         stabilized.get("noi", 0.0) * 12.0 if req.strategy == "income" else 0.0
     )
@@ -560,6 +593,8 @@ def calculate_v2(req: CommercialRequest) -> dict[str, Any]:
         else None
     )
     exit_value = sum(terminal_value)
+    exit_cost = sum(disposition_cost)
+    net_exit_proceeds = exit_value - exit_cost
     exit_noi_annual = (
         exit_value * max(0.0001, _pct(values, "exit_cap_rate_pct", 11.0))
         if req.strategy == "income" else 0.0
@@ -589,6 +624,13 @@ def calculate_v2(req: CommercialRequest) -> dict[str, Any]:
         if peak_debt > 0 and stabilized_noi_annual else None
     )
 
+    project_discount_rate = _pct(values, "project_discount_rate_pct", 15.0)
+    equity_hurdle_rate = _pct(values, "equity_hurdle_rate_pct", 20.0)
+    project_npv = _npv_monthly(project_cashflow, project_discount_rate)
+    equity_npv = _npv_monthly(equity_cashflow, equity_hurdle_rate)
+    project_payback_month = _payback_month(project_cashflow)
+    equity_payback_month = _payback_month(equity_cashflow)
+
     monthly = {
         "months": list(range(horizon)),
         "development_spend": development_spend,
@@ -602,6 +644,7 @@ def calculate_v2(req: CommercialRequest) -> dict[str, Any]:
         "sale_revenue": sale_revenue,
         "selling_cost": selling_cost,
         "terminal_value": terminal_value,
+        "disposition_cost": disposition_cost,
         "project_cashflow": project_cashflow,
         "debt_draw": debt_draw,
         "interest": interest,
@@ -639,6 +682,8 @@ def calculate_v2(req: CommercialRequest) -> dict[str, Any]:
             "Interest cover": interest_cover,
             "Debt yield": debt_yield,
             "Financing cost, ₽": financing_cost,
+            "Project NPV, ₽": project_npv,
+            "Equity NPV, ₽": equity_npv,
         },
     }
 
@@ -678,7 +723,9 @@ def calculate_v2(req: CommercialRequest) -> dict[str, Any]:
     if req.strategy == "income":
         metrics: dict[str, Any] = {
             "Стабилизированный NOI, ₽/год": stabilized_noi_annual,
-            "Exit value, ₽": exit_value,
+            "Exit value gross, ₽": exit_value,
+            "Расходы на выход, ₽": exit_cost,
+            "Exit proceeds net, ₽": net_exit_proceeds,
             "NOI на выходе, ₽/год": exit_noi_annual,
             "Yield on cost": yield_on_cost,
         }
@@ -730,8 +777,12 @@ def calculate_v2(req: CommercialRequest) -> dict[str, Any]:
             "margin": profit_before_tax / total_revenue if total_revenue else None,
             "project_irr": project_irr,
             "project_multiple": project_multiple,
+            "project_npv": project_npv,
+            "project_payback_month": project_payback_month,
             "equity_irr": equity_irr,
             "equity_multiple": equity_multiple,
+            "equity_npv": equity_npv,
+            "equity_payback_month": equity_payback_month,
             "equity_required": equity_required,
             "equity_distributed": equity_distributed,
             "equity_return": equity_distributed - equity_required,
@@ -743,6 +794,8 @@ def calculate_v2(req: CommercialRequest) -> dict[str, Any]:
             "stabilized_noi_annual": stabilized_noi_annual,
             "yield_on_cost": yield_on_cost,
             "exit_value": exit_value,
+            "exit_cost": exit_cost,
+            "net_exit_proceeds": net_exit_proceeds,
             "exit_noi_annual": exit_noi_annual,
         },
         "operating": stabilized,
@@ -753,6 +806,17 @@ def calculate_v2(req: CommercialRequest) -> dict[str, Any]:
         "checks": {
             "development_spend_reconciles": abs(sum(development_spend) - development_cost) < 0.01,
             "ending_debt_zero": abs(debt_balance[-1]) < 0.01,
+            "peak_debt_within_limit": peak_debt <= debt_limit + 0.01,
+            "project_cashflow_reconciles": abs(
+                sum(project_cashflow)
+                - (
+                    total_revenue
+                    - development_cost
+                    - sum(operating_cost)
+                    - sum(selling_cost)
+                    - sum(disposition_cost)
+                )
+            ) < 0.01,
             "uses_escrow": False,
         },
     }
