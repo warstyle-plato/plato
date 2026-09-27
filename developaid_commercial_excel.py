@@ -39,15 +39,22 @@ _LABELS = {
     "income_area_sqm": ("Арендопригодная площадь", "м²"),
     "rent_rub_sqm_month": ("Базовая аренда", "₽/м²/мес."),
     "occupancy_pct": ("Стабилизированная загрузка", "%"),
+    "rent_growth_pct": ("Индексация аренды / ставок", "%/год"),
+    "other_income_pct": ("Прочая выручка офиса", "% аренды"),
     "opex_pct": ("Операционные расходы", "% выручки"),
+    "leasing_cost_pct": ("Leasing / TI / LC", "% выручки lease-up"),
+    "marketing_pct": ("Маркетинг / promotion", "% выручки"),
     "saleable_area_sqm": ("Продаваемая площадь", "м²"),
     "sale_price_rub_sqm": ("Цена продажи", "₽/м²"),
     "sales_rub_sqm_month": ("Оборот арендаторов", "₽/м²/мес."),
     "turnover_rent_pct": ("Процент с оборота", "%"),
     "keys": ("Номерной фонд", "ключей"),
     "adr_rub": ("ADR", "₽/номер/сутки"),
+    "adr_growth_pct": ("Рост ADR", "%/год"),
     "other_revenue_pct": ("Прочая выручка", "% room revenue"),
+    "management_fee_pct": ("Management fee", "% выручки"),
     "ffe_reserve_pct": ("FF&E reserve", "% выручки"),
+    "preopening_cost_rub": ("Pre-opening", "₽"),
     "saleable_keys": ("Продаваемые номера", "шт."),
     "sale_price_rub_key": ("Цена продажи номера", "₽/номер"),
 }
@@ -55,7 +62,9 @@ _LABELS = {
 _PERCENT_KEYS = {
     "soft_cost_pct", "contingency_pct", "exit_cap_rate_pct", "selling_cost_pct",
     "debt_share_pct", "debt_rate_pct", "loan_fee_pct", "sales_cash_sweep_pct",
-    "occupancy_pct", "opex_pct", "turnover_rent_pct", "other_revenue_pct",
+    "occupancy_pct", "rent_growth_pct", "other_income_pct", "opex_pct",
+    "leasing_cost_pct", "marketing_pct", "turnover_rent_pct",
+    "adr_growth_pct", "other_revenue_pct", "management_fee_pct",
     "ffe_reserve_pct",
 }
 
@@ -200,7 +209,7 @@ def _inputs(book: xlsxwriter.Workbook, req: CommercialRequest, values: dict[str,
         ("Hard cost, ₽", "=inp_gross_area_sqm*inp_construction_cost_rub_sqm", "hard_cost"),
         ("Soft cost, ₽", "=hard_cost*inp_soft_cost_pct", "soft_cost"),
         ("Contingency, ₽", "=hard_cost*inp_contingency_pct", "contingency"),
-        ("Development cost, ₽", "=inp_land_cost_rub+hard_cost+soft_cost+contingency", "development_cost"),
+        ("Development cost, ₽", "=inp_land_cost_rub+hard_cost+soft_cost+contingency+IF(model_asset_type=\"hotel\",inp_preopening_cost_rub,0)", "development_cost"),
         ("Горизонт модели, мес.", '=IF(model_strategy="sale",MAX(inp_construction_months+1,inp_sale_start_month+inp_sale_months+1),inp_construction_months+inp_hold_years*12+1)', "model_horizon"),
     ]:
         ws.write(row - 1, 0, label)
@@ -224,8 +233,10 @@ def _operating(book: xlsxwriter.Workbook, req: CommercialRequest, fmt: dict[str,
             ("Доходная площадь, м²", "=inp_income_area_sqm", "NLA", "op_area"),
             ("Аренда, ₽/м²/мес.", "=inp_rent_rub_sqm_month", "", "op_rent"),
             ("Загрузка", "=inp_occupancy_pct", "", "op_occupancy"),
-            ("Валовая выручка, ₽/мес.", "=op_area*op_rent*op_occupancy", "", "op_revenue_month"),
-            ("OPEX, ₽/мес.", "=op_revenue_month*inp_opex_pct", "", "op_cost_direct"),
+            ("Базовая арендная выручка, ₽/мес.", "=op_area*op_rent*op_occupancy", "", "op_base_revenue"),
+            ("Прочая выручка, ₽/мес.", "=op_base_revenue*inp_other_income_pct", "", "op_other_revenue"),
+            ("Валовая выручка, ₽/мес.", "=op_base_revenue+op_other_revenue", "", "op_revenue_month"),
+            ("OPEX + marketing, ₽/мес.", "=op_revenue_month*(inp_opex_pct+inp_marketing_pct)", "", "op_cost_direct"),
             ("NOI, ₽/мес.", "=op_revenue_month-op_cost_direct", "", "op_noi_month"),
         ]
     elif req.asset_type == "retail":
@@ -249,8 +260,9 @@ def _operating(book: xlsxwriter.Workbook, req: CommercialRequest, fmt: dict[str,
             ("Прочая выручка, ₽/мес.", "=op_room_revenue*inp_other_revenue_pct", "", "op_other_revenue"),
             ("Валовая выручка, ₽/мес.", "=op_room_revenue+op_other_revenue", "", "op_revenue_month"),
             ("OPEX, ₽/мес.", "=op_revenue_month*inp_opex_pct", "", "op_opex_month"),
+            ("Management fee, ₽/мес.", "=op_revenue_month*inp_management_fee_pct", "", "op_management_fee"),
             ("FF&E reserve, ₽/мес.", "=op_revenue_month*inp_ffe_reserve_pct", "", "op_ffe_month"),
-            ("NOI, ₽/мес.", "=op_revenue_month-op_opex_month-op_ffe_month", "", "op_noi_month"),
+            ("NOI, ₽/мес.", "=op_revenue_month-op_opex_month-op_management_fee-op_ffe_month", "", "op_noi_month"),
             ("RevPAR, ₽", "=op_adr*op_occupancy", "", "op_revpar"),
         ]
 
@@ -279,48 +291,245 @@ def _operating(book: xlsxwriter.Workbook, req: CommercialRequest, fmt: dict[str,
     book.define_name("sale_total", "=Operating!$B$" + str(row))
 
 
-def _cashflow(book: xlsxwriter.Workbook, fmt: dict[str, Any], months: int = 180) -> None:
+
+def _development(book: xlsxwriter.Workbook, req: CommercialRequest, fmt: dict[str, Any], months: int = 180) -> None:
+    ws = book.add_worksheet("Development")
+    ws.hide_gridlines(2)
+    ws.freeze_panes(3, 1)
+    ws.set_column("A:A", 10)
+    ws.set_column("B:H", 18)
+    ws.merge_range("A1:H1", "Development schedule · S-curve", fmt["title"])
+    ws.write_row("A3", [
+        "Месяц", "Вес S-curve", "Участок", "Hard cost", "Soft cost",
+        "Contingency", "Pre-opening", "Development spend",
+    ], fmt["header"])
+    first, last = 4, 3 + months
+    for month in range(months):
+        row = first + month
+        ws.write_number(row - 1, 0, month)
+        ws.write_formula(
+            row - 1, 1,
+            '=IF(AND(A' + str(row) + '>=1,A' + str(row) + '<=inp_construction_months),'
+            'A' + str(row) + '*(inp_construction_months+1-A' + str(row) + ')/'
+            '(inp_construction_months*(inp_construction_months+1)*(inp_construction_months+2)/6),0)',
+            fmt["percent"],
+        )
+        ws.write_formula(row - 1, 2, '=IF(A' + str(row) + '=0,inp_land_cost_rub,0)', fmt["money"])
+        ws.write_formula(row - 1, 3, '=B' + str(row) + '*hard_cost', fmt["money"])
+        ws.write_formula(row - 1, 4, '=D' + str(row) + '*inp_soft_cost_pct', fmt["money"])
+        ws.write_formula(row - 1, 5, '=D' + str(row) + '*inp_contingency_pct', fmt["money"])
+        ws.write_formula(
+            row - 1, 6,
+            '=IF(AND(model_asset_type="hotel",A' + str(row) + '=inp_construction_months),inp_preopening_cost_rub,0)',
+            fmt["money"],
+        )
+        ws.write_formula(row - 1, 7, '=SUM(C' + str(row) + ':G' + str(row) + ')', fmt["money"])
+    total = last + 1
+    ws.write(total - 1, 0, "TOTAL", fmt["total_label"])
+    for col in "CDEFGH":
+        ws.write_formula(total - 1, ord(col) - 65, '=SUM(' + col + str(first) + ':' + col + str(last) + ')', fmt["total_money"])
+    book.define_name("dev_spend", "=Development!$H$" + str(first) + ":$H$" + str(last))
+
+
+def _sales(book: xlsxwriter.Workbook, req: CommercialRequest, fmt: dict[str, Any], months: int = 180) -> None:
+    ws = book.add_worksheet("Sales")
+    ws.hide_gridlines(2)
+    ws.freeze_panes(3, 1)
+    ws.set_column("A:G", 18)
+    ws.merge_range("A1:G1", "Sales schedule · sale strategy", fmt["title"])
+    ws.write_row("A3", [
+        "Месяц", "Активно", "Продаваемый объём", "Цена", "Gross sales",
+        "Selling cost", "Net sale cash",
+    ], fmt["header"])
+    first, last = 4, 3 + months
+    qty = "inp_saleable_keys" if req.asset_type == "hotel" else "inp_saleable_area_sqm"
+    price = "inp_sale_price_rub_key" if req.asset_type == "hotel" else "inp_sale_price_rub_sqm"
+    for month in range(months):
+        row = first + month
+        ws.write_number(row - 1, 0, month)
+        ws.write_formula(row - 1, 1, '=--(AND(A' + str(row) + '>=inp_sale_start_month,A' + str(row) + '<inp_sale_start_month+inp_sale_months))')
+        ws.write_formula(row - 1, 2, '=IF(B' + str(row) + '=1,' + qty + '/MAX(1,inp_sale_months),0)', fmt["number"])
+        ws.write_formula(row - 1, 3, '=' + price, fmt["money"])
+        ws.write_formula(row - 1, 4, '=C' + str(row) + '*D' + str(row), fmt["money"])
+        ws.write_formula(row - 1, 5, '=E' + str(row) + '*inp_selling_cost_pct', fmt["money"])
+        ws.write_formula(row - 1, 6, '=E' + str(row) + '-F' + str(row), fmt["money"])
+    total = last + 1
+    ws.write(total - 1, 0, "TOTAL", fmt["total_label"])
+    for col in "EFG":
+        ws.write_formula(total - 1, ord(col) - 65, '=SUM(' + col + str(first) + ':' + col + str(last) + ')', fmt["total_money"])
+
+
+def _financing(book: xlsxwriter.Workbook, fmt: dict[str, Any], months: int = 180) -> None:
+    ws = book.add_worksheet("Financing")
+    ws.hide_gridlines(2)
+    ws.set_column("A:A", 31)
+    ws.set_column("B:B", 22)
+    ws.set_column("C:E", 28)
+    ws.merge_range("A1:E1", "Financing · conventional debt, no escrow", fmt["title"])
+    ws.write_row("A3", ["Показатель", "Значение", "Единица", "Ориентир", "Комментарий"], fmt["header"])
+    rows = [
+        ("Peak debt", "=MAX(cf_debt_balance)", "₽", "", "Пиковый остаток долга"),
+        ("Financing cost", "=SUM(cf_interest)+SUM(cf_debt_draw)*inp_loan_fee_pct", "₽", "", "Проценты + fee"),
+        ("Debt / Development cost", "=IF(development_cost=0,0,B4/development_cost)", "x", "<= 0.70x", ""),
+        ("LTV at exit", "=IF(Summary!B19=0,0,B4/Summary!B19)", "x", "<= 0.70x", ""),
+        ("ICR at stabilization", "=IF(B4=0,0,op_noi_annual/(B4*inp_debt_rate_pct))", "x", ">= 1.50x", ""),
+        ("Ending debt", "=INDEX(cf_debt_balance,ROWS(cf_debt_balance))", "₽", "0", "Долг должен быть погашен"),
+    ]
+    for row, item in enumerate(rows, start=4):
+        ws.write(row - 1, 0, item[0])
+        ws.write_formula(row - 1, 1, item[1], fmt["money"] if item[2] == "₽" else fmt["number"])
+        ws.write(row - 1, 2, item[2])
+        ws.write(row - 1, 3, item[3])
+        ws.write(row - 1, 4, item[4], fmt["note"])
+
+
+def _sensitivity(book: xlsxwriter.Workbook, req: CommercialRequest, fmt: dict[str, Any]) -> None:
+    ws = book.add_worksheet("Sensitivity")
+    ws.hide_gridlines(2)
+    ws.set_column("A:F", 18)
+    ws.merge_range("A1:F1", "Sensitivity analysis", fmt["title"])
+    ws.merge_range("A3:F3", "Income strategy · Exit value", fmt["section"])
+    driver = "inp_adr_rub" if req.asset_type == "hotel" else "inp_rent_rub_sqm_month"
+    growth_label = "ADR" if req.asset_type == "hotel" else "Rent"
+    changes = [-0.10, -0.05, 0.0, 0.05, 0.10]
+    caps = [-0.02, -0.01, 0.0, 0.01, 0.02]
+    ws.write_row("A5", ["Cap \\ " + growth_label] + changes, fmt["header"])
+    for col, chg in enumerate(changes, start=1):
+        ws.write_number(4, col, chg, fmt["percent"])
+    for idx, cap in enumerate(caps, start=6):
+        ws.write_number(idx - 1, 0, cap, fmt["percent"])
+        for col, chg in enumerate(changes, start=1):
+            if req.asset_type == "hotel":
+                noi = (
+                    "(inp_keys*" + driver + "*(1+" + str(chg) + ")*365/12*inp_occupancy_pct"
+                    "*(1+inp_other_revenue_pct)*(1-inp_opex_pct-inp_management_fee_pct-inp_ffe_reserve_pct)*12)"
+                )
+            elif req.asset_type == "office":
+                noi = (
+                    "(inp_income_area_sqm*" + driver + "*(1+" + str(chg) + ")*inp_occupancy_pct"
+                    "*(1+inp_other_income_pct)*(1-inp_opex_pct)*12)"
+                )
+            else:
+                noi = (
+                    "(inp_income_area_sqm*" + driver + "*(1+" + str(chg) + ")*inp_occupancy_pct"
+                    "*(1-inp_opex_pct-inp_marketing_pct)*12)"
+                )
+            ws.write_formula(idx - 1, col, "=" + noi + "/(inp_exit_cap_rate_pct+A" + str(idx) + ")", fmt["money"])
+    ws.merge_range("A13:F13", "Sale strategy · profit before financing", fmt["section"])
+    ws.write_row("A15", ["Cost \\ Price"] + changes, fmt["header"])
+    for col, chg in enumerate(changes, start=1):
+        ws.write_number(14, col, chg, fmt["percent"])
+    sale_base = "inp_saleable_keys*inp_sale_price_rub_key" if req.asset_type == "hotel" else "inp_saleable_area_sqm*inp_sale_price_rub_sqm"
+    for idx, cost_chg in enumerate(changes, start=16):
+        ws.write_number(idx - 1, 0, cost_chg, fmt["percent"])
+        for col, price_chg in enumerate(changes, start=1):
+            cost = "(inp_land_cost_rub+hard_cost*(1+" + str(cost_chg) + ")+soft_cost+contingency)"
+            if req.asset_type == "hotel":
+                cost = "(" + cost + "+inp_preopening_cost_rub)"
+            ws.write_formula(
+                idx - 1, col,
+                "=" + sale_base + "*(1+" + str(price_chg) + ")*(1-inp_selling_cost_pct)-" + cost,
+                fmt["money"],
+            )
+
+
+def _checks(book: xlsxwriter.Workbook, req: CommercialRequest, fmt: dict[str, Any]) -> None:
+    ws = book.add_worksheet("Checks")
+    ws.hide_gridlines(2)
+    ws.set_column("A:A", 38)
+    ws.set_column("B:E", 18)
+    ws.merge_range("A1:E1", "Model checks", fmt["title"])
+    ws.write_row("A3", ["Проверка", "Факт", "Ожидание", "Допуск", "Статус"], fmt["header"])
+    rows = [
+        ("S-curve sums to 100%", "=SUM(Development!B4:B183)", 1.0, 0.0001, '=IF(ABS(B4-C4)<=D4,"OK","FAIL")'),
+        ("Ending debt = 0", "=INDEX(cf_debt_balance,ROWS(cf_debt_balance))", 0.0, 1.0, '=IF(ABS(B5-C5)<=D5,"OK","FAIL")'),
+        ("No negative debt", "=MIN(cf_debt_balance)", 0.0, 0.01, '=IF(B6>=-D6,"OK","FAIL")'),
+        ("Exit cap > 0", "=inp_exit_cap_rate_pct", 0.0, 0.0, '=IF(B7>C7,"OK","FAIL")'),
+        ("Equity required >= 0", "=Summary!B15", 0.0, 0.0, '=IF(B8>=C8,"OK","FAIL")'),
+    ]
+    for row, item in enumerate(rows, start=4):
+        ws.write(row - 1, 0, item[0])
+        ws.write_formula(row - 1, 1, item[1], fmt["number"])
+        ws.write_number(row - 1, 2, item[2], fmt["number"])
+        ws.write_number(row - 1, 3, item[3], fmt["number"])
+        ws.write_formula(row - 1, 4, item[4])
+
+
+
+def _cashflow(book: xlsxwriter.Workbook, req: CommercialRequest, fmt: dict[str, Any], months: int = 180) -> None:
     ws = book.add_worksheet("Cash_Flow")
     ws.hide_gridlines(2)
     ws.freeze_panes(3, 2)
     ws.set_column("A:B", 10)
-    ws.set_column("C:M", 17)
-    ws.merge_range("A1:M1", "Помесячный денежный поток · beta", fmt["title"])
+    ws.set_column("C:Q", 17)
+    ws.merge_range("A1:Q1", "Integrated monthly cash flow", fmt["title"])
     ws.write_row("A3", [
         "Месяц", "Активен", "Development spend", "Operating revenue",
         "Sale revenue", "Terminal value", "Operating / selling cost",
-        "Project CF", "Debt draw", "Interest", "Debt repayment",
-        "Debt balance", "Equity CF",
+        "Project CF", "Debt draw", "Interest", "Loan fee", "Debt repayment",
+        "Debt balance", "Equity contribution", "Equity distribution",
+        "Equity CF", "Cumulative equity CF",
     ], fmt["header"])
 
-    first = 4
-    last = first + months - 1
+    first, last = 4, 3 + months
+    growth_name = "inp_adr_growth_pct" if req.asset_type == "hotel" else "inp_rent_growth_pct"
     for month in range(months):
         row = first + month
-        previous_balance = "0" if month == 0 else "L" + str(row - 1)
+        prev_balance = "0" if month == 0 else "M" + str(row - 1)
+        prev_equity = "0" if month == 0 else "Q" + str(row - 1)
         ws.write_number(row - 1, 0, month)
         ws.write_formula(row - 1, 1, "=--(A" + str(row) + "<model_horizon)")
-        ws.write_formula(row - 1, 2, '=IF(B' + str(row) + '=0,0,IF(A' + str(row) + '=0,inp_land_cost_rub,IF(AND(A' + str(row) + '>=1,A' + str(row) + '<=inp_construction_months),(hard_cost+soft_cost+contingency)/MAX(1,inp_construction_months),0)))', fmt["money"])
+        ws.write_formula(row - 1, 2, "=Development!H" + str(row), fmt["money"])
         ramp = 'MIN(1,0.5+0.5*(A' + str(row) + '-inp_construction_months)/MAX(1,inp_stabilization_months))'
-        ws.write_formula(row - 1, 3, '=IF(AND(B' + str(row) + '=1,model_strategy="income",A' + str(row) + '>inp_construction_months),op_revenue_month*' + ramp + ',0)', fmt["money"])
-        ws.write_formula(row - 1, 4, '=IF(AND(B' + str(row) + '=1,model_strategy="sale",A' + str(row) + '>=inp_sale_start_month,A' + str(row) + '<inp_sale_start_month+inp_sale_months),sale_total/MAX(1,inp_sale_months),0)', fmt["money"])
-        ws.write_formula(row - 1, 5, '=IF(AND(B' + str(row) + '=1,model_strategy="income",A' + str(row) + '=model_horizon-1),op_noi_annual/MAX(0.0001,inp_exit_cap_rate_pct),0)', fmt["money"])
-        ws.write_formula(row - 1, 6, '=IF(model_strategy="income",IF(D' + str(row) + '=0,0,op_cost_month*' + ramp + '),E' + str(row) + '*inp_selling_cost_pct)', fmt["money"])
+        growth = '(1+' + growth_name + ')^(MAX(0,A' + str(row) + '-inp_construction_months-1)/12)'
+        ws.write_formula(
+            row - 1, 3,
+            '=IF(AND(B' + str(row) + '=1,model_strategy="income",A' + str(row) + '>inp_construction_months),'
+            'op_revenue_month*' + ramp + '*' + growth + ',0)',
+            fmt["money"],
+        )
+        ws.write_formula(row - 1, 4, '=IF(model_strategy="sale",Sales!E' + str(row) + ',0)', fmt["money"])
+        exit_growth = '(1+' + growth_name + ')^inp_hold_years'
+        ws.write_formula(
+            row - 1, 5,
+            '=IF(AND(B' + str(row) + '=1,model_strategy="income",A' + str(row) + '=model_horizon-1),'
+            'op_noi_annual*' + exit_growth + '/MAX(0.0001,inp_exit_cap_rate_pct),0)',
+            fmt["money"],
+        )
+        extra_office = '+D' + str(row) + '*inp_leasing_cost_pct' if req.asset_type == "office" else ""
+        ws.write_formula(
+            row - 1, 6,
+            '=IF(model_strategy="income",IF(D' + str(row) + '=0,0,op_cost_month*' + ramp + '*' + growth
+            + ')+IF(AND(model_asset_type="office",A' + str(row) + '<=inp_construction_months+inp_stabilization_months,A' + str(row) + '>inp_construction_months),'
+            'D' + str(row) + '*IF(model_asset_type="office",inp_leasing_cost_pct,0),0),'
+            'Sales!F' + str(row) + ')',
+            fmt["money"],
+        )
         ws.write_formula(row - 1, 7, '=D' + str(row) + '+E' + str(row) + '+F' + str(row) + '-C' + str(row) + '-G' + str(row), fmt["money"])
         ws.write_formula(row - 1, 8, '=IF(model_financing="equity_debt",C' + str(row) + '*inp_debt_share_pct,0)', fmt["money"])
-        ws.write_formula(row - 1, 9, '=' + previous_balance + '*IF(model_financing="equity_debt",inp_debt_rate_pct/12,0)', fmt["money"])
-        before_repay = '(' + previous_balance + '+I' + str(row) + ')'
-        ws.write_formula(row - 1, 10, '=IF(model_financing<>"equity_debt",0,IF(model_strategy="sale",MIN(' + before_repay + ',E' + str(row) + '*inp_sales_cash_sweep_pct),IF(A' + str(row) + '=model_horizon-1,' + before_repay + ',0)))', fmt["money"])
-        ws.write_formula(row - 1, 11, '=MAX(0,' + before_repay + '-K' + str(row) + ')', fmt["money"])
-        ws.write_formula(row - 1, 12, '=H' + str(row) + '+I' + str(row) + '-J' + str(row) + '-I' + str(row) + '*inp_loan_fee_pct-K' + str(row), fmt["money"])
+        ws.write_formula(row - 1, 9, '=' + prev_balance + '*IF(model_financing="equity_debt",inp_debt_rate_pct/12,0)', fmt["money"])
+        ws.write_formula(row - 1, 10, '=I' + str(row) + '*IF(model_financing="equity_debt",inp_loan_fee_pct,0)', fmt["money"])
+        before = '(' + prev_balance + '+I' + str(row) + ')'
+        ws.write_formula(
+            row - 1, 11,
+            '=IF(model_financing<>"equity_debt",0,IF(model_strategy="sale",MIN(' + before + ',E' + str(row) + '*inp_sales_cash_sweep_pct),IF(F' + str(row) + '>0,' + before + ',0)))',
+            fmt["money"],
+        )
+        ws.write_formula(row - 1, 12, '=MAX(0,' + before + '-L' + str(row) + ')', fmt["money"])
+        post = '(H' + str(row) + '+I' + str(row) + '-J' + str(row) + '-K' + str(row) + '-L' + str(row) + ')'
+        ws.write_formula(row - 1, 13, '=MAX(0,-' + post + ')', fmt["money"])
+        ws.write_formula(row - 1, 14, '=MAX(0,' + post + ')', fmt["money"])
+        ws.write_formula(row - 1, 15, '=O' + str(row) + '-N' + str(row), fmt["money"])
+        ws.write_formula(row - 1, 16, '=' + prev_equity + '+P' + str(row), fmt["money"])
 
     ranges = {
-        "cf_project": "H", "cf_debt_balance": "L", "cf_equity": "M",
+        "cf_project": "H", "cf_debt_balance": "M", "cf_equity": "P",
         "cf_operating_revenue": "D", "cf_sale_revenue": "E", "cf_terminal": "F",
         "cf_operating_cost": "G", "cf_interest": "J", "cf_debt_draw": "I",
     }
     for name, col in ranges.items():
         book.define_name(name, "=Cash_Flow!$" + col + "$" + str(first) + ":$" + col + "$" + str(last))
+
 
 
 def build_commercial_workbook(req: CommercialRequest) -> tuple[bytes, str, dict[str, Any]]:
@@ -339,11 +548,16 @@ def build_commercial_workbook(req: CommercialRequest) -> tuple[bytes, str, dict[
     fmt = _formats(book)
     _summary(book, req, fmt)
     _inputs(book, req, values, fmt)
+    _development(book, req, fmt)
     _operating(book, req, fmt)
-    _cashflow(book, fmt)
+    _sales(book, req, fmt)
+    _cashflow(book, req, fmt)
+    _financing(book, fmt)
+    _sensitivity(book, req, fmt)
+    _checks(book, req, fmt)
     book.close()
 
-    filename = "DevelopAid_" + _ASSETS[req.asset_type][0] + "_Model_Beta.xlsx"
+    filename = "DevelopAid_" + _ASSETS[req.asset_type][0] + "_Model_Beta_v2.xlsx"
     return output.getvalue(), filename, {
         "asset_type": req.asset_type,
         "strategy": req.strategy,
