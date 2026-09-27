@@ -569,12 +569,23 @@ def test_a_stranger_sees_no_buttons(client) -> None:
     assert _admin_bar(client.get("/normatives").text) == ""
 
 
-def test_the_check_route_answers_the_owner(client) -> None:
-    """403 всем и всегда — это не «только администратору», это сломанный гейт."""
+def test_the_check_route_answers_the_owner(client, monkeypatch) -> None:
+    """403 всем и всегда — это не «только администратору», это сломанный гейт.
+
+    Проверяется гейт, а не источники: настоящий `_probe` ходил бы по сети за
+    каждой ссылкой реестра (до 20 с на чтение, до 2,5 МБ с госсайта) и держал
+    долю CI десятки минут. Ссылки отвечают заглушкой — вызов тот же.
+    """
+    probed: list[str] = []
+    monkeypatch.setattr(registry, "_probe",
+                        lambda entry, previous: probed.append(entry.get("id")) or
+                        {"checked_at": "2026-09-27T00:00:00+03:00", "result": "ok"})
     assert client.post("/api/normatives/check").status_code == 403
+    assert probed == [], "без ключа проверка не должна начинаться"
     got = client.post("/api/normatives/check?key=test-key")
     assert got.status_code == 200, got.text
     assert got.json().get("searched") is False, "бесплатная кнопка не должна платить"
+    assert probed, "владелец нажал «Проверить ссылки», а ни одна ссылка не спрошена"
 
 
 def test_the_paid_question_refuses_with_a_reason(client) -> None:
