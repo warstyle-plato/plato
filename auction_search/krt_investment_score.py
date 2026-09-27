@@ -28,6 +28,19 @@ DEFAULT_PRICE_TARGET_RUB_SQM = 600_000.0
 # остаются теми же, но старые строки обязаны понять, что теперь burden можно
 # достроить автоматически.
 BURDEN_PIPELINE_VERSION = 1
+
+# Медиана каталога — подстановка, а не ответ, и по одной-двум точкам она не
+# подстановка вовсе. Замер прода 27.09.2026: подъём BURDEN_PIPELINE_VERSION
+# отправил на пересчёт весь каталог, `burden_complete` осталось у ОДНОЙ строки,
+# и медиана нагрузки считалась по n=1. Порог объявлен здесь, рядом с методикой,
+# а не у того, кто медиану считает.
+MIN_MEDIAN_SAMPLE = 5
+
+# Сколько составляющих обязано войти в балл. Отсутствие входа, которого нет у
+# всего каталога, не обнуляет итог — составляющая ОТКЛАДЫВАЕТСЯ с названной
+# причиной, и балл считается по остальным. Но индекс по двум составляющим из
+# четырёх — уже другая мера под тем же именем, поэтому отложить можно одну.
+MIN_SCORED_COMPONENTS = 3
 BURDEN_CACHE_SCHEMA_VERSION = 1
 BURDEN_LOOKUP_CHUNK = 6
 BURDEN_RETRY_SECONDS = 24 * 60 * 60
@@ -148,7 +161,12 @@ def methodology() -> dict[str, Any]:
         "burden_pct_stops": BURDEN_PCT_STOPS,
         "rules": {
             "running": "visible_unscored",
-            "missing": "median_imputation_when_available_else_no_total_score",
+            "missing": "median_imputation_when_available_else_deferred_component_else_no_total_score",
+            "median_min_sample": MIN_MEDIAN_SAMPLE,
+            "min_scored_components": MIN_SCORED_COMPONENTS,
+            "deferred_component": (
+                "an input absent across the catalogue is named and excluded from "
+                "the average instead of nulling the score"),
             "coverage": "share_of_components_based_on_direct_project_or_local_market_facts",
             "imputation": "missing inputs may use transparent Moscow/class or KRT-catalogue medians",
             "coverage_step_pct": 25,
@@ -191,6 +209,168 @@ def methodology() -> dict[str, Any]:
     }
 
 
+def rating_inputs(
+    *,
+    project: dict[str, Any] | None = None,
+    row: dict[str, Any] | None = None,
+    segment: Any = "",
+    llcr: Any = None,
+    market_price: Any = None,
+    local_absorption: Any = None,
+    benchmark_absorption: Any = None,
+    burden_pct: Any = None,
+    burden_state: dict[str, Any] | None = None,
+    catalogue_medians: dict[str, dict[str, Any]] | None = None,
+    city_reference: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Входы балла и политика подстановок — ОДНА на оба пересчёта.
+
+    Рейтинг нужен как сравнительный индекс всего каталога, а не как бинарная
+    проверка полноты. Факт и оценка разделены: coverage считает только
+    реальные входы площадки, а отсутствующий вход получает прозрачную
+    медианную подстановку.
+
+    Почему это отдельная функция. Подстановка жила ТОЛЬКО в явном пересчёте
+    (кнопка каталога), а фоновый слой считал тот же балл без неё — два
+    расчёта одного числа с разной политикой. Пока фон почти ничего не
+    пересчитывал, расхождение не было видно; #517 поднял
+    `BURDEN_PIPELINE_VERSION`, весь каталог пошёл на пересчёт фоном, и замер
+    прода 27.09.2026 показал цену расхождения: `investment_rating` есть у
+    365 строк, а балл не null — у 13. Фон перезаписал вчерашние баллы
+    отказом «не хватает данных: burden».
+
+    Медиана по малой выборке не выдаётся за ответ. Там же burden собран
+    ровно у ОДНОЙ площадки, то есть медиана нагрузки считалась по n=1.
+    Порог объявлен методикой (`MIN_MEDIAN_SAMPLE`); не дотянув до него,
+    составляющая ОТКЛАДЫВАЕТСЯ с названной причиной, а не подставляется и
+    не обнуляет балл.
+    """
+    project = project or {}
+    row = row or {}
+    burden_state = burden_state or {}
+    observed: set[str] = set()
+    if llcr is not None:
+        observed.add("llcr")
+    if market_price is not None:
+        observed.add("price")
+    if local_absorption is not None and benchmark_absorption is not None:
+        observed.add("absorption")
+    if burden_pct is not None:
+        observed.add("burden")
+
+    catalogue_medians = catalogue_medians or {}
+    city_reference = city_reference or {}
+    imputed: dict[str, str] = {}
+    deferred: dict[str, str] = {}
+    floor = int(MIN_MEDIAN_SAMPLE)
+
+    def catalogue_median(key: str) -> tuple[Any, int, bool]:
+        """Значение медианы, размер выборки и годится ли она в подстановку."""
+        item = catalogue_medians.get(key) or {}
+        count = int(item.get("count") or 0)
+        value = item.get("value")
+        return value, count, value is not None and count >= floor
+
+    score_llcr = llcr
+    if score_llcr is None:
+        value, count, enough = catalogue_median("llcr")
+        if enough:
+            score_llcr = value
+            imputed["llcr"] = f"медиана LLCR рассчитанных КРТ, n={count}"
+        else:
+            deferred["llcr"] = (
+                f"LLCR рассчитан в каталоге у строк: {count} — медиана по такой "
+                f"выборке не ответ (нужно {floor})")
+
+    score_market_price = market_price
+    if score_market_price is None:
+        score_market_price = city_reference.get("price")
+        if score_market_price is not None:
+            label = segment or "все классы"
+            imputed["price"] = f"медиана цены Москвы, {label}"
+        else:
+            value, count, enough = catalogue_median("price")
+            if enough:
+                score_market_price = value
+                imputed["price"] = f"медиана цены рассчитанных КРТ, n={count}"
+            else:
+                deferred["price"] = (
+                    f"цена окружения известна в каталоге у строк: {count}, медианы "
+                    f"Москвы нет — подставлять нечем (нужно {floor})")
+
+    score_benchmark_absorption = benchmark_absorption
+    if score_benchmark_absorption is None:
+        score_benchmark_absorption = city_reference.get("absorption")
+    score_local_absorption = local_absorption
+    if score_local_absorption is None and score_benchmark_absorption is not None:
+        score_local_absorption = score_benchmark_absorption
+        label = segment or "все классы"
+        imputed["absorption"] = (
+            f"локальных данных нет — медиана поглощения Москвы, {label}")
+    elif score_local_absorption is None:
+        value, count, enough = catalogue_median("absorption")
+        if enough:
+            score_local_absorption = value
+            score_benchmark_absorption = score_benchmark_absorption or value
+            imputed["absorption"] = (
+                f"медиана поглощения рассчитанных КРТ, n={count}")
+        else:
+            deferred["absorption"] = (
+                f"поглощение известно в каталоге у строк: {count}, медианы "
+                f"Москвы нет — подставлять нечем (нужно {floor})")
+    elif benchmark_absorption is None and score_benchmark_absorption is not None:
+        imputed["absorption"] = (
+            f"эталон — медиана поглощения Москвы, {segment or 'все классы'}")
+
+    score_burden_pct = burden_pct
+    if score_burden_pct is None:
+        value, count, enough = catalogue_median("burden")
+        if enough:
+            score_burden_pct = value
+            imputed["burden"] = (
+                f"медиана нагрузки полностью рассчитанных КРТ, n={count}")
+        else:
+            # Отсутствие нагрузки у ВСЕГО каталога — наш незакрытый
+            # конвейер, а не свойство площадки, и обнулять им балл значит
+            # выдавать наш пробел за отказ данных.
+            deferred["burden"] = (
+                f"денежная нагрузка КРТ собрана в каталоге у строк: {count} — "
+                f"медиана по такой выборке не ответ (нужно {floor}); балл "
+                f"считается по остальным составляющим")
+
+    missing_reasons: dict[str, str] = {}
+    if local_absorption is None or benchmark_absorption is None:
+        missing_reasons["absorption"] = (
+            "Нужна пара м²/мес.: локальная медиана и медиана Москвы по классу. "
+            "Сохранённые ДДУ/мес. не подменяют эту меру."
+        )
+    if burden_pct is None:
+        if project.get("early_unpublished") and project.get("seizure_mln") is not None:
+            missing_reasons["burden"] = (
+                f"Известна только предварительная оценка изъятия "
+                f"{project.get('seizure_mln')} млн ₽; полный денежный стек КРТ "
+                "ещё не собран, поэтому нагрузка остаётся unknown."
+            )
+        else:
+            missing_reasons["burden"] = (
+                str(burden_state.get("reason") or row.get("burden_reason") or "")
+                or "Полная денежная нагрузка КРТ пока не собрана для этой площадки; "
+                   "неизвестное не считается нулём."
+            )
+
+    return {
+        "llcr": score_llcr,
+        "market_rub_sqm": score_market_price,
+        "local_sqm_month": score_local_absorption,
+        "benchmark_sqm_month": score_benchmark_absorption,
+        "burden_pct": score_burden_pct,
+        "observed_components": observed,
+        "imputed_components": imputed,
+        "deferred_components": deferred,
+        "missing_reasons": missing_reasons,
+    }
+
+
 def score(
     *,
     status_kind: str,
@@ -208,6 +388,7 @@ def score(
     missing_reasons: dict[str, str] | None = None,
     observed_components: set[str] | list[str] | tuple[str, ...] | None = None,
     imputed_components: dict[str, str] | None = None,
+    deferred_components: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Four equal 0..100 components.
 
@@ -218,6 +399,9 @@ def score(
     sources = sources or {}
     missing_reasons = missing_reasons or {}
     imputed_components = dict(imputed_components or {})
+    # Отложенная составляющая — та, которой нет у всего каталога: подставлять
+    # нечем (медиана по малой выборке — не ответ), но и обнулять балл нельзя.
+    deferred_components = dict(deferred_components or {})
 
     llcr_n = _number(llcr)
     market = _number(market_rub_sqm)
@@ -294,21 +478,35 @@ def score(
     total = None
     reason = ""
     arithmetic = ""
+    order = ("llcr", "price", "absorption", "burden")
+    # Отложить можно только то, что действительно отсутствует: отложенная
+    # составляющая с посчитанным баллом — это потерянный вход, а не пропуск
+    # каталога.
+    deferred = [key for key in order
+                if key in deferred_components and components[key]["score"] is None]
+    unresolved = [key for key in missing if key not in deferred]
+    scored = [key for key in order if components[key]["score"] is not None]
     if not rankable:
         reason = "В реализации · без балла"
-    elif missing:
+    elif unresolved or len(scored) < MIN_SCORED_COMPONENTS:
         reason = "Не хватает данных даже после подстановок: " + ", ".join(missing)
     else:
-        values = [float(components[k]["score"]) for k in ("llcr", "price", "absorption", "burden")]
-        total = sum(values) / 4.0
+        values = [float(components[key]["score"]) for key in scored]
+        total = sum(values) / len(values)
         arithmetic = (
-            f"({values[0]:.1f} + {values[1]:.1f} + {values[2]:.1f} + {values[3]:.1f}) "
-            f"/ 4 = {total:.1f} → {round(total):.0f}"
+            "(" + " + ".join(f"{value:.1f}" for value in values) + ")"
+            f" / {len(values)} = {total:.1f} → {round(total):.0f}"
         )
-        used = [key for key in ("llcr", "price", "absorption", "burden")
-                if key in imputed_components]
+        said = []
+        used = [key for key in order if key in imputed_components]
         if used:
-            reason = "Оценка с медианной подстановкой: " + ", ".join(used)
+            said.append("медианная подстановка: " + ", ".join(used))
+        if deferred:
+            said.append("составляющая отложена по каталогу — "
+                        + "; ".join(f"{key}: {deferred_components[key]}"
+                                    for key in deferred))
+        if said:
+            reason = "Оценка с оговоркой (" + "; ".join(said) + ")"
 
     for key, note in imputed_components.items():
         if key in components:
@@ -325,6 +523,10 @@ def score(
         "rankable": rankable,
         "reason": reason,
         "missing": missing,
+        "deferred": [
+            {"component": key, "reason": str(deferred_components[key])}
+            for key in order if key in deferred
+        ],
         "imputed": [
             {"component": key, "source": str(imputed_components[key])}
             for key in ("llcr", "price", "absorption", "burden")
