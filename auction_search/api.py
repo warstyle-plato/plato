@@ -83,6 +83,7 @@ from auction_search.profile_fit import profile_fit
 from auction_search.service import AuctionSearchService
 from auction_search import krt_territory, nagatino_parcels
 from auction_search import view_access as auction_view
+from auction_search import lot_notes as lot_notes_rules
 from auction_search import krt_early_projects
 from auction_search import krt_investment_score
 from auction_search.nagatino_ui import nagatino_page
@@ -395,6 +396,9 @@ def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
             ("days_to_deadline", "Дней до окончания заявок", 21),
             ("auction_date", "Дата торгов", 18),
             ("status", "Статус", 22),
+            # Комментарий Платона — из фонового разбора лота; выгрузка его только
+            # читает (`lot_notes`). Пустой клетки нет: у отсутствия — причина.
+            ("plato_comment", "Комментарий Платона: чем интересен, чем опасен, что пишут", 70),
             ("url", "Источник", 42),
         ]
         obligation_columns = []
@@ -427,6 +431,11 @@ def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
         "resettlement_mentions": '0',
     }
     wb = Workbook()
+    store = lot_notes_rules.LotNotes(os.path.join(os.getenv("DATA_DIR", "data"), "market"))
+    notes = store.notes() if kind != "krt" else {}
+    queue_place = ({lot["url"]: index for index, lot in enumerate(store.queue(), start=1)}
+                   if kind != "krt" else {})
+    lot_note_interval = lot_notes_rules.interval_seconds()
 
     def fill_sheet(ws, sheet_columns, title: str, table_name: str) -> None:
         ws.title = title
@@ -451,6 +460,11 @@ def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
                 row["days_to_deadline"] = _days_to_application_deadline(row)
             # Снимки, сохранённые до перевода, несут код ГИС Торгов как есть.
             row["status"] = lot_status_ru(row.get("status"))
+            if "plato_comment" in keys:
+                key = str(row.get("url") or "").strip()
+                row["plato_comment"] = lot_notes_rules.comment_for_book(
+                    notes.get(key), place=queue_place.get(key),
+                    interval_seconds=lot_note_interval)
             values = []
             for key in keys:
                 if key in numeric_keys:
@@ -505,7 +519,8 @@ def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
         wrap_columns = {
             index for index, (key, _, _) in enumerate(sheet_columns, start=1)
             if key in {"name", "address", "cadastre", "status", "traffic_light", "url",
-                       "application_start", "application_deadline", "auction_date"}
+                       "application_start", "application_deadline", "auction_date",
+                       "plato_comment"}
         }
         numeric_columns = {
             index for index, (key, _, _) in enumerate(sheet_columns, start=1)
@@ -982,6 +997,7 @@ def install(app: FastAPI) -> None:
         os.path.join(os.getenv("DATA_DIR", "data"), "market")
     )
     krt_ranking = KrtRanking(os.path.join(os.getenv("DATA_DIR", "data"), "market"))
+    lot_notes = lot_notes_rules.LotNotes(os.path.join(os.getenv("DATA_DIR", "data"), "market"))
     # Очередь новинок забирает движок (`/internal/krt/announcements`) — у него
     # общая с ботом подпись, а до api.telegram.org с ядра не дойти. Отдаём ему
     # ТОТ ЖЕ экземпляр каталога, который помечает площадки «новыми» на экране:
@@ -4938,6 +4954,95 @@ def install(app: FastAPI) -> None:
     # «лотов там нет».
     DISCOVERY_BUDGET_SECONDS = 40.0
 
+    # --- комментарий Платона к лотам торгов ---------------------------------
+    # Разбор идёт фоном по одному лоту: платный поиск и ответ модели в запросе
+    # выгрузки заняли бы десятки минут. Темп ниже лимита Платона на клиента
+    # (30 вопросов в час), чтобы фон не отнимал ответы у людей.
+    LOT_NOTE_INTERVAL_SECONDS = lot_notes_rules.interval_seconds()
+    LOT_NOTE_CLAIM_TTL_SECONDS = 20 * 60
+
+    def _lot_note_search(lot: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
+        client = getattr(market, "search", None)
+        finder = getattr(client, "search", None)
+        if not callable(finder) or not getattr(client, "configured", False):
+            return [], "веб-поиск не настроен (YANDEX_SEARCH_API_KEY / FOLDER_ID)"
+        found: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        errors: list[str] = []
+        for query in lot_notes_rules.search_queries(lot):
+            try:
+                docs = finder(query)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{type(exc).__name__}: {exc}"[:200])
+                continue
+            for doc in docs or []:
+                item = doc.to_dict() if hasattr(doc, "to_dict") else dict(doc)
+                url = str(item.get("url") or "")
+                # Карточка самого лота — не «что о нём пишут».
+                if not url or url in seen or url == lot.get("url"):
+                    continue
+                seen.add(url)
+                found.append({key: item.get(key) for key in ("title", "url", "snippet")})
+        if not found and errors:
+            return [], "; ".join(errors[:2])
+        return found[:lot_notes_rules.MAX_SOURCES], ""
+
+    def _lot_note_once() -> bool:
+        """Разобрать один лот из очереди. False — очередь пуста или спрашивать некого."""
+        if core is None or not hasattr(core, "plato_answer"):
+            return False
+        queue = lot_notes.queue()
+        if not queue:
+            return False
+        lot = queue[0]
+        key = str(lot.get("url") or "")
+        now = int(time.time())
+        docs, problem = _lot_note_search(lot)
+        try:
+            answer = core.plato_answer(
+                core.AgentChatRequest(
+                    message=lot_notes_rules.prompt(lot, docs, problem),
+                    inputs=dict(core.DEFAULT_INPUTS),
+                    tep={name: dict(row) for name, row in core.TEP_DEFAULT.items()},
+                ),
+                lot_notes_rules.background_request(),
+            ) or {}
+            text = str(answer.get("answer") or answer.get("reply")
+                       or answer.get("text") or "").strip()
+            if not text:
+                raise RuntimeError("Платон вернул пустой ответ")
+        except Exception as exc:  # noqa: BLE001
+            detail = getattr(exc, "detail", None) or str(exc)
+            logger.warning("Торги: комментарий к лоту не получен %s: %s", key, detail)
+            lot_notes.save_note(key, {"asked_at": now, "failed": True,
+                                      "reason": f"{type(exc).__name__}: {detail}"[:300],
+                                      "sources": docs, "search_problem": problem})
+            return True
+        lot_notes.save_note(key, {"asked_at": now, "failed": False, "text": text[:2000],
+                                  "sources": docs, "search_problem": problem})
+        return True
+
+    def _lot_notes_loop() -> None:
+        time.sleep(45)
+        claim = lot_notes.claim_path
+        while True:
+            try:
+                if krt_ranking_rules.claim_file(claim, LOT_NOTE_CLAIM_TTL_SECONDS):
+                    try:
+                        _lot_note_once()
+                    finally:
+                        krt_ranking_rules.release_file(claim)
+            except Exception:  # noqa: BLE001
+                logger.exception("Торги: фоновый разбор лотов")
+            time.sleep(LOT_NOTE_INTERVAL_SECONDS)
+
+    app.state.auction_lot_note_once = _lot_note_once
+
+    @app.get("/auctions/lot-notes/status")
+    async def auction_lot_notes_status() -> dict[str, Any]:
+        """Сколько лотов разобрано и почему не разобраны остальные — не только в логе."""
+        return await run_in_threadpool(lot_notes.status)
+
     @app.get("/auctions/discover")
     async def auction_discover(
         source: str = Query(default="all"),
@@ -4973,6 +5078,12 @@ def install(app: FastAPI) -> None:
                                     [_public_lot_dict(lot) for lot in lots])
         except Exception:  # noqa: BLE001 — каталог лотов не роняем связкой
             logger.exception("KRT: связка лотов с площадками при сборе не записалась")
+        # Лоты сбора — очередь фонового комментария Платона (`lot_notes`).
+        try:
+            await run_in_threadpool(lot_notes.remember_lots,
+                                    [_public_lot_dict(lot) for lot in lots])
+        except Exception:  # noqa: BLE001 — каталог лотов не роняем очередью
+            logger.exception("Торги: лоты сбора не записаны в очередь комментариев")
 
         return {
             "source_policy": "official_etp_only",
@@ -5004,8 +5115,15 @@ def install(app: FastAPI) -> None:
         }
 
     @app.post("/auctions/export.xlsx")
-    async def auction_export(req: AuctionExportRequest) -> Response:
-        data = _xlsx(req.rows, req.kind)
+    async def auction_export(req: AuctionExportRequest, request: Request) -> Response:
+        # Лоты выгрузки встают в очередь комментария Платона. Ключ «только
+        # просмотр» платный разбор не заказывает: он читает готовое.
+        if req.kind != "krt" and not _view_only(request):
+            try:
+                await run_in_threadpool(lot_notes.request, list(req.rows or []))
+            except Exception:  # noqa: BLE001 — выгрузку не роняем очередью
+                logger.exception("Торги: лоты выгрузки не поставлены в очередь комментариев")
+        data = await run_in_threadpool(_xlsx, req.rows, req.kind)
         filename = "developaid-krt.xlsx" if req.kind == "krt" else "developaid-auctions.xlsx"
         return Response(content=data, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         headers={"Content-Disposition": f'attachment; filename="{filename}"'})
@@ -5224,6 +5342,11 @@ def install(app: FastAPI) -> None:
     # зависимости и на завершении Python может упасть с exit 134, хотя все
     # проверки уже прошли. В production pytest не импортирован, поведение
     # фонового пересчёта не меняется.
+    if (
+        "pytest" not in sys.modules
+        and os.getenv("AUCTION_LOT_NOTES", "1").strip() not in {"0", "false", "no"}
+    ):
+        threading.Thread(target=_lot_notes_loop, name="auction-lot-notes", daemon=True).start()
     if (
         "pytest" not in sys.modules
         and os.getenv("AUCTION_KRT_RATING_BACKGROUND", "1").strip()

@@ -4426,6 +4426,14 @@ $('auctionExport').onclick=()=>exportRows(state.filtered||[],'auctions').catch(e
 </script>
 </body></html>'''
 
+# Правило «идут торги» вставляется в саму константу, а не при сборке страницы:
+# её читают и проверки, и соседние поверхности — метка на месте функции у
+# любого из них значила бы «liveTenderLot is not defined».
+from auction_search.krt_tenders import LIVE_LOT_PLACEHOLDER as _LIVE_LOT_PLACEHOLDER  # noqa: E402
+from auction_search.krt_tenders import LIVE_LOT_SCRIPT as _LIVE_LOT_SCRIPT  # noqa: E402
+
+AUCTIONS_PAGE = AUCTIONS_PAGE.replace(_LIVE_LOT_PLACEHOLDER, _LIVE_LOT_SCRIPT)
+
 
 LEGAL_FOOTER_PLACEHOLDER = "__DEVELOPAID_LEGAL_FOOTER__"
 
@@ -4441,7 +4449,7 @@ def auctions_page(core=None) -> str:
     import management_contour
     import plato_question
 
-    from auction_search import krt_screening, krt_tenders, land_map
+    from auction_search import krt_screening, land_map
 
     footer = legal_footer_html(core) if core is not None else ""
     # Ящик Платона: стили и поведение — из `PAGE`, груз — свой. Без движка
@@ -4469,7 +4477,6 @@ def auctions_page(core=None) -> str:
             # вслух: молча отсутствующая кнопка неотличима от сломанной.
             .replace(land_map.PLACEHOLDER, land_map.script(core))
             .replace(land_map.MARKUP_PLACEHOLDER, land_map.markup(core))
-            .replace(krt_tenders.LIVE_LOT_PLACEHOLDER, krt_tenders.LIVE_LOT_SCRIPT)
             .replace("__DEVELOPAID_CONTOUR_STYLE__", management_contour.STYLE)
             .replace(management_contour.PLACEHOLDER,
                      management_contour.markup("/auctions")))

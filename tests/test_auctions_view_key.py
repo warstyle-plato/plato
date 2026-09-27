@@ -207,3 +207,14 @@ def test_the_view_key_may_export_what_it_sees(monkeypatch):
     answer = client.post("/auctions/export.xlsx", json={"rows": [], "kind": "krt"})
     assert answer.status_code == 200, answer.text
     assert answer.content[:2] == b"PK"
+
+
+def test_the_view_key_does_not_order_paid_lot_comments(monkeypatch, tmp_path):
+    """Выгрузка по ключу просмотра читает готовые комментарии, но не ставит лоты в платный разбор."""
+    from auction_search import lot_notes
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    client = _viewer(monkeypatch)
+    rows = [{"section": "Торги", "name": "Лот", "url": "https://etp/lot/1"}]
+    assert client.post("/auctions/export.xlsx", json={"rows": rows, "kind": "auctions"}).status_code == 200
+    assert lot_notes.LotNotes(tmp_path / "market").queue() == []

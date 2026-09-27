@@ -106,6 +106,7 @@ def set_cookie(response: Response, key: str) -> None:
 _READ_ONLY_GET = tuple(re.compile(pattern) for pattern in (
     r"/auctions",
     r"/auctions/sources",
+    r"/auctions/lot-notes/status",
     r"/auctions/discover",
     r"/auctions/krt",
     r"/auctions/krt/decisions",
