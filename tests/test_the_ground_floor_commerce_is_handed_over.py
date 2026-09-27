@@ -103,12 +103,74 @@ def test_nothing_is_invented_out_of_nothing() -> None:
     assert _split_mkd(core, 0.0, FLATS, SALEABLE_OF_GNS) == (0.0, 0.0, "")
 
 
+MARKET = {"analysis": {"site": {"segment": "комфорт", "price_per_sqm": 400_000,
+                               "sold_lot_avg": 45.0, "units_per_month": 12.0}},
+          "price_hint": {"entry_per_sqm": 400_000, "price_per_sqm": 400_000}}
+# Ул. Архитектора Власова, влд. 59 — решение называет и жильё, и площадь квартир.
+VLASOV = {"slug": "decision:349135220", "name": "ул. Архитектора Власова, влд. 59",
+          "no_card": True, "area_ha": 2.1, "housing_gfa_sqm": HOUSING,
+          "flats_sqm": FLATS, "nonresidential_ground_sqm": GROUND_NONRES}
+# Рубцовская наб., влд. 3 — жилой объём документ НЕ называет, квартиры называет.
+FLATS_ONLY = {"slug": "decision:333331220", "name": "Рубцовская наб., влд. 3",
+              "no_card": True, "area_ha": 0.73, "flats_sqm": 4_290.0,
+              "nonresidential_ground_sqm": 16_200.0}
+
+
+def _screened(site: dict) -> dict:
+    """Прогон настоящим движком. Движок берётся ИМПОРТОМ, а не своей загрузкой:
+    загруженный копией, он теряет разрешённые модели pydantic и падает не по
+    делу."""
+    import main_legacy  # noqa: PLC0415 — тяжёлый движок нужен только здесь
+
+    from auction_search.krt_screening import build_krt_model_screening  # noqa: PLC0415
+
+    got = build_krt_model_screening(dict(site), MARKET, main_legacy)
+    assert got["available"] is True, got.get("reason")
+    return got
+
+
 def test_the_screening_writes_the_row_and_says_what_split_it() -> None:
-    """Строка заполняется и основание доезжает до предпосылок — в коде прогона."""
-    source = (ROOT / "auction_search" / "krt_screening.py").read_text(encoding="utf-8")
-    assert 'tep["ground_commercial"].update(' in source, "строка ТЭП заполняется"
-    assert 'tep["apartments"].update({\n        "gns": apartments_gns,' in source, (
-        "квартиры получают свою долю, а не весь жилой объём")
-    assert "ground_basis" in source and "assumptions.append(" in source
-    body = source[source.index("if ground_basis:"):]
-    assert "встроенная коммерция" in body[:600]
+    """Прогон заполняет строку и называет основание — проверяется на РЕЗУЛЬТАТЕ.
+
+    Прежняя версия читала исходник подстроками и поэтому не заметила, что
+    восстановленный из квартир объём делится 94/6 (см. проверку ниже): текст в
+    файле стоял, а поведение было другим.
+    """
+    got = _screened(VLASOV)
+    tep = got["model_inputs"]["tep"]
+    apartments, ground = tep["apartments"], tep["ground_commercial"]
+
+    assert apartments["gns"] + ground["gns"] == pytest.approx(HOUSING)
+    assert apartments["gns"] == pytest.approx(FLATS / SALEABLE_OF_GNS, abs=0.5)
+    assert ground["gns"] > 0, "строка встроенной коммерции снова приехала нулём"
+    assert ground["saleable"] == pytest.approx(
+        ground["gns"] * 0.9, rel=0.001), ground
+    # Продаваемая квартир — ровно названное городом число, а не наш пересчёт.
+    assert got["phasing"]["saleable_sqm"] == round(FLATS)
+    said = " ".join(got["assumptions"])
+    assert "встроенная коммерция" in said and "названным городом" in said, said
+    # Эти метры идут по цене площадки, а не по цене класса из пресета.
+    inputs = got["model_inputs"]["inputs"]
+    assert inputs["commercial_price_th"] == inputs["apartment_price_th"]
+
+
+def test_a_volume_restored_from_the_flats_is_not_split_again() -> None:
+    """Восстановленный из квартир объём — уже ГНС квартир, делить его нечем.
+
+    Рубцовская наб., влд. 3: решение называет только площадь квартир 4 290 м².
+    Деление такого объёма методикой 94/6 отняло бы 6% в пользу метров, которых
+    никто не называл, и продаваемая вышла бы 4 033 вместо 4 290 — наш пересчёт
+    вместо числа города.
+    """
+    got = _screened(FLATS_ONLY)
+    tep = got["model_inputs"]["tep"]
+    assert got["phasing"]["saleable_sqm"] == round(FLATS_ONLY["flats_sqm"])
+    assert tep["apartments"]["gns"] == pytest.approx(
+        FLATS_ONLY["flats_sqm"] / SALEABLE_OF_GNS, abs=0.5)
+    assert tep["ground_commercial"]["gns"] == 0, (
+        "приписана встроенная коммерция, которой документ не называл")
+    said = " ".join(got["assumptions"])
+    assert "восстановлен из площади квартир" in said, said
+    # Предохранитель: там, где город назвал ОБА числа, строка не нулевая —
+    # иначе проверка проходила бы и на полностью отключённом делении.
+    assert _screened(VLASOV)["model_inputs"]["tep"]["ground_commercial"]["gns"] > 0

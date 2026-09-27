@@ -444,7 +444,8 @@ POPULATION_SQM_PER_PERSON = 33.0
 
 
 def _split_mkd(core: Any, housing_gfa: float, flats_named: float,
-               saleable_of_gns: float) -> tuple[float, float, str]:
+               saleable_of_gns: float, *,
+               restored_from_flats: bool = False) -> tuple[float, float, str]:
     """Жилой объём города — это МКД целиком: квартиры И встроенная коммерция.
 
     «Объекты жилого назначения – 26 260 кв. м» в решении — не площадь квартир:
@@ -465,9 +466,17 @@ def _split_mkd(core: Any, housing_gfa: float, flats_named: float,
     Город назвал только жильё — делит умолчанием движка 94/6. Назвал только
     квартиры — жилой объём и есть их ГНС, а сколько в МКД встроенной, документ
     не сказал: приписать её значит объявить метры, которых никто не называл.
+
+    `restored_from_flats` — жилой объём не назван городом, а ВОССТАНОВЛЕН из
+    площади квартир той же долей. Делить его нельзя: он уже ГНС квартир, и
+    методика отняла бы у них 6% в пользу метров, которых никто не называл. На
+    площадке-решении с одной названной площадью квартир 4 290 м² это давало
+    4 033 продаваемых вместо 4 290 — наш пересчёт вместо числа города.
     """
     if housing_gfa <= 0:
         return 0.0, 0.0, ""
+    if restored_from_flats:
+        return housing_gfa, 0.0, ""
     if flats_named > 0 and saleable_of_gns > 0:
         by_city = flats_named / saleable_of_gns
         if 0 < by_city <= housing_gfa:
@@ -899,8 +908,8 @@ def build_krt_model_screening(
     # владелец правила на модуль. Восстановленному из квартир объёму делить
     # нечего: он УЖЕ ГНС квартир.
     apartments_gns, ground_gns, ground_basis = _split_mkd(
-        core, housing_gfa, 0.0 if housing_from_flats else flats_named,
-        saleable_of_gns)
+        core, housing_gfa, flats_named, saleable_of_gns,
+        restored_from_flats=housing_from_flats)
     saleable = apartments_gns * saleable_of_gns
     total_area = apartments_gns * _number(apartment_ratios.get("total_of_gns"))
     verdict = _verdict(market_report)
