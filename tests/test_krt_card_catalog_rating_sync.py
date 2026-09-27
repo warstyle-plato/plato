@@ -112,12 +112,17 @@ def test_a_rating_at_an_old_target_is_marked() -> None:
         "const esc=s=>String(s??'');"
         "const state={krtRatingTarget:650000,krtRank:{"
         "a:{investment_rating:{display_score:71,coverage_pct:100},investment_rating_target_rub_sqm:600000},"
-        "b:{investment_rating:{display_score:64,coverage_pct:100},investment_rating_target_rub_sqm:650000}}};"
+        "b:{investment_rating:{display_score:64,coverage_pct:100},investment_rating_target_rub_sqm:650000},"
+        "c:{investment_rating:{display_score:58,coverage_pct:75,deferred:[{component:'burden',"
+        "reason:'медиана по 1 площадкам'}]},investment_rating_target_rub_sqm:650000}}};"
         + _fn(page, "krtInvestmentRatingCell")
-        + ";console.log(JSON.stringify([krtInvestmentRatingCell('a'),krtInvestmentRatingCell('b')]))"
+        + ";console.log(JSON.stringify([krtInvestmentRatingCell('a'),krtInvestmentRatingCell('b'),"
+        "krtInvestmentRatingCell('c')]))"
     )
     out = subprocess.run([node, "-e", code], capture_output=True, text=True, timeout=30)
     assert out.returncode == 0, out.stderr
-    old, fresh = json.loads(out.stdout)
+    old, fresh, partial = json.loads(out.stdout)
+    assert "без составляющей: нагрузка" in partial, "балл по трём из четырёх выдан за полный"
+    assert "без составляющей" not in fresh
     assert "ждёт пересчёта" in old and "600" in old
     assert "ждёт пересчёта" not in fresh

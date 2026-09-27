@@ -86,15 +86,46 @@ def app(tmp_path, monkeypatch):
     return application, ranking
 
 
+def _complete_burden_rows(ranking, count):
+    """Площадки каталога с полностью собранной нагрузкой — выборка медианы."""
+    now = int(time.time())
+    for index in range(count):
+        slug = f"burden-{index}"
+        ranking._persist({slug: {"slug": slug, "name": slug, "available": True,
+                                 "computed_at": now, "project_llcr_x": 1.2}})
+        ranking.remember(slug, {"burden_pct": 10.0 + index, "burden_complete": True})
+
+
+def test_a_median_of_one_site_is_not_an_answer(app):
+    """На проде медиана нагрузки считалась по одной строке из 601.
+
+    Под порогом `MIN_MEDIAN_SAMPLE` составляющая не подставляется: она
+    откладывается с причиной, а балл считается по трём остальным.
+    """
+    application, ranking = app  # в каталоге одна строка с полной нагрузкой (beta)
+    fields = application.state.krt_background_rating_fields(dict(PROJECT))
+    rating = fields["investment_rating"]
+    assert rating["imputed"] == [], "медиана одной площадки подставлена как ответ"
+    assert [item["component"] for item in rating["deferred"]] == ["burden"]
+    assert "по 1 площадкам" in rating["deferred"][0]["reason"]
+    assert rating["display_score"] is not None, "отложенная составляющая обнулила балл"
+    assert rating["components"]["burden"]["deferred"] is True
+    assert rating["coverage_pct"] == 75
+    # Медиана не записывается фактом площадки.
+    assert fields["burden_pct"] is None
+    assert fields["burden_complete"] is False
+
+
 def test_the_background_keeps_a_numeric_rating_with_a_labelled_median(app):
     application, ranking = app
+    _complete_burden_rows(ranking, krt_investment_score.MIN_MEDIAN_SAMPLE)
     fields = application.state.krt_background_rating_fields(dict(PROJECT))
     rating = fields["investment_rating"]
     assert rating["display_score"] is not None, "фон снова пишет «—» вместо оценки с медианой"
     assert [item["component"] for item in rating["imputed"]] == ["burden"]
+    assert rating["deferred"] == []
     assert rating["components"]["burden"]["estimated"] is True
     assert rating["coverage_pct"] == 75
-    # Медиана не записывается фактом площадки.
     assert fields["burden_pct"] is None
     assert fields["burden_complete"] is False
 

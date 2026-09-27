@@ -21,6 +21,15 @@ from typing import Any
 from market_search.http import load_json, save_json
 
 TARGET_LLCR = 1.20
+# Медиана каталога подставляется в составляющую, только если под ней не меньше
+# стольких измеренных площадок. На проде 27.09.2026 медиана нагрузки считалась
+# по ОДНОЙ строке из 601 — и её одно число стало бы четвертью балла у всех.
+# Не дотянув до порога, составляющая откладывается с названной причиной, и балл
+# считается по остальным: неполнота видна, а не спрятана в чужое число.
+MIN_MEDIAN_SAMPLE = 5
+# Балл не выдаётся, если измеренных или подставленных составляющих меньше:
+# одна-две из четырёх — уже не рейтинг, а отдельная метрика.
+MIN_SCORED_COMPONENTS = 3
 DEFAULT_PRICE_TARGET_RUB_SQM = 600_000.0
 
 # Версия не шкал рейтинга, а конвейера, который превращает опубликованный
@@ -139,7 +148,7 @@ def _component(
 def methodology() -> dict[str, Any]:
     """Machine-readable methodology from issue #485."""
     return {
-        "version": "issue-485-krt-rating-4x100-v3",
+        "version": "issue-485-krt-rating-4x100-v4",
         "issue": 485,
         "price_target_default_rub_sqm": DEFAULT_PRICE_TARGET_RUB_SQM,
         "target_llcr_x": TARGET_LLCR,
@@ -156,6 +165,12 @@ def methodology() -> dict[str, Any]:
             "missing": "median_imputation_when_available_else_no_total_score",
             "coverage": "share_of_components_based_on_direct_project_or_local_market_facts",
             "imputation": "missing inputs may use transparent Moscow/class or KRT-catalogue medians",
+            "min_median_sample": MIN_MEDIAN_SAMPLE,
+            "deferred": (
+                "catalogue median below min_median_sample is not imputed; the component "
+                "is deferred with a named reason and the score averages the rest"
+            ),
+            "min_scored_components": MIN_SCORED_COMPONENTS,
             "coverage_step_pct": 25,
             "buyout": "non_moscow_cadastral_value_land_and_buildings_no_duplicates",
             "moscow_property": "zero_buyout",
@@ -213,6 +228,7 @@ def score(
     missing_reasons: dict[str, str] | None = None,
     observed_components: set[str] | list[str] | tuple[str, ...] | None = None,
     imputed_components: dict[str, str] | None = None,
+    deferred_components: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Four equal 0..100 components.
 
@@ -221,8 +237,14 @@ def score(
     UI shows a useful number without pretending an estimate is measured fact.
     """
     sources = sources or {}
-    missing_reasons = missing_reasons or {}
+    missing_reasons = dict(missing_reasons or {})
     imputed_components = dict(imputed_components or {})
+    deferred_components = {
+        str(key): str(value) for key, value in (deferred_components or {}).items()
+        if str(key) not in imputed_components
+    }
+    for key, why in deferred_components.items():
+        missing_reasons.setdefault(key, why)
 
     llcr_n = _number(llcr)
     market = _number(market_rub_sqm)
@@ -285,8 +307,14 @@ def score(
         ),
     }
 
+    order = ("llcr", "price", "absorption", "burden")
     resolved = [key for key, item in components.items() if item["score"] is not None]
-    missing = [key for key, item in components.items() if item["score"] is None]
+    # Отложенная составляющая — та, чьей медианы у каталога ещё не хватает на
+    # ответ. Она не «пропущенная»: балл считается по остальным, а она названа.
+    deferred = [key for key in order
+                if key in deferred_components and components[key]["score"] is None]
+    missing = [key for key, item in components.items()
+               if item["score"] is None and key not in deferred]
     if observed_components is None:
         observed = set(resolved)
     else:
@@ -303,17 +331,27 @@ def score(
         reason = "В реализации · без балла"
     elif missing:
         reason = "Не хватает данных даже после подстановок: " + ", ".join(missing)
-    else:
-        values = [float(components[k]["score"]) for k in ("llcr", "price", "absorption", "burden")]
-        total = sum(values) / 4.0
-        arithmetic = (
-            f"({values[0]:.1f} + {values[1]:.1f} + {values[2]:.1f} + {values[3]:.1f}) "
-            f"/ 4 = {total:.1f} → {round(total):.0f}"
+    elif len(order) - len(deferred) < MIN_SCORED_COMPONENTS:
+        reason = (
+            "Отложено составляющих: " + ", ".join(deferred)
+            + f"; балл выдаётся минимум по {MIN_SCORED_COMPONENTS} из 4"
         )
-        used = [key for key in ("llcr", "price", "absorption", "burden")
-                if key in imputed_components]
+    else:
+        counted = [key for key in order if key not in deferred]
+        values = [float(components[k]["score"]) for k in counted]
+        total = sum(values) / float(len(values))
+        arithmetic = (
+            "(" + " + ".join(f"{value:.1f}" for value in values) + ")"
+            + f" / {len(values)} = {total:.1f} → {round(total):.0f}"
+        )
+        notes = []
+        used = [key for key in order if key in imputed_components]
         if used:
-            reason = "Оценка с медианной подстановкой: " + ", ".join(used)
+            notes.append("Оценка с медианной подстановкой: " + ", ".join(used))
+        if deferred:
+            notes.append(
+                f"Балл по {len(counted)} составляющим из 4; без: " + ", ".join(deferred))
+        reason = "; ".join(notes)
 
     for key, note in imputed_components.items():
         if key in components:
@@ -322,6 +360,7 @@ def score(
             components[key]["source"] = str(note) or components[key].get("source", "")
     for key in components:
         components[key].setdefault("estimated", False)
+        components[key]["deferred"] = key in deferred
 
     return {
         "score": None if total is None else round(total, 2),
@@ -334,6 +373,9 @@ def score(
             {"component": key, "source": str(imputed_components[key])}
             for key in ("llcr", "price", "absorption", "burden")
             if key in imputed_components
+        ],
+        "deferred": [
+            {"component": key, "reason": deferred_components[key]} for key in deferred
         ],
         "components": components,
         "arithmetic": arithmetic,

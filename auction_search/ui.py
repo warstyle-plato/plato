@@ -2406,6 +2406,9 @@ function krtInvestmentRatingCell(slug){
  const score=r.display_score;
  const names={llcr:'LLCR',price:'цена',absorption:'поглощение',burden:'нагрузка'};
  const imputed=(r.imputed||[]).map(x=>names[x.component]||x.component).filter(Boolean);
+ // Отложенная составляющая — та, чьей медианы у каталога не хватает на ответ:
+ // балл посчитан по остальным. Не показанная, она читалась бы как полный балл.
+ const held=(r.deferred||[]).filter(x=>x&&x.component);
  if(score!==null&&score!==undefined&&Number.isFinite(Number(score))){
   const quality=Number.isFinite(coverage)?' · '+coverage+'% факта':'';
   const estimate=imputed.length?' · медиана: '+esc(imputed.join(', ')):'';
@@ -2414,7 +2417,9 @@ function krtInvestmentRatingCell(slug){
   const target=Number(rank.investment_rating_target_rub_sqm),now=Number(state.krtRatingTarget);
   const stale=Number.isFinite(target)&&Number.isFinite(now)&&now>0&&Math.abs(target-now)>0.5
    ?' · <span style="color:var(--warn)">при ориентире '+esc(Math.round(target).toLocaleString('ru-RU'))+' ₽/м², ждёт пересчёта</span>':'';
-  return '<b>'+esc(Math.round(Number(score)))+'</b><div class="source">/100'+quality+estimate+stale+'</div>';
+  const waiting=held.length?' · <span title="'+esc(held.map(x=>String(x.reason||'')).join('; '))
+   +'">без составляющей: '+esc(held.map(x=>names[x.component]||x.component).join(', '))+'</span>':'';
+  return '<b>'+esc(Math.round(Number(score)))+'</b><div class="source">/100'+quality+estimate+waiting+stale+'</div>';
  }
  if(Number.isFinite(coverage)&&coverage>0){
   const missing=(r.missing||[]).map(x=>names[x]||x).join(', ');

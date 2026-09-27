@@ -1660,15 +1660,31 @@ def install(app: FastAPI) -> None:
         catalogue_medians = _rating_catalogue_medians()
         city_reference = _city_rating_reference(segment)
         imputed_components: dict[str, str] = {}
+        deferred_components: dict[str, str] = {}
         segment_label = segment or "все классы"
+        least = krt_investment_score.MIN_MEDIAN_SAMPLE
+
+        def catalogue_median(key: str, label: str) -> Any:
+            """Медиана каталога — ответ, только если под ней хватает площадок.
+
+            Порог один на все четыре медианы (`MIN_MEDIAN_SAMPLE`). Не дотянув,
+            составляющая откладывается с причиной, а не подставляется числом
+            одной-двух строк.
+            """
+            item = catalogue_medians[key]
+            count = int(item.get("count") or 0)
+            if item.get("value") is None or count < least:
+                deferred_components[key] = (
+                    f"медиана {label} посчитана по {count} площадкам каталога, "
+                    f"нужно не меньше {least} — составляющая отложена"
+                )
+                return None
+            imputed_components[key] = f"медиана {label} рассчитанных КРТ, n={count}"
+            return item.get("value")
 
         score_llcr = llcr
         if score_llcr is None:
-            item = catalogue_medians["llcr"]
-            score_llcr = item.get("value")
-            if score_llcr is not None:
-                imputed_components["llcr"] = (
-                    f"медиана LLCR рассчитанных КРТ, n={item.get('count') or 0}")
+            score_llcr = catalogue_median("llcr", "LLCR")
 
         score_market_price = market_price
         if score_market_price is None:
@@ -1676,11 +1692,7 @@ def install(app: FastAPI) -> None:
             if score_market_price is not None:
                 imputed_components["price"] = f"медиана цены Москвы, {segment_label}"
             else:
-                item = catalogue_medians["price"]
-                score_market_price = item.get("value")
-                if score_market_price is not None:
-                    imputed_components["price"] = (
-                        f"медиана цены рассчитанных КРТ, n={item.get('count') or 0}")
+                score_market_price = catalogue_median("price", "цены")
 
         score_benchmark_absorption = benchmark_absorption
         if score_benchmark_absorption is None:
@@ -1691,25 +1703,17 @@ def install(app: FastAPI) -> None:
             imputed_components["absorption"] = (
                 f"локальных данных нет — медиана поглощения Москвы, {segment_label}")
         elif score_local_absorption is None:
-            item = catalogue_medians["absorption"]
-            score_local_absorption = item.get("value")
+            score_local_absorption = catalogue_median("absorption", "поглощения")
             if score_local_absorption is not None:
                 score_benchmark_absorption = (
                     score_benchmark_absorption or score_local_absorption)
-                imputed_components["absorption"] = (
-                    f"медиана поглощения рассчитанных КРТ, n={item.get('count') or 0}")
         elif benchmark_absorption is None and score_benchmark_absorption is not None:
             imputed_components["absorption"] = (
                 f"эталон — медиана поглощения Москвы, {segment_label}")
 
         score_burden_pct = burden_pct
         if score_burden_pct is None:
-            item = catalogue_medians["burden"]
-            score_burden_pct = item.get("value")
-            if score_burden_pct is not None:
-                imputed_components["burden"] = (
-                    "медиана нагрузки полностью рассчитанных КРТ, "
-                    f"n={item.get('count') or 0}")
+            score_burden_pct = catalogue_median("burden", "нагрузки полностью")
 
         missing_reasons: dict[str, str] = {}
         if local_absorption is None or benchmark_absorption is None:
@@ -1762,13 +1766,14 @@ def install(app: FastAPI) -> None:
             missing_reasons=missing_reasons,
             observed_components=observed_components,
             imputed_components=imputed_components,
+            deferred_components=deferred_components,
         )
         # Карточка и таблица читают один и тот же результат. Храним только
         # компактный summary, а не всю методику #485 на каждой строке.
         stored_rating = {
             key: rating.get(key) for key in
             ("score", "display_score", "coverage_pct", "rankable", "reason",
-             "missing", "imputed")
+             "missing", "imputed", "deferred")
         }
         stored_rating["components"] = {
             key: {
@@ -1779,6 +1784,7 @@ def install(app: FastAPI) -> None:
                 "ratio": value.get("ratio"),
                 "estimated": bool(value.get("estimated")),
                 "estimate_source": value.get("estimate_source"),
+                "deferred": bool(value.get("deferred")),
             }
             for key, value in (rating.get("components") or {}).items()
         }

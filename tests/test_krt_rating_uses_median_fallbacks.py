@@ -61,3 +61,30 @@ def test_catalogue_marks_median_based_ratings_as_estimated() -> None:
     assert "% факта" in page
     assert "медиана:" in page
     assert "с медианой" in page
+
+
+def test_a_deferred_component_is_named_and_the_rest_is_scored() -> None:
+    got = krt_investment_score.score(
+        status_kind="planned",
+        llcr=1.30,
+        market_rub_sqm=600_000,
+        target_rub_sqm=600_000,
+        local_sqm_month=800,
+        benchmark_sqm_month=800,
+        burden_pct=None,
+        deferred_components={"burden": "медиана нагрузки по 1 площадке"},
+    )
+    assert got["display_score"] == round((100 + 100 + 75) / 3)
+    assert got["deferred"] == [{"component": "burden", "reason": "медиана нагрузки по 1 площадке"}]
+    assert got["missing"] == []
+    assert "/ 3" in got["arithmetic"]
+
+
+def test_two_deferred_components_are_not_a_rating() -> None:
+    got = krt_investment_score.score(
+        status_kind="planned", llcr=1.30, market_rub_sqm=600_000,
+        local_sqm_month=None, benchmark_sqm_month=None, burden_pct=None,
+        deferred_components={"burden": "мало площадок", "absorption": "мало площадок"},
+    )
+    assert got["display_score"] is None
+    assert "минимум по 3 из 4" in got["reason"]
