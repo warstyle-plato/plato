@@ -1711,6 +1711,19 @@ def install(app: FastAPI) -> None:
             imputed_components["absorption"] = (
                 f"эталон — медиана поглощения Москвы, {segment_label}")
 
+        # Поглощение считается ПАРОЙ, и неполная пара — тоже пропуск. Случай
+        # «локальная медиана есть, эталона нет» не был разобран ни одной из
+        # ветвей выше: составляющая молча уходила в missing, без подстановки и
+        # без названной причины. Замер прода 27.09.2026 подстановкой живых
+        # строк: две площадки из 365 теряли балл именно так.
+        if score_benchmark_absorption is None and score_local_absorption is not None:
+            score_benchmark_absorption = catalogue_median(
+                "absorption", "поглощения")
+            if score_benchmark_absorption is not None:
+                imputed_components["absorption"] = (
+                    "эталона Москвы по классу нет — "
+                    + imputed_components["absorption"])
+
         score_burden_pct = burden_pct
         if score_burden_pct is None:
             score_burden_pct = catalogue_median("burden", "нагрузки полностью")
