@@ -417,3 +417,61 @@ def test_a_forbidden_answer_asks_to_sign_in_again(monkeypatch, tmp_path) -> None
     # Причина названа целиком: код и то, что ответил сервер.
     assert client.errors and "403" in client.errors[-1]
     assert "CSRF verification failed" in client.errors[-1]
+
+
+def test_project_dates_come_from_live_pulse_table(tmp_path: Path) -> None:
+    """Дата стадии берётся из ЛК тем же клиентом, что и текущая цена."""
+    client = PulseClient(tmp_path, login="l", password="p")
+    client._projects = [PulseProject(7, "Дом", 55.7, 37.5)]
+    client._post_json = lambda path, payload: {  # type: ignore[assignment]
+        "sales_start_date": "2026-08-01",
+        "planned_commissioning": "2028-06-30",
+        "price_date": "2026-09-01",
+    }
+    client._cookie = lambda name: "cookie"  # type: ignore[assignment]
+    client._open = lambda *args, **kwargs: (_ for _ in ()).throw(  # type: ignore[assignment]
+        AssertionError("при двух датах из API HTML открывать не надо")
+    )
+    got = client.project_dates(7)
+    assert got["sales_start"] == "2026-08-01"
+    assert got["commissioning"] == "2028-06-30"
+    assert got["sources"] == {
+        "sales_start": "pulse_api_table",
+        "commissioning": "pulse_api_table",
+    }
+
+
+def test_project_dates_fall_back_to_the_live_project_page(tmp_path: Path) -> None:
+    """Если API карточки молчит, читается сама авторизованная страница ЖК."""
+    client = PulseClient(tmp_path, login="l", password="p")
+    client._projects = [PulseProject(7, "Дом", 55.7, 37.5)]
+    client._post_json = lambda path, payload: {}  # type: ignore[assignment]
+    client._cookie = lambda name: "cookie"  # type: ignore[assignment]
+    page = """
+      <div><span>Начало продаж</span><b>01.08.2026</b></div>
+      <div><span>Плановый срок ввода в эксплуатацию</span><b>IV кв. 2028</b></div>
+    """
+    client._open = lambda *args, **kwargs: page.encode("utf-8")  # type: ignore[assignment]
+    got = client.project_dates(7)
+    assert got["sales_start"] == "2026-08-01"
+    assert got["commissioning"] == "2028-12-01"
+    assert got["sources"]["commissioning"] == "pulse_project_page"
+
+
+def test_project_dates_aggregate_all_buildings_and_split_quarter(tmp_path: Path) -> None:
+    client = PulseClient(tmp_path, login="l", password="p")
+    client._projects = [PulseProject(7, "Дом", 55.7, 37.5)]
+    client._post_json = lambda path, payload: {  # type: ignore[assignment]
+        "buildings": [
+            {"sales_start_date": "2026-08-01", "planned_commissioning": "2027-12-31"},
+            {"sales_start_date": "2026-06-15",
+             "commissioning_year": 2028, "commissioning_quarter": 2},
+        ]
+    }
+    client._cookie = lambda name: "cookie"  # type: ignore[assignment]
+    client._open = lambda *args, **kwargs: (_ for _ in ()).throw(  # type: ignore[assignment]
+        AssertionError("API already returned both project dates")
+    )
+    got = client.project_dates(7)
+    assert got["sales_start"] == "2026-06-15"
+    assert got["commissioning"] == "2028-06-01"
