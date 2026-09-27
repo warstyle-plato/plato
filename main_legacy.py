@@ -1380,6 +1380,95 @@ FIELD_SECTIONS: dict[str, str] = {
 # `applyProjectClassPreset`, так что переезд ничего не замораживает.
 CLASS_ONLY_INPUTS = ["landscaping_area_per_person_sqm", "landscaping_th_per_sqm",
                      "storage_area_per_unit_sqm"]
+
+# --- Где это править: вкладка, группа, подпись ------------------------------
+# Платон отвечал человеку КЛЮЧАМИ полей: «ставку ставьте в landscaping_th_per_sqm,
+# площадь приведите к landscaping_area_per_person_sqm, править — в Экономика →
+# Вводные» (экран владельца, 14.09.2026: «это вообще где? человеку надо сказать
+# открой такую-то вкладку вбей туда-то»). Неверно там было всё три раза: ключ —
+# не имя поля, норматив во «Вводных» не живёт вовсе (см. CLASS_ONLY_INPUTS), а
+# у человека на руках была ПЛОЩАДЬ двора, под которую поле есть — делить её на
+# население руками не надо.
+#
+# Ответ на «где это править» поэтому один и считается здесь, из того же
+# `FIELD_GROUPS`, что рисует форму: вторая карта «ключ → вкладка» разошлась бы
+# с первой молча, и человек ушёл бы на вкладку, где поля нет.
+VRI_GROUP_NAME = "Смена ВРИ и земельные права"
+VRI_GROUP_NAME_PLACEHOLDER = "__DEVELOPAID_VRI_GROUP_NAME__"
+# Куда ведёт группа, если это не вкладка «Вводные». Группа ВРИ рисуется в своей
+# вкладке (`renderInputs` кладёт её в `vriInputGroups`), а поле из
+# CLASS_ONLY_INPUTS — в окно за ссылкой «Настройки классов» в шапке.
+INPUT_TABS = {VRI_GROUP_NAME: "ВРИ"}
+CLASS_DIALOG_NAME = "Настройки классов"
+
+
+def input_field_place(field: str) -> dict[str, Any] | None:
+    """→ где на экране правится вводная, или None, если такой вводной нет.
+
+    Подпись, единица и группа — из `FIELD_GROUPS`; вкладка выводится из
+    группы, а не хранится рядом со списком полей вторым списком.
+    """
+    for group, fields in FIELD_GROUPS:
+        for item in fields:
+            if item[0] != field:
+                continue
+            hint = str(item[2] or "") if len(item) > 2 else ""
+            if field in CLASS_ONLY_INPUTS:
+                where, path = CLASS_DIALOG_NAME, (
+                    f"шапка модели → «{CLASS_DIALOG_NAME}» → «{item[1]}»")
+            else:
+                where = INPUT_TABS.get(group, "Вводные")
+                path = f"вкладка «{where}» → «{group}» → «{item[1]}»"
+            place = {
+                "field": field,
+                "label": str(item[1]),
+                "unit": class_field_unit(field),
+                "hint": hint,
+                "group": group,
+                "where": where,
+                "path": path,
+            }
+            # У ставки класса домов два, и они означают РАЗНОЕ: в «Настройках
+            # классов» правится свойство класса (личные значения, `/classes/
+            # overrides` — применятся ко всем проектам этого класса), во
+            # «Вводных» — число этого проекта. Назвать одно и умолчать о втором
+            # значит отправить человека менять больше или меньше, чем он хотел
+            # (владелец, 14.09.2026: «надо заходить в настройки класса и там
+            # вводить свои данные»).
+            if field in PROJECT_CLASS_PRESETS["comfort"] and where != CLASS_DIALOG_NAME:
+                place["also"] = f"шапка модели → «{CLASS_DIALOG_NAME}» → «{item[1]}»"
+                place["also_note"] = (
+                    "в «Настройках классов» это свойство класса — правка применится "
+                    "ко всем проектам этого класса; во «Вводных» меняется только "
+                    "текущий проект")
+            return place
+    return None
+
+
+def find_input_fields(query: str, limit: int = 8) -> list[dict[str, Any]]:
+    """Поля, чья подпись или ключ содержат запрос — «благоустройство», «ВРИ».
+
+    Человек называет величину словами, а не ключом, поэтому ищется и по
+    подписи. Совпадение по ключу оставлено затем, что ключ приходит из
+    результата расчёта и из патча: спросить о нём — законный путь.
+    """
+    needle = " ".join(str(query or "").lower().split())
+    if not needle:
+        return []
+    exact = input_field_place(needle)
+    if exact:
+        return [exact]
+    found: list[dict[str, Any]] = []
+    for group, fields in FIELD_GROUPS:
+        for item in fields:
+            haystack = f"{item[0]} {item[1]}".lower()
+            if needle in haystack:
+                place = input_field_place(str(item[0]))
+                if place:
+                    found.append(place)
+            if len(found) >= limit:
+                return found
+    return found
 # Удельные умолчания сверены с банковским бюджетом собственного проекта
 # (Гродненская, 18; ГНС наземной 19 341,14 м², подземная 3 733,2 м², лимит Сбера
 # по главам). Проценты сошлись — генподряд 7%, коммерческие 7% от выручки,
@@ -35102,6 +35191,14 @@ _DevelopAid_METHODOLOGY = [
         "topic": "tep",
         "rule": "В preset Мытищи МФК/офисы — отдельный дискретный продукт: 26 700 м² GBA/ГНС и 21 360 м² полезной/продаваемой площади. Его нельзя одновременно учитывать как standalone retail. Парковка МФК 434 м/м добавляется к жилому подземному паркингу 2 289 м/м.",
     },
+    {
+        # Список ниже короткий, и он обязан сказать, где лежит остальное: без
+        # указателя агент считает его полным, а девять крупных решений
+        # последних недель в нём не было вовсе.
+        "id": "PROJECT_NOTES",
+        "topic": "all",
+        "rule": "Полный свод правил методики, решений владельца с датами и открытых вопросов живёт в записях проекта, а не здесь. Вопрос «почему модель считает так», «откуда это число», «что решено по такому-то параметру» — search_project_knowledge. Здесь только то, что нужно в каждом ответе; записи отвечают на остальное и всегда свежее этого списка.",
+    },
 ]
 
 _AGENT_INSTRUCTIONS = """
@@ -35121,6 +35218,9 @@ _AGENT_INSTRUCTIONS = """
 - «Есть ли ошибки / аномалии / что не сходится?» → find_anomalies.
 - Методологический вопрос → get_methodology; если вопрос связан с текущим проектом, дополнительно используй расчётный инструмент.
 - Вопрос «как сделать», «с чего начать», «где кнопка» → get_user_guide; отвечай шагами из руководства и давай ссылку на раздел вида /guide#inputs. Не выдумывай кнопки: называй только те, что есть в руководстве.
+- «Где это править / как исправить настройку / куда вбить моё число» → where_to_edit. Спрашивай его ВСЕГДА, прежде чем сказать человеку, что и где менять, даже если ключ поля ты знаешь: вкладку и подпись ты не знаешь. Человеку называй путь и подпись («Вводные → Строительство → „Благоустройство"»), а не ключ. Ключи полей (landscaping_th_per_sqm и любые другие) — это язык инструментов, а не ответа: в тексте человеку их не пиши.
+- «Почему модель так считает», «откуда это число», «что у вас решено про…», «это ошибка или так задумано», «какой норматив у…» → search_project_knowledge (source=normative — выжимки актов города, rules — наши правила, backlog — открытые вопросы, all — везде). Там лежат наши записи: правила, выведенные из настоящих поломок, решения владельца с датами и открытые вопросы. Спрашивай их и тогда, когда своего ответа нет: придумать объяснение хуже, чем найти записанное. Это ВНУТРЕННИЕ записи — пользуйся ими, чтобы ответить верно, но не пересказывай как документ, не цитируй длинно и не называй чужие проекты, договоры и адреса. Записанное решение владельца сильнее твоего рассуждения; нет записи — так и скажи, а не выдумывай.
+- Норматив города и наше решение — разные основания, и называть их надо разными словами. Норму бери из source=normative и называй с актом («приложение 5 к 945-ПП»), редакцию — у check_normatives; наше допущение называй нашим. Сказать «Москва требует», имея в виду наше умолчание, — то же самое, что назвать чужое число своим. Чего в записях нет, того не достраивай по памяти: нормативы правятся городом, и помнить их наизусть ты не можешь.
 
 Особые правила:
 1. LLCR 1,20x — целевой ориентир пользователя для DevelopAid, не называй его универсальным нормативом всех банков.
@@ -35128,7 +35228,7 @@ _AGENT_INSTRUCTIONS = """
 2a. Если хотя бы одна очередь ниже 1,20x, не ограничивайся констатацией. Сначала вызови diagnose_project_logic, затем phase_recovery_options. Построй причинный вывод: хватает ли слабой очереди ТЭП/выручки относительно CAPEX, ранних общепроектных затрат, Bridge и социалки; затем ранжируй реальные варианты оздоровления.
 2b. Различай реальное улучшение проекта и косметическую перекладку. Покупку/ВРИ нельзя просто перенести в другую очередь ради красивого LLCR. Социалку и сети можно предлагать переносить только как сценарий при фактической реализуемости по графику/обязательствам.
 2f. Социальная нагрузка и плата за смену ВРИ — обязательства, а не параметры оптимизации. В Москве обнулить социалку нельзя: строить не дадут. Не подавай «социалка = 0» или «плата за ВРИ = 0» как способ оздоровления, даже если инструмент такой сценарий посчитал; если считаешь для оценки чувствительности, называй это пределом, а не решением, и повторяй оговорку инструмента.
-2g. Законные рычаги земельно-правовой нагрузки в Москве: льгота по плате за смену ВРИ (её получают через места приложения труда) — поля vri_relief_pct / vri_relief_mln; рассрочка платежа — vri_installment_years, vri_initial_pct (Москва: 1, 3 или 6 лет, платежи квартальные). Рассрочка меняет не сумму, а её распределение во времени: первые платежи до открытия ПФ несёт БРИДЖ, поэтому эффект на LLCR считай моделью, а не на глаз. Форма исполнения социалки (строительство против денежной компенсации) — тоже решение, но это не обнуление.
+2g. Законные рычаги земельно-правовой нагрузки в Москве: льгота по плате за смену ВРИ (её получают через места приложения труда) — поля «Льгота — доля от суммы» и «Льгота — сумма»; рассрочка платежа — «Срок рассрочки» и «Первый взнос по рассрочке» (Москва: 1, 3 или 6 лет, платежи квартальные). Все четыре — на вкладке «ВРИ»; человеку называй эти подписи, а ключи для prepare_model_patch спрашивай у where_to_edit. Рассрочка меняет не сумму, а её распределение во времени: первые платежи до открытия ПФ несёт БРИДЖ, поэтому эффект на LLCR считай моделью, а не на глаз. Форма исполнения социалки (строительство против денежной компенсации) — тоже решение, но это не обнуление.
 2c. Различай годовую инфляцию стартовой цены между очередями и месячный рост цены внутри каждой очереди. Не индексируй О2/О3 месячным ростом за период до их старта продаж.
 2d. Класс проекта задаёт базовые цены/затраты; сценарий — относительный стресс или апсайд ±10% поверх выбранного класса.
 2e. Управление проектом 5% и технический заказчик/стройконтроль 5% — разные статьи с разным экономическим смыслом.
@@ -35143,6 +35243,10 @@ _AGENT_INSTRUCTIONS = """
 7. Не утверждай, что банк гарантированно одобрит проект.
 8. Ты не можешь менять модель без подтверждения пользователя. prepare_model_patch только готовит изменение; реальный Input меняется после кнопки «Применить в модель».
 8a. Если пользователь пишет «поставь», «измени», «повысить», «снизить» и значение известно — проверь эффект и подготовь patch. Не ограничивайся инструкцией пользователю, где вручную менять поле.
+8b-fields. Прежде чем предлагать человеку пересчитать его величину руками, спроси where_to_edit: у модели может быть поле ровно под ту величину, что у него на руках. Правило общее: перевод в чужую меру — работа модели, а не человека, и «переведите свою цифру в рубли на ГНС» — не ответ.
+8c-fields. Ставки и нормативы класса (строительство, сети, благоустройство, стартовые цены) человек правит в окне «Настройки классов» — ссылка в шапке рядом с выбором класса: он вводит туда СВОИ данные, а пересчёт в рубли на ГНС модель делает сама. У части этих полей два дома, и они означают разное: «Настройки классов» — свойство класса (применится ко всем проектам этого класса), «Вводные» — число только текущего проекта. Называй оба места, как их называет where_to_edit (поля also / also_note), и не говори, что поле «правится вручную во Вводных», если у него есть дом в настройках класса.
+8d-fields. Благоустройство разложено на четыре величины, и человеку нужна та, что у него на руках. Во «Вводных»: «Благоустройство» (тыс ₽/м² ГНС — ставка на метр дома, заданная сильнее методики класса) и «Благоустройство — площадь двора» (м², заданная сильнее норматива). В «Настройках классов» — методика класса: «Благоустройство — ставка за метр двора» (тыс ₽/м² двора) и «Благоустройство — норматив площади двора» (м²/чел.). Знает человек свою площадь двора — он вводит её как есть, делить на расчётное население не надо, это делает движок; знает смету на метр дома — вводит её в «Благоустройство». Цену метра ДВОРА в поле «на метр ГНС» не вписывать и наоборот: меры разные.
+8e-fields. Правит класс, а не проект — в «Настройках классов» поля площади нет, там только норматив на человека, и тогда обратный счёт делаешь ТЫ: возьми население и формулу из where_to_edit (population, per_person_conversion) и назови человеку готовое «норматив = столько-то м²/чел.», а не задание поделить. Население считает движок из площади квартир нормой региона; в ТЭП нет квартир — так и скажи, что пересчитать не на что.
 8b. Тендерную ставку на продаваемую/общую площадь никогда не сравнивай напрямую со ставкой DevelopAid на ГНС. Сначала нормализуй знаменатель. Отдельно проверяй состав: внешние сети, генподряд, резерв, техзаказчик и управление могут сидеть отдельными строками.
 9. Ответ: сначала прямой вывод, затем 3–7 ключевых расчётов/причин.
 10. Если данные противоречат друг другу, не сглаживай противоречие — покажи его.
@@ -36104,6 +36208,17 @@ _VRI_RELIEF_VARIABLES = {
     "vri_initial_pct": "Первый взнос по рассрочке ВРИ, % от суммы",
 }
 
+def _patch_label(field: str) -> str:
+    """Подпись поля для патча — из `FIELD_GROUPS`, а не второй копией.
+
+    Подписи выше написаны руками и потому расходятся с экраном: человек ищет
+    поле по той подписи, что видит. Новые берутся оттуда, где поле объявлено.
+    """
+    unit = class_field_unit(field)
+    label = _input_field_label(field)
+    return f"{label}, {unit}" if unit else label
+
+
 _PATCH_VARIABLES = {
     **_GOAL_VARIABLES,
     **_VRI_RELIEF_VARIABLES,
@@ -36117,6 +36232,15 @@ _PATCH_VARIABLES = {
     "project_management_pct": "Управление проектом, %",
     "gc_fee_pct": "Генподрядчик, %",
     "reserve_pct": "Резерв, %",
+    # Человек приходит со своей площадью двора или ставкой благоустройства на
+    # метр дома — обе величины у модели есть полями «Вводных». Пока их не было
+    # здесь, Платон не мог подготовить кнопку и посылал считать руками:
+    # «поделите свою площадь на расчётное население». Площадь делит сам движок,
+    # и заданное руками сильнее методики класса. Ставку метра двора и норматив
+    # площади сюда не кладём: это свойства класса (`CLASS_ONLY_INPUTS`), их дом —
+    # окно «Настройки классов», и патч одного проекта их не правит.
+    "landscaping_area_sqm": _patch_label("landscaping_area_sqm"),
+    "landscaping_gns_th_per_sqm": _patch_label("landscaping_gns_th_per_sqm"),
 }
 
 
@@ -36905,6 +37029,68 @@ def _tool_get_user_guide(section: str) -> dict[str, Any]:
     }
 
 
+def _tool_search_project_knowledge(query: str, source: str) -> dict[str, Any]:
+    """Наши записи по запросу: правила, открытые вопросы, выжимки нормативов.
+
+    Копии записей в промпте нет — она отстала бы так же, как отстала база
+    методики; источник один и читается лениво, как руководство. Выдача
+    обезличена (`project_knowledge.redact`): Платон отвечает пользователям, а в
+    записях лежат номера договоров, кадастры и адреса собственных проектов.
+    """
+    import project_knowledge
+
+    return project_knowledge.search(query, source=None if source == "all" else source)
+
+
+def _tool_where_to_edit(query: str, req: AgentChatRequest | None = None) -> dict[str, Any]:
+    """Где на экране правится вводная: вкладка, группа и ТОЧНАЯ подпись поля.
+
+    Заведён потому, что Платон отвечал ключами и слал не на ту вкладку: у него
+    не было состава формы вовсе — `inputs` приходят ключами, а руководство
+    рассказывает про экран словами, но полей поимённо не перечисляет. Ответ
+    считает движок из `FIELD_GROUPS` (`input_field_place`), то есть из того же
+    списка, что рисует форму: вторая карта разошлась бы с ней молча.
+    """
+    found = find_input_fields(query)
+    if not found:
+        return {
+            "available": False,
+            "reason": (f"Поля по запросу «{query}» на экране нет. Не выдумывай подпись: "
+                       "спроси другими словами или скажи человеку, что такой вводной нет."),
+        }
+    # Поле, которое меряется «на человека», человек в своей мере не знает: у
+    # него площадь двора в метрах, а в «Настройках классов» поля площади нет
+    # вовсе — там только норматив. Значит нужен обратный счёт, и делать его
+    # обязан движок (`project_population`): «поделите на расчётное население»
+    # не должно становиться заданием человеку.
+    per_person = any("чел" in (item["unit"] or "") for item in found)
+    population, basis = 0, ""
+    if req is not None and per_person:
+        population, basis = project_population(
+            getattr(req, "tep", None) or {},
+            str((getattr(req, "inputs", None) or {}).get("vri_region") or "msk"))
+    answer: dict[str, Any] = {
+        "available": True,
+        "query": query,
+        "fields": found,
+        "note": ("Человеку называй ПУТЬ и ПОДПИСЬ поля (path, label), а не ключ. "
+                 "Ключ (field) годится только для prepare_model_patch."),
+    }
+    if population > 0:
+        answer["population"] = population
+        answer["population_basis"] = basis
+        answer["per_person_conversion"] = (
+            f"норматив на человека = площадь ÷ {population} чел.; "
+            f"площадь = норматив × {population} чел. ({basis}). "
+            "Считай сам по этим числам и назови человеку готовый результат — "
+            "делить его не проси.")
+    elif req is not None and per_person:
+        answer["per_person_conversion"] = (
+            "население не посчитано: в ТЭП нет продаваемой площади квартир — "
+            "пересчитать на человека нечем, и это надо назвать, а не делить на глаз.")
+    return answer
+
+
 def _clone_agent_req_with_inputs(req: AgentChatRequest, inputs: dict[str, Any]) -> Any:
     """Minimal request-like clone for deterministic internal scenario tools."""
     class _ReqClone:
@@ -37500,16 +37686,15 @@ _AGENT_TOOLS = [
                     "items": {
                         "type": "object",
                         "properties": {
+                            # Список переменных патча жил третьей копией и отстал:
+                            # `_tool_prepare_model_patch` умеет льготу и рассрочку ВРИ
+                            # (`_VRI_RELIEF_VARIABLES`, там же выставляются режимы), а в
+                            # этом enum их не было — то есть инструкция звала к рычагу,
+                            # которого инструмент не принимает. Берётся из того же
+                            # списка, который патч и применяет.
                             "variable": {
                                 "type": "string",
-                                "enum": [
-                                    "purchase_price_mln", "main_construction_cost_th_per_sqm",
-                                    "main_above_th_per_sqm", "main_under_th_per_sqm",
-                                    "apartment_price_th", "commercial_price_th", "parking_price_th",
-                                    "storage_price_th", "offices_price_th_per_sqm", "offices_cost_th_per_sqm",
-                                    "social_compensation_mln", "bridge_spread_pp", "utilities_th_per_sqm",
-                                    "technical_supervision_pct", "project_management_pct", "gc_fee_pct", "reserve_pct"
-                                ]
+                                "enum": sorted(_PATCH_VARIABLES),
                             },
                             "value": {"type": "number"}
                         },
@@ -37596,6 +37781,48 @@ _AGENT_TOOLS = [
                 }
             },
             "required": ["topic"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+    {
+        "type": "function",
+        "name": "search_project_knowledge",
+        "description": (
+            "Записи проекта DevelopAid трёх видов: rules — наши правила методики и "
+            "решения владельца с датами, backlog — открытые вопросы, normative — "
+            "выжимки нормативных актов Москвы и области (945-ПП, 2152-ПП, РНГП, "
+            "593-ПП, плата за ВРИ, парковки, озеленение) с ссылкой на первоисточник. "
+            "Спрашивай, когда вопрос о том, ПОЧЕМУ модель считает так, откуда взялось "
+            "число или норма, и когда своего ответа нет. Норму называй нормой города "
+            "и со ссылкой на акт, наше решение — нашим; редакцию акта спрашивай "
+            "у check_normatives."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "source": {"type": "string",
+                           "enum": ["all", "rules", "backlog", "normative"]},
+            },
+            "required": ["query", "source"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+    {
+        "type": "function",
+        "name": "where_to_edit",
+        "description": (
+            "Где на экране правится вводная: вкладка, группа, точная подпись поля и "
+            "его единица. Спрашивай ВСЕГДА, прежде чем сказать человеку, что и где "
+            "менять, и называй ему подпись и путь, а не ключ. Запрос — русскими "
+            "словами («благоустройство», «льгота ВРИ») или ключом поля."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
             "additionalProperties": False,
         },
         "strict": True,
@@ -37692,6 +37919,10 @@ def _execute_agent_tool(
         return _tool_get_methodology(args["topic"])
     if name == "get_user_guide":
         return _tool_get_user_guide(args["section"])
+    if name == "where_to_edit":
+        return _tool_where_to_edit(args["query"], req)
+    if name == "search_project_knowledge":
+        return _tool_search_project_knowledge(args["query"], args["source"])
     if name == "check_normatives":
         return _tool_check_normatives(args["action"])
     return {"error": f"Unknown tool: {name}"}
@@ -41362,6 +41593,8 @@ _AGENT_TOOL_LABELS = {
     "phase_recovery_options": "варианты оздоровления очереди",
     "get_methodology": "справка по методике",
     "get_user_guide": "читает руководство пользователя",
+    "where_to_edit": "ищет поле на экране",
+    "search_project_knowledge": "читает записи проекта",
 }
 
 
@@ -41824,8 +42057,11 @@ summary{padding:11px 0;font-size:14px;font-weight:700;cursor:pointer}
 .group-peek{font-weight:400;color:#888;font-size:12px;margin-left:8px}
 details[open]>summary>.group-peek{display:none}
 .fields{display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;padding:0 0 15px}
-.field-section{font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--muted,#667085);border-top:1px solid var(--line,#e4e7ec);padding:12px 0 8px;margin-top:4px}
-.field-section+.fields{padding-bottom:10px}
+.field-card{background:var(--soft,#f5f5f3);border:1px solid var(--line,#dedede);border-radius:10px;padding:12px 14px 4px;margin:0 0 14px}
+.field-card:first-of-type{margin-top:4px}
+.field-section{font-size:15px;font-weight:700;color:var(--ink,#171717);padding:0 0 10px;margin:0 0 10px;border-bottom:1px solid var(--line,#dedede)}
+.field-card .fields{padding-bottom:10px}
+@media(max-width:640px){.field-card{padding:10px 10px 2px;border-radius:8px}}
 .field label{font-size:12px;color:#555;display:block;margin-bottom:4px}.unit{color:#aaa;font-size:10px}
 input,select{width:100%;border:1px solid #cfcfcf;background:#fff;border-radius:0;padding:9px 10px;font-size:14px;color:#111}
 input:focus,select:focus{outline:2px solid #111;outline-offset:-1px}
@@ -42116,6 +42352,9 @@ details.cadastral-box>summary::marker{color:#888}
 .phase-report-nav{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:0 0 16px}
 .phase-report-nav .btn.active{background:#111;color:#fff;border-color:#111}
 .phase-comparison-card{display:none}
+.phase-comparison-card tr.pc-block th{text-align:left;padding:16px 0 5px;font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#111;border-bottom:2px solid #111}
+.phase-comparison-card tr.pc-part td:first-child,.phase-comparison-card tr.pc-sub td:first-child{padding-left:22px;color:#777}
+.phase-comparison-card tr.pc-total td{font-weight:750;color:#111;border-top:1.5px solid #111}
 .phase-status{font-size:11px;color:#666;margin-top:8px}
 .object-actions{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
 #phasing:not(.phasing-on) .phase-config-only{display:none}
@@ -43895,6 +44134,10 @@ async function sendAgentMessage(scenario){
  // и «долго» отличимо от «зависло».
  const traceId=Array.from(crypto.getRandomValues(new Uint8Array(6))).map(b=>b.toString(16).padStart(2,'0')).join('');
  const stagePoll=setInterval(async()=>{try{const r=await fetch('/agent/trace/'+traceId);const t=await r.json();if(t&&t.label&&t.stage!=='done')thinking.textContent=t.label+'…'}catch(e){}},1200);
+ // Номер принятой работы читает catch ниже, поэтому он объявлен ДО try:
+ // объявленный внутри, он в catch недоступен, и кнопка «Забрать ответ» не
+ // вставала бы никогда.
+ let resumeTrace='';
  try{
   await syncInputsForAgent();
   let data={},response=null;
@@ -43906,6 +44149,7 @@ async function sendAgentMessage(scenario){
     // номером запуска. Так длительность работы перестаёт упираться в чужие
     // сроки — nginx, Render и мобильная сеть рвали её на полпути.
     data=await awaitAgentResult(traceId,thinking,true);
+    if(data&&data.timedOut)resumeTrace=data.traceId;
     response={ok:!!data.answer,status:200};
    }
   }catch(networkError){
@@ -43913,6 +44157,7 @@ async function sendAgentMessage(scenario){
    // запрос не переживает ни nginx, ни мобильную сеть, а работа на сервере
    // при этом доходит до конца. Забираем готовый ответ коротким запросом.
    data=await awaitAgentResult(traceId,thinking);
+   if(data&&data.timedOut)resumeTrace=data.traceId;
    response={ok:!!data.answer,status:504};
   }
   if(response&&!response.ok&&(response.status===502||response.status===504)){
@@ -43921,6 +44166,7 @@ async function sendAgentMessage(scenario){
    // Сохранённая причина отказа лучше общего текста: прежде она здесь
    // терялась, и человек читал «временно не получил ответ» вместо неё.
    else if(late&&late.detail&&!data.detail)data={detail:late.detail};
+   if(late&&late.timedOut)resumeTrace=late.traceId;
   }
   thinking.remove();
   if(response&&response.status===401){
@@ -43934,10 +44180,43 @@ async function sendAgentMessage(scenario){
   const answer=String(data.answer||'Ответ не получен.');
   appendAiMessage('assistant',answer+(data.cached?'\n\n*Ответ из кэша: тот же вопрос по тем же вводным за последние 10 минут.*':''));
   if(Array.isArray(data.proposals)&&data.proposals.length)appendAiProposals(data.proposals);aiHistory.push({role:'assistant',content:answer});aiHistory=aiHistory.slice(-10);
- }catch(e){thinking.remove();appendAiMessage('assistant',String(e.message||e),'error')}
+ }catch(e){thinking.remove();appendAiMessage('assistant',String(e.message||e),'error');
+  // Работа принята — значит забрать её можно: кнопка стоит там, где человек
+  // прочитал отказ, а не на соседнем экране.
+  if(resumeTrace)appendAiResumeButton(resumeTrace)}
  finally{clearInterval(stagePoll);aiBusy=false;aiSendBtn.disabled=false;aiInput.focus()}
 }
 const AI_UNAVAILABLE='Платон Сергеевич временно не получил ответ от AI-сервиса. Расчётная модель продолжает работать. Повторите вопрос через несколько секунд.';
+
+function appendAiResumeButton(traceId){
+ // «Забрать ответ» — не повтор вопроса: работа уже идёт под этим номером, и
+ // второе нажатие «Отправить» заказало бы вторую работу вместо начатой.
+ const wrap=document.createElement('div');
+ wrap.style.cssText='margin:8px 0';
+ const btn=document.createElement('button');
+ btn.className='btn dark';
+ btn.textContent='Забрать ответ';
+ const status=document.createElement('div');
+ status.style.cssText='font-size:12px;color:#777;margin-top:6px';
+ btn.onclick=async()=>{
+  btn.disabled=true;btn.textContent='Забираю…';
+  const late=await awaitAgentResult(traceId,status,true);
+  if(late&&late.answer){
+   wrap.remove();
+   const answer=String(late.answer);
+   appendAiMessage('assistant',answer);
+   if(Array.isArray(late.proposals)&&late.proposals.length)appendAiProposals(late.proposals);
+   aiHistory.push({role:'assistant',content:answer});aiHistory=aiHistory.slice(-10);
+   return;
+  }
+  btn.disabled=false;btn.textContent='Забрать ответ';
+  status.textContent=String((late&&late.detail)||AI_UNAVAILABLE);
+ };
+ wrap.appendChild(btn);
+ wrap.appendChild(status);
+ aiMessages.appendChild(wrap);
+ aiMessages.scrollTop=aiMessages.scrollHeight;
+}
 
 function appendAiLoginButton(){
  const wrap=document.createElement('div');
@@ -43989,9 +44268,14 @@ async function awaitAgentResult(traceId,thinking,accepted){
  // одинаков и когда молчит AI-сервис, и когда стоит очередь у сервиса модели,
  // и когда работа давно упала, — по нему разобрать нечего.
  const waited=Math.round((Date.now()-startedAt)/1000);
- return {detail:'Ответ не пришёл за '+Math.floor(waited/60)+' мин '+(waited%60)+' с.'
+ // Окно сдалось, а работа на сервере продолжается и ляжет под тем же номером
+ // запуска: выбросить её значит потерять посчитанное (экран владельца,
+ // 14.09.2026 — «ответ не пришёл за 6 мин 24 с»). Номер уезжает вместе с
+ // отказом, и рядом с ним встаёт кнопка «Забрать ответ».
+ return {timedOut:true,traceId:traceId,
+   detail:'Ответ не пришёл за '+Math.floor(waited/60)+' мин '+(waited%60)+' с.'
    +(lastStage?' Последняя стадия: '+lastStage+'.':'')
-   +' '+AI_UNAVAILABLE};
+   +' Работа на сервере продолжается — заберите ответ кнопкой ниже.'};
 }
 
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&document.getElementById('aiDrawer')?.classList.contains('open'))toggleAgent(false);if((e.ctrlKey||e.metaKey)&&e.key==='Enter'&&document.getElementById('aiDrawer')?.classList.contains('open'))sendAgentMessage()});
@@ -47553,7 +47837,7 @@ function applyTelegramCalcOverrides(){
 const CONNECTION_HINT=' Не удалось связаться с сервером. Если включён VPN — '
  +'отключите его и повторите: сведения ЕГРН запрашиваются с российского адреса.';
 
-const VRI_GROUP_NAME='Смена ВРИ и земельные права';
+const VRI_GROUP_NAME=__DEVELOPAID_VRI_GROUP_NAME__;
 
 // Свёрнутая группа не должна быть закрытой дверью без таблички: в заголовке
 // показываются два-три числа, по которым видно, надо ли туда заходить.
@@ -47652,11 +47936,14 @@ function renderInputs(){
    const peek=groupPeek(grp[0],grp[1]);
    if(peek){const hint=document.createElement('span');hint.className='group-peek';hint.textContent=peek;sum.appendChild(hint)}
    det.appendChild(sum);
-   // Поля объекта разбиты на смысловые блоки с заголовком: у каждого блока
-   // своя сетка, и новый блок начинается там, где у поля сменился блок.
-   // Порядок полей уже сгруппирован движком — страница его не пересобирает.
+   // Поля объекта разбиты на смысловые блоки: каждый блок — отдельная
+   // карточка с заголовком и своей сеткой полей внутри, и новая карточка
+   // начинается там, где у поля сменился блок. Заголовок одной мелкой серой
+   // строкой над общей сеткой форму не делил — она читалась прежним списком
+   // (владелец, 27.09.2026). Порядок полей сгруппирован движком — страница
+   // его не пересобирает.
    let grid=null,section=null;
-   const openGrid=()=>{grid=document.createElement('div');grid.className='fields';det.appendChild(grid)};
+   const openGrid=(parent)=>{grid=document.createElement('div');grid.className='fields';(parent||det).appendChild(grid)};
    grp[1].forEach(f=>{
      const [id,label,unit,type]=f;
      // Норматив площади двора правится в «Настройках класса»: он свойство
@@ -47668,8 +47955,9 @@ function renderInputs(){
      const own=FIELD_SECTIONS[id];
      if(own&&own!==section){
        section=own;
+       const card=document.createElement('section');card.className='field-card';card.dataset.section=own;
        const head=document.createElement('div');head.className='field-section';head.textContent=own;
-       det.appendChild(head);openGrid();
+       card.appendChild(head);det.appendChild(card);openGrid(card);
      }else if(!grid||(!own&&section)){section=null;openGrid()}
      const wrap=document.createElement('div');wrap.className='field';wrap.dataset.field=id;
      // Класс задаёт не только деньги, и об этом сказано у самого поля:
@@ -50428,27 +50716,52 @@ function renderPhaseComparison(){
  phaseComparisonHead.innerHTML=`<tr><th>Показатель</th>${c.map(x=>`<th>${x.name}</th>`).join('')}<th>Свод</th></tr>`;
  const cs=cons.summary,csSale=cs.monetizable_saleable_sqm||0,csGns=cs.project_gns_sqm||0;
  const perTh=(v,a)=>a?num2(v/a/1000)+' тыс ₽/м²':'—';
- // Выручка одной строкой не говорит, чем очередь живёт: у одной весь объём в
- // квартирах, у другой треть в паркинге и ОСЗ, а маржа и риск у них разные.
- // Строки строятся по продуктам, у которых выручка есть хоть в одной очереди:
- // семь нулевых строк — это шум, а не полнота.
- const prodOrder=(cons.report&&cons.report.products||[]).map(p=>p.key);
- const prodLabel={};(cons.report&&cons.report.products||[]).forEach(p=>{prodLabel[p.key]=p.label});
- const shown=prodOrder.filter(k=>c.some(x=>Number((x.revenue_by_product||{})[k]||0)>0));
- const sumOf=(keys,x)=>keys.reduce((s,k)=>s+Number((x.revenue_by_product||{})[k]||0),0);
- const sumCons=keys=>keys.reduce((s,k)=>s+Number((cons.report.products.find(p=>p.key===k)||{}).revenue||0),0);
+ // Таблица читается блоками, и у каждой сущности блок ОДИН: места паркинга
+ // объектов стояли посреди площадей МКД, а его деньги — внизу среди ОСЗ, и
+ // итоги были неотличимы от слагаемых (владелец, 27.09.2026). Строка — это
+ // [подпись, ячейки очередей, свод, роль, группа, сырые числа]; роль «part»
+ // — слагаемое итога своей группы, «total» — итог, «sub» — «из них».
+ const products=(cons.report&&cons.report.products)||[];
+ const prodOrder=products.map(p=>p.key);
+ const prodOf=k=>products.find(p=>p.key===k)||{};
+ const labelOf=k=>prodOf(k).label||k;
+ const revOf=(x,k)=>Number((x.revenue_by_product||{})[k]||0);
+ const qtyOf=(x,k)=>Number((x.saleable_by_product||{})[k]||0);
+ // Состав групп — из движка: МКД из MKD_PRODUCTS, объекты из реестра
+ // STANDALONE_OBJECTS в его порядке. Продукт вне обоих списков (паркинг
+ // объектов) идёт в ОСЗ следом за объектами, а не теряется: новый объект
+ // реестра встаёт сюда сам.
+ const objKeys=STANDALONE_OBJECTS.map(o=>o.key);
+ const MKD=MKD_PRODUCTS.filter(k=>prodOrder.includes(k));
+ const OSZ=[...objKeys.filter(k=>prodOrder.includes(k)),
+            ...prodOrder.filter(k=>!MKD_PRODUCTS.includes(k)&&!objKeys.includes(k))];
+ // Объём к продаже по продуктам — то количество, на которое движок продаёт
+ // (м² или места, единица у продукта своя). Строка заводится вместе с числом.
+ // Паркинг объектов сюда не идёт: его места — своими строками ниже.
+ const volume=(keys,suffix)=>keys.filter(k=>c.some(x=>qtyOf(x,k)>0)).map(k=>{
+  const u=prodOf(k).unit||'';
+  return [labelOf(k)+(suffix||''),c.map(x=>num(qtyOf(x,k))+' '+u),num(Number(prodOf(k).quantity||0))+' '+u];
+ });
+ // Выручка по продуктам: семь нулевых строк — это шум, а не полнота.
  // Промежуточный итог заводится, только когда в группе больше одного продукта:
  // «Итого МКД» под единственной строкой квартир — это та же строка дважды.
- const group=(keys,label)=>{
-  const mine=shown.filter(k=>keys.includes(k));
-  const rows=mine.map(k=>[' · '+(prodLabel[k]||k),
-                          c.map(x=>money((x.revenue_by_product||{})[k]||0)),
-                          money((cons.report.products.find(p=>p.key===k)||{}).revenue||0)]);
-  if(mine.length>1)rows.push([label,c.map(x=>money(sumOf(mine,x))),money(sumCons(mine))]);
+ const revenueGroup=(keys,label,group)=>{
+  const mine=keys.filter(k=>c.some(x=>revOf(x,k)>0));
+  const rows=mine.map(k=>{
+   const v=[...c.map(x=>revOf(x,k)),Number(prodOf(k).revenue||0)];
+   return [labelOf(k),v.slice(0,-1).map(money),money(v[c.length]),'part',group,v];
+  });
+  if(mine.length>1){
+   const v=[...c.map(x=>mine.reduce((s,k)=>s+revOf(x,k),0)),
+            mine.reduce((s,k)=>s+Number(prodOf(k).revenue||0),0)];
+   rows.push([label,v.slice(0,-1).map(money),money(v[c.length]),'total',group,v]);
+  }
   return rows;
  };
- const prodRows=[...group(MKD_PRODUCTS,'Итого МКД'),
-                 ...group(prodOrder.filter(k=>!MKD_PRODUCTS.includes(k)),'Итого отдельные объекты')];
+ const revAll=[...c.map(x=>Number(x.revenue||0)),Number(cs.revenue||0)];
+ const revenueRows=[...revenueGroup(MKD,'Итого МКД','mkd'),
+                    ...revenueGroup(OSZ,'Итого ОСЗ','osz'),
+                    ['Выручка всего',revAll.slice(0,-1).map(money),money(revAll[c.length]),'total','all',revAll]];
  // Непогашенный долг очереди в таблице не стоял вовсе: очередь, не
  // рассчитавшаяся с банком, выглядела здесь так же, как закрывшая долг. А
  // после переноса у передавшей очереди ноль — без строки «передано следующей»
@@ -50478,66 +50791,87 @@ function renderPhaseComparison(){
  // заводится вместе с числом: пустая «0 мест» у проекта без ОСЗ — шум.
  // Построено и продаётся — два разных числа: у ТЦ и ФОКа места обеспечивают
  // посетителей и не продаются вовсе, у офисника продаются все, кроме
- // гостевых. Оба считает движок очереди, экран их только печатает.
+ // гостевых. Оба считает движок очереди, экран их только печатает. Стоят они
+ // в блоке объектов, рядом с их площадями, а не среди площадей МКД.
  const objParkRows=[];
  if(c.some(x=>Number(x.object_parking_units||0)>0)){
   objParkRows.push(['Паркинг отдельно стоящих объектов — мест',
    c.map(x=>num(x.object_parking_units||0)+' шт.'),
    num(cs.object_parking_units||0)+' шт.']);
-  objParkRows.push([' · из них продаётся',
+  objParkRows.push(['из них продаётся',
    c.map(x=>num(x.object_parking_saleable_units||0)+' шт.'),
-   num(cs.object_parking_saleable_units||0)+' шт.']);
-  objParkRows.push([' · подземная часть под объектами',
+   num(cs.object_parking_saleable_units||0)+' шт.','sub']);
+  objParkRows.push(['подземная часть под объектами',
    c.map(x=>num(x.object_parking_under_gns||0)+' м²'),
-   num(cs.object_parking_under_gns||0)+' м²']);
+   num(cs.object_parking_under_gns||0)+' м²','sub']);
  }
- const rows=[
-  ['Продаваемая площадь',c.map(x=>num(x.saleable_sqm)+' м²'),num(csSale)+' м²'],
-  ['Общая площадь — ГНС',c.map(x=>num(x.gns_sqm)+' м²'),num(csGns)+' м²'],
-  ...objParkRows,
-  ['Выручка',c.map(x=>money(x.revenue)),money(cs.revenue)],
-  ...prodRows,
-  ['Цена реализации на м² продаваемой',c.map(x=>num2(x.revenue_per_saleable_th)+' тыс ₽/м²'),perTh(cs.revenue,csSale)],
-  ['Цена реализации на м² ГНС',c.map(x=>num2(x.revenue_per_gns_th)+' тыс ₽/м²'),perTh(cs.revenue,csGns)],
-  ['CAPEX',c.map(x=>money(x.capex)),money(cs.capex)],
-  ['CAPEX на м² ГНС',c.map(x=>num2(x.capex_per_gns_th)+' тыс ₽/м²'),perTh(cs.capex,csGns)],
-  ['Полные расходы на м² продаваемой',c.map(x=>num2(x.expenses_per_saleable_th)+' тыс ₽/м²'),perTh(cs.total_expenses,csSale)],
-  ['Полные расходы на м² ГНС',c.map(x=>num2(x.expenses_per_gns_th)+' тыс ₽/м²'),perTh(cs.total_expenses,csGns)],
-  ['Чистая прибыль на м² продаваемой',c.map(x=>num2(x.net_profit_per_saleable_th)+' тыс ₽/м²'),perTh(cs.net_profit,csSale)],
-  ['Общепроектная нагрузка — cash',c.map(x=>money(x.cash_shared_cost)),'—'],
-  // Цена метра очереди по общепроектным статьям — из движка: заданная руками
-  // доля видна здесь числом, а не только процентом в редакторе.
-  ...[['ird','ИРД и согласования'],['design','Проектирование П+РД'],['preparation','Подготовительные работы'],['utilities','Наружные сети']].map(([k,l])=>{
-   const inp=((c[0]||{}).shared_rate_inputs_th||{})[k];
-   return [`${l} — цена м² МКД очереди${inp!=null?` (вводная ${num2(inp)} тыс ₽/м²)`:''}`,c.map(x=>((x.shared_rates_th||{})[k]!=null)?num2(x.shared_rates_th[k])+' тыс ₽/м²':'—'),'—'];
-  }),
-  ['Аллоцированные общие расходы',c.map(x=>money(x.allocated_shared_cost)),'—'],
-  ['Пиковый БРИДЖ',c.map(x=>money(x.peak_bridge)),money(cons.finance.peak_bridge)],
-  ['Затраты до РНС',c.map(x=>money(x.pre_rns_costs)),money(((phaseBundle.phase_financing||{}).totals||{}).pre_rns_costs)],
-  ['Свободный cash проекта',c.map(x=>money(x.project_cash_used)),money(((phaseBundle.phase_financing||{}).totals||{}).project_cash_used)],
-  ['Собственные средства',c.map(x=>money(x.own_funds)),money(((phaseBundle.phase_financing||{}).totals||{}).own_funds)],
-  ['Новый БРИДЖ',c.map(x=>money(x.new_bridge)),money(((phaseBundle.phase_financing||{}).totals||{}).new_bridge)],
-  ['Пиковый остаток ПФ',c.map(x=>money(x.peak_pf)),money(cons.finance.peak_pf)],
-  // Раскрытие эскроу — событие очереди. В своде эти строки складывались под
-  // именами моментов: «Раскрытый эскроу в РВЭ» суммировал раскрытия разных
-  // лет, а «в т.ч. принято от предыдущей очереди» при трёх очередях не
-  // отвечало, от какой (владелец, 31.08.2026). Здесь у каждого числа есть
-  // очередь и дата, а в своде остались только те же величины как итоги.
-  ['Лимит ПФ',c.map(x=>money(x.pf_limit)),money(cons.finance.pf_limit)],
-  ['РВЭ очереди',c.map(x=>x.rve?dateRu(x.rve):'—'),'—'],
-  ['Долг ПФ перед раскрытием',c.map(x=>money(x.rve_pf_before_repayment)),
-   money(cons.finance.rve_pf_before_repayment)],
-  ['Раскрыто эскроу',c.map(x=>money(x.rve_escrow_release)),money(cons.finance.rve_escrow_release)],
-  ['Из него на погашение ПФ',c.map(x=>money(x.rve_pf_repayment)),money(cons.finance.rve_pf_repayment)],
-  ['Не покрыто эскроу при раскрытии',c.map(x=>money(x.rve_pf_shortfall)),
-   money(cons.finance.rve_pf_shortfall)],
-  ...debtRows,
-  ['LLCR',c.map(x=>mult(x.llcr)),mult(cons.summary.llcr)],
-  ['Чистая прибыль — cash',c.map(x=>money(x.net_profit)),money(cons.summary.net_profit)],
-  ['Аналитическая прибыль после аллокации',c.map(x=>money(x.allocated_net_profit)),'—'],
-  ['Маржинальность',c.map(x=>pct(x.margin)),pct(cons.summary.margin)]
+ const blocks=[
+  ['mkd','Объём МКД — к продаже',volume(MKD)],
+  ['osz','Отдельно стоящие объекты',[...volume(objKeys.filter(k=>prodOrder.includes(k)),' — к продаже'),...objParkRows]],
+  ['revenue','Выручка',revenueRows],
+  ['costs','Затраты',[
+   ['CAPEX',c.map(x=>money(x.capex)),money(cs.capex)],
+   ['Полные расходы',c.map(x=>money(x.total_expenses)),money(cs.total_expenses)],
+  ]],
+  ['unit','Удельные показатели',[
+   // Удельный подписан своим делителем, и делитель стоит строкой над ним:
+   // те же числа, на которые делит движок (`monetizable_saleable_sqm`,
+   // `project_gns_sqm`), а не площадь, угаданная по заголовку.
+   ['Делитель «на м² продаваемой» — продаваемая площадь',c.map(x=>num(x.saleable_sqm)+' м²'),num(csSale)+' м²'],
+   ['Делитель «на м² ГНС» — ГНС наземная',c.map(x=>num(x.gns_sqm)+' м²'),num(csGns)+' м²'],
+   ['Цена реализации на м² продаваемой',c.map(x=>num2(x.revenue_per_saleable_th)+' тыс ₽/м²'),perTh(cs.revenue,csSale)],
+   ['Цена реализации на м² ГНС',c.map(x=>num2(x.revenue_per_gns_th)+' тыс ₽/м²'),perTh(cs.revenue,csGns)],
+   ['CAPEX на м² ГНС',c.map(x=>num2(x.capex_per_gns_th)+' тыс ₽/м²'),perTh(cs.capex,csGns)],
+   ['Полные расходы на м² продаваемой',c.map(x=>num2(x.expenses_per_saleable_th)+' тыс ₽/м²'),perTh(cs.total_expenses,csSale)],
+   ['Полные расходы на м² ГНС',c.map(x=>num2(x.expenses_per_gns_th)+' тыс ₽/м²'),perTh(cs.total_expenses,csGns)],
+   ['Чистая прибыль на м² продаваемой',c.map(x=>num2(x.net_profit_per_saleable_th)+' тыс ₽/м²'),perTh(cs.net_profit,csSale)],
+   // Цена метра очереди по общепроектным статьям — из движка: заданная руками
+   // доля видна здесь числом, а не только процентом в редакторе.
+   ...[['ird','ИРД и согласования'],['design','Проектирование П+РД'],['preparation','Подготовительные работы'],['utilities','Наружные сети']].map(([k,l])=>{
+    const inp=((c[0]||{}).shared_rate_inputs_th||{})[k];
+    return [`${l} — цена м² МКД очереди${inp!=null?` (вводная ${num2(inp)} тыс ₽/м²)`:''}`,c.map(x=>((x.shared_rates_th||{})[k]!=null)?num2(x.shared_rates_th[k])+' тыс ₽/м²':'—'),'—'];
+   }),
+  ]],
+  ['finance','Финансирование',[
+   ['Пиковый БРИДЖ',c.map(x=>money(x.peak_bridge)),money(cons.finance.peak_bridge)],
+   ['Затраты до РНС',c.map(x=>money(x.pre_rns_costs)),money(((phaseBundle.phase_financing||{}).totals||{}).pre_rns_costs)],
+   ['Свободный cash проекта',c.map(x=>money(x.project_cash_used)),money(((phaseBundle.phase_financing||{}).totals||{}).project_cash_used)],
+   ['Собственные средства',c.map(x=>money(x.own_funds)),money(((phaseBundle.phase_financing||{}).totals||{}).own_funds)],
+   ['Новый БРИДЖ',c.map(x=>money(x.new_bridge)),money(((phaseBundle.phase_financing||{}).totals||{}).new_bridge)],
+   ['Пиковый остаток ПФ',c.map(x=>money(x.peak_pf)),money(cons.finance.peak_pf)],
+   // Раскрытие эскроу — событие очереди. В своде эти строки складывались под
+   // именами моментов: «Раскрытый эскроу в РВЭ» суммировал раскрытия разных
+   // лет, а «в т.ч. принято от предыдущей очереди» при трёх очередях не
+   // отвечало, от какой (владелец, 31.08.2026). Здесь у каждого числа есть
+   // очередь и дата, а в своде остались только те же величины как итоги.
+   ['Лимит ПФ',c.map(x=>money(x.pf_limit)),money(cons.finance.pf_limit)],
+   ['РВЭ очереди',c.map(x=>x.rve?dateRu(x.rve):'—'),'—'],
+   ['Долг ПФ перед раскрытием',c.map(x=>money(x.rve_pf_before_repayment)),
+    money(cons.finance.rve_pf_before_repayment)],
+   ['Раскрыто эскроу',c.map(x=>money(x.rve_escrow_release)),money(cons.finance.rve_escrow_release)],
+   ['Из него на погашение ПФ',c.map(x=>money(x.rve_pf_repayment)),money(cons.finance.rve_pf_repayment)],
+   ['Не покрыто эскроу при раскрытии',c.map(x=>money(x.rve_pf_shortfall)),
+    money(cons.finance.rve_pf_shortfall)],
+   ...debtRows,
+   ['LLCR',c.map(x=>mult(x.llcr)),mult(cons.summary.llcr)],
+  ]],
+  ['result','Результат',[
+   ['Чистая прибыль — cash',c.map(x=>money(x.net_profit)),money(cons.summary.net_profit)],
+   ['Маржинальность',c.map(x=>pct(x.margin)),pct(cons.summary.margin)],
+   ['Общепроектная нагрузка — cash',c.map(x=>money(x.cash_shared_cost)),'—'],
+   ['Аллоцированные общие расходы',c.map(x=>money(x.allocated_shared_cost)),'—'],
+   ['Аналитическая прибыль после аллокации',c.map(x=>money(x.allocated_net_profit)),'—'],
+  ]],
  ];
- phaseComparisonBody.innerHTML=rows.map(r=>`<tr><td>${r[0]}</td>${r[1].map(v=>`<td>${v}</td>`).join('')}<td>${r[2]}</td></tr>`).join('');
+ // Сырые числа итогов и слагаемых уходят в разметку (`data-v`): проверка
+ // сверяет итог с суммой слагаемых по ним, а не по округлённому тексту.
+ const td=(v,raw)=>`<td${raw!=null?` data-v="${raw}"`:''}>${v}</td>`;
+ phaseComparisonBody.innerHTML=blocks.filter(b=>b[2].length).map(([key,title,list])=>
+  `<tr class="pc-block" data-block="${key}"><th colspan="${c.length+2}">${title}</th></tr>`+
+  list.map(([l,cells,tot,role,group,vals])=>
+   `<tr data-block="${key}"${role?` class="pc-${role}"`:''}${group?` data-group="${group}"`:''}><td>${l}</td>`+
+   cells.map((v,i)=>td(v,vals&&vals[i])).join('')+td(tot,vals&&vals[cells.length])+'</tr>').join('')
+ ).join('');
  renderPhaseEscrowCharts();
  // Причина, по которой долг сменил очередь — или по которой не сменил.
  // Обнулённый долг первой очереди рядом с выросшим долгом второй без этой
@@ -53574,6 +53908,11 @@ PAGE = PAGE.replace(INPUT_DEFAULT_PLACEHOLDER,
                     json.dumps(DEFAULT_INPUTS, ensure_ascii=False))
 PAGE = PAGE.replace(CLASS_ONLY_INPUTS_PLACEHOLDER,
                     json.dumps(CLASS_ONLY_INPUTS, ensure_ascii=False))
+# Имя группы ВРИ жило на странице второй копией: вкладка ВРИ узнаёт свою группу
+# по нему, и ответ «где это править» — тоже. Разойдись копии, и поле ВРИ ушло бы
+# рисоваться во «Вводные», а Платон продолжал бы звать на вкладку ВРИ.
+PAGE = PAGE.replace(VRI_GROUP_NAME_PLACEHOLDER,
+                    json.dumps(VRI_GROUP_NAME, ensure_ascii=False))
 PAGE = PAGE.replace(TEP_DEFAULT_PLACEHOLDER,
                     json.dumps(TEP_DEFAULT, ensure_ascii=False))
 PAGE = PAGE.replace(TEP_RATIOS_PLACEHOLDER, json.dumps(TEP_RATIOS, ensure_ascii=False))
