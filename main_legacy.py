@@ -6605,9 +6605,6 @@ def _land_lookup_by_numbers(numbers: list[str]) -> list[dict[str, Any]]:
         except HTTPException as exc:
             results.append({
                 "found": False,
-                # НСПД не ответил (503/429/таймаут) — это не «объекта нет».
-                # Читатели, которые кэшируют ответ, обязаны переспросить.
-                "lookup_failed": True,
                 "cadastral_number": number,
                 "region": parts["region_hint"],
                 "quarter": parts["quarter"],

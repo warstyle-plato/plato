@@ -2409,12 +2409,7 @@ function krtInvestmentRatingCell(slug){
  if(score!==null&&score!==undefined&&Number.isFinite(Number(score))){
   const quality=Number.isFinite(coverage)?' · '+coverage+'% факта':'';
   const estimate=imputed.length?' · медиана: '+esc(imputed.join(', ')):'';
-  // Общий ориентир сменили, а строку ещё не пересчитали — её балл посчитан при
-  // другой цене и сравнивать его с соседними наравне нельзя.
-  const target=Number(rank.investment_rating_target_rub_sqm),now=Number(state.krtRatingTarget);
-  const stale=Number.isFinite(target)&&Number.isFinite(now)&&now>0&&Math.abs(target-now)>0.5
-   ?' · <span style="color:var(--warn)">при ориентире '+esc(Math.round(target).toLocaleString('ru-RU'))+' ₽/м², ждёт пересчёта</span>':'';
-  return '<b>'+esc(Math.round(Number(score)))+'</b><div class="source">/100'+quality+estimate+stale+'</div>';
+  return '<b>'+esc(Math.round(Number(score)))+'</b><div class="source">/100'+quality+estimate+'</div>';
  }
  if(Number.isFinite(coverage)&&coverage>0){
   const missing=(r.missing||[]).map(x=>names[x]||x).join(', ');
@@ -2797,7 +2792,6 @@ function renderKrtRankStatus(){
 async function loadKrtRanking(){
  try{
   const d=await askJson('/auctions/krt/ranking',{cache:'no-store'});
-  state.krtRatingTarget=Number(d.investment_rating_target_rub_sqm)||null;
   state.krtRank={};(d.rows||[]).forEach(row=>{state.krtRank[row.slug]=row;
    if(row.available&&row.traffic_light)state.krtModels[row.slug]={traffic_light:row.traffic_light}});
   state.krtRankProgress=d.progress||null;
@@ -4394,7 +4388,7 @@ window.addEventListener('message',e=>{
   renderKrt();
   return;
  }
- if(d.type!=='developaid-krt-card-action')return;
+ if(d.type!=='developaid-krt-card-action'&&d.type!=='developaid-krt-prototype-action')return;
  const x=state.selectedKrt;
  if(!x||String(x.slug||'')!==String(d.slug||''))return;
  if(d.action==='handoff'){handoffKrt(x);return}
