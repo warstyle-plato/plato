@@ -81,7 +81,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.24.49"
+VERSION = "0.24.50"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -42057,8 +42057,11 @@ summary{padding:11px 0;font-size:14px;font-weight:700;cursor:pointer}
 .group-peek{font-weight:400;color:#888;font-size:12px;margin-left:8px}
 details[open]>summary>.group-peek{display:none}
 .fields{display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;padding:0 0 15px}
-.field-section{font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--muted,#667085);border-top:1px solid var(--line,#e4e7ec);padding:12px 0 8px;margin-top:4px}
-.field-section+.fields{padding-bottom:10px}
+.field-card{background:var(--soft,#f5f5f3);border:1px solid var(--line,#dedede);border-radius:10px;padding:12px 14px 4px;margin:0 0 14px}
+.field-card:first-of-type{margin-top:4px}
+.field-section{font-size:15px;font-weight:700;color:var(--ink,#171717);padding:0 0 10px;margin:0 0 10px;border-bottom:1px solid var(--line,#dedede)}
+.field-card .fields{padding-bottom:10px}
+@media(max-width:640px){.field-card{padding:10px 10px 2px;border-radius:8px}}
 .field label{font-size:12px;color:#555;display:block;margin-bottom:4px}.unit{color:#aaa;font-size:10px}
 input,select{width:100%;border:1px solid #cfcfcf;background:#fff;border-radius:0;padding:9px 10px;font-size:14px;color:#111}
 input:focus,select:focus{outline:2px solid #111;outline-offset:-1px}
@@ -47933,11 +47936,14 @@ function renderInputs(){
    const peek=groupPeek(grp[0],grp[1]);
    if(peek){const hint=document.createElement('span');hint.className='group-peek';hint.textContent=peek;sum.appendChild(hint)}
    det.appendChild(sum);
-   // Поля объекта разбиты на смысловые блоки с заголовком: у каждого блока
-   // своя сетка, и новый блок начинается там, где у поля сменился блок.
-   // Порядок полей уже сгруппирован движком — страница его не пересобирает.
+   // Поля объекта разбиты на смысловые блоки: каждый блок — отдельная
+   // карточка с заголовком и своей сеткой полей внутри, и новая карточка
+   // начинается там, где у поля сменился блок. Заголовок одной мелкой серой
+   // строкой над общей сеткой форму не делил — она читалась прежним списком
+   // (владелец, 27.09.2026). Порядок полей сгруппирован движком — страница
+   // его не пересобирает.
    let grid=null,section=null;
-   const openGrid=()=>{grid=document.createElement('div');grid.className='fields';det.appendChild(grid)};
+   const openGrid=(parent)=>{grid=document.createElement('div');grid.className='fields';(parent||det).appendChild(grid)};
    grp[1].forEach(f=>{
      const [id,label,unit,type]=f;
      // Норматив площади двора правится в «Настройках класса»: он свойство
@@ -47949,8 +47955,9 @@ function renderInputs(){
      const own=FIELD_SECTIONS[id];
      if(own&&own!==section){
        section=own;
+       const card=document.createElement('section');card.className='field-card';card.dataset.section=own;
        const head=document.createElement('div');head.className='field-section';head.textContent=own;
-       det.appendChild(head);openGrid();
+       card.appendChild(head);det.appendChild(card);openGrid(card);
      }else if(!grid||(!own&&section)){section=null;openGrid()}
      const wrap=document.createElement('div');wrap.className='field';wrap.dataset.field=id;
      // Класс задаёт не только деньги, и об этом сказано у самого поля:
