@@ -181,6 +181,7 @@ def test_the_report_splits_the_object_money_between_its_metres_and_places() -> N
     products = {p["key"]: p for p in result["report"]["products"]}
     object_total = result["finance"]["tax_cost_by_product"]["offices"]
     assert products["offices"]["cost"] + products["object_parking"]["cost"] == pytest.approx(object_total)
-    over_building = OVER * core.OBJECT_PARKING_OVER_AREA_DEFAULT * 200 * 1000
+    over_building = (OVER * core.OBJECT_PARKING_OVER_AREA_DEFAULT
+                     * _inputs()["offices_cost_th_per_sqm"] * 1000)
     garage = 1000 * core.OBJECT_PARKING_AREA_DEFAULT * core.DEFAULT_INPUTS["main_under_th_per_sqm"] * 1000
     assert products["object_parking"]["cost"] == pytest.approx(garage + over_building, rel=1e-9)

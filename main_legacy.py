@@ -46442,7 +46442,7 @@ function renderProjectClassPreview(){
  // называет его и себестоимость здания офиса, которую класс теперь двигает.
  const office=OFFICE_CLASS_BY_PROJECT_CLASS[key];
  const officeText=office&&(isNonResidential()||inputs.offices_enabled)
-  ? ` · офисы класса ${office.office_class}, себес. ${classValue(key,'offices_cost_th_per_sqm').toLocaleString('ru-RU')}`
+  ? ` · офисы класса ${office.office_class}, здание офиса ${classValue(key,'offices_cost_th_per_sqm').toLocaleString('ru-RU')}`
   : '';
  box.textContent=isNonResidential()
   ? `Офисы/ТЦ ${classValue(key,'offices_price_th_per_sqm').toLocaleString('ru-RU')} · м/м ${classValue(key,'parking_price_th').toLocaleString('ru-RU')} · подземные ${classValue(key,'main_under_th_per_sqm').toLocaleString('ru-RU')}${officeText} тыс. ₽`

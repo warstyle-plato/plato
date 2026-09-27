@@ -43,4 +43,4 @@ def test_the_class_preview_names_the_office_class() -> None:
     out, _ = page_blocks.run(prelude, "renderProjectClassPreview();"
                              "process.stdout.write(box.textContent);")
     assert "офисы класса B+ и A−" in out
-    assert "себес. 200" in out
+    assert "здание офиса 200" in out
