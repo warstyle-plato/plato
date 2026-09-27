@@ -1,0 +1,26 @@
+# Separate staging only. Never change the production service to this branch.
+services:
+  - type: web
+    name: developaid-commercial-staging
+    runtime: python
+    repo: https://github.com/warstyle-plato/plato
+    branch: feature/commercial-engine-v2
+    plan: free
+    region: frankfurt
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main_registry:app --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /health
+    autoDeployTrigger: off
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.11
+      - key: AUCTION_KRT_WEEKLY
+        value: '0'
+      - key: AUCTION_KRT_WATCH
+        value: '0'
+      - key: NORMATIVES_WATCH
+        value: '0'
+      - key: NAGATINO_EGRN_READ
+        value: '0'
+      - key: MARKET_TAB_ENABLED
+        value: '0'

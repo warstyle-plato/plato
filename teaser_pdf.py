@@ -208,9 +208,18 @@ def _band(text: str, width: float, st: _Styles) -> Table:
     return t
 
 
-def _map_block(map_png: bytes | None, width: float, st: _Styles, site: dict[str, Any]) -> list[Any]:
+# Пропорция слота карты (ширина / высота): левая колонка первой страницы при
+# потолке высоты 78 мм. Движок строит кадр окружения ровно в неё.
+MAP_ASPECT = 1.15
+MAP_MAX_HEIGHT = 78 * mm
+DEFAULT_MAP_CAPTION = "Контур участка по ЕГРН (красная линия) на публичной карте НСПД"
+
+
+def _map_block(map_png: bytes | None, width: float, st: _Styles, site: dict[str, Any],
+               caption: str | None = None) -> list[Any]:
     """Карта участка: картинка с контурами ЕГРН, а нет её — названная причина,
-    не пустое место (пустое читается как «карты у проекта нет»)."""
+    не пустое место (пустое читается как «карты у проекта нет»). Подпись
+    приходит вместе с картинкой и называет подложку — сама карта её не знает."""
     numbers = site.get("cadastral_numbers") or []
     if map_png:
         try:
@@ -219,11 +228,11 @@ def _map_block(map_png: bytes | None, width: float, st: _Styles, site: dict[str,
                 w, h = probe.size
         except Exception:
             w, h = 4, 3
-        height = min(width * h / max(w, 1), 78 * mm)
+        height = min(width * h / max(w, 1), MAP_MAX_HEIGHT)
         image = Image(io.BytesIO(map_png), width=width, height=height)
-        caption = ("Контур участка по ЕГРН (красная линия) на публичной карте НСПД · "
-                   + ", ".join(numbers[:4]) + (" …" if len(numbers) > 4 else ""))
-        return [image, Paragraph(caption, st.note)]
+        text = caption or (DEFAULT_MAP_CAPTION + " · " + ", ".join(numbers[:4])
+                           + (" …" if len(numbers) > 4 else ""))
+        return [image, Paragraph(text, st.note)]
     reason = ("кадастровый номер не задан — карта строится по нему" if not numbers
               else "НСПД не отдал контур или подложку на момент сборки")
     box = Table([[Paragraph(f"{NO_MAP_TEXT}: {reason}.", st.note)]], colWidths=[width],
@@ -527,7 +536,7 @@ def _gantt(model: dict[str, Any], width: float, st: _Styles) -> Drawing | None:
 
 
 def _page_one(model: dict[str, Any], map_png: bytes | None, width: float, st: _Styles,
-              fm: _Formats) -> list[Any]:
+              fm: _Formats, map_caption: str | None = None) -> list[Any]:
     site = model.get("site") or {}
     origin = model.get("origin") or {}
     subject = site.get("address") or ", ".join(site.get("cadastral_numbers") or []) or model.get("project_name")
@@ -541,7 +550,7 @@ def _page_one(model: dict[str, Any], map_png: bytes | None, width: float, st: _S
     right_w = width - gutter - left_w
 
     left: list[Any] = [_section("Расположение", left_w, st)]
-    left += _map_block(map_png, left_w, st, site)
+    left += _map_block(map_png, left_w, st, site, map_caption)
     left.append(_section("Информация по земельному участку", left_w, st))
     left.append(_kv(_site_rows(site, model.get("tep") or {}, fm), left_w, st, label_share=0.36))
     left.append(Paragraph("Ограничения участка", st.h3))
@@ -686,7 +695,8 @@ def _page_two(model: dict[str, Any], width: float, st: _Styles, fm: _Formats) ->
 
 
 def build_teaser_pdf(presentation: dict[str, Any], fonts: tuple[str, str],
-                     num: Callable[..., str], map_png: bytes | None = None) -> bytes:
+                     num: Callable[..., str], map_png: bytes | None = None,
+                     map_caption: str | None = None) -> bytes:
     """Две страницы: «Девелоперский проект» (книжная) и «Итог» (альбомная).
     Ровно две — это проверяется: страница, уехавшая третьей, значит, что
     блок не влез, а не что тизер стал подробнее."""
@@ -708,7 +718,7 @@ def build_teaser_pdf(presentation: dict[str, Any], fonts: tuple[str, str],
                                    leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0)]),
     ])
     story: list[Any] = []
-    story += _page_one(presentation, map_png, portrait_w, st, fm)
+    story += _page_one(presentation, map_png, portrait_w, st, fm, map_caption)
     story.append(NextPageTemplate("landscape"))
     story.append(PageBreak())
     story += _page_two(presentation, landscape_w, st, fm)

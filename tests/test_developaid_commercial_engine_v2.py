@@ -391,3 +391,35 @@ def test_simple_debt_waterfall_records_equity_and_repayment():
     assert result["monthly"]["debt_balance"][1] == pytest.approx(0)
     assert result["kpi"]["equity_required"] == pytest.approx(400)
     assert result["checks"]["ending_debt_zero"] is True
+
+
+def test_long_horizon_irr_is_finite_and_satisfies_discounted_cashflow():
+    from math import isfinite
+    from developaid_commercial_engine import _npv_monthly, _irr_monthly
+    result = calc(hold_years=20, construction_months=240)
+    for key in ('project', 'equity'):
+        irr=result['kpi'][key+'_irr']
+        assert irr is not None and isfinite(irr)
+        flows=result['monthly'][key+'_cashflow']
+        assert abs(_npv_monthly(flows,irr)) < sum(abs(v) for v in flows)*1e-7
+    # Long negative-return case must not lose the sign through underflow.
+    flows=[-1000]+[0]*479+[100]
+    assert (1+_irr_monthly(flows))**480 == pytest.approx(.1,rel=1e-8)
+
+
+def test_opening_occupancy_is_the_first_operating_month():
+    for asset in ('office','retail','hotel'):
+        result=calc(asset, opening_occupancy_pct=40,occupancy_pct=90,stabilization_months=12)
+        first=result['inputs']['construction_months']+1
+        assert result['monthly']['occupancy'][first] == pytest.approx(.4)
+        assert result['monthly']['occupancy'][first+11] == pytest.approx(.9)
+
+
+def test_retail_entered_rates_change_revenue_when_they_are_binding():
+    base=calc('retail',rent_rub_sqm_month=5000,sales_rub_sqm_month=10000,turnover_rent_pct=5)
+    rent=calc('retail',rent_rub_sqm_month=6000,sales_rub_sqm_month=10000,turnover_rent_pct=5)
+    assert rent['kpi']['operating_revenue'] > base['kpi']['operating_revenue']
+    sales=calc('retail',rent_rub_sqm_month=5000,sales_rub_sqm_month=200000,turnover_rent_pct=5)
+    pct=calc('retail',rent_rub_sqm_month=5000,sales_rub_sqm_month=200000,turnover_rent_pct=10)
+    assert sales['kpi']['operating_revenue'] > base['kpi']['operating_revenue']
+    assert pct['kpi']['operating_revenue'] > sales['kpi']['operating_revenue']

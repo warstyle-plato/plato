@@ -1,12 +1,19 @@
 name: Commercial engine beta
 
 on:
+  push:
+    branches: [feature/commercial-engine-v2]
   pull_request:
     branches: [main]
     paths:
       - "developaid_commercial.py"
       - "developaid_commercial_engine.py"
       - "commercial_preview.py"
+      - "commercial_site*"
+      - "developaid_commercial_form.py"
+      - "developaid_commercial_site.py"
+      - "main_registry.py"
+      - "ia_preview/**"
       - "tests/test_developaid_commercial.py"
       - "tests/test_developaid_commercial_engine_v2.py"
       - "tests/test_commercial_preview_staging.py"
@@ -35,4 +42,6 @@ jobs:
           python -m pytest -q \
             tests/test_developaid_commercial.py \
             tests/test_developaid_commercial_engine_v2.py \
-            tests/test_commercial_preview_staging.py
+            tests/test_commercial_preview_staging.py \
+            tests/test_ia_preview_serves_the_page_itself.py \
+            tests/test_ia_preview_layer_matches_the_page.py

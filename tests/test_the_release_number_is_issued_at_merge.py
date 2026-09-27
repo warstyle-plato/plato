@@ -278,3 +278,152 @@ def test_two_merges_do_not_run_at_once():
     text = MERGE_FLOW.read_text(encoding="utf-8")
     assert "group: release-merge" in text
     assert "cancel-in-progress: false" in text
+
+
+@pytest.mark.parametrize("pull, settled", [
+    ({"head": {"sha": "new"}, "mergeable": True}, True),
+    ({"head": {"sha": "new"}, "mergeable": False}, True),
+    ({"head": {"sha": "new"}, "mergeable": None}, False),
+    ({"head": {"sha": "old"}, "mergeable": True}, False),
+    ({}, False),
+])
+def test_the_merge_waits_until_github_knows_the_new_head(pull, settled):
+    """Сразу после push номера GitHub отдаёт прежнюю голову или
+    mergeable=null, и слияние в эту секунду получает 405. Так падали все
+    прогоны workflow с 22.09."""
+    assert release_merge._settled(pull, "new") is settled
+
+
+def test_the_wait_stands_between_the_number_and_the_merge():
+    source = MERGE.read_text(encoding="utf-8")
+    body = source[source.index("for attempt in range"):]
+    wrote = body.index("_set_version(")
+    waited = body.index("_wait_settled(", wrote)
+    merged = body.index('"PUT"', wrote)
+    assert wrote < waited < merged, "слияние не ждёт, пока GitHub досчитает новую голову"
+
+
+def test_a_number_left_by_a_failed_run_does_not_block_the_retry():
+    """Прогон, которому GitHub отказал, оставляет номер в ветке. Повтор
+    обязан слить эту голову, а не падать на «номер уже стоит»."""
+    source = MERGE.read_text(encoding="utf-8")
+    body = source[source.index("def _write_version("):source.index("def _conflict_may_be_the_number(")]
+    assert "raise SystemExit(f\"Номер" not in body
+    assert "if replaced == text:" in body
+
+
+def test_a_branch_behind_a_bumped_base_gets_its_number_without_a_conflict(
+        repo, monkeypatch):
+    """Ветка отошла от 0.24.18 и сама заняла 0.24.19, а база тем временем
+    выпустила свой 0.24.19. Выданный 0.24.20 поверх такой ветки менял ту же
+    строку, что и база, — GitHub видел конфликт, и так 27.09 отказал #484."""
+    # Строки правок стоят поодаль от VERSION, как в настоящем движке: вплотную
+    # git склеил бы их с номером в один кусок и конфликт был бы честным.
+    body = "\n\n\na = 0\n\n\n\n\nb = 0\n"
+    repo.commit("0.24.18", body)
+    repo.run("git", "push", "-q", "origin", "main")
+    repo.branch("feat", "0.24.19", body.replace("a = 0", "a = 1"))
+    repo.run("git", "checkout", "-q", "main")
+    repo.commit("0.24.19", body.replace("b = 0", "b = 1"))
+    repo.run("git", "push", "-q", "origin", "main")
+
+    guard = _module(GUARD, "guard_for_merge")
+    monkeypatch.setattr(release_merge, "_guard", lambda: guard)
+    monkeypatch.setattr(release_merge, "ROOT", repo.path)
+    monkeypatch.setattr(release_merge, "ENGINE", repo.path / "main_legacy.py")
+    monkeypatch.chdir(repo.path)
+
+    head = release_merge._set_version("feat", "0.24.20", "main")
+
+    pushed = subprocess.run(["git", "rev-parse", "origin/feat"], cwd=repo.path,
+                            capture_output=True, text=True, check=True).stdout.strip()
+    assert pushed == head
+    text = subprocess.run(["git", "show", "origin/feat:main_legacy.py"], cwd=repo.path,
+                          capture_output=True, text=True, check=True).stdout
+    assert text == _engine("0.24.20", "\n\n\na = 1\n\n\n\n\nb = 1\n")
+    clean = subprocess.run(["git", "merge-tree", "--write-tree", "origin/main", "origin/feat"],
+                           cwd=repo.path, capture_output=True, text=True)
+    assert clean.returncode == 0, clean.stdout
+
+
+def test_a_real_conflict_is_named_and_not_merged(repo, monkeypatch):
+    body = "\n\n\na = 0\n"
+    repo.commit("0.24.18", body)
+    repo.run("git", "push", "-q", "origin", "main")
+    repo.branch("feat", "0.24.18", "\n\n\na = 1\n")
+    repo.run("git", "checkout", "-q", "main")
+    repo.commit("0.24.19", "\n\n\na = 2\n")
+    repo.run("git", "push", "-q", "origin", "main")
+
+    guard = _module(GUARD, "guard_for_conflict")
+    monkeypatch.setattr(release_merge, "_guard", lambda: guard)
+    monkeypatch.setattr(release_merge, "ROOT", repo.path)
+    monkeypatch.setattr(release_merge, "ENGINE", repo.path / "main_legacy.py")
+    monkeypatch.chdir(repo.path)
+
+    before = subprocess.run(["git", "rev-parse", "origin/feat"], cwd=repo.path,
+                            capture_output=True, text=True, check=True).stdout
+    with pytest.raises(SystemExit, match="не только номером"):
+        release_merge._set_version("feat", "0.24.20", "main")
+    subprocess.run(["git", "fetch", "-q", "origin"], cwd=repo.path, check=True)
+    after = subprocess.run(["git", "rev-parse", "origin/feat"], cwd=repo.path,
+                           capture_output=True, text=True, check=True).stdout
+    assert before == after, "ветку с настоящим конфликтом скрипт не должен трогать"
+
+
+def test_a_release_merge_starts_the_build_itself():
+    """Слияние от GITHUB_TOKEN не запускает сборку main push-событием:
+    27.09 пять выпусков легли в main и не уехали на прод."""
+    source = MERGE.read_text(encoding="utf-8")
+    body = source[source.index("for attempt in range"):]
+    merged = body.index('"PUT"')
+    assert body.index("_dispatch_build(", merged) > merged
+    assert (ROOT / ".github" / "workflows" / release_merge.BUILD_WORKFLOW).exists()
+    assert "actions: write" in MERGE_FLOW.read_text(encoding="utf-8")
+
+
+def _entry(monkeypatch, pull: dict) -> list[str]:
+    """Пройти вход main() на сухом прогоне; вернуть, до чего он дошёл."""
+    reached: list[str] = []
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    monkeypatch.setenv("GH_TOKEN", "t")
+    monkeypatch.setattr(sys, "argv", ["release_merge.py", "--pr", "538", "--dry-run"])
+    monkeypatch.setattr(release_merge, "_api", lambda *a, **k: dict(pull))
+    monkeypatch.setattr(release_merge, "_wait_settled", lambda *a, **k: dict(pull))
+
+    class Guard:
+        def _version(self, text):
+            reached.append("счёт номера")
+            return (0, 24, 46)
+
+        def _show(self, ref):
+            return ""
+
+        def _next_version(self, before):
+            return "0.24.47"
+
+    monkeypatch.setattr(release_merge, "_guard", lambda: Guard())
+    monkeypatch.setattr(release_merge, "_git", lambda *a: "")
+    monkeypatch.setattr(release_merge, "_engine_changed", lambda *a: True)
+    reached.append(f"код {release_merge.main()}")
+    return reached
+
+
+_PULL = {"state": "open", "draft": False, "merged": False,
+         "head": {"ref": "feat", "sha": "abc"}, "base": {"ref": "main"}}
+
+
+def test_an_unsettled_entry_is_not_a_refusal(monkeypatch):
+    """27.09 #532 и #538 упали на входе: после сдвига main GitHub больше
+    минуты отдавал mergeable=null. Недосчитанная слияемость — не отказ:
+    база вливается в ветку, и перед слиянием GitHub спрашивают снова."""
+    reached = _entry(monkeypatch, {**_PULL, "mergeable": None,
+                                   "mergeable_state": "unknown"})
+    assert reached == ["счёт номера", "код 0"]
+
+
+def test_a_blocked_entry_is_still_refused(monkeypatch):
+    """Предохранитель: послабление касается только null, а не отказа базы."""
+    reached = _entry(monkeypatch, {**_PULL, "mergeable": True,
+                                   "mergeable_state": "blocked"})
+    assert reached == ["код 1"]

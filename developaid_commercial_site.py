@@ -23,6 +23,11 @@ def install(core: Any, app: Any) -> None:
             headers={"Cache-Control": "no-store"},
         )
 
+    @app.get("/commercial.css", include_in_schema=False)
+    def commercial_styles() -> FileResponse:
+        return FileResponse(_ROOT / "commercial_site.css", media_type="text/css",
+                            headers={"Cache-Control": "no-store"})
+
     page = str(core.PAGE)
     tab_anchor = (
         '<button class="tab" data-tab="finance" '
@@ -31,7 +36,7 @@ def install(core: Any, app: Any) -> None:
     tab = (
         '<button class="tab" data-tab="commercial" '
         'onclick="openTab(\'commercial\',this);commercialEnsureInit()">'
-        'Нежилая экономика β</button>'
+        'Нежилая экономика</button>'
     )
     if 'data-tab="commercial"' not in page:
         if tab_anchor not in page:
@@ -48,7 +53,7 @@ def install(core: Any, app: Any) -> None:
     if "/commercial-beta.js" not in page:
         page = page.replace(
             "</body>",
-            '<script src="/commercial-beta.js"></script></body>',
+            '<link rel="stylesheet" href="/commercial.css"><script src="/commercial-beta.js"></script></body>',
             1,
         )
     core.PAGE = page

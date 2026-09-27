@@ -1160,8 +1160,21 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 if not price:
                     continue
                 card = self.cards.card(project.complex_id)
-                sales_start = card.get("sales_start")
-                commissioning = card.get("commissioning")
+                # Те же онлайн-данные Пульса, что дают текущую цену. Месячная
+                # карточка остаётся fallback на случай временного отказа ЛК.
+                live_dates_reader = getattr(self.pulse, "project_dates", None)
+                live_dates = (
+                    live_dates_reader(project.complex_id)
+                    if callable(live_dates_reader)
+                    else {}
+                )
+                sales_start = live_dates.get("sales_start") or card.get("sales_start")
+                commissioning = live_dates.get("commissioning") or card.get("commissioning")
+                date_source = (
+                    live_dates.get("source")
+                    if live_dates.get("sales_start") or live_dates.get("commissioning")
+                    else ("Пульс · месячная выгрузка" if sales_start or commissioning else None)
+                )
                 progress = stage.calendar_progress(sales_start, commissioning, today)
                 coefficient = stage.factor(progress) if progress is not None else None
                 row: dict[str, Any] = {
@@ -1179,6 +1192,8 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                     "segment": classes.get(project.complex_id) or card.get("segment"),
                     "sales_start": sales_start,
                     "commissioning": commissioning,
+                    "date_source": date_source,
+                    "date_sources": live_dates.get("sources") or {},
                     "calendar_progress": progress,
                     "calendar_progress_pct": (
                         round(progress * 100, 1) if progress is not None else None
@@ -1289,15 +1304,26 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
             if len(stage_peers) >= 2 and hint.get("basis") == "peers":
                 adjusted = stage.adjust(stage_peers, target_readiness=0.0)
                 if adjusted:
+                    # Процент стоит на странице рядом с «Автоматическим
+                    # ориентиром» — от него он и считается. Чистый эффект стадии
+                    # (к медиане только датированных аналогов) — своим полем:
+                    # выборки разные, и −20% «от них» читалось как −20% «от
+                    # ориентира», хотя от ориентира было −38%.
+                    reference = float(hint.get("price_per_sqm") or 0.0)
                     hint["stage_model"] = {
                         **hint["stage_model"],
                         **adjusted,
                         "available": True,
-                        "adjustment_pct": round(
+                        "adjustment_pct": (
+                            round((adjusted["price_per_sqm"] / reference - 1) * 100, 1)
+                            if reference > 0 else None
+                        ),
+                        "stage_effect_pct": round(
                             (adjusted["price_per_sqm"] / max(adjusted["plain_median"], 1) - 1)
                             * 100,
                             1,
                         ),
+                        "dated_peers": len(stage_peers),
                     }
             elif hint.get("basis") != "peers":
                 hint["stage_model"]["reason"] = (

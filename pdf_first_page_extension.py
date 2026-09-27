@@ -241,17 +241,32 @@ def _front_page_flowables(payload: dict[str, Any], core: Any) -> list[Any]:
     blocks: list[Any] = [Spacer(1, 1.5 * mm), para("Результаты расчёта", heading), card_table]
     drawing = _parcel_drawing(payload, core)
     if drawing is not None:
-        land_area = sum(_number(item.get("area_sqm"))
-                        for item in _land_items(payload))
-        # Три ответа, и слить их нельзя: площадь по ЕГРН, площадь, вписанная
-        # человеком (участка нет в реестре), и «не знаем». Ноль в клетке
-        # читается как посчитанный ноль, а вписанное руками под подписью
-        # «Площадь ЗУ» — как ответ реестра.
+        lands = _land_items(payload)
+        land_area = sum(_number(item.get("area_sqm")) for item in lands)
+        unmeasured = sum(1 for item in lands if _number(item.get("area_sqm")) <= 0)
+        # Три ответа, и слить их нельзя: площадь по ЕГРН, площадь из вводных
+        # (участка нет в реестре) и «не знаем». Ноль в клетке читается как
+        # посчитанный ноль, а площадь вводных под подписью «Площадь ЗУ» — как
+        # ответ реестра. Происхождение площади вводных называется своим
+        # признаком: «вписана руками» — только когда человек её вписал, у
+        # выгрузки ГлавАПУ — своя подпись.
         if land_area > 0:
             area_text = core._pdf_num(land_area, 0) + " м²"
+            if unmeasured:
+                # Участок без площади — не участок площадью ноль.
+                area_text += f" · без площади в ЕГРН: {unmeasured}"
         else:
             manual = _number(inputs.get("site_area_ha")) * 10000.0
-            area_text = (core._pdf_num(manual, 0) + " м² · вписана руками"
+            imported = _number(
+                ((inputs.get("_glavapu_import") or {}).get("normalized") or {})
+                .get("site_area_ha")) * 10000.0
+            if inputs.get("_site_area_user_set"):
+                origin = "вписана руками"
+            elif imported > 0 and abs(imported - manual) < 1.0:
+                origin = "по выгрузке ГлавАПУ"
+            else:
+                origin = "из вводных"
+            area_text = (core._pdf_num(manual, 0) + " м² · " + origin
                          if manual > 0 else "—")
         total_tep = ((result.get("tep") or {}).get("total") or {})
         transfer = sum(

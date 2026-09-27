@@ -44,7 +44,8 @@
   var SECTIONS = [
     { id: 'project', label: 'Проект', tabs: ['iaSite', 'tep', 'phasing'] },
     { id: 'economics', label: 'Экономика', tabs: ['inputs', 'vri', 'rates'] },
-    { id: 'result', label: 'Результат', tabs: ['report', 'sensitivity'] }
+    { id: 'result', label: 'Результат', tabs: ['report', 'sensitivity'] },
+    { id: 'commercial', label: 'Нежилая экономика', tabs: ['commercial'] }
   ];
   /* Финансирование и календарь отдельными вкладками были дублями: в отчёте
      оба живут разделами с оглавлением (rsFinance, rsCalendar) — «зачем блок
@@ -62,7 +63,7 @@
     iaSite: 'Участок', tep: 'ТЭП', vri: 'ВРИ', inputs: 'Вводные',
     rates: 'Ключевая ставка', finance: 'Финансирование',
     phasing: 'Очередность', calendar: 'Календарь', sensitivity: 'Чувствительность',
-    report: 'Отчёт'
+    report: 'Отчёт', commercial: 'Нежилая экономика'
   };
   var TARGET_LLCR = 1.2;
 

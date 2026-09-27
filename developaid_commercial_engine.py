@@ -76,14 +76,22 @@ def _irr_monthly(cashflows: list[float]) -> float | None:
         return None
 
     def npv(rate: float) -> float:
-        return sum(
-            value / ((1.0 + rate) ** index)
-            for index, value in enumerate(cashflows)
-        )
+        factor = 1.0 + rate
+        if rate < 0:
+            # NPV multiplied by factor**(n-1) has the same sign. Horner
+            # evaluation avoids underflow/overflow on long hold periods.
+            value = 0.0
+            for cash in cashflows:
+                value = value * factor + cash
+            return value
+        discount, value = 1.0, 0.0
+        for cash in cashflows:
+            value += cash * discount
+            discount /= factor
+        return value
 
     low, high = -0.95, 10.0
     left, right = npv(low), npv(high)
-    npv_tolerance = max(1e-9, sum(abs(value) for value in cashflows) * 1e-12)
     if left == 0:
         return low
     if right == 0:
@@ -93,7 +101,7 @@ def _irr_monthly(cashflows: list[float]) -> float | None:
     for _ in range(220):
         mid = (low + high) / 2.0
         value = npv(mid)
-        if abs(value) <= npv_tolerance or (high - low) <= 1e-13:
+        if value == 0 or (high - low) <= 1e-13:
             return mid
         if left * value <= 0:
             high, right = mid, value
@@ -156,7 +164,8 @@ def _occupancy(asset: str, values: dict[str, Any], months_open: int) -> float:
     stabilization_months = _months(values, "stabilization_months", 12)
     if months_open <= 0:
         return 0.0
-    progress = _clamp(months_open / stabilization_months, 0.0, 1.0)
+    progress = (1.0 if stabilization_months == 1 else
+                _clamp((months_open - 1) / (stabilization_months - 1), 0.0, 1.0))
     return opening + (stabilized - opening) * progress
 
 
@@ -834,6 +843,9 @@ def calculate_v2(req: CommercialRequest) -> dict[str, Any]:
             "financing_cost": financing_cost,
             "total_cost": total_cost,
             "total_revenue": total_revenue,
+            "operating_revenue": sum(operating_revenue),
+            "sale_revenue": sum(sale_revenue),
+            "net_sale_proceeds": sum(sale_revenue) - sum(selling_cost),
             "profit_before_tax": profit_before_tax,
             "margin": profit_before_tax / total_revenue if total_revenue else None,
             "project_irr": project_irr,

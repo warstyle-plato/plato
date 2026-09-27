@@ -26,6 +26,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -38,6 +39,13 @@ API = "https://api.github.com"
 # API, а не круга приёмки, и четвёртый круг означал бы, что в репозиторий
 # льют быстрее, чем отвечает GitHub.
 ATTEMPTS = 3
+# Сразу после push номера GitHub ещё не знает, сливается ли новая голова
+# (mergeable=null), и PUT merge в эту секунду получает 405. Ждём, пока он
+# досчитает: до трёх минут шагами по три секунды. Минуты не хватало: после
+# сдвига main GitHub пересчитывает все открытые PR разом, и 27.09 #532 и #538
+# упали на входе с null через минуту ожидания.
+SETTLE_POLLS = 60
+SETTLE_PAUSE = 3
 
 
 def _guard():
@@ -92,29 +100,105 @@ def _git(*args: str, capture: bool = True) -> str:
     return (done.stdout or "").strip()
 
 
-def _set_version(head_ref: str, number: str) -> str:
-    """Записать номер в ветку и вернуть новую голову.
-
-    Правится ОДНА строка объявления — та самая, что объявлена в движке один
-    раз. Всё остальное содержимое ветки уже прошло приёмку, и трогать его
-    здесь нечем.
-    """
-    guard = _guard()
-    _git("fetch", "--no-tags", "origin", head_ref)
-    _git("checkout", "-B", head_ref, f"origin/{head_ref}")
+def _write_version(guard, number: str, message: str) -> bool:
+    """Поставить номер в строку VERSION и закоммитить. False — он уже стоит."""
     text = ENGINE.read_text(encoding="utf-8")
     replaced, count = guard._VERSION.subn(f'VERSION = "{number}"', text, count=1)
     if count != 1:
         raise SystemExit(f"В {ENGINE.name} не нашлась строка VERSION — номер не выдан.")
     if replaced == text:
-        raise SystemExit(f"Номер {number} уже стоит в ветке — выдавать нечего.")
+        return False
     ENGINE.write_text(replaced, encoding="utf-8")
     _git("add", str(ENGINE.relative_to(ROOT)))
-    _git("commit", "-m", f"Выпуск {number}\n\nНомер выдан слиянием: "
-                         f"ветка его не занимала, поэтому занять его у соседа "
-                         f"было нечем.")
-    _git("push", "origin", f"HEAD:{head_ref}")
-    return _git("rev-parse", "HEAD")
+    _git("commit", "-m", message)
+    return True
+
+
+def _set_version(head_ref: str, number: str, base_ref: str = "main") -> str:
+    """Записать номер в ветку и вернуть новую голову.
+
+    Правится ОДНА строка объявления — та самая, что объявлена в движке один
+    раз. Всё остальное содержимое ветки уже прошло приёмку, и трогать его
+    здесь нечем.
+
+    Ветка, отошедшая от прежней базы, держит в VERSION прежний номер, а база
+    с тех пор свой подняла. Новый номер поверх такой ветки меняет ту же строку,
+    что и база, — и GitHub видит конфликт, которого в содержании нет. Поэтому
+    сначала строка ставится на номер базы, затем база вливается в ветку, и
+    только потом пишется выданный номер. Конфликт вне VERSION — настоящий, его
+    здесь не разрешают.
+    """
+    guard = _guard()
+    _git("fetch", "--no-tags", "origin", head_ref, base_ref)
+    _git("checkout", "-B", head_ref, f"origin/{head_ref}")
+    found = guard._VERSION.search(guard._show(f"origin/{base_ref}"))
+    if not found:
+        raise SystemExit(f"В {ENGINE.name} базы не нашлась строка VERSION — номер не выдан.")
+    _write_version(guard, found.group(1),
+                   "Номер базы перед слиянием\n\nСтрока VERSION выравнивается по "
+                   "базе, чтобы влить её без конфликта в номере.")
+    merged = subprocess.run(["git", "merge", "--no-edit", f"origin/{base_ref}"],
+                            cwd=ROOT, capture_output=True, text=True)
+    if merged.returncode != 0:
+        subprocess.run(["git", "merge", "--abort"], cwd=ROOT, capture_output=True)
+        raise SystemExit(f"Ветка {head_ref} конфликтует с {base_ref} не только номером: "
+                         "влейте базу и разрешите конфликт в ветке, затем повторите.")
+    if not _write_version(guard, number,
+                          f"Выпуск {number}\n\nНомер выдан слиянием: ветка его не "
+                          "занимала, поэтому занять его у соседа было нечем."):
+        # Номер записал прошлый прогон, которому GitHub отказал в слиянии.
+        # Остановка здесь оставила бы PR с номером, но без слияния, и каждый
+        # повтор падал бы на этой же строке.
+        print(f"Номер {number} уже стоит в ветке — сливается её голова как есть.")
+    head = _git("rev-parse", "HEAD")
+    if head != _git("rev-parse", f"origin/{head_ref}"):
+        _git("push", "origin", f"HEAD:{head_ref}")
+    return head
+
+
+def _conflict_may_be_the_number(pull: dict) -> bool:
+    """Конфликт, который снимет вливание базы в `_set_version`.
+
+    Ветка с номером от прошлого прогона конфликтует с базой в строке VERSION.
+    Настоящий конфликт вне номера `_set_version` назовёт сам и не сольёт.
+    """
+    return (pull.get("state") == "open" and not pull.get("draft")
+            and not pull.get("merged")
+            and (pull.get("mergeable") is False or pull.get("mergeable_state") == "dirty"))
+
+
+def _settled(pull: dict, sha: str) -> bool:
+    """GitHub досчитал слияемость именно этой головы."""
+    return (pull.get("head") or {}).get("sha") == sha and pull.get("mergeable") is not None
+
+
+def _wait_settled(repo: str, number: str, token: str, sha: str) -> dict:
+    pull: dict = {}
+    for _ in range(SETTLE_POLLS):
+        pull = _api("GET", f"/repos/{repo}/pulls/{number}", token)
+        if _settled(pull, sha):
+            break
+        time.sleep(SETTLE_PAUSE)
+    return pull
+
+
+BUILD_WORKFLOW = "build-yandex.yml"
+
+
+def _dispatch_build(repo: str, token: str, base_ref: str) -> None:
+    """Запустить сборку базы после слияния.
+
+    Слияние от GITHUB_TOKEN не рождает push-события для других workflow:
+    27.09 так пять выпусков легли в main и не уехали на прод. Отказ запуска
+    не отменяет слияния, но называется в логе прогона.
+    """
+    try:
+        _api("POST", f"/repos/{repo}/actions/workflows/{BUILD_WORKFLOW}/dispatches",
+             token, {"ref": base_ref})
+        print(f"Сборка {BUILD_WORKFLOW} на {base_ref} запущена.")
+    except urllib.error.HTTPError as error:
+        print(f"Слито, но сборка {BUILD_WORKFLOW} не запустилась ({error.code}): "
+              "запустите её вручную, иначе выпуск не уедет на прод.", file=sys.stderr)
 
 
 def _engine_changed(guard, base_ref: str, head_ref: str) -> bool:
@@ -142,8 +226,19 @@ def main() -> int:
         raise SystemExit("Нет GITHUB_REPOSITORY или GH_TOKEN — это шаг workflow.")
 
     pull = _api("GET", f"/repos/{repo}/pulls/{number}", token)
+    if pull.get("mergeable") is None:
+        # Сдвиг main заставляет GitHub пересчитать все PR, и первый ответ
+        # после любого слияния — null. Ждать, а не отказывать.
+        pull = _wait_settled(repo, number, token, (pull.get("head") or {}).get("sha", ""))
     reason = refuse_reason(pull)
-    if reason:
+    if reason and pull.get("mergeable") is None and pull.get("state") == "open" \
+            and not pull.get("draft") and not pull.get("merged"):
+        # Недосчитанная слияемость на входе — не отказ: дальше база вливается
+        # в ветку (настоящий конфликт `_set_version` назовёт сам), и перед
+        # слиянием GitHub опрашивается снова уже про итоговую голову.
+        print("GitHub не досчитал слияемость на входе — проверим её перед слиянием.")
+        reason = ""
+    if reason and not _conflict_may_be_the_number(pull):
         print(reason, file=sys.stderr)
         return 1
     head_ref = pull["head"]["ref"]
@@ -160,7 +255,7 @@ def main() -> int:
                  else "production-код не менялся — выпуска нет, номер не выдаётся."))
         if dry:
             return 0
-        head_sha = (_set_version(head_ref, issued) if issuing
+        head_sha = (_set_version(head_ref, issued, base_ref) if issuing
                     else _git("rev-parse", f"origin/{head_ref}"))
         # Перечитать базу ПЕРЕД слиянием: между счётом и слиянием сосед мог
         # слить своё. Слить поверх ушедшей базы — это выпуск под занятым
@@ -169,6 +264,16 @@ def main() -> int:
         if guard._version(guard._show(f"origin/{base_ref}")) != before:
             print("База ушла, пока выдавался номер — считаем заново.")
             continue
+        settled = _wait_settled(repo, number, token, head_sha)
+        if not _settled(settled, head_sha):
+            print(f"GitHub за {SETTLE_POLLS * SETTLE_PAUSE} с не досчитал слияемость "
+                  f"головы {head_sha[:7]}. Повторите прогон: номер уже в ветке, "
+                  "и повтор сольёт её как есть.", file=sys.stderr)
+            return 1
+        reason = refuse_reason(settled)
+        if reason:
+            print(reason, file=sys.stderr)
+            return 1
         try:
             answer = _api("PUT", f"/repos/{repo}/pulls/{number}/merge", token,
                           {"merge_method": method, "sha": head_sha,
@@ -181,6 +286,8 @@ def main() -> int:
             print(f"Слияние не состоялось: {answer.get('message')!r}", file=sys.stderr)
             return 1
         print(f"Слито под номером {issued}: {answer.get('sha')}")
+        if issuing:
+            _dispatch_build(repo, token, base_ref)
         return 0
 
     print(f"База уходила {ATTEMPTS} раза подряд — номер так и не выдан. "

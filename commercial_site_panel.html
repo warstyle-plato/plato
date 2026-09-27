@@ -1,19 +1,24 @@
 <div id="commercial" class="panel">
   <div class="card">
-    <div class="report-title">
-      <div>
-        <div class="section-title">Отдельный контур нежилой экономики · beta</div>
-        <h2>Офис · торговля · гостиница</h2>
+    <div class="report-title"><div><div class="section-title">Нежилая экономика</div><h2>Офис · торговля · гостиница</h2></div></div>
+    <p class="ce-muted">Оценка строительства, эксплуатации и продажи коммерческого объекта. Все денежные показатели — в рублях, доходность — до налогов.</p>
+    <form id="ce-form">
+      <div class="ce-selectors">
+        <label>Тип объекта<select id="ce-asset" aria-label="Тип объекта"><option value="office">Office · Офис</option><option value="retail">Retail · Торговля</option><option value="hotel">Hotel · Гостиница</option></select></label>
+        <label>Стратегия<select id="ce-strategy" aria-label="Стратегия"><option value="income">Income / hold · Эксплуатация</option><option value="sale">Sale · Продажа</option></select></label>
+        <label>Финансирование<select id="ce-financing" aria-label="Финансирование"><option value="equity">100% equity · Собственные средства</option><option value="equity_debt">Equity + conventional debt · Кредит</option></select></label>
       </div>
-      <small>Без эскроу · отдельно от жилой экономики</small>
-    </div>
-    <div class="note">
-      Это часть обычного интерфейса DevelopAid.ru. Жилая экономика и проектное финансирование с эскроу здесь не используются.
-    </div>
+      <p id="ce-method" class="ce-muted"></p>
+      <div id="ce-fields"></div>
+      <div class="ce-actions"><button type="submit" class="primary" id="ce-calculate">Рассчитать нежилую экономику</button><button type="button" id="ce-defaults">Вернуть пример</button><span id="ce-status" role="status" aria-live="polite">Откройте раздел для загрузки параметров.</span></div>
+    </form>
+    <p id="ce-error" role="alert" hidden></p>
   </div>
-  <iframe
-    src="/commercial-beta"
-    title="Нежилая экономика DevelopAid"
-    style="width:100%;min-height:1650px;border:0;background:#fff"
-  ></iframe>
+  <div id="ce-results" hidden>
+    <div class="card"><h2>Ключевые показатели</h2><p id="ce-result-context" class="ce-muted"></p><div id="ce-kpis" class="ce-kpis"></div></div>
+    <div class="card" id="ce-operations"><h2>Эксплуатация на стабилизации</h2><p class="ce-muted">Месячные показатели с учётом выхода на загрузку и индексации ставок.</p><div id="ce-operating-kpis" class="ce-kpis"></div></div>
+    <div class="card"><h2>Годовой денежный поток</h2><p class="ce-muted">Годы от начала проекта; первый период включает месяц 0. Денежные суммы — млн ₽. Остаток долга — на конец периода.</p><div id="ce-annual" class="ce-scroll" tabindex="0" aria-label="Годовой денежный поток"></div></div>
+    <div class="card"><details id="ce-monthly-details"><summary>Помесячный денежный поток</summary><p class="ce-muted">Месяц 0 — покупка участка. Проценты: на входящий долг и половину выдачи текущего месяца. Денежные суммы — млн ₽.</p><div id="ce-monthly" class="ce-scroll" tabindex="0" aria-label="Помесячный денежный поток"></div></details></div>
+    <div class="card"><h3>Принятые допущения</h3><p class="ce-muted">Кредит выдаётся пропорционально затратам; проценты и комиссии оплачиваются собственными средствами. Остаток кредита погашается при закрытии проекта, дефицит покрывает инвестор. Net exit — после расходов на продажу, до погашения кредита. Equity required — сумма всех взносов инвестора.</p><p id="ce-validation"></p></div>
+  </div>
 </div>

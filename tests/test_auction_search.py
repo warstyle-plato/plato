@@ -592,8 +592,9 @@ def test_auction_excel_enriches_location_krt_links_and_deadlines():
     assert get("Район").value == "Лефортово"
     assert get("Округ").value == "ЮВАО"
     assert get("Площадь КРТ, га").value == 5.32
-    assert get("Начало приёма заявок").value == "01.09.2026 10:00"
-    assert get("Окончание приёма заявок").value == "31.12.2099 15:00"
+    # Даты — настоящие даты: Excel сортирует и фильтрует их как даты.
+    assert get("Начало приёма заявок").value == datetime(2026, 9, 1, 10, 0)
+    assert get("Окончание приёма заявок").value == datetime(2099, 12, 31, 15, 0)
     assert get("Дней до окончания заявок").value > 0
     assert get("Адрес").hyperlink.target.startswith("https://yandex.ru/maps/?text=")
     assert get("Кадастровые номера").hyperlink.target == "https://nspd.gov.ru/map?thematic=PKK"

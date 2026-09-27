@@ -26,6 +26,7 @@ from typing import Any, Literal
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from developaid_commercial_form import field_groups, field_keys, field_limits
 
 AssetType = Literal["office", "retail", "hotel"]
 Strategy = Literal["income", "sale"]
@@ -132,7 +133,7 @@ FIELD_LABELS: dict[str, tuple[str, str]] = {
     "rent_growth_pct": ("Индексация аренды / ставок", "%/год"),
     "other_income_pct": ("Прочая выручка офиса", "% аренды"),
     "opex_pct": ("Операционные расходы", "% выручки"),
-    "leasing_cost_pct": ("Leasing / TI / LC", "% выручки lease-up"),
+    "leasing_cost_pct": ("Leasing / TI / LC", "% базовой аренды lease-up"),
     "marketing_pct": ("Маркетинг / promotion", "% выручки"),
     "saleable_area_sqm": ("Продаваемая площадь", "м²"),
     "sale_price_rub_sqm": ("Цена продажи", "₽/м²"),
@@ -199,8 +200,11 @@ def form_description() -> dict[str, Any]:
             {"value": "equity_debt", "label": "Собственные средства + кредит"},
         ],
         "defaults": {key: default_inputs(key) for key in ASSET_DEFAULTS},
+        "groups": {f"{a}/{s}/{f}": field_groups(a, s, f)
+                   for a in ASSET_DEFAULTS for s in ("income", "sale")
+                   for f in ("equity", "equity_debt")},
         "fields": [
-            {"key": key, "label": label, "unit": unit}
+            {"key": key, "label": label, "unit": unit, **field_limits(key)}
             for key, (label, unit) in FIELD_LABELS.items()
         ],
         "beta_note": (
@@ -223,6 +227,9 @@ def calculate(req: CommercialRequest) -> dict[str, Any]:
     return calculate_v2(req)
 
 def install(app: FastAPI) -> None:
+    if getattr(app.state, "commercial_installed", False):
+        return
+    app.state.commercial_installed = True
     @app.get("/api/commercial/form")
     @app.get("/api/v2/commercial/form")
     def commercial_form() -> JSONResponse:
@@ -232,6 +239,20 @@ def install(app: FastAPI) -> None:
     @app.post("/api/v2/commercial/calculate")
     def commercial_calculate(req: CommercialRequest) -> JSONResponse:
         try:
+            for key in field_keys(req.asset_type, req.strategy, req.financing_mode):
+                if key not in req.inputs:
+                    continue
+                value = req.inputs[key]
+                if key == "sales_curve":
+                    if value not in {"bell", "flat", "front_loaded", "back_loaded"}:
+                        raise ValueError("Неизвестная кривая продаж")
+                    continue
+                bounds = field_limits(key)
+                number = float(value)
+                if not isfinite(number) or not bounds['min'] <= number <= bounds['max']:
+                    raise ValueError(f"{FIELD_LABELS[key][0]}: допустимо от {bounds['min']} до {bounds['max']}")
+                if bounds['step'] == 1 and number != int(number):
+                    raise ValueError(f"{FIELD_LABELS[key][0]}: требуется целое число")
             payload = calculate(req)
         except (TypeError, ValueError, KeyError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
