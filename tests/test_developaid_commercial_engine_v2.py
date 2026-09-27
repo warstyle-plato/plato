@@ -323,3 +323,71 @@ def test_all_twelve_core_combinations_reconcile(asset, strategy, financing):
         "peak_debt",
     ):
         assert result["kpi"][key] >= 0
+
+
+def test_sale_quantity_is_conserved_and_price_growth_hits_price_not_quantity():
+    result = calc(
+        "office", strategy="sale", financing="equity",
+        saleable_area_sqm=12000,
+        sale_price_rub_sqm=300000,
+        sale_price_growth_pct=12,
+    )
+    assert sum(result["monthly"]["sale_quantity"]) == pytest.approx(12000, abs=1e-6)
+    prices = [value for value in result["monthly"]["sale_price"] if value > 0]
+    assert prices[-1] > prices[0]
+    assert result["checks"]["sale_quantity_reconciles"] is True
+
+
+def test_simple_one_year_sale_has_exact_irr_and_equity_multiple():
+    result = calc(
+        "office",
+        strategy="sale",
+        financing="equity",
+        land_cost_rub=1000,
+        gross_area_sqm=0,
+        construction_cost_rub_sqm=0,
+        soft_cost_pct=0,
+        contingency_pct=0,
+        construction_months=1,
+        sale_start_month=12,
+        sale_months=1,
+        sales_curve="flat",
+        sale_price_growth_pct=0,
+        saleable_area_sqm=1,
+        sale_price_rub_sqm=1210,
+        selling_cost_pct=0,
+        exit_cost_pct=0,
+    )
+    assert result["kpi"]["project_irr"] == pytest.approx(0.21, abs=1e-6)
+    assert result["kpi"]["equity_irr"] == pytest.approx(0.21, abs=1e-6)
+    assert result["kpi"]["equity_multiple"] == pytest.approx(1.21, abs=1e-9)
+
+
+def test_simple_debt_waterfall_records_equity_and_repayment():
+    result = calc(
+        "office",
+        strategy="sale",
+        financing="equity_debt",
+        land_cost_rub=1000,
+        gross_area_sqm=0,
+        construction_cost_rub_sqm=0,
+        soft_cost_pct=0,
+        contingency_pct=0,
+        construction_months=1,
+        sale_start_month=1,
+        sale_months=1,
+        sales_curve="flat",
+        saleable_area_sqm=1,
+        sale_price_rub_sqm=2000,
+        selling_cost_pct=0,
+        debt_share_pct=60,
+        debt_rate_pct=0,
+        loan_fee_pct=0,
+        sales_cash_sweep_pct=100,
+    )
+    assert result["monthly"]["debt_draw"][0] == pytest.approx(600)
+    assert result["monthly"]["equity_injection"][0] == pytest.approx(400)
+    assert result["monthly"]["debt_repayment"][1] == pytest.approx(600)
+    assert result["monthly"]["debt_balance"][1] == pytest.approx(0)
+    assert result["kpi"]["equity_required"] == pytest.approx(400)
+    assert result["checks"]["ending_debt_zero"] is True
