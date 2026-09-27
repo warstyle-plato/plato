@@ -135,6 +135,9 @@ def render(inputs: dict, tail: str = "console.log(JSON.stringify(groups()));",
         # и профиль, и тот, кто по нему спрашивает.
         page_const("PROJECT_CLASS_PRESETS"),
         page_function("classSetsField"),
+        # Пометка «вписано руками» у поля профиля класса — рядом с пометкой класса.
+        page_function("classManualKeys"),
+        page_function("isClassManual"),
         page_const("INPUT_DEFAULT"),
         page_const("num"),
         page_const("VRI_GROUP_NAME"),

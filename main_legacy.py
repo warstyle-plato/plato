@@ -446,6 +446,15 @@ for _preset in PROJECT_CLASS_PRESETS.values():
         _preset["apartment_price_th"])
     _preset["offices_price_th_per_sqm"] = _preset["retail_price_th_per_sqm"]
 del _preset
+# Откуда берётся число класса, если оно не вписано, а выведено. Две строки
+# «Стартовая цена» с одним числом в окне класса читались загадкой (владелец,
+# 27.09.2026): совпадают они потому, что обе считаются правилом выше, и это
+# сказано у самой строки, а не выведено человеком.
+CLASS_DERIVED_NOTES_PLACEHOLDER = "__DEVELOPAID_CLASS_DERIVED_NOTES__"
+CLASS_DERIVED_NOTES: dict[str, str] = {
+    "retail_price_th_per_sqm": "считается от цены квартир",
+    "offices_price_th_per_sqm": "считается от цены квартир",
+}
 
 # Источники базовых ставок классов на страницу не зашиваются: адрес или имя
 # собственного проекта в подписи — раскрытие коммерческой информации, и один
@@ -455,11 +464,18 @@ del _preset
 
 
 def _input_field_label(field: str) -> str:
-    """Подпись поля из FIELD_GROUPS — единственного объявления списка полей."""
-    for _group, fields in FIELD_GROUPS:
+    """Подпись поля ВНЕ его группы: у поля объекта — с именем объекта.
+
+    Короткая подпись («Стартовая цена») однозначна только внутри своей группы;
+    в окне класса, в строках отклонений и в «Не подставлено» две такие строки
+    стояли рядом неразличимыми. Имя объекта — его группа из реестра.
+    """
+    for group, fields in FIELD_GROUPS:
         for item in fields:
             if item[0] == field:
-                return str(item[1])
+                title = str(item[1])
+                return (f"{title} — {group}" if field in FIELD_SECTIONS
+                        else title)
     return field
 
 
@@ -3839,7 +3855,8 @@ def import_project_preset(req: ProjectPresetRequest) -> dict[str, Any]:
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Пресет не разобран: {exc}") from exc
 
-    labels = {name: title for group in FIELD_GROUPS for name, title, *_ in group[1]}
+    labels = {name: _input_field_label(name)
+              for group in FIELD_GROUPS for name, *_ in group[1]}
     tep_labels = {key: str(value.get("label") or key) for key, value in TEP_DEFAULT.items()}
     tep_current = req.tep or {}
     tep_rows: list[dict[str, Any]] = []
@@ -43771,8 +43788,12 @@ async function applyAgentProposal(idx){
    if(k==='main_construction_cost_th_per_sqm'){inputs.main_above_th_per_sqm=value;inputs.main_under_th_per_sqm=value}
    else inputs[k]=value;
  });
- const customKeys=['apartment_price_th','commercial_price_th','parking_price_th','main_above_th_per_sqm','main_under_th_per_sqm','main_construction_cost_th_per_sqm'];
- if(Object.keys(p.patch).some(k=>customKeys.includes(k)))inputs.project_class='custom';
+ // Предложение Платона — тоже не класс: поле профиля, которое он поменял,
+ // помечается вписанным так же, как правка руками.
+ Object.keys(p.patch).forEach(k=>{
+   if(k==='main_construction_cost_th_per_sqm'){markClassManual('main_above_th_per_sqm');markClassManual('main_under_th_per_sqm')}
+   else markClassManual(k);
+ });
  renderInputs();syncTep(false);syncProjectClassSelector();syncProjectKindSelector();renderPhasing();await calculate();
  appendAiMessage('assistant','Изменение применено к текущим Inputs и модель пересчитана.');
 }
@@ -46837,11 +46858,43 @@ function renderProjectClassPreview(){
   : `Кв/комм ${classValue(key,'apartment_price_th').toLocaleString('ru-RU')} · м/м ${classValue(key,'parking_price_th').toLocaleString('ru-RU')} · себес. ${classValue(key,'main_above_th_per_sqm').toLocaleString('ru-RU')}/${classValue(key,'main_under_th_per_sqm').toLocaleString('ru-RU')} тыс. ₽`;
 }
 
+// Число профиля класса, вписанное руками, — решение человека, и смена класса
+// его молча не затирает (инвариант «ручное не подменяется расчётным»). Прежде
+// правку помнили пять полей из литерала — цены квартир, коммерции, машино-места
+// и две ставки СМР, — а цену офисов, благоустройство, нормативы паркинга и
+// кладовую следующий выбор класса перезаписывал без слова. Правило одно:
+// поле профиля, изменённое руками, помечается вписанным. Список полей — сам
+// профиль (`classSetsField`), а не перечисление рядом с ним.
+function classManualKeys(){
+ return Array.isArray(inputs._class_manual)?inputs._class_manual.filter(classSetsField):[];
+}
+function markClassManual(k){
+ if(!classSetsField(k))return false;
+ const list=classManualKeys();
+ if(!list.includes(k))list.push(k);
+ inputs._class_manual=list;
+ return true;
+}
+function isClassManual(k){return classManualKeys().includes(k)}
+
 function applyProjectClassPreset(selectedKey){
  const select=document.getElementById('projectClassSelect');
  const key=selectedKey||(select?select.value:'comfort');
  const p=PROJECT_CLASS_PRESETS[key];
  if(!p){inputs.project_class='custom';renderProjectClassPreview();return;}
+ // Вписанное руками, что класс поменял бы, называется поимённо, и решает
+ // человек: заменить значениями класса или оставить своё. Без окна (стенд,
+ // встроенный вид) — оставить: молча терять ручное хуже, чем не поставить класс.
+ const manual=classManualKeys().filter(k=>Object.prototype.hasOwnProperty.call(p,k)
+   &&isFinite(Number(inputs[k]))&&Math.abs(Number(inputs[k])-classValue(key,k))>1e-9);
+ let keep=[];
+ if(manual.length){
+  const lines=manual.map(k=>`${classFieldLabel(k)}: ${Number(inputs[k]).toLocaleString('ru-RU')} → ${classValue(key,k).toLocaleString('ru-RU')}`).join('\n');
+  const ask=typeof window!=='undefined'&&typeof window.confirm==='function'?window.confirm.bind(window):null;
+  const replace=ask?ask(`Класс «${p.label||key}» заменит числа, вписанные руками:\n${lines}\n\nОК — заменить значениями класса.\nОтмена — оставить вписанные руками.`):false;
+  if(replace)inputs._class_manual=classManualKeys().filter(k=>!manual.includes(k));
+  else keep=manual;
+ }
  inputs.project_class=key;
  // Личная перекрышка сильнее общей базы: применяется значение человека,
  // а отклонение от ОБЩЕЙ базы по-прежнему считает сервер и печатает в PDF.
@@ -46861,7 +46914,7 @@ function applyProjectClassPreset(selectedKey){
  // «места × ПРЕЖНИЙ норматив», у вписанной равенства нет.
  const wasPer=undergroundAreaPerSpace();
  const wasStoragePer=storageAreaPerUnit();
- Object.keys(p).filter(k=>k!=='label').forEach(k=>inputs[k]=classValue(key,k));
+ Object.keys(p).filter(k=>k!=='label'&&!keep.includes(k)).forEach(k=>inputs[k]=classValue(key,k));
  (function(){
   // Норматив не двинулся — двигать нечего, и лишний пересчёт только затёр бы
   // пару там, где класс к ней отношения не имеет.
@@ -47153,7 +47206,12 @@ function classSetsField(k){
  return k!=='label'&&Object.prototype.hasOwnProperty.call(p,k);
 }
 
-function classFieldLabel(k){for(const g of FIELD_GROUPS){for(const f of g[1]){if(f[0]===k)return f[1]}}return k}
+// Подпись поля вне его группы: у поля объекта — с именем объекта («Стартовая
+// цена — МФОЦ / офисы»). Карту считает движок тем же правилом, что строки
+// отклонений в PDF; короткая подпись осталась только внутри своей группы.
+const FIELD_LABELS_OUTSIDE=__DEVELOPAID_FIELD_LABELS_OUTSIDE__;
+const CLASS_DERIVED_NOTES=__DEVELOPAID_CLASS_DERIVED_NOTES__;
+function classFieldLabel(k){if(FIELD_LABELS_OUTSIDE[k])return FIELD_LABELS_OUTSIDE[k];for(const g of FIELD_GROUPS){for(const f of g[1]){if(f[0]===k)return f[1]}}return k}
 // Единицы полей класса считает движок и подставляет готовой картой — как
 // PRODUCT_LABELS и доли ТЭП. Свой разрез подсказки на JS был бы второй
 // реализацией одного правила, и разошлись бы они молча.
@@ -47239,7 +47297,9 @@ function renderClassDialog(){
   const rowStats=classes.map(c=>classStatsRow(c,k));
   const hasStats=rowStats.some(Boolean);
   const unit=classFieldUnit(k);
-  const unitCell=unit?` <span style="color:#8a94a6;font-size:11px;white-space:nowrap">${escapeHtml(unit)}</span>`:'';
+  const derived=CLASS_DERIVED_NOTES[k]||'';
+  const unitCell=(unit?` <span style="color:#8a94a6;font-size:11px;white-space:nowrap">${escapeHtml(unit)}</span>`:'')
+   +(derived?` <span class="class-derived" style="color:#8a94a6;font-size:11px">· ${escapeHtml(derived)}</span>`:'');
   const labelCell=(hasStats
    ?`<a href="#" onclick="toggleClassDetail('${k}');return false" title="Обоснование: источники, диапазон и положение вашего значения" style="color:inherit;text-decoration:none;border-bottom:1px dashed #b6c4d6">${classFieldLabel(k)} <span style="color:#3b6db4">${CLASS_DETAIL_OPEN[k]?'▾':'▸'}</span></a>`
    :classFieldLabel(k))+unitCell;
@@ -47330,6 +47390,7 @@ function setClassRate(k,value){
  const num=Number(value);
  if(!isFinite(num))return;
  inputs[k]=num;
+ markClassManual(k);
  renderInputs();
  renderProjectClassPreview();
  renderClassDialog();
@@ -47617,7 +47678,7 @@ function renderInputs(){
      // машиноместа установлена по классу», владелец, 15.09.2026). Пометка
      // стоит у ЕДИНИЦЫ, то есть рядом с числом, а не строкой ниже: подпись
      // под полем читают, когда уже засомневались.
-     const unitText=classSetsField(id)?unit+' · ставит класс проекта, правится в «Настройках класса»':unit;
+     const unitText=!classSetsField(id)?unit:isClassManual(id)?unit+' · вписано руками — смена класса его не затрёт':unit+' · ставит класс проекта, правится в «Настройках класса»';
      wrap.innerHTML=`<label>${label} <span class="unit">${unitText}</span></label>`;
      // Срок строительства при очередности задаёт очередь, а не проект: движок
      // читает проектное поле ТОЛЬКО когда очередь своего срока не назвала, а
@@ -47679,7 +47740,7 @@ function renderInputs(){
       el.disabled=true;
       el.title='Москва: платежи ежеквартально — установлено нормативно';
      }
-     el.onchange=()=>{inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='social_mode')inputs._social_mode_user_set=true;if(/^(offices|retail|sports)_parking_(under|over)_spaces$/.test(id)){if(String(el.value).trim()==='')restoreParkingNorm(id.split('_')[0]);else markParkingByHand(id.split('_')[0]);}if(id==='underground_manual_spaces'||id==='underground_manual_gns_sqm'){if(Number(el.value)>0)markParkingByHand(PROJECT_PARKING_KEY);else markParkingByNorm(PROJECT_PARKING_KEY);}if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){renderInputs();return calculate()}if(['apartment_price_th','commercial_price_th','parking_price_th','main_above_th_per_sqm','main_under_th_per_sqm'].includes(id)){inputs.project_class='custom';syncProjectClassSelector()}if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(id==='storage_area_per_unit_sqm'){syncStoragePair('units');renderTep()}if(TEP_DERIVED_INPUTS.includes(id)){const cleared=id==='social_area_source'&&krtClearsVriFee();const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(cleared||filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
+     el.onchange=()=>{inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='social_mode')inputs._social_mode_user_set=true;if(/^(offices|retail|sports)_parking_(under|over)_spaces$/.test(id)){if(String(el.value).trim()==='')restoreParkingNorm(id.split('_')[0]);else markParkingByHand(id.split('_')[0]);}if(id==='underground_manual_spaces'||id==='underground_manual_gns_sqm'){if(Number(el.value)>0)markParkingByHand(PROJECT_PARKING_KEY);else markParkingByNorm(PROJECT_PARKING_KEY);}if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){renderInputs();return calculate()}if(markClassManual(id))syncProjectClassSelector();if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(id==='storage_area_per_unit_sqm'){syncStoragePair('units');renderTep()}if(TEP_DERIVED_INPUTS.includes(id)){const cleared=id==='social_area_source'&&krtClearsVriFee();const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(cleared||filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
      wrap.appendChild(el);
      // Смягчение, которое даёт ГОРОД по своему решению, — справка у числа, а
      // не множитель в расчёте (решение владельца, 13.09.2026: «это зависит от
@@ -53497,6 +53558,11 @@ PAGE = PAGE.replace(FIELD_GROUPS_PLACEHOLDER,
                     json.dumps(FIELD_GROUPS, ensure_ascii=False))
 PAGE = PAGE.replace(FIELD_SECTIONS_PLACEHOLDER,
                     json.dumps(FIELD_SECTIONS, ensure_ascii=False))
+# Подписи полей объектов вне их группы — тем же правилом, что в PDF и отчётах.
+PAGE = PAGE.replace("__DEVELOPAID_FIELD_LABELS_OUTSIDE__", json.dumps(
+    {key: _input_field_label(key) for key in FIELD_SECTIONS}, ensure_ascii=False))
+PAGE = PAGE.replace(CLASS_DERIVED_NOTES_PLACEHOLDER,
+                    json.dumps(CLASS_DERIVED_NOTES, ensure_ascii=False))
 # Базы классов — из движка. Копия жила на странице с рождения окна и отстала
 # от пресета в первый же раз, когда профиль класса расширили статьями:
 # полный профиль применялся бы на сервере и молча не существовал бы в браузере.
