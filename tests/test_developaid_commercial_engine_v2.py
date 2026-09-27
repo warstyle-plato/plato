@@ -303,3 +303,23 @@ def test_monthly_cost_channels_are_not_double_counted():
 def test_durable_payback_does_not_report_temporary_early_crossing():
     from developaid_commercial_engine import _payback_month
     assert _payback_month([-100, 150, -100, 100]) == 3
+
+
+@pytest.mark.parametrize("asset", ["office", "retail", "hotel"])
+@pytest.mark.parametrize("strategy", ["income", "sale"])
+@pytest.mark.parametrize("financing", ["equity", "equity_debt"])
+def test_all_twelve_core_combinations_reconcile(asset, strategy, financing):
+    result = calc(asset, strategy=strategy, financing=financing)
+    assert result["uses_escrow"] is False
+    assert result["checks"]["development_spend_reconciles"] is True
+    assert result["checks"]["project_cashflow_reconciles"] is True
+    assert result["checks"]["ending_debt_zero"] is True
+    assert result["checks"]["peak_debt_within_limit"] is True
+    assert min(result["monthly"]["debt_balance"]) >= -0.01
+    assert len(result["monthly"]["months"]) == len(result["monthly"]["project_cashflow"])
+    assert len(result["annual"]) >= 1
+    for key in (
+        "development_cost", "total_cost", "total_revenue", "equity_required",
+        "peak_debt",
+    ):
+        assert result["kpi"][key] >= 0
