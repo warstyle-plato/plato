@@ -4993,7 +4993,8 @@ def install(app: FastAPI) -> None:
                 if not url or url in seen or url == lot.get("url"):
                     continue
                 seen.add(url)
-                found.append({key: item.get(key) for key in ("title", "url", "snippet")})
+                found.append({key: item.get(key) for key in ("title", "url", "snippet", "modtime")
+                              if item.get(key)})
         if not found and errors:
             return [], "; ".join(errors[:2])
         return found[:lot_notes_rules.MAX_SOURCES], ""
@@ -5073,6 +5074,7 @@ def install(app: FastAPI) -> None:
         key = str(lot.get("url") or "")
         now = int(time.time())
         docs, problem = _lot_note_search(lot)
+        docs = lot_notes_rules.fit_docs(lot, docs, problem)
         try:
             answer = core.plato_answer(
                 core.AgentChatRequest(
@@ -5183,6 +5185,10 @@ def install(app: FastAPI) -> None:
                     # вторым счётом той же величины.
                     "fit": profile_fit(_public_lot_dict(lot)),
                     "quality": catalogue_quality(lot),
+                    # Лот основной подборки: в режиме «с шумом» страница ставит
+                    # такие первыми и отделяет от добавленных неполных и шума.
+                    "main_selection": AuctionSearchService.in_main_selection(
+                        AuctionSearchService.screen_lot(lot), catalogue_quality(lot)),
                     # Доля в юрлице разбирается сервером: пороги владельца и
                     # разбор активов, объявленные один раз. Собранные на
                     # странице, они были бы вторым ответом на тот же вопрос.

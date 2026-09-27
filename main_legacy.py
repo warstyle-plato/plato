@@ -4655,9 +4655,12 @@ def _nspd_object_kind(feature: dict[str, Any], options: dict[str, Any]) -> str:
 
 def _nspd_map_url(center: dict[str, Any] | None, cadastral_number: str) -> str:
     if center and center.get("merc_x") is not None:
+        # Порядок и набор параметров — как у ссылки «скопировать» самой НСПД
+        # (`theme_id=1`, `is_copy_url=true`): номер из адреса карта не читает
+        # (`?query=` открывала прежнее место, владелец 27.09.2026), точку — да.
         return (
-            f"{_NSPD_BASE_URL}/map?thematic=PKK&zoom=17"
-            f"&coordinate_x={center['merc_x']}&coordinate_y={center['merc_y']}"
+            f"{_NSPD_BASE_URL}/map?thematic=PKK&theme_id=1&is_copy_url=true"
+            f"&coordinate_x={center['merc_x']}&coordinate_y={center['merc_y']}&zoom=18"
         )
     if cadastral_number:
         return f"{_NSPD_BASE_URL}/map?thematic=PKK&query={urllib.parse.quote(cadastral_number)}"
