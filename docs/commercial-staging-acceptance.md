@@ -29,27 +29,30 @@ navigation adds a fourth top section. No iframe or commercial QA page remains.
 - Opening occupancy now exactly equals the first operating month's occupancy
   for a ramp longer than one month; one-month stabilization starts stabilized.
 
-## Render configuration prepared, deployment pending
+## Render staging and browser acceptance
 
-`render-commercial-staging.yaml` describes a separate free Python service,
-branch-pinned, one worker, no production secrets or scheduled catalog jobs.
-The equivalent direct Render service creation can use the same parameters.
-The Render connector requires user confirmation of a workspace before any
-workspace-scoped operation; no service has been created yet.
+The existing free service `developaid-commercial-engine-qa` is pinned to this
+branch and automatically deployed commit `74863cc`. Render reported live;
+cloud-browser inspection confirmed root v0.24.51 and the native fourth section.
+No additional service was needed.
 
-The cloud browser cannot access the local container's localhost
-(`ERR_BLOCKED_BY_CLIENT`), so DOM tests are NOT a substitute for browser acceptance.
-After deploying:
+Completed in the real cloud browser:
+- Root visually matches production plus the commercial navigation item.
+- All 12 asset / strategy / financing combinations calculate and render.
+- Retail rent 3,800 → 6,000 raises monthly revenue 77.85m → 106.16m;
+  turnover 55,000 → 100,000 raises it to 141.55m. Entered values persist.
+- Hotel ADR 14,000 → 20,000 updates RevPAR, room revenue, GOP and NOI.
+- Header recalculate acts on commercial model; monthly disclosure opens.
+- Cash flow tables have 91 income months and 43 sale months for defaults.
+- A browser-found bug made commercial edits dirty the residential header.
+  Fixed by excluding the commercial panel from residential edit tracking and
+  synchronizing the header with commercial calculation status. Added regression.
 
-1. Verify `/` matches production, plus the new fourth navigation item.
-2. Open the commercial section by clicking its top navigation button.
-3. Exercise Office / Retail / Hotel × income / sale × equity / debt.
-4. Check retail binding rent and turnover assumptions change results; verify
-   the displayed maximum-of-base-and-turnover convention.
-5. Check hotel RevPAR, revenue, GOP, fees and FF&E; sale quantities and zero escrow.
-6. Check entered-value persistence, stale/error state, global recalculation,
-   annual and expandable monthly cash flows.
-7. Inspect desktop and mobile layouts, fix issues, then provide the URL.
+Pending: mobile browser acceptance. This cloud browser exposes no viewport
+resize or device emulation capability. Keyboard device/zoom controls had no
+viewport effect. Opening a local responsive fixture was blocked by the browser
+URL policy; no workaround was attempted. CSS media queries are implemented,
+but this is not evidence of a completed mobile browser test.
 
 ## Model conventions
 

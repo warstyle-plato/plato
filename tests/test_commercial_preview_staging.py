@@ -65,3 +65,20 @@ def test_site_assets_are_served_and_commercial_routes_are_unique():
         assert 'no-store' in response.headers['cache-control']
     routes=[r.path for r in commercial_preview.app.routes]
     assert routes.count('/api/commercial/calculate')==1
+
+
+def test_commercial_edits_do_not_dirty_residential_model():
+    import subprocess
+    from pathlib import Path
+    source=Path('ia_preview/assets/overlay.js').read_text()
+    start=source.index('  function onEdit(event) {')
+    end=source.index('\n  /* ----',start)
+    script=source[start:end]+'''
+      let dirty=0, goalSeekStale=false;
+      function renderState() {}
+      onEdit({target:{closest:s=>s==='.content'||s==='#commercial'}});
+      if(dirty!==0||goalSeekStale) throw Error('Commercial edit dirtied housing');
+      onEdit({target:{closest:s=>s==='.content'}});
+      if(dirty!==1||!goalSeekStale) throw Error('Residential tracking stopped');
+    '''
+    subprocess.run(['node','-e',script],check=True)
