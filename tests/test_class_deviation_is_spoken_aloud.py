@@ -217,8 +217,8 @@ def test_the_page_presets_are_the_engine_presets_not_a_copy():
     assert "__DEVELOPAID_CLASS_PRESETS__" not in core.PAGE, "плейсхолдер не подставлен"
     assert json.dumps(core.PROJECT_CLASS_PRESETS, ensure_ascii=False) in core.PAGE
     # Применение класса идёт по самому пресету — поле, добавленное позже,
-    # применяется без правки списка.
-    assert "Object.keys(p).filter(k=>k!=='label').forEach" in core.PAGE
+    # применяется без правки списка; оставленное руками человек называет сам.
+    assert "Object.keys(p).filter(k=>k!=='label'&&!keep.includes(k)).forEach" in core.PAGE
 
 
 def test_the_class_profile_covers_the_cost_articles_with_a_consensus():
