@@ -94,16 +94,17 @@ def test_the_screen_lists_the_products_under_revenue():
     assert found, "функция сравнения очередей на странице не найдена"
     body = found.group(0)
     assert "revenue_by_product" in body
-    # Строки продуктов стоят сразу под выручкой, а не в конце таблицы.
-    revenue = body.index("['Выручка',")
-    assert body.index("...prodRows") > revenue
-    assert body.index("['Цена реализации на м² продаваемой'") > body.index("...prodRows")
+    # Строки продуктов стоят в блоке «Выручка», над удельными показателями;
+    # что они на отрисованной странице там и стоят, меряет
+    # tests/test_the_phase_table_reads_in_blocks.py.
+    revenue = body.index("['revenue','Выручка',revenueRows]")
+    assert body.index("['Цена реализации на м² продаваемой'") > revenue
 
 
 def test_the_screen_hides_products_without_revenue():
     """Семь нулевых строк — это шум, а не полнота."""
     body = re.search(r"\nfunction renderPhaseComparison\(.*?\n\}", core.PAGE, re.S).group(0)
-    assert "filter(k=>c.some(x=>Number((x.revenue_by_product||{})[k]||0)>0))" in body
+    assert "keys.filter(k=>c.some(x=>revOf(x,k)>0))" in body
 
 
 # --- книга --------------------------------------------------------------------

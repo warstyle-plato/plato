@@ -380,3 +380,50 @@ def test_a_release_merge_starts_the_build_itself():
     assert body.index("_dispatch_build(", merged) > merged
     assert (ROOT / ".github" / "workflows" / release_merge.BUILD_WORKFLOW).exists()
     assert "actions: write" in MERGE_FLOW.read_text(encoding="utf-8")
+
+
+def _entry(monkeypatch, pull: dict) -> list[str]:
+    """Пройти вход main() на сухом прогоне; вернуть, до чего он дошёл."""
+    reached: list[str] = []
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    monkeypatch.setenv("GH_TOKEN", "t")
+    monkeypatch.setattr(sys, "argv", ["release_merge.py", "--pr", "538", "--dry-run"])
+    monkeypatch.setattr(release_merge, "_api", lambda *a, **k: dict(pull))
+    monkeypatch.setattr(release_merge, "_wait_settled", lambda *a, **k: dict(pull))
+
+    class Guard:
+        def _version(self, text):
+            reached.append("счёт номера")
+            return (0, 24, 46)
+
+        def _show(self, ref):
+            return ""
+
+        def _next_version(self, before):
+            return "0.24.47"
+
+    monkeypatch.setattr(release_merge, "_guard", lambda: Guard())
+    monkeypatch.setattr(release_merge, "_git", lambda *a: "")
+    monkeypatch.setattr(release_merge, "_engine_changed", lambda *a: True)
+    reached.append(f"код {release_merge.main()}")
+    return reached
+
+
+_PULL = {"state": "open", "draft": False, "merged": False,
+         "head": {"ref": "feat", "sha": "abc"}, "base": {"ref": "main"}}
+
+
+def test_an_unsettled_entry_is_not_a_refusal(monkeypatch):
+    """27.09 #532 и #538 упали на входе: после сдвига main GitHub больше
+    минуты отдавал mergeable=null. Недосчитанная слияемость — не отказ:
+    база вливается в ветку, и перед слиянием GitHub спрашивают снова."""
+    reached = _entry(monkeypatch, {**_PULL, "mergeable": None,
+                                   "mergeable_state": "unknown"})
+    assert reached == ["счёт номера", "код 0"]
+
+
+def test_a_blocked_entry_is_still_refused(monkeypatch):
+    """Предохранитель: послабление касается только null, а не отказа базы."""
+    reached = _entry(monkeypatch, {**_PULL, "mergeable": True,
+                                   "mergeable_state": "blocked"})
+    assert reached == ["код 1"]
