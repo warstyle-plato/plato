@@ -98,33 +98,71 @@ def _git(*args: str, capture: bool = True) -> str:
     return (done.stdout or "").strip()
 
 
-def _set_version(head_ref: str, number: str) -> str:
-    """Записать номер в ветку и вернуть новую голову.
-
-    Правится ОДНА строка объявления — та самая, что объявлена в движке один
-    раз. Всё остальное содержимое ветки уже прошло приёмку, и трогать его
-    здесь нечем.
-    """
-    guard = _guard()
-    _git("fetch", "--no-tags", "origin", head_ref)
-    _git("checkout", "-B", head_ref, f"origin/{head_ref}")
+def _write_version(guard, number: str, message: str) -> bool:
+    """Поставить номер в строку VERSION и закоммитить. False — он уже стоит."""
     text = ENGINE.read_text(encoding="utf-8")
     replaced, count = guard._VERSION.subn(f'VERSION = "{number}"', text, count=1)
     if count != 1:
         raise SystemExit(f"В {ENGINE.name} не нашлась строка VERSION — номер не выдан.")
     if replaced == text:
+        return False
+    ENGINE.write_text(replaced, encoding="utf-8")
+    _git("add", str(ENGINE.relative_to(ROOT)))
+    _git("commit", "-m", message)
+    return True
+
+
+def _set_version(head_ref: str, number: str, base_ref: str = "main") -> str:
+    """Записать номер в ветку и вернуть новую голову.
+
+    Правится ОДНА строка объявления — та самая, что объявлена в движке один
+    раз. Всё остальное содержимое ветки уже прошло приёмку, и трогать его
+    здесь нечем.
+
+    Ветка, отошедшая от прежней базы, держит в VERSION прежний номер, а база
+    с тех пор свой подняла. Новый номер поверх такой ветки меняет ту же строку,
+    что и база, — и GitHub видит конфликт, которого в содержании нет. Поэтому
+    сначала строка ставится на номер базы, затем база вливается в ветку, и
+    только потом пишется выданный номер. Конфликт вне VERSION — настоящий, его
+    здесь не разрешают.
+    """
+    guard = _guard()
+    _git("fetch", "--no-tags", "origin", head_ref, base_ref)
+    _git("checkout", "-B", head_ref, f"origin/{head_ref}")
+    found = guard._VERSION.search(guard._show(f"origin/{base_ref}"))
+    if not found:
+        raise SystemExit(f"В {ENGINE.name} базы не нашлась строка VERSION — номер не выдан.")
+    _write_version(guard, found.group(1),
+                   "Номер базы перед слиянием\n\nСтрока VERSION выравнивается по "
+                   "базе, чтобы влить её без конфликта в номере.")
+    merged = subprocess.run(["git", "merge", "--no-edit", f"origin/{base_ref}"],
+                            cwd=ROOT, capture_output=True, text=True)
+    if merged.returncode != 0:
+        subprocess.run(["git", "merge", "--abort"], cwd=ROOT, capture_output=True)
+        raise SystemExit(f"Ветка {head_ref} конфликтует с {base_ref} не только номером: "
+                         "влейте базу и разрешите конфликт в ветке, затем повторите.")
+    if not _write_version(guard, number,
+                          f"Выпуск {number}\n\nНомер выдан слиянием: ветка его не "
+                          "занимала, поэтому занять его у соседа было нечем."):
         # Номер записал прошлый прогон, которому GitHub отказал в слиянии.
         # Остановка здесь оставила бы PR с номером, но без слияния, и каждый
         # повтор падал бы на этой же строке.
         print(f"Номер {number} уже стоит в ветке — сливается её голова как есть.")
-        return _git("rev-parse", "HEAD")
-    ENGINE.write_text(replaced, encoding="utf-8")
-    _git("add", str(ENGINE.relative_to(ROOT)))
-    _git("commit", "-m", f"Выпуск {number}\n\nНомер выдан слиянием: "
-                         f"ветка его не занимала, поэтому занять его у соседа "
-                         f"было нечем.")
-    _git("push", "origin", f"HEAD:{head_ref}")
-    return _git("rev-parse", "HEAD")
+    head = _git("rev-parse", "HEAD")
+    if head != _git("rev-parse", f"origin/{head_ref}"):
+        _git("push", "origin", f"HEAD:{head_ref}")
+    return head
+
+
+def _conflict_may_be_the_number(pull: dict) -> bool:
+    """Конфликт, который снимет вливание базы в `_set_version`.
+
+    Ветка с номером от прошлого прогона конфликтует с базой в строке VERSION.
+    Настоящий конфликт вне номера `_set_version` назовёт сам и не сольёт.
+    """
+    return (pull.get("state") == "open" and not pull.get("draft")
+            and not pull.get("merged")
+            and (pull.get("mergeable") is False or pull.get("mergeable_state") == "dirty"))
 
 
 def _settled(pull: dict, sha: str) -> bool:
@@ -167,8 +205,12 @@ def main() -> int:
         raise SystemExit("Нет GITHUB_REPOSITORY или GH_TOKEN — это шаг workflow.")
 
     pull = _api("GET", f"/repos/{repo}/pulls/{number}", token)
+    if pull.get("mergeable") is None:
+        # Сдвиг main заставляет GitHub пересчитать все PR, и первый ответ
+        # после любого слияния — null. Ждать, а не отказывать.
+        pull = _wait_settled(repo, number, token, (pull.get("head") or {}).get("sha", ""))
     reason = refuse_reason(pull)
-    if reason:
+    if reason and not _conflict_may_be_the_number(pull):
         print(reason, file=sys.stderr)
         return 1
     head_ref = pull["head"]["ref"]
@@ -185,7 +227,7 @@ def main() -> int:
                  else "production-код не менялся — выпуска нет, номер не выдаётся."))
         if dry:
             return 0
-        head_sha = (_set_version(head_ref, issued) if issuing
+        head_sha = (_set_version(head_ref, issued, base_ref) if issuing
                     else _git("rev-parse", f"origin/{head_ref}"))
         # Перечитать базу ПЕРЕД слиянием: между счётом и слиянием сосед мог
         # слить своё. Слить поверх ушедшей базы — это выпуск под занятым
