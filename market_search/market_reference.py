@@ -69,6 +69,22 @@ class ClassSnapshot:
         return out
 
 
+# Эталон поглощения — та же мера, что у числителя: СРЕДНИЙ месячный темп за
+# окно, а не срез одного месяца. Числитель рейтинга — средний месячный темп
+# аналогов Пульса за период, и знаменатель, взятый за один последний месяц,
+# сравнивал разные величины. Замер владельца на 2026-08 (медиана «1 месяц» →
+# медиана «среднее 12 мес.»): бизнес 708 (n 79) → 884 (n 102), комфорт 670 (50)
+# → 1016 (66), премиум 304 (43) → 550 (52), элит 236 (4) → 292 (16). Перекос
+# около 1,45× в одну сторону, и выборка при этом растёт: месяц без сделок
+# выбрасывал из неё работающий проект целиком.
+#
+# Окно и порог объявлены здесь, рядом с расчётом, и берутся отсюда всеми.
+ABSORPTION_WINDOW_MONTHS = 12
+# Сколько месяцев с продажами обязан иметь проект, чтобы его средний темп стал
+# наблюдением класса.
+ABSORPTION_MIN_MONTHS = 3
+
+
 class MoscowMarket:
     """Городские своды по классам и округам. Нет файла — источник выключен."""
 
@@ -102,6 +118,7 @@ class MoscowMarket:
         if isinstance(dynamics, dict):
             months = list(dynamics.get("months") or [])
             index = months.index(wanted_month) if wanted_month in months else len(months) - 1
+            first = max(0, index + 1 - ABSORPTION_WINDOW_MONTHS)
             for project in (dynamics.get("projects") or {}).values():
                 if not isinstance(project, dict):
                     continue
@@ -109,16 +126,35 @@ class MoscowMarket:
                 series = project.get("area") or []
                 if not segment or index < 0 or index >= len(series):
                     continue
-                value = series[index]
-                if value is None:
+                sold: list[float] = []
+                for value in series[first:index + 1]:
+                    if value is None:
+                        continue
+                    try:
+                        area = float(value)
+                    except (TypeError, ValueError):
+                        continue
+                    # В динамике 0 используется и как «продаж за месяц нет», и
+                    # как пустой/неполный месячный срез. В СРЕДНЕЕ он не входит
+                    # ни в одном из двух смыслов: месяц без продаж — не месяц
+                    # темпа, а пустой срез вовсе не наблюдение.
+                    if area > 0:
+                        sold.append(area)
+                # Проект с одним-двумя месяцами продаж за год — не темп, а
+                # случай. Порог отсекает его целиком, а не даёт ему голос
+                # наравне с работающим проектом.
+                if len(sold) < ABSORPTION_MIN_MONTHS:
                     continue
-                try:
-                    area_by_segment.setdefault(segment, []).append(float(value))
-                except (TypeError, ValueError):
-                    continue
+                area_by_segment.setdefault(segment, []).append(
+                    sum(sold) / len(sold))
         payload["_area_median_by_segment"] = {
             segment: round(float(statistics.median(values)), 1)
             for segment, values in area_by_segment.items() if values
+        }
+        payload["_area_median_window_months"] = ABSORPTION_WINDOW_MONTHS
+        payload["_area_median_min_months"] = ABSORPTION_MIN_MONTHS
+        payload["_area_median_projects"] = {
+            segment: len(values) for segment, values in area_by_segment.items() if values
         }
         payload["_area_median_source"] = str(
             (dynamics or {}).get("source") or payload.get("source") or ""
@@ -178,7 +214,13 @@ class MoscowMarket:
         return sorted(self.payload.get("current") or {})
 
     def area_median(self, segment: str | None) -> float | None:
-        """Медиана продаж площади в м²/мес. по Москве для класса."""
+        """Медиана продаж площади в м²/мес. по Москве для класса.
+
+        Мера одна на всех читателей: медиана по проектам класса их СРЕДНЕГО
+        месячного темпа за `ABSORPTION_WINDOW_MONTHS`. Второго эталона рядом не
+        заводить — разойдясь, два знаменателя дали бы два достоверных на вид
+        ответа об одном поглощении.
+        """
         value = (self.payload.get("_area_median_by_segment") or {}).get(str(segment or ""))
         try:
             return None if value is None else float(value)

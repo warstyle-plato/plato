@@ -98,7 +98,10 @@ def _osm_parcel_image(payload: dict[str, Any], core: Any, width: float = 260,
     from reportlab.platypus import Image as RLImage
 
     _items, rings, points = _parcel_geometry(payload)
-    bbox = _map_bbox(points, width / height)
+    # Рамка считается в движке (`_map_context_bbox`) — одна на первую
+    # страницу и тизер; местный `_map_bbox` остаётся запасом для ядра без неё.
+    frame = getattr(core, "_map_context_bbox", None)
+    bbox = frame(points, width / height) if callable(frame) else _map_bbox(points, width / height)
     if bbox is None:
         return None
 

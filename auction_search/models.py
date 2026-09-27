@@ -185,6 +185,10 @@ class AuctionLot:
     min_price_rub: Optional[float] = None
     bid_step_rub: Optional[float] = None
     deposit_rub: Optional[float] = None
+    # Начало и конец заявочной кампании храним раздельно. Раньше в модели был
+    # только дедлайн, поэтому Excel мог показать «до какого числа», но не
+    # «с какого числа» — и длительность торгов восстановить было невозможно.
+    application_start: Optional[str] = None
     application_deadline: Optional[str] = None
     auction_date: Optional[str] = None
     status: Optional[str] = None
