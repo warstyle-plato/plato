@@ -4,9 +4,7 @@ const $$ = (s) => [...document.querySelectorAll(s)];
 const clone = (v) => JSON.parse(JSON.stringify(v));
 const token = $('meta[name="desktop-token"]').content;
 const state = {boot:null, request:null, references:null, projects:[], project:null,
-  snapshot:null, dirty:false, unsaved:false, block:0, tab:'inputs', busy:false, pending:Promise.resolve(), syncError:null, invalid:new Set()};
-const commercial = {description:null, asset:'office', strategy:'income', financing:'equity_debt', values:{}, result:null};
-const fmt = (n,d=1) => n === null || n === undefined ? '—' : Number(n).toLocaleString('ru-RU',{maximumFractionDigits:d});
+  snapshot:null, dirty:false, unsaved:false, block:0, tab:'inputs', busy:false, pending:Promise.resolve(), syncError:null, invalid:new Set()};const fmt = (n,d=1) => n === null || n === undefined ? '—' : Number(n).toLocaleString('ru-RU',{maximumFractionDigits:d});
 const money = (n) => n === null || n === undefined ? '—' : `${fmt(n/1e6)} млн ₽`;
 const stamp = (s) => s ? new Date(s).toLocaleString('ru-RU',{dateStyle:'short',timeStyle:'short'}) : '—';
 const text = (tag, value, cls) => {const e=document.createElement(tag); e.textContent=value; if(cls)e.className=cls; return e;};
@@ -94,116 +92,6 @@ async function calculate(){await state.pending;if(state.syncError)throw state.sy
   state.snapshot=await api('/calculate',state.request);state.request={...clone(state.snapshot.request),reference_version:state.snapshot.reference_version};state.dirty=false;state.unsaved=true;renderMetrics();renderResult();renderFields();$('#saveState').textContent='Расчёт выполнен · нажмите «Сохранить», чтобы добавить его в историю';}
 async function save(copy=false){if(state.dirty||!state.snapshot)await calculate();const name=$('#projectName').value.trim()||'Новый проект';state.project=await api('/projects',{name,snapshot_id:state.snapshot.snapshot_id,project_id:copy?null:state.project?.id,revision:copy?0:state.project?.revision||0});state.projects=await api('/projects');state.dirty=false;state.unsaved=false;$('#saveState').textContent=`Сохранено на компьютере · версия ${state.project.revision} · ${stamp(state.project.updated_at)}`;renderProjects();notify('Проект сохранён.');}
 async function exportFile(kind){if(state.dirty||!state.snapshot)throw new Error('Сначала рассчитайте текущие параметры.');const response=await fetch(`/api/snapshots/${state.snapshot.snapshot_id}/export/${kind}`,{headers:{'X-DevelopAid-Token':token}});if(!response.ok){const error=await response.json();throw new Error(error.detail||'Выгрузка не выполнена');}const blob=await response.blob(),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=`DevelopAid-${kind==='json'?'project':'report'}.${kind}`;link.click();setTimeout(()=>URL.revokeObjectURL(url),60000);}
-
-function commercialFieldKeys(){
-  const keys=['land_cost_rub','gross_area_sqm','construction_cost_rub_sqm','soft_cost_pct','contingency_pct','construction_months'];
-  if(commercial.strategy==='income'){
-    keys.push('stabilization_months','hold_years','exit_cap_rate_pct');
-    if(commercial.asset==='hotel')keys.push('keys','adr_rub','occupancy_pct','other_revenue_pct','opex_pct','ffe_reserve_pct');
-    else{keys.push('income_area_sqm','rent_rub_sqm_month','occupancy_pct','opex_pct');if(commercial.asset==='retail')keys.push('sales_rub_sqm_month','turnover_rent_pct');}
-  }else{
-    keys.push('sale_start_month','sale_months','selling_cost_pct');
-    if(commercial.asset==='hotel')keys.push('saleable_keys','sale_price_rub_key');
-    else keys.push('saleable_area_sqm','sale_price_rub_sqm');
-  }
-  if(commercial.financing==='equity_debt'){
-    keys.push('debt_share_pct','debt_rate_pct','loan_fee_pct');
-    if(commercial.strategy==='sale')keys.push('sales_cash_sweep_pct');
-  }
-  return [...new Set(keys)];
-}
-
-function renderCommercialFields(){
-  if(!commercial.description)return;
-  const meta=Object.fromEntries((commercial.description.fields||[]).map(x=>[x.key,x]));
-  $('#commercialInputsTitle').textContent={office:'Офис',retail:'Торговля',hotel:'Гостиница'}[commercial.asset]||'Нежилой объект';
-  const host=$('#commercialFields');host.replaceChildren();
-  for(const key of commercialFieldKeys()){
-    const m=meta[key]||{label:key,unit:''};
-    const label=text('label','');
-    const caption=text('span',m.label);
-    caption.append(text('small',m.unit||''));
-    const input=document.createElement('input');input.type='number';input.step='any';input.value=commercial.values[key]??'';
-    input.dataset.commercialKey=key;
-    input.addEventListener('input',()=>{commercial.values[key]=Number(input.value||0);});
-    label.append(caption,input);host.append(label);
-  }
-}
-
-function commercialMetricValue(label,value){
-  if(value===null||value===undefined)return'—';
-  if(/₽/.test(label))return money(value);
-  if(/RevPAR/.test(label))return fmt(value,0)+' ₽';
-  return fmt(value,2);
-}
-
-function renderCommercialResult(result){
-  commercial.result=result;
-  const k=result.kpi||{},host=$('#commercialMetrics');host.replaceChildren();
-  const rows=[
-    ['Девелоперские затраты',money(k.development_cost),'CAPEX + участок'],
-    ['Совокупный доход',money(k.total_revenue),result.strategy==='income'?'Операции + выход':'Продажи'],
-    ['Прибыль до налога',money(k.profit_before_tax),'После стоимости финансирования'],
-    ['Маржа',k.margin==null?'—':fmt(k.margin*100)+'%',''],
-    ['Собственный капитал',money(k.equity_required),'Потребность в equity'],
-    ['Пиковый долг',money(k.peak_debt),'Обычный кредит · без эскроу'],
-    ['IRR проекта',k.project_irr==null?'—':fmt(k.project_irr*100)+'%','Unlevered'],
-    ['IRR капитала',k.equity_irr==null?'—':fmt(k.equity_irr*100)+'%','Levered'],
-  ];
-  if(result.strategy==='income'){
-    rows.push(['Стабилизированный NOI',money(k.stabilized_noi_annual),'в год']);
-    rows.push(['Yield on cost',k.yield_on_cost==null?'—':fmt(k.yield_on_cost*100)+'%','']);
-  }
-  rows.forEach((row,i)=>{const card=text('div','','metric'+(i===7?' highlight':''));card.append(text('div',row[0],'metric-label'),text('div',row[1],'metric-value'),text('div',row[2],'metric-note'));host.append(card);});
-
-  const report=result.report||{};
-  const summary=$('#commercialSummary');summary.replaceChildren();
-  [['Тип расчёта',report.title||''],['Реализация',report.strategy||''],['Капитал',report.financing||''],['Эскроу','Не используется']].forEach(pair=>{
-    const row=text('div','','commercial-summary-row');row.append(text('span',pair[0]),text('strong',pair[1]));summary.append(row);
-  });
-  const reportHost=$('#commercialReport');reportHost.replaceChildren();
-  for(const section of report.sections||[]){
-    const card=text('div','','commercial-report-section');card.append(text('h3',section.name||''));
-    for(const entry of Object.entries(section.metrics||{})){
-      const row=text('div','');row.append(text('span',entry[0]),text('strong',commercialMetricValue(entry[0],entry[1])));card.append(row);
-    }
-    reportHost.append(card);
-  }
-  const warnings=$('#commercialWarnings');warnings.replaceChildren();
-  for(const item of result.warnings||[])warnings.append(text('div',item,'commercial-warning'));
-}
-
-async function calculateCommercial(){
-  $('#commercialStatus').textContent='Считаю локально…';
-  try{
-    const result=await api('/commercial/calculate',{
-      asset_type:commercial.asset,
-      strategy:commercial.strategy,
-      financing_mode:commercial.financing,
-      inputs:commercial.values
-    });
-    renderCommercialResult(result);
-    $('#commercialStatus').textContent='Готово · нежилая экономика рассчитана локально, без эскроу.';
-  }catch(e){$('#commercialStatus').textContent=e.message;throw e;}
-}
-
-async function initCommercial(){
-  commercial.description=await api('/commercial/form');
-  const fill=(select,items)=>{select.replaceChildren(...items.map(item=>{const o=text('option',item.label);o.value=item.value;return o;}));};
-  fill($('#commercialAsset'),commercial.description.asset_types||[]);
-  fill($('#commercialStrategy'),commercial.description.strategies||[]);
-  fill($('#commercialFinancing'),commercial.description.financing_modes||[]);
-  commercial.values=clone(commercial.description.defaults[commercial.asset]||{});
-  $('#commercialNote').textContent=commercial.description.beta_note||'';
-  $('#commercialAsset').onchange=()=>{commercial.asset=$('#commercialAsset').value;commercial.values=clone(commercial.description.defaults[commercial.asset]||{});renderCommercialFields();task(calculateCommercial);};
-  $('#commercialStrategy').onchange=()=>{commercial.strategy=$('#commercialStrategy').value;renderCommercialFields();task(calculateCommercial);};
-  $('#commercialFinancing').onchange=()=>{commercial.financing=$('#commercialFinancing').value;renderCommercialFields();task(calculateCommercial);};
-  $('#commercialCalculate').onclick=()=>task(calculateCommercial);
-  $('#resEconomicsTab').onclick=()=>showStage('economics');
-  $('#commercialEconomicsTab').onclick=()=>showTab('commercial');
-  renderCommercialFields();
-  await calculateCommercial();
-}
 
 async function init(){state.boot=await api('/bootstrap');state.references=state.boot.references;state.projects=state.boot.projects;$('#engineVersion').textContent=`Приложение ${state.boot.desktop_version} · движок ${state.boot.engine_version}`;newProject();await initCommercial();
   $('[data-tab]').forEach(b=>b.onclick=()=>showTab(b.dataset.tab));$$('[data-stage]').forEach(b=>b.onclick=()=>showStage(b.dataset.stage));$('#fieldSearch').oninput=renderFields;$('#projectName').oninput=changed;
