@@ -82,3 +82,15 @@ def test_the_scheduled_start_is_the_catalogue_run(tmp_path, monkeypatch):
         assert ranking.start([], lambda project: {}, scheduled=scheduled)
         ranking._thread.join(5)
     assert seen == [True, False]
+
+
+def test_a_slug_cannot_leave_the_reports_folder(tmp_path):
+    import pytest
+
+    ranking = KrtRanking(tmp_path)
+    for slug in ("../../etc/passwd", "a/../../b", "decision:77-01"):
+        path = ranking.report_path(slug)
+        assert str(path).startswith(str(ranking.reports_dir.resolve()))
+    with pytest.raises(ValueError):
+        ranking.report_path("..")
+    assert ranking.report("../../etc/passwd") is None

@@ -351,7 +351,12 @@ def _burden_cache_path(project: dict[str, Any], cache_root: str | Path | None = 
     )
     raw = str(project.get("slug") or project.get("name") or "krt").strip().lower()
     safe = re.sub(r"[^0-9a-zа-яё_-]+", "-", raw, flags=re.I).strip("-")[:140] or "krt"
-    return root / f"{safe}.json"
+    # Слаг приходит из адреса запроса: граница папки проверяется явно.
+    base = os.path.realpath(root)
+    path = os.path.realpath(os.path.join(base, f"{safe}.json"))
+    if not path.startswith(base + os.sep):
+        raise ValueError("Идентификатор площадки выводит за папку кэша нагрузки")
+    return Path(path)
 
 
 def _burden_record(item: Any, number: str) -> dict[str, Any]:

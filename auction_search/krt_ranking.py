@@ -1033,7 +1033,14 @@ class KrtRanking:
         safe = re.sub(r"[^a-z0-9_-]+", "-", str(slug or "").strip().lower())[:120]
         if not safe or safe == "-":
             raise ValueError("Пустой идентификатор площадки")
-        return self.reports_dir / f"{safe}.json"
+        # Путь обязан остаться в папке отчётов при любом слаге: замена выше это
+        # и так гарантирует, но граница проверяется явно — нормализацией и
+        # сравнением с папкой, а не доверием к регулярному выражению.
+        root = os.path.realpath(self.reports_dir)
+        path = os.path.realpath(os.path.join(root, f"{safe}.json"))
+        if not path.startswith(root + os.sep):
+            raise ValueError("Идентификатор площадки выводит за папку отчётов")
+        return Path(path)
 
     def report(self, slug: str) -> dict[str, Any] | None:
         """Сохранённый отчёт или None. Чужая схема — это «нет», а не мусор."""
