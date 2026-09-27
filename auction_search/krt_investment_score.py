@@ -322,6 +322,22 @@ def rating_inputs(
         imputed["absorption"] = (
             f"эталон — медиана поглощения Москвы, {segment or 'все классы'}")
 
+    # Поглощение считается ПАРОЙ, и неполная пара — тоже пропуск. Замер прода
+    # 27.09.2026: локальная медиана известна, а медианы Москвы по классу нет, и
+    # такая строка уходила в прочерк молча — ни подстановки, ни отложенной
+    # составляющей. Эталоном тогда служит медиана каталога, а нет и её —
+    # составляющая откладывается названной причиной.
+    if score_benchmark_absorption is None and score_local_absorption is not None:
+        value, count, enough = catalogue_median("absorption")
+        if enough:
+            score_benchmark_absorption = value
+            imputed["absorption"] = (
+                f"эталона Москвы нет — медиана поглощения рассчитанных КРТ, n={count}")
+        else:
+            deferred["absorption"] = (
+                f"эталона поглощения нет ни у Москвы, ни у каталога (строк: "
+                f"{count}, нужно {floor}) — сравнивать локальную медиану не с чем")
+
     score_burden_pct = burden_pct
     if score_burden_pct is None:
         value, count, enough = catalogue_median("burden")

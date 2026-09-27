@@ -136,6 +136,37 @@ def test_the_median_of_one_point_is_not_passed_off_as_an_answer() -> None:
     assert filled["display_score"] != scarce["display_score"]
 
 
+def test_an_incomplete_absorption_pair_is_named_not_silently_dropped() -> None:
+    """Поглощение считается ПАРОЙ, и неполная пара — тоже пропуск.
+
+    Замер прода 27.09.2026 на живых строках: у двух площадок локальная медиана
+    известна, а медианы Москвы по классу нет — и такая строка уходила в прочерк
+    молча, без подстановки и без отложенной составляющей.
+    """
+    enough = dict(MEDIANS_AFTER_517, absorption={"value": 827.0, "count": 297})
+    filled = krt_investment_score.rating_inputs(
+        row=ROW_WITHOUT_BURDEN, segment="комфорт",
+        llcr=1.19, market_price=486_000.0,
+        local_absorption=1_180.0, benchmark_absorption=None,
+        burden_pct=None, catalogue_medians=enough,
+        city_reference={"price": None, "absorption": None})
+    assert filled["benchmark_sqm_month"] == 827.0
+    assert "n=297" in filled["imputed_components"]["absorption"]
+    assert "absorption" not in filled["deferred_components"]
+
+    scarce = krt_investment_score.rating_inputs(
+        row=ROW_WITHOUT_BURDEN, segment="комфорт",
+        llcr=1.19, market_price=486_000.0,
+        local_absorption=1_180.0, benchmark_absorption=None,
+        burden_pct=None,
+        catalogue_medians=dict(MEDIANS_AFTER_517,
+                              absorption={"value": 827.0, "count": 2}),
+        city_reference={"price": None, "absorption": None})
+    assert scarce["benchmark_sqm_month"] is None
+    assert "сравнивать локальную медиану не с чем" in \
+        scarce["deferred_components"]["absorption"]
+
+
 def test_a_measured_burden_still_beats_every_substitution() -> None:
     """Предохранитель: посчитанная нагрузка идёт в балл как факт, coverage 100%."""
     got = _rating(MEDIANS_AFTER_517, burden_pct=46.2)
