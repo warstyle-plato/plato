@@ -32,6 +32,9 @@ concurrency:
 permissions:
   contents: write
   pull-requests: write
+  # Слияние от GITHUB_TOKEN не запускает сборку main push-событием, поэтому
+  # скрипт зовёт её сам — для этого нужен запуск workflow.
+  actions: write
 
 jobs:
   merge:

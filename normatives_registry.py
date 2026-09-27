@@ -106,6 +106,7 @@ def _status_label(status: str) -> tuple[str, str]:
         "verified_in_engine_source_pack": ("Подтверждено source pack движка", "ok"),
         "review_required": ("Требует ревизии", "warn"),
         "manual_source_required": ("Нужен первичный источник", "warn"),
+        "source_link_missing": ("Нет ссылки на текст документа", "warn"),
     }.get(status, (status or "Статус не задан", "muted"))
 
 

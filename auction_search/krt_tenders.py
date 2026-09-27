@@ -200,3 +200,20 @@ def asking_price_mln(lots: Iterable[dict[str, Any]]) -> float | None:
         if value > 0:
             prices.append(value / 1_000_000.0)
     return min(prices) if prices else None
+
+
+# Правило «идут торги» для страниц — одно на каталог и карточку КРТ. Живой лот —
+# тот, у которого срок подачи ЕЩЁ НЕ ПРОШЁЛ. Лот без срока живым не считается:
+# «лот существует» — не «идут торги». Срок, который сервер не разобрал, — не
+# «срок прошёл»: такой лот остаётся живым (момент считает `with_moment`).
+# Карточка держала свою копию, проверявшую поле `moment`, которого сервер не
+# отдаёт, — и лот, чей срок кончился 1 сентября, показывала «Идёт аукцион».
+LIVE_LOT_PLACEHOLDER = "/*__DEVELOPAID_LIVE_LOT__*/"
+LIVE_LOT_SCRIPT = """function liveTenderLot(lots,now){
+ const at0=Number.isFinite(now)?now:Date.now();
+ return (lots||[]).find(v=>{
+  if(!v||!v.deadline)return false;
+  const at=Date.parse(v.deadline_iso||'');
+  return !Number.isFinite(at)||at>=at0;
+ })||null;
+}"""
