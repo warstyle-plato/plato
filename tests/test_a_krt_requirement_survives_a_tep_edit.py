@@ -28,8 +28,10 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "tests"))
 
 import main_legacy as core  # noqa: E402
+import page_blocks  # noqa: E402
 
 PAGE = core.PAGE
 
@@ -66,12 +68,12 @@ def _apply(source: str, derived: dict, **over) -> dict:
     inputs = {"social_area_source": source, "kindergarten_places": 199,
               "school_places": 407, "clinic_capacity": 86,
               "social_compensation_mln": 1234.5, "land_rights_cost_mln": 2864.0, **over}
-    helper = "\n".join(_piece(name) for name in
-                       ("krtRequirementEntered", "applyDerivedInputs"))
-    consts = PAGE[PAGE.index("const KRT_REQUIREMENT_INPUTS="):
-                  PAGE.index("function krtRequirementEntered(")]
+    # Кусок берётся по СВОИМ границам, а не перечислением имён: перечисленный
+    # список отстаёт от страницы, и падение выходит про стенд. Так уже было
+    # 07.09.2026 с самим `applyDerivedInputs` и повторилось 26.09.2026, когда
+    # рядом завёлся `krtLocks`.
     return _run(HARNESS % {"inputs": json.dumps(inputs, ensure_ascii=False),
-                           "helper": consts + helper,
+                           "helper": page_blocks.krt_lock(),
                            "derived": json.dumps(derived, ensure_ascii=False)})
 
 

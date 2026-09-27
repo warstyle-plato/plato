@@ -602,15 +602,29 @@ def test_site_facts_come_from_the_same_screening_as_the_full_pdf(monkeypatch):
 
 
 def test_the_teaser_map_is_the_bot_picture(monkeypatch):
-    """Карта тизера и фото в боте — одна функция; отказ источника — нет карты."""
-    monkeypatch.setattr(core, "_territory_image_png", lambda numbers: (b"\x89PNGfake", "подпись"))
-    assert core._teaser_map_png({"cadastral_numbers": ["77:01:0004023:15"]}) == b"\x89PNGfake"
-    assert core._teaser_map_png({"cadastral_numbers": []}) is None
-    monkeypatch.setattr(core, "_territory_image_png", lambda numbers: None)
-    assert core._teaser_map_png({"cadastral_numbers": ["77:01:0004023:15"]}) is None
+    """Карта тизера и фото в боте — одна функция: тизер зовёт её с картой улиц
+    и окружением, а нет карты улиц — с кадастровой подложкой, как бот.
+    Подпись едет с картинкой; отказ обоих источников — нет карты."""
+    calls: list[tuple[str, float | None]] = []
 
-    def boom(numbers):
-        raise RuntimeError("НСПД молчит")
+    def fake(numbers, basemap="nspd", aspect=None):
+        calls.append((basemap, aspect))
+        return (b"\x89PNG" + basemap.encode(), f"подпись · {basemap}")
+
+    monkeypatch.setattr(core, "_territory_image_png", fake)
+    made = core._teaser_map_png({"cadastral_numbers": ["77:01:0004023:15"]})
+    assert made == (b"\x89PNGosm", "подпись · osm")
+    assert calls == [("osm", teaser_pdf.MAP_ASPECT)], calls
+    assert core._teaser_map_png({"cadastral_numbers": []}) is None
+
+    def only_nspd(numbers, basemap="nspd", aspect=None):
+        return None if basemap == "osm" else (b"\x89PNGnspd", "подпись · nspd")
+
+    monkeypatch.setattr(core, "_territory_image_png", only_nspd)
+    assert core._teaser_map_png({"cadastral_numbers": ["77:01:0004023:15"]}) == (b"\x89PNGnspd", "подпись · nspd")
+
+    def boom(numbers, basemap="nspd", aspect=None):
+        raise RuntimeError("источник молчит")
 
     monkeypatch.setattr(core, "_territory_image_png", boom)
     assert core._teaser_map_png({"cadastral_numbers": ["77:01:0004023:15"]}) is None
@@ -618,6 +632,60 @@ def test_the_teaser_map_is_the_bot_picture(monkeypatch):
     bot = source[source.index("def _telegram_territory_photo("):]
     bot = bot[:bot.index("\ndef ")]
     assert "_territory_image_png(numbers)" in bot, "бот обязан брать ту же картинку, что тизер"
+
+
+def _square_contour(cx: float, cy: float, half: float) -> list[list[float]]:
+    return [[cx - half, cy - half], [cx + half, cy - half], [cx + half, cy + half], [cx - half, cy + half]]
+
+
+def test_the_street_map_shows_the_surroundings_with_the_contour(monkeypatch):
+    """Карта улиц берётся с полем окружения не меньше 250 м в пропорции
+    слота, контур ЕГРН лежит поверх, подпись называет OpenStreetMap."""
+    from PIL import Image
+    cx, cy, half = 4_180_960.0, 7_490_000.0, 60.0          # квадрат 120 м в Москве
+    asked: dict[str, object] = {}
+
+    def fake_lookup(req):
+        return {"results": [{"found": True, "cadastral_number": "77:06:0003002:18",
+                             "contour_merc": [_square_contour(cx, cy, half)]}]}
+
+    def fake_basemap(bbox="", width=1024):
+        parts = [float(v) for v in bbox.split(",")]
+        asked.update(bbox=parts, width=width)
+        span_x, span_y = parts[2] - parts[0], parts[3] - parts[1]
+        img = Image.new("RGB", (int(width), int(round(width * span_y / span_x))), (236, 233, 225))
+        buffer = io.BytesIO(); img.save(buffer, format="PNG")
+        return type("R", (), {"body": buffer.getvalue()})()
+
+    monkeypatch.setattr(core, "land_lookup", fake_lookup)
+    monkeypatch.setattr(core, "land_basemap", fake_basemap)
+    monkeypatch.setattr(core, "land_map_image", lambda bbox="": (_ for _ in ()).throw(AssertionError("НСПД не нужна")))
+    made = core._territory_image_png(["77:06:0003002:18"], basemap="osm", aspect=teaser_pdf.MAP_ASPECT)
+    assert made is not None
+    png, caption = made
+    min_x, min_y, max_x, max_y = asked["bbox"]
+    assert min_x <= cx - half - 250 and max_x >= cx + half + 250, asked
+    assert min_y <= cy - half - 250 and max_y >= cy + half + 250, asked
+    assert abs((max_x - min_x) / (max_y - min_y) - teaser_pdf.MAP_ASPECT) < 0.01
+    image = Image.open(io.BytesIO(png)).convert("RGB")
+    reds = sum(1 for pixel in image.getdata() if pixel[0] > 150 and pixel[1] < 80 and pixel[2] < 80)
+    assert reds > 200, "контур не нарисован поверх карты улиц"
+    assert "OpenStreetMap" in caption and "НСПД" not in caption
+    # Контур занимает малую часть кадра: вокруг — окружение, а не край участка.
+    w, h = image.size
+    assert (2 * half) / (max_x - min_x) * w < w * 0.35
+
+
+def test_the_teaser_prints_the_maps_own_caption(starved):
+    """Подпись под картой — та, что пришла с картинкой: карта улиц не должна
+    подписываться «карта НСПД»."""
+    from pypdf import PdfReader
+    bundle, _, _, _, _, _ = starved
+    inputs, tep, phasing = _starved()
+    pdf = core.build_teaser_pdf(bundle, inputs, tep, phasing, SITE,
+                                (_map_png(), "Контур участка 77:01:0004023:15 · границы ЕГРН · подложка — карта улиц OpenStreetMap"))
+    first = PdfReader(io.BytesIO(pdf)).pages[0].extract_text()
+    assert "OpenStreetMap" in first and "карте НСПД" not in first
 
 
 def test_the_site_numbers_come_from_the_same_place_as_the_full_pdf():
