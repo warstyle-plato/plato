@@ -1,0 +1,275 @@
+"""Записи проекта — то, что мы знаем о модели, для Платона.
+
+Решение владельца: «инструкцию надо полностью пересмотреть, чтобы AI-агент знал
+всё, что есть у нас в логах» — то есть в наших записях: корневой CLAUDE.md,
+его архив `docs/CLAUDE_HISTORY_*.md` (туда переехали подробные правила),
+`docs/questions_backlog.md` и выжимки нормативов `docs/normative/*.md`.
+
+Почему не копией в промпт: записи весят больше миллиона знаков, в инструкцию
+они не влезают, а выжимка была бы второй копией — её негде обновлять, и она
+отстала бы так же, как отстала база методики. Поэтому источник один, читается
+лениво при вызове, а агент получает куски по запросу — тем же способом, каким
+`get_user_guide` читает руководство.
+
+**Наружу записи выходят обезличенными.** Платон отвечает пользователям, а в
+CLAUDE.md лежат номера кредитных договоров, кадастровые номера и адреса
+собственных проектов владельца — то же, из-за чего свод «Статистики» обезличен
+(решение 26.08.2026: «раскрытие комм. информации»). Правило то же и здесь:
+сырые файлы не трогаются, чистится точка выдачи. Гарантии по прозе нет, поэтому
+рядом стоит вторая защита — инструкция агента запрещает пересказывать записи
+наружу дословно; проверка меряет то, что можно измерить: в выдаче не остаётся
+ни номера договора, ни кадастрового номера, ни имени чужого проекта.
+"""
+
+from __future__ import annotations
+
+import math
+import re
+from pathlib import Path
+from typing import Any
+
+_ROOT = Path(__file__).resolve().parent
+# Правила живут в двух местах: короткий корневой CLAUDE.md и его архив, куда
+# переехали подробные разборы. Архив берётся маской, а не именем с датой:
+# следующий снимок иначе молча выпал бы из поиска.
+RULES_FILES = ("CLAUDE.md", "docs/CLAUDE_HISTORY_*.md")
+SOURCES = {
+    "rules": RULES_FILES,
+    "backlog": ("docs/questions_backlog.md",),
+}
+# Нормативная база: выжимки актов, сделанные нами по первичным документам, с
+# оговорками и ссылкой на источник у каждого числа. Сырое распознавание
+# (`*.ocr.txt`, 638 000 знаков) сюда НЕ идёт намеренно: в нём «№ 593-ПП»
+# читается как «593-11», а число, взятое из скана и названное нормой, выглядит
+# на экране ровно так же уверенно, как выверенное. Редакцию акта и ссылку на
+# первоисточник отдаёт реестр (`check_normatives`), и второй копии у него нет.
+NORMATIVE_DIR = _ROOT / "docs" / "normative"
+SOURCE_LABELS = {
+    "rules": "CLAUDE.md и его архив — правила, выведенные из поломок",
+    "backlog": "docs/questions_backlog.md — задачи и открытые вопросы",
+    "normative": "docs/normative — выжимки нормативных актов (текст города, не наше правило)",
+}
+
+# Бюджет выдачи: ответ уходит в диалог, где у вопроса свой предел, и пересланная
+# целиком запись в 4 000 знаков вытеснила бы сам вопрос. Обрезка называется
+# вслух — молча урезанная запись читается как полная.
+ANSWER_BUDGET = 6000
+ENTRY_BUDGET = 1800
+
+# Имена собственных проектов владельца: их адреса — коммерческая информация, и
+# один раз адрес уже вышел на пользовательскую поверхность. Список объявлен
+# здесь один раз; площадки КРТ в него не входят — они публичный каталог города.
+PRIVATE_PROJECT_NAMES = (
+    "Гродненская", "Кутузов Сити", "Кутузов-Сити", "Саввинская",
+    "Румянцево", "Мишина", "Мытищи",
+)
+_MASKS = (
+    (re.compile(r"\b400[A-Z0-9]{6,}\b"), "‹номер договора скрыт›"),
+    (re.compile(r"\b\d{2}:\d{2}:\d{6,7}:\d+"), "‹кадастровый номер скрыт›"),
+)
+# Три буквы, а не четыре: ГНС, СПП, ВРИ, ДОО, ПФ, СМР — это предмет вопроса, и
+# на пороге в четыре буквы они выпадали вместе со служебными «что» и «как».
+# Служебные отсекает список ниже, а не длина.
+_WORD = re.compile(r"[a-zа-яё0-9_]{3,}", re.I)
+# Слова, которыми задают вопрос, а не называют предмет. Редкость их не спасает:
+# «откуда» стоит в двух записях из четырёхсот, то есть весит больше, чем «llcr»,
+# и на вопрос «откуда берётся LLCR 1,20» первой приезжала запись про номера
+# владений. Отсекаются до взвешивания; если после отсечения не осталось ничего,
+# берутся все слова — пустой ответ хуже неточного.
+_QUESTION_WORDS = frozenset("""
+что как где кто чем без для при над под про эта это над них она они оно его ему
+почему откуда зачем какой какая какие какое когда чего чему этом этот эти
+такое такой такая значит нужно надо можно нельзя если тогда здесь везде всегда
+считается берётся берется решено сделано работает получается выходит бывает
+нашем нашей наших ваших вашем моей может должен должна должно хочу хотел
+""".split())
+
+
+def _stem(word: str) -> str:
+    """Основа слова — первые шесть букв.
+
+    Записи написаны прозой, и совпадения по целому слову в ней почти не бывает:
+    «благоустройство» из вопроса и «благоустраивают» из правила — разные строки,
+    как «двора» и «двор». Полноценная морфология тут не нужна и стоила бы
+    словаря; шести букв хватает, чтобы корень совпал, и мало, чтобы слиплись
+    разные корни. Проверяется поведением: вопрос о благоустройстве обязан
+    находить правило о дворе.
+    """
+    return word[:6]
+
+
+def redact(text: str) -> str:
+    """Убрать из куска записи то, чего пользователю видеть не следует."""
+    out = text
+    for pattern, replacement in _MASKS:
+        out = pattern.sub(replacement, out)
+    for name in PRIVATE_PROJECT_NAMES:
+        out = _name_pattern(name).sub("‹проект DevelopAid›", out)
+    return out
+
+
+def _name_pattern(name: str) -> re.Pattern[str]:
+    """Имя проекта во всех падежах: «на Гродненской» — тот же адрес.
+
+    Точная строка ловила только именительный падеж, а записи пишутся прозой.
+    Окончание последнего слова отрезается и заменяется любым хвостом букв.
+    """
+    words = name.split()
+    last = words[-1]
+    stem = last[:-2] if last.lower().endswith(("ая", "ое", "ий")) else (
+        last[:-1] if last[-1].lower() in "аеиоуыэюяй" else last)
+    head = [re.escape(word) for word in words[:-1]]
+    return re.compile(r"[\s-]".join(head + [re.escape(stem) + r"[а-яё]*"]), re.I)
+
+
+def _title_of(chunk: str) -> str:
+    bold = re.match(r"-\s+\*\*(.+?)\*\*", chunk, re.S)
+    if bold:
+        return " ".join(bold.group(1).split())
+    head = re.match(r"#+\s*(.+)", chunk)
+    if head:
+        return head.group(1).strip()
+    return " ".join(chunk.split()[:9])
+
+
+def _patterns(source: str | None = None) -> list[str]:
+    """Маски файлов записей относительно корня — для причины отказа и сборки."""
+    found = [pattern for key, patterns in SOURCES.items()
+             if not source or source == key for pattern in patterns]
+    if not source or source == "normative":
+        found.append(str(NORMATIVE_DIR.relative_to(_ROOT) / "*.md"))
+    return found
+
+
+def entries(source: str | None = None) -> list[dict[str, str]]:
+    """Записи как они написаны: одна запись — один пункт правила или раздел.
+
+    Резать по строкам нельзя: правило живёт абзацем, и половина правила хуже
+    его отсутствия — она выглядит целой.
+    """
+    found: list[dict[str, str]] = []
+    paths: list[tuple[str, Path]] = [
+        (key, path)
+        for key, patterns in SOURCES.items() if not source or source == key
+        for pattern in patterns for path in sorted(_ROOT.glob(pattern))
+    ]
+    if not source or source == "normative":
+        paths += [("normative", path) for path in sorted(NORMATIVE_DIR.glob("*.md"))]
+    for key, path in paths:
+        found.extend(_file_entries(key, path))
+    return found
+
+
+# Разбор файла в записи кэшируется по времени правки: архив весит больше
+# мегабайта, а спрашивают его на каждом вопросе. Изменённый файл читается
+# заново — устаревшая выдача хуже медленной.
+_CACHE: dict[Path, tuple[float, list[dict[str, str]]]] = {}
+
+
+def _file_entries(key: str, path: Path) -> list[dict[str, str]]:
+    try:
+        stamp = path.stat().st_mtime
+    except OSError:
+        return []
+    cached = _CACHE.get(path)
+    if cached and cached[0] == stamp:
+        return cached[1]
+    found: list[dict[str, str]] = []
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    # Нормативная выжимка написана разделами, а не пунктами списка: режется
+    # по заголовкам, иначе таблица норм уедет от строки, которая её вводит.
+    cuts = r"\n(?=#{1,3} )" if key == "normative" else r"\n(?=- \*\*|#{1,2} )"
+    for chunk in re.split(cuts, text):
+        body = chunk.strip()
+        if len(body) < 80:
+            continue
+        title = _title_of(body)
+        if key == "normative":
+            title = f"{path.stem}: {title}"
+        found.append({"source": key, "title": title, "text": body})
+    _CACHE[path] = (stamp, found)
+    return found
+
+
+def search(query: str, limit: int = 4, source: str | None = None) -> dict[str, Any]:
+    """Записи по запросу: сколько нашлось, сколько показано и почему столько."""
+    words = {w.lower() for w in _WORD.findall(str(query or ""))}
+    if not words:
+        return {"available": False, "reason": "Пустой запрос — искать нечего."}
+    meaningful = words - _QUESTION_WORDS
+    words = {_stem(word) for word in (meaningful or words)}
+    pool = entries(source)
+    if not pool:
+        # Файлов записей нет — это не «ничего не нашлось»: причина в сборке
+        # (`.dockerignore`), а не в вопросе, и называть её надо так.
+        return {
+            "available": False,
+            "reason": ("Записей проекта в этой сборке нет: файлы "
+                       f"{', '.join(_patterns(source))} не найдены на сервере."),
+        }
+    # Слово весит тем больше, чем оно реже: «почему», «что» и «считается» стоят
+    # в каждой второй записи и ранжируют наугад — первая версия по ним и
+    # выдавала «Вымывание отвечает на „почему не покупают"» на вопрос о
+    # благоустройстве. Редкое слово — и есть предмет вопроса.
+    везде = {word: sum(1 for entry in pool if word in entry["text"].lower())
+             for word in words}
+    total = max(1, len(pool))
+
+    def weight(word: str) -> float:
+        seen = везде.get(word, 0)
+        if not seen:
+            return 0.0
+        return math.log(total / seen) + 0.1
+
+    scored: list[tuple[float, dict[str, str]]] = []
+    for entry in pool:
+        haystack = entry["text"].lower()
+        title = entry["title"].lower()
+        # Заголовок весит втрое: правило названо своим зачином, и запись «про
+        # это» отличается от записи, где слово встретилось мимоходом.
+        # Частота в записи считается, но с потолком: правило, где слово стоит
+        # трижды, — про него, а где двадцать раз — не в семь раз «прошее».
+        # Без частоты вовсе все записи с LLCR весили одинаково, и на вопрос
+        # «откуда берётся LLCR 1,20» первой приезжала самая короткая из них.
+        score = sum(weight(word) * min(haystack.count(word), 3) for word in words)
+        score += 3 * sum(weight(word) for word in words if word in title)
+        if score:
+            scored.append((score, entry))
+    if not scored:
+        return {
+            "available": False,
+            "reason": f"В записях проекта ничего по запросу «{query}» не нашлось.",
+        }
+    scored.sort(key=lambda pair: (-pair[0], len(pair[1]["text"])))
+    shown: list[dict[str, str]] = []
+    spent = 0
+    for _score, entry in scored[:max(1, limit)]:
+        body = redact(entry["text"])
+        cut = ""
+        if len(body) > ENTRY_BUDGET:
+            body, cut = body[:ENTRY_BUDGET], " …запись обрезана"
+        if spent + len(body) > ANSWER_BUDGET and shown:
+            break
+        spent += len(body)
+        shown.append({
+            "source": SOURCE_LABELS[entry["source"]],
+            "title": redact(entry["title"]),
+            "text": body + cut,
+        })
+    return {
+        "available": True,
+        "query": query,
+        "found": len(scored),
+        "shown": len(shown),
+        "entries": shown,
+        "note": ("Записи трёх видов, и путать их нельзя: CLAUDE.md и архив — НАШИ правила и "
+                 "решения владельца, бэклог — открытые вопросы, docs/normative — "
+                 "выжимка НОРМАТИВНОГО акта города. Норму называй нормой и со "
+                 "ссылкой на акт (редакцию спрашивай у check_normatives), наше "
+                 "решение — нашим. Пользуйся записями, чтобы ответить верно, но не "
+                 "пересказывай их как документ и не называй чужие проекты, "
+                 "договоры и адреса."),
+    }
