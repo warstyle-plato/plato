@@ -37,7 +37,7 @@ from auction_search.adapters import (
     RoseltorgAdapter,
     SberbankASTAdapter,
 )
-from auction_search.adapters.torgi_gov import TorgiGovAdapter, trust_report as torgi_trust_report
+from auction_search.adapters.torgi_gov import TorgiGovAdapter, lot_status_ru, trust_report as torgi_trust_report
 from auction_search.adapters.etp_probe import (
     SLUGS as etp_slugs,
     probe as etp_probe,
@@ -83,10 +83,10 @@ from auction_search.profile_fit import profile_fit
 from auction_search.service import AuctionSearchService
 from auction_search import krt_territory, nagatino_parcels
 from auction_search import view_access as auction_view
+from auction_search import lot_notes as lot_notes_rules
 from auction_search import krt_early_projects
 from auction_search import krt_investment_score
 from auction_search.nagatino_ui import nagatino_page
-from auction_search.krt_nagatino_prototype import nagatino_investment_card_page
 from auction_search.krt_investment_card import krt_investment_card_page
 from auction_search.ui import auctions_page
 from market_search.krt_registry import CATALOGUE_URL, KrtRegistry
@@ -288,6 +288,34 @@ def _yandex_maps_href(address: str) -> str:
     return ("https://yandex.ru/maps/?text=" + urllib.parse.quote_plus(address)) if address else ""
 
 
+_XLSX_DATE_KEYS = ("application_start", "application_deadline", "auction_date")
+_XLSX_DATE_RE = re.compile(
+    r"^\s*(\d{1,2})\.(\d{1,2})\.(\d{4})(?:[ ,T]+(\d{1,2}):(\d{2}))?\s*$")
+
+
+def _xlsx_date(value: Any) -> datetime | None:
+    """Дата торгов из текста площадки — настоящей датой, чтобы Excel её сортировал.
+
+    Разбирается только однозначная форма «ДД.ММ.ГГГГ[ ЧЧ:ММ]»; всё прочее
+    («в течение месяца») остаётся текстом как есть — догадка о дате хуже текста.
+    """
+    match = _XLSX_DATE_RE.match(str(value or ""))
+    if not match:
+        return None
+    day, month, year, hour, minute = match.groups()
+    try:
+        return datetime(int(year), int(month), int(day),
+                        int(hour or 0), int(minute or 0))
+    except ValueError:
+        return None
+
+
+def _xlsx_safe_href(value: Any) -> str:
+    """В гиперссылку книги идёт только http(s): `javascript:` из данных — нет."""
+    text = str(value or "").strip()
+    return text if re.match(r"^https?://", text, re.I) else ""
+
+
 def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
     if kind == "krt":
         columns = [
@@ -368,6 +396,9 @@ def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
             ("days_to_deadline", "Дней до окончания заявок", 21),
             ("auction_date", "Дата торгов", 18),
             ("status", "Статус", 22),
+            # Комментарий Платона — из фонового разбора лота; выгрузка его только
+            # читает (`lot_notes`). Пустой клетки нет: у отсутствия — причина.
+            ("plato_comment", "Комментарий Платона: чем интересен, чем опасен, что пишут", 70),
             ("url", "Источник", 42),
         ]
         obligation_columns = []
@@ -400,6 +431,11 @@ def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
         "resettlement_mentions": '0',
     }
     wb = Workbook()
+    store = lot_notes_rules.LotNotes(os.path.join(os.getenv("DATA_DIR", "data"), "market"))
+    notes = store.notes() if kind != "krt" else {}
+    queue_place = ({lot["url"]: index for index, lot in enumerate(store.queue(), start=1)}
+                   if kind != "krt" else {})
+    lot_note_interval = lot_notes_rules.interval_seconds()
 
     def fill_sheet(ws, sheet_columns, title: str, table_name: str) -> None:
         ws.title = title
@@ -422,11 +458,27 @@ def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
                         area_sqm = parse_hectares_sqm(str(row.get("name") or ""))
                     row["krt_area_ha"] = (area_sqm / 10_000) if area_sqm is not None else ""
                 row["days_to_deadline"] = _days_to_application_deadline(row)
-            values = [
-                number(row.get(key)) if key in numeric_keys else (row.get(key) or "")
-                for key in keys
-            ]
+            # Снимки, сохранённые до перевода, несут код ГИС Торгов как есть.
+            row["status"] = lot_status_ru(row.get("status"))
+            if "plato_comment" in keys:
+                key = str(row.get("url") or "").strip()
+                row["plato_comment"] = lot_notes_rules.comment_for_book(
+                    notes.get(key), place=queue_place.get(key),
+                    interval_seconds=lot_note_interval)
+            values = []
+            for key in keys:
+                if key in numeric_keys:
+                    values.append(number(row.get(key)))
+                elif key in _XLSX_DATE_KEYS and _xlsx_date(row.get(key)) is not None:
+                    values.append(_xlsx_date(row.get(key)))
+                else:
+                    values.append(row.get(key) or "")
             ws.append(values)
+            # Текст площадки, начинающийся с «=», openpyxl пишет формулой:
+            # название лота исполнялось бы в Excel. Такой текст — строка.
+            for cell in ws[ws.max_row]:
+                if cell.data_type == "f":
+                    cell.data_type = "s"
 
         ws.freeze_panes = "A2"
         last_column = get_column_letter(len(sheet_columns))
@@ -440,32 +492,14 @@ def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
         ws.row_dimensions[1].height = 38
         for index, (_, _, width) in enumerate(sheet_columns, start=1):
             ws.column_dimensions[get_column_letter(index)].width = width
-        wrap_columns = {
-            index for index, (key, _, _) in enumerate(sheet_columns, start=1)
-            if key in {"name", "address", "cadastre", "status", "traffic_light", "url",
-                       "application_start", "application_deadline", "auction_date"}
-        }
-        numeric_columns = {
-            index for index, (key, _, _) in enumerate(sheet_columns, start=1)
-            if key in numeric_keys
-        }
-        for row in ws.iter_rows(min_row=2):
-            for cell in row:
-                cell.alignment = Alignment(
-                    horizontal="right" if cell.column in numeric_columns else "left",
-                    vertical="top", wrap_text=cell.column in wrap_columns)
-        for index, (key, _, _) in enumerate(sheet_columns, start=1):
-            if key in formats:
-                for cells in ws.iter_cols(min_col=index, max_col=index, min_row=2):
-                    for item in cells:
-                        item.number_format = formats[key]
         url_column = keys.index("url") + 1
         address_column = keys.index("address") + 1 if "address" in keys else None
         cadastre_column = keys.index("cadastre") + 1 if "cadastre" in keys else None
         for row_number in range(2, ws.max_row + 1):
             cell = ws.cell(row_number, url_column)
-            if cell.value:
-                cell.hyperlink = str(cell.value)
+            href = _xlsx_safe_href(cell.value)
+            if href:
+                cell.hyperlink = href
                 cell.style = "Hyperlink"
             if address_column:
                 address_cell = ws.cell(row_number, address_column)
@@ -479,6 +513,36 @@ def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
                 if href:
                     cadastre_cell.hyperlink = href
                     cadastre_cell.style = "Hyperlink"
+        # Стиль «Hyperlink» сбрасывает выравнивание и формат ячейки — поэтому
+        # перенос строк и форматы ставятся ПОСЛЕ ссылок: «Адрес» со ссылкой на
+        # карту иначе вытягивался в одну строку.
+        wrap_columns = {
+            index for index, (key, _, _) in enumerate(sheet_columns, start=1)
+            if key in {"name", "address", "cadastre", "status", "traffic_light", "url",
+                       "application_start", "application_deadline", "auction_date",
+                       "plato_comment"}
+        }
+        numeric_columns = {
+            index for index, (key, _, _) in enumerate(sheet_columns, start=1)
+            if key in numeric_keys
+        }
+        for row in ws.iter_rows(min_row=2):
+            for cell in row:
+                cell.alignment = Alignment(
+                    horizontal="right" if cell.column in numeric_columns else "left",
+                    vertical="top", wrap_text=cell.column in wrap_columns)
+        for index, (key, _, _) in enumerate(sheet_columns, start=1):
+            if key in _XLSX_DATE_KEYS:
+                for cells in ws.iter_cols(min_col=index, max_col=index, min_row=2):
+                    for item in cells:
+                        if isinstance(item.value, datetime):
+                            item.number_format = (
+                                "DD.MM.YYYY HH:MM"
+                                if (item.value.hour or item.value.minute) else "DD.MM.YYYY")
+            if key in formats:
+                for cells in ws.iter_cols(min_col=index, max_col=index, min_row=2):
+                    for item in cells:
+                        item.number_format = formats[key]
         if ws.max_row >= 2:
             table = Table(displayName=table_name, ref=f"A1:{last_column}{ws.max_row}")
             table.tableStyleInfo = TableStyleInfo(
@@ -933,6 +997,7 @@ def install(app: FastAPI) -> None:
         os.path.join(os.getenv("DATA_DIR", "data"), "market")
     )
     krt_ranking = KrtRanking(os.path.join(os.getenv("DATA_DIR", "data"), "market"))
+    lot_notes = lot_notes_rules.LotNotes(os.path.join(os.getenv("DATA_DIR", "data"), "market"))
     # Очередь новинок забирает движок (`/internal/krt/announcements`) — у него
     # общая с ботом подпись, а до api.telegram.org с ядра не дойти. Отдаём ему
     # ТОТ ЖЕ экземпляр каталога, который помечает площадки «новыми» на экране:
@@ -1189,6 +1254,14 @@ def install(app: FastAPI) -> None:
     def _auctions_gate_enabled() -> bool:
         return bool(auction_view.view_key())
 
+    def _view_only(request: Request) -> bool:
+        """Вошёл ограниченным ключом просмотра, без полного ключа кабинета."""
+        return bool(
+            _auctions_gate_enabled()
+            and auction_view.authorised(request)
+            and not market_cabinet.authorised(request)
+        )
+
     async def _auctions_view_gate(request: Request, call_next):
         path = request.url.path.rstrip("/") or "/"
         if path == "/auctions/login" or not _auctions_gate_enabled():
@@ -1216,23 +1289,14 @@ def install(app: FastAPI) -> None:
         # Новый ключ — именно право СМОТРЕТЬ. Полный MARKET_CABINET_KEY
         # продолжает работать как раньше и не попадает под эти ограничения.
         if view_access and not full_access:
-            if request.method not in ("GET", "HEAD", "OPTIONS"):
+            problem = auction_view.scope_problem(
+                request.method, path, request.query_params)
+            if problem:
                 return JSONResponse(
-                    {"detail": "Ограниченный ключ даёт только просмотр торгов и КРТ"},
+                    {"detail": problem},
                     status_code=403,
                     headers={"Cache-Control": "no-store"},
                 )
-            # Некоторые GET-маршруты умеют запускать обновление каталога.
-            # Для read-only пользователя флаг обновления не превращаем в запись
-            # только потому, что HTTP-метод формально GET.
-            for name in ("refresh", "force", "rebuild", "revoke"):
-                value = str(request.query_params.get(name) or "").strip().lower()
-                if value in ("1", "true", "yes", "on"):
-                    return JSONResponse(
-                        {"detail": "Ограниченный ключ не запускает обновление данных"},
-                        status_code=403,
-                        headers={"Cache-Control": "no-store"},
-                    )
         return await call_next(request)
 
     # Production устанавливает auction_search до первого запроса. Некоторые
@@ -1384,6 +1448,409 @@ def install(app: FastAPI) -> None:
         return {"price": price, "absorption": absorption, "segment": name}
 
 
+    def _is_nagatino(project: dict[str, Any]) -> bool:
+        """Контрольный кейс #485 узнаётся по паспорту, а не по нестабильному slug."""
+        text = " ".join(str(project.get(k) or "") for k in ("name", "address", "district"))
+        try:
+            area = float(project.get("area_ha") or 0)
+        except (TypeError, ValueError):
+            area = 0.0
+        return abs(area - 14.62) < 0.08 and bool(re.search(r"(нагатин|варшавск)", text, re.I))
+
+    def _burden_attempt_failed(exc: Exception) -> dict[str, Any]:
+        """Сбой попытки собрать нагрузку — не ответ «нагрузки нет»."""
+        return {
+            "available": False,
+            "pending": True,
+            "failed": True,
+            "checked_at": int(time.time()),
+            "retry_after_seconds": krt_investment_score.BURDEN_NETWORK_RETRY_SECONDS,
+            "reason": f"Сбор нагрузки не выполнен: {type(exc).__name__}: {exc}"[:300],
+        }
+
+    def _investment_rating(
+        project: dict[str, Any],
+        *,
+        row: dict[str, Any],
+        stored: dict[str, Any],
+        price_target_rub_sqm: float | None = None,
+        burden_state: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Единственная сборка инвестиционного рейтинга КРТ (#485).
+
+        Её зовут карточка, массовая кнопка и фоновый слой. Прежде у каждого
+        была своя копия: фон звал `score()` без медианных подстановок и
+        затирал оценку, записанную кнопкой, на «—»; прототип Нагатино брал
+        LLCR до нагрузки. Одно число — один владелец.
+
+        `burden_state` — свежая попытка собрать денежную нагрузку (явный
+        пересчёт или фон). None — попытки не было, читаем сохранённое.
+        Сбой или недочитанный ЕГРН не стирает прежде собранную нагрузку той же
+        версии методики: разовый 503 — не ответ «нагрузка неизвестна».
+        """
+        screening = dict(stored.get("screening") or {})
+        metrics = dict(screening.get("metrics") or {})
+        market_block = dict(stored.get("market") or screening.get("market_report") or {})
+
+        shared_target = krt_ranking.rating_target(
+            krt_investment_score.DEFAULT_PRICE_TARGET_RUB_SQM)
+        target = float(
+            price_target_rub_sqm if price_target_rub_sqm is not None else shared_target)
+
+        llcr = metrics.get("project_llcr_x")
+        if llcr is None:
+            llcr = row.get("project_llcr_x")
+        entry_capacity_mln = row.get("entry_capacity_mln")
+
+        # Цена окружения — ровно то число, которое рыночный скрининг признал
+        # ценой окружения (`market_price_rub_sqm` → `surrounding_price_rub_sqm`).
+        # Цену «доминирующего класса» из site_verdict правило v5 скрининга
+        # запретило; засчитывать её здесь как измеренную значило вернуть её
+        # в балл через заднюю дверь. Нет цены — прозрачная медиана ниже.
+        market_price = _positive_float(row.get("surrounding_price_rub_sqm"))
+        if market_price is None:
+            market_price = _positive_float(
+                (screening.get("market") or {}).get("market_price_rub_sqm"))
+
+        # Поглощение считается из свежих аналогов отчёта; сохранённое число —
+        # только когда аналогов в отчёте нет. Иначе однажды записанная медиана
+        # переживала любой пересчёт рынка.
+        peers = [p for p in (market_block.get("peers") or []) if isinstance(p, dict)]
+        areas: list[float] = []
+        for peer in peers:
+            try:
+                value = float(peer.get("area_per_month"))
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(value):
+                areas.append(value)
+        local_absorption = (
+            round(float(statistics.median(areas)), 1) if areas
+            else row.get("local_absorption_sqm_month")
+        )
+        comparison = dict(market_block.get("comparison") or {})
+        subject = dict(market_block.get("subject") or {})
+        segment = (
+            comparison.get("segment")
+            or subject.get("segment")
+            or row.get("investment_rating_segment")
+            or row.get("segment")
+            or (screening.get("market") or {}).get("recommended_segment")
+        )
+        benchmark_absorption = None
+        if market is not None:
+            reader = getattr(getattr(market, "city", None), "area_median", None)
+            if callable(reader):
+                benchmark_absorption = _positive_float(reader(segment))
+        if benchmark_absorption is None:
+            benchmark_absorption = _positive_float(row.get("moscow_absorption_sqm_month"))
+
+        # --- денежная нагрузка --------------------------------------------
+        current_pipeline = int(krt_investment_score.BURDEN_PIPELINE_VERSION)
+        row_burden_ok = (
+            row.get("burden_complete") is True
+            and int(row.get("burden_pipeline_version") or 0) >= current_pipeline
+            and row.get("burden_pct") is not None
+        )
+        burden_pct = None
+        burden_mln = None
+        ordinary_capex_mln = row.get("ordinary_capex_mln")
+        burden_complete = False
+        burden_components: dict[str, Any] = {}
+        burden_reason = str(row.get("burden_reason") or "")
+        burden_llcr = None
+        burden_entry = None
+
+        def take_row() -> None:
+            nonlocal burden_pct, burden_mln, ordinary_capex_mln, burden_complete
+            nonlocal burden_components, burden_llcr, burden_entry
+            burden_pct = row.get("burden_pct")
+            burden_mln = row.get("burden_mln")
+            ordinary_capex_mln = row.get("ordinary_capex_mln")
+            burden_complete = True
+            burden_components = dict(row.get("burden_components") or {})
+            burden_llcr = row.get("burden_llcr_x")
+            burden_entry = row.get("burden_entry_capacity_mln")
+
+        early = bool(project.get("early_unpublished"))
+        state = dict(burden_state or {})
+        if early:
+            # У раннего сигнала известна отдельная оценка изъятия, но это НЕ
+            # весь денежный стек КРТ: частичное число не становится полным.
+            model_inputs = dict(screening.get("model_inputs") or {})
+            if ordinary_capex_mln is None and model_inputs and core is not None:
+                try:
+                    ordinary_capex_mln = krt_investment_score._ordinary_capex(
+                        core,
+                        dict(model_inputs.get("inputs") or {}),
+                        dict(model_inputs.get("tep") or {}),
+                        dict(model_inputs.get("phasing") or {}),
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception("Early KRT ordinary CAPEX failed slug=%s",
+                                     project.get("slug"))
+            if project.get("burden_complete") is True:
+                early_burden = _positive_float(project.get("seizure_mln"))
+                if early_burden and ordinary_capex_mln and float(ordinary_capex_mln) > 0:
+                    burden_mln = early_burden
+                    burden_pct = 100.0 * early_burden / float(ordinary_capex_mln)
+                    burden_complete = True
+        elif burden_state is None:
+            if row_burden_ok:
+                take_row()
+        elif state.get("available"):
+            burden_pct = state.get("burden_pct")
+            burden_mln = state.get("burden_mln")
+            ordinary_capex_mln = state.get("ordinary_capex_mln")
+            burden_complete = burden_pct is not None
+            burden_components = dict(state.get("components") or {})
+            burden_llcr = state.get("project_llcr_x")
+            burden_entry = state.get("entry_capacity_mln")
+            burden_reason = ""
+        else:
+            burden_reason = str(state.get("reason") or "")
+            if (state.get("pending") or state.get("failed")) and row_burden_ok:
+                take_row()
+
+        control: dict[str, Any] = {}
+        if _is_nagatino(project) and core is not None:
+            try:
+                control = krt_investment_score.nagatino_live_example(core)
+            except Exception:  # noqa: BLE001
+                logger.exception("Nagatino control burden failed")
+                control = {}
+            # Контрольный кейс заполняет только нагрузку, и только полную:
+            # LLCR и потолок остаются у настоящей модели проекта.
+            if control.get("available") and control.get("burden_pct") is None:
+                burden_reason = str(control.get("burden_reason") or burden_reason)
+            if control.get("available") and control.get("burden_pct") is not None:
+                stack = control.get("cost_stack") or {}
+                burden_pct = control.get("burden_pct")
+                burden_mln = stack.get("total_known_mln")
+                ordinary_capex_mln = control.get("ordinary_capex_mln")
+                burden_complete = True
+                burden_components = dict(stack)
+                burden_reason = ""
+
+        if burden_complete:
+            if burden_llcr is not None:
+                llcr = burden_llcr
+            if burden_entry is not None:
+                entry_capacity_mln = burden_entry
+
+        status_kind = str(project.get("status_kind") or "").strip().lower()
+        if not status_kind:
+            status_kind = (
+                "running" if _krt_status_kind(project.get("status")) == "running"
+                else "planned"
+            )
+
+        # Факт и оценка разделены: coverage считает только реальные входы
+        # площадки, а отсутствующий вход получает прозрачную медиану.
+        observed_components: set[str] = set()
+        if llcr is not None:
+            observed_components.add("llcr")
+        if market_price is not None:
+            observed_components.add("price")
+        if local_absorption is not None and benchmark_absorption is not None:
+            observed_components.add("absorption")
+        if burden_pct is not None:
+            observed_components.add("burden")
+
+        catalogue_medians = _rating_catalogue_medians()
+        city_reference = _city_rating_reference(segment)
+        imputed_components: dict[str, str] = {}
+        deferred_components: dict[str, str] = {}
+        segment_label = segment or "все классы"
+        least = krt_investment_score.MIN_MEDIAN_SAMPLE
+
+        def catalogue_median(key: str, label: str) -> Any:
+            """Медиана каталога — ответ, только если под ней хватает площадок.
+
+            Порог один на все четыре медианы (`MIN_MEDIAN_SAMPLE`). Не дотянув,
+            составляющая откладывается с причиной, а не подставляется числом
+            одной-двух строк.
+            """
+            item = catalogue_medians[key]
+            count = int(item.get("count") or 0)
+            if item.get("value") is None or count < least:
+                deferred_components[key] = (
+                    f"медиана {label} посчитана по {count} площадкам каталога, "
+                    f"нужно не меньше {least} — составляющая отложена"
+                )
+                return None
+            imputed_components[key] = f"медиана {label} рассчитанных КРТ, n={count}"
+            return item.get("value")
+
+        score_llcr = llcr
+        if score_llcr is None:
+            score_llcr = catalogue_median("llcr", "LLCR")
+
+        score_market_price = market_price
+        if score_market_price is None:
+            score_market_price = city_reference.get("price")
+            if score_market_price is not None:
+                imputed_components["price"] = f"медиана цены Москвы, {segment_label}"
+            else:
+                score_market_price = catalogue_median("price", "цены")
+
+        score_benchmark_absorption = benchmark_absorption
+        if score_benchmark_absorption is None:
+            score_benchmark_absorption = city_reference.get("absorption")
+        score_local_absorption = local_absorption
+        if score_local_absorption is None and score_benchmark_absorption is not None:
+            score_local_absorption = score_benchmark_absorption
+            imputed_components["absorption"] = (
+                f"локальных данных нет — медиана поглощения Москвы, {segment_label}")
+        elif score_local_absorption is None:
+            score_local_absorption = catalogue_median("absorption", "поглощения")
+            if score_local_absorption is not None:
+                score_benchmark_absorption = (
+                    score_benchmark_absorption or score_local_absorption)
+        elif benchmark_absorption is None and score_benchmark_absorption is not None:
+            imputed_components["absorption"] = (
+                f"эталон — медиана поглощения Москвы, {segment_label}")
+
+        # Поглощение считается ПАРОЙ, и неполная пара — тоже пропуск. Случай
+        # «локальная медиана есть, эталона нет» не был разобран ни одной из
+        # ветвей выше: составляющая молча уходила в missing, без подстановки и
+        # без названной причины. Замер прода 27.09.2026 подстановкой живых
+        # строк: две площадки из 365 теряли балл именно так.
+        if score_benchmark_absorption is None and score_local_absorption is not None:
+            score_benchmark_absorption = catalogue_median(
+                "absorption", "поглощения")
+            if score_benchmark_absorption is not None:
+                imputed_components["absorption"] = (
+                    "эталона Москвы по классу нет — "
+                    + imputed_components["absorption"])
+
+        score_burden_pct = burden_pct
+        if score_burden_pct is None:
+            score_burden_pct = catalogue_median("burden", "нагрузки полностью")
+
+        missing_reasons: dict[str, str] = {}
+        if local_absorption is None or benchmark_absorption is None:
+            missing_reasons["absorption"] = (
+                "Нужна пара м²/мес.: локальная медиана и медиана Москвы по классу. "
+                "Сохранённые ДДУ/мес. не подменяют эту меру."
+            )
+        if burden_pct is None:
+            if early and project.get("seizure_mln") is not None:
+                missing_reasons["burden"] = (
+                    f"Известна только предварительная оценка изъятия "
+                    f"{project.get('seizure_mln')} млн ₽; полный денежный стек КРТ "
+                    "ещё не собран, поэтому нагрузка остаётся unknown."
+                )
+            else:
+                missing_reasons["burden"] = (
+                    str(control.get("reason") or "") if control and not control.get("available")
+                    else ""
+                ) or burden_reason or (
+                    "Полная денежная нагрузка КРТ пока не собрана для этой площадки; "
+                    "неизвестное не считается нулём."
+                )
+
+        peer_count = len([p for p in peers if p.get("area_per_month") is not None])
+        rating = krt_investment_score.score(
+            status_kind=status_kind,
+            llcr=score_llcr,
+            market_rub_sqm=score_market_price,
+            target_rub_sqm=target,
+            local_sqm_month=score_local_absorption,
+            benchmark_sqm_month=score_benchmark_absorption,
+            burden_pct=score_burden_pct,
+            burden_mln=burden_mln,
+            ordinary_capex_mln=ordinary_capex_mln,
+            housing_gfa_sqm=project.get("housing_gfa_sqm") or row.get("housing_gfa_sqm"),
+            entry_capacity_mln=entry_capacity_mln,
+            sources={
+                "llcr": "DevelopAid financial engine",
+                "price": "рынок 3 км",
+                "absorption": (
+                    f"Pulse: медиана {peer_count} аналогов 3 км / Москва, "
+                    f"класс {segment or 'не определён'}, м²/мес."
+                ),
+                "burden": (
+                    "ранний сигнал: известна лишь часть нагрузки; полный стек не подтверждён"
+                    if early
+                    else "ЕГРН + обязательства КРТ + DevelopAid ordinary CAPEX"
+                ),
+            },
+            missing_reasons=missing_reasons,
+            observed_components=observed_components,
+            imputed_components=imputed_components,
+            deferred_components=deferred_components,
+        )
+        # Карточка и таблица читают один и тот же результат. Храним только
+        # компактный summary, а не всю методику #485 на каждой строке.
+        stored_rating = {
+            key: rating.get(key) for key in
+            ("score", "display_score", "coverage_pct", "rankable", "reason",
+             "missing", "imputed", "deferred")
+        }
+        stored_rating["components"] = {
+            key: {
+                "name": value.get("name"),
+                "score": value.get("score"),
+                "value": value.get("value"),
+                "benchmark": value.get("benchmark"),
+                "ratio": value.get("ratio"),
+                "estimated": bool(value.get("estimated")),
+                "estimate_source": value.get("estimate_source"),
+                "deferred": bool(value.get("deferred")),
+            }
+            for key, value in (rating.get("components") or {}).items()
+        }
+        now = int(time.time())
+        burden_fields = {
+            # Поля нужны и с None: remember() обязан очистить старую
+            # ошибочную «полную нагрузку» после смены методики.
+            "burden_pct": burden_pct,
+            "burden_mln": burden_mln,
+            "ordinary_capex_mln": ordinary_capex_mln,
+            "burden_pipeline_version": current_pipeline,
+            "burden_checked_at": int(
+                state.get("checked_at") or row.get("burden_checked_at") or now),
+            "burden_pending": bool(
+                state.get("pending") if burden_state is not None
+                else row.get("burden_pending")),
+            "burden_retry_after_seconds": int(
+                state.get("retry_after_seconds")
+                or row.get("burden_retry_after_seconds")
+                or krt_investment_score.BURDEN_RETRY_SECONDS),
+            "burden_complete": bool(burden_complete and burden_pct is not None),
+            "burden_reason": "" if burden_complete else burden_reason,
+            "burden_components": burden_components,
+            "burden_llcr_x": (
+                burden_llcr if burden_complete and burden_llcr is not None else None),
+            "burden_entry_capacity_mln": (
+                burden_entry if burden_complete and burden_entry is not None else None),
+        }
+        rating_fields = {
+            "investment_rating": stored_rating,
+            "investment_rating_version": str(
+                (rating.get("methodology") or {}).get("version") or ""),
+            "investment_rating_target_rub_sqm": target,
+            "investment_rating_computed_at": now,
+            "local_absorption_sqm_month": local_absorption,
+            "moscow_absorption_sqm_month": benchmark_absorption,
+            "investment_rating_segment": segment,
+        }
+        return {
+            "rating": rating,
+            "control_case": control,
+            "canonical": abs(target - float(shared_target)) < 0.5,
+            "canonical_target_rub_sqm": shared_target,
+            "burden_fields": burden_fields,
+            "fields": {**rating_fields, **burden_fields},
+            "absorption": {
+                "local_median_sqm_month": local_absorption,
+                "moscow_median_sqm_month": benchmark_absorption,
+                "segment": segment,
+                "peer_count": peer_count,
+            },
+        }
+
     @app.get("/auctions/krt/{slug}/investment-score", include_in_schema=False)
     async def auction_krt_investment_score(
         slug: str,
@@ -1453,621 +1920,72 @@ def install(app: FastAPI) -> None:
             row = krt_ranking.stored_row(slug)
             stored = krt_ranking.report(slug) or {}
             screening = dict(stored.get("screening") or fresh_for_store)
-        metrics = dict(screening.get("metrics") or {})
-        market_block = dict(stored.get("market") or {})
-        analysis = dict(market_block.get("analysis") or {})
-        site = dict(analysis.get("site") or analysis.get("overall") or {})
-        hint = dict(market_block.get("price_hint") or {})
-
-        shared_target = krt_ranking.rating_target(
-            krt_investment_score.DEFAULT_PRICE_TARGET_RUB_SQM)
-        price_target_rub_sqm = float(
-            price_target_rub_sqm if price_target_rub_sqm is not None else shared_target)
-
-        llcr = metrics.get("project_llcr_x", row.get("project_llcr_x"))
-        market_price = row.get("surrounding_price_rub_sqm")
-        if market_price is None:
-            market_price = site.get("price_per_sqm", hint.get("price_per_sqm"))
-        # Предварительный ориентир из раннего сигнала показывается как справка,
-        # но не подменяет production-рынок 3 км. Если Pulse ещё не собран,
-        # ценовой компонент остаётся unknown и честно снижает coverage.
-
-        # #485: поглощение считается в м²/мес. Нужные числа УЖЕ есть
-        # в production market report: каждый peer несёт Pulse area_per_month.
-        # Прежняя связка смотрела только в строку ranking, куда эти поля никогда
-        # не записывались, поэтому карточка показывала coverage 75% при полностью
-        # посчитанном рынке.
-        local_absorption = row.get("local_absorption_sqm_month")
-        benchmark_absorption = _positive_float(row.get("moscow_absorption_sqm_month"))
-        peers = list(market_block.get("peers") or [])
-        if local_absorption is None:
-            areas = []
-            for peer in peers:
-                try:
-                    value = peer.get("area_per_month")
-                    if value is not None:
-                        areas.append(float(value))
-                except (TypeError, ValueError, AttributeError):
-                    continue
-            if areas:
-                local_absorption = round(float(statistics.median(areas)), 1)
-        comparison = dict(market_block.get("comparison") or {})
-        subject = dict(market_block.get("subject") or {})
-        segment = (
-            comparison.get("segment")
-            or subject.get("segment")
-            or row.get("segment")
-            or (screening.get("market") or {}).get("recommended_segment")
-        )
-        if benchmark_absorption is None and market is not None:
-            city = getattr(market, "city", None)
-            reader = getattr(city, "area_median", None)
-            if callable(reader):
-                benchmark_absorption = _positive_float(reader(segment))
-
-        burden_pct = row.get("burden_pct")
-        burden_mln = row.get("burden_mln")
-        ordinary_capex_mln = row.get("ordinary_capex_mln")
-        entry_capacity_mln = row.get("entry_capacity_mln")
-        # Фоновый generic burden уже пересчитал baseline LLCR с известной
-        # нагрузкой. Карточка не должна возвращаться к старому LLCR «до
-        # обязательств», иначе один и тот же рейтинг показывает два исходных
-        # числа в таблице и в расшифровке.
-        if row.get("burden_complete"):
-            if row.get("burden_llcr_x") is not None:
-                llcr = row.get("burden_llcr_x")
-            if row.get("burden_entry_capacity_mln") is not None:
-                entry_capacity_mln = row.get("burden_entry_capacity_mln")
-
-        # У раннего сигнала известна отдельная оценка изъятия, но это НЕ весь
-        # денежный стек КРТ. Не превращаем частичное число в 100% coverage:
-        # соцобъекты, сети и иные обязательства из заметок ещё не оценены.
-        if project.get("early_unpublished"):
-            burden_pct = None
-            burden_mln = None
-            model_inputs = dict(screening.get("model_inputs") or {})
-            if ordinary_capex_mln is None and model_inputs:
-                try:
-                    ordinary_capex_mln = await run_in_threadpool(
-                        krt_investment_score._ordinary_capex,
-                        core,
-                        dict(model_inputs.get("inputs") or {}),
-                        dict(model_inputs.get("tep") or {}),
-                        dict(model_inputs.get("phasing") or {}),
-                    )
-                except Exception:  # noqa: BLE001
-                    logger.exception("Early KRT ordinary CAPEX failed slug=%s", slug)
-            if project.get("burden_complete") is True:
-                try:
-                    early_burden = float(project.get("seizure_mln"))
-                except (TypeError, ValueError):
-                    early_burden = 0.0
-                if early_burden > 0 and ordinary_capex_mln and float(ordinary_capex_mln) > 0:
-                    burden_mln = early_burden
-                    burden_pct = 100.0 * early_burden / float(ordinary_capex_mln)
-
-        # Критическая часть массовой кнопки: построить не только рынок+модель,
-        # но и четвёртый компонент #485. До этой правки endpoint вообще не звал
-        # generic_project_burden; поэтому у всего каталога получались 50/75% и
-        # единственный полный рейтинг Нагатино из отдельного control-case.
-        burden_state: dict[str, Any] = {}
+        # Явный пересчёт (массовая кнопка) достраивает четвёртый компонент
+        # #485 — денежную нагрузку. Без него у всего каталога выходили 50/75%.
+        burden_state: dict[str, Any] | None = None
         if ensure_model and not project.get("early_unpublished") and screening.get("available"):
             try:
+                # Пустой ответ — попытки не было (движок не подключён), а не
+                # «нагрузки нет»: сохранённое остаётся как есть.
                 burden_state = await run_in_threadpool(
-                    _explicit_rating_burden, project, screening)
+                    _explicit_rating_burden, project, screening) or None
             except Exception as exc:  # noqa: BLE001
                 logger.exception("Explicit KRT burden failed slug=%s", slug)
-                burden_state = {
-                    "available": False,
-                    "pending": False,
-                    "checked_at": int(time.time()),
-                    "retry_after_seconds": 24 * 60 * 60,
-                    "reason": f"{type(exc).__name__}: {exc}",
-                }
+                burden_state = _burden_attempt_failed(exc)
 
-            burden_pct = None
-            burden_mln = None
-            if burden_state.get("available"):
-                burden_pct = burden_state.get("burden_pct")
-                burden_mln = burden_state.get("burden_mln")
-                ordinary_capex_mln = burden_state.get("ordinary_capex_mln")
-                if burden_state.get("project_llcr_x") is not None:
-                    llcr = burden_state.get("project_llcr_x")
-                if burden_state.get("entry_capacity_mln") is not None:
-                    entry_capacity_mln = burden_state.get("entry_capacity_mln")
-
-            await run_in_threadpool(
-                krt_ranking.remember,
-                slug,
-                {
-                    "burden_pct": burden_pct,
-                    "burden_mln": burden_mln,
-                    "ordinary_capex_mln": ordinary_capex_mln,
-                    "burden_pipeline_version": krt_investment_score.BURDEN_PIPELINE_VERSION,
-                    "burden_checked_at": int(
-                        burden_state.get("checked_at") or time.time()),
-                    "burden_pending": bool(burden_state.get("pending")),
-                    "burden_retry_after_seconds": int(
-                        burden_state.get("retry_after_seconds") or 24 * 60 * 60),
-                    "burden_complete": bool(
-                        burden_state.get("available") or burden_pct is not None),
-                    "burden_reason": str(burden_state.get("reason") or ""),
-                    "burden_components": burden_state.get("components") or {},
-                    "burden_llcr_x": (
-                        llcr if burden_state.get("available") and llcr is not None else None
-                    ),
-                    "burden_entry_capacity_mln": (
-                        entry_capacity_mln
-                        if burden_state.get("available") and entry_capacity_mln is not None
-                        else None
-                    ),
-                },
-            )
-            row = krt_ranking.stored_row(slug)
-
-        # Пока полный денежный стек собран только для контрольного кейса
-        # Нагатино. Узнаём его по самому паспорту, а не по нестабильному slug.
-        text = " ".join(str(project.get(k) or "") for k in ("name", "address", "district"))
-        try:
-            area = float(project.get("area_ha") or 0)
-        except (TypeError, ValueError):
-            area = 0.0
-        control = {}
-        if abs(area - 14.62) < 0.08 and re.search(r"(нагатин|варшавск)", text, re.I):
-            control = await run_in_threadpool(
-                krt_investment_score.nagatino_live_example, core)
-            if control.get("available"):
-                # nagatino_live_example is a CONTROL CASE from #485, not a
-                # second production project. It may fill the burden
-                # numerator/denominator while the generic burden pipeline is
-                # being completed, but it must never replace the LLCR or entry
-                # capacity of the actual project already calculated by
-                # DevelopAid. Replacing it produced 0.984x while the same
-                # project/report showed 1.231x.
-                stack = control.get("cost_stack") or {}
-                burden_pct = control.get("burden_pct")
-                burden_mln = stack.get("total_known_mln")
-                ordinary_capex_mln = control.get("ordinary_capex_mln")
-
-        status_kind = str(project.get("status_kind") or "").strip().lower()
-        if not status_kind:
-            status_kind = "running" if "реализац" in str(project.get("status") or "").casefold() else "planned"
-
-        # Рейтинг нужен как сравнительный индекс всего каталога, а не как
-        # бинарная проверка полноты. Факт и оценка разделены: coverage считает
-        # только реальные входы площадки, а отсутствующий вход получает
-        # прозрачную медианную подстановку.
-        observed_components: set[str] = set()
-        if llcr is not None:
-            observed_components.add("llcr")
-        if market_price is not None:
-            observed_components.add("price")
-        if local_absorption is not None and benchmark_absorption is not None:
-            observed_components.add("absorption")
-        if burden_pct is not None:
-            observed_components.add("burden")
-
-        catalogue_medians = _rating_catalogue_medians()
-        city_reference = _city_rating_reference(segment)
-        imputed_components: dict[str, str] = {}
-
-        score_llcr = llcr
-        if score_llcr is None:
-            item = catalogue_medians["llcr"]
-            score_llcr = item.get("value")
-            if score_llcr is not None:
-                imputed_components["llcr"] = (
-                    f"медиана LLCR рассчитанных КРТ, n={item.get('count') or 0}"
-                )
-
-        score_market_price = market_price
-        if score_market_price is None:
-            score_market_price = city_reference.get("price")
-            if score_market_price is not None:
-                label = segment or "все классы"
-                imputed_components["price"] = f"медиана цены Москвы, {label}"
-            else:
-                item = catalogue_medians["price"]
-                score_market_price = item.get("value")
-                if score_market_price is not None:
-                    imputed_components["price"] = (
-                        f"медиана цены рассчитанных КРТ, n={item.get('count') or 0}"
-                    )
-
-        score_benchmark_absorption = benchmark_absorption
-        if score_benchmark_absorption is None:
-            score_benchmark_absorption = city_reference.get("absorption")
-        score_local_absorption = local_absorption
-        if score_local_absorption is None and score_benchmark_absorption is not None:
-            score_local_absorption = score_benchmark_absorption
-            label = segment or "все классы"
-            imputed_components["absorption"] = (
-                f"локальных данных нет — медиана поглощения Москвы, {label}"
-            )
-        elif score_local_absorption is None:
-            item = catalogue_medians["absorption"]
-            score_local_absorption = item.get("value")
-            if score_local_absorption is not None:
-                score_benchmark_absorption = (
-                    score_benchmark_absorption or score_local_absorption
-                )
-                imputed_components["absorption"] = (
-                    f"медиана поглощения рассчитанных КРТ, n={item.get('count') or 0}"
-                )
-        elif benchmark_absorption is None and score_benchmark_absorption is not None:
-            imputed_components["absorption"] = (
-                f"эталон — медиана поглощения Москвы, {segment or 'все классы'}"
-            )
-
-        score_burden_pct = burden_pct
-        if score_burden_pct is None:
-            item = catalogue_medians["burden"]
-            score_burden_pct = item.get("value")
-            if score_burden_pct is not None:
-                imputed_components["burden"] = (
-                    f"медиана нагрузки полностью рассчитанных КРТ, n={item.get('count') or 0}"
-                )
-
-        missing_reasons: dict[str, str] = {}
-        if local_absorption is None or benchmark_absorption is None:
-            missing_reasons["absorption"] = (
-                "Нужна пара м²/мес.: локальная медиана и медиана Москвы по классу. "
-                "Сохранённые ДДУ/мес. не подменяют эту меру."
-            )
-        stored_burden_reason = str(row.get("burden_reason") or "")
-        if burden_pct is None:
-            if project.get("early_unpublished") and project.get("seizure_mln") is not None:
-                missing_reasons["burden"] = (
-                    f"Известна только предварительная оценка изъятия "
-                    f"{project.get('seizure_mln')} млн ₽; полный денежный стек КРТ "
-                    "ещё не собран, поэтому нагрузка остаётся unknown."
-                )
-            else:
-                missing_reasons["burden"] = (
-                    str((burden_state or {}).get("reason") or stored_burden_reason)
-                    or "Полная денежная нагрузка КРТ пока не собрана для этой площадки; "
-                       "неизвестное не считается нулём."
-                )
-
-        rating = krt_investment_score.score(
-            status_kind=status_kind,
-            llcr=score_llcr,
-            market_rub_sqm=score_market_price,
-            target_rub_sqm=price_target_rub_sqm,
-            local_sqm_month=score_local_absorption,
-            benchmark_sqm_month=score_benchmark_absorption,
-            burden_pct=score_burden_pct,
-            burden_mln=burden_mln,
-            ordinary_capex_mln=ordinary_capex_mln,
-            housing_gfa_sqm=project.get("housing_gfa_sqm") or row.get("housing_gfa_sqm"),
-            entry_capacity_mln=entry_capacity_mln,
-            sources={
-                "llcr": "DevelopAid financial engine",
-                "price": "рынок 3 км",
-                "absorption": (
-                    f"Pulse: медиана {len([p for p in peers if isinstance(p, dict) and p.get('area_per_month') is not None])} "
-                    f"аналогов 3 км / Москва, класс {segment or 'не определён'}, м²/мес."
-                ),
-                "burden": (
-                    "ранний сигнал: известна лишь часть нагрузки; полный стек не подтверждён"
-                    if project.get("early_unpublished")
-                    else "ЕГРН + обязательства КРТ + DevelopAid ordinary CAPEX"
-                ),
-            },
-            missing_reasons=missing_reasons,
-            observed_components=observed_components,
-            imputed_components=imputed_components,
-        )
-        # Карточка и таблица читают один и тот же результат. Храним только
-        # компактный summary, а не всю методику #485 на каждой строке.
-        stored_rating = {
-            key: rating.get(key) for key in
-            ("score", "display_score", "coverage_pct", "rankable", "reason", "missing", "imputed")
-        }
-        stored_rating["components"] = {
-            key: {
-                "name": value.get("name"),
-                "score": value.get("score"),
-                "value": value.get("value"),
-                "benchmark": value.get("benchmark"),
-                "ratio": value.get("ratio"),
-                "estimated": bool(value.get("estimated")),
-                "estimate_source": value.get("estimate_source"),
-            }
-            for key, value in (rating.get("components") or {}).items()
-        }
-        canonical_target = shared_target
-        canonical = abs(float(price_target_rub_sqm) - float(canonical_target)) < 0.5
+        result = await run_in_threadpool(
+            lambda: _investment_rating(
+                project,
+                row=row,
+                stored=stored,
+                price_target_rub_sqm=price_target_rub_sqm,
+                burden_state=burden_state,
+            ))
+        rating = result["rating"]
+        canonical = bool(result["canonical"])
+        # Ключ «только просмотр» читает, но в общий каталог не пишет.
+        may_write = not _view_only(request)
         # В общий каталог записывается только канонический рейтинг. Сценарий,
         # который пользователь крутит в карточке другим ориентиром, не должен
-        # менять цифру у всех остальных пользователей.
-        if canonical:
-            await run_in_threadpool(
-                krt_ranking.remember,
-                slug,
-                {
-                    "investment_rating": stored_rating,
-                    "investment_rating_version": str(
-                        (rating.get("methodology") or {}).get("version") or ""),
-                    "investment_rating_target_rub_sqm": price_target_rub_sqm,
-                    "investment_rating_computed_at": int(time.time()),
-                    "local_absorption_sqm_month": local_absorption,
-                    "moscow_absorption_sqm_month": benchmark_absorption,
-                    "investment_rating_segment": segment,
-                    "burden_pct": burden_pct,
-                    "burden_mln": burden_mln,
-                    "ordinary_capex_mln": ordinary_capex_mln,
-                    "burden_pipeline_version": krt_investment_score.BURDEN_PIPELINE_VERSION,
-                    "burden_checked_at": int(
-                        (burden_state or {}).get("checked_at") or row.get("burden_checked_at") or time.time()),
-                    "burden_pending": bool(
-                        (burden_state or {}).get("pending") or row.get("burden_pending")),
-                    "burden_retry_after_seconds": int(
-                        (burden_state or {}).get("retry_after_seconds")
-                        or row.get("burden_retry_after_seconds") or 24 * 60 * 60),
-                    "burden_complete": bool(
-                        (burden_state or {}).get("available")
-                        or row.get("burden_complete")
-                        or burden_pct is not None),
-                    "burden_reason": str(
-                        (burden_state or {}).get("reason") or row.get("burden_reason") or ""),
-                    "burden_components": (
-                        (burden_state or {}).get("components")
-                        or row.get("burden_components") or {}),
-                    "burden_llcr_x": (
-                        llcr if burden_pct is not None and llcr is not None
-                        else row.get("burden_llcr_x")
-                    ),
-                    "burden_entry_capacity_mln": (
-                        entry_capacity_mln
-                        if burden_pct is not None and entry_capacity_mln is not None
-                        else row.get("burden_entry_capacity_mln")
-                    ),
-                },
-            )
+        # менять цифру у всех остальных; собранная явным пересчётом нагрузка —
+        # факт площадки и пишется при любом ориентире.
+        if may_write and canonical:
+            await run_in_threadpool(krt_ranking.remember, slug, result["fields"])
+        elif may_write and burden_state is not None:
+            await run_in_threadpool(krt_ranking.remember, slug, result["burden_fields"])
         return {
             "slug": slug,
             "rating": rating,
             "canonical": canonical,
-            "canonical_target_rub_sqm": canonical_target,
-            "control_case": control,
+            "canonical_target_rub_sqm": result["canonical_target_rub_sqm"],
+            "control_case": result["control_case"],
             "imputation": rating.get("imputed") or [],
-            "absorption": {
-                "local_median_sqm_month": local_absorption,
-                "moscow_median_sqm_month": benchmark_absorption,
-                "segment": segment,
-                "peer_count": len([
-                    p for p in peers
-                    if isinstance(p, dict) and p.get("area_per_month") is not None
-                ]),
-            },
+            "absorption": result["absorption"],
         }
 
-    @app.get("/auctions/krt-prototype/nagatino", response_class=HTMLResponse, include_in_schema=False)
-    async def auction_krt_nagatino_prototype() -> HTMLResponse:
-        """Большая карточка Нагатино внутри того же runtime, что рынок и модель."""
-        return HTMLResponse(
-            nagatino_investment_card_page(
-                guide.legal_footer_html(core) if core is not None else ""),
+    @app.get("/auctions/krt-prototype/nagatino", include_in_schema=False)
+    async def auction_krt_nagatino_prototype() -> Response:
+        """Прежний адрес прототипа ведёт в общую карточку площадки.
+
+        Прототип считал рейтинг третьим, своим способом (LLCR до нагрузки, без
+        подстановок) и показывал Нагатино иначе, чем каталог и карточка.
+        Нагатино — обычная площадка каталога; контрольный кейс #485 живёт в
+        общей сборке `_investment_rating`.
+        """
+        project = next(
+            (item for item in (await run_in_threadpool(_krt_all_sites) or [])
+             if _is_nagatino(item)),
+            None,
+        )
+        slug = str((project or {}).get("slug") or "").strip()
+        if not slug:
+            raise HTTPException(
+                status_code=404, detail="Нагатино не найдено в текущем каталоге КРТ")
+        return RedirectResponse(
+            f"/auctions/krt-card/{urllib.parse.quote(slug, safe='')}",
+            status_code=307,
             headers={"Cache-Control": "no-store, must-revalidate"},
         )
-
-    def _nagatino_project_now() -> dict[str, Any]:
-        """Нагатино из текущего каталога, без жёсткой привязки к одному slug."""
-        rows = list(_krt_all_sites() or [])
-        for row in rows:
-            text = " ".join(str(row.get(k) or "") for k in ("name", "address", "district"))
-            try:
-                area = float(row.get("area_ha") or 0)
-            except (TypeError, ValueError):
-                area = 0.0
-            if abs(area - 14.62) < 0.08 and re.search(r"(нагатин|варшавск)", text, re.I):
-                return dict(row)
-        for row in rows:
-            text = " ".join(str(row.get(k) or "") for k in ("name", "address", "district"))
-            if re.search(r"варшавск.{0,80}37", text, re.I):
-                return dict(row)
-        raise HTTPException(status_code=404, detail="Нагатино не найдено в текущем каталоге КРТ")
-
-    def _nagatino_live_now(*, refresh: bool = False) -> dict[str, Any]:
-        """Рынок + DevelopAid из этого же процесса, без HTTP-прокси в другой Render."""
-        if market is None or core is None:
-            raise HTTPException(
-                status_code=503,
-                detail="Рынок или финансовый движок DevelopAid не подключён к этому процессу",
-            )
-        project = _nagatino_project_now()
-        slug = str(project.get("slug") or "")
-        cached_report = krt_ranking.report(slug)
-        cached_row = krt_ranking.stored_row(slug)
-
-        if not refresh and isinstance(cached_report, dict):
-            screening = dict(cached_report.get("screening") or {})
-            market_digest = dict(cached_report.get("market") or {})
-            if screening:
-                screening.setdefault("market_report", market_digest)
-                row = dict(cached_row or score_row(project, screening))
-                return {
-                    "project": project,
-                    "row": row,
-                    "screening": screening,
-                    "market_report": {
-                        "project": project,
-                        "market": market_digest,
-                        "screening": screening,
-                        "computed_at": cached_report.get("computed_at"),
-                    },
-                    "source": "main runtime · saved KRT report",
-                }
-
-        query = f"krt:{slug}"
-        try:
-            report = market.build_report(
-                query,
-                radius_km=3.0,
-                peers_limit=12,
-                city_reference=False,
-                include_project_totals=True,
-                match_nearby_project=False,
-            )
-        except SubjectNotFound:
-            fallback = " ".join(
-                str(project.get(key) or "").strip()
-                for key in ("name", "district")
-                if project.get(key)
-            )
-            if not fallback:
-                raise
-            report = market.build_report(
-                fallback,
-                radius_km=3.0,
-                peers_limit=12,
-                city_reference=False,
-                include_project_totals=True,
-                match_nearby_project=False,
-            )
-
-        requirements = _requirements_for(slug)
-        screening = build_krt_model_screening(
-            project,
-            report,
-            core,
-            requirements=requirements,
-            asking_price_mln=_asking_price_mln(slug),
-        )
-        try:
-            screening["card_facts"] = krt_registry.card_facts(slug)
-        except Exception:  # noqa: BLE001
-            logger.exception("Nagatino card facts failed slug=%s", slug)
-            screening["card_facts"] = {}
-        screening["press_facts"] = (cached_row or {}).get("press_facts") or {}
-        market_digest = _market_digest(report)
-        screening["market_report"] = market_digest
-
-        stored_screening = {
-            key: value for key, value in screening.items() if key != "market_report"
-        }
-        report_payload = {
-            "project": project,
-            "market": market_digest,
-            "screening": stored_screening,
-        }
-        krt_ranking.save_failure_or_report(slug, screening, report_payload)
-        row = score_row(project, screening)
-        krt_ranking.upsert_row(row)
-        return {
-            "project": project,
-            "row": row,
-            "screening": screening,
-            "market_report": {
-                "project": project,
-                "market": market_digest,
-                "screening": stored_screening,
-                "computed_at": row.get("computed_at"),
-            },
-            "source": "main runtime · live market + DevelopAid",
-        }
-
-    @app.get("/auctions/krt-prototype/nagatino/live-data", include_in_schema=False)
-    async def auction_krt_nagatino_live_data(
-        refresh: bool = Query(default=False),
-    ) -> dict[str, Any]:
-        try:
-            return await run_in_threadpool(_nagatino_live_now, refresh=bool(refresh))
-        except HTTPException:
-            raise
-        except (SubjectNotFound, GeocodingError, ValueError) as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        except RemoteServiceError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("Nagatino live card failed")
-            raise HTTPException(
-                status_code=502,
-                detail=f"Живой рынок/модель Нагатино не собраны: {type(exc).__name__}: {exc}",
-            ) from exc
-
-    @app.get("/auctions/krt-prototype/nagatino/investment-score", include_in_schema=False)
-    async def auction_krt_nagatino_investment_score(
-        price_target_rub_sqm: float = Query(
-            krt_investment_score.DEFAULT_PRICE_TARGET_RUB_SQM,
-            ge=1,
-            le=10_000_000,
-        )
-    ) -> dict[str, Any]:
-        """Рейтинг #485 поверх тех же рынка и финансовой модели."""
-        live = await run_in_threadpool(_nagatino_live_now, refresh=False)
-        rank = dict(live.get("row") or {})
-        report = dict(live.get("market_report") or {})
-        market_block = dict(report.get("market") or {})
-
-        control = await run_in_threadpool(
-            krt_investment_score.nagatino_live_example, core)
-        llcr = rank.get("project_llcr_x")
-        burden_pct = rank.get("burden_pct")
-        burden_mln = rank.get("burden_mln")
-        ordinary_capex_mln = rank.get("ordinary_capex_mln")
-        entry_capacity_mln = rank.get("entry_capacity_mln")
-        housing_gfa_sqm = rank.get("housing_gfa_sqm")
-
-        if control.get("available"):
-            stack = control.get("cost_stack") or {}
-            # The #485 control case must not replace LLCR/entry capacity of
-            # the real project already returned by production screening.
-            burden_pct = control.get("burden_pct")
-            burden_mln = stack.get("total_known_mln")
-            ordinary_capex_mln = control.get("ordinary_capex_mln")
-            housing_gfa_sqm = stack.get("housing_gfa_sqm") or housing_gfa_sqm
-
-        local_absorption = rank.get("local_absorption_sqm_month")
-        moscow_absorption = rank.get("moscow_absorption_sqm_month")
-        missing_reasons: dict[str, str] = {}
-        if local_absorption is None or moscow_absorption is None:
-            missing_reasons["absorption"] = (
-                "В текущем рыночном отчёте нет пары: локальная медиана м²/мес. "
-                "и медиана Москвы по соответствующему классу. ДДУ/мес. не подменяют эту меру."
-            )
-        if burden_pct is None:
-            missing_reasons["burden"] = (
-                str(control.get("reason") or "")
-                or "Не собрана полная денежная нагрузка КРТ и ordinary CAPEX."
-            )
-
-        status_text = str(rank.get("status") or "").casefold()
-        rating = krt_investment_score.score(
-            status_kind=("running" if "реализац" in status_text else "planned"),
-            llcr=llcr,
-            market_rub_sqm=rank.get("surrounding_price_rub_sqm"),
-            target_rub_sqm=price_target_rub_sqm,
-            local_sqm_month=local_absorption,
-            benchmark_sqm_month=moscow_absorption,
-            burden_pct=burden_pct,
-            burden_mln=burden_mln,
-            ordinary_capex_mln=ordinary_capex_mln,
-            housing_gfa_sqm=housing_gfa_sqm,
-            entry_capacity_mln=entry_capacity_mln,
-            sources={
-                "llcr": "тот же DevelopAid financial engine",
-                "price": "рынок 3 км · тот же market.build_report",
-                "absorption": "рыночный отчёт; мера должна быть м²/мес.",
-                "burden": "ЕГРН + обязательства КРТ + DevelopAid ordinary CAPEX",
-            },
-            missing_reasons=missing_reasons,
-        )
-        return {
-            "rating": rating,
-            "rank_source": {
-                "slug": rank.get("slug"),
-                "computed_at": rank.get("computed_at"),
-                "old_rank_score_ignored": True,
-                "legacy_ddu_month_ignored": rank.get("surrounding_sales_units_per_month"),
-            },
-            "market": {
-                "peers": len(market_block.get("peers") or []),
-                "radius_km": (market_block.get("comparison") or {}).get("radius_km"),
-            },
-            "control_case": control,
-        }
 
     @app.get("/auctions/sources")
     async def auction_sources() -> dict[str, Any]:
@@ -2979,6 +2897,7 @@ def install(app: FastAPI) -> None:
         Это дешёвый фоновый слой над существующим ranking/report. Он не ходит
         к Pulse и не запускает второй финансовый движок: если рынок/модель ещё
         не посчитаны, отдельный фоновый прогон ниже сначала заполняет их.
+        Сборка рейтинга — та же `_investment_rating`, что у карточки и кнопки.
         """
         slug = str(project.get("slug") or "").strip()
         if not slug or _krt_status_kind(project.get("status")) == "running":
@@ -2991,229 +2910,20 @@ def install(app: FastAPI) -> None:
         if not row and not screening:
             return None
 
-        metrics = dict(screening.get("metrics") or {})
-        market_block = dict(stored.get("market") or screening.get("market_report") or {})
-        analysis = dict(market_block.get("analysis") or {})
-        site = dict(analysis.get("site") or analysis.get("overall") or {})
-        hint = dict(market_block.get("price_hint") or {})
-        target = krt_ranking.rating_target(
-            krt_investment_score.DEFAULT_PRICE_TARGET_RUB_SQM)
-
-        llcr = metrics.get("project_llcr_x", row.get("project_llcr_x"))
-        market_price = row.get("surrounding_price_rub_sqm")
-        if market_price is None:
-            market_price = site.get("price_per_sqm", hint.get("price_per_sqm"))
-        # Ранний справочный ориентир не подменяет живой рынок 3 км.
-
-        peers = [p for p in (market_block.get("peers") or []) if isinstance(p, dict)]
-        local_absorption = row.get("local_absorption_sqm_month")
-        if local_absorption is None:
-            areas = []
-            for peer in peers:
-                try:
-                    value = peer.get("area_per_month")
-                    if value is not None:
-                        areas.append(float(value))
-                except (TypeError, ValueError):
-                    continue
-            if areas:
-                local_absorption = round(float(statistics.median(areas)), 1)
-
-        comparison = dict(market_block.get("comparison") or {})
-        subject = dict(market_block.get("subject") or {})
-        segment = (
-            comparison.get("segment")
-            or subject.get("segment")
-            or row.get("investment_rating_segment")
-            or row.get("segment")
-            or (screening.get("market") or {}).get("recommended_segment")
-        )
-        benchmark_absorption = _positive_float(row.get("moscow_absorption_sqm_month"))
-        if benchmark_absorption is None and market is not None:
-            city = getattr(market, "city", None)
-            reader = getattr(city, "area_median", None)
-            if callable(reader):
-                benchmark_absorption = _positive_float(reader(segment))
-
-        burden_pct = row.get("burden_pct")
-        burden_mln = row.get("burden_mln")
-        ordinary_capex_mln = row.get("ordinary_capex_mln")
-        entry_capacity_mln = row.get("entry_capacity_mln")
-
-        if project.get("early_unpublished"):
-            # Старые ранние строки могли сохранить изъятие как будто это весь
-            # burden. Сбрасываем эти поля и считаем компонент только если
-            # источник когда-нибудь явно подтвердит полноту денежного стека.
-            burden_pct = None
-            burden_mln = None
-            model_inputs = dict(screening.get("model_inputs") or {})
-            if ordinary_capex_mln is None and model_inputs:
-                try:
-                    ordinary_capex_mln = krt_investment_score._ordinary_capex(
-                        core,
-                        dict(model_inputs.get("inputs") or {}),
-                        dict(model_inputs.get("tep") or {}),
-                        dict(model_inputs.get("phasing") or {}),
-                    )
-                except Exception:  # noqa: BLE001
-                    logger.exception("Early KRT background CAPEX failed slug=%s", slug)
-            if project.get("burden_complete") is True:
-                try:
-                    early_burden = float(project.get("seizure_mln"))
-                except (TypeError, ValueError):
-                    early_burden = 0.0
-                if early_burden > 0 and ordinary_capex_mln and float(ordinary_capex_mln) > 0:
-                    burden_mln = early_burden
-                    burden_pct = 100.0 * early_burden / float(ordinary_capex_mln)
-
-        burden_state: dict[str, Any] = {}
+        burden_state: dict[str, Any] | None = None
         if not project.get("early_unpublished"):
             try:
                 burden_state = krt_investment_score.generic_project_burden(
                     core, project, screening)
             except Exception as exc:  # noqa: BLE001
                 logger.exception("Generic KRT burden failed slug=%s", slug)
-                burden_state = {
-                    "available": False,
-                    "pending": False,
-                    "checked_at": int(time.time()),
-                    "retry_after_seconds": 24 * 60 * 60,
-                    "reason": f"{type(exc).__name__}: {exc}",
-                }
-            # Частичный ЕГРН/неоценённая обязанность не превращаются в старый
-            # сохранённый burden: новая попытка либо собрала всё, либо компонент
-            # снова unknown.
-            burden_pct = None
-            burden_mln = None
-            if burden_state.get("available"):
-                burden_pct = burden_state.get("burden_pct")
-                burden_mln = burden_state.get("burden_mln")
-                ordinary_capex_mln = burden_state.get("ordinary_capex_mln")
-                if burden_state.get("project_llcr_x") is not None:
-                    llcr = burden_state.get("project_llcr_x")
-                if burden_state.get("entry_capacity_mln") is not None:
-                    entry_capacity_mln = burden_state.get("entry_capacity_mln")
+                burden_state = _burden_attempt_failed(exc)
+        return _investment_rating(
+            project, row=row, stored=stored, burden_state=burden_state)["fields"]
 
-        # Нагатино остаётся контрольным кейсом только для денежной нагрузки.
-        # LLCR и потолок здесь не подменяются контрольной моделью.
-        text = " ".join(str(project.get(k) or "") for k in ("name", "address", "district"))
-        try:
-            area = float(project.get("area_ha") or 0)
-        except (TypeError, ValueError):
-            area = 0.0
-        if abs(area - 14.62) < 0.08 and re.search(r"(нагатин|варшавск)", text, re.I):
-            try:
-                control = krt_investment_score.nagatino_live_example(core)
-            except Exception:  # noqa: BLE001
-                logger.exception("Nagatino background burden failed")
-                control = {}
-            if control.get("available"):
-                stack = control.get("cost_stack") or {}
-                burden_pct = control.get("burden_pct")
-                burden_mln = stack.get("total_known_mln")
-                ordinary_capex_mln = control.get("ordinary_capex_mln")
-                burden_state = {
-                    "available": True,
-                    "pending": False,
-                    "checked_at": int(time.time()),
-                    "retry_after_seconds": 24 * 60 * 60,
-                    "burden_mln": burden_mln,
-                    "burden_pct": burden_pct,
-                    "ordinary_capex_mln": ordinary_capex_mln,
-                    "components": stack,
-                    "reason": "",
-                }
-
-        missing_reasons: dict[str, str] = {}
-        if local_absorption is None or benchmark_absorption is None:
-            missing_reasons["absorption"] = (
-                "Нет пары поглощения в м²/мес. для локального рынка и Москвы."
-            )
-        if burden_pct is None:
-            if project.get("early_unpublished") and project.get("seizure_mln") is not None:
-                missing_reasons["burden"] = (
-                    "Есть предварительная оценка изъятия, но нет полного денежного "
-                    "стека обязательств КРТ; частичное число не считается полным."
-                )
-            else:
-                missing_reasons["burden"] = (
-                    str((burden_state or {}).get("reason") or "")
-                    or "Полная денежная нагрузка КРТ пока не собрана; неизвестное не равно нулю."
-                )
-
-        rating = krt_investment_score.score(
-            status_kind="planned",
-            llcr=llcr,
-            market_rub_sqm=market_price,
-            target_rub_sqm=target,
-            local_sqm_month=local_absorption,
-            benchmark_sqm_month=benchmark_absorption,
-            burden_pct=burden_pct,
-            burden_mln=burden_mln,
-            ordinary_capex_mln=ordinary_capex_mln,
-            housing_gfa_sqm=project.get("housing_gfa_sqm") or row.get("housing_gfa_sqm"),
-            entry_capacity_mln=entry_capacity_mln,
-            sources={
-                "llcr": "DevelopAid financial engine",
-                "price": "рынок 3 км",
-                "absorption": "Pulse, м²/мес.",
-                "burden": (
-                    "ранний сигнал: полный денежный стек ещё не подтверждён"
-                    if project.get("early_unpublished")
-                    else "обязательства КРТ / ordinary CAPEX"
-                ),
-            },
-            missing_reasons=missing_reasons,
-        )
-        stored_rating = {
-            key: rating.get(key) for key in
-            ("score", "display_score", "coverage_pct", "rankable", "reason", "missing")
-        }
-        stored_rating["components"] = {
-            key: {
-                "name": value.get("name"),
-                "score": value.get("score"),
-                "value": value.get("value"),
-                "benchmark": value.get("benchmark"),
-                "ratio": value.get("ratio"),
-            }
-            for key, value in (rating.get("components") or {}).items()
-        }
-        return {
-            "investment_rating": stored_rating,
-            "investment_rating_version": str(
-                (rating.get("methodology") or {}).get("version") or ""),
-            "investment_rating_target_rub_sqm": target,
-            "investment_rating_computed_at": int(time.time()),
-            "local_absorption_sqm_month": local_absorption,
-            "moscow_absorption_sqm_month": benchmark_absorption,
-            "investment_rating_segment": segment,
-            # Эти поля нужны и с None: remember() должен очистить старую
-            # ошибочную «полную нагрузку» у ранних строк после смены методики.
-            "burden_pct": burden_pct,
-            "burden_mln": burden_mln,
-            "ordinary_capex_mln": ordinary_capex_mln,
-            "burden_pipeline_version": krt_investment_score.BURDEN_PIPELINE_VERSION,
-            "burden_checked_at": int(
-                (burden_state or {}).get("checked_at") or time.time()),
-            "burden_pending": bool((burden_state or {}).get("pending")),
-            "burden_retry_after_seconds": int(
-                (burden_state or {}).get("retry_after_seconds") or 24 * 60 * 60),
-            "burden_complete": bool(
-                (burden_state or {}).get("available") or burden_pct is not None),
-            "burden_reason": str((burden_state or {}).get("reason") or ""),
-            "burden_components": (burden_state or {}).get("components") or {},
-            "burden_llcr_x": (
-                llcr if ((burden_state or {}).get("available") and llcr is not None)
-                else None
-            ),
-            "burden_entry_capacity_mln": (
-                entry_capacity_mln
-                if ((burden_state or {}).get("available")
-                    and entry_capacity_mln is not None)
-                else None
-            ),
-        }
+    # Фоновый слой — функция замыкания; проверки зовут её через состояние
+    # приложения, а не копией логики.
+    app.state.krt_background_rating_fields = _cached_investment_rating_fields
 
     def _rating_needs_recount(project: dict[str, Any], row: dict[str, Any]) -> bool:
         if _krt_status_kind(project.get("status")) == "running":
@@ -3231,7 +2941,10 @@ def install(app: FastAPI) -> None:
             # False может не пережить очередную сборку model-row: исторический
             # merge сохраняет только truthy remembered facts. Поэтому отсутствие
             # True здесь тоже означает «полный burden ещё не подтверждён».
-            (row or {}).get("burden_complete") is not True
+            # Недочитанный ЕГРН при сохранённой прежней нагрузке — тоже повод
+            # дочитать: прежние числа держатся, пока новые не собраны.
+            ((row or {}).get("burden_complete") is not True
+             or (row or {}).get("burden_pending"))
             and time.time() - checked >= max(60.0, retry_after)
         ):
             return True
@@ -3301,13 +3014,16 @@ def install(app: FastAPI) -> None:
         """
         changed = 0
         processed = 0
+        # Файл рейтинга читается один раз за такт, а не на каждую площадку:
+        # сотни полных разборов ranking.json в минуту на воркер.
+        rows = {str(item.get("slug") or ""): item for item in krt_ranking.rows()}
         for project in _krt_all_sites():
             if _krt_status_kind(project.get("status")) == "running":
                 continue
             slug = str(project.get("slug") or "").strip()
             if not slug:
                 continue
-            row = krt_ranking.stored_row(slug)
+            row = dict(rows.get(slug) or {})
             if not _rating_needs_recount(project, row):
                 continue
             fields = _cached_investment_rating_fields(project)
@@ -3339,6 +3055,7 @@ def install(app: FastAPI) -> None:
                 if not off and core is not None and market is not None and not krt_ranking.claimed():
                     now = time.time()
                     missing: list[dict[str, Any]] = []
+                    rows = {str(item.get("slug") or ""): item for item in krt_ranking.rows()}
                     for project in _krt_all_sites():
                         # «В реализации» не получает инвестиционный рейтинг,
                         # но рынок у строки должен оставаться свежим: цена
@@ -3346,7 +3063,7 @@ def install(app: FastAPI) -> None:
                         slug = str(project.get("slug") or "").strip()
                         if not slug:
                             continue
-                        row = krt_ranking.stored_row(slug)
+                        row = dict(rows.get(slug) or {})
                         # Неудачный пересчёт не должен превращать stale-строку
                         # в бесконечную очередь повторных запросов. keep_computed
                         # оставляет последнюю удачную строку, а recompute_failed_at
@@ -3542,14 +3259,13 @@ def install(app: FastAPI) -> None:
         if auction_view.authorised(request):
             # Тот же принцип, что у middleware /auctions: ограниченный ключ
             # читает готовое, но не превращает GET-параметр в команду
-            # обновления служебных данных.
-            for name in ("refresh", "force", "rebuild", "revoke"):
-                value = str(request.query_params.get(name) or "").strip().lower()
-                if value in ("1", "true", "yes", "on"):
-                    raise HTTPException(
-                        status_code=403,
-                        detail="Ограниченный ключ даёт только просмотр торгов и КРТ",
-                    )
+            # обновления служебных данных. Правило одно — в view_access.
+            flag = auction_view.command_flag(request.query_params)
+            if flag:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Ограниченный ключ даёт только просмотр торгов и КРТ",
+                )
             return
         if core is not None and hasattr(core, "_require_admin"):
             # Выгрузка называет живые компании с ИНН и кадастровой стоимостью:
@@ -5257,6 +4973,95 @@ def install(app: FastAPI) -> None:
     # «лотов там нет».
     DISCOVERY_BUDGET_SECONDS = 40.0
 
+    # --- комментарий Платона к лотам торгов ---------------------------------
+    # Разбор идёт фоном по одному лоту: платный поиск и ответ модели в запросе
+    # выгрузки заняли бы десятки минут. Темп ниже лимита Платона на клиента
+    # (30 вопросов в час), чтобы фон не отнимал ответы у людей.
+    LOT_NOTE_INTERVAL_SECONDS = lot_notes_rules.interval_seconds()
+    LOT_NOTE_CLAIM_TTL_SECONDS = 20 * 60
+
+    def _lot_note_search(lot: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
+        client = getattr(market, "search", None)
+        finder = getattr(client, "search", None)
+        if not callable(finder) or not getattr(client, "configured", False):
+            return [], "веб-поиск не настроен (YANDEX_SEARCH_API_KEY / FOLDER_ID)"
+        found: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        errors: list[str] = []
+        for query in lot_notes_rules.search_queries(lot):
+            try:
+                docs = finder(query)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{type(exc).__name__}: {exc}"[:200])
+                continue
+            for doc in docs or []:
+                item = doc.to_dict() if hasattr(doc, "to_dict") else dict(doc)
+                url = str(item.get("url") or "")
+                # Карточка самого лота — не «что о нём пишут».
+                if not url or url in seen or url == lot.get("url"):
+                    continue
+                seen.add(url)
+                found.append({key: item.get(key) for key in ("title", "url", "snippet")})
+        if not found and errors:
+            return [], "; ".join(errors[:2])
+        return found[:lot_notes_rules.MAX_SOURCES], ""
+
+    def _lot_note_once() -> bool:
+        """Разобрать один лот из очереди. False — очередь пуста или спрашивать некого."""
+        if core is None or not hasattr(core, "plato_answer"):
+            return False
+        queue = lot_notes.queue()
+        if not queue:
+            return False
+        lot = queue[0]
+        key = str(lot.get("url") or "")
+        now = int(time.time())
+        docs, problem = _lot_note_search(lot)
+        try:
+            answer = core.plato_answer(
+                core.AgentChatRequest(
+                    message=lot_notes_rules.prompt(lot, docs, problem),
+                    inputs=dict(core.DEFAULT_INPUTS),
+                    tep={name: dict(row) for name, row in core.TEP_DEFAULT.items()},
+                ),
+                lot_notes_rules.background_request(),
+            ) or {}
+            text = str(answer.get("answer") or answer.get("reply")
+                       or answer.get("text") or "").strip()
+            if not text:
+                raise RuntimeError("Платон вернул пустой ответ")
+        except Exception as exc:  # noqa: BLE001
+            detail = getattr(exc, "detail", None) or str(exc)
+            logger.warning("Торги: комментарий к лоту не получен %s: %s", key, detail)
+            lot_notes.save_note(key, {"asked_at": now, "failed": True,
+                                      "reason": f"{type(exc).__name__}: {detail}"[:300],
+                                      "sources": docs, "search_problem": problem})
+            return True
+        lot_notes.save_note(key, {"asked_at": now, "failed": False, "text": text[:2000],
+                                  "sources": docs, "search_problem": problem})
+        return True
+
+    def _lot_notes_loop() -> None:
+        time.sleep(45)
+        claim = lot_notes.claim_path
+        while True:
+            try:
+                if krt_ranking_rules.claim_file(claim, LOT_NOTE_CLAIM_TTL_SECONDS):
+                    try:
+                        _lot_note_once()
+                    finally:
+                        krt_ranking_rules.release_file(claim)
+            except Exception:  # noqa: BLE001
+                logger.exception("Торги: фоновый разбор лотов")
+            time.sleep(LOT_NOTE_INTERVAL_SECONDS)
+
+    app.state.auction_lot_note_once = _lot_note_once
+
+    @app.get("/auctions/lot-notes/status")
+    async def auction_lot_notes_status() -> dict[str, Any]:
+        """Сколько лотов разобрано и почему не разобраны остальные — не только в логе."""
+        return await run_in_threadpool(lot_notes.status)
+
     @app.get("/auctions/discover")
     async def auction_discover(
         source: str = Query(default="all"),
@@ -5292,6 +5097,12 @@ def install(app: FastAPI) -> None:
                                     [_public_lot_dict(lot) for lot in lots])
         except Exception:  # noqa: BLE001 — каталог лотов не роняем связкой
             logger.exception("KRT: связка лотов с площадками при сборе не записалась")
+        # Лоты сбора — очередь фонового комментария Платона (`lot_notes`).
+        try:
+            await run_in_threadpool(lot_notes.remember_lots,
+                                    [_public_lot_dict(lot) for lot in lots])
+        except Exception:  # noqa: BLE001 — каталог лотов не роняем очередью
+            logger.exception("Торги: лоты сбора не записаны в очередь комментариев")
 
         return {
             "source_policy": "official_etp_only",
@@ -5323,8 +5134,15 @@ def install(app: FastAPI) -> None:
         }
 
     @app.post("/auctions/export.xlsx")
-    async def auction_export(req: AuctionExportRequest) -> Response:
-        data = _xlsx(req.rows, req.kind)
+    async def auction_export(req: AuctionExportRequest, request: Request) -> Response:
+        # Лоты выгрузки встают в очередь комментария Платона. Ключ «только
+        # просмотр» платный разбор не заказывает: он читает готовое.
+        if req.kind != "krt" and not _view_only(request):
+            try:
+                await run_in_threadpool(lot_notes.request, list(req.rows or []))
+            except Exception:  # noqa: BLE001 — выгрузку не роняем очередью
+                logger.exception("Торги: лоты выгрузки не поставлены в очередь комментариев")
+        data = await run_in_threadpool(_xlsx, req.rows, req.kind)
         filename = "developaid-krt.xlsx" if req.kind == "krt" else "developaid-auctions.xlsx"
         return Response(content=data, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         headers={"Content-Disposition": f'attachment; filename="{filename}"'})
@@ -5543,6 +5361,11 @@ def install(app: FastAPI) -> None:
     # зависимости и на завершении Python может упасть с exit 134, хотя все
     # проверки уже прошли. В production pytest не импортирован, поведение
     # фонового пересчёта не меняется.
+    if (
+        "pytest" not in sys.modules
+        and os.getenv("AUCTION_LOT_NOTES", "1").strip() not in {"0", "false", "no"}
+    ):
+        threading.Thread(target=_lot_notes_loop, name="auction-lot-notes", daemon=True).start()
     if (
         "pytest" not in sys.modules
         and os.getenv("AUCTION_KRT_RATING_BACKGROUND", "1").strip()

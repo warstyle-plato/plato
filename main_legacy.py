@@ -81,7 +81,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.24.38"
+VERSION = "0.24.47"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -446,6 +446,15 @@ for _preset in PROJECT_CLASS_PRESETS.values():
         _preset["apartment_price_th"])
     _preset["offices_price_th_per_sqm"] = _preset["retail_price_th_per_sqm"]
 del _preset
+# Откуда берётся число класса, если оно не вписано, а выведено. Две строки
+# «Стартовая цена» с одним числом в окне класса читались загадкой (владелец,
+# 27.09.2026): совпадают они потому, что обе считаются правилом выше, и это
+# сказано у самой строки, а не выведено человеком.
+CLASS_DERIVED_NOTES_PLACEHOLDER = "__DEVELOPAID_CLASS_DERIVED_NOTES__"
+CLASS_DERIVED_NOTES: dict[str, str] = {
+    "retail_price_th_per_sqm": "считается от цены квартир",
+    "offices_price_th_per_sqm": "считается от цены квартир",
+}
 
 # Источники базовых ставок классов на страницу не зашиваются: адрес или имя
 # собственного проекта в подписи — раскрытие коммерческой информации, и один
@@ -455,11 +464,18 @@ del _preset
 
 
 def _input_field_label(field: str) -> str:
-    """Подпись поля из FIELD_GROUPS — единственного объявления списка полей."""
-    for _group, fields in FIELD_GROUPS:
+    """Подпись поля ВНЕ его группы: у поля объекта — с именем объекта.
+
+    Короткая подпись («Стартовая цена») однозначна только внутри своей группы;
+    в окне класса, в строках отклонений и в «Не подставлено» две такие строки
+    стояли рядом неразличимыми. Имя объекта — его группа из реестра.
+    """
+    for group, fields in FIELD_GROUPS:
         for item in fields:
             if item[0] == field:
-                return str(item[1])
+                title = str(item[1])
+                return (f"{title} — {group}" if field in FIELD_SECTIONS
+                        else title)
     return field
 
 
@@ -1150,6 +1166,50 @@ _OBJECT_SALES_PROFILE_EDITOR = {"value": "share", "anchor": "sales_start",
                                 "value_label": "Доля продаж",
                                 "when_label": "Месяц от старта продаж"}
 
+# Смысловые блоки формы объекта — ОДИН раз на все объекты, включая будущие.
+# Двадцать полей подряд, от цены до числа машино-мест, читались нагромождением
+# (владелец, 27.09.2026): человек ищет «сколько строим», «когда», «почём
+# строим», «почём продаём» — и форма разбита ровно по этим вопросам. Блок
+# назван окончанием ключа, а не местом в списке: у метров и у мест разные поля
+# одного смысла (GBA и число мест, ставка за метр и за место), и оба попадают в
+# свой блок сами. Порядок блоков — порядок на экране; блок без полей у объекта
+# не рисуется. Смысл полей и их умолчания живут выше; здесь только раскладка.
+_OBJECT_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Объект", ("enabled", "purpose")),
+    ("Объём", ("gba_sqm", "saleable_sqm", "spaces", "area_per_space_sqm")),
+    ("Сроки строительства", ("start", "months")),
+    ("Себестоимость", ("cost_th_per_sqm", "cost_mln_per_space")),
+    ("Цена и рост цены", ("price_th_per_sqm", "price_mln_per_space",
+                          "growth_pre_pct", "growth_post_pct",
+                          "growth_stage1_pct", "growth_stage2_pct",
+                          "growth_stage3_pct", "growth_stage4_pct")),
+    ("Темп продаж", ("sales_start", "share_before_rve_pct", "residual_months",
+                     "sales_profile")),
+    ("Паркинг объекта", ("parking_under_spaces", "parking_over_spaces",
+                         "parking_guest_pct", "parking_under_price_mln_per_space",
+                         "parking_over_price_mln_per_space")),
+    ("Судьба объекта", ("disposition",)),
+)
+# Поле, которому блок не назначен, не пропадает и не прилипает к соседу: оно
+# уходит в последний блок с честным именем, а проверка формы краснеет.
+OBJECT_SECTION_UNASSIGNED = "Прочее"
+
+
+def standalone_object_section(obj: StandaloneObject, key: str) -> str:
+    """Смысловой блок поля объекта — по окончанию ключа после приставки."""
+    head = f"{obj.prefix}_"
+    suffix = key[len(head):] if key.startswith(head) else key
+    for title, suffixes in _OBJECT_SECTIONS:
+        if suffix in suffixes:
+            return title
+    return OBJECT_SECTION_UNASSIGNED
+
+
+def _section_order(obj: StandaloneObject, field: list[Any]) -> int:
+    titles = [title for title, _ in _OBJECT_SECTIONS]
+    title = standalone_object_section(obj, field[0])
+    return titles.index(title) if title in titles else len(titles)
+
 
 def standalone_object_group(obj: StandaloneObject) -> list[Any]:
     """Группа вводных одного объекта — по его строке реестра."""
@@ -1214,6 +1274,8 @@ def standalone_object_group(obj: StandaloneObject) -> list[Any]:
                 "%; при готовности 100% — ввод; дальше ежемесячный рост после РВЭ",
                 "number"])
     out += add(measure["tail"])
+    # Внутри блока поля идут в порядке ввода выше; сортировка устойчива.
+    out.sort(key=lambda field: _section_order(obj, field))
     return [obj.group_label, out]
 
 
@@ -1281,6 +1343,14 @@ FIELD_GROUPS: list[Any] = [
     if str(_group[0]).startswith(_OBJECT_PLACEHOLDER) else _group
     for _group in _FIELD_GROUPS_LITERAL
 ]
+
+# Блок каждого поля объекта — для заголовков на странице. Отдельной картой, а не
+# третьим элементом группы: группу и поле читают распаковкой в десятке мест.
+FIELD_SECTIONS_PLACEHOLDER = "__DEVELOPAID_FIELD_SECTIONS__"
+FIELD_SECTIONS: dict[str, str] = {
+    field[0]: standalone_object_section(obj, field[0])
+    for obj in STANDALONE_OBJECTS for field in standalone_object_group(obj)[1]
+}
 
 
 # Правится в настройках класса, а не во «Вводных». МЕТОДИКА благоустройства —
@@ -3785,7 +3855,8 @@ def import_project_preset(req: ProjectPresetRequest) -> dict[str, Any]:
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Пресет не разобран: {exc}") from exc
 
-    labels = {name: title for group in FIELD_GROUPS for name, title, *_ in group[1]}
+    labels = {name: _input_field_label(name)
+              for group in FIELD_GROUPS for name, *_ in group[1]}
     tep_labels = {key: str(value.get("label") or key) for key, value in TEP_DEFAULT.items()}
     tep_current = req.tep or {}
     tep_rows: list[dict[str, Any]] = []
@@ -6637,6 +6708,9 @@ def _land_lookup_by_numbers(numbers: list[str]) -> list[dict[str, Any]]:
         except HTTPException as exc:
             results.append({
                 "found": False,
+                # НСПД не ответил (503/429/таймаут) — это не «объекта нет».
+                # Читатели, которые кэшируют ответ, обязаны переспросить.
+                "lookup_failed": True,
                 "cadastral_number": number,
                 "region": parts["region_hint"],
                 "quarter": parts["quarter"],
@@ -10874,6 +10948,32 @@ def sports_parking_functions(inputs: dict[str, Any] | None) -> tuple[str, str]:
 
 OBJECT_PARKING_AREA_DEFAULT = 35.0
 OBJECT_PARKING_OVER_AREA_DEFAULT = 25.0
+
+
+def standalone_object_saleable(inputs: dict[str, Any], tep: dict[str, Any] | None,
+                               key: str) -> float:
+    """Продаваемая площадь ОСЗ после пятна мест первых этажей. Ответ один.
+
+    Ровно формула книги v4 (K26/K46/K129 «Расчётная продаваемая площадь»):
+    (GBA вводных − места первых этажей × площадь места) × продаваемая / GBA
+    вводных. Себестоимость объекта движок и книга берут с той же GBA вводных;
+    выручка в движке после #481 читала строку ТЭП, и при ТЭП, пришедшем
+    отдельно от вводных (API, бот), продавала 16 575 м² против 5 840 в книге.
+    Её же читают строки отчёта: объём «Офисы / МФОЦ» стоял до паркинга, а
+    выручка — после, и средняя цена метра выходила ниже назначенной.
+    """
+    obj = next((item for item in standalone_objects() if item.key == key), None)
+    if obj is None or obj.measure == "spaces":
+        return 0.0
+    base_saleable = max(0.0, n(inputs, f"{obj.prefix}_saleable_sqm"))
+    base_gba = max(0.0, n(inputs, f"{obj.prefix}_gba_sqm"))
+    if base_gba <= 0:
+        return 0.0
+    row = (tep or {}).get(key) or {}
+    over_gba = max(0.0, n(row, "parking_over_units")) * (
+        n(inputs, "object_parking_over_area_per_space_sqm", OBJECT_PARKING_OVER_AREA_DEFAULT)
+        or OBJECT_PARKING_OVER_AREA_DEFAULT)
+    return max(0.0, base_gba - over_gba) * base_saleable / base_gba
 
 
 def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
@@ -19722,14 +19822,21 @@ def _v4_product_structure_block(xml: str, missing: list[str]) -> str:
     put("B45", text="ГНС наземная, м²")
     put(f"{under}45", text="Подземная, м²")
 
+    # Числа квартир здесь НЕТ намеренно. Колонка D этого блока означает
+    # продаваемые МЕСТА (машино-места паркинга и гаража офисника) — её итог
+    # сверяется с движком именно так. Квартиры в ту же колонку сложились бы с
+    # местами, и «Единицы» блока перестали бы отвечать на какой-либо вопрос.
+    # Квартиры считаются в блоке очередей и читаются оттуда напрямую.
     # Площадные продукты очередей: наземное в B, подземное в G.
     put("B48", formula="0")
     put(f"{under}48", formula=f"SUM({param}K88:K91)")
-    # У кладовых своей наземной площади нет, а подземная уже посчитана строкой
-    # паркинга: ноль здесь — ответ, а пустая клетка была отсутствием формулы.
+    # У кладовых своей наземной площади нет: ноль здесь — ответ, а пустая
+    # клетка была отсутствием формулы. Подземную кладовых пишет
+    # `_v4_storage_area_cells` — она же пишет её на ТЭП, и второй ответ на
+    # «сколько метров у кладовых» здесь разошёлся бы с первым молча.
     put("B49", formula="0")
     put("C49", formula="0")
-    for row in (46, 47, 49):
+    for row in (46, 47):
         put(f"{under}{row}", formula="0")
 
     garages = []
@@ -20141,6 +20248,18 @@ _V4_PF_APPROVED_CELL = "F26"
 # Блок очередей «Вводных»: лимит НКЛ очереди (ввод) и её потолок (формула).
 _V4_PF_QUEUE_INDIVIDUAL_COL = "AS"
 _V4_PF_QUEUE_CAP_COL = "AT"
+# Количество квартир очереди. Колонки под него в шаблоне нет вовсе: книга
+# знала метры квартир и не знала, сколько их, — «Единицы» строки «Квартиры»
+# стояли пустыми и на ТЭП, и на Дашборде. База (штуки на исходных метрах) и
+# живое число, которое идёт за плотностью так же, как за ней идёт продаваемая
+# площадь (L = Z×K15): числом оно стояло бы мёртвым — правка плотности
+# двигала бы метры и не двигала квартиры.
+#
+# Буквы колонок объявлены у читателя (дашборд), а не здесь второй раз:
+# писатель и читатель одной ячейки, назвавшие её порознь, однажды назовут
+# разные.
+_V4_APARTMENT_UNITS_BASE_COL = v4_dashboard.QUEUE_APARTMENT_UNITS_BASE_COL
+_V4_APARTMENT_UNITS_COL = v4_dashboard.QUEUE_APARTMENT_UNITS_COL
 _V4_PF_UNCOVERED_ROW = 87
 _V4_PF_UNCOVERED_PARITY_ROW = 87
 
@@ -21489,8 +21608,9 @@ def _v4_normative_sources_rows(xml: str, region: str, missing: list[str]) -> str
     parts.append(
         f'<x:row r="{row_at}">'
         + cell(f"A{row_at}",
-               f"Акты, на которых стоит методика ({scope_here} и федеральный уровень). "
-               f"Реестр движка, снят {date.today().isoformat()}; проверять нас нужно "
+               f"Акты реестра движка ({scope_here} и федеральный уровень), снят "
+               f"{date.today().isoformat()}. «Применение» называет, где акт входит в "
+               "расчёт; «справочно» — акт в формулы не входит. Проверять нас нужно "
                "по исходнику, ссылка в колонке рядом.", head_styles)
         + "</x:row>")
     row_at += 1
@@ -21523,6 +21643,16 @@ def _v4_normative_sources_rows(xml: str, region: str, missing: list[str]) -> str
         word = _V4_NORMATIVE_STATUS_WORDS.get(status) or (
             f"статус «{status}» реестру неизвестен" if status else "статус не задан")
         applies = "; ".join(str(item) for item in (row.get("affects") or []) if item)
+        # Справочный акт — не основание расчёта: движок его не читает. Подать
+        # его строкой «оснований» наравне с участвующими значило бы выдать
+        # справку за формулу.
+        used = "; ".join(
+            str(item.get("usage") or item.get("module") or "") if isinstance(item, dict)
+            else str(item)
+            for item in (row.get("engine_usage") or []) if item)
+        applies = (f"в расчёте: {used}" if used
+                   else "справочно, в формулы расчёта не входит"
+                   + (f" · {applies}" if applies else ""))
         serial = _v4_excel_serial(row.get("current_as_of") or row.get("effective_from"))
         values = {
             "A": f"NRM-{index:02d}",
@@ -22519,8 +22649,17 @@ def _v4_storage_area_cells(tep_xml: str, report_xml: str, missing: list[str]
             formula=f"'Вводные'!$AR${queue_row}")})
         if not done:
             missing.append(f"ТЭП · площадь кладовых очереди {index + 1}")
+    # На ОТЧЕТе колонка называет то, что в ней лежит: B — «ГНС наземная», а
+    # `{under}` — «Подземная». Кладовые лежат ПОД землёй, и их метры стояли в
+    # наземной: итог B складывал их с квартирами и коммерцией, и «ГНС наземная»
+    # книги выходила больше движковой ровно на площадь кладовых. Ноль в B —
+    # ответ («наземной части у продукта нет»), а не пробел.
+    #
+    # На ТЭП колонка одна и названа честно — «ГНС / подземная площадь», —
+    # поэтому там кладовые остаются в C.
     report_xml, done = _v4_set_cells(report_xml, _V4_REPORT_STORAGE_ROW, {
-        f"B{_V4_REPORT_STORAGE_ROW}": dict(
+        f"B{_V4_REPORT_STORAGE_ROW}": dict(formula="0"),
+        f"{_V4_UNDER_COLUMN}{_V4_REPORT_STORAGE_ROW}": dict(
             formula="SUM('Вводные'!AR88:AR91)")})
     if not done:
         missing.append("ОТЧЕТ · площадь кладовых")
@@ -24297,6 +24436,24 @@ def build_project_workbook(
             for _col, _title in (("AN", "Из них гостевых, шт."),
                                  ("AO", "Из них передано, шт."),
                                  ("AP", "Кладовых передано, шт.")):
+                xml, _done = _v4_set_or_insert_cell(xml, f"{_col}87", text=_title)
+                if not _done:
+                    missing.append(f"подпись колонки {_col} блока очередей")
+        # Квартир в очереди: база и живое число. Колонок в шаблоне нет —
+        # пишем со вставкой, как гостевые места и площадь кладовых.
+        _base_col = _V4_APARTMENT_UNITS_BASE_COL
+        _units_col = _V4_APARTMENT_UNITS_COL
+        xml, _done = _v4_set_or_insert_cell(
+            xml, f"{_base_col}{row}", number=num_row(crow.get("apartments"), "units"))
+        if not _done:
+            missing.append(f"база числа квартир очереди {index + 1}")
+        xml, _done = _v4_set_or_insert_cell(
+            xml, f"{_units_col}{row}", formula=f"ROUND({_base_col}{row}*$K$15,0)")
+        if not _done:
+            missing.append(f"число квартир очереди {index + 1}")
+        if index == 0:
+            for _col, _title in ((_base_col, "База числа квартир, шт."),
+                                 (_units_col, "Квартир, шт.")):
                 xml, _done = _v4_set_or_insert_cell(xml, f"{_col}87", text=_title)
                 if not _done:
                     missing.append(f"подпись колонки {_col} блока очередей")
@@ -29157,38 +29314,13 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     # Паркинг объектов разложен по строкам ТЭП раньше (`apply_object_parking`),
     # и деньги его оттуда ЧИТАЮТ, а не считают второй раз: два счёта одной
     # величины однажды разошлись бы, и обе цифры выглядели бы верными.
-    # Продаваемая объекта уже пересчитана в строке ТЭП от остаточной GBA.
-    # Продажи читают её оттуда, чтобы в движке был один счёт площади.
+    # Продаваемая объекта — `standalone_object_saleable`: та же формула, что
+    # в книге, на той же GBA вводных, что и себестоимость объекта.
     def object_parking_row(tep_key: str) -> dict[str, Any]:
         return (t or {}).get(tep_key) or {}
 
     def object_saleable(tep_key: str, field: str) -> float:
-        row = object_parking_row(tep_key)
-        # Явная строка ТЭП сильнее вводной: если в ней есть собственная база
-        # площади, apply_object_parking уже пересчитал saleable от остаточной
-        # GBA и здесь остаётся только прочитать результат.
-        if n(row, "gns") > 0 or n(row, "_object_parking_base_saleable") > 0:
-            return max(0.0, n(row, "saleable"))
-
-        # Строки отдельно стоящих объектов в TEP_DEFAULT — нулевые заглушки:
-        # их реальные GBA и продаваемая живут во вводных объекта. До этой
-        # правки атомарный движок именно их и читал. После перехода на
-        # остаточную GBA слепое чтение нулевой строки обнулило все офисные
-        # продажи в обычном проекте и во всех очередях без явного ТЭП.
-        obj = next((item for item in standalone_objects() if item.key == tep_key), None)
-        base_saleable = max(0.0, n(x, field))
-        if obj is None:
-            return base_saleable
-        base_gba = max(0.0, n(x, f"{obj.prefix}_gba_sqm"))
-        if base_gba <= 0:
-            return base_saleable
-        over_gba = (
-            max(0.0, n(row, "parking_over_units"))
-            * (n(x, "object_parking_over_area_per_space_sqm",
-                 OBJECT_PARKING_OVER_AREA_DEFAULT)
-               or OBJECT_PARKING_OVER_AREA_DEFAULT)
-        )
-        return base_saleable * max(0.0, base_gba - over_gba) / base_gba
+        return standalone_object_saleable(x, t, tep_key)
 
     def object_parking_capex(tep_key: str) -> float:
         """Свой подземный паркинг объекта стоит подземного метра.
@@ -31362,13 +31494,16 @@ def calculate(req: CalcRequest) -> dict:
             "residual": int(n(x, "residual_sales_months", 6))
         },
         "offices": {
-            "label": "Офисы / МФОЦ", "quantity": n(x, "offices_saleable_sqm") if b(x, "offices_enabled") else 0,
+            "label": "Офисы / МФОЦ",
+            "quantity": standalone_object_saleable(x, t, "offices") if b(x, "offices_enabled") else 0,
             "unit": "м²", "start_price": n(x, "offices_price_th_per_sqm"), "share": n(x, "offices_share_before_rve_pct", 85)/100,
             "start": d(x["offices_sales_start"]), "end_ref": add_months(d(x["offices_start"]), int(n(x, "offices_months", 24))),
             "residual": int(n(x, "offices_residual_months", 6))
         },
         "standalone_retail": {
-            "label": "Коммерция ОСЗ", "quantity": n(x, "retail_saleable_sqm") if b(x, "retail_enabled") else 0,
+            "label": "Коммерция ОСЗ",
+            "quantity": (standalone_object_saleable(x, t, "standalone_retail")
+                         if b(x, "retail_enabled") else 0),
             "unit": "м²", "start_price": n(x, "retail_price_th_per_sqm"), "share": n(x, "retail_share_before_rve_pct", 85)/100,
             "start": d(x["retail_sales_start"]), "end_ref": add_months(d(x["retail_start"]), int(n(x, "retail_months", 24))),
             "residual": int(n(x, "retail_residual_months", 6))
@@ -31383,7 +31518,7 @@ def calculate(req: CalcRequest) -> dict:
             # Переданный городу ФОК продаваемой площади не имеет: метры
             # строятся, но не продаются — как у соцобъекта.
             "label": "ФОК / медцентр",
-            "quantity": (n(x, "sports_saleable_sqm")
+            "quantity": (standalone_object_saleable(x, t, "sports")
                          if b(x, "sports_enabled") and sports_is_sold(x) else 0),
             "unit": "м²", "start_price": n(x, "sports_price_th_per_sqm"),
             "share": n(x, "sports_share_before_rve_pct", 85)/100,
@@ -41689,6 +41824,8 @@ summary{padding:11px 0;font-size:14px;font-weight:700;cursor:pointer}
 .group-peek{font-weight:400;color:#888;font-size:12px;margin-left:8px}
 details[open]>summary>.group-peek{display:none}
 .fields{display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;padding:0 0 15px}
+.field-section{font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--muted,#667085);border-top:1px solid var(--line,#e4e7ec);padding:12px 0 8px;margin-top:4px}
+.field-section+.fields{padding-bottom:10px}
 .field label{font-size:12px;color:#555;display:block;margin-bottom:4px}.unit{color:#aaa;font-size:10px}
 input,select{width:100%;border:1px solid #cfcfcf;background:#fff;border-radius:0;padding:9px 10px;font-size:14px;color:#111}
 input:focus,select:focus{outline:2px solid #111;outline-offset:-1px}
@@ -43072,6 +43209,9 @@ function productName(key){
  return PRODUCT_LABELS[key]||String(key||'');
 }
 const FIELD_GROUPS=__DEVELOPAID_FIELD_GROUPS__;
+// Смысловой блок поля объекта («Объём», «Цена и рост цены»…) — из реестра
+// движка. Поле без блока рисуется в общей сетке группы, как прежде.
+const FIELD_SECTIONS=__DEVELOPAID_FIELD_SECTIONS__;
 // Поля, которые правят в «Настройках класса», а не во «Вводных». Список
 // приходит из движка, как сами FIELD_GROUPS: вторая копия «что где правят»
 // разошлась бы с первой молча, и поле пропало бы разом из обоих мест или
@@ -43648,8 +43788,12 @@ async function applyAgentProposal(idx){
    if(k==='main_construction_cost_th_per_sqm'){inputs.main_above_th_per_sqm=value;inputs.main_under_th_per_sqm=value}
    else inputs[k]=value;
  });
- const customKeys=['apartment_price_th','commercial_price_th','parking_price_th','main_above_th_per_sqm','main_under_th_per_sqm','main_construction_cost_th_per_sqm'];
- if(Object.keys(p.patch).some(k=>customKeys.includes(k)))inputs.project_class='custom';
+ // Предложение Платона — тоже не класс: поле профиля, которое он поменял,
+ // помечается вписанным так же, как правка руками.
+ Object.keys(p.patch).forEach(k=>{
+   if(k==='main_construction_cost_th_per_sqm'){markClassManual('main_above_th_per_sqm');markClassManual('main_under_th_per_sqm')}
+   else markClassManual(k);
+ });
  renderInputs();syncTep(false);syncProjectClassSelector();syncProjectKindSelector();renderPhasing();await calculate();
  appendAiMessage('assistant','Изменение применено к текущим Inputs и модель пересчитана.');
 }
@@ -46714,11 +46858,43 @@ function renderProjectClassPreview(){
   : `Кв/комм ${classValue(key,'apartment_price_th').toLocaleString('ru-RU')} · м/м ${classValue(key,'parking_price_th').toLocaleString('ru-RU')} · себес. ${classValue(key,'main_above_th_per_sqm').toLocaleString('ru-RU')}/${classValue(key,'main_under_th_per_sqm').toLocaleString('ru-RU')} тыс. ₽`;
 }
 
+// Число профиля класса, вписанное руками, — решение человека, и смена класса
+// его молча не затирает (инвариант «ручное не подменяется расчётным»). Прежде
+// правку помнили пять полей из литерала — цены квартир, коммерции, машино-места
+// и две ставки СМР, — а цену офисов, благоустройство, нормативы паркинга и
+// кладовую следующий выбор класса перезаписывал без слова. Правило одно:
+// поле профиля, изменённое руками, помечается вписанным. Список полей — сам
+// профиль (`classSetsField`), а не перечисление рядом с ним.
+function classManualKeys(){
+ return Array.isArray(inputs._class_manual)?inputs._class_manual.filter(classSetsField):[];
+}
+function markClassManual(k){
+ if(!classSetsField(k))return false;
+ const list=classManualKeys();
+ if(!list.includes(k))list.push(k);
+ inputs._class_manual=list;
+ return true;
+}
+function isClassManual(k){return classManualKeys().includes(k)}
+
 function applyProjectClassPreset(selectedKey){
  const select=document.getElementById('projectClassSelect');
  const key=selectedKey||(select?select.value:'comfort');
  const p=PROJECT_CLASS_PRESETS[key];
  if(!p){inputs.project_class='custom';renderProjectClassPreview();return;}
+ // Вписанное руками, что класс поменял бы, называется поимённо, и решает
+ // человек: заменить значениями класса или оставить своё. Без окна (стенд,
+ // встроенный вид) — оставить: молча терять ручное хуже, чем не поставить класс.
+ const manual=classManualKeys().filter(k=>Object.prototype.hasOwnProperty.call(p,k)
+   &&isFinite(Number(inputs[k]))&&Math.abs(Number(inputs[k])-classValue(key,k))>1e-9);
+ let keep=[];
+ if(manual.length){
+  const lines=manual.map(k=>`${classFieldLabel(k)}: ${Number(inputs[k]).toLocaleString('ru-RU')} → ${classValue(key,k).toLocaleString('ru-RU')}`).join('\n');
+  const ask=typeof window!=='undefined'&&typeof window.confirm==='function'?window.confirm.bind(window):null;
+  const replace=ask?ask(`Класс «${p.label||key}» заменит числа, вписанные руками:\n${lines}\n\nОК — заменить значениями класса.\nОтмена — оставить вписанные руками.`):false;
+  if(replace)inputs._class_manual=classManualKeys().filter(k=>!manual.includes(k));
+  else keep=manual;
+ }
  inputs.project_class=key;
  // Личная перекрышка сильнее общей базы: применяется значение человека,
  // а отклонение от ОБЩЕЙ базы по-прежнему считает сервер и печатает в PDF.
@@ -46738,7 +46914,7 @@ function applyProjectClassPreset(selectedKey){
  // «места × ПРЕЖНИЙ норматив», у вписанной равенства нет.
  const wasPer=undergroundAreaPerSpace();
  const wasStoragePer=storageAreaPerUnit();
- Object.keys(p).filter(k=>k!=='label').forEach(k=>inputs[k]=classValue(key,k));
+ Object.keys(p).filter(k=>k!=='label'&&!keep.includes(k)).forEach(k=>inputs[k]=classValue(key,k));
  (function(){
   // Норматив не двинулся — двигать нечего, и лишний пересчёт только затёр бы
   // пару там, где класс к ней отношения не имеет.
@@ -47030,7 +47206,12 @@ function classSetsField(k){
  return k!=='label'&&Object.prototype.hasOwnProperty.call(p,k);
 }
 
-function classFieldLabel(k){for(const g of FIELD_GROUPS){for(const f of g[1]){if(f[0]===k)return f[1]}}return k}
+// Подпись поля вне его группы: у поля объекта — с именем объекта («Стартовая
+// цена — МФОЦ / офисы»). Карту считает движок тем же правилом, что строки
+// отклонений в PDF; короткая подпись осталась только внутри своей группы.
+const FIELD_LABELS_OUTSIDE=__DEVELOPAID_FIELD_LABELS_OUTSIDE__;
+const CLASS_DERIVED_NOTES=__DEVELOPAID_CLASS_DERIVED_NOTES__;
+function classFieldLabel(k){if(FIELD_LABELS_OUTSIDE[k])return FIELD_LABELS_OUTSIDE[k];for(const g of FIELD_GROUPS){for(const f of g[1]){if(f[0]===k)return f[1]}}return k}
 // Единицы полей класса считает движок и подставляет готовой картой — как
 // PRODUCT_LABELS и доли ТЭП. Свой разрез подсказки на JS был бы второй
 // реализацией одного правила, и разошлись бы они молча.
@@ -47116,7 +47297,9 @@ function renderClassDialog(){
   const rowStats=classes.map(c=>classStatsRow(c,k));
   const hasStats=rowStats.some(Boolean);
   const unit=classFieldUnit(k);
-  const unitCell=unit?` <span style="color:#8a94a6;font-size:11px;white-space:nowrap">${escapeHtml(unit)}</span>`:'';
+  const derived=CLASS_DERIVED_NOTES[k]||'';
+  const unitCell=(unit?` <span style="color:#8a94a6;font-size:11px;white-space:nowrap">${escapeHtml(unit)}</span>`:'')
+   +(derived?` <span class="class-derived" style="color:#8a94a6;font-size:11px">· ${escapeHtml(derived)}</span>`:'');
   const labelCell=(hasStats
    ?`<a href="#" onclick="toggleClassDetail('${k}');return false" title="Обоснование: источники, диапазон и положение вашего значения" style="color:inherit;text-decoration:none;border-bottom:1px dashed #b6c4d6">${classFieldLabel(k)} <span style="color:#3b6db4">${CLASS_DETAIL_OPEN[k]?'▾':'▸'}</span></a>`
    :classFieldLabel(k))+unitCell;
@@ -47207,6 +47390,7 @@ function setClassRate(k,value){
  const num=Number(value);
  if(!isFinite(num))return;
  inputs[k]=num;
+ markClassManual(k);
  renderInputs();
  renderProjectClassPreview();
  renderClassDialog();
@@ -47468,7 +47652,11 @@ function renderInputs(){
    const peek=groupPeek(grp[0],grp[1]);
    if(peek){const hint=document.createElement('span');hint.className='group-peek';hint.textContent=peek;sum.appendChild(hint)}
    det.appendChild(sum);
-   const grid=document.createElement('div');grid.className='fields';
+   // Поля объекта разбиты на смысловые блоки с заголовком: у каждого блока
+   // своя сетка, и новый блок начинается там, где у поля сменился блок.
+   // Порядок полей уже сгруппирован движком — страница его не пересобирает.
+   let grid=null,section=null;
+   const openGrid=()=>{grid=document.createElement('div');grid.className='fields';det.appendChild(grid)};
    grp[1].forEach(f=>{
      const [id,label,unit,type]=f;
      // Норматив площади двора правится в «Настройках класса»: он свойство
@@ -47477,14 +47665,20 @@ function renderInputs(){
      // отклонений в отчёте; здесь оно только не рисуется. Выход ДО создания
      // узла: наполовину нарисованное поле оставило бы в сетке пустую клетку.
      if(CLASS_ONLY_INPUTS.includes(id))return;
-     const wrap=document.createElement('div');wrap.className='field';
+     const own=FIELD_SECTIONS[id];
+     if(own&&own!==section){
+       section=own;
+       const head=document.createElement('div');head.className='field-section';head.textContent=own;
+       det.appendChild(head);openGrid();
+     }else if(!grid||(!own&&section)){section=null;openGrid()}
+     const wrap=document.createElement('div');wrap.className='field';wrap.dataset.field=id;
      // Класс задаёт не только деньги, и об этом сказано у самого поля:
      // одиннадцать вводных ставит выбранный класс, а на экране они
      // неотличимы от набранных руками («я не вижу ничего про площадь
      // машиноместа установлена по классу», владелец, 15.09.2026). Пометка
      // стоит у ЕДИНИЦЫ, то есть рядом с числом, а не строкой ниже: подпись
      // под полем читают, когда уже засомневались.
-     const unitText=classSetsField(id)?unit+' · ставит класс проекта, правится в «Настройках класса»':unit;
+     const unitText=!classSetsField(id)?unit:isClassManual(id)?unit+' · вписано руками — смена класса его не затрёт':unit+' · ставит класс проекта, правится в «Настройках класса»';
      wrap.innerHTML=`<label>${label} <span class="unit">${unitText}</span></label>`;
      // Срок строительства при очередности задаёт очередь, а не проект: движок
      // читает проектное поле ТОЛЬКО когда очередь своего срока не назвала, а
@@ -47546,7 +47740,7 @@ function renderInputs(){
       el.disabled=true;
       el.title='Москва: платежи ежеквартально — установлено нормативно';
      }
-     el.onchange=()=>{inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='social_mode')inputs._social_mode_user_set=true;if(/^(offices|retail|sports)_parking_(under|over)_spaces$/.test(id)){if(String(el.value).trim()==='')restoreParkingNorm(id.split('_')[0]);else markParkingByHand(id.split('_')[0]);}if(id==='underground_manual_spaces'||id==='underground_manual_gns_sqm'){if(Number(el.value)>0)markParkingByHand(PROJECT_PARKING_KEY);else markParkingByNorm(PROJECT_PARKING_KEY);}if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){renderInputs();return calculate()}if(['apartment_price_th','commercial_price_th','parking_price_th','main_above_th_per_sqm','main_under_th_per_sqm'].includes(id)){inputs.project_class='custom';syncProjectClassSelector()}if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(id==='storage_area_per_unit_sqm'){syncStoragePair('units');renderTep()}if(TEP_DERIVED_INPUTS.includes(id)){const cleared=id==='social_area_source'&&krtClearsVriFee();const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(cleared||filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
+     el.onchange=()=>{inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='social_mode')inputs._social_mode_user_set=true;if(/^(offices|retail|sports)_parking_(under|over)_spaces$/.test(id)){if(String(el.value).trim()==='')restoreParkingNorm(id.split('_')[0]);else markParkingByHand(id.split('_')[0]);}if(id==='underground_manual_spaces'||id==='underground_manual_gns_sqm'){if(Number(el.value)>0)markParkingByHand(PROJECT_PARKING_KEY);else markParkingByNorm(PROJECT_PARKING_KEY);}if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){renderInputs();return calculate()}if(markClassManual(id))syncProjectClassSelector();if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(id==='storage_area_per_unit_sqm'){syncStoragePair('units');renderTep()}if(TEP_DERIVED_INPUTS.includes(id)){const cleared=id==='social_area_source'&&krtClearsVriFee();const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(cleared||filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
      wrap.appendChild(el);
      // Смягчение, которое даёт ГОРОД по своему решению, — справка у числа, а
      // не множитель в расчёте (решение владельца, 13.09.2026: «это зависит от
@@ -47612,7 +47806,7 @@ function renderInputs(){
       wrap.appendChild(normCell);
      }
      grid.appendChild(wrap);
-   });det.appendChild(grid);(ownTab?vriBox:box).appendChild(det);
+   });(ownTab?vriBox:box).appendChild(det);
  });
  rateScenario.value=inputs.rate_scenario||'base';
  // Фокус возвращается туда, где он был: перерисовка случается ПОСРЕДИ ввода
@@ -53362,6 +53556,13 @@ MONITOR_PAGE_HTML = (
 )
 PAGE = PAGE.replace(FIELD_GROUPS_PLACEHOLDER,
                     json.dumps(FIELD_GROUPS, ensure_ascii=False))
+PAGE = PAGE.replace(FIELD_SECTIONS_PLACEHOLDER,
+                    json.dumps(FIELD_SECTIONS, ensure_ascii=False))
+# Подписи полей объектов вне их группы — тем же правилом, что в PDF и отчётах.
+PAGE = PAGE.replace("__DEVELOPAID_FIELD_LABELS_OUTSIDE__", json.dumps(
+    {key: _input_field_label(key) for key in FIELD_SECTIONS}, ensure_ascii=False))
+PAGE = PAGE.replace(CLASS_DERIVED_NOTES_PLACEHOLDER,
+                    json.dumps(CLASS_DERIVED_NOTES, ensure_ascii=False))
 # Базы классов — из движка. Копия жила на странице с рождения окна и отстала
 # от пресета в первый же раз, когда профиль класса расширили статьями:
 # полный профиль применялся бы на сервере и молча не существовал бы в браузере.

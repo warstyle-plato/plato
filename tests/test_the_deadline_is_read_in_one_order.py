@@ -93,17 +93,12 @@ def _run(script: str) -> dict:
     своём блоке, и проверяемая функция снаружи не видна — падение выходит про
     стенд, а не про то, что он проверяет.
     """
-    blocks = page_blocks.auctions_function(
-        "moscowFormat", "shortDate", "lotDeadline", "lotDeadlineDays",
-        "krtLots", "krtLiveLot")
+    # Куски добирает общий разрешитель по именам из ошибок node — перечень
+    # руками отставал от страницы (`liveTenderLot is not defined`).
     # `krtLots` смотрит в состояние страницы: свежие лоты сильнее запомненных.
     harness = "const state={krtTenders:{}};\n"
-    proc = subprocess.run(
-        ["node", "-e", harness + blocks + "\n" + script],
-        capture_output=True, text=True, timeout=120,
-    )
-    assert proc.returncode == 0, proc.stderr[-2000:]
-    return json.loads(proc.stdout.strip().splitlines()[-1])
+    out, _taken = page_blocks.run(harness, script, page=ui.auctions_page())
+    return json.loads(out.strip().splitlines()[-1])
 
 
 def test_the_page_prints_the_server_moment_not_its_own_guess() -> None:
