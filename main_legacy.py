@@ -10996,6 +10996,10 @@ def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[st
         row["parking_saleable_units"] = (
             float(max(0, under + over - guests)) if sellable else 0.0
         )
+        # Гостевые — число движка, а не разность на экране: у ТЦ и ФОКа места
+        # не продаются, и «построено − продаётся» называло гостевыми все места.
+        # Поле перенесено из ветки Codex fix/object-parking-tep-expense-units.
+        row["parking_guest_units"] = float(guests)
 
         base_gns = max(0.0, n(row, "gns"))
         over_gba = over * over_per_space
@@ -16213,7 +16217,8 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
                                +(f" (гараж {_pdf_num(row.get('under_gns'),0)} м²)"
                                  if float(row.get('under_gns') or 0) else ""))
         if over: where.append("на первых этажах "+_pdf_num(over,0)+" (в ГНС здания)")
-        tail=("продаётся "+_pdf_num(sold,0)+(", гостевых "+_pdf_num(units-sold,0) if units>sold else "")
+        guest=float(row.get('parking_guest_units') or 0)
+        tail=("продаётся "+_pdf_num(sold,0)+(", гостевых "+_pdf_num(guest,0) if guest else "")
               if sold else "не продаются — обеспечивают посетителей")
         return "   в т.ч. паркинг объекта, мест: "+"; ".join(where+[tail])
     park_units_total=float(total.get('parking_units') or 0)
@@ -31247,6 +31252,7 @@ def calculate(req: CalcRequest) -> dict:
             # здания. ТЭП печатает их строкой «в т.ч. паркинг объекта».
             "parking_under_units": n(row, "parking_under_units"),
             "parking_over_units": n(row, "parking_over_units"),
+            "parking_guest_units": n(row, "parking_guest_units"),
         })
 
     tep_total = {
@@ -31254,7 +31260,8 @@ def calculate(req: CalcRequest) -> dict:
         for key in ("gns", "total_area", "useful", "saleable", "transfer", "units",
                     "guest_units", "transfer_units", "saleable_units",
                     "under_gns", "parking_units", "parking_saleable_units",
-                    "parking_under_units", "parking_over_units")
+                    "parking_under_units", "parking_over_units",
+                    "parking_guest_units")
     }
 
     total_revenue = fin["total_revenue"]
@@ -33606,12 +33613,13 @@ def _consolidate_phase_results(
                 "under_gns": 0.0, "parking_units": 0.0,
                 "parking_saleable_units": 0.0,
                 "parking_under_units": 0.0, "parking_over_units": 0.0,
+                "parking_guest_units": 0.0,
             })
             for field in ("gns", "total_area", "useful", "saleable", "transfer", "units",
                           "guest_units", "transfer_units", "saleable_units",
                           "under_gns", "parking_units",
                           "parking_saleable_units", "parking_under_units",
-                          "parking_over_units"):
+                          "parking_over_units", "parking_guest_units"):
                 target[field] += float(row.get(field, 0.0) or 0.0)
     tep_rows = list(tep_map.values())
     tep_total = {
@@ -33620,7 +33628,7 @@ def _consolidate_phase_results(
                       "guest_units", "transfer_units", "saleable_units",
                       "under_gns", "parking_units",
                       "parking_saleable_units", "parking_under_units",
-                      "parking_over_units")
+                      "parking_over_units", "parking_guest_units")
     }
 
     revenue = _sum_dicts([r["revenue"] for r in results])
@@ -51742,7 +51750,7 @@ function renderResult(){
  const objParkRow=x=>{
   if(!objParkUnits(x))return '';
   const under=Number(x.parking_under_units||0),over=Number(x.parking_over_units||0);
-  const sold=Number(x.parking_saleable_units||0),guest=Math.max(0,objParkUnits(x)-sold);
+  const sold=Number(x.parking_saleable_units||0),guest=Number(x.parking_guest_units||0);
   const where=[under?'подземных '+num(under):'',over?'на первых этажах '+num(over)+' (в ГНС здания)':''].filter(Boolean).join(' · ');
   const small=t=>t?`<span style="display:block;font-size:10px;color:#777">${t}</span>`:'';
   return `<tr class="sub"><td style="padding-left:18px">в т.ч. паркинг объекта, машино-места${small(where)}</td>`

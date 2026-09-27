@@ -198,3 +198,21 @@ def test_the_input_tep_puts_the_object_parking_on_its_own_row() -> None:
     assert "↳ Паркинг объекта" in body
     # Приписки к имени больше нет — иначе одно и то же стояло бы дважды.
     assert "label+=` <span style=\"display:block;font-size:10px;color:#777;margin-top:3px\">${escapeHtml(parkNote)}" not in body
+
+
+def test_the_guest_places_are_an_engine_number() -> None:
+    """Гостевые — поле движка; у непродаваемых мест их нет, а не «все места»."""
+    row = _office_row(_result())
+    assert row["parking_guest_units"] == round((UNDER + OVER) * GUEST_PCT / 100)
+    x = _inputs()
+    x.update({"retail_enabled": True, "retail_parking_under_spaces": 50,
+              "_parking_by_hand": ["offices", "retail"]})
+    t = _tep()
+    t["standalone_retail"].update({"gns": 10_000, "total_area": 9_000,
+                                   "useful": 6_000, "saleable": 6_000})
+    result = core._run_authoritative_model(x, t, [], {})["consolidated"]
+    retail = next(r for r in result["tep"]["rows"] if r["key"] == "standalone_retail")
+    assert retail["parking_units"] == 50 and retail["parking_saleable_units"] == 0
+    assert retail["parking_guest_units"] == 0
+    html = _report_tep_html(result)
+    assert "из них гостевых 50" not in html
