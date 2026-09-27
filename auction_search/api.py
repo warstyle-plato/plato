@@ -1384,67 +1384,6 @@ def install(app: FastAPI) -> None:
         return {"price": price, "absorption": absorption, "segment": name}
 
 
-    def _rating_score_inputs(
-        project: dict[str, Any],
-        row: dict[str, Any],
-        *,
-        segment: Any,
-        llcr: Any,
-        market_price: Any,
-        local_absorption: Any,
-        benchmark_absorption: Any,
-        burden_pct: Any,
-        burden_state: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        """Входы балла для ОБОИХ пересчётов — по кнопке и фонового.
-
-        Здесь читаются только наблюдения каталога: медианы уже посчитанных
-        строк и ориентир Москвы. Сама политика подстановок живёт в методике
-        (`krt_investment_score.rating_inputs`) — там её можно проверить, не
-        поднимая приложение, и там же объявлен порог выборки.
-
-        Почему это одна функция. Подстановка жила ТОЛЬКО в явном пересчёте, а
-        фоновый слой считал тот же балл без неё — два расчёта одного числа с
-        разной политикой. Пока фон почти ничего не пересчитывал, расхождение не
-        было видно; #517 поднял `BURDEN_PIPELINE_VERSION`, весь каталог пошёл на
-        пересчёт фоном, и замер прода 27.09.2026 показал цену расхождения:
-        `investment_rating` есть у 365 строк, а балл не null — у 13. Фон
-        перезаписал вчерашние баллы отказом «не хватает данных: burden».
-        """
-        return krt_investment_score.rating_inputs(
-            project=project or {},
-            row=row or {},
-            segment=segment,
-            llcr=llcr,
-            market_price=market_price,
-            local_absorption=local_absorption,
-            benchmark_absorption=benchmark_absorption,
-            burden_pct=burden_pct,
-            burden_state=burden_state,
-            catalogue_medians=_rating_catalogue_medians(),
-            city_reference=_city_rating_reference(segment),
-        )
-
-
-    # Строка каталога хранит один и тот же набор полей балла, кем бы он ни был
-    # посчитан: разный набор у кнопки и у фона однажды дал бы карточке и таблице
-    # два разных ответа об одном балле.
-    _STORED_RATING_KEYS = ("score", "display_score", "coverage_pct", "rankable",
-                           "reason", "missing", "deferred", "imputed")
-    _STORED_COMPONENT_KEYS = ("name", "score", "value", "benchmark", "ratio",
-                              "estimated", "estimate_source")
-
-
-    def _stored_rating(rating: dict[str, Any]) -> dict[str, Any]:
-        """Компактный снимок балла для строки каталога — один на оба пересчёта."""
-        kept = {key: rating.get(key) for key in _STORED_RATING_KEYS}
-        kept["components"] = {
-            key: {name: value.get(name) for name in _STORED_COMPONENT_KEYS}
-            for key, value in (rating.get("components") or {}).items()
-        }
-        return kept
-
-
     @app.get("/auctions/krt/{slug}/investment-score", include_in_schema=False)
     async def auction_krt_investment_score(
         slug: str,
@@ -1694,23 +1633,110 @@ def install(app: FastAPI) -> None:
         if not status_kind:
             status_kind = "running" if "реализац" in str(project.get("status") or "").casefold() else "planned"
 
-        # Входы балла и политика подстановок — одна на оба пересчёта
-        # (`_rating_score_inputs`). Второй набор правил здесь однажды уже
-        # разошёлся с фоновым и стоил каталогу 352 балла.
-        policy = _rating_score_inputs(
-            project, row, segment=segment, llcr=llcr, market_price=market_price,
-            local_absorption=local_absorption,
-            benchmark_absorption=benchmark_absorption,
-            burden_pct=burden_pct, burden_state=burden_state)
+        # Рейтинг нужен как сравнительный индекс всего каталога, а не как
+        # бинарная проверка полноты. Факт и оценка разделены: coverage считает
+        # только реальные входы площадки, а отсутствующий вход получает
+        # прозрачную медианную подстановку.
+        observed_components: set[str] = set()
+        if llcr is not None:
+            observed_components.add("llcr")
+        if market_price is not None:
+            observed_components.add("price")
+        if local_absorption is not None and benchmark_absorption is not None:
+            observed_components.add("absorption")
+        if burden_pct is not None:
+            observed_components.add("burden")
+
+        catalogue_medians = _rating_catalogue_medians()
+        city_reference = _city_rating_reference(segment)
+        imputed_components: dict[str, str] = {}
+
+        score_llcr = llcr
+        if score_llcr is None:
+            item = catalogue_medians["llcr"]
+            score_llcr = item.get("value")
+            if score_llcr is not None:
+                imputed_components["llcr"] = (
+                    f"медиана LLCR рассчитанных КРТ, n={item.get('count') or 0}"
+                )
+
+        score_market_price = market_price
+        if score_market_price is None:
+            score_market_price = city_reference.get("price")
+            if score_market_price is not None:
+                label = segment or "все классы"
+                imputed_components["price"] = f"медиана цены Москвы, {label}"
+            else:
+                item = catalogue_medians["price"]
+                score_market_price = item.get("value")
+                if score_market_price is not None:
+                    imputed_components["price"] = (
+                        f"медиана цены рассчитанных КРТ, n={item.get('count') or 0}"
+                    )
+
+        score_benchmark_absorption = benchmark_absorption
+        if score_benchmark_absorption is None:
+            score_benchmark_absorption = city_reference.get("absorption")
+        score_local_absorption = local_absorption
+        if score_local_absorption is None and score_benchmark_absorption is not None:
+            score_local_absorption = score_benchmark_absorption
+            label = segment or "все классы"
+            imputed_components["absorption"] = (
+                f"локальных данных нет — медиана поглощения Москвы, {label}"
+            )
+        elif score_local_absorption is None:
+            item = catalogue_medians["absorption"]
+            score_local_absorption = item.get("value")
+            if score_local_absorption is not None:
+                score_benchmark_absorption = (
+                    score_benchmark_absorption or score_local_absorption
+                )
+                imputed_components["absorption"] = (
+                    f"медиана поглощения рассчитанных КРТ, n={item.get('count') or 0}"
+                )
+        elif benchmark_absorption is None and score_benchmark_absorption is not None:
+            imputed_components["absorption"] = (
+                f"эталон — медиана поглощения Москвы, {segment or 'все классы'}"
+            )
+
+        score_burden_pct = burden_pct
+        if score_burden_pct is None:
+            item = catalogue_medians["burden"]
+            score_burden_pct = item.get("value")
+            if score_burden_pct is not None:
+                imputed_components["burden"] = (
+                    f"медиана нагрузки полностью рассчитанных КРТ, n={item.get('count') or 0}"
+                )
+
+        missing_reasons: dict[str, str] = {}
+        if local_absorption is None or benchmark_absorption is None:
+            missing_reasons["absorption"] = (
+                "Нужна пара м²/мес.: локальная медиана и медиана Москвы по классу. "
+                "Сохранённые ДДУ/мес. не подменяют эту меру."
+            )
+        stored_burden_reason = str(row.get("burden_reason") or "")
+        if burden_pct is None:
+            if project.get("early_unpublished") and project.get("seizure_mln") is not None:
+                missing_reasons["burden"] = (
+                    f"Известна только предварительная оценка изъятия "
+                    f"{project.get('seizure_mln')} млн ₽; полный денежный стек КРТ "
+                    "ещё не собран, поэтому нагрузка остаётся unknown."
+                )
+            else:
+                missing_reasons["burden"] = (
+                    str((burden_state or {}).get("reason") or stored_burden_reason)
+                    or "Полная денежная нагрузка КРТ пока не собрана для этой площадки; "
+                       "неизвестное не считается нулём."
+                )
 
         rating = krt_investment_score.score(
             status_kind=status_kind,
-            llcr=policy["llcr"],
-            market_rub_sqm=policy["market_rub_sqm"],
+            llcr=score_llcr,
+            market_rub_sqm=score_market_price,
             target_rub_sqm=price_target_rub_sqm,
-            local_sqm_month=policy["local_sqm_month"],
-            benchmark_sqm_month=policy["benchmark_sqm_month"],
-            burden_pct=policy["burden_pct"],
+            local_sqm_month=score_local_absorption,
+            benchmark_sqm_month=score_benchmark_absorption,
+            burden_pct=score_burden_pct,
             burden_mln=burden_mln,
             ordinary_capex_mln=ordinary_capex_mln,
             housing_gfa_sqm=project.get("housing_gfa_sqm") or row.get("housing_gfa_sqm"),
@@ -1728,15 +1754,28 @@ def install(app: FastAPI) -> None:
                     else "ЕГРН + обязательства КРТ + DevelopAid ordinary CAPEX"
                 ),
             },
-            missing_reasons=policy["missing_reasons"],
-            observed_components=policy["observed_components"],
-            imputed_components=policy["imputed_components"],
-            deferred_components=policy["deferred_components"],
+            missing_reasons=missing_reasons,
+            observed_components=observed_components,
+            imputed_components=imputed_components,
         )
         # Карточка и таблица читают один и тот же результат. Храним только
-        # компактный summary, а не всю методику #485 на каждой строке, и тем же
-        # снимком, каким его хранит фоновый пересчёт.
-        stored_rating = _stored_rating(rating)
+        # компактный summary, а не всю методику #485 на каждой строке.
+        stored_rating = {
+            key: rating.get(key) for key in
+            ("score", "display_score", "coverage_pct", "rankable", "reason", "missing", "imputed")
+        }
+        stored_rating["components"] = {
+            key: {
+                "name": value.get("name"),
+                "score": value.get("score"),
+                "value": value.get("value"),
+                "benchmark": value.get("benchmark"),
+                "ratio": value.get("ratio"),
+                "estimated": bool(value.get("estimated")),
+                "estimate_source": value.get("estimate_source"),
+            }
+            for key, value in (rating.get("components") or {}).items()
+        }
         canonical_target = shared_target
         canonical = abs(float(price_target_rub_sqm) - float(canonical_target)) < 0.5
         # В общий каталог записывается только канонический рейтинг. Сценарий,
@@ -3085,25 +3124,31 @@ def install(app: FastAPI) -> None:
                     "reason": "",
                 }
 
-        # Политика подстановок — та же функция, что у пересчёта по кнопке.
-        # Прежде фон считал БЕЗ подстановок: пока он почти ничего не
-        # пересчитывал, расхождение не было видно, а на пересчёте всего
-        # каталога (#517 поднял BURDEN_PIPELINE_VERSION) он перезаписал баллы
-        # отказом «не хватает данных: burden» — 352 строки из 365.
-        policy = _rating_score_inputs(
-            project, row, segment=segment, llcr=llcr, market_price=market_price,
-            local_absorption=local_absorption,
-            benchmark_absorption=benchmark_absorption,
-            burden_pct=burden_pct, burden_state=burden_state)
+        missing_reasons: dict[str, str] = {}
+        if local_absorption is None or benchmark_absorption is None:
+            missing_reasons["absorption"] = (
+                "Нет пары поглощения в м²/мес. для локального рынка и Москвы."
+            )
+        if burden_pct is None:
+            if project.get("early_unpublished") and project.get("seizure_mln") is not None:
+                missing_reasons["burden"] = (
+                    "Есть предварительная оценка изъятия, но нет полного денежного "
+                    "стека обязательств КРТ; частичное число не считается полным."
+                )
+            else:
+                missing_reasons["burden"] = (
+                    str((burden_state or {}).get("reason") or "")
+                    or "Полная денежная нагрузка КРТ пока не собрана; неизвестное не равно нулю."
+                )
 
         rating = krt_investment_score.score(
             status_kind="planned",
-            llcr=policy["llcr"],
-            market_rub_sqm=policy["market_rub_sqm"],
+            llcr=llcr,
+            market_rub_sqm=market_price,
             target_rub_sqm=target,
-            local_sqm_month=policy["local_sqm_month"],
-            benchmark_sqm_month=policy["benchmark_sqm_month"],
-            burden_pct=policy["burden_pct"],
+            local_sqm_month=local_absorption,
+            benchmark_sqm_month=benchmark_absorption,
+            burden_pct=burden_pct,
             burden_mln=burden_mln,
             ordinary_capex_mln=ordinary_capex_mln,
             housing_gfa_sqm=project.get("housing_gfa_sqm") or row.get("housing_gfa_sqm"),
@@ -3118,12 +3163,22 @@ def install(app: FastAPI) -> None:
                     else "обязательства КРТ / ordinary CAPEX"
                 ),
             },
-            missing_reasons=policy["missing_reasons"],
-            observed_components=policy["observed_components"],
-            imputed_components=policy["imputed_components"],
-            deferred_components=policy["deferred_components"],
+            missing_reasons=missing_reasons,
         )
-        stored_rating = _stored_rating(rating)
+        stored_rating = {
+            key: rating.get(key) for key in
+            ("score", "display_score", "coverage_pct", "rankable", "reason", "missing")
+        }
+        stored_rating["components"] = {
+            key: {
+                "name": value.get("name"),
+                "score": value.get("score"),
+                "value": value.get("value"),
+                "benchmark": value.get("benchmark"),
+                "ratio": value.get("ratio"),
+            }
+            for key, value in (rating.get("components") or {}).items()
+        }
         return {
             "investment_rating": stored_rating,
             "investment_rating_version": str(

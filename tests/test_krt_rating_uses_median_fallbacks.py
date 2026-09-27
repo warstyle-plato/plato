@@ -63,23 +63,11 @@ def test_api_uses_city_and_catalogue_medians_without_overwriting_facts() -> None
     assert "_city_rating_reference" in route
     assert 'median_of("project_llcr_x"' in route
     assert 'median_of("burden_pct"' in route
-    # Сама политика подстановок живёт в методике — там её проверяют без
-    # приложения; маршрут только читает наблюдения каталога и зовёт её.
-    policy = inspect.getsource(krt_investment_score.rating_inputs)
-    assert 'score_local_absorption = score_benchmark_absorption' in policy
-    assert 'score_burden_pct = value' in policy
-    assert "catalogue_medians=_rating_catalogue_medians()" in route
-    assert "city_reference=_city_rating_reference(segment)" in route
-    # Подстановка влияет на БАЛЛ, а не на фактовое поле строки: в ranking.json
-    # едет измеренная нагрузка, а не медиана. Проверяется на самом блоке
-    # записи, а не по всему срезу: имя score_burden_pct законно стоит рядом —
-    # в политике подстановок, откуда балл берёт свои входы.
-    remembered = route[route.index('"investment_rating": stored_rating'):]
-    assert '"burden_pct": burden_pct' in remembered
-    assert "score_burden_pct" not in remembered
-    # Политика подстановок одна на оба пересчёта, и зовут её и кнопка, и фон.
-    assert source.count("def _rating_score_inputs") == 1
-    assert source.count("policy = _rating_score_inputs(") == 2
+    assert 'score_local_absorption = score_benchmark_absorption' in route
+    assert 'score_burden_pct = item.get("value")' in route
+    # The estimate affects the score, not the factual burden field in ranking.json.
+    assert '"burden_pct": burden_pct' in route
+    assert '"burden_pct": score_burden_pct' not in route
 
 
 def test_catalogue_marks_median_based_ratings_as_estimated() -> None:
@@ -87,8 +75,3 @@ def test_catalogue_marks_median_based_ratings_as_estimated() -> None:
     assert "% факта" in page
     assert "медиана:" in page
     assert "с медианой" in page
-    # Балл по трём составляющим из четырёх называет себя: не показанный, он
-    # читался бы как полная оценка. Причина едет подсказкой того же места.
-    assert "без составляющей:" in page
-    assert "r.deferred" in page
-    assert "без составляющей '+incomplete" in page

@@ -7,8 +7,6 @@ monthly rows cannot be a denominator for the absorption ratio.
 
 from __future__ import annotations
 
-import inspect
-
 import json
 import sys
 from pathlib import Path
@@ -57,17 +55,8 @@ def test_moscow_absorption_benchmark_ignores_zero_months(tmp_path: Path) -> None
 
 
 def test_card_exposes_the_real_burden_failure_reason() -> None:
-    """Причина отказа burden берётся у живой попытки, а нет её — у строки.
-
-    Прежде проверялся один литерал `row.get("burden_reason")`. Причина живёт
-    теперь в одной политике входов (`_rating_score_inputs`), которую зовут и
-    кнопка, и фон, — и она называет причину живой попытки прежде сохранённой:
-    свежий отказ конвейера точнее вчерашнего.
-    """
-    policy = inspect.getsource(krt_investment_score.rating_inputs)
-    assert 'str(burden_state.get("reason") or row.get("burden_reason") or "")' in policy
     source = Path(api.__file__).read_text(encoding="utf-8")
-    assert source.count("def _rating_score_inputs") == 1
+    assert 'str(row.get("burden_reason") or "")' in source
 
 
 
