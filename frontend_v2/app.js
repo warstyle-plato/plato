@@ -1120,6 +1120,15 @@ function renderCommercialResult(result) {
   `).join('');
 }
 
+function commercialPayload() {
+  return {
+    asset_type: commercial.asset,
+    strategy: commercial.strategy,
+    financing_mode: commercial.financing,
+    inputs: commercial.values,
+  };
+}
+
 async function calculateCommercial() {
   const status = $('#commercialStatus');
   status.textContent = 'Считаю коммерческую экономику…';
@@ -1128,12 +1137,7 @@ async function calculateCommercial() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       cache: 'no-store',
-      body: JSON.stringify({
-        asset_type: commercial.asset,
-        strategy: commercial.strategy,
-        financing_mode: commercial.financing,
-        inputs: commercial.values,
-      }),
+      body: JSON.stringify(commercialPayload()),
     });
     const result = await response.json();
     if (!response.ok) throw new Error(result.detail || 'Коммерческий расчёт не выполнен');
@@ -1141,6 +1145,38 @@ async function calculateCommercial() {
     status.textContent = result.uses_escrow
       ? 'Готово.'
       : 'Готово. Денежный поток рассчитан без эскроу.';
+  } catch (error) {
+    status.textContent = String(error.message || error);
+  }
+}
+
+async function downloadCommercialExcel() {
+  const status = $('#commercialStatus');
+  status.textContent = 'Собираю отдельную Excel-модель…';
+  try {
+    const response = await fetch('/api/v2/commercial/export/xlsx', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      cache: 'no-store',
+      body: JSON.stringify(commercialPayload()),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || 'Excel не собран');
+    }
+    const blob = await response.blob();
+    const disposition = response.headers.get('Content-Disposition') || '';
+    const match = disposition.match(/filename="?([^";]+)"?/i);
+    const filename = match ? match[1] : 'DevelopAid_Commercial_Model_Beta.xlsx';
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+    status.textContent = 'Excel собран. Это отдельная нежилая модель, без жилого шаблона и эскроу.';
   } catch (error) {
     status.textContent = String(error.message || error);
   }
@@ -1178,6 +1214,7 @@ async function initCommercial() {
     renderCommercialInputs();
   });
   $('#commercialCalc').addEventListener('click', calculateCommercial);
+  $('#commercialExcel').addEventListener('click', downloadCommercialExcel);
 
   renderCommercialInputs();
   await calculateCommercial();
