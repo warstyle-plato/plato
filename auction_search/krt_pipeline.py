@@ -269,9 +269,13 @@ def enrich_krt_from_official_documents(
                 # конце («…они стоят на 250 пт. Это наш пробел»), и обрезка по
                 # 200 срезала бы ровно его — та же потеря, что уже ловилась на
                 # диагнозе печатной формы.
+                # Вид ответа едет полем рядом с текстом: сводка отбирает
+                # непохожие ответы по виду, а не по тексту, в котором стоит
+                # число слов документа. Вид объявляет читатель состава.
                 ledger["skipped"].append({
                     "document": document.title, "url": document.url,
-                    "why": f"состав территории не разобран: {exc}"[:400]})
+                    "why": f"состав территории не разобран: {exc}"[:400],
+                    "verdict": str(getattr(exc, "kind", "") or "")})
             else:
                 krt_territory().remember_notice(
                     key, notice, document=document.title or document.url,
@@ -333,7 +337,7 @@ def enrich_krt_from_official_documents(
 
 
 def _table_verdicts(ledger: dict) -> str:
-    """Что сказал читатель состава о КАЖДОМ вложении, где искал таблицу.
+    """Что сказал читатель состава — по одному ответу на КАЖДЫЙ ВИД ответа.
 
     Причины собирались в `ledger["skipped"]` и никем не читались: на экране
     стояло плоское «таблицы состава территории в них нет» — один ответ на три
@@ -341,22 +345,41 @@ def _table_verdicts(ledger: dict) -> str:
     есть, но её колонки стоят не там, где их ищут по координатам). Два из трёх —
     наш пробел, и выданы они были за ответ документа.
 
-    Показываются непохожие причины, а не все подряд: у лота полтора десятка
-    вложений, и пятнадцать раз «кадастровых номеров нет» ничего не добавляют к
-    одному.
+    Повторы схлопываются по ВИДУ ответа, а не по тексту причины. По тексту они
+    не схлопывались вовсе: в нём стоит число слов документа, у каждого вложения
+    своё. Замер прода 25.09.2026 по МКАД (41 км): список забился ответами
+    «в документе N слов и ни одного кадастрового номера», и вердикт по
+    «Сведениям о земельных участках» — единственному вложению, где таблица
+    состава и должна стоять, — в надпись не попал вовсе.
+
+    Первым стоит наш пробел, последним — ответ документа: у памятки победителя
+    таблицы состава нет и быть не должно, а «колонки не там» чинится кодом.
+    Видов ответа единицы, поэтому показываются ВСЕ — счёт вложений с тем же
+    ответом называется рядом, чтобы схлопнутое не выглядело единичным.
     """
-    said: list[str] = []
+    said: dict[str, dict[str, Any]] = {}
     for item in (ledger.get("skipped") or []):
         why = str(item.get("why") or "")
         mark = "состав территории не разобран: "
         if not why.startswith(mark):
             continue
         reason = why[len(mark):].strip()
+        kind = str(item.get("verdict") or "")
         document = str(item.get("document") or "").strip()
-        line = f"{document} — {reason}" if document else reason
-        if not any(reason in one for one in said):
-            said.append(line)
-    return "; ".join(said[:3])
+        # Вид не назван — схлопывать по тексту: это отказ, которого читатель
+        # состава не разобрал, и склеивать такие ответы между собой нельзя.
+        known = said.setdefault(kind or reason, {
+            "kind": kind, "reason": reason, "document": document, "same": 0})
+        known["same"] = int(known["same"]) + 1
+    lines: list[str] = []
+    for one in sorted(said.values(),
+                      key=lambda row: krt_notice.table_verdict_rank(row["kind"])):
+        line = (f"{one['document']} — {one['reason']}"
+                if one["document"] else str(one["reason"]))
+        if int(one["same"]) > 1:
+            line += f" (и ещё {int(one['same']) - 1} с тем же ответом)"
+        lines.append(line)
+    return "; ".join(lines)
 
 
 def read_notices(by_site: dict[str, Any], *,

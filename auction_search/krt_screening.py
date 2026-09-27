@@ -15,6 +15,9 @@ import math
 from typing import Any
 
 from market_search.krt_requirements import social_objects_from_decision
+# Основание ориентира объявляет price_hint; здесь оно читается, а не
+# пересказывается строковым литералом.
+from market_search.price_hint import BASIS_PEERS as PRICE_BASIS_PEERS
 from market_search.segments import BUSINESS, COMFORT, ECONOMY, ELITE, PREMIUM, normalize_segment
 
 
@@ -150,7 +153,11 @@ def _empty_tep(core: Any) -> dict[str, dict[str, Any]]:
 # числового ориентира, которому нужны минимум три свежих сопоставимых прайса.
 # site_verdict остаётся ответом «что здесь строить», а entry_per_sqm — справкой
 # о входных ценах соседей. Ни одно из них не подменяет отсутствующую цену рынка.
-SCREENING_RULES_VERSION = 5
+# 6: цена окружения ненулевая только при основании `peers`. Медиана округа и
+# медиана класса по Москве остаются ценой МОДЕЛИ с названным основанием, но
+# наблюдением этой площадки не считаются. Подъём версии нужен, чтобы строки,
+# посчитанные прежним правилом, перечитались.
+SCREENING_RULES_VERSION = 6
 
 
 def _market_inputs(report: dict[str, Any]) -> tuple[str | None, float, float, str]:
@@ -174,16 +181,36 @@ def _market_inputs(report: dict[str, Any]) -> tuple[str | None, float, float, st
     # нельзя: именно так единичный premium/elite-кластер давал каталогу КРТ
     # 2,6–3,2 млн ₽/м² как «цену окружения».
     hint_price = _number(hint.get("price_per_sqm"))
-    if hint_price > 0:
+    # На чём стоит ориентир, говорит САМ price_hint. Соседей меньше трёх — он
+    # честно отдаёт медиану округа (`okrug`), а нет и её — медиану класса по
+    # Москве (`city`), и обещание «минимум три свежих сопоставимых прайса»
+    # относится только к `peers`. Читалось же оно как цена окружения при любом
+    # основании: медиана всего округа ехала в колонку «Цена окружения», в
+    # фильтр «от 600 000 ₽/м²» и в ценовую часть рейтинга — то есть городское
+    # среднее выдавалось за наблюдение этой площадки.
+    basis = str(hint.get("basis") or "").strip().lower()
+    basis_title = str(hint.get("basis_title") or "").strip()
+    if hint_price > 0 and basis == PRICE_BASIS_PEERS:
         return (
             segment,
             hint_price,
             hint_price,
             "price_hint отчёта — медиана свежих сопоставимых проектов",
         )
-    # Нет трёх свежих сопоставимых прайсов — цены окружения нет. Не подменяем
-    # её ни site_verdict (он может стоять на одном дорогом проекте выбранного
-    # класса), ни entry_per_sqm (это цена самого дешёвого лота, другой смысл).
+    if hint_price > 0:
+        # Считать по округу можно — он лучше пресета класса. Называть это
+        # ценой ОКРУЖЕНИЯ нельзя: цена окружения остаётся нулём, а основание
+        # едет в предпосылки строкой самого отчёта.
+        return (
+            segment,
+            hint_price,
+            0.0,
+            f"ориентир {basis_title or basis or 'без основания'}: трёх свежих "
+            "сопоставимых проектов рядом не нашлось, цена окружения не измерена",
+        )
+    # Нет и этого — цены нет вовсе. Не подменяем её ни site_verdict (он может
+    # стоять на одном дорогом проекте выбранного класса), ни entry_per_sqm
+    # (это цена самого дешёвого лота, другой смысл).
     return segment, 0.0, 0.0, "price_hint не дал достаточной выборки свежих сопоставимых цен"
 
 
@@ -441,6 +468,58 @@ _SOCIAL_ROWS: dict[str, tuple[str, str, str, str, str]] = {
                "social_clinic_norm_sqm", "Поликлиника"),
 }
 POPULATION_SQM_PER_PERSON = 33.0
+
+
+def _split_mkd(core: Any, housing_gfa: float, flats_named: float,
+               saleable_of_gns: float, *,
+               restored_from_flats: bool = False) -> tuple[float, float, str]:
+    """Жилой объём города — это МКД целиком: квартиры И встроенная коммерция.
+
+    «Объекты жилого назначения – 26 260 кв. м» в решении — не площадь квартир:
+    во встроенных и пристроенных помещениях МКД сидит коммерция первого этажа,
+    и методика ГлавАПУ делит СПП МКД на 94% квартир и 6% встроенной
+    (`MKD_SPP_SPLIT`). Правило объявлено в движке, его применяет страница при
+    правке жилья и восстановление ГлавАПУ — а скрининг КРТ писал ВЕСЬ жилой
+    объём строкой «Квартиры», и строка «Коммерция 1 этажа» приезжала нулём
+    (владелец, 22.09.2026: «вообще не передал как раз первый этаж коммерции»).
+    Эти метры продавались по цене квартир и не имели своей экономики.
+
+    Делит по числам ГОРОДА, когда он назвал оба: у Власова, влд. 59 названы и
+    жильё 26 260, и площадь квартир 15 681. Тогда ГНС квартир — 15 681 / 0,65
+    = 24 124,6, остаток 2 135,4 — встроенная. Это не подгонка: тот же документ
+    называет нежилую наземную 3 410 м², и 3 410 / 0,9 − 1 655 (ОСЗ) = 2 133,9 —
+    два независимых пути сходятся с расхождением 1,5 м² на 2 134.
+
+    Город назвал только жильё — делит умолчанием движка 94/6. Назвал только
+    квартиры — жилой объём и есть их ГНС, а сколько в МКД встроенной, документ
+    не сказал: приписать её значит объявить метры, которых никто не называл.
+
+    `restored_from_flats` — жилой объём не назван городом, а ВОССТАНОВЛЕН из
+    площади квартир той же долей. Делить его нельзя: он уже ГНС квартир, и
+    методика отняла бы у них 6% в пользу метров, которых никто не называл. На
+    площадке-решении с одной названной площадью квартир 4 290 м² это давало
+    4 033 продаваемых вместо 4 290 — наш пересчёт вместо числа города.
+    """
+    if housing_gfa <= 0:
+        return 0.0, 0.0, ""
+    if restored_from_flats:
+        return housing_gfa, 0.0, ""
+    if flats_named > 0 and saleable_of_gns > 0:
+        by_city = flats_named / saleable_of_gns
+        if 0 < by_city <= housing_gfa:
+            return (by_city, housing_gfa - by_city,
+                    "по названным городом жилому объёму и площади квартир")
+        # Числа города не складываются по методике: ГНС квартир вышла больше
+        # всего жилья. Молча обрезать значит спрятать противоречие — считаем
+        # умолчанием и называем расхождение.
+        by_norm = housing_gfa * core.MKD_SPP_SPLIT["apartments"]
+        return (by_norm, housing_gfa - by_norm,
+                f"по методике 94/6: площадь квартир {_ru_number(flats_named)} м² даёт "
+                f"ГНС {_ru_number(by_city)} м² — больше всего жилья "
+                f"{_ru_number(housing_gfa)} м², и по ней делить нельзя")
+    by_norm = housing_gfa * core.MKD_SPP_SPLIT["apartments"]
+    return (by_norm, housing_gfa - by_norm,
+            "по методике ГлавАПУ 94/6 — площадь квартир документом не названа")
 
 
 def _programme(
@@ -769,6 +848,14 @@ def build_krt_model_screening(
     inputs.update({
         "project_class": model_class,
         "apartment_price_th": start_price / 1000.0,
+        # Встроенная коммерция первого этажа идёт за ценой квартир ЭТОЙ
+        # площадки один к одному — так её объявляют все три профиля класса
+        # (комфорт 350/350, бизнес 650/650, элитный 1500/1500). Пока строка
+        # «Коммерция 1 этажа» приезжала нулём, это ничего не значило; как
+        # только метры в ней появились, оставленное число пресета стало бы
+        # ценой другого проекта: на замере ниже рынок давал 455 тыс ₽/м², а
+        # коммерция продолжала продаваться по 650.
+        "commercial_price_th": start_price / 1000.0,
         # Цена нежилого идёт за ценой жилья ЭТОЙ площадки, а не за ценой
         # пресета: жильё здесь ставит рынок (на Рубцовской 608,2 тыс ₽/м²
         # против 650 у профиля бизнеса), и оставленное число пресета было бы
@@ -844,8 +931,14 @@ def build_krt_model_screening(
     housing_from_flats = housing_gfa <= 0 and flats_named > 0 and saleable_of_gns > 0
     if housing_from_flats:
         housing_gfa = flats_named / saleable_of_gns
-    saleable = housing_gfa * saleable_of_gns
-    total_area = housing_gfa * _number(apartment_ratios.get("total_of_gns"))
+    # Жилой объём города делится на квартиры и встроенную коммерцию — один
+    # владелец правила на модуль. Восстановленному из квартир объёму делить
+    # нечего: он УЖЕ ГНС квартир.
+    apartments_gns, ground_gns, ground_basis = _split_mkd(
+        core, housing_gfa, flats_named, saleable_of_gns,
+        restored_from_flats=housing_from_flats)
+    saleable = apartments_gns * saleable_of_gns
+    total_area = apartments_gns * _number(apartment_ratios.get("total_of_gns"))
     verdict = _verdict(market_report)
     # Средняя квартира объявлена в движке с ОСНОВАНИЕМ: площадку КРТ мы
     # собираем сами, значит делитель ручной сборки — 60 м² (решение владельца,
@@ -896,7 +989,7 @@ def build_krt_model_screening(
     renovation_share = renovation_spp / housing_gfa if housing_gfa > 0 else 0.0
     saleable_market = saleable * (1 - renovation_share)
     tep["apartments"].update({
-        "gns": housing_gfa,
+        "gns": apartments_gns,
         "total_area": total_area,
         "useful": saleable,
         "saleable": saleable_market,
@@ -906,6 +999,27 @@ def build_krt_model_screening(
         "transfer": saleable - saleable_market,
         "units": saleable_market / lot_area,
     })
+    # Встроенная коммерция — свой продукт со своей ценой и своими долями
+    # (НП и продаваемая — 90% ГНС). Пока строка была нулём, эти метры
+    # продавались по цене квартир.
+    #
+    # Доля реновации вычитается и здесь. Город называет её долей ЖИЛЬЯ
+    # площадки, а жильё — это МКД целиком: дом, уехавший Фонду, уезжает со
+    # своим первым этажом. Вычитание из одних квартир оставляло бы на продаже
+    # встроенную коммерцию домов, которых у нас нет: на площадке, где
+    # реновации отдано ВСЁ жильё, это 6% его СПП — метры, которых инвестор не
+    # получает вовсе.
+    if ground_gns > 0:
+        ground_ratios = applied_ratios.get("ground_commercial") or {}
+        ground_saleable = ground_gns * _number(ground_ratios.get("saleable_of_gns"))
+        ground_market = ground_saleable * (1 - renovation_share)
+        tep["ground_commercial"].update({
+            "gns": ground_gns,
+            "total_area": ground_gns * _number(ground_ratios.get("total_of_gns")),
+            "useful": ground_saleable,
+            "saleable": ground_market,
+            "transfer": ground_saleable - ground_market,
+        })
 
     # Нежилой объём города и соцобъекты — до паркинга: места считаются от жилья,
     # но продукты очереди и ТЭП должны быть собраны целиком до прогона модели.
@@ -1101,6 +1215,16 @@ def build_krt_model_screening(
            if programme["city"]["district"] else " — район не назван, принята первая зона")
         + ". " + (social_text + "." if social_text else "Соцобъекты по нормативу не потребовались.")
     )
+    # Чем поделён жилой объём — часть ответа, а не мелочь: от неё зависит,
+    # сколько метров продаётся по цене квартир, а сколько по цене коммерции.
+    if ground_basis:
+        assumptions.append(
+            f"Жилой объём {_ru_number(housing_gfa)} м² разделён {ground_basis}: "
+            f"квартиры {_ru_number(apartments_gns)} м² ГНС, встроенная коммерция "
+            f"первого этажа {_ru_number(ground_gns)} м² ГНС."
+            if ground_gns > 0 else
+            f"Жилой объём {_ru_number(housing_gfa)} м² весь отнесён к квартирам: "
+            "встроенной коммерции документ не называет.")
     _volumes = programme.get("volumes") or {}
     if _volumes.get("taken"):
         assumptions.append(
@@ -1133,8 +1257,10 @@ def build_krt_model_screening(
             f"городу, выручки не несут. Это часть ЦЕНЫ ВХОДА, уплаченная метрами, "
             f"а не убыток: Фонд реновации КРТ не торгует — он оператор КРТ и проводит "
             f"конкурсы на подрядные работы, а не выкупает у инвестора метры. "
-            f"Продаваемая по рынку — {_ru_number(saleable_market)} м² из "
-            f"{_ru_number(saleable)} м² построенных."
+            f"Продаваемая по рынку — {_ru_number(saleable_market)} м² квартир из "
+            f"{_ru_number(saleable)} м² построенных; той же долей вычтена "
+            f"встроенная коммерция первых этажей — дом уезжает Фонду со своим "
+            f"первым этажом."
             + (" Всё жильё площадки — Программа реновации: девелоперского продукта "
                "здесь нет вовсе, войти можно подрядчиком."
                if renovation_share >= 0.99 else "")
