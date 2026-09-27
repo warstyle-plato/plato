@@ -116,7 +116,6 @@ _READ_ONLY_GET = tuple(re.compile(pattern) for pattern in (
     r"/auctions/krt/watch",
     r"/auctions/krt-card/[^/]+",
     r"/auctions/krt-prototype/nagatino",
-    r"/auctions/krt-prototype/nagatino/(?:live-data|investment-score)",
     r"/auctions/krt/[^/]+/(?:investment-score|requirements|point|card-facts)",
 ))
 

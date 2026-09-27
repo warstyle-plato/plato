@@ -28,10 +28,15 @@ DEFAULT_PRICE_TARGET_RUB_SQM = 600_000.0
 # остаются теми же, но старые строки обязаны понять, что теперь burden можно
 # достроить автоматически.
 BURDEN_PIPELINE_VERSION = 1
-BURDEN_CACHE_SCHEMA_VERSION = 1
+# 2: отказ сети ЕГРН (503/429/таймаут) помечается `transient` и переспрашивается.
+# Кэш версии 1 держал такой отказ навсегда — при смене версии всё читается заново.
+BURDEN_CACHE_SCHEMA_VERSION = 2
 BURDEN_LOOKUP_CHUNK = 6
 BURDEN_RETRY_SECONDS = 24 * 60 * 60
 BURDEN_NETWORK_RETRY_SECONDS = 30 * 60
+# Кадастровая стоимость и собственник меняются; ответ ЕГРН старше срока
+# переспрашивается, пока старый продолжает считаться.
+BURDEN_ANSWER_TTL_SECONDS = 30 * 24 * 60 * 60
 # Единственная оценочная ставка в generic-конвейере: та же предпосылка
 # site-preparation, которая уже используется в КРТ Варшавское/Нагатино.
 # Это не факт документа и поэтому возвращается в components с basis=assumption.
@@ -346,7 +351,12 @@ def _burden_cache_path(project: dict[str, Any], cache_root: str | Path | None = 
     )
     raw = str(project.get("slug") or project.get("name") or "krt").strip().lower()
     safe = re.sub(r"[^0-9a-zа-яё_-]+", "-", raw, flags=re.I).strip("-")[:140] or "krt"
-    return root / f"{safe}.json"
+    # Слаг приходит из адреса запроса: граница папки проверяется явно.
+    base = os.path.realpath(root)
+    path = os.path.realpath(os.path.join(base, f"{safe}.json"))
+    if not path.startswith(base + os.sep):
+        raise ValueError("Идентификатор площадки выводит за папку кэша нагрузки")
+    return Path(path)
 
 
 def _burden_record(item: Any, number: str) -> dict[str, Any]:
@@ -356,6 +366,9 @@ def _burden_record(item: Any, number: str) -> dict[str, Any]:
             "asked_at": now,
             "cadastral_number": number,
             "found": False,
+            # «ЕГРН не ответил» и «в ЕГРН объекта нет» — разные ответы. Первый
+            # переспрашивается через полчаса, второй живёт до срока свежести.
+            "transient": bool(not isinstance(item, dict) or item.get("lookup_failed")),
             "reason": str((item or {}).get("note") or "ЕГРН не вернул объект")[:300]
             if isinstance(item, dict) else "ЕГРН не вернул объект",
         }
@@ -371,25 +384,33 @@ def _burden_record(item: Any, number: str) -> dict[str, Any]:
     }
 
 
-def _ownership_bucket(value: Any) -> str:
-    """moscow / non_moscow / unknown без догадки по молчащему ЕГРН."""
+def _ownership_bucket(value: Any, number: str = "") -> str:
+    """moscow / non_moscow / unknown без догадки по молчащему ЕГРН.
+
+    Москва — субъект РФ: «собственность субъекта Российской Федерации» у
+    объекта с номером 77:… — это собственность города. Долевая собственность
+    с участием города неделима по публичным данным: доля Москвы не названа,
+    и ни «всё бесплатно», ни «всё платно» не доказано.
+    """
     text = re.sub(r"\s+", " ", str(value or "")).strip().casefold()
     if not text:
         return "unknown"
-    if re.search(r"\bгород(?:а)?\s+москв[аы]\b|\bг\.\s*москва\b", text):
+    moscow = bool(re.search(
+        r"\bгород(?:а|у)?\s+москв[аыуе]\b|\bг\.\s*москв[аыуе]\b", text))
+    shared = "долев" in text or "совместн" in text
+    if shared:
+        return "unknown" if moscow else "non_moscow"
+    if moscow:
         return "moscow"
+    if "субъект" in text and "российской федерации" in text:
+        return "moscow" if str(number or "").strip().startswith("77:") else "non_moscow"
     # Эти формулировки однозначно НЕ означают собственность города Москвы.
     if any(mark in text for mark in (
-        "частн", "федерал", "муниципальн", "российской федерации",
-        "иностран", "долев", "совместн",
+        "частн", "федерал", "муниципальн", "российской федерации", "иностран",
     )):
         return "non_moscow"
     # В публичном НСПД часто стоит лишь «собственность публично-правовых
     # образований». Это может быть и Москва, и РФ; выдумывать владельца нельзя.
-    if any(mark in text for mark in (
-        "публично-правов", "не разгранич", "государственн",
-    )):
-        return "unknown"
     return "unknown"
 
 
@@ -417,7 +438,28 @@ def _cached_cadastral_buyout(
     ):
         answers = dict(cached.get("answers") or {})
 
-    unasked = [number for number in clean if number not in answers]
+    now = time.time()
+
+    def waiting(number: str) -> bool:
+        """Ответа нет вовсе или ЕГРН в прошлый раз не ответил."""
+        item = answers.get(number)
+        return not isinstance(item, dict) or bool(item.get("transient"))
+
+    def due(number: str) -> bool:
+        item = answers.get(number)
+        if not isinstance(item, dict):
+            return True
+        age = now - float(item.get("asked_at") or 0)
+        if item.get("transient"):
+            return age >= BURDEN_NETWORK_RETRY_SECONDS
+        return age >= BURDEN_ANSWER_TTL_SECONDS
+
+    # Сначала не спрошенные, потом не ответившие, потом устаревшие.
+    unasked = (
+        [n for n in clean if n not in answers]
+        + [n for n in clean if n in answers and waiting(n) and due(n)]
+        + [n for n in clean if n in answers and not waiting(n) and due(n)]
+    )
     problem = ""
     if unasked and callable(lookup):
         ask = unasked[:max(1, int(chunk))]
@@ -435,7 +477,8 @@ def _cached_cadastral_buyout(
                 if candidate is None:
                     # Некоторые реализации возвращают найденное в том же
                     # порядке без номера у отказа; сохраняем отказ по запросу.
-                    candidate = {"found": False, "note": "ЕГРН не вернул объект"}
+                    candidate = {"found": False, "lookup_failed": True,
+                                 "note": "ЕГРН не вернул ответа по этому номеру"}
                 answers[number] = _burden_record(candidate, number)
 
     state = {
@@ -450,7 +493,14 @@ def _cached_cadastral_buyout(
     except OSError:
         pass
 
-    remaining = [number for number in clean if number not in answers]
+    remaining = [number for number in clean if waiting(number)]
+    if remaining and not problem:
+        failed = [answers[n] for n in remaining if isinstance(answers.get(n), dict)]
+        if failed:
+            problem = (
+                f"ЕГРН не ответил по {len(failed)} из {len(clean)} объектов: "
+                f"{failed[0].get('reason') or 'сбой запроса'}"
+            )[:300]
     if remaining:
         return {
             "available": False,
@@ -480,7 +530,7 @@ def _cached_cadastral_buyout(
         if kind not in {"land", "building"}:
             missing.append(f"{number}: тип ЕГРН «{kind or 'не определён'}» не является ЗУ/ОКС")
             continue
-        bucket = _ownership_bucket(item.get("ownership"))
+        bucket = _ownership_bucket(item.get("ownership"), number)
         if bucket == "unknown":
             missing.append(
                 f"{number}: ЕГРН не позволяет отличить собственность Москвы от иной"
@@ -955,10 +1005,20 @@ def nagatino_live_example(core: Any) -> dict[str, Any]:
                 core, inputs, tep, phasing, cadastral_mln + start_mln
             )
         ordinary_capex = _ordinary_capex(core, inputs, tep, phasing)
+        # Неизвестная кадастровая стоимость не ноль (`missing_cadastral_value:
+        # unknown_not_zero`): пока она есть, нагрузка не полная и не считается.
         burden_pct = (
             100.0 * float(stack["total_known_mln"]) / ordinary_capex
-            if ordinary_capex and ordinary_capex > 0 else None
+            if ordinary_capex and ordinary_capex > 0 and stack.get("cadastral_complete")
+            else None
         )
+        if not stack.get("cadastral_complete"):
+            result["burden_reason"] = (
+                f"Кадастровая стоимость не опубликована у "
+                f"{stack.get('cadastral_unknown_count') or 0} объектов "
+                f"({', '.join((stack.get('cadastral_unknown_numbers') or [])[:3])}); "
+                "неизвестное не считается нулём."
+            )
         result.update({
             "available": True,
             "baseline": {
