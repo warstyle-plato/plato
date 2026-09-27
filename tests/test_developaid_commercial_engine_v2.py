@@ -278,3 +278,28 @@ def test_npv_hurdles_are_calculated_and_reconcile_checks_pass():
     assert isinstance(result["kpi"]["project_npv"], float)
     assert isinstance(result["kpi"]["equity_npv"], float)
     assert result["checks"]["project_cashflow_reconciles"] is True
+
+
+def test_sale_price_growth_changes_total_proceeds():
+    flat = calc(
+        "office", strategy="sale", financing="equity",
+        sale_price_growth_pct=0,
+    )
+    growing = calc(
+        "office", strategy="sale", financing="equity",
+        sale_price_growth_pct=12,
+    )
+    assert sum(growing["monthly"]["sale_revenue"]) > sum(flat["monthly"]["sale_revenue"])
+
+
+def test_monthly_cost_channels_are_not_double_counted():
+    result = calc("office", strategy="sale", financing="equity", selling_cost_pct=3)
+    assert sum(result["monthly"]["operating_cost"]) == pytest.approx(0.0)
+    assert sum(result["monthly"]["selling_cost"]) > 0
+    annual_selling = sum(row["selling_cost"] for row in result["annual"])
+    assert annual_selling == pytest.approx(sum(result["monthly"]["selling_cost"]), abs=0.01)
+
+
+def test_durable_payback_does_not_report_temporary_early_crossing():
+    from developaid_commercial_engine import _payback_month
+    assert _payback_month([-100, 150, -100, 100]) == 3
