@@ -48682,6 +48682,12 @@ const KRT_REQUIREMENT_LABELS={kindergarten_places:'места ДОО',school_pla
  social_clinic_norm_sqm:'норматив поликлиники',
  social_compensation_mln:'соцкомпенсация',land_rights_cost_mln:'плата за ВРИ'};
 function krtRequirementEntered(){return String(inputs.social_area_source||'norm')==='manual'}
+// Заперто ли ЭТО поле. Правило одно, читателей два: писатель вводных и
+// отчёт о пересчёте. Пока отчёт выводил причину из расхождения чисел, он
+// называл замком КРТ и то, для чего метод просто не дал числа.
+function krtLocks(key){
+ return krtRequirementEntered()&&KRT_REQUIREMENT_INPUTS.indexOf(key)>=0;
+}
 // В КРТ платы за смену ВРИ нет: вид использования меняется УСЛОВИЕМ ДОГОВОРА
 // о комплексном развитии, а не отдельным платежом городу. Режим «Требование
 // КРТ» её только ЗАПИРАЛ от пересчёта — число, попавшее в поле раньше (из
@@ -48745,10 +48751,32 @@ function clearKrtVriFee(){
 
 // Пишет только незапертое и возвращает подпись о том, чего НЕ тронуло: молча
 // не тронутое поле выглядит так же, как не посчитанное.
+// Строка отчёта про ОДНО поле: что в нём стоит сейчас и почему.
+//
+// Список «подставлено» строился ДО подстановки, а запертое требованием КРТ не
+// подставлялось — и одно поле выходило описанным дважды и противоположно:
+// «Плата за ВРИ: было 18 265,9 → стало 10 166,6», а ниже «Не тронуто —
+// вписано требованием КРТ: … плата за ВРИ» (экран владельца, 26.09.2026).
+// Верхняя строка утверждала подстановку, которой не было, и заголовок над ней
+// говорил «Подставлено».
+//
+// Причина берётся у правила (`krtLocks`) и у того, предлагалось ли число
+// вовсе, а не выводится из того, что числа разошлись: «не тронули, потому что
+// заперто» и «не тронули, потому что метод числа не дал» лечатся разным, а по
+// расхождению они неразличимы.
+function derivedLine(name,key,counted,offered){
+ const kept=Number(inputs[key]||0),now=Number(counted||0);
+ if(krtLocks(key))
+  return name+': осталось '+num(kept)+' — поле заперто требованием КРТ'
+   +(Math.abs(kept-now)<0.001?'':'; метод дал бы '+num(now));
+ if(!offered)
+  return name+': осталось '+num(kept)+' — метод числа не дал, поле не тронуто';
+ return name+': '+num(kept);
+}
 function applyDerivedInputs(values){
- const locked=krtRequirementEntered(),skipped=[];
+ const skipped=[];
  Object.keys(values||{}).forEach(key=>{
-  if(locked&&KRT_REQUIREMENT_INPUTS.indexOf(key)>=0){
+  if(krtLocks(key)){
    skipped.push(KRT_REQUIREMENT_LABELS[key]||key);return;
   }
   inputs[key]=values[key];
@@ -48985,28 +49013,55 @@ async function recalcFromTep(options){
   return;
  }
  const b=d.baseline||{};
- const cmp=(name,was,now)=>name+': было '+num(was)+' → стало '+num(now);
- const lines=[
-  cmp('Плата за ВРИ, млн ₽',b.vri_mln,d.vri_total_mln)
-   +(d.land_right_factor&&d.land_right_factor!==1?' (аренда: делитель 1,001)':''),
-  cmp('Соцкомпенсация, млн ₽',b.compensation_mln,d.compensation_mln),
+ // «Было» — это ВЫГРУЗКА ГлавАПУ, а не состояние до правки: ставки сняты с
+ // неё, и сравнение идёт с ней. Пока строка говорила просто «было», каждая
+ // правка ТЭП показывала весь дрейф с момента импорта как её следствие —
+ // «с чего вдруг поменялось население тоже не ясно» (владелец, 26.09.2026):
+ // доля офисов население не двигает вовсе, оно считается от площади квартир.
+ // Не изменившееся не печатается стрелкой: строка со стрелкой читается как
+ // следствие правки, даже когда числа по обе стороны одинаковы.
+ const cmp=(name,was,now)=>Math.abs(Number(was||0)-Number(now||0))<0.5
+  ? name+': '+num(now)+' — как в выгрузке ГлавАПУ'
+  : name+': в выгрузке ГлавАПУ '+num(was)+' → на нынешнем ТЭП '+num(now);
+ // Половины разные, и смешивать их нельзя. Машино-места и население — это
+ // КОНТЕКСТ: полями они не становятся, и сравнивать их можно только с
+ // выгрузкой. Плата за ВРИ, соцкомпенсация и места соцобъектов — ПОДСТАНОВКА,
+ // и про них честно говорить только после того, как она случилась.
+ const context=[
   cmp('Машино-места',b.parking_total,d.parking.total)
    +' ('+d.parking.permanent+' постоянных + '+d.parking.guest+' гостевых + '
    +d.parking.attached+' приобъектных)',
-  cmp('Население, чел.',b.population,d.population)
-   +' · ДОО '+d.places.kindergarten+' · школа '+d.places.school+' · поликлиника '+d.places.clinic];
- (d.warnings||[]).forEach(w=>lines.push('⚠ '+w));
+  // Числа метода по соцобъектам стояли хвостом этой строки — и противоречили
+  // строкам о самих полях: в хвосте «ДОО 412», а поле заперто на 350. Своим
+  // местам они уже сказаны, а второй ответ на тот же вопрос разошёлся бы с
+  // первым молча.
+  cmp('Население, чел.',b.population,d.population)];
+ (d.warnings||[]).forEach(w=>context.push('⚠ '+w));
+ // Вопрос задаётся о НАМЕРЕНИИ: здесь подстановки ещё не было.
+ const proposal=['Плата за ВРИ, млн ₽: по ставке территории '+num(d.vri_total_mln)
+   +(d.land_right_factor&&d.land_right_factor!==1?' (аренда: делитель 1,001)':''),
+  'Соцкомпенсация, млн ₽: по ставке территории '+num(d.compensation_mln)].concat(context);
  // Спрашивать на каждой правке ТЭП нечего: человек уже сказал, чего хочет,
  // изменив метры. Подтверждение осталось у явного нажатия кнопки.
- if(!silent&&!confirm('Пересчёт по параметрам исходного расчёта ГлавАПУ:\n\n'+lines.join('\n')
+ if(!silent&&!confirm('Пересчёт по параметрам исходного расчёта ГлавАПУ:\n\n'+proposal.join('\n')
    +'\n\nПодставить в модель?'))
-  {say(lines.map(escapeHtml).join('<br>'),true);return}
+  {say(proposal.map(escapeHtml).join('<br>'),true);return}
  const derived={kindergarten_places:d.places.kindergarten,school_places:d.places.school,
   clinic_capacity:d.places.clinic};
  if(d.compensation_mln>0)derived.social_compensation_mln=d.compensation_mln;
  if(d.vri_total_mln>0)derived.land_rights_cost_mln=d.vri_total_mln;
- const skipped=applyDerivedInputs(derived);
- if(skipped)lines.push(skipped);
+ applyDerivedInputs(derived);
+ // Отчёт строится ПОСЛЕ подстановки и читает поля: приписка «не тронуто»
+ // здесь больше не нужна — каждая строка сама говорит, что в поле стоит и
+ // почему. Признак «предлагалось ли число» берётся у того же `derived`,
+ // который ушёл в подстановку, а не у второго условия рядом.
+ const lines=[['Плата за ВРИ, млн ₽','land_rights_cost_mln',d.vri_total_mln],
+  ['Соцкомпенсация, млн ₽','social_compensation_mln',d.compensation_mln],
+  ['Места ДОО','kindergarten_places',d.places.kindergarten],
+  ['Места СОШ','school_places',d.places.school],
+  ['Мощность поликлиники','clinic_capacity',d.places.clinic]]
+  .map(x=>derivedLine(x[0],x[1],x[2],Object.prototype.hasOwnProperty.call(derived,x[1])))
+  .concat(context);
  const parkingWas=Number((tep.underground_parking&&tep.underground_parking.units)||0);
  // В подземный гараж идут постоянные и гостевые. Приобъектные — места у входа
  // для посетителей встроенной коммерции, под землю их не кладут: с ними гараж
@@ -49014,9 +49069,17 @@ async function recalcFromTep(options){
  inputs.underground_manual_spaces=d.parking.permanent+d.parking.guest;
  stampSocialBasis('выгрузка ГлавАПУ');
  syncTep(false);renderInputs();renderTep();
- lines.push('Машино-места в ТЭП: было '+parkingWas+', стало '
-   +Number((tep.underground_parking&&tep.underground_parking.units)||0));
- say((silent?'Пересчитано под новый ТЭП: ':'Подставлено: ')+lines.map(escapeHtml).join('<br>')
+ const parkingNow=Number((tep.underground_parking&&tep.underground_parking.units)||0);
+ lines.push(parkingNow===parkingWas
+  ? 'Машино-места в ТЭП: '+parkingNow+' — не изменились'
+  : 'Машино-места в ТЭП: было '+parkingWas+', стало '+parkingNow);
+ // Заголовок отвечает за весь список и обязан быть верен о нём. «Подставлено»
+ // над списком, в котором не подставлено ничего, — то же враньё, что и строка
+ // о подстановке, которой не было, только крупнее.
+ const wrote=Object.keys(derived).some(key=>!krtLocks(key))||parkingNow!==parkingWas;
+ const head=wrote?(silent?'Пересчитано под новый ТЭП: ':'Подставлено: ')
+  :'Подставлять нечего — поля заперты требованием КРТ, а машино-места не изменились: ';
+ say(head+lines.map(escapeHtml).join('<br>')
    +'<br>Ставки территории взяты из исходного расчёта ГлавАПУ и применены к новым метрам. '
    +'Проверено обратным ходом: на исходном ТЭП метод воспроизводит его числа.',true);
  calculate();
