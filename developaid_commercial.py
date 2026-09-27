@@ -223,10 +223,12 @@ def calculate(req: CommercialRequest) -> dict[str, Any]:
     return calculate_v2(req)
 
 def install(app: FastAPI) -> None:
+    @app.get("/api/commercial/form")
     @app.get("/api/v2/commercial/form")
     def commercial_form() -> JSONResponse:
         return JSONResponse(form_description(), headers=_NO_STORE)
 
+    @app.post("/api/commercial/calculate")
     @app.post("/api/v2/commercial/calculate")
     def commercial_calculate(req: CommercialRequest) -> JSONResponse:
         try:
