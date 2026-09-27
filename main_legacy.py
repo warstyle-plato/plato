@@ -81,7 +81,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.24.34"
+VERSION = "0.24.35"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -50964,27 +50964,29 @@ function renderResult(){
  const underTotal=Number(r.summary.underground_gns_sqm!==undefined
   ?r.summary.underground_gns_sqm:underGns);
  const dash='<span style="color:#bbb">—</span>';
- // Переданные метры строятся и не продаются: в продаваемой их нет, и
- // без приписки отчёт читается так, будто продано всё построенное — «в отчёте
+ // Переданные метры строятся и не продаются: в продаваемой их нет, и без
+ // указания отчёт читается так, будто продано всё построенное — «в отчёте
  // вообще нет указания на передаваемую! Чтобы не забыть, что вообще-то не всё
- // продал» (владелец, 10.09.2026). Штуки так подписаны с 04.09; метры —
- // соседнее место, и правило до него не дошло.
- const areaNote=x=>Number(x.transfer||0)>0
-  ? `<span style="display:block;font-size:10px;color:#777">${TRANSFER_NOTE_WORD} ${num(x.transfer)} м²</span>`
-  : '';
+ // продал» (владелец, 10.09.2026).
+ //
+ // Стояло это ПРИПИСКОЙ ВНУТРИ колонки «Продаваемая площадь», и выходило
+ // обратное задуманному: метры школы печатались под заголовком «продаваемая»
+ // — «якобы продаются якобы метры школы и садика» (владелец, 26.09.2026).
+ // Число отвечает на заголовок СВОЕЙ колонки, а не на приписку под собой,
+ // поэтому у переданных метров колонка своя. Ноль в продаваемой при этом
+ // остаётся нулём: «0 тоже сойдут» (владелец, 26.09.2026).
  const transferTotal=r.tep.rows.reduce((sum,x)=>sum+Number(x.transfer||0),0);
  reportTep.innerHTML=
-  `<thead><tr><th>Продукт</th><th>ГНС наземная, м²</th><th>Подземная, м²</th><th>Продаваемая площадь, м²</th><th>Построено, шт.</th><th>Продаётся, шт.</th></tr></thead>`+
+  `<thead><tr><th>Продукт</th><th>ГНС наземная, м²</th><th>Подземная, м²</th><th>Продаваемая площадь, м²</th><th>Передаётся, м²</th><th>Построено, шт.</th><th>Продаётся, шт.</th></tr></thead>`+
   `<tbody>`+
   r.tep.rows.map(x=>`<tr><td>${x.label}</td>`
    +`<td>${isUnder(x)?dash:num(x.gns)}</td>`
    +`<td>${isUnder(x)?num(x.gns):(objUnder(x)>0?num(objUnder(x)):dash)}</td>`
-   +`<td>${num(x.saleable)}${areaNote(x)}</td>`
+   +`<td>${num(x.saleable)}</td><td>${num(x.transfer)}</td>`
    +`<td>${num(x.units)}${unitNote(x)}</td><td>${num(soldUnits(x))}</td></tr>`).join('')+
   `</tbody><tfoot><tr><th>Итого</th><th>${num(aboveGns)}</th><th>${num(underTotal)}</th>`
-  +`<th>${num(r.tep.total.saleable)}`
-  +(transferTotal>0?`<span style="display:block;font-size:10px;color:#777">${TRANSFER_NOTE_WORD} ${num(transferTotal)} м²</span>`:'')
-  +`</th><th>${num(r.tep.total.units)}</th><th>${num(soldTotal)}</th></tr></tfoot>`;
+  +`<th>${num(r.tep.total.saleable)}</th><th>${num(transferTotal)}</th>`
+   +`<th>${num(r.tep.total.units)}</th><th>${num(soldTotal)}</th></tr></tfoot>`;
  const tepNote=document.getElementById('reportTepNote');
  if(tepNote)tepNote.innerHTML=underTotal>0
   ? `Строительный объём — ${num(Number(r.summary.construction_volume_sqm!==undefined?r.summary.construction_volume_sqm:r.tep.total.gns))} м², наземная плюс подземная: на нём считаются общие статьи (ИРД, проектирование, подготовка, сети, благоустройство, сдача, содержание). Удельные «на метр» считаются на наземной ГНС: подземная в неё не входит — у неё своя себестоимость метра и свой продукт, продаваемый местами. ГНС — внутренний термин DevelopAid; город нагрузки считает от суммарной поэтажной площади.`
