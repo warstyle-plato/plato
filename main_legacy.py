@@ -227,6 +227,33 @@ TELEGRAM_EXTRA_COMMANDS = [
 TELEGRAM_MENU_EXTENSION_ANCHOR = "platon"
 
 PRESET_DIR = Path(__file__).resolve().parent / "presets"
+
+
+def _safe_child(base: Path, name: str, *, http_detail: str | None = None,
+                http_status: int = 400) -> Path:
+    """Файл ``name`` строго внутри каталога ``base`` — одним сегментом.
+
+    Имена файлов у нас собираются из того, что пришло снаружи: номер проекта,
+    код ссылки, номер задания Платона, имя картинки. Каждое такое место уже
+    проверяет имя регуляркой, но регулярка доказывает безопасность только
+    читателю, а не коду: ослабь её — и «../» уйдёт за каталог молча. Здесь
+    проверяется РЕЗУЛЬТАТ: после `normpath` путь начинается с базы и
+    разделителя (без разделителя «/data/x-чужое» сошло бы за «внутри») и
+    лежит прямо в ней. Одна дверь на всех: форма `normpath` + `startswith` —
+    та, которую узнаёт CodeQL, и вызывающие получают назад именно
+    проверенное значение, его и надо отдавать на диск.
+
+    Отказ — `ValueError` для внутреннего кода; с ``http_detail`` — ответ
+    ``http_status`` (400, у картинок 404) с этой подписью, как раньше
+    отвечали регулярки у маршрутов.
+    """
+    root = os.path.normpath(base)
+    target = os.path.normpath(os.path.join(root, str(name)))
+    if not target.startswith(root + os.sep) or os.path.dirname(target) != root:
+        if http_detail is not None:
+            raise HTTPException(status_code=http_status, detail=http_detail)
+        raise ValueError(f"Имя файла выходит за каталог {root}: {name!r}")
+    return Path(target)
 MANUAL_TEP_TEMPLATE_FILENAME = "DevelopAid_Шаблон_ТЭП.xlsx"
 MANUAL_TEP_TEMPLATE_B64_PATH = Path(__file__).resolve().parent / "templates" / "DevelopAid_Шаблон_ТЭП.xlsx.b64"
 # Срок ИРД короче месяца модель не считает. Ноль означал бы «разрешение уже
@@ -3395,7 +3422,8 @@ def read_project_preset(preset_id: str, session: str = "", key: str = "") -> dic
     # файлов, а не выбор пресета.
     if "/" in preset_id or "\\" in preset_id or preset_id.startswith("."):
         raise HTTPException(status_code=400, detail="Неверный идентификатор пресета")
-    path = PRESET_DIR / f"{preset_id}.json"
+    path = _safe_child(PRESET_DIR, f"{preset_id}.json",
+                       http_detail="Неверный идентификатор пресета")
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Пресет не найден")
     return json.loads(path.read_text(encoding="utf-8"))
@@ -3807,7 +3835,12 @@ def monitor_crew(project: str, date: str = "", session: str = "",
             # написано, а не пустой список подрядчиков молча.
             by_code = {}
     report = None
-    path = developaid_monitor._project_dir(project) / "daily" / f"{day}.json"
+    try:
+        path = _safe_child(developaid_monitor._project_dir(project) / "daily",
+                           f"{day}.json", http_detail="Неверная дата отчёта.")
+    except ValueError:
+        # Текст отказа свой, не из исключения: наружу не уходит путь на диске.
+        raise HTTPException(400, "Имя проекта не годится для каталога на диске.")
     if day and path.exists():
         try:
             report = json.loads(path.read_text(encoding="utf-8"))
@@ -4045,7 +4078,8 @@ def developaid_asset(name: str) -> Response:
     """
     if not re.fullmatch(r"[a-z0-9._-]{1,64}", name) or "/" in name:
         raise HTTPException(status_code=404, detail="Нет такого файла.")
-    path = _ASSETS_DIR / name
+    path = _safe_child(_ASSETS_DIR, name, http_detail="Нет такого файла.",
+                       http_status=404)
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Нет такого файла.")
     types = {".webp": "image/webp", ".png": "image/png", ".svg": "image/svg+xml"}
@@ -4425,8 +4459,12 @@ _land_lookup_cache_lock = threading.Lock()
 _nominatim_lock = threading.Lock()
 _nominatim_last_call = 0.0
 
+# Разделитель «запятая/точка с запятой в пробелах ИЛИ одни пробелы» записан
+# двумя непересекающимися ветками, а не `\s*[,;\s]\s*`: там пробелы делились
+# между тремя кусками сколькими угодно способами, и длинная строка пробелов
+# без второго числа стоила квадрата шагов. Принимаемые строки те же.
 _COORDINATE_QUERY_RE = re.compile(
-    r"^\s*(-?\d{1,3}(?:[.,]\d+)?)\s*[,;\s]\s*(-?\d{1,3}(?:[.,]\d+)?)\s*$"
+    r"^\s*(-?\d{1,3}(?:[.,]\d+)?)(?:\s*[,;]\s*|\s+)(-?\d{1,3}(?:[.,]\d+)?)\s*$"
 )
 
 # Кадастровые округа. Совпадают с кодами субъектов РФ; используются как
@@ -11852,6 +11890,9 @@ class GlavapuParcelNotAccepted(TimeoutError):
 
     def __init__(self, message: str, snapshot: dict[str, Any] | None = None) -> None:
         super().__init__(message)
+        # Подпись написана нами для человека — её и отдаём наружу, а не
+        # `str(exc)`: так в ответ не попадает ничего, кроме этого текста.
+        self.public_message = str(message)
         self.snapshot = snapshot or {}
 
 
@@ -11860,6 +11901,9 @@ class GlavapuTableNotReady(TimeoutError):
 
     def __init__(self, message: str, snapshot: dict[str, Any] | None = None) -> None:
         super().__init__(message)
+        # Подпись написана нами для человека — её и отдаём наружу, а не
+        # `str(exc)`: так в ответ не попадает ничего, кроме этого текста.
+        self.public_message = str(message)
         self.snapshot = snapshot or {}
 
 
@@ -12538,11 +12582,11 @@ def glavapu_probe(cad: str = "", area: float = 1.0) -> dict[str, Any]:
         rows = _glavapu_headless_rows(numbers, float(area or 1.0))
     except (GlavapuTableNotReady, GlavapuParcelNotAccepted) as exc:
         return {"ok": False, "seconds": round(time.monotonic() - started, 1),
-                "error": str(exc), "snapshot": exc.snapshot}
+                "error": exc.public_message, "snapshot": exc.snapshot}
     except Exception as exc:  # noqa: BLE001
         # Снимок берётся и у чужого отказа: его прикладывает поток браузера.
         return {"ok": False, "seconds": round(time.monotonic() - started, 1),
-                "error": f"{type(exc).__name__}: {exc}",
+                "error": _public_error(exc, "glavapu probe"),
                 "snapshot": getattr(exc, "snapshot", None) or {}}
     codes = sorted({str(r.get("code") or "") for r in rows} - {""})
     return {"ok": True, "seconds": round(time.monotonic() - started, 1),
@@ -12566,7 +12610,8 @@ def glavapu_health() -> dict[str, Any]:
                 return json.loads(response.read().decode("utf-8"))
         except Exception as exc:
             return {"state": "ядро недоступно", "where": "Render",
-                    "hint": f"Ядро не ответило на запрос состояния: {exc}"}
+                    "hint": ("Ядро не ответило на запрос состояния: "
+                             + _public_error(exc, "glavapu health"))}
     state = dict(_glavapu_headless_state())
     state.update({key: _GLAVAPU_HEADLESS.get(key)
                   for key in ("last_ok", "last_error", "runs", "fallbacks")})
@@ -12722,7 +12767,12 @@ def cadastral_tep_server(req: CadastralAnalysisRequest) -> dict[str, Any]:
         + " Формулы сняты с его кода и сходятся с контрольными выгрузками до "
         "единицы, но методику город меняет — расчёт штатного калькулятора имеет "
         "приоритет."
-        + (f" Последняя ошибка запуска: {_GLAVAPU_HEADLESS['last_error']}."
+        # Текст срыва (первая строка Playwright и место в коде) в ответ
+        # расчёта не кладётся: это внутренности сервера, и видит их любой,
+        # кто считает ТЭП. Он лежит в состоянии связки — /glavapu/health и
+        # /status бота, — и здесь сказано, где его смотреть.
+        + (" Последняя ошибка запуска записана в состоянии связки: "
+           "/glavapu/health (в боте — /status)."
            if _GLAVAPU_HEADLESS.get("last_error") else ""),
     )
     if _GLAVAPU_FORMULA_DRIFT["items"]:
@@ -28532,7 +28582,80 @@ _SEASONAL_LOW_MONTHS = (1, 5, 6, 7, 8)
 # отсчёта, «500@0; 300@12» — суммы в млн ₽. Разделитель пар не фиксируем, как
 # у ступеней ставки: пара опознаётся формой «число[%] @ месяц», иначе запятая
 # работает и разделителем, и десятичной точкой сразу.
-_MONTH_SCHEDULE_ITEM = re.compile(r"(\d+(?:[.,]\d+)?)\s*(%)?\s*@\s*(\d+)")
+#
+# Пары ищутся не регуляркой `(\d+(?:[.,]\d+)?)\s*(%)?\s*@\s*(\d+)` через
+# `findall`, а сканером `_scan_number_pairs` с тем же результатом: без якоря
+# регулярка пробовала `\d+` с каждой цифры длинного числа, а `\s*(%)?\s*`
+# делил пробелы надвое — строка из цифр или пробелов без «@» стоила квадрата.
+
+
+def _scan_number_pairs(text: str, separators: str,
+                       right_fraction: bool) -> list[tuple[str, str, str]]:
+    """Все пары «число [%] разделитель число» слева направо, без перекрытий.
+
+    Ровно то, что давал `re.findall` по
+    ``(\d+(?:[.,]\d+)?)\s*(%)?\s*[разделитель]\s*(\d+(?:[.,]\d+)?)`` (у правого
+    числа дробь — только при ``right_fraction``), но за линейное время:
+    каждая позиция просматривается ограниченное число раз. Цифра и пробел — в
+    смысле `re` для строк: `str.isdecimal` и `str.isspace`.
+    Кортеж: (левое число, «%» или "", правое число).
+    """
+    n = len(text)
+
+    def digits(i: int) -> int:
+        while i < n and text[i].isdecimal():
+            i += 1
+        return i
+
+    def spaces(i: int) -> int:
+        while i < n and text[i].isspace():
+            i += 1
+        return i
+
+    def tail(i: int) -> tuple[str, str, int] | None:
+        # `\s*(%)?\s*<разделитель>\s*<число>` с позиции i; перебор с возвратом
+        # тут ничего не находит: пробел не бывает ни «%», ни разделителем.
+        i = spaces(i)
+        percent = ""
+        if i < n and text[i] == "%":
+            percent, i = "%", spaces(i + 1)
+        if i >= n or text[i] not in separators:
+            return None
+        start = spaces(i + 1)
+        end = digits(start)
+        if end == start:
+            return None
+        if (right_fraction and end + 1 < n and text[end] in ".,"
+                and text[end + 1].isdecimal()):
+            end = digits(end + 1)
+        return percent, text[start:end], end
+
+    found: list[tuple[str, str, str]] = []
+    pos = 0
+    while pos < n:
+        if not text[pos].isdecimal():
+            pos += 1
+            continue
+        whole = digits(pos)
+        # Сперва — с дробью (жадный `?`), потом без неё, как у регулярки.
+        attempt = None
+        if whole + 1 < n and text[whole] in ".," and text[whole + 1].isdecimal():
+            fraction = digits(whole + 1)
+            got = tail(fraction)
+            if got is not None:
+                attempt = (text[pos:fraction], got)
+        if attempt is None:
+            got = tail(whole)
+            if got is not None:
+                attempt = (text[pos:whole], got)
+        if attempt is None:
+            # С любой цифры того же числа исход тот же: сразу за его конец.
+            pos = whole
+            continue
+        left, (percent, right, end) = attempt
+        found.append((left, percent, right))
+        pos = end
+    return found
 
 
 def parse_month_schedule(value: Any) -> tuple[list[tuple[float, int]], bool, list[str]]:
@@ -28541,7 +28664,7 @@ def parse_month_schedule(value: Any) -> tuple[list[tuple[float, int]], bool, lis
     Смешивать доли и суммы в одном графике нельзя: такая строка возвращается
     пустой с предупреждением, а не угадывается.
     """
-    found = _MONTH_SCHEDULE_ITEM.findall(str(value or ""))
+    found = _scan_number_pairs(str(value or ""), "@", right_fraction=False)
     items: list[tuple[float, int]] = []
     kinds: set[bool] = set()
     warnings: list[str] = []
@@ -30155,7 +30278,10 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
 # ставка была одна на всё покрытие, и модель завышала проценты сильным
 # проектам. Таблица индивидуальна для каждого НКЛ, поэтому «типовую» зашивать
 # нельзя: ступени вводятся полем, пустое поле оставляет одну ставку.
-_PF_STEP_PAIR = re.compile(r"(\d+(?:[.,]\d+)?)\s*%?\s*[:=\-–—]\s*(\d+(?:[.,]\d+)?)")
+# Пары ищет `_scan_number_pairs` (см. график платежей): регулярка
+# `(\d+(?:[.,]\d+)?)\s*%?\s*[:=\-–—]\s*(\d+(?:[.,]\d+)?)` через `findall`
+# давала тот же ответ за квадрат шагов на длинных строках цифр и пробелов.
+_PF_STEP_SEPARATORS = ":=-–—"
 
 
 def pf_special_steps(value: Any) -> list[tuple[float, float]]:
@@ -30173,7 +30299,8 @@ def pf_special_steps(value: Any) -> list[tuple[float, float]]:
                 pairs.append((str(item[0]), str(item[1])))
         found = pairs
     else:
-        found = _PF_STEP_PAIR.findall(str(value or ""))
+        found = [(left, right) for left, _percent, right in _scan_number_pairs(
+            str(value or ""), _PF_STEP_SEPARATORS, right_fraction=True)]
     steps: list[tuple[float, float]] = []
     for raw_coverage, raw_rate in found:
         try:
@@ -36093,7 +36220,9 @@ def run_sensitivity(
             except Exception as exc:
                 # Отказ одного сценария не должен ронять весь анализ.
                 results[name] = None
-                warnings.append(f"{label}: сценарий не посчитан — {_error_location(exc)}.")
+                # В ответ HTTP — класс и метка журнала, место и стек — в журнал.
+                warnings.append(f"{label}: сценарий не посчитан — "
+                                f"{_public_error(exc, 'sensitivity scenario')}.")
         low, high = results.get("low"), results.get("high")
         if low is None and high is None:
             continue
@@ -37131,6 +37260,31 @@ def _error_location(exc: BaseException) -> str:
         return reason
     last = frames[-1]
     return f"{reason} ({Path(last.filename).name}:{last.lineno}, {last.name})"
+
+
+def _public_error(exc: BaseException, where: str) -> str:
+    """Причина отказа для ответа наружу — без текста и стека чужого исключения.
+
+    `_error_location` пишет место ошибки в чат бота, и там оно нужно. В HTTP-
+    ответ сырой `str(exc)` и строки стека не уходят: это внутренности сервера
+    (пути, запросы, куски чужих страниц), а не причина для человека. Поэтому
+    наружу — класс ошибки, свой текст и метка, по которой полная запись с
+    местом и стеком находится в журнале. Причина при этом названа, а не
+    спрятана в лог: свои отказы (`HTTPException`, исключения с полем
+    ``public_message``) несут заранее написанную для человека подпись, она и
+    отдаётся.
+    """
+    ref = os.urandom(4).hex()
+    logging.error("%s [%s]: %s", where, ref, _error_location(exc),
+                  exc_info=(type(exc), exc, exc.__traceback__))
+    own = getattr(exc, "public_message", None)
+    if isinstance(exc, HTTPException) and isinstance(exc.detail, str):
+        own = exc.detail
+    code = getattr(exc, "code", None)
+    text = (own if isinstance(own, str) and own
+            else f"HTTP {code}" if isinstance(code, int)
+            else "текст ошибки — в журнале сервера")
+    return f"{type(exc).__name__}: {text} (метка журнала {ref})"
 
 
 def _tep_cost_without_revenue(tep: dict[str, Any]) -> list[str]:
@@ -38967,7 +39121,8 @@ _PLATO_QUEUE_POLL_SECONDS = 0.4
 
 
 def _plato_job_path(job_id: str, suffix: str = "json") -> Path:
-    return _PLATO_STAGE_DIR / f"job_{job_id}.{suffix}"
+    # Номер задания проверяют маршруты (`_TRACE_ID_RE`), путь — эта дверь.
+    return _safe_child(_PLATO_STAGE_DIR, f"job_{job_id}.{suffix}")
 
 
 def _plato_puller_seen_touch() -> None:
@@ -39470,7 +39625,7 @@ _PLATO_TRACE_LOCAL = threading.local()
 
 
 def _plato_stage_path(kind: str, key: str) -> Path:
-    return _PLATO_STAGE_DIR / f"{kind}_{key}.json"
+    return _safe_child(_PLATO_STAGE_DIR, f"{kind}_{key}.json")
 
 
 def _plato_trace_write(trace_id: str, stage: str, label: str) -> None:
@@ -39483,7 +39638,7 @@ def _plato_trace_write(trace_id: str, stage: str, label: str) -> None:
                        ensure_ascii=False),
             encoding="utf-8",
         )
-    except OSError:
+    except (OSError, ValueError):
         pass  # стадия — удобство; ронять из-за неё ответ нельзя
 
 
@@ -40247,7 +40402,8 @@ def _project_path(owner: int, project_id: str) -> Path:
     # «../../» уводит запись за пределы каталога владельца.
     if not re.fullmatch(r"[0-9a-f]{12}", str(project_id or "")):
         raise HTTPException(status_code=400, detail="Неверный идентификатор проекта")
-    return _project_dir(owner) / f"{project_id}.json"
+    return _safe_child(_project_dir(owner), f"{project_id}.json",
+                       http_detail="Неверный идентификатор проекта")
 
 
 def _project_card(record: dict[str, Any]) -> dict[str, Any]:
@@ -40363,7 +40519,8 @@ def _shared_path(code: str) -> Path:
     # алфавита, — отказ, иначе «../../» уводит чтение за пределы каталога.
     if not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", str(code or "")):
         raise HTTPException(status_code=400, detail="Неверная ссылка на проект")
-    return _shared_dir() / f"{code}.json"
+    return _safe_child(_shared_dir(), f"{code}.json",
+                       http_detail="Неверная ссылка на проект")
 
 
 def _shared_author(owner: int) -> str:
@@ -41344,7 +41501,8 @@ def _web_login_path(code: str) -> Path:
     # уводит запись за пределы каталога (то же правило, что у проектов).
     if not re.fullmatch(r"[0-9a-f]{12}", str(code or "")):
         raise HTTPException(status_code=400, detail="Неверный код входа.")
-    return _web_login_dir() / f"{code}.json"
+    return _safe_child(_web_login_dir(), f"{code}.json",
+                       http_detail="Неверный код входа.")
 
 
 def _web_login_sign(code: str, chat_id: int) -> str:
