@@ -16050,6 +16050,24 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
                  if any(float(row.get(k) or 0) for k in ('gns', 'saleable', 'units'))]
     total=tep_report.get('total') or {}
     given = sum(float(row.get('transfer') or 0) for row in rows_data)
+    # Свой паркинг отдельно стоящего объекта — продукт, и в ТЭП он стоит
+    # подстрокой с местами, как на экране: полем на строке объекта его в
+    # печати не было вовсе. Метры гаража названы в подписи — в колонке ГНС
+    # они читались бы наземными.
+    def _park_label(row):
+        under=float(row.get('parking_under_units') or 0)
+        over=float(row.get('parking_over_units') or 0)
+        units=float(row.get('parking_units') or 0)
+        sold=float(row.get('parking_saleable_units') or 0)
+        where=[]
+        if under: where.append("подземных "+_pdf_num(under,0)
+                               +(f" (гараж {_pdf_num(row.get('under_gns'),0)} м²)"
+                                 if float(row.get('under_gns') or 0) else ""))
+        if over: where.append("на первых этажах "+_pdf_num(over,0)+" (в ГНС здания)")
+        tail=("продаётся "+_pdf_num(sold,0)+(", гостевых "+_pdf_num(units-sold,0) if units>sold else "")
+              if sold else "не продаются — обеспечивают посетителей")
+        return "   в т.ч. паркинг объекта, мест: "+"; ".join(where+[tail])
+    park_units_total=float(total.get('parking_units') or 0)
     if given > 0:
         tep_rows=[["Продукт","Строит. объём, м²","Продаваемая, м²",
                    f"{TRANSFER_WORD}, м²","Кол-во"]]
@@ -16057,8 +16075,10 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             tep_rows.append([row.get('label') or row.get('key') or '—',
                              _pdf_num(row.get('gns'),0),_pdf_num(row.get('saleable'),0),
                              _pdf_num(row.get('transfer'),0),_pdf_num(row.get('units'),0)])
+            if float(row.get('parking_units') or 0):
+                tep_rows.append([_park_label(row),"—","—","—",_pdf_num(row.get('parking_units'),0)])
         tep_rows.append(["Итого",_pdf_num(total.get('gns'),0),_pdf_num(total.get('saleable'),0),
-                         _pdf_num(given,0),_pdf_num(total.get('units'),0)])
+                         _pdf_num(given,0),_pdf_num(float(total.get('units') or 0)+park_units_total,0)])
         story.append(table(tep_rows,[58*mm,30*mm,32*mm,35*mm,15*mm]))
         story.append(P("Переданные метры строятся, но не продаются: в продаваемой "
                        f"площади их нет. {TRANSFER_RECIPIENT_NOTE.capitalize()}.",
@@ -16067,7 +16087,9 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         tep_rows=[["Продукт","Строит. объём, м²","Продаваемая, м²","Кол-во"]]
         for row in rows_data:
             tep_rows.append([row.get('label') or row.get('key') or '—',_pdf_num(row.get('gns'),0),_pdf_num(row.get('saleable'),0),_pdf_num(row.get('units'),0)])
-        tep_rows.append(["Итого",_pdf_num(total.get('gns'),0),_pdf_num(total.get('saleable'),0),_pdf_num(total.get('units'),0)])
+            if float(row.get('parking_units') or 0):
+                tep_rows.append([_park_label(row),"—","—",_pdf_num(row.get('parking_units'),0)])
+        tep_rows.append(["Итого",_pdf_num(total.get('gns'),0),_pdf_num(total.get('saleable'),0),_pdf_num(float(total.get('units') or 0)+park_units_total,0)])
         story.append(table(tep_rows,[75*mm,32*mm,38*mm,25*mm]))
 
     # Очередность меняет проект целиком — сроки, инфляцию затрат, стартовые цены
@@ -16314,16 +16336,17 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         # Отдельно стоящий объект меряется своей площадью, наземный паркинг —
         # своими местами. Числа считает движок; отчёт носят в банк, и
         # расходиться с экраном ему нельзя — подстроки те же.
-        for part in item.get('items') or []:
-            if part.get('basis')=='units':
-                expense_rows.append(["   в т.ч. "+str(part.get('label') or '—')+" · "+str(part.get('basis_label') or ''),
-                                     _pdf_money(part.get('value') or 0),"—","—",
-                                     _pdf_num(part.get('per_unit_mln') or 0,2)+" млн ₽/место"])
+        # Строки объекта собраны движком — здание и свой гараж порознь, база
+        # названа в ячейке, как на экране.
+        for line in (l for part in item.get('items') or [] for l in part.get('lines') or []):
+            _base=(" "+str(line.get('basis'))) if line.get('basis') else ""
+            _gns='—' if line.get('gns_th') is None else _pdf_num(line['gns_th'],1)+_base
+            if line.get('per_unit_mln') is not None:
+                _sal=_pdf_num(line['per_unit_mln'],2)+" млн ₽/место"
             else:
-                expense_rows.append(["   в т.ч. "+str(part.get('label') or '—')+" · "+str(part.get('basis_label') or ''),
-                                     _pdf_money(part.get('value') or 0),"—",
-                                     _pdf_num(part.get('per_own_gns_th') or 0,1),
-                                     _pdf_num(part.get('per_own_saleable_th') or 0,1)])
+                _sal='—' if line.get('saleable_th') is None else _pdf_num(line['saleable_th'],1)+_base
+            expense_rows.append(["   в т.ч. "+str(line.get('label') or '—'),
+                                 _pdf_money(line.get('value') or 0),"—",_gns,_sal])
     expense_rows.append(["Итого расходы",_pdf_money(total_expense),"100,0%" if total_expense else "—",
                          _pdf_num(total_expense/_exp_gns/1000 if _exp_gns else 0,1),
                          _pdf_num(total_expense/_exp_saleable/1000 if _exp_saleable else 0,1)])
@@ -28780,7 +28803,7 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
             volume, sales_start, end_ref, share_value, residual,
             weights_override=weights,
         ))
-        sold[obj.key] = {"sales_start": sales_start, "end_ref": end_ref,
+        sold[obj.key] = {"volume": volume, "sales_start": sales_start, "end_ref": end_ref,
                          "share": share_value, "residual": residual,
                          "growth_pre": growth_pre, "growth_post": growth_post,
                          "weights": weights, "factor": factor}
@@ -28851,6 +28874,11 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     # Гараж продаётся календарём СВОЕГО объекта — тем же, что посчитан выше.
     # У наземного паркинга гаража нет вовсе, и в `sold` он стоит без него:
     # обход спрашивает реестр, а не перечисляет объекты по памяти.
+    # Чем и когда продаются места — для отчёта о продукте: стартовая цена и
+    # календарь у них СВОИ, офисника, а не квартир. Отчёт брал цену места
+    # дома и сроки дома, и темп мест офиса третьей очереди считался по
+    # календарю квартир первой.
+    object_parking_plan: list[dict[str, Any]] = []
     for obj in standalone_objects():
         plan = sold.get(obj.key)
         if not obj.garage or plan is None:
@@ -28859,6 +28887,13 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
                             plan["share"], plan["residual"],
                             plan["growth_pre"], plan["growth_post"],
                             plan["weights"], plan["factor"])
+        spaces = n(object_parking_row(obj.key), "parking_saleable_units")
+        if spaces > 0:
+            object_parking_plan.append({
+                "key": obj.key, "spaces": spaces,
+                "price_th": object_parking_price(obj.key, obj.prefix) / 1000,
+                "sales_start": plan["sales_start"], "end_ref": plan["end_ref"],
+                "share": plan["share"], "residual": plan["residual"]})
     if object_parking_value:
         add_product("object_parking", dict(object_parking_value), dict(object_parking_units))
     else:
@@ -29228,6 +29263,11 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         # своей ГНС, гараж — подземным метром. Без этой пары удельная объекта
         # молча смешивает два показателя.
         "standalone_garage_capex": dict(standalone_garage_capex),
+        "object_parking_plan": list(object_parking_plan),
+        # Сколько объекта продано на самом деле: у метровых — продаваемая за
+        # вычетом мест первых этажей. Отчёт о продукте брал вводную целиком, и
+        # средняя цена офиса делилась на метры, которые заняты паркингом.
+        "standalone_sold_volume": {key: plan["volume"] for key, plan in sold.items()},
         "purchase_schedule": purchase_schedule_info,
         "object_schedule_notes": object_schedule_notes,
         "core_above_gns": core_above_gns,
@@ -30384,6 +30424,128 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     return result
 
 
+# Суммы подстроки объекта, которые свод по очередям складывает. Удельные среди
+# них нет — их считают заново от сложенных сумм и баз.
+_STANDALONE_ITEM_SUMS = ("value", "building_value", "garage_value", "gns_sqm",
+                         "saleable_sqm", "units", "garage_gns_sqm", "garage_units",
+                         "over_units")
+
+
+def _object_parking_spec(plan: list[dict[str, Any]], fallback: dict[str, Any]) -> dict[str, Any]:
+    """Цена и календарь продукта «паркинг объектов» — от его объектов.
+
+    Мест у нескольких объектов — цена средневзвешенная по местам, календарь
+    от самого раннего старта до самого позднего конца. Без продаваемых мест
+    остаётся прежнее умолчание: продукта тогда в выручке нет.
+    """
+    spaces = sum(item["spaces"] for item in plan)
+    if spaces <= 0:
+        return dict(fallback)
+    return {
+        "start_price": sum(item["price_th"] * item["spaces"] for item in plan) / spaces,
+        "share": sum(item["share"] * item["spaces"] for item in plan) / spaces,
+        "start": min(item["sales_start"] for item in plan),
+        "end_ref": max(item["end_ref"] for item in plan),
+        "residual": max(int(item["residual"]) for item in plan),
+    }
+
+
+def _space_label(value: float) -> str:
+    return f"{value:,.0f}".replace(",", " ")
+
+
+def standalone_expense_item_rates(item: dict[str, Any]) -> dict[str, Any]:
+    """Удельные подстроки «в т.ч.» объекта — одна функция на очередь и на свод.
+
+    Прежде их считали два места: движок очереди разводил здание и гараж, а
+    свод по очередям складывал только деньги и делил их целиком на наземную
+    ГНС здания. На своде гараж возвращался в «ставку здания», и 200 тыс ₽/м²
+    вводной показывались как 316 — третий показатель, не сравнимый ни со
+    сметой, ни со своей вводной. Второго счёта нет: оба места зовут эту.
+
+    На входе — суммы и базы (`value`, `building_value`, `garage_value`,
+    `gns_sqm`, `saleable_sqm`, `units`, `garage_gns_sqm`, `garage_units`,
+    `over_units`); на выходе к ним добавлены удельные и строки `lines`,
+    которые экран и печать рисуют одинаково. Каждая строка несёт СВОЮ базу
+    словами: в колонках проектной таблицы она иначе читалась бы проектной.
+    """
+    out = dict(item)
+    value = _number_or_zero(out.get("value"))
+    if out.get("basis") == "units":
+        units = _number_or_zero(out.get("units"))
+        out["basis_label"] = f"{_space_label(units)} мест" if units else "мест не задано"
+        out["per_unit_mln"] = value / units / 1_000_000 if units else 0.0
+        out["lines"] = [{"label": f"{out.get('label')} · {out['basis_label']}",
+                         "value": value, "gns_th": None, "saleable_th": None,
+                         "per_unit_mln": out["per_unit_mln"], "basis": "место"}]
+        return out
+    garage = _number_or_zero(out.get("garage_value"))
+    building = _number_or_zero(out.get("building_value")) if "building_value" in out \
+        else max(0.0, value - garage)
+    gns = _number_or_zero(out.get("gns_sqm"))
+    saleable = _number_or_zero(out.get("saleable_sqm"))
+    garage_gns = _number_or_zero(out.get("garage_gns_sqm"))
+    garage_units = _number_or_zero(out.get("garage_units"))
+    over_units = _number_or_zero(out.get("over_units"))
+    out["building_value"] = building
+    out["garage_value"] = garage
+    out["basis_label"] = (f"{_space_label(gns)} м² ГНС объекта" if gns
+                          else "площадь объекта не задана")
+    if garage > 0:
+        out["basis_label"] += (
+            f" + гараж {_space_label(garage_gns)} м² подземной"
+            + (f" на {_space_label(garage_units)} мест" if garage_units else ""))
+    # Удельная — на ЗДАНИЕ и его площадь: она обязана воспроизводить вводную
+    # ставку. Гараж стоит рядом своим числом на своей базе.
+    out["per_own_gns_th"] = building / gns / 1000 if gns else 0.0
+    out["per_own_saleable_th"] = building / saleable / 1000 if saleable else 0.0
+    out["garage_per_gns_th"] = garage / garage_gns / 1000 if garage_gns else 0.0
+    out["garage_per_unit_mln"] = garage / garage_units / 1_000_000 if garage_units else 0.0
+    building_basis = (f"{_space_label(gns)} м² ГНС здания" if gns
+                      else "площадь объекта не задана")
+    if over_units:
+        # Места первых этажей лежат в ГНС здания и стоят его ставки: отдельной
+        # строки у них нет, но что часть метров — паркинг, сказано.
+        building_basis += f", из них {_space_label(over_units)} мест на первых этажах"
+    lines = [{"label": f"{out.get('label')} — здание · {building_basis}",
+              "value": building, "gns_th": out["per_own_gns_th"],
+              "saleable_th": out["per_own_saleable_th"], "per_unit_mln": None,
+              "basis": "свой м²"}]
+    if garage > 0:
+        lines.append({
+            "label": (f"{out.get('label')} — свой подземный гараж · "
+                      f"{_space_label(garage_gns)} м²"
+                      + (f", {_space_label(garage_units)} мест" if garage_units else "")),
+            "value": garage, "gns_th": out["garage_per_gns_th"], "saleable_th": None,
+            "per_unit_mln": out["garage_per_unit_mln"] or None, "basis": "м² подземной"})
+    out["lines"] = lines
+    return out
+
+
+def standalone_expense_note(row_value: float, project_gns: float, saleable: float) -> str:
+    """Почему у строки «Отдельные объекты» и её подстрок разные удельные.
+
+    Владелец увидел в одной таблице 132,7 у строки и 316,2 у её подстроки и
+    спросил, что это. Ответ обязан стоять рядом числами, а не общими словами:
+    строка делит деньги на площадь ВСЕГО проекта, подстрока — на свою.
+    """
+    def area(value: float) -> str:
+        return _space_label(value) + " м²"
+
+    def rate(value: float, base: float) -> str:
+        per = value / base / 1000 if base else 0.0
+        return f"{per:,.1f}".replace(",", " ").replace(".", ",")
+    return (
+        "Строка «Отдельные объекты» — те же деньги, делённые на площадь ВСЕГО "
+        f"проекта ({area(project_gns)} наземной ГНС → {rate(row_value, project_gns)}; "
+        f"{area(saleable)} продаваемой → {rate(row_value, saleable)}): так она "
+        "складывается в итог таблицы. Подстроки «в т.ч.» делят "
+        "деньги объекта на ЕГО базу — здание на свою ГНС и свою продаваемую, "
+        "свой подземный гараж на свои метры и места, наземный паркинг на "
+        "машино-место; в итог они не складываются."
+    )
+
+
 def calculate(req: CalcRequest) -> dict:
     x = req.inputs
     t = req.tep
@@ -30468,13 +30630,18 @@ def calculate(req: CalcRequest) -> dict:
             "under_gns": n(row, "under_gns"),
             "parking_units": n(row, "parking_units"),
             "parking_saleable_units": n(row, "parking_saleable_units"),
+            # Где стоят места объекта: гараж под землёй и первые этажи в ГНС
+            # здания. ТЭП печатает их строкой «в т.ч. паркинг объекта».
+            "parking_under_units": n(row, "parking_under_units"),
+            "parking_over_units": n(row, "parking_over_units"),
         })
 
     tep_total = {
         key: sum(row[key] for row in tep_rows)
         for key in ("gns", "total_area", "useful", "saleable", "transfer", "units",
                     "guest_units", "transfer_units", "saleable_units",
-                    "under_gns", "parking_units", "parking_saleable_units")
+                    "under_gns", "parking_units", "parking_saleable_units",
+                    "parking_under_units", "parking_over_units")
     }
 
     total_revenue = fin["total_revenue"]
@@ -30698,9 +30865,6 @@ def calculate(req: CalcRequest) -> dict:
     # вводной было нельзя. Рядом жила вторая беда: в числителе строки стоит и
     # наземный паркинг, у которого метров в знаменателе нет вовсе — он
     # продаётся местами.
-    def _amount_label(value: float) -> str:
-        return f"{value:,.0f}".replace(",", "\u00a0")
-
     standalone_items = []
     # Список объектов — тот, что объявлен в движке, а не перечисление руками:
     # ФОК завели четвёртым 05.09.2026, в это перечисление он не вошёл, и его
@@ -30725,9 +30889,6 @@ def calculate(req: CalcRequest) -> dict:
         # Здание меряется своей площадью, гараж — своим метром и своими
         # местами, и обе базы названы рядом.
         garage = float((op.get("standalone_garage_capex") or {}).get(key) or 0.0)
-        building = max(0.0, amount - garage)
-        garage_gns = n(row, "under_gns")
-        garage_units = n(row, "parking_units")
         # Делитель берётся оттуда же, откуда взялся числитель: CAPEX наземного
         # паркинга считается как `above_parking_spaces × себестоимость места`,
         # и строка ТЭП тут вторым источником быть не может — при вызове мимо
@@ -30736,31 +30897,21 @@ def calculate(req: CalcRequest) -> dict:
                      else n(row, "units"))
         item = {"key": key, "label": label, "value": amount,
                 "gns_sqm": own_gns, "saleable_sqm": own_saleable,
-                "units": own_units}
-        if _obj.measure == "spaces":
-            # Мера продукта — место, и делить его деньги на метры значит
-            # отвечать не на тот вопрос.
-            item["basis"] = "units"
-            item["basis_label"] = f"{_amount_label(own_units)} мест" if own_units else "мест не задано"
-            item["per_unit_mln"] = amount / own_units / 1_000_000 if own_units else 0.0
-        else:
-            item["basis"] = "area"
-            item["basis_label"] = (f"{_amount_label(own_gns)} м² ГНС объекта"
-                                   if own_gns else "площадь объекта не задана")
-            if garage > 0:
-                item["basis_label"] += (
-                    f" + гараж {_amount_label(garage_gns)} м² подземной"
-                    + (f" на {_amount_label(garage_units)} мест" if garage_units else ""))
-            item["building_value"] = building
-            item["garage_value"] = garage
-            item["garage_gns_sqm"] = garage_gns
-            item["garage_units"] = garage_units
-            # Удельная — на ЗДАНИЕ и его площадь: она обязана воспроизводить
-            # вводную ставку. Гараж стоит рядом своим числом на своей базе.
-            item["per_own_gns_th"] = per_sqm_th(building, own_gns)
-            item["per_own_saleable_th"] = per_sqm_th(building, own_saleable)
-            item["garage_per_gns_th"] = per_sqm_th(garage, garage_gns)
-        standalone_items.append(item)
+                "units": own_units,
+                # Мера продукта у наземного паркинга — место, и делить его
+                # деньги на метры значит отвечать не на тот вопрос.
+                "basis": "units" if _obj.measure == "spaces" else "area"}
+        if _obj.measure != "spaces":
+            # Гараж — это ПОДЗЕМНЫЕ места: места первых этажей лежат в ГНС
+            # здания и стоят его ставки. Прежде в подпись гаража шли все места
+            # объекта, и «35 000 м² подземной на 2 778 мест» делили гараж на
+            # места, которых в нём нет.
+            item.update({"building_value": max(0.0, amount - garage),
+                         "garage_value": garage,
+                         "garage_gns_sqm": n(row, "under_gns"),
+                         "garage_units": n(row, "parking_under_units"),
+                         "over_units": n(row, "parking_over_units")})
+        standalone_items.append(standalone_expense_item_rates(item))
 
     expense_structure = []
     expense_base = sum(value for _, value in expense_groups)
@@ -30778,12 +30929,8 @@ def calculate(req: CalcRequest) -> dict:
         }
         if label == "Отдельные объекты" and standalone_items:
             entry["items"] = standalone_items
-            entry["items_note"] = (
-                "Удельные по каждому объекту — на ЕГО площадь, у наземного "
-                "паркинга — на машино-место. Колонки самой строки, как и у "
-                "остальных статей, считаны на весь проект: они складываются "
-                "в итог таблицы, а числа объектов — нет."
-            )
+            entry["items_note"] = standalone_expense_note(
+                value, project_gns_sqm, monetizable_saleable_sqm)
         expense_structure.append(entry)
     expense_structure.sort(key=lambda item: item["value"], reverse=True)
 
@@ -30834,6 +30981,10 @@ def calculate(req: CalcRequest) -> dict:
     irr_equity = _monthly_irr(equity_cf)
 
     # Product economics / sales KPIs.
+    def sold_volume(key: str, field: str) -> float:
+        volumes = op.get("standalone_sold_volume") or {}
+        return float(volumes[key]) if key in volumes else n(x, field)
+
     product_specs = {
         "apartments": {
             "label": "Квартиры", "quantity": n(t.get("apartments", {}), "saleable"),
@@ -30868,19 +31019,20 @@ def calculate(req: CalcRequest) -> dict:
                             for key, _prefix, enabled_key, _sellable in OBJECT_PARKING_OBJECTS
                             if b(x, enabled_key)
                             and (key != "sports" or sports_is_sold(x))),
-            "unit": "шт.", "start_price": n(x, "parking_price_th"),
-            "share": n(x, "share_before_rve_pct", 85)/100,
-            "start": op["sales_start"], "end_ref": op["rve"],
-            "residual": int(n(x, "residual_sales_months", 6))
+            "unit": "шт.", **_object_parking_spec(op.get("object_parking_plan") or [], {
+                "start_price": n(x, "parking_price_th"),
+                "share": n(x, "share_before_rve_pct", 85)/100,
+                "start": op["sales_start"], "end_ref": op["rve"],
+                "residual": int(n(x, "residual_sales_months", 6))}),
         },
         "offices": {
-            "label": "Офисы / МФОЦ", "quantity": n(x, "offices_saleable_sqm") if b(x, "offices_enabled") else 0,
+            "label": "Офисы / МФОЦ", "quantity": sold_volume("offices", "offices_saleable_sqm") if b(x, "offices_enabled") else 0,
             "unit": "м²", "start_price": n(x, "offices_price_th_per_sqm"), "share": n(x, "offices_share_before_rve_pct", 85)/100,
             "start": d(x["offices_sales_start"]), "end_ref": add_months(d(x["offices_start"]), int(n(x, "offices_months", 24))),
             "residual": int(n(x, "offices_residual_months", 6))
         },
         "standalone_retail": {
-            "label": "Коммерция ОСЗ", "quantity": n(x, "retail_saleable_sqm") if b(x, "retail_enabled") else 0,
+            "label": "Коммерция ОСЗ", "quantity": sold_volume("standalone_retail", "retail_saleable_sqm") if b(x, "retail_enabled") else 0,
             "unit": "м²", "start_price": n(x, "retail_price_th_per_sqm"), "share": n(x, "retail_share_before_rve_pct", 85)/100,
             "start": d(x["retail_sales_start"]), "end_ref": add_months(d(x["retail_start"]), int(n(x, "retail_months", 24))),
             "residual": int(n(x, "retail_residual_months", 6))
@@ -30895,7 +31047,7 @@ def calculate(req: CalcRequest) -> dict:
             # Переданный городу ФОК продаваемой площади не имеет: метры
             # строятся, но не продаются — как у соцобъекта.
             "label": "ФОК / медцентр",
-            "quantity": (n(x, "sports_saleable_sqm")
+            "quantity": (sold_volume("sports", "sports_saleable_sqm")
                          if b(x, "sports_enabled") and sports_is_sold(x) else 0),
             "unit": "м²", "start_price": n(x, "sports_price_th_per_sqm"),
             "share": n(x, "sports_share_before_rve_pct", 85)/100,
@@ -32834,11 +32986,13 @@ def _consolidate_phase_results(
                 "guest_units": 0.0, "transfer_units": 0.0, "saleable_units": 0.0,
                 "under_gns": 0.0, "parking_units": 0.0,
                 "parking_saleable_units": 0.0,
+                "parking_under_units": 0.0, "parking_over_units": 0.0,
             })
             for field in ("gns", "total_area", "useful", "saleable", "transfer", "units",
                           "guest_units", "transfer_units", "saleable_units",
                           "under_gns", "parking_units",
-                          "parking_saleable_units"):
+                          "parking_saleable_units", "parking_under_units",
+                          "parking_over_units"):
                 target[field] += float(row.get(field, 0.0) or 0.0)
     tep_rows = list(tep_map.values())
     tep_total = {
@@ -32846,7 +33000,8 @@ def _consolidate_phase_results(
         for field in ("gns", "total_area", "useful", "saleable", "transfer", "units",
                       "guest_units", "transfer_units", "saleable_units",
                       "under_gns", "parking_units",
-                      "parking_saleable_units")
+                      "parking_saleable_units", "parking_under_units",
+                      "parking_over_units")
     }
 
     revenue = _sum_dicts([r["revenue"] for r in results])
@@ -32964,19 +33119,18 @@ def _consolidate_phase_results(
     # очереди свои офисы и свой паркинг, и на своде их надо сложить с их же
     # площадями — иначе «на свою ГНС» перестало бы быть своим.
     item_map: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
-    item_note: dict[str, str] = {}
     for result in results:
         for item in result["report"]["expense_structure"]:
             expense_map[item["label"]] += float(item["value"] or 0.0)
             for part in item.get("items") or []:
                 kept = item_map[item["label"]].setdefault(
                     part["key"], {"key": part["key"], "label": part["label"],
-                                  "basis": part["basis"], "value": 0.0,
-                                  "gns_sqm": 0.0, "saleable_sqm": 0.0, "units": 0.0})
-                for field in ("value", "gns_sqm", "saleable_sqm", "units"):
-                    kept[field] += float(part.get(field) or 0.0)
-            if item.get("items_note"):
-                item_note[item["label"]] = item["items_note"]
+                                  "basis": part["basis"]})
+                # Здание и гараж складываются порознь: сложенные в одно число,
+                # они давали на своде ставку «здания» 316 при вводной 200.
+                for field in _STANDALONE_ITEM_SUMS:
+                    if field in part:
+                        kept[field] = kept.get(field, 0.0) + float(part.get(field) or 0.0)
     expense_base = sum(expense_map.values())
     expense_structure = [
         {
@@ -32993,27 +33147,12 @@ def _consolidate_phase_results(
         for label, value in expense_map.items() if value > 0
     ]
     for entry in expense_structure:
-        parts = list((item_map.get(entry["label"]) or {}).values())
+        parts = [standalone_expense_item_rates(part)
+                 for part in (item_map.get(entry["label"]) or {}).values()]
         if not parts:
             continue
-        for part in parts:
-            if part["basis"] == "units":
-                part["basis_label"] = (
-                    f"{part['units']:,.0f}".replace(",", "\u00a0") + " мест"
-                    if part["units"] else "мест не задано")
-                part["per_unit_mln"] = (part["value"] / part["units"] / 1_000_000
-                                        if part["units"] else 0.0)
-            else:
-                part["basis_label"] = (
-                    f"{part['gns_sqm']:,.0f}".replace(",", "\u00a0") + " м² ГНС объекта"
-                    if part["gns_sqm"] else "площадь объекта не задана")
-                part["per_own_gns_th"] = (part["value"] / part["gns_sqm"] / 1000
-                                          if part["gns_sqm"] else 0.0)
-                part["per_own_saleable_th"] = (part["value"] / part["saleable_sqm"] / 1000
-                                               if part["saleable_sqm"] else 0.0)
         entry["items"] = sorted(parts, key=lambda one: one["value"], reverse=True)
-        if item_note.get(entry["label"]):
-            entry["items_note"] = item_note[entry["label"]]
+        entry["items_note"] = standalone_expense_note(entry["value"], project_gns, saleable)
     expense_structure.sort(key=lambda x: x["value"], reverse=True)
 
     product_map: dict[str, dict[str, Any]] = {}
@@ -47692,7 +47831,16 @@ function renderTep(){
 // строкой раздела — оба числа выглядели бы верными.
 function tepRowUnderGns(key,row){
  const r=row||{};
- return (UNDERGROUND_PRODUCTS.includes(key)?Number(r.gns||0):0)+Number(r.under_gns||0);
+ return (UNDERGROUND_PRODUCTS.includes(key)?Number(r.gns||0):0)
+  +(Number(r.under_gns||0)||objectGarageUnderGns(key));
+}
+// Метры гаража объекта считает движок (`apply_object_parking`), а таблица ТЭП
+// на вводных живёт своими строками, куда их никто не пишет. Подпись «гаражи
+// объектов» при этом складывала поле, которое всегда пусто, и гараж офисника
+// в 35 000 м² в «подземную часть» не попадал. Число берётся у движка.
+function objectGarageUnderGns(key){
+ const item=((projectParking().own)||[]).find(o=>o&&o.tep_key===key&&o.enabled);
+ return item?Number(item.under_gns||0):0;
 }
 
 function tepSubtotalRow(group){
@@ -50687,12 +50835,16 @@ function renderResult(){
    <td>${num2(x.per_gns_th)}</td>
    <td>${num2(x.per_saleable_th)}</td>
  </tr>`;
-   const parts=(x.items||[]).map(o=>`<tr class="sub">
-   <td style="padding-left:18px">в т.ч. ${o.label} · ${o.basis_label||''}</td>
-   <td>${money(o.value)}</td>
+   // Строки объекта собраны движком (`standalone_expense_item_rates`): здание
+   // на свою площадь, свой гараж на свои метры и места. База названа в самой
+   // ячейке — в колонке проектной таблицы число без неё читалось проектным.
+   const base=l=>l.basis?` <span class="muted">${l.basis}</span>`:'';
+   const parts=(x.items||[]).flatMap(o=>o.lines||[]).map(l=>`<tr class="sub">
+   <td style="padding-left:18px">в т.ч. ${l.label}</td>
+   <td>${money(l.value)}</td>
    <td>—</td>
-   <td>${o.basis==='units'?'—':num2(o.per_own_gns_th)}</td>
-   <td>${o.basis==='units'?num2(o.per_unit_mln)+' млн ₽/место':num2(o.per_own_saleable_th)}</td>
+   <td>${l.gns_th==null?'—':num2(l.gns_th)+base(l)}</td>
+   <td>${l.per_unit_mln!=null?num2(l.per_unit_mln)+' млн ₽/место':(l.saleable_th==null?'—':num2(l.saleable_th)+base(l))}</td>
  </tr>`).join('');
    const note=(x.items&&x.items.length&&x.items_note)
      ?`<tr class="sub"><td colspan="5" class="muted" style="padding-left:18px">${x.items_note}</td></tr>`:'';
@@ -50858,18 +51010,36 @@ function renderResult(){
   ? `<span style="display:block;font-size:10px;color:#777">${TRANSFER_NOTE_WORD} ${num(x.transfer)} м²</span>`
   : '';
  const transferTotal=r.tep.rows.reduce((sum,x)=>sum+Number(x.transfer||0),0);
+ // Свой паркинг отдельно стоящего объекта — продукт: гараж и места первых
+ // этажей строятся, у офисника продаются машино-местами. Полем на строке
+ // объекта он в ТЭП не был виден вовсе — ни мест, ни продаваемых; теперь это
+ // подстрока «в т.ч.» с местами, а подземные метры гаража стоят на ней же.
+ const objParkUnits=x=>Number(x.parking_units||0);
+ const objParkRow=x=>{
+  if(!objParkUnits(x))return '';
+  const under=Number(x.parking_under_units||0),over=Number(x.parking_over_units||0);
+  const sold=Number(x.parking_saleable_units||0),guest=Math.max(0,objParkUnits(x)-sold);
+  const where=[under?'подземных '+num(under):'',over?'на первых этажах '+num(over)+' (в ГНС здания)':''].filter(Boolean).join(' · ');
+  const small=t=>t?`<span style="display:block;font-size:10px;color:#777">${t}</span>`:'';
+  return `<tr class="sub"><td style="padding-left:18px">в т.ч. паркинг объекта, машино-места${small(where)}</td>`
+   +`<td>${dash}</td><td>${objUnder(x)>0?num(objUnder(x)):dash}</td><td>${dash}</td>`
+   +`<td>${num(objParkUnits(x))}${small(guest?'из них гостевых '+num(guest):'')}</td>`
+   +`<td>${num(sold)}${small(sold?'':'места обеспечивают посетителей, не продаются')}</td></tr>`;
+ };
  reportTep.innerHTML=
   `<thead><tr><th>Продукт</th><th>ГНС наземная, м²</th><th>Подземная, м²</th><th>Продаваемая площадь, м²</th><th>Построено, шт.</th><th>Продаётся, шт.</th></tr></thead>`+
   `<tbody>`+
   r.tep.rows.map(x=>`<tr><td>${x.label}</td>`
    +`<td>${isUnder(x)?dash:num(x.gns)}</td>`
-   +`<td>${isUnder(x)?num(x.gns):(objUnder(x)>0?num(objUnder(x)):dash)}</td>`
+   +`<td>${isUnder(x)?num(x.gns):(objUnder(x)>0&&!objParkUnits(x)?num(objUnder(x)):dash)}</td>`
    +`<td>${num(x.saleable)}${areaNote(x)}</td>`
-   +`<td>${num(x.units)}${unitNote(x)}</td><td>${num(soldUnits(x))}</td></tr>`).join('')+
+   +`<td>${num(x.units)}${unitNote(x)}</td><td>${num(soldUnits(x))}</td></tr>`
+   +objParkRow(x)).join('')+
   `</tbody><tfoot><tr><th>Итого</th><th>${num(aboveGns)}</th><th>${num(underTotal)}</th>`
   +`<th>${num(r.tep.total.saleable)}`
   +(transferTotal>0?`<span style="display:block;font-size:10px;color:#777">${TRANSFER_NOTE_WORD} ${num(transferTotal)} м²</span>`:'')
-  +`</th><th>${num(r.tep.total.units)}</th><th>${num(soldTotal)}</th></tr></tfoot>`;
+  +`</th><th>${num(Number(r.tep.total.units||0)+Number(r.tep.total.parking_units||0))}</th>`
+  +`<th>${num(soldTotal+Number(r.tep.total.parking_saleable_units||0))}</th></tr></tfoot>`;
  const tepNote=document.getElementById('reportTepNote');
  if(tepNote)tepNote.innerHTML=underTotal>0
   ? `Строительный объём — ${num(Number(r.summary.construction_volume_sqm!==undefined?r.summary.construction_volume_sqm:r.tep.total.gns))} м², наземная плюс подземная: на нём считаются общие статьи (ИРД, проектирование, подготовка, сети, благоустройство, сдача, содержание). Удельные «на метр» считаются на наземной ГНС: подземная в неё не входит — у неё своя себестоимость метра и свой продукт, продаваемый местами. ГНС — внутренний термин DevelopAid; город нагрузки считает от суммарной поэтажной площади.`
