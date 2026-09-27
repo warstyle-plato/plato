@@ -13010,15 +13010,64 @@ def _telegram_send_photo_bytes(
     return result.get("result")
 
 
-def _territory_image_png(numbers: list[str]) -> tuple[bytes, str] | None:
-    """Картинка территории: контуры ЕГРН поверх подложки НСПД — с подписью.
+# Поле окружения вокруг контура на карте улиц: столько же, сколько у кадра
+# первой страницы полного PDF и у карты на сайте — участок читается только
+# вместе с улицами и кварталами вокруг.
+_MAP_CONTEXT_METRES = 250.0
+_MAP_BASEMAP_CAPTION = {"nspd": "подложка — публичная карта НСПД",
+                        "osm": "подложка — карта улиц OpenStreetMap"}
+
+
+def _map_context_bbox(points: list[Any], target_aspect: float,
+                      context_m: float = _MAP_CONTEXT_METRES) -> tuple[float, float, float, float] | None:
+    """Рамка карты вокруг контура: поле окружения и пропорция слота.
+
+    Один расчёт рамки на тизер и первую страницу PDF: две копии одной
+    геометрии расходятся, и контур ложится рядом с подложкой, а выглядит это
+    как неточность ЕГРН. Поле — не меньше `context_m` и не меньше 22 % от
+    размера контура; затем рамка растягивается до пропорции слота.
+    """
+    if not points:
+        return None
+    xs = [float(p[0]) for p in points]
+    ys = [float(p[1]) for p in points]
+    min_x, max_x, min_y, max_y = min(xs), max(xs), min(ys), max(ys)
+    span_x, span_y = max_x - min_x, max_y - min_y
+    if not (span_x > 0 and span_y > 0):
+        return None
+    pad_x = max(span_x * 0.22, context_m)
+    pad_y = max(span_y * 0.22, context_m)
+    min_x, max_x, min_y, max_y = min_x - pad_x, max_x + pad_x, min_y - pad_y, max_y + pad_y
+    span_x, span_y = max_x - min_x, max_y - min_y
+    aspect = max(float(target_aspect or 1.0), 0.1)
+    if span_x / span_y < aspect:
+        extra = (span_y * aspect - span_x) / 2.0
+        min_x, max_x = min_x - extra, max_x + extra
+    elif span_x / span_y > aspect:
+        extra = (span_x / aspect - span_y) / 2.0
+        min_y, max_y = min_y - extra, max_y + extra
+    return min_x, min_y, max_x, max_y
+
+
+def _territory_image_png(numbers: list[str], basemap: str = "nspd",
+                         aspect: float | None = None) -> tuple[bytes, str] | None:
+    """Картинка территории: контуры ЕГРН поверх подложки — с подписью.
 
     Одна на бота и на тизер: та же картинка, что на сайте в карточке участка.
-    Контуры приходят из /land/lookup (`contour_merc`), подложка — из
-    /land/map-image; оба маршрута на Render пересылают на ядро сами. Нет
-    контура или подложки — `None`: голый контур на белом фоне — шум, а не
-    информация (владелец, 16.08.2026), и расчёт от картинки не зависит.
+    Контуры приходят из /land/lookup (`contour_merc`). Подложек две, и
+    подпись называет, какая стоит:
+    - `nspd` — публичная кадастровая карта крупным планом (/land/map-image),
+      как в боте: видны соседние участки;
+    - `osm` — карта улиц с полем окружения не меньше 250 м (/land/basemap,
+      та же склейка, что у первой страницы полного PDF), в пропорции
+      `aspect`: участок в контексте реальной карты города (владелец,
+      22.09.2026 — «класть контур на карту окружения»).
+    Оба маршрута на Render пересылают на ядро сами. Нет контура или подложки
+    — `None`: голый контур на белом фоне — шум, а не информация (владелец,
+    16.08.2026), и расчёт от картинки не зависит.
     """
+    if basemap not in _MAP_BASEMAP_CAPTION:
+        raise ValueError(f"неизвестная подложка карты: {basemap!r}")
     data = land_lookup(LandLookupRequest(
         query=", ".join(numbers), limit=max(10, len(numbers))))
     found = [item for item in (data.get("results") or [])
@@ -13029,19 +13078,31 @@ def _territory_image_png(numbers: list[str]) -> tuple[bytes, str] | None:
               if isinstance(p, (list, tuple)) and len(p) >= 2]
     if not points:
         return None
-    min_x = min(p[0] for p in points); max_x = max(p[0] for p in points)
-    min_y = min(p[1] for p in points); max_y = max(p[1] for p in points)
-    span = max(max_x - min_x, max_y - min_y, 1.0)
-    pad = max(span * 0.08, 25.0)
-    b_min_x, b_min_y = min_x - pad, min_y - pad
-    b_max_x, b_max_y = max_x + pad, max_y + pad
-    from PIL import Image, ImageDraw
-    try:
-        response = land_map_image(
-            bbox=f"{b_min_x:.1f},{b_min_y:.1f},{b_max_x:.1f},{b_max_y:.1f}")
-        backdrop = Image.open(io.BytesIO(bytes(response.body))).convert("RGBA")
-    except Exception:
-        return None
+    from PIL import Image, ImageDraw, ImageFont
+    if basemap == "osm":
+        bbox = _map_context_bbox(points, aspect or 1.0)
+        if bbox is None:
+            return None
+        b_min_x, b_min_y, b_max_x, b_max_y = bbox
+        try:
+            response = land_basemap(
+                bbox=f"{b_min_x:.1f},{b_min_y:.1f},{b_max_x:.1f},{b_max_y:.1f}", width=960)
+            backdrop = Image.open(io.BytesIO(bytes(response.body))).convert("RGBA")
+        except Exception:
+            return None
+    else:
+        min_x = min(p[0] for p in points); max_x = max(p[0] for p in points)
+        min_y = min(p[1] for p in points); max_y = max(p[1] for p in points)
+        span = max(max_x - min_x, max_y - min_y, 1.0)
+        pad = max(span * 0.08, 25.0)
+        b_min_x, b_min_y = min_x - pad, min_y - pad
+        b_max_x, b_max_y = max_x + pad, max_y + pad
+        try:
+            response = land_map_image(
+                bbox=f"{b_min_x:.1f},{b_min_y:.1f},{b_max_x:.1f},{b_max_y:.1f}")
+            backdrop = Image.open(io.BytesIO(bytes(response.body))).convert("RGBA")
+        except Exception:
+            return None
     w, h = backdrop.size
     overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     overlay_draw = ImageDraw.Draw(overlay)
@@ -13065,6 +13126,15 @@ def _territory_image_png(numbers: list[str]) -> tuple[bytes, str] | None:
         # Белая подкладка под тёмной линией: граница читается на пёстрой карте.
         draw.line(closed, fill=(255, 255, 255), width=7, joint="curve")
         draw.line(closed, fill=(180, 35, 24), width=3, joint="curve")
+    if basemap == "osm":
+        # Атрибуция — часть картинки: условие OpenStreetMap, а не украшение.
+        label = "© OpenStreetMap"
+        font = ImageFont.load_default()
+        box = draw.textbbox((0, 0), label, font=font)
+        tw, th = box[2] - box[0], box[3] - box[1]
+        x0, y0 = 8, image.height - th - 8
+        draw.rectangle((x0 - 4, y0 - 3, x0 + tw + 4, y0 + th + 3), fill=(255, 255, 255))
+        draw.text((x0, y0), label, fill=(40, 40, 40), font=font)
     out = io.BytesIO()
     image.save(out, format="PNG")
     listed = ", ".join(str(item.get("cadastral_number") or "") for item in found[:5])
@@ -13072,7 +13142,7 @@ def _territory_image_png(numbers: list[str]) -> tuple[bytes, str] | None:
     caption = (
         f"Контур участка {listed} · границы ЕГРН" if count == 1
         else f"Территория из {count} участков: {listed} · границы ЕГРН")
-    caption += " · подложка — публичная карта НСПД"
+    caption += " · " + _MAP_BASEMAP_CAPTION[basemap]
     return out.getvalue(), caption
 
 
@@ -26950,14 +27020,18 @@ async def report_teaser(request: Request) -> Response:
 def build_teaser_pdf(bundle: dict[str, Any], inputs: dict[str, Any],
                      tep: dict[str, Any], phasing: dict[str, Any] | None,
                      site: dict[str, Any] | None = None,
-                     map_png: bytes | None = None) -> bytes:
+                     map_png: bytes | tuple[bytes, str] | None = None) -> bytes:
     """Тизер из уже посчитанного: модель представления → две страницы.
 
-    `map_png` — картинка участка с контурами ЕГРН (`_territory_image_png`);
-    нет картинки — тизер говорит об этом на её месте, а не молчит."""
+    `map_png` — картинка участка с контурами ЕГРН (`_territory_image_png`),
+    одна или вместе с подписью, называющей подложку; нет картинки — тизер
+    говорит об этом на её месте, а не молчит."""
     presentation = project_presentation(bundle, inputs, tep, phasing, site=site)
+    caption = None
+    if isinstance(map_png, tuple):
+        map_png, caption = map_png
     return _teaser_pdf.build_teaser_pdf(presentation, _pdf_font_names(), _pdf_num,
-                                        map_png=map_png)
+                                        map_png=map_png, map_caption=caption)
 
 
 def _teaser_site(payload: dict[str, Any], inputs: dict[str, Any]) -> dict[str, Any]:
@@ -27029,18 +27103,24 @@ def _teaser_site_facts(site: dict[str, Any], gns_sqm: float) -> dict[str, Any]:
     return facts
 
 
-def _teaser_map_png(site: dict[str, Any]) -> bytes | None:
-    """Карта участка для тизера; любой отказ источника — `None`, тизер
-    называет отсутствие карты сам."""
+def _teaser_map_png(site: dict[str, Any]) -> tuple[bytes, str] | None:
+    """Карта участка для тизера: контур на карте улиц с окружением, а нет карты
+    улиц — тот же контур на кадастровой карте, как в боте. Подпись едет
+    вместе с картинкой и называет подложку. Любой отказ источника — `None`,
+    тизер называет отсутствие карты сам."""
     numbers = list(site.get("cadastral_numbers") or [])
     if not numbers:
         return None
-    try:
-        made = _territory_image_png(numbers)
-    except Exception as exc:
-        logging.info("Карта для тизера пропущена: %s", exc)
-        return None
-    return made[0] if made else None
+    for basemap in ("osm", "nspd"):
+        try:
+            made = _territory_image_png(numbers, basemap=basemap,
+                                        aspect=_teaser_pdf.MAP_ASPECT)
+        except Exception as exc:
+            logging.info("Карта для тизера (%s) пропущена: %s", basemap, exc)
+            made = None
+        if made:
+            return made
+    return None
 
 
 @app.post("/telegram/result")
@@ -46434,11 +46514,24 @@ function projectKindDialogHtml(){
  // тогда, когда смотрит на ставку, а не когда переключает тип.
  html+='<p style="margin:0 0 10px"><b>Где теперь задавать метры:</b> вкладка «Экономика», блоки '
   +escapeHtml(groups.map(t=>'«'+t+'»').join(', '))+'. Строки ТЭП у них производные — считаются '
-  +'по долям объекта.</p>'
-  +'<p style="margin:0 0 10px">Нормативный потенциал участка можно положить в '
-  +escapeHtml(NONRES_DENSITY_TARGETS.map(t=>'«'+t[1]+'»').join(' или '))
-  +' кнопкой «Рассчитать ТЭП от площади и плотности» на шаге «ТЭП»: она спросит, куда.</p>'
-  +'<p style="margin:0">Финансирование режим не трогает: 214-ФЗ нежильё не исключает, эскроу '
+  +'по долям объекта.</p>';
+ const area=Number(inputs.site_area_ha||0),density=effectiveSiteDensity();
+ if(area>0&&density>0){
+  const spp=area*density;
+  html+='<div style="margin:12px 0;padding:11px 12px;border:1px solid #d7e1ee;border-radius:8px;background:#f7f9fc">'
+   +'<div><b>Потенциал участка: '+num(spp)+' м².</b> Куда положить ТЭП нежилого проекта?</div>'
+   +'<div style="margin-top:8px">'
+   +NONRES_DENSITY_TARGETS.map(t=>'<button type="button" class="btn" style="margin:0 6px 6px 0" '
+     +'onclick="applyDensityToObjectFromDialog(\''+t[0]+'\')">'+escapeHtml(t[1])+'</button>').join('')
+   +'</div>'
+   +'<div style="font-size:11px;color:#667085">Выбор сразу запишет рассчитанный потенциал в объект. '
+   +'Если метры хотите задать вручную — нажмите «Понятно» и заполните объект на вкладке «Экономика».</div>'
+   +'</div>';
+ }else{
+  html+='<p style="margin:0 0 10px">Площадь участка или плотность пока не заданы, поэтому распределять '
+   +'потенциал нечего. Их можно задать на шаге «ТЭП», а метры объекта — вручную на вкладке «Экономика».</p>';
+ }
+ html+='<p style="margin:0">Финансирование режим не трогает: 214-ФЗ нежильё не исключает, эскроу '
   +'и лестница ставки ПФ те же.</p>';
  return html;
 }
@@ -46454,6 +46547,14 @@ function openProjectKindDialog(){
 function closeProjectKindDialog(){
  const dialog=document.getElementById('projectKindDialog');
  if(dialog)dialog.style.display='none';
+}
+
+function applyDensityToObjectFromDialog(target){
+ // Если человек выбирает нежилой тип на «Экономике», не отправляем его на
+ // другую вкладку ради второго клика: выбор назначения ТЭП делается в том же
+ // окне, которое сообщает последствия переключения.
+ applyDensityToObject(target);
+ closeProjectKindDialog();
 }
 
 // Отмена переключения целиком: тип возвращается ПЕРВЫМ, иначе пересчёт ТЭП,
