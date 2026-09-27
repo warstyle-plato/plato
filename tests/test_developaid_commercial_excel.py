@@ -28,9 +28,9 @@ def _xml(content: bytes, name: str) -> str:
 
 def test_each_asset_gets_its_own_filename_and_no_escrow_model():
     expected = {
-        "office": "DevelopAid_Office_Model_Beta.xlsx",
-        "retail": "DevelopAid_Retail_Model_Beta.xlsx",
-        "hotel": "DevelopAid_Hotel_Model_Beta.xlsx",
+        "office": "DevelopAid_Office_Model_Beta_v2.xlsx",
+        "retail": "DevelopAid_Retail_Model_Beta_v2.xlsx",
+        "hotel": "DevelopAid_Hotel_Model_Beta_v2.xlsx",
     }
     for asset, filename in expected.items():
         content, actual, meta = build_commercial_workbook(_req(asset))
@@ -42,7 +42,7 @@ def test_each_asset_gets_its_own_filename_and_no_escrow_model():
 def test_workbook_has_separate_inputs_operating_cashflow_and_summary_sheets():
     content, _, _ = build_commercial_workbook(_req("office"))
     workbook_xml = _xml(content, "xl/workbook.xml")
-    for sheet in ("Summary", "Inputs", "Operating", "Cash_Flow"):
+    for sheet in ("Summary", "Inputs", "Development", "Operating", "Sales", "Cash_Flow", "Financing", "Sensitivity", "Checks"):
         assert f'name="{sheet}"' in workbook_xml
 
 
@@ -87,4 +87,28 @@ def test_web_endpoint_returns_xlsx_download():
     assert response.headers["content-type"].startswith(
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
-    assert "DevelopAid_Office_Model_Beta.xlsx" in response.headers["content-disposition"]
+    assert "DevelopAid_Office_Model_Beta_v2.xlsx" in response.headers["content-disposition"]
+
+
+def test_development_sheet_has_formula_driven_s_curve():
+    content, _, _ = build_commercial_workbook(_req("office"))
+    with zipfile.ZipFile(io.BytesIO(content)) as archive:
+        worksheets = "\n".join(
+            archive.read(name).decode("utf-8")
+            for name in archive.namelist()
+            if name.startswith("xl/worksheets/sheet") and name.endswith(".xml")
+        )
+    assert "inp_construction_months" in worksheets
+    assert "Development" in _xml(content, "xl/workbook.xml")
+
+
+def test_hotel_model_carries_management_fee_and_preopening():
+    content, _, _ = build_commercial_workbook(_req("hotel"))
+    with zipfile.ZipFile(io.BytesIO(content)) as archive:
+        text = "\n".join(
+            archive.read(name).decode("utf-8", errors="ignore")
+            for name in archive.namelist()
+            if name.endswith(".xml")
+        )
+    assert "inp_management_fee_pct" in text
+    assert "inp_preopening_cost_rub" in text
