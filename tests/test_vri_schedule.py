@@ -479,7 +479,10 @@ def test_page_has_a_dedicated_vri_tab():
     assert '<div id="vri" class="panel">' in page
     # Вводные ВРИ живут во вкладке, а не в общем списке.
     assert 'id="vriInputGroups"' in page
-    assert "VRI_GROUP_NAME='Смена ВРИ и земельные права'" in page
+    # Имя группы страница получает подстановкой: своей копией оно разошлось бы
+    # с движком молча, и поле ВРИ ушло бы рисоваться во «Вводные».
+    assert f'const VRI_GROUP_NAME="{main.VRI_GROUP_NAME}"' in page
+    assert main.VRI_GROUP_NAME_PLACEHOLDER not in page
 
 
 def test_vri_group_is_still_a_field_group():
