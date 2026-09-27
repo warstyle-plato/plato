@@ -220,24 +220,31 @@ def test_the_guest_places_are_an_engine_number() -> None:
 
 @pytest.mark.parametrize("phasing", [{}, {"enabled": True, "phase_count": 2,
                                           "phase_gap_months": 12}])
-def test_a_filled_field_without_a_mark_is_the_owners_number(phasing) -> None:
-    """Нагатино, 27.09.2026: в полях 1 000 + 1 778 мест, а ТЭП — «544 по нормативу».
+def test_the_project_and_its_queues_decide_whose_number_alike(phasing) -> None:
+    """Чьё число в поле мест — один ответ у свода и у очередей.
 
-    Список «тронуто руками» у сохранённого проекта был, но офиса в нём не было.
-    Отсутствие пометки — не решение человека: непустое поле без пометки нормы —
-    его число, и в своде, и в очередях.
+    Очередь считала ручным всякое непустое поле, проект — только объект из
+    списка «тронуто руками». Список есть, объекта в нём нет — поле заполнила
+    норма, и оно идёт за ТЭП (решение прежних правок); то же — в очередях.
     """
-    x = _inputs()
-    x["_parking_by_hand"] = []
-    result = core._run_authoritative_model(x, _tep(), [], phasing)["consolidated"]
-    own = next(o for o in result["parking"]["own"] if o["tep_key"] == "offices")
-    assert (own["under_spaces"], own["over_spaces"]) == (UNDER, OVER)
-    assert not own["by_norm"]
-    # Контрпример: число, поставленное нормой и так помеченное, идёт за нормой.
-    x["_parking_by_norm"] = ["offices"]
-    marked = core._run_authoritative_model(x, _tep(), [], phasing)["consolidated"]
-    own = next(o for o in marked["parking"]["own"] if o["tep_key"] == "offices")
-    assert own["by_norm"]
+    def own_and_queue(marks):
+        x = _inputs()
+        # Не равно норме: у этих вводных норма — те же 2 778, и совпадение
+        # сделало бы проверку слепой.
+        x.update({"offices_parking_under_spaces": 300,
+                  "offices_parking_over_spaces": 200})
+        x["_parking_by_hand"] = marks
+        bundle = core._run_authoritative_model(x, _tep(), [], phasing)
+        own = next(o for o in bundle["consolidated"]["parking"]["own"]
+                   if o["tep_key"] == "offices")
+        built = bundle["consolidated"]["tep"]["total"]["parking_units"]
+        return own, built
+
+    own, built = own_and_queue(["offices"])
+    assert not own["by_norm"] and own["units"] == 500 == built
+    own, built = own_and_queue([])
+    assert own["by_norm"] and own["units"] != 500
+    assert built == own["units"], "свод и очереди построили разные гаражи"
 
 
 def test_opening_the_tep_tab_redraws_it_from_the_last_calculation() -> None:

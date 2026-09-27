@@ -10942,20 +10942,21 @@ def standalone_object_saleable(inputs: dict[str, Any], tep: dict[str, Any] | Non
 def object_parking_by_hand(inputs: dict[str, Any], prefix: str) -> bool:
     """Места гаража объекта заданы человеком? Ответ один на проект и очередь.
 
-    Отсутствие пометки — не решение человека (правило CLAUDE.md). Прежде
-    ответов было два: очередь считала ручным всякое непустое поле, а проект —
-    только объект из списка `_parking_by_hand`. У сохранённого проекта без
-    пометки офиса (Нагатино, 27.09.2026: 2 778 мест в полях) очереди строили
-    вписанные места, а свод и ТЭП показывали норму — 544 места «по нормативу».
+    Страница ведёт список тронутых руками (`_parking_by_hand`). Пока он есть,
+    объект вне списка — поле заполнила норма, и оно идёт за ТЭП, а не замирает
+    на вчерашнем числе. Проект без списка (сохранён до него) — непустое поле
+    человеческое. Пометка нормы (`_parking_by_norm`) говорит «её число» прямо.
 
-    Порядок: явная пометка «руками» (проекта или очереди) — да; пометка «число
-    поставила норма» — нет; иначе непустое поле — человеческое.
+    Прежде ответов было два: очередь считала ручным всякое непустое поле, а
+    проект — по списку, и одни и те же вводные строили разные гаражи в своде и
+    в очередях.
     """
     key = str(prefix)
     if key in set(inputs.get("_phase_parking_by_hand") or ()):
         return True
-    if key in set(inputs.get("_parking_by_hand") or ()):
-        return True
+    marks = inputs.get("_parking_by_hand")
+    if marks is not None:
+        return key in set(marks)
     if key in set(inputs.get("_parking_by_norm") or ()):
         return False
     return any(n(inputs, f"{prefix}_parking_{kind}_spaces") > 0 for kind in ("under", "over"))
