@@ -369,3 +369,14 @@ def test_a_real_conflict_is_named_and_not_merged(repo, monkeypatch):
     after = subprocess.run(["git", "rev-parse", "origin/feat"], cwd=repo.path,
                            capture_output=True, text=True, check=True).stdout
     assert before == after, "ветку с настоящим конфликтом скрипт не должен трогать"
+
+
+def test_a_release_merge_starts_the_build_itself():
+    """Слияние от GITHUB_TOKEN не запускает сборку main push-событием:
+    27.09 пять выпусков легли в main и не уехали на прод."""
+    source = MERGE.read_text(encoding="utf-8")
+    body = source[source.index("for attempt in range"):]
+    merged = body.index('"PUT"')
+    assert body.index("_dispatch_build(", merged) > merged
+    assert (ROOT / ".github" / "workflows" / release_merge.BUILD_WORKFLOW).exists()
+    assert "actions: write" in MERGE_FLOW.read_text(encoding="utf-8")

@@ -180,6 +180,25 @@ def _wait_settled(repo: str, number: str, token: str, sha: str) -> dict:
     return pull
 
 
+BUILD_WORKFLOW = "build-yandex.yml"
+
+
+def _dispatch_build(repo: str, token: str, base_ref: str) -> None:
+    """Запустить сборку базы после слияния.
+
+    Слияние от GITHUB_TOKEN не рождает push-события для других workflow:
+    27.09 так пять выпусков легли в main и не уехали на прод. Отказ запуска
+    не отменяет слияния, но называется в логе прогона.
+    """
+    try:
+        _api("POST", f"/repos/{repo}/actions/workflows/{BUILD_WORKFLOW}/dispatches",
+             token, {"ref": base_ref})
+        print(f"Сборка {BUILD_WORKFLOW} на {base_ref} запущена.")
+    except urllib.error.HTTPError as error:
+        print(f"Слито, но сборка {BUILD_WORKFLOW} не запустилась ({error.code}): "
+              "запустите её вручную, иначе выпуск не уедет на прод.", file=sys.stderr)
+
+
 def _engine_changed(guard, base_ref: str, head_ref: str) -> bool:
     """Менялся ли production-код. Имя сохранено для совместимости тестов.
 
@@ -258,6 +277,8 @@ def main() -> int:
             print(f"Слияние не состоялось: {answer.get('message')!r}", file=sys.stderr)
             return 1
         print(f"Слито под номером {issued}: {answer.get('sha')}")
+        if issuing:
+            _dispatch_build(repo, token, base_ref)
         return 0
 
     print(f"База уходила {ATTEMPTS} раза подряд — номер так и не выдан. "
