@@ -145,3 +145,42 @@ def test_the_input_tep_counts_the_object_garage_underground() -> None:
     out_off, _ = page_blocks.run(prelude_off, "process.stdout.write(String("
                                  "tepRowUnderGns('offices',{gns:186180})));")
     assert float(out_off) == 0
+
+
+def test_the_object_parking_never_touches_the_house_pool() -> None:
+    """Гараж и места объекта — только его объекта, никогда не МКД (27.09.2026).
+
+    Пул дома — ровно продукты дома: паркинг объекта не забирает долю стройки
+    МКД и не разбавляет своими штуками признание квартир. Его расход признаётся
+    вместе со статьёй объекта, как в книге, а выручка входит в базу целиком.
+    """
+    assert core.COST_POOL_PRODUCTS == core.MKD_PRODUCTS
+    with_places = _result()
+    finance = with_places["finance"]
+    tax_cost = finance["tax_cost_by_product"]
+    # Пул дома признаётся только продажами дома: его маржа — выручка дома
+    # минус весь его расход. Будь места в пуле, в марже стояла бы и их выручка.
+    house_revenue = sum(with_places["revenue"].get(key, 0.0) for key in core.MKD_PRODUCTS)
+    assert finance["tax_margin_by_product"]["core"] == pytest.approx(
+        house_revenue - tax_cost["core"], rel=1e-9)
+    # Гараж — в статье офиса, а не в остатке дома.
+    x = _inputs()
+    x.update({"offices_parking_under_spaces": 0, "offices_parking_over_spaces": 0})
+    without = core._run_authoritative_model(x, _tep(), [], {})["consolidated"]
+    garage = 1000 * core.OBJECT_PARKING_AREA_DEFAULT * core.DEFAULT_INPUTS["main_under_th_per_sqm"] * 1000
+    assert tax_cost["offices"] == pytest.approx(
+        without["finance"]["tax_cost_by_product"]["offices"] + garage, rel=1e-9)
+    tax_with = tax_cost
+    assert tax_with["object_parking"] == 0.0
+    revenue = with_places["revenue"]["object_parking"]
+    assert with_places["finance"]["tax_margin_by_product"]["object_parking"] == pytest.approx(revenue)
+
+
+def test_the_report_splits_the_object_money_between_its_metres_and_places() -> None:
+    result = _result()
+    products = {p["key"]: p for p in result["report"]["products"]}
+    object_total = result["finance"]["tax_cost_by_product"]["offices"]
+    assert products["offices"]["cost"] + products["object_parking"]["cost"] == pytest.approx(object_total)
+    over_building = OVER * core.OBJECT_PARKING_OVER_AREA_DEFAULT * 200 * 1000
+    garage = 1000 * core.OBJECT_PARKING_AREA_DEFAULT * core.DEFAULT_INPUTS["main_under_th_per_sqm"] * 1000
+    assert products["object_parking"]["cost"] == pytest.approx(garage + over_building, rel=1e-9)

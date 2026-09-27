@@ -17783,9 +17783,9 @@ STANDALONE_PRODUCTS: tuple[str, ...] = tuple(o.key for o in STANDALONE_OBJECTS)
 # С 27.09.2026 паркинга объектов в этом пуле нет (владелец: «весь гараж и
 # подземный и наземный должен иметь отношение в затратах и выручке только
 # своего объекта, но никак не МКД. И это правило для всех объектов»). Его
-# расход — доля статьи его объекта (`object_parking_costs`): гараж и метры
-# здания под местами первых этажей. В пуле дома он забирал долю стройки МКД,
-# а его собственные деньги лежали в статье офиса и признавались метрами офиса.
+# расход — в статье его объекта (гараж и метры под местами первых этажей) и
+# признаётся вместе с ней; так же и в книге. В пуле дома он забирал долю
+# стройки МКД и разбавлял признание квартир своими штуками.
 COST_POOL_PRODUCTS: tuple[str, ...] = MKD_PRODUCTS
 
 # Разделы таблицы ТЭП. Двенадцать строк одним списком читаются как двенадцать
@@ -30198,18 +30198,14 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     # они, объект попал бы в выручку и не попал в расход, и обе строки
     # выглядели бы верными.
     product_costs = {key: op["capex_amounts"].get(key, 0.0) for key in krt_products}
-    # Продаваемый паркинг объекта — свой пул внутри денег объекта: доля его
-    # статьи уходит из пула метров объекта в пул мест. Сумма пулов объектов
-    # не меняется, значит пул дома тоже.
-    parking_costs = {key: value for key, value in object_parking_costs(op).items()
-                     if key in product_costs}
-    # Выручка мест без своего расхода всё равно входит в базу: вне пула дома
-    # и вне пула мест она прошла бы мимо налога вовсе.
-    if (sum(parking_costs.values()) > 0
-            or any((op.get("revenue_product_schedules") or {}).get("object_parking") or {})):
-        for key, value in parking_costs.items():
-            product_costs[key] -= value
-        product_costs["object_parking"] = sum(parking_costs.values())
+    # Паркинг объекта — часть СВОЕГО объекта (владелец, 27.09.2026): его гараж
+    # и метры под местами первых этажей лежат в статье объекта и признаются
+    # вместе с ней, продажами объекта. Так это устроено и в книге: выручка
+    # мест идёт в выручку очереди, а расход — в пул объекта (`'ОБЪЕКТЫ'!B28`
+    # по проданным метрам строки 22), и к пулу дома они не относятся. Своего
+    # расхода у продукта мест поэтому нет, но выручка его в базу входит.
+    if any((op.get("revenue_product_schedules") or {}).get("object_parking") or {}):
+        product_costs["object_parking"] = 0.0
         krt_products = krt_products + ("object_parking",)
     core_cost = max(
         total_capex + commercial_costs - sum(product_costs.values()), 0.0
@@ -30474,9 +30470,10 @@ def object_parking_costs(op: dict[str, Any]) -> dict[str, float]:
     """Затраты продаваемого паркинга каждого объекта — доля статьи объекта.
 
     Паркинг объекта принадлежит объекту: его гараж и места первых этажей
-    построены в статье объекта и признаются продажами мест. К пулу дома
-    (`COST_POOL_PRODUCTS`) он отношения не имеет. Налоговая база и отчёт о
-    продуктах зовут эту функцию, а не считают долю каждый у себя.
+    построены в статье объекта, и к пулу дома (`COST_POOL_PRODUCTS`) он
+    отношения не имеет. Налог признаёт их вместе со статьёй объекта, как
+    книга; отчёт о продуктах показывает эту долю строкой мест, чтобы маржа
+    офиса не несла стоимость мест, выручка которых стоит соседней строкой.
     """
     amounts = op.get("capex_amounts") or {}
     return {key: float(amounts.get(key, 0.0) or 0.0) * float(share or 0.0)
@@ -31120,8 +31117,8 @@ def calculate(req: CalcRequest) -> dict:
         **({"sports": float(op["capex_amounts"].get("sports", 0.0) or 0.0)}
            if b(x, "sports_enabled") and sports_is_sold(x) else {}),
     }
-    # Паркинг объекта несёт долю статьи СВОЕГО объекта — тот же счёт, что у
-    # налоговой базы (`object_parking_costs`), а не долю стройки дома.
+    # Паркинг объекта несёт долю статьи СВОЕГО объекта (`object_parking_costs`),
+    # а не долю стройки дома. Сумма по объекту та же, что в налоговой базе.
     _parking_costs = {key: value for key, value in object_parking_costs(op).items()
                       if key in report_krt_costs}
     for _key, _value in _parking_costs.items():
