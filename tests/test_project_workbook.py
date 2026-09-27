@@ -254,15 +254,25 @@ def _formula_reads_parameter(book, coord):
     row = _re.search(r"\d+$", coord).group(0)
     pattern = _re.compile(
         rf"(?:'Параметры модели'|Параметры модели)!\$?{column}\$?{row}(?!\d)")
+    # На самом расчётном листе ссылка без имени листа: $B$231. Формула там —
+    # тоже экономический читатель (выбор колонки сценария ставки в H8), а вот
+    # чистое зеркало ='Вводные'!X читателем не считается.
+    local = _re.compile(rf"(?<![A-Z!'])\$?{column}\$?{row}(?!\d)")
     readers = []
     for sheet in book.worksheets:
-        if sheet.title in ("Вводные", "Параметры модели"):
+        if sheet.title == "Вводные":
             continue
         for cells in sheet.iter_rows():
             for cell in cells:
-                if isinstance(cell.value, str) and cell.value.startswith("="):
-                    if pattern.search(cell.value):
+                if not (isinstance(cell.value, str) and cell.value.startswith("=")):
+                    continue
+                if sheet.title == "Параметры модели":
+                    if cell.coordinate == coord or cell.value.startswith("='Вводные'!"):
+                        continue
+                    if local.search(cell.value):
                         readers.append(f"{sheet.title}!{cell.coordinate}")
+                elif pattern.search(cell.value):
+                    readers.append(f"{sheet.title}!{cell.coordinate}")
     return readers
 
 
