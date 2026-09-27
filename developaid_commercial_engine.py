@@ -376,6 +376,7 @@ def _annual_summary(monthly: dict[str, list[float]], horizon: int) -> list[dict[
         "operating_revenue",
         "operating_cost",
         "selling_cost",
+        "sale_quantity",
         "sale_revenue",
         "terminal_value",
         "disposition_cost",
@@ -475,6 +476,8 @@ def calculate_v2(req: CommercialRequest) -> dict[str, Any]:
     operating_noi = [0.0] * horizon
     occupancy = [0.0] * horizon
     rate_metric = [0.0] * horizon
+    sale_quantity = [0.0] * horizon
+    sale_price = [0.0] * horizon
     sale_revenue = [0.0] * horizon
     selling_cost = [0.0] * horizon
     terminal_value = [0.0] * horizon
@@ -512,7 +515,12 @@ def calculate_v2(req: CommercialRequest) -> dict[str, Any]:
             terminal_value[-1] * _pct(values, "exit_cost_pct", 1.0)
         )
     else:
-        gross_sales = _sale_total(asset, values)
+        if asset == "hotel":
+            total_quantity = max(0.0, _f(values, "saleable_keys"))
+            base_sale_price = max(0.0, _f(values, "sale_price_rub_key"))
+        else:
+            total_quantity = max(0.0, _f(values, "saleable_area_sqm"))
+            base_sale_price = max(0.0, _f(values, "sale_price_rub_sqm"))
         weights = _sales_weights(sale_months, str(values.get("sales_curve", "bell")))
         sale_cost_pct = _pct(values, "selling_cost_pct", 2.0)
         sale_price_growth = _pct(values, "sale_price_growth_pct", 0.0)
@@ -521,7 +529,11 @@ def calculate_v2(req: CommercialRequest) -> dict[str, Any]:
             if month >= horizon:
                 break
             growth = (1.0 + sale_price_growth) ** (index / 12.0)
-            amount = gross_sales * quantity_weight * growth
+            quantity = total_quantity * quantity_weight
+            price = base_sale_price * growth
+            amount = quantity * price
+            sale_quantity[month] = quantity
+            sale_price[month] = price
             sale_revenue[month] = amount
             selling_cost[month] = amount * sale_cost_pct
 
@@ -687,6 +699,8 @@ def calculate_v2(req: CommercialRequest) -> dict[str, Any]:
         "operating_noi": operating_noi,
         "occupancy": occupancy,
         "rate_metric": rate_metric,
+        "sale_quantity": sale_quantity,
+        "sale_price": sale_price,
         "sale_revenue": sale_revenue,
         "terminal_value": terminal_value,
         "disposition_cost": disposition_cost,
@@ -832,6 +846,7 @@ def calculate_v2(req: CommercialRequest) -> dict[str, Any]:
             "equity_required": equity_required,
             "equity_distributed": equity_distributed,
             "equity_return": equity_distributed - equity_required,
+            "debt_limit": debt_limit,
             "peak_debt": peak_debt,
             "ltc": ltc,
             "exit_ltv": exit_ltv,
@@ -853,6 +868,17 @@ def calculate_v2(req: CommercialRequest) -> dict[str, Any]:
             "development_spend_reconciles": abs(sum(development_spend) - development_cost) < 0.01,
             "ending_debt_zero": abs(debt_balance[-1]) < 0.01,
             "peak_debt_within_limit": peak_debt <= debt_limit + 0.01,
+            "sale_quantity_reconciles": (
+                True if req.strategy != "sale"
+                else abs(
+                    sum(sale_quantity)
+                    - (
+                        max(0.0, _f(values, "saleable_keys"))
+                        if asset == "hotel"
+                        else max(0.0, _f(values, "saleable_area_sqm"))
+                    )
+                ) < 0.0001
+            ),
             "project_cashflow_reconciles": abs(
                 sum(project_cashflow)
                 - (
