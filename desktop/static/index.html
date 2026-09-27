@@ -44,6 +44,7 @@
       <button data-tab="references">База данных</button>
       <button data-tab="history">История расчётов</button>
     </nav>
+    <nav id="economicsTabs" class="result-tabs" aria-label="Тип экономики" hidden><button id="resEconomicsTab" class="active">Жилая экономика</button><button id="commercialEconomicsTab">Нежилая экономика β</button></nav>
     <nav id="resultTabs" class="result-tabs" aria-label="Разделы результата" hidden><button data-tab="result">Отчёт</button><button data-tab="cashflow">Денежный поток</button></nav>
     <section id="inputs" class="view">
       <div class="input-layout">
@@ -52,6 +53,34 @@
           <p id="blockHint" class="muted"></p><div id="fields"></div>
           <div class="step-actions"><button id="previousStep">Назад</button><button id="nextStep">Далее →</button></div>
         </div>
+      </div>
+    </section>
+    <section id="commercial" class="view" hidden>
+      <div class="panel commercial-head">
+        <div class="panel-heading"><div><span class="eyebrow">НЕЖИЛАЯ ЭКОНОМИКА · BETA</span><h2>Офис / торговля / гостиница</h2></div><span class="local-badge">Без эскроу</span></div>
+        <div class="commercial-selectors">
+          <label>Тип объекта<select id="commercialAsset"></select></label>
+          <label>Модель реализации<select id="commercialStrategy"></select></label>
+          <label>Финансирование<select id="commercialFinancing"></select></label>
+        </div>
+        <p id="commercialNote" class="muted"></p>
+      </div>
+      <div class="commercial-layout">
+        <div class="panel">
+          <div class="panel-heading"><div><span class="eyebrow">ДОПУЩЕНИЯ</span><h2 id="commercialInputsTitle">Параметры проекта</h2></div></div>
+          <div id="commercialFields" class="commercial-fields"></div>
+          <div class="step-actions"><span id="commercialStatus" class="muted">Тестовый контур нежилой экономики.</span><button id="commercialCalculate" class="primary">Рассчитать β</button></div>
+        </div>
+        <div class="panel">
+          <div class="panel-heading"><div><span class="eyebrow">СТРУКТУРА</span><h2>Логика расчёта</h2></div></div>
+          <div id="commercialSummary" class="commercial-summary"></div>
+        </div>
+      </div>
+      <section id="commercialMetrics" class="metrics commercial-metrics"></section>
+      <div class="panel commercial-report-panel">
+        <div class="panel-heading"><div><span class="eyebrow">РЕЗУЛЬТАТ BETA</span><h2>Показатели нежилого проекта</h2></div></div>
+        <div id="commercialReport" class="commercial-report"></div>
+        <div id="commercialWarnings"></div>
       </div>
     </section>
     <section id="result" class="view" hidden>
