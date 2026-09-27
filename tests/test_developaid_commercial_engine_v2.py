@@ -49,15 +49,19 @@ def test_office_lease_up_and_growth_change_monthly_economics():
     assert result["monthly"]["operating_noi"][stabilized] > result["monthly"]["operating_noi"][first]
 
 
-def test_retail_uses_segment_mix_and_exposes_base_and_turnover_rent():
-    result = calc("retail", financing="equity")
-    operating = result["operating"]
-    assert operating["tenant_segments"]
-    assert sum(row["area"] for row in operating["tenant_segments"]) == pytest.approx(
-        result["inputs"]["income_area_sqm"], rel=1e-9
+def test_retail_default_uses_the_scalar_web_inputs():
+    base = calc("retail", financing="equity")
+    higher_rent = calc(
+        "retail", financing="equity",
+        rent_rub_sqm_month=base["inputs"]["rent_rub_sqm_month"] * 1.25,
     )
-    assert operating["base_rent"] > 0
-    assert operating["turnover_rent"] > 0
+    higher_sales = calc(
+        "retail", financing="equity",
+        sales_rub_sqm_month=base["inputs"]["sales_rub_sqm_month"] * 1.25,
+    )
+    assert base["operating"]["tenant_segments"] == []
+    assert higher_rent["operating"]["base_rent"] > base["operating"]["base_rent"]
+    assert higher_sales["operating"]["turnover_rent"] > base["operating"]["turnover_rent"]
 
 
 def test_retail_custom_mix_is_normalized_but_warned():
@@ -154,3 +158,123 @@ def test_annual_summary_reconciles_to_monthly_cashflow():
     result = calc("retail", financing="equity")
     annual_cf = sum(row["project_cashflow"] for row in result["annual"])
     assert annual_cf == pytest.approx(sum(result["monthly"]["project_cashflow"]), abs=0.01)
+
+
+def test_custom_retail_mix_is_actually_segmented():
+    result = calc(
+        "retail",
+        financing="equity",
+        tenant_mix=[
+            {
+                "name": "Anchor",
+                "share_pct": 30,
+                "base_rent_rub_sqm_month": 1800,
+                "sales_rub_sqm_month": 35000,
+                "turnover_rent_pct": 6,
+                "occupancy_pct": 96,
+            },
+            {
+                "name": "Inline",
+                "share_pct": 70,
+                "base_rent_rub_sqm_month": 5200,
+                "sales_rub_sqm_month": 70000,
+                "turnover_rent_pct": 8,
+                "occupancy_pct": 95,
+            },
+        ],
+    )
+    operating = result["operating"]
+    assert len(operating["tenant_segments"]) == 2
+    assert sum(row["area"] for row in operating["tenant_segments"]) == pytest.approx(
+        result["inputs"]["income_area_sqm"], rel=1e-9
+    )
+
+
+def test_office_stabilized_noi_matches_manual_formula_without_growth_or_lease_cost():
+    result = calc(
+        "office",
+        financing="equity",
+        income_area_sqm=10000,
+        rent_rub_sqm_month=5000,
+        opening_occupancy_pct=100,
+        occupancy_pct=100,
+        stabilization_months=1,
+        rent_growth_pct=0,
+        other_income_pct=0,
+        opex_pct=20,
+        leasing_cost_pct=0,
+    )
+    expected = 10000 * 5000 * 12 * 0.80
+    assert result["kpi"]["stabilized_noi_annual"] == pytest.approx(expected, rel=1e-9)
+
+
+def test_hotel_stabilized_noi_matches_manual_formula():
+    result = calc(
+        "hotel",
+        financing="equity",
+        keys=100,
+        adr_rub=10000,
+        opening_occupancy_pct=70,
+        occupancy_pct=70,
+        stabilization_months=1,
+        adr_growth_pct=0,
+        other_revenue_pct=20,
+        opex_pct=50,
+        management_fee_pct=3,
+        ffe_reserve_pct=2,
+    )
+    revenue = 100 * 10000 * 365 * 0.70 * 1.20
+    expected_noi = revenue * (1 - 0.50 - 0.03 - 0.02)
+    assert result["kpi"]["stabilized_noi_annual"] == pytest.approx(expected_noi, rel=1e-9)
+
+
+def test_exit_cost_reduces_cash_but_not_gross_exit_valuation():
+    no_cost = calc("office", financing="equity", exit_cost_pct=0)
+    with_cost = calc("office", financing="equity", exit_cost_pct=2)
+    assert with_cost["kpi"]["exit_value"] == pytest.approx(no_cost["kpi"]["exit_value"])
+    assert with_cost["kpi"]["exit_cost"] == pytest.approx(
+        with_cost["kpi"]["exit_value"] * 0.02
+    )
+    assert with_cost["kpi"]["net_exit_proceeds"] < with_cost["kpi"]["exit_value"]
+    assert sum(with_cost["monthly"]["project_cashflow"]) < sum(no_cost["monthly"]["project_cashflow"])
+
+
+def test_peak_debt_tracks_balance_before_same_month_sale_repayment():
+    result = calc(
+        "office",
+        strategy="sale",
+        financing="equity_debt",
+        land_cost_rub=1000,
+        gross_area_sqm=0,
+        construction_cost_rub_sqm=0,
+        soft_cost_pct=0,
+        contingency_pct=0,
+        construction_months=1,
+        sale_start_month=0,
+        sale_months=1,
+        saleable_area_sqm=1,
+        sale_price_rub_sqm=10000,
+        selling_cost_pct=0,
+        debt_share_pct=60,
+        debt_rate_pct=0,
+        loan_fee_pct=0,
+        sales_cash_sweep_pct=100,
+    )
+    assert result["kpi"]["peak_debt"] == pytest.approx(600.0)
+    assert result["monthly"]["debt_balance"][0] == 0
+    assert result["checks"]["peak_debt_within_limit"] is True
+
+
+def test_equity_only_project_and_equity_cashflows_are_identical():
+    result = calc("office", financing="equity", loan_fee_pct=0, debt_rate_pct=0)
+    assert result["monthly"]["equity_cashflow"] == pytest.approx(
+        result["monthly"]["project_cashflow"], abs=0.01
+    )
+    assert result["kpi"]["equity_irr"] == pytest.approx(result["kpi"]["project_irr"], rel=1e-9)
+
+
+def test_npv_hurdles_are_calculated_and_reconcile_checks_pass():
+    result = calc("office", financing="equity_debt")
+    assert isinstance(result["kpi"]["project_npv"], float)
+    assert isinstance(result["kpi"]["equity_npv"], float)
+    assert result["checks"]["project_cashflow_reconciles"] is True
