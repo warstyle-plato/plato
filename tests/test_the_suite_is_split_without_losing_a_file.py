@@ -39,7 +39,7 @@ BUILD = WORKFLOWS / "build-yandex.yml"
 RUNNER = ROOT / "scripts" / "run_tests.sh"
 
 
-@pytest.mark.parametrize("shards", [1, 2, 3, 4, 7, 12])
+@pytest.mark.parametrize("shards", [1, 2, 3, 4, 6, 7, 12])
 def test_the_union_of_shards_is_the_whole_suite(shards: int) -> None:
     """Ни один файл не потерян и ни один не посчитан дважды."""
     buckets = test_shards.plan(shards)

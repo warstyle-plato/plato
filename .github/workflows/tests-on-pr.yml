@@ -70,7 +70,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -111,7 +111,7 @@ jobs:
           REQUIRE_BROWSER: "1"
         run: bash scripts/run_tests.sh
 
-  # Долей четыре, и «N passed» стало четырьмя строками. Не запустившаяся доля
+  # Долей шесть, и «N passed» стало шестью строками. Не запустившаяся доля
   # снаружи неотличима от зелёной, поэтому вердикт один и он здесь: красный,
   # пока хоть одна доля не сказала «success».
   verdict:
