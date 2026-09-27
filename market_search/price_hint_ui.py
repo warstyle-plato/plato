@@ -145,7 +145,9 @@ dialog::backdrop{background:rgba(20,30,40,.34)}
     var rows=chosen(), base=median(rows.map(function(p){return p.price_per_sqm}));
     var known=rows.filter(function(p){return p.calendar_progress!==null&&p.calendar_progress!==undefined});
     var ready=median(known.map(function(p){return p.ready_equivalent_price}));
-    var target=Number(document.getElementById('targetStage').value||0);
+    var stageSelect=document.getElementById('targetStage');
+    stageSelect.disabled=!known.length;
+    var target=Number(stageSelect.value||0);
     var start=(data.stage_model&&data.stage_model.start_factor)||0.8;
     var adjusted=ready===null?null:Math.round(ready*factor(target,start));
     document.getElementById('picked').textContent='учитывается '+rows.length+' из '+(data.projects||[]).filter(function(p){return p.eligible!==false}).length;
@@ -155,10 +157,12 @@ dialog::backdrop{background:rgba(20,30,40,.34)}
       +'<div class="muted">'+known.length+' аналог. со стадией</div></div>';
     document.getElementById('recalc').innerHTML=html;
     var note=document.getElementById('stageNote');
+    note.style.display='block';
     if(known.length){
-      note.style.display='block';
       note.textContent='Поправка использует календарное положение между стартом продаж и плановым вводом. Это прокси стадии реализации, а не измеренный процент физической готовности.';
-    }else{note.style.display='none'}
+    }else{
+      note.textContent='Поправка по стадии пока недоступна: ни у одного выбранного аналога нет одновременно старта продаж и планового ввода.';
+    }
   }
 
   function fact(label,value){return '<div class="fact"><small>'+esc(label)+'</small><b>'+esc(value===null||value===undefined||value===''?'—':value)+'</b></div>'}
@@ -168,7 +172,7 @@ dialog::backdrop{background:rgba(20,30,40,.34)}
     var html='<div class="muted">'+esc(p.address||'')+(p.developer?' · '+esc(p.developer):'')+'</div><div class="grid">'
       +fact('Цена',num(p.price_per_sqm)+' ₽/м²')+fact('Расстояние',num(p.distance_km,2)+' км')
       +fact('Класс',p.segment||'—')+fact('Старт продаж',date(p.sales_start))
-      +fact('Плановый ввод',date(p.commissioning))+fact('Календарная стадия',p.stage_label?String(p.stage_label)+' · '+num(p.calendar_progress_pct,0)+'%':'—')
+      +fact('Плановый ввод',date(p.commissioning))+fact('Источник дат',p.date_source||'—')+fact('Календарная стадия',p.stage_label?String(p.stage_label)+' · '+num(p.calendar_progress_pct,0)+'%':'—')
       +fact('Продано, посл. месяц',s.sold!==undefined?num(s.sold):'—')+fact('Остаток',s.rem!==undefined?num(s.rem):'—')
       +fact('Цена сделки ДДУ',s.ddu!==undefined?num(s.ddu)+' ₽/м²':'—')+fact('Скидка к прайсу',s.disc!==undefined?num(s.disc,1)+'%':'—')
       +fact('Ипотека',s.mortgage!==undefined?num(s.mortgage,1)+'%':'—')+fact('Юрлица',s.legal!==undefined?num(s.legal,1)+'%':'—')
