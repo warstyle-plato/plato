@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 import certifi
 
-from desktop import commercial, site
+from desktop import site
 
 import developaid_v2_form
 import developaid_v2_result
@@ -138,23 +138,12 @@ def create_app(core: Any, store: Store, token: str, origin: str) -> FastAPI:
     @app.get("/api/bootstrap")
     def bootstrap():
         return {"engine_version": core.VERSION,
-                "desktop_version": "0.3-beta",
+                "desktop_version": "0.2",
                 "form": {**developaid_v2_form.form_description(core),
                          "blocks": [{"key": "site", "kind": "site", "title": "Участок",
                                      "hint": "Найдите участок по кадастровому номеру или адресу. Для поиска нужен интернет."},
                                     *developaid_v2_form.form_description(core)["blocks"]]},
                 "references": store.pack(), "projects": store.projects()}
-
-    @app.get("/api/commercial/form")
-    def commercial_form():
-        return commercial.form_description()
-
-    @app.post("/api/commercial/calculate")
-    def commercial_calculate(req: commercial.CommercialRequest):
-        try:
-            return commercial.calculate(req)
-        except (TypeError, ValueError, KeyError) as exc:
-            raise HTTPException(400, str(exc)) from exc
 
     @app.get("/api/references")
     def references():
