@@ -42352,6 +42352,13 @@ details.cadastral-box>summary::marker{color:#888}
 .phase-comparison-card tr.pc-block th{text-align:left;padding:16px 0 5px;font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#111;border-bottom:2px solid #111}
 .phase-comparison-card tr.pc-part td:first-child,.phase-comparison-card tr.pc-sub td:first-child{padding-left:22px;color:#777}
 .phase-comparison-card tr.pc-total td{font-weight:750;color:#111;border-top:1.5px solid #111}
+/* На телефоне таблица шире экрана: числа не переносятся (единица рвалась —
+   «917,9 тыс ₽/м» без «²»), таблица прокручивается вбок, а колонка подписей
+   стоит на месте — иначе на «Своде» не видно, чья это строка. */
+.phase-comparison-card td:not(:first-child),.phase-comparison-card th:not(:first-child){white-space:nowrap}
+.phase-comparison-card thead th:first-child,.phase-comparison-card tbody td:first-child{position:sticky;left:0;z-index:1;background:#fff}
+.phase-comparison-card tr.pc-block th span{position:sticky;left:0}
+@media(max-width:600px){.phase-comparison-card thead th:first-child,.phase-comparison-card tbody td:first-child{min-width:128px;max-width:150px;box-shadow:1px 0 0 #e5e5e5}}
 .phase-status{font-size:11px;color:#666;margin-top:8px}
 .object-actions{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
 #phasing:not(.phasing-on) .phase-config-only{display:none}
@@ -50805,19 +50812,6 @@ function renderPhaseComparison(){
   ['costs','Затраты',[
    ['CAPEX',c.map(x=>money(x.capex)),money(cs.capex)],
    ['Полные расходы',c.map(x=>money(x.total_expenses)),money(cs.total_expenses)],
-  ]],
-  ['unit','Удельные показатели',[
-   // Удельный подписан своим делителем, и делитель стоит строкой над ним:
-   // те же числа, на которые делит движок (`monetizable_saleable_sqm`,
-   // `project_gns_sqm`), а не площадь, угаданная по заголовку.
-   ['Делитель «на м² продаваемой» — продаваемая площадь',c.map(x=>num(x.saleable_sqm)+' м²'),num(csSale)+' м²'],
-   ['Делитель «на м² ГНС» — ГНС наземная',c.map(x=>num(x.gns_sqm)+' м²'),num(csGns)+' м²'],
-   ['Цена реализации на м² продаваемой',c.map(x=>num2(x.revenue_per_saleable_th)+' тыс ₽/м²'),perTh(cs.revenue,csSale)],
-   ['Цена реализации на м² ГНС',c.map(x=>num2(x.revenue_per_gns_th)+' тыс ₽/м²'),perTh(cs.revenue,csGns)],
-   ['CAPEX на м² ГНС',c.map(x=>num2(x.capex_per_gns_th)+' тыс ₽/м²'),perTh(cs.capex,csGns)],
-   ['Полные расходы на м² продаваемой',c.map(x=>num2(x.expenses_per_saleable_th)+' тыс ₽/м²'),perTh(cs.total_expenses,csSale)],
-   ['Полные расходы на м² ГНС',c.map(x=>num2(x.expenses_per_gns_th)+' тыс ₽/м²'),perTh(cs.total_expenses,csGns)],
-   ['Чистая прибыль на м² продаваемой',c.map(x=>num2(x.net_profit_per_saleable_th)+' тыс ₽/м²'),perTh(cs.net_profit,csSale)],
    // Цена метра очереди по общепроектным статьям — из движка: заданная руками
    // доля видна здесь числом, а не только процентом в редакторе.
    ...[['ird','ИРД и согласования'],['design','Проектирование П+РД'],['preparation','Подготовительные работы'],['utilities','Наружные сети']].map(([k,l])=>{
@@ -50855,12 +50849,29 @@ function renderPhaseComparison(){
    ['Аллоцированные общие расходы',c.map(x=>money(x.allocated_shared_cost)),'—'],
    ['Аналитическая прибыль после аллокации',c.map(x=>money(x.allocated_net_profit)),'—'],
   ]],
+  // Порядок — как в отчёте о прибылях: объёмы → выручка → расходы →
+  // финансирование → прибыль, и удельные ПОСЛЕ них: метр делит уже
+  // посчитанные итоги, и последняя строка таблицы — прибыль на метр
+  // (владелец, 27.09.2026).
+  ['unit','Удельные показатели',[
+   // Удельный подписан своим делителем, и делитель стоит строкой над ним:
+   // те же числа, на которые делит движок (`monetizable_saleable_sqm`,
+   // `project_gns_sqm`), а не площадь, угаданная по заголовку.
+   ['Делитель «на м² продаваемой» — продаваемая площадь',c.map(x=>num(x.saleable_sqm)+' м²'),num(csSale)+' м²'],
+   ['Делитель «на м² ГНС» — ГНС наземная',c.map(x=>num(x.gns_sqm)+' м²'),num(csGns)+' м²'],
+   ['Цена реализации на м² продаваемой',c.map(x=>num2(x.revenue_per_saleable_th)+' тыс ₽/м²'),perTh(cs.revenue,csSale)],
+   ['Цена реализации на м² ГНС',c.map(x=>num2(x.revenue_per_gns_th)+' тыс ₽/м²'),perTh(cs.revenue,csGns)],
+   ['CAPEX на м² ГНС',c.map(x=>num2(x.capex_per_gns_th)+' тыс ₽/м²'),perTh(cs.capex,csGns)],
+   ['Полные расходы на м² продаваемой',c.map(x=>num2(x.expenses_per_saleable_th)+' тыс ₽/м²'),perTh(cs.total_expenses,csSale)],
+   ['Полные расходы на м² ГНС',c.map(x=>num2(x.expenses_per_gns_th)+' тыс ₽/м²'),perTh(cs.total_expenses,csGns)],
+   ['Чистая прибыль на м² продаваемой',c.map(x=>num2(x.net_profit_per_saleable_th)+' тыс ₽/м²'),perTh(cs.net_profit,csSale)],
+  ]],
  ];
  // Сырые числа итогов и слагаемых уходят в разметку (`data-v`): проверка
  // сверяет итог с суммой слагаемых по ним, а не по округлённому тексту.
  const td=(v,raw)=>`<td${raw!=null?` data-v="${raw}"`:''}>${v}</td>`;
  phaseComparisonBody.innerHTML=blocks.filter(b=>b[2].length).map(([key,title,list])=>
-  `<tr class="pc-block" data-block="${key}"><th colspan="${c.length+2}">${title}</th></tr>`+
+  `<tr class="pc-block" data-block="${key}"><th colspan="${c.length+2}"><span>${title}</span></th></tr>`+
   list.map(([l,cells,tot,role,group,vals])=>
    `<tr data-block="${key}"${role?` class="pc-${role}"`:''}${group?` data-group="${group}"`:''}><td>${l}</td>`+
    cells.map((v,i)=>td(v,vals&&vals[i])).join('')+td(tot,vals&&vals[cells.length])+'</tr>').join('')

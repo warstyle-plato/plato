@@ -35,7 +35,10 @@ from test_object_parking_reaches_the_queue import _phased  # noqa: E402
 
 PORT = 18934
 
-BLOCKS = ["mkd", "osz", "revenue", "costs", "unit", "finance", "result"]
+# Порядок отчёта о прибылях: объёмы → выручка → расходы → финансирование →
+# прибыль, удельные — после них (владелец, 27.09.2026).
+BLOCKS = ["mkd", "osz", "revenue", "costs", "finance", "result", "unit"]
+LAST_ROW = "Чистая прибыль на м² продаваемой"
 
 
 @pytest.fixture(scope="module")
@@ -90,6 +93,20 @@ def test_every_row_sits_in_a_titled_block_in_order(rows) -> None:
         assert r["block"] and r["block"] == current, r
 
 
+def test_unit_block_follows_finance_and_profit_per_metre_closes_the_table(rows) -> None:
+    heads = [r["block"] for r in rows if r["cls"] == "pc-block"]
+    assert heads.index("unit") > heads.index("finance"), heads
+    assert heads.index("unit") > heads.index("result"), heads
+    assert rows[-1]["label"] == LAST_ROW, rows[-1]["label"]
+    assert rows[-1]["block"] == "unit"
+
+
+def test_article_rates_sit_with_the_costs(rows) -> None:
+    rates = [r for r in rows if "цена м² МКД очереди" in r["label"]]
+    assert len(rates) == 4, [r["label"] for r in rates]
+    assert {r["block"] for r in rates} == {"costs"}
+
+
 def _block_of(rows, text: str) -> str:
     found = [r["block"] for r in rows if r["cls"] != "pc-block" and r["label"].startswith(text)]
     assert found, f"строки «{text}» в таблице нет"
@@ -140,10 +157,7 @@ def test_totals_are_marked_and_equal_the_sum_of_their_parts(rows) -> None:
         assert idx[label] > last, label
 
 
-@pytest.mark.timeout(300)
-def test_totals_look_like_totals_on_the_rendered_page(bundle) -> None:
-    chrome = chromium_or_skip()
-    from playwright.sync_api import sync_playwright
+def _server():
     import uvicorn
 
     server = uvicorn.Server(uvicorn.Config(core.app, host="127.0.0.1", port=PORT,
@@ -154,29 +168,90 @@ def test_totals_look_like_totals_on_the_rendered_page(bundle) -> None:
             break
         time.sleep(0.05)
     assert server.started
-    try:
-        with sync_playwright() as pw:
-            browser = pw.chromium.launch(executable_path=str(chrome))
-            page = browser.new_page(viewport={"width": 1300, "height": 900})
-            errors: list[str] = []
-            page.on("pageerror", lambda exc: errors.append(str(exc)))
-            page.goto(f"http://127.0.0.1:{PORT}/", wait_until="domcontentloaded")
-            page.wait_for_function("typeof renderPhaseComparison==='function'")
-            page.evaluate(
-                "b=>{phaseBundle=b;let n=document.getElementById('phaseComparisonCard');"
-                "while(n){if(n.style)n.style.display='block';n=n.parentElement}"
-                "renderPhaseComparison()}", bundle)
-            got = page.evaluate("""()=>[...document.querySelectorAll('#phaseComparisonBody tr')]
-              .filter(t=>!t.classList.contains('pc-block')).map(t=>{
-                const c=t.cells[0],s=getComputedStyle(c),n=getComputedStyle(t.cells[1]);
-                return {label:c.innerText.trim(),cls:t.className,visible:t.offsetHeight>0,
-                  weight:+n.fontWeight,border:parseFloat(n.borderTopWidth),
-                  indent:parseFloat(s.paddingLeft)}})""")
-            heads = page.evaluate("""()=>[...document.querySelectorAll(
-              '#phaseComparisonBody tr.pc-block')].map(t=>t.offsetHeight>0&&t.innerText.trim())""")
-            browser.close()
-    finally:
-        server.should_exit = True
+    return server
+
+
+def _open(pw, chrome, bundle, width: int):
+    """Живая страница с таблицей сравнения на пакете очередей."""
+    browser = pw.chromium.launch(executable_path=str(chrome))
+    page = browser.new_page(viewport={"width": width, "height": 900})
+    errors: list[str] = []
+    page.on("pageerror", lambda exc: errors.append(str(exc)))
+    page.goto(f"http://127.0.0.1:{PORT}/", wait_until="domcontentloaded")
+    page.wait_for_function("typeof renderPhaseComparison==='function'")
+    page.evaluate(
+        "b=>{phaseBundle=b;let n=document.getElementById('phaseComparisonCard');"
+        "while(n){if(n.style)n.style.display='block';n=n.parentElement}"
+        "renderPhaseComparison()}", bundle)
+    return browser, page, errors
+
+
+@pytest.fixture(scope="module")
+def server():
+    chromium_or_skip()
+    srv = _server()
+    yield srv
+    srv.should_exit = True
+
+
+# Число, разорванное переносом («917,9 тыс ₽/м» и «²» строкой ниже), и
+# колонка подписей, уехавшая при прокрутке, — то, что видел владелец на
+# телефоне. Меряется на отрисованной странице, а не по CSS в исходнике.
+_LAYOUT = """()=>{
+  const wrap=document.querySelector('#phaseComparisonCard .scroll');
+  const rows=[...document.querySelectorAll('#phaseComparisonBody tr:not(.pc-block)')];
+  const lines=el=>{const r=document.createRange();r.selectNodeContents(el);
+    return new Set([...r.getClientRects()].filter(x=>x.width>0).map(x=>Math.round(x.top))).size};
+  const broken=[];
+  rows.forEach(t=>[...t.cells].slice(1).forEach(td=>{if(lines(td)>1)broken.push(td.innerText)}));
+  wrap.scrollLeft=wrap.scrollWidth;
+  const w=wrap.getBoundingClientRect(),row=rows[rows.length-1];
+  const first=row.cells[0].getBoundingClientRect(),last=row.cells[row.cells.length-1].getBoundingClientRect();
+  const res={broken:broken.slice(0,5),scrolls:wrap.scrollWidth>wrap.clientWidth,
+    firstLeft:first.left-w.left,lastRight:w.right-last.right,
+    lastText:row.cells[0].innerText.trim(),order:[...document.querySelectorAll(
+      '#phaseComparisonBody tr.pc-block')].map(t=>t.dataset.block)};
+  wrap.scrollLeft=0;return res}"""
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize("width", [1300, 390])
+def test_the_table_reads_on_desktop_and_phone(bundle, server, width) -> None:
+    from playwright.sync_api import sync_playwright
+
+    chrome = chromium_or_skip()
+    with sync_playwright() as pw:
+        browser, page, errors = _open(pw, chrome, bundle, width)
+        got = page.evaluate(_LAYOUT)
+        browser.close()
+    assert not errors, errors
+    assert got["order"] == BLOCKS, got["order"]
+    assert got["lastText"] == LAST_ROW, got["lastText"]
+    assert not got["broken"], f"число разорвано переносом на {width}px: {got['broken']}"
+    # Прокрученная до конца таблица показывает «Свод» целиком, а подпись
+    # строки стоит у левого края.
+    assert got["lastRight"] >= -1, got
+    assert abs(got["firstLeft"]) <= 1, got
+    if width == 390:
+        assert got["scrolls"], "на телефоне таблица обязана прокручиваться вбок"
+
+
+@pytest.mark.timeout(300)
+def test_totals_look_like_totals_on_the_rendered_page(bundle, server) -> None:
+    from playwright.sync_api import sync_playwright
+
+    chrome = chromium_or_skip()
+    with sync_playwright() as pw:
+        browser, page, errors = _open(pw, chrome, bundle, 1300)
+        got = page.evaluate("""()=>[...document.querySelectorAll('#phaseComparisonBody tr')]
+          .filter(t=>!t.classList.contains('pc-block')).map(t=>{
+            const c=t.cells[0],s=getComputedStyle(c),n=getComputedStyle(t.cells[1]);
+            return {label:c.innerText.trim(),cls:t.className,visible:t.offsetHeight>0,
+              weight:+n.fontWeight,border:parseFloat(n.borderTopWidth),
+              indent:parseFloat(s.paddingLeft)}})""")
+        heads = page.evaluate("""()=>[...document.querySelectorAll(
+          '#phaseComparisonBody tr.pc-block')].map(t=>t.offsetHeight>0&&t.innerText.trim())""")
+        browser.close()
     assert not errors, errors
     assert len(heads) == len(BLOCKS) and all(heads), heads
     assert all(r["visible"] for r in got)
