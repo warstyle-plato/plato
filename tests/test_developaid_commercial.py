@@ -37,7 +37,8 @@ def test_sale_strategy_is_direct_cash_without_terminal_value():
     ))
     assert sum(result["monthly"]["sale_revenue"]) > 0
     assert sum(result["monthly"]["terminal_value"]) == 0
-    assert result["report"]["sections"][-1]["metrics"]["Эскроу, ₽"] == 0
+    sales = next(section for section in result["report"]["sections"] if section["name"] == "Продажи")
+    assert sales["metrics"]["Эскроу, ₽"] == 0
 
 
 def test_hotel_income_exposes_hotel_kpis():
