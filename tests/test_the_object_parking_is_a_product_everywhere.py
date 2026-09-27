@@ -185,3 +185,16 @@ def test_the_report_splits_the_object_money_between_its_metres_and_places() -> N
                      * _inputs()["offices_cost_th_per_sqm"] * 1000)
     garage = 1000 * core.OBJECT_PARKING_AREA_DEFAULT * core.DEFAULT_INPUTS["main_under_th_per_sqm"] * 1000
     assert products["object_parking"]["cost"] == pytest.approx(garage + over_building, rel=1e-9)
+
+
+def test_the_input_tep_puts_the_object_parking_on_its_own_row() -> None:
+    """ТЭП на вводных: места объекта — подстрока, а не приписка к его имени.
+
+    Приём из PR #506; текст подстроки — тот же `objectParkingNote`, что был
+    подписью, второго описания мест нет.
+    """
+    body = page_blocks.function("renderTep")
+    assert "objectParkingNote(key)" in body
+    assert "↳ Паркинг объекта" in body
+    # Приписки к имени больше нет — иначе одно и то же стояло бы дважды.
+    assert "label+=` <span style=\"display:block;font-size:10px;color:#777;margin-top:3px\">${escapeHtml(parkNote)}" not in body

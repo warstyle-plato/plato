@@ -48372,12 +48372,10 @@ function renderTep(){
      const note=apartmentUnitsNote();
      if(note)label+=` <span class="tep-note">${escapeHtml(note)}</span>`;
    }
-   // Паркинг объекта строится, стоит денег и продаётся, а в строке его не было
-   // видно вовсе: посчитанное и не показанное неотличимо от непосчитанного.
-   // Своей колонки ему не заводим — таблица и так плотная, и лишние колонки
-   // владелец отклонял; подпись под строкой здесь уже штатный приём.
+   // Паркинг объекта — своя подстрока под строкой объекта (ниже), а не
+   // приписка к его имени: подписью под «Офисами» места читались деталью
+   // офиса, а не продуктом, и их не находили (владелец, 24.09.2026).
    const parkNote=objectParkingNote(key);
-   if(parkNote)label+=` <span style="display:block;font-size:10px;color:#777;margin-top:3px">${escapeHtml(parkNote)}</span>`;
    // Какое из двух чисел чьё — иначе вписанное «по решению КРТ» молча
    // становится не тем: решение задаёт площадь В ГАБАРИТАХ НАРУЖНЫХ СТЕН, то
    // есть наземную, а поле во вводных называется общей.
@@ -48462,6 +48460,17 @@ function renderTep(){
      // и запертая ячейка теряла бы серый фон. Стиль собирается один.
      html+=`<td style="vertical-align:top"><input type="number" step="0.1" value="${inputDisplay(row[col])}" style="margin:0${locked?';background:#f3f3f1;color:#555':''}" ${locked?'readonly':''} onchange="tepCellChanged('${key}','${col}',this.value)">${locked?'':ratioField(col)}</td>`;
    });tr.innerHTML=html;body.appendChild(tr);
+   // Своей колонки паркингу не заводим — таблица плотная, и лишние колонки
+   // владелец отклонял; подстрока на всю ширину. Текст — тот же
+   // `objectParkingNote`, что был подписью: второго описания мест нет.
+   // Приём взят из PR #506 (Codex), текст — из единственного источника.
+   if(parkNote){
+    const park=document.createElement('tr');
+    park.className='tep-park';
+    park.innerHTML=`<td style="padding-left:14px;color:#555">↳ Паркинг объекта</td>`
+     +`<td colspan="6" style="font-size:11px;color:#555;text-align:left">${escapeHtml(parkNote)}</td>`;
+    body.appendChild(park);
+   }
   });
   // Подытог раздела — только когда продуктов в нём больше одного: под
   // единственной строкой это она же во второй раз (правило «Итого МКД»).
