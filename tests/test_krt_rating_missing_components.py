@@ -27,6 +27,14 @@ def test_zero_or_negative_benchmark_is_not_a_valid_denominator() -> None:
 
 
 def test_moscow_absorption_benchmark_ignores_zero_months(tmp_path: Path) -> None:
+    """Ноль в динамике — не месяц темпа, и в среднее он не входит.
+
+    Мера эталона — СРЕДНИЙ месячный темп проекта за окно, поэтому фикстура
+    стала годовой: у месячного среза порог месяцев с продажами не проверить, а
+    без порога проект с одной сделкой за год говорил бы за класс.
+    """
+    months = [f"2025-{month:02d}" for month in range(9, 13)] + [
+        f"2026-{month:02d}" for month in range(1, 9)]
     (tmp_path / "moscow-market-2026-08.json").write_text(
         json.dumps({
             "last_month": "2026-08",
@@ -35,15 +43,20 @@ def test_moscow_absorption_benchmark_ignores_zero_months(tmp_path: Path) -> None
         }, ensure_ascii=False),
         encoding="utf-8",
     )
+    # У «one» и «two» продажи в трёх месяцах из двенадцати — ровно порог; нули
+    # между ними в среднее не входят, поэтому средние равны 100 и 200.
     (tmp_path / "moscow-dynamics-2026-08.json").write_text(
         json.dumps({
             "last_month": "2026-08",
-            "months": ["2026-08"],
+            "months": months,
             "source": "test",
             "projects": {
-                "silent": {"segment": "Бизнес", "area": [0]},
-                "one": {"segment": "Бизнес", "area": [100]},
-                "two": {"segment": "Бизнес", "area": [200]},
+                "silent": {"segment": "Бизнес", "area": [0] * 12},
+                "one": {"segment": "Бизнес", "area": [0] * 9 + [100, 100, 100]},
+                "two": {"segment": "Бизнес", "area": [0] * 9 + [200, 200, 200]},
+                # Один месяц продаж за год — случай, а не темп: порог его
+                # отсекает целиком, иначе он тянул бы медиану класса.
+                "once": {"segment": "Бизнес", "area": [0] * 11 + [9000]},
             },
         }, ensure_ascii=False),
         encoding="utf-8",
@@ -52,6 +65,8 @@ def test_moscow_absorption_benchmark_ignores_zero_months(tmp_path: Path) -> None
     city = MoscowMarket.bundled(tmp_path)
 
     assert city.area_median("Бизнес") == 150.0
+    assert city.payload["_area_median_projects"]["Бизнес"] == 2, (
+        "проект с одним месяцем продаж попал в выборку класса")
 
 
 def test_card_exposes_the_real_burden_failure_reason() -> None:
