@@ -45,6 +45,10 @@ def test_krt_surrounding_price_uses_the_dedicated_price_hint() -> None:
             "segment": "премиум",
             "price_per_sqm": 620_000,
             "entry_per_sqm": 590_000,
+            # На чём стоит ориентир, говорит сам price_hint. Цена окружения —
+            # только `peers`: медиана округа и медиана класса по Москве
+            # остаются ценой модели, но наблюдением площадки не считаются.
+            "basis": "peers",
         },
     }
 
@@ -54,6 +58,14 @@ def test_krt_surrounding_price_uses_the_dedicated_price_hint() -> None:
     assert start_price == 620_000
     assert market_price == 620_000
     assert "price_hint" in basis
+
+    # Тот же ориентир без трёх свежих соседей: считаем по нему, а ценой
+    # окружения не называем.
+    okrug = {**report, "price_hint": {**report["price_hint"], "basis": "okrug",
+                                      "basis_title": "по округу и классу"}}
+    _segment, model_price, surrounding, okrug_basis = _market_inputs(okrug)
+    assert model_price == 620_000 and surrounding == 0.0
+    assert "по округу и классу" in okrug_basis
 
 
 def test_krt_screening_uses_market_class_and_authoritative_phasing() -> None:
