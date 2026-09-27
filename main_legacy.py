@@ -986,6 +986,12 @@ class StandaloneObject(NamedTuple):
     # при продаже, а себестоимость — стартовая величина, а не ставка
     # справочника. Это свойство объекта, а не формы, поэтому живёт здесь.
     hints: dict[str, str] = {}
+    # Чей блок шаблона книги объект берёт за образец. В шаблоне ровно три блока
+    # объектов (офисы, ТЦ, наземный паркинг), и у них поле пустое: они сами
+    # образец. Всякий следующий объект дописывается в книгу КОПИЕЙ блока
+    # двойника со сдвигом строк (`_v4_object_layouts`) — формулы методики не
+    # сочиняются заново, а у второго офисника они те же, что у первого.
+    book_twin: str = ""
 
     @property
     def enabled_key(self) -> str:
@@ -1043,6 +1049,7 @@ STANDALONE_OBJECTS: tuple[StandaloneObject, ...] = (
                      defaults={"gba_sqm": 5000, "saleable_sqm": 3500,
                                "cost_th_per_sqm": 150, "price_th_per_sqm": 300},
                      tep_label="ФОК / медцентр", group_label="ФОК / медцентр",
+                     book_twin="standalone_retail",
                      hints={"saleable_sqm": "м²; читается только при продаже — при"
                                             " передаче метры строятся, но не продаются",
                             "cost_th_per_sqm": "тыс. ₽/м² GBA; умолчание — стартовая"
@@ -1339,11 +1346,22 @@ SPORTS_DISPOSITION_TRANSFER = "transfer"
 SPORTS_DISPOSITION_SALE = "sale"
 
 
-def sports_is_sold(inputs: dict[str, Any] | None) -> bool:
-    """Продаётся ли ФОК. Всё остальное — передача городу."""
-    value = str((inputs or {}).get("sports_disposition")
+def object_is_sold(inputs: dict[str, Any] | None, obj: "StandaloneObject") -> bool:
+    """Продаётся ли объект. Без признака — продаётся всегда.
+
+    Признак (`sale_gate`) есть только у объекта, который может уйти городу;
+    отсутствующее значение читается как передача — см. выше.
+    """
+    if not obj.sale_gate:
+        return True
+    value = str((inputs or {}).get(obj.sale_gate)
                 or SPORTS_DISPOSITION_TRANSFER).strip().lower()
     return value == SPORTS_DISPOSITION_SALE
+
+
+def sports_is_sold(inputs: dict[str, Any] | None) -> bool:
+    """Продаётся ли ФОК. Всё остальное — передача городу."""
+    return object_is_sold(inputs, next(o for o in STANDALONE_OBJECTS if o.key == "sports"))
 
 
 # --- Тип проекта: что строим ------------------------------------------------
@@ -17309,6 +17327,126 @@ _V4_TEMPLATE_PATH = Path(__file__).resolve().parent / "templates" / "DevelopAid_
 
 # Ключ движка -> ячейка листа «Вводные». Проценты движок хранит в пунктах
 # (25 = 25%), книга — в долях, пересчёт по суффиксу _pct/_pp.
+# --- где объект живёт в книге ----------------------------------------------
+# Шаблон несёт ТРИ блока отдельно стоящих объектов — офисы, ТЦ и наземный
+# паркинг, — и каждый из них расписан по пяти листам своими строками: блок
+# вводных на «Параметрах модели», блок ОБЪЕКТЫ, строка ТЭП, строка структуры
+# продукта в ОТЧЁТЕ и места гаража. Всякий следующий объект реестра — ФОК,
+# второй офисник, второй ТЦ — дописывается КОПИЕЙ блока своего двойника
+# (`StandaloneObject.book_twin`) в свободный низ листов.
+#
+# Прежде такой объект был один, и его строки стояли числами в десятке мест
+# поимённо: «поставить второй офисник» значило переписать их все ещё раз.
+# Теперь ответ «на какой строке объект» один — эта раскладка, — и всё, что
+# пишет объект в книгу, читает её.
+class _V4ObjectLayout(NamedTuple):
+    obj: "StandaloneObject"
+    twin: str               # ключ блока шаблона, с которого снята копия
+    twin_prefix: str        # приставка вводных двойника
+    input_head: int         # строка заголовка блока вводных
+    input_offset: int       # сдвиг строк вводных относительно двойника
+    object_head: int        # строка заголовка блока листа ОБЪЕКТЫ
+    object_offset: int      # сдвиг строк ОБЪЕКТОВ относительно двойника
+    disposition_row: int    # «что с объектом дальше»; 0 — признака нет
+    residual_row: int       # остаточные продажи после РВЭ
+    parking_under: str      # мест в своём подземном; "" — гаража нет
+    parking_over: str       # мест на первых этажах
+    parking_guest: str      # доля гостевых; "" — места не продаются
+    parking_under_price: str
+    parking_over_price: str
+    tep_row: int            # строка листа ТЭП
+    report_row: int         # строка структуры продукта; 0 — в строке двойника
+
+    @property
+    def extra(self) -> bool:
+        """Объект дописан копией, а не стоит в шаблоне своим блоком."""
+        return bool(self.input_offset or self.object_offset)
+
+
+# Три блока шаблона. Числа сняты с самого шаблона — это его адреса, а не наш
+# выбор, и сдвинуть их нельзя: на них ссылаются десятки тысяч формул.
+_V4_TEMPLATE_OBJECT_LAYOUT = {
+    # ключ: (заголовок вводных, заголовок ОБЪЕКТОВ, остаточные продажи,
+    #        подземный, первые этажи, гостевые, цена под землёй, цена на этаже,
+    #        строка ТЭП, строка структуры продукта)
+    "offices": (18, 6, 36, "K161", "K162", "K167", "K169", "K170", 31, 50),
+    "standalone_retail": (38, 34, 56, "K163", "K164", "", "", "", 32, 51),
+    "above_parking": (58, 62, 76, "", "", "", "", "", 33, 52),
+}
+# Первый дописанный объект сидит там, где его застала книга: вводные с 121-й
+# строки, ОБЪЕКТЫ с 124-й, места — в общем блоке паркинга (165/166), строка
+# ТЭП на месте прежнего итога (34), строка структуры продукта — на 53-й.
+# Следующие встают ниже всего, что есть на листе, каждый через свой шаг.
+_V4_EXTRA_FIRST_SLOT = (121, 124, "K165", "K166", 34, 53)
+_V4_EXTRA_INPUT_HEAD = 172        # вводные второго дописанного объекта
+_V4_EXTRA_INPUT_STRIDE = 28       # блок 25 строк и зазор
+_V4_EXTRA_OBJECT_HEAD = 154       # ОБЪЕКТЫ второго дописанного объекта
+_V4_EXTRA_OBJECT_STRIDE = 30      # блок 28 строк и зазор
+_V4_EXTRA_TEP_HEAD = 46           # заголовок дописанных строк ТЭП — под соцобъектами
+_V4_INPUT_BLOCK_ROWS = 18         # заголовок + шапка + 16 вводных
+
+
+def _v4_object_layouts(
+        objects: "tuple[StandaloneObject, ...] | None" = None,
+) -> tuple[_V4ObjectLayout, ...]:
+    """Раскладка всех объектов реестра по листам книги, в порядке реестра.
+
+    Дописанный объект с неизвестным двойником — ошибка сборки, а не пропуск:
+    объект без блока в книге выглядел бы посчитанным на экране и отсутствовал
+    бы в Excel.
+    """
+    objects = STANDALONE_OBJECTS if objects is None else objects
+    by_key = {o.key: o for o in objects}
+    out: list[_V4ObjectLayout] = []
+    slot = 0
+    for obj in objects:
+        if obj.key in _V4_TEMPLATE_OBJECT_LAYOUT:
+            (head, ohead, residual, under, over, guest, uprice, oprice,
+             tep_row, report_row) = _V4_TEMPLATE_OBJECT_LAYOUT[obj.key]
+            out.append(_V4ObjectLayout(
+                obj, obj.key, obj.prefix, head, 0, ohead, 0, 0, residual,
+                under, over, guest, uprice, oprice, tep_row, report_row))
+            continue
+        twin = obj.book_twin
+        if twin not in _V4_TEMPLATE_OBJECT_LAYOUT or twin not in by_key:
+            raise ValueError(f"объект «{obj.key}»: у книги нет блока-двойника «{twin}»")
+        (twin_head, twin_ohead, *_rest) = _V4_TEMPLATE_OBJECT_LAYOUT[twin]
+        if slot == 0:
+            head, ohead, under, over, tep_row, report_row = _V4_EXTRA_FIRST_SLOT
+        else:
+            head = _V4_EXTRA_INPUT_HEAD + (slot - 1) * _V4_EXTRA_INPUT_STRIDE
+            ohead = _V4_EXTRA_OBJECT_HEAD + (slot - 1) * _V4_EXTRA_OBJECT_STRIDE
+            under, over = f"K{head + 20}", f"K{head + 21}"
+            tep_row, report_row = _V4_EXTRA_TEP_HEAD + slot, 0
+        if not obj.garage:
+            under = over = ""
+        guest = uprice = oprice = ""
+        if obj.garage and obj.garage_sellable:
+            guest, uprice, oprice = (f"K{head + 22}", f"K{head + 23}", f"K{head + 24}")
+        out.append(_V4ObjectLayout(
+            obj, twin, by_key[twin].prefix, head, head - twin_head, ohead,
+            ohead - twin_ohead, head + 18 if obj.sale_gate else 0, head + 19,
+            under, over, guest, uprice, oprice, tep_row, report_row))
+        slot += 1
+    return tuple(out)
+
+
+_V4_OBJECT_LAYOUTS = _v4_object_layouts()
+_V4_EXTRA_OBJECT_LAYOUTS = tuple(lay for lay in _V4_OBJECT_LAYOUTS if lay.extra)
+
+
+def _v4_layout(key: str) -> _V4ObjectLayout:
+    return next(lay for lay in _V4_OBJECT_LAYOUTS if lay.obj.key == key)
+
+
+def _v4_row_shift(coord: str, offset: int) -> str:
+    """«K43» со сдвигом на 83 — «K126»; пустая ячейка остаётся пустой."""
+    if not coord:
+        return coord
+    match = re.match(r"([A-Z]+)(\d+)$", coord)
+    return f"{match.group(1)}{int(match.group(2)) + offset}"
+
+
 _V4_INPUT_CELLS: dict[str, str] = {
     "purchase_price_mln": "B15", "land_rights_cost_mln": "B16",
     "social_compensation_mln": "B17", "marketing_pct": "B19", "selling_pct": "B20",
@@ -17366,8 +17504,6 @@ _V4_INPUT_CELLS: dict[str, str] = {
     "offices_parking_over_spaces": "K162",
     "retail_parking_under_spaces": "K163",
     "retail_parking_over_spaces": "K164",
-    "sports_parking_under_spaces": "K165",
-    "sports_parking_over_spaces": "K166",
     "offices_parking_guest_pct": "K167",
     "offices_parking_under_price_mln_per_space": "K169",
     "offices_parking_over_price_mln_per_space": "K170",
@@ -17377,24 +17513,53 @@ _V4_INPUT_CELLS: dict[str, str] = {
     "above_parking_price_mln_per_space": "K71",
     "above_parking_share_before_rve_pct": "K72",
     "above_parking_growth_pre_pct": "K74", "above_parking_growth_post_pct": "K75",
-    # ФОК — четвёртый блок, дописанный в свободный низ «Вводных». Ключ живёт
-    # там же, где решается, куда писать значение: второго списка «какой ключ в
-    # какой ячейке» не бывает.
-    "sports_gba_sqm": "K126", "sports_saleable_sqm": "K127",
-    "sports_start": "K130", "sports_months": "K131",
-    "sports_cost_th_per_sqm": "K132", "sports_sales_start": "K133",
-    "sports_price_th_per_sqm": "K134", "sports_share_before_rve_pct": "K135",
-    "sports_growth_pre_pct": "K137", "sports_growth_post_pct": "K138",
 }
 _V4_DATE_KEYS = frozenset({
     "offices_start", "offices_sales_start", "retail_start", "retail_sales_start",
     "above_parking_start", "above_parking_sales_start",
-    "sports_start", "sports_sales_start",
 })
 _V4_BOOL_CELLS = {  # ключ -> ячейка «Да/Нет»
     "offices_enabled": "K20", "retail_enabled": "K40", "above_parking_enabled": "K60",
-    "sports_enabled": "K123",
 }
+
+
+def _v4_extra_object_cells(cells: dict[str, str],
+                           layouts: tuple[_V4ObjectLayout, ...] | None = None,
+                           ) -> dict[str, str]:
+    """Ячейки вводных дописанного объекта — ячейки двойника со сдвигом.
+
+    Ключ живёт там же, где решается, куда писать значение: второго списка
+    «какой ключ в какой ячейке» не бывает, а у копии блока ключи те же, что у
+    образца, с приставкой своего объекта.
+    """
+    out: dict[str, str] = {}
+    for lay in (_V4_EXTRA_OBJECT_LAYOUTS if layouts is None else layouts):
+        if not lay.extra:
+            continue
+        twin_head = lay.input_head - lay.input_offset
+        for key, coord in cells.items():
+            if not key.startswith(lay.twin_prefix + "_"):
+                continue
+            row = int(re.sub(r"[A-Z]+", "", coord))
+            if twin_head <= row < twin_head + _V4_INPUT_BLOCK_ROWS:
+                out[lay.obj.prefix + key[len(lay.twin_prefix):]] = _v4_row_shift(
+                    coord, lay.input_offset)
+        for suffix, coord in (("parking_under_spaces", lay.parking_under),
+                              ("parking_over_spaces", lay.parking_over),
+                              ("parking_guest_pct", lay.parking_guest),
+                              ("parking_under_price_mln_per_space", lay.parking_under_price),
+                              ("parking_over_price_mln_per_space", lay.parking_over_price)):
+            if coord:
+                out[f"{lay.obj.prefix}_{suffix}"] = coord
+    return out
+
+
+_V4_INPUT_CELLS.update(_v4_extra_object_cells(_V4_INPUT_CELLS))
+_V4_DATE_KEYS = _V4_DATE_KEYS | frozenset(
+    f"{lay.obj.prefix}_{name}" for lay in _V4_EXTRA_OBJECT_LAYOUTS
+    for name in ("start", "sales_start"))
+_V4_BOOL_CELLS.update({lay.obj.enabled_key: f"K{lay.input_head + 2}"
+                       for lay in _V4_EXTRA_OBJECT_LAYOUTS})
 # Проценты в этих ячейках движок хранит пунктами, но сами ключи без суффикса.
 _V4_NO_PCT_KEYS = frozenset({"vri_relief_mln", "vri_security_cost_mln"})
 
@@ -18618,9 +18783,13 @@ _V4_OBJECT_PRODUCT_CELLS = {              # (очередь объекта, ег
     "offices": (8, 24),
     "standalone_retail": (36, 52),
     "above_parking": (64, 80),
-    # Четвёртый блок — копия блока ТЦ со сдвигом на 90 строк.
-    "sports": (126, 142),
 }
+# Дописанные объекты — копии блоков шаблона со сдвигом: строки те же, что у
+# двойника, плюс сдвиг его копии.
+_V4_OBJECT_PRODUCT_CELLS.update({
+    lay.obj.key: tuple(row + lay.object_offset
+                       for row in _V4_OBJECT_PRODUCT_CELLS[lay.twin])
+    for lay in _V4_EXTRA_OBJECT_LAYOUTS})
 # Шаблон несёт ТРИ блока объектов; всё, что ниже, дописано копированием — и
 # лист ПРОВЕРКИ о дописанном узнаёт отсюда, а не из выписанных формул.
 _V4_TEMPLATE_OBJECT_REVENUE_ROWS = (24, 52, 80)
@@ -18635,51 +18804,84 @@ _V4_OBJECT_CHECK_ROWS = {
 }
 
 
-# --- ФОК в книге v4 ---------------------------------------------------------
+# --- дописанные объекты в книге v4 ------------------------------------------
 # Объект в книге появляется ровно так же, как в движке, — иначе книга снова
 # станет придатком веб-сервиса. Шаблон несёт ТРИ блока отдельно стоящих
-# объектов (строки 6/34/62 листа ОБЪЕКТЫ) и три блока их вводных (J20/J38/J58
-# «Вводных»). Четвёртый дописывается в СВОБОДНЫЙ низ обоих листов: вставить
-# строку в занятое место нельзя — поедут все ссылки, а низ листов пуст (лист
-# ОБЪЕКТЫ кончается строкой 122, «Вводные» — строкой 119).
+# объектов (строки 6/34/62 листа ОБЪЕКТЫ) и три блока их вводных (J18/J38/J58
+# «Вводных»). Следующие дописываются в СВОБОДНЫЙ низ обоих листов: вставить
+# строку в занятое место нельзя — поедут все ссылки. Где именно — решает
+# раскладка `_v4_object_layouts`.
 #
-# Формулы блока НЕ пишутся заново: они снимаются с блока ТЦ и переносятся со
-# сдвигом строк. Сочинить их кодом значило бы завести вторую реализацию
-# методики владельца — ту самую, которую запрещает правило «пересобирать книгу
-# целиком нельзя». Перенос механический: ссылки на строки своего блока
-# сдвигаются, ссылки на другие листы остаются, а вводные ТЦ подменяются
-# вводными ФОКа по карте ниже.
-_V4_SPORTS_INPUT_OFFSET = 83        # строка блока ТЦ «Вводных» + 83 = строка ФОКа
-_V4_SPORTS_OBJECT_OFFSET = 90       # строка блока ТЦ листа ОБЪЕКТЫ + 90
-_V4_RETAIL_INPUT_ROWS = range(38, 56)     # заголовок 38, последняя вводная 55
-_V4_RETAIL_OBJECT_ROWS = range(34, 60)    # заголовок 34, последняя строка 59
-_V4_SPORTS_DISPOSITION_ROW = 139          # «что с объектом дальше», своя строка
-_V4_SPORTS_RESIDUAL_ROW = 140             # остаточные продажи, как у соседей
-_V4_SPORTS_SALE_WORD = "Продаётся"
-_V4_SPORTS_TRANSFER_WORD = "Передаётся городу"
+# Формулы блока НЕ пишутся заново: они снимаются с блока двойника и
+# переносятся со сдвигом строк. Сочинить их кодом значило бы завести вторую
+# реализацию методики владельца — ту самую, которую запрещает правило
+# «пересобирать книгу целиком нельзя». Перенос механический: ссылки на строки
+# своего блока сдвигаются, ссылки на другие листы остаются, а вводные двойника
+# подменяются вводными объекта.
+_V4_OBJECT_BLOCK_ROWS = 26                # заголовок блока ОБЪЕКТЫ … «Расходы всего»
+_V4_OBJECT_SALE_WORD = "Продаётся"
+_V4_OBJECT_TRANSFER_WORD = "Передаётся городу"
 
-# Подписи блока: у ТЦ они свои, и оставить их значило бы завести в книге второй
-# торговый центр. Ключ API меняется тем же проходом — по нему книга и движок
-# сверяются, и «retail_*» в блоке ФОКа сделал бы сверку бессмысленной.
-_V4_SPORTS_INPUT_LABELS = {
-    121: ("ФОК / МЕДЦЕНТР", None, None),
-    123: ("Объект включён", "Да / Нет", "sports_enabled"),
-    124: ("Очередь финансирования", "1–4", "sports_queue"),
-    125: ("Пересчитывать по плотности", "Да / Нет", "sports_density_linked"),
-    126: ("Базовая общая площадь (GBA)", "м²", "sports_gba_base_sqm"),
-    127: ("Базовая продаваемая площадь", "м²", "sports_saleable_base_sqm"),
-    128: ("Расчётная общая площадь (GBA)", "м²", "sports_gba_sqm"),
-    129: ("Расчётная продаваемая площадь", "м²", "sports_saleable_sqm"),
-    130: ("Начало строительства", "дата", "sports_start"),
-    131: ("Срок строительства", "мес.", "sports_months"),
-    132: ("Себестоимость строительства", "тыс. ₽/м² GBA", "sports_cost_th_per_sqm"),
-    133: ("Старт продаж", "дата", "sports_sales_start"),
-    134: ("Стартовая цена", "тыс. ₽/м²", "sports_price_th_per_sqm"),
-    135: ("Доля продаж до РВЭ", "%", "sports_share_before_rve_pct"),
-    136: ("Общий срок продаж", "мес.", "sports_sales_term_months"),
-    137: ("Рост цены до РВЭ", "%/мес.", "sports_growth_pre_pct"),
-    138: ("Рост цены после РВЭ", "%/мес.", "sports_growth_post_pct"),
+# Подписи блока вводных по строке от заголовка: у двойника они свои, и
+# оставить его ключи значило бы завести в книге второй торговый центр. Ключ
+# API меняется тем же проходом — по нему книга и движок сверяются, и
+# «retail_*» в блоке ФОКа сделал бы сверку бессмысленной. Две формы — метры и
+# места: у наземного паркинга своя.
+_V4_OBJECT_INPUT_LABELS = {
+    "sqm": {
+        2: ("Объект включён", "Да / Нет", "enabled"),
+        3: ("Очередь финансирования", "1–4", "queue"),
+        4: ("Пересчитывать по плотности", "Да / Нет", "density_linked"),
+        5: ("Базовая общая площадь (GBA)", "м²", "gba_base_sqm"),
+        6: ("Базовая продаваемая площадь", "м²", "saleable_base_sqm"),
+        7: ("Расчётная общая площадь (GBA)", "м²", "gba_sqm"),
+        8: ("Расчётная продаваемая площадь", "м²", "saleable_sqm"),
+        9: ("Начало строительства", "дата", "start"),
+        10: ("Срок строительства", "мес.", "months"),
+        11: ("Себестоимость строительства", "тыс. ₽/м² GBA", "cost_th_per_sqm"),
+        12: ("Старт продаж", "дата", "sales_start"),
+        13: ("Стартовая цена", "тыс. ₽/м²", "price_th_per_sqm"),
+        14: ("Доля продаж до РВЭ", "%", "share_before_rve_pct"),
+        15: ("Общий срок продаж", "мес.", "sales_term_months"),
+        16: ("Рост цены до РВЭ", "%/мес.", "growth_pre_pct"),
+        17: ("Рост цены после РВЭ", "%/мес.", "growth_post_pct"),
+    },
+    "spaces": {
+        2: ("Объект включён", "Да / Нет", "enabled"),
+        3: ("Очередь финансирования", "1–4", "queue"),
+        4: ("Пересчитывать по плотности", "Да / Нет", "density_linked"),
+        5: ("Базовое количество машино-мест", "шт.", "spaces_base"),
+        6: ("Площадь на одно место для ТЭП", "м²/место", "area_per_space_sqm"),
+        7: ("Расчётное количество машино-мест", "шт.", "spaces"),
+        8: ("Расчётная общая площадь (GBA)", "м²", "gba_sqm"),
+        9: ("Себестоимость одного места", "млн ₽/место", "cost_mln_per_space"),
+        10: ("Начало строительства", "дата", "start"),
+        11: ("Срок строительства", "мес.", "months"),
+        12: ("Старт продаж", "дата", "sales_start"),
+        13: ("Стартовая цена места", "млн ₽/место", "price_mln_per_space"),
+        14: ("Доля продаж до РВЭ", "%", "share_before_rve_pct"),
+        15: ("Общий срок продаж", "мес.", "sales_term_months"),
+        16: ("Рост цены до РВЭ", "%/мес.", "growth_pre_pct"),
+        17: ("Рост цены после РВЭ", "%/мес.", "growth_post_pct"),
+    },
 }
+# Строки блока вводных по месту от заголовка — у метров и у мест они разные
+# (у паркинга срок стройки ниже на строку).
+_V4_OBJECT_INPUT_ROW = {
+    "sqm": {"enabled": 2, "queue": 3, "density": 4, "base": 5, "base_saleable": 6,
+            "gba": 7, "saleable": 8, "start": 9, "months": 10, "sales_start": 12,
+            "price": 13, "term": 15},
+    "spaces": {"enabled": 2, "queue": 3, "density": 4, "base": 5, "base_saleable": 0,
+               "gba": 8, "saleable": 0, "start": 10, "months": 11, "sales_start": 12,
+               "price": 13, "term": 15},
+}
+
+
+def _v4_input_row(lay: _V4ObjectLayout, name: str) -> int:
+    """Строка вводной `name` в блоке объекта на «Параметрах модели»."""
+    at = _V4_OBJECT_INPUT_ROW[lay.obj.measure][name]
+    return lay.input_head + at if at else 0
+
 
 _V4_SHEET_REF_RE = re.compile(r"'[^']+'!\$?[A-Z]{1,3}\$?\d+")
 _V4_BARE_REF_RE = re.compile(r"(?<![A-Za-z0-9_$!])(\$?)([A-Z]{1,3})(\$?)(\d+)")
@@ -18753,63 +18955,86 @@ def _v4_copy_block(xml: str, rows: range, offset: int, *,
     return xml.replace(tail, "".join(parts) + tail, 1), written
 
 
-def _v4_sports_inputs_block(xml: str, missing: list[str]) -> str:
-    """Блок вводных ФОКа внизу «Вводных»: копия блока ТЦ с своими подписями."""
-    if re.search(r'<x:row r="121"[ />]', xml):
-        missing.append("ФОК: строка 121 «Вводных» занята")
+def _v4_extra_inputs_blocks(xml: str, missing: list[str]) -> str:
+    """Блоки вводных дописанных объектов: копии блоков двойников со своими подписями."""
+    for lay in _V4_EXTRA_OBJECT_LAYOUTS:
+        xml = _v4_extra_inputs_block(xml, lay, missing)
+    return xml
+
+
+def _v4_extra_inputs_block(xml: str, lay: _V4ObjectLayout, missing: list[str]) -> str:
+    obj, head = lay.obj, lay.input_head
+    name = obj.group_label or obj.label
+    title = name.upper()
+    twin_head = head - lay.input_offset
+    if re.search(r'<x:row r="%d"[ />]' % head, xml):
+        missing.append(f"{name}: строка {head} «Вводных» занята")
         return xml
-    xml, written = _v4_copy_block(xml, _V4_RETAIL_INPUT_ROWS,
-                                  _V4_SPORTS_INPUT_OFFSET)
-    if len(written) != len(_V4_RETAIL_INPUT_ROWS):
-        missing.append("ФОК: блок вводных не скопирован целиком")
+    rows = range(twin_head, twin_head + _V4_INPUT_BLOCK_ROWS)
+    xml, written = _v4_copy_block(xml, rows, lay.input_offset)
+    if len(written) != len(rows):
+        missing.append(f"{name}: блок вводных не скопирован целиком")
         return xml
-    # Колонки A–D блока ТЦ уехали бы вместе с ним: там живут статьи
+    # Колонки A–D блока двойника уехали бы вместе с ним: там живут статьи
     # себестоимости, и вторая их копия читалась бы как второй набор ставок.
     for row in written:
         xml = re.sub(r'<x:c r="[A-D]%d"[^>]*?(?:/>|>.*?</x:c>)' % row, "", xml,
                      flags=re.S)
-    for row, (label, unit, key) in _V4_SPORTS_INPUT_LABELS.items():
+    labels = {head: (title, None, None)}
+    labels.update({head + at: (label, unit, f"{obj.prefix}_{suffix}")
+                   for at, (label, unit, suffix)
+                   in _V4_OBJECT_INPUT_LABELS[obj.measure].items()})
+    for row, (label, unit, key) in labels.items():
         xml, done = _v4_set_cell(xml, f"J{row}", text=label)
         if not done:
-            missing.append(f"ФОК: подпись J{row}")
+            missing.append(f"{name}: подпись J{row}")
         if unit is not None:
             xml, _ = _v4_set_cell(xml, f"L{row}", text=unit)
         if key is not None:
             xml, _ = _v4_set_cell(xml, f"M{row}", text=key)
     # Заголовок блока написан во всех четырёх ячейках — так его пишет шаблон.
     for column in ("K", "L", "M"):
-        xml, _ = _v4_set_cell(xml, f"{column}121", text="ФОК / МЕДЦЕНТР")
-    # Признак «что с объектом дальше» и остаточные продажи — две строки сверх
-    # блока ТЦ, и берутся они КОПИЕЙ его строк, а не пустыми ячейками. Лист
-    # ввода узнаёт вводную ПО ЦВЕТУ, и голая ячейка осталась бы на расчётном
-    # листе — то есть приглашала бы печатать там, где печатать нельзя. Образцы
-    # выбраны по типу значения: 40 — «Да/Нет», 49 — число.
-    for source_row, target_row in ((40, _V4_SPORTS_DISPOSITION_ROW),
-                                   (49, _V4_SPORTS_RESIDUAL_ROW)):
+        xml, _ = _v4_set_cell(xml, f"{column}{head}", text=title)
+    # Признак «что с объектом дальше» и остаточные продажи — строки сверх
+    # блока двойника, и берутся они КОПИЕЙ его строк, а не пустыми ячейками.
+    # Лист ввода узнаёт вводную ПО ЦВЕТУ, и голая ячейка осталась бы на
+    # расчётном листе — то есть приглашала бы печатать там, где печатать
+    # нельзя. Образцы выбраны по типу значения: «включён» — «Да/Нет»,
+    # одиннадцатая строка блока — число.
+    extra_rows = [(twin_head + 11, lay.residual_row)]
+    if lay.disposition_row:
+        extra_rows.insert(0, (twin_head + 2, lay.disposition_row))
+    for source_row, target_row in extra_rows:
         xml, written_extra = _v4_copy_block(xml, range(source_row, source_row + 1),
                                             target_row - source_row)
         if len(written_extra) != 1:
-            missing.append(f"ФОК: строка {target_row} «Вводных» не заведена")
+            missing.append(f"{name}: строка {target_row} «Вводных» не заведена")
             continue
         xml = re.sub(r'<x:c r="[A-D]%d"[^>]*?(?:/>|>.*?</x:c>)' % target_row, "", xml,
                      flags=re.S)
-    row = _V4_SPORTS_DISPOSITION_ROW
+    if not lay.disposition_row:
+        return xml
+    row = lay.disposition_row
     for coord, text in ((f"J{row}", "Что с объектом дальше"),
-                        (f"L{row}", f"{_V4_SPORTS_TRANSFER_WORD} / {_V4_SPORTS_SALE_WORD}"),
-                        (f"M{row}", "sports_disposition"),
-                        (f"K{row}", _V4_SPORTS_TRANSFER_WORD)):
+                        (f"L{row}", f"{_V4_OBJECT_TRANSFER_WORD} / {_V4_OBJECT_SALE_WORD}"),
+                        (f"M{row}", obj.sale_gate),
+                        (f"K{row}", _V4_OBJECT_TRANSFER_WORD)):
         xml, done = _v4_set_cell(xml, coord, text=text)
         if not done:
-            missing.append(f"ФОК: ячейка {coord}")
-    # Продаваемая площадь ФОКа гаснет при передаче городу — той же формулой,
-    # что и включение объекта: переданный ФОК строится, но не продаётся.
-    # Стройка при этом идёт от РАСЧЁТНОЙ ОБЩЕЙ площади и остаётся на месте.
-    xml, done = _v4_set_cell(
-        xml, "K129",
-        formula=(f'IF(AND(K123="Да",K{row}="{_V4_SPORTS_SALE_WORD}"),'
-                 f'K127*IF(K125="Да",$K$15,1),0)'))
-    if not done:
-        missing.append("ФОК: формула продаваемой площади K129")
+            missing.append(f"{name}: ячейка {coord}")
+    # Продаваемая площадь гаснет при передаче городу — той же формулой, что и
+    # включение объекта: переданный объект строится, но не продаётся. Стройка
+    # при этом идёт от РАСЧЁТНОЙ ОБЩЕЙ площади и остаётся на месте.
+    saleable = _v4_input_row(lay, "saleable")
+    if saleable:
+        xml, done = _v4_set_cell(
+            xml, f"K{saleable}",
+            formula=(f'IF(AND(K{_v4_input_row(lay, "enabled")}="Да",'
+                     f'K{row}="{_V4_OBJECT_SALE_WORD}"),'
+                     f'K{_v4_input_row(lay, "base_saleable")}'
+                     f'*IF(K{_v4_input_row(lay, "density")}="Да",$K$15,1),0)'))
+        if not done:
+            missing.append(f"{name}: формула продаваемой площади K{saleable}")
     return xml
 
 
@@ -18829,19 +19054,32 @@ _V4_OBJECT_PARKING = (
     #  «мест под землёй», «мест на этажах», строка объёма продаж объекта,
     #  строка цены объекта, ячейка цены объекта, ячейка GBA объекта,
     #  строка «Расчётная продаваемая площадь» объекта, места продаются,
-    #  ячейка гостевых мест — пусто, если продавать нечего)
+    #  ячейка гостевых мест — пусто, если продавать нечего,
+    #  ячейки своей цены места под землёй и на этаже — пусто, если нечего)
     ("МФОЦ / офисы", 7, 32, 33, "B28", "K161", "K162", 22, 23, "K31", "K25", 13,
-     True, "K167"),
+     True, "K167", ("K169", "K170")),
     ("ТЦ / ОСЗ", 35, 60, 61, "B56", "K163", "K164", 50, 51, "K51", "K45", 41,
-     False, ""),
-    # ФОК дописан копией блока ТЦ ниже аллокации, и зазор у него свой.
-    ("ФОК / медцентр", 125, 150, 151, "B146", "K165", "K166", 140, 141, "K134", "K128", 131,
-     False, ""),
+     False, "", ("", "")),
 )
+# Дописанный объект с гаражом — строки двойника со сдвигом его копии; места и
+# цены мест — свои ячейки из раскладки.
+_V4_OBJECT_PARKING = _V4_OBJECT_PARKING + tuple(
+    (lay.obj.group_label or lay.obj.label,
+     *(row + lay.object_offset for row in twin[1:4]),
+     _v4_row_shift(twin[4], lay.object_offset),
+     lay.parking_under, lay.parking_over,
+     *(row + lay.object_offset for row in twin[7:9]),
+     _v4_row_shift(twin[9], lay.input_offset), _v4_row_shift(twin[10], lay.input_offset),
+     twin[11] + lay.object_offset, lay.obj.garage_sellable, lay.parking_guest,
+     (lay.parking_under_price, lay.parking_over_price))
+    for lay in _V4_EXTRA_OBJECT_LAYOUTS if lay.parking_under
+    for twin in [next(item for item in _V4_OBJECT_PARKING
+                      if item[1] == _V4_TEMPLATE_OBJECT_LAYOUT[lay.twin][1] + 1)])
 _V4_OBJECT_PARKING_INPUT_ROWS = (
     # (строка, подпись, ячейка значения, единица) — номер строки задан явно, а
     # не выведен из порядка: снятая строка сдвинула бы все ячейки под собой, и
-    # значения уехали бы в чужие клетки.
+    # значения уехали бы в чужие клетки. Места дописанных объектов — из их
+    # раскладки (`_v4_object_parking_input_rows`).
     (157, "ПАРКИНГ ОТДЕЛЬНО СТОЯЩИХ ОБЪЕКТОВ · МЕСТА", None, None),
     (158, "Площадь на 1 место своего подземного", "K158", "м²/место"),
     (159, "Приобъектная стоянка нормируется отдельно: она вдоль проезда, "
@@ -18851,12 +19089,44 @@ _V4_OBJECT_PARKING_INPUT_ROWS = (
     (162, "Офисы — мест на первых этажах", "K162", "шт."),
     (163, "ТЦ / ОСЗ — мест в своём подземном", "K163", "шт."),
     (164, "ТЦ / ОСЗ — мест на первых этажах", "K164", "шт."),
-    (165, "ФОК — мест в своём подземном", "K165", "шт."),
-    (166, "ФОК — мест на первых этажах", "K166", "шт."),
     (167, "Офисы — гостевых (не продаются)", "K167", "доля мест"),
     (169, "Офисы — цена подземного места (0 = общая цена)", "K169", "млн ₽/место"),
     (170, "Офисы — цена места на первом этаже (0 = общая цена)", "K170", "млн ₽/место"),
 )
+
+
+def _v4_object_parking_input_rows() -> tuple[tuple[int, str, str | None, str | None], ...]:
+    """Строки мест всех объектов с гаражом: общий блок и блоки дописанных."""
+    rows = list(_V4_OBJECT_PARKING_INPUT_ROWS)
+    for lay in _V4_EXTRA_OBJECT_LAYOUTS:
+        name = lay.obj.group_label or lay.obj.label
+        for coord, text, unit in (
+                (lay.parking_under, "мест в своём подземном", "шт."),
+                (lay.parking_over, "мест на первых этажах", "шт."),
+                (lay.parking_guest, "гостевых (не продаются)", "доля мест"),
+                (lay.parking_under_price, "цена подземного места (0 = общая цена)",
+                 "млн ₽/место"),
+                (lay.parking_over_price, "цена места на первом этаже (0 = общая цена)",
+                 "млн ₽/место")):
+            if coord:
+                rows.append((int(coord[1:]), f"{name} — {text}", coord, unit))
+    return tuple(sorted(rows, key=lambda item: item[0]))
+
+
+def _v4_object_saleable_formula(lay: _V4ObjectLayout) -> str:
+    """Продаваемая площадь объекта с гаражом: за вычетом пятна мест на этажах.
+
+    Первые этажи занимают существующую GBA. Сначала вычитаем их пятно из
+    расчётной GBA, затем применяем исходную долю продаваемой площади. Объект
+    с признаком «что дальше» при передаче городу не продаёт ничего.
+    """
+    row = lambda name: f"K{_v4_input_row(lay, name)}"
+    enabled = f'{row("enabled")}="Да"'
+    if lay.disposition_row:
+        enabled = f'AND({enabled},K{lay.disposition_row}="{_V4_OBJECT_SALE_WORD}")'
+    base, gba = row("base"), row("gba")
+    return (f'IF({enabled},IF({base}>0,MAX(0,{gba}-{lay.parking_over}*$K$160)'
+            f'*{row("base_saleable")}/{base},0),0)')
 
 
 def _v4_object_parking_input_labels(xml: str, missing: list[str]) -> str:
@@ -18865,7 +19135,7 @@ def _v4_object_parking_input_labels(xml: str, missing: list[str]) -> str:
     Значение и ключ пишет общая карта `_V4_INPUT_CELLS`; без подписи и единицы
     рядом это столбик чисел, о котором человек не знает, что правит.
     """
-    for row, label, coord, unit in _V4_OBJECT_PARKING_INPUT_ROWS:
+    for row, label, coord, unit in _v4_object_parking_input_rows():
         # Строки внизу листа не существует, пока её не завели: пустых строк в
         # файле не бывает, и запись значения по карте ключей молча не нашла бы
         # ячейку — так эти вводные и приезжали в книгу пустыми.
@@ -18885,14 +19155,11 @@ def _v4_object_parking_input_labels(xml: str, missing: list[str]) -> str:
                 xml, done = _v4_set_or_insert_cell(xml, cell, number=0)
                 if not done:
                     missing.append(f"паркинг объектов: место под {cell}")
-    # Первые этажи занимают существующую GBA. Сначала вычитаем их пятно из
-    # расчётной GBA, затем применяем исходную долю продаваемой площади.
-    formulas = {
-        "K26": 'IF(K20="Да",IF(K23>0,MAX(0,K25-K162*$K$160)*K24/K23,0),0)',
-        "K46": 'IF(K40="Да",IF(K43>0,MAX(0,K45-K164*$K$160)*K44/K43,0),0)',
-        "K129": (f'IF(AND(K123="Да",K{_V4_SPORTS_DISPOSITION_ROW}="{_V4_SPORTS_SALE_WORD}"),'
-                 'IF(K126>0,MAX(0,K128-K166*$K$160)*K127/K126,0),0)'),
-    }
+    garaged = sorted((lay for lay in _V4_OBJECT_LAYOUTS
+                      if lay.parking_over and _v4_input_row(lay, "saleable")),
+                     key=lambda lay: lay.input_head)
+    formulas = {f"K{_v4_input_row(lay, 'saleable')}": _v4_object_saleable_formula(lay)
+                for lay in garaged}
     for coord, formula in formulas.items():
         xml, done = _v4_set_or_insert_cell(xml, coord, formula=formula)
         if not done:
@@ -18903,10 +19170,10 @@ def _v4_object_parking_input_labels(xml: str, missing: list[str]) -> str:
         xml, "J168", text="Проверка: места на первых этажах помещаются в ГНС")
     if not done:
         missing.append("паркинг объектов: подпись проверки J168")
-    guard = ('IF(OR(AND(K20="Да",K162*$K$160>K25),'
-             'AND(K40="Да",K164*$K$160>K45),'
-             'AND(K123="Да",K166*$K$160>K128)),'
-             '"WARN: паркинг первых этажей не помещается в GBA объекта","OK")')
+    guard = ("IF(OR(" + ",".join(
+        f'AND(K{_v4_input_row(lay, "enabled")}="Да",'
+        f'{lay.parking_over}*$K$160>K{_v4_input_row(lay, "gba")})' for lay in garaged)
+        + '),"WARN: паркинг первых этажей не помещается в GBA объекта","OK")')
     xml, done = _v4_set_or_insert_cell(xml, "K168", formula=guard)
     if not done:
         missing.append("паркинг объектов: проверка K168")
@@ -18922,7 +19189,7 @@ def _v4_object_parking_block(xml: str, missing: list[str]) -> str:
     """
     for (label, enabled_row, units_row, revenue_row, capex_cell, under, over,
          volume_row, price_row, price_cell, gba_cell,
-         saleable_row, sellable, guest_cell) in _V4_OBJECT_PARKING:
+         saleable_row, sellable, guest_cell, own_prices) in _V4_OBJECT_PARKING:
         for row in (units_row, revenue_row):
             if re.search(r'<x:c r="A%d"[ />]' % row, xml):
                 missing.append(f"паркинг объектов: строка {row} листа ОБЪЕКТЫ занята")
@@ -18993,10 +19260,10 @@ def _v4_object_parking_block(xml: str, missing: list[str]) -> str:
                 # Только офисный гараж продаётся. Его подземные места и места
                 # первых этажей имеют разные цены; 0 в новой вводной означает
                 # обратную совместимость с общей ценой подземного м/м (B61).
-                under_price = (
-                    f"IF({params}!$K$169>0,{params}!$K$169*1000,{params}!$B$61)")
-                over_price = (
-                    f"IF({params}!$K$170>0,{params}!$K$170*1000,{params}!$B$61)")
+                under_own, over_own = (f"{params}!${cell[0]}${cell[1:]}"
+                                       for cell in own_prices)
+                under_price = f"IF({under_own}>0,{under_own}*1000,{params}!$B$61)"
+                over_price = f"IF({over_own}>0,{over_own}*1000,{params}!$B$61)"
                 under_ref = f"{params}!$" + under[0] + "$" + under[1:]
                 over_ref = f"{params}!$" + over[0] + "$" + over[1:]
                 weighted_price = (
@@ -19101,6 +19368,9 @@ def _v4_object_parking_allocation(xml: str, missing: list[str]) -> str:
     выручки строками того же блока.
     """
     added = 0
+    counted = (r"IF\(\$B\$(?:%s)=\d+,[A-Z]{1,3}(?:%s),0\)" % (
+        "|".join(str(item[1] + 1) for item in _V4_OBJECT_PARKING),
+        "|".join(str(item[3]) for item in _V4_OBJECT_PARKING)))
     for row in range(92, 123):
         found = re.search(r'<x:row r="%d"(?:[ ][^>]*)?>(.*?)</x:row>' % row, xml, re.S)
         if not found:
@@ -19128,8 +19398,7 @@ def _v4_object_parking_allocation(xml: str, missing: list[str]) -> str:
 
         before = found.group(1)
         body = re.sub(r"<x:f>(.*?)</x:f>", extend, before, flags=re.S)
-        added += sum(1 for _ in re.finditer(
-            r"IF\(\$B\$(?:8|36|126)=\d+,[A-Z]{1,3}(?:33|61|151),0\)", body))
+        added += sum(1 for _ in re.finditer(counted, body))
         xml = xml[:found.start(1)] + body + xml[found.end(1):]
     if added < 4 * 100:
         missing.append(f"паркинг объектов: аллокация расширена лишь в {added} ячейках")
@@ -19138,7 +19407,9 @@ def _v4_object_parking_allocation(xml: str, missing: list[str]) -> str:
 
 # Строка объекта на листе ТЭП — по строке его объёма продаж: второй список
 # «какой объект в какой строке» разошёлся бы с первым молча.
-_V4_OBJECT_TEP_ROW = {22: 31, 50: 32, 140: 34}
+_V4_OBJECT_TEP_ROW = {
+    _V4_OBJECT_PRODUCT_CELLS[lay.obj.key][1] - 2: lay.tep_row
+    for lay in _V4_OBJECT_LAYOUTS}
 
 
 def _v4_object_parking_in_tep(xml: str, missing: list[str]) -> str:
@@ -19192,26 +19463,18 @@ _V4_OBJECT_CAPEX_CHECK = {
 }
 
 
-def _v4_sports_object_block(xml: str, missing: list[str]) -> str:
-    """Четвёртый блок листа ОБЪЕКТЫ и его доля в аллокации по очередям."""
-    if re.search(r'<x:row r="124"[ />]', xml):
-        missing.append("ФОК: строка 124 листа ОБЪЕКТЫ занята")
+def _v4_extra_object_blocks(xml: str, missing: list[str]) -> str:
+    """Блоки дописанных объектов листа ОБЪЕКТЫ и их доля в аллокации по очередям."""
+    for lay in _V4_EXTRA_OBJECT_LAYOUTS:
+        xml = _v4_extra_object_block(xml, lay, missing)
+    if not _V4_EXTRA_OBJECT_LAYOUTS:
         return xml
-    xml, written = _v4_copy_block(
-        xml, _V4_RETAIL_OBJECT_ROWS, _V4_SPORTS_OBJECT_OFFSET,
-        input_rows=range(40, 56), input_offset=_V4_SPORTS_INPUT_OFFSET)
-    if len(written) != len(_V4_RETAIL_OBJECT_ROWS):
-        missing.append("ФОК: блок объекта не скопирован целиком")
-        return xml
-    # Заголовок стоит во всех ячейках строки — так его пишет шаблон (полоса
-    # заливки во всю ширину). Оставить там подпись ТЦ значило бы завести в
-    # книге второй торговый центр, который на самом деле ФОК.
-    for _column in ("A", "B", "C", "D"):
-        xml, done = _v4_set_cell(xml, f"{_column}124", text="ФОК / МЕДЦЕНТР")
-        if not done and _column == "A":
-            missing.append("ФОК: заголовок блока объекта")
     # Аллокация — единственная дверь, через которую объекты попадают в CF
-    # очередей. Не расширить её значит построить ФОК и не показать его нигде.
+    # очередей. Не расширить её значит построить объект и не показать его
+    # нигде. Формула каждой ячейки кончается слагаемым наземного паркинга —
+    # последнего блока шаблона; слагаемые дописанных объектов встают за ним в
+    # порядке реестра, каждое своей очередью и строкой своей копии.
+    last_head = _V4_TEMPLATE_OBJECT_LAYOUT["above_parking"][1]
     added = 0
     for row in range(92, 123):
         found = re.search(
@@ -19221,32 +19484,93 @@ def _v4_sports_object_block(xml: str, missing: list[str]) -> str:
         body = found.group(1)
         def extend(match: "re.Match[str]") -> str:
             formula = html.unescape(match.group(1))
-            last = re.search(r"IF\(\$B\$64=(\d+),([A-Z]{1,3})(\d+),0\)\)$", formula)
+            last = re.search(r"IF\(\$B\$%d=(\d+),([A-Z]{1,3})(\d+),0\)\)$"
+                             % (last_head + 2), formula)
             if not last:
                 return match.group(0)
             queue, column, target = last.group(1), last.group(2), int(last.group(3))
-            extended = (formula[:-1] + f",IF($B$126={queue},{column}"
-                        f"{target + 62},0))")
-            return "<x:f>" + xml_escape(extended) + "</x:f>"
+            terms = "".join(
+                f",IF($B${lay.object_head + 2}={queue},{column}"
+                f"{target - last_head + lay.object_head},0)"
+                for lay in _V4_EXTRA_OBJECT_LAYOUTS)
+            return "<x:f>" + xml_escape(formula[:-1] + terms + ")") + "</x:f>"
         new_body, count = re.subn(r"<x:f>(.*?)</x:f>", extend, body, flags=re.S)
         added += count
         xml = xml[:found.start(1)] + new_body + xml[found.end(1):]
     if added < 28 * 100:
-        missing.append(f"ФОК: аллокация по очередям расширена лишь в {added} ячейках")
+        missing.append(f"дописанные объекты: аллокация по очередям расширена лишь в {added} ячейках")
     return xml
 
 
-def _v4_sports_tep_row(xml: str, missing: list[str]) -> str:
-    """Строка ФОКа в блоке отдельно стоящих объектов листа ТЭП.
+def _v4_extra_object_block(xml: str, lay: _V4ObjectLayout, missing: list[str]) -> str:
+    name = lay.obj.group_label or lay.obj.label
+    head = lay.object_head
+    if re.search(r'<x:row r="%d"[ />]' % head, xml):
+        missing.append(f"{name}: строка {head} листа ОБЪЕКТЫ занята")
+        return xml
+    twin_head = head - lay.object_offset
+    twin_input = lay.input_head - lay.input_offset
+    rows = range(twin_head, twin_head + _V4_OBJECT_BLOCK_ROWS)
+    xml, written = _v4_copy_block(
+        xml, rows, lay.object_offset,
+        input_rows=range(twin_input + 2, twin_input + _V4_INPUT_BLOCK_ROWS),
+        input_offset=lay.input_offset)
+    if len(written) != len(rows):
+        missing.append(f"{name}: блок объекта не скопирован целиком")
+        return xml
+    # Заголовок стоит во всех ячейках строки — так его пишет шаблон (полоса
+    # заливки во всю ширину). Оставить там подпись двойника значило бы завести
+    # в книге второй торговый центр, который на самом деле ФОК.
+    for _column in ("A", "B", "C", "D"):
+        xml, done = _v4_set_cell(xml, f"{_column}{head}", text=name.upper())
+        if not done and _column == "A":
+            missing.append(f"{name}: заголовок блока объекта")
+    return xml
 
-    Строк в блоке ровно три, а итог стоит четвёртой. Вставлять строку нельзя —
-    поедут ссылки, — поэтому итог переезжает на пустую строку 35 (она есть в
-    шаблоне и ничем не занята), а его прежнее место занимает ФОК. Ссылок на
-    строки 31–35 листа ТЭП нет ни на одном другом листе — проверено по всей
-    книге, — и единственный читатель итога, «ИТОГО ПРОЕКТ», правится здесь же.
+
+def _v4_object_tep_cells(lay: _V4ObjectLayout) -> dict[str, str]:
+    """Формулы строки дописанного объекта на листе ТЭП — по ячейкам его блока.
+
+    Колонки те же, что у строки двойника: C — GBA, D — продаваемая площадь
+    (у мест — пусто), E — единицы (у метров — пусто), F — стартовая цена с
+    множителями очереди, G — выручка блока ОБЪЕКТЫ. Цена места хранится в
+    миллионах, а колонка — в тысячах: отсюда ×1000 только у мест.
     """
-    for column, letter in (("C", "C"), ("D", "D"), ("E", "E"), ("G", "G")):
-        xml, done = _v4_set_cell(xml, f"{letter}35", formula=f"SUM({letter}31:{letter}34)")
+    params = "'Вводные'!"
+    ref = lambda name: f"{params}$K${_v4_input_row(lay, name)}"
+    queue = ref("queue")
+    per_unit = "*1000" if lay.obj.measure == "spaces" else ""
+    cells = {"C": ref("gba"), "D": "", "E": ""}
+    if lay.obj.measure == "spaces":
+        cells["E"] = f"{params}$K${lay.input_head + 7}"
+    else:
+        cells["D"] = ref("saleable")
+    cells["F"] = (f"{ref('price')}{per_unit}*{params}$H$5"
+                  f"*INDEX({params}$S$88:$S$91,{queue})"
+                  f"*INDEX({params}$AG$88:$AG$91,{queue})")
+    cells["G"] = f"'ОБЪЕКТЫ'!B{_V4_OBJECT_PRODUCT_CELLS[lay.twin][1] + lay.object_offset}"
+    return cells
+
+
+def _v4_extra_tep_rows(xml: str, missing: list[str]) -> str:
+    """Строки дописанных объектов в блоке отдельно стоящих объектов листа ТЭП.
+
+    Строк в блоке шаблона ровно три, а итог стоит четвёртой. Вставлять строку
+    нельзя — поедут ссылки, — поэтому итог переезжает на пустую строку 35 (она
+    есть в шаблоне и ничем не занята), а его прежнее место занимает первый
+    дописанный объект (ФОК). Ссылок на строки 31–35 листа ТЭП нет ни на одном
+    другом листе — проверено по всей книге, — и единственный читатель итога,
+    «ИТОГО ПРОЕКТ», правится здесь же. Следующим объектам места над итогом
+    нет: ниже стоят «ИТОГО ПРОЕКТ» и соцобъекты, на которые ссылаются другие
+    листы. Они встают под соцобъектами своим разделом, и итог объектов
+    складывает оба куска — это сказано в строке раздела.
+    """
+    below = [lay for lay in _V4_EXTRA_OBJECT_LAYOUTS if lay.tep_row > 36]
+    for letter in ("C", "D", "E", "G"):
+        parts = [f"{letter}31:{letter}34"]
+        if below:
+            parts.append(f"{letter}{below[0].tep_row}:{letter}{below[-1].tep_row}")
+        xml, done = _v4_set_cell(xml, f"{letter}35", formula=f"SUM({','.join(parts)})")
         if not done:
             missing.append(f"ТЭП · итог объектов {letter}35")
     # Кладовые лежат на подземном этаже гаража: своей наземной ГНС у них нет,
@@ -19271,8 +19595,10 @@ def _v4_sports_tep_row(xml: str, missing: list[str]) -> str:
     # нигде: строки объектов несут наземную ГБА, и «строительный объём» без
     # них не равен объёму движка. Добавляются здесь же, где собирается итог.
     garages = "+".join(
-        f"IF('Вводные'!${enabled[0]}${enabled[1:]}=\"Да\",'Вводные'!${cell[0]}${cell[1:]},0)"
-        for enabled, cell in (("K20", "K161"), ("K40", "K163"), ("K123", "K165")))
+        f"IF('Вводные'!$K${_v4_input_row(lay, 'enabled')}=\"Да\","
+        f"'Вводные'!${lay.parking_under[0]}${lay.parking_under[1:]},0)"
+        for lay in sorted((lay for lay in _V4_OBJECT_LAYOUTS if lay.parking_under),
+                          key=lambda lay: lay.input_head))
     xml, done = _v4_set_cell(
         xml, "C36",
         formula=f"SUM(C28,C35,F40:F43)+'Вводные'!$K$158*({garages})")
@@ -19281,31 +19607,36 @@ def _v4_sports_tep_row(xml: str, missing: list[str]) -> str:
     xml, _ = _v4_set_or_insert_cell(
         xml, "H36",
         text="Включая соцобъекты и подземные гаражи отдельно стоящих объектов")
-    # Прежний итог становится строкой объекта. Продаваемая площадь и выручка
-    # берутся из блока ФОКа; при передаче городу обе равны нулю сами — гейт
-    # стоит в формуле продаваемой площади «Вводных», а не здесь.
-    for coord, kind, value in (
-            ("A34", "text", "Проект"),
-            ("B34", "text", "ФОК / медцентр"),
-            ("C34", "formula", "'Вводные'!$K$128"),
-            # Колонка D — «Продаваемая площадь», E — «Единицы». Прежде
-            # продаваемая ФОКа стояла в «Единицах»: на выключенном объекте это
-            # ноль и не видно, а у проданного ФОКа его метры читались бы как
-            # штуки.
-            ("D34", "formula", "'Вводные'!$K$129"),
-            ("E34", "text", ""),
-            ("F34", "formula", ("'Вводные'!$K$134*1000*'Вводные'!$H$5"
-                                "*INDEX('Вводные'!$S$88:$S$91,'Вводные'!$K$124)"
-                                "*INDEX('Вводные'!$AG$88:$AG$91,'Вводные'!$K$124)")),
-            ("G34", "formula", "'ОБЪЕКТЫ'!B142"),
-            ("H34", "text", "Передан городу — строится, но не продаётся"),
-    ):
-        if kind == "text":
-            xml, done = _v4_set_or_insert_cell(xml, coord, text=value)
-        else:
-            xml, done = _v4_set_or_insert_cell(xml, coord, formula=value)
-        if not done:
-            missing.append(f"ТЭП · строка ФОКа {coord}")
+    # Прежний итог становится строкой первого дописанного объекта, следующие
+    # встают под соцобъектами. Продаваемая площадь и выручка берутся из блока
+    # объекта; у переданного городу обе равны нулю сами — гейт стоит в
+    # формуле продаваемой площади «Вводных», а не здесь.
+    if below:
+        head = below[0].tep_row - 1
+        for coord, text in ((f"A{head}", "ОТДЕЛЬНО СТОЯЩИЕ ОБЪЕКТЫ · ПРОДОЛЖЕНИЕ"),
+                            (f"H{head}", "Входят в «ИТОГО ОБЪЕКТЫ» (строка 35) и "
+                                         "«ИТОГО ПРОЕКТ» выше")):
+            xml = _v4_ensure_row(xml, head)
+            xml, done = _v4_set_or_insert_cell(xml, coord, text=text)
+            if not done:
+                missing.append(f"ТЭП · раздел дописанных объектов {coord}")
+    for lay in _V4_EXTRA_OBJECT_LAYOUTS:
+        row = lay.tep_row
+        xml = _v4_ensure_row(xml, row)
+        note = ("Передан городу — строится, но не продаётся" if lay.disposition_row
+                else "Отдельно стоящий объект")
+        items = [(f"A{row}", "text", "Проект"),
+                 (f"B{row}", "text", lay.obj.tep_label or lay.obj.label)]
+        for letter, formula in _v4_object_tep_cells(lay).items():
+            items.append((f"{letter}{row}", "formula" if formula else "text", formula))
+        items.append((f"H{row}", "text", note))
+        for coord, kind, value in items:
+            if kind == "text":
+                xml, done = _v4_set_or_insert_cell(xml, coord, text=value)
+            else:
+                xml, done = _v4_set_or_insert_cell(xml, coord, formula=value)
+            if not done:
+                missing.append(f"ТЭП · строка {lay.obj.label} {coord}")
     return xml
 
 
@@ -19317,8 +19648,33 @@ _V4_PRODUCT_STRUCTURE_OBJECTS = (
     (50, "МФОЦ / офисный центр", "K25", "K26", 24, 32, 33, "K161", True),
     (51, "Торговый центр / ОСЗ", "K45", "K46", 52, 60, 61, "K163", False),
     (52, "Наземный паркинг", "K66", "", 80, 0, 0, "", False),
-    (53, "ФОК / медцентр", "K128", "K129", 142, 150, 151, "K165", False),
 )
+
+
+def _v4_extra_product_structure(lay: _V4ObjectLayout) -> tuple:
+    """Строка структуры продукта дописанного объекта — строка двойника со сдвигом."""
+    twin = next(item for item in _V4_PRODUCT_STRUCTURE_OBJECTS
+                if item[0] == _V4_TEMPLATE_OBJECT_LAYOUT[lay.twin][9])
+    shift_rows = lambda row: row + lay.object_offset if row else 0
+    return (lay.report_row, lay.obj.group_label or lay.obj.label,
+            _v4_row_shift(twin[2], lay.input_offset),
+            _v4_row_shift(twin[3], lay.input_offset),
+            shift_rows(twin[4]), shift_rows(twin[5]) if lay.parking_under else 0,
+            shift_rows(twin[6]) if lay.parking_under else 0,
+            lay.parking_under, lay.obj.garage_sellable)
+
+
+# Дописанный объект со своей строкой (ФОК — продукт другого рода) встаёт ею;
+# второй офисник или второй ТЦ — тот же продукт, что у двойника, и их числа
+# складываются в строку двойника: блок называется «структура продукта», и
+# два офисных центра в нём — один продукт.
+_V4_PRODUCT_STRUCTURE_OBJECTS = _V4_PRODUCT_STRUCTURE_OBJECTS + tuple(
+    _v4_extra_product_structure(lay) for lay in _V4_EXTRA_OBJECT_LAYOUTS if lay.report_row)
+_V4_PRODUCT_STRUCTURE_JOINED = {
+    _V4_TEMPLATE_OBJECT_LAYOUT[lay.twin][9]: tuple(
+        _v4_extra_product_structure(other) for other in _V4_EXTRA_OBJECT_LAYOUTS
+        if not other.report_row and other.twin == lay.twin)
+    for lay in _V4_EXTRA_OBJECT_LAYOUTS if not lay.report_row}
 _V4_PRODUCT_STRUCTURE_TOTAL_ROW = 54
 _V4_PRODUCT_STRUCTURE_FIRST_ROW = 46
 _V4_UNDER_COLUMN = "G"
@@ -19384,30 +19740,33 @@ def _v4_product_structure_block(xml: str, missing: list[str]) -> str:
         put(f"{under}{row}", formula="0")
 
     garages = []
-    for (row, label, gba_cell, saleable_cell, revenue_row,
-         places_row, garage_revenue_row, under_cell, sellable) in _V4_PRODUCT_STRUCTURE_OBJECTS:
+    for item in _V4_PRODUCT_STRUCTURE_OBJECTS:
+        row, label = item[0], item[1]
+        members = (item,) + _V4_PRODUCT_STRUCTURE_JOINED.get(row, ())
+        cell = lambda coord: f"{param}${coord[0]}${coord[1:]}"
+        joined = lambda parts: "+".join(parts) if parts else "0"
         put(f"A{row}", text=label)
-        put(f"B{row}", formula=f"{param}${gba_cell[0]}${gba_cell[1:]}")
-        if saleable_cell:
-            put(f"C{row}", formula=f"{param}${saleable_cell[0]}${saleable_cell[1:]}")
-        revenue = f"'ОБЪЕКТЫ'!B{revenue_row}"
-        if garage_revenue_row:
-            revenue += f"+'ОБЪЕКТЫ'!B{garage_revenue_row}"
-        put(f"E{row}", formula=revenue)
+        put(f"B{row}", formula=joined([cell(m[2]) for m in members]))
+        saleable = [cell(m[3]) for m in members if m[3]]
+        if saleable:
+            put(f"C{row}", formula=joined(saleable))
+        revenue = []
+        for m in members:
+            revenue.append(f"'ОБЪЕКТЫ'!B{m[4]}")
+            if m[6]:
+                revenue.append(f"'ОБЪЕКТЫ'!B{m[6]}")
+        put(f"E{row}", formula="+".join(revenue))
         put(f"F{row}", text="Отдельный объект")
-        if under_cell:
-            area = f"{param}${under_cell[0]}${under_cell[1:]}*{param}$K$158"
-            put(f"{under}{row}", formula=area)
-            garages.append(area)
-        else:
-            put(f"{under}{row}", formula="0")
+        areas = [f"{cell(m[7])}*{param}$K$158" for m in members if m[7]]
+        put(f"{under}{row}", formula=joined(areas))
+        garages.extend(areas)
         # Места гаража продаются только у офисника — у ТЦ и ФОКа это
         # обеспеченность посетителей, и «единиц к продаже» у них нет. Ноль
         # ставится явно: на строке ФОКа прежде стоял итог блока, и не стерев
         # его, мы оставили бы сумму блока в графе «Единицы» одного объекта.
-        put(f"D{row}", formula=(f"'ОБЪЕКТЫ'!B{places_row}"
-                                if sellable and places_row else "0"))
-        if not saleable_cell:
+        put(f"D{row}", formula=joined([f"'ОБЪЕКТЫ'!B{m[5]}" for m in members
+                                       if m[8] and m[5]]))
+        if not saleable:
             put(f"C{row}", formula="0")
 
     put(f"A{total}", text="ИТОГО ПРОДУКТЫ")
@@ -19889,23 +20248,31 @@ def _v4_use_bridge_base_row(xml: str, phase: int, missing: list[str]) -> str:
     return xml
 
 
-def _v4_apply_sports_tax_row(xml: str, phase: int, missing: list[str]) -> str:
-    """Признание стоимости ФОКа в налоговой базе очереди — как в движке.
+def _v4_apply_extra_objects_tax_row(xml: str, phase: int, missing: list[str]) -> str:
+    """Признание стоимости дописанных объектов в налоговой базе очереди — как в движке.
 
     Проданный объект признаёт СВОЙ CAPEX по своему проданному объёму: он и в
-    движке стоит отдельным пулом (`krt_products`). Переданный городу не
-    признаёт ничего — выручки у него нет, — и его стоимость возвращается в
-    общий пул очереди, откуда её вычитала строка аллокации объектов. Забыть
-    вторую половину значит оставить стоимость ФОКа непризнанной до конца
-    проекта: налог вырос бы на четверть её, и обе книги выглядели бы верными.
+    движке стоит отдельным пулом (`krt_products`) — тем же слагаемым, что
+    шаблон пишет трём своим объектам. У объекта с признаком «что дальше»
+    (ФОК) переданный городу не признаёт ничего — выручки у него нет, — и его
+    стоимость возвращается в общий пул очереди, откуда её вычитала строка
+    аллокации объектов. Забыть вторую половину значит оставить стоимость
+    непризнанной до конца проекта: налог вырос бы на четверть её, и обе книги
+    выглядели бы верными.
     """
+    if not _V4_EXTRA_OBJECT_LAYOUTS:
+        return xml
     queue = phase
     alloc_row = 96 + 8 * (phase - 1)
-    sold = f"'Вводные'!$K${_V4_SPORTS_DISPOSITION_ROW}=\"{_V4_SPORTS_SALE_WORD}\""
-    mine = f"'ОБЪЕКТЫ'!$B$126={queue}"
     pool_old = f"(SUM({_v4_month_span(20)})-'ОБЪЕКТЫ'!$B${alloc_row})"
-    pool_new = (f"(SUM({_v4_month_span(20)})-'ОБЪЕКТЫ'!$B${alloc_row}"
-                f"+IF({sold},0,IF({mine},'ОБЪЕКТЫ'!$B$146,0)))")
+    returned = ""
+    for lay in _V4_EXTRA_OBJECT_LAYOUTS:
+        if lay.disposition_row:
+            sold = (f"'Вводные'!$K${lay.disposition_row}=\"{_V4_OBJECT_SALE_WORD}\"")
+            capex = f"'ОБЪЕКТЫ'!$B${lay.object_head + 22}"
+            returned += (f"+IF({sold},0,IF('ОБЪЕКТЫ'!$B${lay.object_head + 2}={queue},"
+                         f"{capex},0))")
+    pool_new = pool_old[:-1] + returned + ")"
 
     def build(column: str, body: str) -> str:
         # Хвост формулы — колонко-зависимый: «-D53-D57-D21» в колонке D и
@@ -19915,16 +20282,26 @@ def _v4_apply_sports_tax_row(xml: str, phase: int, missing: list[str]) -> str:
         if pool_old not in body or tail not in body:
             return body
         body = body.replace(pool_old, pool_new)
-        own = (f"-IF({sold},IF({mine},IFERROR('ОБЪЕКТЫ'!$B$146*'ОБЪЕКТЫ'!{column}140"
-               f"/'ОБЪЕКТЫ'!$B$140,0),0),0)")
-        # Слагаемое встаёт ПЕРЕД процентами и НДС — там же, где стоят три
-        # других объекта: порядок слагаемых читается как порядок признания.
+        own = ""
+        for lay in _V4_EXTRA_OBJECT_LAYOUTS:
+            head = lay.object_head
+            mine = f"'ОБЪЕКТЫ'!$B${head + 2}={queue}"
+            volume = _V4_OBJECT_PRODUCT_CELLS[lay.obj.key][1] - 2
+            share = (f"IF({mine},IFERROR('ОБЪЕКТЫ'!$B${head + 22}*'ОБЪЕКТЫ'!{column}{volume}"
+                     f"/'ОБЪЕКТЫ'!$B${volume},0),0)")
+            if lay.disposition_row:
+                sold = (f"'Вводные'!$K${lay.disposition_row}=\"{_V4_OBJECT_SALE_WORD}\"")
+                own += f"-IF({sold},{share},0)"
+            else:
+                own += f"-{share}"
+        # Слагаемые встают ПЕРЕД процентами и НДС — там же, где стоят три
+        # объекта шаблона: порядок слагаемых читается как порядок признания.
         at = body.rindex(tail)
         return body[:at] + own + body[at:]
 
     xml, count = _v4_rewrite_row_formulas(xml, 22, "'ОБЪЕКТЫ'!$B$64=", build)
     if count < 100:
-        missing.append(f"CF_{phase}: строка налоговой базы не знает о ФОКе ({count})")
+        missing.append(f"CF_{phase}: строка налоговой базы не знает о дописанных объектах ({count})")
     return xml
 
 
@@ -21692,8 +22069,25 @@ _V4_OBJECT_ROWS = {
     "offices": (22, 23, "$B$11", "$B$13", "$B$9", "'Вводные'!$K$28", 33),
     "retail": (50, 51, "$B$39", "$B$41", "$B$37", "'Вводные'!$K$48", 61),
     "above_parking": (78, 79, "$B$67", "$B$69", "$B$65", "'Вводные'!$K$69", None),
-    "sports": (140, 141, "$B$129", "$B$131", "$B$127", "'Вводные'!$K$131", 151),
 }
+
+
+def _v4_shift_abs_row(ref: str, offset: int) -> str:
+    """«$B$39» или «'Вводные'!$K$48» со сдвигом строки."""
+    match = re.match(r"(.*\$)(\d+)$", ref)
+    return f"{match.group(1)}{int(match.group(2)) + offset}"
+
+
+# Дописанный объект — строки двойника со сдвигом своей копии; гаража у него
+# нет, если нет своего подземного в раскладке.
+_V4_OBJECT_ROWS.update({
+    lay.obj.prefix: (
+        twin[0] + lay.object_offset, twin[1] + lay.object_offset,
+        *(_v4_shift_abs_row(ref, lay.object_offset) for ref in twin[2:5]),
+        _v4_shift_abs_row(twin[5], lay.input_offset),
+        twin[6] + lay.object_offset if twin[6] is not None and lay.parking_under else None)
+    for lay in _V4_EXTRA_OBJECT_LAYOUTS
+    for twin in [_V4_OBJECT_ROWS[lay.twin_prefix]]})
 
 
 def _v4_apply_object_schedule(objects_xml: str, prefix: str,
@@ -22732,7 +23126,7 @@ def build_project_workbook(
     # Блок ФОКа дописывается ДО того, как вводные разъезжаются по ячейкам:
     # `put` умеет только заменять существующую ячейку, а строк 121–140 в
     # шаблоне нет вовсе.
-    xml = _v4_sports_inputs_block(xml, missing)
+    xml = _v4_extra_inputs_blocks(xml, missing)
     xml = _v4_object_parking_input_labels(xml, missing)
 
     def num_row(row: dict[str, Any] | None, field: str) -> float:
@@ -22827,9 +23221,12 @@ def build_project_workbook(
 
     # Признак ФОКа — не «Да/Нет», а «куда уходит объект»: у него два ответа, и
     # оба содержательные. Формула продаваемой площади читает именно это слово.
-    put(f"K{_V4_SPORTS_DISPOSITION_ROW}",
-        text=(_V4_SPORTS_SALE_WORD if sports_is_sold(x) else _V4_SPORTS_TRANSFER_WORD),
-        label="sports_disposition")
+    for _lay in _V4_EXTRA_OBJECT_LAYOUTS:
+        if _lay.disposition_row:
+            put(f"K{_lay.disposition_row}",
+                text=(_V4_OBJECT_SALE_WORD if object_is_sold(x, _lay.obj)
+                      else _V4_OBJECT_TRANSFER_WORD),
+                label=_lay.obj.sale_gate)
 
     # Признак переноса долга между очередями. Стоит рядом с остальными Да/Нет,
     # но живёт в phasing, а не во вводных проекта: это условие сделки с банком,
@@ -23144,7 +23541,7 @@ def build_project_workbook(
     report_xml = _v4_report_net_profit_from_its_own_rows(report_xml, missing)
     report_xml = _v4_product_structure_block(report_xml, missing)
     report_xml = _v4_rename_labels(report_xml, "ОТЧЕТ", missing)
-    tep_xml = _v4_sports_tep_row(
+    tep_xml = _v4_extra_tep_rows(
         source.read(tep_sheet_path).decode("utf-8"), missing)
     tep_xml = _v4_object_parking_in_tep(tep_xml, missing)
     tep_xml = _v4_rename_labels(tep_xml, "ТЭП", missing)
@@ -23170,7 +23567,7 @@ def build_project_workbook(
         source.read(vri_sheet_path).decode("utf-8"), missing)
     vri_xml = _v4_apply_vri_monthly_accrual(vri_xml, missing)
     objects_sheet_path = _v4_sheet_path(source, "ОБЪЕКТЫ")
-    objects_xml = _v4_sports_object_block(
+    objects_xml = _v4_extra_object_blocks(
         source.read(objects_sheet_path).decode("utf-8"), missing)
     objects_xml = _v4_object_parking_block(objects_xml, missing)
     objects_xml = _v4_object_parking_allocation(objects_xml, missing)
@@ -23273,7 +23670,7 @@ def build_project_workbook(
         # «правка не сработала»: D21 в книге с правкой, а число прежнее.
         cf_sheet_xml[_name] = _v4_apply_vat_base(
             _v4_apply_interest_accrual(
-                _v4_apply_sports_tax_row(
+                _v4_apply_extra_objects_tax_row(
                     _v4_use_bridge_base_row(
                         _v4_apply_cash_sweep(
                             _v4_apply_pf_ceiling(
@@ -23587,10 +23984,9 @@ def build_project_workbook(
     # половины к другой, нельзя (решение владельца, 03.09.2026), — а срок
     # становится формулой: сдвинул стройку или хвост, и он поехал.
     for _obj_prefix, _obj_row, _obj_months, _obj_term in (
-            ("offices", 36, "$K$28", "K33"),
-            ("retail", 56, "$K$48", "K53"),
-            ("above_parking", 76, "$K$69", "K73"),
-            ("sports", _V4_SPORTS_RESIDUAL_ROW, "$K$131", "K136")):
+            (_lay.obj.prefix, _lay.residual_row, f"$K${_v4_input_row(_lay, 'months')}",
+             f"K{_v4_input_row(_lay, 'term')}")
+            for _lay in sorted(_V4_OBJECT_LAYOUTS, key=lambda lay: lay.input_head)):
         put_new(f"J{_obj_row}", text="Остаточные продажи после РВЭ")
         put_new(f"K{_obj_row}", number=n(x, f"{_obj_prefix}_residual_months", 6.0),
                 label=f"{_obj_prefix}_residual_months")
@@ -23687,12 +24083,10 @@ def build_project_workbook(
     phase_offsets = [float(item.get("start_offset_months") or 0)
                      for item in ((phasing or {}).get("phases") or [])]
     for field, coord, default, date_cells, date_keys in (
-        ("offices", "K21", 3, ("K27", "K30"), ("offices_start", "offices_sales_start")),
-        ("standalone_retail", "K41", 2, ("K47", "K50"), ("retail_start", "retail_sales_start")),
-        ("above_parking", "K61", 2, ("K68", "K70"),
-         ("above_parking_start", "above_parking_sales_start")),
-        ("sports", "K124", 2, ("K130", "K133"),
-         ("sports_start", "sports_sales_start")),
+        (_lay.obj.key, f"K{_v4_input_row(_lay, 'queue')}", _lay.obj.default_queue,
+         (f"K{_v4_input_row(_lay, 'start')}", f"K{_v4_input_row(_lay, 'sales_start')}"),
+         (f"{_lay.obj.prefix}_start", f"{_lay.obj.prefix}_sales_start"))
+        for _lay in sorted(_V4_OBJECT_LAYOUTS, key=lambda lay: lay.input_head)
     ):
         # Применённое движком размещение сильнее нашего вывода: объект,
         # объявленный продуктами очереди, до `discrete` не доходит вовсе, и
@@ -24145,8 +24539,8 @@ def build_project_workbook(
             sales_xml = _v4_apply_core_ladder(sales_xml, _core_refs, missing)
         except Exception as exc:
             missing.append("Вводные · лестница цены квартир: " + _error_location(exc))
-    for _prefix, _label in (("offices", "офисы"), ("retail", "ТЦ"),
-                            ("above_parking", "наземный паркинг"), ("sports", "ФОК / медцентр")):
+    for _prefix, _label in ((_lay.obj.prefix, _lay.obj.label) for _lay in
+                            sorted(_V4_OBJECT_LAYOUTS, key=lambda lay: lay.input_head)):
         _profile_items, _profile_percent, _ = parse_month_schedule(x.get(f"{_prefix}_sales_profile"))
         _growth = [n(x, f"{_prefix}_growth_stage{k}_pct", 0.0) / 100.0 for k in (1, 2, 3, 4)]
         _profile_refs = _stage_refs = None
