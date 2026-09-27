@@ -24,7 +24,7 @@ from math import isfinite
 from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
 AssetType = Literal["office", "retail", "hotel"]
@@ -534,3 +534,19 @@ def install(app: FastAPI) -> None:
         except (TypeError, ValueError, KeyError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return JSONResponse(payload, headers=_NO_STORE)
+
+    @app.post("/api/v2/commercial/export/xlsx")
+    def commercial_export_xlsx(req: CommercialRequest) -> Response:
+        try:
+            from developaid_commercial_excel import build_commercial_workbook
+            content, filename, _meta = build_commercial_workbook(req)
+        except (TypeError, ValueError, KeyError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return Response(
+            content=content,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={
+                **_NO_STORE,
+                "Content-Disposition": 'attachment; filename="' + filename + '"',
+            },
+        )
