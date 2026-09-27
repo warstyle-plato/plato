@@ -119,6 +119,8 @@ def render(inputs: dict, tail: str = "console.log(JSON.stringify(groups()));",
         pytest.skip("node недоступен")
     script = "\n".join([
         page_const("FIELD_GROUPS"),
+        # Заголовки смысловых блоков объекта — карта движка рядом с группами.
+        page_const("FIELD_SECTIONS"),
         # Поля, которые правят в «Настройках класса», форма пропускает.
         # Список приходит из движка вместе с самими полями: без него
         # `renderInputs` падает на «CLASS_ONLY_INPUTS is not defined», то

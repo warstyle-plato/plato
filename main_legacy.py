@@ -1150,6 +1150,50 @@ _OBJECT_SALES_PROFILE_EDITOR = {"value": "share", "anchor": "sales_start",
                                 "value_label": "Доля продаж",
                                 "when_label": "Месяц от старта продаж"}
 
+# Смысловые блоки формы объекта — ОДИН раз на все объекты, включая будущие.
+# Двадцать полей подряд, от цены до числа машино-мест, читались нагромождением
+# (владелец, 27.09.2026): человек ищет «сколько строим», «когда», «почём
+# строим», «почём продаём» — и форма разбита ровно по этим вопросам. Блок
+# назван окончанием ключа, а не местом в списке: у метров и у мест разные поля
+# одного смысла (GBA и число мест, ставка за метр и за место), и оба попадают в
+# свой блок сами. Порядок блоков — порядок на экране; блок без полей у объекта
+# не рисуется. Смысл полей и их умолчания живут выше; здесь только раскладка.
+_OBJECT_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Объект", ("enabled", "purpose")),
+    ("Объём", ("gba_sqm", "saleable_sqm", "spaces", "area_per_space_sqm")),
+    ("Сроки строительства", ("start", "months")),
+    ("Себестоимость", ("cost_th_per_sqm", "cost_mln_per_space")),
+    ("Цена и рост цены", ("price_th_per_sqm", "price_mln_per_space",
+                          "growth_pre_pct", "growth_post_pct",
+                          "growth_stage1_pct", "growth_stage2_pct",
+                          "growth_stage3_pct", "growth_stage4_pct")),
+    ("Темп продаж", ("sales_start", "share_before_rve_pct", "residual_months",
+                     "sales_profile")),
+    ("Паркинг объекта", ("parking_under_spaces", "parking_over_spaces",
+                         "parking_guest_pct", "parking_under_price_mln_per_space",
+                         "parking_over_price_mln_per_space")),
+    ("Судьба объекта", ("disposition",)),
+)
+# Поле, которому блок не назначен, не пропадает и не прилипает к соседу: оно
+# уходит в последний блок с честным именем, а проверка формы краснеет.
+OBJECT_SECTION_UNASSIGNED = "Прочее"
+
+
+def standalone_object_section(obj: StandaloneObject, key: str) -> str:
+    """Смысловой блок поля объекта — по окончанию ключа после приставки."""
+    head = f"{obj.prefix}_"
+    suffix = key[len(head):] if key.startswith(head) else key
+    for title, suffixes in _OBJECT_SECTIONS:
+        if suffix in suffixes:
+            return title
+    return OBJECT_SECTION_UNASSIGNED
+
+
+def _section_order(obj: StandaloneObject, field: list[Any]) -> int:
+    titles = [title for title, _ in _OBJECT_SECTIONS]
+    title = standalone_object_section(obj, field[0])
+    return titles.index(title) if title in titles else len(titles)
+
 
 def standalone_object_group(obj: StandaloneObject) -> list[Any]:
     """Группа вводных одного объекта — по его строке реестра."""
@@ -1214,6 +1258,8 @@ def standalone_object_group(obj: StandaloneObject) -> list[Any]:
                 "%; при готовности 100% — ввод; дальше ежемесячный рост после РВЭ",
                 "number"])
     out += add(measure["tail"])
+    # Внутри блока поля идут в порядке ввода выше; сортировка устойчива.
+    out.sort(key=lambda field: _section_order(obj, field))
     return [obj.group_label, out]
 
 
@@ -1281,6 +1327,14 @@ FIELD_GROUPS: list[Any] = [
     if str(_group[0]).startswith(_OBJECT_PLACEHOLDER) else _group
     for _group in _FIELD_GROUPS_LITERAL
 ]
+
+# Блок каждого поля объекта — для заголовков на странице. Отдельной картой, а не
+# третьим элементом группы: группу и поле читают распаковкой в десятке мест.
+FIELD_SECTIONS_PLACEHOLDER = "__DEVELOPAID_FIELD_SECTIONS__"
+FIELD_SECTIONS: dict[str, str] = {
+    field[0]: standalone_object_section(obj, field[0])
+    for obj in STANDALONE_OBJECTS for field in standalone_object_group(obj)[1]
+}
 
 
 # Правится в настройках класса, а не во «Вводных». МЕТОДИКА благоустройства —
@@ -41753,6 +41807,8 @@ summary{padding:11px 0;font-size:14px;font-weight:700;cursor:pointer}
 .group-peek{font-weight:400;color:#888;font-size:12px;margin-left:8px}
 details[open]>summary>.group-peek{display:none}
 .fields{display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;padding:0 0 15px}
+.field-section{font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--muted,#667085);border-top:1px solid var(--line,#e4e7ec);padding:12px 0 8px;margin-top:4px}
+.field-section+.fields{padding-bottom:10px}
 .field label{font-size:12px;color:#555;display:block;margin-bottom:4px}.unit{color:#aaa;font-size:10px}
 input,select{width:100%;border:1px solid #cfcfcf;background:#fff;border-radius:0;padding:9px 10px;font-size:14px;color:#111}
 input:focus,select:focus{outline:2px solid #111;outline-offset:-1px}
@@ -43136,6 +43192,9 @@ function productName(key){
  return PRODUCT_LABELS[key]||String(key||'');
 }
 const FIELD_GROUPS=__DEVELOPAID_FIELD_GROUPS__;
+// Смысловой блок поля объекта («Объём», «Цена и рост цены»…) — из реестра
+// движка. Поле без блока рисуется в общей сетке группы, как прежде.
+const FIELD_SECTIONS=__DEVELOPAID_FIELD_SECTIONS__;
 // Поля, которые правят в «Настройках класса», а не во «Вводных». Список
 // приходит из движка, как сами FIELD_GROUPS: вторая копия «что где правят»
 // разошлась бы с первой молча, и поле пропало бы разом из обоих мест или
@@ -47532,7 +47591,12 @@ function renderInputs(){
    const peek=groupPeek(grp[0],grp[1]);
    if(peek){const hint=document.createElement('span');hint.className='group-peek';hint.textContent=peek;sum.appendChild(hint)}
    det.appendChild(sum);
-   const grid=document.createElement('div');grid.className='fields';
+   // Поля объекта разбиты на смысловые блоки с заголовком: у каждого блока
+   // своя сетка, и новый блок начинается там, где у поля сменился блок.
+   // Порядок полей уже сгруппирован движком — страница его не пересобирает.
+   let grid=null,section=null;
+   const openGrid=()=>{grid=document.createElement('div');grid.className='fields';det.appendChild(grid)};
+   openGrid();
    grp[1].forEach(f=>{
      const [id,label,unit,type]=f;
      // Норматив площади двора правится в «Настройках класса»: он свойство
@@ -47541,7 +47605,14 @@ function renderInputs(){
      // отклонений в отчёте; здесь оно только не рисуется. Выход ДО создания
      // узла: наполовину нарисованное поле оставило бы в сетке пустую клетку.
      if(CLASS_ONLY_INPUTS.includes(id))return;
-     const wrap=document.createElement('div');wrap.className='field';
+     const own=FIELD_SECTIONS[id];
+     if(own&&own!==section){
+       if(section!==null||grid.childElementCount)openGrid();
+       section=own;
+       const head=document.createElement('div');head.className='field-section';head.textContent=own;
+       det.insertBefore(head,grid);
+     }
+     const wrap=document.createElement('div');wrap.className='field';wrap.dataset.field=id;
      // Класс задаёт не только деньги, и об этом сказано у самого поля:
      // одиннадцать вводных ставит выбранный класс, а на экране они
      // неотличимы от набранных руками («я не вижу ничего про площадь
@@ -47676,7 +47747,7 @@ function renderInputs(){
       wrap.appendChild(normCell);
      }
      grid.appendChild(wrap);
-   });det.appendChild(grid);(ownTab?vriBox:box).appendChild(det);
+   });(ownTab?vriBox:box).appendChild(det);
  });
  rateScenario.value=inputs.rate_scenario||'base';
  // Фокус возвращается туда, где он был: перерисовка случается ПОСРЕДИ ввода
@@ -53426,6 +53497,8 @@ MONITOR_PAGE_HTML = (
 )
 PAGE = PAGE.replace(FIELD_GROUPS_PLACEHOLDER,
                     json.dumps(FIELD_GROUPS, ensure_ascii=False))
+PAGE = PAGE.replace(FIELD_SECTIONS_PLACEHOLDER,
+                    json.dumps(FIELD_SECTIONS, ensure_ascii=False))
 # Базы классов — из движка. Копия жила на странице с рождения окна и отстала
 # от пресета в первый же раз, когда профиль класса расширили статьями:
 # полный профиль применялся бы на сервере и молча не существовал бы в браузере.
