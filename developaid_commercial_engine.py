@@ -15,9 +15,7 @@ from typing import Any
 
 from developaid_commercial import (
     CommercialRequest,
-    _annualize_monthly,
     _f,
-    _irr_monthly,
     _months,
     _pct,
     default_inputs,
@@ -61,6 +59,55 @@ _RETAIL_MIX = [
 
 def _clamp(value: float, low: float, high: float) -> float:
     return min(high, max(low, value))
+
+
+def _irr_monthly(cashflows: list[float]) -> float | None:
+    """Solve periodic monthly IRR by bisection.
+
+    Commercial cash flows can contain several sign changes, so the result is
+    the root in the practical search interval used by DevelopAid rather than a
+    claim that every pathological series has a unique economic IRR.
+    """
+    if (
+        not cashflows
+        or not any(value < 0 for value in cashflows)
+        or not any(value > 0 for value in cashflows)
+    ):
+        return None
+
+    def npv(rate: float) -> float:
+        return sum(
+            value / ((1.0 + rate) ** index)
+            for index, value in enumerate(cashflows)
+        )
+
+    low, high = -0.95, 10.0
+    left, right = npv(low), npv(high)
+    if left == 0:
+        return low
+    if right == 0:
+        return high
+    if left * right > 0:
+        return None
+    for _ in range(180):
+        mid = (low + high) / 2.0
+        value = npv(mid)
+        if abs(value) < 0.01:
+            return mid
+        if left * value <= 0:
+            high, right = mid, value
+        else:
+            low, left = mid, value
+    return (low + high) / 2.0
+
+
+def _annualize_monthly(rate: float | None) -> float | None:
+    if rate is None:
+        return None
+    try:
+        return (1.0 + rate) ** 12.0 - 1.0
+    except (OverflowError, ValueError):
+        return None
 
 
 def _share(values: dict[str, Any], key: str, default: float = 0.0) -> float:
