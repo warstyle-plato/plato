@@ -216,3 +216,25 @@ def test_the_guest_places_are_an_engine_number() -> None:
     assert retail["parking_guest_units"] == 0
     html = _report_tep_html(result)
     assert "из них гостевых 50" not in html
+
+
+@pytest.mark.parametrize("phasing", [{}, {"enabled": True, "phase_count": 2,
+                                          "phase_gap_months": 12}])
+def test_a_filled_field_without_a_mark_is_the_owners_number(phasing) -> None:
+    """Нагатино, 27.09.2026: в полях 1 000 + 1 778 мест, а ТЭП — «544 по нормативу».
+
+    Список «тронуто руками» у сохранённого проекта был, но офиса в нём не было.
+    Отсутствие пометки — не решение человека: непустое поле без пометки нормы —
+    его число, и в своде, и в очередях.
+    """
+    x = _inputs()
+    x["_parking_by_hand"] = []
+    result = core._run_authoritative_model(x, _tep(), [], phasing)["consolidated"]
+    own = next(o for o in result["parking"]["own"] if o["tep_key"] == "offices")
+    assert (own["under_spaces"], own["over_spaces"]) == (UNDER, OVER)
+    assert not own["by_norm"]
+    # Контрпример: число, поставленное нормой и так помеченное, идёт за нормой.
+    x["_parking_by_norm"] = ["offices"]
+    marked = core._run_authoritative_model(x, _tep(), [], phasing)["consolidated"]
+    own = next(o for o in marked["parking"]["own"] if o["tep_key"] == "offices")
+    assert own["by_norm"]

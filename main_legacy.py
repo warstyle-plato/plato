@@ -10939,6 +10939,28 @@ def standalone_object_saleable(inputs: dict[str, Any], tep: dict[str, Any] | Non
     return max(0.0, base_gba - over_gba) * base_saleable / base_gba
 
 
+def object_parking_by_hand(inputs: dict[str, Any], prefix: str) -> bool:
+    """Места гаража объекта заданы человеком? Ответ один на проект и очередь.
+
+    Отсутствие пометки — не решение человека (правило CLAUDE.md). Прежде
+    ответов было два: очередь считала ручным всякое непустое поле, а проект —
+    только объект из списка `_parking_by_hand`. У сохранённого проекта без
+    пометки офиса (Нагатино, 27.09.2026: 2 778 мест в полях) очереди строили
+    вписанные места, а свод и ТЭП показывали норму — 544 места «по нормативу».
+
+    Порядок: явная пометка «руками» (проекта или очереди) — да; пометка «число
+    поставила норма» — нет; иначе непустое поле — человеческое.
+    """
+    key = str(prefix)
+    if key in set(inputs.get("_phase_parking_by_hand") or ()):
+        return True
+    if key in set(inputs.get("_parking_by_hand") or ()):
+        return True
+    if key in set(inputs.get("_parking_by_norm") or ()):
+        return False
+    return any(n(inputs, f"{prefix}_parking_{kind}_spaces") > 0 for kind in ("under", "over"))
+
+
 def object_parking_area_per_space(inputs: dict[str, Any]) -> float:
     """Площадь одного подземного места гаража ОСЗ — норматив класса.
 
@@ -11007,13 +11029,7 @@ def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[st
         over = max(0, int(n(inputs, f"{prefix}_parking_over_spaces"))) if enabled else 0
 
         by_norm = False
-        by_hand = str(prefix) in set(inputs.get("_phase_parking_by_hand") or ())
-        marks = inputs.get("_parking_by_hand")
-        if marks is not None:
-            by_hand = by_hand or str(prefix) in set(marks)
-            take_norm = enabled and not by_hand
-        else:
-            take_norm = enabled and under + over == 0 and not by_hand
+        take_norm = enabled and not object_parking_by_hand(inputs, prefix)
         if take_norm:
             required = int((required_by_key.get(tep_key) or 0))
             if required > 0:
@@ -34628,11 +34644,11 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
             share = _phase_object_share(t_master.get(tep_key), p_tep.get(tep_key))
             if not p_inputs.get(enabled_key):
                 share = 0.0
-            by_hand = False
+            # Чьё число — решает тот же предикат, что у проекта: два правила
+            # на один вопрос уже развели свод и очереди (Нагатино, 27.09.2026).
+            by_hand = object_parking_by_hand(x_master, prefix)
             for suffix in ("under", "over"):
                 field = f"{prefix}_parking_{suffix}_spaces"
-                if n(x_master, field) > 0:
-                    by_hand = True
                 p_inputs[field] = float(_phase_place_allocation(
                     object_parking_split, field, n(x_master, field), share))
             if by_hand:
