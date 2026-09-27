@@ -278,3 +278,35 @@ def test_two_merges_do_not_run_at_once():
     text = MERGE_FLOW.read_text(encoding="utf-8")
     assert "group: release-merge" in text
     assert "cancel-in-progress: false" in text
+
+
+@pytest.mark.parametrize("pull, settled", [
+    ({"head": {"sha": "new"}, "mergeable": True}, True),
+    ({"head": {"sha": "new"}, "mergeable": False}, True),
+    ({"head": {"sha": "new"}, "mergeable": None}, False),
+    ({"head": {"sha": "old"}, "mergeable": True}, False),
+    ({}, False),
+])
+def test_the_merge_waits_until_github_knows_the_new_head(pull, settled):
+    """Сразу после push номера GitHub отдаёт прежнюю голову или
+    mergeable=null, и слияние в эту секунду получает 405. Так падали все
+    прогоны workflow с 22.09."""
+    assert release_merge._settled(pull, "new") is settled
+
+
+def test_the_wait_stands_between_the_number_and_the_merge():
+    source = MERGE.read_text(encoding="utf-8")
+    body = source[source.index("for attempt in range"):]
+    wrote = body.index("_set_version(")
+    waited = body.index("_wait_settled(", wrote)
+    merged = body.index('"PUT"', wrote)
+    assert wrote < waited < merged, "слияние не ждёт, пока GitHub досчитает новую голову"
+
+
+def test_a_number_left_by_a_failed_run_does_not_block_the_retry():
+    """Прогон, которому GitHub отказал, оставляет номер в ветке. Повтор
+    обязан слить эту голову, а не падать на «номер уже стоит»."""
+    source = MERGE.read_text(encoding="utf-8")
+    body = source[source.index("def _set_version("):source.index("def _settled(")]
+    assert "raise SystemExit(f\"Номер" not in body
+    assert "if replaced == text:" in body

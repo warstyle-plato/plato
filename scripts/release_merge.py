@@ -26,6 +26,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -38,6 +39,11 @@ API = "https://api.github.com"
 # API, а не круга приёмки, и четвёртый круг означал бы, что в репозиторий
 # льют быстрее, чем отвечает GitHub.
 ATTEMPTS = 3
+# Сразу после push номера GitHub ещё не знает, сливается ли новая голова
+# (mergeable=null), и PUT merge в эту секунду получает 405. Ждём, пока он
+# досчитает: до минуты шагами по три секунды.
+SETTLE_POLLS = 20
+SETTLE_PAUSE = 3
 
 
 def _guard():
@@ -107,7 +113,11 @@ def _set_version(head_ref: str, number: str) -> str:
     if count != 1:
         raise SystemExit(f"В {ENGINE.name} не нашлась строка VERSION — номер не выдан.")
     if replaced == text:
-        raise SystemExit(f"Номер {number} уже стоит в ветке — выдавать нечего.")
+        # Номер записал прошлый прогон, которому GitHub отказал в слиянии.
+        # Остановка здесь оставила бы PR с номером, но без слияния, и каждый
+        # повтор падал бы на этой же строке.
+        print(f"Номер {number} уже стоит в ветке — сливается её голова как есть.")
+        return _git("rev-parse", "HEAD")
     ENGINE.write_text(replaced, encoding="utf-8")
     _git("add", str(ENGINE.relative_to(ROOT)))
     _git("commit", "-m", f"Выпуск {number}\n\nНомер выдан слиянием: "
@@ -115,6 +125,21 @@ def _set_version(head_ref: str, number: str) -> str:
                          f"было нечем.")
     _git("push", "origin", f"HEAD:{head_ref}")
     return _git("rev-parse", "HEAD")
+
+
+def _settled(pull: dict, sha: str) -> bool:
+    """GitHub досчитал слияемость именно этой головы."""
+    return (pull.get("head") or {}).get("sha") == sha and pull.get("mergeable") is not None
+
+
+def _wait_settled(repo: str, number: str, token: str, sha: str) -> dict:
+    pull: dict = {}
+    for _ in range(SETTLE_POLLS):
+        pull = _api("GET", f"/repos/{repo}/pulls/{number}", token)
+        if _settled(pull, sha):
+            break
+        time.sleep(SETTLE_PAUSE)
+    return pull
 
 
 def _engine_changed(guard, base_ref: str, head_ref: str) -> bool:
@@ -169,6 +194,16 @@ def main() -> int:
         if guard._version(guard._show(f"origin/{base_ref}")) != before:
             print("База ушла, пока выдавался номер — считаем заново.")
             continue
+        settled = _wait_settled(repo, number, token, head_sha)
+        if not _settled(settled, head_sha):
+            print(f"GitHub за {SETTLE_POLLS * SETTLE_PAUSE} с не досчитал слияемость "
+                  f"головы {head_sha[:7]}. Повторите прогон: номер уже в ветке, "
+                  "и повтор сольёт её как есть.", file=sys.stderr)
+            return 1
+        reason = refuse_reason(settled)
+        if reason:
+            print(reason, file=sys.stderr)
+            return 1
         try:
             answer = _api("PUT", f"/repos/{repo}/pulls/{number}/merge", token,
                           {"merge_method": method, "sha": head_sha,
