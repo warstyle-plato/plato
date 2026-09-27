@@ -207,3 +207,38 @@ def test_v4_book_uses_separate_office_parking_prices() -> None:
     evaluator = Evaluator(book)
     assert evaluator.cell("ОБЪЕКТЫ", "B33") == pytest.approx(
         _product_revenue(report, "object_parking") / 1_000_000, rel=1e-9)
+
+
+def test_engine_and_book_sell_the_same_office_when_tep_arrives_apart() -> None:
+    """ТЭП, пришедший отдельно от вводных (API, бот), не разводит движок и книгу.
+
+    После #481 движок продавал офис по строке ТЭП (16 575 м²), а книга — по
+    вводным (5 840 м²): выручка 9 173 млн ₽ против 3 232. Себестоимость объекта
+    обе стороны и так брали с GBA вводных.
+    """
+    openpyxl = pytest.importorskip("openpyxl")
+    from xlsx_eval import Evaluator
+
+    inputs = copy.deepcopy(core.DEFAULT_INPUTS)
+    inputs.update(offices_enabled=True, offices_gba_sqm=18_800, offices_saleable_sqm=6_000,
+                  offices_parking_under_spaces=100, offices_parking_over_spaces=20,
+                  _parking_by_hand=["offices"])
+    tep = copy.deepcopy(core.TEP_DEFAULT)
+    tep["offices"].update(gns=20_000.0, total_area=18_800.0, useful=17_000.0,
+                          saleable=17_000.0)
+
+    result = core.calculate(core.CalcRequest(inputs=copy.deepcopy(inputs),
+                                             tep=copy.deepcopy(tep)))
+    office = {p["key"]: p for p in result["report"]["products"]}["offices"]
+    footprint = 20 * core.OBJECT_PARKING_OVER_AREA_DEFAULT
+    expected_sqm = (18_800 - footprint) * 6_000 / 18_800
+    assert office["quantity"] == pytest.approx(expected_sqm), (
+        "объём строки отчёта стоит до паркинга, а выручка — после")
+
+    content, _, _meta = core.build_project_workbook(
+        copy.deepcopy(inputs), copy.deepcopy(tep), [], None, project_name="Проект")
+    sys.setrecursionlimit(400000)
+    evaluator = Evaluator(openpyxl.load_workbook(io.BytesIO(content), data_only=False))
+    assert evaluator.cell("Параметры модели", "K26") == pytest.approx(expected_sqm)
+    assert evaluator.cell("ОБЪЕКТЫ", "B24") * 1_000_000 == pytest.approx(
+        office["revenue"], rel=1e-9), "выручка офиса в движке и книге разошлась"

@@ -105,8 +105,8 @@
     "latest_amendment": "Требуется содержательная сверка действующей редакции по официальным источникам Москвы; карточка заведена для обязательного watcher-контроля.",
     "amendment_history": [],
     "status": "review_required",
-    "source_url": "https://www.mos.ru/",
-    "source_label": "Официальные материалы Правительства Москвы / mos.ru",
+    "source_url": "https://www.consultant.ru/cons/cgi/online.cgi?req=doc&base=MLAW&n=217559",
+    "source_label": "КонсультантПлюс — текст 2151-ПП (резерв: адрес на mos.ru не найден)",
     "watch_terms": [
       "2151-ПП",
       "образования",
@@ -136,9 +136,9 @@
     "current_as_of": "2026-09-21",
     "latest_amendment": "Требуется содержательная сверка действующей редакции по официальным источникам Москвы; карточка заведена для обязательного watcher-контроля.",
     "amendment_history": [],
-    "status": "review_required",
-    "source_url": "https://www.mos.ru/",
-    "source_label": "Официальные материалы Правительства Москвы / mos.ru",
+    "status": "source_link_missing",
+    "source_url": "",
+    "source_label": "Ссылка на текст постановления не найдена — нужен адрес документа, а не главная страница или новость",
     "watch_terms": [
       "2150-ПП",
       "здравоохранения"
@@ -876,8 +876,8 @@
     "current_as_of": "2026-09-22",
     "latest_amendment": "Редакция требует проверки перед машинным применением.",
     "status": "review_required",
-    "source_url": "https://stroi.mos.ru/news/mnoghofunktsional-nyi-komplieks-tsska-poiavitsia-na-lieninghradskom-prospiektie",
-    "source_label": "Комплекс градостроительной политики Москвы — описание процедуры ПЗЗ",
+    "source_url": "https://www.consultant.ru/cons/cgi/online.cgi?req=doc&base=MLAW&n=185650",
+    "source_label": "КонсультантПлюс — текст 457-ПП (резерв: адрес на mos.ru не найден)",
     "watch_terms": [
       "457-ПП",
       "внесении изменений в правила землепользования и застройки"
@@ -921,8 +921,8 @@
     "current_as_of": "2026-09-22",
     "latest_amendment": "Акт продолжает использоваться в московском градостроительном контуре; редакция контролируется watcher.",
     "status": "review_required",
-    "source_url": "https://www.mos.ru/",
-    "source_label": "Официальный портал Мэра и Правительства Москвы",
+    "source_url": "https://www.garant.ru/products/ipo/prime/doc/49556656/",
+    "source_label": "ГАРАНТ.РУ — текст 449-ПП (резерв: адрес на mos.ru не найден)",
     "watch_terms": [
       "449-ПП",
       "проекты планировки территории",
@@ -944,8 +944,8 @@
     "current_as_of": "2026-09-22",
     "latest_amendment": "Актуальная редакция требует проверки перед расчётом компенсации.",
     "status": "review_required",
-    "source_url": "https://www.mos.ru/",
-    "source_label": "Официальный портал Мэра и Правительства Москвы",
+    "source_url": "https://www.mos.ru/authority/documents/doc/10421220/",
+    "source_label": "Сайт Москвы — документ № 63-ПП от 09.03.2011",
     "watch_terms": [
       "63-ПП",
       "денежной компенсации владельцам сносимых индивидуальных гаражей"

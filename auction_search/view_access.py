@@ -12,6 +12,8 @@ import hashlib
 import hmac
 import html
 import os
+import re
+from typing import Any, Mapping
 
 from fastapi import Request, Response
 
@@ -89,6 +91,77 @@ def set_cookie(response: Response, key: str) -> None:
         max_age=30 * 24 * 3600,
         path="/",
     )
+
+
+# --- что открывает ключ просмотра ----------------------------------------
+#
+# Список РАЗРЕШЁННОГО, а не запрещённого. Прежний гейт перечислял параметры,
+# которые считать командой, и сравнивал их с `1/true/yes/on`; FastAPI же
+# читает `bool` шире (`t`, `y`, `True`…), и `?refresh=t` проходил гейт и
+# запускал обновление. А GET-маршруты с побочным действием без флага — платный
+# поиск публикаций, пробы с чужим `url=` через браузер — гейт не видел вовсе.
+# Новый маршрут под /auctions по умолчанию закрыт для ключа просмотра, пока его
+# не внесли сюда сознательно.
+
+_READ_ONLY_GET = tuple(re.compile(pattern) for pattern in (
+    r"/auctions",
+    r"/auctions/sources",
+    r"/auctions/lot-notes/status",
+    r"/auctions/discover",
+    r"/auctions/krt",
+    r"/auctions/krt/decisions",
+    r"/auctions/krt/tender-links",
+    r"/auctions/krt/map",
+    r"/auctions/krt/ranking",
+    r"/auctions/krt/watch",
+    r"/auctions/krt-card/[^/]+",
+    r"/auctions/krt-prototype/nagatino",
+    r"/auctions/krt/[^/]+/(?:investment-score|requirements|point|card-facts)",
+))
+
+# POST, которые ничего не пишут: собрать xlsx из строк на экране и найти точку
+# лота на карте.
+_READ_ONLY_POST = frozenset({"/auctions/export.xlsx", "/auctions/lot-point"})
+
+# Параметры, превращающие чтение в пересчёт или запись. Ложными считаются ровно
+# те значения, которые FastAPI/pydantic читает как False; всё прочее — команда.
+COMMAND_FLAGS = ("refresh", "force", "rebuild", "revoke", "ensure_model")
+_FALSE_WORDS = frozenset({"", "0", "false", "f", "n", "no", "off"})
+
+
+def command_flag(query: Mapping[str, Any]) -> str:
+    """Имя параметра, который просит пересчёт/запись. Пусто — чистое чтение."""
+    for name in COMMAND_FLAGS:
+        values = (
+            query.getlist(name) if hasattr(query, "getlist")
+            else ([query[name]] if name in query else [])
+        )
+        for value in values:
+            if str(value).strip().lower() not in _FALSE_WORDS:
+                return name
+    return ""
+
+
+def scope_problem(method: str, path: str, query: Mapping[str, Any]) -> str:
+    """Почему ключ просмотра не пускает этот запрос. Пусто — пускает."""
+    clean = path.rstrip("/") or "/"
+    verb = str(method or "").upper()
+    if verb == "OPTIONS":
+        return ""
+    if verb in ("GET", "HEAD"):
+        if not any(pattern.fullmatch(clean) for pattern in _READ_ONLY_GET):
+            return (
+                "Ограниченный ключ даёт только просмотр торгов и КРТ; "
+                "этот раздел открывается ключом кабинета рынка"
+            )
+    elif verb == "POST" and clean in _READ_ONLY_POST:
+        pass
+    else:
+        return "Ограниченный ключ даёт только просмотр торгов и КРТ"
+    flag = command_flag(query)
+    if flag:
+        return f"Ограниченный ключ не запускает обновление данных (параметр «{flag}»)"
+    return ""
 
 
 LOGIN_PAGE = """<!doctype html><meta charset="utf-8">

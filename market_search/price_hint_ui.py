@@ -110,7 +110,7 @@ dialog::backdrop{background:rgba(20,30,40,.34)}
       +(data.observed_at?' · '+date(data.observed_at):'')+'</div>'
       +'<div class="kpis">'
       +'<div class="kpi"><span class="muted">Автоматический ориентир</span><b>'+num(data.price_per_sqm)+'</b><span>₽/м²</span></div>'
-      +(stage.available?'<div class="kpi"><span class="muted">На старте по стадии</span><b>'+num(stage.price_per_sqm)+'</b><span>₽/м² · '+num(stage.adjustment_pct,1)+'%</span></div>':'')
+      +(stage.available?'<div class="kpi"><span class="muted">На старте по стадии</span><b>'+num(stage.price_per_sqm)+'</b><span>₽/м² · '+num(stage.adjustment_pct,1)+'% к ориентиру · стадия '+num(stage.stage_effect_pct,1)+'% по '+esc(stage.dated_peers||0)+' аналогам с датами</span></div>':'')
       +'<div class="kpi"><span class="muted">Класс</span><b style="font-size:15px">'+esc(data.segment||'не определён')+'</b><span>выборки</span></div>'
       +'</div>';
   }
