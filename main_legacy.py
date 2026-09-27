@@ -447,6 +447,22 @@ for _preset in PROJECT_CLASS_PRESETS.values():
     _preset["offices_price_th_per_sqm"] = _preset["retail_price_th_per_sqm"]
 del _preset
 
+# Класс проекта — это и класс его офисника (владелец, 27.09.2026): комфорт —
+# офисы B и ниже, бизнес — B+ и A−, элитный — A и выше. Себестоимость здания
+# офиса идёт за классом шкалой 175 / 200 / 225 тыс ₽/м² GBA («а потом всё
+# равно вручную можно править»). Прежде она стояла одним числом 200 на все
+# классы, и офис A строился по цене офиса B. Правка руками сильнее класса —
+# как у любой ставки профиля, и отклонение от базы класса называется вслух.
+OFFICE_CLASS_BY_PROJECT_CLASS: dict[str, dict[str, Any]] = {
+    "comfort": {"office_class": "B и ниже", "cost_th_per_sqm": 175},
+    "business": {"office_class": "B+ и A−", "cost_th_per_sqm": 200},
+    "elite": {"office_class": "A и выше", "cost_th_per_sqm": 225},
+}
+OFFICE_CLASS_PLACEHOLDER = "__DEVELOPAID_OFFICE_CLASS__"
+for _key, _office in OFFICE_CLASS_BY_PROJECT_CLASS.items():
+    PROJECT_CLASS_PRESETS[_key]["offices_cost_th_per_sqm"] = _office["cost_th_per_sqm"]
+del _key, _office
+
 # Источники базовых ставок классов на страницу не зашиваются: адрес или имя
 # собственного проекта в подписи — раскрытие коммерческой информации, и один
 # раз это уже случилось. Свод нормированных данных по источникам отдаёт модуль
@@ -1022,8 +1038,10 @@ STANDALONE_OBJECTS: tuple[StandaloneObject, ...] = (
                      tep_label="Коммерция ОСЗ", group_label="ТЦ / коммерция ОСЗ"),
     StandaloneObject("offices", "offices", "офисы", 3, True, True, "sqm",
                      "offices_cost_th_per_sqm", "offices_price_th_per_sqm",
+                     # 175 — ставка класса «Комфорт» (офисы B и ниже):
+                     # умолчания и есть комфорт (`OFFICE_CLASS_BY_PROJECT_CLASS`).
                      defaults={"gba_sqm": 10000, "saleable_sqm": 6000,
-                               "cost_th_per_sqm": 200,
+                               "cost_th_per_sqm": 175,
                                "price_th_per_sqm": nonresidential_price_th(
                                    PROJECT_CLASS_PRESETS["comfort"][
                                        "apartment_price_th"])},
@@ -42743,6 +42761,8 @@ window.addEventListener('unhandledrejection', function(event){
 <script>
 const SCENARIOS={"conservative":{"scenario_revenue_multiplier":0.9,"scenario_cost_multiplier":1.1},"base":{"scenario_revenue_multiplier":1.0,"scenario_cost_multiplier":1.0},"optimistic":{"scenario_revenue_multiplier":1.1,"scenario_cost_multiplier":0.9}};
 const PROJECT_CLASS_PRESETS=__DEVELOPAID_CLASS_PRESETS__;
+// Класс офисника при классе проекта — из движка (`OFFICE_CLASS_BY_PROJECT_CLASS`).
+const OFFICE_CLASS_BY_PROJECT_CLASS=__DEVELOPAID_OFFICE_CLASS__;
 const RATE_DEFAULT=[]
 const TEP_DEFAULT=__DEVELOPAID_TEP_DEFAULT__;
 // Имя продукта — одно на весь продукт. Копий было пять: подписи строк ТЭП,
@@ -46414,12 +46434,19 @@ function renderProjectClassPreview(){
  // в гараже: 474,1 против 6 321,6 млн.
  //
  // НАЗЕМНУЮ ставку класса подпись не называет: себестоимость самого здания —
- // своя вводная объекта (`offices_cost_th_per_sqm`, 200 тыс ₽/м²), и 190/152
- // к ней не применяются вовсе («у нас же там нет 190/152 в принципе»,
- // владелец 21.09.2026).
+ // своя ставка объекта (`offices_cost_th_per_sqm`), и 190/152 к ней не
+ // применяются вовсе («у нас же там нет 190/152 в принципе», владелец
+ // 21.09.2026). С 27.09.2026 класс двигает и её — шкалой класса офиса
+ // 175 / 200 / 225, и подпись называет четвёртое число.
+ // Класс проекта — это и класс офисника (владелец, 27.09.2026): подпись
+ // называет его и себестоимость здания офиса, которую класс теперь двигает.
+ const office=OFFICE_CLASS_BY_PROJECT_CLASS[key];
+ const officeText=office&&(isNonResidential()||inputs.offices_enabled)
+  ? ` · офисы класса ${office.office_class}, себес. ${classValue(key,'offices_cost_th_per_sqm').toLocaleString('ru-RU')}`
+  : '';
  box.textContent=isNonResidential()
-  ? `Офисы/ТЦ ${classValue(key,'offices_price_th_per_sqm').toLocaleString('ru-RU')} · м/м ${classValue(key,'parking_price_th').toLocaleString('ru-RU')} · подземные ${classValue(key,'main_under_th_per_sqm').toLocaleString('ru-RU')} тыс. ₽`
-  : `Кв/комм ${classValue(key,'apartment_price_th').toLocaleString('ru-RU')} · м/м ${classValue(key,'parking_price_th').toLocaleString('ru-RU')} · себес. ${classValue(key,'main_above_th_per_sqm').toLocaleString('ru-RU')}/${classValue(key,'main_under_th_per_sqm').toLocaleString('ru-RU')} тыс. ₽`;
+  ? `Офисы/ТЦ ${classValue(key,'offices_price_th_per_sqm').toLocaleString('ru-RU')} · м/м ${classValue(key,'parking_price_th').toLocaleString('ru-RU')} · подземные ${classValue(key,'main_under_th_per_sqm').toLocaleString('ru-RU')}${officeText} тыс. ₽`
+  : `Кв/комм ${classValue(key,'apartment_price_th').toLocaleString('ru-RU')} · м/м ${classValue(key,'parking_price_th').toLocaleString('ru-RU')} · себес. ${classValue(key,'main_above_th_per_sqm').toLocaleString('ru-RU')}/${classValue(key,'main_under_th_per_sqm').toLocaleString('ru-RU')}${officeText} тыс. ₽`;
 }
 
 function applyProjectClassPreset(selectedKey){
@@ -53020,6 +53047,8 @@ PAGE = PAGE.replace(FIELD_GROUPS_PLACEHOLDER,
 # полный профиль применялся бы на сервере и молча не существовал бы в браузере.
 PAGE = PAGE.replace("__DEVELOPAID_CLASS_PRESETS__",
                     json.dumps(PROJECT_CLASS_PRESETS, ensure_ascii=False))
+PAGE = PAGE.replace(OFFICE_CLASS_PLACEHOLDER,
+                    json.dumps(OFFICE_CLASS_BY_PROJECT_CLASS, ensure_ascii=False))
 PAGE = PAGE.replace(CLASS_FIELD_UNITS_PLACEHOLDER,
                     json.dumps(class_field_units(), ensure_ascii=False))
 PAGE = PAGE.replace(INPUT_DEFAULT_PLACEHOLDER,
