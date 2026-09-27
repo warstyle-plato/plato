@@ -64,11 +64,24 @@ def test_a_lowered_version_fails(tmp_path):
 
 
 def test_an_untouched_engine_needs_no_bump(tmp_path):
-    """Правка документации или тестов выпуском не является."""
+    """Пустая/нерелизная правка выпуском не является."""
     repo = _repo(tmp_path, 'VERSION = "0.18.45"\nx = 1\n', 'VERSION = "0.18.45"\nx = 1\n')
     answer = _run(repo)
     assert answer.returncode == 0
     assert "не менялся" in answer.stdout
+
+
+def test_market_code_with_the_same_version_fails(tmp_path):
+    """market_search/** тоже меняет production-образ и обязан поднять VERSION."""
+    repo = _repo(tmp_path, 'VERSION = "0.18.45"\nx = 1\n', 'VERSION = "0.18.45"\nx = 1\n')
+    market = repo / "market_search"
+    market.mkdir()
+    (market / "price_hint.py").write_text("VALUE = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "market_search/price_hint.py"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "market change"], cwd=repo, check=True)
+    answer = _run(repo)
+    assert answer.returncode == 1
+    assert "Production-код изменился" in answer.stderr
 
 
 def test_the_build_runs_the_check_before_the_tests():
@@ -83,7 +96,10 @@ def test_the_build_runs_the_check_before_the_tests():
         str(step.get("run") or "") for step in jobs["version"]["steps"])
     assert "version" in (jobs["test"].get("needs") or []), (
         "смысл проверки — падать раньше долгого прогона, а доли её не ждут")
-    assert "fetch-depth: 2" in workflow, "без предыдущего коммита сравнивать не с чем"
+    assert "fetch-depth: 0" in workflow, "без истории до выпуска сравнивать не с чем"
+    assert "check_version_grows.py --since-release" in "\n".join(
+        str(step.get("run") or "") for step in jobs["version"]["steps"]), (
+        "отменённая сборка прячет код без номера, если сверять только с HEAD^")
 
 
 def _run_args(repo: Path, *args: str) -> subprocess.CompletedProcess:
@@ -131,3 +147,54 @@ def test_the_guard_runs_on_pull_requests():
     assert "pull_request" in guard
     assert "check_version_grows.py --on-branch" in guard
     assert "--base" in guard
+
+
+def test_stale_production_builds_are_cancelled():
+    """Старый main не должен позже переписать prod после более нового."""
+    import yaml as _yaml
+    workflow = _yaml.safe_load(
+        (ROOT / ".github" / "workflows" / "build-yandex.yml").read_text(encoding="utf-8")
+    )
+    concurrency = workflow["concurrency"]
+    assert concurrency["group"] == "build-yandex"
+    assert concurrency["cancel-in-progress"] is True
+
+
+def test_stale_main_build_is_cancelled():
+    """Старый main не должен позже переписать prod поверх более нового."""
+    import yaml as _yaml
+    workflow = _yaml.safe_load(
+        (ROOT / ".github" / "workflows" / "build-yandex.yml").read_text(encoding="utf-8")
+    )
+    concurrency = workflow["concurrency"]
+    assert concurrency["group"] == "build-yandex"
+    assert concurrency["cancel-in-progress"] is True
+
+
+def test_a_cancelled_build_does_not_hide_code_without_a_number(tmp_path):
+    """Push A меняет код без номера, push B — только тесты и отменяет сборку A.
+
+    Сверка B с B^ видела «production-код не менялся»; сверка с последним
+    выпуском видит код A.
+    """
+    repo = _repo(tmp_path, 'VERSION = "0.24.30"\nx = 1\n', 'VERSION = "0.24.30"\nx = 2\n')
+    run = lambda *args: subprocess.run(args, cwd=repo, check=True, capture_output=True)
+    (repo / "tests").mkdir()
+    (repo / "tests" / "test_x.py").write_text("def test_x():\n    pass\n", encoding="utf-8")
+    run("git", "add", "tests/test_x.py")
+    run("git", "commit", "-qm", "только тесты")
+
+    plain = _run(repo)
+    assert plain.returncode == 0, "сверка с HEAD^ сама по себе дыру не видит"
+
+    answer = subprocess.run([sys.executable, str(CHECK), "--since-release"],
+                            cwd=repo, capture_output=True, text=True)
+    assert answer.returncode == 1
+    assert "main_legacy.py" in answer.stderr and "второй" in answer.stderr
+
+
+def test_since_release_is_quiet_after_a_proper_release(tmp_path):
+    repo = _repo(tmp_path, 'VERSION = "0.24.30"\nx = 1\n', 'VERSION = "0.24.31"\nx = 2\n')
+    answer = subprocess.run([sys.executable, str(CHECK), "--since-release"],
+                            cwd=repo, capture_output=True, text=True)
+    assert answer.returncode == 0, answer.stderr

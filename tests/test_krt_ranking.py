@@ -148,7 +148,7 @@ def test_the_screen_shows_the_run_and_names_the_measure():
     assert "/auctions/krt/ranking" in page and "/auctions/krt/ranking/refresh" in page
     assert "из ${p.total}" in page and "p.elapsed_seconds" in page and "p.current" in page
     # Пустая ячейка обязана различать «не оценён» и «не выдерживает».
-    assert "не оценён" in page and "потолок не подобран" in page
+    assert "не оценён" in page and "потолок не определён" in page
 
 
 def test_the_site_is_drawn_but_its_boundary_is_not_invented():
@@ -242,9 +242,10 @@ def test_the_catalogue_counts_itself_once_a_week(tmp_path):
     assert second.claim() is True, "после освобождения работа снова доступна"
     second.release()
 
-    # Свежий кэш откладывает следующий прогон.
+    # Свежий полный прогон откладывает следующий.
     first._persist({"a": {"slug": "a", "available": True,
-                          "entry_capacity_rub_per_sqm": 1, "name": "a"}})
+                          "entry_capacity_rub_per_sqm": 1, "name": "a"}},
+                   catalogue_run=True)
     assert first.due() is False
 
 

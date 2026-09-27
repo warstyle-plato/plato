@@ -17,6 +17,15 @@ def _source():
     )
 
 
+def test_roseltorg_reads_application_start_separately_from_deadline():
+    text = (
+        "Дата и время начала приёма заявок | 01.10.26 10:00 "
+        "Дата и время окончания приёма заявок | 09.10.26 15:00"
+    )
+    assert RoseltorgAdapter._application_start(text) == "01.10.26 10:00"
+    assert RoseltorgAdapter._deadline(text) == "09.10.26 15:00"
+
+
 def test_public_discovery_uses_official_tags_parameter():
     url = RoseltorgAdapter._discovery_url("земельный участок")
     parsed = urlparse(url)

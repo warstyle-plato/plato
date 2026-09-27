@@ -235,6 +235,7 @@ class ETPGPBAdapter(AuctionPlatformAdapter):
             procedure_type=procedure,
             start_price_rub=price,
             current_price_rub=price,
+            application_start=cls._moment(attrs.get("start_registration")),
             application_deadline=deadline,
             status="Приём заявок",
             raw={

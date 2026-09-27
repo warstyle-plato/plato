@@ -103,7 +103,7 @@ def test_the_book_takes_the_area_the_engine_calculated(applied: dict) -> None:
 
 
 def test_the_object_parking_is_not_applied_twice() -> None:
-    """Продаваемая офиса уменьшается на метры первых этажей ровно один раз."""
+    """Пятно первых этажей уменьшает GBA-базу офиса ровно один раз."""
     inputs = copy.deepcopy(core.DEFAULT_INPUTS)
     inputs.update(offices_enabled=True, offices_gba_sqm=18800,
                   offices_parking_under_spaces=100, offices_parking_over_spaces=20)
@@ -111,11 +111,13 @@ def test_the_object_parking_is_not_applied_twice() -> None:
     tep["offices"].update(gns=20000.0, total_area=18800.0, useful=17000.0, saleable=17000.0)
     result = core.calculate(core.CalcRequest(inputs=inputs, tep=copy.deepcopy(tep)))
     office = {row["key"]: row for row in result["tep"]["rows"]}["offices"]
-    taken = 20 * core.n(inputs, "object_parking_area_per_space_sqm",
-                        core.OBJECT_PARKING_AREA_DEFAULT)
-    assert taken > 0, "мест первых этажей нет — вычитать нечего, ветка не проверяется"
-    assert abs(office["saleable"] - (17000.0 - taken)) < 0.6, (
-        "метры первых этажей вычтены не один раз")
+    footprint = 20 * core.n(
+        inputs, "object_parking_over_area_per_space_sqm",
+        core.OBJECT_PARKING_OVER_AREA_DEFAULT)
+    expected = 17000.0 * (20000.0 - footprint) / 20000.0
+    assert footprint > 0, "мест первых этажей нет — вычитать нечего, ветка не проверяется"
+    assert abs(office["saleable"] - expected) < 0.6, (
+        "пятно первых этажей применено к GBA не один раз")
 
 
 def test_a_silent_engine_is_named_not_hidden(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -128,7 +128,7 @@ def test_our_own_subtraction_is_not_called_the_city_s_gap(core=None) -> None:
     }
     market = {"analysis": {"site": {"segment": "Бизнес", "price_per_sqm": 450_000,
                                     "sold_lot_avg": 58, "units_per_month": 25}},
-              "price_hint": {}}
+              "price_hint": {"price_per_sqm": 450_000, "basis": "test fresh comparable median"}}
     result = build_krt_model_screening(
         project, market, module,
         requirements={"available": True, "volumes": programme_volumes(VARSHAVSKOE)})

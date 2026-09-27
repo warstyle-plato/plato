@@ -25,6 +25,7 @@
     python3 scripts/check_version_grows.py --base origin/main
     python3 scripts/check_version_grows.py --next --base origin/main
     python3 scripts/check_version_grows.py --on-branch --base origin/main
+    python3 scripts/check_version_grows.py --since-release
 """
 
 from __future__ import annotations
@@ -36,6 +37,39 @@ import sys
 
 ENGINE = "main_legacy.py"
 _VERSION = re.compile(r'^VERSION = "([^"]+)"', re.M)
+
+# VERSION описывает весь production-образ, а не один исторический файл ядра.
+# Не требуют нового номера только поверхности, которые не меняют приложение
+# в контейнере. Guide сознательно живёт на версии движка: для него есть свой
+# revision/hotfix-контур.
+_NON_RELEASE_PREFIXES = (".github/", "docs/", "tests/", "scripts/", "guide/")
+_NON_RELEASE_SUFFIXES = (".md", ".sh")
+
+
+def _changed_paths(base_ref: str, head_ref: str = "HEAD") -> list[str]:
+    done = subprocess.run(
+        ["git", "diff", "--name-only", base_ref, head_ref],
+        capture_output=True, check=True, text=True,
+    )
+    return [line.strip() for line in done.stdout.splitlines() if line.strip()]
+
+
+def _is_release_path(path: str) -> bool:
+    if path.startswith(_NON_RELEASE_PREFIXES):
+        return False
+    if path.endswith(_NON_RELEASE_SUFFIXES):
+        return False
+    return True
+
+
+def _release_changed(base_ref: str, head_ref: str = "HEAD") -> bool:
+    """Изменилось ли то, что попадает пользователю в production-образ.
+
+    Раньше ответ сравнивал только main_legacy.py, поэтому market_search/** мог
+    уехать на прод под старым номером. Теперь источник истины — состав diff:
+    любой runtime/data/image change требует нового VERSION.
+    """
+    return any(_is_release_path(path) for path in _changed_paths(base_ref, head_ref))
 
 
 def _version(text: str) -> tuple[int, ...]:
@@ -155,6 +189,51 @@ def _on_branch(base_ref: str) -> int:
     return 0
 
 
+def _since_release() -> int:
+    """Весь участок main после последнего выпуска, а не один последний коммит.
+
+    Сборки main отменяют друг друга (`cancel-in-progress`): push A меняет
+    production-код без номера, push B трогает только тесты и отменяет прогон A.
+    Проверка B сравнивала B с A, видела «production-код не менялся» — и образ
+    уезжал с кодом A под старым номером, а отменённый прогон A не краснел
+    (cancelled ≠ failure). Здесь сравнение идёт с последним коммитом, где
+    менялась строка VERSION: всё production-изменение после него обязано
+    прийти со своим номером.
+    """
+    try:
+        head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True,
+                              check=True, text=True).stdout.strip()
+        release = subprocess.run(
+            ["git", "log", "-1", "--format=%H", "-G", r'^VERSION = "', "--", ENGINE],
+            capture_output=True, check=True, text=True).stdout.strip()
+    except (subprocess.CalledProcessError, OSError) as exc:
+        print(f"История не прочитана ({exc}) — сверка с выпуском пропущена.",
+              file=sys.stderr)
+        return 1
+    if not release:
+        print("Ни одного выпуска в истории — сверять не с чем.")
+        return 0
+    if release == head:
+        print("Этот коммит сам выпуск: рост номера проверяет обычная сверка.")
+        return 0
+    changed = [path for path in _changed_paths(release, "HEAD") if _is_release_path(path)]
+    if not changed:
+        print(f"После выпуска {release[:8]} production-код не менялся.")
+        return 0
+    commits = subprocess.run(
+        ["git", "log", "--format=%h %s", f"{release}..HEAD", "--", *changed],
+        capture_output=True, check=True, text=True).stdout.strip().splitlines()
+    shown = ", ".join(changed[:5]) + (" и другие" if len(changed) > 5 else "")
+    print(f"После выпуска {release[:8]} production-код изменён без номера: {shown}.",
+          file=sys.stderr)
+    for line in commits[:10]:
+        print(f"  {line}", file=sys.stderr)
+    print("Номер выдаёт слияние (workflow «Слияние с выдачей номера»); код, "
+          "попавший в main мимо него, уезжает в образ под чужим номером.",
+          file=sys.stderr)
+    return 1
+
+
 def _current_branch() -> str:
     """Имя своей ветки — чтобы не счесть собственный номер занятым."""
     for command in (["git", "symbolic-ref", "--quiet", "--short", "HEAD"],
@@ -175,6 +254,8 @@ def main() -> int:
     argv = [arg for arg in sys.argv[1:]]
     show_next = "--next" in argv
     on_branch = "--on-branch" in argv
+    if "--since-release" in argv:
+        return _since_release()
     argv = [arg for arg in argv if arg not in ("--next", "--on-branch")]
     base_ref = ""
     if "--base" in argv:
@@ -234,8 +315,8 @@ def main() -> int:
         print(f"Предыдущей версии нет ({previous_ref}) — сравнение пропущено.")
         return 0
     after_text = _show("HEAD")
-    if before_text == after_text:
-        print("Движок не менялся — версия может остаться прежней.")
+    if not _release_changed(previous_ref, "HEAD"):
+        print("Production-код не менялся — версия может остаться прежней.")
         return 0
     if ("\x00" in before_text or "\ufffd" in before_text) and not (
         "\x00" in after_text or "\ufffd" in after_text
@@ -248,7 +329,7 @@ def main() -> int:
         return 0
     print(f"Версия не выросла: было {'.'.join(map(str, before))}, "
           f"стало {'.'.join(map(str, after))}.", file=sys.stderr)
-    print("Движок изменился, значит выпуск другой. Поднимите VERSION в "
+    print("Production-код изменился, значит выпуск другой. Поднимите VERSION в "
           f"{ENGINE} — она объявляется там один раз.", file=sys.stderr)
     taken, _unread = _remote_versions()
     highest = before

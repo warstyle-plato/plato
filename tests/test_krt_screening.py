@@ -1,6 +1,6 @@
 import main_legacy as core
 
-from auction_search.krt_screening import build_krt_model_screening
+from auction_search.krt_screening import _market_inputs, build_krt_model_screening
 
 
 PROJECT = {
@@ -27,6 +27,35 @@ def _market(price: int, market: int = 708_000) -> dict:
     }
 
 
+def test_krt_surrounding_price_uses_the_dedicated_price_hint() -> None:
+    """Цена окружения берётся из числового ориентира, не из узкого site-verdict.
+
+    Site verdict отвечает ещё и на вопрос о продукте и может честно выбрать
+    дорогой доминирующий класс. Для поля модели price_hint строже: ему нужны
+    минимум три свежих сопоставимых прайса. Их нельзя менять местами.
+    """
+    report = {
+        "analysis": {
+            "site": {
+                "segment": "премиум",
+                "price_per_sqm": 2_948_528,
+            }
+        },
+        "price_hint": {
+            "segment": "премиум",
+            "price_per_sqm": 620_000,
+            "entry_per_sqm": 590_000,
+        },
+    }
+
+    segment, start_price, market_price, basis = _market_inputs(report)
+
+    assert segment == "премиум"
+    assert start_price == 620_000
+    assert market_price == 620_000
+    assert "price_hint" in basis
+
+
 def test_krt_screening_uses_market_class_and_authoritative_phasing() -> None:
     # 680 тыс ₽/м², а не 650: полный профиль себестоимости класса «бизнес»
     # (26.08.2026 — благоустройство 15,5 и сети 10,8 вместо умолчаний) опустил
@@ -43,7 +72,12 @@ def test_krt_screening_uses_market_class_and_authoritative_phasing() -> None:
     assert result["market"]["start_price_rub_sqm"] == 708_000
     assert result["market"]["entry_price_rub_sqm"] == 680_000
     assert result["phasing"]["count"] == 2
-    assert result["phasing"]["saleable_sqm"] == round(161_680 * 0.65)
+    # Продаваемая считается от ГНС КВАРТИР, а не от всего жилого объёма:
+    # «объекты жилого назначения» — это МКД целиком, и 6% его СПП по методике
+    # ГлавАПУ — встроенная коммерция первого этажа. Своей строки она не имела
+    # вовсе, и эти метры продавались по цене квартир (владелец, 26.09.2026).
+    assert result["phasing"]["saleable_sqm"] == round(
+        161_680 * core.MKD_SPP_SPLIT["apartments"] * 0.65)
     assert len(result["phasing"]["phases"]) == 2
     assert result["absorption"]["available"] is True
     assert result["absorption"]["market_units_per_month"] == 21.5
@@ -55,8 +89,11 @@ def test_krt_screening_uses_market_class_and_authoritative_phasing() -> None:
     assert result["metrics"]["project_llcr_x"] == round(result["metrics"]["llcr_x"], 3)
     assert result["metrics"]["project_llcr_x"] >= result["metrics"]["weakest_phase_llcr_x"]
     assert "LLCR проекта" in result["text"]
-    assert result["entry_capacity"]["available"] is True
-    assert result["entry_capacity"]["amount_mln"] > 0
+    # Без прочитанного решения обязательства unknown: точное число нельзя
+    # выдавать за потолок. Goal-seek остаётся верхней границей.
+    assert result["entry_capacity"]["available"] is False
+    assert result["entry_capacity"]["upper_bound_mln"] > 0
+    assert "верхняя граница" in result["entry_capacity"]["reason"]
     assert any("Цена приобретения" in row for row in result["exclusions"])
     assert any("ВРИ" in row for row in result["exclusions"])
 
@@ -73,7 +110,19 @@ def test_krt_screening_can_reject_operating_case_before_land_price() -> None:
 def test_krt_screening_does_not_invent_market_class_or_price() -> None:
     no_class = build_krt_model_screening(PROJECT, {"analysis": {}}, core)
     no_price = build_krt_model_screening(
-        PROJECT, {"analysis": {"site": {"segment": "бизнес"}}}, core
+        PROJECT,
+        {
+            "analysis": {
+                "site": {
+                    "segment": "бизнес",
+                    # Реальная цена одного/двух проектов ещё не означает, что
+                    # получился устойчивый ценовой ориентир площадки.
+                    "price_per_sqm": 2_948_528,
+                }
+            },
+            "price_hint": {"available": False, "entry_per_sqm": 2_558_316},
+        },
+        core,
     )
 
     assert no_class == {"available": False, "reason": "Маркетинг пока не определил класс продукта"}

@@ -103,9 +103,10 @@ def test_the_score_is_not_signed_with_platons_name():
 
     # Колонка таблицы называет то же, что карточка: два имени у одного числа
     # читаются как два разных числа.
-    head = page[page.index('data-sort="score"'):]
+    head = page[page.index('data-sort="investment_rating"'):]
     head = head[:head.index("</th>")]
-    assert "Балл площадки" in head, head
+    assert "Рейтинг" in head, head
+    assert "Платон" not in head, head
 
 
 def test_the_cuts_are_printed_once():

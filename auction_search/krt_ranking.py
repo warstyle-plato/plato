@@ -29,6 +29,7 @@ krt.mos.ru ценового поля нет вовсе (`KrtTerritory` несё�
 from __future__ import annotations
 
 import contextlib
+import gc
 import datetime
 import fcntl
 import hashlib
@@ -44,6 +45,28 @@ from typing import Any, Callable
 from market_search.http import load_json, save_json
 
 logger = logging.getLogger(__name__)
+
+def _trim_process_memory() -> None:
+    """Return freed arenas to Render after each heavy KRT calculation.
+
+    The Starter web process has a 512 MB cgroup limit. Pulse/market reports
+    create large short-lived JSON/list objects; CPython can keep their freed
+    arenas mapped, so RSS grows across otherwise sequential KRT rows until the
+    instance is killed and the ranking run never finishes. Collect Python
+    garbage and, on glibc, ask malloc to return free heap pages to the OS.
+    """
+    gc.collect()
+    if os.name != "posix":
+        return
+    try:
+        import ctypes
+
+        trim = getattr(ctypes.CDLL(None), "malloc_trim", None)
+        if trim is not None:
+            trim(0)
+    except (OSError, AttributeError):
+        pass
+
 
 # Отпечаток методики снимается один раз на процесс: движок считает один и тот
 # же маленький проект, и ответ его в пределах процесса не меняется.
@@ -448,6 +471,11 @@ def score_row(project: dict[str, Any], screening: dict[str, Any]) -> dict[str, A
     else:
         row["entry_capacity_mln"] = None
         row["entry_capacity_rub_per_sqm"] = None
+        upper = _number(capacity.get("upper_bound_mln"))
+        row["entry_capacity_upper_bound_mln"] = round(upper, 1) if upper > 0 else None
+        row["entry_capacity_upper_bound_rub_per_sqm"] = (
+            round(upper * 1e6 / saleable) if upper > 0 and saleable > 0 else None
+        )
         row["entry_capacity_reason"] = str(
             capacity.get("reason") or "Потолок цены входа не подобран")
     return row
@@ -498,7 +526,33 @@ def keep_computed(
 # «Пересчитать сейчас» площадку приходилось читать заново — «так и не хранятся
 # данные о уже просчитанных проектах, что реновация, что занято» (владелец,
 # 03.09.2026). Пустота не затирает прочитанное; новые непустые факты — да.
-_REMEMBERED_FACTS = ("card_facts", "press_facts")
+_REMEMBERED_FACTS = (
+    "card_facts",
+    "press_facts",
+    # Инвестиционный рейтинг — общая серверная характеристика площадки, а не
+    # состояние конкретной вкладки. Массовый/ручной расчёт пишет его в общий
+    # ranking.json; последующий пересчёт рынка/модели не должен молча стирать
+    # его до тех пор, пока новый рейтинг не будет посчитан на свежих данных.
+    "investment_rating",
+    "investment_rating_version",
+    "investment_rating_target_rub_sqm",
+    "investment_rating_computed_at",
+    "local_absorption_sqm_month",
+    "moscow_absorption_sqm_month",
+    "investment_rating_segment",
+    "burden_pct",
+    "burden_mln",
+    "ordinary_capex_mln",
+    "burden_pipeline_version",
+    "burden_checked_at",
+    "burden_pending",
+    "burden_retry_after_seconds",
+    "burden_complete",
+    "burden_reason",
+    "burden_components",
+    "burden_llcr_x",
+    "burden_entry_capacity_mln",
+)
 
 
 def _with_remembered_facts(previous: dict[str, Any] | None,
@@ -560,6 +614,7 @@ class KrtRanking:
         # снимка — сбой записи снимка объявил бы новость, которую мы не
         # запомнили, и она пришла бы снова.
         self.watch_seen_path = Path(data_dir) / "krt" / "watch_seen.json"
+        self.rating_settings_path = Path(data_dir) / "krt" / "rating_settings.json"
         self.ttl_seconds = ttl_seconds
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
@@ -590,8 +645,13 @@ class KrtRanking:
 
     def due(self, now: float | None = None) -> bool:
         """Пора ли считать: кэша нет или он старше последнего срока."""
+        # Срок меряется ПОЛНЫМ прогоном по расписанию, а не последней записью
+        # файла. Файл пишут и карточка (`remember`), и фоновые пачки по четыре
+        # площадки — по `updated_at` одно открытие карточки в воскресенье после
+        # трёх часов отменяло недельный прогон, а фон каждую минуту отодвигал
+        # его навсегда.
         cached = load_json(self.path) or {}
-        at = cached.get("updated_at")
+        at = cached.get("catalogue_run_at")
         if not at:
             return True
         try:
@@ -651,6 +711,30 @@ class KrtRanking:
             return []
         rows = cached.get("rows")
         return list(rows) if isinstance(rows, list) else []
+
+    def rating_target(self, default: float = 600_000.0) -> float:
+        """Общий ценовой ориентир рейтинга каталога.
+
+        Это серверная настройка, общая для всех пользователей. Сценарный
+        ориентир внутри карточки может отличаться, но не меняет каталог.
+        """
+        payload = load_json(self.rating_settings_path) or {}
+        try:
+            value = float(payload.get("price_target_rub_sqm"))
+        except (TypeError, ValueError):
+            value = float(default)
+        return value if value > 0 else float(default)
+
+    def set_rating_target(self, value: float) -> float:
+        target = float(value)
+        if not (1 <= target <= 10_000_000):
+            raise ValueError("Ценовой ориентир должен быть от 1 до 10 000 000 ₽/м²")
+        save_json(self.rating_settings_path, {
+            "schema_version": 1,
+            "price_target_rub_sqm": target,
+            "updated_at": int(time.time()),
+        })
+        return target
 
     # --- что каталог видел раньше ---------------------------------------
 
@@ -949,7 +1033,14 @@ class KrtRanking:
         safe = re.sub(r"[^a-z0-9_-]+", "-", str(slug or "").strip().lower())[:120]
         if not safe or safe == "-":
             raise ValueError("Пустой идентификатор площадки")
-        return self.reports_dir / f"{safe}.json"
+        # Путь обязан остаться в папке отчётов при любом слаге: замена выше это
+        # и так гарантирует, но граница проверяется явно — нормализацией и
+        # сравнением с папкой, а не доверием к регулярному выражению.
+        root = os.path.realpath(self.reports_dir)
+        path = os.path.realpath(os.path.join(root, f"{safe}.json"))
+        if not path.startswith(root + os.sep):
+            raise ValueError("Идентификатор площадки выводит за папку отчётов")
+        return Path(path)
 
     def report(self, slug: str) -> dict[str, Any] | None:
         """Сохранённый отчёт или None. Чужая схема — это «нет», а не мусор."""
@@ -1049,11 +1140,7 @@ class KrtRanking:
             row = dict(stored.get(clean) or {"slug": clean})
             row.update(facts)
             stored[clean] = row
-            save_json(self.path, {
-                "schema_version": CACHE_SCHEMA_VERSION,
-                "updated_at": int(time.time()),
-                "rows": sorted(stored.values(), key=_rank_key),
-            })
+            self._save(stored.values())
 
     def progress(self) -> dict[str, Any]:
         with self._lock:
@@ -1112,7 +1199,9 @@ class KrtRanking:
                 "stop_reason": "", "scheduled": bool(scheduled),
             }
         thread = threading.Thread(
-            target=self._run, args=(projects, screen), name="krt-ranking", daemon=True)
+            target=self._run, args=(projects, screen),
+            kwargs={"catalogue_run": bool(scheduled)},
+            name="krt-ranking", daemon=True)
         self._thread = thread
         thread.start()
         return True
@@ -1121,11 +1210,16 @@ class KrtRanking:
         self,
         projects: list[dict[str, Any]],
         screen: Callable[[dict[str, Any]], dict[str, Any]],
+        *,
+        catalogue_run: bool = False,
     ) -> None:
-        # Прежде посчитанное не выбрасывается до конца прогона: площадка,
-        # которую в этот раз не удалось посчитать, остаётся со своим прошлым
-        # баллом и датой, а не исчезает из списка.
-        rows = {str(row.get("slug") or ""): row for row in self.rows()}
+        # Прежде посчитанное не выбрасывается: площадка, которую в этот раз не
+        # удалось посчитать, остаётся со своим прошлым баллом и датой. Решает
+        # это `merge_row` под замком записи — по строке, которая лежит на диске
+        # В МОМЕНТ записи, а не по снимку начала прогона. Снимок прогон держал
+        # часами и писал целиком после каждой площадки: всё, что за это время
+        # записала карточка (`remember` — общий рейтинг, нагрузка), молча
+        # откатывалось к старому.
         try:
             for index, project in enumerate(projects, start=1):
                 name = str(project.get("name") or project.get("slug") or "")
@@ -1140,10 +1234,8 @@ class KrtRanking:
                     screening = {"available": False, "reason": f"Расчёт не выполнен: {exc}"}
                     with self._lock:
                         self._progress["failed"] += 1
-                row = keep_computed(rows.get(str(project.get("slug") or "")),
-                                    score_row(project, screening))
+                row = score_row(project, screening)
                 if row["slug"]:
-                    rows[row["slug"]] = row
                     # Отчёт кладётся целиком, даже когда посчитать не вышло:
                     # «не посчитали и вот почему» — тоже ответ, и карточка
                     # должна показывать его, а не пустоту с кнопкой. Но если
@@ -1154,12 +1246,16 @@ class KrtRanking:
                         "market": screening.pop("market_report", None),
                         "screening": screening,
                     })
+                    self._persist({row["slug"]: row})
                 with self._lock:
                     self._progress["done"] = index
-                self._persist(rows)
                 self.heartbeat()
+                _trim_process_memory()
         finally:
-            self._persist(rows)
+            # Полный прогон по расписанию отмечается своим полем: по нему
+            # `due()` решает, когда следующий. Пачка фона или пересчёт одной
+            # площадки срок не сдвигают.
+            self._persist({}, catalogue_run=catalogue_run)
             # Замок отпускается ровно здесь: держать его до протухания значило
             # бы, что после первого же прогона неделя превращается в шесть часов
             # ожидания следующего.
@@ -1236,7 +1332,8 @@ class KrtRanking:
                 merged[slug] = merge_row(merged.get(slug), row)
         return merged
 
-    def _persist(self, rows: dict[str, dict[str, Any]]) -> None:
+    def _persist(self, rows: dict[str, dict[str, Any]], *,
+                 catalogue_run: bool = False) -> None:
         """Записать свой взгляд, не потеряв чужого.
 
         Прежде здесь стоял снимок памяти целиком: всё, что появилось в файле
@@ -1244,11 +1341,30 @@ class KrtRanking:
         """
         with self._write_lock():
             merged = self._merged_with_stored(rows)
-            save_json(self.path, {
-                "schema_version": CACHE_SCHEMA_VERSION,
-                "updated_at": int(time.time()),
-                "rows": sorted(merged.values(), key=_rank_key),
-            })
+            self._save(merged.values(), catalogue_run=catalogue_run)
+
+    def _save(self, rows: Any, *, catalogue_run: bool = False) -> None:
+        """Одна запись файла рейтинга. Зовётся только под `_write_lock`.
+
+        Отметка полного прогона переносится из лежащего файла: её ставит
+        только сам полный прогон.
+        """
+        now = int(time.time())
+        stored = load_json(self.path) or {}
+        payload: dict[str, Any] = {
+            "schema_version": CACHE_SCHEMA_VERSION,
+            "updated_at": now,
+            "rows": sorted(rows, key=_rank_key),
+        }
+        previous_run = (
+            stored.get("catalogue_run_at")
+            if stored.get("schema_version") == CACHE_SCHEMA_VERSION else None
+        )
+        if catalogue_run:
+            payload["catalogue_run_at"] = now
+        elif previous_run:
+            payload["catalogue_run_at"] = previous_run
+        save_json(self.path, payload)
 
 
 def _rank_key(row: dict[str, Any]) -> tuple[int, float, str]:

@@ -120,6 +120,30 @@ SUBJECT_CODES = ("77",)
 MOSCOW_DYN_SUBJECT_IDS = ("78",)
 ACTIVE_LOT_STATUSES = ("PUBLISHED", "APPLICATIONS_SUBMISSION")
 
+# Код статуса лота ГИС Торгов — внутреннее слово портала; человеку на экране и
+# в выгрузке нужен статус по-русски. Незнакомый код не прячется и не
+# угадывается: он называется как есть, с пометкой, чьё это слово.
+LOT_STATUS_WORDS = {
+    "PUBLISHED": "Опубликован",
+    "APPLICATIONS_SUBMISSION": "Приём заявок",
+    "DETERMINING_WINNER": "Определение победителя",
+    "SUCCEED": "Состоялся",
+    "FAILED": "Не состоялся",
+    "CANCELED": "Отменён",
+    "CANCELLED": "Отменён",
+    "SUSPENDED": "Приостановлен",
+}
+
+
+def lot_status_ru(value: object) -> str:
+    """Статус лота словами. Уже русский текст возвращается без изменений."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if not re.fullmatch(r"[A-Z][A-Z_]+", text):
+        return text
+    return LOT_STATUS_WORDS.get(text) or f"статус площадки: {text}"
+
 # One broad newest-first stream brought 300 mostly residential cards before a
 # development lot.  These public API filters target the asset classes the user
 # actually asked for while keeping the same forty-page ceiling overall.
@@ -498,8 +522,9 @@ def to_lot(card: dict[str, Any], fetched_at: str) -> AuctionLot | None:
         permitted_use=attribute(card, ATTR_PERMITTED_USE),
         procedure_type=" · ".join(part for part in (bidd_name, form_name) if part) or None,
         current_price_rub=price,
+        application_start=_moment(card.get("biddStartTime")),
         application_deadline=_moment(card.get("biddEndTime")),
-        status=_text(card.get("lotStatus")) or None,
+        status=lot_status_ru(_text(card.get("lotStatus"))) or None,
         relevance_flags=flags,
     )
 

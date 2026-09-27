@@ -1,6 +1,10 @@
 """DevelopAid application entrypoint with persistent Telegram user registry."""
 
+import fcntl
 import os
+import threading
+import time
+from pathlib import Path
 
 import main as _base
 from auction_search import install as install_auction_search
@@ -118,6 +122,51 @@ def _address_suggest(query: str, limit: int):
 
 market_search.address_suggest = _address_suggest
 
+# Массовый прогон КРТ вызывает геокодирование десятков адресов подряд. Цепочка
+# движка в отсутствие платного геокодера доходит до Nominatim, у которого
+# публичный лимит около одного запроса в секунду. Без общей защёлки даже
+# последовательный рейтинг двух воркеров получал 429 и оставлял строки пустыми.
+#
+# Защёлка — файл на диске: воркеров два, память у них раздельная, и
+# `threading.Lock` в каждом свой (вместе они давали около двух запросов в
+# секунду). Под замком только ожидание очереди, а не вся цепочка
+# Яндекс/DaData/Nominatim: запрос человека не стоит за фоновым целиком.
+_MARKET_GEOCODE_SPACING_SECONDS = 1.10
+_market_geocode_lock = threading.Lock()
+
+
+def _market_geocode_gate_path() -> Path:
+    return Path(os.getenv("DATA_DIR", "data")) / "market" / "geocode.gate"
+
+
+def _market_geocode_turn() -> None:
+    """Дождаться своей очереди к геокодеру — общей для всех воркеров."""
+    path = _market_geocode_gate_path()
+    with _market_geocode_lock:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            handle = path.open("a+")
+        except OSError:
+            time.sleep(_MARKET_GEOCODE_SPACING_SECONDS)
+            return
+        with handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            try:
+                handle.seek(0)
+                try:
+                    last = float(handle.read().strip() or 0)
+                except ValueError:
+                    last = 0.0
+                wait = _MARKET_GEOCODE_SPACING_SECONDS - (time.time() - last)
+                if wait > 0:
+                    time.sleep(min(wait, _MARKET_GEOCODE_SPACING_SECONDS))
+                handle.seek(0)
+                handle.truncate()
+                handle.write(f"{time.time():.3f}")
+                handle.flush()
+            finally:
+                fcntl.flock(handle, fcntl.LOCK_UN)
+
 
 def _geocode_for_market(query: str):
     """Адрес объекта отчёта — движковой цепочкой: Яндекс, DaData, Nominatim.
@@ -132,6 +181,7 @@ def _geocode_for_market(query: str):
     """
     from market_search.geocoder import GeocodingError, GeoPoint
 
+    _market_geocode_turn()
     found, warnings = core._geocode_address(query, 1)
     if not found:
         raise GeocodingError("; ".join(warnings) or f"Адрес «{query}» не найден")

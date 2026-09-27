@@ -265,7 +265,7 @@ def test_the_page_can_filter_by_origin_and_subject() -> None:
     page = auctions_page()
     assert 'id="origin"' in page
     assert 'value="bankruptcy"' in page
-    assert 'value="land"' in page and 'value="building"' in page
+    assert "['land','— Земля']" in page and "['building','— Объекты']" in page
     assert "lotMatchesKind" in page
 
 
@@ -417,7 +417,7 @@ def test_the_real_card_parses() -> None:
     lot = parse(_real_card(), "now")
     assert lot is not None
     assert lot.title.startswith("Здание дома кордона")
-    assert lot.status == "PUBLISHED"
+    assert lot.status == "Опубликован"  # код ГИС Торгов переводится адаптером
     assert lot.application_deadline.startswith("2026-09-25")
 
 
