@@ -1,0 +1,96 @@
+<div id="commercial" class="panel">
+  <div class="card">
+    <div class="report-title">
+      <div>
+        <div class="section-title">Отдельный контур нежилой экономики · beta</div>
+        <h2>Офис · торговля · гостиница</h2>
+      </div>
+      <small>Без эскроу · отдельно от жилой экономики</small>
+    </div>
+    <div class="fields" style="grid-template-columns:repeat(3,minmax(180px,1fr));margin-top:16px">
+      <div class="field">
+        <label>Тип объекта</label>
+        <select id="commercialAsset">
+          <option value="office">Офис</option>
+          <option value="retail">Торговый объект</option>
+          <option value="hotel">Гостиница</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Модель реализации</label>
+        <select id="commercialStrategy">
+          <option value="income">Доходная / hold</option>
+          <option value="sale">Продажа площадей / номеров</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Финансирование</label>
+        <select id="commercialFinancing">
+          <option value="equity_debt">Собственные средства + обычный кредит</option>
+          <option value="equity">100% собственные средства</option>
+        </select>
+      </div>
+    </div>
+    <div class="note" style="margin-top:10px">
+      Нежилой расчёт не использует проектное финансирование жилого проекта, покрытие эскроу или льготную ставку ПФ.
+    </div>
+  </div>
+
+  <div class="grid">
+    <div>
+      <div class="card">
+        <div class="section-title">Вводные нежилого проекта</div>
+        <div id="commercialFields" class="fields"></div>
+        <div class="toolbar" style="margin-top:12px">
+          <button class="btn dark" onclick="commercialCalculate()">Рассчитать</button>
+          <button class="btn" onclick="commercialReset()">Сбросить</button>
+          <span id="commercialStatus" style="font-size:12px;color:#777"></span>
+        </div>
+      </div>
+    </div>
+    <div>
+      <div class="card">
+        <div class="section-title">Ключевые показатели</div>
+        <div class="kpis" id="commercialKpis"></div>
+      </div>
+      <div class="card">
+        <div class="section-title">Операционная экономика</div>
+        <table class="metric-table metric-compact"><tbody id="commercialOperating"></tbody></table>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="section-title">Годовой денежный поток</div>
+    <div class="scroll" style="max-height:none">
+      <table>
+        <thead><tr>
+          <th>Год</th><th>Development</th><th>Операционная выручка</th><th>Продажи</th>
+          <th>Exit</th><th>Project CF</th><th>Debt draw</th><th>Interest</th>
+          <th>Debt repayment</th><th>Debt balance</th><th>Equity CF</th>
+        </tr></thead>
+        <tbody id="commercialAnnual"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <details class="card">
+    <summary>Помесячный денежный поток</summary>
+    <div class="scroll" style="max-height:520px">
+      <table class="monthly">
+        <thead><tr>
+          <th>Мес.</th><th>Development</th><th>Operating rev.</th><th>Sale rev.</th><th>Exit</th>
+          <th>OPEX</th><th>Selling cost</th><th>Project CF</th><th>Debt draw</th>
+          <th>Interest</th><th>Debt repayment</th><th>Debt balance</th><th>Equity CF</th>
+        </tr></thead>
+        <tbody id="commercialMonthly"></tbody>
+      </table>
+    </div>
+  </details>
+
+  <div class="card">
+    <div class="section-title">Проверки движка</div>
+    <table class="metric-table metric-compact"><tbody id="commercialChecks"></tbody></table>
+    <div id="commercialWarnings" class="note warning" style="display:none"></div>
+  </div>
+</div>
