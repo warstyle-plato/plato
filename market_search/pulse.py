@@ -232,21 +232,28 @@ def _dates_from_payload(payload: Any) -> dict[str, str]:
     Ключ обязан семантически совпасть с датой. Если у проекта несколько
     корпусов, старт берём самый ранний, а плановый ввод — самый поздний:
     стадия всего ЖК иначе закончится на первом сданном корпусе.
-    """
-    found: dict[str, tuple[int, str]] = {}
 
-    def remember(kind: str, score: int, date: str) -> None:
+    Вес ключа выбирает лучшее поле ВНУТРИ одного объекта (корпуса/проекта):
+    у разных корпусов API бывает разная форма (дата у одного, год+квартал
+    у другого), и сравнивать веса между корпусами нельзя — иначе корпус с
+    «красивым» именем поля скрыл бы более поздний ввод соседнего.
+    """
+    # (владелец — ближайший объемлющий dict, вид даты) -> (вес, дата)
+    found: dict[tuple[int, str], tuple[int, str]] = {}
+
+    def remember(owner: int, kind: str, score: int, date: str) -> None:
         if score <= 0:
             return
-        current = found.get(kind)
+        slot = (owner, kind)
+        current = found.get(slot)
         if current is None or score > current[0]:
-            found[kind] = (score, date)
+            found[slot] = (score, date)
             return
         if score == current[0]:
             if kind == "sales_start" and date < current[1]:
-                found[kind] = (score, date)
+                found[slot] = (score, date)
             elif kind == "commissioning" and date > current[1]:
-                found[kind] = (score, date)
+                found[slot] = (score, date)
 
     def scalar_date(value: Any, kind: str, score: int) -> str | None:
         date = _pulse_date(value)
@@ -261,8 +268,9 @@ def _dates_from_payload(payload: Any) -> dict[str, str]:
             return datetime.date(year, month, 1).isoformat()
         return None
 
-    def walk(value: Any, path: str = "") -> None:
+    def walk(value: Any, path: str = "", owner: int = 0) -> None:
         if isinstance(value, dict):
+            owner = id(value)
             # Частая форма API: commissioning_year + commissioning_quarter.
             scalars = {str(k): v for k, v in value.items() if not isinstance(v, (dict, list))}
             for kind in ("sales_start", "commissioning"):
@@ -290,22 +298,31 @@ def _dates_from_payload(payload: Any) -> dict[str, str]:
                     month = 1 if kind == "sales_start" else quarter * 3
                     if kind == "sales_start":
                         month = (quarter - 1) * 3 + 1
-                    remember(kind, max(score_y, score_q) + 1, datetime.date(year, month, 1).isoformat())
+                    remember(owner, kind, max(score_y, score_q) + 1, datetime.date(year, month, 1).isoformat())
             for key, child in value.items():
-                walk(child, f"{path}.{key}" if path else str(key))
+                walk(child, f"{path}.{key}" if path else str(key), owner)
             return
         if isinstance(value, list):
             for index, child in enumerate(value):
-                walk(child, f"{path}[{index}]")
+                walk(child, f"{path}[{index}]", owner)
             return
         for kind in ("sales_start", "commissioning"):
             score = _date_key_score(path, kind)
             date = scalar_date(value, kind, score)
             if date:
-                remember(kind, score, date)
+                remember(owner, kind, score, date)
 
     walk(payload)
-    return {kind: pair[1] for kind, pair in found.items()}
+    out: dict[str, str] = {}
+    for (_owner, kind), (_score, date) in found.items():
+        current = out.get(kind)
+        if current is None:
+            out[kind] = date
+        elif kind == "sales_start" and date < current:
+            out[kind] = date
+        elif kind == "commissioning" and date > current:
+            out[kind] = date
+    return out
 
 def _dates_from_project_html(page: str) -> dict[str, str]:
     """Даты из самой карточки ЖК, если отдельный JSON их не отдал."""
