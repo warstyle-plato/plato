@@ -119,6 +119,8 @@ def render(inputs: dict, tail: str = "console.log(JSON.stringify(groups()));",
         pytest.skip("node недоступен")
     script = "\n".join([
         page_const("FIELD_GROUPS"),
+        # Заголовки смысловых блоков объекта — карта движка рядом с группами.
+        page_const("FIELD_SECTIONS"),
         # Поля, которые правят в «Настройках класса», форма пропускает.
         # Список приходит из движка вместе с самими полями: без него
         # `renderInputs` падает на «CLASS_ONLY_INPUTS is not defined», то
@@ -133,6 +135,9 @@ def render(inputs: dict, tail: str = "console.log(JSON.stringify(groups()));",
         # и профиль, и тот, кто по нему спрашивает.
         page_const("PROJECT_CLASS_PRESETS"),
         page_function("classSetsField"),
+        # Пометка «вписано руками» у поля профиля класса — рядом с пометкой класса.
+        page_function("classManualKeys"),
+        page_function("isClassManual"),
         page_const("INPUT_DEFAULT"),
         page_const("num"),
         page_const("VRI_GROUP_NAME"),
